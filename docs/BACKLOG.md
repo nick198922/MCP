@@ -6,11 +6,13 @@
 - [x] Http (retry/rate-limit/cache/health), Envelope, провайдери Deribit/HL/ccxt, 16 інструментів, 51 тест.
 
 ## Фаза 0.5 — гігієна (робити першими)
-- [ ] 0.1 Власник виконує `make smoke`; виправити розбіжності (ccxt funding `interval`, `openInterestValue`, HL ctxs).
+- [x] 0.1 `make smoke` виконано 2026-10-10, 9/9 ok; виправлено OKX order-book (3+ колонки); зафіксовано, що Binance/Bybit не повертають `openInterestValue` (окремий пункт нижче).
 - [x] 0.2 `ruff` у dev-extras, `uv lock`.
 - [x] 0.3 Python 3.11 перевірено (51 тест).
 - [x] 0.4 Жорсткі шляхи з README прибрано.
-- [ ] 0.5 Перший запуск CI після створення репозиторію.
+- [ ] 0.5 Перший запуск CI (репо `nick198922/MCP` є; перевірити `gh run list`).
+- [ ] 0.6 `perps_open_interest`: для Binance/Bybit узяти mark із `fetch_ticker`/`fetch_funding_rate` і обчислити `oi_usd = amount * mark` замість `None`.
+- [ ] 0.7 Розширити `scripts/live_smoke.py` новими інструментами: `market_tickers`, `market_markets`, `market_trades`, `deribit_expected_move`, `deribit_oi_by_strike`.
 
 ## Фаза 1 — дані та деривативи (залишок)
 - [x] 1.1 `market_tickers` (batch), `market_markets` (пошук/фільтр, не повний дамп), `market_trades` (+ агресор-дисбаланс/CVD). ccxt `fetch_tickers`, `fetch_markets`, `fetch_trades`.

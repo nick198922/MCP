@@ -27,18 +27,25 @@
 Ядро: `Http` (ретраї на 429/5xx/timeout, token-bucket, TTL-кеш із single-flight, класифікація помилок), `HealthRegistry`, `Envelope/Evidence`, фейкові транспорти для тестів.
 
 ## Як перевірено
-- **61 тест, усі зелені** (локально; Python 3.15 через `uv`). Раніше проходили на 3.13/3.14.
+- **62 тести, усі зелені** (локально; Python 3.15 через `uv`). Раніше проходили на 3.13/3.14.
 - `ruff check` і `ruff format` чисті.
 - Black-76 звірено з **реальним тікером Deribit** (delta −0.4535, gamma ≈2e-5, vega 226.95, theta −25.98) і з ціною (mark у BTC = USD-ціна / forward).
 - Touch-ймовірності звірено з Monte Carlo (±1.5 %).
 - Сервер запускається в обох режимах: stdio-підпроцес і streamable-http (перевірено клієнтом MCP).
 - Зразки реальних відповідей Deribit (книга опціонів, ф'ючерси, ticker, instruments) і Hyperliquid (meta, funding history) отримані 2026-10-10 через DOUBLETOP `fetch` і лежать у `tests/fixtures/` та `docs/reference/api-notes.md`.
 
-## Що НЕ перевірено (важливо)
-Жодного разу не виконано **живих запитів до бірж** з коду проєкту: середовище їх не бачить. Тому:
-- `scripts/live_smoke.py` ще не запускався. Це перше, що має зробити власник: `make smoke` і надіслати вивід.
-- Не підтверджено живими даними: форма відповіді `ccxt.fetch_funding_rate` (поле `interval`, `nextFundingTimestamp`) на Binance/Bybit/OKX; `fetch_open_interest` (чи є `openInterestValue` в USD); друга половина `metaAndAssetCtxs` Hyperliquid (поля funding/openInterest/markPx/… взято з документації: DOUBLETOP обрізає цю відповідь).
-- CI-файл `.github/workflows/ci.yml` не запускався (немає віддаленого репозиторію).
+## Що перевірено живими запитами 2026-10-10
+Виявилось, що з сесії Claude Code на Mac власника мережа до бірж **працює** (через `uv run python … httpx/ccxt`; `curl` блокує sandbox). `make smoke` виконано, 9/9 інструментів ok. Деталі в `docs/reference/api-notes.md` (розділ «Живі зразки»):
+- **Deribit greeks** збігаються з їхнім ticker до 4 знаків на delta/vega/theta (три BTC-кол біля ATM, 30OCT26).
+- **ccxt funding `interval`**: Bybit і OKX повертають `"8h"`; Binance — `null` (наш fallback 8h + warning уже працює).
+- **ccxt `openInterestValue`**: лише OKX. Binance/Bybit повертають `null` → `oi_usd=None` + warning. Залишається як покращення (взяти mark звідкись і множити на amount).
+- **Hyperliquid `metaAndAssetCtxs`**: усі очікувані поля на місці (`funding/openInterest/markPx/oraclePx/midPx/impactPxs/dayBaseVlm/premium/dayNtlVlm/prevDayPx`), universe 234 монети.
+- **OKX order book**: рівні з 4 колонок (включно з `orders_count`) → виправлено в `analytics/orderbook.py` + тест `test_book_tolerates_extra_level_columns`.
+
+## Що ще НЕ перевірено
+- CI-файл `.github/workflows/ci.yml` не запускався (гілка з коммітами запушена в `github.com/nick198922/MCP`, CI має бути вже активним — варто глянути `gh run list`).
+- `perps_open_interest`: для Binance/Bybit USD-значення досі обчислюється як `openInterestAmount * markPrice`? Ні, зараз просто пропускаємо (`oi_usd=None` + warning). Потенційне покращення.
+- Нові інструменти 1.1 (`market_tickers`, `market_markets`, `market_trades`) та 1.12 (`deribit_expected_move`, `deribit_oi_by_strike`) ще не включено в `scripts/live_smoke.py` — додати.
 
 ## Ключові рішення (деталі в `docs/adr/`)
 | ADR | Рішення |

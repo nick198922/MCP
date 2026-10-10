@@ -15,7 +15,7 @@
 
 ## Hyperliquid
 - `POST https://api.hyperliquid.xyz/info`, тіло `{"type": …}` **[V]** для `meta`, `fundingHistory`.
-- `metaAndAssetCtxs` → `[meta, ctxs]`; `meta.universe[i] = {name, szDecimals, maxLeverage, onlyIsolated?, isDelisted?}` **[V]**; `ctxs[i]` (за порядком universe) `{funding, openInterest, prevDayPx, dayNtlVlm, premium, oraclePx, markPx, midPx, impactPxs}` — усі числа рядками **[D]**.
+- `metaAndAssetCtxs` → `[meta, ctxs]`; `meta.universe[i] = {name, szDecimals, maxLeverage, onlyIsolated?, isDelisted?, marginTableId}` **[V]**; `ctxs[i]` (за порядком universe) `{funding, openInterest, prevDayPx, dayNtlVlm, premium, oraclePx, markPx, midPx, impactPxs, dayBaseVlm}` — усі числа рядками **[V]** (2026-10-10, 234 монети).
 - Funding **щогодини**, значення — ставка за годину (дріб) **[V]**; annualize: ×24×365.
 - `openInterest` — у базових одиницях (монетах), для USD помножити на mark **[D]**.
 - `fundingHistory`: `{coin,fundingRate,premium,time}`, до 500 записів на запит **[V/D]**.
@@ -27,8 +27,22 @@
 - Версія з `uv.lock`; клас `ccxt.async_support.<id>`; потрібно `await ex.close()` — наш `Exchanges.aclose()`.
 - Уніфікований символ перпа лінійного USDT: `BTC/USDT:USDT` **[D]**.
 - Id: `binanceusdm`, `bybit`, `okx` (для `okx` `fetch_funding_rate` / `fetch_open_interest`) **[D]**.
-- Поля, що **потребують живої перевірки**: `fundingRate`, `nextFundingTimestamp`, `interval` (рядок на кшталт `8h` — у деяких версіях відсутній), `fetch_open_interest` → `openInterestAmount` / `openInterestValue`.
 - Помилки: `RateLimitExceeded`, `DDoSProtection` → `rate_limited`; `AuthenticationError`, `PermissionDenied` → `auth`; `NetworkError`, `RequestTimeout`, `ExchangeNotAvailable` → `network`; `BadSymbol`, `BadRequest` → `data_unavailable`; решта `ExchangeError` → `backend_error`.
+
+### Живі зразки (snapshot 2026-10-10, BTC/USDT:USDT) **[V]**
+`fetch_funding_rate`:
+- Binance (`binanceusdm`): `interval=null` → наш fallback 8h + warning (`parse_interval_hours` → 8); `nextFundingTimestamp=null`, але `fundingTimestamp` є.
+- Bybit: `interval="8h"` ✓, `nextFundingTimestamp=null`, `fundingTimestamp` є.
+- OKX: `interval="8h"` ✓, і `nextFundingTimestamp`, і `fundingTimestamp`; **`markPrice`/`indexPrice=null`** (не повертає).
+
+`fetch_open_interest`:
+- Binance: `openInterestAmount` (BTC) є, **`openInterestValue=null`**.
+- Bybit: `openInterestAmount` є, **`openInterestValue=null`**.
+- OKX: обидва є (`openInterestValue` у USD).
+- Наслідок: `perps_open_interest` для Binance/Bybit повертає `oi_usd=None` + warning. **Можлива покращення (backlog):** додати ще один виклик, щоб узяти mark (з `fetch_ticker` або `fetch_funding_rate`) і множити на amount.
+
+### OKX order book — додаткові колонки **[V]**
+Рівні у `fetch_order_book` на OKX виглядають як `[price, size, 0, orders_count]` (4 елементи). Наш `book_stats`/`walk_book` беруть `level[0]`, `level[1]` — толерантні. Тест: `tests/test_analytics.py::test_book_tolerates_extra_level_columns`.
 
 ## Polymarket (планується)
 - Gamma API `https://gamma-api.polymarket.com/markets?…` — метадані ринків, `outcomePrices`, `clobTokenIds`, `volume`, `liquidity` **[D]**.
@@ -50,7 +64,8 @@
 - **Lifespan виконується на кожне з'єднання** (див. інваріант №7 у `CLAUDE.md`).
 
 ## Мережеві обмеження середовища розробки
-Хмарний sandbox і Mac-воркспейс Claude: PyPI і GitHub доступні, біржі (Deribit, Binance, Bybit, OKX, Hyperliquid) — **403 на CONNECT**. Тому живу перевірку виконує власник на своїй машині або VPS.
+- **Хмарний sandbox Claude:** PyPI і GitHub доступні, біржі — **403 на CONNECT**.
+- **Локальний Claude Code (Mac власника):** sandbox блокує `curl`, але `uv run python -m httpx`/ccxt виклики проходять. Тому `make smoke` і живі snapshot-и можна виконувати прямо з сесії Claude Code (підтверджено 2026-10-10 для Bybit, Hyperliquid, Binance, OKX, Deribit). На VPS обмежень не буде.
 
 ## Підводні камені
 - Різні одиниці IV (Deribit у %, ми — у дробах).

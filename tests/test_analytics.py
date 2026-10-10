@@ -247,3 +247,13 @@ def test_book_stats_and_walk():
     assert w["avg_price"] == pytest.approx((505 + 1020) / (5 + 10))
     big = orderbook.walk_book(asks, 1e6, mid=100, side="buy")
     assert big["unfilled_usd"] > 0
+
+
+def test_book_tolerates_extra_level_columns():
+    # OKX returns [price, size, 0, order_count] — tolerate anything with price,size as first two.
+    bids = [[99.0, 10, 0, 3], [98.0, 20, 0, 7]]
+    asks = [[101.0, 5, 0, 2], [102.0, 50, 0, 11]]
+    st = orderbook.book_stats(bids, asks)
+    assert st["mid"] == 100
+    w = orderbook.walk_book(asks, 505, mid=100, side="buy")
+    assert w["unfilled_usd"] == pytest.approx(0)

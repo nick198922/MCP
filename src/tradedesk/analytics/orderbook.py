@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-Level = Sequence[float]  # [price, size_in_base]
+Level = Sequence[float]  # [price, size_in_base, ...]  — some venues add order-count etc.
 
 
 def book_stats(bids: list[Level], asks: list[Level], depth_pcts: tuple[float, ...] = (0.1, 0.5, 1.0)) -> dict[str, Any]:
@@ -16,8 +16,8 @@ def book_stats(bids: list[Level], asks: list[Level], depth_pcts: tuple[float, ..
     depth: dict[str, Any] = {}
     for pct in depth_pcts:
         lo, hi = mid * (1 - pct / 100), mid * (1 + pct / 100)
-        bid_usd = sum(p * s for p, s in bids if p >= lo)
-        ask_usd = sum(p * s for p, s in asks if p <= hi)
+        bid_usd = sum(level[0] * level[1] for level in bids if level[0] >= lo)
+        ask_usd = sum(level[0] * level[1] for level in asks if level[0] <= hi)
         tot = bid_usd + ask_usd
         depth[f"{pct}%"] = {
             "bid_usd": bid_usd,
@@ -34,11 +34,16 @@ def book_stats(bids: list[Level], asks: list[Level], depth_pcts: tuple[float, ..
 
 
 def walk_book(levels: list[Level], notional_usd: float, mid: float, side: str) -> dict[str, Any]:
-    """Fill `notional_usd` against `levels` (asks for a buy, bids for a sell)."""
+    """Fill `notional_usd` against `levels` (asks for a buy, bids for a sell).
+
+    Each level may carry extra fields past [price, size] (e.g. OKX adds order-count); only the
+    first two are used.
+    """
     remaining = notional_usd
     cost = 0.0
     qty = 0.0
-    for price, size in levels:
+    for level in levels:
+        price, size = level[0], level[1]
         level_usd = price * size
         take = min(remaining, level_usd)
         qty += take / price

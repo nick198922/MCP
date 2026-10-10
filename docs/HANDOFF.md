@@ -13,13 +13,13 @@
 Припущення, які ще не підтверджено власником (не вважати рішеннями): алерти через Telegram; хостинг на VPS; IBKR (на його Маку помічено папки `Jts`/`ntws`, схоже на IB TWS).
 
 ## Що зроблено (Фаза 0 + частина Фази 1)
-34 інструменти, лише публічні дані, ключі не потрібні:
+35 інструментів, лише публічні дані, ключі не потрібні:
 
 | Група | Інструменти |
 |---|---|
 | Система | `system_health(probe)` |
 | Ринок (ccxt) | `market_ticker`, `market_tickers`, `market_ohlcv`, `market_orderbook`, `market_markets`, `market_trades` |
-| Перпи | `perps_funding_compare`, `perps_funding_history`, `perps_long_short_ratio`, `perps_oi_history`, `perps_open_interest` |
+| Перпи | `perps_funding_compare`, `perps_funding_history`, `perps_long_short_ratio`, `perps_oi_history`, `perps_open_interest`, `perps_basis_compare` |
 | Hyperliquid | `hyperliquid_overview`, `hyperliquid_candles`, `hyperliquid_book`, `hyperliquid_trades`, `hyperliquid_funding_history` |
 | Ф'ючерси | `deribit_futures_curve` |
 | Опціони | `deribit_vol_surface`, `deribit_option_chain`, `deribit_max_pain`, `deribit_gamma_exposure`, `deribit_expected_move`, `deribit_oi_by_strike`, `deribit_dvol`, `deribit_atm_term`, `deribit_skew_term`, `deribit_largest_trades`, `prob_from_options` |
@@ -47,7 +47,8 @@
 - **1.9 закрито (частково):** `deribit_dvol(currency, hours_back, resolution)` — DVOL OHLC-ряд, latest/mean/stdev/min/max і 24h/7d point-changes. `deribit_atm_term(currency)` — ATM-IV term structure з shape (contango/backwardation/flat). IV rank і VRP — до Фази 2 (історія в SQLite).
 - **1.11 закрито:** `deribit_skew_term(currency, target_delta=0.25, min_days, max_days)` — per-expiry RR і fly, найбільш екстремальна за |RR|, крос-експірний `rr_shape` (flattening/steepening/stable). `skew_percentile` — до Фази 2.
 - **1.12 закрито:** `deribit_largest_trades(currency, kind, count, only_blocks, min_notional_usd, top_n)` — топ-N трейдів за USD-notional, фільтр блок-угод, summary з taker imbalance.
-- Тестів: 79 (+9 за сесію), lint і format чисті.
+- **1.13 закрито:** `perps_basis_compare(base)` — крос-венюз perp premium (bps) по Binance/Bybit/OKX/Hyperliquid/Deribit + Deribit dated-futures basis (simple і log річні). Summary: highest/lowest premium, крос-венюз spread, найближчий dated-contract.
+- Тестів: 80 (+10 за сесію), lint і format чисті.
 - **`make smoke` live 2026-10-10: 15/15 ok** на реальних біржах. Deribit greeks звірено з їхнім ticker (30OCT26, delta/vega/theta до 4 знаків). `perps_open_interest` з новим fallback відпрацював 669 мс. `sentiment_fear_greed` повернув 30 денних значень; живий зразок збережено в `tests/fixtures/alternative_me_fng_live_2026-10-10.json`.
 
 ## Що перевірено живими запитами 2026-10-10

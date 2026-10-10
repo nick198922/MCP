@@ -52,6 +52,7 @@ claude mcp add tradedesk -- uv run --directory /ABSOLUTE/PATH/TO/tradedesk-mcp t
 | | `perps_long_short_ratio` | роздрібна L/S по Binance і Bybit (account-based fractions); z-score, divergence між venues |
 | | `perps_oi_history` | OI history (Binance в USD, Bybit в base) з latest/mean/change24h/z-score; крос-венюз: biggest gain/drop |
 | | `perps_open_interest` | OI в USD по майданчиках і частки |
+| | `perps_basis_compare` | крос-венюз perp premium (bps) + Deribit dated-futures basis, cash-and-carry snapshot |
 | Hyperliquid | `hyperliquid_overview` | скринінг усього Hyperliquid за OI, funding, обсягом |
 | | `hyperliquid_candles` | OHLCV + реалізована вола |
 | | `hyperliquid_book` | L2-стакан (20 рівнів) + slippage під розмір |

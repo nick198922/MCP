@@ -729,3 +729,135 @@ def register(server: MCPServer, rt: Runtime) -> None:
         curve.sort(key=lambda x: x["days"])
         index = next((f.get("estimated_delivery_price") for f in fut if f.get("estimated_delivery_price")), None)
         return b.build({"currency": currency, "spot_index": index, "perpetual": perp, "futures": curve})
+
+    @server.tool(
+        annotations=READ_ONLY,
+        description=(
+            "Cross-venue basis snapshot. For each perp venue (Binance USDT-M, Bybit, OKX via ccxt, "
+            "Hyperliquid, Deribit for BTC/ETH): mark, spot index, premium (bps and decimal, 10000 bps "
+            "= 100 %) and annualised funding. Also returns Deribit's dated-futures curve so quarterly "
+            "basis can be compared against perp funding (cash-and-carry setup when quarterly basis is "
+            "well above funding). Summary names the venue with the highest / lowest perp premium and "
+            "the cross-venue spread; `nearest_dated_annualized` is the simple annualised basis of the "
+            "shortest dated contract."
+        ),
+    )
+    async def perps_basis_compare(base: BASE = "BTC", exchanges: CCXT_VENUES = None) -> dict[str, Any]:
+        b = Builder()
+        base = base.upper()
+        venues = [e.lower() for e in (exchanges or PERP_EXCHANGES)]
+        symbol = f"{base}/USDT:USDT"
+
+        def _premium(mark: Any, index: Any) -> tuple[float | None, float | None]:
+            try:
+                m, i = float(mark), float(index)
+            except (TypeError, ValueError):
+                return None, None
+            if i <= 0:
+                return None, None
+            pct = m / i - 1.0
+            return pct, pct * 10_000.0
+
+        async def ccxt_row(ex: str) -> dict[str, Any] | None:
+            fr = await b.guard(f"basis:{ex}", f"ccxt:{ex}", rt.exchanges.funding_rate(ex, symbol))
+            if fr is None:
+                return None
+            pct, bps = _premium(fr.get("markPrice"), fr.get("indexPrice"))
+            if pct is None:
+                return None
+            rate = fr.get("fundingRate")
+            hours = parse_interval_hours(fr.get("interval"))
+            return {
+                "venue": ex,
+                "mark": fr.get("markPrice"),
+                "index": fr.get("indexPrice"),
+                "premium_pct": r(pct, 6),
+                "premium_bps": r(bps, 2),
+                "funding_annualized": r(annualize_funding(float(rate), hours), 5) if rate is not None else None,
+            }
+
+        async def hl_row() -> dict[str, Any] | None:
+            ctx = await b.guard("basis:hyperliquid", "hyperliquid", rt.hyperliquid.asset_contexts())
+            row = next((c for c in ctx or [] if c["coin"] == base), None)
+            if row is None:
+                return None
+            pct, bps = _premium(row.get("mark_px"), row.get("oracle_px"))
+            if pct is None:
+                return None
+            return {
+                "venue": "hyperliquid",
+                "mark": row.get("mark_px"),
+                "index": row.get("oracle_px"),
+                "premium_pct": r(pct, 6),
+                "premium_bps": r(bps, 2),
+                "funding_annualized": r(row.get("funding_annualized"), 5) if row.get("funding_annualized") is not None else None,
+            }
+
+        async def deribit_perp_and_dated() -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+            if base not in ("BTC", "ETH"):
+                return None, []
+            fut = await b.guard("basis:deribit", "deribit", rt.deribit.book_summary(base, "future"))
+            if fut is None:
+                return None, []
+            perp_row: dict[str, Any] | None = None
+            dated: list[dict[str, Any]] = []
+            now = rt.now()
+            for f in fut:
+                parsed = parse_future_name(f.get("instrument_name", ""))
+                idx, mark = f.get("estimated_delivery_price"), f.get("mark_price")
+                if not parsed or not idx or not mark:
+                    continue
+                if parsed[1] is None:
+                    pct, bps = _premium(mark, idx)
+                    if pct is None:
+                        continue
+                    rate = f.get("funding_8h")
+                    perp_row = {
+                        "venue": "deribit",
+                        "mark": mark,
+                        "index": idx,
+                        "premium_pct": r(pct, 6),
+                        "premium_bps": r(bps, 2),
+                        "funding_annualized": r(annualize_funding(rate, 8.0), 5) if rate is not None else None,
+                    }
+                else:
+                    bs = basis(mark, idx, parsed[1], now)
+                    dated.append(
+                        {
+                            "instrument": f["instrument_name"],
+                            "expiry": expiry_token(parsed[1]),
+                            "days": bs["days_to_expiry"],
+                            "mark": mark,
+                            "basis_pct": r(bs["basis_pct"] * 100, 4),
+                            "annualized_simple": r(bs["annualized_simple"], 4),
+                            "annualized_log": r(bs["annualized_log"], 4),
+                        }
+                    )
+            dated.sort(key=lambda x: x["days"])
+            return perp_row, dated
+
+        results = await asyncio.gather(*[ccxt_row(e) for e in venues], hl_row())
+        perps = [x for x in results if x]
+        dbt_perp, dated = await deribit_perp_and_dated()
+        if dbt_perp is not None:
+            perps.append(dbt_perp)
+        if not perps:
+            return b.build(None, ok=False)
+
+        perps.sort(key=lambda x: x["premium_bps"], reverse=True)
+        hi, lo = perps[0], perps[-1]
+        nearest = dated[0] if dated else None
+        return b.build(
+            {
+                "base": base,
+                "perps": perps,
+                "deribit_dated_futures": dated,
+                "summary": {
+                    "highest_premium": {"venue": hi["venue"], "premium_bps": hi["premium_bps"]},
+                    "lowest_premium": {"venue": lo["venue"], "premium_bps": lo["premium_bps"]},
+                    "cross_venue_spread_bps": r(hi["premium_bps"] - lo["premium_bps"], 2),
+                    "nearest_dated_annualized": nearest["annualized_simple"] if nearest else None,
+                    "nearest_dated_expiry": nearest["expiry"] if nearest else None,
+                },
+            }
+        )

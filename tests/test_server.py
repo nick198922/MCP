@@ -38,6 +38,7 @@ EXPECTED_TOOLS = {
     "deribit_atm_term",
     "deribit_skew_term",
     "deribit_largest_trades",
+    "perps_basis_compare",
 }
 
 
@@ -502,6 +503,25 @@ async def test_deribit_atm_term(server):
         assert 0.35 < row["atm_iv"] < 0.45
         assert row["forward"] > 0 and row["strikes"] >= 3
     assert d["shape"] in ("contango", "backwardation", "flat")
+
+
+async def test_perps_basis_compare(server):
+    env = await call(server, "perps_basis_compare", base="BTC")
+    d = env["data"]
+    venues = {p["venue"] for p in d["perps"]}
+    assert {"binanceusdm", "hyperliquid", "deribit"} <= venues
+    for p in d["perps"]:
+        assert p["mark"] is not None and p["index"] is not None
+        assert p["premium_bps"] is not None
+    # perps sorted by premium_bps desc
+    bps = [p["premium_bps"] for p in d["perps"]]
+    assert bps == sorted(bps, reverse=True)
+    s = d["summary"]
+    assert s["cross_venue_spread_bps"] >= 0
+    assert s["highest_premium"]["venue"] == d["perps"][0]["venue"]
+    # Deribit futures fixture has one dated contract
+    assert len(d["deribit_dated_futures"]) >= 1
+    assert s["nearest_dated_annualized"] is not None
 
 
 async def test_deribit_largest_trades(server):

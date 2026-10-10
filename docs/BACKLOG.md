@@ -27,7 +27,7 @@
 - [ ] 1.10 Якість smile: фільтр ✅ (`min_oi`, `max_spread_pct`), прапорці `thin_wing_25d`/`thin_wing_10d` ✅; ліквідні ваги в LS-фіті smile — лишилися.
 - [x] 1.11 Skew term structure: `deribit_skew_term(currency, target_delta, min_days, max_days)` — RR і fly по експіраціях (на будь-який call-equivalent delta у (0, 0.5)), найбільш екстремальна за |RR|, shape `flattening`/`steepening`/`stable`. `skew_percentile` — після Фази 2 (треба історія).
 - [x] 1.12 Deribit: `deribit_largest_trades(currency, kind, count, only_blocks, min_notional_usd, top_n)` — топ трейдів за USD-notional, фільтр блок-угод, summary (buy/sell notional, taker imbalance, block share). `deribit_oi_by_strike` ✅, `deribit_expected_move` ✅.
-- [ ] 1.13 Cross-venue: `perps_basis_compare` (перп vs квартальний Deribit vs CME-проксі), `perps_premium_index`.
+- [x] 1.13 `perps_basis_compare(base)` — крос-венюз perp premium (mark/index) у bps + Deribit dated-futures basis annualized (simple і log); summary з highest/lowest premium, крос-венюзний spread (bps) і найближчим dated-contract. CME-проксі відкладено (потребує платної підписки); Deribit квартальних достатньо.
 
 ## Фаза 2 — пам'ять, збирач, алерти, деплой
 Мета: сервер «працює, поки сплю».

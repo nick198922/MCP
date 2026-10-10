@@ -19,6 +19,8 @@ EXPECTED_TOOLS = {
     "deribit_option_chain",
     "deribit_max_pain",
     "deribit_gamma_exposure",
+    "deribit_expected_move",
+    "deribit_oi_by_strike",
     "prob_from_options",
     "odds_devig",
     "option_calc",
@@ -128,6 +130,34 @@ async def test_max_pain_and_gex(server):
     gx = await call(server, "deribit_gamma_exposure", currency="BTC")
     assert gx["ok"] and gx["data"]["regime"] and "Heuristic" in gx["data"]["notes"]
     assert gx["data"]["profile"]
+
+
+async def test_expected_move_breakevens_bracket_forward(server):
+    env = await call(server, "deribit_expected_move", currency="BTC")
+    exps = env["data"]["expiries"]
+    assert [e["expiry"] for e in exps] == ["30OCT26", "27NOV26", "26MAR27"]
+    for e in exps:
+        assert e["straddle_usd"] > 0
+        assert e["breakeven_lo"] < e["forward"] < e["breakeven_hi"]
+        assert e["sigma_lo"] < e["forward"] < e["sigma_hi"]
+        assert 0 < e["sigma_move_pct"] < 100
+    # 1-expiry filter
+    one = await call(server, "deribit_expected_move", currency="BTC", expiry="27NOV26")
+    assert len(one["data"]["expiries"]) == 1 and one["data"]["expiries"][0]["expiry"] == "27NOV26"
+
+
+async def test_oi_by_strike_walls(server):
+    env = await call(server, "deribit_oi_by_strike", currency="BTC", width_pct=15, top_n=5)
+    d = env["data"]
+    assert d["total_call_oi"] > 0 and d["total_put_oi"] > 0 and d["band_strikes"] > 0
+    assert len(d["top_overall"]) == 5 and len(d["top_call_walls"]) == 5
+    tops = [w["total_oi"] for w in d["top_overall"]]
+    assert tops == sorted(tops, reverse=True)
+    # strikes nearest the forward dominate in the synthetic fixture (OI=20 for |logm|<0.15, 3 otherwise)
+    atm_near = [w for w in d["top_overall"] if abs(w["distance_pct"]) < 15]
+    assert atm_near, "expected close-to-forward strikes among the top walls"
+    one = await call(server, "deribit_oi_by_strike", currency="BTC", expiry="30OCT26")
+    assert one["data"]["expiry"] == "30OCT26" and one["data"]["forward"] > 0
 
 
 async def test_market_tools(server):

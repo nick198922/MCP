@@ -11,6 +11,7 @@ from ..analytics.instruments import expiry_token
 from ..analytics.options import (
     OptionRow,
     atm_iv,
+    atm_straddle,
     build_chain,
     build_smile,
     gex_by_strike,
@@ -19,6 +20,7 @@ from ..analytics.options import (
     group_by_expiry,
     max_pain,
     net_gex,
+    oi_by_strike,
     put_call_ratios,
     rr_fly,
 )
@@ -229,6 +231,137 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "notes": GEX_NOTE,
         }
         return b.build(data)
+
+    @server.tool(
+        annotations=READ_ONLY,
+        description=(
+            "Expected-move estimate for one or every Deribit expiry from the ATM straddle. "
+            "straddle_usd is the mark price of 1 call + 1 put at the strike nearest the forward (in USD per unit of underlying); "
+            "under risk-neutral lognormal with r=0 this also approximates E[|S_T - F|]. breakeven_lo/hi = F ± straddle_usd are the straddle's "
+            "P/L breakevens — the magnitude of move required to profit buying the straddle. sigma_range comes from ATM IV × √T (geometric)."
+        ),
+    )
+    async def deribit_expected_move(
+        currency: CUR = "BTC",
+        expiry: Annotated[str | None, Field(description="Limit to one expiry (e.g. 26MAR27); default all expiries")] = None,
+        min_days: Annotated[float, Field(ge=0)] = 0.5,
+        max_days: Annotated[float, Field(gt=0)] = 400,
+    ) -> dict[str, Any]:
+        b = Builder()
+        rows = await _chain(rt, b, currency)
+        if rows is None:
+            return b.build(None, ok=False)
+        by = group_by_expiry(rows)
+        if expiry:
+            exp, err = find_expiry(by, expiry)
+            if exp is None:
+                b.miss("expiry", "tradedesk", "data_unavailable", err or "")
+                return b.build(None, ok=False)
+            by = {exp: by[exp]}
+        now = rt.now()
+        out: list[dict[str, Any]] = []
+        for exp, rs in by.items():
+            days = (exp - now).total_seconds() / 86400
+            if not (min_days <= days <= max_days):
+                continue
+            st = atm_straddle(rs)
+            if st is None:
+                out.append({"expiry": expiry_token(exp), "days": r(days, 2), "note": "ATM call/put mark unavailable"})
+                continue
+            lo, hi = st["sigma_range"] or (None, None)
+            out.append(
+                {
+                    "expiry": expiry_token(exp),
+                    "days": r(days, 2),
+                    "forward": r(st["forward"], 2),
+                    "atm_strike": st["atm_strike"],
+                    "atm_iv": r(st["atm_iv"], 4),
+                    "call_mark_usd": r(st["call_mark_usd"], 2),
+                    "put_mark_usd": r(st["put_mark_usd"], 2),
+                    "straddle_usd": r(st["straddle_usd"], 2),
+                    "straddle_pct": r(st["straddle_pct_of_forward"] * 100, 3),
+                    "breakeven_lo": r(st["breakeven_lo"], 2),
+                    "breakeven_hi": r(st["breakeven_hi"], 2),
+                    "sigma_move_pct": r((st["sigma_move_pct"] or 0.0) * 100, 3) if st["sigma_move_pct"] else None,
+                    "sigma_lo": r(lo, 2),
+                    "sigma_hi": r(hi, 2),
+                }
+            )
+        if not out:
+            b.miss("straddle", "tradedesk", "data_unavailable", "no expiries matched the window")
+            return b.build(None, ok=False)
+        spot = next((x.index for x in rows if x.index), None)
+        return b.build({"currency": currency, "spot_index": spot, "expiries": out})
+
+    @server.tool(
+        annotations=READ_ONLY,
+        description=(
+            "Open-interest walls on Deribit BTC/ETH options: per-strike call/put OI (in contracts, underlying units) and USD notional at the forward, "
+            "sorted largest-first. Returns top strikes overall and separately the biggest call walls (potential resistance) and put walls (potential support). "
+            "Walls are a positioning snapshot, not a forecast; big OI can be dealer-hedged or vice versa."
+        ),
+    )
+    async def deribit_oi_by_strike(
+        currency: CUR = "BTC",
+        expiry: Annotated[str | None, Field(description="Limit to one expiry (e.g. 26MAR27); default all expiries")] = None,
+        width_pct: Annotated[float, Field(gt=0, le=200)] = 25,
+        top_n: Annotated[int, Field(ge=1, le=50)] = 10,
+    ) -> dict[str, Any]:
+        b = Builder()
+        rows = await _chain(rt, b, currency)
+        if rows is None:
+            return b.build(None, ok=False)
+        by = group_by_expiry(rows)
+        if expiry:
+            exp, err = find_expiry(by, expiry)
+            if exp is None:
+                b.miss("expiry", "tradedesk", "data_unavailable", err or "")
+                return b.build(None, ok=False)
+            scope = by[exp]
+        else:
+            scope = rows
+        F = next((x.forward for x in scope), None)
+        if F is None:
+            b.miss("forward", "tradedesk", "data_unavailable", "no priced options for this scope")
+            return b.build(None, ok=False)
+        banded = [x for x in scope if abs(math.log(x.strike / F)) <= width_pct / 100]
+        agg = oi_by_strike(banded)
+        if not agg:
+            b.miss("oi", "tradedesk", "data_unavailable", "no open interest in the band")
+            return b.build(None, ok=False)
+        total_call = sum(x["call_oi"] for x in agg)
+        total_put = sum(x["put_oi"] for x in agg)
+        rows_out = [
+            {
+                "strike": a["strike"],
+                "call_oi": r(a["call_oi"], 1),
+                "put_oi": r(a["put_oi"], 1),
+                "total_oi": r(a["total_oi"], 1),
+                "notional_usd": r(a["notional_usd"], 0),
+                "pc_ratio": r(a["pc_ratio"], 3),
+                "distance_pct": r((a["strike"] / F - 1) * 100, 2),
+            }
+            for a in agg
+        ]
+        top_all = sorted(rows_out, key=lambda x: x["total_oi"] or 0, reverse=True)[:top_n]
+        top_calls = sorted(rows_out, key=lambda x: x["call_oi"] or 0, reverse=True)[:top_n]
+        top_puts = sorted(rows_out, key=lambda x: x["put_oi"] or 0, reverse=True)[:top_n]
+        spot = next((x.index for x in scope if x.index), None)
+        return b.build(
+            {
+                "currency": currency,
+                "expiry": expiry or "all",
+                "forward": F,
+                "spot_index": spot,
+                "total_call_oi": r(total_call, 1),
+                "total_put_oi": r(total_put, 1),
+                "pc_oi": r((total_put / total_call) if total_call else None, 3),
+                "band_strikes": len(agg),
+                "top_overall": top_all,
+                "top_call_walls": top_calls,
+                "top_put_walls": top_puts,
+            }
+        )
 
     @server.tool(
         annotations=READ_ONLY,

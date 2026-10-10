@@ -37,7 +37,7 @@ make run         # stdio-сервер; make run-http — streamable-http на :8
 claude mcp add tradedesk -- uv run --directory /ABSOLUTE/PATH/TO/tradedesk-mcp tradedesk-mcp
 ```
 
-## Інструменти (19)
+## Інструменти (21)
 
 | Група | Інструмент | Що дає |
 |---|---|---|
@@ -50,6 +50,8 @@ claude mcp add tradedesk -- uv run --directory /ABSOLUTE/PATH/TO/tradedesk-mcp t
 | Опціони | `deribit_vol_surface` | ATM IV, RR/Fly 25Δ і 10Δ, очікуваний рух, P/C по експірації |
 | | `deribit_option_chain` | ланцюжок з greeks (Black-76, збігається з Deribit) |
 | | `deribit_max_pain`, `deribit_gamma_exposure` | max pain, GEX із рівнем flip |
+| | `deribit_expected_move` | ціна ATM-страддла в USD, breakeven-и й 1σ-діапазон за експіраціями |
+| | `deribit_oi_by_strike` | OI-стіни по страйках: кол/пут/USD-ноцінал, топ-рівні підтримки/опору |
 | | `prob_from_options` | ризик-нейтральна ймовірність above/below/touch з урахуванням skew |
 | Квант | `odds_devig`, `option_calc`, `touch_probability` | маржа й справедливі ймовірності, калькулятор опціону, barrier-ймовірність |
 

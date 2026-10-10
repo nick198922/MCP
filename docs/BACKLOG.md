@@ -24,7 +24,7 @@
 - [ ] 1.9 Волатильність: `deribit_dvol` (`public/get_volatility_index_data`), IV rank/percentile (потребує історії → Фаза 2), VRP = IV − реалізована, term structure ATM IV по експірації. **(verify)**
 - [ ] 1.10 Якість smile: фільтр за bid/ask-спредом і мінімальним OI, ваги за ліквідністю, прапорець `thin_wing` у warnings.
 - [ ] 1.11 Skew-метрики: 25Δ-RR і butterfly по всіх експірціях (термова структура skew), `skew_percentile` (після Фази 2).
-- [ ] 1.12 Deribit: `deribit_largest_trades` (блок-угоди `public/get_last_trades_by_currency`), `deribit_oi_by_strike` (стіни), `deribit_expected_move` (straddle-імпліковане).
+- [ ] 1.12 Deribit: `deribit_largest_trades` (блок-угоди `public/get_last_trades_by_currency`); `deribit_oi_by_strike` ✅, `deribit_expected_move` ✅.
 - [ ] 1.13 Cross-venue: `perps_basis_compare` (перп vs квартальний Deribit vs CME-проксі), `perps_premium_index`.
 
 ## Фаза 2 — пам'ять, збирач, алерти, деплой

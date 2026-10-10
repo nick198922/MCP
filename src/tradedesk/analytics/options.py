@@ -260,6 +260,72 @@ def gex_profile(rows: list[OptionRow], span: float = 0.2, step: float = 0.01) ->
     return [(s, net_gex(rows, s)) for s in shifts]
 
 
+def atm_straddle(rows: list[OptionRow]) -> dict[str, Any] | None:
+    """ATM straddle (strike nearest the forward) for one expiry. Returns None if the call or put mark is missing.
+
+    `straddle_usd` is the market price of 1 call + 1 put at the ATM strike, in USD per unit of underlying.
+    Under a risk-neutral lognormal with r=0, this equals `F * sigma * sqrt(T) * sqrt(2/pi)` and is also a direct
+    estimate of E[|S_T - K|] (expected absolute move). `breakeven_lo/hi = F -+ straddle_usd` are the straddle's
+    P/L breakevens, i.e. the move magnitude required to profit buying the straddle.
+    """
+    rows = [r for r in rows if r.T > 0]
+    if not rows:
+        return None
+    F = rows[0].forward
+    T = rows[0].T
+    strikes = sorted({r.strike for r in rows})
+    k_atm = min(strikes, key=lambda k: abs(math.log(k / F)))
+    legs = {r.is_call: r for r in rows if r.strike == k_atm}
+    call, put = legs.get(True), legs.get(False)
+    if call is None or put is None or call.mark_price_usd is None or put.mark_price_usd is None:
+        return None
+    straddle = float(call.mark_price_usd + put.mark_price_usd)
+    atm = (call.iv + put.iv) / 2.0 if (call.iv and put.iv) else (call.iv or put.iv)
+    sigma_move_pct = atm * math.sqrt(T) if atm else None
+    return {
+        "forward": F,
+        "atm_strike": k_atm,
+        "T": T,
+        "atm_iv": atm,
+        "call_mark_usd": float(call.mark_price_usd),
+        "put_mark_usd": float(put.mark_price_usd),
+        "straddle_usd": straddle,
+        "straddle_pct_of_forward": straddle / F,
+        "breakeven_lo": F - straddle,
+        "breakeven_hi": F + straddle,
+        "sigma_range": (F * math.exp(-sigma_move_pct), F * math.exp(sigma_move_pct)) if sigma_move_pct else None,
+        "sigma_move_pct": sigma_move_pct,
+    }
+
+
+def oi_by_strike(rows: Iterable[OptionRow]) -> list[dict[str, Any]]:
+    """Per-strike OI aggregated across the given rows (call vs put, totals, p/c ratio, USD notional at the forward)."""
+    agg: dict[float, dict[str, float]] = {}
+    for r in rows:
+        if r.open_interest <= 0:
+            continue
+        slot = agg.setdefault(r.strike, {"call_oi": 0.0, "put_oi": 0.0, "forward": r.forward})
+        if r.is_call:
+            slot["call_oi"] += r.open_interest
+        else:
+            slot["put_oi"] += r.open_interest
+    out: list[dict[str, Any]] = []
+    for k, v in sorted(agg.items()):
+        total = v["call_oi"] + v["put_oi"]
+        out.append(
+            {
+                "strike": k,
+                "call_oi": v["call_oi"],
+                "put_oi": v["put_oi"],
+                "total_oi": total,
+                "notional_usd": total * v["forward"],
+                "pc_ratio": (v["put_oi"] / v["call_oi"]) if v["call_oi"] > 0 else None,
+                "net_oi": v["call_oi"] - v["put_oi"],
+            }
+        )
+    return out
+
+
 def gex_flip_shift(profile: list[tuple[float, float]]) -> float | None:
     """Spot shift factor (relative to now) where net GEX crosses zero, nearest to 1.0."""
     best: float | None = None

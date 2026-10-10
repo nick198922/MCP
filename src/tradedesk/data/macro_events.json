@@ -1,0 +1,19 @@
+{
+  "_meta": {
+    "updated": "2026-10-10",
+    "note": "Static macro calendar. Update by hand from official sources. Times are UTC. Impact: high/medium/low — a hint, not a forecast.",
+    "sources": {
+      "fomc": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+      "cpi": "https://www.bls.gov/schedule/news_release/cpi.htm",
+      "nfp": "https://www.bls.gov/schedule/news_release/empsit.htm"
+    }
+  },
+  "events": [
+    {"date": "2026-10-15", "time_utc": "12:30", "kind": "cpi",  "label": "US CPI September", "impact": "high"},
+    {"date": "2026-10-28", "time_utc": "18:00", "kind": "fomc", "label": "FOMC rate decision + press conf", "impact": "high"},
+    {"date": "2026-11-07", "time_utc": "13:30", "kind": "nfp",  "label": "US Non-Farm Payrolls", "impact": "high"},
+    {"date": "2026-11-13", "time_utc": "13:30", "kind": "cpi",  "label": "US CPI October", "impact": "high"},
+    {"date": "2026-12-10", "time_utc": "13:30", "kind": "cpi",  "label": "US CPI November", "impact": "high"},
+    {"date": "2026-12-16", "time_utc": "19:00", "kind": "fomc", "label": "FOMC rate decision + SEP + press conf", "impact": "high"}
+  ]
+}

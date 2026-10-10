@@ -33,6 +33,7 @@ EXPECTED_TOOLS = {
     "option_calc",
     "touch_probability",
     "sentiment_fear_greed",
+    "calendar_expiries",
 }
 
 
@@ -439,3 +440,36 @@ async def test_sentiment_fear_greed_provider_failure(state):
     env = await call(srv, "sentiment_fear_greed", days=30)
     assert env["ok"] is False
     assert any(m["provider"] == "alternative_me" for m in env["missing"])
+
+
+async def test_calendar_expiries(server):
+    env = await call(server, "calendar_expiries", currencies=["BTC"], horizon_days=180, funding_hours_ahead=24)
+    d = env["data"]
+    btc = d["deribit_expiries"]["BTC"]
+    kinds = {e["kind"] for e in btc}
+    assert "monthly" in kinds and "quarterly" in kinds
+    # fixture expiries: 2026-10-30 (monthly), 2026-11-27 (monthly), 2027-03-26 (quarterly)
+    assert len(btc) == 3
+    assert btc[0]["days_to_expiry"] < btc[-1]["days_to_expiry"]
+
+    fs = d["funding_schedule"]
+    venues = {r["venue"] for r in fs}
+    assert {"binanceusdm", "bybit", "okx", "hyperliquid"} <= venues
+    assert all(r["ts"] > d["now"] for r in fs)
+
+    macro = d["macro_events"]
+    assert len(macro) >= 2  # CPI 2026-10-15 and FOMC 2026-10-28 within 180d of 2026-10-10
+    assert all(0 <= m["days_ahead"] <= 180 for m in macro)
+    assert {m["kind"] for m in macro} & {"cpi", "fomc", "nfp"}
+
+
+async def test_calendar_classify_expiry():
+    from datetime import UTC, datetime
+
+    from tradedesk.analytics.calendar import classify_expiry
+
+    now = datetime(2026, 10, 10, 13, tzinfo=UTC)
+    assert classify_expiry(datetime(2026, 10, 30, 8, tzinfo=UTC), now) == "monthly"
+    assert classify_expiry(datetime(2027, 3, 26, 8, tzinfo=UTC), now) == "quarterly"
+    assert classify_expiry(datetime(2026, 10, 16, 8, tzinfo=UTC), now) == "weekly"  # third Friday, not last
+    assert classify_expiry(datetime(2026, 10, 11, 8, tzinfo=UTC), now) == "daily"  # Sunday

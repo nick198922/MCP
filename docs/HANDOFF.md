@@ -13,7 +13,7 @@
 Припущення, які ще не підтверджено власником (не вважати рішеннями): алерти через Telegram; хостинг на VPS; IBKR (на його Маку помічено папки `Jts`/`ntws`, схоже на IB TWS).
 
 ## Що зроблено (Фаза 0 + частина Фази 1)
-29 інструментів, лише публічні дані, ключі не потрібні:
+30 інструментів, лише публічні дані, ключі не потрібні:
 
 | Група | Інструменти |
 |---|---|
@@ -25,6 +25,7 @@
 | Опціони | `deribit_vol_surface`, `deribit_option_chain`, `deribit_max_pain`, `deribit_gamma_exposure`, `deribit_expected_move`, `deribit_oi_by_strike`, `prob_from_options` |
 | Квант | `odds_devig`, `option_calc`, `touch_probability` |
 | Настрій | `sentiment_fear_greed` |
+| Календар | `calendar_expiries` |
 
 Ядро: `Http` (ретраї на 429/5xx/timeout, token-bucket, TTL-кеш із single-flight, класифікація помилок), `HealthRegistry`, `Envelope/Evidence`, фейкові транспорти для тестів.
 
@@ -42,7 +43,8 @@
 - **0.6 закрито:** `perps_open_interest` тепер робить fallback `oi_usd = openInterestAmount × last` для бірж без `openInterestValue` (Binance/Bybit). Додатковий виклик `fetch_ticker` кешується TTL=2s. Якщо ticker недоступний — `None` + warning як раніше.
 - **0.7 закрито:** `scripts/live_smoke.py` розширено до 15 кейсів (`market_tickers`, `market_markets`, `market_trades`, `deribit_expected_move`, `deribit_oi_by_strike`, `sentiment_fear_greed`). Поріг успіху 11/15.
 - **1.6 закрито:** `sentiment_fear_greed(days=1..365)` — крипто Fear & Greed з alternative.me. Новий провайдер `alternative_me.py`, аналітика `summarise_fear_greed`. Повертає latest + zone (extreme_fear/fear/neutral/greed/extreme_greed), mean 7d/30d, min/max, change_7d/30d, zone_share, series.
-- Тестів: 73 (+3 за сесію), lint і format чисті.
+- **1.8 закрито:** `calendar_expiries(currencies, horizon_days, funding_hours_ahead)` — три секції: Deribit expiries (daily/weekly/monthly/quarterly), funding payouts (Binance/Bybit/OKX 8h, HL hourly), macro events із `data/macro_events.json` (FOMC/CPI/NFP). Файл JSON підключено до wheel через `force-include`.
+- Тестів: 75 (+5 за сесію), lint і format чисті.
 - **`make smoke` live 2026-10-10: 15/15 ok** на реальних біржах. Deribit greeks звірено з їхнім ticker (30OCT26, delta/vega/theta до 4 знаків). `perps_open_interest` з новим fallback відпрацював 669 мс. `sentiment_fear_greed` повернув 30 денних значень; живий зразок збережено в `tests/fixtures/alternative_me_fng_live_2026-10-10.json`.
 
 ## Що перевірено живими запитами 2026-10-10

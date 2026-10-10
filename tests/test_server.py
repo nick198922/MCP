@@ -34,6 +34,8 @@ EXPECTED_TOOLS = {
     "touch_probability",
     "sentiment_fear_greed",
     "calendar_expiries",
+    "deribit_dvol",
+    "deribit_atm_term",
 }
 
 
@@ -473,3 +475,28 @@ async def test_calendar_classify_expiry():
     assert classify_expiry(datetime(2027, 3, 26, 8, tzinfo=UTC), now) == "quarterly"
     assert classify_expiry(datetime(2026, 10, 16, 8, tzinfo=UTC), now) == "weekly"  # third Friday, not last
     assert classify_expiry(datetime(2026, 10, 11, 8, tzinfo=UTC), now) == "daily"  # Sunday
+
+
+async def test_deribit_dvol(server):
+    env = await call(server, "deribit_dvol", currency="BTC", hours_back=168, resolution=3600)
+    d = env["data"]
+    assert d["currency"] == "BTC"
+    assert d["resolution_seconds"] == 3600
+    assert d["count"] >= 168
+    # fixture has +0.1/hr drift → change_7d_pts positive and large
+    assert d["change_7d_pts"] > 10
+    assert d["mean_pct"] > 0 and d["max_pct"] >= d["min_pct"]
+    assert d["latest"]["value_pct"] >= d["mean_pct"]  # rising series
+
+
+async def test_deribit_atm_term(server):
+    env = await call(server, "deribit_atm_term", currency="BTC", min_days=0, max_days=400)
+    d = env["data"]
+    assert d["currency"] == "BTC"
+    assert len(d["expiries"]) == 3  # fixture: 30OCT26, 27NOV26, 26MAR27
+    assert d["expiries"][0]["days"] < d["expiries"][-1]["days"]
+    # SMILE["base"] = 0.40 → each ATM IV should be close to 0.40
+    for row in d["expiries"]:
+        assert 0.35 < row["atm_iv"] < 0.45
+        assert row["forward"] > 0 and row["strikes"] >= 3
+    assert d["shape"] in ("contango", "backwardation", "flat")

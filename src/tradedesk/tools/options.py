@@ -440,3 +440,104 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 "measure": "risk-neutral",
             }
         )
+
+    @server.tool(
+        annotations=READ_ONLY,
+        description=(
+            "Deribit DVOL index (implied-volatility index) time series via /public/get_volatility_index_data. "
+            "DVOL is reported in annualised PERCENT (e.g. 45.3 means 45.3 %). Returns the OHLC series plus "
+            "latest/mean/min/max/stdev and point-change vs 24h/7d ago. Resolutions supported: 60s, 3600s, "
+            "43200s, 86400s; defaults to 3600s. IV rank/percentile needs stored history (Phase 2)."
+        ),
+    )
+    async def deribit_dvol(
+        currency: CUR = "BTC",
+        hours_back: Annotated[int, Field(ge=1, le=720, description="How far back to pull (max 30 days).")] = 168,
+        resolution: Annotated[Literal[60, 3600, 43200, 86400], Field(description="Candle size in seconds.")] = 3600,
+    ) -> dict[str, Any]:
+        b = Builder()
+        end_ms = int(rt.now().timestamp() * 1000)
+        start_ms = end_ms - hours_back * 3_600_000
+        data = await b.guard("dvol", "deribit", rt.deribit.volatility_index_data(currency, start_ms, end_ms, resolution))
+        rows = (data or {}).get("data") or []
+        if not rows:
+            if data is not None:
+                b.miss("dvol", "deribit", "data_unavailable", "empty series")
+            return b.build(None, ok=False)
+        series = [{"ts": int(x[0]), "open": float(x[1]), "high": float(x[2]), "low": float(x[3]), "close": float(x[4])} for x in rows]
+        series.sort(key=lambda s: s["ts"])
+        closes = [s["close"] for s in series]
+        n = len(closes)
+        mean = sum(closes) / n
+        var = sum((v - mean) ** 2 for v in closes) / (n - 1) if n > 1 else 0.0
+        stdev = math.sqrt(var)
+        latest = series[-1]
+        latest_ms = latest["ts"]
+
+        def delta_hours(h: int) -> float | None:
+            cutoff = latest_ms - h * 3_600_000
+            past = [s["close"] for s in series if s["ts"] <= cutoff]
+            return latest["close"] - past[-1] if past else None
+
+        return b.build(
+            {
+                "currency": currency,
+                "resolution_seconds": resolution,
+                "count": n,
+                "latest": {"ts": latest_ms, "value_pct": r(latest["close"], 3)},
+                "mean_pct": r(mean, 3),
+                "stdev_pct": r(stdev, 3),
+                "min_pct": r(min(closes), 3),
+                "max_pct": r(max(closes), 3),
+                "change_24h_pts": r(delta_hours(24), 3),
+                "change_7d_pts": r(delta_hours(168), 3),
+                "series": [{"ts": s["ts"], "close": r(s["close"], 3)} for s in series],
+            }
+        )
+
+    @server.tool(
+        annotations=READ_ONLY,
+        description=(
+            "ATM implied-vol term structure for a currency (BTC/ETH): one row per Deribit expiry with the "
+            "forward, days-to-expiry and ATM IV (decimal, 0.45 = 45 %). ATM IV is the smile value AT the "
+            "forward, linear-interpolated in log-moneyness. Rising curve = contango, falling = backwardation."
+        ),
+    )
+    async def deribit_atm_term(
+        currency: CUR = "BTC",
+        min_days: Annotated[float, Field(ge=0)] = 0.5,
+        max_days: Annotated[float, Field(gt=0)] = 400,
+    ) -> dict[str, Any]:
+        b = Builder()
+        rows = await _chain(rt, b, currency)
+        if rows is None:
+            return b.build(None, ok=False)
+        by = group_by_expiry(rows)
+        out: list[dict[str, Any]] = []
+        for exp, rs in by.items():
+            days = (exp - rt.now()).total_seconds() / 86400
+            if not (min_days <= days <= max_days):
+                continue
+            sm = build_smile(rs)
+            if sm is None:
+                continue
+            out.append(
+                {
+                    "expiry": expiry_token(exp),
+                    "days": r(days, 2),
+                    "forward": r(sm.forward, 2),
+                    "atm_iv": r(atm_iv(sm), 4),
+                    "strikes": len(sm.strikes),
+                }
+            )
+        if not out:
+            b.miss("atm_term", "deribit", "data_unavailable", "no priced expiries in [min_days, max_days]")
+            return b.build(None, ok=False)
+        shape = None
+        if len(out) >= 2:
+            shape = (
+                "contango"
+                if out[-1]["atm_iv"] > out[0]["atm_iv"]
+                else ("backwardation" if out[-1]["atm_iv"] < out[0]["atm_iv"] else "flat")
+            )
+        return b.build({"currency": currency, "shape": shape, "expiries": out})

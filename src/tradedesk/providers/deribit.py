@@ -37,3 +37,15 @@ class Deribit:
     async def ticker(self, instrument_name: str) -> Fetched:
         """Single instrument incl. exchange-computed greeks, bid/ask IV (used to cross-check our maths)."""
         return await self._public("ticker", {"instrument_name": instrument_name}, ttl=3)
+
+    async def volatility_index_data(self, currency: str, start_ms: int, end_ms: int, resolution: int) -> Fetched:
+        """Deribit's DVOL time series. resolution must be one of 60, 3600, 43200, 86400 seconds.
+
+        Returns ``{"data": [[ts_ms, open, high, low, close], ...], "continuation": ...}`` where close
+        is the DVOL value in annualised-percent units (e.g. 45.3 means 45.3%).
+        """
+        return await self._public(
+            "get_volatility_index_data",
+            {"currency": currency.upper(), "start_timestamp": start_ms, "end_timestamp": end_ms, "resolution": resolution},
+            ttl=30,
+        )

@@ -23,7 +23,7 @@
 - [x] 1.6 `sentiment_fear_greed` (alternative.me, крипто, денна частота): latest + zone, mean 7d/30d, min/max, зміни 7d/30d, zone_share. Провайдер `alternative_me.py` (rate 2 req/s). Live-перевірка — під час наступного `make smoke` (кейс додано).
 - [ ] 1.7 CoinGecko типізовано: `coin_snapshot` (price, mcap, FDV, supply, ATH), `global_market` (домінація, mcap), `top_coins`. Безкоштовний tier + опційний ключ.
 - [x] 1.8 `calendar_expiries(currencies, horizon_days, funding_hours_ahead)`: Deribit експірації по валютах (`classify_expiry` → daily/weekly/monthly/quarterly), funding-schedule для binanceusdm/bybit/okx (8h) + HL (1h), макро-події з `src/tradedesk/data/macro_events.json` (FOMC/CPI/NFP, оновлюється вручну). Включено до wheel force-include.
-- [ ] 1.9 Волатильність: `deribit_dvol` (`public/get_volatility_index_data`), IV rank/percentile (потребує історії → Фаза 2), VRP = IV − реалізована, term structure ATM IV по експірації. **(verify)**
+- [x] 1.9 Волатильність (частково): `deribit_dvol(currency, hours_back, resolution)` — DVOL time series + stats + 24h/7d point-changes. `deribit_atm_term(currency, min_days, max_days)` — ATM-IV term structure зі shape (contango/backwardation/flat). IV rank/percentile і VRP залишаються до Фази 2 (історія). **(verify)** Live-перевірка — під час наступного `make smoke`.
 - [ ] 1.10 Якість smile: фільтр ✅ (`min_oi`, `max_spread_pct`), прапорці `thin_wing_25d`/`thin_wing_10d` ✅; ліквідні ваги в LS-фіті smile — лишилися.
 - [ ] 1.11 Skew-метрики: 25Δ-RR і butterfly по всіх експірціях (термова структура skew), `skew_percentile` (після Фази 2).
 - [ ] 1.12 Deribit: `deribit_largest_trades` (блок-угоди `public/get_last_trades_by_currency`); `deribit_oi_by_strike` ✅, `deribit_expected_move` ✅.

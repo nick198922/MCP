@@ -125,6 +125,18 @@ def make_transports(state: State) -> dict:
         kind = req.url.params.get("kind")
         if req.url.path.endswith("get_book_summary_by_currency"):
             return httpx.Response(200, json={"jsonrpc": "2.0", "result": option_book() if kind == "option" else FUTURES})
+        if req.url.path.endswith("get_volatility_index_data"):
+            start_ms = int(req.url.params.get("start_timestamp"))
+            end_ms = int(req.url.params.get("end_timestamp"))
+            step_ms = int(req.url.params.get("resolution")) * 1000
+            rows = []
+            t = start_ms
+            v = 45.0
+            while t <= end_ms:
+                v += 0.1  # slow upward drift
+                rows.append([t, v, v + 0.5, v - 0.5, v + 0.2])
+                t += step_ms
+            return httpx.Response(200, json={"jsonrpc": "2.0", "result": {"data": rows, "continuation": None}})
         return httpx.Response(200, json={"jsonrpc": "2.0", "error": {"code": 13020, "message": "instrument_not_found"}})
 
     def hyperliquid(req: httpx.Request) -> httpx.Response:

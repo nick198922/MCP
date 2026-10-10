@@ -11,8 +11,8 @@
 - [x] 0.3 Python 3.11 перевірено (51 тест).
 - [x] 0.4 Жорсткі шляхи з README прибрано.
 - [ ] 0.5 Перший запуск CI (репо `nick198922/MCP` є; перевірити `gh run list`).
-- [ ] 0.6 `perps_open_interest`: для Binance/Bybit узяти mark із `fetch_ticker`/`fetch_funding_rate` і обчислити `oi_usd = amount * mark` замість `None`.
-- [ ] 0.7 Розширити `scripts/live_smoke.py` новими інструментами: `market_tickers`, `market_markets`, `market_trades`, `deribit_expected_move`, `deribit_oi_by_strike`.
+- [x] 0.6 `perps_open_interest`: fallback `oi_usd = openInterestAmount × last` для Binance/Bybit (через `ccxt.fetch_ticker`), з warning. Якщо ticker теж недоступний — лишається `None`.
+- [x] 0.7 `scripts/live_smoke.py` розширено: `market_tickers`, `market_markets`, `market_trades`, `deribit_expected_move`, `deribit_oi_by_strike` (14 кейсів, порог 10/14).
 
 ## Фаза 1 — дані та деривативи (залишок)
 - [x] 1.1 `market_tickers` (batch), `market_markets` (пошук/фільтр, не повний дамп), `market_trades` (+ агресор-дисбаланс/CVD). ccxt `fetch_tickers`, `fetch_markets`, `fetch_trades`.

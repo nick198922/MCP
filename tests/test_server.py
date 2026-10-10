@@ -135,6 +135,25 @@ async def test_open_interest(server):
     assert d["venues"][0]["oi_usd"] >= d["venues"][-1]["oi_usd"]
 
 
+async def test_open_interest_fallback_via_mark(state):
+    from conftest import NOW, FakeEx, make_transports
+    from tradedesk.config import Settings
+    from tradedesk.runtime import Runtime
+    from tradedesk.server import build_server
+
+    class FakeExNoOIValue(FakeEx):
+        async def fetch_open_interest(self, symbol):
+            return {"openInterestAmount": 1000.0, "openInterestValue": None}
+
+    rt2 = Runtime(Settings(http_retries=1, cache_scale=0.0), transports=make_transports(state), exchange_factory=FakeExNoOIValue)
+    rt2.now = lambda: NOW
+    srv, _ = build_server(rt2)
+    env = await call(srv, "perps_open_interest", base="BTC", exchanges=["binanceusdm"])
+    row = next(v for v in env["data"]["venues"] if v["venue"] == "binanceusdm")
+    assert row["oi_usd"] == pytest.approx(1000.0 * 82750.0)
+    assert any("estimated as amount * last price" in w for w in env["warnings"])
+
+
 async def test_hyperliquid_candles_has_realized_vol(server):
     env = await call(server, "hyperliquid_candles", coin="BTC", interval="1h", hours_back=24)
     d = env["data"]

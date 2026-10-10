@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased
+- Фаза 0.6: `perps_open_interest` тепер рахує `oi_usd = openInterestAmount × last` коли біржа не повертає `openInterestValue` (Binance/Bybit). Fallback позначається попередженням; якщо ticker недоступний — `oi_usd` лишається `None` як раніше.
+- Фаза 0.7: `scripts/live_smoke.py` розширено п'ятьма новими кейсами — `market_tickers`, `market_markets`, `market_trades`, `deribit_expected_move`, `deribit_oi_by_strike` (разом 14 кейсів; порог успіху 10/14).
 - Три нові ринкові інструменти (Фаза 1.1): `market_tickers` (batch з сортуванням і top-movers), `market_markets` (пошук/фільтр, кеш 1 год), `market_trades` (aggressor-signed flow: buy/sell notional, imbalance, VWAP, CVD, топ-прінти).
 - Нова аналітика: `analytics/trades.py` — чиста функція `summarise` для ccxt-trades.
 - `Exchanges`: методи `tickers`, `markets`, `trades`; `has.fetchTickers` поважається (NotSupported → `missing`).
@@ -12,7 +14,7 @@
 - Фаза 1.2: `perps_funding_history` — крос-венюз історія funding (Binance/Bybit/OKX через ccxt `fetch_funding_rate_history` + Hyperliquid), автодетект інтервалу з медіани ts-різниць (`detect_interval_hours`), крос-венюз-summary (highest/lowest carry, biggest |z|), опція `include_series` для сирих рядів. Live-перевірено на BTC: HL carry 9.1%, OKX 5.1%, Binance 4.5%, Bybit 4.3%; Bybit `z = −1.45` (mean-reversion сигнал).
 - MCP-промт `token_deep_analysis(project)` — глибокий 10-секційний інвест-аналіз криптопроекту (RU), шаблон `src/tradedesk/prompts/token_deep_analysis.md` (bundled у wheel), з хінтом про релевантні tradedesk-mcp інструменти для графіка/позиціювання.
 - Фаза 1.3: нові провайдери `binance_futures.py` і `bybit.py` під окремими `Http` з лімітами. Два нові інструменти: `perps_long_short_ratio` (роздрібні account-based fractions Binance+Bybit, latest/mean/z-score, cross-venue divergence) і `perps_oi_history` (OI history Binance в USD, Bybit в base, latest/mean/change24h/z, cross-venue biggest gain/drop). Live-перевірено 2026-10-10 на BTC.
-- Тестів: 70 (+19 від 0.1.0), lint чистий.
+- Тестів: 71 (+20 від 0.1.0), lint чистий.
 
 ## 0.1.0 — 2026-10-10
 - Ядро: `Http` (ретраї, rate-limit, кеш із single-flight, класифікація помилок), `HealthRegistry`, `Envelope/Evidence`.

@@ -447,7 +447,15 @@ def register(server: MCPServer, rt: Runtime) -> None:
             oi = await b.guard(f"oi:{ex}", f"ccxt:{ex}", rt.exchanges.open_interest(ex, symbol))
             if oi is None:
                 return None
-            return {"venue": ex, "oi_base": oi.get("openInterestAmount"), "oi_usd": oi.get("openInterestValue")}
+            oi_base = oi.get("openInterestAmount")
+            oi_usd = oi.get("openInterestValue")
+            if oi_usd is None and oi_base:
+                tkr = await b.guard(f"oi_mark:{ex}", f"ccxt:{ex}", rt.exchanges.ticker(ex, symbol))
+                mark = (tkr or {}).get("last")
+                if mark:
+                    oi_usd = oi_base * mark
+                    b.warn(f"{ex}: oi_usd estimated as amount * last price (openInterestValue not reported)")
+            return {"venue": ex, "oi_base": oi_base, "oi_usd": oi_usd}
 
         async def hl() -> dict[str, Any] | None:
             ctx = await b.guard("oi:hyperliquid", "hyperliquid", rt.hyperliquid.asset_contexts())

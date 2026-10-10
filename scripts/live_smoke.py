@@ -22,13 +22,18 @@ from tradedesk.server import build_server
 CASES: list[tuple[str, dict]] = [
     ("system_health", {"probe": True}),
     ("market_ticker", {"exchange": "binanceusdm", "symbol": "BTC/USDT:USDT"}),
+    ("market_tickers", {"exchange": "binanceusdm", "symbols": ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT"]}),
+    ("market_markets", {"exchange": "binanceusdm", "query": "BTC", "market_type": "swap", "limit": 10}),
     ("market_ohlcv", {"exchange": "bybit", "symbol": "BTC/USDT:USDT", "timeframe": "1h", "limit": 200}),
     ("market_orderbook", {"exchange": "okx", "symbol": "BTC/USDT:USDT", "notional_usd": 1_000_000}),
+    ("market_trades", {"exchange": "binanceusdm", "symbol": "BTC/USDT:USDT", "limit": 200, "top_n": 5}),
     ("perps_funding_compare", {"base": "BTC"}),
     ("perps_open_interest", {"base": "BTC"}),
     ("hyperliquid_overview", {"sort_by": "funding_annualized", "top_n": 5}),
     ("deribit_futures_curve", {"currency": "BTC"}),
     ("deribit_vol_surface", {"currency": "BTC"}),
+    ("deribit_expected_move", {"currency": "BTC", "min_days": 1, "max_days": 60}),
+    ("deribit_oi_by_strike", {"currency": "BTC", "width_pct": 15, "top_n": 10}),
 ]
 
 
@@ -74,7 +79,7 @@ async def main() -> int:
                     f"  {name}: delta {g['delta']:.4f}|{d['delta']:.4f}  vega {g['vega']:.1f}|{d['vega']:.1f}  theta {g['theta']:.1f}|{d['theta']:.1f}"
                 )
     await rt.aclose()
-    return 0 if ok_count >= 4 else 1
+    return 0 if ok_count >= 10 else 1
 
 
 if __name__ == "__main__":

@@ -188,7 +188,67 @@ def make_transports(state: State) -> dict:
             return httpx.Response(200, json=rows)
         return httpx.Response(200, json=[])
 
-    return {"deribit": httpx.MockTransport(deribit), "hyperliquid": httpx.MockTransport(hyperliquid)}
+    def binance_futures(req: httpx.Request) -> httpx.Response:
+        path = req.url.path
+        if path.endswith("globalLongShortAccountRatio"):
+            rows = [
+                {
+                    "symbol": "BTCUSDT",
+                    "longAccount": f"{0.60 + i * 0.001:.4f}",
+                    "shortAccount": f"{0.40 - i * 0.001:.4f}",
+                    "longShortRatio": f"{(0.60 + i * 0.001) / (0.40 - i * 0.001):.4f}",
+                    "timestamp": 1791640800000 + i * 3_600_000,
+                }
+                for i in range(48)
+            ]
+            return httpx.Response(200, json=rows)
+        if path.endswith("openInterestHist"):
+            rows = [
+                {
+                    "symbol": "BTCUSDT",
+                    "sumOpenInterest": f"{92000 + i * 10}",
+                    "sumOpenInterestValue": f"{(92000 + i * 10) * 82800}",
+                    "CMCCirculatingSupply": "20095900",
+                    "timestamp": 1791640800000 + i * 3_600_000,
+                }
+                for i in range(48)
+            ]
+            return httpx.Response(200, json=rows)
+        return httpx.Response(404, text="not mocked")
+
+    def bybit(req: httpx.Request) -> httpx.Response:
+        path = req.url.path
+        if path.endswith("account-ratio"):
+            rows = [
+                {
+                    "symbol": "BTCUSDT",
+                    "buyRatio": f"{0.62 + i * 0.001:.4f}",
+                    "sellRatio": f"{0.38 - i * 0.001:.4f}",
+                    "timestamp": str(1791640800000 + i * 3_600_000),
+                }
+                for i in range(48)
+            ]
+            return httpx.Response(200, json={"retCode": 0, "retMsg": "OK", "result": {"list": rows}})
+        if path.endswith("open-interest"):
+            rows = [
+                {
+                    "openInterest": f"{55000 + i * 20}",
+                    "singleOpenInterest": f"{(55000 + i * 20) / 2}",
+                    "timestamp": str(1791640800000 + i * 3_600_000),
+                }
+                for i in range(48)
+            ]
+            return httpx.Response(
+                200, json={"retCode": 0, "retMsg": "OK", "result": {"symbol": "BTCUSDT", "category": "linear", "list": rows}}
+            )
+        return httpx.Response(404, text="not mocked")
+
+    return {
+        "deribit": httpx.MockTransport(deribit),
+        "hyperliquid": httpx.MockTransport(hyperliquid),
+        "binance_futures": httpx.MockTransport(binance_futures),
+        "bybit": httpx.MockTransport(bybit),
+    }
 
 
 class FakeEx:

@@ -41,7 +41,7 @@ claude mcp add tradedesk -- uv run --directory /ABSOLUTE/PATH/TO/tradedesk-mcp t
 
 - `token_deep_analysis(project)` — глибокий 10-секційний інвест-аналіз крипто-проекту / токена (російською): продукт, залучений капітал, партнерства, токеноміка, розлоки, revenue, value accrual, roadmap, нарратив, тех. аналіз → bull/base/bear + оцінки 1–10 на 3 горизонтах. Промт автоматично підказує моделі, які інструменти tradedesk-mcp використати для частини «графік + позиціювання». Файл: `src/tradedesk/prompts/token_deep_analysis.md` — редагуйте, перезапуск сервера не потрібен (перечитується на кожен виклик).
 
-## Інструменти (26)
+## Інструменти (28)
 
 | Група | Інструмент | Що дає |
 |---|---|---|
@@ -49,6 +49,8 @@ claude mcp add tradedesk -- uv run --directory /ABSOLUTE/PATH/TO/tradedesk-mcp t
 | Ринок | `market_ticker`, `market_tickers`, `market_ohlcv`, `market_orderbook`, `market_markets`, `market_trades` | котирування (одиночне й batch), свічки з реалізованою вола, стакан зі slippage для заданого розміру, пошук ринків, останні угоди з aggressor-flow (buy/sell, VWAP, CVD) |
 | Перпи | `perps_funding_compare` | funding по Binance/Bybit/OKX/Hyperliquid/Deribit, приведений до річних |
 | | `perps_funding_history` | історія funding по всіх venues: carry 7d/30d, z-score, перцентиль, polarity flips; крос-венюз: найдорожчий carry, найбільший |z| |
+| | `perps_long_short_ratio` | роздрібна L/S по Binance і Bybit (account-based fractions); z-score, divergence між venues |
+| | `perps_oi_history` | OI history (Binance в USD, Bybit в base) з latest/mean/change24h/z-score; крос-венюз: biggest gain/drop |
 | | `perps_open_interest` | OI в USD по майданчиках і частки |
 | Hyperliquid | `hyperliquid_overview` | скринінг усього Hyperliquid за OI, funding, обсягом |
 | | `hyperliquid_candles` | OHLCV + реалізована вола |

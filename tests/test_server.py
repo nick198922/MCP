@@ -13,6 +13,8 @@ EXPECTED_TOOLS = {
     "market_trades",
     "perps_funding_compare",
     "perps_funding_history",
+    "perps_long_short_ratio",
+    "perps_oi_history",
     "perps_open_interest",
     "hyperliquid_overview",
     "hyperliquid_candles",
@@ -95,6 +97,33 @@ async def test_funding_history_cross_venue(server):
     by2 = {v["venue"]: v for v in env2["data"]["venues"]}
     assert "hyperliquid" not in by2
     assert "series" in by2["binanceusdm"] and len(by2["binanceusdm"]["series"]) > 0
+
+
+async def test_long_short_ratio_cross_venue(server):
+    env = await call(server, "perps_long_short_ratio", base="BTC", period="1h", limit=48)
+    assert env["ok"]
+    by = {v["venue"]: v for v in env["data"]["venues"]}
+    assert "binanceusdm" in by and "bybit" in by
+    # fixture: both venues long-leaning (binance 0.60..0.65, bybit 0.62..0.67)
+    for v in by.values():
+        assert v["latest"]["long"] > 0.5
+        assert v["ratio_stats"]["count"] == 48
+        assert v["ratio_stats"]["z_score_latest"] is not None
+    cross = env["data"]["cross_venue"]
+    # bybit starts a bit more long-biased in the fixture
+    assert cross["most_long"]["venue"] == "bybit"
+    assert cross["long_fraction_divergence"] is not None
+
+
+async def test_oi_history_cross_venue(server):
+    env = await call(server, "perps_oi_history", base="BTC", period="1h", limit=48, include_series=True)
+    d = env["data"]
+    by = {v["venue"]: v for v in d["venues"]}
+    assert by["binanceusdm"]["latest"]["oi_usd"] > 0  # Binance exposes USD
+    assert by["bybit"]["latest"]["oi_usd"] is None  # Bybit does not
+    assert by["binanceusdm"]["base_stats"]["change_24h"] > 0  # fixture is rising
+    assert len(by["binanceusdm"]["series"]) == 48
+    assert d["cross_venue"]["biggest_gain_24h"]["venue"] in ("binanceusdm", "bybit")
 
 
 async def test_open_interest(server):

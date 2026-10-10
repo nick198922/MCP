@@ -54,8 +54,8 @@
 
 ## Інші публічні джерела (план)
 - Крипто Fear & Greed: `https://api.alternative.me/fng/?limit=N` **[D]**.
-- Binance futures: `/futures/data/globalLongShortAccountRatio`, `/futures/data/openInterestHist`, `/fapi/v1/fundingRate` **[D]**.
-- Bybit v5: `/v5/market/account-ratio`, `/v5/market/open-interest`, `/v5/market/funding/history` **[D]**.
+- Binance futures: база `https://fapi.binance.com`; `/futures/data/globalLongShortAccountRatio` → `[{symbol, longAccount, shortAccount, longShortRatio, timestamp}]` всі рядки, longAccount+shortAccount≈1.0 (account fractions, не notional-weighted) **[V]**. `/futures/data/openInterestHist` → `[{symbol, sumOpenInterest, sumOpenInterestValue, CMCCirculatingSupply, timestamp}]`, OI у монетах і USD **[V]**. Періоди: `5m/15m/30m/1h/2h/4h/6h/12h/1d`, limit до 500 **[V]**.
+- Bybit v5: база `https://api.bybit.com`; відповідь загорнута в `{retCode, retMsg, result: {list: [...]}}`. `/v5/market/account-ratio?category=linear` → `{symbol, buyRatio, sellRatio, timestamp}`, `buyRatio+sellRatio≈1.0` **[V]**. `/v5/market/open-interest?category=linear&intervalTime=1h` → `{openInterest, singleOpenInterest, timestamp}`, тільки в base-asset (USD-value **не повертається**) **[V]**. Періоди: `5min/15min/30min/1h/4h/1d`, limit до 500 **[V]**. `/v5/market/funding/history` **[D]**.
 - Liquidations: WebSocket Binance `!forceOrder@arr`, Bybit `allLiquidation.<symbol>`, OKX `liquidation-orders`, Hyperliquid немає прямого публічного фіда ліквідацій **[D]**.
 - mempool.space, DefiLlama (`api.llama.fi`, `yields.llama.fi`, `stablecoins.llama.fi`), DexScreener, Etherscan V2, Pendle API (`api-v2.pendle.finance`) **[D]**.
 

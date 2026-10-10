@@ -20,6 +20,33 @@ from ._util import READ_ONLY, r, timeframe_seconds
 BASE = Annotated[str, Field(description="Base asset, e.g. BTC, ETH, SOL")]
 CCXT_VENUES = Annotated[list[str] | None, Field(description=f"ccxt perp exchange ids; default {list(PERP_EXCHANGES)}")]
 
+Period = Literal["5m", "15m", "30m", "1h", "4h", "1d"]
+_PERIOD_SECONDS = {"5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14400, "1d": 86400}
+_PERIOD_BINANCE = {"5m": "5m", "15m": "15m", "30m": "30m", "1h": "1h", "4h": "4h", "1d": "1d"}
+_PERIOD_BYBIT = {"5m": "5min", "15m": "15min", "30m": "30min", "1h": "1h", "4h": "4h", "1d": "1d"}
+
+
+def _series_stats(values: list[float], step_seconds: int) -> dict[str, Any]:
+    """Minimum / mean / max / latest / change over last 24h-worth of entries."""
+    if not values:
+        return {"count": 0, "latest": None, "mean": None, "min": None, "max": None, "change_24h": None, "z_score_latest": None}
+    n = len(values)
+    mean = sum(values) / n
+    latest = values[-1]
+    out: dict[str, Any] = {"count": n, "latest": latest, "mean": mean, "min": min(values), "max": max(values)}
+    steps_24h = max(1, 86400 // step_seconds)
+    if n > steps_24h:
+        out["change_24h"] = latest - values[-1 - steps_24h]
+    else:
+        out["change_24h"] = latest - values[0]
+    if n > 1:
+        var = sum((v - mean) ** 2 for v in values) / (n - 1)
+        sd = var**0.5
+        out["z_score_latest"] = (latest - mean) / sd if sd > 0 else None
+    else:
+        out["z_score_latest"] = None
+    return out
+
 
 def _iso(ms: Any) -> str | None:
     return None if not ms else datetime.fromtimestamp(ms / 1000, UTC).isoformat(timespec="seconds")
@@ -221,6 +248,188 @@ def register(server: MCPServer, rt: Runtime) -> None:
             cross["biggest_abs_z"] = {"venue": v["venue"], "z_score_latest": r(v["z_score_latest"], 3)}
 
         return b.build({"base": base, "days_requested": days_back, "venues": rows, "cross_venue": cross})
+
+    @server.tool(
+        annotations=READ_ONLY,
+        description=(
+            "Retail long/short account ratio history on Binance USDT-M and Bybit (public /futures/data and /v5/market/account-ratio). "
+            "Both report **account fractions** (not notional-weighted), summing to ~1.0. Per venue returns the raw series plus latest/mean/min/max/24h-change/z-score. "
+            "Cross-venue: who is most long right now, and absolute divergence between venues (large divergence = disagreement between retail cohorts). "
+            "`period` is one of 5m/15m/30m/1h/4h/1d; `limit` up to 500. Set `include_series=true` to see all rows."
+        ),
+    )
+    async def perps_long_short_ratio(
+        base: BASE = "BTC",
+        period: Period = "1h",
+        limit: Annotated[int, Field(ge=1, le=500)] = 48,
+        include_series: bool = False,
+    ) -> dict[str, Any]:
+        b = Builder()
+        base = base.upper()
+        symbol = f"{base}USDT"
+
+        async def binance_row() -> dict[str, Any] | None:
+            raw = await b.guard(
+                "ls_ratio:binance", "binance_futures", rt.binance_futures.long_short_account_ratio(symbol, _PERIOD_BINANCE[period], limit)
+            )
+            if not raw:
+                return None
+            series = [
+                {
+                    "ts_ms": int(x["timestamp"]),
+                    "long": float(x["longAccount"]),
+                    "short": float(x["shortAccount"]),
+                    "ratio": float(x["longShortRatio"]),
+                }
+                for x in raw
+                if x.get("longAccount") is not None and x.get("shortAccount") is not None
+            ]
+            series.sort(key=lambda s: s["ts_ms"])
+            if not series:
+                return None
+            step = _PERIOD_SECONDS[period]
+            s = _series_stats([x["ratio"] for x in series], step)
+            long_fracs = _series_stats([x["long"] for x in series], step)
+            return {
+                "venue": "binanceusdm",
+                "latest": series[-1],
+                "ratio_stats": s,
+                "long_stats": long_fracs,
+                **({"series": series} if include_series else {}),
+            }
+
+        async def bybit_row() -> dict[str, Any] | None:
+            raw = await b.guard("ls_ratio:bybit", "bybit", rt.bybit.long_short_account_ratio(symbol, _PERIOD_BYBIT[period], limit))
+            if not raw:
+                return None
+            series = [
+                {
+                    "ts_ms": int(x["timestamp"]),
+                    "long": float(x["buyRatio"]),
+                    "short": float(x["sellRatio"]),
+                    "ratio": float(x["buyRatio"]) / float(x["sellRatio"]) if float(x["sellRatio"]) else None,
+                }
+                for x in raw
+                if x.get("buyRatio") is not None and x.get("sellRatio") is not None
+            ]
+            series.sort(key=lambda s: s["ts_ms"])
+            series = [x for x in series if x["ratio"] is not None]
+            if not series:
+                return None
+            step = _PERIOD_SECONDS[period]
+            s = _series_stats([x["ratio"] for x in series], step)
+            long_fracs = _series_stats([x["long"] for x in series], step)
+            return {
+                "venue": "bybit",
+                "latest": series[-1],
+                "ratio_stats": s,
+                "long_stats": long_fracs,
+                **({"series": series} if include_series else {}),
+            }
+
+        rows = [x for x in await asyncio.gather(binance_row(), bybit_row()) if x]
+        if not rows:
+            return b.build(None, ok=False)
+
+        most_long = max(rows, key=lambda x: x["latest"]["long"])
+        most_short = min(rows, key=lambda x: x["latest"]["long"])
+        divergence = None
+        if len(rows) == 2:
+            divergence = abs(rows[0]["latest"]["long"] - rows[1]["latest"]["long"])
+        return b.build(
+            {
+                "base": base,
+                "period": period,
+                "venues": rows,
+                "cross_venue": {
+                    "most_long": {"venue": most_long["venue"], "long_fraction": r(most_long["latest"]["long"], 4)},
+                    "most_short": {"venue": most_short["venue"], "long_fraction": r(most_short["latest"]["long"], 4)},
+                    "long_fraction_divergence": r(divergence, 4),
+                },
+            }
+        )
+
+    @server.tool(
+        annotations=READ_ONLY,
+        description=(
+            "Open-interest history on Binance USDT-M and Bybit (public /futures/data/openInterestHist and /v5/market/open-interest). "
+            "Binance reports both sum open interest in the base asset and in USD; Bybit reports the base-asset total only (USD estimate omitted). "
+            "Per venue: current OI (base and USD when available), mean, 24h change, z-score of latest vs the window. `period` is 5m/15m/30m/1h/4h/1d; `limit` ≤500."
+        ),
+    )
+    async def perps_oi_history(
+        base: BASE = "BTC",
+        period: Period = "1h",
+        limit: Annotated[int, Field(ge=1, le=500)] = 48,
+        include_series: bool = False,
+    ) -> dict[str, Any]:
+        b = Builder()
+        base = base.upper()
+        symbol = f"{base}USDT"
+        step = _PERIOD_SECONDS[period]
+
+        async def binance_row() -> dict[str, Any] | None:
+            raw = await b.guard(
+                "oi_hist:binance", "binance_futures", rt.binance_futures.open_interest_hist(symbol, _PERIOD_BINANCE[period], limit)
+            )
+            if not raw:
+                return None
+            series = [
+                {"ts_ms": int(x["timestamp"]), "oi_base": float(x["sumOpenInterest"]), "oi_usd": float(x["sumOpenInterestValue"])}
+                for x in raw
+                if x.get("sumOpenInterest") is not None
+            ]
+            series.sort(key=lambda s: s["ts_ms"])
+            if not series:
+                return None
+            return {
+                "venue": "binanceusdm",
+                "latest": series[-1],
+                "base_stats": _series_stats([x["oi_base"] for x in series], step),
+                "usd_stats": _series_stats([x["oi_usd"] for x in series], step),
+                **({"series": series} if include_series else {}),
+            }
+
+        async def bybit_row() -> dict[str, Any] | None:
+            raw = await b.guard("oi_hist:bybit", "bybit", rt.bybit.open_interest(symbol, _PERIOD_BYBIT[period], limit))
+            if not raw:
+                return None
+            series = [
+                {"ts_ms": int(x["timestamp"]), "oi_base": float(x["openInterest"]), "oi_usd": None}
+                for x in raw
+                if x.get("openInterest") is not None
+            ]
+            series.sort(key=lambda s: s["ts_ms"])
+            if not series:
+                return None
+            return {
+                "venue": "bybit",
+                "latest": series[-1],
+                "base_stats": _series_stats([x["oi_base"] for x in series], step),
+                "usd_stats": None,
+                **({"series": series} if include_series else {}),
+            }
+
+        rows = [x for x in await asyncio.gather(binance_row(), bybit_row()) if x]
+        if not rows:
+            return b.build(None, ok=False)
+
+        def pct_change(x: dict[str, Any]) -> float | None:
+            s = x["base_stats"]
+            if s.get("change_24h") is None or s.get("latest") in (None, 0):
+                return None
+            prev = s["latest"] - s["change_24h"]
+            return (s["change_24h"] / prev) if prev else None
+
+        with_pct = [(x, pct_change(x)) for x in rows]
+        growth = [(x, p) for x, p in with_pct if p is not None]
+        cross: dict[str, Any] = {"biggest_gain_24h": None, "biggest_drop_24h": None}
+        if growth:
+            best = max(growth, key=lambda t: t[1])
+            worst = min(growth, key=lambda t: t[1])
+            cross["biggest_gain_24h"] = {"venue": best[0]["venue"], "pct_change_24h": r(best[1] * 100, 3)}
+            cross["biggest_drop_24h"] = {"venue": worst[0]["venue"], "pct_change_24h": r(worst[1] * 100, 3)}
+        return b.build({"base": base, "period": period, "venues": rows, "cross_venue": cross})
 
     @server.tool(
         annotations=READ_ONLY,

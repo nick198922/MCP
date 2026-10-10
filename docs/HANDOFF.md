@@ -13,13 +13,13 @@
 Припущення, які ще не підтверджено власником (не вважати рішеннями): алерти через Telegram; хостинг на VPS; IBKR (на його Маку помічено папки `Jts`/`ntws`, схоже на IB TWS).
 
 ## Що зроблено (Фаза 0 + частина Фази 1)
-26 інструментів, лише публічні дані, ключі не потрібні:
+28 інструментів, лише публічні дані, ключі не потрібні:
 
 | Група | Інструменти |
 |---|---|
 | Система | `system_health(probe)` |
 | Ринок (ccxt) | `market_ticker`, `market_tickers`, `market_ohlcv`, `market_orderbook`, `market_markets`, `market_trades` |
-| Перпи | `perps_funding_compare`, `perps_funding_history`, `perps_open_interest` |
+| Перпи | `perps_funding_compare`, `perps_funding_history`, `perps_long_short_ratio`, `perps_oi_history`, `perps_open_interest` |
 | Hyperliquid | `hyperliquid_overview`, `hyperliquid_candles`, `hyperliquid_book`, `hyperliquid_trades`, `hyperliquid_funding_history` |
 | Ф'ючерси | `deribit_futures_curve` |
 | Опціони | `deribit_vol_surface`, `deribit_option_chain`, `deribit_max_pain`, `deribit_gamma_exposure`, `deribit_expected_move`, `deribit_oi_by_strike`, `prob_from_options` |
@@ -28,7 +28,7 @@
 Ядро: `Http` (ретраї на 429/5xx/timeout, token-bucket, TTL-кеш із single-flight, класифікація помилок), `HealthRegistry`, `Envelope/Evidence`, фейкові транспорти для тестів.
 
 ## Як перевірено
-- **68 тестів, усі зелені** (локально; Python 3.15 через `uv`). Раніше проходили на 3.13/3.14.
+- **70 тестів, усі зелені** (локально; Python 3.15 через `uv`). Раніше проходили на 3.13/3.14.
 - Промт `token_deep_analysis` зареєстрований і рендериться через MCP Client API (`list_prompts` + `get_prompt`).
 - `ruff check` і `ruff format` чисті.
 - Black-76 звірено з **реальним тікером Deribit** (delta −0.4535, gamma ≈2e-5, vega 226.95, theta −25.98) і з ціною (mark у BTC = USD-ціна / forward).

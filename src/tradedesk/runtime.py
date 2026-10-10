@@ -13,8 +13,12 @@ from .core.cache import TTLCache
 from .core.envelope import utcnow
 from .core.health import HealthRegistry
 from .core.http import Http
+from .providers import binance_futures as binance_mod
+from .providers import bybit as bybit_mod
 from .providers import deribit as deribit_mod
 from .providers import hyperliquid as hl_mod
+from .providers.binance_futures import BinanceFutures
+from .providers.bybit import Bybit
 from .providers.deribit import Deribit
 from .providers.exchanges import Exchanges
 from .providers.hyperliquid import Hyperliquid
@@ -51,6 +55,8 @@ class Runtime:
 
         self.deribit = Deribit(http("deribit", deribit_mod.BASE_URL, rate=8, burst=10))
         self.hyperliquid = Hyperliquid(http("hyperliquid", hl_mod.BASE_URL, rate=5, burst=8))
+        self.binance_futures = BinanceFutures(http("binance_futures", binance_mod.BASE_URL, rate=20, burst=40))
+        self.bybit = Bybit(http("bybit", bybit_mod.BASE_URL, rate=20, burst=40))
         self.exchanges = Exchanges(
             self.health,
             cache=self.cache,
@@ -62,4 +68,6 @@ class Runtime:
     async def aclose(self) -> None:
         await self.deribit.http.aclose()
         await self.hyperliquid.http.aclose()
+        await self.binance_futures.http.aclose()
+        await self.bybit.http.aclose()
         await self.exchanges.aclose()

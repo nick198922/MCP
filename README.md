@@ -37,7 +37,7 @@ make run         # stdio-сервер; make run-http — streamable-http на :8
 claude mcp add tradedesk -- uv run --directory /ABSOLUTE/PATH/TO/tradedesk-mcp tradedesk-mcp
 ```
 
-## Інструменти (21)
+## Інструменти (25)
 
 | Група | Інструмент | Що дає |
 |---|---|---|
@@ -45,7 +45,11 @@ claude mcp add tradedesk -- uv run --directory /ABSOLUTE/PATH/TO/tradedesk-mcp t
 | Ринок | `market_ticker`, `market_tickers`, `market_ohlcv`, `market_orderbook`, `market_markets`, `market_trades` | котирування (одиночне й batch), свічки з реалізованою вола, стакан зі slippage для заданого розміру, пошук ринків, останні угоди з aggressor-flow (buy/sell, VWAP, CVD) |
 | Перпи | `perps_funding_compare` | funding по Binance/Bybit/OKX/Hyperliquid/Deribit, приведений до річних |
 | | `perps_open_interest` | OI в USD по майданчиках і частки |
-| | `hyperliquid_overview` | скринінг усього Hyperliquid за OI, funding, обсягом |
+| Hyperliquid | `hyperliquid_overview` | скринінг усього Hyperliquid за OI, funding, обсягом |
+| | `hyperliquid_candles` | OHLCV + реалізована вола |
+| | `hyperliquid_book` | L2-стакан (20 рівнів) + slippage під розмір |
+| | `hyperliquid_trades` | останні угоди з aggressor-flow (B/A → buy/sell, VWAP, CVD) |
+| | `hyperliquid_funding_history` | історія funding + mean 7d/30d, z-score, percentile, річний carry, polarity flips |
 | Ф'ючерси | `deribit_futures_curve` | basis і term structure (прості та лог. річні) |
 | Опціони | `deribit_vol_surface` | ATM IV, RR/Fly 25Δ і 10Δ, очікуваний рух, P/C по експірації |
 | | `deribit_option_chain` | ланцюжок з greeks (Black-76, збігається з Deribit) |

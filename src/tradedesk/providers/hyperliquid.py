@@ -77,3 +77,6 @@ class Hyperliquid:
 
     async def l2_book(self, coin: str) -> Fetched:
         return await self._info({"type": "l2Book", "coin": coin.upper()}, ttl=1)
+
+    async def recent_trades(self, coin: str) -> Fetched:
+        return await self._info({"type": "recentTrades", "coin": coin.upper()}, ttl=2)

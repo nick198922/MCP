@@ -1,18 +1,21 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
 from mcp.server.mcpserver import MCPServer
 from pydantic import Field
 
-from ..analytics.derivatives import annualize_funding, basis, parse_interval_hours
+from ..analytics.derivatives import annualize_funding, basis, parse_interval_hours, summarise_funding_history
 from ..analytics.instruments import expiry_token, parse_future_name
+from ..analytics.orderbook import book_stats, walk_book
+from ..analytics.trades import summarise as summarise_trades
 from ..core.envelope import Builder
 from ..providers.exchanges import PERP_EXCHANGES
 from ..runtime import Runtime
-from ._util import READ_ONLY, r
+from ._util import READ_ONLY, r, timeframe_seconds
 
 BASE = Annotated[str, Field(description="Base asset, e.g. BTC, ETH, SOL")]
 CCXT_VENUES = Annotated[list[str] | None, Field(description=f"ccxt perp exchange ids; default {list(PERP_EXCHANGES)}")]
@@ -177,6 +180,184 @@ def register(server: MCPServer, rt: Runtime) -> None:
         rows.sort(key=lambda c: c[sort_by], reverse=not ascending)
         out = [{k: (r(v, 6) if isinstance(v, float) else v) for k, v in c.items()} for c in rows[:top_n]]
         return b.build({"sort_by": sort_by, "count_after_filter": len(rows), "coins": out})
+
+    @server.tool(
+        annotations=READ_ONLY,
+        description=(
+            "Hyperliquid OHLCV candles for one coin plus period return and annualised close-to-close realised volatility. "
+            "`interval` is HL-shaped: 1m/3m/5m/15m/30m/1h/2h/4h/8h/12h/1d/3d/1w/1M. `hours_back` sets the lookback window."
+        ),
+    )
+    async def hyperliquid_candles(
+        coin: str,
+        interval: str = "1h",
+        hours_back: Annotated[float, Field(gt=0, le=24 * 365)] = 24.0,
+    ) -> dict[str, Any]:
+        b = Builder()
+        try:
+            tf_sec = timeframe_seconds(interval)
+        except ValueError as e:
+            b.miss("interval", "tradedesk", "config", str(e))
+            return b.build(None, ok=False)
+        end_ms = int(rt.now().timestamp() * 1000)
+        start_ms = end_ms - int(hours_back * 3_600_000)
+        raw = await b.guard("candles", "hyperliquid", rt.hyperliquid.candles(coin, interval, start_ms, end_ms))
+        if not raw:
+            if raw is not None:
+                b.miss("candles", "hyperliquid", "data_unavailable", "empty result")
+            return b.build(None, ok=False)
+        rows: list[list[float]] = []
+        for c in raw:
+            try:
+                rows.append([int(c["t"]), float(c["o"]), float(c["h"]), float(c["l"]), float(c["c"]), float(c["v"])])
+            except (KeyError, TypeError, ValueError):
+                continue
+        if not rows:
+            b.miss("candles", "hyperliquid", "data_unavailable", "no parsable candles")
+            return b.build(None, ok=False)
+        rows.sort(key=lambda x: x[0])
+        closes = [row[4] for row in rows if row[4]]
+        summary: dict[str, Any] = {"candles": len(rows), "first_close": closes[0], "last_close": closes[-1]}
+        summary["return_pct"] = r((closes[-1] / closes[0] - 1) * 100, 3)
+        if len(closes) >= 10:
+            lr = [math.log(closes[i] / closes[i - 1]) for i in range(1, len(closes))]
+            mean = sum(lr) / len(lr)
+            var = sum((x - mean) ** 2 for x in lr) / (len(lr) - 1)
+            summary["realized_vol_annualized"] = r(math.sqrt(var) * math.sqrt(365 * 86400 / tf_sec), 4)
+        return b.build(
+            {
+                "coin": coin.upper(),
+                "interval": interval,
+                "columns": ["ts_ms", "open", "high", "low", "close", "volume"],
+                "rows": rows,
+                "summary": summary,
+            }
+        )
+
+    @server.tool(
+        annotations=READ_ONLY,
+        description=(
+            "Hyperliquid L2 order book snapshot (20 levels per side): mid, spread (bps), bid/ask depth imbalance within 0.1/0.5/1 % of mid. "
+            "If `notional_usd` is given, also estimates average fill price and slippage for a market buy and sell of that size."
+        ),
+    )
+    async def hyperliquid_book(
+        coin: str,
+        notional_usd: Annotated[float | None, Field(gt=0, description="Order size in USD")] = None,
+    ) -> dict[str, Any]:
+        b = Builder()
+        raw = await b.guard("book", "hyperliquid", rt.hyperliquid.l2_book(coin))
+        if not raw:
+            if raw is not None:
+                b.miss("book", "hyperliquid", "data_unavailable", "empty result")
+            return b.build(None, ok=False)
+        try:
+            bids_raw, asks_raw = raw["levels"][0], raw["levels"][1]
+        except (KeyError, IndexError, TypeError):
+            b.miss("book", "hyperliquid", "backend_error", "unexpected book shape")
+            return b.build(None, ok=False)
+
+        def levels(xs: list[dict[str, Any]]) -> list[list[float]]:
+            out: list[list[float]] = []
+            for lv in xs:
+                try:
+                    out.append([float(lv["px"]), float(lv["sz"]), float(lv.get("n") or 0)])
+                except (KeyError, TypeError, ValueError):
+                    continue
+            return out
+
+        bids, asks = levels(bids_raw), levels(asks_raw)
+        if not bids or not asks:
+            b.miss("book", "hyperliquid", "data_unavailable", "no quotable levels")
+            return b.build(None, ok=False)
+        stats = book_stats(bids, asks)
+        data: dict[str, Any] = {
+            "coin": coin.upper(),
+            "stats": stats,
+            "bids_top": bids[:10],
+            "asks_top": asks[:10],
+            "levels_loaded": [len(bids), len(asks)],
+        }
+        if notional_usd and stats["mid"]:
+            data["impact"] = {
+                "buy": walk_book(asks, notional_usd, stats["mid"], "buy"),
+                "sell": walk_book(bids, notional_usd, stats["mid"], "sell"),
+            }
+            if data["impact"]["buy"]["unfilled_usd"] > 0 or data["impact"]["sell"]["unfilled_usd"] > 0:
+                b.warn("only 20 levels available per side on Hyperliquid; large orders may not size here")
+        return b.build(data)
+
+    @server.tool(
+        annotations=READ_ONLY,
+        description=(
+            "Hyperliquid recent public trades with aggressor-signed flow: buy/sell counts and notional, imbalance in [-1, 1] (positive = net taker buys), "
+            "VWAP for all / buys / sells, cumulative delta end value, and the largest `top_n` prints. HL `side` field: 'B' = taker buy, 'A' = taker sell. "
+            "The endpoint returns up to ~500 recent fills; HL may return fewer when activity is low."
+        ),
+    )
+    async def hyperliquid_trades(coin: str, top_n: Annotated[int, Field(ge=1, le=50)] = 5) -> dict[str, Any]:
+        b = Builder()
+        raw = await b.guard("trades", "hyperliquid", rt.hyperliquid.recent_trades(coin))
+        if not raw:
+            if raw is not None:
+                b.miss("trades", "hyperliquid", "data_unavailable", "empty result")
+            return b.build(None, ok=False)
+        normalised: list[dict[str, Any]] = []
+        for t in raw:
+            side_code = str(t.get("side") or "").upper()
+            if side_code not in ("B", "A"):
+                continue
+            try:
+                price = float(t["px"])
+                amount = float(t["sz"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            normalised.append(
+                {
+                    "timestamp": int(t.get("time") or 0),
+                    "side": "buy" if side_code == "B" else "sell",
+                    "price": price,
+                    "amount": amount,
+                    "cost": price * amount,
+                }
+            )
+        if not normalised:
+            b.miss("trades", "hyperliquid", "data_unavailable", "no usable trades")
+            return b.build(None, ok=False)
+        summary = summarise_trades(normalised, top_n=top_n)
+        return b.build({"coin": coin.upper(), "fetched": len(raw), "parsed": len(normalised), "summary": summary})
+
+    @server.tool(
+        annotations=READ_ONLY,
+        description=(
+            "Hyperliquid funding-rate history for one coin over a lookback window (default 30 days, interval 1h). Returns the raw series plus "
+            "mean/stdev/min/max/7d-mean/30d-mean of the per-hour rate, annualised carry (mean rate × 8760), the latest rate's z-score and percentile "
+            "relative to the window, and polarity flips (sign changes). Rates are decimals (0.0001 = 0.01 % per hour)."
+        ),
+    )
+    async def hyperliquid_funding_history(
+        coin: str,
+        days_back: Annotated[float, Field(gt=0, le=180)] = 30.0,
+    ) -> dict[str, Any]:
+        b = Builder()
+        now_ms = int(rt.now().timestamp() * 1000)
+        start_ms = now_ms - int(days_back * 86_400_000)
+        raw = await b.guard("funding_history", "hyperliquid", rt.hyperliquid.funding_history(coin, start_ms, now_ms))
+        if not raw:
+            if raw is not None:
+                b.miss("funding_history", "hyperliquid", "data_unavailable", "empty result")
+            return b.build(None, ok=False)
+        entries: list[dict[str, Any]] = []
+        for e in raw:
+            try:
+                entries.append({"ts_ms": int(e["time"]), "rate": float(e["fundingRate"])})
+            except (KeyError, TypeError, ValueError):
+                continue
+        if not entries:
+            b.miss("funding_history", "hyperliquid", "data_unavailable", "no parsable entries")
+            return b.build(None, ok=False)
+        stats = summarise_funding_history(entries, interval_hours=1.0, now_ms=now_ms)
+        return b.build({"coin": coin.upper(), "days_requested": days_back, "stats": stats, "entries": entries})
 
     @server.tool(
         annotations=READ_ONLY,

@@ -19,8 +19,9 @@
 - Funding **щогодини**, значення — ставка за годину (дріб) **[V]**; annualize: ×24×365.
 - `openInterest` — у базових одиницях (монетах), для USD помножити на mark **[D]**.
 - `fundingHistory`: `{coin,fundingRate,premium,time}`, до 500 записів на запит **[V/D]**.
-- `candleSnapshot`: `{"type":"candleSnapshot","req":{coin,interval,startTime,endTime}}`; ~5000 останніх свічок макс **[D]**.
-- `l2Book`: `{levels:[[bids],[asks]]}` кожен рівень `{px,sz,n}` **[D]**.
+- `candleSnapshot`: `{"type":"candleSnapshot","req":{coin,interval,startTime,endTime}}`; свічка `{t,T,s,i,o,h,l,c,v,n}` з числами **рядками** **[V]**; ~5000 останніх свічок макс **[D]**.
+- `l2Book`: `{coin,time,levels:[[bids],[asks]]}` кожен рівень `{px,sz,n}` як рядок — 20 рівнів на сторону **[V]**.
+- `recentTrades`: `{coin,side:"B"|"A",px,sz,time,hash,tid,users}` **[V]**; "B" = taker buy (lifted ask), "A" = taker sell. Повертає до 500 трейдів, у низько-активний момент може бути значно менше (бачили 10).
 - Ліміт ~1200 weight/хв на IP **[D]**; ми беремо 5 req/s.
 
 ## ccxt (async)

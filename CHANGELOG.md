@@ -8,7 +8,8 @@
 - Якість smile (Фаза 1.10 частково): `OptionRow` тепер несе bid/ask і spread_pct; `build_smile` приймає `min_oi` та `max_spread_pct`; `deribit_vol_surface` отримав ці параметри плюс `thin_oi_threshold`, повертає `strikes_used` і `thin_wing_25d/10d` з попередженнями про тонкі крила. Залишилось: вагові LS-фіти smile за ліквідністю.
 - Fix: OKX `fetch_order_book` повертає рівні з 4+ колонок — `book_stats`/`walk_book` тепер толерантні до будь-якого числа колонок після `[price, size]`; тест `test_book_tolerates_extra_level_columns`.
 - Фаза 0.5: `make smoke` виконано 2026-10-10, 9/9 ok (Deribit greeks звірено з their ticker до 4 знаків); живі зразки ccxt і HL задокументовано в `docs/reference/api-notes.md`.
-- Тестів: 62 (+11 від 0.1.0), lint чистий.
+- Фаза 1.4: чотири Hyperliquid-інструменти (`hyperliquid_candles`, `hyperliquid_book`, `hyperliquid_trades`, `hyperliquid_funding_history`); провайдер отримав `recent_trades`; нова чиста аналітика `summarise_funding_history` (mean 7d/30d, z-score, percentile, carry APR, polarity flips). Live-протестовано на реальному BTC/ETH 2026-10-10.
+- Тестів: 66 (+15 від 0.1.0), lint чистий.
 
 ## 0.1.0 — 2026-10-10
 - Ядро: `Http` (ретраї, rate-limit, кеш із single-flight, класифікація помилок), `HealthRegistry`, `Envelope/Evidence`.

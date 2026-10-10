@@ -14,6 +14,10 @@ EXPECTED_TOOLS = {
     "perps_funding_compare",
     "perps_open_interest",
     "hyperliquid_overview",
+    "hyperliquid_candles",
+    "hyperliquid_book",
+    "hyperliquid_trades",
+    "hyperliquid_funding_history",
     "deribit_futures_curve",
     "deribit_vol_surface",
     "deribit_option_chain",
@@ -65,6 +69,45 @@ async def test_open_interest(server):
     assert {"binanceusdm", "bybit", "hyperliquid", "deribit"} <= venues
     assert d["total_oi_usd"] == pytest.approx(sum(v["oi_usd"] for v in d["venues"]))
     assert d["venues"][0]["oi_usd"] >= d["venues"][-1]["oi_usd"]
+
+
+async def test_hyperliquid_candles_has_realized_vol(server):
+    env = await call(server, "hyperliquid_candles", coin="BTC", interval="1h", hours_back=24)
+    d = env["data"]
+    assert d["coin"] == "BTC" and d["interval"] == "1h"
+    assert len(d["rows"]) == 24
+    assert d["summary"]["realized_vol_annualized"] > 0
+    assert d["summary"]["first_close"] > 0 and d["summary"]["last_close"] > 0
+
+
+async def test_hyperliquid_book_stats_and_impact(server):
+    env = await call(server, "hyperliquid_book", coin="BTC", notional_usd=200_000)
+    d = env["data"]
+    assert d["stats"]["mid"] > 0 and d["stats"]["spread_bps"] > 0
+    assert d["levels_loaded"] == [20, 20]
+    assert d["impact"]["buy"]["slippage_bps_vs_mid"] > 0
+    assert d["impact"]["sell"]["slippage_bps_vs_mid"] > 0
+
+
+async def test_hyperliquid_trades_flow(server):
+    env = await call(server, "hyperliquid_trades", coin="BTC", top_n=3)
+    s = env["data"]["summary"]
+    assert s["count"] == 15 and s["buy_count"] + s["sell_count"] == 15
+    assert s["vwap"] > 0
+    assert -1 <= s["imbalance"] <= 1
+    assert s["top_trades"][0]["amount"] == pytest.approx(2.0)  # the big initial B print
+
+
+async def test_hyperliquid_funding_history_stats(server):
+    env = await call(server, "hyperliquid_funding_history", coin="BTC", days_back=7)
+    s = env["data"]["stats"]
+    assert s["count"] == 168
+    assert s["interval_hours"] == 1.0
+    assert s["mean_rate"] is not None
+    assert s["carry_annualized"] == pytest.approx(s["mean_rate"] * 8760)
+    assert s["polarity_flips"] >= 1  # fixture alternates sign heavily
+    assert s["z_score_latest"] is not None
+    assert 0.0 <= s["percentile_latest"] <= 1.0
 
 
 async def test_hyperliquid_overview_filters_and_sorts(server):

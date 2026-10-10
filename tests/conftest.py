@@ -128,8 +128,64 @@ def make_transports(state: State) -> dict:
 
     def hyperliquid(req: httpx.Request) -> httpx.Response:
         body = json.loads(req.content)
-        if body["type"] == "metaAndAssetCtxs":
+        t = body["type"]
+        if t == "metaAndAssetCtxs":
             return httpx.Response(200, json=hl_payload())
+        if t == "l2Book":
+            levels = [
+                [{"px": str(82750.0 - i), "sz": str(1.0 + i * 0.1), "n": 3 + i} for i in range(20)],
+                [{"px": str(82751.0 + i), "sz": str(1.0 + i * 0.1), "n": 2 + i} for i in range(20)],
+            ]
+            return httpx.Response(200, json={"coin": body["coin"], "time": 1791640000000, "levels": levels})
+        if t == "recentTrades":
+            rows = []
+            for i in range(15):
+                side = "B" if i % 3 != 2 else "A"
+                px = 82750.0 + i * 0.1
+                sz = 0.1 if i != 0 else 2.0
+                rows.append(
+                    {
+                        "coin": body["coin"],
+                        "side": side,
+                        "px": str(px),
+                        "sz": str(sz),
+                        "time": 1791640000000 + i * 500,
+                        "hash": f"0x{i:064x}",
+                        "tid": i,
+                    }
+                )
+            return httpx.Response(200, json=rows)
+        if t == "candleSnapshot":
+            req_ = body["req"]
+            start = req_.get("startTime", 1791540000000)
+            rows = []
+            price = 82000.0
+            for i in range(24):
+                price *= 1 + (0.005 if i % 2 else -0.004)
+                t0 = start + i * 3_600_000
+                rows.append(
+                    {
+                        "t": t0,
+                        "T": t0 + 3_599_999,
+                        "s": req_["coin"],
+                        "i": req_["interval"],
+                        "o": str(price * 0.999),
+                        "c": str(price),
+                        "h": str(price * 1.002),
+                        "l": str(price * 0.998),
+                        "v": "1500.0",
+                        "n": 1000,
+                    }
+                )
+            return httpx.Response(200, json=rows)
+        if t == "fundingHistory":
+            coin = body["coin"]
+            start = body.get("startTime", 1791040000000)
+            rows = []
+            for i in range(168):  # 7 days hourly
+                rate = (1e-5 if i % 2 == 0 else -5e-6) + (i * 1e-7)  # alternating sign, drifting
+                rows.append({"coin": coin, "fundingRate": str(rate), "premium": "0", "time": start + i * 3_600_000})
+            return httpx.Response(200, json=rows)
         return httpx.Response(200, json=[])
 
     return {"deribit": httpx.MockTransport(deribit), "hyperliquid": httpx.MockTransport(hyperliquid)}

@@ -11,9 +11,10 @@ Conventions (kept identical everywhere):
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, asdict
+from collections.abc import Iterable
+from dataclasses import asdict, dataclass
 from datetime import datetime
-from typing import Any, Iterable
+from typing import Any
 
 import numpy as np
 
@@ -155,7 +156,7 @@ class Smile:
 
     def iv_at_call_delta(self, target: float) -> float | None:
         """IV at a given call-equivalent delta N(d1) (0.25 -> 25-delta call, 0.75 -> 25-delta put)."""
-        deltas = np.array([ncdf(d1d2(self.forward, k, self.T, v)[0]) for k, v in zip(self.strikes, self.ivs)])
+        deltas = np.array([ncdf(d1d2(self.forward, k, self.T, v)[0]) for k, v in zip(self.strikes, self.ivs, strict=True)])
         order = np.argsort(deltas)
         d_sorted, v_sorted = deltas[order], self.ivs[order]
         keep = np.concatenate(([True], np.diff(d_sorted) > 1e-12))
@@ -262,7 +263,7 @@ def gex_profile(rows: list[OptionRow], span: float = 0.2, step: float = 0.01) ->
 def gex_flip_shift(profile: list[tuple[float, float]]) -> float | None:
     """Spot shift factor (relative to now) where net GEX crosses zero, nearest to 1.0."""
     best: float | None = None
-    for (s0, g0), (s1, g1) in zip(profile, profile[1:]):
+    for (s0, g0), (s1, g1) in zip(profile, profile[1:], strict=False):
         if g0 == 0:
             cand = s0
         elif g0 * g1 < 0:

@@ -100,7 +100,7 @@ class Http:
                     try:
                         return resp.json(), ms
                     except (ValueError, jsonlib.JSONDecodeError):
-                        raise self._fail("backend_error", f"non-JSON response ({resp.headers.get('content-type')})")
+                        raise self._fail("backend_error", f"non-JSON response ({resp.headers.get('content-type')})") from None
                 snippet = resp.text[:160].replace("\n", " ")
                 if code in (401, 403):
                     raise self._fail("auth", f"HTTP {code}: {snippet}")

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 import ccxt
 import ccxt.async_support as ccxt_async
@@ -72,9 +73,7 @@ class Exchanges:
                 except Exception:  # noqa: BLE001 - shutting down
                     pass
 
-    async def _call(
-        self, ex_id: str, tool: str, args: dict[str, Any], ttl: float, fn: Callable[[Any], Awaitable[Any]]
-    ) -> Fetched:
+    async def _call(self, ex_id: str, tool: str, args: dict[str, Any], ttl: float, fn: Callable[[Any], Awaitable[Any]]) -> Fetched:
         label = f"ccxt:{ex_id.lower()}"
         self._health.register(label)
         key = (label, tool, tuple(sorted((k, str(v)) for k, v in args.items())))
@@ -85,11 +84,11 @@ class Exchanges:
                 data = await fn(self.get(ex_id))
             except ProviderError as e:
                 self._health.error(label, e.reason, e.detail)
-                raise ProviderError(label, e.reason, e.detail)
+                raise ProviderError(label, e.reason, e.detail) from e
             except Exception as e:  # noqa: BLE001 - mapped below
                 reason, detail = map_ccxt_error(e)
                 self._health.error(label, reason, detail)
-                raise ProviderError(label, reason, redact(detail))
+                raise ProviderError(label, reason, redact(detail)) from e
             ms = (time.perf_counter() - t0) * 1000
             self._health.ok(label, ms)
             return Fetched(data, Evidence(provider=label, tool=tool, args=args, latency_ms=int(ms)))

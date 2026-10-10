@@ -32,7 +32,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
         except ValueError as e:
             b.miss("odds", "tradedesk", "config", str(e))
             return b.build(None, ok=False)
-        return b.build({k: ([r(x, 6) for x in v] if isinstance(v, list) else (r(v, 6) if isinstance(v, float) else v)) for k, v in data.items()})
+        return b.build(
+            {k: ([r(x, 6) for x in v] if isinstance(v, list) else (r(v, 6) if isinstance(v, float) else v)) for k, v in data.items()}
+        )
 
     @server.tool(
         annotations=READ_ONLY,
@@ -52,7 +54,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
         T, is_call = days / 365.0, kind == "call"
         g = black76_greeks(forward, strike, T, iv, is_call)
         price = black76_price(forward, strike, T, iv, is_call)
-        return b.build({"price_usd": r(price, 4), "price_in_underlying": r(price / forward, 6), **{k: r(v, 6) for k, v in g.items()}}, ok=True)
+        return b.build(
+            {"price_usd": r(price, 4), "price_in_underlying": r(price / forward, 6), **{k: r(v, 6) for k, v in g.items()}}, ok=True
+        )
 
     @server.tool(
         annotations=READ_ONLY,
@@ -69,8 +73,11 @@ def register(server: MCPServer, rt: Runtime) -> None:
     ) -> dict[str, Any]:
         b = Builder()
         T = days / 365.0
-        return b.build({
-            "analytic": r(probability.prob_touch(spot, barrier, iv, T), 4),
-            "monte_carlo": r(probability.mc_touch(spot, barrier, iv, T), 4),
-            "one_sigma_move_pct": r(iv * T**0.5 * 100, 2),
-        }, ok=True)
+        return b.build(
+            {
+                "analytic": r(probability.prob_touch(spot, barrier, iv, T), 4),
+                "monte_carlo": r(probability.mc_touch(spot, barrier, iv, T), 4),
+                "one_sigma_move_pct": r(iv * T**0.5 * 100, 2),
+            },
+            ok=True,
+        )

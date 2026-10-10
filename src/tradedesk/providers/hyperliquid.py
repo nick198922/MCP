@@ -25,9 +25,9 @@ def parse_asset_contexts(raw: Any) -> list[dict[str, Any]]:
         meta, ctxs = raw[0], raw[1]
         universe = meta["universe"]
     except (TypeError, KeyError, IndexError) as e:
-        raise ProviderError("hyperliquid", "backend_error", f"unexpected metaAndAssetCtxs shape: {e}")
+        raise ProviderError("hyperliquid", "backend_error", f"unexpected metaAndAssetCtxs shape: {e}") from e
     rows: list[dict[str, Any]] = []
-    for u, c in zip(universe, ctxs):
+    for u, c in zip(universe, ctxs, strict=False):
         if u.get("isDelisted"):
             continue
         mark, oi, fund = _f(c.get("markPx")), _f(c.get("openInterest")), _f(c.get("funding"))

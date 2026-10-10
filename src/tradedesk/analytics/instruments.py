@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 _MONTHS = {m: i for i, m in enumerate(["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"], 1)}
 _MONTH_NAMES = {v: k for k, v in _MONTHS.items()}
@@ -29,7 +29,7 @@ def parse_expiry_token(token: str) -> datetime | None:
     if mon is None:
         return None
     try:
-        return datetime(2000 + yy, mon, day, _EXPIRY_HOUR_UTC, tzinfo=timezone.utc)
+        return datetime(2000 + yy, mon, day, _EXPIRY_HOUR_UTC, tzinfo=UTC)
     except ValueError:
         return None
 

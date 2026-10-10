@@ -39,9 +39,7 @@ def prob_touch(F: float, barrier: float, sigma: float, T: float) -> float:
     return float(ncdf((-a - mu * T) / s) + math.exp(-2 * mu * a / (sigma * sigma)) * ncdf((-a + mu * T) / s))
 
 
-def mc_touch(
-    F: float, barrier: float, sigma: float, T: float, *, n_paths: int = 40000, steps: int = 400, seed: int = 7
-) -> float:
+def mc_touch(F: float, barrier: float, sigma: float, T: float, *, n_paths: int = 40000, steps: int = 400, seed: int = 7) -> float:
     """Monte Carlo check of `prob_touch` (Broadie-Glasserman barrier shift for discrete monitoring)."""
     rng = np.random.default_rng(seed)
     dt = T / steps

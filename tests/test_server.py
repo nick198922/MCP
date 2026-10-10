@@ -4,10 +4,22 @@ import pytest
 from mcp import Client
 
 EXPECTED_TOOLS = {
-    "system_health", "market_ticker", "market_ohlcv", "market_orderbook",
-    "perps_funding_compare", "perps_open_interest", "hyperliquid_overview", "deribit_futures_curve",
-    "deribit_vol_surface", "deribit_option_chain", "deribit_max_pain", "deribit_gamma_exposure",
-    "prob_from_options", "odds_devig", "option_calc", "touch_probability",
+    "system_health",
+    "market_ticker",
+    "market_ohlcv",
+    "market_orderbook",
+    "perps_funding_compare",
+    "perps_open_interest",
+    "hyperliquid_overview",
+    "deribit_futures_curve",
+    "deribit_vol_surface",
+    "deribit_option_chain",
+    "deribit_max_pain",
+    "deribit_gamma_exposure",
+    "prob_from_options",
+    "odds_devig",
+    "option_calc",
+    "touch_probability",
 }
 
 

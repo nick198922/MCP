@@ -42,8 +42,16 @@ async def _chain(rt: Runtime, b: Builder, currency: str) -> list[OptionRow] | No
 def _leg(row: OptionRow | None) -> dict[str, Any] | None:
     if row is None:
         return None
-    return {"iv": r(row.iv, 4), "delta": r(row.delta, 4), "gamma": r(row.gamma, 8), "vega": r(row.vega, 2),
-            "theta": r(row.theta, 2), "mark_usd": r(row.mark_price_usd, 2), "oi": r(row.open_interest, 1), "volume": r(row.volume, 1)}
+    return {
+        "iv": r(row.iv, 4),
+        "delta": r(row.delta, 4),
+        "gamma": r(row.gamma, 8),
+        "vega": r(row.vega, 2),
+        "theta": r(row.theta, 2),
+        "mark_usd": r(row.mark_price_usd, 2),
+        "oi": r(row.open_interest, 1),
+        "volume": r(row.volume, 1),
+    }
 
 
 def register(server: MCPServer, rt: Runtime) -> None:
@@ -71,16 +79,28 @@ def register(server: MCPServer, rt: Runtime) -> None:
             if not (min_days <= days <= max_days):
                 continue
             pc = put_call_ratios(rs)
-            item: dict[str, Any] = {"expiry": expiry_token(exp), "days": r(days, 2), "forward": rs[0].forward,
-                                    "oi_calls": r(pc["oi_calls"], 1), "oi_puts": r(pc["oi_puts"], 1), "pc_oi": r(pc["pc_oi"], 3)}
+            item: dict[str, Any] = {
+                "expiry": expiry_token(exp),
+                "days": r(days, 2),
+                "forward": rs[0].forward,
+                "oi_calls": r(pc["oi_calls"], 1),
+                "oi_puts": r(pc["oi_puts"], 1),
+                "pc_oi": r(pc["pc_oi"], 3),
+            }
             sm = build_smile(rs)
             if sm is None:
                 item["note"] = "fewer than 3 priced strikes"
             else:
                 a = atm_iv(sm)
                 r25, r10 = rr_fly(sm, 0.25), rr_fly(sm, 0.10)
-                item.update(atm_iv=r(a, 4), rr25=r(r25["rr"], 4), fly25=r(r25["fly"], 4), rr10=r(r10["rr"], 4), fly10=r(r10["fly"], 4),
-                            expected_move_1sd_pct=r(a * math.sqrt(sm.T) * 100, 2))
+                item.update(
+                    atm_iv=r(a, 4),
+                    rr25=r(r25["rr"], 4),
+                    fly25=r(r25["fly"], 4),
+                    rr10=r(r10["rr"], 4),
+                    fly10=r(r10["fly"], 4),
+                    expected_move_1sd_pct=r(a * math.sqrt(sm.T) * 100, 2),
+                )
             out.append(item)
         spot = next((x.index for x in rows if x.index), None)
         return b.build({"currency": currency, "spot_index": spot, "expiries": out})
@@ -115,8 +135,16 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 strikes.setdefault(x.strike, {})[x.is_call] = x
         sm = build_smile(rs)
         table = [{"strike": k, "call": _leg(v.get(True)), "put": _leg(v.get(False))} for k, v in sorted(strikes.items())]
-        return b.build({"currency": currency, "expiry": expiry_token(exp), "forward": F, "days": r(rs[0].T * 365, 2),
-                        "atm_iv": r(atm_iv(sm), 4) if sm else None, "strikes": table})
+        return b.build(
+            {
+                "currency": currency,
+                "expiry": expiry_token(exp),
+                "forward": F,
+                "days": r(rs[0].T * 365, 2),
+                "atm_iv": r(atm_iv(sm), 4) if sm else None,
+                "strikes": table,
+            }
+        )
 
     @server.tool(
         annotations=READ_ONLY,
@@ -147,10 +175,18 @@ def register(server: MCPServer, rt: Runtime) -> None:
         top = sorted(oi_by_strike.items(), key=lambda kv: kv[1], reverse=True)[:5]
         curve = [c for c in mp["curve"] if abs(c["settle"] / F - 1) <= 0.25]
         pc = put_call_ratios(rs)
-        return b.build({"currency": currency, "expiry": expiry_token(exp), "forward": F, "max_pain": mp["max_pain"],
-                        "distance_from_forward_pct": r((mp["max_pain"] / F - 1) * 100, 2), "put_call": {k: r(v, 3) for k, v in pc.items()},
-                        "top_oi_strikes": [{"strike": k, "oi": r(v, 1)} for k, v in top],
-                        "payout_curve": [{"settle": c["settle"], "payout_usd": r(c["payout_usd"], 0)} for c in curve]})
+        return b.build(
+            {
+                "currency": currency,
+                "expiry": expiry_token(exp),
+                "forward": F,
+                "max_pain": mp["max_pain"],
+                "distance_from_forward_pct": r((mp["max_pain"] / F - 1) * 100, 2),
+                "put_call": {k: r(v, 3) for k, v in pc.items()},
+                "top_oi_strikes": [{"strike": k, "oi": r(v, 1)} for k, v in top],
+                "payout_curve": [{"settle": c["settle"], "payout_usd": r(c["payout_usd"], 0)} for c in curve],
+            }
+        )
 
     @server.tool(
         annotations=READ_ONLY,
@@ -181,7 +217,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
         prof = gex_profile(rows)
         flip = gex_flip_shift(prof)
         data = {
-            "currency": currency, "expiry": expiry or "all", "spot_index": spot, "net_gex_usd_per_1pct": r(total, 0),
+            "currency": currency,
+            "expiry": expiry or "all",
+            "spot_index": spot,
+            "net_gex_usd_per_1pct": r(total, 0),
             "regime": "positive (dampening)" if total > 0 else "negative (amplifying)",
             "flip_level": r(spot * flip, 0) if spot and flip else None,
             "top_negative_strikes": [{"strike": k, "gex_usd": r(v, 0)} for k, v in ranked[:5]],
@@ -228,7 +267,18 @@ def register(server: MCPServer, rt: Runtime) -> None:
             above = probability.prob_above(sm, level)
             p = above if kind == "above" else 1 - above
         move = atm_iv(sm) * math.sqrt(sm.T)
-        return b.build({"currency": currency, "expiry": expiry_token(exp), "forward": sm.forward, "level": level, "kind": kind,
-                        "probability": r(p, 4), "iv_at_level": r(iv, 4), "atm_iv": r(atm_iv(sm), 4),
-                        "one_sigma_range": [r(sm.forward * math.exp(-move), 0), r(sm.forward * math.exp(move), 0)],
-                        "days": r(sm.T * 365, 2), "measure": "risk-neutral"})
+        return b.build(
+            {
+                "currency": currency,
+                "expiry": expiry_token(exp),
+                "forward": sm.forward,
+                "level": level,
+                "kind": kind,
+                "probability": r(p, 4),
+                "iv_at_level": r(iv, 4),
+                "atm_iv": r(atm_iv(sm), 4),
+                "one_sigma_range": [r(sm.forward * math.exp(-move), 0), r(sm.forward * math.exp(move), 0)],
+                "days": r(sm.T * 365, 2),
+                "measure": "risk-neutral",
+            }
+        )

@@ -25,7 +25,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
         t = await b.guard("ticker", f"ccxt:{exchange}", rt.exchanges.ticker(exchange, symbol))
         if t is None:
             return b.build(None, ok=False)
-        data = {k: t.get(k) for k in ("symbol", "last", "bid", "ask", "high", "low", "baseVolume", "quoteVolume", "percentage", "timestamp")}
+        data = {
+            k: t.get(k) for k in ("symbol", "last", "bid", "ask", "high", "low", "baseVolume", "quoteVolume", "percentage", "timestamp")
+        }
         if t.get("bid") and t.get("ask"):
             data["spread_bps"] = r((t["ask"] - t["bid"]) / ((t["ask"] + t["bid"]) / 2) * 1e4, 3)
         return b.build(data)
@@ -83,7 +85,13 @@ def register(server: MCPServer, rt: Runtime) -> None:
             return b.build(None, ok=False)
         bids, asks = ob.get("bids", []), ob.get("asks", [])
         stats = book_stats(bids, asks)
-        data: dict[str, Any] = {"symbol": symbol, "stats": stats, "bids_top": bids[:10], "asks_top": asks[:10], "levels_loaded": [len(bids), len(asks)]}
+        data: dict[str, Any] = {
+            "symbol": symbol,
+            "stats": stats,
+            "bids_top": bids[:10],
+            "asks_top": asks[:10],
+            "levels_loaded": [len(bids), len(asks)],
+        }
         if notional_usd and stats["mid"]:
             data["impact"] = {
                 "buy": walk_book(asks, notional_usd, stats["mid"], "buy"),

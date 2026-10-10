@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 
 class TTLCache:
@@ -34,9 +35,7 @@ class TTLCache:
         self._evict()
         self._data[key] = (time.monotonic() + ttl, value)
 
-    async def get_or_fetch(
-        self, key: Any, ttl: float, fetch: Callable[[], Awaitable[Any]]
-    ) -> tuple[Any, bool]:
+    async def get_or_fetch(self, key: Any, ttl: float, fetch: Callable[[], Awaitable[Any]]) -> tuple[Any, bool]:
         """Return (value, from_cache). Concurrent callers with the same key share one fetch."""
         hit, value = self.peek(key)
         if hit:

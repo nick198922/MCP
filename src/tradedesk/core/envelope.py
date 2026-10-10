@@ -11,8 +11,9 @@ Every tool returns an Envelope:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Any, Awaitable, NamedTuple
+from collections.abc import Awaitable
+from datetime import UTC, datetime
+from typing import Any, NamedTuple
 
 from pydantic import BaseModel, Field
 
@@ -20,7 +21,7 @@ from .errors import ProviderError
 
 
 def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def utcnow_iso() -> str:

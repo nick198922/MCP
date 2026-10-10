@@ -15,8 +15,8 @@ import time
 
 from mcp import Client
 
-from tradedesk.analytics.options import black76_greeks, year_fraction
 from tradedesk.analytics.instruments import parse_option_name
+from tradedesk.analytics.options import black76_greeks, year_fraction
 from tradedesk.server import build_server
 
 CASES: list[tuple[str, dict]] = [
@@ -70,7 +70,9 @@ async def main() -> int:
                 p = parse_option_name(name)
                 g = black76_greeks(t["underlying_price"], p.strike, year_fraction(p.expiry, rt.now()), t["mark_iv"] / 100, True)
                 d = t["greeks"]
-                print(f"  {name}: delta {g['delta']:.4f}|{d['delta']:.4f}  vega {g['vega']:.1f}|{d['vega']:.1f}  theta {g['theta']:.1f}|{d['theta']:.1f}")
+                print(
+                    f"  {name}: delta {g['delta']:.4f}|{d['delta']:.4f}  vega {g['vega']:.1f}|{d['vega']:.1f}  theta {g['theta']:.1f}|{d['theta']:.1f}"
+                )
     await rt.aclose()
     return 0 if ok_count >= 4 else 1
 

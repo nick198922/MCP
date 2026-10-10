@@ -1,15 +1,16 @@
 """MCP server entry point.
 
-    tradedesk-mcp                        # stdio (Claude Desktop / Claude Code, local)
-    TRADEDESK_TRANSPORT=streamable-http TRADEDESK_PORT=8000 tradedesk-mcp    # always-on server
+tradedesk-mcp                        # stdio (Claude Desktop / Claude Code, local)
+TRADEDESK_TRANSPORT=streamable-http TRADEDESK_PORT=8000 tradedesk-mcp    # always-on server
 """
 
 from __future__ import annotations
 
 import logging
 import sys
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator
+from typing import Any
 
 from mcp.server.mcpserver import MCPServer
 

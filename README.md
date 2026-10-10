@@ -7,11 +7,14 @@
 ## Швидкий старт
 
 ```bash
-cd ~/Projects/tradedesk-mcp
-uv sync --extra dev          # залежності у .venv
-uv run pytest -q             # 50+ тестів, мережа не потрібна
-uv run python scripts/live_smoke.py   # живий прогін по реальних біржах (потрібен інтернет)
+git clone <URL-репозиторію> tradedesk-mcp && cd tradedesk-mcp
+make install     # uv sync --extra dev
+make test        # 50+ тестів, мережа не потрібна
+make smoke       # живий прогін по реальних біржах (потрібен інтернет)
+make run         # stdio-сервер; make run-http — streamable-http на :8000
 ```
+
+Вимоги: Python ≥3.11 і [uv](https://docs.astral.sh/uv/). Усі команди — у `Makefile`.
 
 ### Підключення до Claude Desktop
 
@@ -22,7 +25,7 @@ uv run python scripts/live_smoke.py   # живий прогін по реаль�
   "mcpServers": {
     "tradedesk": {
       "command": "uv",
-      "args": ["run", "--directory", "/Users/nick/Projects/tradedesk-mcp", "tradedesk-mcp"]
+      "args": ["run", "--directory", "/ABSOLUTE/PATH/TO/tradedesk-mcp", "tradedesk-mcp"]
     }
   }
 }
@@ -31,7 +34,7 @@ uv run python scripts/live_smoke.py   # живий прогін по реаль�
 ### Підключення до Claude Code
 
 ```bash
-claude mcp add tradedesk -- uv run --directory ~/Projects/tradedesk-mcp tradedesk-mcp
+claude mcp add tradedesk -- uv run --directory /ABSOLUTE/PATH/TO/tradedesk-mcp tradedesk-mcp
 ```
 
 ## Інструменти (16)
@@ -52,8 +55,15 @@ claude mcp add tradedesk -- uv run --directory ~/Projects/tradedesk-mcp tradedes
 
 Усі відповіді мають однаковий конверт `{ok, data, evidence, missing, warnings, as_of}`: кожне число має джерело й час, а збій одного провайдера не валить виклик. Деталі в [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
+## Як працювати над проєктом
+
+Проєкт розвивається разом із Claude (Claude Code у терміналі). Точка входу для кожної сесії — [CLAUDE.md](CLAUDE.md): правила, команди, інваріанти. Поточний стан — [docs/HANDOFF.md](docs/HANDOFF.md), план — [docs/BACKLOG.md](docs/BACKLOG.md).
+
 ## Документація
 
+- [CLAUDE.md](CLAUDE.md), [docs/HANDOFF.md](docs/HANDOFF.md), [docs/BACKLOG.md](docs/BACKLOG.md), [CHANGELOG.md](CHANGELOG.md)
+- [docs/adr/](docs/adr/): ключові архітектурні рішення
+- [docs/reference/](docs/reference/): каталог DOUBLETOP і нотатки про API
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): шари, контракти, як додавати провайдерів і інструменти
 - [docs/ROADMAP.md](docs/ROADMAP.md): фази від MVP до виконання ордерів
 - [docs/PARITY.md](docs/PARITY.md): що з DOUBLETOP вже замінено, а що ні

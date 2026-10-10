@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
 from mcp.server.mcpserver import MCPServer
@@ -19,7 +19,7 @@ CCXT_VENUES = Annotated[list[str] | None, Field(description=f"ccxt perp exchange
 
 
 def _iso(ms: Any) -> str | None:
-    return None if not ms else datetime.fromtimestamp(ms / 1000, timezone.utc).isoformat(timespec="seconds")
+    return None if not ms else datetime.fromtimestamp(ms / 1000, UTC).isoformat(timespec="seconds")
 
 
 def register(server: MCPServer, rt: Runtime) -> None:
@@ -51,10 +51,13 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 b.warn(f"{ex}: funding interval not reported, assumed 8h")
             rate = float(fr["fundingRate"])
             return {
-                "venue": ex, "rate_per_interval": rate, "interval_hours": hours,
+                "venue": ex,
+                "rate_per_interval": rate,
+                "interval_hours": hours,
                 "annualized": r(annualize_funding(rate, hours), 5),
                 "next_funding_utc": _iso(fr.get("nextFundingTimestamp") or fr.get("fundingTimestamp")),
-                "mark": fr.get("markPrice"), "index": fr.get("indexPrice"),
+                "mark": fr.get("markPrice"),
+                "index": fr.get("indexPrice"),
             }
 
         async def hl_row() -> dict[str, Any] | None:
@@ -64,8 +67,14 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 if ctx is not None:
                     b.miss("funding:hyperliquid", "hyperliquid", "data_unavailable", f"{base} not listed")
                 return None
-            return {"venue": "hyperliquid", "rate_per_interval": row["funding_1h"], "interval_hours": 1.0,
-                    "annualized": r(row["funding_annualized"], 5), "mark": row["mark_px"], "index": row["oracle_px"]}
+            return {
+                "venue": "hyperliquid",
+                "rate_per_interval": row["funding_1h"],
+                "interval_hours": 1.0,
+                "annualized": r(row["funding_annualized"], 5),
+                "mark": row["mark_px"],
+                "index": row["oracle_px"],
+            }
 
         async def deribit_row() -> dict[str, Any] | None:
             if base not in ("BTC", "ETH"):
@@ -75,9 +84,14 @@ def register(server: MCPServer, rt: Runtime) -> None:
             if not perp or perp.get("funding_8h") is None:
                 return None
             rate = float(perp["funding_8h"])
-            return {"venue": "deribit", "rate_per_interval": rate, "interval_hours": 8.0,
-                    "annualized": r(annualize_funding(rate, 8.0), 5), "mark": perp.get("mark_price"),
-                    "index": perp.get("estimated_delivery_price")}
+            return {
+                "venue": "deribit",
+                "rate_per_interval": rate,
+                "interval_hours": 8.0,
+                "annualized": r(annualize_funding(rate, 8.0), 5),
+                "mark": perp.get("mark_price"),
+                "index": perp.get("estimated_delivery_price"),
+            }
 
         jobs = [ccxt_row(e) for e in venues]
         if include_hyperliquid:
@@ -90,10 +104,14 @@ def register(server: MCPServer, rt: Runtime) -> None:
         rows.sort(key=lambda x: x["annualized"], reverse=True)
         hi, lo = rows[0], rows[-1]
         data = {
-            "base": base, "venues": rows,
-            "widest_spread": {"long_venue": lo["venue"], "short_venue": hi["venue"],
-                              "annualized_spread": r(hi["annualized"] - lo["annualized"], 5),
-                              "note": "short the high-funding venue, long the low one, delta-neutral; ignores fees, basis and margin cost"},
+            "base": base,
+            "venues": rows,
+            "widest_spread": {
+                "long_venue": lo["venue"],
+                "short_venue": hi["venue"],
+                "annualized_spread": r(hi["annualized"] - lo["annualized"], 5),
+                "note": "short the high-funding venue, long the low one, delta-neutral; ignores fees, basis and margin cost",
+            },
         }
         return b.build(data)
 
@@ -181,16 +199,31 @@ def register(server: MCPServer, rt: Runtime) -> None:
             if not parsed or not idx or not mark:
                 continue
             if parsed[1] is None:
-                perp = {"instrument": f["instrument_name"], "mark": mark, "index": idx,
-                        "basis_pct": r((mark / idx - 1) * 100, 4), "funding_8h": f.get("funding_8h"),
-                        "funding_annualized": r(annualize_funding(f["funding_8h"], 8.0), 5) if f.get("funding_8h") is not None else None,
-                        "open_interest_usd": f.get("open_interest")}
+                perp = {
+                    "instrument": f["instrument_name"],
+                    "mark": mark,
+                    "index": idx,
+                    "basis_pct": r((mark / idx - 1) * 100, 4),
+                    "funding_8h": f.get("funding_8h"),
+                    "funding_annualized": r(annualize_funding(f["funding_8h"], 8.0), 5) if f.get("funding_8h") is not None else None,
+                    "open_interest_usd": f.get("open_interest"),
+                }
                 continue
             bs = basis(mark, idx, parsed[1], now)
-            curve.append({"instrument": f["instrument_name"], "expiry": expiry_token(parsed[1]), "mark": mark,
-                          "days": bs["days_to_expiry"], "basis_abs": r(bs["basis_abs"], 2), "basis_pct": r(bs["basis_pct"] * 100, 4),
-                          "annualized_simple": r(bs["annualized_simple"], 4), "annualized_log": r(bs["annualized_log"], 4),
-                          "open_interest_usd": f.get("open_interest"), "volume_usd": f.get("volume_usd")})
+            curve.append(
+                {
+                    "instrument": f["instrument_name"],
+                    "expiry": expiry_token(parsed[1]),
+                    "mark": mark,
+                    "days": bs["days_to_expiry"],
+                    "basis_abs": r(bs["basis_abs"], 2),
+                    "basis_pct": r(bs["basis_pct"] * 100, 4),
+                    "annualized_simple": r(bs["annualized_simple"], 4),
+                    "annualized_log": r(bs["annualized_log"], 4),
+                    "open_interest_usd": f.get("open_interest"),
+                    "volume_usd": f.get("volume_usd"),
+                }
+            )
         curve.sort(key=lambda x: x["days"])
         index = next((f.get("estimated_delivery_price") for f in fut if f.get("estimated_delivery_price")), None)
         return b.build({"currency": currency, "spot_index": index, "perpetual": perp, "futures": curve})

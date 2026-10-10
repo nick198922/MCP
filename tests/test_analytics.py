@@ -1,6 +1,6 @@
 import json
 import math
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -32,7 +32,7 @@ from tradedesk.analytics.options import (
 )
 
 FIX = json.loads((Path(__file__).parent / "fixtures" / "deribit_options_sample.json").read_text())
-UTC = timezone.utc
+UTC = UTC
 
 
 # ---------- instruments ----------
@@ -107,9 +107,17 @@ def synth_chain(F=100_000.0, days=30, base_iv=0.40, skew=-0.25, curv=1.2):
             rows.append(
                 OptionRow(
                     instrument=f"BTC-9NOV26-{k}-{'C' if is_call else 'P'}",
-                    expiry=expiry, strike=float(k), is_call=is_call, iv=iv, forward=F, index=F,
-                    T=year_fraction(expiry, now), mark_price_native=None, mark_price_usd=None,
-                    open_interest=10.0, volume=1.0,
+                    expiry=expiry,
+                    strike=float(k),
+                    is_call=is_call,
+                    iv=iv,
+                    forward=F,
+                    index=F,
+                    T=year_fraction(expiry, now),
+                    mark_price_native=None,
+                    mark_price_usd=None,
+                    open_interest=10.0,
+                    volume=1.0,
                 )
             )
     return rows, iv_fn(F, base_iv, skew, curv)

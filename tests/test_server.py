@@ -37,6 +37,7 @@ EXPECTED_TOOLS = {
     "deribit_dvol",
     "deribit_atm_term",
     "deribit_skew_term",
+    "deribit_largest_trades",
 }
 
 
@@ -501,6 +502,24 @@ async def test_deribit_atm_term(server):
         assert 0.35 < row["atm_iv"] < 0.45
         assert row["forward"] > 0 and row["strikes"] >= 3
     assert d["shape"] in ("contango", "backwardation", "flat")
+
+
+async def test_deribit_largest_trades(server):
+    env = await call(server, "deribit_largest_trades", currency="BTC", kind="option", count=50, top_n=5)
+    d = env["data"]
+    assert d["kind"] == "option"
+    s = d["summary"]
+    assert s["fetched"] == 10 and s["kept"] == 10
+    assert s["block_count"] == 2 and 0 < s["block_share"] < 1
+    # fixture: 5 buy / 5 sell; largest trade is the last (biggest amount) which is odd-index → sell
+    assert s["buy_notional_usd"] > 0 and s["sell_notional_usd"] > 0
+    top = d["top_trades"]
+    assert len(top) == 5
+    assert top[0]["notional_usd"] >= top[-1]["notional_usd"]
+
+    env_blk = await call(server, "deribit_largest_trades", currency="BTC", kind="option", count=50, only_blocks=True, top_n=5)
+    assert env_blk["data"]["summary"]["kept"] == 2
+    assert all(t["is_block"] for t in env_blk["data"]["top_trades"])
 
 
 async def test_deribit_skew_term(server):

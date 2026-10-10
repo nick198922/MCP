@@ -603,3 +603,93 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 "expiries": out,
             }
         )
+
+    @server.tool(
+        annotations=READ_ONLY,
+        description=(
+            "Recent largest trades for Deribit BTC/ETH options or futures via "
+            "/public/get_last_trades_by_currency. Each row includes direction (taker side), amount, "
+            "native price, IV (for options), notional USD = amount * price * index_price for inverse "
+            "options (close enough for sizing), and whether it is a block print (block_trade_id set). "
+            "Returns top_n largest trades by notional USD plus a summary (counts, block share, "
+            "buy/sell notional, taker imbalance). Flow is INFORMATIVE: block prints may be hedged, "
+            "big taker buys do not imply directional conviction."
+        ),
+    )
+    async def deribit_largest_trades(
+        currency: CUR = "BTC",
+        kind: Literal["option", "future"] = "option",
+        count: Annotated[int, Field(ge=1, le=1000, description="How many recent trades to pull from Deribit.")] = 200,
+        only_blocks: Annotated[bool, Field(description="If true, keep only trades with a block_trade_id.")] = False,
+        min_notional_usd: Annotated[float, Field(ge=0, description="Drop trades smaller than this USD notional.")] = 0.0,
+        top_n: Annotated[int, Field(ge=1, le=50)] = 10,
+    ) -> dict[str, Any]:
+        b = Builder()
+        trades = await b.guard("last_trades", "deribit", rt.deribit.last_trades_by_currency(currency, kind, count, False))
+        if not trades:
+            if trades is not None:
+                b.miss("last_trades", "deribit", "data_unavailable", "no trades returned")
+            return b.build(None, ok=False)
+        rows: list[dict[str, Any]] = []
+        for t in trades:
+            try:
+                amount = float(t.get("amount") or 0)
+                price = float(t.get("price") or 0)
+                index = float(t.get("index_price") or 0)
+            except (TypeError, ValueError):
+                continue
+            if amount <= 0 or price <= 0:
+                continue
+            direction = str(t.get("direction") or "").lower()
+            if direction not in ("buy", "sell"):
+                continue
+            # Deribit option prices are quoted in native (BTC/ETH): USD notional ~= amount * price * index.
+            # For dated futures price is USD; use amount * price directly.
+            notional_usd = amount * price * index if kind == "option" else amount * price
+            block_id = t.get("block_trade_id")
+            is_block = bool(block_id)
+            if only_blocks and not is_block:
+                continue
+            if notional_usd < min_notional_usd:
+                continue
+            rows.append(
+                {
+                    "ts": int(t["timestamp"]) if t.get("timestamp") is not None else None,
+                    "instrument": t.get("instrument_name"),
+                    "direction": direction,
+                    "amount": amount,
+                    "price": price,
+                    "iv": t.get("iv"),
+                    "mark_price": t.get("mark_price"),
+                    "index_price": index or None,
+                    "notional_usd": r(notional_usd, 0),
+                    "is_block": is_block,
+                    "block_trade_id": block_id or None,
+                }
+            )
+        if not rows:
+            b.miss("last_trades", "deribit", "data_unavailable", "no trades matched the filters")
+            return b.build(None, ok=False)
+
+        buy_usd = sum(r_["notional_usd"] for r_ in rows if r_["direction"] == "buy")
+        sell_usd = sum(r_["notional_usd"] for r_ in rows if r_["direction"] == "sell")
+        total_usd = buy_usd + sell_usd
+        imbalance = (buy_usd - sell_usd) / total_usd if total_usd else None
+        block_count = sum(1 for r_ in rows if r_["is_block"])
+        top = sorted(rows, key=lambda x: x["notional_usd"] or 0, reverse=True)[:top_n]
+        return b.build(
+            {
+                "currency": currency,
+                "kind": kind,
+                "summary": {
+                    "fetched": len(trades),
+                    "kept": len(rows),
+                    "block_count": block_count,
+                    "block_share": r(block_count / len(rows), 4) if rows else None,
+                    "buy_notional_usd": r(buy_usd, 0),
+                    "sell_notional_usd": r(sell_usd, 0),
+                    "taker_imbalance": r(imbalance, 4) if imbalance is not None else None,
+                },
+                "top_trades": top,
+            }
+        )

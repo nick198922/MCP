@@ -38,6 +38,21 @@ class Deribit:
         """Single instrument incl. exchange-computed greeks, bid/ask IV (used to cross-check our maths)."""
         return await self._public("ticker", {"instrument_name": instrument_name}, ttl=3)
 
+    async def last_trades_by_currency(self, currency: str, kind: str, count: int, include_old: bool) -> Fetched:
+        """Recent trades across all instruments of a kind. `block_trade_id` is set for block prints.
+
+        Each trade carries `instrument_name`, `direction` (buy|sell, taker side), `amount` (contracts
+        or underlying units depending on instrument), `price` (native: BTC for inverse options,
+        USD for linear futures), `mark_price`, `index_price`, `iv`, `timestamp`.
+        """
+        f = await self._public(
+            "get_last_trades_by_currency",
+            {"currency": currency.upper(), "kind": kind, "count": count, "include_old": include_old},
+            ttl=5,
+        )
+        trades = (f.data or {}).get("trades") or []
+        return Fetched(trades, f.evidence)
+
     async def volatility_index_data(self, currency: str, start_ms: int, end_ms: int, resolution: int) -> Fetched:
         """Deribit's DVOL time series. resolution must be one of 60, 3600, 43200, 86400 seconds.
 

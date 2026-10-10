@@ -125,6 +125,27 @@ def make_transports(state: State) -> dict:
         kind = req.url.params.get("kind")
         if req.url.path.endswith("get_book_summary_by_currency"):
             return httpx.Response(200, json={"jsonrpc": "2.0", "result": option_book() if kind == "option" else FUTURES})
+        if req.url.path.endswith("get_last_trades_by_currency"):
+            trades = []
+            for i in range(10):
+                is_block = i < 2  # first two are block prints
+                amount = 10.0 + i * 5
+                price = 0.05 + i * 0.001  # BTC-native
+                trades.append(
+                    {
+                        "trade_id": f"T{i}",
+                        "instrument_name": f"BTC-30OCT26-{80000 + i * 1000}-C",
+                        "direction": "buy" if i % 2 == 0 else "sell",
+                        "amount": amount,
+                        "price": price,
+                        "mark_price": price * 0.99,
+                        "index_price": 82750.0,
+                        "iv": 45.0 + i,
+                        "timestamp": 1791637620000 - i * 60_000,
+                        "block_trade_id": f"BLK{i}" if is_block else None,
+                    }
+                )
+            return httpx.Response(200, json={"jsonrpc": "2.0", "result": {"trades": trades, "has_more": False}})
         if req.url.path.endswith("get_volatility_index_data"):
             start_ms = int(req.url.params.get("start_timestamp"))
             end_ms = int(req.url.params.get("end_timestamp"))

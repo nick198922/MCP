@@ -1,0 +1,188 @@
+{
+  "name": "Fear and Greed Index",
+  "data": [
+    {
+      "value": "27",
+      "value_classification": "Fear",
+      "timestamp": "1791637620",
+      "time_until_update": "0"
+    },
+    {
+      "value": "30",
+      "value_classification": "Fear",
+      "timestamp": "1791551220",
+      "time_until_update": "0"
+    },
+    {
+      "value": "35",
+      "value_classification": "Fear",
+      "timestamp": "1791464820",
+      "time_until_update": "0"
+    },
+    {
+      "value": "42",
+      "value_classification": "Fear",
+      "timestamp": "1791378420",
+      "time_until_update": "0"
+    },
+    {
+      "value": "48",
+      "value_classification": "Neutral",
+      "timestamp": "1791292020",
+      "time_until_update": "0"
+    },
+    {
+      "value": "55",
+      "value_classification": "Greed",
+      "timestamp": "1791205620",
+      "time_until_update": "0"
+    },
+    {
+      "value": "60",
+      "value_classification": "Greed",
+      "timestamp": "1791119220",
+      "time_until_update": "0"
+    },
+    {
+      "value": "66",
+      "value_classification": "Greed",
+      "timestamp": "1791032820",
+      "time_until_update": "0"
+    },
+    {
+      "value": "72",
+      "value_classification": "Greed",
+      "timestamp": "1790946420",
+      "time_until_update": "0"
+    },
+    {
+      "value": "77",
+      "value_classification": "Extreme Greed",
+      "timestamp": "1790860020",
+      "time_until_update": "0"
+    },
+    {
+      "value": "80",
+      "value_classification": "Extreme Greed",
+      "timestamp": "1790773620",
+      "time_until_update": "0"
+    },
+    {
+      "value": "74",
+      "value_classification": "Greed",
+      "timestamp": "1790687220",
+      "time_until_update": "0"
+    },
+    {
+      "value": "68",
+      "value_classification": "Greed",
+      "timestamp": "1790600820",
+      "time_until_update": "0"
+    },
+    {
+      "value": "60",
+      "value_classification": "Greed",
+      "timestamp": "1790514420",
+      "time_until_update": "0"
+    },
+    {
+      "value": "52",
+      "value_classification": "Neutral",
+      "timestamp": "1790428020",
+      "time_until_update": "0"
+    },
+    {
+      "value": "48",
+      "value_classification": "Neutral",
+      "timestamp": "1790341620",
+      "time_until_update": "0"
+    },
+    {
+      "value": "40",
+      "value_classification": "Fear",
+      "timestamp": "1790255220",
+      "time_until_update": "0"
+    },
+    {
+      "value": "32",
+      "value_classification": "Fear",
+      "timestamp": "1790168820",
+      "time_until_update": "0"
+    },
+    {
+      "value": "25",
+      "value_classification": "Fear",
+      "timestamp": "1790082420",
+      "time_until_update": "0"
+    },
+    {
+      "value": "20",
+      "value_classification": "Extreme Fear",
+      "timestamp": "1789996020",
+      "time_until_update": "0"
+    },
+    {
+      "value": "22",
+      "value_classification": "Extreme Fear",
+      "timestamp": "1789909620",
+      "time_until_update": "0"
+    },
+    {
+      "value": "28",
+      "value_classification": "Fear",
+      "timestamp": "1789823220",
+      "time_until_update": "0"
+    },
+    {
+      "value": "35",
+      "value_classification": "Fear",
+      "timestamp": "1789736820",
+      "time_until_update": "0"
+    },
+    {
+      "value": "40",
+      "value_classification": "Fear",
+      "timestamp": "1789650420",
+      "time_until_update": "0"
+    },
+    {
+      "value": "45",
+      "value_classification": "Neutral",
+      "timestamp": "1789564020",
+      "time_until_update": "0"
+    },
+    {
+      "value": "50",
+      "value_classification": "Neutral",
+      "timestamp": "1789477620",
+      "time_until_update": "0"
+    },
+    {
+      "value": "48",
+      "value_classification": "Neutral",
+      "timestamp": "1789391220",
+      "time_until_update": "0"
+    },
+    {
+      "value": "45",
+      "value_classification": "Neutral",
+      "timestamp": "1789304820",
+      "time_until_update": "0"
+    },
+    {
+      "value": "42",
+      "value_classification": "Fear",
+      "timestamp": "1789218420",
+      "time_until_update": "0"
+    },
+    {
+      "value": "38",
+      "value_classification": "Fear",
+      "timestamp": "1789132020",
+      "time_until_update": "0"
+    }
+  ],
+  "metadata": {
+    "error": null
+  }
+}

@@ -7,7 +7,7 @@ from ..runtime import Runtime
 
 def register_all(server: MCPServer, rt: Runtime) -> None:
     from .. import prompts
-    from . import market, options, perps, quant, system
+    from . import market, options, perps, quant, sentiment, system
 
-    for module in (system, market, perps, options, quant, prompts):
+    for module in (system, market, perps, options, quant, sentiment, prompts):
         module.register(server, rt)

@@ -32,6 +32,7 @@ EXPECTED_TOOLS = {
     "odds_devig",
     "option_calc",
     "touch_probability",
+    "sentiment_fear_greed",
 }
 
 
@@ -405,3 +406,36 @@ async def test_quant_tools(server):
     assert oc["data"]["delta"] == pytest.approx(0.5, abs=0.03) and oc["data"]["price_usd"] > 0
     tp = await call(server, "touch_probability", spot=100, barrier=120, days=30, iv=0.6)
     assert tp["data"]["analytic"] == pytest.approx(tp["data"]["monte_carlo"], abs=0.02)
+
+
+async def test_sentiment_fear_greed(server):
+    env = await call(server, "sentiment_fear_greed", days=30)
+    d = env["data"]
+    assert d["count"] == 30
+    assert d["latest"]["value"] == 27 and d["latest"]["zone"] == "fear"
+    assert d["min"] == 20 and d["max"] == 80
+    assert d["mean_7d"] is not None and d["mean_30d"] is not None
+    # i=0 is today; i=7 is 7 days ago. Fixture values[7] = 66 → change_7d = 27 - 66 = -39
+    assert d["change_7d"] == -39
+    assert d["change_30d"] is None or isinstance(d["change_30d"], int)
+    shares = d["zone_share"]
+    assert abs(sum(shares.values()) - 1.0) < 1e-9
+    assert len(d["series"]) == 30 and d["series"][0]["ts"] < d["series"][-1]["ts"]
+
+
+async def test_sentiment_fear_greed_provider_failure(state):
+    import httpx
+
+    from conftest import NOW, FakeEx, make_transports
+    from tradedesk.config import Settings
+    from tradedesk.runtime import Runtime
+    from tradedesk.server import build_server
+
+    tr = make_transports(state)
+    tr["alternative_me"] = httpx.MockTransport(lambda req: httpx.Response(503, text="down"))
+    rt2 = Runtime(Settings(http_retries=1, cache_scale=0.0), transports=tr, exchange_factory=FakeEx)
+    rt2.now = lambda: NOW
+    srv, _ = build_server(rt2)
+    env = await call(srv, "sentiment_fear_greed", days=30)
+    assert env["ok"] is False
+    assert any(m["provider"] == "alternative_me" for m in env["missing"])

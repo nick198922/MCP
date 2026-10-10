@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 from datetime import UTC, datetime
+from pathlib import Path
 
 import ccxt
 import httpx
@@ -243,11 +244,21 @@ def make_transports(state: State) -> dict:
             )
         return httpx.Response(404, text="not mocked")
 
+    def alternative_me(req: httpx.Request) -> httpx.Response:
+        if req.url.path == "/fng/":
+            with open(Path(__file__).parent / "fixtures" / "fear_greed_sample.json") as f:
+                body = json.load(f)
+            limit = int(req.url.params.get("limit") or len(body["data"]))
+            body["data"] = body["data"][:limit]
+            return httpx.Response(200, json=body)
+        return httpx.Response(404, text="not mocked")
+
     return {
         "deribit": httpx.MockTransport(deribit),
         "hyperliquid": httpx.MockTransport(hyperliquid),
         "binance_futures": httpx.MockTransport(binance_futures),
         "bybit": httpx.MockTransport(bybit),
+        "alternative_me": httpx.MockTransport(alternative_me),
     }
 
 

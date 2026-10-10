@@ -34,6 +34,7 @@ CASES: list[tuple[str, dict]] = [
     ("deribit_vol_surface", {"currency": "BTC"}),
     ("deribit_expected_move", {"currency": "BTC", "min_days": 1, "max_days": 60}),
     ("deribit_oi_by_strike", {"currency": "BTC", "width_pct": 15, "top_n": 10}),
+    ("sentiment_fear_greed", {"days": 30}),
 ]
 
 
@@ -79,7 +80,7 @@ async def main() -> int:
                     f"  {name}: delta {g['delta']:.4f}|{d['delta']:.4f}  vega {g['vega']:.1f}|{d['vega']:.1f}  theta {g['theta']:.1f}|{d['theta']:.1f}"
                 )
     await rt.aclose()
-    return 0 if ok_count >= 10 else 1
+    return 0 if ok_count >= 11 else 1
 
 
 if __name__ == "__main__":

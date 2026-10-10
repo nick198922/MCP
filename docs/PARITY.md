@@ -37,7 +37,7 @@ DOUBLETOP: **74 інструменти** (66 від 17 бекендів + 8 вл
 | coinstats `coin_chart`, `coin_detail`, `coins_markets` | 🔜 Фаза 1 (покривається CoinGecko) |
 | coinstats `market_insights` | 🔜 Фаза 1: домінація BTC, mcap |
 | coinstats `wallet_balances` | 🔜 Фаза 5 |
-| fear_greed `get_fear_greed_index` | 🔜 Фаза 1: **крипто** Fear & Greed. Версія в DOUBLETOP віддає індекс фондового ринку США |
+| fear_greed `get_fear_greed_index` | ✅ `sentiment_fear_greed` — крипто-індекс alternative.me, 1..365 днів, latest + zone, mean 7d/30d, min/max, change_7d/30d, zone_share. Деннa частотa; шо DOUBLETOP відважив — індекс фондового ринку США, у нас виключно крипто |
 | graph_polymarket (7) | 🔜 Фаза 1: Gamma + CLOB API (ціни, OI, історія), плюс звірка з options-implied. Топ-трейдери через subgraph потребують ключа The Graph |
 
 ## Ончейн, DeFi (Фаза 5, низький пріоритет)

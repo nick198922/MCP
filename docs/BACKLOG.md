@@ -16,7 +16,7 @@
 
 ## Фаза 1 — дані та деривативи (залишок)
 - [x] 1.1 `market_tickers` (batch), `market_markets` (пошук/фільтр, не повний дамп), `market_trades` (+ агресор-дисбаланс/CVD). ccxt `fetch_tickers`, `fetch_markets`, `fetch_trades`.
-- [ ] 1.2 `perps_funding_history`: ccxt `fetch_funding_rate_history` (Binance/Bybit/OKX) + HL `fundingHistory`; z-score, перцентиль, середнє за 7/30 днів, carry-APR. **(verify)**
+- [x] 1.2 `perps_funding_history`: ccxt `fetch_funding_rate_history` (Binance/Bybit/OKX, 8h) + HL `fundingHistory` (1h); z-score, перцентиль, mean 7d/30d, carry-APR, polarity flips. Крос-венюз-summary (highest/lowest carry, biggest |z|). Live-verified 2026-10-10 на реальних даних. TODO: пагінація HL після 500 записів.
 - [ ] 1.3 `perps_long_short_ratio`, `perps_oi_history`: Binance `/futures/data/globalLongShortAccountRatio`, `/futures/data/openInterestHist`; Bybit `/v5/market/account-ratio`, `/v5/market/open-interest`. Окремий провайдер `binance_futures.py`/`bybit.py` через `Http`. **(verify)**
 - [x] 1.4 Hyperliquid: `hyperliquid_candles` (OHLCV + realized vol), `hyperliquid_book` (+slippage, 20 рівнів), `hyperliquid_trades` (aggressor flow), `hyperliquid_funding_history` (+ 7d/30d mean, z, percentile, carry). Шейпи ctxs і решти ендпойнтів підтверджено живим запитом 2026-10-10.
 - [ ] 1.5 Polymarket: провайдер Gamma + CLOB; інструменти `polymarket_search`, `polymarket_market` (ціни Yes/No, спред, ліквідність), `polymarket_history`; `polymarket_vs_options` — порівняння з `prob_from_options` (touch/above) для крипто-ринків. De-vig для мульти-исходів. **(verify)**

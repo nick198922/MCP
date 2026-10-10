@@ -194,7 +194,11 @@ def make_transports(state: State) -> dict:
 class FakeEx:
     def __init__(self, ex_id: str) -> None:
         self.id = ex_id
-        self.has = {"fetchOpenInterest": ex_id != "okx", "fetchTickers": ex_id != "kraken"}
+        self.has = {
+            "fetchOpenInterest": ex_id != "okx",
+            "fetchTickers": ex_id != "kraken",
+            "fetchFundingRateHistory": ex_id != "coinbase",
+        }
 
     async def fetch_funding_rate(self, symbol):
         if self.id == "okx":
@@ -239,6 +243,23 @@ class FakeEx:
         bids = [[82750 - i * 5.0, 2.0] for i in range(limit)]
         asks = [[82751 + i * 5.0, 2.0] for i in range(limit)]
         return {"bids": bids, "asks": asks}
+
+    async def fetch_funding_rate_history(self, symbol, since=None, limit=500):
+        if self.id == "okx":
+            raise ccxt.RateLimitExceeded("okx 429 too many requests")
+        end = 1791637200000  # 2026-10-10 12:00 UTC — anchor before NOW used in tests
+        interval_ms = 8 * 3_600_000
+        base_rate = {"binanceusdm": 0.0001, "bybit": 0.00008}.get(self.id, 0.00005)
+        rows = []
+        for i in range(90):
+            ts = end - (89 - i) * interval_ms  # 90 entries, 8h apart
+            if since is not None and ts < since:
+                continue
+            rate = base_rate + ((-1) ** i) * 0.00001 * (i % 7)  # noisy sign flips
+            rows.append({"symbol": symbol, "fundingRate": rate, "timestamp": ts, "datetime": None})
+            if len(rows) >= limit:
+                break
+        return rows
 
     async def fetch_tickers(self, symbols=None):
         if self.id == "kraken":

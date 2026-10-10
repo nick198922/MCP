@@ -36,6 +36,8 @@
 - Bybit: `interval="8h"` ✓, `nextFundingTimestamp=null`, `fundingTimestamp` є.
 - OKX: `interval="8h"` ✓, і `nextFundingTimestamp`, і `fundingTimestamp`; **`markPrice`/`indexPrice=null`** (не повертає).
 
+`fetch_funding_rate_history` (всі 3): уніфіковано `{symbol, fundingRate, timestamp, info}`. Інтервал у відповіді відсутній — ми детектимо з медіани ts-різниць (`detect_interval_hours`); на BTC виходить 8h для всіх 3 ccxt-venues.
+
 `fetch_open_interest`:
 - Binance: `openInterestAmount` (BTC) є, **`openInterestValue=null`**.
 - Bybit: `openInterestAmount` є, **`openInterestValue=null`**.

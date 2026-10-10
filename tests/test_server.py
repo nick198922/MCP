@@ -12,6 +12,7 @@ EXPECTED_TOOLS = {
     "market_orderbook",
     "market_trades",
     "perps_funding_compare",
+    "perps_funding_history",
     "perps_open_interest",
     "hyperliquid_overview",
     "hyperliquid_candles",
@@ -60,6 +61,30 @@ async def test_funding_compare_normalises_intervals_and_degrades(server):
     assert any(m["provider"] == "ccxt:okx" and m["reason"] == "rate_limited" for m in env["missing"])
     assert env["data"]["widest_spread"]["short_venue"] in by
     assert {e["provider"] for e in env["evidence"]} >= {"ccxt:binanceusdm", "hyperliquid", "deribit"}
+
+
+async def test_funding_history_cross_venue(server):
+    env = await call(server, "perps_funding_history", base="BTC", days_back=30)
+    assert env["ok"]
+    by = {v["venue"]: v for v in env["data"]["venues"]}
+    # ccxt venues produce 8h intervals; HL produces 1h
+    assert by["binanceusdm"]["interval_hours"] == pytest.approx(8.0, abs=0.01)
+    assert by["hyperliquid"]["interval_hours"] == pytest.approx(1.0, abs=0.01)
+    # okx is set to raise rate_limited in the fake transport -> ends up in missing
+    assert "okx" not in by
+    assert any("okx" in m["provider"] for m in env["missing"])
+    # highest_carry: Binance has larger base rate (0.0001) than Bybit (0.00008)
+    cross = env["data"]["cross_venue"]
+    assert cross["highest_carry"]["venue"] == "binanceusdm"
+    assert cross["lowest_carry"]["venue"] in ("bybit", "hyperliquid")
+    assert cross["biggest_abs_z"] is not None
+    # no series by default
+    assert "series" not in by["binanceusdm"]
+
+    env2 = await call(server, "perps_funding_history", base="BTC", days_back=30, include_series=True, include_hyperliquid=False)
+    by2 = {v["venue"]: v for v in env2["data"]["venues"]}
+    assert "hyperliquid" not in by2
+    assert "series" in by2["binanceusdm"] and len(by2["binanceusdm"]["series"]) > 0
 
 
 async def test_open_interest(server):

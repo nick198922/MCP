@@ -37,13 +37,14 @@ make run         # stdio-сервер; make run-http — streamable-http на :8
 claude mcp add tradedesk -- uv run --directory /ABSOLUTE/PATH/TO/tradedesk-mcp tradedesk-mcp
 ```
 
-## Інструменти (25)
+## Інструменти (26)
 
 | Група | Інструмент | Що дає |
 |---|---|---|
 | Система | `system_health` | стан провайдерів; `probe=true` робить живий пінг |
 | Ринок | `market_ticker`, `market_tickers`, `market_ohlcv`, `market_orderbook`, `market_markets`, `market_trades` | котирування (одиночне й batch), свічки з реалізованою вола, стакан зі slippage для заданого розміру, пошук ринків, останні угоди з aggressor-flow (buy/sell, VWAP, CVD) |
 | Перпи | `perps_funding_compare` | funding по Binance/Bybit/OKX/Hyperliquid/Deribit, приведений до річних |
+| | `perps_funding_history` | історія funding по всіх venues: carry 7d/30d, z-score, перцентиль, polarity flips; крос-венюз: найдорожчий carry, найбільший |z| |
 | | `perps_open_interest` | OI в USD по майданчиках і частки |
 | Hyperliquid | `hyperliquid_overview` | скринінг усього Hyperliquid за OI, funding, обсягом |
 | | `hyperliquid_candles` | OHLCV + реалізована вола |

@@ -25,6 +25,28 @@ def _iso(ms: Any) -> str | None:
     return None if not ms else datetime.fromtimestamp(ms / 1000, UTC).isoformat(timespec="seconds")
 
 
+def _row_from_stats(stats: dict[str, Any]) -> dict[str, Any]:
+    """Project summarise_funding_history output into the per-venue row shape used by perps_funding_history."""
+    return {
+        "count": stats.get("count"),
+        "interval_hours": stats.get("interval_hours"),
+        "latest_rate": stats.get("latest_rate"),
+        "latest_annualized": r(stats.get("latest_annualized"), 6),
+        "mean_rate": r(stats.get("mean_rate"), 8),
+        "stdev_rate": r(stats.get("stdev_rate"), 8),
+        "min_rate": r(stats.get("min_rate"), 8),
+        "max_rate": r(stats.get("max_rate"), 8),
+        "mean_7d": r(stats.get("mean_7d"), 8),
+        "mean_30d": r(stats.get("mean_30d"), 8),
+        "carry_annualized": r(stats.get("carry_annualized"), 6),
+        "z_score_latest": r(stats.get("z_score_latest"), 4),
+        "percentile_latest": r(stats.get("percentile_latest"), 4),
+        "polarity_flips": stats.get("polarity_flips"),
+        "first_ts_ms": stats.get("first_ts_ms"),
+        "last_ts_ms": stats.get("last_ts_ms"),
+    }
+
+
 def register(server: MCPServer, rt: Runtime) -> None:
     @server.tool(
         annotations=READ_ONLY,
@@ -117,6 +139,88 @@ def register(server: MCPServer, rt: Runtime) -> None:
             },
         }
         return b.build(data)
+
+    @server.tool(
+        annotations=READ_ONLY,
+        description=(
+            "Historical perp funding across venues (Binance USDT-M, Bybit, OKX via ccxt; Hyperliquid). "
+            "For each venue returns: count, interval (auto-detected from the median timestamp spacing), latest rate per interval and annualised, "
+            "mean/stdev/min/max of the rate, 7d and 30d means, carry APR (= mean rate × 8760 / interval_hours), z-score and percentile of the latest "
+            "value vs the whole window, polarity flips. Plus a cross-venue summary (highest/lowest carry, biggest absolute z). "
+            "Set `include_series=true` to also receive each venue's raw [ts_ms, rate] rows."
+        ),
+    )
+    async def perps_funding_history(
+        base: BASE = "BTC",
+        exchanges: CCXT_VENUES = None,
+        include_hyperliquid: bool = True,
+        days_back: Annotated[float, Field(gt=0, le=180)] = 30.0,
+        include_series: bool = False,
+    ) -> dict[str, Any]:
+        b = Builder()
+        base = base.upper()
+        symbol = f"{base}/USDT:USDT"
+        venues = [e.lower() for e in (exchanges or PERP_EXCHANGES)]
+        now_ms = int(rt.now().timestamp() * 1000)
+        since_ms = now_ms - int(days_back * 86_400_000)
+        limit = 500
+
+        async def ccxt_row(ex: str) -> dict[str, Any] | None:
+            raw = await b.guard(f"funding_history:{ex}", f"ccxt:{ex}", rt.exchanges.funding_rate_history(ex, symbol, since_ms, limit))
+            if not raw:
+                return None
+            entries = [
+                {"ts_ms": int(x["timestamp"]), "rate": float(x["fundingRate"])}
+                for x in raw
+                if x.get("fundingRate") is not None and x.get("timestamp")
+            ]
+            if not entries:
+                return None
+            stats = summarise_funding_history(entries, now_ms=now_ms)
+            return {"venue": ex, **_row_from_stats(stats), **({"series": entries} if include_series else {})}
+
+        async def hl_row() -> dict[str, Any] | None:
+            raw = await b.guard("funding_history:hyperliquid", "hyperliquid", rt.hyperliquid.funding_history(base, since_ms, now_ms))
+            if not raw:
+                return None
+            entries = [
+                {"ts_ms": int(x["time"]), "rate": float(x["fundingRate"])}
+                for x in raw
+                if x.get("fundingRate") is not None and x.get("time")
+            ]
+            if not entries:
+                return None
+            if len(raw) >= 500 and days_back > 500 / 24:
+                b.warn(f"hyperliquid funding history capped at {len(raw)} rows (API limit); window truncated — pagination TBD")
+            stats = summarise_funding_history(entries, interval_hours=1.0, now_ms=now_ms)
+            return {"venue": "hyperliquid", **_row_from_stats(stats), **({"series": entries} if include_series else {})}
+
+        jobs: list[Any] = [ccxt_row(e) for e in venues]
+        if include_hyperliquid:
+            jobs.append(hl_row())
+        rows = [x for x in await asyncio.gather(*jobs) if x]
+        if not rows:
+            return b.build(None, ok=False)
+
+        def pick(key: str, reverse: bool) -> dict[str, Any] | None:
+            candidates = [x for x in rows if x.get(key) is not None]
+            if not candidates:
+                return None
+            v = max(candidates, key=lambda x: x[key]) if reverse else min(candidates, key=lambda x: x[key])
+            return {"venue": v["venue"], key: r(v[key], 6)}
+
+        rows.sort(key=lambda x: x.get("carry_annualized") or 0, reverse=True)
+        cross = {
+            "highest_carry": pick("carry_annualized", reverse=True),
+            "lowest_carry": pick("carry_annualized", reverse=False),
+            "biggest_abs_z": None,
+        }
+        abs_z = [x for x in rows if x.get("z_score_latest") is not None]
+        if abs_z:
+            v = max(abs_z, key=lambda x: abs(x["z_score_latest"]))
+            cross["biggest_abs_z"] = {"venue": v["venue"], "z_score_latest": r(v["z_score_latest"], 3)}
+
+        return b.build({"base": base, "days_requested": days_back, "venues": rows, "cross_venue": cross})
 
     @server.tool(
         annotations=READ_ONLY,

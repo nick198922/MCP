@@ -64,18 +64,32 @@ def _percentile_rank(values: list[float], x: float) -> float | None:
     return (below + 0.5 * ties) / len(values)
 
 
+def detect_interval_hours(entries: list[dict[str, Any]], fallback: float = 8.0) -> float:
+    """Median spacing between entries, in hours, floored to the nearest sensible funding cadence."""
+    ts = sorted(int(e["ts_ms"]) for e in entries if e.get("ts_ms") is not None)
+    if len(ts) < 2:
+        return fallback
+    diffs = sorted(ts[i + 1] - ts[i] for i in range(len(ts) - 1) if ts[i + 1] > ts[i])
+    if not diffs:
+        return fallback
+    median_ms = diffs[len(diffs) // 2]
+    hours = median_ms / 3_600_000
+    return hours if hours >= 0.25 else fallback
+
+
 def summarise_funding_history(
     entries: list[dict[str, Any]],
     *,
-    interval_hours: float,
+    interval_hours: float | None = None,
     now_ms: int | None = None,
 ) -> dict[str, Any]:
     """Stats over a funding-rate time series.
 
     `entries` are dicts with at least ``rate`` (per-interval, decimal) and ``ts_ms``.
-    Returns mean/stdev/min/max over all, 7d and 30d windows; latest value with its z-score
-    (vs the full window) and percentile rank; annualised carry (mean rate scaled to a year);
-    and polarity flips (count of sign changes in the series).
+    If `interval_hours` is None it is detected from the median timestamp spacing
+    (fallback 8h). Returns mean/stdev/min/max over all, 7d and 30d windows; latest
+    value with its z-score (vs the full window) and percentile rank; annualised
+    carry (mean rate scaled to a year); polarity flips.
     """
     rows = sorted(
         [{"ts_ms": int(e["ts_ms"]), "rate": float(e["rate"])} for e in entries if e.get("rate") is not None],
@@ -83,6 +97,9 @@ def summarise_funding_history(
     )
     if not rows:
         return {"count": 0}
+
+    if interval_hours is None:
+        interval_hours = detect_interval_hours(rows)
 
     rates = [r["rate"] for r in rows]
     stats_all = _stats(rates)

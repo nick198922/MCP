@@ -28,6 +28,8 @@ class Settings:
     port: int = 8000
     # Optional keys; a provider without its key reports `missing: config` instead of failing.
     coinalyze_api_key: str | None = None
+    coingecko_api_key: str | None = None
+    coingecko_plan: str = "demo"  # "demo" or "pro"
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -39,4 +41,6 @@ class Settings:
             host=os.environ.get("TRADEDESK_HOST", "127.0.0.1"),
             port=int(_float("TRADEDESK_PORT", 8000)),
             coinalyze_api_key=os.environ.get("COINALYZE_API_KEY") or None,
+            coingecko_api_key=os.environ.get("COINGECKO_API_KEY") or None,
+            coingecko_plan=os.environ.get("COINGECKO_PLAN", "demo").lower(),
         )

@@ -42,6 +42,9 @@ EXPECTED_TOOLS = {
     "polymarket_search",
     "polymarket_market",
     "polymarket_history",
+    "coin_snapshot",
+    "global_market",
+    "top_coins",
 }
 
 
@@ -506,6 +509,53 @@ async def test_deribit_atm_term(server):
         assert 0.35 < row["atm_iv"] < 0.45
         assert row["forward"] > 0 and row["strikes"] >= 3
     assert d["shape"] in ("contango", "backwardation", "flat")
+
+
+async def test_coin_snapshot(server):
+    env = await call(server, "coin_snapshot", coin_id="bitcoin")
+    d = env["data"]
+    assert d["id"] == "bitcoin" and d["symbol"] == "bit"  # fake uses first-3 as symbol
+    assert d["price"] == 82750.0
+    assert d["max_supply"] == 21_000_000
+    assert d["ath_pct_vs_current"] == -23.4
+    assert d["change_24h_pct"] == 1.2 and d["change_30d_pct"] == 8.5
+    assert d["market_cap_rank"] == 1
+
+
+async def test_global_market(server):
+    env = await call(server, "global_market")
+    d = env["data"]
+    assert d["btc_dominance_pct"] == 55.5
+    assert d["eth_dominance_pct"] == 15.2
+    assert d["altcoin_dominance_pct"] == pytest.approx(100 - 55.5 - 15.2, abs=1e-6)
+    assert d["active_coins"] == 14500
+    assert d["total_mcap_usd"] == 2_500_000_000_000
+
+
+async def test_top_coins(server):
+    env = await call(server, "top_coins", limit=50)
+    d = env["data"]
+    assert d["count"] == 2 and d["coins"][0]["id"] == "bitcoin"
+    assert d["coins"][0]["rank"] == 1
+    assert d["coins"][1]["change_24h_pct"] == -3.4
+
+
+async def test_coingecko_provider_failure(state):
+    import httpx
+
+    from conftest import NOW, FakeEx, make_transports
+    from tradedesk.config import Settings
+    from tradedesk.runtime import Runtime
+    from tradedesk.server import build_server
+
+    tr = make_transports(state)
+    tr["coingecko"] = httpx.MockTransport(lambda req: httpx.Response(503, text="down"))
+    rt2 = Runtime(Settings(http_retries=1, cache_scale=0.0), transports=tr, exchange_factory=FakeEx)
+    rt2.now = lambda: NOW
+    srv, _ = build_server(rt2)
+    env = await call(srv, "coin_snapshot", coin_id="bitcoin")
+    assert env["ok"] is False
+    assert any(m["provider"] == "coingecko" for m in env["missing"])
 
 
 async def test_polymarket_search(server):

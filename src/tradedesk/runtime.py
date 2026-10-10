@@ -16,12 +16,14 @@ from .core.http import Http
 from .providers import alternative_me as altme_mod
 from .providers import binance_futures as binance_mod
 from .providers import bybit as bybit_mod
+from .providers import coingecko as cg_mod
 from .providers import deribit as deribit_mod
 from .providers import hyperliquid as hl_mod
 from .providers import polymarket as poly_mod
 from .providers.alternative_me import AlternativeMe
 from .providers.binance_futures import BinanceFutures
 from .providers.bybit import Bybit
+from .providers.coingecko import CoinGecko
 from .providers.deribit import Deribit
 from .providers.exchanges import Exchanges
 from .providers.hyperliquid import Hyperliquid
@@ -66,6 +68,22 @@ class Runtime:
             gamma=http("polymarket:gamma", poly_mod.GAMMA_URL, rate=5, burst=10),
             clob=http("polymarket:clob", poly_mod.CLOB_URL, rate=5, burst=10),
         )
+        cg_rate = 5.0 if (s.coingecko_api_key or s.coingecko_plan == "pro") else 0.5
+        self.coingecko = CoinGecko(
+            Http(
+                "coingecko",
+                cg_mod.base_url(s.coingecko_plan),
+                rate=cg_rate,
+                burst=max(2, int(cg_rate * 2)),
+                timeout=s.http_timeout,
+                retries=s.http_retries,
+                headers=cg_mod.auth_header(s.coingecko_plan, s.coingecko_api_key),
+                cache=self.cache,
+                cache_scale=s.cache_scale,
+                health=self.health,
+                transport=tr.get("coingecko"),
+            )
+        )
         self.exchanges = Exchanges(
             self.health,
             cache=self.cache,
@@ -81,4 +99,5 @@ class Runtime:
         await self.bybit.http.aclose()
         await self.alternative_me.http.aclose()
         await self.polymarket.aclose()
+        await self.coingecko.http.aclose()
         await self.exchanges.aclose()

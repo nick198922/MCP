@@ -348,6 +348,79 @@ def make_transports(state: State) -> dict:
             return httpx.Response(200, json={"history": rows})
         return httpx.Response(404, text="not mocked")
 
+    def coingecko(req: httpx.Request) -> httpx.Response:
+        path = req.url.path.split("/api/v3", 1)[-1]
+        if path.startswith("/coins/markets"):
+            rows = [
+                {
+                    "id": "bitcoin",
+                    "symbol": "btc",
+                    "name": "Bitcoin",
+                    "current_price": 82750.0,
+                    "market_cap": 1_630_000_000_000,
+                    "fully_diluted_valuation": 1_740_000_000_000,
+                    "total_volume": 45_000_000_000,
+                    "circulating_supply": 19_700_000,
+                    "market_cap_rank": 1,
+                    "price_change_percentage_24h": 1.2,
+                    "price_change_percentage_24h_in_currency": 1.2,
+                    "price_change_percentage_7d_in_currency": -3.1,
+                    "price_change_percentage_30d_in_currency": 8.5,
+                },
+                {
+                    "id": "ethereum",
+                    "symbol": "eth",
+                    "name": "Ethereum",
+                    "current_price": 2410.0,
+                    "market_cap": 290_000_000_000,
+                    "fully_diluted_valuation": 290_000_000_000,
+                    "total_volume": 18_000_000_000,
+                    "circulating_supply": 120_300_000,
+                    "market_cap_rank": 2,
+                    "price_change_percentage_24h": -3.4,
+                    "price_change_percentage_24h_in_currency": -3.4,
+                    "price_change_percentage_7d_in_currency": -5.2,
+                    "price_change_percentage_30d_in_currency": 2.0,
+                },
+            ]
+            return httpx.Response(200, json=rows)
+        if path.startswith("/coins/"):
+            coin_id = path.split("/coins/")[1].split("/")[0]
+            md = {
+                "current_price": {"usd": 82750.0},
+                "market_cap": {"usd": 1_630_000_000_000},
+                "fully_diluted_valuation": {"usd": 1_740_000_000_000},
+                "total_volume": {"usd": 45_000_000_000},
+                "ath": {"usd": 108000.0},
+                "ath_change_percentage": {"usd": -23.4},
+                "atl": {"usd": 67.81},
+                "atl_change_percentage": {"usd": 122000.0},
+                "circulating_supply": 19_700_000,
+                "total_supply": 19_700_000,
+                "max_supply": 21_000_000,
+                "price_change_percentage_24h": 1.2,
+                "price_change_percentage_7d": -3.1,
+                "price_change_percentage_30d": 8.5,
+                "market_cap_rank": 1,
+                "last_updated": "2026-10-10T13:07:00.000Z",
+            }
+            return httpx.Response(200, json={"id": coin_id, "symbol": coin_id[:3], "name": coin_id.capitalize(), "market_data": md})
+        if path == "/global":
+            data = {
+                "active_cryptocurrencies": 14_500,
+                "upcoming_icos": 0,
+                "ongoing_icos": 50,
+                "ended_icos": 3_500,
+                "markets": 1_050,
+                "total_market_cap": {"usd": 2_500_000_000_000, "btc": 30_000_000},
+                "total_volume": {"usd": 100_000_000_000, "btc": 1_200_000},
+                "market_cap_percentage": {"btc": 55.5, "eth": 15.2, "sol": 3.1},
+                "market_cap_change_percentage_24h_usd": 0.75,
+                "updated_at": 1_791_637_620,
+            }
+            return httpx.Response(200, json={"data": data})
+        return httpx.Response(404, text="not mocked")
+
     def alternative_me(req: httpx.Request) -> httpx.Response:
         if req.url.path == "/fng/":
             with open(Path(__file__).parent / "fixtures" / "fear_greed_sample.json") as f:
@@ -365,6 +438,7 @@ def make_transports(state: State) -> dict:
         "alternative_me": httpx.MockTransport(alternative_me),
         "polymarket:gamma": httpx.MockTransport(polymarket_gamma),
         "polymarket:clob": httpx.MockTransport(polymarket_clob),
+        "coingecko": httpx.MockTransport(coingecko),
     }
 
 

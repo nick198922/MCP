@@ -45,6 +45,7 @@ EXPECTED_TOOLS = {
     "coin_snapshot",
     "global_market",
     "top_coins",
+    "iv_rank",
 }
 
 

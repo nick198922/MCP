@@ -12,8 +12,8 @@
 
 Припущення, які ще не підтверджено власником (не вважати рішеннями): алерти через Telegram; хостинг на VPS; IBKR (на його Маку помічено папки `Jts`/`ntws`, схоже на IB TWS).
 
-## Що зроблено (Фаза 0 + частина Фази 1)
-41 інструмент, публічні дані (CoinGecko вільно без ключа, з ключем — вищий ліміт):
+## Що зроблено (Фаза 0 + частина Фази 1 + MVP Фази 2)
+42 інструменти, публічні дані (CoinGecko вільно без ключа, з ключем — вищий ліміт):
 
 | Група | Інструменти |
 |---|---|
@@ -28,6 +28,7 @@
 | Календар | `calendar_expiries` |
 | Prediction markets | `polymarket_search`, `polymarket_market`, `polymarket_history` |
 | Макро/ринок | `coin_snapshot`, `global_market`, `top_coins` |
+| Історія (Фаза 2) | `iv_rank` |
 
 Ядро: `Http` (ретраї на 429/5xx/timeout, token-bucket, TTL-кеш із single-flight, класифікація помилок), `HealthRegistry`, `Envelope/Evidence`, фейкові транспорти для тестів.
 
@@ -52,7 +53,8 @@
 - **1.13 закрито:** `perps_basis_compare(base)` — крос-венюз perp premium (bps) по Binance/Bybit/OKX/Hyperliquid/Deribit + Deribit dated-futures basis (simple і log річні). Summary: highest/lowest premium, крос-венюз spread, найближчий dated-contract.
 - **1.5 закрито (частково):** Polymarket провайдер (Gamma + CLOB через два окремих `Http`), analytics (normalise_market, devig_multi, book_stats), 3 інструменти: `polymarket_search`, `polymarket_market` (з CLOB-мідами по outcome-ах), `polymarket_history`. `polymarket_vs_options` — пізніше, бо треба Polymarket→crypto-option mapping.
 - **1.7 закрито:** CoinGecko провайдер з опційним ключем (env `COINGECKO_API_KEY` + `COINGECKO_PLAN`, demo/pro); 3 інструменти — `coin_snapshot`, `global_market`, `top_coins`. Rate 0.5 req/s без ключа.
-- Тестів: 88 (+18 за сесію), lint і format чисті.
+- **Фаза 2 (MVP, початок):** 2.1 Store — SQLite (WAL, aiosqlite, `PRAGMA user_version`), 4 таблиці (`atm_term`, `funding_hist`, `basis_hist`, `snapshots`). 2.2 Collector — scheduler + 1 дефолтна задача `atm_term` (5 хв); увімкнути `TRADEDESK_COLLECTOR_ENABLED=1`; метрики в `system_health`. 2.4 — перший історичний інструмент `iv_rank(currency, expiry, lookback_days)`. Залишилось у Фазі 2: funding+basis job-и, retention, ліквідації WebSocket, алерти, журнал, деплой (докер/systemd), HTTP-auth.
+- Тестів: 99 (+29 за сесію), lint і format чисті. Нова залежність: `aiosqlite`.
 - **`make smoke` live 2026-10-10: 15/15 ok** на реальних біржах. Deribit greeks звірено з їхнім ticker (30OCT26, delta/vega/theta до 4 знаків). `perps_open_interest` з новим fallback відпрацював 669 мс. `sentiment_fear_greed` повернув 30 денних значень; живий зразок збережено в `tests/fixtures/alternative_me_fng_live_2026-10-10.json`.
 
 ## Що перевірено живими запитами 2026-10-10

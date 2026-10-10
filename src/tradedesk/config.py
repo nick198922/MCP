@@ -30,6 +30,13 @@ class Settings:
     coinalyze_api_key: str | None = None
     coingecko_api_key: str | None = None
     coingecko_plan: str = "demo"  # "demo" or "pro"
+    # Local SQLite history (Phase 2). Empty string disables the store entirely.
+    db_path: str = "data/tradedesk.sqlite"
+    collector_enabled: bool = False
+    # Collection cadences in seconds.
+    collect_atm_term_seconds: int = 300
+    collect_funding_seconds: int = 3600
+    collect_basis_seconds: int = 300
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -43,4 +50,9 @@ class Settings:
             coinalyze_api_key=os.environ.get("COINALYZE_API_KEY") or None,
             coingecko_api_key=os.environ.get("COINGECKO_API_KEY") or None,
             coingecko_plan=os.environ.get("COINGECKO_PLAN", "demo").lower(),
+            db_path=os.environ.get("TRADEDESK_DB_PATH", "data/tradedesk.sqlite"),
+            collector_enabled=os.environ.get("TRADEDESK_COLLECTOR_ENABLED", "").lower() in ("1", "true", "yes"),
+            collect_atm_term_seconds=int(_float("TRADEDESK_COLLECT_ATM_TERM_SECONDS", 300)),
+            collect_funding_seconds=int(_float("TRADEDESK_COLLECT_FUNDING_SECONDS", 3600)),
+            collect_basis_seconds=int(_float("TRADEDESK_COLLECT_BASIS_SECONDS", 300)),
         )

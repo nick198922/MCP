@@ -28,6 +28,7 @@ from .providers.deribit import Deribit
 from .providers.exchanges import Exchanges
 from .providers.hyperliquid import Hyperliquid
 from .providers.polymarket import Polymarket
+from .store import Store
 
 
 class Runtime:
@@ -68,6 +69,8 @@ class Runtime:
             gamma=http("polymarket:gamma", poly_mod.GAMMA_URL, rate=5, burst=10),
             clob=http("polymarket:clob", poly_mod.CLOB_URL, rate=5, burst=10),
         )
+        self.store: Store | None = Store(s.db_path) if s.db_path else None
+        self.scheduler: Any | None = None  # built after providers below (see server.lifespan)
         cg_rate = 5.0 if (s.coingecko_api_key or s.coingecko_plan == "pro") else 0.5
         self.coingecko = CoinGecko(
             Http(
@@ -101,3 +104,5 @@ class Runtime:
         await self.polymarket.aclose()
         await self.coingecko.http.aclose()
         await self.exchanges.aclose()
+        if self.store is not None:
+            await self.store.aclose()

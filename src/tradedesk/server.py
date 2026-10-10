@@ -35,9 +35,19 @@ def build_server(rt: Runtime | None = None) -> tuple[MCPServer, Runtime]:
 
     @asynccontextmanager
     async def lifespan(_: MCPServer) -> AsyncIterator[None]:
+        from .collector import build_default_scheduler  # noqa: PLC0415
+
+        if rt.store is not None:
+            await rt.store.init()
+        rt.scheduler = build_default_scheduler(rt)
+        if rt.scheduler is not None:
+            await rt.scheduler.start()
+            logging.getLogger("tradedesk.collector").info("collector started with %d jobs", len(rt.scheduler.jobs))
         try:
             yield
         finally:
+            if rt.scheduler is not None:
+                await rt.scheduler.stop()
             await rt.aclose()
 
     server = MCPServer("tradedesk", instructions=INSTRUCTIONS, version=__version__, lifespan=lifespan)

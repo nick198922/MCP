@@ -31,17 +31,10 @@
 
 ## Фаза 2 — пам'ять, збирач, алерти, деплой
 Мета: сервер «працює, поки сплю».
-- [ ] 2.1 `store/`: SQLite (WAL), міграції (`PRAGMA user_version`), доступ через `aiosqlite` або потік-обгортку. Схема (чернетка):
-  - `iv_surface(ts, currency, expiry, strike, kind, mark_iv, bid_iv, ask_iv, oi, underlying)` 
-  - `atm_term(ts, currency, expiry, atm_iv, rr25, fly25, rr10, fly10)`
-  - `funding(ts, venue, symbol, rate_ann, interval_h)`
-  - `oi(ts, venue, symbol, oi_usd)`; `basis(ts, currency, expiry, basis_ann)`
-  - `liquidations(ts, venue, symbol, side, notional_usd)`
-  - `alerts(id, rule_id, ts, payload, delivered)`; `journal(id, ts, symbol, side, thesis, entry, stop, target, tags, status, outcome)`
-  - `positions(…)`, `snapshots(ts, kind, json)`
-- [ ] 2.2 Збирач (`collector/`): asyncio-задачі з періодами (IV surface 5 хв, funding 1 год, OI 5 хв, basis 5 хв); ретенція/даунсемплінг; метрики самих збірок у `system_health`.
+- [x] 2.1 `store/` MVP: SQLite (WAL, PRAGMA user_version), `aiosqlite`. Таблиці: `atm_term(ts, currency, expiry, days, forward, atm_iv, rr25, fly25, rr10, fly10)`, `funding_hist(ts, venue, base, rate_per_interval, interval_hours, annualized)`, `basis_hist(ts, currency, expiry, days, basis_pct, annualized_simple)`, `snapshots(id, ts, kind, payload)`. Міграції через `MIGRATIONS` dict + `SCHEMA_VERSION`. Залишилось для пізніх кроків: `iv_surface` (per-strike), `oi`, `liquidations`, `alerts`, `journal`, `positions`.
+- [x] 2.2 Збирач MVP: `collector/scheduler.py` з `Scheduler`/`PeriodicJob`/`JobMetrics`; дефолтний `atm_term` job (5 хв). Увімкнути: `TRADEDESK_COLLECTOR_ENABLED=1`. Метрики в `system_health.data.collector`. Залишилось: funding job, basis job, retention/downsampling.
 - [ ] 2.3 Ліквідації: WebSocket-читач Binance `!forceOrder@arr`, Bybit, OKX → таблиця `liquidations`; інструмент `liquidations_summary(window)`. **(verify)**
-- [ ] 2.4 Історичні інструменти поверх сховища: `iv_rank`, `iv_percentile`, `funding_zscore`, `skew_percentile`.
+- [ ] 2.4 Історичні інструменти поверх сховища: `iv_rank` ✅ (MVP: ATM-IV rank і percentile для експірації з lookback), ще залишилось `iv_percentile` (окремий), `funding_zscore`, `skew_percentile`.
 - [ ] 2.5 Алерти: рушій правил (дивіться 3.1) + канали: Telegram-бот (Bot API; потребує токена й chat_id від власника), email/ntfy як запасні. Антиспам: cooldown, гістерезис, дедуплікація.
 - [ ] 2.6 Журнал угод: `journal_add/list/close`, теги, R-мультиплікатор, статистика (win-rate, expectancy).
 - [ ] 2.7 Позиції й ризик (ручні/з біржі read-only): net delta/gamma/vega/theta портфеля, сценарії (±10 % спот, ±5 vol-пунктів), margin-estimate.

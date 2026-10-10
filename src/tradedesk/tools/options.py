@@ -23,6 +23,7 @@ from ..analytics.options import (
     oi_by_strike,
     put_call_ratios,
     rr_fly,
+    wing_quality,
 )
 from ..core.envelope import Builder
 from ..runtime import Runtime
@@ -62,13 +63,20 @@ def register(server: MCPServer, rt: Runtime) -> None:
         description=(
             "Deribit volatility surface summary for BTC/ETH: for each expiry the forward, ATM IV, 25-delta and 10-delta risk reversal "
             "(call IV minus put IV; negative = puts richer) and butterfly, expected 1-sigma move, open interest and put/call OI ratio. "
-            "IVs are decimals (0.45 = 45 %). Greeks are recomputed with Black-76 and match Deribit's. Start here for any options question."
+            "IVs are decimals (0.45 = 45 %). Greeks are recomputed with Black-76 and match Deribit's. Liquidity controls: `min_oi` and "
+            "`max_spread_pct` filter strikes BEFORE the smile is built; `thin_oi_threshold` only decides whether the 25Δ/10Δ wing is flagged "
+            "as `thin_wing` (OI below threshold or missing two-sided quote). Start here for any options question."
         ),
     )
     async def deribit_vol_surface(
         currency: CUR = "BTC",
         min_days: Annotated[float, Field(ge=0)] = 0.5,
         max_days: Annotated[float, Field(gt=0)] = 400,
+        min_oi: Annotated[float, Field(ge=0, description="Drop strikes whose OTM-side OI is below this before building the smile.")] = 0.0,
+        max_spread_pct: Annotated[
+            float | None, Field(ge=0, description="Drop strikes with bid/ask spread above this percent of mid (native units).")
+        ] = None,
+        thin_oi_threshold: Annotated[float, Field(ge=0, description="Wing OI below this flags the expiry's 25Δ/10Δ wing as thin.")] = 1.0,
     ) -> dict[str, Any]:
         b = Builder()
         rows = await _chain(rt, b, currency)
@@ -89,9 +97,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 "oi_puts": r(pc["oi_puts"], 1),
                 "pc_oi": r(pc["pc_oi"], 3),
             }
-            sm = build_smile(rs)
+            sm = build_smile(rs, min_oi=min_oi, max_spread_pct=max_spread_pct)
             if sm is None:
-                item["note"] = "fewer than 3 priced strikes"
+                item["note"] = "fewer than 3 priced strikes after filter"
             else:
                 a = atm_iv(sm)
                 r25, r10 = rr_fly(sm, 0.25), rr_fly(sm, 0.10)
@@ -102,7 +110,24 @@ def register(server: MCPServer, rt: Runtime) -> None:
                     rr10=r(r10["rr"], 4),
                     fly10=r(r10["fly"], 4),
                     expected_move_1sd_pct=r(a * math.sqrt(sm.T) * 100, 2),
+                    strikes_used=len(sm.strikes),
                 )
+                for label, delta in (("25d", 0.25), ("10d", 0.10)):
+                    wq = wing_quality(rs, sm, delta)
+                    if wq is None:
+                        item[f"thin_wing_{label}"] = True
+                        continue
+                    c, p = wq["call"], wq["put"]
+                    thin = any(
+                        x is None
+                        or x["oi"] < thin_oi_threshold
+                        or (max_spread_pct is not None and not x["quoted_both_sides"])
+                        or (max_spread_pct is not None and x["spread_pct"] is not None and x["spread_pct"] > max_spread_pct)
+                        for x in (c, p)
+                    )
+                    item[f"thin_wing_{label}"] = bool(thin)
+                    if thin:
+                        b.warn(f"thin {label} wing on {expiry_token(exp)}: call OI {c['oi'] if c else '?'}, put OI {p['oi'] if p else '?'}")
             out.append(item)
         spot = next((x.index for x in rows if x.index), None)
         return b.build({"currency": currency, "spot_index": spot, "expiries": out})

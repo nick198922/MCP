@@ -95,7 +95,34 @@ async def test_vol_surface_recovers_input_smile(server):
         assert e["atm_iv"] == pytest.approx(0.40, abs=0.005)
         assert e["rr25"] < 0 and e["fly25"] > 0
         assert e["expected_move_1sd_pct"] > 0
+        assert "strikes_used" in e and e["strikes_used"] >= 3
+        assert e["thin_wing_25d"] is False  # fixture has OI 20 on central strikes, 3 on tails -> default threshold 1.0 passes
     assert exps[0]["days"] == pytest.approx(19.8, abs=0.1)
+
+
+async def test_vol_surface_min_oi_filter(server):
+    env = await call(server, "deribit_vol_surface", currency="BTC", min_oi=10)
+    strikes_each = [e["strikes_used"] for e in env["data"]["expiries"]]
+    env2 = await call(server, "deribit_vol_surface", currency="BTC", min_oi=0)
+    strikes_each0 = [e["strikes_used"] for e in env2["data"]["expiries"]]
+    # the fixture has OI=20 for central strikes, 3 for tails; min_oi=10 drops the tails
+    assert all(a < b for a, b in zip(strikes_each, strikes_each0, strict=True))
+
+    env_hi = await call(server, "deribit_vol_surface", currency="BTC", min_oi=100)
+    assert all(e.get("note", "").startswith("fewer than 3") for e in env_hi["data"]["expiries"])
+
+
+async def test_vol_surface_thin_wing_flag(server):
+    env = await call(server, "deribit_vol_surface", currency="BTC", thin_oi_threshold=25)
+    exps = env["data"]["expiries"]
+    assert all(e["thin_wing_25d"] is True for e in exps)
+    assert any("thin 25d wing" in w for w in env["warnings"])
+
+
+async def test_vol_surface_spread_filter_drops_unquoted(server):
+    # the fixture has no bid/ask; max_spread_pct=any positive drops every strike
+    env = await call(server, "deribit_vol_surface", currency="BTC", max_spread_pct=50)
+    assert all(e.get("note", "").startswith("fewer than 3") for e in env["data"]["expiries"])
 
 
 async def test_option_chain(server):

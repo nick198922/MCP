@@ -78,6 +78,9 @@ class OptionRow:
     mark_price_usd: float | None
     open_interest: float
     volume: float
+    bid_price_native: float | None = None
+    ask_price_native: float | None = None
+    spread_pct: float | None = None
     delta: float | None = None
     gamma: float | None = None
     vega: float | None = None
@@ -89,6 +92,14 @@ class OptionRow:
         d["type"] = "call" if self.is_call else "put"
         d.pop("is_call")
         return d
+
+    def is_liquid(self, min_oi: float, max_spread_pct: float | None) -> bool:
+        if self.open_interest < min_oi:
+            return False
+        if max_spread_pct is not None:
+            if self.spread_pct is None or self.spread_pct > max_spread_pct:
+                return False
+        return True
 
 
 def build_chain(summaries: Iterable[dict[str, Any]], now: datetime) -> list[OptionRow]:
@@ -108,6 +119,13 @@ def build_chain(summaries: Iterable[dict[str, Any]], now: datetime) -> list[Opti
         mark = s.get("mark_price")
         inverse = s.get("quote_currency") == s.get("base_currency")
         mark_usd = (mark * (index or fwd) if inverse else mark) if mark is not None else None
+        bid = s.get("bid_price")
+        ask = s.get("ask_price")
+        spread_pct: float | None = None
+        if isinstance(bid, (int, float)) and isinstance(ask, (int, float)) and bid > 0 and ask > 0 and ask >= bid:
+            mid = s.get("mid_price") or (bid + ask) / 2.0
+            if mid > 0:
+                spread_pct = (ask - bid) / mid * 100.0
         row = OptionRow(
             instrument=parsed.raw,
             expiry=parsed.expiry,
@@ -121,6 +139,9 @@ def build_chain(summaries: Iterable[dict[str, Any]], now: datetime) -> list[Opti
             mark_price_usd=mark_usd,
             open_interest=float(s.get("open_interest") or 0.0),
             volume=float(s.get("volume") or 0.0),
+            bid_price_native=float(bid) if isinstance(bid, (int, float)) and bid > 0 else None,
+            ask_price_native=float(ask) if isinstance(ask, (int, float)) and ask > 0 else None,
+            spread_pct=spread_pct,
         )
         if iv and T > 0:
             g = black76_greeks(row.forward, row.strike, T, iv, row.is_call)
@@ -166,8 +187,18 @@ class Smile:
         return float(np.interp(target, d_sorted, v_sorted))
 
 
-def build_smile(rows: list[OptionRow]) -> Smile | None:
-    """Smile for rows of ONE expiry. Needs >= 3 strikes with an IV."""
+def build_smile(
+    rows: list[OptionRow],
+    min_oi: float = 0.0,
+    max_spread_pct: float | None = None,
+) -> Smile | None:
+    """Smile for rows of ONE expiry. Needs >= 3 strikes with an IV.
+
+    Optional liquidity filters:
+    * `min_oi` — skip strikes whose chosen OTM side has OI below this (in underlying units).
+    * `max_spread_pct` — skip strikes whose bid/ask spread (in native price units, relative to mid)
+      exceeds this percentage; strikes without a two-sided quote are also skipped when this is set.
+    """
     usable = [r for r in rows if r.iv]
     if not usable:
         return None
@@ -181,11 +212,52 @@ def build_smile(rows: list[OptionRow]) -> Smile | None:
     ivs: list[float] = []
     for k, sides in by_strike.items():
         pick = sides.get(k >= F) or next(iter(sides.values()))  # OTM side, else whatever exists
+        if not pick.is_liquid(min_oi, max_spread_pct):
+            continue
         strikes.append(k)
         ivs.append(pick.iv)  # type: ignore[arg-type]
     if len(strikes) < 3:
         return None
     return Smile(F, T, strikes, ivs)
+
+
+def wing_quality(rows: list[OptionRow], smile: Smile, target_delta: float) -> dict[str, Any] | None:
+    """OI and spread of the call- and put-side strikes nearest the given call-delta target.
+
+    `target_delta` is a call-equivalent delta: 0.25 picks the 25-delta call wing and the 25-delta put wing
+    (i.e. 75-delta call). Returns None if the delta falls outside the quoted range.
+    """
+    iv_call = smile.iv_at_call_delta(target_delta)
+    iv_put = smile.iv_at_call_delta(1.0 - target_delta)
+    if iv_call is None or iv_put is None:
+        return None
+
+    def nearest_delta_row(side_is_call: bool, want_call_delta: float) -> OptionRow | None:
+        best: tuple[float, OptionRow] | None = None
+        for r in rows:
+            if r.is_call != side_is_call or r.delta is None:
+                continue
+            call_delta = r.delta if r.is_call else (r.delta + 1.0)
+            d = abs(call_delta - want_call_delta)
+            if best is None or d < best[0]:
+                best = (d, r)
+        return best[1] if best else None
+
+    call_row = nearest_delta_row(True, target_delta)
+    put_row = nearest_delta_row(False, 1.0 - target_delta)
+
+    def info(row: OptionRow | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        return {
+            "strike": row.strike,
+            "oi": row.open_interest,
+            "spread_pct": row.spread_pct,
+            "iv": row.iv,
+            "quoted_both_sides": row.bid_price_native is not None and row.ask_price_native is not None,
+        }
+
+    return {"call": info(call_row), "put": info(put_row)}
 
 
 def atm_iv(smile: Smile) -> float:

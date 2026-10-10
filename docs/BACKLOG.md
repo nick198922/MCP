@@ -13,7 +13,7 @@
 - [ ] 0.5 Перший запуск CI після створення репозиторію.
 
 ## Фаза 1 — дані та деривативи (залишок)
-- [ ] 1.1 `market_tickers` (batch), `market_markets` (пошук/фільтр, не повний дамп), `market_trades` (+ агресор-дисбаланс/CVD). ccxt `fetch_tickers`, `fetch_markets`, `fetch_trades`.
+- [x] 1.1 `market_tickers` (batch), `market_markets` (пошук/фільтр, не повний дамп), `market_trades` (+ агресор-дисбаланс/CVD). ccxt `fetch_tickers`, `fetch_markets`, `fetch_trades`.
 - [ ] 1.2 `perps_funding_history`: ccxt `fetch_funding_rate_history` (Binance/Bybit/OKX) + HL `fundingHistory`; z-score, перцентиль, середнє за 7/30 днів, carry-APR. **(verify)**
 - [ ] 1.3 `perps_long_short_ratio`, `perps_oi_history`: Binance `/futures/data/globalLongShortAccountRatio`, `/futures/data/openInterestHist`; Bybit `/v5/market/account-ratio`, `/v5/market/open-interest`. Окремий провайдер `binance_futures.py`/`bybit.py` через `Http`. **(verify)**
 - [ ] 1.4 Hyperliquid: `hyperliquid_candles`, `hyperliquid_book` (+slippage), `hyperliquid_trades`, `hyperliquid_funding_history`. Звести до тих самих аналітик, що й ccxt. **(verify: ctxs)**

@@ -19,7 +19,9 @@ DOUBLETOP: **74 інструменти** (66 від 17 бекендів + 8 вл
 | ccxt `get-ticker` | ✅ `market_ticker` |
 | ccxt `get-ohlcv` | ✅ `market_ohlcv` (+ реалізована вола) |
 | ccxt `get-orderbook` | ✅ `market_orderbook` (+ slippage під ваш розмір) |
-| ccxt `batch-get-tickers`, `get-markets`, `get-trades` | 🔜 Фаза 1 |
+| ccxt `batch-get-tickers` | ✅ `market_tickers` (сортування за quote volume, top-movers за 24h %) |
+| ccxt `get-markets` | ✅ `market_markets` (пошук за підрядком, фільтр spot/swap/future/option, active) |
+| ccxt `get-trades` | ✅ `market_trades` (+ aggressor flow: buy/sell notional, imbalance, VWAP, CVD, топ-прінти) |
 | coinalyze `funding_rate_history` | 🔜 Фаза 1 (історія з бірж); поточний funding ✅ `perps_funding_compare` |
 | coinalyze `open_interest_history` | 🔜 Фаза 2 (власний збирач; біржі дають коротку історію) |
 | coinalyze `liquidation_history` | 🔜 Фаза 2 (WebSocket-збирач: історії ліквідацій в API бірж немає) |

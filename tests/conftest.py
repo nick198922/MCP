@@ -138,7 +138,7 @@ def make_transports(state: State) -> dict:
 class FakeEx:
     def __init__(self, ex_id: str) -> None:
         self.id = ex_id
-        self.has = {"fetchOpenInterest": ex_id != "okx"}
+        self.has = {"fetchOpenInterest": ex_id != "okx", "fetchTickers": ex_id != "kraken"}
 
     async def fetch_funding_rate(self, symbol):
         if self.id == "okx":
@@ -183,6 +183,158 @@ class FakeEx:
         bids = [[82750 - i * 5.0, 2.0] for i in range(limit)]
         asks = [[82751 + i * 5.0, 2.0] for i in range(limit)]
         return {"bids": bids, "asks": asks}
+
+    async def fetch_tickers(self, symbols=None):
+        if self.id == "kraken":
+            raise ccxt.NotSupported("kraken has no fetchTickers")
+        if self.id == "okx":
+            raise ccxt.RateLimitExceeded("okx 429 too many requests")
+        catalog = {
+            "BTC/USDT:USDT": {
+                "last": 82750.0,
+                "bid": 82749.5,
+                "ask": 82750.5,
+                "high": 84000.0,
+                "low": 81000.0,
+                "baseVolume": 1e5,
+                "quoteVolume": 8e9,
+                "percentage": 1.2,
+                "timestamp": 1791637668000,
+            },
+            "ETH/USDT:USDT": {
+                "last": 2410.0,
+                "bid": 2409.8,
+                "ask": 2410.2,
+                "high": 2500.0,
+                "low": 2380.0,
+                "baseVolume": 2e6,
+                "quoteVolume": 4.8e9,
+                "percentage": -3.4,
+                "timestamp": 1791637668000,
+            },
+            "SOL/USDT:USDT": {
+                "last": 180.5,
+                "bid": 180.4,
+                "ask": 180.6,
+                "high": 190.0,
+                "low": 170.0,
+                "baseVolume": 5e5,
+                "quoteVolume": 1e8,
+                "percentage": 8.1,
+                "timestamp": 1791637668000,
+            },
+            "DOGE/USDT:USDT": {
+                "last": 0.21,
+                "bid": 0.209,
+                "ask": 0.211,
+                "high": 0.22,
+                "low": 0.19,
+                "baseVolume": 1e9,
+                "quoteVolume": 2e8,
+                "percentage": -5.0,
+                "timestamp": 1791637668000,
+            },
+        }
+        wanted = symbols or list(catalog)
+        return {s: {"symbol": s, **catalog[s]} for s in wanted if s in catalog}
+
+    async def load_markets(self):
+        base = {
+            "BTC/USDT": {
+                "id": "BTCUSDT",
+                "symbol": "BTC/USDT",
+                "base": "BTC",
+                "quote": "USDT",
+                "settle": "USDT",
+                "type": "spot",
+                "active": True,
+                "linear": None,
+                "inverse": None,
+                "contractSize": None,
+            },
+            "BTC/USDT:USDT": {
+                "id": "BTCUSDT",
+                "symbol": "BTC/USDT:USDT",
+                "base": "BTC",
+                "quote": "USDT",
+                "settle": "USDT",
+                "type": "swap",
+                "active": True,
+                "linear": True,
+                "inverse": False,
+                "contractSize": 1.0,
+            },
+            "BTC/USD:BTC-271231": {
+                "id": "BTCUSD_271231",
+                "symbol": "BTC/USD:BTC-271231",
+                "base": "BTC",
+                "quote": "USD",
+                "settle": "BTC",
+                "type": "future",
+                "active": True,
+                "linear": False,
+                "inverse": True,
+                "contractSize": 100.0,
+                "expiry": 1830297600000,
+                "expiryDatetime": "2027-12-31T08:00:00.000Z",
+            },
+            "ETH/USDT:USDT": {
+                "id": "ETHUSDT",
+                "symbol": "ETH/USDT:USDT",
+                "base": "ETH",
+                "quote": "USDT",
+                "settle": "USDT",
+                "type": "swap",
+                "active": True,
+                "linear": True,
+                "inverse": False,
+                "contractSize": 1.0,
+            },
+            "DEAD/USDT": {
+                "id": "DEADUSDT",
+                "symbol": "DEAD/USDT",
+                "base": "DEAD",
+                "quote": "USDT",
+                "settle": None,
+                "type": "spot",
+                "active": False,
+                "linear": None,
+                "inverse": None,
+                "contractSize": None,
+            },
+        }
+        return base
+
+    async def fetch_trades(self, symbol, since=None, limit=200):
+        if self.id == "okx":
+            raise ccxt.RateLimitExceeded("okx 429 too many requests")
+        rows = []
+        t0 = 1791637668000
+        for i in range(limit):
+            side = "buy" if (i % 3 != 2) else "sell"
+            price = 82750.0 + (0.5 if side == "buy" else -0.5) + i * 0.01
+            amount = 0.1 + (i % 7) * 0.05
+            if i == 0:
+                amount = 5.0  # a whale print to top the chart
+                side = "buy"
+            if i == 1 and limit > 1:
+                amount = 4.0
+                side = "sell"
+            rows.append(
+                {
+                    "id": str(i),
+                    "timestamp": t0 + i * 50,
+                    "symbol": symbol,
+                    "side": side,
+                    "price": price,
+                    "amount": amount,
+                    "cost": price * amount,
+                }
+            )
+        if self.id == "coinbase":
+            for r in rows:  # some venues don't publish aggressor side
+                r.pop("side", None)
+        return rows
 
     async def close(self):
         pass

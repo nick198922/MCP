@@ -102,6 +102,23 @@ class Exchanges:
     async def ticker(self, ex_id: str, symbol: str) -> Fetched:
         return await self._call(ex_id, "fetch_ticker", {"symbol": symbol}, 2, lambda ex: ex.fetch_ticker(symbol))
 
+    async def tickers(self, ex_id: str, symbols: list[str] | None = None) -> Fetched:
+        async def go(ex: Any) -> Any:
+            has = getattr(ex, "has", {}) or {}
+            if has.get("fetchTickers") is False:
+                raise ccxt.NotSupported(f"{ex_id} has no fetchTickers")
+            return await ex.fetch_tickers(symbols) if symbols else await ex.fetch_tickers()
+
+        a = {"symbols": ",".join(symbols)} if symbols else {}
+        return await self._call(ex_id, "fetch_tickers", a, 2, go)
+
+    async def markets(self, ex_id: str) -> Fetched:
+        return await self._call(ex_id, "load_markets", {}, 3600, lambda ex: ex.load_markets())
+
+    async def trades(self, ex_id: str, symbol: str, limit: int) -> Fetched:
+        a = {"symbol": symbol, "limit": limit}
+        return await self._call(ex_id, "fetch_trades", a, 2, lambda ex: ex.fetch_trades(symbol, limit=limit))
+
     async def ohlcv(self, ex_id: str, symbol: str, timeframe: str, limit: int) -> Fetched:
         a = {"symbol": symbol, "timeframe": timeframe, "limit": limit}
         return await self._call(ex_id, "fetch_ohlcv", a, 15, lambda ex: ex.fetch_ohlcv(symbol, timeframe, limit=limit))

@@ -1,18 +1,20 @@
 from __future__ import annotations
 
 import math
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from mcp.server.mcpserver import MCPServer
 from pydantic import Field
 
 from ..analytics.orderbook import book_stats, walk_book
+from ..analytics.trades import summarise as summarise_trades
 from ..core.envelope import Builder
 from ..runtime import Runtime
 from ._util import READ_ONLY, r, timeframe_seconds
 
 EX = Annotated[str, Field(description="ccxt exchange id: binance, binanceusdm (USDT perps), bybit, okx, kraken, coinbase ...")]
 SYM = Annotated[str, Field(description="ccxt unified symbol. Spot 'BTC/USDT'; linear perp 'BTC/USDT:USDT'")]
+MarketType = Literal["spot", "swap", "future", "option", "any"]
 
 
 def register(server: MCPServer, rt: Runtime) -> None:
@@ -100,3 +102,142 @@ def register(server: MCPServer, rt: Runtime) -> None:
             if data["impact"]["buy"]["unfilled_usd"] > 0 or data["impact"]["sell"]["unfilled_usd"] > 0:
                 b.warn(f"only {len(bids)}/{len(asks)} levels loaded; raise `depth` to size this order")
         return b.build(data)
+
+    @server.tool(
+        annotations=READ_ONLY,
+        description=(
+            "Batch tickers for several symbols on one exchange (ccxt fetch_tickers). "
+            "Returns slim ticker rows sorted by 24h quote volume (desc), the top 3 movers by 24h percent change, "
+            "and spread_bps when bid/ask are present. Pass `symbols` to limit the batch; omit for the exchange default set "
+            "(some venues reject that — the error is reported in `missing`)."
+        ),
+    )
+    async def market_tickers(
+        exchange: EX,
+        symbols: Annotated[list[str] | None, Field(description="ccxt unified symbols. Omit for the full default set.")] = None,
+        limit: Annotated[int, Field(ge=1, le=500, description="Max rows kept after sorting by quote volume.")] = 50,
+    ) -> dict[str, Any]:
+        b = Builder()
+        tk = await b.guard("tickers", f"ccxt:{exchange}", rt.exchanges.tickers(exchange, symbols))
+        if not tk:
+            if tk is not None:
+                b.miss("tickers", f"ccxt:{exchange}", "data_unavailable", "empty result")
+            return b.build(None, ok=False)
+        rows: list[dict[str, Any]] = []
+        for sym, t in tk.items():
+            if not isinstance(t, dict):
+                continue
+            bid, ask = t.get("bid"), t.get("ask")
+            row = {
+                "symbol": sym,
+                "last": t.get("last"),
+                "bid": bid,
+                "ask": ask,
+                "high": t.get("high"),
+                "low": t.get("low"),
+                "baseVolume": t.get("baseVolume"),
+                "quoteVolume": t.get("quoteVolume"),
+                "percentage": t.get("percentage"),
+                "timestamp": t.get("timestamp"),
+            }
+            if bid and ask:
+                row["spread_bps"] = r((ask - bid) / ((ask + bid) / 2) * 1e4, 3)
+            rows.append(row)
+        rows.sort(key=lambda x: x.get("quoteVolume") or 0.0, reverse=True)
+        with_pct = [x for x in rows if isinstance(x.get("percentage"), (int, float))]
+        top_movers = sorted(with_pct, key=lambda x: abs(x["percentage"]), reverse=True)[:3]
+        data = {
+            "count": len(rows),
+            "returned": min(limit, len(rows)),
+            "tickers": rows[:limit],
+            "top_movers": [{"symbol": x["symbol"], "percentage": x["percentage"], "last": x["last"]} for x in top_movers],
+        }
+        return b.build(data)
+
+    @server.tool(
+        annotations=READ_ONLY,
+        description=(
+            "Search tradable markets on one exchange (ccxt load_markets). Filter by substring (`query`, case-insensitive on symbol/id/base/quote), "
+            "`market_type` (spot/swap/future/option/any), and `active_only`. Returns slim rows: symbol, type, base, quote, settle, linear/inverse, "
+            "contractSize, active, plus expiry/strike/optionType when the venue lists them. Markets rarely change (cached ~1h)."
+        ),
+    )
+    async def market_markets(
+        exchange: EX,
+        query: Annotated[str | None, Field(description="Substring match on symbol/id/base/quote (case-insensitive).")] = None,
+        market_type: MarketType = "any",
+        active_only: bool = True,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> dict[str, Any]:
+        b = Builder()
+        mk = await b.guard("markets", f"ccxt:{exchange}", rt.exchanges.markets(exchange))
+        if not mk:
+            if mk is not None:
+                b.miss("markets", f"ccxt:{exchange}", "data_unavailable", "empty result")
+            return b.build(None, ok=False)
+        q = (query or "").lower().strip() or None
+        picked: list[dict[str, Any]] = []
+        for sym, m in mk.items():
+            if not isinstance(m, dict):
+                continue
+            if active_only and m.get("active") is False:
+                continue
+            if market_type != "any" and m.get("type") != market_type:
+                continue
+            if q:
+                hay = " ".join(str(m.get(k) or "") for k in ("symbol", "id", "base", "quote")).lower()
+                if q not in hay:
+                    continue
+            row = {
+                "symbol": m.get("symbol") or sym,
+                "id": m.get("id"),
+                "type": m.get("type"),
+                "base": m.get("base"),
+                "quote": m.get("quote"),
+                "settle": m.get("settle"),
+                "linear": m.get("linear"),
+                "inverse": m.get("inverse"),
+                "contractSize": m.get("contractSize"),
+                "active": m.get("active"),
+            }
+            if m.get("expiry"):
+                row["expiry"] = m.get("expiry")
+                row["expiryDatetime"] = m.get("expiryDatetime")
+            if m.get("strike") is not None:
+                row["strike"] = m.get("strike")
+            if m.get("optionType"):
+                row["optionType"] = m.get("optionType")
+            picked.append(row)
+        picked.sort(key=lambda x: str(x["symbol"]))
+        if len(picked) > limit:
+            b.warn(f"matched {len(picked)} markets; returning first {limit}. Narrow `query` or raise `limit`.")
+        return b.build({"total_markets": len(mk), "matched": len(picked), "markets": picked[:limit]})
+
+    @server.tool(
+        annotations=READ_ONLY,
+        description=(
+            "Recent public trades (ccxt fetch_trades) with aggressor-signed flow: buy/sell counts and notional, delta, "
+            "imbalance in [-1, 1] (positive = net taker buys), VWAP for all / buys / sells, cumulative delta end value, "
+            "and the largest `top_n` prints. `side` from ccxt is the taker side; venues that do not expose it are reported in `warnings`."
+        ),
+    )
+    async def market_trades(
+        exchange: EX,
+        symbol: SYM,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 200,
+        top_n: Annotated[int, Field(ge=1, le=50)] = 5,
+    ) -> dict[str, Any]:
+        b = Builder()
+        trades = await b.guard("trades", f"ccxt:{exchange}", rt.exchanges.trades(exchange, symbol, limit))
+        if not trades:
+            if trades is not None:
+                b.miss("trades", f"ccxt:{exchange}", "data_unavailable", "empty result")
+            return b.build(None, ok=False)
+        with_side = sum(1 for t in trades if isinstance(t, dict) and t.get("side"))
+        summary = summarise_trades(trades, top_n=top_n)
+        if summary.get("count", 0) == 0:
+            b.miss("trades", f"ccxt:{exchange}", "data_unavailable", "no usable trades (missing price/amount/side)")
+            return b.build(None, ok=False)
+        if with_side < len(trades):
+            b.warn(f"{len(trades) - with_side}/{len(trades)} trades had no aggressor side and were skipped")
+        return b.build({"symbol": symbol, "fetched": len(trades), "summary": summary})

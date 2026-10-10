@@ -6,8 +6,11 @@ from mcp import Client
 EXPECTED_TOOLS = {
     "system_health",
     "market_ticker",
+    "market_tickers",
+    "market_markets",
     "market_ohlcv",
     "market_orderbook",
+    "market_trades",
     "perps_funding_compare",
     "perps_open_interest",
     "hyperliquid_overview",
@@ -141,6 +144,56 @@ async def test_market_tools(server):
 async def test_exchange_failure_is_graceful(server):
     env = await call(server, "market_ticker", exchange="bybit", symbol="BTC/USDT:USDT")
     assert env["ok"] is False and env["missing"][0]["reason"] == "auth"
+
+
+async def test_market_tickers_sorts_and_picks_top_movers(server):
+    env = await call(server, "market_tickers", exchange="binanceusdm")
+    d = env["data"]
+    syms = [t["symbol"] for t in d["tickers"]]
+    assert syms[0] == "BTC/USDT:USDT"  # highest quoteVolume
+    assert d["count"] == 4
+    vols = [t["quoteVolume"] for t in d["tickers"]]
+    assert vols == sorted(vols, reverse=True)
+    movers = {m["symbol"] for m in d["top_movers"]}
+    assert "SOL/USDT:USDT" in movers and "DOGE/USDT:USDT" in movers
+    env2 = await call(server, "market_tickers", exchange="binanceusdm", symbols=["BTC/USDT:USDT", "ETH/USDT:USDT"])
+    assert {t["symbol"] for t in env2["data"]["tickers"]} == {"BTC/USDT:USDT", "ETH/USDT:USDT"}
+
+
+async def test_market_tickers_unsupported_is_graceful(server):
+    env = await call(server, "market_tickers", exchange="kraken")
+    assert env["ok"] is False
+    assert any(m["reason"] == "data_unavailable" for m in env["missing"])
+
+
+async def test_market_markets_filters(server):
+    env = await call(server, "market_markets", exchange="binanceusdm", market_type="swap")
+    syms = [m["symbol"] for m in env["data"]["markets"]]
+    assert "BTC/USDT:USDT" in syms and "ETH/USDT:USDT" in syms and "BTC/USDT" not in syms
+    assert all(m["type"] == "swap" for m in env["data"]["markets"])
+
+    env2 = await call(server, "market_markets", exchange="binanceusdm", query="btc")
+    assert all("BTC" in m["symbol"].upper() for m in env2["data"]["markets"])
+
+    env3 = await call(server, "market_markets", exchange="binanceusdm", active_only=False, query="dead")
+    assert any(m["active"] is False for m in env3["data"]["markets"])
+
+
+async def test_market_trades_flow(server):
+    env = await call(server, "market_trades", exchange="binanceusdm", symbol="BTC/USDT:USDT", limit=50)
+    s = env["data"]["summary"]
+    assert s["count"] == 50
+    assert s["buy_count"] + s["sell_count"] == 50
+    assert s["imbalance"] is not None and -1 <= s["imbalance"] <= 1
+    assert s["vwap"] > 0 and s["buy_vwap"] > 0 and s["sell_vwap"] > 0
+    assert s["top_trades"][0]["amount"] == pytest.approx(5.0)  # the whale print
+    assert len(s["cvd_series"]) == 50
+
+
+async def test_market_trades_missing_side_is_graceful(server):
+    env = await call(server, "market_trades", exchange="coinbase", symbol="BTC/USDT", limit=20)
+    assert env["ok"] is False
+    assert any(m["reason"] == "data_unavailable" for m in env["missing"])
 
 
 async def test_deribit_outage_does_not_crash_tools(server, state):

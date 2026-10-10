@@ -10,7 +10,7 @@
 - [x] 0.2 `ruff` у dev-extras, `uv lock`.
 - [x] 0.3 Python 3.11 перевірено (51 тест).
 - [x] 0.4 Жорсткі шляхи з README прибрано.
-- [ ] 0.5 Перший запуск CI (репо `nick198922/MCP` є; перевірити `gh run list`).
+- [x] 0.5 CI активний і зелений: три останні прогони на 3.11/3.12/3.13 — success (`78e0e71`, `b24a050`, `04e10fe`).
 - [x] 0.6 `perps_open_interest`: fallback `oi_usd = openInterestAmount × last` для Binance/Bybit (через `ccxt.fetch_ticker`), з warning. Якщо ticker теж недоступний — лишається `None`.
 - [x] 0.7 `scripts/live_smoke.py` розширено: `market_tickers`, `market_markets`, `market_trades`, `deribit_expected_move`, `deribit_oi_by_strike` (14 кейсів, порог 10/14).
 

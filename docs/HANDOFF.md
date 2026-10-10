@@ -40,7 +40,7 @@
 - **0.6 закрито:** `perps_open_interest` тепер робить fallback `oi_usd = openInterestAmount × last` для бірж без `openInterestValue` (Binance/Bybit). Додатковий виклик `fetch_ticker` кешується TTL=2s. Якщо ticker недоступний — поведінка та сама, що й раніше (`None` + warning). Новий тест `test_open_interest_fallback_via_mark`.
 - **0.7 закрито:** `scripts/live_smoke.py` розширено з 9 до 14 кейсів: додано `market_tickers`, `market_markets`, `market_trades`, `deribit_expected_move`, `deribit_oi_by_strike`. Поріг успіху підкручено до 10/14.
 - Тестів: 71 (+1), lint і format чисті.
-- **0.5 ще не закрито:** `gh` CLI на цій машині не встановлений, тому CI не перевірити звідси. Власник: глянь, будь ласка, https://github.com/nick198922/MCP/actions — остання прогонка на 3.11/3.12/3.13 має бути зелена.
+- **0.5 закрито:** CI активний і зелений (`38072914168` — success на 3.11/3.12/3.13, ~18с кожна матриця). Попередні два прогони `b24a050`/`78e0e71` також success.
 
 ## Що перевірено живими запитами 2026-10-10
 Виявилось, що з сесії Claude Code на Mac власника мережа до бірж **працює** (через `uv run python … httpx/ccxt`; `curl` блокує sandbox). `make smoke` виконано, 9/9 інструментів ok. Деталі в `docs/reference/api-notes.md` (розділ «Живі зразки»):
@@ -51,8 +51,7 @@
 - **OKX order book**: рівні з 4 колонок (включно з `orders_count`) → виправлено в `analytics/orderbook.py` + тест `test_book_tolerates_extra_level_columns`.
 
 ## Що ще НЕ перевірено
-- CI (`.github/workflows/ci.yml`): локально немає `gh` CLI, тож прогонку перевіряє власник (див. пункт 0.5 у BACKLOG).
-- `perps_open_interest` для Bybit: fallback у 0.6 покриває Binance; Bybit у ccxt `fetch_ticker` зазвичай повертає `last`, але не гарантовано (`False` для `has.fetchTicker` окремих маркетів зустрічається). Жива перевірка — під час наступного `make smoke`.
+- `perps_open_interest` для Bybit: fallback у 0.6 покриває Binance; Bybit у ccxt `fetch_ticker` зазвичай повертає `last`, але не гарантовано. Жива перевірка — під час наступного `make smoke`.
 
 ## Ключові рішення (деталі в `docs/adr/`)
 | ADR | Рішення |

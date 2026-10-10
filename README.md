@@ -66,6 +66,7 @@ claude mcp add tradedesk -- uv run --directory /ABSOLUTE/PATH/TO/tradedesk-mcp t
 | | `prob_from_options` | ризик-нейтральна ймовірність above/below/touch з урахуванням skew |
 | | `deribit_dvol` | DVOL (річний %) time series + latest / mean / stdev / min / max / change 24h / 7d |
 | | `deribit_atm_term` | ATM-IV term structure (contango/backwardation) по експіраціях |
+| | `deribit_skew_term` | term structure 25Δ-RR і 25Δ-fly (puts/calls richer, flattening/steepening) |
 | Квант | `odds_devig`, `option_calc`, `touch_probability` | маржа й справедливі ймовірності, калькулятор опціону, barrier-ймовірність |
 | Настрій | `sentiment_fear_greed` | Crypto Fear & Greed (alternative.me): latest + zone, mean 7d/30d, зміни, частка днів у кожній зоні |
 | Календар | `calendar_expiries` | експірації Deribit (daily/weekly/monthly/quarterly), найближчі funding-моменти, макро-події (FOMC/CPI/NFP) |

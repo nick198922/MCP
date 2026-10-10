@@ -25,7 +25,7 @@
 - [x] 1.8 `calendar_expiries(currencies, horizon_days, funding_hours_ahead)`: Deribit експірації по валютах (`classify_expiry` → daily/weekly/monthly/quarterly), funding-schedule для binanceusdm/bybit/okx (8h) + HL (1h), макро-події з `src/tradedesk/data/macro_events.json` (FOMC/CPI/NFP, оновлюється вручну). Включено до wheel force-include.
 - [x] 1.9 Волатильність (частково): `deribit_dvol(currency, hours_back, resolution)` — DVOL time series + stats + 24h/7d point-changes. `deribit_atm_term(currency, min_days, max_days)` — ATM-IV term structure зі shape (contango/backwardation/flat). IV rank/percentile і VRP залишаються до Фази 2 (історія). **(verify)** Live-перевірка — під час наступного `make smoke`.
 - [ ] 1.10 Якість smile: фільтр ✅ (`min_oi`, `max_spread_pct`), прапорці `thin_wing_25d`/`thin_wing_10d` ✅; ліквідні ваги в LS-фіті smile — лишилися.
-- [ ] 1.11 Skew-метрики: 25Δ-RR і butterfly по всіх експірціях (термова структура skew), `skew_percentile` (після Фази 2).
+- [x] 1.11 Skew term structure: `deribit_skew_term(currency, target_delta, min_days, max_days)` — RR і fly по експіраціях (на будь-який call-equivalent delta у (0, 0.5)), найбільш екстремальна за |RR|, shape `flattening`/`steepening`/`stable`. `skew_percentile` — після Фази 2 (треба історія).
 - [ ] 1.12 Deribit: `deribit_largest_trades` (блок-угоди `public/get_last_trades_by_currency`); `deribit_oi_by_strike` ✅, `deribit_expected_move` ✅.
 - [ ] 1.13 Cross-venue: `perps_basis_compare` (перп vs квартальний Deribit vs CME-проксі), `perps_premium_index`.
 

@@ -36,6 +36,7 @@ EXPECTED_TOOLS = {
     "calendar_expiries",
     "deribit_dvol",
     "deribit_atm_term",
+    "deribit_skew_term",
 }
 
 
@@ -500,3 +501,16 @@ async def test_deribit_atm_term(server):
         assert 0.35 < row["atm_iv"] < 0.45
         assert row["forward"] > 0 and row["strikes"] >= 3
     assert d["shape"] in ("contango", "backwardation", "flat")
+
+
+async def test_deribit_skew_term(server):
+    env = await call(server, "deribit_skew_term", currency="BTC", target_delta=0.25, min_days=0, max_days=400)
+    d = env["data"]
+    assert d["target_delta"] == 0.25
+    assert len(d["expiries"]) == 3
+    # SMILE['skew'] = -0.25 (negative) → puts richer → RR negative on every expiry
+    for row in d["expiries"]:
+        assert row["rr"] < 0
+        assert row["fly"] > 0  # curv > 0 → wings above ATM
+    assert d["most_extreme"]["rr"] <= min(r["rr"] for r in d["expiries"])
+    assert d["rr_shape"] in ("flattening", "steepening", "stable")

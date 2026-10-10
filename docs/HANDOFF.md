@@ -13,7 +13,7 @@
 Припущення, які ще не підтверджено власником (не вважати рішеннями): алерти через Telegram; хостинг на VPS; IBKR (на його Маку помічено папки `Jts`/`ntws`, схоже на IB TWS).
 
 ## Що зроблено (Фаза 0 + частина Фази 1)
-32 інструменти, лише публічні дані, ключі не потрібні:
+33 інструменти, лише публічні дані, ключі не потрібні:
 
 | Група | Інструменти |
 |---|---|
@@ -22,7 +22,7 @@
 | Перпи | `perps_funding_compare`, `perps_funding_history`, `perps_long_short_ratio`, `perps_oi_history`, `perps_open_interest` |
 | Hyperliquid | `hyperliquid_overview`, `hyperliquid_candles`, `hyperliquid_book`, `hyperliquid_trades`, `hyperliquid_funding_history` |
 | Ф'ючерси | `deribit_futures_curve` |
-| Опціони | `deribit_vol_surface`, `deribit_option_chain`, `deribit_max_pain`, `deribit_gamma_exposure`, `deribit_expected_move`, `deribit_oi_by_strike`, `deribit_dvol`, `deribit_atm_term`, `prob_from_options` |
+| Опціони | `deribit_vol_surface`, `deribit_option_chain`, `deribit_max_pain`, `deribit_gamma_exposure`, `deribit_expected_move`, `deribit_oi_by_strike`, `deribit_dvol`, `deribit_atm_term`, `deribit_skew_term`, `prob_from_options` |
 | Квант | `odds_devig`, `option_calc`, `touch_probability` |
 | Настрій | `sentiment_fear_greed` |
 | Календар | `calendar_expiries` |
@@ -45,7 +45,8 @@
 - **1.6 закрито:** `sentiment_fear_greed(days=1..365)` — крипто Fear & Greed з alternative.me. Новий провайдер `alternative_me.py`, аналітика `summarise_fear_greed`. Повертає latest + zone (extreme_fear/fear/neutral/greed/extreme_greed), mean 7d/30d, min/max, change_7d/30d, zone_share, series.
 - **1.8 закрито:** `calendar_expiries(currencies, horizon_days, funding_hours_ahead)` — три секції: Deribit expiries (daily/weekly/monthly/quarterly), funding payouts (Binance/Bybit/OKX 8h, HL hourly), macro events із `data/macro_events.json` (FOMC/CPI/NFP). Файл JSON підключено до wheel через `force-include`.
 - **1.9 закрито (частково):** `deribit_dvol(currency, hours_back, resolution)` — DVOL OHLC-ряд, latest/mean/stdev/min/max і 24h/7d point-changes. `deribit_atm_term(currency)` — ATM-IV term structure з shape (contango/backwardation/flat). IV rank і VRP — до Фази 2 (історія в SQLite).
-- Тестів: 77 (+7 за сесію), lint і format чисті.
+- **1.11 закрито:** `deribit_skew_term(currency, target_delta=0.25, min_days, max_days)` — per-expiry RR і fly, найбільш екстремальна за |RR|, крос-експірний `rr_shape` (flattening/steepening/stable). `skew_percentile` — до Фази 2.
+- Тестів: 78 (+8 за сесію), lint і format чисті.
 - **`make smoke` live 2026-10-10: 15/15 ok** на реальних біржах. Deribit greeks звірено з їхнім ticker (30OCT26, delta/vega/theta до 4 знаків). `perps_open_interest` з новим fallback відпрацював 669 мс. `sentiment_fear_greed` повернув 30 денних значень; живий зразок збережено в `tests/fixtures/alternative_me_fng_live_2026-10-10.json`.
 
 ## Що перевірено живими запитами 2026-10-10

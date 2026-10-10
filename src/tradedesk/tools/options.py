@@ -541,3 +541,65 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 else ("backwardation" if out[-1]["atm_iv"] < out[0]["atm_iv"] else "flat")
             )
         return b.build({"currency": currency, "shape": shape, "expiries": out})
+
+    @server.tool(
+        annotations=READ_ONLY,
+        description=(
+            "Skew term structure for Deribit options (BTC/ETH): per expiry the risk reversal (RR = IV_call - "
+            "IV_put at the chosen call-equivalent delta; negative = puts richer, i.e. downside skew) and the "
+            "butterfly (fly = (IV_call + IV_put)/2 - ATM_IV; positive = wings richer than ATM). IVs are "
+            "decimals. target_delta picks the wings (0.25 -> 25-delta call vs 25-delta put). Also reports the "
+            "most-extreme expiry by |RR| and whether the skew is `flattening` / `steepening` / `stable` from "
+            "front to back. IV rank/percentile for RR/fly needs stored history (Phase 2)."
+        ),
+    )
+    async def deribit_skew_term(
+        currency: CUR = "BTC",
+        target_delta: Annotated[float, Field(gt=0, lt=0.5, description="Call-equivalent target delta for the wings.")] = 0.25,
+        min_days: Annotated[float, Field(ge=0)] = 0.5,
+        max_days: Annotated[float, Field(gt=0)] = 400,
+    ) -> dict[str, Any]:
+        b = Builder()
+        rows = await _chain(rt, b, currency)
+        if rows is None:
+            return b.build(None, ok=False)
+        by = group_by_expiry(rows)
+        out: list[dict[str, Any]] = []
+        for exp, rs in by.items():
+            days = (exp - rt.now()).total_seconds() / 86400
+            if not (min_days <= days <= max_days):
+                continue
+            sm = build_smile(rs)
+            if sm is None:
+                continue
+            rf = rr_fly(sm, target_delta)
+            if rf["rr"] is None:
+                continue
+            out.append(
+                {
+                    "expiry": expiry_token(exp),
+                    "days": r(days, 2),
+                    "atm_iv": r(rf["atm"], 4),
+                    "iv_call": r(rf["iv_call"], 4),
+                    "iv_put": r(rf["iv_put"], 4),
+                    "rr": r(rf["rr"], 4),
+                    "fly": r(rf["fly"], 4),
+                }
+            )
+        if not out:
+            b.miss("skew_term", "deribit", "data_unavailable", "no expiries with a usable smile at the target delta")
+            return b.build(None, ok=False)
+        most_extreme = max(out, key=lambda x: abs(x["rr"] or 0))
+        rr_shape: str | None = None
+        if len(out) >= 2 and out[0]["rr"] is not None and out[-1]["rr"] is not None:
+            front, back = abs(out[0]["rr"]), abs(out[-1]["rr"])
+            rr_shape = "flattening" if back < front * 0.5 else ("steepening" if back > front * 1.5 else "stable")
+        return b.build(
+            {
+                "currency": currency,
+                "target_delta": target_delta,
+                "most_extreme": {"expiry": most_extreme["expiry"], "rr": most_extreme["rr"]},
+                "rr_shape": rr_shape,
+                "expiries": out,
+            }
+        )

@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Фаза 1.11: `deribit_skew_term(currency, target_delta=0.25, min_days, max_days)` — per-expiry RR (= IV_call − IV_put на target delta; від'ємний → puts richer) та fly (= (IV_call + IV_put)/2 − ATM_IV), найбільш екстремальна експірація за |RR|, крос-експірний `rr_shape` (flattening/steepening/stable). Поверх уже наявного `rr_fly()`. `skew_percentile` — до Фази 2.
 - Фаза 1.9 (частково): два нових опційних інструменти. `deribit_dvol(currency, hours_back=1..720, resolution=60/3600/43200/86400)` поверх `/public/get_volatility_index_data` — повертає OHLC-ряд DVOL (річний %), latest/mean/stdev/min/max, зміни `change_24h_pts` і `change_7d_pts`. `deribit_atm_term(currency, min_days, max_days)` — ATM-IV для кожної експірації з класифікацією `shape` (contango/backwardation/flat). IV rank/percentile і VRP відкладено до Фази 2 (потрібна локальна історія).
 - Фаза 1.8: `calendar_expiries(currencies, horizon_days, funding_hours_ahead)` — один dashboard-інструмент із трьома секціями. Deribit експірації класифікуються `classify_expiry` як daily/weekly/monthly/quarterly (вічко — 08:00 UTC пʼятниці; остання пʼятниця Mar/Jun/Sep/Dec → quarterly, остальні — monthly). `funding_schedule(now, hours_ahead)` будує список найближчих payouts для Binance/Bybit/OKX (8h, 00/08/16 UTC) та Hyperliquid (щогодини). `filter_macro` фільтрує події з `src/tradedesk/data/macro_events.json` (FOMC/CPI/NFP; оновлюється вручну, у wheel через `force-include`).
 - Фаза 1.6: `sentiment_fear_greed(days=1..365)` — крипто-індекс Fear & Greed з alternative.me. Новий провайдер `alternative_me.py` (`/fng/`, rate 2 req/s). Нова чиста аналітика `summarise_fear_greed` (zones extreme_fear/fear/neutral/greed/extreme_greed, mean 7d/30d, min/max, change_7d/30d, zone_share). Фікстура `tests/fixtures/fear_greed_sample.json` (30 днів навколо NOW); тест happy-path і провайдер-фейл. Доданий кейс у `live_smoke.py` (поріг 11/15).
@@ -17,7 +18,7 @@
 - Фаза 1.2: `perps_funding_history` — крос-венюз історія funding (Binance/Bybit/OKX через ccxt `fetch_funding_rate_history` + Hyperliquid), автодетект інтервалу з медіани ts-різниць (`detect_interval_hours`), крос-венюз-summary (highest/lowest carry, biggest |z|), опція `include_series` для сирих рядів. Live-перевірено на BTC: HL carry 9.1%, OKX 5.1%, Binance 4.5%, Bybit 4.3%; Bybit `z = −1.45` (mean-reversion сигнал).
 - MCP-промт `token_deep_analysis(project)` — глибокий 10-секційний інвест-аналіз криптопроекту (RU), шаблон `src/tradedesk/prompts/token_deep_analysis.md` (bundled у wheel), з хінтом про релевантні tradedesk-mcp інструменти для графіка/позиціювання.
 - Фаза 1.3: нові провайдери `binance_futures.py` і `bybit.py` під окремими `Http` з лімітами. Два нові інструменти: `perps_long_short_ratio` (роздрібні account-based fractions Binance+Bybit, latest/mean/z-score, cross-venue divergence) і `perps_oi_history` (OI history Binance в USD, Bybit в base, latest/mean/change24h/z, cross-venue biggest gain/drop). Live-перевірено 2026-10-10 на BTC.
-- Тестів: 77 (+26 від 0.1.0), lint чистий.
+- Тестів: 78 (+27 від 0.1.0), lint чистий.
 
 ## 0.1.0 — 2026-10-10
 - Ядро: `Http` (ретраї, rate-limit, кеш із single-flight, класифікація помилок), `HealthRegistry`, `Envelope/Evidence`.

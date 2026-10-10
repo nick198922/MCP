@@ -38,6 +38,7 @@ CASES: list[tuple[str, dict]] = [
     ("calendar_expiries", {"currencies": ["BTC", "ETH"], "horizon_days": 60, "funding_hours_ahead": 24}),
     ("deribit_dvol", {"currency": "BTC", "hours_back": 168, "resolution": 3600}),
     ("deribit_atm_term", {"currency": "BTC"}),
+    ("deribit_skew_term", {"currency": "BTC", "target_delta": 0.25}),
 ]
 
 
@@ -83,7 +84,7 @@ async def main() -> int:
                     f"  {name}: delta {g['delta']:.4f}|{d['delta']:.4f}  vega {g['vega']:.1f}|{d['vega']:.1f}  theta {g['theta']:.1f}|{d['theta']:.1f}"
                 )
     await rt.aclose()
-    return 0 if ok_count >= 14 else 1
+    return 0 if ok_count >= 15 else 1
 
 
 if __name__ == "__main__":

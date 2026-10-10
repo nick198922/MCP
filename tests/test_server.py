@@ -39,6 +39,9 @@ EXPECTED_TOOLS = {
     "deribit_skew_term",
     "deribit_largest_trades",
     "perps_basis_compare",
+    "polymarket_search",
+    "polymarket_market",
+    "polymarket_history",
 }
 
 
@@ -503,6 +506,53 @@ async def test_deribit_atm_term(server):
         assert 0.35 < row["atm_iv"] < 0.45
         assert row["forward"] > 0 and row["strikes"] >= 3
     assert d["shape"] in ("contango", "backwardation", "flat")
+
+
+async def test_polymarket_search(server):
+    env = await call(server, "polymarket_search", query="btc", limit=5)
+    d = env["data"]
+    assert d["count"] == 1
+    m = d["markets"][0]
+    assert m["slug"].startswith("will-btc")
+    assert m["active"] is True
+    # raw prices sum to 1.02 (0.62 + 0.40) → de-vigged sums to 1.0
+    s = sum(o["price_devigged"] for o in m["outcomes"])
+    assert abs(s - 1.0) < 1e-9
+    assert m["volume_usd"] > 0
+
+
+async def test_polymarket_market_with_books(server):
+    env = await call(server, "polymarket_market", market_id="516700")
+    m = env["data"]["market"]
+    yes = next(o for o in m["outcomes"] if o["name"] == "Yes")
+    assert yes["book"]["best_bid"] == 0.618 and yes["book"]["best_ask"] == 0.622
+    assert yes["book"]["mid"] == 0.62 and yes["book"]["spread"] == pytest.approx(0.004)
+
+
+async def test_polymarket_history(server):
+    env = await call(server, "polymarket_history", token_id="TOK_YES", interval="1d")
+    d = env["data"]
+    assert d["count"] == 24
+    assert d["latest"]["p"] > d["series"][0]["p"]  # fixture is monotonically rising
+    assert d["change_pct"] > 0
+
+
+async def test_polymarket_provider_failure(state):
+    import httpx
+
+    from conftest import NOW, FakeEx, make_transports
+    from tradedesk.config import Settings
+    from tradedesk.runtime import Runtime
+    from tradedesk.server import build_server
+
+    tr = make_transports(state)
+    tr["polymarket:gamma"] = httpx.MockTransport(lambda req: httpx.Response(502, text="down"))
+    rt2 = Runtime(Settings(http_retries=1, cache_scale=0.0), transports=tr, exchange_factory=FakeEx)
+    rt2.now = lambda: NOW
+    srv, _ = build_server(rt2)
+    env = await call(srv, "polymarket_search", query="x")
+    assert env["ok"] is False
+    assert any(m["provider"] == "polymarket:gamma" for m in env["missing"])
 
 
 async def test_perps_basis_compare(server):

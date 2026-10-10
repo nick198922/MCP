@@ -13,7 +13,7 @@
 Припущення, які ще не підтверджено власником (не вважати рішеннями): алерти через Telegram; хостинг на VPS; IBKR (на його Маку помічено папки `Jts`/`ntws`, схоже на IB TWS).
 
 ## Що зроблено (Фаза 0 + частина Фази 1)
-35 інструментів, лише публічні дані, ключі не потрібні:
+38 інструментів, лише публічні дані, ключі не потрібні:
 
 | Група | Інструменти |
 |---|---|
@@ -26,6 +26,7 @@
 | Квант | `odds_devig`, `option_calc`, `touch_probability` |
 | Настрій | `sentiment_fear_greed` |
 | Календар | `calendar_expiries` |
+| Prediction markets | `polymarket_search`, `polymarket_market`, `polymarket_history` |
 
 Ядро: `Http` (ретраї на 429/5xx/timeout, token-bucket, TTL-кеш із single-flight, класифікація помилок), `HealthRegistry`, `Envelope/Evidence`, фейкові транспорти для тестів.
 
@@ -48,7 +49,8 @@
 - **1.11 закрито:** `deribit_skew_term(currency, target_delta=0.25, min_days, max_days)` — per-expiry RR і fly, найбільш екстремальна за |RR|, крос-експірний `rr_shape` (flattening/steepening/stable). `skew_percentile` — до Фази 2.
 - **1.12 закрито:** `deribit_largest_trades(currency, kind, count, only_blocks, min_notional_usd, top_n)` — топ-N трейдів за USD-notional, фільтр блок-угод, summary з taker imbalance.
 - **1.13 закрито:** `perps_basis_compare(base)` — крос-венюз perp premium (bps) по Binance/Bybit/OKX/Hyperliquid/Deribit + Deribit dated-futures basis (simple і log річні). Summary: highest/lowest premium, крос-венюз spread, найближчий dated-contract.
-- Тестів: 80 (+10 за сесію), lint і format чисті.
+- **1.5 закрито (частково):** Polymarket провайдер (Gamma + CLOB через два окремих `Http`), analytics (normalise_market, devig_multi, book_stats), 3 інструменти: `polymarket_search`, `polymarket_market` (з CLOB-мідами по outcome-ах), `polymarket_history`. `polymarket_vs_options` — пізніше, бо треба Polymarket→crypto-option mapping.
+- Тестів: 84 (+14 за сесію), lint і format чисті.
 - **`make smoke` live 2026-10-10: 15/15 ok** на реальних біржах. Deribit greeks звірено з їхнім ticker (30OCT26, delta/vega/theta до 4 знаків). `perps_open_interest` з новим fallback відпрацював 669 мс. `sentiment_fear_greed` повернув 30 денних значень; живий зразок збережено в `tests/fixtures/alternative_me_fng_live_2026-10-10.json`.
 
 ## Що перевірено живими запитами 2026-10-10

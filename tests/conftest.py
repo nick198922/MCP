@@ -277,6 +277,77 @@ def make_transports(state: State) -> dict:
             )
         return httpx.Response(404, text="not mocked")
 
+    def polymarket_gamma(req: httpx.Request) -> httpx.Response:
+        sample_market = {
+            "id": "516700",
+            "slug": "will-btc-close-above-100k-by-2026-12-31",
+            "question": "Will BTC close above $100k by 2026-12-31?",
+            "outcomes": '["Yes","No"]',
+            "outcomePrices": '["0.62","0.40"]',
+            "clobTokenIds": '["TOK_YES","TOK_NO"]',
+            "endDate": "2026-12-31T23:59:00Z",
+            "active": True,
+            "closed": False,
+            "volumeNum": 1_250_000.0,
+            "liquidityNum": 85_000.0,
+        }
+        if req.url.path == "/public-search":
+            return httpx.Response(200, json={"events": [{"id": "E1", "markets": [sample_market]}], "pagination": {}})
+        if req.url.path == "/markets":
+            market = {
+                "id": "516700",
+                "slug": "will-btc-close-above-100k-by-2026-12-31",
+                "question": "Will BTC close above $100k by 2026-12-31?",
+                "outcomes": '["Yes","No"]',
+                "outcomePrices": '["0.62","0.40"]',
+                "clobTokenIds": '["TOK_YES","TOK_NO"]',
+                "endDate": "2026-12-31T23:59:00Z",
+                "active": True,
+                "closed": False,
+                "volumeNum": 1_250_000.0,
+                "liquidityNum": 85_000.0,
+            }
+            return httpx.Response(200, json=[market])
+        if req.url.path.startswith("/markets/"):
+            mid = req.url.path[len("/markets/") :]
+            return httpx.Response(
+                200,
+                json={
+                    "id": mid,
+                    "slug": "will-btc-close-above-100k-by-2026-12-31",
+                    "question": "Will BTC close above $100k by 2026-12-31?",
+                    "outcomes": '["Yes","No"]',
+                    "outcomePrices": '["0.62","0.40"]',
+                    "clobTokenIds": '["TOK_YES","TOK_NO"]',
+                    "endDate": "2026-12-31T23:59:00Z",
+                    "active": True,
+                    "closed": False,
+                    "volumeNum": 1_250_000.0,
+                    "liquidityNum": 85_000.0,
+                },
+            )
+        return httpx.Response(404, text="not mocked")
+
+    def polymarket_clob(req: httpx.Request) -> httpx.Response:
+        if req.url.path == "/book":
+            tok = req.url.params.get("token_id") or ""
+            # Yes mid 0.62 / No mid 0.38
+            if tok == "TOK_YES":
+                bids = [{"price": "0.618", "size": "500"}, {"price": "0.615", "size": "300"}]
+                asks = [{"price": "0.622", "size": "400"}, {"price": "0.625", "size": "200"}]
+            else:
+                bids = [{"price": "0.378", "size": "450"}, {"price": "0.375", "size": "250"}]
+                asks = [{"price": "0.382", "size": "350"}, {"price": "0.385", "size": "180"}]
+            return httpx.Response(200, json={"market": tok, "bids": bids, "asks": asks})
+        if req.url.path == "/prices-history":
+            tok = req.url.params.get("market") or ""
+            base = 0.55 if tok == "TOK_YES" else 0.45
+            now_ms = 1791637620_000
+            hour = 3_600_000
+            rows = [{"t": now_ms - (23 - i) * hour, "p": base + 0.003 * i} for i in range(24)]
+            return httpx.Response(200, json={"history": rows})
+        return httpx.Response(404, text="not mocked")
+
     def alternative_me(req: httpx.Request) -> httpx.Response:
         if req.url.path == "/fng/":
             with open(Path(__file__).parent / "fixtures" / "fear_greed_sample.json") as f:
@@ -292,6 +363,8 @@ def make_transports(state: State) -> dict:
         "binance_futures": httpx.MockTransport(binance_futures),
         "bybit": httpx.MockTransport(bybit),
         "alternative_me": httpx.MockTransport(alternative_me),
+        "polymarket:gamma": httpx.MockTransport(polymarket_gamma),
+        "polymarket:clob": httpx.MockTransport(polymarket_clob),
     }
 
 

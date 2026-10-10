@@ -18,12 +18,14 @@ from .providers import binance_futures as binance_mod
 from .providers import bybit as bybit_mod
 from .providers import deribit as deribit_mod
 from .providers import hyperliquid as hl_mod
+from .providers import polymarket as poly_mod
 from .providers.alternative_me import AlternativeMe
 from .providers.binance_futures import BinanceFutures
 from .providers.bybit import Bybit
 from .providers.deribit import Deribit
 from .providers.exchanges import Exchanges
 from .providers.hyperliquid import Hyperliquid
+from .providers.polymarket import Polymarket
 
 
 class Runtime:
@@ -60,6 +62,10 @@ class Runtime:
         self.binance_futures = BinanceFutures(http("binance_futures", binance_mod.BASE_URL, rate=20, burst=40))
         self.bybit = Bybit(http("bybit", bybit_mod.BASE_URL, rate=20, burst=40))
         self.alternative_me = AlternativeMe(http("alternative_me", altme_mod.BASE_URL, rate=2, burst=4))
+        self.polymarket = Polymarket(
+            gamma=http("polymarket:gamma", poly_mod.GAMMA_URL, rate=5, burst=10),
+            clob=http("polymarket:clob", poly_mod.CLOB_URL, rate=5, burst=10),
+        )
         self.exchanges = Exchanges(
             self.health,
             cache=self.cache,
@@ -74,4 +80,5 @@ class Runtime:
         await self.binance_futures.http.aclose()
         await self.bybit.http.aclose()
         await self.alternative_me.http.aclose()
+        await self.polymarket.aclose()
         await self.exchanges.aclose()

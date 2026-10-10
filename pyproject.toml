@@ -25,6 +25,9 @@ tradedesk-mcp = "tradedesk.server:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/tradedesk"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"src/tradedesk/prompts/token_deep_analysis.md" = "tradedesk/prompts/token_deep_analysis.md"
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

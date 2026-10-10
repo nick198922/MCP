@@ -81,6 +81,6 @@
 
 ## Ідеї без пріоритету
 - MCP-ресурси (`resource://`) для статичних довідників (специфікації контрактів, календар).
-- MCP-промпти: `morning_briefing`, `pre_trade_checklist`, `post_mortem`.
+- MCP-промпти: `morning_briefing`, `pre_trade_checklist`, `post_mortem` (базовий `token_deep_analysis` ✅).
 - Експорт у Google Sheets/CSV.
 - Сповіщення про зміну health провайдерів.

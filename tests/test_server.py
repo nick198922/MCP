@@ -50,6 +50,16 @@ async def test_tool_surface(server):
     assert EXPECTED_TOOLS <= names
 
 
+async def test_token_deep_analysis_prompt(server):
+    async with Client(server) as c:
+        names = {p.name for p in (await c.list_prompts()).prompts}
+        assert "token_deep_analysis" in names
+        res = await c.get_prompt("token_deep_analysis", {"project": "SOL"})
+        text = res.messages[0].content.text
+    assert "SOL" in text and "[НАЗВАНИЕ ПРОЕКТА" not in text
+    assert "tradedesk-mcp" in text  # the hint block is appended
+
+
 async def test_funding_compare_normalises_intervals_and_degrades(server):
     env = await call(server, "perps_funding_compare", base="BTC")
     assert env["ok"]

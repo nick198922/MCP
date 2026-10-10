@@ -28,7 +28,8 @@
 Ядро: `Http` (ретраї на 429/5xx/timeout, token-bucket, TTL-кеш із single-flight, класифікація помилок), `HealthRegistry`, `Envelope/Evidence`, фейкові транспорти для тестів.
 
 ## Як перевірено
-- **67 тестів, усі зелені** (локально; Python 3.15 через `uv`). Раніше проходили на 3.13/3.14.
+- **68 тестів, усі зелені** (локально; Python 3.15 через `uv`). Раніше проходили на 3.13/3.14.
+- Промт `token_deep_analysis` зареєстрований і рендериться через MCP Client API (`list_prompts` + `get_prompt`).
 - `ruff check` і `ruff format` чисті.
 - Black-76 звірено з **реальним тікером Deribit** (delta −0.4535, gamma ≈2e-5, vega 226.95, theta −25.98) і з ціною (mark у BTC = USD-ціна / forward).
 - Touch-ймовірності звірено з Monte Carlo (±1.5 %).

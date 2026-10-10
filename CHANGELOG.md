@@ -10,7 +10,8 @@
 - Фаза 0.5: `make smoke` виконано 2026-10-10, 9/9 ok (Deribit greeks звірено з their ticker до 4 знаків); живі зразки ccxt і HL задокументовано в `docs/reference/api-notes.md`.
 - Фаза 1.4: чотири Hyperliquid-інструменти (`hyperliquid_candles`, `hyperliquid_book`, `hyperliquid_trades`, `hyperliquid_funding_history`); провайдер отримав `recent_trades`; нова чиста аналітика `summarise_funding_history` (mean 7d/30d, z-score, percentile, carry APR, polarity flips). Live-протестовано на реальному BTC/ETH 2026-10-10.
 - Фаза 1.2: `perps_funding_history` — крос-венюз історія funding (Binance/Bybit/OKX через ccxt `fetch_funding_rate_history` + Hyperliquid), автодетект інтервалу з медіани ts-різниць (`detect_interval_hours`), крос-венюз-summary (highest/lowest carry, biggest |z|), опція `include_series` для сирих рядів. Live-перевірено на BTC: HL carry 9.1%, OKX 5.1%, Binance 4.5%, Bybit 4.3%; Bybit `z = −1.45` (mean-reversion сигнал).
-- Тестів: 67 (+16 від 0.1.0), lint чистий.
+- MCP-промт `token_deep_analysis(project)` — глибокий 10-секційний інвест-аналіз криптопроекту (RU), шаблон `src/tradedesk/prompts/token_deep_analysis.md` (bundled у wheel), з хінтом про релевантні tradedesk-mcp інструменти для графіка/позиціювання.
+- Тестів: 68 (+17 від 0.1.0), lint чистий.
 
 ## 0.1.0 — 2026-10-10
 - Ядро: `Http` (ретраї, rate-limit, кеш із single-flight, класифікація помилок), `HealthRegistry`, `Envelope/Evidence`.

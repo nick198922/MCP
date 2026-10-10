@@ -52,8 +52,11 @@
 - CLOB API `https://clob.polymarket.com`: `/price?token_id=&side=`, `/book?token_id=`, `/prices-history?market=<token>&interval=&fidelity=` **[D]**.
 - Ціна «Yes» ≈ імплікована ймовірність; для багатоісходних ринків потрібен de-vig (`odds_devig`).
 
+## alternative.me (крипто Fear & Greed) **[V]**
+- `GET https://api.alternative.me/fng/?limit=N&format=json` → `{name, data: [{value, value_classification, timestamp, time_until_update?}], metadata}`. `value` і `timestamp` — рядки; `time_until_update` присутній лише в найсвіжішому рядку. Денна частота, оновлення близько 00:00 UTC. Класифікація: `Extreme Fear` (0–24) / `Fear` (25–44) / `Neutral` (45–54) / `Greed` (55–74) / `Extreme Greed` (75–100).
+- Живий snapshot `tests/fixtures/alternative_me_fng_live_2026-10-10.json` (30 рядків, 2026-10-10 ~14:40 UTC): останнє значення 64 (Greed), 7 днів тому 73 (Greed), тижневий тренд легка просадка.
+
 ## Інші публічні джерела (план)
-- Крипто Fear & Greed: `https://api.alternative.me/fng/?limit=N` **[D]**.
 - Binance futures: база `https://fapi.binance.com`; `/futures/data/globalLongShortAccountRatio` → `[{symbol, longAccount, shortAccount, longShortRatio, timestamp}]` всі рядки, longAccount+shortAccount≈1.0 (account fractions, не notional-weighted) **[V]**. `/futures/data/openInterestHist` → `[{symbol, sumOpenInterest, sumOpenInterestValue, CMCCirculatingSupply, timestamp}]`, OI у монетах і USD **[V]**. Періоди: `5m/15m/30m/1h/2h/4h/6h/12h/1d`, limit до 500 **[V]**.
 - Bybit v5: база `https://api.bybit.com`; відповідь загорнута в `{retCode, retMsg, result: {list: [...]}}`. `/v5/market/account-ratio?category=linear` → `{symbol, buyRatio, sellRatio, timestamp}`, `buyRatio+sellRatio≈1.0` **[V]**. `/v5/market/open-interest?category=linear&intervalTime=1h` → `{openInterest, singleOpenInterest, timestamp}`, тільки в base-asset (USD-value **не повертається**) **[V]**. Періоди: `5min/15min/30min/1h/4h/1d`, limit до 500 **[V]**. `/v5/market/funding/history` **[D]**.
 - Liquidations: WebSocket Binance `!forceOrder@arr`, Bybit `allLiquidation.<symbol>`, OKX `liquidation-orders`, Hyperliquid немає прямого публічного фіда ліквідацій **[D]**.

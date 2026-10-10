@@ -43,6 +43,7 @@
 - **0.7 закрито:** `scripts/live_smoke.py` розширено до 15 кейсів (`market_tickers`, `market_markets`, `market_trades`, `deribit_expected_move`, `deribit_oi_by_strike`, `sentiment_fear_greed`). Поріг успіху 11/15.
 - **1.6 закрито:** `sentiment_fear_greed(days=1..365)` — крипто Fear & Greed з alternative.me. Новий провайдер `alternative_me.py`, аналітика `summarise_fear_greed`. Повертає latest + zone (extreme_fear/fear/neutral/greed/extreme_greed), mean 7d/30d, min/max, change_7d/30d, zone_share, series.
 - Тестів: 73 (+3 за сесію), lint і format чисті.
+- **`make smoke` live 2026-10-10: 15/15 ok** на реальних біржах. Deribit greeks звірено з їхнім ticker (30OCT26, delta/vega/theta до 4 знаків). `perps_open_interest` з новим fallback відпрацював 669 мс. `sentiment_fear_greed` повернув 30 денних значень; живий зразок збережено в `tests/fixtures/alternative_me_fng_live_2026-10-10.json`.
 
 ## Що перевірено живими запитами 2026-10-10
 Виявилось, що з сесії Claude Code на Mac власника мережа до бірж **працює** (через `uv run python … httpx/ccxt`; `curl` блокує sandbox). `make smoke` виконано, 9/9 інструментів ok. Деталі в `docs/reference/api-notes.md` (розділ «Живі зразки»):

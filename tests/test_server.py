@@ -62,6 +62,7 @@ EXPECTED_TOOLS = {
     "rules_list",
     "rules_test",
     "rules_disable",
+    "strategy_payoff",
 }
 
 

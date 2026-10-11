@@ -21,6 +21,7 @@ def register_all(server: MCPServer, rt: Runtime) -> None:
         quant,
         rules,
         sentiment,
+        strategy,
         system,
     )
 
@@ -39,6 +40,7 @@ def register_all(server: MCPServer, rt: Runtime) -> None:
         positions,
         liquidations,
         rules,
+        strategy,
         prompts,
     ):
         module.register(server, rt)

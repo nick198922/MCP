@@ -7,7 +7,21 @@ from ..runtime import Runtime
 
 def register_all(server: MCPServer, rt: Runtime) -> None:
     from .. import prompts
-    from . import calendar, coingecko, history, journal, market, options, perps, polymarket, quant, sentiment, system
+    from . import calendar, coingecko, history, journal, market, options, perps, polymarket, positions, quant, sentiment, system
 
-    for module in (system, market, perps, options, quant, sentiment, calendar, polymarket, coingecko, history, journal, prompts):
+    for module in (
+        system,
+        market,
+        perps,
+        options,
+        quant,
+        sentiment,
+        calendar,
+        polymarket,
+        coingecko,
+        history,
+        journal,
+        positions,
+        prompts,
+    ):
         module.register(server, rt)

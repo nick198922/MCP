@@ -76,6 +76,7 @@ claude mcp add tradedesk -- uv run --directory /ABSOLUTE/PATH/TO/tradedesk-mcp t
 | Макро/ринок | `coin_snapshot`, `global_market`, `top_coins` | CoinGecko: ціна/mcap/FDV/supply/ATH, глобальна домінація BTC/ETH/alts, топ-N монет |
 | Історія (Фаза 2) | `iv_rank`, `funding_zscore`, `skew_percentile`, `alerts_recent` | ATM-IV rank, крос-венюз funding z-score, 25Δ/10Δ RR percentile, журнал алертів (локальна SQLite) |
 | Журнал (Фаза 2) | `journal_add`, `journal_list`, `journal_close`, `journal_stats` | трекінг угод у локальній SQLite: PnL, R-multiple, теги, win-rate / expectancy / avg R |
+| Позиції (Фаза 2) | `positions_add`, `positions_list`, `positions_close`, `positions_risk` | ручний портфель + сценарії PnL (±10 % спот, ±5 vol-points, crash+vol-up): net δ/γ/vega/θ |
 
 Усі відповіді мають однаковий конверт `{ok, data, evidence, missing, warnings, as_of}`: кожне число має джерело й час, а збій одного провайдера не валить виклик. Деталі в [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 

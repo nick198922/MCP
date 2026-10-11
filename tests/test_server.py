@@ -53,6 +53,10 @@ EXPECTED_TOOLS = {
     "journal_list",
     "journal_close",
     "journal_stats",
+    "positions_add",
+    "positions_list",
+    "positions_close",
+    "positions_risk",
 }
 
 

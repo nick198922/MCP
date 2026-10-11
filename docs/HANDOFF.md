@@ -12,8 +12,8 @@
 
 Припущення, які ще не підтверджено власником (не вважати рішеннями): алерти через Telegram; хостинг на VPS; IBKR (на його Маку помічено папки `Jts`/`ntws`, схоже на IB TWS).
 
-## Що зроблено (Фаза 0 + Фаза 1 без 1.10 + Фаза 2 крім ліквідацій/позицій)
-49 інструментів, публічні дані (CoinGecko вільно без ключа, з ключем — вищий ліміт):
+## Що зроблено (Фаза 0 + Фаза 1 без 1.10 + Фаза 2 крім ліквідацій)
+53 інструментів, публічні дані (CoinGecko вільно без ключа, з ключем — вищий ліміт):
 
 | Група | Інструменти |
 |---|---|
@@ -30,6 +30,7 @@
 | Макро/ринок | `coin_snapshot`, `global_market`, `top_coins` |
 | Історія (Фаза 2) | `iv_rank`, `funding_zscore`, `skew_percentile`, `alerts_recent` |
 | Журнал (Фаза 2) | `journal_add`, `journal_list`, `journal_close`, `journal_stats` |
+| Позиції (Фаза 2) | `positions_add`, `positions_list`, `positions_close`, `positions_risk` |
 
 Ядро: `Http` (ретраї на 429/5xx/timeout, token-bucket, TTL-кеш із single-flight, класифікація помилок), `HealthRegistry`, `Envelope/Evidence`, фейкові транспорти для тестів.
 
@@ -60,8 +61,9 @@
 - **Фаза 2.8 (частково):** артефакти деплою — `Dockerfile`, `docker-compose.yml`, `deploy/{env.example,tradedesk-mcp.service,backup-sqlite.sh,README.md}`. Два шляхи — Docker Compose (рекомендовано) і bare systemd. Build-smoke та live-прогін на VPS робить власник (Docker на цій машині не встановлено).
 - **Фаза 2.9:** HTTP bearer-auth для streamable-http через `BearerAuthMiddleware`. `TRADEDESK_HTTP_BEARER_TOKEN` (або `TRADEDESK_HTTP_BEARER_TOKENS` зі списком через кому). Порожнє значення → auth вимкнена + WARNING у лозі (запускати лише локально).
 - **Фаза 2.5 (MVP):** rules → channels → store. Нова таблиця `alerts` (schema v2). Пакет `alerts/{engine,channels}.py`, провайдер `telegram.py`, scheduler-job `alerts` (увімкнути `TRADEDESK_ALERTS_ENABLED=1` + вказати `TRADEDESK_ALERTS_RULES_PATH`). Канали: `log` (завжди) + `telegram` (коли задані `TELEGRAM_BOT_TOKEN`+`TELEGRAM_CHAT_ID`). MCP-інструмент `alerts_recent`. Повноцінний DSL — на 3.1.
-- **Фаза 2.6:** журнал угод (schema v3, таблиця `journal`). Чиста аналітика `analytics/journal.py` (`pnl`, `r_multiple`, `outcome_of`, `summary`). Чотири MCP-tools: `journal_add`, `journal_list`, `journal_close` (з обчисленням PnL і R-multiple), `journal_stats` (win-rate, expectancy, R-stats). Локальна SQLite — ніяких ордерів назовні. Залишилось у Фазі 2: ліквідації WebSocket, позиції й ризик, email/ntfy канали, off-site бекапи, `/healthz`.
-- Тестів: 128 (+58 за сесію), lint і format чисті. Нова залежність: `aiosqlite`.
+- **Фаза 2.6:** журнал угод (schema v3, таблиця `journal`). Чиста аналітика `analytics/journal.py` (`pnl`, `r_multiple`, `outcome_of`, `summary`). Чотири MCP-tools: `journal_add`, `journal_list`, `journal_close` (з обчисленням PnL і R-multiple), `journal_stats` (win-rate, expectancy, R-stats). Локальна SQLite — ніяких ордерів назовні.
+- **Фаза 2.7:** позиції й ризик (schema v4, таблиця `positions`). Чиста аналітика `analytics/portfolio.py` (`aggregate_greeks`, `scenario_pnl`). Чотири MCP-tools: `positions_add`, `positions_list`, `positions_close`, `positions_risk` з net δ/γ/vega/θ, per-instrument розподілом і 7 default-сценаріями (±5%/±10% spot, ±5 vol-points, крах+вол-ап). Sync з біржі (read-only) — у Фазі 4; margin-estimate — також пізніше. Залишилось у Фазі 2: ліквідації WebSocket, email/ntfy канали, off-site бекапи, `/healthz`.
+- Тестів: 134 (+64 за сесію), lint і format чисті. Нова залежність: `aiosqlite`.
 - **`make smoke` live 2026-10-10: 15/15 ok** на реальних біржах. Deribit greeks звірено з їхнім ticker (30OCT26, delta/vega/theta до 4 знаків). `perps_open_interest` з новим fallback відпрацював 669 мс. `sentiment_fear_greed` повернув 30 денних значень; живий зразок збережено в `tests/fixtures/alternative_me_fng_live_2026-10-10.json`.
 
 ## Що перевірено живими запитами 2026-10-10

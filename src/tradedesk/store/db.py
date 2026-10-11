@@ -25,6 +25,10 @@ def _parse_journal_row(row: dict[str, Any]) -> dict[str, Any]:
     return row
 
 
+def _parse_position_row(row: dict[str, Any]) -> dict[str, Any]:
+    return _parse_journal_row(row)  # same tags handling
+
+
 class Store:
     def __init__(self, path: str | Path) -> None:
         self.path = str(path)
@@ -269,6 +273,94 @@ class Store:
         cur = await self.conn.execute(sql, params)
         rows = await cur.fetchall()
         return [_parse_journal_row(dict(r)) for r in rows]
+
+    # ---------- positions ----------
+
+    async def position_insert(
+        self,
+        *,
+        opened_ts: int,
+        instrument: str,
+        kind: str,
+        side: str,
+        size: float,
+        entry: float | None,
+        mark: float | None,
+        delta: float | None,
+        gamma: float | None,
+        vega: float | None,
+        theta: float | None,
+        tags: list[str] | None,
+        source: str = "manual",
+        venue: str | None = None,
+        external_id: str | None = None,
+        note: str | None = None,
+    ) -> int:
+        cur = await self.conn.execute(
+            "INSERT INTO positions (opened_ts, source, venue, external_id, instrument, kind, side, size, entry, mark,"
+            " delta, gamma, vega, theta, tags, status, note) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'open', ?)",
+            (
+                opened_ts,
+                source,
+                venue,
+                external_id,
+                instrument,
+                kind,
+                side,
+                float(size),
+                entry,
+                mark,
+                delta,
+                gamma,
+                vega,
+                theta,
+                json.dumps(tags or []),
+                note,
+            ),
+        )
+        await self.conn.commit()
+        return int(cur.lastrowid or 0)
+
+    async def position_get(self, position_id: int) -> dict[str, Any] | None:
+        cur = await self.conn.execute("SELECT * FROM positions WHERE id = ?", (position_id,))
+        row = await cur.fetchone()
+        return _parse_position_row(dict(row)) if row else None
+
+    async def position_update_close(self, position_id: int, closed_ts: int, note: str | None = None) -> int:
+        cur = await self.conn.execute(
+            "UPDATE positions SET status = 'closed', closed_ts = ?, note = COALESCE(?, note) WHERE id = ?",
+            (closed_ts, note, position_id),
+        )
+        await self.conn.commit()
+        return cur.rowcount or 0
+
+    async def positions_list(
+        self,
+        *,
+        status: str | None = None,
+        instrument: str | None = None,
+        tag: str | None = None,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        where: list[str] = []
+        params: list[Any] = []
+        if status:
+            where.append("status = ?")
+            params.append(status)
+        if instrument:
+            where.append("instrument = ?")
+            params.append(instrument)
+        if tag:
+            where.append("tags LIKE ?")
+            params.append(f'%"{tag}"%')
+        sql = "SELECT * FROM positions"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY opened_ts DESC LIMIT ?"
+        params.append(limit)
+        cur = await self.conn.execute(sql, params)
+        rows = await cur.fetchall()
+        return [_parse_position_row(dict(r)) for r in rows]
 
     async def recent_alerts(self, limit: int = 50) -> list[dict[str, Any]]:
         cur = await self.conn.execute(

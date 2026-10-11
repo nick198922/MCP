@@ -78,6 +78,10 @@ claude mcp add tradedesk -- uv run --directory /ABSOLUTE/PATH/TO/tradedesk-mcp t
 
 Усі відповіді мають однаковий конверт `{ok, data, evidence, missing, warnings, as_of}`: кожне число має джерело й час, а збій одного провайдера не валить виклик. Деталі в [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
+## Деплой на VPS
+
+Готовий `Dockerfile` + `docker-compose.yml` + systemd-unit лежать поруч із кодом; поетапна інструкція (Docker або bare systemd), приклад Caddy-конфігурації для TLS+bearer і бекап-скрипт SQLite — у [deploy/README.md](deploy/README.md). Опція «працює, поки сплю» вмикається одним флагом `TRADEDESK_COLLECTOR_ENABLED=1`.
+
 ## Як працювати над проєктом
 
 Проєкт розвивається разом із Claude (Claude Code у терміналі). Точка входу для кожної сесії — [CLAUDE.md](CLAUDE.md): правила, команди, інваріанти. Поточний стан — [docs/HANDOFF.md](docs/HANDOFF.md), план — [docs/BACKLOG.md](docs/BACKLOG.md).

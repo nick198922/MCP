@@ -1,0 +1,28 @@
+# Single-service compose for a VPS. The port is bound to loopback only; put
+# Caddy/Nginx with TLS + bearer-auth in front of it (see deploy/README.md).
+
+services:
+  tradedesk-mcp:
+    build:
+      context: .
+    image: tradedesk-mcp:latest
+    container_name: tradedesk-mcp
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      TRADEDESK_TRANSPORT: streamable-http
+      TRADEDESK_HOST: 0.0.0.0
+      TRADEDESK_PORT: "8000"
+      TRADEDESK_DB_PATH: /data/tradedesk.sqlite
+      TRADEDESK_COLLECTOR_ENABLED: "1"
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8000), timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

@@ -38,7 +38,7 @@
 - [ ] 2.5 Алерти: рушій правил (дивіться 3.1) + канали: Telegram-бот (Bot API; потребує токена й chat_id від власника), email/ntfy як запасні. Антиспам: cooldown, гістерезис, дедуплікація.
 - [ ] 2.6 Журнал угод: `journal_add/list/close`, теги, R-мультиплікатор, статистика (win-rate, expectancy).
 - [ ] 2.7 Позиції й ризик (ручні/з біржі read-only): net delta/gamma/vega/theta портфеля, сценарії (±10 % спот, ±5 vol-пунктів), margin-estimate.
-- [ ] 2.8 Деплой: Dockerfile, `docker-compose`, systemd-unit, `/healthz`, резервне копіювання SQLite (`.backup` + off-site), інструкція для VPS (Hetzner/DO, 1–2 vCPU/2 GB достатньо). 
+- [x] 2.8 Деплой (частково): `Dockerfile` (uv builder → slim runtime, non-root uid 10001, `sqlite3` CLI, HEALTHCHECK по TCP:8000), `docker-compose.yml` (bind 127.0.0.1, volume `./data:/data`), `deploy/tradedesk-mcp.service` (systemd + hardening), `deploy/backup-sqlite.sh` (`.backup` + gzip + ретенція `BACKUP_KEEP_DAYS`), `deploy/env.example`, `deploy/README.md` (Docker + bare-systemd варіанти + Caddy приклад). `/healthz` — чекає розширення MCP SDK (нотатка в deploy README). Off-site копіювання лишається вручну (`rclone`/`restic` поза скоупом).
 - [ ] 2.9 HTTP-автентифікація: bearer-токен або mTLS/Tailscale; TLS через Caddy. (Мінімум до публікації порту назовні.)
 - [ ] 2.10 Структуровані логи (JSON), ротація, метрики Prometheus (опційно).
 

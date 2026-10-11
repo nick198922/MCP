@@ -1,6 +1,14 @@
 # Changelog
 
 ## Unreleased
+- Фаза 2.8 (частково): артефакти деплою.
+  * `Dockerfile` (multi-stage uv builder → slim runtime, non-root `tradedesk` uid 10001, `sqlite3` CLI + CA-certs у runtime, TCP HEALTHCHECK на :8000).
+  * `docker-compose.yml` — слухає `127.0.0.1:8000`, тримає стан у `./data`, увімкнений збирач за замовчуванням.
+  * `deploy/env.example` як шаблон для `.env` (усі `TRADEDESK_*` + опційні ключі).
+  * `deploy/tradedesk-mcp.service` для варіанту без Docker (bare systemd), з `ProtectSystem=strict`, `ReadWritePaths=/var/lib/tradedesk-mcp`.
+  * `deploy/backup-sqlite.sh` — `sqlite3 .backup` + gzip + ретенція `BACKUP_KEEP_DAYS` (30 за замовчуванням).
+  * `deploy/README.md` з Docker-рецептом, bare-systemd-рецептом, прикладом Caddy для TLS+bearer, cron-рядком для бекапів і коментарем щодо `/healthz` (чекаємо на MCP SDK).
+  * `.gitignore` оновлено (`.env`, `.env.*`, з винятком `deploy/env.example`).
 - Фаза 2.1 (MVP): `store/` на aiosqlite з PRAGMA user_version-міграціями (`SCHEMA_VERSION=1`). Таблиці: `atm_term`, `funding_hist`, `basis_hist`, `snapshots`. WAL + synchronous=NORMAL. `Store.insert_atm_term/funding/basis/snapshot` (REPLACE за первинним ключем), `Store.atm_term_series/funding_series/basis_series`. Runtime створює store ліниво за `TRADEDESK_DB_PATH` (default `data/tradedesk.sqlite`, порожній рядок — вимикає).
 - Фаза 2.2: збирач доповнено до 4 дефолтних джобів — `atm_term` (5 хв), `funding` (1 год, крос-венюз snapshot в `funding_hist`), `basis` (5 хв, Deribit dated-futures basis у `basis_hist`), `retention` (24 год, `DELETE WHERE ts < cutoff` для кожної таблиці за її `TRADEDESK_RETENTION_*_DAYS` вікном, 0 вимикає). Нові налаштування: `TRADEDESK_COLLECT_FUNDING_SECONDS`, `TRADEDESK_COLLECT_BASIS_SECONDS`, `TRADEDESK_RETENTION_SECONDS`, `TRADEDESK_RETENTION_ATM_TERM_DAYS`, `TRADEDESK_RETENTION_FUNDING_DAYS`, `TRADEDESK_RETENTION_BASIS_DAYS`. `Store.prune(table, cutoff_ts)` — чистий read-count DELETE. Увімкнути: `TRADEDESK_COLLECTOR_ENABLED=1`. Lifespan сервера піднімає store і scheduler. Метрики (runs/successes/failures/last_run_ts/last_duration_ms/last_rows_written/last_error) видно в `system_health.data.collector`; store шлях + user_version + rows per table — у `system_health.data.store`.
 - Фаза 2.4: `iv_rank(currency, expiry, lookback_days, min_points)` — читає ATM-IV ряд з SQLite (`atm_term_series`) і повертає latest, min/max, iv_rank ∈ [0,1] і percentile. Два нових інструменти поверх того ж контракту: `funding_zscore(venue, base, lookback_days)` (`funding_hist.annualized` — latest/mean/stdev/min/max + z-score + percentile + rank) і `skew_percentile(currency, expiry, delta_target='25'|'10', lookback_days)` (`atm_term.rr25`/`rr10` — ті самі stats). Усі три повертають `ok=false` коли сховище не налаштоване або рядів менше за `min_points` (10 за замовчуванням). Внутрішній хелпер `_summary(values, latest)` ділиться між інструментами.

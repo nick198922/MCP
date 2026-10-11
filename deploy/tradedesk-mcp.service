@@ -1,0 +1,26 @@
+[Unit]
+Description=tradedesk-mcp (personal trading desk MCP server)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=tradedesk
+Group=tradedesk
+WorkingDirectory=/opt/tradedesk-mcp
+# One-line env source (same keys as .env.example). Keep this file 0600.
+EnvironmentFile=/etc/tradedesk-mcp.env
+# Install the project in a venv under /opt/tradedesk-mcp/.venv first (see deploy/README.md).
+ExecStart=/opt/tradedesk-mcp/.venv/bin/tradedesk-mcp
+Restart=on-failure
+RestartSec=3
+# Modest hardening — relax if you need extra paths.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/tradedesk-mcp
+# Match TRADEDESK_DB_PATH to a path inside ReadWritePaths.
+
+[Install]
+WantedBy=multi-user.target

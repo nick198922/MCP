@@ -43,6 +43,13 @@ class Settings:
     retention_seconds: int = 86_400  # how often to run the retention sweep
     # Comma-separated bearer tokens for the streamable-http transport. Empty = auth disabled.
     http_bearer_tokens: str = ""
+    # Alerts
+    alerts_enabled: bool = False
+    alerts_rules_path: str = ""
+    alerts_seconds: int = 60
+    alerts_default_cooldown: int = 1800  # 30 min
+    telegram_bot_token: str | None = None
+    telegram_chat_id: str | None = None
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -66,4 +73,10 @@ class Settings:
             retention_basis_days=int(_float("TRADEDESK_RETENTION_BASIS_DAYS", 365)),
             retention_seconds=int(_float("TRADEDESK_RETENTION_SECONDS", 86_400)),
             http_bearer_tokens=os.environ.get("TRADEDESK_HTTP_BEARER_TOKENS") or os.environ.get("TRADEDESK_HTTP_BEARER_TOKEN", ""),
+            alerts_enabled=os.environ.get("TRADEDESK_ALERTS_ENABLED", "").lower() in ("1", "true", "yes"),
+            alerts_rules_path=os.environ.get("TRADEDESK_ALERTS_RULES_PATH", ""),
+            alerts_seconds=int(_float("TRADEDESK_ALERTS_SECONDS", 60)),
+            alerts_default_cooldown=int(_float("TRADEDESK_ALERTS_DEFAULT_COOLDOWN", 1800)),
+            telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN") or None,
+            telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID") or None,
         )

@@ -1,0 +1,32 @@
+{
+  "_meta": {
+    "note": "Alert rules for the local collector. Copy to a writable path and point TRADEDESK_ALERTS_RULES_PATH at it. Decimals (0.30 = 30%).",
+    "schema": "metrics: funding (venue, base), atm_iv (currency, expiry), basis (currency, expiry). Op: > < >= <= ==. Values are compared against the latest stored row."
+  },
+  "rules": [
+    {
+      "id": "btc_funding_binance_spike",
+      "enabled": true,
+      "cooldown_seconds": 3600,
+      "metric": {"kind": "funding", "venue": "binanceusdm", "base": "BTC"},
+      "when": {"op": ">", "value": 0.30},
+      "message": "Binance BTC funding {value_pct:+.2f}% > 30%"
+    },
+    {
+      "id": "btc_funding_binance_crush",
+      "enabled": true,
+      "cooldown_seconds": 3600,
+      "metric": {"kind": "funding", "venue": "binanceusdm", "base": "BTC"},
+      "when": {"op": "<", "value": -0.20},
+      "message": "Binance BTC funding {value_pct:+.2f}% < -20%"
+    },
+    {
+      "id": "btc_atm_iv_crush_30oct26",
+      "enabled": false,
+      "cooldown_seconds": 7200,
+      "metric": {"kind": "atm_iv", "currency": "BTC", "expiry": "2026-10-30T08:00:00+00:00"},
+      "when": {"op": "<", "value": 0.30},
+      "message": "BTC 30OCT26 ATM IV {value_pct:.2f}% < 30%"
+    }
+  ]
+}

@@ -223,3 +223,27 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 "rr": stats,
             }
         )
+
+    @server.tool(
+        annotations=READ_ONLY,
+        description=(
+            "Recent alert history (from the local SQLite store). Returns up to `limit` most-recent "
+            "alerts with id, rule_id, timestamp, channel, delivered flag, delivery_error (if any) "
+            "and the full payload. Needs the alerts job enabled (TRADEDESK_ALERTS_ENABLED=1) and "
+            "some fired alerts; empty history is a valid ok=true response."
+        ),
+    )
+    async def alerts_recent(
+        limit: Annotated[int, Field(ge=1, le=500, description="Max rows to return.")] = 50,
+    ) -> dict[str, Any]:
+        b = Builder()
+        if rt.store is None:
+            b.miss("store", "tradedesk", "config", "db_path is empty; set TRADEDESK_DB_PATH to enable history")
+            return b.build(None, ok=False)
+        try:
+            await rt.store.init()
+        except Exception as e:  # noqa: BLE001
+            b.miss("store", "tradedesk", "backend_error", f"{type(e).__name__}: {e}")
+            return b.build(None, ok=False)
+        rows = await rt.store.recent_alerts(limit=limit)
+        return b.build({"count": len(rows), "alerts": rows})

@@ -154,8 +154,49 @@ class Store:
 
     async def prune(self, table: str, cutoff_ts: int) -> int:
         """Delete rows with ts < cutoff_ts. Returns the number of rows deleted."""
-        if table not in {"atm_term", "funding_hist", "basis_hist", "snapshots"}:
+        if table not in {"atm_term", "funding_hist", "basis_hist", "snapshots", "alerts"}:
             raise ValueError(f"unknown table {table!r}")
         cur = await self.conn.execute(f"DELETE FROM {table} WHERE ts < ?", (cutoff_ts,))
         await self.conn.commit()
         return cur.rowcount or 0
+
+    # ---------- alerts ----------
+
+    async def insert_alert(
+        self,
+        *,
+        rule_id: str,
+        ts: int,
+        payload: dict[str, Any],
+        channel: str,
+        delivered: bool,
+        delivery_error: str | None = None,
+    ) -> int:
+        cur = await self.conn.execute(
+            "INSERT INTO alerts (rule_id, ts, payload, channel, delivered, delivery_error) VALUES (?,?,?,?,?,?)",
+            (rule_id, ts, json.dumps(payload, separators=(",", ":")), channel, 1 if delivered else 0, delivery_error),
+        )
+        await self.conn.commit()
+        return int(cur.lastrowid or 0)
+
+    async def last_alert_ts(self, rule_id: str) -> int | None:
+        cur = await self.conn.execute("SELECT MAX(ts) FROM alerts WHERE rule_id = ?", (rule_id,))
+        row = await cur.fetchone()
+        return int(row[0]) if row and row[0] is not None else None
+
+    async def recent_alerts(self, limit: int = 50) -> list[dict[str, Any]]:
+        cur = await self.conn.execute(
+            "SELECT id, rule_id, ts, payload, channel, delivered, delivery_error FROM alerts ORDER BY ts DESC LIMIT ?",
+            (limit,),
+        )
+        rows = await cur.fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["payload"] = json.loads(d["payload"])
+            except (TypeError, ValueError):
+                pass
+            d["delivered"] = bool(d["delivered"])
+            out.append(d)
+        return out

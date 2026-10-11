@@ -48,6 +48,7 @@ EXPECTED_TOOLS = {
     "iv_rank",
     "funding_zscore",
     "skew_percentile",
+    "alerts_recent",
 }
 
 

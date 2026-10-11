@@ -10,6 +10,7 @@ from tradedesk.collector.scheduler import (
     _collect_atm_term,
     _collect_basis,
     _collect_funding,
+    _evaluate_alerts,
     _retention_sweep,
 )
 from tradedesk.config import Settings
@@ -124,6 +125,67 @@ async def test_basis_job_writes_rows(state):
         # in the fake transport → 3 × 2 = 6 dated rows total.
         assert written == 6
         assert await rt.store.table_count("basis_hist") == 6
+    finally:
+        await rt.aclose()
+
+
+async def test_evaluate_alerts_fires_and_writes(state, tmp_path):
+    rules_path = tmp_path / "rules.json"
+    import json
+
+    rules_path.write_text(
+        json.dumps(
+            {
+                "rules": [
+                    {
+                        "id": "funding_hot",
+                        "enabled": True,
+                        "cooldown_seconds": 600,
+                        "metric": {"kind": "funding", "venue": "binanceusdm", "base": "BTC"},
+                        "when": {"op": ">", "value": 0.30},
+                        "message": "hot {value_pct:.1f}%",
+                    }
+                ]
+            }
+        )
+    )
+    settings = Settings(
+        http_retries=1,
+        cache_scale=0.0,
+        db_path=":memory:",
+        collector_enabled=True,
+        alerts_enabled=True,
+        alerts_rules_path=str(rules_path),
+    )
+    rt = Runtime(settings, transports=make_transports(state), exchange_factory=FakeEx)
+    rt.now = lambda: NOW
+    assert rt.store is not None
+    await rt.store.init()
+    try:
+        # Seed a funding row above threshold at NOW.
+        await rt.store.insert_funding(
+            ts=int(NOW.timestamp()),
+            rows=[
+                {
+                    "venue": "binanceusdm",
+                    "base": "BTC",
+                    "rate_per_interval": 0.0003,
+                    "interval_hours": 8.0,
+                    "annualized": 0.32,
+                }
+            ],
+        )
+        rows = await _evaluate_alerts(rt)
+        assert rows == 1
+        recent = await rt.store.recent_alerts()
+        assert len(recent) == 1
+        assert recent[0]["rule_id"] == "funding_hot"
+        assert recent[0]["channel"] == "log"
+        assert recent[0]["delivered"] is True
+
+        # Second evaluation within the cooldown must not create a new row.
+        rows2 = await _evaluate_alerts(rt)
+        assert rows2 == 0
     finally:
         await rt.aclose()
 

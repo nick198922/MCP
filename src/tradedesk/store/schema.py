@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # Each migration is a list of SQL statements executed in a single transaction.
 # `PRAGMA user_version` is bumped by Store.init() after a block runs.
@@ -57,5 +57,19 @@ MIGRATIONS: dict[int, list[str]] = {
         )
         """,
         "CREATE INDEX IF NOT EXISTS snapshots_kind_ts ON snapshots (kind, ts)",
+    ],
+    2: [
+        """
+        CREATE TABLE IF NOT EXISTS alerts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rule_id TEXT NOT NULL,
+            ts INTEGER NOT NULL,
+            payload TEXT NOT NULL,          -- JSON {metric, value, threshold, message, …}
+            channel TEXT NOT NULL,          -- "log", "telegram", …
+            delivered INTEGER NOT NULL DEFAULT 0,
+            delivery_error TEXT
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS alerts_rule_ts ON alerts (rule_id, ts)",
     ],
 }

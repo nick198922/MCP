@@ -236,6 +236,55 @@ async def _collect_basis(rt: "Runtime") -> int:
     return total
 
 
+async def _evaluate_alerts(rt: "Runtime") -> int:
+    """Load rules, evaluate against the store, deliver via channels, record outcome."""
+    from ..alerts import build_channels, evaluate_rules, load_rules  # noqa: PLC0415
+
+    assert rt.store is not None
+    s = rt.settings
+    if not s.alerts_rules_path:
+        return 0
+    rules = load_rules(s.alerts_rules_path, default_cooldown=s.alerts_default_cooldown)
+    if not rules:
+        return 0
+    now_ts = int(rt.now().timestamp())
+    fired = await evaluate_rules(rules, rt.store, now_ts=now_ts)
+    if not fired:
+        return 0
+    channels = build_channels(s)
+    delivered_rows = 0
+    for alert in fired:
+        delivered_any = False
+        last_err: str | None = None
+        for ch in channels:
+            ok, err = await ch.send(alert)
+            payload = alert.payload() | {"channel": ch.name}
+            await rt.store.insert_alert(
+                rule_id=alert.rule_id,
+                ts=alert.ts,
+                payload=payload,
+                channel=ch.name,
+                delivered=ok,
+                delivery_error=err,
+            )
+            delivered_any = delivered_any or ok
+            if err and not ok:
+                last_err = err
+        if delivered_any:
+            delivered_rows += 1
+        else:
+            log.warning("alert %s not delivered through any channel: %s", alert.rule_id, last_err)
+    # Close telegram client http if present.
+    for ch in channels:
+        aclose = getattr(getattr(ch, "_client", None), "aclose", None)
+        if aclose is not None:
+            try:
+                await aclose()
+            except Exception:  # noqa: BLE001
+                pass
+    return delivered_rows
+
+
 async def _retention_sweep(rt: "Runtime") -> int:
     """Trim stored history to the retention windows configured in Settings."""
     assert rt.store is not None
@@ -265,4 +314,6 @@ def build_default_scheduler(rt: "Runtime") -> Scheduler | None:
         PeriodicJob(name="basis", period_seconds=s.collect_basis_seconds, fn=_collect_basis),
         PeriodicJob(name="retention", period_seconds=s.retention_seconds, fn=_retention_sweep),
     ]
+    if s.alerts_enabled and s.alerts_rules_path:
+        jobs.append(PeriodicJob(name="alerts", period_seconds=s.alerts_seconds, fn=_evaluate_alerts))
     return Scheduler(rt, jobs)

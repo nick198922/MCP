@@ -1,6 +1,14 @@
 # Changelog
 
 ## Unreleased
+- Фаза 2.5 (MVP): алерти з rules → channels → store.
+  * Нова таблиця `alerts(id, rule_id, ts, payload, channel, delivered, delivery_error)` (schema v2 міграція у `store/schema.py`). Нові хелпери `Store.insert_alert`, `Store.last_alert_ts`, `Store.recent_alerts`. `Store.prune` розширено на `alerts`.
+  * Пакет `src/tradedesk/alerts/`: `engine.py` з `Rule`, `FiredAlert`, `load_rules(path)`, `evaluate_rules(rules, store, now_ts)` (чистий — без side-effects, читає лише останню точку з `funding_hist` / `atm_term` / `basis_hist`, перевіряє cooldown через `last_alert_ts`). `channels.py` з `LogChannel` (завжди) і `TelegramChannel` (увімкнений, коли задані токени). `build_channels(settings)` збирає список.
+  * Провайдер `providers/telegram.py` із `send_message` (POST `/bot<token>/sendMessage` через наш `Http`, rate=1 req/s).
+  * Scheduler-job `alerts`: читає `TRADEDESK_ALERTS_RULES_PATH`, оцінює правила, доставляє через кожен канал і пише окремий `alerts` рядок на канал (щоб помилка Telegram не блокувала log і було видно `delivery_error`). Умови вмикання: `TRADEDESK_ALERTS_ENABLED=1` + файл правил.
+  * Нові налаштування: `TRADEDESK_ALERTS_{ENABLED,RULES_PATH,SECONDS,DEFAULT_COOLDOWN}`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
+  * MCP-інструмент `alerts_recent(limit)` показує останні рядки з таблиці `alerts` з payload і статусом доставки.
+  * `src/tradedesk/data/alert_rules.example.json` з трьома прикладами (BTC funding > 30%, funding < -20%, ATM IV 30OCT26 < 30%). Пакується у wheel.
 - Фаза 2.9: HTTP bearer-auth для streamable-http. Новий модуль `http_auth.py` з `parse_tokens` і `BearerAuthMiddleware` (ASGI, non-HTTP scopes пропускаються, constant-time порівняння через `hmac.compare_digest`, 401 + `WWW-Authenticate: Bearer realm="tradedesk"`). `server.main()` тепер явно будує Starlette-додаток через `server.streamable_http_app()`, обгортає його в middleware коли налаштовано `TRADEDESK_HTTP_BEARER_TOKEN(S)`, і запускає uvicorn напряму. Без токена сервер стартує з явним WARNING у лозі (під'єднання тільки з 127.0.0.1 / VPN). `deploy/env.example` і `deploy/README.md` оновлено (Caddy спрощено до чистого reverse_proxy, auth у самому сервері).
 - Фаза 2.8 (частково): артефакти деплою.
   * `Dockerfile` (multi-stage uv builder → slim runtime, non-root `tradedesk` uid 10001, `sqlite3` CLI + CA-certs у runtime, TCP HEALTHCHECK на :8000).
@@ -34,7 +42,7 @@
 - Фаза 1.2: `perps_funding_history` — крос-венюз історія funding (Binance/Bybit/OKX через ccxt `fetch_funding_rate_history` + Hyperliquid), автодетект інтервалу з медіани ts-різниць (`detect_interval_hours`), крос-венюз-summary (highest/lowest carry, biggest |z|), опція `include_series` для сирих рядів. Live-перевірено на BTC: HL carry 9.1%, OKX 5.1%, Binance 4.5%, Bybit 4.3%; Bybit `z = −1.45` (mean-reversion сигнал).
 - MCP-промт `token_deep_analysis(project)` — глибокий 10-секційний інвест-аналіз криптопроекту (RU), шаблон `src/tradedesk/prompts/token_deep_analysis.md` (bundled у wheel), з хінтом про релевантні tradedesk-mcp інструменти для графіка/позиціювання.
 - Фаза 1.3: нові провайдери `binance_futures.py` і `bybit.py` під окремими `Http` з лімітами. Два нові інструменти: `perps_long_short_ratio` (роздрібні account-based fractions Binance+Bybit, latest/mean/z-score, cross-venue divergence) і `perps_oi_history` (OI history Binance в USD, Bybit в base, latest/mean/change24h/z, cross-venue biggest gain/drop). Live-перевірено 2026-10-10 на BTC.
-- Тестів: 112 (+61 від 0.1.0), lint чистий. Нова залежність `aiosqlite>=0.19`.
+- Тестів: 120 (+69 від 0.1.0), lint чистий. Нова залежність `aiosqlite>=0.19`.
 
 ## 0.1.0 — 2026-10-10
 - Ядро: `Http` (ретраї, rate-limit, кеш із single-flight, класифікація помилок), `HealthRegistry`, `Envelope/Evidence`.

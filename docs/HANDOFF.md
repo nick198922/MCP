@@ -12,8 +12,8 @@
 
 Припущення, які ще не підтверджено власником (не вважати рішеннями): алерти через Telegram; хостинг на VPS; IBKR (на його Маку помічено папки `Jts`/`ntws`, схоже на IB TWS).
 
-## Що зроблено (Фаза 0 + частина Фази 1 + MVP Фази 2)
-42 інструменти, публічні дані (CoinGecko вільно без ключа, з ключем — вищий ліміт):
+## Що зроблено (Фаза 0 + частина Фази 1 + Фаза 2 без ліквідацій/алертів/деплою)
+44 інструменти, публічні дані (CoinGecko вільно без ключа, з ключем — вищий ліміт):
 
 | Група | Інструменти |
 |---|---|
@@ -28,7 +28,7 @@
 | Календар | `calendar_expiries` |
 | Prediction markets | `polymarket_search`, `polymarket_market`, `polymarket_history` |
 | Макро/ринок | `coin_snapshot`, `global_market`, `top_coins` |
-| Історія (Фаза 2) | `iv_rank` |
+| Історія (Фаза 2) | `iv_rank`, `funding_zscore`, `skew_percentile` |
 
 Ядро: `Http` (ретраї на 429/5xx/timeout, token-bucket, TTL-кеш із single-flight, класифікація помилок), `HealthRegistry`, `Envelope/Evidence`, фейкові транспорти для тестів.
 
@@ -54,8 +54,9 @@
 - **1.5 закрито (частково):** Polymarket провайдер (Gamma + CLOB через два окремих `Http`), analytics (normalise_market, devig_multi, book_stats), 3 інструменти: `polymarket_search`, `polymarket_market` (з CLOB-мідами по outcome-ах), `polymarket_history`. `polymarket_vs_options` — пізніше, бо треба Polymarket→crypto-option mapping.
 - **1.7 закрито:** CoinGecko провайдер з опційним ключем (env `COINGECKO_API_KEY` + `COINGECKO_PLAN`, demo/pro); 3 інструменти — `coin_snapshot`, `global_market`, `top_coins`. Rate 0.5 req/s без ключа.
 - **Фаза 2 (MVP, початок):** 2.1 Store — SQLite (WAL, aiosqlite, `PRAGMA user_version`), 4 таблиці (`atm_term`, `funding_hist`, `basis_hist`, `snapshots`). 2.4 — перший історичний інструмент `iv_rank(currency, expiry, lookback_days)`.
-- **Фаза 2.2 (повно):** scheduler із 4 дефолтними джобами — `atm_term` (5 хв), `funding` (1 год, крос-венюз snapshot у `funding_hist`), `basis` (5 хв, Deribit dated у `basis_hist`), `retention` (24 год, DELETE по таблицях за `TRADEDESK_RETENTION_*_DAYS`). Увімкнути: `TRADEDESK_COLLECTOR_ENABLED=1`; метрики в `system_health`. Залишилось у Фазі 2: ліквідації WebSocket, решта історичних інструментів (`funding_zscore`, `skew_percentile`), алерти, журнал, деплой (docker/systemd), HTTP-auth.
-- Тестів: 102 (+32 за сесію), lint і format чисті. Нова залежність: `aiosqlite`.
+- **Фаза 2.2 (повно):** scheduler із 4 дефолтними джобами — `atm_term` (5 хв), `funding` (1 год, крос-венюз snapshot у `funding_hist`), `basis` (5 хв, Deribit dated у `basis_hist`), `retention` (24 год, DELETE по таблицях за `TRADEDESK_RETENTION_*_DAYS`). Увімкнути: `TRADEDESK_COLLECTOR_ENABLED=1`; метрики в `system_health`.
+- **Фаза 2.4 (повно):** `iv_rank(currency, expiry, lookback_days)`, `funding_zscore(venue, base, lookback_days)`, `skew_percentile(currency, expiry, delta_target='25'|'10', lookback_days)`. Усі повертають latest/mean/stdev/min/max + z_score + percentile + rank. Залишилось у Фазі 2: ліквідації WebSocket, алерти, журнал, деплой (docker/systemd), HTTP-auth.
+- Тестів: 104 (+34 за сесію), lint і format чисті. Нова залежність: `aiosqlite`.
 - **`make smoke` live 2026-10-10: 15/15 ok** на реальних біржах. Deribit greeks звірено з їхнім ticker (30OCT26, delta/vega/theta до 4 знаків). `perps_open_interest` з новим fallback відпрацював 669 мс. `sentiment_fear_greed` повернув 30 денних значень; живий зразок збережено в `tests/fixtures/alternative_me_fng_live_2026-10-10.json`.
 
 ## Що перевірено живими запитами 2026-10-10

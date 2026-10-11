@@ -46,6 +46,8 @@ EXPECTED_TOOLS = {
     "global_market",
     "top_coins",
     "iv_rank",
+    "funding_zscore",
+    "skew_percentile",
 }
 
 

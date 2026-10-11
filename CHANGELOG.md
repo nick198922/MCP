@@ -1,6 +1,11 @@
 # Changelog
 
 ## Unreleased
+- Фаза 3.3: шаблони стратегій.
+  * Pure-builders у `analytics/strategy.py`: `build_straddle`, `build_strangle`, `build_risk_reversal` (bullish/bearish), `build_iron_condor` (валідація порядку страйків), `build_cash_and_carry` (long spot + short future), `build_funding_carry` (long cheap venue + short expensive venue).
+  * 6 нових MCP-tools: `strategy_straddle`, `strategy_strangle`, `strategy_risk_reversal`, `strategy_iron_condor`, `strategy_cash_and_carry`, `strategy_funding_carry`. Кожен генерує legs і прогоняє їх через `summarise` → breakevens / max profit/loss / net greeks / MTM / PoP. cash-and-carry додає `basis_abs`/`basis_pct`; funding carry — `spread_abs`/`spread_bps`.
+  * `tools/strategy.py::_packed` — спільний формат відповіді для `strategy_payoff` і всіх шаблонів.
+  * Calendar spread (two IVs/expiries) та дельта-хедж — у наступних кроках.
 - Фаза 3.4: `strategy_payoff` — many-leg payoff + греки + PoP для опційних стратегій.
   * Чиста аналітика `analytics/strategy.py`: `payoff_curve(legs, prices)` (intrinsic value при terminal date, net entry cost; legs = call/put/linear × long/short), `breakevens(prices, pnl)` (лінійна інтерполяція zero-crossings), `aggregate_greeks(legs, forward, days, iv)` (Black-76), `mtm_value(legs, forward, days, iv)` (current pricing мінус entry), `prob_of_profit(legs, prices, pnl, forward, days, iv)` (log-normal CDF, інтегрована по profit-сегментах з полярністю через sample mid-point кожного сегменту), `summarise(...)` — one-stop block.
   * MCP-інструмент `strategy_payoff(legs, spot, days, iv, forward?, width_pct=0.3, grid=201, kind='detailed'|'summary')`. `summary` викидає криву з відповіді (легше для великого grid).
@@ -67,7 +72,7 @@
 - Фаза 1.2: `perps_funding_history` — крос-венюз історія funding (Binance/Bybit/OKX через ccxt `fetch_funding_rate_history` + Hyperliquid), автодетект інтервалу з медіани ts-різниць (`detect_interval_hours`), крос-венюз-summary (highest/lowest carry, biggest |z|), опція `include_series` для сирих рядів. Live-перевірено на BTC: HL carry 9.1%, OKX 5.1%, Binance 4.5%, Bybit 4.3%; Bybit `z = −1.45` (mean-reversion сигнал).
 - MCP-промт `token_deep_analysis(project)` — глибокий 10-секційний інвест-аналіз криптопроекту (RU), шаблон `src/tradedesk/prompts/token_deep_analysis.md` (bundled у wheel), з хінтом про релевантні tradedesk-mcp інструменти для графіка/позиціювання.
 - Фаза 1.3: нові провайдери `binance_futures.py` і `bybit.py` під окремими `Http` з лімітами. Два нові інструменти: `perps_long_short_ratio` (роздрібні account-based fractions Binance+Bybit, latest/mean/z-score, cross-venue divergence) і `perps_oi_history` (OI history Binance в USD, Bybit в base, latest/mean/change24h/z, cross-venue biggest gain/drop). Live-перевірено 2026-10-10 на BTC.
-- Тестів: 157 (+106 від 0.1.0), lint чистий. Нові залежності `aiosqlite>=0.19`, `websockets>=12`.
+- Тестів: 164 (+113 від 0.1.0), lint чистий. Нові залежності `aiosqlite>=0.19`, `websockets>=12`.
 
 ## 0.1.0 — 2026-10-10
 - Ядро: `Http` (ретраї, rate-limit, кеш із single-flight, класифікація помилок), `HealthRegistry`, `Envelope/Evidence`.

@@ -79,7 +79,7 @@ claude mcp add tradedesk -- uv run --directory /ABSOLUTE/PATH/TO/tradedesk-mcp t
 | Позиції (Фаза 2) | `positions_add`, `positions_list`, `positions_close`, `positions_risk` | ручний портфель + сценарії PnL (±10 % спот, ±5 vol-points, crash+vol-up): net δ/γ/vega/θ |
 | Ліквідації (Фаза 2) | `liquidations_summary` | WebSocket збирач Binance `!forceOrder@arr` + агрегати (longs/shorts USD, imbalance, per-symbol, top) |
 | Правила (Фаза 3) | `rules_add`, `rules_list`, `rules_test`, `rules_disable` | DSL правил alert'ів (безпечний AST + metric funcs); зберігає й читається alerts job'ом |
-| Стратегії (Фаза 3) | `strategy_payoff` | многоногий payoff: криву P&L, breakevens, max profit/loss, net δ/γ/vega/θ (Black-76), MTM, risk-neutral PoP |
+| Стратегії (Фаза 3) | `strategy_payoff`, `strategy_straddle`, `strategy_strangle`, `strategy_risk_reversal`, `strategy_iron_condor`, `strategy_cash_and_carry`, `strategy_funding_carry` | многоногий payoff + шаблони (straddle/strangle/RR/iron condor/basis arb): P&L крива, breakevens, max profit/loss, δ/γ/vega/θ, MTM, risk-neutral PoP |
 
 Усі відповіді мають однаковий конверт `{ok, data, evidence, missing, warnings, as_of}`: кожне число має джерело й час, а збій одного провайдера не валить виклик. Деталі в [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 

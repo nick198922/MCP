@@ -63,6 +63,12 @@ EXPECTED_TOOLS = {
     "rules_test",
     "rules_disable",
     "strategy_payoff",
+    "strategy_straddle",
+    "strategy_strangle",
+    "strategy_risk_reversal",
+    "strategy_iron_condor",
+    "strategy_cash_and_carry",
+    "strategy_funding_carry",
 }
 
 

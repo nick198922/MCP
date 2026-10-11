@@ -184,6 +184,102 @@ def prob_of_profit(
     return min(max(prob, 0.0), 1.0)
 
 
+def _opp(side: str) -> str:
+    return "short" if side == "long" else "long"
+
+
+def build_straddle(
+    *, strike: float, call_premium: float, put_premium: float, side: str = "long", size: float = 1.0
+) -> list[dict[str, Any]]:
+    """Call + put at the same strike — long = long vol, short = short vol."""
+    return [
+        {"kind": "call", "side": side, "size": size, "strike": strike, "entry_premium": call_premium},
+        {"kind": "put", "side": side, "size": size, "strike": strike, "entry_premium": put_premium},
+    ]
+
+
+def build_strangle(
+    *, call_strike: float, put_strike: float, call_premium: float, put_premium: float, side: str = "long", size: float = 1.0
+) -> list[dict[str, Any]]:
+    """OTM call + OTM put — wider breakevens than a straddle, cheaper premium."""
+    return [
+        {"kind": "call", "side": side, "size": size, "strike": call_strike, "entry_premium": call_premium},
+        {"kind": "put", "side": side, "size": size, "strike": put_strike, "entry_premium": put_premium},
+    ]
+
+
+def build_risk_reversal(
+    *,
+    call_strike: float,
+    put_strike: float,
+    call_premium: float,
+    put_premium: float,
+    direction: str = "bullish",
+    size: float = 1.0,
+) -> list[dict[str, Any]]:
+    """Risk reversal: bullish = long call + short put; bearish = long put + short call.
+
+    Net premium ≈ call_premium − put_premium (bullish); can be a credit when
+    puts trade richer than calls (downside skew).
+    """
+    if direction == "bullish":
+        call_side, put_side = "long", "short"
+    elif direction == "bearish":
+        call_side, put_side = "short", "long"
+    else:
+        raise ValueError("direction must be 'bullish' or 'bearish'")
+    return [
+        {"kind": "call", "side": call_side, "size": size, "strike": call_strike, "entry_premium": call_premium},
+        {"kind": "put", "side": put_side, "size": size, "strike": put_strike, "entry_premium": put_premium},
+    ]
+
+
+def build_iron_condor(
+    *,
+    long_put_strike: float,
+    short_put_strike: float,
+    short_call_strike: float,
+    long_call_strike: float,
+    long_put_premium: float,
+    short_put_premium: float,
+    short_call_premium: float,
+    long_call_premium: float,
+    size: float = 1.0,
+) -> list[dict[str, Any]]:
+    """Short strangle protected by further-OTM wings. Net credit; max profit
+    when S stays between the short strikes, max loss capped by the wings.
+    Requires: long_put < short_put < short_call < long_call."""
+    if not (long_put_strike < short_put_strike < short_call_strike < long_call_strike):
+        raise ValueError("strikes must satisfy long_put < short_put < short_call < long_call")
+    return [
+        {"kind": "put", "side": "long", "size": size, "strike": long_put_strike, "entry_premium": long_put_premium},
+        {"kind": "put", "side": "short", "size": size, "strike": short_put_strike, "entry_premium": short_put_premium},
+        {"kind": "call", "side": "short", "size": size, "strike": short_call_strike, "entry_premium": short_call_premium},
+        {"kind": "call", "side": "long", "size": size, "strike": long_call_strike, "entry_premium": long_call_premium},
+    ]
+
+
+def build_cash_and_carry(*, spot_price: float, futures_price: float, size: float = 1.0) -> list[dict[str, Any]]:
+    """Long spot + short dated future. Earns the basis as the future converges
+    toward spot at expiry. Returns two ``linear`` legs."""
+    return [
+        {"kind": "linear", "side": "long", "size": size, "entry": spot_price},
+        {"kind": "linear", "side": "short", "size": size, "entry": futures_price},
+    ]
+
+
+def build_funding_carry(*, long_mark: float, short_mark: float, size: float = 1.0) -> list[dict[str, Any]]:
+    """Long perp on the cheap venue + short perp on the expensive venue.
+
+    Both legs are ``linear`` at their own marks. The strategy earns the perp
+    premium spread + the funding differential (which is NOT captured by this
+    payoff — pair with ``funding_zscore`` / ``perps_basis_compare``)."""
+    return [
+        {"kind": "linear", "side": "long", "size": size, "entry": long_mark},
+        {"kind": "linear", "side": "short", "size": size, "entry": short_mark},
+    ]
+
+
 def summarise(
     legs: list[dict[str, Any]],
     *,

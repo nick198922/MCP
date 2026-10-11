@@ -1,6 +1,12 @@
 # Changelog
 
 ## Unreleased
+- Фаза 3.1: DSL правил alert'ів.
+  * Новий пакет `src/tradedesk/rules/`. `dsl.py` — безпечний AST-евалюатор (whitelist вузлів: Constant/Name/BinOp/BoolOp/Compare/UnaryOp/Call; заборонено Attribute, Subscript, Lambda, усі comprehension-и, Walrus, dunder-імена, dunder-виклики, keyword args, non-whitelisted BinOp). `evaluate(src_or_compiled, env={names, calls})` — async, awaiting coroutine-and callables. `compile_expr(src)` робить всю валідацію один раз.
+  * `metrics.py` — набір async функцій, що читають локальну SQLite через `MetricContext(store, now_ts)`: `funding(venue, base)`, `funding_mean/_zscore(..., days)`, `atm_iv/atm_iv_mean/_zscore(currency, expiry, days?)`, `rr25(currency, expiry)`, `basis/basis_annualized(currency, expiry)`, `liquidations_total/imbalance(window_minutes, venue?, symbol?)`, плюс `abs/min/max`.
+  * Schema v6: таблиця `rules(id, name UNIQUE, enabled, expr, message, cooldown_seconds, created_ts, disabled_ts)` з індексом `(enabled, name)`. Store API: `rule_insert`, `rule_get`, `rule_set_enabled`, `rule_delete`, `rules_list(enabled_only)`.
+  * Alert engine отримав `evaluate_dsl_rules(store, now_ts)` поруч із існуючим JSON-шляхом; scheduler-job `alerts` тепер викликає обидва (DB завжди, JSON за `TRADEDESK_ALERTS_RULES_PATH`). Увімкнення алертів тепер гейтиться лише на `TRADEDESK_ALERTS_ENABLED=1`; JSON-файл — опційний. У таблиці `alerts` DB-правила отримують `rule_id = "db:<name>"`.
+  * 4 нові MCP-tools: `rules_add(name, expr, message?, cooldown_seconds, enabled)` з compile-time валідацією, `rules_list(enabled_only?)`, `rules_test(expr?)` (без expr повертає перелік метрик; інакше парсить, виконує і повертає value+truthy), `rules_disable(id, enable?, delete?)`.
 - Фаза 2.3: Bybit і OKX ліквідації додано до WS-збирача.
   * Нові провайдери-парсери: `parse_bybit_liquidation(event)` (Bybit v5 `allLiquidation.<symbol>`, повертає список бо `data[]` snapshot багатократний), `parse_okx_liquidation(event)` (OKX v5 `liquidation-orders`, nested `details[]`). Side-convention одна й та сама: sell = long got liquidated.
   * Нові стріми: `bybit_liquidation_stream(symbols, max_seconds)` — підписка `op:subscribe` з `args=["allLiquidation.<symbol>", …]`; `okx_liquidation_stream(inst_type, max_seconds)` — підписка на канал `liquidation-orders` з переданим `instType` (SWAP/FUTURES/MARGIN/OPTION).
@@ -57,7 +63,7 @@
 - Фаза 1.2: `perps_funding_history` — крос-венюз історія funding (Binance/Bybit/OKX через ccxt `fetch_funding_rate_history` + Hyperliquid), автодетект інтервалу з медіани ts-різниць (`detect_interval_hours`), крос-венюз-summary (highest/lowest carry, biggest |z|), опція `include_series` для сирих рядів. Live-перевірено на BTC: HL carry 9.1%, OKX 5.1%, Binance 4.5%, Bybit 4.3%; Bybit `z = −1.45` (mean-reversion сигнал).
 - MCP-промт `token_deep_analysis(project)` — глибокий 10-секційний інвест-аналіз криптопроекту (RU), шаблон `src/tradedesk/prompts/token_deep_analysis.md` (bundled у wheel), з хінтом про релевантні tradedesk-mcp інструменти для графіка/позиціювання.
 - Фаза 1.3: нові провайдери `binance_futures.py` і `bybit.py` під окремими `Http` з лімітами. Два нові інструменти: `perps_long_short_ratio` (роздрібні account-based fractions Binance+Bybit, latest/mean/z-score, cross-venue divergence) і `perps_oi_history` (OI history Binance в USD, Bybit в base, latest/mean/change24h/z, cross-venue biggest gain/drop). Live-перевірено 2026-10-10 на BTC.
-- Тестів: 144 (+93 від 0.1.0), lint чистий. Нові залежності `aiosqlite>=0.19`, `websockets>=12`.
+- Тестів: 152 (+101 від 0.1.0), lint чистий. Нові залежності `aiosqlite>=0.19`, `websockets>=12`.
 
 ## 0.1.0 — 2026-10-10
 - Ядро: `Http` (ретраї, rate-limit, кеш із single-flight, класифікація помилок), `HealthRegistry`, `Envelope/Evidence`.

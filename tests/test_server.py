@@ -58,6 +58,10 @@ EXPECTED_TOOLS = {
     "positions_close",
     "positions_risk",
     "liquidations_summary",
+    "rules_add",
+    "rules_list",
+    "rules_test",
+    "rules_disable",
 }
 
 

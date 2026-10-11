@@ -19,6 +19,7 @@ def register_all(server: MCPServer, rt: Runtime) -> None:
         polymarket,
         positions,
         quant,
+        rules,
         sentiment,
         system,
     )
@@ -37,6 +38,7 @@ def register_all(server: MCPServer, rt: Runtime) -> None:
         journal,
         positions,
         liquidations,
+        rules,
         prompts,
     ):
         module.register(server, rt)

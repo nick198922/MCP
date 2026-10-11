@@ -139,3 +139,53 @@ async def evaluate_rules(rules: list[Rule], store: "Store", *, now_ts: int) -> l
             )
         )
     return fired
+
+
+async def evaluate_dsl_rules(store: "Store", *, now_ts: int) -> list[FiredAlert]:
+    """Evaluate DSL rules stored in the ``rules`` table (Phase 3.1).
+
+    A rule fires when its boolean expression evaluates truthy AND the
+    per-rule cooldown has elapsed since its last stored alert.
+    """
+    from ..rules.dsl import DslError, compile_expr, evaluate  # noqa: PLC0415
+    from ..rules.metrics import MetricContext, build_metrics  # noqa: PLC0415
+
+    ctx = MetricContext(store=store, now_ts=now_ts)
+    calls = build_metrics(ctx)
+    stored = await store.rules_list(enabled_only=True)
+    fired: list[FiredAlert] = []
+    for row in stored:
+        rule_id = f"db:{row['name']}"
+        last = await store.last_alert_ts(rule_id)
+        if last is not None and (now_ts - last) < int(row["cooldown_seconds"]):
+            continue
+        try:
+            compiled = compile_expr(row["expr"])
+            result = await evaluate(compiled, {"names": {}, "calls": calls})
+        except DslError:
+            continue
+        except Exception:  # noqa: BLE001 — a user expression should not crash the scheduler
+            continue
+        if not result:
+            continue
+        try:
+            value_f = 1.0 if isinstance(result, bool) else float(result)
+        except (TypeError, ValueError):
+            value_f = 1.0
+        msg = row.get("message") or ""
+        try:
+            msg = msg.format(value=value_f, value_pct=value_f * 100)
+        except (KeyError, IndexError, ValueError):
+            pass
+        fired.append(
+            FiredAlert(
+                rule_id=rule_id,
+                ts=now_ts,
+                value=value_f,
+                threshold=0.0,
+                op="dsl",
+                metric={"expr": row["expr"], "name": row["name"]},
+                message=msg,
+            )
+        )
+    return fired

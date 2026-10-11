@@ -12,8 +12,8 @@
 
 Припущення, які ще не підтверджено власником (не вважати рішеннями): алерти через Telegram; хостинг на VPS; IBKR (на його Маку помічено папки `Jts`/`ntws`, схоже на IB TWS).
 
-## Що зроблено (Фаза 0 + Фаза 1 без 1.10 + Фаза 2 крім Bybit/OKX ліквідацій, 2.10 і дрібниць)
-54 інструменти, публічні дані (CoinGecko вільно без ключа, з ключем — вищий ліміт):
+## Що зроблено (Фаза 0 + Фаза 1 без 1.10 + Фаза 2 без 2.10 + Фаза 3.1)
+58 інструментів, публічні дані (CoinGecko вільно без ключа, з ключем — вищий ліміт):
 
 | Група | Інструменти |
 |---|---|
@@ -32,6 +32,7 @@
 | Журнал (Фаза 2) | `journal_add`, `journal_list`, `journal_close`, `journal_stats` |
 | Позиції (Фаза 2) | `positions_add`, `positions_list`, `positions_close`, `positions_risk` |
 | Ліквідації (Фаза 2) | `liquidations_summary` |
+| Правила (Фаза 3) | `rules_add`, `rules_list`, `rules_test`, `rules_disable` |
 
 Ядро: `Http` (ретраї на 429/5xx/timeout, token-bucket, TTL-кеш із single-flight, класифікація помилок), `HealthRegistry`, `Envelope/Evidence`, фейкові транспорти для тестів.
 
@@ -64,6 +65,7 @@
 - **Фаза 2.5 (MVP):** rules → channels → store. Нова таблиця `alerts` (schema v2). Пакет `alerts/{engine,channels}.py`, провайдер `telegram.py`, scheduler-job `alerts` (увімкнути `TRADEDESK_ALERTS_ENABLED=1` + вказати `TRADEDESK_ALERTS_RULES_PATH`). Канали: `log` (завжди) + `telegram` (коли задані `TELEGRAM_BOT_TOKEN`+`TELEGRAM_CHAT_ID`). MCP-інструмент `alerts_recent`. Повноцінний DSL — на 3.1.
 - **Фаза 2.6:** журнал угод (schema v3, таблиця `journal`). Чиста аналітика `analytics/journal.py` (`pnl`, `r_multiple`, `outcome_of`, `summary`). Чотири MCP-tools: `journal_add`, `journal_list`, `journal_close` (з обчисленням PnL і R-multiple), `journal_stats` (win-rate, expectancy, R-stats). Локальна SQLite — ніяких ордерів назовні.
 - **Фаза 2.7:** позиції й ризик (schema v4, таблиця `positions`). Чиста аналітика `analytics/portfolio.py` (`aggregate_greeks`, `scenario_pnl`). Чотири MCP-tools: `positions_add`, `positions_list`, `positions_close`, `positions_risk` з net δ/γ/vega/θ, per-instrument розподілом і 7 default-сценаріями (±5%/±10% spot, ±5 vol-points, крах+вол-ап). Sync з біржі (read-only) — у Фазі 4; margin-estimate — також пізніше.
+- **Фаза 3.1:** DSL правил. Безпечний AST-евалюатор (`rules/dsl.py`) + metric functions (`rules/metrics.py`) + schema v6 (`rules`) + 4 MCP-tools (`rules_add/list/test/disable`). `alerts` job'и тепер читають і JSON (2.5), і DB-DSL (3.1). Доступні функції: `funding/funding_mean/funding_zscore`, `atm_iv/atm_iv_mean/atm_iv_zscore`, `rr25`, `basis/basis_annualized`, `liquidations_total/imbalance`, `abs/min/max`.
 - **Фаза 2.3:** schema v5 (`liquidations`) + WS-колектор для 3 venues. Binance `!forceOrder@arr` (без subscribe), Bybit v5 `allLiquidation.<symbol>` (per-symbol subscribe), OKX v5 `liquidation-orders` (один `instType`). Вибір venues через `TRADEDESK_COLLECT_LIQUIDATIONS_VENUES`. Загальний drain `_consume_liquidation_stream` → `insert_liquidations` батчами по 100. MCP-інструмент `liquidations_summary(window_minutes, venue?, symbol?)`. Live-перевірено (OKX STRK-USDT-SWAP ліквідації залетіли; Bybit підключився). Залишилось у Фазі 2: email/ntfy канали, off-site бекапи, `/healthz`, Prometheus (2.10).
 - Тестів: 144 (+74 за сесію), lint і format чисті. Нові залежності: `aiosqlite`, `websockets`.
 - **`make smoke` live 2026-10-10: 15/15 ok** на реальних біржах. Deribit greeks звірено з їхнім ticker (30OCT26, delta/vega/theta до 4 знаків). `perps_open_interest` з новим fallback відпрацював 669 мс. `sentiment_fear_greed` повернув 30 денних значень; живий зразок збережено в `tests/fixtures/alternative_me_fng_live_2026-10-10.json`.

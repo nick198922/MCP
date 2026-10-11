@@ -287,16 +287,18 @@ async def _collect_liquidations_okx(rt: "Runtime") -> int:
 async def _evaluate_alerts(rt: "Runtime") -> int:
     """Load rules, evaluate against the store, deliver via channels, record outcome."""
     from ..alerts import build_channels, evaluate_rules, load_rules  # noqa: PLC0415
+    from ..alerts.engine import evaluate_dsl_rules  # noqa: PLC0415
 
     assert rt.store is not None
     s = rt.settings
-    if not s.alerts_rules_path:
-        return 0
-    rules = load_rules(s.alerts_rules_path, default_cooldown=s.alerts_default_cooldown)
-    if not rules:
-        return 0
     now_ts = int(rt.now().timestamp())
-    fired = await evaluate_rules(rules, rt.store, now_ts=now_ts)
+    fired: list = []
+    # JSON (Phase 2.5) rules — optional file path.
+    if s.alerts_rules_path:
+        rules = load_rules(s.alerts_rules_path, default_cooldown=s.alerts_default_cooldown)
+        fired += await evaluate_rules(rules, rt.store, now_ts=now_ts)
+    # DB-backed DSL (Phase 3.1) rules — always consulted when the job runs.
+    fired += await evaluate_dsl_rules(rt.store, now_ts=now_ts)
     if not fired:
         return 0
     channels = build_channels(s)
@@ -362,7 +364,8 @@ def build_default_scheduler(rt: "Runtime") -> Scheduler | None:
         PeriodicJob(name="basis", period_seconds=s.collect_basis_seconds, fn=_collect_basis),
         PeriodicJob(name="retention", period_seconds=s.retention_seconds, fn=_retention_sweep),
     ]
-    if s.alerts_enabled and s.alerts_rules_path:
+    if s.alerts_enabled:
+        # JSON file is optional in Phase 3.1 — DB-backed rules work on their own.
         jobs.append(PeriodicJob(name="alerts", period_seconds=s.alerts_seconds, fn=_evaluate_alerts))
     if s.collect_liquidations_enabled:
         venues = {v.strip().lower() for v in s.collect_liquidations_venues.split(",") if v.strip()}

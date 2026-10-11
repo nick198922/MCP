@@ -274,6 +274,61 @@ class Store:
         rows = await cur.fetchall()
         return [_parse_journal_row(dict(r)) for r in rows]
 
+    # ---------- rules (DSL) ----------
+
+    async def rule_insert(
+        self,
+        *,
+        name: str,
+        expr: str,
+        message: str | None,
+        cooldown_seconds: int,
+        enabled: bool,
+        created_ts: int,
+    ) -> int:
+        cur = await self.conn.execute(
+            "INSERT INTO rules (name, enabled, expr, message, cooldown_seconds, created_ts) VALUES (?,?,?,?,?,?)",
+            (name, 1 if enabled else 0, expr, message, int(cooldown_seconds), int(created_ts)),
+        )
+        await self.conn.commit()
+        return int(cur.lastrowid or 0)
+
+    async def rule_get(self, rule_id: int) -> dict[str, Any] | None:
+        cur = await self.conn.execute("SELECT * FROM rules WHERE id = ?", (rule_id,))
+        row = await cur.fetchone()
+        if row is None:
+            return None
+        d = dict(row)
+        d["enabled"] = bool(d["enabled"])
+        return d
+
+    async def rule_set_enabled(self, rule_id: int, enabled: bool, *, ts: int) -> int:
+        cur = await self.conn.execute(
+            "UPDATE rules SET enabled = ?, disabled_ts = ? WHERE id = ?",
+            (1 if enabled else 0, (None if enabled else ts), rule_id),
+        )
+        await self.conn.commit()
+        return cur.rowcount or 0
+
+    async def rule_delete(self, rule_id: int) -> int:
+        cur = await self.conn.execute("DELETE FROM rules WHERE id = ?", (rule_id,))
+        await self.conn.commit()
+        return cur.rowcount or 0
+
+    async def rules_list(self, *, enabled_only: bool = False) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM rules"
+        if enabled_only:
+            sql += " WHERE enabled = 1"
+        sql += " ORDER BY name"
+        cur = await self.conn.execute(sql)
+        rows = await cur.fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            d = dict(r)
+            d["enabled"] = bool(d["enabled"])
+            out.append(d)
+        return out
+
     # ---------- liquidations ----------
 
     async def insert_liquidations(self, rows: list[dict[str, Any]]) -> int:

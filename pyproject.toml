@@ -15,6 +15,7 @@ dependencies = [
   "ccxt>=4.4",
   "numpy>=1.26",
   "aiosqlite>=0.19",
+  "websockets>=12",
 ]
 
 [project.optional-dependencies]

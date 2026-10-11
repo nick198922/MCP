@@ -236,6 +236,30 @@ async def _collect_basis(rt: "Runtime") -> int:
     return total
 
 
+async def _collect_liquidations_binance(rt: "Runtime") -> int:
+    """Open the Binance !forceOrder@arr stream, buffer events for a bounded
+    window and flush them to the store. The scheduler reruns us so a short
+    connection drop costs at most ``collect_liquidations_restart_seconds``.
+    Returns the total number of rows written during this window.
+    """
+    from ..providers.liquidations import binance_liquidation_stream  # noqa: PLC0415
+
+    assert rt.store is not None
+    s = rt.settings
+    written = 0
+    buffer: list[dict] = []
+    try:
+        async for row in binance_liquidation_stream(max_seconds=float(s.collect_liquidations_window_seconds)):
+            buffer.append(row)
+            if len(buffer) >= 100:
+                written += await rt.store.insert_liquidations(buffer)
+                buffer.clear()
+    finally:
+        if buffer:
+            written += await rt.store.insert_liquidations(buffer)
+    return written
+
+
 async def _evaluate_alerts(rt: "Runtime") -> int:
     """Load rules, evaluate against the store, deliver via channels, record outcome."""
     from ..alerts import build_channels, evaluate_rules, load_rules  # noqa: PLC0415
@@ -316,4 +340,13 @@ def build_default_scheduler(rt: "Runtime") -> Scheduler | None:
     ]
     if s.alerts_enabled and s.alerts_rules_path:
         jobs.append(PeriodicJob(name="alerts", period_seconds=s.alerts_seconds, fn=_evaluate_alerts))
+    if s.collect_liquidations_enabled:
+        # The job already blocks for ~window_seconds; period here is the sleep between runs.
+        jobs.append(
+            PeriodicJob(
+                name="liquidations",
+                period_seconds=s.collect_liquidations_restart_seconds,
+                fn=_collect_liquidations_binance,
+            )
+        )
     return Scheduler(rt, jobs)

@@ -77,6 +77,7 @@ claude mcp add tradedesk -- uv run --directory /ABSOLUTE/PATH/TO/tradedesk-mcp t
 | Історія (Фаза 2) | `iv_rank`, `funding_zscore`, `skew_percentile`, `alerts_recent` | ATM-IV rank, крос-венюз funding z-score, 25Δ/10Δ RR percentile, журнал алертів (локальна SQLite) |
 | Журнал (Фаза 2) | `journal_add`, `journal_list`, `journal_close`, `journal_stats` | трекінг угод у локальній SQLite: PnL, R-multiple, теги, win-rate / expectancy / avg R |
 | Позиції (Фаза 2) | `positions_add`, `positions_list`, `positions_close`, `positions_risk` | ручний портфель + сценарії PnL (±10 % спот, ±5 vol-points, crash+vol-up): net δ/γ/vega/θ |
+| Ліквідації (Фаза 2) | `liquidations_summary` | WebSocket збирач Binance `!forceOrder@arr` + агрегати (longs/shorts USD, imbalance, per-symbol, top) |
 
 Усі відповіді мають однаковий конверт `{ok, data, evidence, missing, warnings, as_of}`: кожне число має джерело й час, а збій одного провайдера не валить виклик. Деталі в [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 

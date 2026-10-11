@@ -43,6 +43,10 @@ class Settings:
     retention_seconds: int = 86_400  # how often to run the retention sweep
     # Comma-separated bearer tokens for the streamable-http transport. Empty = auth disabled.
     http_bearer_tokens: str = ""
+    # Liquidations collector (WebSocket)
+    collect_liquidations_enabled: bool = False
+    collect_liquidations_window_seconds: int = 60
+    collect_liquidations_restart_seconds: int = 5
     # Alerts
     alerts_enabled: bool = False
     alerts_rules_path: str = ""
@@ -72,6 +76,9 @@ class Settings:
             retention_funding_days=int(_float("TRADEDESK_RETENTION_FUNDING_DAYS", 365)),
             retention_basis_days=int(_float("TRADEDESK_RETENTION_BASIS_DAYS", 365)),
             retention_seconds=int(_float("TRADEDESK_RETENTION_SECONDS", 86_400)),
+            collect_liquidations_enabled=os.environ.get("TRADEDESK_COLLECT_LIQUIDATIONS_ENABLED", "").lower() in ("1", "true", "yes"),
+            collect_liquidations_window_seconds=int(_float("TRADEDESK_COLLECT_LIQUIDATIONS_WINDOW_SECONDS", 60)),
+            collect_liquidations_restart_seconds=int(_float("TRADEDESK_COLLECT_LIQUIDATIONS_RESTART_SECONDS", 5)),
             http_bearer_tokens=os.environ.get("TRADEDESK_HTTP_BEARER_TOKENS") or os.environ.get("TRADEDESK_HTTP_BEARER_TOKEN", ""),
             alerts_enabled=os.environ.get("TRADEDESK_ALERTS_ENABLED", "").lower() in ("1", "true", "yes"),
             alerts_rules_path=os.environ.get("TRADEDESK_ALERTS_RULES_PATH", ""),

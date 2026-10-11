@@ -168,7 +168,7 @@ class Store:
 
     async def prune(self, table: str, cutoff_ts: int) -> int:
         """Delete rows with ts < cutoff_ts. Returns the number of rows deleted."""
-        if table not in {"atm_term", "funding_hist", "basis_hist", "snapshots", "alerts"}:
+        if table not in {"atm_term", "funding_hist", "basis_hist", "snapshots", "alerts", "liquidations"}:
             raise ValueError(f"unknown table {table!r}")
         cur = await self.conn.execute(f"DELETE FROM {table} WHERE ts < ?", (cutoff_ts,))
         await self.conn.commit()
@@ -273,6 +273,51 @@ class Store:
         cur = await self.conn.execute(sql, params)
         rows = await cur.fetchall()
         return [_parse_journal_row(dict(r)) for r in rows]
+
+    # ---------- liquidations ----------
+
+    async def insert_liquidations(self, rows: list[dict[str, Any]]) -> int:
+        if not rows:
+            return 0
+        payload = [
+            (
+                int(r["ts"]),
+                r["venue"],
+                r["symbol"],
+                r["side"],
+                float(r["qty"]),
+                float(r["price"]),
+                float(r["notional_usd"]),
+            )
+            for r in rows
+        ]
+        await self.conn.executemany(
+            "INSERT INTO liquidations (ts, venue, symbol, side, qty, price, notional_usd) VALUES (?,?,?,?,?,?,?)",
+            payload,
+        )
+        await self.conn.commit()
+        return len(payload)
+
+    async def liquidations_in_window(
+        self,
+        *,
+        since_ts: int,
+        until_ts: int,
+        venue: str | None = None,
+        symbol: str | None = None,
+    ) -> list[dict[str, Any]]:
+        where = ["ts >= ?", "ts <= ?"]
+        params: list[Any] = [since_ts, until_ts]
+        if venue:
+            where.append("venue = ?")
+            params.append(venue)
+        if symbol:
+            where.append("symbol = ?")
+            params.append(symbol)
+        sql = "SELECT ts, venue, symbol, side, qty, price, notional_usd FROM liquidations WHERE " + " AND ".join(where) + " ORDER BY ts"
+        cur = await self.conn.execute(sql, params)
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
 
     # ---------- positions ----------
 

@@ -8,6 +8,7 @@ from ..runtime import Runtime
 def register_all(server: MCPServer, rt: Runtime) -> None:
     from .. import prompts
     from . import (
+        backtest,
         calendar,
         coingecko,
         history,
@@ -41,6 +42,7 @@ def register_all(server: MCPServer, rt: Runtime) -> None:
         liquidations,
         rules,
         strategy,
+        backtest,
         prompts,
     ):
         module.register(server, rt)

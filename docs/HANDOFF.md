@@ -12,8 +12,8 @@
 
 Припущення, які ще не підтверджено власником (не вважати рішеннями): алерти через Telegram; хостинг на VPS; IBKR (на його Маку помічено папки `Jts`/`ntws`, схоже на IB TWS).
 
-## Що зроблено (Фаза 0 + Фаза 1 без 1.10 + Фаза 2 без 2.10 + Фаза 3.1, 3.3, 3.4)
-65 інструментів, публічні дані (CoinGecko вільно без ключа, з ключем — вищий ліміт):
+## Що зроблено (Фаза 0 + Фаза 1 без 1.10 + Фаза 2 без 2.10 + Фаза 3.1/3.3/3.4/3.5)
+66 інструментів, публічні дані (CoinGecko вільно без ключа, з ключем — вищий ліміт):
 
 | Група | Інструменти |
 |---|---|
@@ -34,6 +34,7 @@
 | Ліквідації (Фаза 2) | `liquidations_summary` |
 | Правила (Фаза 3) | `rules_add`, `rules_list`, `rules_test`, `rules_disable` |
 | Стратегії (Фаза 3) | `strategy_payoff`, `strategy_straddle`, `strategy_strangle`, `strategy_risk_reversal`, `strategy_iron_condor`, `strategy_cash_and_carry`, `strategy_funding_carry` |
+| Бектест (Фаза 3) | `strategy_backtest_momentum` |
 
 Ядро: `Http` (ретраї на 429/5xx/timeout, token-bucket, TTL-кеш із single-flight, класифікація помилок), `HealthRegistry`, `Envelope/Evidence`, фейкові транспорти для тестів.
 
@@ -69,6 +70,7 @@
 - **Фаза 3.1:** DSL правил. Безпечний AST-евалюатор (`rules/dsl.py`) + metric functions (`rules/metrics.py`) + schema v6 (`rules`) + 4 MCP-tools (`rules_add/list/test/disable`). `alerts` job'и тепер читають і JSON (2.5), і DB-DSL (3.1). Доступні функції: `funding/funding_mean/funding_zscore`, `atm_iv/atm_iv_mean/atm_iv_zscore`, `rr25`, `basis/basis_annualized`, `liquidations_total/imbalance`, `abs/min/max`.
 - **Фаза 3.4:** `strategy_payoff(legs, spot, days, iv, forward?, width_pct, grid, kind)` — many-leg payoff, breakevens, max profit/loss, net Black-76 δ/γ/vega/θ, MTM, risk-neutral PoP. Чиста аналітика `analytics/strategy.py`.
 - **Фаза 3.3:** 6 шаблонів стратегій на базі pure-builders — `strategy_straddle`, `strategy_strangle`, `strategy_risk_reversal`, `strategy_iron_condor`, `strategy_cash_and_carry`, `strategy_funding_carry`. Кожен генерує legs і повертає payoff у єдиному форматі з `strategy_payoff`.
+- **Фаза 3.5 (MVP):** векторизований бектест `analytics/backtest.py` (next-bar fill, costs за зміну позиції, узгоджені equity+returns) + сигнал-шаблон momentum. MCP-tool `strategy_backtest_momentum` поверх ccxt OHLCV. Live-перевірено на BTC/USDT 1h × 30d. Залишилось у Фазі 3: 3.2 (бібліотека пресет-правил), 3.6 (режими ринку), funding/multi-asset у бектесті, walk-forward splits.
 - **Фаза 2.3:** schema v5 (`liquidations`) + WS-колектор для 3 venues. Binance `!forceOrder@arr` (без subscribe), Bybit v5 `allLiquidation.<symbol>` (per-symbol subscribe), OKX v5 `liquidation-orders` (один `instType`). Вибір venues через `TRADEDESK_COLLECT_LIQUIDATIONS_VENUES`. Загальний drain `_consume_liquidation_stream` → `insert_liquidations` батчами по 100. MCP-інструмент `liquidations_summary(window_minutes, venue?, symbol?)`. Live-перевірено (OKX STRK-USDT-SWAP ліквідації залетіли; Bybit підключився). Залишилось у Фазі 2: email/ntfy канали, off-site бекапи, `/healthz`, Prometheus (2.10).
 - Тестів: 144 (+74 за сесію), lint і format чисті. Нові залежності: `aiosqlite`, `websockets`.
 - **`make smoke` live 2026-10-10: 15/15 ok** на реальних біржах. Deribit greeks звірено з їхнім ticker (30OCT26, delta/vega/theta до 4 знаків). `perps_open_interest` з новим fallback відпрацював 669 мс. `sentiment_fear_greed` повернув 30 денних значень; живий зразок збережено в `tests/fixtures/alternative_me_fng_live_2026-10-10.json`.

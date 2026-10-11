@@ -69,6 +69,7 @@ EXPECTED_TOOLS = {
     "strategy_iron_condor",
     "strategy_cash_and_carry",
     "strategy_funding_carry",
+    "strategy_backtest_momentum",
 }
 
 

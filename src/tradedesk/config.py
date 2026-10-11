@@ -37,6 +37,10 @@ class Settings:
     collect_atm_term_seconds: int = 300
     collect_funding_seconds: int = 3600
     collect_basis_seconds: int = 300
+    retention_atm_term_days: int = 365
+    retention_funding_days: int = 365
+    retention_basis_days: int = 365
+    retention_seconds: int = 86_400  # how often to run the retention sweep
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -55,4 +59,8 @@ class Settings:
             collect_atm_term_seconds=int(_float("TRADEDESK_COLLECT_ATM_TERM_SECONDS", 300)),
             collect_funding_seconds=int(_float("TRADEDESK_COLLECT_FUNDING_SECONDS", 3600)),
             collect_basis_seconds=int(_float("TRADEDESK_COLLECT_BASIS_SECONDS", 300)),
+            retention_atm_term_days=int(_float("TRADEDESK_RETENTION_ATM_TERM_DAYS", 365)),
+            retention_funding_days=int(_float("TRADEDESK_RETENTION_FUNDING_DAYS", 365)),
+            retention_basis_days=int(_float("TRADEDESK_RETENTION_BASIS_DAYS", 365)),
+            retention_seconds=int(_float("TRADEDESK_RETENTION_SECONDS", 86_400)),
         )

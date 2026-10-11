@@ -151,3 +151,11 @@ class Store:
         )
         rows = await cur.fetchall()
         return [dict(r) for r in rows]
+
+    async def prune(self, table: str, cutoff_ts: int) -> int:
+        """Delete rows with ts < cutoff_ts. Returns the number of rows deleted."""
+        if table not in {"atm_term", "funding_hist", "basis_hist", "snapshots"}:
+            raise ValueError(f"unknown table {table!r}")
+        cur = await self.conn.execute(f"DELETE FROM {table} WHERE ts < ?", (cutoff_ts,))
+        await self.conn.commit()
+        return cur.rowcount or 0

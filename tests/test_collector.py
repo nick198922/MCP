@@ -4,7 +4,14 @@ import asyncio
 from dataclasses import replace
 
 from conftest import NOW, FakeEx, make_transports
-from tradedesk.collector.scheduler import PeriodicJob, Scheduler, _collect_atm_term
+from tradedesk.collector.scheduler import (
+    PeriodicJob,
+    Scheduler,
+    _collect_atm_term,
+    _collect_basis,
+    _collect_funding,
+    _retention_sweep,
+)
 from tradedesk.config import Settings
 from tradedesk.runtime import Runtime
 
@@ -93,3 +100,58 @@ async def test_build_default_scheduler_respects_flag(state):
 
     # Keep the Settings-defaults contract explicit.
     _ = replace  # silence unused-import complaints when the file is edited later
+
+
+async def test_funding_job_writes_rows(state):
+    rt = await _rt_with_memory_store(state)
+    try:
+        written = await _collect_funding(rt)
+        # FakeEx: binanceusdm + bybit yield funding (OKX raises); HL provides BTC+ETH;
+        # Deribit perpetual has funding_8h in the FUTURES fixture → 1 row per currency.
+        # Expect something non-trivial for BTC and ETH, plus HL + Deribit rows.
+        assert written >= 4
+        snap = await rt.store.funding_series("binanceusdm", "BTC", 0, 2_000_000_000)
+        assert len(snap) == 1 and snap[0]["annualized"] != 0
+    finally:
+        await rt.aclose()
+
+
+async def test_basis_job_writes_rows(state):
+    rt = await _rt_with_memory_store(state)
+    try:
+        written = await _collect_basis(rt)
+        # Fake Deribit FUTURES fixture (3 dated + 1 perp) is returned for both BTC and ETH
+        # in the fake transport → 3 × 2 = 6 dated rows total.
+        assert written == 6
+        assert await rt.store.table_count("basis_hist") == 6
+    finally:
+        await rt.aclose()
+
+
+async def test_retention_sweep_deletes_old_rows(state):
+    settings = Settings(
+        http_retries=1,
+        cache_scale=0.0,
+        db_path=":memory:",
+        collector_enabled=True,
+        retention_atm_term_days=5,
+        retention_funding_days=0,  # 0 disables prune for that table
+        retention_basis_days=0,
+    )
+    rt = Runtime(settings, transports=make_transports(state), exchange_factory=FakeEx)
+    rt.now = lambda: NOW
+    assert rt.store is not None
+    await rt.store.init()
+    try:
+        now_ts = int(rt.now().timestamp())
+        rows = [
+            {"expiry": "2026-10-30T08:00:00+00:00", "days": 20.0, "forward": 83000.0, "atm_iv": 0.42},
+        ]
+        await rt.store.insert_atm_term(ts=now_ts - 10 * 86_400, currency="BTC", rows=rows)  # 10 days ago
+        await rt.store.insert_atm_term(ts=now_ts - 1 * 86_400, currency="BTC", rows=rows)  # 1 day ago
+        assert await rt.store.table_count("atm_term") == 2
+        deleted = await _retention_sweep(rt)
+        assert deleted == 1
+        assert await rt.store.table_count("atm_term") == 1
+    finally:
+        await rt.aclose()

@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Фаза 2.9: HTTP bearer-auth для streamable-http. Новий модуль `http_auth.py` з `parse_tokens` і `BearerAuthMiddleware` (ASGI, non-HTTP scopes пропускаються, constant-time порівняння через `hmac.compare_digest`, 401 + `WWW-Authenticate: Bearer realm="tradedesk"`). `server.main()` тепер явно будує Starlette-додаток через `server.streamable_http_app()`, обгортає його в middleware коли налаштовано `TRADEDESK_HTTP_BEARER_TOKEN(S)`, і запускає uvicorn напряму. Без токена сервер стартує з явним WARNING у лозі (під'єднання тільки з 127.0.0.1 / VPN). `deploy/env.example` і `deploy/README.md` оновлено (Caddy спрощено до чистого reverse_proxy, auth у самому сервері).
 - Фаза 2.8 (частково): артефакти деплою.
   * `Dockerfile` (multi-stage uv builder → slim runtime, non-root `tradedesk` uid 10001, `sqlite3` CLI + CA-certs у runtime, TCP HEALTHCHECK на :8000).
   * `docker-compose.yml` — слухає `127.0.0.1:8000`, тримає стан у `./data`, увімкнений збирач за замовчуванням.
@@ -33,7 +34,7 @@
 - Фаза 1.2: `perps_funding_history` — крос-венюз історія funding (Binance/Bybit/OKX через ccxt `fetch_funding_rate_history` + Hyperliquid), автодетект інтервалу з медіани ts-різниць (`detect_interval_hours`), крос-венюз-summary (highest/lowest carry, biggest |z|), опція `include_series` для сирих рядів. Live-перевірено на BTC: HL carry 9.1%, OKX 5.1%, Binance 4.5%, Bybit 4.3%; Bybit `z = −1.45` (mean-reversion сигнал).
 - MCP-промт `token_deep_analysis(project)` — глибокий 10-секційний інвест-аналіз криптопроекту (RU), шаблон `src/tradedesk/prompts/token_deep_analysis.md` (bundled у wheel), з хінтом про релевантні tradedesk-mcp інструменти для графіка/позиціювання.
 - Фаза 1.3: нові провайдери `binance_futures.py` і `bybit.py` під окремими `Http` з лімітами. Два нові інструменти: `perps_long_short_ratio` (роздрібні account-based fractions Binance+Bybit, latest/mean/z-score, cross-venue divergence) і `perps_oi_history` (OI history Binance в USD, Bybit в base, latest/mean/change24h/z, cross-venue biggest gain/drop). Live-перевірено 2026-10-10 на BTC.
-- Тестів: 104 (+53 від 0.1.0), lint чистий. Нова залежність `aiosqlite>=0.19`.
+- Тестів: 112 (+61 від 0.1.0), lint чистий. Нова залежність `aiosqlite>=0.19`.
 
 ## 0.1.0 — 2026-10-10
 - Ядро: `Http` (ретраї, rate-limit, кеш із single-flight, класифікація помилок), `HealthRegistry`, `Envelope/Evidence`.

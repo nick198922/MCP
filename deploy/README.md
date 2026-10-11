@@ -28,17 +28,23 @@ docker compose logs -f tradedesk-mcp
 
 ```caddy
 mcp.example.com {
-    @auth {
-        header Authorization "Bearer YOUR_LONG_RANDOM_TOKEN"
-    }
-    handle @auth {
-        reverse_proxy 127.0.0.1:8000
-    }
-    respond "Unauthorized" 401
+    reverse_proxy 127.0.0.1:8000
 }
 ```
 
-Caddy сам підніме TLS від Let's Encrypt. Токен тримай **довгим** (32+ байти з `openssl rand -base64 32`). Пара MCP-клієнтів передає `Authorization: Bearer …` у заголовках.
+Caddy сам підніме TLS від Let's Encrypt. Автентифікація — у самому серверу (`TRADEDESK_HTTP_BEARER_TOKEN`), тому Caddy тільки проксі-пас.
+
+### Bearer-токен (2.9) — обов'язково, якщо порт назовні
+
+У `.env`:
+
+```
+TRADEDESK_HTTP_BEARER_TOKEN=$(openssl rand -base64 32)
+# або кілька токенів для ротації:
+# TRADEDESK_HTTP_BEARER_TOKENS=primary,backup
+```
+
+Без токена `streamable-http` стартує в режимі «без auth» (підходить лише для 127.0.0.1 / mTLS / Tailscale). Коли токен заданий, усі HTTP-запити без `Authorization: Bearer <token>` отримують 401. Порівняння токенів — constant-time, тож тайминг не витікає. Клієнт MCP передає токен у хедері.
 
 ### Бекапи
 
@@ -85,6 +91,6 @@ journalctl -u tradedesk-mcp -f
 
 ## Що лишилось зробити вручну (поки не автоматизовано)
 
-- **TLS + bearer** — у коробці нема, тож Caddy/Nginx + ротація токена під вашу відповідальність (див. 2.9 у BACKLOG).
+- **Ротація bearer-токена** — додавайте новий у `TRADEDESK_HTTP_BEARER_TOKENS=primary,backup`, перезапускайте сервіс, переключайте клієнтів, видаляйте старий. TLS досі робить Caddy/Nginx.
 - **/healthz** — MCP SDK streamable-http не експонує окремий ендпойнт, тому healthcheck у Docker/Compose просто перевіряє, що порт підв'язаний. Коли SDK додасть endpoint, замінити на HTTP-перевірку.
 - **Моніторинг** — як мінімум `docker compose logs` або journalctl у tail; метрики Prometheus — опційно у 2.10.

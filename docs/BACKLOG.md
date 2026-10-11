@@ -39,7 +39,7 @@
 - [ ] 2.6 Журнал угод: `journal_add/list/close`, теги, R-мультиплікатор, статистика (win-rate, expectancy).
 - [ ] 2.7 Позиції й ризик (ручні/з біржі read-only): net delta/gamma/vega/theta портфеля, сценарії (±10 % спот, ±5 vol-пунктів), margin-estimate.
 - [x] 2.8 Деплой (частково): `Dockerfile` (uv builder → slim runtime, non-root uid 10001, `sqlite3` CLI, HEALTHCHECK по TCP:8000), `docker-compose.yml` (bind 127.0.0.1, volume `./data:/data`), `deploy/tradedesk-mcp.service` (systemd + hardening), `deploy/backup-sqlite.sh` (`.backup` + gzip + ретенція `BACKUP_KEEP_DAYS`), `deploy/env.example`, `deploy/README.md` (Docker + bare-systemd варіанти + Caddy приклад). `/healthz` — чекає розширення MCP SDK (нотатка в deploy README). Off-site копіювання лишається вручну (`rclone`/`restic` поза скоупом).
-- [ ] 2.9 HTTP-автентифікація: bearer-токен або mTLS/Tailscale; TLS через Caddy. (Мінімум до публікації порту назовні.)
+- [x] 2.9 HTTP-auth: `BearerAuthMiddleware` для streamable-http, `TRADEDESK_HTTP_BEARER_TOKEN` (або `TRADEDESK_HTTP_BEARER_TOKENS` для списку). constant-time compare (`hmac.compare_digest`), 401 + `WWW-Authenticate: Bearer realm="tradedesk"`. Порожнє значення = auth вимкнена + WARNING у лозі. TLS досі зовні (Caddy/Nginx). Без ключа — лише 127.0.0.1/VPN.
 - [ ] 2.10 Структуровані логи (JSON), ротація, метрики Prometheus (опційно).
 
 ## Фаза 3 — правила, стратегії, бектест

@@ -41,6 +41,8 @@ class Settings:
     retention_funding_days: int = 365
     retention_basis_days: int = 365
     retention_seconds: int = 86_400  # how often to run the retention sweep
+    # Comma-separated bearer tokens for the streamable-http transport. Empty = auth disabled.
+    http_bearer_tokens: str = ""
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -63,4 +65,5 @@ class Settings:
             retention_funding_days=int(_float("TRADEDESK_RETENTION_FUNDING_DAYS", 365)),
             retention_basis_days=int(_float("TRADEDESK_RETENTION_BASIS_DAYS", 365)),
             retention_seconds=int(_float("TRADEDESK_RETENTION_SECONDS", 86_400)),
+            http_bearer_tokens=os.environ.get("TRADEDESK_HTTP_BEARER_TOKENS") or os.environ.get("TRADEDESK_HTTP_BEARER_TOKEN", ""),
         )

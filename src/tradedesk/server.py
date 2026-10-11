@@ -10,11 +10,11 @@ import logging
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any
 
 from mcp.server.mcpserver import MCPServer
 
 from . import __version__
+from .http_auth import BearerAuthMiddleware, parse_tokens
 from .runtime import Runtime
 from .tools import register_all
 
@@ -59,10 +59,22 @@ def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     server, rt = build_server()
     s = rt.settings
-    kwargs: dict[str, Any] = {}
-    if s.transport == "streamable-http":
-        kwargs = {"host": s.host, "port": s.port}
-    server.run(s.transport, **kwargs)  # type: ignore[arg-type]
+    if s.transport != "streamable-http":
+        server.run(s.transport)  # type: ignore[arg-type]
+        return
+
+    import uvicorn  # noqa: PLC0415
+
+    app = server.streamable_http_app(host=s.host)
+    tokens = parse_tokens(s.http_bearer_tokens)
+    if tokens:
+        app = BearerAuthMiddleware(app, tokens)
+        logging.getLogger("tradedesk.auth").info("bearer auth enabled (%d token(s))", len(tokens))
+    else:
+        logging.getLogger("tradedesk.auth").warning(
+            "streamable-http running WITHOUT auth; bind to 127.0.0.1 or set TRADEDESK_HTTP_BEARER_TOKEN"
+        )
+    uvicorn.run(app, host=s.host, port=s.port, log_level="info")
 
 
 if __name__ == "__main__":

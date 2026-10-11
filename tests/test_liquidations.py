@@ -7,7 +7,11 @@ from mcp import Client
 
 from conftest import NOW, FakeEx, make_transports
 from tradedesk.config import Settings
-from tradedesk.providers.liquidations import parse_binance_force_order
+from tradedesk.providers.liquidations import (
+    parse_binance_force_order,
+    parse_bybit_liquidation,
+    parse_okx_liquidation,
+)
 from tradedesk.runtime import Runtime
 from tradedesk.server import build_server
 
@@ -62,6 +66,52 @@ def test_parse_sell_is_long_liquidation():
 def test_parse_buy_maps_to_short_liquidation():
     row = parse_binance_force_order(_event(S="BUY"))
     assert row["side"] == "buy"
+
+
+def test_parse_bybit_snapshot_yields_rows():
+    event = {
+        "topic": "allLiquidation.BTCUSDT",
+        "type": "snapshot",
+        "ts": 1_703_485_267_706,
+        "data": [
+            {"T": 1_703_485_267_706, "s": "BTCUSDT", "S": "Sell", "v": "0.03", "p": "40000"},
+            {"T": 1_703_485_267_800, "s": "BTCUSDT", "S": "Buy", "v": "0.01", "p": "40010"},
+        ],
+    }
+    rows = parse_bybit_liquidation(event)
+    assert [r["side"] for r in rows] == ["sell", "buy"]
+    assert all(r["venue"] == "bybit" and r["symbol"] == "BTCUSDT" for r in rows)
+    assert rows[0]["notional_usd"] == pytest.approx(0.03 * 40000.0)
+
+
+def test_parse_bybit_ignores_other_topics():
+    assert parse_bybit_liquidation({"topic": "trade.BTCUSDT", "data": [{}]}) == []
+    assert parse_bybit_liquidation({"op": "subscribe", "success": True}) == []
+
+
+def test_parse_okx_liquidation_yields_rows():
+    event = {
+        "arg": {"channel": "liquidation-orders", "instType": "SWAP"},
+        "data": [
+            {
+                "instType": "SWAP",
+                "instId": "BTC-USDT-SWAP",
+                "details": [
+                    {"side": "sell", "sz": "0.5", "bkPx": "40000", "posSide": "long", "ts": "1703485267706"},
+                    {"side": "buy", "sz": "0.1", "bkPx": "40020", "posSide": "short", "ts": "1703485267800"},
+                ],
+            }
+        ],
+    }
+    rows = parse_okx_liquidation(event)
+    assert len(rows) == 2
+    assert rows[0]["venue"] == "okx" and rows[0]["symbol"] == "BTC-USDT-SWAP"
+    assert rows[0]["side"] == "sell" and rows[1]["side"] == "buy"
+    assert rows[0]["notional_usd"] == pytest.approx(0.5 * 40000.0)
+
+
+def test_parse_okx_ignores_other_channels():
+    assert parse_okx_liquidation({"arg": {"channel": "trades"}, "data": [{}]}) == []
 
 
 def test_parse_rejects_bad_events():

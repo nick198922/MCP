@@ -236,20 +236,13 @@ async def _collect_basis(rt: "Runtime") -> int:
     return total
 
 
-async def _collect_liquidations_binance(rt: "Runtime") -> int:
-    """Open the Binance !forceOrder@arr stream, buffer events for a bounded
-    window and flush them to the store. The scheduler reruns us so a short
-    connection drop costs at most ``collect_liquidations_restart_seconds``.
-    Returns the total number of rows written during this window.
-    """
-    from ..providers.liquidations import binance_liquidation_stream  # noqa: PLC0415
-
+async def _consume_liquidation_stream(rt: "Runtime", stream) -> int:
+    """Drain an async-iterable of liquidation rows into the store, batching by 100."""
     assert rt.store is not None
-    s = rt.settings
     written = 0
     buffer: list[dict] = []
     try:
-        async for row in binance_liquidation_stream(max_seconds=float(s.collect_liquidations_window_seconds)):
+        async for row in stream:
             buffer.append(row)
             if len(buffer) >= 100:
                 written += await rt.store.insert_liquidations(buffer)
@@ -258,6 +251,37 @@ async def _collect_liquidations_binance(rt: "Runtime") -> int:
         if buffer:
             written += await rt.store.insert_liquidations(buffer)
     return written
+
+
+async def _collect_liquidations_binance(rt: "Runtime") -> int:
+    """Open the Binance !forceOrder@arr stream for a bounded window."""
+    from ..providers.liquidations import binance_liquidation_stream  # noqa: PLC0415
+
+    s = rt.settings
+    return await _consume_liquidation_stream(rt, binance_liquidation_stream(max_seconds=float(s.collect_liquidations_window_seconds)))
+
+
+async def _collect_liquidations_bybit(rt: "Runtime") -> int:
+    """Subscribe to Bybit v5 ``allLiquidation.<symbol>`` for the configured symbols."""
+    from ..providers.liquidations import bybit_liquidation_stream  # noqa: PLC0415
+
+    s = rt.settings
+    symbols = [sym.strip().upper() for sym in s.collect_liquidations_bybit_symbols.split(",") if sym.strip()]
+    if not symbols:
+        return 0
+    return await _consume_liquidation_stream(
+        rt, bybit_liquidation_stream(symbols, max_seconds=float(s.collect_liquidations_window_seconds))
+    )
+
+
+async def _collect_liquidations_okx(rt: "Runtime") -> int:
+    """Subscribe to OKX v5 ``liquidation-orders`` for one instType."""
+    from ..providers.liquidations import okx_liquidation_stream  # noqa: PLC0415
+
+    s = rt.settings
+    return await _consume_liquidation_stream(
+        rt, okx_liquidation_stream(s.collect_liquidations_okx_inst_type, max_seconds=float(s.collect_liquidations_window_seconds))
+    )
 
 
 async def _evaluate_alerts(rt: "Runtime") -> int:
@@ -341,12 +365,20 @@ def build_default_scheduler(rt: "Runtime") -> Scheduler | None:
     if s.alerts_enabled and s.alerts_rules_path:
         jobs.append(PeriodicJob(name="alerts", period_seconds=s.alerts_seconds, fn=_evaluate_alerts))
     if s.collect_liquidations_enabled:
-        # The job already blocks for ~window_seconds; period here is the sleep between runs.
-        jobs.append(
-            PeriodicJob(
-                name="liquidations",
-                period_seconds=s.collect_liquidations_restart_seconds,
-                fn=_collect_liquidations_binance,
+        venues = {v.strip().lower() for v in s.collect_liquidations_venues.split(",") if v.strip()}
+        fns = {
+            "binance": _collect_liquidations_binance,
+            "bybit": _collect_liquidations_bybit,
+            "okx": _collect_liquidations_okx,
+        }
+        for venue in ("binance", "bybit", "okx"):
+            if venue not in venues:
+                continue
+            jobs.append(
+                PeriodicJob(
+                    name=f"liquidations:{venue}",
+                    period_seconds=s.collect_liquidations_restart_seconds,
+                    fn=fns[venue],
+                )
             )
-        )
     return Scheduler(rt, jobs)

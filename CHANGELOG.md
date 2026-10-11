@@ -1,6 +1,13 @@
 # Changelog
 
 ## Unreleased
+- Фаза 2.3: Bybit і OKX ліквідації додано до WS-збирача.
+  * Нові провайдери-парсери: `parse_bybit_liquidation(event)` (Bybit v5 `allLiquidation.<symbol>`, повертає список бо `data[]` snapshot багатократний), `parse_okx_liquidation(event)` (OKX v5 `liquidation-orders`, nested `details[]`). Side-convention одна й та сама: sell = long got liquidated.
+  * Нові стріми: `bybit_liquidation_stream(symbols, max_seconds)` — підписка `op:subscribe` з `args=["allLiquidation.<symbol>", …]`; `okx_liquidation_stream(inst_type, max_seconds)` — підписка на канал `liquidation-orders` з переданим `instType` (SWAP/FUTURES/MARGIN/OPTION).
+  * Shared `_ws_consume(url, subscribe, parser, max_seconds)` з bound-ed deadline, lazy `websockets` імпорт.
+  * Collector: окремі джоби `liquidations:binance|bybit|okx` будуються за `TRADEDESK_COLLECT_LIQUIDATIONS_VENUES` (default `binance,bybit,okx`). Налаштування `TRADEDESK_COLLECT_LIQUIDATIONS_BYBIT_SYMBOLS` (default `BTCUSDT,ETHUSDT,SOLUSDT`), `TRADEDESK_COLLECT_LIQUIDATIONS_OKX_INST_TYPE` (default `SWAP`).
+  * `_consume_liquidation_stream(rt, stream)` — спільний drain → store batcher для всіх venues.
+  * Live-перевірка 2026-10-11: OKX видає живі STRK-USDT-SWAP ліквідації; Bybit підключається без помилок (тихо в момент тесту).
 - Фаза 2.3 (MVP, Binance тільки): WebSocket збирач ліквідацій.
   * Schema v5: таблиця `liquidations(id, ts, venue, symbol, side, qty, price, notional_usd)` з індексами по `(venue, ts)` і `(symbol, ts)`. Store: `insert_liquidations(rows)`, `liquidations_in_window(since_ts, until_ts, venue?, symbol?)`; `prune` розширено.
   * Нова залежність `websockets>=12`. Провайдер `providers/liquidations.py`: чистий `parse_binance_force_order(event)` (повертає None на невідомий тип/нульові поля), async-ітератор `binance_liquidation_stream(max_seconds)` — відкриває `wss://fstream.binance.com/ws/!forceOrder@arr`, читає bound-ed період, автоматично завершується після таймауту (scheduler перезапускає). Side convention: `sell` = long got liquidated (downside flush), `buy` = short got liquidated (upside squeeze).
@@ -50,7 +57,7 @@
 - Фаза 1.2: `perps_funding_history` — крос-венюз історія funding (Binance/Bybit/OKX через ccxt `fetch_funding_rate_history` + Hyperliquid), автодетект інтервалу з медіани ts-різниць (`detect_interval_hours`), крос-венюз-summary (highest/lowest carry, biggest |z|), опція `include_series` для сирих рядів. Live-перевірено на BTC: HL carry 9.1%, OKX 5.1%, Binance 4.5%, Bybit 4.3%; Bybit `z = −1.45` (mean-reversion сигнал).
 - MCP-промт `token_deep_analysis(project)` — глибокий 10-секційний інвест-аналіз криптопроекту (RU), шаблон `src/tradedesk/prompts/token_deep_analysis.md` (bundled у wheel), з хінтом про релевантні tradedesk-mcp інструменти для графіка/позиціювання.
 - Фаза 1.3: нові провайдери `binance_futures.py` і `bybit.py` під окремими `Http` з лімітами. Два нові інструменти: `perps_long_short_ratio` (роздрібні account-based fractions Binance+Bybit, latest/mean/z-score, cross-venue divergence) і `perps_oi_history` (OI history Binance в USD, Bybit в base, latest/mean/change24h/z, cross-venue biggest gain/drop). Live-перевірено 2026-10-10 на BTC.
-- Тестів: 140 (+89 від 0.1.0), lint чистий. Нові залежності `aiosqlite>=0.19`, `websockets>=12`.
+- Тестів: 144 (+93 від 0.1.0), lint чистий. Нові залежності `aiosqlite>=0.19`, `websockets>=12`.
 
 ## 0.1.0 — 2026-10-10
 - Ядро: `Http` (ретраї, rate-limit, кеш із single-flight, класифікація помилок), `HealthRegistry`, `Envelope/Evidence`.

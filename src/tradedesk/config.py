@@ -45,8 +45,11 @@ class Settings:
     http_bearer_tokens: str = ""
     # Liquidations collector (WebSocket)
     collect_liquidations_enabled: bool = False
+    collect_liquidations_venues: str = "binance,bybit,okx"  # comma-separated subset
     collect_liquidations_window_seconds: int = 60
     collect_liquidations_restart_seconds: int = 5
+    collect_liquidations_bybit_symbols: str = "BTCUSDT,ETHUSDT,SOLUSDT"
+    collect_liquidations_okx_inst_type: str = "SWAP"
     # Alerts
     alerts_enabled: bool = False
     alerts_rules_path: str = ""
@@ -77,8 +80,11 @@ class Settings:
             retention_basis_days=int(_float("TRADEDESK_RETENTION_BASIS_DAYS", 365)),
             retention_seconds=int(_float("TRADEDESK_RETENTION_SECONDS", 86_400)),
             collect_liquidations_enabled=os.environ.get("TRADEDESK_COLLECT_LIQUIDATIONS_ENABLED", "").lower() in ("1", "true", "yes"),
+            collect_liquidations_venues=os.environ.get("TRADEDESK_COLLECT_LIQUIDATIONS_VENUES", "binance,bybit,okx"),
             collect_liquidations_window_seconds=int(_float("TRADEDESK_COLLECT_LIQUIDATIONS_WINDOW_SECONDS", 60)),
             collect_liquidations_restart_seconds=int(_float("TRADEDESK_COLLECT_LIQUIDATIONS_RESTART_SECONDS", 5)),
+            collect_liquidations_bybit_symbols=os.environ.get("TRADEDESK_COLLECT_LIQUIDATIONS_BYBIT_SYMBOLS", "BTCUSDT,ETHUSDT,SOLUSDT"),
+            collect_liquidations_okx_inst_type=os.environ.get("TRADEDESK_COLLECT_LIQUIDATIONS_OKX_INST_TYPE", "SWAP"),
             http_bearer_tokens=os.environ.get("TRADEDESK_HTTP_BEARER_TOKENS") or os.environ.get("TRADEDESK_HTTP_BEARER_TOKEN", ""),
             alerts_enabled=os.environ.get("TRADEDESK_ALERTS_ENABLED", "").lower() in ("1", "true", "yes"),
             alerts_rules_path=os.environ.get("TRADEDESK_ALERTS_RULES_PATH", ""),

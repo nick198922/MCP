@@ -15,6 +15,16 @@ import aiosqlite
 from .schema import MIGRATIONS
 
 
+def _parse_journal_row(row: dict[str, Any]) -> dict[str, Any]:
+    tags = row.get("tags")
+    if isinstance(tags, str):
+        try:
+            row["tags"] = json.loads(tags)
+        except (TypeError, ValueError):
+            row["tags"] = []
+    return row
+
+
 class Store:
     def __init__(self, path: str | Path) -> None:
         self.path = str(path)
@@ -183,6 +193,82 @@ class Store:
         cur = await self.conn.execute("SELECT MAX(ts) FROM alerts WHERE rule_id = ?", (rule_id,))
         row = await cur.fetchone()
         return int(row[0]) if row and row[0] is not None else None
+
+    async def journal_insert(
+        self,
+        *,
+        opened_ts: int,
+        symbol: str,
+        side: str,
+        size: float,
+        entry: float,
+        stop: float | None = None,
+        target: float | None = None,
+        thesis: str | None = None,
+        tags: list[str] | None = None,
+    ) -> int:
+        cur = await self.conn.execute(
+            "INSERT INTO journal (opened_ts, symbol, side, size, entry, stop, target, thesis, tags, status) "
+            "VALUES (?,?,?,?,?,?,?,?,?, 'open')",
+            (opened_ts, symbol, side, float(size), float(entry), stop, target, thesis, json.dumps(tags or [])),
+        )
+        await self.conn.commit()
+        return int(cur.lastrowid or 0)
+
+    async def journal_update_close(
+        self,
+        trade_id: int,
+        *,
+        closed_ts: int,
+        status: str,
+        exit_: float | None,
+        outcome: str | None,
+        pnl: float | None,
+        r_multiple: float | None,
+        note: str | None,
+    ) -> int:
+        cur = await self.conn.execute(
+            "UPDATE journal SET closed_ts = ?, status = ?, exit = ?, outcome = ?, pnl = ?, r_multiple = ?, note = ? WHERE id = ?",
+            (closed_ts, status, exit_, outcome, pnl, r_multiple, note, trade_id),
+        )
+        await self.conn.commit()
+        return cur.rowcount or 0
+
+    async def journal_get(self, trade_id: int) -> dict[str, Any] | None:
+        cur = await self.conn.execute("SELECT * FROM journal WHERE id = ?", (trade_id,))
+        row = await cur.fetchone()
+        if row is None:
+            return None
+        return _parse_journal_row(dict(row))
+
+    async def journal_list(
+        self,
+        *,
+        status: str | None = None,
+        symbol: str | None = None,
+        tag: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        where: list[str] = []
+        params: list[Any] = []
+        if status:
+            where.append("status = ?")
+            params.append(status)
+        if symbol:
+            where.append("symbol = ?")
+            params.append(symbol)
+        if tag:
+            # tags are stored as JSON array; use LIKE on the quoted value.
+            where.append("tags LIKE ?")
+            params.append(f'%"{tag}"%')
+        sql = "SELECT * FROM journal"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY opened_ts DESC LIMIT ?"
+        params.append(limit)
+        cur = await self.conn.execute(sql, params)
+        rows = await cur.fetchall()
+        return [_parse_journal_row(dict(r)) for r in rows]
 
     async def recent_alerts(self, limit: int = 50) -> list[dict[str, Any]]:
         cur = await self.conn.execute(

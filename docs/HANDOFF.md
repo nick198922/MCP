@@ -12,8 +12,8 @@
 
 Припущення, які ще не підтверджено власником (не вважати рішеннями): алерти через Telegram; хостинг на VPS; IBKR (на його Маку помічено папки `Jts`/`ntws`, схоже на IB TWS).
 
-## Що зроблено (Фаза 0 + Фаза 1 без 1.10 + Фаза 2 крім ліквідацій/журналу/позицій)
-45 інструментів, публічні дані (CoinGecko вільно без ключа, з ключем — вищий ліміт):
+## Що зроблено (Фаза 0 + Фаза 1 без 1.10 + Фаза 2 крім ліквідацій/позицій)
+49 інструментів, публічні дані (CoinGecko вільно без ключа, з ключем — вищий ліміт):
 
 | Група | Інструменти |
 |---|---|
@@ -29,6 +29,7 @@
 | Prediction markets | `polymarket_search`, `polymarket_market`, `polymarket_history` |
 | Макро/ринок | `coin_snapshot`, `global_market`, `top_coins` |
 | Історія (Фаза 2) | `iv_rank`, `funding_zscore`, `skew_percentile`, `alerts_recent` |
+| Журнал (Фаза 2) | `journal_add`, `journal_list`, `journal_close`, `journal_stats` |
 
 Ядро: `Http` (ретраї на 429/5xx/timeout, token-bucket, TTL-кеш із single-flight, класифікація помилок), `HealthRegistry`, `Envelope/Evidence`, фейкові транспорти для тестів.
 
@@ -58,8 +59,9 @@
 - **Фаза 2.4 (повно):** `iv_rank(currency, expiry, lookback_days)`, `funding_zscore(venue, base, lookback_days)`, `skew_percentile(currency, expiry, delta_target='25'|'10', lookback_days)`. Усі повертають latest/mean/stdev/min/max + z_score + percentile + rank.
 - **Фаза 2.8 (частково):** артефакти деплою — `Dockerfile`, `docker-compose.yml`, `deploy/{env.example,tradedesk-mcp.service,backup-sqlite.sh,README.md}`. Два шляхи — Docker Compose (рекомендовано) і bare systemd. Build-smoke та live-прогін на VPS робить власник (Docker на цій машині не встановлено).
 - **Фаза 2.9:** HTTP bearer-auth для streamable-http через `BearerAuthMiddleware`. `TRADEDESK_HTTP_BEARER_TOKEN` (або `TRADEDESK_HTTP_BEARER_TOKENS` зі списком через кому). Порожнє значення → auth вимкнена + WARNING у лозі (запускати лише локально).
-- **Фаза 2.5 (MVP):** rules → channels → store. Нова таблиця `alerts` (schema v2). Пакет `alerts/{engine,channels}.py`, провайдер `telegram.py`, scheduler-job `alerts` (увімкнути `TRADEDESK_ALERTS_ENABLED=1` + вказати `TRADEDESK_ALERTS_RULES_PATH`). Канали: `log` (завжди) + `telegram` (коли задані `TELEGRAM_BOT_TOKEN`+`TELEGRAM_CHAT_ID`). MCP-інструмент `alerts_recent`. Повноцінний DSL — на 3.1. Залишилось у Фазі 2: ліквідації WebSocket, журнал угод, позиції й ризик, email/ntfy канали, off-site бекапи, `/healthz`.
-- Тестів: 120 (+50 за сесію), lint і format чисті. Нова залежність: `aiosqlite`.
+- **Фаза 2.5 (MVP):** rules → channels → store. Нова таблиця `alerts` (schema v2). Пакет `alerts/{engine,channels}.py`, провайдер `telegram.py`, scheduler-job `alerts` (увімкнути `TRADEDESK_ALERTS_ENABLED=1` + вказати `TRADEDESK_ALERTS_RULES_PATH`). Канали: `log` (завжди) + `telegram` (коли задані `TELEGRAM_BOT_TOKEN`+`TELEGRAM_CHAT_ID`). MCP-інструмент `alerts_recent`. Повноцінний DSL — на 3.1.
+- **Фаза 2.6:** журнал угод (schema v3, таблиця `journal`). Чиста аналітика `analytics/journal.py` (`pnl`, `r_multiple`, `outcome_of`, `summary`). Чотири MCP-tools: `journal_add`, `journal_list`, `journal_close` (з обчисленням PnL і R-multiple), `journal_stats` (win-rate, expectancy, R-stats). Локальна SQLite — ніяких ордерів назовні. Залишилось у Фазі 2: ліквідації WebSocket, позиції й ризик, email/ntfy канали, off-site бекапи, `/healthz`.
+- Тестів: 128 (+58 за сесію), lint і format чисті. Нова залежність: `aiosqlite`.
 - **`make smoke` live 2026-10-10: 15/15 ok** на реальних біржах. Deribit greeks звірено з їхнім ticker (30OCT26, delta/vega/theta до 4 знаків). `perps_open_interest` з новим fallback відпрацював 669 мс. `sentiment_fear_greed` повернув 30 денних значень; живий зразок збережено в `tests/fixtures/alternative_me_fng_live_2026-10-10.json`.
 
 ## Що перевірено живими запитами 2026-10-10

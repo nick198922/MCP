@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Фаза 2.6: журнал угод у локальній SQLite. Схема v3: таблиця `journal(id, opened_ts, closed_ts, symbol, side, size, entry, stop, target, thesis, tags, status, exit, outcome, pnl, r_multiple, note)` із індексами по `(status, opened_ts)` і `(symbol, opened_ts)`. Чиста аналітика `analytics/journal.py`: `pnl(side, size, entry, exit)` (long = sign +1, short = −1), `r_multiple(side, entry, stop, exit)` (повертає None якщо stop відсутній або в неправильному напрямку), `outcome_of(pnl, cancelled)`, `summary(trades)` (win-rate, expectancy, avg_win_pnl / avg_loss_pnl, avg / median / min / max R). Чотири MCP-tools: `journal_add` → id, `journal_list(status, symbol, tag, limit)` (tag — підрядковий матч по JSON-масиву), `journal_close(id, exit?, cancelled=False, note?)` (friendly-fail якщо `exit` відсутній без cancelled, якщо trade вже closed тощо), `journal_stats(symbol?, tag?)` над закритими угодами. Store API доповнено `journal_insert / journal_update_close / journal_get / journal_list` і хелпером `_parse_journal_row` (JSON tags → list). Пише у локальне сховище, біржові ордери не ставить — це тільки трекінг.
 - Фаза 2.5 (MVP): алерти з rules → channels → store.
   * Нова таблиця `alerts(id, rule_id, ts, payload, channel, delivered, delivery_error)` (schema v2 міграція у `store/schema.py`). Нові хелпери `Store.insert_alert`, `Store.last_alert_ts`, `Store.recent_alerts`. `Store.prune` розширено на `alerts`.
   * Пакет `src/tradedesk/alerts/`: `engine.py` з `Rule`, `FiredAlert`, `load_rules(path)`, `evaluate_rules(rules, store, now_ts)` (чистий — без side-effects, читає лише останню точку з `funding_hist` / `atm_term` / `basis_hist`, перевіряє cooldown через `last_alert_ts`). `channels.py` з `LogChannel` (завжди) і `TelegramChannel` (увімкнений, коли задані токени). `build_channels(settings)` збирає список.
@@ -42,7 +43,7 @@
 - Фаза 1.2: `perps_funding_history` — крос-венюз історія funding (Binance/Bybit/OKX через ccxt `fetch_funding_rate_history` + Hyperliquid), автодетект інтервалу з медіани ts-різниць (`detect_interval_hours`), крос-венюз-summary (highest/lowest carry, biggest |z|), опція `include_series` для сирих рядів. Live-перевірено на BTC: HL carry 9.1%, OKX 5.1%, Binance 4.5%, Bybit 4.3%; Bybit `z = −1.45` (mean-reversion сигнал).
 - MCP-промт `token_deep_analysis(project)` — глибокий 10-секційний інвест-аналіз криптопроекту (RU), шаблон `src/tradedesk/prompts/token_deep_analysis.md` (bundled у wheel), з хінтом про релевантні tradedesk-mcp інструменти для графіка/позиціювання.
 - Фаза 1.3: нові провайдери `binance_futures.py` і `bybit.py` під окремими `Http` з лімітами. Два нові інструменти: `perps_long_short_ratio` (роздрібні account-based fractions Binance+Bybit, latest/mean/z-score, cross-venue divergence) і `perps_oi_history` (OI history Binance в USD, Bybit в base, latest/mean/change24h/z, cross-venue biggest gain/drop). Live-перевірено 2026-10-10 на BTC.
-- Тестів: 120 (+69 від 0.1.0), lint чистий. Нова залежність `aiosqlite>=0.19`.
+- Тестів: 128 (+77 від 0.1.0), lint чистий. Нова залежність `aiosqlite>=0.19`.
 
 ## 0.1.0 — 2026-10-10
 - Ядро: `Http` (ретраї, rate-limit, кеш із single-flight, класифікація помилок), `HealthRegistry`, `Envelope/Evidence`.

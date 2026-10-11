@@ -49,6 +49,10 @@ EXPECTED_TOOLS = {
     "funding_zscore",
     "skew_percentile",
     "alerts_recent",
+    "journal_add",
+    "journal_list",
+    "journal_close",
+    "journal_stats",
 }
 
 

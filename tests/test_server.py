@@ -51,6 +51,7 @@ EXPECTED_TOOLS = {
     "alerts_recent",
     "ohlcv_history",
     "market_regime",
+    "range_detect",
     "events_add",
     "events_list",
     "events_seed_load",

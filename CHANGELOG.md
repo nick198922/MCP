@@ -1,6 +1,10 @@
 # Changelog
 
 ## Unreleased
+- Фаза 1.17: range / sweep / deviation detectors (з DoubleTop «Рейнджі»).
+  * Pure `analytics/ranges.py`: `swing_points(bars, lookback)` — лівий-правий pivot з N-окружних бар'ів; `detect_ranges(bars, min_bars, max_width_pct)` — rolling window із суворою перевіркою стартового вікна, merge overlapping; `detect_sweeps(bars, swings, wick_ratio, reversal_min_pct)` — ліквідне проколювання свічкою з довгим фітилем і закриттям назад; `detect_deviations(bars, range, max_bars_back)` — хибні пробої (close поза межею + повернення); `classify_ranges(...)` — end-to-end wrapper.
+  * MCP-tool `range_detect(venue, symbol, timeframe, lookback_bars, min_bars, max_width_pct, swing_lookback, sweep_wick_ratio, max_deviation_bars, source='store'|'live')`. Повертає ranges з top/bottom/mid/width_pct, swing points, sweeps і per-range deviations. Опис інструмента несе intuition DoubleTop: bull-range → sweeps внизу, bear-range → sweeps вгорі.
+  * Live BTC 2026-10-12: 1h×500 → 1 рейндж 80345..87385 (8.39%, 21 sweep); 4h×300 → 74909..87385 (15.37%, 8 sweeps, останні 3 high-sweep підряд).
 - Фаза 3.2 (MVP): готова бібліотека сигналів.
   * `src/tradedesk/data/rules_presets.json` з 8 DSL-правилами: Binance BTC funding hot/crush/|zscore|>2σ, HL↔Deribit crypto-carry, ETH funding hot (disabled by default), BTC liquidation cascade (>$50M/60min), shorts-squeezed / longs-flushed imbalance. Запаковано у wheel.
   * MCP-tool `rules_presets_load(only?, enable_disabled?)` — compile-check кожного expr перед insert, idempotent через UNIQUE(name), повертає `candidates/inserted/already_present/failed`. `only=[...]` обирає підмножину; `enable_disabled=True` вмикає `enabled:false` пресети на install.
@@ -113,7 +117,7 @@
 - Фаза 1.2: `perps_funding_history` — крос-венюз історія funding (Binance/Bybit/OKX через ccxt `fetch_funding_rate_history` + Hyperliquid), автодетект інтервалу з медіани ts-різниць (`detect_interval_hours`), крос-венюз-summary (highest/lowest carry, biggest |z|), опція `include_series` для сирих рядів. Live-перевірено на BTC: HL carry 9.1%, OKX 5.1%, Binance 4.5%, Bybit 4.3%; Bybit `z = −1.45` (mean-reversion сигнал).
 - MCP-промт `token_deep_analysis(project)` — глибокий 10-секційний інвест-аналіз криптопроекту (RU), шаблон `src/tradedesk/prompts/token_deep_analysis.md` (bundled у wheel), з хінтом про релевантні tradedesk-mcp інструменти для графіка/позиціювання.
 - Фаза 1.3: нові провайдери `binance_futures.py` і `bybit.py` під окремими `Http` з лімітами. Два нові інструменти: `perps_long_short_ratio` (роздрібні account-based fractions Binance+Bybit, latest/mean/z-score, cross-venue divergence) і `perps_oi_history` (OI history Binance в USD, Bybit в base, latest/mean/change24h/z, cross-venue biggest gain/drop). Live-перевірено 2026-10-10 на BTC.
-- Тестів: 214 (+163 від 0.1.0), lint чистий. Нові залежності `aiosqlite>=0.19`, `websockets>=12`.
+- Тестів: 222 (+171 від 0.1.0), lint чистий. Нові залежності `aiosqlite>=0.19`, `websockets>=12`.
 
 ## 0.1.0 — 2026-10-10
 - Ядро: `Http` (ретраї, rate-limit, кеш із single-flight, класифікація помилок), `HealthRegistry`, `Envelope/Evidence`.

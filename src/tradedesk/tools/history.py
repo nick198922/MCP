@@ -13,6 +13,7 @@ from typing import Annotated, Any, Literal
 from mcp.server.mcpserver import MCPServer
 from pydantic import Field
 
+from ..analytics.ranges import classify_ranges
 from ..analytics.regime import classify_regime
 from ..core.envelope import Builder
 from ..runtime import Runtime
@@ -277,6 +278,121 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 "first_ts_ms": rows[0]["ts"],
                 "last_ts_ms": rows[-1]["ts"],
                 "bars": rows,
+            }
+        )
+
+    @server.tool(
+        annotations=READ_ONLY,
+        description=(
+            "Detect horizontal ranges on OHLCV plus the two short-lived events the DoubleTop "
+            "'Рейнджі' lecture names: SWEEPS (candles whose wick pokes past a prior swing "
+            "level and closes back on the original side — a liquidity grab) and DEVIATIONS "
+            "(closes beyond the range boundary that are pulled back within `max_deviation_bars`). "
+            "Pulls bars from ohlcv_hist (default) or live ccxt (`source='live'`). "
+            "Interpretation hints: in a bull-range price works the LOWER boundary (sweeps / "
+            "deviations down), in a bear-range the UPPER boundary — combine with market_regime "
+            "to pick the side. Returns ranges with {top, bottom, mid, width_pct}, swing high/low "
+            "pivots, sweeps and per-range deviations."
+        ),
+    )
+    async def range_detect(
+        venue: Annotated[str, Field(description="ccxt venue id, e.g. 'binanceusdm'.")],
+        symbol: Annotated[str, Field(description="ccxt symbol, e.g. 'BTC/USDT:USDT'.")],
+        timeframe: Annotated[str, Field(description="OHLCV timeframe, e.g. '1h'.")] = "1h",
+        lookback_bars: Annotated[int, Field(ge=20, le=10_000)] = 500,
+        min_bars: Annotated[int, Field(ge=5, le=1000, description="Minimum bars in a range.")] = 20,
+        max_width_pct: Annotated[float, Field(gt=0, le=50, description="Max (high - low) / mid, in percent.")] = 10.0,
+        swing_lookback: Annotated[int, Field(ge=1, le=50, description="Pivot look-around for swing points.")] = 3,
+        sweep_wick_ratio: Annotated[float, Field(ge=0.0, le=1.0, description="Min piercing wick as fraction of candle range.")] = 0.5,
+        max_deviation_bars: Annotated[int, Field(ge=1, le=20, description="How quickly a deviation must snap back.")] = 3,
+        source: Annotated[Literal["store", "live"], Field(description="Where bars come from.")] = "store",
+    ) -> dict[str, Any]:
+        b = Builder()
+        bars: list[dict[str, Any]] = []
+        if source == "live":
+            fetched = await b.guard(f"ohlcv:{venue}", f"ccxt:{venue}", rt.exchanges.ohlcv(venue, symbol, timeframe, lookback_bars))
+            raw = fetched or []
+            bars = [
+                {
+                    "ts": int(x[0]),
+                    "open": float(x[1]),
+                    "high": float(x[2]),
+                    "low": float(x[3]),
+                    "close": float(x[4]),
+                    "volume": float(x[5]) if len(x) >= 6 else 0.0,
+                }
+                for x in raw
+                if isinstance(x, (list, tuple)) and len(x) >= 5
+            ]
+        else:
+            if rt.store is None:
+                b.miss("store", "tradedesk", "config", "db_path is empty; set TRADEDESK_DB_PATH to use source='store'")
+                return b.build(None, ok=False)
+            try:
+                await rt.store.init()
+            except Exception as e:  # noqa: BLE001
+                b.miss("store", "tradedesk", "backend_error", f"{type(e).__name__}: {e}")
+                return b.build(None, ok=False)
+            rows = await rt.store.ohlcv_range(venue=venue, symbol=symbol, timeframe=timeframe, since_ts=0, limit=lookback_bars * 2)
+            bars = rows[-lookback_bars:] if rows else []
+        if len(bars) < min_bars:
+            b.miss("bars", "tradedesk", "data_unavailable", f"only {len(bars)} bars; need >= {min_bars}")
+            return b.build(None, ok=False)
+        res = classify_ranges(
+            bars,
+            min_bars=min_bars,
+            max_width_pct=max_width_pct,
+            swing_lookback=swing_lookback,
+            sweep_wick_ratio=sweep_wick_ratio,
+            max_deviation_bars=max_deviation_bars,
+        )
+        return b.build(
+            {
+                "venue": venue,
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "source": source,
+                "lookback_bars": lookback_bars,
+                "n_bars_evaluated": res["n_bars"],
+                "n_ranges": len(res["ranges"]),
+                "n_sweeps": len(res["sweeps"]),
+                "latest_range": (
+                    {
+                        "top": r(res["ranges"][-1]["top"], 6),
+                        "bottom": r(res["ranges"][-1]["bottom"], 6),
+                        "mid": r(res["ranges"][-1]["mid"], 6),
+                        "width_pct": r(res["ranges"][-1]["width_pct"], 4),
+                        "n_bars": res["ranges"][-1]["n_bars"],
+                        "start_ts": res["ranges"][-1]["start_ts"],
+                        "end_ts": res["ranges"][-1]["end_ts"],
+                    }
+                    if res["ranges"]
+                    else None
+                ),
+                "ranges": [
+                    {
+                        "top": r(x["top"], 6),
+                        "bottom": r(x["bottom"], 6),
+                        "mid": r(x["mid"], 6),
+                        "width_pct": r(x["width_pct"], 4),
+                        "n_bars": x["n_bars"],
+                        "start_ts": x["start_ts"],
+                        "end_ts": x["end_ts"],
+                    }
+                    for x in res["ranges"]
+                ],
+                "swing_highs": [{"ts": s["ts"], "price": r(s["price"], 6)} for s in res["swings"]["highs"]],
+                "swing_lows": [{"ts": s["ts"], "price": r(s["price"], 6)} for s in res["swings"]["lows"]],
+                "sweeps": [
+                    {
+                        "ts": s["ts"],
+                        "side": s["side"],
+                        "swept_level": r(s["swept_level"], 6),
+                        "reversal_pct": r(s["reversal_pct"], 4),
+                    }
+                    for s in res["sweeps"]
+                ],
+                "deviations_per_range": res["deviations_per_range"],
             }
         )
 

@@ -132,6 +132,17 @@ class Exchanges:
     async def funding_rate(self, ex_id: str, symbol: str) -> Fetched:
         return await self._call(ex_id, "fetch_funding_rate", {"symbol": symbol}, 10, lambda ex: ex.fetch_funding_rate(symbol))
 
+    async def funding_rates(self, ex_id: str) -> Fetched:
+        """Current funding for every perp on the venue in one request."""
+
+        async def go(ex: Any) -> Any:
+            has = getattr(ex, "has", {}) or {}
+            if has.get("fetchFundingRates") is False:
+                raise ccxt.NotSupported(f"{ex_id} has no fetchFundingRates")
+            return await ex.fetch_funding_rates()
+
+        return await self._call(ex_id, "fetch_funding_rates", {}, 30, go)
+
     async def funding_rate_history(self, ex_id: str, symbol: str, since_ms: int | None, limit: int) -> Fetched:
         a = {"symbol": symbol, "since_ms": since_ms, "limit": limit}
 

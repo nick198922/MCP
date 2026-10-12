@@ -495,6 +495,14 @@ class FakeEx:
         asks = [[82751 + i * 5.0, 2.0] for i in range(limit)]
         return {"bids": bids, "asks": asks}
 
+    async def fetch_funding_rates(self, symbols=None):
+        if self.id == "okx":
+            raise ccxt.RateLimitExceeded("okx 429 too many requests")
+        rows = {"BTC/USDT:USDT": 0.0001, "ETH/USDT:USDT": 0.0003, "SOL/USDT:USDT": -0.0001, "XAU/USDT:USDT": 0.002, "BTC/USDT": 0.5}
+        return {
+            sym: {"symbol": sym, "fundingRate": rate, "interval": "8h", "nextFundingTimestamp": 1791648000000} for sym, rate in rows.items()
+        }
+
     async def fetch_funding_rate_history(self, symbol, since=None, limit=500):
         if self.id == "okx":
             raise ccxt.RateLimitExceeded("okx 429 too many requests")
@@ -617,6 +625,19 @@ class FakeEx:
                 "linear": True,
                 "inverse": False,
                 "contractSize": 1.0,
+            },
+            "XAU/USDT:USDT": {
+                "id": "XAUUSDT",
+                "symbol": "XAU/USDT:USDT",
+                "base": "XAU",
+                "quote": "USDT",
+                "settle": "USDT",
+                "type": "swap",
+                "active": True,
+                "linear": True,
+                "inverse": False,
+                "contractSize": 1.0,
+                "info": {"contractType": "TRADIFI_PERPETUAL", "underlyingType": "COMMODITY"},
             },
             "DEAD/USDT": {
                 "id": "DEADUSDT",

@@ -69,12 +69,12 @@ def cache_path(cache: Path, venue: str, symbol: str, tf: str, days: int) -> Path
     return cache / f"{venue}_{symbol.replace('/', '-').replace(':', '_')}_{tf}_{days}d.json"
 
 
-async def fetch_history(rt: Any, venue: str, symbol: str, tf: str, days: int) -> list[dict[str, Any]]:
+async def fetch_history(rt: Any, venue: str, symbol: str, tf: str, days: int, page: int = 1500) -> list[dict[str, Any]]:
     now_ms = int(time.time() * 1000)
     since = now_ms - days * 86_400_000
     rows: dict[int, list[float]] = {}
     while since < now_ms:
-        fetched = await rt.exchanges.ohlcv(venue, symbol, tf, 1500, since_ms=since)
+        fetched = await rt.exchanges.ohlcv(venue, symbol, tf, page, since_ms=since)
         batch = [b for b in (fetched.data or []) if isinstance(b, (list, tuple)) and len(b) >= 5]
         if not batch:
             break

@@ -13,6 +13,7 @@ EXPECTED_TOOLS = {
     "market_trades",
     "perps_funding_compare",
     "perps_funding_history",
+    "funding_carry_scan",
     "perps_long_short_ratio",
     "perps_oi_history",
     "perps_open_interest",
@@ -173,6 +174,50 @@ async def test_funding_history_cross_venue(server):
     by2 = {v["venue"]: v for v in env2["data"]["venues"]}
     assert "hyperliquid" not in by2
     assert "series" in by2["binanceusdm"] and len(by2["binanceusdm"]["series"]) > 0
+
+
+async def test_funding_carry_scan_candidates_from_bulk(server):
+    env = await call(server, "funding_carry_scan", venue="binanceusdm", candidates=5, require_spot=False)
+    assert env["ok"]
+    assert any("not risk-free" in w for w in env["warnings"])
+    rows = env["data"]["rows"]
+    # bulk fake has BTC/ETH/SOL crypto perps, a TradFi perp (XAU) and a spot symbol; the last two are skipped
+    assert {x["symbol"] for x in rows} == {"BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT"}
+    eth = next(x for x in rows if x["base"] == "ETH")
+    assert eth["current_apr"] == pytest.approx(0.0003 * 3 * 365, rel=1e-3)
+    btc = next(x for x in rows if x["base"] == "BTC")
+    assert btc["spot_available"] is True
+    assert btc["trailing_apr"] == pytest.approx(0.0001 * 3 * 365, rel=0.15)
+    assert btc["status"] == "above_entry"  # fake base rate 0.0001 per 8h -> ~11 % APR >= 10 %
+    trailing = [x["trailing_apr"] for x in rows]
+    assert trailing == sorted(trailing, reverse=True)
+
+
+async def test_funding_carry_scan_candidate_filters(server):
+    spot_only = await call(server, "funding_carry_scan", venue="binanceusdm", candidates=5)
+    assert [x["base"] for x in spot_only["data"]["rows"]] == ["BTC"]  # only BTC has a spot market in the fake
+    everything = await call(server, "funding_carry_scan", venue="binanceusdm", candidates=5, crypto_only=False, require_spot=False)
+    xau = next(x for x in everything["data"]["rows"] if x["base"] == "XAU")
+    assert xau["tradfi"] is True
+    assert xau["spot_available"] is False
+
+
+async def test_funding_carry_scan_explicit_bases_and_thresholds(server):
+    env = await call(server, "funding_carry_scan", venue="binanceusdm", bases=["btc"], entry_apr=0.05, exit_apr=0.0)
+    assert env["ok"]
+    (row,) = env["data"]["rows"]
+    assert row["status"] == "above_entry"
+    assert row["breakeven_days"] == pytest.approx(0.003 / (row["trailing_apr"] / 365), rel=0.01)
+    assert env["data"]["summary"]["above_entry_with_spot"] == ["BTC"]
+
+
+async def test_funding_carry_scan_provider_failure(server):
+    env = await call(server, "funding_carry_scan", venue="okx")
+    assert env["ok"] is False
+    assert any(m["field"] == "funding_rates" for m in env["missing"])
+    env2 = await call(server, "funding_carry_scan", venue="okx", bases=["BTC"])
+    assert env2["ok"] is False
+    assert any(m["field"].startswith("funding_history:") for m in env2["missing"])
 
 
 async def test_long_short_ratio_cross_venue(server):

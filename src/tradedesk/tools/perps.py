@@ -8,6 +8,7 @@ from typing import Annotated, Any, Literal
 from mcp.server.mcpserver import MCPServer
 from pydantic import Field
 
+from ..analytics.carry import carry_snapshot
 from ..analytics.derivatives import annualize_funding, basis, parse_interval_hours, summarise_funding_history
 from ..analytics.instruments import expiry_token, parse_future_name
 from ..analytics.orderbook import book_stats, walk_book
@@ -18,6 +19,13 @@ from ..runtime import Runtime
 from ._util import READ_ONLY, r, timeframe_seconds
 
 BASE = Annotated[str, Field(description="Base asset, e.g. BTC, ETH, SOL")]
+CARRY_WARNING = (
+    "Funding carry is not risk-free: funding can flip negative, the perp premium moves, a squeeze can liquidate "
+    "the short perp unless margin is topped up, and the venue itself is a counterparty. Backtest "
+    "(docs/verification/2026-10-12-funding-carry.md, Binance top-20, 2024-10..2026-10): trailing 7d APR predicted "
+    "next-week funding well (correlation ~0.6), but cash-and-carry earned only ~3-5 % APR on notional after fees, "
+    "and ~0.3 % in the last 12 months. Compare with a risk-free stablecoin or T-bill yield before acting."
+)
 CCXT_VENUES = Annotated[list[str] | None, Field(description=f"ccxt perp exchange ids; default {list(PERP_EXCHANGES)}")]
 
 Period = Literal["5m", "15m", "30m", "1h", "4h", "1d"]
@@ -248,6 +256,153 @@ def register(server: MCPServer, rt: Runtime) -> None:
             cross["biggest_abs_z"] = {"venue": v["venue"], "z_score_latest": r(v["z_score_latest"], 3)}
 
         return b.build({"base": base, "days_requested": days_back, "venues": rows, "cross_venue": cross})
+
+    @server.tool(
+        annotations=READ_ONLY,
+        description=(
+            "Scan perps on one venue for funding carry (short perp collects funding; cash-and-carry pairs it with "
+            "long spot). Per symbol: current funding and its APR, trailing realized APR over `lookback_days` and 30d "
+            "(sum of actual payments over real time, robust to 8h/4h/1h interval changes), share of positive payments, "
+            "status vs `entry_apr` / `exit_apr` (above_entry / between / below_exit), `breakeven_days` = days the "
+            "trailing APR must persist to pay `roundtrip_fee`, and whether a spot market exists on `spot_venue`. "
+            "Without `bases` the venue's `candidates` perps with the highest current funding are scanned, by default "
+            "only crypto perps (TradFi perps skipped) that also have a spot market. "
+            "All rates and APRs are decimals (0.10 = 10 %), on position notional; capital needed is higher "
+            "(spot leg + perp margin). Carry is not risk-free: see `warnings`."
+        ),
+    )
+    async def funding_carry_scan(
+        venue: Annotated[Literal["binanceusdm", "bybit", "okx"], Field(description="ccxt perp venue.")] = "binanceusdm",
+        bases: Annotated[
+            list[str] | None,
+            Field(description="Bases to scan, e.g. ['BTC','ETH']; default: top `candidates` by current funding.", max_length=50),
+        ] = None,
+        candidates: Annotated[int, Field(ge=1, le=50, description="How many perps to scan when `bases` is empty.")] = 20,
+        lookback_days: Annotated[float, Field(ge=1, le=30, description="Trailing window for the realized APR, days.")] = 7.0,
+        entry_apr: Annotated[float, Field(ge=0, le=5, description="Trailing APR at or above which carry is 'above_entry'.")] = 0.10,
+        exit_apr: Annotated[float, Field(ge=-1, le=5, description="Trailing APR at or below which carry is 'below_exit'.")] = 0.0,
+        roundtrip_fee: Annotated[
+            float,
+            Field(
+                ge=0, le=0.05, description="Entry + exit fees on both legs, decimal of notional (0.003 = spot 0.10 % + perp 0.05 %, twice)."
+            ),
+        ] = 0.003,
+        spot_venue: Annotated[str | None, Field(description="ccxt spot venue checked for a USDT spot market; null to skip.")] = "binance",
+        crypto_only: Annotated[
+            bool, Field(description="When picking candidates, skip TradFi perps (commodities, equities, ETFs) flagged by the venue.")
+        ] = True,
+        require_spot: Annotated[
+            bool, Field(description="When picking candidates, keep only bases with a spot market on `spot_venue` (cash-and-carry).")
+        ] = True,
+        max_concurrency: Annotated[int, Field(ge=1, le=16, description="Parallel funding-history requests.")] = 4,
+    ) -> dict[str, Any]:
+        b = Builder()
+        b.warn(CARRY_WARNING)
+        now_ms = int(rt.now().timestamp() * 1000)
+        current: dict[str, dict[str, Any]] = {}
+        bulk = await b.guard("funding_rates", f"ccxt:{venue}", rt.exchanges.funding_rates(venue))
+        for sym, x in (bulk or {}).items():
+            if not sym.endswith("/USDT:USDT") or x.get("fundingRate") is None:
+                continue
+            hours = parse_interval_hours(x.get("interval"))
+            current[sym] = {
+                "rate": float(x["fundingRate"]),
+                "interval_hours": hours,
+                "apr": annualize_funding(float(x["fundingRate"]), hours),
+                "next_funding_ts": x.get("nextFundingTimestamp"),
+            }
+        spot: set[str] | None = None
+        if spot_venue:
+            markets = await b.guard("spot_markets", f"ccxt:{spot_venue}", rt.exchanges.markets(spot_venue))
+            if markets:
+                spot = {m for m, v in markets.items() if (v or {}).get("type") == "spot" and (v or {}).get("active") is not False}
+        tradfi: set[str] | None = None
+        perp_markets = await b.guard("perp_markets", f"ccxt:{venue}", rt.exchanges.markets(venue))
+        if perp_markets:
+            tradfi = set()
+            for m, v in perp_markets.items():
+                info = (v or {}).get("info") or {}
+                if str(info.get("contractType") or "").startswith("TRADIFI") or info.get("underlyingType") not in (None, "COIN"):
+                    tradfi.add(m)
+
+        if bases:
+            symbols = [f"{x.upper()}/USDT:USDT" for x in bases]
+        elif current:
+            pool = list(current)
+            if crypto_only:
+                if tradfi is None:
+                    b.warn("perp market metadata unavailable; TradFi perps could not be filtered out")
+                else:
+                    pool = [k for k in pool if k not in tradfi]
+            if require_spot:
+                if spot is None:
+                    b.warn("spot markets unavailable; candidates were not restricted to bases with spot")
+                else:
+                    pool = [k for k in pool if f"{k.split('/')[0]}/USDT" in spot]
+            symbols = sorted(pool, key=lambda k: current[k]["apr"], reverse=True)[:candidates]
+            if not symbols:
+                b.miss("candidates", "tradedesk", "data_unavailable", "no perps left after crypto_only / require_spot filters")
+                return b.build(None, ok=False)
+        else:
+            return b.build(None, ok=False)
+
+        sem = asyncio.Semaphore(max_concurrency)
+        since_ms = now_ms - int(max(30.0, lookback_days) * 86_400_000)
+
+        async def row(sym: str) -> dict[str, Any] | None:
+            async with sem:
+                raw = await b.guard(
+                    f"funding_history:{sym}", f"ccxt:{venue}", rt.exchanges.funding_rate_history(venue, sym, since_ms, 1000)
+                )
+            entries = [
+                {"ts_ms": int(x["timestamp"]), "rate": float(x["fundingRate"])}
+                for x in (raw or [])
+                if x.get("fundingRate") is not None and x.get("timestamp")
+            ]
+            cur = current.get(sym)
+            if not entries and not cur:
+                return None
+            snap = carry_snapshot(
+                entries, now_ms=now_ms, lookback_days=lookback_days, entry_apr=entry_apr, exit_apr=exit_apr, roundtrip_fee=roundtrip_fee
+            )
+            base = sym.split("/")[0]
+            return {
+                "base": base,
+                "symbol": sym,
+                "current_rate": r(cur["rate"], 8) if cur else None,
+                "interval_hours": cur["interval_hours"] if cur else None,
+                "current_apr": r(cur["apr"], 4) if cur else None,
+                "next_funding": _iso(cur["next_funding_ts"]) if cur else None,
+                "trailing_apr": r(snap.get("trailing_apr"), 4),
+                "trailing_30d_apr": r(snap.get("trailing_30d_apr"), 4),
+                "positive_share": r(snap.get("positive_share"), 3),
+                "status": snap.get("status"),
+                "breakeven_days": r(snap.get("breakeven_days"), 1),
+                "coverage_days": r(snap.get("coverage_days"), 1),
+                "spot_available": (f"{base}/USDT" in spot) if spot is not None else None,
+                "tradfi": (sym in tradfi) if tradfi is not None else None,
+            }
+
+        rows = [x for x in await asyncio.gather(*[row(s) for s in symbols]) if x]
+        if not rows:
+            return b.build(None, ok=False)
+        rows.sort(key=lambda x: x["trailing_apr"] if x["trailing_apr"] is not None else float("-inf"), reverse=True)
+        trailing = sorted(x["trailing_apr"] for x in rows if x["trailing_apr"] is not None)
+        above = [x["base"] for x in rows if x["status"] == "above_entry"]
+        return b.build(
+            {
+                "venue": venue,
+                "lookback_days": lookback_days,
+                "thresholds": {"entry_apr": entry_apr, "exit_apr": exit_apr, "roundtrip_fee": roundtrip_fee},
+                "summary": {
+                    "scanned": len(rows),
+                    "above_entry": above,
+                    "above_entry_with_spot": [x["base"] for x in rows if x["status"] == "above_entry" and x["spot_available"]],
+                    "median_trailing_apr": r(trailing[len(trailing) // 2], 4) if trailing else None,
+                },
+                "rows": rows,
+            }
+        )
 
     @server.tool(
         annotations=READ_ONLY,

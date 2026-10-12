@@ -20,6 +20,12 @@ from ..core.envelope import Builder
 from ..runtime import Runtime
 from ._util import READ_ONLY, r
 
+SFP_EDGE_WARNING = (
+    "Unverified edge: walk-forward 2024-10..2026-10 on 20 Binance perps (4h and 12h, 850 trades at "
+    "default params) showed no statistically significant edge, avg R ~ 0 before fees. "
+    "Treat setups as candidates for manual review, not signals. See docs/verification/."
+)
+
 
 def _summary(values: list[float], latest: float) -> dict[str, Any]:
     """Shared stats block for history-rank style tools."""
@@ -410,7 +416,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "is True when rr1 ≥ min_rr. `use_tight_stop=true` puts the stop right past the wick "
             "extreme — the rule after 2-3 confirmed sweeps in a row. Entry is the sweep candle's "
             "close; check `latest_sweep.bars_since_sweep` for staleness. Mechanical proposal, "
-            "not advice; the lecture confirms entries on 15m price action."
+            "not advice; the lecture confirms entries on 15m price action. A 2-year walk-forward "
+            "backtest found no significant edge for this mechanic; see `warnings`."
         ),
     )
     async def range_setup(
@@ -429,6 +436,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
         source: Annotated[Literal["store", "live"], Field(description="Where bars come from.")] = "live",
     ) -> dict[str, Any]:
         b = Builder()
+        b.warn(SFP_EDGE_WARNING)
         if source == "live":
             fetched = await b.guard(f"ohlcv:{venue}", f"ccxt:{venue}", rt.exchanges.ohlcv(venue, symbol, timeframe, lookback_bars))
             raw = fetched or []
@@ -639,7 +647,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "`max_sweep_age_bars` drops setups whose sweep closed more than N bars ago (stale). "
             "`max_concurrency` throttles parallel ccxt fetches so we respect venue rate limits. "
             "Entry is the sweep candle's close — a mechanical proposal, not advice; the lecture "
-            "confirms entries on 15m price action."
+            "confirms entries on 15m price action. A 2-year walk-forward backtest found no "
+            "significant edge for this mechanic; see `warnings`."
         ),
     )
     async def range_setup_scan(
@@ -662,6 +671,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
         max_concurrency: Annotated[int, Field(ge=1, le=16, description="Max concurrent OHLCV fetches.")] = 4,
     ) -> dict[str, Any]:
         b = Builder()
+        b.warn(SFP_EDGE_WARNING)
         if not symbols:
             b.miss("symbols", "tradedesk", "config", "empty symbol list")
             return b.build(None, ok=False)

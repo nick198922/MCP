@@ -359,6 +359,7 @@ async def test_range_setup_scan_happy_path(state):
             only_tradable=False,
         )
         assert env["ok"] is True
+        assert any("Unverified edge" in w for w in env["warnings"])
         d = env["data"]
         assert d["scanned"] == 2
         assert d["tradable"] == len(d["setups"])

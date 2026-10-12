@@ -119,9 +119,11 @@ class Exchanges:
         a = {"symbol": symbol, "limit": limit}
         return await self._call(ex_id, "fetch_trades", a, 2, lambda ex: ex.fetch_trades(symbol, limit=limit))
 
-    async def ohlcv(self, ex_id: str, symbol: str, timeframe: str, limit: int) -> Fetched:
-        a = {"symbol": symbol, "timeframe": timeframe, "limit": limit}
-        return await self._call(ex_id, "fetch_ohlcv", a, 15, lambda ex: ex.fetch_ohlcv(symbol, timeframe, limit=limit))
+    async def ohlcv(self, ex_id: str, symbol: str, timeframe: str, limit: int, since_ms: int | None = None) -> Fetched:
+        a = {"symbol": symbol, "timeframe": timeframe, "limit": limit, "since_ms": since_ms}
+        if since_ms is None:
+            return await self._call(ex_id, "fetch_ohlcv", a, 15, lambda ex: ex.fetch_ohlcv(symbol, timeframe, limit=limit))
+        return await self._call(ex_id, "fetch_ohlcv", a, 15, lambda ex: ex.fetch_ohlcv(symbol, timeframe, since=since_ms, limit=limit))
 
     async def order_book(self, ex_id: str, symbol: str, limit: int) -> Fetched:
         a = {"symbol": symbol, "limit": limit}

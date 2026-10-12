@@ -6,6 +6,7 @@ collector; otherwise it returns `ok=false` with `missing: store`.
 
 from __future__ import annotations
 
+import asyncio
 import math
 from datetime import datetime
 from typing import Annotated, Any, Literal
@@ -403,12 +404,13 @@ def register(server: MCPServer, rt: Runtime) -> None:
         description=(
             "Translate the latest sweep inside the latest range into a tradable setup "
             "(entry / stop / tp1 / tp2 / RR). Follows DoubleTop «Торговля SFP» rules: "
-            "stop = swept_level ± (stop_mult × reversal_pct), with a floor of "
+            "stop = swept_level ± (stop_mult × overshoot_pct), where overshoot is how far the "
+            "wick poked past the level, and never closer than the wick extreme ± "
             "stop_min_offset_pct; tp1 = range midpoint, tp2 = opposite boundary; `tradable` "
-            "is True when rr1 ≥ min_rr. `use_tight_stop=true` collapses the stop multiplier "
-            "to the min offset — the rule after 2-3 confirmed sweeps in a row. Setup entry "
-            "is a math approximation at the swept level; a real client validates on 15m price "
-            "action before firing."
+            "is True when rr1 ≥ min_rr. `use_tight_stop=true` puts the stop right past the wick "
+            "extreme — the rule after 2-3 confirmed sweeps in a row. Entry is the sweep candle's "
+            "close; check `latest_sweep.bars_since_sweep` for staleness. Mechanical proposal, "
+            "not advice; the lecture confirms entries on 15m price action."
         ),
     )
     async def range_setup(
@@ -420,7 +422,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
         max_width_pct: Annotated[float, Field(gt=0, le=50)] = 15.0,
         swing_lookback: Annotated[int, Field(ge=1, le=50)] = 3,
         sweep_wick_ratio: Annotated[float, Field(ge=0.0, le=1.0)] = 0.5,
-        stop_mult: Annotated[float, Field(ge=0.0, le=10, description="Stop offset multiplier over the sweep's reversal %.")] = 2.0,
+        stop_mult: Annotated[float, Field(ge=0.0, le=10, description="Stop offset multiplier over the sweep's overshoot %.")] = 2.0,
         stop_min_offset_pct: Annotated[float, Field(ge=0.0, le=5, description="Minimum stop offset in percent.")] = 0.1,
         min_rr: Annotated[float, Field(ge=1, le=20, description="Min rr1 to flag the setup as tradable.")] = 2.0,
         use_tight_stop: Annotated[bool, Field(description="After 2-3 confirmed sweeps: stop right at the swept level.")] = False,
@@ -500,6 +502,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
                     "side": latest_sweep["side"],
                     "swept_level": r(latest_sweep["swept_level"], 6),
                     "reversal_pct": r(latest_sweep["reversal_pct"], 4),
+                    "overshoot_pct": r(latest_sweep["overshoot_pct"], 4),
+                    "bars_since_sweep": len(bars) - 1 - latest_sweep["idx"],
                     "same_side_in_last_5": recent_same_side,
                 },
                 "setup": {
@@ -524,6 +528,199 @@ def register(server: MCPServer, rt: Runtime) -> None:
                     ),
                 },
             }
+        )
+
+    async def _scan_one(
+        b: Builder,
+        venue: str,
+        symbol: str,
+        timeframe: str,
+        lookback_bars: int,
+        min_bars: int,
+        max_width_pct: float,
+        swing_lookback: int,
+        sweep_wick_ratio: float,
+        stop_mult: float,
+        stop_min_offset_pct: float,
+        min_rr: float,
+    ) -> dict[str, Any]:
+        """Fetch + classify + generate_setup for one symbol, with everything caught."""
+        out: dict[str, Any] = {"symbol": symbol, "ok": False, "reason": None}
+        raw = await b.guard(f"ohlcv:{symbol}", f"ccxt:{venue}", rt.exchanges.ohlcv(venue, symbol, timeframe, lookback_bars))
+        if raw is None:
+            out["reason"] = "fetch_failed"
+            return out
+        bars = [
+            {
+                "ts": int(x[0]),
+                "open": float(x[1]),
+                "high": float(x[2]),
+                "low": float(x[3]),
+                "close": float(x[4]),
+                "volume": float(x[5]) if len(x) >= 6 else 0.0,
+            }
+            for x in (raw or [])
+            if isinstance(x, (list, tuple)) and len(x) >= 5
+        ]
+        if len(bars) < min_bars:
+            out["reason"] = f"insufficient_bars: {len(bars)} < {min_bars}"
+            return out
+        res = classify_ranges(
+            bars,
+            min_bars=min_bars,
+            max_width_pct=max_width_pct,
+            swing_lookback=swing_lookback,
+            sweep_wick_ratio=sweep_wick_ratio,
+        )
+        if not res["ranges"]:
+            out["reason"] = "no_range"
+            return out
+        rng = res["ranges"][-1]
+        cls = res["classifications"][-1] if res["classifications"] else None
+        in_rng = [s for s in res["sweeps"] if rng["start_idx"] <= s["idx"] <= rng["end_idx"]]
+        if not in_rng:
+            out["reason"] = "no_sweep_in_range"
+            return out
+        sweep = in_rng[-1]
+        setup = generate_setup(rng, sweep, stop_mult=stop_mult, stop_min_offset_pct=stop_min_offset_pct, min_rr=min_rr)
+        if setup is None:
+            out["reason"] = "incoherent_sweep"
+            return out
+        recent_same_side = sum(1 for s in in_rng[-5:] if s["side"] == sweep["side"])
+        out.update(
+            {
+                "ok": True,
+                "classification": cls["type"] if cls else None,
+                "classification_confidence": cls["confidence"] if cls else None,
+                "range": {
+                    "top": r(rng["top"], 6),
+                    "bottom": r(rng["bottom"], 6),
+                    "mid": r(rng["mid"], 6),
+                    "width_pct": r(rng["width_pct"], 4),
+                },
+                "sweep": {
+                    "ts": sweep["ts"],
+                    "side": sweep["side"],
+                    "swept_level": r(sweep["swept_level"], 6),
+                    "reversal_pct": r(sweep["reversal_pct"], 4),
+                    "overshoot_pct": r(sweep["overshoot_pct"], 4),
+                    "bars_since_sweep": len(bars) - 1 - sweep["idx"],
+                    "same_side_in_last_5": recent_same_side,
+                },
+                "setup": {
+                    "direction": setup["direction"],
+                    "entry": r(setup["entry"], 6),
+                    "stop": r(setup["stop"], 6),
+                    "stop_offset_pct": r(setup["stop_offset_pct"], 4),
+                    "tp1": r(setup["tp1"], 6),
+                    "tp2": r(setup["tp2"], 6),
+                    "risk_pct_from_entry": r(setup["risk_pct_from_entry"], 4),
+                    "rr1": r(setup["rr1"], 3),
+                    "rr2": r(setup["rr2"], 3),
+                    "tradable": setup["tradable"],
+                    "min_rr": setup["min_rr"],
+                },
+                "consider_tight_stop": recent_same_side >= 3,
+            }
+        )
+        return out
+
+    @server.tool(
+        annotations=READ_ONLY,
+        description=(
+            "Scan multiple symbols on one venue for tradable SFP setups (DoubleTop «Торговля SFP»). "
+            "For each symbol: fetch OHLCV via ccxt → detect ranges + sweeps → classify "
+            "accumulation / distribution / ambiguous → generate entry/stop/tp1/tp2/RR via the "
+            "same `range_setup` mechanic. Returns `setups` (filtered + sorted by rr1 desc), "
+            "`scanned` / `tradable` counts, and `rejected` (per-symbol reasons: no_range, "
+            "no_sweep_in_range, incoherent_sweep, insufficient_bars, fetch_failed). "
+            "Filters: `only_tradable` keeps only rr1 ≥ min_rr; `exclude_ambiguous` drops ranges "
+            "whose classification is `ambiguous` (keep this on for high-conviction scans); "
+            "`max_sweep_age_bars` drops setups whose sweep closed more than N bars ago (stale). "
+            "`max_concurrency` throttles parallel ccxt fetches so we respect venue rate limits. "
+            "Entry is the sweep candle's close — a mechanical proposal, not advice; the lecture "
+            "confirms entries on 15m price action."
+        ),
+    )
+    async def range_setup_scan(
+        venue: Annotated[str, Field(description="ccxt venue id (binanceusdm, bybit, okx, hyperliquid, …).")],
+        symbols: Annotated[list[str], Field(description="ccxt symbols to scan (same venue). Max 50 per call.", max_length=50)],
+        timeframe: Annotated[str, Field(description="Range timeframe. DoubleTop recommends 4h / 12h.")] = "4h",
+        lookback_bars: Annotated[int, Field(ge=20, le=10_000)] = 300,
+        min_bars: Annotated[int, Field(ge=5, le=1000)] = 20,
+        max_width_pct: Annotated[float, Field(gt=0, le=50)] = 15.0,
+        swing_lookback: Annotated[int, Field(ge=1, le=50)] = 3,
+        sweep_wick_ratio: Annotated[float, Field(ge=0.0, le=1.0)] = 0.5,
+        stop_mult: Annotated[float, Field(ge=0.0, le=10)] = 2.0,
+        stop_min_offset_pct: Annotated[float, Field(ge=0.0, le=5)] = 0.1,
+        min_rr: Annotated[float, Field(ge=1, le=20)] = 2.0,
+        only_tradable: Annotated[bool, Field(description="Keep only setups with rr1 ≥ min_rr.")] = True,
+        exclude_ambiguous: Annotated[bool, Field(description="Drop ranges whose classification is ambiguous.")] = False,
+        max_sweep_age_bars: Annotated[
+            int, Field(ge=0, le=1000, description="Drop setups whose sweep is older than N bars (6 × 4h = 1 day).")
+        ] = 6,
+        max_concurrency: Annotated[int, Field(ge=1, le=16, description="Max concurrent OHLCV fetches.")] = 4,
+    ) -> dict[str, Any]:
+        b = Builder()
+        if not symbols:
+            b.miss("symbols", "tradedesk", "config", "empty symbol list")
+            return b.build(None, ok=False)
+        sem = asyncio.Semaphore(max_concurrency)
+
+        async def _bounded(sym: str) -> dict[str, Any]:
+            async with sem:
+                return await _scan_one(
+                    b,
+                    venue,
+                    sym,
+                    timeframe,
+                    lookback_bars,
+                    min_bars,
+                    max_width_pct,
+                    swing_lookback,
+                    sweep_wick_ratio,
+                    stop_mult,
+                    stop_min_offset_pct,
+                    min_rr,
+                )
+
+        results = await asyncio.gather(*[_bounded(s) for s in symbols], return_exceptions=False)
+
+        setups: list[dict[str, Any]] = []
+        rejected: list[dict[str, Any]] = []
+        for r_ in results:
+            if not r_["ok"]:
+                rejected.append({"symbol": r_["symbol"], "reason": r_["reason"]})
+                continue
+            age = r_["sweep"]["bars_since_sweep"]
+            if age > max_sweep_age_bars:
+                rejected.append({"symbol": r_["symbol"], "reason": f"stale_sweep: {age} bars > {max_sweep_age_bars}"})
+                continue
+            if exclude_ambiguous and r_.get("classification") == "ambiguous":
+                rejected.append({"symbol": r_["symbol"], "reason": "ambiguous_classification"})
+                continue
+            if only_tradable and not r_["setup"]["tradable"]:
+                rejected.append({"symbol": r_["symbol"], "reason": f"rr_below_min: {r_['setup']['rr1']} < {min_rr}"})
+                continue
+            setups.append(r_)
+        setups.sort(key=lambda x: x["setup"]["rr1"], reverse=True)
+        any_fetched = any(x["reason"] != "fetch_failed" for x in results)
+        return b.build(
+            {
+                "venue": venue,
+                "timeframe": timeframe,
+                "scanned": len(symbols),
+                "tradable": len(setups),
+                "filters": {
+                    "only_tradable": only_tradable,
+                    "exclude_ambiguous": exclude_ambiguous,
+                    "max_sweep_age_bars": max_sweep_age_bars,
+                    "min_rr": min_rr,
+                },
+                "setups": setups,
+                "rejected": rejected,
+            },
+            ok=any_fetched,
         )
 
     @server.tool(

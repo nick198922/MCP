@@ -53,6 +53,7 @@ EXPECTED_TOOLS = {
     "market_regime",
     "range_detect",
     "range_setup",
+    "range_setup_scan",
     "events_add",
     "events_list",
     "events_seed_load",

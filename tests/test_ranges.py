@@ -207,42 +207,60 @@ async def _call(server, name, **args):
 
 
 def test_generate_setup_short_from_high_sweep():
-    rng = {"top": 110.0, "bottom": 90.0, "mid": 100.0}
-    sweep = {"side": "high", "swept_level": 110.0, "reversal_pct": 1.0, "ts": 42}
+    # Lecture example: overshoot 0.37 % → stop offset ≈ 2 × 0.37 % from the level.
+    rng = {"top": 100.0, "bottom": 90.0, "mid": 95.0}
+    sweep = {"side": "high", "swept_level": 100.0, "candle_high": 100.37, "candle_close": 99.8, "overshoot_pct": 0.37}
     setup = generate_setup(rng, sweep, stop_mult=2.0, stop_min_offset_pct=0.1, min_rr=2.0)
     assert setup["direction"] == "short"
-    assert setup["entry"] == pytest.approx(110.0)
-    # 2.0 × 1.0 % = 2 %, so stop at 110 × 1.02 = 112.2
-    assert setup["stop"] == pytest.approx(112.2, rel=1e-6)
-    assert setup["tp1"] == pytest.approx(100.0)
+    assert setup["entry"] == pytest.approx(99.8)
+    assert setup["stop"] == pytest.approx(100.74, rel=1e-9)
+    assert setup["stop_offset_pct"] == pytest.approx(0.74, rel=1e-9)
+    assert setup["tp1"] == pytest.approx(95.0)
     assert setup["tp2"] == pytest.approx(90.0)
-    # risk 2.2, reward1 10 → RR ~ 4.5
-    assert setup["rr1"] == pytest.approx(10.0 / 2.2, rel=1e-6)
+    assert setup["rr1"] == pytest.approx(4.8 / 0.94, rel=1e-9)
     assert setup["tradable"] is True
+
+
+def test_generate_setup_stop_never_inside_wick():
+    # Tiny multiplier would put the stop inside the wick; the floor pushes it past the extreme.
+    rng = {"top": 100.0, "bottom": 90.0, "mid": 95.0}
+    sweep = {"side": "high", "swept_level": 100.0, "candle_high": 101.0, "candle_close": 99.5, "overshoot_pct": 1.0}
+    setup = generate_setup(rng, sweep, stop_mult=0.5, stop_min_offset_pct=0.1)
+    assert setup["stop"] == pytest.approx(101.0 * 1.001, rel=1e-9)
 
 
 def test_generate_setup_long_from_low_sweep_and_tight_stop():
     rng = {"top": 110.0, "bottom": 90.0, "mid": 100.0}
-    sweep = {"side": "low", "swept_level": 90.0, "reversal_pct": 1.5, "ts": 42}
+    sweep = {"side": "low", "swept_level": 90.0, "candle_low": 88.5, "candle_close": 90.5, "overshoot_pct": 1.6667}
+    normal = generate_setup(rng, sweep, stop_mult=2.0, stop_min_offset_pct=0.1)
     tight = generate_setup(rng, sweep, stop_mult=2.0, stop_min_offset_pct=0.1, use_tight_stop=True)
-    # Tight stop uses just the min offset (0.1 %), so stop = 90 × 0.999 = 89.91.
     assert tight["direction"] == "long"
-    assert tight["stop"] == pytest.approx(89.91, rel=1e-6)
-    assert tight["rr1"] > 100  # tiny risk × big reward
+    # M7: stop right past the wick low, no multiplier.
+    assert tight["stop"] == pytest.approx(88.5 * 0.999, rel=1e-9)
+    assert normal["stop"] < tight["stop"]
+    assert tight["rr1"] > normal["rr1"]
 
 
 def test_generate_setup_rejects_incoherent_sweep():
     rng = {"top": 110.0, "bottom": 90.0, "mid": 100.0}
-    # A "high" sweep whose swept_level sits below the mid is incoherent.
-    bad = generate_setup(rng, {"side": "high", "swept_level": 95.0, "reversal_pct": 0.5, "ts": 42}, min_rr=2.0)
+    bad = generate_setup(rng, {"side": "high", "swept_level": 95.0, "candle_high": 95.5, "overshoot_pct": 0.5}, min_rr=2.0)
     assert bad is None
 
 
 def test_generate_setup_tradable_flag():
     rng = {"top": 110.0, "bottom": 90.0, "mid": 100.0}
-    # Big sweep → wide stop → RR < 2
-    weak = generate_setup(rng, {"side": "high", "swept_level": 110.0, "reversal_pct": 8.0, "ts": 42}, min_rr=2.0)
+    weak = generate_setup(rng, {"side": "high", "swept_level": 110.0, "candle_high": 118.8, "overshoot_pct": 8.0}, min_rr=2.0)
     assert weak["tradable"] is False
+
+
+def test_detect_sweeps_reports_overshoot():
+    bars = [{"ts": i, "open": 100.0, "high": 100.5, "low": 99.5, "close": 100.0, "volume": 1.0} for i in range(6)]
+    bars[2]["high"] = 102.0  # swing high at idx 2
+    bars.append({"ts": 6, "open": 101.0, "high": 103.0, "low": 100.8, "close": 101.2, "volume": 1.0})
+    swings = {"highs": [{"idx": 2, "ts": 2, "price": 102.0}], "lows": []}
+    sw = detect_sweeps(bars, swings, wick_ratio=0.5)
+    assert sw and sw[-1]["side"] == "high"
+    assert sw[-1]["overshoot_pct"] == pytest.approx(1.0 / 102.0 * 100.0, rel=1e-9)
 
 
 async def test_range_detect_live_source(state):
@@ -303,6 +321,110 @@ async def test_range_setup_live_mcp(state):
             # Fake oscillator may not generate a clean sweep inside a tight range;
             # tolerant failure path.
             assert any(m["field"] in ("sweep", "range", "setup") for m in env["missing"])
+    finally:
+        await rt.aclose()
+
+
+class _OhlcvFailEx(FakeEx):
+    async def fetch_ohlcv(self, symbol, timeframe="1h", limit=100):
+        import ccxt.async_support as ccxt
+
+        if symbol.startswith("BAD"):
+            raise ccxt.ExchangeNotAvailable("ohlcv down")
+        return await super().fetch_ohlcv(symbol, timeframe, limit)
+
+
+def _scan_rt(state, factory=FakeEx):
+    rt = Runtime(
+        Settings(http_retries=1, cache_scale=0.0, db_path=""),
+        transports=make_transports(state),
+        exchange_factory=factory,
+    )
+    rt.now = lambda: NOW
+    return rt
+
+
+async def test_range_setup_scan_happy_path(state):
+    rt = _scan_rt(state)
+    srv, _ = build_server(rt)
+    try:
+        env = await _call(
+            srv,
+            "range_setup_scan",
+            venue="binanceusdm",
+            symbols=["BTC/USDT:USDT", "ETH/USDT:USDT"],
+            timeframe="1h",
+            lookback_bars=100,
+            max_width_pct=10,
+            only_tradable=False,
+        )
+        assert env["ok"] is True
+        d = env["data"]
+        assert d["scanned"] == 2
+        assert d["tradable"] == len(d["setups"])
+        assert len(d["setups"]) + len(d["rejected"]) == 2
+        rr = [s["setup"]["rr1"] for s in d["setups"]]
+        assert rr == sorted(rr, reverse=True)
+    finally:
+        await rt.aclose()
+
+
+async def test_range_setup_scan_stale_filter(state):
+    rt = _scan_rt(state)
+    srv, _ = build_server(rt)
+    try:
+        args = dict(
+            venue="binanceusdm", symbols=["BTC/USDT:USDT"], timeframe="1h", lookback_bars=100, max_width_pct=10, only_tradable=False
+        )
+        loose = await _call(srv, "range_setup_scan", max_sweep_age_bars=1000, **args)
+        strict = await _call(srv, "range_setup_scan", max_sweep_age_bars=0, **args)
+        for s in strict["data"]["setups"]:
+            assert s["sweep"]["bars_since_sweep"] == 0
+        for s in loose["data"]["setups"]:
+            if s["sweep"]["bars_since_sweep"] > 0:
+                assert any(x["reason"].startswith("stale_sweep") for x in strict["data"]["rejected"])
+    finally:
+        await rt.aclose()
+
+
+async def test_range_setup_scan_partial_provider_failure(state):
+    rt = _scan_rt(state, _OhlcvFailEx)
+    srv, _ = build_server(rt)
+    try:
+        env = await _call(
+            srv,
+            "range_setup_scan",
+            venue="binanceusdm",
+            symbols=["BTC/USDT:USDT", "BAD/USDT:USDT"],
+            timeframe="1h",
+            lookback_bars=100,
+        )
+        assert env["ok"] is True
+        reasons = {x["symbol"]: x["reason"] for x in env["data"]["rejected"]}
+        assert reasons["BAD/USDT:USDT"] == "fetch_failed"
+        assert any(m["field"] == "ohlcv:BAD/USDT:USDT" for m in env["missing"])
+    finally:
+        await rt.aclose()
+
+
+async def test_range_setup_scan_all_failed_is_not_ok(state):
+    rt = _scan_rt(state, _OhlcvFailEx)
+    srv, _ = build_server(rt)
+    try:
+        env = await _call(srv, "range_setup_scan", venue="binanceusdm", symbols=["BAD1/USDT:USDT", "BAD2/USDT:USDT"])
+        assert env["ok"] is False
+        assert env["data"]["tradable"] == 0
+    finally:
+        await rt.aclose()
+
+
+async def test_range_setup_scan_empty_symbols(state):
+    rt = _scan_rt(state)
+    srv, _ = build_server(rt)
+    try:
+        env = await _call(srv, "range_setup_scan", venue="binanceusdm", symbols=[])
+        assert env["ok"] is False
+        assert env["missing"][0]["field"] == "symbols"
     finally:
         await rt.aclose()
 

@@ -160,6 +160,7 @@ def detect_sweeps(
                             "candle_high": hi,
                             "candle_close": cl,
                             "reversal_pct": rev_pct,
+                            "overshoot_pct": (hi - last_high) / last_high * 100.0 if last_high > 0 else 0.0,
                         }
                     )
         prior_lows = [p for p, idx in zip(lows_prices, lows_idx, strict=False) if idx < i]
@@ -177,6 +178,7 @@ def detect_sweeps(
                             "candle_low": lo,
                             "candle_close": cl,
                             "reversal_pct": rev_pct,
+                            "overshoot_pct": (last_low - lo) / last_low * 100.0 if last_low > 0 else 0.0,
                         }
                     )
     return out
@@ -369,46 +371,45 @@ def generate_setup(
 
     Follows the DoubleTop «Торговля SFP» rules:
     * **direction**: long after a low-side sweep, short after a high-side sweep.
-    * **entry**: at the swept level — i.e. where price retraced back to after
-      the sweep. Simple approximation; a real client watches 15m price action.
-    * **stop**: swept extreme ± `stop_mult × sweep.reversal_pct` (M2). Falls
-      back to `stop_min_offset_pct` so a tiny sweep still gives breathing room.
-      When `use_tight_stop` is True (after 2-3 confirmed sweeps, rule M7) the
-      multiplier collapses to just the min offset — effectively "stop right at
-      the swept level".
+    * **entry**: the sweep candle's close (first price known once the bar
+      closed back inside); falls back to the swept level. A real trade still
+      confirms on 15m.
+    * **stop** (M2): swept_level ± `stop_mult × overshoot_pct`, where
+      overshoot is how far the wick poked past the level. The stop is never
+      closer than the wick extreme ± `stop_min_offset_pct`, so it cannot sit
+      inside the sweep wick. `use_tight_stop` (M7, after 2-3 confirmed sweeps)
+      drops the multiplier: stop = wick extreme ± min offset.
     * **tp1 / tp2**: mid of the range (M3) and the opposite boundary.
-    * **rr1 / rr2**: reward-to-risk for each target.
     * **tradable**: True when `rr1 >= min_rr` (M4).
 
-    Returns ``None`` when the sweep direction is incoherent with the range
-    (sweep high but swept_level below the range top, etc.) — belt-and-braces.
+    Returns ``None`` when the setup is incoherent (entry on the wrong side of
+    the mid, or zero risk).
     """
     top, bottom = float(rng["top"]), float(rng["bottom"])
     mid = (top + bottom) / 2.0
     side = sweep.get("side")
     level = float(sweep.get("swept_level") or 0.0)
-    rev = float(sweep.get("reversal_pct") or 0.0)
-    offset_pct = max(stop_min_offset_pct, stop_mult * rev) if not use_tight_stop else stop_min_offset_pct
+    if level <= 0:
+        return None
+    entry = float(sweep.get("candle_close") or level)
+    overshoot = float(sweep.get("overshoot_pct") or 0.0)
+    rule_pct = 0.0 if use_tight_stop else stop_mult * overshoot
     if side == "high":
-        entry = level
-        stop = level * (1 + offset_pct / 100.0)
-        tp1 = mid
-        tp2 = bottom
-        direction = "short"
+        extreme = float(sweep.get("candle_high") or level)
+        stop = max(level * (1 + rule_pct / 100.0), extreme * (1 + stop_min_offset_pct / 100.0))
+        tp1, tp2, direction = mid, bottom, "short"
     elif side == "low":
-        entry = level
-        stop = level * (1 - offset_pct / 100.0)
-        tp1 = mid
-        tp2 = top
-        direction = "long"
+        extreme = float(sweep.get("candle_low") or level)
+        stop = min(level * (1 - rule_pct / 100.0), extreme * (1 - stop_min_offset_pct / 100.0))
+        tp1, tp2, direction = mid, top, "long"
     else:
         return None
+    offset_pct = abs(stop - level) / level * 100.0
     risk = abs(stop - entry)
     reward1 = abs(tp1 - entry)
     reward2 = abs(tp2 - entry)
     if risk <= 0:
         return None
-    # Flip reward signs if the sweep sits on the wrong side of the mid (incoherent).
     if direction == "short" and entry <= mid:
         return None
     if direction == "long" and entry >= mid:
@@ -420,6 +421,7 @@ def generate_setup(
         "entry": entry,
         "stop": stop,
         "stop_offset_pct": offset_pct,
+        "overshoot_pct": overshoot,
         "tp1": tp1,
         "tp2": tp2,
         "risk_abs": risk,

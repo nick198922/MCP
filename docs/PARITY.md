@@ -62,3 +62,5 @@ DOUBLETOP: **74 інструменти** (66 від 17 бекендів + 8 вл
 ## Чого в DOUBLETOP не було, а в нас є або буде
 
 Опціони (vol surface, skew, greeks, max pain, GEX, імпліковані ймовірності), basis і term structure, порівняння funding між майданчиками з нормалізацією інтервалів, slippage-калькулятор, квант-інструменти (de-vig, barrier-ймовірності), далі: пам'ять, алерти, ризик, правила, бектест, виконання.
+
+Price-action за навчальними відео DoubleTop (не з їхнього MCP): `range_detect` (рейнджі, sweeps, deviations, accumulation/distribution), `range_setup` (SFP-сетап: entry/stop/TP/RR), `range_setup_scan` (сканер SFP-сетапів по списку тикерів).

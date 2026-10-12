@@ -1,6 +1,9 @@
 # Changelog
 
 ## Unreleased
+- Сканер, етап 1: MCP-інструмент `range_setup_scan(venue, symbols≤50, timeframe, …, only_tradable, exclude_ambiguous, max_sweep_age_bars=6, max_concurrency=4)` — паралельний (semaphore) прогін механіки `range_setup` по списку тикерів однієї біржі; `setups` відсортовані за rr1, `rejected` з причинами (`fetch_failed`, `no_range`, `no_sweep_in_range`, `incoherent_sweep`, `stale_sweep`, `ambiguous_classification`, `rr_below_min`); збій одного тикера → `missing: ohlcv:<symbol>`, решта сканується; усі впали → `ok=false`.
+- **Виправлення 1.17c (важливе):** стоп рахувався від `reversal_pct` (наскільки close повернувся під рівень), а лектор рахує від **розміру пересвипу** (наскільки фітиль вийшов за рівень). Через це стоп міг стояти всередині фітиля, а RR був завищений (ETH 42.9, BNB 26.8). Тепер: `detect_sweeps` повертає `overshoot_pct`; stop = рівень ± `stop_mult × overshoot_pct`, але не ближче за екстремум фітиля ± `stop_min_offset_pct`; entry = close свічки-свипу; `use_tight_stop` = стоп одразу за фітилем. `range_setup` додатково повертає `overshoot_pct` і `bars_since_sweep`. Звіт 1.17c про BTC (RR 3.77, tradable) був хибним: з правильним стопом RR 1.14.
+- Live 2026-10-12, Binance 20 топ-перпів 4h: 0 свіжих tradable-сетапів (10 stale, 6 incoherent, 4 без sweep у рейнджі); без фільтра свіжості — 1 з 20 (ETH, RR 5.4, але sweep 94 бари тому).
 - Фаза 1.17c: SFP trade generator (DoubleTop «Торговля SFP», Part 3).
   * Pure `analytics/ranges.py::generate_setup(range, sweep, stop_mult=2.0, stop_min_offset_pct=0.1, min_rr=2.0, use_tight_stop=False)`:
     - direction: short after high-sweep, long after low-sweep.
@@ -136,7 +139,7 @@
 - Фаза 1.2: `perps_funding_history` — крос-венюз історія funding (Binance/Bybit/OKX через ccxt `fetch_funding_rate_history` + Hyperliquid), автодетект інтервалу з медіани ts-різниць (`detect_interval_hours`), крос-венюз-summary (highest/lowest carry, biggest |z|), опція `include_series` для сирих рядів. Live-перевірено на BTC: HL carry 9.1%, OKX 5.1%, Binance 4.5%, Bybit 4.3%; Bybit `z = −1.45` (mean-reversion сигнал).
 - MCP-промт `token_deep_analysis(project)` — глибокий 10-секційний інвест-аналіз криптопроекту (RU), шаблон `src/tradedesk/prompts/token_deep_analysis.md` (bundled у wheel), з хінтом про релевантні tradedesk-mcp інструменти для графіка/позиціювання.
 - Фаза 1.3: нові провайдери `binance_futures.py` і `bybit.py` під окремими `Http` з лімітами. Два нові інструменти: `perps_long_short_ratio` (роздрібні account-based fractions Binance+Bybit, latest/mean/z-score, cross-venue divergence) і `perps_oi_history` (OI history Binance в USD, Bybit в base, latest/mean/change24h/z, cross-venue biggest gain/drop). Live-перевірено 2026-10-10 на BTC.
-- Тестів: 226 (+175 від 0.1.0), lint чистий. Нові залежності `aiosqlite>=0.19`, `websockets>=12`.
+- Тестів: 238 (+187 від 0.1.0), lint чистий. Нові залежності `aiosqlite>=0.19`, `websockets>=12`.
 
 ## 0.1.0 — 2026-10-10
 - Ядро: `Http` (ретраї, rate-limit, кеш із single-flight, класифікація помилок), `HealthRegistry`, `Envelope/Evidence`.

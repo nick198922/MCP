@@ -108,6 +108,32 @@ async def test_token_deep_analysis_prompt(server):
     assert "tradedesk-mcp" in text  # the hint block is appended
 
 
+async def test_fomc_playbook_prompt(server):
+    async with Client(server) as c:
+        names = {p.name for p in (await c.list_prompts()).prompts}
+        assert {"fomc_playbook", "pre_trade_checklist", "morning_briefing"} <= names
+        res = await c.get_prompt("fomc_playbook", {"symbol": "BTC/USDT:USDT", "event_date": "2026-12-16"})
+        text = res.messages[0].content.text
+    assert "BTC/USDT:USDT" in text
+    assert "2026-12-16" in text
+    assert "{{SYMBOL}}" not in text  # all placeholders substituted
+
+
+async def test_pre_trade_checklist_prompt(server):
+    async with Client(server) as c:
+        res = await c.get_prompt("pre_trade_checklist", {"symbol": "ETH/USDT:USDT", "side": "short", "size": "2 ETH"})
+        text = res.messages[0].content.text
+    assert "ETH/USDT:USDT" in text and "short" in text and "2 ETH" in text
+
+
+async def test_morning_briefing_prompt(server):
+    async with Client(server) as c:
+        res = await c.get_prompt("morning_briefing", {})
+        text = res.messages[0].content.text
+    # Prompt has no template placeholders — just make sure it renders and references our tools.
+    assert "coin_snapshot" in text and "perps_funding_compare" in text
+
+
 async def test_funding_compare_normalises_intervals_and_degrades(server):
     env = await call(server, "perps_funding_compare", base="BTC")
     assert env["ok"]

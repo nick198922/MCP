@@ -32,6 +32,13 @@ def _render_token_deep_analysis(project: str) -> str:
     return rendered + TRADEDESK_HINT
 
 
+def _render_template(filename: str, replacements: dict[str, str]) -> str:
+    text = resources.files("tradedesk.prompts").joinpath(filename).read_text(encoding="utf-8")
+    for k, v in replacements.items():
+        text = text.replace("{{" + k + "}}", v)
+    return text
+
+
 def register(server: MCPServer, rt: Runtime) -> None:
     @server.prompt(
         name="token_deep_analysis",
@@ -47,3 +54,67 @@ def register(server: MCPServer, rt: Runtime) -> None:
         project: Annotated[str, Field(description="Project name or ticker, e.g. 'Hyperliquid (HYPE)' or 'SOL'")],
     ) -> str:
         return _render_token_deep_analysis(project)
+
+    @server.prompt(
+        name="fomc_playbook",
+        title="FOMC event playbook (DoubleTop-style)",
+        description=(
+            "Structured FOMC trade plan for a crypto perp/option: event-study on past FOMC days, "
+            "retracement ladder, multi-horizon scenario matrix, exit ladder, risks. Pulls event_study / "
+            "strategy_scenario_matrix / fib_retracement / touch_probability / market_regime. "
+            "Pattern mirrors the DoubleTop FOMC write-up — descriptive stats + prebuilt levels, "
+            "not a forecast."
+        ),
+    )
+    async def fomc_playbook(
+        symbol: Annotated[str, Field(description="ccxt symbol, e.g. 'BTC/USDT:USDT'")] = "BTC/USDT:USDT",
+        venue: Annotated[str, Field(description="ccxt venue id")] = "binanceusdm",
+        timeframe: Annotated[str, Field(description="OHLCV timeframe for the study")] = "1h",
+        event_date: Annotated[str, Field(description="Event date YYYY-MM-DD UTC (upcoming or past)")] = "",
+        event_time_utc: Annotated[str, Field(description="Event time HH:MM UTC")] = "19:00",
+        time_stop: Annotated[str, Field(description="Time-based stop expression, e.g. 'Fri 21:00 UTC'")] = "T+48h",
+        regime_change_date: Annotated[str, Field(description="Date beyond which regime looks different")] = "2024-01-01",
+    ) -> str:
+        return _render_template(
+            "fomc_playbook.md",
+            {
+                "SYMBOL": symbol,
+                "VENUE": venue,
+                "TIMEFRAME": timeframe,
+                "EVENT_DATE": event_date or "<fill in>",
+                "EVENT_TIME_UTC": event_time_utc,
+                "TIME_STOP": time_stop,
+                "REGIME_CHANGE_DATE": regime_change_date,
+            },
+        )
+
+    @server.prompt(
+        name="pre_trade_checklist",
+        title="Pre-trade checklist",
+        description=(
+            "10-step checklist before opening a position: thesis one-liner, market regime, "
+            "derivatives picture, volatility & skew, calendar, payoff + risk, mechanics, exit "
+            "plan, alerts/rules, journal entry. Each step names the tradedesk-mcp tool to call."
+        ),
+    )
+    async def pre_trade_checklist(
+        symbol: Annotated[str, Field(description="Instrument you're about to trade")] = "BTC/USDT:USDT",
+        side: Annotated[str, Field(description="long / short / spread name")] = "long",
+        size: Annotated[str, Field(description="Position size (e.g. '0.5 BTC' or '10 contracts')")] = "<size>",
+    ) -> str:
+        return _render_template(
+            "pre_trade_checklist.md",
+            {"SYMBOL": symbol, "SIDE": side, "SIZE": size},
+        )
+
+    @server.prompt(
+        name="morning_briefing",
+        title="Morning crypto-derivatives briefing",
+        description=(
+            "One-page morning briefing (price/regime, sentiment/funding, vol & skew, basis/carry, "
+            "flow, 24h calendar, alerts, positions, journal). Each block names the tradedesk-mcp "
+            "tool to call so the client fills in live numbers. No forecasts, facts only."
+        ),
+    )
+    async def morning_briefing() -> str:
+        return _render_template("morning_briefing.md", {})

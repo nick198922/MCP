@@ -131,6 +131,9 @@ def walk_forward_sfp(
                 continue
             fee_r = fee_pct / setup["risk_pct_from_entry"] if setup["risk_pct_from_entry"] else 0.0
             variants[name] = {
+                "entry": setup["entry"],
+                "stop": setup["stop"],
+                "tp1": setup["tp1"],
                 "rr1": setup["rr1"],
                 "risk_pct": setup["risk_pct_from_entry"],
                 **sim,
@@ -147,6 +150,7 @@ def walk_forward_sfp(
                 "side": sweep["side"],
                 "direction": "short" if sweep["side"] == "high" else "long",
                 "overshoot_pct": sweep["overshoot_pct"],
+                "swept_level": sweep["swept_level"],
                 "range_width_pct": rng["width_pct"],
                 "classification": cls["type"],
                 "context": cls["signals"]["context"],
@@ -155,6 +159,69 @@ def walk_forward_sfp(
             }
         )
     return signals
+
+
+def ltf_entry(
+    bars: list[dict[str, Any]],
+    start_idx: int,
+    direction: str,
+    level: float,
+    stop: float,
+    target: float,
+    mode: str,
+    wait_bars: int = 16,
+) -> dict[str, Any]:
+    """Find a lower-timeframe entry after a higher-timeframe sweep candle closed at bars[start_idx].ts.
+
+    Modes (DoubleTop «Торговля SFP»: the sweep is read on 4h/12h, the entry taken on 15m):
+    * ``htf_close`` — market entry at the open of the first lower-TF bar.
+    * ``retest`` — resting limit at the swept level for ``wait_bars``. A bar that fills and
+      also reaches the stop is a loss; a target touched before the fill cancels the order.
+    * ``confirm`` — enter at the close of the first bar that closes beyond the previous bar's
+      extreme in the trade direction while on the inside of the level. A stop or target
+      touched first cancels.
+
+    Returns ``{"entry_price", "exit_from", "stopped_in_fill_bar"}`` or ``{"skip": reason}``.
+    """
+    n = len(bars)
+    if start_idx >= n:
+        return {"skip": "no_bars"}
+    short = direction == "short"
+    end = min(start_idx + wait_bars, n)
+    if mode == "htf_close":
+        price = float(bars[start_idx]["open"])
+        if (short and price >= stop) or (not short and price <= stop):
+            return {"skip": "entry_beyond_stop"}
+        if (short and price <= target) or (not short and price >= target):
+            return {"skip": "entry_beyond_target"}
+        return {"entry_price": price, "exit_from": start_idx, "stopped_in_fill_bar": False}
+    if mode == "retest":
+        for k in range(start_idx, end):
+            b = bars[k]
+            op, hi, lo = float(b["open"]), float(b["high"]), float(b["low"])
+            filled = hi >= level if short else lo <= level
+            if not filled:
+                if (short and lo <= target) or (not short and hi >= target):
+                    return {"skip": "target_before_fill"}
+                continue
+            price = max(op, level) if short else min(op, level)
+            stopped = hi >= stop if short else lo <= stop
+            return {"entry_price": price, "exit_from": k + 1, "stopped_in_fill_bar": stopped, "fill_idx": k}
+        return {"skip": "no_fill"}
+    if mode == "confirm":
+        for k in range(max(start_idx, 1), end):
+            b, prev = bars[k], bars[k - 1]
+            hi, lo, cl = float(b["high"]), float(b["low"]), float(b["close"])
+            if (short and hi >= stop) or (not short and lo <= stop):
+                return {"skip": "stop_before_confirm"}
+            if (short and lo <= target) or (not short and hi >= target):
+                return {"skip": "target_before_confirm"}
+            if short and cl < float(prev["low"]) and cl < level:
+                return {"entry_price": cl, "exit_from": k + 1, "stopped_in_fill_bar": False}
+            if not short and cl > float(prev["high"]) and cl > level:
+                return {"entry_price": cl, "exit_from": k + 1, "stopped_in_fill_bar": False}
+        return {"skip": "no_confirm"}
+    raise ValueError(f"unknown mode {mode!r}")
 
 
 def summarise_r(rs: list[float], outcomes: list[str]) -> dict[str, Any]:

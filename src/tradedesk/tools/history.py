@@ -21,9 +21,10 @@ from ..runtime import Runtime
 from ._util import READ_ONLY, r
 
 SFP_EDGE_WARNING = (
-    "Unverified edge: walk-forward 2024-10..2026-10 on 20 Binance perps (4h and 12h, 850 trades at "
-    "default params) showed no statistically significant edge, avg R ~ 0 before fees. "
-    "Treat setups as candidates for manual review, not signals. See docs/verification/."
+    "Unverified edge: walk-forward backtests (2022-10..2026-10, up to 50 Binance crypto perps, 4h/12h "
+    "sweeps, entries at the HTF close, on a 15m retest or after 15m confirmation) found no statistically "
+    "significant edge out of sample; avg R ~ 0 before fees. Treat setups as candidates for manual review, "
+    "not signals. See docs/verification/."
 )
 
 

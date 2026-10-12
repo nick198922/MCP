@@ -29,7 +29,7 @@ from tradedesk.server import build_server
 
 TOP20 = ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "ADA", "AVAX", "LINK", "SUI",
          "TON", "DOT", "LTC", "NEAR", "APT", "ARB", "OP", "INJ", "TIA", "WLD"]  # fmt: skip
-TF_MS = {"4h": 4 * 3_600_000, "1d": 86_400_000}
+TF_MS = {"15m": 900_000, "1h": 3_600_000, "4h": 4 * 3_600_000, "12h": 12 * 3_600_000, "1d": 86_400_000}
 
 
 def aggregate(bars: list[dict[str, Any]], period_ms: int) -> list[dict[str, Any]]:

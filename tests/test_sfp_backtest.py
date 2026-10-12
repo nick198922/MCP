@@ -5,6 +5,7 @@ import random
 import pytest
 
 from tradedesk.analytics.sfp_backtest import (
+    ltf_entry,
     range_time_share,
     simulate_bracket,
     summarise_r,
@@ -96,3 +97,53 @@ def test_summarise_r_basic():
 def test_range_time_share_flat_series_is_fully_ranged():
     bars = [_bar(100, 100.5, 99.5, 100, ts=i) for i in range(60)]
     assert range_time_share(bars, min_bars=20, max_width_pct=5) == pytest.approx(1.0)
+
+
+# Short after a high sweep of level 100: stop 101, target 95.
+def test_ltf_entry_htf_close_takes_first_open():
+    bars = [_bar(99.5, 99.8, 99.0, 99.2)]
+    e = ltf_entry(bars, 0, "short", 100.0, 101.0, 95.0, "htf_close")
+    assert e["entry_price"] == pytest.approx(99.5)
+    assert e["exit_from"] == 0
+
+
+def test_ltf_entry_retest_fills_at_level():
+    bars = [_bar(99.5, 99.7, 99.0, 99.2), _bar(99.2, 100.2, 99.1, 99.6)]
+    e = ltf_entry(bars, 0, "short", 100.0, 101.0, 95.0, "retest")
+    assert e["entry_price"] == pytest.approx(100.0)
+    assert e["exit_from"] == 2
+    assert e["stopped_in_fill_bar"] is False
+
+
+def test_ltf_entry_retest_fill_and_stop_same_bar_is_flagged():
+    bars = [_bar(99.5, 101.5, 99.0, 99.2)]
+    e = ltf_entry(bars, 0, "short", 100.0, 101.0, 95.0, "retest")
+    assert e["stopped_in_fill_bar"] is True
+
+
+def test_ltf_entry_retest_cancelled_by_target_first():
+    bars = [_bar(99.0, 99.2, 94.5, 95.0), _bar(95.0, 100.5, 94.8, 100.2)]
+    assert ltf_entry(bars, 0, "short", 100.0, 101.0, 95.0, "retest") == {"skip": "target_before_fill"}
+
+
+def test_ltf_entry_retest_no_fill():
+    bars = [_bar(99.0, 99.5, 98.0, 98.5)] * 3
+    assert ltf_entry(bars, 0, "short", 100.0, 101.0, 95.0, "retest", wait_bars=3) == {"skip": "no_fill"}
+
+
+def test_ltf_entry_confirm_on_close_below_previous_low():
+    bars = [_bar(99.6, 99.9, 99.4, 99.5), _bar(99.5, 99.8, 99.45, 99.7), _bar(99.7, 99.75, 99.1, 99.3)]
+    e = ltf_entry(bars, 1, "short", 100.0, 101.0, 95.0, "confirm")
+    assert e["entry_price"] == pytest.approx(99.3)
+    assert e["exit_from"] == 3
+
+
+def test_ltf_entry_confirm_cancelled_by_stop():
+    bars = [_bar(99.6, 99.9, 99.4, 99.5), _bar(99.5, 101.2, 99.45, 100.8)]
+    assert ltf_entry(bars, 1, "short", 100.0, 101.0, 95.0, "confirm") == {"skip": "stop_before_confirm"}
+
+
+def test_ltf_entry_long_retest_mirror():
+    bars = [_bar(100.5, 100.8, 99.8, 100.4)]
+    e = ltf_entry(bars, 0, "long", 100.0, 99.0, 105.0, "retest")
+    assert e["entry_price"] == pytest.approx(100.0)

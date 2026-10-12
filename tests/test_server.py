@@ -50,6 +50,7 @@ EXPECTED_TOOLS = {
     "skew_percentile",
     "alerts_recent",
     "ohlcv_history",
+    "market_regime",
     "events_add",
     "events_list",
     "events_seed_load",

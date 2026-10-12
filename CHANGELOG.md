@@ -1,6 +1,10 @@
 # Changelog
 
 ## Unreleased
+- Фаза 3.6: market regime classifier (up / down / chop).
+  * Pure `analytics/regime.py::classify_regime(bars, lookback, trend_threshold)`: OLS slope на `log(close)`, stdev бар-лог-returns, trend_strength = `|slope|·√n / vol` (Sharpe-shaped). Поріг `trend_threshold` (default 0.5) → up коли slope>0 і strength≥threshold, down коли slope<0, інакше chop. `unknown` на n<3.
+  * MCP-tool `market_regime(venue, symbol, timeframe, lookback_bars, trend_threshold, source='store'|'live')`. `store` (default) читає з `ohlcv_hist`; `live` — fresh ccxt pull (працює до backfill колектора). Повертає regime, count, slope%/bar + slope_log, stdev_bar_log, trend_strength, window_return_pct, first/last_ts, first/last_close.
+  * Live-sanity 2026-10-12 BTC/USDT:USDT: 1h×168 → down (strength 0.89, −1.9%), 4h×120 → chop (strength 0.26), 1d×90 → up (strength 1.95, +30%).
 - Фаза 3.8: `fib_retracement` — fibonacci retracement ladder.
   * Pure `analytics/retracement.py::fib_levels(p0, L, levels)` і `summarise_retracement(p0, L, levels?, min_drop_pct)` з напрямком (drop/rally/flat), diff_abs/diff_pct, applicable-flag проти noise floor. Формула симетрична в обох напрямках: `price = L + (P0 − L) × level`.
   * MCP-tool `fib_retracement(p0, l_point, levels?, min_drop_pct=2.0)` повертає ладдер (default 23.6/38.2/50/61.8/78.6%) з `price` + `pct_of_p0`; на малому русі — `ok=true, applicable: false` з reason і повний ladder для огляду. Historical hit-rate на ladder-levels — окремий крок пізніше.
@@ -101,7 +105,7 @@
 - Фаза 1.2: `perps_funding_history` — крос-венюз історія funding (Binance/Bybit/OKX через ccxt `fetch_funding_rate_history` + Hyperliquid), автодетект інтервалу з медіани ts-різниць (`detect_interval_hours`), крос-венюз-summary (highest/lowest carry, biggest |z|), опція `include_series` для сирих рядів. Live-перевірено на BTC: HL carry 9.1%, OKX 5.1%, Binance 4.5%, Bybit 4.3%; Bybit `z = −1.45` (mean-reversion сигнал).
 - MCP-промт `token_deep_analysis(project)` — глибокий 10-секційний інвест-аналіз криптопроекту (RU), шаблон `src/tradedesk/prompts/token_deep_analysis.md` (bundled у wheel), з хінтом про релевантні tradedesk-mcp інструменти для графіка/позиціювання.
 - Фаза 1.3: нові провайдери `binance_futures.py` і `bybit.py` під окремими `Http` з лімітами. Два нові інструменти: `perps_long_short_ratio` (роздрібні account-based fractions Binance+Bybit, latest/mean/z-score, cross-venue divergence) і `perps_oi_history` (OI history Binance в USD, Bybit в base, latest/mean/change24h/z, cross-venue biggest gain/drop). Live-перевірено 2026-10-10 на BTC.
-- Тестів: 201 (+150 від 0.1.0), lint чистий. Нові залежності `aiosqlite>=0.19`, `websockets>=12`.
+- Тестів: 209 (+158 від 0.1.0), lint чистий. Нові залежності `aiosqlite>=0.19`, `websockets>=12`.
 
 ## 0.1.0 — 2026-10-10
 - Ядро: `Http` (ретраї, rate-limit, кеш із single-flight, класифікація помилок), `HealthRegistry`, `Envelope/Evidence`.

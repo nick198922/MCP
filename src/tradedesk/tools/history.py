@@ -13,6 +13,7 @@ from typing import Annotated, Any, Literal
 from mcp.server.mcpserver import MCPServer
 from pydantic import Field
 
+from ..analytics.regime import classify_regime
 from ..core.envelope import Builder
 from ..runtime import Runtime
 from ._util import READ_ONLY, r
@@ -276,6 +277,86 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 "first_ts_ms": rows[0]["ts"],
                 "last_ts_ms": rows[-1]["ts"],
                 "bars": rows,
+            }
+        )
+
+    @server.tool(
+        annotations=READ_ONLY,
+        description=(
+            "Classify the market regime (up / down / chop) over the trailing `lookback_bars` bars. "
+            "Pulls OHLCV from the local `ohlcv_hist` by default, or set `source='live'` to fetch "
+            "fresh bars via ccxt (handy before the collector has backfilled anything). Reports "
+            "slope (log and %/bar), stdev of bar log-returns and a Sharpe-shaped `trend_strength` "
+            "that drives the regime label at `trend_threshold` (default 0.5). Classifier is "
+            "deliberately simple; feed `trend_threshold` higher to only flag very clean trends."
+        ),
+    )
+    async def market_regime(
+        venue: Annotated[str, Field(description="ccxt venue id, e.g. 'binanceusdm'.")],
+        symbol: Annotated[str, Field(description="ccxt symbol, e.g. 'BTC/USDT:USDT'.")],
+        timeframe: Annotated[str, Field(description="OHLCV timeframe, e.g. '1h'.")] = "1h",
+        lookback_bars: Annotated[int, Field(ge=3, le=10_000)] = 100,
+        trend_threshold: Annotated[float, Field(ge=0, le=10, description="trend_strength cutoff for up/down vs chop.")] = 0.5,
+        source: Annotated[Literal["store", "live"], Field(description="Where bars come from.")] = "store",
+    ) -> dict[str, Any]:
+        b = Builder()
+        bars: list[dict[str, Any]] = []
+        if source == "live":
+            fetched = await b.guard(f"ohlcv:{venue}", f"ccxt:{venue}", rt.exchanges.ohlcv(venue, symbol, timeframe, lookback_bars))
+            raw = fetched or []
+            bars = [
+                {"ts": int(x[0]), "open": float(x[1]), "high": float(x[2]), "low": float(x[3]), "close": float(x[4])}
+                for x in raw
+                if isinstance(x, (list, tuple)) and len(x) >= 5
+            ]
+        else:
+            if rt.store is None:
+                b.miss("store", "tradedesk", "config", "db_path is empty; set TRADEDESK_DB_PATH to use source='store'")
+                return b.build(None, ok=False)
+            try:
+                await rt.store.init()
+            except Exception as e:  # noqa: BLE001
+                b.miss("store", "tradedesk", "backend_error", f"{type(e).__name__}: {e}")
+                return b.build(None, ok=False)
+            # Pull a little more than we need so OLS has enough rows after dropping bad entries.
+            rows = await rt.store.ohlcv_range(
+                venue=venue,
+                symbol=symbol,
+                timeframe=timeframe,
+                since_ts=0,
+                limit=lookback_bars * 2,
+            )
+            bars = rows[-lookback_bars:] if rows else []
+
+        if len(bars) < 3:
+            b.miss(
+                "ohlcv_hist" if source == "store" else "ohlcv",
+                "store" if source == "store" else f"ccxt:{venue}",
+                "data_unavailable",
+                f"only {len(bars)} bars available; need at least 3",
+            )
+            return b.build(None, ok=False)
+
+        res = classify_regime(bars, lookback=lookback_bars, trend_threshold=trend_threshold)
+        return b.build(
+            {
+                "venue": venue,
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "lookback_bars": lookback_bars,
+                "source": source,
+                "regime": res["regime"],
+                "count": res["count"],
+                "slope_pct_per_bar": r(res.get("slope_pct_per_bar"), 6),
+                "slope_per_bar_log": r(res.get("slope_per_bar_log"), 8),
+                "stdev_bar_log": r(res.get("stdev_bar_log"), 6),
+                "trend_strength": r(res.get("trend_strength"), 3),
+                "trend_threshold": trend_threshold,
+                "window_return_pct": r(res.get("window_return_pct"), 4),
+                "first_ts": res.get("first_ts"),
+                "last_ts": res.get("last_ts"),
+                "first_close": r(res.get("first_close"), 6),
+                "last_close": r(res.get("last_close"), 6),
             }
         )
 

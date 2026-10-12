@@ -65,9 +65,9 @@
 - [ ] 4.6 Керування: `order_cancel`, `order_amend`, `positions_close_all` (аварійне), автоматичні стопи/OCO там, де біржа підтримує.
 - [ ] 4.7 Дельта-хедж для опціонних позицій (пропозиції, не автовиконання, на старті).
 
-## Фаза 5 — IBKR та ончейн
-- [ ] 5.1 IBKR через `ib_async`: підключення до IB Gateway (на VPS: IBC + Xvfb або Docker `gnzsnz/ib-gateway`), market-data (потрібна підписка), ланцюги опціонів, ф'ючерси (ES/NQ/CL/GC), greeks від IBKR; потім execution через той самий `ExecutionGuard`.
-- [ ] 5.2 Єдиний шар інструментів (`instrument_id`, мультибіржові символи), нормалізація ф'ючерсних контрактів (серії, ролл).
+## Фаза 5 — ончейн (IBKR відкладено, див. [docs/adr/0006](adr/0006-no-ibkr-for-now.md))
+- **5.1 IBKR** — **deferred** (власник не планує додавати найближчим часом). Повернутись лише за явним запитом; попередньо погодити тип рахунку, market-data subscription і 24/7 IB Gateway на VPS.
+- **5.2 Єдиний шар інструментів** — **deferred** (мав сенс передусім як міст crypto↔IBKR; без IBKR ccxt + Deribit імен достатньо).
 - [ ] 5.3 Ончейн-паритет з DOUBLETOP: DefiLlama, DexScreener, Etherscan V2, Helius, mempool, `token_card`/`wallet_snapshot` з тим самим `evidence`-контрактом.
 - [ ] 5.4 Pendle (fixed yield, крива, PT vs underlying, календар) — для funding-carry стратегій.
 

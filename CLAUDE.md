@@ -64,3 +64,11 @@ scripts/       live_smoke.py
 2. TaskCreate для плану; зміни — малими кроками з тестами.
 3. По завершенню: оновити `docs/HANDOFF.md` (стан, нові рішення, відкриті питання), `docs/BACKLOG.md` (закреслити зроблене), `CHANGELOG.md`.
 4. Власнику: коротко, українською, що змінилось і що він має перевірити сам (особливо live-перевірки).
+
+## Правила з навчальних відео DoubleTop
+Коли власник присилає transcript, слідуй [`docs/VERIFICATION_PROTOCOL.md`](docs/VERIFICATION_PROTOCOL.md):
+- Витягнути **кількісні claim-и** з transcript'а (а не тільки концепти).
+- Для кожного — empirical test на наших даних (`range_detect`, `event_study`, `funding_zscore` тощо).
+- Повернути verdict: ✓ CONFIRMED / ≈ DIRECTIONALLY RIGHT / ✗ NOT CONFIRMED / ◯ UNVERIFIABLE з `n_sample`, period, thresholds.
+- Якщо розбіжність — спочатку варіювати **свої параметри**, не приписувати помилку лектору.
+- Усе, що імпортується з лекції, маркувати у коміт-повідомленні з посиланням на YouTube URL.

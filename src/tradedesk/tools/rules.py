@@ -139,7 +139,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "crypto-carry, liquidation cascades + imbalance). Each preset is a complete DSL "
             "rule validated at compile time. Idempotent via UNIQUE(name) — existing rules are "
             "skipped. Use `only=['name1','name2']` to pick a subset; `enable_disabled=true` "
-            "forces presets flagged `enabled: false` in the seed to be enabled on install."
+            "forces presets flagged `enabled: false` in the seed to be enabled on install. "
+            "IMPORTANT: thresholds in the presets are starting-point values picked by the model "
+            "from general crypto-derivatives intuition — they are NOT backtested or research-"
+            "sourced. Tune them against your own history before trusting the alerts."
         ),
     )
     async def rules_presets_load(

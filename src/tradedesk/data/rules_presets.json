@@ -1,7 +1,9 @@
 {
   "_meta": {
     "updated": "2026-10-12",
-    "note": "Ready-made DSL rules you can install with `rules_presets_load`. All idempotent via UNIQUE(name). Thresholds are deliberately generous — tune them for your own book."
+    "note": "Ready-made DSL rules you can install with `rules_presets_load`. All idempotent via UNIQUE(name).",
+    "source": "Not research-derived: thresholds (30% funding, |z|>2σ, $50M liquidations/60min, |imbalance|>0.7) are starting-point values chosen by the model from general crypto-derivatives knowledge, NOT backtested or sourced from a specific research artifact. BACKLOG 3.2 only listed signal categories (funding extremes, liquidation cascades, OI+price divergences, …) — the exact numbers here are placeholders.",
+    "action_required": "Tune every threshold against your own history (e.g. via event_study + funding_zscore + liquidations_summary) before relying on these in production. Treat the presets as a template, not a signal library."
   },
   "presets": [
     {

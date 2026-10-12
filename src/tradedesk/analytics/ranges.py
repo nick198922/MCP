@@ -228,6 +228,134 @@ def detect_deviations(
     return out
 
 
+def _ols_slope(xs: list[float], ys: list[float]) -> float:
+    """Slope of y = a + b*x via least-squares; 0 if under-constrained."""
+    n = len(xs)
+    if n < 2 or len(ys) != n:
+        return 0.0
+    xm = sum(xs) / n
+    ym = sum(ys) / n
+    num = sum((xs[i] - xm) * (ys[i] - ym) for i in range(n))
+    den = sum((xs[i] - xm) ** 2 for i in range(n))
+    return num / den if den > 0 else 0.0
+
+
+def _sma(bars: list[dict[str, Any]], end_idx: int, n: int) -> float | None:
+    """Simple moving average over the n closes ending at end_idx (inclusive)."""
+    if end_idx + 1 < n:
+        return None
+    window = bars[end_idx - n + 1 : end_idx + 1]
+    return sum(float(b["close"]) for b in window) / n
+
+
+def range_type_hint(
+    bars: list[dict[str, Any]],
+    rng: dict[str, Any],
+    swings: dict[str, list[dict[str, Any]]],
+    sweeps: list[dict[str, Any]],
+    *,
+    sweep_asymmetry_threshold: float = 0.65,
+) -> dict[str, Any]:
+    """Vote-based classification of a range as accumulation / distribution.
+
+    Three criteria from DoubleTop «Аккумуляція / Дистрибуція»:
+    * **context**: SMA100 vs SMA200 at the range's end — above → accumulation
+      candidate, below → distribution.
+    * **wedge**: slope of swing highs vs swing lows inside the range —
+      expanding-up wedge (bottom flat, top rising) → distribution; expanding-
+      down (top flat, bottom falling) → accumulation.
+    * **sweep asymmetry**: share of upper sweeps inside the range — above
+      threshold → distribution; below (1 − threshold) → accumulation.
+
+    Each criterion casts one vote. If votes agree → that label with high
+    confidence; split → "ambiguous" (the lecture's warning: ambiguous ranges
+    that showed upper-sweep hunts were the ones that flushed in Oct 2025).
+    """
+    start_idx, end_idx = int(rng["start_idx"]), int(rng["end_idx"])
+    reasons: list[str] = []
+    votes = {"accumulation": 0, "distribution": 0}
+
+    # 1) SMA context.
+    sma100 = _sma(bars, end_idx, 100)
+    sma200 = _sma(bars, end_idx, 200)
+    context_label = None
+    if sma100 is not None and sma200 is not None:
+        if sma100 > sma200:
+            context_label = "accumulation"
+            votes["accumulation"] += 1
+        elif sma100 < sma200:
+            context_label = "distribution"
+            votes["distribution"] += 1
+        reasons.append(f"SMA100={sma100:.2f} vs SMA200={sma200:.2f} → {context_label or 'flat'}")
+    else:
+        reasons.append("SMA100/200 unavailable (need ≥200 bars before range end)")
+
+    # 2) Wedge slopes on swings inside the range.
+    highs_in = [s for s in swings["highs"] if start_idx <= s["idx"] <= end_idx]
+    lows_in = [s for s in swings["lows"] if start_idx <= s["idx"] <= end_idx]
+    top_slope = _ols_slope([float(s["idx"]) for s in highs_in], [float(s["price"]) for s in highs_in])
+    bot_slope = _ols_slope([float(s["idx"]) for s in lows_in], [float(s["price"]) for s in lows_in])
+    wedge_label = None
+    # Normalise slopes by mid price for comparability.
+    mid = float(rng["mid"])
+    top_slope_pct = (top_slope / mid * 100.0) if mid > 0 else 0.0
+    bot_slope_pct = (bot_slope / mid * 100.0) if mid > 0 else 0.0
+    # Distribution wedge: top rising while bottom roughly flat (|top| > 2× |bottom|, top > 0).
+    if abs(top_slope_pct) > abs(bot_slope_pct) * 2 and top_slope_pct > 0:
+        wedge_label = "distribution"
+        votes["distribution"] += 1
+    elif abs(bot_slope_pct) > abs(top_slope_pct) * 2 and bot_slope_pct < 0:
+        wedge_label = "accumulation"
+        votes["accumulation"] += 1
+    reasons.append(f"wedge top_slope={top_slope_pct:+.4f}%/bar bottom_slope={bot_slope_pct:+.4f}%/bar → {wedge_label or 'symmetric'}")
+
+    # 3) Sweep asymmetry.
+    sweeps_in = [s for s in sweeps if start_idx <= s["idx"] <= end_idx]
+    hi_sweeps = sum(1 for s in sweeps_in if s["side"] == "high")
+    lo_sweeps = sum(1 for s in sweeps_in if s["side"] == "low")
+    total = hi_sweeps + lo_sweeps
+    sweep_label = None
+    if total > 0:
+        hi_share = hi_sweeps / total
+        if hi_share >= sweep_asymmetry_threshold:
+            sweep_label = "distribution"
+            votes["distribution"] += 1
+        elif hi_share <= 1 - sweep_asymmetry_threshold:
+            sweep_label = "accumulation"
+            votes["accumulation"] += 1
+        reasons.append(f"sweeps high={hi_sweeps} low={lo_sweeps} ({hi_share:.0%} up) → {sweep_label or 'mixed'}")
+    else:
+        reasons.append("no sweeps inside range")
+
+    # Verdict.
+    acc, dist = votes["accumulation"], votes["distribution"]
+    if acc > dist and acc >= 2:
+        verdict, confidence = "accumulation", acc / 3.0
+    elif dist > acc and dist >= 2:
+        verdict, confidence = "distribution", dist / 3.0
+    else:
+        verdict, confidence = "ambiguous", max(acc, dist) / 3.0
+    return {
+        "type": verdict,
+        "confidence": confidence,
+        "votes": votes,
+        "signals": {
+            "context": context_label,
+            "wedge": wedge_label,
+            "sweep_asymmetry": sweep_label,
+        },
+        "metrics": {
+            "sma100": sma100,
+            "sma200": sma200,
+            "top_slope_pct_per_bar": top_slope_pct,
+            "bottom_slope_pct_per_bar": bot_slope_pct,
+            "high_sweeps": hi_sweeps,
+            "low_sweeps": lo_sweeps,
+        },
+        "reasons": reasons,
+    }
+
+
 def classify_ranges(
     bars: list[dict[str, Any]],
     *,
@@ -236,18 +364,22 @@ def classify_ranges(
     swing_lookback: int = 3,
     sweep_wick_ratio: float = 0.5,
     max_deviation_bars: int = 3,
+    sweep_asymmetry_threshold: float = 0.65,
 ) -> dict[str, Any]:
-    """End-to-end: ranges + swings + sweeps + deviations within the latest range."""
+    """End-to-end: ranges + swings + sweeps + deviations + per-range classification."""
     swings = swing_points(bars, lookback=swing_lookback)
     ranges = detect_ranges(bars, min_bars=min_bars, max_width_pct=max_width_pct)
     sweeps = detect_sweeps(bars, swings, wick_ratio=sweep_wick_ratio)
     deviations_per_range: list[list[dict[str, Any]]] = []
+    classifications: list[dict[str, Any]] = []
     for rng in ranges:
         deviations_per_range.append(detect_deviations(bars, rng, max_bars_back=max_deviation_bars))
+        classifications.append(range_type_hint(bars, rng, swings, sweeps, sweep_asymmetry_threshold=sweep_asymmetry_threshold))
     return {
         "n_bars": len(bars),
         "swings": swings,
         "ranges": ranges,
         "sweeps": sweeps,
         "deviations_per_range": deviations_per_range,
+        "classifications": classifications,
     }

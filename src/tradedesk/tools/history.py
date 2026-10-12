@@ -365,6 +365,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
                         "n_bars": res["ranges"][-1]["n_bars"],
                         "start_ts": res["ranges"][-1]["start_ts"],
                         "end_ts": res["ranges"][-1]["end_ts"],
+                        "classification": (res["classifications"] or [None])[-1],
                     }
                     if res["ranges"]
                     else None
@@ -378,8 +379,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
                         "n_bars": x["n_bars"],
                         "start_ts": x["start_ts"],
                         "end_ts": x["end_ts"],
+                        "classification": res["classifications"][i] if i < len(res["classifications"]) else None,
                     }
-                    for x in res["ranges"]
+                    for i, x in enumerate(res["ranges"])
                 ],
                 "swing_highs": [{"ts": s["ts"], "price": r(s["price"], 6)} for s in res["swings"]["highs"]],
                 "swing_lows": [{"ts": s["ts"], "price": r(s["price"], 6)} for s in res["swings"]["lows"]],

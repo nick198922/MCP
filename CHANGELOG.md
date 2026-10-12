@@ -1,6 +1,10 @@
 # Changelog
 
 ## Unreleased
+- Фаза 3.7: `strategy_scenario_matrix` — multi-horizon MTM-grid для стратегії.
+  * Pure `analytics/strategy.py::scenario_matrix(legs, initial_forward, horizons, prices)`: для кожного `{days, iv}` і кожної ціни з `prices` рахує Black-76 MTM через `mtm_value` (linear-ноги — time-invariant). Greeks рахуються при `forward=initial_forward` і horizon `(days, iv)` — дрейф δ/γ/vega/θ видно з таблиці.
+  * MCP-tool `strategy_scenario_matrix(legs, spot, horizons?, days?, iv?, forward?, price_grid_pct?)`. Default-horizons `[D/3, D/2, D]` з flat IV; default-grid `[-10,-5,-2,0,2,5,10]%`. Повертає `matrix` із `prices`, `pct_moves`, `pnl_usd`, `greeks` per horizon.
+  * Discipline: flat IV per horizon означає що vol-surface не враховується; феедіть різні IV у `horizons` щоб апроксимувати term structure чи vol shock. Опис інструмента це явно пояснює.
 - Фаза 1.16: event-study engine (DoubleTop FOMC-style аналітика).
   * Нова чиста аналітика `analytics/event_study.py`. `windowed_measure(bars, event_ts_ms, before_ms, after_ms, measure)` → один скаляр per event. 5 measures: `direction` (бінарно, hit_rate = доля ups), `close_vs_t0` (signed return), `max_up` (max up-excursion ≥ 0), `max_dd` (max drawdown ≤ 0), `volatility` (window-level realised stdev log-returns).
   * `summarise_events(values, measure)` повертає `n_sample, hit_rate (тільки для 'direction'), mean, median, p25, p75, min, max, small_sample_flag` (True коли n<20 — DoubleTop pattern).
@@ -94,7 +98,7 @@
 - Фаза 1.2: `perps_funding_history` — крос-венюз історія funding (Binance/Bybit/OKX через ccxt `fetch_funding_rate_history` + Hyperliquid), автодетект інтервалу з медіани ts-різниць (`detect_interval_hours`), крос-венюз-summary (highest/lowest carry, biggest |z|), опція `include_series` для сирих рядів. Live-перевірено на BTC: HL carry 9.1%, OKX 5.1%, Binance 4.5%, Bybit 4.3%; Bybit `z = −1.45` (mean-reversion сигнал).
 - MCP-промт `token_deep_analysis(project)` — глибокий 10-секційний інвест-аналіз криптопроекту (RU), шаблон `src/tradedesk/prompts/token_deep_analysis.md` (bundled у wheel), з хінтом про релевантні tradedesk-mcp інструменти для графіка/позиціювання.
 - Фаза 1.3: нові провайдери `binance_futures.py` і `bybit.py` під окремими `Http` з лімітами. Два нові інструменти: `perps_long_short_ratio` (роздрібні account-based fractions Binance+Bybit, latest/mean/z-score, cross-venue divergence) і `perps_oi_history` (OI history Binance в USD, Bybit в base, latest/mean/change24h/z, cross-venue biggest gain/drop). Live-перевірено 2026-10-10 на BTC.
-- Тестів: 190 (+139 від 0.1.0), lint чистий. Нові залежності `aiosqlite>=0.19`, `websockets>=12`.
+- Тестів: 193 (+142 від 0.1.0), lint чистий. Нові залежності `aiosqlite>=0.19`, `websockets>=12`.
 
 ## 0.1.0 — 2026-10-10
 - Ядро: `Http` (ретраї, rate-limit, кеш із single-flight, класифікація помилок), `HealthRegistry`, `Envelope/Evidence`.

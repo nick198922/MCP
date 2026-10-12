@@ -280,6 +280,37 @@ def build_funding_carry(*, long_mark: float, short_mark: float, size: float = 1.
     ]
 
 
+def scenario_matrix(
+    legs: list[dict[str, Any]],
+    *,
+    initial_forward: float,
+    horizons: list[dict[str, float]],
+    prices: list[float],
+) -> list[dict[str, Any]]:
+    """Multi-horizon mark-to-market grid for a strategy.
+
+    ``horizons`` is a list of ``{"days": D, "iv": σ}``. For each horizon and
+    each ``S`` in ``prices`` we revalue every leg with Black-76 at ``(S, D, σ)``
+    minus its entry (linear legs: ``(S - entry) * sign * size``), so cells are
+    actual MTM, not payoff-at-expiry. The ``greeks`` block is computed at
+    ``forward=initial_forward`` and the horizon's ``(D, σ)`` so you can see how
+    δ/γ/vega/θ drift through time without picking a new forward each row.
+
+    This does NOT assume a vol surface — one flat IV per horizon; feed in a
+    different value per row to approximate a term structure or a vol shock.
+    """
+    out: list[dict[str, Any]] = []
+    for h in horizons:
+        days = float(h["days"])
+        iv = float(h["iv"])
+        pnls: list[float] = []
+        for s in prices:
+            pnls.append(mtm_value(legs, forward=float(s), days=days, iv=iv))
+        greeks = aggregate_greeks(legs, forward=float(initial_forward), days=days, iv=iv)
+        out.append({"days": days, "iv": iv, "prices": list(prices), "pnl": pnls, "greeks": greeks})
+    return out
+
+
 def summarise(
     legs: list[dict[str, Any]],
     *,

@@ -16,6 +16,7 @@ from tradedesk.analytics.strategy import (
     build_strangle,
     payoff_curve,
     prob_of_profit,
+    scenario_matrix,
     summarise,
 )
 from tradedesk.config import Settings
@@ -207,6 +208,78 @@ async def test_strategy_cash_and_carry_reports_basis(state):
         # locked-in basis: PnL at any S should be 1000
         assert d["max_profit_usd"] == pytest.approx(1000.0)
         assert d["max_loss_usd"] == pytest.approx(1000.0)
+    finally:
+        await rt.aclose()
+
+
+# ---------- scenario matrix ----------
+
+
+def test_scenario_matrix_shape_and_time_decay():
+    # Long ATM straddle with same vol across horizons — nearer expiries should
+    # price cheaper (less theta remaining) so the ATM MTM becomes more negative
+    # (we paid premium, time decay eats it).
+    legs = [
+        {"kind": "call", "side": "long", "size": 1.0, "strike": 100.0, "entry_premium": 5.0},
+        {"kind": "put", "side": "long", "size": 1.0, "strike": 100.0, "entry_premium": 5.0},
+    ]
+    horizons = [{"days": 30, "iv": 0.5}, {"days": 10, "iv": 0.5}, {"days": 1, "iv": 0.5}]
+    prices = [90.0, 100.0, 110.0]
+    out = scenario_matrix(legs, initial_forward=100.0, horizons=horizons, prices=prices)
+    assert len(out) == 3 and all(len(row["pnl"]) == 3 for row in out)
+    # ATM MTM at the 1-day horizon should be lower than at the 30-day horizon
+    # (less time value remains in the options).
+    atm_30d = out[0]["pnl"][1]
+    atm_1d = out[2]["pnl"][1]
+    assert atm_1d < atm_30d
+    # Greeks block exists per horizon.
+    for row in out:
+        for k in ("delta", "gamma", "vega", "theta"):
+            assert k in row["greeks"]
+
+
+def test_scenario_matrix_linear_leg_is_horizon_invariant():
+    # Linear leg's MTM depends only on (S - entry), not on time or vol.
+    legs = [{"kind": "linear", "side": "long", "size": 1.0, "entry": 100.0}]
+    horizons = [{"days": 1, "iv": 0.3}, {"days": 100, "iv": 0.9}]
+    prices = [90.0, 100.0, 110.0]
+    out = scenario_matrix(legs, initial_forward=100.0, horizons=horizons, prices=prices)
+    assert out[0]["pnl"] == out[1]["pnl"] == [-10.0, 0.0, 10.0]
+
+
+async def test_strategy_scenario_matrix_mcp(state):
+    from tradedesk.config import Settings  # noqa: PLC0415
+    from tradedesk.runtime import Runtime  # noqa: PLC0415
+    from tradedesk.server import build_server  # noqa: PLC0415
+
+    rt = Runtime(
+        Settings(http_retries=1, cache_scale=0.0, db_path=""),
+        transports=make_transports(state),
+        exchange_factory=FakeEx,
+    )
+    rt.now = lambda: NOW
+    srv, _ = build_server(rt)
+    try:
+        env = await _call(
+            srv,
+            "strategy_scenario_matrix",
+            legs=[
+                {"kind": "call", "side": "long", "size": 1.0, "strike": 83000.0, "entry_premium": 1500.0},
+                {"kind": "put", "side": "long", "size": 1.0, "strike": 83000.0, "entry_premium": 1500.0},
+            ],
+            spot=83000.0,
+            days=20.0,
+            iv=0.4,
+            price_grid_pct=[-10.0, 0.0, 10.0],
+        )
+        d = env["data"]
+        assert d["n_horizons"] == 3
+        assert d["matrix"][0]["pct_moves"] == [-10.0, 0.0, 10.0]
+        assert len(d["matrix"][0]["pnl_usd"]) == 3
+        # The ATM MTM at the shortest horizon should be lower (closer to expiry).
+        atm_short = d["matrix"][0]["pnl_usd"][1]
+        atm_long = d["matrix"][-1]["pnl_usd"][1]
+        assert atm_short < atm_long
     finally:
         await rt.aclose()
 

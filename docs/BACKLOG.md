@@ -77,6 +77,8 @@
 - [ ] 6.3 Підписані релізи, Dependabot, SBOM.
 - [ ] 6.4 Документація користувача: цикли використання («ранковий брифінг», «пре-трейд чеклист»), MCP-промпти (`@server.prompt`) для типових сценаріїв.
 
+- [x] 3.7 Scenario matrix: `scenario_matrix(legs, initial_forward, horizons=[{days, iv}, …], prices)` — multi-horizon MTM-grid (Black-76 на кожному горизонті, flat IV per horizon; linear-ноги time-invariant). MCP-tool `strategy_scenario_matrix(legs, spot, horizons?, days?, iv?, forward?, price_grid_pct?)` з default-horizon-schedule `[D/3, D/2, D]` і default-grid `[-10,-5,-2,0,2,5,10]%`. Повертає `matrix` із PnL-рядком, pct_moves і net greeks per horizon.
+
 ## Ідеї без пріоритету
 - MCP-ресурси (`resource://`) для статичних довідників (специфікації контрактів, календар).
 - MCP-промпти: `morning_briefing`, `pre_trade_checklist`, `post_mortem` (базовий `token_deep_analysis` ✅).

@@ -17,6 +17,7 @@ from ..analytics.strategy import (
     build_risk_reversal,
     build_straddle,
     build_strangle,
+    scenario_matrix,
     summarise,
 )
 from ..core.envelope import Builder
@@ -309,3 +310,71 @@ def register(server: MCPServer, rt: Runtime) -> None:
         data["spread_abs"] = r(short_mark - long_mark, 4)
         data["spread_bps"] = r((short_mark / long_mark - 1.0) * 10_000, 2)
         return b.build(data)
+
+    @server.tool(
+        annotations=READ_ONLY,
+        description=(
+            "Mark-to-market SCENARIO MATRIX across (horizon, price). For each horizon "
+            "{days, iv} and each S in the grid, revalues the whole strategy via Black-76 "
+            "(linear legs = (S - entry) * sign * size). Returns a per-horizon block with "
+            "the price list, the PnL row, and net δ/γ/vega/θ at the initial forward and "
+            "that horizon. Default price grid is percent-moves around `spot`; override via "
+            "`price_grid_pct` (e.g. [-10,-5,-2,0,2,5,10]). Horizons default to a near / mid "
+            "/ expiry schedule derived from the longest horizon."
+        ),
+    )
+    async def strategy_scenario_matrix(
+        legs: Annotated[
+            list[dict[str, Any]],
+            Field(min_length=1, description="Leg dicts: {kind, side, size, strike?, entry_premium?, entry?}."),
+        ],
+        spot: Annotated[float, Field(gt=0, description="Underlying spot used as the price-grid anchor.")],
+        horizons: Annotated[
+            list[dict[str, float]] | None,
+            Field(description="List of {days, iv}. Omit to use [day/3, day/2, day] from `days`."),
+        ] = None,
+        days: Annotated[float, Field(gt=0, description="Longest horizon in days when `horizons` is omitted.")] = 30.0,
+        iv: Annotated[float, Field(gt=0, description="Default IV for the derived horizon schedule.")] = 0.5,
+        forward: Annotated[float | None, Field(gt=0, description="Forward used for greeks; defaults to spot.")] = None,
+        price_grid_pct: Annotated[
+            list[float] | None,
+            Field(description="Percent-moves around spot (e.g. [-10,-5,-2,0,2,5,10]). None → default grid."),
+        ] = None,
+    ) -> dict[str, Any]:
+        b = Builder()
+        F = float(forward) if forward is not None else float(spot)
+        if horizons is None:
+            horizons = [
+                {"days": max(days / 3.0, 0.01), "iv": iv},
+                {"days": max(days / 2.0, 0.02), "iv": iv},
+                {"days": float(days), "iv": iv},
+            ]
+        pcts = price_grid_pct or [-10.0, -5.0, -2.0, 0.0, 2.0, 5.0, 10.0]
+        prices = [float(spot) * (1.0 + p / 100.0) for p in pcts]
+        try:
+            matrix = scenario_matrix(list(legs), initial_forward=F, horizons=list(horizons), prices=prices)
+        except (KeyError, TypeError, ValueError) as e:
+            b.miss("legs", "tradedesk", "data_unavailable", f"bad input: {type(e).__name__}: {e}")
+            return b.build(None, ok=False)
+
+        rows = [
+            {
+                "days": row["days"],
+                "iv": row["iv"],
+                "prices": [r(p, 2) for p in row["prices"]],
+                "pct_moves": pcts,
+                "pnl_usd": [r(p, 2) for p in row["pnl"]],
+                "greeks": {k: r(v, 6) for k, v in row["greeks"].items()},
+            }
+            for row in matrix
+        ]
+        return b.build(
+            {
+                "spot": spot,
+                "forward": F,
+                "n_horizons": len(rows),
+                "price_grid_pct": pcts,
+                "matrix": rows,
+                "measure": "mark-to-market (USD, Black-76, flat IV per horizon)",
+            }
+        )

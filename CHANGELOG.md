@@ -1,6 +1,12 @@
 # Changelog
 
 ## Unreleased
+- Фаза 1.16: event-study engine (DoubleTop FOMC-style аналітика).
+  * Нова чиста аналітика `analytics/event_study.py`. `windowed_measure(bars, event_ts_ms, before_ms, after_ms, measure)` → один скаляр per event. 5 measures: `direction` (бінарно, hit_rate = доля ups), `close_vs_t0` (signed return), `max_up` (max up-excursion ≥ 0), `max_dd` (max drawdown ≤ 0), `volatility` (window-level realised stdev log-returns).
+  * `summarise_events(values, measure)` повертає `n_sample, hit_rate (тільки для 'direction'), mean, median, p25, p75, min, max, small_sample_flag` (True коли n<20 — DoubleTop pattern).
+  * `event_study(bars, event_ts_ms, before_minutes, after_minutes, measure)` — end-to-end: per-event значення + агрегати.
+  * MCP-інструмент `event_study(venue, symbol, timeframe, event_kind, measure, before_minutes, after_minutes, since_date?, until_date?, impact?)` поверх `ohlcv_hist` + `events`. Витягує OHLCV span з margin за найширшим вікном. На недостатньому OHLCV (< 5 бар'ів) або порожньому списку подій → ok=false з clear miss. При `small_sample_flag=True` → warning.
+  * Опис інструмента явно каже: hit rates / медіани — ДЕСКРИПТИВНА статистика на обмеженій вибірці, не прогноз.
 - Фаза 1.15: event dataset (локальний календар макро-подій).
   * Schema v8: таблиця `events(id, ts, kind, label, impact, meta)` з `UNIQUE(ts, kind, label)` і індексом `(kind, ts)`. Store API: `event_insert` (idempotent, `rowcount` замість `lastrowid` для dedup), `events_insert_many` (bulk INSERT OR IGNORE), `events_list(kind?, impact?, since_ts?, until_ts?)`, `event_count`.
   * Bundled seed `src/tradedesk/data/events_seed.json` із 96 подіями: FOMC × 24 (2024-2026), CPI × 36, NFP × 36. Часи UTC приблизні (13:30/19:00). 2026 Fed-дати позначено як projected у `_meta.note`. Файл запаковано у wheel через `force-include`.
@@ -88,7 +94,7 @@
 - Фаза 1.2: `perps_funding_history` — крос-венюз історія funding (Binance/Bybit/OKX через ccxt `fetch_funding_rate_history` + Hyperliquid), автодетект інтервалу з медіани ts-різниць (`detect_interval_hours`), крос-венюз-summary (highest/lowest carry, biggest |z|), опція `include_series` для сирих рядів. Live-перевірено на BTC: HL carry 9.1%, OKX 5.1%, Binance 4.5%, Bybit 4.3%; Bybit `z = −1.45` (mean-reversion сигнал).
 - MCP-промт `token_deep_analysis(project)` — глибокий 10-секційний інвест-аналіз криптопроекту (RU), шаблон `src/tradedesk/prompts/token_deep_analysis.md` (bundled у wheel), з хінтом про релевантні tradedesk-mcp інструменти для графіка/позиціювання.
 - Фаза 1.3: нові провайдери `binance_futures.py` і `bybit.py` під окремими `Http` з лімітами. Два нові інструменти: `perps_long_short_ratio` (роздрібні account-based fractions Binance+Bybit, latest/mean/z-score, cross-venue divergence) і `perps_oi_history` (OI history Binance в USD, Bybit в base, latest/mean/change24h/z, cross-venue biggest gain/drop). Live-перевірено 2026-10-10 на BTC.
-- Тестів: 181 (+130 від 0.1.0), lint чистий. Нові залежності `aiosqlite>=0.19`, `websockets>=12`.
+- Тестів: 190 (+139 від 0.1.0), lint чистий. Нові залежності `aiosqlite>=0.19`, `websockets>=12`.
 
 ## 0.1.0 — 2026-10-10
 - Ядро: `Http` (ретраї, rate-limit, кеш із single-flight, класифікація помилок), `HealthRegistry`, `Envelope/Evidence`.

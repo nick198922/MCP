@@ -1,6 +1,11 @@
-"""Macro-event calendar stored locally. Underpins the Phase-3 event-study
-engine (``event_study``) that will land next: pull OHLCV windows around each
-stored timestamp and compute hit rate / median / p25-p75 across the sample.
+"""Macro-event calendar stored locally plus the event-study aggregator that
+runs windowed statistics across every stored event of a given kind.
+
+Pattern follows the DoubleTop FOMC write-up: pull a before/after window of
+OHLCV around each event, compute one scalar per event (direction, close_vs_t0,
+max_up, max_dd, volatility), then report hit rate / median / p25-p75 together
+with the sample size and a ``small_sample_flag`` so the caller can never miss
+the caveat.
 """
 
 from __future__ import annotations
@@ -13,9 +18,11 @@ from typing import Annotated, Any, Literal
 from mcp.server.mcpserver import MCPServer
 from pydantic import Field
 
+from ..analytics.event_study import MEASURES
+from ..analytics.event_study import event_study as _event_study
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY
+from ._util import READ_ONLY, r
 
 
 def _store_guard(b: Builder, rt: Runtime) -> bool:
@@ -130,5 +137,104 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 "events_before": before,
                 "events_after": total,
                 "meta": seed.get("_meta"),
+            }
+        )
+
+    @server.tool(
+        annotations=READ_ONLY,
+        description=(
+            "Event-study: for every stored event of `event_kind`, measure one scalar over the "
+            "window [event_ts − before_minutes, event_ts + after_minutes] using the chosen "
+            "`measure` and return distribution stats across the sample. "
+            "Needs ohlcv_hist populated for (venue, symbol, timeframe) AND events already in the "
+            "local store. Measures: 'direction' (1 if close_after ≥ close_t0; hit_rate = share "
+            "of ups), 'close_vs_t0' (signed return), 'max_up' (max intra-window up excursion ≥ 0),"
+            " 'max_dd' (max intra-window drawdown ≤ 0), 'volatility' (window-level realised "
+            "stdev of log-returns). Reports n_sample and small_sample_flag=true when n<20. "
+            "Hit rates and medians are DESCRIPTIVE statistics on a finite sample — they are not "
+            "forecasts; always eyeball n_sample and the regime window before trading on them."
+        ),
+    )
+    async def event_study(
+        venue: Annotated[str, Field(description="ccxt venue id (must match ohlcv_hist).")],
+        symbol: Annotated[str, Field(description="ccxt symbol (must match ohlcv_hist).")],
+        timeframe: Annotated[str, Field(description="Timeframe stored in ohlcv_hist.")] = "1h",
+        event_kind: Annotated[str, Field(description="Event kind in the local events table (e.g. 'fomc', 'cpi', 'nfp').")] = "fomc",
+        measure: Annotated[str, Field(description=f"One of: {', '.join(MEASURES)}.")] = "direction",
+        before_minutes: Annotated[float, Field(ge=0, le=10_080)] = 60,
+        after_minutes: Annotated[float, Field(gt=0, le=10_080)] = 240,
+        since_date: Annotated[str | None, Field(description="UTC 'YYYY-MM-DD' lower bound on event dates.")] = None,
+        until_date: Annotated[str | None, Field(description="UTC 'YYYY-MM-DD' upper bound.")] = None,
+        impact: Annotated[Literal["low", "medium", "high"] | None, Field(description="Optional impact filter.")] = None,
+    ) -> dict[str, Any]:
+        b = Builder()
+        if not _store_guard(b, rt):
+            return b.build(None, ok=False)
+        await rt.store.init()
+        if measure not in MEASURES:
+            b.miss("measure", "tradedesk", "data_unavailable", f"measure must be one of {MEASURES}")
+            return b.build(None, ok=False)
+
+        since_ts = until_ts = None
+        if since_date:
+            try:
+                since_ts = int(datetime.strptime(since_date, "%Y-%m-%d").replace(tzinfo=rt.now().tzinfo).timestamp())
+            except ValueError:
+                b.miss("since_date", "tradedesk", "data_unavailable", "invalid date")
+                return b.build(None, ok=False)
+        if until_date:
+            try:
+                until_ts = int(datetime.strptime(until_date + " 23:59", "%Y-%m-%d %H:%M").replace(tzinfo=rt.now().tzinfo).timestamp())
+            except ValueError:
+                b.miss("until_date", "tradedesk", "data_unavailable", "invalid date")
+                return b.build(None, ok=False)
+
+        events = await rt.store.events_list(kind=event_kind, impact=impact, since_ts=since_ts, until_ts=until_ts, limit=5000)
+        if not events:
+            b.miss("events", "store", "data_unavailable", f"no stored events for kind={event_kind!r} in the window")
+            return b.build(None, ok=False)
+
+        # Pull a single OHLCV span covering every event with margin.
+        margin_ms = int(max(before_minutes, after_minutes) * 60_000 * 2)
+        ev_ts_ms = [int(e["ts"]) * 1000 for e in events]
+        bars_lo = min(ev_ts_ms) - margin_ms
+        bars_hi = max(ev_ts_ms) + margin_ms
+        bars = await rt.store.ohlcv_range(venue=venue, symbol=symbol, timeframe=timeframe, since_ts=bars_lo, until_ts=bars_hi)
+        if len(bars) < 5:
+            b.miss(
+                "ohlcv_hist",
+                "store",
+                "data_unavailable",
+                f"only {len(bars)} bars stored for {venue} {symbol} {timeframe} in the event window — enable the ohlcv_hist collector and let it backfill",
+            )
+            return b.build(None, ok=False)
+
+        res = _event_study(bars, ev_ts_ms, before_minutes=before_minutes, after_minutes=after_minutes, measure=measure)
+        stats = res["stats"]
+        if stats["small_sample_flag"]:
+            b.warn(f"small sample: n_sample={stats['n_sample']}; stats are noisy")
+
+        # Round where sensible, keep hit_rate / returns in decimal form.
+        rounded_stats = {k: (r(v, 6) if isinstance(v, float) else v) for k, v in stats.items()}
+        return b.build(
+            {
+                "venue": venue,
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "event_kind": event_kind,
+                "measure": measure,
+                "before_minutes": before_minutes,
+                "after_minutes": after_minutes,
+                "stats": rounded_stats,
+                "n_events_requested": res["n_events_requested"],
+                "n_events_evaluated": res["n_events_evaluated"],
+                "per_event": [
+                    {
+                        "ts_ms": pe["ts_ms"],
+                        "iso": datetime.fromtimestamp(pe["ts_ms"] / 1000, tz=rt.now().tzinfo).isoformat(),
+                        "value": r(pe["value"], 6) if pe["value"] is not None else None,
+                    }
+                    for pe in res["per_event"]
+                ],
             }
         )

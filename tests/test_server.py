@@ -53,6 +53,7 @@ EXPECTED_TOOLS = {
     "events_add",
     "events_list",
     "events_seed_load",
+    "event_study",
     "journal_add",
     "journal_list",
     "journal_close",

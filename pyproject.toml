@@ -35,6 +35,7 @@ packages = ["src/tradedesk"]
 "src/tradedesk/data/macro_events.json" = "tradedesk/data/macro_events.json"
 "src/tradedesk/data/alert_rules.example.json" = "tradedesk/data/alert_rules.example.json"
 "src/tradedesk/data/events_seed.json" = "tradedesk/data/events_seed.json"
+"src/tradedesk/data/rules_presets.json" = "tradedesk/data/rules_presets.json"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

@@ -33,7 +33,7 @@
 | Журнал (Фаза 2) | `journal_add`, `journal_list`, `journal_close`, `journal_stats` |
 | Позиції (Фаза 2) | `positions_add`, `positions_list`, `positions_close`, `positions_risk` |
 | Ліквідації (Фаза 2) | `liquidations_summary` |
-| Правила (Фаза 3) | `rules_add`, `rules_list`, `rules_test`, `rules_disable` |
+| Правила (Фаза 3) | `rules_add`, `rules_list`, `rules_test`, `rules_disable`, `rules_presets_load` |
 | Стратегії (Фаза 3) | `strategy_payoff`, `strategy_straddle`, `strategy_strangle`, `strategy_risk_reversal`, `strategy_iron_condor`, `strategy_cash_and_carry`, `strategy_funding_carry`, `strategy_scenario_matrix` |
 | Бектест (Фаза 3) | `strategy_backtest_momentum` |
 
@@ -79,6 +79,7 @@
 - **Фаза 3.8:** `fib_retracement` — pure math ladder 23.6/38.2/50/61.8/78.6% з direction і noise-filter (`min_drop_pct`). Analytics `retracement.py`.
 - **Фаза 3.6:** `market_regime` — up/down/chop класифікатор (OLS slope на log-closes, trend_strength = `|slope|·√n/vol`). Pure `analytics/regime.py`; MCP-tool із source=store/live. Live BTC 2026-10-12: 1h=down(0.89), 4h=chop(0.26), 1d=up(1.95).
 - **Фаза 6.4:** три нових MCP-промпти — `fomc_playbook`, `pre_trade_checklist`, `morning_briefing`. Шаблони у `src/tradedesk/prompts/*.md`, запаковані у wheel. DoubleTop-паритет досягнуто: тепер MCP-клієнт має готові сценарії, що викликають усі наші analytics tools.
+- **Фаза 3.2 (MVP):** bundled `rules_presets.json` з 8 готовими DSL-правилами + MCP-tool `rules_presets_load(only?, enable_disabled?)`. Один виклик додає весь сигнальний набір у локальний store.
 - **Фаза 2.3:** schema v5 (`liquidations`) + WS-колектор для 3 venues. Binance `!forceOrder@arr` (без subscribe), Bybit v5 `allLiquidation.<symbol>` (per-symbol subscribe), OKX v5 `liquidation-orders` (один `instType`). Вибір venues через `TRADEDESK_COLLECT_LIQUIDATIONS_VENUES`. Загальний drain `_consume_liquidation_stream` → `insert_liquidations` батчами по 100. MCP-інструмент `liquidations_summary(window_minutes, venue?, symbol?)`. Live-перевірено (OKX STRK-USDT-SWAP ліквідації залетіли; Bybit підключився). Залишилось у Фазі 2: email/ntfy канали, off-site бекапи, `/healthz`, Prometheus (2.10).
 - Тестів: 144 (+74 за сесію), lint і format чисті. Нові залежності: `aiosqlite`, `websockets`.
 - **`make smoke` live 2026-10-10: 15/15 ok** на реальних біржах. Deribit greeks звірено з їхнім ticker (30OCT26, delta/vega/theta до 4 знаків). `perps_open_interest` з новим fallback відпрацював 669 мс. `sentiment_fear_greed` повернув 30 денних значень; живий зразок збережено в `tests/fixtures/alternative_me_fng_live_2026-10-10.json`.

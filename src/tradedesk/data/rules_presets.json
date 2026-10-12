@@ -1,0 +1,64 @@
+{
+  "_meta": {
+    "updated": "2026-10-12",
+    "note": "Ready-made DSL rules you can install with `rules_presets_load`. All idempotent via UNIQUE(name). Thresholds are deliberately generous — tune them for your own book."
+  },
+  "presets": [
+    {
+      "name": "preset_btc_funding_hot_binance",
+      "expr": "funding(\"binanceusdm\",\"BTC\") > 0.30",
+      "message": "Binance BTC funding {value_pct:+.2f}%/yr > 30% — perp is paying longs too much; consider short-perp carry",
+      "cooldown_seconds": 3600,
+      "enabled": true
+    },
+    {
+      "name": "preset_btc_funding_crush_binance",
+      "expr": "funding(\"binanceusdm\",\"BTC\") < -0.20",
+      "message": "Binance BTC funding {value_pct:+.2f}%/yr < -20% — perp is paying shorts; long-perp carry window",
+      "cooldown_seconds": 3600,
+      "enabled": true
+    },
+    {
+      "name": "preset_btc_funding_extreme_zscore",
+      "expr": "funding_zscore(\"binanceusdm\",\"BTC\",14) > 2.0 or funding_zscore(\"binanceusdm\",\"BTC\",14) < -2.0",
+      "message": "Binance BTC funding is {value:+.2f}σ from the 14d mean — mean-reversion setup",
+      "cooldown_seconds": 7200,
+      "enabled": true
+    },
+    {
+      "name": "preset_hl_funding_crypto_carry",
+      "expr": "funding(\"hyperliquid\",\"BTC\") > 0.20 and funding(\"deribit\",\"BTC\") < 0.08",
+      "message": "HL BTC pays {value_pct:+.2f}%/yr while Deribit is cheap — short-HL / long-Deribit crypto-carry",
+      "cooldown_seconds": 7200,
+      "enabled": true
+    },
+    {
+      "name": "preset_eth_funding_hot",
+      "expr": "funding(\"binanceusdm\",\"ETH\") > 0.30",
+      "message": "Binance ETH funding {value_pct:+.2f}%/yr > 30%",
+      "cooldown_seconds": 3600,
+      "enabled": false
+    },
+    {
+      "name": "preset_btc_liquidation_cascade",
+      "expr": "liquidations_total(60, \"binanceusdm\", \"BTCUSDT\") > 50000000",
+      "message": "Binance BTCUSDT liquidations > $50M in last 60 min — cascade in progress",
+      "cooldown_seconds": 1800,
+      "enabled": true
+    },
+    {
+      "name": "preset_btc_liq_imbalance_shorts_squeezed",
+      "expr": "liquidations_imbalance(60, \"binanceusdm\", \"BTCUSDT\") > 0.7",
+      "message": "Shorts dominating BTC liquidations (imbalance {value:+.2f}) — upside squeeze",
+      "cooldown_seconds": 1800,
+      "enabled": true
+    },
+    {
+      "name": "preset_btc_liq_imbalance_longs_flushed",
+      "expr": "liquidations_imbalance(60, \"binanceusdm\", \"BTCUSDT\") < -0.7",
+      "message": "Longs being flushed in BTC (imbalance {value:+.2f}) — downside cascade",
+      "cooldown_seconds": 1800,
+      "enabled": true
+    }
+  ]
+}

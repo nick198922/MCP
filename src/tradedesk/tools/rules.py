@@ -7,6 +7,8 @@ functions in :mod:`tradedesk.rules.metrics`.
 
 from __future__ import annotations
 
+import json
+from importlib import resources
 from typing import Annotated, Any
 
 from mcp.server.mcpserver import MCPServer
@@ -129,3 +131,72 @@ def register(server: MCPServer, rt: Runtime) -> None:
         now_ts = int(rt.now().timestamp())
         await rt.store.rule_set_enabled(id, enabled=enable, ts=now_ts)
         return b.build(await rt.store.rule_get(id))
+
+    @server.tool(
+        annotations=READ_ONLY,
+        description=(
+            "Install the bundled rule presets (funding extremes, funding z-score, HL↔Deribit "
+            "crypto-carry, liquidation cascades + imbalance). Each preset is a complete DSL "
+            "rule validated at compile time. Idempotent via UNIQUE(name) — existing rules are "
+            "skipped. Use `only=['name1','name2']` to pick a subset; `enable_disabled=true` "
+            "forces presets flagged `enabled: false` in the seed to be enabled on install."
+        ),
+    )
+    async def rules_presets_load(
+        only: Annotated[list[str] | None, Field(description="Install just these preset names.")] = None,
+        enable_disabled: Annotated[bool, Field(description="Enable presets whose seed `enabled` is false.")] = False,
+    ) -> dict[str, Any]:
+        b = Builder()
+        if not _store_guard(b, rt):
+            return b.build(None, ok=False)
+        await rt.store.init()
+        try:
+            with resources.files("tradedesk.data").joinpath("rules_presets.json").open("r", encoding="utf-8") as f:
+                seed = json.load(f)
+        except (FileNotFoundError, ValueError, OSError) as e:
+            b.miss("presets", "tradedesk", "data_unavailable", f"{type(e).__name__}: {e}")
+            return b.build(None, ok=False)
+
+        presets = seed.get("presets") or []
+        selected: list[dict[str, Any]] = []
+        for row in presets:
+            if only and row.get("name") not in only:
+                continue
+            selected.append(row)
+
+        now_ts = int(rt.now().timestamp())
+        inserted = 0
+        skipped: list[str] = []
+        failed: list[dict[str, Any]] = []
+        for row in selected:
+            name = row.get("name") or ""
+            expr = row.get("expr") or ""
+            try:
+                compile_expr(expr)
+            except DslError as e:
+                failed.append({"name": name, "reason": str(e)})
+                continue
+            # UNIQUE(name) — rule_insert raises IntegrityError on dup, so skip existing names.
+            existing = await rt.store.rules_list()
+            if any(r["name"] == name for r in existing):
+                skipped.append(name)
+                continue
+            enabled = bool(row.get("enabled", True)) or enable_disabled
+            await rt.store.rule_insert(
+                name=name,
+                expr=expr,
+                message=row.get("message"),
+                cooldown_seconds=int(row.get("cooldown_seconds", 1800)),
+                enabled=enabled,
+                created_ts=now_ts,
+            )
+            inserted += 1
+        return b.build(
+            {
+                "candidates": len(selected),
+                "inserted": inserted,
+                "already_present": skipped,
+                "failed": failed,
+                "meta": seed.get("_meta"),
+            }
+        )

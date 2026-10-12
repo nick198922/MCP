@@ -196,3 +196,39 @@ async def test_rules_add_list_test_disable(state, tmp_path):
         assert deleted["data"]["deleted"] is True
     finally:
         await rt.aclose()
+
+
+async def test_rules_presets_load_installs_bundled(state, tmp_path):
+    rt = await _rt(state, tmp_path)
+    srv, _ = build_server(rt)
+    try:
+        env = await _call(srv, "rules_presets_load")
+        d = env["data"]
+        assert d["candidates"] >= 6
+        assert d["inserted"] == d["candidates"]
+        assert d["failed"] == []
+        # Idempotent — second call skips everything.
+        again = await _call(srv, "rules_presets_load")
+        assert again["data"]["inserted"] == 0
+        listed = (await _call(srv, "rules_list"))["data"]["rules"]
+        assert sorted(again["data"]["already_present"]) == sorted(r["name"] for r in listed)
+    finally:
+        await rt.aclose()
+
+
+async def test_rules_presets_load_subset_and_force_enable(state, tmp_path):
+    rt = await _rt(state, tmp_path)
+    srv, _ = build_server(rt)
+    try:
+        env = await _call(
+            srv,
+            "rules_presets_load",
+            only=["preset_eth_funding_hot"],
+            enable_disabled=True,
+        )
+        d = env["data"]
+        assert d["candidates"] == 1 and d["inserted"] == 1
+        rows = (await _call(srv, "rules_list"))["data"]["rules"]
+        assert rows[0]["name"] == "preset_eth_funding_hot" and rows[0]["enabled"] is True
+    finally:
+        await rt.aclose()

@@ -1,6 +1,9 @@
 # Changelog
 
 ## Unreleased
+- Фаза 3.2 (MVP): готова бібліотека сигналів.
+  * `src/tradedesk/data/rules_presets.json` з 8 DSL-правилами: Binance BTC funding hot/crush/|zscore|>2σ, HL↔Deribit crypto-carry, ETH funding hot (disabled by default), BTC liquidation cascade (>$50M/60min), shorts-squeezed / longs-flushed imbalance. Запаковано у wheel.
+  * MCP-tool `rules_presets_load(only?, enable_disabled?)` — compile-check кожного expr перед insert, idempotent через UNIQUE(name), повертає `candidates/inserted/already_present/failed`. `only=[...]` обирає підмножину; `enable_disabled=True` вмикає `enabled:false` пресети на install.
 - Фаза 6.4: три нових MCP-промпти (DoubleTop-style шаблони, що називають потрібні tradedesk-mcp tools).
   * `fomc_playbook(symbol, venue, timeframe, event_date, event_time_utc, time_stop, regime_change_date)` — повний event-плейбук: Position summary → Event-study (5 measures) → Fib ladder → Scenario matrix (multi-horizon) → Second-entry comparison → Exit ladder → Regime-conditional stats → Rejected ideas → Risks.
   * `pre_trade_checklist(symbol, side, size)` — 10-крокова перевірка: thesis → regime → derivatives → vol/skew → calendar → payoff/risk → mechanics → exit plan → alerts/rules → journal.
@@ -110,7 +113,7 @@
 - Фаза 1.2: `perps_funding_history` — крос-венюз історія funding (Binance/Bybit/OKX через ccxt `fetch_funding_rate_history` + Hyperliquid), автодетект інтервалу з медіани ts-різниць (`detect_interval_hours`), крос-венюз-summary (highest/lowest carry, biggest |z|), опція `include_series` для сирих рядів. Live-перевірено на BTC: HL carry 9.1%, OKX 5.1%, Binance 4.5%, Bybit 4.3%; Bybit `z = −1.45` (mean-reversion сигнал).
 - MCP-промт `token_deep_analysis(project)` — глибокий 10-секційний інвест-аналіз криптопроекту (RU), шаблон `src/tradedesk/prompts/token_deep_analysis.md` (bundled у wheel), з хінтом про релевантні tradedesk-mcp інструменти для графіка/позиціювання.
 - Фаза 1.3: нові провайдери `binance_futures.py` і `bybit.py` під окремими `Http` з лімітами. Два нові інструменти: `perps_long_short_ratio` (роздрібні account-based fractions Binance+Bybit, latest/mean/z-score, cross-venue divergence) і `perps_oi_history` (OI history Binance в USD, Bybit в base, latest/mean/change24h/z, cross-venue biggest gain/drop). Live-перевірено 2026-10-10 на BTC.
-- Тестів: 212 (+161 від 0.1.0), lint чистий. Нові залежності `aiosqlite>=0.19`, `websockets>=12`.
+- Тестів: 214 (+163 від 0.1.0), lint чистий. Нові залежності `aiosqlite>=0.19`, `websockets>=12`.
 
 ## 0.1.0 — 2026-10-10
 - Ядро: `Http` (ретраї, rate-limit, кеш із single-flight, класифікація помилок), `HealthRegistry`, `Envelope/Evidence`.

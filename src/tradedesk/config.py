@@ -50,6 +50,12 @@ class Settings:
     collect_liquidations_restart_seconds: int = 5
     collect_liquidations_bybit_symbols: str = "BTCUSDT,ETHUSDT,SOLUSDT"
     collect_liquidations_okx_inst_type: str = "SWAP"
+    # Historical OHLCV collector
+    collect_ohlcv_hist_enabled: bool = False
+    collect_ohlcv_hist_markets: str = ""  # "venue:symbol:timeframe,..."
+    collect_ohlcv_hist_seconds: int = 3600
+    collect_ohlcv_hist_backfill_days: int = 365
+    retention_ohlcv_hist_days: int = 0  # 0 = never prune ohlcv_hist
     # Alerts
     alerts_enabled: bool = False
     alerts_rules_path: str = ""
@@ -85,6 +91,11 @@ class Settings:
             collect_liquidations_restart_seconds=int(_float("TRADEDESK_COLLECT_LIQUIDATIONS_RESTART_SECONDS", 5)),
             collect_liquidations_bybit_symbols=os.environ.get("TRADEDESK_COLLECT_LIQUIDATIONS_BYBIT_SYMBOLS", "BTCUSDT,ETHUSDT,SOLUSDT"),
             collect_liquidations_okx_inst_type=os.environ.get("TRADEDESK_COLLECT_LIQUIDATIONS_OKX_INST_TYPE", "SWAP"),
+            collect_ohlcv_hist_enabled=os.environ.get("TRADEDESK_COLLECT_OHLCV_HIST_ENABLED", "").lower() in ("1", "true", "yes"),
+            collect_ohlcv_hist_markets=os.environ.get("TRADEDESK_COLLECT_OHLCV_HIST_MARKETS", ""),
+            collect_ohlcv_hist_seconds=int(_float("TRADEDESK_COLLECT_OHLCV_HIST_SECONDS", 3600)),
+            collect_ohlcv_hist_backfill_days=int(_float("TRADEDESK_OHLCV_HIST_BACKFILL_DAYS", 365)),
+            retention_ohlcv_hist_days=int(_float("TRADEDESK_RETENTION_OHLCV_HIST_DAYS", 0)),
             http_bearer_tokens=os.environ.get("TRADEDESK_HTTP_BEARER_TOKENS") or os.environ.get("TRADEDESK_HTTP_BEARER_TOKEN", ""),
             alerts_enabled=os.environ.get("TRADEDESK_ALERTS_ENABLED", "").lower() in ("1", "true", "yes"),
             alerts_rules_path=os.environ.get("TRADEDESK_ALERTS_RULES_PATH", ""),

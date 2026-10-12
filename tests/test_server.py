@@ -49,6 +49,7 @@ EXPECTED_TOOLS = {
     "funding_zscore",
     "skew_percentile",
     "alerts_recent",
+    "ohlcv_history",
     "journal_add",
     "journal_list",
     "journal_close",

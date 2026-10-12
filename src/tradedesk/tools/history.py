@@ -227,6 +227,61 @@ def register(server: MCPServer, rt: Runtime) -> None:
     @server.tool(
         annotations=READ_ONLY,
         description=(
+            "Historical OHLCV from the local SQLite store (table ``ohlcv_hist``). Needs the "
+            "ohlcv_hist collector enabled (TRADEDESK_COLLECT_OHLCV_HIST_ENABLED=1 with a market "
+            "list in TRADEDESK_COLLECT_OHLCV_HIST_MARKETS). Returns stored bars for the "
+            "(venue, symbol, timeframe), optionally bounded by since/until (unix MILLISECONDS, "
+            "ccxt convention). Reports the inclusive date range of what's actually stored."
+        ),
+    )
+    async def ohlcv_history(
+        venue: Annotated[str, Field(description="ccxt venue id, e.g. 'binanceusdm'.")],
+        symbol: Annotated[str, Field(description="ccxt symbol, e.g. 'BTC/USDT:USDT'.")],
+        timeframe: Annotated[str, Field(description="OHLCV timeframe as stored, e.g. '1h'.")] = "1h",
+        since_ts_ms: Annotated[int | None, Field(description="Unix ms lower bound (inclusive).")] = None,
+        until_ts_ms: Annotated[int | None, Field(description="Unix ms upper bound (inclusive).")] = None,
+        limit: Annotated[int | None, Field(ge=1, le=50_000)] = None,
+    ) -> dict[str, Any]:
+        b = Builder()
+        if rt.store is None:
+            b.miss("store", "tradedesk", "config", "db_path is empty; set TRADEDESK_DB_PATH to enable history")
+            return b.build(None, ok=False)
+        try:
+            await rt.store.init()
+        except Exception as e:  # noqa: BLE001
+            b.miss("store", "tradedesk", "backend_error", f"{type(e).__name__}: {e}")
+            return b.build(None, ok=False)
+        rows = await rt.store.ohlcv_range(
+            venue=venue,
+            symbol=symbol,
+            timeframe=timeframe,
+            since_ts=since_ts_ms or 0,
+            until_ts=until_ts_ms,
+            limit=limit,
+        )
+        if not rows:
+            b.miss(
+                "ohlcv_hist",
+                "store",
+                "data_unavailable",
+                "no bars stored for this (venue, symbol, timeframe) in the requested window",
+            )
+            return b.build({"venue": venue, "symbol": symbol, "timeframe": timeframe, "count": 0, "bars": []}, ok=False)
+        return b.build(
+            {
+                "venue": venue,
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "count": len(rows),
+                "first_ts_ms": rows[0]["ts"],
+                "last_ts_ms": rows[-1]["ts"],
+                "bars": rows,
+            }
+        )
+
+    @server.tool(
+        annotations=READ_ONLY,
+        description=(
             "Recent alert history (from the local SQLite store). Returns up to `limit` most-recent "
             "alerts with id, rule_id, timestamp, channel, delivered flag, delivery_error (if any) "
             "and the full payload. Needs the alerts job enabled (TRADEDESK_ALERTS_ENABLED=1) and "

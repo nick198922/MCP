@@ -168,7 +168,7 @@ class Store:
 
     async def prune(self, table: str, cutoff_ts: int) -> int:
         """Delete rows with ts < cutoff_ts. Returns the number of rows deleted."""
-        if table not in {"atm_term", "funding_hist", "basis_hist", "snapshots", "alerts", "liquidations"}:
+        if table not in {"atm_term", "funding_hist", "basis_hist", "snapshots", "alerts", "liquidations", "ohlcv_hist"}:
             raise ValueError(f"unknown table {table!r}")
         cur = await self.conn.execute(f"DELETE FROM {table} WHERE ts < ?", (cutoff_ts,))
         await self.conn.commit()
@@ -328,6 +328,72 @@ class Store:
             d["enabled"] = bool(d["enabled"])
             out.append(d)
         return out
+
+    # ---------- ohlcv history ----------
+
+    async def insert_ohlcv_batch(self, venue: str, symbol: str, timeframe: str, bars: list[Any]) -> int:
+        """Insert ccxt-shaped bars ``[[ts_ms, o, h, l, c, v], ...]``. Idempotent per
+        (venue, symbol, timeframe, ts) — later rows for the same ts replace earlier ones.
+        """
+        if not bars:
+            return 0
+        payload = []
+        for b in bars:
+            if isinstance(b, (list, tuple)) and len(b) >= 6:
+                payload.append((venue, symbol, timeframe, int(b[0]), float(b[1]), float(b[2]), float(b[3]), float(b[4]), float(b[5])))
+            elif isinstance(b, dict) and "close" in b:
+                payload.append(
+                    (
+                        venue,
+                        symbol,
+                        timeframe,
+                        int(b.get("ts") or b.get("timestamp") or 0),
+                        float(b.get("open") or b["close"]),
+                        float(b.get("high") or b["close"]),
+                        float(b.get("low") or b["close"]),
+                        float(b["close"]),
+                        float(b.get("volume") or 0.0),
+                    )
+                )
+        if not payload:
+            return 0
+        await self.conn.executemany(
+            "INSERT OR REPLACE INTO ohlcv_hist (venue, symbol, timeframe, ts, open, high, low, close, volume) VALUES (?,?,?,?,?,?,?,?,?)",
+            payload,
+        )
+        await self.conn.commit()
+        return len(payload)
+
+    async def ohlcv_range(
+        self,
+        *,
+        venue: str,
+        symbol: str,
+        timeframe: str,
+        since_ts: int = 0,
+        until_ts: int | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        where = ["venue = ?", "symbol = ?", "timeframe = ?", "ts >= ?"]
+        params: list[Any] = [venue, symbol, timeframe, since_ts]
+        if until_ts is not None:
+            where.append("ts <= ?")
+            params.append(until_ts)
+        sql = "SELECT ts, open, high, low, close, volume FROM ohlcv_hist WHERE " + " AND ".join(where) + " ORDER BY ts"
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(int(limit))
+        cur = await self.conn.execute(sql, params)
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    async def ohlcv_last_ts(self, venue: str, symbol: str, timeframe: str) -> int | None:
+        cur = await self.conn.execute(
+            "SELECT MAX(ts) FROM ohlcv_hist WHERE venue = ? AND symbol = ? AND timeframe = ?",
+            (venue, symbol, timeframe),
+        )
+        row = await cur.fetchone()
+        return int(row[0]) if row and row[0] is not None else None
 
     # ---------- liquidations ----------
 

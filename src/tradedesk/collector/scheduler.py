@@ -335,6 +335,71 @@ async def _evaluate_alerts(rt: "Runtime") -> int:
     return delivered_rows
 
 
+def _parse_ohlcv_markets(raw: str) -> list[tuple[str, str, str]]:
+    """``venue:symbol:timeframe`` entries separated by commas. Whitespace tolerated."""
+    out: list[tuple[str, str, str]] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        bits = part.split(":")
+        if len(bits) < 3:
+            continue
+        venue = bits[0].strip()
+        timeframe = bits[-1].strip()
+        symbol = ":".join(bits[1:-1]).strip()  # ccxt symbols may contain ':' (e.g. BTC/USDT:USDT)
+        if venue and symbol and timeframe:
+            out.append((venue, symbol, timeframe))
+    return out
+
+
+async def _collect_ohlcv_hist(rt: "Runtime") -> int:
+    """Backfill + incremental pull for every (venue, symbol, timeframe) in settings.
+
+    Each tick advances every market by up to 10 batches of 500 bars; the job
+    runs often enough (default 1 h) that long backfills complete over several
+    ticks without blocking the scheduler.
+    """
+    from ..tools._util import timeframe_seconds  # noqa: PLC0415
+
+    assert rt.store is not None
+    s = rt.settings
+    markets = _parse_ohlcv_markets(s.collect_ohlcv_hist_markets)
+    if not markets:
+        return 0
+    now_ms = int(rt.now().timestamp() * 1000)
+    written = 0
+    MAX_BATCHES = 10
+    BATCH_SIZE = 500
+    for venue, symbol, timeframe in markets:
+        tf_sec = timeframe_seconds(timeframe)
+        if not tf_sec:
+            continue
+        step_ms = tf_sec * 1000
+        last = await rt.store.ohlcv_last_ts(venue, symbol, timeframe)
+        since_ms = (last + step_ms) if last is not None else (now_ms - s.collect_ohlcv_hist_backfill_days * 86_400_000)
+        for _ in range(MAX_BATCHES):
+            if since_ms >= now_ms:
+                break
+            try:
+                fetched = await rt.exchanges.ohlcv(venue, symbol, timeframe, BATCH_SIZE)
+                bars = fetched.data or []
+            except Exception as e:  # noqa: BLE001
+                log.warning("ohlcv_hist %s %s %s: fetch failed: %s", venue, symbol, timeframe, e)
+                break
+            # ccxt returns bars starting from the current window; keep only new rows
+            # strictly after `last` (or everything on backfill when last is None).
+            fresh = [b for b in bars if isinstance(b, (list, tuple)) and len(b) >= 6 and int(b[0]) >= since_ms]
+            if not fresh:
+                break
+            inserted = await rt.store.insert_ohlcv_batch(venue, symbol, timeframe, fresh)
+            written += inserted
+            since_ms = int(fresh[-1][0]) + step_ms
+            if inserted < BATCH_SIZE:
+                break
+    return written
+
+
 async def _retention_sweep(rt: "Runtime") -> int:
     """Trim stored history to the retention windows configured in Settings."""
     assert rt.store is not None
@@ -345,11 +410,14 @@ async def _retention_sweep(rt: "Runtime") -> int:
         ("atm_term", s.retention_atm_term_days),
         ("funding_hist", s.retention_funding_days),
         ("basis_hist", s.retention_basis_days),
+        ("ohlcv_hist", s.retention_ohlcv_hist_days),
     )
     for table, days in pairs:
         if days <= 0:
             continue
-        deleted += await rt.store.prune(table, now_ts - days * 86_400)
+        # ohlcv_hist stores ts in milliseconds; everything else is seconds.
+        cutoff = (now_ts - days * 86_400) * (1000 if table == "ohlcv_hist" else 1)
+        deleted += await rt.store.prune(table, cutoff)
     return deleted
 
 
@@ -367,6 +435,14 @@ def build_default_scheduler(rt: "Runtime") -> Scheduler | None:
     if s.alerts_enabled:
         # JSON file is optional in Phase 3.1 — DB-backed rules work on their own.
         jobs.append(PeriodicJob(name="alerts", period_seconds=s.alerts_seconds, fn=_evaluate_alerts))
+    if s.collect_ohlcv_hist_enabled and s.collect_ohlcv_hist_markets.strip():
+        jobs.append(
+            PeriodicJob(
+                name="ohlcv_hist",
+                period_seconds=s.collect_ohlcv_hist_seconds,
+                fn=_collect_ohlcv_hist,
+            )
+        )
     if s.collect_liquidations_enabled:
         venues = {v.strip().lower() for v in s.collect_liquidations_venues.split(",") if v.strip()}
         fns = {

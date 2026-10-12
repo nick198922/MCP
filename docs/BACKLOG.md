@@ -29,6 +29,11 @@
 - [x] 1.12 Deribit: `deribit_largest_trades(currency, kind, count, only_blocks, min_notional_usd, top_n)` — топ трейдів за USD-notional, фільтр блок-угод, summary (buy/sell notional, taker imbalance, block share). `deribit_oi_by_strike` ✅, `deribit_expected_move` ✅.
 - [x] 1.13 `perps_basis_compare(base)` — крос-венюз perp premium (mark/index) у bps + Deribit dated-futures basis annualized (simple і log); summary з highest/lowest premium, крос-венюзний spread (bps) і найближчим dated-contract. CME-проксі відкладено (потребує платної підписки); Deribit квартальних достатньо.
 
+## Фаза 1.14+ — історія для event-study (додано після DoubleTop FOMC-write-up)
+- [x] 1.14 Historical OHLCV store (schema v7, таблиця `ohlcv_hist(venue, symbol, timeframe, ts, o, h, l, c, v)` з PK `(venue, symbol, timeframe, ts)`). Store API: `insert_ohlcv_batch`, `ohlcv_range`, `ohlcv_last_ts`. Collector-job `ohlcv_hist`: парсить `TRADEDESK_COLLECT_OHLCV_HIST_MARKETS=venue:symbol:timeframe,…`, backfill до `TRADEDESK_OHLCV_HIST_BACKFILL_DAYS` (365 default), inкрементальний pull після `last_ts`, до 10 batch'ів по 500 бар'ів за tick. Retention по `TRADEDESK_RETENTION_OHLCV_HIST_DAYS` (0 = не чистити). MCP-tool `ohlcv_history(venue, symbol, timeframe, since_ts_ms?, until_ts_ms?, limit?)` з ok=false коли нема рядків.
+- [ ] 1.15 Event dataset (schema v8, таблиця `events`). Статичний seed JSON історичних FOMC/CPI/NFP (2019+). Інструменти `events_add`/`events_list`.
+- [ ] 1.16 Event-study engine: `event_study(symbol, timeframe, event_kind, before_minutes, after_minutes, measure)` → `{n_sample, period, hit_rate, median, p25, p75, per_event, small_sample_flag}`.
+
 ## Фаза 2 — пам'ять, збирач, алерти, деплой
 Мета: сервер «працює, поки сплю».
 - [x] 2.1 `store/` MVP: SQLite (WAL, PRAGMA user_version), `aiosqlite`. Таблиці: `atm_term(ts, currency, expiry, days, forward, atm_iv, rr25, fly25, rr10, fly10)`, `funding_hist(ts, venue, base, rate_per_interval, interval_hours, annualized)`, `basis_hist(ts, currency, expiry, days, basis_pct, annualized_simple)`, `snapshots(id, ts, kind, payload)`. Міграції через `MIGRATIONS` dict + `SCHEMA_VERSION`. Залишилось для пізніх кроків: `iv_surface` (per-strike), `oi`, `liquidations`, `alerts`, `journal`, `positions`.

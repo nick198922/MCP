@@ -1,6 +1,12 @@
 # Changelog
 
 ## Unreleased
+- Фаза 1.14: історичне сховище OHLCV + collector + MCP-інструмент.
+  * Schema v7: таблиця `ohlcv_hist(venue, symbol, timeframe, ts, o, h, l, c, v)` з PK `(venue, symbol, timeframe, ts)` і індексом `(venue, symbol, timeframe, ts)`. Store API: `insert_ohlcv_batch(venue, symbol, timeframe, bars)` (REPLACE за PK, приймає ccxt-масиви й dict-рядки), `ohlcv_range(venue, symbol, timeframe, since_ts, until_ts?, limit?)`, `ohlcv_last_ts(…)`. `prune("ohlcv_hist", cutoff_ms)` і retention у секундах (`TRADEDESK_RETENTION_OHLCV_HIST_DAYS`).
+  * Scheduler-job `ohlcv_hist`: парсить `TRADEDESK_COLLECT_OHLCV_HIST_MARKETS=venue:symbol:timeframe,…` (ccxt-символи з ':' обробляються коректно), backfill до `TRADEDESK_OHLCV_HIST_BACKFILL_DAYS` (365 default), інкрементально тягне після `last_ts`, до 10 batch'ів по 500 бар'ів за тік (default період — 1 година).
+  * MCP-інструмент `ohlcv_history(venue, symbol, timeframe, since_ts_ms?, until_ts_ms?, limit?)` з `first/last_ts_ms`. На порожньому вікні — ok=false + miss `ohlcv_hist`.
+  * Нові налаштування: `TRADEDESK_COLLECT_OHLCV_HIST_{ENABLED, MARKETS, SECONDS}`, `TRADEDESK_OHLCV_HIST_BACKFILL_DAYS`, `TRADEDESK_RETENTION_OHLCV_HIST_DAYS`.
+  * Фундамент для `event_study` і conditional-регіме (пізніше); підкаст від DoubleTop FOMC write-up.
 - Фаза 3.5 (MVP): векторизований бектест.
   * Чиста аналітика `analytics/backtest.py`: `run_backtest(bars, positions, fee_bps, slippage_bps, bars_per_year, initial_equity)` — next-bar fill, cost на кожну зміну позиції (long↔short пайить 2×). bar_ret об'єднує cost + open-to-close рух, тож equity_final і stats.total_return тепер узгоджені. Повертає `equity_curve`, `returns`, `trades` і `stats` (count, total_return, annualized_return, mean/stdev, sharpe, sortino, max_drawdown, best_bar, worst_bar, num_trades, win_rate, avg_trade_return).
   * `signals_momentum(bars, lookback, threshold_pct)` — простий breakout: long коли `close/close[-lookback]-1 >= threshold`, short на симетричній умові, flat інакше. Перші `lookback` позицій = 0.
@@ -77,7 +83,7 @@
 - Фаза 1.2: `perps_funding_history` — крос-венюз історія funding (Binance/Bybit/OKX через ccxt `fetch_funding_rate_history` + Hyperliquid), автодетект інтервалу з медіани ts-різниць (`detect_interval_hours`), крос-венюз-summary (highest/lowest carry, biggest |z|), опція `include_series` для сирих рядів. Live-перевірено на BTC: HL carry 9.1%, OKX 5.1%, Binance 4.5%, Bybit 4.3%; Bybit `z = −1.45` (mean-reversion сигнал).
 - MCP-промт `token_deep_analysis(project)` — глибокий 10-секційний інвест-аналіз криптопроекту (RU), шаблон `src/tradedesk/prompts/token_deep_analysis.md` (bundled у wheel), з хінтом про релевантні tradedesk-mcp інструменти для графіка/позиціювання.
 - Фаза 1.3: нові провайдери `binance_futures.py` і `bybit.py` під окремими `Http` з лімітами. Два нові інструменти: `perps_long_short_ratio` (роздрібні account-based fractions Binance+Bybit, latest/mean/z-score, cross-venue divergence) і `perps_oi_history` (OI history Binance в USD, Bybit в base, latest/mean/change24h/z, cross-venue biggest gain/drop). Live-перевірено 2026-10-10 на BTC.
-- Тестів: 170 (+119 від 0.1.0), lint чистий. Нові залежності `aiosqlite>=0.19`, `websockets>=12`.
+- Тестів: 176 (+125 від 0.1.0), lint чистий. Нові залежності `aiosqlite>=0.19`, `websockets>=12`.
 
 ## 0.1.0 — 2026-10-10
 - Ядро: `Http` (ретраї, rate-limit, кеш із single-flight, класифікація помилок), `HealthRegistry`, `Envelope/Evidence`.

@@ -1,0 +1,586 @@
+{
+  "_meta": {
+    "generated_at": "2026-10-12",
+    "coverage": "2024-01 \u2026 2026-12",
+    "source": "approximate from Federal Reserve FOMC calendar + BLS CPI/NFP schedules",
+    "note": "Times approximated at 13:30/19:00 UTC. 2026 Fed dates are projected and should be verified against https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
+  },
+  "events": [
+    {
+      "ts": 1706727600,
+      "kind": "fomc",
+      "label": "Jan 2024 FOMC",
+      "impact": "high"
+    },
+    {
+      "ts": 1710961200,
+      "kind": "fomc",
+      "label": "Mar 2024 FOMC",
+      "impact": "high"
+    },
+    {
+      "ts": 1714590000,
+      "kind": "fomc",
+      "label": "May 2024 FOMC",
+      "impact": "high"
+    },
+    {
+      "ts": 1718218800,
+      "kind": "fomc",
+      "label": "Jun 2024 FOMC (SEP)",
+      "impact": "high"
+    },
+    {
+      "ts": 1722452400,
+      "kind": "fomc",
+      "label": "Jul 2024 FOMC",
+      "impact": "high"
+    },
+    {
+      "ts": 1726686000,
+      "kind": "fomc",
+      "label": "Sep 2024 FOMC (SEP)",
+      "impact": "high"
+    },
+    {
+      "ts": 1731006000,
+      "kind": "fomc",
+      "label": "Nov 2024 FOMC",
+      "impact": "high"
+    },
+    {
+      "ts": 1734548400,
+      "kind": "fomc",
+      "label": "Dec 2024 FOMC (SEP)",
+      "impact": "high"
+    },
+    {
+      "ts": 1738177200,
+      "kind": "fomc",
+      "label": "Jan 2025 FOMC",
+      "impact": "high"
+    },
+    {
+      "ts": 1742410800,
+      "kind": "fomc",
+      "label": "Mar 2025 FOMC (SEP)",
+      "impact": "high"
+    },
+    {
+      "ts": 1746644400,
+      "kind": "fomc",
+      "label": "May 2025 FOMC",
+      "impact": "high"
+    },
+    {
+      "ts": 1750273200,
+      "kind": "fomc",
+      "label": "Jun 2025 FOMC (SEP)",
+      "impact": "high"
+    },
+    {
+      "ts": 1753902000,
+      "kind": "fomc",
+      "label": "Jul 2025 FOMC",
+      "impact": "high"
+    },
+    {
+      "ts": 1758135600,
+      "kind": "fomc",
+      "label": "Sep 2025 FOMC (SEP)",
+      "impact": "high"
+    },
+    {
+      "ts": 1761764400,
+      "kind": "fomc",
+      "label": "Oct 2025 FOMC",
+      "impact": "high"
+    },
+    {
+      "ts": 1765393200,
+      "kind": "fomc",
+      "label": "Dec 2025 FOMC (SEP)",
+      "impact": "high"
+    },
+    {
+      "ts": 1769626800,
+      "kind": "fomc",
+      "label": "Jan 2026 FOMC",
+      "impact": "high"
+    },
+    {
+      "ts": 1773860400,
+      "kind": "fomc",
+      "label": "Mar 2026 FOMC (SEP)",
+      "impact": "high"
+    },
+    {
+      "ts": 1777489200,
+      "kind": "fomc",
+      "label": "Apr 2026 FOMC",
+      "impact": "high"
+    },
+    {
+      "ts": 1781722800,
+      "kind": "fomc",
+      "label": "Jun 2026 FOMC (SEP)",
+      "impact": "high"
+    },
+    {
+      "ts": 1785351600,
+      "kind": "fomc",
+      "label": "Jul 2026 FOMC",
+      "impact": "high"
+    },
+    {
+      "ts": 1789585200,
+      "kind": "fomc",
+      "label": "Sep 2026 FOMC (SEP)",
+      "impact": "high"
+    },
+    {
+      "ts": 1793214000,
+      "kind": "fomc",
+      "label": "Oct 2026 FOMC",
+      "impact": "high"
+    },
+    {
+      "ts": 1797447600,
+      "kind": "fomc",
+      "label": "Dec 2026 FOMC (SEP)",
+      "impact": "high"
+    },
+    {
+      "ts": 1704978000,
+      "kind": "cpi",
+      "label": "US CPI 2024-01",
+      "impact": "high"
+    },
+    {
+      "ts": 1707829200,
+      "kind": "cpi",
+      "label": "US CPI 2024-02",
+      "impact": "high"
+    },
+    {
+      "ts": 1710248400,
+      "kind": "cpi",
+      "label": "US CPI 2024-03",
+      "impact": "high"
+    },
+    {
+      "ts": 1712754000,
+      "kind": "cpi",
+      "label": "US CPI 2024-04",
+      "impact": "high"
+    },
+    {
+      "ts": 1715778000,
+      "kind": "cpi",
+      "label": "US CPI 2024-05",
+      "impact": "high"
+    },
+    {
+      "ts": 1718197200,
+      "kind": "cpi",
+      "label": "US CPI 2024-06",
+      "impact": "high"
+    },
+    {
+      "ts": 1720702800,
+      "kind": "cpi",
+      "label": "US CPI 2024-07",
+      "impact": "high"
+    },
+    {
+      "ts": 1723640400,
+      "kind": "cpi",
+      "label": "US CPI 2024-08",
+      "impact": "high"
+    },
+    {
+      "ts": 1726059600,
+      "kind": "cpi",
+      "label": "US CPI 2024-09",
+      "impact": "high"
+    },
+    {
+      "ts": 1728565200,
+      "kind": "cpi",
+      "label": "US CPI 2024-10",
+      "impact": "high"
+    },
+    {
+      "ts": 1731502800,
+      "kind": "cpi",
+      "label": "US CPI 2024-11",
+      "impact": "high"
+    },
+    {
+      "ts": 1733922000,
+      "kind": "cpi",
+      "label": "US CPI 2024-12",
+      "impact": "high"
+    },
+    {
+      "ts": 1736946000,
+      "kind": "cpi",
+      "label": "US CPI 2025-01",
+      "impact": "high"
+    },
+    {
+      "ts": 1739365200,
+      "kind": "cpi",
+      "label": "US CPI 2025-02",
+      "impact": "high"
+    },
+    {
+      "ts": 1741784400,
+      "kind": "cpi",
+      "label": "US CPI 2025-03",
+      "impact": "high"
+    },
+    {
+      "ts": 1744290000,
+      "kind": "cpi",
+      "label": "US CPI 2025-04",
+      "impact": "high"
+    },
+    {
+      "ts": 1747141200,
+      "kind": "cpi",
+      "label": "US CPI 2025-05",
+      "impact": "high"
+    },
+    {
+      "ts": 1749646800,
+      "kind": "cpi",
+      "label": "US CPI 2025-06",
+      "impact": "high"
+    },
+    {
+      "ts": 1752584400,
+      "kind": "cpi",
+      "label": "US CPI 2025-07",
+      "impact": "high"
+    },
+    {
+      "ts": 1755003600,
+      "kind": "cpi",
+      "label": "US CPI 2025-08",
+      "impact": "high"
+    },
+    {
+      "ts": 1757595600,
+      "kind": "cpi",
+      "label": "US CPI 2025-09",
+      "impact": "high"
+    },
+    {
+      "ts": 1760533200,
+      "kind": "cpi",
+      "label": "US CPI 2025-10",
+      "impact": "high"
+    },
+    {
+      "ts": 1763038800,
+      "kind": "cpi",
+      "label": "US CPI 2025-11",
+      "impact": "high"
+    },
+    {
+      "ts": 1765371600,
+      "kind": "cpi",
+      "label": "US CPI 2025-12",
+      "impact": "high"
+    },
+    {
+      "ts": 1768309200,
+      "kind": "cpi",
+      "label": "US CPI 2026-01",
+      "impact": "high"
+    },
+    {
+      "ts": 1770814800,
+      "kind": "cpi",
+      "label": "US CPI 2026-02",
+      "impact": "high"
+    },
+    {
+      "ts": 1773234000,
+      "kind": "cpi",
+      "label": "US CPI 2026-03",
+      "impact": "high"
+    },
+    {
+      "ts": 1775826000,
+      "kind": "cpi",
+      "label": "US CPI 2026-04",
+      "impact": "high"
+    },
+    {
+      "ts": 1778590800,
+      "kind": "cpi",
+      "label": "US CPI 2026-05",
+      "impact": "high"
+    },
+    {
+      "ts": 1781096400,
+      "kind": "cpi",
+      "label": "US CPI 2026-06",
+      "impact": "high"
+    },
+    {
+      "ts": 1784034000,
+      "kind": "cpi",
+      "label": "US CPI 2026-07",
+      "impact": "high"
+    },
+    {
+      "ts": 1786453200,
+      "kind": "cpi",
+      "label": "US CPI 2026-08",
+      "impact": "high"
+    },
+    {
+      "ts": 1789045200,
+      "kind": "cpi",
+      "label": "US CPI 2026-09",
+      "impact": "high"
+    },
+    {
+      "ts": 1791982800,
+      "kind": "cpi",
+      "label": "US CPI 2026-10",
+      "impact": "high"
+    },
+    {
+      "ts": 1794488400,
+      "kind": "cpi",
+      "label": "US CPI 2026-11",
+      "impact": "high"
+    },
+    {
+      "ts": 1796907600,
+      "kind": "cpi",
+      "label": "US CPI 2026-12",
+      "impact": "high"
+    },
+    {
+      "ts": 1704459600,
+      "kind": "nfp",
+      "label": "US NFP 2024-01",
+      "impact": "high"
+    },
+    {
+      "ts": 1706878800,
+      "kind": "nfp",
+      "label": "US NFP 2024-02",
+      "impact": "high"
+    },
+    {
+      "ts": 1709902800,
+      "kind": "nfp",
+      "label": "US NFP 2024-03",
+      "impact": "high"
+    },
+    {
+      "ts": 1712322000,
+      "kind": "nfp",
+      "label": "US NFP 2024-04",
+      "impact": "high"
+    },
+    {
+      "ts": 1714741200,
+      "kind": "nfp",
+      "label": "US NFP 2024-05",
+      "impact": "high"
+    },
+    {
+      "ts": 1717765200,
+      "kind": "nfp",
+      "label": "US NFP 2024-06",
+      "impact": "high"
+    },
+    {
+      "ts": 1720184400,
+      "kind": "nfp",
+      "label": "US NFP 2024-07",
+      "impact": "high"
+    },
+    {
+      "ts": 1722603600,
+      "kind": "nfp",
+      "label": "US NFP 2024-08",
+      "impact": "high"
+    },
+    {
+      "ts": 1725627600,
+      "kind": "nfp",
+      "label": "US NFP 2024-09",
+      "impact": "high"
+    },
+    {
+      "ts": 1728046800,
+      "kind": "nfp",
+      "label": "US NFP 2024-10",
+      "impact": "high"
+    },
+    {
+      "ts": 1730466000,
+      "kind": "nfp",
+      "label": "US NFP 2024-11",
+      "impact": "high"
+    },
+    {
+      "ts": 1733490000,
+      "kind": "nfp",
+      "label": "US NFP 2024-12",
+      "impact": "high"
+    },
+    {
+      "ts": 1736514000,
+      "kind": "nfp",
+      "label": "US NFP 2025-01",
+      "impact": "high"
+    },
+    {
+      "ts": 1738933200,
+      "kind": "nfp",
+      "label": "US NFP 2025-02",
+      "impact": "high"
+    },
+    {
+      "ts": 1741352400,
+      "kind": "nfp",
+      "label": "US NFP 2025-03",
+      "impact": "high"
+    },
+    {
+      "ts": 1743771600,
+      "kind": "nfp",
+      "label": "US NFP 2025-04",
+      "impact": "high"
+    },
+    {
+      "ts": 1746190800,
+      "kind": "nfp",
+      "label": "US NFP 2025-05",
+      "impact": "high"
+    },
+    {
+      "ts": 1749214800,
+      "kind": "nfp",
+      "label": "US NFP 2025-06",
+      "impact": "high"
+    },
+    {
+      "ts": 1751547600,
+      "kind": "nfp",
+      "label": "US NFP 2025-07",
+      "impact": "high"
+    },
+    {
+      "ts": 1754053200,
+      "kind": "nfp",
+      "label": "US NFP 2025-08",
+      "impact": "high"
+    },
+    {
+      "ts": 1757077200,
+      "kind": "nfp",
+      "label": "US NFP 2025-09",
+      "impact": "high"
+    },
+    {
+      "ts": 1759496400,
+      "kind": "nfp",
+      "label": "US NFP 2025-10",
+      "impact": "high"
+    },
+    {
+      "ts": 1762520400,
+      "kind": "nfp",
+      "label": "US NFP 2025-11",
+      "impact": "high"
+    },
+    {
+      "ts": 1764939600,
+      "kind": "nfp",
+      "label": "US NFP 2025-12",
+      "impact": "high"
+    },
+    {
+      "ts": 1767963600,
+      "kind": "nfp",
+      "label": "US NFP 2026-01",
+      "impact": "high"
+    },
+    {
+      "ts": 1770382800,
+      "kind": "nfp",
+      "label": "US NFP 2026-02",
+      "impact": "high"
+    },
+    {
+      "ts": 1772802000,
+      "kind": "nfp",
+      "label": "US NFP 2026-03",
+      "impact": "high"
+    },
+    {
+      "ts": 1775221200,
+      "kind": "nfp",
+      "label": "US NFP 2026-04",
+      "impact": "high"
+    },
+    {
+      "ts": 1777640400,
+      "kind": "nfp",
+      "label": "US NFP 2026-05",
+      "impact": "high"
+    },
+    {
+      "ts": 1780664400,
+      "kind": "nfp",
+      "label": "US NFP 2026-06",
+      "impact": "high"
+    },
+    {
+      "ts": 1782997200,
+      "kind": "nfp",
+      "label": "US NFP 2026-07",
+      "impact": "high"
+    },
+    {
+      "ts": 1786107600,
+      "kind": "nfp",
+      "label": "US NFP 2026-08",
+      "impact": "high"
+    },
+    {
+      "ts": 1788526800,
+      "kind": "nfp",
+      "label": "US NFP 2026-09",
+      "impact": "high"
+    },
+    {
+      "ts": 1790946000,
+      "kind": "nfp",
+      "label": "US NFP 2026-10",
+      "impact": "high"
+    },
+    {
+      "ts": 1793970000,
+      "kind": "nfp",
+      "label": "US NFP 2026-11",
+      "impact": "high"
+    },
+    {
+      "ts": 1796389200,
+      "kind": "nfp",
+      "label": "US NFP 2026-12",
+      "impact": "high"
+    }
+  ]
+}

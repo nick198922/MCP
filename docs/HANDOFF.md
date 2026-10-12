@@ -12,8 +12,8 @@
 
 Припущення, які ще не підтверджено власником (не вважати рішеннями): алерти через Telegram; хостинг на VPS; IBKR (на його Маку помічено папки `Jts`/`ntws`, схоже на IB TWS).
 
-## Що зроблено (Фаза 0 + Фаза 1 без 1.10 + 1.14 + Фаза 2 без 2.10 + Фаза 3.1/3.3/3.4/3.5)
-67 інструментів, публічні дані (CoinGecko вільно без ключа, з ключем — вищий ліміт):
+## Що зроблено (Фаза 0 + Фаза 1 без 1.10 + 1.14, 1.15 + Фаза 2 без 2.10 + Фаза 3.1/3.3/3.4/3.5)
+70 інструментів, публічні дані (CoinGecko вільно без ключа, з ключем — вищий ліміт):
 
 | Група | Інструменти |
 |---|---|
@@ -26,6 +26,7 @@
 | Квант | `odds_devig`, `option_calc`, `touch_probability` |
 | Настрій | `sentiment_fear_greed` |
 | Календар | `calendar_expiries` |
+| Події (Фаза 1) | `events_add`, `events_list`, `events_seed_load` |
 | Prediction markets | `polymarket_search`, `polymarket_market`, `polymarket_history` |
 | Макро/ринок | `coin_snapshot`, `global_market`, `top_coins` |
 | Історія (Фаза 2) | `iv_rank`, `funding_zscore`, `skew_percentile`, `alerts_recent`, `ohlcv_history` |
@@ -72,6 +73,7 @@
 - **Фаза 3.3:** 6 шаблонів стратегій на базі pure-builders — `strategy_straddle`, `strategy_strangle`, `strategy_risk_reversal`, `strategy_iron_condor`, `strategy_cash_and_carry`, `strategy_funding_carry`. Кожен генерує legs і повертає payoff у єдиному форматі з `strategy_payoff`.
 - **Фаза 3.5 (MVP):** векторизований бектест `analytics/backtest.py` (next-bar fill, costs за зміну позиції, узгоджені equity+returns) + сигнал-шаблон momentum. MCP-tool `strategy_backtest_momentum` поверх ccxt OHLCV. Live-перевірено на BTC/USDT 1h × 30d. Залишилось у Фазі 3: 3.2 (бібліотека пресет-правил), 3.6 (режими ринку), funding/multi-asset у бектесті, walk-forward splits.
 - **Фаза 1.14 (нова, після DoubleTop FOMC-прикладу):** historical OHLCV store (schema v7). Collector-job `ohlcv_hist` з backfill і incremental pull; MCP-інструмент `ohlcv_history`. Фундамент для майбутніх `event_study` і `market_regime` (1.15, 1.16, 3.6).
+- **Фаза 1.15:** schema v8 (`events`) + bundled seed JSON (FOMC/CPI/NFP 2024-2026, 96 подій, 2026 Fed-дати projected) + 3 MCP-tools (`events_add`, `events_list`, `events_seed_load`). Idempotency через `UNIQUE(ts, kind, label)`.
 - **Фаза 2.3:** schema v5 (`liquidations`) + WS-колектор для 3 venues. Binance `!forceOrder@arr` (без subscribe), Bybit v5 `allLiquidation.<symbol>` (per-symbol subscribe), OKX v5 `liquidation-orders` (один `instType`). Вибір venues через `TRADEDESK_COLLECT_LIQUIDATIONS_VENUES`. Загальний drain `_consume_liquidation_stream` → `insert_liquidations` батчами по 100. MCP-інструмент `liquidations_summary(window_minutes, venue?, symbol?)`. Live-перевірено (OKX STRK-USDT-SWAP ліквідації залетіли; Bybit підключився). Залишилось у Фазі 2: email/ntfy канали, off-site бекапи, `/healthz`, Prometheus (2.10).
 - Тестів: 144 (+74 за сесію), lint і format чисті. Нові залежності: `aiosqlite`, `websockets`.
 - **`make smoke` live 2026-10-10: 15/15 ok** на реальних біржах. Deribit greeks звірено з їхнім ticker (30OCT26, delta/vega/theta до 4 знаків). `perps_open_interest` з новим fallback відпрацював 669 мс. `sentiment_fear_greed` повернув 30 денних значень; живий зразок збережено в `tests/fixtures/alternative_me_fng_live_2026-10-10.json`.

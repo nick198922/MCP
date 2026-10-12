@@ -31,7 +31,7 @@
 
 ## Фаза 1.14+ — історія для event-study (додано після DoubleTop FOMC-write-up)
 - [x] 1.14 Historical OHLCV store (schema v7, таблиця `ohlcv_hist(venue, symbol, timeframe, ts, o, h, l, c, v)` з PK `(venue, symbol, timeframe, ts)`). Store API: `insert_ohlcv_batch`, `ohlcv_range`, `ohlcv_last_ts`. Collector-job `ohlcv_hist`: парсить `TRADEDESK_COLLECT_OHLCV_HIST_MARKETS=venue:symbol:timeframe,…`, backfill до `TRADEDESK_OHLCV_HIST_BACKFILL_DAYS` (365 default), inкрементальний pull після `last_ts`, до 10 batch'ів по 500 бар'ів за tick. Retention по `TRADEDESK_RETENTION_OHLCV_HIST_DAYS` (0 = не чистити). MCP-tool `ohlcv_history(venue, symbol, timeframe, since_ts_ms?, until_ts_ms?, limit?)` з ok=false коли нема рядків.
-- [ ] 1.15 Event dataset (schema v8, таблиця `events`). Статичний seed JSON історичних FOMC/CPI/NFP (2019+). Інструменти `events_add`/`events_list`.
+- [x] 1.15 Event dataset: schema v8 (`events(id, ts, kind, label, impact, meta)` з UNIQUE `(ts, kind, label)` і індексом `(kind, ts)`). Store API: `event_insert` (idempotent), `events_insert_many`, `events_list(kind?, impact?, since_ts?, until_ts?)`, `event_count`. Bundled seed `src/tradedesk/data/events_seed.json` з 96 подіями (FOMC/CPI/NFP 2024-2026, 2026 projected). 3 MCP-tools: `events_add(kind, label, impact, ts_ms? OR date+time_utc?)`, `events_list(kind?, impact?, since_date?, until_date?)`, `events_seed_load` (idempotent).
 - [ ] 1.16 Event-study engine: `event_study(symbol, timeframe, event_kind, before_minutes, after_minutes, measure)` → `{n_sample, period, hit_rate, median, p25, p75, per_event, small_sample_flag}`.
 
 ## Фаза 2 — пам'ять, збирач, алерти, деплой

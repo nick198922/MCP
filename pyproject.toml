@@ -31,6 +31,7 @@ packages = ["src/tradedesk"]
 "src/tradedesk/prompts/token_deep_analysis.md" = "tradedesk/prompts/token_deep_analysis.md"
 "src/tradedesk/data/macro_events.json" = "tradedesk/data/macro_events.json"
 "src/tradedesk/data/alert_rules.example.json" = "tradedesk/data/alert_rules.example.json"
+"src/tradedesk/data/events_seed.json" = "tradedesk/data/events_seed.json"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

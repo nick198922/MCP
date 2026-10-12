@@ -11,6 +11,7 @@ def register_all(server: MCPServer, rt: Runtime) -> None:
         backtest,
         calendar,
         coingecko,
+        events,
         history,
         journal,
         liquidations,
@@ -43,6 +44,7 @@ def register_all(server: MCPServer, rt: Runtime) -> None:
         rules,
         strategy,
         backtest,
+        events,
         prompts,
     ):
         module.register(server, rt)

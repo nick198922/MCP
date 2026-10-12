@@ -72,6 +72,7 @@ claude mcp add tradedesk -- uv run --directory /ABSOLUTE/PATH/TO/tradedesk-mcp t
 | Квант | `odds_devig`, `option_calc`, `touch_probability` | маржа й справедливі ймовірності, калькулятор опціону, barrier-ймовірність |
 | Настрій | `sentiment_fear_greed` | Crypto Fear & Greed (alternative.me): latest + zone, mean 7d/30d, зміни, частка днів у кожній зоні |
 | Календар | `calendar_expiries` | експірації Deribit (daily/weekly/monthly/quarterly), найближчі funding-моменти, макро-події (FOMC/CPI/NFP) |
+| Події (Фаза 1) | `events_add`, `events_list`, `events_seed_load` | локальна база макро-подій (FOMC/CPI/NFP); seed 2024-2026 запаковано у wheel |
 | Prediction markets | `polymarket_search`, `polymarket_market`, `polymarket_history` | Polymarket Gamma+CLOB: пошук, карта ринку з order-book мідами, історія цін yes/no |
 | Макро/ринок | `coin_snapshot`, `global_market`, `top_coins` | CoinGecko: ціна/mcap/FDV/supply/ATH, глобальна домінація BTC/ETH/alts, топ-N монет |
 | Історія (Фаза 2) | `iv_rank`, `funding_zscore`, `skew_percentile`, `alerts_recent`, `ohlcv_history` | ATM-IV rank, крос-венюз funding z-score, 25Δ/10Δ RR percentile, журнал алертів, історичний OHLCV з локальної SQLite |

@@ -1,6 +1,11 @@
 # Changelog
 
 ## Unreleased
+- Фаза 1.15: event dataset (локальний календар макро-подій).
+  * Schema v8: таблиця `events(id, ts, kind, label, impact, meta)` з `UNIQUE(ts, kind, label)` і індексом `(kind, ts)`. Store API: `event_insert` (idempotent, `rowcount` замість `lastrowid` для dedup), `events_insert_many` (bulk INSERT OR IGNORE), `events_list(kind?, impact?, since_ts?, until_ts?)`, `event_count`.
+  * Bundled seed `src/tradedesk/data/events_seed.json` із 96 подіями: FOMC × 24 (2024-2026), CPI × 36, NFP × 36. Часи UTC приблизні (13:30/19:00). 2026 Fed-дати позначено як projected у `_meta.note`. Файл запаковано у wheel через `force-include`.
+  * Три MCP-tools: `events_add(kind, label, impact, ts_ms? OR date+time_utc?, meta?)`, `events_list(kind?, impact?, since_date?, until_date?)`, `events_seed_load` (idempotent, повертає `candidates/inserted/already_present/events_before/after` і warning про projected 2026).
+  * Фундамент під майбутній 1.16 `event_study`.
 - Фаза 1.14: історичне сховище OHLCV + collector + MCP-інструмент.
   * Schema v7: таблиця `ohlcv_hist(venue, symbol, timeframe, ts, o, h, l, c, v)` з PK `(venue, symbol, timeframe, ts)` і індексом `(venue, symbol, timeframe, ts)`. Store API: `insert_ohlcv_batch(venue, symbol, timeframe, bars)` (REPLACE за PK, приймає ccxt-масиви й dict-рядки), `ohlcv_range(venue, symbol, timeframe, since_ts, until_ts?, limit?)`, `ohlcv_last_ts(…)`. `prune("ohlcv_hist", cutoff_ms)` і retention у секундах (`TRADEDESK_RETENTION_OHLCV_HIST_DAYS`).
   * Scheduler-job `ohlcv_hist`: парсить `TRADEDESK_COLLECT_OHLCV_HIST_MARKETS=venue:symbol:timeframe,…` (ccxt-символи з ':' обробляються коректно), backfill до `TRADEDESK_OHLCV_HIST_BACKFILL_DAYS` (365 default), інкрементально тягне після `last_ts`, до 10 batch'ів по 500 бар'ів за тік (default період — 1 година).
@@ -83,7 +88,7 @@
 - Фаза 1.2: `perps_funding_history` — крос-венюз історія funding (Binance/Bybit/OKX через ccxt `fetch_funding_rate_history` + Hyperliquid), автодетект інтервалу з медіани ts-різниць (`detect_interval_hours`), крос-венюз-summary (highest/lowest carry, biggest |z|), опція `include_series` для сирих рядів. Live-перевірено на BTC: HL carry 9.1%, OKX 5.1%, Binance 4.5%, Bybit 4.3%; Bybit `z = −1.45` (mean-reversion сигнал).
 - MCP-промт `token_deep_analysis(project)` — глибокий 10-секційний інвест-аналіз криптопроекту (RU), шаблон `src/tradedesk/prompts/token_deep_analysis.md` (bundled у wheel), з хінтом про релевантні tradedesk-mcp інструменти для графіка/позиціювання.
 - Фаза 1.3: нові провайдери `binance_futures.py` і `bybit.py` під окремими `Http` з лімітами. Два нові інструменти: `perps_long_short_ratio` (роздрібні account-based fractions Binance+Bybit, latest/mean/z-score, cross-venue divergence) і `perps_oi_history` (OI history Binance в USD, Bybit в base, latest/mean/change24h/z, cross-venue biggest gain/drop). Live-перевірено 2026-10-10 на BTC.
-- Тестів: 176 (+125 від 0.1.0), lint чистий. Нові залежності `aiosqlite>=0.19`, `websockets>=12`.
+- Тестів: 181 (+130 від 0.1.0), lint чистий. Нові залежності `aiosqlite>=0.19`, `websockets>=12`.
 
 ## 0.1.0 — 2026-10-10
 - Ядро: `Http` (ретраї, rate-limit, кеш із single-flight, класифікація помилок), `HealthRegistry`, `Envelope/Evidence`.

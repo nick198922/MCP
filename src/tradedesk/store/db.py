@@ -329,6 +329,109 @@ class Store:
             out.append(d)
         return out
 
+    # ---------- events (macro calendar) ----------
+
+    async def event_insert(
+        self,
+        *,
+        ts: int,
+        kind: str,
+        label: str,
+        impact: str = "medium",
+        meta: dict[str, Any] | None = None,
+        ignore_duplicate: bool = True,
+    ) -> int:
+        """Insert one event. With ``ignore_duplicate`` (default) the UNIQUE
+        (ts, kind, label) constraint drops repeats silently; returns the row's
+        id if inserted, else 0."""
+        verb = "INSERT OR IGNORE" if ignore_duplicate else "INSERT"
+        cur = await self.conn.execute(
+            f"{verb} INTO events (ts, kind, label, impact, meta) VALUES (?,?,?,?,?)",
+            (int(ts), kind, label, impact, json.dumps(meta) if meta else None),
+        )
+        await self.conn.commit()
+        # `lastrowid` sticks around across INSERT OR IGNORE no-ops, so gate on rowcount.
+        return int(cur.lastrowid or 0) if (cur.rowcount or 0) > 0 else 0
+
+    async def events_insert_many(self, rows: list[dict[str, Any]]) -> int:
+        """Bulk upsert with UNIQUE-based idempotency. Returns the number of
+        new rows (SQLite's ``total_changes`` delta)."""
+        if not rows:
+            return 0
+        before = self.conn.total_changes
+        payload = []
+        for r in rows:
+            try:
+                payload.append(
+                    (
+                        int(r["ts"]),
+                        str(r["kind"]),
+                        str(r["label"]),
+                        str(r.get("impact") or "medium"),
+                        json.dumps(r["meta"]) if r.get("meta") else None,
+                    )
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+        await self.conn.executemany(
+            "INSERT OR IGNORE INTO events (ts, kind, label, impact, meta) VALUES (?,?,?,?,?)",
+            payload,
+        )
+        await self.conn.commit()
+        return self.conn.total_changes - before
+
+    async def events_list(
+        self,
+        *,
+        kind: str | None = None,
+        impact: str | None = None,
+        since_ts: int | None = None,
+        until_ts: int | None = None,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        where: list[str] = []
+        params: list[Any] = []
+        if kind:
+            where.append("kind = ?")
+            params.append(kind)
+        if impact:
+            where.append("impact = ?")
+            params.append(impact)
+        if since_ts is not None:
+            where.append("ts >= ?")
+            params.append(int(since_ts))
+        if until_ts is not None:
+            where.append("ts <= ?")
+            params.append(int(until_ts))
+        sql = "SELECT id, ts, kind, label, impact, meta FROM events"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY ts LIMIT ?"
+        params.append(int(limit))
+        cur = await self.conn.execute(sql, params)
+        rows = await cur.fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            d = dict(r)
+            m = d.get("meta")
+            if isinstance(m, str):
+                try:
+                    d["meta"] = json.loads(m)
+                except (TypeError, ValueError):
+                    pass
+            out.append(d)
+        return out
+
+    async def event_count(self, kind: str | None = None) -> int:
+        sql = "SELECT COUNT(*) FROM events"
+        params: list[Any] = []
+        if kind:
+            sql += " WHERE kind = ?"
+            params.append(kind)
+        cur = await self.conn.execute(sql, params)
+        row = await cur.fetchone()
+        return int(row[0]) if row else 0
+
     # ---------- ohlcv history ----------
 
     async def insert_ohlcv_batch(self, venue: str, symbol: str, timeframe: str, bars: list[Any]) -> int:

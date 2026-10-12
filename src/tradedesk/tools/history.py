@@ -13,7 +13,7 @@ from typing import Annotated, Any, Literal
 from mcp.server.mcpserver import MCPServer
 from pydantic import Field
 
-from ..analytics.ranges import classify_ranges
+from ..analytics.ranges import classify_ranges, generate_setup
 from ..analytics.regime import classify_regime
 from ..core.envelope import Builder
 from ..runtime import Runtime
@@ -395,6 +395,134 @@ def register(server: MCPServer, rt: Runtime) -> None:
                     for s in res["sweeps"]
                 ],
                 "deviations_per_range": res["deviations_per_range"],
+            }
+        )
+
+    @server.tool(
+        annotations=READ_ONLY,
+        description=(
+            "Translate the latest sweep inside the latest range into a tradable setup "
+            "(entry / stop / tp1 / tp2 / RR). Follows DoubleTop «Торговля SFP» rules: "
+            "stop = swept_level ± (stop_mult × reversal_pct), with a floor of "
+            "stop_min_offset_pct; tp1 = range midpoint, tp2 = opposite boundary; `tradable` "
+            "is True when rr1 ≥ min_rr. `use_tight_stop=true` collapses the stop multiplier "
+            "to the min offset — the rule after 2-3 confirmed sweeps in a row. Setup entry "
+            "is a math approximation at the swept level; a real client validates on 15m price "
+            "action before firing."
+        ),
+    )
+    async def range_setup(
+        venue: Annotated[str, Field(description="ccxt venue id.")],
+        symbol: Annotated[str, Field(description="ccxt symbol.")],
+        timeframe: Annotated[str, Field(description="Range timeframe (4h / 12h recommended by lecture).")] = "4h",
+        lookback_bars: Annotated[int, Field(ge=20, le=10_000)] = 300,
+        min_bars: Annotated[int, Field(ge=5, le=1000)] = 20,
+        max_width_pct: Annotated[float, Field(gt=0, le=50)] = 15.0,
+        swing_lookback: Annotated[int, Field(ge=1, le=50)] = 3,
+        sweep_wick_ratio: Annotated[float, Field(ge=0.0, le=1.0)] = 0.5,
+        stop_mult: Annotated[float, Field(ge=0.0, le=10, description="Stop offset multiplier over the sweep's reversal %.")] = 2.0,
+        stop_min_offset_pct: Annotated[float, Field(ge=0.0, le=5, description="Minimum stop offset in percent.")] = 0.1,
+        min_rr: Annotated[float, Field(ge=1, le=20, description="Min rr1 to flag the setup as tradable.")] = 2.0,
+        use_tight_stop: Annotated[bool, Field(description="After 2-3 confirmed sweeps: stop right at the swept level.")] = False,
+        source: Annotated[Literal["store", "live"], Field(description="Where bars come from.")] = "live",
+    ) -> dict[str, Any]:
+        b = Builder()
+        if source == "live":
+            fetched = await b.guard(f"ohlcv:{venue}", f"ccxt:{venue}", rt.exchanges.ohlcv(venue, symbol, timeframe, lookback_bars))
+            raw = fetched or []
+            bars = [
+                {
+                    "ts": int(x[0]),
+                    "open": float(x[1]),
+                    "high": float(x[2]),
+                    "low": float(x[3]),
+                    "close": float(x[4]),
+                    "volume": float(x[5]) if len(x) >= 6 else 0.0,
+                }
+                for x in raw
+                if isinstance(x, (list, tuple)) and len(x) >= 5
+            ]
+        else:
+            if rt.store is None:
+                b.miss("store", "tradedesk", "config", "db_path is empty; set TRADEDESK_DB_PATH to use source='store'")
+                return b.build(None, ok=False)
+            await rt.store.init()
+            rows = await rt.store.ohlcv_range(venue=venue, symbol=symbol, timeframe=timeframe, since_ts=0, limit=lookback_bars * 2)
+            bars = rows[-lookback_bars:] if rows else []
+        if len(bars) < min_bars:
+            b.miss("bars", "tradedesk", "data_unavailable", f"only {len(bars)} bars; need >= {min_bars}")
+            return b.build(None, ok=False)
+        res = classify_ranges(
+            bars,
+            min_bars=min_bars,
+            max_width_pct=max_width_pct,
+            swing_lookback=swing_lookback,
+            sweep_wick_ratio=sweep_wick_ratio,
+        )
+        if not res["ranges"]:
+            b.miss("range", "tradedesk", "data_unavailable", "no range detected in the window")
+            return b.build(None, ok=False)
+        latest_rng = res["ranges"][-1]
+        latest_cls = res["classifications"][-1] if res["classifications"] else None
+        # Only sweeps that fall inside the latest range count.
+        in_rng = [s for s in res["sweeps"] if latest_rng["start_idx"] <= s["idx"] <= latest_rng["end_idx"]]
+        if not in_rng:
+            b.miss("sweep", "tradedesk", "data_unavailable", "no sweeps inside the latest range")
+            return b.build(None, ok=False)
+        latest_sweep = in_rng[-1]
+        setup = generate_setup(
+            latest_rng,
+            latest_sweep,
+            stop_mult=stop_mult,
+            stop_min_offset_pct=stop_min_offset_pct,
+            min_rr=min_rr,
+            use_tight_stop=use_tight_stop,
+        )
+        if setup is None:
+            b.miss("setup", "tradedesk", "data_unavailable", "sweep direction incoherent with range")
+            return b.build(None, ok=False)
+        # Count how many sweeps on this side came recently — hint for tightening the stop (M7).
+        recent_same_side = sum(1 for s in in_rng[-5:] if s["side"] == latest_sweep["side"])
+        return b.build(
+            {
+                "venue": venue,
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "range": {
+                    "top": r(latest_rng["top"], 6),
+                    "bottom": r(latest_rng["bottom"], 6),
+                    "mid": r(latest_rng["mid"], 6),
+                    "width_pct": r(latest_rng["width_pct"], 4),
+                    "classification": latest_cls,
+                },
+                "latest_sweep": {
+                    "ts": latest_sweep["ts"],
+                    "side": latest_sweep["side"],
+                    "swept_level": r(latest_sweep["swept_level"], 6),
+                    "reversal_pct": r(latest_sweep["reversal_pct"], 4),
+                    "same_side_in_last_5": recent_same_side,
+                },
+                "setup": {
+                    "direction": setup["direction"],
+                    "entry": r(setup["entry"], 6),
+                    "stop": r(setup["stop"], 6),
+                    "stop_offset_pct": r(setup["stop_offset_pct"], 4),
+                    "tp1": r(setup["tp1"], 6),
+                    "tp2": r(setup["tp2"], 6),
+                    "risk_pct_from_entry": r(setup["risk_pct_from_entry"], 4),
+                    "rr1": r(setup["rr1"], 3),
+                    "rr2": r(setup["rr2"], 3),
+                    "tradable": setup["tradable"],
+                    "min_rr": setup["min_rr"],
+                },
+                "hints": {
+                    "consider_tight_stop": recent_same_side >= 3,
+                    "note": (
+                        "Multiple same-side sweeps in a row (≥3) justify tightening the stop (DoubleTop rule M7)."
+                        if recent_same_side >= 3
+                        else "Standard stop offset recommended."
+                    ),
+                },
             }
         )
 

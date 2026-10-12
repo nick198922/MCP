@@ -1,6 +1,17 @@
 # Changelog
 
 ## Unreleased
+- Фаза 1.17c: SFP trade generator (DoubleTop «Торговля SFP», Part 3).
+  * Pure `analytics/ranges.py::generate_setup(range, sweep, stop_mult=2.0, stop_min_offset_pct=0.1, min_rr=2.0, use_tight_stop=False)`:
+    - direction: short after high-sweep, long after low-sweep.
+    - entry = swept_level (math approximation; реальний клієнт перевіряє 15m price action).
+    - stop = swept_level ± max(stop_min_offset_pct, stop_mult × sweep.reversal_pct) — DoubleTop rule M2.
+    - tp1 = range mid, tp2 = opposite boundary — rule M3.
+    - rr1/rr2 обчислюються; `tradable = rr1 ≥ min_rr` — rule M4.
+    - `use_tight_stop=True` схлопує multiplier → stop прямо за swept_level — rule M7 (після 2-3 підтверджених sweeps).
+    - Повертає None якщо sweep direction incoherent with range.
+  * MCP-tool `range_setup(venue, symbol, timeframe, lookback_bars, min_bars, max_width_pct, swing_lookback, sweep_wick_ratio, stop_mult, stop_min_offset_pct, min_rr, use_tight_stop, source='store'|'live')` — обирає last range → last same-range sweep → setup + classification + `hints.consider_tight_stop` коли same-side sweeps ≥ 3 з останніх 5.
+  * Live BTC 2026-10-12 4h×300: range 74909..87385 ambiguous, last sweep high@84555 rev 0.54%, setup SHORT entry 84555 stop 85460 (1.07% ≈ 2× sweep) tp1=81147 (RR 3.77) tp2=74909 (RR 10.66) tradable=True, same-side=4 → M7 hint fired. Reproduces all mechanics from the lecture.
 - Фаза 1.17b: класифікація accumulation vs distribution (DoubleTop Part 2).
   * `analytics/ranges.py::range_type_hint(bars, range, swings, sweeps, sweep_asymmetry_threshold=0.65)` голосує на 3 критеріях і повертає `{type, confidence, votes, signals, metrics, reasons}`:
     - **context**: SMA100 vs SMA200 at the range's end (DoubleTop C1).

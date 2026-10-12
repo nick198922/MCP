@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from mcp import Client
 
 from conftest import NOW, FakeEx, make_transports
@@ -10,6 +11,7 @@ from tradedesk.analytics.ranges import (
     detect_deviations,
     detect_ranges,
     detect_sweeps,
+    generate_setup,
     range_type_hint,
     swing_points,
 )
@@ -204,6 +206,45 @@ async def _call(server, name, **args):
     return data
 
 
+def test_generate_setup_short_from_high_sweep():
+    rng = {"top": 110.0, "bottom": 90.0, "mid": 100.0}
+    sweep = {"side": "high", "swept_level": 110.0, "reversal_pct": 1.0, "ts": 42}
+    setup = generate_setup(rng, sweep, stop_mult=2.0, stop_min_offset_pct=0.1, min_rr=2.0)
+    assert setup["direction"] == "short"
+    assert setup["entry"] == pytest.approx(110.0)
+    # 2.0 × 1.0 % = 2 %, so stop at 110 × 1.02 = 112.2
+    assert setup["stop"] == pytest.approx(112.2, rel=1e-6)
+    assert setup["tp1"] == pytest.approx(100.0)
+    assert setup["tp2"] == pytest.approx(90.0)
+    # risk 2.2, reward1 10 → RR ~ 4.5
+    assert setup["rr1"] == pytest.approx(10.0 / 2.2, rel=1e-6)
+    assert setup["tradable"] is True
+
+
+def test_generate_setup_long_from_low_sweep_and_tight_stop():
+    rng = {"top": 110.0, "bottom": 90.0, "mid": 100.0}
+    sweep = {"side": "low", "swept_level": 90.0, "reversal_pct": 1.5, "ts": 42}
+    tight = generate_setup(rng, sweep, stop_mult=2.0, stop_min_offset_pct=0.1, use_tight_stop=True)
+    # Tight stop uses just the min offset (0.1 %), so stop = 90 × 0.999 = 89.91.
+    assert tight["direction"] == "long"
+    assert tight["stop"] == pytest.approx(89.91, rel=1e-6)
+    assert tight["rr1"] > 100  # tiny risk × big reward
+
+
+def test_generate_setup_rejects_incoherent_sweep():
+    rng = {"top": 110.0, "bottom": 90.0, "mid": 100.0}
+    # A "high" sweep whose swept_level sits below the mid is incoherent.
+    bad = generate_setup(rng, {"side": "high", "swept_level": 95.0, "reversal_pct": 0.5, "ts": 42}, min_rr=2.0)
+    assert bad is None
+
+
+def test_generate_setup_tradable_flag():
+    rng = {"top": 110.0, "bottom": 90.0, "mid": 100.0}
+    # Big sweep → wide stop → RR < 2
+    weak = generate_setup(rng, {"side": "high", "swept_level": 110.0, "reversal_pct": 8.0, "ts": 42}, min_rr=2.0)
+    assert weak["tradable"] is False
+
+
 async def test_range_detect_live_source(state):
     rt = Runtime(
         Settings(http_retries=1, cache_scale=0.0, db_path=""),
@@ -229,6 +270,39 @@ async def test_range_detect_live_source(state):
         # FakeEx oscillates mildly inside ~5-6 % band → a range should emerge.
         assert d["n_ranges"] >= 1
         assert d["latest_range"]["bottom"] < d["latest_range"]["top"]
+    finally:
+        await rt.aclose()
+
+
+async def test_range_setup_live_mcp(state):
+    rt = Runtime(
+        Settings(http_retries=1, cache_scale=0.0, db_path=""),
+        transports=make_transports(state),
+        exchange_factory=FakeEx,
+    )
+    rt.now = lambda: NOW
+    srv, _ = build_server(rt)
+    try:
+        env = await _call(
+            srv,
+            "range_setup",
+            venue="binanceusdm",
+            symbol="BTC/USDT:USDT",
+            timeframe="1h",
+            lookback_bars=100,
+            min_bars=20,
+            max_width_pct=10,
+            source="live",
+        )
+        if env["ok"]:
+            d = env["data"]
+            assert d["setup"]["direction"] in ("long", "short")
+            assert "rr1" in d["setup"]
+            assert d["setup"]["entry"] > 0
+        else:
+            # Fake oscillator may not generate a clean sweep inside a tight range;
+            # tolerant failure path.
+            assert any(m["field"] in ("sweep", "range", "setup") for m in env["missing"])
     finally:
         await rt.aclose()
 

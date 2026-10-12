@@ -356,6 +356,82 @@ def range_type_hint(
     }
 
 
+def generate_setup(
+    rng: dict[str, Any],
+    sweep: dict[str, Any],
+    *,
+    stop_mult: float = 2.0,
+    stop_min_offset_pct: float = 0.1,
+    min_rr: float = 2.0,
+    use_tight_stop: bool = False,
+) -> dict[str, Any]:
+    """Translate a sweep into a tradable entry / stop / targets block.
+
+    Follows the DoubleTop «Торговля SFP» rules:
+    * **direction**: long after a low-side sweep, short after a high-side sweep.
+    * **entry**: at the swept level — i.e. where price retraced back to after
+      the sweep. Simple approximation; a real client watches 15m price action.
+    * **stop**: swept extreme ± `stop_mult × sweep.reversal_pct` (M2). Falls
+      back to `stop_min_offset_pct` so a tiny sweep still gives breathing room.
+      When `use_tight_stop` is True (after 2-3 confirmed sweeps, rule M7) the
+      multiplier collapses to just the min offset — effectively "stop right at
+      the swept level".
+    * **tp1 / tp2**: mid of the range (M3) and the opposite boundary.
+    * **rr1 / rr2**: reward-to-risk for each target.
+    * **tradable**: True when `rr1 >= min_rr` (M4).
+
+    Returns ``None`` when the sweep direction is incoherent with the range
+    (sweep high but swept_level below the range top, etc.) — belt-and-braces.
+    """
+    top, bottom = float(rng["top"]), float(rng["bottom"])
+    mid = (top + bottom) / 2.0
+    side = sweep.get("side")
+    level = float(sweep.get("swept_level") or 0.0)
+    rev = float(sweep.get("reversal_pct") or 0.0)
+    offset_pct = max(stop_min_offset_pct, stop_mult * rev) if not use_tight_stop else stop_min_offset_pct
+    if side == "high":
+        entry = level
+        stop = level * (1 + offset_pct / 100.0)
+        tp1 = mid
+        tp2 = bottom
+        direction = "short"
+    elif side == "low":
+        entry = level
+        stop = level * (1 - offset_pct / 100.0)
+        tp1 = mid
+        tp2 = top
+        direction = "long"
+    else:
+        return None
+    risk = abs(stop - entry)
+    reward1 = abs(tp1 - entry)
+    reward2 = abs(tp2 - entry)
+    if risk <= 0:
+        return None
+    # Flip reward signs if the sweep sits on the wrong side of the mid (incoherent).
+    if direction == "short" and entry <= mid:
+        return None
+    if direction == "long" and entry >= mid:
+        return None
+    rr1 = reward1 / risk
+    rr2 = reward2 / risk
+    return {
+        "direction": direction,
+        "entry": entry,
+        "stop": stop,
+        "stop_offset_pct": offset_pct,
+        "tp1": tp1,
+        "tp2": tp2,
+        "risk_abs": risk,
+        "risk_pct_from_entry": risk / entry * 100.0 if entry > 0 else None,
+        "rr1": rr1,
+        "rr2": rr2,
+        "tradable": rr1 >= min_rr,
+        "min_rr": min_rr,
+        "sweep_ts": sweep.get("ts"),
+    }
+
+
 def classify_ranges(
     bars: list[dict[str, Any]],
     *,

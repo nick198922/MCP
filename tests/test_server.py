@@ -76,6 +76,7 @@ EXPECTED_TOOLS = {
     "strategy_funding_carry",
     "strategy_backtest_momentum",
     "strategy_scenario_matrix",
+    "fib_retracement",
 }
 
 

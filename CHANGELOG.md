@@ -1,6 +1,9 @@
 # Changelog
 
 ## Unreleased
+- Фаза 3.8: `fib_retracement` — fibonacci retracement ladder.
+  * Pure `analytics/retracement.py::fib_levels(p0, L, levels)` і `summarise_retracement(p0, L, levels?, min_drop_pct)` з напрямком (drop/rally/flat), diff_abs/diff_pct, applicable-flag проти noise floor. Формула симетрична в обох напрямках: `price = L + (P0 − L) × level`.
+  * MCP-tool `fib_retracement(p0, l_point, levels?, min_drop_pct=2.0)` повертає ладдер (default 23.6/38.2/50/61.8/78.6%) з `price` + `pct_of_p0`; на малому русі — `ok=true, applicable: false` з reason і повний ladder для огляду. Historical hit-rate на ladder-levels — окремий крок пізніше.
 - Фаза 3.7: `strategy_scenario_matrix` — multi-horizon MTM-grid для стратегії.
   * Pure `analytics/strategy.py::scenario_matrix(legs, initial_forward, horizons, prices)`: для кожного `{days, iv}` і кожної ціни з `prices` рахує Black-76 MTM через `mtm_value` (linear-ноги — time-invariant). Greeks рахуються при `forward=initial_forward` і horizon `(days, iv)` — дрейф δ/γ/vega/θ видно з таблиці.
   * MCP-tool `strategy_scenario_matrix(legs, spot, horizons?, days?, iv?, forward?, price_grid_pct?)`. Default-horizons `[D/3, D/2, D]` з flat IV; default-grid `[-10,-5,-2,0,2,5,10]%`. Повертає `matrix` із `prices`, `pct_moves`, `pnl_usd`, `greeks` per horizon.
@@ -98,7 +101,7 @@
 - Фаза 1.2: `perps_funding_history` — крос-венюз історія funding (Binance/Bybit/OKX через ccxt `fetch_funding_rate_history` + Hyperliquid), автодетект інтервалу з медіани ts-різниць (`detect_interval_hours`), крос-венюз-summary (highest/lowest carry, biggest |z|), опція `include_series` для сирих рядів. Live-перевірено на BTC: HL carry 9.1%, OKX 5.1%, Binance 4.5%, Bybit 4.3%; Bybit `z = −1.45` (mean-reversion сигнал).
 - MCP-промт `token_deep_analysis(project)` — глибокий 10-секційний інвест-аналіз криптопроекту (RU), шаблон `src/tradedesk/prompts/token_deep_analysis.md` (bundled у wheel), з хінтом про релевантні tradedesk-mcp інструменти для графіка/позиціювання.
 - Фаза 1.3: нові провайдери `binance_futures.py` і `bybit.py` під окремими `Http` з лімітами. Два нові інструменти: `perps_long_short_ratio` (роздрібні account-based fractions Binance+Bybit, latest/mean/z-score, cross-venue divergence) і `perps_oi_history` (OI history Binance в USD, Bybit в base, latest/mean/change24h/z, cross-venue biggest gain/drop). Live-перевірено 2026-10-10 на BTC.
-- Тестів: 193 (+142 від 0.1.0), lint чистий. Нові залежності `aiosqlite>=0.19`, `websockets>=12`.
+- Тестів: 201 (+150 від 0.1.0), lint чистий. Нові залежності `aiosqlite>=0.19`, `websockets>=12`.
 
 ## 0.1.0 — 2026-10-10
 - Ядро: `Http` (ретраї, rate-limit, кеш із single-flight, класифікація помилок), `HealthRegistry`, `Envelope/Evidence`.

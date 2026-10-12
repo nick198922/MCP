@@ -12,8 +12,8 @@
 
 Припущення, які ще не підтверджено власником (не вважати рішеннями): алерти через Telegram; хостинг на VPS; IBKR (на його Маку помічено папки `Jts`/`ntws`, схоже на IB TWS).
 
-## Що зроблено (Фаза 0 + Фаза 1 без 1.10 + 1.14-1.16 + Фаза 2 без 2.10 + Фаза 3.1/3.3/3.4/3.5/3.7)
-72 інструменти, публічні дані (CoinGecko вільно без ключа, з ключем — вищий ліміт):
+## Що зроблено (Фаза 0 + Фаза 1 без 1.10 + 1.14-1.16 + Фаза 2 без 2.10 + Фаза 3.1/3.3/3.4/3.5/3.7/3.8)
+73 інструменти, публічні дані (CoinGecko вільно без ключа, з ключем — вищий ліміт):
 
 | Група | Інструменти |
 |---|---|
@@ -23,7 +23,7 @@
 | Hyperliquid | `hyperliquid_overview`, `hyperliquid_candles`, `hyperliquid_book`, `hyperliquid_trades`, `hyperliquid_funding_history` |
 | Ф'ючерси | `deribit_futures_curve` |
 | Опціони | `deribit_vol_surface`, `deribit_option_chain`, `deribit_max_pain`, `deribit_gamma_exposure`, `deribit_expected_move`, `deribit_oi_by_strike`, `deribit_dvol`, `deribit_atm_term`, `deribit_skew_term`, `deribit_largest_trades`, `prob_from_options` |
-| Квант | `odds_devig`, `option_calc`, `touch_probability` |
+| Квант | `odds_devig`, `option_calc`, `touch_probability`, `fib_retracement` |
 | Настрій | `sentiment_fear_greed` |
 | Календар | `calendar_expiries` |
 | Події (Фаза 1) | `events_add`, `events_list`, `events_seed_load`, `event_study` |
@@ -76,6 +76,7 @@
 - **Фаза 1.15:** schema v8 (`events`) + bundled seed JSON (FOMC/CPI/NFP 2024-2026, 96 подій, 2026 Fed-дати projected) + 3 MCP-tools (`events_add`, `events_list`, `events_seed_load`). Idempotency через `UNIQUE(ts, kind, label)`.
 - **Фаза 1.16:** event-study engine `analytics/event_study.py` (5 measures: direction/close_vs_t0/max_up/max_dd/volatility; `small_sample_flag` коли n<20) + MCP-tool `event_study` поверх `ohlcv_hist` + `events`. Готовий фундамент для FOMC-style playbook'ів (DoubleTop pattern).
 - **Фаза 3.7:** `strategy_scenario_matrix` — multi-horizon MTM-grid для стратегії. Black-76 на кожному горизонті, flat IV per horizon (feed різні IV у `horizons` для term-structure). Default schedule `[D/3, D/2, D]` і grid `[-10,-5,-2,0,2,5,10]%`.
+- **Фаза 3.8:** `fib_retracement` — pure math ladder 23.6/38.2/50/61.8/78.6% з direction і noise-filter (`min_drop_pct`). Analytics `retracement.py`.
 - **Фаза 2.3:** schema v5 (`liquidations`) + WS-колектор для 3 venues. Binance `!forceOrder@arr` (без subscribe), Bybit v5 `allLiquidation.<symbol>` (per-symbol subscribe), OKX v5 `liquidation-orders` (один `instType`). Вибір venues через `TRADEDESK_COLLECT_LIQUIDATIONS_VENUES`. Загальний drain `_consume_liquidation_stream` → `insert_liquidations` батчами по 100. MCP-інструмент `liquidations_summary(window_minutes, venue?, symbol?)`. Live-перевірено (OKX STRK-USDT-SWAP ліквідації залетіли; Bybit підключився). Залишилось у Фазі 2: email/ntfy канали, off-site бекапи, `/healthz`, Prometheus (2.10).
 - Тестів: 144 (+74 за сесію), lint і format чисті. Нові залежності: `aiosqlite`, `websockets`.
 - **`make smoke` live 2026-10-10: 15/15 ok** на реальних біржах. Deribit greeks звірено з їхнім ticker (30OCT26, delta/vega/theta до 4 знаків). `perps_open_interest` з новим fallback відпрацював 669 мс. `sentiment_fear_greed` повернув 30 денних значень; живий зразок збережено в `tests/fixtures/alternative_me_fng_live_2026-10-10.json`.

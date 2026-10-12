@@ -77,6 +77,7 @@
 - [ ] 6.3 Підписані релізи, Dependabot, SBOM.
 - [ ] 6.4 Документація користувача: цикли використання («ранковий брифінг», «пре-трейд чеклист»), MCP-промпти (`@server.prompt`) для типових сценаріїв.
 
+- [x] 3.8 Fibonacci retracement calculator: pure `analytics/retracement.py::fib_levels(p0, L, levels)` + `summarise_retracement(p0, L, levels?, min_drop_pct)` з direction (drop/rally/flat), applicable-flag (|move| ≥ min_drop_pct). MCP-tool `fib_retracement(p0, l_point, levels?, min_drop_pct=2.0)` повертає ладдер (23.6/38.2/50/61.8/78.6% default) з `price` і `pct_of_p0`; на малих рухах — ok=true з `applicable: false` і причиною. Historical hit-rate на ladder-levels — наступний крок (через windowed walk по `ohlcv_hist`).
 - [x] 3.7 Scenario matrix: `scenario_matrix(legs, initial_forward, horizons=[{days, iv}, …], prices)` — multi-horizon MTM-grid (Black-76 на кожному горизонті, flat IV per horizon; linear-ноги time-invariant). MCP-tool `strategy_scenario_matrix(legs, spot, horizons?, days?, iv?, forward?, price_grid_pct?)` з default-horizon-schedule `[D/3, D/2, D]` і default-grid `[-10,-5,-2,0,2,5,10]%`. Повертає `matrix` із PnL-рядком, pct_moves і net greeks per horizon.
 
 ## Ідеї без пріоритету

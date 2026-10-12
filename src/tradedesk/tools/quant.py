@@ -8,6 +8,7 @@ from pydantic import Field
 from ..analytics import odds as odds_mod
 from ..analytics import probability
 from ..analytics.options import black76_greeks, black76_price
+from ..analytics.retracement import summarise_retracement
 from ..core.envelope import Builder
 from ..runtime import Runtime
 from ._util import READ_ONLY, r
@@ -80,4 +81,61 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 "one_sigma_move_pct": r(iv * T**0.5 * 100, 2),
             },
             ok=True,
+        )
+
+    @server.tool(
+        annotations=READ_ONLY,
+        description=(
+            "Fibonacci retracement ladder. Given a reference price `p0` (decision price before "
+            "a reaction) and the reaction extreme `L` (lowest low in a drop, highest high in a "
+            "rally), returns the standard 23.6 / 38.2 / 50 / 61.8 / 78.6 % ladder plus "
+            "direction, absolute / percent move, and an `applicable` flag that is False when the "
+            "move is below `min_drop_pct` (default 2 %) — a cheap guard against pulling a "
+            "ladder off noise. Pure math; it does not fetch any data."
+        ),
+    )
+    async def fib_retracement(
+        p0: Annotated[float, Field(gt=0, description="Decision / pre-reaction reference price.")],
+        l_point: Annotated[float, Field(gt=0, description="Reaction extreme (lowest low on a drop, highest high on a rally).")],
+        levels: Annotated[
+            list[float] | None, Field(description="Custom retracement levels (defaults to 0.236/0.382/0.5/0.618/0.786).")
+        ] = None,
+        min_drop_pct: Annotated[float, Field(ge=0, le=100, description="Noise-filter threshold on |P0 - L| / P0, in percent.")] = 2.0,
+    ) -> dict[str, Any]:
+        b = Builder()
+        s = summarise_retracement(p0, l_point, levels=levels, min_drop_pct=min_drop_pct)
+        if not s.get("applicable"):
+            # Still return the full block so the caller can inspect why.
+            return b.build(
+                {
+                    "p0": p0,
+                    "l": l_point,
+                    "diff_abs": r(s.get("diff_abs", 0.0), 6),
+                    "diff_pct": r(s.get("diff_pct", 0.0), 4),
+                    "direction": s.get("direction"),
+                    "applicable": False,
+                    "reason": s.get("reason") or f"|move| < {min_drop_pct}% noise floor",
+                    "ladder": [{"level": lv["level"], "price": r(lv["price"], 6)} for lv in s.get("ladder", [])],
+                },
+                ok=True,
+            )
+        ladder = [
+            {
+                "level": lv["level"],
+                "price": r(lv["price"], 6),
+                "pct_of_p0": r((lv["price"] / p0 - 1.0) * 100.0, 4) if p0 > 0 else None,
+            }
+            for lv in s["ladder"]
+        ]
+        return b.build(
+            {
+                "p0": p0,
+                "l": l_point,
+                "diff_abs": r(s["diff_abs"], 6),
+                "diff_pct": r(s["diff_pct"], 4),
+                "direction": s["direction"],
+                "applicable": True,
+                "min_drop_pct": s["min_drop_pct"],
+                "ladder": ladder,
+            }
         )

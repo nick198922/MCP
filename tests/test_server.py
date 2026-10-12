@@ -188,7 +188,7 @@ async def test_funding_carry_scan_candidates_from_bulk(server):
     btc = next(x for x in rows if x["base"] == "BTC")
     assert btc["spot_available"] is True
     assert btc["trailing_apr"] == pytest.approx(0.0001 * 3 * 365, rel=0.15)
-    assert btc["status"] == "above_entry"  # fake base rate 0.0001 per 8h -> ~11 % APR >= 10 %
+    assert btc["status"] == "between"  # fake base rate 0.0001 per 8h -> ~11 % APR, between 0 % and the 20 % default
     trailing = [x["trailing_apr"] for x in rows]
     assert trailing == sorted(trailing, reverse=True)
 

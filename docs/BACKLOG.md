@@ -81,7 +81,7 @@
 - **5.2 Єдиний шар інструментів** — **deferred** (мав сенс передусім як міст crypto↔IBKR; без IBKR ccxt + Deribit імен достатньо).
 - [ ] 5.3 Ончейн-паритет з DOUBLETOP: DefiLlama, DexScreener, Etherscan V2, Helius, mempool, `token_card`/`wallet_snapshot` з тим самим `evidence`-контрактом.
 - [x] Funding carry: бектест cash-and-carry (Binance топ-20, 2 роки) + `funding_carry_scan`. Звіт `docs/verification/2026-10-12-funding-carry.md`.
-- [ ] Carry на дрібних альтах із високим funding (саме вони вгорі живого скану): бектест з урахуванням ризику премії й ліквідності.
+- [x] Carry на дрібних альтах: портфель зі слотами на 359 крипто-перпах Binance — +6.5% на номінал (~3–5% на капітал), великий ризик шорт-ноги, концентрація в мемкоїнах. Звіт `docs/verification/2026-10-12-funding-carry-alts.md`. Дефолтний поріг `funding_carry_scan` → 20%.
 - [ ] Крос-біржовий carry перп-перп (Binance ↔ Bybit): історія funding обох бірж, розбіжність цін між біржами. OKX віддає лише ~3 місяці історії funding.
 - [ ] `perps_funding_history.carry_annualized` множить середню ставку на фіксований інтервал — перейти на суму фактичних виплат, як у `carry_snapshot`.
 - [ ] 5.4 Pendle (fixed yield, крива, PT vs underlying, календар) — для funding-carry стратегій.

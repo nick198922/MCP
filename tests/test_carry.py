@@ -121,3 +121,60 @@ def test_carry_snapshot_ignores_future_rows_and_empty():
     assert carry_snapshot([], now_ms=0) == {"count": 0}
     rows = [{"ts_ms": DAY_MS * 9, "rate": 0.001}, {"ts_ms": DAY_MS * 11, "rate": 0.5}]
     assert carry_snapshot(rows, now_ms=DAY_MS * 10)["count"] == 1
+
+
+H4 = 4 * 3_600_000
+
+
+def _market(rates, price=100.0, perp_high_at=None, high=None, start=0):
+    funding = [{"ts_ms": start + i * H8, "rate": r} for i, r in enumerate(rates)]
+    n_bars = len(rates) * 2 + 2
+    spot = [{"ts": start + i * H4, "close": price} for i in range(n_bars)]
+    perp = [{"ts": start + i * H4, "close": price, "high": price} for i in range(n_bars)]
+    if perp_high_at is not None:
+        perp[perp_high_at]["high"] = high
+    return {"funding": funding, "spot": spot, "perp": perp}
+
+
+def test_portfolio_picks_highest_apr_and_respects_slots():
+    from tradedesk.analytics.carry import simulate_carry_portfolio
+
+    mk = {"A": _market([0.0010] * 60), "B": _market([0.0005] * 60), "C": _market([0.0])}
+    res = simulate_carry_portfolio(mk, slots=1, lookback_days=1, entry_apr=0.2, exit_apr=0.0, spot_fee=0, perp_fee=0, slippage=0)
+    assert {t["symbol"] for t in res["trades"]} == {"A"}
+    res2 = simulate_carry_portfolio(mk, slots=2, lookback_days=1, entry_apr=0.2, exit_apr=0.0, spot_fee=0, perp_fee=0, slippage=0)
+    assert {t["symbol"] for t in res2["trades"]} == {"A", "B"}
+
+
+def test_portfolio_income_and_costs_per_slot():
+    from tradedesk.analytics.carry import simulate_carry_portfolio
+
+    mk = {"A": _market([0.001] * 30)}
+    res = simulate_carry_portfolio(mk, slots=2, lookback_days=1, entry_apr=0.2, spot_fee=0.001, perp_fee=0.0005, slippage=0.0005)
+    (t,) = res["trades"]
+    # Opens 5 min after the first grid point once 1 day of history exists, then earns every later payment.
+    paid = sum(1 for e in mk["A"]["funding"] if e["ts_ms"] > t["open_ts"])
+    assert t["funding"] == pytest.approx(0.001 * paid)
+    assert t["fees"] == pytest.approx(2 * (0.001 + 0.0005 + 2 * 0.0005))
+    assert res["stats"]["total_return"] == pytest.approx(0.5 * (t["funding"] - t["fees"]))
+
+
+def test_portfolio_records_runup_and_exits_on_rule():
+    from tradedesk.analytics.carry import simulate_carry_portfolio
+
+    rates = [0.001] * 12 + [-0.001] * 12 + [0.0] * 6
+    mk = {"A": _market(rates, perp_high_at=16, high=150.0)}
+    res = simulate_carry_portfolio(mk, slots=1, lookback_days=1, entry_apr=0.2, exit_apr=0.0, spot_fee=0, perp_fee=0, slippage=0)
+    t = res["trades"][0]
+    assert t["open_at_end"] is False
+    assert t["max_runup"] == pytest.approx(0.5)
+
+
+def test_portfolio_ignores_future_data():
+    from tradedesk.analytics.carry import simulate_carry_portfolio
+
+    base = [0.001] * 20
+    a = simulate_carry_portfolio({"A": _market(base + [0.0] * 20), "B": _market([0.0005] * 40)}, slots=1, lookback_days=1)
+    b = simulate_carry_portfolio({"A": _market(base + [0.0] * 20), "B": _market([0.0005] * 20 + [0.05] * 20)}, slots=1, lookback_days=1)
+    assert a["trades"][0]["open_ts"] == b["trades"][0]["open_ts"]
+    assert a["trades"][0]["symbol"] == b["trades"][0]["symbol"] == "A"

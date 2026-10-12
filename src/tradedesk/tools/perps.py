@@ -20,11 +20,12 @@ from ._util import READ_ONLY, r, timeframe_seconds
 
 BASE = Annotated[str, Field(description="Base asset, e.g. BTC, ETH, SOL")]
 CARRY_WARNING = (
-    "Funding carry is not risk-free: funding can flip negative, the perp premium moves, a squeeze can liquidate "
-    "the short perp unless margin is topped up, and the venue itself is a counterparty. Backtest "
-    "(docs/verification/2026-10-12-funding-carry.md, Binance top-20, 2024-10..2026-10): trailing 7d APR predicted "
-    "next-week funding well (correlation ~0.6), but cash-and-carry earned only ~3-5 % APR on notional after fees, "
-    "and ~0.3 % in the last 12 months. Compare with a risk-free stablecoin or T-bill yield before acting."
+    "Funding carry is not risk-free: funding can flip negative, the perp premium moves, a pump can liquidate the "
+    "short perp unless margin is topped up, and the venue is a counterparty. Backtests (docs/verification/, Binance, "
+    "2024-10..2026-10, APRs on notional after fees): top-20 majors ~3-5 % (~0.3 % in the last 12 months); all crypto "
+    "perps with spot, 5 slots, enter at trailing 7d >= 20 %: ~6.5 %, but 21 % of trades saw the perp rise >= 100 % "
+    "while open and a handful of memecoins made most of the profit. On real capital (spot + perp margin) roughly "
+    "3-5 %. Funding >= 50-100 % APR mean-reverts within days. Compare with a risk-free stablecoin or T-bill yield."
 )
 CCXT_VENUES = Annotated[list[str] | None, Field(description=f"ccxt perp exchange ids; default {list(PERP_EXCHANGES)}")]
 
@@ -279,7 +280,14 @@ def register(server: MCPServer, rt: Runtime) -> None:
         ] = None,
         candidates: Annotated[int, Field(ge=1, le=50, description="How many perps to scan when `bases` is empty.")] = 20,
         lookback_days: Annotated[float, Field(ge=1, le=30, description="Trailing window for the realized APR, days.")] = 7.0,
-        entry_apr: Annotated[float, Field(ge=0, le=5, description="Trailing APR at or above which carry is 'above_entry'.")] = 0.10,
+        entry_apr: Annotated[
+            float,
+            Field(
+                ge=0,
+                le=5,
+                description="Trailing APR at or above which carry is 'above_entry'. Binance's baseline 0.01 % per 8h is ~10.95 %.",
+            ),
+        ] = 0.20,
         exit_apr: Annotated[float, Field(ge=-1, le=5, description="Trailing APR at or below which carry is 'below_exit'.")] = 0.0,
         roundtrip_fee: Annotated[
             float,

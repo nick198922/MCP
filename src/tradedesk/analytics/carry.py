@@ -231,3 +231,196 @@ def carry_snapshot(
         "status": status,
         "breakeven_days": roundtrip_fee / (apr / 365.0) if apr and apr > 0 else None,
     }
+
+
+class _Market:
+    """Per-symbol lookups for the portfolio walk: funding prefix sums and bar arrays."""
+
+    def __init__(self, data: dict[str, Any], bar_ms: int) -> None:
+        f = sorted(data["funding"], key=lambda e: int(e["ts_ms"]))
+        self.f_ts = [int(e["ts_ms"]) for e in f]
+        self.f_rate = [float(e["rate"]) for e in f]
+        self.prefix = [0.0]
+        for x in self.f_rate:
+            self.prefix.append(self.prefix[-1] + x)
+        self.bar_ms = bar_ms
+        self.s_close_t = [int(b["ts"]) + bar_ms for b in data["spot"]]
+        self.s_close = [float(b["close"]) for b in data["spot"]]
+        self.p_close_t = [int(b["ts"]) + bar_ms for b in data["perp"]]
+        self.p_close = [float(b["close"]) for b in data["perp"]]
+        self.p_high = [float(b["high"]) for b in data["perp"]]
+
+    def apr(self, t: int, lookback_ms: int) -> float | None:
+        if not self.f_ts or self.f_ts[0] > t - lookback_ms:
+            return None
+        hi = bisect.bisect_right(self.f_ts, t)
+        lo = bisect.bisect_right(self.f_ts, t - lookback_ms)
+        return (self.prefix[hi] - self.prefix[lo]) * YEAR_MS / lookback_ms
+
+    def _at(self, times: list[int], values: list[float], t: int) -> float | None:
+        i = bisect.bisect_right(times, t + 60_000) - 1
+        if i < 0 or t - times[i] > self.bar_ms:
+            return None
+        return values[i]
+
+    def spot(self, t: int) -> float | None:
+        return self._at(self.s_close_t, self.s_close, t)
+
+    def perp(self, t: int) -> float | None:
+        return self._at(self.p_close_t, self.p_close, t)
+
+    def payments(self, after: int, upto: int) -> list[tuple[int, float]]:
+        lo, hi = bisect.bisect_right(self.f_ts, after), bisect.bisect_right(self.f_ts, upto)
+        return list(zip(self.f_ts[lo:hi], self.f_rate[lo:hi], strict=True))
+
+    def perp_high(self, after: int, upto: int) -> float | None:
+        lo, hi = bisect.bisect_right(self.p_close_t, after), bisect.bisect_right(self.p_close_t, upto)
+        return max(self.p_high[lo:hi]) if hi > lo else None
+
+
+def simulate_carry_portfolio(
+    markets: dict[str, dict[str, Any]],
+    *,
+    slots: int = 5,
+    lookback_days: float = 7.0,
+    entry_apr: float = 0.20,
+    exit_apr: float = 0.0,
+    spot_fee: float = 0.001,
+    perp_fee: float = 0.0005,
+    slippage: float = 0.0005,
+    step_hours: float = 8.0,
+    bar_ms: int = 4 * 3_600_000,
+) -> dict[str, Any]:
+    """Cash-and-carry across many symbols with ``slots`` equal capital slots.
+
+    ``markets[sym] = {"funding": [{ts_ms, rate}], "spot": [{ts, close}], "perp": [{ts, close, high}]}``,
+    bars of length ``bar_ms`` keyed by open time. Every ``step_hours`` (UTC-aligned) the walk
+    accrues actual funding payments on open positions, closes those whose trailing APR fell to
+    ``exit_apr``, then fills free slots with the highest trailing APR >= ``entry_apr``. Costs per
+    side: ``spot_fee + perp_fee + 2 x slippage``. Returns are fractions of total capital (slot
+    notional = 1 / slots, no compounding). Per trade it records ``max_runup`` (highest perp high
+    vs perp entry, the short leg's liquidation risk) and ``max_premium_rise`` (worst widening of
+    perp/spot over entry at bar closes).
+    """
+    ms = {s: _Market(d, bar_ms) for s, d in markets.items() if d.get("funding") and d.get("spot") and d.get("perp")}
+    if not ms:
+        return {"trades": [], "equity": [], "stats": {}}
+    lookback_ms = int(lookback_days * DAY_MS)
+    step = int(step_hours * 3_600_000)
+    start = min(m.f_ts[0] for m in ms.values()) + lookback_ms
+    # Decisions 5 minutes after each UTC-aligned funding time, so payments stamped a few ms late are settled.
+    start = (start // step + 1) * step + 300_000
+    end = max(m.f_ts[-1] for m in ms.values())
+    side_cost = spot_fee + perp_fee + 2 * slippage
+    w = 1.0 / slots
+    open_pos: dict[str, dict[str, Any]] = {}
+    trades: list[dict[str, Any]] = []
+    equity: list[tuple[int, float]] = []
+    realized = 0.0
+
+    def mark(sym: str, p: dict[str, Any], t: int) -> None:
+        m = ms[sym]
+        for ts_pay, rate in m.payments(p["last"], t):
+            price = m.perp(ts_pay) or p["perp_last"]
+            p["funding"] += rate * price / p["spot_e"]
+        p["last"] = t
+        hi = m.perp_high(p["last_bar"], t)
+        if hi is not None:
+            p["max_runup"] = max(p["max_runup"], hi / p["perp_e"] - 1.0)
+            p["last_bar"] = t
+        s, q = m.spot(t), m.perp(t)
+        if s and q:
+            p["spot_last"], p["perp_last"] = s, q
+            p["max_premium_rise"] = max(p["max_premium_rise"], q / s - p["perp_e"] / p["spot_e"])
+
+    def basis(p: dict[str, Any]) -> float:
+        return (p["spot_last"] - p["spot_e"] - (p["perp_last"] - p["perp_e"])) / p["spot_e"]
+
+    t = start
+    while t <= end:
+        for sym in list(open_pos):
+            p = open_pos[sym]
+            mark(sym, p, t)
+            a = ms[sym].apr(t, lookback_ms)
+            if a is not None and a <= exit_apr:
+                fees = p["fees"] + side_cost * p["spot_last"] / p["spot_e"]
+                pnl = p["funding"] + basis(p) - fees
+                realized += w * pnl
+                trades.append(
+                    {
+                        **{k: p[k] for k in ("symbol", "open_ts", "entry_apr", "funding", "max_runup", "max_premium_rise")},
+                        "close_ts": t,
+                        "basis": basis(p),
+                        "fees": fees,
+                        "pnl": pnl,
+                        "open_at_end": False,
+                    }
+                )
+                del open_pos[sym]
+        free = slots - len(open_pos)
+        if free > 0:
+            ranked = []
+            for sym, m in ms.items():
+                if sym in open_pos:
+                    continue
+                a = m.apr(t, lookback_ms)
+                if a is not None and a >= entry_apr and m.spot(t) and m.perp(t):
+                    ranked.append((a, sym))
+            for a, sym in sorted(ranked, reverse=True)[:free]:
+                m = ms[sym]
+                s, q = m.spot(t), m.perp(t)
+                open_pos[sym] = {
+                    "symbol": sym,
+                    "open_ts": t,
+                    "entry_apr": a,
+                    "spot_e": s,
+                    "perp_e": q,
+                    "spot_last": s,
+                    "perp_last": q,
+                    "funding": 0.0,
+                    "fees": side_cost,
+                    "last": t,
+                    "last_bar": t,
+                    "max_runup": 0.0,
+                    "max_premium_rise": 0.0,
+                }
+        equity.append((t, realized + sum(w * (p["funding"] + basis(p) - p["fees"]) for p in open_pos.values())))
+        t += step
+    for p in list(open_pos.values()):
+        mark(p["symbol"], p, end)
+        fees = p["fees"] + side_cost * p["spot_last"] / p["spot_e"]
+        pnl = p["funding"] + basis(p) - fees
+        realized += w * pnl
+        trades.append(
+            {
+                **{k: p[k] for k in ("symbol", "open_ts", "entry_apr", "funding", "max_runup", "max_premium_rise")},
+                "close_ts": p["last"],
+                "basis": basis(p),
+                "fees": fees,
+                "pnl": pnl,
+                "open_at_end": True,
+            }
+        )
+    if equity:
+        equity[-1] = (equity[-1][0], realized)
+    years = max(end - start, 1) / YEAR_MS
+    peak, max_dd = float("-inf"), 0.0
+    for _, v in equity:
+        peak = max(peak, v)
+        max_dd = max(max_dd, peak - v)
+    occupied = sum(tr["close_ts"] - tr["open_ts"] for tr in trades) / (max(end - start, 1) * slots)
+    return {
+        "trades": trades,
+        "equity": equity,
+        "stats": {
+            "years": years,
+            "apr_on_capital": realized / years,
+            "total_return": realized,
+            "n_trades": len(trades),
+            "slot_utilisation": occupied,
+            "max_drawdown": max_dd,
+            "funding": w * sum(tr["funding"] for tr in trades),
+            "basis": w * sum(tr["basis"] for tr in trades),
+            "costs": w * sum(tr["fees"] for tr in trades),
+        },
+    }

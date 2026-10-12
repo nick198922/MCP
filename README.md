@@ -49,7 +49,7 @@ claude mcp add tradedesk -- uv run --directory /ABSOLUTE/PATH/TO/tradedesk-mcp t
 | Ринок | `market_ticker`, `market_tickers`, `market_ohlcv`, `market_orderbook`, `market_markets`, `market_trades` | котирування (одиночне й batch), свічки з реалізованою вола, стакан зі slippage для заданого розміру, пошук ринків, останні угоди з aggressor-flow (buy/sell, VWAP, CVD) |
 | Перпи | `perps_funding_compare` | funding по Binance/Bybit/OKX/Hyperliquid/Deribit, приведений до річних |
 | | `perps_funding_history` | історія funding по всіх venues: carry 7d/30d, z-score, перцентиль, polarity flips; крос-венюз: найдорожчий carry, найбільший |z| |
-| | `funding_carry_scan` | скан funding carry по біржі: поточний і trailing 7d/30d APR (сума фактичних виплат), статус відносно порогів входу/виходу, окупність комісій у днях, чи є спот; за замовчуванням лише крипто-перпи зі спотом. Перевірку на історії див. у `docs/verification/2026-10-12-funding-carry.md` |
+| | `funding_carry_scan` | скан funding carry по біржі: поточний і trailing 7d/30d APR (сума фактичних виплат), статус відносно порогів входу/виходу (вхід за замовчуванням 20%), окупність комісій у днях, чи є спот; за замовчуванням лише крипто-перпи зі спотом. Перевірку на історії див. у `docs/verification/2026-10-12-funding-carry.md` |
 | | `perps_long_short_ratio` | роздрібна L/S по Binance і Bybit (account-based fractions); z-score, divergence між venues |
 | | `perps_oi_history` | OI history (Binance в USD, Bybit в base) з latest/mean/change24h/z-score; крос-венюз: biggest gain/drop |
 | | `perps_open_interest` | OI в USD по майданчиках і частки |

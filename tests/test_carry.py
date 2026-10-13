@@ -274,3 +274,47 @@ def test_perp_spread_stop_move_closes_and_charges_penalty():
     t = stopped["trades"][0]
     assert t["stopped"] is True and t["fees"] == pytest.approx(0.01)
     assert t["close_ts"] < free["trades"][0]["close_ts"]
+
+
+def _hist(rate, days=30, step=H8, now=40 * DAY_MS):
+    n = int(days * DAY_MS / step)
+    return [{"ts_ms": now - i * step, "rate": rate} for i in range(n)]
+
+
+def test_spread_snapshot_picks_direction_and_costs():
+    from tradedesk.analytics.carry import spread_snapshot
+
+    now = 40 * DAY_MS
+    legs = {
+        "binanceusdm": {"entries": _hist(0.0001), "rate": 0.0001, "interval_hours": 8, "mark": 100.0},
+        "bybit": {"entries": _hist(0.0006), "rate": 0.0006, "interval_hours": 8, "mark": 100.1},
+    }
+    s = spread_snapshot(legs, now_ms=now, fees={"binanceusdm": 0.0005, "bybit": 0.00055}, slippage=0.0005)
+    p = s["pair"]
+    assert (p["short_venue"], p["long_venue"]) == ("bybit", "binanceusdm")
+    assert p["trailing_spread_apr"] == pytest.approx(0.0005 * 3 * 365)
+    assert p["roundtrip_cost"] == pytest.approx(2 * (0.00055 + 0.0005 + 0.001))
+    assert p["breakeven_days"] == pytest.approx(p["roundtrip_cost"] / (p["trailing_spread_apr"] / 365))
+    assert p["status"] == "above_entry" and p["tradable_now"] is True and p["flags"] == []
+
+
+def test_spread_snapshot_flags():
+    from tradedesk.analytics.carry import spread_snapshot
+
+    now = 40 * DAY_MS
+    legs = {
+        "binanceusdm": {"entries": _hist(0.0001), "rate": 0.002, "interval_hours": 4, "mark": 100.0, "cap": 0.002},
+        "bybit": {"entries": _hist(0.0008, days=3), "rate": 0.0001, "interval_hours": 8, "mark": 103.0},
+    }
+    p = spread_snapshot(legs, now_ms=now, lookback_days=7)["pair"]
+    assert set(p["flags"]) == {"price_gap", "current_spread_reversed", "funding_at_cap", "short_history", "interval_mismatch"}
+    assert p["tradable_now"] is False
+    legs["bybit"]["mark"] = 0.25  # a different token under the same ticker
+    assert "price_mismatch" in spread_snapshot(legs, now_ms=now)["pair"]["flags"]
+
+
+def test_spread_snapshot_needs_two_venues():
+    from tradedesk.analytics.carry import spread_snapshot
+
+    s = spread_snapshot({"bybit": {"entries": _hist(0.0001)}, "okx": {"entries": []}}, now_ms=40 * DAY_MS)
+    assert s["pair"] is None and set(s["venues"]) == {"bybit", "okx"}

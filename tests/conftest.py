@@ -516,9 +516,24 @@ class FakeEx:
     async def fetch_funding_rates(self, symbols=None):
         if self.id == "okx":
             raise ccxt.RateLimitExceeded("okx 429 too many requests")
+        marks = {"BTC/USDT:USDT": 82760.0, "ETH/USDT:USDT": 3000.0, "SOL/USDT:USDT": 150.0, "XAU/USDT:USDT": 2400.0, "BTC/USDT": 82750.0}
+        if self.id == "bybit":
+            rows = {"BTC/USDT:USDT": 0.0001, "ETH/USDT:USDT": 0.0001, "SOL/USDT:USDT": 0.0002}
+            return {
+                sym: {"symbol": sym, "fundingRate": rate, "interval": "8h", "markPrice": marks[sym] * 1.0001, "nextFundingTimestamp": None}
+                for sym, rate in rows.items()
+            }
+        # Like Binance: the bulk call has no interval; fetch_funding_intervals supplies it.
         rows = {"BTC/USDT:USDT": 0.0001, "ETH/USDT:USDT": 0.0003, "SOL/USDT:USDT": -0.0001, "XAU/USDT:USDT": 0.002, "BTC/USDT": 0.5}
         return {
-            sym: {"symbol": sym, "fundingRate": rate, "interval": "8h", "nextFundingTimestamp": 1791648000000} for sym, rate in rows.items()
+            sym: {"symbol": sym, "fundingRate": rate, "interval": None, "markPrice": marks[sym], "nextFundingTimestamp": 1791648000000}
+            for sym, rate in rows.items()
+        }
+
+    async def fetch_funding_intervals(self, symbols=None):
+        return {
+            "BTC/USDT:USDT": {"symbol": "BTC/USDT:USDT", "interval": "8h", "info": {"adjustedFundingRateCap": "0.003"}},
+            "SOL/USDT:USDT": {"symbol": "SOL/USDT:USDT", "interval": "4h", "info": {"adjustedFundingRateCap": "0.02"}},
         }
 
     async def fetch_funding_rate_history(self, symbol, since=None, limit=500):

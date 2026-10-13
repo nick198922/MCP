@@ -8,7 +8,7 @@ from typing import Annotated, Any, Literal
 from mcp.server.mcpserver import MCPServer
 from pydantic import Field
 
-from ..analytics.carry import carry_snapshot
+from ..analytics.carry import carry_snapshot, spread_snapshot
 from ..analytics.derivatives import annualize_funding, basis, parse_interval_hours, summarise_funding_history
 from ..analytics.instruments import expiry_token, parse_future_name
 from ..analytics.orderbook import book_stats, walk_book
@@ -19,6 +19,15 @@ from ..runtime import Runtime
 from ._util import READ_ONLY, r, timeframe_seconds
 
 BASE = Annotated[str, Field(description="Base asset, e.g. BTC, ETH, SOL")]
+SPREAD_WARNING = (
+    "Backtest (docs/verification/2026-10-13-funding-carry-perp-perp.md, Binance<->Bybit, 2024-10..2026-10): entering "
+    "at a trailing 7d spread >= 10 % and exiting at <= 0 earned about +76..90 % APR on notional, but the median trade "
+    "was about zero: the profit came from hyped listings whose funding hit venue caps, and in 46 % of trades one leg "
+    "moved >= 33 % against itself (a 3x isolated leg is liquidated without a top-up). Majors earned nothing. Not "
+    "modelled: per-symbol position limits, venues changing caps / intervals / leverage mid-event, separate margin on "
+    "each venue, liquidation fees. Paper-trade first: log entries with journal_add(tags=[...]) and check journal_stats."
+)
+TAKER_FEES = {"binanceusdm": 0.0005, "bybit": 0.00055, "okx": 0.0005}
 CARRY_WARNING = (
     "Funding carry is not risk-free: funding can flip negative, the perp premium moves, a pump can liquidate the "
     "short perp unless margin is topped up, and the venue is a counterparty. Backtests (docs/verification/, Binance, "
@@ -270,6 +279,35 @@ def register(server: MCPServer, rt: Runtime) -> None:
 
         return b.build({"base": base, "days_requested": days_back, "venues": rows, "cross_venue": cross})
 
+    async def _current_funding(b: Builder, venue: str, markets: dict[str, Any] | None = None) -> dict[str, dict[str, Any]]:
+        """Current funding per USDT perp with the right interval (bulk Binance rows omit it) and the rate cap when known."""
+        bulk = await b.guard(f"funding_rates:{venue}", f"ccxt:{venue}", rt.exchanges.funding_rates(venue))
+        if not bulk:
+            return {}
+        meta: dict[str, Any] = {}
+        if any(not (x or {}).get("interval") for x in bulk.values()):
+            meta = await b.guard(f"funding_intervals:{venue}", f"ccxt:{venue}", rt.exchanges.funding_intervals(venue)) or {}
+            if not meta:
+                b.warn(f"{venue}: funding intervals unavailable; assuming 8h where the venue omits it")
+        out: dict[str, dict[str, Any]] = {}
+        for sym, x in bulk.items():
+            if not sym.endswith("/USDT:USDT") or (x or {}).get("fundingRate") is None:
+                continue
+            m = meta.get(sym) or {}
+            hours = parse_interval_hours(x.get("interval") or m.get("interval"))
+            info = ((markets or {}).get(sym) or {}).get("info") or {}
+            cap = (m.get("info") or {}).get("adjustedFundingRateCap") or info.get("upperFundingRate")
+            rate = float(x["fundingRate"])
+            out[sym] = {
+                "rate": rate,
+                "interval_hours": hours,
+                "apr": annualize_funding(rate, hours),
+                "next_funding_ts": x.get("nextFundingTimestamp"),
+                "mark": float(x["markPrice"]) if x.get("markPrice") else None,
+                "cap": float(cap) if cap not in (None, "") else None,
+            }
+        return out
+
     @server.tool(
         annotations=READ_ONLY,
         description=(
@@ -319,18 +357,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
         b = Builder()
         b.warn(CARRY_WARNING)
         now_ms = int(rt.now().timestamp() * 1000)
-        current: dict[str, dict[str, Any]] = {}
-        bulk = await b.guard("funding_rates", f"ccxt:{venue}", rt.exchanges.funding_rates(venue))
-        for sym, x in (bulk or {}).items():
-            if not sym.endswith("/USDT:USDT") or x.get("fundingRate") is None:
-                continue
-            hours = parse_interval_hours(x.get("interval"))
-            current[sym] = {
-                "rate": float(x["fundingRate"]),
-                "interval_hours": hours,
-                "apr": annualize_funding(float(x["fundingRate"]), hours),
-                "next_funding_ts": x.get("nextFundingTimestamp"),
-            }
+        current = await _current_funding(b, venue)
         spot: set[str] | None = None
         if spot_venue:
             markets = await b.guard("spot_markets", f"ccxt:{spot_venue}", rt.exchanges.markets(spot_venue))
@@ -421,6 +448,175 @@ def register(server: MCPServer, rt: Runtime) -> None:
                     "above_entry": above,
                     "above_entry_with_spot": [x["base"] for x in rows if x["status"] == "above_entry" and x["spot_available"]],
                     "median_trailing_apr": r(trailing[len(trailing) // 2], 4) if trailing else None,
+                },
+                "rows": rows,
+            }
+        )
+
+    @server.tool(
+        annotations=READ_ONLY,
+        description=(
+            "Cross-venue funding spread scan for perp-perp carry: short the perp on the venue with the higher trailing "
+            "funding, long it on the venue with the lower one. Per base: each venue's current funding (interval-correct) "
+            "and trailing realized APR over `lookback_days` and 30d; the best pair; trailing and current spread; status vs "
+            "`entry_apr` / `exit_apr`; round-trip cost (taker fees binanceusdm 0.05 %, bybit 0.055 %, okx 0.05 % plus "
+            "`slippage` per leg, entry and exit) and the days of trailing spread needed to pay it; the mark-price gap "
+            "between venues (null when a venue's bulk funding has no mark price, e.g. OKX); the 7-day high/low range of the short venue's perp; and flags: price_mismatch (likely different "
+            "tokens under one ticker), price_gap, current_spread_reversed, funding_at_cap, short_history, "
+            "interval_mismatch, volatile (7d range >= 33 %). `tradable_now` = above entry with no price or reversal flag. "
+            "Without `bases`, the `candidates` crypto perps listed on at least two venues with the widest current spread "
+            "are scanned. Rates and APRs are decimals on notional. See `warnings` before acting."
+        ),
+    )
+    async def funding_spread_scan(
+        venues: Annotated[
+            list[Literal["binanceusdm", "bybit", "okx"]] | None,
+            Field(description="Two or three ccxt perp venues; default binanceusdm and bybit.", max_length=3),
+        ] = None,
+        bases: Annotated[
+            list[str] | None,
+            Field(description="Bases to scan, e.g. ['BTC','WIF']; default: widest current spreads.", max_length=50),
+        ] = None,
+        candidates: Annotated[int, Field(ge=1, le=50, description="How many bases to scan when `bases` is empty.")] = 20,
+        lookback_days: Annotated[float, Field(ge=1, le=30, description="Trailing window for realized funding, days.")] = 7.0,
+        entry_apr: Annotated[float, Field(ge=0, le=50, description="Trailing spread at or above which the pair is 'above_entry'.")] = 0.10,
+        exit_apr: Annotated[float, Field(ge=-1, le=50, description="Trailing spread at or below which the pair is 'below_exit'.")] = 0.0,
+        slippage: Annotated[float, Field(ge=0, le=0.01, description="Slippage per leg per side, decimal of notional.")] = 0.0005,
+        max_entry_gap: Annotated[
+            float, Field(ge=0, le=0.2, description="Largest mark-price gap between venues to call it tradable.")
+        ] = 0.02,
+        crypto_only: Annotated[bool, Field(description="Skip TradFi perps flagged by the venue when picking candidates.")] = True,
+        max_concurrency: Annotated[int, Field(ge=1, le=16, description="Parallel requests.")] = 4,
+    ) -> dict[str, Any]:
+        b = Builder()
+        b.warn(SPREAD_WARNING)
+        vs = list(dict.fromkeys(v.lower() for v in (venues or ["binanceusdm", "bybit"])))
+        if len(vs) < 2:
+            b.miss("venues", "tradedesk", "config", "need at least two venues")
+            return b.build(None, ok=False)
+        now_ms = int(rt.now().timestamp() * 1000)
+        markets: dict[str, dict[str, Any]] = {}
+        current: dict[str, dict[str, dict[str, Any]]] = {}
+        tradfi: set[str] = set()
+        for v in vs:
+            markets[v] = await b.guard(f"perp_markets:{v}", f"ccxt:{v}", rt.exchanges.markets(v)) or {}
+            current[v] = await _current_funding(b, v, markets[v])
+            for m, x in markets[v].items():
+                info = (x or {}).get("info") or {}
+                if str(info.get("contractType") or "").startswith("TRADIFI") or info.get("underlyingType") not in (None, "COIN"):
+                    tradfi.add(m)
+        if bases:
+            symbols = [f"{x.upper()}/USDT:USDT" for x in bases]
+        else:
+            listed: dict[str, list[float]] = {}
+            for v in vs:
+                for sym, cur in current[v].items():
+                    if not (crypto_only and sym in tradfi):
+                        listed.setdefault(sym, []).append(cur["apr"])
+            ranked = sorted(((max(a) - min(a), sym) for sym, a in listed.items() if len(a) >= 2), reverse=True)
+            symbols = [sym for _, sym in ranked[:candidates]]
+            if not symbols:
+                b.miss("candidates", "tradedesk", "data_unavailable", "no perp is listed with current funding on two venues")
+                return b.build(None, ok=False)
+        sem = asyncio.Semaphore(max_concurrency)
+        since_ms = now_ms - int(max(30.0, lookback_days) * 86_400_000)
+
+        async def leg(v: str, sym: str) -> tuple[str, dict[str, Any]] | None:
+            cur = current[v].get(sym)
+            if not bases and cur is None:
+                return None
+            async with sem:
+                got = await b.guard(
+                    f"funding_history:{v}:{sym}", f"ccxt:{v}", rt.exchanges.funding_rate_history_range(v, sym, since_ms, now_ms)
+                )
+            entries = [
+                {"ts_ms": int(x["timestamp"]), "rate": float(x["fundingRate"])}
+                for x in (got["rows"] if got else [])
+                if x.get("fundingRate") is not None and x.get("timestamp")
+            ]
+            if not entries and cur is None:
+                return None
+            cur = cur or {}
+            return v, {
+                "entries": entries,
+                "rate": cur.get("rate"),
+                "interval_hours": cur.get("interval_hours"),
+                "mark": cur.get("mark"),
+                "cap": cur.get("cap"),
+            }
+
+        async def row(sym: str) -> dict[str, Any] | None:
+            legs = dict(x for x in await asyncio.gather(*[leg(v, sym) for v in vs]) if x)
+            if len(legs) < 2:
+                return None
+            snap = spread_snapshot(
+                legs,
+                now_ms=now_ms,
+                lookback_days=lookback_days,
+                entry_apr=entry_apr,
+                exit_apr=exit_apr,
+                fees=TAKER_FEES,
+                slippage=slippage,
+                max_entry_gap=max_entry_gap,
+            )
+            pair = snap["pair"]
+            if pair is None:
+                return None
+            async with sem:
+                bars = await b.guard(
+                    f"ohlcv:{pair['short_venue']}:{sym}",
+                    f"ccxt:{pair['short_venue']}",
+                    rt.exchanges.ohlcv(pair["short_venue"], sym, "4h", 42),
+                )
+            ok_bars = [x for x in (bars or []) if isinstance(x, (list, tuple)) and len(x) >= 5]
+            range_7d = max(float(x[2]) for x in ok_bars) / min(float(x[3]) for x in ok_bars) - 1.0 if ok_bars else None
+            flags = list(pair["flags"])
+            if range_7d is not None and range_7d >= 1 / 3:
+                flags.append("volatile")
+            return {
+                "base": sym.split("/")[0],
+                "symbol": sym,
+                "short_venue": pair["short_venue"],
+                "long_venue": pair["long_venue"],
+                "trailing_spread_apr": r(pair["trailing_spread_apr"], 4),
+                "current_spread_apr": r(pair["current_spread_apr"], 4),
+                "status": pair["status"],
+                "tradable_now": pair["tradable_now"],
+                "breakeven_days": r(pair["breakeven_days"], 1),
+                "roundtrip_cost": r(pair["roundtrip_cost"], 5),
+                "price_gap": r(pair["price_gap"], 5),
+                "range_7d": r(range_7d, 4),
+                "flags": flags,
+                "venues": {
+                    v: {
+                        "trailing_apr": r(x["trailing_apr"], 4),
+                        "trailing_30d_apr": r(x["trailing_30d_apr"], 4),
+                        "current_apr": r(x["current_apr"], 4),
+                        "current_rate": r(x["current_rate"], 8),
+                        "interval_hours": x["interval_hours"],
+                        "cap": x["cap"],
+                        "mark": x["mark"],
+                        "coverage_days": r(x["coverage_days"], 1),
+                    }
+                    for v, x in snap["venues"].items()
+                },
+            }
+
+        rows = [x for x in await asyncio.gather(*[row(s_) for s_ in symbols]) if x]
+        if not rows:
+            return b.build(None, ok=False)
+        rows.sort(key=lambda x: x["trailing_spread_apr"] if x["trailing_spread_apr"] is not None else float("-inf"), reverse=True)
+        spreads = sorted(x["trailing_spread_apr"] for x in rows if x["trailing_spread_apr"] is not None)
+        return b.build(
+            {
+                "venues": vs,
+                "lookback_days": lookback_days,
+                "thresholds": {"entry_apr": entry_apr, "exit_apr": exit_apr, "slippage": slippage, "max_entry_gap": max_entry_gap},
+                "summary": {
+                    "scanned": len(rows),
+                    "tradable_now": [x["base"] for x in rows if x["tradable_now"]],
+                    "above_entry": [x["base"] for x in rows if x["status"] == "above_entry"],
+                    "median_trailing_spread_apr": r(spreads[len(spreads) // 2], 4) if spreads else None,
                 },
                 "rows": rows,
             }

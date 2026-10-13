@@ -157,6 +157,17 @@ class Exchanges:
 
         return await self._call(ex_id, "fetch_funding_rate_history", a, 60, go)
 
+    async def funding_intervals(self, ex_id: str) -> Fetched:
+        """Per-symbol funding interval and rate cap/floor (Binance's bulk funding omits the interval)."""
+
+        async def go(ex: Any) -> Any:
+            has = getattr(ex, "has", {}) or {}
+            if has.get("fetchFundingIntervals") is False:
+                raise ccxt.NotSupported(f"{ex_id} has no fetchFundingIntervals")
+            return await ex.fetch_funding_intervals()
+
+        return await self._call(ex_id, "fetch_funding_intervals", {}, 3600, go)
+
     async def funding_rate_history_range(self, ex_id: str, symbol: str, since_ms: int, until_ms: int, *, max_pages: int = 60) -> Fetched:
         """Funding history from ``since_ms`` to ``until_ms`` walked page by page.
 

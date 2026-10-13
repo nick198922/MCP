@@ -15,6 +15,7 @@ EXPECTED_TOOLS = {
     "perps_funding_compare",
     "perps_funding_history",
     "funding_carry_scan",
+    "funding_spread_scan",
     "perps_long_short_ratio",
     "perps_oi_history",
     "perps_open_interest",
@@ -193,6 +194,10 @@ async def test_funding_carry_scan_candidates_from_bulk(server):
     assert btc["status"] == "between"  # fake base rate 0.0001 per 8h -> ~11 % APR, between 0 % and the 20 % default
     trailing = [x["trailing_apr"] for x in rows]
     assert trailing == sorted(trailing, reverse=True)
+    sol = next(x for x in rows if x["base"] == "SOL")
+    # Binance omits the interval in bulk rows; SOL is on 4h there, so 6 payments a day, not 3
+    assert sol["interval_hours"] == 4.0
+    assert sol["current_apr"] == pytest.approx(-0.0001 * 6 * 365, rel=1e-3)
 
 
 async def test_funding_carry_scan_candidate_filters(server):
@@ -216,7 +221,7 @@ async def test_funding_carry_scan_explicit_bases_and_thresholds(server):
 async def test_funding_carry_scan_provider_failure(server):
     env = await call(server, "funding_carry_scan", venue="okx")
     assert env["ok"] is False
-    assert any(m["field"] == "funding_rates" for m in env["missing"])
+    assert any(m["field"].startswith("funding_rates") for m in env["missing"])
     env2 = await call(server, "funding_carry_scan", venue="okx", bases=["BTC"])
     assert env2["ok"] is False
     assert any(m["field"].startswith("funding_history:") for m in env2["missing"])
@@ -227,6 +232,37 @@ async def test_funding_history_warns_when_venue_history_is_shorter(server):
     env = await call(server, "perps_funding_history", base="BTC", days_back=60, include_hyperliquid=False)
     assert env["ok"]
     assert any("later than requested" in w and "binanceusdm" in w for w in env["warnings"])
+
+
+async def test_funding_spread_scan_candidates(server):
+    env = await call(server, "funding_spread_scan", entry_apr=0.01)
+    assert env["ok"], env["missing"]
+    assert any("Backtest" in w for w in env["warnings"])
+    rows = {x["base"]: x for x in env["data"]["rows"]}
+    assert set(rows) == {"BTC", "ETH", "SOL"}  # XAU is on one venue only and TradFi
+    btc = rows["BTC"]
+    # fake history: Binance 0.0001 vs Bybit 0.00008 per 8h -> short Binance, long Bybit, ~2.2 % APR
+    assert (btc["short_venue"], btc["long_venue"]) == ("binanceusdm", "bybit")
+    assert btc["trailing_spread_apr"] == pytest.approx(0.00002 * 3 * 365, rel=0.15)
+    assert btc["status"] == "above_entry" and btc["tradable_now"] is True
+    assert btc["roundtrip_cost"] == pytest.approx(2 * (0.0005 + 0.00055 + 0.001))
+    assert abs(btc["price_gap"]) < 0.001
+    assert btc["venues"]["binanceusdm"]["cap"] == pytest.approx(0.003)
+    # SOL's current funding points the other way (Binance -0.0001 per 4h, Bybit +0.0002 per 8h)
+    assert "current_spread_reversed" in rows["SOL"]["flags"] and rows["SOL"]["tradable_now"] is False
+    assert "interval_mismatch" in rows["SOL"]["flags"]
+    assert "BTC" in env["data"]["summary"]["tradable_now"] and "SOL" not in env["data"]["summary"]["tradable_now"]
+
+
+async def test_funding_spread_scan_explicit_bases_and_failures(server):
+    env = await call(server, "funding_spread_scan", bases=["btc"], entry_apr=0.5)
+    (row,) = env["data"]["rows"]
+    assert row["status"] == "between" and row["tradable_now"] is False
+    bad = await call(server, "funding_spread_scan", venues=["okx", "binanceusdm"])
+    assert bad["ok"] is False
+    assert any(m["field"] == "funding_rates:okx" for m in bad["missing"])
+    one = await call(server, "funding_spread_scan", venues=["bybit", "bybit"])
+    assert one["ok"] is False and one["missing"][0]["field"] == "venues"
 
 
 async def test_long_short_ratio_cross_venue(server):

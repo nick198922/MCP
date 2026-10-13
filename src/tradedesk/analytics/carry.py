@@ -612,3 +612,87 @@ def simulate_perp_spread_portfolio(
             "n_stopped": sum(1 for tr in trades if tr.get("stopped")),
         },
     }
+
+
+def spread_snapshot(
+    legs: dict[str, dict[str, Any]],
+    *,
+    now_ms: int,
+    lookback_days: float = 7.0,
+    entry_apr: float = 0.10,
+    exit_apr: float = 0.0,
+    fees: dict[str, float] | None = None,
+    slippage: float = 0.0005,
+    max_entry_gap: float = 0.02,
+    mismatch_gap: float = 0.20,
+) -> dict[str, Any]:
+    """Best cross-venue funding pair for one base: short where trailing funding is highest, long where lowest.
+
+    ``legs[venue] = {"entries": [{ts_ms, rate}], "rate", "interval_hours", "mark", "cap"}`` (current fields
+    optional). Spreads are trailing realized APRs (sums of actual payments). ``roundtrip_cost`` is both legs'
+    taker fees plus ``slippage`` per leg, paid on entry and exit. Flags:
+    ``price_mismatch`` (marks differ by more than ``mismatch_gap``: likely different instruments under one
+    ticker), ``price_gap`` (more than ``max_entry_gap``), ``current_spread_reversed`` (current funding now favours
+    the other direction), ``funding_at_cap`` (a leg's current rate within 5 % of its cap), ``short_history``,
+    ``interval_mismatch``. ``tradable_now`` = above entry and none of the price/reversal flags.
+    """
+    fees = fees or {}
+    venues: dict[str, dict[str, Any]] = {}
+    for v, leg in legs.items():
+        snap = carry_snapshot(leg.get("entries") or [], now_ms=now_ms, lookback_days=lookback_days)
+        rate, hours = leg.get("rate"), leg.get("interval_hours")
+        venues[v] = {
+            "trailing_apr": snap.get("trailing_apr"),
+            "trailing_30d_apr": snap.get("trailing_30d_apr"),
+            "coverage_days": snap.get("coverage_days"),
+            "current_rate": rate,
+            "interval_hours": hours,
+            "current_apr": rate * 8760.0 / hours if rate is not None and hours else None,
+            "mark": leg.get("mark"),
+            "cap": leg.get("cap"),
+        }
+    valid = {v: x for v, x in venues.items() if x["trailing_apr"] is not None}
+    if len(valid) < 2:
+        return {"venues": venues, "pair": None}
+    short_v = max(valid, key=lambda v: valid[v]["trailing_apr"])
+    long_v = min(valid, key=lambda v: valid[v]["trailing_apr"])
+    s, lg = valid[short_v], valid[long_v]
+    spread = s["trailing_apr"] - lg["trailing_apr"]
+    current = s["current_apr"] - lg["current_apr"] if s["current_apr"] is not None and lg["current_apr"] is not None else None
+    roundtrip = 2 * (fees.get(short_v, 0.0005) + fees.get(long_v, 0.0005) + 2 * slippage)
+    gap = s["mark"] / lg["mark"] - 1.0 if s["mark"] and lg["mark"] else None
+    flags = []
+    if gap is not None and abs(gap) > mismatch_gap:
+        flags.append("price_mismatch")
+    elif gap is not None and abs(gap) > max_entry_gap:
+        flags.append("price_gap")
+    if current is not None and current < 0:
+        flags.append("current_spread_reversed")
+    if any(x["cap"] and x["current_rate"] is not None and abs(x["current_rate"]) >= 0.95 * x["cap"] for x in (s, lg)):
+        flags.append("funding_at_cap")
+    if any((x["coverage_days"] or 0) < lookback_days for x in (s, lg)):
+        flags.append("short_history")
+    if s["interval_hours"] and lg["interval_hours"] and s["interval_hours"] != lg["interval_hours"]:
+        flags.append("interval_mismatch")
+    if spread >= entry_apr:
+        status = "above_entry"
+    elif spread <= exit_apr:
+        status = "below_exit"
+    else:
+        status = "between"
+    blocking = {"price_mismatch", "price_gap", "current_spread_reversed"}
+    return {
+        "venues": venues,
+        "pair": {
+            "short_venue": short_v,
+            "long_venue": long_v,
+            "trailing_spread_apr": spread,
+            "current_spread_apr": current,
+            "status": status,
+            "roundtrip_cost": roundtrip,
+            "breakeven_days": roundtrip / (spread / 365.0) if spread > 0 else None,
+            "price_gap": gap,
+            "flags": flags,
+            "tradable_now": status == "above_entry" and not blocking.intersection(flags),
+        },
+    }

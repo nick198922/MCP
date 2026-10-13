@@ -65,6 +65,6 @@ DOUBLETOP: **74 інструменти** (66 від 17 бекендів + 8 вл
 
 Премія за волатильність: `deribit_vrp` (DVOL проти реалізованої, IV rank без сховища, хеджований продаж стреддла по рівнях DVOL) + бектест `scripts/verify_vrp.py`.
 
-Funding carry: `funding_carry_scan` (trailing APR з фактичних виплат, пороги, окупність комісій, наявність спота, фільтр TradFi-перпів) + бектест cash-and-carry (`scripts/verify_funding_carry.py`).
+Funding carry: `funding_spread_scan` (крос-біржовий спред для перп-перп з прапорцями ризику), `funding_carry_scan` (trailing APR з фактичних виплат, пороги, окупність комісій, наявність спота, фільтр TradFi-перпів) + бектест cash-and-carry (`scripts/verify_funding_carry.py`).
 
 Price-action за навчальними відео DoubleTop (не з їхнього MCP): `range_detect` (рейнджі, sweeps, deviations, accumulation/distribution), `range_setup` (SFP-сетап: entry/stop/TP/RR), `range_setup_scan` (сканер SFP-сетапів по списку тикерів).

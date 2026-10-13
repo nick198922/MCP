@@ -86,7 +86,9 @@
 - [x] Funding carry: бектест cash-and-carry (Binance топ-20, 2 роки) + `funding_carry_scan`. Звіт `docs/verification/2026-10-12-funding-carry.md`.
 - [x] Carry на дрібних альтах: портфель зі слотами на 359 крипто-перпах Binance — +6.5% на номінал (~3–5% на капітал), великий ризик шорт-ноги, концентрація в мемкоїнах. Звіт `docs/verification/2026-10-12-funding-carry-alts.md`. Дефолтний поріг `funding_carry_scan` → 20%.
 - [x] Крос-біржовий carry перп-перп Binance ↔ Bybit: бектест — +90% на номінал (+76% зі стопом при 2x), лише на хайпових лістингах, хвостовий розподіл. Звіт `docs/verification/2026-10-13-funding-carry-perp-perp.md`.
-- [ ] Сканер крос-біржових спредів funding (Binance/Bybit/OKX/HL): trailing spread APR, окупність комісій, розрив цін між біржами, прапорці ризику (вік лістингу, волатильність, ліміт funding). Потрібен для паперової перевірки перп-перп carry.
+- [x] Сканер крос-біржових спредів funding `funding_spread_scan` (Binance/Bybit/OKX), 2026-10-13.
+- [ ] Додати Hyperliquid у `funding_spread_scan` (інша схема назв монет, напр. kPEPE; funding щогодини; mark з `metaAndAssetCtxs`).
+- [ ] Паперова перевірка перп-перп carry: записувати угоди за сигналом `tradable_now` через `journal_add(tags=["pp-paper"])`, через 4–8 тижнів порівняти `journal_stats(tag="pp-paper")` з бектестом (медіанна угода, частка стопів).
 - [x] `carry_annualized` — сума фактичних виплат за покритий проміжок (2026-10-13).
 - [x] Пагінація історії funding (ccxt і Hyperliquid) — інструменти більше не обрізають свіжі дані (2026-10-13).
 - [ ] 5.4 Pendle (fixed yield, крива, PT vs underlying, календар) — для funding-carry стратегій.

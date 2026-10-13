@@ -31,6 +31,7 @@ if [[ -n "$(git status --porcelain)" ]]; then
   git stash push --include-untracked -m "nightly-leftover-$STAMP"
 fi
 git checkout --quiet --detach origin/main
+rm -f .agent/branch .agent/commit-msg.txt
 uv sync --quiet --extra dev
 echo "worktree $WT at $(git rev-parse --short HEAD)"
 
@@ -45,16 +46,64 @@ ALLOWED=(
   Read Write Edit Glob Grep WebSearch WebFetch Agent
   "Bash(uv run:*)" "Bash(uv sync:*)" "Bash(make:*)"
   "Bash(git status:*)" "Bash(git diff:*)" "Bash(git log:*)" "Bash(git show:*)" "Bash(git branch:*)"
-  "Bash(git fetch:*)" "Bash(git rev-parse:*)" "Bash(git ls-tree:*)" "Bash(git switch -c agent/:*)" "Bash(git add:*)" "Bash(git commit:*)"
-  "Bash(git push -u origin agent/:*)" "Bash(gh pr:*)" "Bash(ls:*)" "Bash(date:*)" "Bash(which:*)"
+  "Bash(git fetch:*)" "Bash(git rev-parse:*)" "Bash(git ls-tree:*)" "Bash(git add:*)"
+  "Bash(ls:*)" "Bash(date:*)" "Bash(which:*)" "Bash(head:*)" "Bash(tail:*)" "Bash(wc:*)" "Bash(mkdir -p .agent:*)"
 )
 DENIED=(
   "Bash(git push origin main:*)" "Bash(git push --force:*)" "Bash(git push -f:*)" "Bash(git reset --hard:*)"
   "Bash(git config:*)" "Bash(rm -rf:*)"
 )
 
-caffeinate -i claude -p "$PROMPT" --permission-mode dontAsk \
-  --allowedTools "${ALLOWED[@]}" --disallowedTools "${DENIED[@]}" | tee "$LOG_DIR/$STAMP.summary.md"
+SUMMARY="$LOG_DIR/$STAMP.summary.md"
+caffeinate -i "${TRADEDESK_CLAUDE_BIN:-claude}" -p "$PROMPT" --permission-mode dontAsk \
+  --allowedTools "${ALLOWED[@]}" --disallowedTools "${DENIED[@]}" | tee "$SUMMARY" || echo "claude exited with an error"
 
+# Delivery is done here, not by the model: only agent/YYYY-MM-DD-* branches, only after lint and tests pass.
+deliver() {
+  [[ $DRY -eq 1 ]] && return 0
+  if [[ ! -f .agent/branch || ! -f .agent/commit-msg.txt ]]; then
+    echo "no delivery requested"
+    return 0
+  fi
+  local br
+  br="$(head -1 .agent/branch | tr -d '[:space:]')"
+  if [[ ! "$br" =~ ^agent/[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9][a-z0-9-]*$ ]]; then
+    echo "refusing branch name '$br'"
+    return 1
+  fi
+  if git ls-remote --exit-code --heads origin "$br" >/dev/null 2>&1; then
+    echo "branch $br already exists on origin"
+    return 1
+  fi
+  if git diff --cached --quiet; then
+    echo "nothing staged"
+    return 1
+  fi
+  if ! git diff --quiet; then
+    echo "unstaged changes in tracked files; refusing to deliver a commit that differs from what was tested"
+    return 1
+  fi
+  if ! make lint || ! make test; then
+    echo "lint or tests failed; not delivering"
+    return 1
+  fi
+  # errexit is off inside a function called from `if`, so every step is checked explicitly.
+  git switch -c "$br" || return 1
+  git commit -q -F .agent/commit-msg.txt || return 1
+  git push -q -u origin "$br" || return 1
+  local repo url
+  repo="$(git remote get-url origin | sed -E 's#^(git@github.com:|https://github.com/)##; s#\.git$##')"
+  url="https://github.com/$repo/compare/main...$br?expand=1"
+  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+    url="$(gh pr create --base main --head "$br" --title "$(head -1 .agent/commit-msg.txt)" --body-file .agent/commit-msg.txt)" || true
+  fi
+  echo "delivered $br: $url"
+  printf '\n**Гілка:** `%s`\n**PR:** %s\n' "$br" "$url" >>"$SUMMARY"
+}
+if ! deliver; then
+  printf '\n**Доставку не виконано** — причина в лозі %s.\n' "$LOG_DIR/$STAMP.log" >>"$SUMMARY"
+fi
+
+uv run --no-project python "$REPO/scripts/agents_transcript.py" --out "$LOG_DIR/$STAMP.transcript.md" || true
 echo "== $(date) done"
-osascript -e "display notification \"Підсумок: $LOG_DIR/$STAMP.summary.md\" with title \"tradedesk: нічний прогін агентів\"" || true
+osascript -e "display notification \"Підсумок: $SUMMARY; розмова агентів: $LOG_DIR/$STAMP.transcript.md\" with title \"tradedesk: нічний прогін агентів\"" || true

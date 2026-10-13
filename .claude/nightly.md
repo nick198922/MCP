@@ -20,17 +20,20 @@ e. Nothing applies -> write the summary saying so and stop.
 
 Give each subagent a self-contained brief: which card or item, which files, what done looks like.
 
-## 3. Deliver
+## 3. Prepare delivery (the launcher script commits and pushes)
 
-1. `git switch -c agent/YYYY-MM-DD-<slug>` from the detached `origin/main`.
-2. `make lint && make test` must pass. If they cannot be made to pass within the step, commit nothing except the summary and explain.
-3. Commit with a clear message ending with the attribution lines the environment gives you.
-4. `git push -u origin agent/YYYY-MM-DD-<slug>`.
-5. If `gh` is available, `gh pr create --base main` with the summary as the body. Otherwise put this compare link in the summary: `https://github.com/nick198922/MCP/compare/main...agent/YYYY-MM-DD-<slug>?expand=1`.
+You do not create branches, commit or push. After you finish, the launcher script does that, and only if it accepts your request.
+
+1. `make lint && make test` must pass.
+2. Stage exactly the files of this step with `git add <paths>` (including the summary from step 4). Leave no unstaged changes in tracked files.
+3. Write `.agent/branch` with one line, `agent/YYYY-MM-DD-<slug>` (lowercase letters, digits, hyphens), and `.agent/commit-msg.txt` with the commit message: a subject line, a blank line, the body, then the attribution lines the environment gives you. Do not stage `.agent/`.
+4. If lint or tests fail and cannot be fixed within the step, do not write `.agent/branch`; explain in the summary.
+
+The script re-runs lint and tests, creates the branch, commits, pushes, and adds the PR or compare link to the summary it shows the owner.
 
 ## 4. Summary for the owner
 
-Write `docs/agents/runs/YYYY-MM-DD.md` in Ukrainian, at most 15 lines: which step and why, the result and verdicts, the critic's verdict, the PR or compare link, and any new questions. Include it in the same commit. Print the same text as your final answer.
+Write `docs/agents/runs/YYYY-MM-DD.md` in Ukrainian, at most 15 lines: which step and why, the result and verdicts, the critic's verdict, the branch name you requested, and any new questions. Stage it with the rest. Print the same text as your final answer.
 
 ## Hard rules
 

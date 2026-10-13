@@ -484,6 +484,13 @@ class FakeEx:
         }
 
     async def fetch_ohlcv(self, symbol, timeframe="1h", limit=100):
+        if timeframe == "1d":
+            end = 1791590400000  # 2026-10-10 00:00 UTC, the day of NOW
+            price, rows = 60000.0, []
+            for i in range(limit):
+                price *= 1.015 if i % 2 else 1 / 1.015
+                rows.append([end - (limit - 1 - i) * 86_400_000, price, price * 1.01, price * 0.99, price, 10.0])
+            return rows
         price, rows = 80000.0, []
         for i in range(limit):
             price *= 1 + (0.004 if i % 2 else -0.003)

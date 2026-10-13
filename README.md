@@ -67,6 +67,7 @@ claude mcp add tradedesk -- uv run --directory /ABSOLUTE/PATH/TO/tradedesk-mcp t
 | | `deribit_oi_by_strike` | OI-стіни по страйках: кол/пут/USD-ноцінал, топ-рівні підтримки/опору |
 | | `prob_from_options` | ризик-нейтральна ймовірність above/below/touch з урахуванням skew |
 | | `deribit_dvol` | DVOL (річний %) time series + latest / mean / stdev / min / max / change 24h / 7d |
+| | `deribit_vrp` | премія за волатильність: DVOL проти реалізованої (7д/30д), перцентиль DVOL за історію і за рік, історична премія і результат хеджованого продажу ATM-стреддла, у т.ч. по квінтилях рівня DVOL. Перевірку на історії див. у `docs/verification/2026-10-13-vrp.md` |
 | | `deribit_atm_term` | ATM-IV term structure (contango/backwardation) по експіраціях |
 | | `deribit_skew_term` | term structure 25Δ-RR і 25Δ-fly (puts/calls richer, flattening/steepening) |
 | | `deribit_largest_trades` | останні крупні трейди (options/futures), фільтр блок-угод, buy/sell imbalance |

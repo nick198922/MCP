@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
 from mcp.server.mcpserver import MCPServer
@@ -25,12 +26,34 @@ from ..analytics.options import (
     rr_fly,
     wing_quality,
 )
+from ..analytics.vrp import align_daily, vrp_summary
 from ..core.envelope import Builder
 from ..runtime import Runtime
 from ._util import READ_ONLY, find_expiry, r
 
 CUR = Annotated[Literal["BTC", "ETH"], Field(description="Deribit inverse-option currency")]
 EXPIRY = Annotated[str, Field(description="Expiry as 26MAR27 or 2027-03-26 (08:00 UTC). Use deribit_vol_surface to list expiries.")]
+VRP_WARNING = (
+    "Backtest 2021-03..2026-10 (docs/verification/2026-10-13-vrp.md): DVOL exceeded the next 30 days' realized vol "
+    "on ~72 % (BTC) / ~65 % (ETH) of days; a daily delta-hedged short 30d ATM straddle earned roughly +1.3..2 % of "
+    "spot per month on BTC (95 % CI above zero), weaker and not significant on ETH, with single-month losses up to "
+    "~-15 % (BTC) / ~-35 % (ETH) of spot and a premium that has shrunk since 2021. The DVOL-minus-trailing-RV spread "
+    "did NOT predict the next month's premium; DVOL's level did (exploratory, consistent in 2021-23 and 2024-26): "
+    "starts with DVOL in the top fifth of its trailing-year range earned the most (BTC ~+2.7..3.9 % of spot per "
+    "month), the bottom fifth about zero. DVOL is a 30d index that includes the wings and usually sits above ATM "
+    "IV, so the straddle here is priced at DVOL minus `entry_cost_vol`. Daily closes only: intraday gamma, margin, "
+    "early hedging slippage and Deribit's 08:00 UTC settlement are not modelled."
+)
+
+
+def _in_bucket(p: float | None, lo: float, hi: float) -> bool:
+    return p is not None and (lo <= p < hi or (hi >= 1.0 and p >= 1.0))
+
+
+def _day(d: float) -> str:
+    return datetime.fromtimestamp(int(d) * 86400, UTC).date().isoformat()
+
+
 GEX_NOTE = (
     "Heuristic: assumes dealers are long calls / short puts. Real positioning is unknown, so treat the sign and "
     "flip level as a model output, not a fact."
@@ -494,6 +517,129 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 "series": [{"ts": s["ts"], "close": r(s["close"], 3)} for s in series],
             }
         )
+
+    @server.tool(
+        annotations=READ_ONLY,
+        description=(
+            "Volatility risk premium for BTC/ETH: Deribit DVOL (30d implied vol index) against realized volatility "
+            "of daily spot closes. Returns the current DVOL, realized vol over 7d and 30d, their spread and DVOL's "
+            "percentile over the history (an IV rank that needs no stored data); the history's realized premium "
+            "(DVOL minus the following 30 days' realized vol); and the record of selling a 30d ATM straddle at "
+            "DVOL - `entry_cost_vol` with daily delta hedging (P&L as a fraction of spot per trade), overall and by "
+            "DVOL's percentile within the trailing 365 days (`by_dvol_level`, current bucket flagged). Vols are "
+            "decimals (0.45 = 45 %). Historical, not a forecast: see `warnings`."
+        ),
+    )
+    async def deribit_vrp(
+        currency: CUR = "BTC",
+        history_days: Annotated[int, Field(ge=120, le=1000, description="Days of daily DVOL and spot history to use.")] = 1000,
+        entry_cost_vol: Annotated[
+            float,
+            Field(
+                ge=0,
+                le=0.2,
+                description="Vol knocked off DVOL when pricing the sold straddle (DVOL-to-ATM gap + half-spread); 0.02 = 2 vol points.",
+            ),
+        ] = 0.02,
+        price_venue: Annotated[str, Field(description="ccxt spot venue for daily {currency}/USDT closes.")] = "binance",
+    ) -> dict[str, Any]:
+        b = Builder()
+        b.warn(VRP_WARNING)
+        end_ms = int(rt.now().timestamp() * 1000)
+        start_ms = end_ms - history_days * 86_400_000
+        iv: dict[int, float] = {}
+        end = end_ms
+        for _ in range(5):
+            page = await b.guard("dvol", "deribit", rt.deribit.volatility_index_data(currency, start_ms, end, 86400))
+            if not page:
+                break
+            for x in page.get("data") or []:
+                iv[int(x[0])] = float(x[4]) / 100.0
+            cont = page.get("continuation")
+            if not cont or int(cont) <= start_ms or int(cont) >= end:
+                break
+            end = int(cont)
+        bars = await b.guard(
+            f"ohlcv:{price_venue}", f"ccxt:{price_venue}", rt.exchanges.ohlcv(price_venue, f"{currency}/USDT", "1d", history_days)
+        )
+        prices = [(int(x[0]), float(x[4])) for x in (bars or []) if isinstance(x, (list, tuple)) and len(x) >= 5]
+        if not iv or not prices:
+            if not iv and not any(m.field == "dvol" for m in b.missing):
+                b.miss("dvol", "deribit", "data_unavailable", "empty DVOL series")
+            if not prices and bars is not None:
+                b.miss(f"ohlcv:{price_venue}", f"ccxt:{price_venue}", "data_unavailable", "no daily closes")
+            return b.build(None, ok=False)
+        rows = align_daily(sorted(iv.items()), prices)
+        if not rows:
+            b.miss("history", "tradedesk", "data_unavailable", "DVOL and spot closes share no days")
+            return b.build(None, ok=False)
+        s = vrp_summary(rows, entry_cost_vol=entry_cost_vol)
+        cur = s["current"]
+        data: dict[str, Any] = {
+            "currency": currency,
+            "price_venue": price_venue,
+            "history": {"days": s["history_days"], "from": _day(rows[0]["day"]), "to": _day(rows[-1]["day"])},
+            "current": {
+                "date": _day(cur["day"]),
+                "dvol": r(cur["iv"], 4),
+                "rv_7d": r(cur["rv_7d"], 4),
+                "rv_30d": r(cur["rv_30d"], 4),
+                "spread_vs_rv30": r(cur["spread_vs_rv30"], 4),
+                "dvol_percentile": r(cur["iv_percentile"], 3),
+                "dvol_min": r(cur["iv_min"], 4),
+                "dvol_max": r(cur["iv_max"], 4),
+                "dvol_mean": r(cur["iv_mean"], 4),
+                "dvol_percentile_365d": r(cur.get("iv_percentile_365d"), 3),
+            },
+        }
+        if s.get("by_iv_level"):
+            p365 = cur.get("iv_percentile_365d")
+            data["by_dvol_level"] = [
+                {
+                    "dvol_percentile_365d": f"{x['percentile_from']:.0%}-{x['percentile_to']:.0%}",
+                    "n_starts": x["n_starts"],
+                    "mean_straddle_pnl": r(x["mean_pnl"], 4),
+                    "share_positive": r(x["share_positive"], 3),
+                    "current": _in_bucket(p365, x["percentile_from"], x["percentile_to"]),
+                }
+                for x in s["by_iv_level"]
+            ]
+        if "premium" in s:
+            pm = s["premium"]
+            no = pm["non_overlapping"]
+            data["premium"] = {
+                "mean_vrp": r(pm["mean_vrp_vol"], 4),
+                "share_dvol_above_realized": r(pm["share_iv_above_realized"], 3),
+                "mean_dvol": r(pm["mean_iv"], 4),
+                "mean_realized_forward": r(pm["mean_rv_forward"], 4),
+                "non_overlapping": {
+                    "n": no["n"],
+                    "mean": r(no.get("mean"), 4),
+                    "ci95": [r(x, 4) for x in no["ci95"]] if no.get("ci95") else None,
+                },
+                "spread_correlation_with_next_premium": r(pm["spread_correlation"], 3),
+            }
+        else:
+            b.warn("history too short for a forward realized-vol window (needs >= 61 consecutive days)")
+        if "hedged_short_straddle" in s:
+            h = s["hedged_short_straddle"]
+            al, no, w = h["all_starts"], h["non_overlapping"], h["worst"]
+            data["hedged_short_straddle"] = {
+                "entry_cost_vol": entry_cost_vol,
+                "mean_premium": r(h["mean_premium"], 4),
+                "mean_pnl_all_starts": r(al["mean"], 4),
+                "share_positive": r(al["share_positive"], 3),
+                "last_365d_mean_pnl": r(h["last_365d_mean"], 4),
+                "non_overlapping": {
+                    "n": no["n"],
+                    "mean": r(no.get("mean"), 4),
+                    "ci95": [r(x, 4) for x in no["ci95"]] if no.get("ci95") else None,
+                    "sharpe_annual": r(no.get("sharpe"), 2),
+                    "max_drawdown": r(no.get("max_drawdown"), 4),
+                },
+                "worst": {"start": _day(w["day"]), "pnl": r(w["pnl"], 4), "spot_move": r(w["move"], 4), "dvol": r(w["iv"], 4)},
+            }
+        return b.build(data)
 
     @server.tool(
         annotations=READ_ONLY,

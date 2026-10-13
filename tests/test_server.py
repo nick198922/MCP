@@ -1,4 +1,5 @@
 import json
+import math
 
 import pytest
 from mcp import Client
@@ -36,6 +37,7 @@ EXPECTED_TOOLS = {
     "sentiment_fear_greed",
     "calendar_expiries",
     "deribit_dvol",
+    "deribit_vrp",
     "deribit_atm_term",
     "deribit_skew_term",
     "deribit_largest_trades",
@@ -592,6 +594,28 @@ async def test_calendar_classify_expiry():
     assert classify_expiry(datetime(2027, 3, 26, 8, tzinfo=UTC), now) == "quarterly"
     assert classify_expiry(datetime(2026, 10, 16, 8, tzinfo=UTC), now) == "weekly"  # third Friday, not last
     assert classify_expiry(datetime(2026, 10, 11, 8, tzinfo=UTC), now) == "daily"  # Sunday
+
+
+async def test_deribit_vrp(server):
+    env = await call(server, "deribit_vrp", currency="BTC", history_days=200)
+    assert env["ok"], env["missing"]
+    d = env["data"]
+    assert any("Backtest" in w for w in env["warnings"])
+    assert d["history"]["days"] >= 190
+    cur = d["current"]
+    # fake spot zigzags +-1.5 % a day -> realized ~ 0.015 * sqrt(365) ~ 28.7 %; fake DVOL drifts up from 45 %
+    assert cur["rv_30d"] == pytest.approx(0.015 * math.sqrt(365), rel=0.02)
+    assert cur["dvol"] > cur["rv_30d"]
+    assert cur["dvol_percentile"] > 0.9  # rising series -> latest is near the top
+    assert d["premium"]["share_dvol_above_realized"] == pytest.approx(1.0)
+    hs = d["hedged_short_straddle"]
+    assert hs["mean_pnl_all_starts"] > 0
+    assert hs["non_overlapping"]["n"] >= 4
+    assert "by_dvol_level" not in d  # 200 days < 365-day percentile window
+    env2 = await call(server, "deribit_vrp", currency="BTC", history_days=500)
+    levels = env2["data"]["by_dvol_level"]
+    assert len(levels) == 5 and sum(1 for x in levels if x["current"]) == 1
+    assert env2["data"]["current"]["dvol_percentile_365d"] == pytest.approx(1.0)  # fake DVOL only rises
 
 
 async def test_deribit_dvol(server):

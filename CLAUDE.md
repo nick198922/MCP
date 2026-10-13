@@ -72,3 +72,6 @@ scripts/       live_smoke.py
 - Повернути verdict: ✓ CONFIRMED / ≈ DIRECTIONALLY RIGHT / ✗ NOT CONFIRMED / ◯ UNVERIFIABLE з `n_sample`, period, thresholds.
 - Якщо розбіжність — спочатку варіювати **свої параметри**, не приписувати помилку лектору.
 - Усе, що імпортується з лекції, маркувати у коміт-повідомленні з посиланням на YouTube URL.
+
+## Команда агентів
+Нічний конвеєр (скаут → критик → квант → критик → розробник → критик → PR) описано в [`docs/AGENTS.md`](docs/AGENTS.md); визначення агентів — `.claude/agents/`, інструкція координатора — `.claude/nightly.md`. Агенти працюють у worktree `../tradedesk-agents`, віддають роботу гілками `agent/*`, у `main` нічого не пушать; питання до власника — `docs/QUESTIONS.md`.

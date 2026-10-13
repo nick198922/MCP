@@ -14,8 +14,9 @@ Skip anything blocked by an unanswered question in `docs/QUESTIONS.md`. If a ste
 
 a. A card with status `accepted` -> **quant** tests it -> **critic** (mode B) reviews. If the critic requests changes, the quant gets one round of fixes, then the critic re-reviews. The card status follows the final verdict.
 b. A card with status `confirmed` and no tool built yet -> **builder** implements the tool -> **critic** (mode C), one fix round.
-c. An open, unblocked `docs/BACKLOG.md` item that is not Phase 4 / execution / keys / security and follows the priorities in `docs/AGENTS.md` -> **builder** -> **critic** (mode C), one fix round.
-d. Otherwise, or if fewer than two cards are `proposed` or `accepted` -> **scout** writes 1-3 cards -> **critic** (mode A) triages them.
+c. Fewer than two cards with status `proposed` or `accepted`, counting cards on `origin/main` AND on unmerged `origin/agent/*` branches (`git ls-tree -r --name-only <branch> docs/ideas`, `git show <branch>:<path>`) -> **scout** writes 1-3 cards -> **critic** (mode A) triages them. Counting cards waiting in open branches keeps the scout from running again while its last batch waits for the owner.
+d. An open, unblocked `docs/BACKLOG.md` item that is not Phase 4 / execution / keys / security and follows the priorities in `docs/AGENTS.md` -> **builder** -> **critic** (mode C), one fix round.
+e. Nothing applies -> write the summary saying so and stop.
 
 Give each subagent a self-contained brief: which card or item, which files, what done looks like.
 

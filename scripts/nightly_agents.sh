@@ -45,7 +45,7 @@ ALLOWED=(
   Read Write Edit Glob Grep WebSearch WebFetch Agent
   "Bash(uv run:*)" "Bash(uv sync:*)" "Bash(make:*)"
   "Bash(git status:*)" "Bash(git diff:*)" "Bash(git log:*)" "Bash(git show:*)" "Bash(git branch:*)"
-  "Bash(git fetch:*)" "Bash(git rev-parse:*)" "Bash(git switch -c agent/:*)" "Bash(git add:*)" "Bash(git commit:*)"
+  "Bash(git fetch:*)" "Bash(git rev-parse:*)" "Bash(git ls-tree:*)" "Bash(git switch -c agent/:*)" "Bash(git add:*)" "Bash(git commit:*)"
   "Bash(git push -u origin agent/:*)" "Bash(gh pr:*)" "Bash(ls:*)" "Bash(date:*)" "Bash(which:*)"
 )
 DENIED=(

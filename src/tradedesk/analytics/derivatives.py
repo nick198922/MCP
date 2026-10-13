@@ -89,7 +89,8 @@ def summarise_funding_history(
     If `interval_hours` is None it is detected from the median timestamp spacing
     (fallback 8h). Returns mean/stdev/min/max over all, 7d and 30d windows; latest
     value with its z-score (vs the full window) and percentile rank; annualised
-    carry (mean rate scaled to a year); polarity flips.
+    carry (sum of payments over the covered span, robust to interval changes);
+    the latest rate annualised at the latest payment's own interval; polarity flips.
     """
     rows = sorted(
         [{"ts_ms": int(e["ts_ms"]), "rate": float(e["rate"])} for e in entries if e.get("rate") is not None],
@@ -111,9 +112,14 @@ def summarise_funding_history(
         return [r["rate"] for r in rows if r["ts_ms"] >= cutoff]
 
     flips = sum(1 for a, b in zip(rates, rates[1:], strict=False) if a == 0 or (a > 0) != (b > 0) and b != 0)
-    scale = 8760.0 / interval_hours
     mean_rate = stats_all["mean"]
-    carry_annualized = mean_rate * scale if mean_rate is not None else None
+    # Carry = actual payments over the covered span (one interval before the first payment to the last), so a
+    # venue switching 8h -> 1h mid-window does not scale hourly rates by the 8h count or vice versa.
+    span_ms = rows[-1]["ts_ms"] - rows[0]["ts_ms"] + interval_hours * 3_600_000
+    carry_annualized = sum(rates) * 365 * 86_400_000 / span_ms if span_ms > 0 else None
+    latest_interval = (rows[-1]["ts_ms"] - rows[-2]["ts_ms"]) / 3_600_000 if len(rows) >= 2 else interval_hours
+    if latest_interval < 0.25:
+        latest_interval = interval_hours
 
     z = None
     sd = stats_all["stdev"]
@@ -125,7 +131,7 @@ def summarise_funding_history(
         "first_ts_ms": rows[0]["ts_ms"],
         "last_ts_ms": latest["ts_ms"],
         "latest_rate": latest["rate"],
-        "latest_annualized": latest["rate"] * scale,
+        "latest_annualized": latest["rate"] * 8760.0 / latest_interval,
         "mean_rate": mean_rate,
         "stdev_rate": sd,
         "min_rate": stats_all["min"],

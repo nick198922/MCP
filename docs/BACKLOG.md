@@ -16,7 +16,7 @@
 
 ## Фаза 1 — дані та деривативи (залишок)
 - [x] 1.1 `market_tickers` (batch), `market_markets` (пошук/фільтр, не повний дамп), `market_trades` (+ агресор-дисбаланс/CVD). ccxt `fetch_tickers`, `fetch_markets`, `fetch_trades`.
-- [x] 1.2 `perps_funding_history`: ccxt `fetch_funding_rate_history` (Binance/Bybit/OKX, 8h) + HL `fundingHistory` (1h); z-score, перцентиль, mean 7d/30d, carry-APR, polarity flips. Крос-венюз-summary (highest/lowest carry, biggest |z|). Live-verified 2026-10-10 на реальних даних. TODO: пагінація HL після 500 записів.
+- [x] 1.2 `perps_funding_history`: ccxt `fetch_funding_rate_history` (Binance/Bybit/OKX, 8h) + HL `fundingHistory` (1h); z-score, перцентиль, mean 7d/30d, carry-APR, polarity flips. Крос-венюз-summary (highest/lowest carry, biggest |z|). Live-verified 2026-10-10 на реальних даних. Пагінацію HL зроблено 2026-10-13.
 - [x] 1.3 `perps_long_short_ratio`, `perps_oi_history`: Binance `/futures/data/globalLongShortAccountRatio`, `/futures/data/openInterestHist`; Bybit `/v5/market/account-ratio`, `/v5/market/open-interest`. Нові провайдери `binance_futures.py`, `bybit.py`. Live-verified 2026-10-10. Bybit OI без USD-value (так само як 0.6 — потрібен fallback через mark price).
 - [x] 1.4 Hyperliquid: `hyperliquid_candles` (OHLCV + realized vol), `hyperliquid_book` (+slippage, 20 рівнів), `hyperliquid_trades` (aggressor flow), `hyperliquid_funding_history` (+ 7d/30d mean, z, percentile, carry). Шейпи ctxs і решти ендпойнтів підтверджено живим запитом 2026-10-10.
 - [x] 1.5 Polymarket (частково): провайдер `polymarket.py` з двома `Http` (Gamma + CLOB), analytics `normalise_market`, `devig_multi`, `book_stats`; інструменти `polymarket_search`, `polymarket_market` (per-outcome CLOB mid/spread/depth), `polymarket_history`. **(verify)** Live-перевірка — під час наступного `make smoke`. `polymarket_vs_options` відкладено (треба маніфест mapping Polymarket-ринок → крипто-опціонна подія).
@@ -42,7 +42,7 @@
 - [x] Калібрування SFP-механіки: walk-forward 2 роки × 20 перпів, 4h і 12h, сітка параметрів — `scripts/verify_lectures.py`, звіт у `docs/verification/2026-10-12-doubletop-ranges-sfp.md`. **Переваги немає** (R ≈ 0 до комісій); у `range_setup*` додано `warnings`.
 - [x] SFP на 12h out-of-sample (50 крипто-перпів, 2022–2026): ✗ не підтвердилось (OOS −0.050 R, CI [−0.16; +0.06]). Звіт `docs/verification/2026-10-12-sfp-oos-and-15m.md`.
 - [x] SFP з входом на 15m (ретест / підтвердження): ✗ переваги не додає; ретест значуще гірший. **Тему SFP закрито**, нових розширень не робимо.
-- [ ] Баг колектора: `_ohlcv_hist_tick` не передає `since_ms` в `Exchanges.ohlcv`, тому backfill завжди отримує лише останні 500 барів. `Exchanges.ohlcv` уже приймає `since_ms`; треба передати його і оновити `FakeEx.fetch_ohlcv` у тестах.
+- [x] Баг колектора: backfill `ohlcv_hist` тепер іде від `since_ms` (2026-10-13).
 
 - [x] 1.17b Range classification accumulation vs distribution (з DoubleTop «Аккумуляційні і дистрибутивні ренджі»): `range_type_hint(bars, range, swings, sweeps)` голосує на 3 критеріях — SMA100 vs SMA200 (context), slopes верхньої/нижньої меж (wedge), асиметрія sweeps (sweep_asymmetry_threshold=0.65). Verdict: `accumulation` / `distribution` / `ambiguous` + confidence. Exposes через `range_detect.classification`. Live BTC 2026-10-12: range 74909-87385 → `ambiguous` (SMA context каже accumulation, wedge симетричний, sweep tilt 62% up — всі ознаки "підозрілого" range'у з жовтневого прикладу Ільї).
 - [x] 1.17 Range / sweep / deviation detectors (з DoubleTop «Рейнджі»): pure `analytics/ranges.py` з `swing_points`, `detect_ranges` (rolling-window + merge overlapping), `detect_sweeps` (candle wick pokes past prior swing + closes back), `detect_deviations` (close beyond + return within `max_bars_back`), `classify_ranges` (end-to-end). MCP-tool `range_detect(venue, symbol, timeframe, lookback_bars, min_bars, max_width_pct, swing_lookback, sweep_wick_ratio, max_deviation_bars, source=store|live)`. Live BTC 2026-10-12: 1h×500 → 1 range 80345..87385 (8.39%), 21 sweeps; 4h×300 → 1 range 74909..87385 (15.37%), 8 sweeps (3 high-sweeps підряд — узгоджується з DoubleTop патерном «на bear-range знімається верхня ліквідність»).
@@ -87,7 +87,8 @@
 - [x] Carry на дрібних альтах: портфель зі слотами на 359 крипто-перпах Binance — +6.5% на номінал (~3–5% на капітал), великий ризик шорт-ноги, концентрація в мемкоїнах. Звіт `docs/verification/2026-10-12-funding-carry-alts.md`. Дефолтний поріг `funding_carry_scan` → 20%.
 - [x] Крос-біржовий carry перп-перп Binance ↔ Bybit: бектест — +90% на номінал (+76% зі стопом при 2x), лише на хайпових лістингах, хвостовий розподіл. Звіт `docs/verification/2026-10-13-funding-carry-perp-perp.md`.
 - [ ] Сканер крос-біржових спредів funding (Binance/Bybit/OKX/HL): trailing spread APR, окупність комісій, розрив цін між біржами, прапорці ризику (вік лістингу, волатильність, ліміт funding). Потрібен для паперової перевірки перп-перп carry.
-- [ ] `perps_funding_history.carry_annualized` множить середню ставку на фіксований інтервал — перейти на суму фактичних виплат, як у `carry_snapshot`.
+- [x] `carry_annualized` — сума фактичних виплат за покритий проміжок (2026-10-13).
+- [x] Пагінація історії funding (ccxt і Hyperliquid) — інструменти більше не обрізають свіжі дані (2026-10-13).
 - [ ] 5.4 Pendle (fixed yield, крива, PT vs underlying, календар) — для funding-carry стратегій.
 
 ## Фаза 6 — безпека та полірування

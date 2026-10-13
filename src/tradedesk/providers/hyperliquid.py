@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..core.envelope import Fetched
+from ..core.envelope import Evidence, Fetched
 from ..core.errors import ProviderError
 from ..core.http import Http
 
@@ -68,6 +68,46 @@ class Hyperliquid:
         if end_ms:
             payload["endTime"] = end_ms
         return await self._info(payload, ttl=30)
+
+    async def funding_history_range(self, coin: str, start_ms: int, end_ms: int, *, max_pages: int = 40) -> Fetched:
+        """Hourly funding from ``start_ms`` to ``end_ms``; the API returns at most 500 rows per call, so walk forward.
+
+        Returns ``{"rows": [...], "complete": bool}``; ``complete`` is False when ``max_pages`` was hit or a
+        later page failed (rows so far are kept). A failure on the first page raises.
+        """
+        rows: dict[int, dict[str, Any]] = {}
+        start, pages, latency, cached, complete = start_ms, 0, 0, True, True
+        while start < end_ms:
+            if pages >= max_pages:
+                complete = False
+                break
+            try:
+                f = await self.funding_history(coin, start, end_ms)
+            except ProviderError:
+                if pages == 0:
+                    raise
+                complete = False
+                break
+            pages += 1
+            latency += f.evidence.latency_ms or 0
+            cached = cached and f.evidence.cached
+            batch = [x for x in (f.data or []) if isinstance(x, dict) and x.get("time") is not None]
+            for x in batch:
+                rows[int(x["time"])] = x
+            if len(batch) < 500:
+                break
+            nxt = max(int(x["time"]) for x in batch) + 1
+            if nxt <= start:
+                break
+            start = nxt
+        ev = Evidence(
+            provider="hyperliquid",
+            tool="info/fundingHistory",
+            args={"coin": coin.upper(), "start_ms": start_ms, "end_ms": end_ms, "pages": pages},
+            latency_ms=latency,
+            cached=cached and pages > 0,
+        )
+        return Fetched({"rows": [rows[k] for k in sorted(rows) if k <= end_ms], "complete": complete}, ev)
 
     async def candles(self, coin: str, interval: str, start_ms: int, end_ms: int | None = None) -> Fetched:
         req: dict[str, Any] = {"coin": coin.upper(), "interval": interval, "startTime": start_ms}

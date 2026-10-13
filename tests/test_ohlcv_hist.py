@@ -81,6 +81,38 @@ async def test_collect_ohlcv_hist_writes_rows(state, tmp_path):
         await rt.aclose()
 
 
+class _SpyEx(FakeEx):
+    since_seen: list = []
+
+    async def fetch_ohlcv(self, symbol, timeframe="1h", limit=100, since=None):
+        type(self).since_seen.append(since)
+        return await super().fetch_ohlcv(symbol, timeframe, limit, since)
+
+
+async def test_collect_ohlcv_hist_backfill_requests_from_since(state, tmp_path):
+    _SpyEx.since_seen = []
+    settings = Settings(
+        http_retries=1,
+        cache_scale=0.0,
+        db_path=str(tmp_path / "ohlcv.sqlite"),
+        collect_ohlcv_hist_enabled=True,
+        collect_ohlcv_hist_markets="binanceusdm:BTC/USDT:USDT:1h",
+        collect_ohlcv_hist_backfill_days=3,
+    )
+    rt = Runtime(settings, transports=make_transports(state), exchange_factory=_SpyEx)
+    rt.now = lambda: NOW
+    await rt.store.init()
+    try:
+        written = await _collect_ohlcv_hist(rt)
+        now_ms = int(NOW.timestamp() * 1000)
+        assert _SpyEx.since_seen[0] == now_ms - 3 * 86_400_000
+        rows = await rt.store.ohlcv_range(venue="binanceusdm", symbol="BTC/USDT:USDT", timeframe="1h", since_ts=0)
+        assert written == len(rows) == 72  # three days of hourly bars, nothing older
+        assert rows[0]["ts"] >= now_ms - 3 * 86_400_000
+    finally:
+        await rt.aclose()
+
+
 # ---------- MCP tool ----------
 
 

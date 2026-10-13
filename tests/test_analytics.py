@@ -257,3 +257,18 @@ def test_book_tolerates_extra_level_columns():
     assert st["mid"] == 100
     w = orderbook.walk_book(asks, 505, mid=100, side="buy")
     assert w["unfilled_usd"] == pytest.approx(0)
+
+
+def test_funding_carry_is_robust_to_interval_change():
+    from tradedesk.analytics.derivatives import summarise_funding_history
+
+    h = 3_600_000
+    r = 0.0001  # 0.01 % per 8h = 0.03 % a day
+    eight = [{"ts_ms": i * 8 * h, "rate": r} for i in range(90)]  # 30 days at 8h
+    t0 = eight[-1]["ts_ms"]
+    hourly = [{"ts_ms": t0 + (i + 1) * h, "rate": r / 8} for i in range(7 * 24)]  # then 7 days at 1h, same daily income
+    s = summarise_funding_history(eight + hourly)
+    assert s["carry_annualized"] == pytest.approx(r * 3 * 365, rel=0.01)
+    assert s["latest_annualized"] == pytest.approx(r / 8 * 8760, rel=1e-9)  # at the latest 1h interval
+    plain = summarise_funding_history(eight)
+    assert plain["carry_annualized"] == pytest.approx(r * 3 * 365, rel=1e-9)

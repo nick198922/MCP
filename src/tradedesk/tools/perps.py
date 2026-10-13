@@ -61,6 +61,13 @@ def _iso(ms: Any) -> str | None:
     return None if not ms else datetime.fromtimestamp(ms / 1000, UTC).isoformat(timespec="seconds")
 
 
+def _warn_short_coverage(b: Builder, venue: str, entries: list[dict[str, Any]], since_ms: int) -> None:
+    """Flag history that starts well after the requested window (venue retention, e.g. OKX ~3 months, or a later listing)."""
+    first = min(e["ts_ms"] for e in entries)
+    if first - since_ms > 2 * 86_400_000:
+        b.warn(f"{venue} funding history starts {_iso(first)[:10]}, later than requested (venue retention or listing date)")
+
+
 def _row_from_stats(stats: dict[str, Any]) -> dict[str, Any]:
     """Project summarise_funding_history output into the per-venue row shape used by perps_funding_history."""
     return {
@@ -181,7 +188,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
         description=(
             "Historical perp funding across venues (Binance USDT-M, Bybit, OKX via ccxt; Hyperliquid). "
             "For each venue returns: count, interval (auto-detected from the median timestamp spacing), latest rate per interval and annualised, "
-            "mean/stdev/min/max of the rate, 7d and 30d means, carry APR (= mean rate × 8760 / interval_hours), z-score and percentile of the latest "
+            "mean/stdev/min/max of the rate, 7d and 30d means, carry APR (= sum of actual payments over the covered span, annualised; robust to interval changes), z-score and percentile of the latest "
             "value vs the whole window, polarity flips. Plus a cross-venue summary (highest/lowest carry, biggest absolute z). "
             "Set `include_series=true` to also receive each venue's raw [ts_ms, rate] rows."
         ),
@@ -199,35 +206,40 @@ def register(server: MCPServer, rt: Runtime) -> None:
         venues = [e.lower() for e in (exchanges or PERP_EXCHANGES)]
         now_ms = int(rt.now().timestamp() * 1000)
         since_ms = now_ms - int(days_back * 86_400_000)
-        limit = 500
 
         async def ccxt_row(ex: str) -> dict[str, Any] | None:
-            raw = await b.guard(f"funding_history:{ex}", f"ccxt:{ex}", rt.exchanges.funding_rate_history(ex, symbol, since_ms, limit))
-            if not raw:
+            got = await b.guard(
+                f"funding_history:{ex}", f"ccxt:{ex}", rt.exchanges.funding_rate_history_range(ex, symbol, since_ms, now_ms)
+            )
+            if not got:
                 return None
+            if not got["complete"]:
+                b.warn(f"{ex} funding history incomplete (page limit or a later page failed); window truncated")
             entries = [
                 {"ts_ms": int(x["timestamp"]), "rate": float(x["fundingRate"])}
-                for x in raw
+                for x in got["rows"]
                 if x.get("fundingRate") is not None and x.get("timestamp")
             ]
             if not entries:
                 return None
+            _warn_short_coverage(b, ex, entries, since_ms)
             stats = summarise_funding_history(entries, now_ms=now_ms)
             return {"venue": ex, **_row_from_stats(stats), **({"series": entries} if include_series else {})}
 
         async def hl_row() -> dict[str, Any] | None:
-            raw = await b.guard("funding_history:hyperliquid", "hyperliquid", rt.hyperliquid.funding_history(base, since_ms, now_ms))
-            if not raw:
+            got = await b.guard("funding_history:hyperliquid", "hyperliquid", rt.hyperliquid.funding_history_range(base, since_ms, now_ms))
+            if not got:
                 return None
+            if not got["complete"]:
+                b.warn("hyperliquid funding history incomplete (page limit or a later page failed); window truncated")
             entries = [
                 {"ts_ms": int(x["time"]), "rate": float(x["fundingRate"])}
-                for x in raw
+                for x in got["rows"]
                 if x.get("fundingRate") is not None and x.get("time")
             ]
             if not entries:
                 return None
-            if len(raw) >= 500 and days_back > 500 / 24:
-                b.warn(f"hyperliquid funding history capped at {len(raw)} rows (API limit); window truncated — pagination TBD")
+            _warn_short_coverage(b, "hyperliquid", entries, since_ms)
             stats = summarise_funding_history(entries, interval_hours=1.0, now_ms=now_ms)
             return {"venue": "hyperliquid", **_row_from_stats(stats), **({"series": entries} if include_series else {})}
 
@@ -359,12 +371,14 @@ def register(server: MCPServer, rt: Runtime) -> None:
 
         async def row(sym: str) -> dict[str, Any] | None:
             async with sem:
-                raw = await b.guard(
-                    f"funding_history:{sym}", f"ccxt:{venue}", rt.exchanges.funding_rate_history(venue, sym, since_ms, 1000)
+                got = await b.guard(
+                    f"funding_history:{sym}", f"ccxt:{venue}", rt.exchanges.funding_rate_history_range(venue, sym, since_ms, now_ms)
                 )
+            if got and not got["complete"]:
+                b.warn(f"{sym}: funding history incomplete (page limit or a later page failed)")
             entries = [
                 {"ts_ms": int(x["timestamp"]), "rate": float(x["fundingRate"])}
-                for x in (raw or [])
+                for x in (got["rows"] if got else [])
                 if x.get("fundingRate") is not None and x.get("timestamp")
             ]
             cur = current.get(sym)
@@ -815,7 +829,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
         annotations=READ_ONLY,
         description=(
             "Hyperliquid funding-rate history for one coin over a lookback window (default 30 days, interval 1h). Returns the raw series plus "
-            "mean/stdev/min/max/7d-mean/30d-mean of the per-hour rate, annualised carry (mean rate × 8760), the latest rate's z-score and percentile "
+            "mean/stdev/min/max/7d-mean/30d-mean of the per-hour rate, annualised carry (sum of payments over the covered span), the latest rate's z-score and percentile "
             "relative to the window, and polarity flips (sign changes). Rates are decimals (0.0001 = 0.01 % per hour)."
         ),
     )
@@ -826,13 +840,15 @@ def register(server: MCPServer, rt: Runtime) -> None:
         b = Builder()
         now_ms = int(rt.now().timestamp() * 1000)
         start_ms = now_ms - int(days_back * 86_400_000)
-        raw = await b.guard("funding_history", "hyperliquid", rt.hyperliquid.funding_history(coin, start_ms, now_ms))
-        if not raw:
-            if raw is not None:
+        got = await b.guard("funding_history", "hyperliquid", rt.hyperliquid.funding_history_range(coin, start_ms, now_ms))
+        if not got or not got["rows"]:
+            if got is not None:
                 b.miss("funding_history", "hyperliquid", "data_unavailable", "empty result")
             return b.build(None, ok=False)
+        if not got["complete"]:
+            b.warn("funding history incomplete (page limit or a later page failed); window truncated")
         entries: list[dict[str, Any]] = []
-        for e in raw:
+        for e in got["rows"]:
             try:
                 entries.append({"ts_ms": int(e["time"]), "rate": float(e["fundingRate"])})
             except (KeyError, TypeError, ValueError):

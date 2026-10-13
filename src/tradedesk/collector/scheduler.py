@@ -382,13 +382,12 @@ async def _collect_ohlcv_hist(rt: "Runtime") -> int:
             if since_ms >= now_ms:
                 break
             try:
-                fetched = await rt.exchanges.ohlcv(venue, symbol, timeframe, BATCH_SIZE)
+                fetched = await rt.exchanges.ohlcv(venue, symbol, timeframe, BATCH_SIZE, since_ms=since_ms)
                 bars = fetched.data or []
             except Exception as e:  # noqa: BLE001
                 log.warning("ohlcv_hist %s %s %s: fetch failed: %s", venue, symbol, timeframe, e)
                 break
-            # ccxt returns bars starting from the current window; keep only new rows
-            # strictly after `last` (or everything on backfill when last is None).
+            # Keep only rows at or after `since_ms` in case the venue returns an earlier bar.
             fresh = [b for b in bars if isinstance(b, (list, tuple)) and len(b) >= 6 and int(b[0]) >= since_ms]
             if not fresh:
                 break

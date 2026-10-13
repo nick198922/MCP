@@ -15,6 +15,9 @@ from ..core.errors import ProviderError
 from ..core.health import HealthRegistry, redact
 
 # Exchanges we expose for linear USDT perps (unified symbol BASE/USDT:USDT).
+
+# Max funding-history rows each venue returns per request; anything larger is silently capped.
+FUNDING_PAGE = {"binanceusdm": 1000, "bybit": 200, "okx": 100}
 PERP_EXCHANGES = ("binanceusdm", "bybit", "okx")
 
 
@@ -153,6 +156,52 @@ class Exchanges:
             return await ex.fetch_funding_rate_history(symbol, since=since_ms, limit=limit)
 
         return await self._call(ex_id, "fetch_funding_rate_history", a, 60, go)
+
+    async def funding_rate_history_range(self, ex_id: str, symbol: str, since_ms: int, until_ms: int, *, max_pages: int = 60) -> Fetched:
+        """Funding history from ``since_ms`` to ``until_ms`` walked page by page.
+
+        One request returns at most a venue-specific number of rows, and ccxt sizes Bybit's request window
+        from the symbol's *current* interval, so a short page does not mean the history ended: walk forward
+        from the newest row seen. An empty window (before a listing) is skipped by ``page`` hours, the
+        smallest window a page can cover at a 1h interval, so no rows are jumped over. Returns
+        ``{"rows": [...], "complete": bool}``; ``complete`` is False when ``max_pages`` was hit or a later
+        page failed (rows fetched so far are kept). A failure on the first page raises.
+        """
+        page = FUNDING_PAGE.get(ex_id.lower(), 500)
+        rows: dict[int, dict[str, Any]] = {}
+        since, pages, latency, cached, complete = since_ms, 0, 0, True, True
+        while since < until_ms:
+            if pages >= max_pages:
+                complete = False
+                break
+            try:
+                f = await self.funding_rate_history(ex_id, symbol, since, page)
+            except ProviderError:
+                if pages == 0:
+                    raise
+                complete = False
+                break
+            pages += 1
+            latency += f.evidence.latency_ms or 0
+            cached = cached and f.evidence.cached
+            batch = [x for x in (f.data or []) if x.get("timestamp") is not None]
+            if not batch:
+                since += page * 3_600_000
+                continue
+            for x in batch:
+                rows[int(x["timestamp"])] = x
+            nxt = max(int(x["timestamp"]) for x in batch) + 1
+            if nxt <= since:
+                break
+            since = nxt
+        ev = Evidence(
+            provider=f"ccxt:{ex_id.lower()}",
+            tool="fetch_funding_rate_history",
+            args={"symbol": symbol, "since_ms": since_ms, "until_ms": until_ms, "pages": pages},
+            latency_ms=latency,
+            cached=cached and pages > 0,
+        )
+        return Fetched({"rows": [rows[k] for k in sorted(rows) if k <= until_ms], "complete": complete}, ev)
 
     async def open_interest(self, ex_id: str, symbol: str) -> Fetched:
         async def go(ex: Any) -> Any:

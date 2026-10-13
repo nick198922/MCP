@@ -222,6 +222,13 @@ async def test_funding_carry_scan_provider_failure(server):
     assert any(m["field"].startswith("funding_history:") for m in env2["missing"])
 
 
+async def test_funding_history_warns_when_venue_history_is_shorter(server):
+    # the fake ccxt history spans 30 days; asking for 60 must say so instead of passing it off as the full window
+    env = await call(server, "perps_funding_history", base="BTC", days_back=60, include_hyperliquid=False)
+    assert env["ok"]
+    assert any("later than requested" in w and "binanceusdm" in w for w in env["warnings"])
+
+
 async def test_long_short_ratio_cross_venue(server):
     env = await call(server, "perps_long_short_ratio", base="BTC", period="1h", limit=48)
     assert env["ok"]

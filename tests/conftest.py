@@ -483,7 +483,18 @@ class FakeEx:
             "timestamp": 1791637668000,
         }
 
-    async def fetch_ohlcv(self, symbol, timeframe="1h", limit=100):
+    async def fetch_ohlcv(self, symbol, timeframe="1h", limit=100, since=None):
+        if since is not None and timeframe == "1h":
+            # Bars from `since` (rounded up to the hour) up to the last closed hour before NOW.
+            anchor, step = 1791637200000, 3_600_000  # 2026-10-10 12:00 UTC
+            t = -(-since // step) * step
+            rows = []
+            price = 80000.0
+            while t <= anchor and len(rows) < limit:
+                price *= 1.001
+                rows.append([t, price, price * 1.001, price * 0.999, price, 10.0])
+                t += step
+            return rows
         if timeframe == "1d":
             end = 1791590400000  # 2026-10-10 00:00 UTC, the day of NOW
             price, rows = 60000.0, []

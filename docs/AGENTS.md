@@ -49,5 +49,6 @@
 - За розкладом: `scripts/install_nightly_agents.sh` ставить launchd-задачу на 02:30 щоночі. Вимкнути: `launchctl bootout gui/$(id -u)/com.tradedesk.agents`.
 - Агенти працюють в окремій копії репозиторію `../tradedesk-agents` (git worktree), ваша робоча тека не зачіпається.
 - Логи й підсумки: `~/Library/Logs/tradedesk-agents/`.
+- Розмова агентів (що координатор доручив, що кожен агент робив і відповів, рішення критика): `uv run python scripts/agents_transcript.py` (останній прогін) або з id сесії; сирі записи — `~/.claude/projects/-Users-nick-MCP-tradedesk-agents/`.
 - PR створюються через `gh`, якщо він встановлений і авторизований (`brew install gh`, `gh auth login`); інакше в підсумку є посилання «створити PR».
 - Кожен прогін витрачає ліміт вашого плану Claude.

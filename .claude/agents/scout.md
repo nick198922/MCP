@@ -1,7 +1,7 @@
 ---
 name: scout
 description: Finds candidate trading-edge ideas for crypto options and futures and writes them as testable idea cards in docs/ideas/. Use when fewer than two ideas are waiting in the pipeline. Never writes code, never runs backtests.
-tools: Read, Grep, Glob, Write, WebSearch, WebFetch, Bash
+tools: Read, Grep, Glob, Write, Edit, WebSearch, WebFetch, Bash
 model: sonnet
 ---
 

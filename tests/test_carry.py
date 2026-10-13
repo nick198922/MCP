@@ -178,3 +178,99 @@ def test_portfolio_ignores_future_data():
     b = simulate_carry_portfolio({"A": _market(base + [0.0] * 20), "B": _market([0.0005] * 20 + [0.05] * 20)}, slots=1, lookback_days=1)
     assert a["trades"][0]["open_ts"] == b["trades"][0]["open_ts"]
     assert a["trades"][0]["symbol"] == b["trades"][0]["symbol"] == "A"
+
+
+def _leg(rates, price=100.0, start=0, bump=None):
+    funding = [{"ts_ms": start + i * H8, "rate": r} for i, r in enumerate(rates)]
+    n = len(rates) * 2 + 2
+    bars = [{"ts": start + i * H4, "close": price, "high": price, "low": price} for i in range(n)]
+    if bump:
+        i, field, value = bump
+        bars[i][field] = value
+    return {"funding": funding, "bars": bars}
+
+
+def test_perp_spread_shorts_higher_funding_venue_and_collects_difference():
+    from tradedesk.analytics.carry import simulate_perp_spread_portfolio
+
+    mk = {"X": {"a": _leg([0.0001] * 30), "b": _leg([0.0006] * 30)}}
+    res = simulate_perp_spread_portfolio(mk, slots=1, lookback_days=1, entry_apr=0.1, fee_a=0, fee_b=0, slippage=0)
+    (t,) = res["trades"]
+    assert t["dir"] == 1  # long A, short B
+    paid = sum(1 for e in mk["X"]["a"]["funding"] if e["ts_ms"] > t["open_ts"])
+    assert t["funding"] == pytest.approx(0.0005 * paid)
+    assert t["price_pnl"] == pytest.approx(0.0)
+
+
+def test_perp_spread_mirror_direction_and_costs():
+    from tradedesk.analytics.carry import simulate_perp_spread_portfolio
+
+    mk = {"X": {"a": _leg([0.0006] * 30), "b": _leg([-0.0002] * 30)}}
+    res = simulate_perp_spread_portfolio(mk, slots=2, lookback_days=1, entry_apr=0.1, fee_a=0.0005, fee_b=0.00055, slippage=0.0005)
+    (t,) = res["trades"]
+    assert t["dir"] == -1  # short A, long B
+    assert t["funding"] > 0
+    assert t["fees"] == pytest.approx(2 * (0.0005 + 0.00055 + 0.001))
+    assert res["stats"]["total_return"] == pytest.approx(0.5 * (t["funding"] - t["fees"]))
+
+
+def test_perp_spread_exits_on_flip_and_tracks_risk():
+    from tradedesk.analytics.carry import simulate_perp_spread_portfolio
+
+    a = _leg([0.0] * 30, bump=(14, "high", 130.0))
+    b = _leg([0.0008] * 12 + [-0.0008] * 18, bump=(16, "low", 80.0))
+    a["bars"][-1]["close"] = 101.0  # long A gains 1 % by the end, but the trade closes earlier
+    res = simulate_perp_spread_portfolio({"X": {"a": a, "b": b}}, slots=1, lookback_days=1, entry_apr=0.1, fee_a=0, fee_b=0, slippage=0)
+    t = res["trades"][0]
+    assert t["open_at_end"] is False
+    assert t["max_up"] == pytest.approx(0.3)
+    assert t["max_down"] == pytest.approx(0.2)
+
+
+def test_perp_spread_price_pnl_and_gap():
+    from tradedesk.analytics.carry import simulate_perp_spread_portfolio
+
+    a = _leg([0.0] * 30)
+    b = _leg([0.0008] * 30)
+    for bar in a["bars"][20:]:
+        bar["close"] = 102.0
+    res = simulate_perp_spread_portfolio({"X": {"a": a, "b": b}}, slots=1, lookback_days=1, entry_apr=0.1, fee_a=0, fee_b=0, slippage=0)
+    t = res["trades"][0]
+    assert t["price_pnl"] == pytest.approx(0.02)  # long A rose 2 %, short B flat
+    assert t["max_gap"] == pytest.approx(0.02)
+
+
+def test_perp_spread_ignores_future_data():
+    from tradedesk.analytics.carry import simulate_perp_spread_portfolio
+
+    base_a, base_b = [0.0] * 20, [0.0008] * 20
+    r1 = simulate_perp_spread_portfolio({"X": {"a": _leg(base_a + [0.0] * 20), "b": _leg(base_b + [0.0] * 20)}}, slots=1, lookback_days=1)
+    r2 = simulate_perp_spread_portfolio(
+        {"X": {"a": _leg(base_a + [0.05] * 20), "b": _leg(base_b + [-0.05] * 20)}}, slots=1, lookback_days=1
+    )
+    assert r1["trades"][0]["open_ts"] == r2["trades"][0]["open_ts"]
+    assert r1["trades"][0]["dir"] == r2["trades"][0]["dir"] == 1
+
+
+def test_perp_spread_entry_gap_guard():
+    from tradedesk.analytics.carry import simulate_perp_spread_portfolio
+
+    a = _leg([0.0] * 30, price=100.0)
+    b = _leg([0.0008] * 30, price=110.0)  # 10 % apart: a different instrument or a dislocation
+    kw = dict(slots=1, lookback_days=1, fee_a=0, fee_b=0, slippage=0)
+    assert simulate_perp_spread_portfolio({"X": {"a": a, "b": b}}, max_entry_gap=0.02, **kw)["trades"] == []
+    assert simulate_perp_spread_portfolio({"X": {"a": a, "b": b}}, **kw)["trades"]
+
+
+def test_perp_spread_stop_move_closes_and_charges_penalty():
+    from tradedesk.analytics.carry import simulate_perp_spread_portfolio
+
+    a = _leg([0.0] * 30)
+    b = _leg([0.0008] * 30, bump=(14, "high", 160.0))  # +60 % against the short leg on B
+    kw = dict(slots=1, lookback_days=1, entry_apr=0.1, fee_a=0, fee_b=0, slippage=0)
+    free = simulate_perp_spread_portfolio({"X": {"a": a, "b": b}}, **kw)
+    stopped = simulate_perp_spread_portfolio({"X": {"a": a, "b": b}}, stop_move=0.5, stop_penalty=0.01, **kw)
+    assert free["stats"]["n_stopped"] == 0
+    t = stopped["trades"][0]
+    assert t["stopped"] is True and t["fees"] == pytest.approx(0.01)
+    assert t["close_ts"] < free["trades"][0]["close_ts"]

@@ -424,3 +424,191 @@ def simulate_carry_portfolio(
             "costs": w * sum(tr["fees"] for tr in trades),
         },
     }
+
+
+class _Leg:
+    """One perp on one venue: funding prefix sums and bar lookups (close, high, low)."""
+
+    def __init__(self, data: dict[str, Any], bar_ms: int) -> None:
+        f = sorted(data["funding"], key=lambda e: int(e["ts_ms"]))
+        self.f_ts = [int(e["ts_ms"]) for e in f]
+        self.f_rate = [float(e["rate"]) for e in f]
+        self.prefix = [0.0]
+        for x in self.f_rate:
+            self.prefix.append(self.prefix[-1] + x)
+        self.bar_ms = bar_ms
+        self.t = [int(b["ts"]) + bar_ms for b in data["bars"]]
+        self.close = [float(b["close"]) for b in data["bars"]]
+        self.high = [float(b["high"]) for b in data["bars"]]
+        self.low = [float(b["low"]) for b in data["bars"]]
+
+    def apr(self, t: int, lookback_ms: int) -> float | None:
+        if not self.f_ts or self.f_ts[0] > t - lookback_ms:
+            return None
+        hi = bisect.bisect_right(self.f_ts, t)
+        lo = bisect.bisect_right(self.f_ts, t - lookback_ms)
+        return (self.prefix[hi] - self.prefix[lo]) * YEAR_MS / lookback_ms
+
+    def price(self, t: int) -> float | None:
+        i = bisect.bisect_right(self.t, t + 60_000) - 1
+        if i < 0 or t - self.t[i] > self.bar_ms:
+            return None
+        return self.close[i]
+
+    def payments(self, after: int, upto: int) -> list[tuple[int, float]]:
+        lo, hi = bisect.bisect_right(self.f_ts, after), bisect.bisect_right(self.f_ts, upto)
+        return list(zip(self.f_ts[lo:hi], self.f_rate[lo:hi], strict=True))
+
+    def extremes(self, after: int, upto: int) -> tuple[float, float] | None:
+        lo, hi = bisect.bisect_right(self.t, after), bisect.bisect_right(self.t, upto)
+        return (max(self.high[lo:hi]), min(self.low[lo:hi])) if hi > lo else None
+
+
+def simulate_perp_spread_portfolio(
+    markets: dict[str, dict[str, Any]],
+    *,
+    slots: int = 5,
+    lookback_days: float = 7.0,
+    entry_apr: float = 0.10,
+    exit_apr: float = 0.0,
+    fee_a: float = 0.0005,
+    fee_b: float = 0.00055,
+    slippage: float = 0.0005,
+    max_entry_gap: float | None = None,
+    stop_move: float | None = None,
+    stop_penalty: float = 0.01,
+    step_hours: float = 8.0,
+    bar_ms: int = 4 * 3_600_000,
+) -> dict[str, Any]:
+    """Cross-venue funding carry: short the perp on the venue with higher trailing funding, long the other.
+
+    ``markets[sym] = {"a": {"funding": [{ts_ms, rate}], "bars": [{ts, close, high, low}]}, "b": {...}}``.
+    Every ``step_hours`` the walk accrues actual payments on both legs, closes positions whose trailing
+    spread in the held direction fell to ``exit_apr``, then fills free slots with the widest trailing
+    spreads >= ``entry_apr``. Costs per side: ``fee_a + fee_b + 2 x slippage``. Returns are fractions of
+    portfolio notional (slot notional = 1 / slots, priced at leg A's entry, no compounding). With
+    ``max_entry_gap`` a pair is not opened while its two perp prices differ by more than that fraction. With
+    ``stop_move`` a position is closed at the step where either leg has moved that far against itself (a
+    stand-in for liquidating an isolated leg at leverage 1 / stop_move), paying ``stop_penalty`` of notional. Per trade:
+    ``max_up`` / ``max_down`` (largest price move against the short / long leg) and ``max_gap`` (largest
+    change in the A/B price ratio at bar closes, the cross-venue divergence risk).
+    """
+    legs = {
+        s: (_Leg(d["a"], bar_ms), _Leg(d["b"], bar_ms))
+        for s, d in markets.items()
+        if d.get("a", {}).get("funding") and d.get("b", {}).get("funding") and d["a"].get("bars") and d["b"].get("bars")
+    }
+    if not legs:
+        return {"trades": [], "equity": [], "stats": {}}
+    lookback_ms = int(lookback_days * DAY_MS)
+    step = int(step_hours * 3_600_000)
+    start = min(max(a.f_ts[0], b.f_ts[0]) for a, b in legs.values()) + lookback_ms
+    start = (start // step + 1) * step + 300_000
+    end = max(min(a.f_ts[-1], b.f_ts[-1]) for a, b in legs.values())
+    side_cost = fee_a + fee_b + 2 * slippage
+    w = 1.0 / slots
+    open_pos: dict[str, dict[str, Any]] = {}
+    trades: list[dict[str, Any]] = []
+    equity: list[tuple[int, float]] = []
+    realized = 0.0
+
+    def mark(sym: str, p: dict[str, Any], t: int) -> None:
+        a, b = legs[sym]
+        # dir = +1: long A / short B; dir = -1: short A / long B.
+        for ts_pay, rate in a.payments(p["last"], t):
+            p["funding"] -= p["dir"] * rate * (a.price(ts_pay) or p["a_last"]) / p["a_e"]
+        for ts_pay, rate in b.payments(p["last"], t):
+            p["funding"] += p["dir"] * rate * (b.price(ts_pay) or p["b_last"]) / p["a_e"]
+        p["last"] = t
+        for leg, e_key in ((a, "a_e"), (b, "b_e")):
+            ex = leg.extremes(p["last_bar"], t)
+            if ex:
+                p["max_up"] = max(p["max_up"], ex[0] / p[e_key] - 1.0)
+                p["max_down"] = max(p["max_down"], 1.0 - ex[1] / p[e_key])
+        p["last_bar"] = t
+        pa, pb = a.price(t), b.price(t)
+        if pa and pb:
+            p["a_last"], p["b_last"] = pa, pb
+            p["max_gap"] = max(p["max_gap"], abs(pa / pb - p["a_e"] / p["b_e"]))
+
+    def price_pnl(p: dict[str, Any]) -> float:
+        return p["dir"] * ((p["a_last"] - p["a_e"]) - (p["b_last"] - p["b_e"])) / p["a_e"]
+
+    def close(sym: str, p: dict[str, Any], t: int, at_end: bool, stopped: bool = False) -> None:
+        nonlocal realized
+        fees = p["fees"] + side_cost * p["a_last"] / p["a_e"] + (stop_penalty if stopped else 0.0)
+        pnl = p["funding"] + price_pnl(p) - fees
+        realized += w * pnl
+        trades.append(
+            {
+                **{k: p[k] for k in ("symbol", "open_ts", "dir", "entry_spread", "funding", "max_up", "max_down", "max_gap")},
+                "close_ts": t,
+                "price_pnl": price_pnl(p),
+                "fees": fees,
+                "pnl": pnl,
+                "open_at_end": at_end,
+                "stopped": stopped,
+            }
+        )
+
+    t = start
+    while t <= end:
+        for sym in list(open_pos):
+            p = open_pos[sym]
+            mark(sym, p, t)
+            if stop_move is not None and max(p["max_up"], p["max_down"]) >= stop_move:
+                close(sym, p, t, at_end=False, stopped=True)
+                del open_pos[sym]
+                continue
+            a, b = legs[sym]
+            ra, rb = a.apr(t, lookback_ms), b.apr(t, lookback_ms)
+            if ra is not None and rb is not None and p["dir"] * (rb - ra) <= exit_apr:
+                close(sym, p, t, at_end=False)
+                del open_pos[sym]
+        free = slots - len(open_pos)
+        if free > 0:
+            ranked = []
+            for sym, (a, b) in legs.items():
+                if sym in open_pos:
+                    continue
+                ra, rb = a.apr(t, lookback_ms), b.apr(t, lookback_ms)
+                if ra is None or rb is None or abs(rb - ra) < entry_apr:
+                    continue
+                pa, pb = a.price(t), b.price(t)
+                if pa and pb and (max_entry_gap is None or abs(pa / pb - 1.0) <= max_entry_gap):
+                    ranked.append((abs(rb - ra), sym, 1 if rb > ra else -1))
+            for spread, sym, d in sorted(ranked, reverse=True)[:free]:
+                a, b = legs[sym]
+                pa, pb = a.price(t), b.price(t)
+                open_pos[sym] = {
+                    "symbol": sym, "open_ts": t, "dir": d, "entry_spread": spread, "a_e": pa, "b_e": pb, "a_last": pa, "b_last": pb,
+                    "funding": 0.0, "fees": side_cost, "last": t, "last_bar": t, "max_up": 0.0, "max_down": 0.0, "max_gap": 0.0,
+                }  # fmt: skip
+        equity.append((t, realized + sum(w * (p["funding"] + price_pnl(p) - p["fees"]) for p in open_pos.values())))
+        t += step
+    for sym, p in list(open_pos.items()):
+        mark(sym, p, end)
+        close(sym, p, end, at_end=True)
+    if equity:
+        equity[-1] = (equity[-1][0], realized)
+    years = max(end - start, 1) / YEAR_MS
+    peak, max_dd = float("-inf"), 0.0
+    for _, v in equity:
+        peak = max(peak, v)
+        max_dd = max(max_dd, peak - v)
+    return {
+        "trades": trades,
+        "equity": equity,
+        "stats": {
+            "years": years,
+            "apr_on_notional": realized / years,
+            "total_return": realized,
+            "n_trades": len(trades),
+            "slot_utilisation": sum(tr["close_ts"] - tr["open_ts"] for tr in trades) / (max(end - start, 1) * slots),
+            "max_drawdown": max_dd,
+            "funding": w * sum(tr["funding"] for tr in trades),
+            "price_pnl": w * sum(tr["price_pnl"] for tr in trades),
+            "costs": w * sum(tr["fees"] for tr in trades),
+            "n_stopped": sum(1 for tr in trades if tr.get("stopped")),
+        },
+    }

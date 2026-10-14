@@ -15,15 +15,34 @@ if [[ ! "$token" =~ ^[0-9]+:[A-Za-z0-9_-]{30,}$ ]]; then
 fi
 
 # The token is passed to curl through stdin, not the command line.
-chat="$(printf 'url = "https://api.telegram.org/bot%s/getUpdates"\n' "$token" | curl -s -m 20 -K - | jq -r '
-  [ .result[]? | (.message // .my_chat_member // empty)
-    | (.chat | select(.type == "group" or .type == "supergroup") | .id), (.migrate_to_chat_id // empty) ]
-  | last // empty')"
-if [[ -z "$chat" ]]; then
-  echo "The bot sees no group yet: add it to the group, send any message there (e.g. /start), then run this again."
+tg() { printf 'url = "https://api.telegram.org/bot%s/%s"\n' "$token" "$1" | curl -s -m 20 -K -; }
+
+me="$(tg getMe)" || true
+if [[ "$(jq -r '.ok' <<<"$me" 2>/dev/null)" != "true" ]]; then
+  echo "Telegram did not accept the token: $(jq -r '.description // empty' <<<"$me" 2>/dev/null || echo "no answer from api.telegram.org")"
   exit 1
 fi
-echo "group chat id: $chat"
+bot="$(jq -r '.result.username' <<<"$me")"
+echo "bot: @$bot"
+
+updates="$(tg getUpdates)" || true
+if [[ "$(jq -r '.ok' <<<"$updates" 2>/dev/null)" != "true" ]]; then
+  echo "getUpdates failed: $(jq -r '.description // empty' <<<"$updates" 2>/dev/null)"
+  exit 1
+fi
+echo "chats the bot has seen:"
+jq -r '[ .result[] | (.message // .edited_message // .channel_post // .my_chat_member // empty) | .chat ]
+  | unique_by(.id)[] | "  \(.type)  \(.title // .username // .first_name // "")  (\(.id))"' <<<"$updates"
+chat="$(jq -r '
+  [ .result[] | (.message // .edited_message // .channel_post // .my_chat_member // empty)
+    | (.chat | select(.type == "group" or .type == "supergroup" or .type == "channel") | .id), (.migrate_to_chat_id // empty) ]
+  | last // empty' <<<"$updates")"
+if [[ -z "$chat" ]]; then
+  echo "No group or channel above. Add @$bot to the group as a member (a channel: as an admin),"
+  echo "then send /start@$bot in the group and run this again."
+  exit 1
+fi
+echo "using chat id: $chat"
 
 printf 'TELEGRAM_BOT_TOKEN=%s\nTELEGRAM_CHAT_ID=%s\n' "$token" "$chat" | ssh tradedesk@"$SERVER" \
   'umask 077 && mkdir -p ~/.config/tradedesk && cat > ~/.config/tradedesk/agents.env && chmod 600 ~/.config/tradedesk/agents.env'

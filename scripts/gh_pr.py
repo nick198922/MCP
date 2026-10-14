@@ -79,11 +79,19 @@ def open_pr(call: Call, repo: str, head: str, title: str, body: str, base: str =
     raise RuntimeError(f"GitHub HTTP {status}: {message(data) or 'no reason given'}")
 
 
+PROBE_BRANCH = "tradedesk-permission-probe-no-such-branch"
+
+
 def check(call: Call, repo: str) -> str:
+    """Read the PRs, then ask for a PR from a branch that does not exist: GitHub answers 422 when the token may open
+    pull requests and 403 when it may not, and nothing is created either way."""
     status, data = call("GET", f"/repos/{repo}/pulls?per_page=1", None)
     if status != 200:
         raise RuntimeError(f"GitHub HTTP {status}: {message(data) or 'no reason given'}")
-    return f"the token works: it can read the pull requests of {repo}"
+    status, data = call("POST", f"/repos/{repo}/pulls", {"title": "permission probe", "head": PROBE_BRANCH, "base": "main"})
+    if status != 422:
+        raise RuntimeError(f"the token can read but not open pull requests (GitHub HTTP {status}: {message(data)})")
+    return f"the token works: it can read and open the pull requests of {repo}"
 
 
 def main(argv: list[str] | None = None) -> int:

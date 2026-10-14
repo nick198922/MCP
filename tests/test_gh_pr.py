@@ -43,6 +43,15 @@ def test_a_refusal_names_github_reason():
         gh_pr.open_pr(gh, "o/r", "agent/x", "t", "b")
 
 
+def test_check_tells_a_read_only_token_apart():
+    ok = FakeGitHub((200, []), (422, {"message": "Validation Failed", "errors": [{"field": "head", "code": "invalid"}]}))
+    assert "read and open" in gh_pr.check(ok, "o/r")
+    assert ok.calls[1][2]["head"] == gh_pr.PROBE_BRANCH
+    read_only = FakeGitHub((200, []), (403, {"message": "Resource not accessible by personal access token"}))
+    with pytest.raises(RuntimeError, match="can read but not open"):
+        gh_pr.check(read_only, "o/r")
+
+
 def test_without_a_token_it_fails_quietly(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(gh_pr, "TOKEN_FILE", tmp_path / "missing.env")
     assert gh_pr.main(["--repo", "o/r", "--head", "agent/x"]) == 1

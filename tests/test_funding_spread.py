@@ -240,3 +240,15 @@ def test_weekly_spreads_and_ar1() -> None:
     assert r == pytest.approx(-1.0) and n == 19
     trend = [{i: float(i) for i in range(10)}]
     assert pooled_ar1(trend, rank=True)[0] == pytest.approx(1.0)
+
+
+def test_pooled_ar1_demean_removes_coin_level_effect() -> None:
+    # two coins with constant opposite offsets and pure mean-reverting noise: pooling raw levels
+    # looks persistent, demeaning per coin recovers the within-coin AR(1) of -1
+    alt = {i: (1.0 if i % 2 else -1.0) for i in range(20)}
+    hi = {i: 10.0 + v for i, v in alt.items()}
+    lo = {i: -10.0 + v for i, v in alt.items()}
+    raw, n = pooled_ar1([hi, lo])
+    assert raw is not None and raw > 0.9 and n == 38
+    dm, n2 = pooled_ar1([hi, lo], demean=True)
+    assert dm == pytest.approx(-1.0) and n2 == 38

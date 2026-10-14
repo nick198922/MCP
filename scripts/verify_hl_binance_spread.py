@@ -671,7 +671,8 @@ def report(cache: Path, gate_only: bool) -> str:
 
     # ---- primary and gate
     prim = run_rule(hlb, cost=COST, stop_move=STOP)
-    wr(cache / "trades_primary.json", prim)
+    if not gate_only:  # the gate must be viewable without per-trade P&L on disk (review 2026-10-15, finding 4)
+        wr(cache / "trades_primary.json", prim)
     g = gate(prim)
     L.append("\n## Ворота потужності (друкуються до будь-яких середніх)\n")
     L.append(
@@ -717,7 +718,9 @@ def report(cache: Path, gate_only: bool) -> str:
     # control on the three-venue intersection and the same weeks
     hl3 = [t for t in prim if t["coin"] in ctrl_coins]
     ctl = run_rule(ctrl, cost=COST_CTRL, gap_a=GAP_CEX, stop_move=STOP)
-    weeks = {t["week"] for t in hl3} | {t["week"] for t in ctl}
+    # same weeks = the intersection (review 2026-10-15, finding 2; the union filtered nothing)
+    weeks = {t["week"] for t in hl3} & {t["week"] for t in ctl}
+    hl3 = [t for t in hl3 if t["week"] in weeks]
     ctl = [t for t in ctl if t["week"] in weeks]
     control: list[tuple[str, list[dict[str, Any]]]] = [
         ("HL ↔ Binance на перетині трьох площадок", hl3),
@@ -754,7 +757,8 @@ def report(cache: Path, gate_only: bool) -> str:
             L.append(mrow(label, trs))
         d = cluster_bootstrap_diff([t["net"] for t in hl3], [t["week"] for t in hl3], [t["net"] for t in ctl], [t["week"] for t in ctl])
         L.append(
-            f"\nHL ↔ Binance мінус контроль (перетин, ті самі тижні): {pct(d['diff'])}, 95% CI {d['ci'] and (pct(d['ci'][0]) + ' … ' + pct(d['ci'][1]))}."
+            f"\nHL ↔ Binance мінус контроль (перетин, ті самі тижні): {pct(d['diff'])} ({d['diff']:+.4%}), "
+            f"95% CI {d['ci'] and (pct(d['ci'][0]) + ' … ' + pct(d['ci'][1]))}."
         )
     else:
         L.append("\nВорота або мінімум вибірки не пройдено: середні, CI і порівняння середніх не друкуються (умова 7 критика).")
@@ -785,6 +789,14 @@ def report(cache: Path, gate_only: bool) -> str:
             f"- AR(1) тижневого спреду, {name}: HL ↔ Binance {r1 and f'{r1:.3f}'} (пар тижнів {n1}), Bybit ↔ Binance {r2 and f'{r2:.3f}'} ({n2}); "
             f"різниця {diff and f'{diff:+.3f}'} (поріг H2 ≥ +0.10)."
         )
+    # exploratory, added after the review: pooled AR(1) mixes persistence with constant per-coin offsets
+    r1, n1 = pooled_ar1(s_hl, demean=True)
+    r2, n2 = pooled_ar1(s_by, demean=True)
+    diff = None if r1 is None or r2 is None else r1 - r2
+    L.append(
+        f"- Розвідувальне (після рев'ю, не зареєстровано): AR(1) Пірсон після віднімання середнього по монеті: HL ↔ Binance "
+        f"{r1 and f'{r1:.3f}'} ({n1}), Bybit ↔ Binance {r2 and f'{r2:.3f}'} ({n2}); різниця {diff and f'{diff:+.3f}'}."
+    )
     absd = [abs(v) for s in s_hl for v in s.values()]
     absc = [abs(v) for s in s_by for v in s.values()]
     if absd and absc:

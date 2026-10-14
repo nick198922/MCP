@@ -379,8 +379,15 @@ def _ranks(xs: Sequence[float]) -> list[float]:
     return r
 
 
-def pooled_ar1(series: Sequence[dict[int, float]], *, rank: bool = False) -> tuple[float | None, int]:
-    """Pooled lag-1 correlation of consecutive weeks within each series (Pearson, or Spearman with ``rank``)."""
+def pooled_ar1(series: Sequence[dict[int, float]], *, rank: bool = False, demean: bool = False) -> tuple[float | None, int]:
+    """Pooled lag-1 correlation of consecutive weeks within each series (Pearson, or Spearman with ``rank``).
+
+    Without ``demean`` a constant per-series offset inflates the pooled correlation (between-series level
+    differences look like persistence). ``demean`` subtracts each series' own full-sample mean first; it uses
+    the whole series, so it is a descriptive statistic, not a point-in-time one.
+    """
+    if demean:
+        series = [{w: v - statistics.fmean(s.values()) for w, v in s.items()} if s else s for s in series]
     pairs = [(s[w], s[w + 1]) for s in series for w in s if w + 1 in s]
     if rank and pairs:
         rx, ry = _ranks([p[0] for p in pairs]), _ranks([p[1] for p in pairs])

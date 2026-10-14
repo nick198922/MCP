@@ -144,7 +144,7 @@ if dirty; then
   attempts=$((attempts + 1))
   echo "$attempts $first" >"$STATE"
 else
-  rm -f "$STATE"
+  rm -f "$STATE" "$LOG_DIR/refusal.txt"
   git checkout --quiet --detach origin/main
 fi
 uv sync --quiet --extra dev
@@ -155,9 +155,16 @@ if [[ $MODE == resume ]]; then
   prev="$(ls -t "$LOG_DIR"/*.transcript.md 2>/dev/null | head -1 || true)"
   hint=""
   [[ -n "$prev" ]] && hint=", and the transcript of the previous run: $prev"
+  refused=""
+  if [[ -s "$LOG_DIR/refusal.txt" ]]; then
+    refused="
+
+The launcher refused the previous delivery. Fix exactly this before you request delivery again:
+$(cat "$LOG_DIR/refusal.txt")"
+  fi
   PROMPT="$PROMPT
 
-RESUME (attempt $attempts of $MAX_RESUMES): the previous run ended before delivery. The uncommitted changes in this tree (git status, git diff, git diff --cached) are its work, and HEAD is the commit it started from; ignore the 'clean tree at origin/main' and work-in-progress-limit parts of the preflight. Do not start a new step and do not discard that work. Find where it stopped (the card in docs/ideas, docs/reviews, docs/verification$hint). Finish the step if little is left; otherwise go straight to steps 3-4 with what exists and say in the card and the summary what is unfinished. Stage every file of the step, including the ones the previous run changed: the launcher refuses a delivery with unstaged changes."
+RESUME (attempt $attempts of $MAX_RESUMES): the previous run ended before delivery. The uncommitted changes in this tree (git status, git diff, git diff --cached) are its work, and HEAD is the commit it started from; ignore the 'clean tree at origin/main' and work-in-progress-limit parts of the preflight. Do not start a new step and do not discard that work. Find where it stopped (the card in docs/ideas, docs/reviews, docs/verification$hint). Finish the step if little is left; otherwise go straight to steps 3-4 with what exists and say in the card and the summary what is unfinished. Stage every file of the step, including the ones the previous run changed: the launcher refuses a delivery with unstaged changes.$refused"
 fi
 if [[ $DRY -eq 1 ]]; then
   PROMPT="$PROMPT
@@ -171,6 +178,7 @@ ALLOWED=(
   "Bash(git status:*)" "Bash(git diff:*)" "Bash(git log:*)" "Bash(git show:*)" "Bash(git branch:*)"
   "Bash(git fetch:*)" "Bash(git rev-parse:*)" "Bash(git ls-tree:*)" "Bash(git add:*)"
   "Bash(ls:*)" "Bash(date:*)" "Bash(which:*)" "Bash(head:*)" "Bash(tail:*)" "Bash(wc:*)" "Bash(mkdir -p .agent:*)"
+  "Bash(cat:*)" "Bash(sed:*)" "Bash(cut:*)" "Bash(grep:*)" "Bash(sort:*)" "Bash(uniq:*)" "Bash(find:*)"
 )
 DENIED=(
   "Bash(git push origin main:*)" "Bash(git push --force:*)" "Bash(git push -f:*)" "Bash(git reset --hard:*)"
@@ -203,7 +211,7 @@ if [[ $DRY -eq 1 ]]; then
   finish 0 "dry" "🧪 **Агенти: пробний прогін**
 $BODY" --silent
 elif [[ -n "$DELIVERED" ]]; then
-  rm -f "$STATE"
+  rm -f "$STATE" "$LOG_DIR/refusal.txt"
   finish 0 "delivered" "✅ **Агенти здали крок:** \`$DELIVERED\`
 $BODY" --button "🔀 Відкрити PR|$DELIVERED_URL"
 elif dirty; then
@@ -213,6 +221,7 @@ elif dirty; then
     rescue_wip "$first" "$attempts" || finish 5 "error" "❌ Агенти: не вдалося зберегти незавершену роботу гілкою; лог $LOG_DIR/$STAMP.log"
   fi
   echo "$attempts $first" >"$STATE"
+  printf '%s\n%s\n' "$why" "$DETAIL" >"$LOG_DIR/refusal.txt"
   finish 4 "unfinished" "⏳ **Агенти: крок не здано з першого разу** ($why). Нічого робити не треба: за кілька хвилин наступний прогін продовжить роботу (спроба $((attempts + 1)) з $MAX_RESUMES), а якщо не вийде — збереже її гілкою wip." --silent
 elif ((rc != 0)); then
   finish 5 "error" "❌ **Агенти: claude завершився з помилкою** (код $rc), змін немає; лікар шукає причину. Кінець виводу:

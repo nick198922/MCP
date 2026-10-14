@@ -45,14 +45,15 @@ class LogChannel:
 class TelegramChannel:
     name = "telegram"
 
-    def __init__(self, client: "Telegram", chat_id: str) -> None:
+    def __init__(self, client: "Telegram", chat_id: str, thread_id: int | None = None) -> None:
         self._client = client
         self._chat_id = chat_id
+        self._thread_id = thread_id  # a forum topic of the group, if it has topics
 
     async def send(self, alert: "FiredAlert") -> tuple[bool, str | None]:
         text = alert.message or (f"[{alert.rule_id}] value={alert.value} op={alert.op} threshold={alert.threshold}")
         try:
-            await self._client.send_message(self._chat_id, text)
+            await self._client.send_message(self._chat_id, text, message_thread_id=self._thread_id)
         except Exception as e:  # noqa: BLE001 — a bad bot shouldn't crash the scheduler
             return False, f"{type(e).__name__}: {e}"
         return True, None
@@ -67,5 +68,7 @@ def build_channels(settings: "Settings") -> list[Channel]:
         from ..providers.telegram import Telegram  # noqa: PLC0415
 
         http = Http("telegram", TG_URL, rate=1.0, burst=2, timeout=settings.http_timeout, retries=settings.http_retries)
-        channels.append(TelegramChannel(Telegram(http, settings.telegram_bot_token), settings.telegram_chat_id))
+        channels.append(
+            TelegramChannel(Telegram(http, settings.telegram_bot_token), settings.telegram_chat_id, settings.telegram_topic_alerts)
+        )
     return channels

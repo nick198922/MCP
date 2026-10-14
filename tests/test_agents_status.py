@@ -99,3 +99,66 @@ def test_load_env_parses_key_values(tmp_path):
     f = tmp_path / "agents.env"
     f.write_text("# c\nTELEGRAM_BOT_TOKEN=1:abc\nTELEGRAM_CHAT_ID='-55'\n")
     assert tg_send.load_env(f) == {"TELEGRAM_BOT_TOKEN": "1:abc", "TELEGRAM_CHAT_ID": "-55"}
+
+
+def test_payload_and_topic_thread():
+    env = {"TELEGRAM_TOPIC_STATUS": "42", "TELEGRAM_TOPIC_AGENTS": ""}
+    assert tg_send.topic_thread(env, "status") == 42
+    assert tg_send.topic_thread(env, "agents") is None
+    assert tg_send.topic_thread(env, None) is None
+    assert tg_send.payload("-1", "x", thread=42)["message_thread_id"] == 42
+    assert "message_thread_id" not in tg_send.payload("-1", "x")
+
+
+def test_send_falls_back_to_general_chat_when_the_topic_is_gone(monkeypatch):
+    calls = []
+
+    def fake_post(token, body):
+        calls.append(body.get("message_thread_id"))
+        if body.get("message_thread_id"):
+            return False, "Bad Request: message thread not found"
+        return True, ""
+
+    monkeypatch.setattr(tg_send, "_post", fake_post)
+    env = {"TELEGRAM_BOT_TOKEN": "1:a", "TELEGRAM_CHAT_ID": "-1", "TELEGRAM_TOPIC_AGENTS": "9"}
+    assert tg_send.send("hi", topic="agents", env=env) is True
+    assert calls == [9, None]
+
+
+def test_topics_setup_follows_the_supergroup_migration(monkeypatch, tmp_path):
+    import telegram_topics as tt
+
+    env_file = tmp_path / "agents.env"
+    env_file.write_text("TELEGRAM_BOT_TOKEN=1:a\nTELEGRAM_CHAT_ID=-55\n")
+    monkeypatch.setattr(tt, "ENV_FILE", env_file)
+    made = []
+
+    def fake_api(token, method, body):
+        if method == "getChat" and body["chat_id"] == "-55":
+            return {"ok": False, "description": "upgraded", "parameters": {"migrate_to_chat_id": -1001}}
+        if method == "getChat":
+            return {"ok": True, "result": {"is_forum": True}}
+        if method == "createForumTopic":
+            made.append(body["name"])
+            return {"ok": True, "result": {"message_thread_id": len(made)}}
+        return {"ok": True}
+
+    monkeypatch.setattr(tt, "api", fake_api)
+    assert tt.main() == 0
+    env = tg_send.load_env(env_file)
+    assert env["TELEGRAM_CHAT_ID"] == "-1001"
+    assert [env[f"TELEGRAM_TOPIC_{k}"] for k in ("AGENTS", "STATUS", "ALERTS")] == ["1", "2", "3"]
+    assert env["TELEGRAM_BOT_TOKEN"] == "1:a"
+    assert env_file.stat().st_mode & 0o777 == 0o600
+    assert tt.main() == 0 and len(made) == 3  # a second run keeps the topics
+
+
+def test_topics_setup_stops_when_topics_are_off(monkeypatch, tmp_path, capsys):
+    import telegram_topics as tt
+
+    env_file = tmp_path / "agents.env"
+    env_file.write_text("TELEGRAM_BOT_TOKEN=1:a\nTELEGRAM_CHAT_ID=-1001\n")
+    monkeypatch.setattr(tt, "ENV_FILE", env_file)
+    monkeypatch.setattr(tt, "api", lambda token, method, body: {"ok": True, "result": {"is_forum": False}})
+    assert tt.main() == 1
+    assert "Topics are off" in capsys.readouterr().out

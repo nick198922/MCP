@@ -362,7 +362,7 @@ def main(argv: list[str] | None = None) -> int:
         for label, url in buttons:
             print(f"[{label}] {url}")
         return 0
-    return 0 if send(text, silent=True, buttons=buttons) else 1
+    return 0 if send(text, silent=True, buttons=buttons, topic="status") else 1
 
 
 if __name__ == "__main__":

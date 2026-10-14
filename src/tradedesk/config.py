@@ -63,6 +63,7 @@ class Settings:
     alerts_default_cooldown: int = 1800  # 30 min
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
+    telegram_topic_alerts: int | None = None  # forum topic (message_thread_id) for market alerts
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -103,4 +104,7 @@ class Settings:
             alerts_default_cooldown=int(_float("TRADEDESK_ALERTS_DEFAULT_COOLDOWN", 1800)),
             telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN") or None,
             telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID") or None,
+            telegram_topic_alerts=int(os.environ["TELEGRAM_TOPIC_ALERTS"])
+            if os.environ.get("TELEGRAM_TOPIC_ALERTS", "").isdigit()
+            else None,
         )

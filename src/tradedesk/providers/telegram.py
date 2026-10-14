@@ -26,8 +26,12 @@ class Telegram:
     async def aclose(self) -> None:
         await self.http.aclose()
 
-    async def send_message(self, chat_id: str, text: str, *, parse_mode: str | None = None) -> Fetched:
+    async def send_message(
+        self, chat_id: str, text: str, *, parse_mode: str | None = None, message_thread_id: int | None = None
+    ) -> Fetched:
         body: dict[str, Any] = {"chat_id": chat_id, "text": text}
+        if message_thread_id:
+            body["message_thread_id"] = message_thread_id
         if parse_mode:
             body["parse_mode"] = parse_mode
         f = await self.http.post_json(f"/bot{self._token}/sendMessage", json=body, ttl=0, tool="sendMessage", args={"chat_id": chat_id})

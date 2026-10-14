@@ -28,8 +28,8 @@ fi
 
 # Rewrite the service environment without putting the token on any command line.
 tmp="$(mktemp /etc/tradedesk-mcp.env.XXXXXX)"
-grep -v -E '^(TELEGRAM_BOT_TOKEN|TELEGRAM_CHAT_ID|TRADEDESK_ALERTS_ENABLED|TRADEDESK_ALERTS_RULES_PATH)=' "$ENV" >"$tmp" || true
-grep -E '^TELEGRAM_(BOT_TOKEN|CHAT_ID)=' "$SRC" >>"$tmp"
+grep -v -E '^(TELEGRAM_BOT_TOKEN|TELEGRAM_CHAT_ID|TELEGRAM_TOPIC_ALERTS|TRADEDESK_ALERTS_ENABLED|TRADEDESK_ALERTS_RULES_PATH)=' "$ENV" >"$tmp" || true
+grep -E '^TELEGRAM_(BOT_TOKEN|CHAT_ID|TOPIC_ALERTS)=' "$SRC" >>"$tmp"
 printf 'TRADEDESK_ALERTS_ENABLED=1\nTRADEDESK_ALERTS_RULES_PATH=%s\n' "$RULES" >>"$tmp"
 chown root:"$SVC" "$tmp"
 chmod 640 "$tmp"

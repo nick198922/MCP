@@ -102,6 +102,24 @@ class Exchanges:
         res, cached = await self._cache.get_or_fetch(key, eff, fetch)
         return Fetched(res.data, res.evidence.model_copy(update={"cached": True})) if cached else res
 
+    async def public_get(self, ex_id: str, endpoint: str, params: dict[str, Any], ttl: float = 0) -> Fetched:
+        """Raw public GET through a ccxt implicit endpoint, e.g. ``("binance", "dapiPublicGetContinuousKlines", {...})``.
+
+        Research-only escape hatch for venue endpoints ccxt does not unify (continuous/index klines, delivery
+        contract klines). Only ``*PublicGet*`` endpoints are allowed, so nothing private or state-changing can be
+        reached through it. Returns the venue's JSON as-is (native units, strings for numbers on Binance).
+        """
+        if "PublicGet" not in endpoint and not endpoint.startswith("publicGet"):
+            raise ProviderError(f"ccxt:{ex_id.lower()}", "config", f"only public GET endpoints are allowed, got '{endpoint}'")
+
+        async def go(ex: Any) -> Any:
+            fn = getattr(ex, endpoint, None)
+            if fn is None:
+                raise ccxt.NotSupported(f"{ex_id} has no endpoint {endpoint}")
+            return await fn(dict(params))
+
+        return await self._call(ex_id, endpoint, {"endpoint": endpoint, **params}, ttl, go)
+
     async def ticker(self, ex_id: str, symbol: str) -> Fetched:
         return await self._call(ex_id, "fetch_ticker", {"symbol": symbol}, 2, lambda ex: ex.fetch_ticker(symbol))
 

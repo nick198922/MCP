@@ -123,6 +123,19 @@ class Deribit:
         "delivery_price": float}], "records_total": int}``. ``index_name`` e.g. ``"btc_usd"``; USD units."""
         return await self._public("get_delivery_prices", {"index_name": index_name, "offset": int(offset), "count": int(count)}, ttl=60)
 
+    async def tradingview_chart_data(self, instrument_name: str, start_ms: int, end_ms: int, resolution: str = "1D") -> Fetched:
+        """OHLCV bars of one instrument: ``{"ticks": [ms], "open": [...], "high", "low", "close", "volume", "cost",
+        "status": "ok" | "no_data"}``. ``resolution`` is minutes as a string ("1", "60", ...) or "1D". Prices in the
+        instrument's quote units (USD for BTC/ETH futures). Bars are trade-based: a bar without trades repeats the
+        previous close (check ``volume``)."""
+        params = {
+            "instrument_name": instrument_name,
+            "start_timestamp": int(start_ms),
+            "end_timestamp": int(end_ms),
+            "resolution": resolution,
+        }
+        return await self._public("get_tradingview_chart_data", params, ttl=0)
+
     async def funding_rate_history(self, instrument_name: str, start_ms: int, end_ms: int) -> Fetched:
         """Hourly perpetual funding records (www host only; at most 744 per call, so page by <=31 days).
 

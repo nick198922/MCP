@@ -137,7 +137,7 @@
 ## Відкриті питання до власника
 1. ✅ GitHub-репозиторій `github.com/nick198922/MCP` (CI зелений на 3.11/3.12/3.13).
 2. ✅ Хостинг: Contabo VPS `169.58.169.184` (2026-10-14).
-3. Telegram-бот створено (2026-10-14), група «MCP»; підсумки кроків агентів уже йдуть туди (`scripts/server/telegram-setup.sh`). Ринкові алерти MCP (`TelegramChannel`) ще вимкнені: для них ті самі `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` треба додати в `/etc/tradedesk-mcp.env` — за рішенням власника.
+3. Telegram-бот створено (2026-10-14), група «MCP»; підсумки кроків агентів уже йдуть туди (`scripts/server/telegram-setup.sh`). Ринкові алерти MCP (`TelegramChannel`) ідуть у ту саму групу після `scripts/server/09-alerts-telegram.sh`: він копіює токен і чат у `/etc/tradedesk-mcp.env`, вмикає `TRADEDESK_ALERTS_ENABLED` з прикладом правил `/var/lib/tradedesk-mcp/alert_rules.json` (funding BTC на Binance > +30 % або < −20 % річних); нові правила — інструментами `rules_*`. Логи httpx приглушено до WARNING, бо URL Telegram містить токен.
 4. ~~IBKR~~ — **відкладено** за рішенням власника (див. ADR 0006).
 5. Live-пробіг колектора: пройти `make smoke` з увімкненим collector'ом на кілька днів, щоб `iv_rank`/`skew_percentile`/`funding_zscore`/`event_study` набрали історію.
 

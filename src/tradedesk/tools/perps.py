@@ -99,6 +99,36 @@ def _row_from_stats(stats: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+async def current_funding(rt: Runtime, b: Builder, venue: str, markets: dict[str, Any] | None = None) -> dict[str, dict[str, Any]]:
+    """Current funding per USDT perp with the right interval (bulk Binance rows omit it) and the rate cap when known."""
+    bulk = await b.guard(f"funding_rates:{venue}", f"ccxt:{venue}", rt.exchanges.funding_rates(venue))
+    if not bulk:
+        return {}
+    meta: dict[str, Any] = {}
+    if any(not (x or {}).get("interval") for x in bulk.values()):
+        meta = await b.guard(f"funding_intervals:{venue}", f"ccxt:{venue}", rt.exchanges.funding_intervals(venue)) or {}
+        if not meta:
+            b.warn(f"{venue}: funding intervals unavailable; assuming 8h where the venue omits it")
+    out: dict[str, dict[str, Any]] = {}
+    for sym, x in bulk.items():
+        if not sym.endswith("/USDT:USDT") or (x or {}).get("fundingRate") is None:
+            continue
+        m = meta.get(sym) or {}
+        hours = parse_interval_hours(x.get("interval") or m.get("interval"))
+        info = ((markets or {}).get(sym) or {}).get("info") or {}
+        cap = (m.get("info") or {}).get("adjustedFundingRateCap") or info.get("upperFundingRate")
+        rate = float(x["fundingRate"])
+        out[sym] = {
+            "rate": rate,
+            "interval_hours": hours,
+            "apr": annualize_funding(rate, hours),
+            "next_funding_ts": x.get("nextFundingTimestamp"),
+            "mark": float(x["markPrice"]) if x.get("markPrice") else None,
+            "cap": float(cap) if cap not in (None, "") else None,
+        }
+    return out
+
+
 def register(server: MCPServer, rt: Runtime) -> None:
     @server.tool(
         annotations=READ_ONLY,
@@ -280,33 +310,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
         return b.build({"base": base, "days_requested": days_back, "venues": rows, "cross_venue": cross})
 
     async def _current_funding(b: Builder, venue: str, markets: dict[str, Any] | None = None) -> dict[str, dict[str, Any]]:
-        """Current funding per USDT perp with the right interval (bulk Binance rows omit it) and the rate cap when known."""
-        bulk = await b.guard(f"funding_rates:{venue}", f"ccxt:{venue}", rt.exchanges.funding_rates(venue))
-        if not bulk:
-            return {}
-        meta: dict[str, Any] = {}
-        if any(not (x or {}).get("interval") for x in bulk.values()):
-            meta = await b.guard(f"funding_intervals:{venue}", f"ccxt:{venue}", rt.exchanges.funding_intervals(venue)) or {}
-            if not meta:
-                b.warn(f"{venue}: funding intervals unavailable; assuming 8h where the venue omits it")
-        out: dict[str, dict[str, Any]] = {}
-        for sym, x in bulk.items():
-            if not sym.endswith("/USDT:USDT") or (x or {}).get("fundingRate") is None:
-                continue
-            m = meta.get(sym) or {}
-            hours = parse_interval_hours(x.get("interval") or m.get("interval"))
-            info = ((markets or {}).get(sym) or {}).get("info") or {}
-            cap = (m.get("info") or {}).get("adjustedFundingRateCap") or info.get("upperFundingRate")
-            rate = float(x["fundingRate"])
-            out[sym] = {
-                "rate": rate,
-                "interval_hours": hours,
-                "apr": annualize_funding(rate, hours),
-                "next_funding_ts": x.get("nextFundingTimestamp"),
-                "mark": float(x["markPrice"]) if x.get("markPrice") else None,
-                "cap": float(cap) if cap not in (None, "") else None,
-            }
-        return out
+        return await current_funding(rt, b, venue, markets)
 
     @server.tool(
         annotations=READ_ONLY,

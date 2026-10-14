@@ -122,10 +122,21 @@ class Exchanges:
         a = {"symbol": symbol, "limit": limit}
         return await self._call(ex_id, "fetch_trades", a, 2, lambda ex: ex.fetch_trades(symbol, limit=limit))
 
-    async def ohlcv(self, ex_id: str, symbol: str, timeframe: str, limit: int, since_ms: int | None = None) -> Fetched:
+    async def ohlcv(
+        self, ex_id: str, symbol: str, timeframe: str, limit: int, since_ms: int | None = None, until_ms: int | None = None
+    ) -> Fetched:
+        """OHLCV bars. With ``since_ms`` the window starts there; ``until_ms`` also bounds it above (ccxt ``until``), so
+        venues that would otherwise return the *latest* ``limit`` bars (Bybit sends only ``start``) page deterministically."""
         a = {"symbol": symbol, "timeframe": timeframe, "limit": limit, "since_ms": since_ms}
+        if until_ms is not None:
+            a["until_ms"] = until_ms
         if since_ms is None:
             return await self._call(ex_id, "fetch_ohlcv", a, 15, lambda ex: ex.fetch_ohlcv(symbol, timeframe, limit=limit))
+        params = {"until": until_ms} if until_ms is not None else {}
+        if params:
+            return await self._call(
+                ex_id, "fetch_ohlcv", a, 15, lambda ex: ex.fetch_ohlcv(symbol, timeframe, since=since_ms, limit=limit, params=params)
+            )
         return await self._call(ex_id, "fetch_ohlcv", a, 15, lambda ex: ex.fetch_ohlcv(symbol, timeframe, since=since_ms, limit=limit))
 
     async def order_book(self, ex_id: str, symbol: str, limit: int) -> Fetched:

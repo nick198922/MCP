@@ -10,6 +10,7 @@ def register_all(server: MCPServer, rt: Runtime) -> None:
     from . import (
         backtest,
         calendar,
+        carry_paper,
         coingecko,
         events,
         history,
@@ -39,6 +40,7 @@ def register_all(server: MCPServer, rt: Runtime) -> None:
         coingecko,
         history,
         journal,
+        carry_paper,
         positions,
         liquidations,
         rules,

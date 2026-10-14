@@ -116,8 +116,8 @@ def test_send_falls_back_to_general_chat_when_the_topic_is_gone(monkeypatch):
     def fake_post(token, body):
         calls.append(body.get("message_thread_id"))
         if body.get("message_thread_id"):
-            return False, "Bad Request: message thread not found"
-        return True, ""
+            return False, "Bad Request: message thread not found", {}
+        return True, "", {}
 
     monkeypatch.setattr(tg_send, "_post", fake_post)
     env = {"TELEGRAM_BOT_TOKEN": "1:a", "TELEGRAM_CHAT_ID": "-1", "TELEGRAM_TOPIC_AGENTS": "9"}
@@ -134,10 +134,12 @@ def test_topics_setup_follows_the_supergroup_migration(monkeypatch, tmp_path):
     made = []
 
     def fake_api(token, method, body):
-        if method == "getChat" and body["chat_id"] == "-55":
+        if method == "sendChatAction" and body["chat_id"] == "-55":
             return {"ok": False, "description": "upgraded", "parameters": {"migrate_to_chat_id": -1001}}
+        if method == "getChat" and body["chat_id"] == "-55":  # the old group still answers, without topics
+            return {"ok": True, "result": {"type": "group", "is_forum": False}}
         if method == "getChat":
-            return {"ok": True, "result": {"is_forum": True}}
+            return {"ok": True, "result": {"type": "supergroup", "is_forum": True}}
         if method == "createForumTopic":
             made.append(body["name"])
             return {"ok": True, "result": {"message_thread_id": len(made)}}
@@ -162,3 +164,22 @@ def test_topics_setup_stops_when_topics_are_off(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(tt, "api", lambda token, method, body: {"ok": True, "result": {"is_forum": False}})
     assert tt.main() == 1
     assert "Topics are off" in capsys.readouterr().out
+
+
+def test_send_follows_the_group_to_its_supergroup(monkeypatch, tmp_path):
+    env_file = tmp_path / "agents.env"
+    env_file.write_text("TELEGRAM_BOT_TOKEN=1:a\nTELEGRAM_CHAT_ID=-55\n")
+    monkeypatch.setattr(tg_send, "ENV_FILE", env_file)
+    chats = []
+
+    def fake_post(token, body):
+        chats.append(body["chat_id"])
+        if body["chat_id"] == "-55":
+            return False, "Bad Request: group chat was upgraded to a supergroup chat", {"migrate_to_chat_id": -1001}
+        return True, "", {}
+
+    monkeypatch.setattr(tg_send, "_post", fake_post)
+    assert tg_send.send("hi") is True
+    assert chats == ["-55", "-1001"]
+    assert tg_send.load_env(env_file) == {"TELEGRAM_BOT_TOKEN": "1:a", "TELEGRAM_CHAT_ID": "-1001"}
+    assert env_file.stat().st_mode & 0o777 == 0o600

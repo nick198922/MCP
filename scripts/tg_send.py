@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import os
 import re
 import sys
 import urllib.error
@@ -27,10 +28,10 @@ ENV_FILE = Path.home() / ".config" / "tradedesk" / "agents.env"
 TEXT_LIMIT = 3800  # Telegram allows 4096 characters after entity parsing
 
 
-def load_env(path: Path = ENV_FILE) -> dict[str, str]:
+def load_env(path: Path | None = None) -> dict[str, str]:
     out: dict[str, str] = {}
     try:
-        text = path.read_text(encoding="utf-8")
+        text = (path or ENV_FILE).read_text(encoding="utf-8")
     except OSError:
         return out
     for line in text.splitlines():
@@ -40,6 +41,16 @@ def load_env(path: Path = ENV_FILE) -> dict[str, str]:
         key, value = line.split("=", 1)
         out[key.strip()] = value.strip().strip("'\"")
     return out
+
+
+def write_env(env: dict[str, str], path: Path | None = None) -> None:
+    """Rewrite the settings file atomically, readable by its owner only."""
+    path = path or ENV_FILE
+    tmp = path.with_suffix(".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.writelines(f"{k}={v}\n" for k, v in env.items())
+    os.replace(tmp, path)
 
 
 def md_to_html(text: str) -> str:
@@ -90,7 +101,8 @@ def payload(
     return body
 
 
-def _post(token: str, body: dict) -> tuple[bool, str]:
+def _post(token: str, body: dict) -> tuple[bool, str, dict]:
+    """(ok, error description, response parameters such as migrate_to_chat_id)."""
     req = urllib.request.Request(
         f"https://api.telegram.org/bot{token}/sendMessage",
         data=json.dumps(body).encode(),
@@ -98,14 +110,15 @@ def _post(token: str, body: dict) -> tuple[bool, str]:
     )
     try:
         with urllib.request.urlopen(req, timeout=20) as resp:
-            return bool(json.load(resp).get("ok")), ""
+            return bool(json.load(resp).get("ok")), "", {}
     except urllib.error.HTTPError as e:  # the body names the problem; the URL (with the token) is never printed
         try:
-            return False, str(json.load(e).get("description", e.code))
+            data = json.load(e)
+            return False, str(data.get("description", e.code)), data.get("parameters") or {}
         except (ValueError, OSError):
-            return False, f"HTTP {e.code}"
+            return False, f"HTTP {e.code}", {}
     except (urllib.error.URLError, OSError, ValueError) as e:
-        return False, type(e).__name__
+        return False, type(e).__name__, {}
 
 
 def topic_thread(env: dict[str, str], topic: str | None) -> int | None:
@@ -121,21 +134,31 @@ def send(
     topic: str | None = None,
     env: dict[str, str] | None = None,
 ) -> bool:
+    from_file = env is None
     env = load_env() if env is None else env
     token, chat = env.get("TELEGRAM_BOT_TOKEN"), env.get("TELEGRAM_CHAT_ID")
     if not token or not chat:
         print("telegram is not configured", file=sys.stderr)
         return False
     thread = topic_thread(env, topic)
-    ok, err = _post(token, payload(chat, clip(text_html), silent=silent, buttons=buttons, thread=thread))
+    ok, err, params = _post(token, payload(chat, clip(text_html), silent=silent, buttons=buttons, thread=thread))
+    if not ok and params.get("migrate_to_chat_id"):
+        # The group became a supergroup (e.g. Topics switched on): follow it and remember the new id.
+        chat = str(params["migrate_to_chat_id"])
+        print(f"the group moved to chat id {chat}; settings updated", file=sys.stderr)
+        if from_file:
+            write_env({**env, "TELEGRAM_CHAT_ID": chat})
+        ok, err, params = _post(token, payload(chat, clip(text_html), silent=silent, buttons=buttons, thread=thread))
     if not ok and thread and "thread" in err.lower():
         print(f"topic {topic} is not usable ({err}); sending to the general chat", file=sys.stderr)
         thread = None
-        ok, err = _post(token, payload(chat, clip(text_html), silent=silent, buttons=buttons))
+        ok, err, params = _post(token, payload(chat, clip(text_html), silent=silent, buttons=buttons))
     if not ok:
         print(f"telegram rejected the HTML message ({err}); sending plain text", file=sys.stderr)
         plain = re.sub(r"<[^>]+>", "", text_html)
-        ok, err = _post(token, payload(chat, clip(html.unescape(plain)), html_mode=False, silent=silent, buttons=buttons, thread=thread))
+        ok, err, params = _post(
+            token, payload(chat, clip(html.unescape(plain)), html_mode=False, silent=silent, buttons=buttons, thread=thread)
+        )
         if not ok:
             print(f"telegram send failed: {err}", file=sys.stderr)
     return ok

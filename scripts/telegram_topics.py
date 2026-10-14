@@ -9,7 +9,6 @@ again: topics already recorded are kept. The token is never printed.
 from __future__ import annotations
 
 import json
-import os
 import sys
 import urllib.error
 import urllib.request
@@ -17,6 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from tg_send import ENV_FILE, load_env  # noqa: E402
+from tg_send import write_env as _write_env  # noqa: E402
 
 # key, topic name, icon colour (one of the six Telegram allows), first message in the topic
 TOPICS = [
@@ -45,14 +45,24 @@ def api(token: str, method: str, body: dict) -> dict:
 
 
 def write_env(env: dict[str, str], path: Path | None = None) -> None:
-    path = path or ENV_FILE
     first = ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"] + [f"TELEGRAM_TOPIC_{k}" for k, *_ in TOPICS]
-    keys = [k for k in first if k in env] + [k for k in env if k not in first]
-    tmp = path.with_suffix(".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.writelines(f"{k}={env[k]}\n" for k in keys)
-    os.replace(tmp, path)
+    ordered = {k: env[k] for k in first if k in env} | {k: v for k, v in env.items() if k not in first}
+    _write_env(ordered, path or ENV_FILE)
+
+
+def migrated_to(token: str, chat: str) -> str | None:
+    """The supergroup id if the group moved. getChat may still answer for the old group, so ask with a harmless
+    chat action, which Telegram refuses with the new id; recent updates are a second source."""
+    tried = api(token, "sendChatAction", {"chat_id": chat, "action": "typing"})
+    new = (tried.get("parameters") or {}).get("migrate_to_chat_id")
+    if new:
+        return str(new)
+    updates = api(token, "getUpdates", {}).get("result")
+    for update in updates if isinstance(updates, list) else []:
+        msg = (update.get("message") if isinstance(update, dict) else None) or {}
+        if str((msg.get("chat") or {}).get("id")) == chat and msg.get("migrate_to_chat_id"):
+            return str(msg["migrate_to_chat_id"])
+    return None
 
 
 def main() -> int:
@@ -61,18 +71,19 @@ def main() -> int:
     if not token or not chat:
         print("no bot token or chat id: run scripts/server/telegram-setup.sh first")
         return 1
-    info = api(token, "getChat", {"chat_id": chat})
-    moved = (info.get("parameters") or {}).get("migrate_to_chat_id")
-    if not info.get("ok") and moved:
+    moved = migrated_to(token, chat)
+    if moved and moved != chat:
         print(f"the group became a supergroup: chat id {chat} -> {moved}")
-        chat = str(moved)
+        chat = moved
         for key, *_ in TOPICS:  # topics of the old chat cannot exist
             env.pop(f"TELEGRAM_TOPIC_{key}", None)
-        info = api(token, "getChat", {"chat_id": chat})
+    info = api(token, "getChat", {"chat_id": chat})
     if not info.get("ok"):
         print(f"Telegram cannot see the group: {info.get('description')}")
         return 1
-    if not info["result"].get("is_forum"):
+    result = info["result"]
+    print(f"group: {result.get('title')} ({result.get('type')}, id {chat}), topics {'on' if result.get('is_forum') else 'off'}")
+    if not result.get("is_forum"):
         print("Topics are off in this group. In Telegram: the group -> Edit -> Topics -> on; then run this again.")
         return 1
     env["TELEGRAM_CHAT_ID"] = chat

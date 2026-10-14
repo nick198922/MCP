@@ -41,6 +41,7 @@ from tradedesk.analytics.carry import pearson
 from tradedesk.analytics.options import black76_greeks
 from tradedesk.analytics.put_skew import (
     V1_BUILD,
+    FundingIndex,
     block_bootstrap_ci,
     build_day,
     chain,
@@ -364,7 +365,7 @@ def run_all(
     days: dict[int, dict[str, Any]],
     plans: dict[tuple[str, float], dict[int, dict[str, Any]]],
     delivery: dict[str, float],
-    funding: list[tuple[int, float]],
+    funding: FundingIndex,
 ):
     results: dict[tuple[str, float, str, bool], dict[str, dict[int, dict[str, Any]]]] = {}
     for tenor, dl in plans:
@@ -812,7 +813,7 @@ def main() -> None:
                 f"медіана різниці {statistics.median(diffs) * 100:+.3f}%, медіана |різниці| {statistics.median(ad) * 100:.3f}%, "
                 f"p95 |різниці| {ad[int(0.95 * (len(ad) - 1))] * 100:.3f}%; днів без угод ф'ючерса {sum(1 for v in fut.values() if not v)}."
             )
-    results = run_all(days, plans, delivery, funding)
+    results = run_all(days, plans, delivery, FundingIndex(funding))  # prefix sums: O(log n) per hedge interval
     pr = results[("30d", 0.25, "base", True)]
     puts = list(pr["put"].values())
     if puts:

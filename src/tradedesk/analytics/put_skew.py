@@ -347,6 +347,21 @@ def funding_sum(funding: Sequence[tuple[int, float]], t0: int, t1: int) -> float
     return sum(f[1] for f in funding[i:j])
 
 
+class FundingIndex:
+    """Prefix sums over sorted (timestamp, rate) funding records: ``sum(t0, t1)`` equals `funding_sum` in O(log n)."""
+
+    def __init__(self, funding: Sequence[tuple[int, float]]) -> None:
+        pts = sorted(funding)
+        self.ts = [int(t) for t, _ in pts]
+        self.cum = [0.0]
+        for _, v in pts:
+            self.cum.append(self.cum[-1] + float(v))
+
+    def sum(self, t0: int, t1: int) -> float:
+        i, j = bisect.bisect_right(self.ts, t0), bisect.bisect_right(self.ts, t1)
+        return self.cum[j] - self.cum[i] if j > i else 0.0
+
+
 def run_book(
     days: dict[int, dict[str, Any]],
     entry_day: int,
@@ -354,7 +369,7 @@ def run_book(
     legs: list[tuple[float, bool, float, float]],
     delivery_price: float,
     *,
-    funding: Sequence[tuple[int, float]] = (),
+    funding: Sequence[tuple[int, float]] | FundingIndex = (),
     option_fee: float = 0.0003,
     delivery_fee: float = 0.00015,
     fee_cap: float = 0.125,
@@ -372,6 +387,7 @@ def run_book(
     snap0 = days.get(entry_day)
     if snap0 is None or expiry_ms not in snap0["expiries"]:
         return None
+    fidx = funding if isinstance(funding, FundingIndex) else FundingIndex(funding)
     x0 = snap0["expiries"][expiry_ms]
     s0, f0, t0 = snap0["spot"], x0["F"], x0["T"]
     premium = 0.0
@@ -410,7 +426,7 @@ def run_book(
             if path:
                 pt, ps, pp = path[-1]
                 hedge_pnl += pp * (s - ps)
-                fund_pnl -= pp * ps * funding_sum(funding, pt, snap["t_ms"])
+                fund_pnl -= pp * ps * fidx.sum(pt, snap["t_ms"])
             pos = target
             path.append((snap["t_ms"], s, pos))
             n_hedge += 1
@@ -418,7 +434,7 @@ def run_book(
     if path:
         pt, ps, pp = path[-1]
         hedge_pnl += pp * (delivery_price - ps)
-        fund_pnl -= pp * ps * funding_sum(funding, pt, expiry_ms)
+        fund_pnl -= pp * ps * fidx.sum(pt, expiry_ms)
         hedge_cost += hedge_fee * abs(pp) * delivery_price
     payoff = 0.0
     for K, is_call, q, _ in legs:

@@ -92,6 +92,7 @@ git fetch --quiet origin
 rm -f .agent/branch .agent/commit-msg.txt
 
 # Push work that could not be finished after MAX_RESUMES attempts, so the owner sees it and nothing is lost.
+RESCUE_FAILED=""
 rescue_wip() {
   local first="$1" attempts="$2" br checks="lint and tests pass" url
   if [[ -z "$(git status --porcelain -- docs src tests scripts)" ]]; then
@@ -103,16 +104,16 @@ rescue_wip() {
   br="agent/$(date +%F)-wip-$(date +%H%M%S)"
   make lint >"$LOG_DIR/$STAMP.rescue-lint.log" 2>&1 || checks="LINT FAILS"
   make test >"$LOG_DIR/$STAMP.rescue-test.log" 2>&1 || checks="$checks; TESTS FAIL"
-  git switch -q -c "$br" || return 1
-  git add -A -- docs src tests scripts || return 1
+  git switch -q -c "$br" || { RESCUE_FAILED="git switch"; return 1; }
+  git add -A -- docs src tests scripts || { RESCUE_FAILED="git add"; return 1; }
   while IFS= read -r f; do
     if [[ -f "$f" && $(wc -c <"$f") -gt 2000000 ]]; then
       git reset -q -- "$f"
       echo "left out (over 2 MB): $f"
     fi
   done < <(git diff --cached --name-only)
-  git diff --cached --quiet && return 1
-  git commit -q -F - <<EOF || return 1
+  git diff --cached --quiet && { RESCUE_FAILED="nothing staged"; return 1; }
+  git commit -q -F - <<EOF || { RESCUE_FAILED="git commit"; return 1; }
 Unfinished agent step, pushed as is ($checks)
 
 The step started at $first and was resumed $attempts times without
@@ -121,13 +122,18 @@ Not a final result: see the run summaries and the agents' transcripts.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 EOF
-  git push -q -u origin "$br" || return 1
+  git push -q -u origin "$br" || { RESCUE_FAILED="git push"; return 1; }
   url="https://github.com/$(repo_slug)/compare/main...$br?expand=1"
   # Anything left outside the project paths is set aside so the next run starts clean.
   if dirty; then git stash push -q --include-untracked -m "agents-rescue-leftover-$STAMP" || true; fi
   git checkout --quiet --detach origin/main
   rm -f "$STATE"
   finish 0 "wip" "⚠️ **Агенти: крок не завершено і після $attempts повторних спроб.** Роботу збережено гілкою \`$br\` ($checks); лікар уже шукає причину." --button "🔀 Подивитися гілку|$url"
+}
+
+rescue_failed() {
+  finish 5 "error" "❌ **Агенти: не вдалося зберегти незавершену роботу гілкою** (впало: ${RESCUE_FAILED:-?}). Лог: $LOG_DIR/$STAMP.log
+$(grep -v '^== ' "$LOG_DIR/$STAMP.log" | tail -5)"
 }
 
 MODE=fresh
@@ -140,7 +146,7 @@ if dirty; then
   fi
   read -r attempts first <"$STATE" 2>/dev/null || { attempts=0; first="$STAMP"; }
   if ((attempts >= MAX_RESUMES)); then
-    rescue_wip "$first" "$attempts" || finish 5 "error" "❌ Агенти: не вдалося зберегти незавершену роботу гілкою; лог $LOG_DIR/$STAMP.log"
+    rescue_wip "$first" "$attempts" || rescue_failed
   fi
   MODE=resume
   attempts=$((attempts + 1))
@@ -220,7 +226,7 @@ elif dirty; then
   why="${NOTE:-координатор завершився, не здавши крок}"
   if ((rc != 0)); then why="$why; claude завершився з кодом $rc"; fi
   if ((attempts >= MAX_RESUMES)); then
-    rescue_wip "$first" "$attempts" || finish 5 "error" "❌ Агенти: не вдалося зберегти незавершену роботу гілкою; лог $LOG_DIR/$STAMP.log"
+    rescue_wip "$first" "$attempts" || rescue_failed
   fi
   echo "$attempts $first" >"$STATE"
   printf '%s\n%s\n' "$why" "$DETAIL" >"$LOG_DIR/refusal.txt"

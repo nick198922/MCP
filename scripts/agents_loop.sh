@@ -11,7 +11,8 @@
 # space the next tries out (GAP, 2*GAP, 4*GAP, ... up to TRADEDESK_AGENTS_FAIL_MAX_WAIT_SECONDS).
 # Telegram: each change of state once, and a silent project status (scripts/agents_status.py) every
 # TRADEDESK_STATUS_EVERY_SECONDS outside the quiet hours TRADEDESK_STATUS_QUIET ("23-8").
-# Runs as a systemd service (scripts/server/08-agents-loop.sh). Restart the service after changing this file.
+# Runs as a systemd service (scripts/server/08-agents-loop.sh). A new version of this file (the server pulls main every
+# night) takes over by itself between steps.
 set -uo pipefail
 export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
@@ -32,8 +33,12 @@ FAIL_MAX_WAIT="${TRADEDESK_AGENTS_FAIL_MAX_WAIT_SECONDS:-14400}"
 FAIL_ALERT=3
 export TRADEDESK_AGENTS_WORKTREE="$WT" TRADEDESK_AGENTS_LOG_DIR="$LOG_DIR"
 mkdir -p "$LOG_DIR"
-# Also keep the loop's own log next to the run logs, where the doctor can read it.
-exec > >(tee -a "$LOG_DIR/loop.log") 2>&1
+# Also keep the loop's own log next to the run logs, where the doctor can read it (once: a re-exec keeps the tee).
+if [[ -z "${TRADEDESK_LOOP_TEED:-}" ]]; then
+  export TRADEDESK_LOOP_TEED=1
+  exec > >(tee -a "$LOG_DIR/loop.log") 2>&1
+fi
+SELF="$(cksum <"$0")"
 
 log() { echo "$(date '+%F %T') $*"; }
 
@@ -157,8 +162,14 @@ if (($(date +%s) - last_start > 3600)); then
 fi
 date +%s >"$LOG_DIR/loop.started"
 status_ticker &
+TICKER=$!
 
 while true; do
+  if [[ "$(cksum <"$0" 2>/dev/null)" != "$SELF" ]]; then
+    log "this script changed; continuing with the new version"
+    kill "$TICKER" 2>/dev/null
+    exec "$0" "$@"
+  fi
   daily_check
   git -C "$REPO" fetch -q origin || log "fetch failed"
   leftovers=0

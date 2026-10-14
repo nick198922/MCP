@@ -55,7 +55,9 @@ DENIED=(
 )
 
 SUMMARY="$LOG_DIR/$STAMP.summary.md"
-caffeinate -i "${TRADEDESK_CLAUDE_BIN:-claude}" -p "$PROMPT" --permission-mode dontAsk \
+# A run that hangs (e.g. API connections dead after the Mac slept mid-request) is killed after
+# TRADEDESK_AGENTS_MAX_SECONDS so it cannot hold the lock and block the following nights.
+caffeinate -i perl -e 'alarm shift; exec @ARGV' "${TRADEDESK_AGENTS_MAX_SECONDS:-10800}" "${TRADEDESK_CLAUDE_BIN:-claude}" -p "$PROMPT" --permission-mode dontAsk \
   --allowedTools "${ALLOWED[@]}" --disallowedTools "${DENIED[@]}" | tee "$SUMMARY" || echo "claude exited with an error"
 
 # Delivery is done here, not by the model: only agent/YYYY-MM-DD-* branches, only after lint and tests pass.

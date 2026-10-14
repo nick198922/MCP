@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Агенти: кеш досліджень `~/.cache/tradedesk-agents` доступний їм на читання (`--add-dir`, змінна `TRADEDESK_AGENTS_CACHE_DIR`), дозволено `git ls-files`; збій збереження wip називає команду, що впала.
 - Цикл агентів: збої поспіль відсувають наступну спробу (5 хв, подвоєння до 4 год) замість спроби кожні 5 хв; у Telegram — перший збій і одне 🛑 після трьох поспіль, а не повідомлення щоразу. `agents-status.sh` показує й останні результати та кінець логу останнього кроку; вибір логу кроку більше не плутає його з логом Telegram-містка.
 - Розмова з Claude з Telegram: тема «💬 Claude», `scripts/tg_bridge.py` (лише творець групи, окремий клон `~/tradedesk-chat`, зміни гілками `chat/…`, `/new`, `/status`), `.claude/telegram.md`, встановлення `scripts/server/10-tg-bridge.sh`; `telegram_topics.py` додає тему й id власника.
 - Telegram-теми: `scripts/telegram_topics.py` переводить групу на теми (агенти, статус, алерти ринку), сам підхоплює новий id супергрупи; `tg_send.py --topic`, повідомлення в зниклу тему йдуть у загальний чат; алерти MCP пишуть у тему `TELEGRAM_TOPIC_ALERTS` (`Settings.telegram_topic_alerts`).

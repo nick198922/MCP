@@ -184,7 +184,7 @@ ALLOWED=(
   Read Write Edit Glob Grep WebSearch WebFetch Agent
   "Bash(uv run:*)" "Bash(uv sync:*)" "Bash(make:*)"
   "Bash(git status:*)" "Bash(git diff:*)" "Bash(git log:*)" "Bash(git show:*)" "Bash(git branch:*)"
-  "Bash(git fetch:*)" "Bash(git rev-parse:*)" "Bash(git ls-tree:*)" "Bash(git add:*)"
+  "Bash(git fetch:*)" "Bash(git rev-parse:*)" "Bash(git ls-tree:*)" "Bash(git ls-files:*)" "Bash(git add:*)"
   "Bash(ls:*)" "Bash(date:*)" "Bash(which:*)" "Bash(head:*)" "Bash(tail:*)" "Bash(wc:*)" "Bash(mkdir -p .agent:*)"
   "Bash(cat:*)" "Bash(sed:*)" "Bash(cut:*)" "Bash(grep:*)" "Bash(sort:*)" "Bash(uniq:*)" "Bash(find:*)"
 )
@@ -197,11 +197,14 @@ DENIED=(
 # The coordinator only routes and stages, so it runs on Sonnet; each subagent keeps the model from its
 # .claude/agents/*.md (quant and critic: Opus).
 # A run that hangs is killed after TRADEDESK_AGENTS_MAX_SECONDS; its work stays for the next run to resume.
+# Research data that outlives the clone (scripts' --cache-dir) is kept in CACHE_DIR, which the agents may also read.
 KEEP_AWAKE=()
 command -v caffeinate >/dev/null 2>&1 && KEEP_AWAKE=(caffeinate -i)
+CACHE_DIR="${TRADEDESK_AGENTS_CACHE_DIR:-$HOME/.cache/tradedesk-agents}"
+mkdir -p "$CACHE_DIR"
 set +e
 ${KEEP_AWAKE[@]+"${KEEP_AWAKE[@]}"} perl -e 'alarm shift; exec @ARGV' "${TRADEDESK_AGENTS_MAX_SECONDS:-10800}" "${TRADEDESK_CLAUDE_BIN:-claude}" -p "$PROMPT" --permission-mode dontAsk \
-  --model "${TRADEDESK_AGENTS_COORDINATOR_MODEL:-sonnet}" \
+  --model "${TRADEDESK_AGENTS_COORDINATOR_MODEL:-sonnet}" --add-dir "$CACHE_DIR" \
   --allowedTools "${ALLOWED[@]}" --disallowedTools "${DENIED[@]}" | tee -a "$SUMMARY"
 rc=${PIPESTATUS[0]}
 set -e

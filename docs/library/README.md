@@ -10,7 +10,7 @@
 
 ## Запис
 
-Один файл на матеріал: `LIB-YYYYMMDD-<slug>.md` за [`TEMPLATE.md`](TEMPLATE.md).
+Один файл на матеріал: `LIB-YYYYMMDD-<slug>.md` за [`TEMPLATE.md`](TEMPLATE.md). PDF і інші оригінали в git не кладуться (`.gitignore`): у записі — текст, ключові числа й посилання.
 
 Статуси:
 - `new` — щойно додано;
@@ -29,3 +29,4 @@
 | Запис | Тема | Статус |
 |---|---|---|
 | [LIB-20261014-buybacks](LIB-20261014-buybacks.md) | Хороші й погані байбеки (MOVE, KAITO, JUP) | new |
+| [LIB-20261014-tao-research](LIB-20261014-tao-research.md) | DoubleTop Research: Bittensor (TAO), емісія проти виручки, сценарії | new |

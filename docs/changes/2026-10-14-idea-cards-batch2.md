@@ -1,0 +1,2 @@
+- Скаут додав три картки ідей: Hyperliquid↔Binance funding-спред, преміум straddle у дні подій (FOMC/CPI/NFP), знижка вол на вихідних.
+- Критик прийняв усі три з умовами (`accepted`); рев'ю: `docs/reviews/2026-10-14-idea-triage-2.md`.

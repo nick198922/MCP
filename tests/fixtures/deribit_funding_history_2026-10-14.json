@@ -1,0 +1,28 @@
+{
+ "_source": "www.deribit.com/api/v2/public/get_funding_rate_history instrument_name=BTC-PERPETUAL start=2022-06-15T00:00Z end=2022-06-15T03:00Z",
+ "_fetched": "2026-10-14",
+ "jsonrpc": "2.0",
+ "result": [
+  {
+   "timestamp": 1655254800000,
+   "index_price": 21784.39,
+   "interest_8h": -0.00034688671709183234,
+   "interest_1h": -3.4331643789619915e-05,
+   "prev_index_price": 22109.82
+  },
+  {
+   "timestamp": 1655258400000,
+   "index_price": 22134.58,
+   "interest_8h": -0.0003570193007204557,
+   "interest_1h": -3.659462062771123e-05,
+   "prev_index_price": 21784.39
+  },
+  {
+   "timestamp": 1655262000000,
+   "index_price": 21954.02,
+   "interest_8h": -0.000384252486277751,
+   "interest_1h": -4.909966456944197e-05,
+   "prev_index_price": 22134.58
+  }
+ ]
+}

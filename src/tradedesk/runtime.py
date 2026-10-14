@@ -61,6 +61,8 @@ class Runtime:
             )
 
         self.deribit = Deribit(http("deribit", deribit_mod.BASE_URL, rate=8, burst=10))
+        # Archive host for historical trades of expired instruments (research scripts, not tools).
+        self.deribit_history = Deribit(http("deribit_history", deribit_mod.HISTORY_URL, rate=5, burst=5))
         self.hyperliquid = Hyperliquid(http("hyperliquid", hl_mod.BASE_URL, rate=5, burst=8))
         self.binance_futures = BinanceFutures(http("binance_futures", binance_mod.BASE_URL, rate=20, burst=40))
         self.bybit = Bybit(http("bybit", bybit_mod.BASE_URL, rate=20, burst=40))
@@ -97,6 +99,7 @@ class Runtime:
 
     async def aclose(self) -> None:
         await self.deribit.http.aclose()
+        await self.deribit_history.http.aclose()
         await self.hyperliquid.http.aclose()
         await self.binance_futures.http.aclose()
         await self.bybit.http.aclose()

@@ -1,0 +1,22 @@
+{
+ "_source": "www.deribit.com/api/v2/public/get_delivery_prices index_name=btc_usd offset=0 count=3",
+ "_fetched": "2026-10-14",
+ "jsonrpc": "2.0",
+ "result": {
+  "data": [
+   {
+    "date": "2026-10-13",
+    "delivery_price": 83826.89
+   },
+   {
+    "date": "2026-10-12",
+    "delivery_price": 83911.12
+   },
+   {
+    "date": "2026-10-11",
+    "delivery_price": 82952.11
+   }
+  ],
+  "records_total": 2637
+ }
+}

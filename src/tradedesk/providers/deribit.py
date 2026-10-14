@@ -9,6 +9,9 @@ from ..core.errors import ProviderError
 from ..core.http import Http
 
 BASE_URL = "https://www.deribit.com/api/v2"
+# Archive host serving the full public trade history (incl. long-expired instruments). Same JSON-RPC
+# shape as BASE_URL; used by research scripts only (see docs/verification/2026-10-14-put-skew.md).
+HISTORY_URL = "https://history.deribit.com/api/v2"
 
 
 class Deribit:
@@ -63,4 +66,71 @@ class Deribit:
             "get_volatility_index_data",
             {"currency": currency.upper(), "start_timestamp": start_ms, "end_timestamp": end_ms, "resolution": resolution},
             ttl=30,
+        )
+
+    async def last_trades_by_currency_and_time(
+        self,
+        currency: str,
+        kind: str,
+        start_ms: int,
+        end_ms: int,
+        *,
+        count: int = 1000,
+        sorting: str = "asc",
+    ) -> Fetched:
+        """Trades of all instruments of a kind within [start_ms, end_ms] (ms since epoch), at most `count` (<=1000).
+
+        Returns ``{"trades": [...], "has_more": bool}``. Paginate by moving ``start_ms`` to the last
+        trade's timestamp (sorting="asc") and de-duplicating by ``trade_id``. Option trades carry
+        ``iv`` in percent (55.1 = 55.1 %), ``price``/``mark_price`` in BTC, ``index_price`` in USD.
+        On ``HISTORY_URL`` this also covers expired instruments.
+        """
+        params = {
+            "currency": currency.upper(),
+            "kind": kind,
+            "start_timestamp": int(start_ms),
+            "end_timestamp": int(end_ms),
+            "count": int(count),
+            "sorting": sorting,
+        }
+        f = await self._public("get_last_trades_by_currency_and_time", params, ttl=0)
+        data = f.data or {}
+        return Fetched({"trades": data.get("trades") or [], "has_more": bool(data.get("has_more"))}, f.evidence)
+
+    async def last_trades_by_instrument_and_time(
+        self,
+        instrument_name: str,
+        start_ms: int,
+        end_ms: int,
+        *,
+        count: int = 1000,
+        sorting: str = "asc",
+    ) -> Fetched:
+        """Trades of one instrument within [start_ms, end_ms]; same shape as `last_trades_by_currency_and_time`."""
+        params = {
+            "instrument_name": instrument_name,
+            "start_timestamp": int(start_ms),
+            "end_timestamp": int(end_ms),
+            "count": int(count),
+            "sorting": sorting,
+        }
+        f = await self._public("get_last_trades_by_instrument_and_time", params, ttl=0)
+        data = f.data or {}
+        return Fetched({"trades": data.get("trades") or [], "has_more": bool(data.get("has_more"))}, f.evidence)
+
+    async def delivery_prices(self, index_name: str, *, offset: int = 0, count: int = 1000) -> Fetched:
+        """Historical delivery (settlement) prices, newest first: ``{"data": [{"date": "YYYY-MM-DD",
+        "delivery_price": float}], "records_total": int}``. ``index_name`` e.g. ``"btc_usd"``; USD units."""
+        return await self._public("get_delivery_prices", {"index_name": index_name, "offset": int(offset), "count": int(count)}, ttl=60)
+
+    async def funding_rate_history(self, instrument_name: str, start_ms: int, end_ms: int) -> Fetched:
+        """Hourly perpetual funding records (www host only; at most 744 per call, so page by <=31 days).
+
+        Each record: ``timestamp`` (ms, end of hour), ``interest_1h`` (funding accrued in that hour,
+        decimal of notional; longs pay when positive), ``interest_8h``, ``index_price``, ``prev_index_price``.
+        """
+        return await self._public(
+            "get_funding_rate_history",
+            {"instrument_name": instrument_name, "start_timestamp": int(start_ms), "end_timestamp": int(end_ms)},
+            ttl=0,
         )

@@ -12,7 +12,7 @@ if [[ "$(uname)" == "Darwin" ]]; then
 else
   LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/tradedesk-agents"
 fi
-# Optional secrets for the morning notification (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID); keep the file 0600.
+# Optional secrets for the end-of-step Telegram message (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID); keep the file 0600.
 [[ -f "$HOME/.config/tradedesk/agents.env" ]] && . "$HOME/.config/tradedesk/agents.env"
 STAMP="$(date +%Y-%m-%d_%H%M)"
 DRY=0
@@ -132,7 +132,8 @@ echo "== $(date) done"
 if [[ "$(uname)" == "Darwin" ]]; then
   osascript -e "display notification \"Підсумок: $SUMMARY; розмова агентів: $LOG_DIR/$STAMP.transcript.md\" with title \"tradedesk: нічний прогін агентів\"" || true
 elif [[ -n "${TELEGRAM_BOT_TOKEN:-}" && -n "${TELEGRAM_CHAT_ID:-}" ]]; then
-  curl -s -m 20 "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+  # The token goes to curl through stdin, so it never shows up in the process list.
+  printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$TELEGRAM_BOT_TOKEN" | curl -s -m 20 -K - \
     --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
     --data-urlencode "text=$(head -c 3800 "$SUMMARY")" >/dev/null || true
 fi

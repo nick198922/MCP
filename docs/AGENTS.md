@@ -52,7 +52,7 @@
 - база: `/var/lib/tradedesk-mcp/tradedesk.sqlite`, резервні копії: `/var/lib/tradedesk-mcp/backups/`;
 - логи й підсумки агентів: `~/.local/state/tradedesk-agents/`; журнал служб: `journalctl -u tradedesk-mcp -u tradedesk-agents`;
 - пробний прогін з Mac: `bash scripts/server/agents-dryrun.sh`; робота на сервері: `ssh -t tradedesk@169.58.169.184`, далі `cd tradedesk-mcp && claude`;
-- сповіщення в Telegram: `~/.config/tradedesk/agents.env` з `TELEGRAM_BOT_TOKEN` і `TELEGRAM_CHAT_ID` (0600);
+- сповіщення в Telegram (група «MCP»): `~/.config/tradedesk/agents.env` з `TELEGRAM_BOT_TOKEN` і `TELEGRAM_CHAT_ID` (0600); налаштування — `bash scripts/server/telegram-setup.sh` у Terminal на Mac (питає токен, сама знаходить групу);
 - захист: вхід лише за ключем, фаєрвол лише SSH, deploy-ключ сервера не може пушити в `main` (правило `protect-main` на GitHub).
 
 Покрокове налаштування нового сервера — `scripts/server/01…05`.

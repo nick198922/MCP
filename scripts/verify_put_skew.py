@@ -27,6 +27,7 @@ import asyncio
 import functools
 import gzip
 import json
+import logging
 import os
 import random
 import statistics
@@ -131,7 +132,9 @@ def day_path(tdir: Path, d: datetime, gz: bool) -> Path:
 
 def write_day(p: Path, blob: dict[str, Any]) -> None:
     raw = json.dumps(blob, separators=(",", ":")).encode()
-    p.write_bytes(gzip.compress(raw, 6) if p.suffix == ".gz" else raw)
+    tmp = p.with_name(p.name + ".part")  # atomic: an interrupted run never leaves a truncated day file
+    tmp.write_bytes(gzip.compress(raw, 6) if p.suffix == ".gz" else raw)
+    os.replace(tmp, p)
 
 
 def read_day(p: Path) -> dict[str, Any]:
@@ -238,7 +241,7 @@ def _de(snap: dict[str, Any] | None) -> dict[str, Any] | None:
 
 def load_snapshots(cache: Path, scheme: str) -> tuple[dict[int, dict[str, Any]], dict[str, Any]]:
     sch = SCHEMES[scheme]
-    files = sorted(str(p) for p in (cache / sch["dir"]).glob("*.json*"))
+    files = sorted(str(p) for p in (cache / sch["dir"]).glob("*.json*") if not p.name.endswith(".part"))
     sp = cache / sch["snap"]
     if sp.exists():
         blob = json.loads(sp.read_text())
@@ -261,6 +264,54 @@ def load_snapshots(cache: Path, scheme: str) -> tuple[dict[int, dict[str, Any]],
                 print(f"  surfaces {i}/{len(files)} in {time.perf_counter() - t0:.0f}s", flush=True)
     sp.write_text(json.dumps({"n_files": len(files), "days": out, "meta": meta}))
     return {int(d): _de(s) for d, s in out.items() if s}, meta
+
+
+# ----------------------------------------------------------------------------- futures cross-check
+
+MONTHS = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
+
+
+def future_name(expiry_ms: int) -> str:
+    d = datetime.fromtimestamp(expiry_ms / 1000, UTC)
+    return f"BTC-{d.day}{MONTHS[d.month - 1]}{d:%y}"
+
+
+async def futures_check(cache: Path, plans: dict[int, dict[str, Any]], days: dict[int, dict[str, Any]]) -> dict[str, list[list[float]]]:
+    """(price, index) of the dated future's prints in the hour before 09:00 on days whose chosen expiry is
+    quarterly (pre-registered consistency check of the solved F/S). Cached in one JSON file, resumable."""
+    from tradedesk.core.errors import ProviderError
+
+    p = cache / "futures_fs_v2.json"
+    got: dict[str, list[list[float]]] = json.loads(p.read_text()) if p.exists() else {}
+    todo = [
+        (d, pl)
+        for d, pl in sorted(plans.items())
+        if pl["covered"] and datetime.fromtimestamp(pl["expiry"] / 1000, UTC).month in (3, 6, 9, 12) and str(d) not in got
+    ]
+    if not todo:
+        return got
+    print(f"futures check: {len(todo)} days to fetch", flush=True)
+    _, rt = build_server()
+    try:
+        for i, (d, pl) in enumerate(todo):
+            t_ref = days[d]["t_ms"]
+            try:
+                f = await rt.deribit_history.last_trades_by_instrument_and_time(
+                    future_name(pl["expiry"]), t_ref - HOUR_MS, t_ref, count=100, sorting="desc"
+                )
+                got[str(d)] = [
+                    [float(t["price"]), float(t["index_price"])] for t in f.data["trades"] if t.get("price") and t.get("index_price")
+                ]
+            except ProviderError as e:
+                print(f"  {ymd(d)} {future_name(pl['expiry'])}: {e}", flush=True)
+                got[str(d)] = []
+            if i % 100 == 0:
+                print(f"  futures {i + 1}/{len(todo)}", flush=True)
+                p.write_text(json.dumps(got))
+    finally:
+        await rt.aclose()
+        p.write_text(json.dumps(got))
+    return got
 
 
 # ----------------------------------------------------------------------------- books
@@ -620,6 +671,8 @@ def main() -> None:
     ap.add_argument("--sample-coverage", default="", help="directory of the 40-day full-day sample: print exploratory coverage rows only")
     ap.add_argument("--out", default="")
     a = ap.parse_args()
+    for name in ("httpx", "httpcore"):  # one INFO line per request otherwise
+        logging.getLogger(name).setLevel(logging.WARNING)
     cache = Path(a.cache_dir).expanduser()
     cache.mkdir(parents=True, exist_ok=True)
     if a.sample_coverage:
@@ -743,6 +796,22 @@ def main() -> None:
         if a.out:
             Path(a.out).expanduser().write_text(report + "\n")
         return
+    if a.scheme == "v2":
+        fut = asyncio.run(futures_check(cache, plans[("30d", 0.25)], days))
+        diffs = []
+        for ds, prints in fut.items():
+            d = int(ds)
+            p = plans[("30d", 0.25)].get(d)
+            if prints and p is not None:
+                fr = statistics.median(px / ix for px, ix in prints)
+                diffs.append(days[d]["expiries"][p["expiry"]]["ratio"] - fr)
+        if diffs:
+            ad = sorted(abs(x) for x in diffs)
+            L.append(
+                f"- F/S з угод опціонів проти F/S квартального ф'ючерса (угоди за годину до 09:00), n={len(diffs)} днів: "
+                f"медіана різниці {statistics.median(diffs) * 100:+.3f}%, медіана |різниці| {statistics.median(ad) * 100:.3f}%, "
+                f"p95 |різниці| {ad[int(0.95 * (len(ad) - 1))] * 100:.3f}%; днів без угод ф'ючерса {sum(1 for v in fut.values() if not v)}."
+            )
     results = run_all(days, plans, delivery, funding)
     pr = results[("30d", 0.25, "base", True)]
     puts = list(pr["put"].values())

@@ -175,6 +175,19 @@ def test_marks_use_freshest_prints_with_age_cap():
     assert v1[18_000.0]["mark_iv"] == pytest.approx(0.9, abs=1e-5)  # v1 took the oldest 15
 
 
+def test_forward_ratio_uses_freshest_prints():
+    """Blocker 3 (forward): F/S comes from near-the-money prints <= 6 h old, not from the whole 24 h window."""
+    stale = [_trade(f"{JUL}-20000-P", T9 - 10 * HOUR_MS + i, 21_000, 20_000, 0.6) for i in range(30)]
+    fresh = [_trade(f"{JUL}-20000-C", T9 - 20 * 60_000 + i, 20_040, 20_000, 0.6) for i in range(5)]
+    x = next(iter(build_day(stale + fresh, D0)["expiries"].values()))
+    assert x["ratio"] == pytest.approx(1.002, abs=1e-5)
+    # no fresh near-the-money prints at all: fall back to every print of the window
+    x_old = next(iter(build_day(stale, D0, max_mark_age_h=None)["expiries"].values()))
+    assert x_old["ratio"] == pytest.approx(1.05, abs=1e-5)
+    v1 = next(iter(build_day(stale + fresh, D0, **V1_BUILD)["expiries"].values()))
+    assert v1["ratio"] == pytest.approx(1.05, abs=1e-5)  # v1 thinned evenly over the window
+
+
 def test_dvol_control_uses_previous_day_close():
     """Blocker 5: the candle stamped day d closes at 24:00, so entry day d sees the d-1 candle."""
     dv = dvol_known_at_entry([(D0, 0.50), (D0 + DAY_MS, 0.70)])

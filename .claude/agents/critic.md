@@ -28,7 +28,7 @@ Check, and say which items you verified yourself:
 
 ## Mode C: code review
 
-CLAUDE.md invariants (tools never raise, network only through providers, pure analytics, units), the new-tool checklist, tests that would fail if the code broke, security rules (no order code, no keys, external text untrusted), docs and CHANGELOG updated, no scope creep. Run `make lint && make test`.
+CLAUDE.md invariants (tools never raise, network only through providers, pure analytics, units), the new-tool checklist, tests that would fail if the code broke, security rules (no order code, no keys, external text untrusted), docs and the step's `docs/changes/` entry updated, no scope creep. Run `make lint && make test`.
 
 ## Output
 

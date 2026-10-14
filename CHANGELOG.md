@@ -1,6 +1,11 @@
 # Changelog
 
+Зміни, зроблені агентами, — по файлу на крок у [`docs/changes/`](docs/changes/).
+
 ## Unreleased
+- Автозлиття готових PR агентів: `.github/workflows/automerge.yml` + `scripts/automerge.py` (правила з `main`; системні файли, правки лікаря й незавершені кроки — лише власнику); лаунчер позначає готові PR (`gh_pr.py --ready`) і пише в Telegram, зіллється PR сам чи чекає на вас. Проти конфліктів: перед пушем гілка підтягує `main` (`CHANGELOG.md` зливається union), а агенти пишуть записи змін у `docs/changes/`.
+- Цикл агентів сам переходить на нову версію `agents_loop.sh` між кроками (перевірка `cksum`, `exec`), тож після оновлення сервера його не треба перезапускати.
+- Агенти ощадливіші: лікар не оглядає той самий збій двічі за добу, щоденний огляд іде на Sonnet і не з'їдає квоту на збої; огляд отримує список команд, відхилених агентам за добу (`agents_transcript.py --denied 24`), і пропонує вузькі дозволи для безпечних. Повідомлення про крок показують тривалість і приріст ліміту Claude (`scripts/agents_usage.sh`, 4-й стовпець `history.tsv`). Ліміт кроку 3 → 5 год.
 - Дослідження «датований базис проти реалізованого funding» (`IDEA-20261013-dated-basis-vs-funding-forward`).
   - Провайдери: `Deribit.tradingview_chart_data` і `Exchanges.public_get`, сирий публічний GET через неявні ендпоінти ccxt; дозволено лише `*PublicGet*`. Фікстури `tests/fixtures/deribit_tradingview_expired_2026-10-14.json` і `binance_delivery_klines_2026-10-14.json`.
   - Чиста `analytics/dated_basis.py`: календар квартальних експірацій, синхронний базис з угод (`price/index_price`, без lookahead), `FundingSeries` (префіксні суми, зважування ціною, покриття), `contract_record` (d, календар, dated і perp cash-and-carry), t-CI, MDE, бутстреп, блоковий бутстреп. Тести `tests/test_dated_basis.py`.

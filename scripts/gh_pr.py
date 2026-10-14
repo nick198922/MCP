@@ -26,6 +26,7 @@ from tg_send import load_env  # noqa: E402
 
 TOKEN_FILE = Path.home() / ".config" / "tradedesk" / "github.env"
 BODY_LIMIT = 60000  # GitHub allows 65536 characters
+READY_MARK = "<!-- agents: ready -->"  # scripts/automerge.py merges only pull requests that carry it
 
 # (method, path, body) -> (HTTP status, decoded JSON)
 Call = Callable[[str, str, dict | None], tuple[int, object]]
@@ -102,6 +103,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--body-file", type=Path)
     ap.add_argument("--base", default="main")
     ap.add_argument("--check", action="store_true", help="only test the token")
+    ap.add_argument("--ready", action="store_true", help="mark it for the automatic merge (scripts/automerge.py)")
     args = ap.parse_args(argv)
     token = load_env(TOKEN_FILE).get("GITHUB_TOKEN", "")
     if not token:
@@ -115,6 +117,8 @@ def main(argv: list[str] | None = None) -> int:
         if not args.head:
             ap.error("--head is required")
         body = args.body_file.read_text(encoding="utf-8", errors="replace") if args.body_file else ""
+        if args.ready:
+            body = body[: BODY_LIMIT - len(READY_MARK) - 2] + "\n\n" + READY_MARK
         print(open_pr(call, args.repo, args.head, args.title or args.head, body, args.base))
         return 0
     except (RuntimeError, OSError) as e:

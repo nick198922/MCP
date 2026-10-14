@@ -23,6 +23,7 @@ else
 fi
 . "$REPO/scripts/agents_notify.sh"
 . "$REPO/scripts/agents_deliver.sh"
+. "$REPO/scripts/agents_usage.sh"
 MAX_RUNS="${TRADEDESK_AGENTS_MAX_RUNS:-5}"
 BRANCH_RE='^agent/[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9][a-z0-9-]*$'
 STAMP="$(date +%Y-%m-%d_%H%M%S)"
@@ -52,13 +53,20 @@ SUMMARY="$LOG_DIR/$STAMP.summary.md"
 : >"$SUMMARY"
 dirty() { [[ -n "$(git -C "$WT" status --porcelain 2>/dev/null)" ]]; }
 
-# Report one outcome: history line, Telegram message, exit code.
+# Report one outcome: history line (with what the step cost), Telegram message, exit code.
 # Arguments after the text go to notify (--silent, --button "Label|url").
+COST=""
 finish() {
-  local code="$1" status="$2" text="$3" last
+  local code="$1" status="$2" text="$3" last rest
   shift 3
   last="$(tail -1 "$LOG_DIR/history.tsv" 2>/dev/null | cut -f2 || true)"
-  printf '%s\t%s\t%s\n' "$STAMP" "$status" "$(head -1 <<<"$text")" >>"$LOG_DIR/history.tsv"
+  printf '%s\t%s\t%s\t%s\n' "$STAMP" "$status" "$(head -1 <<<"$text")" "$COST" >>"$LOG_DIR/history.tsv"
+  if [[ -n "$COST" ]]; then
+    rest="$(tail -n +2 <<<"$text")"
+    text="$(head -1 <<<"$text")
+$COST${rest:+
+$rest}"
+  fi
   echo "== $(date) done: $status"
   # A repeated "nothing to do" or failure is reported once; the loop tells the owner when failures pile up.
   if [[ "$status" != "$last" || ("$status" != "idle" && "$status" != "error") ]]; then
@@ -182,12 +190,22 @@ EOF
 }
 
 # Hand the work to the owner: a pull request (or a compare link without a GitHub token) and a Telegram message.
+# A finished step ("delivered") is marked ready: GitHub merges it by itself once CI passes, unless it changes the
+# control plane (scripts/automerge.py); a stuck one always waits for the owner.
 handover() {
-  local br="$1" status="$2" head="$3" title url
+  local br="$1" status="$2" head="$3" title url ready="" verdict how
   title="$(head -1 .agent/commit-msg.txt 2>/dev/null || true)"
-  url="$(open_pr "$br" "${title:-Agents: $br}" "$SUMMARY")"
+  verdict="$(git diff --name-only "origin/main...$br" | python3 "$REPO/scripts/automerge.py" --classify 2>/dev/null || echo "owner: ?")"
+  if [[ "$status" == delivered && "$verdict" == auto ]]; then
+    ready="--ready"
+    how="🤖 Зіллється сам, щойно на GitHub пройдуть тести."
+  else
+    how="👀 Чекає на ваше злиття (${verdict#owner: })."
+  fi
+  url="$(open_pr "$br" "${title:-Agents: $br}" "$SUMMARY" $ready)"
   rm -f "$WORK" "$LOG_DIR/refusal.txt"
   finish 0 "$status" "$head
+$how
 $(head -c 3000 "$SUMMARY")" --button "🔀 Відкрити PR|$url"
 }
 
@@ -237,19 +255,26 @@ DENIED=(
 
 # The coordinator only routes and stages, so it runs on Sonnet; each subagent keeps the model from its
 # .claude/agents/*.md (quant and critic: Opus).
-# A run that hangs is killed after TRADEDESK_AGENTS_MAX_SECONDS; its work is saved for the next run.
+# A run that hangs is killed after TRADEDESK_AGENTS_MAX_SECONDS (5 h: a research step with a long fetch, the
+# quant's work and the critic's review took almost 3); its work is saved for the next run.
 # Research data that outlives the clone (scripts' --cache-dir) is kept in CACHE_DIR, which the agents may also read.
 KEEP_AWAKE=()
 command -v caffeinate >/dev/null 2>&1 && KEEP_AWAKE=(caffeinate -i)
 CACHE_DIR="${TRADEDESK_AGENTS_CACHE_DIR:-$HOME/.cache/tradedesk-agents}"
 mkdir -p "$CACHE_DIR"
+T0="$(date +%s)"
+U0="$(usage_now)"
 set +e
-${KEEP_AWAKE[@]+"${KEEP_AWAKE[@]}"} perl -e 'alarm shift; exec @ARGV' "${TRADEDESK_AGENTS_MAX_SECONDS:-10800}" "${TRADEDESK_CLAUDE_BIN:-claude}" -p "$PROMPT" --permission-mode dontAsk \
+${KEEP_AWAKE[@]+"${KEEP_AWAKE[@]}"} perl -e 'alarm shift; exec @ARGV' "${TRADEDESK_AGENTS_MAX_SECONDS:-18000}" "${TRADEDESK_CLAUDE_BIN:-claude}" -p "$PROMPT" --permission-mode dontAsk \
   --model "${TRADEDESK_AGENTS_COORDINATOR_MODEL:-sonnet}" --add-dir "$CACHE_DIR" \
   --allowedTools "${ALLOWED[@]}" --disallowedTools "${DENIED[@]}" | tee -a "$SUMMARY"
 rc=${PIPESTATUS[0]}
 set -e
 echo "claude exit code $rc"
+secs=$(($(date +%s) - T0))
+COST="⏱ $((secs / 3600)) год $((secs % 3600 / 60)) хв"
+change="$(usage_change "$U0" "$(usage_now)")"
+[[ -n "$change" ]] && COST="$COST · ліміт Claude: $change"
 
 NEXT="$(head -1 .agent/next 2>/dev/null | tr -d '[:space:]' || true)"
 if [[ $DRY -eq 0 ]]; then

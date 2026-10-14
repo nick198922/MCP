@@ -1,0 +1,30 @@
+name: automerge
+# Merges an agents' pull request by itself once CI has passed on it, if scripts/automerge.py finds it safe. A
+# workflow_run always uses this file and the checkout of main, so a pull request cannot change these rules for itself.
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  merge:
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      startsWith(github.event.workflow_run.head_branch, 'agent/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Merge if safe
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRS: ${{ toJSON(github.event.workflow_run.pull_requests) }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          for n in $(jq -r '.[].number' <<<"$PRS"); do
+            python3 scripts/automerge.py --repo "$GITHUB_REPOSITORY" --pr "$n" --sha "$SHA"
+          done

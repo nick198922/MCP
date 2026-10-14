@@ -71,11 +71,14 @@ DENIED=(
 )
 
 SUMMARY="$LOG_DIR/$STAMP.summary.md"
+# The coordinator only routes and stages, so it runs on Sonnet; each subagent keeps the model from its
+# .claude/agents/*.md (quant and critic: Opus).
 # A run that hangs (e.g. API connections dead after the Mac slept mid-request) is killed after
 # TRADEDESK_AGENTS_MAX_SECONDS so it cannot hold the lock and block the following nights.
 KEEP_AWAKE=()
 command -v caffeinate >/dev/null 2>&1 && KEEP_AWAKE=(caffeinate -i)
 ${KEEP_AWAKE[@]+"${KEEP_AWAKE[@]}"} perl -e 'alarm shift; exec @ARGV' "${TRADEDESK_AGENTS_MAX_SECONDS:-10800}" "${TRADEDESK_CLAUDE_BIN:-claude}" -p "$PROMPT" --permission-mode dontAsk \
+  --model "${TRADEDESK_AGENTS_COORDINATOR_MODEL:-sonnet}" \
   --allowedTools "${ALLOWED[@]}" --disallowedTools "${DENIED[@]}" | tee "$SUMMARY" || echo "claude exited with an error"
 
 # Delivery is done here, not by the model: only agent/YYYY-MM-DD-* branches, only after lint and tests pass.

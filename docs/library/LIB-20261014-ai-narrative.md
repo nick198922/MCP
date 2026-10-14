@@ -2,7 +2,7 @@
 
 Статус: new
 <!-- new → triaged → used | archived (див. README) -->
-Додано: 2026-10-14 · Джерело: YouTube, 2TOP SQUAD (ведучий Ілля), https://www.youtube.com/watch?v=A8W3-jsR1lA; друга частина серії про наративи циклу (перша — про RWA) · Тип: відео
+Додано: 2026-10-14 · Джерело: YouTube, 2TOP SQUAD (ведучий Ілля), https://www.youtube.com/watch?v=A8W3-jsR1lA; друга частина серії про наративи циклу (перша — [LIB-20261014-rwa-narrative](LIB-20261014-rwa-narrative.md)) · Тип: відео
 Теми: AI-наратив, агенти, приватний inference, «стейк за кредити», value capture (токен проти акцій), анлоки, ETF на альти, спот-заходи
 Тікери (назви з автоматичних субтитрів, перевіряти): NEAR, VVV (Venice), VIRTUAL, GRASS, NIL (ймовірно Nillion), TAO, CHIP (ймовірно USD.AI), WLD, ORBIO (Robinhood chain)
 

@@ -1,12 +1,19 @@
 #!/bin/bash
 # One nightly pipeline step by the project agents, in a separate git worktree; the result is an agent/* branch.
 # Usage: scripts/nightly_agents.sh [--dry-run]
+# Exit 3 = the step delivered no branch (scripts/agents_loop.sh then waits longer).
 set -euo pipefail
 
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 WT="${TRADEDESK_AGENTS_WORKTREE:-$(dirname "$REPO")/tradedesk-agents}"
-LOG_DIR="$HOME/Library/Logs/tradedesk-agents"
+if [[ "$(uname)" == "Darwin" ]]; then
+  LOG_DIR="$HOME/Library/Logs/tradedesk-agents"
+else
+  LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/tradedesk-agents"
+fi
+# Optional secrets for the morning notification (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID); keep the file 0600.
+[[ -f "$HOME/.config/tradedesk/agents.env" ]] && . "$HOME/.config/tradedesk/agents.env"
 STAMP="$(date +%Y-%m-%d_%H%M)"
 DRY=0
 [[ "${1:-}" == "--dry-run" ]] && DRY=1
@@ -57,7 +64,9 @@ DENIED=(
 SUMMARY="$LOG_DIR/$STAMP.summary.md"
 # A run that hangs (e.g. API connections dead after the Mac slept mid-request) is killed after
 # TRADEDESK_AGENTS_MAX_SECONDS so it cannot hold the lock and block the following nights.
-caffeinate -i perl -e 'alarm shift; exec @ARGV' "${TRADEDESK_AGENTS_MAX_SECONDS:-10800}" "${TRADEDESK_CLAUDE_BIN:-claude}" -p "$PROMPT" --permission-mode dontAsk \
+KEEP_AWAKE=()
+command -v caffeinate >/dev/null 2>&1 && KEEP_AWAKE=(caffeinate -i)
+${KEEP_AWAKE[@]+"${KEEP_AWAKE[@]}"} perl -e 'alarm shift; exec @ARGV' "${TRADEDESK_AGENTS_MAX_SECONDS:-10800}" "${TRADEDESK_CLAUDE_BIN:-claude}" -p "$PROMPT" --permission-mode dontAsk \
   --allowedTools "${ALLOWED[@]}" --disallowedTools "${DENIED[@]}" | tee "$SUMMARY" || echo "claude exited with an error"
 
 # Delivery is done here, not by the model: only agent/YYYY-MM-DD-* branches, only after lint and tests pass.
@@ -99,13 +108,23 @@ deliver() {
   if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
     url="$(gh pr create --base main --head "$br" --title "$(head -1 .agent/commit-msg.txt)" --body-file .agent/commit-msg.txt)" || true
   fi
+  DELIVERED=1
   echo "delivered $br: $url"
   printf '\n**Гілка:** `%s`\n**PR:** %s\n' "$br" "$url" >>"$SUMMARY"
 }
+DELIVERED=0
 if ! deliver; then
   printf '\n**Доставку не виконано** — причина в лозі %s.\n' "$LOG_DIR/$STAMP.log" >>"$SUMMARY"
 fi
 
-uv run --no-project python "$REPO/scripts/agents_transcript.py" --out "$LOG_DIR/$STAMP.transcript.md" || true
+PROJECT_DIR="$(printf '%s' "$WT" | sed 's#[^A-Za-z0-9-]#-#g')"
+uv run --no-project python "$REPO/scripts/agents_transcript.py" --project "$PROJECT_DIR" --out "$LOG_DIR/$STAMP.transcript.md" || true
 echo "== $(date) done"
-osascript -e "display notification \"Підсумок: $SUMMARY; розмова агентів: $LOG_DIR/$STAMP.transcript.md\" with title \"tradedesk: нічний прогін агентів\"" || true
+if [[ "$(uname)" == "Darwin" ]]; then
+  osascript -e "display notification \"Підсумок: $SUMMARY; розмова агентів: $LOG_DIR/$STAMP.transcript.md\" with title \"tradedesk: нічний прогін агентів\"" || true
+elif [[ -n "${TELEGRAM_BOT_TOKEN:-}" && -n "${TELEGRAM_CHAT_ID:-}" ]]; then
+  curl -s -m 20 "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+    --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+    --data-urlencode "text=$(head -c 3800 "$SUMMARY")" >/dev/null || true
+fi
+[[ $DRY -eq 1 || $DELIVERED -eq 1 ]] || exit 3

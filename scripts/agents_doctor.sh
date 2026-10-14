@@ -24,6 +24,7 @@ exec >>"$LOG_DIR/$STAMP.doctor.log" 2>&1
 echo "== $(date) doctor: $REASON"
 [[ -d "$DOC/.git" ]] || git clone --quiet "$(git -C "$REPO" remote get-url origin)" "$DOC"
 cd "$DOC"
+ensure_git_identity
 git fetch --quiet origin
 if [[ -n "$(git status --porcelain)" ]]; then
   git stash push -q --include-untracked -m "doctor-leftover-$STAMP"

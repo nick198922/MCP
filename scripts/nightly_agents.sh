@@ -86,6 +86,7 @@ if [[ ! -d "$WT/.git" ]]; then
   git clone --quiet "$(git -C "$REPO" remote get-url origin)" "$WT"
 fi
 cd "$WT"
+ensure_git_identity
 git fetch --quiet origin
 rm -f .agent/branch .agent/commit-msg.txt
 

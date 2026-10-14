@@ -10,6 +10,14 @@ DETAIL=""
 
 repo_slug() { git remote get-url origin | sed -E 's#^(git@github.com:|https://github.com/)##; s#\.git$##'; }
 
+# The agents' and the doctor's clones are made by the launcher, and the server user has no global git identity,
+# so without this every commit there fails with "Author identity unknown". Call it inside the clone.
+ensure_git_identity() {
+  git config user.email >/dev/null 2>&1 && return 0
+  git config user.name "Mykola Khanetskyi (agents)"
+  git config user.email "$(git -C "$REPO" config user.email 2>/dev/null || echo agents@localhost)"
+}
+
 deliver() {
   local summary="$1" pattern="$2" br url
   if [[ ! -f .agent/branch || ! -f .agent/commit-msg.txt ]]; then
@@ -46,7 +54,8 @@ $(tail -40 <<<"$checks")"
     return 1
   fi
   # errexit is off inside a function called from `if` or `||`, so every step is checked explicitly.
-  git switch -c "$br" || return 1
+  # -C: a local branch of this name can only be left by an earlier attempt that failed before pushing.
+  git switch -C "$br" || return 1
   git commit -q -F .agent/commit-msg.txt || return 1
   git push -q -u origin "$br" || return 1
   url="https://github.com/$(repo_slug)/compare/main...$br?expand=1"

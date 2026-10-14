@@ -1,5 +1,5 @@
 #!/bin/bash
-# One nightly pipeline step by the project agents, in a separate git worktree; the result is an agent/* branch.
+# One pipeline step by the project agents, in a separate clone of the repo; the result is an agent/* branch.
 # Usage: scripts/nightly_agents.sh [--dry-run]
 # Exit 3 = the step delivered no branch (scripts/agents_loop.sh then waits longer).
 set -euo pipefail
@@ -29,18 +29,27 @@ trap 'rmdir "$LOCK"' EXIT
 
 echo "== $(date) start (dry=$DRY)"
 git -C "$REPO" fetch --quiet origin
-if [[ ! -d "$WT" ]]; then
-  git -C "$REPO" worktree add --detach "$WT" origin/main
+# The agents work in a separate clone, not a git worktree: Claude Code applies the main checkout's project
+# settings (the owner's broad permissions in .claude/settings.local.json) to its worktrees as well.
+if [[ -e "$WT/.git" && ! -d "$WT/.git" ]]; then
+  if [[ -n "$(git -C "$WT" status --porcelain)" ]]; then
+    git -C "$WT" stash push --include-untracked -m "agents-leftover-$STAMP"
+  fi
+  git -C "$REPO" worktree remove --force "$WT"
+fi
+if [[ ! -d "$WT/.git" ]]; then
+  git clone --quiet "$(git -C "$REPO" remote get-url origin)" "$WT"
 fi
 cd "$WT"
+git fetch --quiet origin
 # Leftovers from an interrupted run are stashed, not deleted.
 if [[ -n "$(git status --porcelain)" ]]; then
-  git stash push --include-untracked -m "nightly-leftover-$STAMP"
+  git stash push --include-untracked -m "agents-leftover-$STAMP"
 fi
 git checkout --quiet --detach origin/main
 rm -f .agent/branch .agent/commit-msg.txt
 uv sync --quiet --extra dev
-echo "worktree $WT at $(git rev-parse --short HEAD)"
+echo "agents clone $WT at $(git rev-parse --short HEAD)"
 
 PROMPT="$(cat .claude/nightly.md)"
 if [[ $DRY -eq 1 ]]; then

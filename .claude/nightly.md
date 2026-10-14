@@ -6,7 +6,7 @@ You are in the agents' own clone of the repo, detached at `origin/main`, with a 
 
 ## 1. Work-in-progress limit
 
-List unmerged agent branches: `git branch -r --no-merged origin/main --list 'origin/agent/*'`. If there are two or more, start no new work: write no files and request no delivery; print a short summary naming the branches that wait for the owner, and stop.
+List unmerged agent branches: `git branch -r --no-merged origin/main --list 'origin/agent/*'`, not counting the doctor's `agent/*-fix-*` branches. If there are two or more, start no new work: write no files and request no delivery; print a short summary naming the branches that wait for the owner, and stop.
 
 ## 2. Choose one step (first match wins)
 

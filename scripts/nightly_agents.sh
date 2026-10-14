@@ -1,57 +1,164 @@
 #!/bin/bash
 # One pipeline step by the project agents, in a separate clone of the repo; the result is an agent/* branch.
 # Usage: scripts/nightly_agents.sh [--dry-run]
-# Exit 3 = the step delivered no branch (scripts/agents_loop.sh then waits longer).
+# Nothing is lost silently: a step that ends without delivery leaves its work in the agents' clone, the next run
+# resumes it (up to TRADEDESK_AGENTS_MAX_RESUMES times), and after that the work is pushed as an agent/*-wip branch.
+# Every outcome goes to Telegram (scripts/agents_notify.sh) and to $LOG_DIR/history.tsv.
+# Exit codes for scripts/agents_loop.sh: 0 delivered (or dry run / work rescued), 3 nothing to do,
+# 4 unfinished (the next run resumes it), 5 claude failed.
 set -euo pipefail
 
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 WT="${TRADEDESK_AGENTS_WORKTREE:-$(dirname "$REPO")/tradedesk-agents}"
 if [[ "$(uname)" == "Darwin" ]]; then
-  LOG_DIR="$HOME/Library/Logs/tradedesk-agents"
+  LOG_DIR="${TRADEDESK_AGENTS_LOG_DIR:-$HOME/Library/Logs/tradedesk-agents}"
 else
-  LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/tradedesk-agents"
+  LOG_DIR="${TRADEDESK_AGENTS_LOG_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/tradedesk-agents}"
 fi
-# Optional secrets for the end-of-step Telegram message (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID); keep the file 0600.
-[[ -f "$HOME/.config/tradedesk/agents.env" ]] && . "$HOME/.config/tradedesk/agents.env"
-STAMP="$(date +%Y-%m-%d_%H%M)"
+. "$REPO/scripts/agents_notify.sh"
+. "$REPO/scripts/agents_deliver.sh"
+MAX_RESUMES="${TRADEDESK_AGENTS_MAX_RESUMES:-2}"
+STAMP="$(date +%Y-%m-%d_%H%M%S)"
 DRY=0
 [[ "${1:-}" == "--dry-run" ]] && DRY=1
 
 mkdir -p "$LOG_DIR"
 exec >>"$LOG_DIR/$STAMP.log" 2>&1
+# The lock holds the owner's pid, so a lock left by a killed run or a reboot does not block every later run.
 LOCK="$LOG_DIR/.lock"
 if ! mkdir "$LOCK" 2>/dev/null; then
-  echo "another run holds $LOCK; exiting"
-  exit 0
+  pid="$(cat "$LOCK/pid" 2>/dev/null || true)"
+  if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+    echo "another run ($pid) holds $LOCK; exiting"
+    exit 0
+  fi
+  echo "removing a stale lock (pid ${pid:-unknown} is gone)"
+  rm -f "$LOCK/pid"
+  rmdir "$LOCK"
+  mkdir "$LOCK"
 fi
-trap 'rmdir "$LOCK"' EXIT
+echo $$ >"$LOCK/pid"
+trap 'rm -f "$LOCK/pid"; rmdir "$LOCK"' EXIT
+
+STATE="$LOG_DIR/resume.state" # "<resume attempts> <stamp of the run that started the unfinished step>"
+SUMMARY="$LOG_DIR/$STAMP.summary.md"
+: >"$SUMMARY"
+dirty() { [[ -n "$(git -C "$WT" status --porcelain 2>/dev/null)" ]]; }
+
+# Report one outcome: history line, Telegram message (repeated "nothing to do" only once), exit code.
+# Arguments after the text go to notify (--silent, --button "Label|url").
+finish() {
+  local code="$1" status="$2" text="$3" last
+  shift 3
+  last="$(tail -1 "$LOG_DIR/history.tsv" 2>/dev/null | cut -f2 || true)"
+  printf '%s\t%s\t%s\n' "$STAMP" "$status" "$(head -1 <<<"$text")" >>"$LOG_DIR/history.tsv"
+  echo "== $(date) done: $status"
+  if [[ "$status" != "idle" || "$last" != "idle" ]]; then
+    notify "$text" "$@"
+  fi
+  exit "$code"
+}
 
 echo "== $(date) start (dry=$DRY)"
 git -C "$REPO" fetch --quiet origin
 # The agents work in a separate clone, not a git worktree: Claude Code applies the main checkout's project
 # settings (the owner's broad permissions in .claude/settings.local.json) to its worktrees as well.
+# Unfinished work in an old worktree is carried over to the clone, on the commit it was based on.
 if [[ -e "$WT/.git" && ! -d "$WT/.git" ]]; then
-  if [[ -n "$(git -C "$WT" status --porcelain)" ]]; then
-    git -C "$WT" stash push --include-untracked -m "agents-leftover-$STAMP"
+  carry=""
+  if dirty; then
+    git -C "$WT" add -A
+    git -C "$WT" -c user.name=agents -c user.email=agents@localhost commit -q -m "agents leftover $STAMP"
+    carry="refs/agents/leftover-$STAMP"
+    git -C "$REPO" update-ref "$carry" "$(git -C "$WT" rev-parse HEAD)"
   fi
   git -C "$REPO" worktree remove --force "$WT"
+  git clone --quiet "$(git -C "$REPO" remote get-url origin)" "$WT"
+  if [[ -n "$carry" ]]; then
+    git -C "$WT" fetch --quiet "$REPO" "$carry"
+    git -C "$WT" checkout --quiet --detach FETCH_HEAD
+    git -C "$WT" reset --quiet --soft HEAD~1
+    git -C "$WT" reset --quiet
+  fi
 fi
 if [[ ! -d "$WT/.git" ]]; then
   git clone --quiet "$(git -C "$REPO" remote get-url origin)" "$WT"
 fi
 cd "$WT"
 git fetch --quiet origin
-# Leftovers from an interrupted run are stashed, not deleted.
-if [[ -n "$(git status --porcelain)" ]]; then
-  git stash push --include-untracked -m "agents-leftover-$STAMP"
-fi
-git checkout --quiet --detach origin/main
 rm -f .agent/branch .agent/commit-msg.txt
+
+# Push work that could not be finished after MAX_RESUMES attempts, so the owner sees it and nothing is lost.
+rescue_wip() {
+  local first="$1" attempts="$2" br checks="lint and tests pass" url
+  if [[ -z "$(git status --porcelain -- docs src tests scripts)" ]]; then
+    git stash push -q --include-untracked -m "agents-leftover-$STAMP" || true
+    git checkout --quiet --detach origin/main
+    rm -f "$STATE"
+    return 0
+  fi
+  br="agent/$(date +%F)-wip-$(date +%H%M%S)"
+  make lint >"$LOG_DIR/$STAMP.rescue-lint.log" 2>&1 || checks="LINT FAILS"
+  make test >"$LOG_DIR/$STAMP.rescue-test.log" 2>&1 || checks="$checks; TESTS FAIL"
+  git switch -q -c "$br" || return 1
+  git add -A -- docs src tests scripts || return 1
+  while IFS= read -r f; do
+    if [[ -f "$f" && $(wc -c <"$f") -gt 2000000 ]]; then
+      git reset -q -- "$f"
+      echo "left out (over 2 MB): $f"
+    fi
+  done < <(git diff --cached --name-only)
+  git diff --cached --quiet && return 1
+  git commit -q -F - <<EOF || return 1
+Unfinished agent step, pushed as is ($checks)
+
+The step started at $first and was resumed $attempts times without
+being delivered, so the launcher pushed its work instead of losing it.
+Not a final result: see the run summaries and the agents' transcripts.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+EOF
+  git push -q -u origin "$br" || return 1
+  url="https://github.com/$(repo_slug)/compare/main...$br?expand=1"
+  # Anything left outside the project paths is set aside so the next run starts clean.
+  if dirty; then git stash push -q --include-untracked -m "agents-rescue-leftover-$STAMP" || true; fi
+  git checkout --quiet --detach origin/main
+  rm -f "$STATE"
+  finish 0 "wip" "⚠️ **Агенти: крок не завершено і після $attempts повторних спроб.** Роботу збережено гілкою \`$br\` ($checks); лікар уже шукає причину." --button "🔀 Подивитися гілку|$url"
+}
+
+MODE=fresh
+attempts=0
+first="$STAMP"
+if dirty; then
+  if [[ $DRY -eq 1 ]]; then
+    echo "unfinished work in $WT; dry run skipped"
+    exit 0
+  fi
+  read -r attempts first <"$STATE" 2>/dev/null || { attempts=0; first="$STAMP"; }
+  if ((attempts >= MAX_RESUMES)); then
+    rescue_wip "$first" "$attempts" || finish 5 "error" "❌ Агенти: не вдалося зберегти незавершену роботу гілкою; лог $LOG_DIR/$STAMP.log"
+  fi
+  MODE=resume
+  attempts=$((attempts + 1))
+  echo "$attempts $first" >"$STATE"
+else
+  rm -f "$STATE"
+  git checkout --quiet --detach origin/main
+fi
 uv sync --quiet --extra dev
-echo "agents clone $WT at $(git rev-parse --short HEAD)"
+echo "agents clone $WT at $(git rev-parse --short HEAD), mode $MODE"
 
 PROMPT="$(cat .claude/nightly.md)"
+if [[ $MODE == resume ]]; then
+  prev="$(ls -t "$LOG_DIR"/*.transcript.md 2>/dev/null | head -1 || true)"
+  hint=""
+  [[ -n "$prev" ]] && hint=", and the transcript of the previous run: $prev"
+  PROMPT="$PROMPT
+
+RESUME (attempt $attempts of $MAX_RESUMES): the previous run ended before delivery. The uncommitted changes in this tree (git status, git diff, git diff --cached) are its work, and HEAD is the commit it started from; ignore the 'clean tree at origin/main' and work-in-progress-limit parts of the preflight. Do not start a new step and do not discard that work. Find where it stopped (the card in docs/ideas, docs/reviews, docs/verification$hint). Finish the step if little is left; otherwise go straight to steps 3-4 with what exists and say in the card and the summary what is unfinished. Stage every file of the step, including the ones the previous run changed: the launcher refuses a delivery with unstaged changes."
+fi
 if [[ $DRY -eq 1 ]]; then
   PROMPT="$PROMPT
 
@@ -67,77 +174,49 @@ ALLOWED=(
 )
 DENIED=(
   "Bash(git push origin main:*)" "Bash(git push --force:*)" "Bash(git push -f:*)" "Bash(git reset --hard:*)"
-  "Bash(git config:*)" "Bash(rm -rf:*)"
+  "Bash(git config:*)" "Bash(rm -rf:*)" "Bash(sudo:*)"
+  "Read(~/.claude/.credentials.json)" "Read(~/.ssh/**)" "Read(~/.config/tradedesk/**)" "Read(//etc/tradedesk-mcp.env)"
 )
 
-SUMMARY="$LOG_DIR/$STAMP.summary.md"
 # The coordinator only routes and stages, so it runs on Sonnet; each subagent keeps the model from its
 # .claude/agents/*.md (quant and critic: Opus).
-# A run that hangs (e.g. API connections dead after the Mac slept mid-request) is killed after
-# TRADEDESK_AGENTS_MAX_SECONDS so it cannot hold the lock and block the following nights.
+# A run that hangs is killed after TRADEDESK_AGENTS_MAX_SECONDS; its work stays for the next run to resume.
 KEEP_AWAKE=()
 command -v caffeinate >/dev/null 2>&1 && KEEP_AWAKE=(caffeinate -i)
+set +e
 ${KEEP_AWAKE[@]+"${KEEP_AWAKE[@]}"} perl -e 'alarm shift; exec @ARGV' "${TRADEDESK_AGENTS_MAX_SECONDS:-10800}" "${TRADEDESK_CLAUDE_BIN:-claude}" -p "$PROMPT" --permission-mode dontAsk \
   --model "${TRADEDESK_AGENTS_COORDINATOR_MODEL:-sonnet}" \
-  --allowedTools "${ALLOWED[@]}" --disallowedTools "${DENIED[@]}" | tee "$SUMMARY" || echo "claude exited with an error"
+  --allowedTools "${ALLOWED[@]}" --disallowedTools "${DENIED[@]}" | tee -a "$SUMMARY"
+rc=${PIPESTATUS[0]}
+set -e
+echo "claude exit code $rc"
 
-# Delivery is done here, not by the model: only agent/YYYY-MM-DD-* branches, only after lint and tests pass.
-deliver() {
-  [[ $DRY -eq 1 ]] && return 0
-  if [[ ! -f .agent/branch || ! -f .agent/commit-msg.txt ]]; then
-    echo "no delivery requested"
-    return 0
-  fi
-  local br
-  br="$(head -1 .agent/branch | tr -d '[:space:]')"
-  if [[ ! "$br" =~ ^agent/[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9][a-z0-9-]*$ ]]; then
-    echo "refusing branch name '$br'"
-    return 1
-  fi
-  if git ls-remote --exit-code --heads origin "$br" >/dev/null 2>&1; then
-    echo "branch $br already exists on origin"
-    return 1
-  fi
-  if git diff --cached --quiet; then
-    echo "nothing staged"
-    return 1
-  fi
-  if ! git diff --quiet; then
-    echo "unstaged changes in tracked files; refusing to deliver a commit that differs from what was tested"
-    return 1
-  fi
-  if ! make lint || ! make test; then
-    echo "lint or tests failed; not delivering"
-    return 1
-  fi
-  # errexit is off inside a function called from `if`, so every step is checked explicitly.
-  git switch -c "$br" || return 1
-  git commit -q -F .agent/commit-msg.txt || return 1
-  git push -q -u origin "$br" || return 1
-  local repo url
-  repo="$(git remote get-url origin | sed -E 's#^(git@github.com:|https://github.com/)##; s#\.git$##')"
-  url="https://github.com/$repo/compare/main...$br?expand=1"
-  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-    url="$(gh pr create --base main --head "$br" --title "$(head -1 .agent/commit-msg.txt)" --body-file .agent/commit-msg.txt)" || true
-  fi
-  DELIVERED=1
-  echo "delivered $br: $url"
-  printf '\n**Гілка:** `%s`\n**PR:** %s\n' "$br" "$url" >>"$SUMMARY"
-}
-DELIVERED=0
-if ! deliver; then
-  printf '\n**Доставку не виконано** — причина в лозі %s.\n' "$LOG_DIR/$STAMP.log" >>"$SUMMARY"
+if [[ $DRY -eq 0 ]]; then
+  deliver "$SUMMARY" '^agent/[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9][a-z0-9-]*$' || echo "delivery refused: $NOTE"
 fi
 
 PROJECT_DIR="$(printf '%s' "$WT" | sed 's#[^A-Za-z0-9-]#-#g')"
 uv run --no-project python "$REPO/scripts/agents_transcript.py" --project="$PROJECT_DIR" --out "$LOG_DIR/$STAMP.transcript.md" || true
-echo "== $(date) done"
-if [[ "$(uname)" == "Darwin" ]]; then
-  osascript -e "display notification \"Підсумок: $SUMMARY; розмова агентів: $LOG_DIR/$STAMP.transcript.md\" with title \"tradedesk: нічний прогін агентів\"" || true
-elif [[ -n "${TELEGRAM_BOT_TOKEN:-}" && -n "${TELEGRAM_CHAT_ID:-}" ]]; then
-  # The token goes to curl through stdin, so it never shows up in the process list.
-  printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$TELEGRAM_BOT_TOKEN" | curl -s -m 20 -K - \
-    --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
-    --data-urlencode "text=$(head -c 3800 "$SUMMARY")" >/dev/null || true
+
+BODY="$(head -c 3000 "$SUMMARY")"
+if [[ $DRY -eq 1 ]]; then
+  finish 0 "dry" "🧪 **Агенти: пробний прогін**
+$BODY" --silent
+elif [[ -n "$DELIVERED" ]]; then
+  rm -f "$STATE"
+  finish 0 "delivered" "✅ **Агенти здали крок:** \`$DELIVERED\`
+$BODY" --button "🔀 Відкрити PR|$DELIVERED_URL"
+elif dirty; then
+  why="${NOTE:-координатор завершився, не здавши крок}"
+  if ((rc != 0)); then why="$why; claude завершився з кодом $rc"; fi
+  if ((attempts >= MAX_RESUMES)); then
+    rescue_wip "$first" "$attempts" || finish 5 "error" "❌ Агенти: не вдалося зберегти незавершену роботу гілкою; лог $LOG_DIR/$STAMP.log"
+  fi
+  echo "$attempts $first" >"$STATE"
+  finish 4 "unfinished" "⏳ **Агенти: крок не здано з першого разу** ($why). Нічого робити не треба: за кілька хвилин наступний прогін продовжить роботу (спроба $((attempts + 1)) з $MAX_RESUMES), а якщо не вийде — збереже її гілкою wip." --silent
+elif ((rc != 0)); then
+  finish 5 "error" "❌ **Агенти: claude завершився з помилкою** (код $rc), змін немає; лікар шукає причину. Кінець виводу:
+$(tail -c 800 "$SUMMARY")"
+else
+  finish 3 "idle" "💤 **Агенти: роботи немає.** ${BODY:0:600}" --silent
 fi
-[[ $DRY -eq 1 || $DELIVERED -eq 1 ]] || exit 3

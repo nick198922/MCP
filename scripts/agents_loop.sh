@@ -5,7 +5,8 @@
 #    (unfinished work in the agents' clone is resumed anyway: it adds no new branch; the doctor's fixes do not count)
 #  - idle: if there was nothing to do, sleep longer before the next step
 # Failures call the doctor (scripts/agents_doctor.sh), which fixes what it can and delivers the fix as a PR; it also
-# runs a daily health check at REPORT_HOUR. At most TRADEDESK_DOCTOR_MAX_PER_DAY doctor runs a day.
+# runs a daily health check at REPORT_HOUR. At most TRADEDESK_DOCTOR_MAX_PER_DAY doctor runs a day. Failures in a row
+# space the next tries out (GAP, 2*GAP, 4*GAP, ... up to TRADEDESK_AGENTS_FAIL_MAX_WAIT_SECONDS).
 # Telegram: each change of state once, and a silent project status (scripts/agents_status.py) every
 # TRADEDESK_STATUS_EVERY_SECONDS outside the quiet hours TRADEDESK_STATUS_QUIET ("23-8").
 # Runs as a systemd service (scripts/server/08-agents-loop.sh). Restart the service after changing this file.
@@ -24,6 +25,8 @@ REPORT_HOUR="${TRADEDESK_AGENTS_REPORT_HOUR:-9}"
 DOCTOR_MAX="${TRADEDESK_DOCTOR_MAX_PER_DAY:-4}"
 STATUS_EVERY="${TRADEDESK_STATUS_EVERY_SECONDS:-7200}"
 STATUS_QUIET="${TRADEDESK_STATUS_QUIET:-23-8}"
+FAIL_MAX_WAIT="${TRADEDESK_AGENTS_FAIL_MAX_WAIT_SECONDS:-14400}"
+FAIL_ALERT=3
 export TRADEDESK_AGENTS_WORKTREE="$WT" TRADEDESK_AGENTS_LOG_DIR="$LOG_DIR"
 mkdir -p "$LOG_DIR"
 # Also keep the loop's own log next to the run logs, where the doctor can read it.
@@ -88,6 +91,21 @@ doctor() {
   log "doctor: $1"
   loop_state "лікар оглядає систему"
   "$REPO/scripts/agents_doctor.sh" "$1" || log "doctor exited with $?"
+}
+
+# After a failure: wait longer the more failures there were in a row, and tell the owner once when they pile up.
+fails=0
+after_failure() {
+  local wait="$GAP" i
+  fails=$((fails + 1))
+  for ((i = 1; i < fails && wait < FAIL_MAX_WAIT; i++)); do wait=$((wait * 2)); done
+  ((wait > FAIL_MAX_WAIT)) && wait="$FAIL_MAX_WAIT"
+  if ((fails == FAIL_ALERT)); then
+    notify "🛑 **Агенти: $fails збої поспіль.** Далі пробую рідше (до разу на $((FAIL_MAX_WAIT / 3600)) год), наступна спроба о $(at "$wait"). Причину покаже \`agents-status.sh\`, або спитайте в темі «💬 Claude»."
+  fi
+  log "failure $fails in a row; next try in ${wait}s"
+  loop_state "пауза після збою ($fails поспіль), наступна спроба о $(at "$wait")"
+  sleep "$wait"
 }
 
 daily_check() {
@@ -160,8 +178,10 @@ while true; do
   loop_state "крок триває"
   "$REPO/scripts/nightly_agents.sh"
   rc=$?
-  last_log="$(ls -t "$LOG_DIR"/*.log 2>/dev/null | grep -v -e doctor -e loop.log | head -1)"
+  # Run logs only (<stamp>.log), not the doctor's, the rescue checks', the loop's or the Telegram bridge's.
+  last_log="$(ls -t "$LOG_DIR"/20??-??-??_??????.log 2>/dev/null | head -1)"
   last_status="$(tail -1 "$LOG_DIR/history.tsv" 2>/dev/null | cut -f2)"
+  ((rc == 0 || rc == 3 || rc == 4)) && fails=0
   case $rc in
     0)
       log "step finished"
@@ -184,15 +204,13 @@ while true; do
     5)
       log "claude failed"
       doctor "claude exited with an error during an agent step. Run log: $last_log"
-      loop_state "пауза після збою, наступна спроба о $(at "$GAP")"
-      sleep "$GAP"
+      after_failure
       ;;
     *)
       log "step script failed (exit $rc)"
-      notify "❌ **Скрипт кроку агентів упав** (код $rc). Викликаю лікаря. Лог: $last_log"
+      ((fails == 0)) && notify "❌ **Скрипт кроку агентів упав** (код $rc). Викликаю лікаря. Лог: $last_log"
       doctor "scripts/nightly_agents.sh itself failed with exit code $rc. Run log: $last_log"
-      loop_state "пауза після збою скрипта, наступна спроба о $(at "$GAP")"
-      sleep "$GAP"
+      after_failure
       ;;
   esac
 done

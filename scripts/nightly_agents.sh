@@ -46,7 +46,7 @@ SUMMARY="$LOG_DIR/$STAMP.summary.md"
 : >"$SUMMARY"
 dirty() { [[ -n "$(git -C "$WT" status --porcelain 2>/dev/null)" ]]; }
 
-# Report one outcome: history line, Telegram message (repeated "nothing to do" only once), exit code.
+# Report one outcome: history line, Telegram message, exit code.
 # Arguments after the text go to notify (--silent, --button "Label|url").
 finish() {
   local code="$1" status="$2" text="$3" last
@@ -54,7 +54,8 @@ finish() {
   last="$(tail -1 "$LOG_DIR/history.tsv" 2>/dev/null | cut -f2 || true)"
   printf '%s\t%s\t%s\n' "$STAMP" "$status" "$(head -1 <<<"$text")" >>"$LOG_DIR/history.tsv"
   echo "== $(date) done: $status"
-  if [[ "$status" != "idle" || "$last" != "idle" ]]; then
+  # A repeated "nothing to do" or failure is reported once; the loop tells the owner when failures pile up.
+  if [[ "$status" != "$last" || ("$status" != "idle" && "$status" != "error") ]]; then
     notify "$text" "$@"
   fi
   exit "$code"

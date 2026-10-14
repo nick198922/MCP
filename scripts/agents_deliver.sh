@@ -20,6 +20,14 @@ ensure_git_identity() {
   git config user.email "$(git -C "$REPO" config user.email 2>/dev/null || echo agents@localhost)"
 }
 
+# Merge the newest main into the branch before it is pushed, so its pull request merges cleanly. CHANGELOG.md, which
+# everyone appends to at the top, is merged by keeping both sides; any other conflict is left for the owner's review.
+catch_up_with_main() {
+  grep -qx 'CHANGELOG.md merge=union' .git/info/attributes 2>/dev/null || echo 'CHANGELOG.md merge=union' >>.git/info/attributes
+  git fetch -q origin main || return 0
+  git merge -q --no-edit origin/main >/dev/null 2>&1 || { git merge --abort 2>/dev/null; echo "main does not merge cleanly; left for the owner"; }
+}
+
 deliver() {
   local summary="$1" pattern="$2" work="${3:-}" br
   if [[ ! -f .agent/branch || ! -f .agent/commit-msg.txt ]]; then
@@ -60,6 +68,7 @@ $(tail -40 <<<"$checks")"
   # -C: a local branch of this name can only be left by an earlier attempt that failed before pushing.
   git switch -C "$br" || return 1
   git commit -q -F .agent/commit-msg.txt || return 1
+  catch_up_with_main
   git push -q -u origin "$br" || return 1
   DELIVERED="$br"
   DELIVERED_URL="https://github.com/$(repo_slug)/compare/main...$br?expand=1"
@@ -68,9 +77,10 @@ $(tail -40 <<<"$checks")"
   git checkout --quiet --detach origin/main
 }
 
-# open_pr <branch> <title> <body file>: prints the URL of the branch's pull request, opened by scripts/gh_pr.py with
-# the token in ~/.config/tradedesk/github.env; the compare link if there is no token or GitHub refuses.
+# open_pr <branch> <title> <body file> [--ready]: prints the URL of the branch's pull request, opened by
+# scripts/gh_pr.py with the token in ~/.config/tradedesk/github.env; the compare link if there is no token or GitHub
+# refuses. --ready lets .github/workflows/automerge.yml merge it once CI passes, if it touches no control-plane file.
 open_pr() {
-  python3 "$REPO/scripts/gh_pr.py" --repo "$(repo_slug)" --head "$1" --title "$2" --body-file "$3" ||
+  python3 "$REPO/scripts/gh_pr.py" --repo "$(repo_slug)" --head "$1" --title "$2" --body-file "$3" ${4:+"$4"} ||
     echo "https://github.com/$(repo_slug)/compare/main...$1?expand=1"
 }

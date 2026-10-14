@@ -190,12 +190,22 @@ EOF
 }
 
 # Hand the work to the owner: a pull request (or a compare link without a GitHub token) and a Telegram message.
+# A finished step ("delivered") is marked ready: GitHub merges it by itself once CI passes, unless it changes the
+# control plane (scripts/automerge.py); a stuck one always waits for the owner.
 handover() {
-  local br="$1" status="$2" head="$3" title url
+  local br="$1" status="$2" head="$3" title url ready="" verdict how
   title="$(head -1 .agent/commit-msg.txt 2>/dev/null || true)"
-  url="$(open_pr "$br" "${title:-Agents: $br}" "$SUMMARY")"
+  verdict="$(git diff --name-only "origin/main...$br" | python3 "$REPO/scripts/automerge.py" --classify 2>/dev/null || echo "owner: ?")"
+  if [[ "$status" == delivered && "$verdict" == auto ]]; then
+    ready="--ready"
+    how="🤖 Зіллється сам, щойно на GitHub пройдуть тести."
+  else
+    how="👀 Чекає на ваше злиття (${verdict#owner: })."
+  fi
+  url="$(open_pr "$br" "${title:-Agents: $br}" "$SUMMARY" $ready)"
   rm -f "$WORK" "$LOG_DIR/refusal.txt"
   finish 0 "$status" "$head
+$how
 $(head -c 3000 "$SUMMARY")" --button "🔀 Відкрити PR|$url"
 }
 

@@ -16,7 +16,7 @@ You are the developer of tradedesk-mcp. You ship exactly one well-scoped change 
 - A tool never raises: provider failures go through `Builder.guard(...)` into `missing`; the envelope is always returned.
 - Network only through `core.http.Http` and `Exchanges._call` (providers). Paginate when a venue caps rows per request.
 - `analytics/` is pure (no I/O, time passed in); units: IV, rates, funding, basis as decimals.
-- Every new tool: English description with units and caveats, `Annotated[..., Field(description=...)]` parameters, `READ_ONLY` annotation, entry in `EXPECTED_TOOLS` in `tests/test_server.py`, a happy-path test and a provider-failure test, rows in `README.md` and `docs/PARITY.md`, a `CHANGELOG.md` entry.
+- Every new tool: English description with units and caveats, `Annotated[..., Field(description=...)]` parameters, `READ_ONLY` annotation, entry in `EXPECTED_TOOLS` in `tests/test_server.py`, a happy-path test and a provider-failure test, rows in `README.md` and `docs/PARITY.md`, a changelog entry in `docs/changes/` (see `.claude/nightly.md`).
 - When a tool rests on a backtest, its `warnings` must state the backtest result and its limits honestly.
 
 ## Workflow

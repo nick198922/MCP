@@ -30,3 +30,4 @@
 |---|---|---|
 | [LIB-20261014-buybacks](LIB-20261014-buybacks.md) | Хороші й погані байбеки (MOVE, KAITO, JUP) | new |
 | [LIB-20261014-tao-research](LIB-20261014-tao-research.md) | DoubleTop Research: Bittensor (TAO), емісія проти виручки, сценарії | new |
+| [LIB-20261014-ai-narrative](LIB-20261014-ai-narrative.md) | 2TOP SQUAD: AI-наратив, агенти, NEAR/VVV/VIRTUAL/GRASS/NIL/TAO/CHIP/WLD/ORBIO | new |

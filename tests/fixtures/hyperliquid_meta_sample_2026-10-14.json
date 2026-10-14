@@ -1,0 +1,32 @@
+{
+ "_source": "Hyperliquid POST /info {type: metaAndAssetCtxs}, universe names and isDelisted only, fetched 2026-10-14",
+ "universe": [
+  {
+   "name": "BTC"
+  },
+  {
+   "name": "ETH"
+  },
+  {
+   "name": "kPEPE"
+  },
+  {
+   "name": "kSHIB"
+  },
+  {
+   "name": "HYPE"
+  },
+  {
+   "name": "MATIC",
+   "isDelisted": true
+  },
+  {
+   "name": "RNDR",
+   "isDelisted": true
+  },
+  {
+   "name": "FTM",
+   "isDelisted": true
+  }
+ ]
+}

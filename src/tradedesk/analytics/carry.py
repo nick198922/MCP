@@ -696,3 +696,170 @@ def spread_snapshot(
             "tradable_now": status == "above_entry" and not blocking.intersection(flags),
         },
     }
+
+
+def _bar_price(bars: list[dict[str, Any]], t_ms: int, bar_ms: int, fallback: float) -> float:
+    """Close of the latest bar that closed at or before ``t_ms`` (60 s grace), like ``_Leg.price``; else ``fallback``."""
+    best: float | None = None
+    best_t = -1
+    for b in bars:
+        close_t = int(b["ts"]) + bar_ms
+        if close_t <= t_ms + 60_000 and close_t > best_t:
+            best, best_t = float(b["close"]), close_t
+    if best is None or t_ms - best_t > bar_ms:
+        return fallback
+    return best
+
+
+def pair_paper_mark(
+    *,
+    opened_ms: int,
+    now_ms: int,
+    notional_usd: float,
+    long_entry: float,
+    short_entry: float,
+    long_funding: list[dict[str, Any]],
+    short_funding: list[dict[str, Any]],
+    long_bars: list[dict[str, Any]],
+    short_bars: list[dict[str, Any]],
+    long_now: float,
+    short_now: float,
+    spread_apr: float | None,
+    fee_long: float,
+    fee_short: float,
+    slippage: float = 0.0005,
+    stop_move: float | None = None,
+    stop_penalty: float = 0.01,
+    exit_apr: float = 0.0,
+    bar_ms: int = 4 * 3_600_000,
+) -> dict[str, Any]:
+    """Mark one paper perp-perp carry pair (long one venue, short another, same coin quantity) to ``now_ms``.
+
+    Mirrors ``simulate_perp_spread_portfolio`` accounting, in USD on ``notional_usd`` (qty = notional / long_entry):
+    the long leg pays ``rate x qty x price`` and the short leg receives it, per funding payment with
+    ``opened_ms < ts <= end``, priced at the leg's last 4h bar close at or before the payment (entry price when
+    no such bar). Price P&L = ``qty x ((long_x - long_entry) - (short_x - short_entry))``. Costs = entry side
+    ``(fee_long + fee_short + 2 x slippage) x notional`` plus the same for the exit scaled by ``long_x / long_entry``
+    (an estimate as if closed at ``end``), plus ``stop_penalty x notional`` when stopped.
+
+    Stop, defined as ``mark()`` in the backtest does: ``max_up`` is the largest ``high / entry - 1`` over BOTH legs and
+    ``max_down`` the largest ``1 - low / entry`` over both legs, from bars whose close is after ``opened_ms`` (the bar
+    containing the entry included, conservative) and which opened at or before ``now_ms``. The first bar (in time
+    order) where either reaches ``stop_move`` (= 1 / leverage) is the stop: ``stop_ts`` = that bar's close (at most
+    ``now_ms``), and funding, price P&L, exit costs and the penalty are frozen there (``end = stop_ts``, prices =
+    the bars' closes at ``stop_ts``). Without a bar trigger the current prices are checked at ``now_ms``.
+    Otherwise ``end = now_ms`` and ``spread_apr`` (trailing spread in the held direction) ``<= exit_apr`` gives
+    ``exit_signal = "spread_exit"``. Returns are fractions of ``notional_usd``.
+    """
+    qty = notional_usd / long_entry
+    legs = ((long_bars, long_entry, long_now), (short_bars, short_entry, short_now))
+    max_up = max_down = 0.0
+    stop_ts: int | None = None
+    window = sorted(
+        (int(b["ts"]), float(b["high"]) / e - 1.0, 1.0 - float(b["low"]) / e)
+        for bars, e, _ in legs
+        for b in bars
+        if int(b["ts"]) + bar_ms > opened_ms and int(b["ts"]) <= now_ms
+    )
+    for ts, up, down in window:
+        max_up, max_down = max(max_up, up), max(max_down, down)
+        if stop_move is not None and max(max_up, max_down) >= stop_move:
+            stop_ts = min(ts + bar_ms, now_ms)
+            break
+    if stop_ts is None:
+        for _, e, px in legs:
+            max_up, max_down = max(max_up, px / e - 1.0), max(max_down, 1.0 - px / e)
+        if stop_move is not None and max(max_up, max_down) >= stop_move:
+            stop_ts = now_ms
+    end = stop_ts if stop_ts is not None else now_ms
+    if stop_ts is not None and stop_ts < now_ms:
+        long_x = _bar_price(long_bars, end, bar_ms, long_now)
+        short_x = _bar_price(short_bars, end, bar_ms, short_now)
+    else:
+        long_x, short_x = long_now, short_now
+    funding = 0.0
+    n_payments = 0
+    for rows, bars, entry, sign in ((long_funding, long_bars, long_entry, -1.0), (short_funding, short_bars, short_entry, 1.0)):
+        for e in rows:
+            ts = int(e["ts_ms"])
+            if e.get("rate") is None or not opened_ms < ts <= end:
+                continue
+            funding += sign * float(e["rate"]) * qty * _bar_price(bars, ts, bar_ms, entry)
+            n_payments += 1
+    price_pnl = qty * ((long_x - long_entry) - (short_x - short_entry))
+    side_cost = (fee_long + fee_short + 2 * slippage) * notional_usd
+    costs = side_cost + side_cost * long_x / long_entry + (stop_penalty * notional_usd if stop_ts is not None else 0.0)
+    pnl = funding + price_pnl - costs
+    held_days = max(end - opened_ms, 0) / DAY_MS
+    ret = pnl / notional_usd
+    if stop_ts is not None:
+        signal: str | None = "stop"
+    elif spread_apr is not None and spread_apr <= exit_apr:
+        signal = "spread_exit"
+    else:
+        signal = None
+    return {
+        "qty": qty,
+        "funding_pnl": funding,
+        "n_funding_payments": n_payments,
+        "price_pnl": price_pnl,
+        "costs": costs,
+        "pnl_usd": pnl,
+        "return_on_notional": ret,
+        "held_days": held_days,
+        "realized_apr": ret * 365.0 / held_days if held_days > 0 else None,
+        "max_up": max_up,
+        "max_down": max_down,
+        "spread_apr": spread_apr,
+        "exit_signal": signal,
+        "stopped": stop_ts is not None,
+        "stop_ts_ms": stop_ts,
+        "long_x": long_x,
+        "short_x": short_x,
+    }
+
+
+def bar_gaps(bars: list[dict[str, Any]], opened_ms: int, now_ms: int, bar_ms: int = 4 * 3_600_000) -> int:
+    """Number of bars missing between the entry bar and the bar containing ``now_ms`` (0 = full coverage)."""
+    ts = sorted({int(b["ts"]) for b in bars if int(b["ts"]) + bar_ms > opened_ms and int(b["ts"]) <= now_ms})
+    expected = (now_ms // bar_ms) - ((opened_ms) // bar_ms) + 1
+    if not ts:
+        return max(expected, 1)
+    # distinct grid slots covered vs. expected slots between the entry bar and the current bar
+    covered = len({t // bar_ms for t in ts})
+    return max(expected - covered, 0)
+
+
+def paper_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Stats over closed paper pairs (rows shaped like ``carry_paper``): fractions of notional, comparable with the backtest.
+
+    Returns the stats of all closed pairs plus ``entry_tradable``: the same stats for the pairs that met the backtest's
+    entry rule (``tradable_now`` in the held direction at open), the subset comparable with the backtest.
+    """
+    closed = [x for x in rows if x.get("status") == "closed" and x.get("return_on_notional") is not None]
+    return {**_paper_stats(closed), "entry_tradable": _paper_stats([x for x in closed if x.get("entry_tradable")])}
+
+
+def _paper_stats(closed: list[dict[str, Any]]) -> dict[str, Any]:
+    if not closed:
+        return {"n": 0}
+    rets = sorted(float(x["return_on_notional"]) for x in closed)
+    n = len(rets)
+    median = rets[n // 2] if n % 2 else (rets[n // 2 - 1] + rets[n // 2]) / 2
+    held = [
+        (int(x["closed_ts"]) - int(x["opened_ts"])) / 86400
+        for x in closed
+        if x.get("closed_ts") is not None and x.get("opened_ts") is not None
+    ]
+    return {
+        "n": n,
+        "mean_return": sum(rets) / n,
+        "median_return": median,
+        "share_losing": sum(1 for v in rets if v < 0) / n,
+        "share_stopped": sum(1 for x in closed if x.get("stopped")) / n,
+        "mean_held_days": sum(held) / len(held) if held else None,
+        "sum_funding_usd": sum(float(x.get("funding_pnl") or 0.0) for x in closed),
+        "sum_price_usd": sum(float(x.get("price_pnl") or 0.0) for x in closed),
+        "sum_costs_usd": sum(float(x.get("costs") or 0.0) for x in closed),
+        "sum_pnl_usd": sum(float(x.get("pnl_usd") or 0.0) for x in closed),
+    }

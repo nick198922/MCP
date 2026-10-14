@@ -6,6 +6,7 @@ connection, so a single ``Store`` instance can be shared across async tasks.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -29,15 +30,31 @@ def _parse_position_row(row: dict[str, Any]) -> dict[str, Any]:
     return _parse_journal_row(row)  # same tags handling
 
 
+def _parse_carry_paper_row(row: dict[str, Any]) -> dict[str, Any]:
+    for k in ("tags", "entry_flags"):
+        v = row.get(k)
+        if isinstance(v, str):
+            try:
+                row[k] = json.loads(v)
+            except (TypeError, ValueError):
+                row[k] = []
+    for k in ("stopped", "entry_tradable"):
+        if row.get(k) is not None:
+            row[k] = bool(row[k])
+    return row
+
+
 class Store:
     def __init__(self, path: str | Path) -> None:
         self.path = str(path)
         self._conn: aiosqlite.Connection | None = None
+        self._tx_lock: asyncio.Lock | None = None
 
     async def init(self) -> None:
         """Open the connection, enable WAL, apply pending migrations."""
         if self._conn is not None:
             return
+        self._tx_lock = asyncio.Lock()  # serialises multi-statement transactions on the shared connection
         if self.path != ":memory:":
             Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         self._conn = await aiosqlite.connect(self.path)
@@ -273,6 +290,91 @@ class Store:
         cur = await self.conn.execute(sql, params)
         rows = await cur.fetchall()
         return [_parse_journal_row(dict(r)) for r in rows]
+
+    # ---------- carry_paper (paper perp-perp carry pairs, local bookkeeping only) ----------
+
+    async def carry_paper_insert(self, **f: Any) -> int:
+        cols = (
+            "opened_ts base symbol long_venue short_venue qty notional_usd long_entry short_entry entry_trailing_spread_apr "
+            "entry_current_spread_apr leverage stop_move lookback_days exit_apr slippage note"
+        ).split()
+        f.setdefault("slippage", 0.0005)
+        vals = [f.get(c) for c in cols]
+        cols += ["entry_flags", "entry_tradable", "tags"]
+        tradable = f.get("entry_tradable")
+        vals += [json.dumps(f.get("entry_flags") or []), None if tradable is None else int(bool(tradable)), json.dumps(f.get("tags") or [])]
+        cur = await self.conn.execute(
+            f"INSERT INTO carry_paper ({', '.join(cols)}, status) VALUES ({', '.join('?' * len(cols))}, 'open')", vals
+        )
+        await self.conn.commit()
+        return int(cur.lastrowid or 0)
+
+    async def carry_paper_get(self, trade_id: int) -> dict[str, Any] | None:
+        cur = await self.conn.execute("SELECT * FROM carry_paper WHERE id = ?", (trade_id,))
+        row = await cur.fetchone()
+        return _parse_carry_paper_row(dict(row)) if row else None
+
+    async def carry_paper_list(self, *, status: str | None = None, limit: int = 500) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM carry_paper" + (" WHERE status = ?" if status else "") + " ORDER BY opened_ts DESC, id DESC LIMIT ?"
+        cur = await self.conn.execute(sql, [status, limit] if status else [limit])
+        return [_parse_carry_paper_row(dict(r)) for r in await cur.fetchall()]
+
+    async def carry_paper_close(
+        self,
+        trade_id: int,
+        *,
+        status: str,
+        closed_ts: int,
+        exit_reason: str,
+        long_exit: float | None = None,
+        short_exit: float | None = None,
+        funding_pnl: float | None = None,
+        price_pnl: float | None = None,
+        costs: float | None = None,
+        pnl_usd: float | None = None,
+        return_on_notional: float | None = None,
+        max_up: float | None = None,
+        max_down: float | None = None,
+        stopped: bool = False,
+        stop_ts: int | None = None,
+        journal: dict[str, Any] | None = None,
+        note: str | None = None,
+    ) -> int:
+        """Claim an open pair with one conditional UPDATE (``WHERE status='open'``) and, when ``journal`` is given,
+        write its mirror row in the same transaction. Returns 1 when this call closed the pair, 0 when it was no
+        longer open (nothing is written). Calls are serialised so concurrent closes on the shared connection cannot
+        interleave their transactions."""
+        lock = self._tx_lock or asyncio.Lock()
+        async with lock:
+            try:
+                cur = await self.conn.execute(
+                    "UPDATE carry_paper SET status = ?, closed_ts = ?, stop_ts = ?, exit_reason = ?, long_exit = ?, short_exit = ?,"
+                    " funding_pnl = ?, price_pnl = ?, costs = ?, pnl_usd = ?, return_on_notional = ?, max_up = ?, max_down = ?,"
+                    " stopped = ?, note = COALESCE(?, note) WHERE id = ? AND status = 'open'",
+                    (
+                        status, closed_ts, stop_ts, exit_reason, long_exit, short_exit, funding_pnl, price_pnl, costs, pnl_usd,
+                        return_on_notional, max_up, max_down, 1 if stopped else 0, note, trade_id,
+                    ),
+                )  # fmt: skip
+                if not cur.rowcount:
+                    await self.conn.rollback()
+                    return 0
+                if journal is not None:
+                    j = await self.conn.execute(
+                        "INSERT INTO journal (opened_ts, closed_ts, symbol, side, size, entry, thesis, tags, status, exit, outcome,"
+                        " pnl, r_multiple, note) VALUES (?,?,?,?,?,?,?,?, 'closed', ?,?,?, NULL, ?)",
+                        (
+                            journal["opened_ts"], closed_ts, journal["symbol"], journal["side"], journal["size"], journal["entry"],
+                            journal["thesis"], json.dumps(journal["tags"]), journal["exit"], journal["outcome"], journal["pnl"],
+                            note,
+                        ),
+                    )  # fmt: skip
+                    await self.conn.execute("UPDATE carry_paper SET journal_id = ? WHERE id = ?", (j.lastrowid, trade_id))
+                await self.conn.commit()
+                return 1
+            except Exception:
+                await self.conn.rollback()
+                raise
 
     # ---------- rules (DSL) ----------
 

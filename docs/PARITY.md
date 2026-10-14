@@ -67,4 +67,6 @@ DOUBLETOP: **74 інструменти** (66 від 17 бекендів + 8 вл
 
 Funding carry: `funding_spread_scan` (крос-біржовий спред для перп-перп з прапорцями ризику), `funding_carry_scan` (trailing APR з фактичних виплат, пороги, окупність комісій, наявність спота, фільтр TradFi-перпів) + бектест cash-and-carry (`scripts/verify_funding_carry.py`).
 
+Паперова перевірка carry перп-перп: `carry_paper_open` / `carry_paper_status` / `carry_paper_close` (пара ніг на двох біржах у локальній SQLite, облік як у бектесті `simulate_perp_spread_portfolio`; закриті пари дзеркаляться в `journal` з тегом `pp-paper`). Ордерів немає.
+
 Price-action за навчальними відео DoubleTop (не з їхнього MCP): `range_detect` (рейнджі, sweeps, deviations, accumulation/distribution), `range_setup` (SFP-сетап: entry/stop/TP/RR), `range_setup_scan` (сканер SFP-сетапів по списку тикерів).

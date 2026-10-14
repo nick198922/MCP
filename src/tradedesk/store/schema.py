@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 # Each migration is a list of SQL statements executed in a single transaction.
 # `PRAGMA user_version` is bumped by Store.init() after a block runs.
@@ -185,5 +185,48 @@ MIGRATIONS: dict[int, list[str]] = {
         )
         """,
         "CREATE INDEX IF NOT EXISTS events_kind_ts ON events (kind, ts)",
+    ],
+    9: [
+        """
+        CREATE TABLE IF NOT EXISTS carry_paper (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            opened_ts INTEGER NOT NULL,            -- unix seconds
+            base TEXT NOT NULL,
+            symbol TEXT NOT NULL,                  -- ccxt symbol, e.g. WIF/USDT:USDT
+            long_venue TEXT NOT NULL,
+            short_venue TEXT NOT NULL,
+            qty REAL NOT NULL,                     -- coins, same on both legs
+            notional_usd REAL NOT NULL,
+            long_entry REAL NOT NULL,
+            short_entry REAL NOT NULL,
+            entry_trailing_spread_apr REAL,        -- decimal, held direction
+            entry_current_spread_apr REAL,
+            entry_flags TEXT,                      -- JSON array of scan flags at entry
+            entry_tradable INTEGER,                -- 1 when funding_spread_scan's tradable_now held in this direction at open
+            leverage REAL NOT NULL,
+            stop_move REAL NOT NULL,               -- 1 / leverage
+            lookback_days REAL NOT NULL,
+            exit_apr REAL NOT NULL,
+            slippage REAL NOT NULL DEFAULT 0.0005,
+            status TEXT NOT NULL DEFAULT 'open',   -- 'open' | 'closed' | 'cancelled'
+            closed_ts INTEGER,                     -- economic close: the stop moment when stopped, else the close call
+            stop_ts INTEGER,                       -- unix seconds the stop triggered (from bar data), if it did
+            long_exit REAL,
+            short_exit REAL,
+            funding_pnl REAL,                      -- USD
+            price_pnl REAL,
+            costs REAL,
+            pnl_usd REAL,
+            return_on_notional REAL,               -- fraction of notional_usd
+            max_up REAL,
+            max_down REAL,
+            stopped INTEGER,
+            exit_reason TEXT,                      -- 'signal' | 'stop' | 'manual'
+            journal_id INTEGER,
+            tags TEXT,                             -- JSON array of strings
+            note TEXT
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS carry_paper_status_opened ON carry_paper (status, opened_ts)",
     ],
 }

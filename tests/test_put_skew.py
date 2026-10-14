@@ -15,6 +15,7 @@ from tradedesk.analytics.put_skew import (
     DAY_MS,
     HOUR_MS,
     V1_BUILD,
+    FundingIndex,
     block_bootstrap_ci,
     build_day,
     chain,
@@ -131,7 +132,7 @@ def test_plan_entry_selects_25d_put_and_atm():
 # ---------- v2 surface hygiene (review 2026-10-14, blockers 2-6) ----------
 
 T9 = D0 + 9 * HOUR_MS
-JUL = "BTC-15JUL22"  # 2022-07-15 is the last Friday of July 2022
+JUL = "BTC-15JUL22"  # any traded expiry works here; not the July monthly (that is 2022-07-29)
 
 
 def test_build_day_drops_prints_after_reference_time():
@@ -282,6 +283,16 @@ def test_run_book_hedged_matches_hand_computation():
     r = run_book(days, D0, exp, [(20_000.0, False, -1.0, 0.6)], st, funding=funding, option_fee=0, delivery_fee=0)
     assert r["pnl"] == pytest.approx(expected / 20_000, rel=1e-9)
     assert funding_sum(funding, t0, t1) == pytest.approx(24 * 0.0001)
+    fast = run_book(days, D0, exp, [(20_000.0, False, -1.0, 0.6)], st, funding=FundingIndex(funding), option_fee=0, delivery_fee=0)
+    assert fast["pnl"] == pytest.approx(r["pnl"], rel=1e-12)
+
+
+def test_funding_index_matches_funding_sum():
+    recs = [(1_000 * i, (-1) ** i * 0.0001 * (i % 5)) for i in range(1, 200)]
+    fi = FundingIndex(list(reversed(recs)))
+    for t0, t1 in ((0, 10**9), (5_000, 5_000), (5_000, 5_001), (4_999, 77_000), (150_500, 300_000), (300_000, 0)):
+        assert fi.sum(t0, t1) == pytest.approx(funding_sum(recs, t0, t1), abs=1e-15)
+    assert FundingIndex(()).sum(0, 10**9) == 0.0
 
 
 def test_run_book_ignores_data_after_expiry_and_respects_time():

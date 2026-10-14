@@ -65,7 +65,13 @@ Claude (Desktop / Code / claude.ai)
 
   Обидва методи повертають до 1000 угод, пагінація за `timestamp`; `iv` у відсотках, ціни опціонів у BTC.
 
-`delivery_prices` і funding на history-хості дають HTTP 400. Використовується лише дослідницькими скриптами (`scripts/verify_put_skew.py`), MCP-інструменти його поки не викликають.
+`delivery_prices` і funding на history-хості дають HTTP 400. Використовується лише дослідницькими скриптами (`scripts/verify_put_skew.py`, `scripts/verify_dated_basis.py`), MCP-інструменти його поки не викликають.
+
+`tradingview_chart_data` (OHLCV одного інструмента, `resolution` у хвилинах або `1D`) працює на обох хостах, зокрема для давно експірованих ф'ючерсів (перевірено BTC-28JUN19, 2026-10-14).
+
+## ccxt: сирі публічні ендпоінти
+
+`Exchanges.public_get(ex_id, endpoint, params)` викликає неявний ендпоінт ccxt (наприклад, `fapiPublicGetContinuousKlines`, `fapiPublicGetIndexPriceKlines`, `fapiPublicGetKlines` для експірованих USDT-M квартальних) через `_call`, тобто з health і `Evidence`. Дозволено лише `*PublicGet*`; приватні або змінні ендпоінти відхиляються з `ProviderError(reason="config")`. Призначено лише для дослідницьких скриптів.
 
 ## Як додати провайдера
 

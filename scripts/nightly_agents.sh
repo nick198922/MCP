@@ -1,11 +1,13 @@
 #!/bin/bash
 # One pipeline step by the project agents, in a separate clone of the repo; the result is an agent/* branch.
 # Usage: scripts/nightly_agents.sh [--dry-run]
-# Nothing is lost silently: a step that ends without delivery leaves its work in the agents' clone, the next run
-# resumes it (up to TRADEDESK_AGENTS_MAX_RESUMES times), and after that the work is pushed as an agent/*-wip branch.
+# Work the agents have not finished stays theirs: it is pushed to a work branch (on a delivery the coordinator marks
+# "continue", or saved by this script when a run ends without one), and the next run checks that branch out and
+# carries on. The owner gets a pull request only when the coordinator hands the step over ("owner": the critic
+# approved, the card ended, or a question waits) or after TRADEDESK_AGENTS_MAX_RUNS runs on the same work.
 # Every outcome goes to Telegram (scripts/agents_notify.sh) and to $LOG_DIR/history.tsv.
-# Exit codes for scripts/agents_loop.sh: 0 delivered (or dry run / work rescued), 3 nothing to do,
-# 4 unfinished (the next run resumes it), 5 claude failed.
+# Exit codes for scripts/agents_loop.sh: 0 handed to the owner (or dry run), 3 nothing to do,
+# 4 the work continues in the next run, 5 claude or saving failed.
 set -euo pipefail
 
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -21,7 +23,8 @@ else
 fi
 . "$REPO/scripts/agents_notify.sh"
 . "$REPO/scripts/agents_deliver.sh"
-MAX_RESUMES="${TRADEDESK_AGENTS_MAX_RESUMES:-2}"
+MAX_RUNS="${TRADEDESK_AGENTS_MAX_RUNS:-5}"
+BRANCH_RE='^agent/[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9][a-z0-9-]*$'
 STAMP="$(date +%Y-%m-%d_%H%M%S)"
 DRY=0
 [[ "${1:-}" == "--dry-run" ]] && DRY=1
@@ -44,7 +47,7 @@ fi
 echo $$ >"$LOCK/pid"
 trap 'rm -f "$LOCK/pid"; rmdir "$LOCK"' EXIT
 
-STATE="$LOG_DIR/resume.state" # "<resume attempts> <stamp of the run that started the unfinished step>"
+WORK="$LOG_DIR/work.state" # "<work branch> <runs on it> <stamp of its first run>": the agents' unfinished work
 SUMMARY="$LOG_DIR/$STAMP.summary.md"
 : >"$SUMMARY"
 dirty() { [[ -n "$(git -C "$WT" status --porcelain 2>/dev/null)" ]]; }
@@ -91,78 +94,105 @@ if [[ ! -d "$WT/.git" ]]; then
 fi
 cd "$WT"
 ensure_git_identity
-git fetch --quiet origin
-rm -f .agent/branch .agent/commit-msg.txt
+git fetch --quiet --prune origin
+rm -f .agent/branch .agent/commit-msg.txt .agent/next "$LOG_DIR/resume.state"
 
-# Push work that could not be finished after MAX_RESUMES attempts, so the owner sees it and nothing is lost.
-RESCUE_FAILED=""
-rescue_wip() {
-  local first="$1" attempts="$2" br checks="lint and tests pass" url
-  if [[ -z "$(git status --porcelain -- docs src tests scripts)" ]]; then
-    git stash push -q --include-untracked -m "agents-leftover-$STAMP" || true
-    git checkout --quiet --detach origin/main
-    rm -f "$STATE"
-    return 0
+# The work in progress, unless the owner has merged or deleted its branch meanwhile.
+WORK_BR="" RUNS=0 FIRST="$STAMP"
+read -r WORK_BR RUNS FIRST 2>/dev/null <"$WORK" || true
+RUNS="${RUNS:-0}" FIRST="${FIRST:-$STAMP}"
+if [[ -n "$WORK_BR" ]]; then
+  if ! git rev-parse -q --verify "refs/remotes/origin/$WORK_BR" >/dev/null || git merge-base --is-ancestor "origin/$WORK_BR" origin/main; then
+    echo "work branch $WORK_BR was merged or deleted; starting afresh"
+    if dirty; then git stash push -q --include-untracked -m "agents-leftover-$STAMP" || true; fi
+    WORK_BR="" RUNS=0 FIRST="$STAMP"
+    rm -f "$WORK" "$LOG_DIR/refusal.txt"
   fi
-  br="agent/$(date +%F)-wip-$(date +%H%M%S)"
-  make lint >"$LOG_DIR/$STAMP.rescue-lint.log" 2>&1 || checks="LINT FAILS"
-  make test >"$LOG_DIR/$STAMP.rescue-test.log" 2>&1 || checks="$checks; TESTS FAIL"
-  git switch -q -c "$br" || { RESCUE_FAILED="git switch"; return 1; }
-  git add -A -- docs src tests scripts || { RESCUE_FAILED="git add"; return 1; }
+fi
+
+MODE=fresh
+if [[ $DRY -eq 1 ]]; then
+  if [[ -n "$WORK_BR" ]] || dirty; then
+    echo "work in progress; dry run skipped"
+    exit 0
+  fi
+  git checkout --quiet --detach origin/main
+elif [[ -n "$WORK_BR" ]]; then
+  MODE=continue
+  if ! dirty; then # otherwise a killed run's changes are on top of the local work branch already
+    git checkout --quiet -B "$WORK_BR" "origin/$WORK_BR"
+    # Keep the work current with main so its PR merges cleanly; a conflict is left for the owner's review.
+    git merge --quiet --no-edit origin/main >/dev/null 2>&1 || git merge --abort 2>/dev/null || true
+  fi
+elif dirty; then
+  MODE=continue # a killed run's work that was never saved
+else
+  rm -f "$LOG_DIR/refusal.txt"
+  git checkout --quiet --detach origin/main
+fi
+if [[ $MODE == continue ]]; then RUNS=$((RUNS + 1)); else RUNS=1 FIRST="$STAMP"; fi
+[[ -n "$WORK_BR" ]] && echo "$WORK_BR $RUNS $FIRST" >"$WORK"
+uv sync --quiet --extra dev
+echo "agents clone $WT at $(git rev-parse --short HEAD), mode $MODE, run $RUNS${WORK_BR:+ on $WORK_BR}"
+
+# Save the work of a run that did not hand anything over: commit the project paths on the work branch (a new one if
+# there is none yet) and push it, so nothing is lost and the next run continues from GitHub. Returns 2 when there is
+# nothing to save.
+SAVE_FAILED="" SAVE_CHECKS=""
+save_work() {
+  local br="$WORK_BR" want f
+  if [[ -z "$br" ]]; then
+    if [[ -z "$(git status --porcelain -- docs src tests scripts)" ]]; then
+      if dirty; then git stash push -q --include-untracked -m "agents-leftover-$STAMP" || true; fi
+      git checkout --quiet --detach origin/main
+      return 2
+    fi
+    want="$(head -1 .agent/branch 2>/dev/null | tr -d '[:space:]')"
+    if [[ "$want" =~ $BRANCH_RE ]] && ! git ls-remote --exit-code --heads origin "$want" >/dev/null 2>&1; then
+      br="$want"
+    else
+      br="agent/$(date +%F)-wip-$(date +%H%M%S)"
+    fi
+  fi
+  SAVE_CHECKS="lint and tests pass"
+  make lint >"$LOG_DIR/$STAMP.save-lint.log" 2>&1 || SAVE_CHECKS="LINT FAILS"
+  make test >"$LOG_DIR/$STAMP.save-test.log" 2>&1 || SAVE_CHECKS="$SAVE_CHECKS; TESTS FAIL"
+  git switch -q -C "$br" || { SAVE_FAILED="git switch"; return 1; }
+  git add -A -- docs src tests scripts || { SAVE_FAILED="git add"; return 1; }
   while IFS= read -r f; do
     if [[ -f "$f" && $(wc -c <"$f") -gt 2000000 ]]; then
       git reset -q -- "$f"
       echo "left out (over 2 MB): $f"
     fi
   done < <(git diff --cached --name-only)
-  git diff --cached --quiet && { RESCUE_FAILED="nothing staged"; return 1; }
-  git commit -q -F - <<EOF || { RESCUE_FAILED="git commit"; return 1; }
-Unfinished agent step, pushed as is ($checks)
+  if ! git diff --cached --quiet; then
+    git commit -q -F - <<EOF || { SAVE_FAILED="git commit"; return 1; }
+Agents' work in progress, run $RUNS ($SAVE_CHECKS)
 
-The step started at $first and was resumed $attempts times without
-being delivered, so the launcher pushed its work instead of losing it.
-Not a final result: see the run summaries and the agents' transcripts.
+Saved by the launcher at $STAMP: the run ended without handing the step
+over, and the next run continues from here. Not a final result.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 EOF
-  git push -q -u origin "$br" || { RESCUE_FAILED="git push"; return 1; }
-  url="https://github.com/$(repo_slug)/compare/main...$br?expand=1"
+  fi
+  git push -q -u origin "$br" || { SAVE_FAILED="git push"; return 1; }
   # Anything left outside the project paths is set aside so the next run starts clean.
-  if dirty; then git stash push -q --include-untracked -m "agents-rescue-leftover-$STAMP" || true; fi
-  git checkout --quiet --detach origin/main
-  rm -f "$STATE"
-  finish 0 "wip" "⚠️ **Агенти: крок не завершено і після $attempts повторних спроб.** Роботу збережено гілкою \`$br\` ($checks); лікар уже шукає причину." --button "🔀 Подивитися гілку|$url"
+  if dirty; then git stash push -q --include-untracked -m "agents-save-leftover-$STAMP" || true; fi
+  WORK_BR="$br"
 }
 
-rescue_failed() {
-  finish 5 "error" "❌ **Агенти: не вдалося зберегти незавершену роботу гілкою** (впало: ${RESCUE_FAILED:-?}). Лог: $LOG_DIR/$STAMP.log
-$(grep -v '^== ' "$LOG_DIR/$STAMP.log" | tail -5)"
+# Hand the work to the owner: a pull request (or a compare link without a GitHub token) and a Telegram message.
+handover() {
+  local br="$1" status="$2" head="$3" title url
+  title="$(head -1 .agent/commit-msg.txt 2>/dev/null || true)"
+  url="$(open_pr "$br" "${title:-Agents: $br}" "$SUMMARY")"
+  rm -f "$WORK" "$LOG_DIR/refusal.txt"
+  finish 0 "$status" "$head
+$(head -c 3000 "$SUMMARY")" --button "🔀 Відкрити PR|$url"
 }
-
-MODE=fresh
-attempts=0
-first="$STAMP"
-if dirty; then
-  if [[ $DRY -eq 1 ]]; then
-    echo "unfinished work in $WT; dry run skipped"
-    exit 0
-  fi
-  read -r attempts first <"$STATE" 2>/dev/null || { attempts=0; first="$STAMP"; }
-  if ((attempts >= MAX_RESUMES)); then
-    rescue_wip "$first" "$attempts" || rescue_failed
-  fi
-  MODE=resume
-  attempts=$((attempts + 1))
-  echo "$attempts $first" >"$STATE"
-else
-  rm -f "$STATE" "$LOG_DIR/refusal.txt"
-  git checkout --quiet --detach origin/main
-fi
-uv sync --quiet --extra dev
-echo "agents clone $WT at $(git rev-parse --short HEAD), mode $MODE"
 
 PROMPT="$(cat .claude/nightly.md)"
-if [[ $MODE == resume ]]; then
+if [[ $MODE == continue ]]; then
   # The agents may read only inside the clone, so the previous run's transcript is copied into .agent/ (gitignored).
   prev="$(ls -t "$LOG_DIR"/*.transcript.md 2>/dev/null | head -1 || true)"
   hint=""
@@ -171,6 +201,8 @@ if [[ $MODE == resume ]]; then
     cp "$prev" .agent/previous-transcript.md
     hint=", and the transcript of the previous run: .agent/previous-transcript.md (read it with the Read tool)"
   fi
+  on_branch=""
+  [[ -n "$WORK_BR" ]] && on_branch=" Its commits are on this branch, \`$WORK_BR\`, beyond origin/main (git log --oneline origin/main..HEAD, git diff --stat origin/main...HEAD); this branch is not waiting for the owner, so its cards are not skipped."
   refused=""
   if [[ -s "$LOG_DIR/refusal.txt" ]]; then
     refused="
@@ -180,7 +212,7 @@ $(cat "$LOG_DIR/refusal.txt")"
   fi
   PROMPT="$PROMPT
 
-RESUME (attempt $attempts of $MAX_RESUMES): the previous run ended before delivery. The uncommitted changes in this tree (git status, git diff, git diff --cached) are its work, and HEAD is the commit it started from; ignore the 'clean tree at origin/main' and work-in-progress-limit parts of the preflight. Do not start a new step and do not discard that work. Find where it stopped (the card in docs/ideas, docs/reviews, docs/verification$hint). Finish the step if little is left; otherwise go straight to steps 3-4 with what exists and say in the card and the summary what is unfinished. Stage every file of the step, including the ones the previous run changed: the launcher refuses a delivery with unstaged changes.$refused"
+CONTINUE (run $RUNS of at most $MAX_RUNS on this work): an earlier run started this step and did not hand it to the owner.$on_branch Uncommitted changes (git status) are its work too. Do not start another step and do not discard that work. Find where it stopped (the card in docs/ideas, docs/reviews, docs/verification, docs/agents/runs$hint) and carry on from there; ignore the 'clean tree at origin/main' and work-in-progress-limit parts of the preflight (this work adds no new branch). Stage every file of the step, including the ones earlier runs changed. Any valid name in .agent/branch will do: the launcher keeps this work on its branch.$refused"
 fi
 if [[ $DRY -eq 1 ]]; then
   PROMPT="$PROMPT
@@ -205,7 +237,7 @@ DENIED=(
 
 # The coordinator only routes and stages, so it runs on Sonnet; each subagent keeps the model from its
 # .claude/agents/*.md (quant and critic: Opus).
-# A run that hangs is killed after TRADEDESK_AGENTS_MAX_SECONDS; its work stays for the next run to resume.
+# A run that hangs is killed after TRADEDESK_AGENTS_MAX_SECONDS; its work is saved for the next run.
 # Research data that outlives the clone (scripts' --cache-dir) is kept in CACHE_DIR, which the agents may also read.
 KEEP_AWAKE=()
 command -v caffeinate >/dev/null 2>&1 && KEEP_AWAKE=(caffeinate -i)
@@ -219,33 +251,50 @@ rc=${PIPESTATUS[0]}
 set -e
 echo "claude exit code $rc"
 
+NEXT="$(head -1 .agent/next 2>/dev/null | tr -d '[:space:]' || true)"
 if [[ $DRY -eq 0 ]]; then
-  deliver "$SUMMARY" '^agent/[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9][a-z0-9-]*$' || echo "delivery refused: $NOTE"
+  deliver "$SUMMARY" "$BRANCH_RE" "$WORK_BR" || echo "delivery refused: $NOTE"
 fi
 
 PROJECT_DIR="$(printf '%s' "$WT" | sed 's#[^A-Za-z0-9-]#-#g')"
 uv run --no-project python "$REPO/scripts/agents_transcript.py" --project="$PROJECT_DIR" --out "$LOG_DIR/$STAMP.transcript.md" || true
 
-BODY="$(head -c 3000 "$SUMMARY")"
 if [[ $DRY -eq 1 ]]; then
   finish 0 "dry" "🧪 **Агенти: пробний прогін**
-$BODY" --silent
+$(head -c 3000 "$SUMMARY")" --silent
 elif [[ -n "$DELIVERED" ]]; then
-  rm -f "$STATE" "$LOG_DIR/refusal.txt"
-  finish 0 "delivered" "✅ **Агенти здали крок:** \`$DELIVERED\`
-$BODY" --button "🔀 Відкрити PR|$DELIVERED_URL"
-elif dirty; then
+  rm -f "$LOG_DIR/refusal.txt"
+  if [[ "$NEXT" == continue ]] && ((RUNS < MAX_RUNS)); then
+    echo "$DELIVERED $RUNS $FIRST" >"$WORK"
+    finish 4 "continues" "🔄 **Агенти: проміжний крок збережено** (\`$DELIVERED\`, прогін $RUNS з $MAX_RUNS); наступний прогін продовжить сам, вам нічого робити не треба.
+$(head -c 1500 "$SUMMARY")" --silent
+  fi
+  head="✅ **Агенти здали крок:** \`$DELIVERED\`"
+  [[ "$NEXT" == continue ]] && head="⚠️ **Агенти: крок ще не завершено, але це вже $RUNS-й прогін;** віддаю вам як є: \`$DELIVERED\`"
+  handover "$DELIVERED" "delivered" "$head"
+elif dirty || [[ -n "$WORK_BR" ]]; then
   why="${NOTE:-координатор завершився, не здавши крок}"
   if ((rc != 0)); then why="$why; claude завершився з кодом $rc"; fi
-  if ((attempts >= MAX_RESUMES)); then
-    rescue_wip "$first" "$attempts" || rescue_failed
+  set +e
+  save_work
+  saved=$?
+  set -e
+  if ((saved == 1)); then
+    finish 5 "error" "❌ **Агенти: не вдалося зберегти роботу гілкою** (впало: ${SAVE_FAILED:-?}). Лог: $LOG_DIR/$STAMP.log
+$(grep -v '^== ' "$LOG_DIR/$STAMP.log" | tail -5)"
   fi
-  echo "$attempts $first" >"$STATE"
-  printf '%s\n%s\n' "$why" "$DETAIL" >"$LOG_DIR/refusal.txt"
-  finish 4 "unfinished" "⏳ **Агенти: крок не здано з першого разу** ($why). Нічого робити не треба: за кілька хвилин наступний прогін продовжить роботу (спроба $((attempts + 1)) з $MAX_RESUMES), а якщо не вийде — збереже її гілкою wip." --silent
-elif ((rc != 0)); then
+  if ((saved == 0)); then
+    printf '%s\n%s\n' "$why" "$DETAIL" >"$LOG_DIR/refusal.txt"
+    if ((RUNS >= MAX_RUNS)); then
+      handover "$WORK_BR" "stuck" "⚠️ **Агенти не завершили крок за $RUNS прогонів** ($why). Віддаю вам як є: \`$WORK_BR\` ($SAVE_CHECKS); лікар шукає причину."
+    fi
+    echo "$WORK_BR $RUNS $FIRST" >"$WORK"
+    finish 4 "unfinished" "⏳ **Агенти: крок не завершено** ($why). Роботу збережено в \`$WORK_BR\`; наступний прогін продовжить її сам (прогін $((RUNS + 1)) з $MAX_RUNS), вам нічого робити не треба." --silent
+  fi
+fi # nothing worth saving: report as below
+if ((rc != 0)); then
   finish 5 "error" "❌ **Агенти: claude завершився з помилкою** (код $rc), змін немає; лікар шукає причину. Кінець виводу:
 $(tail -c 800 "$SUMMARY")"
 else
-  finish 3 "idle" "💤 **Агенти: роботи немає.** ${BODY:0:600}" --silent
+  finish 3 "idle" "💤 **Агенти: роботи немає.** $(head -c 600 "$SUMMARY")" --silent
 fi

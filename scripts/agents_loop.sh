@@ -2,7 +2,8 @@
 # Continuous agent pipeline: one step at a time (scripts/nightly_agents.sh), with three brakes:
 #  - plan usage: if the 5-hour or 7-day utilization is at or above TRADEDESK_AGENTS_MAX_USAGE (%), sleep until it resets
 #  - review backlog: if TRADEDESK_AGENTS_MAX_OPEN agent branches wait for the owner, sleep and check again
-#    (unfinished work in the agents' clone is resumed anyway: it adds no new branch; the doctor's fixes do not count)
+#    (the agents' own work in progress is continued anyway: its branch does not wait for the owner; nor do the
+#    doctor's fixes)
 #  - idle: if there was nothing to do, sleep longer before the next step
 # Failures call the doctor (scripts/agents_doctor.sh), which fixes what it can and delivers the fix as a PR; it also
 # runs a daily health check at REPORT_HOUR. At most TRADEDESK_DOCTOR_MAX_PER_DAY doctor runs a day. Failures in a row
@@ -70,8 +71,14 @@ usage_wait() {
       end' <<<"$1" 2>/dev/null || true
 }
 
-# Branches waiting for the owner; the doctor's fixes (agent/*-fix-*) do not hold the agents back.
-open_branches() { git -C "$REPO" branch -r --no-merged origin/main --list 'origin/agent/*' | sed 's#^ *origin/##' | grep -v -- '-fix-' || true; }
+# Branches waiting for the owner; the doctor's fixes (agent/*-fix-*) and the agents' work in progress do not count.
+work_branch() { cut -d' ' -f1 "$LOG_DIR/work.state" 2>/dev/null || true; }
+open_branches() {
+  local work
+  work="$(work_branch)"
+  git -C "$REPO" branch -r --no-merged origin/main --list 'origin/agent/*' | sed 's#^ *origin/##' | grep -v -- '-fix-' |
+    grep -vxF -- "${work:-//none//}" || true
+}
 
 # The doctor, unless the usage limit is near or today's quota of doctor runs is used up.
 doctor() {
@@ -149,7 +156,7 @@ while true; do
   daily_check
   git -C "$REPO" fetch -q origin || log "fetch failed"
   leftovers=0
-  [[ -n "$(git -C "$WT" status --porcelain 2>/dev/null)" ]] && leftovers=1
+  [[ -n "$(git -C "$WT" status --porcelain 2>/dev/null)" || -n "$(work_branch)" ]] && leftovers=1
   open="$(open_branches)"
   n_open="$(grep -c . <<<"$open")"
   if ((n_open >= MAX_OPEN && leftovers == 0)); then
@@ -185,8 +192,8 @@ while true; do
   case $rc in
     0)
       log "step finished"
-      if [[ "$last_status" == "wip" ]]; then
-        doctor "An agent step could not be finished even after the automatic resumes and was pushed as a wip branch. Find why the coordinator kept ending without delivery. Run log: $last_log"
+      if [[ "$last_status" == "stuck" ]]; then
+        doctor "The agents could not finish one step in the allowed number of runs; it was handed to the owner as it is. Find why the runs kept ending without delivery. Run log: $last_log"
       fi
       loop_state "пауза між кроками, наступний о $(at "$GAP")"
       sleep "$GAP"
@@ -197,8 +204,8 @@ while true; do
       sleep "$WAIT_IDLE"
       ;;
     4)
-      log "step unfinished; resuming after ${GAP}s"
-      loop_state "продовжать незавершений крок о $(at "$GAP")"
+      log "work continues; next run after ${GAP}s"
+      loop_state "продовжать роботу о $(at "$GAP")"
       sleep "$GAP"
       ;;
     5)

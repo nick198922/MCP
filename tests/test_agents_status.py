@@ -73,6 +73,16 @@ def test_render_escapes_text_and_adds_pr_buttons():
     assert buttons == [("🔀 2026-10-14-put-skew", "https://github.com/nick198922/MCP/compare/main...agent/2026-10-14-put-skew?expand=1")]
 
 
+def test_work_in_progress_is_shown_and_not_waiting_for_the_owner(tmp_path):
+    (tmp_path / "work.state").write_text("agent/2026-10-14-wip-144107 2 2026-10-14_142418\n")
+    work = st.work_state(tmp_path)
+    assert work == ("agent/2026-10-14-wip-144107", 2)
+    assert st.work_state(tmp_path / "none") is None
+    text, buttons = st.render({"now": datetime(2026, 10, 14, 15, 0), "agents_line": "🟢", "work": work, "open_branches": []})
+    assert "У роботі <code>agent/2026-10-14-wip-144107</code> (прогін 2)" in text
+    assert "нічого — агенти працюють самі" in text and buttons == []
+
+
 def test_md_to_html_escapes_then_formats():
     out = tg_send.md_to_html("# Підсумок\n- **крок** `quant` <x> & y")
     assert out == "<b>Підсумок</b>\n• <b>крок</b> <code>quant</code> &lt;x&gt; &amp; y"

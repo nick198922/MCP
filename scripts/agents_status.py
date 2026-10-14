@@ -39,7 +39,7 @@ STATUS_ICON = {
     "inconclusive": "❔",
 }
 ROLE = {"scout": "скаут", "quant": "квант", "builder": "розробник", "critic": "критик"}
-OUTCOME_ICON = {"delivered": "✅", "unfinished": "⏳", "wip": "⚠️", "error": "❌", "idle": "💤"}
+OUTCOME_ICON = {"delivered": "✅", "continues": "🔄", "unfinished": "⏳", "stuck": "⚠️", "wip": "⚠️", "error": "❌", "idle": "💤"}
 
 
 # ---- pure helpers (tested) -------------------------------------------------------------------------------
@@ -159,6 +159,9 @@ def render(d: dict) -> tuple[str, list[tuple[str, str]]]:
     out.append(esc(d.get("agents_line", "стан невідомий")))
     if d.get("activity"):
         out.append(esc(d["activity"]))
+    if d.get("work"):
+        br, runs = d["work"]
+        out.append(f"🔄 У роботі <code>{esc(br)}</code> (прогін {runs}), PR буде, коли доведуть до кінця")
     c2, c24 = d.get("counts_2h", Counter()), d.get("counts_24h", Counter())
     if sum(c24.values()):
         fmt = " · ".join(f"{OUTCOME_ICON[k]} {c24[k]}" for k in OUTCOME_ICON if c24.get(k))
@@ -285,6 +288,15 @@ def agents_state(log_dir: Path, worktree: Path) -> tuple[str, str]:
         return "⚪ Цикл агентів не повідомив стан", ""
 
 
+def work_state(log_dir: Path) -> tuple[str, int] | None:
+    """The agents' work in progress (work.state of scripts/nightly_agents.sh): its branch and runs so far."""
+    try:
+        parts = (log_dir / "work.state").read_text(encoding="utf-8").split()
+        return parts[0], int(parts[1])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
 def doctor_note(log_dir: Path) -> str:
     reports = sorted(log_dir.glob("*.doctor.md"), key=lambda p: p.stat().st_mtime)
     if not reports or time.time() - reports[-1].stat().st_mtime > 86400:
@@ -323,6 +335,8 @@ def server_line(db: Path, backups: Path) -> str:
 def collect(repo: Path, worktree: Path, log_dir: Path) -> dict:
     _git(repo, "fetch", "-q", "origin")
     branches = open_branches(repo)
+    work = work_state(log_dir)
+    waiting = [b for b in branches if not work or b != work[0]]
     agents_line, activity = agents_state(log_dir, worktree)
     try:
         hist = (log_dir / "history.tsv").read_text(encoding="utf-8").splitlines()
@@ -339,7 +353,8 @@ def collect(repo: Path, worktree: Path, log_dir: Path) -> dict:
         "counts_24h": history_counts(hist, stamp(86400)),
         "usage": usage(),
         "cards": collect_cards(repo, branches),
-        "open_branches": [b for b in branches if "-fix-" not in b] + [b for b in branches if "-fix-" in b],
+        "work": work,
+        "open_branches": [b for b in waiting if "-fix-" not in b] + [b for b in waiting if "-fix-" in b],
         "questions": open_questions(read("docs/QUESTIONS.md")),
         "doctor": doctor_note(log_dir),
         "backlog": backlog_next(read("docs/BACKLOG.md")),

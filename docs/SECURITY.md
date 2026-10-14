@@ -29,3 +29,7 @@
 ## Telegram-міст до Claude
 
 `scripts/tg_bridge.py` (служба `tradedesk-tgbridge`) передає Claude на сервері лише текстові повідомлення творця групи (`TELEGRAM_OWNER_ID`) з теми «💬 Claude»; пересланих і чужих повідомлень не бере, усе записує в `tg-bridge.log`. Claude працює в окремому клоні `~/tradedesk-chat` з правами користувача `tradedesk`: без sudo, без force-push і пушу в `main` (його ще й закриває ruleset), без читання ключів, токенів і `/etc/tradedesk-mcp.env`; зміни йдуть гілками `chat/…` через PR власника. Хто заволодіє Telegram-акаунтом власника, отримає цей доступ, тому в Telegram обов'язкові хмарний пароль (двоетапна перевірка) і регулярний перегляд активних сеансів. Коли з'явиться `execution/`, місток не отримає доступу до ключів бірж: вони житимуть в окремого користувача.
+
+## Токен GitHub для PR агентів
+
+Лаунчер агентів і лікар самі відкривають pull request (`scripts/gh_pr.py`). Для цього на сервері лежить fine-grained токен у `~/.config/tradedesk/github.env` (0600, записує `scripts/server/11-github-token.sh` з Mac): лише репозиторій MCP, права Pull requests: read and write і Contents: read-only. Пушити, зливати чи міняти налаштування він не може; гілки й далі пушаться deploy key, а злиття в `main` лишається за власником. Агентам читання `~/.config/tradedesk/` заборонено.

@@ -9,10 +9,12 @@ from typing import Any
 from .envelope import utcnow_iso
 
 _SECRET = re.compile(r"(?i)((?:api[_-]?key|token|secret|signature|passphrase)=)[^&\s\"']+")
+# Telegram puts the bot token in the URL path: /bot<id>:<secret>/sendMessage.
+_BOT_TOKEN = re.compile(r"(/bot)\d+:[A-Za-z0-9_-]+")
 
 
 def redact(text: str, limit: int = 200) -> str:
-    return _SECRET.sub(r"\1***", text)[:limit]
+    return _BOT_TOKEN.sub(r"\1***", _SECRET.sub(r"\1***", text))[:limit]
 
 
 @dataclass

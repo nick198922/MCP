@@ -10,7 +10,8 @@
 | `quant` (квант) | Opus | Тестує прийняту ідею: попередня реєстрація гіпотези, бектест, звіт у `docs/verification/` | Не робить інструментів MCP |
 | `builder` (розробник) | Sonnet | Робить один пункт `BACKLOG` або інструмент на підтвердженому результаті | Не вирішує, що варте уваги |
 | `critic` (критик, вето) | Opus | Тріаж ідей, рев'ю досліджень і коду, звіти в `docs/reviews/` | Не пише код і ідей |
-| координатор | ваша модель за замовчуванням | Щоночі обирає один крок, видає завдання агентам, пише підсумок | Не приймає PR |
+| координатор | Sonnet (`TRADEDESK_AGENTS_COORDINATOR_MODEL`) | Обирає один крок за прогін, видає завдання агентам, пише підсумок | Не приймає PR |
+| лікар (`.claude/doctor.md`) | Opus (`TRADEDESK_DOCTOR_MODEL`) | Запускається сам при збої і щодня о 09:00: шукає причину в логах, виправляє код і віддає PR `agent/…-fix-…`; що потребує root — скриптом у `scripts/server/` | Не послаблює запобіжників, не зливає PR |
 
 Визначення агентів: `.claude/agents/*.md`, інструкція координатора: `.claude/nightly.md`.
 
@@ -46,13 +47,15 @@
 ## Запуск
 
 **Основне місце — сервер** (Contabo, Ubuntu 24.04, `169.58.169.184`, користувач `tradedesk` без sudo; адміністратор — `nick`):
-- код: `/home/tradedesk/tradedesk-mcp`, worktree агентів: `/home/tradedesk/tradedesk-agents`;
+- код: `/home/tradedesk/tradedesk-mcp`, окремий клон для агентів: `/home/tradedesk/tradedesk-agents` (не worktree: Claude Code застосовує до worktree налаштування основної копії, тобто ваші широкі дозволи);
 - служби systemd: `tradedesk-mcp` (MCP + колектор, `127.0.0.1:8000`), `tradedesk-agents-loop` (агенти безперервно, крок за кроком), таймери `tradedesk-update` (02:15, pull + restart MCP) і `tradedesk-backup` (03:30);
 - цикл агентів (`scripts/agents_loop.sh`): перед кожним кроком — якщо використання плану Claude (5-годинне або тижневе) ≥ 95 %, чекає до оновлення ліміту; якщо на власника чекають 2 гілки агентів — чекає 30 хв; якщо крок нічого не здав — чекає 2 год; між кроками 5 хв. Пороги — змінні `TRADEDESK_AGENTS_*` у службі; після зміни циклу: `sudo systemctl restart tradedesk-agents-loop`;
+- самовідновлення: крок, що завершився без здачі, лишає роботу в копії агентів, і наступний прогін (за 5 хв) продовжує її сам; після 2 невдалих продовжень робота йде гілкою `agent/…-wip-…`, а лікар шукає причину. Збій Claude чи скрипта теж викликає лікаря (не більше 4 разів на добу); збої поспіль відсувають наступну спробу (5, 10, 20 хв … до 4 год), у Telegram — перший збій і один 🛑 після трьох поспіль. Причина останнього збою: `bash scripts/server/agents-status.sh` з Mac. Журнал результатів — `~/.local/state/tradedesk-agents/history.tsv`;
+- Telegram, група «MCP» з темами (`scripts/server/telegram-topics.sh`): «🤖 Агенти» — події агентів і лікаря, «📊 Статус» — статус кожні 2 год, «📈 Алерти ринку» — алерти MCP, «💬 Claude» — розмова власника з Claude на сервері (`scripts/tg_bridge.py`, служба `tradedesk-tgbridge`, встановлення `scripts/server/10-tg-bridge.sh`; `/new`, `/status`, `/help`; безпека — `docs/SECURITY.md`); id тем — `TELEGRAM_TOPIC_*` в `agents.env` (для алертів — `TELEGRAM_TOPIC_ALERTS` у `/etc/tradedesk-mcp.env`). Кожна подія один раз (✅ здано з кнопкою PR, ⏳ продовжують, ⚠️ wip, ❌ збій, ⏸ пауза через ліміт або ваш перегляд, 🩺 лікар); тихий статус проєкту кожні 2 год, крім 23–08 (`scripts/agents_status.py`: що роблять агенти, ліміт, ідеї, що чекає на вас, що виправити, що далі, стан сервера). Попередній перегляд: `python3 scripts/agents_status.py --print`;
 - база: `/var/lib/tradedesk-mcp/tradedesk.sqlite`, резервні копії: `/var/lib/tradedesk-mcp/backups/`;
 - логи й підсумки агентів: `~/.local/state/tradedesk-agents/`; журнал служб: `journalctl -u tradedesk-mcp -u tradedesk-agents`;
 - пробний прогін з Mac: `bash scripts/server/agents-dryrun.sh`; робота на сервері: `ssh -t tradedesk@169.58.169.184`, далі `cd tradedesk-mcp && claude`;
-- сповіщення в Telegram: `~/.config/tradedesk/agents.env` з `TELEGRAM_BOT_TOKEN` і `TELEGRAM_CHAT_ID` (0600);
+- сповіщення в Telegram (група «MCP»): `~/.config/tradedesk/agents.env` з `TELEGRAM_BOT_TOKEN` і `TELEGRAM_CHAT_ID` (0600); налаштування — `bash scripts/server/telegram-setup.sh` у Terminal на Mac (питає токен, сама знаходить групу);
 - захист: вхід лише за ключем, фаєрвол лише SSH, deploy-ключ сервера не може пушити в `main` (правило `protect-main` на GitHub).
 
 Покрокове налаштування нового сервера — `scripts/server/01…05`.

@@ -148,3 +148,35 @@ async def test_atm_iv_and_basis_metrics(store: Store):
     ]
     fired = await evaluate_rules(rules, store, now_ts=10)
     assert {f.rule_id for f in fired} == {"iv_high", "basis_wide"}
+
+
+async def test_telegram_channel_posts_into_the_alerts_topic():
+    import httpx
+
+    from tradedesk.alerts.channels import TelegramChannel
+    from tradedesk.alerts.engine import FiredAlert
+    from tradedesk.core.http import Http
+    from tradedesk.providers.telegram import BASE_URL, Telegram
+
+    bodies = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(req.content))
+        return httpx.Response(200, json={"ok": True, "result": {}})
+
+    tg = Telegram(Http("telegram", BASE_URL, transport=httpx.MockTransport(handler)), "1:abc")
+    alert = FiredAlert("r", 0, 0.5, 0.3, ">", {}, "BTC funding high")
+    assert await TelegramChannel(tg, "-100", thread_id=7).send(alert) == (True, None)
+    assert await TelegramChannel(tg, "-100").send(alert) == (True, None)
+    await tg.aclose()
+    assert bodies[0] == {"chat_id": "-100", "text": "BTC funding high", "message_thread_id": 7}
+    assert "message_thread_id" not in bodies[1]
+
+
+def test_settings_read_the_alerts_topic(monkeypatch):
+    from tradedesk.config import Settings
+
+    monkeypatch.setenv("TELEGRAM_TOPIC_ALERTS", "12")
+    assert Settings.from_env().telegram_topic_alerts == 12
+    monkeypatch.setenv("TELEGRAM_TOPIC_ALERTS", "")
+    assert Settings.from_env().telegram_topic_alerts is None

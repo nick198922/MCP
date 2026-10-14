@@ -55,8 +55,15 @@ def build_server(rt: Runtime | None = None) -> tuple[MCPServer, Runtime]:
     return server, rt
 
 
-def main(argv: list[str] | None = None) -> None:
+def configure_logging() -> None:
     logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    # httpx logs every request URL at INFO; the Telegram URL carries the bot token, so keep it out of the journal.
+    for name in ("httpx", "httpcore"):
+        logging.getLogger(name).setLevel(logging.WARNING)
+
+
+def main(argv: list[str] | None = None) -> None:
+    configure_logging()
     server, rt = build_server()
     s = rt.settings
     if s.transport != "streamable-http":

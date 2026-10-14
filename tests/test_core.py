@@ -147,6 +147,23 @@ def test_redact_hides_secrets():
     assert "SECRET" not in redact("GET /x?api_key=SECRET&b=1 token=SECRET2")
 
 
+def test_redact_hides_telegram_bot_token():
+    out = redact("POST https://api.telegram.org/bot123456789:AAH-secret_PART/sendMessage failed")
+    assert "secret_PART" not in out and "123456789" not in out
+    assert "/bot***/sendMessage" in out
+
+
+def test_server_logging_keeps_request_urls_out(caplog):
+    import logging
+
+    from tradedesk.server import configure_logging
+
+    configure_logging()
+    with caplog.at_level(logging.INFO):
+        logging.getLogger("httpx").info("HTTP Request: POST https://api.telegram.org/bot1:SECRET/sendMessage")
+    assert "SECRET" not in caplog.text
+
+
 async def test_builder_guard_degrades_gracefully():
     b = Builder()
 

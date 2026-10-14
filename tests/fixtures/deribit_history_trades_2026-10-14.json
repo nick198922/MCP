@@ -1,0 +1,75 @@
+{
+ "_source": "history.deribit.com/api/v2/public/get_last_trades_by_currency_and_time currency=BTC kind=option start=2022-06-15T08:00Z end=2022-06-15T10:00Z count=5 sorting=asc",
+ "_fetched": "2026-10-14",
+ "jsonrpc": "2.0",
+ "result": {
+  "trades": [
+   {
+    "trade_id": "218878961",
+    "instrument_name": "BTC-17JUN22-22000-C",
+    "timestamp": 1655280009777,
+    "iv": 188.28,
+    "price": 0.0305,
+    "mark_price": 0.02999869,
+    "index_price": 20663.99,
+    "direction": "sell",
+    "amount": 3.3,
+    "trade_seq": 218,
+    "tick_direction": 0
+   },
+   {
+    "trade_id": "218878975",
+    "instrument_name": "BTC-17JUN22-17000-P",
+    "timestamp": 1655280010638,
+    "iv": 282.09,
+    "price": 0.018,
+    "mark_price": 0.01584414,
+    "index_price": 20664.37,
+    "direction": "buy",
+    "amount": 0.4,
+    "trade_seq": 54,
+    "tick_direction": 0
+   },
+   {
+    "trade_id": "218878980",
+    "instrument_name": "BTC-30SEP22-20000-P",
+    "timestamp": 1655280011736,
+    "iv": 85.98,
+    "price": 0.165,
+    "mark_price": 0.16478565,
+    "index_price": 20664.26,
+    "direction": "buy",
+    "amount": 0.5,
+    "trade_seq": 5182,
+    "tick_direction": 0
+   },
+   {
+    "trade_id": "218879053",
+    "instrument_name": "BTC-24JUN22-21000-P",
+    "timestamp": 1655280013997,
+    "iv": 134.82,
+    "price": 0.095,
+    "mark_price": 0.09367853,
+    "index_price": 20651.15,
+    "direction": "buy",
+    "amount": 0.3,
+    "trade_seq": 363,
+    "tick_direction": 0
+   },
+   {
+    "trade_id": "218879059",
+    "instrument_name": "BTC-24JUN22-25000-P",
+    "timestamp": 1655280015605,
+    "iv": 118.12,
+    "price": 0.23,
+    "mark_price": 0.22925175,
+    "index_price": 20638.26,
+    "direction": "buy",
+    "amount": 3.7,
+    "trade_seq": 8239,
+    "tick_direction": 1
+   }
+  ],
+  "has_more": true
+ }
+}

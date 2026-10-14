@@ -56,6 +56,17 @@ Claude (Desktop / Code / claude.ai)
 | Час | UTC, ISO-8601 або epoch ms (суфікс `_ms`) |
 | Експірації Deribit | 08:00 UTC; токен без нуля попереду (`5NOV26`) |
 
+## Deribit: два хости
+
+- `rt.deribit` працює з `www.deribit.com/api/v2`: живі дані інструментів, DVOL, `delivery_prices` (історія розрахункових цін, USD) і `funding_rate_history` (погодинний funding перпа, `interest_1h`; ≤ 744 записів за запит).
+- `rt.deribit_history` — той самий клас `Deribit` на архівному хості `history.deribit.com/api/v2`, з окремим rate-limit 5 запитів/с і окремим записом `deribit_history` у health. Лише він віддає угоди давно експірованих інструментів:
+  - `last_trades_by_currency_and_time`;
+  - `last_trades_by_instrument_and_time`.
+
+  Обидва методи повертають до 1000 угод, пагінація за `timestamp`; `iv` у відсотках, ціни опціонів у BTC.
+
+`delivery_prices` і funding на history-хості дають HTTP 400. Використовується лише дослідницькими скриптами (`scripts/verify_put_skew.py`), MCP-інструменти його поки не викликають.
+
 ## Як додати провайдера
 
 1. `providers/<name>.py`: клас з методами, що повертають `Fetched(data, evidence)`. HTTP тільки через `core.http.Http`, щоб діяли ліміти, ретраї, кеш і health.

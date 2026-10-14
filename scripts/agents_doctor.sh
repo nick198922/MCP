@@ -5,6 +5,7 @@
 # Usage: scripts/agents_doctor.sh "<what happened>"
 set -euo pipefail
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 # wait for background work instead of stopping it after 10 minutes
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 WT="${TRADEDESK_AGENTS_WORKTREE:-$(dirname "$REPO")/tradedesk-agents}"
 DOC="${TRADEDESK_DOCTOR_CLONE:-$(dirname "$REPO")/tradedesk-doctor}"

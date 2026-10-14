@@ -9,6 +9,9 @@
 set -euo pipefail
 
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+# Subagents run in the background. By default `claude -p` stops background work 10 minutes after the coordinator's
+# last reply, which killed a quant in the middle of a long fetch; wait for it instead (the run's alarm still applies).
+export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 WT="${TRADEDESK_AGENTS_WORKTREE:-$(dirname "$REPO")/tradedesk-agents}"
 if [[ "$(uname)" == "Darwin" ]]; then
@@ -187,6 +190,7 @@ ALLOWED=(
   "Bash(git fetch:*)" "Bash(git rev-parse:*)" "Bash(git ls-tree:*)" "Bash(git ls-files:*)" "Bash(git add:*)"
   "Bash(ls:*)" "Bash(date:*)" "Bash(which:*)" "Bash(head:*)" "Bash(tail:*)" "Bash(wc:*)" "Bash(mkdir -p .agent:*)"
   "Bash(cat:*)" "Bash(sed:*)" "Bash(cut:*)" "Bash(grep:*)" "Bash(sort:*)" "Bash(uniq:*)" "Bash(find:*)"
+  "Bash(scripts/agents_wait.sh:*)" "Bash(bash scripts/agents_wait.sh:*)"
 )
 DENIED=(
   "Bash(git push origin main:*)" "Bash(git push --force:*)" "Bash(git push -f:*)" "Bash(git reset --hard:*)"

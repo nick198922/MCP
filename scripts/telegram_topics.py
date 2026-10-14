@@ -23,6 +23,7 @@ TOPICS = [
     ("AGENTS", "🤖 Агенти", 0x6FB9F0, "Тут агенти й лікар пишуть про кожен крок: здано, продовжують, збій, пауза."),
     ("STATUS", "📊 Статус", 0x8EEE98, "Тут кожні 2 години (крім ночі) тихий статус проєкту."),
     ("ALERTS", "📈 Алерти ринку", 0xFB6F5F, "Тут ринкові алерти MCP-сервера (правила додаються інструментами rules_*)."),
+    ("CHAT", "💬 Claude", 0xFFD67E, "Пишіть сюди: відповідає Claude на сервері. /new — нова розмова, /status — статус, /help — підказка."),
 ]
 
 
@@ -45,7 +46,7 @@ def api(token: str, method: str, body: dict) -> dict:
 
 
 def write_env(env: dict[str, str], path: Path | None = None) -> None:
-    first = ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"] + [f"TELEGRAM_TOPIC_{k}" for k, *_ in TOPICS]
+    first = ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "TELEGRAM_OWNER_ID"] + [f"TELEGRAM_TOPIC_{k}" for k, *_ in TOPICS]
     ordered = {k: env[k] for k in first if k in env} | {k: v for k, v in env.items() if k not in first}
     _write_env(ordered, path or ENV_FILE)
 
@@ -87,6 +88,12 @@ def main() -> int:
         print("Topics are off in this group. In Telegram: the group -> Edit -> Topics -> on; then run this again.")
         return 1
     env["TELEGRAM_CHAT_ID"] = chat
+    # The owner is the group's creator; only their messages reach Claude through the "💬 Claude" topic.
+    admins = api(token, "getChatAdministrators", {"chat_id": chat}).get("result")
+    creator = next((a["user"]["id"] for a in admins or [] if isinstance(a, dict) and a.get("status") == "creator"), None)
+    if creator:
+        env["TELEGRAM_OWNER_ID"] = str(creator)
+        print(f"owner (group creator): {creator}")
     write_env(env)
     for key, name, color, hello in TOPICS:
         if env.get(f"TELEGRAM_TOPIC_{key}", "").isdigit():
@@ -102,7 +109,7 @@ def main() -> int:
         write_env(env)
         api(token, "sendMessage", {"chat_id": chat, "message_thread_id": thread, "text": hello})
         print(f"topic {name}: created")
-    print("done: agents, status and alerts go to their topics")
+    print("done: agents, status, alerts and the Claude chat have their topics")
     return 0
 
 

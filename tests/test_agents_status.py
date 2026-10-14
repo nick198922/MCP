@@ -143,16 +143,19 @@ def test_topics_setup_follows_the_supergroup_migration(monkeypatch, tmp_path):
         if method == "createForumTopic":
             made.append(body["name"])
             return {"ok": True, "result": {"message_thread_id": len(made)}}
+        if method == "getChatAdministrators":
+            return {"ok": True, "result": [{"status": "administrator", "user": {"id": 5}}, {"status": "creator", "user": {"id": 777}}]}
         return {"ok": True}
 
     monkeypatch.setattr(tt, "api", fake_api)
     assert tt.main() == 0
     env = tg_send.load_env(env_file)
     assert env["TELEGRAM_CHAT_ID"] == "-1001"
-    assert [env[f"TELEGRAM_TOPIC_{k}"] for k in ("AGENTS", "STATUS", "ALERTS")] == ["1", "2", "3"]
+    assert [env[f"TELEGRAM_TOPIC_{k}"] for k in ("AGENTS", "STATUS", "ALERTS", "CHAT")] == ["1", "2", "3", "4"]
+    assert env["TELEGRAM_OWNER_ID"] == "777"
     assert env["TELEGRAM_BOT_TOKEN"] == "1:a"
     assert env_file.stat().st_mode & 0o777 == 0o600
-    assert tt.main() == 0 and len(made) == 3  # a second run keeps the topics
+    assert tt.main() == 0 and len(made) == 4  # a second run keeps the topics
 
 
 def test_topics_setup_stops_when_topics_are_off(monkeypatch, tmp_path, capsys):

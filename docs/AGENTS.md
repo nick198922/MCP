@@ -47,7 +47,8 @@
 
 **Основне місце — сервер** (Contabo, Ubuntu 24.04, `169.58.169.184`, користувач `tradedesk` без sudo; адміністратор — `nick`):
 - код: `/home/tradedesk/tradedesk-mcp`, worktree агентів: `/home/tradedesk/tradedesk-agents`;
-- служби systemd: `tradedesk-mcp` (MCP + колектор, `127.0.0.1:8000`), таймери `tradedesk-update` (02:15, pull + restart), `tradedesk-agents` (02:30), `tradedesk-backup` (03:30);
+- служби systemd: `tradedesk-mcp` (MCP + колектор, `127.0.0.1:8000`), `tradedesk-agents-loop` (агенти безперервно, крок за кроком), таймери `tradedesk-update` (02:15, pull + restart MCP) і `tradedesk-backup` (03:30);
+- цикл агентів (`scripts/agents_loop.sh`): перед кожним кроком — якщо використання плану Claude (5-годинне або тижневе) ≥ 95 %, чекає до оновлення ліміту; якщо на власника чекають 2 гілки агентів — чекає 30 хв; якщо крок нічого не здав — чекає 2 год; між кроками 5 хв. Пороги — змінні `TRADEDESK_AGENTS_*` у службі; після зміни циклу: `sudo systemctl restart tradedesk-agents-loop`;
 - база: `/var/lib/tradedesk-mcp/tradedesk.sqlite`, резервні копії: `/var/lib/tradedesk-mcp/backups/`;
 - логи й підсумки агентів: `~/.local/state/tradedesk-agents/`; журнал служб: `journalctl -u tradedesk-mcp -u tradedesk-agents`;
 - пробний прогін з Mac: `bash scripts/server/agents-dryrun.sh`; робота на сервері: `ssh -t tradedesk@169.58.169.184`, далі `cd tradedesk-mcp && claude`;

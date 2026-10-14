@@ -163,9 +163,14 @@ echo "agents clone $WT at $(git rev-parse --short HEAD), mode $MODE"
 
 PROMPT="$(cat .claude/nightly.md)"
 if [[ $MODE == resume ]]; then
+  # The agents may read only inside the clone, so the previous run's transcript is copied into .agent/ (gitignored).
   prev="$(ls -t "$LOG_DIR"/*.transcript.md 2>/dev/null | head -1 || true)"
   hint=""
-  [[ -n "$prev" ]] && hint=", and the transcript of the previous run: $prev"
+  if [[ -n "$prev" ]]; then
+    mkdir -p .agent
+    cp "$prev" .agent/previous-transcript.md
+    hint=", and the transcript of the previous run: .agent/previous-transcript.md (read it with the Read tool)"
+  fi
   refused=""
   if [[ -s "$LOG_DIR/refusal.txt" ]]; then
     refused="

@@ -45,6 +45,19 @@
 
 ## Запуск
 
+**Основне місце — сервер** (Contabo, Ubuntu 24.04, `169.58.169.184`, користувач `tradedesk` без sudo; адміністратор — `nick`):
+- код: `/home/tradedesk/tradedesk-mcp`, worktree агентів: `/home/tradedesk/tradedesk-agents`;
+- служби systemd: `tradedesk-mcp` (MCP + колектор, `127.0.0.1:8000`), таймери `tradedesk-update` (02:15, pull + restart), `tradedesk-agents` (02:30), `tradedesk-backup` (03:30);
+- база: `/var/lib/tradedesk-mcp/tradedesk.sqlite`, резервні копії: `/var/lib/tradedesk-mcp/backups/`;
+- логи й підсумки агентів: `~/.local/state/tradedesk-agents/`; журнал служб: `journalctl -u tradedesk-mcp -u tradedesk-agents`;
+- пробний прогін з Mac: `bash scripts/server/agents-dryrun.sh`; робота на сервері: `ssh -t tradedesk@169.58.169.184`, далі `cd tradedesk-mcp && claude`;
+- сповіщення в Telegram: `~/.config/tradedesk/agents.env` з `TELEGRAM_BOT_TOKEN` і `TELEGRAM_CHAT_ID` (0600);
+- захист: вхід лише за ключем, фаєрвол лише SSH, deploy-ключ сервера не може пушити в `main` (правило `protect-main` на GitHub).
+
+Покрокове налаштування нового сервера — `scripts/server/01…05`.
+
+Нижче — запуск на Mac (історичний варіант, вимкнено після переносу):
+
 - Вручну: `scripts/nightly_agents.sh` (повний крок) або `scripts/nightly_agents.sh --dry-run` (лише план, без змін).
 - За розкладом: `scripts/install_nightly_agents.sh` ставить launchd-задачу на 02:30 щоночі. Вимкнути: `launchctl bootout gui/$(id -u)/com.tradedesk.agents`.
 - Агенти працюють в окремій копії репозиторію `../tradedesk-agents` (git worktree), ваша робоча тека не зачіпається.

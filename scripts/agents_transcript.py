@@ -4,6 +4,7 @@ Usage:
     uv run python scripts/agents_transcript.py                 # latest run of the agents' worktree
     uv run python scripts/agents_transcript.py <session-id>    # a specific run
     uv run python scripts/agents_transcript.py --out run.md
+    uv run python scripts/agents_transcript.py --denied 24    # tool calls the permission rules refused in 24 h
 
 Shows what the coordinator said and did, each brief it gave a subagent, what that subagent did
 (searches, fetches, files, commands) and the report it returned. Model reasoning is not shown.
@@ -13,6 +14,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -90,6 +93,34 @@ def _render_events(events: list[dict[str, Any]], who: str, lines: list[str], *, 
                 lines.append(f"  - {_time(e)} {_action(b)}")
 
 
+def denied_calls(events: list[dict[str, Any]]) -> list[str]:
+    """The tool calls the permission rules refused (not ones that merely failed), as short readable actions."""
+    uses: dict[str, dict[str, Any]] = {}
+    out = []
+    for e in events:
+        content = e["message"].get("content")
+        for b in content if isinstance(content, list) else []:
+            if not isinstance(b, dict):
+                continue
+            if b.get("type") == "tool_use":
+                uses[b.get("id", "")] = b
+            elif b.get("type") == "tool_result" and b.get("is_error"):
+                text = _result_text(b.get("content"))
+                if "Permission to use" in text and "denied" in text and b.get("tool_use_id") in uses:
+                    out.append(_action(uses[b["tool_use_id"]]))
+    return out
+
+
+def denied_report(folder: Path, hours: float) -> str:
+    """Refused calls of all runs (coordinator and subagents) in the last `hours`, most frequent first."""
+    since = time.time() - hours * 3600
+    counts: Counter[str] = Counter()
+    for path in folder.rglob("*.jsonl") if folder.is_dir() else []:
+        if path.stat().st_mtime >= since:
+            counts.update(denied_calls(_load(path)))
+    return "\n".join(f"- {n}× {action}" for action, n in counts.most_common()) or "none"
+
+
 def render(session: Path) -> str:
     main = _load(session.with_suffix(".jsonl"))
     sub_dir = session / "subagents"
@@ -140,8 +171,12 @@ def main() -> None:
     ap.add_argument("session", nargs="?", help="session id; default: the latest run")
     ap.add_argument("--project", default=DEFAULT_PROJECT, help="folder under ~/.claude/projects")
     ap.add_argument("--out", default="", help="write markdown here instead of stdout")
+    ap.add_argument("--denied", type=float, metavar="HOURS", help="list the refused tool calls of the last HOURS instead")
     a = ap.parse_args()
     folder = PROJECTS / a.project
+    if a.denied is not None:
+        print(denied_report(folder, a.denied))
+        return
     if a.session:
         session = folder / a.session
     else:

@@ -35,6 +35,19 @@ rm -f .agent/branch .agent/commit-msg.txt
 uv sync --quiet --extra dev
 
 latest_run="$(ls -t "$LOG_DIR"/*.summary.md 2>/dev/null | head -1 || true)"
+# A failure gets Opus; the routine daily check, which mostly finds nothing, Sonnet. The daily check also gets the
+# agents' commands refused by the permission rules, to propose narrow allow rules for the safe ones.
+MODEL="${TRADEDESK_DOCTOR_MODEL:-opus}"
+DENIED_NOTE=""
+if [[ "$REASON" == "daily health check" ]]; then
+  MODEL="${TRADEDESK_DOCTOR_DAILY_MODEL:-sonnet}"
+  PROJECT_DIR="$(printf '%s' "$WT" | sed 's#[^A-Za-z0-9-]#-#g')"
+  DENIED_NOTE="
+
+## Agents' commands refused in the last 24 h
+
+$(uv run --no-project python "$REPO/scripts/agents_transcript.py" --project="$PROJECT_DIR" --denied 24 2>/dev/null | head -60 || echo unknown)"
+fi
 PROMPT="$(cat .claude/doctor.md)
 
 ## What happened
@@ -42,7 +55,7 @@ PROMPT="$(cat .claude/doctor.md)
 $REASON
 
 Logs: $LOG_DIR (agent runs: <stamp>.log, <stamp>.summary.md, <stamp>.transcript.md; history.tsv; loop.log; your earlier reports: *.doctor.md). Latest run summary: ${latest_run:-none}.
-The agents' clone (read it, do not change it): $WT. This server user: $(whoami), without sudo."
+The agents' clone (read it, do not change it): $WT. This server user: $(whoami), without sudo.$DENIED_NOTE"
 
 ALLOWED=(
   Read Write Edit Glob Grep
@@ -59,7 +72,7 @@ DENIED=(
 
 set +e
 perl -e 'alarm shift; exec @ARGV' "${TRADEDESK_DOCTOR_MAX_SECONDS:-3600}" "${TRADEDESK_CLAUDE_BIN:-claude}" -p "$PROMPT" \
-  --permission-mode dontAsk --model "${TRADEDESK_DOCTOR_MODEL:-opus}" \
+  --permission-mode dontAsk --model "$MODEL" \
   --allowedTools "${ALLOWED[@]}" --disallowedTools "${DENIED[@]}" | tee "$REPORT"
 rc=${PIPESTATUS[0]}
 set -e

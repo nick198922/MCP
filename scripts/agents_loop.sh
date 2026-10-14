@@ -6,7 +6,8 @@
 #    doctor's fixes)
 #  - idle: if there was nothing to do, sleep longer before the next step
 # Failures call the doctor (scripts/agents_doctor.sh), which fixes what it can and delivers the fix as a PR; it also
-# runs a daily health check at REPORT_HOUR. At most TRADEDESK_DOCTOR_MAX_PER_DAY doctor runs a day. Failures in a row
+# runs a daily health check at REPORT_HOUR. At most TRADEDESK_DOCTOR_MAX_PER_DAY doctor runs a day for failures (the
+# daily check does not count), and the same failure is examined once a day. Failures in a row
 # space the next tries out (GAP, 2*GAP, 4*GAP, ... up to TRADEDESK_AGENTS_FAIL_MAX_WAIT_SECONDS).
 # Telegram: each change of state once, and a silent project status (scripts/agents_status.py) every
 # TRADEDESK_STATUS_EVERY_SECONDS outside the quiet hours TRADEDESK_STATUS_QUIET ("23-8").
@@ -17,6 +18,7 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 WT="${TRADEDESK_AGENTS_WORKTREE:-$(dirname "$REPO")/tradedesk-agents}"
 LOG_DIR="${TRADEDESK_AGENTS_LOG_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/tradedesk-agents}"
 . "$REPO/scripts/agents_notify.sh"
+. "$REPO/scripts/agents_usage.sh"
 MAX_USAGE="${TRADEDESK_AGENTS_MAX_USAGE:-95}"
 MAX_OPEN="${TRADEDESK_AGENTS_MAX_OPEN:-2}"
 WAIT_REVIEW="${TRADEDESK_AGENTS_REVIEW_WAIT_SECONDS:-1800}"
@@ -49,15 +51,6 @@ announce() {
   notify "$@"
 }
 
-# The same plan-usage figures as /usage. Prints the JSON; the token is never printed or logged.
-usage_json() {
-  local token
-  token="$(jq -r '.claudeAiOauth.accessToken // empty' "$HOME/.claude/.credentials.json" 2>/dev/null)"
-  [[ -z "$token" ]] && return 0
-  printf 'header = "Authorization: Bearer %s"\n' "$token" | curl -s -m 15 -K - https://api.anthropic.com/api/oauth/usage \
-    -H "anthropic-beta: oauth-2025-04-20" || true
-}
-
 # Prints "<seconds> <reason>" when usage is at or above MAX_USAGE, nothing when below or unknown.
 usage_wait() {
   jq -r --argjson max "$MAX_USAGE" '
@@ -80,21 +73,34 @@ open_branches() {
     grep -vxF -- "${work:-//none//}" || true
 }
 
-# The doctor, unless the usage limit is near or today's quota of doctor runs is used up.
+# doctor "<what happened>" ["<failure signature>"]: the doctor, unless the usage limit is near. For a failure (with a
+# signature: the outcome line, paths left out) also unless today's quota is used up or the same failure was examined
+# today already: a second look at an unchanged cause only burns tokens.
 doctor() {
-  local day count
+  local day count sig=""
   day="$(date +%F)"
-  count="$(awk -v d="$day" '$1 == d {print $2}' "$LOG_DIR/doctor.count" 2>/dev/null)"
-  count="${count:-0}"
-  if ((count >= DOCTOR_MAX)); then
-    log "doctor skipped: $DOCTOR_MAX runs today already"
-    return 0
+  if [[ -n "${2:-}" ]]; then
+    sig="$(printf '%s' "$2" | sed 's#/[^ ]*##g' | cksum | cut -d' ' -f1)"
+    if grep -qx "$day $sig" "$LOG_DIR/doctor.seen" 2>/dev/null; then
+      log "doctor skipped: this failure was examined today"
+      return 0
+    fi
+    count="$(awk -v d="$day" '$1 == d {print $2}' "$LOG_DIR/doctor.count" 2>/dev/null)"
+    count="${count:-0}"
+    if ((count >= DOCTOR_MAX)); then
+      log "doctor skipped: $DOCTOR_MAX runs for failures today already"
+      return 0
+    fi
   fi
   if [[ -n "$(usage_wait "$(usage_json)")" ]]; then
     log "doctor skipped: usage limit"
     return 0
   fi
-  echo "$day $((count + 1))" >"$LOG_DIR/doctor.count"
+  if [[ -n "$sig" ]]; then
+    echo "$day $((count + 1))" >"$LOG_DIR/doctor.count"
+    { grep "^$day " "$LOG_DIR/doctor.seen" 2>/dev/null; echo "$day $sig"; } >"$LOG_DIR/doctor.seen.tmp"
+    mv "$LOG_DIR/doctor.seen.tmp" "$LOG_DIR/doctor.seen"
+  fi
   log "doctor: $1"
   loop_state "лікар оглядає систему"
   "$REPO/scripts/agents_doctor.sh" "$1" || log "doctor exited with $?"
@@ -188,12 +194,13 @@ while true; do
   # Run logs only (<stamp>.log), not the doctor's, the rescue checks', the loop's or the Telegram bridge's.
   last_log="$(ls -t "$LOG_DIR"/20??-??-??_??????.log 2>/dev/null | head -1)"
   last_status="$(tail -1 "$LOG_DIR/history.tsv" 2>/dev/null | cut -f2)"
+  last_outcome="$(tail -1 "$LOG_DIR/history.tsv" 2>/dev/null | cut -f2-3)"
   ((rc == 0 || rc == 3 || rc == 4)) && fails=0
   case $rc in
     0)
       log "step finished"
       if [[ "$last_status" == "stuck" ]]; then
-        doctor "The agents could not finish one step in the allowed number of runs; it was handed to the owner as it is. Find why the runs kept ending without delivery. Run log: $last_log"
+        doctor "The agents could not finish one step in the allowed number of runs; it was handed to the owner as it is. Find why the runs kept ending without delivery. Run log: $last_log" "$last_outcome"
       fi
       loop_state "пауза між кроками, наступний о $(at "$GAP")"
       sleep "$GAP"
@@ -210,13 +217,13 @@ while true; do
       ;;
     5)
       log "claude failed"
-      doctor "claude exited with an error during an agent step. Run log: $last_log"
+      doctor "claude exited with an error during an agent step. Run log: $last_log" "$last_outcome"
       after_failure
       ;;
     *)
       log "step script failed (exit $rc)"
       ((fails == 0)) && notify "❌ **Скрипт кроку агентів упав** (код $rc). Викликаю лікаря. Лог: $last_log"
-      doctor "scripts/nightly_agents.sh itself failed with exit code $rc. Run log: $last_log"
+      doctor "scripts/nightly_agents.sh itself failed with exit code $rc. Run log: $last_log" "script exit $rc"
       after_failure
       ;;
   esac

@@ -118,7 +118,7 @@ if ! deliver; then
 fi
 
 PROJECT_DIR="$(printf '%s' "$WT" | sed 's#[^A-Za-z0-9-]#-#g')"
-uv run --no-project python "$REPO/scripts/agents_transcript.py" --project "$PROJECT_DIR" --out "$LOG_DIR/$STAMP.transcript.md" || true
+uv run --no-project python "$REPO/scripts/agents_transcript.py" --project="$PROJECT_DIR" --out "$LOG_DIR/$STAMP.transcript.md" || true
 echo "== $(date) done"
 if [[ "$(uname)" == "Darwin" ]]; then
   osascript -e "display notification \"Підсумок: $SUMMARY; розмова агентів: $LOG_DIR/$STAMP.transcript.md\" with title \"tradedesk: нічний прогін агентів\"" || true

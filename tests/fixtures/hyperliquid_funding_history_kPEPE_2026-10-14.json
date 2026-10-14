@@ -1,0 +1,245 @@
+{
+ "_source": "Hyperliquid POST /info {type: fundingHistory, coin: kPEPE, startTime: 2024-06-01}, first 48 rows (time, fundingRate), fetched 2026-10-14",
+ "rows": [
+  {
+   "coin": "kPEPE",
+   "fundingRate": "2.51007e-05",
+   "time": 1717200000073
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "1.25e-05",
+   "time": 1717203600165
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "1.25e-05",
+   "time": 1717207200110
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "1.25e-05",
+   "time": 1717210800122
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "1.25e-05",
+   "time": 1717214400101
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "1.25e-05",
+   "time": 1717218000014
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "1.25e-05",
+   "time": 1717221600087
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "1.25e-05",
+   "time": 1717225200083
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "4.5065e-05",
+   "time": 1717228800169
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "2.92529e-05",
+   "time": 1717232400115
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "4.16146e-05",
+   "time": 1717236000077
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "2.59098e-05",
+   "time": 1717239600030
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "1.96775e-05",
+   "time": 1717243200012
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "2.37269e-05",
+   "time": 1717246800040
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "6.71648e-05",
+   "time": 1717250400016
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "7.11075e-05",
+   "time": 1717254000036
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "5.67012e-05",
+   "time": 1717257600026
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "1.25e-05",
+   "time": 1717261200050
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "1.25e-05",
+   "time": 1717264800075
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "1.50541e-05",
+   "time": 1717268400043
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "1.25e-05",
+   "time": 1717272000046
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "1.25e-05",
+   "time": 1717275600027
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "1.25e-05",
+   "time": 1717279200042
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "1.25e-05",
+   "time": 1717282800050
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "1.25e-05",
+   "time": 1717286400064
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "1.25e-05",
+   "time": 1717290000107
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "6.11762e-05",
+   "time": 1717293600063
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "3.06125e-05",
+   "time": 1717297200047
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "9.41641e-05",
+   "time": 1717300800053
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "0.0001219037",
+   "time": 1717304400018
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "0.0001156954",
+   "time": 1717308000022
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "0.0001023462",
+   "time": 1717311600026
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "9.02124e-05",
+   "time": 1717315200025
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "8.64209e-05",
+   "time": 1717318800023
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "8.55518e-05",
+   "time": 1717322400035
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "4.83733e-05",
+   "time": 1717326000026
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "7.32692e-05",
+   "time": 1717329600036
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "0.0001170868",
+   "time": 1717333200029
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "6.78039e-05",
+   "time": 1717336800044
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "0.0001053058",
+   "time": 1717340400101
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "0.0001378252",
+   "time": 1717344000032
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "6.40005e-05",
+   "time": 1717347600094
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "2.7628e-05",
+   "time": 1717351200123
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "4.24016e-05",
+   "time": 1717354800027
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "8.95471e-05",
+   "time": 1717358400001
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "0.0001156092",
+   "time": 1717362000101
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "0.0001345771",
+   "time": 1717365600102
+  },
+  {
+   "coin": "kPEPE",
+   "fundingRate": "0.0001066029",
+   "time": 1717369200035
+  }
+ ]
+}

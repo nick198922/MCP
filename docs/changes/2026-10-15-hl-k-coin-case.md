@@ -1,0 +1,3 @@
+- Виправлено регістр назв `k`-монет Hyperliquid (kPEPE, kBONK, kSHIB, kFLOKI, kLUNC, kNEIRO, kDOGS): провайдер більше не робить `upper()`, а зіставляє введену назву з `meta.universe` без урахування регістру (`Hyperliquid.resolve_coin`; таблиця назв кешується на 10 хв; якщо збігу нема або universe недоступний, назва береться у верхньому регістрі, як раніше, і в `warnings` з'являється попередження).
+- `hyperliquid_candles`, `hyperliquid_book`, `hyperliquid_trades`, `hyperliquid_funding_history` і HL-ніжка `perps_funding_history` тепер працюють для `k`-монет; поле `coin` у відповіді містить точну назву з біржі.
+- Тести: `tests/test_hl_coin_case.py` (happy path для kPEPE у чотирьох інструментах, збій провайдера).

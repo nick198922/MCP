@@ -130,6 +130,15 @@ async def current_funding(rt: Runtime, b: Builder, venue: str, markets: dict[str
 
 
 def register(server: MCPServer, rt: Runtime) -> None:
+    async def _hl_name(b: Builder, coin: str) -> str:
+        """Resolve the case-sensitive HL name once per tool call; warn when the universe could not confirm it."""
+        name, status = await rt.hyperliquid.lookup_coin(coin)
+        if status == "unavailable":
+            b.warn(f"hyperliquid universe unavailable; coin name sent as '{name}' (case-sensitive names like kPEPE may fail)")
+        elif status == "unknown":
+            b.warn(f"'{coin.strip()}' not found in the hyperliquid universe; sent as '{name}'")
+        return name
+
     @server.tool(
         annotations=READ_ONLY,
         description=(
@@ -266,7 +275,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
             return {"venue": ex, **_row_from_stats(stats), **({"series": entries} if include_series else {})}
 
         async def hl_row() -> dict[str, Any] | None:
-            got = await b.guard("funding_history:hyperliquid", "hyperliquid", rt.hyperliquid.funding_history_range(base, since_ms, now_ms))
+            hl_base = await _hl_name(b, base)
+            got = await b.guard(
+                "funding_history:hyperliquid", "hyperliquid", rt.hyperliquid.funding_history_range(hl_base, since_ms, now_ms)
+            )
             if not got:
                 return None
             if not got["complete"]:
@@ -899,6 +911,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
             return b.build(None, ok=False)
         end_ms = int(rt.now().timestamp() * 1000)
         start_ms = end_ms - int(hours_back * 3_600_000)
+        coin = await _hl_name(b, coin)
         raw = await b.guard("candles", "hyperliquid", rt.hyperliquid.candles(coin, interval, start_ms, end_ms))
         if not raw:
             if raw is not None:
@@ -924,7 +937,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
             summary["realized_vol_annualized"] = r(math.sqrt(var) * math.sqrt(365 * 86400 / tf_sec), 4)
         return b.build(
             {
-                "coin": coin.upper(),
+                "coin": coin,
                 "interval": interval,
                 "columns": ["ts_ms", "open", "high", "low", "close", "volume"],
                 "rows": rows,
@@ -944,6 +957,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
         notional_usd: Annotated[float | None, Field(gt=0, description="Order size in USD")] = None,
     ) -> dict[str, Any]:
         b = Builder()
+        coin = await _hl_name(b, coin)
         raw = await b.guard("book", "hyperliquid", rt.hyperliquid.l2_book(coin))
         if not raw:
             if raw is not None:
@@ -970,7 +984,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
             return b.build(None, ok=False)
         stats = book_stats(bids, asks)
         data: dict[str, Any] = {
-            "coin": coin.upper(),
+            "coin": coin,
             "stats": stats,
             "bids_top": bids[:10],
             "asks_top": asks[:10],
@@ -995,6 +1009,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
     )
     async def hyperliquid_trades(coin: str, top_n: Annotated[int, Field(ge=1, le=50)] = 5) -> dict[str, Any]:
         b = Builder()
+        coin = await _hl_name(b, coin)
         raw = await b.guard("trades", "hyperliquid", rt.hyperliquid.recent_trades(coin))
         if not raw:
             if raw is not None:
@@ -1023,7 +1038,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
             b.miss("trades", "hyperliquid", "data_unavailable", "no usable trades")
             return b.build(None, ok=False)
         summary = summarise_trades(normalised, top_n=top_n)
-        return b.build({"coin": coin.upper(), "fetched": len(raw), "parsed": len(normalised), "summary": summary})
+        return b.build({"coin": coin, "fetched": len(raw), "parsed": len(normalised), "summary": summary})
 
     @server.tool(
         annotations=READ_ONLY,
@@ -1040,6 +1055,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
         b = Builder()
         now_ms = int(rt.now().timestamp() * 1000)
         start_ms = now_ms - int(days_back * 86_400_000)
+        coin = await _hl_name(b, coin)
         got = await b.guard("funding_history", "hyperliquid", rt.hyperliquid.funding_history_range(coin, start_ms, now_ms))
         if not got or not got["rows"]:
             if got is not None:
@@ -1057,7 +1073,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
             b.miss("funding_history", "hyperliquid", "data_unavailable", "no parsable entries")
             return b.build(None, ok=False)
         stats = summarise_funding_history(entries, interval_hours=1.0, now_ms=now_ms)
-        return b.build({"coin": coin.upper(), "days_requested": days_back, "stats": stats, "entries": entries})
+        return b.build({"coin": coin, "days_requested": days_back, "stats": stats, "entries": entries})
 
     @server.tool(
         annotations=READ_ONLY,

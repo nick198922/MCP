@@ -1,0 +1,28 @@
+# Заклики з бібліотеки власника для форвард-перевірки. Формат і правила: README.md у цій теці.
+# date = день заклику (запис відео чи посту; якщо невідомо — день, коли матеріал потрапив у бібліотеку).
+id,date,source,asset,side,zone_low,zone_high,target,stop,horizon_days,symbol,note
+AI-VVV,2026-10-14,LIB-20261014-ai-narrative,VVV,long,20,20,40,,,,"«зона ~$20, цілі 2–2.5x»; ціль = 2x; дата запису невідома"
+AI-VIRTUAL,2026-10-14,LIB-20261014-ai-narrative,VIRTUAL,long,0.60,0.65,,,,,"купівля частинами від тижневої підтримки"
+AI-GRASS-1,2026-10-14,LIB-20261014-ai-narrative,GRASS,long,0.58,0.60,,,,,
+AI-GRASS-2,2026-10-14,LIB-20261014-ai-narrative,GRASS,long,0.40,0.40,,,,,
+AI-NIL,2026-10-14,LIB-20261014-ai-narrative,NIL,long,0.60,0.60,3.0,,,,"ціль 5x; «можливо падіння до $0.40»; тікер із субтитрів (ймовірно Nillion)"
+AI-CHIP,2026-10-14,LIB-20261014-ai-narrative,CHIP,long,0.04,0.04,,,,,"тікер із субтитрів (ймовірно USD.AI), не підтверджено"
+RWA-ONDO-1,2026-10-05,LIB-20261014-rwa-narrative,ONDO,long,0.40,0.40,,,,,
+RWA-ONDO-2,2026-10-05,LIB-20261014-rwa-narrative,ONDO,long,0.34,0.35,,,,,"перетин тижневих трендових"
+RWA-AAVE,2026-10-05,LIB-20261014-rwa-narrative,AAVE,long,120,120,,,,,"−30 %, тижневий тренд"
+RWA-UNI,2026-10-05,LIB-20261014-rwa-narrative,UNI,long,6,6,,,,,
+RWA-ENA-1,2026-10-05,LIB-20261014-rwa-narrative,ENA,long,0.20,0.20,,,,,
+RWA-ENA-2,2026-10-05,LIB-20261014-rwa-narrative,ENA,long,0.15,0.15,,,,,"при глибокій корекції"
+RWA-SYRUP,2026-10-05,LIB-20261014-rwa-narrative,SYRUP,long,0.20,0.20,,,,,
+RWA-RAY,2026-10-05,LIB-20261014-rwa-narrative,RAY,long,1.20,1.20,,,,binanceusdm:RAYSOL/USDT:USDT,"Raydium: на Binance RAYSOL (RAY там інший токен), на Bybit RAYDIUM; тижневий тренд"
+RWA-ZRO,2026-10-05,LIB-20261014-rwa-narrative,ZRO,long,1.50,1.50,,,,,"анлок 20.10 як можлива точка входу"
+MR-BTC-LONG,2026-10-15,LIB-20261015-market-review,BTC,long,80000,82000,85400,,,,"локальний лонг від низу рейнджу; ціль = зняття ліквідності вище 84–85.4 тис."
+MR-BTC-SHORT,2026-10-15,LIB-20261015-market-review,BTC,short,85400,85600,,,,,"сам автор: low probability trade"
+MR-BTC-GLOBAL,2026-10-15,LIB-20261015-market-review,BTC,long,75000,76000,,,,,"«глобальні закупи»"
+MR-HYPE,2026-10-15,LIB-20261015-market-review,HYPE,long,75,75,,,,,"«можливо 65»"
+MR-PUMP-1,2026-10-15,LIB-20261015-market-review,PUMP,long,0.37,0.38,,,,,
+MR-PUMP-2,2026-10-15,LIB-20261015-market-review,PUMP,long,0.32,0.32,,,,,
+MR-ZRO-1,2026-10-15,LIB-20261015-market-review,ZRO,long,1.50,1.50,2.5,,,,"цілі 2.5, потім 5"
+MR-ZRO-2,2026-10-15,LIB-20261015-market-review,ZRO,long,1.30,1.30,2.5,,,,
+MR-AERO,2026-10-15,LIB-20261015-market-review,AERO,long,0.75,0.77,,,,,"до 21.10; у субтитрах «175 177», опір $1"
+MR-ENA,2026-10-15,LIB-20261015-market-review,ENA,long,0.15,0.15,,0.14,,,"«не хотілося б нижче 14 центів»"

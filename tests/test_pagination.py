@@ -92,6 +92,8 @@ async def test_hyperliquid_funding_range_walks_500_row_pages(state):
 
     def hl(req: httpx.Request) -> httpx.Response:
         body = json.loads(req.content)
+        if body["type"] != "fundingHistory":
+            return httpx.Response(200, json=[])
         start, end = body["startTime"], body.get("endTime", 10**15)
         return httpx.Response(200, json=[r for r in total if start <= r["time"] <= end][:500])
 

@@ -1,0 +1,49 @@
+{
+ "_source": "binance dapi continuousKlines pair=BTCUSD contractType=CURRENT_QUARTER interval=1d (first 3), via ccxt implicit endpoint dapiPublicGetContinuousKlines. Expired COIN-M dapi klines symbol=BTCUSD_221230 returned {\"code\":-1121,\"msg\":\"Invalid symbol.\"}, hence null below; expired USDT-M fapi klines (BTCUSDT_221230) were served",
+ "_fetched": "2026-10-14",
+ "continuous_current_quarter": [
+  [
+   1591833600000,
+   "10105.9",
+   "10119.5",
+   "9068.5",
+   "9298.6",
+   "1011760",
+   1591919999999,
+   "10601.08070603",
+   31850,
+   "497662",
+   "5223.97415421",
+   "0"
+  ],
+  [
+   1591920000000,
+   "9298.8",
+   "9589.9",
+   "9264.0",
+   "9565.6",
+   "1069543",
+   1592006399999,
+   "11297.63746200",
+   29320,
+   "544850",
+   "5757.45055933",
+   "0"
+  ],
+  [
+   1592006400000,
+   "9562.8",
+   "9579.5",
+   "9430.0",
+   "9577.5",
+   "415483",
+   1592092799999,
+   "4364.88345879",
+   14022,
+   "208165",
+   "2187.43625391",
+   "0"
+  ]
+ ],
+ "expired_delivery_klines": null
+}

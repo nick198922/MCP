@@ -1,0 +1,3 @@
+- Скаут: дві нові картки ідей — `polymarket-threshold-vs-vol-model` (перекіс хвостів щоденних ринків Polymarket проти моделі на DVOL) і `perp-spot-premium-spike-convergence` (збіжність премії перпа до споту після спайка ≥ 1 %).
+- Критик: обидві картки `accepted` умовно (рев'ю `docs/reviews/2026-10-15-idea-triage-4.md`); пріоритет 1 — premium-spike, 2 — Polymarket (спершу лише стадія 0 — покриття даних).
+- Нове питання до власника: `Q-20261015-3` (доступ до торгівлі на Polymarket).

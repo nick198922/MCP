@@ -16,3 +16,5 @@ build/
 .DS_Store
 /.agent/
 .claude/settings.local.json
+# originals of library items (the LIB-*.md file keeps the text)
+docs/library/*.pdf

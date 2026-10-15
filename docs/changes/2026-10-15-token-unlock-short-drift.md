@@ -1,0 +1,3 @@
+- Дослідження «шорт перпа перед великим анлоком токена» (IDEA-20261015-token-unlock-short-drift): **rejected**. Нетто +1.8 п.п. за 12 днів, t 1.68 < 2, OOS 2025–2026 +0.9 п.п. (t 0.7). Звіт: `docs/verification/2026-10-15-token-unlock-short-drift.md`.
+- Нове: чиста аналітика `src/tradedesk/analytics/token_unlocks.py` (відбір подій з розкладу DefiLlama, placebo, стоп), тести `tests/test_token_unlocks.py`, скрипти `scripts/verify_token_unlocks.py` і `scripts/probe_token_unlocks.py`.
+- Знайдено дефект: `funding_rate_history_range` лишає дірки по ~25 днів у funding при `complete=true` (Bybit/Binance); пункт у `docs/BACKLOG.md`, зачіпає й кеш holders-revenue.

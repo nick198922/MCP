@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 # Each migration is a list of SQL statements executed in a single transaction.
 # `PRAGMA user_version` is bumped by Store.init() after a block runs.
@@ -252,5 +252,52 @@ MIGRATIONS: dict[int, list[str]] = {
         )
         """,
         "CREATE INDEX IF NOT EXISTS supply_snapshot_symbol_day ON supply_snapshot (symbol, day)",
+    ],
+    11: [
+        # Public accounts of strong traders (Hyperliquid, Polymarket): a daily leaderboard snapshot and their positions,
+        # recorded forward so the agents can test whether past PnL persists and whether new positions lead price.
+        """
+        CREATE TABLE IF NOT EXISTS trader_snapshot (
+            day TEXT NOT NULL,                     -- UTC date, YYYY-MM-DD
+            venue TEXT NOT NULL,                   -- 'hyperliquid' | 'polymarket' | 'polymarket_crypto'
+            account TEXT NOT NULL,                 -- lower-case address (Polymarket: proxy wallet)
+            ts INTEGER NOT NULL,
+            name TEXT,
+            account_value REAL,                    -- USD (Hyperliquid only)
+            pnl_day REAL, pnl_week REAL, pnl_month REAL, pnl_all REAL,   -- USD
+            roi_month REAL, roi_all REAL,          -- decimal (Hyperliquid only)
+            vlm_month REAL,                        -- USD traded in the month window
+            rank_month INTEGER,                    -- rank by pnl_month among the stored accounts of that venue and day
+            PRIMARY KEY (day, venue, account)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS trader_snapshot_account ON trader_snapshot (venue, account, day)",
+        """
+        CREATE TABLE IF NOT EXISTS trader_positions (
+            ts INTEGER NOT NULL,                   -- unix seconds of the observation
+            venue TEXT NOT NULL,
+            account TEXT NOT NULL,
+            market TEXT NOT NULL,                  -- HL coin; Polymarket token id ('' with side 'flat': no open positions)
+            side TEXT NOT NULL,                    -- 'long' | 'short' (HL); outcome name (Polymarket); 'flat'
+            size REAL,                             -- coins (HL) or shares (Polymarket)
+            entry_px REAL,
+            value_usd REAL,
+            upnl REAL,
+            leverage REAL,
+            liq_px REAL,
+            title TEXT,                            -- Polymarket market title (untrusted text)
+            PRIMARY KEY (ts, venue, account, market)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS trader_positions_account ON trader_positions (venue, account, ts)",
+        """
+        CREATE TABLE IF NOT EXISTS trader_position_state (
+            venue TEXT NOT NULL,
+            account TEXT NOT NULL,
+            digest TEXT NOT NULL,                  -- of the last recorded position set; rows are written only on change
+            ts INTEGER NOT NULL,
+            PRIMARY KEY (venue, account)
+        )
+        """,
     ],
 }

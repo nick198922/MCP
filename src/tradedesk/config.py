@@ -60,6 +60,13 @@ class Settings:
     collect_supply_enabled: bool = True
     collect_supply_seconds: int = 86_400
     collect_supply_pages: int = 4
+    # Strong traders' public accounts (Hyperliquid leaderboard + positions, Polymarket leaderboard + positions).
+    collect_traders_enabled: bool = True
+    collect_traders_seconds: int = 86_400  # leaderboards
+    collect_traders_positions_seconds: int = 3_600
+    traders_top_n: int = 100  # watched per venue and per ranking (month PnL, all-time PnL)
+    traders_min_account_usd: float = 500_000.0  # Hyperliquid accounts stored in the daily snapshot
+    traders_pm_pages: int = 10  # Polymarket leaderboard pages of 50 per ranking
     # Alerts
     alerts_enabled: bool = False
     alerts_rules_path: str = ""
@@ -104,6 +111,12 @@ class Settings:
             collect_supply_enabled=os.environ.get("TRADEDESK_COLLECT_SUPPLY_ENABLED", "1").lower() in ("1", "true", "yes"),
             collect_supply_seconds=int(_float("TRADEDESK_COLLECT_SUPPLY_SECONDS", 86_400)),
             collect_supply_pages=int(_float("TRADEDESK_COLLECT_SUPPLY_PAGES", 4)),
+            collect_traders_enabled=os.environ.get("TRADEDESK_COLLECT_TRADERS_ENABLED", "1").lower() in ("1", "true", "yes"),
+            collect_traders_seconds=int(_float("TRADEDESK_COLLECT_TRADERS_SECONDS", 86_400)),
+            collect_traders_positions_seconds=int(_float("TRADEDESK_COLLECT_TRADERS_POSITIONS_SECONDS", 3_600)),
+            traders_top_n=int(_float("TRADEDESK_TRADERS_TOP_N", 100)),
+            traders_min_account_usd=_float("TRADEDESK_TRADERS_MIN_ACCOUNT_USD", 500_000.0),
+            traders_pm_pages=int(_float("TRADEDESK_TRADERS_PM_PAGES", 10)),
             http_bearer_tokens=os.environ.get("TRADEDESK_HTTP_BEARER_TOKENS") or os.environ.get("TRADEDESK_HTTP_BEARER_TOKEN", ""),
             alerts_enabled=os.environ.get("TRADEDESK_ALERTS_ENABLED", "").lower() in ("1", "true", "yes"),
             alerts_rules_path=os.environ.get("TRADEDESK_ALERTS_RULES_PATH", ""),

@@ -10,6 +10,8 @@ from ..core.errors import ProviderError
 from ..core.http import Http
 
 BASE_URL = "https://api.hyperliquid.xyz"
+# Leaderboard of every account (one ~40 MB JSON): PnL, ROI and volume by day / week / month / all time.
+STATS_URL = "https://stats-data.hyperliquid.xyz"
 FUNDING_INTERVAL_HOURS = 1.0
 NAMES_TTL_S = 600.0
 NAMES_RETRY_S = 60.0
@@ -53,17 +55,88 @@ def parse_asset_contexts(raw: Any) -> list[dict[str, Any]]:
     return rows
 
 
+WINDOWS = {"day": "day", "week": "week", "month": "month", "allTime": "all"}
+
+
+def parse_leaderboard(raw: Any, min_account_usd: float = 0.0) -> list[dict[str, Any]]:
+    """Accounts from the stats leaderboard with ``account_value >= min_account_usd``: ``account``, ``name``,
+    ``account_value`` and ``pnl_<day|week|month|all>``, ``roi_<…>``, ``vlm_<…>`` (USD; ROI as a decimal). Bad rows are skipped."""
+    rows = raw.get("leaderboardRows") if isinstance(raw, dict) else raw
+    if not isinstance(rows, list):
+        raise ProviderError("hyperliquid", "backend_error", "unexpected leaderboard shape")
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        if not isinstance(r, dict) or not r.get("ethAddress"):
+            continue
+        value = _f(r.get("accountValue"))
+        if value is None or value < min_account_usd:
+            continue
+        row: dict[str, Any] = {"account": str(r["ethAddress"]).lower(), "name": r.get("displayName"), "account_value": value}
+        perf = r.get("windowPerformances") or []
+        for item in perf:
+            if isinstance(item, (list, tuple)) and len(item) == 2 and item[0] in WINDOWS and isinstance(item[1], dict):
+                w = WINDOWS[item[0]]
+                row[f"pnl_{w}"], row[f"roi_{w}"], row[f"vlm_{w}"] = _f(item[1].get("pnl")), _f(item[1].get("roi")), _f(item[1].get("vlm"))
+        out.append(row)
+    return out
+
+
+def parse_positions(state: Any) -> list[dict[str, Any]]:
+    """Open perp positions from ``clearinghouseState``: ``market`` (coin), ``side``, ``size`` (coins, unsigned),
+    ``entry_px``, ``value_usd``, ``upnl``, ``leverage``, ``liq_px``."""
+    if not isinstance(state, dict):
+        raise ProviderError("hyperliquid", "backend_error", "unexpected clearinghouseState shape")
+    out: list[dict[str, Any]] = []
+    for ap in state.get("assetPositions") or []:
+        pos = ap.get("position") if isinstance(ap, dict) else None
+        if not isinstance(pos, dict):
+            continue
+        szi = _f(pos.get("szi"))
+        if not szi:
+            continue
+        lev = pos.get("leverage")
+        out.append(
+            {
+                "market": str(pos.get("coin")),
+                "side": "long" if szi > 0 else "short",
+                "size": abs(szi),
+                "entry_px": _f(pos.get("entryPx")),
+                "value_usd": _f(pos.get("positionValue")),
+                "upnl": _f(pos.get("unrealizedPnl")),
+                "leverage": _f(lev.get("value")) if isinstance(lev, dict) else None,
+                "liq_px": _f(pos.get("liquidationPx")),
+            }
+        )
+    return out
+
+
 class Hyperliquid:
     name = "hyperliquid"
 
-    def __init__(self, http: Http) -> None:
+    def __init__(self, http: Http, stats: Http | None = None) -> None:
         self.http = http
+        self.stats = stats  # stats-data host (leaderboard)
         self._names: dict[str, str] | None = None  # plain state: survives aclose()
         self._names_at = 0.0
         self._names_try_at = -NAMES_RETRY_S
 
     async def _info(self, payload: dict[str, Any], ttl: float) -> Fetched:
         return await self.http.post_json("/info", json=payload, ttl=ttl, tool=f"info/{payload['type']}", args=payload)
+
+    async def aclose(self) -> None:
+        await self.http.aclose()
+        if self.stats is not None:
+            await self.stats.aclose()
+
+    async def leaderboard(self) -> Fetched:
+        """Every account's PnL / ROI / volume by window (raw rows; parse with ``parse_leaderboard``). ~40 MB, not cached."""
+        if self.stats is None:
+            raise ProviderError(self.name, "config", "stats client not configured")
+        return await self.stats.get_json("/Mainnet/leaderboard", tool="leaderboard", args={})
+
+    async def clearinghouse_state(self, user: str) -> Fetched:
+        """One account's margin summary and open perp positions (public for every address)."""
+        return await self._info({"type": "clearinghouseState", "user": user}, ttl=30)
 
     async def asset_contexts(self) -> Fetched:
         f = await self._info({"type": "metaAndAssetCtxs"}, ttl=5)

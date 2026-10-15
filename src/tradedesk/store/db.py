@@ -223,6 +223,93 @@ class Store:
         await self.conn.commit()
         return len(payload)
 
+    async def insert_trader_snapshot(self, day: str, ts: int, venue: str, rows: list[dict[str, Any]]) -> int:
+        """Leaderboard rows of one venue for one UTC day; idempotent per (day, venue, account). ``rank_month`` is
+        computed here by ``pnl_month`` (descending) among the rows given."""
+        ranked = sorted(rows, key=lambda r: -(r.get("pnl_month") or float("-inf")))
+        payload = [
+            (
+                day,
+                venue,
+                str(r["account"]).lower(),
+                ts,
+                r.get("name"),
+                r.get("account_value"),
+                r.get("pnl_day"),
+                r.get("pnl_week"),
+                r.get("pnl_month"),
+                r.get("pnl_all"),
+                r.get("roi_month"),
+                r.get("roi_all"),
+                r.get("vlm_month"),
+                i + 1 if r.get("pnl_month") is not None else None,
+            )
+            for i, r in enumerate(ranked)
+            if r.get("account")
+        ]
+        if not payload:
+            return 0
+        await self.conn.executemany(
+            "INSERT OR REPLACE INTO trader_snapshot (day, venue, account, ts, name, account_value, pnl_day, pnl_week, pnl_month, "
+            "pnl_all, roi_month, roi_all, vlm_month, rank_month) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            payload,
+        )
+        await self.conn.commit()
+        return len(payload)
+
+    async def tracked_traders(self, venue: str, top_n: int, min_account_usd: float = 0.0) -> list[str]:
+        """Accounts to watch from the latest snapshot of ``venue``: the top ``top_n`` by month PnL and the top ``top_n``
+        by all-time PnL (Hyperliquid: among accounts worth at least ``min_account_usd``)."""
+        cur = await self.conn.execute("SELECT MAX(day) FROM trader_snapshot WHERE venue = ?", (venue,))
+        row = await cur.fetchone()
+        if not row or row[0] is None:
+            return []
+        out: list[str] = []
+        for col in ("pnl_month", "pnl_all"):
+            cur = await self.conn.execute(
+                f"SELECT account FROM trader_snapshot WHERE venue = ? AND day = ? AND {col} IS NOT NULL "
+                f"AND COALESCE(account_value, ?) >= ? ORDER BY {col} DESC LIMIT ?",
+                (venue, row[0], min_account_usd, min_account_usd, top_n),
+            )
+            out += [r[0] for r in await cur.fetchall() if r[0] not in out]
+        return out
+
+    async def record_trader_positions(self, ts: int, venue: str, account: str, positions: list[dict[str, Any]]) -> int:
+        """Store ``account``'s positions only if the set (market, side, size to 4 significant digits) changed since the
+        last record; an empty set is stored as one 'flat' row. Returns the rows written (0: unchanged)."""
+        digest = "|".join(sorted(f"{p['market']}:{p['side']}:{float(p.get('size') or 0):.4g}" for p in positions)) or "flat"
+        cur = await self.conn.execute("SELECT digest FROM trader_position_state WHERE venue = ? AND account = ?", (venue, account))
+        prev = await cur.fetchone()
+        if prev and prev[0] == digest:
+            return 0
+        rows = positions or [{"market": "", "side": "flat"}]
+        await self.conn.executemany(
+            "INSERT OR REPLACE INTO trader_positions (ts, venue, account, market, side, size, entry_px, value_usd, upnl, leverage, "
+            "liq_px, title) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            [
+                (
+                    ts,
+                    venue,
+                    account,
+                    str(p["market"]),
+                    str(p["side"]),
+                    p.get("size"),
+                    p.get("entry_px"),
+                    p.get("value_usd"),
+                    p.get("upnl"),
+                    p.get("leverage"),
+                    p.get("liq_px"),
+                    p.get("title"),
+                )
+                for p in rows
+            ],
+        )
+        await self.conn.execute(
+            "INSERT OR REPLACE INTO trader_position_state (venue, account, digest, ts) VALUES (?,?,?,?)", (venue, account, digest, ts)
+        )
+        await self.conn.commit()
+        return len(rows)
+
     async def prune(self, table: str, cutoff_ts: int) -> int:
         """Delete rows with ts < cutoff_ts. Returns the number of rows deleted."""
         if table not in {"atm_term", "funding_hist", "basis_hist", "snapshots", "alerts", "liquidations", "ohlcv_hist"}:

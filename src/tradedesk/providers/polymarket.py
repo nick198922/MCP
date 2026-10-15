@@ -121,6 +121,38 @@ class Polymarket:
             raise ProviderError(self.name, "backend_error", "unexpected shape at /trades")
         return f
 
+    async def leaderboard(
+        self, *, period: str = "MONTH", order_by: str = "PNL", category: str = "OVERALL", limit: int = 50, offset: int = 0
+    ) -> Fetched:
+        """data-api `/v1/leaderboard`: rows with `rank`, `proxyWallet`, `userName`, `pnl`, `vol` (USD) for the period
+        (DAY / WEEK / MONTH / ALL) and category (OVERALL, CRYPTO, POLITICS, …). Pages of up to 50 via `offset`."""
+        if self.data is None:
+            raise ProviderError(self.name, "config", "data-api client not configured")
+        params: dict[str, Any] = {"category": category, "timePeriod": period, "orderBy": order_by, "limit": limit, "offset": offset}
+        f = await self.data.get_json("/v1/leaderboard", params=params, ttl=600, tool="leaderboard", args=params)
+        if not isinstance(f.data, list):
+            raise ProviderError(self.name, "backend_error", "unexpected shape at /v1/leaderboard")
+        return f
+
+    async def positions(self, user: str, *, limit: int = 500, size_threshold: float = 1.0) -> Fetched:
+        """data-api `/positions` of one wallet, open ones only (`redeemable=false`; otherwise resolved markets fill the
+        limit and hide them), largest current value first: `conditionId`, `asset`, `outcome`, `size` (shares),
+        `avgPrice`, `currentValue`, `cashPnl`, `curPrice`, `title`, …"""
+        if self.data is None:
+            raise ProviderError(self.name, "config", "data-api client not configured")
+        params: dict[str, Any] = {
+            "user": user,
+            "limit": limit,
+            "sizeThreshold": size_threshold,
+            "redeemable": "false",
+            "sortBy": "CURRENT",
+            "sortDirection": "DESC",
+        }
+        f = await self.data.get_json("/positions", params=params, ttl=60, tool="positions", args=params)
+        if not isinstance(f.data, list):
+            raise ProviderError(self.name, "backend_error", "unexpected shape at /positions")
+        return f
+
     async def search(self, query: str | None, limit: int, active: bool, closed: bool) -> Fetched:
         """With `query`: Gamma `/public-search?q=` (returns events, each with a markets list).
         Without `query`: Gamma `/markets?order=volume` (top markets by volume).

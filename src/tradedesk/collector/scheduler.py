@@ -425,6 +425,110 @@ async def _collect_supply(rt: "Runtime") -> int:
     return await rt.store.insert_supply_snapshot(now.strftime("%Y-%m-%d"), int(now.timestamp()), rows)
 
 
+def _num(v: object) -> float | None:
+    try:
+        return None if v is None or isinstance(v, bool) else float(v)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+async def _pm_leaderboard(rt: "Runtime", category: str, pages: int) -> list[dict[str, object]]:
+    """Polymarket leaderboard rows for one category, merged by wallet over the DAY / WEEK / MONTH / ALL rankings."""
+    merged: dict[str, dict[str, object]] = {}
+    for period, key in (("MONTH", "pnl_month"), ("WEEK", "pnl_week"), ("DAY", "pnl_day"), ("ALL", "pnl_all")):
+        for page in range(max(1, pages)):
+            rows = (await rt.polymarket.leaderboard(period=period, category=category, limit=50, offset=page * 50)).data
+            for r in rows:
+                wallet = str(r.get("proxyWallet") or "").lower() if isinstance(r, dict) else ""
+                if not wallet:
+                    continue
+                m = merged.setdefault(wallet, {"account": wallet, "name": r.get("userName") or None})
+                m[key] = _num(r.get("pnl"))
+                if period == "MONTH":
+                    m["vlm_month"] = _num(r.get("vol"))
+            if len(rows) < 50:
+                break
+    return list(merged.values())
+
+
+async def _collect_traders(rt: "Runtime") -> int:
+    """Daily snapshot of strong traders' public results into `trader_snapshot`: every Hyperliquid account worth at
+    least `traders_min_account_usd`, and the Polymarket leaderboards (overall and crypto). One venue failing does not
+    stop the others; the job fails only if nothing was written."""
+    from ..core.errors import ProviderError  # noqa: PLC0415
+    from ..providers.hyperliquid import parse_leaderboard  # noqa: PLC0415
+
+    assert rt.store is not None
+    s = rt.settings
+    now = rt.now()
+    day, ts = now.strftime("%Y-%m-%d"), int(now.timestamp())
+    written, errors = 0, []
+    try:
+        rows = parse_leaderboard((await rt.hyperliquid.leaderboard()).data, s.traders_min_account_usd)
+        written += await rt.store.insert_trader_snapshot(day, ts, "hyperliquid", rows)
+    except ProviderError as e:
+        errors.append(f"hyperliquid: {e}")
+    for venue, category in (("polymarket", "OVERALL"), ("polymarket_crypto", "CRYPTO")):
+        try:
+            written += await rt.store.insert_trader_snapshot(day, ts, venue, await _pm_leaderboard(rt, category, s.traders_pm_pages))
+        except ProviderError as e:
+            errors.append(f"{venue}: {e}")
+    if errors:
+        if not written:
+            raise RuntimeError("; ".join(errors))
+        log.warning("traders snapshot partly failed: %s", "; ".join(errors))
+    return written
+
+
+async def _collect_trader_positions(rt: "Runtime") -> int:
+    """Positions of the watched traders (top by month and all-time PnL in the latest snapshot) into `trader_positions`,
+    written only when an account's position set changes. Polymarket: open (not resolved) positions worth >= $100."""
+    from ..core.errors import ProviderError  # noqa: PLC0415
+    from ..providers.hyperliquid import parse_positions  # noqa: PLC0415
+
+    assert rt.store is not None
+    s = rt.settings
+    ts = int(rt.now().timestamp())
+    written = failed = tried = 0
+    for account in await rt.store.tracked_traders("hyperliquid", s.traders_top_n, s.traders_min_account_usd):
+        tried += 1
+        try:
+            positions = parse_positions((await rt.hyperliquid.clearinghouse_state(account)).data)
+        except ProviderError as e:
+            failed += 1
+            log.debug("positions hyperliquid %s: %s", account, e)
+            continue
+        written += await rt.store.record_trader_positions(ts, "hyperliquid", account, positions)
+    pm_accounts: list[str] = []
+    for venue in ("polymarket", "polymarket_crypto"):
+        pm_accounts += [a for a in await rt.store.tracked_traders(venue, s.traders_top_n) if a not in pm_accounts]
+    for account in pm_accounts:
+        tried += 1
+        try:
+            raw = (await rt.polymarket.positions(account)).data
+        except ProviderError as e:
+            failed += 1
+            log.debug("positions polymarket %s: %s", account, e)
+            continue
+        positions = [
+            {
+                "market": str(r.get("asset")),
+                "side": str(r.get("outcome") or ""),
+                "size": _num(r.get("size")),
+                "entry_px": _num(r.get("avgPrice")),
+                "value_usd": _num(r.get("currentValue")),
+                "upnl": _num(r.get("cashPnl")),
+                "title": r.get("title"),
+            }
+            for r in raw
+            if isinstance(r, dict) and r.get("asset") and not r.get("redeemable") and (_num(r.get("currentValue")) or 0) >= 100
+        ]
+        written += await rt.store.record_trader_positions(ts, "polymarket", account, positions)
+    if tried and failed == tried:
+        raise RuntimeError(f"positions: all {tried} requests failed")
+    return written
+
+
 async def _retention_sweep(rt: "Runtime") -> int:
     """Trim stored history to the retention windows configured in Settings."""
     assert rt.store is not None
@@ -457,6 +561,9 @@ def build_default_scheduler(rt: "Runtime") -> Scheduler | None:
         PeriodicJob(name="basis", period_seconds=s.collect_basis_seconds, fn=_collect_basis),
         PeriodicJob(name="retention", period_seconds=s.retention_seconds, fn=_retention_sweep),
     ]
+    if s.collect_traders_enabled:
+        jobs.append(PeriodicJob(name="traders", period_seconds=s.collect_traders_seconds, fn=_collect_traders))
+        jobs.append(PeriodicJob(name="trader_positions", period_seconds=s.collect_traders_positions_seconds, fn=_collect_trader_positions))
     if s.collect_supply_enabled:
         jobs.append(PeriodicJob(name="supply", period_seconds=s.collect_supply_seconds, fn=_collect_supply))
     if s.alerts_enabled:

@@ -1,0 +1,22 @@
+[
+ {
+  "rank": "1",
+  "proxyWallet": "0x000000000000000000000000000000000000000b",
+  "userName": "user1",
+  "xUsername": "",
+  "verifiedBadge": false,
+  "vol": 50636447.469857015,
+  "pnl": 4221348.354600897,
+  "profileImage": ""
+ },
+ {
+  "rank": "2",
+  "proxyWallet": "0x000000000000000000000000000000000000000c",
+  "userName": "user2",
+  "xUsername": "",
+  "verifiedBadge": false,
+  "vol": 24997779.328897998,
+  "pnl": 4145320.7348018456,
+  "profileImage": ""
+ }
+]

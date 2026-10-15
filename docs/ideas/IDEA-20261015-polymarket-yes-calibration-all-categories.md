@@ -1,6 +1,6 @@
 # IDEA-20261015-polymarket-yes-calibration-all-categories: чи Polymarket систематично переоцінює YES у «середніх» цінах (40-60 %) за 4-24 год до розрахунку, і чи окупається покупка NO
 
-Статус: accepted
+Статус: rejected — поза напрямом власника (2026-10-15): на Polymarket беремо лише крипто-ринки, а вигода цієї картки — ставки NO на політику, спорт і культуру. Калібрування крипто-ринків покривають `threshold-vs-vol-model` і `touch-ladder-event-days`; повертатися лише як крипто-версія з достатньою потужністю.
 <!-- proposed → accepted | rejected → testing → confirmed | rejected | inconclusive → built -->
 
 ## Інструменти і ринок

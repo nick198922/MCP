@@ -27,3 +27,14 @@ def test_transcript_paragraph_lookup_and_index():
     assert yf.paragraph_at(paras, 59) == "intro" and yf.paragraph_at(paras, 70) == "weekly support"
     md = yf.render_index("Title", "https://youtu.be/x", [(70.0, "t00110.jpg")], paras, ["sheet-1.jpg"])
     assert "## 01:10 — [t00110.jpg](t00110.jpg)" in md and "> weekly support" in md and "[sheet-1.jpg](sheet-1.jpg)" in md
+
+
+def test_moments_and_bursts():
+    assert yf.parse_times("4:05, 0:30,4:05,1:02:03,45") == [30.0, 45.0, 245.0, 3723.0]
+    assert yf.burst_times([0.0, 245.0], [0.0, 4.0, -2.0]) == [[0.0, 4.0, 0.0], [245.0, 249.0, 243.0]]
+    try:
+        yf.parse_times("4m05")
+        raise AssertionError("bad time accepted")
+    except ValueError:
+        pass
+    assert yf.video_id("https://youtu.be/8YKAUGz0HnM?si=x") == "8YKAUGz0HnM" and yf.video_id("nope") is None

@@ -56,11 +56,11 @@ def paragraphs(snippets: list[tuple[float, str]], every: float = 60.0) -> list[s
     return out
 
 
-def render(meta: dict, url: str, language: str, generated: bool, snippets: list[tuple[float, str]]) -> str:
+def render(meta: dict, url: str, language: str, generated: bool, snippets: list[tuple[float, str]], every: float = 60.0) -> str:
     title = meta.get("title") or url
     who = meta.get("author_name") or "канал невідомий"
     kind = "автоматичний" if generated else "ручний"
-    body = "\n\n".join(paragraphs(snippets))
+    body = "\n\n".join(paragraphs(snippets, every))
     return f"# {title}\n\nКанал: {who} · {url} · транскрипт: {language}, {kind}\n\n## Транскрипт\n\n{body}\n"
 
 
@@ -96,6 +96,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("url")
     ap.add_argument("--out", type=Path, help="write the markdown here instead of stdout")
+    ap.add_argument("--every", type=float, default=60.0, help="seconds per paragraph (default 60; 10-15 to pick key frames)")
     args = ap.parse_args(argv)
     vid = video_id(args.url)
     if not vid:
@@ -117,7 +118,7 @@ def main(argv: list[str] | None = None) -> int:
             print("YouTube blocks this machine's IP. Set TRADEDESK_YT_PROXY or ask the owner for the transcript.", file=sys.stderr)
             return 2
         return 1
-    text = render(oembed(url), url, language, generated, snippets)
+    text = render(oembed(url), url, language, generated, snippets, args.every)
     if args.out:
         args.out.write_text(text, encoding="utf-8")
         print(f"{args.out}: {len(snippets)} captions, {len(text)} characters")

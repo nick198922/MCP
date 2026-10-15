@@ -1,0 +1,622 @@
+## Ticker / price check
+
+legs checked 484, kept 474, dropped 10
+  ETH      ethereum                   binanceusdm:ETH n=0 median=None -> DROP
+  ETH      ethereum                   bybit:ETH n=0 median=None -> DROP
+  ETH      ethereum                   hyperliquid:ETH n=0 median=None -> DROP
+  GAIB     gaib                       binanceusdm:GAIB n=0 median=None -> DROP
+  MANTRA   mantra-dao                 binanceusdm:MANTRA n=1 median=0.746 -> DROP
+  NOM      omni-network               binanceusdm:NOM n=1 median=0.007 -> DROP
+  NOM      omni-network               bybit:NOM n=1 median=0.007 -> DROP
+  RAM      ramsesx                    bybit:RAM n=1 median=378.738 -> DROP
+  RAY      raydium                    binanceusdm:RAY n=0 median=None -> DROP
+  VELO     velodrome                  bybit:VELO n=5 median=0.229 -> DROP
+
+## Main variant (short token + beta BTC, >= 2 %, entry close T-10, exit close T+2)
+
+events after the price check: 548 on 57 tokens; evaluated (beta, closes): 534; truncated exits 0; funding missing 0; by venue {'binanceusdm': 477, 'bybit': 51, 'bybitraw': 5, 'hyperliquid': 1}
+H1 net : n= 534 tok= 57 mean= +1.82pp median= +3.89pp t2way=+1.68 CI_tok=[+0.29, +3.27] hit=61%
+   gross: n= 534 tok= 57 mean= +2.99pp median= +4.53pp t2way=+2.74 CI_tok=[+1.39, +4.57] hit=64%
+   mean round-trip cost 0.49pp; token funding received by the short: mean -0.411pp, share of trades where the short paid 40%; mean beta 1.27
+
+placebo (same tokens, windows clear of any >= 0.5 % unlock): n=2554 tok= 57 mean= -0.10pp median= +2.27pp t2way=-0.12 CI_tok=[-1.13, +0.73] hit=58%
+event - placebo: +1.92pp, token-cluster bootstrap 95% CI [+0.12, +3.59]
+cap-matched control (diagnostic): event net - mean of 3 controls' short net: n= 510 tok= 56 mean= +1.19pp median= +1.57pp t2way=+1.30 CI_tok=[-0.41, +2.74] hit=57%
+   controls alone (short net): n= 510 tok= 56 mean= +0.46pp median= +1.46pp t2way=+0.56 CI_tok=[-0.65, +1.54] hit=56%
+
+OOS 2025-01-01..: n= 310 tok= 46 mean= +0.93pp median= +2.52pp t2way=+0.69 CI_tok=[-1.23, +3.17] hit=59%
+2023-2024       : n= 224 tok= 30 mean= +3.04pp median= +5.63pp t2way=+1.56 CI_tok=[+0.46, +5.58] hit=64%
+  2023: n=  86 tok= 15 mean= -0.73pp median= +3.60pp t2way=-0.22 CI_tok=[-6.65, +3.66] hit=57%
+  2024: n= 138 tok= 27 mean= +5.39pp median= +8.28pp t2way=+2.42 CI_tok=[+2.67, +8.22] hit=69%
+  2025: n= 147 tok= 36 mean= +2.35pp median= +3.07pp t2way=+0.98 CI_tok=[-1.07, +5.93] hit=59%
+  2026: n= 163 tok= 35 mean= -0.34pp median= +1.97pp t2way=-0.22 CI_tok=[-3.50, +2.50] hit=59%
+without top-5 by net: n= 529 tok= 57 mean= +1.30pp median= +3.80pp t2way=+1.06 CI_tok=[-0.63, +2.94] hit=61%
+without bottom-5 by net: n= 529 tok= 57 mean= +2.91pp median= +4.01pp t2way=+3.10 CI_tok=[+1.68, +4.18] hit=62%
+costs x2: n= 534 tok= 57 mean= +1.33pp median= +3.35pp t2way=+1.22 CI_tok=[-0.20, +2.78] hit=60%
+token-level means (each token weight 1): n=57 mean +4.32pp median +3.00pp share > 0 68%
+per token (n, mean net pp): APE 37 +5.9; SEI 36 +0.1; GMT 32 +5.2; ZETA 31 +4.2; FLR 30 +2.4; STRK 30 +1.8; SUI 23 +2.9; CARV 21 +2.6; MAV 20 -0.6; IMX 19 -1.1; CYBER 19 -1.6; BB 17 +1.3; AGT 15 -11.3; ZORA 13 +6.9; XPL 12 +0.9; CELO 11 -4.3; RESOLV 10 +8.8; GRASS 10 -4.8; M 10 -0.7; STABLE 10 -4.4; KAITO 9 -4.7; HBAR 7 -1.1; VANA 7 +1.1; STO 7 -10.1; BICO 6 +2.2; ALPHA 6 -0.1; BIGTIME 6 -15.7; ENA 6 +4.0; LAYER 6 -0.2; OPN 6 +2.3; PERP 5 +5.1; MANTA 5 +14.0; DBR 5 +3.0; MEME 4 -6.3; QI 4 +15.2; INJ 3 -2.9; PYTH 3 +26.2; TRUMP 3 +4.5; KMNO 3 +4.9; APR 3 +25.0; TAO 2 +4.0; W 2 +12.6; TNSR 2 +19.0; SNX 2 -23.2; ONDO 2 +9.5; BABY 2 +12.2; ME 2 +13.7; BLUR 1 +15.6; LOOKS 1 +24.0; TIA 1 +19.7; BLAST 1 +18.4; SHELL 1 +11.1; DEEP 1 +6.1; PLUME 1 +7.8; WAL 1 +6.7; WET 1 -2.3; 2Z 1 +11.1
+
+short-leg MAE (daily highs): median 11.4%, p90 44.5%, max 2146.6%; share liquidated at 3x (MAE >= 30.8%): 17.2%, share liquidated at 5x (MAE >= 17.5%): 36.7%
+with a +30% stop: n= 534 tok= 57 mean= +0.83pp median= +3.02pp t2way=+0.78 CI_tok=[-0.50, +2.09] hit=58%; stopped 95
+max simultaneous positions 11; median when any open 5; perp median daily volume at entry: median $15.9m, p10 $1.2m
+on capital at 3x on both legs (capital = (1 + |beta|)/3 of token notional, |beta|~1.30): mean net +2.37% per 12-day trade
+
+## Verdict inputs
+
+n=534 mean=+1.82pp t=+1.68 CI_tok=(0.0028681775412850133, 0.03267867238303167) diff_placebo_CI=(0.0012165148864005347, 0.035944433776856854) OOS_mean=+0.93pp
+
+## Exploratory variants (12 + no-hedge = 13 attempts; do not change the verdict)
+
+no hedge (short token outright)                      n= 534 tok= 57 mean= +1.24pp median= +3.79pp t2way=+0.88 CI_tok=[-0.44, +2.91] hit=61%
+entry T-5                                            n= 535 tok= 57 mean= +1.24pp median= +2.85pp t2way=+1.55 CI_tok=[-0.09, +2.35] hit=61%
+entry T-1                                            n= 541 tok= 57 mean= +0.15pp median= +1.12pp t2way=+0.34 CI_tok=[-0.86, +0.92] hit=57%
+exit T+0                                             n= 535 tok= 57 mean= +1.30pp median= +2.74pp t2way=+1.38 CI_tok=[-0.09, +2.68] hit=60%
+exit T+5                                             n= 528 tok= 57 mean= +1.12pp median= +4.52pp t2way=+0.79 CI_tok=[-0.91, +2.86] hit=61%
+>= 5 %                                               n= 228 tok= 46 mean= +1.87pp median= +4.94pp t2way=+1.19 CI_tok=[-0.49, +4.28] hit=61%
+pre-event [T-10; T-1]                                n= 537 tok= 57 mean= +1.19pp median= +2.54pp t2way=+1.32 CI_tok=[-0.11, +2.51] hit=59%
+post-event [T-1; T+5] (entry at the close before T)  n= 533 tok= 57 mean= -0.30pp median= +1.07pp t2way=-0.33 CI_tok=[-2.05, +0.97] hit=54%
+cliff part >= 2 %                                    n= 525 tok= 57 mean= +1.66pp median= +3.80pp t2way=+1.52 CI_tok=[+0.07, +3.13] hit=61%
+insiders + investors >= 50 % of the unlock           n= 344 tok= 42 mean= +2.69pp median= +4.33pp t2way=+2.09 CI_tok=[+0.82, +4.55] hit=63%
+all 115 tokens (flagged schedules too)               n= 955 tok=112 mean= +1.44pp median= +4.32pp t2way=+1.70 CI_tok=[+0.08, +2.66] hit=64%
+denominator incl. noncirculating                     n= 538 tok= 57 mean= +1.81pp median= +4.05pp t2way=+1.69 CI_tok=[+0.18, +3.36] hit=62%
+schedule circ today within x1.5 of CoinGecko         n= 379 tok= 34 mean= +1.92pp median= +3.90pp t2way=+1.60 CI_tok=[+0.25, +3.46] hit=62%
+
+## Top-20 events by |net| (manual review)
+
+  2023-11-30 BIGTIME  binanceusdm:BIGTIME    frac  0.058 beta -0.57 r_tok +136.9 r_btc   +5.3 f_tok +0.24 net -139.7pp mae 157.5
+  2025-11-14 STRK     binanceusdm:STRK       frac  0.051 beta +2.81 r_tok +110.3 r_btc   -7.1 f_tok -0.31 net -131.9pp mae 138.5
+  2026-06-15 AGT      binanceusdm:AGT        frac  0.060 beta -0.07 r_tok +104.2 r_btc   +5.7 f_tok +1.30 net -103.7pp mae 114.6
+  2026-04-04 STO      binanceusdm:STO        frac  0.095 beta +0.83 r_tok  +80.6 r_btc   -3.5 f_tok -18.07 net -102.1pp mae 2146.6
+  2026-04-15 AGT      binanceusdm:AGT        frac  0.037 beta +0.25 r_tok  +97.0 r_btc  +11.6 f_tok +1.85 net  -92.6pp mae 201.6
+  2025-07-15 AGT      binanceusdm:AGT        frac  0.053 beta +1.77 r_tok  -62.3 r_btc  +10.2 f_tok +1.17 net  +80.5pp mae  10.8
+  2025-08-15 CYBER    binanceusdm:CYBER      frac  0.156 beta +2.19 r_tok  +75.3 r_btc   +2.9 f_tok -3.20 net  -73.5pp mae 226.2
+  2026-05-30 GRASS    binanceusdm:GRASS      frac  0.035 beta +1.75 r_tok  +57.8 r_btc   -7.9 f_tok +0.36 net  -72.2pp mae  94.4
+  2024-12-01 MAV      binanceusdm:MAV        frac  0.021 beta +1.56 r_tok  +59.2 r_btc   -2.5 f_tok +0.80 net  -63.7pp mae  64.3
+  2026-04-03 M        binanceusdm:M          frac  0.031 beta +0.23 r_tok  +61.9 r_btc   -2.2 f_tok +1.45 net  -61.3pp mae  65.8
+  2026-07-04 M        binanceusdm:M          frac  0.028 beta +0.72 r_tok  -54.8 r_btc   +4.9 f_tok -0.74 net  +56.9pp mae   0.1
+  2026-07-21 KAITO    binanceusdm:KAITO      frac  0.038 beta +0.75 r_tok  +54.1 r_btc   +2.0 f_tok +0.34 net  -52.8pp mae  69.3
+  2026-04-24 APR      binanceusdm:APR        frac  0.108 beta +0.78 r_tok  -44.8 r_btc   +6.1 f_tok +1.92 net  +51.2pp mae  10.5
+  2023-02-06 IMX      binanceusdm:IMX        frac  0.059 beta +1.19 r_tok  +50.0 r_btc   -0.5 f_tok +0.59 net  -50.9pp mae  78.8
+  2024-01-04 BIGTIME  binanceusdm:BIGTIME    frac  0.054 beta +1.01 r_tok  -45.2 r_btc   +0.8 f_tok +2.51 net  +47.1pp mae   4.8
+  2026-08-20 KAITO    binanceusdm:KAITO      frac  0.095 beta +0.57 r_tok  -47.0 r_btc  +20.6 f_tok -14.02 net  +44.3pp mae   1.5
+  2024-03-03 SUI      binanceusdm:SUI        frac  0.074 beta +1.01 r_tok  -18.8 r_btc  +24.2 f_tok +2.44 net  +43.8pp mae   1.7
+  2025-04-26 MEME     binanceusdm:MEME       frac  0.121 beta +1.44 r_tok  +51.8 r_btc  +13.1 f_tok -8.57 net  -42.1pp mae  86.8
+  2024-12-06 SNX      binanceusdm:SNX        frac  0.028 beta +1.18 r_tok  +52.9 r_btc  +10.0 f_tok +1.03 net  -41.4pp mae  66.7
+  2025-05-19 PYTH     binanceusdm:PYTH       frac  0.381 beta +1.50 r_tok  -31.9 r_btc   +6.5 f_tok -0.31 net  +40.5pp mae   7.7
+
+## All main events
+
+  2023-01-01 CELO     bin frac  0.029 beta +1.82 AR   +4.8 f -2.34 net   -8.1
+  2023-01-01 HBAR     bin frac  0.260 beta +1.14 AR  -11.3 f -0.69 net   +9.9
+  2023-01-01 INJ      bin frac  0.108 beta +1.97 AR   -0.1 f +0.28 net   -0.6
+  2023-01-07 IMX      bin frac  0.065 beta +1.60 AR  +15.6 f -1.07 net  -17.5
+  2023-01-08 GMT      bin frac  0.059 beta +1.87 AR  +19.7 f -0.67 net  -21.2
+  2023-01-24 BICO     byb frac  0.030 beta +1.54 AR   +0.5 f -0.06 net   -1.8
+  2023-01-30 ALPHA    bin frac  0.028 beta +1.48 AR   +6.8 f +0.56 net   -7.3
+  2023-01-31 CELO     bin frac  0.028 beta +1.27 AR   +4.9 f +0.39 net   -5.5
+  2023-02-06 IMX      bin frac  0.059 beta +1.19 AR  +50.6 f +0.59 net  -50.9
+  2023-02-07 GMT      bin frac  0.055 beta +2.47 AR  -14.4 f +0.45 net  +13.4
+  2023-02-23 BICO     byb frac  0.028 beta +1.10 AR  +18.4 f +0.44 net  -18.9
+  2023-03-03 CELO     bin frac  0.027 beta +1.41 AR   -7.7 f +0.31 net   +7.3
+  2023-03-08 IMX      bin frac  0.053 beta +1.54 AR   +7.6 f +0.02 net   -8.2
+  2023-03-10 GMT      bin frac  0.052 beta +2.46 AR   +5.9 f -1.56 net   -8.3
+  2023-03-18 APE      bin frac  0.714 beta +1.27 AR  -42.0 f -1.58 net  +39.6
+  2023-03-25 BICO     byb frac  0.025 beta +1.20 AR  -15.4 f -0.68 net  +13.9
+  2023-04-01 HBAR     bin frac  0.055 beta +1.25 AR  +10.4 f -0.07 net  -11.1
+  2023-04-02 CELO     bin frac  0.027 beta +1.33 AR  +16.6 f +0.16 net  -17.0
+  2023-04-08 IMX      bin frac  0.049 beta +1.46 AR   -9.8 f +0.33 net   +9.5
+  2023-04-09 GMT      bin frac  0.153 beta +1.63 AR  -14.4 f +0.25 net  +14.0
+  2023-04-17 APE      bin frac  0.138 beta +1.15 AR   -5.0 f -0.39 net   +4.0
+  2023-04-25 BICO     byb frac  0.024 beta +1.11 AR  -12.9 f +0.83 net  +12.9
+  2023-05-02 ALPHA    bin frac  0.027 beta +1.23 AR  +14.3 f -0.21 net  -15.2
+  2023-05-03 CELO     bin frac  0.026 beta +1.31 AR  -12.1 f +0.36 net  +11.7
+  2023-05-08 IMX      bin frac  0.045 beta +1.42 AR  -15.7 f +0.33 net  +15.3
+  2023-05-10 GMT      bin frac  0.133 beta +1.26 AR   -5.9 f +0.07 net   +5.4
+  2023-05-11 FLR      byb frac  0.119 beta +0.10 AR   -7.9 f -2.19 net   +5.3
+  2023-05-18 APE      bin frac  0.121 beta +0.90 AR   +4.2 f -0.36 net   -5.0
+  2023-05-25 BICO     byb frac  0.022 beta +0.94 AR   -3.4 f +0.21 net   +2.8
+  2023-06-02 CELO     bin frac  0.025 beta +1.39 AR   +4.2 f +0.34 net   -4.7
+  2023-06-08 IMX      bin frac  0.042 beta +1.65 AR   -9.1 f +0.25 net   +8.5
+  2023-06-09 GMT      bin frac  0.117 beta +1.21 AR  -20.1 f +0.12 net  +19.6
+  2023-06-11 FLR      byb frac  0.106 beta +0.12 AR  -32.4 f -5.10 net  +26.9
+  2023-06-16 BLUR     bin frac  1.239 beta +2.70 AR  -16.7 f -0.00 net  +15.6
+  2023-06-16 PERP     bin frac  0.027 beta +1.59 AR  -19.6 f -0.15 net  +18.5
+  2023-06-17 APE      bin frac  0.108 beta +0.79 AR  -30.2 f -0.95 net  +28.8
+  2023-06-25 BICO     byb frac  0.020 beta +1.10 AR   -5.0 f -0.21 net   +3.9
+  2023-06-29 PERP     bin frac  0.040 beta +1.60 AR   +9.3 f +0.30 net  -10.2
+  2023-07-01 HBAR     bin frac  0.034 beta +0.91 AR   -3.7 f +0.34 net   +3.3
+  2023-07-03 CELO     bin frac  0.025 beta +1.29 AR  +12.1 f -0.13 net  -13.2
+  2023-07-03 INJ      bin frac  0.097 beta +1.80 AR  +16.8 f -0.43 net  -18.4
+  2023-07-03 SUI      bin frac  0.247 beta +1.91 AR  -15.9 f -0.26 net  +14.5
+  2023-07-08 IMX      bin frac  0.039 beta +1.80 AR   -2.7 f +0.32 net   +2.0
+  2023-07-09 GMT      bin frac  0.105 beta +1.32 AR   +0.3 f +0.22 net   -0.8
+  2023-07-11 FLR      byb frac  0.104 beta +0.78 AR   +4.4 f -1.00 net   -6.1
+  2023-07-17 APE      bin frac  0.097 beta +1.39 AR   +9.3 f +0.03 net  -10.0
+  2023-08-01 ALPHA    bin frac  0.026 beta +0.82 AR   -1.0 f +0.36 net   +0.7
+  2023-08-02 CELO     bin frac  0.024 beta +1.51 AR   +3.1 f -0.46 net   -4.3
+  2023-08-03 SUI      bin frac  0.194 beta +1.63 AR   -6.4 f -0.01 net   +5.5
+  2023-08-08 IMX      bin frac  0.036 beta +1.64 AR   -5.0 f +0.08 net   +4.0
+  2023-08-09 GMT      bin frac  0.095 beta +1.48 AR   -5.5 f +0.34 net   +5.0
+  2023-08-11 FLR      byb frac  0.085 beta +1.40 AR   +3.0 f +0.35 net   -3.7
+  2023-08-17 APE      bin frac  0.089 beta +1.58 AR   +4.9 f -0.20 net   -6.0
+  2023-09-01 CELO     bin frac  0.023 beta +1.43 AR   -0.3 f +0.25 net   -0.1
+  2023-09-02 SUI      bin frac  0.159 beta +1.19 AR  -17.0 f -0.56 net  +15.9
+  2023-09-07 IMX      bin frac  0.034 beta +1.33 AR   -5.5 f +0.14 net   +5.1
+  2023-09-08 GMT      bin frac  0.087 beta +1.47 AR   -0.3 f +0.27 net   -0.0
+  2023-09-10 FLR      byb frac  0.078 beta +1.76 AR  -10.9 f +0.07 net  +10.2
+  2023-09-15 PERP     bin frac  0.025 beta +1.57 AR  -26.0 f -6.32 net  +19.0
+  2023-09-16 APE      bin frac  0.328 beta +1.25 AR  -19.6 f -0.22 net  +19.0
+  2023-10-02 CELO     bin frac  0.023 beta +1.00 AR   -7.9 f +0.21 net   +7.6
+  2023-10-03 SUI      bin frac  0.135 beta +1.08 AR   -6.0 f +0.09 net   +5.7
+  2023-10-08 IMX      bin frac  0.032 beta +0.98 AR   -8.2 f +0.00 net   +7.7
+  2023-10-09 GMT      bin frac  0.080 beta +1.17 AR  -10.4 f +0.12 net   +9.9
+  2023-10-10 FLR      byb frac  0.072 beta +0.79 AR  -16.0 f -1.65 net  +13.8
+  2023-10-14 SEI      bin frac  0.063 beta +1.70 AR  -15.1 f +0.21 net  +14.6
+  2023-10-15 CYBER    bin frac  0.107 beta +3.43 AR  -26.3 f +0.30 net  +25.5
+  2023-10-17 APE      bin frac  0.061 beta +1.00 AR   -7.3 f +0.12 net   +7.0
+  2023-10-31 ALPHA    bin frac  0.025 beta +1.20 AR   -7.9 f +0.56 net   +7.6
+  2023-11-01 CELO     bin frac  0.022 beta +1.03 AR  +20.5 f +0.36 net  -21.0
+  2023-11-02 SUI      bin frac  0.116 beta +1.18 AR  +13.3 f +0.56 net  -13.5
+  2023-11-07 IMX      bin frac  0.031 beta +0.63 AR  +32.4 f -0.63 net  -33.7
+  2023-11-08 GMT      bin frac  0.074 beta +0.85 AR  +17.3 f +0.57 net  -17.5
+  2023-11-10 FLR      byb frac  0.066 beta +0.57 AR   +9.5 f -0.34 net  -10.6
+  2023-11-14 SEI      bin frac  0.060 beta +1.03 AR  +27.9 f +0.88 net  -28.0
+  2023-11-15 CYBER    bin frac  0.215 beta +1.89 AR   -2.0 f +1.10 net   +1.7
+  2023-11-16 APE      bin frac  0.058 beta +0.75 AR  -13.9 f +0.33 net  +13.6
+  2023-11-30 BIGTIME  bin frac  0.058 beta -0.57 AR +139.9 f +0.24 net -139.7
+  2023-12-03 SUI      bin frac  0.102 beta +0.77 AR   -4.5 f +0.51 net   +4.5
+  2023-12-07 IMX      bin frac  0.029 beta +1.00 AR  +26.2 f +0.93 net  -26.1
+  2023-12-09 GMT      bin frac  0.069 beta +0.62 AR   -6.3 f +0.70 net   +6.4
+  2023-12-10 FLR      byb frac  0.062 beta +0.45 AR  +29.7 f -0.13 net  -30.5
+  2023-12-14 SEI      bin frac  0.056 beta +0.94 AR  -14.1 f +0.88 net  +14.3
+  2023-12-15 CYBER    bin frac  0.079 beta +0.99 AR   -8.7 f +1.01 net   +9.0
+  2023-12-16 PERP     bin frac  0.024 beta +0.96 AR  +10.4 f +1.02 net  -10.3
+  2023-12-17 APE      bin frac  0.055 beta +0.93 AR   -2.6 f +0.49 net   +2.3
+  2024-01-01 MAV      bin frac  0.037 beta +1.34 AR  +34.0 f +1.25 net  -34.7
+  2024-01-02 INJ      bin frac  0.088 beta +0.86 AR   -9.8 f +1.67 net  +10.2
+  2024-01-02 SUI      bin frac  0.091 beta +1.05 AR  +12.3 f +1.33 net  -12.4
+  2024-01-04 BIGTIME  bin frac  0.054 beta +1.01 AR  -46.0 f +2.51 net  +47.1
+  2024-01-07 IMX      bin frac  0.028 beta +0.76 AR  -24.2 f +0.95 net  +24.2
+  2024-01-08 GMT      bin frac  0.061 beta +0.80 AR   -1.4 f +0.83 net   +1.4
+  2024-01-10 FLR      byb frac  0.108 beta +0.58 AR   -3.7 f +0.00 net   +2.9
+  2024-01-14 SEI      bin frac  0.053 beta +1.77 AR   +4.2 f +0.37 net   -4.9
+  2024-01-15 CYBER    bin frac  0.073 beta +1.14 AR  +21.1 f +0.39 net  -21.6
+  2024-01-16 APE      bin frac  0.052 beta +1.25 AR   +6.3 f +0.16 net   -7.0
+  2024-01-31 MAV      bin frac  0.036 beta +1.17 AR  +27.5 f +0.36 net  -28.0
+  2024-01-31 ALPHA    bin frac  0.025 beta +0.93 AR   -8.9 f +0.36 net   +8.6
+  2024-02-01 SUI      bin frac  0.082 beta +0.91 AR  +26.0 f +0.34 net  -26.3
+  2024-02-06 IMX      bin frac  0.026 beta +0.88 AR  +11.3 f +0.36 net  -11.6
+  2024-02-08 GMT      bin frac  0.057 beta +1.10 AR  -18.3 f +0.36 net  +18.0
+  2024-02-09 FLR      byb frac  0.063 beta +0.73 AR  +37.0 f -1.22 net  -38.9
+  2024-02-13 SEI      bin frac  0.051 beta +1.39 AR  +23.5 f +0.58 net  -23.8
+  2024-02-14 CYBER    bin frac  0.153 beta +0.84 AR   +2.2 f +0.79 net   -2.1
+  2024-02-16 APE      bin frac  0.049 beta +1.18 AR   +2.9 f +0.74 net   -3.0
+  2024-02-29 BIGTIME  bin frac  0.825 beta +1.94 AR  -23.1 f +3.05 net  +23.5
+  2024-03-02 MAV      bin frac  0.035 beta +0.81 AR  -23.7 f +2.16 net  +24.3
+  2024-03-03 SUI      bin frac  0.074 beta +1.01 AR  -43.2 f +2.44 net  +43.8
+  2024-03-08 IMX      bin frac  0.025 beta +1.41 AR  -27.4 f +1.64 net  +26.1
+  2024-03-09 GMT      bin frac  0.054 beta +1.07 AR  +13.2 f +2.14 net  -13.3
+  2024-03-11 FLR      byb frac  0.059 beta +0.57 AR  -24.1 f +2.46 net  +25.1
+  2024-03-15 SEI      bin frac  0.048 beta +1.60 AR  +13.6 f +1.97 net  -14.2
+  2024-03-16 CYBER    bin frac  0.025 beta +0.69 AR  +18.1 f +2.11 net  -17.3
+  2024-03-16 PERP     bin frac  0.022 beta +1.32 AR   -8.5 f +2.02 net   +8.3
+  2024-03-17 APE      bin frac  0.047 beta +1.15 AR  -10.4 f +1.57 net  +10.2
+  2024-03-19 MANTA    bin frac  0.041 beta +0.78 AR   -9.5 f +1.53 net   +9.8
+  2024-04-01 HBAR     bin frac  0.076 beta +0.63 AR   -5.9 f +0.94 net   +6.0
+  2024-04-01 MAV      bin frac  0.034 beta +0.43 AR  +12.8 f +1.19 net  -12.3
+  2024-04-02 SUI      bin frac  0.068 beta +0.65 AR   -2.2 f +1.00 net   +2.3
+  2024-04-02 ZETA     bin frac  0.032 beta +0.74 AR   -8.0 f +1.37 net   +8.4
+  2024-04-07 IMX      bin frac  0.024 beta +0.90 AR   -8.0 f +0.72 net   +7.8
+  2024-04-08 GMT      bin frac  0.051 beta +0.71 AR  -27.2 f +0.95 net  +27.4
+  2024-04-10 FLR      byb frac  0.056 beta +0.55 AR  -12.9 f -1.19 net  +10.9
+  2024-04-14 SEI      bin frac  0.046 beta +0.80 AR  -26.9 f -0.13 net  +26.1
+  2024-04-15 CYBER    bin frac  0.024 beta +0.39 AR  -34.7 f -0.05 net  +34.2
+  2024-04-15 STRK     bin frac  0.137 beta +0.25 AR  -32.4 f -0.06 net  +32.0
+  2024-04-16 APE      bin frac  0.045 beta +0.82 AR  -20.2 f +0.31 net  +19.9
+  2024-04-19 MANTA    bin frac  0.108 beta +0.60 AR  -26.0 f -0.98 net  +24.5
+  2024-04-30 TAO      byb frac  0.034 beta +0.79 AR   -9.7 f +0.44 net   +9.6
+  2024-05-01 MEME     bin frac  0.450 beta +1.33 AR   -6.3 f +0.19 net   +5.9
+  2024-05-01 ALPHA    bin frac  0.024 beta +0.98 AR   -5.2 f +0.27 net   +4.9
+  2024-05-02 MAV      bin frac  0.033 beta +0.80 AR   -8.6 f +0.20 net   +8.3
+  2024-05-03 SUI      bin frac  0.840 beta +0.37 AR  -16.0 f -0.43 net  +15.3
+  2024-05-03 ZETA     bin frac  0.030 beta +0.80 AR  +36.7 f -1.10 net  -38.3
+  2024-05-08 IMX      bin frac  0.023 beta +0.99 AR   +6.7 f +0.32 net   -7.0
+  2024-05-09 GMT      bin frac  0.049 beta +0.90 AR   -4.3 f +0.33 net   +4.1
+  2024-05-11 FLR      byb frac  0.052 beta +0.63 AR  -13.6 f +0.30 net  +13.3
+  2024-05-14 SEI      bin frac  0.044 beta +0.86 AR   -6.2 f -0.27 net   +5.5
+  2024-05-15 CYBER    bin frac  0.093 beta +0.76 AR  -16.8 f -2.62 net  +13.7
+  2024-05-15 STRK     bin frac  0.120 beta +0.66 AR  -18.5 f -0.07 net  +18.1
+  2024-05-17 APE      bin frac  0.043 beta +1.07 AR  -10.4 f +0.15 net  +10.0
+  2024-05-19 MANTA    bin frac  0.035 beta +1.14 AR  -15.3 f +0.30 net  +14.9
+  2024-05-19 PYTH     bin frac  0.617 beta +1.22 AR  -18.7 f -2.59 net  +15.4
+  2024-05-20 QI       byb frac  0.028 beta +1.54 AR  -30.9 f -1.26 net  +28.7
+  2024-05-26 TAO      bin frac  0.022 beta +1.77 AR   +1.0 f +0.49 net   -1.5
+  2024-06-01 MAV      bin frac  0.031 beta +1.33 AR   +8.3 f +0.39 net   -8.9
+  2024-06-02 SUI      bin frac  0.063 beta +0.51 AR   -4.0 f +0.38 net   +3.9
+  2024-06-02 ZETA     bin frac  0.029 beta +1.02 AR  -15.7 f +0.82 net  +15.7
+  2024-06-07 IMX      bin frac  0.022 beta +1.31 AR  -14.7 f +0.32 net  +14.0
+  2024-06-08 GMT      bin frac  0.046 beta +1.21 AR  -17.8 f +0.43 net  +17.3
+  2024-06-10 FLR      byb frac  0.050 beta +0.66 AR   +2.9 f +0.28 net   -3.4
+  2024-06-10 LOOKS    byb frac  0.029 beta +1.48 AR  -24.8 f +0.42 net  +24.0
+  2024-06-14 SEI      bin frac  0.042 beta +1.67 AR  -11.4 f +0.02 net  +10.4
+  2024-06-15 CYBER    bin frac  0.022 beta +1.35 AR  -24.2 f -1.12 net  +22.1
+  2024-06-15 STRK     bin frac  0.107 beta +1.16 AR  -32.7 f +0.30 net  +32.2
+  2024-06-16 APE      bin frac  0.041 beta +1.28 AR  -21.0 f +0.17 net  +20.2
+  2024-06-19 MANTA    bin frac  0.034 beta +1.43 AR  -25.5 f +0.29 net  +24.8
+  2024-07-01 HBAR     bin frac  0.061 beta +1.15 AR   -1.3 f +0.26 net   +0.7
+  2024-07-02 MAV      bin frac  0.150 beta +1.39 AR  -16.9 f +0.19 net  +16.1
+  2024-07-03 SUI      bin frac  0.040 beta +0.88 AR  -17.7 f +0.15 net  +17.2
+  2024-07-03 ZETA     bin frac  0.027 beta +0.93 AR  -12.6 f +0.34 net  +12.2
+  2024-07-07 IMX      bin frac  0.021 beta +1.48 AR  -10.1 f -0.01 net   +9.1
+  2024-07-09 GMT      bin frac  0.044 beta +1.11 AR   -6.3 f +0.26 net   +5.7
+  2024-07-10 FLR      byb frac  0.047 beta +0.70 AR  -15.7 f -1.30 net  +13.7
+  2024-07-14 SEI      bin frac  0.040 beta +1.45 AR  +10.9 f -0.76 net  -12.4
+  2024-07-15 CYBER    bin frac  0.021 beta +0.99 AR   +3.9 f +0.27 net   -4.3
+  2024-07-15 STRK     bin frac  0.097 beta +0.90 AR   +3.3 f -0.15 net   -4.0
+  2024-07-17 APE      bin frac  0.040 beta +0.91 AR   +0.7 f +0.01 net   -1.3
+  2024-07-19 MANTA    bin frac  0.033 beta +1.15 AR   +3.6 f +0.08 net   -4.1
+  2024-08-01 MAV      bin frac  0.027 beta +1.60 AR  -11.6 f +0.18 net  +10.8
+  2024-08-02 SUI      bin frac  0.038 beta +1.52 AR  -11.2 f +0.13 net  +10.5
+  2024-08-02 ZETA     bin frac  0.233 beta +1.23 AR  -20.5 f -0.26 net  +19.4
+  2024-08-03 W        bin frac  0.375 beta +1.71 AR  -11.3 f -0.01 net  +10.3
+  2024-08-08 GMT      bin frac  0.043 beta +1.22 AR  -13.3 f +0.17 net  +12.8
+  2024-08-10 FLR      byb frac  0.045 beta +0.97 AR   -3.7 f -0.28 net   +2.7
+  2024-08-14 SEI      bin frac  0.045 beta +1.78 AR   +4.5 f -0.64 net   -5.6
+  2024-08-15 CYBER    bin frac  0.082 beta +1.51 AR   -1.5 f +0.14 net   +1.1
+  2024-08-15 STRK     bin frac  0.088 beta +1.52 AR  -11.5 f -0.49 net  +10.5
+  2024-08-16 APE      bin frac  0.038 beta +1.33 AR   -4.4 f -0.17 net   +3.8
+  2024-08-19 QI       byb frac  0.026 beta +1.49 AR  +12.9 f +0.29 net  -13.2
+  2024-08-31 MAV      bin frac  0.026 beta +1.42 AR   +4.8 f +0.19 net   -5.1
+  2024-09-01 SUI      bin frac  0.036 beta +1.81 AR   +0.9 f +0.14 net   -1.3
+  2024-09-02 ZETA     bin frac  0.186 beta +1.56 AR  -12.3 f -0.14 net  +11.5
+  2024-09-05 ENA      bin frac  0.032 beta +1.74 AR   -8.4 f -0.40 net   +7.5
+  2024-09-08 GMT      bin frac  0.050 beta +1.29 AR  +20.0 f +0.04 net  -20.4
+  2024-09-09 FLR      byb frac  0.043 beta +0.79 AR   -7.1 f -1.18 net   +5.4
+  2024-09-13 SEI      bin frac  0.106 beta +1.79 AR   +8.4 f -0.30 net   -9.1
+  2024-09-14 STRK     bin frac  0.081 beta +1.58 AR   -8.3 f -0.24 net   +7.6
+  2024-09-16 APE      bin frac  0.037 beta +1.25 AR   +5.1 f -0.19 net   -5.7
+  2024-09-18 ENA      bin frac  0.028 beta +1.86 AR  -10.0 f +0.06 net   +9.6
+  2024-10-01 ENA      bin frac  0.021 beta +1.77 AR   +4.1 f -0.07 net   -5.0
+  2024-10-01 MAV      bin frac  0.119 beta +1.43 AR  -16.2 f +0.31 net  +15.7
+  2024-10-02 SUI      bin frac  0.034 beta +1.62 AR  +15.7 f -0.21 net  -16.6
+  2024-10-02 ZETA     bin frac  0.155 beta +1.59 AR   -2.6 f -0.65 net   +1.2
+  2024-10-08 GMT      bin frac  0.033 beta +1.41 AR   -6.9 f -0.71 net   +5.4
+  2024-10-09 TNSR     bin frac  0.020 beta +1.68 AR  -15.9 f +0.32 net  +15.4
+  2024-10-10 FLR      byb frac  0.041 beta +0.67 AR   -3.5 f +0.11 net   +3.0
+  2024-10-14 SEI      bin frac  0.096 beta +1.67 AR   -8.7 f -0.15 net   +7.8
+  2024-10-15 STRK     bin frac  0.075 beta +1.30 AR   -9.3 f +0.33 net   +9.0
+  2024-10-16 APE      bin frac  0.035 beta +1.09 AR   -9.5 f +0.23 net   +9.2
+  2024-10-28 MEME     bin frac  0.250 beta +1.82 AR   -9.6 f +0.32 net   +8.8
+  2024-10-31 TIA      bin frac  0.511 beta +1.70 AR  -21.7 f -1.02 net  +19.7
+  2024-10-31 MAV      bin frac  0.022 beta +1.64 AR  -27.0 f +0.28 net  +26.1
+  2024-11-01 SUI      bin frac  0.032 beta +1.32 AR   -2.3 f +0.14 net   +1.6
+  2024-11-01 ZETA     bin frac  0.133 beta +1.81 AR  -17.1 f -0.68 net  +15.3
+  2024-11-07 GMT      bin frac  0.032 beta +1.47 AR   -8.6 f +0.23 net   +7.8
+  2024-11-09 FLR      byb frac  0.039 beta +0.82 AR  -11.9 f -0.00 net  +11.0
+  2024-11-13 SEI      bin frac  0.087 beta +1.39 AR  -12.9 f +0.57 net  +12.3
+  2024-11-14 CYBER    bin frac  0.215 beta +1.59 AR  -13.4 f +0.48 net  +12.5
+  2024-11-14 STRK     bin frac  0.070 beta +1.21 AR   -0.1 f +0.66 net   -0.4
+  2024-11-15 APE      bin frac  0.034 beta +1.36 AR  -30.1 f +0.69 net  +29.7
+  2024-11-19 QI       byb frac  0.024 beta +1.36 AR  -38.7 f +0.65 net  +38.0
+  2024-12-01 MAV      bin frac  0.021 beta +1.56 AR  +63.1 f +0.80 net  -63.7
+  2024-12-02 SUI      bin frac  0.031 beta +1.24 AR   +3.4 f +0.77 net   -3.8
+  2024-12-02 ZETA     bin frac  0.116 beta +1.42 AR  +32.6 f +2.22 net  -31.7
+  2024-12-05 BIGTIME  bin frac  0.427 beta +1.92 AR  +38.3 f +2.12 net  -38.0
+  2024-12-06 SNX      bin frac  0.028 beta +1.18 AR  +41.1 f +1.03 net  -41.4
+  2024-12-08 GMT      bin frac  0.031 beta +1.18 AR  -12.4 f +0.26 net  +11.3
+  2024-12-10 CARV     byb frac  0.151 beta +0.56 AR   -9.1 f -7.27 net   +1.1
+  2024-12-10 FLR      byb frac  0.038 beta +0.87 AR   +1.6 f +0.67 net   -2.0
+  2024-12-13 SEI      bin frac  0.080 beta +1.15 AR  -24.6 f +0.74 net  +24.3
+  2024-12-14 STRK     bin frac  0.065 beta +1.58 AR  -24.9 f +0.81 net  +24.4
+  2024-12-16 APE      bin frac  0.033 beta +1.10 AR  -29.6 f +0.54 net  +29.3
+  2024-12-31 MAV      bin frac  0.098 beta +1.35 AR   +9.9 f +0.34 net  -10.5
+  2025-01-01 HBAR     bin frac  0.118 beta +0.67 AR  +16.0 f +0.26 net  -16.3
+  2025-01-01 SUI      bin frac  0.029 beta +1.03 AR  +12.1 f -0.27 net  -13.1
+  2025-01-01 ZETA     bin frac  0.103 beta +1.22 AR   +1.5 f +0.15 net   -2.2
+  2025-01-07 GMT      bin frac  0.030 beta +1.23 AR  -21.2 f -0.86 net  +19.6
+  2025-01-09 FLR      byb frac  0.036 beta +0.85 AR   -4.5 f +0.36 net   +4.1
+  2025-01-10 CARV     byb frac  0.131 beta +0.68 AR   -3.2 f -4.33 net   -1.7
+  2025-01-13 SEI      bin frac  0.074 beta +1.13 AR  -14.0 f -0.28 net  +13.1
+  2025-01-14 STRK     bin frac  0.061 beta +1.49 AR  -22.1 f +0.28 net  +21.5
+  2025-01-15 APE      bin frac  0.032 beta +1.16 AR  -18.1 f +0.30 net  +17.8
+  2025-01-18 ONDO     bin frac  4.626 beta +1.40 AR  -12.1 f -6.03 net   +5.4
+  2025-02-01 SUI      bin frac  0.028 beta +0.90 AR  -16.3 f +0.09 net  +15.9
+  2025-02-01 ZETA     bin frac  0.050 beta +1.48 AR  -24.3 f +0.25 net  +23.7
+  2025-02-07 GMT      bin frac  0.029 beta +0.98 AR  -17.3 f +0.14 net  +16.9
+  2025-02-08 FLR      byb frac  0.024 beta +1.30 AR   -2.5 f +0.02 net   +1.7
+  2025-02-09 CARV     byb frac  0.116 beta +1.19 AR  -19.4 f -0.12 net  +18.5
+  2025-02-12 SEI      bin frac  0.069 beta +1.41 AR   -4.3 f -0.61 net   +3.1
+  2025-02-13 CYBER    bin frac  0.239 beta +1.73 AR   +2.0 f +0.12 net   -2.7
+  2025-02-13 STRK     bin frac  0.065 beta +1.64 AR   -9.6 f -0.12 net   +8.7
+  2025-02-15 APE      bin frac  0.031 beta +1.70 AR   +5.6 f -0.06 net   -6.3
+  2025-02-18 QI       byb frac  0.023 beta +1.60 AR   -8.2 f -0.04 net   +7.2
+  2025-03-03 SUI      bin frac  0.027 beta +1.33 AR  -11.8 f -0.06 net  +11.2
+  2025-03-03 ZETA     bin frac  0.047 beta +1.46 AR   -6.8 f -0.07 net   +6.0
+  2025-03-07 ENA      bin frac  0.045 beta +2.06 AR  +21.7 f -1.16 net  -23.5
+  2025-03-09 GMT      bin frac  0.029 beta +1.08 AR  -22.8 f +0.09 net  +22.3
+  2025-03-11 FLR      byb frac  0.024 beta +1.75 AR   -7.2 f +0.30 net   +6.7
+  2025-03-12 CARV     byb frac  0.104 beta +1.29 AR  -15.6 f -6.19 net   +8.7
+  2025-03-15 SEI      bin frac  0.065 beta +1.95 AR   -0.2 f -1.61 net   -2.1
+  2025-03-16 STRK     bin frac  0.061 beta +1.90 AR   +8.8 f -0.07 net   -9.6
+  2025-03-17 APE      bin frac  0.030 beta +1.85 AR   -3.3 f -0.10 net   +2.5
+  2025-03-20 ENA      bin frac  0.038 beta +1.82 AR  -26.0 f +0.12 net  +25.5
+  2025-04-02 ENA      bin frac  0.025 beta +1.42 AR  -10.5 f +0.20 net  +10.1
+  2025-04-02 MAV      bin frac  0.066 beta +1.51 AR  -28.1 f -0.44 net  +26.9
+  2025-04-03 W        bin frac  0.295 beta +1.49 AR  -15.7 f -0.28 net  +14.8
+  2025-04-03 SUI      bin frac  0.026 beta +1.65 AR   -0.1 f -0.09 net   -0.6
+  2025-04-03 ZETA     bin frac  0.045 beta +1.34 AR  -17.6 f -0.57 net  +16.4
+  2025-04-09 GMT      bin frac  0.025 beta +1.42 AR   -8.5 f -0.83 net   +7.0
+  2025-04-10 FLR      byb frac  0.023 beta +1.26 AR   +9.9 f -0.62 net  -11.3
+  2025-04-10 TNSR     bin frac  0.257 beta +1.16 AR  -23.0 f +0.28 net  +22.6
+  2025-04-11 CARV     byb frac  0.124 beta +1.06 AR  -17.4 f -27.08 net  -10.5
+  2025-04-14 SEI      bin frac  0.061 beta +1.28 AR   +1.5 f -0.74 net   -2.8
+  2025-04-15 STRK     bin frac  0.080 beta +1.35 AR  -15.0 f -0.38 net  +14.0
+  2025-04-17 APE      bin frac  0.029 beta +1.46 AR   +4.2 f +0.15 net   -4.7
+  2025-04-20 TRUMP    bin frac  0.405 beta +1.91 AR  -16.7 f -0.65 net  +15.3
+  2025-04-26 MEME     bin frac  0.121 beta +1.44 AR  +33.0 f -8.57 net  -42.1
+  2025-05-03 SUI      bin frac  0.025 beta +1.70 AR  +13.5 f -0.08 net  -14.0
+  2025-05-03 ZETA     bin frac  0.043 beta +1.33 AR  -10.6 f -0.31 net   +9.8
+  2025-05-09 GMT      bin frac  0.025 beta +1.36 AR   +1.7 f -0.40 net   -2.7
+  2025-05-11 FLR      byb frac  0.023 beta +1.34 AR   +1.9 f -0.53 net   -3.2
+  2025-05-12 CARV     byb frac  0.071 beta +1.14 AR   +3.5 f -1.08 net   -5.3
+  2025-05-13 BB       bin frac  0.101 beta +1.44 AR  +21.6 f +0.27 net  -22.1
+  2025-05-13 LAYER    bin frac  0.081 beta +0.31 AR  -67.9 f -35.93 net  +31.6
+  2025-05-15 SEI      bin frac  0.057 beta +1.28 AR   +0.6 f -0.17 net   -1.5
+  2025-05-16 CYBER    bin frac  0.189 beta +1.31 AR   +6.6 f -0.27 net   -7.7
+  2025-05-16 STRK     bin frac  0.074 beta +1.28 AR  +12.3 f +0.16 net  -12.9
+  2025-05-17 APE      bin frac  0.028 beta +1.40 AR  +20.9 f +0.22 net  -21.5
+  2025-05-19 PYTH     bin frac  0.381 beta +1.50 AR  -41.6 f -0.31 net  +40.5
+  2025-05-29 BABY     bin frac  0.022 beta +1.22 AR  -21.0 f -0.89 net  +19.5
+  2025-05-29 KMNO     bin frac  0.159 beta +1.46 AR  -14.8 f -1.80 net  +12.1
+  2025-06-02 ZETA     bin frac  0.041 beta +1.26 AR  -10.2 f +0.27 net   +9.8
+  2025-06-09 GMT      bin frac  0.024 beta +1.39 AR   +3.1 f +0.12 net   -3.6
+  2025-06-10 FLR      byb frac  0.022 beta +1.26 AR   +3.4 f -1.04 net   -5.1
+  2025-06-11 CARV     byb frac  0.066 beta +1.29 AR  -14.2 f -2.82 net  +10.7
+  2025-06-13 BB       bin frac  0.091 beta +2.04 AR  -17.8 f +0.13 net  +17.2
+  2025-06-14 SEI      bin frac  0.054 beta +1.74 AR  -12.5 f -0.74 net  +11.0
+  2025-06-15 STRK     bin frac  0.069 beta +1.87 AR  -14.3 f +0.14 net  +13.7
+  2025-06-17 APE      bin frac  0.028 beta +1.56 AR   -8.0 f +0.13 net   +7.5
+  2025-06-17 VANA     bin frac  0.391 beta +1.62 AR  -20.8 f -0.93 net  +19.2
+  2025-06-26 BLAST    hyp frac  0.381 beta +1.09 AR  -21.3 f -2.25 net  +18.4
+  2025-07-02 MAV      bin frac  0.072 beta +2.09 AR   -4.6 f -0.43 net   +3.2
+  2025-07-03 ZETA     bin frac  0.039 beta +1.52 AR   -5.9 f +0.03 net   +5.1
+  2025-07-09 GMT      bin frac  0.024 beta +1.60 AR   -2.3 f +0.10 net   +1.6
+  2025-07-11 CARV     byb frac  0.027 beta +1.34 AR   +6.3 f +0.09 net   -7.0
+  2025-07-11 FLR      byb frac  0.022 beta +0.72 AR   -7.8 f -0.45 net   +6.7
+  2025-07-13 BB       bin frac  0.082 beta +2.83 AR   +1.7 f +0.04 net   -3.0
+  2025-07-15 AGT      bin frac  0.053 beta +1.77 AR  -80.3 f +1.17 net  +80.5
+  2025-07-15 SEI      bin frac  0.051 beta +2.17 AR  +10.9 f +0.12 net  -11.9
+  2025-07-15 STRK     bin frac  0.064 beta +2.59 AR   -0.0 f +0.32 net   -1.0
+  2025-07-17 APE      bin frac  0.027 beta +1.86 AR   -4.1 f +0.31 net   +3.2
+  2025-07-18 DBR      byb frac  0.333 beta +0.41 AR   +2.0 f -1.27 net   -3.8
+  2025-07-20 TRUMP    bin frac  0.281 beta +2.12 AR   +6.5 f +0.41 net   -7.4
+  2025-07-31 BIGTIME  bin frac  0.289 beta +2.30 AR  -12.7 f +0.34 net  +11.7
+  2025-07-31 RESOLV   bin frac  0.030 beta +2.69 AR   +0.8 f -0.73 net   -2.9
+  2025-08-02 ZETA     bin frac  0.037 beta +2.20 AR   -5.5 f +0.36 net   +4.6
+  2025-08-08 GMT      bin frac  0.023 beta +2.04 AR   -3.2 f +0.14 net   +2.3
+  2025-08-10 FLR      byb frac  0.021 beta +1.10 AR   -4.1 f -0.40 net   +2.9
+  2025-08-11 CARV     byb frac  0.052 beta +1.42 AR   +3.6 f +0.00 net   -4.5
+  2025-08-12 BB       bin frac  0.075 beta +2.70 AR   +8.5 f -0.08 net  -10.0
+  2025-08-12 LAYER    bin frac  0.072 beta +1.44 AR   -3.3 f +0.31 net   +2.7
+  2025-08-14 SHELL    bin frac  0.104 beta +2.41 AR  -12.1 f +0.31 net  +11.1
+  2025-08-14 SEI      bin frac  0.049 beta +2.05 AR   +2.1 f -0.30 net   -3.5
+  2025-08-15 AGT      bin frac  0.050 beta +1.08 AR   -8.5 f +1.47 net   +9.2
+  2025-08-15 CYBER    bin frac  0.156 beta +2.19 AR  +69.1 f -3.20 net  -73.5
+  2025-08-15 STRK     bin frac  0.060 beta +2.39 AR  +13.8 f +0.26 net  -14.8
+  2025-08-16 APE      bin frac  0.026 beta +1.55 AR   +4.8 f +0.31 net   -5.4
+  2025-08-20 KAITO    bin frac  0.088 beta +1.92 AR   +0.3 f +0.19 net   -1.2
+  2025-08-30 RESOLV   bin frac  0.026 beta +2.13 AR   -2.2 f +0.30 net   +1.4
+  2025-09-02 ZETA     bin frac  0.036 beta +2.14 AR   -2.9 f +0.33 net   +2.0
+  2025-09-10 FLR      byb frac  0.021 beta +1.44 AR   -4.5 f -0.45 net   +3.1
+  2025-09-12 BB       bin frac  0.070 beta +3.72 AR   +0.6 f -1.22 net   -3.4
+  2025-09-13 SEI      bin frac  0.037 beta +2.18 AR   +1.1 f +0.32 net   -1.7
+  2025-09-14 AGT      bin frac  0.048 beta -0.31 AR  +35.3 f +1.86 net  -33.7
+  2025-09-14 STRK     bin frac  0.057 beta +2.53 AR   -1.1 f +0.28 net   +0.2
+  2025-09-16 APE      bin frac  0.025 beta +1.77 AR   -4.8 f +0.33 net   +4.2
+  2025-09-30 RESOLV   bin frac  0.025 beta +1.84 AR  -35.0 f -0.20 net  +34.0
+  2025-09-30 ZORA     bin frac  0.036 beta +4.45 AR  -24.3 f -1.11 net  +21.5
+  2025-10-01 MAV      bin frac  0.064 beta +1.49 AR  -26.8 f -0.55 net  +25.5
+  2025-10-02 ZETA     bin frac  0.034 beta +2.01 AR  -21.0 f +0.27 net  +20.2
+  2025-10-10 FLR      byb frac  0.020 beta +1.12 AR  -21.7 f -1.97 net  +18.9
+  2025-10-11 CARV     bin frac  0.118 beta +1.34 AR  -13.8 f +0.55 net  +13.5
+  2025-10-12 BB       bin frac  0.065 beta +3.65 AR  -10.1 f -1.38 net   +7.4
+  2025-10-14 SEI      bin frac  0.035 beta +2.58 AR   +0.9 f -0.91 net   -2.6
+  2025-10-15 AGT      bin frac  0.045 beta +1.67 AR  +17.8 f +2.45 net  -16.0
+  2025-10-15 DEEP     bin frac  0.183 beta +2.59 AR   -8.2 f -1.12 net   +6.1
+  2025-10-15 STRK     bin frac  0.054 beta +2.40 AR   +6.4 f -0.46 net   -7.6
+  2025-10-16 APE      bin frac  0.025 beta +1.92 AR   -5.8 f +0.15 net   +5.3
+  2025-10-18 DBR      byb frac  0.250 beta +0.87 AR   -8.8 f +0.25 net   +8.6
+  2025-10-23 MEME     bin frac  0.095 beta +2.60 AR   -2.9 f -0.02 net   +2.2
+  2025-10-26 XPL      bin frac  0.049 beta -1.81 AR   -6.6 f +0.25 net   +6.5
+  2025-10-28 GRASS    bin frac  0.589 beta +1.81 AR  -25.7 f -1.68 net  +23.3
+  2025-10-30 RESOLV   bin frac  0.023 beta +2.92 AR  -13.5 f -0.34 net  +11.9
+  2025-10-30 ZORA     bin frac  0.034 beta +1.33 AR  -30.0 f -3.50 net  +25.8
+  2025-11-02 ZETA     bin frac  0.033 beta +2.80 AR   +5.8 f -0.88 net   -8.0
+  2025-11-10 CARV     bin frac  0.036 beta +1.75 AR  +17.2 f +0.97 net  -17.2
+  2025-11-11 LAYER    bin frac  0.066 beta +2.31 AR   +5.2 f -4.00 net  -10.3
+  2025-11-12 BB       bin frac  0.045 beta +2.85 AR  +17.1 f -0.51 net  -18.8
+  2025-11-13 SEI      bin frac  0.034 beta +2.52 AR  +25.5 f -0.58 net  -27.2
+  2025-11-14 AGT      bin frac  0.055 beta +3.02 AR  +11.1 f +1.21 net  -11.3
+  2025-11-14 CYBER    bin frac  0.132 beta +2.92 AR  +23.0 f -0.33 net  -24.6
+  2025-11-14 KMNO     bin frac  0.028 beta +2.05 AR   +6.6 f -1.17 net   -8.7
+  2025-11-14 STRK     bin frac  0.051 beta +2.81 AR +130.3 f -0.31 net -131.9
+  2025-11-16 APE      bin frac  0.024 beta +2.81 AR  +15.4 f -0.09 net  -16.9
+  2025-11-25 XPL      bin frac  0.047 beta +1.54 AR   -0.9 f +0.23 net   +0.5
+  2025-11-28 GRASS    bin frac  0.039 beta +3.25 AR   +0.3 f -0.36 net   -1.8
+  2025-11-30 RESOLV   bin frac  0.022 beta +2.62 AR  -56.3 f -29.82 net  +25.7
+  2025-11-30 ZORA     bin frac  0.033 beta +0.72 AR  -14.8 f -4.72 net   +9.6
+  2025-12-02 ZETA     bin frac  0.032 beta +2.51 AR  -22.1 f -0.61 net  +20.6
+  2025-12-11 ME       bin frac  1.552 beta +1.85 AR  -21.6 f -4.30 net  +16.4
+  2025-12-12 BB       bin frac  0.043 beta +2.17 AR  -10.3 f -0.85 net   +8.6
+  2025-12-14 SEI      bin frac  0.033 beta +2.04 AR   -3.2 f -0.65 net   +1.8
+  2025-12-15 AGT      bin frac  0.044 beta +1.81 AR  +19.6 f +1.00 net  -19.5
+  2025-12-15 STRK     bin frac  0.049 beta +2.34 AR  -12.8 f -0.47 net  +11.5
+  2025-12-16 APE      bin frac  0.024 beta +2.18 AR   -8.3 f +0.12 net   +7.5
+  2025-12-17 VANA     bin frac  0.179 beta +1.67 AR   +1.9 f -1.31 net   -4.1
+  2025-12-26 XPL      bin frac  0.045 beta +2.34 AR  +16.2 f +0.30 net  -16.9
+  2025-12-28 GRASS    bin frac  0.029 beta +1.47 AR   -3.5 f +0.32 net   +2.9
+  2025-12-30 RESOLV   bin frac  0.021 beta +0.11 AR  -18.4 f -6.98 net  +11.1
+  2025-12-30 ZORA     bin frac  0.032 beta +1.22 AR  -18.8 f -2.80 net  +15.3
+  2026-01-01 MAV      bin frac  0.045 beta +0.64 AR   +3.1 f +0.24 net   -3.4
+  2026-01-02 M        bin frac  0.034 beta -0.03 AR  +16.6 f +0.27 net  -16.6
+  2026-01-02 ZETA     bin frac  0.030 beta +1.22 AR   +7.9 f -0.23 net   -9.0
+  2026-01-08 STABLE   bin frac  0.049 beta +2.17 AR   -0.5 f +0.90 net   +0.4
+  2026-01-10 CARV     bin frac  0.115 beta +1.38 AR  -13.7 f +0.37 net  +13.2
+  2026-01-12 BB       bin frac  0.041 beta +1.48 AR  -11.2 f -0.14 net  +10.3
+  2026-01-13 SEI      bin frac  0.032 beta +1.58 AR   -9.4 f -0.21 net   +8.4
+  2026-01-14 AGT      bin frac  0.042 beta +0.34 AR   -1.5 f +0.38 net   +1.4
+  2026-01-14 STRK     bin frac  0.046 beta +1.37 AR  -11.8 f -0.15 net  +10.9
+  2026-01-16 APE      bin frac  0.021 beta +1.27 AR   -6.8 f -0.11 net   +6.0
+  2026-01-17 DBR      byb frac  0.200 beta +0.46 AR   -0.9 f +0.02 net   +0.4
+  2026-01-18 TRUMP    bin frac  0.143 beta +1.12 AR   -6.5 f -0.46 net   +5.5
+  2026-01-18 ONDO     bin frac  0.822 beta +1.60 AR  -14.5 f -0.09 net  +13.7
+  2026-01-21 PLUME    bin frac  1.938 beta +1.86 AR   -9.1 f -0.41 net   +7.8
+  2026-01-23 APR      bin frac  0.122 beta +0.76 AR  -15.2 f +0.54 net  +15.1
+  2026-01-25 XPL      bin frac  0.043 beta +1.54 AR   +7.4 f +0.14 net   -8.0
+  2026-01-28 GRASS    bin frac  0.036 beta +0.04 AR  -22.6 f +0.37 net  +22.5
+  2026-01-30 ZORA     bin frac  0.031 beta +1.29 AR   +1.0 f -6.88 net   -8.6
+  2026-02-01 ZETA     bin frac  0.029 beta +1.18 AR   +3.0 f -1.72 net   -5.4
+  2026-02-02 M        bin frac  0.033 beta -0.25 AR  -10.3 f +0.39 net  +10.3
+  2026-02-07 STABLE   bin frac  0.047 beta +1.94 AR  +20.0 f -2.59 net  -23.1
+  2026-02-09 CARV     bin frac  0.030 beta +1.26 AR   +0.2 f +0.36 net   -0.3
+  2026-02-09 KMNO     bin frac  0.023 beta +0.75 AR  -11.6 f -0.01 net  +11.1
+  2026-02-11 BB       bin frac  0.039 beta +1.96 AR  +12.7 f -0.01 net  -13.2
+  2026-02-11 LAYER    bin frac  0.411 beta +1.22 AR   +4.6 f -0.25 net   -5.2
+  2026-02-13 AGT      bin frac  0.040 beta -0.18 AR   -1.7 f +0.70 net   +2.0
+  2026-02-13 SEI      bin frac  0.031 beta +1.59 AR   +2.5 f -0.34 net   -3.2
+  2026-02-14 CYBER    bin frac  0.115 beta +0.75 AR   +6.7 f -2.91 net  -10.0
+  2026-02-14 STRK     bin frac  0.044 beta +1.35 AR   -2.5 f -0.16 net   +2.0
+  2026-02-15 APE      bin frac  0.021 beta +1.62 AR   -5.8 f -0.34 net   +5.0
+  2026-02-16 VANA     bin frac  0.022 beta +0.73 AR   -2.0 f -10.99 net   -9.5
+  2026-02-19 KAITO    bin frac  0.131 beta +1.56 AR   +0.5 f -0.03 net   -1.1
+  2026-02-25 XPL      bin frac  0.041 beta +1.78 AR   +2.9 f +0.22 net   -3.1
+  2026-02-27 GRASS    bin frac  0.224 beta +1.03 AR  +31.4 f +0.12 net  -31.8
+  2026-03-01 ZORA     bin frac  0.030 beta +1.16 AR  -21.2 f -3.01 net  +17.7
+  2026-03-03 ZETA     bin frac  0.028 beta +1.16 AR   -8.1 f -1.83 net   +5.7
+  2026-03-04 M        bin frac  0.032 beta +0.40 AR  +10.4 f +0.36 net  -10.4
+  2026-03-10 STABLE   bin frac  0.045 beta +0.95 AR  -13.5 f -1.67 net  +11.4
+  2026-03-12 CARV     bin frac  0.029 beta +1.07 AR  -12.3 f +0.36 net  +12.2
+  2026-03-14 BB       bin frac  0.038 beta +1.35 AR   +4.1 f +0.31 net   -4.3
+  2026-03-15 SEI      bin frac  0.030 beta +1.03 AR   -2.6 f -0.70 net   +1.5
+  2026-03-16 AGT      bin frac  0.039 beta +0.30 AR   -1.2 f +1.75 net   +2.5
+  2026-03-16 STRK     bin frac  0.042 beta +1.18 AR   -8.8 f -0.31 net   +8.1
+  2026-03-17 APE      bin frac  0.020 beta +1.22 AR   -4.7 f -0.63 net   +3.7
+  2026-03-18 VANA     bin frac  0.022 beta +1.07 AR   -3.2 f -0.31 net   +2.4
+  2026-03-21 KAITO    bin frac  0.044 beta +1.17 AR  +12.1 f +0.33 net  -12.1
+  2026-03-27 XPL      bin frac  0.040 beta +1.38 AR  -12.3 f +0.18 net  +12.0
+  2026-03-28 WAL      bin frac  0.960 beta +1.17 AR   -8.1 f -0.85 net   +6.7
+  2026-03-30 GRASS    bin frac  0.038 beta +1.16 AR  -18.9 f +0.24 net  +18.7
+  2026-04-01 HBAR     bin frac  0.109 beta +1.00 AR   -0.4 f +0.01 net   -0.1
+  2026-04-01 ZORA     bin frac  0.029 beta +0.82 AR  -11.3 f -0.63 net  +10.2
+  2026-04-02 BIGTIME  bin frac  0.218 beta +1.19 AR   -1.7 f +0.27 net   +1.4
+  2026-04-02 MAV      bin frac  0.052 beta +1.01 AR   +5.0 f +0.27 net   -5.2
+  2026-04-03 M        bin frac  0.031 beta +0.23 AR  +62.3 f +1.45 net  -61.3
+  2026-04-03 ZETA     bin frac  0.028 beta +1.00 AR   -4.3 f -2.35 net   +1.4
+  2026-04-04 STO      bin frac  0.095 beta +0.83 AR  +83.5 f -18.07 net -102.1
+  2026-04-09 STABLE   bin frac  0.043 beta +0.69 AR   +3.1 f -6.95 net  -10.5
+  2026-04-10 BABY     bin frac  0.694 beta +1.06 AR   -5.4 f +0.12 net   +4.9
+  2026-04-12 CARV     bin frac  0.069 beta +1.02 AR  -13.2 f +0.18 net  +12.8
+  2026-04-13 BB       bin frac  0.036 beta +1.18 AR   +2.8 f +0.17 net   -3.2
+  2026-04-14 SEI      bin frac  0.029 beta +0.92 AR   -2.0 f -0.34 net   +1.2
+  2026-04-15 AGT      bin frac  0.037 beta +0.25 AR  +94.1 f +1.85 net  -92.6
+  2026-04-15 STRK     bin frac  0.041 beta +1.01 AR   -1.0 f +0.06 net   +0.7
+  2026-04-17 VANA     bin frac  0.021 beta +0.97 AR   +0.8 f -0.47 net   -1.6
+  2026-04-18 DBR      byb frac  0.167 beta +0.43 AR  -15.6 f -6.49 net   +8.7
+  2026-04-21 KAITO    bin frac  0.042 beta +0.82 AR   -0.3 f -0.00 net   -0.1
+  2026-04-24 APR      bin frac  0.108 beta +0.78 AR  -49.6 f +1.92 net  +51.2
+  2026-04-27 XPL      bin frac  0.038 beta +1.48 AR  -24.4 f -0.02 net  +24.0
+  2026-04-29 GRASS    bin frac  0.037 beta +1.54 AR   -4.3 f +0.36 net   +4.2
+  2026-05-01 ZORA     bin frac  0.029 beta +0.60 AR  -12.4 f +0.15 net  +12.1
+  2026-05-03 ZETA     bin frac  0.027 beta +1.12 AR   +6.5 f +0.27 net   -6.7
+  2026-05-04 M        bin frac  0.030 beta -0.01 AR  -12.1 f +1.44 net  +13.3
+  2026-05-04 OPN      bin frac  0.177 beta +1.82 AR  -28.5 f +0.30 net  +28.4
+  2026-05-04 STO      bin frac  0.087 beta +0.30 AR   -9.6 f +0.25 net   +9.5
+  2026-05-10 STABLE   bin frac  0.041 beta +0.57 AR  +19.1 f -2.17 net  -21.6
+  2026-05-12 CARV     bin frac  0.023 beta +0.92 AR   +4.5 f +0.40 net   -4.6
+  2026-05-13 BB       bin frac  0.035 beta +1.07 AR   -4.8 f -0.38 net   +3.9
+  2026-05-13 LAYER    bin frac  0.043 beta +0.97 AR  +14.6 f -3.82 net  -19.0
+  2026-05-15 SEI      bin frac  0.028 beta +0.99 AR   +6.9 f -0.09 net   -7.5
+  2026-05-16 AGT      bin frac  0.036 beta -0.14 AR  -21.6 f +0.70 net  +21.9
+  2026-05-16 CYBER    bin frac  0.102 beta +0.79 AR   -9.7 f +0.20 net   +9.3
+  2026-05-16 STRK     bin frac  0.039 beta +1.12 AR   +5.6 f +0.11 net   -6.0
+  2026-05-18 VANA     bin frac  0.021 beta +0.80 AR   -4.8 f +0.25 net   +4.4
+  2026-05-19 PYTH     bin frac  0.276 beta +1.03 AR  -23.2 f +0.04 net  +22.7
+  2026-05-21 KAITO    bin frac  0.041 beta +0.35 AR   -1.9 f +0.17 net   +1.7
+  2026-05-27 XPL      bin frac  0.037 beta +1.48 AR  +13.9 f +0.17 net  -14.5
+  2026-05-30 GRASS    bin frac  0.035 beta +1.75 AR  +71.5 f +0.36 net  -72.2
+  2026-05-31 ZORA     bin frac  0.028 beta +1.17 AR  +20.3 f -1.90 net  -23.0
+  2026-06-03 M        bin frac  0.029 beta +0.87 AR  +18.2 f +1.14 net  -17.7
+  2026-06-03 ZETA     bin frac  0.026 beta +1.24 AR   -0.8 f +0.34 net   +0.3
+  2026-06-04 WET      bin frac  0.837 beta +1.47 AR   +1.8 f +0.40 net   -2.3
+  2026-06-04 OPN      bin frac  0.150 beta +1.10 AR   +3.6 f +0.37 net   -4.0
+  2026-06-04 STO      bin frac  0.080 beta +0.30 AR  -15.8 f +0.17 net  +15.6
+  2026-06-09 STABLE   bin frac  0.040 beta +0.89 AR   +3.3 f -4.32 net   -8.2
+  2026-06-11 CARV     bin frac  0.023 beta +1.13 AR   -8.8 f +0.50 net   +8.7
+  2026-06-11 ME       bin frac  0.489 beta +1.18 AR  -13.0 f -1.36 net  +11.0
+  2026-06-13 BB       bin frac  0.033 beta +1.25 AR  -13.1 f +0.18 net  +12.7
+  2026-06-14 SEI      bin frac  0.028 beta +1.41 AR   +0.8 f -0.63 net   -2.0
+  2026-06-15 AGT      bin frac  0.060 beta -0.07 AR +104.6 f +1.30 net -103.7
+  2026-06-15 STRK     bin frac  0.038 beta +1.54 AR   -3.1 f +0.04 net   +2.6
+  2026-06-17 VANA     bin frac  0.149 beta +0.91 AR   +3.0 f +0.34 net   -3.2
+  2026-06-20 KAITO    bin frac  0.039 beta +0.75 AR   +5.4 f +0.31 net   -5.5
+  2026-06-26 XPL      bin frac  0.035 beta +1.34 AR  +17.4 f +0.18 net  -17.9
+  2026-06-28 RESOLV   bin frac  0.051 beta +0.77 AR  +27.4 f -0.96 net  -28.9
+  2026-06-29 GRASS    bin frac  0.034 beta +1.67 AR  +19.3 f +0.36 net  -19.7
+  2026-07-01 ZORA     bin frac  0.027 beta +1.00 AR   -4.2 f -0.40 net   +3.1
+  2026-07-02 MAV      bin frac  0.047 beta +1.20 AR   +0.3 f +0.27 net   -0.8
+  2026-07-03 ZETA     bin frac  0.025 beta +1.10 AR   -4.9 f +0.30 net   +4.4
+  2026-07-04 M        bin frac  0.028 beta +0.72 AR  -58.3 f -0.74 net  +56.9
+  2026-07-04 OPN      bin frac  0.087 beta -0.30 AR   +5.0 f +0.30 net   -5.0
+  2026-07-04 STO      bin frac  0.074 beta +0.49 AR   +4.7 f +0.34 net   -4.9
+  2026-07-06 SNX      bin frac  0.685 beta +1.07 AR   +4.2 f -0.04 net   -5.0
+  2026-07-10 STABLE   bin frac  0.038 beta +0.80 AR  -11.8 f -1.05 net  +10.1
+  2026-07-12 CARV     bin frac  0.083 beta +1.25 AR  -17.3 f +0.36 net  +16.8
+  2026-07-13 BB       bin frac  0.032 beta +1.50 AR  -14.1 f +0.33 net  +13.5
+  2026-07-15 SEI      bin frac  0.027 beta +1.26 AR   -6.7 f -0.04 net   +5.9
+  2026-07-16 AGT      bin frac  0.056 beta -0.48 AR  +21.7 f +0.75 net  -21.3
+  2026-07-16 STRK     bin frac  0.036 beta +1.04 AR   -7.7 f +0.14 net   +7.1
+  2026-07-19 DBR      byb frac  0.143 beta +0.06 AR   -2.2 f -0.69 net   +1.1
+  2026-07-21 KAITO    bin frac  0.038 beta +0.75 AR  +52.6 f +0.34 net  -52.8
+  2026-07-24 APR      bin frac  0.098 beta -0.98 AR   -8.3 f +0.71 net   +8.7
+  2026-07-27 XPL      bin frac  0.034 beta +1.70 AR   -9.7 f +0.18 net   +9.0
+  2026-07-28 RESOLV   bin frac  0.048 beta +1.25 AR  -22.7 f +0.19 net  +22.2
+  2026-07-31 ZORA     bin frac  0.026 beta +0.78 AR  -10.4 f +0.04 net   +9.7
+  2026-08-03 M        bin frac  0.028 beta +1.40 AR   +0.6 f +0.84 net   -0.6
+  2026-08-03 STO      bin frac  0.069 beta +0.61 AR   -7.7 f +0.27 net   +7.3
+  2026-08-03 ZETA     bin frac  0.024 beta +1.12 AR  -11.4 f +0.22 net  +10.9
+  2026-08-04 OPN      bin frac  0.066 beta -0.39 AR  -12.4 f +0.26 net  +12.4
+  2026-08-09 STABLE   bin frac  0.037 beta +0.42 AR   -6.0 f -1.34 net   +4.1
+  2026-08-11 CARV     bin frac  0.020 beta +1.19 AR   +8.7 f +0.36 net   -9.2
+  2026-08-12 LAYER    bin frac  0.039 beta +1.20 AR   +0.3 f +0.26 net   -0.8
+  2026-08-13 BB       bin frac  0.031 beta +1.29 AR  -15.7 f +0.35 net  +15.2
+  2026-08-14 SEI      bin frac  0.026 beta +1.05 AR   -3.2 f -0.21 net   +2.3
+  2026-08-15 AGT      bin frac  0.053 beta -1.21 AR   -4.8 f +1.74 net   +6.2
+  2026-08-15 CYBER    bin frac  0.092 beta +1.04 AR   -4.5 f +0.19 net   +3.9
+  2026-08-15 STRK     bin frac  0.035 beta +1.00 AR   -8.9 f +0.23 net   +8.4
+  2026-08-20 KAITO    bin frac  0.095 beta +0.57 AR  -58.7 f -14.02 net  +44.3
+  2026-08-26 XPL      bin frac  0.033 beta +1.65 AR  -26.3 f +0.29 net  +25.6
+  2026-08-28 RESOLV   bin frac  0.048 beta +0.99 AR  -20.7 f +0.36 net  +20.3
+  2026-08-29 GRASS    bin frac  0.032 beta +1.99 AR   -6.8 f +0.38 net   +5.9
+  2026-08-31 ZORA     bin frac  0.026 beta +0.62 AR   +9.1 f -4.26 net  -14.0
+  2026-09-02 ZETA     bin frac  0.024 beta +1.08 AR   -0.3 f +0.35 net   -0.2
+  2026-09-03 M        bin frac  0.027 beta +2.14 AR   -2.1 f +0.90 net   +1.8
+  2026-09-03 OPN      bin frac  0.062 beta +1.36 AR   +5.4 f +0.34 net   -6.0
+  2026-09-03 STO      bin frac  0.064 beta +0.85 AR   -0.6 f +0.35 net   +0.2
+  2026-09-08 STABLE   bin frac  0.035 beta -0.25 AR  +11.2 f +0.38 net  -11.2
+  2026-09-11 CARV     bin frac  0.020 beta +1.06 AR   +5.0 f +0.43 net   -5.3
+  2026-09-12 BB       bin frac  0.030 beta +0.79 AR  -11.6 f +0.36 net  +11.3
+  2026-09-14 AGT      bin frac  0.051 beta -0.80 AR   -3.9 f +1.00 net   +4.5
+  2026-09-14 SEI      bin frac  0.025 beta +1.16 AR   -2.9 f -0.02 net   +2.2
+  2026-09-15 STRK     bin frac  0.034 beta +1.19 AR   +1.3 f +0.34 net   -1.7
+  2026-09-20 KAITO    bin frac  0.033 beta +0.86 AR  +14.7 f +0.28 net  -15.1
+  2026-09-26 XPL      bin frac  0.632 beta +1.58 AR   +6.4 f +0.32 net   -6.9
+  2026-09-27 RESOLV   bin frac  0.042 beta +0.67 AR   +6.6 f +0.36 net   -6.8
+  2026-09-30 ZORA     bin frac  0.025 beta +1.23 AR  -10.3 f +0.36 net  +10.0
+  2026-10-02 2Z       bin frac  2.911 beta +1.16 AR  -16.7 f -4.93 net  +11.1
+  2026-10-02 MAV      bin frac  0.035 beta +0.80 AR   -4.0 f +0.36 net   +3.8
+  2026-10-02 ZETA     bin frac  0.023 beta +0.97 AR   -8.6 f +0.35 net   +8.3
+  2026-10-03 M        bin frac  0.026 beta -0.15 AR  -17.0 f +1.15 net  +17.7
+  2026-10-03 STO      bin frac  0.060 beta +0.81 AR   -3.9 f +0.34 net   +3.7
+  2026-10-04 OPN      bin frac  0.056 beta +0.85 AR  +11.9 f +0.36 net  -12.2
+  2026-10-09 STABLE   bin frac  0.034 beta +0.36 AR   -4.9 f +0.66 net   +5.1
+  2026-10-11 CARV     bin frac  0.061 beta +1.11 AR   -9.6 f -3.91 net   +5.1

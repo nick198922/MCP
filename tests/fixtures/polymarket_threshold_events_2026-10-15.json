@@ -1,0 +1,113 @@
+{
+ "_source": "gamma-api.polymarket.com /public-search, fetched 2026-10-15, trimmed fields",
+ "events": [
+  {
+   "id": "211888",
+   "ticker": "bitcoin-above-on-february-23",
+   "slug": "bitcoin-above-on-february-23",
+   "title": "Bitcoin above ___ on February 23?",
+   "description": "This market will resolve to \"Yes\" if the Binance 1 minute candle for BTC/USDT 12:00 in the ET timezone (noon) on the date specified in the title has a final \"Close\" price higher than the price specified in the title. Otherwise, this market will resolve to \"No\".\n\nThe resolution source for this market is Binance, specifically the BTC/USDT \"Close\" prices currently available at https://www.binance.com/en/trade/BTC_USDT with \"1m\" and \"Candles\" selected on the top bar.\n\nPlease note that this market is about the price according to Binance BTC/USDT, not according to other sources or spot markets.\n\nPrice precision is determined by the number of decimal places in the source.",
+   "startDate": "2026-02-16T17:05:32.538703Z",
+   "endDate": "2026-02-23T17:00:00Z",
+   "active": true,
+   "closed": true,
+   "markets": [
+    {
+     "id": "1385959",
+     "question": "Will the price of Bitcoin be above $64,000 on February 23?",
+     "conditionId": "0xea7c1109bdd9ef2b87036b2644072b3d9166ce3ba9214fca8f79448d99899911",
+     "slug": "bitcoin-above-64k-on-february-23",
+     "endDate": "2026-02-23T17:00:00Z",
+     "startDate": "2026-02-16T17:05:16.639358Z",
+     "description": "This market will resolve to \"Yes\" if the Binance 1 minute candle for BTC/USDT 12:00 in the ET timezone (noon) on the date specified in the title has a final \"Close\" price higher than the price specified in the title. Otherwise, this market will resolve to \"No\".\n\nThe resolution source for this market is Binance, specifically the BTC/USDT \"Close\" prices currently available at https://www.binance.com/en/trade/BTC_USDT with \"1m\" and \"Candles\" selected on the top bar.\n\nPlease note that this market is about the price according to Binance BTC/USDT, not according to other sources or spot markets.\n\nPrice precision is determined by the number of decimal places in the source.",
+     "outcomes": "[\"Yes\", \"No\"]",
+     "outcomePrices": "[\"1\", \"0\"]",
+     "active": true,
+     "closed": true,
+     "closedTime": "2026-02-23 19:22:50+00",
+     "groupItemTitle": "64,000",
+     "umaResolutionStatus": "resolved",
+     "clobTokenIds": "[\"110570541370923042640113794691898367804193164953971180991431787210224843082042\", \"71344828496105578070881019772299905601027418076504270991325969314221490102076\"]",
+     "acceptingOrdersTimestamp": "2026-02-16T17:04:11Z",
+     "orderPriceMinTickSize": 0.001,
+     "feesEnabled": false,
+     "feeType": null
+    },
+    {
+     "id": "1385960",
+     "question": "Will the price of Bitcoin be above $66,000 on February 23?",
+     "conditionId": "0x90999658fff72e6cfd0b51e6f561578d99ad9d24184bdd6ed5d2f8a861d50dfa",
+     "slug": "bitcoin-above-66k-on-february-23",
+     "endDate": "2026-02-23T17:00:00Z",
+     "startDate": "2026-02-16T17:04:48.862865Z",
+     "description": "This market will resolve to \"Yes\" if the Binance 1 minute candle for BTC/USDT 12:00 in the ET timezone (noon) on the date specified in the title has a final \"Close\" price higher than the price specified in the title. Otherwise, this market will resolve to \"No\".\n\nThe resolution source for this market is Binance, specifically the BTC/USDT \"Close\" prices currently available at https://www.binance.com/en/trade/BTC_USDT with \"1m\" and \"Candles\" selected on the top bar.\n\nPlease note that this market is about the price according to Binance BTC/USDT, not according to other sources or spot markets.\n\nPrice precision is determined by the number of decimal places in the source.",
+     "outcomes": "[\"Yes\", \"No\"]",
+     "outcomePrices": "[\"0\", \"1\"]",
+     "active": true,
+     "closed": true,
+     "closedTime": "2026-02-23 19:20:48+00",
+     "groupItemTitle": "66,000",
+     "umaResolutionStatus": "resolved",
+     "clobTokenIds": "[\"97007471278837526715475019011816387959807240907821566815499578324068016651279\", \"60709330490357988089865045186177077206108524352000682147908476633377187004278\"]",
+     "acceptingOrdersTimestamp": "2026-02-16T17:03:43Z",
+     "orderPriceMinTickSize": 0.001,
+     "feesEnabled": false,
+     "feeType": null
+    }
+   ],
+   "series": [
+    {
+     "id": "45",
+     "slug": "btc-multi-strikes-weekly"
+    }
+   ]
+  },
+  {
+   "id": "1148925",
+   "ticker": "xrp-above-on-october-14-2026",
+   "slug": "xrp-above-on-october-14-2026",
+   "title": "XRP above ___ on October 14?",
+   "description": "This market will resolve to \"Yes\" if the Binance 1 minute candle for XRP/USDT closing at 12:00 in the ET timezone (noon) on the date specified in the title has a final \"Close\" price higher than the price specified in the title. Otherwise, this market will resolve to \"No\".\n\nThe resolution source for this market is Binance, specifically the XRP/USDT \"Close\" prices currently available at https://www.binance.com/en/trade/XRP_USDT with \"1m\" and \"Candles\" selected on the top bar.\n\nPlease note that this market is about the price according to Binance XRP/USDT, not according to other exchanges or trading pairs.\n\nPrice precision is determined by the number of decimal places in the source.",
+   "startDate": "2026-10-07T16:00:21Z",
+   "endDate": "2026-10-14T16:00:00Z",
+   "active": true,
+   "closed": true,
+   "markets": [
+    {
+     "id": "5407385",
+     "question": "Will the price of XRP be above $0.90 on October 14?",
+     "conditionId": "0xd0d71f6fad94af356ba6367ac69e3502362e116aa54df765dde5ebdb05b7482c",
+     "slug": "xrp-above-0pt9-on-october-14-2026",
+     "endDate": "2026-10-14T16:00:00Z",
+     "startDate": "2026-10-07T16:00:21Z",
+     "description": "This market will resolve to \"Yes\" if the Binance 1 minute candle for XRP/USDT closing at 12:00 in the ET timezone (noon) on the date specified in the title has a final \"Close\" price higher than the price specified in the title. Otherwise, this market will resolve to \"No\".\n\nThe resolution source for this market is Binance, specifically the XRP/USDT \"Close\" prices currently available at https://www.binance.com/en/trade/XRP_USDT with \"1m\" and \"Candles\" selected on the top bar.\n\nPlease note that this market is about the price according to Binance XRP/USDT, not according to other exchanges or trading pairs.\n\nPrice precision is determined by the number of decimal places in the source.",
+     "outcomes": "[\"Yes\", \"No\"]",
+     "outcomePrices": "[\"1\", \"0\"]",
+     "active": true,
+     "closed": true,
+     "closedTime": "2026-10-14 16:13:00+00",
+     "groupItemTitle": "0.90",
+     "umaResolutionStatus": "resolved",
+     "clobTokenIds": "[\"31010802966435047337361969216417172045556035102779272011573978315906836879528\", \"44069197857248925212566550909326711957370096860415690595744465227153330036592\"]",
+     "acceptingOrdersTimestamp": "2026-10-07T16:00:21Z",
+     "orderPriceMinTickSize": 0.001,
+     "feesEnabled": true,
+     "feeType": "crypto_fees_v2",
+     "feeSchedule": {
+      "exponent": 1,
+      "rate": 0.07,
+      "takerOnly": true,
+      "rebateRate": 0.2
+     },
+     "resolutionSource": "https://www.binance.com/en/trade/XRP_USDT"
+    }
+   ],
+   "series": [
+    {
+     "id": "?",
+     "slug": "xrp-multi-strikes-weekly"
+    }
+   ]
+  }
+ ]
+}

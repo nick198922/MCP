@@ -1,0 +1,7 @@
+- Дослідження «Polymarket переоцінює хвости щоденних крипто-порогових ринків» (IDEA-20261015-polymarket-threshold-vs-vol-model): **inconclusive**, стадія 0. Дані доступні: 17 122 ринки, покриття q на T − 12 год 100 %. Lookahead у q не виявлено (точка ≤ t0 − 60 с). Що саме повертає точка `/prices-history` (mid книги чи інша похідна від книги), не доведено. Потужності нема: MDE калібрування 2.23 п.п. і H2 7.74 п.п. при воротах ≤ 1.0 п.п., тож середні не рахувались. Реєстрацію не закомічено до fetch, її момент підтверджено лише заявою кванта. Звіт: `docs/verification/2026-10-15-polymarket-threshold-vs-vol-model.md`.
+- Нове в провайдері `polymarket.py` (лише для дослідницьких скриптів, інструменти не змінювались):
+  - `events_all` — курсорна пагінація Gamma `/events/keyset`, бо `/events` з offset відмовляє на глибоких зсувах;
+  - `price_history_range` — явне вікно дає 1-хвилинні точки й для закритих ринків; це знімок котирування, не ціна угоди, семантику мітки часу не перевірено;
+  - `trades` — data-api `/trades` зі `start/end`; offset > 10 000 дає `ProviderError` з причиною `config`.
+- Новий HTTP-клієнт `polymarket:data` у `Runtime` (3 зап./с). Зразки в `tests/fixtures/polymarket_*_2026-10-15.json` (у фікстурі угод вилучено поля гаманців і `transactionHash`).
+- Нове: чиста аналітика `src/tradedesk/analytics/pm_threshold.py`, тести `tests/test_pm_threshold.py`, скрипт `scripts/verify_pm_threshold.py`.

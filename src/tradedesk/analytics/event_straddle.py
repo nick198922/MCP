@@ -62,8 +62,9 @@ def entry_quote(
     moneyness_band: float = 0.15,
     fee: float = 0.0003,
     fee_cap: float = 0.125,
+    expiry_days: int = 1,
 ) -> dict[str, Any] | None:
-    """Short ATM straddle entry quote at ``t0`` on the next daily expiry, from prints <= t0 only.
+    """Short ATM straddle entry quote at ``t0`` on the daily expiry ``day + expiry_days`` 08:00 UTC, from prints <= t0 only.
 
     Returns None if no print at all is usable for the spot; otherwise a dict with ``covered`` (bool) and,
     when covered: spot ``S0``, forward ``F``, ``T``, strike ``K``, per-leg mark IV (``iv_call``, ``iv_put``)
@@ -74,7 +75,7 @@ def entry_quote(
     """
     t0 = day_ms + int(entry_hour * HOUR_MS)
     lo = t0 - int(window_h * HOUR_MS)
-    exp = day_ms + DAY_MS + 8 * HOUR_MS
+    exp = day_ms + expiry_days * DAY_MS + 8 * HOUR_MS
     # spot: median index of all BTC option prints in the last spot_window_min before t0, else latest print <= t0
     recent, last = [], None
     for t in trades:

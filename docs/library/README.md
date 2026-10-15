@@ -35,3 +35,5 @@
 | [LIB-20261014-ai-narrative](LIB-20261014-ai-narrative.md) | 2TOP SQUAD: AI-наратив, агенти, NEAR/VVV/VIRTUAL/GRASS/NIL/TAO/CHIP/WLD/ORBIO | triaged |
 | [LIB-20261014-rwa-narrative](LIB-20261014-rwa-narrative.md) | 2TOP SQUAD: RWA-наратив, ONDO/AAVE/UNI/ENA/SYRUP/AERO/MORPHO/RAY/ZRO/CFG, анлоки | triaged |
 | [LIB-20261015-market-review](LIB-20261015-market-review.md) | 2TOP SQUAD: огляд ринку 15.10, реакція на макроновини, бета альтів, покупки скарбниць | triaged |
+| [LIB-20261015-polymarket-basics](LIB-20261015-polymarket-basics.md) | DOUBLETOP Education: як заробляють на Polymarket — переоцінений YES, продаж на 50 %, арбітраж, нові гаманці | new |
+| [LIB-20261015-cpi-polymarket-touch](LIB-20261015-cpi-polymarket-touch.md) | Пост: стренгл із ринків «на дотик» Polymarket на CPI (BTC ±3 %, ETH ±8 %), ризик 0.7 % | new |

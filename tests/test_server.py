@@ -135,6 +135,17 @@ async def test_pre_trade_checklist_prompt(server):
         res = await c.get_prompt("pre_trade_checklist", {"symbol": "ETH/USDT:USDT", "side": "short", "size": "2 ETH"})
         text = res.messages[0].content.text
     assert "ETH/USDT:USDT" in text and "short" in text and "2 ETH" in text
+    assert "{{" not in text  # every placeholder filled, defaults included
+
+
+async def test_pre_trade_checklist_sizing_and_journal_review(server):
+    async with Client(server) as c:
+        res = await c.get_prompt("pre_trade_checklist", {"symbol": "SOL/USDT:USDT", "account": "$10000", "risk_pct": "0.5"})
+        plan = res.messages[0].content.text
+        res = await c.get_prompt("journal_review", {"days": "60"})
+        review = res.messages[0].content.text
+    assert "0.5 % від $10000" in plan and "journal_add" in plan and "touch_probability" in plan
+    assert "60 днів" in review and "journal_stats" in review and "{{" not in review
 
 
 async def test_morning_briefing_prompt(server):

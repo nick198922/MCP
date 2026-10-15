@@ -31,6 +31,7 @@ packages = ["src/tradedesk"]
 "src/tradedesk/prompts/token_deep_analysis.md" = "tradedesk/prompts/token_deep_analysis.md"
 "src/tradedesk/prompts/fomc_playbook.md" = "tradedesk/prompts/fomc_playbook.md"
 "src/tradedesk/prompts/pre_trade_checklist.md" = "tradedesk/prompts/pre_trade_checklist.md"
+"src/tradedesk/prompts/journal_review.md" = "tradedesk/prompts/journal_review.md"
 "src/tradedesk/prompts/morning_briefing.md" = "tradedesk/prompts/morning_briefing.md"
 "src/tradedesk/data/macro_events.json" = "tradedesk/data/macro_events.json"
 "src/tradedesk/data/alert_rules.example.json" = "tradedesk/data/alert_rules.example.json"

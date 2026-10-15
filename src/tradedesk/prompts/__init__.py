@@ -90,22 +90,40 @@ def register(server: MCPServer, rt: Runtime) -> None:
 
     @server.prompt(
         name="pre_trade_checklist",
-        title="Pre-trade checklist",
+        title="Trade plan / pre-trade checklist",
         description=(
-            "10-step checklist before opening a position: thesis one-liner, market regime, "
-            "derivatives picture, volatility & skew, calendar, payoff + risk, mechanics, exit "
-            "plan, alerts/rules, journal entry. Each step names the tradedesk-mcp tool to call."
+            "Trade plan before opening a position, in Ukrainian: honest frame (no entry-timing edge is verified), thesis and "
+            "source, regime, derivatives positioning, volatility vs stop distance, calendar (defined-risk alternatives on "
+            "macro days: options or Polymarket vs touch_probability), position size from account and risk %, execution, "
+            "exit plan, verdict (enter / wait for a trigger with an alert / skip), journal entry with tags for later review. "
+            "Each step names the tradedesk-mcp tool to call. Places no orders."
         ),
     )
     async def pre_trade_checklist(
         symbol: Annotated[str, Field(description="Instrument you're about to trade")] = "BTC/USDT:USDT",
         side: Annotated[str, Field(description="long / short / spread name")] = "long",
         size: Annotated[str, Field(description="Position size (e.g. '0.5 BTC' or '10 contracts')")] = "<size>",
+        account: Annotated[str, Field(description="Account equity, e.g. '$10000'")] = "<рахунок>",
+        risk_pct: Annotated[str, Field(description="Risk per trade in percent of the account, e.g. '1'")] = "1",
     ) -> str:
         return _render_template(
             "pre_trade_checklist.md",
-            {"SYMBOL": symbol, "SIDE": side, "SIZE": size},
+            {"SYMBOL": symbol, "SIDE": side, "SIZE": size, "ACCOUNT": account, "RISK_PCT": risk_pct},
         )
+
+    @server.prompt(
+        name="journal_review",
+        title="Monthly trade journal review",
+        description=(
+            "Review of the owner's trade journal in Ukrainian: win rate, mean and total R by tag (source, setup, confidence, "
+            "event), discipline (trades without stops, losses beyond 1R), three conclusions and one rule to change next "
+            "month; compares with the calls tracker. Uses journal_list / journal_stats; paper trades (pp-paper) kept apart."
+        ),
+    )
+    async def journal_review(
+        days: Annotated[str, Field(description="Look-back window in days")] = "30",
+    ) -> str:
+        return _render_template("journal_review.md", {"DAYS": days})
 
     @server.prompt(
         name="morning_briefing",

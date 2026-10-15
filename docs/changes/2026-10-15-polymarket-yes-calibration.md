@@ -1,0 +1,3 @@
+- Polymarket: чисті функції калібрування YES (`analytics/pm_calibration.py`) і тести (18).
+- Скрипт `scripts/verify_pm_yes_calibration.py` (етапи fetch / trades / stage0 / full, відновлення з кешу).
+- Картка калібрування: статус `testing`, попередня реєстрація записана до першого запиту цін. Вердикту ще немає.

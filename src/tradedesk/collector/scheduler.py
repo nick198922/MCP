@@ -399,6 +399,32 @@ async def _collect_ohlcv_hist(rt: "Runtime") -> int:
     return written
 
 
+async def _collect_supply(rt: "Runtime") -> int:
+    """Daily point-in-time supply snapshot of the top coins by market cap into `supply_snapshot`.
+
+    CoinGecko's history is corrected retroactively and its supply history is Enterprise-only, so research that needs
+    supply as it was known on a day (unlocks, net issuance, buybacks) can only rely on snapshots taken at the time.
+    A failed later page keeps the pages already fetched; a failed first page fails the job.
+    """
+    from ..core.errors import ProviderError  # noqa: PLC0415
+
+    assert rt.store is not None
+    now = rt.now()
+    rows: list[dict[str, object]] = []
+    for page in range(1, max(1, rt.settings.collect_supply_pages) + 1):
+        try:
+            fetched = await rt.coingecko.coins_markets("usd", 250, page)
+        except ProviderError as e:
+            if not rows:
+                raise
+            log.warning("supply snapshot: page %d failed, keeping %d rows: %s", page, len(rows), e)
+            break
+        if not fetched.data:
+            break
+        rows.extend(fetched.data)
+    return await rt.store.insert_supply_snapshot(now.strftime("%Y-%m-%d"), int(now.timestamp()), rows)
+
+
 async def _retention_sweep(rt: "Runtime") -> int:
     """Trim stored history to the retention windows configured in Settings."""
     assert rt.store is not None
@@ -431,6 +457,8 @@ def build_default_scheduler(rt: "Runtime") -> Scheduler | None:
         PeriodicJob(name="basis", period_seconds=s.collect_basis_seconds, fn=_collect_basis),
         PeriodicJob(name="retention", period_seconds=s.retention_seconds, fn=_retention_sweep),
     ]
+    if s.collect_supply_enabled:
+        jobs.append(PeriodicJob(name="supply", period_seconds=s.collect_supply_seconds, fn=_collect_supply))
     if s.alerts_enabled:
         # JSON file is optional in Phase 3.1 — DB-backed rules work on their own.
         jobs.append(PeriodicJob(name="alerts", period_seconds=s.alerts_seconds, fn=_evaluate_alerts))

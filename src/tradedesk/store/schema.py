@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 # Each migration is a list of SQL statements executed in a single transaction.
 # `PRAGMA user_version` is bumped by Store.init() after a block runs.
@@ -228,5 +228,29 @@ MIGRATIONS: dict[int, list[str]] = {
         )
         """,
         "CREATE INDEX IF NOT EXISTS carry_paper_status_opened ON carry_paper (status, opened_ts)",
+    ],
+    10: [
+        # One CoinGecko /coins/markets snapshot a day: a point-in-time record of supply that the provider's own
+        # history (retroactively corrected, supply history Enterprise-only) cannot give.
+        """
+        CREATE TABLE IF NOT EXISTS supply_snapshot (
+            day TEXT NOT NULL,                     -- UTC date of the snapshot, YYYY-MM-DD
+            coin_id TEXT NOT NULL,                 -- CoinGecko id
+            ts INTEGER NOT NULL,                   -- unix seconds of the snapshot
+            symbol TEXT NOT NULL,                  -- upper-case ticker as CoinGecko reports it
+            name TEXT,
+            market_cap_rank INTEGER,
+            price REAL,                            -- USD
+            market_cap REAL,                       -- USD
+            fdv REAL,                              -- USD
+            volume_24h REAL,                       -- USD
+            circulating_supply REAL,               -- coins
+            total_supply REAL,
+            max_supply REAL,
+            last_updated TEXT,                     -- CoinGecko's own timestamp of the row
+            PRIMARY KEY (day, coin_id)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS supply_snapshot_symbol_day ON supply_snapshot (symbol, day)",
     ],
 }

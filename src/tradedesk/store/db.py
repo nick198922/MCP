@@ -183,6 +183,46 @@ class Store:
         rows = await cur.fetchall()
         return [dict(r) for r in rows]
 
+    async def insert_supply_snapshot(self, day: str, ts: int, rows: list[dict[str, Any]]) -> int:
+        """CoinGecko ``/coins/markets`` rows for one UTC day. Idempotent per (day, coin_id): a later snapshot of the
+        same day replaces the earlier one. Rows without an id or symbol are skipped."""
+
+        def num(v: Any) -> float | None:
+            return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+        payload = []
+        for r in rows:
+            if not isinstance(r, dict) or not r.get("id") or not r.get("symbol"):
+                continue
+            rank = r.get("market_cap_rank")
+            payload.append(
+                (
+                    day,
+                    str(r["id"]),
+                    ts,
+                    str(r["symbol"]).upper(),
+                    r.get("name"),
+                    int(rank) if isinstance(rank, int) else None,
+                    num(r.get("current_price")),
+                    num(r.get("market_cap")),
+                    num(r.get("fully_diluted_valuation")),
+                    num(r.get("total_volume")),
+                    num(r.get("circulating_supply")),
+                    num(r.get("total_supply")),
+                    num(r.get("max_supply")),
+                    r.get("last_updated"),
+                )
+            )
+        if not payload:
+            return 0
+        await self.conn.executemany(
+            "INSERT OR REPLACE INTO supply_snapshot (day, coin_id, ts, symbol, name, market_cap_rank, price, market_cap, fdv, "
+            "volume_24h, circulating_supply, total_supply, max_supply, last_updated) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            payload,
+        )
+        await self.conn.commit()
+        return len(payload)
+
     async def prune(self, table: str, cutoff_ts: int) -> int:
         """Delete rows with ts < cutoff_ts. Returns the number of rows deleted."""
         if table not in {"atm_term", "funding_hist", "basis_hist", "snapshots", "alerts", "liquidations", "ohlcv_hist"}:

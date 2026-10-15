@@ -56,6 +56,10 @@ class Settings:
     collect_ohlcv_hist_seconds: int = 3600
     collect_ohlcv_hist_backfill_days: int = 365
     retention_ohlcv_hist_days: int = 0  # 0 = never prune ohlcv_hist
+    # Daily CoinGecko supply snapshot (top `pages` x 250 coins by market cap); on whenever the collector is.
+    collect_supply_enabled: bool = True
+    collect_supply_seconds: int = 86_400
+    collect_supply_pages: int = 4
     # Alerts
     alerts_enabled: bool = False
     alerts_rules_path: str = ""
@@ -97,6 +101,9 @@ class Settings:
             collect_ohlcv_hist_seconds=int(_float("TRADEDESK_COLLECT_OHLCV_HIST_SECONDS", 3600)),
             collect_ohlcv_hist_backfill_days=int(_float("TRADEDESK_OHLCV_HIST_BACKFILL_DAYS", 365)),
             retention_ohlcv_hist_days=int(_float("TRADEDESK_RETENTION_OHLCV_HIST_DAYS", 0)),
+            collect_supply_enabled=os.environ.get("TRADEDESK_COLLECT_SUPPLY_ENABLED", "1").lower() in ("1", "true", "yes"),
+            collect_supply_seconds=int(_float("TRADEDESK_COLLECT_SUPPLY_SECONDS", 86_400)),
+            collect_supply_pages=int(_float("TRADEDESK_COLLECT_SUPPLY_PAGES", 4)),
             http_bearer_tokens=os.environ.get("TRADEDESK_HTTP_BEARER_TOKENS") or os.environ.get("TRADEDESK_HTTP_BEARER_TOKEN", ""),
             alerts_enabled=os.environ.get("TRADEDESK_ALERTS_ENABLED", "").lower() in ("1", "true", "yes"),
             alerts_rules_path=os.environ.get("TRADEDESK_ALERTS_RULES_PATH", ""),

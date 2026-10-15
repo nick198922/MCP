@@ -217,3 +217,87 @@ async def test_retention_sweep_deletes_old_rows(state):
         assert await rt.store.table_count("atm_term") == 1
     finally:
         await rt.aclose()
+
+
+def _coin(i: int) -> dict:
+    return {
+        "id": f"coin-{i}",
+        "symbol": f"c{i}",
+        "name": f"Coin {i}",
+        "market_cap_rank": i,
+        "current_price": 1.5,
+        "market_cap": 1_500_000.0,
+        "fully_diluted_valuation": None,
+        "total_volume": 10_000.0,
+        "circulating_supply": 1_000_000.0,
+        "total_supply": 2_000_000.0,
+        "max_supply": None,
+        "last_updated": "2026-10-10T13:00:00.000Z",
+    }
+
+
+async def _rt_with_coingecko_pages(state, pages: dict[int, object]) -> Runtime:
+    """A runtime whose CoinGecko /coins/markets answers by page: a list of rows, or an int HTTP error status."""
+    import httpx  # noqa: PLC0415
+
+    def cg(req: httpx.Request) -> httpx.Response:
+        page = int(req.url.params.get("page", "1"))
+        answer = pages.get(page, [])
+        if isinstance(answer, int):
+            return httpx.Response(answer, text="down")
+        return httpx.Response(200, json=answer)
+
+    transports = make_transports(state)
+    transports["coingecko"] = httpx.MockTransport(cg)
+    settings = Settings(http_retries=1, cache_scale=0.0, db_path=":memory:", collector_enabled=True, collect_supply_pages=3)
+    rt = Runtime(settings, transports=transports, exchange_factory=FakeEx)
+    rt.now = lambda: NOW
+    await rt.store.init()
+    return rt
+
+
+async def test_supply_job_writes_daily_snapshot_idempotently(state):
+    from tradedesk.collector.scheduler import _collect_supply  # noqa: PLC0415
+
+    rt = await _rt_with_coingecko_pages(state, {1: [_coin(1), _coin(2), {"id": "", "symbol": "x"}], 2: [_coin(3)]})
+    try:
+        assert await _collect_supply(rt) == 3  # page 3 is empty: stop there; the row without an id is skipped
+        assert await _collect_supply(rt) == 3  # same day again: replaced, not duplicated
+        assert await rt.store.table_count("supply_snapshot") == 3
+        cur = await rt.store.conn.execute("SELECT day, symbol, circulating_supply, fdv FROM supply_snapshot WHERE coin_id = 'coin-2'")
+        assert tuple(await cur.fetchone()) == ("2026-10-10", "C2", 1_000_000.0, None)
+    finally:
+        await rt.aclose()
+
+
+async def test_supply_job_keeps_pages_fetched_before_a_failure(state):
+    import pytest  # noqa: PLC0415
+
+    from tradedesk.collector.scheduler import _collect_supply  # noqa: PLC0415
+    from tradedesk.core.errors import ProviderError  # noqa: PLC0415
+
+    rt = await _rt_with_coingecko_pages(state, {1: [_coin(1)], 2: 500})
+    try:
+        assert await _collect_supply(rt) == 1
+    finally:
+        await rt.aclose()
+    rt = await _rt_with_coingecko_pages(state, {1: 500})
+    try:
+        with pytest.raises(ProviderError):
+            await _collect_supply(rt)
+        assert await rt.store.table_count("supply_snapshot") == 0
+    finally:
+        await rt.aclose()
+
+
+def test_supply_job_is_scheduled_with_the_collector(state):
+    from tradedesk.collector.scheduler import build_default_scheduler  # noqa: PLC0415
+
+    on = Runtime(Settings(db_path=":memory:", collector_enabled=True), transports=make_transports(state), exchange_factory=FakeEx)
+    off = Runtime(
+        Settings(db_path=":memory:", collector_enabled=True, collect_supply_enabled=False),
+        transports=make_transports(state),
+        exchange_factory=FakeEx,
+    )
+    assert "supply" in [j.name for j in build_default_scheduler(on).jobs]
+    assert "supply" not in [j.name for j in build_default_scheduler(off).jobs]

@@ -1,0 +1,2 @@
+- Бібліотека: `LIB-20261015-polymarket-basics` розібрано (статус `triaged`).
+- Дві нові картки: калібрування YES у всіх категоріях Polymarket та сканер суми цін neg-risk подій; критик прийняв обидві з умовами (`docs/reviews/2026-10-15-polymarket-basics-triage.md`).

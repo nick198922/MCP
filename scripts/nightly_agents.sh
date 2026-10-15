@@ -127,7 +127,15 @@ if [[ $DRY -eq 1 ]]; then
   git checkout --quiet --detach origin/main
 elif [[ -n "$WORK_BR" ]]; then
   MODE=continue
-  if ! dirty; then # otherwise a killed run's changes are on top of the local work branch already
+  # A killed run's changes are kept only when they sit on the work branch already. Leftovers on another commit (the
+  # throwaway scripts/_* a delivery leaves on detached main) are set aside: kept, they would start the agents on main
+  # and make the save push main's history over the branch, which GitHub rejects.
+  on_work=0
+  if [[ "$(git branch --show-current)" == "$WORK_BR" ]] && git merge-base --is-ancestor "origin/$WORK_BR" HEAD; then
+    on_work=1
+  fi
+  if ((!on_work)) || ! dirty; then
+    if dirty; then git stash push -q --include-untracked -m "agents-leftover-$STAMP" || true; fi
     git checkout --quiet -B "$WORK_BR" "origin/$WORK_BR"
     # Keep the work current with main so its PR merges cleanly; a conflict is left for the owner's review.
     git merge --quiet --no-edit origin/main >/dev/null 2>&1 || git merge --abort 2>/dev/null || true

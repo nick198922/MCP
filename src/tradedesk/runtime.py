@@ -77,6 +77,8 @@ class Runtime:
         self.polymarket = Polymarket(
             gamma=http("polymarket:gamma", poly_mod.GAMMA_URL, rate=5, burst=10),
             clob=http("polymarket:clob", poly_mod.CLOB_URL, rate=5, burst=10),
+            # Trade prints (research scripts, not tools).
+            data=http("polymarket:data", poly_mod.DATA_URL, rate=3, burst=5),
         )
         self.store: Store | None = Store(s.db_path) if s.db_path else None
         self.scheduler: Any | None = None  # built after providers below (see server.lifespan)

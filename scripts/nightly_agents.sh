@@ -166,7 +166,8 @@ save_work() {
   make lint >"$LOG_DIR/$STAMP.save-lint.log" 2>&1 || SAVE_CHECKS="LINT FAILS"
   make test >"$LOG_DIR/$STAMP.save-test.log" 2>&1 || SAVE_CHECKS="$SAVE_CHECKS; TESTS FAIL"
   git switch -q -C "$br" || { SAVE_FAILED="git switch"; return 1; }
-  git add -A -- docs src tests scripts || { SAVE_FAILED="git add"; return 1; }
+  # scripts/_* are the agents' throwaway helpers (.claude/nightly.md), never project files.
+  git add -A -- docs src tests scripts ':!scripts/_*' || { SAVE_FAILED="git add"; return 1; }
   while IFS= read -r f; do
     if [[ -f "$f" && $(wc -c <"$f") -gt 2000000 ]]; then
       git reset -q -- "$f"
@@ -246,6 +247,7 @@ ALLOWED=(
   "Bash(ls:*)" "Bash(date:*)" "Bash(which:*)" "Bash(head:*)" "Bash(tail:*)" "Bash(wc:*)" "Bash(mkdir -p .agent:*)"
   "Bash(cat:*)" "Bash(sed:*)" "Bash(cut:*)" "Bash(grep:*)" "Bash(sort:*)" "Bash(uniq:*)" "Bash(find:*)"
   "Bash(scripts/agents_wait.sh:*)" "Bash(bash scripts/agents_wait.sh:*)"
+  "Bash(scripts/agents_rm.py:*)" "Bash(python3 scripts/agents_rm.py:*)" "Bash(uv run python scripts/agents_rm.py:*)"
 )
 DENIED=(
   "Bash(git push origin main:*)" "Bash(git push --force:*)" "Bash(git push -f:*)" "Bash(git reset --hard:*)"

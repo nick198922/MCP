@@ -127,7 +127,12 @@ if [[ $DRY -eq 1 ]]; then
   git checkout --quiet --detach origin/main
 elif [[ -n "$WORK_BR" ]]; then
   MODE=continue
-  if ! dirty; then # otherwise a killed run's changes are on top of the local work branch already
+  # Keep the local tree only when it is a killed run's work on top of the saved work branch. Anything else (a clone
+  # left at main with a stray helper file, as on 2026-10-15) is set aside, and the run starts from the saved work.
+  if dirty && git merge-base --is-ancestor "origin/$WORK_BR" HEAD 2>/dev/null; then
+    echo "continuing a killed run's changes on top of $WORK_BR"
+  else
+    if dirty; then git stash push -q --include-untracked -m "agents-leftover-$STAMP" || true; fi
     git checkout --quiet -B "$WORK_BR" "origin/$WORK_BR"
     # Keep the work current with main so its PR merges cleanly; a conflict is left for the owner's review.
     git merge --quiet --no-edit origin/main >/dev/null 2>&1 || git merge --abort 2>/dev/null || true
@@ -161,6 +166,11 @@ save_work() {
     else
       br="agent/$(date +%F)-wip-$(date +%H%M%S)"
     fi
+  fi
+  if [[ -n "$WORK_BR" ]] && git rev-parse -q --verify "refs/remotes/origin/$br" >/dev/null &&
+    ! git merge-base --is-ancestor "origin/$br" HEAD 2>/dev/null; then
+    SAVE_FAILED="the clone is not on $br (it does not contain the saved work), nothing pushed"
+    return 1
   fi
   SAVE_CHECKS="lint and tests pass"
   make lint >"$LOG_DIR/$STAMP.save-lint.log" 2>&1 || SAVE_CHECKS="LINT FAILS"
@@ -307,6 +317,8 @@ elif dirty || [[ -n "$WORK_BR" ]]; then
   saved=$?
   set -e
   if ((saved == 1)); then
+    # A run whose work could not be saved did not move the step forward: it does not count toward MAX_RUNS.
+    if [[ $MODE == continue && -n "$WORK_BR" ]] && ((RUNS > 1)); then echo "$WORK_BR $((RUNS - 1)) $FIRST" >"$WORK"; fi
     finish 5 "error" "❌ **Агенти: не вдалося зберегти роботу гілкою** (впало: ${SAVE_FAILED:-?}). Лог: $LOG_DIR/$STAMP.log
 $(grep -v '^== ' "$LOG_DIR/$STAMP.log" | tail -5)"
   fi

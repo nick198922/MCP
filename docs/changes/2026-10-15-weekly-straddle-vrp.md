@@ -1,0 +1,2 @@
+- Квант перевірив картку «тижневий стреддл VRP + нахил кривої» (Deribit BTC, 2021–2026): `analytics/weekly_straddle.py`, `scripts/verify_weekly_straddle.py`, звіт `docs/verification/2026-10-15-weekly-straddle-vrp.md`.
+- Вердикт: `rejected` за критерієм (д) (найгірший тиждень −10.65 % спота, середнє нетто +0.10 % [−0.20; +0.40]); H1 лишається ◯ (ворота потужності не пройдено, MDE 0.45 % > 0.25 %).

@@ -22,6 +22,7 @@ FILES_URL = "https://data.binance.vision"
 LISTING_URL = "https://s3-ap-northeast-1.amazonaws.com"
 BUCKET = "data.binance.vision"
 UM_KLINES = "data/futures/um"
+SPOT = "data/spot"
 VALID_INTERVALS = ("1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d")
 _S3_NS = "{http://s3.amazonaws.com/doc/2006-03-01/}"
 # Archive symbols are mostly [A-Z0-9] but some bases are not Latin (e.g. a CJK meme coin); forbid only path syntax.
@@ -94,6 +95,11 @@ def _check(symbol: str, interval: str) -> None:
         raise ProviderError("binance_vision", "config", f"interval must be one of {VALID_INTERVALS}")
 
 
+def _check_day(day: str) -> None:
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", day):
+        raise ProviderError("binance_vision", "config", f"bad day {day!r}")
+
+
 class BinanceVision:
     name = "binance_vision"
 
@@ -151,6 +157,45 @@ class BinanceVision:
         name = f"{symbol}-fundingRate-{year:04d}-{month:02d}.zip"
         f = await self.http.get_bytes(f"/{UM_KLINES}/monthly/fundingRate/{symbol}/{name}", tool="um_funding_monthly")
         return Fetched(parse_funding_zip(f.data), f.evidence)
+
+    async def um_premium_index_monthly(self, symbol: str, interval: str, year: int, month: int) -> Fetched:
+        """One month of USDT-M ``premiumIndexKlines``: kline rows whose prices are the premium index, a decimal
+        (0.01 = perp impact price 1 % above the multi-venue spot index). Volume columns are 0; 404 -> ``data_unavailable``."""
+        _check(symbol, interval)
+        name = f"{symbol}-{interval}-{year:04d}-{month:02d}.zip"
+        f = await self.http.get_bytes(
+            f"/{UM_KLINES}/monthly/premiumIndexKlines/{symbol}/{interval}/{name}", tool="um_premium_index_monthly"
+        )
+        return Fetched(parse_klines_zip(f.data), f.evidence)
+
+    async def um_premium_index_daily(self, symbol: str, interval: str, day: str) -> Fetched:
+        """One UTC day (``YYYY-MM-DD``) of USDT-M ``premiumIndexKlines`` (see ``um_premium_index_monthly``)."""
+        _check(symbol, interval)
+        _check_day(day)
+        name = f"{symbol}-{interval}-{day}.zip"
+        f = await self.http.get_bytes(f"/{UM_KLINES}/daily/premiumIndexKlines/{symbol}/{interval}/{name}", tool="um_premium_index_daily")
+        return Fetched(parse_klines_zip(f.data), f.evidence)
+
+    async def spot_symbols(self) -> Fetched:
+        """Every spot symbol that ever had monthly klines in the archive (including delisted pairs)."""
+        f = await self.list_dir(f"{SPOT}/monthly/klines/", max_pages=200)
+        syms = sorted({d.rstrip("/").rsplit("/", 1)[-1] for d in f.data["dirs"]})
+        return Fetched(syms, f.evidence)
+
+    async def spot_klines_monthly(self, symbol: str, interval: str, year: int, month: int) -> Fetched:
+        """One month of spot klines (same row layout as USDT-M; files from 2025 carry microsecond timestamps)."""
+        _check(symbol, interval)
+        name = f"{symbol}-{interval}-{year:04d}-{month:02d}.zip"
+        f = await self.http.get_bytes(f"/{SPOT}/monthly/klines/{symbol}/{interval}/{name}", tool="spot_klines_monthly")
+        return Fetched(parse_klines_zip(f.data), f.evidence)
+
+    async def spot_klines_daily(self, symbol: str, interval: str, day: str) -> Fetched:
+        """One UTC day (``YYYY-MM-DD``) of spot klines."""
+        _check(symbol, interval)
+        _check_day(day)
+        name = f"{symbol}-{interval}-{day}.zip"
+        f = await self.http.get_bytes(f"/{SPOT}/daily/klines/{symbol}/{interval}/{name}", tool="spot_klines_daily")
+        return Fetched(parse_klines_zip(f.data), f.evidence)
 
     async def aclose(self) -> None:
         await self.http.aclose()

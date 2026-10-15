@@ -82,7 +82,7 @@ class Http:
             self._health.error(self.provider, reason, detail)
         return ProviderError(self.provider, reason, detail)
 
-    async def _once(self, method: str, path: str, params: Any, json: Any) -> tuple[Any, float]:
+    async def _once(self, method: str, path: str, params: Any, json: Any, *, raw: bool = False) -> tuple[Any, float]:
         last: ProviderError | None = None
         for attempt in range(self._retries + 1):
             await self._limiter.acquire()
@@ -97,6 +97,8 @@ class Http:
                 ms = (time.perf_counter() - t0) * 1000
                 code = resp.status_code
                 if code < 400:
+                    if raw:
+                        return resp.content, ms
                     try:
                         return resp.json(), ms
                     except (ValueError, jsonlib.JSONDecodeError):
@@ -159,3 +161,11 @@ class Http:
 
     async def post_json(self, path: str, **kw: Any) -> Fetched:
         return await self.request_json("POST", path, **kw)
+
+    async def get_bytes(self, path: str, *, params: dict[str, Any] | None = None, tool: str | None = None) -> Fetched:
+        """Raw response body (archives, XML listings). Same limiter, retries, error mapping and health as JSON calls;
+        never cached in memory (payloads can be large; callers keep their own file cache)."""
+        data, ms = await self._once("GET", path, params, None, raw=True)
+        if self._health:
+            self._health.ok(self.provider, ms)
+        return Fetched(data, Evidence(provider=self.provider, tool=tool or path, args=_clean_args(params), latency_ms=int(ms)))

@@ -15,6 +15,7 @@ from .core.health import HealthRegistry
 from .core.http import Http
 from .providers import alternative_me as altme_mod
 from .providers import binance_futures as binance_mod
+from .providers import binance_vision as vision_mod
 from .providers import bybit as bybit_mod
 from .providers import coingecko as cg_mod
 from .providers import deribit as deribit_mod
@@ -22,6 +23,7 @@ from .providers import hyperliquid as hl_mod
 from .providers import polymarket as poly_mod
 from .providers.alternative_me import AlternativeMe
 from .providers.binance_futures import BinanceFutures
+from .providers.binance_vision import BinanceVision
 from .providers.bybit import Bybit
 from .providers.coingecko import CoinGecko
 from .providers.deribit import Deribit
@@ -66,6 +68,11 @@ class Runtime:
         self.hyperliquid = Hyperliquid(http("hyperliquid", hl_mod.BASE_URL, rate=5, burst=8))
         self.binance_futures = BinanceFutures(http("binance_futures", binance_mod.BASE_URL, rate=20, burst=40))
         self.bybit = Bybit(http("bybit", bybit_mod.BASE_URL, rate=20, burst=40))
+        # Public kline archive incl. delisted symbols (research scripts, not tools).
+        self.binance_vision = BinanceVision(
+            files=http("binance_vision", vision_mod.FILES_URL, rate=20, burst=40),
+            listing=http("binance_vision:s3", vision_mod.LISTING_URL, rate=5, burst=10),
+        )
         self.alternative_me = AlternativeMe(http("alternative_me", altme_mod.BASE_URL, rate=2, burst=4))
         self.polymarket = Polymarket(
             gamma=http("polymarket:gamma", poly_mod.GAMMA_URL, rate=5, burst=10),
@@ -103,6 +110,7 @@ class Runtime:
         await self.hyperliquid.http.aclose()
         await self.binance_futures.http.aclose()
         await self.bybit.http.aclose()
+        await self.binance_vision.aclose()
         await self.alternative_me.http.aclose()
         await self.polymarket.aclose()
         await self.coingecko.http.aclose()

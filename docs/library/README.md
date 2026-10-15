@@ -6,7 +6,7 @@
 
 - **Тут, у розмові з Claude:** вставити текст або посилання, Claude оформить запис і запушить його в `main`.
 - **З Telegram, тема «💬 Claude»:** те саме, Claude на сервері відкриє PR, і він зіллється сам.
-- **YouTube:** достатньо посилання: транскрипт (назва, канал, текст з мітками часу) витягне `scripts/yt_transcript.py`. Якщо YouTube заблокує запит, Claude попросить транскрипт у вас.
+- **YouTube:** достатньо посилання: транскрипт (назва, канал, текст з мітками часу) витягне `scripts/yt_transcript.py`. Кадри (графіки, слайди) витягне `scripts/yt_frames.py`: кадр раз на 20 с, без повторів, контактні аркуші й індекс із прив'язкою до транскрипту; ключові кадри кладуться в `img/<запис>/`. Працює на Mac (сервер YouTube блокує). Що з матеріалів засвоєно за темами — у базі знань агентів [`docs/knowledge/`](../knowledge/README.md). Якщо YouTube заблокує запит, Claude попросить транскрипт у вас.
 
 ## Запис
 
@@ -37,3 +37,4 @@
 | [LIB-20261015-market-review](LIB-20261015-market-review.md) | 2TOP SQUAD: огляд ринку 15.10, реакція на макроновини, бета альтів, покупки скарбниць | triaged |
 | [LIB-20261015-polymarket-basics](LIB-20261015-polymarket-basics.md) | DOUBLETOP Education: як заробляють на Polymarket — переоцінений YES, продаж на 50 %, арбітраж, нові гаманці | triaged |
 | [LIB-20261015-cpi-polymarket-touch](LIB-20261015-cpi-polymarket-touch.md) | Пост: стренгл із ринків «на дотик» Polymarket на CPI (BTC ±3 %, ETH ±8 %), ризик 0.7 % | triaged |
+| [LIB-20261015-spot-entries](LIB-20261015-spot-entries.md) | 2TOP SQUAD: як набирати спот — дно BTC, тижневі підтримки, reclaim рівнів (з кадрами) | new |

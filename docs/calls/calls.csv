@@ -5,7 +5,7 @@ AI-VVV,2026-10-14,LIB-20261014-ai-narrative,VVV,long,20,20,40,,,,"«зона ~$2
 AI-VIRTUAL,2026-10-14,LIB-20261014-ai-narrative,VIRTUAL,long,0.60,0.65,,,,,"купівля частинами від тижневої підтримки"
 AI-GRASS-1,2026-10-14,LIB-20261014-ai-narrative,GRASS,long,0.58,0.60,,,,,
 AI-GRASS-2,2026-10-14,LIB-20261014-ai-narrative,GRASS,long,0.40,0.40,,,,,
-AI-NIL,2026-10-14,LIB-20261014-ai-narrative,NIL,long,0.60,0.60,3.0,,,,"ціль 5x; «можливо падіння до $0.40»; тікер із субтитрів (ймовірно Nillion)"
+AI-NIL,2026-10-14,LIB-20261014-ai-narrative,NIL,long,0.060,0.060,0.30,,,,"ціль 5x; «можливо падіння до 0.040»; у субтитрах «0.60» — нулі загублено, ціна NIL на скриншоті 15.10 ≈ 0.088 (LIB-20261015-spot-entries)"
 AI-CHIP,2026-10-14,LIB-20261014-ai-narrative,CHIP,long,0.04,0.04,,,,,"тікер із субтитрів (ймовірно USD.AI), не підтверджено"
 RWA-ONDO-1,2026-10-05,LIB-20261014-rwa-narrative,ONDO,long,0.40,0.40,,,,,
 RWA-ONDO-2,2026-10-05,LIB-20261014-rwa-narrative,ONDO,long,0.34,0.35,,,,,"перетин тижневих трендових"
@@ -20,9 +20,11 @@ MR-BTC-LONG,2026-10-15,LIB-20261015-market-review,BTC,long,80000,82000,85400,,,,
 MR-BTC-SHORT,2026-10-15,LIB-20261015-market-review,BTC,short,85400,85600,,,,,"сам автор: low probability trade"
 MR-BTC-GLOBAL,2026-10-15,LIB-20261015-market-review,BTC,long,75000,76000,,,,,"«глобальні закупи»"
 MR-HYPE,2026-10-15,LIB-20261015-market-review,HYPE,long,75,75,,,,,"«можливо 65»"
-MR-PUMP-1,2026-10-15,LIB-20261015-market-review,PUMP,long,0.37,0.38,,,,,
-MR-PUMP-2,2026-10-15,LIB-20261015-market-review,PUMP,long,0.32,0.32,,,,,
+MR-PUMP-1,2026-10-15,LIB-20261015-market-review,PUMP,long,0.0037,0.0038,,,,,"у субтитрах «37–38 центів»; ціна PUMP на скриншоті 15.10 ≈ 0.0043 (LIB-20261015-spot-entries)"
+MR-PUMP-2,2026-10-15,LIB-20261015-market-review,PUMP,long,0.0032,0.0032,,,,,"reclaim 0.0036–0.0037; масштаб як у MR-PUMP-1"
 MR-ZRO-1,2026-10-15,LIB-20261015-market-review,ZRO,long,1.50,1.50,2.5,,,,"цілі 2.5, потім 5"
 MR-ZRO-2,2026-10-15,LIB-20261015-market-review,ZRO,long,1.30,1.30,2.5,,,,
 MR-AERO,2026-10-15,LIB-20261015-market-review,AERO,long,0.75,0.77,,,,,"до 21.10; у субтитрах «175 177», опір $1"
 MR-ENA,2026-10-15,LIB-20261015-market-review,ENA,long,0.15,0.15,,0.14,,,"«не хотілося б нижче 14 центів»"
+SPOT-NEAR,2026-10-15,LIB-20261015-spot-entries,NEAR,long,3.00,3.16,,,,,"тест тижневої підтримки / ключового рівня 3.158 (скриншот); «можна сліпо купувати», можливе сповзання ще на 10–20 %"
+SPOT-VIRTUAL,2026-10-15,LIB-20261015-spot-entries,VIRTUAL,long,0.50,0.50,,,,,"тест 50 центів, бажано зі зняттям ліквідності й поверненням вище; у боковику, тож не від тижневої підтримки"

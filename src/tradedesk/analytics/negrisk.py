@@ -9,7 +9,8 @@ No I/O; the snapshot time is a parameter. Prices are USD per share (a YES share 
   convert N NO into N - 1 USDC through the neg-risk adapter; gross per set = ``S_bid(K) - 1``.
 * Fees: Polymarket taker fee from the market's ``feeSchedule``. Upper bound ``rate * (p(1-p))**exponent`` per share
   (the convention of the neighbouring reports) and the lower bound ``p * rate * (p(1-p))**exponent``; the exact
-  formula has not been checked against Polymarket's documentation, hence both.
+  formula was checked against Polymarket's fee docs (2026-10-16): ``fee = C * feeRate * p(1-p)``, i.e. the upper
+  bound is the real one; the lower bound is kept for sensitivity only.
 """
 
 from __future__ import annotations

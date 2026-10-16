@@ -7,7 +7,11 @@ ssh nick@"$SERVER" 'echo "--- memory"; free -m; echo "--- load"; uptime
   echo "--- services (current / peak memory)"
   for u in tradedesk-mcp tradedesk-agents-loop tradedesk-tgbridge; do
     printf "%s: " "$u"; systemctl show "$u" -p MemoryCurrent -p MemoryPeak -p ActiveState --value | tr "\n" " "; echo
-  done'
+  done
+  echo "--- nightly update (result, finished) and MCP start"
+  systemctl show tradedesk-update -p Result -p ExecMainExitTimestamp --value | tr "\n" " "; echo
+  systemctl show tradedesk-mcp -p ActiveEnterTimestamp --value
+  sudo journalctl -u tradedesk-update --since yesterday --no-pager -o short-iso | tail -4'
 ssh tradedesk@"$SERVER" 'python3 - <<"PY"
 import sqlite3
 db = "/var/lib/tradedesk-mcp/tradedesk.sqlite"

@@ -71,11 +71,20 @@ usage_wait() {
 
 # Branches waiting for the owner; the doctor's fixes (agent/*-fix-*) and the agents' work in progress do not count.
 work_branch() { cut -d' ' -f1 "$LOG_DIR/work.state" 2>/dev/null || true; }
+# Unfinished work, not a handover: parked, or its last outcome in history.tsv set it aside (parked, continues, unfinished).
+wip_branch() {
+  grep -q -- "^$1 " "$LOG_DIR/parked.state" 2>/dev/null && return 0
+  case "$(grep -F "\`$1\`" "$LOG_DIR/history.tsv" 2>/dev/null | tail -1 | cut -f2)" in
+  parked | continues | unfinished) return 0 ;;
+  esac
+  return 1
+}
+# Agent branches that wait for the owner's review: not merged, not a doctor's fix, not work in progress.
 open_branches() {
-  local work
+  local work b
   work="$(work_branch)"
   git -C "$REPO" branch -r --no-merged origin/main --list 'origin/agent/*' | sed 's#^ *origin/##' | grep -v -- '-fix-' |
-    grep -vxF -- "${work:-//none//}" || true
+    grep -vxF -- "${work:-//none//}" | while read -r b; do wip_branch "$b" || echo "$b"; done || true
 }
 
 # doctor "<what happened>" ["<failure signature>"]: the doctor, unless the usage limit is near. For a failure (with a

@@ -200,9 +200,27 @@ def test_send_follows_the_group_to_its_supergroup(monkeypatch, tmp_path):
 
 def test_parked_work_is_shown_with_its_resume_time(tmp_path):
     at = int(datetime(2026, 10, 16, 19, 5).timestamp())
-    (tmp_path / "parked.state").write_text(f"agent/2026-10-16-negrisk-step0 {at} 2 2026-10-16_123437\n", encoding="utf-8")
+    early = int(datetime(2026, 10, 16, 17, 30).timestamp())
+    (tmp_path / "parked.state").write_text(
+        f"agent/2026-10-16-negrisk-step0 {at} 2 2026-10-16_123437\nagent/2026-10-16-fx {early} 1 2026-10-16_173536\nbad\n",
+        encoding="utf-8",
+    )
     parked = st.parked_state(tmp_path)
-    assert parked == ("agent/2026-10-16-negrisk-step0", datetime(2026, 10, 16, 19, 5))
-    assert st.parked_state(tmp_path / "none") is None
+    assert parked == [
+        ("agent/2026-10-16-fx", datetime(2026, 10, 16, 17, 30)),
+        ("agent/2026-10-16-negrisk-step0", datetime(2026, 10, 16, 19, 5)),
+    ]
+    assert st.parked_state(tmp_path / "none") == []
     text, _ = st.render({"now": datetime(2026, 10, 16, 16, 0), "agents_line": "🟢", "parked": parked, "open_branches": []})
-    assert "⏸ Відкладено до 16.10 19:05" in text and "negrisk-step0" in text
+    assert "⏸ Відкладено до 16.10 19:05" in text and "negrisk-step0" in text and "16.10 17:30" in text
+
+
+def test_wip_branches_are_not_counted_as_awaiting_review():
+    hist = [
+        "2026-10-16_155555\tcontinues\t🔄 крок збережено (`agent/a`, прогін 1 з 5)\t",
+        "2026-10-16_170703\tparked\t⏸ відкладено (`agent/a`, прогін 4 з 5)\t",
+        "2026-10-16_171910\tdelivered\t✅ здали крок: `agent/b`\t",
+        "2026-10-16_172000\tcontinues\t🔄 крок збережено (`agent/c`)\t",
+        "2026-10-16_180000\tdelivered\t✅ здали крок: `agent/c`\t",
+    ]
+    assert st.wip_branches(hist) == {"agent/a"}

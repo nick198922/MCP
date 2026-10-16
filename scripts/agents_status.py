@@ -171,8 +171,7 @@ def render(d: dict) -> tuple[str, list[tuple[str, str]]]:
     if d.get("work"):
         br, runs = d["work"]
         out.append(f"🔄 У роботі <code>{esc(br)}</code> (прогін {runs}), PR буде, коли доведуть до кінця")
-    if d.get("parked"):
-        br, at = d["parked"]
+    for br, at in d.get("parked") or []:
         out.append(f"⏸ Відкладено до {at:%d.%m %H:%M} <code>{esc(br)}</code>: тим часом агенти беруть інші кроки")
     c2, c24 = d.get("counts_2h", Counter()), d.get("counts_24h", Counter())
     if sum(c24.values()):
@@ -309,13 +308,32 @@ def work_state(log_dir: Path) -> tuple[str, int] | None:
         return None
 
 
-def parked_state(log_dir: Path) -> tuple[str, datetime] | None:
-    """Work set aside until a time (parked.state of scripts/nightly_agents.sh): its branch and when it resumes."""
+def parked_state(log_dir: Path) -> list[tuple[str, datetime]]:
+    """Work set aside until a time (parked.state of scripts/nightly_agents.sh, one line per branch): each branch and when
+    it resumes, earliest first."""
     try:
-        parts = (log_dir / "parked.state").read_text(encoding="utf-8").split()
-        return parts[0], datetime.fromtimestamp(int(parts[1]))
-    except (OSError, ValueError, IndexError):
-        return None
+        lines = (log_dir / "parked.state").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    out = []
+    for line in lines:
+        parts = line.split()
+        try:
+            out.append((parts[0], datetime.fromtimestamp(int(parts[1]))))
+        except (ValueError, IndexError):
+            continue
+    return sorted(out, key=lambda x: x[1])
+
+
+def wip_branches(history: list[str]) -> set[str]:
+    """Branches whose last outcome in history.tsv set the work aside (parked, continues, unfinished): not for review."""
+    last: dict[str, str] = {}
+    for line in history:
+        cols = line.split("\t")
+        if len(cols) >= 3:
+            for br in re.findall(r"`(agent/[^`]+)`", cols[2]):
+                last[br] = cols[1]
+    return {br for br, status in last.items() if status in ("parked", "continues", "unfinished")}
 
 
 def doctor_note(log_dir: Path) -> str:
@@ -358,13 +376,13 @@ def collect(repo: Path, worktree: Path, log_dir: Path) -> dict:
     branches = open_branches(repo)
     work = work_state(log_dir)
     parked = parked_state(log_dir)
-    busy = {x[0] for x in (work, parked) if x}
-    waiting = [b for b in branches if b not in busy]
     agents_line, activity = agents_state(log_dir, worktree)
     try:
         hist = (log_dir / "history.tsv").read_text(encoding="utf-8").splitlines()
     except OSError:
         hist = []
+    busy = {b for b, _ in parked} | ({work[0]} if work else set()) | wip_branches(hist)
+    waiting = [b for b in branches if b not in busy]
     stamp = lambda secs: datetime.fromtimestamp(time.time() - secs).strftime("%Y-%m-%d_%H%M%S")  # noqa: E731
     read = lambda rel: _git(repo, "show", f"origin/main:{rel}")  # noqa: E731
     data_dir = Path(os.environ.get("TRADEDESK_DATA_DIR", "/var/lib/tradedesk-mcp"))

@@ -42,17 +42,23 @@ def _swing(s: dict[str, Any]) -> dict[str, Any]:
     return {"price": px(s["price"]), "ts_ms": s["ts"]}
 
 
+def _event(e: dict[str, Any]) -> dict[str, Any]:
+    return {"type": e["type"], "level": px(e["level"]), "ts_ms": e["ts"]}
+
+
 def register(server: MCPServer, rt: Runtime) -> None:
     @server.tool(
         annotations=READ_ONLY,
         description=(
             "Chart markup the DoubleTop course draws by hand, computed from a venue's OHLCV: EMA groups (Trend 13/21/34 on "
             "the chart timeframe, 'Daily' EMA 100/200 on 4h, 'Weekly' EMA 100/200 on 1d), anchored VWAP with a 1-sigma band, "
-            "volume profile (POC/VAH/VAL over the window), 3-candle swings and market structure (BOS only on a candle CLOSE beyond "
-            "a swing; a wick beyond with the close back inside is a sweep / fake BOS), untaken liquidity above and below and equal "
-            "highs/lows pools, fair value gaps with their fill state (open/partial/balanced at 0.5/filled), order blocks with the "
-            "course's validity flags (impulsive engulf, FVG after, BOS after) and state (untested/tested/broken = breaker candidate), "
-            "premium/discount and OTE 0.618-0.786 on the leg of the latest BOS, ATR(14), RSI(14), and for timeframes up to 1h the "
+            "volume profile (POC/VAH/VAL over the window), market structure on structural swings as the course draws it (trend, the "
+            "protected HL/LH whose close-break changes the trend, the HH/LL a continuation must close beyond after a pullback, "
+            "BOS/CHoCH only on a candle CLOSE; a wick beyond with the close back inside is a sweep / fake BOS) plus the internal "
+            "structure on every 3-candle swing, untaken liquidity above and below and equal highs/lows pools (within 0.25 ATR), fair value gaps with their fill state (open/partial/balanced at 0.5/filled), order blocks with the "
+            "course's validity flags (impulsive engulf, FVG after, BOS after) and state (untested/tested/broken = breaker candidate; "
+            "breakers carry the course's checks: broken impulsively by one candle, an imbalance left by the break), "
+            "premium/discount and OTE 0.618-0.786 on the structural leg (HL to HH, LH to LL), ATR(14), RSI(14), and for timeframes up to 1h the "
             "Asian range (00:00 UTC to the Frankfurt open) and whether the Frankfurt/London hunt window swept it (setup S25). "
             "Prices are in the quote currency; percentages are not used. BingX forex perps accept 'EURUSD' (mapped to "
             "NCFXEUR2USD/USDT:USDT). Descriptive levels, not signals: our tests of mechanical SMC rules found no edge after costs."
@@ -93,13 +99,14 @@ def register(server: MCPServer, rt: Runtime) -> None:
         atr = mk.atr(bars)
         swings = mk.fractals(bars)
         st = mk.structure(bars, swings)
+        ss = mk.swing_structure(bars, swings)
         gaps = mk.fvgs(bars)
         obs = mk.order_blocks(bars, gaps, st["events"], atr)
         # The course's "equal" highs/lows differ by ~0.2-0.4 ATR on its charts (sloped dashed lines), not by a tick.
         tol = 0.25 * atr if atr else price * 0.001
         vwap = mk.anchored_vwap(bars, vwap_anchor)
         vp = mk.volume_profile(bars)
-        dr = mk.dealing_range(bars, st["last_bos"])
+        dr = mk.swing_dealing_range(bars, ss) or mk.dealing_range(bars, st["last_bos"])
 
         def side_of(lo: float, hi: float) -> str:
             return "above" if price > hi else "below" if price < lo else "inside"
@@ -117,6 +124,11 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 "state": g["state"],
                 "ts_ms": g["ts"],
             }
+
+        def breaker_view(o: dict[str, Any]) -> dict[str, Any]:
+            v = ob_view(o)
+            v["breaker_flags"] = {"break_impulsive": o["break_impulsive"], "fvg_on_break": o["fvg_on_break"]}
+            return v
 
         def ob_view(o: dict[str, Any]) -> dict[str, Any]:
             return {
@@ -162,11 +174,17 @@ def register(server: MCPServer, rt: Runtime) -> None:
             if vp is None
             else {"poc": px(vp["poc"]), "vah": px(vp["vah"]), "val": px(vp["val"]), "price_vs_value_area": side_of(vp["val"], vp["vah"])},
             "structure": {
-                "trend": st["trend"],
-                "last_bos": None
-                if not st["last_bos"]
-                else {"type": st["last_bos"]["type"], "level": px(st["last_bos"]["level"]), "ts_ms": st["last_bos"]["ts"]},
-                "recent_events": [{"type": e["type"], "level": px(e["level"]), "ts_ms": e["ts"]} for e in st["events"][-8:]],
+                "trend": ss["trend"],
+                "protected": None if not ss["trend"] else {**_swing(ss["protected"]), "label": ss["protected"]["label"]},
+                "extreme": None if not ss["trend"] else {**_swing(ss["extreme"]), "label": ss["extreme"]["label"]},
+                "in_pullback": ss["in_pullback"],
+                "last_break": None if not ss["last_break"] else _event(ss["last_break"]),
+                "recent_events": [_event(e) for e in ss["events"][-6:]],
+                "internal": {
+                    "trend": st["trend"],
+                    "last_bos": None if not st["last_bos"] else _event(st["last_bos"]),
+                    "recent_events": [_event(e) for e in st["events"][-8:]],
+                },
             },
             "liquidity": {
                 "above": [_swing(s) for s in mk.nearest(st["untaken_highs"], price, "above")],
@@ -184,7 +202,12 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 "at_price": [gap_view(g) for g in open_gaps if g["bottom"] <= price <= g["top"]][:2],
             },
             "order_blocks": [ob_view(o) for o in sorted(live_obs, key=lambda o: dist(o["zone_low"], o["zone_high"]))[:4]],
-            "breakers": [ob_view(o) for o in sorted(breakers, key=lambda o: dist(o["zone_low"], o["zone_high"]))[:3]],
+            "breakers": [
+                breaker_view(o)
+                for o in sorted(breakers, key=lambda o: (-(o["break_impulsive"] + o["fvg_on_break"]), dist(o["zone_low"], o["zone_high"])))[
+                    :3
+                ]
+            ],
             "dealing_range": None
             if dr is None
             else {

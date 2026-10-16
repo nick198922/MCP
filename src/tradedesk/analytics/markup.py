@@ -402,7 +402,9 @@ def order_blocks(
     bearish candle engulfed by a bullish one; the zone is the whole candle (wicks included), the body is the main
     reference. Flags (the course's validity rules): ``impulsive`` (engulfing body >= 1 ATR), ``fvg_after`` (a same-side
     FVG formed by candle i+1 or i+2), ``bos_after`` (a same-side close-BOS within ``bos_window`` bars). State: ``untested``,
-    ``tested`` (price came back into the zone), ``broken`` (closed beyond the far side: now a breaker candidate)."""
+    ``tested`` (price came back into the zone), ``broken`` (closed beyond the far side: now a breaker candidate). For a
+    broken block, the course's breaker checks: ``break_impulsive`` (the breaking candle crossed the whole zone or its body
+    is >= 1 ATR) and ``fvg_on_break`` (the break left an opposite-side FVG overlapping the zone)."""
     out = []
     fvg_by_mid = {(g["idx"], g["type"]) for g in gaps}
     for i in range(len(bars) - 1):
@@ -420,21 +422,31 @@ def order_blocks(
         fvg_after = any((k, side) in fvg_by_mid for k in (i + 1, i + 2))
         bos_type = "bos_up" if side == "bull" else "bos_down"
         bos_after = any(e["type"] == bos_type and i + 1 <= e["idx"] <= i + bos_window for e in events)
-        state = "untested"
-        for b in bars[i + 2 :]:
-            bl, bh, bc = float(b["low"]), float(b["high"]), float(b["close"])
+        state, broke_at = "untested", None
+        for k in range(i + 2, len(bars)):
+            bl, bh, bc = float(bars[k]["low"]), float(bars[k]["high"]), float(bars[k]["close"])
             if side == "bull":
                 if bc < zone_lo:
-                    state = "broken"
+                    state, broke_at = "broken", k
                     break
                 if bl <= zone_hi:
                     state = "tested"
             else:
                 if bc > zone_hi:
-                    state = "broken"
+                    state, broke_at = "broken", k
                     break
                 if bh >= zone_lo:
                     state = "tested"
+        break_impulsive = fvg_on_break = False
+        if broke_at is not None:
+            bo, bc = float(bars[broke_at]["open"]), float(bars[broke_at]["close"])
+            crossed = bo >= zone_hi if side == "bull" else bo <= zone_lo
+            break_impulsive = crossed or (atr_value is not None and abs(bc - bo) >= atr_value)
+            other = "bear" if side == "bull" else "bull"
+            fvg_on_break = any(
+                g["type"] == other and broke_at - 1 <= g["idx"] <= broke_at + 1 and g["bottom"] < zone_hi and g["top"] > zone_lo
+                for g in gaps
+            )
         out.append(
             {
                 "type": side,
@@ -449,6 +461,8 @@ def order_blocks(
                 "bos_after": bos_after,
                 "score": int(impulsive) + int(fvg_after) + int(bos_after),
                 "state": state,
+                "break_impulsive": break_impulsive,
+                "fvg_on_break": fvg_on_break,
             }
         )
     return out

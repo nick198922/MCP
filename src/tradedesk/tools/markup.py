@@ -56,7 +56,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "protected HL/LH whose close-break changes the trend, the HH/LL a continuation must close beyond after a pullback, "
             "BOS/CHoCH only on a candle CLOSE; a wick beyond with the close back inside is a sweep / fake BOS) plus the internal "
             "structure on every 3-candle swing, untaken liquidity above and below and equal highs/lows pools (within 0.25 ATR), fair value gaps with their fill state (open/partial/balanced at 0.5/filled), order blocks with the "
-            "course's validity flags (impulsive engulf, FVG after, BOS after) and state (untested/tested/broken = breaker candidate), "
+            "course's validity flags (impulsive engulf, FVG after, BOS after) and state (untested/tested/broken = breaker candidate; "
+            "breakers carry the course's checks: broken impulsively by one candle, an imbalance left by the break), "
             "premium/discount and OTE 0.618-0.786 on the structural leg (HL to HH, LH to LL), ATR(14), RSI(14), and for timeframes up to 1h the "
             "Asian range (00:00 UTC to the Frankfurt open) and whether the Frankfurt/London hunt window swept it (setup S25). "
             "Prices are in the quote currency; percentages are not used. BingX forex perps accept 'EURUSD' (mapped to "
@@ -123,6 +124,11 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 "state": g["state"],
                 "ts_ms": g["ts"],
             }
+
+        def breaker_view(o: dict[str, Any]) -> dict[str, Any]:
+            v = ob_view(o)
+            v["breaker_flags"] = {"break_impulsive": o["break_impulsive"], "fvg_on_break": o["fvg_on_break"]}
+            return v
 
         def ob_view(o: dict[str, Any]) -> dict[str, Any]:
             return {
@@ -196,7 +202,12 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 "at_price": [gap_view(g) for g in open_gaps if g["bottom"] <= price <= g["top"]][:2],
             },
             "order_blocks": [ob_view(o) for o in sorted(live_obs, key=lambda o: dist(o["zone_low"], o["zone_high"]))[:4]],
-            "breakers": [ob_view(o) for o in sorted(breakers, key=lambda o: dist(o["zone_low"], o["zone_high"]))[:3]],
+            "breakers": [
+                breaker_view(o)
+                for o in sorted(breakers, key=lambda o: (-(o["break_impulsive"] + o["fvg_on_break"]), dist(o["zone_low"], o["zone_high"])))[
+                    :3
+                ]
+            ],
             "dealing_range": None
             if dr is None
             else {

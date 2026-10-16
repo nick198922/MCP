@@ -203,3 +203,22 @@ def test_swing_structure_course_rules():
     assert (dr["low"], dr["high"], dr["direction"]) == (10.0, 12.5, "down") and dr["price_zone"] == "discount"
     up = mk.swing_structure(bars[:11], mk.fractals(bars[:11]))
     assert (up["trend"], up["protected"]["label"], up["protected"]["price"], up["extreme"]["price"]) == ("up", "HL", 10.5, 12.5)
+
+
+def test_breaker_checks_impulsive_break_and_imbalance():
+    bars = [
+        bar(0, 9.6, 9.8, 9.3, 9.5),
+        bar(1, 10, 10.2, 8.8, 9),  # bearish candle engulfed next: bullish OB 8.8-10.2
+        bar(2, 9, 10.6, 9, 10.5),
+        bar(3, 10.5, 11.5, 10.4, 11.4),
+        bar(4, 11.4, 11.6, 10.9, 11.0),
+        bar(5, 11.0, 11.1, 9.6, 9.7),  # gap top: high 11.1 ... next bar high below bar 4's low 10.9
+        bar(6, 10.4, 10.5, 8.0, 8.2),  # opened above the zone and closed below it in one candle: impulsive break
+        bar(7, 8.2, 8.5, 7.8, 8.0),  # high 8.5 < bar 5 low 9.6: bearish FVG 8.5-9.6 overlaps the zone
+    ]
+    gaps = mk.fvgs(bars)
+    ob = next(o for o in mk.order_blocks(bars, gaps, [], atr_value=5.0) if o["idx"] == 1)
+    assert ob["state"] == "broken" and ob["break_impulsive"] and ob["fvg_on_break"]
+    slow = [*bars[:5], bar(5, 11.0, 11.1, 9.9, 10.0), bar(6, 10.0, 10.1, 9.4, 9.5), bar(7, 9.5, 10.0, 8.6, 8.7)]  # creeps down, no gap
+    ob2 = next(o for o in mk.order_blocks(slow, mk.fvgs(slow), [], atr_value=5.0) if o["idx"] == 1)
+    assert ob2["state"] == "broken" and not ob2["break_impulsive"] and not ob2["fvg_on_break"]

@@ -66,6 +66,7 @@
 - `src:own`, `src:LIB-…` або `src:agents`;
 - `setup:S<номер>` із книги сетапів (або `setup:<тип>`, якщо сетапу там нема);
 - `conf:1` … `conf:3` (впевненість);
+- `tf:m15`, `tf:h1` тощо — таймфрейм входу; у нотатці — посилання на скриншот TradingView з розміткою;
 - `event:cpi` тощо, якщо угода навколо події.
 - `emo:calm`, `emo:fomo`, `emo:revenge`, `emo:fear` або `emo:greed` — чесно, з яким станом входиш (емоційний журнал, `docs/knowledge/psychology.md`); `emo:revenge` після збитку — привід не входити.
 

@@ -169,3 +169,37 @@ def test_one_event_per_bar_and_kind():
     ]
     ev = [e for e in mk.structure(bars, mk.fractals(bars))["events"] if e["idx"] == 7]
     assert [(e["type"], e["level"]) for e in ev] == [("bos_up", 10.0), ("sweep_high", 11.0)]
+
+
+def test_swing_structure_course_rules():
+    rows = [
+        (10, 10.5, 9.5, 10),
+        (10, 11, 9.8, 10.8),  # swing high 11
+        (10.8, 10.6, 9.6, 9.9),
+        (9.9, 10.2, 9.0, 9.5),  # swing low 9.0
+        (9.5, 10.4, 9.2, 10.3),
+        (10.3, 11.4, 10.2, 11.3),  # close above 11: uptrend, protected HL 9.0
+        (11.3, 12, 11, 11.8),  # new high without a pullback: HH extends to 12, no event
+        (11.8, 11.6, 10.8, 11),
+        (11, 11.2, 10.5, 10.7),  # pullback swing low 10.5
+        (10.7, 11.5, 10.6, 11.4),
+        (11.4, 12.5, 11.3, 12.4),  # close above HH 12 after the pullback: BOS, HL moves to 10.5
+        (12.4, 12.3, 11.0, 11.2),
+        (11.2, 11.5, 10.4, 10.6),  # wick below HL 10.5, close above: sweep
+        (10.6, 10.8, 10.0, 10.2),  # close below HL: change of character
+    ]
+    bars = [bar(i, *r) for i, r in enumerate(rows)]
+    ss = mk.swing_structure(bars, mk.fractals(bars))
+    assert [(e["type"], e["level"]) for e in ss["events"]] == [
+        ("bos_up", 11.0),
+        ("bos_up", 12.0),
+        ("sweep_low", 10.5),
+        ("choch_down", 10.5),
+    ]
+    assert ss["trend"] == "down" and ss["last_break"]["type"] == "choch_down"
+    assert (ss["protected"]["label"], ss["protected"]["price"], ss["protected"]["idx"]) == ("LH", 12.5, 10)
+    assert (ss["extreme"]["label"], ss["extreme"]["price"]) == ("LL", 10.0)
+    dr = mk.swing_dealing_range(bars, ss)
+    assert (dr["low"], dr["high"], dr["direction"]) == (10.0, 12.5, "down") and dr["price_zone"] == "discount"
+    up = mk.swing_structure(bars[:11], mk.fractals(bars[:11]))
+    assert (up["trend"], up["protected"]["label"], up["protected"]["price"], up["extreme"]["price"]) == ("up", "HL", 10.5, 12.5)

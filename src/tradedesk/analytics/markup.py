@@ -6,6 +6,9 @@ UTC). Definitions follow the course (docs/knowledge/smc.md, indicators.md):
 * swings are 3-candle fractals (the middle high above both neighbours' highs, lows mirror);
 * a break of structure (BOS) needs a candle CLOSE beyond the swing; a wick beyond it with the close back inside is a
   sweep ("fake BOS", liquidity taken) — the swing is then spent either way;
+* the course's structure uses structural swings only (``swing_structure``): in an uptrend the HL is the pullback low a
+  new HH was made from, and the trend changes only on a close below it; every-fractal breaks (``structure``) are the
+  internal structure (substructure);
 * FVG/imbalance: candle 3's low above candle 1's high (bullish) or candle 3's high below candle 1's low (bearish);
   balanced at its midpoint (0.5) or fully filled;
 * order block: a candle engulfed by the next candle of the opposite colour; the course's validity checks are reported
@@ -250,6 +253,85 @@ def structure(bars: list[dict[str, Any]], swings: dict[str, list[dict[str, Any]]
     return {"events": events, "trend": trend, "last_bos": bos[-1] if bos else None, "untaken_highs": active_h, "untaken_lows": active_l}
 
 
+def swing_structure(bars: list[dict[str, Any]], swings: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+    """Market structure on structural swings, as the course draws it (docs/knowledge/market-structure.md).
+
+    The first close beyond a known 3-candle swing sets the trend. In an uptrend the running high is the HH; once a
+    swing low has formed after it (a pullback), a close above the HH is a continuation BOS and the lowest low of that
+    pullback becomes the protected HL. A close below the protected HL is a change of character (``choch_down``): the
+    trend turns down, the last HH becomes the protected high and the running low the LL. Wicks beyond the protected
+    level or beyond the HH after a pullback with the close back inside are sweeps (fake BOS). A new high without a
+    pullback only extends the HH. Downtrends mirror. A swing is known from the close of the bar after it."""
+    highs = sorted(swings["highs"], key=lambda s: s["idx"])
+    lows = sorted(swings["lows"], key=lambda s: s["idx"])
+    hi_i = lo_i = 0
+    last_hi: dict[str, Any] | None = None
+    last_lo: dict[str, Any] | None = None
+    trend: str | None = None
+    prot: dict[str, Any] = {}
+    ext: dict[str, Any] = {}
+    pulled = False
+    events: list[dict[str, Any]] = []
+
+    def event(kind: str, t: int, level: float) -> None:
+        events.append({"type": kind, "idx": t, "ts": bars[t]["ts"], "level": level})
+
+    def extreme(lo: int, hi: int, side: str) -> dict[str, Any]:
+        seg = range(lo, hi + 1)
+        i = min(seg, key=lambda j: float(bars[j]["low"])) if side == "low" else max(seg, key=lambda j: float(bars[j]["high"]))
+        return {"price": float(bars[i][side]), "idx": i, "ts": bars[i]["ts"]}
+
+    for t, bar in enumerate(bars):
+        while hi_i < len(highs) and highs[hi_i]["idx"] + 2 <= t:
+            last_hi, hi_i = highs[hi_i], hi_i + 1
+        while lo_i < len(lows) and lows[lo_i]["idx"] + 2 <= t:
+            last_lo, lo_i = lows[lo_i], lo_i + 1
+        h, lo, c = float(bar["high"]), float(bar["low"]), float(bar["close"])
+        if trend is None:
+            if last_hi and c > last_hi["price"]:
+                trend, prot, ext, pulled = "up", extreme(last_hi["idx"], t, "low"), {"price": h, "idx": t, "ts": bar["ts"]}, False
+                event("bos_up", t, last_hi["price"])
+            elif last_lo and c < last_lo["price"]:
+                trend, prot, ext, pulled = "down", extreme(last_lo["idx"], t, "high"), {"price": lo, "idx": t, "ts": bar["ts"]}, False
+                event("bos_down", t, last_lo["price"])
+            continue
+        up = trend == "up"
+        # The protected level: a close beyond it changes the trend, a wick beyond it is a sweep.
+        if (c < prot["price"]) if up else (c > prot["price"]):
+            event("choch_down" if up else "choch_up", t, prot["price"])
+            top = ext if not up or ext["price"] >= h else {"price": h, "idx": t, "ts": bar["ts"]}
+            bottom = ext if up or ext["price"] <= lo else {"price": lo, "idx": t, "ts": bar["ts"]}
+            trend = "down" if up else "up"
+            prot, ext = (top, {"price": lo, "idx": t, "ts": bar["ts"]}) if up else (bottom, {"price": h, "idx": t, "ts": bar["ts"]})
+            pulled = False
+            continue
+        if (lo < prot["price"]) if up else (h > prot["price"]):
+            event("sweep_low" if up else "sweep_high", t, prot["price"])
+        swing = last_lo if up else last_hi
+        pulled = pulled or bool(swing and swing["idx"] > ext["idx"])
+        beyond = h > ext["price"] if up else lo < ext["price"]
+        if not beyond:
+            continue
+        if not pulled:
+            ext = {"price": h if up else lo, "idx": t, "ts": bar["ts"]}
+        elif (c > ext["price"]) if up else (c < ext["price"]):
+            event("bos_up" if up else "bos_down", t, ext["price"])
+            prot = extreme(ext["idx"] + 1, t, "low" if up else "high")
+            ext, pulled = {"price": h if up else lo, "idx": t, "ts": bar["ts"]}, False
+        else:
+            event("sweep_high" if up else "sweep_low", t, ext["price"])
+    breaks = [e for e in events if not e["type"].startswith("sweep")]
+    labels = ("HL", "HH") if trend == "up" else ("LH", "LL")
+    return {
+        "trend": trend,
+        "protected": {**prot, "label": labels[0]} if trend else None,
+        "extreme": {**ext, "label": labels[1]} if trend else None,
+        "in_pullback": pulled,
+        "events": events,
+        "last_break": breaks[-1] if breaks else None,
+    }
+
+
 def equal_levels(untaken: list[dict[str, Any]], tol: float) -> list[dict[str, Any]]:
     """Pairs (or clusters) of untaken swings within ``tol`` of each other: equal highs/lows, a liquidity pool."""
     pts = sorted(untaken, key=lambda s: s["price"])
@@ -385,17 +467,28 @@ def dealing_range(bars: list[dict[str, Any]], last_bos: dict[str, Any] | None) -
     if last_bos["type"] == "bos_up":
         low = min(float(b["low"]) for b in bars[s : k + 1])
         high = max(float(b["high"]) for b in bars[k:])
-        levels = {str(f): high - f * (high - low) for f in OTE_LEVELS}
     else:
         high = max(float(b["high"]) for b in bars[s : k + 1])
         low = min(float(b["low"]) for b in bars[k:])
-        levels = {str(f): low + f * (high - low) for f in OTE_LEVELS}
-    price = float(bars[-1]["close"])
+    return fib_leg(low, high, "up" if last_bos["type"] == "bos_up" else "down", float(bars[-1]["close"]))
+
+
+def swing_dealing_range(bars: list[dict[str, Any]], swing: dict[str, Any]) -> dict[str, Any] | None:
+    """The structural leg: from the protected HL to the HH in an uptrend (LH to LL in a downtrend)."""
+    if not swing.get("trend"):
+        return None
+    a, b = float(swing["protected"]["price"]), float(swing["extreme"]["price"])
+    return fib_leg(min(a, b), max(a, b), swing["trend"], float(bars[-1]["close"]))
+
+
+def fib_leg(low: float, high: float, direction: str, price: float) -> dict[str, Any]:
+    """Fibonacci on a leg: 0 at its end (the high of an up leg), 1 at its start; above 0.5 is premium."""
+    levels = {str(f): high - f * (high - low) if direction == "up" else low + f * (high - low) for f in OTE_LEVELS}
     eq = (high + low) / 2
     zone = "premium" if price > eq else "discount" if price < eq else "equilibrium"
     ote_lo, ote_hi = sorted((levels["0.618"], levels["0.786"]))
     return {
-        "direction": "up" if last_bos["type"] == "bos_up" else "down",
+        "direction": direction,
         "low": low,
         "high": high,
         "levels": levels,

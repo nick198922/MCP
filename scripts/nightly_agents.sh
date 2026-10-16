@@ -269,7 +269,11 @@ ALLOWED=(
   "Bash(git fetch:*)" "Bash(git rev-parse:*)" "Bash(git ls-tree:*)" "Bash(git ls-files:*)" "Bash(git add:*)"
   "Bash(ls:*)" "Bash(date:*)" "Bash(which:*)" "Bash(head:*)" "Bash(tail:*)" "Bash(wc:*)" "Bash(mkdir -p .agent:*)"
   "Bash(cat:*)" "Bash(sed:*)" "Bash(cut:*)" "Bash(grep:*)" "Bash(sort:*)" "Bash(uniq:*)" "Bash(find:*)"
-  "Bash(scripts/agents_wait.sh:*)" "Bash(bash scripts/agents_wait.sh:*)"
+  "Bash(scripts/agents_wait.sh:*)" "Bash(bash scripts/agents_wait.sh:*)" "Bash($WT/scripts/agents_wait.sh:*)"
+  # Inert or read-only commands the agents reach for in compound commands (each part of one is checked on its own);
+  # python3 runs code like the allowed `uv run python`. git -C, git checkout, kill and file redirections stay off.
+  "Bash(cd:*)" "Bash(mkdir:*)" "Bash(printf:*)" "Bash(echo:*)" "Bash(ps:*)" "Bash(free:*)" "Bash(stat:*)"
+  "Bash(awk:*)" "Bash(tr:*)" "Bash(diff:*)" "Bash(jq:*)" "Bash(python3:*)"
   "Bash(scripts/agents_rm.py:*)" "Bash(python3 scripts/agents_rm.py:*)" "Bash(uv run python scripts/agents_rm.py:*)"
 )
 DENIED=(

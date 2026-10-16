@@ -152,7 +152,7 @@ if [[ $MODE == continue && -n "$WORK_BR" && -e "$ACTIVE" ]] && ((RUNS > 0 && KIL
   KILLS=$((KILLS + 1))
   echo "run $RUNS was killed before it reported; it is repeated ($KILLS in a row)"
 elif [[ $MODE == continue ]]; then
-  RUNS=$((RUNS + 1))
+  RUNS=$((RUNS + 1)) KILLS=0 # the previous run reported: the kills are no longer in a row
 else
   RUNS=1 FIRST="$STAMP" KILLS=0
 fi

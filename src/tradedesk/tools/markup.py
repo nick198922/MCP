@@ -95,7 +95,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
         st = mk.structure(bars, swings)
         gaps = mk.fvgs(bars)
         obs = mk.order_blocks(bars, gaps, st["events"], atr)
-        tol = 0.1 * atr if atr else price * 0.0005
+        # The course's "equal" highs/lows differ by ~0.2-0.4 ATR on its charts (sloped dashed lines), not by a tick.
+        tol = 0.25 * atr if atr else price * 0.001
         vwap = mk.anchored_vwap(bars, vwap_anchor)
         vp = mk.volume_profile(bars)
         dr = mk.dealing_range(bars, st["last_bos"])

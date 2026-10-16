@@ -1,0 +1,31 @@
+# LIB-20261016-ict-concepts: поняття ICT із шаблону автора курсу — IDM, SMT, BPR, Midnight Open, SMR, MMXM
+
+Статус: triaged
+<!-- new → triaged → used | archived (див. README) -->
+Додано: 2026-10-16 · Джерело: пошук Claude в інтернеті на прохання власника (власник: «пошукай в інтернеті, напевно ці поняття поширені серед трейдерів»); посилання нижче · Тип: довідка
+Теми: ICT (Inner Circle Trader), Smart Money Concepts, міжринкова дивергенція, часові якорі, market maker model
+Тікери: BTC, ETH, EURUSD, GBPUSD
+
+## Звідки взялось
+- Шаблон розмітки автора курсу DoubleTop (урок «Робота з TradingView», графік gmilnikov EURUSD 1D) містить лінії й зони, яких немає в жодному збереженому уроці: Inducement (IDM), SMT Diver, Balanced Price Range (BPR), Day Open (DO), New York Midnight (NYM), Smart Money Reversal (SMR), Original Consolidation, Re-Acc 1/2, BSL/SSL 2.0, вертикаль NEWS ([indicators](../knowledge/indicators.md)).
+- Це терміни ICT (Michael J. Huddleston). Першоджерела ICT — лекції на YouTube і менторство; знайдені описи — вторинні (LuxAlgo, описи індикаторів TradingView, освітні сайти). Вони узгоджені між собою, але **жодне джерело не наводить перевіреної статистики**.
+
+## Що означають (коротко)
+- **IDM (inducement, «приманка»):** дрібний відкатний хай чи лой перед важливим рівнем (POI). Ті, хто входить на цьому відкаті, ставлять стопи за ним; ціна спершу знімає цю дрібну ліквідність, а вже потім іде до POI. Буває внутрішній (свічка в рейнджі) і зовнішній (хибний пробій рівня). Відмінність від свипу: IDM — місце-приманка, свип — подія, коли ціну за нього проносить ([LuxAlgo](https://www.luxalgo.com/library/concept/inducement/), [AlphaEx](https://www.alphaexcapital.com/smart-money-concepts/ict-inducement-and-draw-on-liquidity), [LiteFinance](https://www.litefinance.org/blog/for-beginners/what-is-inducement-in-trading/)).
+- **SMT-дивергенція («smart money technique»):** два позитивно корельовані активи розходяться на свінгу: один робить новий екстремум (знімає ліквідність), інший — ні. Бичача: в одного нижчий лой, у другого вищий лой; ведмежа — дзеркально. Пари: EURUSD/GBPUSD, BTC/ETH, XAU/XAG, NQ/ES, EURUSD/DXY (обернена). Корельовані активи можуть відставати на кілька хвилин, тож порівнювати строго по одній свічці не можна ([TradingView: SMT Divergence ICT](https://www.tradingview.com/scripts/ict/page-23/), [TradingView: SMT scripts](https://in.tradingview.com/scripts/smt/)).
+- **BPR (balanced price range):** зона, де перекриваються ведмежий і бичачий FVG — ціна різко пройшла вниз, лишивши ведмежий FVG, потім так само різко вгору, лишивши бичачий FVG на тому ж рівні. Напрям задає новіший FVG ([LuxAlgo](https://www.luxalgo.com/library/concept/balanced-price-range/), [TradingView](https://pl.tradingview.com/chart/EURUSD/rDaVoWlo-What-Is-a-Balanced-Price-Range-and-How-Can-You-Use-It)).
+- **NY Midnight Open (NYM) і Day Open (DO):** ціна відкриття о 00:00 за Нью-Йорком — початок «справжнього дня» в ICT (другий якір — 08:30 NY, вихід новин США). Вище цієї ціни — «premium» дня, нижче — «discount». Модель «Judas swing»: у бичачий день ціна спершу ходить нижче midnight open, потім росте. Типова помилка розмітки — UTC-графік замість часу Нью-Йорка ([LuxAlgo: ICT time anchors](https://www.luxalgo.com/library/concept/ict-time-anchors/), [LuxAlgo: NY midnight open](https://www.luxalgo.com/library/indicator/Pt0Kk3PV-ict-new-york-midnight-open-and-8-30-am-open/)).
+- **SMR (smart money reversal):** розворот після зняття ліквідності: свип → зсув структури з імпульсом (displacement) → відкат у зону входу. Без імпульсного злому свип часто виявляється продовженням ([LuxAlgo](https://www.luxalgo.com/library/concept/smart-money-reversal/)). По суті — те саме, що QM і MS + OF курсу (S22, S23).
+- **MMXM (market maker buy/sell model):** «крива» з п'яти стадій: original consolidation (вихідний рейндж) → рух від нього → SMR → re-accumulation / re-distribution (рівні лівої половини кривої стають підтримкою на правій) → завершення біля original consolidation. Re-Acc 1/2 у шаблоні автора — проміжні накопичення на правій стороні кривої ([TradingView: MMXM ICT](https://tr.tradingview.com/scripts/search/fair%20value%20gap/page-13), [лекція ICT, конспект](https://videohighlight.com/v/1vkggpvWN_k)).
+- **BSL / SSL і draw on liquidity:** buy-side liquidity — стопи шортистів над старими й рівними хаями, sell-side — під лоями; «draw» — пул, до якого ймовірніше йде ціна ([LuxAlgo](https://www.luxalgo.com/library/concept/draw-on-liquidity/)). У базі знань уже є ([smc](../knowledge/smc.md)).
+
+## Як це може дати гроші
+- Нового для механічної перевірки тут два: **SMT** (міжринкова умова, якої в наших тестах свипів не було) і **часовий якір NY Midnight Open**. Решта (IDM, SMR, BPR, MMXM) — варіації свипу, FVG і зламу структури, механічні родичі яких у нас ✗.
+
+## Гіпотези
+- **H1 (SMT як фільтр свипу):** на BTC/ETH (1h і 4h, 2020–2026) і EURUSD/GBPUSD (15m і 1h, Dukascopy) свип свінгового екстремуму, **не підтверджений** корельованим активом (SMT), дає реверсію (дохід у бік, протилежний свипу, за 4 / 12 / 24 бари) більшу, ніж свип, підтверджений обома активами. Порівняння — всередині свипів (SMT проти без SMT), тож це тест саме фільтра, а не свипу загалом. Вікно узгодження свінгів між активами — ±2 бари (через відставання).
+- **H2 (NY Midnight Open):** для BTC і EURUSD: (а) частка днів, коли ціна між 00:00 і 09:30 NY ходить по інший бік від midnight open, ніж закриття дня («Judas swing»), проти базової частоти для випадкової години відкриття; (б) чи прогнозує положення ціни відносно midnight open о 09:30 NY напрям руху до 16:00 NY (проти того ж правила з 00:00 UTC як плацебо).
+- Обидві — нижчий пріоритет за поточну серію; додано кроками 9–10 у [IDEA-20261016-course-setups-crypto](../ideas/IDEA-20261016-course-setups-crypto.md).
+
+## Застереження
+- Джерела — вторинні й частково рекламні (продавці індикаторів). Пояснення «великий гравець ставить приманку для роздрібних» — легенда методики, а не виміряний факт ([AlphaEx](https://www.alphaexcapital.com/smart-money-concepts/ict-inducement-and-draw-on-liquidity)). Як автор курсу трактує ці поняття — невідомо; беремо загальноприйняті визначення.

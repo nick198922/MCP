@@ -50,7 +50,7 @@ trap 'rm -f "$LOCK/pid"; rmdir "$LOCK"' EXIT
 
 WORK="$LOG_DIR/work.state" # "<work branch> <runs on it> <stamp of its first run> [<killed runs in a row>]"
 ACTIVE="$LOG_DIR/run.active" # exists while a run is under way; left behind, it marks a run killed before it reported
-PARKED="$LOG_DIR/parked.state" # "<branch> <not-before epoch> <runs> <first>": work set aside until a time (".agent/next park")
+PARKED="$LOG_DIR/parked.state" # one line per branch "<branch> <not-before epoch> <runs> <first>": work set aside until a time (".agent/next park")
 SUMMARY="$LOG_DIR/$STAMP.summary.md"
 : >"$SUMMARY"
 dirty() { [[ -n "$(git -C "$WT" status --porcelain 2>/dev/null)" ]]; }
@@ -122,20 +122,49 @@ if [[ -n "$WORK_BR" ]]; then
 fi
 
 # Parked work (it waits for a time, e.g. the next pass of a forward observation) resumes once that time has come and no
-# other work is in progress; until then the runs take other steps. A merged or deleted parked branch is forgotten.
+# other work is in progress; until then the runs take other steps. Several branches can be parked (one line each); the
+# earliest due one resumes first. A merged or deleted parked branch is forgotten.
+park_add() { # park_add <branch> <not-before epoch> <runs> <first>: park a branch, replacing its earlier line
+  { grep -v -- "^$1 " "$PARKED" 2>/dev/null || true; echo "$*"; } >"$PARKED.tmp"
+  mv "$PARKED.tmp" "$PARKED"
+}
+# Unfinished work that lost its record (an older launcher kept one parked branch and overwrote it) is parked again, due
+# now: its last outcome in history.tsv says it was set aside, not handed to the owner.
+while read -r b; do
+  [[ -z "$b" || "$b" == *-fix-* || "$b" == "$WORK_BR" ]] && continue
+  grep -q -- "^$b " "$PARKED" 2>/dev/null && continue
+  last="$(grep -F "\`$b\`" "$LOG_DIR/history.tsv" 2>/dev/null | tail -1 || true)"
+  case "$(cut -f2 <<<"$last")" in
+  parked | continues | unfinished)
+    runs="$(grep -o 'прогін [0-9]*' <<<"$last" | grep -o '[0-9]*' | tail -1 || true)"
+    echo "re-parking orphaned work $b"
+    park_add "$b" "$(date +%s)" "${runs:-1}" "$STAMP"
+    ;;
+  esac
+done < <(git branch -r --no-merged origin/main --list 'origin/agent/*' | sed 's#^ *origin/##')
 PARKED_NOTE=""
 if [[ -s "$PARKED" ]]; then
-  read -r P_BR P_AT P_RUNS P_FIRST 2>/dev/null <"$PARKED" || true
-  if [[ -z "${P_BR:-}" ]] || ! git rev-parse -q --verify "refs/remotes/origin/$P_BR" >/dev/null || git merge-base --is-ancestor "origin/$P_BR" origin/main; then
-    echo "parked branch ${P_BR:-?} was merged or deleted; forgetting it"
-    rm -f "$PARKED"
-  elif [[ -z "$WORK_BR" ]] && (($(date +%s) >= ${P_AT:-0})); then
+  keep="" due=""
+  while read -r P_BR P_AT P_RUNS P_FIRST; do
+    [[ -z "${P_BR:-}" ]] && continue
+    if ! git rev-parse -q --verify "refs/remotes/origin/$P_BR" >/dev/null || git merge-base --is-ancestor "origin/$P_BR" origin/main; then
+      echo "parked branch $P_BR was merged or deleted; forgetting it"
+      continue
+    fi
+    if [[ -z "$WORK_BR" && -z "$due" ]] && (($(date +%s) >= ${P_AT:-0})); then
+      due="$P_BR ${P_RUNS:-1} ${P_FIRST:-$STAMP}"
+      continue
+    fi
+    keep+="$P_BR $P_AT $P_RUNS $P_FIRST"$'\n'
+  done < <(sort -k2,2n "$PARKED")
+  printf '%s' "$keep" >"$PARKED"
+  if [[ -n "$due" ]]; then
+    read -r P_BR P_RUNS P_FIRST <<<"$due"
     echo "resuming parked work $P_BR"
-    WORK_BR="$P_BR" RUNS="${P_RUNS:-1}" FIRST="${P_FIRST:-$STAMP}" KILLS=0
-    rm -f "$PARKED"
-  else
-    PARKED_NOTE="$P_BR"
+    WORK_BR="$P_BR" RUNS="$P_RUNS" FIRST="$P_FIRST" KILLS=0
   fi
+  PARKED_NOTE="$(cut -d' ' -f1 "$PARKED" | paste -sd' ' - || true)"
+  [[ -s "$PARKED" ]] || rm -f "$PARKED"
 fi
 
 MODE=fresh
@@ -277,7 +306,7 @@ fi
 if [[ -n "$PARKED_NOTE" ]]; then
   PROMPT="$PROMPT
 
-PARKED: \`$PARKED_NOTE\` is work set aside until a set time (a later run resumes it). Do not take its card or item, and do not count its branch in the work-in-progress limit."
+PARKED: $PARKED_NOTE — work set aside until a set time (a later run resumes it). Do not take their cards or items, and do not count their branches in the work-in-progress limit."
 fi
 if [[ $DRY -eq 1 ]]; then
   PROMPT="$PROMPT
@@ -352,7 +381,7 @@ $(head -c 3000 "$SUMMARY")" --silent
 elif [[ -n "$DELIVERED" ]]; then
   rm -f "$LOG_DIR/refusal.txt"
   if [[ "$NEXT" == park ]] && ((RUNS < MAX_RUNS)); then
-    echo "$DELIVERED $NOT_BEFORE $RUNS $FIRST" >"$PARKED"
+    park_add "$DELIVERED" "$NOT_BEFORE" "$RUNS" "$FIRST"
     rm -f "$WORK"
     finish 4 "parked" "⏸ **Агенти: крок відкладено** (\`$DELIVERED\`, прогін $RUNS з $MAX_RUNS) до $(TZ=Europe/Kyiv date -d "@$NOT_BEFORE" '+%d.%m %H:%M' 2>/dev/null || echo "$NOT_BEFORE") за Києвом; тим часом агенти беруть інші кроки, потім продовжать його самі.
 $(head -c 1500 "$SUMMARY")" --silent
@@ -385,7 +414,7 @@ $(grep -v '^== ' "$LOG_DIR/$STAMP.log" | tail -5)"
   fi
   if ((saved == 0)) && [[ "$NEXT" == park ]] && ((RUNS < MAX_RUNS)); then
     if ((NOTHING_NEW && RUNS > 1)); then RUNS=$((RUNS - 1)); fi
-    echo "$WORK_BR $NOT_BEFORE $RUNS $FIRST" >"$PARKED"
+    park_add "$WORK_BR" "$NOT_BEFORE" "$RUNS" "$FIRST"
     rm -f "$WORK"
     finish 4 "parked" "⏸ **Агенти: крок відкладено** (\`$WORK_BR\`) до $(TZ=Europe/Kyiv date -d "@$NOT_BEFORE" '+%d.%m %H:%M' 2>/dev/null || echo "$NOT_BEFORE") за Києвом; тим часом агенти беруть інші кроки, потім продовжать його самі.
 $(head -c 1500 "$SUMMARY")" --silent

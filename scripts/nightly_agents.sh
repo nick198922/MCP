@@ -106,7 +106,7 @@ fi
 cd "$WT"
 ensure_git_identity
 git fetch --quiet --prune origin
-rm -f .agent/branch .agent/commit-msg.txt .agent/next "$LOG_DIR/resume.state"
+rm -f .agent/branch .agent/commit-msg.txt .agent/next .agent/not_before "$LOG_DIR/resume.state"
 
 # The work in progress, unless the owner has merged or deleted its branch meanwhile.
 WORK_BR="" RUNS=0 FIRST="$STAMP" KILLS=0
@@ -368,6 +368,11 @@ $(head -c 1500 "$SUMMARY")" --silent
 elif dirty || [[ -n "$WORK_BR" ]]; then
   why="${NOTE:-координатор завершився, не здавши крок}"
   if ((rc != 0)); then why="$why; claude завершився з кодом $rc"; fi
+  # A park that changed nothing (the run only found that the time has not come) does not count toward MAX_RUNS.
+  NOTHING_NEW=0
+  if [[ -n "$WORK_BR" ]] && git diff --cached --quiet && [[ -z "$(git status --porcelain -- docs src tests scripts ':!scripts/_*')" ]]; then
+    NOTHING_NEW=1
+  fi
   set +e
   save_work
   saved=$?
@@ -377,6 +382,13 @@ elif dirty || [[ -n "$WORK_BR" ]]; then
     if [[ $MODE == continue && -n "$WORK_BR" ]] && ((RUNS > 1)); then echo "$WORK_BR $((RUNS - 1)) $FIRST" >"$WORK"; fi
     finish 5 "error" "❌ **Агенти: не вдалося зберегти роботу гілкою** (впало: ${SAVE_FAILED:-?}). Лог: $LOG_DIR/$STAMP.log
 $(grep -v '^== ' "$LOG_DIR/$STAMP.log" | tail -5)"
+  fi
+  if ((saved == 0)) && [[ "$NEXT" == park ]] && ((RUNS < MAX_RUNS)); then
+    if ((NOTHING_NEW && RUNS > 1)); then RUNS=$((RUNS - 1)); fi
+    echo "$WORK_BR $NOT_BEFORE $RUNS $FIRST" >"$PARKED"
+    rm -f "$WORK"
+    finish 4 "parked" "⏸ **Агенти: крок відкладено** (\`$WORK_BR\`) до $(TZ=Europe/Kyiv date -d "@$NOT_BEFORE" '+%d.%m %H:%M' 2>/dev/null || echo "$NOT_BEFORE") за Києвом; тим часом агенти беруть інші кроки, потім продовжать його самі.
+$(head -c 1500 "$SUMMARY")" --silent
   fi
   if ((saved == 0)); then
     printf '%s\n%s\n' "$why" "$DETAIL" >"$LOG_DIR/refusal.txt"

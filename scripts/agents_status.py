@@ -162,6 +162,9 @@ def render(d: dict) -> tuple[str, list[tuple[str, str]]]:
     if d.get("work"):
         br, runs = d["work"]
         out.append(f"🔄 У роботі <code>{esc(br)}</code> (прогін {runs}), PR буде, коли доведуть до кінця")
+    if d.get("parked"):
+        br, at = d["parked"]
+        out.append(f"⏸ Відкладено до {at:%d.%m %H:%M} <code>{esc(br)}</code>: тим часом агенти беруть інші кроки")
     c2, c24 = d.get("counts_2h", Counter()), d.get("counts_24h", Counter())
     if sum(c24.values()):
         fmt = " · ".join(f"{OUTCOME_ICON[k]} {c24[k]}" for k in OUTCOME_ICON if c24.get(k))
@@ -297,6 +300,15 @@ def work_state(log_dir: Path) -> tuple[str, int] | None:
         return None
 
 
+def parked_state(log_dir: Path) -> tuple[str, datetime] | None:
+    """Work set aside until a time (parked.state of scripts/nightly_agents.sh): its branch and when it resumes."""
+    try:
+        parts = (log_dir / "parked.state").read_text(encoding="utf-8").split()
+        return parts[0], datetime.fromtimestamp(int(parts[1]))
+    except (OSError, ValueError, IndexError):
+        return None
+
+
 def doctor_note(log_dir: Path) -> str:
     reports = sorted(log_dir.glob("*.doctor.md"), key=lambda p: p.stat().st_mtime)
     if not reports or time.time() - reports[-1].stat().st_mtime > 86400:
@@ -336,7 +348,9 @@ def collect(repo: Path, worktree: Path, log_dir: Path) -> dict:
     _git(repo, "fetch", "-q", "origin")
     branches = open_branches(repo)
     work = work_state(log_dir)
-    waiting = [b for b in branches if not work or b != work[0]]
+    parked = parked_state(log_dir)
+    busy = {x[0] for x in (work, parked) if x}
+    waiting = [b for b in branches if b not in busy]
     agents_line, activity = agents_state(log_dir, worktree)
     try:
         hist = (log_dir / "history.tsv").read_text(encoding="utf-8").splitlines()
@@ -354,6 +368,7 @@ def collect(repo: Path, worktree: Path, log_dir: Path) -> dict:
         "usage": usage(),
         "cards": collect_cards(repo, branches),
         "work": work,
+        "parked": parked,
         "open_branches": [b for b in waiting if "-fix-" not in b] + [b for b in waiting if "-fix-" in b],
         "questions": open_questions(read("docs/QUESTIONS.md")),
         "doctor": doctor_note(log_dir),

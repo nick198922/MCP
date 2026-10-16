@@ -37,5 +37,5 @@
 | [LIB-20261015-market-review](LIB-20261015-market-review.md) | 2TOP SQUAD: огляд ринку 15.10, реакція на макроновини, бета альтів, покупки скарбниць | triaged |
 | [LIB-20261015-polymarket-basics](LIB-20261015-polymarket-basics.md) | DOUBLETOP Education: як заробляють на Polymarket — переоцінений YES, продаж на 50 %, арбітраж, нові гаманці | triaged |
 | [LIB-20261015-cpi-polymarket-touch](LIB-20261015-cpi-polymarket-touch.md) | Пост: стренгл із ринків «на дотик» Polymarket на CPI (BTC ±3 %, ETH ±8 %), ризик 0.7 % | triaged |
-| [LIB-20261015-spot-entries](LIB-20261015-spot-entries.md) | 2TOP SQUAD: як набирати спот — дно BTC, тижневі підтримки, reclaim рівнів (з кадрами) | new |
+| [LIB-20261015-spot-entries](LIB-20261015-spot-entries.md) | 2TOP SQUAD: як набирати спот — дно BTC, тижневі підтримки, reclaim рівнів (з кадрами) | triaged |
 | [LIB-20261015-doubletop-stream](LIB-20261015-doubletop-stream.md) | Стрім Дзюби й Іллі 15.10: реакція на CPI/PPI, зони BTC, MSCI і MSTR, самоперевірка прогнозів (Whisper, кадри) | triaged |

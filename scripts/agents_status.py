@@ -39,7 +39,7 @@ STATUS_ICON = {
     "inconclusive": "❔",
 }
 ROLE = {"scout": "скаут", "quant": "квант", "builder": "розробник", "critic": "критик"}
-OUTCOME_ICON = {"delivered": "✅", "continues": "🔄", "unfinished": "⏳", "stuck": "⚠️", "wip": "⚠️", "error": "❌", "idle": "💤"}
+OUTCOME_ICON = {"delivered": "✅", "continues": "🔄", "parked": "⏸", "unfinished": "⏳", "stuck": "⚠️", "wip": "⚠️", "error": "❌", "idle": "💤"}
 
 
 # ---- pure helpers (tested) -------------------------------------------------------------------------------

@@ -296,6 +296,104 @@ def bootstrap_ci(values: Sequence[float], *, n_boot: int = 10_000, seed: int = 7
     return {"mean": m, "lo": float(lo), "hi": float(hi), "n": n}
 
 
+def cluster_bootstrap_ci(rows: Iterable[tuple[str, str, float]], *, n_boot: int = 10_000, seed: int = 7) -> dict[str, float | None]:
+    """Two-stage cluster bootstrap: the estimate stays the equal-weight mean of unit (event) means, the CI resamples
+    outer clusters (e.g. calendar dates) with replacement and keeps every unit of a drawn cluster.
+
+    ``rows`` are (outer key, unit key, value). A unit is assigned to the outer key of its first row in sorted order.
+    Each replicate is sum of unit means over drawn clusters / number of units drawn, so with one unit per cluster the
+    result equals :func:`bootstrap_ci` on the unit means (same seed and draws).
+    """
+    acc: dict[str, list[float]] = defaultdict(list)
+    outer_of: dict[str, str] = {}
+    for o, u, v in sorted(rows, key=lambda r: (r[1], r[0])):
+        acc[u].append(v)
+        outer_of.setdefault(u, o)
+    if not acc:
+        return {"mean": None, "lo": None, "hi": None, "n": 0, "n_clusters": 0}
+    s: dict[str, float] = defaultdict(float)
+    c: dict[str, int] = defaultdict(int)
+    for u, vs in sorted(acc.items()):
+        s[outer_of[u]] += sum(vs) / len(vs)
+        c[outer_of[u]] += 1
+    keys = sorted(s)
+    S = np.asarray([s[k] for k in keys], dtype=float)
+    N = np.asarray([c[k] for k in keys], dtype=float)
+    k_cl = len(keys)
+    m = float(S.sum() / N.sum())
+    if k_cl < 2:
+        return {"mean": m, "lo": None, "hi": None, "n": int(N.sum()), "n_clusters": k_cl}
+    rng = np.random.default_rng(seed)
+    means = np.empty(n_boot)
+    step = max(1, 2_000_000 // k_cl)
+    for i in range(0, n_boot, step):
+        k = min(step, n_boot - i)
+        idx = rng.integers(0, k_cl, size=(k, k_cl))
+        means[i : i + k] = S[idx].sum(axis=1) / N[idx].sum(axis=1)
+    lo, hi = np.percentile(means, [2.5, 97.5])
+    return {"mean": m, "lo": float(lo), "hi": float(hi), "n": int(N.sum()), "n_clusters": k_cl}
+
+
+def _yes_prints(trades: Iterable[dict[str, Any]], yes_token: str) -> list[tuple[int, float]]:
+    out = []
+    for x in trades:
+        try:
+            t, px = int(x["timestamp"]), float(x["price"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        out.append((t, px if str(x.get("asset")) == yes_token else 1.0 - px))
+    return sorted(out)
+
+
+def lag_profile(
+    points: Sequence[dict[str, Any]], trades: Iterable[dict[str, Any]], yes_token: str, ks: Sequence[int]
+) -> dict[int, list[float]]:
+    """Timestamp check of ``/prices-history``: for each shift k (s), |p - last YES-equivalent print with ts <= t + k|
+    over points (t, p) that have such a print. A series stamped late (lookahead) fits best at k > 0."""
+    tr = _yes_prints(trades, yes_token)
+    out: dict[int, list[float]] = {k: [] for k in ks}
+    for pt in points:
+        t, p = int(pt["t"]), float(pt["p"])
+        for k in ks:
+            last = None
+            for ts, px in tr:
+                if ts > t + k:
+                    break
+                last = px
+            if last is not None:
+                out[k].append(abs(p - last))
+    return out
+
+
+def jump_proximity(
+    points: Sequence[dict[str, Any]],
+    trades: Iterable[dict[str, Any]],
+    yes_token: str,
+    *,
+    min_jump: float = 0.02,
+    windows: Sequence[tuple[str, int, int]] = (
+        ("before_0_60", -60, 0),
+        ("before_60_120", -120, -60),
+        ("before_120_300", -300, -120),
+        ("after_0_60", 0, 60),
+    ),
+) -> dict[str, list[bool]]:
+    """Around each trade-price jump >= ``min_jump`` (consecutive YES-equivalent prints), whether a point in the window
+    [tj + a, tj + b) relative to the jump print is closer to the new price than to the old one. Points before a jump
+    that are mostly closer to the new price would indicate lookahead in the point timestamps."""
+    tr = _yes_prints(trades, yes_token)
+    out: dict[str, list[bool]] = {name: [] for name, _, _ in windows}
+    for (_, old), (tj, new) in zip(tr, tr[1:], strict=False):
+        if abs(new - old) < min_jump:
+            continue
+        for pt in points:
+            t, p = int(pt["t"]), float(pt["p"])
+            for name, a, b in windows:
+                if tj + a <= t < tj + b:
+                    out[name].append(abs(p - new) < abs(p - old))
+    return out
+
+
 def mde(sd_value: float, n: int, k: float = 2.8) -> float:
     """Minimum detectable effect at alpha 5 % two-sided, power 80 %: k * sd / sqrt(n)."""
     return k * sd_value / math.sqrt(n) if n > 0 else math.inf

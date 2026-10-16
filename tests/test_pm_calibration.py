@@ -12,12 +12,15 @@ from tradedesk.analytics.pm_calibration import (
     bootstrap_ci,
     category_of,
     classify_market,
+    cluster_bootstrap_ci,
     cluster_means,
     devig_event,
     eligible_at,
     end_matches_slug,
     is_automated,
     iso_ts,
+    jump_proximity,
+    lag_profile,
     mde,
     no_return,
     reliability,
@@ -210,6 +213,40 @@ def test_bootstrap_ci_and_mde():
     assert bootstrap_ci(vals) == b  # seeded
     assert bootstrap_ci([])["mean"] is None and bootstrap_ci([0.2])["lo"] is None
     assert mde(0.5, 2000) == pytest.approx(2.8 * 0.5 / math.sqrt(2000))  # 3.13 pp, as in the card
+
+
+def test_cluster_bootstrap_keeps_event_estimate_and_widens_ci():
+    # one event per date: identical to the event bootstrap (same seed, same draws)
+    vals = [0.0, 1.0] * 50
+    rows = [(f"d{i:03d}", f"d{i:03d}", v) for i, v in enumerate(vals)]
+    a, b = cluster_bootstrap_ci(rows), bootstrap_ci(vals)
+    assert (a["mean"], a["lo"], a["hi"]) == pytest.approx((b["mean"], b["lo"], b["hi"]))
+    # the estimate is the mean of event means (markets averaged within the event first), not the mean of date means
+    rows = [("A", "e1", 0.0), ("A", "e1", 0.0), ("A", "e2", 0.0), ("A", "e3", 0.0), ("B", "e4", 1.0), ("B", "e4", 1.0)]
+    r = cluster_bootstrap_ci(rows)
+    assert r["mean"] == pytest.approx(0.25) and r["n"] == 4 and r["n_clusters"] == 2
+    assert cluster_means([(o, v) for o, _, v in rows]) == [0.0, 1.0]  # date weighting would give 0.5
+    # perfectly correlated within a date: 20 dates x 50 events -> the CI reflects 20 clusters, not 1000 events
+    rows = [(f"d{d:02d}", f"d{d:02d}e{e}", float(d % 2)) for d in range(20) for e in range(50)]
+    r = cluster_bootstrap_ci(rows)
+    assert r["mean"] == pytest.approx(0.5)
+    assert r["lo"] == pytest.approx(0.5 - 1.96 * 0.5 / math.sqrt(20), abs=0.04)
+    assert r["hi"] == pytest.approx(0.5 + 1.96 * 0.5 / math.sqrt(20), abs=0.04)
+    assert cluster_bootstrap_ci([])["mean"] is None and cluster_bootstrap_ci([("A", "e", 0.3)])["lo"] is None
+
+
+def test_lag_profile_and_jump_proximity():
+    yes = "Y"
+    # prints: YES 0.40 at t=100, NO 0.40 (YES-eq 0.60) at t=200; points stamped at the print times
+    trades = [{"timestamp": 100, "price": 0.40, "asset": "Y"}, {"timestamp": 200, "price": 0.40, "asset": "N"}]
+    pts = [{"t": 150, "p": 0.40}, {"t": 230, "p": 0.60}]
+    lp = lag_profile(pts, trades, yes, (-60, 0, 60))
+    assert lp[-60] == pytest.approx([0.2])  # t=150 has no print <= 90; t=230 sees 0.40 (print <= 170)
+    assert lp[0] == pytest.approx([0.0, 0.0])
+    assert lp[60] == pytest.approx([0.2, 0.0])  # t=150 sees the 0.60 print at 200 <= 210
+    jp = jump_proximity([{"t": 170, "p": 0.41}, {"t": 210, "p": 0.59}], trades, yes)
+    assert jp["before_0_60"] == [False] and jp["after_0_60"] == [True]
+    assert jp["before_60_120"] == [] and jp["before_120_300"] == []
 
 
 def test_stratified_event_sample_is_proportional_and_deterministic():

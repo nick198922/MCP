@@ -8,6 +8,7 @@ Usage:
     uv run python scripts/verify_pm_yes_calibration.py --stage list      # Gamma closed events by month (metadata)
     uv run python scripts/verify_pm_yes_calibration.py --stage classify  # exclusion counts (no prices)
     uv run python scripts/verify_pm_yes_calibration.py --stage fetch --limit 200   # timing sample + estimate
+    uv run python scripts/verify_pm_yes_calibration.py --stage slim      # universe.json -> sampled events only (RAM)
     uv run python scripts/verify_pm_yes_calibration.py --stage fetch     # quotes at T-24h..T-4h (long; sample rule)
     uv run python scripts/verify_pm_yes_calibration.py --stage trades    # last trades for q in [0.35; 0.65]
     uv run python scripts/verify_pm_yes_calibration.py --stage stage0    # coverage, freshness, SD, MDE gates (no means)
@@ -20,6 +21,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import os
 import random
 import re
 import statistics
@@ -34,6 +36,7 @@ from tradedesk.analytics.pm_calibration import (
     basket,
     bootstrap_ci,
     classify_market,
+    cluster_bootstrap_ci,
     cluster_means,
     devig_event,
     eligible_at,
@@ -122,7 +125,7 @@ async def _retry(coro_fn, what: str, tries: int = 5):  # noqa: ANN001, ANN202
 
 def _write(p: Path, obj: Any) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".tmp")
+    tmp = p.with_suffix(f".{os.getpid()}.tmp")  # per process: two fetchers may share the cache
     tmp.write_text(json.dumps(obj))
     tmp.replace(p)
 
@@ -272,9 +275,75 @@ def build_universe(cache: Path) -> dict[str, Any]:
     return u
 
 
+def _universe_sig(up: Path) -> Any:
+    """The "sig" field of universe.json, read from the file head only (the file is ~2 GB)."""
+    with up.open() as f:
+        head = f.read(1 << 16)
+    a = head.index("[", head.index('"sig"'))
+    return json.JSONDecoder().raw_decode(head, a)[0]
+
+
+def sample_universe(cache: Path) -> dict[str, Any]:
+    """universe.json restricted to the sampled events (sample.json), built by streaming the big file.
+
+    Loading the full ~2 GB universe.json into Python needs more RAM than the server has (runs on 2026-10-16 died
+    silently), so after the sample rule fixed the events every stage reads this smaller file. Same structure as
+    :func:`build_universe` plus ``yes_no_ok`` = [YES, n] over all ok Yes/No markets of the full universe.
+    Selection depends only on event ids from sample.json (fixed before prices), never on prices or outcomes.
+    """
+    files = sorted((cache / "events").glob("20*.json"))
+    sig = [[p.name, p.stat().st_size] for p in files]
+    up, sp, smp = cache / "universe.json", cache / "universe_sample.json", cache / "sample.json"
+    s_hash = hashlib.sha256(smp.read_bytes()).hexdigest()
+    if sp.exists():
+        u = json.loads(sp.read_text())
+        if u.get("sig") == sig and u.get("sample_sha") == s_hash:
+            return u
+    if not up.exists() or _universe_sig(up) != sig:
+        build_universe(cache)  # full rebuild (memory-heavy); only if the event files changed
+    sel = set(json.loads(smp.read_text())["events"])
+    dec = json.JSONDecoder()
+    text = up.read_text()
+    head_end = text.index('"markets": [')
+    head = json.loads(text[:head_end].rstrip().rstrip(",") + "}")
+    i = head_end + len('"markets": [')
+    out: list[dict[str, Any]] = []
+    y_ok = n_ok = 0
+    while True:
+        while text[i] in " ,\n":
+            i += 1
+        if text[i] == "]":
+            i += 1
+            break
+        m, i = dec.raw_decode(text, i)
+        if m.get("yes_no"):
+            n_ok += 1
+            y_ok += int(m["outcome"])
+        if m["event_id"] in sel:
+            out.append(m)
+    rest = json.loads("{" + text[i:].lstrip().lstrip(","))
+    del text
+    u = {
+        **head,
+        "markets": out,
+        "events": {k: v for k, v in rest["events"].items() if k in sel},
+        "yes_share_all": rest["yes_share_all"],
+        "n_events": rest["n_events"],
+        "yes_no_ok": [y_ok, n_ok],
+        "sample_sha": s_hash,
+    }
+    _write(sp, u)
+    return u
+
+
+def universe(cache: Path) -> dict[str, Any]:
+    """The sampled universe once sample.json exists (memory-light), else the full one."""
+    return sample_universe(cache) if (cache / "sample.json").exists() else build_universe(cache)
+
+
 def load_markets(cache: Path) -> tuple[list[dict[str, Any]], Counter, dict[str, dict[str, Any]], list[dict[str, Any]]]:
     """Classified markets in the period (checks before prices). Returns (ok markets, status counts, event meta, file meta)."""
-    u = build_universe(cache)
+    u = universe(cache)
     return u["markets"], Counter(u["why"]), u["events"], u["meta"]
 
 
@@ -414,20 +483,22 @@ def load_quotes(cache: Path, markets: list[dict[str, Any]]) -> dict[str, dict[st
 # ----------------------------------------------------------------------------- stage: trades (freshness + H2 entry)
 
 
-async def stage_trades(cache: Path, rate: float, include_named: bool) -> None:
+async def stage_trades(cache: Path, rate: float, include_named: bool, hs: tuple[int, ...] = H_LIST, reverse: bool = False) -> None:
     from tradedesk.core.ratelimit import TokenBucket
     from tradedesk.server import build_server
 
     ms, _, _, _ = load_markets(cache)
     sel = sample_ids(cache)
     pool = [m for m in ms if (m["yes_no"] or include_named) and (sel is None or m["event_id"] in sel)]
+    if reverse:  # a second fetcher can start from the other end of the time-ordered list
+        pool = pool[::-1]
     qs = load_quotes(cache, pool)
     todo = []
     for m in pool:
         qd = qs.get(m["market_id"])
         if not qd:
             continue
-        for h in H_LIST:
+        for h in hs:
             qa = qd["q"].get(h)
             if (
                 qa
@@ -446,8 +517,14 @@ async def stage_trades(cache: Path, rate: float, include_named: bool) -> None:
     async def one(m: dict[str, Any], h: int) -> None:
         nonlocal done, errs
         t0 = t0_of(m, h)
+        if not _needs_fetch(tpath(cache, m["market_id"], h)):  # written meanwhile by another fetcher
+            done += 1
+            return
         try:
             async with sem:
+                if not _needs_fetch(tpath(cache, m["market_id"], h)):
+                    done += 1
+                    return
                 f = await _retry(lambda: rt.polymarket.trades(m["condition_id"], limit=5, end=t0), "trades")
             obj: dict[str, Any] = {"trades": f.data}
         except Exception as e:  # noqa: BLE001
@@ -535,7 +612,7 @@ def ok_years(rows: list[dict[str, Any]]) -> set[int]:
 
 
 def stage0(cache: Path, out: str) -> dict[str, Any]:
-    u = build_universe(cache)
+    u = universe(cache)
     ms, why, meta = u["markets"], Counter(u["why"]), u["meta"]
     sel = sample_ids(cache)
     samp = json.loads((cache / "sample.json").read_text()) if (cache / "sample.json").exists() else {}
@@ -553,11 +630,15 @@ def stage0(cache: Path, out: str) -> dict[str, Any]:
         P(f"| {k} | {v} |")
     # consistency check against the accuracy page: YES share of all resolved Yes/No markets (incl. automated)
     y_all, n_all = u["yes_share_all"]
-    all_ok = [m for m in ms if m["yes_no"]]
+    if "yes_no_ok" in u:
+        y_ok, n_ok = u["yes_no_ok"]
+    else:
+        all_ok = [m for m in ms if m["yes_no"]]
+        y_ok, n_ok = sum(m["outcome"] for m in all_ok), len(all_ok)
     P(
         f"\n**Звірка з polymarket.com/accuracy (21.9 % YES):** усі розв'язані Yes/No ринки переліку (зокрема автоматичні): "
         f"{y_all}/{n_all} = {y_all / max(n_all, 1):.1%}; наш універс Yes/No після виключень: "
-        f"{sum(m['outcome'] for m in all_ok)}/{len(all_ok)} = {sum(m['outcome'] for m in all_ok) / max(len(all_ok), 1):.1%}.\n"
+        f"{y_ok}/{n_ok} = {y_ok / max(n_ok, 1):.1%}.\n"
     )
     P(
         f"Вибірка подій (правило бюджету): частка {samp.get('frac', 1.0):.3f}, оцінка повного fetch {samp.get('est_h', 0):.1f} год "
@@ -628,17 +709,35 @@ def _fmt(label: str, pairs: list[tuple[str, float]], k: float = 100.0, unit: str
     return f"| {label} | {n_m} | {len(vals)} | {b['mean'] * k:+.2f} | [{lo}; {hi}] |"
 
 
+def _fmt_dc(label: str, triples: list[tuple[str, str, float]], k: float = 100.0) -> str:
+    """Row with the event-mean estimate and a two-stage bootstrap CI over calendar dates (rows: date, event, value)."""
+    b = cluster_bootstrap_ci(triples)
+    if b["mean"] is None:
+        return f"| {label} | 0 | 0 | — | — |"
+    lo = f"{b['lo'] * k:+.2f}" if b["lo"] is not None else "—"
+    hi = f"{b['hi'] * k:+.2f}" if b["hi"] is not None else "—"
+    return f"| {label} | {len(triples)} | {b['n_clusters']} дат / {b['n']} подій | {b['mean'] * k:+.2f} | [{lo}; {hi}] |"
+
+
+def _dc(rs: list[dict[str, Any]], vals: list[tuple[str, float]] | None = None) -> list[tuple[str, str, float]]:
+    """(date T, event, value) triples; value = q - outcome unless per-row values (same order as ``rs``) are given."""
+    if vals is None:
+        return [(date_key(r), r["event_id"], r["q"] - r["outcome"]) for r in rs]
+    return [(date_key(r), e, v) for r, (e, v) in zip(rs, vals, strict=True)]
+
+
 def _gap(rs: list[dict[str, Any]], key: str = "event_id") -> list[tuple[str, float]]:
     return [(r[key] if key != "date" else date_key(r), r["q"] - r["outcome"]) for r in rs]
 
 
-def _h2(rs: list[dict[str, Any]], half_spread: float = 0.01, fee_all: float | None = None) -> list[tuple[str, float]]:
+def _h2(
+    rs: list[dict[str, Any]], half_spread: float = 0.01, fee_all: float | None = None, use_last: bool = True
+) -> list[tuple[str, float]]:
     out = []
     for r in rs:
         rate, exp = (fee_all, 1.0) if fee_all is not None else (r["fee_rate"], r["fee_exp"])
-        x = no_return(
-            r["q"], r["outcome"], half_spread=half_spread, last_no_px=r["lt"]["no_px"] if r["lt"] else None, fee_rate=rate, fee_exp=exp
-        )
+        last = r["lt"]["no_px"] if (r["lt"] and use_last) else None
+        x = no_return(r["q"], r["outcome"], half_spread=half_spread, last_no_px=last, fee_rate=rate, fee_exp=exp)
         out.append((r["event_id"], x["ret"]))
     return out
 
@@ -662,8 +761,9 @@ def full(cache: Path, out: str) -> None:
     P("### H1: розрив q − частота YES у центрі [0.40; 0.60], п.п. (кластер — подія)\n")
     P(hdr)
     P(_fmt("**H1 головний: Yes/No, давність ≤ 2 год**", _gap(main)))
-    P(_fmt("той самий, кластер — календарна дата T", _gap(main, "date")))
-    P(_fmt("той самий, без кластерів (ринок = одиниця)", [(r["market_id"], r["q"] - r["outcome"]) for r in main]))
+    P(_fmt_dc("той самий, CI з кластером «дата T» (двостадійний bootstrap, оцінка = середнє подій)", _dc(main)))
+    P(_fmt("інше зважування: дата = одиниця (середнє по датах)", _gap(main, "date")))
+    P(_fmt("інше зважування: ринок = одиниця", [(r["market_id"], r["q"] - r["outcome"]) for r in main]))
     # halves
     ds = sorted(date_key(r) for r in main)
     mid = ds[len(ds) // 2]
@@ -715,9 +815,10 @@ def full(cache: Path, out: str) -> None:
     by_ev: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for m in ms:
         by_ev[m["event_id"]].append(m)
-    q_all = load_quotes(cache, [m for m in ms if m["event_id"] in {r["event_id"] for r in rows if r["neg_risk"]}])
+    neg_ids = {r["event_id"] for r in rows if r["neg_risk"]}  # built once (inside the comprehension it was O(n^2))
+    q_all = load_quotes(cache, [m for m in ms if m["event_id"] in neg_ids])
     raw_p, dv_p, n_ev_skip = [], [], 0
-    for eid in sorted({r["event_id"] for r in rows if r["neg_risk"]}):
+    for eid in sorted(neg_ids):
         ev = events.get(eid) or {}
         if not ev.get("neg"):
             continue
@@ -749,6 +850,10 @@ def full(cache: Path, out: str) -> None:
     P(_fmt("сирі q (ті самі події)", raw_p))
     P(_fmt("нормалізовані q' = q / Σq", dv_p))
     P(f"\nПодій пропущено (не всі варіанти класифіковані/котировані або різні T): {n_ev_skip}.")
+    P(
+        "Увага: два рядки рахуються на різних наборах ринків (сирий кошик за q, нормалізований — за q'), тож різниця "
+        "змішує overround зі зміною складу кошика; це не парне порівняння."
+    )
     for c in ("politics", "sports", "culture"):
         P(_fmt(f"категорія {c} (H1 головний)", _gap([r for r in main if r["category"] == c])))
 
@@ -762,6 +867,41 @@ def full(cache: Path, out: str) -> None:
     P(_fmt(f"перша половина (T < {mid})", _h2([r for r in main if date_key(r) < mid])))
     P(_fmt(f"друга половина (T ≥ {mid})", _h2([r for r in main if date_key(r) >= mid])))
     P(_fmt(f"без найбільшої категорії ({top_cat})", _h2([r for r in main if r["category"] != top_cat])))
+    P(_fmt_dc("H2 головний, CI з кластером «дата T» (двостадійний bootstrap)", _dc(main, _h2(main))))
+    # Decomposition of H2 (descriptive, added after the critic's review; does not change the verdict)
+    P("\n### Розклад H2 (описово; додано після рев'ю, вердикт не змінює), % на капітал\n")
+    P(hdr)
+    P(
+        _fmt(
+            "вхід за 1 − q, без спреду й комісії: (q − y) / (1 − q)",
+            [(r["event_id"], (r["q"] - r["outcome"]) / (1 - r["q"])) for r in main],
+        )
+    )
+    P(_fmt("+ комісія за ринком (півспреду 0, лише q)", _h2(main, half_spread=0.0, use_last=False)))
+    P(_fmt("+ півспреду 0.01 (лише q)", _h2(main, use_last=False)))
+    P(_fmt("+ гірша з двох (q-вхід або остання NO-угода) = H2 головний", _h2(main)))
+    P(_fmt("H2 головний без комісії", _h2(main, fee_all=0.0)))
+    fee_rows = [r for r in main if r["fee_rate"] > 0]
+    fee_cap = []
+    for r in main:
+        x = no_return(
+            r["q"],
+            r["outcome"],
+            half_spread=0.01,
+            last_no_px=r["lt"]["no_px"] if r["lt"] else None,
+            fee_rate=r["fee_rate"],
+            fee_exp=r["fee_exp"],
+        )
+        fee_cap.append(x["fee"] / (x["entry"] + x["fee"]))
+    fee_cap_pos = [f for f, r in zip(fee_cap, main, strict=True) if r["fee_rate"] > 0]
+    cats_fee = Counter(r["category"] for r in fee_rows)
+    yrs_fee = Counter(r["year"] for r in fee_rows)
+    P(
+        f"\nКомісія в головній вибірці (`feeSchedule`): ненульова в {len(fee_rows)}/{len(main)} ринків ({len(fee_rows) / max(len(main), 1):.0%}); "
+        f"за категоріями {dict(cats_fee.most_common(4))}, за роками {dict(sorted(yrs_fee.items()))}. "
+        f"Комісія на угоду, % капіталу: середнє по всіх {statistics.mean(fee_cap) * 100:.2f}, по ринках з комісією "
+        f"{(statistics.mean(fee_cap_pos) * 100 if fee_cap_pos else 0):.2f}."
+    )
     lock = [(r["closed"] - r["t0"]) / 3600 for r in main]
     P(
         f"\nБлокування капіталу (closedTime − t0): медіана {statistics.median(lock):.1f} год, p75 {statistics.quantiles(lock, n=4)[2]:.1f} год, "
@@ -789,6 +929,96 @@ def full(cache: Path, out: str) -> None:
         Path(out).expanduser().write_text(report + "\n")
 
 
+# ----------------------------------------------------------------------------- EXPLORATORY (after the full run)
+
+
+def explore(cache: Path) -> None:
+    """EXPLORATORY diagnostics, written after seeing the full run (not pre-registered; the report labels them)."""
+    ms, _, _, _ = load_markets(cache)
+    sel = sample_ids(cache)
+    yn = [m for m in ms if m["yes_no"] and (sel is None or m["event_id"] in sel)]
+    qs = load_quotes(cache, yn)
+    rows = build_rows(cache, yn, qs, H_MAIN)
+    yrs = ok_years(rows)
+    main = center(rows, years=yrs)
+    allc = center(rows, stale_s=None, years=yrs)
+    hdr = "| Варіант | ринків | кластерів | середнє | 95 % CI |\n|---|---|---|---|---|"
+    mk = lambda rs: [(r["market_id"], r["q"] - r["outcome"]) for r in rs]  # noqa: E731
+    P = print
+    P("## РОЗВІДКА (не з реєстрації; після перегляду повного прогону)\n")
+    P("### 1. Центр без фільтра давності: «мертві» книги біля 0.50\n")
+    near = [r for r in allc if abs(r["q"] - 0.5) <= 0.005]
+    stale = [r for r in allc if not fresh(r)]
+    P(
+        f"q ∈ [0.495; 0.505]: {len(near)} з {len(allc)} ринків центру; частота YES {statistics.mean(r['outcome'] for r in near):.3f}; "
+        f"з угодою ≤ 2 год {sum(1 for r in near if fresh(r)) / max(len(near), 1):.1%}."
+    )
+    P(
+        f"Без угоди ≤ 2 год: {len(stale)} ринків, частота YES {statistics.mean(r['outcome'] for r in stale):.3f}, "
+        f"середнє q {statistics.mean(r['q'] for r in stale):.3f}.\n"
+    )
+    P(hdr)
+    P(_fmt("несвіжі, ринок = одиниця", mk(stale)))
+    P(_fmt("несвіжі, кластер — подія", _gap(stale)))
+    P(_fmt("усі в центрі, ринок = одиниця", mk(allc)))
+    P(_fmt("усі в центрі, кластер — подія", _gap(allc)))
+    P("\n### 2. Головна вибірка: вага подій проти ринків і дат\n")
+    cnt = Counter(r["event_id"] for r in main)
+    by_date = Counter(date_key(r) for r in main)
+    P(hdr)
+    for lab, f in (
+        ("1 ринок події в центрі", lambda r: cnt[r["event_id"]] == 1),
+        ("≥ 2 ринки події в центрі", lambda r: cnt[r["event_id"]] >= 2),
+    ):
+        rs = [r for r in main if f(r)]
+        P(_fmt(f"{lab}, кластер — подія", _gap(rs)))
+        P(_fmt(f"{lab}, ринок = одиниця", mk(rs)))
+    top_d = {k for k, _ in by_date.most_common(10)}
+    P(_fmt("без 10 дат із найбільшою кількістю ринків", _gap([r for r in main if date_key(r) not in top_d])))
+    P(
+        f"\nДат {len(by_date)}; ринків на дату: медіана {statistics.median(by_date.values())}, максимум {max(by_date.values())}; "
+        f"10 найбільших дат дають {sum(by_date[k] for k in top_d)} ринків."
+    )
+    P("\n### 3. q проти останньої угоди (YES-еквівалент), головна вибірка\n")
+    d = [r["q"] - r["lt"]["yes_px"] for r in main]
+    P(
+        f"q − остання угода: середнє {statistics.mean(d):+.4f}, медіана {statistics.median(d):+.4f}, "
+        f"частка |·| > 0.05: {sum(abs(x) > 0.05 for x in d) / len(d):.1%}.\n"
+    )
+    P(hdr)
+    P(_fmt("розрив з ціною останньої угоди замість q", [(r["event_id"], r["lt"]["yes_px"] - r["outcome"]) for r in main]))
+    P("\n### 4. Спорт і погода (головна вибірка)\n")
+    P(hdr)
+    for c in ("sports", "weather"):
+        rs = [r for r in main if r["category"] == c]
+        P(_fmt(f"{c}, кластер — подія", _gap(rs)))
+        P(_fmt_dc(f"{c}, CI з кластером «дата T» (двостадійний)", _dc(rs)))
+        P(_fmt(f"{c}, інше зважування: дата = одиниця", _gap(rs, "date")))
+        for neg in (True, False):
+            P(_fmt(f"{c}, neg-risk = {neg}", _gap([r for r in rs if r["neg_risk"] == neg])))
+    for c in ("sports", "weather"):
+        rs = [r for r in main if r["category"] == c]
+        P(f"\n{c}: найчастіші префікси slug подій {Counter(str(r['event_slug']).split('-')[0] for r in rs).most_common(10)}")
+    P("\n### 5. Дзеркало H2: купівля YES за max(q + півспреду, остання YES-угода), комісія за ринком, % на капітал\n")
+
+    def yes_ret(r: dict[str, Any], hs: float) -> float:
+        e = r["q"] + hs
+        if r["lt"]:
+            e = max(e, r["lt"]["yes_px"])
+        e = min(max(e, 0.001), 0.999)
+        fee = r["fee_rate"] * (e * (1 - e)) ** r["fee_exp"] if r["fee_rate"] > 0 else 0.0
+        return (r["outcome"] - e - fee) / (e + fee)
+
+    P(hdr)
+    for lab, rs in (("усі", main), ("sports", [r for r in main if r["category"] == "sports"])):
+        for hs in (0.005, 0.01):
+            P(_fmt(f"YES, {lab}, півспреду {hs}", [(r["event_id"], yes_ret(r, hs)) for r in rs]))
+    P("\n### 6. Свіжість за підсумковим обсягом (описово)\n")
+    for lo, hi, lab in ((0, 1e4, "< $10k"), (1e4, 1e5, "$10–100k"), (1e5, 1e18, "> $100k")):
+        a = [r for r in allc if lo <= r["volume"] < hi]
+        P(f"- обсяг {lab}: у центрі {len(a)}, з угодою ≤ 2 год {sum(1 for r in a if fresh(r)) / max(len(a), 1):.1%}")
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--stage", required=True)
@@ -797,6 +1027,8 @@ if __name__ == "__main__":
     ap.add_argument("--limit", type=int, default=0, help="fetch: random timing sample of N markets (seed 7)")
     ap.add_argument("--rate", type=float, default=10.0, help="requests/s for CLOB (fetch) or data-api (trades)")
     ap.add_argument("--named", action="store_true", help="also fetch non Yes/No binaries (descriptive)")
+    ap.add_argument("--hs", default="", help="trades: comma-separated horizons in hours (default 4,12,24)")
+    ap.add_argument("--reverse", action="store_true", help="trades: walk markets from the latest T backwards")
     ap.add_argument("--log", default="", help="write progress lines to this file instead of the terminal")
     a = ap.parse_args()
     c = Path(a.cache_dir).expanduser()
@@ -812,11 +1044,17 @@ if __name__ == "__main__":
         asyncio.run(stage_list(c))
     elif a.stage == "classify":
         stage_classify(c)
+    elif a.stage == "slim":
+        su = sample_universe(c)
+        print(f"universe_sample.json: markets {len(su['markets'])}, events {len(su['events'])}, yes_no_ok {su['yes_no_ok']}", flush=True)
     elif a.stage == "fetch":
         asyncio.run(stage_fetch(c, a.limit or None, a.rate, a.named))
     elif a.stage == "trades":
-        asyncio.run(stage_trades(c, a.rate, a.named))
+        hs = tuple(int(x) for x in a.hs.split(",")) if a.hs else H_LIST
+        asyncio.run(stage_trades(c, a.rate, a.named, hs, a.reverse))
     elif a.stage == "stage0":
         stage0(c, a.out)
     elif a.stage == "full":
         full(c, a.out)
+    elif a.stage == "explore":
+        explore(c)

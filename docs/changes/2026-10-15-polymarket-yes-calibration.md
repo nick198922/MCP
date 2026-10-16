@@ -1,3 +1,9 @@
 - Polymarket: чисті функції калібрування YES (`analytics/pm_calibration.py`) і тести (18).
-- Скрипт `scripts/verify_pm_yes_calibration.py` (етапи fetch / trades / stage0 / full, відновлення з кешу).
-- Картка калібрування: статус `testing`, попередня реєстрація записана до першого запиту цін. Вердикту ще немає.
+- Скрипт `scripts/verify_pm_yes_calibration.py`:
+  - етапи list / classify / fetch / slim / trades / stage0 / full / explore;
+  - відновлення з кешу, звужений універс вибірки (пам'ять);
+  - паралельні завантажувачі угод (`--hs`, `--reverse`).
+- Картка калібрування: `rejected` (2026-10-16). Звіт: `docs/verification/2026-10-16-polymarket-yes-calibration.md`.
+  - Розрив YES у центрі −1.40 п.п. [−2.58; −0.23], а не +3–6.
+  - NO після витрат дає −8.86 % на капітал.
+  - Розрив у сирих даних пояснюють мертві книги біля 0.50 і overround neg-risk подій.

@@ -19,7 +19,7 @@
 
 | Тема | Нотатка | Що відомо з перевірок |
 |---|---|---|
-| Набір спот-позицій: дно BTC, тижневі підтримки, reclaim рівнів | [spot-entries](spot-entries.md) | рейнджі/SFP ✗; тижнева підтримка з фільтром сили — не перевірено |
+| Набір спот-позицій: дно BTC, тижневі підтримки, reclaim рівнів | [spot-entries](spot-entries.md) | рейнджі/SFP ✗; тижнева підтримка з фільтром сили — картка IDEA-20261016-weekly-ma-support-strong-alts (rejected у тріажі, потужність) |
 | Новини, макро, реакція ринку, примусові потоки | [news-reaction](news-reaction.md) | дні подій ◯ `2026-10-15-event-day-straddle`; реакція на реліз — у роботі |
 | Рейнджі, свипи, SFP | — | ✗ механічно, і на out-of-sample: `2026-10-12-doubletop-ranges-sfp`, `2026-10-12-sfp-oos-and-15m` |
 | Funding carry (спот–перп, перп–перп, альти) | — | ≈ малий і слабшає: `2026-10-12-funding-carry`, `…-funding-carry-alts`, `2026-10-13-funding-carry-perp-perp`; HL↔Binance ✗ `2026-10-15-hl-binance-funding-spread`; кошик за funding ◯ `2026-10-15-funding-crowding-longshort` |

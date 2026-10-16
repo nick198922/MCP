@@ -18,3 +18,5 @@ build/
 .claude/settings.local.json
 # originals of library items (the LIB-*.md file keeps the text)
 docs/library/*.pdf
+# paid courses the owner bought: originals stay on this Mac only; git gets our notes (docs/knowledge/), never their text
+docs/library/courses/

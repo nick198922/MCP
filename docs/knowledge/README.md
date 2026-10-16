@@ -20,13 +20,15 @@
 | Тема | Нотатка | Що відомо з перевірок |
 |---|---|---|
 | Структура ринку, рівні, рейнджі | [market-structure](market-structure.md) | SFP/краї рейнджу ✗; «перший тест — найкращий» ◯ |
-| Індикатори: EMA, VWAP, профіль об'єму | [indicators](indicators.md) | ◯; трендослідування на EMA — пріоритет 1 (LIB-20261016-course-module0, H4) |
+| Індикатори: EMA, VWAP, профіль об'єму, Фібоначчі OTE і premium/discount | [indicators](indicators.md) | ◯; трендослідування на EMA — пріоритет 1 (LIB-20261016-course-module0, H4) |
 | Інструменти: ф'ючерси, funding, спот, маржа, ліквідація | [instruments](instruments.md) | довідка |
 | DeFi: DEX і LP, концентрована ліквідність, лендинг, стейкінг, мости; тренди й наративи | [defi](defi.md) | довідка; лідер наративу й послідовники — гіпотези H1–H2 у `LIB-20261016-course-gem3` |
 | Джерела даних і ончейн-інструменти | [data-sources](data-sources.md) | довідка |
 | Набір спот-позицій: дно BTC, тижневі підтримки, reclaim рівнів | [spot-entries](spot-entries.md) | рейнджі/SFP ✗; тижнева підтримка з фільтром сили — картка IDEA-20261016-weekly-ma-support-strong-alts (rejected у тріажі, потужність) |
 | Новини, макро, реакція ринку, примусові потоки | [news-reaction](news-reaction.md) | дні подій ◯ `2026-10-15-event-day-straddle`; реакція на реліз — у роботі |
 | Ризик-менеджмент: стоп, розмір позиції, плече, ризик за режимом, портфель, вхід і супровід (FTA, беззбиток) | [risk-management](risk-management.md) | правила (арифметика, не гіпотези); просадки BTC — S13 ◯ |
+| Психологія і дисципліна: мотивація, емоційний журнал, денні ліміти, час за графіком | [psychology](psychology.md) | правила; теги `emo:` у журналі |
+| Торгова стратегія, журнал, бектест; чернетка стратегії власника | [trading-strategy](trading-strategy.md) | методика; пункти стратегії підтверджує власник |
 | Рейнджі, свипи, SFP, імбаланси, BtS/StB, order flow, QM, Wyckoff, сесії (Smart Money Concepts) | [smc](smc.md) | ✗ механічно, і на out-of-sample: `2026-10-12-doubletop-ranges-sfp`, `2026-10-12-sfp-oos-and-15m` |
 | Funding carry (спот–перп, перп–перп, альти) | — | ≈ малий і слабшає: `2026-10-12-funding-carry`, `…-funding-carry-alts`, `2026-10-13-funding-carry-perp-perp`; HL↔Binance ✗ `2026-10-15-hl-binance-funding-spread`; кошик за funding ◯ `2026-10-15-funding-crowding-longshort` |
 | Премія за волатильність (VRP), опціони | [options](options.md) | на DVOL ✓ `2026-10-13-vrp`, на реальних марках Deribit слабко: `2026-10-14-put-skew-v2`, тижневий стреддл ✗ `2026-10-15-weekly-straddle-vrp`; дні подій ◯ `2026-10-15-event-day-straddle`; вихідні ◯ `2026-10-15-weekend-vol-discount` |

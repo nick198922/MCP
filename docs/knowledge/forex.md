@@ -35,5 +35,5 @@
 
 ## План перевірок (агенти)
 
-- Session Stop Hunt (картка `IDEA-20261016-session-stop-hunt`): після вердикту на BTC, ETH і SOL — той самий дизайн на EURUSD і GBPUSD 5m (Dukascopy) з витратами ECN (1 піпс за коло) і BingX (0.1 % за коло). Пункт у BACKLOG.
+- Session Stop Hunt на EURUSD і GBPUSD 5m (Dukascopy, 2014–2026, картка `IDEA-20261016-session-stop-hunt-fx`) — **✗** (критик затвердив 17.10, `docs/reviews/2026-10-17-session-stop-hunt-fx.md`): 1 048 угод, −0.05R net [−0.13; +0.03] з витратами ECN (0.7 піпса комісії + 0.2 проковзування, спред 0.2/0.5 піпса), gross +0.03R. Лондон − плацебо +0.06R, незначуще. На BingX ті самі угоди — −1.23R: витрати 1.16R медіана при стопі ~15 піпсів підтверджують висновок про інтрадей на BingX вище. Звіт `docs/verification/2026-10-16-session-stop-hunt-fx.md`.
 - BOS тілом проти тіні, EQH/EQL (H1–H2 у `LIB-20261016-course-basics`) — додати EURUSD поруч із криптою.

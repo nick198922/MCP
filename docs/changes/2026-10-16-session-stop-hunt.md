@@ -1,0 +1,3 @@
+- Картка `session-stop-hunt` (S25, пріоритет власника): статус `testing`, квант пропонує `rejected`. E1×T1 net −0.214R [−0.290; −0.135] на 1 915 угодах (BTC, ETH, SOL + BNB, XRP, DOGE за правилом стадії 0), gross ≈ 0; «Лондон − плацебо» −0.016R [−0.104; +0.073]. Чекає рев'ю критика.
+- Додано `analytics/session_stop_hunt.py` (сесії з DST, фрактал, BOS, E1/E2 × T1/T2, бутстреп різниці кластерами за датою), `scripts/verify_session_stop_hunt.py` (`--stage fetch|count|report`, `--out`), `tests/test_session_stop_hunt.py`.
+- Звіт: `docs/verification/2026-10-16-session-stop-hunt.md` (+ `.raw.md`, `.stage0.raw.md`, `.registration.txt`); статус S25 у `knowledge/setups.md`, `smc.md`, `README.md`.

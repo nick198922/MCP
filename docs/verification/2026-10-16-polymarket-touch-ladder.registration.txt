@@ -1,0 +1,2 @@
+2026-10-16T07:53:25+00:00 sha256=1c6b3819994ac2015550cef3d779b04cf78b077206d3566d04d1f5988d779d5f bytes=11995
+Реєстрація картки IDEA-20261015-polymarket-touch-ladder-event-days: зроблено до переліку ринків і завантаження цін. Копія картки на момент реєстрації: ~/.cache/tradedesk-agents/pm_touch/card_at_registration_1c6b3819994a.md.

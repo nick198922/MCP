@@ -19,6 +19,9 @@
 | anchor/fvg | розмітка FVG (назва з панелі) | — |
 | Paragon Levels; [@TheParagonGrp] VWAP Suite, Scalp VWAP | сторонні індикатори TradingView | у кадрах вимкнені |
 
+**Шаблон розмітки автора** (урок «Робота з TradingView», графік gmilnikov EURUSD 1D, повний розмір, 16.10): лінії 3DP, bos, be, Buyside/Sellside Liquidity, EQL/EQH, Liquidity ✗ / Sweep ✓, Imbalance 1/2, Market Shift (MS), OTE 1/2 (0.5/0.62/0.705/0.79), Range 1/2, Premium/Discount, Deviation; зони OB, Imbalance, кольори Blue/Green/Orange/Red.
+- **У шаблоні є поняття, яких немає в жодному збереженому уроці:** Inducement (IDM), SMT Divergence, Divergence, Balanced Price Range (BPR), Original Consolidation, Re-Acc 1/2, Smart Money Reversal (SMR), рівні Day Open (DO) і New York Midnight (NYM), BSL/SSL 2.0, вертикаль NEWS. Це терміни ICT, які автор, схоже, використовує поза курсом. Найкраще перевіряються SMT (розбіжність свипу BTC і ETH: одна знімає хай, друга ні) і рівні DO/NYM (відкриття дня 00:00 UTC і 00:00 Нью-Йорка як магніт або опора). Кандидати для бібліотеки, якщо власник має матеріали про них.
+
 **Що з цього рахує проєкт:** інструмент `chart_markup` (з 2026-10-16) — EMA-групи, квартальний (або інший) VWAP з 1σ, профіль об'єму, фрактали, FVG. **Як саме:** EMA-стрічки й EMA старших ТФ, VWAP (з якорем на квартал, місяць чи тиждень) зі смугами, профіль об'єму (POC, VAH, VAL), фрактали й FVG — з тих самих свічок бірж, без TradingView. Сторонні індикатори Paragon — закриті скрипти, їх точно не відтворити.
 
 ## EMA (експоненційна ковзна середня)

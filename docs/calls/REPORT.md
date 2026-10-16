@@ -1,6 +1,6 @@
 # Трекер закликів: звіт
 
-Звіт на 2026-10-15 (`scripts/calls_check.py`; денні свічки перпів, лише завершені дні UTC). Заклики: [`calls.csv`](calls.csv); правила оцінки: [`src/tradedesk/analytics/calls.py`](../../src/tradedesk/analytics/calls.py).
+Звіт на 2026-10-16 (`scripts/calls_check.py`; денні свічки перпів, лише завершені дні UTC). Заклики: [`calls.csv`](calls.csv); правила оцінки: [`src/tradedesk/analytics/calls.py`](../../src/tradedesk/analytics/calls.py).
 
 Як читати:
 - «Результат» — дохідність угоди від входу в зоні до цілі, стопу або останнього закриття, у напрямку заклику.
@@ -10,31 +10,32 @@
 
 | Джерело | Закликів | З даними | Дійшло до зони | Ціль | Стоп | Сер. результат | Сер. «одразу» |
 |---|---|---|---|---|---|---|---|
-| LIB-20261014-ai-narrative | 6 | 6 | 0 | 0 | 0 | — | — |
-| LIB-20261014-rwa-narrative | 9 | 9 | 1 | 0 | 0 | -2.1 % | -21.5 % |
+| LIB-20261014-ai-narrative | 6 | 6 | 2 | 0 | 0 | +7.1 % | +3.3 % |
+| LIB-20261014-rwa-narrative | 9 | 9 | 2 | 0 | 0 | +3.7 % | -16.9 % |
 | LIB-20261015-doubletop-stream | 6 | 6 | 0 | 0 | 0 | — | — |
 | LIB-20261015-market-review | 12 | 12 | 0 | 0 | 0 | — | — |
 | LIB-20261015-spot-entries | 2 | 2 | 0 | 0 | 0 | — | — |
+| LIB-20261016-local-review | 1 | 1 | 0 | 0 | 0 | — | — |
 
 ## Заклики
 
 | id | Дата | Актив | Сторона | Зона | Ціль / стоп | Статус | Дійшло (днів) | Вхід | Результат | Макс. рух | Макс. просадка | «Одразу» | Дані |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| AI-VVV | 2026-10-14 | VVV | long | 20 | 40 / — | чекає зону | — | — | — | — | — | — | — |
-| AI-VIRTUAL | 2026-10-14 | VIRTUAL | long | 0.6–0.65 | — / — | чекає зону | — | — | — | — | — | — | — |
-| AI-GRASS-1 | 2026-10-14 | GRASS | long | 0.58–0.6 | — / — | чекає зону | — | — | — | — | — | — | — |
-| AI-GRASS-2 | 2026-10-14 | GRASS | long | 0.4 | — / — | чекає зону | — | — | — | — | — | — | — |
-| AI-NIL | 2026-10-14 | NIL | long | 0.06 | 0.3 / — | чекає зону | — | — | — | — | — | — | — |
-| AI-CHIP | 2026-10-14 | CHIP | long | 0.04 | — / — | чекає зону | — | — | — | — | — | — | — |
-| RWA-ONDO-1 | 2026-10-05 | ONDO | long | 0.4 | — / — | чекає зону | — | — | — | — | — | -10.9 % | binanceusdm:ONDO/USDT:USDT |
-| RWA-ONDO-2 | 2026-10-05 | ONDO | long | 0.34–0.35 | — / — | чекає зону | — | — | — | — | — | -10.9 % | binanceusdm:ONDO/USDT:USDT |
-| RWA-AAVE | 2026-10-05 | AAVE | long | 120 | — / — | чекає зону | — | — | — | — | — | -16.0 % | binanceusdm:AAVE/USDT:USDT |
-| RWA-UNI | 2026-10-05 | UNI | long | 6.2–6.7 | — / — | чекає зону | — | — | — | — | — | -20.8 % | binanceusdm:UNI/USDT:USDT |
-| RWA-ENA-1 | 2026-10-05 | ENA | long | 0.2 | — / — | у позиції | 2026-10-08 (3) | 0.2 | -2.1 % | +23.7 % | -7.0 % | -21.5 % | binanceusdm:ENA/USDT:USDT |
-| RWA-ENA-2 | 2026-10-05 | ENA | long | 0.15 | — / — | чекає зону | — | — | — | — | — | -21.5 % | binanceusdm:ENA/USDT:USDT |
-| RWA-SYRUP | 2026-10-05 | SYRUP | long | 0.2 | — / — | чекає зону | — | — | — | — | — | -15.4 % | binanceusdm:SYRUP/USDT:USDT |
-| RWA-RAY | 2026-10-05 | RAY | long | 1.2 | — / — | чекає зону | — | — | — | — | — | -15.5 % | binanceusdm:RAYSOL/USDT:USDT |
-| RWA-ZRO | 2026-10-05 | ZRO | long | 1.5–1.577 | — / — | чекає зону | — | — | — | — | — | -12.8 % | binanceusdm:ZRO/USDT:USDT |
+| AI-VVV | 2026-10-14 | VVV | long | 20 | 40 / — | чекає зону | — | — | — | — | — | +6.7 % | binanceusdm:VVV/USDT:USDT |
+| AI-VIRTUAL | 2026-10-14 | VIRTUAL | long | 0.6–0.65 | — / — | у позиції | 2026-10-15 (1) | 0.65 | +4.7 % | — | -3.2 % | +0.9 % | binanceusdm:VIRTUAL/USDT:USDT |
+| AI-GRASS-1 | 2026-10-14 | GRASS | long | 0.58–0.6 | — / — | у позиції | 2026-10-15 (1) | 0.6 | +9.6 % | — | -1.4 % | +5.6 % | binanceusdm:GRASS/USDT:USDT |
+| AI-GRASS-2 | 2026-10-14 | GRASS | long | 0.4 | — / — | чекає зону | — | — | — | — | — | +5.6 % | binanceusdm:GRASS/USDT:USDT |
+| AI-NIL | 2026-10-14 | NIL | long | 0.06 | 0.3 / — | чекає зону | — | — | — | — | — | -6.8 % | binanceusdm:NIL/USDT:USDT |
+| AI-CHIP | 2026-10-14 | CHIP | long | 0.04 | — / — | чекає зону | — | — | — | — | — | -6.6 % | binanceusdm:CHIP/USDT:USDT |
+| RWA-ONDO-1 | 2026-10-05 | ONDO | long | 0.4 | — / — | чекає зону | — | — | — | — | — | -6.1 % | binanceusdm:ONDO/USDT:USDT |
+| RWA-ONDO-2 | 2026-10-05 | ONDO | long | 0.34–0.35 | — / — | чекає зону | — | — | — | — | — | -6.1 % | binanceusdm:ONDO/USDT:USDT |
+| RWA-AAVE | 2026-10-05 | AAVE | long | 120 | — / — | чекає зону | — | — | — | — | — | -14.4 % | binanceusdm:AAVE/USDT:USDT |
+| RWA-UNI | 2026-10-05 | UNI | long | 6.2–6.7 | — / — | чекає зону | — | — | — | — | — | -18.2 % | binanceusdm:UNI/USDT:USDT |
+| RWA-ENA-1 | 2026-10-05 | ENA | long | 0.2 | — / — | у позиції | 2026-10-08 (3) | 0.2 | +2.5 % | +23.7 % | -8.9 % | -17.8 % | binanceusdm:ENA/USDT:USDT |
+| RWA-ENA-2 | 2026-10-05 | ENA | long | 0.15 | — / — | чекає зону | — | — | — | — | — | -17.8 % | binanceusdm:ENA/USDT:USDT |
+| RWA-SYRUP | 2026-10-05 | SYRUP | long | 0.2 | — / — | у позиції | 2026-10-15 (10) | 0.2 | +5.0 % | — | -3.0 % | -16.0 % | binanceusdm:SYRUP/USDT:USDT |
+| RWA-RAY | 2026-10-05 | RAY | long | 1.2 | — / — | чекає зону | — | — | — | — | — | -18.1 % | binanceusdm:RAYSOL/USDT:USDT |
+| RWA-ZRO | 2026-10-05 | ZRO | long | 1.5–1.577 | — / — | чекає зону | — | — | — | — | — | -3.8 % | binanceusdm:ZRO/USDT:USDT |
 | MR-BTC-LONG | 2026-10-15 | BTC | long | 80 000–82 000 | 85 400 / — | чекає зону | — | — | — | — | — | — | — |
 | MR-BTC-SHORT | 2026-10-15 | BTC | short | 85 400–85 600 | — / — | чекає зону | — | — | — | — | — | — | — |
 | MR-BTC-GLOBAL | 2026-10-15 | BTC | long | 75 000–76 000 | — / — | чекає зону | — | — | — | — | — | — | — |
@@ -55,3 +56,4 @@
 | DT-CASHCAT | 2026-10-15 | CASHCAT | long | 0.1 | 1 / — | чекає зону | — | — | — | — | — | — | — |
 | MR-VVV-1 | 2026-10-15 | VVV | long | 19.6–20.5 | — / — | чекає зону | — | — | — | — | — | — | — |
 | MR-VVV-2 | 2026-10-15 | VVV | long | 15.5–16.6 | — / — | чекає зону | — | — | — | — | — | — | — |
+| ETH-LOC | 2026-10-16 | ETH | long | 2 420–2 460 | 2 807 / 2 322 | чекає зону | — | — | — | — | — | — | — |

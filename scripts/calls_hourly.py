@@ -5,7 +5,9 @@
 CALLS.csv columns (extra columns are ignored): id, utc (YYYY-MM-DDTHH:MM, the moment of the call), asset, instrument,
 side (long|short), entry_low, entry_high ("mkt" = market at the next bar's open), stop (a price, or LOW / HIGH = beyond
 the extreme of the 24 h before the call), tp1, setup, evaluable (y = entry and stop, p = entry only, n = skip), symbol
-(optional "venue:SYMBOL" override), author_r, author_depo_pct (what the author reported, optional).
+(optional "venue:SYMBOL" override), entry_type (mkt | limit, as the author worded it; empty = a single price within
+0.5 % of the market is taken as market), cancel_utc (optional: the author withdrew a resting limit then; the entry stays a
+limit and an unfilled call ends there), author_r, author_depo_pct (what the author reported, optional).
 
 Bars: 1h perps from Binance USD-M, Bybit, Gate, MEXC, OKX, Bitget, then KuCoin spot and Hyperliquid; cached in
 ~/.cache/tradedesk-agents/calls-1h. Replay rules: src/tradedesk/analytics/trade_replay.py. A zone enters at its near edge (long: top, short: bottom),
@@ -75,14 +77,14 @@ async def fetch(rt, spec: str, since: int, until: int, markets: dict, tf: str = 
             markets[venue] = set(((await rt.exchanges.markets(venue)).data or {}).keys())
         if sym not in markets[venue]:
             return []
+        step = M if tf == "1m" else H
         t = since
-        for _ in range(12):  # page: some venues cap a request at 100-300 bars
-            got = (await rt.exchanges.ohlcv(venue, sym, tf, 300, since_ms=t, until_ms=until)).data or []
-            got = [r for r in got if t <= int(r[0]) <= until]
-            if not got:
-                break
+        for _ in range(60):  # page by windows of 300 bars: some venues return the *latest* bars of a longer window
+            end = min(until, t + 299 * step)
+            got = (await rt.exchanges.ohlcv(venue, sym, tf, 300, since_ms=t, until_ms=end)).data or []
+            got = [r for r in got if t <= int(r[0]) <= end]
             rows += got
-            t = int(got[-1][0]) + (M if tf == "1m" else H)
+            t = (int(got[-1][0]) if got else end) + step
             if t > until:
                 break
     seen, bars = set(), []
@@ -96,9 +98,10 @@ async def fetch(rt, spec: str, since: int, until: int, markets: dict, tf: str = 
     return bars
 
 
-async def bars_for(rt, row: dict, start: int, markets: dict) -> tuple[list[Bar], str]:
-    """Hourly bars wholly before the call (for LOW/HIGH stops), 1m bars of the rest of the call's hour, then hourly bars."""
-    hour = -(-start // H) * H  # the first full hour after the call
+async def bars_for(rt, row: dict, start: int, markets: dict, minutes_to: int | None = None) -> tuple[list[Bar], str]:
+    """Hourly bars wholly before the call (for LOW/HIGH stops), 1m bars of the rest of the call's hour (or up to
+    ``minutes_to``, e.g. the moment the author withdrew a limit), then hourly bars."""
+    hour = -(-max(start, minutes_to or start) // H) * H  # the first full hour after the minute window
     since, until = start - 25 * H, start + (FILL_H + HOLD_H + 2) * H
     for spec in candidates(row):
         try:
@@ -134,6 +137,12 @@ def plan(row: dict, bars: list[Bar], start: int) -> tuple[float | None, float | 
     else:
         stop = _f(row["stop"])
     return entry, stop, _f(row.get("tp1", ""))
+
+
+def fill_window(row: dict, start: int) -> int | None:
+    """How long a limit may wait when the author withdrew it (``cancel_utc``), capped at FILL_H; None if not withdrawn."""
+    c = (row.get("cancel_utc") or "").strip()
+    return max(0, min(FILL_H * H, _ms(c) - start)) if c else None
 
 
 def boot_ci(xs: list[float], n: int = 4000, seed: int = 7) -> tuple[float, float]:
@@ -194,14 +203,24 @@ async def run(rows: list[dict]) -> list[tuple[dict, Replay, str, float | None, f
             if row["evaluable"] not in ("y", "p"):
                 continue
             start = _ms(row["utc"]) + M  # the next minute: the call is stamped to the minute
-            bars, spec = await bars_for(rt, row, start, markets)
+            cancel = fill_window(row, start)
+            bars, spec = await bars_for(rt, row, start, markets, None if cancel is None else start + cancel)
             entry, stop, target = plan(row, bars, start)
+            kind = (row.get("entry_type") or "").strip()  # mkt | limit | "" (decide by MKT_TOL)
+            if kind == "mkt":
+                entry = None
             first = min((b for b in bars if b.t >= start), key=lambda b: b.t, default=None)
             if first is None or first.t > start + 2 * H:
                 bars, spec = [], (spec + " (listed later)") if spec else ""
             elif entry is not None and not 0.5 <= first.open / entry <= 1.5:
                 bars, spec = [], spec + f" (price {first.open:.6g} far from entry)"
-            elif entry is not None and row["entry_low"] == row["entry_high"] and abs(first.open / entry - 1) <= MKT_TOL:
+            elif (
+                not kind
+                and cancel is None
+                and entry is not None
+                and row["entry_low"] == row["entry_high"]
+                and abs(first.open / entry - 1) <= MKT_TOL
+            ):
                 entry = None  # one price within MKT_TOL of the market at the call: the author's «current price»
             r = (
                 replay(
@@ -211,7 +230,7 @@ async def run(rows: list[dict]) -> list[tuple[dict, Replay, str, float | None, f
                     entry=entry,
                     stop=stop,
                     target=target,
-                    fill_ms=FILL_H * H,
+                    fill_ms=FILL_H * H if cancel is None else cancel,
                     hold_ms=HOLD_H * H,
                     cost_frac=COST,
                 )
@@ -226,7 +245,7 @@ async def run(rows: list[dict]) -> list[tuple[dict, Replay, str, float | None, f
                     entry=entry,
                     stop=stop,
                     target=target,
-                    fill_ms=FILL_H * H,
+                    fill_ms=FILL_H * H if cancel is None else cancel,
                     hold_ms=HOLD_H * H,
                     cost_frac=COST,
                     be_at_r=1.0,

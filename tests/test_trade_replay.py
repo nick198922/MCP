@@ -106,3 +106,23 @@ def test_breakeven_after_one_r():
     assert r.status == "breakeven" and r.exit == 100 and r.r_gross == pytest.approx(0.0)
     plain = replay(b, side="long", start_ms=T0, entry=100, stop=95, target=115, cost_frac=0.0, hold_ms=2 * H)
     assert plain.status == "time"
+
+
+def test_script_plan_and_cancel_window():
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+    import calls_hourly as ch
+
+    start = ch._ms("2026-10-06T07:49")
+    row = {"side": "long", "entry_low": "2690", "entry_high": "2701", "stop": "2680", "tp1": "2739", "cancel_utc": "2026-10-06T09:05"}
+    first = Bar(start, 2707, 2708, 2705, 2706)
+    entry, stop, target = ch.plan(row, [first], start)
+    assert (entry, stop, target) == (2701, 2680, 2739)  # a long zone enters at its top edge
+    assert ch.fill_window(row, start) == 76 * 60_000
+    assert ch.fill_window({**row, "cancel_utc": ""}, start) is None
+    short = {**row, "side": "short", "stop": "HIGH"}
+    before = [Bar(start - 2 * H, 2700, 2720, 2690, 2710)]
+    entry, stop, _ = ch.plan(short, before + [first], start)
+    assert entry == 2690 and stop == pytest.approx(2720 * 1.001)

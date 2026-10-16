@@ -48,7 +48,8 @@ fi
 echo $$ >"$LOCK/pid"
 trap 'rm -f "$LOCK/pid"; rmdir "$LOCK"' EXIT
 
-WORK="$LOG_DIR/work.state" # "<work branch> <runs on it> <stamp of its first run>": the agents' unfinished work
+WORK="$LOG_DIR/work.state" # "<work branch> <runs on it> <stamp of its first run> [<killed runs in a row>]"
+ACTIVE="$LOG_DIR/run.active" # exists while a run is under way; left behind, it marks a run killed before it reported
 SUMMARY="$LOG_DIR/$STAMP.summary.md"
 : >"$SUMMARY"
 dirty() { [[ -n "$(git -C "$WT" status --porcelain 2>/dev/null)" ]]; }
@@ -59,6 +60,7 @@ COST=""
 finish() {
   local code="$1" status="$2" text="$3" last rest
   shift 3
+  rm -f "$ACTIVE"
   last="$(tail -1 "$LOG_DIR/history.tsv" 2>/dev/null | cut -f2 || true)"
   printf '%s\t%s\t%s\t%s\n' "$STAMP" "$status" "$(head -1 <<<"$text")" "$COST" >>"$LOG_DIR/history.tsv"
   if [[ -n "$COST" ]]; then
@@ -106,14 +108,14 @@ git fetch --quiet --prune origin
 rm -f .agent/branch .agent/commit-msg.txt .agent/next "$LOG_DIR/resume.state"
 
 # The work in progress, unless the owner has merged or deleted its branch meanwhile.
-WORK_BR="" RUNS=0 FIRST="$STAMP"
-read -r WORK_BR RUNS FIRST 2>/dev/null <"$WORK" || true
-RUNS="${RUNS:-0}" FIRST="${FIRST:-$STAMP}"
+WORK_BR="" RUNS=0 FIRST="$STAMP" KILLS=0
+read -r WORK_BR RUNS FIRST KILLS 2>/dev/null <"$WORK" || true
+RUNS="${RUNS:-0}" FIRST="${FIRST:-$STAMP}" KILLS="${KILLS:-0}"
 if [[ -n "$WORK_BR" ]]; then
   if ! git rev-parse -q --verify "refs/remotes/origin/$WORK_BR" >/dev/null || git merge-base --is-ancestor "origin/$WORK_BR" origin/main; then
     echo "work branch $WORK_BR was merged or deleted; starting afresh"
     if dirty; then git stash push -q --include-untracked -m "agents-leftover-$STAMP" || true; fi
-    WORK_BR="" RUNS=0 FIRST="$STAMP"
+    WORK_BR="" RUNS=0 FIRST="$STAMP" KILLS=0
     rm -f "$WORK" "$LOG_DIR/refusal.txt"
   fi
 fi
@@ -143,8 +145,19 @@ else
   rm -f "$LOG_DIR/refusal.txt"
   git checkout --quiet --detach origin/main
 fi
-if [[ $MODE == continue ]]; then RUNS=$((RUNS + 1)); else RUNS=1 FIRST="$STAMP"; fi
-[[ -n "$WORK_BR" ]] && echo "$WORK_BR $RUNS $FIRST" >"$WORK"
+# A run killed before it reported (the service restarted after an OOM kill, a reboot) did not move the step forward:
+# its number is reused. On 2026-10-16 five such runs used up MAX_RUNS. After MAX_RUNS kills in a row the runs count
+# again, so work that gets killed every time still reaches the owner.
+if [[ $MODE == continue && -n "$WORK_BR" && -e "$ACTIVE" ]] && ((RUNS > 0 && KILLS < MAX_RUNS)); then
+  KILLS=$((KILLS + 1))
+  echo "run $RUNS was killed before it reported; it is repeated ($KILLS in a row)"
+elif [[ $MODE == continue ]]; then
+  RUNS=$((RUNS + 1))
+else
+  RUNS=1 FIRST="$STAMP" KILLS=0
+fi
+[[ -n "$WORK_BR" ]] && echo "$WORK_BR $RUNS $FIRST $KILLS" >"$WORK"
+echo "$STAMP" >"$ACTIVE"
 uv sync --quiet --extra dev
 echo "agents clone $WT at $(git rev-parse --short HEAD), mode $MODE, run $RUNS${WORK_BR:+ on $WORK_BR}"
 

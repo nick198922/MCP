@@ -81,3 +81,4 @@
   - «Вхід і супровід позиції» в `risk-management.md`;
   - сетапи S22–S25 у `setups.md`;
   - у `pre_trade_checklist` — FTA і план беззбитку до входу.
+- 2026-10-16, Claude за рішенням власника: H1 → картка [IDEA-20261016-session-stop-hunt](../ideas/IDEA-20261016-session-stop-hunt.md) (`accepted`, «Пріоритет: власник» — перша в черзі агентів). H2–H4 лишаються для скаута.

@@ -27,7 +27,7 @@
 | Ризик-менеджмент: стоп, розмір позиції, плече, ризик за режимом, портфель | [risk-management](risk-management.md) | правила (арифметика, не гіпотези); просадки BTC — S13 ◯ |
 | Рейнджі, свипи, SFP, імбаланси (Smart Money Concepts) | [smc](smc.md) | ✗ механічно, і на out-of-sample: `2026-10-12-doubletop-ranges-sfp`, `2026-10-12-sfp-oos-and-15m` |
 | Funding carry (спот–перп, перп–перп, альти) | — | ≈ малий і слабшає: `2026-10-12-funding-carry`, `…-funding-carry-alts`, `2026-10-13-funding-carry-perp-perp`; HL↔Binance ✗ `2026-10-15-hl-binance-funding-spread`; кошик за funding ◯ `2026-10-15-funding-crowding-longshort` |
-| Премія за волатильність (VRP), опціони | — | на DVOL ✓ `2026-10-13-vrp`, на реальних марках Deribit слабко: `2026-10-14-put-skew-v2`, тижневий стреддл ✗ `2026-10-15-weekly-straddle-vrp`; дні подій ◯ `2026-10-15-event-day-straddle`; вихідні ◯ `2026-10-15-weekend-vol-discount` |
+| Премія за волатильність (VRP), опціони | [options](options.md) | на DVOL ✓ `2026-10-13-vrp`, на реальних марках Deribit слабко: `2026-10-14-put-skew-v2`, тижневий стреддл ✗ `2026-10-15-weekly-straddle-vrp`; дні подій ◯ `2026-10-15-event-day-straddle`; вихідні ◯ `2026-10-15-weekend-vol-discount` |
 | Ліквідації, примусові потоки | — | відскок після каскаду ✗ `2026-10-14-liquidation-flush` |
 | Анлоки, байбеки, виручка протоколів | — | шорт перед анлоком ✗ (+1.8 п.п., t 1.68) `2026-10-15-token-unlock-short-drift`; падіння виручки ✗ `2026-10-15-holders-revenue-collapse-lag` |
 | Альти проти BTC, бета | — | асиметрія є, угода ✗ `2026-10-15-alt-downside-beta-basket` |

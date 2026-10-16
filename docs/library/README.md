@@ -41,3 +41,4 @@
 | [LIB-20261015-doubletop-stream](LIB-20261015-doubletop-stream.md) | Стрім Дзюби й Іллі 15.10: реакція на CPI/PPI, зони BTC, MSCI і MSTR, самоперевірка прогнозів (Whisper, кадри) | triaged |
 | [LIB-20261016-local-review](LIB-20261016-local-review.md) | Локальний огляд BTC і ETH (графіки): маніпуляція, імбаланс, повернення в рейндж, ETH до $2 800 | triaged |
 | [LIB-20261016-course-module0](LIB-20261016-course-module0.md) | Курс DoubleTop «Options Advanced 2.0», модуль 0: ризик, структура, рейнджі, ліквідність, OB/POB/FVG, EMA, VWAP, профіль об'єму (оригінали лише локально) | new |
+| [LIB-20261016-course-options](LIB-20261016-course-options.md) | Курс DoubleTop, модуль «Опціони» (15 уроків): греки, IV crush, скью, спреди, метелики й кондори, продаж волатильності, хедж (оригінали лише локально) | new |

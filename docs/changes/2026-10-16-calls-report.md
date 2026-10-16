@@ -1,0 +1,1 @@
+- Трекер закликів: оновлено `docs/calls/REPORT.md` на 2026-10-16 (додано заклик ETH-LOC із LIB-20261016-local-review).

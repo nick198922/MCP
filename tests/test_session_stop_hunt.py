@@ -5,13 +5,18 @@ import pytest
 
 from tradedesk.analytics.session_stop_hunt import (
     BAR_MS,
+    CRYPTO,
     MAKER,
     MARKET_SIDE,
     Bars,
+    Costs,
     cluster_bootstrap_diff,
+    cost_r,
     design_effect,
     find_setup,
     fractal_low_indices,
+    fx_execution,
+    fx_skip_reason,
     is_fractal_low,
     london_session,
     new_york_session,
@@ -250,3 +255,129 @@ def test_design_effect_and_diff_bootstrap():
     assert r["ci"] == pytest.approx((0.5, 0.5))  # paired by date: every resample keeps the constant shift
     z = cluster_bootstrap_diff(a, days, a, days, n_boot=500)
     assert z["diff"] == 0.0
+
+
+# ---------------------------------------------------------------- forex execution (IDEA-20261016-session-stop-hunt-fx)
+# Same SHORT pattern, read as bid bars, with a "pip" of 0.01 and a constant spread of 0.05 (5 pips).
+
+PIP = 0.01
+FX = fx_execution(PIP, 5.0)  # 1 pip buffer, 0.7 pip commission, 0.2 pip slippage on E1 entry and stop exits
+FX_STOP = 101.5 + 0.05 + 0.01  # short: beyond the bid extreme + spread (the ask that hits it) + 1 pip
+FX_RISK = FX_STOP - 99.95
+
+
+def test_fx_short_sells_bid_and_exits_on_ask():
+    st, space, why = find_setup(make_bars(SHORT), london_session(DAY), FX)
+    assert why == "ok" and st is not None and space is not None
+    assert st.entry == 99.95 and st.stop == pytest.approx(FX_STOP)
+    t, _ = simulate(st, space, "E1", "T1", FX)
+    # target 97.0 is hit when the ask (bid low 96.9 + 0.05) reaches it
+    assert t is not None and t.exit_kind == "target" and t.exit == 97.0
+    assert t.r_gross == pytest.approx((99.95 - 97.0) / FX_RISK)
+    assert t.cost_r == pytest.approx((0.7 + 0.2) * PIP / FX_RISK)  # no slippage on a target exit
+
+    w = list(SHORT)
+    w[9] = (98.6, 98.7, 96.97, 97.5)  # bid reaches 97.0 but the ask (97.02) does not
+    st, space, _ = find_setup(make_bars(w), london_session(DAY), FX)
+    assert st is not None and space is not None
+    t, _ = simulate(st, space, "E1", "T1", FX)
+    assert t is not None and t.exit_kind == "time" and t.exit == pytest.approx(97.5 + 0.05)  # buys back at the ask
+    zero = fx_execution(PIP, 0.0)
+    st0, space0, _ = find_setup(make_bars(w), london_session(DAY), zero)
+    assert st0 is not None and space0 is not None
+    t0, _ = simulate(st0, space0, "E1", "T1", zero)
+    assert t0 is not None and t0.exit_kind == "target"
+
+
+def test_fx_short_stop_triggers_on_ask():
+    w = list(SHORT)
+    w[8] = (99.95, 101.52, 99.5, 100.0)  # ask high 101.57 >= stop 101.56
+    st, space, _ = find_setup(make_bars(w), london_session(DAY), FX)
+    assert st is not None and space is not None
+    t, _ = simulate(st, space, "E1", "T1", FX)
+    assert t is not None and t.exit_kind == "stop" and t.r_gross == pytest.approx(-1.0)
+    assert t.cost_r == pytest.approx((0.7 + 0.2 + 0.2) * PIP / FX_RISK)
+    w[8] = (99.95, 101.505, 99.5, 100.0)  # ask high 101.555 < stop
+    st, space, _ = find_setup(make_bars(w), london_session(DAY), FX)
+    assert st is not None and space is not None
+    t, _ = simulate(st, space, "E1", "T1", FX)
+    assert t is not None and t.exit_kind != "stop"
+
+
+def test_fx_long_buys_ask_and_exits_on_bid():
+    st, space, why = find_setup(mirror(make_bars(SHORT)), london_session(DAY), FX)
+    assert why == "ok" and st is not None and space is not None and st.side == 1
+    # real prices: BOS bid close 100.05, entry at the ask 100.10, stop 1 pip below the swept bid low 98.5
+    assert -st.entry == pytest.approx(100.10) and -st.stop == pytest.approx(98.49)
+    t, _ = simulate(st, space, "E1", "T1", FX)
+    assert t is not None and t.exit_kind == "target" and -t.exit == pytest.approx(103.0)  # bid high 103.1 >= 103
+    assert t.r_gross == pytest.approx((103.0 - 100.10) / (100.10 - 98.49))
+
+
+def test_fx_e2_long_limit_needs_the_ask():
+    w = list(SHORT)
+    w[8] = (99.95, 100.78, 99.9, 100.5)  # mirrored: bid low 99.22 above the buy limit 99.25 - spread = 99.20
+    w[9] = (100.5, 100.6, 96.0, 96.5)
+    b = mirror(make_bars(w))
+    st, space, _ = find_setup(b, london_session(DAY), FX)
+    assert st is not None and space is not None
+    assert simulate(st, space, "E2", "T2", FX) == (None, "e2_unfilled")
+    zero = fx_execution(PIP, 0.0)
+    st0, space0, _ = find_setup(b, london_session(DAY), zero)
+    assert st0 is not None and space0 is not None
+    t0, why = simulate(st0, space0, "E2", "T2", zero)
+    assert why == "ok" and t0 is not None and -t0.entry == pytest.approx(99.25)
+
+
+def test_fx_bingx_costs_and_crypto_defaults():
+    st, space, _ = find_setup(make_bars(SHORT), london_session(DAY), FX)
+    assert st is not None and space is not None
+    t, _ = simulate(st, space, "E1", "T1", FX)
+    assert t is not None
+    assert cost_r(t, Costs(0.0007, 0.0007, 0.0007)) == pytest.approx(0.0007 * (99.95 + 97.0) / FX_RISK)
+    # the default execution is the crypto card's: same setup and trade as without the argument
+    b = make_bars(SHORT)
+    st_c, sp_c, _ = find_setup(b, london_session(DAY), CRYPTO)
+    assert st_c is not None and sp_c is not None
+    assert st_c == find_setup(b, london_session(DAY))[0]
+    tc = simulate(st_c, sp_c, "E1", "T1")[0]
+    assert tc is not None and simulate(st_c, sp_c, "E1", "T1", CRYPTO)[0] == tc
+    assert cost_r(tc, Costs()) == pytest.approx(MARKET_SIDE * (99.95 + 97.0) / RISK)
+
+
+def test_fx_skip_reasons():
+    s = london_session(DAY)
+    b = make_bars(SHORT)
+    vol = np.ones(b.t.size)
+    assert fx_skip_reason(b, vol, s) is None
+    assert fx_skip_reason(b, np.zeros(b.t.size), s) == "zero_volume"
+    flat = Bars(b.t, b.o.copy(), b.h.copy(), b.low.copy(), b.c.copy())
+    rng = (b.t >= s.range_start) & (b.t < s.range_end)
+    idx = np.flatnonzero(rng)[: int(rng.sum() * 0.6)]
+    flat.h[idx] = flat.o[idx]
+    flat.low[idx] = flat.o[idx]
+    flat.c[idx] = flat.o[idx]
+    assert fx_skip_reason(flat, vol, s) == "flat_range"
+    keep = b.t != ms("2024-01-15T12:00")
+    g = Bars(b.t[keep], b.o[keep], b.h[keep], b.low[keep], b.c[keep])
+    assert fx_skip_reason(g, vol[keep], s) == "gap"
+
+
+def test_fx_no_lookahead_after_exit():
+    s = london_session(DAY)
+    b = make_bars(SHORT)
+    vol = np.ones(b.t.size)
+    st, space, _ = find_setup(b, s, FX)
+    assert st is not None and space is not None
+    variants = (("E1", "T1"), ("E1", "T2"), ("E2", "T1"))
+    ref = [simulate(st, space, ek, tk, FX)[0] for ek, tk in variants]
+    later = b.t >= s.exit_at
+    b2 = Bars(b.t, b.o.copy(), b.h.copy(), b.low.copy(), b.c.copy())
+    b2.h[later] += 50
+    b2.low[later] -= 50
+    v2 = vol.copy()
+    v2[later] = 0.0
+    assert fx_skip_reason(b2, v2, s) is None
+    st2, space2, _ = find_setup(b2, s, FX)
+    assert st2 == st and space2 is not None
+    assert [simulate(st2, space2, ek, tk, FX)[0] for ek, tk in variants] == ref

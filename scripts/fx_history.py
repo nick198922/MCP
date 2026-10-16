@@ -8,7 +8,12 @@ its own terms of use (personal research): https://www.dukascopy.com — do not r
 
 Each day is one file https://datafeed.dukascopy.com/datafeed/<SYM>/<YYYY>/<MM-1>/<DD>/BID_candles_min_1.bi5 (LZMA,
 24-byte big-endian records: seconds from midnight UTC, open, close, low, high as integers in points, volume float).
-Weekend days are empty. Raw days are cached as they arrive, so an interrupted run resumes. Times are UTC.
+Weekend days hold flat zero-volume candles. Raw days are cached as they arrive, so an interrupted run resumes; bars are
+streamed to --out in batches (flat memory) with a progress line per batch. Times are UTC.
+
+Pacing: Dukascopy throttles with 503 and refused connections. Measured on the server 2026-10-16: one pair at
+--concurrency 2-4 gives ~30-140 days per minute; two pairs in parallel drew long 503 streaks. Fetch one pair at a time;
+12+ years of one pair take roughly 1-2 hours.
 """
 
 from __future__ import annotations
@@ -26,6 +31,7 @@ import httpx
 
 URL = "https://datafeed.dukascopy.com/datafeed/{sym}/{y:04d}/{m:02d}/{d:02d}/BID_candles_min_1.bi5"
 RECORD = struct.Struct(">IIIIIf")
+RETRIES = 10
 TF_MIN = {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240, "1d": 1440}
 
 
@@ -69,7 +75,7 @@ async def fetch_day(client: httpx.AsyncClient, symbol: str, day: date, cache: Pa
         return f.read_bytes()
     url = URL.format(sym=symbol, y=day.year, m=day.month - 1, d=day.day)
     last = ""
-    for attempt in range(6):
+    for attempt in range(RETRIES):
         try:
             r = await client.get(url)
             if r.status_code == 404:
@@ -80,7 +86,9 @@ async def fetch_day(client: httpx.AsyncClient, symbol: str, day: date, cache: Pa
             break
         except httpx.HTTPError as e:
             last = f"{type(e).__name__}: {e}"
-            await asyncio.sleep(3 * 2**attempt)
+            print(f"{symbol} {day}: retry {attempt + 1} ({last[:120]})", file=sys.stderr, flush=True)
+            # Dukascopy throttles bursts with 503 for minutes: back off up to 5 min per attempt
+            await asyncio.sleep(min(300, 3 * 2**attempt))
     else:
         raise RuntimeError(f"{symbol} {day}: download failed ({last[:200]})")
     f.parent.mkdir(parents=True, exist_ok=True)
@@ -88,26 +96,45 @@ async def fetch_day(client: httpx.AsyncClient, symbol: str, day: date, cache: Pa
     return raw
 
 
+BATCH_DAYS = 60  # days fetched, decoded and written per step: memory stays flat for any history length
+
+
+def _rss_mb() -> float:
+    import resource
+
+    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+
+
 async def run(symbol: str, start: date, end: date, tf: str, cache: Path, out: Path, concurrency: int) -> int:
+    """Fetch day by day in batches and stream the bars to ``out``. Buckets are aligned to UTC midnight and every
+    supported timeframe divides a day, so aggregating each day on its own equals aggregating the whole history."""
     days = [start + timedelta(days=i) for i in range((end - start).days + 1)]
     sem = asyncio.Semaphore(concurrency)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    n = 0
     async with httpx.AsyncClient(timeout=30, headers={"User-Agent": "tradedesk-research"}) as client:
 
         async def one(d: date) -> tuple[date, bytes]:
             async with sem:
                 return d, await fetch_day(client, symbol, d, cache)
 
-        results = await asyncio.gather(*(one(d) for d in days))
-    rows: list[tuple[int, float, float, float, float, float]] = []
-    for d, raw in sorted(results):
-        rows.extend(parse_day(raw, d, symbol))
-    bars = aggregate(rows, TF_MIN[tf]) if tf != "1m" else [list(r) for r in rows]
-    out.parent.mkdir(parents=True, exist_ok=True)
-    with out.open("w", newline="") as fh:
-        w = csv.writer(fh)
-        w.writerow(["ts_ms", "open", "high", "low", "close", "volume"])
-        w.writerows(bars)
-    return len(bars)
+        with out.open("w", newline="") as fh:
+            w = csv.writer(fh)
+            w.writerow(["ts_ms", "open", "high", "low", "close", "volume"])
+            for b0 in range(0, len(days), BATCH_DAYS):
+                batch = days[b0 : b0 + BATCH_DAYS]
+                results = await asyncio.gather(*(one(d) for d in batch))
+                for d, raw in sorted(results):
+                    rows = parse_day(raw, d, symbol)
+                    bars = aggregate(rows, TF_MIN[tf]) if tf != "1m" else [list(r) for r in rows]
+                    w.writerows(bars)
+                    n += len(bars)
+                print(
+                    f"{symbol} {batch[-1]}: {b0 + len(batch)}/{len(days)} days, {n} bars, peak RSS {_rss_mb():.0f} MB",
+                    file=sys.stderr,
+                    flush=True,
+                )
+    return n
 
 
 def main() -> None:

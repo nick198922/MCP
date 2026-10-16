@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 # Each migration is a list of SQL statements executed in a single transaction.
 # `PRAGMA user_version` is bumped by Store.init() after a block runs.
@@ -299,5 +299,11 @@ MIGRATIONS: dict[int, list[str]] = {
             PRIMARY KEY (venue, account)
         )
         """,
+    ],
+    12: [
+        # trader_positions becomes a change log: a baseline of an account's positions at the first observation, then
+        # only the positions that opened, changed size or side, or closed ('closed', size 0). The last full set is
+        # kept here, so the next observation can be diffed against it.
+        "ALTER TABLE trader_position_state ADD COLUMN positions_json TEXT",
     ],
 }

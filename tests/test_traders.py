@@ -97,9 +97,9 @@ async def test_flat_account_and_one_venue_down(state):
     try:
         await rt.store.init()
         assert await _collect_traders(rt) == 2  # Polymarket down: Hyperliquid still written
-        assert await _collect_trader_positions(rt) == 2  # one 'flat' row per HL account
-        cur = await rt.store.conn.execute("SELECT DISTINCT side, market FROM trader_positions")
-        assert [tuple(r) for r in await cur.fetchall()] == [("flat", "")]
+        assert await _collect_trader_positions(rt) == 0  # flat accounts: state kept, no rows
+        assert await rt.store.table_count("trader_positions") == 0
+        assert await rt.store.table_count("trader_position_state") == 2
     finally:
         await rt.aclose()
     rt = _runtime(state, hl_fail=True, pm_fail=True)
@@ -117,3 +117,21 @@ def test_traders_jobs_are_scheduled(state):
     off = _runtime(state, settings=Settings(db_path=":memory:", collector_enabled=True, collect_traders_enabled=False))
     assert {"traders", "trader_positions"} <= {j.name for j in build_default_scheduler(on).jobs}
     assert not {"traders", "trader_positions"} & {j.name for j in build_default_scheduler(off).jobs}
+
+
+async def test_positions_are_a_change_log(state):
+    rt = _runtime(state)
+    try:
+        await rt.store.init()
+        st = rt.store
+        a = {"market": "BTC", "side": "long", "size": 1.0, "value_usd": 80_000.0}
+        b = {"market": "ETH", "side": "short", "size": 10.0, "value_usd": 24_000.0}
+        assert await st.record_trader_positions(100, "hyperliquid", "0xa", [a, b]) == 2  # baseline
+        assert await st.record_trader_positions(200, "hyperliquid", "0xa", [dict(a, value_usd=81_000.0), b]) == 0  # value only
+        c = {"market": "SOL", "side": "long", "size": 50.0}
+        assert await st.record_trader_positions(300, "hyperliquid", "0xa", [dict(a, size=1.5), c]) == 3
+        cur = await st.conn.execute("SELECT market, side, size FROM trader_positions WHERE ts = 300 ORDER BY market")
+        assert [tuple(r) for r in await cur.fetchall()] == [("BTC", "long", 1.5), ("ETH", "closed", 0.0), ("SOL", "long", 50.0)]
+        assert await st.record_trader_positions(400, "hyperliquid", "0xa", []) == 2  # everything closed
+    finally:
+        await rt.aclose()

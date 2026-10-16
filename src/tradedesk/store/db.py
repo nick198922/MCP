@@ -275,37 +275,55 @@ class Store:
         return out
 
     async def record_trader_positions(self, ts: int, venue: str, account: str, positions: list[dict[str, Any]]) -> int:
-        """Store ``account``'s positions only if the set (market, side, size to 4 significant digits) changed since the
-        last record; an empty set is stored as one 'flat' row. Returns the rows written (0: unchanged)."""
-        digest = "|".join(sorted(f"{p['market']}:{p['side']}:{float(p.get('size') or 0):.4g}" for p in positions)) or "flat"
-        cur = await self.conn.execute("SELECT digest FROM trader_position_state WHERE venue = ? AND account = ?", (venue, account))
-        prev = await cur.fetchone()
-        if prev and prev[0] == digest:
-            return 0
-        rows = positions or [{"market": "", "side": "flat"}]
-        await self.conn.executemany(
-            "INSERT OR REPLACE INTO trader_positions (ts, venue, account, market, side, size, entry_px, value_usd, upnl, leverage, "
-            "liq_px, title) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-            [
-                (
-                    ts,
-                    venue,
-                    account,
-                    str(p["market"]),
-                    str(p["side"]),
-                    p.get("size"),
-                    p.get("entry_px"),
-                    p.get("value_usd"),
-                    p.get("upnl"),
-                    p.get("leverage"),
-                    p.get("liq_px"),
-                    p.get("title"),
-                )
-                for p in rows
-            ],
+        """Record what changed in ``account``'s positions since the last observation: every position at the first one
+        (baseline), later only those opened, changed (side, or size to 4 significant digits) or closed (side
+        'closed', size 0). Returns the rows written (0: nothing changed)."""
+
+        def key(p: dict[str, Any]) -> str:
+            return f"{p['side']}:{float(p.get('size') or 0):.4g}"
+
+        now = {str(p["market"]): p for p in positions}
+        cur = await self.conn.execute(
+            "SELECT digest, positions_json FROM trader_position_state WHERE venue = ? AND account = ?", (venue, account)
         )
+        prev_row = await cur.fetchone()
+        prev: dict[str, dict[str, Any]] = {}
+        if prev_row and prev_row[1]:
+            try:
+                prev = {str(p["market"]): p for p in json.loads(prev_row[1])}
+            except (ValueError, TypeError, KeyError):
+                prev = {}
+        changed = [p for m, p in now.items() if m not in prev or key(prev[m]) != key(p)]
+        closed = [{"market": m, "side": "closed", "size": 0.0, "title": p.get("title")} for m, p in prev.items() if m not in now]
+        rows = changed + closed
+        digest = "|".join(sorted(f"{m}:{key(p)}" for m, p in now.items())) or "flat"
+        if prev_row and prev_row[0] == digest and not rows:
+            return 0
+        if rows:
+            await self.conn.executemany(
+                "INSERT OR REPLACE INTO trader_positions (ts, venue, account, market, side, size, entry_px, value_usd, upnl, "
+                "leverage, liq_px, title) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                [
+                    (
+                        ts,
+                        venue,
+                        account,
+                        str(p["market"]),
+                        str(p["side"]),
+                        p.get("size"),
+                        p.get("entry_px"),
+                        p.get("value_usd"),
+                        p.get("upnl"),
+                        p.get("leverage"),
+                        p.get("liq_px"),
+                        p.get("title"),
+                    )
+                    for p in rows
+                ],
+            )
         await self.conn.execute(
-            "INSERT OR REPLACE INTO trader_position_state (venue, account, digest, ts) VALUES (?,?,?,?)", (venue, account, digest, ts)
+            "INSERT OR REPLACE INTO trader_position_state (venue, account, digest, ts, positions_json) VALUES (?,?,?,?,?)",
+            (venue, account, digest, ts, json.dumps(list(now.values()), separators=(",", ":"))),
         )
         await self.conn.commit()
         return len(rows)

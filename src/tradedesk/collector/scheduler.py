@@ -481,8 +481,9 @@ async def _collect_traders(rt: "Runtime") -> int:
 
 
 async def _collect_trader_positions(rt: "Runtime") -> int:
-    """Positions of the watched traders (top by month and all-time PnL in the latest snapshot) into `trader_positions`,
-    written only when an account's position set changes. Polymarket: open (not resolved) positions worth >= $100."""
+    """Positions of the watched traders (top by month and all-time PnL in the latest snapshot) into `trader_positions`
+    as a change log (baseline, then opened / changed / closed positions). Polymarket: the 100 largest open positions
+    worth >= $100."""
     from ..core.errors import ProviderError  # noqa: PLC0415
     from ..providers.hyperliquid import parse_positions  # noqa: PLC0415
 
@@ -505,7 +506,7 @@ async def _collect_trader_positions(rt: "Runtime") -> int:
     for account in pm_accounts:
         tried += 1
         try:
-            raw = (await rt.polymarket.positions(account)).data
+            raw = (await rt.polymarket.positions(account, limit=100)).data  # the 100 largest open positions
         except ProviderError as e:
             failed += 1
             log.debug("positions polymarket %s: %s", account, e)

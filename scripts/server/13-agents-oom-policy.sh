@@ -12,4 +12,4 @@ OOMPolicy=continue
 CONF
 systemctl daemon-reload
 systemctl show tradedesk-agents-loop.service -p OOMPolicy -p MemoryHigh -p MemoryMax
-echo "OOMPolicy=continue set (takes effect when the loop next starts; it restarts itself between steps when its script changes)"
+echo "OOMPolicy=continue set; systemd applies it after the reload (the line above should read OOMPolicy=continue)"

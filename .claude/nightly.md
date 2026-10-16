@@ -33,6 +33,7 @@ You do not create branches, commit or push. After you finish, the launcher scrip
 4. Write `.agent/next` with one word:
    - `owner` when the step is finished for review: the critic's final verdict is approve, or the card ended (rejected, or inconclusive with no further version planned), or it now waits on a question to the owner;
    - `continue` when the agents have a clear next move on the same card or item: the critic requested changes that need another round, a registered next version still has to run, or a long fetch did not finish. The launcher then keeps the work on its branch and the next run carries on, so the owner is not asked to merge half-done work.
+   - `park` when the next move cannot start before a set time (the next pass of a forward observation, data published later): also write `.agent/not_before` with that time in UTC, ISO format (`2026-10-16T16:05:00Z`), at most 24 h ahead. The launcher saves the work, takes other steps meanwhile and resumes this one once the time has come. **Never wait in the session longer than ~30 min for a time-spaced pass or event: park instead.**
 5. If lint or tests fail and cannot be fixed within the step, do not write `.agent/branch`; explain in the summary (the launcher saves the work and the next run continues it).
 
 The script re-runs lint and tests, creates the branch (or updates the CONTINUE branch), commits and pushes; for `owner` it opens the pull request.

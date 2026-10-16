@@ -196,3 +196,13 @@ def test_send_follows_the_group_to_its_supergroup(monkeypatch, tmp_path):
     assert chats == ["-55", "-1001"]
     assert tg_send.load_env(env_file) == {"TELEGRAM_BOT_TOKEN": "1:a", "TELEGRAM_CHAT_ID": "-1001"}
     assert env_file.stat().st_mode & 0o777 == 0o600
+
+
+def test_parked_work_is_shown_with_its_resume_time(tmp_path):
+    at = int(datetime(2026, 10, 16, 19, 5).timestamp())
+    (tmp_path / "parked.state").write_text(f"agent/2026-10-16-negrisk-step0 {at} 2 2026-10-16_123437\n", encoding="utf-8")
+    parked = st.parked_state(tmp_path)
+    assert parked == ("agent/2026-10-16-negrisk-step0", datetime(2026, 10, 16, 19, 5))
+    assert st.parked_state(tmp_path / "none") is None
+    text, _ = st.render({"now": datetime(2026, 10, 16, 16, 0), "agents_line": "🟢", "parked": parked, "open_branches": []})
+    assert "⏸ Відкладено до 16.10 19:05" in text and "negrisk-step0" in text

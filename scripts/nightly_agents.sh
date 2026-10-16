@@ -50,6 +50,7 @@ trap 'rm -f "$LOCK/pid"; rmdir "$LOCK"' EXIT
 
 WORK="$LOG_DIR/work.state" # "<work branch> <runs on it> <stamp of its first run> [<killed runs in a row>]"
 ACTIVE="$LOG_DIR/run.active" # exists while a run is under way; left behind, it marks a run killed before it reported
+PARKED="$LOG_DIR/parked.state" # "<branch> <not-before epoch> <runs> <first>": work set aside until a time (".agent/next park")
 SUMMARY="$LOG_DIR/$STAMP.summary.md"
 : >"$SUMMARY"
 dirty() { [[ -n "$(git -C "$WT" status --porcelain 2>/dev/null)" ]]; }
@@ -117,6 +118,23 @@ if [[ -n "$WORK_BR" ]]; then
     if dirty; then git stash push -q --include-untracked -m "agents-leftover-$STAMP" || true; fi
     WORK_BR="" RUNS=0 FIRST="$STAMP" KILLS=0
     rm -f "$WORK" "$LOG_DIR/refusal.txt"
+  fi
+fi
+
+# Parked work (it waits for a time, e.g. the next pass of a forward observation) resumes once that time has come and no
+# other work is in progress; until then the runs take other steps. A merged or deleted parked branch is forgotten.
+PARKED_NOTE=""
+if [[ -s "$PARKED" ]]; then
+  read -r P_BR P_AT P_RUNS P_FIRST 2>/dev/null <"$PARKED" || true
+  if [[ -z "${P_BR:-}" ]] || ! git rev-parse -q --verify "refs/remotes/origin/$P_BR" >/dev/null || git merge-base --is-ancestor "origin/$P_BR" origin/main; then
+    echo "parked branch ${P_BR:-?} was merged or deleted; forgetting it"
+    rm -f "$PARKED"
+  elif [[ -z "$WORK_BR" ]] && (($(date +%s) >= ${P_AT:-0})); then
+    echo "resuming parked work $P_BR"
+    WORK_BR="$P_BR" RUNS="${P_RUNS:-1}" FIRST="${P_FIRST:-$STAMP}" KILLS=0
+    rm -f "$PARKED"
+  else
+    PARKED_NOTE="$P_BR"
   fi
 fi
 
@@ -256,6 +274,11 @@ $(cat "$LOG_DIR/refusal.txt")"
 
 CONTINUE (run $RUNS of at most $MAX_RUNS on this work): an earlier run started this step and did not hand it to the owner.$on_branch Uncommitted changes (git status) are its work too. Do not start another step and do not discard that work. Find where it stopped (the card in docs/ideas, docs/reviews, docs/verification, docs/agents/runs$hint) and carry on from there; ignore the 'clean tree at origin/main' and work-in-progress-limit parts of the preflight (this work adds no new branch). Stage every file of the step, including the ones earlier runs changed. Any valid name in .agent/branch will do: the launcher keeps this work on its branch.$refused"
 fi
+if [[ -n "$PARKED_NOTE" ]]; then
+  PROMPT="$PROMPT
+
+PARKED: \`$PARKED_NOTE\` is work set aside until a set time (a later run resumes it). Do not take its card or item, and do not count its branch in the work-in-progress limit."
+fi
 if [[ $DRY -eq 1 ]]; then
   PROMPT="$PROMPT
 
@@ -306,6 +329,16 @@ change="$(usage_change "$U0" "$(usage_now)")"
 [[ -n "$change" ]] && COST="$COST · ліміт Claude: $change"
 
 NEXT="$(head -1 .agent/next 2>/dev/null | tr -d '[:space:]' || true)"
+NOT_BEFORE=""
+if [[ "$NEXT" == park ]]; then
+  # An ISO time in UTC, at most 24 h ahead; anything else turns the park into an ordinary continue.
+  NOT_BEFORE="$(python3 -c 'import sys, time, datetime as d
+t = d.datetime.fromisoformat(sys.argv[1].strip().replace("Z", "+00:00"))
+t = t if t.tzinfo else t.replace(tzinfo=d.timezone.utc)
+e = int(t.timestamp())
+print(e if time.time() < e <= time.time() + 86400 else "")' "$(head -1 .agent/not_before 2>/dev/null)" 2>/dev/null || true)"
+  [[ -z "$NOT_BEFORE" ]] && NEXT=continue
+fi
 if [[ $DRY -eq 0 ]]; then
   deliver "$SUMMARY" "$BRANCH_RE" "$WORK_BR" || echo "delivery refused: $NOTE"
 fi
@@ -318,6 +351,12 @@ if [[ $DRY -eq 1 ]]; then
 $(head -c 3000 "$SUMMARY")" --silent
 elif [[ -n "$DELIVERED" ]]; then
   rm -f "$LOG_DIR/refusal.txt"
+  if [[ "$NEXT" == park ]] && ((RUNS < MAX_RUNS)); then
+    echo "$DELIVERED $NOT_BEFORE $RUNS $FIRST" >"$PARKED"
+    rm -f "$WORK"
+    finish 4 "parked" "⏸ **Агенти: крок відкладено** (\`$DELIVERED\`, прогін $RUNS з $MAX_RUNS) до $(TZ=Europe/Kyiv date -d "@$NOT_BEFORE" '+%d.%m %H:%M' 2>/dev/null || echo "$NOT_BEFORE") за Києвом; тим часом агенти беруть інші кроки, потім продовжать його самі.
+$(head -c 1500 "$SUMMARY")" --silent
+  fi
   if [[ "$NEXT" == continue ]] && ((RUNS < MAX_RUNS)); then
     echo "$DELIVERED $RUNS $FIRST" >"$WORK"
     finish 4 "continues" "🔄 **Агенти: проміжний крок збережено** (\`$DELIVERED\`, прогін $RUNS з $MAX_RUNS); наступний прогін продовжить сам, вам нічого робити не треба.

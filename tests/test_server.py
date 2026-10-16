@@ -10,6 +10,7 @@ EXPECTED_TOOLS = {
     "market_tickers",
     "market_markets",
     "market_ohlcv",
+    "chart_markup",
     "market_orderbook",
     "market_trades",
     "perps_funding_compare",
@@ -842,3 +843,25 @@ async def test_deribit_skew_term(server):
         assert row["fly"] > 0  # curv > 0 → wings above ATM
     assert d["most_extreme"]["rr"] <= min(r["rr"] for r in d["expiries"])
     assert d["rr_shape"] in ("flattening", "steepening", "stable")
+
+
+async def test_chart_markup_tool(server):
+    env = await call(server, "chart_markup", exchange="binanceusdm", symbol="BTC/USDT:USDT", timeframe="1h", limit=300)
+    assert env["ok"] is True
+    d = env["data"]
+    assert d["bars"] == 300 and d["price"] > 0 and d["atr14"] > 0
+    assert set(d["emas"]) == {"trend_13_21_34", "daily_4h_100_200", "weekly_1d_100_200"}
+    assert d["emas"]["trend_13_21_34"]["ema34"] is not None
+    assert d["volume_profile"]["val"] <= d["volume_profile"]["poc"] <= d["volume_profile"]["vah"]
+    assert "asia_session" in d  # 1h chart: the session block is present (may be null outside the window)
+    assert any("not signals" in w for w in env["warnings"])
+
+
+async def test_chart_markup_provider_failure(server):
+    env = await call(server, "chart_markup", exchange="binanceusdm", symbol="DOWN/USDT:USDT", timeframe="4h")
+    assert env["ok"] is False and env["missing"][0]["reason"] == "network"
+
+
+async def test_chart_markup_bad_timeframe(server):
+    env = await call(server, "chart_markup", exchange="binanceusdm", symbol="BTC/USDT:USDT", timeframe="4x")
+    assert env["ok"] is False and env["missing"][0]["reason"] == "config"

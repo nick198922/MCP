@@ -18,6 +18,7 @@ DOUBLETOP: **74 інструменти** (66 від 17 бекендів + 8 вл
 |---|---|
 | ccxt `get-ticker` | ✅ `market_ticker` |
 | ccxt `get-ohlcv` | ✅ `market_ohlcv` (+ реалізована вола) |
+| — (власне, курс DoubleTop) | ✅ `chart_markup` — розмітка графіка: EMA-групи, VWAP, профіль об'єму, структура (BOS/sweep), ліквідність, FVG, OB/брейкери, premium/discount/OTE, азійська сесія; працює й для форекс-перпів BingX |
 | ccxt `get-orderbook` | ✅ `market_orderbook` (+ slippage під ваш розмір) |
 | ccxt `batch-get-tickers` | ✅ `market_tickers` (сортування за quote volume, top-movers за 24h %) |
 | ccxt `get-markets` | ✅ `market_markets` (пошук за підрядком, фільтр spot/swap/future/option, active) |

@@ -15,6 +15,8 @@
 - `sentiment_fear_greed(days=30)`: чи ми в екстремумі?
 - `global_market()`: домінація BTC і ETH, зміна капіталізації за 24 год.
 
+- Рівні з графіка: `chart_markup(exchange, symbol, timeframe)` на ТФ входу й на старшому (4h/1d) — тренд за останнім BOS, де ціна відносно EMA-груп, VWAP і зони вартості, найближча ліквідність і FVG/OB, premium чи discount. Стоп за рівнем звідти, FTA — найближча зона на шляху до цілі.
+
 ## 3. Позиціонування в деривативах
 - `perps_funding_compare(base)`: funding > 20 % річних у бік угоди → ⚠ натовп уже там.
 - `perps_open_interest(base)`, `perps_oi_history`, `perps_long_short_ratio`: хто тримає позиції і куди росте OI.

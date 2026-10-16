@@ -484,6 +484,8 @@ class FakeEx:
         }
 
     async def fetch_ohlcv(self, symbol, timeframe="1h", limit=100, since=None, params=None):
+        if symbol.startswith("DOWN/"):
+            raise ccxt.NetworkError("venue down")
         if since is not None and timeframe == "4h":
             # Honours `since`, `limit` and params["until"] like a real venue: flat 82750 bars on the 4h grid up to NOW.
             step, until = 4 * 3_600_000, (params or {}).get("until", 1791637620000)

@@ -17,6 +17,7 @@ def register_all(server: MCPServer, rt: Runtime) -> None:
         journal,
         liquidations,
         market,
+        markup,
         options,
         perps,
         polymarket,
@@ -31,6 +32,7 @@ def register_all(server: MCPServer, rt: Runtime) -> None:
     for module in (
         system,
         market,
+        markup,
         perps,
         options,
         quant,

@@ -1,0 +1,53 @@
+{
+ "id": "1186354",
+ "slug": "what-price-will-bitcoin-hit-on-october-14-2026",
+ "title": "What price will Bitcoin hit on October 14?",
+ "startDate": "2026-10-14T04:00:10Z",
+ "endDate": "2026-10-15T04:00:00Z",
+ "markets": [
+  {
+   "id": "5677944",
+   "question": "Will Bitcoin reach $86,000 on October 14?",
+   "conditionId": "0x3be117408fa364d77140d64beb43d8e542128ced1a6e0fd1249c531c2df10e96",
+   "slug": "will-bitcoin-reach-86k-on-october-14-2026",
+   "endDate": "2026-10-15T04:00:00Z",
+   "startDate": "2026-10-14T04:00:10Z",
+   "description": "This market will immediately resolve to \"Yes\" if any Binance 1-minute candle for Bitcoin (BTC/USDT) on the date specified in the title, between 12:00 AM ET and 11:59 PM ET has a final \"High\" price equal to or greater than the price specified in the title. Otherwise, this market will resolve to \"No\".\n\nThe resolution source for this market is Binance, specifically the BTC/USDT \"High\" prices available at https://www.binance.com/en/trade/BTC_USDT, with the chart settings on \"1m\" candles selected on the top bar.\n\nPlease note that the outcome of this market depends solely on the price data from the Binance BTC/USDT trading pair. Prices from other exchanges, different trading pairs, or spot markets will not be considered for the resolution of this market.",
+   "outcomes": "[\"Yes\", \"No\"]",
+   "outcomePrices": "[\"0\", \"1\"]",
+   "clobTokenIds": "[\"22724811644108731023820138147450288332776062475799462537933371092378390057045\", \"61113419925497671356314980777129372446906560888949551474510327690886482901453\"]",
+   "groupItemTitle": "↑ 86,000",
+   "acceptingOrdersTimestamp": "2026-10-14T04:00:10Z",
+   "feesEnabled": true,
+   "feeSchedule": {
+    "exponent": 1,
+    "rate": 0.07,
+    "takerOnly": true,
+    "rebateRate": 0.2
+   },
+   "orderPriceMinTickSize": 0.001
+  },
+  {
+   "id": "5677949",
+   "question": "Will Bitcoin dip to $81,000 on October 14?",
+   "conditionId": "0x03392ec22c0d29f32a91b7bedf0748b6b229db1303a150787d64676c7eca6983",
+   "slug": "will-bitcoin-dip-to-81k-on-october-14-2026",
+   "endDate": "2026-10-15T04:00:00Z",
+   "startDate": "2026-10-14T04:00:10Z",
+   "description": "This market will immediately resolve to \"Yes\" if any Binance 1 minute candle for Bitcoin (BTC/USDT) on the date specified in the title, between 12:00 AM ET and 11:59 PM ET has a final \"Low\" price equal to or lower than the price specified in the title. Otherwise, this market will resolve to \"No.\"\n\nThe resolution source for this market is Binance, specifically the BTC/USDT \"Low\" prices available at https://www.binance.com/en/trade/BTC_USDT, with the chart settings on \"1m\" for one-minute candles selected on the top bar.\n\nPlease note that the outcome of this market depends solely on the price data from the Binance BTC/USDT trading pair. Prices from other exchanges, different trading pairs, or spot markets will not be considered for the resolution of this market.",
+   "outcomes": "[\"Yes\", \"No\"]",
+   "outcomePrices": "[\"1\", \"0\"]",
+   "clobTokenIds": "[\"7436282997751612560477140654422078301733502637687349288953060487790024368650\", \"61427103273212026348768507600561148468520014582869660833343865435433772238038\"]",
+   "groupItemTitle": "↓ 81,000",
+   "acceptingOrdersTimestamp": "2026-10-14T04:00:10Z",
+   "feesEnabled": true,
+   "feeSchedule": {
+    "exponent": 1,
+    "rate": 0.07,
+    "takerOnly": true,
+    "rebateRate": 0.2
+   },
+   "orderPriceMinTickSize": 0.001
+  }
+ ]
+}

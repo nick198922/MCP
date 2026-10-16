@@ -18,13 +18,14 @@
 ## Що показали наші перевірки
 
 - Премія за волатильність у дні подій (CPI/NFP/FOMC) — ◯, мало даних для висновку (`docs/verification/2026-10-15-event-day-straddle.md`).
+- Ринки Polymarket «на дотик» у дні CPI/NFP — ◯: денні драбини існують лише з 2026-03, днів подій ≈ 16, середні не рахувались (`docs/verification/2026-10-16-polymarket-touch-ladder.md`).
 - Реакція в перші години як прогноз на наступні дні — картка `IDEA-20261015-macro-release-reaction-continuation` (ще не перевірено).
 - Дати CPI/NFP 2025–2026 звірено з архівом BLS (Q-20261015-2).
 
 ## Відкриті гіпотези
 
 - Дрейф BTC після CPI («8 з 9 цього року»): H1 у LIB-20261015-doubletop-stream.
-- Ринки Polymarket «на дотик» у дні подій проти опціонів: `IDEA-20261015-polymarket-touch-ladder-event-days`.
+- Ринки Polymarket «на дотик» у дні подій: `IDEA-20261015-polymarket-touch-ladder-event-days` (`inconclusive`; лише forward-збір знімків книги).
 - MSCI і MSTR, описово, одна подія: H2 у LIB-20261015-doubletop-stream.
 
 ## Як користуватись зараз

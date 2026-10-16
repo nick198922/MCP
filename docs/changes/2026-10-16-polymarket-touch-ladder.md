@@ -1,0 +1,4 @@
+- Картка `polymarket-touch-ladder-event-days`: вердикт `inconclusive` (ворота G1: 126 дат < 300; G3: MDE 5.98 п.п. > 5). Середні не рахувались.
+- Додано `analytics/pm_touch.py`, `scripts/verify_pm_touch.py`, тести й зразок у `tests/fixtures/`.
+- Звіт: `docs/verification/2026-10-16-polymarket-touch-ladder.md`; рев'ю критика: approve.
+- Перезапуск можливий після накопичення історії (нова реєстрація з t0 = 07:30 ET).

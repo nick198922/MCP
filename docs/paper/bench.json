@@ -1,0 +1,2559 @@
+{
+ "card": "docs/ideas/IDEA-20261017-forward-paper-carry.md",
+ "criterion": "(v) realized funding APR of a paper trade (>= 7 days held, not deferred) within [p05, p95] of its entry bucket",
+ "generated_utc": "2026-10-17T15:03:24Z",
+ "git": {
+  "sha": "738eb6ac6f1139c61a6282572173fc04ec1ee05e",
+  "dirty": true
+ },
+ "script": "scripts/verify_paper_carry_bench.py",
+ "definition": {
+  "realized_funding_apr": "funding collected (fraction of slot notional) / (days held / 365)",
+  "slot_notional": "A: spot entry price x qty; B: leg A (Binance) entry price x qty; $2000 per leg in the paper book",
+  "price_at_payment": "close of the 4h bar containing the payment (backtest convention; the paper engine does the same)",
+  "entry": {
+   "A": "trailing 7d funding APR at entry",
+   "B": "|trailing 7d APR Bybit - Binance| at entry"
+  },
+  "percentiles": "linear interpolation between order statistics (numpy default / R type 7)",
+  "merge": "bucket with < 10 trades merged into its lower neighbour (lowest into upper), repeated top-down",
+  "pass": ">= 80 % of paper trades (>= 7 days, not deferred) inside their bucket's band; needs >= 10 such trades",
+  "rates": "decimals: 0.10 = 10 %"
+ },
+ "params": {
+  "A": {
+   "slots": 5,
+   "lookback_days": 7,
+   "entry_apr": 0.2,
+   "exit_apr": 0.0,
+   "spot_fee": 0.001,
+   "perp_fee": 0.0005,
+   "slippage": 0.0005
+  },
+  "B": {
+   "slots": 5,
+   "lookback_days": 7,
+   "entry_apr": 0.1,
+   "exit_apr": 0.0,
+   "fee_a": 0.0005,
+   "fee_b": 0.00055,
+   "slippage": 0.0005,
+   "max_entry_gap": 0.02,
+   "stop_move": 0.5,
+   "stop_penalty": 0.01
+  },
+  "days": 730,
+  "min_days": 7.0,
+  "min_n": 10,
+  "gap_factor": 1.5,
+  "gap_floor_h": 12.0
+ },
+ "data": {
+  "A": {
+   "universe": 359,
+   "universe_filter": "Binance USDT-M PERPETUAL, underlyingType == COIN (TradFi excluded), active, Binance USDT spot exists",
+   "with_prices": 265,
+   "multiplier_symbols": [
+    "1000BONK/USDT:USDT",
+    "1000FLOKI/USDT:USDT",
+    "1000LUNC/USDT:USDT",
+    "1000PEPE/USDT:USDT",
+    "1000SHIB/USDT:USDT",
+    "1000XEC/USDT:USDT"
+   ],
+   "symbols_with_funding_hole_gt_12h": 1,
+   "funding_first": "2024-10-17 16:00",
+   "funding_last": "2026-10-17 12:00",
+   "summary": {
+    "apr_on_notional": 0.065157,
+    "n_trades": 42,
+    "share_negative": 0.404762,
+    "mean_days_held": 62.92419,
+    "funding_per_year": 0.079854,
+    "n_stopped": null,
+    "years": 1.979443
+   }
+  },
+  "B": {
+   "universe": 461,
+   "hot": 460,
+   "with_data": 459,
+   "collisions_excluded": [
+    [
+     "ON",
+     0.002375
+    ]
+   ],
+   "pairs_with_funding_hole_gt_12h": {
+    "binance": 2,
+    "bybit": 1
+   },
+   "funding_first": "2024-10-17 16:00",
+   "funding_last": "2026-10-17 13:00",
+   "summary": {
+    "apr_on_notional": -0.086674,
+    "n_trades": 397,
+    "share_negative": 0.672544,
+    "mean_days_held": 9.099977,
+    "funding_per_year": 0.233328,
+    "n_stopped": 130,
+    "years": 1.979557
+   },
+   "summary_no_stop": {
+    "apr_on_notional": 0.028543,
+    "n_trades": 256,
+    "share_negative": 0.621094,
+    "mean_days_held": 14.112074,
+    "funding_per_year": 0.238905,
+    "n_stopped": 0,
+    "years": 1.979557
+   },
+   "bybit_hole_fill": {
+    "holes_seen": 650,
+    "rows_added": 235990,
+    "holes_confirmed_empty": 1,
+    "holes_query_failed": 0
+   }
+  }
+ },
+ "A": {
+  "primary_sample": "trades held >= 7 days, no funding gap in the holding window, open-at-end included",
+  "n_trades_backtest": 42,
+  "n_ge7d": 28,
+  "n_gap_trades_excluded": 0,
+  "n_gap_trades_registered_rule": 4,
+  "bench": {
+   "registered_edges": [
+    0.2,
+    0.3,
+    0.5,
+    1.0
+   ],
+   "registered_counts": [
+    23,
+    1,
+    3,
+    1
+   ],
+   "below_lowest_edge": 0,
+   "min_n": 10,
+   "q_lo": 0.05,
+   "q_hi": 0.95,
+   "buckets": [
+    {
+     "entry_lo": 0.2,
+     "entry_hi": null,
+     "n": 28,
+     "thin": false,
+     "p05": 0.028069,
+     "p95": 0.280734,
+     "median": 0.097817,
+     "mean": 0.127954
+    }
+   ]
+  },
+  "in_sample_coverage": 0.857143,
+  "oos": {
+   "split": "2025-10-29 10:02",
+   "n_first": 20,
+   "n_second": 8,
+   "coverage_second": 1.0,
+   "n_second_without_bucket": 0,
+   "bench_first": {
+    "registered_edges": [
+     0.2,
+     0.3,
+     0.5,
+     1.0
+    ],
+    "registered_counts": [
+     16,
+     1,
+     2,
+     1
+    ],
+    "below_lowest_edge": 0,
+    "min_n": 10,
+    "q_lo": 0.05,
+    "q_hi": 0.95,
+    "buckets": [
+     {
+      "entry_lo": 0.2,
+      "entry_hi": null,
+      "n": 20,
+      "thin": false,
+      "p05": 0.024213,
+      "p95": 0.2966,
+      "median": 0.068602,
+      "mean": 0.119029
+     }
+    ]
+   }
+  },
+  "concentration": {
+   "n_symbols": 22,
+   "top5": [
+    [
+     "RIF/USDT:USDT",
+     3
+    ],
+    [
+     "BANANAS31/USDT:USDT",
+     2
+    ],
+    [
+     "FORM/USDT:USDT",
+     2
+    ],
+    [
+     "KITE/USDT:USDT",
+     2
+    ],
+    [
+     "币安人生/USDT:USDT",
+     2
+    ]
+   ],
+   "top5_share": 0.392857
+  },
+  "variants_descriptive": {
+   "all_trades": {
+    "registered_edges": [
+     0.2,
+     0.3,
+     0.5,
+     1.0
+    ],
+    "registered_counts": [
+     33,
+     4,
+     4,
+     1
+    ],
+    "below_lowest_edge": 0,
+    "min_n": 10,
+    "q_lo": 0.05,
+    "q_hi": 0.95,
+    "buckets": [
+     {
+      "entry_lo": 0.2,
+      "entry_hi": null,
+      "n": 42,
+      "thin": false,
+      "p05": -0.873288,
+      "p95": 0.261644,
+      "median": 0.063173,
+      "mean": -0.085073
+     }
+    ]
+   },
+   "ge7d_with_gap_trades": {
+    "registered_edges": [
+     0.2,
+     0.3,
+     0.5,
+     1.0
+    ],
+    "registered_counts": [
+     23,
+     1,
+     3,
+     1
+    ],
+    "below_lowest_edge": 0,
+    "min_n": 10,
+    "q_lo": 0.05,
+    "q_hi": 0.95,
+    "buckets": [
+     {
+      "entry_lo": 0.2,
+      "entry_hi": null,
+      "n": 28,
+      "thin": false,
+      "p05": 0.028069,
+      "p95": 0.280734,
+      "median": 0.097817,
+      "mean": 0.127954
+     }
+    ]
+   },
+   "ge7d_closed_only": {
+    "registered_edges": [
+     0.2,
+     0.3,
+     0.5,
+     1.0
+    ],
+    "registered_counts": [
+     19,
+     1,
+     2,
+     1
+    ],
+    "below_lowest_edge": 0,
+    "min_n": 10,
+    "q_lo": 0.05,
+    "q_hi": 0.95,
+    "buckets": [
+     {
+      "entry_lo": 0.2,
+      "entry_hi": null,
+      "n": 23,
+      "thin": false,
+      "p05": 0.025696,
+      "p95": 0.287197,
+      "median": 0.088074,
+      "mean": 0.125775
+     }
+    ]
+   },
+   "ge7d_registered_gap_rule": {
+    "registered_edges": [
+     0.2,
+     0.3,
+     0.5,
+     1.0
+    ],
+    "registered_counts": [
+     20,
+     1,
+     2,
+     1
+    ],
+    "below_lowest_edge": 0,
+    "min_n": 10,
+    "q_lo": 0.05,
+    "q_hi": 0.95,
+    "buckets": [
+     {
+      "entry_lo": 0.2,
+      "entry_hi": null,
+      "n": 24,
+      "thin": false,
+      "p05": 0.026171,
+      "p95": 0.285904,
+      "median": 0.090092,
+      "mean": 0.126138
+     }
+    ]
+   }
+  },
+  "samples": [
+   {
+    "symbol": "SUN/USDT:USDT",
+    "open_ts": 1731369900000,
+    "close_ts": 1734653100000,
+    "days": 38.0,
+    "entry": 0.210859,
+    "realized_apr": 0.289782,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "RIF/USDT:USDT",
+    "open_ts": 1731369900000,
+    "close_ts": 1736928300000,
+    "days": 64.333333,
+    "entry": 0.216668,
+    "realized_apr": 0.200256,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "TAO/USDT:USDT",
+    "open_ts": 1731369900000,
+    "close_ts": 1739001900000,
+    "days": 88.333333,
+    "entry": 0.219019,
+    "realized_apr": 0.158142,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "COTI/USDT:USDT",
+    "open_ts": 1731283500000,
+    "close_ts": 1739117100000,
+    "days": 90.666667,
+    "entry": 0.20232,
+    "realized_apr": 0.186656,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "AIXBT/USDT:USDT",
+    "open_ts": 1736525100000,
+    "close_ts": 1739721900000,
+    "days": 37.0,
+    "entry": 0.313088,
+    "realized_apr": 0.07222,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "TRUMP/USDT:USDT",
+    "open_ts": 1737821100000,
+    "close_ts": 1741593900000,
+    "days": 43.666667,
+    "entry": 0.564164,
+    "realized_apr": 0.048995,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "NEIRO/USDT:USDT",
+    "open_ts": 1731225900000,
+    "close_ts": 1743465900000,
+    "days": 141.666667,
+    "entry": 0.226829,
+    "realized_apr": 0.06771,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "MUBARAK/USDT:USDT",
+    "open_ts": 1743120300000,
+    "close_ts": 1745222700000,
+    "days": 24.333333,
+    "entry": 0.257594,
+    "realized_apr": 0.024747,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "RIF/USDT:USDT",
+    "open_ts": 1746288300000,
+    "close_ts": 1747065900000,
+    "days": 9.0,
+    "entry": 0.249565,
+    "realized_apr": 0.181025,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "RIF/USDT:USDT",
+    "open_ts": 1747843500000,
+    "close_ts": 1748534700000,
+    "days": 8.0,
+    "entry": 0.234072,
+    "realized_apr": 0.034238,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "BANANAS31/USDT:USDT",
+    "open_ts": 1743120300000,
+    "close_ts": 1752509100000,
+    "days": 108.666667,
+    "entry": 0.27319,
+    "realized_apr": 0.148536,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "FORM/USDT:USDT",
+    "open_ts": 1757232300000,
+    "close_ts": 1757837100000,
+    "days": 7.0,
+    "entry": 0.210571,
+    "realized_apr": 0.014073,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "ALPINE/USDT:USDT",
+    "open_ts": 1755302700000,
+    "close_ts": 1759881900000,
+    "days": 53.0,
+    "entry": 0.245036,
+    "realized_apr": 0.426143,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "LINEA/USDT:USDT",
+    "open_ts": 1757837100000,
+    "close_ts": 1760141100000,
+    "days": 26.666667,
+    "entry": 0.248106,
+    "realized_apr": 0.069493,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "TUT/USDT:USDT",
+    "open_ts": 1755043500000,
+    "close_ts": 1760544300000,
+    "days": 63.666667,
+    "entry": 0.201141,
+    "realized_apr": 0.188809,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "ASTER/USDT:USDT",
+    "open_ts": 1759881900000,
+    "close_ts": 1762243500000,
+    "days": 27.333333,
+    "entry": 0.274888,
+    "realized_apr": 0.04249,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "GIGGLE/USDT:USDT",
+    "open_ts": 1761379500000,
+    "close_ts": 1762704300000,
+    "days": 15.333333,
+    "entry": 1.138731,
+    "realized_apr": 0.063355,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "TST/USDT:USDT",
+    "open_ts": 1744445100000,
+    "close_ts": 1767168300000,
+    "days": 263.0,
+    "entry": 0.202352,
+    "realized_apr": 0.062991,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "SCR/USDT:USDT",
+    "open_ts": 1766822700000,
+    "close_ts": 1767773100000,
+    "days": 11.0,
+    "entry": 0.200132,
+    "realized_apr": 0.088074,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "GTC/USDT:USDT",
+    "open_ts": 1767369900000,
+    "close_ts": 1768521900000,
+    "days": 13.333333,
+    "entry": 0.214548,
+    "realized_apr": 0.092111,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "KITE/USDT:USDT",
+    "open_ts": 1768320300000,
+    "close_ts": 1772496300000,
+    "days": 48.333333,
+    "entry": 0.220757,
+    "realized_apr": 0.263931,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "SOLV/USDT:USDT",
+    "open_ts": 1755158700000,
+    "close_ts": 1773245100000,
+    "days": 209.333333,
+    "entry": 0.210242,
+    "realized_apr": 0.065519,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "币安人生/USDT:USDT",
+    "open_ts": 1767801900000,
+    "close_ts": 1775808300000,
+    "days": 92.666667,
+    "entry": 0.587884,
+    "realized_apr": 0.103523,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "FORM/USDT:USDT",
+    "open_ts": 1760141100000,
+    "close_ts": 1792238400000,
+    "days": 371.496528,
+    "entry": 0.559507,
+    "realized_apr": 0.035401,
+    "open_at_end": true,
+    "stopped": false
+   },
+   {
+    "symbol": "BANANAS31/USDT:USDT",
+    "open_ts": 1772870700000,
+    "close_ts": 1792238400000,
+    "days": 224.163194,
+    "entry": 0.224521,
+    "realized_apr": 0.16653,
+    "open_at_end": true,
+    "stopped": false
+   },
+   {
+    "symbol": "KITE/USDT:USDT",
+    "open_ts": 1776355500000,
+    "close_ts": 1792238400000,
+    "days": 183.829861,
+    "entry": 0.243884,
+    "realized_apr": 0.135279,
+    "open_at_end": true,
+    "stopped": false
+   },
+   {
+    "symbol": "XVG/USDT:USDT",
+    "open_ts": 1778429100000,
+    "close_ts": 1792238400000,
+    "days": 159.829861,
+    "entry": 0.215978,
+    "realized_apr": 0.134483,
+    "open_at_end": true,
+    "stopped": false
+   },
+   {
+    "symbol": "币安人生/USDT:USDT",
+    "open_ts": 1778688300000,
+    "close_ts": 1792238400000,
+    "days": 156.829861,
+    "entry": 0.215567,
+    "realized_apr": 0.218193,
+    "open_at_end": true,
+    "stopped": false
+   }
+  ]
+ },
+ "B": {
+  "primary_sample": "trades held >= 7 days, no funding gap in the holding window, open-at-end included",
+  "n_trades_backtest": 397,
+  "n_ge7d": 155,
+  "n_gap_trades_excluded": 0,
+  "n_gap_trades_registered_rule": 64,
+  "bench": {
+   "registered_edges": [
+    0.1,
+    0.3,
+    1.0,
+    3.0
+   ],
+   "registered_counts": [
+    8,
+    73,
+    63,
+    11
+   ],
+   "below_lowest_edge": 0,
+   "min_n": 10,
+   "q_lo": 0.05,
+   "q_hi": 0.95,
+   "buckets": [
+    {
+     "entry_lo": 0.1,
+     "entry_hi": 1.0,
+     "n": 81,
+     "thin": false,
+     "p05": 0.003198,
+     "p95": 0.615948,
+     "median": 0.152646,
+     "mean": 0.214725
+    },
+    {
+     "entry_lo": 1.0,
+     "entry_hi": 3.0,
+     "n": 63,
+     "thin": false,
+     "p05": -0.116159,
+     "p95": 1.045052,
+     "median": 0.263507,
+     "mean": 0.341573
+    },
+    {
+     "entry_lo": 3.0,
+     "entry_hi": null,
+     "n": 11,
+     "thin": false,
+     "p05": 0.099021,
+     "p95": 2.28564,
+     "median": 0.405495,
+     "mean": 0.734939
+    }
+   ]
+  },
+  "in_sample_coverage": 0.883871,
+  "oos": {
+   "split": "2025-10-21 06:32",
+   "n_first": 74,
+   "n_second": 81,
+   "coverage_second": 0.703704,
+   "n_second_without_bucket": 0,
+   "bench_first": {
+    "registered_edges": [
+     0.1,
+     0.3,
+     1.0,
+     3.0
+    ],
+    "registered_counts": [
+     8,
+     50,
+     14,
+     2
+    ],
+    "below_lowest_edge": 0,
+    "min_n": 10,
+    "q_lo": 0.05,
+    "q_hi": 0.95,
+    "buckets": [
+     {
+      "entry_lo": 0.1,
+      "entry_hi": 1.0,
+      "n": 58,
+      "thin": false,
+      "p05": 0.006064,
+      "p95": 0.726026,
+      "median": 0.165041,
+      "mean": 0.237219
+     },
+     {
+      "entry_lo": 1.0,
+      "entry_hi": null,
+      "n": 16,
+      "thin": false,
+      "p05": 0.038214,
+      "p95": 0.76924,
+      "median": 0.346006,
+      "mean": 0.368389
+     }
+    ]
+   }
+  },
+  "concentration": {
+   "n_symbols": 114,
+   "top5": [
+    [
+     "ORCA/USDT:USDT",
+     5
+    ],
+    [
+     "HOME/USDT:USDT",
+     4
+    ],
+    [
+     "API3/USDT:USDT",
+     3
+    ],
+    [
+     "STEEM/USDT:USDT",
+     3
+    ],
+    [
+     "REZ/USDT:USDT",
+     3
+    ]
+   ],
+   "top5_share": 0.116129
+  },
+  "variants_descriptive": {
+   "all_trades": {
+    "registered_edges": [
+     0.1,
+     0.3,
+     1.0,
+     3.0
+    ],
+    "registered_counts": [
+     13,
+     125,
+     168,
+     91
+    ],
+    "below_lowest_edge": 0,
+    "min_n": 10,
+    "q_lo": 0.05,
+    "q_hi": 0.95,
+    "buckets": [
+     {
+      "entry_lo": 0.1,
+      "entry_hi": 0.3,
+      "n": 13,
+      "thin": false,
+      "p05": -0.123226,
+      "p95": 0.435148,
+      "median": 0.05208,
+      "mean": 0.098077
+     },
+     {
+      "entry_lo": 0.3,
+      "entry_hi": 1.0,
+      "n": 125,
+      "thin": false,
+      "p05": -0.474515,
+      "p95": 0.621696,
+      "median": 0.095835,
+      "mean": -0.021473
+     },
+     {
+      "entry_lo": 1.0,
+      "entry_hi": 3.0,
+      "n": 168,
+      "thin": false,
+      "p05": -2.431196,
+      "p95": 4.753406,
+      "median": 0.043018,
+      "mean": 0.639281
+     },
+     {
+      "entry_lo": 3.0,
+      "entry_hi": null,
+      "n": 91,
+      "thin": false,
+      "p05": -5.072014,
+      "p95": 12.863757,
+      "median": -0.2416,
+      "mean": 1.014681
+     }
+    ]
+   },
+   "ge7d_with_gap_trades": {
+    "registered_edges": [
+     0.1,
+     0.3,
+     1.0,
+     3.0
+    ],
+    "registered_counts": [
+     8,
+     73,
+     63,
+     11
+    ],
+    "below_lowest_edge": 0,
+    "min_n": 10,
+    "q_lo": 0.05,
+    "q_hi": 0.95,
+    "buckets": [
+     {
+      "entry_lo": 0.1,
+      "entry_hi": 1.0,
+      "n": 81,
+      "thin": false,
+      "p05": 0.003198,
+      "p95": 0.615948,
+      "median": 0.152646,
+      "mean": 0.214725
+     },
+     {
+      "entry_lo": 1.0,
+      "entry_hi": 3.0,
+      "n": 63,
+      "thin": false,
+      "p05": -0.116159,
+      "p95": 1.045052,
+      "median": 0.263507,
+      "mean": 0.341573
+     },
+     {
+      "entry_lo": 3.0,
+      "entry_hi": null,
+      "n": 11,
+      "thin": false,
+      "p05": 0.099021,
+      "p95": 2.28564,
+      "median": 0.405495,
+      "mean": 0.734939
+     }
+    ]
+   },
+   "ge7d_closed_only": {
+    "registered_edges": [
+     0.1,
+     0.3,
+     1.0,
+     3.0
+    ],
+    "registered_counts": [
+     8,
+     71,
+     63,
+     11
+    ],
+    "below_lowest_edge": 0,
+    "min_n": 10,
+    "q_lo": 0.05,
+    "q_hi": 0.95,
+    "buckets": [
+     {
+      "entry_lo": 0.1,
+      "entry_hi": 1.0,
+      "n": 79,
+      "thin": false,
+      "p05": 0.003029,
+      "p95": 0.619246,
+      "median": 0.152646,
+      "mean": 0.217428
+     },
+     {
+      "entry_lo": 1.0,
+      "entry_hi": 3.0,
+      "n": 63,
+      "thin": false,
+      "p05": -0.116159,
+      "p95": 1.045052,
+      "median": 0.263507,
+      "mean": 0.341573
+     },
+     {
+      "entry_lo": 3.0,
+      "entry_hi": null,
+      "n": 11,
+      "thin": false,
+      "p05": 0.099021,
+      "p95": 2.28564,
+      "median": 0.405495,
+      "mean": 0.734939
+     }
+    ]
+   },
+   "ge7d_registered_gap_rule": {
+    "registered_edges": [
+     0.1,
+     0.3,
+     1.0,
+     3.0
+    ],
+    "registered_counts": [
+     1,
+     57,
+     57,
+     11
+    ],
+    "below_lowest_edge": 0,
+    "min_n": 10,
+    "q_lo": 0.05,
+    "q_hi": 0.95,
+    "buckets": [
+     {
+      "entry_lo": 0.1,
+      "entry_hi": 1.0,
+      "n": 58,
+      "thin": false,
+      "p05": 0.003531,
+      "p95": 0.726026,
+      "median": 0.173934,
+      "mean": 0.245014
+     },
+     {
+      "entry_lo": 1.0,
+      "entry_hi": 3.0,
+      "n": 57,
+      "thin": false,
+      "p05": -0.190306,
+      "p95": 1.074833,
+      "median": 0.260765,
+      "mean": 0.329231
+     },
+     {
+      "entry_lo": 3.0,
+      "entry_hi": null,
+      "n": 11,
+      "thin": false,
+      "p05": 0.099021,
+      "p95": 2.28564,
+      "median": 0.405495,
+      "mean": 0.734939
+     }
+    ]
+   },
+   "ge7d_not_stopped": {
+    "registered_edges": [
+     0.1,
+     0.3,
+     1.0,
+     3.0
+    ],
+    "registered_counts": [
+     8,
+     52,
+     51,
+     9
+    ],
+    "below_lowest_edge": 0,
+    "min_n": 10,
+    "q_lo": 0.05,
+    "q_hi": 0.95,
+    "buckets": [
+     {
+      "entry_lo": 0.1,
+      "entry_hi": 1.0,
+      "n": 60,
+      "thin": false,
+      "p05": 0.001225,
+      "p95": 0.371943,
+      "median": 0.110786,
+      "mean": 0.153932
+     },
+     {
+      "entry_lo": 1.0,
+      "entry_hi": null,
+      "n": 60,
+      "thin": false,
+      "p05": -0.13858,
+      "p95": 1.378675,
+      "median": 0.259376,
+      "mean": 0.38741
+     }
+    ]
+   }
+  },
+  "samples": [
+   {
+    "symbol": "MEW/USDT:USDT",
+    "open_ts": 1729814700000,
+    "close_ts": 1730448300000,
+    "days": 7.333333,
+    "entry": 0.130469,
+    "realized_apr": 0.003198,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "JUP/USDT:USDT",
+    "open_ts": 1730045100000,
+    "close_ts": 1730765100000,
+    "days": 8.333333,
+    "entry": 0.245889,
+    "realized_apr": 0.05208,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "AXL/USDT:USDT",
+    "open_ts": 1729814700000,
+    "close_ts": 1731254700000,
+    "days": 16.666667,
+    "entry": 0.134634,
+    "realized_apr": 0.005166,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "API3/USDT:USDT",
+    "open_ts": 1729814700000,
+    "close_ts": 1731369900000,
+    "days": 18.0,
+    "entry": 0.163038,
+    "realized_apr": 0.075247,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "ENA/USDT:USDT",
+    "open_ts": 1731197100000,
+    "close_ts": 1731888300000,
+    "days": 8.0,
+    "entry": 0.169878,
+    "realized_apr": 0.025798,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "BRETT/USDT:USDT",
+    "open_ts": 1731369900000,
+    "close_ts": 1732291500000,
+    "days": 10.666667,
+    "entry": 0.334156,
+    "realized_apr": 0.045928,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "MEW/USDT:USDT",
+    "open_ts": 1731888300000,
+    "close_ts": 1732665900000,
+    "days": 9.0,
+    "entry": 0.356694,
+    "realized_apr": 0.07801,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "ALT/USDT:USDT",
+    "open_ts": 1732089900000,
+    "close_ts": 1733069100000,
+    "days": 11.333333,
+    "entry": 0.303399,
+    "realized_apr": 0.070507,
+    "open_at_end": false,
+    "stopped": true
+   },
+   {
+    "symbol": "POWR/USDT:USDT",
+    "open_ts": 1732665900000,
+    "close_ts": 1733357100000,
+    "days": 8.0,
+    "entry": 1.038319,
+    "realized_apr": 0.694065,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "1000RATS/USDT:USDT",
+    "open_ts": 1729814700000,
+    "close_ts": 1733846700000,
+    "days": 46.666667,
+    "entry": 0.127605,
+    "realized_apr": 0.146873,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "ALICE/USDT:USDT",
+    "open_ts": 1733385900000,
+    "close_ts": 1734336300000,
+    "days": 11.0,
+    "entry": 0.609114,
+    "realized_apr": 0.222968,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "ZEC/USDT:USDT",
+    "open_ts": 1733846700000,
+    "close_ts": 1734739500000,
+    "days": 10.333333,
+    "entry": 0.778883,
+    "realized_apr": -0.004165,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "TAO/USDT:USDT",
+    "open_ts": 1731254700000,
+    "close_ts": 1735315500000,
+    "days": 47.0,
+    "entry": 0.218202,
+    "realized_apr": 0.175199,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "AUCTION/USDT:USDT",
+    "open_ts": 1733357100000,
+    "close_ts": 1735632300000,
+    "days": 26.333333,
+    "entry": 0.601014,
+    "realized_apr": 0.136706,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "MOCA/USDT:USDT",
+    "open_ts": 1735315500000,
+    "close_ts": 1736438700000,
+    "days": 13.0,
+    "entry": 1.103555,
+    "realized_apr": 0.125352,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "ZEREBRO/USDT:USDT",
+    "open_ts": 1736438700000,
+    "close_ts": 1737331500000,
+    "days": 10.333333,
+    "entry": 0.681763,
+    "realized_apr": 0.257397,
+    "open_at_end": false,
+    "stopped": true
+   },
+   {
+    "symbol": "POLYX/USDT:USDT",
+    "open_ts": 1732291500000,
+    "close_ts": 1737533100000,
+    "days": 60.666667,
+    "entry": 0.345042,
+    "realized_apr": 0.090428,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "BAN/USDT:USDT",
+    "open_ts": 1734739500000,
+    "close_ts": 1737792300000,
+    "days": 35.333333,
+    "entry": 0.363781,
+    "realized_apr": 0.225114,
+    "open_at_end": false,
+    "stopped": true
+   },
+   {
+    "symbol": "1000RATS/USDT:USDT",
+    "open_ts": 1737446700000,
+    "close_ts": 1738483500000,
+    "days": 12.0,
+    "entry": 0.543596,
+    "realized_apr": 0.109789,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "XVG/USDT:USDT",
+    "open_ts": 1734336300000,
+    "close_ts": 1738541100000,
+    "days": 48.666667,
+    "entry": 0.60065,
+    "realized_apr": 0.211421,
+    "open_at_end": false,
+    "stopped": true
+   },
+   {
+    "symbol": "STEEM/USDT:USDT",
+    "open_ts": 1735632300000,
+    "close_ts": 1738569900000,
+    "days": 34.0,
+    "entry": 1.456464,
+    "realized_apr": 0.428506,
+    "open_at_end": false,
+    "stopped": true
+   },
+   {
+    "symbol": "ONT/USDT:USDT",
+    "open_ts": 1738541100000,
+    "close_ts": 1739549100000,
+    "days": 11.666667,
+    "entry": 0.515739,
+    "realized_apr": 0.247205,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "VVV/USDT:USDT",
+    "open_ts": 1739059500000,
+    "close_ts": 1740729900000,
+    "days": 19.333333,
+    "entry": 0.514489,
+    "realized_apr": 0.11773,
+    "open_at_end": false,
+    "stopped": true
+   },
+   {
+    "symbol": "HIVE/USDT:USDT",
+    "open_ts": 1737792300000,
+    "close_ts": 1740787500000,
+    "days": 34.666667,
+    "entry": 1.908391,
+    "realized_apr": 0.499628,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "STEEM/USDT:USDT",
+    "open_ts": 1738569900000,
+    "close_ts": 1740989100000,
+    "days": 28.0,
+    "entry": 0.206768,
+    "realized_apr": 0.271869,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "ARC/USDT:USDT",
+    "open_ts": 1739721900000,
+    "close_ts": 1741305900000,
+    "days": 18.333333,
+    "entry": 0.351708,
+    "realized_apr": 0.253816,
+    "open_at_end": false,
+    "stopped": true
+   },
+   {
+    "symbol": "USUAL/USDT:USDT",
+    "open_ts": 1740787500000,
+    "close_ts": 1742054700000,
+    "days": 14.666667,
+    "entry": 0.53483,
+    "realized_apr": 0.116308,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "REZ/USDT:USDT",
+    "open_ts": 1741305900000,
+    "close_ts": 1742457900000,
+    "days": 13.333333,
+    "entry": 0.564576,
+    "realized_apr": 0.024308,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "ALCH/USDT:USDT",
+    "open_ts": 1740989100000,
+    "close_ts": 1742832300000,
+    "days": 21.333333,
+    "entry": 0.501253,
+    "realized_apr": 0.160083,
+    "open_at_end": false,
+    "stopped": true
+   },
+   {
+    "symbol": "MELANIA/USDT:USDT",
+    "open_ts": 1742054700000,
+    "close_ts": 1743293100000,
+    "days": 14.333333,
+    "entry": 0.597851,
+    "realized_apr": 0.086614,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "ORCA/USDT:USDT",
+    "open_ts": 1742832300000,
+    "close_ts": 1744358700000,
+    "days": 17.666667,
+    "entry": 0.503711,
+    "realized_apr": 0.041462,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "STEEM/USDT:USDT",
+    "open_ts": 1742457900000,
+    "close_ts": 1744848300000,
+    "days": 27.666667,
+    "entry": 0.477685,
+    "realized_apr": 0.346445,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "RONIN/USDT:USDT",
+    "open_ts": 1741075500000,
+    "close_ts": 1744992300000,
+    "days": 45.333333,
+    "entry": 0.335113,
+    "realized_apr": 0.194924,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "ORCA/USDT:USDT",
+    "open_ts": 1744358700000,
+    "close_ts": 1745049900000,
+    "days": 8.0,
+    "entry": 0.737423,
+    "realized_apr": 1.162918,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "ANIME/USDT:USDT",
+    "open_ts": 1740989100000,
+    "close_ts": 1745481900000,
+    "days": 52.0,
+    "entry": 0.491909,
+    "realized_apr": 0.298374,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "BABY/USDT:USDT",
+    "open_ts": 1744848300000,
+    "close_ts": 1745597100000,
+    "days": 8.666667,
+    "entry": 2.099263,
+    "realized_apr": 0.045822,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "MOVE/USDT:USDT",
+    "open_ts": 1744992300000,
+    "close_ts": 1746000300000,
+    "days": 11.666667,
+    "entry": 0.599443,
+    "realized_apr": 0.04183,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "REZ/USDT:USDT",
+    "open_ts": 1743725100000,
+    "close_ts": 1746432300000,
+    "days": 31.333333,
+    "entry": 0.492272,
+    "realized_apr": 0.141586,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "DEEP/USDT:USDT",
+    "open_ts": 1745971500000,
+    "close_ts": 1747123500000,
+    "days": 13.333333,
+    "entry": 0.860159,
+    "realized_apr": 0.09768,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "XMR/USDT:USDT",
+    "open_ts": 1746259500000,
+    "close_ts": 1747123500000,
+    "days": 10.0,
+    "entry": 0.588495,
+    "realized_apr": 0.46424,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "RONIN/USDT:USDT",
+    "open_ts": 1746432300000,
+    "close_ts": 1748016300000,
+    "days": 18.333333,
+    "entry": 0.564773,
+    "realized_apr": 0.391495,
+    "open_at_end": false,
+    "stopped": true
+   },
+   {
+    "symbol": "RED/USDT:USDT",
+    "open_ts": 1746374700000,
+    "close_ts": 1748333100000,
+    "days": 22.666667,
+    "entry": 0.563043,
+    "realized_apr": 0.27319,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "CETUS/USDT:USDT",
+    "open_ts": 1748333100000,
+    "close_ts": 1749024300000,
+    "days": 8.0,
+    "entry": 0.525731,
+    "realized_apr": 0.169998,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "BIO/USDT:USDT",
+    "open_ts": 1748016300000,
+    "close_ts": 1750550700000,
+    "days": 29.333333,
+    "entry": 0.406566,
+    "realized_apr": 0.135151,
+    "open_at_end": false,
+    "stopped": true
+   },
+   {
+    "symbol": "MOVE/USDT:USDT",
+    "open_ts": 1749024300000,
+    "close_ts": 1750694700000,
+    "days": 19.333333,
+    "entry": 0.47543,
+    "realized_apr": 0.202626,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "JST/USDT:USDT",
+    "open_ts": 1747584300000,
+    "close_ts": 1750925100000,
+    "days": 38.666667,
+    "entry": 0.61699,
+    "realized_apr": 0.19492,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "MAVIA/USDT:USDT",
+    "open_ts": 1747267500000,
+    "close_ts": 1751155500000,
+    "days": 45.0,
+    "entry": 0.533803,
+    "realized_apr": 0.041215,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "RONIN/USDT:USDT",
+    "open_ts": 1750694700000,
+    "close_ts": 1752019500000,
+    "days": 15.333333,
+    "entry": 0.491442,
+    "realized_apr": 0.096453,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "BANANAS31/USDT:USDT",
+    "open_ts": 1751155500000,
+    "close_ts": 1752019500000,
+    "days": 10.0,
+    "entry": 0.570878,
+    "realized_apr": 0.152646,
+    "open_at_end": false,
+    "stopped": true
+   },
+   {
+    "symbol": "ORCA/USDT:USDT",
+    "open_ts": 1745049900000,
+    "close_ts": 1752451500000,
+    "days": 85.666667,
+    "entry": 1.275009,
+    "realized_apr": 0.049259,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "SXT/USDT:USDT",
+    "open_ts": 1752019500000,
+    "close_ts": 1752710700000,
+    "days": 8.0,
+    "entry": 0.592735,
+    "realized_apr": 0.006222,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "HOME/USDT:USDT",
+    "open_ts": 1752019500000,
+    "close_ts": 1753113900000,
+    "days": 12.666667,
+    "entry": 0.568261,
+    "realized_apr": 0.179104,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "HYPER/USDT:USDT",
+    "open_ts": 1752797100000,
+    "close_ts": 1753430700000,
+    "days": 7.333333,
+    "entry": 0.600467,
+    "realized_apr": 1.435522,
+    "open_at_end": false,
+    "stopped": true
+   },
+   {
+    "symbol": "NEWT/USDT:USDT",
+    "open_ts": 1753430700000,
+    "close_ts": 1754381100000,
+    "days": 11.0,
+    "entry": 3.13521,
+    "realized_apr": 0.105551,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "SOPH/USDT:USDT",
+    "open_ts": 1753805100000,
+    "close_ts": 1754582700000,
+    "days": 9.0,
+    "entry": 2.080109,
+    "realized_apr": 0.032209,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "SONIC/USDT:USDT",
+    "open_ts": 1750694700000,
+    "close_ts": 1755043500000,
+    "days": 50.333333,
+    "entry": 0.522337,
+    "realized_apr": 0.277816,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "F/USDT:USDT",
+    "open_ts": 1750925100000,
+    "close_ts": 1755043500000,
+    "days": 47.666667,
+    "entry": 0.877838,
+    "realized_apr": 0.367085,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "B/USDT:USDT",
+    "open_ts": 1753113900000,
+    "close_ts": 1756253100000,
+    "days": 36.333333,
+    "entry": 0.483558,
+    "realized_apr": 0.18198,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "M/USDT:USDT",
+    "open_ts": 1754381100000,
+    "close_ts": 1756569900000,
+    "days": 25.333333,
+    "entry": 0.467966,
+    "realized_apr": 1.305068,
+    "open_at_end": false,
+    "stopped": true
+   },
+   {
+    "symbol": "MYX/USDT:USDT",
+    "open_ts": 1755763500000,
+    "close_ts": 1757117100000,
+    "days": 15.666667,
+    "entry": 1.550611,
+    "realized_apr": 0.263507,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "NAORIS/USDT:USDT",
+    "open_ts": 1754582700000,
+    "close_ts": 1757232300000,
+    "days": 30.666667,
+    "entry": 0.667842,
+    "realized_apr": 0.1836,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "REZ/USDT:USDT",
+    "open_ts": 1755590700000,
+    "close_ts": 1757635500000,
+    "days": 23.666667,
+    "entry": 0.452314,
+    "realized_apr": 0.099739,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "MYX/USDT:USDT",
+    "open_ts": 1757376300000,
+    "close_ts": 1758096300000,
+    "days": 8.333333,
+    "entry": 2.434795,
+    "realized_apr": 0.72536,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "RED/USDT:USDT",
+    "open_ts": 1757433900000,
+    "close_ts": 1758816300000,
+    "days": 16.0,
+    "entry": 0.945274,
+    "realized_apr": 0.234913,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "B2/USDT:USDT",
+    "open_ts": 1757808300000,
+    "close_ts": 1759133100000,
+    "days": 15.333333,
+    "entry": 0.700499,
+    "realized_apr": 0.474194,
+    "open_at_end": false,
+    "stopped": true
+   },
+   {
+    "symbol": "API3/USDT:USDT",
+    "open_ts": 1756253100000,
+    "close_ts": 1759824300000,
+    "days": 41.333333,
+    "entry": 0.642459,
+    "realized_apr": 0.095835,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "PIPPIN/USDT:USDT",
+    "open_ts": 1758096300000,
+    "close_ts": 1760141100000,
+    "days": 23.666667,
+    "entry": 0.63877,
+    "realized_apr": 0.615948,
+    "open_at_end": false,
+    "stopped": true
+   },
+   {
+    "symbol": "LA/USDT:USDT",
+    "open_ts": 1758384300000,
+    "close_ts": 1760141100000,
+    "days": 20.333333,
+    "entry": 0.701919,
+    "realized_apr": 0.648928,
+    "open_at_end": false,
+    "stopped": true
+   },
+   {
+    "symbol": "FLOCK/USDT:USDT",
+    "open_ts": 1758816300000,
+    "close_ts": 1760141100000,
+    "days": 15.333333,
+    "entry": 1.579188,
+    "realized_apr": 0.588653,
+    "open_at_end": false,
+    "stopped": true
+   },
+   {
+    "symbol": "SOMI/USDT:USDT",
+    "open_ts": 1760141100000,
+    "close_ts": 1760774700000,
+    "days": 7.333333,
+    "entry": 1.544146,
+    "realized_apr": 0.040215,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "FLOCK/USDT:USDT",
+    "open_ts": 1760313900000,
+    "close_ts": 1761033900000,
+    "days": 8.333333,
+    "entry": 1.617202,
+    "realized_apr": 0.233491,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "API3/USDT:USDT",
+    "open_ts": 1760141100000,
+    "close_ts": 1761494700000,
+    "days": 15.666667,
+    "entry": 4.575313,
+    "realized_apr": 0.900883,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "JELLYJELLY/USDT:USDT",
+    "open_ts": 1760141100000,
+    "close_ts": 1761811500000,
+    "days": 19.333333,
+    "entry": 1.475181,
+    "realized_apr": 0.694018,
+    "open_at_end": false,
+    "stopped": true
+   },
+   {
+    "symbol": "AIO/USDT:USDT",
+    "open_ts": 1760774700000,
+    "close_ts": 1761926700000,
+    "days": 13.333333,
+    "entry": 1.407445,
+    "realized_apr": 0.467705,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "F/USDT:USDT",
+    "open_ts": 1761379500000,
+    "close_ts": 1761984300000,
+    "days": 7.0,
+    "entry": 2.453926,
+    "realized_apr": 0.033748,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "BIO/USDT:USDT",
+    "open_ts": 1761149100000,
+    "close_ts": 1762790700000,
+    "days": 19.0,
+    "entry": 2.145028,
+    "realized_apr": 0.168875,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "LPT/USDT:USDT",
+    "open_ts": 1762185900000,
+    "close_ts": 1762934700000,
+    "days": 8.666667,
+    "entry": 2.541968,
+    "realized_apr": 0.115677,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "DOOD/USDT:USDT",
+    "open_ts": 1761494700000,
+    "close_ts": 1763078700000,
+    "days": 18.333333,
+    "entry": 1.566202,
+    "realized_apr": 0.192069,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "ZEREBRO/USDT:USDT",
+    "open_ts": 1761926700000,
+    "close_ts": 1763654700000,
+    "days": 20.0,
+    "entry": 0.872504,
+    "realized_apr": 0.195056,
+    "open_at_end": false,
+    "stopped": true
+   },
+   {
+    "symbol": "ENSO/USDT:USDT",
+    "open_ts": 1761984300000,
+    "close_ts": 1763712300000,
+    "days": 20.0,
+    "entry": 0.803453,
+    "realized_apr": 0.17787,
+    "open_at_end": false,
+    "stopped": true
+   },
+   {
+    "symbol": "LSK/USDT:USDT",
+    "open_ts": 1763078700000,
+    "close_ts": 1763712300000,
+    "days": 7.333333,
+    "entry": 2.756251,
+    "realized_apr": 1.193776,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "RESOLV/USDT:USDT",
+    "open_ts": 1763712300000,
+    "close_ts": 1764777900000,
+    "days": 12.333333,
+    "entry": 2.611279,
+    "realized_apr": 2.759206,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "TNSR/USDT:USDT",
+    "open_ts": 1764057900000,
+    "close_ts": 1764806700000,
+    "days": 8.666667,
+    "entry": 5.188887,
+    "realized_apr": 0.710396,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "ORCA/USDT:USDT",
+    "open_ts": 1764403500000,
+    "close_ts": 1765037100000,
+    "days": 7.333333,
+    "entry": 1.911593,
+    "realized_apr": 0.734878,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "LUNA2/USDT:USDT",
+    "open_ts": 1765411500000,
+    "close_ts": 1766073900000,
+    "days": 7.666667,
+    "entry": 5.116916,
+    "realized_apr": 1.837911,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "RESOLV/USDT:USDT",
+    "open_ts": 1764864300000,
+    "close_ts": 1766160300000,
+    "days": 15.0,
+    "entry": 2.67041,
+    "realized_apr": 0.260765,
+    "open_at_end": false,
+    "stopped": true
+   },
+   {
+    "symbol": "SOON/USDT:USDT",
+    "open_ts": 1764403500000,
+    "close_ts": 1766217900000,
+    "days": 21.0,
+    "entry": 1.446322,
+    "realized_apr": 0.287128,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "MOVE/USDT:USDT",
+    "open_ts": 1765728300000,
+    "close_ts": 1766361900000,
+    "days": 7.333333,
+    "entry": 2.284699,
+    "realized_apr": 0.255245,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "MOODENG/USDT:USDT",
+    "open_ts": 1765238700000,
+    "close_ts": 1766995500000,
+    "days": 20.333333,
+    "entry": 3.025215,
+    "realized_apr": 0.092491,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "PIPPIN/USDT:USDT",
+    "open_ts": 1766995500000,
+    "close_ts": 1767600300000,
+    "days": 7.0,
+    "entry": 1.244209,
+    "realized_apr": -1.295081,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "WCT/USDT:USDT",
+    "open_ts": 1767110700000,
+    "close_ts": 1767715500000,
+    "days": 7.0,
+    "entry": 1.019088,
+    "realized_apr": -0.069553,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "OG/USDT:USDT",
+    "open_ts": 1767715500000,
+    "close_ts": 1768349100000,
+    "days": 7.333333,
+    "entry": 0.893939,
+    "realized_apr": 0.003889,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "PIEVERSE/USDT:USDT",
+    "open_ts": 1768176300000,
+    "close_ts": 1768838700000,
+    "days": 7.666667,
+    "entry": 2.309486,
+    "realized_apr": 0.337222,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "PTB/USDT:USDT",
+    "open_ts": 1766419500000,
+    "close_ts": 1769126700000,
+    "days": 31.333333,
+    "entry": 2.02801,
+    "realized_apr": 0.56291,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "PIPPIN/USDT:USDT",
+    "open_ts": 1768349100000,
+    "close_ts": 1769587500000,
+    "days": 14.333333,
+    "entry": 2.421691,
+    "realized_apr": 1.04465,
+    "open_at_end": false,
+    "stopped": true
+   },
+   {
+    "symbol": "ZKP/USDT:USDT",
+    "open_ts": 1769011500000,
+    "close_ts": 1769933100000,
+    "days": 10.666667,
+    "entry": 1.387446,
+    "realized_apr": -0.85887,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "AXS/USDT:USDT",
+    "open_ts": 1769011500000,
+    "close_ts": 1770249900000,
+    "days": 14.333333,
+    "entry": 2.795937,
+    "realized_apr": 1.354504,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "FLOW/USDT:USDT",
+    "open_ts": 1769731500000,
+    "close_ts": 1770393900000,
+    "days": 7.666667,
+    "entry": 1.456526,
+    "realized_apr": 0.011299,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "ENSO/USDT:USDT",
+    "open_ts": 1769443500000,
+    "close_ts": 1770451500000,
+    "days": 11.666667,
+    "entry": 2.770172,
+    "realized_apr": 0.720219,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "0G/USDT:USDT",
+    "open_ts": 1769558700000,
+    "close_ts": 1770509100000,
+    "days": 11.0,
+    "entry": 2.446787,
+    "realized_apr": 0.493184,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "ZKP/USDT:USDT",
+    "open_ts": 1770249900000,
+    "close_ts": 1771286700000,
+    "days": 12.0,
+    "entry": 4.248915,
+    "realized_apr": 2.73337,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "ZORA/USDT:USDT",
+    "open_ts": 1770451500000,
+    "close_ts": 1771401900000,
+    "days": 11.0,
+    "entry": 2.508737,
+    "realized_apr": 0.174997,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "SOPH/USDT:USDT",
+    "open_ts": 1769933100000,
+    "close_ts": 1771632300000,
+    "days": 19.666667,
+    "entry": 1.580573,
+    "realized_apr": 0.182094,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "RIVER/USDT:USDT",
+    "open_ts": 1771315500000,
+    "close_ts": 1771977900000,
+    "days": 7.666667,
+    "entry": 2.179954,
+    "realized_apr": 0.710181,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "AZTEC/USDT:USDT",
+    "open_ts": 1771632300000,
+    "close_ts": 1772352300000,
+    "days": 8.333333,
+    "entry": 2.129565,
+    "realized_apr": 1.045097,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "ESP/USDT:USDT",
+    "open_ts": 1772006700000,
+    "close_ts": 1772870700000,
+    "days": 10.0,
+    "entry": 1.568233,
+    "realized_apr": 0.606612,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "ENSO/USDT:USDT",
+    "open_ts": 1772755500000,
+    "close_ts": 1773533100000,
+    "days": 9.0,
+    "entry": 1.513176,
+    "realized_apr": 0.157504,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "Q/USDT:USDT",
+    "open_ts": 1772957100000,
+    "close_ts": 1773821100000,
+    "days": 10.0,
+    "entry": 0.614673,
+    "realized_apr": 0.111783,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "AXL/USDT:USDT",
+    "open_ts": 1772870700000,
+    "close_ts": 1773907500000,
+    "days": 12.0,
+    "entry": 0.585539,
+    "realized_apr": 0.106549,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "SAHARA/USDT:USDT",
+    "open_ts": 1773533100000,
+    "close_ts": 1774512300000,
+    "days": 11.333333,
+    "entry": 2.253765,
+    "realized_apr": 1.034624,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "XVS/USDT:USDT",
+    "open_ts": 1773907500000,
+    "close_ts": 1774541100000,
+    "days": 7.333333,
+    "entry": 0.9406,
+    "realized_apr": 0.001508,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "SKR/USDT:USDT",
+    "open_ts": 1772697900000,
+    "close_ts": 1774829100000,
+    "days": 24.666667,
+    "entry": 1.050535,
+    "realized_apr": 0.113007,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "ENJ/USDT:USDT",
+    "open_ts": 1774051500000,
+    "close_ts": 1775721900000,
+    "days": 19.333333,
+    "entry": 1.368676,
+    "realized_apr": 0.059999,
+    "open_at_end": false,
+    "stopped": true
+   },
+   {
+    "symbol": "KAT/USDT:USDT",
+    "open_ts": 1775261100000,
+    "close_ts": 1776614700000,
+    "days": 15.666667,
+    "entry": 1.302073,
+    "realized_apr": 0.264866,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "STO/USDT:USDT",
+    "open_ts": 1775779500000,
+    "close_ts": 1777017900000,
+    "days": 14.333333,
+    "entry": 1.78003,
+    "realized_apr": 0.164768,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "ARIA/USDT:USDT",
+    "open_ts": 1776211500000,
+    "close_ts": 1777507500000,
+    "days": 15.0,
+    "entry": 6.605853,
+    "realized_apr": 0.273688,
+    "open_at_end": false,
+    "stopped": true
+   },
+   {
+    "symbol": "SIREN/USDT:USDT",
+    "open_ts": 1776528300000,
+    "close_ts": 1778169900000,
+    "days": 19.0,
+    "entry": 1.724952,
+    "realized_apr": 0.711187,
+    "open_at_end": false,
+    "stopped": true
+   },
+   {
+    "symbol": "TA/USDT:USDT",
+    "open_ts": 1777824300000,
+    "close_ts": 1779811500000,
+    "days": 23.0,
+    "entry": 0.92981,
+    "realized_apr": 0.353245,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "RAVE/USDT:USDT",
+    "open_ts": 1777190700000,
+    "close_ts": 1779955500000,
+    "days": 32.0,
+    "entry": 3.708667,
+    "realized_apr": 0.573665,
+    "open_at_end": false,
+    "stopped": true
+   },
+   {
+    "symbol": "H/USDT:USDT",
+    "open_ts": 1778169900000,
+    "close_ts": 1780157100000,
+    "days": 23.0,
+    "entry": 0.774625,
+    "realized_apr": 0.470011,
+    "open_at_end": false,
+    "stopped": true
+   },
+   {
+    "symbol": "DRIFT/USDT:USDT",
+    "open_ts": 1776614700000,
+    "close_ts": 1780445100000,
+    "days": 44.333333,
+    "entry": 1.652618,
+    "realized_apr": 0.565475,
+    "open_at_end": false,
+    "stopped": true
+   },
+   {
+    "symbol": "ID/USDT:USDT",
+    "open_ts": 1780157100000,
+    "close_ts": 1780819500000,
+    "days": 7.666667,
+    "entry": 3.279535,
+    "realized_apr": 0.333061,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "ORCA/USDT:USDT",
+    "open_ts": 1778054700000,
+    "close_ts": 1780905900000,
+    "days": 33.0,
+    "entry": 1.250309,
+    "realized_apr": 0.135501,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "BTR/USDT:USDT",
+    "open_ts": 1779811500000,
+    "close_ts": 1781424300000,
+    "days": 18.666667,
+    "entry": 1.32145,
+    "realized_apr": 0.338349,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "HEI/USDT:USDT",
+    "open_ts": 1780934700000,
+    "close_ts": 1781856300000,
+    "days": 10.666667,
+    "entry": 1.166469,
+    "realized_apr": 0.011858,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "HOME/USDT:USDT",
+    "open_ts": 1781712300000,
+    "close_ts": 1782691500000,
+    "days": 11.333333,
+    "entry": 2.145259,
+    "realized_apr": 0.302757,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "PRL/USDT:USDT",
+    "open_ts": 1782173100000,
+    "close_ts": 1782777900000,
+    "days": 7.0,
+    "entry": 0.735349,
+    "realized_apr": -0.024595,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "IN/USDT:USDT",
+    "open_ts": 1782864300000,
+    "close_ts": 1783469100000,
+    "days": 7.0,
+    "entry": 1.684862,
+    "realized_apr": -0.040675,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "ESPORTS/USDT:USDT",
+    "open_ts": 1781971500000,
+    "close_ts": 1783497900000,
+    "days": 17.666667,
+    "entry": 0.937276,
+    "realized_apr": 0.402425,
+    "open_at_end": false,
+    "stopped": true
+   },
+   {
+    "symbol": "EPIC/USDT:USDT",
+    "open_ts": 1783613100000,
+    "close_ts": 1784621100000,
+    "days": 11.666667,
+    "entry": 1.417228,
+    "realized_apr": 0.081246,
+    "open_at_end": false,
+    "stopped": true
+   },
+   {
+    "symbol": "OGN/USDT:USDT",
+    "open_ts": 1783843500000,
+    "close_ts": 1784937900000,
+    "days": 12.666667,
+    "entry": 0.520321,
+    "realized_apr": 0.120977,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "1000XEC/USDT:USDT",
+    "open_ts": 1784621100000,
+    "close_ts": 1785225900000,
+    "days": 7.0,
+    "entry": 0.973545,
+    "realized_apr": -0.036448,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "HOME/USDT:USDT",
+    "open_ts": 1784937900000,
+    "close_ts": 1785830700000,
+    "days": 10.333333,
+    "entry": 0.974193,
+    "realized_apr": 0.109573,
+    "open_at_end": false,
+    "stopped": true
+   },
+   {
+    "symbol": "DEXE/USDT:USDT",
+    "open_ts": 1785341100000,
+    "close_ts": 1786089900000,
+    "days": 8.666667,
+    "entry": 2.098588,
+    "realized_apr": 0.293107,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "COTI/USDT:USDT",
+    "open_ts": 1785629100000,
+    "close_ts": 1786320300000,
+    "days": 8.0,
+    "entry": 2.210995,
+    "realized_apr": 0.037025,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "ZIL/USDT:USDT",
+    "open_ts": 1785398700000,
+    "close_ts": 1786377900000,
+    "days": 11.333333,
+    "entry": 1.170236,
+    "realized_apr": 0.562385,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "BIRB/USDT:USDT",
+    "open_ts": 1785830700000,
+    "close_ts": 1786521900000,
+    "days": 8.0,
+    "entry": 0.832304,
+    "realized_apr": 0.015677,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "ARIA/USDT:USDT",
+    "open_ts": 1781424300000,
+    "close_ts": 1786637100000,
+    "days": 60.333333,
+    "entry": 0.776235,
+    "realized_apr": 0.186358,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "HOME/USDT:USDT",
+    "open_ts": 1786089900000,
+    "close_ts": 1786723500000,
+    "days": 7.333333,
+    "entry": 1.245037,
+    "realized_apr": -0.016418,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "COTI/USDT:USDT",
+    "open_ts": 1786521900000,
+    "close_ts": 1787587500000,
+    "days": 12.333333,
+    "entry": 2.061258,
+    "realized_apr": 0.446806,
+    "open_at_end": false,
+    "stopped": true
+   },
+   {
+    "symbol": "BTR/USDT:USDT",
+    "open_ts": 1786723500000,
+    "close_ts": 1787731500000,
+    "days": 11.666667,
+    "entry": 1.000029,
+    "realized_apr": 0.210152,
+    "open_at_end": false,
+    "stopped": true
+   },
+   {
+    "symbol": "THE/USDT:USDT",
+    "open_ts": 1786953900000,
+    "close_ts": 1788278700000,
+    "days": 15.333333,
+    "entry": 0.968504,
+    "realized_apr": 0.219546,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "ONG/USDT:USDT",
+    "open_ts": 1788278700000,
+    "close_ts": 1788883500000,
+    "days": 7.0,
+    "entry": 1.697784,
+    "realized_apr": -0.466182,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "COTI/USDT:USDT",
+    "open_ts": 1788048300000,
+    "close_ts": 1788998700000,
+    "days": 11.0,
+    "entry": 1.170098,
+    "realized_apr": 0.420074,
+    "open_at_end": false,
+    "stopped": true
+   },
+   {
+    "symbol": "COW/USDT:USDT",
+    "open_ts": 1787587500000,
+    "close_ts": 1789027500000,
+    "days": 16.666667,
+    "entry": 0.522371,
+    "realized_apr": 0.009988,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "CHILLGUY/USDT:USDT",
+    "open_ts": 1787760300000,
+    "close_ts": 1789545900000,
+    "days": 20.666667,
+    "entry": 0.433534,
+    "realized_apr": 0.039313,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "IOST/USDT:USDT",
+    "open_ts": 1789027500000,
+    "close_ts": 1789632300000,
+    "days": 7.0,
+    "entry": 1.587774,
+    "realized_apr": -0.121337,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "ONG/USDT:USDT",
+    "open_ts": 1789113900000,
+    "close_ts": 1789920300000,
+    "days": 9.333333,
+    "entry": 1.457447,
+    "realized_apr": 0.344425,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "MTL/USDT:USDT",
+    "open_ts": 1789373100000,
+    "close_ts": 1789977900000,
+    "days": 7.0,
+    "entry": 3.249962,
+    "realized_apr": 0.117822,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "BR/USDT:USDT",
+    "open_ts": 1789977900000,
+    "close_ts": 1791043500000,
+    "days": 12.333333,
+    "entry": 0.887761,
+    "realized_apr": 0.346913,
+    "open_at_end": false,
+    "stopped": true
+   },
+   {
+    "symbol": "LSK/USDT:USDT",
+    "open_ts": 1790496300000,
+    "close_ts": 1791273900000,
+    "days": 9.0,
+    "entry": 0.972087,
+    "realized_apr": 0.602482,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "NAORIS/USDT:USDT",
+    "open_ts": 1790899500000,
+    "close_ts": 1791849900000,
+    "days": 11.0,
+    "entry": 0.70651,
+    "realized_apr": 0.006009,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "ARK/USDT:USDT",
+    "open_ts": 1791043500000,
+    "close_ts": 1792137900000,
+    "days": 12.666667,
+    "entry": 6.397171,
+    "realized_apr": 0.405495,
+    "open_at_end": false,
+    "stopped": false
+   },
+   {
+    "symbol": "MTL/USDT:USDT",
+    "open_ts": 1790006700000,
+    "close_ts": 1792242000000,
+    "days": 25.871528,
+    "entry": 0.582815,
+    "realized_apr": 0.056607,
+    "open_at_end": true,
+    "stopped": false
+   },
+   {
+    "symbol": "PHAROS/USDT:USDT",
+    "open_ts": 1791273900000,
+    "close_ts": 1792242000000,
+    "days": 11.204861,
+    "entry": 0.559451,
+    "realized_apr": 0.159324,
+    "open_at_end": true,
+    "stopped": false
+   }
+  ]
+ }
+}

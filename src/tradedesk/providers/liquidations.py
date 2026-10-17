@@ -37,7 +37,9 @@ import json
 from collections.abc import AsyncIterator
 from typing import Any
 
-BINANCE_WS_URL = "wss://fstream.binance.com/ws/!forceOrder@arr"
+# USD-M market streams moved under /market/ (checked 2026-10-17): the old /ws/ path still accepts the connection but
+# sends nothing, not even btcusdt@aggTrade.
+BINANCE_WS_URL = "wss://fstream.binance.com/market/ws/!forceOrder@arr"
 BYBIT_WS_URL = "wss://stream.bybit.com/v5/public/linear"
 OKX_WS_URL = "wss://ws.okx.com:8443/ws/v5/public"
 

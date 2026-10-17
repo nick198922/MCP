@@ -79,7 +79,7 @@ $rest}"
 }
 
 echo "== $(date) start (dry=$DRY)"
-git -C "$REPO" fetch --quiet origin
+git -C "$REPO" fetch --quiet --no-write-fetch-head origin
 # The agents work in a separate clone, not a git worktree: Claude Code applies the main checkout's project
 # settings (the owner's broad permissions in .claude/settings.local.json) to its worktrees as well.
 # Unfinished work in an old worktree is carried over to the clone, on the commit it was based on.

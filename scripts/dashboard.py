@@ -320,7 +320,7 @@ _last_fetch = [0.0]
 def snapshot() -> dict:
     now = time.time()
     if now - _last_fetch[0] >= FETCH_EVERY_S:
-        _git("fetch", "-q", "origin")
+        _git("fetch", "-q", "--no-write-fetch-head", "origin")
         _last_fetch[0] = now
     try:
         hist = (LOG_DIR / "history.tsv").read_text(encoding="utf-8").splitlines()

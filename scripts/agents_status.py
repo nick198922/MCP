@@ -372,7 +372,7 @@ def server_line(db: Path, backups: Path) -> str:
 
 
 def collect(repo: Path, worktree: Path, log_dir: Path) -> dict:
-    _git(repo, "fetch", "-q", "origin")
+    _git(repo, "fetch", "-q", "--no-write-fetch-head", "origin")
     branches = open_branches(repo)
     work = work_state(log_dir)
     parked = parked_state(log_dir)

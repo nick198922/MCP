@@ -28,7 +28,7 @@
   Нічого з цього не в git.
 
 ## Стан (17.10)
-- **86 MCP-інструментів, 900+ тестів.** Таблиця — `README.md`; відповідність DOUBLETOP — `docs/PARITY.md`.
+- **86 MCP-інструментів, 950+ тестів.** Таблиця — `README.md`; відповідність DOUBLETOP — `docs/PARITY.md`.
 - **Агенти** (`docs/AGENTS.md`) працюють безперервно з автозливом: 46 кроків здано за 14–17.10.
   - Лаунчер уміє паркувати кілька гілок.
   - Від 80 % тижневого ліміту — лише картки власника.
@@ -46,17 +46,19 @@
 Деталі — `docs/AGENTS.md` → «Візія».
 
 ## Черга агентів (картки власника, `Порядок: N`)
-1. [deviation-weekly-trend](ideas/IDEA-20261017-deviation-weekly-trend.md) — H1, улюблений сетап Іллі.
-2. [forward-paper-carry](ideas/IDEA-20261017-forward-paper-carry.md) — паперовий рушій у колекторі, тижневий звіт. **Перший зріз зроблено 17.10** (рушій, спільні чисті функції, `paper_carry_status`, схема 14, виправлення за рев'ю: кеш funding, пейсер, утримання при пропущеній виплаті, `on_time` від завершення); лишилися тижневий звіт, `bench.json`, перевірки (г)/(є), запуск на сервері — `docs/BACKLOG.md`.
-3. [doubletop-to-ours](ideas/IDEA-20261017-doubletop-to-ours.md):
-   - звірка з DOUBLETOP;
-   - `dex_pairs`, `chain_metrics`;
-   - історія Coinalyze і повтор перевірок ліквідацій і натовпу у funding.
-4. [vrp-real-marks](ideas/IDEA-20261017-vrp-real-marks.md).
-5. [polymarket-vs-options-forward](ideas/IDEA-20261017-polymarket-vs-options-forward.md) — CLV.
-6. [course-setups-crypto](ideas/IDEA-20261016-course-setups-crypto.md), кроки 8–11 — потім серію закрити.
+1. ~~deviation-weekly-trend~~ — `inconclusive` 17.10 (108 дат, тупик за потужністю, OOS −0.08R).
+2. [forward-paper-carry](ideas/IDEA-20261017-forward-paper-carry.md) — **перший зріз зроблено 17.10** (рушій, спільні чисті функції, `paper_carry_status`, схема 14, виправлення за рев'ю: кеш funding, пейсер, утримання при пропущеній виплаті, `on_time` від завершення); лишилися тижневий звіт, `bench.json`, перевірки (г)/(є), запуск на сервері — `docs/BACKLOG.md`.
+3. [per-asset-recheck](ideas/IDEA-20261017-per-asset-recheck.md) — чи прив'язані закриті сетапи до окремих монет. Правило п. 5a `quant.md` — для всіх нових звітів.
+4. [doubletop-to-ours](ideas/IDEA-20261017-doubletop-to-ours.md) — звірка, `dex_pairs`, `chain_metrics`, Coinalyze.
+5. [setup-hunt](ideas/IDEA-20261017-setup-hunt.md) — власний пошук 2–3 сетапів з доказами.
+6. [vrp-real-marks](ideas/IDEA-20261017-vrp-real-marks.md).
+7. [polymarket-vs-options-forward](ideas/IDEA-20261017-polymarket-vs-options-forward.md) — CLV.
+8. [course-setups-crypto](ideas/IDEA-20261016-course-setups-crypto.md), кроки 8–11.
 
-Поза чергою: «розумні гроші» (квант зараз), калібрування Polymarket (правки після рев'ю).
+**Поза чергою:**
+- «розумні гроші» — стадія 0 `inconclusive`, збір триває;
+- калібрування Polymarket — правки;
+- нові уроки DoubleTop (36 сторінок) — Claude з власником після 20.10.
 
 ## MCP DOUBLETOP (тимчасово)
 - Конектор claude.ai на сервері через акаунт власника. Агентам — лише для звірки й зразків (`tests/fixtures/doubletop/`), не з коду. Правила — `docs/AGENTS.md`.

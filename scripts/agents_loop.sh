@@ -20,7 +20,7 @@ WT="${TRADEDESK_AGENTS_WORKTREE:-$(dirname "$REPO")/tradedesk-agents}"
 LOG_DIR="${TRADEDESK_AGENTS_LOG_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/tradedesk-agents}"
 . "$REPO/scripts/agents_notify.sh"
 . "$REPO/scripts/agents_usage.sh"
-MAX_USAGE="${TRADEDESK_AGENTS_MAX_USAGE:-95}"
+MAX_USAGE="${TRADEDESK_AGENTS_MAX_USAGE:-97}"
 OWNER_ONLY_AT="${TRADEDESK_AGENTS_OWNER_ONLY_AT:-80}" # weekly %: from here only the owner's cards (Пріоритет: власник)
 WAIT_BUDGET=3600
 MAX_OPEN="${TRADEDESK_AGENTS_MAX_OPEN:-2}"

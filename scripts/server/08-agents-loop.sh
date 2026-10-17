@@ -19,7 +19,7 @@ Type=simple
 User=$SVC
 Group=$SVC
 WorkingDirectory=$REPO
-Environment=TRADEDESK_AGENTS_MAX_USAGE=95
+Environment=TRADEDESK_AGENTS_MAX_USAGE=97
 Environment=TRADEDESK_AGENTS_MAX_OPEN=2
 ExecStart=$REPO/scripts/agents_loop.sh
 Restart=always

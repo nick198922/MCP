@@ -1,0 +1,6 @@
+IDEA-20261017-news-events, stage 0b (closures): SHA-256 of the card section "## Попередня реєстрація 0b" (to the end of
+the file), printed by `uv run python scripts/verify_news_events_0b.py prereg`.
+
+1) before stage 0b (no closure prices fetched or looked at; known in advance: Claude's preliminary measurement quoted in
+   the card and the CSV itself):
+2026-10-17T19:23:18+00:00 sha256=81488a3e5ac7629bea96f5188787c8796c10326de915f01330cdfb56f6769395 bytes=9670

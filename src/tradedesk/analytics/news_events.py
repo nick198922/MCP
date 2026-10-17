@@ -10,13 +10,16 @@ them is ever executed or used as an instruction.
 
 from __future__ import annotations
 
+import csv
 import hashlib
+import io
 import math
 import random
 import re
 import statistics
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 import numpy as np
 
@@ -187,6 +190,111 @@ def hack_events(
         day = ms // DAY_MS * DAY_MS
         out.append(Event(s, day, "hack", "defillama", f"hack:{day}:{s}", precise=False, note=f"{h.get('name')} ${amt / 1e6:.1f}M"))
     return out
+
+
+# ------------------------------------------------------------------ stage 0b: curated closures (CSV, Claude's set)
+
+CLOSURE_WHOLE = frozenset({"shutdown", "chain_sunset", "wind_down_distribution"})  # the whole project ends
+CLOSURE_PARTIAL = frozenset({"product_sunset", "alliance_exit", "governance_negative"})  # a part of it
+OFFICIAL_TIME = frozenset({"official_tweet", "contributor_tweet"})
+HYPOTHESIS_SOURCES = frozenset({"BLUR", "BLAST"})  # the owner's examples the hypothesis came from
+
+
+@dataclass(frozen=True)
+class Closure:
+    """One row of ``docs/verification/2026-10-17-news-closures.csv`` (time in epoch ms UTC)."""
+
+    token: str
+    ms: int
+    type: str
+    scope: str
+    direction_prior: str  # down | ambiguous | up
+    time_source: str  # official_tweet | contributor_tweet | secondary_upper_bound | leak
+    url: str
+    note: str
+
+    @property
+    def key(self) -> str:
+        return f"{self.token}@{self.ms}"
+
+
+def parse_closures(text: str) -> list[Closure]:
+    """Rows of the closures CSV (header ``token,t0_utc,type,scope,direction_prior,time_source,url,note``; t0 as
+    ``YYYY-MM-DD HH:MM:SS`` UTC). The text is untrusted: fields are only stored, never interpreted."""
+    out: list[Closure] = []
+    for r in csv.DictReader(io.StringIO(text)):
+        ms = int(datetime.strptime(r["t0_utc"].strip(), "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC).timestamp() * 1000)
+        out.append(
+            Closure(
+                r["token"].strip().upper(),
+                ms,
+                r["type"].strip(),
+                r["scope"].strip(),
+                r["direction_prior"].strip(),
+                r["time_source"].strip(),
+                r["url"].strip(),
+                r["note"].strip(),
+            )
+        )
+    return out
+
+
+TWITTER_EPOCH_MS = 1288834974657
+
+
+def snowflake_ms(tweet_id: int) -> int:
+    """Creation time (epoch ms UTC) encoded in an X/Twitter snowflake ID: (id >> 22) + Twitter epoch."""
+    return (int(tweet_id) >> 22) + TWITTER_EPOCH_MS
+
+
+def closure_exclusion(c: Closure) -> str | None:
+    """Why a closure row is outside the registered primary pool of stage 0b (None: it is in the pool)."""
+    if c.time_source == "leak" or c.type == "leak":
+        return "leak"
+    if c.type == "hack":
+        return "hack (stage 0d)"
+    if c.direction_prior == "up":
+        return "direction prior up"
+    if c.token in HYPOTHESIS_SOURCES:
+        return "hypothesis source"
+    return None
+
+
+# ------------------------------------------------------------------ speed: how much of the 24 h move is early
+
+
+def move_share_pooled(r_h: Sequence[float], r_24: Sequence[float]) -> float:
+    """Share of the 24 h move that happened by horizon h, pooled: mean r(h) / mean r(24 h). NaN if mean r(24 h) = 0."""
+    if not r_h or len(r_h) != len(r_24):
+        return float("nan")
+    den = statistics.fmean(r_24)
+    return statistics.fmean(r_h) / den if den != 0 else float("nan")
+
+
+def move_share_bootstrap(
+    r_h: Sequence[float], r_24: Sequence[float], *, n_boot: int = 10000, seed: int = 5, alpha: float = 0.05
+) -> tuple[float, float, float]:
+    """(pooled share, lower, upper): percentile CI of mean r(h) / mean r(24 h), resampling events (pairs kept)."""
+    est = move_share_pooled(r_h, r_24)
+    n = len(r_h)
+    if n < 2:
+        return est, float("nan"), float("nan")
+    a, z = np.asarray(r_h, dtype=float), np.asarray(r_24, dtype=float)
+    idx = np.random.default_rng(seed).integers(0, n, size=(n_boot, n))
+    den = z[idx].mean(axis=1)
+    ok = den != 0
+    ratios = a[idx].mean(axis=1)[ok] / den[ok]
+    if not len(ratios):
+        return est, float("nan"), float("nan")
+    lo, hi = np.quantile(ratios, [alpha / 2, 1 - alpha / 2])
+    return est, float(lo), float(hi)
+
+
+def move_share_median(r_h: Sequence[float], r_24: Sequence[float], *, min_abs_24: float = 0.05) -> tuple[float, int]:
+    """(median of per-event r(h) / r(24 h), n) over events with |r(24 h)| >= ``min_abs_24`` (small moves make the
+    per-event ratio meaningless)."""
+    xs = [a / z for a, z in zip(r_h, r_24, strict=True) if abs(z) >= min_abs_24]
+    return (statistics.median(xs) if xs else float("nan")), len(xs)
 
 
 # ------------------------------------------------------------------ price paths

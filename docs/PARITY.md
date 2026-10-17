@@ -15,6 +15,8 @@ DOUBLETOP: **74 інструменти** (66 від 17 бекендів + 8 вл
 
 ## Біржі та деривативи
 
+Звірку чисел із DOUBLETOP для шести пар (OHLCV, OI, funding, long/short, Hyperliquid funding, Polymarket history) ще **не виконано**: очікувані розбіжності (одиниці, час, покриття) і що лишилося перевірити — у [reviews/2026-10-18-doubletop-parity.md](reviews/2026-10-18-doubletop-parity.md). Доти статус ✅ нижче означає «функціонал є», а не «числа збігаються».
+
 | DOUBLETOP | Наш аналог |
 |---|---|
 | ccxt `get-ticker` | ✅ `market_ticker` |

@@ -17,6 +17,7 @@ from .providers import alternative_me as altme_mod
 from .providers import binance_futures as binance_mod
 from .providers import binance_vision as vision_mod
 from .providers import bybit as bybit_mod
+from .providers import coinalyze as coinalyze_mod
 from .providers import coingecko as cg_mod
 from .providers import defillama as llama_mod
 from .providers import deribit as deribit_mod
@@ -27,6 +28,7 @@ from .providers.alternative_me import AlternativeMe
 from .providers.binance_futures import BinanceFutures
 from .providers.binance_vision import BinanceVision
 from .providers.bybit import Bybit
+from .providers.coinalyze import Coinalyze
 from .providers.coingecko import CoinGecko
 from .providers.defillama import DefiLlama
 from .providers.deribit import Deribit
@@ -82,6 +84,22 @@ class Runtime:
         self.alternative_me = AlternativeMe(http("alternative_me", altme_mod.BASE_URL, rate=2, burst=4))
         self.dexscreener = DexScreener(http("dexscreener", dexs_mod.BASE_URL, rate=4, burst=8))
         self.defillama = DefiLlama(http("defillama", llama_mod.BASE_URL, rate=4, burst=8))
+        self.coinalyze = Coinalyze(
+            Http(
+                "coinalyze",
+                coinalyze_mod.BASE_URL,
+                rate=coinalyze_mod.RATE_PER_SECOND,
+                burst=5,
+                timeout=s.http_timeout,
+                retries=s.http_retries,
+                headers=coinalyze_mod.auth_header(s.coinalyze_api_key),
+                cache=self.cache,
+                cache_scale=s.cache_scale,
+                health=self.health,
+                transport=tr.get("coinalyze"),
+            ),
+            has_key=bool(s.coinalyze_api_key),
+        )
         self.polymarket = Polymarket(
             gamma=http("polymarket:gamma", poly_mod.GAMMA_URL, rate=5, burst=10),
             clob=http("polymarket:clob", poly_mod.CLOB_URL, rate=5, burst=10),
@@ -124,6 +142,7 @@ class Runtime:
         await self.alternative_me.http.aclose()
         await self.dexscreener.http.aclose()
         await self.defillama.http.aclose()
+        await self.coinalyze.http.aclose()
         await self.polymarket.aclose()
         await self.coingecko.http.aclose()
         await self.exchanges.aclose()

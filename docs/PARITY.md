@@ -26,7 +26,7 @@ DOUBLETOP: **74 інструменти** (66 від 17 бекендів + 8 вл
 | ccxt `get-trades` | ✅ `market_trades` (+ aggressor flow: buy/sell notional, imbalance, VWAP, CVD, топ-прінти) |
 | coinalyze `funding_rate_history` | ✅ `perps_funding_history` (з бірж); поточний — `perps_funding_compare` |
 | coinalyze `open_interest_history` | ✅ `perps_oi_history` (з бірж, коротка історія); довга — 🔜 власний ключ Coinalyze |
-| coinalyze `liquidation_history` | ✅ живі — `liquidations_summary` (WebSocket-збирач); історія — 🔜 `liquidations_history` на власному безкоштовному ключі Coinalyze (у DoubleTop денна історія є щонайменше з 2024-01) |
+| coinalyze `liquidation_history` | ✅ живі — `liquidations_summary` (WebSocket-збирач); історія — ✅ `liquidations_history` (Coinalyze, агрегат по біржах, daily/hourly; потрібен `COINALYZE_API_KEY`; живу відповідь ще не звірено; у DoubleTop денна історія є щонайменше з 2024-01) |
 | coinalyze `long_short_ratio_history` | ✅ `perps_long_short_ratio` (Binance/Bybit) |
 | hyperliquid `meta_and_asset_ctxs` | ✅ `hyperliquid_overview` (у DOUBLETOP ця відповідь обрізається й контексти з funding/OI не повертаються) |
 | hyperliquid `l2_book`, `candle_snapshot`, `funding_history`, `recent_trades` | ✅ `hyperliquid_book`, `hyperliquid_candles`, `hyperliquid_funding_history`, `hyperliquid_trades` |

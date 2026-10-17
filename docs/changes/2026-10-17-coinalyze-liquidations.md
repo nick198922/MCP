@@ -1,0 +1,6 @@
+- Картка `IDEA-20261017-doubletop-to-ours`, крок 4 (перший шматок): провайдер Coinalyze і інструмент `liquidations_history` (лише читання).
+  - `liquidations_history`: історія ліквідацій лонгів/шортів перпа, агрегована по біржах (символ `{BASE}USDT_PERP.A` або `{BASE}USD_PERP.A`), інтервали daily/hourly, USD або базові одиниці; по рядках `long`, `short`, `total`, `net`, `long_share`, а також суми й пік. Hourly обмежено 30 днями.
+  - Ключ `COINALYZE_API_KEY` береться з оточення через `Settings`; іде лише в заголовок `api_key` (не в URL, не в `evidence`, не в кеш-ключ). Без ключа інструмент повертає `ok=false` із `missing` (`reason=config`) і не робить запитів.
+- `providers/coinalyze.py` (ліміт ~40 запитів/хв, ліниве httpx-з'єднання), чиста агрегація в `analytics/liquidations_agg.py`, інструмент у `tools/coinalyze.py`. Тести: `tests/test_coinalyze.py` (форма відповіді — зі зразка `tests/fixtures/doubletop/coinalyze__liquidation_history_BTCUSDT_PERP.A_daily_2026-10-17.json`).
+- Живу відповідь Coinalyze з цього середовища не перевірено (біржі недоступні, ключа немає): назву параметрів і формат символу звірити на машині власника з ключем. Бектесту сигналу на ліквідаціях немає, у `warnings` це зазначено.
+- Лишається в кроці 4: backfill у збирачі та історія OI / funding / long-short через той самий провайдер (`docs/BACKLOG.md`).

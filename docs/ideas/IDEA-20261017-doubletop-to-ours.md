@@ -10,7 +10,8 @@
 - [x] 2. `dex_pairs`
 - [x] 3. `chain_metrics`
 - [x] Ключ Coinalyze (власник, 17.10)
-- [ ] 4. Провайдер Coinalyze
+- [x] 4a. Провайдер Coinalyze + `liquidations_history`
+- [ ] 4b. Жива перевірка власником (USD/одиниці) і бекфіл колектором
 - [ ] 5. Повтор перевірок на історії Coinalyze
 - [ ] 6. Pendle (нижчий пріоритет)
 

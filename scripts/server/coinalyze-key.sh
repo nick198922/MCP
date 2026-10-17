@@ -13,10 +13,17 @@ if [[ ! "$key" =~ ^[A-Za-z0-9-]{16,64}$ ]]; then
   echo "This does not look like a Coinalyze key (letters, digits, dashes). Run it again and paste the key."
   exit 1
 fi
-# The key goes to curl through stdin (a config with the header), not the command line.
-code="$(printf 'header = "api_key: %s"\nurl = "https://api.coinalyze.net/v1/exchanges"\n' "$key" | curl -s -m 20 -o /dev/null -w '%{http_code}' -K -)" || true
+# The key goes to curl through stdin (a config file), never the command line. Coinalyze takes it as the api_key header
+# or the api_key query parameter: try the header first, then the parameter.
+try() { curl -s -m 20 -o /dev/null -w '%{http_code}' -K - || true; }
+code="$(printf 'header = "api_key: %s"\nurl = "https://api.coinalyze.net/v1/exchanges"\n' "$key" | try)"
 if [[ "$code" != "200" ]]; then
-  echo "Coinalyze did not accept the key (HTTP ${code:-none}). Check it on coinalyze.net and run again."
+  code="$(printf 'url = "https://api.coinalyze.net/v1/exchanges?api_key=%s"\n' "$key" | try)"
+fi
+if [[ "$code" != "200" ]]; then
+  echo "Coinalyze did not accept the key (HTTP ${code:-none}). The key you pasted: ${#key} characters, ending in …${key: -2}."
+  echo "Compare it with https://coinalyze.net/account/api-key/ (generate one there if the page has none; a new account may"
+  echo "need its e-mail confirmed first), then run again."
   exit 1
 fi
 echo "Coinalyze accepted the key."

@@ -23,6 +23,8 @@ You are the developer of tradedesk-mcp. You ship exactly one well-scoped change 
 
 Keep the change minimal: no refactors beyond the task, no speculative features. Run `make lint && make test`. When the change touches live data, check it against the real venues from this machine (`uv run python -c ...` through `build_server()`), and report what you saw. Update `docs/BACKLOG.md` and `docs/HANDOFF.md`. Owner-facing docs in Ukrainian; code, comments and tool descriptions in English.
 
+CI runs the tests on Python 3.11, 3.12 and 3.13 (`make test` here runs one version). Since 3.12, `sum()` of floats is compensated, so float results differ in the last bits between versions: never pin exact floats or hashes of raw float output; compare with a tolerance or round before hashing.
+
 ## Never
 
 Write code that places, modifies or cancels orders, read or store API keys, start Phase 4 (execution), edit `docs/SECURITY.md`, the `ExecutionGuard` design or the invariants in `CLAUDE.md`, or disable tests or lint.

@@ -518,9 +518,9 @@ uv run python scripts/verify_course_step7_basics.py --stage report --tests s16 -
 [report] finished in 107s, peak rss 148 MB
 ```
 
-Додатково з рядків причинного прогону (дослідницьке; `~/.cache/tradedesk-agents/tmp/step7_causal_extra.py`):
+Додатково з рядків причинного прогону (дослідницьке; `~/.cache/tradedesk-agents/tmp/step7_causal_extra.py`). Заголовок першого блоку виправлено вручну після повторного рев'ю (R1): спершу він помилково казав «isolates the sweep change from placebo redraws». Числа не змінено.
 ```
-## S16: registered deviation rows vs causal sweep rows (isolates the sweep change from placebo redraws)
+## S16: registered (also look-ahead) deviation selection vs causal sweep rows ("hybrid"; NOT a clean control of the sweep change)
 s16 oos=0.0: x_dev registered +2.1 (n 375), causal +5.4 (n 376); x_sweep registered -0.4 (n 1792), causal +1.7 (n 2016); hybrid delta +0.4 pp [-6.6; +7.3] p 0.447 MDE 0.0992
 s16 oos=1.0: x_dev registered +1.9 (n 107), causal +6.9 (n 107); x_sweep registered +0.5 (n 528), causal +3.0 (n 592); hybrid delta -1.1 pp [-13.0; +11.3] p 0.581 MDE 0.1742
 s16_4h oos=0.0: x_dev registered -2.0 (n 3212), causal -0.4 (n 3217); x_sweep registered -0.7 (n 13447), causal +1.2 (n 15468); hybrid delta -3.2 pp [-6.3; -0.2] p 0.983 MDE 0.0431

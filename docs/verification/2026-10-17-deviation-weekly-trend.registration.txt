@@ -1,0 +1,8 @@
+IDEA-20261017-deviation-weekly-trend: SHA-256 of the card section "## Попередня реєстрація" (to the end of the file),
+printed by `uv run python scripts/verify_deviation_weekly_trend.py --stage prereg`.
+
+1) before stage 0 (no counts, no outcomes):
+2026-10-17T10:17:47+00:00 sha256=9e4d9cc3c9ccb2d876a2874eec4f722a9fe4ffeef808bd9a338200d267e9d44d bytes=10838
+
+2) after the "Стадія 0" block (event counts only; universe extended to top-50), before --stage report:
+2026-10-17T10:32:13+00:00 sha256=82cca839ee48c2bea827bffce4f44a80d60826ada9f649941c4b41c402a94ee2 bytes=12916

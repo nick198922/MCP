@@ -1,0 +1,10 @@
+- Картка `deviation-weekly-trend` (сетап Іллі, пріоритет власника №1): вердикт `inconclusive`.
+  - Ворота потужності не пройдено навіть після розширення всесвіту до топ-50: 108 дат угод T в IS при порозі 150, MDE 0.36R.
+  - Переваги не видно: T +0.111R net [−0.129; +0.373], T − C +0.169 [−0.088; +0.434]; без 5 найкращих дат −0.05R, OOS −0.08R, варіант детектора з картки −0.05R.
+  - Детектор відкалібровано до результатів на прикладі автора: ETH 15.10.2026 — подія T лише при ширині рейнджу ≤ 10 ATR і 1–3 закриттях під низом. Варіант картки (8 ATR, 1–2) звітується окремо.
+  - H2 (новинні дні) — описово, без PPI; `events_seed.json` не змінювався, використано виправлену таблицю `2026-10-15-us-macro-events.csv`.
+- Додано:
+  - `analytics/deviation_weekly_trend.py`: денний контекст за останнім завершеним днем (`last_daily_before`), групи T / C / deep за смугою денних EMA, правило цілі, плацебо «тест низу без виносу», симуляція лімітних угод по одній водночас;
+  - `scripts/verify_deviation_weekly_trend.py`: стадії `prereg | live | universe50 | count | report | analyse`, `--universe top30|top50`, `--out`; кеш `~/.cache/tradedesk-agents/deviation_weekly_trend/`;
+  - `tests/test_deviation_weekly_trend.py`: аналітичні приклади, причинність, живий приклад ETH 15.10.2026 на фікстурі `tests/fixtures/binance_vision_ethusdt_dwt_2026-10.json` (data.binance.vision, 1D з 2024-01, 4h з 2026-07, завантажено 2026-10-17).
+- Звіт: `docs/verification/2026-10-17-deviation-weekly-trend.md` (+ `.raw.md`, `.registration.txt`). Оновлено `knowledge/setups.md` (S16, варіант Іллі), `knowledge/market-structure.md`, `knowledge/README.md`.

@@ -18,6 +18,7 @@ from ..core.health import HealthRegistry, redact
 
 # Max funding-history rows each venue returns per request; anything larger is silently capped.
 FUNDING_PAGE = {"binanceusdm": 1000, "bybit": 200, "okx": 100}
+BYBIT_NEWEST_SLACK_MS = 24 * 3_600_000  # a full newest-first page ends within a funding interval of endTime (slack: 24 h)
 PERP_EXCHANGES = ("binanceusdm", "bybit", "okx")
 
 
@@ -175,13 +176,18 @@ class Exchanges:
 
         return await self._call(ex_id, "fetch_funding_rates", {}, 30, go)
 
-    async def funding_rate_history(self, ex_id: str, symbol: str, since_ms: int | None, limit: int) -> Fetched:
-        a = {"symbol": symbol, "since_ms": since_ms, "limit": limit}
+    async def funding_rate_history(self, ex_id: str, symbol: str, since_ms: int | None, limit: int, until_ms: int | None = None) -> Fetched:
+        """One page of funding history; ``until_ms`` (ccxt ``until`` = Bybit ``endTime``) bounds the window explicitly."""
+        a: dict[str, Any] = {"symbol": symbol, "since_ms": since_ms, "limit": limit}
+        if until_ms is not None:
+            a["until_ms"] = until_ms
 
         async def go(ex: Any) -> Any:
             has = getattr(ex, "has", {}) or {}
             if has.get("fetchFundingRateHistory") is False:
                 raise ccxt.NotSupported(f"{ex_id} has no fetchFundingRateHistory")
+            if until_ms is not None:
+                return await ex.fetch_funding_rate_history(symbol, since=since_ms, limit=limit, params={"until": until_ms})
             return await ex.fetch_funding_rate_history(symbol, since=since_ms, limit=limit)
 
         return await self._call(ex_id, "fetch_funding_rate_history", a, 60, go)
@@ -212,6 +218,43 @@ class Exchanges:
         page = FUNDING_PAGE.get(ex_id.lower(), 500)
         rows: dict[int, dict[str, Any]] = {}
         since, pages, latency, cached, complete = since_ms, 0, 0, True, True
+        if ex_id.lower() == "bybit":
+            # Bybit returns the *newest* ``page`` rows of [startTime, endTime]; without an explicit endTime ccxt sizes the
+            # window from the current interval and silently drops older rows (holes). Walk backward from endTime.
+            end = until_ms
+            while end >= since_ms:
+                if pages >= max_pages:
+                    complete = False
+                    break
+                try:
+                    f = await self.funding_rate_history(ex_id, symbol, since_ms, page, until_ms=end)
+                except ProviderError:
+                    if pages == 0:
+                        raise
+                    complete = False
+                    break
+                pages += 1
+                latency += f.evidence.latency_ms or 0
+                cached = cached and f.evidence.cached
+                batch = [x for x in (f.data or []) if x.get("timestamp") is not None and since_ms <= int(x["timestamp"]) <= end]
+                for x in batch:
+                    rows[int(x["timestamp"])] = x
+                if len(f.data or []) < page:
+                    break  # a short page means the window is exhausted
+                # A full page must hold the newest rows up to ``end``: nothing in the window, or rows far below ``end``
+                # (oldest-first order, ignored endTime), means the walk cannot be trusted.
+                if not batch or max(int(x["timestamp"]) for x in batch) < end - BYBIT_NEWEST_SLACK_MS:
+                    complete = False
+                    break
+                end = min(int(x["timestamp"]) for x in batch) - 1
+            ev = Evidence(
+                provider="ccxt:bybit",
+                tool="fetch_funding_rate_history",
+                args={"symbol": symbol, "since_ms": since_ms, "until_ms": until_ms, "pages": pages},
+                latency_ms=latency,
+                cached=cached and pages > 0,
+            )
+            return Fetched({"rows": [rows[k] for k in sorted(rows)], "complete": complete}, ev)
         while since < until_ms:
             if pages >= max_pages:
                 complete = False

@@ -547,7 +547,8 @@ class FakeEx:
             "SOL/USDT:USDT": {"symbol": "SOL/USDT:USDT", "interval": "4h", "info": {"adjustedFundingRateCap": "0.02"}},
         }
 
-    async def fetch_funding_rate_history(self, symbol, since=None, limit=500):
+    async def fetch_funding_rate_history(self, symbol, since=None, limit=500, params=None):
+        until = (params or {}).get("until")
         if self.id == "okx":
             raise ccxt.RateLimitExceeded("okx 429 too many requests")
         end = 1791637200000  # 2026-10-10 12:00 UTC — anchor before NOW used in tests
@@ -557,6 +558,8 @@ class FakeEx:
         for i in range(90):
             ts = end - (89 - i) * interval_ms  # 90 entries, 8h apart
             if since is not None and ts < since:
+                continue
+            if until is not None and ts > until:
                 continue
             rate = base_rate + ((-1) ** i) * 0.00001 * (i % 7)  # noisy sign flips
             rows.append({"symbol": symbol, "fundingRate": rate, "timestamp": ts, "datetime": None})

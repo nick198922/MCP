@@ -29,10 +29,10 @@ BAR_PAGE = 100  # OKX caps candles per request at 100; paginate rather than rely
 MISMATCH_GAP = 0.20
 PAPER_WARNING = (
     "Paper trade, local bookkeeping only: no order is sent. Fills are the last (or mark) price plus modelled costs "
-    "(taker fees + slippage per leg per side), not real fills. Backtest (docs/verification/2026-10-13-funding-carry-perp-perp.md, "
-    "Binance<->Bybit, 2024-10..2026-10), default variant 2x per leg with stop and 1 % penalty: +76 % APR on notional "
-    "(the +90 % headline is the no-stop variant), 326 trades, 54 % of trades lost, 119 stopped (37 %); the report states a "
-    "median trade of -0.17 % per slot, and the profit came from a few hyped listings (without the top 5 symbols +44 %). Not "
+    "(taker fees + slippage per leg per side), not real fills. Expectation for this strategy is about zero or negative: the earlier "
+    "+76 % APR backtest (docs/verification/2026-10-13-funding-carry-perp-perp.md) came from holes in the Bybit funding history; "
+    "on the full history (docs/verification/2026-10-17-paper-carry-bench.md, Binance<->Bybit, 2024-10..2026-10) it is -8.7 % APR "
+    "on notional at 2x per leg with stop (397 trades, 67 % losing, 130 stopped) and +2.9 % without the stop. Not "
     "modelled: per-symbol position limits, venues changing caps / intervals / leverage, two separate margins that need "
     "top-ups, real liquidation prices (the stop here is the backtest's: either leg's 4h bar high / low moving >= 1 / leverage "
     "from its entry, frozen at that bar). Compare journal_stats(tag='pp-paper') with the backtest only after many closed trades."

@@ -4,6 +4,12 @@ Checks the engine on real data before the collector job is enabled. Usage:
     uv run python scripts/paper_carry_once.py [--db /tmp/paper_carry_check.sqlite] [--strategy A|B|both]
 Prints, per strategy, the cycle outcome, the universe, exclusions, the top candidates and the recorded leg sides
 (book spread, VWAP cost vs the modelled cost). Expect several minutes: the funding history of the whole universe is fetched.
+
+WARNING (review R4): do NOT run this with an empty cache (a fresh --db) while the collector engine is running. The Binance
+request pacer (``SHARED_PACER``, 400 calls / 5 min) is per process, so this script, the MCP server and the collector each
+spend their own budget against the same per-IP limit (Binance fundingRate: 500 / 5 min). A cold start here fetches the
+whole universe's history and can push the shared IP over the limit (418/429 ban) for the running engine. Run it before
+the engine is enabled, or when it is stopped.
 """
 
 from __future__ import annotations

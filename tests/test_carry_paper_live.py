@@ -48,13 +48,15 @@ class LiveEx(FakeEx):
     cycle = CYCLE
     history_calls: list[tuple[str, str, int | None]] = []
 
-    async def fetch_funding_rate_history(self, symbol, since=None, limit=500):
+    async def fetch_funding_rate_history(self, symbol, since=None, limit=500, params=None):
         type(self).history_calls.append((self.id, symbol, since))
+        until = (params or {}).get("until")
         hot = symbol.startswith("WIF") and self.id == "binanceusdm"
         rate = 0.0008 if hot else 0.0001
         rows, ts = [], (type(self).cycle // H8) * H8 + 3
         while ts >= (since or 0) and len(rows) < limit:
-            rows.append({"symbol": symbol, "fundingRate": rate, "timestamp": ts})
+            if until is None or ts <= until:
+                rows.append({"symbol": symbol, "fundingRate": rate, "timestamp": ts})
             ts -= H8
         return sorted(rows, key=lambda r: r["timestamp"])
 
@@ -190,6 +192,74 @@ async def test_funding_history_gap_in_live_feed_is_flagged_and_position_held(tmp
         assert pos["state"]["last"] == nxt2 + DECISION_DELAY_MS
         paid = await rt.store.cp_logs("A", "funding", trade_id=pos["trade_id"])
         assert len(paid) == 2  # both payments accrued, none lost
+    finally:
+        await rt.aclose()
+
+
+async def test_held_symbol_window_is_reloaded_and_a_persistent_gap_is_confirmed(tmp_path):
+    hole = CYCLE + H8 + 3  # this payment is never published
+
+    class Ex(LiveEx):
+        history_calls: list = []
+
+        async def fetch_funding_rate_history(self, symbol, since=None, limit=500, params=None):
+            rows = await super().fetch_funding_rate_history(symbol, since, limit, params)
+            return [r for r in rows if r["timestamp"] != hole]
+
+    rt = _rt(Ex, tmp_path)
+    assert rt.store is not None
+    await rt.store.init()
+    try:
+        feed = LiveFeed(rt, workers=2, pacer=Pacer(10**6))
+        assert (await run_cycle(rt.store, feed, PARAMS_A, CYCLE, clock=lambda: CYCLE + DECISION_DELAY_MS))["status"] == "done"
+        opened_last = CYCLE + DECISION_DELAY_MS
+        for n in (1, 2, 3):
+            cyc_ts = CYCLE + n * H8
+            Ex.cycle = cyc_ts
+            Ex.history_calls.clear()
+            assert (await run_cycle(rt.store, feed, PARAMS_A, cyc_ts, clock=lambda c=cyc_ts: c + DECISION_DELAY_MS))["status"] == "done"
+            wif = [s for v, sym, s in Ex.history_calls if v == "binanceusdm" and sym == "WIF/USDT:USDT"]
+            if n == 1:
+                assert wif and min(wif) > opened_last - H8  # first miss: ordinary incremental fetch
+            if n == 2:
+                assert any(s is not None and s <= opened_last - H8 + 1 for s in wif)  # held: window re-read behind `last`
+        events = [e["payload"] for e in await rt.store.cp_logs("A", "event") if e["payload"]["type"] == "funding_gap_confirmed"]
+        assert [e["symbol"] for e in events] == ["WIF/USDT:USDT"] and events[0]["missing_payments"] == 1
+        (pos,) = await rt.store.cp_positions("A", "open")
+        assert pos["state"]["last"] == CYCLE + 3 * H8 + DECISION_DELAY_MS and "gap_cycles" not in pos["state"]
+    finally:
+        await rt.aclose()
+
+
+async def test_late_published_payment_behind_a_stored_later_one_is_reloaded_and_settled(tmp_path):
+    hole = CYCLE + H8 + 3  # hidden on cycles 1 and 2 (a later payment is stored meanwhile), published on cycle 3
+
+    class Ex(LiveEx):
+        history_calls: list = []
+
+        async def fetch_funding_rate_history(self, symbol, since=None, limit=500, params=None):
+            rows = await super().fetch_funding_rate_history(symbol, since, limit, params)
+            if type(self).cycle < CYCLE + 3 * H8:
+                rows = [r for r in rows if r["timestamp"] != hole]
+            return rows
+
+    rt = _rt(Ex, tmp_path)
+    assert rt.store is not None
+    await rt.store.init()
+    try:
+        feed = LiveFeed(rt, workers=2, pacer=Pacer(10**6))
+        assert (await run_cycle(rt.store, feed, PARAMS_A, CYCLE, clock=lambda: CYCLE + DECISION_DELAY_MS))["status"] == "done"
+        for n in (1, 2, 3):
+            cyc_ts = CYCLE + n * H8
+            Ex.cycle = cyc_ts
+            assert (await run_cycle(rt.store, feed, PARAMS_A, cyc_ts, clock=lambda c=cyc_ts: c + DECISION_DELAY_MS))["status"] == "done"
+            (pos,) = await rt.store.cp_positions("A", "open")
+            if n < 3:
+                assert pos["state"]["gap_cycles"] == n  # held, nothing settled
+        assert not [e for e in await rt.store.cp_logs("A", "event") if e["payload"]["type"] == "funding_gap_confirmed"]
+        paid = {x["payload"]["payment_ts"] for x in await rt.store.cp_logs("A", "funding", trade_id=pos["trade_id"])}
+        assert hole in paid and CYCLE + 2 * H8 + 3 in paid  # the late payment is in the P&L
+        assert "gap_cycles" not in pos["state"] and pos["state"]["last"] == CYCLE + 3 * H8 + DECISION_DELAY_MS
     finally:
         await rt.aclose()
 

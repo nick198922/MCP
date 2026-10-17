@@ -125,6 +125,19 @@ def universe_b(perps: dict[str, Any], other: dict[str, Any]) -> tuple[list[str],
     return sorted(uni), excluded
 
 
+RELOAD_BACK_MS = 8 * 3_600_000  # the longest regular funding interval: (last - interval, t] always contains the last payment
+
+
+def _reload_from(open_positions: list[dict[str, Any]]) -> dict[str, int]:
+    """Held positions the engine flagged with a missing funding payment (``gap_cycles`` > 0) -> window start for a re-read."""
+    out: dict[str, int] = {}
+    for p in open_positions:
+        s = p["state"]
+        if s.get("gap_cycles") and s.get("last") is not None:
+            out[s["symbol"]] = int(s["last"]) - RELOAD_BACK_MS + 1
+    return out
+
+
 class LiveFeed:
     def __init__(self, rt: Runtime, *, workers: int = 4, pacer: Pacer | None = None) -> None:
         self.rt = rt
@@ -149,10 +162,23 @@ class LiveFeed:
         return f.data
 
     async def _history(
-        self, b: Builder, venue: str, sym: str, since: int, until: int, flags: list[dict[str, Any]]
+        self, b: Builder, venue: str, sym: str, since: int, until: int, flags: list[dict[str, Any]], reload_from: int | None = None
     ) -> list[dict[str, Any]] | None:
         store = self.rt.store
         st = await store.cp_funding_state(venue, sym) if store is not None else None
+        if reload_from is not None and store is not None:
+            # A held position has a missing payment (engine R2): the stored coverage claims the range is complete, so the
+            # incremental path would never see a hole inside it. Re-read the window from the store-bypassing request.
+            got = await self._fetch_range(b, venue, sym, reload_from, until)
+            if got is None:
+                flags.append({"symbol": sym, "venue": venue, "issue": "funding_history_unavailable"})
+                return None
+            entries = _entries(got["rows"])
+            if not got["complete"]:
+                flags.append({"symbol": sym, "venue": venue, "issue": "funding_history_incomplete"})
+            await store.cp_funding_put(venue, sym, [(e["ts_ms"], e["rate"]) for e in entries], covered_from=None, covered_to=None)
+            rows = await store.cp_funding_rows(venue, sym, since, until)
+            return [{"ts_ms": ts, "rate": r} for ts, r in rows] or None
         if st and st["covered_from"] <= since and st["last_ts"] >= st["covered_from"]:
             if st["covered_to"] >= until and st["last_ts"] >= until - DECISION_DELAY_MS - 60_000:
                 got: dict[str, Any] | None = {"rows": [], "complete": True}  # the scheduled payment is already stored
@@ -220,6 +246,7 @@ class LiveFeed:
         current = await self._current(b, PERP_VENUE, perps)
         flags: list[dict[str, Any]] = []
         opened = {p["state"]["symbol"]: int(p["state"]["open_ts"]) for p in open_positions}
+        reload = _reload_from(open_positions)
         for s in opened:  # a held symbol must stay in the universe even if the listing changed
             if s not in uni and s in perps:
                 base = s.split("/")[0]
@@ -228,7 +255,7 @@ class LiveFeed:
 
         async def hist(sym: str) -> tuple[str, list[dict[str, Any]] | None]:
             since = min(t - lb - DAY_MS, opened.get(sym, t) - 3_600_000)
-            return sym, await self._history(b, PERP_VENUE, sym, since, t, flags)
+            return sym, await self._history(b, PERP_VENUE, sym, since, t, flags, reload.get(sym))
 
         funding = dict(await self._gather([hist(s) for s in sorted(uni)], self.workers))
         want = set(opened)
@@ -266,10 +293,16 @@ class LiveFeed:
         flags: list[dict[str, Any]] = []
         opened = {p["state"]["symbol"]: int(p["state"]["open_ts"]) for p in open_positions}
         uni = sorted(set(uni) | {s for s in opened if s in pa and s in pb})
+        reload = _reload_from(open_positions)
 
         async def hist(sym: str) -> tuple[str, list[Any] | None, list[Any] | None]:
             since = min(t - lb - DAY_MS, opened.get(sym, t) - 3_600_000)
-            return sym, await self._history(b, PERP_VENUE, sym, since, t, flags), await self._history(b, BYBIT, sym, since, t, flags)
+            rf = reload.get(sym)
+            return (
+                sym,
+                await self._history(b, PERP_VENUE, sym, since, t, flags, rf),
+                await self._history(b, BYBIT, sym, since, t, flags, rf),
+            )
 
         h = {s: (fa, fb) for s, fa, fb in await self._gather([hist(s) for s in uni], self.workers)}
         want = set(opened)

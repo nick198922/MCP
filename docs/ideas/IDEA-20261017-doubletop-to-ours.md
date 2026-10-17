@@ -7,8 +7,8 @@
 
 ## Прогрес
 - [ ] 1. Звірка наших інструментів з DOUBLETOP
-- [ ] 2. `dex_pairs`
-- [ ] 3. `chain_metrics`
+- [x] 2. `dex_pairs`
+- [x] 3. `chain_metrics`
 - [x] Ключ Coinalyze (власник, 17.10)
 - [ ] 4. Провайдер Coinalyze
 - [ ] 5. Повтор перевірок на історії Coinalyze

@@ -1,0 +1,469 @@
+{
+ "_source": "api.dexscreener.com /latest/dex/tokens/9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump (Fartcoin), fetched 2026-10-17 by Claude; first 8 of 30 pairs, `info` dropped",
+ "schemaVersion": "1.0.0",
+ "pairs": [
+  {
+   "chainId": "solana",
+   "dexId": "raydium",
+   "url": "https://dexscreener.com/solana/bzc9nzfmqkxr6fz1dbph7bdf9broyef6pnzesp7v5iiw",
+   "pairAddress": "Bzc9NZfMqkXR6fz1DBph7BDf9BroyEf6pnzESP7v5iiw",
+   "baseToken": {
+    "address": "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump",
+    "name": "Fartcoin ",
+    "symbol": "Fartcoin "
+   },
+   "quoteToken": {
+    "address": "So11111111111111111111111111111111111111112",
+    "name": "Wrapped SOL",
+    "symbol": "SOL"
+   },
+   "priceNative": "0.001439",
+   "priceUsd": "0.1497",
+   "txns": {
+    "m5": {
+     "buys": 0,
+     "sells": 1
+    },
+    "h1": {
+     "buys": 8,
+     "sells": 3
+    },
+    "h6": {
+     "buys": 214,
+     "sells": 244
+    },
+    "h24": {
+     "buys": 8885,
+     "sells": 8349
+    }
+   },
+   "volume": {
+    "h24": 1349283.57,
+    "h6": 58500.18,
+    "h1": 5188.25,
+    "m5": 1.01
+   },
+   "priceChange": {
+    "m5": -0.53,
+    "h1": -0.12,
+    "h6": -0.31,
+    "h24": -2.57
+   },
+   "liquidity": {
+    "usd": 7615594.18,
+    "base": 25399759,
+    "quote": 36659
+   },
+   "fdv": 149726199,
+   "marketCap": 149726199,
+   "pairCreatedAt": 1729231787000
+  },
+  {
+   "chainId": "solana",
+   "dexId": "orca",
+   "url": "https://dexscreener.com/solana/tuy6gmupgqn7wcz8rvp1eulryb132vso9smy4ajvqgn",
+   "pairAddress": "Tuy6gMupGQN7wCZ8rVP1EuLRYB132VSo9Smy4AJvQgn",
+   "labels": [
+    "wp"
+   ],
+   "baseToken": {
+    "address": "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump",
+    "name": "Fartcoin ",
+    "symbol": "Fartcoin "
+   },
+   "quoteToken": {
+    "address": "So11111111111111111111111111111111111111112",
+    "name": "Wrapped SOL",
+    "symbol": "SOL"
+   },
+   "priceNative": "0.001439",
+   "priceUsd": "0.1497",
+   "txns": {
+    "m5": {
+     "buys": 0,
+     "sells": 1
+    },
+    "h1": {
+     "buys": 11,
+     "sells": 14
+    },
+    "h6": {
+     "buys": 200,
+     "sells": 127
+    },
+    "h24": {
+     "buys": 2442,
+     "sells": 2170
+    }
+   },
+   "volume": {
+    "h24": 565320.78,
+    "h6": 59463.46,
+    "h1": 4727.64,
+    "m5": 24.74
+   },
+   "priceChange": {
+    "m5": 0.03,
+    "h1": 0.23,
+    "h6": 0.08,
+    "h24": -1.94
+   },
+   "liquidity": {
+    "usd": 1050377.08,
+    "base": 5921758,
+    "quote": 1573.9604
+   },
+   "fdv": 149732569,
+   "marketCap": 149732569,
+   "pairCreatedAt": 1748980188000
+  },
+  {
+   "chainId": "solana",
+   "dexId": "orca",
+   "url": "https://dexscreener.com/solana/j5jzvt22u1mt6de4gkbheststjbfys7a6af5jzu9ihkc",
+   "pairAddress": "J5jzvT22u1Mt6de4gkBhEsTSTjBfYS7A6aF5jzu9ihkC",
+   "labels": [
+    "wp"
+   ],
+   "baseToken": {
+    "address": "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump",
+    "name": "Fartcoin ",
+    "symbol": "Fartcoin "
+   },
+   "quoteToken": {
+    "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "name": "USD Coin",
+    "symbol": "USDC"
+   },
+   "priceNative": "0.1498",
+   "priceUsd": "0.1498",
+   "txns": {
+    "m5": {
+     "buys": 7,
+     "sells": 3
+    },
+    "h1": {
+     "buys": 83,
+     "sells": 73
+    },
+    "h6": {
+     "buys": 748,
+     "sells": 668
+    },
+    "h24": {
+     "buys": 8286,
+     "sells": 6853
+    }
+   },
+   "volume": {
+    "h24": 328547.55,
+    "h6": 12474.41,
+    "h1": 1689.83,
+    "m5": 70.47
+   },
+   "priceChange": {
+    "m5": -0.09,
+    "h1": 0.13,
+    "h6": -0.13,
+    "h24": -2.1
+   },
+   "liquidity": {
+    "usd": 32669.62,
+    "base": 180800,
+    "quote": 5584.6944
+   },
+   "fdv": 149804768,
+   "marketCap": 149804768,
+   "pairCreatedAt": 1747349952000
+  },
+  {
+   "chainId": "solana",
+   "dexId": "orca",
+   "url": "https://dexscreener.com/solana/c9u2ksk6kkwvleeo5yuq7xu46x7nzebjtd9pbfuxausm",
+   "pairAddress": "C9U2Ksk6KKWvLEeo5yUQ7Xu46X7NzeBJtd9PBfuXaUSM",
+   "labels": [
+    "wp"
+   ],
+   "baseToken": {
+    "address": "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump",
+    "name": "Fartcoin ",
+    "symbol": "Fartcoin "
+   },
+   "quoteToken": {
+    "address": "So11111111111111111111111111111111111111112",
+    "name": "Wrapped SOL",
+    "symbol": "SOL"
+   },
+   "priceNative": "0.001444",
+   "priceUsd": "0.1502",
+   "txns": {
+    "m5": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h1": {
+     "buys": 7,
+     "sells": 11
+    },
+    "h6": {
+     "buys": 119,
+     "sells": 110
+    },
+    "h24": {
+     "buys": 1252,
+     "sells": 1307
+    }
+   },
+   "volume": {
+    "h24": 77141.74,
+    "h6": 4416.91,
+    "h1": 712.13,
+    "m5": 0
+   },
+   "priceChange": {
+    "h1": 0.23,
+    "h6": 0.39,
+    "h24": -1.8
+   },
+   "liquidity": {
+    "usd": 252434.04,
+    "base": 1544445,
+    "quote": 196.3638
+   },
+   "fdv": 150221448,
+   "marketCap": 150221448,
+   "pairCreatedAt": 1731008159000
+  },
+  {
+   "chainId": "solana",
+   "dexId": "meteora",
+   "url": "https://dexscreener.com/solana/6wj7w3ohj7ex6mvfp2o26nsof3aey7u8brs8e371wcxa",
+   "pairAddress": "6wJ7W3oHj7ex6MVFp2o26NSof3aey7U8Brs8E371WCXA",
+   "labels": [
+    "DLMM"
+   ],
+   "baseToken": {
+    "address": "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump",
+    "name": "Fartcoin ",
+    "symbol": "Fartcoin "
+   },
+   "quoteToken": {
+    "address": "So11111111111111111111111111111111111111112",
+    "name": "Wrapped SOL",
+    "symbol": "SOL"
+   },
+   "priceNative": "0.001444",
+   "priceUsd": "0.1499",
+   "txns": {
+    "m5": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h1": {
+     "buys": 1,
+     "sells": 0
+    },
+    "h6": {
+     "buys": 9,
+     "sells": 23
+    },
+    "h24": {
+     "buys": 126,
+     "sells": 216
+    }
+   },
+   "volume": {
+    "h24": 4780.21,
+    "h6": 188.72,
+    "h1": 13.08,
+    "m5": 0
+   },
+   "priceChange": {
+    "h1": 0.2,
+    "h6": 0.09,
+    "h24": -1.92
+   },
+   "liquidity": {
+    "usd": 130852.5,
+    "base": 772952,
+    "quote": 143.6265
+   },
+   "fdv": 149991445,
+   "marketCap": 149991445,
+   "pairCreatedAt": 1731787585000
+  },
+  {
+   "chainId": "solana",
+   "dexId": "raydium",
+   "url": "https://dexscreener.com/solana/3mjwoqzhaabcqlbsn6dtmgl6rpazvgyaxbyghaxiqytx",
+   "pairAddress": "3MjwoqZHAAbCQLBSn6DtmgL6rpazvgYaxBYGHaxiQYTx",
+   "labels": [
+    "CLMM"
+   ],
+   "baseToken": {
+    "address": "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump",
+    "name": "Fartcoin ",
+    "symbol": "Fartcoin "
+   },
+   "quoteToken": {
+    "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "name": "USD Coin",
+    "symbol": "USDC"
+   },
+   "priceNative": "0.1498",
+   "priceUsd": "0.1498",
+   "txns": {
+    "m5": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h1": {
+     "buys": 11,
+     "sells": 10
+    },
+    "h6": {
+     "buys": 96,
+     "sells": 116
+    },
+    "h24": {
+     "buys": 545,
+     "sells": 615
+    }
+   },
+   "volume": {
+    "h24": 71.11,
+    "h6": 8.07,
+    "h1": 0.8,
+    "m5": 0
+   },
+   "priceChange": {
+    "h1": 0.18,
+    "h6": -0.05,
+    "h24": -2.08
+   },
+   "liquidity": {
+    "usd": 16864.69,
+    "base": 78704,
+    "quote": 5070.6918
+   },
+   "fdv": 149850228,
+   "marketCap": 149850228,
+   "pairCreatedAt": 1739033064000
+  },
+  {
+   "chainId": "solana",
+   "dexId": "meteora",
+   "url": "https://dexscreener.com/solana/bhjvwzocir2jqvrdgemebdfmtemw3eenfrxyffkpfj1y",
+   "pairAddress": "BhjvwZoCir2jqVrdGemebDFmTeMW3eENFrxYffkPfj1Y",
+   "labels": [
+    "DLMM"
+   ],
+   "baseToken": {
+    "address": "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump",
+    "name": "Fartcoin ",
+    "symbol": "Fartcoin "
+   },
+   "quoteToken": {
+    "address": "So11111111111111111111111111111111111111112",
+    "name": "Wrapped SOL",
+    "symbol": "SOL"
+   },
+   "priceNative": "0.001442",
+   "priceUsd": "0.1498",
+   "txns": {
+    "m5": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h1": {
+     "buys": 1,
+     "sells": 0
+    },
+    "h6": {
+     "buys": 9,
+     "sells": 7
+    },
+    "h24": {
+     "buys": 66,
+     "sells": 93
+    }
+   },
+   "volume": {
+    "h24": 6723.21,
+    "h6": 512.25,
+    "h1": 5.37,
+    "m5": 0
+   },
+   "priceChange": {
+    "h1": -0.02,
+    "h6": -0.05,
+    "h24": -1.58
+   },
+   "liquidity": {
+    "usd": 26772.4,
+    "base": 137229,
+    "quote": 59.8017
+   },
+   "fdv": 149836031,
+   "marketCap": 149836031,
+   "pairCreatedAt": 1734663914000
+  },
+  {
+   "chainId": "solana",
+   "dexId": "raydium",
+   "url": "https://dexscreener.com/solana/4wrt4yys3k5yysmuabgvnp3kg5r43c3dxlpv8fven29n",
+   "pairAddress": "4wRT4yYS3k5yysMuABGvNp3Kg5R43c3dxLPv8fvEn29N",
+   "labels": [
+    "CLMM"
+   ],
+   "baseToken": {
+    "address": "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump",
+    "name": "Fartcoin ",
+    "symbol": "Fartcoin "
+   },
+   "quoteToken": {
+    "address": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+    "name": "PayPal USD",
+    "symbol": "PYUSD"
+   },
+   "priceNative": "0.1487",
+   "priceUsd": "0.1488",
+   "txns": {
+    "m5": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h1": {
+     "buys": 0,
+     "sells": 0
+    },
+    "h6": {
+     "buys": 0,
+     "sells": 8
+    },
+    "h24": {
+     "buys": 6,
+     "sells": 30
+    }
+   },
+   "volume": {
+    "h24": 109.78,
+    "h6": 21.57,
+    "h1": 0,
+    "m5": 0
+   },
+   "priceChange": {
+    "h6": -0.61,
+    "h24": -2.26
+   },
+   "liquidity": {
+    "usd": 13690.38,
+    "base": 46014,
+    "quote": 6841.8517
+   },
+   "fdv": 148812513,
+   "marketCap": 148812513,
+   "pairCreatedAt": 1734595883000
+  }
+ ]
+}

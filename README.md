@@ -75,6 +75,7 @@ claude mcp add tradedesk -- uv run --directory /ABSOLUTE/PATH/TO/tradedesk-mcp t
 | | `deribit_largest_trades` | останні крупні трейди (options/futures), фільтр блок-угод, buy/sell imbalance |
 | Квант | `odds_devig`, `option_calc`, `touch_probability`, `fib_retracement` | маржа й справедливі ймовірності, калькулятор опціону, barrier-ймовірність, fib-retracement ладдер (23.6/38.2/50/61.8/78.6%) |
 | Настрій | `sentiment_fear_greed` | Crypto Fear & Greed (alternative.me): latest + zone, mean 7d/30d, зміни, частка днів у кожній зоні |
+| On-chain / DEX | `dex_pairs`, `chain_metrics` | пули токена за адресою з DexScreener (за ліквідністю, прапорець `likely_fake` для підроблених тікерів), TVL / DEX-обсяг / fees мережі з DefiLlama зі змінами 7д і 30д |
 | Календар | `calendar_expiries` | експірації Deribit (daily/weekly/monthly/quarterly), найближчі funding-моменти, макро-події (FOMC/CPI/NFP) |
 | Події (Фаза 1) | `events_add`, `events_list`, `events_seed_load`, `event_study` | локальна база макро-подій (FOMC/CPI/NFP); seed 2024-2026 запаковано у wheel; windowed-study поверх `ohlcv_hist` (hit rate, p25/50/75) |
 

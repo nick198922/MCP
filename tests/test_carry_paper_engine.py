@@ -373,11 +373,11 @@ def test_funding_gap_issue():
 # Backtest output on seeded synthetic series, hashed at commit 82cb78d (before carry_rules.py was extracted from
 # carry.py; the refactored code was compared with the old code on these inputs, byte-for-byte equal).
 BACKTEST_PINS = [
-    ("A", 1, {"slots": 3, "entry_apr": 0.10}, "cbc0817c8c24d9be"),
-    ("A", 5, {"slots": 3, "entry_apr": 0.10}, "6069deb4b40fb78e"),
-    ("B", 2, {"slots": 3, "entry_apr": 0.05, "stop_move": 0.5, "max_entry_gap": 0.02}, "e10d6f29f5fbd840"),
-    ("B", 2, {"slots": 3, "entry_apr": 0.05}, "76ddfd72a2be4666"),
-    ("B", 7, {"slots": 3, "entry_apr": 0.05, "stop_move": 0.5, "max_entry_gap": 0.02}, "fec155cea43b93a7"),
+    ("A", 1, {"slots": 3, "entry_apr": 0.10}, "9896eb6fe5638e71"),
+    ("A", 5, {"slots": 3, "entry_apr": 0.10}, "d0d2a3560a076f5c"),
+    ("B", 2, {"slots": 3, "entry_apr": 0.05, "stop_move": 0.5, "max_entry_gap": 0.02}, "c5e2dcd5a515b1e0"),
+    ("B", 2, {"slots": 3, "entry_apr": 0.05}, "b728f0758d202017"),
+    ("B", 7, {"slots": 3, "entry_apr": 0.05, "stop_move": 0.5, "max_entry_gap": 0.02}, "c9cdcf79026eb712"),
 ]
 
 
@@ -390,8 +390,20 @@ def test_backtest_output_is_pinned(kind, seed, kw, digest):
         out = simulate_carry_portfolio(markets_a(seed=seed, days=110), **kw)
     else:
         out = simulate_perp_spread_portfolio(markets_b(seed=seed, days=110), **kw)
-    got = hashlib.sha256(json.dumps(out, sort_keys=True, default=str).encode()).hexdigest()[:16]
+    got = hashlib.sha256(json.dumps(_canon(out), sort_keys=True, default=str).encode()).hexdigest()[:16]
     assert got == digest and out["trades"]
+
+
+def _canon(o):
+    """Floats rounded to 10 significant digits before hashing: Python 3.12's sum() of floats is compensated
+    (Neumaier), so the last bits differ from 3.11 while the backtest itself is the same."""
+    if isinstance(o, float):
+        return float(f"{o:.10g}")
+    if isinstance(o, dict):
+        return {k: _canon(v) for k, v in o.items()}
+    if isinstance(o, list | tuple):
+        return [_canon(v) for v in o]
+    return o
 
 
 def test_leg_execution_vwap_cost_and_depth_shortfall():

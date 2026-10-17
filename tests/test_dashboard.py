@@ -51,6 +51,7 @@ def test_table_freshness_reads_seconds_millis_and_days(tmp_path):
     assert rows["funding_hist"]["ok"] is True and rows["funding_hist"]["age_s"] == pytest.approx(600)
     assert rows["ohlcv_hist"]["ok"] is False and rows["funding_hist"]["rows"] == 1
     assert "trader_snapshot" in rows and "basis_hist" not in rows
+    assert rows["trader_snapshot"]["age_s"] == pytest.approx(8 * H)  # 2027-01-15 08:00 UTC; a day row counts from midnight
     assert db.table_freshness(tmp_path / "none.sqlite", now) == []
 
 

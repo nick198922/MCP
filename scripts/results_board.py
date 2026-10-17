@@ -35,7 +35,7 @@ EARLY = [
     ("VRP BTC (короткий стреддл з хеджем)", "≈ +2 % від спота на місяць на DVOL; на реальних марках не значущий", "2026-10-13-vrp"),
     ("SFP / свипи рейнджів (відео DoubleTop)", "✗ після витрат, і поза вибіркою", "2026-10-12-doubletop-ranges-sfp"),
 ]
-STATUS_RE = re.compile(r"^Статус:\s*([a-z]+)\s*(.*)$", re.M)
+STATUS_RE = re.compile(r"^Статус:[ \t]*([a-z]+)[ \t]*(.*)$", re.M)
 TITLE_RE = re.compile(r"^#\s*IDEA-\d{8}-[a-z0-9-]+:\s*(.+)$", re.M)
 REPORT_RE = re.compile(r"(?:\.\./)?(?:docs/)?verification/([0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9-]+)\.md")
 

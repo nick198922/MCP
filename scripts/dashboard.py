@@ -24,7 +24,7 @@ import sys
 import threading
 import time
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -129,7 +129,7 @@ def table_freshness(db: Path, now: float) -> list[dict]:
             ts = None
             if isinstance(newest, str):
                 try:
-                    ts = datetime.strptime(newest[:10], "%Y-%m-%d").timestamp() + 86400
+                    ts = datetime.strptime(newest[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp()  # noqa: UP017 - runs on the system python3
                 except ValueError:
                     ts = None
             elif newest:
@@ -197,6 +197,17 @@ def usage_with_trend(now: float) -> dict | None:
 _progress_cache: dict = {}
 
 
+def _short_progress(line: str) -> str:
+    line = re.sub(r"`", "", line)
+    if "помилка інструмента" in line:
+        return (
+            line.split("помилка інструмента")[0]
+            + "помилка інструмента: "
+            + ("відмовлено в дозволі" if "denied" in line else line.split(":", 2)[-1].strip()[:80])
+        )
+    return line[:180]
+
+
 def live_progress(n: int = 14) -> list[str]:
     """The latest lines of the running (or last) agent session, as agents-progress.sh shows them."""
     project = HOME / ".claude/projects" / re.sub(r"[^A-Za-z0-9-]", "-", str(WORKTREE))
@@ -216,7 +227,7 @@ def live_progress(n: int = 14) -> list[str]:
         lines = [ln for ln in r.stdout.splitlines() if re.match(r"^(## |### |\*\*|  - )", ln)]
     except (OSError, subprocess.SubprocessError):
         lines = []
-    lines = [re.sub(r"`", "", ln)[:200] for ln in lines[-n:]]
+    lines = [_short_progress(ln) for ln in lines[-n:]]
     _progress_cache.update(key=key, lines=lines)
     return lines
 
@@ -305,7 +316,8 @@ def snapshot() -> dict:
             "activity": activity,
             "work": work,
             "parked": [(b, at.strftime("%d.%m %H:%M")) for b, at in parked],
-            "awaiting_review": [b for b in branches if b not in busy],
+            "awaiting_review": [b for b in branches if b not in busy and "-fix-" not in b],
+            "doctor_fixes": [b for b in branches if "-fix-" in b],
             "counts_24h": dict(st.history_counts(hist, since)),
             "history": history_rows(hist),
             "progress": live_progress(),
@@ -387,6 +399,12 @@ def render(s: dict) -> str:
         out.append(f"<p>⏸ відкладено до {_e(at)}: <code>{_e(br)}</code></p>")
     if a["awaiting_review"]:
         out.append("<p class='warn'>Чекають твого перегляду: " + ", ".join(f"<code>{_e(b)}</code>" for b in a["awaiting_review"]) + "</p>")
+    if a.get("doctor_fixes"):
+        out.append(
+            "<p class='mut'>Виправлення від лікаря (PR без автозливу): "
+            + ", ".join(f"<code>{_e(b)}</code>" for b in a["doctor_fixes"])
+            + "</p>"
+        )
     c = a["counts_24h"]
     if c:
         out.append(
@@ -485,10 +503,10 @@ def render(s: dict) -> str:
     if m["load"]:
         extra.append("load " + " / ".join(m["load"]))
     if m["uptime_s"]:
-        extra.append(f"працює {fmt_age(m['uptime_s'])}")
+        extra.append(f"сервер працює {fmt_age(m['uptime_s']).replace(' тому', '')}")
     if m["db_bytes"]:
         extra.append(f"база {m['db_bytes'] / 1024**2:.0f} МБ")
-    extra.append(f"бекап {fmt_age(m['backup_age_s'])} тому")
+    extra.append(f"бекап {fmt_age(m['backup_age_s'])}")
     out.append(f"<p class='mut'>{_e(' · '.join(extra))}</p></section>")
 
     # Collector
@@ -496,7 +514,7 @@ def render(s: dict) -> str:
     for t in s["tables"]:
         cls = "mut" if t["ok"] is None else ("ok" if t["ok"] else "bad")
         out.append(
-            f"<tr><td>{_e(t['label'])}</td><td class='{cls}'>{_e(fmt_age(t['age_s']))} тому</td><td>{t['rows']:,}".replace(",", " ")
+            f"<tr><td>{_e(t['label'])}</td><td class='{cls}'>{_e(fmt_age(t['age_s']))}</td><td>{t['rows']:,}".replace(",", " ")
             + "</td></tr>"
         )
     out.append("</table></section>")

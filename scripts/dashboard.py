@@ -155,7 +155,33 @@ def _git(*args: str) -> str:
     return st._git(REPO, *args)
 
 
-def read_usage() -> dict | None:
+USAGE_CACHE = LOG_DIR / "usage.json"  # the agents' last good answer (scripts/agents_usage.sh)
+USAGE_OWN_EVERY_S = 900  # the endpoint rate-limits: call it ourselves at most every 15 minutes
+_usage_last_call = [0.0]
+
+
+def _usage_from(data: dict) -> dict:
+    out = {}
+    for k in ("five_hour", "seven_day"):
+        v = data.get(k) or {}
+        out[k] = {"pct": v.get("utilization"), "resets_at": v.get("resets_at")}
+    return out
+
+
+def read_usage(now: float | None = None) -> dict | None:
+    """Plan usage from the agents' cache when under 20 minutes old, else from the endpoint at most every 15 minutes
+    (the answer is cached for the agents too); None when neither is available."""
+    now = now or time.time()
+    try:
+        cached = json.loads(USAGE_CACHE.read_text())
+        age = now - USAGE_CACHE.stat().st_mtime
+    except (OSError, ValueError):
+        cached, age = None, 1e9
+    if cached and age < 1200 and (cached.get("seven_day") or {}).get("utilization") is not None:
+        return _usage_from(cached)
+    if now - _usage_last_call[0] < USAGE_OWN_EVERY_S:
+        return _usage_from(cached) if cached and age < 3600 else None
+    _usage_last_call[0] = now
     try:
         token = json.loads((HOME / ".claude/.credentials.json").read_text())["claudeAiOauth"]["accessToken"]
         req = urllib.request.Request(
@@ -164,17 +190,18 @@ def read_usage() -> dict | None:
         )
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.load(resp)
+        if (data.get("seven_day") or {}).get("utilization") is None:
+            raise ValueError("no utilization")
+        tmp = USAGE_CACHE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data))
+        tmp.replace(USAGE_CACHE)
+        return _usage_from(data)
     except Exception:  # noqa: BLE001 - usage is optional on the page
-        return None
-    out = {}
-    for k in ("five_hour", "seven_day"):
-        v = data.get(k) or {}
-        out[k] = {"pct": v.get("utilization"), "resets_at": v.get("resets_at")}
-    return out
+        return _usage_from(cached) if cached and age < 3600 else None
 
 
 def usage_with_trend(now: float) -> dict | None:
-    u = read_usage()
+    u = read_usage(now)
     path = STATE / "usage_samples.json"
     try:
         samples = [tuple(x) for x in json.loads(path.read_text())]

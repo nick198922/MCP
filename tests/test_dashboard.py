@@ -127,3 +127,23 @@ def test_render_has_all_sections_and_escapes():
         assert text in page
     assert "<script>" not in page and "&lt;script&gt;" in page
     assert "http-equiv='refresh'" in page and 'class="bar"' in page
+
+
+def test_read_usage_prefers_the_agents_cache_and_throttles_own_calls(tmp_path, monkeypatch):
+    import json as _json
+    import time as _time
+
+    cache = tmp_path / "usage.json"
+    cache.write_text(_json.dumps({"five_hour": {"utilization": 12.0, "resets_at": "x"}, "seven_day": {"utilization": 65.0}}))
+    monkeypatch.setattr(db, "USAGE_CACHE", cache)
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude/.credentials.json").write_text(_json.dumps({"claudeAiOauth": {"accessToken": "t"}}))
+    monkeypatch.setattr(db, "HOME", tmp_path)
+    calls = []
+    monkeypatch.setattr(db.urllib.request, "urlopen", lambda *a, **k: calls.append(1) or (_ for _ in ()).throw(OSError("429")))
+    now = _time.time()
+    assert db.read_usage(now)["seven_day"]["pct"] == 65.0 and calls == []  # fresh cache: no call
+    old = now + 1500  # cache 25 min old: one own call (fails), then the cache is still used under an hour
+    db._usage_last_call[0] = 0.0
+    assert db.read_usage(old)["five_hour"]["pct"] == 12.0 and calls == [1]
+    assert db.read_usage(old + 60)["five_hour"]["pct"] == 12.0 and calls == [1]  # throttled: no second call

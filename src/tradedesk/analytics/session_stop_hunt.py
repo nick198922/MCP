@@ -37,6 +37,61 @@ FRACTAL_LOOKBACK = 288  # search the manipulation start at most one day back
 
 
 @dataclass(frozen=True)
+class Costs:
+    """Trading costs of one trade. ``*_pct`` are decimal fractions of the fill price per side; ``*_abs`` are price
+    units (forex pips): a round-trip commission, slippage on a market (E1) entry and slippage on a stop exit.
+    The defaults are the crypto card's: 0.07 % per market side, 0.02 % for the E2 maker entry, nothing absolute."""
+
+    entry_market_pct: float = MARKET_SIDE
+    entry_limit_pct: float = MAKER
+    exit_pct: float = MARKET_SIDE
+    round_trip_abs: float = 0.0
+    slip_entry_market_abs: float = 0.0
+    slip_stop_abs: float = 0.0
+
+    def price_cost(self, entry_kind: str, entry: float, exit_kind: str, exit_px: float) -> float:
+        """Cost of the round trip in price units."""
+        fee_in = self.entry_market_pct if entry_kind == "E1" else self.entry_limit_pct
+        c = fee_in * abs(entry) + self.exit_pct * abs(exit_px) + self.round_trip_abs
+        if entry_kind == "E1":
+            c += self.slip_entry_market_abs
+        if exit_kind in ("stop", "stop_gap"):
+            c += self.slip_stop_abs
+        return c
+
+
+@dataclass(frozen=True)
+class Execution:
+    """How a detected setup is traded. Bars are one price series (crypto: last trade; forex: bid). ``spread`` is a
+    constant ask - bid in price units: a short sells at the bid and buys back at the ask, so its stop and target
+    trigger when bid + spread reaches them; a long buys at the ask and its exits trigger on the bid. Signals (range,
+    sweep, fractals, BOS, the E2 level) are read on the bars. The stop sits ``stop_buffer_pct`` of the swept extreme
+    plus ``stop_buffer_abs`` beyond the extreme (for a short: beyond extreme + spread, the ask that would hit it)."""
+
+    spread: float = 0.0
+    stop_buffer_pct: float = STOP_BUFFER
+    stop_buffer_abs: float = 0.0
+    costs: Costs = Costs()
+
+
+CRYPTO = Execution()
+
+
+def fx_execution(
+    pip: float, spread_pips: float, *, commission_pips: float = 0.7, slip_pips: float = 0.2, buffer_pips: float = 1.0
+) -> Execution:
+    """Forex ECN model of IDEA-20261016-session-stop-hunt-fx: bid bars, constant spread, stop 1 pip beyond the swept
+    extreme, 0.7 pip commission per round trip, 0.2 pip slippage on the E1 entry and on stop exits, E2 limit and
+    target fills without slippage."""
+    return Execution(
+        spread=spread_pips * pip,
+        stop_buffer_pct=0.0,
+        stop_buffer_abs=buffer_pips * pip,
+        costs=Costs(0.0, 0.0, 0.0, commission_pips * pip, slip_pips * pip, slip_pips * pip),
+    )
+
+
+@dataclass(frozen=True)
 class Session:
     """Times (ms UTC) of one day's setup. Bars with open in [range_start, range_end) form the range, bars with open in
     [range_end, window_end) can sweep it, and an open trade closes at the close of the bar that ends at exit_at."""
@@ -119,9 +174,11 @@ class Setup:
     manip_idx: int
     manip_start: float
     bos_idx: int
-    entry: float  # E1: BOS close
+    entry: float  # E1: BOS close (minus the spread for a long, which buys at the ask)
     stop: float
     exit_idx: int  # last bar (closes at exit_at)
+    entry_off: float = 0.0  # short space: the trade price is bars - entry_off on entry (long: spread, short: 0)
+    exit_off: float = 0.0  # and bars + exit_off on exit (short: spread, long: 0)
 
 
 def is_fractal_low(low: np.ndarray, k: int, n: int = FRACTAL_N) -> bool:
@@ -154,7 +211,9 @@ def last_fractal_low(fractals: np.ndarray, before: int, confirmed_by: int, floor
     return int(fractals[p])
 
 
-def _short_setup(b: Bars, rs: int, re_: int, sweep: int, w_end: int, exit_idx: int, side: int) -> tuple[Setup | None, str]:
+def _short_setup(
+    b: Bars, rs: int, re_: int, sweep: int, w_end: int, exit_idx: int, side: int, ex: Execution = CRYPTO
+) -> tuple[Setup | None, str]:
     """Short-space BOS search after the sweep bar ``sweep``. ``rs``/``re_`` bound the range, ``w_end`` is the first bar
     outside the hunt window. The extreme may still extend inside the window; a new extreme after it voids the setup."""
     H = float(b.h[rs:re_].max())
@@ -180,13 +239,14 @@ def _short_setup(b: Bars, rs: int, re_: int, sweep: int, w_end: int, exit_idx: i
         seen_fractal = True
         M = float(b.low[m])
         if returned and b.c[j] < M:
-            entry = float(b.c[j])
-            stop = X + STOP_BUFFER * abs(X)
-            return Setup(side, H, L, sweep, ix, X, m, M, j, entry, stop, exit_idx), "ok"
+            e_off, x_off = (ex.spread, 0.0) if side > 0 else (0.0, ex.spread)
+            entry = float(b.c[j]) - e_off
+            stop = X + x_off + ex.stop_buffer_abs + ex.stop_buffer_pct * abs(X)
+            return Setup(side, H, L, sweep, ix, X, m, M, j, entry, stop, exit_idx, e_off, x_off), "ok"
     return None, "no_bos_60m"
 
 
-def find_setup(bars: Bars, s: Session) -> tuple[Setup | None, Bars | None, str]:
+def find_setup(bars: Bars, s: Session, ex: Execution = CRYPTO) -> tuple[Setup | None, Bars | None, str]:
     """Detect the day's setup. Returns (setup in short space, the day bars in that space, reason).
 
     Reasons: ok, gap (a missing bar between range start and the time exit), no_sweep, both_first (the first bar out
@@ -211,7 +271,7 @@ def find_setup(bars: Bars, s: Session) -> tuple[Setup | None, Bars | None, str]:
         if up or dn:
             side = -1 if up else 1
             space = day if up else day.mirrored()
-            st, why = _short_setup(space, rs, re_, j, w_end, exit_idx, side)
+            st, why = _short_setup(space, rs, re_, j, w_end, exit_idx, side, ex)
             return st, (space if st else None), why
     return None, None, "no_sweep"
 
@@ -240,25 +300,31 @@ class Trade:
         return (self.stop - self.entry) / abs(self.entry)
 
 
-def walk(b: Bars, start: int, last: int, entry: float, stop: float, target: float) -> tuple[float, str, bool, int]:
-    """Short position held from the close before ``start``; bars start..last. Stop first when a bar touches both; an
-    open beyond the stop exits at the open; time exit at the close of ``last``."""
+def walk(b: Bars, start: int, last: int, entry: float, stop: float, target: float, off: float = 0.0) -> tuple[float, str, bool, int]:
+    """Short position held from the close before ``start``; bars start..last, traded at bars + ``off`` (the spread for
+    a short on bid bars). Stop first when a bar touches both; an open beyond the stop exits at the open; time exit at
+    the close of ``last``."""
     for j in range(start, last + 1):
-        if b.o[j] >= stop:
-            return float(b.o[j]), "stop_gap", False, j
-        if b.h[j] >= stop:
-            return stop, "stop", bool(b.low[j] <= target), j
-        if b.low[j] <= target:
+        if b.o[j] + off >= stop:
+            return float(b.o[j] + off), "stop_gap", False, j
+        if b.h[j] + off >= stop:
+            return stop, "stop", bool(b.low[j] + off <= target), j
+        if b.low[j] + off <= target:
             return target, "target", False, j
-    return float(b.c[last]), "time", False, last
+    return float(b.c[last] + off), "time", False, last
 
 
-def _trade(ek: str, tk: str, b: Bars, start: int, last: int, entry: float, stop: float, target: float, fee_in: float) -> Trade:
-    px, kind, both, j = walk(b, start, last, entry, stop, target)
+def _trade(ek: str, tk: str, b: Bars, start: int, last: int, entry: float, stop: float, target: float, st: Setup, ex: Execution) -> Trade:
+    px, kind, both, j = walk(b, start, last, entry, stop, target, st.exit_off)
     risk = stop - entry
     gross = (entry - px) / risk
-    cost = (fee_in * abs(entry) + MARKET_SIDE * abs(px)) / risk
+    cost = ex.costs.price_cost(ek, entry, kind, px) / risk
     return Trade(ek, tk, entry, stop, target, px, kind, both, gross, cost, start - 1, j)
+
+
+def cost_r(t: Trade, costs: Costs) -> float:
+    """The same trade's costs in R under another cost model (e.g. BingX fees on forex trades)."""
+    return costs.price_cost(t.entry_kind, t.entry, t.exit_kind, t.exit) / (t.stop - t.entry)
 
 
 def target_for(kind: str, st: Setup, entry: float) -> float | None:
@@ -269,8 +335,9 @@ def target_for(kind: str, st: Setup, entry: float) -> float | None:
     return st.range_low if entry - st.range_low >= risk else None
 
 
-def simulate(st: Setup, b: Bars, entry_kind: str, target_kind: str) -> tuple[Trade | None, str]:
-    """One entry/target variant of a setup. Reasons: ok, t1_lt_1r, e2_unfilled, no_bars."""
+def simulate(st: Setup, b: Bars, entry_kind: str, target_kind: str, ex: Execution = CRYPTO) -> tuple[Trade | None, str]:
+    """One entry/target variant of a setup (detected with the same ``ex``). Reasons: ok, t1_lt_1r, e2_unfilled,
+    no_bars."""
     last = st.exit_idx
     if entry_kind == "E1":
         if st.bos_idx >= last:
@@ -278,27 +345,55 @@ def simulate(st: Setup, b: Bars, entry_kind: str, target_kind: str) -> tuple[Tra
         tgt = target_for(target_kind, st, st.entry)
         if tgt is None:
             return None, "t1_lt_1r"
-        return _trade("E1", target_kind, b, st.bos_idx + 1, last, st.entry, st.stop, tgt, MARKET_SIDE), "ok"
+        return _trade("E1", target_kind, b, st.bos_idx + 1, last, st.entry, st.stop, tgt, st, ex), "ok"
     level = 0.5 * (st.manip_start + st.extreme)
     tgt = target_for(target_kind, st, level)
     if tgt is None:
         return None, "t1_lt_1r"
     risk = st.stop - level
+    x = st.exit_off
     for j in range(st.bos_idx + 1, min(st.bos_idx + E2_VALID_BARS, last) + 1):
-        if b.h[j] < level:
+        if b.h[j] < level + st.entry_off:  # a long's buy limit fills only when the ask (bid + spread) reaches it
             continue
         # filled at the limit price (never at a better open); on the fill bar only the stop counts, because the
         # order of the fill and a target touch inside the bar is unknown
-        if b.h[j] >= st.stop or j == last:
-            if b.h[j] >= st.stop:
-                px, kind = (float(b.o[j]), "stop_gap") if b.o[j] >= st.stop else (st.stop, "stop")
+        if b.h[j] + x >= st.stop or j == last:
+            if b.h[j] + x >= st.stop:
+                px, kind = (float(b.o[j] + x), "stop_gap") if b.o[j] + x >= st.stop else (st.stop, "stop")
             else:
-                px, kind = float(b.c[j]), "time"
-            cost = (MAKER * abs(level) + MARKET_SIDE * abs(px)) / risk
+                px, kind = float(b.c[j] + x), "time"
+            cost = ex.costs.price_cost("E2", level, kind, px) / risk
             return Trade("E2", target_kind, level, st.stop, tgt, px, kind, False, (level - px) / risk, cost, j, j), "ok"
-        t = _trade("E2", target_kind, b, j + 1, last, level, st.stop, tgt, MAKER)
+        t = _trade("E2", target_kind, b, j + 1, last, level, st.stop, tgt, st, ex)
         return Trade("E2", target_kind, level, st.stop, tgt, t.exit, t.exit_kind, t.both_touched, t.r_gross, t.cost_r, j, t.exit_idx), "ok"
     return None, "e2_unfilled"
+
+
+def flat_share(b: Bars, i: int, j: int) -> float:
+    """Share of bars i..j-1 with open = high = low = close (no ticks: forex holidays, weekend filler)."""
+    if j <= i:
+        return 1.0
+    o, h, lo, c = b.o[i:j], b.h[i:j], b.low[i:j], b.c[i:j]
+    return float(np.mean((o == h) & (h == lo) & (lo == c)))
+
+
+def fx_skip_reason(b: Bars, volume: np.ndarray, s: Session, max_flat: float = 0.5) -> str | None:
+    """Forex day filter of the FX pre-registration, from bars before the time exit only: ``gap`` (a missing 5m bar
+    from range start to the exit), ``flat_range`` / ``flat_window`` (more than ``max_flat`` of the range or the hunt
+    window bars are flat), ``zero_volume`` (no volume from range start to the exit). None = the day is usable."""
+    i_rs = int(np.searchsorted(b.t, s.range_start))
+    i_ex = int(np.searchsorted(b.t, s.exit_at))
+    if i_ex - i_rs != (s.exit_at - s.range_start) // BAR_MS or i_rs >= b.t.size or b.t[i_rs] != s.range_start:
+        return "gap"
+    i_re = i_rs + (s.range_end - s.range_start) // BAR_MS
+    i_we = i_rs + (s.window_end - s.range_start) // BAR_MS
+    if flat_share(b, i_rs, i_re) > max_flat:
+        return "flat_range"
+    if flat_share(b, i_re, i_we) > max_flat:
+        return "flat_window"
+    if float(np.sum(volume[i_rs:i_ex])) <= 0.0:
+        return "zero_volume"
+    return None
 
 
 # ---------------------------------------------------------------- statistics

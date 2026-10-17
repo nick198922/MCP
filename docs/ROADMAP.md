@@ -1,7 +1,7 @@
 # Дорожня карта
 
 Оновлено 2026-10-17. Легенда: ✅ зроблено · 🔄 у роботі · 🔜 заплановано · ⏸ відкладено · ❓ рішення власника.
-Що саме в черзі зараз — `docs/HANDOFF.md`. Дрібні пункти — `docs/BACKLOG.md`. Результати перевірок — `docs/RESULTS.md`.
+Що саме в черзі зараз — `docs/HANDOFF.md`. Дрібні пункти — `docs/BACKLOG.md`. Результати перевірок — `uv run python scripts/results_board.py` → `docs/RESULTS.md` (генерується, не в git) або панель проєкту.
 
 ## Фаза 0: основа ✅
 Ядро: Http з ретраями, rate-limit, кеш, health, Envelope/Evidence. Каркас MCP-сервера, тести.

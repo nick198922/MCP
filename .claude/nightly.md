@@ -30,7 +30,7 @@ Give each subagent a self-contained brief: which card or item, which files, what
 You do not create branches, commit or push. After you finish, the launcher script does that, and only if it accepts your request.
 
 1. `make lint && make test` must pass. Never edit `CHANGELOG.md` (every branch editing its top makes pull requests conflict): write the step's changelog entry, in Ukrainian, as `docs/changes/YYYY-MM-DD-<slug>.md` (one file per branch, a few bullet lines; on a CONTINUE run, update that file).
-2. If the step changed any card's status line, regenerate the results board with `uv run python scripts/results_board.py` and stage `docs/RESULTS.md` too.
+2. Do not stage `docs/RESULTS.md`: it is generated (`uv run python scripts/results_board.py`) and not tracked.
    Stage exactly the files of this step with `git add <paths>` (including the summary from step 4). Leave no unstaged changes in tracked files.
 3. Write `.agent/branch` with one line, `agent/YYYY-MM-DD-<slug>` (lowercase letters, digits, hyphens), and `.agent/commit-msg.txt` with the commit message: a subject line, a blank line, the body, then the attribution lines the environment gives you. Do not stage `.agent/`.
 4. Write `.agent/next` with one word:

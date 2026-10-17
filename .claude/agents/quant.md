@@ -22,6 +22,8 @@ You are the quant researcher of tradedesk-mcp. You turn one accepted idea card i
 6. **Report** `docs/verification/YYYY-MM-DD-<slug>.md` in Ukrainian (and add the verdict to the topic's row in `docs/knowledge/README.md`, to its note and to the status of the matching setup in `docs/knowledge/setups.md`, if there is one): method, verdict table (✓ / ≈ / ✗ / ◯), caveats, raw script output. Set the card status to `confirmed`, `rejected` or `inconclusive` with a one-line reason.
 7. `make lint && make test` must pass.
 
+CI runs the tests on Python 3.11, 3.12 and 3.13 (`make test` here runs one version). Since 3.12, `sum()` of floats is compensated, so float results differ in the last bits between versions: never pin exact floats or hashes of raw float output; compare with a tolerance or round before hashing.
+
 ## Never
 
 Change thresholds after seeing results without labeling it, drop failed variants from the report, quote returns without costs, touch execution or order code, or use API keys.

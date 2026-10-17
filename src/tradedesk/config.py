@@ -67,6 +67,10 @@ class Settings:
     traders_top_n: int = 100  # watched per venue and per ranking (month PnL, all-time PnL)
     traders_min_account_usd: float = 500_000.0  # Hyperliquid accounts stored in the daily snapshot
     traders_pm_pages: int = 10  # Polymarket leaderboard pages of 50 per ranking
+    # Forward paper engine for the two carry strategies (docs/ideas/IDEA-20261017-forward-paper-carry.md): bookkeeping only.
+    # Off by default; the job polls and runs one cycle after each 8h funding payment.
+    paper_carry_enabled: bool = False
+    paper_carry_seconds: int = 600
     # Alerts
     alerts_enabled: bool = False
     alerts_rules_path: str = ""
@@ -117,6 +121,8 @@ class Settings:
             traders_top_n=int(_float("TRADEDESK_TRADERS_TOP_N", 100)),
             traders_min_account_usd=_float("TRADEDESK_TRADERS_MIN_ACCOUNT_USD", 500_000.0),
             traders_pm_pages=int(_float("TRADEDESK_TRADERS_PM_PAGES", 10)),
+            paper_carry_enabled=os.environ.get("TRADEDESK_PAPER_CARRY_ENABLED", "").lower() in ("1", "true", "yes"),
+            paper_carry_seconds=int(_float("TRADEDESK_PAPER_CARRY_SECONDS", 600)),
             http_bearer_tokens=os.environ.get("TRADEDESK_HTTP_BEARER_TOKENS") or os.environ.get("TRADEDESK_HTTP_BEARER_TOKEN", ""),
             alerts_enabled=os.environ.get("TRADEDESK_ALERTS_ENABLED", "").lower() in ("1", "true", "yes"),
             alerts_rules_path=os.environ.get("TRADEDESK_ALERTS_RULES_PATH", ""),

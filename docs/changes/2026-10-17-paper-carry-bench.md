@@ -1,0 +1,4 @@
+- Форвард-папір carry, поправка реєстрації до старту рушія: заморожено `docs/paper/bench.json` (смуги funding для критерію (в)), знімок ladder Bybit, перелік полів, яких рушій ще не логує, правило «відкладеної» угоди.
+- Знахідка: +76 % APR для перп-перп carry (B) не відтворюється — через дірки в історії Bybit funding (пагінація ccxt) на повних даних ≈ −8.7 % (2x зі стопом). Стратегія A не зачеплена (+6.5 %, 42 угоди). Помилку позначено у звіті 2026-10-13 і в `docs/RESULTS.md`.
+- Нове: `analytics/carry_bench.py`, `scripts/verify_paper_carry_bench.py`, `scripts/paper_ladder_snapshot.py`, `scripts/paper_bench_manifest.py`, тести; звіт `docs/verification/2026-10-17-paper-carry-bench.md`, рев'ю критика (approve).
+- Питання власнику `Q-20261017-1`: чи вести B на папері (рекомендація — так, як контроль витрат, очікування ≈ 0).

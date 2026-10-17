@@ -60,7 +60,7 @@
 | Що | Результат | Звіт |
 |---|---|---|
 | Funding carry на альтах (cash-and-carry, 5 слотів, вхід ≥ 20 % APR) | +6.5 % на номінал за 2 роки, ≈ 3–5 % на капітал | [2026-10-12-funding-carry-alts](verification/2026-10-12-funding-carry-alts.md) |
-| Carry перп-перп Binance ↔ Bybit | +76…+90 % на номінал за 2 роки, лише хайпові лістинги; медіанна угода ≈ 0 | [2026-10-13-funding-carry-perp-perp](verification/2026-10-13-funding-carry-perp-perp.md) |
+| Carry перп-перп Binance ↔ Bybit | ⚠ errata 17.10: «+76…+90 %» зумовлено дірками в історії funding Bybit; на повній історії −8.7 % (2x, стоп) / +2.9 % (без стопу) на номінал, див. 2026-10-17-paper-carry-bench; повна повторна перевірка окремо | [2026-10-13-funding-carry-perp-perp](verification/2026-10-13-funding-carry-perp-perp.md) |
 | VRP BTC (короткий стреддл з хеджем) | ≈ +2 % від спота на місяць на DVOL; на реальних марках не значущий | [2026-10-13-vrp](verification/2026-10-13-vrp.md) |
 | SFP / свипи рейнджів (відео DoubleTop) | ✗ після витрат, і поза вибіркою | [2026-10-12-doubletop-ranges-sfp](verification/2026-10-12-doubletop-ranges-sfp.md) |
 

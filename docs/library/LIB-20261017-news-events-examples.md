@@ -21,7 +21,7 @@
 - STRK мав два окремі великі рухи:
   - 18.09: +53 % за день, початок о 07:00 UTC;
   - тиждень до 11.10: 0.044 → 0.117. Найбільша година — 10.10 14:00 UTC, +17 %. На ній +1 год — +23 %, +4 год — +35 %, +24 год — +48 %, +72 год — +13 %.
-- Пояснення в пресі — розгляд переходу Starknet в L1 заради квантової стійкості, заява CEO ([KuCoin/Odaily](https://www.kucoin.com/news/flash/strk-surges-40-amid-starknet-s-quantum-resistance-and-potential-l1-transition), [CoinMarketCap](https://coinmarketcap.com/tr/top-stories/6ac8e664dd67e817b910d4d2/)). Точний твіт-тригер не знайдено.
+- Пояснення в пресі — розгляд переходу Starknet в L1 заради квантової стійкості, заява CEO ([KuCoin/Odaily](https://www.kucoin.com/news/flash/strk-surges-40-amid-starknet-s-quantum-resistance-and-potential-l1-transition), [CoinMarketCap](https://coinmarketcap.com/tr/top-stories/6ac8e664dd67e817b910d4d2/)). Точний твіт-тригер не знайдено. Власник (17.10): «в цілому він пішов в ріст завдяки саме тій темі, що в тому твіті» — тобто приклад STRK — це **тема-наратив** (квантова стійкість), а не окрема новина: гіпотеза H3 картки.
 
 ## Як це може дати гроші
 - Негативні новини про закриття чи депрекацію: падіння триває годинами й днями. Вхід через 5–15 хв ще брав −20…−40 % до кінця доби. Це підстава для перевірки на історичному наборі подій.

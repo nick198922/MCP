@@ -2,6 +2,8 @@
 
 Дата: 2026-10-17 · Картка: [IDEA-20261016-course-setups-crypto](../ideas/IDEA-20261016-course-setups-crypto.md), крок 4 · Реєстрація: розділ «Попередня реєстрація — крок 4 (S12 + S28: FVG, OB, брейкери)» у картці; хеші й git-blob — [registration.txt](2026-10-17-course-step4-fvg-ob.registration.txt) · Сирий вивід: [raw](2026-10-17-course-step4-fvg-ob.raw.md) · Код: `src/tradedesk/analytics/course_fvg_ob.py`, `scripts/verify_course_step4_fvg_ob.py`, тести `tests/test_course_fvg_ob.py`.
 
+**Перевірка по активах:** [2026-10-17-per-asset-recheck](2026-10-17-per-asset-recheck.md) — FVG і валідні OB: розкид між монетами в межах шуму (I² 0 %), найкращі до 2025-03 монети після не значуще кращі (FVG +0.023R [−0.053; +0.096], MDE 0.09R; OB +0.022R [−0.201; +0.254], MDE 0.29R). Брейкери: монети справді різняться (I² 36 %, Holm-p 0.014; структурно — BTC і ETH гірші), але найкращі в IS не значуще кращі в OOS (+0.118R [−0.045; +0.278], Holm-p 0.31, MDE 0.21R), і їхня верхня чверть в OOS ≈ 0 (+0.032).
+
 Твердження, що перевірялись:
 - **H2** у [LIB-20261016-local-review](../library/LIB-20261016-local-review.md) і **H1** у [LIB-20261016-course-module0](../library/LIB-20261016-course-module0.md): ціна повертається до незаповненого FVG (за 5 / 20 барів) частіше, ніж до випадкового рівня на тій самій відстані; відскок ≥ 1 ATR від FVG (0.5 чи повне заповнення) частіший, ніж від випадкового рівня.
 - **H4** у [LIB-20261016-course-basics](../library/LIB-20261016-course-basics.md): ордер-блок із критеріями курсу (імпульсне поглинання, FVG після, BOS після) кращий за решту OB на ≥ 0.1R.

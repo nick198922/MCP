@@ -2,6 +2,8 @@
 
 Дата: 2026-10-17 · Картка: [IDEA-20261017-deviation-weekly-trend](../ideas/IDEA-20261017-deviation-weekly-trend.md) · Реєстрація: розділ «Попередня реєстрація» в картці; хеші — [registration.txt](2026-10-17-deviation-weekly-trend.registration.txt) · Сирий вивід: [raw](2026-10-17-deviation-weekly-trend.raw.md) · Код: `src/tradedesk/analytics/deviation_weekly_trend.py`, `scripts/verify_deviation_weekly_trend.py`, тести `tests/test_deviation_weekly_trend.py`.
 
+**Перевірка по активах:** [2026-10-17-per-asset-recheck](2026-10-17-per-asset-recheck.md) — для групи T по монетах не перевіряється (222 угоди на 94 монетах, жодна не має 30); у сусідній групі deep розкид між монетами не відрізняється від шуму (I² 0 %, p перестановки 0.68; тест стійкості слабкий, MDE 0.40R).
+
 Твердження: H1 у [LIB-20261017-goodmood-market-review](../library/LIB-20261017-goodmood-market-review.md). Ціна довго в рейнджі, тінню випадає під низ до денних EMA 100/200 («тижневий тренд»), за 1–2 свічки 4h повертається. Вхід — на ретесті низу рейнджу, стоп — за екстремумом виносу. Перевіряється, чи дотик денних EMA як фільтр дає перевагу.
 
 ## Вердикт

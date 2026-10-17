@@ -20,3 +20,4 @@ build/
 docs/library/*.pdf
 # paid courses the owner bought: originals stay on this Mac only; git gets our notes (docs/knowledge/), never their text
 docs/library/courses/
+docs/RESULTS.md

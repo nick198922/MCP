@@ -1,0 +1,18 @@
+IDEA-20261017-news-events: SHA-256 of the card section "## Попередня реєстрація" (to the end of the file),
+printed by `uv run python scripts/verify_news_events.py prereg`.
+
+1) before stage 0 (event counts from titles only; a 20-event price fetch was timed, no outcome looked at):
+2026-10-17T16:03:22+00:00 sha256=398304ef62281c791c3e35b2e8f512599535be4f5ad9a478cd7e7bfff9adcd3f bytes=10212
+
+Between 1) and 2), before any outcome mean (code only, the registered rules unchanged): the placebo now passes the
+token's other event times as `blocked` (the registration text already said so; the first draft of the runner omitted
+it), the OKX source got its own robustness row, and the `sanity` stage was added.
+
+2) after the "Стадія 0" block (n, SD, MDE, data checks only), before `report`:
+2026-10-17T16:26:57+00:00 sha256=76d0e361d3b555ab29cb823e78c4bca905eb5695f272d518add3a1ed3541213a bytes=11717
+
+3) AFTER RESULTS (the first report and the critic's recompute were already seen): "Поправка 1" appended -- perp
+   live at t0 (24 h price range > 0 and 60 min volume > 0), spot check on the announcing exchange, funding_partial.
+   Hashes 1) and 2) above are the original ones and still match the section without the "Стадія 0" block / without
+   "Поправка 1". Recorded before the amended `prices` / `stage0` / `report` runs:
+2026-10-17T16:57:01+00:00 sha256=e9ddc608befdd71fb14e63d0158bd95fcac910b9f868ea23bedd4d96c1ed1e86 bytes=14462

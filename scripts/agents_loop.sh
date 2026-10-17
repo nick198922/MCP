@@ -192,7 +192,7 @@ while true; do
     exec "$0" "$@"
   fi
   daily_check
-  git -C "$REPO" fetch -q origin || log "fetch failed"
+  git -C "$REPO" fetch -q --no-write-fetch-head origin || log "fetch failed"
   leftovers=0
   [[ -n "$(git -C "$WT" status --porcelain 2>/dev/null)" || -n "$(work_branch)" ]] && leftovers=1
   open="$(open_branches)"

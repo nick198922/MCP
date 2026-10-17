@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 14
 
 # Each migration is a list of SQL statements executed in a single transaction.
 # `PRAGMA user_version` is bumped by Store.init() after a block runs.
@@ -305,5 +305,75 @@ MIGRATIONS: dict[int, list[str]] = {
         # only the positions that opened, changed size or side, or closed ('closed', size 0). The last full set is
         # kept here, so the next observation can be diffed against it.
         "ALTER TABLE trader_position_state ADD COLUMN positions_json TEXT",
+    ],
+    13: [
+        # Forward paper engine for the two carry strategies (A cash-and-carry 'cc-paper', B perp-perp 'pp-paper'):
+        # bookkeeping only, no orders. A position keeps the backtest's own state dict (JSON) so that the shared
+        # rule functions in analytics/carry_rules.py can resume it; cp_log holds the pre-registered record
+        # (candidates, leg sides with book snapshots, funding payments, marks, exchange events), one row per item.
+        """
+        CREATE TABLE IF NOT EXISTS cp_position (
+            trade_id TEXT PRIMARY KEY,             -- '<strategy>:<symbol>:<open cycle ts ms>'
+            strategy TEXT NOT NULL,                -- 'A' | 'B'
+            symbol TEXT NOT NULL,                  -- ccxt perp symbol, e.g. WIF/USDT:USDT
+            status TEXT NOT NULL DEFAULT 'open',   -- 'open' | 'closed'
+            opened_ts INTEGER NOT NULL,            -- UTC ms of the deciding cycle
+            closed_ts INTEGER,
+            slot_notional REAL NOT NULL,           -- USD per leg
+            state TEXT NOT NULL,                   -- JSON: the backtest position dict, fractions of slot notional
+            trade TEXT,                            -- JSON: closed-trade record (same keys as the backtest trade)
+            exit_reason TEXT,                      -- 'signal' | 'stop' | 'forced' | 'manual'
+            journal_id INTEGER
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS cp_position_status ON cp_position (strategy, status)",
+        """
+        CREATE TABLE IF NOT EXISTS cp_cycle (
+            strategy TEXT NOT NULL,
+            cycle_ts INTEGER NOT NULL,             -- scheduled funding time, UTC ms (00/08/16 UTC)
+            status TEXT NOT NULL,                  -- 'done' | 'skipped' | 'failed'
+            reason TEXT,                           -- why a cycle was skipped / failed
+            started_ms INTEGER,
+            finished_ms INTEGER,
+            git_sha TEXT,
+            params_hash TEXT,
+            payload TEXT,                          -- JSON: universe, exclusions, candidates, ranking, decisions, flags
+            PRIMARY KEY (strategy, cycle_ts)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS cp_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            strategy TEXT NOT NULL,
+            cycle_ts INTEGER NOT NULL,
+            kind TEXT NOT NULL,                    -- 'side' | 'funding' | 'mark' | 'close' | 'event'
+            trade_id TEXT,
+            payload TEXT NOT NULL                  -- JSON
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS cp_log_kind ON cp_log (strategy, kind, cycle_ts)",
+        "CREATE INDEX IF NOT EXISTS cp_log_trade ON cp_log (trade_id)",
+    ],
+    14: [
+        # Incremental funding-history cache of the paper carry engine (public data): only payments after the last stored
+        # one are fetched each cycle, which keeps the engine under Binance's 500 requests / 5 min limit on fundingRate.
+        """
+        CREATE TABLE IF NOT EXISTS cp_funding (
+            venue TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            ts INTEGER NOT NULL,                   -- payment time, UTC ms as reported by the venue
+            rate REAL NOT NULL,                    -- decimal fraction per interval
+            PRIMARY KEY (venue, symbol, ts)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS cp_funding_cov (
+            venue TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            covered_from INTEGER NOT NULL,         -- the history is complete from here (UTC ms)
+            covered_to INTEGER NOT NULL,           -- last fully fetched upper bound (UTC ms)
+            PRIMARY KEY (venue, symbol)
+        )
+        """,
     ],
 }

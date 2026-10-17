@@ -197,7 +197,9 @@ class Exchanges:
 
         return await self._call(ex_id, "fetch_funding_intervals", {}, 3600, go)
 
-    async def funding_rate_history_range(self, ex_id: str, symbol: str, since_ms: int, until_ms: int, *, max_pages: int = 60) -> Fetched:
+    async def funding_rate_history_range(
+        self, ex_id: str, symbol: str, since_ms: int, until_ms: int, *, max_pages: int = 60, trust_short_page: bool = False
+    ) -> Fetched:
         """Funding history from ``since_ms`` to ``until_ms`` walked page by page.
 
         One request returns at most a venue-specific number of rows, and ccxt sizes Bybit's request window
@@ -234,6 +236,8 @@ class Exchanges:
             if nxt <= since:
                 break
             since = nxt
+            if trust_short_page and len(batch) < page:
+                break  # venues that fill a page from ``since`` (Binance): a short page is the end, saves the empty trailing request
         ev = Evidence(
             provider=f"ccxt:{ex_id.lower()}",
             tool="fetch_funding_rate_history",

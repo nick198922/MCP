@@ -40,7 +40,9 @@ if [[ -z "${TRADEDESK_LOOP_TEED:-}" ]]; then
   export TRADEDESK_LOOP_TEED=1
   exec > >(tee -a "$LOG_DIR/loop.log") 2>&1
 fi
-SELF="$(cksum <"$0")"
+# The loop restarts itself when this script or a helper it sources changes (they are read once, at start).
+self_sum() { cat "$0" "$REPO/scripts/agents_usage.sh" "$REPO/scripts/agents_notify.sh" 2>/dev/null | cksum; }
+SELF="$(self_sum)"
 
 log() { echo "$(date '+%F %T') $*"; }
 
@@ -184,7 +186,7 @@ status_ticker &
 TICKER=$!
 
 while true; do
-  if [[ "$(cksum <"$0" 2>/dev/null)" != "$SELF" ]]; then
+  if [[ "$(self_sum)" != "$SELF" ]]; then
     log "this script changed; continuing with the new version"
     kill "$TICKER" 2>/dev/null
     exec "$0" "$@"

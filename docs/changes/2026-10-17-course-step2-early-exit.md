@@ -1,0 +1,9 @@
+- Картка `course-setups-crypto` (пріоритет власника): статус лишається `testing`. Крок 2 (ранній вихід за часом і стоп у БУ як модулі виходу): квант пропонує `rejected`.
+  - Ранній вихід «4 бари без +0.5R» на 4 664 лонгах 4h кроку 1: Δ +0.005R [−0.014; +0.022], в OOS −0.003R; MDE 0.026R.
+  - БУ після +1R: −0.008R в IS (в OOS +0.061R, розбіжність). На Session Stop Hunt ранній вихід через 2 год дав +0.04R лише в IS.
+  - Чекає рев'ю критика.
+- Додано:
+  - `analytics/early_exit.py`: шлях угоди з раннім виходом і БУ, без зазирання вперед; базове правило дорівнює `course_s14_ema.simulate`;
+  - `scripts/verify_course_step2_early_exit.py` (`--stage prereg|report`, `--out`, без мережі, з кешів кроку 1 і S25);
+  - `tests/test_early_exit.py` (13 тестів: аналітичні еталони, причинність, мартингал).
+- Звіт: `docs/verification/2026-10-17-course-step2-early-exit.md` (+ `.raw.md`, `.registration.txt`). Оновлено `knowledge/risk-management.md`, `setups.md` (S14), `README.md`.

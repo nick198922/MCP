@@ -2,7 +2,7 @@
 
 Статус: accepted (рішення власника 2026-10-17: «хочу щоб ми використали їх МСР для побудови нашого»)
 Пріоритет: власник
-Порядок: 4
+Порядок: 5
 <!-- proposed → accepted | rejected → testing → confirmed | rejected | inconclusive → built -->
 
 ## Черга

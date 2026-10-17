@@ -49,11 +49,12 @@
 1. ~~deviation-weekly-trend~~ — `inconclusive` 17.10 (108 дат, тупик за потужністю, OOS −0.08R).
 2. [forward-paper-carry](ideas/IDEA-20261017-forward-paper-carry.md) — **перший зріз зроблено 17.10** (рушій, спільні чисті функції, `paper_carry_status`, схема 14, виправлення за рев'ю: кеш funding, пейсер, утримання при пропущеній виплаті, `on_time` від завершення); лишилися тижневий звіт, `bench.json`, перевірки (г)/(є), запуск на сервері — `docs/BACKLOG.md`.
 3. [per-asset-recheck](ideas/IDEA-20261017-per-asset-recheck.md) — чи прив'язані закриті сетапи до окремих монет. Правило п. 5a `quant.md` — для всіх нових звітів.
-4. [doubletop-to-ours](ideas/IDEA-20261017-doubletop-to-ours.md) — звірка, `dex_pairs`, `chain_metrics`, Coinalyze.
-5. [setup-hunt](ideas/IDEA-20261017-setup-hunt.md) — власний пошук 2–3 сетапів з доказами.
-6. [vrp-real-marks](ideas/IDEA-20261017-vrp-real-marks.md).
-7. [polymarket-vs-options-forward](ideas/IDEA-20261017-polymarket-vs-options-forward.md) — CLV.
-8. [course-setups-crypto](ideas/IDEA-20261016-course-setups-crypto.md), кроки 8–11.
+4. [news-events](ideas/IDEA-20261017-news-events.md) — торгівля на офіційних новинах (закриття, депрекація, злами, делістинги): етап 0 — історичний набір подій; далі сповіщення в Telegram; автоматизація — лише Фаза 4.
+5. [doubletop-to-ours](ideas/IDEA-20261017-doubletop-to-ours.md) — звірка, `dex_pairs`, `chain_metrics`, Coinalyze.
+6. [setup-hunt](ideas/IDEA-20261017-setup-hunt.md) — власний пошук 2–3 сетапів з доказами.
+7. [vrp-real-marks](ideas/IDEA-20261017-vrp-real-marks.md).
+8. [polymarket-vs-options-forward](ideas/IDEA-20261017-polymarket-vs-options-forward.md) — CLV.
+9. [course-setups-crypto](ideas/IDEA-20261016-course-setups-crypto.md), кроки 8–11.
 
 **Поза чергою:**
 - «розумні гроші» — стадія 0 `inconclusive`, збір триває;

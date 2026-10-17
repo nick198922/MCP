@@ -328,10 +328,39 @@ ALLOWED=(
   "Bash(awk:*)" "Bash(tr:*)" "Bash(diff:*)" "Bash(jq:*)" "Bash(python3:*)"
   "Bash(scripts/agents_rm.py:*)" "Bash(python3 scripts/agents_rm.py:*)" "Bash(uv run python scripts/agents_rm.py:*)"
 )
+# The claude.ai DOUBLETOP connector (the owner's account; access is temporary): read-only data tools for parity checks
+# and real response samples (docs/AGENTS.md, «MCP DOUBLETOP»). Never a runtime dependency. Its generic fetch and
+# CoinGecko code sandbox stay off, and so do the account's other connectors (Drive, Docs).
+DT_TOOLS=(
+  ccxt__batch-get-tickers ccxt__get-markets ccxt__get-ohlcv ccxt__get-orderbook ccxt__get-ticker ccxt__get-trades
+  coinalyze__funding_rate_history coinalyze__liquidation_history coinalyze__long_short_ratio_history
+  coinalyze__open_interest_history coingecko__search_docs
+  coinstats__coin_chart coinstats__coin_detail coinstats__coins_markets coinstats__market_insights
+  defillama__get_chart__by_pool defillama__get_pools defillama__get_protocols defillama__get_stablecoincharts_all
+  defillama__get_tvl__by_protocol defillama__get_v2_chains defillama__get_v2_historicalChainTvl__by_chain
+  dexscreener__search_blockchain_tokens dexscreener__search_pairs_by_token_addresses
+  dt_edu__chain_trend_snapshot dt_edu__pair_discovery dt_edu__provider_readiness dt_edu__risk_hints_address
+  dt_edu__risk_hints_token dt_edu__token_card_snapshot
+  etherscan__balanceERC20 etherscan__balanceNative etherscan__erc20TxsByAddress etherscan__getContractSourceCode
+  etherscan__getTokenInfo etherscan__normalTxsByAddress etherscan__tokenTopHolders etherscan__transaction
+  fear_greed__get_fear_greed_index
+  graph_polymarket__get_live_prices graph_polymarket__get_market_data graph_polymarket__get_oi_history
+  graph_polymarket__get_price_history graph_polymarket__get_top_traders graph_polymarket__get_trader_profile
+  graph_polymarket__search_markets
+  helius__get_asset helius__get_signatures_for_address helius__get_transaction helius__search_assets
+  hyperliquid_info__candle_snapshot hyperliquid_info__funding_history hyperliquid_info__l2_book
+  hyperliquid_info__meta_and_asset_ctxs hyperliquid_info__recent_trades
+  mempool__block_latest mempool__difficulty_hashrate mempool__fees_recommended mempool__mempool_summary
+  pendle__compare_pt_vs_underlying pendle__expiry_calendar pendle__liquidity_depth pendle__pendle_briefing
+  pendle__scan_fixed_yields pendle__yield_curve
+)
+for t in "${DT_TOOLS[@]}"; do ALLOWED+=("mcp__claude_ai_DOUBLETOP__$t"); done
 DENIED=(
   "Bash(git push origin main:*)" "Bash(git push --force:*)" "Bash(git push -f:*)" "Bash(git reset --hard:*)"
   "Bash(git config:*)" "Bash(rm -rf:*)" "Bash(sudo:*)"
   "Read(~/.claude/.credentials.json)" "Read(~/.ssh/**)" "Read(~/.config/tradedesk/**)" "Read(//etc/tradedesk-mcp.env)"
+  "mcp__claude_ai_DOUBLETOP__fetch__fetch" "mcp__claude_ai_DOUBLETOP__coingecko__execute"
+  "mcp__claude_ai_Google_Drive" "mcp__claude_ai_Claude_Docs"
 )
 
 # The coordinator only routes and stages, so it runs on Sonnet; each subagent keeps the model from its

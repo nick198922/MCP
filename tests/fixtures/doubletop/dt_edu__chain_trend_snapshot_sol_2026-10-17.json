@@ -1,0 +1,20 @@
+{
+  "_source": "claude.ai DOUBLETOP dt_edu__chain_trend_snapshot, captured 2026-10-17 by Claude; args: {chain: sol}",
+  "_notes": "trending_tokens trimmed from 10 to 2 entries: all 10 were fake «SOL» tokens with made-up liquidity (~$2.3B each) — DexScreener search without a scam filter. Usable panels: tvl, dex_volume_24h, fees_24h (DefiLlama). native_price failed (their CoinGecko), derivatives_oi empty.",
+  "response": {"_meta": {"issue": "2TOP-219", "contractVersion": "1", "schema_version": 1}, "subject": {"kind": "chain", "value": "sol", "chain_id": "solana", "display_name": "Solana", "evm": false, "status": "available"},
+    "panels": {
+      "tvl": {"summary": "Aggregate DeFi TVL", "value": {"usd": "5936345737"}, "evidence_ref": {"provider": "defillama", "tool": "defillama__get_v2_historicalChainTvl__by_chain", "args": {"chain": "Solana"}, "fetched_at": "2026-10-17T08:17:52Z"}},
+      "dex_volume_24h": {"summary": "24h DEX volume", "value": {"usd": "2466383894.11"}, "evidence_ref": {"provider": "defillama", "tool": "defillama__get_overview_dexs__by_chain", "args": {"chain": "Solana"}, "fetched_at": "2026-10-17T08:17:52Z"}},
+      "fees_24h": {"summary": "24h protocol fees", "value": {"usd": "12239279.179999998"}, "evidence_ref": {"provider": "defillama", "tool": "defillama__get_overview_fees__by_chain", "args": {"chain": "Solana"}, "fetched_at": "2026-10-17T08:17:52Z"}},
+      "trending_tokens": {"summary": "Top trending tokens on chain", "value": {"tokens": [
+        {"rank": 1, "symbol": "SOL", "name": "Solana", "token_address": "5Sqq3NWD98JkcirdDBKRxZFsoZ8f1qqpFp6DSZkoTsHd", "chain_id": "solana", "pair_address": "392Yvfy6iJB5GHkZEFoF5bYtzXZffKVFz4fdmi26vVkw", "price_usd": 110.21, "fdv_usd": 2314591244.0, "market_cap_usd": 2314591244.0, "volume_1h_usd": 0.0, "volume_6h_usd": 85423.23, "volume_24h_usd": 347776.17, "liquidity_usd": 2314314671.08, "provider_ref": "https://dexscreener.com/solana/392yvfy6ijb5ghkzefof5bytzxzffkvfz4fdmi26vvkw"},
+        {"rank": 2, "symbol": "SOL", "name": "Solana", "token_address": "5vhw96LZoKA4K8kbBkTJXBYvJSN1RWJzJgJbYEorBChv", "chain_id": "solana", "pair_address": "7DYVdkbhQ5ZgeJNhVBBDnvhbfoJeGrF46EGeDaohT6Hu", "price_usd": 76.064, "fdv_usd": 1597357236.0, "market_cap_usd": 1597357236.0, "volume_1h_usd": 0.0, "volume_6h_usd": 22255.54, "volume_24h_usd": 94611.83, "liquidity_usd": 1597167490.72, "provider_ref": "https://dexscreener.com/solana/7dyvdkbhq5zgejnhvbbdnvhbfojegrf46egedaoht6hu"}
+      ]}, "evidence_ref": {"provider": "dexscreener", "tool": "dexscreener__search_blockchain_tokens", "args": {"chain_name": "solana"}, "fetched_at": "2026-10-17T08:17:52Z"}}
+    },
+    "missing_panels": [
+      {"panel": "native_price", "reason": "backend_error", "providers_without_field": ["coingecko"], "notes": "Provider 'coingecko' returned no usable data for native_price."},
+      {"panel": "gas_price", "reason": "no_gwei_equivalent", "providers_without_field": [], "notes": "Solana uses prioritization fees (lamports/CU), not gwei. Future hub-internal tool dt_edu__sol_priority_fee may surface this with evidence_ref.tool='dt_edu__sol_priority_fee' once wired; today, panel is intentionally absent."},
+      {"panel": "whale_flows", "reason": "no_active_provider", "providers_without_field": ["coinalyze"], "notes": "No active whale-flow normalizer is wired in DT Hub snapshot today."},
+      {"panel": "derivatives_oi", "reason": "no_data", "providers_without_field": ["coinalyze"], "notes": "Provider 'coinalyze' returned no usable data for derivatives_oi."}
+    ], "fetched_at": "2026-10-17T08:17:52Z"}
+}

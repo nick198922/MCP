@@ -1,6 +1,6 @@
 # Паритет із DOUBLETOP
 
-DOUBLETOP: **74 інструменти** (66 від 17 бекендів + 8 власних `dt_edu`). Доступ планується відкликати, тому тут для кожного інструмента вказано, що буде замість нього.
+DOUBLETOP: **74 інструменти** (66 від 17 бекендів + 8 власних `dt_edu`). Доступ планується відкликати, тому тут для кожного інструмента вказано, що буде замість нього. Оновлено 2026-10-17. Поки доступ є, агенти користуються ним для звірки й зразків (`docs/AGENTS.md`, «MCP DOUBLETOP»), але не з коду.
 
 Легенда: ✅ замінено · 🔜 заплановано (фаза) · ⏭ свідомо не переносимо
 
@@ -10,7 +10,7 @@ DOUBLETOP: **74 інструменти** (66 від 17 бекендів + 8 вл
 |---|---|
 | `provider_readiness` | ✅ `system_health` (+ `probe=true` для живої перевірки; у DOUBLETOP 15 з 17 перевірок були застарілими) |
 | `whoami` | ⏭ автентифікація буде нашою (Фаза 6) |
-| `token_card_snapshot`, `chain_trend_snapshot`, `pair_discovery`, `risk_hints_token`, `risk_hints_address`, `wallet_snapshot` | 🔜 Фаза 5: модуль ончейну, з тим самим `evidence`-контрактом. Низький пріоритет для деривативного трейдингу |
+| `token_card_snapshot`, `chain_trend_snapshot`, `pair_discovery`, `risk_hints_token`, `risk_hints_address`, `wallet_snapshot` | 🔜 `dex_pairs` і `chain_metrics` ([IDEA-20261017-doubletop-to-ours](ideas/IDEA-20261017-doubletop-to-ours.md)); решта — Фаза 5. Перевірка 17.10: картка ETH порожня, «трендові» Solana — фейкові токени, ризики PEPE порожні; корисні лише пари DexScreener і TVL/DEX-обсяг/fees DefiLlama (зразки в `tests/fixtures/doubletop/`) |
 
 ## Біржі та деривативи
 
@@ -23,30 +23,30 @@ DOUBLETOP: **74 інструменти** (66 від 17 бекендів + 8 вл
 | ccxt `batch-get-tickers` | ✅ `market_tickers` (сортування за quote volume, top-movers за 24h %) |
 | ccxt `get-markets` | ✅ `market_markets` (пошук за підрядком, фільтр spot/swap/future/option, active) |
 | ccxt `get-trades` | ✅ `market_trades` (+ aggressor flow: buy/sell notional, imbalance, VWAP, CVD, топ-прінти) |
-| coinalyze `funding_rate_history` | 🔜 Фаза 1 (історія з бірж); поточний funding ✅ `perps_funding_compare` |
-| coinalyze `open_interest_history` | 🔜 Фаза 2 (власний збирач; біржі дають коротку історію) |
-| coinalyze `liquidation_history` | 🔜 Фаза 2 (WebSocket-збирач: історії ліквідацій в API бірж немає) |
-| coinalyze `long_short_ratio_history` | 🔜 Фаза 1 (публічні ендпоїнти Binance/Bybit) |
+| coinalyze `funding_rate_history` | ✅ `perps_funding_history` (з бірж); поточний — `perps_funding_compare` |
+| coinalyze `open_interest_history` | ✅ `perps_oi_history` (з бірж, коротка історія); довга — 🔜 власний ключ Coinalyze |
+| coinalyze `liquidation_history` | ✅ живі — `liquidations_summary` (WebSocket-збирач); історія — 🔜 `liquidations_history` на власному безкоштовному ключі Coinalyze (у DoubleTop денна історія є щонайменше з 2024-01) |
+| coinalyze `long_short_ratio_history` | ✅ `perps_long_short_ratio` (Binance/Bybit) |
 | hyperliquid `meta_and_asset_ctxs` | ✅ `hyperliquid_overview` (у DOUBLETOP ця відповідь обрізається й контексти з funding/OI не повертаються) |
-| hyperliquid `l2_book`, `candle_snapshot`, `funding_history`, `recent_trades` | 🔜 Фаза 1 |
+| hyperliquid `l2_book`, `candle_snapshot`, `funding_history`, `recent_trades` | ✅ `hyperliquid_book`, `hyperliquid_candles`, `hyperliquid_funding_history`, `hyperliquid_trades` |
 
 ## Ринок, сентимент, прогнозні ринки
 
 | DOUBLETOP | Рішення |
 |---|---|
-| coingecko `execute`, `search_docs` | 🔜 Фаза 1: типізовані інструменти замість code-sandbox (у DOUBLETOP він періодично падає) |
-| coinstats `coin_chart`, `coin_detail`, `coins_markets` | 🔜 Фаза 1 (покривається CoinGecko) |
-| coinstats `market_insights` | 🔜 Фаза 1: домінація BTC, mcap |
+| coingecko `execute`, `search_docs` | ✅ `coin_snapshot`, `top_coins`, `global_market` (у DOUBLETOP code-sandbox CoinGecko 17.10 знову падав) |
+| coinstats `coin_chart`, `coin_detail`, `coins_markets` | ✅ покрито `coin_snapshot`, `top_coins`, `ohlcv_history` |
+| coinstats `market_insights` | ✅ `global_market` |
 | coinstats `wallet_balances` | 🔜 Фаза 5 |
 | fear_greed `get_fear_greed_index` | ✅ `sentiment_fear_greed` — крипто-індекс alternative.me, 1..365 днів, latest + zone, mean 7d/30d, min/max, change_7d/30d, zone_share. Деннa частотa; шо DOUBLETOP відважив — індекс фондового ринку США, у нас виключно крипто |
-| graph_polymarket (7) | 🔜 Фаза 1: Gamma + CLOB API (ціни, OI, історія), плюс звірка з options-implied. Топ-трейдери через subgraph потребують ключа The Graph |
+| graph_polymarket (7) | ✅ `polymarket_search`, `polymarket_market`, `polymarket_history`; топ-трейдери — колектор `trader_snapshot` (лідерборд Polymarket); OI-історія — 🔜 |
 
 ## Ончейн, DeFi (Фаза 5, низький пріоритет)
 
 | DOUBLETOP | Рішення |
 |---|---|
-| defillama (7) | 🔜 TVL, stablecoin flows, пули (публічний API) |
-| dexscreener (2) | 🔜 публічний API |
+| defillama (7) | 🔜 `chain_metrics` (TVL, DEX-обсяг, fees мережі); stablecoin flows і пули — Фаза 5 |
+| dexscreener (2) | 🔜 `dex_pairs` ([IDEA-20261017-doubletop-to-ours](ideas/IDEA-20261017-doubletop-to-ours.md)) |
 | etherscan (8) | 🔜 Etherscan V2 (безкоштовний ключ). `getTokenInfo` і `tokenTopHolders` — лише платний Pro |
 | helius (5) | 🔜 безкоштовний тариф із ключем |
 | mempool (5) | 🔜 публічний API mempool.space |

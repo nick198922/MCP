@@ -167,6 +167,13 @@
 - Лаунчер: запаркованих гілок може бути кілька (`parked.state` — рядок на гілку; раніше друга затирала першу). Незавершена робота (parked/continues/unfinished в `history.tsv`) не вважається «на перегляді власника»: через це цикл стояв 16.10 з 19:05. Загублену так гілку negRisk лаунчер підхопить сам.
 - `calls_hourly.py` уміє: тип входу з тексту (`entry_type` mkt/limit), момент зняття лімітки (`cancel_utc`, хвилинні свічки до нього), сторінки по 300 барів (Bybit інакше віддає останні бари довгого вікна).
 
+## MCP DoubleTop (2026-10-17)
+- Конектор claude.ai DOUBLETOP на сервері вже підключений через акаунт власника (`scripts/server/doubletop-check.sh` показує ✔).
+- Агентам дозволено його інструменти даних, крім `fetch` і code-sandbox CoinGecko. Інші конектори акаунта (Drive, Docs) заборонені. Правила — `docs/AGENTS.md`.
+- Знято зразки (`tests/fixtures/doubletop/`). Їхній `dt_edu` слабкий; цінні — Coinalyze і публічні API.
+- Картка [IDEA-20261017-doubletop-to-ours](ideas/IDEA-20261017-doubletop-to-ours.md): звірка, `dex_pairs`, `chain_metrics`, Coinalyze.
+- Від власника — безкоштовний ключ Coinalyze і `scripts/server/coinalyze-key.sh` у Terminal.
+
 ## Наступні кроки
 Див. `docs/BACKLOG.md`. Фази 0-3 (крім 1.10, 2.10, 3.2) закриті. Основні гілки з того, що залишилось:
 - **Фаза 4 (execution)** — `ExecutionGuard`, paper → testnet → live. Крипто тільки (без IBKR). Це серйозний блок, вимагає ADR на деталі.

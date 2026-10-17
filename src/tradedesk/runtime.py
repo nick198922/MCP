@@ -22,6 +22,7 @@ from .providers import coingecko as cg_mod
 from .providers import defillama as llama_mod
 from .providers import deribit as deribit_mod
 from .providers import dexscreener as dexs_mod
+from .providers import forexfactory as ff_mod
 from .providers import hyperliquid as hl_mod
 from .providers import polymarket as poly_mod
 from .providers.alternative_me import AlternativeMe
@@ -34,6 +35,7 @@ from .providers.defillama import DefiLlama
 from .providers.deribit import Deribit
 from .providers.dexscreener import DexScreener
 from .providers.exchanges import Exchanges
+from .providers.forexfactory import ForexFactory
 from .providers.hyperliquid import Hyperliquid
 from .providers.polymarket import Polymarket
 from .store import Store
@@ -82,6 +84,7 @@ class Runtime:
             listing=http("binance_vision:s3", vision_mod.LISTING_URL, rate=5, burst=10),
         )
         self.alternative_me = AlternativeMe(http("alternative_me", altme_mod.BASE_URL, rate=2, burst=4))
+        self.forexfactory = ForexFactory(http("forexfactory", ff_mod.BASE_URL, rate=0.5, burst=2))
         self.dexscreener = DexScreener(http("dexscreener", dexs_mod.BASE_URL, rate=4, burst=8))
         self.defillama = DefiLlama(http("defillama", llama_mod.BASE_URL, rate=4, burst=8))
         self.coinalyze = Coinalyze(
@@ -140,6 +143,7 @@ class Runtime:
         await self.bybit.http.aclose()
         await self.binance_vision.aclose()
         await self.alternative_me.http.aclose()
+        await self.forexfactory.http.aclose()
         await self.dexscreener.http.aclose()
         await self.defillama.http.aclose()
         await self.coinalyze.http.aclose()

@@ -30,6 +30,7 @@
 
 ## 5. Календар
 - `calendar_expiries(horizon_days=14)` і `events_list`: експірації, макроподії, анлоки у вікні угоди.
+- `macro_calendar(horizon_days=2)`: події з високим впливом (ФРС, CPI, NFP, рішення ECB/BoJ/BoE) з часом за Києвом, прогнозом і попереднім значенням; `high_impact_within_48h=true` → правило нижче. Якщо у `missing` є `forexfactory`, дати беруться з наближеного сіду — звір з офіційним календарем.
 - Макроподія в межах 48 год (CPI, NFP, FOMC): ф'ючерс зі стопом на сплеску часто вибиває навіть за правильного напряму. Розглянь вираз з обмеженим ризиком:
   - опціони (`strategy_straddle`, `strategy_strangle`, `strategy_risk_reversal`);
   - Polymarket: `polymarket_search` → ціна ринку проти `touch_probability` (ринки «на дотик») чи `prob_from_options` (порогові ринки); маржу прибирає `odds_devig`. Ймовірності з опціонів ризик-нейтральні.

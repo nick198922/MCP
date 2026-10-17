@@ -1,0 +1,149 @@
+"""macro_calendar: ForexFactory weekly feed filter, UTC/Kyiv times, seed merge, provider failure.
+
+The feed fixture is a hand-built sample (see its "_note"), not a real capture.
+"""
+
+import json
+from datetime import UTC, datetime
+from pathlib import Path
+
+import httpx
+
+from conftest import NOW, FakeEx, make_transports
+from test_server import call
+from tradedesk.analytics.macro_calendar import build_macro_calendar, classify, clean_text
+from tradedesk.config import Settings
+from tradedesk.runtime import Runtime
+from tradedesk.server import build_server
+
+FIX = json.loads((Path(__file__).parent / "fixtures" / "forexfactory_calendar_sample.json").read_text())
+FEED = FIX["thisweek"] + FIX["nextweek"]
+SEED = json.loads((Path(__file__).parents[1] / "src" / "tradedesk" / "data" / "events_seed.json").read_text())["events"]
+
+
+def test_classify():
+    assert classify("Core PCE Price Index m/m", "USD") == "core_pce"
+    assert classify("CPI m/m", "USD") == "cpi"
+    assert classify("Non-Farm Employment Change", "USD") == "nfp"
+    assert classify("Unemployment Claims", "USD") == "jobless_claims"
+    assert classify("FOMC Meeting Minutes", "USD") == "fomc_minutes"
+    assert classify("FOMC Statement", "USD") == "fomc"
+    assert classify("Federal Funds Rate", "USD") == "fomc"
+    assert classify("ADP Non-Farm Employment Change", "USD") == "adp"
+    assert classify("Fed Chair Powell Testifies", "USD") == "usd_other"  # not matched: wording differs
+    assert classify("Fed Chair Testimony", "USD") == "fed_speech"
+    assert classify("Monetary Policy Report", "USD") == "fed_speech"
+    assert classify("Building Permits", "USD") == "usd_other"
+    assert classify("Main Refinancing Rate", "EUR") == "ecb_decision"
+    assert classify("Official Bank Rate", "GBP") == "boe_decision"
+    assert classify("BOJ Policy Rate", "JPY") == "boj_decision"
+    assert classify("CPI y/y", "GBP") is None  # non-USD, not a central-bank decision
+    assert classify("German ZEW Economic Sentiment", "EUR") is None
+
+
+def test_clean_text_strips_control_chars_and_truncates():
+    assert clean_text("a\x07b\nc", 10) == "a b c"
+    assert len(clean_text("x" * 500, 40)) == 40
+    assert clean_text(None, 5) == ""
+
+
+def test_build_filters_normalises_times_and_supersedes_seed():
+    res = build_macro_calendar(FEED, SEED, NOW, 30)
+    ev = res["events"]
+    titles = [e["title"] for e in ev]
+    assert "Empire State Manufacturing Index" not in titles  # medium impact
+    assert "Prelim UoM Consumer Sentiment" not in titles  # low impact
+    assert "German ZEW Economic Sentiment" not in titles  # non-USD, not a central bank
+    assert "Building Permits" not in titles  # naive date: skipped, not guessed
+    assert "ISM Manufacturing PMI" not in titles  # before now
+    wanted = {"CPI m/m", "Core CPI m/m", "Unemployment Claims", "Main Refinancing Rate", "Official Bank Rate", "Retail Sales m/m"}
+    assert wanted <= set(titles)
+
+    cpi = next(e for e in ev if e["title"] == "CPI m/m")
+    assert cpi["ts_utc"] == "2026-10-14T12:30:00+00:00"
+    assert cpi["ts_kyiv"].startswith("2026-10-14T15:30:00") and cpi["ts_kyiv"].endswith("+03:00")  # EEST
+    assert cpi["kind"] == "cpi" and cpi["forecast"] == "0.3%" and cpi["previous"] == "0.4%" and cpi["source"] == "forexfactory"
+    ecb = next(e for e in ev if e["kind"] == "ecb_decision")
+    assert ecb["ts_utc"] == "2026-10-15T12:15:00+00:00"
+
+    # the seed CPI (2026-10-14) lies inside the feed span and is superseded; the seed FOMC (2026-10-28) is added
+    assert not [e for e in ev if e["source"] == "seed" and e["kind"] == "cpi" and e["ts_utc"].startswith("2026-10-14")]
+    assert res["seed_superseded"] >= 1
+    assert any(e["source"] == "seed" and e["kind"] == "fomc" and e["ts_utc"].startswith("2026-10-28") for e in ev)
+    assert [e["ts_utc"] for e in ev] == sorted(e["ts_utc"] for e in ev)
+    assert res["feed"]["covers_from"].startswith("2026-10-05")
+    assert any("skipped" in w for w in res["warnings"])
+
+
+def test_untrusted_title_is_sanitised():
+    ev = build_macro_calendar(FEED, [], NOW, 14)["events"]
+    speech = next(e for e in ev if e["kind"] == "fed_speech")
+    assert "\x07" not in speech["title"] and speech["forecast"] is None
+
+
+def test_48h_flag_uses_the_passed_time():
+    assert build_macro_calendar(FEED, SEED, NOW, 14)["high_impact_within_48h"] is False  # next release is 4 days away
+    later = datetime(2026, 10, 13, 14, 0, tzinfo=UTC)
+    res = build_macro_calendar(FEED, SEED, later, 14)
+    assert res["high_impact_within_48h"] is True and res["next_event"]["kind"] == "cpi"
+
+
+def test_grace_window_and_all_rows_unparsable():
+    cpi_ts = datetime(2026, 10, 14, 12, 30, tzinfo=UTC)
+    after = datetime(2026, 10, 14, 14, 0, tzinfo=UTC)  # 1.5 h after the release
+    res = build_macro_calendar(FEED, [], after, 1)
+    assert res["high_impact_within_48h"] is True
+    assert any(e["ts_utc"] == cpi_ts.isoformat() and e["hours_ahead"] < 0 for e in res["events"])
+    assert res["next_event"]["hours_ahead"] >= 0 or all(e["hours_ahead"] < 0 for e in res["events"])
+    late = datetime(2026, 10, 14, 15, 0, tzinfo=UTC)  # 2.5 h after: dropped
+    assert not any(e["ts_utc"] == cpi_ts.isoformat() for e in build_macro_calendar(FEED, [], late, 1)["events"])
+    bad = build_macro_calendar([{"title": "CPI m/m", "country": "USD", "date": "2026-10-14 08:30", "impact": "High"}], [], NOW, 7)
+    assert bad["all_feed_rows_unparsable"] is True
+
+
+def test_feed_down_falls_back_to_seed_only():
+    res = build_macro_calendar([], SEED, NOW, 30)
+    assert res["feed"]["rows"] == 0 and res["seed_added"] >= 2
+    assert all(e["source"] == "seed" for e in res["events"])
+    assert any("approximate" in w for w in res["warnings"])
+
+
+def test_warns_when_horizon_passes_end_of_seed():
+    res = build_macro_calendar([], SEED, datetime(2026, 12, 20, tzinfo=UTC), 60)
+    assert any("seed ends" in w for w in res["warnings"])
+
+
+async def test_macro_calendar_tool(server):
+    env = await call(server, "macro_calendar", horizon_days=30)
+    assert env["ok"], env["missing"]
+    d = env["data"]
+    assert env["missing"] == []
+    assert {e["provider"] for e in env["evidence"]} == {"forexfactory"} and len(env["evidence"]) == 2
+    kinds = {e["kind"] for e in d["events"]}
+    assert {"cpi", "jobless_claims", "ecb_decision", "boe_decision", "retail_sales", "fomc"} <= kinds
+    assert d["feed"]["rows"] == len(FEED) - 1  # the timezone-less row is dropped
+    assert all(e["hours_ahead"] >= 0 for e in d["events"])
+
+
+async def test_macro_calendar_provider_failure(state):
+    tr = make_transports(state)
+    tr["forexfactory"] = httpx.MockTransport(lambda req: httpx.Response(503, text="down"))
+    rt2 = Runtime(Settings(http_retries=1, cache_scale=0.0), transports=tr, exchange_factory=FakeEx)
+    rt2.now = lambda: NOW
+    srv, _ = build_server(rt2)
+    env = await call(srv, "macro_calendar", horizon_days=30)  # must not raise
+    assert {m["provider"] for m in env["missing"]} == {"forexfactory"} and len(env["missing"]) == 2
+    assert env["ok"] is True  # the seed still supplies dates
+    assert env["data"]["feed"]["rows"] == 0
+    assert env["data"]["events"] and all(e["source"] == "seed" for e in env["data"]["events"])
+    assert any("incomplete" in w for w in env["warnings"])
+
+
+async def test_macro_calendar_bad_shape_goes_to_missing(state):
+    tr = make_transports(state)
+    tr["forexfactory"] = httpx.MockTransport(lambda req: httpx.Response(200, json={"oops": 1}))
+    rt2 = Runtime(Settings(http_retries=1, cache_scale=0.0), transports=tr, exchange_factory=FakeEx)
+    rt2.now = lambda: NOW
+    srv, _ = build_server(rt2)
+    env = await call(srv, "macro_calendar", horizon_days=7)
+    assert len(env["missing"]) == 2 and all(m["reason"] == "backend_error" for m in env["missing"])

@@ -12,6 +12,7 @@ outcomes may exceed 1; `analytics.polymarket.devig_multi` normalises back to 1.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from typing import Any
 
 from ..core.envelope import Fetched
@@ -73,6 +74,26 @@ class Polymarket:
             raise ProviderError(self.name, "backend_error", "no pages fetched")
         ev = last.evidence.model_copy(update={"args": {**(last.evidence.args or {}), "pages": pages, "complete": complete}})
         return Fetched({"rows": list(rows.values()), "pages": pages, "complete": complete}, ev)
+
+    async def iter_events(self, filters: dict[str, Any], *, max_pages: int = 1000) -> AsyncIterator[tuple[list[Any], bool]]:
+        """Stream Gamma `/events/keyset` page by page without caching, yielding ``(events, is_last)``.
+
+        For large listings (all active events with nested markets is ~3 GB if held at once): the caller keeps only
+        what it needs from each page. `is_last` is True on the page without `next_cursor` (listing complete)."""
+        cursor: str | None = None
+        for _ in range(max_pages):
+            params: dict[str, Any] = {**filters, "limit": GAMMA_PAGE_CAP}
+            if cursor:
+                params["after_cursor"] = cursor
+            f = await self.gamma.get_json("/events/keyset", params=params, ttl=0, tool="events-keyset", args=params)
+            if not isinstance(f.data, dict) or not isinstance(f.data.get("events"), list):
+                raise ProviderError(self.name, "backend_error", "unexpected shape at /events/keyset")
+            cursor = f.data.get("next_cursor") or None
+            last = not cursor or not f.data["events"]
+            yield f.data["events"], last
+            if last:
+                return
+        raise ProviderError(self.name, "backend_error", f"listing not finished after {max_pages} pages")
 
     async def price_history_range(self, token_id: str, start_ts: int, end_ts: int, fidelity: int) -> Fetched:
         """CLOB `/prices-history` over an explicit [start_ts, end_ts] window (unix seconds), `fidelity` in minutes.
@@ -203,6 +224,19 @@ class Polymarket:
         f = await self.clob.get_json("/book", params={"token_id": token_id}, ttl=2, tool="book", args={"token_id": token_id})
         if not isinstance(f.data, dict):
             raise ProviderError(self.name, "backend_error", "unexpected shape at /book")
+        return f
+
+    async def books(self, token_ids: list[str]) -> Fetched:
+        """CLOB batch `POST /books` (body ``[{"token_id": ...}, ...]``): one order book per token in a single
+        response, so all legs of an event are read at (nearly) one moment. Each book carries `asset_id`, `bids`,
+        `asks` (price/size strings), `timestamp` (unix ms of the book state), `tick_size`, `min_order_size`, `neg_risk`.
+        Never cached: the caller needs the current state, not a reused one."""
+        if not token_ids:
+            raise ProviderError(self.name, "config", "no token ids")
+        body = [{"token_id": t} for t in token_ids]
+        f = await self.clob.post_json("/books", json=body, ttl=0, tool="books", args={"n": len(token_ids)})
+        if not isinstance(f.data, list):
+            raise ProviderError(self.name, "backend_error", "unexpected shape at /books")
         return f
 
     async def price_history(self, token_id: str, interval: str, fidelity: int | None) -> Fetched:

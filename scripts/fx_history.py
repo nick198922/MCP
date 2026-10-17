@@ -8,12 +8,13 @@ its own terms of use (personal research): https://www.dukascopy.com — do not r
 
 Each day is one file https://datafeed.dukascopy.com/datafeed/<SYM>/<YYYY>/<MM-1>/<DD>/BID_candles_min_1.bi5 (LZMA,
 24-byte big-endian records: seconds from midnight UTC, open, close, low, high as integers in points, volume float).
-Weekend days hold flat zero-volume candles. Raw days are cached as they arrive, so an interrupted run resumes; bars are
-streamed to --out in batches (flat memory) with a progress line per batch. Times are UTC.
+Weekend days are empty. Raw days are cached as they arrive, so an interrupted run resumes. Times are UTC.
 
-Pacing: Dukascopy throttles with 503 and refused connections. Measured on the server 2026-10-16: one pair at
---concurrency 2-4 gives ~30-140 days per minute; two pairs in parallel drew long 503 streaks. Fetch one pair at a time;
-12+ years of one pair take roughly 1-2 hours.
+Dukascopy throttles long downloads (connection resets, timeouts, 503 after a few thousand days). Requests are paced
+(``--pace`` seconds apart), a failing day is retried with growing pauses and then left for later instead of aborting the
+run, and the other days keep downloading. If days are still missing at the end, they are listed, no CSV is written and
+the exit code is 3: run the same command again later (cached days are not fetched again), or pass ``--allow-missing``
+to write the CSV without them.
 """
 
 from __future__ import annotations
@@ -31,7 +32,6 @@ import httpx
 
 URL = "https://datafeed.dukascopy.com/datafeed/{sym}/{y:04d}/{m:02d}/{d:02d}/BID_candles_min_1.bi5"
 RECORD = struct.Struct(">IIIIIf")
-RETRIES = 10
 TF_MIN = {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240, "1d": 1440}
 
 
@@ -69,13 +69,31 @@ def aggregate(rows: list[tuple[int, float, float, float, float, float]], minutes
     return out
 
 
-async def fetch_day(client: httpx.AsyncClient, symbol: str, day: date, cache: Path) -> bytes:
+class Pacer:
+    """At most one request start per ``interval`` seconds across all workers."""
+
+    def __init__(self, interval: float) -> None:
+        self.interval, self.next_at, self.lock = interval, 0.0, asyncio.Lock()
+
+    async def wait(self) -> None:
+        async with self.lock:
+            now = asyncio.get_running_loop().time()
+            if self.next_at > now:
+                await asyncio.sleep(self.next_at - now)
+            self.next_at = max(now, self.next_at) + self.interval
+
+
+async def fetch_day(
+    client: httpx.AsyncClient, symbol: str, day: date, cache: Path, pacer: Pacer | None = None, attempts: int = 6
+) -> bytes | None:
+    """The day's raw file (b"" for a day without data), or None if it could not be downloaded now."""
     f = cache / symbol / f"{day.isoformat()}.bi5"
     if f.exists():
         return f.read_bytes()
     url = URL.format(sym=symbol, y=day.year, m=day.month - 1, d=day.day)
-    last = ""
-    for attempt in range(RETRIES):
+    for attempt in range(attempts):
+        if pacer:
+            await pacer.wait()
         try:
             r = await client.get(url)
             if r.status_code == 404:
@@ -85,56 +103,60 @@ async def fetch_day(client: httpx.AsyncClient, symbol: str, day: date, cache: Pa
             raw = r.content
             break
         except httpx.HTTPError as e:
-            last = f"{type(e).__name__}: {e}"
-            print(f"{symbol} {day}: retry {attempt + 1} ({last[:120]})", file=sys.stderr, flush=True)
-            # Dukascopy throttles bursts with 503 for minutes: back off up to 5 min per attempt
-            await asyncio.sleep(min(300, 3 * 2**attempt))
+            print(f"{symbol} {day}: {type(e).__name__} (attempt {attempt + 1}/{attempts})", file=sys.stderr)
+            await asyncio.sleep(min(120, 3 * 2**attempt))
     else:
-        raise RuntimeError(f"{symbol} {day}: download failed ({last[:200]})")
+        return None
     f.parent.mkdir(parents=True, exist_ok=True)
     f.write_bytes(raw)
     return raw
 
 
-BATCH_DAYS = 60  # days fetched, decoded and written per step: memory stays flat for any history length
-
-
-def _rss_mb() -> float:
-    import resource
-
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
-
-
-async def run(symbol: str, start: date, end: date, tf: str, cache: Path, out: Path, concurrency: int) -> int:
-    """Fetch day by day in batches and stream the bars to ``out``. Buckets are aligned to UTC midnight and every
-    supported timeframe divides a day, so aggregating each day on its own equals aggregating the whole history."""
+async def run(
+    symbol: str,
+    start: date,
+    end: date,
+    tf: str,
+    cache: Path,
+    out: Path,
+    concurrency: int,
+    pace: float = 0.5,
+    allow_missing: bool = False,
+    client: httpx.AsyncClient | None = None,
+) -> tuple[int, list[date]]:
+    """Download (or read from the cache) every day and write the CSV; returns (bars written, days still missing)."""
     days = [start + timedelta(days=i) for i in range((end - start).days + 1)]
     sem = asyncio.Semaphore(concurrency)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    n = 0
-    async with httpx.AsyncClient(timeout=30, headers={"User-Agent": "tradedesk-research"}) as client:
+    pacer = Pacer(pace)
+    own = client is None
+    client = client or httpx.AsyncClient(timeout=60, headers={"User-Agent": "tradedesk-research"})
+    try:
 
-        async def one(d: date) -> tuple[date, bytes]:
+        async def one(d: date) -> tuple[date, bytes | None]:
             async with sem:
-                return d, await fetch_day(client, symbol, d, cache)
+                return d, await fetch_day(client, symbol, d, cache, pacer)
 
-        with out.open("w", newline="") as fh:
-            w = csv.writer(fh)
-            w.writerow(["ts_ms", "open", "high", "low", "close", "volume"])
-            for b0 in range(0, len(days), BATCH_DAYS):
-                batch = days[b0 : b0 + BATCH_DAYS]
-                results = await asyncio.gather(*(one(d) for d in batch))
-                for d, raw in sorted(results):
-                    rows = parse_day(raw, d, symbol)
-                    bars = aggregate(rows, TF_MIN[tf]) if tf != "1m" else [list(r) for r in rows]
-                    w.writerows(bars)
-                    n += len(bars)
-                print(
-                    f"{symbol} {batch[-1]}: {b0 + len(batch)}/{len(days)} days, {n} bars, peak RSS {_rss_mb():.0f} MB",
-                    file=sys.stderr,
-                    flush=True,
-                )
-    return n
+        results = await asyncio.gather(*(one(d) for d in days))
+        missing = sorted(d for d, raw in results if raw is None)
+        if missing:  # one more slow pass over the days that failed
+            again = [(d, await fetch_day(client, symbol, d, cache, Pacer(max(pace, 2.0)), attempts=3)) for d in missing]
+            results = [(d, raw) for d, raw in results if raw is not None] + again
+            missing = sorted(d for d, raw in again if raw is None)
+    finally:
+        if own:
+            await client.aclose()
+    if missing and not allow_missing:
+        return 0, missing
+    rows: list[tuple[int, float, float, float, float, float]] = []
+    for d, raw in sorted(results, key=lambda x: x[0]):
+        rows.extend(parse_day(raw or b"", d, symbol))
+    bars = aggregate(rows, TF_MIN[tf]) if tf != "1m" else [list(r) for r in rows]
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with out.open("w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["ts_ms", "open", "high", "low", "close", "volume"])
+        w.writerows(bars)
+    return len(bars), missing
 
 
 def main() -> None:
@@ -145,9 +167,11 @@ def main() -> None:
     ap.add_argument("--tf", default="5m", choices=sorted(TF_MIN))
     ap.add_argument("--cache", type=Path, default=Path.home() / ".cache" / "tradedesk-agents" / "fx")
     ap.add_argument("--out", type=Path, required=True, help="CSV to write (ts_ms, open, high, low, close, volume)")
-    ap.add_argument("--concurrency", type=int, default=2)
+    ap.add_argument("--concurrency", type=int, default=1)
+    ap.add_argument("--pace", type=float, default=0.5, help="seconds between request starts (Dukascopy throttles)")
+    ap.add_argument("--allow-missing", action="store_true", help="write the CSV even if some days could not be fetched")
     a = ap.parse_args()
-    n = asyncio.run(
+    n, missing = asyncio.run(
         run(
             a.symbol.upper(),
             date.fromisoformat(a.start),
@@ -156,8 +180,16 @@ def main() -> None:
             a.cache.expanduser(),
             a.out.expanduser(),
             a.concurrency,
+            a.pace,
+            a.allow_missing,
         )
     )
+    if missing:
+        days = ", ".join(d.isoformat() for d in missing[:20]) + (" …" if len(missing) > 20 else "")
+        print(f"{a.symbol.upper()}: {len(missing)} days could not be downloaded now: {days}", file=sys.stderr)
+        if not a.allow_missing:
+            print("no CSV written; run the same command again later (cached days are kept)", file=sys.stderr)
+            sys.exit(3)
     print(f"{a.symbol.upper()} {a.tf}: {n} bars -> {a.out}", file=sys.stderr)
 
 

@@ -1,0 +1,4 @@
+2026-10-16T09:40:27+00:00 sha256=ab20aa48dfa72b0f11c836bd562024e7fc8f14db70bfc7915087962f4e566688 bytes=9080
+Реєстрація картки IDEA-20261015-polymarket-negrisk-sum-scanner (крок 0): зроблено до читання книг neg-risk подій (до реєстрації лише схемна перевірка без цін neg-risk). Копія картки: ~/.cache/tradedesk-agents/negrisk/card_at_registration_ab20aa48dfa7.md.
+2026-10-16T09:48:54+00:00 sha256=3d678b3d1b9e1ae5d45e51cd185f50c79736dc7ccda6e581042f62fc2860e876 bytes=11422
+Поправка 1 (одночасність: настінний час пакетного читання ≤ 5 с замість розкиду `timestamp` книг): зареєстровано ПІСЛЯ пілотного проходу 20261016T094353Z (09:43-09:46 UTC) і діагностики `--stage diag`, ДО проходів, що входять у рішення (перший — 20261016T094900Z). Пілот у рішення не входить. Копія картки: ~/.cache/tradedesk-agents/negrisk/card_at_registration_3d678b3d1b9e.md.

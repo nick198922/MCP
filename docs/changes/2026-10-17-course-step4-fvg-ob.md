@@ -1,0 +1,10 @@
+- Картка `course-setups-crypto` (пріоритет власника): статус лишається `testing`. Крок 4 (S12 + S28: FVG, OB з критеріями курсу, брейкери як рівні реакції): квант пропонує `rejected` для всіх трьох співосновних.
+  - Тест: ліміт на першому тесті, стоп 1 ATR, ціль 2R, 4h, обидва боки, BTC, ETH + топ-30 перпів Binance, 2020–2026. Плацебо — випадковий рівень на тій самій відстані.
+  - FVG (0.5): E[R] net в IS +0.029R [−0.002; +0.060], Δ проти плацебо +0.035R [+0.004; +0.066] (поріг +0.10R), в OOS −0.011R.
+  - Валідні OB: −0.052R (Δ −0.016; проти решти OB −0.030R). Валідні брейкери: −0.024R (Δ −0.010).
+  - «Магніт» FVG — ≈ +1–2 п. п. Holm: p кроку 0.038 → 0.154 (m = 4).
+- Додано:
+  - `analytics/course_fvg_ob.py`: причинні FVG, OB (`impulsive` / `fvg_after` / `bos_after`), брейкери (`break_impulsive` / `fvg_on_break`), бар `arm` для кожного набору прапорців, лімітна угода на годинному шляху;
+  - `scripts/verify_course_step4_fvg_ob.py` (`--stage prereg|count|report|analyse`, `--symbols`, `--out`; без мережі, з кешу кроку 1);
+  - `tests/test_course_fvg_ob.py` (22 тести: збіг детекторів із `markup`, причинність, аналітичні шляхи угоди й витрати).
+- Звіт: `docs/verification/2026-10-17-course-step4-fvg-ob.md` (+ `.raw.md`, `.registration.txt`). Оновлено `knowledge/smc.md`, `setups.md` (S12, S28), `README.md`.

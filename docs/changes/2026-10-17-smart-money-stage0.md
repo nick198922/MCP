@@ -1,0 +1,11 @@
+- Картка `IDEA-20261015-smart-money-persistence`, стадія 0: `inconclusive` — ворота потужності (статус картки лишається `testing`).
+  - Класи HL (4 641 акаунт ≥ $500k): idle 72.5 %, directional 17.7 %, hedger? 6.4 %, mm 1.8 %, hft_directional 1.6 %.
+  - Ретроспектива H1 (`portfolio`, 12 місяців, survivorship): знак не визначений — без lookahead IC −0.076 [−0.283; +0.131], із зареєстрованою інтерполяцією меж +0.062 [−0.134; +0.258]; sd IC між періодами 0.31–0.33 → ~150–970 місячних періодів форварду для MDE 0.05. H2 ≥ 8 місяців; потужність H3 не оцінена.
+  - Зареєстрована перевірка узгодженості `portfolio` з лідербордом провалена (26.4 % > 10 %); джерело B (`userFillsByTime`) — ◯, не оцінювалось.
+  - Раунд правок за рев'ю критика (`docs/reviews/2026-10-17-smart-money-persistence.md`): межі вікон без lookahead, чесні позначки перевірок і постфактум-варіантів, прибрано неоцінену потужність H3.
+- Додано:
+  - `analytics/smart_money.py`: класи акаунтів, значення історій на момент часу (`step_at`, `step_change`; лінійна `interp` / `window_change` лише для порівняння), реалізований PnL з кінцем покриття, IC / спред топ-квінтилю, t-CI, CI для sd, MDE, відтворення журналу `trader_positions` (до і після схеми v12), потік (без акаунтів без базової лінії) і книга позицій, зміни позицій;
+  - `scripts/verify_smart_money.py` (`--stage fetch|report|align`, кеш `~/.cache/tradedesk-agents/smart_money/`);
+  - `scripts/traders_report.py` — щотижнева дошка `docs/traders/REPORT.md` з копії бази (без мережі; назви ринків екрануються, включно з `[` `]`);
+  - `tests/test_smart_money.py` (зокрема тест на lookahead із точкою після t усередині історії) і фікстура `tests/fixtures/hyperliquid_portfolio_2026-10-17.json` (жива відповідь `portfolio`, 2026-10-17).
+- Звіт: `docs/verification/2026-10-17-smart-money-persistence.md` (+ `.registration.txt`). Оновлено `knowledge/data-sources.md`.

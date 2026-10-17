@@ -151,16 +151,16 @@ def heterogeneity(values: Sequence[float], assets: Sequence[Any], *, min_n: int 
     }
 
 
-def cluster_robust_q(values: Sequence[float], assets: Sequence[Any], clusters: Sequence[Any], *, min_n: int = 30) -> dict[str, Any]:
-    """Cochran's Q with cluster-robust per-asset standard errors (clusters, e.g. ISO weeks, taken within each asset):
-    se_i^2 = G/(G-1) * sum_g (S_g - n_g m_i)^2 / n_i^2. Overlapping trades of one asset (the same move tested by
-    several zones) then do not count as independent. With one trade per cluster this equals Q with per-asset
-    variances (``heterogeneity(...)["q_sep"]``). Returns q, df, p, i2 and the mean design effect (se_cl / se_iid)^2.
-    """
+def cluster_robust_variances(
+    values: Sequence[float], assets: Sequence[Any], clusters: Sequence[Any], *, min_n: int = 30
+) -> list[tuple[Any, float, float, float]]:
+    """Per-asset (asset, mean, cluster-robust variance of the mean, iid variance of the mean) with clusters (e.g. ISO
+    weeks) taken within each asset: se_i^2 = G/(G-1) * sum_g (S_g - n_g m_i)^2 / n_i^2. Assets with n < max(2, min_n),
+    fewer than two clusters or a zero variance are skipped. The variances can be passed to ``tau_ci_qprofile``."""
     v = np.asarray(values, dtype=float)
     keys, c = _codes(assets)
     _, g = _codes(clusters)
-    m_l, w_l, deff = [], [], []
+    out: list[tuple[Any, float, float, float]] = []
     for i in range(len(keys)):
         sel = c == i
         n = int(sel.sum())
@@ -177,10 +177,20 @@ def cluster_robust_q(values: Sequence[float], assets: Sequence[Any], clusters: S
         se2 = big_g / (big_g - 1) * float(np.sum((s_g - n_g * m) ** 2)) / n**2
         if se2 <= 0:
             continue
-        m_l.append(m)
-        w_l.append(1.0 / se2)
-        var_iid = float(x.var(ddof=1)) / n
-        deff.append(se2 / var_iid if var_iid > 0 else float("nan"))
+        out.append((keys[i], m, se2, float(x.var(ddof=1)) / n))
+    return out
+
+
+def cluster_robust_q(values: Sequence[float], assets: Sequence[Any], clusters: Sequence[Any], *, min_n: int = 30) -> dict[str, Any]:
+    """Cochran's Q with cluster-robust per-asset standard errors (clusters, e.g. ISO weeks, taken within each asset):
+    se_i^2 = G/(G-1) * sum_g (S_g - n_g m_i)^2 / n_i^2. Overlapping trades of one asset (the same move tested by
+    several zones) then do not count as independent. With one trade per cluster this equals Q with per-asset
+    variances (``heterogeneity(...)["q_sep"]``). Returns q, df, p, i2 and the mean design effect (se_cl / se_iid)^2.
+    """
+    rows = cluster_robust_variances(values, assets, clusters, min_n=min_n)
+    m_l = [m for _, m, _, _ in rows]
+    w_l = [1.0 / se2 for _, _, se2, _ in rows]
+    deff = [se2 / vi if vi > 0 else float("nan") for _, _, se2, vi in rows]
     k = len(m_l)
     if k < 2:
         return {"k": k, "q": float("nan"), "df": k - 1, "p": None, "i2": float("nan"), "deff": float("nan")}
@@ -342,8 +352,10 @@ def tau_ci_qprofile(means: Sequence[float], variances: Sequence[float], *, level
 
     ``means`` are per-asset means, ``variances`` their sampling variances (sd_i^2 / n_i). Q(tau^2) decreases in tau^2;
     the bounds solve Q(tau^2) = chi2_{k-1}((1 + level) / 2) (lower) and chi2_{k-1}((1 - level) / 2) (upper), floored
-    at 0. Also returns the random-effects mean and its SE at tau_upper. Variances that ignore serial correlation
-    inside an asset understate var_i and so overstate tau: the upper bound is then conservative (too high).
+    at 0. Also returns the random-effects mean and its SE at tau_upper. The bounds are only as good as the variances:
+    iid per-trade variances are biased when trades of one asset are correlated, in either direction (positive
+    correlation inflates tau, negative correlation or shared market days deflate it), so neither bound is conservative
+    by construction; compare with cluster-robust variances (``cluster_robust_variances``).
     """
     y = np.asarray(means, dtype=float)
     var = np.asarray(variances, dtype=float)

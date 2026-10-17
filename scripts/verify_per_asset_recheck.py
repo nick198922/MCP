@@ -45,6 +45,7 @@ from tradedesk.analytics.liquidation_flush import cluster_bootstrap_ci, holm  # 
 from tradedesk.analytics.per_asset import (  # noqa: E402
     asset_stats,
     cluster_robust_q,
+    cluster_robust_variances,
     heterogeneity,
     mde,
     permutation_q,
@@ -519,32 +520,43 @@ def stage_explore(root: Path) -> None:
 
 def stage_bounds(root: Path) -> None:
     """What the registered tests can exclude (added after the critic's review; no new hypothesis, no verdict rule):
-    (1) Q-profile 95 % CI for tau over assets with n >= 30 (whole period, per-asset iid variances: overlapping trades
-    of one asset inflate tau, so tau_hi is conservative); (2) implied true E[R] of the best quarter of assets,
-    mu_RE(tau_hi) + 1.271 tau_hi, and the same with the upper 95 % bound of the pooled date-cluster mean in place of
-    mu_RE; (3) MDE of the persistence difference at 80 % power, SE = CI width / 3.92, one-sided alpha 0.05 (the
+    (1) Q-profile 95 % CI for tau over assets with n >= 30 (whole period), once with per-asset iid variances and once
+    with cluster-robust variances (cluster = ISO week within the asset, the ``cluster_robust_q`` scheme); the bias of
+    the iid variances can go either way, so neither is conservative by construction; (2) implied true E[R] of the best
+    quarter of assets, mu_RE(tau_hi) + 1.271 tau_hi (iid and cluster-robust), and the iid one with the upper 95 % bound
+    of the pooled date-cluster mean in place of mu_RE; (3) MDE of the persistence difference at 80 % power, SE = CI width / 3.92, one-sided alpha 0.05 (the
     registered level before Holm) and 0.0125 (Holm's first step for 4 rows); (4) own OOS CI of the top-10 group."""
     up = top_fraction_uplift(0.25)
     emit("# Перевірка по активах: межі того, що тести здатні виключити (додано після рев'ю критика)")
     emit(
         f"τ — SD справжніх середніх активів (n ≥ {MIN_N}, весь період), Q-profile 95 % CI на власних дисперсіях активів "
-        f"(перекриття угод однієї монети завищує τ, тож верхня межа консервативна). Верхня чверть ≈ μ + {up:.3f}·τ_верх "
+        "(iid) і на кластерно-робастних (кластер — тиждень у монеті, схема cluster_robust_q). Кореляція угод однієї монети "
+        "зміщує iid-межі в будь-який бік, тож жодна з них не консервативна за побудовою: дивитися обидві й брати більшу. "
+        f"Верхня чверть ≈ μ_RE + {up:.3f}·τ_верх "
         "(нормальний розподіл справжніх середніх). MDE різниці стійкості — потужність 80 %, SE = ширина CI / 3.92."
     )
     rows = load_all(root)
     emit(
-        "\n| рядок | активів | τ DL (зареєстр.) | τ 95 % CI | μ_RE при τ_верх | верхня чверть: μ_RE + 1.27·τ_верх | "
-        "те саме з верхньою межею CI зведеного μ | OOS верхня чверть (факт) [CI] | MDE різниці, α 0.05 / 0.0125 | "
-        "верхні 10 OOS [CI] |\n|---|---|---|---|---|---|---|---|---|---|"
+        "\n| рядок | активів | τ DL (зареєстр.) | τ 95 % CI (iid) | μ_RE при τ_верх | верхня чверть: μ_RE + 1.27·τ_верх | "
+        "те саме з верхньою межею CI зведеного μ | τ 95 % CI кластерно-робастний (активів); верхня чверть | "
+        "OOS верхня чверть (факт) [CI] | MDE різниці, α 0.05 / 0.0125 | "
+        "верхні 10 OOS [CI] |\n|---|---|---|---|---|---|---|---|---|---|---|"
     )
     for r in rows:
         al = list(r.asset)
         st = asset_stats(r.val, al, min_n=MIN_N)
         if len(st) < 2:
-            emit(f"| {r.key} | {len(st)} | — | — | — | — | — | — | — | — |")
+            emit(f"| {r.key} | {len(st)} | — | — | — | — | — | — | — | — | — |")
             continue
         h = heterogeneity(r.val, al, min_n=MIN_N)
         tc = tau_ci_qprofile([s.mean for s in st], [s.sd**2 / s.n for s in st])
+        cv = cluster_robust_variances(r.val, al, list((r.day + 3) // 7), min_n=MIN_N)
+        tcc = tau_ci_qprofile([m for _, m, _, _ in cv], [v for _, _, v, _ in cv])
+        cl_s = (
+            f"[{tcc['tau_lo']:.3f}; {tcc['tau_hi']:.3f}] ({tcc['k']}); {tcc['mu_hi_tau'] + up * tcc['tau_hi']:+.3f}"
+            if tcc["k"] >= 2
+            else "—"
+        )
         sel = np.isin(r.asset, [s.asset for s in st])
         _, _, _, pci = pooled(r.val[sel], r.day[sel], N_BOOT)
         top_q = tc["mu_hi_tau"] + up * tc["tau_hi"]
@@ -560,7 +572,7 @@ def stage_bounds(root: Path) -> None:
             mde_s = "—"
         emit(
             f"| {r.key} | {tc['k']} | {h['tau']:.3f} | [{tc['tau_lo']:.3f}; {tc['tau_hi']:.3f}] | {tc['mu_hi_tau']:+.3f} | {top_q:+.3f} | "
-            f"{top_q_hi:+.3f} | {pr['top_oos_mean']:+.3f} {ci_s(pr['top_oos_ci'])} | {mde_s} | "
+            f"{top_q_hi:+.3f} | {cl_s} | {pr['top_oos_mean']:+.3f} {ci_s(pr['top_oos_ci'])} | {mde_s} | "
             f"{p10['top_oos_mean']:+.3f} {ci_s(p10['top_oos_ci'])} ({p10['n_top_oos']} угод) |"
         )
     emit(f"\n- пікова RSS {rss_mb():.0f} MB")

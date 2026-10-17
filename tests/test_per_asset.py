@@ -12,6 +12,7 @@ from tradedesk.analytics.per_asset import (
     chi2_ppf,
     chi2_sf,
     cluster_robust_q,
+    cluster_robust_variances,
     heterogeneity,
     mde,
     permutation_q,
@@ -88,6 +89,22 @@ def test_cluster_robust_q_matches_q_sep_and_ignores_duplicates() -> None:
     q2 = cluster_robust_q(v2, a2, g2, min_n=30)
     assert q2["q"] == pytest.approx(q["q"], rel=1e-9)
     assert q2["deff"] == pytest.approx(2.0, rel=0.05)
+
+
+def test_cluster_robust_variances_by_hand() -> None:
+    # a: [1, 3 | 5, 7], m = 4, S_g = 4, 12, n_g = 2: G/(G-1) * ((4-8)^2 + (12-8)^2) / n^2 = 2 * 32 / 16 = 4;
+    # iid: var([1, 3, 5, 7]) / 4 = (20 / 3) / 4. b has one cluster only -> skipped; c has n < min_n -> skipped.
+    rows = cluster_robust_variances(
+        [1.0, 3.0, 5.0, 7.0, 1.0, 2.0, 9.0], ["a", "a", "a", "a", "b", "b", "c"], [0, 0, 1, 1, 5, 5, 0], min_n=2
+    )
+    assert len(rows) == 1
+    asset, m, se2, var_iid = rows[0]
+    assert asset == "a" and m == pytest.approx(4.0)
+    assert se2 == pytest.approx(4.0)
+    assert var_iid == pytest.approx(5.0 / 3.0)
+    # the Q-profile CI accepts them as variances
+    r = tau_ci_qprofile([0.0, 1.0, 2.0], [se2] * 3)
+    assert r["k"] == 3 and r["tau_lo"] == 0.0
 
 
 def test_permute_within_keeps_counts_per_date() -> None:

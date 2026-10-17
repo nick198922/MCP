@@ -41,6 +41,7 @@ EXPECTED_TOOLS = {
     "chain_metrics",
     "liquidations_history",
     "calendar_expiries",
+    "macro_calendar",
     "deribit_dvol",
     "deribit_vrp",
     "deribit_atm_term",

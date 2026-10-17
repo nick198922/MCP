@@ -430,7 +430,18 @@ def make_transports(state: State) -> dict:
             return httpx.Response(200, json=body)
         return httpx.Response(404, text="not mocked")
 
+    def forexfactory(req: httpx.Request) -> httpx.Response:
+        # Hand-built sample (not a real capture), see the "_note" field in the fixture.
+        with open(Path(__file__).parent / "fixtures" / "forexfactory_calendar_sample.json") as f:
+            body = json.load(f)
+        if req.url.path == "/ff_calendar_thisweek.json":
+            return httpx.Response(200, json=body["thisweek"])
+        if req.url.path == "/ff_calendar_nextweek.json":
+            return httpx.Response(200, json=body["nextweek"])
+        return httpx.Response(404, text="not mocked")
+
     return {
+        "forexfactory": httpx.MockTransport(forexfactory),
         "deribit": httpx.MockTransport(deribit),
         "hyperliquid": httpx.MockTransport(hyperliquid),
         "binance_futures": httpx.MockTransport(binance_futures),

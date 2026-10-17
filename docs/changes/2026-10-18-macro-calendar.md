@@ -1,0 +1,5 @@
+- Новий інструмент `macro_calendar(horizon_days)`: події з високим впливом (USD: FOMC, CPI, Core PCE, NFP, PPI, GDP, Retail Sales, ISM, Jobless Claims; рішення ECB, BoJ, BoE) з тижневого фіду ForexFactory, час UTC і за Києвом, прогноз і попереднє значення (фактичного значення в фіді нема).
+- Дати поза вікном двох тижнів беруться зі сіду `events_seed.json` (час наближений, без прогнозу); у вікні фіду пріоритет у фіду. Збій фіду йде в `missing`, інструмент лишається робочим на сіді.
+- Новий провайдер `forexfactory.py` (кеш 15 хв), чиста функція `analytics/macro_calendar.py`; `pre_trade_checklist` тепер викликає `macro_calendar(horizon_days=2)` для правила «подія в межах 48 год».
+- Зразок фіду в тестах складено вручну за описаними полями (не реальний знімок); живий формат треба звірити командою `curl https://nfs.faireconomy.media/ff_calendar_thisweek.json` на машині з мережею.
+- Питання Q-20261018-1: потрібні дати FOMC і BLS на 2027 для сіду.

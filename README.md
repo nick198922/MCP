@@ -77,6 +77,7 @@ claude mcp add tradedesk -- uv run --directory /ABSOLUTE/PATH/TO/tradedesk-mcp t
 | Настрій | `sentiment_fear_greed` | Crypto Fear & Greed (alternative.me): latest + zone, mean 7d/30d, зміни, частка днів у кожній зоні |
 | On-chain / DEX | `dex_pairs`, `chain_metrics` | пули токена за адресою з DexScreener (за ліквідністю, прапорець `likely_fake` для підроблених тікерів), TVL / DEX-обсяг / fees мережі з DefiLlama зі змінами 7д і 30д |
 | Календар | `calendar_expiries` | експірації Deribit (daily/weekly/monthly/quarterly), найближчі funding-моменти, макро-події (FOMC/CPI/NFP) |
+| Календар | `macro_calendar` | макрокалендар з високим впливом: ForexFactory (цей і наступний тиждень; USD: FOMC, CPI, Core PCE, NFP, PPI, GDP, Retail Sales, ISM, Jobless Claims + рішення ECB/BoJ/BoE), час UTC і Київ, прогноз і попереднє (фактичного значення нема), далі сід FOMC/CPI/NFP; прапор події в найближчі 48 год |
 | Події (Фаза 1) | `events_add`, `events_list`, `events_seed_load`, `event_study` | локальна база макро-подій (FOMC/CPI/NFP); seed 2024-2026 запаковано у wheel; windowed-study поверх `ohlcv_hist` (hit rate, p25/50/75) |
 
 MCP-промпти: `token_deep_analysis`, `fomc_playbook`, `pre_trade_checklist` (план угоди: контекст, розмір від рахунку й ризику, вердикт, запис у журнал), `journal_review` (щомісячний розбір журналу за тегами), `morning_briefing` (шаблони з підказками, які `tradedesk-mcp` інструменти викликати).

@@ -1,0 +1,6 @@
+- Картка `IDEA-20261017-news-events`, етап 0b (закриття, депрекації, wind-down): `inconclusive` — шорт перпа через 15 хв після поста, 24 год, +2.6 % net [+0.4; +4.7] на 12 подіях, але 10 з 12 — з попереднього заміру Claude, нових лише 2 (неінформативно; вердикт вирішує можлива колізія K, Q-20261017-2).
+- Додано:
+  - `analytics/news_events.py`: `parse_closures`, `closure_exclusion`, `snowflake_ms`, частки швидкості руху `move_share_*`;
+  - `scripts/verify_news_events_0b.py` (стадії `prereg|prices|stage0|report`, кеш `~/.cache/tradedesk-agents/news_events/`);
+  - тести в `tests/test_news_events.py` (час подій зі snowflake ID, відсутність зазирання вперед).
+- Звіт: `docs/verification/2026-10-17-news-events-0b.md` (з поправкою ПІСЛЯ результатів за рев'ю критика). Оновлено `knowledge/news-reaction.md`, `knowledge/README.md`, `docs/QUESTIONS.md`.

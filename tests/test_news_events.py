@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import math
+import re
+from datetime import UTC, datetime
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -16,6 +19,7 @@ from tradedesk.analytics.news_events import (
     _chi2_sf,
     classify_delisting,
     classify_listing,
+    closure_exclusion,
     cluster_bootstrap,
     cluster_sd,
     cochran_q,
@@ -23,14 +27,21 @@ from tradedesk.analytics.news_events import (
     hack_events,
     max_move,
     mde_clusters,
+    move_share_bootstrap,
+    move_share_median,
+    move_share_pooled,
     paired_diff_bootstrap,
+    parse_closures,
     perp_base,
     perp_live,
     placebo_times,
     price_at,
     reaction,
     short_trade,
+    snowflake_ms,
 )
+
+CLOSURES_CSV = Path(__file__).resolve().parent.parent / "docs" / "verification" / "2026-10-17-news-closures.csv"
 
 T0 = 1_760_000_000_000 // MIN_MS * MIN_MS  # a minute boundary
 
@@ -299,3 +310,46 @@ def test_cochran_q_and_chi2() -> None:
     assert _chi2_sf(3.841459, 1) == pytest.approx(0.05, abs=1e-5)
     assert _chi2_sf(2.0, 2) == pytest.approx(math.exp(-1.0), rel=1e-9)
     assert _chi2_sf(18.307038, 10) == pytest.approx(0.05, abs=1e-5)
+
+
+# ------------------------------------------------------------------ stage 0b: curated closures and speed
+
+
+def test_snowflake_ms_owner_example() -> None:
+    # BLUR post https://x.com/blur_io/status/2109735810857861203 -> 2026-10-12 19:59:48 UTC (card, owner's example)
+    want = datetime(2026, 10, 12, 19, 59, 48, tzinfo=UTC).timestamp()
+    assert snowflake_ms(2109735810857861203) // 1000 == int(want)
+
+
+def test_closures_csv_times_match_snowflakes_and_pool() -> None:
+    rows = parse_closures(CLOSURES_CSV.read_text())
+    assert len(rows) == 33
+    for c in rows:  # every t0 is the tweet's own creation time, to the second
+        tid = int(re.search(r"/status/(\d+)", c.url).group(1))  # type: ignore[union-attr]
+        assert c.ms == snowflake_ms(tid) // 1000 * 1000, c.key
+    reasons = [closure_exclusion(c) for c in rows]
+    assert reasons.count("leak") == 1 and reasons.count("hack (stage 0d)") == 1
+    assert reasons.count("direction prior up") == 1 and reasons.count("hypothesis source") == 2
+    assert reasons.count(None) == 28
+
+
+def test_move_share_closed_forms() -> None:
+    r24 = [-0.10, -0.10, -0.02]
+    r5 = [-0.05, -0.01, 0.01]
+    assert move_share_pooled(r5, r24) == pytest.approx((-0.05 / 3) / (-0.22 / 3))
+    med, n = move_share_median(r5, r24)  # only |r24| >= 5 %: ratios 0.5 and 0.1
+    assert n == 2 and med == pytest.approx(0.3)
+    assert math.isnan(move_share_pooled([0.01], [0.0]))
+    # a constant per-event share gives a degenerate bootstrap interval at that share
+    s, lo, hi = move_share_bootstrap([0.5 * x for x in (-0.2, -0.1, -0.05, -0.3)], [-0.2, -0.1, -0.05, -0.3], n_boot=500)
+    assert s == pytest.approx(0.5) and lo == pytest.approx(0.5) and hi == pytest.approx(0.5)
+
+
+def test_one_minute_reaction_ignores_data_after_it() -> None:
+    rows = ramp(600)
+    cut = T0 + 2 * MIN_MS
+    rows2 = [r if r[0] + MIN_MS <= cut else [r[0], r[1], r[2] * 4, r[3] / 4, r[4] * 2] for r in rows]
+    b1, b2 = Bars.from_rows(rows), Bars.from_rows(rows2)
+    for t0 in (T0, T0 + 48_000):  # on the minute and 48 s into it (post times carry seconds)
+        assert reaction(b1, t0, MIN_MS) == reaction(b2, t0, MIN_MS)
+    assert reaction(b1, T0, 5 * MIN_MS) != reaction(b2, T0, 5 * MIN_MS)  # the change is visible later

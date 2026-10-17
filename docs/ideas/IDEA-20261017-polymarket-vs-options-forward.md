@@ -2,7 +2,7 @@
 
 Статус: accepted (рішення власника 2026-10-17: «згоден зі всім» — пропозиція 3 звіту `docs/reports/2026-10-17-project-report.pdf`)
 Пріоритет: власник
-Порядок: 9
+Порядок: 10
 <!-- proposed → accepted | rejected → testing → confirmed | rejected | inconclusive → built -->
 
 ## Навіщо і чому так

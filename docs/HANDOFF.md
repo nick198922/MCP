@@ -51,11 +51,12 @@
 3. [per-asset-recheck](ideas/IDEA-20261017-per-asset-recheck.md) — чи прив'язані закриті сетапи до окремих монет. Правило п. 5a `quant.md` — для всіх нових звітів.
 4. [news-events](ideas/IDEA-20261017-news-events.md) — торгівля на новинах. Етап 0 (делістинги бірж) ◯. Далі, за рішенням власника 17.10: 0b — закриття проєктів (набір Claude з 33 подій), 0c — Upbit/Bithumb (лістинг, попередження, делістинг), 0d — злами з точним часом. Для кожної категорії міряти швидкість (чи потрібен автомат). Стратегія (власник погодив 17.10): основна ніша — повільний дрейф і сповіщення людині; автомат для перших секунд — лише якщо заміри в секундах покажуть, що рух лишається; фільтр ризику (анонси Upbit у `pre_trade_checklist`) будується одразу. Ордери лише через Фазу 4.
 5. [doubletop-to-ours](ideas/IDEA-20261017-doubletop-to-ours.md) — звірка, `dex_pairs`, `chain_metrics`, Coinalyze.
-6. [market-makers](ideas/IDEA-20261017-market-makers.md) — вихід ММ з книги заявок (архів глибини Binance з 2023), новини про ММ, далі потоки в блокчейні (ключі — рішенням власника).
-7. [setup-hunt](ideas/IDEA-20261017-setup-hunt.md) — власний пошук 2–3 сетапів з доказами.
-8. [vrp-real-marks](ideas/IDEA-20261017-vrp-real-marks.md).
-9. [polymarket-vs-options-forward](ideas/IDEA-20261017-polymarket-vs-options-forward.md) — CLV.
-10. [course-setups-crypto](ideas/IDEA-20261016-course-setups-crypto.md), кроки 8–11.
+6. [macro](ideas/IDEA-20261017-macro.md) — макрокалендар (ForexFactory + сід 2027, інструмент, Telegram-огляд тижня), далі аналіз: кореляція BTC з Nasdaq/S&P за режимами ФРС, реакція на релізи, повільне макро (M2, ставки).
+7. [market-makers](ideas/IDEA-20261017-market-makers.md) — вихід ММ з книги заявок (архів глибини Binance з 2023), новини про ММ, далі потоки в блокчейні (ключі — рішенням власника).
+8. [setup-hunt](ideas/IDEA-20261017-setup-hunt.md) — власний пошук 2–3 сетапів з доказами.
+9. [vrp-real-marks](ideas/IDEA-20261017-vrp-real-marks.md).
+10. [polymarket-vs-options-forward](ideas/IDEA-20261017-polymarket-vs-options-forward.md) — CLV.
+11. [course-setups-crypto](ideas/IDEA-20261016-course-setups-crypto.md), кроки 8–11.
 
 **Поза чергою:**
 - «розумні гроші» — стадія 0 `inconclusive`, збір триває;

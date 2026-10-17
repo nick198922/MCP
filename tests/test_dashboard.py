@@ -2,6 +2,7 @@
 
 import sqlite3
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -94,6 +95,15 @@ def test_render_has_all_sections_and_escapes():
                 "report": "",
             },
         ],
+        "progress": {
+            "done": 30,
+            "total": 90,
+            "pct": 33.3,
+            "groups": [{"label": "Фінал: прогін і обгортка", "done": 0, "total": 5}],
+            "cards_left": 40,
+            "pace": 8.0,
+            "eta_days": 5.0,
+        },
         "commits": [["abc1234", "17.10 12:00", "Owner's decisions"]],
         "questions": ["Q-1: ключ?"],
         "services": [{"label": "MCP", "unit": "tradedesk-mcp", "state": "active"}],
@@ -111,6 +121,8 @@ def test_render_has_all_sections_and_escapes():
     }
     page = db.render(snap)
     for text in (
+        "Прогрес проєкту",
+        "Фінал: прогін і обгортка",
         "Агенти зараз",
         "Ліміт Claude",
         "Черга",
@@ -147,3 +159,24 @@ def test_read_usage_prefers_the_agents_cache_and_throttles_own_calls(tmp_path, m
     db._usage_last_call[0] = 0.0
     assert db.read_usage(old)["five_hour"]["pct"] == 12.0 and calls == [1]
     assert db.read_usage(old + 60)["five_hour"]["pct"] == 12.0 and calls == [1]  # throttled: no second call
+
+
+def test_project_progress_counts_owner_card_steps_and_milestones():
+    cards = [
+        {"owner": True, "status": "testing", "steps_done": 2, "steps_total": 5},
+        {"owner": True, "status": "rejected", "steps_done": 0, "steps_total": 0},
+        {"owner": True, "status": "accepted", "steps_done": 0, "steps_total": 0},
+        {"owner": False, "status": "accepted", "steps_done": 0, "steps_total": 9},
+    ]
+    md = "# P\n\n## Основа\n- [x] a\n- [x] b\n\n## Фінал\n- [ ] c\n- [ ] d\n"
+    p = db.project_progress(cards, md, pace=2.0)
+    assert p["groups"][0]["done"] == 3 and p["groups"][0]["total"] == 7
+    assert (p["done"], p["total"]) == (5, 11) and round(p["pct"], 1) == 45.5
+    assert p["cards_left"] == 4 and p["eta_days"] == 2.0
+    assert db.project_progress(cards, "", pace=0.0)["eta_days"] is None
+
+
+def test_delivered_pace_counts_recent_deliveries_only():
+    now = datetime(2026, 10, 17, 12, 0).timestamp()
+    lines = ["2026-10-16_100000\tdelivered\tx", "2026-10-15_100000\tcontinues\ty", "2026-10-01_100000\tdelivered\tz"]
+    assert db.delivered_pace(lines, now, days=7) == 1 / 7

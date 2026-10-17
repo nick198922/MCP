@@ -111,6 +111,35 @@ def history_rows(lines: list[str], n: int = 15) -> list[dict]:
     return out
 
 
+def delivered_pace(lines: list[str], now: float, days: int = 7) -> float:
+    """Agent steps delivered per day over the last ``days`` days of history.tsv."""
+    since = datetime.fromtimestamp(now - days * 86400).strftime("%Y-%m-%d_%H%M%S")
+    n = sum(1 for ln in lines if ln.split("\t", 2)[0] >= since and ln.split("\t", 2)[1:2] == ["delivered"])
+    return n / days
+
+
+def project_progress(cards: list[dict], progress_md: str, pace: float) -> dict:
+    """Overall progress: the owner's cards (their «## Прогрес» steps) plus the product milestones of docs/PROGRESS.md.
+
+    Every step weighs the same; the total grows whenever a new card or step is added, so the percentage can fall."""
+    owner = [c for c in cards if c["owner"]]
+    cd = sum(rb.card_progress(c)[0] for c in owner)
+    ct = sum(rb.card_progress(c)[1] for c in owner)
+    groups = [{"label": "Дослідження й побудова (картки власника)", "done": cd, "total": ct}]
+    groups += [{"label": h, "done": d, "total": t} for h, d, t in rb.checklists(progress_md)]
+    done, total = sum(g["done"] for g in groups), sum(g["total"] for g in groups)
+    left = ct - cd
+    return {
+        "done": done,
+        "total": total,
+        "pct": 100.0 * done / total if total else 0.0,
+        "groups": groups,
+        "cards_left": left,
+        "pace": pace,
+        "eta_days": left / pace if pace > 0 else None,
+    }
+
+
 def table_freshness(db: Path, now: float) -> list[dict]:
     """Newest row and an approximate row count (max rowid) per collector table, read-only."""
     if not db.exists():
@@ -352,6 +381,7 @@ def snapshot() -> dict:
         },
         "usage": usage_with_trend(now),
         "cards": cards,
+        "progress": project_progress(cards, _git("show", "origin/main:docs/PROGRESS.md"), delivered_pace(hist, now)),
         "commits": commits,
         "questions": st.open_questions(_git("show", "origin/main:docs/QUESTIONS.md")),
         "services": services(),
@@ -414,6 +444,33 @@ def render(s: dict) -> str:
     out.append(
         f"<header><h1>tradedesk</h1><span class='mut'>оновлено {_when(s['generated_at'])} · сторінка сама оновлюється щохвилини</span><span>{svc}</span></header><main>"
     )
+
+    # Project progress
+    pr = s.get("progress")
+    if pr:
+        out.append("<section class='wide'><h2>Прогрес проєкту</h2>")
+        out.append(
+            f"<p><b style='font-size:17px'>{pr['pct']:.0f} %</b> — зроблено {pr['done']} з {pr['total']} кроків до готового продукту "
+            "<span class='mut'>(кожен крок важить однаково; коли додаються нові задачі, загальна кількість росте)</span></p>"
+        )
+        out.append(f'<div class="bar" style="height:14px"><i style="width:{min(100, pr["pct"]):.0f}%"></i></div>')
+        out.append("<table><tr><th>Етап</th><th>Зроблено</th><th style='width:45%'>Прогрес</th></tr>")
+        for g in pr["groups"]:
+            pct = 100.0 * g["done"] / g["total"] if g["total"] else 0.0
+            out.append(
+                f"<tr><td>{_e(g['label'])}</td><td>{g['done']} / {g['total']}</td>"
+                f'<td><div class="bar"><i style="width:{pct:.0f}%"></i></div></td></tr>'
+            )
+        out.append("</table>")
+        if pr["eta_days"] is not None:
+            out.append(
+                f"<p class='mut'>Карткам власника лишилось {pr['cards_left']} кроків; за темпом останніх 7 днів "
+                f"({pr['pace']:.1f} здачі на день) — ≈ {pr['eta_days']:.0f} дн. роботи агентів. Грубо: без пауз через ліміт, "
+                "кроків, що ще з'являться, і 4-тижневих паперових вікон.</p>"
+            )
+        out.append(
+            "<p class='mut'>Кроки карток — розділ «Прогрес» у кожній картці; етапи продукту — <code>docs/PROGRESS.md</code>.</p></section>"
+        )
 
     # Agents now
     out.append("<section><h2>Агенти зараз</h2>")
@@ -478,14 +535,16 @@ def render(s: dict) -> str:
         key=lambda x: (x["order"] if x["order"] is not None else 99, x["name"]),
     )
     other = [x for x in cards if not x["owner"] and x["status"] in ("accepted", "testing", "proposed")]
-    out.append("<section><h2>Черга</h2><table><tr><th>#</th><th>Картка</th><th>Статус</th></tr>")
+    out.append("<section><h2>Черга</h2><table><tr><th>#</th><th>Картка</th><th>Статус</th><th>Кроки</th></tr>")
     for x in owner:
+        d, t = rb.card_progress(x)
         out.append(
-            f"<tr><td>{x['order'] if x['order'] is not None else '👤'}</td><td>{_e(x['title'])}<br><span class='mut'>{_e(x['name'][14:])}</span></td><td>{_e(x['status'])}</td></tr>"
+            f"<tr><td>{x['order'] if x['order'] is not None else '👤'}</td><td>{_e(x['title'])}<br><span class='mut'>{_e(x['name'][14:])}</span></td><td>{_e(x['status'])}</td>"
+            f'<td style="min-width:90px">{d} / {t}<div class="bar"><i style="width:{100.0 * d / t if t else 0:.0f}%"></i></div></td></tr>'
         )
     for x in other:
         out.append(
-            f"<tr><td class='mut'>·</td><td>{_e(x['title'])}<br><span class='mut'>{_e(x['name'][14:])}</span></td><td>{_e(x['status'])}</td></tr>"
+            f"<tr><td class='mut'>·</td><td>{_e(x['title'])}<br><span class='mut'>{_e(x['name'][14:])}</span></td><td>{_e(x['status'])}</td><td></td></tr>"
         )
     out.append("</table></section>")
 

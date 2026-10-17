@@ -2,8 +2,12 @@
 
 Статус: accepted (рішення власника 2026-10-17: «згоден зі всім» — пропозиція 2 звіту `docs/reports/2026-10-17-project-report.pdf`)
 Пріоритет: власник
-Порядок: 8
+Порядок: 9
 <!-- proposed → accepted | rejected → testing → confirmed | rejected | inconclusive → built -->
+
+## Прогрес
+- [ ] Крок 1: історичний тест на марках Deribit
+- [ ] Крок 2: паперовий форвард (лише якщо крок 1 `confirmed`)
 
 ## Навіщо
 - VRP на BTC — єдиний «підтверджений» ефект (`docs/verification/2026-10-13-vrp.md`): ≈ +2 % від спота на місяць на DVOL.

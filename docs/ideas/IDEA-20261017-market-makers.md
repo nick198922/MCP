@@ -5,6 +5,12 @@
 Порядок: 7
 <!-- proposed → accepted | rejected → testing → confirmed | rejected | inconclusive → built -->
 
+## Прогрес
+- [ ] A. Вихід ліквідності з книги заявок (архів `bookDepth`)
+- [ ] C. Новини про ММ (події — Claude)
+- [ ] Рішення власника про ключі Etherscan / Dune
+- [ ] B. Потоки ММ у блокчейні
+
 ## Інструменти і ринок
 Перпи Binance USD-M (альти з top-200); спот і on-chain — у частині B.
 

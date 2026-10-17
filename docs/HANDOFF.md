@@ -58,6 +58,8 @@
 10. [polymarket-vs-options-forward](ideas/IDEA-20261017-polymarket-vs-options-forward.md) — CLV.
 11. [course-setups-crypto](ideas/IDEA-20261016-course-setups-crypto.md), кроки 8–11.
 
+**Прогрес:** панель показує загальну шкалу до готового продукту (кроки карток власника з розділу «Прогрес» плюс етапи [`PROGRESS.md`](PROGRESS.md)) і шкалу кожної картки. На 17.10 — 25 з 87 кроків.
+
 **Поза чергою:**
 - «розумні гроші» — стадія 0 `inconclusive`, збір триває;
 - калібрування Polymarket — правки;

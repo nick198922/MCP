@@ -5,6 +5,15 @@
 Порядок: 5
 <!-- proposed → accepted | rejected → testing → confirmed | rejected | inconclusive → built -->
 
+## Прогрес
+- [ ] 1. Звірка наших інструментів з DOUBLETOP
+- [ ] 2. `dex_pairs`
+- [ ] 3. `chain_metrics`
+- [x] Ключ Coinalyze (власник, 17.10)
+- [ ] 4. Провайдер Coinalyze
+- [ ] 5. Повтор перевірок на історії Coinalyze
+- [ ] 6. Pendle (нижчий пріоритет)
+
 ## Черга
 - Після [IDEA-20261017-deviation-weekly-trend](IDEA-20261017-deviation-weekly-trend.md) (H1 — першою).
 - Це інженерна картка: розробник + критик (рев'ю коду). Квант — лише для звірки чисел.

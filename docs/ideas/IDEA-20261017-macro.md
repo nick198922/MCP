@@ -5,6 +5,15 @@
 Порядок: 6
 <!-- proposed → accepted | rejected → testing → confirmed | rejected | inconclusive → built -->
 
+## Прогрес
+- [ ] A. Провайдер календаря і інструмент `macro_calendar`
+- [ ] A. Сід 2027 (дати — Claude)
+- [ ] A. Огляд тижня й нагадування в Telegram
+- [ ] B1. Режими кореляції BTC з фондовим ринком
+- [ ] B2. Реакція на релізи за сюрпризом
+- [ ] B3. Повільне макро: ставки, M2, DXY
+- [ ] Практичні правила для власника
+
 ## Що вже є
 - Сід подій `src/tradedesk/data/events_seed.json`: FOMC, CPI, NFP 2024–2026, час наближений.
 - Інструменти `events_list`, `event_study`, `calendar_expiries`; таблиця дат 2021–2026 `docs/verification/2026-10-15-us-macro-events.csv`, звірена з BLS.

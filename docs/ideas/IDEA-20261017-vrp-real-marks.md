@@ -5,6 +5,10 @@
 Порядок: 9
 <!-- proposed → accepted | rejected → testing → confirmed | rejected | inconclusive → built -->
 
+## Прогрес
+- [ ] Крок 1: історичний тест на марках Deribit
+- [ ] Крок 2: паперовий форвард (лише якщо крок 1 `confirmed`)
+
 ## Навіщо
 - VRP на BTC — єдиний «підтверджений» ефект (`docs/verification/2026-10-13-vrp.md`): ≈ +2 % від спота на місяць на DVOL.
 - Але на реальних ATM-марках Deribit з funding хеджу фаза 0 дала +0.06 % [−0.83; +0.95] (`docs/verification/2026-10-14-put-skew-v2.md`, «Застереження»).

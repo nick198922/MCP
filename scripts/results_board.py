@@ -39,6 +39,28 @@ EARLY = [
 STATUS_RE = re.compile(r"^Статус:[ \t]*([a-z]+)[ \t]*(.*)$", re.M)
 TITLE_RE = re.compile(r"^#\s*IDEA-\d{8}-[a-z0-9-]+:\s*(.+)$", re.M)
 REPORT_RE = re.compile(r"(?:\.\./)?(?:docs/)?verification/([0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9-]+)\.md")
+CHECK_RE = re.compile(r"^[ \t]*[-*][ \t]+\[([ xX])\]", re.M)
+FINAL = ("confirmed", "built", "inconclusive", "rejected")
+
+
+def checklists(text: str, only: str | None = None) -> list[tuple[str, int, int]]:
+    """(heading, done, total) for every «## …» section that has «- [ ]» / «- [x]» items; ``only`` keeps one heading."""
+    out = []
+    for block in re.split(r"^(?=## )", text, flags=re.M):
+        head = block.split("\n", 1)[0][3:].strip() if block.startswith("## ") else ""
+        if only is not None and head != only:
+            continue
+        marks = CHECK_RE.findall(block)
+        if marks and head:
+            out.append((head, sum(m in "xX" for m in marks), len(marks)))
+    return out
+
+
+def card_progress(card: dict) -> tuple[int, int]:
+    """Steps done and total of a card: its «## Прогрес» checklist, else 1/1 for a final status and 0/1 otherwise."""
+    if card.get("steps_total"):
+        return card["steps_done"], card["steps_total"]
+    return (1, 1) if card["status"] in FINAL else (0, 1)
 
 
 def parse_card(text: str, name: str) -> dict:
@@ -52,6 +74,7 @@ def parse_card(text: str, name: str) -> dict:
     t = TITLE_RE.search(text)
     order = re.search(r"^Порядок:\s*(\d+)\s*$", text, re.M)
     rep = REPORT_RE.search(text)
+    steps = checklists(text, only="Прогрес")
     return {
         "name": name,
         "title": (t.group(1).strip() if t else name)[:110],
@@ -60,6 +83,8 @@ def parse_card(text: str, name: str) -> dict:
         "owner": bool(re.search(r"^Пріоритет:\s*власник", text, re.M)),
         "order": int(order.group(1)) if order else None,
         "report": rep.group(1) if rep else "",
+        "steps_done": steps[0][1] if steps else 0,
+        "steps_total": steps[0][2] if steps else 0,
     }
 
 

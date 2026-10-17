@@ -42,3 +42,12 @@ def test_repo_cards_all_parse():
     assert cards and all(
         c["status"] in {"proposed", "accepted", "testing", "confirmed", "rejected", "inconclusive", "built"} for c in cards
     )
+
+
+def test_progress_checklist_and_fallback_by_status():
+    text = "# IDEA-20261017-p: P\n\nСтатус: testing\n\n## Прогрес\n- [x] one\n- [X] two\n- [ ] three\n\n## Інше\n- [ ] not counted\n"
+    c = rb.parse_card(text, "IDEA-20261017-p")
+    assert (c["steps_done"], c["steps_total"]) == (2, 3) and rb.card_progress(c) == (2, 3)
+    assert rb.checklists(text) == [("Прогрес", 2, 3), ("Інше", 0, 1)]
+    assert rb.card_progress(rb.parse_card("Статус: rejected — ні\n", "IDEA-x")) == (1, 1)
+    assert rb.card_progress(rb.parse_card("Статус: accepted\n", "IDEA-y")) == (0, 1)

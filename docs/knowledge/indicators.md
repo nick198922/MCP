@@ -19,6 +19,8 @@
 | anchor/fvg | розмітка FVG (назва з панелі) | — |
 | Paragon Levels; [@TheParagonGrp] VWAP Suite, Scalp VWAP | сторонні індикатори TradingView | у кадрах вимкнені |
 
+Перевірено числами на кадрі огляду Іллі 16.10.2026 (ETH, Binance, [LIB-20261017-goodmood-market-review](../library/LIB-20261017-goodmood-market-review.md)): синя хмара = EMA 100/200 на 4h (2549/2547 проти ≈ 2550 на графіку), фіолетові = звичайні EMA 100/200 на 1D (2357/2311 проти ≈ 2351/2304), а не згладжені. 4h EMA100/200 майже збігаються з денними EMA 21/34.
+
 **Шаблон розмітки автора** (урок «Робота з TradingView», графік gmilnikov EURUSD 1D, повний розмір, 16.10): лінії 3DP, bos, be, Buyside/Sellside Liquidity, EQL/EQH, Liquidity ✗ / Sweep ✓, Imbalance 1/2, Market Shift (MS), OTE 1/2 (0.5/0.62/0.705/0.79), Range 1/2, Premium/Discount, Deviation; зони OB, Imbalance, кольори Blue/Green/Orange/Red.
 - **У шаблоні є поняття, яких немає в жодному збереженому уроці:** Inducement (IDM), SMT Divergence, Divergence, Balanced Price Range (BPR), Original Consolidation, Re-Acc 1/2, Smart Money Reversal (SMR), рівні Day Open (DO) і New York Midnight (NYM), BSL/SSL 2.0, вертикаль NEWS. Це терміни ICT, які автор, схоже, використовує поза курсом. Найкраще перевіряються SMT (розбіжність свипу BTC і ETH: одна знімає хай, друга ні) і рівні DO/NYM (відкриття дня 00:00 UTC і 00:00 Нью-Йорка як магніт або опора). Кандидати для бібліотеки, якщо власник має матеріали про них.
 

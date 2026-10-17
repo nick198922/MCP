@@ -1,0 +1,11 @@
+{
+  "_source": "claude.ai DOUBLETOP coinalyze__liquidation_history, captured 2026-10-17 by Claude (session with the owner)",
+  "_notes": "l = long liquidations, s = short liquidations, in base units (BTC) per interval; t = interval start, unix seconds. A request from 2020-01-01 returned []: history reaches back at least to 2024-01-01.",
+  "calls": [
+    {"args": {"symbols": "BTCUSDT_PERP.A", "interval": "daily", "from": 1577836800, "to": 1578614400}, "response": []},
+    {"args": {"symbols": "BTCUSDT_PERP.A", "interval": "daily", "from": 1704067200, "to": 1704499200},
+     "response": [{"symbol": "BTCUSDT_PERP.A", "history": [{"t": 1704067200, "l": 35.648999999999994, "s": 465.5419999999996}, {"t": 1704153600, "l": 143.00199999999984, "s": 210.26899999999924}, {"t": 1704240000, "l": 534.4049999999983, "s": 192.08799999999943}, {"t": 1704326400, "l": 70.15300000000002, "s": 145.11199999999997}, {"t": 1704412800, "l": 121.89100000000016, "s": 122.88900000000017}, {"t": 1704499200, "l": 55.47900000000004, "s": 73.24399999999993}]}]},
+    {"args": {"symbols": "BTCUSDT_PERP.A", "interval": "daily", "from": 1759276800, "to": 1759708800},
+     "response": [{"symbol": "BTCUSDT_PERP.A", "history": [{"t": 1759276800, "l": 24.853000000000023, "s": 325.6079999999978}, {"t": 1759363200, "l": 39.40900000000001, "s": 119.37900000000026}, {"t": 1759449600, "l": 86.04300000000008, "s": 121.70200000000013}, {"t": 1759536000, "l": 27.240000000000023, "s": 20.224999999999994}, {"t": 1759622400, "l": 50.32399999999995, "s": 49.338999999999864}, {"t": 1759708800, "l": 27.415000000000006, "s": 79.01200000000011}]}]}
+  ]
+}

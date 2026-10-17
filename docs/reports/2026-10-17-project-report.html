@@ -1,0 +1,1056 @@
+<!doctype html><html lang='uk'><head><meta charset='utf-8'><title>tradedesk-mcp — звіт 17.10.2026</title><style>
+@page { size: A4; margin: 12mm 13mm 12mm 13mm; }
+* { box-sizing: border-box; }
+body { font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; font-size: 8.9pt; line-height: 1.38; color: #1d2329; margin: 0; }
+header { border-bottom: 2px solid #2f6db5; padding-bottom: 5px; margin-bottom: 8px; }
+.title { font-size: 19pt; font-weight: 700; color: #16324f; letter-spacing: -0.2px; }
+.sub { color: #5d6873; font-size: 8.5pt; margin-top: 2px; }
+h2 { font-size: 11.5pt; color: #16324f; margin: 11px 0 4px; border-bottom: 1px solid #d5dde6; padding-bottom: 2px; }
+h3 { font-size: 9.6pt; color: #2f6db5; margin: 8px 0 3px; }
+p { margin: 3px 0 5px; }
+ul, ol { margin: 3px 0 5px; padding-left: 17px; }
+li { margin: 1.5px 0; }
+.tight li { margin: 1px 0; }
+.summary { background: #f2f6fb; border-left: 4px solid #2f6db5; padding: 5px 10px 4px; margin-bottom: 7px; }
+.summary h2 { border: none; margin-top: 2px; }
+.kpis { display: grid; grid-template-columns: repeat(8, 1fr); gap: 5px; margin: 6px 0 4px; }
+.kpis div { background: #f6f8fa; border: 1px solid #e1e6eb; border-radius: 4px; padding: 4px 3px; text-align: center; }
+.kpis b { display: block; font-size: 13.5pt; color: #16324f; }
+.kpis span { font-size: 6.9pt; color: #5d6873; line-height: 1.15; display: block; }
+.kpis .bad b { color: #b33a36; } .kpis .ok b { color: #2f7a4b; } .kpis .warn b { color: #b8761d; }
+table { border-collapse: collapse; width: 100%; margin: 3px 0 5px; }
+table.compact th, table.compact td { border-bottom: 1px solid #e3e8ed; padding: 2.5px 5px; vertical-align: top; text-align: left; font-size: 8.3pt; }
+table.compact th { background: #eef2f6; color: #2b3640; font-weight: 600; }
+table.compact td:nth-child(2) { white-space: nowrap; }
+table.verdicts td:nth-child(2) { white-space: normal; }
+.okrow td:first-child { border-left: 3px solid #3b8f5a; } .badrow td:first-child { border-left: 3px solid #c0504d; } .midrow td:first-child { border-left: 3px solid #9aa3ad; }
+td.g { color: #2f7a4b; } td.y { color: #9a6416; } td.r { color: #b33a36; font-weight: 600; }
+.two { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
+.fig svg { width: 100%; height: auto; display: block; }
+.fig.wide svg { max-height: 58mm; }
+.two.end { grid-template-columns: 1.15fr 0.85fr; margin-top: 9px; } .two.end .decide { margin-top: 0; }
+.cap { font-size: 7.3pt; color: #6b7681; text-align: center; margin-top: 1px; }
+.note { color: #2b3640; }
+code { font-family: Menlo, monospace; font-size: 7.8pt; background: #f1f3f5; padding: 0 2px; border-radius: 2px; }
+.decide { background: #fff7ea; border-left: 4px solid #d9902a; padding: 4px 10px 3px; margin-top: 9px; }
+.decide h2 { border: none; margin-top: 2px; color: #8a5a12; }
+.foot { font-size: 7pt; color: #808a94; margin-top: 6px; border-top: 1px solid #e3e8ed; padding-top: 3px; }
+h2, h3 { break-after: avoid; } table, .fig, li { break-inside: avoid; }
+</style></head><body><header>
+  <div class="title">tradedesk-mcp — звіт по проєкту</div>
+  <div class="sub">17.10.2026 · стан на 12:00 за Києвом · 8 днів від першого коміту (10.10)</div>
+</header>
+
+<section class="summary">
+  <h2>Коротко</h2>
+  <ul>
+    <li><b>Платформа готова й працює цілодобово:</b> 85 MCP-інструментів, 882 тести, власний сервер, колектори даних, Telegram, команда агентів з автозливом.</li>
+    <li><b>Дослідження:</b> 30 карток ідей і 34 звіти перевірок за 5 днів. <b>Підтвердженої торгової переваги поки немає.</b></li>
+    <li><b>Позитив дали лише структурні ефекти:</b> funding carry на альтах, carry перп-перп на нових лістингах, премія волатильності (VRP) на BTC. Жоден не стоїть на форвард-перевірці: це головна прогалина.</li>
+    <li><b>Технічний аналіз:</b> курс DoubleTop, SMC, заклики трейдерів — 0 підтверджених з ~20 перевірок. Питання закрите цифрами.</li>
+    <li><b>Головна пропозиція:</b> після H1 перемкнути агентів на форвард-папір структурних кандидатів і Polymarket (твоя експертиза). Тоді до чекпоінту 30.11 буде шанс мати стратегію на папері.</li>
+  </ul>
+</section>
+
+<div class="kpis">
+  <div><b>85</b><span>MCP-інструментів</span></div>
+  <div><b>882</b><span>тести, офлайн</span></div>
+  <div><b>325</b><span>комітів</span></div>
+  <div><b>51</b><span>PR (42 — авто агентів)</span></div>
+  <div><b>34</b><span>звіти перевірок</span></div>
+  <div class="bad"><b>0</b><span>підтверджено</span></div>
+  <div class="ok"><b>3</b><span>кандидати</span></div>
+  <div class="warn"><b>63 %</b><span>тижневого ліміту Claude</span></div>
+</div>
+
+<h2>1. Що зроблено</h2>
+
+<h3>1.1 Платформа (MCP-сервер)</h3>
+<table class="compact">
+  <tr><th>Домен</th><th>Інстр.</th><th>Що вміє</th></tr>
+  <tr><td>Ринок і біржі</td><td>13</td><td>тікери, свічки, історія, стакан зі slippage, угоди з CVD, режим ринку; <b>chart_markup</b> — розмітка курсу (EMA-хмари, VWAP, профіль об'єму, структура, FVG/OB, ліквідність); рейнджі та SFP-сканер</td></tr>
+  <tr><td>Перпи й funding</td><td>10</td><td>funding по 5 майданчиках та історія, z-score, basis, OI та історія, лонг/шорт; сканери carry і крос-біржового спреду; ліквідації (WebSocket; збір на сервері був вимкнений — виявлено 17.10, вмикається скриптом 16)</td></tr>
+  <tr><td>Hyperliquid</td><td>5</td><td>огляд всесвіту, стакан, свічки, угоди, історія funding</td></tr>
+  <tr><td>Опціони Deribit</td><td>17</td><td>ланцюжок із греками, поверхня волатильності, скью й ATM-строки, DVOL, VRP, GEX, max pain, OI за страйками, великі угоди, очікуваний рух, крива ф'ючерсів, ймовірності (вище/нижче/дотик), IV rank</td></tr>
+  <tr><td>Polymarket і квант</td><td>5</td><td>пошук, ринок, історія цін; de-vig коефіцієнтів, event study</td></tr>
+  <tr><td>Огляд ринку</td><td>5</td><td>монета, топ, глобальний ринок, Fear &amp; Greed, здоров'я системи</td></tr>
+  <tr><td>Пам'ять і ризик</td><td>21</td><td>журнал угод, позиції й портфельний ризик, правила й алерти в Telegram, календар подій та експірацій, паперовий carry перп-перп</td></tr>
+  <tr><td>Стратегії</td><td>9</td><td>payoff, стреддл/стренгл, risk reversal, iron condor, cash-and-carry, funding carry, матриця сценаріїв, бектест моментуму</td></tr>
+</table>
+<p class="note"><b>Інфраструктура:</b> сервер Contabo (12 ГБ RAM, 193 ГБ диска), 3 служби (MCP, цикл агентів, Telegram-міст), колектор 24/7: лідерборди Hyperliquid і Polymarket, позиції топ-трейдерів, пропозиція токенів. Оновлення з main щоночі о 02:15. Сховище — SQLite, схема 12. Вже підключено: ключ Coinalyze (17.10) і конектор DoubleTop для звірки.</p>
+
+<div class="two">
+<div>
+<h3>1.2 Команда агентів</h3>
+<p>Конвеєр: скаут → критик → квант → критик → розробник → PR з автозливом. Вердикт ставиться лише за правилами, зареєстрованими до прогону (OOS, плацебо, потужність).</p>
+<ul class="tight">
+  <li>За 14–17.10: <b>46 кроків здано</b>, 17 збоїв (13 — у перший день запуску), 1 зависання.</li>
+  <li>Медіана кроку ~30 хв; великі кроки кванта — 1–2 год.</li>
+  <li>Виправлено цього тижня: OOM (ліміт 7 ГБ), паркінг кількох гілок, троттлінг Dukascopy, кеш відкритих вікон.</li>
+</ul>
+</div>
+<div class="fig"><svg xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 244.8 136.8" xmlns="http://www.w3.org/2000/svg" version="1.1">
+ <metadata>
+  <rdf:RDF xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+   <cc:Work>
+    <dc:type rdf:resource="http://purl.org/dc/dcmitype/StillImage"/>
+    <dc:date>2026-10-17T12:06:13.605387</dc:date>
+    <dc:format>image/svg+xml</dc:format>
+    <dc:creator>
+     <cc:Agent>
+      <dc:title>Matplotlib v3.11.2, https://matplotlib.org/</dc:title>
+     </cc:Agent>
+    </dc:creator>
+   </cc:Work>
+  </rdf:RDF>
+ </metadata>
+ <defs>
+  <style type="text/css">*{stroke-linejoin: round; stroke-linecap: butt}</style>
+ </defs>
+ <g id="figure_1">
+  <g id="patch_1">
+   <path d="M 0 136.8 
+L 244.8 136.8 
+L 244.8 0 
+L 0 0 
+z
+" style="fill: #ffffff"/>
+  </g>
+  <g id="axes_1">
+   <g id="patch_2">
+    <path d="M 39.334531 111.800703 
+L 235.08 111.800703 
+L 235.08 9.72 
+L 39.334531 9.72 
+z
+" style="fill: #ffffff"/>
+   </g>
+   <g id="patch_3">
+    <path d="M 48.232053 111.800703 
+L 85.6953 111.800703 
+L 85.6953 99.040615 
+L 48.232053 99.040615 
+z
+" clip-path="url(#p920e43593e)" style="fill: #3b8f5a"/>
+   </g>
+   <g id="patch_4">
+    <path d="M 95.061112 111.800703 
+L 132.52436 111.800703 
+L 132.52436 38.430198 
+L 95.061112 38.430198 
+z
+" clip-path="url(#p920e43593e)" style="fill: #3b8f5a"/>
+   </g>
+   <g id="patch_5">
+    <path d="M 141.890172 111.800703 
+L 179.353419 111.800703 
+L 179.353419 86.280527 
+L 141.890172 86.280527 
+z
+" clip-path="url(#p920e43593e)" style="fill: #3b8f5a"/>
+   </g>
+   <g id="patch_6">
+    <path d="M 188.719231 111.800703 
+L 226.182479 111.800703 
+L 226.182479 76.710461 
+L 188.719231 76.710461 
+z
+" clip-path="url(#p920e43593e)" style="fill: #3b8f5a"/>
+   </g>
+   <g id="patch_7">
+    <path d="M 48.232053 99.040615 
+L 85.6953 99.040615 
+L 85.6953 79.900483 
+L 48.232053 79.900483 
+z
+" clip-path="url(#p920e43593e)" style="fill: #9aa3ad"/>
+   </g>
+   <g id="patch_8">
+    <path d="M 95.061112 38.430198 
+L 132.52436 38.430198 
+L 132.52436 32.050154 
+L 95.061112 32.050154 
+z
+" clip-path="url(#p920e43593e)" style="fill: #9aa3ad"/>
+   </g>
+   <g id="patch_9">
+    <path d="M 141.890172 86.280527 
+L 179.353419 86.280527 
+L 179.353419 57.57033 
+L 141.890172 57.57033 
+z
+" clip-path="url(#p920e43593e)" style="fill: #9aa3ad"/>
+   </g>
+   <g id="patch_10">
+    <path d="M 188.719231 76.710461 
+L 226.182479 76.710461 
+L 226.182479 76.710461 
+L 188.719231 76.710461 
+z
+" clip-path="url(#p920e43593e)" style="fill: #9aa3ad"/>
+   </g>
+   <g id="patch_11">
+    <path d="M 48.232053 79.900483 
+L 85.6953 79.900483 
+L 85.6953 38.430198 
+L 48.232053 38.430198 
+z
+" clip-path="url(#p920e43593e)" style="fill: #c0504d"/>
+   </g>
+   <g id="patch_12">
+    <path d="M 95.061112 32.050154 
+L 132.52436 32.050154 
+L 132.52436 19.290066 
+L 95.061112 19.290066 
+z
+" clip-path="url(#p920e43593e)" style="fill: #c0504d"/>
+   </g>
+   <g id="patch_13">
+    <path d="M 141.890172 57.57033 
+L 179.353419 57.57033 
+L 179.353419 54.380308 
+L 141.890172 54.380308 
+z
+" clip-path="url(#p920e43593e)" style="fill: #c0504d"/>
+   </g>
+   <g id="patch_14">
+    <path d="M 188.719231 76.710461 
+L 226.182479 76.710461 
+L 226.182479 76.710461 
+L 188.719231 76.710461 
+z
+" clip-path="url(#p920e43593e)" style="fill: #c0504d"/>
+   </g>
+   <g id="matplotlib.axis_1">
+    <g id="xtick_1">
+     <g id="line2d_1">
+      <defs>
+       <path id="mf5c4a28538" d="M 0 0 
+L 0 3.5 
+" style="stroke: #444444; stroke-width: 0.8"/>
+      </defs>
+      <g>
+       <use xlink:href="#mf5c4a28538" x="66.963676" y="111.800703" style="fill: #444444; stroke: #444444; stroke-width: 0.8"/>
+      </g>
+     </g>
+     <g id="text_1">
+      <text style="font-size: 9px; font-family: 'Helvetica'; text-anchor: middle; fill: #444444" x="66.963676" y="125.550703" transform="rotate(-0 66.963676 125.550703)">14.10</text>
+     </g>
+    </g>
+    <g id="xtick_2">
+     <g id="line2d_2">
+      <g>
+       <use xlink:href="#mf5c4a28538" x="113.792736" y="111.800703" style="fill: #444444; stroke: #444444; stroke-width: 0.8"/>
+      </g>
+     </g>
+     <g id="text_2">
+      <text style="font-size: 9px; font-family: 'Helvetica'; text-anchor: middle; fill: #444444" x="113.792736" y="125.550703" transform="rotate(-0 113.792736 125.550703)">15.10</text>
+     </g>
+    </g>
+    <g id="xtick_3">
+     <g id="line2d_3">
+      <g>
+       <use xlink:href="#mf5c4a28538" x="160.621795" y="111.800703" style="fill: #444444; stroke: #444444; stroke-width: 0.8"/>
+      </g>
+     </g>
+     <g id="text_3">
+      <text style="font-size: 9px; font-family: 'Helvetica'; text-anchor: middle; fill: #444444" x="160.621795" y="125.550703" transform="rotate(-0 160.621795 125.550703)">16.10</text>
+     </g>
+    </g>
+    <g id="xtick_4">
+     <g id="line2d_4">
+      <g>
+       <use xlink:href="#mf5c4a28538" x="207.450855" y="111.800703" style="fill: #444444; stroke: #444444; stroke-width: 0.8"/>
+      </g>
+     </g>
+     <g id="text_4">
+      <text style="font-size: 9px; font-family: 'Helvetica'; text-anchor: middle; fill: #444444" x="207.450855" y="125.550703" transform="rotate(-0 207.450855 125.550703)">17.10*</text>
+     </g>
+    </g>
+   </g>
+   <g id="matplotlib.axis_2">
+    <g id="ytick_1">
+     <g id="line2d_5">
+      <defs>
+       <path id="m69f0d567dd" d="M 0 0 
+L -3.5 0 
+" style="stroke: #444444; stroke-width: 0.8"/>
+      </defs>
+      <g>
+       <use xlink:href="#m69f0d567dd" x="39.334531" y="111.800703" style="fill: #444444; stroke: #444444; stroke-width: 0.8"/>
+      </g>
+     </g>
+     <g id="text_5">
+      <text style="font-size: 9px; font-family: 'Helvetica'; text-anchor: end; fill: #444444" x="32.334531" y="115.175703" transform="rotate(-0 32.334531 115.175703)">0</text>
+     </g>
+    </g>
+    <g id="ytick_2">
+     <g id="line2d_6">
+      <g>
+       <use xlink:href="#m69f0d567dd" x="39.334531" y="79.900483" style="fill: #444444; stroke: #444444; stroke-width: 0.8"/>
+      </g>
+     </g>
+     <g id="text_6">
+      <text style="font-size: 9px; font-family: 'Helvetica'; text-anchor: end; fill: #444444" x="32.334531" y="83.275483" transform="rotate(-0 32.334531 83.275483)">10</text>
+     </g>
+    </g>
+    <g id="ytick_3">
+     <g id="line2d_7">
+      <g>
+       <use xlink:href="#m69f0d567dd" x="39.334531" y="48.000264" style="fill: #444444; stroke: #444444; stroke-width: 0.8"/>
+      </g>
+     </g>
+     <g id="text_7">
+      <text style="font-size: 9px; font-family: 'Helvetica'; text-anchor: end; fill: #444444" x="32.334531" y="51.375264" transform="rotate(-0 32.334531 51.375264)">20</text>
+     </g>
+    </g>
+    <g id="ytick_4">
+     <g id="line2d_8">
+      <g>
+       <use xlink:href="#m69f0d567dd" x="39.334531" y="16.100044" style="fill: #444444; stroke: #444444; stroke-width: 0.8"/>
+      </g>
+     </g>
+     <g id="text_8">
+      <text style="font-size: 9px; font-family: 'Helvetica'; text-anchor: end; fill: #444444" x="32.334531" y="19.475044" transform="rotate(-0 32.334531 19.475044)">30</text>
+     </g>
+    </g>
+    <g id="text_9">
+     <text style="font-size: 9px; font-family: 'Helvetica'; text-anchor: middle; fill: #333333" x="16.47" y="60.760352" transform="rotate(-90 16.47 60.760352)">прогони агентів</text>
+    </g>
+   </g>
+   <g id="patch_15">
+    <path d="M 39.334531 111.800703 
+L 39.334531 9.72 
+" style="fill: none; stroke: #999999; stroke-width: 0.8; stroke-linejoin: miter; stroke-linecap: square"/>
+   </g>
+   <g id="patch_16">
+    <path d="M 39.334531 111.800703 
+L 235.08 111.800703 
+" style="fill: none; stroke: #999999; stroke-width: 0.8; stroke-linejoin: miter; stroke-linecap: square"/>
+   </g>
+   <g id="legend_1">
+    <g id="patch_17">
+     <path d="M 139.5825 21.27 
+L 153.5825 21.27 
+L 153.5825 16.37 
+L 139.5825 16.37 
+z
+" style="fill: #3b8f5a"/>
+    </g>
+    <g id="text_10">
+     <text style="font-size: 7px; font-family: 'Helvetica'; text-anchor: start" x="159.1825" y="21.27" transform="rotate(-0 159.1825 21.27)">здано</text>
+    </g>
+    <g id="patch_18">
+     <path d="M 139.5825 31.209453 
+L 153.5825 31.209453 
+L 153.5825 26.309453 
+L 139.5825 26.309453 
+z
+" style="fill: #9aa3ad"/>
+    </g>
+    <g id="text_11">
+     <text style="font-size: 7px; font-family: 'Helvetica'; text-anchor: start" x="159.1825" y="31.209453" transform="rotate(-0 159.1825 31.209453)">проміжні / відкладені</text>
+    </g>
+    <g id="patch_19">
+     <path d="M 139.5825 41.402109 
+L 153.5825 41.402109 
+L 153.5825 36.502109 
+L 139.5825 36.502109 
+z
+" style="fill: #c0504d"/>
+    </g>
+    <g id="text_12">
+     <text style="font-size: 7px; font-family: 'Helvetica'; text-anchor: start" x="159.1825" y="41.402109" transform="rotate(-0 159.1825 41.402109)">збої</text>
+    </g>
+   </g>
+  </g>
+ </g>
+ <defs>
+  <clipPath id="p920e43593e">
+   <rect x="39.334531" y="9.72" width="195.745469" height="102.080703"/>
+  </clipPath>
+ </defs>
+</svg>
+<div class="cap">Прогони агентів по днях (17.10 — до 12:00)</div></div>
+</div>
+
+<h3>1.3 Знання</h3>
+<p>19 записів бібліотеки (відео з транскриптами й кадрами); 15 тематичних нотаток бази знань; книга з 28 сетапів зі статусом перевірки; <b>курс DoubleTop переглянуто повністю</b> (53 відео, усі слайди), у ньому знайдено й виправлено помилки. Трекер закликів: денний і годинний; разом розібрано 150+ закликів трьох трейдерів.</p>
+
+<h3>1.4 Результати перевірок</h3>
+<table class="compact verdicts">
+  <tr><th style="width:24%">Група</th><th>Перевірки</th></tr>
+  <tr class="okrow"><td><b>Кандидати</b> (позитивний бектест, без форварду)</td><td>
+    <b>Funding carry на альтах</b>: +6.5 % на номінал за 2 роки, ≈ 3–5 % на капітал, стабільно в обох роках; ризик — 21 % угод зі злетом перпа ≥ 100 %.<br>
+    <b>Carry перп-перп Binance↔Bybit</b>: +90 % на номінал за 2 роки, але лише на хайпових лістингах, медіанна угода ≈ 0, ризики бірж не змодельовані.<br>
+    <b>VRP BTC</b>: продаж волатильності з хеджем ≈ +2 % від спота на місяць на DVOL, але на реальних марках Deribit не значущий — потрібна перевірка на марках.</td></tr>
+  <tr class="badrow"><td><b>✗ відхилено</b> (15 карток + SFP)</td><td>premium put-skew; flush ліквідацій; спред funding HL↔Binance; альтовий downside-beta кошик; денний residual reversal; продовження реакції на макро; revenue-колапс холдерів; yield/net supply; шорт перед розлоком; sell-the-news; VRP тижневих стреддлів; сектор-лідер; тижнева МА сильних альтів; <b>Session Stop Hunt</b> — крипта −0.21R, форекс −0.05R; SFP рейнджів</td></tr>
+  <tr class="midrow"><td><b>◯ без вердикту</b> (10)</td><td>dated basis; страддл у день події; знижка вола на вихідних; натовп у funding; дрейф нових лістингів; спайк премії перп/спот; Polymarket: поріг проти моделі вола, драбина «на дотик», negRisk-сканер; ріст вола перед подіями. Здебільшого — замало подій для потужності</td></tr>
+  <tr class="badrow"><td><b>Курс DoubleTop</b> (серія, кроки 1–7)</td><td>EMA після імпульсу ✗ (−0.09R на 4 664 угодах); ранній вихід ✗; FVG/OB ✗; S18, POB, просадки BTC, девіація під рейнджем ◯; базові тези (BOS тілом, EQH/EQL, OTE, «перший тест», конфлюенція) ✗</td></tr>
+  <tr class="badrow"><td><b>Трейдери DoubleTop</b></td><td>Good_Mood, 14 міс.: 75 угод, механічно −0.20R/угоду [−0.54; +0.18], свип і повернення — 15 стопів з 16. gmilnikov: 20 угод, −0.10R, замало для вердикту. f1ntech — збираємо. Ручне ведення обох дає ≈ +0.5R на угоду проти механіки, але й з ним результат ≈ 0</td></tr>
+</table>
+
+<h2>2. Що в черзі</h2>
+<div class="two">
+<div>
+<ol class="tight">
+  <li><b>«Розумні гроші»</b> (персистентність топ-трейдерів HL/Polymarket) — квант зараз.</li>
+  <li><b>H1: девіація в тижневий тренд</b> (улюблений сетап Іллі) — твоя: першою.</li>
+  <li><b>DoubleTop → наше:</b> звірка інструментів, <code>dex_pairs</code>, <code>chain_metrics</code>, історія Coinalyze (ліквідації, OI, funding).</li>
+  <li>Серія курсу, кроки 8–11: рух у макроподію, спот-альти біля тижневої підтримки, SMT-дивергенція, NY Midnight Open.</li>
+  <li>Калібрування Polymarket — правки після рев'ю, потім <code>rejected</code>.</li>
+</ol>
+</div>
+<div>
+<p class="note"><b>BACKLOG поза картками:</b></p>
+<ul class="tight">
+  <li>VRP на реальних марках Deribit;</li>
+  <li>живий запуск паперового carry (потрібен твій запуск);</li>
+  <li>Фаза 4 (виконання ордерів) — лише після форварду;</li>
+  <li>дрібні хвости 1.10, 2.10, 3.2;</li>
+  <li>оновити ROADMAP: Фази 2–3 там досі позначені як «заплановано», хоча здебільшого зроблені.</li>
+</ul>
+</div>
+</div>
+
+<h2>3. Прогноз</h2>
+<div class="fig wide"><svg xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 504 151.2" xmlns="http://www.w3.org/2000/svg" version="1.1">
+ <metadata>
+  <rdf:RDF xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+   <cc:Work>
+    <dc:type rdf:resource="http://purl.org/dc/dcmitype/StillImage"/>
+    <dc:date>2026-10-17T12:06:13.624536</dc:date>
+    <dc:format>image/svg+xml</dc:format>
+    <dc:creator>
+     <cc:Agent>
+      <dc:title>Matplotlib v3.11.2, https://matplotlib.org/</dc:title>
+     </cc:Agent>
+    </dc:creator>
+   </cc:Work>
+  </rdf:RDF>
+ </metadata>
+ <defs>
+  <style type="text/css">*{stroke-linejoin: round; stroke-linecap: butt}</style>
+ </defs>
+ <g id="figure_1">
+  <g id="patch_1">
+   <path d="M 0 151.2 
+L 504 151.2 
+L 504 0 
+L 0 0 
+z
+" style="fill: #ffffff"/>
+  </g>
+  <g id="axes_1">
+   <g id="patch_2">
+    <path d="M 44.013828 126.200703 
+L 466.681739 126.200703 
+L 466.681739 13.095 
+L 44.013828 13.095 
+z
+" style="fill: #ffffff"/>
+   </g>
+   <g id="patch_3">
+    <path d="M 44.013828 18.750285 
+L 466.681739 18.750285 
+L 466.681739 13.095 
+L 44.013828 13.095 
+z
+" clip-path="url(#pf487057f7a)" style="fill: #c0504d; opacity: 0.12; stroke: #c0504d; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_4">
+    <path d="M 336.302415 126.200703 
+L 454.430495 126.200703 
+L 454.430495 13.095 
+L 336.302415 13.095 
+z
+" clip-path="url(#pf487057f7a)" style="fill: #9aa3ad; opacity: 0.15; stroke: #9aa3ad; stroke-linejoin: miter"/>
+   </g>
+   <g id="matplotlib.axis_1">
+    <g id="xtick_1">
+     <g id="line2d_1">
+      <defs>
+       <path id="m0c74524671" d="M 0 0 
+L 0 3.5 
+" style="stroke: #444444; stroke-width: 0.8"/>
+      </defs>
+      <g>
+       <use xlink:href="#m0c74524671" x="99.144425" y="126.200703" style="fill: #444444; stroke: #444444; stroke-width: 0.8"/>
+      </g>
+     </g>
+     <g id="text_1">
+      <text style="font-size: 9px; font-family: 'Helvetica'; text-anchor: middle; fill: #444444" x="99.144425" y="139.950703" transform="rotate(-0 99.144425 139.950703)">16.10</text>
+     </g>
+    </g>
+    <g id="xtick_2">
+     <g id="line2d_2">
+      <g>
+       <use xlink:href="#m0c74524671" x="172.651888" y="126.200703" style="fill: #444444; stroke: #444444; stroke-width: 0.8"/>
+      </g>
+     </g>
+     <g id="text_2">
+      <text style="font-size: 9px; font-family: 'Helvetica'; text-anchor: middle; fill: #444444" x="172.651888" y="139.950703" transform="rotate(-0 172.651888 139.950703)">17.10</text>
+     </g>
+    </g>
+    <g id="xtick_3">
+     <g id="line2d_3">
+      <g>
+       <use xlink:href="#m0c74524671" x="246.159351" y="126.200703" style="fill: #444444; stroke: #444444; stroke-width: 0.8"/>
+      </g>
+     </g>
+     <g id="text_3">
+      <text style="font-size: 9px; font-family: 'Helvetica'; text-anchor: middle; fill: #444444" x="246.159351" y="139.950703" transform="rotate(-0 246.159351 139.950703)">18.10</text>
+     </g>
+    </g>
+    <g id="xtick_4">
+     <g id="line2d_4">
+      <g>
+       <use xlink:href="#m0c74524671" x="319.666814" y="126.200703" style="fill: #444444; stroke: #444444; stroke-width: 0.8"/>
+      </g>
+     </g>
+     <g id="text_4">
+      <text style="font-size: 9px; font-family: 'Helvetica'; text-anchor: middle; fill: #444444" x="319.666814" y="139.950703" transform="rotate(-0 319.666814 139.950703)">19.10</text>
+     </g>
+    </g>
+    <g id="xtick_5">
+     <g id="line2d_5">
+      <g>
+       <use xlink:href="#m0c74524671" x="393.174276" y="126.200703" style="fill: #444444; stroke: #444444; stroke-width: 0.8"/>
+      </g>
+     </g>
+     <g id="text_5">
+      <text style="font-size: 9px; font-family: 'Helvetica'; text-anchor: middle; fill: #444444" x="393.174276" y="139.950703" transform="rotate(-0 393.174276 139.950703)">20.10</text>
+     </g>
+    </g>
+    <g id="xtick_6">
+     <g id="line2d_6">
+      <g>
+       <use xlink:href="#m0c74524671" x="466.681739" y="126.200703" style="fill: #444444; stroke: #444444; stroke-width: 0.8"/>
+      </g>
+     </g>
+     <g id="text_6">
+      <text style="font-size: 9px; font-family: 'Helvetica'; text-anchor: middle; fill: #444444" x="466.681739" y="139.950703" transform="rotate(-0 466.681739 139.950703)">21.10</text>
+     </g>
+    </g>
+   </g>
+   <g id="matplotlib.axis_2">
+    <g id="ytick_1">
+     <g id="line2d_7">
+      <defs>
+       <path id="m6f70c9819e" d="M 0 0 
+L -3.5 0 
+" style="stroke: #444444; stroke-width: 0.8"/>
+      </defs>
+      <g>
+       <use xlink:href="#m6f70c9819e" x="44.013828" y="126.200703" style="fill: #444444; stroke: #444444; stroke-width: 0.8"/>
+      </g>
+     </g>
+     <g id="text_7">
+      <text style="font-size: 9px; font-family: 'Helvetica'; text-anchor: end; fill: #444444" x="37.013828" y="129.575703" transform="rotate(-0 37.013828 129.575703)">0</text>
+     </g>
+    </g>
+    <g id="ytick_2">
+     <g id="line2d_8">
+      <g>
+       <use xlink:href="#m6f70c9819e" x="44.013828" y="103.579563" style="fill: #444444; stroke: #444444; stroke-width: 0.8"/>
+      </g>
+     </g>
+     <g id="text_8">
+      <text style="font-size: 9px; font-family: 'Helvetica'; text-anchor: end; fill: #444444" x="37.013828" y="106.954563" transform="rotate(-0 37.013828 106.954563)">20</text>
+     </g>
+    </g>
+    <g id="ytick_3">
+     <g id="line2d_9">
+      <g>
+       <use xlink:href="#m6f70c9819e" x="44.013828" y="80.958422" style="fill: #444444; stroke: #444444; stroke-width: 0.8"/>
+      </g>
+     </g>
+     <g id="text_9">
+      <text style="font-size: 9px; font-family: 'Helvetica'; text-anchor: end; fill: #444444" x="37.013828" y="84.333422" transform="rotate(-0 37.013828 84.333422)">40</text>
+     </g>
+    </g>
+    <g id="ytick_4">
+     <g id="line2d_10">
+      <g>
+       <use xlink:href="#m6f70c9819e" x="44.013828" y="58.337281" style="fill: #444444; stroke: #444444; stroke-width: 0.8"/>
+      </g>
+     </g>
+     <g id="text_10">
+      <text style="font-size: 9px; font-family: 'Helvetica'; text-anchor: end; fill: #444444" x="37.013828" y="61.712281" transform="rotate(-0 37.013828 61.712281)">60</text>
+     </g>
+    </g>
+    <g id="ytick_5">
+     <g id="line2d_11">
+      <g>
+       <use xlink:href="#m6f70c9819e" x="44.013828" y="35.716141" style="fill: #444444; stroke: #444444; stroke-width: 0.8"/>
+      </g>
+     </g>
+     <g id="text_11">
+      <text style="font-size: 9px; font-family: 'Helvetica'; text-anchor: end; fill: #444444" x="37.013828" y="39.091141" transform="rotate(-0 37.013828 39.091141)">80</text>
+     </g>
+    </g>
+    <g id="ytick_6">
+     <g id="line2d_12">
+      <g>
+       <use xlink:href="#m6f70c9819e" x="44.013828" y="13.095" style="fill: #444444; stroke: #444444; stroke-width: 0.8"/>
+      </g>
+     </g>
+     <g id="text_12">
+      <text style="font-size: 9px; font-family: 'Helvetica'; text-anchor: end; fill: #444444" x="37.013828" y="16.47" transform="rotate(-0 37.013828 16.47)">100</text>
+     </g>
+    </g>
+    <g id="text_13">
+     <text style="font-size: 9px; font-family: 'Helvetica'; text-anchor: middle; fill: #333333" x="16.47" y="69.647852" transform="rotate(-90 16.47 69.647852)">тижневий ліміт, %</text>
+    </g>
+   </g>
+   <g id="line2d_13">
+    <path d="M 67.189098 95.662163 
+L 83.728277 87.744764 
+L 114.968948 84.351593 
+L 132.27383 82.089479 
+L 149.374525 74.17208 
+L 168.721281 68.516795 
+L 182.810211 66.25468 
+L 198.736828 58.337281 
+L 209.660854 54.94411 
+" clip-path="url(#pf487057f7a)" style="fill: none; stroke: #2f6db5; stroke-width: 1.5; stroke-linecap: square"/>
+    <defs>
+     <path id="m8f8b5a2458" d="M 0 1.5 
+C 0.397805 1.5 0.77937 1.341951 1.06066 1.06066 
+C 1.341951 0.77937 1.5 0.397805 1.5 0 
+C 1.5 -0.397805 1.341951 -0.77937 1.06066 -1.06066 
+C 0.77937 -1.341951 0.397805 -1.5 0 -1.5 
+C -0.397805 -1.5 -0.77937 -1.341951 -1.06066 -1.06066 
+C -1.341951 -0.77937 -1.5 -0.397805 -1.5 0 
+C -1.5 0.397805 -1.341951 0.77937 -1.06066 1.06066 
+C -0.77937 1.341951 -0.397805 1.5 0 1.5 
+z
+" style="stroke: #2f6db5"/>
+    </defs>
+    <g clip-path="url(#pf487057f7a)">
+     <use xlink:href="#m8f8b5a2458" x="67.189098" y="95.662163" style="fill: #2f6db5; stroke: #2f6db5"/>
+     <use xlink:href="#m8f8b5a2458" x="83.728277" y="87.744764" style="fill: #2f6db5; stroke: #2f6db5"/>
+     <use xlink:href="#m8f8b5a2458" x="114.968948" y="84.351593" style="fill: #2f6db5; stroke: #2f6db5"/>
+     <use xlink:href="#m8f8b5a2458" x="132.27383" y="82.089479" style="fill: #2f6db5; stroke: #2f6db5"/>
+     <use xlink:href="#m8f8b5a2458" x="149.374525" y="74.17208" style="fill: #2f6db5; stroke: #2f6db5"/>
+     <use xlink:href="#m8f8b5a2458" x="168.721281" y="68.516795" style="fill: #2f6db5; stroke: #2f6db5"/>
+     <use xlink:href="#m8f8b5a2458" x="182.810211" y="66.25468" style="fill: #2f6db5; stroke: #2f6db5"/>
+     <use xlink:href="#m8f8b5a2458" x="198.736828" y="58.337281" style="fill: #2f6db5; stroke: #2f6db5"/>
+     <use xlink:href="#m8f8b5a2458" x="209.660854" y="54.94411" style="fill: #2f6db5; stroke: #2f6db5"/>
+    </g>
+   </g>
+   <g id="line2d_14">
+    <path d="M 209.660854 54.94411 
+L 336.302415 18.750285 
+" clip-path="url(#pf487057f7a)" style="fill: none; stroke-dasharray: 5.55,2.4; stroke-dashoffset: 0; stroke: #d9902a; stroke-width: 1.5"/>
+   </g>
+   <g id="line2d_15">
+    <path d="M 454.430495 126.200703 
+L 454.430495 13.095 
+" clip-path="url(#pf487057f7a)" style="fill: none; stroke: #3b8f5a; stroke-linecap: square"/>
+   </g>
+   <g id="patch_5">
+    <path d="M 44.013828 126.200703 
+L 44.013828 13.095 
+" style="fill: none; stroke: #999999; stroke-width: 0.8; stroke-linejoin: miter; stroke-linecap: square"/>
+   </g>
+   <g id="patch_6">
+    <path d="M 44.013828 126.200703 
+L 466.681739 126.200703 
+" style="fill: none; stroke: #999999; stroke-width: 0.8; stroke-linejoin: miter; stroke-linecap: square"/>
+   </g>
+   <g id="text_14">
+    <text style="font-size: 7px; font-family: 'Helvetica'; text-anchor: start; fill: #c0504d" x="67.189098" y="17.0537" transform="rotate(-0 67.189098 17.0537)">пауза агентів ≥ 95 %</text>
+   </g>
+   <g id="text_15">
+    <text style="font-size: 7px; font-family: 'Helvetica'; fill: #3b8f5a" transform="translate(454.430495 110.504298)"> скидання</text>
+    <text style="font-size: 7px; font-family: 'Helvetica'; fill: #3b8f5a" transform="translate(454.430495 117.152247)"> 20.10 20:00</text>
+   </g>
+   <g id="text_16">
+    <text style="font-size: 7px; font-family: 'Helvetica'; text-anchor: start; fill: #d9902a" x="336.302415" y="47.026711" transform="rotate(-0 336.302415 47.026711)"> 19.10 05:25</text>
+   </g>
+   <g id="legend_1">
+    <g id="line2d_16">
+     <path d="M 50.313828 22.195 
+L 57.313828 22.195 
+L 64.313828 22.195 
+" style="fill: none; stroke: #2f6db5; stroke-width: 1.5; stroke-linecap: square"/>
+     <g>
+      <use xlink:href="#m8f8b5a2458" x="57.313828" y="22.195" style="fill: #2f6db5; stroke: #2f6db5"/>
+     </g>
+    </g>
+    <g id="text_17">
+     <text style="font-size: 7px; font-family: 'Helvetica'; text-anchor: start" x="69.913828" y="24.645" transform="rotate(-0 69.913828 24.645)">факт</text>
+    </g>
+    <g id="line2d_17">
+     <path d="M 50.313828 32.387656 
+L 57.313828 32.387656 
+L 64.313828 32.387656 
+" style="fill: none; stroke-dasharray: 5.55,2.4; stroke-dashoffset: 0; stroke: #d9902a; stroke-width: 1.5"/>
+    </g>
+    <g id="text_18">
+     <text style="font-size: 7px; font-family: 'Helvetica'; text-anchor: start" x="69.913828" y="34.837656" transform="rotate(-0 69.913828 34.837656)">прогноз (≈ 18.6 п.п./добу)</text>
+    </g>
+   </g>
+  </g>
+ </g>
+ <defs>
+  <clipPath id="pf487057f7a">
+   <rect x="44.013828" y="13.095" width="422.667911" height="113.105703"/>
+  </clipPath>
+ </defs>
+</svg>
+<div class="cap">Тижневий ліміт Claude: факт і прогноз за поточного темпу. Сюди входять і твої інтерактивні сесії</div></div>
+<ul class="tight">
+  <li><b>Ліміт Claude.</b> Використано 63 % тижня, темп ≈ 18.6 п.п./добу. Поріг паузи агентів (95 %) — <b>≈ 19.10, 05:30</b> (на графіку — точка перетину); далі агенти стоять ≈ 38 год до скидання 20.10 о 20:00. Тиждень дає приблизно 4.5–5 днів роботи агентів.</li>
+  <li><b>Черга.</b> Без обмежень агенти здають 10–20 кроків на добу. Пункти 1–3 черги — ≈ 1–1.5 доби роботи, тобто до паузи встигнуть. Серія курсу — після скидання.</li>
+  <li><b>Дані.</b> Позиції трейдерів після схеми 12 — ≈ 20 тис. рядків на добу (було ≈ 90 тис.), знімки лідербордів — ≈ 22 тис. на добу. База 101 МБ → ≈ 1–1.5 ГБ за рік. Диск зайнятий на 12 %. Найбільший споживач — кеш досліджень агентів (19 ГБ), він росте з кожною завантаженою історією.</li>
+  <li><b>Результати</b> (моя оцінка, не гарантія):
+    <ul class="tight">
+      <li>H1 і кроки 8–11 курсу — по ~5–10 % на підтвердження: пріор технічного аналізу на крипті слабкий, механічні родичі вже ✗;</li>
+      <li>хоча б один структурний кандидат на форвард-папері, що збігається з бектестом до 30.11, — ≈ 30–40 %, якщо запустити цього тижня, і ≈ 10 %, якщо ні;</li>
+      <li>Polymarket — найближче до твоєї експертизи, але ринки тонкі й потужність мала.</li>
+    </ul>
+  </li>
+</ul>
+
+<h2>4. Навантаження</h2>
+<table class="compact">
+  <tr><th>Ресурс</th><th>Зараз</th><th>Пік / межа</th><th>Оцінка</th></tr>
+  <tr><td>RAM сервера</td><td>≈ 1 ГБ з 12</td><td>агенти 3.4 ГБ (ліміт 7), MCP 0.55, міст 0.87</td><td class="g">запас великий; OOM з 16.10 не було</td></tr>
+  <tr><td>CPU</td><td>load 0.0–0.1</td><td>сплески під час завантажень</td><td class="g">не вузьке місце</td></tr>
+  <tr><td>Диск</td><td>22 / 193 ГБ (12 %)</td><td>кеш агентів 19 ГБ</td><td class="g">на рік вистачить</td></tr>
+  <tr><td>Claude, 5 год</td><td>66 %</td><td>кроки кванта беруть +8…+23 %</td><td class="y">тримається, вікно оновлюється</td></tr>
+  <tr><td>Claude, тиждень</td><td>63 %</td><td>скидання 20.10 20:00</td><td class="r">пауза ≈ 1.5 доби на тиждень</td></tr>
+  <tr><td>Відмови агентам у командах</td><td>143 за добу</td><td>на 10 кроків — ≈ 14 на крок</td><td class="y">коштують токенів; типи відомі</td></tr>
+  <tr><td>Збої прогонів</td><td>0 за 17.10</td><td>13 у день запуску</td><td class="g">стабільно після виправлень</td></tr>
+</table>
+
+<div class="two">
+<div>
+<h2>5. Критика</h2>
+<ol class="tight">
+  <li><b>Ресурс пішов у слабкі гіпотези.</b> За 16–17.10 більша частина роботи агентів — курс DoubleTop і заклики блогерів: 0 позитивних. Це твоє рішення, і питання тепер закрите цифрами. Але продовжувати в тому ж обсязі — марнувати тижневий ліміт.</li>
+  <li><b>Позитив не доведено до форварду.</b> Carry і VRP лежать з 12–13.10. Інструменти паперового carry є, але вживу не запускались, щоденного обліку немає — тобто немає шляху до чекпоінту 30.11.</li>
+  <li><b>Документи відстають від коду.</b> ROADMAP застарів, PARITY оновлено лише сьогодні, HANDOFF роздутий — новій сесії важко швидко зорієнтуватись.</li>
+  <li><b>Складність лаунчера росте:</b> паркінг, автозлив, лікар, відновлення — і кожна нова функція цього тижня дала баг. 16.10 цикл тихо простояв ~3 год.</li>
+  <li><b>Скаут пропонує без оцінки потужності й EV:</b> 5 з 30 карток відхилено ще на тріажі через брак потужності; більшість із 10 «без вердикту» — з тієї ж причини.</li>
+  <li><b>Один план Claude на все:</b> твої сесії й агенти ділять ліміт, звідси регулярна пауза.</li>
+</ol>
+</div>
+<div>
+<h2>6. Пропозиції</h2>
+<ol class="tight">
+  <li><b>Форвард-папір структурних кандидатів</b> (≈ 1 тиждень): carry альтів і перп-перп через наявні <code>carry_paper_*</code>, щоденно колектором, звіт у Telegram щонеділі, критерій до 30.11.</li>
+  <li><b>VRP на реальних марках Deribit</b>; якщо пройде — паперовий продаж стреддлу з хеджем.</li>
+  <li><b>Polymarket — основний дослідницький напрям:</b> калібрування, «розумні гроші», ринки «на дотик» проти опціонних ймовірностей (інструменти вже є).</li>
+  <li><b>Історія Coinalyze</b> → повторити каскади ліквідацій і натовп у funding на нових даних: раніше бракувало саме історії.</li>
+  <li><b>Після H1 і кроків 8–11 технічний аналіз зупинити.</b> Нові відео — лише в базу знань; тест — лише якщо є механізм.</li>
+  <li><b>Дошка результатів і пріоритет за EV × імовірністю</b> (обидві ідеї відкладені 14.10, тепер окупляться).</li>
+  <li><b>Ліміт:</b> важкі кроки кванта — на початок тижневого вікна; понад 80 % — лише твої картки.</li>
+  <li><b>Документи:</b> оновити ROADMAP, скоротити HANDOFF до сторінки.</li>
+  <li><b>Фаза 4</b> (ордери) — не раніше, ніж стратегія 4+ тижні на папері збігається з бектестом.</li>
+</ol>
+</div>
+</div>
+
+<div class="two end"><section class="decide">
+  <h2>Що потрібно від тебе</h2>
+  <ol class="tight">
+    <li>Чи перемикаємо агентів після H1 на форвард-папір carry/VRP і Polymarket (п. 1–3 пропозицій)?</li>
+    <li>Чи зупиняємо технічний аналіз після кроків 8–11 серії курсу?</li>
+    <li>Один раз запустити паперовий carry вживу (дам одну команду), щоб перевірити його на біржах.</li>
+  </ol>
+</section>
+<div class="fig"><svg xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 237.6 126" xmlns="http://www.w3.org/2000/svg" version="1.1">
+ <metadata>
+  <rdf:RDF xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+   <cc:Work>
+    <dc:type rdf:resource="http://purl.org/dc/dcmitype/StillImage"/>
+    <dc:date>2026-10-17T12:06:13.586041</dc:date>
+    <dc:format>image/svg+xml</dc:format>
+    <dc:creator>
+     <cc:Agent>
+      <dc:title>Matplotlib v3.11.2, https://matplotlib.org/</dc:title>
+     </cc:Agent>
+    </dc:creator>
+   </cc:Work>
+  </rdf:RDF>
+ </metadata>
+ <defs>
+  <style type="text/css">*{stroke-linejoin: round; stroke-linecap: butt}</style>
+ </defs>
+ <g id="figure_1">
+  <g id="patch_1">
+   <path d="M 0 126 
+L 237.6 126 
+L 237.6 0 
+L 0 0 
+z
+" style="fill: #ffffff"/>
+  </g>
+  <g id="axes_1">
+   <g id="patch_2">
+    <path d="M 44.013828 102.380586 
+L 227.88 102.380586 
+L 227.88 13.095 
+L 44.013828 13.095 
+z
+" style="fill: #ffffff"/>
+   </g>
+   <g id="patch_3">
+    <path d="M 52.371381 102.380586 
+L 69.51508 102.380586 
+L 69.51508 82.737757 
+L 52.371381 82.737757 
+z
+" clip-path="url(#p17eae7b1b4)" style="fill: #2f6db5"/>
+   </g>
+   <g id="patch_4">
+    <path d="M 73.801005 102.380586 
+L 90.944704 102.380586 
+L 90.944704 90.77346 
+L 73.801005 90.77346 
+z
+" clip-path="url(#p17eae7b1b4)" style="fill: #2f6db5"/>
+   </g>
+   <g id="patch_5">
+    <path d="M 95.230629 102.380586 
+L 112.374328 102.380586 
+L 112.374328 85.416325 
+L 95.230629 85.416325 
+z
+" clip-path="url(#p17eae7b1b4)" style="fill: #2f6db5"/>
+   </g>
+   <g id="patch_6">
+    <path d="M 116.660253 102.380586 
+L 133.803952 102.380586 
+L 133.803952 94.344883 
+L 116.660253 94.344883 
+z
+" clip-path="url(#p17eae7b1b4)" style="fill: #2f6db5"/>
+   </g>
+   <g id="patch_7">
+    <path d="M 138.089876 102.380586 
+L 155.233575 102.380586 
+L 155.233575 42.559243 
+L 138.089876 42.559243 
+z
+" clip-path="url(#p17eae7b1b4)" style="fill: #2f6db5"/>
+   </g>
+   <g id="patch_8">
+    <path d="M 159.5195 102.380586 
+L 176.663199 102.380586 
+L 176.663199 34.523541 
+L 159.5195 34.523541 
+z
+" clip-path="url(#p17eae7b1b4)" style="fill: #2f6db5"/>
+   </g>
+   <g id="patch_9">
+    <path d="M 180.949124 102.380586 
+L 198.092823 102.380586 
+L 198.092823 22.023559 
+L 180.949124 22.023559 
+z
+" clip-path="url(#p17eae7b1b4)" style="fill: #2f6db5"/>
+   </g>
+   <g id="patch_10">
+    <path d="M 202.378748 102.380586 
+L 219.522447 102.380586 
+L 219.522447 72.916343 
+L 202.378748 72.916343 
+z
+" clip-path="url(#p17eae7b1b4)" style="fill: #9aa3ad"/>
+   </g>
+   <g id="matplotlib.axis_1">
+    <g id="xtick_1">
+     <g id="line2d_1">
+      <defs>
+       <path id="m1c2bf00cc7" d="M 0 0 
+L 0 3.5 
+" style="stroke: #444444; stroke-width: 0.8"/>
+      </defs>
+      <g>
+       <use xlink:href="#m1c2bf00cc7" x="60.943231" y="102.380586" style="fill: #444444; stroke: #444444; stroke-width: 0.8"/>
+      </g>
+     </g>
+     <g id="text_1">
+      <text style="font-size: 7.5px; font-family: 'Helvetica'; text-anchor: middle; fill: #444444" x="60.943231" y="115.005586" transform="rotate(-0 60.943231 115.005586)">10.10</text>
+     </g>
+    </g>
+    <g id="xtick_2">
+     <g id="line2d_2">
+      <g>
+       <use xlink:href="#m1c2bf00cc7" x="82.372855" y="102.380586" style="fill: #444444; stroke: #444444; stroke-width: 0.8"/>
+      </g>
+     </g>
+     <g id="text_2">
+      <text style="font-size: 7.5px; font-family: 'Helvetica'; text-anchor: middle; fill: #444444" x="82.372855" y="115.005586" transform="rotate(-0 82.372855 115.005586)">11.10</text>
+     </g>
+    </g>
+    <g id="xtick_3">
+     <g id="line2d_3">
+      <g>
+       <use xlink:href="#m1c2bf00cc7" x="103.802478" y="102.380586" style="fill: #444444; stroke: #444444; stroke-width: 0.8"/>
+      </g>
+     </g>
+     <g id="text_3">
+      <text style="font-size: 7.5px; font-family: 'Helvetica'; text-anchor: middle; fill: #444444" x="103.802478" y="115.005586" transform="rotate(-0 103.802478 115.005586)">12.10</text>
+     </g>
+    </g>
+    <g id="xtick_4">
+     <g id="line2d_4">
+      <g>
+       <use xlink:href="#m1c2bf00cc7" x="125.232102" y="102.380586" style="fill: #444444; stroke: #444444; stroke-width: 0.8"/>
+      </g>
+     </g>
+     <g id="text_4">
+      <text style="font-size: 7.5px; font-family: 'Helvetica'; text-anchor: middle; fill: #444444" x="125.232102" y="115.005586" transform="rotate(-0 125.232102 115.005586)">13.10</text>
+     </g>
+    </g>
+    <g id="xtick_5">
+     <g id="line2d_5">
+      <g>
+       <use xlink:href="#m1c2bf00cc7" x="146.661726" y="102.380586" style="fill: #444444; stroke: #444444; stroke-width: 0.8"/>
+      </g>
+     </g>
+     <g id="text_5">
+      <text style="font-size: 7.5px; font-family: 'Helvetica'; text-anchor: middle; fill: #444444" x="146.661726" y="115.005586" transform="rotate(-0 146.661726 115.005586)">14.10</text>
+     </g>
+    </g>
+    <g id="xtick_6">
+     <g id="line2d_6">
+      <g>
+       <use xlink:href="#m1c2bf00cc7" x="168.09135" y="102.380586" style="fill: #444444; stroke: #444444; stroke-width: 0.8"/>
+      </g>
+     </g>
+     <g id="text_6">
+      <text style="font-size: 7.5px; font-family: 'Helvetica'; text-anchor: middle; fill: #444444" x="168.09135" y="115.005586" transform="rotate(-0 168.09135 115.005586)">15.10</text>
+     </g>
+    </g>
+    <g id="xtick_7">
+     <g id="line2d_7">
+      <g>
+       <use xlink:href="#m1c2bf00cc7" x="189.520973" y="102.380586" style="fill: #444444; stroke: #444444; stroke-width: 0.8"/>
+      </g>
+     </g>
+     <g id="text_7">
+      <text style="font-size: 7.5px; font-family: 'Helvetica'; text-anchor: middle; fill: #444444" x="189.520973" y="115.005586" transform="rotate(-0 189.520973 115.005586)">16.10</text>
+     </g>
+    </g>
+    <g id="xtick_8">
+     <g id="line2d_8">
+      <g>
+       <use xlink:href="#m1c2bf00cc7" x="210.950597" y="102.380586" style="fill: #444444; stroke: #444444; stroke-width: 0.8"/>
+      </g>
+     </g>
+     <g id="text_8">
+      <text style="font-size: 7.5px; font-family: 'Helvetica'; text-anchor: middle; fill: #444444" x="210.950597" y="115.005586" transform="rotate(-0 210.950597 115.005586)">17.10*</text>
+     </g>
+    </g>
+   </g>
+   <g id="matplotlib.axis_2">
+    <g id="ytick_1">
+     <g id="line2d_9">
+      <defs>
+       <path id="m3a34c32849" d="M 0 0 
+L -3.5 0 
+" style="stroke: #444444; stroke-width: 0.8"/>
+      </defs>
+      <g>
+       <use xlink:href="#m3a34c32849" x="44.013828" y="102.380586" style="fill: #444444; stroke: #444444; stroke-width: 0.8"/>
+      </g>
+     </g>
+     <g id="text_9">
+      <text style="font-size: 9px; font-family: 'Helvetica'; text-anchor: end; fill: #444444" x="37.013828" y="105.755586" transform="rotate(-0 37.013828 105.755586)">0</text>
+     </g>
+    </g>
+    <g id="ytick_2">
+     <g id="line2d_10">
+      <g>
+       <use xlink:href="#m3a34c32849" x="44.013828" y="80.059189" style="fill: #444444; stroke: #444444; stroke-width: 0.8"/>
+      </g>
+     </g>
+     <g id="text_10">
+      <text style="font-size: 9px; font-family: 'Helvetica'; text-anchor: end; fill: #444444" x="37.013828" y="83.434189" transform="rotate(-0 37.013828 83.434189)">25</text>
+     </g>
+    </g>
+    <g id="ytick_3">
+     <g id="line2d_11">
+      <g>
+       <use xlink:href="#m3a34c32849" x="44.013828" y="57.737793" style="fill: #444444; stroke: #444444; stroke-width: 0.8"/>
+      </g>
+     </g>
+     <g id="text_11">
+      <text style="font-size: 9px; font-family: 'Helvetica'; text-anchor: end; fill: #444444" x="37.013828" y="61.112793" transform="rotate(-0 37.013828 61.112793)">50</text>
+     </g>
+    </g>
+    <g id="ytick_4">
+     <g id="line2d_12">
+      <g>
+       <use xlink:href="#m3a34c32849" x="44.013828" y="35.416396" style="fill: #444444; stroke: #444444; stroke-width: 0.8"/>
+      </g>
+     </g>
+     <g id="text_12">
+      <text style="font-size: 9px; font-family: 'Helvetica'; text-anchor: end; fill: #444444" x="37.013828" y="38.791396" transform="rotate(-0 37.013828 38.791396)">75</text>
+     </g>
+    </g>
+    <g id="ytick_5">
+     <g id="line2d_13">
+      <g>
+       <use xlink:href="#m3a34c32849" x="44.013828" y="13.095" style="fill: #444444; stroke: #444444; stroke-width: 0.8"/>
+      </g>
+     </g>
+     <g id="text_13">
+      <text style="font-size: 9px; font-family: 'Helvetica'; text-anchor: end; fill: #444444" x="37.013828" y="16.47" transform="rotate(-0 37.013828 16.47)">100</text>
+     </g>
+    </g>
+    <g id="text_14">
+     <text style="font-size: 9px; font-family: 'Helvetica'; text-anchor: middle; fill: #333333" x="16.47" y="57.737793" transform="rotate(-90 16.47 57.737793)">коміти</text>
+    </g>
+   </g>
+   <g id="patch_11">
+    <path d="M 44.013828 102.380586 
+L 44.013828 13.095 
+" style="fill: none; stroke: #999999; stroke-width: 0.8; stroke-linejoin: miter; stroke-linecap: square"/>
+   </g>
+   <g id="patch_12">
+    <path d="M 44.013828 102.380586 
+L 227.88 102.380586 
+" style="fill: none; stroke: #999999; stroke-width: 0.8; stroke-linejoin: miter; stroke-linecap: square"/>
+   </g>
+   <g id="text_15">
+    <text style="font-size: 7.5px; font-family: 'Helvetica'; text-anchor: middle" x="60.943231" y="81.398473" transform="rotate(-0 60.943231 81.398473)">22</text>
+   </g>
+   <g id="text_16">
+    <text style="font-size: 7.5px; font-family: 'Helvetica'; text-anchor: middle" x="82.372855" y="89.434176" transform="rotate(-0 82.372855 89.434176)">13</text>
+   </g>
+   <g id="text_17">
+    <text style="font-size: 7.5px; font-family: 'Helvetica'; text-anchor: middle" x="103.802478" y="84.077041" transform="rotate(-0 103.802478 84.077041)">19</text>
+   </g>
+   <g id="text_18">
+    <text style="font-size: 7.5px; font-family: 'Helvetica'; text-anchor: middle" x="125.232102" y="93.005599" transform="rotate(-0 125.232102 93.005599)">9</text>
+   </g>
+   <g id="text_19">
+    <text style="font-size: 7.5px; font-family: 'Helvetica'; text-anchor: middle" x="146.661726" y="41.21996" transform="rotate(-0 146.661726 41.21996)">67</text>
+   </g>
+   <g id="text_20">
+    <text style="font-size: 7.5px; font-family: 'Helvetica'; text-anchor: middle" x="168.09135" y="33.184257" transform="rotate(-0 168.09135 33.184257)">76</text>
+   </g>
+   <g id="text_21">
+    <text style="font-size: 7.5px; font-family: 'Helvetica'; text-anchor: middle" x="189.520973" y="20.684275" transform="rotate(-0 189.520973 20.684275)">90</text>
+   </g>
+   <g id="text_22">
+    <text style="font-size: 7.5px; font-family: 'Helvetica'; text-anchor: middle" x="210.950597" y="71.577059" transform="rotate(-0 210.950597 71.577059)">33</text>
+   </g>
+  </g>
+ </g>
+ <defs>
+  <clipPath id="p17eae7b1b4">
+   <rect x="44.013828" y="13.095" width="183.866172" height="89.285586"/>
+  </clipPath>
+ </defs>
+</svg>
+<div class="cap">Коміти по днях (17.10 — до 12:00)</div></div></div>
+<p class="foot">Джерела: git (main), tests/test_server.py, docs/ideas, docs/verification, docs/HANDOFF.md, server health/disk/usage checks 17.10. Ймовірності в розділі 3 — експертна оцінка, не результат розрахунку.</p>
+</body></html>

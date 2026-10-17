@@ -25,6 +25,7 @@ import json
 import logging
 import random
 import statistics
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -65,7 +66,8 @@ def candidates(row: dict) -> list[str]:
 
 async def fetch(rt, spec: str, since: int, until: int, markets: dict, tf: str = "1h") -> list[Bar]:
     key = CACHE / (spec.replace("/", "_").replace(":", "_") + f"_{tf}_{since}_{until}.json")
-    if key.exists():
+    complete = until < time.time() * 1000 - H  # a window still running is fetched afresh, not served from the cache
+    if complete and key.exists():
         return [Bar(*r) for r in json.loads(key.read_text())]
     venue, _, sym = spec.partition(":")
     rows: list[list] = []
@@ -92,7 +94,7 @@ async def fetch(rt, spec: str, since: int, until: int, markets: dict, tf: str = 
         if int(r[0]) not in seen and None not in r[1:5]:
             seen.add(int(r[0]))
             bars.append(Bar(int(r[0]), float(r[1]), float(r[2]), float(r[3]), float(r[4])))
-    if bars:
+    if bars and complete:
         key.parent.mkdir(parents=True, exist_ok=True)
         key.write_text(json.dumps([[b.t, b.open, b.high, b.low, b.close] for b in bars]))
     return bars

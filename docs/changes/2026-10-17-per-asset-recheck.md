@@ -1,0 +1,3 @@
+- Перевірка «прив'язки сетапів до монет» (картка IDEA-20261017-per-asset-recheck): розкид між монетами (Q/I², перестановки в межах дат) і стійкість найкращої чверті IS → OOS для S14, FVG, OB, breakers, девіації та Session Stop Hunt.
+- Нова чиста аналітика `analytics/per_asset.py` з тестами; раннер `scripts/verify_per_asset_recheck.py`.
+- Звіт `docs/verification/2026-10-17-per-asset-recheck.md`; у чотирьох звітах-джерелах додано посилання; бази знань доповнено.

@@ -172,7 +172,7 @@
 - Агентам дозволено його інструменти даних, крім `fetch` і code-sandbox CoinGecko. Інші конектори акаунта (Drive, Docs) заборонені. Правила — `docs/AGENTS.md`.
 - Знято зразки (`tests/fixtures/doubletop/`). Їхній `dt_edu` слабкий; цінні — Coinalyze і публічні API.
 - Картка [IDEA-20261017-doubletop-to-ours](ideas/IDEA-20261017-doubletop-to-ours.md): звірка, `dex_pairs`, `chain_metrics`, Coinalyze.
-- Від власника — безкоштовний ключ Coinalyze і `scripts/server/coinalyze-key.sh` у Terminal.
+- Ключ Coinalyze додано 17.10 (у `/etc/tradedesk-mcp.env`, сервіс перезапущено 11:39; `scripts/server/coinalyze-check.sh` → 200, 28 бірж).
 
 ## Наступні кроки
 Див. `docs/BACKLOG.md`. Фази 0-3 (крім 1.10, 2.10, 3.2) закриті. Основні гілки з того, що залишилось:

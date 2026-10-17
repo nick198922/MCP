@@ -1,0 +1,10 @@
+{"_source": "DoubleTop graph_polymarket__get_price_history interval=1d fidelity=6, tokenId=Yes of 'Xi Jinping out before 2027?' (conditionId 0xa467b14d...), taken 2026-10-18; untrusted sample. Response had pointCount=230 despite fidelity=6; only first 4 and last 2 points kept",
+ "pointCount": 230,
+ "history": [
+  {"timestamp": 1792186942, "date": "2026-10-16T21:42:22.000Z", "price": 0.0285},
+  {"timestamp": 1792187296, "date": "2026-10-16T21:48:16.000Z", "price": 0.0285},
+  {"timestamp": 1792187662, "date": "2026-10-16T21:54:22.000Z", "price": 0.0285},
+  {"timestamp": 1792188025, "date": "2026-10-16T22:00:25.000Z", "price": 0.0285},
+  {"timestamp": 1792271902, "date": "2026-10-17T21:18:22.000Z", "price": 0.0275},
+  {"timestamp": 1792272263, "date": "2026-10-17T21:24:23.000Z", "price": 0.0275}
+ ]}

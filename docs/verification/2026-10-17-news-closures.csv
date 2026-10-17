@@ -1,0 +1,34 @@
+token,t0_utc,type,scope,direction_prior,time_source,url,note
+BLUR,2026-10-12 19:59:48,product_sunset,frontend,down,official_tweet,https://x.com/blur_io/status/2109735810857861203,blur.io frontend deprecated on 2026-11-12; protocol and fee switch stay
+BLAST,2026-10-02 14:45:23,shutdown,L2 chain,down,official_tweet,https://x.com/blast/status/2106032805280891073,Blast L2 shutting down; withdrawals until 2026-10-26
+RADAR,2025-11-17 14:42:36,shutdown,company,down,official_tweet,https://x.com/DappRadar/status/1990430373055013066,DappRadar shuts down after seven years
+ROUTE,2026-09-04 23:15:40,shutdown,protocol,down,official_tweet,https://x.com/routerprotocol/status/2096014360573550783,Router Protocol winding down by 2026-09-30; 303M ROUTE treasury burn; CEX listings to close
+LRC,2025-05-28 13:14:29,product_sunset,wallet,down,official_tweet,https://x.com/loopringorg/status/1927715098837070079,Loopring Wallet ceasing operations by end of June 2025
+LRC,2025-07-11 09:02:34,product_sunset,DeFi products,down,official_tweet,https://x.com/loopringorg/status/1943596767385129404,Loopring DeFi products sunset by 2025-07-31
+LRC,2026-06-28 15:23:51,shutdown,DEX and L2,down,official_tweet,https://x.com/loopringorg/status/2071253250725322987,Sunsetting Loopring DEX (X article; author per search result)
+GLMR,2026-07-03 14:09:28,chain_sunset,parachain to Base with pivot,ambiguous,official_tweet,https://x.com/MoonbeamNetwork/status/2073046469741781197,GLMR migrates to Base 1:1; parachain stops 2026-07-31; pivot to an AI agent network
+RDNT,2026-06-01 14:40:58,shutdown,protocol (maintenance state),down,official_tweet,https://x.com/RDNTCapital/status/2061457987441447041,Radiant sunsetting operations; RDNT emissions stop
+DMAIL,2026-04-02 16:59:13,shutdown,company,down,official_tweet,https://x.com/Dmailofficial/status/2039749505902694636,Dmail: after 5 years it's time to say goodbye
+BMEX,2026-07-23 08:01:24,shutdown,exchange,down,official_tweet,https://x.com/BitMEX/status/2080201602456301580,BitMEX exchange shuts down on 2026-09-23
+SWELL,2026-04-28 09:57:00,chain_sunset,L2 chain,down,official_tweet,https://x.com/swellnetworkio/status/2049065334536016382,Sunsetting Swellchain: from L2 to Faro
+BAL,2026-03-23 19:45:31,shutdown,company (Balancer Labs),down,contributor_tweet,https://x.com/Marcus_Balancer/status/2036167477906772187,Balancer's Next Chapter: Balancer Labs shuts down after the Nov 2025 exploit (Wu Blockchain repost 23:18 UTC)
+BAL,2026-09-14 19:29:43,wind_down_distribution,protocol,ambiguous,official_tweet,https://x.com/Balancer/status/2099581376744001556,proposal to wind down Balancer and distribute the treasury to BAL holders (treasury close to market cap)
+BAL,2026-09-29 18:47:00,wind_down_distribution,protocol,ambiguous,official_tweet,https://x.com/Balancer/status/2105006446752731615,wind-down approved (BIP-928); fork proposal rejected
+ALPACA,2025-05-27 05:28:15,shutdown,protocol,down,secondary_upper_bound,https://x.com/coingecko/status/1927235377703550991,CoinGecko: already -30.2 % after the announcement; official post earlier; Binance delisted ALPACA on 2025-05-02
+VRTX,2025-07-08 14:09:06,shutdown,protocol (token sunset),down,official_tweet,https://x.com/vertex_protocol/status/1942586747365548295,Vertex joins Ink; VRTX token sunset with an INK airdrop
+MULTI,2023-07-06 23:27:00,hack,bridge,down,official_tweet,https://x.com/MultichainOrg/status/1677096839731097600,MPC assets moved abnormally; users told to stop using Multichain
+MULTI,2023-07-14 08:22:51,shutdown,bridge,down,official_tweet,https://x.com/MultichainOrg/status/1679768407628185600,team forced to cease operations (CEO detained since May)
+ME,2026-02-26 20:25:53,leak,product sunset,down,leak,https://x.com/cbspears/status/2027117941624389741,Blockspace scoop about the sunset ~21 h before the official post
+ME,2026-02-27 17:48:38,product_sunset,BTC and EVM marketplaces and wallet,down,official_tweet,https://x.com/MagicEden/status/2027440753006301398,refocus on Solana; ME wallet deprecated 04-01; $ME remains central
+SYND,2026-05-21 02:44:59,shutdown,company (Syndicate Labs),down,official_tweet,https://x.com/syndicateio/status/2057291537860706672,Syndicate Labs winding down; SYND governance via a DUNA not immediately affected
+SPELL,2026-09-30 09:22:48,wind_down_distribution,protocol,down,secondary_upper_bound,https://x.com/TheBlockCo/status/2105226847868887115,Abracadabra governance considers an orderly wind-down (~$21M MIM bad debt)
+ANT,2023-11-02 18:35:56,wind_down_distribution,association,up,official_tweet,https://x.com/AragonProject/status/1720147748895535191,treasury redemption ANT to ETH; Aragon Association dissolves
+BB,2026-08-21 12:58:17,chain_sunset,L1 after an exploit,down,official_tweet,https://x.com/bouncebit/status/2090785561800061430,BounceBit L1 sunset after an exploit; BB reissued as BEP-20
+SOPH,2026-06-25 17:07:51,chain_sunset,L2 chain,down,official_tweet,https://x.com/Sophon/status/2070192257295335800,All in on apps: sunsetting the Sophon chain
+FET,2025-10-09 04:05:31,alliance_exit,ASI alliance,down,official_tweet,https://x.com/oceanprotocol/status/1976136922289308064,Ocean Protocol withdraws from the ASI Alliance
+LDO,2023-10-16 19:54:39,product_sunset,Lido on Solana,ambiguous,official_tweet,https://x.com/LidoFinance/status/1714006961602101639,sunsetting of Lido on Solana approved
+LDO,2024-12-16 14:42:47,product_sunset,Lido on Polygon,ambiguous,official_tweet,https://x.com/LidoFinance/status/1868668099345666540,Lido on Polygon sunset process begun
+K,2025-09-07 16:03:39,shutdown,chain,down,official_tweet,https://x.com/KintoXYZ/status/1964721235675537573,Kinto shutting down after the July exploit
+SCR,2025-09-11 09:22:39,governance_negative,DAO,down,official_tweet,https://x.com/Scroll_ZKP/status/1966069871135051857,Scroll DAO: no new proposals until a new governance model
+ZERO,2026-02-17 06:25:37,shutdown,protocol,down,secondary_upper_bound,https://x.com/entrepreneur_cm/status/2023644987200852431,ZeroLend shutting down (founder post earlier; ZERO -33.5 % per reports)
+ZEND,2025-06-25 10:26:20,shutdown,protocol,down,official_tweet,https://x.com/zkLend/status/1937819644942811361,zkLend winding down after the exploit

@@ -530,6 +530,26 @@ async def _collect_trader_positions(rt: "Runtime") -> int:
     return written
 
 
+async def _paper_carry(rt: "Runtime") -> int:
+    """Run the due forward-paper cycle of each carry strategy (no orders: bookkeeping and public market data only)."""
+    from .carry_paper_engine import PARAMS, run_due  # noqa: PLC0415
+    from .carry_paper_feed import LiveFeed  # noqa: PLC0415
+
+    assert rt.store is not None
+    feed = LiveFeed(rt)
+    done = 0
+
+    def clock() -> int:
+        return int(rt.now().timestamp() * 1000)
+
+    for params in PARAMS.values():
+        out = await run_due(rt.store, feed, params, clock=clock)
+        done += out.get("status") == "done"
+        if out.get("status") == "failed":
+            log.warning("paper carry %s cycle %s failed: %s", params.strategy, out.get("cycle_ts"), out.get("error"))
+    return done
+
+
 async def _retention_sweep(rt: "Runtime") -> int:
     """Trim stored history to the retention windows configured in Settings."""
     assert rt.store is not None
@@ -567,6 +587,8 @@ def build_default_scheduler(rt: "Runtime") -> Scheduler | None:
         jobs.append(PeriodicJob(name="trader_positions", period_seconds=s.collect_traders_positions_seconds, fn=_collect_trader_positions))
     if s.collect_supply_enabled:
         jobs.append(PeriodicJob(name="supply", period_seconds=s.collect_supply_seconds, fn=_collect_supply))
+    if s.paper_carry_enabled:
+        jobs.append(PeriodicJob(name="paper_carry", period_seconds=s.paper_carry_seconds, fn=_paper_carry))
     if s.alerts_enabled:
         # JSON file is optional in Phase 3.1 — DB-backed rules work on their own.
         jobs.append(PeriodicJob(name="alerts", period_seconds=s.alerts_seconds, fn=_evaluate_alerts))

@@ -44,6 +44,17 @@ def _parse_carry_paper_row(row: dict[str, Any]) -> dict[str, Any]:
     return row
 
 
+def _parse_json_cols(row: dict[str, Any], cols: tuple[str, ...]) -> dict[str, Any]:
+    for k in cols:
+        v = row.get(k)
+        if isinstance(v, str):
+            try:
+                row[k] = json.loads(v)
+            except (TypeError, ValueError):
+                row[k] = None
+    return row
+
+
 class Store:
     def __init__(self, path: str | Path) -> None:
         self.path = str(path)
@@ -520,6 +531,132 @@ class Store:
             except Exception:
                 await self.conn.rollback()
                 raise
+
+    # ---------- cp_*: forward paper engine for the carry strategies (bookkeeping only, no orders) ----------
+
+    async def cp_cycle_get(self, strategy: str, cycle_ts: int) -> dict[str, Any] | None:
+        cur = await self.conn.execute("SELECT * FROM cp_cycle WHERE strategy = ? AND cycle_ts = ?", (strategy, cycle_ts))
+        row = await cur.fetchone()
+        return _parse_json_cols(dict(row), ("payload",)) if row else None
+
+    async def cp_cycles(self, strategy: str, limit: int = 200) -> list[dict[str, Any]]:
+        cur = await self.conn.execute("SELECT * FROM cp_cycle WHERE strategy = ? ORDER BY cycle_ts DESC LIMIT ?", (strategy, limit))
+        return [_parse_json_cols(dict(r), ("payload",)) for r in await cur.fetchall()]
+
+    async def cp_positions(self, strategy: str, status: str | None = None, limit: int = 1000) -> list[dict[str, Any]]:
+        sql = (
+            "SELECT * FROM cp_position WHERE strategy = ?" + (" AND status = ?" if status else "") + " ORDER BY opened_ts, trade_id LIMIT ?"
+        )
+        cur = await self.conn.execute(sql, [strategy, status, limit] if status else [strategy, limit])
+        return [_parse_json_cols(dict(r), ("state", "trade")) for r in await cur.fetchall()]
+
+    async def cp_logs(self, strategy: str, kind: str, *, trade_id: str | None = None, limit: int = 5000) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM cp_log WHERE strategy = ? AND kind = ?" + (" AND trade_id = ?" if trade_id else "") + " ORDER BY id LIMIT ?"
+        cur = await self.conn.execute(sql, [strategy, kind, trade_id, limit] if trade_id else [strategy, kind, limit])
+        return [_parse_json_cols(dict(r), ("payload",)) for r in await cur.fetchall()]
+
+    async def cp_log_add(self, logs: list[dict[str, Any]]) -> int:
+        """Append log rows outside a cycle commit (e.g. a failed attempt)."""
+        if not logs:
+            return 0
+        await self.conn.executemany(
+            "INSERT INTO cp_log (strategy, cycle_ts, kind, trade_id, payload) VALUES (?,?,?,?,?)",
+            [(x["strategy"], x["cycle_ts"], x["kind"], x.get("trade_id"), json.dumps(x["payload"])) for x in logs],
+        )
+        await self.conn.commit()
+        return len(logs)
+
+    async def cp_cycle_commit(self, cycle: dict[str, Any], positions: list[dict[str, Any]], logs: list[dict[str, Any]]) -> bool:
+        """Write one engine cycle in a single transaction: the cycle row, position upserts (a closed position may
+        carry a ``journal`` mirror row), and log rows. Returns False, writing nothing, when the cycle already exists."""
+        lock = self._tx_lock or asyncio.Lock()
+        async with lock:
+            try:
+                cur = await self.conn.execute(
+                    "INSERT OR IGNORE INTO cp_cycle (strategy, cycle_ts, status, reason, started_ms, finished_ms, git_sha, params_hash, payload)"
+                    " VALUES (?,?,?,?,?,?,?,?,?)",
+                    (
+                        cycle["strategy"], cycle["cycle_ts"], cycle["status"], cycle.get("reason"), cycle.get("started_ms"),
+                        cycle.get("finished_ms"), cycle.get("git_sha"), cycle.get("params_hash"), json.dumps(cycle.get("payload") or {}),
+                    ),
+                )  # fmt: skip
+                if not cur.rowcount:
+                    await self.conn.rollback()
+                    return False
+                for p in positions:
+                    journal_id = None
+                    j = p.get("journal")
+                    if j is not None:
+                        jc = await self.conn.execute(
+                            "INSERT INTO journal (opened_ts, closed_ts, symbol, side, size, entry, thesis, tags, status, exit, outcome,"
+                            " pnl, r_multiple, note) VALUES (?,?,?,?,?,?,?,?, 'closed', ?,?,?, NULL, NULL)",
+                            (
+                                j["opened_ts"], j["closed_ts"], j["symbol"], j["side"], j["size"], j["entry"], j["thesis"],
+                                json.dumps(j["tags"]), j["exit"], j["outcome"], j["pnl"],
+                            ),
+                        )  # fmt: skip
+                        journal_id = jc.lastrowid
+                    await self.conn.execute(
+                        "INSERT INTO cp_position (trade_id, strategy, symbol, status, opened_ts, closed_ts, slot_notional, state, trade,"
+                        " exit_reason, journal_id) VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(trade_id) DO UPDATE SET status = excluded.status,"
+                        " closed_ts = excluded.closed_ts, state = excluded.state, trade = excluded.trade, exit_reason = excluded.exit_reason,"
+                        " journal_id = COALESCE(excluded.journal_id, journal_id)",
+                        (
+                            p["trade_id"], p["strategy"], p["symbol"], p["status"], p["opened_ts"], p.get("closed_ts"), p["slot_notional"],
+                            json.dumps(p["state"]), json.dumps(p["trade"]) if p.get("trade") is not None else None, p.get("exit_reason"),
+                            journal_id,
+                        ),
+                    )  # fmt: skip
+                if logs:
+                    await self.conn.executemany(
+                        "INSERT INTO cp_log (strategy, cycle_ts, kind, trade_id, payload) VALUES (?,?,?,?,?)",
+                        [(x["strategy"], x["cycle_ts"], x["kind"], x.get("trade_id"), json.dumps(x["payload"])) for x in logs],
+                    )
+                await self.conn.commit()
+                return True
+            except Exception:
+                await self.conn.rollback()
+                raise
+
+    async def cp_funding_state(self, venue: str, symbol: str) -> dict[str, int] | None:
+        """Cached funding history of one symbol: ``covered_from`` / ``covered_to`` and the newest stored payment ``last_ts``."""
+        cur = await self.conn.execute("SELECT covered_from, covered_to FROM cp_funding_cov WHERE venue = ? AND symbol = ?", (venue, symbol))
+        cov = await cur.fetchone()
+        if cov is None:
+            return None
+        cur = await self.conn.execute("SELECT MAX(ts) AS m FROM cp_funding WHERE venue = ? AND symbol = ?", (venue, symbol))
+        last = await cur.fetchone()
+        return {
+            "covered_from": int(cov["covered_from"]),
+            "covered_to": int(cov["covered_to"]),
+            "last_ts": int(last["m"]) if last and last["m"] else 0,
+        }
+
+    async def cp_funding_rows(self, venue: str, symbol: str, since: int, until: int) -> list[tuple[int, float]]:
+        cur = await self.conn.execute(
+            "SELECT ts, rate FROM cp_funding WHERE venue = ? AND symbol = ? AND ts >= ? AND ts <= ? ORDER BY ts",
+            (venue, symbol, since, until),
+        )
+        return [(int(r["ts"]), float(r["rate"])) for r in await cur.fetchall()]
+
+    async def cp_funding_put(
+        self, venue: str, symbol: str, rows: list[tuple[int, float]], *, covered_from: int | None, covered_to: int | None
+    ) -> None:
+        """Store payments (idempotent). ``covered_*`` None leaves the coverage unchanged (an incomplete fetch)."""
+        async with self._tx_lock or asyncio.Lock():  # do not commit another task's half-built transaction
+            if rows:
+                await self.conn.executemany(
+                    "INSERT OR REPLACE INTO cp_funding (venue, symbol, ts, rate) VALUES (?,?,?,?)",
+                    [(venue, symbol, ts, r) for ts, r in rows],
+                )
+            if covered_from is not None and covered_to is not None:
+                await self.conn.execute(
+                    "INSERT INTO cp_funding_cov (venue, symbol, covered_from, covered_to) VALUES (?,?,?,?) ON CONFLICT(venue, symbol)"
+                    " DO UPDATE SET covered_from = MIN(covered_from, excluded.covered_from),"
+                    " covered_to = MAX(covered_to, excluded.covered_to)",
+                    (venue, symbol, covered_from, covered_to),
+                )
+            await self.conn.commit()
 
     # ---------- rules (DSL) ----------
 

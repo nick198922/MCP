@@ -15,8 +15,22 @@ from __future__ import annotations
 
 import bisect
 import math
+from functools import partial
 from typing import Any
 
+from .carry_rules import (
+    DECISION_DELAY_MS,
+    carry_mark,
+    carry_pnl_now,
+    carry_side_cost,
+    carry_step,
+    carry_trade,
+    spread_mark,
+    spread_pnl_now,
+    spread_side_cost,
+    spread_step,
+    spread_trade,
+)
 from .derivatives import detect_interval_hours
 
 DAY_MS = 86_400_000
@@ -278,6 +292,29 @@ class _Market:
         return max(self.p_high[lo:hi]) if hi > lo else None
 
 
+def carry_observers(ms: dict[str, Any], lookback_ms: int) -> tuple[Any, Any]:
+    """Observation callbacks for ``carry_step`` over ``{symbol: _Market}``: the one place that reads bars and funding.
+
+    ``mark_obs(sym, pos, at=t)`` and ``entry_obs(sym, at=t)``; used by the backtest and by the paper engine alike.
+    """
+
+    def mark_obs(sym: str, p: dict[str, Any], at: int) -> dict[str, Any]:
+        m = ms[sym]
+        return {
+            "payments": [(ts_pay, rate, m.perp(ts_pay)) for ts_pay, rate in m.payments(p["last"], at)],
+            "perp_high": m.perp_high(p["last_bar"], at),
+            "spot": m.spot(at),
+            "perp": m.perp(at),
+            "apr": m.apr(at, lookback_ms),
+        }
+
+    def entry_obs(sym: str, at: int) -> tuple[float | None, float | None, float | None]:
+        m = ms[sym]
+        return m.apr(at, lookback_ms), m.spot(at), m.perp(at)
+
+    return mark_obs, entry_obs
+
+
 def simulate_carry_portfolio(
     markets: dict[str, dict[str, Any]],
     *,
@@ -309,98 +346,40 @@ def simulate_carry_portfolio(
     step = int(step_hours * 3_600_000)
     start = min(m.f_ts[0] for m in ms.values()) + lookback_ms
     # Decisions 5 minutes after each UTC-aligned funding time, so payments stamped a few ms late are settled.
-    start = (start // step + 1) * step + 300_000
+    start = (start // step + 1) * step + DECISION_DELAY_MS
     end = max(m.f_ts[-1] for m in ms.values())
-    side_cost = spot_fee + perp_fee + 2 * slippage
+    side_cost = carry_side_cost(spot_fee, perp_fee, slippage)
     w = 1.0 / slots
     open_pos: dict[str, dict[str, Any]] = {}
     trades: list[dict[str, Any]] = []
     equity: list[tuple[int, float]] = []
     realized = 0.0
-
-    def mark(sym: str, p: dict[str, Any], t: int) -> None:
-        m = ms[sym]
-        for ts_pay, rate in m.payments(p["last"], t):
-            price = m.perp(ts_pay) or p["perp_last"]
-            p["funding"] += rate * price / p["spot_e"]
-        p["last"] = t
-        hi = m.perp_high(p["last_bar"], t)
-        if hi is not None:
-            p["max_runup"] = max(p["max_runup"], hi / p["perp_e"] - 1.0)
-            p["last_bar"] = t
-        s, q = m.spot(t), m.perp(t)
-        if s and q:
-            p["spot_last"], p["perp_last"] = s, q
-            p["max_premium_rise"] = max(p["max_premium_rise"], q / s - p["perp_e"] / p["spot_e"])
-
-    def basis(p: dict[str, Any]) -> float:
-        return (p["spot_last"] - p["spot_e"] - (p["perp_last"] - p["perp_e"])) / p["spot_e"]
-
     t = start
+
+    mark_obs_at, entry_obs_at = carry_observers(ms, lookback_ms)
     while t <= end:
-        for sym in list(open_pos):
-            p = open_pos[sym]
-            mark(sym, p, t)
-            a = ms[sym].apr(t, lookback_ms)
-            if a is not None and a <= exit_apr:
-                fees = p["fees"] + side_cost * p["spot_last"] / p["spot_e"]
-                pnl = p["funding"] + basis(p) - fees
-                realized += w * pnl
-                trades.append(
-                    {
-                        **{k: p[k] for k in ("symbol", "open_ts", "entry_apr", "funding", "max_runup", "max_premium_rise")},
-                        "close_ts": t,
-                        "basis": basis(p),
-                        "fees": fees,
-                        "pnl": pnl,
-                        "open_at_end": False,
-                    }
-                )
-                del open_pos[sym]
-        free = slots - len(open_pos)
-        if free > 0:
-            ranked = []
-            for sym, m in ms.items():
-                if sym in open_pos:
-                    continue
-                a = m.apr(t, lookback_ms)
-                if a is not None and a >= entry_apr and m.spot(t) and m.perp(t):
-                    ranked.append((a, sym))
-            for a, sym in sorted(ranked, reverse=True)[:free]:
-                m = ms[sym]
-                s, q = m.spot(t), m.perp(t)
-                open_pos[sym] = {
-                    "symbol": sym,
-                    "open_ts": t,
-                    "entry_apr": a,
-                    "spot_e": s,
-                    "perp_e": q,
-                    "spot_last": s,
-                    "perp_last": q,
-                    "funding": 0.0,
-                    "fees": side_cost,
-                    "last": t,
-                    "last_bar": t,
-                    "max_runup": 0.0,
-                    "max_premium_rise": 0.0,
-                }
-        equity.append((t, realized + sum(w * (p["funding"] + basis(p) - p["fees"]) for p in open_pos.values())))
+        res = carry_step(
+            open_pos,
+            t,
+            ms,
+            partial(mark_obs_at, at=t),
+            partial(entry_obs_at, at=t),
+            slots=slots,
+            entry_apr=entry_apr,
+            exit_apr=exit_apr,
+            side_cost=side_cost,
+        )
+        for tr in res["closed"]:
+            realized += w * tr["pnl"]
+            trades.append(tr)
+        equity.append((t, realized + sum(w * carry_pnl_now(p) for p in open_pos.values())))
         t += step
     for p in list(open_pos.values()):
-        mark(p["symbol"], p, end)
-        fees = p["fees"] + side_cost * p["spot_last"] / p["spot_e"]
-        pnl = p["funding"] + basis(p) - fees
-        realized += w * pnl
-        trades.append(
-            {
-                **{k: p[k] for k in ("symbol", "open_ts", "entry_apr", "funding", "max_runup", "max_premium_rise")},
-                "close_ts": p["last"],
-                "basis": basis(p),
-                "fees": fees,
-                "pnl": pnl,
-                "open_at_end": True,
-            }
-        )
+        o = mark_obs_at(p["symbol"], p, end)
+        carry_mark(p, end, payments=o["payments"], perp_high=o["perp_high"], spot=o["spot"], perp=o["perp"])
+        tr = carry_trade(p, p["last"], side_cost, at_end=True)
+        realized += w * tr["pnl"]
+        trades.append(tr)
     if equity:
         equity[-1] = (equity[-1][0], realized)
     years = max(end - start, 1) / YEAR_MS
@@ -464,6 +443,29 @@ class _Leg:
         return (max(self.high[lo:hi]), min(self.low[lo:hi])) if hi > lo else None
 
 
+def spread_observers(legs: dict[str, tuple[_Leg, _Leg]], lookback_ms: int) -> tuple[Any, Any]:
+    """Observation callbacks for ``spread_step`` over ``{symbol: (_Leg A, _Leg B)}`` (see ``carry_observers``)."""
+
+    def mark_obs(sym: str, p: dict[str, Any], at: int) -> dict[str, Any]:
+        a, b = legs[sym]
+        return {
+            "pay_a": [(ts_pay, rate, a.price(ts_pay)) for ts_pay, rate in a.payments(p["last"], at)],
+            "pay_b": [(ts_pay, rate, b.price(ts_pay)) for ts_pay, rate in b.payments(p["last"], at)],
+            "ext_a": a.extremes(p["last_bar"], at),
+            "ext_b": b.extremes(p["last_bar"], at),
+            "pa": a.price(at),
+            "pb": b.price(at),
+            "ra": a.apr(at, lookback_ms),
+            "rb": b.apr(at, lookback_ms),
+        }
+
+    def entry_obs(sym: str, at: int) -> tuple[float | None, float | None, float | None, float | None]:
+        a, b = legs[sym]
+        return a.apr(at, lookback_ms), b.apr(at, lookback_ms), a.price(at), b.price(at)
+
+    return mark_obs, entry_obs
+
+
 def simulate_perp_spread_portfolio(
     markets: dict[str, dict[str, Any]],
     *,
@@ -503,92 +505,43 @@ def simulate_perp_spread_portfolio(
     lookback_ms = int(lookback_days * DAY_MS)
     step = int(step_hours * 3_600_000)
     start = min(max(a.f_ts[0], b.f_ts[0]) for a, b in legs.values()) + lookback_ms
-    start = (start // step + 1) * step + 300_000
+    start = (start // step + 1) * step + DECISION_DELAY_MS
     end = max(min(a.f_ts[-1], b.f_ts[-1]) for a, b in legs.values())
-    side_cost = fee_a + fee_b + 2 * slippage
+    side_cost = spread_side_cost(fee_a, fee_b, slippage)
     w = 1.0 / slots
     open_pos: dict[str, dict[str, Any]] = {}
     trades: list[dict[str, Any]] = []
     equity: list[tuple[int, float]] = []
     realized = 0.0
-
-    def mark(sym: str, p: dict[str, Any], t: int) -> None:
-        a, b = legs[sym]
-        # dir = +1: long A / short B; dir = -1: short A / long B.
-        for ts_pay, rate in a.payments(p["last"], t):
-            p["funding"] -= p["dir"] * rate * (a.price(ts_pay) or p["a_last"]) / p["a_e"]
-        for ts_pay, rate in b.payments(p["last"], t):
-            p["funding"] += p["dir"] * rate * (b.price(ts_pay) or p["b_last"]) / p["a_e"]
-        p["last"] = t
-        for leg, e_key in ((a, "a_e"), (b, "b_e")):
-            ex = leg.extremes(p["last_bar"], t)
-            if ex:
-                p["max_up"] = max(p["max_up"], ex[0] / p[e_key] - 1.0)
-                p["max_down"] = max(p["max_down"], 1.0 - ex[1] / p[e_key])
-        p["last_bar"] = t
-        pa, pb = a.price(t), b.price(t)
-        if pa and pb:
-            p["a_last"], p["b_last"] = pa, pb
-            p["max_gap"] = max(p["max_gap"], abs(pa / pb - p["a_e"] / p["b_e"]))
-
-    def price_pnl(p: dict[str, Any]) -> float:
-        return p["dir"] * ((p["a_last"] - p["a_e"]) - (p["b_last"] - p["b_e"])) / p["a_e"]
-
-    def close(sym: str, p: dict[str, Any], t: int, at_end: bool, stopped: bool = False) -> None:
-        nonlocal realized
-        fees = p["fees"] + side_cost * p["a_last"] / p["a_e"] + (stop_penalty if stopped else 0.0)
-        pnl = p["funding"] + price_pnl(p) - fees
-        realized += w * pnl
-        trades.append(
-            {
-                **{k: p[k] for k in ("symbol", "open_ts", "dir", "entry_spread", "funding", "max_up", "max_down", "max_gap")},
-                "close_ts": t,
-                "price_pnl": price_pnl(p),
-                "fees": fees,
-                "pnl": pnl,
-                "open_at_end": at_end,
-                "stopped": stopped,
-            }
-        )
-
     t = start
+
+    mark_obs_at, entry_obs_at = spread_observers(legs, lookback_ms)
     while t <= end:
-        for sym in list(open_pos):
-            p = open_pos[sym]
-            mark(sym, p, t)
-            if stop_move is not None and max(p["max_up"], p["max_down"]) >= stop_move:
-                close(sym, p, t, at_end=False, stopped=True)
-                del open_pos[sym]
-                continue
-            a, b = legs[sym]
-            ra, rb = a.apr(t, lookback_ms), b.apr(t, lookback_ms)
-            if ra is not None and rb is not None and p["dir"] * (rb - ra) <= exit_apr:
-                close(sym, p, t, at_end=False)
-                del open_pos[sym]
-        free = slots - len(open_pos)
-        if free > 0:
-            ranked = []
-            for sym, (a, b) in legs.items():
-                if sym in open_pos:
-                    continue
-                ra, rb = a.apr(t, lookback_ms), b.apr(t, lookback_ms)
-                if ra is None or rb is None or abs(rb - ra) < entry_apr:
-                    continue
-                pa, pb = a.price(t), b.price(t)
-                if pa and pb and (max_entry_gap is None or abs(pa / pb - 1.0) <= max_entry_gap):
-                    ranked.append((abs(rb - ra), sym, 1 if rb > ra else -1))
-            for spread, sym, d in sorted(ranked, reverse=True)[:free]:
-                a, b = legs[sym]
-                pa, pb = a.price(t), b.price(t)
-                open_pos[sym] = {
-                    "symbol": sym, "open_ts": t, "dir": d, "entry_spread": spread, "a_e": pa, "b_e": pb, "a_last": pa, "b_last": pb,
-                    "funding": 0.0, "fees": side_cost, "last": t, "last_bar": t, "max_up": 0.0, "max_down": 0.0, "max_gap": 0.0,
-                }  # fmt: skip
-        equity.append((t, realized + sum(w * (p["funding"] + price_pnl(p) - p["fees"]) for p in open_pos.values())))
+        res = spread_step(
+            open_pos,
+            t,
+            legs,
+            partial(mark_obs_at, at=t),
+            partial(entry_obs_at, at=t),
+            slots=slots,
+            entry_apr=entry_apr,
+            exit_apr=exit_apr,
+            side_cost=side_cost,
+            max_entry_gap=max_entry_gap,
+            stop_move=stop_move,
+            stop_penalty=stop_penalty,
+        )
+        for tr in res["closed"]:
+            realized += w * tr["pnl"]
+            trades.append(tr)
+        equity.append((t, realized + sum(w * spread_pnl_now(p) for p in open_pos.values())))
         t += step
     for sym, p in list(open_pos.items()):
-        mark(sym, p, end)
-        close(sym, p, end, at_end=True)
+        o = mark_obs_at(sym, p, end)
+        spread_mark(p, end, pay_a=o["pay_a"], pay_b=o["pay_b"], ext_a=o["ext_a"], ext_b=o["ext_b"], pa=o["pa"], pb=o["pb"])
+        tr = spread_trade(p, end, side_cost, stop_penalty, at_end=True)
+        realized += w * tr["pnl"]
+        trades.append(tr)
     if equity:
         equity[-1] = (equity[-1][0], realized)
     years = max(end - start, 1) / YEAR_MS

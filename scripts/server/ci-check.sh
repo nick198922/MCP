@@ -15,6 +15,9 @@ def get(path):
             return json.load(r)
     except Exception as e:
         return {"error": str(e)}
+pulls = get("/pulls?state=open&per_page=20")
+for pr in (pulls if isinstance(pulls, list) else []):
+    print("open PR #%d" % pr["number"], pr["head"]["ref"], pr["created_at"][5:16], "draft" if pr.get("draft") else "")
 runs = get("/actions/runs?per_page=15")
 if "error" in runs:
     print("runs:", runs["error"]); raise SystemExit

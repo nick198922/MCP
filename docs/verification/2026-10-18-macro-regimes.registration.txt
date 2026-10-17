@@ -1,0 +1,32 @@
+IDEA-20261017-macro, part B1: SHA-256 of the card section "## Попередня реєстрація (B1: режими кореляції)" (to the
+next level-2 heading), printed by `uv run python scripts/verify_macro_regimes.py --stage prereg`.
+
+Recorded after a reachability probe only (HTTP status, size, first bytes; no correlation, beta or mean computed) and
+before `--stage fetch` / `sanity` / `report`. The agent could not commit (git commit not permitted in this run); the
+coordinator commits. card_blob = `git hash-object` of the whole card at that moment.
+
+2026-10-17T22:53:50+00:00 sha256=d823bb19f6da7dd77d10bd9255468eaa4db6b4db757e4bbd08574abfc1cde4c6 bytes=11001 card_blob=c130abaa1cf1174e642f98d789fa4a3325dbf125
+
+Order of runs (UTC): prereg 22:53:50 -> fetch (Nasdaq COMP/SPY/UUP, Treasury 2017-2026, Fed openmarket.htm, Binance
+archive BTCUSDT/ETHUSDT 1h) -> sanity -> report 22:58:09.
+After the report the card section was not edited; the verdict and progress were added in other sections.
+
+Correction (2026-10-18, review round 1). The line above originally said "one report run; nothing changed after it".
+That was true for the card section, but not for the code: `scripts/verify_macro_regimes.py` and
+`src/tradedesk/analytics/macro_regimes.py` were modified at 23:05:15 UTC, after the 22:58:09 report (believed to be
+formatting only, but that was not evidenced at the time). Reproduction, from the existing cache, no network:
+- 23:15:41 UTC, code exactly as reviewed (before any fix): `--stage report` output vs the cached 22:58:09
+  `report_raw.md`: `diff` shows only line 1 (run timestamp) and the last line (wall time 42 s vs 47 s). All numbers
+  and verdict labels identical. So the post-run code change did not change any result.
+- 23:17:59 UTC, after the review fixes (this is now `docs/verification/2026-10-18-macro-regimes.raw.md`, plus the
+  sanity block from `sanity.md`). Differences vs 22:58:09, besides timestamp and wall time:
+  (1) H3 verdict labels: BTC ≈ -> ◯, ETH "✗ (знак протилежний)" -> ◯; the H3 line now also prints the per-episode
+      beta differences. Cause: the verdict code did not implement the registered rule (≈ was given on the point
+      estimate alone, ignoring the sign-agreement condition; the ✗ label for hi > 0 was not in the rule). Now
+      `analytics.macro_regimes.h3_verdict`, with a unit test. No statistic changed.
+  (2) Two new descriptive lines each in H2 and H4c: dates of the 5 days dropped in "без 5 найбільших |r|".
+      Variant definitions and numbers unchanged.
+- 23:25:02 UTC, after `ruff format` of `scripts/verify_macro_regimes.py` (run after the 23:17:59 report): output
+  vs 23:17:59 differs only in line 1 (timestamp) and the wall-time line (43 s vs 47 s). This is the final code state;
+  the committed raw output (23:17:59) matches it.
+Bootstrap seed 20261018 fixed; all statistics identical across the four runs.

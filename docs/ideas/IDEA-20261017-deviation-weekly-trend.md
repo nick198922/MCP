@@ -2,6 +2,7 @@
 
 Статус: accepted (рішення власника 2026-10-17: «дай агентам перевірити H1 першим»)
 Пріоритет: власник
+Порядок: 1
 <!-- proposed → accepted | rejected → testing → confirmed | rejected | inconclusive → built -->
 
 ## Черга

@@ -21,6 +21,8 @@ LOG_DIR="${TRADEDESK_AGENTS_LOG_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/trade
 . "$REPO/scripts/agents_notify.sh"
 . "$REPO/scripts/agents_usage.sh"
 MAX_USAGE="${TRADEDESK_AGENTS_MAX_USAGE:-95}"
+OWNER_ONLY_AT="${TRADEDESK_AGENTS_OWNER_ONLY_AT:-80}" # weekly %: from here only the owner's cards (Пріоритет: власник)
+WAIT_BUDGET=3600
 MAX_OPEN="${TRADEDESK_AGENTS_MAX_OPEN:-2}"
 WAIT_REVIEW="${TRADEDESK_AGENTS_REVIEW_WAIT_SECONDS:-1800}"
 WAIT_IDLE="${TRADEDESK_AGENTS_IDLE_WAIT_SECONDS:-7200}"
@@ -71,6 +73,14 @@ usage_wait() {
 
 # Branches waiting for the owner; the doctor's fixes (agent/*-fix-*) and the agents' work in progress do not count.
 work_branch() { cut -d' ' -f1 "$LOG_DIR/work.state" 2>/dev/null || true; }
+# Owner-priority cards on main that still need work (accepted, testing or proposed).
+owner_cards_open() {
+  local f
+  git -C "$REPO" grep -l -e '^Пріоритет: власник' origin/main -- 'docs/ideas/IDEA-*.md' 2>/dev/null | sed 's#^origin/main:##' |
+    while read -r f; do
+      git -C "$REPO" show "origin/main:$f" 2>/dev/null | grep -qE '^Статус: (accepted|testing|proposed)' && echo "$f"
+    done || true
+}
 # Unfinished work, not a handover: parked, or its last outcome in history.tsv set it aside (parked, continues, unfinished).
 wip_branch() {
   grep -q -- "^$1 " "$LOG_DIR/parked.state" 2>/dev/null && return 0
@@ -204,6 +214,14 @@ while true; do
     loop_state "пауза: ліміт Claude (${w#* }), продовжать о $(at "$secs")"
     announce "usage:${w#* }" "⏸ **Агенти на паузі:** використано ${w#* } ліміту плану. Продовжать приблизно о $(at "$secs")." --silent
     sleep "$secs"
+    continue
+  fi
+  week="$(usage_now | awk '{print $2}')"
+  if ((leftovers == 0)) && [[ -n "$week" ]] && awk -v w="$week" -v m="$OWNER_ONLY_AT" 'BEGIN { exit !(w >= m) }' &&
+    [[ -z "$(owner_cards_open)" ]]; then
+    log "waiting ${WAIT_BUDGET}s: weekly usage ${week}% >= ${OWNER_ONLY_AT}%, kept for the owner's cards, none open"
+    loop_state "бюджет тижня (${week}%) лише для ваших карток; їх немає, наступна перевірка о $(at "$WAIT_BUDGET")"
+    sleep "$WAIT_BUDGET"
     continue
   fi
   STATE_NOW=""

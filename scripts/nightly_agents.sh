@@ -303,6 +303,14 @@ $(cat "$LOG_DIR/refusal.txt")"
 
 CONTINUE (run $RUNS of at most $MAX_RUNS on this work): an earlier run started this step and did not hand it to the owner.$on_branch Uncommitted changes (git status) are its work too. Do not start another step and do not discard that work. Find where it stopped (the card in docs/ideas, docs/reviews, docs/verification, docs/agents/runs$hint) and carry on from there; ignore the 'clean tree at origin/main' and work-in-progress-limit parts of the preflight (this work adds no new branch). Stage every file of the step, including the ones earlier runs changed. Any valid name in .agent/branch will do: the launcher keeps this work on its branch.$refused"
 fi
+# Late in the weekly window the plan is kept for the owner's cards (step p of .claude/nightly.md).
+OWNER_ONLY_AT="${TRADEDESK_AGENTS_OWNER_ONLY_AT:-80}"
+WEEK="$(usage_now | awk '{print $2}')"
+if [[ -n "$WEEK" ]] && awk -v w="$WEEK" -v m="$OWNER_ONLY_AT" 'BEGIN { exit !(w >= m) }'; then
+  PROMPT="$PROMPT
+
+BUDGET: the weekly plan usage is ${WEEK}% (>= ${OWNER_ONLY_AT}%). Take only step p or the CONTINUE work."
+fi
 if [[ -n "$PARKED_NOTE" ]]; then
   PROMPT="$PROMPT
 

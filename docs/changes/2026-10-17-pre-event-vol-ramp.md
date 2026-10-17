@@ -1,0 +1,9 @@
+- Картка `IDEA-20261017-pre-event-vol-ramp` (тріаж курсу options/gem3): `inconclusive` — ворота точності не пройдено (півширина CI 1.13 п. > 1.0, MDE 1.61 п. > 1.5; SD 6.96 п.).
+  - ΔDVOL BTC T0−3 00:00 → T0 00:00 UTC (до релізу) мінус контролі: +1.22 п. [+0.18; +2.42], n = 146 вікон FOMC / CPI / NFP, 2021-03 … 2026-05; нижче торгового порогу 1.5 п. Купівля 30д ATM-стреддла на нотіонал після витрат −0.07 % спота, з дрейфом VRP −0.27 %.
+  - Теза: ✓ за зареєстрованим правилом на 2021–2026; у 2023–2026 ≈ 0 (підвибірка, дослідницьке), на практиці не підтверджено; картка ◯ (`inconclusive`).
+- Додано:
+  - `analytics/pre_event_vol.py`: вікна DVOL без lookahead, об'єднання близьких подій, свята США, контрольні псевдоподії, ворота точності, вердикти, вега стреддла;
+  - `scripts/verify_pre_event_vol.py` (стадії `prereg|gates|report`; лише кеш, кеш результатів `~/.cache/tradedesk-agents/pre_event_vol/`);
+  - `tests/test_pre_event_vol.py` і фікстура `tests/fixtures/deribit_dvol_btc_daily_vs_hourly_2026-10-17.json` (годинні ключі = час закриття).
+- Виправлено таблицю подій `docs/verification/2026-10-15-us-macro-events.csv` за відповіддю на Q-20261015-2.
+- Звіт: `docs/verification/2026-10-17-pre-event-vol-ramp.md`. Оновлено `knowledge/options.md`, `knowledge/README.md`.

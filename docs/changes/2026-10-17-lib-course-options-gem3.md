@@ -1,0 +1,4 @@
+- Бібліотека: матеріали курсу basics, module0, options, gem3 розібрано (статус `triaged`).
+- Нова картка `IDEA-20261017-pre-event-vol-ramp` (зростання DVOL перед макроподією) — `accepted` з умовами критика.
+- Нова картка `IDEA-20261017-sector-leader-spillover` — `rejected` на тріажі (потужність, відбір лідера за подією).
+- Оновлено бази знань `options`, `defi`, `knowledge/README`.

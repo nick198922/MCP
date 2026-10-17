@@ -39,6 +39,7 @@ EXPECTED_TOOLS = {
     "sentiment_fear_greed",
     "dex_pairs",
     "chain_metrics",
+    "liquidations_history",
     "calendar_expiries",
     "deribit_dvol",
     "deribit_vrp",

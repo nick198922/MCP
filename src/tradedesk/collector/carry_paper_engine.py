@@ -43,6 +43,7 @@ from ..analytics.journal import pnl as journal_pnl
 
 ON_TIME_MS = 30 * 60_000  # registered reliability bar: cycle executed within 30 min of the payment
 BAR_MS = 4 * 3_600_000
+GAP_CONFIRM_CYCLES = 3  # held cycles with a persisting funding gap before it is confirmed and the position settles
 PERP_VENUE, SPOT_VENUE, BYBIT = "binanceusdm", "binance", "bybit"
 
 
@@ -146,6 +147,19 @@ def _funding_issue(params: CarryParams, p: dict[str, Any], obj: Any, cur: dict[s
         if issue:
             return issue
     return None
+
+
+def _missing_payments(params: CarryParams, p: dict[str, Any], obj: Any, cur: dict[str, Any], t: int, cycle_ts: int) -> int:
+    """Payments expected over ``(last, cycle_ts]`` but absent from the history (largest shortfall over B's two legs)."""
+    pairs = [(obj.f_ts, cur)] if params.strategy == "A" else [(obj[0].f_ts, cur.get("a") or {}), (obj[1].f_ts, cur.get("b") or {})]
+    last, worst = int(p["last"]), 0
+    for f_ts, c in pairs:
+        iv = c.get("interval_hours") or _interval_hours(f_ts, last) or 8.0
+        # ``last`` is a decision time (payment + 5 min), payments fall on cycle_ts - k * interval: count those after ``last``
+        expected = int((cycle_ts + 60_000 - last) // (iv * 3_600_000)) + 1
+        found = sum(1 for x in f_ts if last < x <= t)
+        worst = max(worst, expected - found)
+    return max(worst, 0)
 
 
 def _trade_id(strategy: str, sym: str, open_ts: int) -> str:
@@ -385,17 +399,39 @@ async def run_cycle(
         # Settling a position moves its ``last`` to ``t``: a funding payment absent from the loaded history would be lost
         # for good. Such a position is held (not settled, ``last`` stays) and flagged; the next cycle settles it in full.
         incomplete = {x["symbol"] for x in data.flags if x.get("issue") == "funding_history_incomplete" and x.get("symbol")}
+        # R2: the feed re-reads the window of a held symbol on the next cycle (``gap_cycles`` marks it); if the payment is
+        # still absent after GAP_CONFIRM_CYCLES cycles the venue will not publish it, so the position settles with the
+        # flag ``funding_gap_confirmed`` and the shortfall is written as an event (a held position must not hang forever).
         held: list[dict[str, Any]] = []
+        confirmed: list[dict[str, Any]] = []
         for s in list(open_pos):
             issue = _funding_issue(params, open_pos[s], objs[s], data.current.get(s) or {}, t, cycle_ts)
-            if issue is None and s in incomplete:
-                issue = "funding_history_incomplete"
-            if issue is not None:
+            gaps = int(open_pos[s].get("gap_cycles") or 0)
+            if s in incomplete:
+                # Our own fetch was incomplete (page limit, 429/418): hold without counting towards the confirmation, or
+                # a rate-limited feed would settle the position and lose published payments for good.
                 aside[s] = open_pos.pop(s)
-                held.append({"symbol": s, "issue": "funding_payment_missing", "detail": issue})
-        flags += held
+                held.append({"symbol": s, "issue": "funding_payment_missing", "detail": "funding_history_incomplete", "gap_cycles": gaps})
+                continue
+            if issue is None:
+                if gaps:
+                    open_pos[s] = {k: v for k, v in open_pos[s].items() if k != "gap_cycles"}
+                continue
+            gaps += 1
+            if gaps >= GAP_CONFIRM_CYCLES:
+                missing = _missing_payments(params, open_pos[s], objs[s], data.current.get(s) or {}, t, cycle_ts)
+                confirmed.append(
+                    {"symbol": s, "issue": "funding_gap_confirmed", "detail": issue, "cycles": gaps, "missing_payments": missing}
+                )
+                open_pos[s] = {k: v for k, v in open_pos[s].items() if k != "gap_cycles"}
+                continue
+            aside[s] = {**open_pos.pop(s), "gap_cycles": gaps}
+            held.append({"symbol": s, "issue": "funding_payment_missing", "detail": issue, "gap_cycles": gaps})
+        flags += held + confirmed
+        confirmed_by_sym = {c["symbol"]: c for c in confirmed}
         tradable = [s for s in objs if s not in aside]  # a held-aside position must not be re-opened as a new entry
         before = dict(open_pos)
+        before_last = {s: p.get("last") for s, p in before.items()}
         paid: dict[str, dict[str, Any]] = {}
 
         def mark_obs(sym: str, p: dict[str, Any]) -> dict[str, Any]:
@@ -426,12 +462,24 @@ async def run_cycle(
             }
             for h in held
         ]
+        logs += [
+            {
+                "strategy": strat,
+                "cycle_ts": cycle_ts,
+                "kind": "event",
+                "trade_id": ids.get(c["symbol"]),
+                "payload": {"type": "funding_gap_confirmed", **c, "last": before_last.get(c["symbol"]), "settled_at": t},
+            }
+            for c in confirmed
+        ]
         positions: list[dict[str, Any]] = []
         for tr in res["closed"]:
             sym = tr["symbol"]
             p, tid = before[sym], ids[sym]
             reason = "stop" if reasons[sym] == "stop" else "signal"
             rec = _trade_record(params, tr, tid, reason)
+            if sym in confirmed_by_sym:
+                rec["funding_gap_confirmed"] = confirmed_by_sym[sym]["missing_payments"]
             logs += _funding_rows(params, p, paid[sym], data, tid, cycle_ts)
             logs += await _side_rows(feed, params, p, data, "close", tid, cycle_ts)
             logs.append({"strategy": strat, "cycle_ts": cycle_ts, "kind": "close", "trade_id": tid, "payload": rec})

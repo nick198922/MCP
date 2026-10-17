@@ -293,7 +293,7 @@ async def test_open_status_close_roundtrip(state, tmp_path):
         assert d["stop_move"] == 0.5 and d["price_gap"] == 0
         assert d["tradable_now"] is False  # fake spread is far below the 10 % entry bar
         assert any("not tradable_now" in w for w in o["warnings"])
-        assert any("-0.17" in w and "37 %" in w for w in o["warnings"])  # honest backtest caveat
+        assert any("-8.7 %" in w and "zero or negative" in w for w in o["warnings"])  # honest backtest caveat
 
         rt.now = lambda: NOW
         s = await _call(srv, "carry_paper_status")

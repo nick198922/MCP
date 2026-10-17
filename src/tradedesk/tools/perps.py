@@ -21,9 +21,11 @@ from ._util import READ_ONLY, r, timeframe_seconds
 BASE = Annotated[str, Field(description="Base asset, e.g. BTC, ETH, SOL")]
 SPREAD_WARNING = (
     "Backtest (docs/verification/2026-10-13-funding-carry-perp-perp.md, Binance<->Bybit, 2024-10..2026-10): entering "
-    "at a trailing 7d spread >= 10 % and exiting at <= 0 earned about +76..90 % APR on notional, but the median trade "
-    "was about zero: the profit came from hyped listings whose funding hit venue caps, and in 46 % of trades one leg "
-    "moved >= 33 % against itself (a 3x isolated leg is liquidated without a top-up). Majors earned nothing. Not "
+    "at a trailing 7d spread >= 10 % and exiting at <= 0 has an expectation of about zero or negative on the full funding "
+    "history (-8.7 % APR on notional at 2x with stop, +2.9 % without stop; docs/verification/2026-10-17-paper-carry-bench.md; "
+    "the earlier +76..90 % came from holes in Bybit funding history). Majors earned nothing. An older report on the holed "
+    "history found one leg moving >= 33 % against itself in 46 % of trades (not recomputed on the full history; a 3x "
+    "isolated leg is liquidated without a top-up). Not "
     "modelled: per-symbol position limits, venues changing caps / intervals / leverage mid-event, separate margin on "
     "each venue, liquidation fees. Paper-trade first: log entries with journal_add(tags=[...]) and check journal_stats."
 )

@@ -269,6 +269,99 @@ async def test_missed_funding_payment_holds_the_position_and_is_settled_next_cyc
     assert paid & drop.dropped  # the late payment was accrued once the history had it
 
 
+class PermanentHoleFeed(FixtureFeed):
+    """One payment (``hole_ts``) never appears in the history, on any cycle: the venue will not publish it."""
+
+    def __init__(self, markets: dict[str, Any], strategy: str, hole_ts: int) -> None:
+        super().__init__(markets, strategy)
+        self.hole_ts = hole_ts
+
+    async def load(self, params: CarryParams, decision_ts: int, open_positions: list[dict[str, Any]]) -> FeedData:
+        data = await super().load(params, decision_ts, open_positions)
+        for sym, d in list(data.markets.items()):
+            data.markets[sym] = {**d, "funding": [e for e in d["funding"] if abs(e["ts_ms"] - self.hole_ts) > 60_000]}
+        return data
+
+
+async def test_persistent_funding_gap_is_confirmed_after_three_cycles_and_settles(store):
+    mk = markets_a(days=110)
+    params = replace(PARAMS_A, slots=SLOTS, entry_apr=0.10)
+    times = _grid(min(d["funding"][0]["ts_ms"] for d in mk.values()), 10**15)
+    feed = FixtureFeed(mk, "A")
+    i = 0
+    while not await store.cp_positions("A", "open"):
+        await _drive(store, feed, params, [times[i]])
+        i += 1
+    held = {r["symbol"]: r for r in await store.cp_positions("A", "open")}
+    hole = PermanentHoleFeed(mk, "A", hole_ts=times[i] - DECISION_DELAY_MS)
+    await _drive(store, hole, params, [times[i]])
+    gaps = {r["symbol"]: r["state"].get("gap_cycles") for r in await store.cp_positions("A", "open") if r["symbol"] in held}
+    assert set(gaps.values()) == {1}
+    await _drive(store, hole, params, [times[i + 1]])
+    assert {r["state"].get("gap_cycles") for r in await store.cp_positions("A", "open") if r["symbol"] in held} == {2}
+    # the position stays held for exactly GAP_CONFIRM_CYCLES - 1 cycles, then settles
+    await _drive(store, hole, params, [times[i + 2]])
+    events = [e["payload"] for e in await store.cp_logs("A", "event") if e["payload"]["type"] == "funding_gap_confirmed"]
+    assert {e["symbol"] for e in events} == set(held)
+    assert all(e["missing_payments"] == 1 and e["cycles"] == 3 for e in events)
+    cyc = await store.cp_cycle_get("A", times[i + 2] - DECISION_DELAY_MS)
+    assert {f["symbol"] for f in cyc["payload"]["flags"] if f["issue"] == "funding_gap_confirmed"} == set(held)
+    now_open = {r["symbol"]: r for r in await store.cp_positions("A", "open")}
+    closed = {r["symbol"]: r for r in await store.cp_positions("A", "closed")}
+    for sym, was in held.items():
+        if sym in now_open:
+            assert "gap_cycles" not in now_open[sym]["state"]
+            assert now_open[sym]["state"]["last"] > was["state"]["last"]  # settled in full, not hanging
+        else:
+            assert closed[sym]["trade"]["funding_gap_confirmed"] == 1
+
+
+class IncompleteHoleFeed(PermanentHoleFeed):
+    """Like PermanentHoleFeed, but our own fetch is flagged incomplete (page limit, 429/418)."""
+
+    async def load(self, params: CarryParams, decision_ts: int, open_positions: list[dict[str, Any]]) -> FeedData:
+        data = await super().load(params, decision_ts, open_positions)
+        data.flags += [{"symbol": s, "issue": "funding_history_incomplete"} for s in data.markets]
+        return data
+
+
+async def test_incomplete_fetch_holds_without_counting_towards_gap_confirmation(store):
+    mk = markets_a(days=110)
+    params = replace(PARAMS_A, slots=SLOTS, entry_apr=0.10)
+    times = _grid(min(d["funding"][0]["ts_ms"] for d in mk.values()), 10**15)
+    feed = FixtureFeed(mk, "A")
+    i = 0
+    while not await store.cp_positions("A", "open"):
+        await _drive(store, feed, params, [times[i]])
+        i += 1
+    held = {r["symbol"]: r for r in await store.cp_positions("A", "open")}
+    bad = IncompleteHoleFeed(mk, "A", hole_ts=times[i] - DECISION_DELAY_MS)
+    for n in range(4):
+        await _drive(store, bad, params, [times[i + n]])
+        for r in await store.cp_positions("A", "open"):
+            if r["symbol"] in held:
+                assert not r["state"].get("gap_cycles")
+                assert r["state"]["last"] == held[r["symbol"]]["state"]["last"]  # held, never settled
+    assert not [e for e in await store.cp_logs("A", "event") if e["payload"]["type"] == "funding_gap_confirmed"]
+
+
+async def test_recovered_gap_clears_the_gap_counter(store):
+    mk = markets_a(days=110)
+    params = replace(PARAMS_A, slots=SLOTS, entry_apr=0.10)
+    times = _grid(min(d["funding"][0]["ts_ms"] for d in mk.values()), 10**15)
+    feed = FixtureFeed(mk, "A")
+    i = 0
+    while not await store.cp_positions("A", "open"):
+        await _drive(store, feed, params, [times[i]])
+        i += 1
+    held = {r["symbol"] for r in await store.cp_positions("A", "open")}
+    await _drive(store, DroppingFeed(mk, "A", drop_cycle_ts=times[i] - DECISION_DELAY_MS), params, [times[i]])
+    await _drive(store, feed, params, [times[i + 1]])  # the payment is back
+    for r in await store.cp_positions("A", "open"):
+        if r["symbol"] in held:
+            assert "gap_cycles" not in r["state"]
+
+
 class MidWindowHoleFeed(FixtureFeed):
     """Funding at ``interval_h`` spacing; at ``hole_cycle`` the payment ``gap_ms`` before it is missing (mid-window)."""
 

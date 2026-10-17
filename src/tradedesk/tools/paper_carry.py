@@ -21,8 +21,9 @@ PAPER_CARRY_WARNING = (
     "have cost. Marks are as of the last engine cycle, not live. Backtests: A (docs/verification/2026-10-12-funding-carry-alts.md, "
     "Binance, 2024-10..2026-10) about +6.5 % APR on notional, 40 % of trades losing, average trade 62 days, in 21 % of trades the "
     "perp rose >= 100 % while open (liquidation risk of the short perp, margin top-ups not modelled); B "
-    "(docs/verification/2026-10-13-funding-carry-perp-perp.md, 2x per leg with stop) about +76 % APR on notional, 326 trades, ~50 % "
-    "losing, profit from a few hyped listings. Not modelled: position limits, venue rule changes, separate margins. At this "
+    "(docs/verification/2026-10-17-paper-carry-bench.md, full funding history) is expected at about zero or negative: -8.7 % APR "
+    "on notional at 2x per leg with stop, +2.9 % without the stop (the earlier +76 % was an artefact of holes in Bybit funding "
+    "history). Not modelled: position limits, venue rule changes, separate margins. At this "
     "sample size the paper P&L is descriptive only: it cannot separate the expected edge from zero (see the registration in "
     "docs/ideas/IDEA-20261017-forward-paper-carry.md)."
 )

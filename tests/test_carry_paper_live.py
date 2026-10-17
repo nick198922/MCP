@@ -264,6 +264,99 @@ async def test_late_published_payment_behind_a_stored_later_one_is_reloaded_and_
         await rt.aclose()
 
 
+class IntervalEx(LiveEx):
+    """Binance-like: the bulk funding call has no interval, ``fetch_funding_intervals`` (fundingInfo) supplies it."""
+
+    wif_interval = "8h"
+    intervals_down = False
+
+    async def fetch_funding_rates(self, symbols=None):
+        out = await super().fetch_funding_rates()
+        if self.id == "binanceusdm":
+            out["WIF/USDT:USDT"] = {"symbol": "WIF/USDT:USDT", "fundingRate": 0.0008, "interval": None, "markPrice": 2.0}
+        return out
+
+    async def fetch_funding_intervals(self, symbols=None):
+        if type(self).intervals_down:
+            raise ccxt.NetworkError("fundingInfo down")
+        return {"WIF/USDT:USDT": {"symbol": "WIF/USDT:USDT", "interval": type(self).wif_interval, "info": {}}}
+
+
+async def test_live_feed_fills_interval_hours_from_funding_info(tmp_path):
+    class Ex(IntervalEx):
+        history_calls: list = []
+
+    rt = _rt(Ex, tmp_path)
+    assert rt.store is not None
+    await rt.store.init()
+    try:
+        feed = LiveFeed(rt, workers=2, pacer=Pacer(10**6))
+        for wif, want in (("8h", 8.0), ("4h", 4.0)):
+            Ex.wif_interval = wif
+            cur = (await feed.load(PARAMS_A, CYCLE, [])).current["WIF/USDT:USDT"]
+            assert cur["interval_hours"] == want and cur["interval_source"] == "venue"
+    finally:
+        await rt.aclose()
+
+
+async def test_interval_info_failure_leaves_interval_empty_not_a_guessed_8h(tmp_path):
+    class Ex(IntervalEx):
+        history_calls: list = []
+        intervals_down = True
+
+    rt = _rt(Ex, tmp_path)
+    assert rt.store is not None
+    await rt.store.init()
+    try:
+        data = await LiveFeed(rt, workers=2, pacer=Pacer(10**6)).load(PARAMS_A, CYCLE, [])
+        assert data.current["WIF/USDT:USDT"]["interval_hours"] is None
+        assert any(f["issue"] == "provider_missing" and f["field"].startswith("funding_intervals") for f in data.flags)
+    finally:
+        await rt.aclose()
+
+
+async def test_switch_to_4h_makes_a_skipped_payment_visible_in_the_cycle(tmp_path):
+    class Ex(IntervalEx):
+        history_calls: list = []
+
+    rt = _rt(Ex, tmp_path)
+    assert rt.store is not None
+    await rt.store.init()
+    try:
+        feed = LiveFeed(rt, workers=2, pacer=Pacer(10**6))
+        assert (await run_cycle(rt.store, feed, PARAMS_A, CYCLE, clock=lambda: CYCLE + DECISION_DELAY_MS))["status"] == "done"
+        Ex.wif_interval = "4h"  # switched; the history still shows only the 8h-cadence payment (the +4h one is absent)
+        nxt = CYCLE + H8
+        Ex.cycle = nxt
+        assert (await run_cycle(rt.store, feed, PARAMS_A, nxt, clock=lambda: nxt + DECISION_DELAY_MS))["status"] == "done"
+        cyc = await rt.store.cp_cycle_get("A", nxt)
+        held = [f for f in cyc["payload"]["flags"] if f["issue"] == "funding_payment_missing"]
+        assert [(f["symbol"], f["detail"]) for f in held] == [("WIF/USDT:USDT", "payment_gap")]
+        (pos,) = await rt.store.cp_positions("A", "open")
+        assert pos["state"]["last"] == CYCLE + DECISION_DELAY_MS  # held, nothing settled over the hole
+    finally:
+        await rt.aclose()
+
+
+def test_missing_payments_follow_the_reported_interval_after_a_switch():
+    from types import SimpleNamespace
+
+    from tradedesk.collector.carry_paper_engine import _missing_payments
+
+    last = CYCLE + DECISION_DELAY_MS
+    t = CYCLE + H8
+    p = {"last": last}
+    h4 = H8 // 2
+    # 8h -> 4h: history up to `last` is 8h-spaced, the venue now reports 4h, the +4h payment never arrived
+    obj = SimpleNamespace(f_ts=[CYCLE - H8 + 3, CYCLE + 3, t + 3])
+    assert _missing_payments(PARAMS_A, p, obj, {"interval_hours": 4.0}, t + 3, t) == 1
+    assert _missing_payments(PARAMS_A, p, obj, {"interval_hours": 8.0}, t + 3, t) == 0
+    # 4h -> 8h: history up to `last` is 4h-spaced; without the reported interval a normal 8h step would look like a loss
+    obj = SimpleNamespace(f_ts=[CYCLE - h4 + 3, CYCLE + 3, t + 3])
+    assert _missing_payments(PARAMS_A, p, obj, {}, t + 3, t) == 1
+    assert _missing_payments(PARAMS_A, p, obj, {"interval_hours": 8.0}, t + 3, t) == 0
+
+
 async def test_live_feed_provider_failure_is_logged_not_raised(tmp_path):
     class Down(LiveEx):
         async def load_markets(self):

@@ -110,19 +110,24 @@ async def current_funding(rt: Runtime, b: Builder, venue: str, markets: dict[str
     if any(not (x or {}).get("interval") for x in bulk.values()):
         meta = await b.guard(f"funding_intervals:{venue}", f"ccxt:{venue}", rt.exchanges.funding_intervals(venue)) or {}
         if not meta:
-            b.warn(f"{venue}: funding intervals unavailable; assuming 8h where the venue omits it")
+            b.warn(f"{venue}: funding intervals unavailable; 8h shown (interval_source=assumed) where the venue omits it")
     out: dict[str, dict[str, Any]] = {}
     for sym, x in bulk.items():
         if not sym.endswith("/USDT:USDT") or (x or {}).get("fundingRate") is None:
             continue
         m = meta.get(sym) or {}
-        hours = parse_interval_hours(x.get("interval") or m.get("interval"))
+        raw_interval = x.get("interval") or m.get("interval")
+        hours = parse_interval_hours(raw_interval)
+        # "venue": reported by the venue; "default": the venue's interval list was read and omits the symbol (Binance lists
+        # only non-default ones, so 8h); "assumed": no interval source at all (the 8h is a guess).
+        source = "venue" if raw_interval else ("default" if meta else "assumed")
         info = ((markets or {}).get(sym) or {}).get("info") or {}
         cap = (m.get("info") or {}).get("adjustedFundingRateCap") or info.get("upperFundingRate")
         rate = float(x["fundingRate"])
         out[sym] = {
             "rate": rate,
             "interval_hours": hours,
+            "interval_source": source,
             "apr": annualize_funding(rate, hours),
             "next_funding_ts": x.get("nextFundingTimestamp"),
             "mark": float(x["markPrice"]) if x.get("markPrice") else None,

@@ -2,13 +2,12 @@
 
 Згенеровано 2026-10-17 скриптом `scripts/results_board.py` з карток `docs/ideas/`. Не редагувати вручну.
 
-✅ Підтверджено або побудовано: **0** · 🔄 У роботі: **8** · ◯ Без вердикту: **10** · ✗ Відхилено: **15**
+✅ Підтверджено або побудовано: **0** · 🔄 У роботі: **7** · ◯ Без вердикту: **11** · ✗ Відхилено: **15**
 
 ## 🔄 У роботі
 
 | Картка | Суть | Статус і вердикт | Звіт або джерело |
 |---|---|---|---|
-| [IDEA-20261017-deviation-weekly-trend](ideas/IDEA-20261017-deviation-weekly-trend.md) 👤 #1 | девіація під рейнджем у «тижневий тренд» (денні EMA 100/200) і повернення — улюблений сетап Іллі (Good_Mood) | accepted: (рішення власника 2026-10-17: «дай агентам перевірити H1 першим») | [2026-10-17-course-step7-basics](verification/2026-10-17-course-step7-basics.md) |
 | [IDEA-20261017-forward-paper-carry](ideas/IDEA-20261017-forward-paper-carry.md) 👤 #2 | паперовий форвард двох carry-стратегій, автоматично, з тижневим звітом | accepted: (рішення власника 2026-10-17: «згоден зі всім» — пропозиція 1 звіту `docs/reports/2026-10-17-project-report.pdf`) | [2026-10-12-funding-carry-alts](verification/2026-10-12-funding-carry-alts.md) |
 | [IDEA-20261017-doubletop-to-ours](ideas/IDEA-20261017-doubletop-to-ours.md) 👤 #3 | використати MCP DoubleTop, поки є доступ, щоб добудувати наше (Coinalyze, ончейн, звірка) | accepted: (рішення власника 2026-10-17: «хочу щоб ми використали їх МСР для побудови нашого») | — |
 | [IDEA-20261017-vrp-real-marks](ideas/IDEA-20261017-vrp-real-marks.md) 👤 #4 | премія волатильності BTC на реальних марках Deribit, потім паперовий продаж стреддлу | accepted: (рішення власника 2026-10-17: «згоден зі всім» — пропозиція 2 звіту `docs/reports/2026-10-17-project-report.pdf`) | [2026-10-13-vrp](verification/2026-10-13-vrp.md) |
@@ -22,6 +21,7 @@
 | Картка | Суть | Статус і вердикт | Звіт або джерело |
 |---|---|---|---|
 | [IDEA-20261017-pre-event-vol-ramp](ideas/IDEA-20261017-pre-event-vol-ramp.md) | чи росте DVOL за три дні до FOMC / CPI / NFP достатньо, щоб окупити купівлю волатильності (вікно T−3 → до релі | inconclusive: (2026-10-17): ворота точності не пройдено (півширина CI 1.13 п. > 1.0, MDE 1.61 п. > 1.5; SD 6.96 п.); ΔDVOL T0−3 → T0 = +1.22 п. [+0.18; +2.42], n = 146 вікон, 2021-03 … 2026-05, нижче торгового порогу 1.5 п.; теза: ✓ за … | [2026-10-17-pre-event-vol-ramp](verification/2026-10-17-pre-event-vol-ramp.md) |
+| [IDEA-20261017-deviation-weekly-trend](ideas/IDEA-20261017-deviation-weekly-trend.md) 👤 #1 | девіація під рейнджем у «тижневий тренд» (денні EMA 100/200) і повернення — улюблений сетап Іллі (Good_Mood) | inconclusive: (2026-10-17, звіт: ворота потужності не пройдено — 108 дат угод T в IS при порозі 150 навіть на топ-50; T +0.111R net [−0.129; +0.373], без 5 найкращих дат −0.05R, OOS −0.08R — переваги не видно. Тупик: на наявних даних не … | [2026-10-17-deviation-weekly-trend](verification/2026-10-17-deviation-weekly-trend.md) |
 | [IDEA-20261015-polymarket-touch-ladder-event-days](ideas/IDEA-20261015-polymarket-touch-ladder-event-days.md) | чи Polymarket у ринках «What price will BTC/ETH hit» недооцінює дотики в дні CPI/NFP (і чи окупається «стренгл | inconclusive: денні ринки на дотик існують лише з 2026-03 (221 дата): G1 126 < 300 дат, G3 MDE 5.98 > 5 п.п., G2 96.5 % ✓; середні не рахувались; H2/H3 описові, CI немає (H3: 13 днів, MDE 161 % капіталу); ціна входу з q + 0.01 і … | [2026-10-16-polymarket-touch-ladder](verification/2026-10-16-polymarket-touch-ladder.md) |
 | [IDEA-20261015-polymarket-threshold-vs-vol-model](ideas/IDEA-20261015-polymarket-threshold-vs-vol-model.md) | чи систематично Polymarket переоцінює «хвости» щоденних крипто-порогових ринків порівняно з волатильнісною мод | inconclusive | [2026-10-13-vrp](verification/2026-10-13-vrp.md) |
 | [IDEA-20261015-polymarket-negrisk-sum-scanner](ideas/IDEA-20261015-polymarket-negrisk-sum-scanner.md) | чи в Polymarket-подіях із взаємовиключними варіантами сума котирувань відхиляється від 1 настільки, щоб це був | inconclusive: крок 0: підтверджені свіжі відхилення лише за м'якою оцінкою комісії (7 подій, основна — 0); документація підтверджує основну межу, тож колектор не будувати (2026-10-16) | [2026-10-16-polymarket-negrisk-step0](verification/2026-10-16-polymarket-negrisk-step0.md) |

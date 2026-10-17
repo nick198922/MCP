@@ -1,0 +1,16 @@
+{
+  "_source": "Deribit public/get_volatility_index_data BTC, copied 2026-10-17 from the research caches: daily = ~/.cache/tradedesk-agents/put_skew/dvol_BTC.json ([candle open ms, close decimal]), hourly = ~/.cache/tradedesk-agents/polymarket_threshold/dvol_BTC_1h.json ([close time s = open + 3600, close decimal], scripts/verify_pm_threshold.py:388). Days 2025-10-01 and 2025-10-02.",
+  "daily": [[1759276800000, 0.3712], [1759363200000, 0.3739]],
+  "hourly": [
+    [1759352400, 0.3737],
+    [1759356000, 0.3667],
+    [1759359600, 0.3669],
+    [1759363200, 0.3712],
+    [1759366800, 0.3749],
+    [1759438800, 0.37439999999999996],
+    [1759442400, 0.37479999999999997],
+    [1759446000, 0.37479999999999997],
+    [1759449600, 0.3739],
+    [1759453200, 0.37479999999999997]
+  ]
+}

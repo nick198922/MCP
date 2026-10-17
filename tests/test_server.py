@@ -37,6 +37,8 @@ EXPECTED_TOOLS = {
     "option_calc",
     "touch_probability",
     "sentiment_fear_greed",
+    "dex_pairs",
+    "chain_metrics",
     "calendar_expiries",
     "deribit_dvol",
     "deribit_vrp",

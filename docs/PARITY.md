@@ -10,7 +10,8 @@ DOUBLETOP: **74 інструменти** (66 від 17 бекендів + 8 вл
 |---|---|
 | `provider_readiness` | ✅ `system_health` (+ `probe=true` для живої перевірки; у DOUBLETOP 15 з 17 перевірок були застарілими) |
 | `whoami` | ⏭ автентифікація буде нашою (Фаза 6) |
-| `token_card_snapshot`, `chain_trend_snapshot`, `pair_discovery`, `risk_hints_token`, `risk_hints_address`, `wallet_snapshot` | 🔜 `dex_pairs` і `chain_metrics` ([IDEA-20261017-doubletop-to-ours](ideas/IDEA-20261017-doubletop-to-ours.md)); решта — Фаза 5. Перевірка 17.10: картка ETH порожня, «трендові» Solana — фейкові токени, ризики PEPE порожні; корисні лише пари DexScreener і TVL/DEX-обсяг/fees DefiLlama (зразки в `tests/fixtures/doubletop/`) |
+| `chain_trend_snapshot` (панелі TVL, DEX-обсяг, fees), `pair_discovery` | ✅ `chain_metrics` (DefiLlama: TVL, DEX-обсяг і fees за 24 год зі змінами 7д/30д та week-over-week, десяткові частки) і `dex_pairs` (DexScreener: числа числами, symbol без пробілів, сортування за ліквідністю, прапорець `likely_fake` для «SOL»-підробок). `trending_tokens` не відтворюємо: у DOUBLETOP це фейкові токени ([IDEA-20261017-doubletop-to-ours](ideas/IDEA-20261017-doubletop-to-ours.md)) |
+| `token_card_snapshot`, `risk_hints_token`, `risk_hints_address`, `wallet_snapshot` | 🔜 Фаза 5. Перевірка 17.10: картка ETH порожня, ризики PEPE порожні (зразки в `tests/fixtures/doubletop/`) |
 
 ## Біржі та деривативи
 

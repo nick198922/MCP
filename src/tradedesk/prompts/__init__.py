@@ -94,7 +94,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
         description=(
             "Trade plan before opening a position, in Ukrainian: honest frame (no entry-timing edge is verified), thesis and "
             "source, regime, derivatives positioning, volatility vs stop distance, calendar (defined-risk alternatives on "
-            "macro days: options or Polymarket vs touch_probability), position size from account and risk %, execution, "
+            "macro days: options or Polymarket vs touch_probability), coin risk (pending Upbit warning or delisting via upbit_notices), "
+            "position size from account and risk %, execution, "
             "exit plan, verdict (enter / wait for a trigger with an alert / skip), journal entry with tags for later review. "
             "Each step names the tradedesk-mcp tool to call. Places no orders."
         ),

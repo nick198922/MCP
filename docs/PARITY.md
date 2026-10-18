@@ -43,6 +43,7 @@ DOUBLETOP: **74 інструменти** (66 від 17 бекендів + 8 вл
 | coinstats `wallet_balances` | 🔜 Фаза 5 |
 | fear_greed `get_fear_greed_index` | ✅ `sentiment_fear_greed` — крипто-індекс alternative.me, 1..365 днів, latest + zone, mean 7d/30d, min/max, change_7d/30d, zone_share. Деннa частотa; шо DOUBLETOP відважив — індекс фондового ринку США, у нас виключно крипто |
 | — (у DOUBLETOP макрокалендаря нема) | ✅ `macro_calendar` — ForexFactory, події з високим впливом (USD + ECB/BoJ/BoE), час UTC і Київ, прогноз/попереднє; дати поза вікном двох тижнів — із сіду (наближені) |
+| — (у DOUBLETOP анонсів бірж нема) | ✅ `upbit_notices` — публічний API анонсів Upbit (категорія `trade`): лістинги в KRW, попередження, делістинги за токеном; фільтр ризику, не сигнал; Bithumb — публічного API нема |
 | graph_polymarket (7) | ✅ `polymarket_search`, `polymarket_market`, `polymarket_history`; топ-трейдери — колектор `trader_snapshot` (лідерборд Polymarket); OI-історія — 🔜 |
 
 ## Ончейн, DeFi (Фаза 5, низький пріоритет)

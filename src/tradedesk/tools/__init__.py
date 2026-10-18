@@ -31,6 +31,7 @@ def register_all(server: MCPServer, rt: Runtime) -> None:
         sentiment,
         strategy,
         system,
+        upbit,
     )
 
     for module in (
@@ -57,6 +58,7 @@ def register_all(server: MCPServer, rt: Runtime) -> None:
         strategy,
         backtest,
         events,
+        upbit,
         prompts,
     ):
         module.register(server, rt)

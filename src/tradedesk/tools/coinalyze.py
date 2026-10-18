@@ -15,14 +15,15 @@ def register(server: MCPServer, rt: Runtime) -> None:
     @server.tool(
         annotations=READ_ONLY,
         description=(
-            "Historical long/short liquidations of a perpetual, aggregated across exchanges (Coinalyze, needs the "
-            "COINALYZE_API_KEY setting). Per interval: long (forced sells of longs), short (forced buys of shorts), "
+            "Historical long/short liquidations of a perpetual on **Binance only** (Coinalyze symbol suffix '.A' is "
+            "the Binance exchange code, not an all-exchanges aggregate; needs the COINALYZE_API_KEY setting). Per "
+            "interval: long (forced sells of longs), short (forced buys of shorts), "
             "total, net = long - short, long_share in [0, 1]; plus totals and the peak interval. Units: USD by "
             "default, or base-asset coins with in_usd=false. Intervals are UTC-aligned daily or hourly. Coinalyze "
-            "keeps hourly data only for a limited recent window (older ranges come back empty), and its exchange "
-            "coverage and USD conversion are its own, so totals will not match a single venue's liquidation feed "
-            "(see liquidations_summary for our own live-collected stream). Liquidation counts are exchange-reported "
-            "and understate forced closes on venues that publish only the largest order per second."
+            "keeps hourly data only for a limited recent window (older ranges come back empty), and its USD "
+            "conversion is its own (see liquidations_summary for our own live-collected stream). Liquidation counts "
+            "are exchange-reported and understate forced closes on venues that publish only the largest order per "
+            "second. Do not read the totals as market-wide liquidations."
         ),
     )
     async def liquidations_history(
@@ -61,7 +62,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
         if data["totals"]["gaps"]:
             b.warn(f"{data['totals']['gaps']} gap(s) in the series (missing intervals); totals cover only returned rows.")
         b.warn(
-            "Aggregated across the exchanges Coinalyze covers; the current (last) interval is still open. "
+            "Binance only (suffix '.A' = Binance in Coinalyze; verified against Binance OI/funding/long-short, not an "
+            "all-exchange sum); the current (last) interval is still open. "
             "Not a trading signal by itself: no backtest of liquidation spikes is attached to this tool."
         )
         return b.build(data)

@@ -86,6 +86,8 @@ async def test_liquidations_history_happy_and_key_not_leaked():
     assert req.url.params["convert_to_usd"] == "true"
     assert int(req.url.params["to"]) == int(NOW.timestamp())
     assert SECRET not in json.dumps(env) and SECRET not in str(req.url)
+    # '.A' is Binance's exchange code, not an all-exchange sum (docs/reviews/2026-10-18-doubletop-parity-1b.md)
+    assert any("Binance only" in w for w in env["warnings"])
 
 
 async def test_liquidations_history_hourly_cap_and_base_units():

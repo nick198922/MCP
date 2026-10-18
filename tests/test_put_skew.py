@@ -110,6 +110,15 @@ def test_build_day_recovers_forward_and_marks():
     assert x["T"] == pytest.approx((e - (D0 + 9 * HOUR_MS)) / (365 * DAY_MS))
 
 
+def test_build_day_filters_by_product():
+    """ETH prints are a separate surface; the default keeps BTC only."""
+    eth = [dict(t, instrument_name=t["instrument_name"].replace("BTC-", "ETH-")) for t in _synthetic_day()]
+    assert build_day(eth, D0) is None
+    snap = build_day(eth + _synthetic_day(ratio=1.01), D0, product="ETH")
+    x = next(iter(snap["expiries"].values()))
+    assert x["ratio"] == pytest.approx(1.002, abs=1e-6)  # BTC prints (ratio 1.01) were skipped
+
+
 def test_interpolation_and_rr25():
     snap = build_day(_synthetic_day(skew=False), D0)
     x = next(iter(snap["expiries"].values()))

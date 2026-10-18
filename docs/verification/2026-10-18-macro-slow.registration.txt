@@ -1,0 +1,24 @@
+IDEA-20261017-macro, part B3: SHA-256 of the card section "## Попередня реєстрація (B3: повільне макро)" (to the
+next level-2 heading), printed by `uv run python scripts/verify_macro_slow.py --stage prereg`.
+
+Recorded after a reachability probe only and before `--stage fetch` / `sanity` / `report`. The probe (throwaway
+script outside the repo, ~00:40 UTC) downloaded through core.http.Http / rt.exchanges: the Fed DDP H.6 and H.10
+packages, Treasury real yield CSV 2015, Nasdaq UUP 2014-2017 (0 rows) and one Bitstamp BTC/USD 1d page
+(2014-01-01 .. 2016-09); it printed only HTTP status, sizes, first bytes, series names, date ranges and the
+observation format. No return, change, correlation or mean was computed. The two DDP zips from the probe were
+reused by `--stage fetch` (copied, not re-downloaded). The agent does not commit; the coordinator commits.
+card_blob = `git hash-object` of the whole card at that moment.
+
+2026-10-18T00:50:06+00:00 sha256=e2ee904303f9e58cb638549b4a2350ab4200761009a693368d24d8833c0a8ada bytes=11572 card_blob=961187c5249694cf883737bd3c57cfd98301ea73
+
+Order of runs (UTC): prereg 00:50:06 -> fetch (DDP H.6/H.10 from probe, Treasury nominal 2014-2016 and real
+2014-2026, Bitstamp BTC/USD 2014+ and ETH/USD 2017-08+) -> sanity -> report 00:51:33 (the registered run).
+After the report:
+- 00:54 `ruff format` of the script and the analytics module; report rerun 00:54:40 from cache: `diff` against
+  00:51:33 shows only line 1 (timestamp) and the wall-time line. Numbers and verdict labels identical.
+- 00:55:25 the same report written to `2026-10-18-macro-slow.raw.md` (identical apart from timestamp / wall time).
+- 00:56 added `--stage explore` and `analytics.macro_slow.circular_shift_null` (exploratory, after seeing the
+  results: bootstrap SEs were below 1/sqrt(n)); output `2026-10-18-macro-slow.explore.md`. Report rerun 00:56:52:
+  identical apart from timestamp / wall time.
+The card section was not edited after the hash; verdict and progress were added in other sections.
+Bootstrap seed 20261018 fixed.

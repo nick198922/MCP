@@ -3,6 +3,7 @@
 Зміни, зроблені агентами, — по файлу на крок у [`docs/changes/`](docs/changes/).
 
 ## Unreleased
+- Правила власника (затверджено 18.10) з його 323 реальних угод: `docs/knowledge/trading-strategy.md`; перевірка в `pre_trade_checklist` (крок 6) і розбір порушень у `journal_review`; картка асистента — кроки перевірки правил і моніторингу відкритих опціонів; `scripts/journal_rules.py` — що дали б правила на історії.
 - Журнал: імпорт Binance USD-M за 2 роки (асинхронні вивантаження історії угод, fills → закриті позиції, режими one-way і hedge) і опціонів Bybit (fills за 2 роки, поставка на експірацію, відкриті позиції з греками); звіт по кожній біржі й разом, угоди фарму дропу Hyperliquid позначені й не входять у статистику.
 - Журнал: імпорт угод Hyperliquid за адресою гаманця (публічні fills, групування в закриті позиції з часом відкриття, `scripts/hyperliquid_import.py`, `scripts/server/hl-import.sh`); статистика імпорту — для будь-якої біржі й тривалість угод; ключ Binance лише для читання (`scripts/server/binance-key.sh`).
 - Імпорт угод власника з Bybit у журнал (за 2 роки, лише читання): `scripts/bybit_import.py` (`check` відхиляє ключ, що може торгувати; `import` — закриті позиції linear / inverse, зокрема до переходу на UTA, і опціони; дублікати пропускаються; `stats` — звіт поза git), `scripts/server/bybit-key.sh` (ключ через приховане введення в `/etc/tradedesk-bybit.env`, перевірка на сервері), `scripts/server/bybit-import.sh`.

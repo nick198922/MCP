@@ -71,6 +71,11 @@ class Settings:
     # Off by default; the job polls and runs one cycle after each 8h funding payment.
     paper_carry_enabled: bool = False
     paper_carry_seconds: int = 600
+    # Assistant snapshot (docs/ideas/IDEA-20261018-assistant.md): one JSON file for the dashboard, read-only data. Off by default.
+    # Empty path = <directory of db_path>/assistant/snapshot.json.
+    assistant_snapshot_enabled: bool = False
+    assistant_snapshot_seconds: int = 600
+    assistant_snapshot_path: str = ""
     # Alerts
     alerts_enabled: bool = False
     alerts_rules_path: str = ""
@@ -123,6 +128,9 @@ class Settings:
             traders_pm_pages=int(_float("TRADEDESK_TRADERS_PM_PAGES", 10)),
             paper_carry_enabled=os.environ.get("TRADEDESK_PAPER_CARRY_ENABLED", "").lower() in ("1", "true", "yes"),
             paper_carry_seconds=int(_float("TRADEDESK_PAPER_CARRY_SECONDS", 600)),
+            assistant_snapshot_enabled=os.environ.get("TRADEDESK_ASSISTANT_SNAPSHOT_ENABLED", "").lower() in ("1", "true", "yes"),
+            assistant_snapshot_seconds=int(_float("TRADEDESK_ASSISTANT_SNAPSHOT_SECONDS", 600)),
+            assistant_snapshot_path=os.environ.get("TRADEDESK_ASSISTANT_SNAPSHOT_PATH", ""),
             http_bearer_tokens=os.environ.get("TRADEDESK_HTTP_BEARER_TOKENS") or os.environ.get("TRADEDESK_HTTP_BEARER_TOKEN", ""),
             alerts_enabled=os.environ.get("TRADEDESK_ALERTS_ENABLED", "").lower() in ("1", "true", "yes"),
             alerts_rules_path=os.environ.get("TRADEDESK_ALERTS_RULES_PATH", ""),

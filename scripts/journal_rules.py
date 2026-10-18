@@ -67,6 +67,16 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--db", default="/var/lib/tradedesk-mcp/tradedesk.sqlite")
     a = ap.parse_args(argv)
+    con = sqlite3.connect(f"file:{a.db}?mode=ro", uri=True)
+    worst = con.execute(
+        "SELECT closed_ts, symbol, side, size, entry, exit, pnl FROM journal WHERE tags LIKE '%\"import\"%' AND tags NOT LIKE '%\"airdrop\"%' "
+        "AND tags NOT LIKE '%\"option\"%' AND status='closed' ORDER BY pnl LIMIT 10"
+    ).fetchall()
+    con.close()
+    print("10 largest losses: notional = size x entry, adverse move = exit vs entry")
+    for ts, sym, side, size, entry, exit_, pnl in worst:
+        move = (exit_ / entry - 1) * (1 if side == "long" else -1) * 100
+        print(f"  {datetime.fromtimestamp(ts, UTC):%d.%m.%Y} {sym:14} {side:5} notional ${size * entry:>9,.0f}  move {move:+6.1f}%  pnl {pnl:+9,.0f}")
     w = what_if(load(a.db))
     print(f"trades {w['n']}; actual {w['base']:+,.0f} USD; worst day {w['worst_day']:+,.0f}")
     print(f"loss capped at -100 per trade: {w['cap100']:+,.0f}")

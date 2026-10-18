@@ -192,6 +192,48 @@ def fetch_classic(env: str, symbols: list[str], start_ms: int, end_ms: int) -> t
     return rows, notes
 
 
+def options_raw(env: str, days: int = 729) -> dict[str, Any]:
+    """Option fills (2 years, 7-day windows), delivery (expiry) records and the open option positions."""
+    ex = client(env)
+    now = int(time.time() * 1000)
+    out: dict[str, Any] = {"fills": [], "delivery": [], "open": [], "notes": []}
+    t = now - days * DAY_MS
+    errs = 0
+    while t < now:
+        try:
+            out["fills"] += _pages(ex.privateGetV5ExecutionList, {"category": "option", "startTime": t, "endTime": min(t + WINDOW_MS, now)})
+        except Exception as e:  # noqa: BLE001
+            errs += 1
+            if errs <= 2:
+                out["notes"].append(f"option fills {datetime.fromtimestamp(t / 1000, UTC):%Y-%m-%d}: {type(e).__name__}: {str(e)[:120]}")
+        t += WINDOW_MS
+    t = now - days * DAY_MS
+    while t < now:  # delivery records: 30-day windows are allowed for this endpoint
+        try:
+            out["delivery"] += _pages(
+                ex.privateGetV5AssetDeliveryRecord, {"category": "option", "startTime": t, "endTime": min(t + 30 * DAY_MS, now)}
+            )
+        except Exception as e:  # noqa: BLE001
+            out["notes"].append(f"delivery {datetime.fromtimestamp(t / 1000, UTC):%Y-%m-%d}: {type(e).__name__}: {str(e)[:120]}")
+            break
+        t += 30 * DAY_MS
+    for coin in ("BTC", "ETH", "SOL", "USDT", "USDC"):
+        try:
+            out["open"] += _pages(
+                ex.privateGetV5PositionList,
+                {"category": "option", "baseCoin": coin} if coin in ("BTC", "ETH", "SOL") else {"category": "option", "settleCoin": coin},
+            )
+        except Exception as e:  # noqa: BLE001
+            out["notes"].append(f"open {coin}: {type(e).__name__}: {str(e)[:100]}")
+    seen, uniq = set(), []
+    for x in out["open"]:
+        if x.get("symbol") not in seen and float(x.get("size") or 0) != 0:
+            seen.add(x.get("symbol"))
+            uniq.append(x)
+    out["open"] = uniq
+    return out
+
+
 def to_trade(x: dict[str, Any]) -> dict[str, Any] | None:
     """One closed-P&L record as a journal row; the side is taken from the sign that matches the gross P&L."""
     try:
@@ -426,6 +468,8 @@ def main(argv: list[str] | None = None) -> int:
     cl.add_argument("--symbols", required=True, help="comma-separated, or 'journal' = symbols already in the journal plus majors")
     cl.add_argument("--from", dest="from_", default="2024-10-19")
     cl.add_argument("--to", default="2025-05-01")
+    op = sub.add_parser("options-probe", help="count option fills / deliveries and print the open option positions")
+    op.add_argument("--save", default=None, help="save the raw records as JSON here (outside git)")
     s = sub.add_parser("stats")
     s.add_argument("--venue", default="bybit", help="bybit, hyperliquid, binance or all")
     s.add_argument("--out", default=None, help="also write the report here (keep it outside git)")
@@ -440,6 +484,27 @@ def main(argv: list[str] | None = None) -> int:
         added, skipped = asyncio.run(store(trades, a.db))
         print("\n".join(notes))
         print(f"records {len(raw)}, usable {len(trades)}, added {added}, already in the journal {skipped}")
+        return 0
+    if a.cmd == "options-probe":
+        if check(a.env):
+            return 1
+        raw = options_raw(a.env)
+        f = raw["fills"]
+        span = (
+            f"{datetime.fromtimestamp(min(int(x['execTime']) for x in f) / 1000, UTC):%d.%m.%Y} – {datetime.fromtimestamp(max(int(x['execTime']) for x in f) / 1000, UTC):%d.%m.%Y}"
+            if f
+            else "-"
+        )
+        print(
+            f"option fills: {len(f)} ({span}); symbols {len({x['symbol'] for x in f})}; delivery records: {len(raw['delivery'])}; open positions: {len(raw['open'])}"
+        )
+        print("\n".join(raw["notes"]))
+        keys = ("symbol", "side", "size", "avgPrice", "markPrice", "unrealisedPnl", "delta", "gamma", "vega", "theta", "positionValue")
+        for x in raw["open"]:
+            print("OPEN", json.dumps({k: x.get(k) for k in keys}, ensure_ascii=False))
+        if a.save:
+            Path(a.save).parent.mkdir(parents=True, exist_ok=True)
+            Path(a.save).write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
         return 0
     if a.cmd == "import-classic":
         if check(a.env):

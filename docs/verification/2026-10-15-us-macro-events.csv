@@ -161,27 +161,27 @@ date,kind,time_et,status,verification,release_url,calendar_url,note
 2025-12-18,cpi,08:30,actual,verified_bls_archive,https://www.bls.gov/news.release/archives/cpi_12182025.htm,https://www.bls.gov/bls/news-release/cpi.htm,scheduled 2025-12-10; delayed after the shutdown
 2026-01-09,nfp,08:30,scheduled_2026,recalled_from_official_calendar_not_fetched,https://www.bls.gov/news.release/archives/empsit_01092026.htm,https://www.bls.gov/bls/news-release/empsit.htm,
 2026-01-13,cpi,08:30,scheduled_2026,recalled_from_official_calendar_not_fetched,https://www.bls.gov/news.release/archives/cpi_01132026.htm,https://www.bls.gov/bls/news-release/cpi.htm,
-2026-01-28,fomc,14:00,scheduled_2026,recalled_from_official_calendar_not_fetched,https://www.federalreserve.gov/newsevents/pressreleases/monetary20260128a.htm,https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm (historical: /monetarypolicy/fomchistoricalYYYY.htm),
+2026-01-28,fomc,14:00,actual,verified_fed_calendar,https://www.federalreserve.gov/newsevents/pressreleases/monetary20260128a.htm,https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm (historical: /monetarypolicy/fomchistoricalYYYY.htm),
 2026-02-11,nfp,08:30,actual,verified_bls_archive,,https://www.bls.gov/bls/news-release/empsit.htm,January 2026 report; scheduled 2026-02-06; delayed by the 2026-01-31..02-03 funding lapse (owner answer Q-20261015-2)
 2026-02-13,cpi,08:30,actual,verified_bls_archive,,https://www.bls.gov/bls/news-release/cpi.htm,January 2026 CPI; scheduled 2026-02-11; delayed (owner answer Q-20261015-2)
-2026-03-06,nfp,08:30,scheduled_2026,recalled_from_official_calendar_not_fetched,https://www.bls.gov/news.release/archives/empsit_03062026.htm,https://www.bls.gov/bls/news-release/empsit.htm,
-2026-03-11,cpi,08:30,scheduled_2026,recalled_from_official_calendar_not_fetched,https://www.bls.gov/news.release/archives/cpi_03112026.htm,https://www.bls.gov/bls/news-release/cpi.htm,
-2026-03-18,fomc,14:00,scheduled_2026,recalled_from_official_calendar_not_fetched,https://www.federalreserve.gov/newsevents/pressreleases/monetary20260318a.htm,https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm (historical: /monetarypolicy/fomchistoricalYYYY.htm),
-2026-04-03,nfp,08:30,scheduled_2026,recalled_from_official_calendar_not_fetched,https://www.bls.gov/news.release/archives/empsit_04032026.htm,https://www.bls.gov/bls/news-release/empsit.htm,
-2026-04-10,cpi,08:30,scheduled_2026,recalled_from_official_calendar_not_fetched,https://www.bls.gov/news.release/archives/cpi_04102026.htm,https://www.bls.gov/bls/news-release/cpi.htm,
-2026-04-29,fomc,14:00,scheduled_2026,recalled_from_official_calendar_not_fetched,https://www.federalreserve.gov/newsevents/pressreleases/monetary20260429a.htm,https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm (historical: /monetarypolicy/fomchistoricalYYYY.htm),
+2026-03-06,nfp,08:30,actual,verified_bls_archive,https://www.bls.gov/news.release/archives/empsit_03062026.htm,https://www.bls.gov/bls/news-release/empsit.htm,
+2026-03-11,cpi,08:30,actual,verified_bls_archive,https://www.bls.gov/news.release/archives/cpi_03112026.htm,https://www.bls.gov/bls/news-release/cpi.htm,
+2026-03-18,fomc,14:00,actual,verified_fed_calendar,https://www.federalreserve.gov/newsevents/pressreleases/monetary20260318a.htm,https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm (historical: /monetarypolicy/fomchistoricalYYYY.htm),
+2026-04-03,nfp,08:30,actual,verified_bls_archive,https://www.bls.gov/news.release/archives/empsit_04032026.htm,https://www.bls.gov/bls/news-release/empsit.htm,
+2026-04-10,cpi,08:30,actual,verified_bls_archive,https://www.bls.gov/news.release/archives/cpi_04102026.htm,https://www.bls.gov/bls/news-release/cpi.htm,
+2026-04-29,fomc,14:00,actual,verified_fed_calendar,https://www.federalreserve.gov/newsevents/pressreleases/monetary20260429a.htm,https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm (historical: /monetarypolicy/fomchistoricalYYYY.htm),
 2026-05-08,nfp,08:30,actual,verified_bls_archive,,https://www.bls.gov/bls/news-release/empsit.htm,April 2026 report; 2026-05-01 in the seed is wrong (owner answer Q-20261015-2)
-2026-05-12,cpi,08:30,scheduled_2026,recalled_from_official_calendar_not_fetched,https://www.bls.gov/news.release/archives/cpi_05122026.htm,https://www.bls.gov/bls/news-release/cpi.htm,
-2026-06-05,nfp,08:30,unverified,none,,https://www.bls.gov/bls/news-release/empsit.htm,after the author's knowledge horizon (2026-05-31); not confirmed
-2026-06-10,cpi,08:30,unverified,none,,https://www.bls.gov/bls/news-release/cpi.htm,after the author's knowledge horizon (2026-05-31); not confirmed
-2026-06-17,fomc,14:00,unverified,none,,https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm (historical: /monetarypolicy/fomchistoricalYYYY.htm),after the author's knowledge horizon (2026-05-31); not confirmed
-2026-07-02,nfp,08:30,unverified,none,,https://www.bls.gov/bls/news-release/empsit.htm,after the author's knowledge horizon (2026-05-31); not confirmed
-2026-07-14,cpi,08:30,unverified,none,,https://www.bls.gov/bls/news-release/cpi.htm,after the author's knowledge horizon (2026-05-31); not confirmed
-2026-07-29,fomc,14:00,unverified,none,,https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm (historical: /monetarypolicy/fomchistoricalYYYY.htm),after the author's knowledge horizon (2026-05-31); not confirmed
-2026-08-07,nfp,08:30,unverified,none,,https://www.bls.gov/bls/news-release/empsit.htm,after the author's knowledge horizon (2026-05-31); not confirmed
-2026-08-12,cpi,08:30,unverified,none,,https://www.bls.gov/bls/news-release/cpi.htm,after the author's knowledge horizon (2026-05-31); not confirmed
-2026-09-04,nfp,08:30,unverified,none,,https://www.bls.gov/bls/news-release/empsit.htm,after the author's knowledge horizon (2026-05-31); not confirmed
-2026-09-11,cpi,08:30,unverified,none,,https://www.bls.gov/bls/news-release/cpi.htm,after the author's knowledge horizon (2026-05-31); not confirmed
-2026-09-16,fomc,14:00,unverified,none,,https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm (historical: /monetarypolicy/fomchistoricalYYYY.htm),after the author's knowledge horizon (2026-05-31); not confirmed
-2026-10-02,nfp,08:30,unverified,none,,https://www.bls.gov/bls/news-release/empsit.htm,after the author's knowledge horizon (2026-05-31); not confirmed
-2026-10-14,cpi,08:30,unverified,none,,https://www.bls.gov/bls/news-release/cpi.htm,September 2026 CPI; row added 2026-10-18 after the first B2 run (critic review item 1); sources disagree and none is confirmed: events_seed.json 2026-10-14 (13:00 UTC approx) vs macro_events.json 2026-10-15 12:30 UTC; BLS schedule 403; 2026-10-14 also has a 1.19 % BTC 5m move at 08:30 ET (data-informed choice; 2026-10-15 alternative reported)
+2026-05-12,cpi,08:30,actual,verified_bls_archive,https://www.bls.gov/news.release/archives/cpi_05122026.htm,https://www.bls.gov/bls/news-release/cpi.htm,
+2026-06-05,nfp,08:30,actual,verified_bls_archive,,https://www.bls.gov/bls/news-release/empsit.htm,after the author's knowledge horizon (2026-05-31); not confirmed
+2026-06-10,cpi,08:30,actual,verified_bls_archive,,https://www.bls.gov/bls/news-release/cpi.htm,after the author's knowledge horizon (2026-05-31); not confirmed
+2026-06-17,fomc,14:00,actual,verified_fed_calendar,,https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm (historical: /monetarypolicy/fomchistoricalYYYY.htm),after the author's knowledge horizon (2026-05-31); not confirmed
+2026-07-02,nfp,08:30,actual,verified_bls_archive,,https://www.bls.gov/bls/news-release/empsit.htm,after the author's knowledge horizon (2026-05-31); not confirmed
+2026-07-14,cpi,08:30,actual,verified_bls_archive,,https://www.bls.gov/bls/news-release/cpi.htm,after the author's knowledge horizon (2026-05-31); not confirmed
+2026-07-29,fomc,14:00,actual,verified_fed_calendar,,https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm (historical: /monetarypolicy/fomchistoricalYYYY.htm),after the author's knowledge horizon (2026-05-31); not confirmed
+2026-08-07,nfp,08:30,actual,verified_bls_archive,,https://www.bls.gov/bls/news-release/empsit.htm,after the author's knowledge horizon (2026-05-31); not confirmed
+2026-08-12,cpi,08:30,actual,verified_bls_archive,,https://www.bls.gov/bls/news-release/cpi.htm,after the author's knowledge horizon (2026-05-31); not confirmed
+2026-09-04,nfp,08:30,actual,verified_bls_archive,,https://www.bls.gov/bls/news-release/empsit.htm,after the author's knowledge horizon (2026-05-31); not confirmed
+2026-09-11,cpi,08:30,actual,verified_bls_archive,,https://www.bls.gov/bls/news-release/cpi.htm,after the author's knowledge horizon (2026-05-31); not confirmed
+2026-09-16,fomc,14:00,actual,verified_fed_calendar,,https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm (historical: /monetarypolicy/fomchistoricalYYYY.htm),after the author's knowledge horizon (2026-05-31); not confirmed
+2026-10-02,nfp,08:30,actual,verified_bls_archive,,https://www.bls.gov/bls/news-release/empsit.htm,after the author's knowledge horizon (2026-05-31); not confirmed
+2026-10-14,cpi,08:30,actual,verified_bls_archive,,https://www.bls.gov/bls/news-release/cpi.htm,September 2026 CPI; row added 2026-10-18 after the first B2 run (critic review item 1); sources disagree and none is confirmed: events_seed.json 2026-10-14 (13:00 UTC approx) vs macro_events.json 2026-10-15 12:30 UTC; BLS schedule 403; 2026-10-14 also has a 1.19 % BTC 5m move at 08:30 ET (data-informed choice; 2026-10-15 alternative reported)

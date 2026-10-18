@@ -4,7 +4,7 @@ The feed fixture is a hand-built sample (see its "_note"), not a real capture.
 """
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -109,7 +109,8 @@ def test_feed_down_falls_back_to_seed_only():
 
 
 def test_warns_when_horizon_passes_end_of_seed():
-    res = build_macro_calendar([], SEED, datetime(2026, 12, 20, tzinfo=UTC), 60)
+    last = datetime.fromtimestamp(max(e["ts"] for e in SEED), UTC)  # seed now runs to 2027-12
+    res = build_macro_calendar([], SEED, last - timedelta(days=10), 60)
     assert any("seed ends" in w for w in res["warnings"])
 
 
@@ -147,3 +148,13 @@ async def test_macro_calendar_bad_shape_goes_to_missing(state):
     srv, _ = build_server(rt2)
     env = await call(srv, "macro_calendar", horizon_days=7)
     assert len(env["missing"]) == 2 and all(m["reason"] == "backend_error" for m in env["missing"])
+
+
+def test_real_feed_capture_parses_and_keeps_only_in_scope_rows():
+    """A real ForexFactory capture (2026-10-18): all rows parse; that week had no high-impact USD or central-bank event,
+    so only seed events remain and the high-impact CAD/GBP/NZD CPI rows are dropped."""
+    cap = json.loads((Path(__file__).parent / "fixtures" / "forexfactory_thisweek_2026-10-18.json").read_text())
+    res = build_macro_calendar(cap["thisweek"], SEED, datetime(2026, 10, 18, 6, 30, tzinfo=UTC), 14)
+    assert res["feed"]["rows"] == len(cap["thisweek"]) == 86
+    assert res["events"] and all(e["source"] == "seed" for e in res["events"])
+    assert [e["kind"] for e in res["events"]] == ["fomc"]

@@ -1,0 +1,2 @@
+- Крос-секційні фактори перпів (`xs-factor-ic-panel`): M28 ✗, R7 та IVOL30 ◯ (ворота MDE), MAX30 — лише рангова IC (−0.091), це ефект воли; картка `rejected`, торгової переваги нема.
+- Додано `analytics/xs_factors.py`, `scripts/verify_xs_factor_ic_panel.py`, тести, звіт верифікації й рев'ю критика.

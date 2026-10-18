@@ -1,4 +1,3 @@
-- Картка `IDEA-20261017-doubletop-to-ours`, крок 1 (звірка з DOUBLETOP): наш бік описано з коду, пункт числового порівняння в картці лишено незазначеним.
-  - `docs/reviews/2026-10-18-doubletop-parity.md`: одиниці, час, покриття наших інструментів і таблиця очікуваних розбіжностей.
-  - Зразки відповідей DOUBLETOP у `tests/fixtures/doubletop/`: Coinalyze (funding і l/s у відсотках, OI у BTC), ohlcv Binance, funding Hyperliquid, Polymarket.
-  - Числові порівняння з нашими інструментами — `make smoke` на машині власника. Коду не змінено.
+- Звірка наших інструментів із зразками DoubleTop на BTC: ohlcv, OI, funding, лонг/шорт, Hyperliquid, Polymarket (`docs/reviews/2026-10-18-doubletop-parity.md`).
+- Скрипт `scripts/doubletop_parity.py` і наші зразки `tests/fixtures/doubletop/ours__*`.
+- Знахідка: `BTCUSDT_PERP.A` у Coinalyze, схоже, лише Binance, а не всі біржі; перевірка через `/exchanges` винесена в `docs/BACKLOG.md`.

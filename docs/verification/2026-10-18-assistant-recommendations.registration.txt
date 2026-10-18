@@ -1,0 +1,15 @@
+Pre-registration of IDEA-20261018-assistant, item "Квант: перевірка методу рекомендацій".
+
+Registered text: docs/ideas/IDEA-20261018-assistant.md, section "Попередня реєстрація (квант, 2026-10-18, до P&L-прогону)".
+Commit was not allowed by the coordinator's instructions for this step, so the card with the registration
+was copied outside the repo before the first P&L run:
+
+  ~/.cache/tradedesk-agents/assistant_recs/registration_2026-10-18.md
+  copied 2026-10-18T17:47:03+00:00
+  sha256 0a1b4c4a73977101498eff0fcc777f1e07b283924c1b5b475cef11e3d1377aaf
+
+Before the copy only `scripts/verify_assistant_recs.py --stage0` had run (coverage, the method's picks,
+MDE; no P&L of any trade). Output: ~/.cache/tradedesk-agents/assistant_recs/stage0.md.
+First full run: report_raw.md; second run (two blocks added after seeing results, labelled in the output:
+A0 on the card's fixed 40-day grid, and the calm-regime cell of H2): report_raw_v2.md. All registered
+numbers are identical between the two runs.

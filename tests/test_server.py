@@ -41,6 +41,7 @@ EXPECTED_TOOLS = {
     "chain_metrics",
     "pendle_fixed_yields",
     "pendle_market",
+    "pendle_yield_curve",
     "liquidations_history",
     "calendar_expiries",
     "macro_calendar",

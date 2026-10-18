@@ -110,6 +110,130 @@ async def test_pendle_fixed_yields_provider_failure():
     assert env["ok"] is False and env["missing"][0]["reason"] == "data_unavailable"
 
 
+def test_build_yield_curve_orders_by_expiry_and_flags_thin():
+    from tradedesk.analytics.pendle import build_yield_curve
+
+    base = next(x for x in PENDLE["markets"] if x["address"] == SUSDE_ETH)
+
+    def mk(expiry, apy, liq, addr):
+        return {**base, "expiry": expiry, "address": addr, "details": {**base["details"], "impliedApy": apy, "liquidity": liq}}
+
+    rows = [
+        mk("2027-01-18T00:00:00.000Z", 0.09, 5e5, "0x" + "a3" * 20),
+        mk("2026-11-18T00:00:00.000Z", 0.06, 5e6, "0x" + "a1" * 20),
+        mk("2026-12-18T00:00:00.000Z", 0.07, 5e6, "0x" + "a2" * 20),
+        {**base, "name": "Other"},
+    ]
+    c = build_yield_curve(rows, NOW, "susde")
+    ds = [p["days_to_expiry"] for p in c["points"]]
+    assert ds == sorted(ds) and c["points_count"] == 3 and c["matched_names"] == ["sUSDe"]
+    assert [p["thin"] for p in c["points"]] == [False, False, True]
+    assert c["points"][0]["implied_change_vs_prev"] is None
+    assert c["points"][1]["implied_change_vs_prev"] == pytest.approx(0.01)
+    assert c["shape_first_to_last"] == "upward"
+    assert build_yield_curve(rows, NOW, "nothing")["points_count"] == 0
+    assert build_yield_curve(rows, NOW, "")["points_count"] == 0
+
+
+def _curve_rows():
+    base = next(x for x in PENDLE["markets"] if x["address"] == SUSDE_ETH)
+
+    def mk(expiry, apy, liq, addr, chain=1, **extra):
+        det = {**base["details"], "impliedApy": apy, "liquidity": liq}
+        m = {**base, "expiry": expiry, "address": addr, "pt": f"{chain}-0x" + "bb" * 20, "details": det}
+        m.update(extra)
+        return m
+
+    return mk
+
+
+def test_yield_curve_representative_per_expiry_is_order_independent():
+    from tradedesk.analytics.pendle import build_yield_curve
+
+    mk = _curve_rows()
+    a = "2026-11-18T00:00:00.000Z"
+    b = "2026-12-18T00:00:00.000Z"
+    rows = [
+        mk(a, 0.05, 1e6, "0x" + "a1" * 20, chain=1),
+        mk(a, 0.09, 9e6, "0x" + "a2" * 20, chain=9),  # most liquid on expiry A, highest chain id
+        mk(b, 0.07, 5e6, "0x" + "a3" * 20, chain=1),
+    ]
+    for order in (rows, rows[::-1]):
+        c = build_yield_curve(order, NOW, "susde")
+        assert c["points_count"] == 3 and c["distinct_expiries"] == 2
+        reps = [p for p in c["points"] if p["representative"]]
+        assert [p["chain_id"] for p in reps] == [9, 1]
+        # change is between representatives (0.07 - 0.09), not vs the lowest-liquidity chain
+        assert reps[1]["implied_change_vs_prev"] == pytest.approx(-0.02)
+        assert [p["implied_change_vs_prev"] for p in c["points"] if not p["representative"]] == [None]
+        assert c["shape_first_to_last"] == "downward"
+
+
+def test_yield_curve_shape_none_when_several_names():
+    from tradedesk.analytics.pendle import build_yield_curve
+
+    mk = _curve_rows()
+    rows = [
+        mk("2026-11-18T00:00:00.000Z", 0.05, 1e6, "0x" + "a1" * 20, name="sUSDe-A"),
+        mk("2026-12-18T00:00:00.000Z", 0.07, 1e6, "0x" + "a2" * 20, name="sUSDe-B"),
+    ]
+    c = build_yield_curve(rows, NOW, "susde")
+    assert c["points_count"] == 2 and len(c["matched_names"]) == 2 and c["shape_first_to_last"] is None
+
+
+def test_yield_curve_filters_and_unknown_liquidity():
+    from tradedesk.analytics.pendle import build_yield_curve
+
+    mk = _curve_rows()
+    rows = [
+        mk("2026-10-10T00:00:00.000Z", 0.04, 5e6, "0x" + "e1" * 20),  # expired
+        mk("2026-11-18T00:00:00.000Z", None, 5e6, "0x" + "e2" * 20),  # no APY
+        mk("2026-11-20T00:00:00.000Z", 0.06, 5e4, "0x" + "e3" * 20),  # low liquidity
+        mk("2026-12-18T00:00:00.000Z", 0.07, 5e6, "0x" + "e4" * 20, chain=42161),
+        mk("2029-12-18T00:00:00.000Z", 0.08, 5e6, "0x" + "e5" * 20),  # beyond max_days
+        mk("2026-10-18T18:00:00.000Z", 0.03, 5e6, "0x" + "e6" * 20),  # 0.25 days < min_days
+    ]
+    c = build_yield_curve(rows, NOW, "susde")
+    assert sorted(p["market"] for p in c["points"]) == sorted(["0x" + "e3" * 20, "0x" + "e4" * 20])
+    c = build_yield_curve(rows, NOW, "susde", min_liquidity_usd=1e5)
+    assert [p["market"] for p in c["points"]] == ["0x" + "e4" * 20]
+    c = build_yield_curve(rows, NOW, "susde", min_days=0.1, max_days=40)
+    assert sorted(p["market"] for p in c["points"]) == sorted(["0x" + "e3" * 20, "0x" + "e6" * 20])
+    c = build_yield_curve(rows, NOW, "susde", max_days=5000)
+    assert "0x" + "e5" * 20 in [p["market"] for p in c["points"]]
+    assert build_yield_curve(rows, NOW, "susde", chain_ids=[999])["points_count"] == 0
+    # unknown liquidity is not flagged thin
+    unk = mk("2026-12-18T00:00:00.000Z", 0.07, None, "0x" + "e7" * 20)
+    unk["details"].pop("liquidity")
+    c = build_yield_curve([unk], NOW, "susde")
+    assert c["points"][0]["thin"] is None and c["thin_points"] == 0 and c["unknown_liquidity_points"] == 1
+
+
+async def test_pendle_yield_curve_min_days_gt_max_days():
+    env = await call(make_server(), "pendle_yield_curve", asset="sUSDe", min_days=50, max_days=10)
+    assert env["ok"] is False and env["missing"][0]["reason"] == "invalid_argument"
+
+
+async def test_pendle_yield_curve_happy():
+    env = await call(make_server(), "pendle_yield_curve", asset="sUSDe")
+    assert env["ok"] is True
+    d = env["data"]
+    assert d["points_count"] == 2 and {p["chain_id"] for p in d["points"]} == {143, 9745}
+    assert all(0 < p["implied_apy"] < 1 for p in d["points"])
+    assert d["points"][1]["implied_change_vs_prev"] is None  # same expiry on two chains
+    assert any("not arbitrage-free" in w for w in env["warnings"])
+    assert env["evidence"][0]["provider"] == "pendle"
+    env = await call(make_server(), "pendle_yield_curve", asset="sUSDe", chain_ids=[9745], thin_liquidity_usd=1e7)
+    assert env["data"]["points_count"] == 1 and env["data"]["thin_points"] == 1
+
+
+async def test_pendle_yield_curve_failures():
+    env = await call(make_server(lambda req: httpx.Response(503, text="down")), "pendle_yield_curve", asset="sUSDe")
+    assert env["ok"] is False and any(m["provider"] == "pendle" for m in env["missing"])
+    env = await call(make_server(), "pendle_yield_curve", asset="NoSuchAsset")
+    assert env["ok"] is False and env["missing"][0]["reason"] == "data_unavailable"
+
+
 async def test_pendle_market_happy_and_price_input():
     env = await call(make_server(), "pendle_market", market=SUSDE_ETH.upper().replace("0X", "0x"), pt_price=0.99)
     assert env["ok"] is True

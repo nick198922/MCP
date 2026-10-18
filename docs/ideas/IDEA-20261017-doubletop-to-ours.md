@@ -15,7 +15,8 @@
 - [ ] 4b. Жива перевірка власником (USD/одиниці) і бекфіл колектором
 - [ ] 5. Повтор перевірок на історії Coinalyze
 - [x] 6a. Pendle (нижчий пріоритет): фіксована дохідність, `pendle_fixed_yields`, `pendle_market` змерджено (PR #78)
-- [ ] 6b. Pendle: крива дохідності (`yield_curve` у PARITY ще 🔜) і звірка з відповіддю DoubleTop на тому самому вході
+- [x] 6b. Pendle: крива дохідності — інструмент `pendle_yield_curve` (критик: approve, `docs/reviews/2026-10-18-pendle-yield-curve.md`)
+- [ ] 6c. Звірка `pendle_yield_curve` з відповіддю DoubleTop `pendle__yield_curve` на тому самому вході (потрібен зразок DT від Claude в інтерактивній сесії)
 
 ## Черга
 - Після [IDEA-20261017-deviation-weekly-trend](IDEA-20261017-deviation-weekly-trend.md) (H1 — першою).

@@ -141,6 +141,96 @@ def summarise_all(markets: Any, now: datetime) -> tuple[list[dict[str, Any]], in
     return rows, skipped
 
 
+def build_yield_curve(
+    markets: Any,
+    now: datetime,
+    asset: str,
+    *,
+    min_days: float = 1.0,
+    max_days: float = 1095.0,
+    min_liquidity_usd: float = 0.0,
+    thin_liquidity_usd: float = 1_000_000.0,
+    chain_ids: list[int] | None = None,
+) -> dict[str, Any]:
+    """Term structure of implied APY for one asset: active markets whose name matches `asset`
+    (case-insensitive exact match, else substring), sorted by expiry. No interpolation: only observed points.
+
+    When an expiry is listed on several chains, the most liquid point is its `representative`.
+    `implied_change_vs_prev` is the implied-APY difference (decimal) between a representative and the
+    representative of the previous (earlier) expiry; non-representative points get None. `shape_first_to_last`
+    compares the first and last representatives, and is None when several distinct names matched.
+    `thin` marks liquidity below `thin_liquidity_usd`; None when liquidity is unknown.
+    """
+    rows, skipped = summarise_all(markets, now)
+    needle = _text(asset, 60)
+    needle = needle.lower() if needle else ""
+    usable = [r for r in rows if r["implied_apy"] is not None and r["days_to_expiry"] is not None and not r["expired"] and r["name"]]
+    exact = [r for r in usable if r["name"].lower() == needle]
+    named = exact or ([r for r in usable if needle in r["name"].lower()] if needle else [])
+    pts = []
+    for r in named:
+        d = r["days_to_expiry"]
+        if d < min_days or d > max_days or (r["liquidity_usd"] or 0.0) < min_liquidity_usd:
+            continue
+        if chain_ids and r["chain_id"] not in chain_ids:
+            continue
+        pts.append(r)
+    pts.sort(key=lambda r: (r["days_to_expiry"], r["chain_id"] or 0))
+    # One representative per expiry: highest liquidity (unknown last), ties -> lowest chain id, then address.
+    best: dict[str, dict[str, Any]] = {}
+    for r in pts:
+        cur = best.get(r["expiry"])
+        key = (-(r["liquidity_usd"] if r["liquidity_usd"] is not None else -1.0), r["chain_id"] or 0, r["market"] or "")
+        if cur is None or key < cur["_key"]:
+            best[r["expiry"]] = {"row": r, "_key": key}
+    reps = {e: v["row"] for e, v in best.items()}
+    rep_list = sorted(reps.values(), key=lambda r: r["days_to_expiry"])
+    prev_rep: dict[str, dict[str, Any]] = {}
+    for i, r in enumerate(rep_list):
+        if i:
+            prev_rep[r["expiry"]] = rep_list[i - 1]
+    out: list[dict[str, Any]] = []
+    for r in pts:
+        is_rep = reps[r["expiry"]] is r
+        prev = prev_rep.get(r["expiry"]) if is_rep else None
+        out.append(
+            {
+                "name": r["name"],
+                "chain_id": r["chain_id"],
+                "market": r["market"],
+                "expiry": r["expiry"],
+                "days_to_expiry": r["days_to_expiry"],
+                "implied_apy": r["implied_apy"],
+                "underlying_apy": r["underlying_apy"],
+                "implied_minus_underlying": r["implied_minus_underlying"],
+                "liquidity_usd": r["liquidity_usd"],
+                "tvl_usd": r["tvl_usd"],
+                # None = liquidity unknown (not flagged thin)
+                "thin": None if r["liquidity_usd"] is None else r["liquidity_usd"] < thin_liquidity_usd,
+                "representative": is_rep,
+                "implied_change_vs_prev": (r["implied_apy"] - prev["implied_apy"]) if prev is not None else None,
+            }
+        )
+    expiries = sorted({p["expiry"] for p in out})
+    names = {p["name"] for p in out}
+    shape = None
+    if len(rep_list) >= 2 and len(names) == 1:
+        first, last = rep_list[0]["implied_apy"], rep_list[-1]["implied_apy"]
+        shape = "upward" if last > first else "downward" if last < first else "flat"
+    return {
+        "asset": needle or None,
+        "matched_names": sorted({p["name"] for p in out}),
+        "markets_total": len(rows),
+        "markets_skipped": skipped,
+        "points_count": len(out),
+        "distinct_expiries": len(expiries),
+        "thin_points": sum(1 for p in out if p["thin"] is True),
+        "unknown_liquidity_points": sum(1 for p in out if p["thin"] is None),
+        "shape_first_to_last": shape,
+        "points": out,
+    }
+
+
 def scan_fixed_yields(
     markets: Any,
     now: datetime,

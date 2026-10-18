@@ -149,3 +149,16 @@ def test_hyperliquid_round_trips_and_flip(tmp_path):
     assert asyncio.run(bi.store(t, db)) == (3, 0)
     rep = bi.stats(db, venue="hyperliquid")
     assert "Hyperliquid" in rep and "Закритих позицій: **3**" in rep
+
+
+def test_airdrop_trades_are_left_out_of_stats(tmp_path):
+    import hyperliquid_import as hl
+
+    db = str(tmp_path / "j.sqlite")
+    old = dict(bi.to_trade(LONG), venue="hyperliquid", category="perp", ts=1700000000000, oid="a")
+    new = dict(bi.to_trade(LOSS), venue="hyperliquid", category="perp", ts=1760200000000, oid="b")
+    asyncio.run(bi.store([old, new], db))
+    assert hl.mark_airdrop(db, "2025-04-18") == 1 and hl.mark_airdrop(db, "2025-04-18") == 0
+    rep = bi.stats(db, venue="hyperliquid")
+    assert "Закритих позицій: **1**" in rep and "ETHUSDT" in rep
+    assert "Закритих позицій: **1**" in bi.stats(db, venue=None)

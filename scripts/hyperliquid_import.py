@@ -128,12 +128,36 @@ def round_trips(fills: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return trips
 
 
+def mark_airdrop(db_path: str, before: str) -> int:
+    """Owner 2026-10-18: older Hyperliquid positions were held to farm the airdrop, not traded; keep them, tag them."""
+    import json  # noqa: PLC0415
+    import sqlite3  # noqa: PLC0415
+    from datetime import UTC, datetime  # noqa: PLC0415
+
+    cut = int(datetime.strptime(before, "%Y-%m-%d").replace(tzinfo=UTC).timestamp())
+    con = sqlite3.connect(db_path)
+    n = 0
+    for tid, tags in con.execute("SELECT id, tags FROM journal WHERE tags LIKE '%\"hyperliquid\"%' AND closed_ts < ?", (cut,)).fetchall():
+        t = json.loads(tags or "[]")
+        if "airdrop" not in t:
+            con.execute(
+                "UPDATE journal SET tags = ?, thesis = ? WHERE id = ?",
+                (json.dumps([*t, "airdrop"]), "фарм дропу Hyperliquid (не торгівля)", tid),
+            )
+            n += 1
+    con.commit()
+    con.close()
+    return n
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--db", default=DB_DEFAULT)
     sub = ap.add_subparsers(dest="cmd", required=True)
     imp = sub.add_parser("import")
     imp.add_argument("address")
+    md = sub.add_parser("mark-airdrop", help="tag Hyperliquid trades closed before a date as airdrop farming (left out of stats)")
+    md.add_argument("--before", required=True, help="YYYY-MM-DD (UTC)")
     s = sub.add_parser("stats")
     s.add_argument("--out", default=None)
     a = ap.parse_args(argv)
@@ -151,6 +175,9 @@ def main(argv: list[str] | None = None) -> int:
             else "-"
         )
         print(f"fills {len(fills)} ({span}), closed round trips {len(trips)}, added {added}, already in the journal {skipped}")
+        return 0
+    if a.cmd == "mark-airdrop":
+        print(f"marked {mark_airdrop(a.db, a.before)} trades as airdrop farming")
         return 0
     rep = bi.stats(a.db, venue="hyperliquid")
     print(rep)

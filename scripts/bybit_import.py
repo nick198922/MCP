@@ -310,11 +310,12 @@ def _levkey(k: str) -> float:
 
 
 def stats(db_path: str, venue: str | None = "bybit") -> str:
+    """Report over imported closed trades of one venue (None = all venues); rows tagged "airdrop" are left out."""
     import sqlite3  # noqa: PLC0415
 
     con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     rows = con.execute(
-        "SELECT closed_ts, symbol, side, pnl, note, opened_ts FROM journal WHERE tags LIKE ? AND status='closed'",
+        "SELECT closed_ts, symbol, side, pnl, note, opened_ts FROM journal WHERE tags LIKE ? AND tags NOT LIKE '%\"airdrop\"%' AND status='closed'",
         (f'%"{venue}"%' if venue else '%"import"%',),
     ).fetchall()
     con.close()
@@ -426,6 +427,7 @@ def main(argv: list[str] | None = None) -> int:
     cl.add_argument("--from", dest="from_", default="2024-10-19")
     cl.add_argument("--to", default="2025-05-01")
     s = sub.add_parser("stats")
+    s.add_argument("--venue", default="bybit", help="bybit, hyperliquid, binance or all")
     s.add_argument("--out", default=None, help="also write the report here (keep it outside git)")
     a = ap.parse_args(argv)
     if a.cmd == "check":
@@ -456,7 +458,7 @@ def main(argv: list[str] | None = None) -> int:
         print("\n".join(notes))
         print(f"symbols {len(syms)}, records {len(raw)}, usable {len(trades)}, added {added}, already in the journal {skipped}")
         return 0
-    rep = stats(a.db)
+    rep = stats(a.db, None if a.venue == "all" else a.venue)
     print(rep)
     if a.out:
         Path(a.out).parent.mkdir(parents=True, exist_ok=True)

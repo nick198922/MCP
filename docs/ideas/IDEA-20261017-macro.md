@@ -8,7 +8,7 @@
 ## Прогрес
 - [x] A. Провайдер календаря і інструмент `macro_calendar` (реалізовано 2026-10-18; живу відповідь ForexFactory звірив Claude 2026-10-18 — фікстура `tests/fixtures/forexfactory_thisweek_2026-10-18.json`, формат збігається; `nextweek` до середини тижня віддає 404)
 - [x] A. Сід 2027 (Claude 2026-10-18, Q-20261018-1; заодно виправлено 7 дат 2026 і точний час подій)
-- [ ] A. Огляд тижня й нагадування в Telegram
+- [x] A. Огляд тижня й нагадування в Telegram (2026-10-18, `scripts/macro_digest.py`, `analytics/macro_digest.py`; рев'ю критика approve; таймери вмикає власник: `scripts/server/18-macro-digest-timer.sh`)
 - [x] B1. Режими кореляції BTC з фондовим ринком (2026-10-18, [`docs/verification/2026-10-18-macro-regimes.md`](../verification/2026-10-18-macro-regimes.md); годинний lead-lag ◯ — немає даних)
 - [x] B2. Реакція на релізи (2026-10-18, [`docs/verification/2026-10-18-macro-release-reaction.md`](../verification/2026-10-18-macro-release-reaction.md); рев'ю критика, раунд 1, виправлено): сплеск воли ✓, продовження/відкат після першої години ✗ (критерій «вбити» спрацював), правила ✗ (не виявлено; першу годину не перевіряли)
 - [ ] B2. Сюрприз у точному сенсі (actual − forecast) — ◯, поки колектор не накопичить прогнози ForexFactory (частина A); зараз лише проксі через Nasdaq

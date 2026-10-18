@@ -7,7 +7,7 @@
 
 ## Прогрес
 - [x] 1a. Звірка наших інструментів з DOUBLETOP на одному вході (18.10, шість пар, BTC/Xi; docs/reviews/2026-10-18-doubletop-parity.md)
-- [ ] 1b. Звірка: ETH і альт (до 3–5 входів, як у кроці 1), Bybit-гілки, з'ясувати, що означає суфікс `.A` у Coinalyze (дані звірки вказують на Binance, а не агрегат; див. docs/reviews/2026-10-18-doubletop-parity-critic.md)
+- [ ] 1b. Звірка (зроблено: BTC, ETH, SOL проти DT, `.A` = Binance; лишилась Bybit-гілка — потрібні коди бірж `/exchanges`, ключ у власника): ETH і альт (до 3–5 входів, як у кроці 1), Bybit-гілки, з'ясувати, що означає суфікс `.A` у Coinalyze (дані звірки вказують на Binance, а не агрегат; див. docs/reviews/2026-10-18-doubletop-parity-critic.md)
 - [x] 2. `dex_pairs`
 - [x] 3. `chain_metrics`
 - [x] Ключ Coinalyze (власник, 17.10)

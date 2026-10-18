@@ -260,6 +260,242 @@ def closure_exclusion(c: Closure) -> str | None:
     return None
 
 
+# ------------------------------------------------------------------ stage 0c: Upbit announcements (Korean titles)
+
+KST_OFFSET_MS = 9 * 3_600_000
+
+_UP_GROUP = re.compile(r"\(([^()]*)\)")  # innermost parenthesised groups
+# one item of a group: a bare ticker ("SOL") or a Korean name + space + ticker ("도지코인 DOGE", "리니어 파이낸스 LINA")
+_UP_ITEM = re.compile(r"^(?:[^,()]*[가-힣][^,()]*\s+)?([A-Z0-9]{1,15})$")
+_UP_LEAD = re.compile(r"^([A-Z0-9]{2,15}(?:\s*,\s*[A-Z0-9]{2,15})*)\s+(?=[가-힣])")  # "LUNA 유의 종목 지정 안내"
+_UP_BATCH = re.compile(r"\d+\s*종")  # "(18종)", "24종 디지털 자산": the tickers are only in the body
+_UP_MARKET_WORDS = frozenset({"KRW", "BTC", "USDT", "ETH"})
+UPBIT_STABLES = frozenset({"KRW", "USDG", "RLUSD", "EURC", "USDQ", "USD0", "GHO", "FRAX", "LUSD", "JPYC"})
+_UP_LISTING = ("디지털 자산 추가", "신규 거래지원", "신규 거래 지원", "신규 상장", "코인 추가")
+_UP_KRW = re.compile(r"KRW|원화\s*마켓")
+
+
+def _upbit_tickers(t: str) -> list[str]:
+    """Tickers of a title: items of parenthesised groups (a group naming markets -- it contains "마켓" -- is skipped);
+    if there are none, a leading comma-separated list of upper-case symbols followed by Korean text."""
+    out: list[str] = []
+    for g in _UP_GROUP.findall(t):
+        if "마켓" in g:
+            continue
+        for part in g.split(","):
+            m = _UP_ITEM.match(part.strip())
+            if m:
+                out.append(m.group(1))
+    if not out:
+        m = _UP_LEAD.match(t)
+        if m and not t[m.end() :].startswith("마켓"):
+            out = [x.strip() for x in m.group(1).split(",")]
+    return [x for x in dict.fromkeys(out) if x not in STABLES and x not in UPBIT_STABLES and x not in _UP_MARKET_WORDS]
+
+
+def _upbit_main(t: str) -> str:
+    """The title without trailing parenthesised update notes ("... (거래지원 종료 일정 변경 안내)") added when a notice
+    is edited; the publication time of the notice stays the original one."""
+    return re.sub(r"(?:\s*\([^()]*\))+\s*$", "", t)
+
+
+def upbit_body_tickers(text: str) -> list[str]:
+    """Tickers of the numbered list of a batch notice body ("**1) 시린토큰(SRN)**", "2) Cred(LBA)"), in order, without
+    duplicates (the English copy repeats them) and without market / stable symbols; if the body has no numbered list,
+    every "name(TICK)". Assets merely mentioned in the text (released, kept on the list, "(KST)") are not in the
+    numbered list. The body is untrusted text: only these fixed patterns are matched."""
+    found = re.findall(r"(?m)^[*\s]*\d+\)\s*[^()\n]*?\(([A-Z0-9]{2,15})\)", text)
+    if not found:
+        found = re.findall(r"[가-힣A-Za-z0-9.]\s?\(([A-Z0-9]{2,15})\)", text)
+    skip = STABLES | UPBIT_STABLES | _UP_MARKET_WORDS | {"KST", "UTC"}
+    # an asset whose designation is extended / kept / released or whose delisting is put on hold ("베이직(BASIC)은
+    # 유의종목 지정이 연장됩니다") is not part of the batch decision, even if the body numbers it
+    for line in text.splitlines():
+        if re.search(r"연장|유지|해제|보류", line) and not re.match(r"^[*\s]*\d+\)", line):
+            skip |= set(re.findall(r"\(([A-Z0-9]{2,15})\)", line))
+    return [x for x in dict.fromkeys(found) if x not in skip]
+
+
+def upbit_body_is_reminder(text: str) -> bool:
+    """A notice that repeats an earlier decision ("...일정을 다시 한 번 안내드리오니"): an update, not a new event."""
+    return "다시 한 번 안내" in text
+
+
+def upbit_batch_size(title: str) -> int | None:
+    """N of a batch notice title ("디지털 자산 유의 종목 지정 안내 (8종)" -> 8); None if the title is not a batch."""
+    m = re.search(r"(\d+)\s*종", title)
+    return int(m.group(1)) if m else None
+
+
+def upbit_time_ms(notice: Mapping[str, object]) -> int | None:
+    """Publication time (epoch ms UTC) of an Upbit notice: ``first_listed_at`` if present, else ``listed_at``.
+    ISO strings with an offset are honoured; naive strings are KST (UTC+9)."""
+    for k in ("first_listed_at", "listed_at"):
+        s = notice.get(k)
+        if not s:
+            continue
+        try:
+            d = datetime.fromisoformat(str(s).strip().replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if d.tzinfo is None:
+            return int(d.replace(tzinfo=UTC).timestamp() * 1000) - KST_OFFSET_MS
+        return int(d.timestamp() * 1000)
+    return None
+
+
+def classify_upbit(title: str) -> tuple[str, list[str]]:
+    """Kind and tickers of an Upbit ``trade`` notice title (untrusted text, fixed patterns only).
+
+    Kinds: ``listing`` (a KRW market is added; "KRW" or "원화 마켓", wordings of 2019-2026), ``warning``
+    (designated as a trading-caution asset; not an extension, release or a mere caution call), ``delist`` (trading
+    support ends for the asset, not just one market), ``warning_batch`` / ``delist_batch`` (a batch notice, "(8종)":
+    the tickers are only in the body), ``ignore``. Tickers: items of parenthesised groups (bare or "name TICKER",
+    comma-separated), else a leading upper-case list. A listing title that also designates another asset as a
+    warning ("... 추가 (T) 및 이에 따른 NU 유의 종목 지정") is a listing of the parenthesised ticker."""
+    t = " ".join(title.split())
+    main = _upbit_main(t)
+    ticks = _upbit_tickers(t)
+    if _UP_KRW.search(t) and any(x in t for x in _UP_LISTING) and "종료" not in main:
+        return ("listing", ticks) if ticks else ("ignore", [])
+    if re.search(r"거래\s?지원 종료", t):
+        if re.search(r"마켓\s*(?:디지털 자산\s*)?거래\s?지원 종료", t) or "페어 제거" in t:
+            return "ignore", []  # one market only
+        if any(x in main for x in ("연기", "철회", "취소", "변경", "정정")):
+            return "ignore", []  # postponed / withdrawn / date changed / corrected: an update, not a new decision
+        if _UP_BATCH.search(t):
+            return "delist_batch", []
+        return ("delist", ticks) if ticks else ("ignore", [])
+    if "유의" in t and "지정" in t:
+        if any(x in t for x in ("연장", "해제", "촉구", "유지")):
+            return "ignore", []
+        if _UP_BATCH.search(t):
+            return "warning_batch", []
+        return ("warning", ticks) if ticks else ("ignore", [])
+    return "ignore", []
+
+
+def btc_cross_ratio(perp: float, perp_btc: float, krw_x: float, krw_btc: float) -> float | None:
+    """Ticker-identity check across venues: (perp price / BTC perp price) / (Upbit KRW-X / Upbit KRW-BTC), i.e. the
+    token's price in BTC on both venues. The KRW premium ("kimchi premium") and the FX rate cancel; a ratio far from 1
+    means the same ticker is a different token. None if any price is missing or not positive."""
+    if not all(x is not None and x > 0 for x in (perp, perp_btc, krw_x, krw_btc)):
+        return None
+    return (perp / perp_btc) / (krw_x / krw_btc)
+
+
+def flat_share(b: Bars, t: int, window_ms: int = HOUR_MS) -> float:
+    """Share of bars closed in (t - window_ms, t] whose high equals low (no price movement: a dead or illiquid
+    market); NaN if there are none. Uses only bars closed at or before ``t``."""
+    i1 = _last_closed(b, t)
+    i0 = int(np.searchsorted(b.t, t - window_ms, side="left"))
+    if i1 < i0:
+        return float("nan")
+    return float(np.mean(b.h[i0 : i1 + 1] <= b.lo[i0 : i1 + 1]))
+
+
+def second_bars(trades: Iterable[Sequence[float]], a_ms: int, z_ms: int) -> list[list[float | None]]:
+    """1-second bars ``[open_ms, open, high, low, close, base_qty, quote_qty]`` from trades ``(time_ms, price, qty)``
+    with ``a_ms <= time < z_ms``; seconds without trades are absent. Trades are aggregated in time order (stable).
+
+    If the trades carry a 4th field ``is_buyer_maker`` (Binance: true = the aggressor sold), six columns follow:
+    ``buy_qty, buy_quote, first_buy_price, last_sell_price, sell_qty, sell_quote`` (aggressive buys / sells;
+    a price is None when the second has no trade of that side)."""
+    acc: dict[int, list] = {}
+    for tr in sorted((t for t in trades if a_ms <= t[0] < z_ms), key=lambda t: t[0]):
+        s = int(tr[0]) // 1000 * 1000
+        p, q = float(tr[1]), float(tr[2])
+        side = len(tr) > 3
+        sell = bool(tr[3]) if side else False
+        b = acc.get(s)
+        if b is None:
+            b = acc[s] = [float(s), p, p, p, p, 0.0, 0.0]
+            if side:
+                b += [0.0, 0.0, None, None, 0.0, 0.0]
+        b[2] = max(b[2], p)
+        b[3] = min(b[3], p)
+        b[4] = p
+        b[5] += q
+        b[6] += p * q
+        if side and len(b) > 7:
+            if sell:
+                b[10] = p
+                b[11] += q
+                b[12] += p * q
+            else:
+                if b[9] is None:
+                    b[9] = p
+                b[7] += q
+                b[8] += p * q
+    return [acc[k] for k in sorted(acc)]
+
+
+def taker_buy_fill(rows: Sequence[Sequence], a_ms: int, z_ms: int, *, fallback_ms: int = 60_000, first: bool = False) -> float | None:
+    """Entry price of a market buy from side-aware 1 s bars (``second_bars`` with ``is_buyer_maker``): the VWAP of the
+    aggressive buys in bars that open in [a_ms, z_ms) -- or, with ``first=True``, the first aggressive buy at or after
+    a_ms; if the window has none, the first aggressive buy in [z_ms, z_ms + fallback_ms); else None. Only bars at or
+    after ``a_ms`` are used."""
+    sel = [r for r in rows if a_ms <= r[0] < z_ms and len(r) > 12 and r[9] is not None]
+    if sel:
+        if first:
+            return float(sel[0][9])
+        q = sum(float(r[7]) for r in sel)
+        if q > 0:
+            return sum(float(r[8]) for r in sel) / q
+    nxt = [r for r in rows if z_ms <= r[0] < z_ms + fallback_ms and len(r) > 12 and r[9] is not None]
+    return float(nxt[0][9]) if nxt else None
+
+
+def taker_sell_exit(rows: Sequence[Sequence], t_ms: int, *, max_stale_ms: int = 5 * MIN_MS) -> float | None:
+    """Exit price of a market sell at ``t_ms``: the last aggressive sell in the last 1 s bar that closed by t_ms and has
+    one (side-aware bars); None if there is none within ``max_stale_ms``. Uses only bars closed by t_ms."""
+    for r in reversed(rows):
+        if r[0] + 1000 > t_ms:
+            continue
+        if t_ms - (r[0] + 1000) > max_stale_ms:
+            return None
+        if len(r) > 12 and r[10] is not None:
+            return float(r[10])
+    return None
+
+
+def vwap_fill(rows: Sequence[Sequence[float]], a_ms: int, z_ms: int, *, fallback_ms: int = 60_000) -> float | None:
+    """Volume-weighted price of the 1 s bars that open in [a_ms, z_ms); if there are none, the open of the first bar
+    that opens in [z_ms, z_ms + fallback_ms); None if that is empty too. Only bars at or after ``a_ms`` are used."""
+    sel = [r for r in rows if a_ms <= r[0] < z_ms]
+    q = sum(float(r[5]) for r in sel)
+    if sel and q > 0:
+        return sum(float(r[6]) for r in sel) / q
+    nxt = [r for r in rows if z_ms <= r[0] < z_ms + fallback_ms]
+    return float(min(nxt, key=lambda r: r[0])[1]) if nxt else None
+
+
+def one_sided_p(values: Sequence[float], clusters: Sequence[object], *, n_boot: int = 10000, seed: int = 7) -> float:
+    """One-sided bootstrap p that the mean is <= 0: (1 + #{cluster-bootstrap means <= 0}) / (1 + n_boot)."""
+    if len(values) < 2:
+        return float("nan")
+    g: dict[object, list[float]] = {}
+    for v, c in zip(values, clusters, strict=True):
+        g.setdefault(c, []).append(float(v))
+    sums = np.array([sum(v) for v in g.values()])
+    cnts = np.array([len(v) for v in g.values()], dtype=float)
+    idx = np.random.default_rng(seed).integers(0, len(sums), size=(n_boot, len(sums)))
+    means = sums[idx].sum(axis=1) / cnts[idx].sum(axis=1)
+    return float((1 + int((means <= 0).sum())) / (1 + n_boot))
+
+
+def holm(pvals: Mapping[str, float]) -> dict[str, float]:
+    """Holm step-down adjusted p-values (monotone, capped at 1); NaN p-values stay NaN and do not count in m."""
+    ok = sorted(((p, k) for k, p in pvals.items() if not math.isnan(p)), key=lambda x: x[0])
+    m = len(ok)
+    adj: dict[str, float] = {k: float("nan") for k in pvals}
+    run = 0.0
+    for i, (p, k) in enumerate(ok):
+        run = max(run, min(1.0, (m - i) * p))
+        adj[k] = run
+    return adj
+
+
 # ------------------------------------------------------------------ speed: how much of the 24 h move is early
 
 
@@ -400,6 +636,8 @@ def short_trade(
     max_stale_ms: int = 30 * MIN_MS,
     sign: float = 1.0,
     stop_fill: str = "level",
+    entry_price: float | None = None,
+    exit_price: float | None = None,
 ) -> Trade | None:
     """Short (``sign=1``) or long (``sign=-1``) the perp at ``entry_ms`` and close at ``exit_ms``.
 
@@ -407,8 +645,10 @@ def short_trade(
     used for the stop and the excursion, so nothing after a time t changes results before t. A stop (0.25 = 25 %
     against the position) fills at the stop level on the first bar that touches it (gaps fill worse in reality);
     ``stop_fill="extreme"`` fills it at that bar's high (short) / low (long) instead -- the worst price of the bar.
-    If the series ends before ``exit_ms`` the position closes at the last close (``truncated``)."""
-    p0 = price_at(b, entry_ms, max_stale_ms=max_stale_ms)
+    If the series ends before ``exit_ms`` the position closes at the last close (``truncated``). ``entry_price``
+    overrides the entry fill (e.g. a VWAP over the first seconds after ``entry_ms``); ``exit_price`` overrides the exit
+    fill when the position is neither stopped nor truncated (e.g. the last aggressive sell before ``exit_ms``)."""
+    p0 = entry_price if entry_price is not None else price_at(b, entry_ms, max_stale_ms=max_stale_ms)
     if p0 is None or p0 <= 0:
         return None
     i0 = int(np.searchsorted(b.t, entry_ms, side="left"))
@@ -435,7 +675,7 @@ def short_trade(
         truncated = exit_ms - last_end > max_stale_ms
         if truncated:
             end_ms = last_end
-        p1 = float(b.c[i1])
+        p1 = float(exit_price) if exit_price is not None and not truncated else float(b.c[i1])
         gross = (1.0 - p1 / p0) if sign > 0 else (p1 / p0 - 1.0)
     fund = sign * sum(r for ms, r in funding if entry_ms < ms <= end_ms)
     cost = 2.0 * cost_side
@@ -463,13 +703,16 @@ def placebo_times(
     blocked: Iterable[int] = (),
     block_ms: int = 4 * DAY_MS,
     grid_ms: int = HOUR_MS,
+    lo_ms: int | None = None,
+    hi_ms: int | None = None,
 ) -> list[int]:
     """``n`` pseudo-random hour starts in [t0 - lo_days, t0 - hi_days], seeded by ``key`` (reproducible), at least
     ``block_ms`` away from every ``blocked`` time (other events of the token). Only times before the event are used,
-    so the placebo window never contains the event's own reaction."""
+    so the placebo window never contains the event's own reaction. ``lo_ms`` / ``hi_ms`` (offsets before t0 in ms)
+    override the day bounds, e.g. random minutes in [t0 - 23 h, t0 - 2 h] with ``grid_ms=MIN_MS``."""
     rng = random.Random(int(hashlib.sha256(key.encode()).hexdigest()[:16], 16))
-    a = (t0_ms - lo_days * DAY_MS) // grid_ms
-    z = (t0_ms - hi_days * DAY_MS) // grid_ms
+    a = (t0_ms - (lo_ms if lo_ms is not None else lo_days * DAY_MS)) // grid_ms
+    z = (t0_ms - (hi_ms if hi_ms is not None else hi_days * DAY_MS)) // grid_ms
     bl = sorted(blocked)
     out: list[int] = []
     tries = 0

@@ -1,0 +1,14 @@
+IDEA-20261017-news-events, stage 0c (Upbit / Bithumb): SHA-256 of the card section "## Попередня реєстрація 0c" (to the
+end of the file), printed by `uv run python scripts/verify_news_events_0c.py prereg`.
+
+1) before stage 0c (no Upbit / Bithumb announcements and no prices fetched or looked at; known in advance: Claude's
+   preliminary measurement quoted in the card, section 0c, and the answer to Q-20261017-2):
+2026-10-18T07:21:02+00:00 sha256=dea46f8fe84c88aa75a3a9464df42672470cdbaa8243fe446a0688a6aaa11d90 bytes=11228
+
+2) after the "Стадія 0" block (counts, SD, MDE, collision review, one benchmark event; no means of any hypothesis
+   looked at), before `report`:
+2026-10-18T08:00:07+00:00 sha256=e2d58ebfcf2891c3b6cbb5fb7f52e9553ceec890b35f5e2152348a31d721a3ac bytes=15181
+
+3) after the critic's review (run 2, 2026-10-18): the registration text was not changed. A section "## 0c після рев'ю
+   критика" was appended after it, so the section now runs past 15181 bytes; `prereg` also prints the SHA-256 of the
+   first 11228 and 15181 bytes of the section, which must equal hashes 1 and 2 above (checked: both equal).

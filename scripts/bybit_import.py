@@ -29,6 +29,40 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 DB_DEFAULT = "/var/lib/tradedesk-mcp/tradedesk.sqlite"
 DAY_MS = 86_400_000
 WINDOW_MS = 7 * DAY_MS  # Bybit: endTime - startTime <= 7 days
+MAJORS = [
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT",
+    "XRPUSDT",
+    "DOGEUSDT",
+    "BNBUSDT",
+    "ADAUSDT",
+    "AVAXUSDT",
+    "LINKUSDT",
+    "SUIUSDT",
+    "WIFUSDT",
+    "1000PEPEUSDT",
+    "TRUMPUSDT",
+    "FARTCOINUSDT",
+    "HYPEUSDT",
+    "ENAUSDT",
+    "TAOUSDT",
+    "TIAUSDT",
+    "NEARUSDT",
+    "APTUSDT",
+    "ARBUSDT",
+    "OPUSDT",
+    "INJUSDT",
+    "SEIUSDT",
+    "ONDOUSDT",
+    "JUPUSDT",
+    "WLDUSDT",
+    "TONUSDT",
+    "LTCUSDT",
+    "DOTUSDT",
+    "BTCUSD",
+    "ETHUSD",
+]
 
 
 def read_env(path: str) -> tuple[str, str]:
@@ -117,6 +151,43 @@ def fetch(env: str, days: int) -> tuple[list[dict[str, Any]], list[str]]:
         rows += [dict(x, _option=True) for x in opts]
     except Exception as e:  # noqa: BLE001
         notes.append(f"options: {type(e).__name__}: {str(e)[:120]}")
+    return rows, notes
+
+
+def fetch_classic(env: str, symbols: list[str], start_ms: int, end_ms: int) -> tuple[list[dict[str, Any]], list[str]]:
+    """Pre-upgrade (classic account) closed P&L: Bybit needs one symbol per request, 7-day windows."""
+    ex = client(env)
+    now = int(time.time() * 1000)
+    start_ms = max(start_ms, now - 729 * DAY_MS)
+    rows: list[dict[str, Any]] = []
+    notes: list[str] = []
+    for cat in ("linear", "inverse"):
+        found: dict[str, int] = {}
+        errors = 0
+        for sym in symbols:
+            if cat == "inverse" and not sym.endswith("USD"):
+                continue
+            t = start_ms
+            while t < end_ms:
+                try:
+                    part = _pages(
+                        ex.privateGetV5PreUpgradePositionClosedPnl,
+                        {"category": cat, "symbol": sym, "startTime": t, "endTime": min(t + WINDOW_MS, end_ms)},
+                    )
+                except Exception as e:  # noqa: BLE001 - unknown symbols and old windows are expected; keep going
+                    errors += 1
+                    if errors <= 2:
+                        notes.append(f"classic {cat} {sym}: {type(e).__name__}: {str(e)[:100]}")
+                    break
+                for x in part:
+                    x["_category"] = cat + "-classic"
+                if part:
+                    found[sym] = found.get(sym, 0) + len(part)
+                rows += part
+                t += WINDOW_MS
+        notes.append(
+            f"classic {cat}: {sum(found.values())} records in {len(found)} symbols ({', '.join(sorted(found)) or '-'}); {errors} symbols failed"
+        )
     return rows, notes
 
 
@@ -319,6 +390,10 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("check")
     imp = sub.add_parser("import")
     imp.add_argument("--days", type=int, default=730)
+    cl = sub.add_parser("import-classic", help="pre-upgrade (classic account) closed P&L, per symbol")
+    cl.add_argument("--symbols", required=True, help="comma-separated, or 'journal' = symbols already in the journal plus majors")
+    cl.add_argument("--from", dest="from_", default="2024-10-19")
+    cl.add_argument("--to", default="2025-05-01")
     s = sub.add_parser("stats")
     s.add_argument("--out", default=None, help="also write the report here (keep it outside git)")
     a = ap.parse_args(argv)
@@ -332,6 +407,23 @@ def main(argv: list[str] | None = None) -> int:
         added, skipped = asyncio.run(store(trades, a.db))
         print("\n".join(notes))
         print(f"records {len(raw)}, usable {len(trades)}, added {added}, already in the journal {skipped}")
+        return 0
+    if a.cmd == "import-classic":
+        if check(a.env):
+            return 1
+        syms = [x.strip().upper() for x in a.symbols.split(",") if x.strip()]
+        if a.symbols == "journal":
+            import sqlite3  # noqa: PLC0415
+
+            con = sqlite3.connect(f"file:{a.db}?mode=ro", uri=True)
+            syms = sorted({r[0] for r in con.execute("SELECT DISTINCT symbol FROM journal WHERE tags LIKE '%\"bybit\"%'")} | set(MAJORS))
+            con.close()
+        ms = lambda d: int(datetime.strptime(d, "%Y-%m-%d").replace(tzinfo=UTC).timestamp() * 1000)  # noqa: E731
+        raw, notes = fetch_classic(a.env, syms, ms(a.from_), ms(a.to))
+        trades = [t for t in (to_trade(x) for x in raw) if t]
+        added, skipped = asyncio.run(store(trades, a.db))
+        print("\n".join(notes))
+        print(f"symbols {len(syms)}, records {len(raw)}, usable {len(trades)}, added {added}, already in the journal {skipped}")
         return 0
     rep = stats(a.db)
     print(rep)

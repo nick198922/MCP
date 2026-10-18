@@ -147,7 +147,8 @@ async def test_open_settle_roundtrip(tmp_path):
         assert d["size_btc"] > 0 and any("HYPOTHESIS" in w for w in o["warnings"])
         # not yet expired -> stays open
         s = await _call(srv, "assistant_paper_status")
-        assert s["data"]["summary_settled"] == {"method": {"n": 0}, "manual": {"n": 0}} and len(s["data"]["open"]) == 1
+        assert s["data"]["summary_settled"] == {"method": {"n": 0}, "method_triggered": {"n": 0}, "manual": {"n": 0}}
+        assert len(s["data"]["open"]) == 1
         # after expiry: settled at the delivery price, own table only (the owner's journal stays empty)
         rt.now = lambda: datetime(2026, 11, 27, 9, tzinfo=UTC)
         s = await _call(srv, "assistant_paper_status")
@@ -175,26 +176,32 @@ async def test_sources_summarised_separately_and_validation(tmp_path):
     rt = _rt(tmp_path)
     srv, _ = build_server(rt)
     try:
-        m = await _call(
-            srv,
-            "assistant_paper_open",
-            structure="long_strangle25",
-            deposit_usd=1e6,
-            source="method",
-            method_mean_pct=0.01,
-            method_q05_pct=-0.05,
-            regime="calm",
-            note="x",
-        )
-        assert m["ok"] and m["data"]["source"] == "method" and m["data"]["regime"] == "calm" and m["data"]["method_q05_pct"] == -0.05
+        # the tool only books manual rows: 'method' is the collector job's tag
+        async with Client(srv) as c:
+            try:
+                res = await c.call_tool("assistant_paper_open", {"structure": "long_strangle25", "source": "method"})
+                assert res.is_error
+            except Exception:  # noqa: BLE001 - a validation error may surface as an exception
+                pass
+        await rt.store.init()
+        assert await rt.store.rec_paper_list() == []
+        for tr in ("chain", "regime"):  # two method rows written the way the job writes them
+            m = await _call(srv, "assistant_paper_open", structure="long_strangle25", deposit_usd=1e6, regime="calm", note="x")
+            assert m["ok"] and m["data"]["source"] == "manual" and m["data"]["regime"] == "calm"
+            await rt.store.init()  # the server lifespan closes the store after each call
+            await rt.store.conn.execute(
+                "UPDATE rec_paper SET source = 'method', trigger = ?, method_q05_pct = -0.05 WHERE id = ?", (tr, m["data"]["id"])
+            )
+            await rt.store.conn.commit()
         assert (await _call(srv, "assistant_paper_open", structure="long_straddle", deposit_usd=1e6))["ok"]
         bad = await _call(srv, "assistant_paper_open", structure="long_straddle", size_btc=0.15)
         assert bad["ok"] is False and bad["missing"][0]["field"] == "size_btc"
         eth = await _call(srv, "assistant_paper_open", structure="long_straddle", size_btc=0.1, currency="ETH")
-        assert eth["ok"] is False  # ETH lot is 1
+        assert eth["ok"] is False and eth["missing"][0]["field"] == "size_btc"  # ETH lot is 1
         rt.now = lambda: datetime(2026, 11, 27, 9, tzinfo=UTC)
         s = (await _call(srv, "assistant_paper_status"))["data"]["summary_settled"]
-        assert s["method"]["n"] == 1 and s["manual"]["n"] == 1
+        # the chain trade (H1-comparable) and the regime-triggered one are summarised apart
+        assert s["method"]["n"] == 1 and s["method_triggered"]["n"] == 1 and s["manual"]["n"] == 1
     finally:
         await rt.aclose()
 

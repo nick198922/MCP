@@ -537,7 +537,7 @@ class Store:
     async def rec_paper_insert(self, **f: Any) -> int:
         cols = (
             "opened_ts currency structure expiry_ts spot forward t_years premium_per_btc entry_fees_per_btc max_loss_per_btc "
-            "risk_basis size_btc deposit_usd risk_pct risk_usd note method_mean_pct method_q05_pct regime"
+            "risk_basis size_btc deposit_usd risk_pct risk_usd note method_mean_pct method_q05_pct regime trigger"
         ).split()
         vals = [f.get(c) for c in cols]
         cols += ["legs", "within_risk", "label", "source"]

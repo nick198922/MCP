@@ -116,10 +116,10 @@ def settle_paper(trade: dict[str, Any], delivery_price: float) -> dict[str, Any]
 
     ``trade`` needs ``legs`` (list of ``[strike, is_call, qty, exec_iv, entry_price]``), ``premium_per_btc``,
     ``entry_fees_per_btc``, ``size_btc``, ``risk_usd`` and ``spot``; optional ``method_q05_pct`` (the method's 5 %
-    quantile of the P&L as a fraction of spot). Returns the USD P&L for the trade size, the P&L per 1 BTC of
+    quantile of the P&L as a fraction of the entry forward, exactly as `option_replay.method_summary` returns it). Returns the USD P&L for the trade size, the P&L per 1 BTC of
     structure as a fraction of the entry spot (``pnl_pct_spot``, the main metric, same as in the 2026-10-18 study),
     ``r_worst_case`` = P&L / the trade's worst-loss risk in USD (NOT the study's R) and ``r_study`` = P&L per unit /
-    the study's risk: the premium for a debit, |q05| * spot for a credit (None when it is a credit and q05 unknown).
+    the study's risk: the premium for a debit, |q05| * spot for a credit (spot stands in for the forward, as in the study; None when it is a credit and q05 unknown).
     """
     legs: list[Leg] = [(float(k), bool(c), float(q), float(iv)) for k, c, q, iv, *_ in trade["legs"]]
     gross = payoff(legs, delivery_price)

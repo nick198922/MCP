@@ -84,6 +84,7 @@ def _view(t: dict[str, Any]) -> dict[str, Any]:
         "entry_fees_usd_per_btc": r(t["entry_fees_per_btc"], 2),
         "source": t["source"],
         "regime": t["regime"],
+        "trigger": t.get("trigger"),
         "method_mean_pct": r(t["method_mean_pct"], 5),
         "method_q05_pct": r(t["method_q05_pct"], 5),
         "max_loss_usd_per_btc": r(t["max_loss_per_btc"], 2),
@@ -107,6 +108,121 @@ def _view(t: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+async def prepare_chain(
+    rt: Runtime,
+    b: Builder,
+    currency: str,
+    expiry: str | None,
+    *,
+    target: float = TARGET_DTE,
+    band: tuple[float, float] = DTE_BAND,
+) -> dict[str, Any] | None:
+    """Live Deribit chain -> the expiry to price (given, else closest to ``target`` days within ``band``) with its surface and roles.
+
+    Shared by the tool and the collector job so both book through the same code. Failures go into ``b.missing``.
+    """
+    book = await b.guard("option_book", "deribit", rt.deribit.book_summary(currency, "option"))
+    if book is None:
+        return None
+    now = rt.now()
+    by = group_by_expiry(build_chain(book, now))
+    if expiry:
+        exp, err = find_expiry(by, expiry)
+        if exp is None:
+            b.miss("expiry", "tradedesk", "data_unavailable", err or "")
+            return None
+    else:
+        cands = [e for e in by if band[0] <= (e - now).total_seconds() / 86400 <= band[1]]
+        if not cands:
+            b.miss("expiry", "tradedesk", "data_unavailable", f"no listed expiry within {band[0]:g}..{band[1]:g} days; pass `expiry`")
+            return None
+        exp = min(cands, key=lambda e: abs((e - now).total_seconds() / 86400 - target))
+    rows = by[exp]
+    t_years = rows[0].T
+    spot = next((x.index for x in rows if x.index), None)
+    if t_years <= 0 or not spot:
+        b.miss("expiry", "tradedesk", "data_unavailable", f"{expiry_token(exp)} is expired or has no index price")
+        return None
+    surf = surface_of(rows)
+    return {"now": now, "exp": exp, "t_years": t_years, "spot": float(spot), "surf": surf, "roles": strike_roles(surf)}
+
+
+async def book_paper(
+    rt: Runtime,
+    b: Builder,
+    ctx: dict[str, Any],
+    *,
+    structure: str,
+    currency: str,
+    deposit_usd: float,
+    risk_pct: float,
+    size_btc: float | None,
+    lot: float,
+    source: str,
+    method_mean_pct: float | None,
+    method_q05_pct: float | None,
+    regime: str | None,
+    note: str | None,
+    trigger: str | None = None,
+) -> dict[str, Any] | None:
+    """Price ``structure`` on the prepared chain and insert the paper trade; returns the view, None on failure (in ``b``)."""
+    assert rt.store is not None
+    exp, surf, now, t_years, spot = ctx["exp"], ctx["surf"], ctx["now"], ctx["t_years"], ctx["spot"]
+    built = build_legs(structure, ctx["roles"], surf["F"], spread_vol=0.01)
+    if built is None:
+        b.miss("structure", "tradedesk", "data_unavailable", f"{structure}: no suitable strikes with open interest on {expiry_token(exp)}")
+        return None
+    legs = built[0]
+    rec = open_paper(
+        legs, forward=surf["F"], spot=spot, t_years=t_years, deposit_usd=deposit_usd, risk_pct=risk_pct, size_btc=size_btc, lot=lot
+    )
+    if not rec["within_risk"]:
+        b.warn(
+            f"booked size {rec['size_btc']:g} {currency} risks {rec['risk_usd']:.0f} USD > the {rec['risk_budget_usd']:.0f} USD budget "
+            f"({risk_pct:g} % of {deposit_usd:g}); max size under the budget is {rec['max_size_btc']:g}"
+        )
+    if rec["risk_basis"] != "max_loss":
+        b.warn("this structure has unbounded loss: `risk_usd` is a stress (downside to zero or forward +30 %), not a bound")
+    dupes = [
+        x["id"]
+        for x in await rt.store.rec_paper_list(status="open")
+        if x["structure"] == structure and x["expiry_ts"] == int(exp.timestamp()) and x["currency"] == currency
+    ]
+    if dupes:
+        b.warn(f"open paper trade(s) {dupes} with the same structure and expiry already exist; recording another")
+    stored_legs = [[k, c, q, iv, p] for (k, c, q, iv), p in zip(legs, rec["leg_prices"], strict=True)]
+    trade_id = await rt.store.rec_paper_insert(
+        opened_ts=int(now.timestamp()),
+        currency=currency,
+        structure=structure,
+        expiry_ts=int(exp.timestamp()),
+        spot=spot,
+        forward=surf["F"],
+        t_years=t_years,
+        legs=stored_legs,
+        premium_per_btc=rec["premium"],
+        entry_fees_per_btc=rec["entry_fees"],
+        max_loss_per_btc=rec["max_loss_per_btc"],
+        risk_basis=rec["risk_basis"],
+        size_btc=rec["size_btc"],
+        deposit_usd=deposit_usd,
+        risk_pct=risk_pct,
+        risk_usd=rec["risk_usd"],
+        within_risk=rec["within_risk"],
+        note=note,
+        source=source,
+        method_mean_pct=method_mean_pct,
+        method_q05_pct=method_q05_pct,
+        regime=regime,
+        trigger=trigger,
+    )
+    row = await rt.store.rec_paper_get(trade_id)
+    if row is None:
+        b.miss("rec_paper", "tradedesk", "data_unavailable", f"trade {trade_id} was written but could not be read back")
+        return None
+    return {**_view(row), "max_size_btc": rec["max_size_btc"], "risk_budget_usd": r(rec["risk_budget_usd"], 2)}
+
+
 def register(server: MCPServer, rt: Runtime) -> None:
     @server.tool(
         annotations=READ_ONLY,  # assistant_paper_open writes to the LOCAL store only — no orders, no external effects
@@ -120,8 +236,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "size fits; `size_btc` must be a multiple of the lot (default 0.1 BTC, 1 ETH). Worst loss is exact for bounded structures; for net short-call structures (short straddle / strangle) "
             "it is the worst of the downside to zero and a +30 % upside stress, not a bound (`risk_basis`). Worst loss includes entry and delivery fees. Money is USD, IV and fractions are decimals; P&L is linear USD accounting "
             "while Deribit options are inverse (premium and payoff in the coin), so a coin-margined result would differ. "
-            "`source` is 'manual' (default) or 'method' (picked by the method; optionally with its simulation `method_mean_pct`, "
-            "`method_q05_pct` as fractions of spot and `regime`): only 'method' rows test the method. "
+            "`source` is always 'manual' here: rows tagged 'method' are written only by the collector job `assistant_paper` "
+            "and are the only ones that test the method; manual rows are kept apart. "
             "Expiry defaults to the listed one closest to 40 days (28..56). The row is tagged 'hypothesis' (see `warnings`). "
             "Settle with assistant_paper_status after the 08:00 UTC expiry."
         ),
@@ -137,13 +253,20 @@ def register(server: MCPServer, rt: Runtime) -> None:
             float | None, Field(gt=0, le=10, description="Lot step in coins; default 0.1 for BTC and 1 for ETH (Deribit minimums).")
         ] = None,
         source: Annotated[
-            Literal["method", "manual"],
-            Field(description="'method' = picked by the recommendation method, 'manual' = picked by a person or model."),
+            Literal["manual"],
+            Field(description="Only 'manual' (picked by a person or model); 'method' rows are written by the collector job alone."),
         ] = "manual",
-        method_mean_pct: Annotated[float | None, Field(description="Method simulation mean P&L at entry, fraction of spot.")] = None,
+        method_mean_pct: Annotated[
+            float | None,
+            Field(
+                description="Method simulation mean P&L at entry, fraction of the entry forward (as `option_replay.method_summary` returns it)."
+            ),
+        ] = None,
         method_q05_pct: Annotated[
             float | None,
-            Field(description="Method simulation 5 % quantile of P&L at entry, fraction of spot (negative); gives r_study for credits."),
+            Field(
+                description="Method simulation 5 % quantile of P&L at entry, fraction of the entry forward (negative; as `method_summary` returns it); gives r_study for credits."
+            ),
         ] = None,
         regime: Annotated[str | None, Field(max_length=60, description="Method regime bucket at entry.")] = None,
         note: Annotated[
@@ -159,96 +282,26 @@ def register(server: MCPServer, rt: Runtime) -> None:
             b.miss("size_btc", "tradedesk", "invalid_input", f"size_btc {size_btc:g} is not a multiple of the lot {lot:g}")
             return b.build(None, ok=False)
         await rt.store.init()
-        book = await b.guard("option_book", "deribit", rt.deribit.book_summary(currency, "option"))
-        if book is None:
+        ctx = await prepare_chain(rt, b, currency, expiry)
+        if ctx is None:
             return b.build(None, ok=False)
-        now = rt.now()
-        by = group_by_expiry(build_chain(book, now))
-        if expiry:
-            exp, err = find_expiry(by, expiry)
-            if exp is None:
-                b.miss("expiry", "tradedesk", "data_unavailable", err or "")
-                return b.build(None, ok=False)
-        else:
-            cands = [e for e in by if DTE_BAND[0] <= (e - now).total_seconds() / 86400 <= DTE_BAND[1]]
-            if not cands:
-                b.miss(
-                    "expiry",
-                    "tradedesk",
-                    "data_unavailable",
-                    f"no listed expiry within {DTE_BAND[0]:g}..{DTE_BAND[1]:g} days; pass `expiry`",
-                )
-                return b.build(None, ok=False)
-            exp = min(cands, key=lambda e: abs((e - now).total_seconds() / 86400 - TARGET_DTE))
-        rows = by[exp]
-        t_years = rows[0].T
-        spot = next((x.index for x in rows if x.index), None)
-        if t_years <= 0 or not spot:
-            b.miss("expiry", "tradedesk", "data_unavailable", f"{expiry_token(exp)} is expired or has no index price")
-            return b.build(None, ok=False)
-        surf = surface_of(rows)
-        roles = strike_roles(surf)
-        built = build_legs(structure, roles, surf["F"], spread_vol=0.01)
-        if built is None:
-            b.miss(
-                "structure", "tradedesk", "data_unavailable", f"{structure}: no suitable strikes with open interest on {expiry_token(exp)}"
-            )
-            return b.build(None, ok=False)
-        legs = built[0]
-        rec = open_paper(
-            legs,
-            forward=surf["F"],
-            spot=float(spot),
-            t_years=t_years,
+        out = await book_paper(
+            rt,
+            b,
+            ctx,
+            structure=structure,
+            currency=currency,
             deposit_usd=deposit_usd,
             risk_pct=risk_pct,
             size_btc=size_btc,
             lot=lot,
-        )
-        if not rec["within_risk"]:
-            b.warn(
-                f"booked size {rec['size_btc']:g} {currency} risks {rec['risk_usd']:.0f} USD > the {rec['risk_budget_usd']:.0f} USD budget "
-                f"({risk_pct:g} % of {deposit_usd:g}); max size under the budget is {rec['max_size_btc']:g}"
-            )
-        if rec["risk_basis"] != "max_loss":
-            b.warn("this structure has unbounded loss: `risk_usd` is a stress (downside to zero or forward +30 %), not a bound")
-        dupes = [
-            x["id"]
-            for x in await rt.store.rec_paper_list(status="open")
-            if x["structure"] == structure and x["expiry_ts"] == int(exp.timestamp()) and x["currency"] == currency
-        ]
-        if dupes:
-            b.warn(f"open paper trade(s) {dupes} with the same structure and expiry already exist; recording another")
-        stored_legs = [[k, c, q, iv, p] for (k, c, q, iv), p in zip(legs, rec["leg_prices"], strict=True)]
-        trade_id = await rt.store.rec_paper_insert(
-            opened_ts=int(now.timestamp()),
-            currency=currency,
-            structure=structure,
-            expiry_ts=int(exp.timestamp()),
-            spot=float(spot),
-            forward=surf["F"],
-            t_years=t_years,
-            legs=stored_legs,
-            premium_per_btc=rec["premium"],
-            entry_fees_per_btc=rec["entry_fees"],
-            max_loss_per_btc=rec["max_loss_per_btc"],
-            risk_basis=rec["risk_basis"],
-            size_btc=rec["size_btc"],
-            deposit_usd=deposit_usd,
-            risk_pct=risk_pct,
-            risk_usd=rec["risk_usd"],
-            within_risk=rec["within_risk"],
-            note=note,
             source=source,
             method_mean_pct=method_mean_pct,
             method_q05_pct=method_q05_pct,
             regime=regime,
+            note=note,
         )
-        row = await rt.store.rec_paper_get(trade_id)
-        if row is None:
-            b.miss("rec_paper", "tradedesk", "data_unavailable", f"trade {trade_id} was written but could not be read back")
-            return b.build(None, ok=False)
-        return b.build({**_view(row), "max_size_btc": rec["max_size_btc"], "risk_budget_usd": r(rec["risk_budget_usd"], 2)})
+        return b.build(out, ok=False) if out is None else b.build(out)
 
     @server.tool(
         annotations=READ_ONLY,  # settling writes to the LOCAL store only — no orders
@@ -260,8 +313,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "`r_worst_case` (P&L / the trade's worst-loss risk in USD; NOT the R of the 2026-10-18 report) and `r_study` "
             "(per-unit P&L / premium for a debit, / |method 5 % quantile| * spot for a credit; null for a credit without "
             "`method_q05_pct`). Main metric: `pnl_pct_spot`. Returns open trades, settled trades and `summary_settled` "
-            "reported separately per `source` ('method' | 'manual'; only 'method' tests the method): n, win share, mean % of "
-            "spot, mean R (both kinds), sum USD. A trade whose delivery price is not yet "
+            "reported separately: 'method' (chain trades booked first / after an expiry, comparable with the walk-forward), "
+            "'method_triggered' (extra trades on a regime change or an event; they overlap the chain, so they are not independent) "
+            "and 'manual' (not a test of the method): n, win share, mean % of spot, mean R (both kinds), sum USD. A trade whose delivery price is not yet "
             "published stays open and is listed in `missing`. Few trades: the statistics are descriptive, not evidence."
         ),
     )
@@ -309,8 +363,16 @@ def register(server: MCPServer, rt: Runtime) -> None:
         open_now = await rt.store.rec_paper_list(status="open", limit=5000)
         settled = await rt.store.rec_paper_list(status="settled", limit=5000)
         summary: dict[str, Any] = {}
-        for src in ("method", "manual"):
-            s = summarize([x for x in settled if x["source"] == src])
+        meth = [x for x in settled if x["source"] == "method"]
+        groups = {
+            # 'method' = the chain trades (first / after expiry), the ones comparable with the H1 walk-forward;
+            # 'method_triggered' = extra trades opened on a regime change or an event (overlap the chain, correlated)
+            "method": [x for x in meth if x.get("trigger") in (None, "chain")],
+            "method_triggered": [x for x in meth if x.get("trigger") not in (None, "chain")],
+            "manual": [x for x in settled if x["source"] == "manual"],
+        }
+        for src, rows_ in groups.items():
+            s = summarize(rows_)
             for k, nd in (("win_share", 3), ("mean_pnl_pct_spot", 5), ("mean_r_worst_case", 3), ("mean_r_study", 3), ("sum_pnl_usd", 2)):
                 if k in s:
                     s[k] = r(s[k], nd)

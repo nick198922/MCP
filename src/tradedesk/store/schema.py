@@ -408,9 +408,10 @@ MIGRATIONS: dict[int, list[str]] = {
             r_worst_case REAL,                     -- P&L / worst-loss risk of the trade (NOT the study's R)
             r_study REAL,                          -- per-unit P&L / (premium for a debit, |method_q05| * spot for a credit)
             source TEXT NOT NULL DEFAULT 'manual', -- 'method' (picked by the method) | 'manual' (picked by a person/model)
-            method_mean_pct REAL,                  -- method simulation mean at entry, fraction of spot
-            method_q05_pct REAL,                   -- method simulation 5 % quantile at entry, fraction of spot
+            method_mean_pct REAL,                  -- method simulation mean at entry, fraction of the entry FORWARD (as method_summary returns it)
+            method_q05_pct REAL,                   -- method simulation 5 % quantile at entry, fraction of the entry FORWARD (as method_summary returns it)
             regime TEXT,                           -- method regime bucket at entry
+            trigger TEXT,                          -- why the job booked it: 'chain' (first / after expiry; H1-comparable) | 'regime' | 'event'; NULL for manual
             note TEXT
         )
         """,

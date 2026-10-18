@@ -593,6 +593,10 @@ def build_default_scheduler(rt: "Runtime") -> Scheduler | None:
         from .assistant_snapshot import collect_assistant_snapshot  # noqa: PLC0415
 
         jobs.append(PeriodicJob(name="assistant_snapshot", period_seconds=s.assistant_snapshot_seconds, fn=collect_assistant_snapshot))
+    if s.assistant_paper_enabled:
+        from .assistant_paper import collect_assistant_paper  # noqa: PLC0415
+
+        jobs.append(PeriodicJob(name="assistant_paper", period_seconds=s.assistant_paper_seconds, fn=collect_assistant_paper))
     if s.alerts_enabled:
         # JSON file is optional in Phase 3.1 — DB-backed rules work on their own.
         jobs.append(PeriodicJob(name="alerts", period_seconds=s.alerts_seconds, fn=_evaluate_alerts))

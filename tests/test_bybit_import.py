@@ -199,3 +199,32 @@ def test_option_trips_close_by_trade_and_at_expiry():
     a, b = t["BTC-30OCT26-86000-C-USDT"], t["ETH-2OCT26-2500-P-USDT"]
     assert a["side"] == "long" and round(a["pnl"], 2) == 98.0 and a["exit"] == 1500
     assert b["side"] == "short" and b["exit"] == 50 and round(b["pnl"], 2) == round(40 - 50 - 0.5 - 0.2, 2)
+
+
+def test_binance_fills_to_round_trips():
+    import binance_import as bn
+
+    def row(t, sym, side, px, q, rp, fee="0.1 USDT", tid=1, ps="BOTH"):
+        return {
+            "Time(UTC)": t,
+            "Symbol": sym,
+            "Side": side,
+            "Position Side": ps,
+            "Price": str(px),
+            "Quantity": str(q),
+            "Realized Profit": str(rp),
+            "Fee": fee,
+            "Trade Id": str(tid),
+            "Order Id": str(tid),
+        }
+
+    F = [
+        row("2025-01-01 00:00:00", "ETHUSDT", "SELL", 3000, 1, 5, tid=1),  # closes a pre-history position: skipped
+        row("2025-01-02 00:00:00", "ETHUSDT", "BUY", 3000, 1, 0, tid=2),
+        row("2025-01-03 00:00:00", "ETHUSDT", "SELL", 3100, 1, 100, tid=3),
+        row("2025-01-04 00:00:00", "SOLUSDT", "SELL", 100, 10, 0, tid=4),
+        row("2025-01-05 00:00:00", "SOLUSDT", "BUY", 90, 10, 100, fee="0.01 BNB", tid=5),
+    ]
+    t, skipped = bn.trips_from_fills(F)
+    got = sorted((x["symbol"], x["side"], x["entry"], x["exit"], round(x["pnl"], 2)) for x in t)
+    assert skipped == 1 and got == [("ETHUSDT", "long", 3000, 3100, 99.8), ("SOLUSDT", "short", 100, 90, 99.9)]

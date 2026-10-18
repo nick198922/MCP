@@ -119,6 +119,122 @@ def fetch(env: str) -> int:
     return 0
 
 
+def read_files(folder: Path = STATE) -> list[dict[str, str]]:
+    import csv  # noqa: PLC0415
+    import io  # noqa: PLC0415
+    import zipfile  # noqa: PLC0415
+
+    rows: list[dict[str, str]] = []
+    for f in sorted(folder.glob("trades_*")):
+        texts = (
+            [zipfile.ZipFile(f).read(n).decode("utf-8-sig") for n in zipfile.ZipFile(f).namelist()]
+            if f.suffix == ".zip"
+            else [f.read_text("utf-8-sig")]
+        )
+        for t in texts:
+            rows += list(csv.DictReader(io.StringIO(t)))
+    seen, uniq = set(), []
+    for r in rows:
+        k = (r.get("Symbol"), r.get("Trade Id"))
+        if k not in seen:
+            seen.add(k)
+            uniq.append(r)
+    return uniq
+
+
+def trips_from_fills(fills: list[dict[str, str]]) -> tuple[list[dict[str, Any]], int]:
+    """Group futures fills per symbol and position side into closed round trips; returns (trips, fills skipped).
+
+    One-way mode ("BOTH"): the position is the running signed quantity; a trip runs from flat to flat, a flip closes one
+    trip and opens the next. Hedge mode ("LONG"/"SHORT"): each side is its own position. P&L = Binance's realized profit
+    minus fees in USDT/USDC (fees paid in other coins are left out and counted). Fills that close a position opened
+    before the history starts (non-zero realized profit with no open trip) are skipped."""
+
+    def ts(r: dict[str, str]) -> int:
+        return int(datetime.strptime(r["Time(UTC)"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC).timestamp() * 1000)
+
+    groups: dict[tuple[str, str], list[dict[str, str]]] = {}
+    for r in fills:
+        groups.setdefault((r["Symbol"], r.get("Position Side", "BOTH")), []).append(r)
+    trips: list[dict[str, Any]] = []
+    skipped = 0
+    for (sym, pside), fs in groups.items():
+        fs.sort(key=lambda r: (ts(r), int(r.get("Trade Id") or 0)))
+        pos, cur = 0.0, None
+        for r in fs:
+            q, px, rp = float(r["Quantity"]), float(r["Price"]), float(r["Realized Profit"] or 0)
+            fee_s = str(r.get("Fee", "0")).split()
+            fee = float(fee_s[0]) if len(fee_s) == 2 and fee_s[1] in ("USDT", "USDC") else 0.0
+            if pside == "LONG":
+                signed = q if r["Side"] == "BUY" else -q
+            elif pside == "SHORT":
+                signed = -q if r["Side"] == "SELL" else q
+            else:
+                signed = q if r["Side"] == "BUY" else -q
+            if cur is None:
+                if abs(rp) > 1e-12:
+                    skipped += 1  # closes a position opened before the history starts
+                    continue
+                cur = {
+                    "side": "long" if signed > 0 else "short",
+                    "open_ts": ts(r),
+                    "in_q": 0.0,
+                    "in_v": 0.0,
+                    "out_q": 0.0,
+                    "out_v": 0.0,
+                    "pnl": 0.0,
+                    "fees": 0.0,
+                    "oid": r.get("Order Id") or r.get("Trade Id"),
+                }
+                pos = 0.0
+            new = pos + signed
+            flip = pos != 0 and new != 0 and (pos > 0) != (new > 0)
+            opening = (signed > 0) == (cur["side"] == "long") and not flip
+            close_q = abs(pos) if flip else (0.0 if opening else q)
+            if opening:
+                cur["in_q"] += q
+                cur["in_v"] += q * px
+            if close_q:
+                cur["out_q"] += close_q
+                cur["out_v"] += close_q * px
+            cur["pnl"] += rp
+            cur["fees"] += fee
+            pos = new
+            if abs(pos) < 1e-9 or flip:
+                if cur["in_q"] > 0 and cur["out_q"] > 0:
+                    trips.append(
+                        {
+                            "venue": "binance",
+                            "category": "usdm",
+                            "oid": str(cur["oid"]),
+                            "symbol": sym,
+                            "side": cur["side"],
+                            "size": cur["in_q"],
+                            "entry": cur["in_v"] / cur["in_q"],
+                            "exit": cur["out_v"] / cur["out_q"],
+                            "pnl": cur["pnl"] - cur["fees"],
+                            "fees": cur["fees"],
+                            "leverage": None,
+                            "open_ts": cur["open_ts"],
+                            "ts": ts(r),
+                        }
+                    )
+                cur = None
+                if flip:
+                    cur = {
+                        "side": "long" if pos > 0 else "short",
+                        "open_ts": ts(r),
+                        "in_q": abs(pos),
+                        "in_v": abs(pos) * px,
+                        "out_q": 0.0,
+                        "out_v": 0.0,
+                        "pnl": 0.0,
+                        "fees": 0.0,
+                        "oid": str(r.get("Order Id")) + "f",
+                    }
+    return trips, skipped
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--env", default="/etc/tradedesk-binance.env")
@@ -128,7 +244,23 @@ def main(argv: list[str] | None = None) -> int:
     rq.add_argument("--from", dest="from_", required=True)
     rq.add_argument("--to", required=True)
     sub.add_parser("fetch")
+    sub.add_parser("import", help="build round trips from the downloaded files and add them to the journal")
+    ap.add_argument("--db", default="/var/lib/tradedesk-mcp/tradedesk.sqlite")
     a = ap.parse_args(argv)
+    if a.cmd == "import":
+        import asyncio  # noqa: PLC0415
+
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+        import bybit_import as bi  # noqa: PLC0415
+
+        fills = read_files()
+        trips, skipped = trips_from_fills(fills)
+        added, dup = asyncio.run(bi.store(trips, a.db))
+        print(
+            f"fills {len(fills)}, closed round trips {len(trips)}, fills before the history start skipped {skipped}, added {added}, already in the journal {dup}"
+        )
+        return 0
     if a.cmd == "request":
         return request(a.env, a.from_, a.to)
     if a.cmd == "fetch":

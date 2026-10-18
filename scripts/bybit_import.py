@@ -423,10 +423,12 @@ def stats(db_path: str, venue: str | None = "bybit") -> str:
     """Report over imported closed trades of one venue (None = all venues); rows tagged "airdrop" are left out."""
     import sqlite3  # noqa: PLC0415
 
+    venue, _, extra = (venue or "").partition(":")  # "bybit:option" = Bybit rows tagged "option"
+    venue = venue or None
     con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     rows = con.execute(
-        "SELECT closed_ts, symbol, side, pnl, note, opened_ts FROM journal WHERE tags LIKE ? AND tags NOT LIKE '%\"airdrop\"%' AND status='closed'",
-        (f'%"{venue}"%' if venue else '%"import"%',),
+        "SELECT closed_ts, symbol, side, pnl, note, opened_ts FROM journal WHERE tags LIKE ? AND tags LIKE ? AND tags NOT LIKE '%\"airdrop\"%' AND status='closed'",
+        (f'%"{venue}"%' if venue else '%"import"%', f'%"{extra}"%' if extra else "%"),
     ).fetchall()
     con.close()
     if not rows:

@@ -112,6 +112,7 @@ def build_day(
     spot_window_min: float | None = 15.0,
     mark_pick: str = "latest",
     max_mark_age_h: float | None = 6.0,
+    product: str = "BTC",
 ) -> dict[str, Any] | None:
     """One day's surface at the reference time ``t_ref = day + ref_hour`` from trade prints.
 
@@ -129,12 +130,13 @@ def build_day(
       (age of the freshest print used), ``n``/``n_put`` (all prints / put prints in the window),
       ``sell_iv``/``buy_iv`` (median trade IV of taker-sell / taker-buy prints, i.e. bid / ask side) and
       ``put_delta`` at the mark IV on the reference forward and time.
+    * ``product``: option underlying to keep (``"BTC"``, ``"ETH"``); other instruments are skipped.
     """
     t_ref = day_ms + int(ref_hour * HOUR_MS)
     rows = []
     for t in trades:
         on = parse_option_name(str(t.get("instrument_name") or ""))
-        if on is None or on.product != "BTC":
+        if on is None or on.product != product:
             continue
         idx, ts = t.get("index_price"), t.get("timestamp")
         if not idx or not ts:

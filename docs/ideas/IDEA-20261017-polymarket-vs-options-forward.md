@@ -6,7 +6,7 @@
 <!-- proposed → accepted | rejected → testing → confirmed | rejected | inconclusive → built -->
 
 ## Прогрес
-- [ ] Колектор розривів Polymarket ↔ опціони
+- [x] Колектор розривів Polymarket ↔ опціони
 - [ ] Реєстрація порогу й метрик
 - [ ] Паперові позиції
 - [ ] Тижневий звіт

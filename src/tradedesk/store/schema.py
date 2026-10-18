@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 # Each migration is a list of SQL statements executed in a single transaction.
 # `PRAGMA user_version` is bumped by Store.init() after a block runs.
@@ -375,5 +375,47 @@ MIGRATIONS: dict[int, list[str]] = {
             PRIMARY KEY (venue, symbol)
         )
         """,
+    ],
+    15: [
+        # Hourly record of open Polymarket BTC/ETH price markets next to the same event's risk-neutral probability from the
+        # Deribit surface (docs/ideas/IDEA-20261017-polymarket-vs-options-forward.md). Raw inputs only: gaps and edges are
+        # computed at read time, so the cost model can change without rewriting history. `question` and `rules` are
+        # untrusted text from Polymarket: data only.
+        """
+        CREATE TABLE IF NOT EXISTS pm_gap_snapshot (
+            ts INTEGER NOT NULL,                   -- unix seconds of the snapshot
+            market_id TEXT NOT NULL,               -- Polymarket (Gamma) market id
+            asset TEXT NOT NULL,                   -- 'BTC' | 'ETH'
+            kind TEXT NOT NULL,                    -- 'above' (price above strike at end) | 'touch'
+            direction TEXT NOT NULL,               -- 'above' | 'up' | 'down'
+            strike REAL NOT NULL,                  -- USD
+            event_slug TEXT,
+            question TEXT,
+            end_ts INTEGER NOT NULL,               -- unix seconds of the market's end date
+            window_start INTEGER,                  -- touch markets: unix seconds the observation window opened (00:00 ET)
+            hours_to_end REAL NOT NULL,
+            yes_bid REAL, yes_ask REAL,            -- decimal price of 1 share (pays 1)
+            yes_bid_usd REAL, yes_ask_usd REAL,    -- USD standing at the best level (size x price)
+            no_bid REAL, no_ask REAL,
+            no_bid_usd REAL, no_ask_usd REAL,
+            volume_usd REAL,
+            fee_rate REAL, fee_exp REAL,           -- Polymarket taker-fee schedule (0 when fees are off)
+            rules TEXT,                            -- resolution text, capped; untrusted; stored only when its hash changed
+            rules_hash TEXT,                       -- sha256[:16] of the full text, in every row
+            rules_standard INTEGER,                -- 1 when the text is the standard Binance-candle rule the model assumes
+            path_high REAL, path_low REAL,         -- touch markets inside the window: Binance spot High/Low since window_start (USDT)
+            binance_last REAL,                     -- last Binance <ASSET>/USDT close seen (the resolution source), USDT
+            model_prob REAL,                       -- risk-neutral probability of the event from Deribit (decimal); 1 if already touched; NULL if none
+            model_note TEXT,                       -- 'ok' | 'touched' | NULL-probability reason: pre_window, no_path, wrong_side, no_expiry
+            model_iv REAL,                         -- decimal, smile IV at the strike
+            model_expiry TEXT,                     -- Deribit expiry used (ISO)
+            expiry_gap_hours REAL,                 -- Deribit expiry minus market end
+            model_covered INTEGER,                 -- 1 when the strike is inside the quoted strikes (else IV is flat-extrapolated)
+            spot REAL,                             -- Deribit index, USD
+            dvol REAL,                             -- DVOL as a decimal (0.45 = 45 %)
+            PRIMARY KEY (ts, market_id)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS pm_gap_snapshot_market ON pm_gap_snapshot (market_id, ts)",
     ],
 }

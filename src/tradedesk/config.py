@@ -76,6 +76,9 @@ class Settings:
     assistant_snapshot_enabled: bool = False
     assistant_snapshot_seconds: int = 600
     assistant_snapshot_path: str = ""
+    # Polymarket <-> Deribit options gap collector (docs/ideas/IDEA-20261017-polymarket-vs-options-forward.md). Off by default.
+    pm_gap_enabled: bool = False
+    pm_gap_seconds: int = 3600
     # Alerts
     alerts_enabled: bool = False
     alerts_rules_path: str = ""
@@ -131,6 +134,8 @@ class Settings:
             assistant_snapshot_enabled=os.environ.get("TRADEDESK_ASSISTANT_SNAPSHOT_ENABLED", "").lower() in ("1", "true", "yes"),
             assistant_snapshot_seconds=int(_float("TRADEDESK_ASSISTANT_SNAPSHOT_SECONDS", 600)),
             assistant_snapshot_path=os.environ.get("TRADEDESK_ASSISTANT_SNAPSHOT_PATH", ""),
+            pm_gap_enabled=os.environ.get("TRADEDESK_PM_GAP_ENABLED", "").lower() in ("1", "true", "yes"),
+            pm_gap_seconds=int(_float("TRADEDESK_PM_GAP_SECONDS", 3600)),
             http_bearer_tokens=os.environ.get("TRADEDESK_HTTP_BEARER_TOKENS") or os.environ.get("TRADEDESK_HTTP_BEARER_TOKEN", ""),
             alerts_enabled=os.environ.get("TRADEDESK_ALERTS_ENABLED", "").lower() in ("1", "true", "yes"),
             alerts_rules_path=os.environ.get("TRADEDESK_ALERTS_RULES_PATH", ""),

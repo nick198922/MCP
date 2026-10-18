@@ -55,6 +55,7 @@ EXPECTED_TOOLS = {
     "polymarket_search",
     "polymarket_market",
     "polymarket_history",
+    "polymarket_options_gap",
     "coin_snapshot",
     "global_market",
     "top_coins",

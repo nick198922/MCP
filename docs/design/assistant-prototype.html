@@ -1,0 +1,453 @@
+<title>Асистент tradedesk</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600&family=JetBrains+Mono:wght@400;600&family=Unbounded:wght@500;700&display=swap">
+<style>
+/* Layout: a trader's morning desk — summary strip on top, three tabs (brief, options, journal), dense cards, charts drawn to scale */
+:root{
+  --paper:#F4F6F9; --surface:#FFFFFF; --ink:#13202D; --muted:#5A6878; --line:#DCE3EB;
+  --accent:#1D5FC4; --accent-soft:#E3ECFA; --gain:#11805A; --gain-soft:#E1F3EC; --loss:#C2402E; --loss-soft:#FBE7E3; --warn:#A86B12; --warn-soft:#FBF0DC;
+  --f-display:"Unbounded","Golos Text",system-ui,sans-serif; --f-body:"Golos Text",system-ui,-apple-system,"Segoe UI",sans-serif; --f-num:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --paper:#0D131A; --surface:#141C26; --ink:#E5EBF2; --muted:#93A1B2; --line:#25303D;
+  --accent:#73A9FF; --accent-soft:#1B2A40; --gain:#41C08F; --gain-soft:#14302A; --loss:#F07B69; --loss-soft:#3A1F1C; --warn:#E3AB4E; --warn-soft:#382B15; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --paper:#0D131A; --surface:#141C26; --ink:#E5EBF2; --muted:#93A1B2; --line:#25303D;
+  --accent:#73A9FF; --accent-soft:#1B2A40; --gain:#41C08F; --gain-soft:#14302A; --loss:#F07B69; --loss-soft:#3A1F1C; --warn:#E3AB4E; --warn-soft:#382B15; color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--paper);color:var(--ink);font:15px/1.5 var(--f-body);padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:14px 40px}
+.wrap{max-width:1180px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
+header.top{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 18px}
+h1{font:700 20px/1.2 var(--f-display);margin:0;letter-spacing:.01em}
+.stamp{color:var(--muted);font-size:13px}
+.proto{font-size:12px;color:var(--warn);background:var(--warn-soft);border-radius:999px;padding:2px 10px}
+nav.tabs{display:flex;gap:6px;flex-wrap:wrap;border-bottom:1px solid var(--line)}
+nav.tabs button{font:600 14px var(--f-body);color:var(--muted);background:none;border:0;border-bottom:3px solid transparent;padding:8px 12px;cursor:pointer}
+nav.tabs button[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--accent)}
+nav.tabs button:focus-visible,button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.grid{display:grid;gap:14px;grid-template-columns:repeat(12,minmax(0,1fr))}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px 16px;min-width:0}
+.c12{grid-column:span 12}.c8{grid-column:span 8}.c7{grid-column:span 7}.c6{grid-column:span 6}.c5{grid-column:span 5}.c4{grid-column:span 4}
+@media (max-width:900px){.c8,.c7,.c6,.c5,.c4{grid-column:span 12}}
+h2{font:500 12px/1.3 var(--f-display);text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:0 0 10px}
+h3{font:600 16px/1.35 var(--f-body);margin:0 0 6px;text-wrap:balance}
+.num{font-family:var(--f-num);font-variant-numeric:tabular-nums}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+.tile{display:flex;flex-direction:column;gap:2px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
+.tile .k{font-size:12px;color:var(--muted)}.tile .v{font:600 20px var(--f-num)}.tile .s{font-size:12px;color:var(--muted)}
+.up{color:var(--gain)}.dn{color:var(--loss)}.wr{color:var(--warn)}.mut{color:var(--muted)}
+ul.key{margin:0;padding-left:0;list-style:none;display:flex;flex-direction:column;gap:8px}
+ul.key li{display:grid;grid-template-columns:auto 1fr;gap:10px;align-items:start}
+.chip{font:600 11px var(--f-body);text-transform:uppercase;letter-spacing:.05em;border-radius:999px;padding:2px 8px;white-space:nowrap}
+.chip.calm{background:var(--accent-soft);color:var(--accent)}.chip.risk{background:var(--loss-soft);color:var(--loss)}.chip.opp{background:var(--gain-soft);color:var(--gain)}.chip.ev{background:var(--warn-soft);color:var(--warn)}
+table{width:100%;border-collapse:collapse;font-size:14px}
+td,th{padding:6px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+th{font-weight:600;color:var(--muted);font-size:12px}
+td.r,th.r{text-align:right}
+.scroll{overflow-x:auto}
+svg{display:block;width:100%;height:auto}
+svg text{font:11px var(--f-num);fill:var(--muted)}
+.bars{display:flex;flex-direction:column;gap:6px}
+.bar{display:grid;grid-template-columns:110px 1fr 58px;gap:8px;align-items:center;font-size:13px}
+.bar .t{height:10px;background:var(--line);border-radius:5px;overflow:hidden}.bar .t i{display:block;height:100%;background:var(--accent)}
+.ctl{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:end}
+.ctl label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)}
+select,input[type=number]{font:14px var(--f-num);color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:6px 8px;min-width:0}
+input[type=range]{accent-color:var(--accent);width:180px;max-width:100%}
+.seg{display:flex;flex-wrap:wrap;gap:6px}
+.seg button{font:600 13px var(--f-body);border:1px solid var(--line);background:var(--surface);color:var(--ink);border-radius:999px;padding:6px 12px;cursor:pointer}
+.seg button[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:var(--surface)}
+.verdict{font-size:15px;line-height:1.6;max-width:72ch}
+.verdict b{font-family:var(--f-num);font-weight:600}
+.note{font-size:12px;color:var(--muted);max-width:90ch}
+.example{border:1px dashed var(--warn);background:var(--warn-soft);color:var(--ink);border-radius:8px;padding:8px 12px;font-size:13px}
+.legend{display:flex;flex-wrap:wrap;gap:12px;font-size:12px;color:var(--muted)}
+.legend i{display:inline-block;width:14px;height:3px;border-radius:2px;vertical-align:middle;margin-right:5px}
+@media (prefers-reduced-motion:no-preference){.card{transition:border-color .2s}}
+</style>
+<div class="wrap">
+<header class="top">
+  <h1>Асистент tradedesk</h1>
+  <span class="stamp" id="stamp"></span>
+  <span class="proto">прототип · знімок даних, не оновлюється</span>
+</header>
+<nav class="tabs" role="tablist">
+  <button role="tab" id="t-brief" aria-selected="true" aria-controls="p-brief">Бриф</button>
+  <button role="tab" id="t-options" aria-selected="false" aria-controls="p-options">Опціони</button>
+  <button role="tab" id="t-journal" aria-selected="false" aria-controls="p-journal">Журнал</button>
+</nav>
+
+<!-- ================= BRIEF ================= -->
+<section id="p-brief" role="tabpanel" aria-labelledby="t-brief">
+ <div class="grid">
+  <div class="card c12"><div class="tiles" id="tiles"></div></div>
+
+  <div class="card c5">
+    <h2>Головне сьогодні</h2>
+    <ul class="key" id="keypoints"></ul>
+  </div>
+
+  <div class="card c7">
+    <h2>BTC за 120 днів і що закладають опціони</h2>
+    <div id="pricechart"></div>
+    <div class="legend"><span><i style="background:var(--ink)"></i>ціна закриття (Binance, день)</span><span><i style="background:var(--accent)"></i>±1σ до 27.11 (опціони)</span><span><i style="background:var(--warn)"></i>беззбиток стреддлу до 22.10</span></div>
+  </div>
+
+  <div class="card c6">
+    <h2>Сценарії на 27.11 · ймовірності з цін опціонів</h2>
+    <div class="bars" id="probs"></div>
+    <p class="note">Ризик-нейтральні ймовірності з ланцюжка Deribit (IV на кожному страйку). Це ціна страхування в ринку, а не наш прогноз: реальні ймовірності відрізняються на премію за ризик. Прогнози асистента з'являться окремо, з оцінкою точності (Brier).</p>
+  </div>
+
+  <div class="card c6">
+    <h2>Волатильність</h2>
+    <div class="tiles" id="voltiles"></div>
+    <div id="termchart" style="margin-top:10px"></div>
+    <p class="note" id="volnote"></p>
+  </div>
+
+  <div class="card c4">
+    <h2>Події · час Київ</h2>
+    <table id="events"></table>
+    <p class="note">За 48 год до події з високим впливом — менший розмір або позиція з обмеженим ризиком.</p>
+  </div>
+  <div class="card c4">
+    <h2>Funding · річних</h2>
+    <div id="funding"></div>
+  </div>
+  <div class="card c4">
+    <h2>Upbit · фільтр ризику</h2>
+    <table id="upbit"></table>
+    <p class="note">Монети з попередженням або делістингом — не для лонгів.</p>
+  </div>
+ </div>
+</section>
+
+<!-- ================= OPTIONS ================= -->
+<section id="p-options" role="tabpanel" aria-labelledby="t-options" hidden>
+ <div class="grid">
+  <div class="card c12">
+    <h2>Конструктор · BTC, експірація <span id="expname"></span></h2>
+    <div class="ctl">
+      <div class="seg" id="strat" role="group" aria-label="Стратегія">
+        <button data-s="short_strangle" aria-pressed="true">Продаж стренглу</button>
+        <button data-s="short_straddle" aria-pressed="false">Продаж стреддлу</button>
+        <button data-s="iron_condor" aria-pressed="false">Залізний кондор</button>
+        <button data-s="long_straddle" aria-pressed="false">Купівля стреддлу</button>
+        <button data-s="long_strangle" aria-pressed="false">Купівля стренглу</button>
+      </div>
+    </div>
+    <div class="ctl" style="margin-top:12px">
+      <label for="kput">Пут, страйк<select id="kput"></select></label>
+      <label for="kcall">Кол, страйк<select id="kcall"></select></label>
+      <label for="kputw" id="lputw">Захисний пут<select id="kputw"></select></label>
+      <label for="kcallw" id="lcallw">Захисний кол<select id="kcallw"></select></label>
+      <label for="qty">Розмір, BTC<input type="number" id="qty" min="0.1" max="20" step="0.1" value="1"></label>
+      <label for="hzn">Лінія «через N днів»: <span id="hznv" class="num"></span><input type="range" id="hzn" min="0" max="39" step="1" value="10"></label>
+    </div>
+  </div>
+
+  <div class="card c8">
+    <h2>Прибуток і збиток, USD</h2>
+    <div id="payoff"></div>
+    <div class="legend"><span><i style="background:var(--accent)"></i>на експірацію</span><span><i style="background:var(--warn)"></i>через N днів (та сама IV)</span><span><i style="background:var(--muted)"></i>поточна ціна</span><span><i style="background:var(--accent-soft);height:8px"></i>±1σ до експірації</span></div>
+  </div>
+  <div class="card c4">
+    <h2>Позиція</h2>
+    <div class="tiles" id="postiles"></div>
+    <h2 style="margin-top:14px">Греки позиції</h2>
+    <table id="greeks"></table>
+  </div>
+
+  <div class="card c7">
+    <h2>Що це означає</h2>
+    <div class="verdict" id="verdict"></div>
+  </div>
+  <div class="card c5">
+    <h2>Чи дорога зараз волатильність</h2>
+    <div id="vrpbox"></div>
+  </div>
+
+  <div class="card c12">
+    <h2>Сценарії · P&amp;L позиції, USD</h2>
+    <div class="scroll"><table id="scen"></table></div>
+    <p class="note">Ціни й греки — Deribit, марки, Black-76 на форварді експірації (r = 0), T = дні/365; вега — на 1 пункт волатильності, тета — за день. Ймовірність прибутку — ризик-нейтральна, лог-нормальна за ATM IV. Комісії не враховано.</p>
+  </div>
+ </div>
+</section>
+
+<!-- ================= JOURNAL ================= -->
+<section id="p-journal" role="tabpanel" aria-labelledby="t-journal" hidden>
+ <div class="grid">
+  <div class="card c12"><div class="example"><b>Приклад наповнення.</b> Твоїх угод у журналі ще немає: так виглядатиме сторінка, коли ти записуватимеш угоди (через Telegram або в чаті з Claude) з тезою, стопом і тегами.</div></div>
+  <div class="card c12"><div class="tiles" id="jtiles"></div></div>
+  <div class="card c7">
+    <h2>Крива результату в R (приклад)</h2>
+    <div id="eqchart"></div>
+  </div>
+  <div class="card c5">
+    <h2>Розбір тижня (приклад)</h2>
+    <div class="verdict" id="review"></div>
+  </div>
+  <div class="card c12">
+    <h2>Угоди (приклад)</h2>
+    <div class="scroll"><table id="trades"></table></div>
+  </div>
+ </div>
+</section>
+
+<p class="note">Дані: Deribit, Binance, Bybit, OKX, Hyperliquid, alternative.me, ForexFactory і сід ФРС/BLS, Upbit — через інструменти MCP-сервера tradedesk. Це не інвестиційна порада.</p>
+</div>
+
+<script>
+const D = {"asof_utc":"2026-10-18T15:13:00Z","asof_kyiv":"18.10.2026, 18:13","spot":81075.24,"tick":[{"s":"BTC","last":81180.48,"pct":-0.477,"hi":82295.47,"lo":80819.66},{"s":"ETH","last":2380.0,"pct":-1.807,"hi":2430.0,"lo":2356.79},{"s":"SOL","last":102.32,"pct":-1.795,"hi":104.79,"lo":101.25}],"ohlc":[[1782000000000,64298.01,64588.0,63270.0,63311.99],[1782086400000,63312.0,65622.83,63312.0,64020.01],[1782172800000,64020.01,64275.38,61938.0,62734.57],[1782259200000,62734.57,63239.06,59102.7,61077.99],[1782345600000,61078.0,61962.4,58115.01,59794.0],[1782432000000,59794.64,60759.99,58337.0,60097.27],[1782518400000,60097.27,60941.17,59855.16,60029.0],[1782604800000,60029.01,60545.01,58905.0,59577.01],[1782691200000,59577.01,60780.57,58900.01,60260.21],[1782777600000,60260.2,60276.54,58201.0,58624.71],[1782864000000,58624.71,61334.0,57800.19,60024.0],[1782950400000,60024.0,62200.0,59588.0,61560.0],[1783036800000,61560.0,62979.86,61248.86,62583.26],[1783123200000,62583.26,63461.99,62328.24,63144.01],[1783209600000,63144.01,63999.0,62436.59,63650.0],[1783296000000,63650.01,64700.0,61306.84,64042.02],[1783382400000,64042.93,64314.0,62671.39,63363.99],[1783468800000,63364.0,63761.99,61544.56,62290.0],[1783555200000,62290.01,63500.0,61705.29,63230.0],[1783641600000,63230.01,64692.83,62926.01,64161.72],[1783728000000,64161.72,64504.11,63819.0,63819.0],[1783814400000,63819.01,64290.11,63640.83,63780.0],[1783900800000,63780.0,64425.0,61824.97,62334.52],[1783987200000,62334.52,65100.0,62272.2,65043.98],[1784073600000,65043.99,65600.0,64485.0,64756.28],[1784160000000,64756.28,64997.52,63748.74,63830.2],[1784246400000,63830.2,64387.99,62537.56,63931.67],[1784332800000,63931.67,64865.0,63886.65,64834.22],[1784419200000,64834.21,64967.25,64280.0,64722.54],[1784505600000,64722.55,65799.0,63100.0,65255.51],[1784592000000,65255.51,66956.15,65148.75,66556.16],[1784678400000,66556.15,66739.89,65553.67,66114.49],[1784764800000,66114.5,66313.14,64650.0,65098.97],[1784851200000,65098.98,65808.59,63739.75,64139.99],[1784937600000,64140.0,64475.28,63810.0,64375.0],[1785024000000,64375.01,65577.0,64293.81,65399.99],[1785110400000,65400.0,65744.6,63605.56,63755.86],[1785196800000,63755.86,64100.0,62742.47,63915.0],[1785283200000,63915.0,64744.81,63267.34,63984.28],[1785369600000,63984.29,65176.6,63603.92,64780.02],[1785456000000,64780.03,65409.56,62466.0,62887.88],[1785542400000,62887.88,63150.0,62275.0,62823.64],[1785628800000,62823.65,63796.33,62806.58,63570.0],[1785715200000,63570.01,64080.0,62300.0,63520.0],[1785801600000,63520.0,64549.16,63322.01,64106.56],[1785888000000,64106.55,65025.22,63880.0,64665.23],[1785974400000,64665.24,64999.0,64172.0,64323.61],[1786060800000,64323.61,65390.99,64166.0,64923.19],[1786147200000,64923.2,65192.54,64784.19,64962.6],[1786233600000,64962.6,65474.46,64730.08,64901.59],[1786320000000,64901.59,65391.14,63806.27,63970.01],[1786406400000,63970.01,64515.43,63238.0,63600.0],[1786492800000,63600.01,64500.0,63310.34,63479.99],[1786579200000,63479.99,64010.0,62802.27,63490.86],[1786665600000,63490.86,63617.45,62535.24,63043.56],[1786752000000,63043.56,63187.98,62920.0,63086.01],[1786838400000,63086.01,63390.0,62716.0,62900.0],[1786924800000,62900.0,64610.01,62751.1,64532.1],[1787011200000,64532.11,65058.81,64027.85,64725.42],[1787097600000,64725.42,70000.0,64166.0,69334.79],[1787184000000,69334.78,73400.0,68902.22,73025.15],[1787270400000,73027.02,79500.0,73027.02,78338.03],[1787356800000,78338.03,78828.15,76500.0,77074.93],[1787443200000,77074.94,78052.85,75545.67,77734.0],[1787529600000,77734.0,80000.0,76670.01,78992.75],[1787616000000,78992.76,81272.62,77851.0,78539.14],[1787702400000,78539.13,79251.6,77632.58,79023.75],[1787788800000,79023.75,80848.74,78546.13,80249.58],[1787875200000,80249.59,81478.87,76888.0,77845.87],[1787961600000,77845.88,78330.0,77382.37,78230.0],[1788048000000,78230.0,79400.0,77000.0,77682.0],[1788134400000,77682.0,79250.0,77392.0,78581.29],[1788220800000,78581.3,79220.61,76420.0,77439.0],[1788307200000,77439.01,77792.0,76264.0,77340.01],[1788393600000,77340.01,82300.0,76968.0,81270.37],[1788480000000,81270.37,81427.75,78660.0,79660.77],[1788566400000,79660.77,80200.0,79442.0,79831.75],[1788652800000,79831.75,80559.99,79233.0,80341.83],[1788739200000,80341.83,80443.99,78680.0,79112.01],[1788825600000,79112.0,79485.0,77620.01,78455.8],[1788912000000,78455.8,79760.0,77770.0,78306.43],[1788998400000,78306.43,78564.39,76464.0,76568.72],[1789084800000,76568.73,79890.0,76046.58,77225.7],[1789171200000,77225.71,77505.67,77059.75,77278.73],[1789257600000,77278.73,77450.0,76500.0,76842.01],[1789344000000,76842.01,79600.0,76388.72,78189.21],[1789430400000,78189.2,78250.46,74967.97,75644.48],[1789516800000,75644.48,76560.76,75064.82,76206.01],[1789603200000,76206.0,77179.47,76000.0,76417.01],[1789689600000,76417.01,81400.0,76296.0,80883.87],[1789776000000,80883.86,81951.0,80844.58,81249.99],[1789862400000,81249.99,81497.33,80126.04,81178.0],[1789948800000,81178.01,87395.67,80850.22,86620.0],[1790035200000,86620.01,86717.6,85114.0,86208.56],[1790121600000,86208.57,87278.54,83500.01,84397.6],[1790208000000,84397.6,84942.45,82874.93,84410.24],[1790294400000,84410.24,85255.0,83183.0,84099.99],[1790380800000,84100.0,84473.58,83798.0,84433.1],[1790467200000,84433.11,85159.03,84132.0,84472.0],[1790553600000,84472.01,84999.0,82563.0,83500.01],[1790640000000,83500.01,84563.99,82775.94,83663.66],[1790726400000,83663.66,85649.95,82956.11,83623.6],[1790812800000,83623.59,85273.65,83186.0,84880.05],[1790899200000,84880.05,87220.0,83888.0,84518.01],[1790985600000,84518.0,85037.63,84456.02,84753.56],[1791072000000,84753.57,86800.0,84719.99,86530.0],[1791158400000,86530.0,86999.11,84972.01,85766.87],[1791244800000,85766.87,86698.99,85136.11,85549.93],[1791331200000,85549.94,85598.22,82787.25,83321.81],[1791417600000,83321.81,83521.15,80393.56,81754.45],[1791504000000,81754.46,83528.98,81603.52,82635.55],[1791590400000,82635.56,83173.29,82545.82,82988.36],[1791676800000,82988.35,84199.0,82804.65,83773.12],[1791763200000,83773.12,84352.0,81750.09,81850.0],[1791849600000,81850.01,84168.0,81033.66,83169.0],[1791936000000,83169.01,84146.72,81444.42,81682.01],[1792022400000,81682.02,82634.3,79800.0,82245.93],[1792108800000,82245.93,82940.81,80809.25,81615.64],[1792195200000,81615.91,81770.01,80819.66,81491.04],[1792281600000,81491.04,82295.47,81037.0,81180.47]],"vol":{"dvol":0.3852,"rv_7d":0.2547,"rv_30d":0.3151,"dvol_percentile_365d":0.282,"dvol_mean":0.4903,"dvol_min":0.3359,"dvol_max":0.8302},"dvol_chg":{"d1":1.08,"d7":1.34},"vrp_buckets":[{"dvol_percentile_365d":"0%-20%","n_starts":266,"mean_straddle_pnl":-0.001,"share_positive":0.545,"current":false},{"dvol_percentile_365d":"20%-40%","n_starts":129,"mean_straddle_pnl":-0.002,"share_positive":0.419,"current":true},{"dvol_percentile_365d":"40%-60%","n_starts":98,"mean_straddle_pnl":0.0155,"share_positive":0.724,"current":false},{"dvol_percentile_365d":"60%-80%","n_starts":51,"mean_straddle_pnl":0.0232,"share_positive":0.882,"current":false},{"dvol_percentile_365d":"80%-100%","n_starts":61,"mean_straddle_pnl":0.0172,"share_positive":0.885,"current":false}],"term":[{"e":"19OCT26","d":0.7,"iv":0.3372},{"e":"20OCT26","d":1.7,"iv":0.3501},{"e":"21OCT26","d":2.7,"iv":0.3458},{"e":"22OCT26","d":3.7,"iv":0.3414},{"e":"23OCT26","d":4.7,"iv":0.341},{"e":"30OCT26","d":11.7,"iv":0.3446},{"e":"6NOV26","d":18.7,"iv":0.3746},{"e":"27NOV26","d":39.7,"iv":0.3672},{"e":"25DEC26","d":67.7,"iv":0.3675},{"e":"26MAR27","d":158.7,"iv":0.3781},{"e":"25JUN27","d":249.7,"iv":0.3839},{"e":"24SEP27","d":340.7,"iv":0.3888}],"skew":[{"e":"19OCT26","d":0.7,"rr":-0.0662,"put":0.3809,"call":0.3147},{"e":"20OCT26","d":1.7,"rr":-0.0702,"put":0.3998,"call":0.3296},{"e":"21OCT26","d":2.7,"rr":-0.0647,"put":0.3896,"call":0.3249},{"e":"22OCT26","d":3.7,"rr":-0.0525,"put":0.3814,"call":0.3288},{"e":"23OCT26","d":4.7,"rr":-0.0549,"put":0.3793,"call":0.3243},{"e":"30OCT26","d":11.7,"rr":-0.0348,"put":0.3739,"call":0.3391},{"e":"6NOV26","d":18.7,"rr":-0.0444,"put":0.4048,"call":0.3605},{"e":"27NOV26","d":39.7,"rr":-0.0307,"put":0.39,"call":0.3593},{"e":"25DEC26","d":67.7,"rr":-0.0302,"put":0.3893,"call":0.3591},{"e":"26MAR27","d":158.7,"rr":-0.0181,"put":0.3942,"call":0.3761},{"e":"25JUN27","d":249.7,"rr":-0.0168,"put":0.3996,"call":0.3828},{"e":"24SEP27","d":340.7,"rr":-0.0126,"put":0.4019,"call":0.3892}],"em_week":{"expiry":"22OCT26","days":3.7,"forward":81147.42,"atm_strike":81000.0,"atm_iv":0.3422,"call_mark_usd":1186.75,"put_mark_usd":1043.1,"straddle_usd":2229.85,"straddle_pct":2.748,"breakeven_lo":78917.57,"breakeven_hi":83377.27,"sigma_move_pct":3.445,"sigma_lo":78399.71,"sigma_hi":83991.43},"em_month":{"expiry":"27NOV26","days":39.7,"forward":81594.76,"atm_strike":82000.0,"atm_iv":0.3666,"call_mark_usd":3719.57,"put_mark_usd":4121.85,"straddle_usd":7841.41,"straddle_pct":9.61,"breakeven_lo":73753.35,"breakeven_hi":89436.17,"sigma_move_pct":12.09,"sigma_lo":72302.77,"sigma_hi":92080.92},"funding":{"BTC":[{"venue":"binanceusdm","annualized":0.08609},{"venue":"hyperliquid","annualized":0.07487},{"venue":"okx","annualized":0.06624},{"venue":"deribit","annualized":0.0589},{"venue":"bybit","annualized":0.0174}],"ETH":[{"venue":"deribit","annualized":0.07446},{"venue":"okx","annualized":0.05831},{"venue":"binanceusdm","annualized":0.05482},{"venue":"hyperliquid","annualized":0.0316},{"venue":"bybit","annualized":0.01789}]},"fng":{"v":53,"cls":"neutral","m7":59,"m30":67},"events":[{"when":"28.10, 20:00","what":"ФРС: рішення щодо ставки і пресконференція","kind":"fomc","days":10},{"when":"06.11, 15:30","what":"США: зайнятість поза с/г (NFP) за жовтень","kind":"nfp","days":19},{"when":"10.11, 15:30","what":"США: інфляція CPI за жовтень","kind":"cpi","days":23}],"upbit":[{"kind":"delist","t":["ZIL"],"utc":"2026-10-16T07:30"},{"kind":"warning_extended","t":["MANTRA"],"utc":"2026-10-16T07:30"},{"kind":"warning","t":["HBD"],"utc":"2026-10-16T07:00"},{"kind":"warning","t":["DNT"],"utc":"2026-10-16T07:00"},{"kind":"delist","t":["SOPH"],"utc":"2026-10-15T07:00"},{"kind":"listing","t":["PUFFER"],"utc":"2026-10-15T04:40"},{"kind":"delist","t":["BLAST"],"utc":"2026-10-14T07:00"},{"kind":"warning","t":["BLUR"],"utc":"2026-10-13T06:00"},{"kind":"listing","t":["GTC"],"utc":"2026-10-12T10:00"},{"kind":"listing","t":["RSR"],"utc":"2026-10-12T04:54"}],"chain":{"expiry":"27NOV26","days":39.7,"F":81605.11,"atm_iv":0.3672,"rows":[{"k":67000.0,"c":{"iv":0.4644,"delta":0.9137,"gamma":1.259e-05,"vega":42.34,"theta":-24.77,"mark_usd":15037.56,"oi":0.6},"p":{"iv":0.4644,"delta":-0.0862,"gamma":1.259e-05,"vega":42.34,"theta":-24.76,"mark_usd":524.89,"oi":368.5}},{"k":68000.0,"c":{"iv":0.453,"delta":0.9024,"gamma":1.414e-05,"vega":46.39,"theta":-26.47,"mark_usd":14113.13,"oi":0.0},"p":{"iv":0.453,"delta":-0.0976,"gamma":1.414e-05,"vega":46.39,"theta":-26.47,"mark_usd":592.92,"oi":266.6}},{"k":69000.0,"c":{"iv":0.4427,"delta":0.8892,"gamma":1.586e-05,"vega":50.87,"theta":-28.36,"mark_usd":13202.3,"oi":2.6},"p":{"iv":0.4427,"delta":-0.1108,"gamma":1.586e-05,"vega":50.87,"theta":-28.36,"mark_usd":675.72,"oi":141.3}},{"k":70000.0,"c":{"iv":0.4321,"delta":0.8745,"gamma":1.776e-05,"vega":55.57,"theta":-30.24,"mark_usd":12300.79,"oi":3.3},"p":{"iv":0.4321,"delta":-0.1255,"gamma":1.775e-05,"vega":55.57,"theta":-30.24,"mark_usd":767.86,"oi":286.0}},{"k":71000.0,"c":{"iv":0.4236,"delta":0.8569,"gamma":1.982e-05,"vega":60.8,"theta":-32.44,"mark_usd":11424.16,"oi":0.2},"p":{"iv":0.4236,"delta":-0.1431,"gamma":1.982e-05,"vega":60.8,"theta":-32.44,"mark_usd":884.87,"oi":86.1}},{"k":72000.0,"c":{"iv":0.4141,"delta":0.8377,"gamma":2.203e-05,"vega":66.08,"theta":-34.47,"mark_usd":10556.84,"oi":38.0},"p":{"iv":0.4141,"delta":-0.1623,"gamma":2.203e-05,"vega":66.08,"theta":-34.47,"mark_usd":1011.19,"oi":142.2}},{"k":73000.0,"c":{"iv":0.4071,"delta":0.8152,"gamma":2.435e-05,"vega":71.79,"theta":-36.81,"mark_usd":9723.78,"oi":11.2},"p":{"iv":0.4071,"delta":-0.1848,"gamma":2.435e-05,"vega":71.8,"theta":-36.81,"mark_usd":1171.77,"oi":215.6}},{"k":74000.0,"c":{"iv":0.3986,"delta":0.791,"gamma":2.679e-05,"vega":77.34,"theta":-38.83,"mark_usd":8900.96,"oi":0.4},"p":{"iv":0.3986,"delta":-0.209,"gamma":2.679e-05,"vega":77.34,"theta":-38.83,"mark_usd":1342.59,"oi":149.8}},{"k":75000.0,"c":{"iv":0.3925,"delta":0.7632,"gamma":2.921e-05,"vega":83.04,"theta":-41.05,"mark_usd":8119.25,"oi":288.8},"p":{"iv":0.3925,"delta":-0.2367,"gamma":2.921e-05,"vega":83.04,"theta":-41.05,"mark_usd":1555.58,"oi":2291.4}},{"k":76000.0,"c":{"iv":0.3868,"delta":0.7329,"gamma":3.159e-05,"vega":88.5,"theta":-43.11,"mark_usd":7370.58,"oi":27.4},"p":{"iv":0.3868,"delta":-0.2671,"gamma":3.159e-05,"vega":88.5,"theta":-43.11,"mark_usd":1799.49,"oi":209.0}},{"k":77000.0,"c":{"iv":0.3819,"delta":0.7,"gamma":3.383e-05,"vega":93.58,"theta":-45.01,"mark_usd":6658.58,"oi":86.1},"p":{"iv":0.3819,"delta":-0.3001,"gamma":3.383e-05,"vega":93.58,"theta":-45.01,"mark_usd":2081.13,"oi":341.8}},{"k":78000.0,"c":{"iv":0.3777,"delta":0.6646,"gamma":3.586e-05,"vega":98.09,"theta":-46.66,"mark_usd":5986.32,"oi":243.5},"p":{"iv":0.3777,"delta":-0.3354,"gamma":3.586e-05,"vega":98.09,"theta":-46.66,"mark_usd":2402.5,"oi":559.6}},{"k":79000.0,"c":{"iv":0.3741,"delta":0.6273,"gamma":3.759e-05,"vega":101.85,"theta":-47.99,"mark_usd":5355.05,"oi":130.4},"p":{"iv":0.3741,"delta":-0.3727,"gamma":3.759e-05,"vega":101.85,"theta":-47.99,"mark_usd":2764.88,"oi":304.8}},{"k":80000.0,"c":{"iv":0.3712,"delta":0.5885,"gamma":3.895e-05,"vega":104.72,"theta":-48.96,"mark_usd":4768.63,"oi":1153.7},"p":{"iv":0.3712,"delta":-0.4116,"gamma":3.895e-05,"vega":104.72,"theta":-48.96,"mark_usd":3172.1,"oi":793.5}},{"k":81000.0,"c":{"iv":0.3682,"delta":0.5486,"gamma":3.996e-05,"vega":106.57,"theta":-49.42,"mark_usd":4219.69,"oi":306.1},"p":{"iv":0.3682,"delta":-0.4514,"gamma":3.996e-05,"vega":106.57,"theta":-49.42,"mark_usd":3616.8,"oi":597.0}},{"k":82000.0,"c":{"iv":0.3665,"delta":0.5082,"gamma":4.044e-05,"vega":107.34,"theta":-49.55,"mark_usd":3724.91,"oi":213.3},"p":{"iv":0.3665,"delta":-0.4918,"gamma":4.044e-05,"vega":107.34,"theta":-49.55,"mark_usd":4115.66,"oi":257.5}},{"k":83000.0,"c":{"iv":0.3652,"delta":0.4679,"gamma":4.046e-05,"vega":107.02,"theta":-49.23,"mark_usd":3273.57,"oi":231.4},"p":{"iv":0.3652,"delta":-0.5321,"gamma":4.046e-05,"vega":107.02,"theta":-49.23,"mark_usd":4657.96,"oi":288.7}},{"k":84000.0,"c":{"iv":0.3627,"delta":0.4278,"gamma":4.02e-05,"vega":105.6,"theta":-48.24,"mark_usd":2848.94,"oi":231.0},"p":{"iv":0.3627,"delta":-0.5722,"gamma":4.02e-05,"vega":105.61,"theta":-48.24,"mark_usd":5226.96,"oi":131.1}},{"k":85000.0,"c":{"iv":0.3617,"delta":0.389,"gamma":3.939e-05,"vega":103.18,"theta":-47.01,"mark_usd":2477.8,"oi":958.0},"p":{"iv":0.3617,"delta":-0.611,"gamma":3.939e-05,"vega":103.18,"theta":-47.01,"mark_usd":5849.46,"oi":329.4}},{"k":86000.0,"c":{"iv":0.361,"delta":0.3516,"gamma":3.819e-05,"vega":99.85,"theta":-45.4,"mark_usd":2147.0,"oi":230.0},"p":{"iv":0.361,"delta":-0.6484,"gamma":3.819e-05,"vega":99.85,"theta":-45.4,"mark_usd":6512.31,"oi":321.4}},{"k":87000.0,"c":{"iv":0.3604,"delta":0.3159,"gamma":3.667e-05,"vega":95.73,"theta":-43.45,"mark_usd":1850.76,"oi":445.9},"p":{"iv":0.3604,"delta":-0.6841,"gamma":3.667e-05,"vega":95.72,"theta":-43.45,"mark_usd":7209.71,"oi":40.5}},{"k":88000.0,"c":{"iv":0.3592,"delta":0.2818,"gamma":3.493e-05,"vega":90.87,"theta":-41.11,"mark_usd":1583.03,"oi":1464.0},"p":{"iv":0.3592,"delta":-0.7182,"gamma":3.493e-05,"vega":90.87,"theta":-41.11,"mark_usd":7935.62,"oi":35.7}},{"k":89000.0,"c":{"iv":0.3593,"delta":0.2506,"gamma":3.29e-05,"vega":85.63,"theta":-38.75,"mark_usd":1356.61,"oi":535.4},"p":{"iv":0.3593,"delta":-0.7494,"gamma":3.29e-05,"vega":85.63,"theta":-38.75,"mark_usd":8702.84,"oi":48.4}},{"k":90000.0,"c":{"iv":0.36,"delta":0.2221,"gamma":3.072e-05,"vega":80.11,"theta":-36.32,"mark_usd":1162.03,"oi":3746.0},"p":{"iv":0.36,"delta":-0.7779,"gamma":3.072e-05,"vega":80.11,"theta":-36.32,"mark_usd":9501.9,"oi":10.5}},{"k":91000.0,"c":{"iv":0.3601,"delta":0.1954,"gamma":2.849e-05,"vega":74.3,"theta":-33.7,"mark_usd":988.13,"oi":228.5},"p":{"iv":0.3601,"delta":-0.8046,"gamma":2.849e-05,"vega":74.3,"theta":-33.7,"mark_usd":10321.64,"oi":0.2}},{"k":92000.0,"c":{"iv":0.3616,"delta":0.1722,"gamma":2.621e-05,"vega":68.66,"theta":-31.27,"mark_usd":845.76,"oi":581.6},"p":{"iv":0.3616,"delta":-0.8279,"gamma":2.621e-05,"vega":68.65,"theta":-31.26,"mark_usd":11172.91,"oi":2.1}},{"k":93000.0,"c":{"iv":0.3627,"delta":0.1508,"gamma":2.398e-05,"vega":62.98,"theta":-28.77,"mark_usd":720.05,"oi":387.8},"p":{"iv":0.3627,"delta":-0.8492,"gamma":2.397e-05,"vega":62.98,"theta":-28.77,"mark_usd":12040.84,"oi":50.0}},{"k":94000.0,"c":{"iv":0.3638,"delta":0.1317,"gamma":2.18e-05,"vega":57.44,"theta":-26.32,"mark_usd":611.22,"oi":623.2},"p":{"iv":0.3638,"delta":-0.8683,"gamma":2.18e-05,"vega":57.44,"theta":-26.32,"mark_usd":12925.65,"oi":4.0}},{"k":95000.0,"c":{"iv":0.3663,"delta":0.1155,"gamma":1.975e-05,"vega":52.41,"theta":-24.18,"mark_usd":525.2,"oi":1131.9},"p":{"iv":0.3663,"delta":-0.8845,"gamma":1.975e-05,"vega":52.4,"theta":-24.18,"mark_usd":13833.27,"oi":0.1}},{"k":96000.0,"c":{"iv":0.3676,"delta":0.1004,"gamma":1.779e-05,"vega":47.36,"theta":-21.93,"mark_usd":445.09,"oi":371.0},"p":{"iv":0.3676,"delta":-0.8996,"gamma":1.779e-05,"vega":47.36,"theta":-21.93,"mark_usd":14746.8,"oi":0.0}},{"k":97000.0,"c":{"iv":0.3699,"delta":0.0876,"gamma":1.599e-05,"vega":42.84,"theta":-19.96,"mark_usd":380.92,"oi":327.2},"p":{"iv":0.3699,"delta":-0.9124,"gamma":1.599e-05,"vega":42.83,"theta":-19.96,"mark_usd":15676.27,"oi":0.0}},{"k":98000.0,"c":{"iv":0.3722,"delta":0.0764,"gamma":1.433e-05,"vega":38.62,"theta":-18.11,"mark_usd":325.45,"oi":903.6},"p":{"iv":0.3722,"delta":-0.9237,"gamma":1.432e-05,"vega":38.62,"theta":-18.1,"mark_usd":16614.44,"oi":0.0}},{"k":99000.0,"c":{"iv":0.3754,"delta":0.067,"gamma":1.284e-05,"vega":34.92,"theta":-16.51,"mark_usd":281.49,"oi":60.6},"p":{"iv":0.3754,"delta":-0.933,"gamma":1.284e-05,"vega":34.92,"theta":-16.51,"mark_usd":17564.12,"oi":0.0}}]}};
+const $ = id => document.getElementById(id);
+const nf = (x, d = 0) => Math.abs(x).toLocaleString('uk-UA', {minimumFractionDigits: d, maximumFractionDigits: d});
+const sgn = x => x > 0 ? '+' : x < 0 ? '−' : '';
+const usd = x => (x < 0 ? '−' : '') + '$' + nf(x);
+const usdS = x => sgn(Math.round(x)) + '$' + nf(x);
+const pc = (x, d = 1) => sgn(x) + nf(x, d) + ' %';
+const k$ = x => '$' + (x / 1000).toLocaleString('uk-UA', {maximumFractionDigits: 1}) + 'k';
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
+function N(x) { const t = 1 / (1 + 0.2316419 * Math.abs(x)), d = 0.3989422804014327 * Math.exp(-x * x / 2);
+  const p = d * t * (0.31938153 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429)))); return x > 0 ? 1 - p : p; }
+function b76(F, K, T, s, call) { if (T <= 1e-9) return Math.max(call ? F - K : K - F, 0);
+  const v = s * Math.sqrt(T), d1 = (Math.log(F / K) + v * v / 2) / v, d2 = d1 - v;
+  return call ? F * N(d1) - K * N(d2) : K * N(-d2) - F * N(-d1); }
+const SV = (w, h, inner) => `<svg viewBox="0 0 ${w} ${h}" role="img" preserveAspectRatio="xMidYMid meet">${inner}</svg>`;
+function niceStep(range, target) { const raw = range / target, p = Math.pow(10, Math.floor(Math.log10(raw)));
+  for (const m of [1, 2, 2.5, 5, 10]) if (m * p >= raw) return m * p; return 10 * p; }
+const C = D.chain, T = C.days / 365, F = C.F, rows = C.rows.slice().sort((a, b) => a.k - b.k);
+const KYIV = ms => { const d = new Date(ms + 3 * 3600e3); return d.toISOString().slice(8, 10) + '.' + d.toISOString().slice(5, 7); };
+
+/* ---------- tabs ---------- */
+const TABS = ['brief', 'options', 'journal'];
+function show(t) { TABS.forEach(x => { $('t-' + x).setAttribute('aria-selected', x === t); $('p-' + x).hidden = x !== t; });
+  try { localStorage.setItem('td-tab', t); } catch (e) {} renderAll(); }
+TABS.forEach(x => $('t-' + x).addEventListener('click', () => show(x)));
+
+/* ---------- brief ---------- */
+$('stamp').textContent = 'Знімок ' + D.asof_kyiv + ' за Києвом';
+function tilesBrief() {
+  const t = D.tick.map(x => `<div class="tile"><span class="k">${x.s}</span><span class="v num">${x.s === 'BTC' ? nf(x.last) : nf(x.last, x.last < 1000 ? 2 : 0)}</span><span class="s num ${x.pct >= 0 ? 'up' : 'dn'}">${pc(x.pct, 2)} за 24 год</span></div>`);
+  t.push(`<div class="tile"><span class="k">Страх і жадібність</span><span class="v num">${D.fng.v}</span><span class="s">нейтрально · 7 дн ${D.fng.m7}, 30 дн ${D.fng.m30}</span></div>`);
+  t.push(`<div class="tile"><span class="k">DVOL (IV BTC, 30 дн)</span><span class="v num">${nf(D.vol.dvol * 100, 1)}</span><span class="s">${nf(D.vol.dvol_percentile_365d * 100)}-й перцентиль за рік</span></div>`);
+  $('tiles').innerHTML = t.join('');
+}
+function keypoints() {
+  const w = D.em_week, m = D.em_month, sk = D.skew.find(x => x.d > 1) || D.skew[0];
+  const items = [
+    ['calm', 'Ринок', `BTC <b class="num">${nf(D.tick[0].last)}</b>, ${pc(D.tick[0].pct, 1)} за добу. Настрій нейтральний (${D.fng.v}) і охолоджується: місяць тому в середньому ${D.fng.m30}.`],
+    ['calm', 'Діапазон', `Опціони закладають ±${nf(w.straddle_pct, 1)} % до ${'22.10'} (${k$(w.breakeven_lo)} – ${k$(w.breakeven_hi)}) і ±${nf(m.sigma_move_pct, 0)} % (1σ) до 27.11.`],
+    ['opp', 'Волатильність', `Дешева: DVOL ${nf(D.vol.dvol * 100, 1)} — ${nf(D.vol.dvol_percentile_365d * 100)}-й перцентиль за рік, реалізована за 30 днів ${nf(D.vol.rv_30d * 100, 1)}. Продаж волатильності в такому режимі історично дає ≈ 0; купівля під ФРС — цікавіша.`],
+    ['risk', 'Захист', `Пути дорожчі за коли на ${nf(-sk.rr * 100, 1)} пункти волатильності (${sk.e}): ринок платить за страховку від падіння.`],
+    ['ev', 'Подія', `ФРС 28.10 о 20:00. За 48 год до рішення — менший розмір.`],
+    ['risk', 'Upbit', `Делістинг ZIL і SOPH 16.11, попередження HBD, DNT, BLUR: лонги в цих монетах не відкривати.`],
+  ];
+  const lab = {calm: 'спокій', opp: 'нагода', risk: 'ризик', ev: 'подія'};
+  $('keypoints').innerHTML = items.map(([c, h, t]) => `<li><span class="chip ${c}">${lab[c]}</span><span><b>${h}.</b> ${t}</span></li>`).join('');
+}
+function priceChart() {
+  const el = $('pricechart'), W = Math.max(320, el.clientWidth || 640), H = 280, L = 58, R = 12, Tp = 10, B = 26;
+  const pts = D.ohlc.map(r => [r[0], r[4]]), t0 = pts[0][0], tLast = pts[pts.length - 1][0];
+  const tExp = Date.UTC(2026, 10, 27, 8), tWk = Date.UTC(2026, 9, 22, 8), m = D.em_month, w = D.em_week;
+  const lo = Math.min(...D.ohlc.map(r => r[3]), m.sigma_lo) * 0.98, hi = Math.max(...D.ohlc.map(r => r[2]), m.sigma_hi) * 1.02;
+  const X = t => L + (t - t0) / (tExp - t0) * (W - L - R), Y = p => Tp + (hi - p) / (hi - lo) * (H - Tp - B);
+  let g = '';
+  const st = niceStep(hi - lo, 5);
+  for (let p = Math.ceil(lo / st) * st; p <= hi; p += st) g += `<line x1="${L}" x2="${W - R}" y1="${Y(p)}" y2="${Y(p)}" style="stroke:var(--line)"/><text x="${L - 6}" y="${Y(p) + 4}" text-anchor="end">${k$(p)}</text>`;
+  const mon = ['січ', 'лют', 'бер', 'кві', 'тра', 'чер', 'лип', 'сер', 'вер', 'жов', 'лис', 'гру'];
+  for (let d = new Date(t0); d.getTime() <= tExp; d = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1))) {
+    const t = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1); if (t < t0) continue;
+    g += `<line x1="${X(t)}" x2="${X(t)}" y1="${Tp}" y2="${H - B}" style="stroke:var(--line)"/><text x="${X(t)}" y="${H - 8}" text-anchor="middle">${mon[d.getUTCMonth()]}</text>`; }
+  const last = pts[pts.length - 1][1];
+  g += `<polygon points="${X(tLast)},${Y(last)} ${X(tExp)},${Y(m.sigma_hi)} ${X(tExp)},${Y(m.sigma_lo)}" style="fill:var(--accent-soft);stroke:var(--accent);stroke-width:1"/>`;
+  g += `<text x="${X(tExp) - 4}" y="${Y(m.sigma_hi) - 6}" text-anchor="end" style="fill:var(--accent)">${k$(m.sigma_hi)}</text><text x="${X(tExp) - 4}" y="${Y(m.sigma_lo) + 14}" text-anchor="end" style="fill:var(--accent)">${k$(m.sigma_lo)}</text>`;
+  [w.breakeven_lo, w.breakeven_hi].forEach(p => g += `<line x1="${X(tLast)}" x2="${X(tWk)}" y1="${Y(p)}" y2="${Y(p)}" style="stroke:var(--warn);stroke-width:2;stroke-dasharray:4 3"/>`);
+  const path = pts.map((p, i) => (i ? 'L' : 'M') + X(p[0]).toFixed(1) + ',' + Y(p[1]).toFixed(1)).join('');
+  g += `<path d="${path}" style="fill:none;stroke:var(--ink);stroke-width:1.6"/><circle cx="${X(tLast)}" cy="${Y(last)}" r="3.5" style="fill:var(--ink)"/>`;
+  g += `<text x="${X(tLast) - 6}" y="${Y(last) - 8}" text-anchor="end" style="fill:var(--ink)">${nf(last)}</text>`;
+  el.innerHTML = SV(W, H, g);
+}
+function ivAt(K) { // smile IV at strike: put side below forward, call side above, linear between strikes
+  const side = K < F ? 'p' : 'c', r = rows.filter(x => x[side] && x[side].iv);
+  if (K <= r[0].k) return r[0][side].iv; if (K >= r[r.length - 1].k) return r[r.length - 1][side].iv;
+  for (let i = 1; i < r.length; i++) if (r[i].k >= K) { const a = r[i - 1], b = r[i], f = (K - a.k) / (b.k - a.k); return a[side].iv + f * (b[side].iv - a[side].iv); } }
+function pAbove(K) { const s = ivAt(K), v = s * Math.sqrt(T); return N((Math.log(F / K) - v * v / 2) / v); }
+function probs() {
+  const cuts = [70000, 75000, 80000, 85000, 90000, 95000], bands = [];
+  bands.push(['нижче ' + k$(cuts[0]), 1 - pAbove(cuts[0])]);
+  for (let i = 0; i < cuts.length - 1; i++) bands.push([k$(cuts[i]) + ' – ' + k$(cuts[i + 1]), pAbove(cuts[i]) - pAbove(cuts[i + 1])]);
+  bands.push(['вище ' + k$(cuts[cuts.length - 1]), pAbove(cuts[cuts.length - 1])]);
+  const mx = Math.max(...bands.map(b => b[1]));
+  $('probs').innerHTML = bands.reverse().map(([l, p]) => `<div class="bar"><span>${l}</span><span class="t"><i style="width:${(p / mx * 100).toFixed(0)}%"></i></span><span class="num" style="text-align:right">${nf(p * 100, 0)} %</span></div>`).join('');
+}
+function vol() {
+  const v = D.vol;
+  $('voltiles').innerHTML = [
+    ['DVOL', nf(v.dvol * 100, 1), `за 7 днів ${sgn(D.dvol_chg.d7)}${nf(D.dvol_chg.d7, 1)} п.`],
+    ['Реалізована 30 дн', nf(v.rv_30d * 100, 1), `7 дн ${nf(v.rv_7d * 100, 1)}`],
+    ['Премія IV − RV', sgn(v.dvol - v.rv_30d) + nf((v.dvol - v.rv_30d) * 100, 1), 'пунктів волатильності'],
+  ].map(([k, val, s]) => `<div class="tile"><span class="k">${k}</span><span class="v num">${val}</span><span class="s">${s}</span></div>`).join('');
+  const el = $('termchart'), W = Math.max(300, el.clientWidth || 520), H = 150, L = 44, R = 10, Tp = 10, B = 24;
+  const tm = D.term.filter(x => x.d >= 1), dmax = Math.max(...tm.map(x => x.d)), ivs = tm.map(x => x.iv * 100);
+  const lo = Math.floor(Math.min(...ivs) - 1), hi = Math.ceil(Math.max(...ivs) + 1);
+  const X = d => L + Math.sqrt(d / dmax) * (W - L - R), Y = iv => Tp + (hi - iv) / (hi - lo) * (H - Tp - B);
+  let g = '';
+  for (let p = Math.ceil(lo); p <= hi; p += niceStep(hi - lo, 3)) g += `<line x1="${L}" x2="${W - R}" y1="${Y(p)}" y2="${Y(p)}" style="stroke:var(--line)"/><text x="${L - 6}" y="${Y(p) + 4}" text-anchor="end">${nf(p)}</text>`;
+  [1, 7, 30, 90, 180].filter(d => d <= dmax).forEach(d => g += `<text x="${X(d)}" y="${H - 6}" text-anchor="middle">${d} дн</text>`);
+  g += `<path d="${tm.map((x, i) => (i ? 'L' : 'M') + X(x.d).toFixed(1) + ',' + Y(x.iv * 100).toFixed(1)).join('')}" style="fill:none;stroke:var(--accent);stroke-width:2"/>`;
+  tm.forEach(x => g += `<circle cx="${X(x.d)}" cy="${Y(x.iv * 100)}" r="2.5" style="fill:var(--accent)"/>`);
+  el.innerHTML = SV(W, H, g) + `<div class="legend"><span><i style="background:var(--accent)"></i>ATM IV за строками експірації, %</span></div>`;
+  const sk = D.skew.filter(x => x.d > 1);
+  $('volnote').textContent = `Крива в контанго: далекі строки дорожчі за близькі. Скью: пути 25Δ дорожчі за коли на ${nf(-sk[0].rr * 100, 1)} п. (${sk[0].e}) і ${nf(-sk[sk.length - 1].rr * 100, 1)} п. (${sk[sk.length - 1].e}).`;
+}
+function events() {
+  $('events').innerHTML = D.events.map(e => `<tr><td class="num" style="white-space:nowrap">${e.when}</td><td>${esc(e.what)}<br><span class="mut" style="font-size:12px">через ${e.days} дн</span></td></tr>`).join('');
+}
+function funding() {
+  const vs = [['BTC', D.funding.BTC], ['ETH', D.funding.ETH]], mx = Math.max(...vs.flatMap(([, v]) => v.map(x => Math.abs(x.annualized))));
+  const name = {binanceusdm: 'Binance', hyperliquid: 'Hyperliquid', okx: 'OKX', deribit: 'Deribit', bybit: 'Bybit'};
+  $('funding').innerHTML = vs.map(([c, v]) => `<h3 style="font-size:14px;margin-top:4px">${c}</h3><div class="bars">` + v.map(x => `<div class="bar"><span>${name[x.venue] || x.venue}</span><span class="t"><i style="width:${(Math.abs(x.annualized) / mx * 100).toFixed(0)}%;background:${x.annualized >= 0 ? 'var(--accent)' : 'var(--loss)'}"></i></span><span class="num" style="text-align:right">${pc(x.annualized * 100, 1)}</span></div>`).join('') + '</div>').join('') +
+    `<p class="note">Лонги платять шортам помірно, без перекосу. Різниця між біржами (до ~7 п. п. річних по BTC) — завелика для carry після витрат лише у хайпових монетах.</p>`;
+}
+function upbit() {
+  const lab = {delist: ['делістинг', 'risk'], warning: ['попередження', 'risk'], warning_extended: ['попередження +', 'ev'], listing: ['лістинг KRW', 'opp']};
+  $('upbit').innerHTML = D.upbit.map(e => { const [l, c] = lab[e.kind] || [e.kind, 'calm'];
+    return `<tr><td class="num" style="white-space:nowrap">${KYIV(Date.parse(e.utc + 'Z'))}</td><td><b>${e.t.join(', ')}</b></td><td><span class="chip ${c}">${l}</span></td></tr>`; }).join('');
+}
+
+/* ---------- options desk ---------- */
+const S = {strat: 'short_strangle', qty: 1, hzn: 10};
+const near = (side, target) => rows.filter(r => r[side] && r[side].delta != null).reduce((b, r) => Math.abs(Math.abs(r[side].delta) - target) < Math.abs(Math.abs(b[side].delta) - target) ? r : b);
+const ATM = rows.reduce((b, r) => Math.abs(r.k - F) < Math.abs(b.k - F) ? r : b).k;
+const row = k => rows.find(r => r.k === k);
+function defaults(s) {
+  if (s.includes('straddle')) { S.kput = S.kcall = ATM; }
+  else { S.kput = near('p', 0.25).k; S.kcall = near('c', 0.25).k; }
+  S.kputw = near('p', 0.10).k; S.kcallw = near('c', 0.10).k;
+}
+function legs() {
+  const L = [], q = S.qty, add = (t, k, side) => { const r = row(k)[t]; L.push({t, k, side, q, prem: r.mark_usd, iv: r.iv, g: r}); };
+  switch (S.strat) {
+    case 'short_strangle': add('c', S.kcall, -1); add('p', S.kput, -1); break;
+    case 'short_straddle': add('c', ATM, -1); add('p', ATM, -1); break;
+    case 'long_straddle': add('c', ATM, 1); add('p', ATM, 1); break;
+    case 'long_strangle': add('c', S.kcall, 1); add('p', S.kput, 1); break;
+    case 'iron_condor': add('c', S.kcall, -1); add('p', S.kput, -1); add('c', S.kcallw, 1); add('p', S.kputw, 1); break;
+  }
+  return L;
+}
+const pnlExp = (L, x) => L.reduce((a, l) => a + l.side * l.q * (Math.max(l.t === 'c' ? x - l.k : l.k - x, 0) - l.prem), 0);
+const pnlAt = (L, x, days, dIv = 0) => L.reduce((a, l) => a + l.side * l.q * (b76(x, l.k, Math.max(0, C.days - days) / 365, l.iv + dIv, l.t === 'c') - l.prem), 0);
+function fillSelects() {
+  const opt = (side, sel) => rows.filter(r => r[side] && r[side].mark_usd).map(r => `<option value="${r.k}"${r.k === sel ? ' selected' : ''}>${nf(r.k)} · Δ ${nf(r[side].delta, 2)} · IV ${nf(r[side].iv * 100, 1)}</option>`).join('');
+  $('kput').innerHTML = opt('p', S.kput); $('kcall').innerHTML = opt('c', S.kcall); $('kputw').innerHTML = opt('p', S.kputw); $('kcallw').innerHTML = opt('c', S.kcallw);
+  const strad = S.strat.includes('straddle'), condor = S.strat === 'iron_condor';
+  $('kput').disabled = $('kcall').disabled = strad; $('lputw').hidden = $('lcallw').hidden = !condor;
+}
+function options() {
+  $('expname').textContent = C.expiry + ' · ' + nf(C.days, 1) + ' дн · форвард ' + nf(F);
+  $('hznv').textContent = S.hzn + ' дн';
+  const L = legs(), lo = F * 0.7, hi = F * 1.3, n = 241, xs = Array.from({length: n}, (_, i) => lo + (hi - lo) * i / (n - 1));
+  const ye = xs.map(x => pnlExp(L, x)), yh = xs.map(x => pnlAt(L, x, S.hzn));
+  const credit = -L.reduce((a, l) => a + l.side * l.q * l.prem, 0);
+  const be = []; for (let i = 1; i < n; i++) if ((ye[i - 1] > 0) !== (ye[i] > 0)) { const f = ye[i - 1] / (ye[i - 1] - ye[i]); be.push(xs[i - 1] + f * (xs[i] - xs[i - 1])); }
+  const net = L.reduce((a, l) => a + l.side, 0), shortCall = L.some(l => l.t === 'c' && l.side < 0) && !L.some(l => l.t === 'c' && l.side > 0);
+  const maxP = Math.max(...ye), minP = Math.min(...ye);
+  const sig = C.atm_iv, v = sig * Math.sqrt(T), cdf = x => N((Math.log(x / F) + v * v / 2) / v);
+  let pop = 0; for (let i = 1; i < n; i++) if ((ye[i - 1] + ye[i]) / 2 > 0) pop += cdf(xs[i]) - cdf(xs[i - 1]);
+  if (ye[0] > 0) pop += cdf(xs[0]); if (ye[n - 1] > 0) pop += 1 - cdf(xs[n - 1]);
+  const G = ['delta', 'gamma', 'vega', 'theta'].reduce((o, k) => (o[k] = L.reduce((a, l) => a + l.side * l.q * (l.g[k] || 0), 0), o), {});
+  // tiles
+  $('postiles').innerHTML = [
+    [credit >= 0 ? 'Отримуєш премію' : 'Платиш премію', usd(Math.abs(credit)), 'за марками Deribit'],
+    ['Беззбиток', be.length ? be.map(k$).join(' / ') : '—', 'на експірацію'],
+    ['Макс. прибуток', maxP >= ye[n - 1] && maxP >= ye[0] ? usd(maxP) : 'необмежений', 'на експірацію'],
+    ['Макс. збиток', shortCall || (net < 0 && !L.some(l => l.side > 0)) ? 'необмежений' : usd(minP), shortCall ? `на −30 %: ${usd(ye[0])}, на +30 %: ${usd(ye[n - 1])}` : 'на експірацію'],
+    ['Ймовірність прибутку', nf(pop * 100, 0) + ' %', 'ризик-нейтральна'],
+  ].map(([k, val, s]) => `<div class="tile"><span class="k">${k}</span><span class="v num" style="font-size:17px">${val}</span><span class="s">${s}</span></div>`).join('');
+  $('greeks').innerHTML = [
+    ['Дельта', nf(G.delta, 3) + ' BTC', `≈ ${usdS(G.delta * 1000)} на +$1 000 BTC`, G.delta],
+    ['Гамма', nf(G.gamma * 1000, 3), 'зміна дельти на +$1 000', G.gamma],
+    ['Вега', usdS(G.vega), 'на +1 пункт волатильності', G.vega],
+    ['Тета', usdS(G.theta), 'за день, решта без змін', G.theta],
+  ].map(([k, val, s, x]) => `<tr><td>${k}</td><td class="r num ${x > 0 ? 'up' : x < 0 ? 'dn' : ''}">${(x < 0 && !String(val).startsWith('−') ? '−' : '') + val}</td><td class="mut" style="font-size:12px">${s}</td></tr>`).join('');
+  // chart
+  const el = $('payoff'), W = Math.max(320, el.clientWidth || 700), H = 320, Lm = 66, Rm = 14, Tm = 12, Bm = 28;
+  let ymin = Math.min(...ye, ...yh), ymax = Math.max(...ye, ...yh); const pad = (ymax - ymin) * 0.08; ymin -= pad; ymax += pad;
+  const X = x => Lm + (x - lo) / (hi - lo) * (W - Lm - Rm), Y = y => Tm + (ymax - y) / (ymax - ymin) * (H - Tm - Bm);
+  let g = `<defs><clipPath id="cpU"><rect x="0" y="0" width="${W}" height="${Y(0)}"/></clipPath><clipPath id="cpD"><rect x="0" y="${Y(0)}" width="${W}" height="${H}"/></clipPath></defs>`;
+  g += `<rect x="${X(F * Math.exp(-v))}" y="${Tm}" width="${X(F * Math.exp(v)) - X(F * Math.exp(-v))}" height="${H - Tm - Bm}" style="fill:var(--accent-soft)"/>`;
+  const sy = niceStep(ymax - ymin, 6); for (let y = Math.ceil(ymin / sy) * sy; y <= ymax; y += sy) g += `<line x1="${Lm}" x2="${W - Rm}" y1="${Y(y)}" y2="${Y(y)}" style="stroke:var(--line)"/><text x="${Lm - 6}" y="${Y(y) + 4}" text-anchor="end">${usd(y)}</text>`;
+  const sx = niceStep(hi - lo, W < 520 ? 4 : 8); for (let x = Math.ceil(lo / sx) * sx; x <= hi; x += sx) g += `<text x="${X(x)}" y="${H - 8}" text-anchor="middle">${k$(x)}</text>`;
+  const pe = xs.map((x, i) => (i ? 'L' : 'M') + X(x).toFixed(1) + ',' + Y(ye[i]).toFixed(1)).join('');
+  const area = pe + `L${X(hi)},${Y(0)}L${X(lo)},${Y(0)}Z`;
+  g += `<path d="${area}" clip-path="url(#cpU)" style="fill:var(--gain-soft)"/><path d="${area}" clip-path="url(#cpD)" style="fill:var(--loss-soft)"/>`;
+  g += `<line x1="${Lm}" x2="${W - Rm}" y1="${Y(0)}" y2="${Y(0)}" style="stroke:var(--muted)"/>`;
+  g += `<line x1="${X(F)}" x2="${X(F)}" y1="${Tm}" y2="${H - Bm}" style="stroke:var(--muted);stroke-dasharray:2 3"/><text x="${X(F) + 4}" y="${Tm + 10}" style="fill:var(--muted)">зараз ${k$(F)}</text>`;
+  g += `<path d="${xs.map((x, i) => (i ? 'L' : 'M') + X(x).toFixed(1) + ',' + Y(yh[i]).toFixed(1)).join('')}" style="fill:none;stroke:var(--warn);stroke-width:2;stroke-dasharray:6 4"/>`;
+  g += `<path d="${pe}" style="fill:none;stroke:var(--accent);stroke-width:2.4"/>`;
+  be.forEach(b => g += `<circle cx="${X(b)}" cy="${Y(0)}" r="4" style="fill:var(--surface);stroke:var(--ink);stroke-width:1.5"/><text x="${X(b)}" y="${Y(0) + 18}" text-anchor="middle" style="fill:var(--ink)">${k$(b)}</text>`);
+  el.innerHTML = SV(W, H, g);
+  // verdict
+  const short = credit > 0, vrpTxt = D.vol.dvol_percentile_365d < 0.4;
+  let txt;
+  if (short) txt = `Ти продаєш волатильність і отримуєш <b>${usd(credit)}</b> премії на ${nf(S.qty, 1)} BTC. Заробляєш, якщо 27.11 BTC буде між <b>${be.map(k$).join(' і ')}</b>; за цінами ринку шанс цього ≈ <b>${nf(pop * 100, 0)} %</b>. Щодня час приносить ≈ <b>${usd(G.theta)}</b>, але кожен +1 пункт волатильності забирає <b>${usd(-G.vega)}</b>: перед ФРС 28.10 волатильність зазвичай росте, +5 пунктів — це ≈ <b>${usd(-G.vega * 5)}</b> паперового збитку. ${shortCall ? 'Ризик необмежений: потрібен стоп або захисні опціони (кондор).' : 'Збиток обмежений захисними опціонами.'}`;
+  else txt = `Ти купуєш волатильність за <b>${usd(-credit)}</b> на ${nf(S.qty, 1)} BTC. Заробляєш, якщо до 27.11 BTC вийде за <b>${be.map(k$).join(' або ')}</b>; за цінами ринку шанс ≈ <b>${nf(pop * 100, 0)} %</b>. Щодня втрачаєш ≈ <b>${usd(-G.theta)}</b> на часі, але +5 пунктів волатильності (типово перед ФРС) дадуть ≈ <b>${usd(G.vega * 5)}</b>. Максимальний збиток — сплачена премія.`;
+  txt += vrpTxt ? (short ? ` <span class="wr">Волатильність зараз дешева (${nf(D.vol.dvol_percentile_365d * 100)}-й перцентиль): історично продаж у такому режимі в середньому ≈ 0.</span>` : ` <span class="up">Волатильність зараз дешева (${nf(D.vol.dvol_percentile_365d * 100)}-й перцентиль), тож купівля обходиться відносно недорого.</span>`) : '';
+  $('verdict').innerHTML = `<p style="margin:0">${txt}</p>`;
+  // vrp box
+  const cur = D.vrp_buckets.find(b => b.current);
+  $('vrpbox').innerHTML = `<div class="tiles"><div class="tile"><span class="k">ATM IV ${C.expiry}</span><span class="v num">${nf(C.atm_iv * 100, 1)}</span><span class="s">реалізована 30 дн ${nf(D.vol.rv_30d * 100, 1)}</span></div><div class="tile"><span class="k">DVOL за рік</span><span class="v num">${nf(D.vol.dvol_percentile_365d * 100)}-й</span><span class="s">перцентиль · мін ${nf(D.vol.dvol_min * 100)} / макс ${nf(D.vol.dvol_max * 100)}</span></div></div>
+   <table style="margin-top:10px"><tr><th>DVOL, перцентиль за рік</th><th class="r">Короткий стреддл 30 дн, середнє</th><th class="r">У плюсі</th></tr>${D.vrp_buckets.map(b => `<tr${b.current ? ' style="background:var(--accent-soft)"' : ''}><td>${b.dvol_percentile_365d}${b.current ? ' · зараз' : ''}</td><td class="r num ${b.mean_straddle_pnl >= 0 ? 'up' : 'dn'}">${pc(b.mean_straddle_pnl * 100, 1)}</td><td class="r num">${nf(b.share_positive * 100, 0)} %</td></tr>`).join('')}</table>
+   <p class="note">Історія 2024–2026 на DVOL (у % від спота, з хеджем). На реальних марках Deribit премію ще перевіряють агенти (картка VRP), тож це орієнтир, а не доведена перевага.</p>`;
+  // scenario table
+  const moves = [-15, -10, -5, 0, 5, 10, 15], hs = [[0, 0, 'сьогодні'], [0, 0.05, 'сьогодні, IV +5 п.'], [10, 0, 'через 10 дн'], [20, 0, 'через 20 дн'], [C.days, 0, 'експірація 27.11']];
+  $('scen').innerHTML = `<tr><th>BTC</th>${moves.map(m => `<th class="r num">${m > 0 ? '+' : m < 0 ? '−' : ''}${Math.abs(m)} %<br><span style="font-weight:400">${k$(F * (1 + m / 100))}</span></th>`).join('')}</tr>` +
+    hs.map(([d, di, lab]) => `<tr><td style="white-space:nowrap">${lab}</td>${moves.map(m => { const p = d >= C.days ? pnlExp(L, F * (1 + m / 100)) : pnlAt(L, F * (1 + m / 100), d, di); return `<td class="r num ${p >= 0 ? 'up' : 'dn'}">${usdS(p)}</td>`; }).join('')}</tr>`).join('');
+}
+$('strat').addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; S.strat = b.dataset.s;
+  [...$('strat').children].forEach(x => x.setAttribute('aria-pressed', x === b)); defaults(S.strat); fillSelects(); options(); });
+['kput', 'kcall', 'kputw', 'kcallw'].forEach(id => $(id).addEventListener('change', e => { S[id] = +e.target.value; options(); }));
+$('qty').addEventListener('input', e => { const q = +e.target.value; if (q > 0) { S.qty = q; options(); } });
+$('hzn').addEventListener('input', e => { S.hzn = +e.target.value; options(); });
+
+/* ---------- journal (example) ---------- */
+const EX = [
+  ['07.10', 'BTC', 'шорт стренглу 75k/89k', 'премія при IV 42', 0.6, 'опціони', ''],
+  ['08.10', 'ETH', 'лонг перп', 'відскок від рівня', -1.0, 'перп', 'вхід проти тренду'],
+  ['09.10', 'SOL', 'лонг перп', 'пробій діапазону', 2.1, 'перп', ''],
+  ['12.10', 'BLUR', 'шорт перп', 'закриття фронтенду', 1.4, 'новина', ''],
+  ['13.10', 'BTC', 'лонг перп', 'перед CPI', -1.0, 'перп', 'порушено правило 48 год'],
+  ['14.10', 'ETH', 'продаж кола 2 600', 'покритий кол', 0.3, 'опціони', ''],
+  ['15.10', 'BTC', 'лонг перп', 'ретест рівня', -0.4, 'перп', 'ранній вихід без причини'],
+  ['16.10', 'SOL', 'шорт перп', 'funding +40 % річних', 0.9, 'перп', ''],
+];
+function journal() {
+  const rs = EX.map(x => x[4]), wins = rs.filter(r => r > 0).length, cum = rs.reduce((a, r) => (a.push((a.at(-1) || 0) + r), a), []);
+  let peak = 0, dd = 0; cum.forEach(c => { peak = Math.max(peak, c); dd = Math.min(dd, c - peak); });
+  $('jtiles').innerHTML = [['Угод', EX.length, 'за 10 днів'], ['У плюсі', nf(wins / EX.length * 100) + ' %', `${wins} з ${EX.length}`], ['Середній результат', sgn(rs.reduce((a, b) => a + b) / rs.length) + nf(rs.reduce((a, b) => a + b) / rs.length, 2) + 'R', 'на угоду'], ['Найбільша просадка', nf(dd, 1) === '0' ? '0R' : '−' + nf(dd, 1) + 'R', 'від піку'], ['За правилами', nf(6 / 8 * 100) + ' %', '2 угоди з порушенням']]
+    .map(([k, val, s]) => `<div class="tile"><span class="k">${k}</span><span class="v num">${val}</span><span class="s">${s}</span></div>`).join('');
+  const el = $('eqchart'), W = Math.max(300, el.clientWidth || 600), H = 200, L = 40, R = 10, Tp = 10, B = 24;
+  const ys = [0, ...cum], lo = Math.min(...ys) - 0.5, hi = Math.max(...ys) + 0.5;
+  const X = i => L + i / (ys.length - 1) * (W - L - R), Y = y => Tp + (hi - y) / (hi - lo) * (H - Tp - B);
+  let g = ''; for (let y = Math.ceil(lo); y <= hi; y += 1) g += `<line x1="${L}" x2="${W - R}" y1="${Y(y)}" y2="${Y(y)}" style="stroke:var(--line)"/><text x="${L - 6}" y="${Y(y) + 4}" text-anchor="end">${sgn(y)}${Math.abs(y)}R</text>`;
+  ys.forEach((y, i) => i && (g += `<text x="${X(i)}" y="${H - 6}" text-anchor="middle">${i}</text>`));
+  g += `<path d="${ys.map((y, i) => (i ? 'L' : 'M') + X(i) + ',' + Y(y)).join('')}" style="fill:none;stroke:var(--accent);stroke-width:2.2"/>`;
+  ys.forEach((y, i) => g += `<circle cx="${X(i)}" cy="${Y(y)}" r="3" style="fill:${i && rs[i - 1] < 0 ? 'var(--loss)' : 'var(--accent)'}"/>`);
+  el.innerHTML = SV(W, H, g);
+  $('trades').innerHTML = `<tr><th>Дата</th><th>Інструмент</th><th>Угода</th><th>Теза</th><th class="r">Результат</th><th>Тег</th><th>Помилка</th></tr>` + EX.map(x => `<tr><td class="num">${x[0]}</td><td><b>${x[1]}</b></td><td>${x[2]}</td><td>${x[3]}</td><td class="r num ${x[4] >= 0 ? 'up' : 'dn'}">${sgn(x[4])}${nf(x[4], 1)}R</td><td><span class="chip calm">${x[5]}</span></td><td>${x[6] ? `<span class="chip risk">${x[6]}</span>` : ''}</td></tr>`).join('');
+  $('review').innerHTML = `<p style="margin:0 0 8px"><b>Що спрацювало:</b> угоди з причиною поза графіком (новина BLUR, перекіс funding SOL, премія опціонів) дали +3.2R із загальних +2.9R.</p><p style="margin:0 0 8px"><b>Що ні:</b> дві угоди проти правил (вхід перед CPI, вхід проти тренду) коштували −2R, ранній вихід — ще −0.4R.</p><p style="margin:0"><b>Правило на тиждень:</b> жодних нових перп-позицій за 48 год до ФРС 28.10; опціони — лише з обмеженим ризиком.</p>`;
+}
+
+function renderAll() { tilesBrief(); keypoints(); probs(); events(); funding(); upbit(); vol(); priceChart(); options(); journal(); }
+defaults(S.strat); fillSelects();
+let tab = 'brief'; try { tab = localStorage.getItem('td-tab') || tab; } catch (e) {}
+if (location.hash && TABS.includes(location.hash.slice(1))) tab = location.hash.slice(1);
+show(tab);
+let rt; addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(renderAll, 150); });
+
+</script>

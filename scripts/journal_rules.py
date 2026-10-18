@@ -76,7 +76,9 @@ def main(argv: list[str] | None = None) -> int:
     print("10 largest losses: notional = size x entry, adverse move = exit vs entry")
     for ts, sym, side, size, entry, exit_, pnl in worst:
         move = (exit_ / entry - 1) * (1 if side == "long" else -1) * 100
-        print(f"  {datetime.fromtimestamp(ts, UTC):%d.%m.%Y} {sym:14} {side:5} notional ${size * entry:>9,.0f}  move {move:+6.1f}%  pnl {pnl:+9,.0f}")
+        print(
+            f"  {datetime.fromtimestamp(ts, UTC):%d.%m.%Y} {sym:14} {side:5} notional ${size * entry:>9,.0f}  move {move:+6.1f}%  pnl {pnl:+9,.0f}"
+        )
     w = what_if(load(a.db))
     print(f"trades {w['n']}; actual {w['base']:+,.0f} USD; worst day {w['worst_day']:+,.0f}")
     print(f"loss capped at -100 per trade: {w['cap100']:+,.0f}")

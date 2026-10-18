@@ -234,6 +234,74 @@ def options_raw(env: str, days: int = 729) -> dict[str, Any]:
     return out
 
 
+def option_trips(fills: list[dict[str, Any]], delivery: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Group option fills per contract into round trips; a position still open at expiry closes at the delivery value.
+
+    P&L = premium received - premium paid + expiry value of what was left - fees (USD). Entry and exit are average
+    premiums per contract; a trip closed at expiry exits at its intrinsic value."""
+    deliv = {d.get("symbol"): d for d in delivery}
+    by_sym: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for f in fills:
+        if str(f.get("execType", "Trade")) in ("Trade", "BustTrade"):
+            by_sym[str(f["symbol"])].append(f)
+    trips = []
+    for sym, fs in by_sym.items():
+        fs.sort(key=lambda f: int(f["execTime"]))
+        pos, cash, fees, first, in_q, in_v, out_q, out_v, side = 0.0, 0.0, 0.0, None, 0.0, 0.0, 0.0, 0.0, None
+
+        def flush(ts: int, extra_cash: float = 0.0, extra_fee: float = 0.0, exit_px: float | None = None, sym: str = sym) -> None:
+            nonlocal pos, cash, fees, first, in_q, in_v, out_q, out_v, side
+            if in_q > 0:
+                ex_px = exit_px if exit_px is not None else (out_v / out_q if out_q else 0.0)
+                trips.append(
+                    {
+                        "venue": "bybit",
+                        "category": "option",
+                        "oid": f"{sym}:{first}",
+                        "symbol": sym,
+                        "side": side,
+                        "size": in_q,
+                        "entry": in_v / in_q,
+                        "exit": ex_px,
+                        "pnl": cash + extra_cash - fees - extra_fee,
+                        "fees": fees + extra_fee,
+                        "leverage": None,
+                        "open_ts": first,
+                        "ts": ts,
+                    }
+                )
+            pos, cash, fees, first, in_q, in_v, out_q, out_v, side = 0.0, 0.0, 0.0, None, 0.0, 0.0, 0.0, 0.0, None
+
+        for f in fs:
+            q, px, ts = float(f["execQty"]), float(f["execPrice"]), int(f["execTime"])
+            signed = q if f["side"] == "Buy" else -q
+            if pos == 0:
+                first, side = ts, ("long" if signed > 0 else "short")
+            opening = (signed > 0) == (side == "long")
+            if opening:
+                in_q, in_v = in_q + q, in_v + q * px
+            else:
+                out_q, out_v = out_q + q, out_v + q * px
+            cash -= signed * px
+            fees += float(f.get("execFee") or 0.0)
+            pos += signed
+            if abs(pos) < 1e-12:
+                flush(ts)
+        if abs(pos) > 1e-12 and sym in deliv:
+            d = deliv[sym]
+            parts = sym.split("-")
+            k, kind = float(parts[2]), parts[3]
+            u = float(d.get("deliveryPrice") or 0.0)
+            intrinsic = max(u - k, 0.0) if kind == "C" else max(k - u, 0.0)
+            flush(
+                int(d.get("deliveryTime") or fs[-1]["execTime"]),
+                extra_cash=pos * intrinsic,
+                extra_fee=float(d.get("fee") or 0.0),
+                exit_px=intrinsic,
+            )
+    return trips
+
+
 def to_trade(x: dict[str, Any]) -> dict[str, Any] | None:
     """One closed-P&L record as a journal row; the side is taken from the sign that matches the gross P&L."""
     try:
@@ -502,6 +570,9 @@ def main(argv: list[str] | None = None) -> int:
         keys = ("symbol", "side", "size", "avgPrice", "markPrice", "unrealisedPnl", "delta", "gamma", "vega", "theta", "positionValue")
         for x in raw["open"]:
             print("OPEN", json.dumps({k: x.get(k) for k in keys}, ensure_ascii=False))
+        trips = option_trips(raw["fills"], raw["delivery"])
+        added, skipped = asyncio.run(store(trips, a.db))
+        print(f"option round trips closed: {len(trips)}, added {added}, already in the journal {skipped}")
         if a.save:
             Path(a.save).parent.mkdir(parents=True, exist_ok=True)
             Path(a.save).write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")

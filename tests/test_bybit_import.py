@@ -162,3 +162,40 @@ def test_airdrop_trades_are_left_out_of_stats(tmp_path):
     rep = bi.stats(db, venue="hyperliquid")
     assert "Закритих позицій: **1**" in rep and "ETHUSDT" in rep
     assert "Закритих позицій: **1**" in bi.stats(db, venue=None)
+
+
+def test_option_trips_close_by_trade_and_at_expiry():
+    F = [
+        {
+            "symbol": "BTC-30OCT26-86000-C-USDT",
+            "side": "Buy",
+            "execQty": "0.2",
+            "execPrice": "1000",
+            "execFee": "1",
+            "execTime": "1000",
+            "execType": "Trade",
+        },
+        {
+            "symbol": "BTC-30OCT26-86000-C-USDT",
+            "side": "Sell",
+            "execQty": "0.2",
+            "execPrice": "1500",
+            "execFee": "1",
+            "execTime": "2000",
+            "execType": "Trade",
+        },
+        {
+            "symbol": "ETH-2OCT26-2500-P-USDT",
+            "side": "Sell",
+            "execQty": "1",
+            "execPrice": "40",
+            "execFee": "0.5",
+            "execTime": "3000",
+            "execType": "Trade",
+        },
+    ]
+    D = [{"symbol": "ETH-2OCT26-2500-P-USDT", "deliveryPrice": "2450", "fee": "0.2", "deliveryTime": "4000"}]
+    t = {x["symbol"]: x for x in bi.option_trips(F, D)}
+    a, b = t["BTC-30OCT26-86000-C-USDT"], t["ETH-2OCT26-2500-P-USDT"]
+    assert a["side"] == "long" and round(a["pnl"], 2) == 98.0 and a["exit"] == 1500
+    assert b["side"] == "short" and b["exit"] == 50 and round(b["pnl"], 2) == round(40 - 50 - 0.5 - 0.2, 2)

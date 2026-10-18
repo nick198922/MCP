@@ -14,6 +14,7 @@ import logging
 import math
 import os
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -159,6 +160,18 @@ async def build_snapshot(rt: "Runtime") -> dict[str, Any]:
     }
 
 
+MAX_STALE_HOURS = 6.0  # a carried-forward section older than this is dropped (stays in `missing`)
+
+
+def _age_hours(old: Any, new: str) -> float:
+    """Hours between two `%Y-%m-%dT%H:%M:%SZ` stamps; infinity if the old one is unreadable."""
+    try:
+        fmt = "%Y-%m-%dT%H:%M:%SZ"
+        return (datetime.strptime(new, fmt) - datetime.strptime(str(old), fmt)).total_seconds() / 3600
+    except ValueError:
+        return float("inf")
+
+
 def carry_forward(snap: dict[str, Any], prev: dict[str, Any] | None) -> None:
     """Replace a failed section by the previous file's good one (own `asof_utc`, `stale: true`, new failure in `missing`).
 
@@ -171,6 +184,9 @@ def carry_forward(snap: dict[str, Any], prev: dict[str, Any] | None) -> None:
         old = prev["sections"].get(name)
         if not isinstance(old, dict) or not old.get("ok"):
             continue
+        old_asof = old.get("asof_utc") or prev.get("asof_utc")
+        if _age_hours(old_asof, snap["asof_utc"]) > MAX_STALE_HOURS:
+            continue  # too old to be useful: better an honest gap in `missing`
         key = dependent.get(name)
         if key:
             old_exp = (prev.get("expiries") or {}).get(key)
@@ -184,7 +200,7 @@ def carry_forward(snap: dict[str, Any], prev: dict[str, Any] | None) -> None:
             "data": old.get("data"),
             "missing": sec["missing"],
             "warnings": old.get("warnings") or [],
-            "asof_utc": old.get("asof_utc") or prev.get("asof_utc"),
+            "asof_utc": old_asof,
             "stale": True,
         }
         snap["missing"].remove(name)

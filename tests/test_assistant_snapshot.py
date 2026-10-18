@@ -161,6 +161,24 @@ async def test_failed_section_carries_previous_good_one_as_stale(state, tmp_path
     assert snap["sections"]["tickers"]["asof_utc"] == "2026-10-10T13:17:00Z"
 
 
+async def test_carried_section_older_than_limit_is_dropped(state, tmp_path):
+    rt = _rt(state, tmp_path)
+    try:
+        await collect_assistant_snapshot(rt)
+    finally:
+        await rt.aclose()
+    state.deribit_status = 500
+    rt = _rt(state, tmp_path)
+    rt.now = lambda: NOW + timedelta(hours=7)
+    try:
+        await collect_assistant_snapshot(rt)
+    finally:
+        await rt.aclose()
+    snap = json.loads((tmp_path / "out" / "snapshot.json").read_text())
+    assert snap["stale"] == []
+    assert "term" in snap["missing"] and not snap["sections"]["term"]["ok"]
+
+
 async def test_call_reports_tool_error_reason():
     from mcp import Client
     from mcp.server.mcpserver import MCPServer

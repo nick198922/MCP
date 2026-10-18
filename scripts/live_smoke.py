@@ -48,6 +48,7 @@ CASES: list[tuple[str, dict]] = [
     ("coin_snapshot", {"coin_id": "bitcoin"}),
     ("global_market", {}),
     ("top_coins", {"limit": 10}),
+    ("pendle_fixed_yields", {"min_liquidity_usd": 1_000_000, "limit": 10}),
 ]
 
 

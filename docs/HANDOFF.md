@@ -62,6 +62,8 @@
 
 **Асистент (власник 18.10, Порядок 1):** [IDEA-20261018-assistant](ideas/IDEA-20261018-assistant.md) — бриф, опціонний стіл, журнал на панелі й у Telegram. Еталон — макет на живих даних [`docs/design/assistant-prototype.html`](design/assistant-prototype.html) (артефакт власника: https://claude.ai/artifact/PYh3aWHYPGBm5tkr5me3ky).
 
+**Паперовий журнал рекомендацій (18.10, перший зріз):** `assistant_paper_open` / `assistant_paper_status`, таблиця `rec_paper` (схема v15, мітка `hypothesis`, не дзеркалиться в `journal`). Лишилось: автозапис колектором і правило частоти, вкладка «Журнал» на панелі, порівняння з симуляцією через 4–8 тижнів (див. «Прогрес» картки). Живу перевірку на Deribit власник ще не робив.
+
 **Поза чергою:**
 - «розумні гроші» — стадія 0 `inconclusive`, збір триває;
 - калібрування Polymarket — правки;

@@ -532,6 +532,59 @@ class Store:
                 await self.conn.rollback()
                 raise
 
+    # ---------- rec_paper (paper trades of the assistant's option recommendations, bookkeeping only) ----------
+
+    async def rec_paper_insert(self, **f: Any) -> int:
+        cols = (
+            "opened_ts currency structure expiry_ts spot forward t_years premium_per_btc entry_fees_per_btc max_loss_per_btc "
+            "risk_basis size_btc deposit_usd risk_pct risk_usd note method_mean_pct method_q05_pct regime"
+        ).split()
+        vals = [f.get(c) for c in cols]
+        cols += ["legs", "within_risk", "label", "source"]
+        vals += [json.dumps(f["legs"]), int(bool(f["within_risk"])), f.get("label") or "hypothesis", f.get("source") or "manual"]
+        cur = await self.conn.execute(
+            f"INSERT INTO rec_paper ({', '.join(cols)}, status) VALUES ({', '.join('?' * len(cols))}, 'open')", vals
+        )
+        await self.conn.commit()
+        return int(cur.lastrowid or 0)
+
+    async def rec_paper_list(self, *, status: str | None = None, limit: int = 500) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM rec_paper" + (" WHERE status = ?" if status else "") + " ORDER BY opened_ts DESC, id DESC LIMIT ?"
+        cur = await self.conn.execute(sql, [status, limit] if status else [limit])
+        rows = [_parse_json_cols(dict(r), ("legs",)) for r in await cur.fetchall()]
+        for row in rows:
+            row["within_risk"] = bool(row["within_risk"])
+        return rows
+
+    async def rec_paper_get(self, trade_id: int) -> dict[str, Any] | None:
+        cur = await self.conn.execute("SELECT * FROM rec_paper WHERE id = ?", (trade_id,))
+        row = await cur.fetchone()
+        if row is None:
+            return None
+        out = _parse_json_cols(dict(row), ("legs",))
+        out["within_risk"] = bool(out["within_risk"])
+        return out
+
+    async def rec_paper_settle(
+        self,
+        trade_id: int,
+        *,
+        settled_ts: int,
+        delivery_price: float,
+        pnl_usd: float,
+        pnl_pct_spot: float,
+        r_worst_case: float | None,
+        r_study: float | None,
+    ) -> int:
+        """Settle an open paper trade with one conditional UPDATE; 1 when this call settled it, 0 when it was not open."""
+        cur = await self.conn.execute(
+            "UPDATE rec_paper SET status = 'settled', settled_ts = ?, delivery_price = ?, pnl_usd = ?, pnl_pct_spot = ?,"
+            " r_worst_case = ?, r_study = ? WHERE id = ? AND status = 'open'",
+            (settled_ts, delivery_price, pnl_usd, pnl_pct_spot, r_worst_case, r_study, trade_id),
+        )
+        await self.conn.commit()
+        return int(cur.rowcount or 0)
+
     # ---------- cp_*: forward paper engine for the carry strategies (bookkeeping only, no orders) ----------
 
     async def cp_cycle_get(self, strategy: str, cycle_ts: int) -> dict[str, Any] | None:

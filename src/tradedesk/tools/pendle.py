@@ -5,7 +5,7 @@ from typing import Annotated, Any, Literal
 from mcp.server.mcpserver import MCPServer
 from pydantic import Field
 
-from ..analytics.pendle import ADDR_RE, pt_price_to_apy, scan_fixed_yields, summarise_all
+from ..analytics.pendle import ADDR_RE, build_yield_curve, pt_price_to_apy, scan_fixed_yields, summarise_all
 from ..core.envelope import Builder
 from ..runtime import Runtime
 from ._util import READ_ONLY
@@ -66,6 +66,70 @@ def register(server: MCPServer, rt: Runtime) -> None:
             b.warn(f"{data['markets_skipped']} malformed market entries were skipped.")
         if data["markets_matched"] == 0:
             b.warn("No market matches the filters; loosen min_liquidity_usd / min_apy / max_days.")
+        b.warn(_CAVEATS)
+        return b.build(data)
+
+    @server.tool(
+        annotations=READ_ONLY,
+        description=(
+            "Term structure of Pendle fixed (implied) APY for one asset: all active markets whose name matches "
+            "`asset` (e.g. 'sUSDe'; case-insensitive, exact match preferred, else substring), ordered by expiry, "
+            "with days to expiry, implied APY and underlying APY (decimals, 0.05 = 5 %), implied-minus-underlying, "
+            "change in implied APY vs the previous expiry, liquidity / TVL in USD, chain, and a `thin` flag for "
+            "points below `thin_liquidity_usd` (null when liquidity is unknown). Observed points only: NO "
+            "interpolation, so the curve is not arbitrage-free and gaps between expiries are real gaps. Different "
+            "chains with the same expiry are separate points; the most liquid one is the `representative` of that "
+            "expiry, and the change vs previous expiry and `shape_first_to_last` use representatives only "
+            "(shape is null when several distinct names matched). Same-name markets from different issuers may be unrelated assets. "
+            + _CAVEATS
+        ),
+    )
+    async def pendle_yield_curve(
+        asset: Annotated[str, Field(min_length=1, max_length=60, description="Market/asset name, e.g. 'sUSDe', 'USDe', 'stETH'.")],
+        min_liquidity_usd: Annotated[float, Field(ge=0, description="Drop markets with pool liquidity below this (USD).")] = 0.0,
+        thin_liquidity_usd: Annotated[
+            float, Field(ge=0, description="Points with liquidity below this are flagged thin (USD).")
+        ] = 1_000_000.0,
+        min_days: Annotated[float, Field(ge=0, description="Minimum days to expiry.")] = 1.0,
+        max_days: Annotated[float, Field(gt=0, le=3650, description="Maximum days to expiry.")] = 1095.0,
+        chain_ids: Annotated[list[int] | None, Field(description="Optional EVM chain ids, e.g. [1, 42161, 8453].")] = None,
+    ) -> dict[str, Any]:
+        b = Builder()
+        if min_days > max_days:
+            b.miss("curve", "pendle", "invalid_argument", f"min_days ({min_days}) is greater than max_days ({max_days})")
+            return b.build(None, ok=False)
+        rows = await b.guard("markets", "pendle", rt.pendle.markets())
+        if rows is None:
+            return b.build(None, ok=False)
+        data = build_yield_curve(
+            rows,
+            rt.now(),
+            asset,
+            min_days=min_days,
+            max_days=max_days,
+            min_liquidity_usd=min_liquidity_usd,
+            thin_liquidity_usd=thin_liquidity_usd,
+            chain_ids=chain_ids,
+        )
+        if data["markets_total"] == 0:
+            b.miss("markets", "pendle", "data_unavailable", "no usable markets in the response")
+            return b.build(None, ok=False)
+        if data["markets_skipped"]:
+            b.warn(f"{data['markets_skipped']} malformed market entries were skipped.")
+        if data["points_count"] == 0:
+            b.miss("curve", "pendle", "data_unavailable", f"no active market matches asset {asset!r} and the filters")
+            return b.build(None, ok=False)
+        if data["distinct_expiries"] < 2:
+            b.warn("Fewer than two distinct expiries: this is a single point, not a curve.")
+        if data["thin_points"]:
+            b.warn(
+                f"{data['thin_points']} point(s) have liquidity below {thin_liquidity_usd:,.0f} USD; their APY may not be reachable at size."
+            )
+        if data["unknown_liquidity_points"]:
+            b.warn(f"{data['unknown_liquidity_points']} point(s) have unknown liquidity (thin=null); not flagged thin.")
+        if len(data["matched_names"]) > 1:
+            b.warn(f"Substring match mixed several names {data['matched_names']}; pass the exact name for one asset.")
+        b.warn("Implied APY is market-implied, not guaranteed. Points are observed, not interpolated; the curve is not arbitrage-free.")
         b.warn(_CAVEATS)
         return b.build(data)
 

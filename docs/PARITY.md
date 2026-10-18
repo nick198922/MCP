@@ -77,4 +77,6 @@ Funding carry: `funding_spread_scan` (крос-біржовий спред дл�
 
 Форвард-папір carry від рушія колектора: `paper_carry_status` (дві книги A `cc-paper` і B `pp-paper`, правила й облік спільні з бектестами в `analytics/carry_rules.py`; відкриває й закриває сам рушій, не людина). Аналога в DOUBLETOP немає. Ордерів немає.
 
+Розриви Polymarket ↔ опціони: `polymarket_options_gap` (поточні розриви відкритих ринків BTC/ETH проти ймовірності з поверхні Deribit після комісії й спреду; колектор `pm_gap` пише щогодини для форвард-тесту CLV). Аналога в DOUBLETOP немає. Ордерів немає.
+
 Price-action за навчальними відео DoubleTop (не з їхнього MCP): `range_detect` (рейнджі, sweeps, deviations, accumulation/distribution), `range_setup` (SFP-сетап: entry/stop/TP/RR), `range_setup_scan` (сканер SFP-сетапів по списку тикерів).

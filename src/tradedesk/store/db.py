@@ -234,6 +234,36 @@ class Store:
         await self.conn.commit()
         return len(payload)
 
+    PM_GAP_COLUMNS = (
+        "market_id asset kind direction strike event_slug question end_ts window_start hours_to_end yes_bid yes_ask yes_bid_usd "
+        "yes_ask_usd no_bid no_ask no_bid_usd no_ask_usd volume_usd fee_rate fee_exp rules rules_hash rules_standard path_high "
+        "path_low binance_last model_prob model_note model_iv model_expiry expiry_gap_hours model_covered spot dvol"
+    ).split()
+
+    async def insert_pm_gap(self, ts: int, rows: list[dict[str, Any]]) -> int:
+        """Open Polymarket BTC/ETH price markets with the options-implied probability; idempotent per (ts, market_id)."""
+        if not rows:
+            return 0
+        cols = self.PM_GAP_COLUMNS
+        # The resolution text is long and changes rarely (Polymarket appends clarifications): the hash is in every row, the
+        # text only when it differs from the previous snapshot's hash of the same market (index (market_id, ts)).
+        rows = [r for r in rows if r.get("market_id")]
+        prev: dict[str, str | None] = {}
+        for r in rows:
+            mid = r["market_id"]
+            cur = await self.conn.execute(
+                "SELECT rules_hash FROM pm_gap_snapshot WHERE market_id = ? AND ts < ? AND rules_hash IS NOT NULL ORDER BY ts DESC LIMIT 1",
+                (mid, ts),
+            )
+            got = await cur.fetchone()
+            prev[mid] = got[0] if got else None
+        rows = [{**r, "rules": None} if r.get("rules_hash") is not None and prev[r["market_id"]] == r["rules_hash"] else r for r in rows]
+        payload = [(ts, *(r.get(c) for c in cols)) for r in rows]
+        marks = ",".join("?" * (len(cols) + 1))
+        await self.conn.executemany(f"INSERT OR REPLACE INTO pm_gap_snapshot (ts, {', '.join(cols)}) VALUES ({marks})", payload)
+        await self.conn.commit()
+        return len(payload)
+
     async def insert_trader_snapshot(self, day: str, ts: int, venue: str, rows: list[dict[str, Any]]) -> int:
         """Leaderboard rows of one venue for one UTC day; idempotent per (day, venue, account). ``rank_month`` is
         computed here by ``pnl_month`` (descending) among the rows given."""

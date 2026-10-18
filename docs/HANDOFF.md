@@ -14,7 +14,7 @@
 - **Сервер:** Contabo `169.58.169.184`, користувач `tradedesk`.
   - Служби: `tradedesk-mcp` (MCP і колектор 24/7), `tradedesk-agents-loop`, `tradedesk-tgbridge`.
   - Оновлення з `main` щоночі о 02:15. Шляхи — `docs/AGENTS.md` → «Запуск».
-- **Сховище:** SQLite, схема 14 (`cp_*` — книги паперового carry). Колектор пише:
+- **Сховище:** SQLite, схема 15 (`cp_*` — книги паперового carry; `pm_gap_snapshot` — розриви Polymarket ↔ опціони). Колектор пише:
   - ATM-строки, funding, basis;
   - ліквідації через WebSocket — **вимкнено** (знайдено 17.10; вмикає `scripts/server/16-collector-liquidations.sh`), історія OHLCV — вимкнено (є архів Binance);
   - історію OHLCV, пропозицію токенів;
@@ -55,7 +55,7 @@
 7. [market-makers](ideas/IDEA-20261017-market-makers.md) — вихід ММ з книги заявок (архів глибини Binance з 2023), новини про ММ, далі потоки в блокчейні (ключі — рішенням власника).
 8. [setup-hunt](ideas/IDEA-20261017-setup-hunt.md) — власний пошук 2–3 сетапів з доказами.
 9. [vrp-real-marks](ideas/IDEA-20261017-vrp-real-marks.md).
-10. [polymarket-vs-options-forward](ideas/IDEA-20261017-polymarket-vs-options-forward.md) — CLV.
+10. [polymarket-vs-options-forward](ideas/IDEA-20261017-polymarket-vs-options-forward.md) — CLV. **Колектор розривів зроблено 18.10** (`collector/pm_gap.py`, таблиця `pm_gap_snapshot`, схема 15, чисті `analytics/pm_gap.py`, інструмент `polymarket_options_gap`; завдання вимкнене, вмикає `TRADEDESK_PM_GAP_ENABLED=1`, щогодини). Після рев'ю (18.10): модель дотику враховує напрям, початок вікна й шлях Binance 1h (торкнуто → p=1, до вікна/без свічок/хибний бік → NULL з `model_note`), перевірка часу розв'язання, лічильники по тегах (нуль BTC/ETH-ринків = помилка), `rules_hash`, `include_nonstandard`. **Перед `TRADEDESK_PM_GAP_ENABLED=1` один раз живо перевірити** (на сервері, `uv run python -c` через `build_server()`): теги Gamma `multi-strikes`/`hit-price` для відкритих подій (`active=true&closed=false`), форма відповіді CLOB `POST /books`, ліміт сторінок (60 × 100 подій на тег), формулювання правил тижневого дотику (`weekly_rules_direction`), `ccxt` `binance` 1h з `since`; записати результат тут. Лишилися реєстрація порогу й метрик, паперові позиції, тижневий звіт, вердикт.
 11. [course-setups-crypto](ideas/IDEA-20261016-course-setups-crypto.md), кроки 8–11.
 
 **Прогрес:** панель показує загальну шкалу до готового продукту (кроки карток власника з розділу «Прогрес» плюс етапи [`PROGRESS.md`](PROGRESS.md)) і шкалу кожної картки. На 17.10 — 25 з 87 кроків.

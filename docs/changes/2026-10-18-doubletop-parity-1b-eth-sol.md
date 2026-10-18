@@ -1,0 +1,2 @@
+- Звірка з DoubleTop, крок 1b (доповнення): ETH ohlcv Binance 1d і SOL funding збігаються з DT точно; SOL OI збігається лише на частині міток (до ≈ 3 %).
+- Додано зразки DT у `tests/fixtures/doubletop/` (ETH ohlcv, SOL OI і funding). Код не змінювався.

@@ -6,14 +6,16 @@
 <!-- proposed → accepted | rejected → testing → confirmed | rejected | inconclusive → built -->
 
 ## Прогрес
-- [ ] 1. Звірка наших інструментів з DOUBLETOP
+- [x] 1a. Звірка наших інструментів з DOUBLETOP на одному вході (18.10, шість пар, BTC/Xi; docs/reviews/2026-10-18-doubletop-parity.md)
+- [ ] 1b. Звірка: ETH і альт (до 3–5 входів, як у кроці 1), Bybit-гілки, з'ясувати, що означає суфікс `.A` у Coinalyze (дані звірки вказують на Binance, а не агрегат; див. docs/reviews/2026-10-18-doubletop-parity-critic.md)
 - [x] 2. `dex_pairs`
 - [x] 3. `chain_metrics`
 - [x] Ключ Coinalyze (власник, 17.10)
 - [x] 4a. Провайдер Coinalyze + `liquidations_history`
 - [ ] 4b. Жива перевірка власником (USD/одиниці) і бекфіл колектором
 - [ ] 5. Повтор перевірок на історії Coinalyze
-- [ ] 6. Pendle (нижчий пріоритет)
+- [x] 6a. Pendle (нижчий пріоритет): фіксована дохідність, `pendle_fixed_yields`, `pendle_market` змерджено (PR #78)
+- [ ] 6b. Pendle: крива дохідності (`yield_curve` у PARITY ще 🔜) і звірка з відповіддю DoubleTop на тому самому вході
 
 ## Черга
 - Після [IDEA-20261017-deviation-weekly-trend](IDEA-20261017-deviation-weekly-trend.md) (H1 — першою).

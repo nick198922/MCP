@@ -42,6 +42,7 @@ EXPECTED_TOOLS = {
     "liquidations_history",
     "calendar_expiries",
     "macro_calendar",
+    "upbit_notices",
     "deribit_dvol",
     "deribit_vrp",
     "deribit_atm_term",
@@ -151,6 +152,7 @@ async def test_pre_trade_checklist_sizing_and_journal_review(server):
         res = await c.get_prompt("journal_review", {"days": "60"})
         review = res.messages[0].content.text
     assert "0.5 % від $10000" in plan and "journal_add" in plan and "touch_probability" in plan
+    assert "upbit_notices" in plan
     assert "60 днів" in review and "journal_stats" in review and "{{" not in review
 
 

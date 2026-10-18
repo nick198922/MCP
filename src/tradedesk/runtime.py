@@ -25,6 +25,7 @@ from .providers import dexscreener as dexs_mod
 from .providers import forexfactory as ff_mod
 from .providers import hyperliquid as hl_mod
 from .providers import polymarket as poly_mod
+from .providers import upbit as upbit_mod
 from .providers.alternative_me import AlternativeMe
 from .providers.binance_futures import BinanceFutures
 from .providers.binance_vision import BinanceVision
@@ -38,6 +39,7 @@ from .providers.exchanges import Exchanges
 from .providers.forexfactory import ForexFactory
 from .providers.hyperliquid import Hyperliquid
 from .providers.polymarket import Polymarket
+from .providers.upbit import Upbit
 from .store import Store
 
 
@@ -85,6 +87,8 @@ class Runtime:
         )
         self.alternative_me = AlternativeMe(http("alternative_me", altme_mod.BASE_URL, rate=2, burst=4))
         self.forexfactory = ForexFactory(http("forexfactory", ff_mod.BASE_URL, rate=0.5, burst=2))
+        # Cloudflare in front of Upbit answers 429 / 1015 above ~1 request per 6 s.
+        self.upbit = Upbit(http("upbit", upbit_mod.BASE_URL, rate=upbit_mod.RATE_PER_SECOND, burst=1))
         self.dexscreener = DexScreener(http("dexscreener", dexs_mod.BASE_URL, rate=4, burst=8))
         self.defillama = DefiLlama(http("defillama", llama_mod.BASE_URL, rate=4, burst=8))
         self.coinalyze = Coinalyze(
@@ -144,6 +148,7 @@ class Runtime:
         await self.binance_vision.aclose()
         await self.alternative_me.http.aclose()
         await self.forexfactory.http.aclose()
+        await self.upbit.http.aclose()
         await self.dexscreener.http.aclose()
         await self.defillama.http.aclose()
         await self.coinalyze.http.aclose()

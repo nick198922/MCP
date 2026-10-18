@@ -60,6 +60,8 @@
 
 **Прогрес:** панель показує загальну шкалу до готового продукту (кроки карток власника з розділу «Прогрес» плюс етапи [`PROGRESS.md`](PROGRESS.md)) і шкалу кожної картки. На 17.10 — 25 з 87 кроків.
 
+**Асистент (власник 18.10, Порядок 1):** [IDEA-20261018-assistant](ideas/IDEA-20261018-assistant.md) — бриф, опціонний стіл, журнал на панелі й у Telegram. Еталон — макет на живих даних [`docs/design/assistant-prototype.html`](design/assistant-prototype.html) (артефакт власника: https://claude.ai/artifact/PYh3aWHYPGBm5tkr5me3ky).
+
 **Поза чергою:**
 - «розумні гроші» — стадія 0 `inconclusive`, збір триває;
 - калібрування Polymarket — правки;

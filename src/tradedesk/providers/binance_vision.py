@@ -12,7 +12,10 @@ import io
 import re
 import xml.etree.ElementTree as ET
 import zipfile
+from datetime import UTC, datetime
 from typing import Any
+
+import numpy as np
 
 from ..core.envelope import Fetched
 from ..core.errors import ProviderError
@@ -73,6 +76,35 @@ def parse_funding_zip(blob: bytes) -> list[list[float]]:
         out.append([float(ts), float(row[1] or 0), float(row[2])])
     out.sort(key=lambda r: r[0])
     return out
+
+
+def _epoch_s(stamp: str) -> int:
+    s = stamp.strip()
+    if s.isdigit():  # epoch ms or us in some archive generations
+        v = int(s)
+        return v // 1_000_000 if v > 10**14 else v // 1000
+    return int(datetime.fromisoformat(s).replace(tzinfo=UTC).timestamp())
+
+
+def parse_book_depth_zip(blob: bytes) -> dict[str, np.ndarray]:
+    """Columns of a daily USD-M ``bookDepth`` zip: ``ts`` (snapshot time, epoch seconds UTC), ``pct`` (signed distance
+    from the price in percent: -1 = bids within 1 % below, +1 = asks within 1 % above), ``depth`` (cumulative base
+    quantity) and ``notional`` (cumulative quote value, USDT). Snapshots every ~30 s; levels +-1..5 (and +-0.2 in newer
+    files). Header optional."""
+    lines = [ln for ln in _csv_text(blob).splitlines() if ln and ln[0].isdigit()]  # drop header / blank lines
+    if not lines:
+        return {"ts": np.empty(0, dtype=np.int64), "pct": np.empty(0), "depth": np.empty(0), "notional": np.empty(0)}
+    fields = ",".join(lines).split(",")
+    if len(fields) != 4 * len(lines):
+        raise ProviderError("binance_vision", "backend_error", "bad bookDepth csv: expected 4 columns per row")
+    try:
+        vals = np.array([fields[1::4], fields[2::4], fields[3::4]], dtype=float)
+    except ValueError as e:
+        raise ProviderError("binance_vision", "backend_error", f"bad bookDepth csv: {e}") from None
+    seen: dict[str, int] = {}
+    heads = fields[0::4]
+    ts = np.fromiter((seen[h] if h in seen else seen.setdefault(h, _epoch_s(h)) for h in heads), dtype=np.int64, count=len(heads))
+    return {"ts": ts, "pct": vals[0], "depth": vals[1], "notional": vals[2]}
 
 
 def parse_listing(blob: bytes) -> tuple[list[str], list[str], str | None]:
@@ -175,6 +207,16 @@ class BinanceVision:
         name = f"{symbol}-{interval}-{day}.zip"
         f = await self.http.get_bytes(f"/{UM_KLINES}/daily/premiumIndexKlines/{symbol}/{interval}/{name}", tool="um_premium_index_daily")
         return Fetched(parse_klines_zip(f.data), f.evidence)
+
+    async def um_book_depth_daily(self, symbol: str, day: str) -> Fetched:
+        """One UTC day of USDT-M ``bookDepth`` snapshots (see ``parse_book_depth_zip``); 404 -> ``data_unavailable``.
+
+        The archive starts in 2023-01 (early files can be partial: count snapshots before use). ~0.5 MB per day."""
+        _check(symbol, "1d")
+        _check_day(day)
+        name = f"{symbol}-bookDepth-{day}.zip"
+        f = await self.http.get_bytes(f"/{UM_KLINES}/daily/bookDepth/{symbol}/{name}", tool="um_book_depth_daily")
+        return Fetched(parse_book_depth_zip(f.data), f.evidence)
 
     async def spot_symbols(self) -> Fetched:
         """Every spot symbol that ever had monthly klines in the archive (including delisted pairs)."""

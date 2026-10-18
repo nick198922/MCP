@@ -1,0 +1,39 @@
+2026-10-17T23:48:42+00:00 sha256=48947227f4141e555cfd0a36062c73ee7ea06f9714ca2d869bd44c5a2cd9aa5d bytes=13838 card_blob=96554480d6c3d643d6e54d03fe3ffee61a216d14
+# The line above is the hash of the card section "Попередня реєстрація (B2: реакція на релізи)", written by
+# `scripts/verify_macro_release.py --stage prereg` before any data was fetched (copy of
+# ~/.cache/tradedesk-agents/macro_release/registration.txt). The agent has no git permission, so the coordinator commits.
+#
+# Order of work (UTC, 2026-10-17):
+# 23:48:42  prereg hash (above)
+# 23:48-23:53  --stage fetch: 172 kline files (5m, BTCUSDT/ETHUSDT spot, 2020-12 .. 2026-10-16), fomccalendars.htm (ok),
+#              BLS schedule 2021: HTTP 403 on the one registered try, no further BLS requests
+# --stage dates (event dates vs the official FOMC calendar; no prices) and --stage gates (sanity, n, SD, MDE; no means)
+# 23:55:58  first --stage report run -> report_raw.md
+# 23:57:02  second --stage report run -> report_raw_v2.md (= docs/verification/2026-10-18-macro-release-reaction.raw.md)
+#           after a label-only fix (the H4b section printed "BTC" in the ETH block) and one added output line with
+#           5-digit CI bounds of mean z (the BTC FOMC lower bound printed as +0.000). diff report_raw.md report_raw_v2.md:
+#           only the time line, the duration line, the ETH labels and the two added lines; no number changed.
+# 23:57:55  third --stage report run (same code, same data), with the --stage gates output (gates.md) appended by hand
+#           -> the first version of docs/verification/2026-10-18-macro-release-reaction.raw.md. No number changed.
+#           (This run was missing from the log above; added 2026-10-18 after the critic review, item 7.)
+#
+# Round 2 after the critic review (docs/reviews/2026-10-18-macro-release-reaction.md). CHANGED AFTER THE FIRST RUN:
+#  - data fix: the September 2026 CPI was missing from docs/verification/2026-10-15-us-macro-events.csv although it is
+#    inside the registered event window (to 2026-10-15). Added row 2026-10-14,cpi,unverified. Sources disagree
+#    (events_seed.json 2026-10-14, macro_events.json 2026-10-15) and neither is confirmed (BLS 403). The choice of
+#    2026-10-14 is partly data-informed (BTC 1.19 % in 5 min at 08:30 ET that day, found by the critic), so the
+#    alternative date is reported as a sensitivity run. Events 183 -> 184, placebo days 989 -> 986.
+#  - script: reverse scan of placebo days (top 15 by |R(5m)| at 08:30 and 14:00 ET); exploratory lines, no verdicts:
+#    Bonferroni-adjusted CI (12 main tests) for H1 at 5m and 2h, NFP vs Friday-only placebo, H5 net without the 3
+#    largest |C|; options --with-gates (append the gates block to the report) and --move-event OLD:NEW (sensitivity).
+#  - tests: lookahead test for bars that open at t0 or later (sigma, sigma7, p0 unchanged).
+#  - not changed: registered parameters, thresholds, verdict functions (h1_verdict, continuation_verdict,
+#    rule_verdict), power gates, bootstrap settings.
+# 2026-10-18 00:13:56  fourth --stage report run (new CSV row, new script lines) -> cache report_raw_v3.md
+# 2026-10-18 00:14:31  sensitivity run --move-event 2026-10-14:2026-10-15 -> cache report_raw_v3_alt_cpi_20261015.md
+# 2026-10-18 00:15     --stage gates (cache gates_v3.md; no means), then --stage report --with-gates at 00:15:44
+#           -> docs/verification/2026-10-18-macro-release-reaction.raw.md (numbers identical to the 00:13:56 run)
+# 2026-10-18 00:16:28  sensitivity run again -> docs/verification/2026-10-18-macro-release-reaction.raw-alt.md
+#           Result of round 2: every verdict unchanged (H1 ✓ x6, H3 pooled ✗ x2, H4a ✗ x2, H5 ✗ x2, BTC FOMC ≈,
+#           ETH FOMC ◯) under both CPI dates; numbers moved in the second digit.
+# Not done: git commit of the card before the run (no git permission for the agent).

@@ -88,31 +88,27 @@ def _pages(call: Any, params: dict[str, Any]) -> list[dict[str, Any]]:
 def fetch(env: str, days: int) -> tuple[list[dict[str, Any]], list[str]]:
     ex = client(env)
     now = int(time.time() * 1000)
-    start = now - days * DAY_MS
+    # Bybit refuses anything older than its 2-year limit, counted a little stricter than 730 days: start a day later
+    start = now - (min(days, 730) - 1) * DAY_MS
     rows: list[dict[str, Any]] = []
     notes: list[str] = []
-    sources = [
-        ("linear", ex.privateGetV5PositionClosedPnl),
-        ("inverse", ex.privateGetV5PositionClosedPnl),
-        ("linear", ex.privateGetV5PreUpgradePositionClosedPnl),
-        ("inverse", ex.privateGetV5PreUpgradePositionClosedPnl),
-    ]
-    for cat, call in sources:
-        name = call.__name__ if hasattr(call, "__name__") else "closed-pnl"
-        got = 0
-        t = start
+    for cat in ("linear", "inverse"):
+        got, errors, t = 0, 0, start
         while t < now:
             try:
-                part = _pages(call, {"category": cat, "startTime": t, "endTime": min(t + WINDOW_MS, now)})
-            except Exception as e:  # noqa: BLE001 - one failing source must not stop the rest
-                notes.append(f"{cat} {name}: {type(e).__name__}: {str(e)[:120]}")
-                break
+                part = _pages(ex.privateGetV5PositionClosedPnl, {"category": cat, "startTime": t, "endTime": min(t + WINDOW_MS, now)})
+            except Exception as e:  # noqa: BLE001 - one failing window must not stop the rest
+                errors += 1
+                if errors <= 2:
+                    notes.append(f"{cat} closed-pnl {datetime.fromtimestamp(t / 1000, UTC):%Y-%m-%d}: {type(e).__name__}: {str(e)[:120]}")
+                part = []
             for x in part:
                 x["_category"] = cat
             rows += part
             got += len(part)
             t += WINDOW_MS
-        notes.append(f"{cat} {name}: {got} records")
+        notes.append(f"{cat} closed-pnl: {got} records, {errors} failed windows")
+    # The pre-upgrade (classic account) history needs a symbol per request; it is fetched only when asked for
     try:
         opts = _pages(ex.privateGetV5PositionGetClosedPositions, {"category": "option"})
         for x in opts:

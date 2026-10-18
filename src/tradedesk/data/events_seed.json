@@ -1,11 +1,23 @@
 {
   "_meta": {
-    "generated_at": "2026-10-12",
-    "coverage": "2024-01 \u2026 2026-12",
-    "source": "approximate from Federal Reserve FOMC calendar + BLS CPI/NFP schedules",
-    "note": "Times approximated at 13:30/19:00 UTC. 2026 Fed dates are projected and should be verified against https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
+    "generated_at": "2026-10-18",
+    "coverage": "2024-01 … 2027-12",
+    "source": "Federal Reserve FOMC calendar + BLS CPI/NFP schedules and release archives",
+    "note": "Times are the official ET release times converted to UTC (CPI/NFP 08:30 ET, FOMC decision 14:00 ET). Verified by Claude 2026-10-18 against https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm (2026, 2027), https://www.bls.gov/schedule/news_release/cpi.htm and empsit.htm (Nov 2026 … Dec 2027) and the BLS release archives (Feb … Oct 2026). Dates before 2026-02 are as originally approximated. FOMC dates are tentative until confirmed at the preceding meeting."
   },
   "events": [
+    {
+      "ts": 1704461400,
+      "kind": "nfp",
+      "label": "US NFP 2024-01",
+      "impact": "high"
+    },
+    {
+      "ts": 1704979800,
+      "kind": "cpi",
+      "label": "US CPI 2024-01",
+      "impact": "high"
+    },
     {
       "ts": 1706727600,
       "kind": "fomc",
@@ -13,33 +25,147 @@
       "impact": "high"
     },
     {
-      "ts": 1710961200,
+      "ts": 1706880600,
+      "kind": "nfp",
+      "label": "US NFP 2024-02",
+      "impact": "high"
+    },
+    {
+      "ts": 1707831000,
+      "kind": "cpi",
+      "label": "US CPI 2024-02",
+      "impact": "high"
+    },
+    {
+      "ts": 1709904600,
+      "kind": "nfp",
+      "label": "US NFP 2024-03",
+      "impact": "high"
+    },
+    {
+      "ts": 1710246600,
+      "kind": "cpi",
+      "label": "US CPI 2024-03",
+      "impact": "high"
+    },
+    {
+      "ts": 1710957600,
       "kind": "fomc",
       "label": "Mar 2024 FOMC",
       "impact": "high"
     },
     {
-      "ts": 1714590000,
+      "ts": 1712320200,
+      "kind": "nfp",
+      "label": "US NFP 2024-04",
+      "impact": "high"
+    },
+    {
+      "ts": 1712752200,
+      "kind": "cpi",
+      "label": "US CPI 2024-04",
+      "impact": "high"
+    },
+    {
+      "ts": 1714586400,
       "kind": "fomc",
       "label": "May 2024 FOMC",
       "impact": "high"
     },
     {
-      "ts": 1718218800,
+      "ts": 1714739400,
+      "kind": "nfp",
+      "label": "US NFP 2024-05",
+      "impact": "high"
+    },
+    {
+      "ts": 1715776200,
+      "kind": "cpi",
+      "label": "US CPI 2024-05",
+      "impact": "high"
+    },
+    {
+      "ts": 1717763400,
+      "kind": "nfp",
+      "label": "US NFP 2024-06",
+      "impact": "high"
+    },
+    {
+      "ts": 1718195400,
+      "kind": "cpi",
+      "label": "US CPI 2024-06",
+      "impact": "high"
+    },
+    {
+      "ts": 1718215200,
       "kind": "fomc",
       "label": "Jun 2024 FOMC (SEP)",
       "impact": "high"
     },
     {
-      "ts": 1722452400,
+      "ts": 1720182600,
+      "kind": "nfp",
+      "label": "US NFP 2024-07",
+      "impact": "high"
+    },
+    {
+      "ts": 1720701000,
+      "kind": "cpi",
+      "label": "US CPI 2024-07",
+      "impact": "high"
+    },
+    {
+      "ts": 1722448800,
       "kind": "fomc",
       "label": "Jul 2024 FOMC",
       "impact": "high"
     },
     {
-      "ts": 1726686000,
+      "ts": 1722601800,
+      "kind": "nfp",
+      "label": "US NFP 2024-08",
+      "impact": "high"
+    },
+    {
+      "ts": 1723638600,
+      "kind": "cpi",
+      "label": "US CPI 2024-08",
+      "impact": "high"
+    },
+    {
+      "ts": 1725625800,
+      "kind": "nfp",
+      "label": "US NFP 2024-09",
+      "impact": "high"
+    },
+    {
+      "ts": 1726057800,
+      "kind": "cpi",
+      "label": "US CPI 2024-09",
+      "impact": "high"
+    },
+    {
+      "ts": 1726682400,
       "kind": "fomc",
       "label": "Sep 2024 FOMC (SEP)",
+      "impact": "high"
+    },
+    {
+      "ts": 1728045000,
+      "kind": "nfp",
+      "label": "US NFP 2024-10",
+      "impact": "high"
+    },
+    {
+      "ts": 1728563400,
+      "kind": "cpi",
+      "label": "US CPI 2024-10",
+      "impact": "high"
+    },
+    {
+      "ts": 1730464200,
+      "kind": "nfp",
+      "label": "US NFP 2024-11",
       "impact": "high"
     },
     {
@@ -49,9 +175,39 @@
       "impact": "high"
     },
     {
+      "ts": 1731504600,
+      "kind": "cpi",
+      "label": "US CPI 2024-11",
+      "impact": "high"
+    },
+    {
+      "ts": 1733491800,
+      "kind": "nfp",
+      "label": "US NFP 2024-12",
+      "impact": "high"
+    },
+    {
+      "ts": 1733923800,
+      "kind": "cpi",
+      "label": "US CPI 2024-12",
+      "impact": "high"
+    },
+    {
       "ts": 1734548400,
       "kind": "fomc",
       "label": "Dec 2024 FOMC (SEP)",
+      "impact": "high"
+    },
+    {
+      "ts": 1736515800,
+      "kind": "nfp",
+      "label": "US NFP 2025-01",
+      "impact": "high"
+    },
+    {
+      "ts": 1736947800,
+      "kind": "cpi",
+      "label": "US CPI 2025-01",
       "impact": "high"
     },
     {
@@ -61,39 +217,171 @@
       "impact": "high"
     },
     {
-      "ts": 1742410800,
+      "ts": 1738935000,
+      "kind": "nfp",
+      "label": "US NFP 2025-02",
+      "impact": "high"
+    },
+    {
+      "ts": 1739367000,
+      "kind": "cpi",
+      "label": "US CPI 2025-02",
+      "impact": "high"
+    },
+    {
+      "ts": 1741354200,
+      "kind": "nfp",
+      "label": "US NFP 2025-03",
+      "impact": "high"
+    },
+    {
+      "ts": 1741782600,
+      "kind": "cpi",
+      "label": "US CPI 2025-03",
+      "impact": "high"
+    },
+    {
+      "ts": 1742407200,
       "kind": "fomc",
       "label": "Mar 2025 FOMC (SEP)",
       "impact": "high"
     },
     {
-      "ts": 1746644400,
+      "ts": 1743769800,
+      "kind": "nfp",
+      "label": "US NFP 2025-04",
+      "impact": "high"
+    },
+    {
+      "ts": 1744288200,
+      "kind": "cpi",
+      "label": "US CPI 2025-04",
+      "impact": "high"
+    },
+    {
+      "ts": 1746189000,
+      "kind": "nfp",
+      "label": "US NFP 2025-05",
+      "impact": "high"
+    },
+    {
+      "ts": 1746640800,
       "kind": "fomc",
       "label": "May 2025 FOMC",
       "impact": "high"
     },
     {
-      "ts": 1750273200,
+      "ts": 1747139400,
+      "kind": "cpi",
+      "label": "US CPI 2025-05",
+      "impact": "high"
+    },
+    {
+      "ts": 1749213000,
+      "kind": "nfp",
+      "label": "US NFP 2025-06",
+      "impact": "high"
+    },
+    {
+      "ts": 1749645000,
+      "kind": "cpi",
+      "label": "US CPI 2025-06",
+      "impact": "high"
+    },
+    {
+      "ts": 1750269600,
       "kind": "fomc",
       "label": "Jun 2025 FOMC (SEP)",
       "impact": "high"
     },
     {
-      "ts": 1753902000,
+      "ts": 1751545800,
+      "kind": "nfp",
+      "label": "US NFP 2025-07",
+      "impact": "high"
+    },
+    {
+      "ts": 1752582600,
+      "kind": "cpi",
+      "label": "US CPI 2025-07",
+      "impact": "high"
+    },
+    {
+      "ts": 1753898400,
       "kind": "fomc",
       "label": "Jul 2025 FOMC",
       "impact": "high"
     },
     {
-      "ts": 1758135600,
+      "ts": 1754051400,
+      "kind": "nfp",
+      "label": "US NFP 2025-08",
+      "impact": "high"
+    },
+    {
+      "ts": 1755001800,
+      "kind": "cpi",
+      "label": "US CPI 2025-08",
+      "impact": "high"
+    },
+    {
+      "ts": 1757075400,
+      "kind": "nfp",
+      "label": "US NFP 2025-09",
+      "impact": "high"
+    },
+    {
+      "ts": 1757593800,
+      "kind": "cpi",
+      "label": "US CPI 2025-09",
+      "impact": "high"
+    },
+    {
+      "ts": 1758132000,
       "kind": "fomc",
       "label": "Sep 2025 FOMC (SEP)",
       "impact": "high"
     },
     {
-      "ts": 1761764400,
+      "ts": 1759494600,
+      "kind": "nfp",
+      "label": "US NFP 2025-10",
+      "impact": "high"
+    },
+    {
+      "ts": 1760531400,
+      "kind": "cpi",
+      "label": "US CPI 2025-10",
+      "impact": "high"
+    },
+    {
+      "ts": 1761760800,
       "kind": "fomc",
       "label": "Oct 2025 FOMC",
+      "impact": "high"
+    },
+    {
+      "ts": 1762522200,
+      "kind": "nfp",
+      "label": "US NFP 2025-11",
+      "impact": "high"
+    },
+    {
+      "ts": 1763040600,
+      "kind": "cpi",
+      "label": "US CPI 2025-11",
+      "impact": "high"
+    },
+    {
+      "ts": 1764941400,
+      "kind": "nfp",
+      "label": "US NFP 2025-12",
+      "impact": "high"
+    },
+    {
+      "ts": 1765373400,
+      "kind": "cpi",
+      "label": "US CPI 2025-12",
       "impact": "high"
     },
     {
@@ -103,483 +391,387 @@
       "impact": "high"
     },
     {
+      "ts": 1767965400,
+      "kind": "nfp",
+      "label": "US NFP 2026-01",
+      "impact": "high"
+    },
+    {
+      "ts": 1768311000,
+      "kind": "cpi",
+      "label": "US CPI 2026-01",
+      "impact": "high"
+    },
+    {
       "ts": 1769626800,
       "kind": "fomc",
       "label": "Jan 2026 FOMC",
       "impact": "high"
     },
     {
-      "ts": 1773860400,
-      "kind": "fomc",
-      "label": "Mar 2026 FOMC (SEP)",
-      "impact": "high"
-    },
-    {
-      "ts": 1777489200,
-      "kind": "fomc",
-      "label": "Apr 2026 FOMC",
-      "impact": "high"
-    },
-    {
-      "ts": 1781722800,
-      "kind": "fomc",
-      "label": "Jun 2026 FOMC (SEP)",
-      "impact": "high"
-    },
-    {
-      "ts": 1785351600,
-      "kind": "fomc",
-      "label": "Jul 2026 FOMC",
-      "impact": "high"
-    },
-    {
-      "ts": 1789585200,
-      "kind": "fomc",
-      "label": "Sep 2026 FOMC (SEP)",
-      "impact": "high"
-    },
-    {
-      "ts": 1793214000,
-      "kind": "fomc",
-      "label": "Oct 2026 FOMC",
-      "impact": "high"
-    },
-    {
-      "ts": 1797447600,
-      "kind": "fomc",
-      "label": "Dec 2026 FOMC (SEP)",
-      "impact": "high"
-    },
-    {
-      "ts": 1704978000,
-      "kind": "cpi",
-      "label": "US CPI 2024-01",
-      "impact": "high"
-    },
-    {
-      "ts": 1707829200,
-      "kind": "cpi",
-      "label": "US CPI 2024-02",
-      "impact": "high"
-    },
-    {
-      "ts": 1710248400,
-      "kind": "cpi",
-      "label": "US CPI 2024-03",
-      "impact": "high"
-    },
-    {
-      "ts": 1712754000,
-      "kind": "cpi",
-      "label": "US CPI 2024-04",
-      "impact": "high"
-    },
-    {
-      "ts": 1715778000,
-      "kind": "cpi",
-      "label": "US CPI 2024-05",
-      "impact": "high"
-    },
-    {
-      "ts": 1718197200,
-      "kind": "cpi",
-      "label": "US CPI 2024-06",
-      "impact": "high"
-    },
-    {
-      "ts": 1720702800,
-      "kind": "cpi",
-      "label": "US CPI 2024-07",
-      "impact": "high"
-    },
-    {
-      "ts": 1723640400,
-      "kind": "cpi",
-      "label": "US CPI 2024-08",
-      "impact": "high"
-    },
-    {
-      "ts": 1726059600,
-      "kind": "cpi",
-      "label": "US CPI 2024-09",
-      "impact": "high"
-    },
-    {
-      "ts": 1728565200,
-      "kind": "cpi",
-      "label": "US CPI 2024-10",
-      "impact": "high"
-    },
-    {
-      "ts": 1731502800,
-      "kind": "cpi",
-      "label": "US CPI 2024-11",
-      "impact": "high"
-    },
-    {
-      "ts": 1733922000,
-      "kind": "cpi",
-      "label": "US CPI 2024-12",
-      "impact": "high"
-    },
-    {
-      "ts": 1736946000,
-      "kind": "cpi",
-      "label": "US CPI 2025-01",
-      "impact": "high"
-    },
-    {
-      "ts": 1739365200,
-      "kind": "cpi",
-      "label": "US CPI 2025-02",
-      "impact": "high"
-    },
-    {
-      "ts": 1741784400,
-      "kind": "cpi",
-      "label": "US CPI 2025-03",
-      "impact": "high"
-    },
-    {
-      "ts": 1744290000,
-      "kind": "cpi",
-      "label": "US CPI 2025-04",
-      "impact": "high"
-    },
-    {
-      "ts": 1747141200,
-      "kind": "cpi",
-      "label": "US CPI 2025-05",
-      "impact": "high"
-    },
-    {
-      "ts": 1749646800,
-      "kind": "cpi",
-      "label": "US CPI 2025-06",
-      "impact": "high"
-    },
-    {
-      "ts": 1752584400,
-      "kind": "cpi",
-      "label": "US CPI 2025-07",
-      "impact": "high"
-    },
-    {
-      "ts": 1755003600,
-      "kind": "cpi",
-      "label": "US CPI 2025-08",
-      "impact": "high"
-    },
-    {
-      "ts": 1757595600,
-      "kind": "cpi",
-      "label": "US CPI 2025-09",
-      "impact": "high"
-    },
-    {
-      "ts": 1760533200,
-      "kind": "cpi",
-      "label": "US CPI 2025-10",
-      "impact": "high"
-    },
-    {
-      "ts": 1763038800,
-      "kind": "cpi",
-      "label": "US CPI 2025-11",
-      "impact": "high"
-    },
-    {
-      "ts": 1765371600,
-      "kind": "cpi",
-      "label": "US CPI 2025-12",
-      "impact": "high"
-    },
-    {
-      "ts": 1768309200,
-      "kind": "cpi",
-      "label": "US CPI 2026-01",
-      "impact": "high"
-    },
-    {
-      "ts": 1770814800,
-      "kind": "cpi",
-      "label": "US CPI 2026-02",
-      "impact": "high"
-    },
-    {
-      "ts": 1773234000,
-      "kind": "cpi",
-      "label": "US CPI 2026-03",
-      "impact": "high"
-    },
-    {
-      "ts": 1775826000,
-      "kind": "cpi",
-      "label": "US CPI 2026-04",
-      "impact": "high"
-    },
-    {
-      "ts": 1778590800,
-      "kind": "cpi",
-      "label": "US CPI 2026-05",
-      "impact": "high"
-    },
-    {
-      "ts": 1781096400,
-      "kind": "cpi",
-      "label": "US CPI 2026-06",
-      "impact": "high"
-    },
-    {
-      "ts": 1784034000,
-      "kind": "cpi",
-      "label": "US CPI 2026-07",
-      "impact": "high"
-    },
-    {
-      "ts": 1786453200,
-      "kind": "cpi",
-      "label": "US CPI 2026-08",
-      "impact": "high"
-    },
-    {
-      "ts": 1789045200,
-      "kind": "cpi",
-      "label": "US CPI 2026-09",
-      "impact": "high"
-    },
-    {
-      "ts": 1791982800,
-      "kind": "cpi",
-      "label": "US CPI 2026-10",
-      "impact": "high"
-    },
-    {
-      "ts": 1794488400,
-      "kind": "cpi",
-      "label": "US CPI 2026-11",
-      "impact": "high"
-    },
-    {
-      "ts": 1796907600,
-      "kind": "cpi",
-      "label": "US CPI 2026-12",
-      "impact": "high"
-    },
-    {
-      "ts": 1704459600,
-      "kind": "nfp",
-      "label": "US NFP 2024-01",
-      "impact": "high"
-    },
-    {
-      "ts": 1706878800,
-      "kind": "nfp",
-      "label": "US NFP 2024-02",
-      "impact": "high"
-    },
-    {
-      "ts": 1709902800,
-      "kind": "nfp",
-      "label": "US NFP 2024-03",
-      "impact": "high"
-    },
-    {
-      "ts": 1712322000,
-      "kind": "nfp",
-      "label": "US NFP 2024-04",
-      "impact": "high"
-    },
-    {
-      "ts": 1714741200,
-      "kind": "nfp",
-      "label": "US NFP 2024-05",
-      "impact": "high"
-    },
-    {
-      "ts": 1717765200,
-      "kind": "nfp",
-      "label": "US NFP 2024-06",
-      "impact": "high"
-    },
-    {
-      "ts": 1720184400,
-      "kind": "nfp",
-      "label": "US NFP 2024-07",
-      "impact": "high"
-    },
-    {
-      "ts": 1722603600,
-      "kind": "nfp",
-      "label": "US NFP 2024-08",
-      "impact": "high"
-    },
-    {
-      "ts": 1725627600,
-      "kind": "nfp",
-      "label": "US NFP 2024-09",
-      "impact": "high"
-    },
-    {
-      "ts": 1728046800,
-      "kind": "nfp",
-      "label": "US NFP 2024-10",
-      "impact": "high"
-    },
-    {
-      "ts": 1730466000,
-      "kind": "nfp",
-      "label": "US NFP 2024-11",
-      "impact": "high"
-    },
-    {
-      "ts": 1733490000,
-      "kind": "nfp",
-      "label": "US NFP 2024-12",
-      "impact": "high"
-    },
-    {
-      "ts": 1736514000,
-      "kind": "nfp",
-      "label": "US NFP 2025-01",
-      "impact": "high"
-    },
-    {
-      "ts": 1738933200,
-      "kind": "nfp",
-      "label": "US NFP 2025-02",
-      "impact": "high"
-    },
-    {
-      "ts": 1741352400,
-      "kind": "nfp",
-      "label": "US NFP 2025-03",
-      "impact": "high"
-    },
-    {
-      "ts": 1743771600,
-      "kind": "nfp",
-      "label": "US NFP 2025-04",
-      "impact": "high"
-    },
-    {
-      "ts": 1746190800,
-      "kind": "nfp",
-      "label": "US NFP 2025-05",
-      "impact": "high"
-    },
-    {
-      "ts": 1749214800,
-      "kind": "nfp",
-      "label": "US NFP 2025-06",
-      "impact": "high"
-    },
-    {
-      "ts": 1751547600,
-      "kind": "nfp",
-      "label": "US NFP 2025-07",
-      "impact": "high"
-    },
-    {
-      "ts": 1754053200,
-      "kind": "nfp",
-      "label": "US NFP 2025-08",
-      "impact": "high"
-    },
-    {
-      "ts": 1757077200,
-      "kind": "nfp",
-      "label": "US NFP 2025-09",
-      "impact": "high"
-    },
-    {
-      "ts": 1759496400,
-      "kind": "nfp",
-      "label": "US NFP 2025-10",
-      "impact": "high"
-    },
-    {
-      "ts": 1762520400,
-      "kind": "nfp",
-      "label": "US NFP 2025-11",
-      "impact": "high"
-    },
-    {
-      "ts": 1764939600,
-      "kind": "nfp",
-      "label": "US NFP 2025-12",
-      "impact": "high"
-    },
-    {
-      "ts": 1767963600,
-      "kind": "nfp",
-      "label": "US NFP 2026-01",
-      "impact": "high"
-    },
-    {
-      "ts": 1770382800,
+      "ts": 1770816600,
       "kind": "nfp",
       "label": "US NFP 2026-02",
       "impact": "high"
     },
     {
-      "ts": 1772802000,
+      "ts": 1770989400,
+      "kind": "cpi",
+      "label": "US CPI 2026-02",
+      "impact": "high"
+    },
+    {
+      "ts": 1772803800,
       "kind": "nfp",
       "label": "US NFP 2026-03",
       "impact": "high"
     },
     {
-      "ts": 1775221200,
+      "ts": 1773232200,
+      "kind": "cpi",
+      "label": "US CPI 2026-03",
+      "impact": "high"
+    },
+    {
+      "ts": 1773856800,
+      "kind": "fomc",
+      "label": "Mar 2026 FOMC (SEP)",
+      "impact": "high"
+    },
+    {
+      "ts": 1775219400,
       "kind": "nfp",
       "label": "US NFP 2026-04",
       "impact": "high"
     },
     {
-      "ts": 1777640400,
+      "ts": 1775824200,
+      "kind": "cpi",
+      "label": "US CPI 2026-04",
+      "impact": "high"
+    },
+    {
+      "ts": 1777485600,
+      "kind": "fomc",
+      "label": "Apr 2026 FOMC",
+      "impact": "high"
+    },
+    {
+      "ts": 1778243400,
       "kind": "nfp",
       "label": "US NFP 2026-05",
       "impact": "high"
     },
     {
-      "ts": 1780664400,
+      "ts": 1778589000,
+      "kind": "cpi",
+      "label": "US CPI 2026-05",
+      "impact": "high"
+    },
+    {
+      "ts": 1780662600,
       "kind": "nfp",
       "label": "US NFP 2026-06",
       "impact": "high"
     },
     {
-      "ts": 1782997200,
+      "ts": 1781094600,
+      "kind": "cpi",
+      "label": "US CPI 2026-06",
+      "impact": "high"
+    },
+    {
+      "ts": 1781719200,
+      "kind": "fomc",
+      "label": "Jun 2026 FOMC (SEP)",
+      "impact": "high"
+    },
+    {
+      "ts": 1782995400,
       "kind": "nfp",
       "label": "US NFP 2026-07",
       "impact": "high"
     },
     {
-      "ts": 1786107600,
+      "ts": 1784032200,
+      "kind": "cpi",
+      "label": "US CPI 2026-07",
+      "impact": "high"
+    },
+    {
+      "ts": 1785348000,
+      "kind": "fomc",
+      "label": "Jul 2026 FOMC",
+      "impact": "high"
+    },
+    {
+      "ts": 1786105800,
       "kind": "nfp",
       "label": "US NFP 2026-08",
       "impact": "high"
     },
     {
-      "ts": 1788526800,
+      "ts": 1786537800,
+      "kind": "cpi",
+      "label": "US CPI 2026-08",
+      "impact": "high"
+    },
+    {
+      "ts": 1788525000,
       "kind": "nfp",
       "label": "US NFP 2026-09",
       "impact": "high"
     },
     {
-      "ts": 1790946000,
+      "ts": 1789129800,
+      "kind": "cpi",
+      "label": "US CPI 2026-09",
+      "impact": "high"
+    },
+    {
+      "ts": 1789581600,
+      "kind": "fomc",
+      "label": "Sep 2026 FOMC (SEP)",
+      "impact": "high"
+    },
+    {
+      "ts": 1790944200,
       "kind": "nfp",
       "label": "US NFP 2026-10",
       "impact": "high"
     },
     {
-      "ts": 1793970000,
+      "ts": 1791981000,
+      "kind": "cpi",
+      "label": "US CPI 2026-10",
+      "impact": "high"
+    },
+    {
+      "ts": 1793210400,
+      "kind": "fomc",
+      "label": "Oct 2026 FOMC",
+      "impact": "high"
+    },
+    {
+      "ts": 1793971800,
       "kind": "nfp",
       "label": "US NFP 2026-11",
       "impact": "high"
     },
     {
-      "ts": 1796389200,
+      "ts": 1794317400,
+      "kind": "cpi",
+      "label": "US CPI 2026-11",
+      "impact": "high"
+    },
+    {
+      "ts": 1796391000,
       "kind": "nfp",
       "label": "US NFP 2026-12",
+      "impact": "high"
+    },
+    {
+      "ts": 1796842800,
+      "kind": "fomc",
+      "label": "Dec 2026 FOMC (SEP)",
+      "impact": "high"
+    },
+    {
+      "ts": 1796909400,
+      "kind": "cpi",
+      "label": "US CPI 2026-12",
+      "impact": "high"
+    },
+    {
+      "ts": 1799415000,
+      "kind": "nfp",
+      "label": "US NFP 2027-01",
+      "impact": "high"
+    },
+    {
+      "ts": 1799847000,
+      "kind": "cpi",
+      "label": "US CPI 2027-01",
+      "impact": "high"
+    },
+    {
+      "ts": 1801076400,
+      "kind": "fomc",
+      "label": "Jan 2027 FOMC",
+      "impact": "high"
+    },
+    {
+      "ts": 1801834200,
+      "kind": "nfp",
+      "label": "US NFP 2027-02",
+      "impact": "high"
+    },
+    {
+      "ts": 1802352600,
+      "kind": "cpi",
+      "label": "US CPI 2027-02",
+      "impact": "high"
+    },
+    {
+      "ts": 1804253400,
+      "kind": "nfp",
+      "label": "US NFP 2027-03",
+      "impact": "high"
+    },
+    {
+      "ts": 1804685400,
+      "kind": "cpi",
+      "label": "US CPI 2027-03",
+      "impact": "high"
+    },
+    {
+      "ts": 1805306400,
+      "kind": "fomc",
+      "label": "Mar 2027 FOMC (SEP)",
+      "impact": "high"
+    },
+    {
+      "ts": 1806669000,
+      "kind": "nfp",
+      "label": "US NFP 2027-04",
+      "impact": "high"
+    },
+    {
+      "ts": 1807619400,
+      "kind": "cpi",
+      "label": "US CPI 2027-04",
+      "impact": "high"
+    },
+    {
+      "ts": 1808935200,
+      "kind": "fomc",
+      "label": "Apr 2027 FOMC",
+      "impact": "high"
+    },
+    {
+      "ts": 1809693000,
+      "kind": "nfp",
+      "label": "US NFP 2027-05",
+      "impact": "high"
+    },
+    {
+      "ts": 1810125000,
+      "kind": "cpi",
+      "label": "US CPI 2027-05",
+      "impact": "high"
+    },
+    {
+      "ts": 1812112200,
+      "kind": "nfp",
+      "label": "US NFP 2027-06",
+      "impact": "high"
+    },
+    {
+      "ts": 1812564000,
+      "kind": "fomc",
+      "label": "Jun 2027 FOMC (SEP)",
+      "impact": "high"
+    },
+    {
+      "ts": 1812630600,
+      "kind": "cpi",
+      "label": "US CPI 2027-06",
+      "impact": "high"
+    },
+    {
+      "ts": 1814531400,
+      "kind": "nfp",
+      "label": "US NFP 2027-07",
+      "impact": "high"
+    },
+    {
+      "ts": 1815568200,
+      "kind": "cpi",
+      "label": "US CPI 2027-07",
+      "impact": "high"
+    },
+    {
+      "ts": 1816797600,
+      "kind": "fomc",
+      "label": "Jul 2027 FOMC",
+      "impact": "high"
+    },
+    {
+      "ts": 1817555400,
+      "kind": "nfp",
+      "label": "US NFP 2027-08",
+      "impact": "high"
+    },
+    {
+      "ts": 1817987400,
+      "kind": "cpi",
+      "label": "US CPI 2027-08",
+      "impact": "high"
+    },
+    {
+      "ts": 1819974600,
+      "kind": "nfp",
+      "label": "US NFP 2027-09",
+      "impact": "high"
+    },
+    {
+      "ts": 1820925000,
+      "kind": "cpi",
+      "label": "US CPI 2027-09",
+      "impact": "high"
+    },
+    {
+      "ts": 1821031200,
+      "kind": "fomc",
+      "label": "Sep 2027 FOMC (SEP)",
+      "impact": "high"
+    },
+    {
+      "ts": 1822998600,
+      "kind": "nfp",
+      "label": "US NFP 2027-10",
+      "impact": "high"
+    },
+    {
+      "ts": 1823517000,
+      "kind": "cpi",
+      "label": "US CPI 2027-10",
+      "impact": "high"
+    },
+    {
+      "ts": 1824660000,
+      "kind": "fomc",
+      "label": "Oct 2027 FOMC",
+      "impact": "high"
+    },
+    {
+      "ts": 1825417800,
+      "kind": "nfp",
+      "label": "US NFP 2027-11",
+      "impact": "high"
+    },
+    {
+      "ts": 1825853400,
+      "kind": "cpi",
+      "label": "US CPI 2027-11",
+      "impact": "high"
+    },
+    {
+      "ts": 1827840600,
+      "kind": "nfp",
+      "label": "US NFP 2027-12",
+      "impact": "high"
+    },
+    {
+      "ts": 1828292400,
+      "kind": "fomc",
+      "label": "Dec 2027 FOMC (SEP)",
+      "impact": "high"
+    },
+    {
+      "ts": 1828445400,
+      "kind": "cpi",
+      "label": "US CPI 2027-12",
       "impact": "high"
     }
   ]

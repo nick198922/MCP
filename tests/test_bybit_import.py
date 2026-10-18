@@ -54,3 +54,98 @@ def test_env_file_is_parsed_without_exposing_values(tmp_path):
     p = tmp_path / "b.env"
     p.write_text("# note\nBYBIT_API_KEY=abc\nBYBIT_API_SECRET=def\n")
     assert bi.read_env(str(p)) == ("abc", "def")
+
+
+def test_hyperliquid_round_trips_and_flip(tmp_path):
+    import hyperliquid_import as hl
+
+    F = [
+        {
+            "coin": "ETH",
+            "px": "3000",
+            "sz": "1",
+            "side": "B",
+            "time": 1000,
+            "startPosition": "0",
+            "dir": "Open Long",
+            "closedPnl": "0",
+            "fee": "1",
+            "oid": 1,
+            "tid": 1,
+        },
+        {
+            "coin": "ETH",
+            "px": "3100",
+            "sz": "1",
+            "side": "A",
+            "time": 2000,
+            "startPosition": "1",
+            "dir": "Close Long",
+            "closedPnl": "100",
+            "fee": "1",
+            "oid": 2,
+            "tid": 2,
+        },
+        {
+            "coin": "SOL",
+            "px": "100",
+            "sz": "10",
+            "side": "A",
+            "time": 3000,
+            "startPosition": "0",
+            "dir": "Open Short",
+            "closedPnl": "0",
+            "fee": "0.5",
+            "oid": 3,
+            "tid": 3,
+        },
+        {
+            "coin": "SOL",
+            "px": "110",
+            "sz": "20",
+            "side": "B",
+            "time": 4000,
+            "startPosition": "-10",
+            "dir": "Short > Long",
+            "closedPnl": "-100",
+            "fee": "1",
+            "oid": 4,
+            "tid": 4,
+        },
+        {
+            "coin": "SOL",
+            "px": "120",
+            "sz": "10",
+            "side": "A",
+            "time": 5000,
+            "startPosition": "10",
+            "dir": "Close Long",
+            "closedPnl": "100",
+            "fee": "0.5",
+            "oid": 5,
+            "tid": 5,
+        },
+        {
+            "coin": "PURR/USDC",
+            "px": "1",
+            "sz": "5",
+            "side": "B",
+            "time": 6000,
+            "startPosition": "0",
+            "dir": "Buy",
+            "closedPnl": "0",
+            "fee": "0",
+            "oid": 6,
+            "tid": 6,
+        },
+    ]
+    t = hl.round_trips(F)
+    assert [(x["symbol"], x["side"], x["entry"], x["exit"], round(x["pnl"], 2)) for x in t] == [
+        ("ETH", "long", 3000, 3100, 98.0),
+        ("SOL", "short", 100, 110, -101.5),
+        ("SOL", "long", 110, 120, 99.5),
+    ]
+    db = str(tmp_path / "j.sqlite")
+    assert asyncio.run(bi.store(t, db)) == (3, 0)
+    rep = bi.stats(db, venue="hyperliquid")
+    assert "Hyperliquid" in rep and "Закритих позицій: **3**" in rep

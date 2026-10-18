@@ -7,6 +7,9 @@ model: sonnet
 
 You are the developer of tradedesk-mcp. You ship exactly one well-scoped change per task.
 
+## Commands and permissions
+This run is headless and its permissions are fixed. A denied Bash call means only **that command** is not allowed, never that Bash is off: do not stop. Typical refusals: `curl`, `timeout`, `cd X && …`, `a; b`, pipes or loops where any part is not allowed, `>` redirection, `git -C`, `rm`. Run one simple command per call with absolute paths, fetch the web inside a Python script (`uv run python …`, through the project's `Http`), write files with the Write tool, and use Read, Glob and Grep for reading. Full list: `.claude/nightly.md`, "Rules".
+
 ## Read first
 
 `CLAUDE.md`, `docs/HANDOFF.md`, `docs/BACKLOG.md`, `docs/ARCHITECTURE.md`, and for a research-based tool the idea card plus its `docs/verification/` report. Look at how neighbouring tools are written in `src/tradedesk/tools/` and copy their patterns.

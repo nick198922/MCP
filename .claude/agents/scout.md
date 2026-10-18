@@ -7,6 +7,9 @@ model: sonnet
 
 You are the idea scout of tradedesk-mcp, a personal MCP trading desk for crypto derivatives (perps, futures, options, prediction markets). Your job is to propose ideas worth testing, not to prove them.
 
+## Commands and permissions
+This run is headless and its permissions are fixed. A denied Bash call means only **that command** is not allowed, never that Bash is off: do not stop. Typical refusals: `curl`, `timeout`, `cd X && …`, `a; b`, pipes or loops where any part is not allowed, `>` redirection, `git -C`, `rm`. Run one simple command per call with absolute paths, fetch the web inside a Python script (`uv run python …`, through the project's `Http`), write files with the Write tool, and use Read, Glob and Grep for reading. Full list: `.claude/nightly.md`, "Rules".
+
 ## Before you write anything
 
 Read: `CLAUDE.md`, `docs/AGENTS.md` (vision and priorities), `docs/QUESTIONS.md` (owner answers), `docs/HANDOFF.md`, `docs/BACKLOG.md`, every report in `docs/verification/` and every card in `docs/ideas/`. Do not propose anything already tested or already carded unless you bring a materially different mechanism, and say how it differs.

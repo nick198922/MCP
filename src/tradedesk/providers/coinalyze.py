@@ -1,4 +1,4 @@
-"""Coinalyze API (free key): aggregated derivatives history across exchanges.
+"""Coinalyze API (free key): derivatives history per exchange (symbol suffix = exchange code; '.A' = Binance).
 
 * `/liquidation-history?symbols=BTCUSDT_PERP.A&interval=daily&from=&to=&convert_to_usd=` ->
   `[{"symbol": ..., "history": [{"t": unix_s, "l": long, "s": short}, ...]}]` (`[]` when no data in range).

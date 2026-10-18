@@ -1,0 +1,3 @@
+- `liquidations_history`: опис і застереження виправлено — суфікс `.A` у Coinalyze це Binance, а не агрегат усіх бірж (раніше опис казав «aggregated»).
+- Звірка з DoubleTop, крок 1b: ETH збігається з Coinalyze за long/short і funding; OI має зсув на добу (мітка Binance — кінець періоду). Звіт `docs/reviews/2026-10-18-doubletop-parity-1b.md`.
+- Додано `scripts/doubletop_parity_1b.py` і наші зразки `tests/fixtures/doubletop/ours__*_2026-10-18.json`.

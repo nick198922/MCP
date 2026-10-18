@@ -1,4 +1,4 @@
-"""Pure helpers for aggregated liquidation history (Coinalyze `/liquidation-history`). No I/O.
+"""Pure helpers for liquidation history (Binance symbols) (Coinalyze `/liquidation-history`). No I/O.
 
 Coinalyze rows are `{"t": unix_s, "l": long_liquidations, "s": short_liquidations}`; units are base-asset
 contracts/coins, or USD when the request set `convert_to_usd=true`. A long liquidation is a forced SELL of a long
@@ -23,7 +23,8 @@ def api_interval(interval: str) -> str:
 
 
 def aggregated_symbol(base: str, margin: str = "usdt") -> str | None:
-    """Coinalyze aggregated-perpetual symbol ('.A' = all exchanges), e.g. BTC -> BTCUSDT_PERP.A. None if invalid."""
+    """Coinalyze perpetual symbol on Binance (the '.A' suffix is the exchange code of Binance, NOT an all-exchange
+    aggregate; checked 2026-10-18 against Binance OI/funding/long-short), e.g. BTC -> BTCUSDT_PERP.A. None if invalid."""
     b = (base or "").strip().upper()
     m = (margin or "").strip().upper()
     if not _BASE_OK.match(b) or m not in ("USDT", "USD"):

@@ -187,6 +187,7 @@ async def collect_assistant_paper(rt: "Runtime") -> int:
         prev_regime=(prev or {}).get("regime"),
         event_key=event_key,
         last=last,
+        standing=rows,
         now_ts=int(now.timestamp()),
         seen_events=seen,
     )

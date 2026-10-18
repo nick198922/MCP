@@ -179,12 +179,11 @@ async def test_sources_summarised_separately_and_validation(tmp_path):
         # the tool only books manual rows: 'method' is the collector job's tag
         async with Client(srv) as c:
             try:
-                res = await c.call_tool("assistant_paper_open", {"structure": "long_strangle25", "source": "method"})
-                assert res.is_error
-            except Exception:  # noqa: BLE001 - a validation error may surface as an exception
+                await c.call_tool("assistant_paper_open", {"structure": "long_strangle25", "source": "method"})
+            except Exception:  # noqa: BLE001 - a validation error may surface as an exception or an error result
                 pass
         await rt.store.init()
-        assert await rt.store.rec_paper_list() == []
+        assert await rt.store.rec_paper_list() == []  # whichever way it was refused, no row was written
         for tr in ("chain", "regime"):  # two method rows written the way the job writes them
             m = await _call(srv, "assistant_paper_open", structure="long_strangle25", deposit_usd=1e6, regime="calm", note="x")
             assert m["ok"] and m["data"]["source"] == "manual" and m["data"]["regime"] == "calm"

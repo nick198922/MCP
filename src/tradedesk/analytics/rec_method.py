@@ -97,21 +97,28 @@ def decide(
     last: dict[str, Any] | None,
     now_ts: int,
     seen_events: set[str],
+    standing: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Whether to book a new paper trade today, why, and which state the standing recommendation is in.
 
-    ``pick`` is the structure to book (base name) on the expiry ``pick_expiry_ts``; ``last`` is the newest
-    ``source = 'method'`` row (needs ``structure``, ``expiry_ts``, ``regime``) or None. ``event_key`` identifies the upcoming
+    ``pick`` is the structure to book (base name) on the expiry ``pick_expiry_ts``; ``standing`` is every ``source = 'method'``
+    row, newest first (needs ``structure``, ``expiry_ts``, ``regime``, ``trigger``); only the not-yet-expired ones count, and a pick
+    equal to ANY of them is never duplicated. ``last`` (newest row or None) is the single-row shorthand when ``standing`` is None. ``event_key`` identifies the upcoming
     high-impact event (None when none); ``seen_events`` are keys already used. Returns ``action`` ('open' | 'hold' | 'none'),
     ``state``, ``reason`` and, for 'open', ``trigger`` ('chain' | 'regime' | 'event').
     """
-    live = last if last is not None and last["expiry_ts"] > now_ts else None
+    history = standing if standing is not None else ([last] if last is not None else [])
+    live_rows = [x for x in history if x["expiry_ts"] > now_ts]  # newest first
+    live = live_rows[0] if live_rows else None
     if pick is None:
         return {"action": "none", "state": "no_longer_actual", "reason": "the method picks no trade today"}
     if live is None:
-        return {"action": "open", "state": "actual", "reason": "expiry" if last is not None else "first", "trigger": "chain"}
-    if pick == live["structure"] and pick_expiry_ts == live["expiry_ts"]:
-        return {"action": "hold", "state": "actual", "reason": "the standing paper trade is the method's pick (same structure and expiry)"}
+        return {"action": "open", "state": "actual", "reason": "expiry" if history else "first", "trigger": "chain"}
+    if any(pick == x["structure"] and pick_expiry_ts == x["expiry_ts"] for x in live_rows):
+        return {"action": "hold", "state": "actual", "reason": "a standing paper trade is the method's pick (same structure and expiry)"}
+    if not any(x.get("trigger") in (None, "chain") for x in live_rows):
+        # only triggered trades stand: the chain (comparable with H1) has no live trade of its own, so it continues
+        return {"action": "open", "state": "actual", "reason": "expiry", "trigger": "chain"}
     if regime_confirmed(live.get("regime"), regime, rv30, prev_regime):
         return {"action": "open", "state": "changed", "reason": "regime", "trigger": "regime"}
     if event_key is not None and event_key not in seen_events:

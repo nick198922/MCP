@@ -76,6 +76,33 @@ def test_decide_rules():
     assert (d["action"], d["state"]) == ("hold", "changed")  # the event was already used; another pick alone opens nothing
 
 
+def test_decide_sees_all_standing_trades():
+    chain = {**_row("short_straddle"), "trigger": "chain"}
+    regime_trade = {**_row("short_strangle25"), "trigger": "regime"}
+    # case 1: chain trade + newer regime trade; the pick equals the older chain trade -> no duplicate
+    d = _decide("short_straddle", regime="rv30_b2", rv30=0.5, last=regime_trade, seen=set())
+    assert d["action"] == "open"  # looking only at the newest row duplicated the chain trade
+    d = decide(
+        pick="short_straddle", pick_expiry_ts=EXP, regime="rv30_b2", rv30=0.5, prev_regime="rv30_b2", event_key=None,
+        last=regime_trade, standing=[regime_trade, chain], now_ts=1_000, seen_events=set(),
+    )  # fmt: skip
+    assert (d["action"], d["state"]) == ("hold", "actual")
+    # case 2: the 40d chain trade stands, the newer 14d regime trade expired -> not a second chain trade
+    short = {**_row("long_straddle_14d", expiry_ts=900), "trigger": "regime"}
+    d = decide(
+        pick="long_strangle25", pick_expiry_ts=EXP + 5, regime="rv30_b1", rv30=0.3, prev_regime=None, event_key=None,
+        last=short, standing=[short, chain], now_ts=1_000, seen_events=set(),
+    )  # fmt: skip
+    assert d["action"] == "hold"
+    # only triggered trades stand -> the chain continues
+    trig = {**_row("long_straddle_14d"), "trigger": "regime"}
+    d = decide(
+        pick="long_strangle25", pick_expiry_ts=EXP + 5, regime="rv30_b1", rv30=0.3, prev_regime=None, event_key=None,
+        last=trig, standing=[trig], now_ts=1_000, seen_events=set(),
+    )  # fmt: skip
+    assert (d["action"], d["trigger"]) == ("open", "chain")
+
+
 def test_regime_hysteresis():
     live = _row("long_straddle", regime="rv30_b1")
     # 0.405 is barely past the 0.40 edge: noise, no trade ...

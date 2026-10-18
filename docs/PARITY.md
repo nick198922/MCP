@@ -55,7 +55,7 @@ DOUBLETOP: **74 інструменти** (66 від 17 бекендів + 8 вл
 | etherscan (8) | 🔜 Etherscan V2 (безкоштовний ключ). `getTokenInfo` і `tokenTopHolders` — лише платний Pro |
 | helius (5) | 🔜 безкоштовний тариф із ключем |
 | mempool (5) | 🔜 публічний API mempool.space |
-| pendle (6) | 🔜 Pendle API + власна логіка (fixed yield, крива, PT vs underlying, календар експірацій, глибина). Корисно для funding-carry |
+| pendle (6) | 🟡 `pendle_fixed_yields` (≈ `scan_fixed_yields`: фільтри за ліквідністю, APY, днями, stable, мережею) і `pendle_market` (один ринок + APY за ціною PT). 🔜 `yield_curve`, `compare_pt_vs_underlying`, `expiry_calendar`, `liquidity_depth`. Корисно для funding-carry |
 
 ## Не переносимо
 

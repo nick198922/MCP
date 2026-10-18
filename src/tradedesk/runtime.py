@@ -24,6 +24,7 @@ from .providers import deribit as deribit_mod
 from .providers import dexscreener as dexs_mod
 from .providers import forexfactory as ff_mod
 from .providers import hyperliquid as hl_mod
+from .providers import pendle as pendle_mod
 from .providers import polymarket as poly_mod
 from .providers import upbit as upbit_mod
 from .providers.alternative_me import AlternativeMe
@@ -38,6 +39,7 @@ from .providers.dexscreener import DexScreener
 from .providers.exchanges import Exchanges
 from .providers.forexfactory import ForexFactory
 from .providers.hyperliquid import Hyperliquid
+from .providers.pendle import Pendle
 from .providers.polymarket import Polymarket
 from .providers.upbit import Upbit
 from .store import Store
@@ -91,6 +93,7 @@ class Runtime:
         self.upbit = Upbit(http("upbit", upbit_mod.BASE_URL, rate=upbit_mod.RATE_PER_SECOND, burst=1))
         self.dexscreener = DexScreener(http("dexscreener", dexs_mod.BASE_URL, rate=4, burst=8))
         self.defillama = DefiLlama(http("defillama", llama_mod.BASE_URL, rate=4, burst=8))
+        self.pendle = Pendle(http("pendle", pendle_mod.BASE_URL, rate=2, burst=4))
         self.coinalyze = Coinalyze(
             Http(
                 "coinalyze",
@@ -151,6 +154,7 @@ class Runtime:
         await self.upbit.http.aclose()
         await self.dexscreener.http.aclose()
         await self.defillama.http.aclose()
+        await self.pendle.http.aclose()
         await self.coinalyze.http.aclose()
         await self.polymarket.aclose()
         await self.coingecko.http.aclose()

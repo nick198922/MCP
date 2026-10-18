@@ -75,6 +75,7 @@ claude mcp add tradedesk -- uv run --directory /ABSOLUTE/PATH/TO/tradedesk-mcp t
 | | `deribit_largest_trades` | останні крупні трейди (options/futures), фільтр блок-угод, buy/sell imbalance |
 | Квант | `odds_devig`, `option_calc`, `touch_probability`, `fib_retracement` | маржа й справедливі ймовірності, калькулятор опціону, barrier-ймовірність, fib-retracement ладдер (23.6/38.2/50/61.8/78.6%) |
 | Настрій | `sentiment_fear_greed` | Crypto Fear & Greed (alternative.me): latest + zone, mean 7d/30d, зміни, частка днів у кожній зоні |
+| Pendle (фіксована дохідність) | `pendle_fixed_yields`, `pendle_market` | скан ринків Pendle: implied/underlying APY, дисконт PT, дні до експірації, ліквідність; один ринок + APY за заданою ціною PT (десяткові частки; зразок знято наживо 18.10) |
 | On-chain / DEX | `dex_pairs`, `chain_metrics` | пули токена за адресою з DexScreener (за ліквідністю, прапорець `likely_fake` для підроблених тікерів), TVL / DEX-обсяг / fees мережі з DefiLlama зі змінами 7д і 30д |
 | Календар | `calendar_expiries` | експірації Deribit (daily/weekly/monthly/quarterly), найближчі funding-моменти, макро-події (FOMC/CPI/NFP) |
 | Календар | `macro_calendar` | макрокалендар з високим впливом: ForexFactory (цей і наступний тиждень; USD: FOMC, CPI, Core PCE, NFP, PPI, GDP, Retail Sales, ISM, Jobless Claims + рішення ECB/BoJ/BoE), час UTC і Київ, прогноз і попереднє (фактичного значення нема), далі сід FOMC/CPI/NFP; прапор події в найближчі 48 год |

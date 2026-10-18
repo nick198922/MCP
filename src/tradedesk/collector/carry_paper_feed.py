@@ -208,6 +208,12 @@ class LiveFeed:
 
     async def _current(self, b: Builder, venue: str, markets: dict[str, Any]) -> dict[str, dict[str, Any]]:
         cur = await current_funding(self.rt, b, venue, markets)
+        if any(x.get("interval_source") == "assumed" for x in cur.values()):
+            # No interval source (Binance fundingInfo failed): do not feed the engine a guessed 8h. With None it falls back to
+            # the spacing of the stored history up to the position's last payment, and current_funding has already warned.
+            for x in cur.values():
+                if x.get("interval_source") == "assumed":
+                    x["interval_hours"] = None
         bulk = await b.guard(f"funding_rates:{venue}", f"ccxt:{venue}", self.rt.exchanges.funding_rates(venue)) or {}
         for sym, x in cur.items():
             raw = bulk.get(sym) or {}

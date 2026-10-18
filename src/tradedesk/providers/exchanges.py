@@ -201,7 +201,7 @@ class Exchanges:
                 raise ccxt.NotSupported(f"{ex_id} has no fetchFundingIntervals")
             return await ex.fetch_funding_intervals()
 
-        return await self._call(ex_id, "fetch_funding_intervals", {}, 3600, go)
+        return await self._call(ex_id, "fetch_funding_intervals", {}, 300, go)  # short TTL: Binance flips 8h<->4h at extreme funding
 
     async def funding_rate_history_range(
         self, ex_id: str, symbol: str, since_ms: int, until_ms: int, *, max_pages: int = 60, trust_short_page: bool = False

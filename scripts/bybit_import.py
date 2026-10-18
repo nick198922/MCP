@@ -202,6 +202,13 @@ async def store(trades: list[dict[str, Any]], db_path: str) -> tuple[int, int]:
     return added, skipped
 
 
+def _levkey(k: str) -> float:
+    try:
+        return float(k.rstrip("x"))
+    except ValueError:
+        return 1e9
+
+
 def stats(db_path: str) -> str:
     import sqlite3  # noqa: PLC0415
 
@@ -229,6 +236,20 @@ def stats(db_path: str) -> str:
         by_month[datetime.fromtimestamp(r[0], UTC).strftime("%Y-%m")].append(r[3] or 0.0)
         by_sym[r[1]].append(r[3] or 0.0)
         by_side[r[2]].append(r[3] or 0.0)
+    by_lev: dict[str, list[float]] = defaultdict(list)
+    by_day: dict[str, list[float]] = defaultdict(list)
+    for r in rows:
+        try:
+            lev = str(r[4]).split("плече ")[1].split(";")[0].strip()
+        except IndexError:
+            lev = "-"
+        by_lev[lev + "x" if lev not in ("-", "") else "?"].append(r[3] or 0.0)
+        by_day[datetime.fromtimestamp(r[0], UTC).strftime("%Y-%m-%d")].append(r[3] or 0.0)
+    worst = sorted(((datetime.fromtimestamp(r[0], UTC).strftime("%d.%m.%Y"), r[1], r[3] or 0.0) for r in rows), key=lambda z: z[2])[:10]
+    streak = cur = 0
+    for r in sorted(rows):
+        cur = cur + 1 if (r[3] or 0) < 0 else 0
+        streak = max(streak, cur)
     first = datetime.fromtimestamp(min(r[0] for r in rows), UTC).strftime("%d.%m.%Y")
     last = datetime.fromtimestamp(max(r[0] for r in rows), UTC).strftime("%d.%m.%Y")
     pf = sum(wins) / -sum(losses) if losses else float("inf")
@@ -266,6 +287,26 @@ def stats(db_path: str) -> str:
         "| Місяць | Угод | Результат, USD |",
         "|---|---|---|",
         *[f"| {m} | {len(v)} | {sum(v):+,.2f} |" for m, v in sorted(by_month.items())],
+        "",
+        "## Плече",
+        "",
+        "| Плече | Угод | Результат, USD | У плюсі |",
+        "|---|---|---|---|",
+        *[
+            f"| {k} | {len(v)} | {sum(v):+,.2f} | {sum(p > 0 for p in v) / len(v) * 100:.0f} % |"
+            for k, v in sorted(by_lev.items(), key=lambda kv: _levkey(kv[0]))
+        ],
+        "",
+        "## Найбільші збитки",
+        "",
+        f"- 10 найбільших збитків: {sum(p for _, _, p in worst):+,.2f} USD — {sum(p for _, _, p in worst) / sum(losses) * 100:.0f} % усіх збитків.",
+        *[f"- {d} {sym}: {p:+,.2f}" for d, sym, p in worst],
+        "",
+        "## Поведінка",
+        "",
+        f"- Найдовша серія збиткових угод поспіль: {streak}.",
+        f"- Днів з угодами: {len(by_day)}; у середньому {n / max(1, len(by_day)):.1f} угоди на такий день; найбільше за день — {max(len(v) for v in by_day.values())}.",
+        f"- Дні з 5+ угодами: {sum(len(v) >= 5 for v in by_day.values())}, їхній результат {sum(sum(v) for v in by_day.values() if len(v) >= 5):+,.2f} USD.",
     ]
     return "\n".join(out) + "\n"
 

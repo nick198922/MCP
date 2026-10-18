@@ -1,0 +1,2 @@
+- Картка `risk-overlay-vol-target-trend` перевірена на BTC/ETH (2014–2026): таргетування волатильності не зрізає хвіст і не покращує Sharpe → `rejected` (критик: approve).
+- Додано `analytics/risk_overlay.py`, тести та `scripts/verify_risk_overlay.py`; звіт у `docs/verification/`.

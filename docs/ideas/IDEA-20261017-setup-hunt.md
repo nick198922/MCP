@@ -6,11 +6,11 @@
 <!-- proposed → accepted | rejected → testing → confirmed | rejected | inconclusive → built -->
 
 ## Прогрес
-- [ ] Етап 1: скаут — 6–10 кандидатів з доказами
-- [ ] Етап 2: критик — 2–3 найцінніші
-- [ ] Тест кандидата 1
-- [ ] Тест кандидата 2
-- [ ] Тест кандидата 3
+- [x] Етап 1: скаут — 6–10 кандидатів з доказами (7 карток `IDEA-20261018-*`: risk-overlay-vol-target-trend, xs-factor-ic-panel, options-direction-signals, leverage-tail-risk-forecast, us-demand-flows, high-dvol-short-vol-regime, staked-eth-carry)
+- [x] Етап 2: критик — 2–3 найцінніші (`docs/reviews/2026-10-18-setup-hunt-triage.md`): прийнято xs-factor-ic-panel (Порядок 12) і risk-overlay-vol-target-trend (Порядок 13, з переробленням дизайну); high-dvol-short-vol-regime — вторинною гіпотезою в крок 1 vrp-real-marks; решта чотири `rejected`
+- [ ] Тест кандидата 1: xs-factor-ic-panel
+- [ ] Тест кандидата 2: risk-overlay-vol-target-trend
+- [ ] Тест кандидата 3: high-dvol (у складі vrp-real-marks, Порядок 9)
 
 ## Чому окрема задача
 - Перевірено ~30 ідей, переважно з курсів і від блогерів: механічного плюсу немає.

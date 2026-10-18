@@ -138,6 +138,16 @@ input[type=range]{accent-color:var(--accent);width:180px;max-width:100%}
 <!-- ================= OPTIONS ================= -->
 <section id="p-options" role="tabpanel" aria-labelledby="t-options" hidden>
  <div class="grid">
+  <div class="card c12">
+    <h2>Твій депозит і розмір</h2>
+    <div class="ctl">
+      <label for="dep">Депозит, $<input type="number" id="dep" min="100" step="100" value="10000"></label>
+      <label for="riskp">Ризик на угоду, %<input type="number" id="riskp" min="0.1" max="10" step="0.1" value="1"></label>
+      <label for="qtyg">Розмір, BTC<input type="number" id="qtyg" min="0.01" max="20" step="0.01" value="1"></label>
+      <span class="note" id="budget" style="align-self:center"></span>
+    </div>
+    <p class="note" style="margin-top:8px">Розмір діє і на рекомендації, і на конструктор. Мінімальний лот опціонів BTC: Deribit — 0.1 BTC; OKX і Bybit — 0.01 BTC (уточнимо перед першою угодою).</p>
+  </div>
   <div class="card c12" id="reccard">
     <h2>Рекомендації на сьогодні · BTC</h2>
     <p class="verdict" id="recverdict" style="margin:0 0 12px"></p>
@@ -162,7 +172,7 @@ input[type=range]{accent-color:var(--accent);width:180px;max-width:100%}
       <label for="kcall">Кол, страйк<select id="kcall"></select></label>
       <label for="kputw" id="lputw">Захисний пут<select id="kputw"></select></label>
       <label for="kcallw" id="lcallw">Захисний кол<select id="kcallw"></select></label>
-      <label for="qty">Розмір, BTC<input type="number" id="qty" min="0.1" max="20" step="0.1" value="1"></label>
+      <label for="qty">Розмір, BTC<input type="number" id="qty" min="0.01" max="20" step="0.01" value="1"></label>
       <label for="hzn">Лінія «через N днів»: <span id="hznv" class="num"></span><input type="range" id="hzn" min="0" max="39" step="1" value="10"></label>
     </div>
   </div>
@@ -338,7 +348,9 @@ function upbit() {
 }
 
 /* ---------- options desk ---------- */
-const S = {strat: 'short_strangle', qty: 1, hzn: 10};
+const S = {strat: 'long_strangle', qty: 1, hzn: 10, dep: 10000, riskp: 1};
+try { const m = JSON.parse(localStorage.getItem('td-size') || '{}'); ['qty', 'dep', 'riskp'].forEach(k => { if (+m[k] > 0) S[k] = +m[k]; }); } catch (e) {}
+const saveSize = () => { try { localStorage.setItem('td-size', JSON.stringify({qty: S.qty, dep: S.dep, riskp: S.riskp})); } catch (e) {} };
 const near = (side, target) => rows.filter(r => r[side] && r[side].delta != null).reduce((b, r) => Math.abs(Math.abs(r[side].delta) - target) < Math.abs(Math.abs(b[side].delta) - target) ? r : b);
 const ATM = rows.reduce((b, r) => Math.abs(r.k - F) < Math.abs(b.k - F) ? r : b).k;
 const row = k => rows.find(r => r.k === k);
@@ -430,7 +442,13 @@ function options() {
 $('strat').addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; S.strat = b.dataset.s;
   [...$('strat').children].forEach(x => x.setAttribute('aria-pressed', x === b)); defaults(S.strat); fillSelects(); options(); });
 ['kput', 'kcall', 'kputw', 'kcallw'].forEach(id => $(id).addEventListener('change', e => { S[id] = +e.target.value; options(); }));
-$('qty').addEventListener('input', e => { const q = +e.target.value; if (q > 0) { S.qty = q; options(); } });
+const setQty = q => { if (q > 0) { S.qty = q; $('qty').value = q; $('qtyg').value = q; saveSize(); recs(); options(); } };
+$('qty').addEventListener('input', e => setQty(+e.target.value));
+$('qtyg').addEventListener('input', e => setQty(+e.target.value));
+$('dep').addEventListener('input', e => { if (+e.target.value > 0) { S.dep = +e.target.value; saveSize(); recs(); } });
+$('riskp').addEventListener('input', e => { if (+e.target.value > 0) { S.riskp = +e.target.value; saveSize(); recs(); } });
+$('qty').value = $('qtyg').value = S.qty; $('dep').value = S.dep; $('riskp').value = S.riskp;
+[...$('strat').children].forEach(x => x.setAttribute('aria-pressed', x.dataset.s === S.strat));
 $('hzn').addEventListener('input', e => { S.hzn = +e.target.value; options(); });
 
 /* ---------- journal (example) ---------- */
@@ -464,7 +482,12 @@ function journal() {
 /* ---------- recommendations (historical simulation at today's prices) ---------- */
 function recs() {
   const Hs = D.hist, by = Hs.by, k = Hs.strikes, f = D.chain.F, fm = D.hist.fomc_straddle;
-  const P = x => pc(x * 100, 1), $F = x => usd(x * f), win = x => nf(x * 100) + ' %';
+  const P = x => pc(x * 100, 1), $F = x => usd(x * f), win = x => nf(x * 100) + ' %', q = S.qty, budget = S.dep * S.riskp / 100;
+  $('budget').innerHTML = `Ризик на угоду: <b class="num">${usd(budget)}</b>`;
+  const fit = cost1 => { const cost = cost1 * q, ratio = cost / budget, qmax = Math.floor(budget / cost1 * 100) / 100;
+    const chip = ratio <= 1.0001 ? `<span class="chip opp">в межах ризику</span>` : `<span class="chip risk">більше за ризик у ${nf(ratio, 1)} раза</span>`;
+    const alt = qmax >= 0.01 ? `під твій ризик ${usd(budget)}: до <b class="num">${nf(qmax, 2)} BTC</b>${qmax < 0.1 ? ' (лише OKX / Bybit, на Deribit мінімум 0.1)' : ''}` : `навіть 0.01 BTC коштує ${usd(cost1 * 0.01)} — більше за ризик`;
+    return `<span class="num">${usd(cost)}</span> за ${nf(q, 2)} BTC (${nf(cost / S.dep * 100, 1)} % депозиту) ${chip}<br><span class="mut">${alt}</span>`; };
   const list = [
     {s: 'long_strangle', title: `Купити стренгл ${k$(k.p25)} / ${k$(k.c25)}`, exp: '27.11', b: by.long_strangle, conf: ['середня', 'opp'],
      why: 'Найкраще співвідношення: платиш мало, а в спокійні періоди BTC за 40 днів зазвичай виходив за ці страйки.'},
@@ -475,14 +498,14 @@ function recs() {
   $('recverdict').innerHTML = `<b>Сьогодні — купувати волатильність, не продавати.</b> Опціони оцінюють рух BTC як ±${nf(D.em_month.straddle_pct, 1)} % до 27.11 (IV ${nf(D.chain.atm_iv * 100, 1)}). У ${by.long_straddle.calm.n_indep} схожих спокійних періодах з 2017 року (реалізована волатильність ${D.hist.calm_rule}, зараз ${nf(D.hist.rv30_now * 100, 1)} %) BTC за ${D.hist.window_days} днів рухався сильніше, ніж закладено в ці ціни.`;
   $('recs').innerHTML = list.map((r, i) => `<article class="rec${i ? '' : ' top'}"><header><span class="rank">${i + 1}</span><h3 style="margin:0">${r.title}</h3><span class="chip ${r.conf[1]}">впевненість: ${r.conf[0]}</span></header>
     <dl><dt>Експірація</dt><dd>${r.exp}, ${nf(D.chain.days, 0)} дн</dd>
-    <dt>Платиш</dt><dd class="num">${$F(r.b.premium_pct < 0 ? -r.b.premium_pct : r.b.premium_pct)} на 1 BTC (${nf(Math.abs(r.b.premium_pct) * 100, 1)} % від ціни) — це й максимальний збиток</dd>
-    <dt>Історія</dt><dd class="num">у плюсі ${win(r.b.calm.win)} випадків, середнє ${P(r.b.calm.mean)} (${usdS(r.b.calm.mean * f)} на 1 BTC), 95 % CI [${P(r.b.calm.ci_lo)}; ${P(r.b.calm.ci_hi)}]</dd>
+    <dt>Платиш</dt><dd>${fit(Math.abs(r.b.premium_pct) * f)}<br><span class="mut">це й максимальний збиток; ${nf(Math.abs(r.b.premium_pct) * 100, 1)} % від ціни BTC</span></dd>
+    <dt>Історія</dt><dd class="num">у плюсі ${win(r.b.calm.win)} випадків, середнє ${P(r.b.calm.mean)} від ціни (${usdS(r.b.calm.mean * f * q)} на ${nf(q, 2)} BTC), 95 % CI [${P(r.b.calm.ci_lo)}; ${P(r.b.calm.ci_hi)}]</dd>
     <dt>Чому</dt><dd>${r.why}</dd>
-    <dt>Розмір</dt><dd>ризик 1 % капіталу: капітал × 1 % ÷ ${$F(Math.abs(r.b.premium_pct))}; мінімальний лот Deribit 0.1 BTC = ${$F(Math.abs(r.b.premium_pct) * 0.1)} ризику</dd></dl>
+</dl>
     <button data-apply="${r.s}">Відкрити в конструкторі</button></article>`).join('') +
     `<article class="rec"><header><span class="rank">3</span><h3 style="margin:0">${fomc.title}</h3><span class="chip ${fomc.conf[1]}">впевненість: ${fomc.conf[0]}</span></header>
     <dl><dt>Експірація</dt><dd>${fomc.exp}, через 2 дні після рішення ФРС 28.10</dd>
-    <dt>Платиш</dt><dd class="num">${usd(fm.cost_usd)} на 1 BTC (${nf(fm.cost_pct * 100, 1)} % від ціни)</dd>
+    <dt>Платиш</dt><dd>${fit(fm.cost_usd)}</dd>
     <dt>Історія</dt><dd class="num">у плюсі ${win(fm.win)}, середнє ${P(fm.mean)}, 95 % CI [${P(fm.ci_lo)}; ${P(fm.ci_hi)}], ${fm.n_indep} періодів</dd>
     <dt>Чому</dt><dd>Коротка ставка на рух навколо ФРС. Перевага слабка: ринок уже закладає подію в ціну.</dd></dl></article>`;
   const av = [['short_strangle', 'Продаж стренглу'], ['short_straddle', 'Продаж стреддлу'], ['iron_condor', 'Залізний кондор']];

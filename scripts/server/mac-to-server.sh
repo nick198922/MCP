@@ -44,6 +44,7 @@ tar --no-mac-metadata -C "$MEM" -czf - . | ssh "$SERVER" '
   done
   rm -rf "$tmp"
   chat=~/.claude/projects/-home-tradedesk-tradedesk-chat
+  [ -d "$chat/memory" ] && [ ! -L "$chat/memory" ] && rmdir "$chat/memory" 2>/dev/null || true   # an empty folder is replaced
   if [ -d ~/tradedesk-chat ] && [ ! -e "$chat/memory" ]; then mkdir -p "$chat"; ln -s "$dst" "$chat/memory"; echo "Telegram Claude now shares this memory"; fi
   [ -e "$chat/memory" ] && [ ! -L "$chat/memory" ] && echo "note: Telegram Claude has its own memory in $chat/memory (left as is)"
   echo "memory on the server: $(ls "$dst" | wc -l) files"'

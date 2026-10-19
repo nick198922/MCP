@@ -80,6 +80,8 @@ EXPECTED_TOOLS = {
     "carry_paper_status",
     "carry_paper_close",
     "paper_carry_status",
+    "assistant_paper_open",
+    "assistant_paper_status",
     "positions_add",
     "positions_list",
     "positions_close",

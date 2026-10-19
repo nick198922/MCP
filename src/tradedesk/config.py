@@ -79,6 +79,12 @@ class Settings:
     # Polymarket <-> Deribit options gap collector (docs/ideas/IDEA-20261017-polymarket-vs-options-forward.md). Off by default.
     pm_gap_enabled: bool = False
     pm_gap_seconds: int = 3600
+    # Paper recommendation journal (same card): once a day after 09:00 UTC the job records the method's pick as a paper trade
+    # (source 'method') and writes <directory of db_path>/assistant/paper_state.json. Off by default.
+    assistant_paper_enabled: bool = False
+    assistant_paper_seconds: int = 3600
+    assistant_paper_deposit_usd: float = 10_000.0
+    assistant_paper_risk_pct: float = 1.0
     # Alerts
     alerts_enabled: bool = False
     alerts_rules_path: str = ""
@@ -136,6 +142,10 @@ class Settings:
             assistant_snapshot_path=os.environ.get("TRADEDESK_ASSISTANT_SNAPSHOT_PATH", ""),
             pm_gap_enabled=os.environ.get("TRADEDESK_PM_GAP_ENABLED", "").lower() in ("1", "true", "yes"),
             pm_gap_seconds=int(_float("TRADEDESK_PM_GAP_SECONDS", 3600)),
+            assistant_paper_enabled=os.environ.get("TRADEDESK_ASSISTANT_PAPER_ENABLED", "").lower() in ("1", "true", "yes"),
+            assistant_paper_seconds=int(_float("TRADEDESK_ASSISTANT_PAPER_SECONDS", 3600)),
+            assistant_paper_deposit_usd=_float("TRADEDESK_ASSISTANT_PAPER_DEPOSIT_USD", 10_000.0),
+            assistant_paper_risk_pct=_float("TRADEDESK_ASSISTANT_PAPER_RISK_PCT", 1.0),
             http_bearer_tokens=os.environ.get("TRADEDESK_HTTP_BEARER_TOKENS") or os.environ.get("TRADEDESK_HTTP_BEARER_TOKEN", ""),
             alerts_enabled=os.environ.get("TRADEDESK_ALERTS_ENABLED", "").lower() in ("1", "true", "yes"),
             alerts_rules_path=os.environ.get("TRADEDESK_ALERTS_RULES_PATH", ""),

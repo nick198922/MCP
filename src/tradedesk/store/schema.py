@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 # Each migration is a list of SQL statements executed in a single transaction.
 # `PRAGMA user_version` is bumped by Store.init() after a block runs.
@@ -417,5 +417,46 @@ MIGRATIONS: dict[int, list[str]] = {
         )
         """,
         "CREATE INDEX IF NOT EXISTS pm_gap_snapshot_market ON pm_gap_snapshot (market_id, ts)",
+    ],
+    16: [
+        # Paper trades of the assistant's option recommendations (bookkeeping only, no orders). Deliberately NOT
+        # mirrored into `journal`: that table holds the owner's real trades, and a hypothesis must not mix with them.
+        """
+        CREATE TABLE IF NOT EXISTS rec_paper (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            opened_ts INTEGER NOT NULL,            -- unix seconds
+            currency TEXT NOT NULL,
+            structure TEXT NOT NULL,               -- key of option_replay.STRUCTURES
+            expiry_ts INTEGER NOT NULL,            -- unix seconds, 08:00 UTC delivery
+            spot REAL NOT NULL,                    -- USD at entry
+            forward REAL NOT NULL,
+            t_years REAL NOT NULL,
+            legs TEXT NOT NULL,                    -- JSON [[strike, is_call, qty, exec_iv, entry_price_usd], ...]
+            premium_per_btc REAL NOT NULL,         -- USD per 1 BTC of structure, debit > 0
+            entry_fees_per_btc REAL NOT NULL,
+            max_loss_per_btc REAL NOT NULL,
+            risk_basis TEXT NOT NULL,              -- 'max_loss' | 'stress_up_30pct'
+            size_btc REAL NOT NULL,
+            deposit_usd REAL NOT NULL,
+            risk_pct REAL NOT NULL,                -- percent of the deposit
+            risk_usd REAL NOT NULL,                -- max_loss_per_btc * size_btc
+            within_risk INTEGER NOT NULL,
+            label TEXT NOT NULL DEFAULT 'hypothesis',
+            status TEXT NOT NULL DEFAULT 'open',   -- 'open' | 'settled'
+            settled_ts INTEGER,
+            delivery_price REAL,
+            pnl_usd REAL,
+            pnl_pct_spot REAL,                     -- fraction: P&L per 1 BTC of structure / entry spot
+            r_worst_case REAL,                     -- P&L / worst-loss risk of the trade (NOT the study's R)
+            r_study REAL,                          -- per-unit P&L / (premium for a debit, |method_q05| * spot for a credit)
+            source TEXT NOT NULL DEFAULT 'manual', -- 'method' (picked by the method) | 'manual' (picked by a person/model)
+            method_mean_pct REAL,                  -- method simulation mean at entry, fraction of the entry FORWARD (as method_summary returns it)
+            method_q05_pct REAL,                   -- method simulation 5 % quantile at entry, fraction of the entry FORWARD (as method_summary returns it)
+            regime TEXT,                           -- method regime bucket at entry
+            trigger TEXT,                          -- why the job booked it: 'chain' (first / after expiry; H1-comparable) | 'regime' | 'event'; NULL for manual
+            note TEXT
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS rec_paper_status_expiry ON rec_paper (status, expiry_ts)",
     ],
 }

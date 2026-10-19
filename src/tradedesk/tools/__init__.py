@@ -8,6 +8,7 @@ from ..runtime import Runtime
 def register_all(server: MCPServer, rt: Runtime) -> None:
     from .. import prompts
     from . import (
+        assistant_paper,
         backtest,
         calendar,
         carry_paper,
@@ -54,6 +55,7 @@ def register_all(server: MCPServer, rt: Runtime) -> None:
         journal,
         carry_paper,
         paper_carry,
+        assistant_paper,
         positions,
         liquidations,
         onchain,

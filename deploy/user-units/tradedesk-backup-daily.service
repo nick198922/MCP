@@ -1,0 +1,10 @@
+[Unit]
+Description=tradedesk: restic backup (daily)
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /home/tradedesk/tradedesk-mcp/scripts/backup.sh daily
+TimeoutStartSec=2h
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=true

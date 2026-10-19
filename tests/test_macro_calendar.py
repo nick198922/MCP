@@ -158,3 +158,22 @@ def test_real_feed_capture_parses_and_keeps_only_in_scope_rows():
     assert res["feed"]["rows"] == len(cap["thisweek"]) == 86
     assert res["events"] and all(e["source"] == "seed" for e in res["events"])
     assert [e["kind"] for e in res["events"]] == ["fomc"]
+
+
+async def test_macro_calendar_next_week_not_published_is_still_ok(state):
+    # ForexFactory answers 404 for next week from Sunday to mid-week: an empty horizon is a valid answer, not a failure.
+    tr = make_transports(state)
+    tr["forexfactory"] = httpx.MockTransport(
+        lambda req: (
+            httpx.Response(200, json=FIX["thisweek"])
+            if req.url.path == "/ff_calendar_thisweek.json"
+            else httpx.Response(404, text="not found")
+        )
+    )
+    rt2 = Runtime(Settings(http_retries=1, cache_scale=0.0), transports=tr, exchange_factory=FakeEx)
+    rt2.now = lambda: NOW
+    srv, _ = build_server(rt2)
+    env = await call(srv, "macro_calendar", horizon_days=1)
+    assert env["ok"] is True and env["data"]["events"] == []
+    assert len(env["missing"]) == 1 and env["missing"][0]["provider"] == "forexfactory"
+    assert any("no high-impact event" in w for w in env["warnings"])

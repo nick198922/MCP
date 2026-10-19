@@ -22,7 +22,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "Side convention follows the taker in the force-order: 'sell' = long got liquidated "
             "(downside flush), 'buy' = short got liquidated (upside squeeze). Reports total USD "
             "notional, longs/shorts USD split, imbalance (buy − sell)/total, top-N by notional, "
-            "and a per-symbol breakdown. Phase-2 collector covers Binance USD-M only."
+            "and a per-symbol breakdown. Venues: Binance USD-M, Bybit, OKX (TRADEDESK_COLLECT_LIQUIDATIONS_VENUES). "
+            "Binance undercounts: its stream sends at most the latest liquidation per symbol each second, so cascades "
+            "are understated (a lower bound, not the full volume)."
         ),
     )
     async def liquidations_summary(
@@ -74,6 +76,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
         per_symbol = sorted(by_sym.values(), key=lambda x: x["total_usd"], reverse=True)
 
         top = sorted(rows, key=lambda x: x["notional_usd"], reverse=True)[:top_n]
+        if any("binance" in str(row.get("venue", "")) for row in rows):
+            b.warn("Binance sends at most one liquidation per symbol per second: its figures are a lower bound in cascades")
 
         return b.build(
             {

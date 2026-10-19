@@ -1,7 +1,8 @@
 """Public liquidation streams: Binance / Bybit / OKX.
 
-Binance USD-M (`!forceOrder@arr`) carries every force-close across all perps
-and needs no subscribe. Bybit v5 needs an explicit ``subscribe`` for each
+Binance USD-M (`!forceOrder@arr`) covers all perps and needs no subscribe, but
+sends at most the latest force-close per symbol each second (Binance docs), so
+cascades are undercounted. Bybit v5 needs an explicit ``subscribe`` for each
 ``allLiquidation.<symbol>`` channel. OKX v5 streams every SWAP liquidation
 through one ``liquidation-orders`` channel (filtered by ``instType``).
 

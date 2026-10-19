@@ -111,7 +111,8 @@ def main(argv: list[str] | None = None) -> int:
         seed = _load_seed()
     except (FileNotFoundError, ValueError, OSError):
         seed = []
-    events = build_macro_calendar(feed, seed, now, 14)["events"]
+    # 60 days: an empty week can still name the next big event (from the seed beyond the two-week feed)
+    events = build_macro_calendar(feed, seed, now, 60 if a.mode == "week" else 14)["events"]
 
     if a.mode == "week":
         text = format_week_digest(events, now, notes)

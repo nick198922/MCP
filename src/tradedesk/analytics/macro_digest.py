@@ -71,6 +71,9 @@ def format_week_digest(events: list[dict[str, Any]], now: datetime, notes: list[
     out = [f"# Макро-тиждень {first:%d.%m}–{last:%d.%m}", ""]
     if not week:
         out.append("Подій високого впливу (США, рішення ECB/BoJ/BoE) у календарі немає.")
+        later = sorted((e for e in events if _ts(e) >= end), key=lambda e: e["ts_utc"])
+        if later:
+            out += ["", "Наступна велика подія:", _line(later[0], with_day=True)]
     else:
         day = None
         for e in week:

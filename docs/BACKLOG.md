@@ -11,6 +11,14 @@
 - [x] ~~`macro_calendar`: `ok=true` і порожній список, коли `nextweek` ще не опубліковано~~ — зроблено (Claude, 2026-10-19).
 
 ## Фаза 0.5 — гігієна (робити першими)
+- [ ] **Прибрати корейські біржі (Upbit, Bithumb) з проєкту** — рішення власника 2026-10-19: «лістинги на Upbit та інших корейських біржах відмінити, мало шансів що це допоможе заробити». Підстава — етап 0c ([звіт](verification/2026-10-18-news-events-0c.md)): H1 лише гонка швидкості (рух згасає за 30 с, виявлення 3–6 с), H2–H4 `inconclusive`. Розробнику (одним PR, критик перевіряє):
+  - видалити `providers/upbit.py`, `tools/upbit.py` (`upbit_notices`), `analytics/upbit_risk.py`, Upbit у `runtime.py` і `tools/__init__.py`, фікстуру `tests/fixtures/upbit_announcements_sample.json`, `tests/test_upbit.py`, Upbit-обробник у `tests/conftest.py`; прибрати `upbit_notices` з `EXPECTED_TOOLS`;
+  - знімок асистента (`collector/assistant_snapshot.py`, тести) — без секції `upbit`; панель і прототип (`docs/design/assistant-prototype.html`) — без неї;
+  - `prompts/pre_trade_checklist.md` (і `prompts/__init__.py`) — прибрати крок «ризик монети: `upbit_notices`»;
+  - `analytics/news_events.py`: Upbit-функції (`upbit_*`) прибрати, якщо їх не потребує нічого, крім архівного `scripts/verify_news_events_0c.py`; сам скрипт і звіт 0c лишити як історію (позначити в docstring, що провайдер видалено);
+  - документація: `README.md`, `docs/PARITY.md`, `docs/knowledge/news-reaction.md` (позначка «корейські біржі закрито 19.10»), картка `IDEA-20261017-news-events` (етап 0c закрито, Bithumb ◯ не продовжувати), `docs/QUESTIONS.md` (питання про Bithumb — закрити);
+  - історичні звіти, рев'ю й записи змін не чіпати.
+  Решта новинного напряму лишається (закриття проєктів, зломи, делістинги Binance/Bybit/OKX). Нових карток про корейські біржі не створювати.
 - [x] 0.1 `make smoke` виконано 2026-10-10, 9/9 ok; виправлено OKX order-book (3+ колонки); зафіксовано, що Binance/Bybit не повертають `openInterestValue` (окремий пункт нижче).
 - [x] 0.2 `ruff` у dev-extras, `uv lock`.
 - [x] 0.3 Python 3.11 перевірено (51 тест).

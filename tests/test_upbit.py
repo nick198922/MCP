@@ -132,6 +132,7 @@ async def test_upbit_notices_provider_failure(state):
     rt2 = Runtime(Settings(http_retries=1, cache_scale=0.0), transports=tr, exchange_factory=FakeEx)
     rt2.now = lambda: NOW
     rt2.upbit.http._limiter = TokenBucket(1000, 100)  # the real 1 request / 6 s limit would slow the retry
+    rt2.upbit.http._backoff = 0.0  # Upbit retries 6 times; no need to wait between them here
     srv, _ = build_server(rt2)
     env = await call(srv, "upbit_notices", token="ZIL")  # must not raise
     assert env["ok"] is False and env["data"] is None
@@ -230,3 +231,24 @@ async def test_upbit_notices_unhashable_id_does_not_raise(state):
     srv, _ = build_server(rt2)
     env = await call(srv, "upbit_notices", token="KAIA")
     assert env["ok"] is True and [e["id"] for e in env["data"]["events"]] == [6645]
+
+
+async def test_upbit_survives_cloudflare_refusals(state):
+    # From a server IP Cloudflare refuses many single requests with 429 (retry-after: 0); Upbit retries up to 6 times.
+    tr = make_transports(state)
+    real, refused = tr["upbit"], {"n": 0}
+
+    async def flaky(req: httpx.Request) -> httpx.Response:
+        if refused["n"] < 4:
+            refused["n"] += 1
+            return httpx.Response(429, headers={"retry-after": "0"}, text="rate limited")
+        return await real.handle_async_request(req)
+
+    tr["upbit"] = httpx.MockTransport(flaky)
+    rt2 = Runtime(Settings(http_retries=1, cache_scale=0.0), transports=tr, exchange_factory=FakeEx)
+    rt2.now = lambda: NOW
+    rt2.upbit.http._limiter = TokenBucket(1000, 100)
+    rt2.upbit.http._backoff = 0.0
+    srv, _ = build_server(rt2)
+    env = await call(srv, "upbit_notices", token="ZIL")
+    assert env["ok"] is True and refused["n"] == 4

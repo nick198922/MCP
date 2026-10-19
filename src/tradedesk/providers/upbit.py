@@ -18,6 +18,8 @@ from ..core.http import Http
 BASE_URL = "https://api-manager.upbit.com"
 RATE_PER_SECOND = 1 / 6
 PER_PAGE = 20
+RETRIES = 5  # 6 attempts: Cloudflare refuses many single requests from a server IP (see runtime.py)
+BODY_TTL = 7 * 24 * 3600  # an announcement body does not change; fewer calls mean fewer refusals
 
 
 class Upbit:
@@ -55,7 +57,7 @@ class Upbit:
             nid = int(notice_id)
         except (TypeError, ValueError):
             raise ProviderError(self.name, "backend_error", f"bad announcement id {str(notice_id)[:40]!r}") from None
-        f = await self.http.get_json(f"/api/v1/announcements/{nid}", ttl=3600, tool="upbit_announcement", args={"id": nid})
+        f = await self.http.get_json(f"/api/v1/announcements/{nid}", ttl=BODY_TTL, tool="upbit_announcement", args={"id": nid})
         d = f.data.get("data") if isinstance(f.data, dict) else None
         if not isinstance(d, dict):
             raise ProviderError(self.name, "backend_error", "unexpected announcement response shape")

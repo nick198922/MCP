@@ -60,14 +60,14 @@ class Runtime:
         self.cache = TTLCache()
         tr = transports or {}
 
-        def http(name: str, base: str, rate: float, burst: int) -> Http:
+        def http(name: str, base: str, rate: float, burst: int, retries: int | None = None) -> Http:
             return Http(
                 name,
                 base,
                 rate=rate,
                 burst=burst,
                 timeout=s.http_timeout,
-                retries=s.http_retries,
+                retries=s.http_retries if retries is None else retries,
                 cache=self.cache,
                 cache_scale=s.cache_scale,
                 health=self.health,
@@ -89,8 +89,12 @@ class Runtime:
         )
         self.alternative_me = AlternativeMe(http("alternative_me", altme_mod.BASE_URL, rate=2, burst=4))
         self.forexfactory = ForexFactory(http("forexfactory", ff_mod.BASE_URL, rate=0.5, burst=2))
-        # Cloudflare in front of Upbit answers 429 / 1015 above ~1 request per 6 s.
-        self.upbit = Upbit(http("upbit", upbit_mod.BASE_URL, rate=upbit_mod.RATE_PER_SECOND, burst=1))
+        # Cloudflare in front of Upbit answers 429 / 1015 above ~1 request per 6 s, and from a datacenter IP to a
+        # non-browser client on most cache misses even below that (measured from the server 2026-10-19: ~30-50 % of
+        # single requests pass), so Upbit gets more retries; the token bucket still spaces them 6 s apart.
+        self.upbit = Upbit(
+            http("upbit", upbit_mod.BASE_URL, rate=upbit_mod.RATE_PER_SECOND, burst=1, retries=max(s.http_retries, upbit_mod.RETRIES))
+        )
         self.dexscreener = DexScreener(http("dexscreener", dexs_mod.BASE_URL, rate=4, burst=8))
         self.defillama = DefiLlama(http("defillama", llama_mod.BASE_URL, rate=4, burst=8))
         self.pendle = Pendle(http("pendle", pendle_mod.BASE_URL, rate=2, burst=4))

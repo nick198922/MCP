@@ -19,6 +19,12 @@ read -rp "Назва бакета: " bucket
 read -rp "Access Key ID: " key_id
 read -rsp "Secret Access Key (не показується): " secret
 echo
+[[ "$endpoint" == http* ]] || endpoint="https://$endpoint"
+if [[ "$endpoint" == *backblazeb2.com* && ${#key_id} -lt 20 ]]; then
+  echo "Це схоже на головний ключ акаунта Backblaze (keyID ${#key_id} символів); для S3 потрібен ключ застосунку"
+  echo "(Application Keys → Add a New Application Key, доступ лише до бакета, Read and Write; keyID ≈ 25 символів)."
+  exit 1
+fi
 head -c 32 /dev/urandom | base64 | tr -d '/+=' | head -c 40 >"$PASS"
 cat >"$ENV" <<EOF
 RESTIC_REPOSITORY=s3:${endpoint%/}/$bucket/tradedesk

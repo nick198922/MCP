@@ -1,14 +1,15 @@
 #!/bin/bash
 # Claude Code status line for the owner's terminal (Warp over ssh): model, plan usage for 5 hours and the week with
 # reset times, context use; each as a coloured bar (green to 50 %, yellow to 80 %, red above). Usage comes from the
-# status line input (rate_limits) when Claude Code sends it, otherwise
-# from the same cached /usage call as the agents (scripts/agents_usage.sh, at most one call per 2 minutes).
+# same cached /usage call as the agents (scripts/agents_usage.sh, at most one call per 2 minutes), falling back to
+# the status line input (rate_limits) when that call fails.
 # ~/.claude/settings.json: "statusLine": {"type": "command", "command": "bash ~/tradedesk-mcp/scripts/statusline.sh"}
 in="$(cat)"
 source "$(dirname "$0")/agents_usage.sh"
 
-usage="$(jq -c '.rate_limits // empty' <<<"$in" 2>/dev/null)"
-[[ -z "$usage" ]] && usage="$(usage_json)"
+# The /usage figures first (Claude Code's own rate_limits lagged them by ~1 point, 2026-10-19), its input as fallback.
+usage="$(usage_json)"
+[[ -z "$usage" ]] && usage="$(jq -c '.rate_limits // empty' <<<"$in" 2>/dev/null)"
 
 [[ -z "$in" ]] && in='{}'
 [[ -z "$usage" ]] && usage='{}'

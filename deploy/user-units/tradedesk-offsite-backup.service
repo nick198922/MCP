@@ -1,0 +1,10 @@
+[Unit]
+Description=tradedesk: encrypted off-server backup to Telegram
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/tradedesk/tradedesk-mcp
+ExecStart=/usr/bin/python3 -I /home/tradedesk/tradedesk-mcp/scripts/offsite_backup.py
+TimeoutStartSec=2h
+Nice=10
+NoNewPrivileges=true

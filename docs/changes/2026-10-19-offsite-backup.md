@@ -1,0 +1,1 @@
+- Бекап поза сервером: щоночі зашифрований (`age`) архів бази, пам'яті Claude і стану агентів у Telegram (тема «💾 Бекапи»), `~/private` — коли змінився. `scripts/offsite_backup.py`, `scripts/backup_key.sh`, `deploy/user-units/tradedesk-offsite-backup.*`.

@@ -59,6 +59,11 @@ def register(server: MCPServer, rt: Runtime) -> None:
             b.miss("calendar", "forexfactory", "backend_error", "every feed row had an unparsable or timezone-less date")
         if this_week is None or next_week is None:
             b.warn("ForexFactory feed incomplete: dates it does not cover fall back to the approximate seed")
-        if not res["events"] and (this_week is None or next_week is None):
+        if not res["events"] and this_week is None and next_week is None:
             return b.build(None, ok=False)
+        if not res["events"]:
+            b.warn(
+                "no high-impact event in the horizon; ForexFactory covers only this week and next (next week's file "
+                "is often published mid-week), beyond that only the approximate seed"
+            )
         return b.build({"now": now.isoformat(), "horizon_days": horizon_days, **res})

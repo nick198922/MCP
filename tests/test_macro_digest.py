@@ -83,3 +83,12 @@ def test_reminders_window_dedupe_and_seed_skipped():
     assert format_reminder([], now) is None
     seed_ev = [{**ev[0], "source": "seed"}]
     assert due_reminders(seed_ev, now, 60) == []
+
+
+def test_empty_week_names_the_next_big_event():
+    now = datetime(2026, 10, 18, 17, 0, tzinfo=UTC)  # Sunday evening: the digest covers 19.10-25.10
+    fomc = {"ts_utc": "2026-10-28T18:00:00+00:00", "country": "USD", "title": "FOMC Statement", "source": "seed"}
+    text = format_week_digest([fomc], now)
+    assert "немає" in text and "Наступна велика подія:" in text
+    assert "ср 28.10 20:00 київ" in text.lower() and "FOMC Statement" in text
+    assert "Наступна" not in format_week_digest([], now)

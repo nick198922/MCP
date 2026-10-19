@@ -202,6 +202,7 @@ async def test_liquidations_summary_aggregates(state, tmp_path):
         assert syms == {"BTCUSDT", "ETHUSDT"}
         # Top entry should be the biggest sell print.
         assert d["top"][0]["symbol"] == "BTCUSDT" and d["top"][0]["notional_usd"] == 120_000
+        assert any("lower bound" in w for w in env["warnings"])  # Binance: one liquidation per symbol per second
     finally:
         await rt.aclose()
 

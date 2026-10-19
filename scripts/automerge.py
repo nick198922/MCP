@@ -1,7 +1,7 @@
 """Merge an agents' pull request by itself when it is safe to (run by .github/workflows/automerge.yml from main).
 
-A pull request qualifies when it comes from an agent/* branch of this repository (not a doctor's -fix- branch), the
-launcher marked it ready (the coordinator handed the step over; a step stuck after its run limit is not ready), CI
+A pull request qualifies when it comes from an agent/* or claude/* branch of this repository (not a doctor's -fix-
+branch), the launcher (or Claude's session, scripts/gh_pr.py --ready) marked it ready (the coordinator handed the step over; a step stuck after its run limit is not ready), CI
 passed on its current head, and it changes nothing of the control plane: the agents' own scripts, permissions and
 instructions, the server scripts, GitHub workflows, dependencies, CLAUDE.md, the security notes, ADRs or an execution
 package. Anything else waits for the owner. The rules are read from main, never from the pull request.
@@ -21,7 +21,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gh_pr import READY_MARK, Call, caller, message  # noqa: E402
 
-PROTECTED_PREFIXES = (".github/", ".claude/", "scripts/server/", "deploy/", "docs/adr/", "src/tradedesk/execution/")
+# deploy/ stays the owner's except the feature switches and the user timers (both run as the unprivileged service user,
+# like the rest of the code); their guards, src/tradedesk/features.py and scripts/user_units_sync.sh, are protected.
+PROTECTED_PREFIXES = (".github/", ".claude/", "scripts/server/", "docs/adr/", "src/tradedesk/execution/")
+DEPLOY_OPEN = ("deploy/features.env", "deploy/env.example", "deploy/README.md", "deploy/user-units/")
+BRANCH_PREFIXES = ("agent/", "claude/")  # the agents' launcher and Claude's own sessions with the owner
 PROTECTED_FILES = {
     "CLAUDE.md",
     "docs/SECURITY.md",
@@ -32,11 +36,15 @@ PROTECTED_FILES = {
     "scripts/nightly_agents.sh",
     "scripts/gh_pr.py",
     "scripts/automerge.py",
+    "scripts/user_units_sync.sh",
+    "src/tradedesk/features.py",
 }
 PROTECTED_GLOBS = ("scripts/agents_*", "scripts/tg_*", "scripts/telegram_*", "scripts/install_*")
 
 
 def protected(path: str) -> bool:
+    if path.startswith("deploy/") and not path.startswith(DEPLOY_OPEN):
+        return True
     return path.startswith(PROTECTED_PREFIXES) or path in PROTECTED_FILES or any(fnmatch.fnmatch(path, g) for g in PROTECTED_GLOBS)
 
 
@@ -60,8 +68,8 @@ def decide(pr: dict, files: list[str], tested_sha: str) -> tuple[bool, str]:
         return False, "not into main"
     if (head.get("repo") or {}).get("full_name") != (base.get("repo") or {}).get("full_name"):
         return False, "from a fork"
-    if not ref.startswith("agent/") or "-fix-" in ref:
-        return False, f"{ref} is not an agents' step branch"
+    if not ref.startswith(BRANCH_PREFIXES) or "-fix-" in ref:
+        return False, f"{ref} is not an agents' or Claude's step branch"
     if READY_MARK not in (pr.get("body") or ""):
         return False, "not marked ready by the launcher"
     if head.get("sha") != tested_sha:
@@ -91,7 +99,7 @@ def run(call: Call, repo: str, number: int, sha: str) -> str:
     if not ok:
         return f"PR #{number} waits for the owner: {why}"
     ref = pr["head"]["ref"]
-    body = {"merge_method": "merge", "sha": sha, "commit_title": f"Merge pull request #{number} from {ref} (auto: agents)"}
+    body = {"merge_method": "merge", "sha": sha, "commit_title": f"Merge pull request #{number} from {ref} (auto)"}
     status, data = call("PUT", f"/repos/{repo}/pulls/{number}/merge", body)
     if status != 200:
         raise RuntimeError(f"GitHub did not merge PR #{number}: HTTP {status} {message(data)}")

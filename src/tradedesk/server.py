@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 
 from mcp.server.mcpserver import MCPServer
 
-from . import __version__
+from . import __version__, features
 from .http_auth import BearerAuthMiddleware, parse_tokens
 from .runtime import Runtime
 from .tools import register_all
@@ -64,6 +64,7 @@ def configure_logging() -> None:
 
 def main(argv: list[str] | None = None) -> None:
     configure_logging()
+    features.load()
     server, rt = build_server()
     s = rt.settings
     if s.transport != "streamable-http":

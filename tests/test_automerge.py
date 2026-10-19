@@ -48,9 +48,25 @@ def test_the_control_plane_waits_for_the_owner():
         "pyproject.toml",
         "uv.lock",
         "src/tradedesk/execution/guard.py",
+        "src/tradedesk/features.py",
+        "scripts/user_units_sync.sh",
+        "deploy/tradedesk-mcp.service",
+        "deploy/backup-sqlite.sh",
     ):
         assert am.classify(["docs/x.md", path]).startswith("owner: changes " + path), path
     assert am.classify([]) == "owner: no changes"
+
+
+def test_feature_switches_and_user_timers_merge_by_themselves():
+    files = ["deploy/features.env", "deploy/env.example", "deploy/user-units/tradedesk-x.timer", "deploy/user-units/tradedesk-x.service"]
+    assert am.classify(files) == "auto"
+
+
+def test_claudes_own_branches_merge_like_the_agents():
+    claude = pr(head={"ref": "claude/2026-10-19-self-service", "sha": "abc", "repo": REPO})
+    assert am.decide(claude, ["docs/x.md"], "abc") == (True, "auto")
+    other = pr(head={"ref": "feature/x", "sha": "abc", "repo": REPO})
+    assert not am.decide(other, ["docs/x.md"], "abc")[0]
 
 
 def test_decide_needs_a_ready_open_agent_pr_tested_at_its_head():

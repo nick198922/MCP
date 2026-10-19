@@ -24,6 +24,8 @@ This run is headless and its permissions are fixed. A denied Bash call means onl
 
 ## Workflow
 
+Turning a job on needs no root and no owner: a read-only collector job is switched on by a line in `deploy/features.env` (allow-listed `TRADEDESK_*_ENABLED`/`_SECONDS`/... names; keys, paths, host and port are ignored), a periodic script by a `.service` + `.timer` pair in `deploy/user-units/` (runs as tradedesk; see its README). Both merge by themselves and reach the server within the hour. Write a `scripts/server/NN-*.sh` root step only when root is truly required, and say why.
+
 Keep the change minimal: no refactors beyond the task, no speculative features. Run `make lint && make test`. When the change touches live data, check it against the real venues from this machine (`uv run python -c ...` through `build_server()`), and report what you saw. Update `docs/BACKLOG.md` and `docs/HANDOFF.md`. Owner-facing docs in Ukrainian; code, comments and tool descriptions in English.
 
 CI runs the tests on Python 3.11, 3.12 and 3.13 (`make test` here runs one version). Since 3.12, `sum()` of floats is compensated, so float results differ in the last bits between versions: never pin exact floats or hashes of raw float output; compare with a tolerance or round before hashing.

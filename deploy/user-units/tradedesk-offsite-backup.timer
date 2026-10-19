@@ -1,9 +1,0 @@
-[Unit]
-Description=tradedesk-offsite-backup after the nightly SQLite backup (03:30)
-
-[Timer]
-OnCalendar=*-*-* 04:00:00
-Persistent=true
-
-[Install]
-WantedBy=timers.target

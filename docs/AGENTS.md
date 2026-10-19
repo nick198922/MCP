@@ -117,14 +117,17 @@
 
 ## Бекап поза сервером
 
-Щоночі о 04:00 (user-таймер `tradedesk-offsite-backup`, без root і без токенів Claude) `scripts/offsite_backup.py` шифрує `age` на публічний ключ власника й надсилає в Telegram, тема «💾 Бекапи», частинами ≤ 45 МБ:
-- `core` — щоночі: свіжа копія бази з `/var/lib/tradedesk-mcp/backups`, пам'ять Claude (`~/.claude/projects/*/memory`), стан агентів (`~/.local/state/tradedesk-agents`);
-- `private` — лише коли змінився `~/private` (курси тощо).
+restic у хмарне S3-сховище (Cloudflare R2 / Backblaze B2): шифрування, дедуплікація, інкрементально — після першого заливу передаються лише зміни. User-таймери, без root і без токенів Claude:
+- `tradedesk-backup-hourly` (щогодини о :45): узгоджена копія живої бази (`sqlite3 .backup`), пам'ять Claude, стан агентів, дрібні дані збирача (`journal/`, `assistant/`, `macro/`, `alert_rules.json`), `~/private`;
+- `tradedesk-backup-daily` (04:10): те саме + зберігання 48 годинних / 14 денних / 8 тижневих / 12 місячних знімків, перевірка цілісності 2 % даних; у неділю — тест відновлення бази (`quick_check`) і один рядок ✅ у темі статусу.
 
-Секретний ключ — лише в менеджері паролів власника (видає один раз `bash scripts/backup_key.sh`). Збій — 🛑 у темі статусу.
+Збій — 🛑 у темі статусу. Секрети (ключі бірж, токени) не бекапляться: при втраті сервера їх перевипускають. Код у git (GitHub).
 
-Відновлення (будь-яка машина з `age`, `zstd`): завантажити всі частини одного архіву з теми, потім
+Налаштування — один раз, власник у своєму терміналі: `bash ~/tradedesk-mcp/scripts/backup_setup.sh` (endpoint, бакет, ключі; пароль сховища показується один раз → менеджер паролів). Стан: `bash scripts/backup.sh status`.
+
+Відновлення (будь-яка машина з restic, змінні `RESTIC_REPOSITORY`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, пароль):
 ```bash
-cat core.tar.zst.age.* | age -d -i key.txt | zstd -d | tar -x -C /куди/відновити
+restic snapshots
+restic restore latest --target /куди/відновити          # усе
+restic restore latest --target /tmp/r --include '*/tradedesk.sqlite'   # лише база
 ```
-де `key.txt` містить рядок `AGE-SECRET-KEY-…`. База — у `var/lib/tradedesk-mcp/backups/*.sqlite.gz` (`gunzip`).

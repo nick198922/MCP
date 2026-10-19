@@ -1,0 +1,10 @@
+[Unit]
+Description=tradedesk-backup-hourly (*-*-* *:45:00)
+
+[Timer]
+OnCalendar=*-*-* *:45:00
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,1 @@
+- Paper engines switched on in `deploy/features.env` after live runs from the server: forward-paper carry (A, B), assistant paper journal; `TRADEDESK_ASSISTANT_PAPER_` prefix accepted by `features.py`.

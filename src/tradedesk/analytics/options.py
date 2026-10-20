@@ -168,6 +168,23 @@ class Smile:
         self.ivs = np.array(ivs, dtype=float)[order]
         self._logm = np.log(self.strikes / forward)
 
+    def smoothed(self, weights: list[float] | np.ndarray | None = None, degree: int = 2) -> Smile:
+        """Weighted least-squares polynomial fit of IV in log-moneyness, evaluated at the same strikes.
+
+        `weights` are per-strike (aligned with `self.strikes`, ascending); None = equal weights. A degree-2 fit
+        has 3 parameters, so it needs >= 3 strikes (always true for a built smile); fewer than degree+1 -> unchanged copy.
+        Only the IVs change; strikes, forward and T stay. Output IVs are floored at 1e-4.
+        """
+        n = len(self.strikes)
+        if n <= degree:
+            return Smile(self.forward, self.T, list(self.strikes), list(self.ivs))
+        w = np.ones(n) if weights is None else np.asarray(weights, dtype=float)
+        if w.shape != (n,) or not np.all(np.isfinite(w)) or np.any(w < 0) or not np.any(w > 0):
+            raise ValueError("weights must be n non-negative finite numbers, at least one positive")
+        coef = np.polyfit(self._logm, self.ivs, degree, w=np.sqrt(w))  # polyfit squares w in the residual
+        fitted = np.maximum(np.polyval(coef, self._logm), 1e-4)
+        return Smile(self.forward, self.T, list(self.strikes), list(fitted))
+
     def iv(self, K: float) -> float:
         """Linear interpolation in log-moneyness, flat outside the quoted range."""
         return float(np.interp(math.log(K / self.forward), self._logm, self.ivs))
@@ -187,10 +204,24 @@ class Smile:
         return float(np.interp(target, d_sorted, v_sorted))
 
 
+def liquidity_weight(oi: float, spread_pct: float | None, ref_oi: float, ref_spread_pct: float = 5.0) -> float:
+    """Bounded liquidity weight in [0.1, 3.0]: sqrt(OI / ref_oi) divided by (spread / ref_spread), both factors clipped.
+
+    OI in underlying units, spread in percent of mid. A missing spread counts as the reference spread (neutral),
+    zero OI as the floor. Bounds stop a single huge-OI strike from dominating the fit.
+    """
+    oi_f = math.sqrt(max(oi, 0.0) / ref_oi) if ref_oi > 0 else 1.0
+    sp_f = 1.0 if spread_pct is None else ref_spread_pct / max(spread_pct, 0.5)
+    oi_f = min(max(oi_f, 0.1), 3.0)
+    sp_f = min(max(sp_f, 0.1), 3.0)
+    return min(max(oi_f * sp_f, 0.1), 3.0)
+
+
 def build_smile(
     rows: list[OptionRow],
     min_oi: float = 0.0,
     max_spread_pct: float | None = None,
+    liquidity_weighted: bool = False,
 ) -> Smile | None:
     """Smile for rows of ONE expiry. Needs >= 3 strikes with an IV.
 
@@ -198,6 +229,10 @@ def build_smile(
     * `min_oi` — skip strikes whose chosen OTM side has OI below this (in underlying units).
     * `max_spread_pct` — skip strikes whose bid/ask spread (in native price units, relative to mid)
       exceeds this percentage; strikes without a two-sided quote are also skipped when this is set.
+    * `liquidity_weighted` — instead of interpolating raw mark IVs, return a weighted LS quadratic fit in
+      log-moneyness with weights from `liquidity_weight` (OI and spread of the picked side). Off by default:
+      the default smile passes exactly through every mark IV. The fit smooths noisy thin wings but cannot
+      reproduce sharp kinks; use for RR/fly on noisy chains.
     """
     usable = [r for r in rows if r.iv]
     if not usable:
@@ -210,15 +245,24 @@ def build_smile(
         by_strike.setdefault(r.strike, {})[r.is_call] = r
     strikes: list[float] = []
     ivs: list[float] = []
+    picks: list[OptionRow] = []
     for k, sides in by_strike.items():
         pick = sides.get(k >= F) or next(iter(sides.values()))  # OTM side, else whatever exists
         if not pick.is_liquid(min_oi, max_spread_pct):
             continue
         strikes.append(k)
         ivs.append(pick.iv)  # type: ignore[arg-type]
+        picks.append(pick)
     if len(strikes) < 3:
         return None
-    return Smile(F, T, strikes, ivs)
+    sm = Smile(F, T, strikes, ivs)
+    if not liquidity_weighted:
+        return sm
+    ois = [p.open_interest for p in picks]
+    ref_oi = float(np.median([o for o in ois if o > 0] or [1.0]))
+    order = np.argsort(strikes)
+    weights = [liquidity_weight(picks[i].open_interest, picks[i].spread_pct, ref_oi) for i in order]
+    return sm.smoothed(weights)
 
 
 def wing_quality(rows: list[OptionRow], smile: Smile, target_delta: float) -> dict[str, Any] | None:

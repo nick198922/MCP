@@ -23,6 +23,7 @@ from tradedesk.analytics.options import (
     gex_flip_shift,
     gex_profile,
     group_by_expiry,
+    liquidity_weight,
     max_pain,
     ncdf,
     net_gex,
@@ -272,3 +273,69 @@ def test_funding_carry_is_robust_to_interval_change():
     assert s["latest_annualized"] == pytest.approx(r / 8 * 8760, rel=1e-9)  # at the latest 1h interval
     plain = summarise_funding_history(eight)
     assert plain["carry_annualized"] == pytest.approx(r * 3 * 365, rel=1e-9)
+
+
+# ---------- liquidity-weighted smile fit ----------
+def test_smoothed_equal_weights_recovers_quadratic_and_none_equals_ones():
+    rows, fn = synth_chain()
+    sm = build_smile(rows)
+    fit = sm.smoothed()  # smile is exactly quadratic in log-moneyness
+    assert list(fit.ivs) == pytest.approx(list(sm.ivs), abs=1e-9)
+    assert list(sm.smoothed([1.0] * len(sm.strikes)).ivs) == pytest.approx(list(fit.ivs), abs=1e-12)
+
+
+def test_smoothed_downweights_noisy_illiquid_wing():
+    rows, _ = synth_chain()
+    sm = build_smile(rows)
+    ivs = list(sm.ivs)
+    ivs[0] += 0.30  # junk quote on the lowest strike
+    noisy = Smile(sm.forward, sm.T, list(sm.strikes), ivs)
+    equal = noisy.smoothed()
+    w = [1.0] * len(ivs)
+    w[0] = 0.1
+    weighted = noisy.smoothed(w)
+    true0 = sm.ivs[0]
+    assert abs(weighted.ivs[0] - true0) < abs(equal.ivs[0] - true0)
+    assert abs(weighted.ivs[len(ivs) // 2] - sm.ivs[len(ivs) // 2]) < abs(equal.ivs[len(ivs) // 2] - sm.ivs[len(ivs) // 2])
+
+
+def test_smoothed_rejects_bad_weights():
+    sm = build_smile(synth_chain()[0])
+    with pytest.raises(ValueError):
+        sm.smoothed([1.0, 2.0])
+
+
+def test_liquidity_weight_is_bounded_and_monotone():
+    assert liquidity_weight(0.0, None, 10.0) == pytest.approx(0.1)
+    assert liquidity_weight(1e9, 0.1, 10.0) == pytest.approx(3.0)
+    assert liquidity_weight(40.0, 5.0, 10.0) > liquidity_weight(10.0, 5.0, 10.0) > liquidity_weight(10.0, 20.0, 10.0)
+
+
+def test_build_smile_default_unchanged_and_weighted_downweights_thin_wing():
+    rows, _ = synth_chain()
+    base = build_smile(rows)
+    assert build_smile(rows, liquidity_weighted=False).ivs.tolist() == base.ivs.tolist()
+    for r in rows:  # junk, thin, wide-spread quote on the lowest strike
+        if r.strike == 60_000.0:
+            r.iv += 0.30
+            r.open_interest = 0.0
+            r.spread_pct = 80.0
+        else:
+            r.spread_pct = 2.0
+    raw = build_smile(rows)
+    wtd = build_smile(rows, liquidity_weighted=True)
+    mid = len(raw.ivs) // 2
+    assert abs(wtd.ivs[mid] - base.ivs[mid]) < abs(build_smile(rows).smoothed().ivs[mid] - base.ivs[mid])
+
+
+def test_weighted_smile_on_real_fixture_rows():
+    from dataclasses import replace
+
+    rows = build_chain(FIX["result"], datetime.fromtimestamp(1791637668, UTC))
+    ref = rows[0]
+    same = [replace(r, expiry=ref.expiry, forward=ref.forward, T=ref.T) for r in rows]  # real IV/OI/spread, one expiry
+    sm = build_smile(same, liquidity_weighted=True)
+    assert sm is not None
+    lo, hi = min(r.iv for r in same), max(r.iv for r in same)
+    assert all(0.0 < v < 2 * hi for v in sm.ivs) and lo > 0
+    assert sm.strikes.tolist() == sorted({r.strike for r in same})

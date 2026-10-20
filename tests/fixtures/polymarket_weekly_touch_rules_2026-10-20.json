@@ -1,0 +1,20 @@
+{
+ "_source": "Polymarket Gamma, live via collector.pm_gap.scan_gaps on the server, 2026-10-20 (BTC weekly touch, October 19-25)",
+ "texts": {
+  "reach_pair_only": {
+   "question": "Will Bitcoin reach $96,000 October 19-25?",
+   "slug": "what-price-will-bitcoin-hit-october-19-25-2026",
+   "rules": "This market will immediately resolve to \"Yes\" if any Binance 1-minute candle for BTC/USDT during the date range specified in the title (from 12:00 AM ET on the first date to 11:59 PM ET on the last) has a final \"High\" price equal to or greater than the price specified in the title. Otherwise, this market will resolve to \"No\".\n\nThe resolution source for this market is Binance, specifically the BTC/USDT \"High\" prices available at https://www.binance.com/en/trade/BTC_USDT, with the chart settings on \"1m\" candles selected on the top bar.\n\nPlease note that the outcome of this market depends solely on the price data from the Binance BTC/USDT trading pair. Prices from other exchanges, different trading pairs, or spot markets will not be considered for the resolution of this market."
+  },
+  "dip_name_and_pair": {
+   "question": "Will Bitcoin dip to $80,000 October 19-25?",
+   "slug": "what-price-will-bitcoin-hit-october-19-25-2026",
+   "rules": "This market will immediately resolve to \"Yes\" if any Binance 1 minute candle for Bitcoin (BTC/USDT) during the date range specified in the title (from 12:00 AM ET on the first date to 11:59 PM ET on the last) has a final \"Low\" price equal to or lower than the price specified in the title. Otherwise, this market will resolve to \"No.\"\n\nThe resolution source for this market is Binance, specifically the BTC/USDT \"Low\" prices available at https://www.binance.com/en/trade/BTC_USDT, with the chart settings on \"1m\" candles selected on the top bar.\n\nPlease note that the outcome of this market depends solely on the price data from the Binance BTC/USDT trading pair. Prices from other exchanges, different trading pairs, or spot markets will not be considered for the resolution of this market."
+  },
+  "dip_from_creation": {
+   "question": "Will Bitcoin dip to $82,000 October 19-25?",
+   "slug": "what-price-will-bitcoin-hit-october-19-25-2026",
+   "rules": "This market will resolve to \"Yes\" if any Binance 1 minute candle for BTC/USDT from the creation of this market through 11:59 PM ET on the last day of the date range specified in the title has a final Low price equal to or lower than the price specified in the title. Otherwise, this market will resolve to \"No\". Price action before this market's creation will not be considered.\n\nThe resolution source for this market is Binance, specifically the BTC/USDT Low prices available at https://www.binance.com/en/trade/BTC_USDT, with the chart settings on \"1m\" for one-minute candles selected on the top bar.\n\nPlease note that the outcome of this market depends solely on the price data from the Binance BTC/USDT trading pair. Prices from other exchanges, different trading pairs, or spot markets will not be considered for the resolution of this market."
+  }
+ }
+}

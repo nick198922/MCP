@@ -1,0 +1,1 @@
+- `pm_gap`: live check on the server (210 markets, no provider errors); weekly "reach" touch texts that name only the pair (`BTC/USDT`) are accepted by `weekly_rules_direction` (all 16 were rejected), windows from the market's creation stay rejected; live texts saved as a fixture. Collector switched on via `deploy/features.env` (`TRADEDESK_PM_GAP_` prefix accepted).

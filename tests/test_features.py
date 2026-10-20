@@ -8,12 +8,13 @@ from tradedesk import features
 def test_switches_of_read_only_jobs_are_accepted():
     ok, rejected = features.parse(
         "# comment\n\nTRADEDESK_PAPER_CARRY_ENABLED=1\nTRADEDESK_ASSISTANT_SNAPSHOT_SECONDS=600\n"
-        "TRADEDESK_COLLECT_OHLCV_HIST_MARKETS=binance:BTC/USDT:USDT\n"
+        "TRADEDESK_COLLECT_OHLCV_HIST_MARKETS=binance:BTC/USDT:USDT\nTRADEDESK_PM_GAP_ENABLED=1\n"
     )
     assert ok == {
         "TRADEDESK_PAPER_CARRY_ENABLED": "1",
         "TRADEDESK_ASSISTANT_SNAPSHOT_SECONDS": "600",
         "TRADEDESK_COLLECT_OHLCV_HIST_MARKETS": "binance:BTC/USDT:USDT",
+        "TRADEDESK_PM_GAP_ENABLED": "1",
     }
     assert rejected == []
 

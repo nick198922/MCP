@@ -24,7 +24,8 @@ Claude (Desktop / Code / claude.ai)
 │ core/         Http (retry, rate-limit, cache), TTLCache,  │
 │               HealthRegistry, Envelope/Evidence, errors    │
 └──────────────────────────────────────────────────┘
-Фаза 2+: store/ (SQLite) · workers/ (collector, alerts) · risk/ · strategies/ · execution/
+Фаза 2–3 (є): store/ (SQLite, міграції) · collector/ (планувальник, знімки, паперові рушії) · alerts/ · rules/ (DSL) · prompts/ · data/ (сіди) · features.py (перемикачі з deploy/features.env) · http_auth.py
+Фаза 4 (нема): execution/ (ExecutionGuard, ADR 0005)
 ```
 
 `runtime.py` збирає налаштування, кеш, health і провайдерів в один об'єкт `Runtime`. Інструменти отримують його через замикання `register(server, rt)`, тому в тестах підміняються транспорт, біржі й годинник (`rt.now`).
@@ -100,8 +101,9 @@ Mac засинає, тому для автономної роботи потрі
 
 Фонові задачі виконуються в тому самому процесі (asyncio): збирач знімків, WebSocket-збирач ліквідацій, рушій алертів. Алерти йдуть у Telegram-бот (потрібен токен бота).
 
-## Відкриті рішення
+## Ухвалені й відкриті рішення
 
-- Хостинг (VPS чи інше) і домен/тунель.
-- Канал алертів (Telegram — припущення; `TelegramChannel` увімкнеться при наявності env-токенів).
+- Хостинг — **вирішено:** сервер Contabo, служби systemd, доступ лише по SSH; HTTP-режим слухає `127.0.0.1` (`docs/AGENTS.md` → «Запуск»).
+- Канал алертів — **вирішено:** Telegram (`TelegramChannel` вмикається, коли задано `TELEGRAM_BOT_TOKEN` і `TELEGRAM_CHAT_ID`).
 - IBKR — **відкладено** за рішенням власника (див. [ADR 0006](adr/0006-no-ibkr-for-now.md)).
+- Відкрите: винесення дослідницької аналітики (модулі `analytics/`, які використовують лише `scripts/verify_*.py`) з продуктового пакета — див. `docs/BACKLOG.md`.

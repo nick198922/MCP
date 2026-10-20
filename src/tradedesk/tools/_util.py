@@ -30,8 +30,13 @@ def find_expiry(by_expiry: dict[datetime, Any], text: str | None) -> tuple[datet
 
 
 def timeframe_seconds(tf: str) -> float:
-    unit = tf[-1].lower()
-    mult = {"m": 60, "h": 3600, "d": 86400, "w": 604800}.get(unit)
+    """Seconds in one ccxt timeframe: '1m', '4h', '1d', '1w' and '1M' (a month, taken as 30 days).
+
+    Raises ValueError for anything else; tools catch it and report `missing: timeframe` instead of raising.
+    """
+    unit = tf[-1:]
+    # ccxt spells minutes 'm' and months 'M'; decide the month before lower-casing.
+    mult = 30 * 86400 if unit == "M" else {"m": 60, "h": 3600, "d": 86400, "w": 604800}.get(unit.lower())
     if mult is None or not tf[:-1].isdigit():
         raise ValueError(f"bad timeframe '{tf}'")
     return int(tf[:-1]) * mult

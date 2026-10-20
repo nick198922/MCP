@@ -10,6 +10,22 @@ from tradedesk.analytics.backtest import run_backtest, signals_momentum
 from tradedesk.config import Settings
 from tradedesk.runtime import Runtime
 from tradedesk.server import build_server
+from tradedesk.tools._util import timeframe_seconds
+
+# ---------- helpers ----------
+
+
+def test_timeframe_seconds_units():
+    assert timeframe_seconds("1m") == 60
+    assert timeframe_seconds("4h") == 4 * 3600
+    assert timeframe_seconds("1d") == 86400
+    assert timeframe_seconds("1w") == 7 * 86400
+    # ccxt's month is a capital M; it must not be read as one minute.
+    assert timeframe_seconds("1M") == 30 * 86400
+    for bad in ("1x", "h", "", "x1h"):
+        with pytest.raises(ValueError):
+            timeframe_seconds(bad)
+
 
 # ---------- pure engine ----------
 
@@ -106,5 +122,22 @@ async def test_strategy_backtest_momentum_runs(state):
         # FakeEx walks a mild up-trend, so a lookback=20 / thr=0.3% breakout should fire ≥ once.
         assert d["stats"]["num_trades"] >= 1
         assert d["stats"]["max_drawdown"] <= 0
+    finally:
+        await rt.aclose()
+
+
+async def test_strategy_backtest_momentum_bad_timeframe_is_reported_not_raised(state):
+    rt = Runtime(
+        Settings(http_retries=1, cache_scale=0.0, db_path=""),
+        transports=make_transports(state),
+        exchange_factory=FakeEx,
+    )
+    rt.now = lambda: NOW
+    srv, _ = build_server(rt)
+    try:
+        env = await _call(srv, "strategy_backtest_momentum", exchange="binanceusdm", symbol="BTC/USDT:USDT", timeframe="1x")
+        assert env["ok"] is False
+        assert env["missing"][0]["field"] == "timeframe"
+        assert env["missing"][0]["reason"] == "config"
     finally:
         await rt.aclose()

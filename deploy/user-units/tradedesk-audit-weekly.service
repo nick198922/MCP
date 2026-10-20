@@ -1,0 +1,8 @@
+[Unit]
+Description=tradedesk: weekly project audit (Fable 5.1, xhigh)
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /home/tradedesk/tradedesk-mcp/scripts/agents_audit.sh
+TimeoutStartSec=5h
+NoNewPrivileges=true

@@ -38,3 +38,26 @@ def test_render_names_the_video_and_kind_of_transcript():
 def test_main_rejects_a_non_youtube_link(capsys):
     assert yt.main(["https://example.com"]) == 1
     assert "not a YouTube link" in capsys.readouterr().err
+
+
+def test_parse_vtt_drops_rolling_repeats_and_word_tags():
+    vtt = """WEBVTT
+Kind: captions
+Language: ru
+
+00:00:01.000 --> 00:00:03.500 align:start position:0%
+ 
+биткоин<00:00:01.500><c> пробил</c><00:00:02.000><c> уровень</c>
+
+00:00:03.500 --> 00:00:03.510 align:start position:0%
+биткоин пробил уровень
+ 
+
+00:00:03.510 --> 00:00:06.000 align:start position:0%
+биткоин пробил уровень
+восемьдесят&nbsp;тысяч<00:00:04.000><c> и</c>
+
+01:02:03.000 --> 01:02:05.000
+финал
+"""
+    assert yt.parse_vtt(vtt) == [(1.0, "биткоин пробил уровень"), (3.51, "восемьдесят тысяч и"), (3723.0, "финал")]

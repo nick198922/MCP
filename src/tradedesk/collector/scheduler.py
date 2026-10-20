@@ -372,8 +372,10 @@ async def _collect_ohlcv_hist(rt: "Runtime") -> int:
     MAX_BATCHES = 10
     BATCH_SIZE = 500
     for venue, symbol, timeframe in markets:
-        tf_sec = timeframe_seconds(timeframe)
-        if not tf_sec:
+        try:
+            tf_sec = timeframe_seconds(timeframe)
+        except ValueError:  # one bad entry in TRADEDESK_COLLECT_OHLCV_HIST_MARKETS must not fail the whole job
+            log.warning("ohlcv_hist: skipping %s:%s, unknown timeframe %r", venue, symbol, timeframe)
             continue
         step_ms = tf_sec * 1000
         last = await rt.store.ohlcv_last_ts(venue, symbol, timeframe)

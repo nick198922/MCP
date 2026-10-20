@@ -43,12 +43,16 @@ def register(server: MCPServer, rt: Runtime) -> None:
         include_curve: bool = False,
     ) -> dict[str, Any]:
         b = Builder()
+        try:
+            tf_sec = timeframe_seconds(timeframe)
+        except ValueError as e:  # a tool never raises: an unknown timeframe is reported, not thrown
+            b.miss("timeframe", "tradedesk", "config", str(e))
+            return b.build(None, ok=False)
         bars = await b.guard(f"ohlcv:{exchange}", f"ccxt:{exchange}", rt.exchanges.ohlcv(exchange, symbol, timeframe, limit))
         if not bars or len(bars) < max(lookback + 5, 50):
             b.miss("ohlcv", f"ccxt:{exchange}", "data_unavailable", f"only {0 if not bars else len(bars)} bars available")
             return b.build(None, ok=False)
         positions = signals_momentum(bars, lookback=lookback, threshold_pct=threshold_pct)
-        tf_sec = timeframe_seconds(timeframe) or 3600
         bars_per_year = (365 * 24 * 3600) / tf_sec
         res = run_backtest(
             bars,

@@ -1,0 +1,1 @@
+- Тижневий аудит проєкту: щовівторка о 20:01 (Київ) окрема сесія Claude на Fable 5.1 з effort xhigh перевіряє архітектуру, код, документацію, агентів і безпеку; звіт — PR `agent/*-audit-weekly` і Telegram (`scripts/agents_audit.sh`, `.claude/audit.md`, таймер `tradedesk-audit-weekly`).

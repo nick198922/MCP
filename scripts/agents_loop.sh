@@ -1,6 +1,9 @@
 #!/bin/bash
 # Continuous agent pipeline: one step at a time (scripts/nightly_agents.sh), with three brakes:
 #  - plan usage: if the 5-hour or 7-day utilization is at or above TRADEDESK_AGENTS_MAX_USAGE (%), sleep until it resets
+#  - weekly pace: the agents spend the week evenly, (100 - TRADEDESK_AGENTS_OWNER_RESERVE) % over 7 days from the
+#    reset (about 1/7 a day), the rest kept for the owner's sessions; ahead of that schedule they sleep until it
+#    catches up
 #  - review backlog: if TRADEDESK_AGENTS_MAX_OPEN agent branches wait for the owner, sleep and check again
 #    (the agents' own work in progress is continued anyway: its branch does not wait for the owner; nor do the
 #    doctor's fixes)
@@ -23,6 +26,8 @@ LOG_DIR="${TRADEDESK_AGENTS_LOG_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/trade
 MAX_USAGE="${TRADEDESK_AGENTS_MAX_USAGE:-97}"
 OWNER_ONLY_AT="${TRADEDESK_AGENTS_OWNER_ONLY_AT:-80}" # weekly %: from here only the owner's cards (Пріоритет: власник)
 WAIT_BUDGET=3600
+RESERVE="${TRADEDESK_AGENTS_OWNER_RESERVE:-15}" # weekly % never planned for the agents
+PACE_SLACK="${TRADEDESK_AGENTS_PACE_SLACK:-3}"  # weekly % the agents may run ahead of the even schedule
 MAX_OPEN="${TRADEDESK_AGENTS_MAX_OPEN:-2}"
 WAIT_REVIEW="${TRADEDESK_AGENTS_REVIEW_WAIT_SECONDS:-1800}"
 WAIT_IDLE="${TRADEDESK_AGENTS_IDLE_WAIT_SECONDS:-7200}"
@@ -70,6 +75,24 @@ usage_wait() {
          r: (.value.resets_at | sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601)} ]
     | if length == 0 then empty
       else (max_by(.r)) as $m | "\(($m.r - now | floor) + 300) \($m.k)=\($m.u)%"
+      end' <<<"$1" 2>/dev/null || true
+}
+
+# Prints "<seconds> <used>% <planned>%" when the weekly usage runs ahead of the even schedule, nothing otherwise or
+# when unknown: planned = (100 - RESERVE) * (share of the week since the reset) + PACE_SLACK; <seconds> is when the
+# schedule reaches the usage (past the reset: 5 minutes after it).
+pace_wait() {
+  jq -r --argjson res "$RESERVE" --argjson slack "$PACE_SLACK" '
+    .seven_day as $w
+    | ($w.utilization // empty) as $u
+    | ($w.resets_at | sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601) as $r
+    | 604800 as $week
+    | ([[1 - ($r - now) / $week, 0] | max, 1] | min) as $f
+    | ((100 - $res) * $f + $slack) as $plan
+    | if $u <= $plan then empty
+      else (($u - $slack) / (100 - $res)) as $need
+        | (if $need >= 1 then $r - now + 300 else ($need - $f) * $week + 60 end | floor) as $s
+        | "\($s) \($u)% \($plan | floor)%"
       end' <<<"$1" 2>/dev/null || true
 }
 
@@ -215,6 +238,19 @@ while true; do
     log "waiting ${secs}s for the usage limit to reset: ${w#* }"
     loop_state "пауза: ліміт Claude (${w#* }), продовжать о $(at "$secs")"
     announce "usage:${w#* }" "⏸ **Агенти на паузі:** використано ${w#* } ліміту плану. Продовжать приблизно о $(at "$secs")." --silent
+    sleep "$secs"
+    continue
+  fi
+  p="$(pace_wait "$(usage_json)")"
+  if [[ -n "$p" ]]; then
+    secs="${p%% *}"
+    read -r used plan <<<"${p#* }"
+    resume="$(at "$secs")"
+    # Sleep at most an hour at a time: the owner's own sessions move the figures, and a new script version takes over.
+    ((secs > 3600)) && secs=3600
+    log "waiting ${secs}s: weekly usage ${used} ahead of the even schedule ${plan}"
+    loop_state "пауза за графіком: тиждень ${used}, за планом ${plan}; продовжать приблизно о ${resume}"
+    announce "pace" "⏸ **Агенти на паузі за графіком ліміту:** тиждень ${used}, за рівномірним планом ${plan} (${RESERVE}% тримаю для вас). Продовжать приблизно о ${resume}." --silent
     sleep "$secs"
     continue
   fi

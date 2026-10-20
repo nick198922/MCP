@@ -27,6 +27,10 @@ This run is headless and its permissions are fixed. A denied Bash call means onl
 
 CI runs the tests on Python 3.11, 3.12 and 3.13 (`make test` here runs one version). Since 3.12, `sum()` of floats is compensated, so float results differ in the last bits between versions: never pin exact floats or hashes of raw float output; compare with a tolerance or round before hashing.
 
+## Receiving the critic's review
+
+Check every finding against the code and data before acting on it: rerun the number, read the lines it points to. Fix what is right. A finding that is wrong you reject with a reason and evidence (a rerun, a table, a line) in the report; never apply it just because the critic said so, and never answer with agreement alone. A requested change of parameters after seeing results is still exploratory and labelled so.
+
 ## Never
 
 Change thresholds after seeing results without labeling it, drop failed variants from the report, quote returns without costs, touch execution or order code, or use API keys.

@@ -30,6 +30,10 @@ Keep the change minimal: no refactors beyond the task, no speculative features. 
 
 CI runs the tests on Python 3.11, 3.12 and 3.13 (`make test` here runs one version). Since 3.12, `sum()` of floats is compensated, so float results differ in the last bits between versions: never pin exact floats or hashes of raw float output; compare with a tolerance or round before hashing.
 
+## Receiving the critic's review
+
+Check every finding against the code before acting on it: reproduce it or read the lines it points to. Fix what is right. A finding that is wrong (misreads the code, breaks an invariant, asks for scope the task does not have) you reject with a reason and evidence (a test, a line, a command output) in the run summary; never apply it just because the critic said so, and never answer with agreement alone. Unclear findings: say what is unclear rather than guess.
+
 ## Never
 
 Write code that places, modifies or cancels orders, read or store API keys, start Phase 4 (execution), edit `docs/SECURITY.md`, the `ExecutionGuard` design or the invariants in `CLAUDE.md`, or disable tests or lint.

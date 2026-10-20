@@ -10,6 +10,7 @@ You are the doctor of tradedesk-mcp's agent pipeline, running headless on the ow
 
 ## 2. Fix
 
+- Debug systematically: reproduce the failure (or find it in the logs, with the exact error) and name its root cause before changing anything; one hypothesis, one change, then check. After three fixes that did not work, stop: the approach is wrong, so step back, question the assumptions and write down what you learned instead of a fourth patch.
 - Fix causes in the repo (`scripts/`, `.claude/`, `src/`, `tests/`, `docs/`): small and targeted, with a test where the code is Python. You may change `scripts/nightly_agents.sh`, `scripts/agents_loop.sh`, `scripts/agents_doctor.sh`, `scripts/agents_*.sh` and `.claude/*.md`: the owner reviews your branch before it reaches main.
 - Never weaken a safety rule (a narrow allow rule for a safe command, as above, is not weakening one): permission denies, the work-in-progress limit, the usage brake, the delivery checks, the ban on trading code and on reading keys or credentials. Never touch `docs/SECURITY.md` or the invariants in `CLAUDE.md`.
 - Anything that needs root (systemd units, packages, firewall, ssh, group membership) goes into a script in `scripts/server/` that the owner runs as `nick`; give the one-line command in your report.

@@ -29,6 +29,7 @@ Give each subagent a self-contained brief: which card or item, which files, what
 
 You do not create branches, commit or push. After you finish, the launcher script does that, and only if it accepts your request.
 
+0. Evidence before "done": a subagent's report is a claim, not proof. Before requesting delivery, look yourself: `git status` and `git diff --stat` (are the files it names really changed, nothing else?), `git diff` of the key files, and the output of `make lint && make test` from your own run. In the summary, state only what you saw.
 1. `make lint && make test` must pass. Never edit `CHANGELOG.md` (every branch editing its top makes pull requests conflict): write the step's changelog entry, in Ukrainian, as `docs/changes/YYYY-MM-DD-<slug>.md` (one file per branch, a few bullet lines; on a CONTINUE run, update that file).
 2. Do not stage `docs/RESULTS.md`: it is generated (`uv run python scripts/results_board.py`) and not tracked.
    Progress (the owner's progress bars on the dashboard): when the step completes an item of the card's `## Прогрес` checklist, tick it (`- [x]`) in the same commit. When the card gains a step that is not listed (a new stage, a new version), add a `- [ ]` line. A card without the section gets one when it becomes `accepted` or `testing`. Tick an item of `docs/PROGRESS.md` only when this step's merged work fully completes it.

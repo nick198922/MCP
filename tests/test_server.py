@@ -39,6 +39,7 @@ EXPECTED_TOOLS = {
     "sentiment_fear_greed",
     "dex_pairs",
     "chain_metrics",
+    "pendle_expiry_calendar",
     "pendle_fixed_yields",
     "pendle_market",
     "pendle_yield_curve",

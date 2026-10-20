@@ -5,7 +5,7 @@ from typing import Annotated, Any, Literal
 from mcp.server.mcpserver import MCPServer
 from pydantic import Field
 
-from ..analytics.pendle import ADDR_RE, build_yield_curve, pt_price_to_apy, scan_fixed_yields, summarise_all
+from ..analytics.pendle import ADDR_RE, build_yield_curve, expiry_calendar, pt_price_to_apy, scan_fixed_yields, summarise_all
 from ..core.envelope import Builder
 from ..runtime import Runtime
 from ._util import READ_ONLY
@@ -178,5 +178,40 @@ def register(server: MCPServer, rt: Runtime) -> None:
             data["pt_price_input"] = pt_price
             if pt_price >= 1:
                 b.warn("pt_price >= 1 means a negative fixed yield (PT above its redemption value).")
+        b.warn(_CAVEATS)
+        return b.build(data)
+
+    @server.tool(
+        annotations=READ_ONLY,
+        description=(
+            "Calendar of upcoming Pendle PT expiries (all chains): active markets expiring within `days_ahead`, "
+            "grouped by expiry date (UTC), soonest first. Each date has the summed pool liquidity and TVL in USD "
+            "(unknown values count as 0, counted in `unknown_liquidity`) and its markets, most liquid first, with "
+            "implied and underlying APY (decimals, 0.05 = 5 %). Use it to see when large fixed-yield positions mature "
+            "and capital may rotate (e.g. sUSDe/USDe expiries vs perp funding). Liquidity at expiry is a snapshot "
+            "now, not what will mature; TVL includes positions that may exit earlier. " + _CAVEATS
+        ),
+    )
+    async def pendle_expiry_calendar(
+        days_ahead: Annotated[float, Field(gt=0, le=3650, description="Look this many days ahead.")] = 90.0,
+        asset: Annotated[
+            str | None, Field(max_length=60, description="Optional name filter, case-insensitive substring, e.g. 'USDe'.")
+        ] = None,
+        min_liquidity_usd: Annotated[float, Field(ge=0, description="Drop markets with pool liquidity below this (USD).")] = 0.0,
+        chain_ids: Annotated[list[int] | None, Field(description="Optional EVM chain ids, e.g. [1, 42161, 8453].")] = None,
+    ) -> dict[str, Any]:
+        b = Builder()
+        rows = await b.guard("markets", "pendle", rt.pendle.markets())
+        if rows is None:
+            return b.build(None, ok=False)
+        data = expiry_calendar(rows, rt.now(), days_ahead=days_ahead, asset=asset, min_liquidity_usd=min_liquidity_usd, chain_ids=chain_ids)
+        if data["markets_total"] == 0:
+            b.miss("markets", "pendle", "data_unavailable", "no usable markets in the response")
+            return b.build(None, ok=False)
+        if data["markets_skipped"]:
+            b.warn(f"{data['markets_skipped']} malformed market entries were skipped.")
+        if data["markets_matched"] == 0:
+            b.warn("No market expires in the window with these filters; widen days_ahead or drop the filters.")
+        b.warn("Liquidity and TVL are today's snapshot, not the amount that will mature on each date.")
         b.warn(_CAVEATS)
         return b.build(data)

@@ -71,7 +71,7 @@ DOUBLETOP: **74 інструменти** (66 від 17 бекендів + 8 вл
 
 Премія за волатильність: `deribit_vrp` (DVOL проти реалізованої, IV rank без сховища, хеджований продаж стреддла по рівнях DVOL) + бектест `scripts/verify_vrp.py`.
 
-Funding carry: `funding_spread_scan` (крос-біржовий спред для перп-перп з прапорцями ризику), `funding_carry_scan` (trailing APR з фактичних виплат, пороги, окупність комісій, наявність спота, фільтр TradFi-перпів) + бектест cash-and-carry (`scripts/verify_funding_carry.py`).
+Funding carry: `funding_spread_scan` (крос-біржовий спред для перп-перп з прапорцями ризику; Hyperliquid опційно, kPEPE зіставляється з 1000PEPE за множником), `funding_carry_scan` (trailing APR з фактичних виплат, пороги, окупність комісій, наявність спота, фільтр TradFi-перпів) + бектест cash-and-carry (`scripts/verify_funding_carry.py`).
 
 Паперова перевірка carry перп-перп: `carry_paper_open` / `carry_paper_status` / `carry_paper_close` (пара ніг на двох біржах у локальній SQLite, облік як у бектесті `simulate_perp_spread_portfolio`; закриті пари дзеркаляться в `journal` з тегом `pp-paper`). Ордерів немає.
 

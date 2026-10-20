@@ -10,6 +10,7 @@ from pydantic import Field
 
 from ..analytics.carry import carry_snapshot, spread_snapshot
 from ..analytics.derivatives import annualize_funding, basis, parse_interval_hours, summarise_funding_history
+from ..analytics.funding_spread import normalize_asset
 from ..analytics.instruments import expiry_token, parse_future_name
 from ..analytics.orderbook import book_stats, walk_book
 from ..analytics.trades import summarise as summarise_trades
@@ -29,7 +30,8 @@ SPREAD_WARNING = (
     "modelled: per-symbol position limits, venues changing caps / intervals / leverage mid-event, separate margin on "
     "each venue, liquidation fees. Paper-trade first: log entries with journal_add(tags=[...]) and check journal_stats."
 )
-TAKER_FEES = {"binanceusdm": 0.0005, "bybit": 0.00055, "okx": 0.0005}
+TAKER_FEES = {"binanceusdm": 0.0005, "bybit": 0.00055, "okx": 0.0005, "hyperliquid": 0.00045}
+HL_FUNDING_CAP = 0.04  # Hyperliquid caps funding at 4 % per hour
 CARRY_WARNING = (
     "Funding carry is not risk-free: funding can flip negative, the perp premium moves, a pump can liquidate the "
     "short perp unless margin is topped up, and the venue is a counterparty. Backtests (docs/verification/, Binance, "
@@ -134,6 +136,42 @@ async def current_funding(rt: Runtime, b: Builder, venue: str, markets: dict[str
             "cap": float(cap) if cap not in (None, "") else None,
         }
     return out
+
+
+def hl_symbol(coin: str) -> str:
+    """Hyperliquid coin -> the ccxt-style key CEXes use for the same instrument (kPEPE -> 1000PEPE/USDT:USDT)."""
+    asset, mult = normalize_asset(coin, "hyperliquid")
+    return f"{mult if mult > 1 else ''}{asset}/USDT:USDT"
+
+
+async def hl_current_funding(rt: Runtime, b: Builder) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
+    """Hyperliquid current funding keyed like the CEX symbols, plus key -> native HL coin name.
+
+    Funding is hourly: ``apr`` = hourly rate x 8760 (decimal, simple). ``mark`` is in the same unit as the CEX
+    contract (kPEPE quotes 1000 PEPE, like 1000PEPE).
+    """
+    rows = await b.guard("asset_contexts:hyperliquid", "hyperliquid", rt.hyperliquid.asset_contexts())
+    out: dict[str, dict[str, Any]] = {}
+    names: dict[str, str] = {}
+    for x in rows or []:
+        if x.get("funding_1h") is None:
+            continue
+        key = hl_symbol(x["coin"])
+        if key in names:  # two HL names for one instrument: ambiguous, drop both
+            out.pop(key, None)
+            names[key] = ""
+            continue
+        names[key] = x["coin"]
+        out[key] = {
+            "rate": x["funding_1h"],
+            "interval_hours": 1.0,
+            "interval_source": "venue",
+            "apr": x["funding_1h"] * 8760.0,
+            "next_funding_ts": None,
+            "mark": x["mark_px"],
+            "cap": HL_FUNDING_CAP,
+        }
+    return out, {k: v for k, v in names.items() if v}
 
 
 def register(server: MCPServer, rt: Runtime) -> None:
@@ -486,15 +524,20 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "`slippage` per leg, entry and exit) and the days of trailing spread needed to pay it; the mark-price gap "
             "between venues (null when a venue's bulk funding has no mark price, e.g. OKX); the 7-day high/low range of the short venue's perp; and flags: price_mismatch (likely different "
             "tokens under one ticker), price_gap, current_spread_reversed, funding_at_cap, short_history, "
-            "interval_mismatch, volatile (7d range >= 33 %). `tradable_now` = above entry with no price or reversal flag. "
+            "interval_mismatch, volatile (7d range >= 33 %). `hyperliquid` is optional (hourly funding, taker fee 0.045 %, cap 4 %/h; "
+            "kPEPE-style names are matched to 1000PEPE-style CEX tickers by multiplier, other naming differences stay unmatched; "
+            "the HL<->Binance 7d carry backtest was unprofitable after costs, so treat it as monitoring, not a signal). `tradable_now` = above entry with no price or reversal flag. "
             "Without `bases`, the `candidates` crypto perps listed on at least two venues with the widest current spread "
             "are scanned. Rates and APRs are decimals on notional. See `warnings` before acting."
         ),
     )
     async def funding_spread_scan(
         venues: Annotated[
-            list[Literal["binanceusdm", "bybit", "okx"]] | None,
-            Field(description="Two or three ccxt perp venues; default binanceusdm and bybit.", max_length=3),
+            list[Literal["binanceusdm", "bybit", "okx", "hyperliquid"]] | None,
+            Field(
+                description="Two to four perp venues (ccxt + hyperliquid); default binanceusdm and bybit.",
+                max_length=4,
+            ),
         ] = None,
         bases: Annotated[
             list[str] | None,
@@ -521,7 +564,11 @@ def register(server: MCPServer, rt: Runtime) -> None:
         markets: dict[str, dict[str, Any]] = {}
         current: dict[str, dict[str, dict[str, Any]]] = {}
         tradfi: set[str] = set()
+        hl_names: dict[str, str] = {}
         for v in vs:
+            if v == "hyperliquid":
+                current[v], hl_names = await hl_current_funding(rt, b)
+                continue
             markets[v] = await b.guard(f"perp_markets:{v}", f"ccxt:{v}", rt.exchanges.markets(v)) or {}
             current[v] = await _current_funding(b, v, markets[v])
             for m, x in markets[v].items():
@@ -548,15 +595,29 @@ def register(server: MCPServer, rt: Runtime) -> None:
             cur = current[v].get(sym)
             if not bases and cur is None:
                 return None
-            async with sem:
-                got = await b.guard(
-                    f"funding_history:{v}:{sym}", f"ccxt:{v}", rt.exchanges.funding_rate_history_range(v, sym, since_ms, now_ms)
-                )
-            entries = [
-                {"ts_ms": int(x["timestamp"]), "rate": float(x["fundingRate"])}
-                for x in (got["rows"] if got else [])
-                if x.get("fundingRate") is not None and x.get("timestamp")
-            ]
+            if v == "hyperliquid":
+                coin = hl_names.get(sym)
+                if coin is None:
+                    return None
+                async with sem:
+                    got = await b.guard(
+                        f"funding_history:{v}:{sym}", "hyperliquid", rt.hyperliquid.funding_history_range(coin, since_ms, now_ms)
+                    )
+                entries = [
+                    {"ts_ms": int(x["time"]), "rate": float(x["fundingRate"])}
+                    for x in (got["rows"] if got else [])
+                    if x.get("fundingRate") is not None and x.get("time")
+                ]
+            else:
+                async with sem:
+                    got = await b.guard(
+                        f"funding_history:{v}:{sym}", f"ccxt:{v}", rt.exchanges.funding_rate_history_range(v, sym, since_ms, now_ms)
+                    )
+                entries = [
+                    {"ts_ms": int(x["timestamp"]), "rate": float(x["fundingRate"])}
+                    for x in (got["rows"] if got else [])
+                    if x.get("fundingRate") is not None and x.get("timestamp")
+                ]
             if not entries and cur is None:
                 return None
             cur = cur or {}
@@ -586,11 +647,20 @@ def register(server: MCPServer, rt: Runtime) -> None:
             if pair is None:
                 return None
             async with sem:
-                bars = await b.guard(
-                    f"ohlcv:{pair['short_venue']}:{sym}",
-                    f"ccxt:{pair['short_venue']}",
-                    rt.exchanges.ohlcv(pair["short_venue"], sym, "4h", 42),
-                )
+                if pair["short_venue"] == "hyperliquid":
+                    raw = await b.guard(
+                        f"ohlcv:hyperliquid:{sym}",
+                        "hyperliquid",
+                        rt.hyperliquid.candles(hl_names.get(sym, ""), "4h", now_ms - 42 * 4 * 3_600_000, now_ms),
+                    )
+                    # HL candles are dicts (t, o, h, l, c): reshape to ccxt [ts, o, h, l, c]
+                    bars = [[x["t"], x["o"], x["h"], x["l"], x["c"]] for x in raw or [] if isinstance(x, dict) and "h" in x and "l" in x]
+                else:
+                    bars = await b.guard(
+                        f"ohlcv:{pair['short_venue']}:{sym}",
+                        f"ccxt:{pair['short_venue']}",
+                        rt.exchanges.ohlcv(pair["short_venue"], sym, "4h", 42),
+                    )
             ok_bars = [x for x in (bars or []) if isinstance(x, (list, tuple)) and len(x) >= 5]
             range_7d = max(float(x[2]) for x in ok_bars) / min(float(x[3]) for x in ok_bars) - 1.0 if ok_bars else None
             flags = list(pair["flags"])

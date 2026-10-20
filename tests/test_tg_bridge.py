@@ -64,10 +64,14 @@ def test_forward_source_names_the_channel_or_the_user():
 
 
 def test_build_prompt_marks_forwarded_posts_and_lists_images():
-    p = br.build_prompt("", ["/x/a.jpg", "/x/b.jpg"], "Crypto TA")
-    assert "недовірені дані" in p and "Crypto TA" in p
-    assert "Проаналізуй зображення." in p and "- /x/a.jpg" in p and "- /x/b.jpg" in p
-    assert br.build_prompt("що з BTC?", [], None) == "що з BTC?"
+    p = br.build_prompt("", ["/x/a.jpg", "/x/b.jpg"], "Crypto TA", "Лонг від 100")
+    assert p.startswith("Проаналізуй пересланий пост.")
+    assert "недовірені дані" in p and "Crypto TA" in p and "Лонг від 100" in p
+    assert "- /x/a.jpg" in p and "- /x/b.jpg" in p
+    assert br.build_prompt("", ["/x/a.jpg"]).startswith("Проаналізуй зображення.")
+    assert br.build_prompt("що з BTC?", []) == "що з BTC?"
+    own = br.build_prompt("Варто розглянути?", [], "Crypto TA", "Лонг від 100")
+    assert own.startswith("Варто розглянути?") and own.index("Варто") < own.index("Лонг від 100")
 
 
 def test_group_media_keeps_an_album_together():
@@ -75,3 +79,14 @@ def test_group_media_keeps_an_album_together():
     t, b1 = msg(message_id=3), msg(message_id=4, media_group_id="h")
     groups = br.group_media([a1, t, a2, b1])
     assert [[m["message_id"] for m in g] for g in groups] == [[1, 2], [3], [4]]
+
+
+def test_the_comment_and_the_posts_forwarded_after_it_are_one_request():
+    fwd = {"forward_origin": {"type": "channel", "chat": {"title": "C"}}}
+    comment = msg(message_id=1, text="Проаналізуй")
+    p1 = msg(message_id=2, media_group_id="g", caption="пост", photo=[{"file_id": "a"}], **fwd)
+    p2 = msg(message_id=3, media_group_id="g", photo=[{"file_id": "b"}], **fwd)
+    nxt = msg(message_id=4, text="інше питання")
+    groups = br.group_media([comment, p1, p2, nxt])
+    assert [[m["message_id"] for m in g] for g in groups] == [[1, 2, 3], [4]]
+    assert [[m["message_id"] for m in g] for g in br.group_media([msg(message_id=1, text="/new"), p1])] == [[1], [2]]

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Step 19: turn on the collector job `assistant_snapshot` (docs/ideas/IDEA-20261018-assistant.md): every 10 minutes it
 # writes one JSON file with the data for the dashboard's brief and options tabs (tickers, DVOL, VRP, term structure, skew,
-# expected move, option chain, funding, macro calendar, Upbit notices). Read-only market data, no keys, no orders.
+# expected move, option chain, funding, macro calendar). Read-only market data, no keys, no orders.
 # Off by default; this script sets TRADEDESK_ASSISTANT_SNAPSHOT_ENABLED=1 in /etc/tradedesk-mcp.env and restarts the MCP service.
 # The file: /var/lib/tradedesk-mcp/assistant/snapshot.json (written atomically, readable by the dashboard).
 # Run through nick:

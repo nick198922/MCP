@@ -1,0 +1,2 @@
+- Корейські біржі (Upbit, Bithumb) прибрано з проєкту за рішенням власника (19.10): видалено провайдер `upbit`, інструмент `upbit_notices`, `analytics/upbit_risk.py`, фікстуру й тести, Upbit у `Runtime`, секцію `upbit` знімка асистента й панелі/прототипу, крок «ризик монети» в промпті `pre_trade_checklist`.
+- Upbit-функції з `analytics/news_events.py` винесено в `scripts/_upbit_0c_helpers.py` лише для архівного `scripts/verify_news_events_0c.py` (історія звіту 0c); у пакеті їх більше нема.

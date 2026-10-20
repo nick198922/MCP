@@ -1,0 +1,9 @@
+[Unit]
+Description=tradedesk-audit-weekly (Tue 20:01 Europe/Kyiv)
+
+[Timer]
+OnCalendar=Tue *-*-* 20:01:00 Europe/Kyiv
+Persistent=true
+
+[Install]
+WantedBy=timers.target

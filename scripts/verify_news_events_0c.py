@@ -1,5 +1,8 @@
 """News events (IDEA-20261017-news-events), stage 0c: Korean exchanges (Upbit; Bithumb if a public feed exists).
 
+ARCHIVED (2026-10-19): the Upbit provider, tool and analytics were removed from the project (owner decision); the
+helpers this script needs are vendored in ``scripts/_upbit_0c_helpers.py``. Kept as history of the 0c report only.
+
 Idea card: docs/ideas/IDEA-20261017-news-events.md (section "Попередня реєстрація 0c").
 Events: Upbit announcements API (category ``trade``, all pages): KRW-market listings, trading warnings
 ("거래 유의 종목 지정"), delistings ("거래지원 종료"). Titles are untrusted text: only matched against fixed patterns.
@@ -46,6 +49,14 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import verify_news_events as v0  # noqa: E402  (stage-0 pipeline: fetchers, cache helpers, formatting)
+from _upbit_0c_helpers import (  # noqa: E402  (vendored: the Upbit analytics were removed from the package)
+    btc_cross_ratio,
+    classify_upbit,
+    upbit_batch_size,
+    upbit_body_is_reminder,
+    upbit_body_tickers,
+    upbit_time_ms,
+)
 
 from tradedesk.analytics.news_events import (  # noqa: E402
     DAY_MS,
@@ -54,8 +65,6 @@ from tradedesk.analytics.news_events import (  # noqa: E402
     MULTIPLIERS,
     Bars,
     Event,
-    btc_cross_ratio,
-    classify_upbit,
     cluster_bootstrap,
     cluster_sd,
     cochran_q,
@@ -74,10 +83,6 @@ from tradedesk.analytics.news_events import (  # noqa: E402
     short_trade,
     taker_buy_fill,
     taker_sell_exit,
-    upbit_batch_size,
-    upbit_body_is_reminder,
-    upbit_body_tickers,
-    upbit_time_ms,
     vwap_fill,
 )
 from tradedesk.core.errors import ProviderError  # noqa: E402

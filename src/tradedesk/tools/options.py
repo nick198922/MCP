@@ -100,6 +100,13 @@ def register(server: MCPServer, rt: Runtime) -> None:
             float | None, Field(ge=0, description="Drop strikes with bid/ask spread above this percent of mid (native units).")
         ] = None,
         thin_oi_threshold: Annotated[float, Field(ge=0, description="Wing OI below this flags the expiry's 25Δ/10Δ wing as thin.")] = 1.0,
+        liquidity_weighted: Annotated[
+            bool,
+            Field(
+                description="Replace the raw mark-IV interpolation with a quadratic least-squares smile fit in log-moneyness, "
+                "weighted by OI and bid/ask spread (bounded weights). Smooths noisy thin wings; default false = exact mark IVs."
+            ),
+        ] = False,
     ) -> dict[str, Any]:
         b = Builder()
         rows = await _chain(rt, b, currency)
@@ -120,7 +127,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 "oi_puts": r(pc["oi_puts"], 1),
                 "pc_oi": r(pc["pc_oi"], 3),
             }
-            sm = build_smile(rs, min_oi=min_oi, max_spread_pct=max_spread_pct)
+            sm = build_smile(rs, min_oi=min_oi, max_spread_pct=max_spread_pct, liquidity_weighted=liquidity_weighted)
             if sm is None:
                 item["note"] = "fewer than 3 priced strikes after filter"
             else:

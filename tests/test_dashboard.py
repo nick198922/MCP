@@ -139,6 +139,7 @@ def test_render_has_all_sections_and_escapes():
         assert text in page
     assert "<script>" not in page and "&lt;script&gt;" in page
     assert "http-equiv='refresh'" in page and 'class="bar"' in page
+    assert "href='/brief'" in page  # the «Бриф» tab
 
 
 def test_read_usage_prefers_the_agents_cache_and_throttles_own_calls(tmp_path, monkeypatch):
@@ -180,3 +181,148 @@ def test_delivered_pace_counts_recent_deliveries_only():
     now = datetime(2026, 10, 17, 12, 0).timestamp()
     lines = ["2026-10-16_100000\tdelivered\tx", "2026-10-15_100000\tcontinues\ty", "2026-10-01_100000\tdelivered\tz"]
     assert db.delivered_pace(lines, now, days=7) == 1 / 7
+
+
+# ---------------------------------------------------------------- «Бриф» tab (assistant snapshot)
+
+SNAP_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "assistant_snapshot_2026-10-20.json"
+
+
+def _snap() -> tuple[dict, float]:
+    snap, err = db.load_snapshot(SNAP_FIXTURE)
+    assert err is None
+    return snap, db.parse_utc(snap["asof_utc"]).timestamp()
+
+
+def test_brief_renders_the_real_snapshot():
+    snap, asof = _snap()
+    page = db.render_brief(snap, None, asof + 300)
+    for text in (
+        "Головне сьогодні",
+        "BTC за 120 днів і що закладають опціони",
+        "Сценарії на 27.11",
+        "Волатильність",
+        "Події · час Київ",
+        "Funding · річних",
+        "Страх і жадібність",
+        "16-й перцентиль за рік",
+        "5 хв тому",
+        "ризик-нейтральні",
+        "vrp-real-marks",
+        "Не інвестиційна порада",
+        "Oct 2026 FOMC",
+        "Hyperliquid",
+        "беззбиток стреддлу до 23.10",
+        "aria-current=page>Бриф",
+    ):
+        assert text in page, text
+    assert page.count("<svg") == 2 and "старший за 30 хв" not in page and "Блок не вдалося" not in page
+    if db.KYIV is not None:
+        assert "28.10 20:00" in page  # 18:00 UTC FOMC in Kyiv summer time
+    assert "<script" not in page and "googleapis" not in page  # no JS needed, no CDN
+
+
+def test_range_probabilities_match_the_analytics_reference():
+    from tradedesk.analytics.options import Smile
+    from tradedesk.analytics.probability import prob_above
+
+    snap, _ = _snap()
+    F, T, pts = db.chain_smile(snap["sections"]["chain"]["data"])
+    smile = Smile(F, T, [k for k, _ in pts], [v for _, v in pts])
+    for K in [60000.0, 70000.0, 80000.0, F, 90000.0, 110000.0]:
+        assert db.prob_above(pts, F, T, K) == pytest.approx(prob_above(smile, K), abs=1e-9)
+    cuts = db.scenario_cuts(F)
+    assert cuts == [70000.0, 75000.0, 80000.0, 85000.0, 90000.0, 95000.0]
+    bands = db.range_probabilities(pts, F, T, cuts)
+    assert len(bands) == 7 and all(b["p"] >= 0 for b in bands)
+    assert sum(b["p"] for b in bands) == pytest.approx(1.0)
+    assert bands[3]["lo"] == 80000.0 and bands[3]["p"] == max(b["p"] for b in bands)  # the forward's band is the likeliest
+
+
+def test_brief_missing_and_corrupt_snapshot(tmp_path, monkeypatch):
+    snap, err = db.load_snapshot(tmp_path / "none.json")
+    assert (snap, err) == (None, "missing")
+    monkeypatch.setattr(db, "SNAPSHOT_PATH", tmp_path / "none.json")
+    page = db.brief_page(now=1_800_000_000.0)
+    assert "Знімка асистента ще немає" in page and "assistant_snapshot" in page and "Не інвестиційна порада" in page
+    for raw in ("{bad", "[1, 2]", '{"sections": []}', ""):
+        p = tmp_path / "snap.json"
+        p.write_text(raw, encoding="utf-8")
+        assert db.load_snapshot(p) == (None, "corrupt")
+        monkeypatch.setattr(db, "SNAPSHOT_PATH", p)
+        assert "пошкоджений" in db.brief_page(now=1_800_000_000.0)
+
+
+def test_brief_warns_on_stale_snapshot_and_carried_sections():
+    snap, asof = _snap()
+    snap["sections"]["chain"]["stale"] = True
+    snap["sections"]["chain"]["asof_utc"] = "2026-10-20T18:00:00Z"
+    snap["stale"] = ["chain"]
+    snap["sections"]["ohlc"] = {
+        "ok": False,
+        "data": None,
+        "missing": [{"reason": "error", "detail": "market_ohlcv: timeout"}],
+        "warnings": [],
+    }
+    snap["missing"] = ["ohlc"]
+    page = db.render_brief(snap, None, asof + 2 * 3600)
+    assert "старший за 30 хв" in page and "2 год тому" in page
+    assert "з попереднього знімка: ланцюжок опціонів" in page and "без даних: свічки BTC" in page
+    assert "Свічок BTC у знімку немає" in page and "market_ohlcv: timeout" in page
+    assert "Сценарії на 27.11" in page and "Блок не вдалося" not in page  # the carried chain still renders
+
+
+def test_brief_escapes_hostile_strings_from_the_snapshot():
+    snap, asof = _snap()
+    s = snap["sections"]
+    evil = "<script>alert(1)</script>"
+    s["events"]["data"]["events"][0]["title"] = evil
+    s["events"]["data"]["next_event"]["title"] = evil
+    s["events"]["warnings"] = ["<img src=x onerror=alert(2)>"]
+    s["tickers"]["data"]["tickers"][0]["symbol"] = "<img src=x onerror=alert(3)>/USDT:USDT"
+    s["funding_btc"]["data"]["venues"][0]["venue"] = "<b>evil</b>"
+    s["skew"]["data"]["expiries"][2]["expiry"] = "<i>x</i>"
+    s["vrp"]["warnings"] = [evil]
+    s["term"]["data"]["shape"] = "<svg onload=alert(4)>"
+    s["fng"]["data"]["latest"]["zone"] = "<u>z</u>"
+    s["ohlc"] = {"ok": False, "data": None, "missing": [{"detail": "<iframe src=//x.example>"}], "warnings": []}
+    snap["missing"] = ["<svg onload=alert(5)>"]
+    snap["schema"] = "<b>2</b>"
+    page = db.render_brief(snap, None, asof + 60)
+    for raw in ("<script", "<img", "<iframe", "<b>evil", "<i>x", "<u>z", "<svg onload", "<b>2"):
+        assert raw not in page, raw
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in page and "&lt;iframe" in page and "&lt;b&gt;evil" in page
+
+
+def test_brief_survives_malformed_sections():
+    snap, asof = _snap()
+    s = snap["sections"]
+    s["tickers"]["data"] = {"tickers": "x"}
+    s["ohlc"]["data"]["rows"] = [[1, "a"], None, "z"]
+    s["chain"]["data"]["strikes"] = [None, 1, {"strike": "x"}, {"strike": 80000.0, "put": {"iv": float("nan")}}]
+    s["term"]["data"]["expiries"] = [{"days": "a"}, 3]
+    s["events"]["data"] = {"events": [1, None, {"title": 5}], "next_event": "soon"}
+    s["funding_btc"]["data"]["venues"] = 5
+    s["vrp"]["data"]["current"] = []
+    s["fng"]["data"]["latest"] = "x"
+    s["skew"] = "broken"
+    snap["expiries"] = None
+    snap["asof_utc"] = "yesterday"
+    page = db.render_brief(snap, None, asof)
+    assert "Час знімка невідомий" in page
+    assert "Свічок BTC у знімку немає" in page and "Ланцюжка опціонів у знімку немає" in page
+    assert "Funding · річних" in page and "Hyperliquid" in page  # ETH funding is intact
+    assert "Сценарії на місячну експірацію" in page  # no expiry label without its data
+
+
+def test_brief_no_expiry_label_when_the_chain_was_dropped():
+    snap, asof = _snap()
+    snap["sections"]["chain"] = {"ok": False, "data": None, "missing": [{"detail": "too old"}], "warnings": []}
+    page = db.render_brief(snap, None, asof)  # `expiries.month` still says 27NOV26
+    assert "Сценарії на місячну експірацію" in page and "Сценарії на 27.11" not in page
+
+
+def test_expiry_utc_parses_deribit_tokens():
+    assert db.expiry_utc("27NOV26").isoformat() == "2026-11-27T08:00:00+00:00"
+    assert db.expiry_utc("6NOV26").day == 6
+    assert db.expiry_utc("31FEB26") is None and db.expiry_utc("bad") is None and db.expiry_utc(None) is None

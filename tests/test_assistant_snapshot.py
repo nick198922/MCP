@@ -11,7 +11,6 @@ from tradedesk.analytics.assistant import is_last_friday, pick_expiries
 from tradedesk.collector.assistant_snapshot import collect_assistant_snapshot, snapshot_path, write_atomic
 from tradedesk.collector.scheduler import build_default_scheduler
 from tradedesk.config import Settings
-from tradedesk.core.ratelimit import TokenBucket
 from tradedesk.runtime import Runtime
 
 
@@ -25,7 +24,6 @@ def _rt(state, tmp_path: Path, **kw) -> Runtime:
     )
     rt = Runtime(settings, transports=make_transports(state), exchange_factory=FakeEx)
     rt.now = lambda: NOW
-    rt.upbit.http._limiter = TokenBucket(1000, 100)
     return rt
 
 
@@ -106,7 +104,7 @@ async def test_snapshot_happy_path(state, tmp_path):
     assert snap["expiries"] == {"week": None, "month": "27NOV26"}
     for name in (
         "tickers", "ohlc", "fng", "dvol", "vrp", "term", "skew",
-        "funding_btc", "funding_eth", "events", "upbit", "em_month", "chain",
+        "funding_btc", "funding_eth", "events", "em_month", "chain",
     ):  # fmt: skip
         assert snap["sections"][name]["ok"], name
         assert snap["sections"][name]["asof_utc"] == "2026-10-10T13:07:00Z"

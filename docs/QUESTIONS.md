@@ -16,7 +16,7 @@
 ---
 
 ## Q-20261018-4: news-events 0c — анонси Bithumb з точним часом у фікстуру
-Статус: answered
+Статус: answered (закрито 20.10.2026: корейські біржі прибрано з проєкту, Bithumb не продовжувати)
 Контекст:
 - Етап 0c картки `IDEA-20261017-news-events` (`docs/verification/2026-10-18-news-events-0c.md`) виконано лише на Upbit.
 - Публічного ендпоінта анонсів Bithumb із сервера агентів не знайдено: `api.bithumb.com/v1/notices` і `/v1/notice` відповідають 302 без даних, `feed.bithumb.com` — 403 (захист від ботів), `cafe.bithumb.com` не резолвиться. Тож Bithumb — ◯.

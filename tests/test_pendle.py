@@ -287,3 +287,34 @@ async def test_pendle_tools_survive_bad_rows():
     assert env["ok"] is True and env["data"]["chain_id"] == 143
     env = await call(srv, "pendle_market", market=SUSDE_ETH, chain_id=1)
     assert env["ok"] is False
+
+
+def test_expiry_calendar_groups_by_date_on_live_sample():
+    from tradedesk.analytics.pendle import expiry_calendar, summarise_all
+
+    rows, _ = summarise_all(PENDLE["markets"], NOW)
+    want = [r for r in rows if not r["expired"] and r["days_to_expiry"] is not None and r["days_to_expiry"] <= 60 and r["name"]]
+    out = expiry_calendar(PENDLE["markets"], NOW, days_ahead=60)
+    assert out["markets_matched"] == len(want) > 0
+    days = [g["days_to_expiry"] for g in out["calendar"]]
+    assert days == sorted(days) and all(0 < d <= 60 for d in days)
+    for g in out["calendar"]:
+        assert g["markets_count"] == len(g["markets"])
+        assert g["liquidity_usd"] == pytest.approx(sum(m["liquidity_usd"] or 0 for m in g["markets"]))
+        liq = [m["liquidity_usd"] or 0 for m in g["markets"]]
+        assert liq == sorted(liq, reverse=True)
+        assert all(m["expiry"].startswith(g["date"]) for m in g["markets"])
+    usde = expiry_calendar(PENDLE["markets"], NOW, days_ahead=3650, asset="usde")
+    assert usde["markets_matched"] > 0
+    assert all("usde" in m["name"].lower() for g in usde["calendar"] for m in g["markets"])
+
+
+async def test_pendle_expiry_calendar_happy():
+    env = await call(make_server(), "pendle_expiry_calendar", days_ahead=120, min_liquidity_usd=100_000)
+    assert env["ok"] is True and env["data"]["calendar"]
+    assert env["evidence"][0]["provider"] == "pendle"
+
+
+async def test_pendle_expiry_calendar_provider_failure():
+    env = await call(make_server(lambda req: httpx.Response(503, text="down")), "pendle_expiry_calendar")
+    assert env["ok"] is False and any(m["provider"] == "pendle" for m in env["missing"])

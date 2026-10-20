@@ -13,7 +13,6 @@ import pytest
 
 from tradedesk.analytics.options import black76_price
 from tradedesk.config import Settings
-from tradedesk.core.ratelimit import TokenBucket
 from tradedesk.runtime import Runtime
 from tradedesk.server import build_server
 
@@ -441,19 +440,7 @@ def make_transports(state: State) -> dict:
             return httpx.Response(200, json=body["nextweek"])
         return httpx.Response(404, text="not mocked")
 
-    def upbit(req: httpx.Request) -> httpx.Response:
-        # Real notices (2026-10-18) with an assumed outer wrapper and one synthetic batch notice, see the fixture "_note".
-        with open(Path(__file__).parent / "fixtures" / "upbit_announcements_sample.json") as f:
-            body = json.load(f)
-        if req.url.path == "/api/v1/announcements":
-            return httpx.Response(200, json=body["page2" if req.url.params.get("page") == "2" else "page1"])
-        nid = req.url.path.rsplit("/", 1)[-1]
-        if req.url.path.startswith("/api/v1/announcements/") and nid in body["bodies"]:
-            return httpx.Response(200, json=body["bodies"][nid])
-        return httpx.Response(404, text="not mocked")
-
     return {
-        "upbit": httpx.MockTransport(upbit),
         "forexfactory": httpx.MockTransport(forexfactory),
         "deribit": httpx.MockTransport(deribit),
         "hyperliquid": httpx.MockTransport(hyperliquid),
@@ -769,7 +756,6 @@ def state() -> State:
 def rt(state: State) -> Runtime:
     runtime = Runtime(Settings(http_retries=1, cache_scale=0.0), transports=make_transports(state), exchange_factory=FakeEx)
     runtime.now = lambda: NOW
-    runtime.upbit.http._limiter = TokenBucket(1000, 100)  # the real limit is 1 request / 6 s (Cloudflare)
     return runtime
 
 

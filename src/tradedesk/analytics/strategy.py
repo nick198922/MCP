@@ -62,6 +62,27 @@ def payoff_curve(legs: Iterable[dict[str, Any]], prices: list[float]) -> list[fl
     return pnl
 
 
+def payoff_extremes(legs: list[dict[str, Any]]) -> dict[str, float | None]:
+    """Exact max profit and max loss of the terminal payoff over S in [0, inf).
+
+    The payoff is piecewise linear with kinks at the strikes, so its extremes sit at S = 0, at a strike, or at
+    infinity: beyond the last strike the slope is the net long call (+ linear) size; a positive slope makes the
+    profit unbounded, a negative one the loss. ``None`` = unbounded. Unlike ``summarise`` (max/min on a ±30 %
+    grid), this does not mistake a grid edge for the maximum of a naked leg.
+    """
+    kinks = [0.0] + sorted({float(leg["strike"]) for leg in legs if leg.get("kind") in ("call", "put")})
+    values = [sum(_leg_payoff_at(leg, s) for leg in legs) for s in kinks]
+    slope = 0.0
+    for leg in legs:
+        if leg.get("kind") in ("call", "linear") and float(leg.get("size") or 0.0) > 0:
+            slope += _sign(leg.get("side", "")) * float(leg["size"])
+    eps = 1e-12
+    return {
+        "max_profit": None if slope > eps else max(values),
+        "max_loss": None if slope < -eps else min(values),
+    }
+
+
 def breakevens(prices: list[float], pnl: list[float]) -> list[float]:
     """Linear-interpolated zero crossings of the payoff curve."""
     out: list[float] = []

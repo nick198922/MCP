@@ -326,3 +326,160 @@ def test_expiry_utc_parses_deribit_tokens():
     assert db.expiry_utc("27NOV26").isoformat() == "2026-11-27T08:00:00+00:00"
     assert db.expiry_utc("6NOV26").day == 6
     assert db.expiry_utc("31FEB26") is None and db.expiry_utc("bad") is None and db.expiry_utc(None) is None
+
+
+# ---------------------------------------------------------------- «Опціони» tab (strategy builder on the snapshot chain)
+
+
+def _legs(strat: str, qty: float = 0.1) -> tuple[dict, list[dict]]:
+    snap, _ = _snap()
+    ch = db.option_chain(snap)
+    legs, err = db.option_legs(ch, strat, db.default_strikes(ch, strat), qty)
+    assert err is None
+    return ch, legs
+
+
+def test_options_tab_renders_the_real_snapshot():
+    snap, asof = _snap()
+    page = db.render_options(snap, None, asof + 300, db.parse_options_query(""))
+    for text in (
+        "Конструктор · BTC, експірація 27.11 · 37.5 дн · форвард 83 215",
+        "aria-current=page>Опціони",
+        "value='long_strangle' aria-pressed=true",
+        "value='77000' selected",  # 25Δ put
+        "value='90000' selected",  # 25Δ call
+        "Платиш премію",
+        "$291",  # long 25Δ strangle on 0.1 BTC, as in the card («≈ $291 (2.9 %)»)
+        "$74.1k / $92.9k",
+        "Макс. прибуток",
+        "необмежений",
+        "Ймовірність прибутку",
+        "32 %",
+        "Ризик на угоду: <b class='num'>$100</b>",
+        "більше за ризик у 2.9 раза",
+        "до <b class='num'>0.03 BTC</b>",
+        "ризик-нейтральна",
+        "vrp-real-marks",
+        "Не інвестиційна порада",
+        "5 хв тому",
+        "localStorage",
+        "name='dep' min='100' max='1e+08' step='100' value='10000'",
+        "name='riskp' min='0.1' max='100' step='0.1' value='1'",
+        "name='qty' min='0.01' max='100' step='0.01' value='0.1'",
+    ):
+        assert text in page, text
+    assert page.count("<svg") == 1 and "старший за 30 хв" not in page and "не вдалося" not in page
+    assert "googleapis" not in page and "<script src" not in page  # inline JS only, no CDN
+    assert "href='/options'" in db.render_brief(snap, None, asof)  # the tab is in the shared nav
+
+
+def test_options_numbers_match_the_analytics_reference():
+    from tradedesk.analytics import strategy
+
+    for strat in db.OPT_STRATEGIES:
+        ch, legs = _legs(strat)
+        F, T, iv = ch["F"], ch["T"], ch["iv"]
+        mine, ref = db.payoff_extremes(legs), strategy.payoff_extremes(legs)
+        for key in ("max_profit", "max_loss"):
+            assert (mine[key] is None) == (ref[key] is None) and (ref[key] is None or mine[key] == pytest.approx(ref[key], abs=1e-6))
+        prices = [F * 0.3 + F * 2.2 * i / 20000 for i in range(20001)]
+        pnl = strategy.payoff_curve(legs, prices)
+        assert all(db.payoff(legs, p) == pytest.approx(v, abs=1e-9) for p, v in zip(prices[::500], pnl[::500], strict=True))
+        ref_be = strategy.breakevens(prices, pnl)
+        assert db.payoff_breakevens(legs) == pytest.approx(ref_be, abs=1e-6)
+        ref_pop = strategy.prob_of_profit(legs, prices, pnl, forward=F, days=ch["days"], iv=iv)
+        assert db.prob_of_profit(legs, F, T, iv) == pytest.approx(ref_pop, abs=1e-9)
+    # long + short of the same structure are complementary
+    ch, ls = _legs("long_strangle")
+    F, T, iv = ch["F"], ch["T"], ch["iv"]
+    _, ss = _legs("short_strangle")
+    assert db.prob_of_profit(ls, F, T, iv) + db.prob_of_profit(ss, F, T, iv) == pytest.approx(1.0)
+
+
+def test_options_formulas_against_analytic_references():
+    F, T, iv = 100.0, 30 / 365, 0.5
+    # long straddle at K = F, premium P: breakevens K ± P, PoP = 1 − [Φ(z(K+P)) − Φ(z(K−P))]
+    legs = [
+        {"kind": "call", "side": "long", "size": 1.0, "strike": 100.0, "entry_premium": 4.0},
+        {"kind": "put", "side": "long", "size": 1.0, "strike": 100.0, "entry_premium": 3.0},
+    ]
+    assert db.payoff_breakevens(legs) == pytest.approx([93.0, 107.0])
+    v = iv * T**0.5
+
+    def z(x: float) -> float:
+        return db._ncdf((db.math.log(x / F) + 0.5 * v * v) / v)
+
+    assert db.prob_of_profit(legs, F, T, iv) == pytest.approx(1 - (z(107.0) - z(93.0)), abs=1e-12)
+    assert db.payoff_extremes(legs) == {"max_profit": None, "max_loss": pytest.approx(-7.0)}
+    # iron condor 80/90/110/120 for a 4.5 credit: max profit 4.5, max loss 10 − 4.5, breakevens 85.5 / 114.5
+    condor = [
+        {"kind": "put", "side": "long", "size": 1.0, "strike": 80.0, "entry_premium": 1.0},
+        {"kind": "put", "side": "short", "size": 1.0, "strike": 90.0, "entry_premium": 4.0},
+        {"kind": "call", "side": "short", "size": 1.0, "strike": 110.0, "entry_premium": 2.0},
+        {"kind": "call", "side": "long", "size": 1.0, "strike": 120.0, "entry_premium": 0.5},
+    ]
+    assert db.payoff_extremes(condor) == {"max_profit": pytest.approx(4.5), "max_loss": pytest.approx(-5.5)}
+    assert db.payoff_breakevens(condor) == pytest.approx([85.5, 114.5])
+    assert db.prob_of_profit(condor, F, T, iv) == pytest.approx(z(114.5) - z(85.5), abs=1e-12)
+    # risk budget: $10 000 × 1 % = $100; a $291 loss on 0.1 BTC is 2.9× it, 0.03 BTC fits
+    fit = db.risk_fit(-290.74, 0.1, 10000.0, 1.0)
+    assert fit["budget"] == pytest.approx(100.0) and fit["fits"] is False and fit["ratio"] == pytest.approx(2.9074)
+    assert fit["qmax"] == 0.03 and fit["pct_dep"] == pytest.approx(2.9074)
+    assert db.risk_fit(-50.0, 0.1, 10000.0, 1.0)["fits"] is True and db.risk_fit(-100.0, 0.5, 10000.0, 1.0)["qmax"] == 0.5
+    assert db.risk_fit(None, 0.1, 10000.0, 1.0) == {"budget": 100.0, "unbounded": True}
+
+
+def test_options_strategies_and_query_parameters():
+    snap, asof = _snap()
+    # switching the strategy resets the strikes to its defaults; the condor gets 10Δ wings
+    page = db.render_options(snap, None, asof, db.parse_options_query("s=iron_condor&cur=long_strangle&kput=80000&qty=1"))
+    assert "value='iron_condor' aria-pressed=true" in page and "Захисний пут" in page
+    assert "value='70000' selected" in page and "value='97000' selected" in page and "value='77000' selected" in page
+    assert "Отримуєш премію" in page and "$1 940" in page  # 1 BTC condor credit
+    # a strike change within the same strategy is kept
+    page = db.render_options(snap, None, asof, db.parse_options_query("cur=short_strangle&kput=75000&kcall=92000&dep=50000&riskp=2"))
+    assert "value='75000' selected" in page and "value='92000' selected" in page and "ризик необмежений" in page
+    assert "Ризик на угоду: <b class='num'>$1 000</b>" in page
+    # straddles sit at the strike nearest the forward, the selects are locked
+    page = db.render_options(snap, None, asof, db.parse_options_query("s=short_straddle&kput=60000"))
+    assert "value='83000' selected" in page and " disabled>" in page
+    # a condor with crossed strikes is explained, not raised
+    page = db.render_options(snap, None, asof, db.parse_options_query("cur=iron_condor&kputw=80000&kput=77000"))
+    assert "Кондор: захисний пут &lt; пут" in page and "<svg" not in page
+    # hostile or out-of-range parameters fall back to the defaults
+    p = db.parse_options_query("s=<script>&kput=nan&dep=-5&riskp=1e9&qty=inf&" + "x=1&" * 60)
+    assert p["strat"] == "long_strangle" and p["dep"] == 10000.0 and p["riskp"] == 1.0 and p["qty"] == 0.1 and p["kput"] is None
+    page = db.render_options(snap, None, asof, db.parse_options_query("s=<script>alert(1)</script>"))
+    assert page.count("<script") == 1 and "alert(1)" not in page  # only our own inline script
+
+
+def test_options_missing_snapshot_chain_and_stale(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "SNAPSHOT_PATH", tmp_path / "none.json")
+    page = db.options_page("s=long_straddle", now=1_800_000_000.0)
+    assert "Знімка асистента ще немає" in page and "Не інвестиційна порада" in page and "aria-current=page>Опціони" in page
+    p = tmp_path / "snap.json"
+    p.write_text("{bad", encoding="utf-8")
+    monkeypatch.setattr(db, "SNAPSHOT_PATH", p)
+    assert "пошкоджений" in db.options_page(now=1_800_000_000.0)
+    snap, asof = _snap()
+    snap["sections"]["chain"] = {"ok": False, "data": None, "missing": [{"detail": "deribit_option_chain: timeout"}], "warnings": []}
+    page = db.render_options(snap, None, asof)
+    assert "Ланцюжка опціонів у знімку немає" in page and "deribit_option_chain: timeout" in page
+    snap, asof = _snap()
+    snap["sections"]["chain"]["data"]["strikes"] = [None, 1, {"strike": "x"}, {"strike": 80000.0, "put": {"mark_usd": float("nan")}}]
+    assert "Ланцюжка опціонів у знімку немає" in db.render_options(snap, None, asof)
+    snap, asof = _snap()
+    page = db.render_options(snap, None, asof + 2 * 3600)
+    assert "старший за 30 хв" in page and "2 год тому" in page and "Платиш премію" in page
+
+
+def test_options_escapes_hostile_strings_from_the_snapshot():
+    snap, asof = _snap()
+    snap["sections"]["chain"]["data"]["expiry"] = "<img src=x onerror=alert(1)>"
+    snap["sections"]["chain"]["stale"] = True
+    snap["sections"]["chain"]["asof_utc"] = "<script>alert(2)</script>"
+    snap["missing"] = ["<svg onload=alert(3)>"]
+    page = db.render_options(snap, None, asof)
+    for raw in ("<img", "<script>alert", "<svg onload"):
+        assert raw not in page, raw
+    assert "&lt;img src=x" in page and "Платиш премію" in page

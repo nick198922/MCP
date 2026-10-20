@@ -12,6 +12,11 @@ the plan usage is read with the agents' login, only percentages and reset times 
 The «Бриф» tab (/brief) renders the assistant's morning brief from the snapshot JSON written by the collector job
 ``assistant_snapshot`` (no network here: the collector does all fetching). Every string from that file is untrusted
 text and is escaped; a missing, stale or corrupt snapshot gives an empty state, never an error.
+
+The «Опціони» tab (/options) is a strategy builder on the snapshot's month chain (marks, Δ, IV): sell/buy strangle and
+straddle, iron condor; P&L at expiry, breakevens, max profit/loss, risk-neutral probability of profit and the fit to the
+owner's risk budget. Everything is computed here on a plain GET form; the inline script only remembers deposit, risk
+and size in the browser (localStorage) and resubmits on a change.
 """
 
 from __future__ import annotations
@@ -28,6 +33,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -420,7 +426,7 @@ nav.tabs a[aria-current=page]{color:var(--fg);border-bottom-color:var(--acc)}
 
 
 def _nav(active: str) -> str:
-    tabs = (("/", "project", "Проєкт"), ("/brief", "brief", "Бриф"))
+    tabs = (("/", "project", "Проєкт"), ("/brief", "brief", "Бриф"), ("/options", "options", "Опціони"))
     return (
         "<nav class='tabs'>"
         + "".join(f"<a href='{href}'{' aria-current=page' if key == active else ''}>{label}</a>" for href, key, label in tabs)
@@ -1377,6 +1383,39 @@ def _guard(fn, snap: dict) -> str:
         return _empty(f"Блок не вдалося показати: несподіваний формат даних ({type(e).__name__}).")
 
 
+def _snapshot_problem(err: str | None, path: Path | None) -> str:
+    """Why there is no snapshot to show (HTML, escaped)."""
+    where = f" (<code>{_e(path)}</code>)" if path else ""
+    return {
+        "missing": f"Знімка асистента ще немає{where}: завдання колектора <code>assistant_snapshot</code> вимкнене або ще не відпрацювало.",
+        "corrupt": f"Файл знімка пошкоджений або має несподіваний формат{where}. Наступний прогін колектора (кожні 10 хв) його перепише.",
+    }.get(err or "", f"Знімок не читається{where}: {_e(err)}.")
+
+
+def _snapshot_stamp(snap: dict, now: float) -> str:
+    """The snapshot's time and age (a warning when older than 30 min) plus its schema / missing / carried notes."""
+    asof = parse_utc(snap.get("asof_utc"))
+    age = now - asof.timestamp() if asof else None
+    if age is None:
+        stamp = "<span class='bad'>Час знімка невідомий: дані можуть бути застарілими.</span>"
+    else:
+        cls = "bad" if age > SNAPSHOT_OLD_S else "warn" if age > SNAPSHOT_STALE_S else "mut"
+        stamp = f"<span class='{cls}'>Знімок {_e(kyiv(asof))} за Києвом · {_e(fmt_age(age))}"
+        if age > SNAPSHOT_STALE_S:
+            stamp += " · старший за 30 хв: завдання колектора, схоже, зупинилось, дані можуть бути неактуальні"
+        stamp += "</span>"
+    extra = []
+    if snap.get("schema") != SNAPSHOT_SCHEMA:
+        extra.append(f"схема знімка {_clean(snap.get('schema'), 10)}, панель знає {SNAPSHOT_SCHEMA}: частина блоків може бути порожня")
+    miss = [SECTION_UA.get(str(n), _clean(n, 30)) for n in _list(snap.get("missing"))]
+    stale = [SECTION_UA.get(str(n), _clean(n, 30)) for n in _list(snap.get("stale"))]
+    if miss:
+        extra.append("без даних: " + ", ".join(miss))
+    if stale:
+        extra.append("з попереднього знімка: " + ", ".join(stale))
+    return stamp + "".join(f"<span class='warn'>{_e(x)}</span>" for x in extra)
+
+
 def render_brief(snap: dict | None, err: str | None, now: float, path: Path | None = None) -> str:
     """The «Бриф» tab. Never raises: a missing, stale or corrupt snapshot gives an explained empty state."""
     head = (
@@ -1386,33 +1425,9 @@ def render_brief(snap: dict | None, err: str | None, now: float, path: Path | No
     caveats = "<div class='caveat'><b>Застереження</b><ul>" + "".join(f"<li>{_e(c)}</li>" for c in BRIEF_CAVEATS) + "</ul></div>"
     try:
         if snap is None:
-            where = f" (<code>{_e(path)}</code>)" if path else ""
-            msg = {
-                "missing": f"Знімка асистента ще немає{where}: завдання колектора <code>assistant_snapshot</code> вимкнене або ще не відпрацювало.",
-                "corrupt": f"Файл знімка пошкоджений або має несподіваний формат{where}. Наступний прогін колектора (кожні 10 хв) його перепише.",
-            }.get(err or "", f"Знімок не читається{where}: {_e(err)}.")
+            msg = _snapshot_problem(err, path)
             return head + f"<header><h1>Бриф</h1><span class='bad'>{msg}</span></header>{_nav('brief')}{caveats}</body></html>"
-        asof = parse_utc(snap.get("asof_utc"))
-        age = now - asof.timestamp() if asof else None
-        if age is None:
-            stamp = "<span class='bad'>Час знімка невідомий: дані можуть бути застарілими.</span>"
-        else:
-            cls = "bad" if age > SNAPSHOT_OLD_S else "warn" if age > SNAPSHOT_STALE_S else "mut"
-            stamp = f"<span class='{cls}'>Знімок {_e(kyiv(asof))} за Києвом · {_e(fmt_age(age))}"
-            if age > SNAPSHOT_STALE_S:
-                stamp += " · старший за 30 хв: завдання колектора, схоже, зупинилось, дані можуть бути неактуальні"
-            stamp += "</span>"
-        extra = []
-        if snap.get("schema") != SNAPSHOT_SCHEMA:
-            extra.append(f"схема знімка {_clean(snap.get('schema'), 10)}, панель знає {SNAPSHOT_SCHEMA}: частина блоків може бути порожня")
-        miss = [SECTION_UA.get(str(n), _clean(n, 30)) for n in _list(snap.get("missing"))]
-        stale = [SECTION_UA.get(str(n), _clean(n, 30)) for n in _list(snap.get("stale"))]
-        if miss:
-            extra.append("без даних: " + ", ".join(miss))
-        if stale:
-            extra.append("з попереднього знімка: " + ", ".join(stale))
-        out = [head, f"<header><h1>Бриф</h1>{stamp}"]
-        out += [f"<span class='warn'>{_e(x)}</span>" for x in extra]
+        out = [head, f"<header><h1>Бриф</h1>{_snapshot_stamp(snap, now)}"]
         out.append(f"</header>{_nav('brief')}{caveats}<main class='brief'>")
         # the expiry label only next to its data: `expiries` can name an expiry whose section was dropped as too old
         month = _exp_label(snap, "month") if _data(snap, "chain") else "—"
@@ -1443,6 +1458,500 @@ def brief_page(now: float | None = None) -> str:
     return render_brief(snap, err, time.time() if now is None else now, SNAPSHOT_PATH)
 
 
+# ---------------------------------------------------------------- «Опціони» tab: strategy builder on the snapshot chain
+#
+# All numbers are computed here (stdlib copies of analytics.strategy: payoff, payoff_extremes, breakevens,
+# prob_of_profit; tests compare the two). The page is a plain GET form: the inline script only keeps deposit, risk and
+# size in localStorage and resubmits the form on a change, so there is one implementation of every formula.
+
+OPT_STRATEGIES = {
+    "short_strangle": "Продаж стренглу",
+    "short_straddle": "Продаж стреддлу",
+    "iron_condor": "Залізний кондор",
+    "long_straddle": "Купівля стреддлу",
+    "long_strangle": "Купівля стренглу",
+}
+OPT_DEFAULT_STRAT = "long_strangle"
+# (default, min, max): deposit USD, risk per trade %, size BTC (the owner trades 0.1, card «Депозит і ризик»)
+OPT_SIZE = {"dep": (10000.0, 100.0, 1e8), "riskp": (1.0, 0.1, 100.0), "qty": (0.1, 0.01, 100.0)}
+OPT_STRIKES = ("kput", "kcall", "kputw", "kcallw")
+OPT_RANGE = 0.3  # chart: forward ±30 %
+OPT_CAVEATS = (
+    "Ймовірність прибутку — ризик-нейтральна (лог-нормальна за ATM IV експірації): це ціна страхування в ринку, а не прогноз.",
+    "Премії — марки Deribit на час знімка, без спреду й комісій: реальна ціна входу гірша. P&L — лише на експірацію.",
+    "Премія волатильності (VRP) на марках опціонів ще перевіряється (картка vrp-real-marks): «дорога» чи «дешева» волатильність — не доведена перевага.",
+    "Не інвестиційна порада: сторінка лише рахує, нічого не торгує.",
+)
+OPT_CSS = """
+.seg{display:flex;flex-wrap:wrap;gap:6px}
+.seg button{font:600 13px -apple-system,"Segoe UI",Helvetica,Arial,sans-serif;border:1px solid var(--line);background:var(--card);color:var(--fg);border-radius:999px;padding:6px 12px;cursor:pointer}
+.seg button[aria-pressed=true]{background:var(--acc);border-color:var(--acc);color:var(--card)}
+.ctl{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:end;margin-top:10px}
+.ctl label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--mut)}
+select,input[type=number]{font:14px Menlo,Consolas,monospace;color:var(--fg);background:var(--card);border:1px solid var(--line);border-radius:6px;padding:6px 8px;min-width:0;max-width:100%}
+select:disabled{opacity:.6}.ctl button.go{font-weight:600;border:0;border-radius:999px;padding:7px 14px;background:var(--acc);color:var(--card);cursor:pointer}
+button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+.fit{font-size:14px;line-height:1.6}
+"""
+OPT_JS = """
+(function () {
+  var f = document.getElementById('opt-form'); if (!f) return;
+  var KEY = 'td-size', keys = ['dep', 'riskp', 'qty'], m = {};
+  try { m = JSON.parse(localStorage.getItem(KEY) || '{}') || {}; } catch (e) { m = {}; }
+  var q = new URLSearchParams(location.search), changed = false;
+  if (!keys.some(function (k) { return q.has(k); })) {
+    keys.forEach(function (k) { var v = +m[k]; if (v > 0 && f.elements[k] && +f.elements[k].value !== v) { f.elements[k].value = v; changed = true; } });
+  }
+  if (changed) { f.submit(); return; }
+  var save = function () { var o = {}; keys.forEach(function (k) { o[k] = +f.elements[k].value; }); try { localStorage.setItem(KEY, JSON.stringify(o)); } catch (e) {} };
+  f.addEventListener('submit', save);
+  f.addEventListener('change', function () { save(); f.submit(); });
+})();
+"""
+
+
+def option_chain(snap: dict | None) -> dict | None:
+    """The month chain for the builder: forward, days, ATM IV, expiry and rows {k, c/p: {mark, iv, delta}} (legs with a
+    positive mark only). None when the snapshot has no usable chain."""
+    chain = _data(snap, "chain") if isinstance(snap, dict) else None
+    if not chain:
+        return None
+    F, days = _num(chain.get("forward")), _num(chain.get("days"))
+    if F is None or F <= 0 or days is None or days <= 0:
+        return None
+    by: dict[float, dict] = {}
+    for r in _list(chain.get("strikes")):
+        if not isinstance(r, dict):
+            continue
+        k = _num(r.get("strike"))
+        if k is None or k <= 0:
+            continue
+        row = {"k": k}
+        for side, key in (("call", "c"), ("put", "p")):
+            leg = r.get(side)
+            if not isinstance(leg, dict):
+                continue
+            mark = _num(leg.get("mark_usd"))
+            if mark is not None and mark > 0:
+                row[key] = {"mark": mark, "iv": _num(leg.get("iv")), "delta": _num(leg.get("delta"))}
+        if "c" in row or "p" in row:
+            by[k] = row
+    rows = [by[k] for k in sorted(by)]
+    both = [r for r in rows if "c" in r and "p" in r]
+    if not both:
+        return None
+    atm = min(both, key=lambda r: abs(r["k"] - F))
+    iv = _num(chain.get("atm_iv"))
+    if iv is None or iv <= 0:
+        ivs = [x for x in (atm["c"]["iv"], atm["p"]["iv"]) if x is not None and x > 0]
+        iv = sum(ivs) / len(ivs) if ivs else None
+    if iv is None:
+        return None
+    return {"F": F, "days": days, "T": days / 365.0, "iv": iv, "expiry": chain.get("expiry"), "rows": rows, "atm": atm["k"]}
+
+
+def _nearest_delta(rows: list[dict], side: str, target: float) -> float | None:
+    cand = [r for r in rows if side in r and r[side]["delta"] is not None]
+    return min(cand, key=lambda r: abs(abs(r[side]["delta"]) - target))["k"] if cand else None
+
+
+def default_strikes(ch: dict, strat: str) -> dict[str, float | None]:
+    """As in the mock-up: straddles at the strike nearest the forward, strangles at 25Δ, condor wings at 10Δ."""
+    rows = ch["rows"]
+    if "straddle" in strat:
+        kput = kcall = ch["atm"]
+    else:
+        kput, kcall = _nearest_delta(rows, "p", 0.25), _nearest_delta(rows, "c", 0.25)
+    return {"kput": kput, "kcall": kcall, "kputw": _nearest_delta(rows, "p", 0.10), "kcallw": _nearest_delta(rows, "c", 0.10)}
+
+
+def option_legs(ch: dict, strat: str, strikes: dict, qty: float) -> tuple[list[dict], str | None]:
+    """Legs in the analytics.strategy format (kind, side, size, strike, entry_premium = mark, USD per BTC), or an error."""
+    by = {r["k"]: r for r in ch["rows"]}
+    kput, kcall, kputw, kcallw = (strikes.get(k) for k in OPT_STRIKES)
+    if "straddle" in strat:
+        kput = kcall = ch["atm"]
+    plan = {
+        "short_strangle": [("call", kcall, "short"), ("put", kput, "short")],
+        "short_straddle": [("call", kcall, "short"), ("put", kput, "short")],
+        "long_straddle": [("call", kcall, "long"), ("put", kput, "long")],
+        "long_strangle": [("call", kcall, "long"), ("put", kput, "long")],
+        "iron_condor": [("call", kcall, "short"), ("put", kput, "short"), ("call", kcallw, "long"), ("put", kputw, "long")],
+    }[strat]
+    if kput is not None and kcall is not None and kput > kcall:
+        return [], "Страйк пута має бути не вище страйку кола."
+    if strat == "iron_condor" and not (None not in (kputw, kput, kcall, kcallw) and kputw < kput < kcall < kcallw):
+        return [], "Кондор: захисний пут < пут < кол < захисний кол."
+    legs = []
+    for kind, k, side in plan:
+        leg = by.get(k, {}).get("c" if kind == "call" else "p") if k is not None else None
+        if not leg:
+            return [], "На цьому страйку в знімку немає марки опціону."
+        legs.append({"kind": kind, "side": side, "size": qty, "strike": k, "entry_premium": leg["mark"]})
+    return legs, None
+
+
+def payoff(legs: list[dict], s: float) -> float:
+    """Terminal P&L in USD at price s (analytics.strategy.payoff_curve for option legs)."""
+    total = 0.0
+    for leg in legs:
+        sign = 1 if leg["side"] == "long" else -1
+        intrinsic = max(s - leg["strike"], 0.0) if leg["kind"] == "call" else max(leg["strike"] - s, 0.0)
+        total += sign * leg["size"] * (intrinsic - leg["entry_premium"])
+    return total
+
+
+def _tail_slope(legs: list[dict]) -> float:
+    return sum((1 if leg["side"] == "long" else -1) * leg["size"] for leg in legs if leg["kind"] == "call")
+
+
+def payoff_extremes(legs: list[dict]) -> dict[str, float | None]:
+    """Exact max profit / max loss over S in [0, inf); None = unbounded (copy of analytics.strategy.payoff_extremes)."""
+    kinks = [0.0] + sorted({leg["strike"] for leg in legs})
+    values = [payoff(legs, s) for s in kinks]
+    slope = _tail_slope(legs)
+    return {"max_profit": None if slope > 1e-12 else max(values), "max_loss": None if slope < -1e-12 else min(values)}
+
+
+def payoff_breakevens(legs: list[dict]) -> list[float]:
+    """Exact prices where the terminal P&L turns from loss to profit or back (profit = strictly > 0)."""
+    kinks = [0.0] + sorted({leg["strike"] for leg in legs})
+    values = [payoff(legs, s) for s in kinks]
+    out = []
+    for i in range(1, len(kinks)):
+        v0, v1 = values[i - 1], values[i]
+        if (v0 > 0) != (v1 > 0):
+            out.append(kinks[i - 1] + (0.0 - v0) * (kinks[i] - kinks[i - 1]) / (v1 - v0))
+    slope, last = _tail_slope(legs), values[-1]
+    if (last > 0) != (slope > 0 or (slope == 0 and last > 0)):
+        out.append(kinks[-1] - last / slope)
+    return out
+
+
+def _lognormal_cdf(F: float, T: float, iv: float, x: float) -> float:
+    """Risk-neutral P(S_T <= x), log-normal around the forward (r = 0), as analytics.strategy._lognormal_cdf."""
+    if x <= 0:
+        return 0.0
+    v = iv * math.sqrt(T)
+    return _ncdf((math.log(x / F) + 0.5 * v * v) / v)
+
+
+def prob_of_profit(legs: list[dict], F: float, T: float, iv: float) -> float:
+    """Risk-neutral probability that the terminal P&L is > 0, summed over the profit intervals between breakevens."""
+    bounds = [0.0] + payoff_breakevens(legs) + [math.inf]
+    p = 0.0
+    for lo, hi in zip(bounds, bounds[1:], strict=False):
+        if hi <= lo:
+            continue
+        mid = max(2 * lo, lo + F) if math.isinf(hi) else (lo + hi) / 2
+        if payoff(legs, mid) > 0:
+            p += (1.0 if math.isinf(hi) else _lognormal_cdf(F, T, iv, hi)) - _lognormal_cdf(F, T, iv, lo)
+    return min(1.0, max(0.0, p))
+
+
+def risk_fit(max_loss: float | None, qty: float, dep: float, riskp: float) -> dict:
+    """Does the position's max loss fit the risk budget (deposit × risk %)? Also the largest size that fits, in 0.01 BTC."""
+    budget = dep * riskp / 100.0
+    if max_loss is None:
+        return {"budget": budget, "unbounded": True}
+    loss = max(0.0, -max_loss)
+    per_btc = loss / qty if qty > 0 else 0.0
+    qmax = math.floor(budget / per_btc * 100 + 1e-9) / 100 if per_btc > 0 else None
+    return {
+        "budget": budget,
+        "unbounded": False,
+        "loss": loss,
+        "fits": loss <= budget * (1 + 1e-9),
+        "ratio": loss / budget if budget > 0 else None,
+        "pct_dep": loss / dep * 100 if dep > 0 else None,
+        "qmax": qmax,
+    }
+
+
+def parse_options_query(query: str) -> dict:
+    """Form parameters from the URL query (untrusted): unknown or out-of-range values fall back to the defaults."""
+    try:
+        q = urllib.parse.parse_qs(query or "", max_num_fields=40)
+    except ValueError:
+        q = {}
+
+    def one(name: str) -> str | None:
+        v = q.get(name)
+        return v[0][:40] if v else None
+
+    def fnum(name: str, lo: float, hi: float) -> float | None:
+        try:
+            v = float(one(name))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return None
+        return v if math.isfinite(v) and lo <= v <= hi else None
+
+    s, cur = one("s"), one("cur")
+    s = s if s in OPT_STRATEGIES else None
+    cur = cur if cur in OPT_STRATEGIES else None
+    out: dict = {"strat": s or cur or OPT_DEFAULT_STRAT, "keep_strikes": s is None or s == cur}
+    for name, (default, lo, hi) in OPT_SIZE.items():
+        v = fnum(name, lo, hi)
+        out[name] = default if v is None else v
+    for name in OPT_STRIKES:
+        out[name] = fnum(name, 0.0, 1e9)
+    return out
+
+
+def _usd(x: float | None, signed: bool = False) -> str:
+    if x is None:
+        return "—"
+    sign = "−" if x < -0.5 else ("+" if signed and x > 0.5 else "")
+    return f"{sign}${_nf(abs(x))}"
+
+
+def _kd(x: float) -> str:
+    return "$" + _k(x)
+
+
+def payoff_svg(legs: list[dict], F: float, T: float, iv: float, bes: list[float]) -> str:
+    """P&L at expiry over forward ±30 %: profit/loss areas, the ±1σ band, the forward and the breakevens."""
+    W, H, L, R, Tp, B = 720, 300, 70, 14, 12, 28
+    lo, hi, n = F * (1 - OPT_RANGE), F * (1 + OPT_RANGE), 241
+    xs = [lo + (hi - lo) * i / (n - 1) for i in range(n)]
+    ys = [payoff(legs, x) for x in xs]
+    ymin, ymax = min(ys + [0.0]), max(ys + [0.0])
+    pad = (ymax - ymin) * 0.08 or 1.0
+    ymin, ymax = ymin - pad, ymax + pad
+
+    def X(x: float) -> float:
+        return L + (x - lo) / (hi - lo) * (W - L - R)
+
+    def Y(y: float) -> float:
+        return Tp + (ymax - y) / (ymax - ymin) * (H - Tp - B)
+
+    y0 = Y(0.0)
+    g = [
+        f'<defs><clipPath id="cpU"><rect x="0" y="0" width="{W}" height="{y0:.1f}"/></clipPath>'
+        f'<clipPath id="cpD"><rect x="0" y="{y0:.1f}" width="{W}" height="{H}"/></clipPath></defs>'
+    ]
+    v = iv * math.sqrt(T)
+    s_lo, s_hi = max(lo, F * math.exp(-v)), min(hi, F * math.exp(v))
+    g.append(
+        f'<rect x="{X(s_lo):.1f}" y="{Tp}" width="{X(s_hi) - X(s_lo):.1f}" height="{H - Tp - B}" style="fill:var(--acc);fill-opacity:.08"/>'
+    )
+    sy = nice_step(ymax - ymin, 6)
+    y = math.ceil(ymin / sy) * sy
+    while y <= ymax:
+        g.append(
+            f'<line x1="{L}" x2="{W - R}" y1="{Y(y):.1f}" y2="{Y(y):.1f}" style="stroke:var(--line)"/>'
+            f'<text x="{L - 6}" y="{Y(y) + 4:.1f}" text-anchor="end">{_e(_usd(y))}</text>'
+        )
+        y += sy
+    sx = nice_step(hi - lo, 8)
+    x = math.ceil(lo / sx) * sx
+    while x <= hi:
+        g.append(f'<text x="{X(x):.1f}" y="{H - 8}" text-anchor="middle">{_e(_kd(x))}</text>')
+        x += sx
+    path = "".join(f"{'L' if i else 'M'}{X(x):.1f},{Y(y):.1f}" for i, (x, y) in enumerate(zip(xs, ys, strict=True)))
+    area = path + f"L{X(hi):.1f},{y0:.1f}L{X(lo):.1f},{y0:.1f}Z"
+    g.append(f'<path d="{area}" clip-path="url(#cpU)" style="fill:var(--ok);fill-opacity:.16"/>')
+    g.append(f'<path d="{area}" clip-path="url(#cpD)" style="fill:var(--bad);fill-opacity:.16"/>')
+    g.append(f'<line x1="{L}" x2="{W - R}" y1="{y0:.1f}" y2="{y0:.1f}" style="stroke:var(--mut)"/>')
+    g.append(
+        f'<line x1="{X(F):.1f}" x2="{X(F):.1f}" y1="{Tp}" y2="{H - B}" style="stroke:var(--mut);stroke-dasharray:2 3"/>'
+        f'<text x="{X(F) + 4:.1f}" y="{Tp + 10}">зараз {_e(_kd(F))}</text>'
+    )
+    g.append(f'<path d="{path}" style="fill:none;stroke:var(--acc);stroke-width:2.4"/>')
+    for b in bes:
+        if lo <= b <= hi:
+            g.append(
+                f'<circle cx="{X(b):.1f}" cy="{y0:.1f}" r="4" style="fill:var(--card);stroke:var(--fg);stroke-width:1.5"/>'
+                f'<text x="{X(b):.1f}" y="{y0 + 18:.1f}" text-anchor="middle" style="fill:var(--fg)">{_e(_kd(b))}</text>'
+            )
+    return f'<svg viewBox="0 0 {W} {H}" role="img" aria-label="P&amp;L позиції на експірацію, USD">{"".join(g)}</svg>'
+
+
+def _strike_select(ch: dict, name: str, side: str, sel: float | None, label: str, disabled: bool) -> str:
+    opts = []
+    for r in ch["rows"]:
+        leg = r.get(side)
+        if not leg:
+            continue
+        d = "—" if leg["delta"] is None else f"{leg['delta']:.2f}".replace("-", "−")
+        ivs = "—" if leg["iv"] is None else _nf(leg["iv"] * 100, 1)
+        opts.append(
+            f"<option value='{r['k']:.10g}'{' selected' if r['k'] == sel else ''}>{_e(_nf(r['k']))} · Δ {_e(d)} · IV {_e(ivs)}</option>"
+        )
+    dis = " disabled" if disabled else ""
+    return f"<label for='{name}'>{label}<select id='{name}' name='{name}'{dis}>{''.join(opts)}</select></label>"
+
+
+def _num_input(name: str, label: str, value: float, step: str) -> str:
+    _, lo, hi = OPT_SIZE[name]
+    return (
+        f"<label for='{name}'>{label}<input type='number' id='{name}' name='{name}' min='{lo:g}' max='{hi:g}' step='{step}' "
+        f"value='{value:.10g}'></label>"
+    )
+
+
+def block_builder(ch: dict, snap: dict, p: dict) -> str:
+    strat = p["strat"]
+    strikes = default_strikes(ch, strat)
+    if p["keep_strikes"]:
+        for name, side in (("kput", "p"), ("kcall", "c"), ("kputw", "p"), ("kcallw", "c")):
+            k = p.get(name)
+            if k is not None and any(r["k"] == k and side in r for r in ch["rows"]):
+                strikes[name] = k
+    if "straddle" in strat:
+        strikes["kput"] = strikes["kcall"] = ch["atm"]
+    qty, dep, riskp = p["qty"], p["dep"], p["riskp"]
+    exp = expiry_utc(ch.get("expiry"))
+    exp_s = kyiv(exp, "%d.%m") if exp else _clean(ch.get("expiry") or "—", 12)
+    out = [
+        f"<section class='wide'><h2>Конструктор · BTC, експірація {_e(exp_s)} · {_e(_nf(ch['days'], 1))} дн · форвард {_e(_nf(ch['F']))}</h2>",
+        "<form id='opt-form' method='get' action='/options'>",
+        f"<input type='hidden' name='cur' value='{_e(strat)}'>",
+        "<div class='seg' role='group' aria-label='Стратегія'>",
+    ]
+    for key, label in OPT_STRATEGIES.items():
+        out.append(f"<button type='submit' name='s' value='{key}' aria-pressed={'true' if key == strat else 'false'}>{_e(label)}</button>")
+    out.append("</div><div class='ctl'>")
+    strad, condor = "straddle" in strat, strat == "iron_condor"
+    out.append(_strike_select(ch, "kput", "p", strikes["kput"], "Пут, страйк", strad))
+    out.append(_strike_select(ch, "kcall", "c", strikes["kcall"], "Кол, страйк", strad))
+    if condor:
+        out.append(_strike_select(ch, "kputw", "p", strikes["kputw"], "Захисний пут", False))
+        out.append(_strike_select(ch, "kcallw", "c", strikes["kcallw"], "Захисний кол", False))
+    out.append("</div><div class='ctl'>")
+    out.append(_num_input("dep", "Депозит, $", dep, "100"))
+    out.append(_num_input("riskp", "Ризик на угоду, %", riskp, "0.1"))
+    out.append(_num_input("qty", "Розмір, BTC", qty, "0.01"))
+    out.append("<button class='go' type='submit'>Порахувати</button></div></form>")
+    out.append(
+        "<p class='note'>Страйки — з ланцюжка знімка (Δ і IV Deribit); стреддл — на страйку, найближчому до форварду. "
+        "Депозит, ризик і розмір запам'ятовуються в цьому браузері. Мінімальний лот опціонів BTC: Deribit — 0.1 BTC; "
+        "OKX і Bybit — 0.01 BTC (уточнимо перед першою угодою).</p></section>"
+    )
+
+    legs, err = option_legs(ch, strat, strikes, qty)
+    if err:
+        out.append(f"<section class='wide'><h2>Позиція</h2>{_empty(err)}</section>")
+        return "".join(out)
+    F, T, iv = ch["F"], ch["T"], ch["iv"]
+    credit = -sum((1 if lg["side"] == "long" else -1) * lg["size"] * lg["entry_premium"] for lg in legs)
+    ext = payoff_extremes(legs)
+    bes = payoff_breakevens(legs)
+    pop = prob_of_profit(legs, F, T, iv)
+    shown_bes = sorted({round(b, 2) for b in bes})
+
+    out.append("<section class='wide'><h2>Прибуток і збиток на експірацію, USD</h2>")
+    out.append(payoff_svg(legs, F, T, iv, shown_bes))
+    out.append(
+        "<div class='legend'><span><i style='background:var(--acc)'></i>на експірацію</span>"
+        "<span><i style='background:var(--mut)'></i>поточний форвард</span>"
+        f"<span><i style='background:var(--acc);opacity:.25;height:8px'></i>±1σ до експірації (ATM IV {_e(_nf(iv * 100, 1))})</span></div></section>"
+    )
+
+    tiles = [
+        _tile(
+            "Отримуєш премію" if credit >= 0 else "Платиш премію",
+            _e(_usd(abs(credit))),
+            _e(f"за марками Deribit, {_nf(qty, 2)} BTC"),
+        ),
+        _tile("Беззбиток", _e(" / ".join(_kd(b) for b in shown_bes) or "—"), "на експірацію"),
+        _tile(
+            "Макс. прибуток",
+            _e("необмежений" if ext["max_profit"] is None else _usd(ext["max_profit"])),
+            "на експірацію",
+        ),
+    ]
+    if ext["max_loss"] is None:
+        down, up = payoff(legs, F * (1 - OPT_RANGE)), payoff(legs, F * (1 + OPT_RANGE))
+        tiles.append(_tile("Макс. збиток", "необмежений", _e(f"на −30 %: {_usd(down)}, на +30 %: {_usd(up)}"), "bad"))
+    else:
+        tiles.append(_tile("Макс. збиток", _e(_usd(ext["max_loss"])), "на експірацію"))
+    tiles.append(_tile("Ймовірність прибутку", _e(f"{_nf(pop * 100)} %"), "ризик-нейтральна, за ATM IV"))
+    out.append(f"<section><h2>Позиція</h2><div class='tiles'>{''.join(tiles)}</div></section>")
+
+    fit = risk_fit(ext["max_loss"], qty, dep, riskp)
+    out.append("<section><h2>Чи вкладається в ризик</h2><div class='fit'>")
+    out.append(f"<p>Ризик на угоду: <b class='num'>{_e(_usd(fit['budget']))}</b> ({_e(_nf(riskp, 1))} % від депозиту {_e(_usd(dep))}).</p>")
+    if fit["unbounded"]:
+        out.append(
+            "<p><span class='chip risk'>ризик необмежений</span> Продаж без захисних опціонів не має межі збитку, тож "
+            "правило «ризик на угоду» він не виконує: потрібен стоп або захисні опціони (залізний кондор).</p>"
+        )
+    else:
+        chip = (
+            "<span class='chip opp'>в межах ризику</span>"
+            if fit["fits"]
+            else f"<span class='chip risk'>більше за ризик у {_e(_nf(fit['ratio'], 1))} раза</span>"
+        )
+        out.append(
+            f"<p>Макс. збиток <b class='num'>{_e(_usd(fit['loss']))}</b> за {_e(_nf(qty, 2))} BTC "
+            f"({_e(_nf(fit['pct_dep'], 1))} % депозиту) {chip}</p>"
+        )
+        qmax = fit["qmax"]
+        if qmax is None:
+            out.append("<p class='mut'>Збитку на експірацію немає за жодної ціни.</p>")
+        elif qmax >= 0.01:
+            lot = " (лише OKX / Bybit: на Deribit мінімум 0.1 BTC)" if qmax < 0.1 else ""
+            out.append(f"<p class='mut'>Під твій ризик — до <b class='num'>{_e(_nf(qmax, 2))} BTC</b>{_e(lot)}.</p>")
+        else:
+            per = fit["loss"] / qty * 0.01
+            out.append(f"<p class='mut'>Навіть 0.01 BTC — це {_e(_usd(per))} збитку: більше за ризик.</p>")
+    out.append("</div></section>")
+    out.append(
+        "<section class='wide'><p class='note'>Ціни — марки Deribit, USD за 1 BTC контракту, помножені на розмір; P&amp;L на експірацію "
+        "= внутрішня вартість мінус премія. Беззбиток і максимуми — точні (ламана з вузлами на страйках). Ймовірність прибутку — "
+        "ризик-нейтральна, лог-нормальна з ATM IV на форварді експірації (r = 0, T = дні/365), без нахилу усмішки. "
+        "Комісії й спред не враховано.</p></section>"
+    )
+    return "".join(out)
+
+
+def render_options(snap: dict | None, err: str | None, now: float, params: dict | None = None, path: Path | None = None) -> str:
+    """The «Опціони» tab. Never raises: no snapshot or no chain gives an explained empty state."""
+    p = params or parse_options_query("")
+    head = (
+        "<!doctype html><html lang='uk'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+        f"<title>tradedesk — опціони</title><style>{CSS}{BRIEF_CSS}{OPT_CSS}</style></head><body>"
+    )
+    caveats = "<div class='caveat'><b>Застереження</b><ul>" + "".join(f"<li>{_e(c)}</li>" for c in OPT_CAVEATS) + "</ul></div>"
+    tail = f"<script>{OPT_JS}</script></body></html>"
+    try:
+        if snap is None:
+            msg = _snapshot_problem(err, path)
+            return head + f"<header><h1>Опціони</h1><span class='bad'>{msg}</span></header>{_nav('options')}{caveats}</body></html>"
+        out = [head, f"<header><h1>Опціони</h1>{_snapshot_stamp(snap, now)}</header>{_nav('options')}{caveats}<main class='brief'>"]
+        ch = option_chain(snap)
+        if ch is None:
+            out.append(
+                "<section class='wide'><h2>Конструктор</h2>"
+                + _empty("Ланцюжка опціонів у знімку немає: конструктор порахувати нема з чого.")
+                + _section_notes(snap, "chain")
+                + "</section></main></body></html>"
+            )
+            return "".join(out)
+        try:
+            out.append(block_builder(ch, snap, p))
+        except Exception as e:  # noqa: BLE001 - one odd chain must not take the page down
+            out.append(
+                f"<section class='wide'>{_empty(f'Конструктор не вдалося показати: несподіваний формат даних ({type(e).__name__}).')}</section>"
+            )
+        notes = _section_notes(snap, "chain")
+        if notes:
+            out.append(f"<section class='wide'>{notes}</section>")
+        out.append("</main>" + tail)
+        return "".join(out)
+    except Exception as e:  # noqa: BLE001 - the page always renders
+        return (
+            head
+            + f"<header><h1>Опціони</h1><span class='bad'>Знімок не вдалося показати ({_e(type(e).__name__)}).</span></header>{_nav('options')}{caveats}</body></html>"
+        )
+
+
+def options_page(query: str = "", now: float | None = None) -> str:
+    snap, err = load_snapshot(SNAPSHOT_PATH)
+    return render_options(snap, err, time.time() if now is None else now, parse_options_query(query), SNAPSHOT_PATH)
+
+
 # ---------------------------------------------------------------- server
 
 
@@ -1468,11 +1977,13 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         with _State.lock:
             snap, page = _State.snap, _State.page
-        path = self.path.split("?", 1)[0]
+        path, _, query = self.path.partition("?")
         if path in ("/", "/index.html"):
             body, ctype = page.encode(), "text/html; charset=utf-8"
         elif path == "/brief":
             body, ctype = brief_page().encode(), "text/html; charset=utf-8"  # read per request: the age is always current
+        elif path == "/options":
+            body, ctype = options_page(query).encode(), "text/html; charset=utf-8"
         elif self.path == "/status.json":
             body, ctype = json.dumps(snap or {}, ensure_ascii=False, default=str).encode(), "application/json; charset=utf-8"
         else:
@@ -1507,9 +2018,11 @@ def main() -> None:
     on = sub.add_parser("once")
     on.add_argument("--out", type=Path, required=True)
     on.add_argument("--brief", action="store_true", help="the «Бриф» tab from the assistant snapshot instead of the project page")
+    on.add_argument("--options", action="store_true", help="the «Опціони» tab (default strategy and size) from the snapshot")
     a = ap.parse_args()
     if a.cmd == "once":
-        a.out.write_text(brief_page() if a.brief else render(snapshot()), encoding="utf-8")
+        page = brief_page() if a.brief else options_page() if a.options else render(snapshot())
+        a.out.write_text(page, encoding="utf-8")
         print(f"-> {a.out}")
         return
     threading.Thread(target=_refresh_loop, daemon=True).start()

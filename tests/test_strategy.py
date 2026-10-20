@@ -15,6 +15,7 @@ from tradedesk.analytics.strategy import (
     build_straddle,
     build_strangle,
     payoff_curve,
+    payoff_extremes,
     prob_of_profit,
     scenario_matrix,
     summarise,
@@ -24,6 +25,31 @@ from tradedesk.runtime import Runtime
 from tradedesk.server import build_server
 
 # ---------- pure analytics ----------
+
+
+def test_payoff_extremes_exact_and_unbounded():
+    # Iron condor 80/90/110/120, credit = (4 + 2) - (1 + 0.5) = 4.5: max profit = credit, max loss = wing width - credit.
+    condor = build_iron_condor(
+        long_put_strike=80.0,
+        short_put_strike=90.0,
+        short_call_strike=110.0,
+        long_call_strike=120.0,
+        long_put_premium=1.0,
+        short_put_premium=4.0,
+        short_call_premium=2.0,
+        long_call_premium=0.5,
+    )
+    e = payoff_extremes(condor)
+    assert e["max_profit"] == pytest.approx(4.5) and e["max_loss"] == pytest.approx(-(10.0 - 4.5))
+    # Long straddle: loss = the premium, profit unbounded; short straddle mirrors it.
+    long_st = build_straddle(strike=100.0, call_premium=5.0, put_premium=4.0, size=2.0)
+    assert payoff_extremes(long_st) == {"max_profit": None, "max_loss": pytest.approx(-18.0)}
+    short_st = build_straddle(strike=100.0, call_premium=5.0, put_premium=4.0, side="short")
+    assert payoff_extremes(short_st) == {"max_profit": pytest.approx(9.0), "max_loss": None}
+    # A long put alone: the profit is capped at S = 0 (strike - premium), which a ±30 % grid would miss.
+    put = [{"kind": "put", "side": "long", "size": 1.0, "strike": 100.0, "entry_premium": 3.0}]
+    assert payoff_extremes(put) == {"max_profit": pytest.approx(97.0), "max_loss": pytest.approx(-3.0)}
+    assert summarise(put, forward=100.0, days=30.0, iv=0.5)["max_profit"] < 97.0
 
 
 def test_long_straddle_payoff_breakevens_and_pop():

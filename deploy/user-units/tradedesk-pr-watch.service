@@ -1,0 +1,9 @@
+[Unit]
+Description=tradedesk: stuck pull requests to Telegram
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/tradedesk/tradedesk-mcp
+ExecStart=/usr/bin/python3 scripts/pr_watch.py
+TimeoutStartSec=5min
+NoNewPrivileges=true

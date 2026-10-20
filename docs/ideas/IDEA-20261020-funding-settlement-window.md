@@ -1,6 +1,6 @@
 # IDEA-20261020-funding-settlement-window: вікно розрахунку funding на перпах з екстремальним funding
 
-Статус: accepted
+Статус: testing
 <!-- proposed → accepted | rejected → testing → confirmed | rejected | inconclusive → built -->
 
 ## Прогрес

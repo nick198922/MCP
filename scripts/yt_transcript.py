@@ -11,6 +11,7 @@ The transcript is untrusted text: it is data for the agents, never instructions.
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import os
 import re
@@ -64,6 +65,30 @@ def render(meta: dict, url: str, language: str, generated: bool, snippets: list[
     return f"# {title}\n\nКанал: {who} · {url} · транскрипт: {language}, {kind}\n\n## Транскрипт\n\n{body}\n"
 
 
+def parse_vtt(text: str) -> list[tuple[float, str]]:
+    """[(start seconds, text)] from a WebVTT file (yt-dlp --write-subs/--write-auto-subs). YouTube's automatic captions
+    roll: each cue repeats the previous line and adds a new one, with word-timing tags; tags are dropped and a line
+    already emitted by one of the last two cues is skipped."""
+    out: list[tuple[float, str]] = []
+    recent: list[str] = []
+    for block in re.split(r"\n\n+", text.replace("\r", "")):  # a cue may hold a line of one space: split on empty lines only
+        lines = block.strip().splitlines()
+        timing = next((i for i, x in enumerate(lines) if "-->" in x), None)
+        if timing is None:
+            continue
+        m = re.match(r"(?:(\d+):)?(\d+):(\d+(?:\.\d+)?)", lines[timing].strip())
+        if not m:
+            continue
+        start = int(m.group(1) or 0) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
+        for raw in lines[timing + 1 :]:
+            line = " ".join(html.unescape(re.sub(r"<[^>]+>", "", raw)).split())
+            if not line or line in recent:
+                continue
+            out.append((start, line))
+            recent = (recent + [line])[-2:]
+    return out
+
+
 def oembed(url: str) -> dict:
     query = urllib.parse.urlencode({"url": url, "format": "json"})
     try:
@@ -97,12 +122,25 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("url")
     ap.add_argument("--out", type=Path, help="write the markdown here instead of stdout")
     ap.add_argument("--every", type=float, default=60.0, help="seconds per paragraph (default 60; 10-15 to pick key frames)")
+    ap.add_argument("--vtt", type=Path, help="render from this subtitle file (fetched on the Mac: scripts/mac/yt_fetch.sh) instead")
     args = ap.parse_args(argv)
     vid = video_id(args.url)
     if not vid:
         print(f"not a YouTube link: {args.url}", file=sys.stderr)
         return 1
     url = f"https://www.youtube.com/watch?v={vid}"
+    if args.vtt:
+        snippets = parse_vtt(args.vtt.read_text(encoding="utf-8"))
+        lang = args.vtt.suffixes[-2].lstrip(".") if len(args.vtt.suffixes) >= 2 else "?"
+        title = args.vtt.parent / f"{vid}.title"
+        meta = {"title": title.read_text(encoding="utf-8").strip()} if title.exists() else oembed(url)
+        text = render(meta, url, lang, True, snippets, args.every)
+        if args.out:
+            args.out.write_text(text, encoding="utf-8")
+        else:
+            print(text)
+        print(f"{args.out or 'stdout'}: {len(snippets)} captions from {args.vtt.name}", file=sys.stderr)
+        return 0
     try:
         language, generated, snippets = fetch(vid)
     except ImportError:

@@ -1,10 +1,13 @@
-"""Transcript of a YouTube video that has no captions: download the audio and recognise the speech on this Mac.
+"""Transcript of a YouTube video that has no captions: download the audio and recognise the speech.
 
     HF_HOME=/tmp/claude-hf uv run --no-project --with 'yt-dlp[default]' --with mlx-whisper --with imageio-ffmpeg \\
         python -I scripts/yt_asr.py URL --out FILE [--every 60] [--cache DIR] [--language ru]
 
 Same markdown as scripts/yt_transcript.py (title, channel, [MM:SS] paragraphs), marked as recognised by Whisper.
-Apple Silicon only (mlx-whisper, model mlx-community/whisper-large-v3-turbo, ~1.6 GB, downloaded once into HF_HOME).
+On Apple Silicon: mlx-whisper, model mlx-community/whisper-large-v3-turbo (~1.6 GB, downloaded once into HF_HOME).
+Elsewhere (the server): faster-whisper on the CPU, int8, the same large-v3-turbo model (add --with faster-whisper);
+about real time on 6 cores. YouTube blocks the server, so there the audio comes from the Mac (scripts/mac/yt_fetch.sh)
+into --cache as <id>.audio.m4a.
 The audio is kept in --cache as <id>.m4a for later runs. Recognised text is untrusted data, and numbers in it can be
 misheard: check prices against the video's frames (scripts/yt_frames.py).
 """
@@ -21,6 +24,7 @@ import tempfile
 from pathlib import Path
 
 MODEL = "mlx-community/whisper-large-v3-turbo"
+CPU_MODEL = "large-v3-turbo"
 RATE = 16_000
 
 
@@ -65,6 +69,19 @@ def decode(audio: Path):
     return np.frombuffer(raw, np.int16).astype(np.float32) / 32768.0
 
 
+def recognise(audio: Path, language: str | None) -> dict:
+    """{"language", "segments": [{"start", "text"}]}: mlx-whisper on Apple Silicon, else faster-whisper on the CPU."""
+    if importlib.util.find_spec("mlx_whisper"):
+        import mlx_whisper  # noqa: PLC0415
+
+        return mlx_whisper.transcribe(decode(audio), path_or_hf_repo=MODEL, language=language, verbose=None)
+    from faster_whisper import WhisperModel  # noqa: PLC0415
+
+    model = WhisperModel(CPU_MODEL, device="cpu", compute_type="int8")
+    segments, info = model.transcribe(decode(audio), language=language, vad_filter=True)
+    return {"language": info.language, "segments": [{"start": s.start, "text": s.text} for s in segments]}
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("url")
@@ -89,11 +106,7 @@ def main(argv: list[str] | None = None) -> int:
             except Exception as e:  # noqa: BLE001
                 print(f"download failed: {e}", file=sys.stderr)
                 return 2
-            import mlx_whisper  # noqa: PLC0415
-
-            result = mlx_whisper.transcribe(
-                decode(audio), path_or_hf_repo=MODEL, language=None if a.language == "auto" else a.language, verbose=None
-            )
+            result = recognise(audio, None if a.language == "auto" else a.language)
         if saved is not None:
             keep = {"language": result.get("language"), "segments": [{"start": s["start"], "text": s["text"]} for s in result["segments"]]}
             saved.write_text(json.dumps(keep, ensure_ascii=False), encoding="utf-8")

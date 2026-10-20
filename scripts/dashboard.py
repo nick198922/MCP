@@ -8,6 +8,10 @@ on origin/main (scripts/results_board.py), the agents' run history and live tran
 and /proc. The page refreshes itself every minute; /status.json gives the same data to scripts. The server listens on
 127.0.0.1 only: the owner opens it through an SSH tunnel (scripts/dashboard-open.sh). No secret is ever put on the page:
 the plan usage is read with the agents' login, only percentages and reset times are kept.
+
+The «Бриф» tab (/brief) renders the assistant's morning brief from the snapshot JSON written by the collector job
+``assistant_snapshot`` (no network here: the collector does all fetching). Every string from that file is untrusted
+text and is escaped; a missing, stale or corrupt snapshot gives an empty state, never an error.
 """
 
 from __future__ import annotations
@@ -15,6 +19,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import math
 import os
 import re
 import shutil
@@ -27,6 +32,7 @@ import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -407,7 +413,19 @@ th{color:var(--mut);font-weight:600}.bar{height:8px;background:var(--line);borde
 pre{white-space:pre-wrap;word-break:break-word;font:12px/1.4 Menlo,Consolas,monospace;margin:0;max-height:330px;overflow:auto}
 .kpi{display:flex;flex-wrap:wrap;gap:8px}.kpi div{border:1px solid var(--line);border-radius:6px;padding:4px 10px}.kpi b{font-size:17px}
 code{font:12px Menlo,Consolas,monospace}
+nav.tabs{display:flex;gap:4px;padding:0 18px;border-bottom:1px solid var(--line);margin:0 0 12px}
+nav.tabs a{padding:6px 12px;color:var(--mut);text-decoration:none;font-weight:600;border-bottom:3px solid transparent}
+nav.tabs a[aria-current=page]{color:var(--fg);border-bottom-color:var(--acc)}
 """
+
+
+def _nav(active: str) -> str:
+    tabs = (("/", "project", "Проєкт"), ("/brief", "brief", "Бриф"))
+    return (
+        "<nav class='tabs'>"
+        + "".join(f"<a href='{href}'{' aria-current=page' if key == active else ''}>{label}</a>" for href, key, label in tabs)
+        + "</nav>"
+    )
 
 
 def _e(x: object) -> str:
@@ -442,7 +460,7 @@ def render(s: dict) -> str:
     ]
     svc = " ".join(f"<span class='{'ok' if x['state'] == 'active' else 'bad'}'>● {_e(x['label'])}</span>" for x in s["services"])
     out.append(
-        f"<header><h1>tradedesk</h1><span class='mut'>оновлено {_when(s['generated_at'])} · сторінка сама оновлюється щохвилини</span><span>{svc}</span></header><main>"
+        f"<header><h1>tradedesk</h1><span class='mut'>оновлено {_when(s['generated_at'])} · сторінка сама оновлюється щохвилини</span><span>{svc}</span></header>{_nav('project')}<main>"
     )
 
     # Project progress
@@ -619,6 +637,812 @@ def render(s: dict) -> str:
     return "".join(out)
 
 
+# ---------------------------------------------------------------- assistant brief tab (snapshot JSON only, no network)
+
+SNAPSHOT_PATH = Path(os.environ.get("TRADEDESK_ASSISTANT_SNAPSHOT_PATH") or DATA_DIR / "assistant" / "snapshot.json")
+SNAPSHOT_SCHEMA = 1
+SNAPSHOT_STALE_S = 30 * 60  # the job runs every 10 minutes: older than this means it stopped or failed
+SNAPSHOT_OLD_S = 6 * 3600
+MONTHS_UA = ("січ", "лют", "бер", "кві", "тра", "чер", "лип", "сер", "вер", "жов", "лис", "гру")
+_MON_EN = {m: i for i, m in enumerate(("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"), 1)}
+FNG_UA = {
+    "extreme_fear": "крайній страх",
+    "fear": "страх",
+    "neutral": "нейтрально",
+    "greed": "жадібність",
+    "extreme_greed": "крайня жадібність",
+}
+TERM_SHAPE_UA = {
+    "contango": "у контанго: далекі строки дорожчі за близькі",
+    "backwardation": "у беквордації: близькі строки дорожчі за далекі",
+    "flat": "пласка",
+}
+IMPACT_UA = {"high": "високий", "medium": "середній", "low": "низький"}
+VENUE_NAMES = {"binanceusdm": "Binance", "hyperliquid": "Hyperliquid", "okx": "OKX", "deribit": "Deribit", "bybit": "Bybit"}
+SECTION_UA = {
+    "tickers": "ціни",
+    "ohlc": "свічки BTC",
+    "fng": "страх і жадібність",
+    "dvol": "DVOL",
+    "vrp": "VRP / реалізована вола",
+    "term": "крива строків",
+    "skew": "скью",
+    "funding_btc": "funding BTC",
+    "funding_eth": "funding ETH",
+    "events": "календар подій",
+    "em_week": "очікуваний рух (тиждень)",
+    "em_month": "очікуваний рух (місяць)",
+    "chain": "ланцюжок опціонів",
+}
+BRIEF_CAVEATS = (
+    "Ймовірності з цін опціонів — ризик-нейтральні: це ціна страхування в ринку, а не прогноз; "
+    "реальні ймовірності відрізняються на премію за ризик.",
+    "Премія волатильності (VRP) тут рахується за DVOL; перевірка на марках опціонів ще триває (картка vrp-real-marks).",
+    "Не інвестиційна порада: сторінка лише показує дані й нічого не торгує.",
+)
+BRIEF_CSS = """
+main.brief{grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr))}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px}
+.tile{border:1px solid var(--line);border-radius:6px;padding:6px 10px;display:flex;flex-direction:column;min-width:0}
+.tile .k{font-size:12px;color:var(--mut)}.tile .v{font:600 19px Menlo,Consolas,monospace}.tile .s{font-size:12px;color:var(--mut)}
+.num{font-family:Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
+ul.key{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px}ul.key li{display:grid;grid-template-columns:auto 1fr;gap:10px}
+.chip{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;border-radius:999px;padding:1px 8px;white-space:nowrap;height:fit-content}
+.chip.calm{background:rgba(47,109,181,.16);color:var(--acc)}.chip.risk{background:rgba(179,58,54,.16);color:var(--bad)}
+.chip.opp{background:rgba(47,122,75,.16);color:var(--ok)}.chip.ev{background:rgba(184,118,29,.18);color:var(--warn)}
+.hbars{display:flex;flex-direction:column;gap:5px}
+.hb{display:grid;grid-template-columns:minmax(90px,130px) 1fr 56px;gap:8px;align-items:center;font-size:13px}
+.hb .t{height:10px;background:var(--line);border-radius:5px;overflow:hidden}.hb .t i{display:block;height:100%;background:var(--acc)}
+.hb .t i.neg{background:var(--bad)}.hb .r{text-align:right}
+svg{display:block;width:100%;height:auto}svg text{font:11px Menlo,Consolas,monospace;fill:var(--mut)}
+.note{font-size:12px;color:var(--mut);margin:6px 0 0}.empty{color:var(--mut);font-style:italic}
+.legend{display:flex;flex-wrap:wrap;gap:12px;font-size:12px;color:var(--mut)}
+.legend i{display:inline-block;width:14px;height:3px;border-radius:2px;vertical-align:middle;margin-right:5px}
+.caveat{border:1px dashed var(--warn);border-radius:8px;padding:6px 12px;margin:0 12px 12px;font-size:13px}
+.caveat ul{margin:4px 0;padding-left:18px}
+details{font-size:12px;color:var(--mut);margin-top:6px}
+"""
+
+
+def load_snapshot(path: Path) -> tuple[dict | None, str | None]:
+    """The snapshot dict, or (None, reason) with reason 'missing' | 'corrupt' | 'unreadable: …'. Never raises."""
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None, "missing"
+    except (OSError, UnicodeDecodeError) as e:
+        return None, f"unreadable: {type(e).__name__}"
+    try:
+        snap = json.loads(raw)
+    except (ValueError, RecursionError):
+        return None, "corrupt"
+    if not isinstance(snap, dict) or not isinstance(snap.get("sections"), dict):
+        return None, "corrupt"
+    return snap, None
+
+
+def _num(x: object) -> float | None:
+    if isinstance(x, bool) or not isinstance(x, (int, float)):
+        return None
+    v = float(x)
+    return v if math.isfinite(v) else None
+
+
+def _section(snap: dict, name: str) -> dict:
+    secs = snap.get("sections")
+    sec = secs.get(name) if isinstance(secs, dict) else None
+    return sec if isinstance(sec, dict) else {}
+
+
+def _data(snap: dict, name: str) -> dict | None:
+    """The data of a section that has it (fresh or carried forward), else None."""
+    sec = _section(snap, name)
+    return sec["data"] if sec.get("ok") and isinstance(sec.get("data"), dict) else None
+
+
+def _list(x: object) -> list:
+    return x if isinstance(x, list) else []
+
+
+def parse_utc(s: object) -> datetime | None:
+    try:
+        return datetime.strptime(str(s), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)  # noqa: UP017 - runs on the system python3
+    except ValueError:
+        return None
+
+
+def expiry_utc(token: object) -> datetime | None:
+    """Deribit expiry token ('27NOV26') -> its delivery time, 08:00 UTC."""
+    m = re.fullmatch(r"(\d{1,2})([A-Z]{3})(\d{2})", str(token or ""))
+    if not m or m.group(2) not in _MON_EN:
+        return None
+    try:
+        return datetime(2000 + int(m.group(3)), _MON_EN[m.group(2)], int(m.group(1)), 8, tzinfo=timezone.utc)  # noqa: UP017
+    except ValueError:
+        return None
+
+
+def _kyiv_tz() -> ZoneInfo | None:
+    for name in ("Europe/Kyiv", "Europe/Kiev"):
+        try:
+            return ZoneInfo(name)
+        except Exception:  # noqa: BLE001 - no tzdata: times are shown in UTC instead
+            continue
+    return None
+
+
+KYIV = _kyiv_tz()
+
+
+def kyiv(dt: datetime | None, fmt: str = "%d.%m %H:%M") -> str:
+    if dt is None:
+        return "—"
+    if KYIV is None:
+        return dt.astimezone(timezone.utc).strftime(fmt) + " UTC"  # noqa: UP017
+    return dt.astimezone(KYIV).strftime(fmt)
+
+
+def _nf(x: object, d: int = 0) -> str:
+    v = _num(x)
+    return "—" if v is None else f"{v:,.{d}f}".replace(",", " ").replace("-", "−")
+
+
+def _pc(x: object, d: int = 1) -> str:
+    """Signed percent of a number already in percent units."""
+    v = _num(x)
+    return "—" if v is None else f"{v:+.{d}f} %".replace("-", "−")
+
+
+def _k(x: object) -> str:
+    v = _num(x)
+    if v is None:
+        return "—"
+    if abs(v) < 10000:
+        return _nf(v)
+    return (f"{v / 1000:.1f}".rstrip("0").rstrip(".") + "k").replace("-", "−")
+
+
+def nice_step(span: float, target: int) -> float:
+    raw = span / max(target, 1)
+    if raw <= 0 or not math.isfinite(raw):
+        return 1.0
+    p = 10 ** math.floor(math.log10(raw))
+    for m in (1, 2, 2.5, 5, 10):
+        if m * p >= raw:
+            return m * p
+    return 10 * p
+
+
+# ---- risk-neutral range probabilities (a stdlib copy of analytics.probability.prob_above; tests compare the two)
+
+
+def _ncdf(x: float) -> float:
+    return 0.5 * math.erfc(-x / math.sqrt(2.0))
+
+
+def chain_smile(chain: dict) -> tuple[float, float, list[tuple[float, float]]] | None:
+    """(forward, T in years, [(strike, iv)]) of the OTM smile from a deribit_option_chain section: puts below the
+    forward, calls above (the other side when one is missing). None when the chain is unusable."""
+    F, days = _num(chain.get("forward")), _num(chain.get("days"))
+    if F is None or F <= 0 or days is None or days <= 0:
+        return None
+    pts: dict[float, float] = {}
+    for row in _list(chain.get("strikes")):
+        if not isinstance(row, dict):
+            continue
+        k = _num(row.get("strike"))
+        if k is None or k <= 0:
+            continue
+        for side in ("put", "call") if k < F else ("call", "put"):
+            leg = row.get(side)
+            iv = _num(leg.get("iv")) if isinstance(leg, dict) else None
+            if iv is not None and iv > 0:
+                pts[k] = iv
+                break
+    if len(pts) < 2:
+        return None
+    return F, days / 365.0, sorted(pts.items())
+
+
+def smile_iv(pts: list[tuple[float, float]], F: float, K: float) -> float:
+    """Linear interpolation in log-moneyness, flat outside the quoted strikes (as analytics.options.Smile.iv)."""
+    x = math.log(K / F)
+    xs = [math.log(k / F) for k, _ in pts]
+    if x <= xs[0]:
+        return pts[0][1]
+    for i in range(1, len(xs)):
+        if x <= xs[i]:
+            f = (x - xs[i - 1]) / (xs[i] - xs[i - 1])
+            return pts[i - 1][1] + f * (pts[i][1] - pts[i - 1][1])
+    return pts[-1][1]
+
+
+def prob_above(pts: list[tuple[float, float]], F: float, T: float, K: float) -> float:
+    """Risk-neutral P(S_T > K) = N(d2) - vega * dsigma/dK (Breeden-Litzenberger with the smile slope), clipped to [0, 1]."""
+    sigma = smile_iv(pts, F, K)
+    v = sigma * math.sqrt(T)
+    d1 = (math.log(F / K) + 0.5 * v * v) / v
+    h = 0.005
+    slope = (smile_iv(pts, F, K * (1 + h)) - smile_iv(pts, F, K * (1 - h))) / (K * 2 * h)
+    vega_unit = F * math.exp(-0.5 * d1 * d1) / math.sqrt(2.0 * math.pi) * math.sqrt(T)
+    return min(1.0, max(0.0, _ncdf(d1 - v) - vega_unit * slope))
+
+
+def scenario_cuts(F: float) -> list[float]:
+    """Six round price levels around the forward (step ~6 % of it): 70k..95k for a forward of 83k."""
+    step = nice_step(F * 0.06, 1)
+    base = math.floor(F / step) * step
+    return [base + (i - 2) * step for i in range(6)]
+
+
+def range_probabilities(pts: list[tuple[float, float]], F: float, T: float, cuts: list[float]) -> list[dict]:
+    """Bands below the first cut, between cuts and above the last, each with its risk-neutral probability (they sum to 1)
+    and the smile IV at the band's middle (at the cut for the open tails)."""
+    above: list[float] = []
+    for c in cuts:
+        p = prob_above(pts, F, T, c)
+        above.append(min(p, above[-1]) if above else p)  # keep P(S > K) non-increasing in K
+    bands = [{"lo": None, "hi": cuts[0], "p": 1.0 - above[0], "iv": smile_iv(pts, F, cuts[0])}]
+    for i in range(len(cuts) - 1):
+        mid = (cuts[i] + cuts[i + 1]) / 2
+        bands.append({"lo": cuts[i], "hi": cuts[i + 1], "p": above[i] - above[i + 1], "iv": smile_iv(pts, F, mid)})
+    bands.append({"lo": cuts[-1], "hi": None, "p": above[-1], "iv": smile_iv(pts, F, cuts[-1])})
+    return bands
+
+
+# ---- charts (inline SVG, scaled to the card width by the viewBox)
+
+
+def price_svg(rows: list, cone: tuple | None = None, week: tuple | None = None) -> str:
+    """Daily closes plus the options' ±1σ cone to the monthly expiry and the weekly straddle breakevens.
+
+    rows: [[ts_ms, open, high, low, close, ...]]; cone / week: (expiry ts_ms, low, high). '' when there is too little data."""
+    pts = []
+    for r in rows:
+        if isinstance(r, list) and len(r) >= 5:
+            t, h, lo_, c = _num(r[0]), _num(r[2]), _num(r[3]), _num(r[4])
+            if None not in (t, h, lo_, c):
+                pts.append((t, c, h, lo_))
+    if len(pts) < 2:
+        return ""
+    pts.sort()
+    W, H, L, R, Tp, B = 720, 280, 58, 12, 10, 26
+    t0, t_last, last = pts[0][0], pts[-1][0], pts[-1][1]
+    extras = [x for x in (cone, week) if x and x[0] > t_last]
+    t_end = max([t_last] + [x[0] for x in extras])
+    lo = min([p[3] for p in pts] + [x[1] for x in extras]) * 0.98
+    hi = max([p[2] for p in pts] + [x[2] for x in extras]) * 1.02
+    if hi <= lo or t_end <= t0:
+        return ""
+
+    def X(t: float) -> float:
+        return L + (t - t0) / (t_end - t0) * (W - L - R)
+
+    def Y(p: float) -> float:
+        return Tp + (hi - p) / (hi - lo) * (H - Tp - B)
+
+    g = []
+    st_ = nice_step(hi - lo, 5)
+    p = math.ceil(lo / st_) * st_
+    while p <= hi:
+        g.append(
+            f'<line x1="{L}" x2="{W - R}" y1="{Y(p):.1f}" y2="{Y(p):.1f}" style="stroke:var(--line)"/>'
+            f'<text x="{L - 6}" y="{Y(p) + 4:.1f}" text-anchor="end">{_e(_k(p))}</text>'
+        )
+        p += st_
+    d = datetime.fromtimestamp(t0 / 1000, timezone.utc).replace(day=1, hour=0, minute=0, second=0, microsecond=0)  # noqa: UP017
+    while True:
+        d = d.replace(year=d.year + 1, month=1) if d.month == 12 else d.replace(month=d.month + 1)
+        t = d.timestamp() * 1000
+        if t > t_end:
+            break
+        g.append(
+            f'<line x1="{X(t):.1f}" x2="{X(t):.1f}" y1="{Tp}" y2="{H - B}" style="stroke:var(--line)"/>'
+            f'<text x="{X(t):.1f}" y="{H - 8}" text-anchor="middle">{MONTHS_UA[d.month - 1]}</text>'
+        )
+    if cone and cone[0] > t_last:
+        te, clo, chi = cone
+        g.append(
+            f'<polygon points="{X(t_last):.1f},{Y(last):.1f} {X(te):.1f},{Y(chi):.1f} {X(te):.1f},{Y(clo):.1f}" '
+            'style="fill:var(--acc);fill-opacity:.15;stroke:var(--acc);stroke-width:1"/>'
+            f'<text x="{X(te) - 4:.1f}" y="{Y(chi) - 6:.1f}" text-anchor="end" style="fill:var(--acc)">{_e(_k(chi))}</text>'
+            f'<text x="{X(te) - 4:.1f}" y="{Y(clo) + 14:.1f}" text-anchor="end" style="fill:var(--acc)">{_e(_k(clo))}</text>'
+        )
+    if week and week[0] > t_last:
+        for p in week[1:]:
+            g.append(
+                f'<line x1="{X(t_last):.1f}" x2="{X(week[0]):.1f}" y1="{Y(p):.1f}" y2="{Y(p):.1f}" '
+                'style="stroke:var(--warn);stroke-width:2;stroke-dasharray:4 3"/>'
+            )
+    path = "".join(f"{'L' if i else 'M'}{X(t):.1f},{Y(c):.1f}" for i, (t, c, _, _) in enumerate(pts))
+    g.append(f'<path d="{path}" style="fill:none;stroke:var(--fg);stroke-width:1.6"/>')
+    g.append(f'<circle cx="{X(t_last):.1f}" cy="{Y(last):.1f}" r="3.5" style="fill:var(--fg)"/>')
+    g.append(f'<text x="{X(t_last) - 6:.1f}" y="{Y(last) - 8:.1f}" text-anchor="end" style="fill:var(--fg)">{_e(_nf(last))}</text>')
+    return f'<svg viewBox="0 0 {W} {H}" role="img" aria-label="BTC, денні закриття">{"".join(g)}</svg>'
+
+
+def term_svg(points: list[tuple[float, float]]) -> str:
+    """ATM IV (decimal) by days to expiry, square-root time axis. '' with fewer than two points."""
+    pts = sorted((d, iv * 100) for d, iv in points if d > 0)
+    if len(pts) < 2:
+        return ""
+    W, H, L, R, Tp, B = 520, 150, 44, 10, 10, 24
+    dmax = pts[-1][0]
+    lo = math.floor(min(v for _, v in pts) - 1)
+    hi = math.ceil(max(v for _, v in pts) + 1)
+
+    def X(d: float) -> float:
+        return L + math.sqrt(d / dmax) * (W - L - R)
+
+    def Y(v: float) -> float:
+        return Tp + (hi - v) / (hi - lo) * (H - Tp - B)
+
+    g = []
+    st_ = nice_step(hi - lo, 3)
+    p = math.ceil(lo / st_) * st_
+    while p <= hi:
+        g.append(
+            f'<line x1="{L}" x2="{W - R}" y1="{Y(p):.1f}" y2="{Y(p):.1f}" style="stroke:var(--line)"/>'
+            f'<text x="{L - 6}" y="{Y(p) + 4:.1f}" text-anchor="end">{_e(_nf(p, 0 if st_ >= 1 else 1))}</text>'
+        )
+        p += st_
+    for d in (1, 7, 30, 90, 180, 365):
+        if d <= dmax:
+            g.append(f'<text x="{X(d):.1f}" y="{H - 6}" text-anchor="middle">{d} дн</text>')
+    g.append(
+        '<path d="'
+        + "".join(f"{'L' if i else 'M'}{X(d):.1f},{Y(v):.1f}" for i, (d, v) in enumerate(pts))
+        + '" style="fill:none;stroke:var(--acc);stroke-width:2"/>'
+    )
+    g += [f'<circle cx="{X(d):.1f}" cy="{Y(v):.1f}" r="2.5" style="fill:var(--acc)"/>' for d, v in pts]
+    return f'<svg viewBox="0 0 {W} {H}" role="img" aria-label="ATM IV за строками">{"".join(g)}</svg>'
+
+
+# ---- blocks: each returns HTML for one card body; data comes only from the snapshot, every string is escaped
+
+
+def _empty(text: str) -> str:
+    return f"<p class='empty'>{_e(text)}</p>"
+
+
+def _clean(s: object, n: int = 160) -> str:
+    return re.sub(r"\s+", " ", str(s)).strip()[:n]
+
+
+def _section_notes(snap: dict, *names: str) -> str:
+    """Why a block is empty or old: the section's failure reason or its own (older) time."""
+    notes = []
+    for n in names:
+        sec, label = _section(snap, n), SECTION_UA.get(n, n)
+        if not sec.get("ok"):
+            miss = _list(sec.get("missing"))
+            first = miss[0] if miss and isinstance(miss[0], dict) else {}
+            why = _clean(first.get("detail") or first.get("reason") or "секції немає в знімку")
+            notes.append(f"немає даних «{label}»: {why}")
+        elif sec.get("stale"):
+            notes.append(f"«{label}» — з попереднього знімка, дані на {kyiv(parse_utc(sec.get('asof_utc')))} за Києвом")
+    return "".join(f"<p class='note warn'>{_e(x)}</p>" for x in notes)
+
+
+def _hbar(label: str, frac: float, value: str, neg: bool = False, bold: bool = False) -> str:
+    w = max(0.0, min(1.0, frac)) * 100
+    lab = f"<b>{label}</b>" if bold else label
+    return f"<div class='hb'><span>{lab}</span><span class='t'><i class='{'neg' if neg else ''}' style='width:{w:.0f}%'></i></span><span class='r num'>{value}</span></div>"
+
+
+def _tickers(snap: dict) -> dict[str, dict]:
+    out = {}
+    for t in _list((_data(snap, "tickers") or {}).get("tickers")):
+        if isinstance(t, dict) and isinstance(t.get("symbol"), str):
+            out[t["symbol"].split("/")[0]] = t
+    return out
+
+
+def _tile(k: str, v: str, s: str = "", cls: str = "") -> str:
+    return f"<div class='tile'><span class='k'>{k}</span><span class='v'>{v}</span><span class='s {cls}'>{s}</span></div>"
+
+
+def _fng_zone(latest: dict) -> str:
+    z = latest.get("zone") or latest.get("classification")
+    return FNG_UA.get(str(z), _clean(z, 40)) if z else ""
+
+
+def block_tiles(snap: dict) -> str:
+    tiles = []
+    tick = _tickers(snap)
+    for base, t in tick.items():
+        last, pct = _num(t.get("last")), _num(t.get("percentage"))
+        if last is None:
+            continue
+        tiles.append(
+            _tile(
+                _e(base),
+                _e(_nf(last, 0 if last >= 1000 else 2)),
+                _e(f"{_pc(pct, 2)} за 24 год"),
+                "" if pct is None else ("ok" if pct >= 0 else "bad"),
+            )
+        )
+    fng = _data(snap, "fng") or {}
+    latest = fng.get("latest") if isinstance(fng.get("latest"), dict) else {}
+    if _num(latest.get("value")) is not None:
+        s = f"{_fng_zone(latest)} · 7 дн {_nf(fng.get('mean_7d'))}, 30 дн {_nf(fng.get('mean_30d'))}"
+        tiles.append(_tile("Страх і жадібність", _e(_nf(latest["value"])), _e(s)))
+    cur = (_data(snap, "vrp") or {}).get("current")
+    cur = cur if isinstance(cur, dict) else {}
+    dvol = _num(cur.get("dvol"))
+    if dvol is None:
+        lat = (_data(snap, "dvol") or {}).get("latest")
+        v = _num(lat.get("value_pct")) if isinstance(lat, dict) else None
+        dvol = v / 100 if v is not None else None
+    if dvol is not None:
+        pr = _num(cur.get("dvol_percentile_365d"))
+        tiles.append(
+            _tile(
+                "DVOL (IV BTC, 30 дн)",
+                _e(_nf(dvol * 100, 1)),
+                _e(f"{_nf(pr * 100)}-й перцентиль за рік" if pr is not None else "перцентиля немає"),
+            )
+        )
+    body = f"<div class='tiles'>{''.join(tiles)}</div>" if tiles else _empty("Цін у знімку немає.")
+    return body + _section_notes(snap, "tickers", "fng", "vrp")
+
+
+def _em(snap: dict, name: str) -> dict | None:
+    rows = _list((_data(snap, name) or {}).get("expiries"))
+    return rows[0] if rows and isinstance(rows[0], dict) else None
+
+
+def _exp_label(snap: dict, key: str) -> str:
+    exp = (snap.get("expiries") or {}).get(key) if isinstance(snap.get("expiries"), dict) else None
+    return kyiv(expiry_utc(exp), "%d.%m") if expiry_utc(exp) else "—"
+
+
+def _skew_ref(snap: dict) -> dict | None:
+    rows = [x for x in _list((_data(snap, "skew") or {}).get("expiries")) if isinstance(x, dict) and _num(x.get("rr")) is not None]
+    if not rows:
+        return None
+    return next((x for x in rows if (_num(x.get("days")) or 0) > 7), rows[0])
+
+
+def _in_hours(h: float | None) -> str:
+    if h is None:
+        return ""
+    return f"через {h:.0f} год" if h < 48 else f"через {h / 24:.0f} дн"
+
+
+def block_key(snap: dict) -> str:
+    items: list[tuple[str, str, str]] = []  # (chip class, heading, escaped HTML text)
+    btc = _tickers(snap).get("BTC")
+    fng = _data(snap, "fng") or {}
+    latest = fng.get("latest") if isinstance(fng.get("latest"), dict) else {}
+    parts = []
+    if btc and _num(btc.get("last")) is not None:
+        parts.append(f"BTC <b class='num'>{_e(_nf(btc['last']))}</b>, {_e(_pc(btc.get('percentage')))} за добу.")
+    if _num(latest.get("value")) is not None:
+        parts.append(
+            _e(
+                f"Страх і жадібність {_nf(latest['value'])} ({_fng_zone(latest)}); у середньому за 7 дн {_nf(fng.get('mean_7d'))}, за 30 дн {_nf(fng.get('mean_30d'))}."
+            )
+        )
+    if parts:
+        items.append(("calm", "Ринок", " ".join(parts)))
+    w, m = _em(snap, "em_week"), _em(snap, "em_month")
+    parts = []
+    if w and _num(w.get("straddle_pct")) is not None:
+        parts.append(
+            f"Опціони закладають ±{_nf(w['straddle_pct'], 1)} % до {_exp_label(snap, 'week')} "
+            f"(беззбиток тижневого стреддлу {_k(w.get('breakeven_lo'))} – {_k(w.get('breakeven_hi'))})"
+        )
+    if m and _num(m.get("sigma_move_pct")) is not None:
+        parts.append(
+            f"±{_nf(m['sigma_move_pct'], 1)} % (1σ) до {_exp_label(snap, 'month')} ({_k(m.get('sigma_lo'))} – {_k(m.get('sigma_hi'))})"
+        )
+    if parts:
+        items.append(("calm", "Діапазон", _e(" і ".join(parts) + ".")))
+    cur = (_data(snap, "vrp") or {}).get("current")
+    cur = cur if isinstance(cur, dict) else {}
+    dvol, pr, spr = _num(cur.get("dvol")), _num(cur.get("dvol_percentile_365d")), _num(cur.get("spread_vs_rv30"))
+    if dvol is not None:
+        txt = f"DVOL {_nf(dvol * 100, 1)}"
+        if pr is not None:
+            txt += f" — {_nf(pr * 100)}-й перцентиль за рік"
+        if spr is not None:
+            txt += f"; премія IV − RV30 {_pc(spr * 100, 1).replace(' %', '')} вп"
+        txt += ". Рівень волатильності сам по собі не сигнал: метод «купувати дешеву волатильність» перевірено 18.10 і відхилено."
+        items.append(("risk" if pr is not None and pr >= 0.8 else "calm", "Волатильність", _e(txt)))
+    sk = _skew_ref(snap)
+    if sk:
+        rr = _num(sk["rr"])
+        exp = _clean(sk.get("expiry"), 12)
+        if rr < 0:
+            items.append(
+                (
+                    "risk" if rr <= -0.02 else "calm",
+                    "Захист",
+                    _e(
+                        f"Пути 25Δ дорожчі за коли на {_nf(-rr * 100, 1)} вп волатильності ({exp}): ринок платить за страховку від падіння."
+                    ),
+                )
+            )
+        else:
+            items.append(
+                (
+                    "calm",
+                    "Скью",
+                    _e(f"Коли 25Δ дорожчі за пути на {_nf(rr * 100, 1)} вп волатильності ({exp}): ринок платить за участь у зростанні."),
+                )
+            )
+    ev = _data(snap, "events")
+    if ev is not None:
+        nxt = ev.get("next_event") if isinstance(ev.get("next_event"), dict) else None
+        if nxt:
+            when = kyiv(_iso(nxt.get("ts_utc")))
+            txt = f"{_clean(nxt.get('title'), 80)} — {when} за Києвом, {_in_hours(_num(nxt.get('hours_ahead')))}."
+            if ev.get("high_impact_within_48h") is True:
+                items.append(
+                    ("risk", "Подія", _e(txt + " До події з високим впливом менше 48 год: менший розмір або позиція з обмеженим ризиком."))
+                )
+            else:
+                items.append(("ev", "Подія", _e(txt)))
+        else:
+            items.append(("calm", "Подія", _e("Подій з високим впливом у календарі на 14 днів немає.")))
+    if not items:
+        return _empty("Даних для головного немає.") + _section_notes(snap, "tickers", "em_week", "em_month", "vrp", "skew", "events")
+    lab = {"calm": "спокій", "opp": "нагода", "risk": "ризик", "ev": "подія"}
+    return (
+        "<ul class='key'>"
+        + "".join(f"<li><span class='chip {c}'>{lab[c]}</span><span><b>{_e(h)}.</b> {t}</span></li>" for c, h, t in items)
+        + "</ul>"
+    )
+
+
+def _iso(s: object) -> datetime | None:
+    try:
+        dt = datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)  # noqa: UP017
+
+
+def block_chart(snap: dict) -> str:
+    rows = _list((_data(snap, "ohlc") or {}).get("rows"))
+    cone = week = None
+    m, w = _em(snap, "em_month"), _em(snap, "em_week")
+    tm, tw = expiry_utc((snap.get("expiries") or {}).get("month")), expiry_utc((snap.get("expiries") or {}).get("week"))
+    if m and tm and _num(m.get("sigma_lo")) and _num(m.get("sigma_hi")):
+        cone = (tm.timestamp() * 1000, _num(m["sigma_lo"]), _num(m["sigma_hi"]))
+    if w and tw and _num(w.get("breakeven_lo")) and _num(w.get("breakeven_hi")):
+        week = (tw.timestamp() * 1000, _num(w["breakeven_lo"]), _num(w["breakeven_hi"]))
+    svg = price_svg(rows, cone, week)
+    if not svg:
+        return _empty("Свічок BTC у знімку немає.") + _section_notes(snap, "ohlc")
+    legend = ["<span><i style='background:var(--fg)'></i>ціна закриття (Binance, день)</span>"]
+    if cone:
+        legend.append(f"<span><i style='background:var(--acc)'></i>±1σ до {_exp_label(snap, 'month')} (опціони)</span>")
+    if week:
+        legend.append(f"<span><i style='background:var(--warn)'></i>беззбиток стреддлу до {_exp_label(snap, 'week')}</span>")
+    return svg + f"<div class='legend'>{''.join(legend)}</div>" + _section_notes(snap, "ohlc", "em_month", "em_week")
+
+
+def block_scenarios(snap: dict) -> str:
+    chain = _data(snap, "chain")
+    sm = chain_smile(chain) if chain else None
+    if not sm:
+        return _empty("Ланцюжка опціонів у знімку немає: сценарії не пораховано.") + _section_notes(snap, "chain")
+    F, T, pts = sm
+    bands = range_probabilities(pts, F, T, scenario_cuts(F))
+    mx = max(b["p"] for b in bands) or 1.0
+    rows = []
+    for b in reversed(bands):
+        if b["lo"] is None:
+            label = f"нижче {_k(b['hi'])}"
+        elif b["hi"] is None:
+            label = f"вище {_k(b['lo'])}"
+        else:
+            label = f"{_k(b['lo'])} – {_k(b['hi'])}"
+        here = (b["lo"] is None or b["lo"] <= F) and (b["hi"] is None or F < b["hi"])
+        rows.append(
+            _hbar(
+                _e(label) + f" <span class='mut'>IV {_e(_nf(b['iv'] * 100, 0))}</span>",
+                b["p"] / mx,
+                _e(f"{_nf(b['p'] * 100)} %"),
+                bold=here,
+            )
+        )
+    note = (
+        f"Ризик-нейтральні ймовірності з ланцюжка Deribit на {_e(_exp_label(snap, 'month'))} (IV на кожному страйку, нахил усмішки враховано), "
+        f"форвард {_e(_nf(F))} (жирним — його діапазон). Це ціна страхування в ринку, а не наш прогноз: реальні ймовірності "
+        "відрізняються на премію за ризик. Прогнози асистента з'являться окремо, з оцінкою точності (Brier)."
+    )
+    return f"<div class='hbars'>{''.join(rows)}</div><p class='note'>{note}</p>" + _section_notes(snap, "chain")
+
+
+def block_vol(snap: dict) -> str:
+    vrp = _data(snap, "vrp") or {}
+    cur = vrp.get("current") if isinstance(vrp.get("current"), dict) else {}
+    dv = _data(snap, "dvol") or {}
+    tiles = []
+    dvol = _num(cur.get("dvol"))
+    if dvol is not None:
+        ch = _num(dv.get("change_7d_pts"))
+        tiles.append(_tile("DVOL", _e(_nf(dvol * 100, 1)), _e(f"за 7 днів {_pc(ch, 1).replace(' %', '')} вп" if ch is not None else "")))
+    rv30, rv7 = _num(cur.get("rv_30d")), _num(cur.get("rv_7d"))
+    if rv30 is not None:
+        tiles.append(_tile("Реалізована 30 дн", _e(_nf(rv30 * 100, 1)), _e(f"7 дн {_nf(rv7 * 100, 1)}" if rv7 is not None else "")))
+    spr = _num(cur.get("spread_vs_rv30"))
+    if spr is not None:
+        tiles.append(_tile("Премія IV − RV30", _e(_pc(spr * 100, 1).replace(" %", "")), "пунктів волатильності"))
+    out = [f"<div class='tiles'>{''.join(tiles)}</div>"] if tiles else []
+    term = _data(snap, "term") or {}
+    pts = []
+    for x in _list(term.get("expiries")):
+        if isinstance(x, dict) and _num(x.get("days")) is not None and _num(x.get("atm_iv")) is not None:
+            pts.append((_num(x["days"]), _num(x["atm_iv"])))
+    svg = term_svg(pts)
+    if svg:
+        out.append(svg + "<div class='legend'><span><i style='background:var(--acc)'></i>ATM IV за строками експірації, %</span></div>")
+    notes = []
+    shape = term.get("shape")
+    if svg and isinstance(shape, str):
+        notes.append(f"Крива {TERM_SHAPE_UA.get(shape, _clean(shape, 30))}.")
+    sk = [
+        x
+        for x in _list((_data(snap, "skew") or {}).get("expiries"))
+        if isinstance(x, dict) and _num(x.get("rr")) is not None and (_num(x.get("days")) or 0) > 1
+    ]
+    if sk:
+        a, b = sk[0], sk[-1]
+        notes.append(
+            f"Скью (RR 25Δ, кол − пут): {_pc(_num(a['rr']) * 100, 1).replace(' %', '')} вп ({_clean(a.get('expiry'), 12)}) і "
+            f"{_pc(_num(b['rr']) * 100, 1).replace(' %', '')} вп ({_clean(b.get('expiry'), 12)}); від'ємний — пути дорожчі."
+        )
+    cell = next((x for x in _list(vrp.get("by_dvol_level")) if isinstance(x, dict) and x.get("current") is True), None)
+    if cell and _num(cell.get("mean_straddle_pnl")) is not None:
+        notes.append(
+            f"Бектест на поточному рівні DVOL ({_clean(cell.get('dvol_percentile_365d'), 12)} перцентиля за рік): короткий 30-денний стреддл ATM "
+            f"з щоденним дельта-хеджем у середньому {_pc(_num(cell['mean_straddle_pnl']) * 100, 2)} спота, у плюсі {_nf((_num(cell.get('share_positive')) or 0) * 100)} %, "
+            f"n = {_nf(cell.get('n_starts'))} перекривних стартів. Історія за DVOL, не за марками; не сигнал."
+        )
+    if notes:
+        out.append(f"<p class='note'>{_e(' '.join(notes))}</p>")
+    warns = [_clean(x, 1200) for x in _list(_section(snap, "vrp").get("warnings")) if isinstance(x, str)]
+    if warns and vrp:
+        out.append("<details><summary>Бектест VRP: результат і межі</summary>" + "".join(f"<p>{_e(x)}</p>" for x in warns) + "</details>")
+    if not out:
+        return _empty("Даних про волатильність у знімку немає.") + _section_notes(snap, "vrp", "dvol", "term", "skew")
+    return "".join(out) + _section_notes(snap, "vrp", "dvol", "term", "skew")
+
+
+def block_events(snap: dict) -> str:
+    ev = _data(snap, "events")
+    if ev is None:
+        return _empty("Календаря подій у знімку немає.") + _section_notes(snap, "events")
+    rows = []
+    for x in _list(ev.get("events"))[:12]:
+        if not isinstance(x, dict):
+            continue
+        when = kyiv(_iso(x.get("ts_utc")))
+        imp = str(x.get("impact") or "")
+        cls = "bad" if imp == "high" else "mut"
+        imp = IMPACT_UA.get(imp, imp)
+        seed = " · час орієнтовний" if x.get("source") == "seed" else ""
+        rows.append(
+            f"<tr><td class='num' style='white-space:nowrap'>{_e(when)}</td><td>{_e(_clean(x.get('title'), 100))}"
+            f"<br><span class='mut' style='font-size:12px'>{_e(_in_hours(_num(x.get('hours_ahead'))))}{_e(seed)}</span></td>"
+            f"<td class='{cls}'>{_e(_clean(imp, 12))}</td></tr>"
+        )
+    body = f"<table>{''.join(rows)}</table>" if rows else _empty("Подій на 14 днів у календарі немає.")
+    warns = [_clean(x, 300) for x in _list(_section(snap, "events").get("warnings")) if isinstance(x, str)]
+    miss = [_clean((m or {}).get("field", "") if isinstance(m, dict) else m, 60) for m in _list(_section(snap, "events").get("missing"))]
+    if miss:
+        warns.append("Неповне джерело: " + ", ".join(miss))
+    body += "<p class='note'>За 48 год до події з високим впливом — менший розмір або позиція з обмеженим ризиком.</p>"
+    body += "".join(f"<p class='note'>{_e(x)}</p>" for x in warns)
+    return body + _section_notes(snap, "events")
+
+
+def block_funding(snap: dict) -> str:
+    groups = []
+    for base, name in (("BTC", "funding_btc"), ("ETH", "funding_eth")):
+        d = _data(snap, name)
+        venues = [v for v in _list((d or {}).get("venues")) if isinstance(v, dict) and _num(v.get("annualized")) is not None]
+        if venues:
+            groups.append((base, venues, d))
+    if not groups:
+        return _empty("Funding у знімку немає.") + _section_notes(snap, "funding_btc", "funding_eth")
+    mx = max(abs(_num(v["annualized"])) for _, vs, _ in groups for v in vs) or 1.0
+    out = []
+    for base, venues, d in groups:
+        out.append(f"<h3 style='font-size:14px;margin:6px 0 4px'>{base}</h3><div class='hbars'>")
+        for v in venues:
+            a = _num(v["annualized"])
+            label = VENUE_NAMES.get(str(v.get("venue")), _clean(v.get("venue"), 20))
+            out.append(_hbar(_e(label), abs(a) / mx, _e(_pc(a * 100, 1)), neg=a < 0))
+        out.append("</div>")
+        ws = d.get("widest_spread")
+        if isinstance(ws, dict) and _num(ws.get("annualized_spread")) is not None:
+            lv = VENUE_NAMES.get(str(ws.get("long_venue")), _clean(ws.get("long_venue"), 20))
+            sv = VENUE_NAMES.get(str(ws.get("short_venue")), _clean(ws.get("short_venue"), 20))
+            gap = _nf(_num(ws["annualized_spread"]) * 100, 1)
+            txt = f"Найбільша різниця: лонг {lv}, шорт {sv} — {gap} п. п. річних до комісій, базису й маржі."
+            out.append(f"<p class='note'>{_e(txt)}</p>")
+    out.append("<p class='note'>Річних, у відсотках: додатний funding — лонги платять шортам.</p>")
+    return "".join(out) + _section_notes(snap, "funding_btc", "funding_eth")
+
+
+def _guard(fn, snap: dict) -> str:
+    try:
+        return fn(snap)
+    except Exception as e:  # noqa: BLE001 - one odd section must not take the page down
+        return _empty(f"Блок не вдалося показати: несподіваний формат даних ({type(e).__name__}).")
+
+
+def render_brief(snap: dict | None, err: str | None, now: float, path: Path | None = None) -> str:
+    """The «Бриф» tab. Never raises: a missing, stale or corrupt snapshot gives an explained empty state."""
+    head = (
+        "<!doctype html><html lang='uk'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+        f"<meta http-equiv='refresh' content='{REFRESH_S}'><title>tradedesk — бриф</title><style>{CSS}{BRIEF_CSS}</style></head><body>"
+    )
+    caveats = "<div class='caveat'><b>Застереження</b><ul>" + "".join(f"<li>{_e(c)}</li>" for c in BRIEF_CAVEATS) + "</ul></div>"
+    try:
+        if snap is None:
+            where = f" (<code>{_e(path)}</code>)" if path else ""
+            msg = {
+                "missing": f"Знімка асистента ще немає{where}: завдання колектора <code>assistant_snapshot</code> вимкнене або ще не відпрацювало.",
+                "corrupt": f"Файл знімка пошкоджений або має несподіваний формат{where}. Наступний прогін колектора (кожні 10 хв) його перепише.",
+            }.get(err or "", f"Знімок не читається{where}: {_e(err)}.")
+            return head + f"<header><h1>Бриф</h1><span class='bad'>{msg}</span></header>{_nav('brief')}{caveats}</body></html>"
+        asof = parse_utc(snap.get("asof_utc"))
+        age = now - asof.timestamp() if asof else None
+        if age is None:
+            stamp = "<span class='bad'>Час знімка невідомий: дані можуть бути застарілими.</span>"
+        else:
+            cls = "bad" if age > SNAPSHOT_OLD_S else "warn" if age > SNAPSHOT_STALE_S else "mut"
+            stamp = f"<span class='{cls}'>Знімок {_e(kyiv(asof))} за Києвом · {_e(fmt_age(age))}"
+            if age > SNAPSHOT_STALE_S:
+                stamp += " · старший за 30 хв: завдання колектора, схоже, зупинилось, дані можуть бути неактуальні"
+            stamp += "</span>"
+        extra = []
+        if snap.get("schema") != SNAPSHOT_SCHEMA:
+            extra.append(f"схема знімка {_clean(snap.get('schema'), 10)}, панель знає {SNAPSHOT_SCHEMA}: частина блоків може бути порожня")
+        miss = [SECTION_UA.get(str(n), _clean(n, 30)) for n in _list(snap.get("missing"))]
+        stale = [SECTION_UA.get(str(n), _clean(n, 30)) for n in _list(snap.get("stale"))]
+        if miss:
+            extra.append("без даних: " + ", ".join(miss))
+        if stale:
+            extra.append("з попереднього знімка: " + ", ".join(stale))
+        out = [head, f"<header><h1>Бриф</h1>{stamp}"]
+        out += [f"<span class='warn'>{_e(x)}</span>" for x in extra]
+        out.append(f"</header>{_nav('brief')}{caveats}<main class='brief'>")
+        # the expiry label only next to its data: `expiries` can name an expiry whose section was dropped as too old
+        month = _exp_label(snap, "month") if _data(snap, "chain") else "—"
+        scen = f"Сценарії на {month}" if month != "—" else "Сценарії на місячну експірацію"
+        cards = (
+            ("wide", "", block_tiles),
+            ("", "Головне сьогодні", block_key),
+            ("", "BTC за 120 днів і що закладають опціони", block_chart),
+            ("", f"{scen} · ймовірності з цін опціонів", block_scenarios),
+            ("", "Волатильність", block_vol),
+            ("", "Події · час Київ", block_events),
+            ("", "Funding · річних", block_funding),
+        )
+        for cls, title, fn in cards:
+            h2 = f"<h2>{_e(title)}</h2>" if title else ""
+            out.append(f"<section class='{cls}'>{h2}{_guard(fn, snap)}</section>")
+        out.append("</main></body></html>")
+        return "".join(out)
+    except Exception as e:  # noqa: BLE001 - the page always renders
+        return (
+            head
+            + f"<header><h1>Бриф</h1><span class='bad'>Знімок не вдалося показати ({_e(type(e).__name__)}).</span></header>{_nav('brief')}{caveats}</body></html>"
+        )
+
+
+def brief_page(now: float | None = None) -> str:
+    snap, err = load_snapshot(SNAPSHOT_PATH)
+    return render_brief(snap, err, time.time() if now is None else now, SNAPSHOT_PATH)
+
+
 # ---------------------------------------------------------------- server
 
 
@@ -644,8 +1468,11 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         with _State.lock:
             snap, page = _State.snap, _State.page
-        if self.path in ("/", "/index.html"):
+        path = self.path.split("?", 1)[0]
+        if path in ("/", "/index.html"):
             body, ctype = page.encode(), "text/html; charset=utf-8"
+        elif path == "/brief":
+            body, ctype = brief_page().encode(), "text/html; charset=utf-8"  # read per request: the age is always current
         elif self.path == "/status.json":
             body, ctype = json.dumps(snap or {}, ensure_ascii=False, default=str).encode(), "application/json; charset=utf-8"
         else:
@@ -679,9 +1506,10 @@ def main() -> None:
     sv.add_argument("--port", type=int, default=8090)
     on = sub.add_parser("once")
     on.add_argument("--out", type=Path, required=True)
+    on.add_argument("--brief", action="store_true", help="the «Бриф» tab from the assistant snapshot instead of the project page")
     a = ap.parse_args()
     if a.cmd == "once":
-        a.out.write_text(render(snapshot()), encoding="utf-8")
+        a.out.write_text(brief_page() if a.brief else render(snapshot()), encoding="utf-8")
         print(f"-> {a.out}")
         return
     threading.Thread(target=_refresh_loop, daemon=True).start()

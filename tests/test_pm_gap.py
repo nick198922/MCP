@@ -23,6 +23,7 @@ from tradedesk.analytics.pm_gap import (
     pick_expiry,
     top_of_book,
     touch_state,
+    weekly_rules_direction,
     weekly_window,
 )
 from tradedesk.analytics.pm_threshold import digital_above, settle_ts
@@ -707,3 +708,15 @@ async def test_job_fails_when_polymarket_is_down_and_is_scheduled_only_when_enab
         assert job.period_seconds == 3600
     finally:
         await on.aclose()
+
+
+def test_weekly_rules_direction_on_live_texts_2026_10_20():
+    """Live weekly touch texts: 'reach' names only the pair, 'dip' names the asset and the pair; a window from the
+    market's creation does not fit the slug window and is rejected."""
+    from pathlib import Path
+
+    texts = json.loads((Path(__file__).parent / "fixtures" / "polymarket_weekly_touch_rules_2026-10-20.json").read_text())["texts"]
+    assert weekly_rules_direction(texts["reach_pair_only"]["rules"], "bitcoin") == "up"
+    assert weekly_rules_direction(texts["dip_name_and_pair"]["rules"], "bitcoin") == "down"
+    assert weekly_rules_direction(texts["dip_from_creation"]["rules"], "bitcoin") is None
+    assert weekly_rules_direction(texts["reach_pair_only"]["rules"], "ethereum") is None  # ETH market citing BTC/USDT

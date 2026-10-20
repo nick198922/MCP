@@ -155,11 +155,15 @@ def weekly_rules_direction(description: str, asset: str) -> str | None:
     """'up'/'down' if a WEEKLY touch text states the Binance 1-minute-candle rule for the asset's pair with an ET window.
 
     The daily pattern ("between 12:00 AM ET and 11:59 PM ET") does not fit a week, so only the pair, the candle kind and the
-    High/Low wording are required. The exact weekly wording has not been checked against a live text yet (see the HANDOFF).
+    High/Low wording are required. Live texts of 2026-10-20 name the pair either as "Bitcoin (BTC/USDT)" (dip) or as
+    "BTC/USDT" (reach); both are accepted. A window that starts at the market's creation, not at the first date of the
+    slug, does not fit ``weekly_window`` and is rejected.
     """
     name, pair = ASSET_NAMES.get(asset, ("", ""))
     d = _norm(description)
-    if not pair or f"Binance 1 minute candle for {name} ({pair})" not in d or " ET" not in d:
+    if not pair or " ET" not in d or "creation of this market" in d:
+        return None
+    if f"Binance 1 minute candle for {name} ({pair})" not in d and f"Binance 1 minute candle for {pair} " not in d:
         return None
     up = '"High" price equal to or greater than the price specified in the title' in d
     down = '"Low" price equal to or lower than the price specified in the title' in d

@@ -126,7 +126,6 @@ async def build_snapshot(rt: "Runtime") -> dict[str, Any]:
             "funding_btc": ("perps_funding_compare", {"base": "BTC"}),
             "funding_eth": ("perps_funding_compare", {"base": "ETH"}),
             "events": ("macro_calendar", {"horizon_days": 14}),
-            "upbit": ("upbit_notices", {"days": 14, "max_pages": 3}),
         }
         names = list(plan)
         results = await asyncio.gather(*(_call(c, *plan[n]) for n in names))

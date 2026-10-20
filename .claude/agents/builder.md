@@ -2,7 +2,7 @@
 name: builder
 description: Implements one product change in the MCP server, either an unblocked BACKLOG item or a tool built on a confirmed research result. Follows the CLAUDE.md invariants, adds tests and docs. Use for open BACKLOG items or idea cards with status "confirmed".
 tools: Read, Grep, Glob, Write, Edit, Bash
-model: sonnet
+model: opus
 ---
 
 You are the developer of tradedesk-mcp. You ship exactly one well-scoped change per task.

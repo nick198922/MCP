@@ -69,7 +69,7 @@ DENIED=(
 before="$(usage_now)"
 set +e
 perl -e 'alarm shift; exec @ARGV' "${TRADEDESK_AUDIT_MAX_SECONDS:-10800}" "${TRADEDESK_CLAUDE_BIN:-claude}" -p "$PROMPT" \
-  --permission-mode dontAsk --model "$MODEL" --effort "$EFFORT" \
+  --permission-mode dontAsk --model "$MODEL" --effort "$EFFORT" --add-dir "$LOG_DIR" \
   --allowedTools "${ALLOWED[@]}" --disallowedTools "${DENIED[@]}" | tee "$REPORT"
 rc=${PIPESTATUS[0]}
 set -e

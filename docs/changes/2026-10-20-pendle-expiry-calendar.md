@@ -1,0 +1,2 @@
+- Новий інструмент `pendle_expiry_calendar`: календар експірацій PT Pendle на N днів уперед, групи за датою з сумарною ліквідністю/TVL і ринками (implied/underlying APY). `compare_pt_vs_underlying` вважаємо покритим `implied_minus_underlying`; лишився `liquidity_depth`.
+- BACKLOG: уточнено, що провайдер funding Bybit уже виправлено (17.10); лишились перерахунки досліджень.

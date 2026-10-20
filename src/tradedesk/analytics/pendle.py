@@ -264,3 +264,58 @@ def scan_fixed_yields(
     key = sort_by if sort_by in {"implied_apy", "liquidity_usd", "days_to_expiry", "implied_minus_underlying"} else "implied_apy"
     out.sort(key=lambda r: (r[key] is None, -(r[key] or 0.0) if key != "days_to_expiry" else (r[key] or 0.0)))
     return {"markets_total": total, "markets_skipped": skipped, "markets_matched": len(out), "markets": out[:limit]}
+
+
+def expiry_calendar(
+    markets: Any,
+    now: datetime,
+    *,
+    days_ahead: float = 90.0,
+    asset: str | None = None,
+    min_liquidity_usd: float = 0.0,
+    chain_ids: list[int] | None = None,
+) -> dict[str, Any]:
+    """Active markets expiring within `days_ahead`, grouped by expiry date (UTC), soonest first.
+
+    Each group sums liquidity and TVL (unknown values count as 0 and are reported in `unknown_liquidity`) and lists
+    its markets, most liquid first. `asset` filters names by case-insensitive substring.
+    """
+    rows, skipped = summarise_all(markets, now)
+    needle = asset.strip().lower() if asset else None
+    groups: dict[str, dict[str, Any]] = {}
+    matched = 0
+    for r in rows:
+        d = r["days_to_expiry"]
+        if r["expired"] or d is None or d > days_ahead or not r["name"]:
+            continue
+        if needle and needle not in r["name"].lower():
+            continue
+        if chain_ids and r["chain_id"] not in chain_ids:
+            continue
+        if (r["liquidity_usd"] or 0.0) < min_liquidity_usd:
+            continue
+        exp = parse_expiry(r["expiry"])
+        day = exp.date().isoformat() if exp else str(r["expiry"])
+        g = groups.setdefault(
+            day, {"date": day, "days_to_expiry": d, "liquidity_usd": 0.0, "tvl_usd": 0.0, "unknown_liquidity": 0, "markets": []}
+        )
+        g["days_to_expiry"] = min(g["days_to_expiry"], d)
+        g["liquidity_usd"] += r["liquidity_usd"] or 0.0
+        g["tvl_usd"] += r["tvl_usd"] or 0.0
+        g["unknown_liquidity"] += r["liquidity_usd"] is None
+        g["markets"].append(
+            {k: r[k] for k in ("name", "chain_id", "market", "expiry", "implied_apy", "underlying_apy", "liquidity_usd", "tvl_usd")}
+        )
+        matched += 1
+    cal = sorted(groups.values(), key=lambda g: g["days_to_expiry"])
+    for g in cal:
+        g["markets"].sort(key=lambda m: -(m["liquidity_usd"] or 0.0))
+        g["markets_count"] = len(g["markets"])
+    return {
+        "days_ahead": days_ahead,
+        "markets_total": len(rows),
+        "markets_skipped": skipped,
+        "markets_matched": matched,
+        "liquidity_usd_total": sum(g["liquidity_usd"] for g in cal),
+        "calendar": cal,
+    }

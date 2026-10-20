@@ -20,6 +20,9 @@ STAMP="$(date +%Y-%m-%d_%H%M%S)"
 REPORT="$LOG_DIR/$STAMP.audit.md"
 
 mkdir -p "$LOG_DIR"
+# While the audit runs the agents loop does not start new steps (scripts/agents_loop.sh, audit_running).
+echo $$ >"$LOG_DIR/audit.pid"
+trap 'rm -f "$LOG_DIR/audit.pid"' EXIT
 exec >>"$LOG_DIR/$STAMP.audit.log" 2>&1
 echo "== $(date) weekly audit ($MODEL, effort $EFFORT)"
 # The weekly limit resets at 20:00 Kyiv; if it has not (yet), wait up to an hour rather than run into the wall.

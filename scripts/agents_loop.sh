@@ -179,6 +179,17 @@ daily_check() {
   doctor "daily health check"
 }
 
+# The weekly audit (scripts/agents_audit.sh) gets the fresh weekly limit first: no new steps while it runs, nor in
+# the minutes before its timer (Tuesday 19:45-20:03 Kyiv), so a step does not slip in just before it starts.
+audit_running() {
+  local pid hm
+  pid="$(cat "$LOG_DIR/audit.pid" 2>/dev/null)"
+  [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null && return 0
+  [[ "$(TZ=Europe/Kyiv date +%u)" == 2 ]] || return 1
+  hm="$(TZ=Europe/Kyiv date +%H%M)"
+  ((10#$hm >= 1945 && 10#$hm < 2003))
+}
+
 quiet_now() {
   local h from to
   h=$((10#$(date +%H)))
@@ -213,6 +224,13 @@ while true; do
     log "this script changed; continuing with the new version"
     kill "$TICKER" 2>/dev/null
     exec "$0" "$@"
+  fi
+  if audit_running; then
+    log "waiting 300s: the weekly audit runs first"
+    loop_state "пауза: триває тижневий аудит"
+    announce "audit" "⏸ **Агенти чекають:** спершу тижневий аудит, потім продовжать самі." --silent
+    sleep 300
+    continue
   fi
   daily_check
   git -C "$REPO" fetch -q --no-write-fetch-head origin || log "fetch failed"

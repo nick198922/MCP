@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
+import sqlite3
+from collections import Counter
 from datetime import UTC, date, datetime
+from pathlib import Path
 
 import httpx
 import pytest
@@ -26,15 +30,20 @@ from tradedesk.analytics.pm_gap import (
     weekly_rules_direction,
     weekly_window,
 )
+from tradedesk.analytics.pm_gap_paper import rules_accepted
+from tradedesk.analytics.pm_gap_report import settled_outcomes
 from tradedesk.analytics.pm_threshold import digital_above, settle_ts
 from tradedesk.analytics.pm_touch import day_window
-from tradedesk.collector.pm_gap import collect_pm_gap, scan_gaps
+from tradedesk.collector.pm_gap import collect_pm_gap, resolve_outcomes, scan_gaps
 from tradedesk.collector.scheduler import build_default_scheduler
 from tradedesk.config import Settings
 from tradedesk.core.envelope import Builder
 from tradedesk.runtime import Runtime
 from tradedesk.server import build_server
+from tradedesk.store import SCHEMA_VERSION, Store
+from tradedesk.store.schema import MIGRATIONS
 
+FIXTURES = Path(__file__).parent / "fixtures"
 NOW_TS = int(NOW.timestamp())
 # a Deribit expiry exists on 2026-10-30 08:00 UTC; the markets below end before it
 END_ABOVE = settle_ts(date(2026, 10, 29))  # 12:00 ET = 16:00 UTC
@@ -720,3 +729,220 @@ def test_weekly_rules_direction_on_live_texts_2026_10_20():
     assert weekly_rules_direction(texts["dip_name_and_pair"]["rules"], "bitcoin") == "down"
     assert weekly_rules_direction(texts["dip_from_creation"]["rules"], "bitcoin") is None
     assert weekly_rules_direction(texts["reach_pair_only"]["rules"], "ethereum") is None  # ETH market citing BTC/USDT
+
+
+# ----------------------------------------------------------------------------- registration section 13: read times, forward, rules
+
+
+def test_classify_accepts_the_live_closing_at_wording_2026_10_20():
+    """Every open threshold market uses "... candle for <PAIR> closing at 12:00 ..." (since 2026-10-07): the collector
+    now marks it standard, with the same acceptance as the paper test (pm_gap_paper.rules_accepted)."""
+    texts = json.loads((FIXTURES / "polymarket_threshold_rules_2026-10-20.json").read_text())["texts"]
+    btc, eth = texts["btc_closing_at"], texts["eth_closing_at"]
+    for t in (btc, eth):  # the fixture is the exact text: its hash is the collector's
+        assert hashlib.sha256(t["rules"].encode("utf-8")).hexdigest()[:16] == t["rules_hash"]
+    ev = _events()
+    above, eth_ev = ev[0], ev[2]
+    c = classify_open_market(above, {**above["markets"][0], "description": btc["rules"]}, NOW_TS, 30)
+    assert c["status"] == "ok" and c["rules_standard"] is True and c["rules_hash"] == btc["rules_hash"]
+    assert classify_open_market(eth_ev, {**eth_ev["markets"][0], "description": eth["rules"]}, NOW_TS, 30)["rules_standard"] is True
+    # the pair must be the market's own, and the strict "higher than" is still required
+    assert classify_open_market(above, {**above["markets"][0], "description": eth["rules"]}, NOW_TS, 30)["rules_standard"] is False
+    lower = btc["rules"].replace("higher than", "lower than")
+    assert classify_open_market(above, {**above["markets"][0], "description": lower}, NOW_TS, 30)["rules_standard"] is False
+    assert rules_accepted(btc["rules"], "BTC") and rules_accepted(eth["rules"], "ETH")
+
+
+async def test_job_records_read_times_and_the_smile_forward(state, monkeypatch):
+    import tradedesk.collector.pm_gap as mod
+
+    rt = await _rt(state)
+    try:
+        real = mod.scan_gaps
+
+        async def wide(rt_, b, *, max_days=14.0):
+            return await real(rt_, b, max_days=30.0)
+
+        monkeypatch.setattr(mod, "scan_gaps", wide)
+        assert await collect_pm_gap(rt) == 8
+        cur = await rt.store.conn.execute("SELECT market_id, book_ts, surface_ts, model_forward, model_note FROM pm_gap_snapshot")
+        got = {r[0]: tuple(r)[1:] for r in await cur.fetchall()}
+        raw = (await rt.deribit.book_summary("BTC", "option")).data
+        by_exp = group_by_expiry(build_chain(raw, NOW))
+        fwd = build_smile(by_exp[pick_expiry(by_exp, END_ABOVE)]).forward
+        book_ts, surface_ts, forward, note = got["m1"]
+        assert note == "ok" and forward == pytest.approx(fwd)
+        assert isinstance(book_ts, int) and isinstance(surface_ts, int) and abs(book_ts - surface_ts) <= 5
+        # touch markets before their window have no model, so no forward; the read times are still recorded
+        assert got["m2"][2] is None and got["m2"][0] is not None and got["m2"][1] is not None
+    finally:
+        await rt.aclose()
+
+
+async def test_scan_reads_the_surface_after_the_books(state):
+    """The Deribit surface is read right after the Polymarket books (smaller skew between the two quotes)."""
+    rt = await _rt(state)
+    try:
+        b = Builder()
+        await scan_gaps(rt, b, max_days=30)
+        order = [e.provider for e in b.evidence]
+        assert order.index("polymarket:clob") < order.index("deribit")
+    finally:
+        await rt.aclose()
+
+
+async def test_migration_18_adds_columns_and_the_outcome_table_to_an_old_db(tmp_path):
+    path = tmp_path / "v17.sqlite"
+    con = sqlite3.connect(path)
+    for v in sorted(MIGRATIONS):
+        if v <= 17:
+            for stmt in MIGRATIONS[v]:
+                con.execute(stmt)
+    con.execute("PRAGMA user_version = 17")
+    con.execute(
+        "INSERT INTO pm_gap_snapshot (ts, market_id, asset, kind, direction, strike, end_ts, hours_to_end, model_prob)"
+        " VALUES (100, 'old', 'BTC', 'above', 'above', 70000, 7300, 2.0, 0.4)"
+    )
+    con.commit()
+    con.close()
+    s = Store(path)
+    await s.init()
+    try:
+        assert SCHEMA_VERSION == 18 and await s.version() == 18
+        cur = await s.conn.execute("SELECT model_prob, book_ts, surface_ts, model_forward FROM pm_gap_snapshot WHERE market_id = 'old'")
+        assert tuple(await cur.fetchone()) == (0.4, None, None, None)  # history kept, the new fields NULL
+        row = {
+            "market_id": "new",
+            "asset": "BTC",
+            "kind": "above",
+            "direction": "above",
+            "strike": 1.0,
+            "end_ts": 9000,
+            "hours_to_end": 2.0,
+        }
+        await s.insert_pm_gap(200, [{**row, "book_ts": 199, "surface_ts": 201, "model_forward": 70_100.0}])
+        cur = await s.conn.execute("SELECT book_ts, surface_ts, model_forward FROM pm_gap_snapshot WHERE market_id = 'new'")
+        assert tuple(await cur.fetchone()) == (199, 201, 70_100.0)
+        assert await s.table_count("pm_gap_outcome") == 0
+    finally:
+        await s.aclose()
+
+
+# ----------------------------------------------------------------------------- settled results (registration section 7)
+
+REAL_GAMMA = {
+    m["id"]: m for e in json.loads((FIXTURES / "polymarket_threshold_events_2026-10-15.json").read_text())["events"] for m in e["markets"]
+}
+END_FEB23 = int(datetime(2026, 2, 23, 17, 0, tzinfo=UTC).timestamp())  # 12:00 ET; BTC above 64k paid YES, above 66k paid NO
+
+
+def _snap(mid: str, kind: str, strike: float, end_ts: int) -> dict:
+    return {"market_id": mid, "asset": "BTC", "kind": kind, "direction": "above" if kind == "above" else "up", "strike": strike,
+            "end_ts": end_ts, "hours_to_end": 1.0}  # fmt: skip
+
+
+def minute_ex(closes: dict[int, float], calls: list):
+    """FakeEx whose Binance BTC/USDT 1m bars are ``{open_ts: close}``; records each 1m request."""
+
+    class MinuteEx(FakeEx):
+        async def fetch_ohlcv(self, symbol, timeframe="1h", limit=100, since=None, params=None):
+            if timeframe == "1m":
+                calls.append((symbol, since, limit))
+                return [[t * 1000, c, c, c, c, 1.0] for t, c in sorted(closes.items()) if t * 1000 >= since][:limit]
+            return await super().fetch_ohlcv(symbol, timeframe, limit, since, params)
+
+    return MinuteEx
+
+
+async def test_outcomes_are_fetched_once_with_the_binance_cross_check(state):
+    gamma_calls: Counter = Counter()
+
+    def gamma(req: httpx.Request) -> httpx.Response:
+        mid = req.url.path.rsplit("/", 1)[-1]
+        gamma_calls[mid] += 1
+        if mid in REAL_GAMMA:  # real resolved markets (fixture of 2026-10-15)
+            return httpx.Response(200, json=REAL_GAMMA[mid])
+        if mid == "open1":  # ended, not settled yet
+            return httpx.Response(200, json={"id": mid, "closed": False, "outcomePrices": '["0.9995","0.0005"]'})
+        return httpx.Response(502, text="down")
+
+    bar_calls: list = []
+    ex = minute_ex({END_FEB23 - 60: 65_000.0, END_FEB23: 65_010.0}, bar_calls)
+    rt = await _rt(state, now=datetime.fromtimestamp(END_FEB23 + 3 * 3600, UTC), ex=ex, gamma=gamma)
+    try:
+        snaps = [
+            _snap("1385959", "above", 64_000.0, END_FEB23),
+            _snap("1385960", "above", 66_000.0, END_FEB23),
+            _snap("open1", "touch", 70_000.0, END_FEB23),
+            _snap("down1", "above", 60_000.0, END_FEB23),
+            _snap("recent", "above", 60_000.0, END_FEB23 + 2 * 3600 + 1),  # ended < 1 h ago: not asked yet
+            _snap("stale", "above", 60_000.0, END_FEB23 - 20 * 86_400),  # ended 20 days ago: given up
+        ]
+        await rt.store.insert_pm_gap(END_FEB23 - 4 * 3600, snaps)
+        b = Builder()
+        assert await resolve_outcomes(rt, b) == {"checked": 4, "settled": 2, "pending": 2}
+        assert [m.field for m in b.missing] == ["outcome:down1"]
+        cur = await rt.store.conn.execute("SELECT * FROM pm_gap_outcome ORDER BY market_id")
+        out = {r["market_id"]: dict(r) for r in await cur.fetchall()}
+        assert set(out) == {"1385959", "1385960", "open1", "down1"}
+        o = out["1385959"]
+        assert (o["outcome_yes"], o["binance_close_end"], o["binance_close_next"]) == (1, 65_000.0, 65_010.0)
+        assert out["1385960"]["outcome_yes"] == 0 and out["1385960"]["resolved_ts"] == END_FEB23 + 3 * 3600
+        assert out["1385960"]["outcomes"] == REAL_GAMMA["1385960"]["outcomes"]  # the labels are kept with the prices
+        assert out["open1"]["outcome_yes"] is None and out["open1"]["outcome_prices"] == '["0.9995","0.0005"]'
+        assert out["down1"]["outcome_yes"] is None and out["down1"]["attempts"] == 1
+        assert len(bar_calls) == 2 and bar_calls[0] == ("BTC/USDT", (END_FEB23 - 60) * 1000, 2)  # threshold markets only
+        usable, summary = settled_outcomes(list(out.values()))
+        assert usable == {"1385959": 1, "1385960": 0} and summary["check"] == {"match": 2} and summary["excluded"] == []
+        # next run: settled markets are not asked again, the others are retried
+        before = dict(gamma_calls)
+        assert await resolve_outcomes(rt, Builder()) == {"checked": 2, "settled": 0, "pending": 2}
+        assert gamma_calls["1385959"] == before["1385959"] and gamma_calls["open1"] == before["open1"] + 1
+        assert len(bar_calls) == 2
+        cur = await rt.store.conn.execute("SELECT attempts FROM pm_gap_outcome WHERE market_id = 'down1'")
+        assert (await cur.fetchone())[0] == 2
+    finally:
+        await rt.aclose()
+
+
+async def test_outcome_queue_puts_untried_and_recent_markets_before_stuck_ones(state):
+    """Markets Gamma never settles (50/50, removed) are retried, but behind markets not tried yet and the latest ends,
+    so after an outage a batch of stuck markets cannot push fresh ones out."""
+    now = END_FEB23 + 3 * 3600
+    rt = await _rt(state, now=datetime.fromtimestamp(now, UTC))
+    try:
+        snaps = [_snap(f"stuck{i}", "touch", 1.0, END_FEB23 - (5 + i) * 86_400) for i in range(3)]
+        snaps += [_snap("fresh_old", "touch", 1.0, END_FEB23 - 86_400), _snap("fresh_new", "touch", 1.0, END_FEB23)]
+        await rt.store.insert_pm_gap(END_FEB23 - 30 * 86_400, snaps)
+        for i in range(3):  # tried before, still without a result
+            for _ in range(i + 1):
+                await rt.store.upsert_pm_gap_outcome({**snaps[i], "outcome_yes": None}, now - 3600)
+        got = await rt.store.pm_gap_outcome_pending(now - 3600, now - 14 * 86_400, 10)
+        assert [g["market_id"] for g in got] == ["fresh_new", "fresh_old", "stuck0", "stuck1", "stuck2"]
+        assert [g["market_id"] for g in await rt.store.pm_gap_outcome_pending(now - 3600, now - 14 * 86_400, 2)] == [
+            "fresh_new",
+            "fresh_old",
+        ]
+    finally:
+        await rt.aclose()
+
+
+async def test_a_failed_outcome_fetch_never_fails_the_snapshot(state, monkeypatch):
+    import tradedesk.collector.pm_gap as mod
+
+    async def boom(rt_, b):
+        raise RuntimeError("store hiccup")
+
+    real = mod.scan_gaps
+
+    async def wide(rt_, b, *, max_days=14.0):
+        return await real(rt_, b, max_days=30.0)
+
+    monkeypatch.setattr(mod, "resolve_outcomes", boom)
+    monkeypatch.setattr(mod, "scan_gaps", wide)
+    rt = await _rt(state)
+    try:
+        assert await collect_pm_gap(rt) == 8
+        assert await rt.store.table_count("pm_gap_snapshot") == 8
+    finally:
+        await rt.aclose()

@@ -448,11 +448,408 @@ def _nav(active: str) -> str:
         "<nav class='tabs'>"
         + "".join(f"<a href='{href}'{' aria-current=page' if key == active else ''}>{label}</a>" for href, key, label in tabs)
         + "</nav>"
+        + ("" if active == "project" else HOWTO)
     )
 
 
 def _e(x: object) -> str:
     return html.escape(str(x), quote=True)
+
+
+# ---------------------------------------------------------------- help icons and trade-lean highlights (assistant tabs)
+#
+# Every tile and block of the assistant tabs gets an «i» icon: hover (desktop) or tap (phone) opens a short note —
+# what the number is, how to read it, what it means for a trade. Tiles whose number speaks for or against buying
+# options get a coloured edge and a one-line badge. All texts are ours (static), never data from the snapshot.
+
+# key -> (title, what it is, how to read it, what it means for a trade)
+HELP: dict[str, tuple[str, str, str, str]] = {
+    "price": (
+        "Ціна і зміна за добу",
+        "Остання ціна безстрокового ф'ючерсу (перпа) на Binance і зміна за 24 години.",
+        "Зелене — ціна зросла за добу, червоне — впала.",
+        "Сама зміна за добу — не причина входити: дивись рівні, очікуваний рух і ризик.",
+    ),
+    "fng": (
+        "Страх і жадібність",
+        "Індекс настрою крипторинку від 0 до 100 (alternative.me): волатильність, обсяги, соцмережі, домінація BTC.",
+        "До 25 — крайній страх, 25–45 — страх, 45–55 — нейтрально, 55–75 — жадібність, понад 75 — крайня жадібність.",
+        "На крайнощах натовп панікує або в ейфорії, рухи різкіші: менший розмір. Як сигнал входу ми це не перевіряли — лише контекст.",
+    ),
+    "dvol": (
+        "DVOL — «індекс страху» BTC",
+        "Індекс Deribit: яку волатильність на 30 днів закладено в ціни опціонів BTC, у % річних (як VIX для акцій).",
+        "DVOL 40 означає, що ринок чекає ±40 % за рік, тобто ≈ ±11.5 % за місяць (40 / √12). "
+        "Перцентиль — де DVOL зараз відносно останніх 365 днів: 10-й — дешевше, ніж у 90 % днів року.",
+        "Низький — опціони дешеві: купувати дешевше, а продаж дає мало премії. Високий — навпаки. "
+        "Але «купувати дешеву волатильність» як окремий сигнал ми перевірили 18.10 — переваги не дало.",
+    ),
+    "iv": (
+        "IV — закладена волатильність",
+        "Волатильність, яку «зашито» в ціну конкретного опціону. Чим вища IV, тим дорожчий опціон. ATM IV — на страйку біля поточної ціни.",
+        "Порівнюй з реалізованою (RV): IV вища за RV — опціони дорожчі за фактичний рух.",
+        "Купуючи опціон, ти платиш за IV і заробляєш, якщо ціна рухатиметься сильніше, ніж закладено. Продаючи — навпаки.",
+    ),
+    "rv": (
+        "Реалізована волатильність (RV)",
+        "Наскільки BTC реально рухався за останні 7 або 30 днів, у % річних — та сама шкала, що й IV.",
+        "RV 7 днів вища за 30 днів — ринок останнім часом пожвавився; нижча — заспокоївся.",
+        "Якщо IV помітно вища за RV, покупець опціону платить за рух, якого поки немає.",
+    ),
+    "vrp": (
+        "Премія IV − RV30",
+        "На скільки пунктів волатильності опціони (DVOL) дорожчі за фактичний рух BTC за 30 днів.",
+        "Звично +3…+10: продавці беруть премію за ризик. Понад +10 — опціони помітно дорогі; нижче 0 — дешевші за фактичний рух.",
+        "Від'ємна — сприяє покупцю; велика додатна — продавцю. Перевірка цієї премії на реальних цінах опціонів ще триває.",
+    ),
+    "term": (
+        "Крива строків",
+        "ATM IV для різних експірацій: від найближчих до далеких.",
+        "Контанго (далекі дорожчі) — звичний спокійний стан. Беквордація (близькі дорожчі) — ринок чекає руху зараз: подія або стрес.",
+        "У беквордації короткі опціони дорогі: купувати їх дорожче, продавати — ризикованіше.",
+    ),
+    "skew": (
+        "Скью (RR 25Δ)",
+        "Різниця IV колів і путів з дельтою 25 (≈ 25 % шансу опинитись у грошах): кол − пут.",
+        "Від'ємний — пути дорожчі: ринок страхується від падіння. Додатний — коли дорожчі: платять за участь у зростанні.",
+        "При сильно від'ємному скью купувати пути дорожче, а продаж путів дає більше премії, але й більше ризику обвалу.",
+    ),
+    "key": (
+        "Головне сьогодні",
+        "Короткий підсумок знімка: ринок, діапазон, волатильність, захист, найближча подія.",
+        "Мітки: «спокій» — до відома, «ризик» — обережно з розміром, «подія» — врахуй час, «нагода» — умови сприяють.",
+        "Це опис ринку, не порада: рішення — за твоїми правилами й ризиком на угоду.",
+    ),
+    "chart": (
+        "Графік і що закладають опціони",
+        "Денні закриття BTC за 120 днів і діапазони з цін опціонів.",
+        "Синя зона — ±1σ до місячної експірації (≈ 68 % шансу за цінами ринку). Жовті лінії — беззбиток тижневого стреддлу.",
+        "Якщо твоя ціль далеко за синьою зоною, ринок вважає такий рух малоймовірним: опціон під нього дешевий, але й шанс малий.",
+    ),
+    "scenarios": (
+        "Сценарії з цін опціонів",
+        "Ймовірність, що BTC на експірацію опиниться в кожному діапазоні, виведена з цін опціонів Deribit.",
+        "Жирним — діапазон поточного форварду. Це ризик-нейтральні ймовірності: «ціна страховки», а не прогноз.",
+        "Якщо ти обґрунтовано вважаєш сценарій імовірнішим, ніж тут, — опціон під нього тобі дешевий. Якщо ні — переваги нема.",
+    ),
+    "em": (
+        "Очікуваний рух",
+        "Скільки ринок закладає руху до експірації: ціна ATM-стреддлу (кол + пут) або 1σ з IV.",
+        "±3 % до п'ятниці — ринок платить за рух приблизно такого розміру.",
+        "Якщо твоєму опціону для прибутку потрібен рух більший за очікуваний — ти ставиш на те, що ринок недооцінює рух.",
+    ),
+    "events": (
+        "Події",
+        "Макрорелізи (CPI, FOMC, NFP та ін.) за київським часом на 14 днів.",
+        "Червоне — високий вплив. Наш замір: у першу годину після CPI / FOMC волатильність BTC у 2–3 рази вища.",
+        "За 48 год до події — менший розмір або позиція з обмеженим ризиком; опціони перед подією зазвичай дорожчі.",
+    ),
+    "funding": (
+        "Funding",
+        "Платіж між лонгами й шортами безстрокових ф'ючерсів, щоб ціна трималась біля спота; тут — у % річних.",
+        "Додатний — лонги платять шортам (натовп у лонгах), від'ємний — навпаки. Дуже високий — перегрів.",
+        "Тримати лонг перпа при високому funding дорого. Заробіток на різниці funding ми перевіряли: малий і слабшає.",
+    ),
+    "conditions": (
+        "Купувати чи продавати опціони",
+        "Зведення: що зараз за цінами опціонів сприяє покупцю, а що продавцю.",
+        "Зелений «+» — на користь, червоний «−» — проти, жовтий «!» — обережно. Оцінюється ціна волатильності й ризик, не напрям ціни.",
+        "Це про те, дорого чи дешево зараз платити за опціон. Доведеної переваги жодна сторона не має (метод асистента відхилено 18.10).",
+    ),
+    "builder": (
+        "Конструктор",
+        "Збери опціонну позицію на місячній експірації BTC: стратегія, страйки, депозит, ризик і розмір.",
+        "Купівля стреддлу / стренглу — ставка на сильний рух у будь-який бік. Продаж — на спокій. Кондор — продаж із захистом.",
+        "Нижче — графік P&L, «за і проти», греки, ризик і сценарії для цієї позиції.",
+    ),
+    "payoff": (
+        "Прибуток і збиток",
+        "P&L позиції залежно від ціни BTC: на експірацію і через N днів.",
+        "Де лінія вище нуля — прибуток. Вертикальна лінія — поточний форвард, зона — ±1σ до експірації.",
+        "Порівняй, де беззбиток, із зоною ±1σ: якщо він далеко за нею, для прибутку потрібен незвично великий рух.",
+    ),
+    "premium": (
+        "Премія",
+        "Скільки ти платиш (купівля) або отримуєш (продаж) за позицію за марками Deribit, без спреду й комісій.",
+        "Для покупця премія — це і є максимальний збиток.",
+        "Реальна ціна входу трохи гірша: на біржі купуєш по аску, продаєш по біду.",
+    ),
+    "breakeven": (
+        "Беззбиток",
+        "Ціна BTC на експірацію, за якої P&L дорівнює нулю.",
+        "Для купленого стренглу — два рівні: нижче нижнього або вище верхнього — прибуток.",
+        "Порівнюй відстань до беззбитку з очікуваним рухом: що далі, то менший шанс.",
+    ),
+    "maxprofit": (
+        "Максимальний прибуток",
+        "Найкращий можливий результат на експірацію.",
+        "«Необмежений» — у купленого кола (і стреддлу) прибуток росте з ціною.",
+        "Великий макс. прибуток ще не робить угоду вигідною: дивись шанс і ціну.",
+    ),
+    "maxloss": (
+        "Максимальний збиток",
+        "Найгірший можливий результат на експірацію.",
+        "«Необмежений» — продаж опціонів без захисту: збиток росте разом із рухом.",
+        "Має вкладатися у твій ризик на угоду. Необмежений збиток правило ризику не виконує — потрібен захист або стоп.",
+    ),
+    "pop": (
+        "Ймовірність прибутку",
+        "Шанс закінчити в плюсі на експірацію за цінами ринку (ризик-нейтрально, за ATM IV).",
+        "У покупця опціонів зазвичай 20–40 %, зате виграш більший за ставку. У продавця 60–80 %, зате рідкі збитки великі.",
+        "Сама по собі не каже, вигідна угода чи ні: за справедливими цінами очікуваний результат ≈ 0 мінус комісії.",
+    ),
+    "proscons": (
+        "За і проти",
+        "Перевірка цієї позиції: ризик, ціна волатильності, потрібний рух, вплив часу, події.",
+        "Зелений «+» — на користь угоди, червоний «−» — проти, жовтий «!» — обережно, сірий «·» — нейтрально.",
+        "Більше червоних — угода дорога або ризикована саме зараз. Це оцінка ціни й ризику, не прогноз напряму.",
+    ),
+    "greeks": (
+        "Греки",
+        "Як вартість позиції реагує на ціну (дельта, гамма), волатильність (вега) і час (тета).",
+        "Дельта — як скільки BTC на споті; гамма — як швидко міняється дельта; вега — на 1 пункт IV; тета — за день.",
+        "Покупець: тета мінус (час з'їдає), вега плюс (росте IV — заробляєш). Продавець — навпаки.",
+    ),
+    "riskfit": (
+        "Чи вкладається в ризик",
+        "Максимальний збиток позиції проти твого ризику на угоду (депозит × %).",
+        "Зелене — вкладається; червоне — більше за ризик, і показано, який розмір вкладається.",
+        "Твоє правило — ризик ≈ 1 % депозиту на угоду. Позиція понад нього — зменш розмір.",
+    ),
+    "verdict": (
+        "Що це означає",
+        "Та сама позиція простими словами: що купуєш, коли заробляєш, скільки забирає час, де межа збитку.",
+        "Числа — з графіка й греків вище.",
+        "Прочитай перед входом: якщо щось тут тебе не влаштовує — угоду варто не відкривати.",
+    ),
+    "volcost": (
+        "Чи дорога зараз волатильність",
+        "ATM IV експірації, DVOL і його перцентиль за рік, різниця з фактичним рухом.",
+        "Таблиця — історичний бектест продажу стреддлу на кожному рівні DVOL (за індексом, не за реальними цінами).",
+        "Дорога вола — гірше для покупця, краще для продавця, і навпаки. Як окремий сигнал переваги не доведено.",
+    ),
+    "optscen": (
+        "Сценарії",
+        "P&L позиції, якщо BTC зміниться на ±N % — зараз, через кілька днів і на експірацію; плюс сценарій «IV +5 пунктів».",
+        "Зелене — прибуток, червоне — збиток.",
+        "Знайди рядок, де тобі боляче: чи готовий ти до такого руху?",
+    ),
+    "j_trades": (
+        "Мої угоди",
+        "Підсумок закритих реальних угод з імпорту бірж і журналу.",
+        "Частка в плюсі, P&L, середнє на угоду, середній R і найбільша просадка.",
+        "Середнє на угоду нижче нуля — система поки збиткова: менший розмір, суворіші правила входу.",
+    ),
+    "r": (
+        "R — результат у ризиках",
+        "Прибуток або збиток угоди, поділений на запланований ризик (відстань до стопу).",
+        "+2R — заробив удвічі більше, ніж ризикував; −1R — спрацював стоп.",
+        "Середній R вище 0 на достатній кількості угод (≥ 30) — ознака переваги; менше — ще не доказ.",
+    ),
+    "drawdown": (
+        "Найбільша просадка",
+        "Найглибше падіння кривої P&L від попереднього максимуму.",
+        "Показує, який біль система вже завдала.",
+        "Розмір позицій має бути таким, щоб таку просадку повторно пережити спокійно.",
+    ),
+    "sources": (
+        "За джерелом",
+        "Ті самі угоди, розбиті за біржею або джерелом.",
+        "Де найбільший мінус — там варто зупинитись і переглянути правила.",
+        "Джерело з довгим мінусом — кандидат на паузу.",
+    ),
+    "rec": (
+        "Паперові рекомендації асистента",
+        "Угоди, які асистент запропонував за своїм методом, розраховані на папері (без грошей).",
+        "Середнє в % спота — основна метрика; R — у ризиках угоди.",
+        "Метод поки гіпотеза: у перевірці 18.10 переваги не показав. Паперовий журнал це перевіряє.",
+    ),
+    "plans": (
+        "Плани угод асистента",
+        "Плани з вердиктами enter / wait / skip і їх паперова оцінка на свічках.",
+        "95 % ДІ — інтервал, де з 95 % впевненості лежить справжній середній R. Містить 0 — переваги не видно.",
+        "Перший чесний висновок — після ≈ 30 розв'язаних планів enter.",
+    ),
+    "pm": (
+        "Розриви Polymarket ↔ опціони",
+        "Ринки Polymarket про ціну BTC / ETH, де ціна боку нижча за ймовірність, порахованою з опціонів Deribit.",
+        "Edge — різниця в п.п. після комісії. R:R — скільки виграєш на кожен $ ризику.",
+        "Edge ≥ 5 п.п. і R:R ≥ 2 — проходить правила. Це паперова гіпотеза: перевага ще перевіряється.",
+    ),
+}
+
+HOWTO = (
+    "<div class='howto'><span><span class='info' aria-hidden='true'>i</span> наведи або торкнись — що це і як читати</span>"
+    "<span><i class='sw good'></i>на користь угоди</span><span><i class='sw warn'></i>обережно</span>"
+    "<span><i class='sw bad'></i>проти угоди</span>"
+    "<span class='mut'>Підсвітка оцінює ціну й ризик, а не напрям ціни; доведеної переваги вона не означає.</span></div>"
+)
+
+HELP_CSS = """
+.info{display:inline-flex;align-items:center;justify-content:center;width:17px;height:17px;margin-left:6px;border-radius:50%;
+border:1.5px solid var(--acc);color:var(--acc);font:italic 700 11px Georgia,serif;cursor:help;vertical-align:middle;position:relative;
+text-transform:none;letter-spacing:0;user-select:none;-webkit-user-select:none;flex:none;-webkit-tap-highlight-color:transparent}
+.info:hover,.info:focus,.info.open{background:var(--acc);color:var(--card);outline:none}
+.info .tip{display:none;position:absolute;z-index:50;left:50%;top:22px;transform:translateX(-50%);width:min(330px,88vw);
+background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:10px;padding:10px 12px;
+box-shadow:0 8px 28px rgba(0,0,0,.22);font:13px/1.5 -apple-system,"Segoe UI",Helvetica,Arial,sans-serif;
+font-style:normal;text-align:left;white-space:normal;cursor:auto}
+.info:hover .tip,.info:focus .tip,.info.open .tip{display:block}
+.tip b{display:block;margin-bottom:4px;color:var(--acc);font-size:13px}.tip span{display:block}
+.tip .rd{margin-top:6px;color:var(--mut)}.tip .tr{margin-top:6px;padding-top:6px;border-top:1px dashed var(--line)}
+.tile .k{display:flex;align-items:center}
+.tile.t-good{border-left:4px solid var(--ok)}.tile.t-warn{border-left:4px solid var(--warn)}.tile.t-bad{border-left:4px solid var(--bad)}
+.sig{font-size:12px;font-weight:600;margin-top:2px}.sig.good{color:var(--ok)}.sig.warn{color:var(--warn)}.sig.bad{color:var(--bad)}
+.howto{display:flex;flex-wrap:wrap;gap:6px 16px;align-items:center;margin:-4px 12px 12px;font-size:12px}
+.howto .info{cursor:default}.howto .sw{display:inline-block;width:4px;height:14px;border-radius:2px;vertical-align:middle;margin-right:6px}
+.sw.good{background:var(--ok)}.sw.warn{background:var(--warn)}.sw.bad{background:var(--bad)}
+ul.pc{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+ul.pc li{display:grid;grid-template-columns:22px 1fr;gap:6px;padding:6px 8px;border-radius:6px;font-size:13px;line-height:1.5}
+ul.pc .pi{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;
+font:700 13px/1 -apple-system,"Segoe UI",Helvetica,Arial,sans-serif;color:#fff;background:var(--mut);margin-top:1px}
+ul.pc li.good .pi{background:var(--ok)}ul.pc li.bad .pi{background:var(--bad)}ul.pc li.warn .pi{background:var(--warn)}
+ul.pc li.good{background:rgba(47,122,75,.11)}ul.pc li.bad{background:rgba(179,58,54,.11)}ul.pc li.warn{background:rgba(184,118,29,.13)}
+.pcsum{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 8px}
+.cols2{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:12px}
+.cols2 h3{font-size:13px;margin:0 0 6px}
+"""
+
+# Hover is followed for a mouse only (a tap also fires enter/leave). A tap fires focus and click in a row: the click
+# only closes a tip opened earlier, not just now.
+# Open tips are positioned `fixed` so table scrollers and section edges never clip them.
+HELP_JS = """
+(function () {
+  var open = null, at = 0;
+  function place(i) {
+    var t = i.querySelector('.tip'); if (!t) return;
+    var w = Math.min(330, innerWidth - 16), r = i.getBoundingClientRect();
+    t.style.position = 'fixed'; t.style.transform = 'none'; t.style.width = w + 'px'; t.style.display = 'block';
+    t.style.left = Math.max(8, Math.min(r.left + r.width / 2 - w / 2, innerWidth - w - 8)) + 'px';
+    var h = t.offsetHeight, y = r.bottom + 6;
+    if (y + h > innerHeight - 8 && r.top - h - 6 > 8) y = r.top - h - 6;
+    t.style.top = Math.max(8, y) + 'px';
+  }
+  function show(i) { if (open && open !== i) hide(open); if (open !== i) at = Date.now(); open = i; i.classList.add('open'); place(i); }
+  function hide(i) { i.classList.remove('open'); var t = i.querySelector('.tip'); if (t) t.removeAttribute('style'); if (open === i) open = null; }
+  document.querySelectorAll('.info').forEach(function (i) {
+    if (!i.querySelector('.tip')) return;
+    i.addEventListener('pointerenter', function (e) { if (e.pointerType === 'mouse') show(i); });
+    i.addEventListener('pointerleave', function (e) { if (e.pointerType === 'mouse') hide(i); });
+    i.addEventListener('focus', function () { show(i); });
+    i.addEventListener('blur', function () { hide(i); });
+    i.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); if (open === i && Date.now() - at > 400) { hide(i); } else { show(i); } });
+    i.addEventListener('keydown', function (e) { if (e.key === 'Escape') { hide(i); i.blur(); } });
+  });
+  document.addEventListener('click', function () { if (open) hide(open); });
+  addEventListener('scroll', function () { if (open) place(open); }, { passive: true });
+  addEventListener('resize', function () { if (open) place(open); });
+})();
+"""
+
+
+def _info(key: str) -> str:
+    """The «i» icon with its note (static text from HELP); '' for an unknown key."""
+    h = HELP.get(key)
+    if not h:
+        return ""
+    title, what, read, trade = (_e(x) for x in h)
+    return (
+        f"<span class='info' tabindex='0' role='button' aria-label='Пояснення: {title}'>i"
+        f"<span class='tip' role='tooltip'><b>{title}</b><span>{what}</span><span class='rd'>{read}</span>"
+        f"<span class='tr'>Для угоди: {trade}</span></span></span>"
+    )
+
+
+def _h2(title: str, key: str = "", extra: str = "") -> str:
+    """A section heading (title escaped here) with its help icon; `extra` is trusted HTML (chips)."""
+    return f"<h2>{_e(title)}{_info(key)}{extra}</h2>"
+
+
+def with_help(page: str) -> str:
+    """Add the tooltip script to a rendered assistant page."""
+    return page.replace("</body>", f"<script>{HELP_JS}</script></body>", 1)
+
+
+def _flip(tone: str) -> str:
+    return {"good": "bad", "bad": "good"}.get(tone, tone)
+
+
+def vol_lean(pct365: float | None, spr: float | None) -> list[tuple[str, str, str]]:
+    """(tone for an option BUYER, buyer's text, seller's text) from DVOL's 365-day percentile and the DVOL − RV30
+    spread; the seller's tone is the flipped one. About the price of options only: no edge is claimed (H1 rejected
+    18.10)."""
+    out: list[tuple[str, str, str]] = []
+    if pct365 is not None:
+        p = f"{pct365 * 100:.0f}-й перцентиль за рік"
+        if pct365 < 0.3:
+            out.append(
+                (
+                    "good",
+                    f"Волатильність дешева ({p}): опціони коштують менше, ніж зазвичай",
+                    f"Волатильність дешева ({p}): премія за продаж менша, ніж зазвичай",
+                )
+            )
+        elif pct365 > 0.7:
+            out.append(
+                (
+                    "bad",
+                    f"Волатильність дорога ({p}): опціони коштують більше, ніж зазвичай",
+                    f"Волатильність дорога ({p}): премія за продаж більша, ніж зазвичай",
+                )
+            )
+        else:
+            out.append(("", f"Волатильність на середньому рівні ({p})", f"Волатильність на середньому рівні ({p})"))
+    if spr is not None:
+        v = f"{spr * 100:+.1f}".replace("-", "−")
+        if spr <= 0:
+            out.append(
+                (
+                    "good",
+                    f"IV не вища за фактичний рух за 30 днів ({v} вп): опціони не переплачені",
+                    f"IV не вища за фактичний рух за 30 днів ({v} вп): продаж не дає премії понад фактичний рух",
+                )
+            )
+        elif spr >= 0.10:
+            out.append(
+                (
+                    "bad",
+                    f"IV вища за фактичний рух на {v} вп: платиш за рух, якого поки немає",
+                    f"IV вища за фактичний рух на {v} вп: продаж бере премію понад фактичний рух",
+                )
+            )
+        else:
+            out.append(
+                ("", f"IV вища за фактичний рух на {v} вп — у звичних межах", f"IV вища за фактичний рух на {v} вп — у звичних межах")
+            )
+    return out
+
+
+def lean_badge(tone: str, buyer: bool = True) -> str:
+    """A tile badge for the buyer's view of an option price signal."""
+    return {"good": "покупцю дешево", "bad": "покупцю дорого"}.get(tone, "") if buyer else ""
+
+
+CHIP_HYPOTHESIS = "<span class='chip ev'>гіпотеза</span>"
+CHIP_LEDGER = "<span class='chip calm'>облік</span>"
+CHIP_HINT = "<span class='chip ev'>підказка</span>"
+PC_ICON = {"good": "+", "bad": "−", "warn": "!", "": "·"}  # drawn as coloured dots (CSS), no emoji font needed
+
+
+def pros_cons_html(items: list[tuple[str, str]]) -> str:
+    """A for / against / caution list with a count line; texts are escaped here."""
+    if not items:
+        return _empty("Даних для оцінки немає.")
+    n = {t: sum(1 for x, _ in items if x == t) for t in ("good", "bad", "warn")}
+    summ = (
+        f"<div class='pcsum'><span class='chip opp'>за: {n['good']}</span><span class='chip risk'>проти: {n['bad']}</span>"
+        f"<span class='chip ev'>обережно: {n['warn']}</span></div>"
+    )
+    return (
+        summ
+        + "<ul class='pc'>"
+        + "".join(f"<li class='{t}'><span class='pi'>{PC_ICON[t]}</span><span>{_e(s)}</span></li>" for t, s in items)
+        + "</ul>"
+    )
 
 
 def _bar(pct: float | None, warn: float, bad: float) -> str:
@@ -704,7 +1101,8 @@ BRIEF_CAVEATS = (
     "Премія волатильності (VRP) тут рахується за DVOL; перевірка на марках опціонів ще триває (картка vrp-real-marks).",
     "Не інвестиційна порада: сторінка лише показує дані й нічого не торгує.",
 )
-BRIEF_CSS = """
+BRIEF_CSS = (
+    """
 main.brief{grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr))}
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px}
 .tile{border:1px solid var(--line);border-radius:6px;padding:6px 10px;display:flex;flex-direction:column;min-width:0}
@@ -726,6 +1124,8 @@ svg{display:block;width:100%;height:auto}svg text{font:11px Menlo,Consolas,monos
 .caveat ul{margin:4px 0;padding-left:18px}
 details{font-size:12px;color:var(--mut);margin-top:6px}
 """
+    + HELP_CSS
+)
 
 
 def load_snapshot(path: Path) -> tuple[dict | None, str | None]:
@@ -1062,8 +1462,14 @@ def _tickers(snap: dict) -> dict[str, dict]:
     return out
 
 
-def _tile(k: str, v: str, s: str = "", cls: str = "") -> str:
-    return f"<div class='tile'><span class='k'>{k}</span><span class='v'>{v}</span><span class='s {cls}'>{s}</span></div>"
+def _tile(k: str, v: str, s: str = "", cls: str = "", help: str = "", tone: str = "", badge: str = "") -> str:
+    """A number tile; `k`, `v`, `s` are trusted HTML. `help` is a HELP key, `tone` good|warn|bad colours the edge and
+    the `badge` line (plain text, escaped here)."""
+    sig = f"<span class='sig {tone}'>{_e(badge)}</span>" if badge else ""
+    return (
+        f"<div class='tile{f' t-{tone}' if tone else ''}'><span class='k'>{k}{_info(help)}</span><span class='v'>{v}</span>"
+        f"<span class='s {cls}'>{s}</span>{sig}</div>"
+    )
 
 
 def _fng_zone(latest: dict) -> str:
@@ -1084,13 +1490,25 @@ def block_tiles(snap: dict) -> str:
                 _e(_nf(last, 0 if last >= 1000 else 2)),
                 _e(f"{_pc(pct, 2)} за 24 год"),
                 "" if pct is None else ("ok" if pct >= 0 else "bad"),
+                help="price",
             )
         )
     fng = _data(snap, "fng") or {}
     latest = fng.get("latest") if isinstance(fng.get("latest"), dict) else {}
     if _num(latest.get("value")) is not None:
         s = f"{_fng_zone(latest)} · 7 дн {_nf(fng.get('mean_7d'))}, 30 дн {_nf(fng.get('mean_30d'))}"
-        tiles.append(_tile("Страх і жадібність", _e(_nf(latest["value"])), _e(s)))
+        fv = _num(latest["value"])
+        extreme = fv <= 25 or fv >= 75
+        tiles.append(
+            _tile(
+                "Страх і жадібність",
+                _e(_nf(fv)),
+                _e(s),
+                help="fng",
+                tone="warn" if extreme else "",
+                badge="крайність: менший розмір" if extreme else "",
+            )
+        )
     cur = (_data(snap, "vrp") or {}).get("current")
     cur = cur if isinstance(cur, dict) else {}
     dvol = _num(cur.get("dvol"))
@@ -1100,11 +1518,15 @@ def block_tiles(snap: dict) -> str:
         dvol = v / 100 if v is not None else None
     if dvol is not None:
         pr = _num(cur.get("dvol_percentile_365d"))
+        tone = (vol_lean(pr, None) or [("", "")])[0][0]
         tiles.append(
             _tile(
                 "DVOL (IV BTC, 30 дн)",
                 _e(_nf(dvol * 100, 1)),
                 _e(f"{_nf(pr * 100)}-й перцентиль за рік" if pr is not None else "перцентиля немає"),
+                help="dvol",
+                tone=tone,
+                badge=lean_badge(tone),
             )
         )
     body = f"<div class='tiles'>{''.join(tiles)}</div>" if tiles else _empty("Цін у знімку немає.")
@@ -1289,13 +1711,27 @@ def block_vol(snap: dict) -> str:
     dvol = _num(cur.get("dvol"))
     if dvol is not None:
         ch = _num(dv.get("change_7d_pts"))
-        tiles.append(_tile("DVOL", _e(_nf(dvol * 100, 1)), _e(f"за 7 днів {_pc(ch, 1).replace(' %', '')} вп" if ch is not None else "")))
+        tiles.append(
+            _tile("DVOL", _e(_nf(dvol * 100, 1)), _e(f"за 7 днів {_pc(ch, 1).replace(' %', '')} вп" if ch is not None else ""), help="dvol")
+        )
     rv30, rv7 = _num(cur.get("rv_30d")), _num(cur.get("rv_7d"))
     if rv30 is not None:
-        tiles.append(_tile("Реалізована 30 дн", _e(_nf(rv30 * 100, 1)), _e(f"7 дн {_nf(rv7 * 100, 1)}" if rv7 is not None else "")))
+        tiles.append(
+            _tile("Реалізована 30 дн", _e(_nf(rv30 * 100, 1)), _e(f"7 дн {_nf(rv7 * 100, 1)}" if rv7 is not None else ""), help="rv")
+        )
     spr = _num(cur.get("spread_vs_rv30"))
     if spr is not None:
-        tiles.append(_tile("Премія IV − RV30", _e(_pc(spr * 100, 1).replace(" %", "")), "пунктів волатильності"))
+        tone = vol_lean(None, spr)[0][0]
+        tiles.append(
+            _tile(
+                "Премія IV − RV30",
+                _e(_pc(spr * 100, 1).replace(" %", "")),
+                "пунктів волатильності",
+                help="vrp",
+                tone=tone,
+                badge=lean_badge(tone),
+            )
+        )
     out = [f"<div class='tiles'>{''.join(tiles)}</div>"] if tiles else []
     term = _data(snap, "term") or {}
     pts = []
@@ -1304,7 +1740,11 @@ def block_vol(snap: dict) -> str:
             pts.append((_num(x["days"]), _num(x["atm_iv"])))
     svg = term_svg(pts)
     if svg:
-        out.append(svg + "<div class='legend'><span><i style='background:var(--acc)'></i>ATM IV за строками експірації, %</span></div>")
+        out.append(
+            svg
+            + f"<div class='legend'><span><i style='background:var(--acc)'></i>ATM IV за строками експірації, %{_info('term')}</span>"
+            + f"<span>скью{_info('skew')}</span></div>"
+        )
     notes = []
     shape = term.get("shape")
     if svg and isinstance(shape, str):
@@ -1335,6 +1775,49 @@ def block_vol(snap: dict) -> str:
     if not out:
         return _empty("Даних про волатильність у знімку немає.") + _section_notes(snap, "vrp", "dvol", "term", "skew")
     return "".join(out) + _section_notes(snap, "vrp", "dvol", "term", "skew")
+
+
+def market_lean(snap: dict) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """(buyer items, seller items) for options now: the price of volatility, the term curve, the skew and the next
+    high-impact event. Tones: good | bad | warn | '' (neutral)."""
+    cur = (_data(snap, "vrp") or {}).get("current")
+    cur = cur if isinstance(cur, dict) else {}
+    lean = vol_lean(_num(cur.get("dvol_percentile_365d")), _num(cur.get("spread_vs_rv30")))
+    buy = [(t, b) for t, b, _ in lean]
+    sell = [(_flip(t), x) for t, _, x in lean]
+    shape = (_data(snap, "term") or {}).get("shape")
+    if shape == "backwardation":
+        buy.append(("warn", "Близькі експірації дорожчі за далекі (беквордація): ринок чекає руху вже зараз, короткі опціони дорогі"))
+        sell.append(("warn", "Беквордація: ринок чекає руху вже зараз — продаж коротких опціонів ризикованіший"))
+    elif shape == "contango":
+        buy.append(("", "Крива строків у контанго: звичний спокійний стан"))
+        sell.append(("", "Крива строків у контанго: звичний спокійний стан"))
+    sk = _skew_ref(snap)
+    if sk and _num(sk.get("rr")) is not None and _num(sk["rr"]) <= -0.04:
+        rr = f"{_num(sk['rr']) * 100:.1f}".replace("-", "−")
+        buy.append(("warn", f"Пути помітно дорожчі за коли (скью {rr} вп): захист від падіння дорогий, коли відносно дешевші"))
+        sell.append(("warn", f"Пути помітно дорожчі за коли (скью {rr} вп): продаж путів платить більше, але ринок боїться обвалу"))
+    ev = _data(snap, "events") or {}
+    nxt = ev.get("next_event") if isinstance(ev.get("next_event"), dict) else None
+    if ev.get("high_impact_within_48h") is True and nxt:
+        t = f"{_clean(nxt.get('title'), 60)} {_in_hours(_num(nxt.get('hours_ahead')))}"
+        buy.append(("warn", f"{t}: перед подією опціони зазвичай дорожчають — менший розмір"))
+        sell.append(("bad", f"{t}: різкий рух після релізу б'є по проданих опціонах — менший розмір або захист"))
+    return buy, sell
+
+
+def block_conditions(snap: dict) -> str:
+    buy, sell = market_lean(snap)
+    if not buy and not sell:
+        return _empty("Даних для оцінки в знімку немає.") + _section_notes(snap, "vrp", "term", "skew", "events")
+    return (
+        "<div class='cols2'><div><h3>Купувати опціони</h3>"
+        + pros_cons_html(buy)
+        + "</div><div><h3>Продавати опціони</h3>"
+        + pros_cons_html(sell)
+        + "</div></div><p class='note'>Оцінка ціни волатильності й ризику подій, а не напряму ціни. Метод «обирати угоду за режимом "
+        "волатильності» перевірено 18.10 і відхилено: це підказка, де дорожче чи дешевше, а не сигнал входу.</p>"
+    )
 
 
 def block_events(snap: dict) -> str:
@@ -1451,16 +1934,17 @@ def render_brief(snap: dict | None, err: str | None, now: float, path: Path | No
         month = _exp_label(snap, "month") if _data(snap, "chain") else "—"
         scen = f"Сценарії на {month}" if month != "—" else "Сценарії на місячну експірацію"
         cards = (
-            ("wide", "", block_tiles),
-            ("", "Головне сьогодні", block_key),
-            ("", "BTC за 120 днів і що закладають опціони", block_chart),
-            ("", f"{scen} · ймовірності з цін опціонів", block_scenarios),
-            ("", "Волатильність", block_vol),
-            ("", "Події · час Київ", block_events),
-            ("", "Funding · річних", block_funding),
+            ("wide", "", "", block_tiles),
+            ("", "Головне сьогодні", "key", block_key),
+            ("", "Купувати чи продавати опціони зараз", "conditions", block_conditions),
+            ("", "BTC за 120 днів і що закладають опціони", "chart", block_chart),
+            ("", f"{scen} · ймовірності з цін опціонів", "scenarios", block_scenarios),
+            ("", "Волатильність", "iv", block_vol),
+            ("", "Події · час Київ", "events", block_events),
+            ("", "Funding · річних", "funding", block_funding),
         )
-        for cls, title, fn in cards:
-            h2 = f"<h2>{_e(title)}</h2>" if title else ""
+        for cls, title, key, fn in cards:
+            h2 = _h2(title, key) if title else ""
             out.append(f"<section class='{cls}'>{h2}{_guard(fn, snap)}</section>")
         out.append("</main></body></html>")
         return "".join(out)
@@ -1473,7 +1957,7 @@ def render_brief(snap: dict | None, err: str | None, now: float, path: Path | No
 
 def brief_page(now: float | None = None) -> str:
     snap, err = load_snapshot(SNAPSHOT_PATH)
-    return render_brief(snap, err, time.time() if now is None else now, SNAPSHOT_PATH)
+    return with_help(render_brief(snap, err, time.time() if now is None else now, SNAPSHOT_PATH))
 
 
 # ---------------------------------------------------------------- «Опціони» tab: strategy builder on the snapshot chain
@@ -1902,6 +2386,58 @@ def _num_input(name: str, label: str, value: float, step: str) -> str:
     )
 
 
+def position_pros_cons(
+    legs: list[dict],
+    F: float,
+    T: float,
+    iv: float,
+    credit: float,
+    bes: list[float],
+    G: dict[str, float],
+    ext: dict,
+    fit: dict,
+    snap: dict,
+) -> list[tuple[str, str]]:
+    """For and against this position: risk fit, the move it needs vs the market's 1σ, time decay, and the market's
+    lean for its side (market_lean). Tones good | bad | warn | ''. Our numbers only."""
+    buyer = credit < 0
+    items: list[tuple[str, str]] = []
+    if fit["unbounded"]:
+        items.append(("bad", "Збиток необмежений: без стопу або захисних опціонів правило ризику на угоду не виконується"))
+    elif fit["fits"]:
+        items.append(("good", f"Макс. збиток {_usd(fit['loss'])} вкладається в ризик на угоду {_usd(fit['budget'])}"))
+    elif fit["qmax"] is not None and fit["qmax"] >= 0.01:
+        items.append(
+            ("bad", f"Макс. збиток {_usd(fit['loss'])} більший за ризик {_usd(fit['budget'])}: під нього — до {_nf(fit['qmax'], 2)} BTC")
+        )
+    else:
+        items.append(("bad", f"Макс. збиток {_usd(fit['loss'])} більший за ризик {_usd(fit['budget'])} навіть на 0.01 BTC"))
+    sigma = F * iv * math.sqrt(T) if T > 0 and iv > 0 else 0.0
+    if bes and sigma > 0:
+        d = min(abs(b - F) for b in bes)
+        ratio, dp, sp = d / sigma, d / F * 100, sigma / F * 100
+        if buyer and payoff(legs, F) > 0:
+            items.append(("good", "На поточній ціні позиція вже в плюсі на експірацію"))
+        elif buyer:
+            tone = "good" if ratio < 0.7 else "bad" if ratio > 1.2 else ""
+            items.append(
+                (tone, f"Для прибутку BTC має пройти щонайменше {dp:.1f} % до беззбитку; ринок закладає ±{sp:.1f} % (1σ) до експірації")
+            )
+        else:
+            tone = "good" if ratio > 1.2 else "bad" if ratio < 0.7 else ""
+            items.append((tone, f"У мінус позиція піде, якщо BTC пройде понад {dp:.1f} %; ринок закладає ±{sp:.1f} % (1σ) до експірації"))
+    t = G["theta"]
+    if buyer and credit < 0 and t < 0:
+        share = -t / -credit * 100
+        tone = "bad" if share > 4 else "warn" if share > 2 else ""
+        items.append((tone, f"Час забирає ≈ {_usd(-t)} на день — {share:.1f} % сплаченої премії щодня"))
+    elif not buyer and t > 0:
+        items.append(("good", f"Час працює на тебе: ≈ +{_usd(t)} на день, якщо ціна й IV не зміняться"))
+    buy, sell = market_lean(snap) if isinstance(snap, dict) else ([], [])
+    items.extend(buy if buyer else sell)
+    return items
+
+
 def block_builder(ch: dict, snap: dict, p: dict) -> str:
     strat = p["strat"]
     strikes = default_strikes(ch, strat)
@@ -1915,8 +2451,9 @@ def block_builder(ch: dict, snap: dict, p: dict) -> str:
     qty, dep, riskp = p["qty"], p["dep"], p["riskp"]
     exp = expiry_utc(ch.get("expiry"))
     exp_s = kyiv(exp, "%d.%m") if exp else _clean(ch.get("expiry") or "—", 12)
+    title = f"Конструктор · BTC, експірація {exp_s} · {_nf(ch['days'], 1)} дн · форвард {_nf(ch['F'])}"
     out = [
-        f"<section class='wide'><h2>Конструктор · BTC, експірація {_e(exp_s)} · {_e(_nf(ch['days'], 1))} дн · форвард {_e(_nf(ch['F']))}</h2>",
+        f"<section class='wide'>{_h2(title, 'builder')}",
         "<form id='opt-form' method='get' action='/options'>",
         f"<input type='hidden' name='cur' value='{_e(strat)}'>",
         "<div class='seg' role='group' aria-label='Стратегія'>",
@@ -1957,7 +2494,7 @@ def block_builder(ch: dict, snap: dict, p: dict) -> str:
     pop = prob_of_profit(legs, F, T, iv)
     shown_bes = sorted({round(b, 2) for b in bes})
 
-    out.append("<section class='wide'><h2>Прибуток і збиток на експірацію, USD</h2>")
+    out.append(f"<section class='wide'>{_h2('Прибуток і збиток на експірацію, USD', 'payoff')}")
     out.append(payoff_svg(legs, F, T, iv, shown_bes, hzn))
     out.append(
         "<div class='legend'><span><i style='background:var(--acc)'></i>на експірацію</span>"
@@ -1971,26 +2508,53 @@ def block_builder(ch: dict, snap: dict, p: dict) -> str:
             "Отримуєш премію" if credit >= 0 else "Платиш премію",
             _e(_usd(abs(credit))),
             _e(f"за марками Deribit, {_nf(qty, 2)} BTC"),
+            help="premium",
         ),
-        _tile("Беззбиток", _e(" / ".join(_kd(b) for b in shown_bes) or "—"), "на експірацію"),
+        _tile("Беззбиток", _e(" / ".join(_kd(b) for b in shown_bes) or "—"), "на експірацію", help="breakeven"),
         _tile(
             "Макс. прибуток",
             _e("необмежений" if ext["max_profit"] is None else _usd(ext["max_profit"])),
             "на експірацію",
+            help="maxprofit",
         ),
     ]
     if ext["max_loss"] is None:
         down, up = payoff(legs, F * (1 - OPT_RANGE)), payoff(legs, F * (1 + OPT_RANGE))
-        tiles.append(_tile("Макс. збиток", "необмежений", _e(f"на −30 %: {_usd(down)}, на +30 %: {_usd(up)}"), "bad"))
+        tiles.append(
+            _tile(
+                "Макс. збиток",
+                "необмежений",
+                _e(f"на −30 %: {_usd(down)}, на +30 %: {_usd(up)}"),
+                "bad",
+                help="maxloss",
+                tone="bad",
+                badge="без захисту",
+            )
+        )
     else:
-        tiles.append(_tile("Макс. збиток", _e(_usd(ext["max_loss"])), "на експірацію"))
-    tiles.append(_tile("Ймовірність прибутку", _e(f"{_nf(pop * 100)} %"), "ризик-нейтральна, за ATM IV"))
-    out.append(f"<section><h2>Позиція</h2><div class='tiles'>{''.join(tiles)}</div></section>")
+        fits = risk_fit(ext["max_loss"], qty, dep, riskp)["fits"]
+        tiles.append(
+            _tile(
+                "Макс. збиток",
+                _e(_usd(ext["max_loss"])),
+                "на експірацію",
+                help="maxloss",
+                tone="good" if fits else "bad",
+                badge="в межах ризику" if fits else "більше за твій ризик",
+            )
+        )
+    tiles.append(_tile("Ймовірність прибутку", _e(f"{_nf(pop * 100)} %"), "ризик-нейтральна, за ATM IV", help="pop"))
+    out.append(f"<section>{_h2('Позиція')}<div class='tiles'>{''.join(tiles)}</div></section>")
     G = position_greeks(legs, F, T, iv)
+    out.append(
+        f"<section>{_h2('За і проти цієї угоди', 'proscons')}"
+        + pros_cons_html(position_pros_cons(legs, F, T, iv, credit, shown_bes, G, ext, risk_fit(ext["max_loss"], qty, dep, riskp), snap))
+        + "</section>"
+    )
     out.append(block_greeks(G))
 
     fit = risk_fit(ext["max_loss"], qty, dep, riskp)
-    out.append("<section><h2>Чи вкладається в ризик</h2><div class='fit'>")
+    out.append(f"<section>{_h2('Чи вкладається в ризик', 'riskfit')}<div class='fit'>")
     out.append(f"<p>Ризик на угоду: <b class='num'>{_e(_usd(fit['budget']))}</b> ({_e(_nf(riskp, 1))} % від депозиту {_e(_usd(dep))}).</p>")
     if fit["unbounded"]:
         out.append(
@@ -2019,7 +2583,9 @@ def block_builder(ch: dict, snap: dict, p: dict) -> str:
     out.append("</div></section>")
     pct365 = _num(((_data(snap, "vrp") or {}).get("current") or {}).get("dvol_percentile_365d")) if isinstance(snap, dict) else None
     out.append(
-        "<section><h2>Що це означає</h2>" + verdict_html(legs, F, credit, shown_bes, pop, G, ext, fit, exp_s, qty, pct365) + "</section>"
+        f"<section>{_h2('Що це означає', 'verdict')}"
+        + verdict_html(legs, F, credit, shown_bes, pop, G, ext, fit, exp_s, qty, pct365)
+        + "</section>"
     )
     out.append(block_vol_cost(snap, ch, exp_s))
     out.append(block_opt_scenarios(scenario_rows(legs, ch, exp_s), F))
@@ -2067,7 +2633,7 @@ def block_greeks(G: dict[str, float]) -> str:
         for k, val, x, s in rows
     )
     return (
-        f"<section><h2>Греки позиції</h2><table class='greeks'>{body}</table>"
+        f"<section>{_h2('Греки позиції', 'greeks')}<table class='greeks'>{body}</table>"
         "<p class='note'>Black-76 на форварді, кожна нога за своєю IV; діють лише на малі рухи й поки решта не змінилась.</p></section>"
     )
 
@@ -2149,15 +2715,33 @@ def block_vol_cost(snap: dict, ch: dict, exp_s: str) -> str:
     tiles = []
     rv30, spr = _num(cur.get("rv_30d")), _num(cur.get("spread_vs_rv30"))
     sub = f"реалізована 30 дн {_nf(rv30 * 100, 1)}" if rv30 is not None else "реалізованої в знімку немає"
-    tiles.append(_tile(f"ATM IV {_e(exp_s)}", _e(_nf(ch["iv"] * 100, 1)), _e(sub)))
+    tiles.append(_tile(f"ATM IV {_e(exp_s)}", _e(_nf(ch["iv"] * 100, 1)), _e(sub), help="iv"))
     p365, dvol = _num(cur.get("dvol_percentile_365d")), _num(cur.get("dvol"))
     if p365 is not None:
+        tone = vol_lean(p365, None)[0][0]
         tiles.append(
-            _tile("DVOL за рік", _e(f"{_nf(p365 * 100)}-й"), _e(f"перцентиль · DVOL {_nf(dvol * 100, 1) if dvol is not None else '—'}"))
+            _tile(
+                "DVOL за рік",
+                _e(f"{_nf(p365 * 100)}-й"),
+                _e(f"перцентиль · DVOL {_nf(dvol * 100, 1) if dvol is not None else '—'}"),
+                help="dvol",
+                tone=tone,
+                badge=lean_badge(tone),
+            )
         )
     if spr is not None:
-        tiles.append(_tile("DVOL − RV30", _e(_pc(spr * 100, 1).replace(" %", "")), "пунктів волатильності"))
-    out = ["<section><h2>Чи дорога зараз волатильність</h2>", f"<div class='tiles'>{''.join(tiles)}</div>"]
+        tone = vol_lean(None, spr)[0][0]
+        tiles.append(
+            _tile(
+                "DVOL − RV30",
+                _e(_pc(spr * 100, 1).replace(" %", "")),
+                "пунктів волатильності",
+                help="vrp",
+                tone=tone,
+                badge=lean_badge(tone),
+            )
+        )
+    out = [f"<section>{_h2('Чи дорога зараз волатильність', 'volcost')}", f"<div class='tiles'>{''.join(tiles)}</div>"]
     if p365 is not None:
         out.append(f"<p class='fit'>Рівень DVOL — {_e(_vol_level(p365))}.</p>")
     cells = [x for x in _list(vrp.get("by_dvol_level")) if isinstance(x, dict) and _num(x.get("mean_straddle_pnl")) is not None]
@@ -2204,7 +2788,7 @@ def block_opt_scenarios(rows: list[dict], F: float) -> str:
         for r in rows
     )
     return (
-        "<section class='wide'><h2>Сценарії · P&amp;L позиції, USD</h2>"
+        f"<section class='wide'>{_h2('Сценарії · P&L позиції, USD', 'optscen')}"
         f"<div class='scroll'><table class='scen'><tr><th>BTC</th>{head}</tr>{body}</table></div>"
         "<p class='note'>Рух — форварду експірації (≈ спота). До експірації — зміна вартості позиції від поточної за Black-76, "
         "кожна нога за своєю IV; «IV +5 п.» — усі ноги на 5 пунктів одразу. На експірацію — точна виплата мінус премія за марками. "
@@ -2255,7 +2839,7 @@ def render_options(snap: dict | None, err: str | None, now: float, params: dict 
 
 def options_page(query: str = "", now: float | None = None) -> str:
     snap, err = load_snapshot(SNAPSHOT_PATH)
-    return render_options(snap, err, time.time() if now is None else now, parse_options_query(query), SNAPSHOT_PATH)
+    return with_help(render_options(snap, err, time.time() if now is None else now, parse_options_query(query), SNAPSHOT_PATH))
 
 
 # ---------------------------------------------------------------- «Журнал» tab: the owner's journal and the paper recommendations
@@ -2498,12 +3082,23 @@ def block_journal_tiles(real: list[dict], n_open: int) -> str:
         return _empty("Закритих реальних угод ще немає.") + (f"<p class='note'>Відкритих: {n_open}.</p>" if n_open else "")
     total, exp = s["total_pnl"], s["expectancy_per_trade"]
     tiles = [
-        _tile("Угод (закритих)", _nf(s["closed_trades"]), f"у плюсі {s['wins']} · у мінусі {s['losses']}"),
+        _tile("Угод (закритих)", _nf(s["closed_trades"]), f"у плюсі {s['wins']} · у мінусі {s['losses']}", help="j_trades"),
         _tile("Частка в плюсі", _share(s["win_rate"]), "за полем outcome"),
         _tile("P&L разом", f"<span class='{_signed_cls(total)}'>{_usd(total, True)}</span>", "USD, усі біржі й опціони разом"),
-        _tile("Середнє на угоду", f"<span class='{_signed_cls(exp)}'>{_usd(exp, True)}</span>", "USD, усі джерела разом"),
-        _tile("Середній R", _r(s["avg_r"]), f"угод зі стопом {s['r_count']}" if s["r_count"] else "стопи не записані"),
-        _tile("Найбільша просадка", _usd(-max_drawdown_usd(real)), "USD, одна крива P&L усіх бірж і опціонів за датою закриття"),
+        _tile(
+            "Середнє на угоду",
+            f"<span class='{_signed_cls(exp)}'>{_usd(exp, True)}</span>",
+            "USD, усі джерела разом",
+            tone="bad" if exp is not None and exp < 0 else "",
+            badge="система поки в мінусі" if exp is not None and exp < 0 else "",
+        ),
+        _tile("Середній R", _r(s["avg_r"]), f"угод зі стопом {s['r_count']}" if s["r_count"] else "стопи не записані", help="r"),
+        _tile(
+            "Найбільша просадка",
+            _usd(-max_drawdown_usd(real)),
+            "USD, одна крива P&L усіх бірж і опціонів за датою закриття",
+            help="drawdown",
+        ),
     ]
     if n_open:
         tiles.append(_tile("Відкритих", _nf(n_open)))
@@ -2613,7 +3208,7 @@ def _rec_tiles(s: dict, n_open: int) -> str:
         _tile("Розраховано", _nf(s["n"]), f"метод за ланцюгом · відкритих {n_open}"),
         _tile("У плюсі", _share(s["win_share"])),
         _tile("Середнє, % спота", f"<span class='{_signed_cls(mean)}'>{_pc(mean, 2)}</span>", "на 1 BTC, порівнянне з H1, основна метрика"),
-        _tile("Середній R (як у тесті)", _r(s["mean_r_study"]), f"угод з R {s['n_r_study']}"),
+        _tile("Середній R (як у тесті)", _r(s["mean_r_study"]), f"угод з R {s['n_r_study']}", help="r"),
         _tile("Середній R (від найгіршого)", _r(s["mean_r_worst_case"]), "P&L / ризик угоди"),
         _tile("P&L разом", f"<span class='{_signed_cls(s['sum_pnl_usd'])}'>{_usd(s['sum_pnl_usd'], True)}</span>", "USD на розмір угод"),
     ]
@@ -2715,8 +3310,8 @@ def block_trade_plans(rows: list[dict] | None, n_shadow: int = 0) -> str:
         tiles = [
             _tile("Розв'язано", _nf(s["n"]), f"з входом {s['n_filled']} · з R {s['n_r']}"),
             _tile("У плюсі", _share(s["win_rate"]), "частка планів з R > 0"),
-            _tile("Середній R", f"<span class='{_signed_cls(mean)}'>{_r(mean)}</span>", f"95 % ДІ {_ci(ci)}"),
-            _tile("Проти 0", f"<span class='{cls}'>{_e(vs0)}</span>", "t-інтервал середнього R"),
+            _tile("Середній R", f"<span class='{_signed_cls(mean)}'>{_r(mean)}</span>", f"95 % ДІ {_ci(ci)}", help="r"),
+            _tile("Проти 0", f"<span class='{cls}'>{_e(vs0)}</span>", "t-інтервал середнього R", help="plans"),
             _tile(
                 "Виходи",
                 f"{o['target']} / {o['stop']}",
@@ -2785,19 +3380,19 @@ def render_journal(data: dict | None, err: str | None, now: float, params: dict 
                     groups.setdefault(src, []).append(t)
             real = kinds["real"]
             n_open = sum(1 for t in real if t.get("status") == "open")
-            out.append(f"<section class='wide'><h2>Мої угоди</h2>{block_journal_tiles(real, n_open)}")
+            out.append(f"<section class='wide'>{_h2('Мої угоди', 'j_trades')}{block_journal_tiles(real, n_open)}")
             out.append(block_journal_other(kinds["paper"], kinds["airdrop"]))
             if len(rows) >= JOURNAL_MAX_ROWS:
                 out.append(f"<p class='note warn'>Прочитано лише {JOURNAL_MAX_ROWS} останніх рядків журналу.</p>")
             out.append("</section>")
-            out.append(f"<section><h2>За джерелом</h2>{block_journal_sources(groups)}</section>")
+            out.append(f"<section>{_h2('За джерелом', 'sources')}{block_journal_sources(groups)}</section>")
             out.append(f"<section class='wide'><h2>Угоди</h2>{block_journal_table(real, p['page'])}</section>")
         try:
             rec = block_rec_paper(data.get("rec_paper"))
         except Exception as e:  # noqa: BLE001 - one odd row must not take the page down
             rec = _empty(f"Блок не вдалося показати: несподіваний формат даних ({type(e).__name__}).")
         out.append(
-            "<section class='wide'><h2>Паперові рекомендації асистента<span class='chip ev'>гіпотеза</span></h2>"
+            f"<section class='wide'>{_h2('Паперові рекомендації асистента', 'rec', CHIP_HYPOTHESIS)}"
             f"<p class='note warn'>{_e(REC_CAVEAT)}</p>{rec}</section>"
         )
         try:
@@ -2805,7 +3400,7 @@ def render_journal(data: dict | None, err: str | None, now: float, params: dict 
         except Exception as e:  # noqa: BLE001 - one odd row must not take the page down
             plans = _empty(f"Блок не вдалося показати: несподіваний формат даних ({type(e).__name__}).")
         out.append(
-            "<section class='wide'><h2>Плани угод асистента<span class='chip calm'>облік</span></h2>"
+            f"<section class='wide'>{_h2('Плани угод асистента', 'plans', CHIP_LEDGER)}"
             f"<p class='note warn'>{_e(PLAN_CAVEAT)}</p>{plans}</section>"
         )
         out.append("</main></body></html>")
@@ -2819,7 +3414,7 @@ def render_journal(data: dict | None, err: str | None, now: float, params: dict 
 
 def journal_page(query: str = "", now: float | None = None) -> str:
     data, err = load_journal(JOURNAL_DB)
-    return render_journal(data, err, time.time() if now is None else now, parse_journal_query(query), JOURNAL_DB)
+    return with_help(render_journal(data, err, time.time() if now is None else now, parse_journal_query(query), JOURNAL_DB))
 
 
 # ---------------------------------------------------------------- «Polymarket» tab: current Polymarket <-> Deribit gaps
@@ -3167,7 +3762,7 @@ def render_polymarket(data: dict | None, err: str | None, now: float, path: Path
             notes.append(f"Рядків з несподіваним форматом пропущено: {v['n_bad']}.")
         stale = age > PM_STALE_S
         n_low = sum(1 for s in v["pass"] if s["rr"] < PM_MIN_RR)
-        out.append("<section class='wide'><h2>Проходять поріг (≥ 5 п.п.)<span class='chip ev'>підказка</span></h2>")
+        out.append(f"<section class='wide'>{_h2('Проходять поріг (≥ 5 п.п.)', 'pm', CHIP_HINT)}")
         if v["pass"]:
             table = block_pm_table(v["pass"], now)
             if n_low:
@@ -3200,7 +3795,7 @@ def render_polymarket(data: dict | None, err: str | None, now: float, path: Path
 
 def polymarket_page(now: float | None = None) -> str:
     data, err = load_pm_gap(PM_DB)
-    return render_polymarket(data, err, time.time() if now is None else now, PM_DB)
+    return with_help(render_polymarket(data, err, time.time() if now is None else now, PM_DB))
 
 
 # ---------------------------------------------------------------- server

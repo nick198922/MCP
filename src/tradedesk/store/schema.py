@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 # Each migration is a list of SQL statements executed in a single transaction.
 # `PRAGMA user_version` is bumped by Store.init() after a block runs.
@@ -458,5 +458,42 @@ MIGRATIONS: dict[int, list[str]] = {
         )
         """,
         "CREATE INDEX IF NOT EXISTS rec_paper_status_expiry ON rec_paper (status, expiry_ts)",
+    ],
+    17: [
+        # Every trade plan the assistant gives (whatever its verdict), scored later on candles (analytics/trade_plan.py):
+        # a forward record of the assistant's judgment. Bookkeeping only, no orders; the owner's real trades stay in
+        # `journal` (linked through journal_id when he traded the plan).
+        """
+        CREATE TABLE IF NOT EXISTS trade_plan (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_ts INTEGER NOT NULL,           -- unix seconds; always the time of plan_add (no backdating)
+            exchange TEXT NOT NULL,                -- ccxt id the candles come from
+            symbol TEXT NOT NULL,                  -- ccxt symbol (options: the underlying)
+            instrument TEXT NOT NULL,              -- 'perp' | 'spot' | 'option'
+            side TEXT NOT NULL,                    -- 'long' | 'short'
+            entry_type TEXT NOT NULL,              -- 'market' | 'limit' | 'stop'
+            entry REAL NOT NULL,
+            stop REAL NOT NULL,
+            target REAL NOT NULL,
+            expires_ts INTEGER NOT NULL,           -- plan horizon, unix seconds
+            verdict TEXT NOT NULL,                 -- 'enter' | 'wait' | 'skip' (checklist ✅ / ⏳ / ❌)
+            thesis TEXT,
+            rules TEXT,                            -- JSON {rule number: 'pass' | 'fail' | 'warn'}
+            tags TEXT,                             -- JSON array of strings
+            rec_paper_id INTEGER,                  -- option plans: the linked rec_paper row
+            journal_id INTEGER,                    -- set when the owner actually traded the plan
+            status TEXT NOT NULL DEFAULT 'open',   -- 'open' | 'resolved'
+            outcome TEXT,                          -- 'target' | 'stop' | 'expired' | 'not_filled'
+            filled_ts INTEGER,
+            fill REAL,                             -- paper fill price (entry, or the open after a gap through a stop entry)
+            resolved_ts INTEGER,
+            exit REAL,
+            r_result REAL,                         -- net R: move / |entry - stop| minus a flat taker fee on both sides
+            timeframe TEXT,                        -- candles the plan was scored on
+            resolve_note TEXT
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS trade_plan_status_expires ON trade_plan (status, expires_ts)",
+        "CREATE INDEX IF NOT EXISTS trade_plan_symbol_created ON trade_plan (symbol, created_ts)",
     ],
 }

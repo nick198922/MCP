@@ -615,6 +615,82 @@ class Store:
         await self.conn.commit()
         return int(cur.rowcount or 0)
 
+    # ---------- trade_plan (the assistant's trade plans, scored on candles; bookkeeping only) ----------
+
+    async def plan_insert(self, **f: Any) -> int:
+        cols = ("created_ts exchange symbol instrument side entry_type entry stop target expires_ts verdict thesis rec_paper_id").split()
+        vals = [f.get(c) for c in cols]
+        cols += ["rules", "tags"]
+        vals += [json.dumps(f.get("rules") or {}), json.dumps(f.get("tags") or [])]
+        cur = await self.conn.execute(
+            f"INSERT INTO trade_plan ({', '.join(cols)}, status) VALUES ({', '.join('?' * len(cols))}, 'open')", vals
+        )
+        await self.conn.commit()
+        return int(cur.lastrowid or 0)
+
+    async def plan_get(self, plan_id: int) -> dict[str, Any] | None:
+        cur = await self.conn.execute("SELECT * FROM trade_plan WHERE id = ?", (plan_id,))
+        row = await cur.fetchone()
+        return _parse_json_cols(dict(row), ("rules", "tags")) if row else None
+
+    async def plan_list(
+        self,
+        *,
+        status: str | None = None,
+        verdict: str | None = None,
+        tag: str | None = None,
+        symbol: str | None = None,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        where: list[str] = []
+        params: list[Any] = []
+        for col, v in (("status", status), ("verdict", verdict), ("symbol", symbol)):
+            if v:
+                where.append(f"{col} = ?")
+                params.append(v)
+        if tag:
+            where.append("tags LIKE ?")  # JSON array: match the quoted value
+            params.append(f'%"{tag}"%')
+        sql = "SELECT * FROM trade_plan" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY created_ts DESC, id DESC LIMIT ?"
+        cur = await self.conn.execute(sql, [*params, limit])
+        return [_parse_json_cols(dict(r), ("rules", "tags")) for r in await cur.fetchall()]
+
+    async def plan_set_fill(self, plan_id: int, *, filled_ts: int, fill: float, timeframe: str) -> int:
+        """Record the paper fill of a plan that is still open."""
+        cur = await self.conn.execute(
+            "UPDATE trade_plan SET filled_ts = ?, fill = ?, timeframe = ? WHERE id = ? AND status = 'open'",
+            (filled_ts, fill, timeframe, plan_id),
+        )
+        await self.conn.commit()
+        return int(cur.rowcount or 0)
+
+    async def plan_resolve(
+        self,
+        plan_id: int,
+        *,
+        outcome: str,
+        resolved_ts: int,
+        filled_ts: int | None,
+        fill: float | None,
+        exit_: float | None,
+        r_result: float | None,
+        timeframe: str | None,
+        note: str | None,
+    ) -> int:
+        """Resolve an open plan with one conditional UPDATE; 1 when this call resolved it, 0 when it was not open."""
+        cur = await self.conn.execute(
+            "UPDATE trade_plan SET status = 'resolved', outcome = ?, resolved_ts = ?, filled_ts = ?, fill = ?, exit = ?,"
+            " r_result = ?, timeframe = ?, resolve_note = ? WHERE id = ? AND status = 'open'",
+            (outcome, resolved_ts, filled_ts, fill, exit_, r_result, timeframe, note, plan_id),
+        )
+        await self.conn.commit()
+        return int(cur.rowcount or 0)
+
+    async def plan_link_journal(self, plan_id: int, journal_id: int) -> int:
+        cur = await self.conn.execute("UPDATE trade_plan SET journal_id = ? WHERE id = ?", (journal_id, plan_id))
+        await self.conn.commit()
+        return int(cur.rowcount or 0)
+
     # ---------- cp_*: forward paper engine for the carry strategies (bookkeeping only, no orders) ----------
 
     async def cp_cycle_get(self, strategy: str, cycle_ts: int) -> dict[str, Any] | None:

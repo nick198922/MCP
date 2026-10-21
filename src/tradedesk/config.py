@@ -85,6 +85,9 @@ class Settings:
     assistant_paper_seconds: int = 3600
     assistant_paper_deposit_usd: float = 10_000.0
     assistant_paper_risk_pct: float = 1.0
+    # Trade-plan scoring (tools/trade_plan.py): the job resolves the assistant's open plans on candles. Off by default.
+    plan_resolve_enabled: bool = False
+    plan_resolve_seconds: int = 3600
     # Alerts
     alerts_enabled: bool = False
     alerts_rules_path: str = ""
@@ -146,6 +149,9 @@ class Settings:
             assistant_paper_seconds=int(_float("TRADEDESK_ASSISTANT_PAPER_SECONDS", 3600)),
             assistant_paper_deposit_usd=_float("TRADEDESK_ASSISTANT_PAPER_DEPOSIT_USD", 10_000.0),
             assistant_paper_risk_pct=_float("TRADEDESK_ASSISTANT_PAPER_RISK_PCT", 1.0),
+            # TRADEDESK_PAPER_ prefix: already on the deploy/features.env allow-list (src/tradedesk/features.py)
+            plan_resolve_enabled=os.environ.get("TRADEDESK_PAPER_PLAN_RESOLVE_ENABLED", "").lower() in ("1", "true", "yes"),
+            plan_resolve_seconds=int(_float("TRADEDESK_PAPER_PLAN_RESOLVE_SECONDS", 3600)),
             http_bearer_tokens=os.environ.get("TRADEDESK_HTTP_BEARER_TOKENS") or os.environ.get("TRADEDESK_HTTP_BEARER_TOKEN", ""),
             alerts_enabled=os.environ.get("TRADEDESK_ALERTS_ENABLED", "").lower() in ("1", "true", "yes"),
             alerts_rules_path=os.environ.get("TRADEDESK_ALERTS_RULES_PATH", ""),

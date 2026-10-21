@@ -201,10 +201,18 @@ async def test_plan_add_review_roundtrip(tmp_path):
             entry=81000.0, stop=82000.0, target=79000.0, expires_ts=_ts(3), verdict="skip", tags=["idea:demo"],
         )  # fmt: skip
         assert b["ok"] is True and b["data"]["id"] == 2
+        c = await _call(
+            srv, "plan_add", exchange="binance", symbol="BTC/USDT:USDT", instrument="perp", side="long", entry_type="market",
+            entry=80100.0, stop=79000.0, target=80500.0, expires_ts=_ts(24), verdict="enter", tags=["src:demo-shadow", "demo:taken"],
+        )  # fmt: skip
+        assert c["data"]["id"] == 3  # the demo trader's shadow plan: resolved, but outside the assistant's record
         rt.now = lambda: NOW  # 13:07: candles up to the 12:00 one are in the data
         rv = await _call(srv, "plan_review")
         assert rv["ok"] is True, rv
-        assert sorted(rv["data"]["resolved_now"]) == [1, 2] and rv["data"]["open"] == []
+        assert sorted(rv["data"]["resolved_now"]) == [1, 2, 3] and rv["data"]["open"] == []
+        sh = rv["data"]["demo_shadow"]
+        assert sh["open"] == 0 and sh["by_verdict"]["enter"]["n"] == 1 and sh["by_tag"]["demo:taken"]["enter"]["n"] == 1
+        assert 3 not in {p["id"] for p in rv["data"]["recent_resolved"]}
         by = {p["id"]: p for p in rv["data"]["recent_resolved"]}
         assert by[1]["outcome"] == "target" and by[1]["exit"] == 80500.0 and by[1]["timeframe"] == "1h"
         assert by[1]["r_result"] == pytest.approx((400 - FEE * 160600) / 1100, abs=1e-3)

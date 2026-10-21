@@ -9,14 +9,17 @@ Hourly cycle:
    journal row is closed and the owner gets a Telegram message. A position held longer than ``MAX_HOLD_MS`` of its
    timeframe is flattened with a reduce-only market order (outside the guard: it only reduces).
 2. Break-even (also every minute): at +30 % ROE the stop moves to the entry plus both taker fees (owner 21.10).
-3. Universe: today's top 100 USDT perpetuals by turnover. Scan the setups of ``analytics/setup_signals.py`` on the last
+3. Universe: today's top 100 crypto USDT perpetuals by turnover (no tokenised stocks, ETFs or commodities). Scan the setups of ``analytics/setup_signals.py`` on the last
    closed 1d and 4h bars; a signal older than ``FRESH_MS`` is ignored, and each signal is decided once.
-4. Each candidate is sized for $100 at the stop (fees included) from the live price, gets its leverage (tier, lowered
-   for the liquidation) and a confidence score. Candidates that pass the guard and score at least ``MIN_SCORE`` are
+4. Each candidate is sized for $100 at the stop (fees included) from the live price, gets its leverage (the owner's
+   tier, capped by the venue's maximum) and a confidence score. The account is on cross margin (owner 21.10): the guard
+   keeps the maintenance margin plus the loss at every stop within half of the equity, so stops come before liquidation. Candidates that pass the guard and score at least ``MIN_SCORE`` are
    entered best first, at most 5 a UTC day (owner 21.10); the rest are recorded as skipped with the reason.
 5. Every candidate, taken or not, is also written to ``trade_plan`` as a shadow plan (tag ``src:demo-shadow``, verdict
    'enter' if taken, else 'skip'), which the collector resolves on candles without the break-even rule: so selection
    and break-even can both be compared with the plain setup.
+
+A dry run reads and scans only: no sync writes, no time exit, no stop move, no order; its audit rows are 'dry_*'.
 
 Kill-switch: the file ~/.config/tradedesk/demo.halt (any content) stops new entries; open positions keep their stop
 and target. No key file = nothing to do (exit 0). Signals come from candles only: no text from any external source can
@@ -41,7 +44,7 @@ from typing import Any
 from ..analytics.course_s14_ema import Bars
 from ..analytics.setup_signals import TF_MS, LiveSignal, Score, closed_bars, scan, score
 from ..store import Store
-from .bybit_demo import BybitDemo, load_keys
+from .bybit_demo import CROSS, BybitDemo, is_refusal, load_keys
 from .guard import (
     BE_ROE,
     DEFAULT,
@@ -69,6 +72,7 @@ MIN_SCORE = 2
 UNKNOWN_GRACE_MS = 10 * 60_000  # an 'unknown' order the venue still does not know after this is rejected
 SHADOW_EXCHANGE = "bybit"  # ccxt id the collector resolves the shadow plans on
 HOUR_MS = 3_600_000
+BTC = "BTC/USDT:USDT"
 
 Notify = Callable[[str], Awaitable[None]]
 
@@ -250,18 +254,21 @@ async def manage(ctx: Ctx, positions: dict[str, Any]) -> None:
             continue
         await ctx.safe(
             "breakeven",
-            lambda t=t, entry=entry, mark=mark, r=r: _move_to_breakeven(ctx, t, entry, mark, r),
+            lambda t=t, pos=pos, entry=entry, mark=mark, r=r: _move_to_breakeven(ctx, t, pos, entry, mark, r),
             link_id=t["link_id"],
             symbol=t["symbol"],
         )
 
 
-async def _move_to_breakeven(ctx: Ctx, t: dict[str, Any], entry: float, mark: float, r: float) -> None:
+async def _move_to_breakeven(ctx: Ctx, t: dict[str, Any], pos: dict[str, Any], entry: float, mark: float, r: float) -> None:
     m = await ctx.client.market(t["symbol"])
-    be = _round(breakeven_stop(t["side"], entry), m.tick)
-    if (t["side"] == "long" and be >= mark) or (t["side"] == "short" and be <= mark):
+    be = breakeven_stop(t["side"], entry, m.tick)
+    sign = 1 if t["side"] == "long" else -1
+    if sign * (mark - be) <= 0:
         return  # the price is already back through the break-even level
-    await ctx.client.set_stop(m.market_id, be)
+    current = float(pos.get("stopLossPrice") or 0)
+    if not (current and sign * (current - be) >= 0):  # a stop already at break-even (an earlier move) is only recorded
+        await ctx.client.set_stop(t["symbol"], be)
     await ctx.store.demo_trade_update(t["link_id"], be_ts=ctx.now, be_stop=be)
     await ctx.audit(
         "stop_moved", link_id=t["link_id"], symbol=t["symbol"], setup=t["setup"], payload={"be_stop": be, "roe": r, "mark": mark}
@@ -293,12 +300,19 @@ async def _state(ctx: Ctx, positions: dict[str, Any], uni: tuple[str, ...], equi
         orders_last_hour=len(await ctx.store.exec_audit_list(ctx.now - HOUR_MS, ("sent",))),
         open_risk_usd=open_risk_usd([(t["qty"], t["fill"] or t["entry"], t["be_stop"] or t["stop"]) for t in open_rows]),
         open_margin_usd=sum(t["qty"] * (t["fill"] or t["entry"]) / max(1, t["leverage"]) for t in open_rows),
+        open_maint_usd=sum(_maint(positions.get(t["symbol"]), t) for t in open_rows),
         day_realised_loss_usd=-sum(
             min(0.0, t["pnl_usd"] or 0.0) for t in trades if t["status"] == "closed" and (t["closed_ts"] or 0) >= day0
         ),
         equity_usd=equity,
         seen_link_ids=tuple({t["link_id"] for t in trades} | {a["link_id"] for a in seen_audit if a["link_id"]}),
     )
+
+
+def _maint(pos: dict[str, Any] | None, t: dict[str, Any]) -> float:
+    """Maintenance margin of an open trade: the venue's figure, else a cautious 10 % of the notional."""
+    mm = (pos or {}).get("maintenanceMargin")
+    return float(mm) if mm else 0.10 * t["qty"] * (t["fill"] or t["entry"])
 
 
 @dataclass
@@ -315,9 +329,13 @@ _CAPS = ("trades today", "orders in the last hour")
 async def _candidates(ctx: Ctx, uni: tuple[str, ...], state: State) -> list[Candidate]:
     htf: dict[str, Bars] = {}
     out: list[Candidate] = []
+    btc = await ctx.safe("ohlcv", lambda: _bars(ctx, BTC, "1d"), symbol=BTC)  # the BTC-trend point of every alt
+    if btc is not None:
+        htf[BTC] = btc
     for symbol in uni:
         for tf in TIMEFRAMES:
-            bars = await ctx.safe("ohlcv", lambda s=symbol, tf=tf: _bars(ctx, s, tf), symbol=symbol)
+            bars = htf.get(symbol) if tf == "1d" and symbol == BTC else None
+            bars = bars or await ctx.safe("ohlcv", lambda s=symbol, tf=tf: _bars(ctx, s, tf), symbol=symbol)
             if bars is None:
                 continue
             if tf == "1d":
@@ -338,6 +356,7 @@ async def _bars(ctx: Ctx, symbol: str, tf: str) -> Bars:
 async def _candidate(ctx: Ctx, symbol: str, sig: LiveSignal, htf: dict[str, Bars], state: State) -> Candidate:
     ctx.bump("signals")
     m = await ctx.client.market(symbol)
+    tier = await ctx.client.risk_tier(symbol)
     last = await ctx.client.last_price(symbol)
     p = plan_order(
         symbol,
@@ -350,8 +369,11 @@ async def _candidate(ctx: Ctx, symbol: str, sig: LiveSignal, htf: dict[str, Bars
         m.lot_step,
         m.min_qty,
         ctx.cfg,
+        mmr=tier.mmr,
+        venue_max_leverage=tier.max_leverage,
+        tier_limit_usd=tier.limit_usd,
     )
-    sc = score(sig, p.reward_risk, htf.get(symbol), htf.get("BTC/USDT:USDT"), base_of(symbol) == "BTC")
+    sc = score(sig, p.reward_risk, htf.get(symbol), htf.get(BTC), base_of(symbol) == "BTC")
     structural = [v for v in check(p, replace(state, trades_today=0, orders_last_hour=0), ctx.cfg) if not any(c in v for c in _CAPS)]
     await ctx.audit(
         "signal",
@@ -360,7 +382,7 @@ async def _candidate(ctx: Ctx, symbol: str, sig: LiveSignal, htf: dict[str, Bars
         setup=sig.setup,
         payload={
             "signal": sig.__dict__,
-            "proposal": {**p.__dict__, "risk_usd": p.risk_usd, "rr": p.reward_risk},
+            "proposal": {**p.__dict__, "risk_usd": p.risk_usd, "rr": p.reward_risk, "maintenance": p.maintenance},
             "score": sc.points,
             "why": sc.reasons,
         },
@@ -395,9 +417,8 @@ async def _shadow(ctx: Ctx, c: Candidate, taken: bool) -> int | None:
     )
 
 
-async def _enter(ctx: Ctx, c: Candidate, state: State) -> State:
+async def _insert_trade(ctx: Ctx, c: Candidate) -> None:
     p, sig = c.p, c.sig
-    await ctx.client.prepare(p.symbol, p.leverage)
     await ctx.store.demo_trade_insert(
         {
             "link_id": p.link_id,
@@ -420,6 +441,22 @@ async def _enter(ctx: Ctx, c: Candidate, state: State) -> State:
             "opened_ts": ctx.now,
         }
     )  # written before the order: if the answer is lost, the next sync finds the order by its link id
+
+
+async def _enter(ctx: Ctx, c: Candidate, state: State) -> State:
+    p, sig = c.p, c.sig
+    try:
+        await ctx.client.prepare(p.symbol, p.leverage)
+        await _insert_trade(ctx, c)
+    except Exception as e:  # noqa: BLE001 - nothing was sent: the signal is refused, the cycle goes on
+        err = ctx.client.safe_error(e)
+        ctx.bump("refused")
+        await ctx.safe(
+            "audit_refused",
+            lambda: ctx.audit("refused", link_id=p.link_id, symbol=p.symbol, setup=sig.setup, payload={"violations": [err]}),
+        )
+        await ctx.safe("shadow", lambda: _shadow(ctx, c, False), link_id=p.link_id)
+        return replace(state, seen_link_ids=(*state.seen_link_ids, p.link_id))
     taken = replace(
         state,
         open_symbols=(*state.open_symbols, p.symbol),
@@ -427,13 +464,12 @@ async def _enter(ctx: Ctx, c: Candidate, state: State) -> State:
         orders_last_hour=state.orders_last_hour + 1,
         open_risk_usd=state.open_risk_usd + p.risk_usd,
         open_margin_usd=state.open_margin_usd + p.margin,
+        open_maint_usd=state.open_maint_usd + p.maintenance,
         seen_link_ids=(*state.seen_link_ids, p.link_id),
     )
     try:
         order = await ctx.client.place_bracket(p.symbol, p.side, p.qty, p.stop, p.target, p.link_id)
     except Exception as e:  # noqa: BLE001
-        from .bybit_demo import is_refusal  # noqa: PLC0415
-
         if is_refusal(e):
             await ctx.store.demo_trade_update(p.link_id, status="rejected")
             await ctx.audit("rejected", link_id=p.link_id, symbol=p.symbol, setup=sig.setup, payload={"error": ctx.client.safe_error(e)})
@@ -524,15 +560,19 @@ async def cycle(
     if positions is None:
         ctx.out["skipped_entries"] = "positions unreadable"
         return ctx.out
-    for t in await store.demo_trade_list(("open", "unknown")):
-        await ctx.safe("sync", lambda t=t: _sync_trade(ctx, t, positions), link_id=t["link_id"], symbol=t["symbol"])
-    positions = await ctx.safe("positions", client.positions) or positions
-    await manage(ctx, positions)
+    if not dry_run:  # a dry run only reads and scans: no sync writes, no time exit, no stop move
+        for t in await store.demo_trade_list(("open", "unknown")):
+            await ctx.safe("sync", lambda t=t: _sync_trade(ctx, t, positions), link_id=t["link_id"], symbol=t["symbol"])
+        positions = await ctx.safe("positions", client.positions) or positions
+        await manage(ctx, positions)
     equity = await ctx.safe("equity", client.equity_usd)
     turnovers = await ctx.safe("universe", client.turnovers)
-    if not equity or not turnovers:
-        ctx.out["skipped_entries"] = "equity or universe unreadable"
+    mode = await ctx.safe("margin_mode", lambda: client.ensure_cross(change=not dry_run))
+    if not equity or not turnovers or mode is None:
+        ctx.out["skipped_entries"] = "equity, universe or margin mode unreadable"
         return ctx.out
+    if mode != CROSS:
+        await ctx.safe("audit_margin", lambda: ctx.audit("margin_mode", payload={"was": mode, "now": "cross" if not dry_run else mode}))
     uni = universe(turnovers)
     state = await _state(ctx, positions, uni, equity)
     ctx.out.update(halted=state.halted, universe=len(uni), trades_today=state.trades_today)

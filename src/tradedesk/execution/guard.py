@@ -5,8 +5,9 @@ of external data can raise them. The demo trader builds a ``Proposal`` with ``pl
 ``check`` returns no violations; every decision (sent or refused) is written to the append-only audit log.
 
 Risk is the owner's rule: $100 lost at the stop, Bybit taker fees on both sides included. Leverage does not change that
-risk, it only sets the margin (owner 21.10): BTC and ETH 20x, the majors 10x, the rest 5x, lowered when the stop would
-sit beyond the isolated-margin liquidation price.
+risk, it only sets the margin (owner 21.10): BTC and ETH 20x, the majors 10x, the rest 5x, capped by the venue's maximum
+for the coin. The account is on cross margin (owner 21.10), so liquidation is an account matter: the maintenance margin
+of all positions plus the loss if every stop is hit must stay within half of the equity, so the stops always come first.
 """
 
 from __future__ import annotations
@@ -34,11 +35,10 @@ class GuardConfig:
     max_open_risk_usd: float = 1500.0  # sum of the losses at the stops of all open positions
     daily_max_loss_usd: float = 500.0  # realised loss of the UTC day; then no new entries until 00:00 UTC
     max_margin_share: float = 0.90  # initial margin of all open positions / equity
+    max_maint_and_risk_share: float = 0.50  # (maintenance margin of all + loss at all stops) / equity: cross-margin safety
     max_notional_usd: float = 50_000.0  # per order; a tighter stop shrinks the size to this cap (risk below $100)
     min_reward_risk: float = 1.5  # after fees
     max_stop_pct: float = 0.10  # stop farther than 10 % of the entry is a broken setup, not a trade
-    liq_buffer: float = 0.01  # the stop must be at least 1 % of the price before the estimated liquidation
-    mmr: float = 0.01  # maintenance margin rate assumed for the liquidation estimate (Bybit base tier 0.5-1 %)
     orders_per_hour: int = 5
 
 
@@ -54,14 +54,6 @@ def tier_leverage(symbol: str) -> int:
     return LEVERAGE_TOP.get(b, 10 if b in MAJORS else 5)
 
 
-def safe_leverage(entry: float, stop: float, cfg: GuardConfig = DEFAULT) -> int:
-    """Highest whole leverage whose isolated liquidation (about 1/L - mmr from the entry) lies beyond the stop + buffer."""
-    if entry <= 0:
-        return 0
-    need = abs(entry - stop) / entry + cfg.mmr + cfg.liq_buffer
-    return int(math.floor(1 / need)) if need > 0 else 0
-
-
 @dataclass(frozen=True)
 class Proposal:
     symbol: str
@@ -73,6 +65,7 @@ class Proposal:
     leverage: int
     setup: str  # e.g. 'S16'
     link_id: str  # idempotency key sent to the venue as orderLinkId
+    mmr: float = 0.10  # maintenance margin rate of the venue's first risk tier (decimal); unknown = a cautious 10 %
 
     @property
     def notional(self) -> float:
@@ -81,6 +74,10 @@ class Proposal:
     @property
     def margin(self) -> float:
         return self.notional / self.leverage if self.leverage > 0 else math.inf
+
+    @property
+    def maintenance(self) -> float:
+        return self.notional * self.mmr
 
     @property
     def risk_usd(self) -> float:
@@ -106,6 +103,7 @@ class State:
     orders_last_hour: int = 0
     open_risk_usd: float = 0.0
     open_margin_usd: float = 0.0
+    open_maint_usd: float = 0.0  # maintenance margin of the open positions
     day_realised_loss_usd: float = 0.0  # positive = loss
     equity_usd: float = 0.0
     seen_link_ids: tuple[str, ...] = ()  # signals already decided (sent, refused or not selected): one shot each
@@ -133,10 +131,16 @@ def plan_order(
     lot_step: float,
     min_qty: float,
     cfg: GuardConfig = DEFAULT,
+    *,
+    mmr: float = 0.10,
+    venue_max_leverage: float = 100.0,
+    tier_limit_usd: float = math.inf,
 ) -> Proposal:
-    lev = max(0, min(tier_leverage(symbol), safe_leverage(entry, stop, cfg)))
-    qty = size_for_risk(entry, stop, cfg.risk_usd, lot_step, min_qty, cfg.max_notional_usd)
-    return Proposal(symbol, side, entry, stop, target, qty, lev, setup, link_id)
+    """Size for the risk (capped by the order cap and the venue's first risk tier, where ``mmr`` holds) and the leverage
+    (the owner's tier, capped by the venue's maximum for the coin)."""
+    lev = max(0, min(tier_leverage(symbol), int(venue_max_leverage)))
+    qty = size_for_risk(entry, stop, cfg.risk_usd, lot_step, min_qty, min(cfg.max_notional_usd, tier_limit_usd))
+    return Proposal(symbol, side, entry, stop, target, qty, lev, setup, link_id, mmr)
 
 
 def check(p: Proposal, s: State, cfg: GuardConfig = DEFAULT) -> list[str]:
@@ -158,10 +162,8 @@ def check(p: Proposal, s: State, cfg: GuardConfig = DEFAULT) -> list[str]:
         out.append(f"stop {dist:.1%} from the entry > {cfg.max_stop_pct:.0%}")
     if p.reward_risk < cfg.min_reward_risk:
         out.append(f"reward/risk {p.reward_risk:.2f} after fees < {cfg.min_reward_risk}")
-    if p.leverage < 1:
-        out.append("no leverage keeps the liquidation beyond the stop")
-    elif p.leverage > tier_leverage(p.symbol) or p.leverage > safe_leverage(p.entry, p.stop, cfg):
-        out.append(f"leverage {p.leverage}x above the tier or the liquidation limit")
+    if not 1 <= p.leverage <= tier_leverage(p.symbol):
+        out.append(f"leverage {p.leverage}x outside 1..{tier_leverage(p.symbol)}x")
     if p.qty <= 0:
         out.append("size is zero (risk too small for the lot step)")
     if p.risk_usd > cfg.risk_usd * 1.0001:
@@ -170,8 +172,12 @@ def check(p: Proposal, s: State, cfg: GuardConfig = DEFAULT) -> list[str]:
         out.append(f"notional {p.notional:,.0f} USD > {cfg.max_notional_usd:,.0f}")
     if s.equity_usd <= 0:
         out.append("equity unknown or zero")
-    elif s.open_margin_usd + p.margin > cfg.max_margin_share * s.equity_usd:
-        out.append(f"margin {s.open_margin_usd + p.margin:,.0f} USD > {cfg.max_margin_share:.0%} of equity")
+    else:
+        if s.open_margin_usd + p.margin > cfg.max_margin_share * s.equity_usd:
+            out.append(f"margin {s.open_margin_usd + p.margin:,.0f} USD > {cfg.max_margin_share:.0%} of equity")
+        need = s.open_maint_usd + p.maintenance + s.open_risk_usd + p.risk_usd
+        if need > cfg.max_maint_and_risk_share * s.equity_usd:
+            out.append(f"maintenance + loss at all stops {need:,.0f} USD > {cfg.max_maint_and_risk_share:.0%} of equity (cross margin)")
     if p.symbol in s.open_symbols:
         out.append(f"already in {p.symbol}")
     if len(s.open_symbols) >= cfg.max_open_positions:
@@ -198,9 +204,14 @@ def open_risk_usd(positions: Sequence[tuple[float, float, float]]) -> float:
     return sum(abs(q) * (abs(e - st) + TAKER_FEE * (e + st)) for q, e, st in positions)
 
 
-def breakeven_stop(side: str, entry: float) -> float:
-    """Stop price that loses nothing after both taker fees (the owner's rule: move here at +30 % ROE)."""
-    return entry * (1 + 2 * TAKER_FEE) if side == "long" else entry * (1 - 2 * TAKER_FEE)
+def breakeven_stop(side: str, entry: float, tick: float = 0.0) -> float:
+    """Stop price that loses nothing after both taker fees (the owner's rule: move here at +30 % ROE), rounded to the
+    tick away from the entry (up for a long, down for a short) so it never lands on the losing side."""
+    raw = entry * (1 + 2 * TAKER_FEE) if side == "long" else entry * (1 - 2 * TAKER_FEE)
+    if tick <= 0:
+        return raw
+    steps = raw / tick
+    return round((math.ceil(steps - 1e-9) if side == "long" else math.floor(steps + 1e-9)) * tick, 12)
 
 
 def roe(side: str, entry: float, mark: float, leverage: float) -> float:
@@ -213,8 +224,16 @@ def roe(side: str, entry: float, mark: float, leverage: float) -> float:
 BE_ROE = 0.30  # owner 21.10: at +30 % ROE the stop goes to the entry
 
 
-def universe(tickers: Sequence[tuple[str, float]], size: int = 100, min_turnover_usd: float = 5e6) -> tuple[str, ...]:
-    """Top ``size`` USDT linear perpetuals by 24h turnover, stablecoins and thin markets out; input (symbol, turnover)."""
-    ok = [(sym, t) for sym, t in tickers if sym.endswith("/USDT:USDT") and base_of(sym) not in STABLES and t >= min_turnover_usd]
+CRYPTO_KINDS = ("", "innovation")  # Bybit symbolType: '' = crypto, 'innovation' = new crypto listings; no stock/ETF/commodity
+
+
+def universe(tickers: Sequence[tuple[str, float, str]], size: int = 100, min_turnover_usd: float = 5e6) -> tuple[str, ...]:
+    """Top ``size`` crypto USDT linear perpetuals by 24h turnover; stablecoins, thin markets and tokenised stocks, ETFs
+    and commodities out (the course setups were checked on crypto only). Input (symbol, turnover, Bybit symbolType)."""
+    ok = [
+        (sym, t)
+        for sym, t, kind in tickers
+        if sym.endswith("/USDT:USDT") and kind in CRYPTO_KINDS and base_of(sym) not in STABLES and t >= min_turnover_usd
+    ]
     ok.sort(key=lambda x: -x[1])
     return tuple(sym for sym, _ in ok[:size])

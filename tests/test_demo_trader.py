@@ -11,7 +11,7 @@ import pytest
 
 from tradedesk.analytics import setup_signals as ss
 from tradedesk.execution import bybit_demo, demo_trader
-from tradedesk.execution.bybit_demo import BybitDemo, DemoOnlyError, MarketInfo
+from tradedesk.execution.bybit_demo import CROSS, BybitDemo, DemoOnlyError, MarketInfo, RiskTier
 from tradedesk.execution.guard import DEFAULT, TAKER_FEE
 from tradedesk.store import Store
 
@@ -44,6 +44,9 @@ class FakeVenue(BybitDemo):
         self.fail: BaseException | None = None
         self.place_lands = False  # with ``fail``: the order reached the venue anyway (lost answer)
         self.positions_fail = False
+        self.mode = CROSS
+        self.mode_changes = 0
+        self.prepare_fail: BaseException | None = None
 
     async def aclose(self):
         pass
@@ -63,16 +66,34 @@ class FakeVenue(BybitDemo):
         return 10_000.0
 
     async def turnovers(self):
-        return [(BTC, 5e9), ("USDC/USDT:USDT", 9e9)]  # one coin: the patched scan gives every coin the same signal
+        # one crypto coin: the patched scan gives every coin the same signal
+        return [(BTC, 5e9, ""), ("USDC/USDT:USDT", 9e9, ""), ("NVDA/USDT:USDT", 8e9, "stock")]
+
+    async def risk_tier(self, symbol):
+        return RiskTier(0.005, 100.0, 2_000_000.0)
+
+    async def margin_mode(self):
+        return self.mode
+
+    async def ensure_cross(self, change=True):
+        was = self.mode
+        if was != CROSS and change:
+            self.mode, self.mode_changes = CROSS, self.mode_changes + 1
+        return was
 
     async def ohlcv(self, symbol, tf, limit=1000):
         return _rising_rows(300, ss.TF_MS[tf], self.now - 60_000)
 
     async def prepare(self, symbol, leverage):
         self.orders.append(("prepare", symbol, leverage))
+        if self.prepare_fail is not None:
+            raise self.prepare_fail
 
     def _fill(self, symbol, side, qty, link_id):
-        self.pos[symbol] = {"symbol": symbol, "contracts": qty, "entryPrice": self.last[symbol], "markPrice": self.last[symbol]}
+        px = self.last[symbol]
+        self.pos[symbol] = {
+            "symbol": symbol, "contracts": qty, "entryPrice": px, "markPrice": px, "stopLossPrice": None, "maintenanceMargin": qty * px * 0.005,
+        }  # fmt: skip
         self.by_link[link_id] = {
             "orderStatus": "Filled",
             "cumExecQty": str(qty),
@@ -93,8 +114,10 @@ class FakeVenue(BybitDemo):
     async def order_by_link(self, market_id, link_id):
         return self.by_link.get(link_id)
 
-    async def set_stop(self, market_id, stop):
-        self.stops.append((market_id, stop))
+    async def set_stop(self, symbol, stop):
+        self.stops.append((symbol, stop))
+        if symbol in self.pos:
+            self.pos[symbol]["stopLossPrice"] = stop
         return {}
 
     async def close_position(self, symbol, side, qty, link_id):
@@ -292,7 +315,8 @@ async def test_breakeven_at_30_percent_roe_once(world):
     assert res["breakeven"] == 0 and not w.venue.stops
     w.venue.pos[BTC]["markPrice"] = 101_600.0  # +1.6 % at 20x = +32 % ROE
     res = await demo_trader.manage_only(w.store, w.venue, w.now + 120_000, w.notify)
-    assert res["breakeven"] == 1 and w.venue.stops == [("BTCUSDT", pytest.approx(100_000 * (1 + 2 * TAKER_FEE), abs=0.1))]
+    assert res["breakeven"] == 1 and w.venue.stops == [(BTC, pytest.approx(100_000 * (1 + 2 * TAKER_FEE), abs=0.1))]
+    assert w.venue.stops[0][1] >= 100_000 * (1 + 2 * TAKER_FEE) - 1e-6  # rounded away from the entry
     await demo_trader.manage_only(w.store, w.venue, w.now + 180_000, w.notify)
     assert len(w.venue.stops) == 1  # once per trade
     assert any("беззбиток" in m for m in w.msgs)
@@ -392,3 +416,44 @@ def test_keys_file(tmp_path):
     assert bybit_demo.load_keys(p) is None
     p.write_text("BYBIT_DEMO_API_KEY=abc\nBYBIT_DEMO_API_SECRET=def\n")
     assert bybit_demo.load_keys(p) == ("abc", "def")
+
+
+async def test_breakeven_already_on_the_venue_is_only_recorded(world):
+    """The stop moved but the DB write failed last minute: the next run records it without a second venue call."""
+    w = world
+    await w.run()
+    w.venue.pos[BTC].update(markPrice=101_600.0, stopLossPrice=100_200.0)
+    res = await demo_trader.manage_only(w.store, w.venue, w.now + 60_000, w.notify)
+    assert res["breakeven"] == 1 and w.venue.stops == [] and (await w.store.demo_trade_list())[0]["be_ts"]
+
+
+async def test_account_is_switched_to_cross_once_and_stocks_are_out(world):
+    w = world
+    w.venue.mode = "ISOLATED_MARGIN"
+    res = await w.run()
+    assert w.venue.mode_changes == 1 and res["universe"] == 1 and res["sent"] == 1
+    assert (await w.store.exec_audit_list(kinds=("margin_mode",)))[0]["payload"]["was"] == "ISOLATED_MARGIN"
+    await w.run(w.now + 3_600_000)
+    assert w.venue.mode_changes == 1
+
+
+async def test_failure_before_the_order_refuses_the_signal_once(world):
+    w = world
+    w.venue.prepare_fail = ccxt.ExchangeError("leverage not allowed")
+    res = await w.run()
+    assert res.get("refused") == 1 and res["sent"] == 0 and not [o for o in w.venue.orders if o[0] == "bracket"]
+    assert await w.store.demo_trade_list() == []
+    w.venue.prepare_fail = None
+    res = await w.run(w.now + 600_000)
+    assert res["sent"] == 0  # one shot: the refused signal is not retried
+
+
+async def test_dry_run_does_not_touch_open_trades(world):
+    w = world
+    await w.run()
+    w.venue.pos[BTC]["markPrice"] = 101_600.0
+    w.signals["4h"] = []
+    n = len(w.venue.orders)
+    await w.run(w.now + demo_trader.MAX_HOLD_MS["4h"] + 1, dry_run=True)
+    assert w.venue.orders[n:] == [] and w.venue.stops == []
+    assert (await w.store.demo_trade_list())[0]["exit_reason"] is None

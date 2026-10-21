@@ -20,6 +20,7 @@ from ..core.health import redact
 
 ENV_FILE = Path.home() / ".config" / "tradedesk" / "bybit-demo.env"
 DEMO_HOST = "api-demo.bybit.com"
+CROSS = "REGULAR_MARGIN"  # Bybit unified account: cross margin
 CLOSED_PNL_WINDOW_MS = 7 * 86_400_000 - 60_000  # Bybit closed-pnl: start..end at most 7 days
 
 
@@ -46,6 +47,15 @@ class MarketInfo:
     tick: float
 
 
+@dataclass(frozen=True)
+class RiskTier:
+    """The venue's lowest risk tier of a symbol (public /v5/market/risk-limit)."""
+
+    mmr: float  # maintenance margin rate, decimal
+    max_leverage: float
+    limit_usd: float  # position value up to which this tier holds
+
+
 def _make_exchange(key: str, secret: str) -> Any:
     import ccxt.async_support as ccxt  # noqa: PLC0415
 
@@ -67,6 +77,7 @@ class BybitDemo:
         self.ex = factory(key, secret)
         self._secrets = tuple(s for s in (key, secret) if len(s) >= 6)
         self._markets: dict[str, Any] = {}
+        self._tiers: dict[str, RiskTier] = {}
 
     def safe_error(self, e: BaseException) -> str:
         text = f"{type(e).__name__}: {e}"
@@ -86,21 +97,41 @@ class BybitDemo:
     async def aclose(self) -> None:
         await self.ex.close()
 
-    async def market(self, symbol: str) -> MarketInfo:
+    async def _load(self) -> dict[str, Any]:
         if not self._markets:
             self._markets = await self.ex.load_markets()
-        m = self._markets[symbol]
+        return self._markets
+
+    async def market(self, symbol: str) -> MarketInfo:
+        m = (await self._load())[symbol]
         lot = float(m["precision"]["amount"])
         min_qty = float(((m.get("limits") or {}).get("amount") or {}).get("min") or lot)
         return MarketInfo(symbol, m["id"], lot, min_qty, float(m["precision"]["price"]))
 
-    async def turnovers(self) -> list[tuple[str, float]]:
-        """(symbol, 24h turnover in USDT) of every linear perpetual (public data)."""
+    async def turnovers(self) -> list[tuple[str, float, str]]:
+        """(symbol, 24h turnover in USDT, Bybit symbolType) of every linear perpetual (public data). symbolType is ''
+        for crypto, else 'innovation', 'stock', 'ETF', 'commodity', ...; an unknown market gets '?' (left out)."""
+        markets = await self._load()
         out = []
         for sym, t in (await self.ex.fetch_tickers(None, {"category": "linear"})).items():
             turnover = (t.get("info") or {}).get("turnover24h") or t.get("quoteVolume") or 0
-            out.append((sym, float(turnover)))
+            m = markets.get(sym)
+            kind = str((m.get("info") or {}).get("symbolType") or "") if m else "?"
+            out.append((sym, float(turnover), kind))
         return out
+
+    async def risk_tier(self, symbol: str) -> RiskTier:
+        """Maintenance margin rate, max leverage and size limit of the symbol's lowest risk tier (public data)."""
+        if symbol not in self._tiers:
+            m = await self.market(symbol)
+            r = await self.ex.publicGetV5MarketRiskLimit({"category": "linear", "symbol": m.market_id})
+            rows = ((r or {}).get("result") or {}).get("list") or []
+            rows = [x for x in rows if x.get("symbol") == m.market_id] or rows
+            if not rows:
+                raise ValueError(f"no risk tier for {m.market_id}")
+            low = next((x for x in rows if str(x.get("isLowestRisk")) == "1"), min(rows, key=lambda x: int(x.get("id") or 0)))
+            self._tiers[symbol] = RiskTier(float(low["maintenanceMargin"]), float(low["maxLeverage"]), float(low["riskLimitValue"]))
+        return self._tiers[symbol]
 
     async def ohlcv(self, symbol: str, timeframe: str, limit: int = 1000) -> list[list[float]]:
         return await self.ex.fetch_ohlcv(symbol, timeframe, limit=limit)
@@ -124,15 +155,28 @@ class BybitDemo:
                 out[p["symbol"]] = p
         return out
 
-    async def prepare(self, symbol: str, leverage: int) -> None:
-        """Isolated margin and ``leverage`` on the symbol; Bybit's 'not modified' answers are fine."""
+    async def margin_mode(self) -> str:
+        """The unified account's margin mode: 'REGULAR_MARGIN' (cross), 'ISOLATED_MARGIN' or 'PORTFOLIO_MARGIN'."""
         self._demo_only()
-        for call in (lambda: self.ex.set_margin_mode("isolated", symbol), lambda: self.ex.set_leverage(leverage, symbol)):
-            try:
-                await call()
-            except Exception as e:  # noqa: BLE001 - Bybit answers an error when the value is already set
-                if not any(x in str(e).lower() for x in ("not modified", "110043", "110026", "same", "unchanged")):
-                    raise
+        r = await self.ex.privateGetV5AccountInfo()
+        return str(((r or {}).get("result") or {}).get("marginMode") or "")
+
+    async def ensure_cross(self, change: bool = True) -> str:
+        """Cross margin for the whole account (owner 21.10); switches only when it is something else. Returns the mode
+        found before any change."""
+        mode = await self.margin_mode()
+        if mode != CROSS and change:
+            await self.ex.set_margin_mode("cross", "BTC/USDT:USDT")  # account level on a unified account
+        return mode
+
+    async def prepare(self, symbol: str, leverage: int) -> None:
+        """``leverage`` on the symbol (both sides); Bybit's 'not modified' answer is fine."""
+        self._demo_only()
+        try:
+            await self.ex.set_leverage(leverage, symbol)
+        except Exception as e:  # noqa: BLE001 - Bybit answers an error when the value is already set
+            if not any(x in str(e).lower() for x in ("not modified", "110043", "same", "unchanged")):
+                raise
 
     async def place_bracket(self, symbol: str, side: str, qty: float, stop: float, target: float, link_id: str) -> dict[str, Any]:
         """Market entry with the stop-loss and take-profit attached to the position (Bybit tpslMode Full)."""
@@ -161,11 +205,18 @@ class BybitDemo:
                 return rows[0]
         return None
 
-    async def set_stop(self, market_id: str, stop: float) -> dict[str, Any]:
-        """Move the position's stop-loss (Bybit /v5/position/trading-stop, full position)."""
+    async def set_stop(self, symbol: str, stop: float) -> dict[str, Any]:
+        """Move the position's stop-loss (Bybit /v5/position/trading-stop, full position), price in the venue's format."""
         self._demo_only()
+        m = await self.market(symbol)
         return await self.ex.privatePostV5PositionTradingStop(
-            {"category": "linear", "symbol": market_id, "stopLoss": str(stop), "tpslMode": "Full", "positionIdx": 0}
+            {
+                "category": "linear",
+                "symbol": m.market_id,
+                "stopLoss": self.ex.price_to_precision(symbol, stop),
+                "tpslMode": "Full",
+                "positionIdx": 0,
+            }
         )
 
     async def close_position(self, symbol: str, side: str, qty: float, link_id: str) -> dict[str, Any]:

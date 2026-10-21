@@ -34,6 +34,7 @@ def register_all(server: MCPServer, rt: Runtime) -> None:
         sentiment,
         strategy,
         system,
+        trade_plan,
     )
 
     for module in (
@@ -55,6 +56,7 @@ def register_all(server: MCPServer, rt: Runtime) -> None:
         carry_paper,
         paper_carry,
         assistant_paper,
+        trade_plan,
         positions,
         liquidations,
         onchain,

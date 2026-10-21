@@ -82,6 +82,10 @@ EXPECTED_TOOLS = {
     "paper_carry_status",
     "assistant_paper_open",
     "assistant_paper_status",
+    "plan_add",
+    "plan_list",
+    "plan_review",
+    "plan_link",
     "positions_add",
     "positions_list",
     "positions_close",
@@ -158,6 +162,7 @@ async def test_pre_trade_checklist_sizing_and_journal_review(server):
         res = await c.get_prompt("journal_review", {"days": "60"})
         review = res.messages[0].content.text
     assert "0.5 % від $10000" in plan and "journal_add" in plan and "touch_probability" in plan
+    assert plan.index("plan_add") < plan.index("journal_add", plan.index("## 10.")) and "plan_link" in plan
     assert "60 днів" in review and "journal_stats" in review and "{{" not in review
 
 

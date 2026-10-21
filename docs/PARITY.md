@@ -76,6 +76,8 @@ Funding carry: `funding_spread_scan` (крос-біржовий спред дл�
 
 Паперовий журнал рекомендацій асистента: `assistant_paper_open` / `assistant_paper_status` (структура з живого ланцюга Deribit за марками ± 1 вп, розмір за депозитом і ризиком, розрахунок на delivery; таблиця `rec_paper` з міткою `hypothesis`, у `journal` не дзеркалиться). Аналога в DOUBLETOP немає. Ордерів немає.
 
+Плани угод асистента: `plan_add` / `plan_list` / `plan_review` / `plan_link` (кожен план за будь-якого вердикту в таблиці `trade_plan`, оцінка на свічках біржі за правилами `analytics/trade_plan.py`, підсумок за вердиктом і тегом; щогодинна робота колектора `plan_resolve`). Аналога в DOUBLETOP немає. Ордерів немає.
+
 Форвард-папір carry від рушія колектора: `paper_carry_status` (дві книги A `cc-paper` і B `pp-paper`, правила й облік спільні з бектестами в `analytics/carry_rules.py`; відкриває й закриває сам рушій, не людина). Аналога в DOUBLETOP немає. Ордерів немає.
 
 Розриви Polymarket ↔ опціони: `polymarket_options_gap` (поточні розриви відкритих ринків BTC/ETH проти ймовірності з поверхні Deribit після комісії й спреду; колектор `pm_gap` пише щогодини для форвард-тесту CLV). Аналога в DOUBLETOP немає. Ордерів немає.

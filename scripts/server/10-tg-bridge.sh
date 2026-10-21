@@ -22,7 +22,7 @@ as tee "$CHAT/.claude/settings.local.json" >/dev/null <<'JSON'
 {
   "permissions": {
     "defaultMode": "acceptEdits",
-    "allow": ["Bash", "WebFetch", "WebSearch"],
+    "allow": ["Bash", "WebFetch", "WebSearch", "mcp__tradedesk"],
     "deny": [
       "Bash(sudo:*)",
       "Bash(git push --force:*)",
@@ -42,6 +42,8 @@ as tee "$CHAT/.claude/settings.local.json" >/dev/null <<'JSON'
 }
 JSON
 as chmod 600 "$CHAT/.claude/settings.local.json"
+# The project's own MCP (localhost, read-only tools) for market pictures and trade plans (plan_add) from the chat.
+as bash -c "cd '$CHAT' && claude mcp remove --scope local tradedesk >/dev/null 2>&1; claude mcp add --scope local --transport http tradedesk http://127.0.0.1:8000/mcp >/dev/null"
 as bash -c "cd '$CHAT' && ~/.local/bin/uv sync --quiet --extra dev"
 
 # The "💬 Claude" topic and the owner's Telegram id (the group's creator).

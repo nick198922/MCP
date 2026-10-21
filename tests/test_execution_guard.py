@@ -43,6 +43,14 @@ def test_size_stays_inside_the_first_risk_tier():
     assert p.notional <= 20_000 and p.maintenance == pytest.approx(p.notional * 0.005)
 
 
+def test_size_caps_tied_to_equity():
+    tight = plan_order(BTC, "long", 100_000.0, 99_800.0, 101_000.0, "S14", "x", 0.001, 0.001, equity_usd=10_000.0)
+    assert tight.notional <= 10_000.0  # 0.2 % stop: $100 risk would be ~$38k, shrunk to 1x equity
+    assert any("1x equity" in v for v in check(replace(tight, qty=0.2), S))
+    assert any("open size" in v for v in check(P, replace(S, open_notional_usd=26_000.0)))
+    assert not any("open size" in v for v in check(P, replace(S, open_notional_usd=20_000.0)))
+
+
 def test_cross_margin_account_limit():
     # maintenance of the open positions + the loss at all stops must stay within half of the equity
     assert check(P, replace(S, open_maint_usd=4_000.0, open_risk_usd=900.0)) != []

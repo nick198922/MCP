@@ -321,14 +321,13 @@ def register(server: MCPServer, rt: Runtime) -> None:
         await rt.store.init()
         resolved_now = await review_open(rt, b)
         now_ts = int(rt.now().timestamp())
-        open_all = await rt.store.plan_list(status="open", limit=5000)
-        open_now = [p for p in open_all if SHADOW_TAG not in (p["tags"] or [])]
+        open_now = await rt.store.plan_list(status="open", exclude_tag=SHADOW_TAG, limit=5000)
+        open_shadow = await rt.store.plan_list(status="open", tag=SHADOW_TAG, limit=100_000)
         stale = [p["id"] for p in open_now if p["expires_ts"] + STALE_S < now_ts and p["rec_paper_id"] is None]
         if stale:
             b.warn(f"plans {stale} are past their horizon by more than a day and still open: candles missing for their market")
-        done_all = await rt.store.plan_list(status="resolved", limit=5000)
-        done = [p for p in done_all if SHADOW_TAG not in (p["tags"] or [])]
-        shadow = [p for p in done_all if SHADOW_TAG in (p["tags"] or [])]
+        done = await rt.store.plan_list(status="resolved", exclude_tag=SHADOW_TAG, limit=5000)
+        shadow = await rt.store.plan_list(status="resolved", tag=SHADOW_TAG, limit=100_000)
         summary = summarize_plans(done)
         shadow_summary = summarize_plans(shadow)
 
@@ -348,7 +347,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
             },
             "recent_resolved": [_view(p) for p in done[:50]],
             "demo_shadow": {
-                "open": len(open_all) - len(open_now),
+                "open": len(open_shadow),
                 "by_verdict": {v: rnd(s) for v, s in shadow_summary["by_verdict"].items()},
                 "by_tag": {t: {v: rnd(s) for v, s in g.items()} for t, g in shadow_summary["by_tag"].items()},
             },

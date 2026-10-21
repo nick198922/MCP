@@ -301,6 +301,7 @@ async def _state(ctx: Ctx, positions: dict[str, Any], uni: tuple[str, ...], equi
         open_risk_usd=open_risk_usd([(t["qty"], t["fill"] or t["entry"], t["be_stop"] or t["stop"]) for t in open_rows]),
         open_margin_usd=sum(t["qty"] * (t["fill"] or t["entry"]) / max(1, t["leverage"]) for t in open_rows),
         open_maint_usd=sum(_maint(positions.get(t["symbol"]), t) for t in open_rows),
+        open_notional_usd=sum(t["qty"] * (t["fill"] or t["entry"]) for t in open_rows),
         day_realised_loss_usd=-sum(
             min(0.0, t["pnl_usd"] or 0.0) for t in trades if t["status"] == "closed" and (t["closed_ts"] or 0) >= day0
         ),
@@ -372,6 +373,7 @@ async def _candidate(ctx: Ctx, symbol: str, sig: LiveSignal, htf: dict[str, Bars
         mmr=tier.mmr,
         venue_max_leverage=tier.max_leverage,
         tier_limit_usd=tier.limit_usd,
+        equity_usd=state.equity_usd,
     )
     sc = score(sig, p.reward_risk, htf.get(symbol), htf.get(BTC), base_of(symbol) == "BTC")
     structural = [v for v in check(p, replace(state, trades_today=0, orders_last_hour=0), ctx.cfg) if not any(c in v for c in _CAPS)]
@@ -465,20 +467,26 @@ async def _enter(ctx: Ctx, c: Candidate, state: State) -> State:
         open_risk_usd=state.open_risk_usd + p.risk_usd,
         open_margin_usd=state.open_margin_usd + p.margin,
         open_maint_usd=state.open_maint_usd + p.maintenance,
+        open_notional_usd=state.open_notional_usd + p.notional,
         seen_link_ids=(*state.seen_link_ids, p.link_id),
     )
     try:
         order = await ctx.client.place_bracket(p.symbol, p.side, p.qty, p.stop, p.target, p.link_id)
     except Exception as e:  # noqa: BLE001
+        err = ctx.client.safe_error(e)
         if is_refusal(e):
-            await ctx.store.demo_trade_update(p.link_id, status="rejected")
-            await ctx.audit("rejected", link_id=p.link_id, symbol=p.symbol, setup=sig.setup, payload={"error": ctx.client.safe_error(e)})
             ctx.bump("rejected")
+            await ctx.safe("trade_rejected", lambda: ctx.store.demo_trade_update(p.link_id, status="rejected"), link_id=p.link_id)
+            await ctx.safe(
+                "audit_rejected",
+                lambda: ctx.audit("rejected", link_id=p.link_id, symbol=p.symbol, setup=sig.setup, payload={"error": err}),
+            )
             return replace(state, seen_link_ids=(*state.seen_link_ids, p.link_id))
-        await ctx.audit(
-            "error", link_id=p.link_id, symbol=p.symbol, setup=sig.setup, payload={"order": ctx.client.safe_error(e), "state": "unknown"}
-        )
         ctx.bump("unknown")
+        await ctx.safe(
+            "audit_unknown",
+            lambda: ctx.audit("error", link_id=p.link_id, symbol=p.symbol, setup=sig.setup, payload={"order": err, "state": "unknown"}),
+        )
         return taken  # the order may exist: count it as taken until the next sync resolves it
     ctx.bump("sent")
     lid = p.link_id

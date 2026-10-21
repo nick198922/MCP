@@ -717,6 +717,7 @@ class Store:
         tag: str | None = None,
         symbol: str | None = None,
         limit: int = 500,
+        exclude_tag: str | None = None,
     ) -> list[dict[str, Any]]:
         where: list[str] = []
         params: list[Any] = []
@@ -727,6 +728,9 @@ class Store:
         if tag:
             where.append("tags LIKE ?")  # JSON array: match the quoted value
             params.append(f'%"{tag}"%')
+        if exclude_tag:
+            where.append("tags NOT LIKE ?")
+            params.append(f'%"{exclude_tag}"%')
         sql = "SELECT * FROM trade_plan" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY created_ts DESC, id DESC LIMIT ?"
         cur = await self.conn.execute(sql, [*params, limit])
         return [_parse_json_cols(dict(r), ("rules", "tags")) for r in await cur.fetchall()]

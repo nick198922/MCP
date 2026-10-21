@@ -37,6 +37,8 @@ class GuardConfig:
     max_margin_share: float = 0.90  # initial margin of all open positions / equity
     max_maint_and_risk_share: float = 0.50  # (maintenance margin of all + loss at all stops) / equity: cross-margin safety
     max_notional_usd: float = 50_000.0  # per order; a tighter stop shrinks the size to this cap (risk below $100)
+    max_order_equity_share: float = 1.0  # per order also at most 1x equity (cross margin: a gap fills past the stop)
+    max_open_notional_share: float = 3.0  # all open positions together at most 3x equity
     min_reward_risk: float = 1.5  # after fees
     max_stop_pct: float = 0.10  # stop farther than 10 % of the entry is a broken setup, not a trade
     orders_per_hour: int = 5
@@ -104,6 +106,7 @@ class State:
     open_risk_usd: float = 0.0
     open_margin_usd: float = 0.0
     open_maint_usd: float = 0.0  # maintenance margin of the open positions
+    open_notional_usd: float = 0.0  # size of the open positions at the entry price
     day_realised_loss_usd: float = 0.0  # positive = loss
     equity_usd: float = 0.0
     seen_link_ids: tuple[str, ...] = ()  # signals already decided (sent, refused or not selected): one shot each
@@ -135,11 +138,13 @@ def plan_order(
     mmr: float = 0.10,
     venue_max_leverage: float = 100.0,
     tier_limit_usd: float = math.inf,
+    equity_usd: float = math.inf,
 ) -> Proposal:
     """Size for the risk (capped by the order cap and the venue's first risk tier, where ``mmr`` holds) and the leverage
     (the owner's tier, capped by the venue's maximum for the coin)."""
     lev = max(0, min(tier_leverage(symbol), int(venue_max_leverage)))
-    qty = size_for_risk(entry, stop, cfg.risk_usd, lot_step, min_qty, min(cfg.max_notional_usd, tier_limit_usd))
+    cap = min(cfg.max_notional_usd, tier_limit_usd, cfg.max_order_equity_share * equity_usd)
+    qty = size_for_risk(entry, stop, cfg.risk_usd, lot_step, min_qty, cap)
     return Proposal(symbol, side, entry, stop, target, qty, lev, setup, link_id, mmr)
 
 
@@ -175,6 +180,11 @@ def check(p: Proposal, s: State, cfg: GuardConfig = DEFAULT) -> list[str]:
     else:
         if s.open_margin_usd + p.margin > cfg.max_margin_share * s.equity_usd:
             out.append(f"margin {s.open_margin_usd + p.margin:,.0f} USD > {cfg.max_margin_share:.0%} of equity")
+        if p.notional > cfg.max_order_equity_share * s.equity_usd * 1.0001:
+            out.append(f"notional {p.notional:,.0f} USD > {cfg.max_order_equity_share:g}x equity")
+        total = s.open_notional_usd + p.notional
+        if total > cfg.max_open_notional_share * s.equity_usd:
+            out.append(f"open size {total:,.0f} USD > {cfg.max_open_notional_share:g}x equity")
         need = s.open_maint_usd + p.maintenance + s.open_risk_usd + p.risk_usd
         if need > cfg.max_maint_and_risk_share * s.equity_usd:
             out.append(f"maintenance + loss at all stops {need:,.0f} USD > {cfg.max_maint_and_risk_share:.0%} of equity (cross margin)")

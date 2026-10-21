@@ -164,6 +164,67 @@ def send(
     return ok
 
 
+def multipart(fields: dict[str, str], file_field: str, filename: str, data: bytes, boundary: str) -> bytes:
+    """A multipart/form-data body: the text fields plus one PNG file."""
+    out = []
+    for k, v in fields.items():
+        out.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode())
+    out.append(
+        f'--{boundary}\r\nContent-Disposition: form-data; name="{file_field}"; filename="{filename}"\r\n'
+        "Content-Type: image/png\r\n\r\n".encode()
+    )
+    out.append(data)
+    out.append(f"\r\n--{boundary}--\r\n".encode())
+    return b"".join(out)
+
+
+def send_photo(
+    png: bytes,
+    caption_html: str = "",
+    *,
+    silent: bool = False,
+    topic: str | None = None,
+    env: dict[str, str] | None = None,
+) -> bool:
+    """Post one PNG (sendPhoto) with a short HTML caption; falls back to the general chat when the topic is gone."""
+    env = load_env() if env is None else env
+    token, chat = env.get("TELEGRAM_BOT_TOKEN"), env.get("TELEGRAM_CHAT_ID")
+    if not token or not chat:
+        print("telegram is not configured", file=sys.stderr)
+        return False
+    thread = topic_thread(env, topic)
+    boundary = "tradedesk" + os.urandom(8).hex()
+
+    def post(thread_id: int | None) -> tuple[bool, str]:
+        fields = {"chat_id": chat, "caption": clip(caption_html, 1000), "parse_mode": "HTML"}
+        if silent:
+            fields["disable_notification"] = "true"
+        if thread_id:
+            fields["message_thread_id"] = str(thread_id)
+        req = urllib.request.Request(
+            f"https://api.telegram.org/bot{token}/sendPhoto",
+            data=multipart(fields, "photo", "chart.png", png, boundary),
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                return bool(json.load(resp).get("ok")), ""
+        except urllib.error.HTTPError as e:  # the URL (with the token) is never printed
+            try:
+                return False, str(json.load(e).get("description", e.code))
+            except (ValueError, OSError):
+                return False, f"HTTP {e.code}"
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            return False, type(e).__name__
+
+    ok, err = post(thread)
+    if not ok and thread and "thread" in err.lower():
+        ok, err = post(None)
+    if not ok:
+        print(f"telegram photo send failed: {err}", file=sys.stderr)
+    return ok
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--silent", action="store_true", help="deliver without a sound")

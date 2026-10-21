@@ -1,0 +1,10 @@
+[Unit]
+Description=tradedesk-assistant-brief (daily 08:00 Europe/Kyiv)
+
+[Timer]
+OnCalendar=*-*-* 08:00:00 Europe/Kyiv
+# A morning brief sent hours late after a reboot would mislead: no catch-up run.
+Persistent=false
+
+[Install]
+WantedBy=timers.target

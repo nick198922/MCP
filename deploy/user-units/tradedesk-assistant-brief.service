@@ -1,0 +1,12 @@
+[Unit]
+Description=tradedesk: assistant morning brief to Telegram (scripts/assistant_brief_tg.py)
+# Off until this file exists: scripts/server/22-assistant-brief-timer.sh creates it ("off" removes it). The directory
+# belongs to tradedesk, so any tradedesk process can flip it; not an owner-only switch (docs/QUESTIONS.md).
+ConditionPathExists=/var/lib/tradedesk-mcp/assistant/brief-telegram.on
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/tradedesk/tradedesk-mcp
+ExecStart=/home/tradedesk/.local/bin/uv run --quiet python scripts/assistant_brief_tg.py
+TimeoutStartSec=5min
+NoNewPrivileges=true

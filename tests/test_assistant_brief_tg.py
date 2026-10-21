@@ -196,6 +196,9 @@ def test_main_preview_sends_nothing(tmp_path, monkeypatch, capsys):
 
     monkeypatch.setattr(tg_send, "send", boom)
     monkeypatch.setattr(tg_send, "send_photo", boom)
+    snap, _ = _snap()
+    asof = ab.db.parse_utc(snap["asof_utc"]).timestamp()
+    monkeypatch.setattr(ab.time, "time", lambda: asof + 300)  # the fixture must stay fresh, whatever today's date
     assert ab.main(["--snapshot", str(SNAP_FIXTURE), "--print", "--no-chart"]) == 0
     assert "<b>Головне сьогодні</b>" in capsys.readouterr().out
     assert ab.main(["--snapshot", str(SNAP_FIXTURE), "--out", str(tmp_path / "o"), "--no-chart"]) == 0

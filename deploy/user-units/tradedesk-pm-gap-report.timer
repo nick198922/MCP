@@ -1,0 +1,9 @@
+[Unit]
+Description=tradedesk-pm-gap-report (Sun 20:10 Europe/Kyiv)
+
+[Timer]
+OnCalendar=Sun *-*-* 20:10:00 Europe/Kyiv
+Persistent=true
+
+[Install]
+WantedBy=timers.target

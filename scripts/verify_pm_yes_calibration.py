@@ -13,6 +13,9 @@ Usage:
     uv run python scripts/verify_pm_yes_calibration.py --stage trades    # last trades for q in [0.35; 0.65]
     uv run python scripts/verify_pm_yes_calibration.py --stage stage0    # coverage, freshness, SD, MDE gates (no means)
     uv run python scripts/verify_pm_yes_calibration.py --stage full      # only if the gates pass
+    uv run python scripts/verify_pm_yes_calibration.py --stage explore   # EXPLORATORY, after the full run
+    uv run python scripts/verify_pm_yes_calibration.py --stage ts_check  # timestamp test + empty /trades check (network)
+Every analysis stage takes ``--out FILE`` (report copy) and ``--log FILE`` (progress lines); no shell redirects needed.
 """
 
 from __future__ import annotations
@@ -545,6 +548,142 @@ async def stage_trades(cache: Path, rate: float, include_named: bool, hs: tuple[
     print(f"trades done {done} in {time.perf_counter() - t_start:.0f}s errors={errs}", flush=True)
 
 
+# ----------------------------------------------------------------------------- stage: ts_check (timestamp test)
+
+
+async def _pages(rt: Any, cid: str, *, start: int | None, end: int | None, max_offset: int = 10_000) -> dict[str, Any]:  # noqa: ANN401
+    """All /trades rows of one market in [start, end] (newest first, offset pages of 500, offset cap 10 000)."""
+    rows: list[dict[str, Any]] = []
+    off, capped = 0, False
+    while True:
+        f = await _retry(lambda off=off: rt.polymarket.trades(cid, limit=500, offset=off, start=start, end=end), "trades")
+        page = f.data or []
+        rows.extend(page)
+        if len(page) < 500:
+            break
+        off += 500
+        if off > max_offset:
+            capped = True
+            break
+    return {"trades": rows, "start": start, "end": end, "capped": capped}
+
+
+async def _fetch_trade_windows(jobs: list[tuple[Path, str, int | None, int | None]], rate: float) -> None:
+    """Fetch and cache /trades for (cache file, condition id, start, end) jobs, writing each file as it arrives."""
+    from tradedesk.core.ratelimit import TokenBucket
+    from tradedesk.server import build_server
+
+    _, rt = build_server()
+    rt.polymarket.data._limiter = TokenBucket(rate, int(2 * rate))
+    sem = asyncio.Semaphore(max(2, int(rate)))
+    done = 0
+
+    async def one(path: Path, cid: str, start: int | None, end: int | None) -> None:
+        nonlocal done
+        async with sem:
+            d = await _pages(rt, cid, start=start, end=end)
+        _write(path, d)
+        done += 1
+        if done % 25 == 0:
+            print(f"  ts_check trades {done}/{len(jobs)}", flush=True)
+
+    try:
+        await asyncio.gather(*(one(*j) for j in jobs))
+    finally:
+        await rt.aclose()
+
+
+def stage_ts_check(cache: Path, out: str, rate: float, n_pick: int = 150, n_empty: int = 50) -> None:
+    """Condition 7 of the triage: timestamps of ``/prices-history`` points vs data-api prints, plus (critic's review,
+    finding 7) an independent check of empty ``/trades?end=t0`` answers. Re-implements ``ts_check.log`` of 2026-10-15
+    (the scratch ``scripts/_pm_ts_check.py`` was not kept; ``scripts/verify_pm_ts_check.py`` is now an alias of this
+    stage); the market pick is new, so the 150 markets are not the same ones. Trades reach t0 + 5 min so that the
+    k > 0 shifts see prints after the point; they are used only here, never in the estimates. Cached per market under
+    ``ts_check/`` and ``ts_check_empty/``.
+    """
+    from tradedesk.analytics.pm_calibration import jump_proximity, lag_profile
+
+    ms, _, _, _ = load_markets(cache)
+    sel = sample_ids(cache)
+    yn = sorted((m for m in ms if m["yes_no"] and (sel is None or m["event_id"] in sel)), key=lambda m: m["market_id"])
+    del ms
+    rng = random.Random(7)
+    order = rng.sample(yn, len(yn))
+    picked: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
+    for m in order:  # markets with >= 10 h = 4 points in [t0 - 30 min, t0]
+        p = qpath(cache, m["market_id"])
+        if not p.exists():
+            continue
+        pts = json.loads(p.read_text()).get("pts", {}).get(str(H_MAIN), [])
+        if len(pts) >= 10:
+            picked.append((m, pts))
+        if len(picked) >= n_pick:
+            break
+    # empty /trades?end=t0 answers among h = 4 centre markets (q in [0.40; 0.60])
+    empties: list[dict[str, Any]] = []
+    for m in order:
+        if len(empties) >= n_empty:
+            break
+        tp, qp = tpath(cache, m["market_id"], H_MAIN), qpath(cache, m["market_id"])
+        if not (tp.exists() and qp.exists()) or json.loads(tp.read_text()).get("trades"):
+            continue
+        qa = quote_at(json.loads(qp.read_text()).get("pts", {}).get(str(H_MAIN), []), t0_of(m, H_MAIN))
+        if qa and basket(qa[0]) and eligible_at(m, t0_of(m, H_MAIN)):
+            empties.append(m)
+    import resource
+
+    rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+    print(
+        f"ts_check: picked {len(picked)} markets, empty-answer check {len(empties)} markets, rate {rate}/s, peak RSS {rss:.0f} MB",
+        flush=True,
+    )
+    jobs = [
+        (cache / "ts_check" / f"{m['market_id']}.json", m["condition_id"], t0_of(m, H_MAIN) - POINTS_KEEP_S - 300, t0_of(m, H_MAIN) + 300)
+        for m, _ in picked
+    ] + [(cache / "ts_check_empty" / f"{m['market_id']}.json", m["condition_id"], None, None) for m in empties]
+    todo = [j for j in jobs if not j[0].exists()]
+    print(f"ts_check: {len(todo)} of {len(jobs)} markets not cached yet", flush=True)
+    if todo:
+        asyncio.run(_fetch_trade_windows(todo, rate))
+    tr = [json.loads(cache.joinpath("ts_check", f"{m['market_id']}.json").read_text()) for m, _ in picked]
+    em = [json.loads(cache.joinpath("ts_check_empty", f"{m['market_id']}.json").read_text()) for m in empties]
+    ks = (-120, -60, 0, 30, 60, 120, 300)
+    lag: dict[int, list[float]] = {k: [] for k in ks}
+    jp: dict[str, list[bool]] = defaultdict(list)
+    n_tr = 0
+    for (m, pts), d in zip(picked, tr, strict=True):
+        trades = d.get("trades") or []
+        n_tr += len(trades)
+        for k, v in lag_profile(pts, trades, m["yes_token"], ks).items():
+            lag[k].extend(v)
+        for k, v in jump_proximity(pts, trades, m["yes_token"]).items():
+            jp[k].extend(v)
+    L = [
+        f"ts_check (stage of scripts/verify_pm_yes_calibration.py; seed 7, h = {H_MAIN} points, trades in [t0 - 35 min; t0 + 5 min])",
+        f"picked {len(picked)} markets",
+        f"trades {n_tr}",
+        "| k, s | точок | середнє abs(p - остання угода <= t + k) |",
+        "|---|---|---|",
+    ]
+    L += [f"| {k:+d} | {len(lag[k])} | {statistics.mean(lag[k]) if lag[k] else float('nan'):.4f} |" for k in ks]
+    L += ["", "| Точка відносно стрибка угоди (>= 2 ц) | точок | частка ближче до нової ціни |", "|---|---|---|"]
+    L += [f"| {k} | {len(v)} | {sum(v) / len(v) if v else float('nan'):.1%} |" for k, v in jp.items()]
+    n_before = n_capped = 0
+    for m, d in zip(empties, em, strict=True):
+        t0 = t0_of(m, H_MAIN)
+        n_capped += bool(d.get("capped"))
+        n_before += any(int(x.get("timestamp", 0)) <= t0 for x in d.get("trades") or [])
+    L += [
+        "",
+        f"Порожні відповіді /trades?end=t0 (h = {H_MAIN}, центр): перевірено {len(empties)} ринків запитом без start/end "
+        f"(фільтр на клієнті): з принтами <= t0 {n_before}; обрізано лімітом offset {n_capped}.",
+    ]
+    report = "\n".join(L)
+    print(report, flush=True)
+    if out:
+        Path(out).expanduser().write_text(report + "\n")
+
+
 # ----------------------------------------------------------------------------- rows
 
 
@@ -932,8 +1071,19 @@ def full(cache: Path, out: str) -> None:
 # ----------------------------------------------------------------------------- EXPLORATORY (after the full run)
 
 
-def explore(cache: Path) -> None:
+def explore(cache: Path, out: str = "") -> None:
     """EXPLORATORY diagnostics, written after seeing the full run (not pre-registered; the report labels them)."""
+    L: list[str] = []
+    try:
+        _explore(cache, L.append)
+    finally:
+        report = "\n".join(L)
+        print(report, flush=True)
+        if out:
+            Path(out).expanduser().write_text(report + "\n")
+
+
+def _explore(cache: Path, P: Any) -> None:  # noqa: ANN401
     ms, _, _, _ = load_markets(cache)
     sel = sample_ids(cache)
     yn = [m for m in ms if m["yes_no"] and (sel is None or m["event_id"] in sel)]
@@ -944,7 +1094,6 @@ def explore(cache: Path) -> None:
     allc = center(rows, stale_s=None, years=yrs)
     hdr = "| Варіант | ринків | кластерів | середнє | 95 % CI |\n|---|---|---|---|---|"
     mk = lambda rs: [(r["market_id"], r["q"] - r["outcome"]) for r in rs]  # noqa: E731
-    P = print
     P("## РОЗВІДКА (не з реєстрації; після перегляду повного прогону)\n")
     P("### 1. Центр без фільтра давності: «мертві» книги біля 0.50\n")
     near = [r for r in allc if abs(r["q"] - 0.5) <= 0.005]
@@ -1057,4 +1206,8 @@ if __name__ == "__main__":
     elif a.stage == "full":
         full(c, a.out)
     elif a.stage == "explore":
-        explore(c)
+        explore(c, a.out)
+    elif a.stage == "ts_check":
+        stage_ts_check(c, a.out, min(a.rate, 5.0))
+    else:
+        ap.error(f"unknown stage {a.stage!r}")

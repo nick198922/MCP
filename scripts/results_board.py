@@ -17,6 +17,7 @@ from pathlib import Path
 GROUPS = [
     ("✅ Підтверджено або побудовано", ("confirmed", "built")),
     ("🔄 У роботі", ("testing", "accepted", "proposed")),
+    ("🔭 Форвард (на історії не перевірити)", ("forward",)),
     ("◯ Без вердикту", ("inconclusive",)),
     ("✗ Відхилено", ("rejected",)),
 ]

@@ -580,6 +580,7 @@ def render(s: dict) -> str:
     # Results
     groups = [
         ("підтверджено", ("confirmed", "built"), "ok"),
+        ("форвард", ("forward",), "mut"),
         ("без вердикту", ("inconclusive",), "mut"),
         ("відхилено", ("rejected",), "bad"),
     ]

@@ -32,6 +32,7 @@ GITHUB = "https://github.com/nick198922/MCP"
 STATUS_ICON = {
     "proposed": "📝",
     "accepted": "👍",
+    "forward": "🔭",
     "testing": "🔬",
     "confirmed": "🏆",
     "built": "🧰",
@@ -192,7 +193,7 @@ def render(d: dict) -> tuple[str, list[tuple[str, str]]]:
         counts = Counter(c["status"] for c in cards)
         out.append("<b>🧪 Ідеї</b> " + " · ".join(f"{STATUS_ICON.get(s, '•')}{n}" for s, n in sorted(counts.items())))
         for c in cards:
-            if c["status"] in ("proposed", "accepted", "testing", "confirmed"):
+            if c["status"] in ("proposed", "accepted", "forward", "testing", "confirmed"):
                 where = f" <i>(гілка {esc(c['branch'])})</i>" if c.get("branch") else ""
                 out.append(f"{STATUS_ICON.get(c['status'], '•')} {esc(c['title'][:90])}{where}")
         out.append("")

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 
 # Each migration is a list of SQL statements executed in a single transaction.
 # `PRAGMA user_version` is bumped by Store.init() after a block runs.
@@ -495,5 +495,31 @@ MIGRATIONS: dict[int, list[str]] = {
         """,
         "CREATE INDEX IF NOT EXISTS trade_plan_status_expires ON trade_plan (status, expires_ts)",
         "CREATE INDEX IF NOT EXISTS trade_plan_symbol_created ON trade_plan (symbol, created_ts)",
+    ],
+    18: [
+        # Polymarket <-> Deribit gap, registration section 13 (docs/ideas/IDEA-20261017-polymarket-vs-options-forward.md):
+        # read times of the two quotes (the 60 s synchronicity filter) and the smile forward; rows before this migration
+        # keep NULL (they pass the filter and are counted in the report).
+        "ALTER TABLE pm_gap_snapshot ADD COLUMN book_ts INTEGER",  # unix s: when this market's Polymarket book was read
+        "ALTER TABLE pm_gap_snapshot ADD COLUMN surface_ts INTEGER",  # unix s: when the Deribit option surface was read
+        "ALTER TABLE pm_gap_snapshot ADD COLUMN model_forward REAL",  # USD: forward of the Deribit smile used by the model
+        # Settled result of each snapshotted market, fetched once after its end (registration section 7: Gamma
+        # outcomePrices; threshold markets also get the Binance 1m closes around the end for the cross-check).
+        """
+        CREATE TABLE IF NOT EXISTS pm_gap_outcome (
+            market_id TEXT PRIMARY KEY,            -- Polymarket (Gamma) market id
+            asset TEXT NOT NULL,                   -- 'BTC' | 'ETH'
+            kind TEXT NOT NULL,                    -- 'above' | 'touch'
+            strike REAL NOT NULL,                  -- USD
+            end_ts INTEGER NOT NULL,               -- unix seconds of the market's end
+            outcome_yes INTEGER,                   -- 1 YES paid 1, 0 NO paid 1, NULL not settled yet (Gamma outcomePrices)
+            outcome_prices TEXT,                   -- raw Gamma outcomePrices of the last attempt (untrusted)
+            binance_close_end REAL,                -- 'above': close of the Binance <ASSET>/USDT 1m candle closing at end_ts (USDT)
+            binance_close_next REAL,               -- 'above': close of the 1m candle opening at end_ts (USDT)
+            attempts INTEGER NOT NULL DEFAULT 0,
+            checked_ts INTEGER NOT NULL,           -- unix seconds of the last attempt
+            resolved_ts INTEGER                    -- unix seconds when outcome_yes was first stored
+        )
+        """,
     ],
 }

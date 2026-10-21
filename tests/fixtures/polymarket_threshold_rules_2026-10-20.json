@@ -1,0 +1,17 @@
+{
+ "_source": "Gamma market descriptions as stored by the pm_gap collector in /var/lib/tradedesk-mcp/tradedesk.sqlite (table pm_gap_snapshot, first snapshot 2026-10-20 18:20 UTC); read read-only 2026-10-21. The only two threshold texts in the table: every open BTC/ETH 'above' market uses the 'closing at 12:00' wording (since 2026-10-07).",
+ "texts": {
+  "btc_closing_at": {
+   "market_id": "5690012",
+   "event_slug": "bitcoin-above-on-october-21-2026",
+   "rules_hash": "1c27bfa87e1c4896",
+   "rules": "This market will resolve to \"Yes\" if the Binance 1 minute candle for BTC/USDT closing at 12:00 in the ET timezone (noon) on the date specified in the title has a final \"Close\" price higher than the price specified in the title. Otherwise, this market will resolve to \"No\".\n\nThe resolution source for this market is Binance, specifically the BTC/USDT \"Close\" prices currently available at https://www.binance.com/en/trade/BTC_USDT with \"1m\" and \"Candles\" selected on the top bar.\n\nPlease note that this market is about the price according to Binance BTC/USDT, not according to other exchanges or trading pairs.\n\nPrice precision is determined by the number of decimal places in the source."
+  },
+  "eth_closing_at": {
+   "market_id": "5689983",
+   "event_slug": "ethereum-above-on-october-21-2026",
+   "rules_hash": "70f35d44c30f0a45",
+   "rules": "This market will resolve to \"Yes\" if the Binance 1 minute candle for ETH/USDT closing at 12:00 in the ET timezone (noon) on the date specified in the title has a final \"Close\" price higher than the price specified in the title. Otherwise, this market will resolve to \"No\".\n\nThe resolution source for this market is Binance, specifically the ETH/USDT \"Close\" prices currently available at https://www.binance.com/en/trade/ETH_USDT with \"1m\" and \"Candles\" selected on the top bar.\n\nPlease note that this market is about the price according to Binance ETH/USDT, not according to other exchanges or trading pairs.\n\nPrice precision is determined by the number of decimal places in the source."
+  }
+ }
+}

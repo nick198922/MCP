@@ -10,11 +10,15 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
+from collections.abc import Awaitable
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from ..analytics.options import Smile, build_chain, build_smile, group_by_expiry
 from ..analytics.pm_gap import classify_open_market, model_probability, path_extremes, pick_expiry, top_of_book, touch_state
-from ..core.envelope import Builder
+from ..analytics.pm_gap_report import binance_closes
+from ..analytics.pm_threshold import outcome_yes
+from ..core.envelope import Builder, Fetched
 from ..core.errors import ProviderError
 
 if TYPE_CHECKING:
@@ -28,6 +32,9 @@ BOOK_CHUNK = 50  # tokens per CLOB /books request
 CURRENCIES = ("BTC", "ETH")
 PATH_VENUE = "binance"  # spot: the venue whose <ASSET>/USDT candles resolve the markets
 PATH_BARS = 400  # 1h bars: a weekly window is 168, plus slack
+OUTCOME_DELAY_S = 3600  # ask Gamma for a result from 1 h after the end (UMA settlement usually takes a few hours)
+OUTCOME_GIVE_UP_S = 14 * 86_400  # stop asking 14 days after the end (the market then stays without a result)
+OUTCOME_BATCH = 120  # markets per run: about two days of ended markets
 
 
 async def _events(rt: "Runtime", b: Builder, now_ts: int, max_days: float, skipped: Counter) -> list[dict[str, Any]]:
@@ -98,29 +105,49 @@ async def _paths(rt: "Runtime", b: Builder, markets: list[dict[str, Any]], now_t
     return out
 
 
-async def _books(rt: "Runtime", b: Builder, tokens: list[str]) -> dict[str, dict[str, Any]]:
-    """Order book per token id (CLOB batch endpoint); a failed chunk leaves its tokens out and lands in ``missing``."""
+async def _read(b: Builder, field: str, provider: str, call: Awaitable[Fetched]) -> tuple[Any, int | None]:
+    """``b.guard`` plus the unix second the data was read (the evidence's fetch time; a cache hit keeps the original
+    read time). (None, None) on a provider failure."""
+    n = len(b.evidence)
+    data = await b.guard(field, provider, call)
+    if len(b.evidence) == n:
+        return data, None
+    return data, int(datetime.fromisoformat(b.evidence[-1].fetched_at).timestamp())
+
+
+async def _books(rt: "Runtime", b: Builder, tokens: list[str]) -> tuple[dict[str, dict[str, Any]], dict[str, int]]:
+    """Order book per token id (CLOB batch endpoint) and the unix second each token's book was read; a failed chunk
+    leaves its tokens out and lands in ``missing``."""
     out: dict[str, dict[str, Any]] = {}
+    read_ts: dict[str, int] = {}
     for i in range(0, len(tokens), BOOK_CHUNK):
-        data = await b.guard(f"books:{i // BOOK_CHUNK}", "polymarket:clob", rt.polymarket.books(tokens[i : i + BOOK_CHUNK]))
+        data, ts = await _read(b, f"books:{i // BOOK_CHUNK}", "polymarket:clob", rt.polymarket.books(tokens[i : i + BOOK_CHUNK]))
         for bk in data or []:
             if isinstance(bk, dict) and bk.get("asset_id") is not None:
                 out[str(bk["asset_id"])] = bk
-    return out
+                if ts is not None:
+                    read_ts[str(bk["asset_id"])] = ts
+    return out, read_ts
 
 
 async def scan_gaps(rt: "Runtime", b: Builder, *, max_days: float = 14.0) -> list[dict[str, Any]]:
     """One row per open market (see ``PM_GAP_COLUMNS`` in the store); never raises, failures go to ``b.missing``.
 
     A market without a YES order book is skipped. A market whose event has no usable Deribit expiry is kept with
-    ``model_prob = None``. The Deribit side is read once per currency.
+    ``model_prob = None``. The Deribit side is read once per currency, right after the books, so the two quotes are as
+    close in time as the APIs allow; ``book_ts`` / ``surface_ts`` record when each was read (registration section 2:
+    rows with more than 60 s between them are left out of the paper test).
     """
     now = rt.now()
     now_ts = int(now.timestamp())
     now_ms = now_ts * 1000
+    skipped: Counter = Counter()
+    markets = await _events(rt, b, now_ts, max_days, skipped)
+    books, book_read = await _books(rt, b, [t for m in markets for t in (m["yes_token"], m["no_token"])]) if markets else ({}, {})
+
     deribit: dict[str, dict[str, Any]] = {}
     for cur in CURRENCIES:
-        raw = await b.guard(f"option_book:{cur}", "deribit", rt.deribit.book_summary(cur, "option"))
+        raw, surface_ts = await _read(b, f"option_book:{cur}", "deribit", rt.deribit.book_summary(cur, "option"))
         chain = build_chain(raw, now) if raw else []
         dv = await b.guard(f"dvol:{cur}", "deribit", rt.deribit.volatility_index_data(cur, now_ms - 3 * 3_600_000, now_ms, 3600))
         series = (dv or {}).get("data") or []
@@ -128,12 +155,9 @@ async def scan_gaps(rt: "Runtime", b: Builder, *, max_days: float = 14.0) -> lis
             "by_exp": group_by_expiry(chain),
             "spot": next((r.index for r in chain if r.index), None),
             "dvol": float(series[-1][4]) / 100.0 if series else None,
+            "surface_ts": surface_ts if raw else None,
             "smiles": {},
         }
-
-    skipped: Counter = Counter()
-    markets = await _events(rt, b, now_ts, max_days, skipped)
-    books = await _books(rt, b, [t for m in markets for t in (m["yes_token"], m["no_token"])]) if markets else {}
     paths = await _paths(rt, b, markets, now_ts)
 
     def smile_for(cur: str, exp: Any) -> Smile | None:
@@ -158,6 +182,7 @@ async def scan_gaps(rt: "Runtime", b: Builder, *, max_days: float = 14.0) -> lis
             state = touch_state(m["direction"], m["strike"], now_ts, m["window_start"], ext["high"], ext["low"])
         model: dict[str, Any] | None = None
         exp = None
+        forward: float | None = None
         if state == "touched":  # the level was already reached inside the window: the event has happened
             model = {"prob": 1.0, "iv": None, "covered": None, "note": "touched"}
         elif state != "open":  # pre_window / no_path: no honest number
@@ -169,8 +194,11 @@ async def scan_gaps(rt: "Runtime", b: Builder, *, max_days: float = 14.0) -> lis
                 model = model_probability(smile, m["kind"], m["strike"], now_ts, m["end_ts"], m["direction"])
                 if model is None:
                     exp = None
+                else:
+                    forward = float(smile.forward)
             else:
                 exp = None
+        yes_t, no_t = book_read.get(m["yes_token"]), book_read.get(m["no_token"])
         rows.append(
             {
                 "market_id": m["market_id"],
@@ -208,6 +236,9 @@ async def scan_gaps(rt: "Runtime", b: Builder, *, max_days: float = 14.0) -> lis
                 "model_covered": int(model["covered"]) if model and model["covered"] is not None else None,
                 "spot": d["spot"],
                 "dvol": d["dvol"],
+                "book_ts": max((t for t in (yes_t, no_t) if t is not None), default=None),
+                "surface_ts": d["surface_ts"],
+                "model_forward": forward,
             }
         )
     if skipped:
@@ -215,11 +246,49 @@ async def scan_gaps(rt: "Runtime", b: Builder, *, max_days: float = 14.0) -> lis
     return rows
 
 
+async def resolve_outcomes(rt: "Runtime", b: Builder) -> dict[str, int]:
+    """Fetch the settled result of snapshotted markets that have ended (registration section 7), once per market.
+
+    For each market ended between ``OUTCOME_GIVE_UP_S`` and ``OUTCOME_DELAY_S`` ago without a stored result: Gamma
+    ``/markets/{id}`` ``outcomePrices`` (1/0 = settled; anything else = not yet, retried next run). Threshold markets also
+    get the closes of the Binance <ASSET>/USDT 1m candles closing at and opening at the end, for the cross-check that
+    the analysis does (``pm_gap_report.binance_check``). Failures land in ``b.missing`` and are retried next run.
+    Returns counts: ``checked``, ``settled`` (new results stored), ``pending``.
+    """
+    assert rt.store is not None
+    now_ts = int(rt.now().timestamp())
+    todo = await rt.store.pm_gap_outcome_pending(now_ts - OUTCOME_DELAY_S, now_ts - OUTCOME_GIVE_UP_S, OUTCOME_BATCH)
+    settled = 0
+    for m in todo:
+        mid, y = str(m["market_id"]), m["outcome_yes"]
+        rec: dict[str, Any] = {k: m[k] for k in ("market_id", "asset", "kind", "strike", "end_ts")}
+        if y is None:
+            data = await b.guard(f"outcome:{mid}", "polymarket:gamma", rt.polymarket.market(mid))
+            if isinstance(data, dict):
+                prices = data.get("outcomePrices")
+                rec["outcome_prices"] = prices if isinstance(prices, str) or prices is None else str(prices)
+                y = outcome_yes(prices) if data.get("closed") else None
+                rec["outcome_yes"] = y
+                settled += int(y is not None)
+        if y is not None and m["kind"] == "above" and (m["binance_close_end"] is None or m["binance_close_next"] is None):
+            end = int(m["end_ts"])
+            bars = await b.guard(
+                f"binance_close:{mid}",
+                "ccxt:binance",
+                rt.exchanges.ohlcv(PATH_VENUE, f"{m['asset']}/USDT", "1m", 2, since_ms=(end - 60) * 1000),
+            )
+            rec["binance_close_end"], rec["binance_close_next"] = binance_closes(bars or [], end)
+        await rt.store.upsert_pm_gap_outcome(rec, now_ts)
+    return {"checked": len(todo), "settled": settled}
+
+
 async def collect_pm_gap(rt: "Runtime") -> int:
-    """Collector job: store one snapshot of ``scan_gaps``. Returns the rows written.
+    """Collector job: store one snapshot of ``scan_gaps``, then fetch the results of markets that have ended
+    (:func:`resolve_outcomes`). Returns the snapshot rows written.
 
     Fails (so the scheduler records it) only when nothing was found and a provider reported a problem; an empty
-    market list without errors (no open markets) is a normal zero.
+    market list without errors (no open markets) is a normal zero. A failed result fetch never fails the snapshot: it
+    is logged and retried next run.
     """
     assert rt.store is not None
     b = Builder()
@@ -228,4 +297,13 @@ async def collect_pm_gap(rt: "Runtime") -> int:
         raise RuntimeError("pm_gap: no rows; " + "; ".join(f"{m.field}: {m.reason}" for m in b.missing[:4]))
     if b.missing:
         log.warning("pm_gap: partial snapshot, missing: %s", "; ".join(f"{m.field}: {m.reason}" for m in b.missing[:6]))
-    return await rt.store.insert_pm_gap(int(rt.now().timestamp()), rows)
+    n = await rt.store.insert_pm_gap(int(rt.now().timestamp()), rows)
+    ob = Builder()
+    try:
+        got = await resolve_outcomes(rt, ob)
+    except Exception as e:  # noqa: BLE001 - the snapshot is stored; results are retried next run
+        log.warning("pm_gap: outcome fetch failed: %s: %s", type(e).__name__, e)
+    else:
+        if ob.missing:
+            log.warning("pm_gap: outcomes %s, missing: %s", got, "; ".join(f"{m.field}: {m.reason}" for m in ob.missing[:6]))
+    return n

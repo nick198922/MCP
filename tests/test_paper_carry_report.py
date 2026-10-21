@@ -54,3 +54,23 @@ def test_deferred_line_counts_share_and_applies_registered_thresholds():
     assert "6 of 20 (30.0 %)" in rep.deferred_line(6, 20) and "above 20%" in rep.deferred_line(6, 20)
     assert "fewer than 10 trades" in rep.deferred_line(0, 5)
     assert "0 of 0 (n/a)" in rep.deferred_line(0, 0)
+
+
+def test_main_writes_to_the_env_path_and_sends_to_telegram(tmp_path, monkeypatch):
+    async def fake_report(db, now_ms):
+        return f"# Paper carry: weekly report\n\ndb={db} now={now_ms}\n"
+
+    sent: list[tuple[str, str]] = []
+    fake_tg = SimpleNamespace(md_to_html=lambda t: f"<b>{t}</b>", send=lambda html, topic, silent: sent.append((html, topic)) or True)
+    monkeypatch.setitem(sys.modules, "tg_send", fake_tg)
+    monkeypatch.setattr(rep, "build_report", fake_report)
+    out = tmp_path / "paper" / "carry.md"
+    monkeypatch.setenv(rep.ENV_OUT, str(out))
+
+    assert rep.main(["--now-ms", "123", "--telegram"]) == 0
+    assert out.read_text() == f"# Paper carry: weekly report\n\ndb={rep.DEFAULT_DB} now=123\n"
+    assert sent == [(f"<b>{out.read_text()}</b>", "agents")]
+
+    fake_tg.send = lambda html, topic, silent: False
+    assert rep.main(["--db", "x.sqlite", "--now-ms", "1", "--out", str(tmp_path / "o.md"), "--telegram"]) == 3  # send failed
+    assert "db=x.sqlite" in (tmp_path / "o.md").read_text()

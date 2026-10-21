@@ -36,7 +36,10 @@ snapshot() {
     "$HOME/private"; do
     [[ -e "$p" ]] && paths+=("$p")
   done
-  "$RESTIC" backup --quiet --tag "$MODE" --exclude-caches "${paths[@]}" || fail "restic backup"
+  # Raw video and audio (~/private/yt-inbox, ~9 GB) can be fetched again; transcripts and frames next to them stay.
+  "$RESTIC" backup --quiet --tag "$MODE" --exclude-caches \
+    --exclude '*.mp4' --exclude '*.m4a' --exclude '*.webm' --exclude '*.mkv' --exclude '*.mov' \
+    "${paths[@]}" || fail "restic backup"
 }
 
 case "$MODE" in

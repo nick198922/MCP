@@ -1,0 +1,9 @@
+[Unit]
+Description=tradedesk-paper-carry-report (Sun 20:05 Europe/Kyiv)
+
+[Timer]
+OnCalendar=Sun *-*-* 20:05:00 Europe/Kyiv
+Persistent=true
+
+[Install]
+WantedBy=timers.target

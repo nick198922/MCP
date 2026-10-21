@@ -78,15 +78,34 @@ class Store:
         await self._conn.execute("PRAGMA journal_mode=WAL")
         await self._conn.execute("PRAGMA synchronous=NORMAL")
         await self._conn.execute("PRAGMA foreign_keys=ON")
-        cur = await self._conn.execute("PRAGMA user_version")
+        try:
+            await self._migrate()
+        except BaseException:
+            await self._conn.close()  # a half-open store would skip migrations on the next init()
+            self._conn = None
+            raise
+
+    async def _migrate(self) -> None:
+        # Python sqlite3 opens no implicit transaction before DDL, so without an explicit
+        # BEGIN each ALTER TABLE would commit on its own and a crash mid-block would leave
+        # the columns without the version bump ("duplicate column" on the next start).
+        # user_version lives in the db header and is rolled back together with the block.
+        conn = self.conn
+        cur = await conn.execute("PRAGMA user_version")
         row = await cur.fetchone()
         current = int(row[0]) if row else 0
         for v in sorted(MIGRATIONS):
-            if v > current:
+            if v <= current:
+                continue
+            await conn.execute("BEGIN IMMEDIATE")
+            try:
                 for stmt in MIGRATIONS[v]:
-                    await self._conn.execute(stmt)
-                await self._conn.execute(f"PRAGMA user_version = {v}")
-        await self._conn.commit()
+                    await conn.execute(stmt)
+                await conn.execute(f"PRAGMA user_version = {v}")
+            except BaseException:
+                await conn.rollback()
+                raise
+            await conn.commit()
 
     async def aclose(self) -> None:
         if self._conn is not None:

@@ -5,7 +5,8 @@ from __future__ import annotations
 SCHEMA_VERSION = 19
 
 # Each migration is a list of SQL statements executed in a single transaction.
-# `PRAGMA user_version` is bumped by Store.init() after a block runs.
+# `PRAGMA user_version` is bumped by Store.init() inside the same explicit transaction,
+# so a block that fails half-way leaves neither its tables/columns nor the version bump.
 MIGRATIONS: dict[int, list[str]] = {
     1: [
         """

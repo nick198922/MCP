@@ -56,7 +56,21 @@ def _parse_json_cols(row: dict[str, Any], cols: tuple[str, ...]) -> dict[str, An
 
 
 _DEMO_TRADE_MUTABLE = frozenset(
-    {"status", "order_id", "fill", "opened_ts", "exit", "closed_ts", "pnl_usd", "r_multiple", "exit_reason", "journal_id"}
+    {
+        "status",
+        "order_id",
+        "fill",
+        "opened_ts",
+        "exit",
+        "closed_ts",
+        "pnl_usd",
+        "r_multiple",
+        "exit_reason",
+        "be_ts",
+        "be_stop",
+        "journal_id",
+        "plan_id",
+    }
 )
 
 

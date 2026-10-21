@@ -27,7 +27,7 @@ from typing import Any
 import numpy as np
 
 from .course_basics import range_events
-from .course_s14_ema import Bars, Params, atr, find_signals, indicators, segment_pos
+from .course_s14_ema import Bars, Params, atr, ema, find_signals, indicators, segment_pos
 
 S14_PARAMS = Params()
 RANGE_W = 30
@@ -76,7 +76,9 @@ def s14(b: Bars, timeframe: str) -> list[LiveSignal]:
         return out
     for side, bb in (("long", b), ("short", b.mirrored())):
         ind = indicators(bb, S14_PARAMS)
-        for s in find_signals(bb, ind, S14_PARAMS, variant="sweep", lo=n - 1, hi=n):
+        # the whole window, not only the last bar: the detector keeps one signal per impulse ("used"), and that memory
+        # needs the earlier bars; only a signal decided on the last bar is returned
+        for s in (x for x in find_signals(bb, ind, S14_PARAMS, variant="sweep") if x.idx == n - 1):
             e, st, tg = (_flip(side, v) for v in (s.entry, s.stop, s.target))
             ef, em, es = (_flip(side, float(v[n - 2])) for v in (ind.e_fast, ind.e_mid, ind.e_slow))
             a = float(ind.atr[n - 1])
@@ -87,7 +89,7 @@ def s14(b: Bars, timeframe: str) -> list[LiveSignal]:
                 f"імпульс до {_px(high)} ≥ {S14_PARAMS.impulse_atr:g} ATR. Свічка зняла фрактал у зоні EMA13–EMA34 "
                 f"(EMA13 {_px(ef)}, EMA21 {_px(em)}, EMA34 {_px(es)}) і закрилась за EMA34. "
                 f"Вхід {_px(e)} за закриттям, стоп {_px(st)} (за свічкою + {S14_PARAMS.stop_atr:g} ATR, ATR14 {_px(a)}), "
-                f"ціль {_px(tg)} ({'хай імпульсу' if s.target_kind == 'high' else '2R'})."
+                f"ціль {_px(tg)} ({('хай' if side == 'long' else 'лоу') + ' імпульсу' if s.target_kind == 'high' else '2R'})."
             )
             out.append(
                 LiveSignal(
@@ -170,3 +172,50 @@ def scan(b: Bars, timeframe: str, setups: Sequence[str] = ("S14", "S16", "S3")) 
         seen.add(fn)
         out += [s for s in fn(b, timeframe) if s.setup in setups]
     return out
+
+
+# ---------------------------------------------------------------- confidence score (owner 21.10: at most 5 trades a day)
+
+
+def trend_dir(b: Bars) -> int:
+    """+1 up / -1 down / 0 flat on the last closed bar: close vs EMA34 and the slope of EMA21 (the S14 ribbon)."""
+    if len(b) < 60:
+        return 0
+    pos = segment_pos(b.t)
+    e21, e34 = ema(b.c, 21, pos), ema(b.c, 34, pos)
+    if not (np.isfinite(e21[-1]) and np.isfinite(e21[-2]) and np.isfinite(e34[-1])):
+        return 0
+    if b.c[-1] > e34[-1] and e21[-1] > e21[-2]:
+        return 1
+    if b.c[-1] < e34[-1] and e21[-1] < e21[-2]:
+        return -1
+    return 0
+
+
+@dataclass(frozen=True)
+class Score:
+    points: int
+    reasons: tuple[str, ...]  # Ukrainian, shown to the owner
+
+
+def score(sig: LiveSignal, rr_after_fees: float, htf: Bars | None, btc_htf: Bars | None, is_btc: bool) -> Score:
+    """One point per independent confirmation, all from candles: the daily trend of the coin agrees, the daily trend of
+    BTC agrees (alts), the reward/risk after fees is at least 2, and at least 3. Ties are broken by reward/risk."""
+    want = 1 if sig.side == "long" else -1
+    pts, why = 0, []
+    t = trend_dir(htf) if htf is not None else 0
+    if t == want:
+        pts += 1
+        why.append("денний тренд монети в бік угоди")
+    if not is_btc:
+        bt = trend_dir(btc_htf) if btc_htf is not None else 0
+        if bt == want:
+            pts += 1
+            why.append("денний тренд BTC в бік угоди")
+    if rr_after_fees >= 2:
+        pts += 1
+        why.append(f"R:R {rr_after_fees:.1f} ≥ 2")
+    if rr_after_fees >= 3:
+        pts += 1
+        why.append("R:R ≥ 3")
+    return Score(pts, tuple(why))

@@ -12,7 +12,7 @@ from tradedesk.analytics.course_s14_ema import Bars, atr, find_signals, indicato
 H4 = ss.TF_MS["4h"]
 
 
-def _bars(n: int = 1500, seed: int = 7) -> Bars:
+def _bars(n: int = 1000, seed: int = 7) -> Bars:
     """Regime-switching walk (trends and flat ranges) so that every detector fires a few times."""
     rng = np.random.default_rng(seed)
     drift = np.repeat(rng.choice([-0.004, 0.0, 0.0, 0.004], size=n // 60 + 1), 60)[:n]
@@ -75,3 +75,44 @@ def test_closed_bars_drops_the_forming_bar():
 
 def test_too_few_bars_gives_nothing():
     assert ss.scan(_bars(40), "4h") == []
+
+
+@pytest.mark.parametrize("seed", [1, 2, 3, 4, 5, 6])
+def test_s14_live_equals_the_detector_on_more_seeds(seed):
+    """One signal per impulse: the live scan keeps the detector's memory of used impulses (critic 21.10, finding 5)."""
+    b = _bars(700, seed)
+    want = set()
+    for side, bb in (("long", b), ("short", b.mirrored())):
+        ind = indicators(bb, ss.S14_PARAMS)
+        want |= {(side, s.idx) for s in find_signals(bb, ind, ss.S14_PARAMS, variant="sweep") if s.idx >= 150}
+    got = {(s.side, i) for i in range(150, len(b)) for s in ss.s14(b.slice(0, i + 1), "4h")}
+    assert got == want
+
+
+def test_short_s14_comment_names_the_impulse_low():
+    b = _bars(700, 1)  # seed 1 has a short S14 whose target is the impulse extreme
+    for i in range(150, len(b)):
+        for s in ss.s14(b.slice(0, i + 1), "4h"):
+            if s.side == "short" and "імпульсу" in s.comment:
+                assert "лоу імпульсу" in s.comment and "хай імпульсу" not in s.comment
+                return
+    raise AssertionError("seed 1 should give a short S14 with the impulse target")
+
+
+def test_trend_and_score():
+    up = _bars(300, 11)
+    rising = Bars(up.t, up.o, up.h, up.low, np.linspace(100, 200, len(up)), up.bar_ms)
+    falling = Bars(up.t, up.o, up.h, up.low, np.linspace(200, 100, len(up)), up.bar_ms)
+    assert ss.trend_dir(rising) == 1 and ss.trend_dir(falling) == -1 and ss.trend_dir(up.slice(0, 30)) == 0
+    sig = ss.LiveSignal("S14", "long", "4h", 0, 100.0, 95.0, 115.0, "c")
+    full = ss.score(sig, 3.2, rising, rising, is_btc=False)
+    assert full.points == 4 and len(full.reasons) == 4
+    assert ss.score(sig, 1.6, falling, falling, is_btc=False).points == 0
+    assert ss.score(sig, 2.5, rising, None, is_btc=True).points == 2  # BTC: no separate BTC-trend point
+    assert ss.score(replace_side(sig), 2.5, falling, falling, is_btc=False).points == 3
+
+
+def replace_side(sig):
+    from dataclasses import replace
+
+    return replace(sig, side="short", stop=105.0, target=85.0)

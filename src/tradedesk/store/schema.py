@@ -556,9 +556,12 @@ MIGRATIONS: dict[int, list[str]] = {
             stop REAL NOT NULL,
             target REAL NOT NULL,
             qty REAL NOT NULL,                     -- base units
-            risk_usd REAL NOT NULL,                -- qty * |entry - stop|
+            leverage INTEGER NOT NULL,             -- isolated leverage set on the venue (tier, lowered for the liquidation)
+            risk_usd REAL NOT NULL,                -- loss at the stop with both taker fees (USD)
+            score INTEGER,                         -- confidence points (analytics/setup_signals.score)
+            score_reasons TEXT,                    -- JSON list of the points, Ukrainian
             comment TEXT NOT NULL,                 -- why: setup, indicators and their values, levels (shown to the owner)
-            status TEXT NOT NULL,                  -- 'sent' | 'open' | 'closed' | 'cancelled' | 'rejected'
+            status TEXT NOT NULL,                  -- 'unknown' (written before the order) | 'open' | 'closed' | 'rejected'
             order_id TEXT,                         -- venue order id
             fill REAL,                             -- average entry fill
             opened_ts INTEGER,                     -- unix ms of the fill
@@ -566,8 +569,11 @@ MIGRATIONS: dict[int, list[str]] = {
             closed_ts INTEGER,
             pnl_usd REAL,                          -- venue closed P&L (fees included)
             r_multiple REAL,                       -- pnl_usd / risk_usd
-            exit_reason TEXT,                      -- 'target' | 'stop' | 'expired' | 'manual' | ...
-            journal_id INTEGER                     -- mirror row in journal (tags demo-paper, setup:<S>)
+            exit_reason TEXT,                      -- 'target' | 'stop' | 'breakeven' | 'time'
+            be_ts INTEGER,                         -- unix ms when the stop was moved to break-even (+30 % ROE rule)
+            be_stop REAL,                          -- that break-even stop (entry +- both taker fees)
+            journal_id INTEGER,                    -- mirror row in journal (tags demo-paper, setup:<S>)
+            plan_id INTEGER                        -- shadow row in trade_plan (same levels, no break-even rule)
         )
         """,
         "CREATE INDEX IF NOT EXISTS demo_trade_status ON demo_trade (status, symbol)",

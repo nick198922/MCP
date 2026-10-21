@@ -38,8 +38,18 @@ PROTECTED_FILES = {
     "scripts/automerge.py",
     "scripts/user_units_sync.sh",
     "src/tradedesk/features.py",
+    # what decides the demo trader's orders (ADR 0007): the signal adapters and the detectors they run
+    "src/tradedesk/analytics/setup_signals.py",
+    "src/tradedesk/analytics/course_s14_ema.py",
+    "src/tradedesk/analytics/course_basics.py",
 }
-PROTECTED_GLOBS = ("scripts/agents_*", "scripts/tg_*", "scripts/telegram_*", "scripts/install_*")
+PROTECTED_GLOBS = (
+    "scripts/agents_*",
+    "scripts/tg_*",
+    "scripts/telegram_*",
+    "scripts/install_*",
+    "deploy/user-units/tradedesk-demo-*",  # the demo trader's timers
+)
 
 
 def protected(path: str) -> bool:

@@ -6,19 +6,40 @@ from dataclasses import replace
 
 import pytest
 
-from tradedesk.execution.guard import DEFAULT, GuardConfig, Proposal, State, check, day_start_ms, open_risk_usd, size_for_risk
+from tradedesk.execution import guard as g
+from tradedesk.execution.guard import DEFAULT, GuardConfig, State, check, plan_order
 
 NOW = 1_792_600_000_000
-P = Proposal("BTC/USDT:USDT", "long", entry=100_000.0, stop=98_000.0, target=104_000.0, qty=0.05, setup="S14", link_id="td-S14-1")
-S = State(now_ms=NOW, equity_usd=50_000.0)
+BTC = "BTC/USDT:USDT"
+UNI = (BTC, "ETH/USDT:USDT", "SOL/USDT:USDT", "WIF/USDT:USDT")
+P = plan_order(BTC, "long", 100_000.0, 98_000.0, 105_000.0, "S14", "td-S14-1", 0.001, 0.001)
+S = State(now_ms=NOW, universe=UNI, equity_usd=10_000.0)
 
 
-def test_sizing_risks_at_most_the_budget_and_floors_to_the_lot_step():
-    assert size_for_risk(100_000, 98_000, 100, 0.001, 0.001) == 0.05  # 0.05 * 2000 = 100 USD
-    assert size_for_risk(100_000, 97_000, 100, 0.001, 0.001) == 0.033  # 0.0333.. floored, never above the budget
-    assert size_for_risk(1.0, 0.9, 100, 1, 1) == 1000.0
-    assert size_for_risk(100_000, 50_000, 100, 0.001, 0.01) == 0.0  # 0.002 < the minimum lot 0.01 -> no trade
-    assert size_for_risk(100.0, 100.0, 100, 0.01, 0.01) == 0.0  # zero stop distance
+def test_sizing_includes_both_taker_fees_and_floors_to_the_lot_step():
+    q = g.size_for_risk(100_000, 98_000, 100, 0.001, 0.001)
+    per_unit = 2000 + g.TAKER_FEE * 198_000
+    assert q == 0.047 and q * per_unit <= 100 < (q + 0.001) * per_unit
+    assert g.size_for_risk(100.0, 99.5, 100, 1, 1, max_notional=10_000) == 100.0  # 164 by risk, shrunk to the cap
+    assert g.size_for_risk(100_000, 50_000, 100, 0.001, 0.01) == 0.0  # below the minimum lot
+    assert g.size_for_risk(100.0, 100.0, 100, 0.01, 0.01) > 0  # fees alone still bound the size
+    assert P.risk_usd <= 100.0
+
+
+def test_leverage_tiers_and_the_liquidation_limit():
+    assert (g.tier_leverage(BTC), g.tier_leverage("ETH/USDT:USDT"), g.tier_leverage("SOL/USDT:USDT"), g.tier_leverage("WIF/USDT:USDT")) == (
+        20,
+        20,
+        10,
+        5,
+    )
+    assert P.leverage == 20  # 2 % stop: 20x keeps the liquidation (about 5 % away) beyond the stop
+    wide = plan_order(BTC, "long", 100_000.0, 95_500.0, 115_000.0, "S14", "x", 0.001, 0.001)
+    assert wide.leverage == g.safe_leverage(100_000, 95_500) < 20  # 4.5 % stop: lowered
+    liq_move = 1 / wide.leverage - DEFAULT.mmr
+    assert liq_move > 0.045 + DEFAULT.liq_buffer - 1e-9  # the stop triggers well before the liquidation
+    alt = plan_order("WIF/USDT:USDT", "short", 2.0, 2.1, 1.7, "S3", "y", 1, 1)
+    assert alt.leverage == 5 and alt.margin == pytest.approx(alt.notional / 5)
 
 
 def test_a_sane_proposal_passes():
@@ -29,20 +50,26 @@ def test_a_sane_proposal_passes():
     ("p", "s", "needle"),
     [
         (P, replace(S, halted=True), "kill-switch"),
-        (replace(P, symbol="PEPE/USDT:USDT"), S, "allow-list"),
+        (replace(P, symbol="PEPE/USDT:USDT"), S, "universe"),
+        (replace(P, symbol="USDC/USDT:USDT"), replace(S, universe=(*UNI, "USDC/USDT:USDT")), "universe"),
         (replace(P, stop=101_000.0), S, "opposite sides"),
         (replace(P, target=99_000.0), S, "opposite sides"),
-        (replace(P, stop=85_000.0, qty=0.006), S, "from the entry"),
-        (replace(P, target=102_000.0), S, "reward/risk"),
+        (replace(P, stop=85_000.0, qty=0.006, leverage=1), S, "from the entry"),
+        (replace(P, target=102_500.0), S, "reward/risk"),
         (replace(P, qty=0.0), S, "size is zero"),
-        (replace(P, qty=0.06), S, "risk 120.00 USD"),
-        (replace(P, qty=0.2, stop=99_900.0, target=100_400.0), S, "notional"),
-        (P, replace(S, equity_usd=500.0), "leverage"),
-        (P, replace(S, open_symbols=("BTC/USDT:USDT",)), "already in"),
-        (P, replace(S, open_symbols=("a", "b", "c", "d", "e")), "open positions = max"),
-        (P, replace(S, orders_last_hour=6), "orders in the last hour"),
-        (P, replace(S, day_loss_usd=250.0), "daily loss"),
-        (P, replace(S, sent_link_ids=("td-S14-1",)), "already sent"),
+        (replace(P, qty=0.06), S, "risk"),
+        (replace(P, qty=0.6, stop=99_950.0, target=100_500.0), S, "notional"),
+        (replace(P, leverage=25), S, "leverage 25x"),
+        (replace(P, leverage=0), S, "no leverage"),
+        (P, replace(S, equity_usd=0.0), "equity unknown"),
+        (P, replace(S, open_margin_usd=8_900.0), "margin"),
+        (P, replace(S, open_symbols=(BTC,)), "already in"),
+        (P, replace(S, open_symbols=tuple(f"s{i}" for i in range(15))), "open positions = max"),
+        (P, replace(S, trades_today=5), "trades today = max"),
+        (P, replace(S, orders_last_hour=5), "orders in the last hour"),
+        (P, replace(S, open_risk_usd=1450.0), "open risk"),
+        (P, replace(S, day_realised_loss_usd=500.0), "realised loss today"),
+        (P, replace(S, seen_link_ids=("td-S14-1",)), "already decided"),
     ],
 )
 def test_each_limit_refuses(p, s, needle):
@@ -51,14 +78,36 @@ def test_each_limit_refuses(p, s, needle):
 
 def test_only_testnet_mode_exists():
     assert any("not allowed" in v for v in check(P, S, GuardConfig(mode="live")))
-    assert DEFAULT.mode == "testnet" and DEFAULT.venue == "bybit-demo"
+    assert DEFAULT.mode == g.MODE == "testnet" and DEFAULT.venue == "bybit-demo" and DEFAULT.max_trades_per_day == 5
 
 
 def test_short_levels_mirror():
-    short = replace(P, side="short", stop=102_000.0, target=96_000.0)
+    short = plan_order(BTC, "short", 100_000.0, 102_000.0, 95_000.0, "S14", "s", 0.001, 0.001)
     assert check(short, S) == []
 
 
+def test_breakeven_and_roe():
+    assert g.breakeven_stop("long", 100.0) == pytest.approx(100.11) and g.breakeven_stop("short", 100.0) == pytest.approx(99.89)
+    assert g.roe("long", 100.0, 101.5, 20) == pytest.approx(0.30)  # 1.5 % at 20x = +30 % ROE
+    assert g.roe("short", 100.0, 94.0, 5) == pytest.approx(0.30)  # 6 % at 5x
+    assert g.roe("long", 100.0, 99.0, 10) < 0
+
+
+def test_universe_top_by_turnover_without_stables_and_thin_markets():
+    rows = [
+        ("BTC/USDT:USDT", 5e9),
+        ("USDC/USDT:USDT", 9e9),
+        ("THIN/USDT:USDT", 1e6),
+        ("ETH/USDT:USDT", 3e9),
+        ("BTC/USDC:USDC", 8e9),
+        ("BTC/USDT:USDT-261226", 7e9),
+    ]
+    rows += [(f"A{i}/USDT:USDT", 2e8 - i) for i in range(150)]
+    u = g.universe(rows)
+    assert u[:2] == ("BTC/USDT:USDT", "ETH/USDT:USDT") and len(u) == 100
+    assert not any(x in u for x in ("USDC/USDT:USDT", "THIN/USDT:USDT", "BTC/USDC:USDC", "BTC/USDT:USDT-261226"))
+
+
 def test_helpers():
-    assert day_start_ms(NOW) % 86_400_000 == 0 and NOW - day_start_ms(NOW) < 86_400_000
-    assert open_risk_usd([(0.05, 100_000, 98_000), (-10, 2.0, 2.1)]) == pytest.approx(101.0)
+    assert g.day_start_ms(NOW) % 86_400_000 == 0 and NOW - g.day_start_ms(NOW) < 86_400_000
+    assert g.open_risk_usd([(0.05, 100_000, 98_000)]) == pytest.approx(0.05 * (2000 + g.TAKER_FEE * 198_000))

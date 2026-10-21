@@ -8,16 +8,20 @@ from typing import Any
 
 from .envelope import utcnow_iso
 
-# key=value in URLs, and "key": "value" / 'key': 'value' / Key: value in reprs of dicts and headers (ccxt errors).
-_SECRET = re.compile(
-    r"(?i)(?<![a-z])((?:x-bapi-)?(?:api[_-]?key|apikey|token|secret|signature|sign|passphrase)[\"']?\s*[=:]\s*[\"']?)[^&\s\"',}]+"
-)
+_SECRET = re.compile(r"(?i)((?:api[_-]?key|token|secret|signature|passphrase)=)[^&\s\"']+")
+# "key": "value" / 'key': 'value' / Key: value in reprs of dicts and headers (ccxt errors). "sign" only as a whole word,
+# so "design: ..." stays; the other names may sit inside longer ones (apiSecret, clientSecret, accessToken).
+_SECRET_KV = re.compile(r"(?i)((?:api[_-]?key|token|secret|signature|passphrase|(?<![a-z])sign)[\"']?\s*:\s*[\"']?)[^&\s\"',}]+")
+# Bybit's sign error echoes the signed string, which starts with the timestamp and the API key.
+_ORIGIN = re.compile(r"(?i)(origin_string\[)[^\]]*")
 # Telegram puts the bot token in the URL path: /bot<id>:<secret>/sendMessage.
 _BOT_TOKEN = re.compile(r"(/bot)\d+:[A-Za-z0-9_-]+")
 
 
 def redact(text: str, limit: int = 200) -> str:
-    return _BOT_TOKEN.sub(r"\1***", _SECRET.sub(r"\1***", text))[:limit]
+    for rx in (_SECRET, _SECRET_KV, _ORIGIN, _BOT_TOKEN):
+        text = rx.sub(r"\1***", text)
+    return text[:limit]
 
 
 @dataclass

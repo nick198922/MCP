@@ -25,6 +25,6 @@ echo "3/4 video (720p, no sound) and audio"
 ytdlp -f 'bv*[height<=720][ext=mp4]/bv*[height<=720]' -o "$id.mp4" "$URL"
 ytdlp -f 'bestaudio[ext=m4a]/bestaudio' -o "$id.audio.%(ext)s" "$URL"
 echo "4/4 copying to the server"
-ssh "tradedesk@$SERVER" 'mkdir -p ~/private/yt-inbox'
-scp -q ./* "tradedesk@$SERVER:private/yt-inbox/"
+ssh -n "tradedesk@$SERVER" 'mkdir -p ~/private/yt-inbox'   # -n: the script itself is on stdin
+scp -q ./* "tradedesk@$SERVER:private/yt-inbox/" </dev/null
 echo "ok: $id ($(cat "$id.title")). Скажіть Claude: «відео $id на сервері»."

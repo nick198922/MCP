@@ -62,3 +62,39 @@ async def test_snapshot_json_round_trip(store: Store):
     sid = await store.insert_snapshot(ts=1_000_000, kind="iv_surface", payload={"currency": "BTC", "atm": 0.42})
     assert sid > 0
     assert await store.table_count("snapshots") == 1
+
+
+async def test_migration_block_is_atomic_and_retried_after_a_failure(tmp_path, monkeypatch):
+    from tradedesk.store import schema
+
+    path = tmp_path / "half.sqlite"
+    s = Store(path)
+    await s.init()
+    await s.aclose()
+
+    v = SCHEMA_VERSION + 1
+    monkeypatch.setitem(
+        schema.MIGRATIONS,
+        v,
+        ["ALTER TABLE atm_term ADD COLUMN probe_a REAL", "ALTER TABLE no_such_table ADD COLUMN probe_b REAL"],
+    )
+    s = Store(path)
+    with pytest.raises(Exception, match="no_such_table"):
+        await s.init()
+    assert s._conn is None  # failed init leaves no half-open connection behind
+
+    s = Store(path)
+    monkeypatch.setitem(schema.MIGRATIONS, v, ["SELECT 1"])
+    await s.init()
+    try:
+        assert await s.version() == v
+        cur = await s.conn.execute("PRAGMA table_info(atm_term)")
+        cols = {r[1] for r in await cur.fetchall()}
+        assert "probe_a" not in cols  # the first ALTER of the failed block was rolled back
+
+        monkeypatch.setitem(schema.MIGRATIONS, v + 1, ["ALTER TABLE atm_term ADD COLUMN probe_a REAL"])
+        await s.aclose()
+        await s.init()  # the same ALTER now applies cleanly: no "duplicate column"
+        assert await s.version() == v + 1
+    finally:
+        await s.aclose()

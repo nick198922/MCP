@@ -8,7 +8,10 @@ from typing import Any
 
 from .envelope import utcnow_iso
 
-_SECRET = re.compile(r"(?i)((?:api[_-]?key|token|secret|signature|passphrase)=)[^&\s\"']+")
+# key=value in URLs, and "key": "value" / 'key': 'value' / Key: value in reprs of dicts and headers (ccxt errors).
+_SECRET = re.compile(
+    r"(?i)(?<![a-z])((?:x-bapi-)?(?:api[_-]?key|apikey|token|secret|signature|sign|passphrase)[\"']?\s*[=:]\s*[\"']?)[^&\s\"',}]+"
+)
 # Telegram puts the bot token in the URL path: /bot<id>:<secret>/sendMessage.
 _BOT_TOKEN = re.compile(r"(/bot)\d+:[A-Za-z0-9_-]+")
 

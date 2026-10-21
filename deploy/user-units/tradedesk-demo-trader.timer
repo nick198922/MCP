@@ -1,0 +1,9 @@
+[Unit]
+Description=tradedesk-demo-trader (hourly at :02 UTC, after the 4h and 1d bars close)
+
+[Timer]
+OnCalendar=*-*-* *:02:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

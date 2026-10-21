@@ -178,3 +178,11 @@ async def test_builder_guard_degrades_gracefully():
     env = b.build({"x": 1})
     assert env["ok"] and len(env["evidence"]) == 1
     assert env["missing"] == [{"field": "f2", "provider": "b", "reason": "auth", "detail": "401"}]
+
+
+def test_redact_hides_secrets_in_dict_and_header_reprs():
+    from tradedesk.core.health import redact
+
+    text = "{'api_key': 'K1', \"secret\": \"S1\"} X-BAPI-SIGN: abc access_token=T1 design: kept"
+    out = redact(text, limit=500)
+    assert not any(s in out for s in ("K1", "S1", "abc", "T1")) and "design: kept" in out

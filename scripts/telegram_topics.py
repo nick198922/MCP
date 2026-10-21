@@ -2,7 +2,7 @@
 
 Runs on the server as tradedesk (scripts/server/telegram-topics.sh does it from the Mac). Needs Topics switched on in
 the group, which turns it into a supergroup with a new id, and the bot an admin allowed to manage topics. Updates
-~/.config/tradedesk/agents.env (0600): the new chat id and TELEGRAM_TOPIC_AGENTS / _STATUS / _ALERTS. Safe to run
+~/.config/tradedesk/agents.env (0600): the new chat id and TELEGRAM_TOPIC_AGENTS / _STATUS / _ALERTS / _DEMO. Safe to run
 again: topics already recorded are kept. The token is never printed.
 """
 
@@ -23,6 +23,7 @@ TOPICS = [
     ("AGENTS", "🤖 Агенти", 0x6FB9F0, "Тут агенти й лікар пишуть про кожен крок: здано, продовжують, збій, пауза."),
     ("STATUS", "📊 Статус", 0x8EEE98, "Тут кожні 2 години (крім ночі) тихий статус проєкту."),
     ("ALERTS", "📈 Алерти ринку", 0xFB6F5F, "Тут ринкові алерти MCP-сервера (правила додаються інструментами rules_*)."),
+    ("DEMO", "🧪 Демо-рахунок", 0xCB86DB, "Тут демо-трейдер Bybit пише кожен вхід (сетап, індикатори, рівні) і кожне закриття з P&L у R."),
     ("CHAT", "💬 Claude", 0xFFD67E, "Пишіть сюди: відповідає Claude на сервері. /new — нова розмова, /status — статус, /help — підказка."),
 ]
 

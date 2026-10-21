@@ -880,7 +880,7 @@ async def test_outcomes_are_fetched_once_with_the_binance_cross_check(state):
         ]
         await rt.store.insert_pm_gap(END_FEB23 - 4 * 3600, snaps)
         b = Builder()
-        assert await resolve_outcomes(rt, b) == {"checked": 4, "settled": 2}
+        assert await resolve_outcomes(rt, b) == {"checked": 4, "settled": 2, "pending": 2}
         assert [m.field for m in b.missing] == ["outcome:down1"]
         cur = await rt.store.conn.execute("SELECT * FROM pm_gap_outcome ORDER BY market_id")
         out = {r["market_id"]: dict(r) for r in await cur.fetchall()}
@@ -888,6 +888,7 @@ async def test_outcomes_are_fetched_once_with_the_binance_cross_check(state):
         o = out["1385959"]
         assert (o["outcome_yes"], o["binance_close_end"], o["binance_close_next"]) == (1, 65_000.0, 65_010.0)
         assert out["1385960"]["outcome_yes"] == 0 and out["1385960"]["resolved_ts"] == END_FEB23 + 3 * 3600
+        assert out["1385960"]["outcomes"] == REAL_GAMMA["1385960"]["outcomes"]  # the labels are kept with the prices
         assert out["open1"]["outcome_yes"] is None and out["open1"]["outcome_prices"] == '["0.9995","0.0005"]'
         assert out["down1"]["outcome_yes"] is None and out["down1"]["attempts"] == 1
         assert len(bar_calls) == 2 and bar_calls[0] == ("BTC/USDT", (END_FEB23 - 60) * 1000, 2)  # threshold markets only
@@ -895,11 +896,33 @@ async def test_outcomes_are_fetched_once_with_the_binance_cross_check(state):
         assert usable == {"1385959": 1, "1385960": 0} and summary["check"] == {"match": 2} and summary["excluded"] == []
         # next run: settled markets are not asked again, the others are retried
         before = dict(gamma_calls)
-        assert await resolve_outcomes(rt, Builder()) == {"checked": 2, "settled": 0}
+        assert await resolve_outcomes(rt, Builder()) == {"checked": 2, "settled": 0, "pending": 2}
         assert gamma_calls["1385959"] == before["1385959"] and gamma_calls["open1"] == before["open1"] + 1
         assert len(bar_calls) == 2
         cur = await rt.store.conn.execute("SELECT attempts FROM pm_gap_outcome WHERE market_id = 'down1'")
         assert (await cur.fetchone())[0] == 2
+    finally:
+        await rt.aclose()
+
+
+async def test_outcome_queue_puts_untried_and_recent_markets_before_stuck_ones(state):
+    """Markets Gamma never settles (50/50, removed) are retried, but behind markets not tried yet and the latest ends,
+    so after an outage a batch of stuck markets cannot push fresh ones out."""
+    now = END_FEB23 + 3 * 3600
+    rt = await _rt(state, now=datetime.fromtimestamp(now, UTC))
+    try:
+        snaps = [_snap(f"stuck{i}", "touch", 1.0, END_FEB23 - (5 + i) * 86_400) for i in range(3)]
+        snaps += [_snap("fresh_old", "touch", 1.0, END_FEB23 - 86_400), _snap("fresh_new", "touch", 1.0, END_FEB23)]
+        await rt.store.insert_pm_gap(END_FEB23 - 30 * 86_400, snaps)
+        for i in range(3):  # tried before, still without a result
+            for _ in range(i + 1):
+                await rt.store.upsert_pm_gap_outcome({**snaps[i], "outcome_yes": None}, now - 3600)
+        got = await rt.store.pm_gap_outcome_pending(now - 3600, now - 14 * 86_400, 10)
+        assert [g["market_id"] for g in got] == ["fresh_new", "fresh_old", "stuck0", "stuck1", "stuck2"]
+        assert [g["market_id"] for g in await rt.store.pm_gap_outcome_pending(now - 3600, now - 14 * 86_400, 2)] == [
+            "fresh_new",
+            "fresh_old",
+        ]
     finally:
         await rt.aclose()
 

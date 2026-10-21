@@ -14,9 +14,11 @@ import pytest
 from tradedesk.analytics.pm_gap_paper import EntryRule
 from tradedesk.analytics.pm_gap_report import (
     DAY_S,
+    T0_TS,
     binance_check,
     binance_closes,
     final_metrics,
+    gamma_outcome,
     main_period,
     render_weekly,
     settled_outcomes,
@@ -109,6 +111,24 @@ def test_binance_closes_and_check():
     assert binance_check(0, 70_000.0, 70_100.0, 69_900.0) == "ambiguous"  # crossed in that minute, Gamma agrees with one
     assert binance_check(1, 70_000.0, 70_000.0, None) == "mismatch"  # strictly higher than
     assert binance_check(1, 70_000.0, None, None) == "unchecked" and binance_check(None, 70_000.0, 1.0, 1.0) == "unchecked"
+
+
+def test_gamma_outcome_checks_labels_order_and_uma_status():
+    m = {"closed": True, "outcomes": '["Yes", "No"]', "outcomePrices": '["1", "0"]', "umaResolutionStatus": "resolved"}
+    assert gamma_outcome(m) == 1 and gamma_outcome({**m, "outcomePrices": '["0", "1"]'}) == 0
+    assert gamma_outcome({k: v for k, v in m.items() if k != "umaResolutionStatus"}) == 1  # field absent: not required
+    assert gamma_outcome({**m, "outcomes": '["No", "Yes"]'}) is None  # prices are read by position: refuse other orders
+    assert gamma_outcome({**m, "outcomes": '["Up", "Down"]'}) is None
+    assert gamma_outcome({**m, "outcomes": ["Yes", "No"]}) == 1  # a decoded list is fine too
+    assert gamma_outcome({**m, "umaResolutionStatus": "proposed"}) is None  # stored once: wait for the final one
+    assert gamma_outcome({**m, "closed": False}) is None
+    assert gamma_outcome({**m, "outcomePrices": '["0.5", "0.5"]'}) is None
+
+
+def test_registered_t0_is_the_first_live_snapshot():
+    from datetime import UTC, datetime
+
+    assert datetime.fromtimestamp(T0_TS, UTC).isoformat() == "2026-10-20T18:20:35+00:00"
 
 
 def test_settled_outcomes_exclude_and_list_contradictions():
@@ -240,14 +260,35 @@ async def test_runner_writes_the_weekly_report_and_refuses_the_early_verdict(tmp
     assert "тижневий звіт" in text and "усього 4" in text and "T0 = " in text
     for hidden in HIDDEN:
         assert hidden not in text, hidden
-    # --verdict before T0 + 126 days: refused, nothing written
+    # --verdict today (wall clock before the registered T0 + 126 days): refused, nothing written
     out2 = tmp_path / "verdict.md"
-    assert script.main(["--db", str(db), "--out", str(out2), "--now", str(END + 2 * H), "--verdict"]) == 2
+    assert script.main(["--db", str(db), "--out", str(out2), "--verdict"]) == 2
     assert not out2.exists() and "refused" in capsys.readouterr().err
-    # at the verdict date it runs (T0 = the first snapshot)
-    assert script.main(["--db", str(db), "--out", str(out2), "--now", str(verdict_ts(T0)), "--verdict"]) == 0
-    assert "Вердикт: inconclusive" in out2.read_text(encoding="utf-8")
     assert hashlib.sha256(db.read_bytes()).hexdigest() == digest  # the DB was only read
+
+
+def test_verdict_gate_cannot_be_moved_from_the_command_line(tmp_path, capsys):
+    db = tmp_path / "db.sqlite"
+    out = tmp_path / "verdict.md"
+    # a future --now or a past --t0 would put "now" past the gate: both are refused outright, before reading anything
+    for flags in (["--now", str(verdict_ts(T0_TS) + 86_400)], ["--t0", "1"], ["--now", "1", "--t0", "1"]):
+        assert script.main(["--db", str(db), "--out", str(out), "--verdict", *flags]) == 2
+        assert "not allowed" in capsys.readouterr().err and not out.exists()
+
+
+async def test_verdict_runs_only_on_the_wall_clock_and_the_registered_t0(tmp_path, monkeypatch):
+    db = tmp_path / "db.sqlite"
+    await _db(db)  # first snapshot = T0 of this fixture
+    monkeypatch.setattr(script.time, "time", lambda: float(verdict_ts(T0) + 60))
+    # the clock is past the fixture's gate, but the DB does not start at the registered T0: refused
+    code, text = script.build_verdict(str(db))
+    assert code == 2 and "not the registered T0" in text
+    monkeypatch.setattr(script, "T0_TS", T0)  # the fixture's registered T0
+    code, text = script.build_verdict(str(db))
+    assert code == 0 and "Вердикт: inconclusive" in text
+    monkeypatch.setattr(script.time, "time", lambda: float(verdict_ts(T0) - 1))  # one second early
+    code, text = script.build_verdict(str(db))
+    assert code == 2 and "refused" in text and "Вердикт" not in text
 
 
 def test_runner_reads_an_old_schema_db_without_migrating_it(tmp_path):
@@ -270,7 +311,7 @@ def test_runner_reads_an_old_schema_db_without_migrating_it(tmp_path):
     con.close()
     rows, outcomes = script.load(str(db))
     assert len(rows) == len(ROWS) and outcomes == [] and rows[0]["book_ts"] is None
-    code, text = script.build(str(db), END + 2 * H, None, False)
+    code, text = script.build_weekly(str(db), END + 2 * H, None)
     assert code == 0 and "без часу читання книги/поверхні: 400 (100.0 %)" in text
     con = sqlite3.connect(db)
     assert con.execute("PRAGMA user_version").fetchone()[0] == 17
@@ -282,5 +323,5 @@ def test_runner_on_an_empty_db(tmp_path):
     import sqlite3
 
     sqlite3.connect(db).close()
-    assert script.build(str(db), END, None, False)[0] == 1
+    assert script.build_weekly(str(db), END, None)[0] == 1
     assert EntryRule().threshold == 0.05  # the registered rule is used unchanged

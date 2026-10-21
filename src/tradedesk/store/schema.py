@@ -514,6 +514,7 @@ MIGRATIONS: dict[int, list[str]] = {
             end_ts INTEGER NOT NULL,               -- unix seconds of the market's end
             outcome_yes INTEGER,                   -- 1 YES paid 1, 0 NO paid 1, NULL not settled yet (Gamma outcomePrices)
             outcome_prices TEXT,                   -- raw Gamma outcomePrices of the last attempt (untrusted)
+            outcomes TEXT,                         -- raw Gamma outcomes (labels of outcome_prices, untrusted)
             binance_close_end REAL,                -- 'above': close of the Binance <ASSET>/USDT 1m candle closing at end_ts (USDT)
             binance_close_next REAL,               -- 'above': close of the 1m candle opening at end_ts (USDT)
             attempts INTEGER NOT NULL DEFAULT 0,

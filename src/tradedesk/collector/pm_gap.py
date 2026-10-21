@@ -8,6 +8,7 @@ Deribit smile. The `polymarket_options_gap` tool and the hourly job share it. No
 
 from __future__ import annotations
 
+import json
 import logging
 from collections import Counter
 from collections.abc import Awaitable
@@ -16,8 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..analytics.options import Smile, build_chain, build_smile, group_by_expiry
 from ..analytics.pm_gap import classify_open_market, model_probability, path_extremes, pick_expiry, top_of_book, touch_state
-from ..analytics.pm_gap_report import binance_closes
-from ..analytics.pm_threshold import outcome_yes
+from ..analytics.pm_gap_report import binance_closes, gamma_outcome
 from ..core.envelope import Builder, Fetched
 from ..core.errors import ProviderError
 
@@ -250,26 +250,31 @@ async def resolve_outcomes(rt: "Runtime", b: Builder) -> dict[str, int]:
     """Fetch the settled result of snapshotted markets that have ended (registration section 7), once per market.
 
     For each market ended between ``OUTCOME_GIVE_UP_S`` and ``OUTCOME_DELAY_S`` ago without a stored result: Gamma
-    ``/markets/{id}`` ``outcomePrices`` (1/0 = settled; anything else = not yet, retried next run). Threshold markets also
+    ``/markets/{id}`` read by ``pm_gap_report.gamma_outcome`` (closed, outcomes ["Yes", "No"], UMA status resolved,
+    prices exactly 1/0; anything else = not yet, retried next run). Threshold markets also
     get the closes of the Binance <ASSET>/USDT 1m candles closing at and opening at the end, for the cross-check that
     the analysis does (``pm_gap_report.binance_check``). Failures land in ``b.missing`` and are retried next run.
-    Returns counts: ``checked``, ``settled`` (new results stored), ``pending``.
+    The queue takes markets with the fewest attempts first, then the latest end (``Store.pm_gap_outcome_pending``).
+    Returns counts: ``checked`` (markets looked at), ``settled`` (new results stored this run), ``pending`` (looked at
+    and still without a result).
     """
     assert rt.store is not None
     now_ts = int(rt.now().timestamp())
     todo = await rt.store.pm_gap_outcome_pending(now_ts - OUTCOME_DELAY_S, now_ts - OUTCOME_GIVE_UP_S, OUTCOME_BATCH)
-    settled = 0
+    settled = pending = 0
     for m in todo:
         mid, y = str(m["market_id"]), m["outcome_yes"]
         rec: dict[str, Any] = {k: m[k] for k in ("market_id", "asset", "kind", "strike", "end_ts")}
         if y is None:
             data = await b.guard(f"outcome:{mid}", "polymarket:gamma", rt.polymarket.market(mid))
             if isinstance(data, dict):
-                prices = data.get("outcomePrices")
-                rec["outcome_prices"] = prices if isinstance(prices, str) or prices is None else str(prices)
-                y = outcome_yes(prices) if data.get("closed") else None
+                rec["outcome_prices"], rec["outcomes"] = (
+                    v if isinstance(v, str) or v is None else json.dumps(v) for v in (data.get("outcomePrices"), data.get("outcomes"))
+                )
+                y = gamma_outcome(data)
                 rec["outcome_yes"] = y
                 settled += int(y is not None)
+            pending += int(y is None)
         if y is not None and m["kind"] == "above" and (m["binance_close_end"] is None or m["binance_close_next"] is None):
             end = int(m["end_ts"])
             bars = await b.guard(
@@ -279,7 +284,7 @@ async def resolve_outcomes(rt: "Runtime", b: Builder) -> dict[str, int]:
             )
             rec["binance_close_end"], rec["binance_close_next"] = binance_closes(bars or [], end)
         await rt.store.upsert_pm_gap_outcome(rec, now_ts)
-    return {"checked": len(todo), "settled": settled}
+    return {"checked": len(todo), "settled": settled, "pending": pending}
 
 
 async def collect_pm_gap(rt: "Runtime") -> int:

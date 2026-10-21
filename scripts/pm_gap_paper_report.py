@@ -1,14 +1,18 @@
 """Weekly DESCRIPTIVE report of the Polymarket <-> Deribit paper test, or (once, at T0 + 126 days) its verdict.
 
     uv run python scripts/pm_gap_paper_report.py [--db PATH] [--out PATH] [--t0 UNIX_S] [--now UNIX_S] [--print] [--telegram]
-    uv run python scripts/pm_gap_paper_report.py --verdict ...     # refuses to run before T0 + 126 days
+    uv run python scripts/pm_gap_paper_report.py --verdict [--db PATH] [--out PATH]   # refused before T0 + 126 days
+
+``--verdict`` takes no ``--now`` / ``--t0`` (refused if given): it uses the wall clock and the registered T0
+(``pm_gap_report.T0_TS``), and refuses when the DB's first snapshot is not that T0. The gate cannot be moved from the
+command line; the weekly mode keeps both flags (it shows no mean).
 
 Reads ``pm_gap_snapshot`` and ``pm_gap_outcome`` from the collector DB through a READ-ONLY connection (``mode=ro``: no
 migration, no write, no network) and applies the registration of
 docs/ideas/IDEA-20261017-polymarket-vs-options-forward.md with the pure ``analytics/pm_gap_report.py``. The weekly report
 shows only what registration section 1 allows (counts, resolution days and weeks, CLV source shares, SD per position,
 skew and read-time shares); the mean of the main metric, its CI, the P&L and the Brier comparison exist only in
-``--verdict`` mode. T0 = the first snapshot unless ``--t0`` is given. Output: ``--out``, else $TRADEDESK_PM_GAP_REPORT,
+``--verdict`` mode. Weekly T0 = the first snapshot unless ``--t0`` is given. Output: ``--out``, else $TRADEDESK_PM_GAP_REPORT,
 else /var/lib/tradedesk-mcp/paper/pm_gap_REPORT.md (outside git). ``--telegram`` sends the text to the group's ``agents``
 topic through scripts/tg_send.py. Paper positions only: nothing here trades.
 """
@@ -27,6 +31,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from tradedesk.analytics.pm_gap_report import (  # noqa: E402
+    T0_TS,
     final_metrics,
     render_verdict,
     render_weekly,
@@ -66,31 +71,48 @@ def load(db: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         con.close()
 
 
-def build(db: str, now_ts: int, t0: int | None, want_verdict: bool) -> tuple[int, str]:
-    """(exit code, text). Exit 2 and a refusal text for ``--verdict`` before T0 + 126 days."""
+NO_ROWS = "no pm_gap_snapshot rows: the collector has not stored anything yet\n"
+
+
+def build_weekly(db: str, now_ts: int, t0: int | None) -> tuple[int, str]:
+    """(exit code, text) of the descriptive weekly report; ``t0`` None = the first snapshot."""
     rows, outcomes = load(db)
     if not rows:
-        return 1, "no pm_gap_snapshot rows: the collector has not stored anything yet\n"
+        return 1, NO_ROWS
     start = int(t0) if t0 else min(int(r["ts"]) for r in rows)
-    if want_verdict:
-        if now_ts < verdict_ts(start):
-            when = datetime.fromtimestamp(verdict_ts(start), UTC).isoformat(timespec="minutes")
-            return 2, f"refused: the verdict is computed once, not before T0 + 126 days ({when}); use the weekly report\n"
-        return 0, render_verdict(final_metrics(rows, outcomes, now_ts, start))
     return 0, render_weekly(weekly_descriptive(rows, outcomes, now_ts, start))
+
+
+def build_verdict(db: str) -> tuple[int, str]:
+    """(exit code, text) of the one-time verdict, on the wall clock and the registered T0 only (no parameter can move
+    the gate). Exit 2 with a refusal before T0 + 126 days or when the DB's first snapshot is not the registered T0."""
+    now_ts = int(time.time())
+    if now_ts < verdict_ts(T0_TS):
+        when = datetime.fromtimestamp(verdict_ts(T0_TS), UTC).isoformat(timespec="minutes")
+        return 2, f"refused: the verdict is computed once, not before T0 + 126 days ({when}); use the weekly report\n"
+    rows, outcomes = load(db)
+    if not rows:
+        return 1, NO_ROWS
+    first = min(int(r["ts"]) for r in rows)
+    if first != T0_TS:
+        return 2, f"refused: the DB's first snapshot is {first}, not the registered T0 {T0_TS}; wrong or altered database\n"
+    return 0, render_verdict(final_metrics(rows, outcomes, now_ts, T0_TS))
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--db", default=DEFAULT_DB, help="collector SQLite DB (opened read-only)")
     ap.add_argument("--out", default="", help=f"output Markdown (default ${ENV_OUT} or {DEFAULT_OUT})")
-    ap.add_argument("--t0", type=int, default=0, help="T0 in unix seconds (default: the first snapshot)")
-    ap.add_argument("--now", type=int, default=0, help="report time in unix seconds (default: now)")
+    ap.add_argument("--t0", type=int, default=0, help="weekly mode only: T0 in unix seconds (default: the first snapshot)")
+    ap.add_argument("--now", type=int, default=0, help="weekly mode only: report time in unix seconds (default: now)")
     ap.add_argument("--verdict", action="store_true", help="the one-time verdict; refused before T0 + 126 days")
     ap.add_argument("--print", action="store_true", help="also print the text")
     ap.add_argument("--telegram", action="store_true", help="send the text to the Telegram group (topic agents)")
     a = ap.parse_args(argv)
-    code, text = build(a.db, a.now or int(time.time()), a.t0 or None, a.verdict)
+    if a.verdict and (a.now or a.t0):
+        print("refused: --verdict uses the wall clock and the registered T0; --now / --t0 are not allowed", file=sys.stderr)
+        return 2
+    code, text = build_verdict(a.db) if a.verdict else build_weekly(a.db, a.now or int(time.time()), a.t0 or None)
     if code:
         print(text, end="", file=sys.stderr)
         return code

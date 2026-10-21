@@ -38,10 +38,12 @@ from .pm_gap_paper import (
     position_metrics,
     verdict,
 )
+from .pm_threshold import _json_list, outcome_yes
 
 DAY_S = 86_400
 MAIN_PERIOD_DAYS = 112  # registration section 1: positions opened in [T0, T0 + 112 days) form the main test
 VERDICT_DAYS = 126  # the verdict is taken once, at T0 + 126 days (last main-period market resolved by then)
+T0_TS = 1792520435  # registered T0: the first pm_gap_snapshot, 2026-10-20 18:20:35 UTC (card and HANDOFF)
 
 
 def main_period(t0: int) -> tuple[int, int]:
@@ -55,6 +57,21 @@ def verdict_ts(t0: int) -> int:
 
 
 # ----------------------------------------------------------------------------- settled results
+
+
+def gamma_outcome(market: Mapping[str, Any]) -> int | None:
+    """Settled result of a Gamma market: 1 if YES paid 1, 0 if NO did, None otherwise. Requires ``closed``, the labels
+    ``outcomes`` = ["Yes", "No"] in that order (the prices are read by position), and, when Gamma gives the field,
+    ``umaResolutionStatus`` = "resolved" (a result is stored once and never revised, so a proposed one is not taken)."""
+    if not market.get("closed"):
+        return None
+    labels = _json_list(market.get("outcomes"))
+    if not labels or [str(x).strip().lower() for x in labels] != ["yes", "no"]:
+        return None
+    uma = market.get("umaResolutionStatus")
+    if uma is not None and str(uma).lower() != "resolved":
+        return None
+    return outcome_yes(market.get("outcomePrices"))
 
 
 def binance_closes(bars: Iterable[Sequence[Any]], end_ts: int) -> tuple[float | None, float | None]:
@@ -332,7 +349,10 @@ def final_metrics(
 
     Primary: CLV +24 h per position (cluster = ISO week of the entry, ET). Secondary: P&L and the closing CLV (cluster =
     resolution week), Brier D = model (k = 1) - Polymarket per resolved market over the main period's eligible snapshots
-    (cluster = resolution week); k = 0.92 alongside. Robustness and stress (sections 6 and 12) are not computed here."""
+    (cluster = resolution week); k = 0.92 alongside. Robustness and stress (sections 6 and 12) are not computed here.
+
+    A pure function cannot know the real time: the gate is held by the runner (scripts/pm_gap_paper_report.py), which
+    calls this only with the wall clock and the registered :data:`T0_TS`, never with values from the command line."""
     if now_ts < verdict_ts(t0):
         raise ValueError(f"the verdict may be computed only from {verdict_ts(t0)} (T0 + {VERDICT_DAYS} days), now {now_ts}")
     rule = rule or EntryRule()

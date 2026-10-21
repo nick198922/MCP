@@ -1,6 +1,10 @@
 """Weekly report of the forward paper carry books: reads a COPY of the collector DB, no network, writes a Markdown file.
 
-    uv run python scripts/paper_carry_report.py --db /path/to/copy.sqlite [--out docs/paper/REPORT.md] [--now-ms 0]
+    uv run python scripts/paper_carry_report.py [--db PATH] [--out PATH] [--now-ms 0] [--print] [--telegram]
+
+Defaults: the collector DB /var/lib/tradedesk-mcp/tradedesk.sqlite; output ``--out``, else $TRADEDESK_PAPER_CARRY_REPORT,
+else /var/lib/tradedesk-mcp/paper/carry_REPORT.md (outside git). ``--telegram`` sends the text to the group's ``agents``
+topic through scripts/tg_send.py. The user timer tradedesk-paper-carry-report runs it on Sundays.
 
 The script never writes to the given DB: it takes a consistent snapshot (sqlite3 backup, source opened read-only) into a
 temporary file and works on that, so the schema migration cannot touch the collector's database. Everything comes from the
@@ -13,7 +17,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sqlite3
+import sys
 import tempfile
 import time
 from datetime import UTC, datetime
@@ -23,6 +29,12 @@ from typing import Any
 
 from tradedesk.store import Store
 from tradedesk.tools.paper_carry import book_view
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+DEFAULT_DB = "/var/lib/tradedesk-mcp/tradedesk.sqlite"
+DEFAULT_OUT = "/var/lib/tradedesk-mcp/paper/carry_REPORT.md"
+ENV_OUT = "TRADEDESK_PAPER_CARRY_REPORT"
 
 NAMES = {"A": "A: cash-and-carry (Binance spot + perp), tag cc-paper", "B": "B: perp-perp Binance<->Bybit, tag pp-paper"}
 EXPECTATION = {
@@ -135,7 +147,7 @@ async def _build(db: str, now_ms: int) -> str:
             "# Paper carry: weekly report",
             "",
             f"Generated {datetime.fromtimestamp(now_ms / 1000, UTC).isoformat(timespec='minutes')} from a snapshot of the collector DB"
-            "(no network). Forward PAPER books: local bookkeeping, no order was ever sent, fills are modelled.",
+            " (no network). Forward PAPER books: local bookkeeping, no order was ever sent, fills are modelled.",
             "",
             "Reading guide: at this sample size the paper P&L is descriptive only and cannot separate the expected edge from zero "
             "(registration: docs/ideas/IDEA-20261017-forward-paper-carry.md). Nothing here is a profit promise or a recommendation.",
@@ -157,18 +169,28 @@ async def _build(db: str, now_ms: int) -> str:
         await store.aclose()
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--db", required=True, help="path to the collector SQLite DB (opened read-only; a snapshot is used)")
-    ap.add_argument("--out", default="docs/paper/REPORT.md")
+    ap.add_argument("--db", default=DEFAULT_DB, help="collector SQLite DB (opened read-only; a snapshot is used)")
+    ap.add_argument("--out", default="", help=f"output Markdown (default ${ENV_OUT} or {DEFAULT_OUT})")
     ap.add_argument("--now-ms", type=int, default=0, help="report time in UTC ms (default: now)")
-    a = ap.parse_args()
+    ap.add_argument("--print", action="store_true", help="also print the text")
+    ap.add_argument("--telegram", action="store_true", help="send the text to the Telegram group (topic agents)")
+    a = ap.parse_args(argv)
     text = asyncio.run(build_report(a.db, a.now_ms or int(time.time() * 1000)))
-    out = Path(a.out)
+    out = Path(a.out or os.environ.get(ENV_OUT) or DEFAULT_OUT)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(text, encoding="utf-8")
     print(f"wrote {out} ({len(text)} bytes)")
+    if a.print:
+        print(text)
+    if a.telegram:
+        from tg_send import md_to_html, send  # noqa: PLC0415
+
+        if not send(md_to_html(text), topic="agents", silent=True):
+            return 3
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

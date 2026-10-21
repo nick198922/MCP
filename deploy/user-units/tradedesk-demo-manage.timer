@@ -1,0 +1,9 @@
+[Unit]
+Description=tradedesk-demo-manage (every minute)
+
+[Timer]
+OnCalendar=*-*-* *:*:30
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

@@ -64,6 +64,12 @@
 - [ ] 4.2 Paper-режим: симуляція fill по стакану; журнал і P&L.
 - [ ] 4.3 Двокроковий потік: `order_propose` → повертає `proposal_id` + повний розрахунок (ціна, slippage, margin, ризик) → `order_confirm(proposal_id)` з TTL; повторний запуск неможливий (idempotency key).
 - [ ] 4.4 Testnet: Deribit testnet, Binance/Bybit testnet через ccxt `set_sandbox_mode`. Окремі ключі.
+  - ✅ 21.10 (Claude, рішення власника, [ADR 0007](adr/0007-demo-auto-execution.md)): **демо-трейдер на Bybit Demo Trading**. Зроблено: `execution/guard.py` (ліміти, розмір за ризиком $100), `execution/bybit_demo.py` (ccxt, лише `api-demo`), `execution/demo_trader.py` (щогодини: синхронізація закриттів, вихід за часом, скан, вхід зі стопом і ціллю), `analytics/setup_signals.py` (S14, S16, S3 на 4h / 1d), схема 19 (`exec_audit` лише на додавання, `demo_trade`), тема Telegram «🧪 Демо-рахунок», таймер `tradedesk-demo-trader`. Демо поповнено на 10 000 USDT (API `demo-apply-money`).
+  - [ ] Решта готових детекторів у сканер: S12 / S28 (FVG / OB, лише лонг), S17 (POB), S23 (QM: sweep → BOS → тест, `sfp_backtest.ltf_entry`), S25 (Session Stop Hunt, 5m).
+  - [ ] Нові детектори з чіткими правилами: S24 (Wyckoff Spring), S26 (3DP), S27 (Дракон), S31–S35. Кожен — чиста функція з тестом на історії до демо.
+  - [ ] Вкладка «Демо» на панелі: угоди, R за сетапом, відмови guard за причинами. Тижневий підсумок у Telegram.
+  - [ ] Через ≈ 30 закритих угод на сетап — перше читання (середній R з ДІ проти 0) і порівняння з бектестом того самого детектора.
+  - [ ] Опціони — Deribit testnet (окремий ключ, окремий ADR-пункт).
 - [ ] 4.5 Live, мінімальні ліміти, ключі без права виведення + IP allow-list; перші ордери вручну разом із власником.
 - [ ] 4.6 Керування: `order_cancel`, `order_amend`, `positions_close_all` (аварійне), автоматичні стопи/OCO там, де біржа підтримує.
 - [ ] 4.7 Дельта-хедж для опціонних позицій (пропозиції, не автовиконання, на старті).

@@ -55,6 +55,25 @@ def _parse_json_cols(row: dict[str, Any], cols: tuple[str, ...]) -> dict[str, An
     return row
 
 
+_DEMO_TRADE_MUTABLE = frozenset(
+    {
+        "status",
+        "order_id",
+        "fill",
+        "opened_ts",
+        "exit",
+        "closed_ts",
+        "pnl_usd",
+        "r_multiple",
+        "exit_reason",
+        "be_ts",
+        "be_stop",
+        "journal_id",
+        "plan_id",
+    }
+)
+
+
 class Store:
     def __init__(self, path: str | Path) -> None:
         self.path = str(path)
@@ -698,6 +717,7 @@ class Store:
         tag: str | None = None,
         symbol: str | None = None,
         limit: int = 500,
+        exclude_tag: str | None = None,
     ) -> list[dict[str, Any]]:
         where: list[str] = []
         params: list[Any] = []
@@ -708,6 +728,9 @@ class Store:
         if tag:
             where.append("tags LIKE ?")  # JSON array: match the quoted value
             params.append(f'%"{tag}"%')
+        if exclude_tag:
+            where.append("tags NOT LIKE ?")
+            params.append(f'%"{exclude_tag}"%')
         sql = "SELECT * FROM trade_plan" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY created_ts DESC, id DESC LIMIT ?"
         cur = await self.conn.execute(sql, [*params, limit])
         return [_parse_json_cols(dict(r), ("rules", "tags")) for r in await cur.fetchall()]
@@ -1247,3 +1270,56 @@ class Store:
             d["delivered"] = bool(d["delivered"])
             out.append(d)
         return out
+
+    # ---------- demo execution (schema 19, ADR 0007) ----------
+
+    async def exec_audit_add(
+        self,
+        ts: int,
+        venue: str,
+        kind: str,
+        *,
+        link_id: str | None = None,
+        symbol: str | None = None,
+        setup: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> int:
+        """Append one row to the append-only audit log (triggers refuse UPDATE and DELETE)."""
+        cur = await self.conn.execute(
+            "INSERT INTO exec_audit (ts, venue, kind, link_id, symbol, setup, payload) VALUES (?,?,?,?,?,?,?)",
+            (ts, venue, kind, link_id, symbol, setup, json.dumps(payload or {}, default=str)),
+        )
+        await self.conn.commit()
+        return int(cur.lastrowid or 0)
+
+    async def exec_audit_list(self, since_ts: int = 0, kinds: tuple[str, ...] = (), limit: int = 500) -> list[dict[str, Any]]:
+        sql, params = "SELECT * FROM exec_audit WHERE ts >= ?", [since_ts]
+        if kinds:
+            sql += f" AND kind IN ({','.join('?' * len(kinds))})"
+            params += list(kinds)
+        cur = await self.conn.execute(sql + " ORDER BY id DESC LIMIT ?", [*params, limit])
+        return [_parse_json_cols(dict(r), ("payload",)) for r in await cur.fetchall()]
+
+    async def demo_trade_insert(self, row: dict[str, Any]) -> None:
+        cols = [c for c in row if c.isidentifier()]
+        await self.conn.execute(f"INSERT INTO demo_trade ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})", [row[c] for c in cols])
+        await self.conn.commit()
+
+    async def demo_trade_update(self, link_id: str, **fields: Any) -> int:
+        if not fields:
+            return 0
+        bad = set(fields) - _DEMO_TRADE_MUTABLE
+        if bad:
+            raise ValueError(f"demo_trade: not updatable {sorted(bad)}")
+        sets = ", ".join(f"{k} = ?" for k in fields)
+        cur = await self.conn.execute(f"UPDATE demo_trade SET {sets} WHERE link_id = ?", [*fields.values(), link_id])
+        await self.conn.commit()
+        return cur.rowcount or 0
+
+    async def demo_trade_list(self, statuses: tuple[str, ...] = (), limit: int = 500) -> list[dict[str, Any]]:
+        sql, params = "SELECT * FROM demo_trade", []
+        if statuses:
+            sql += f" WHERE status IN ({','.join('?' * len(statuses))})"
+            params = list(statuses)
+        cur = await self.conn.execute(sql + " ORDER BY signal_ts DESC LIMIT ?", [*params, limit])
+        return [dict(r) for r in await cur.fetchall()]

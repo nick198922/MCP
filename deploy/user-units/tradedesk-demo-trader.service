@@ -1,0 +1,10 @@
+[Unit]
+Description=tradedesk: demo trader, course setups on the Bybit Demo Trading account (ADR 0007, play money)
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/tradedesk/tradedesk-mcp
+ExecStart=/home/tradedesk/.local/bin/uv run python -m tradedesk.execution.demo_trader
+TimeoutStartSec=10min
+Nice=5
+NoNewPrivileges=true

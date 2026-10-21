@@ -808,7 +808,7 @@ async def test_migration_18_adds_columns_and_the_outcome_table_to_an_old_db(tmp_
     s = Store(path)
     await s.init()
     try:
-        assert SCHEMA_VERSION == 18 and await s.version() == 18
+        assert await s.version() == SCHEMA_VERSION >= 18
         cur = await s.conn.execute("SELECT model_prob, book_ts, surface_ts, model_forward FROM pm_gap_snapshot WHERE market_id = 'old'")
         assert tuple(await cur.fetchone()) == (0.4, None, None, None)  # history kept, the new fields NULL
         row = {

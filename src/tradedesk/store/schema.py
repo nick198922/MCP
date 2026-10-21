@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 
 # Each migration is a list of SQL statements executed in a single transaction.
 # `PRAGMA user_version` is bumped by Store.init() inside the same explicit transaction,
@@ -523,5 +523,59 @@ MIGRATIONS: dict[int, list[str]] = {
             resolved_ts INTEGER                    -- unix seconds when outcome_yes was first stored
         )
         """,
+    ],
+    19: [
+        # Demo execution (ADR 0007, stage testnet on the Bybit Demo Trading account): append-only audit log of every
+        # decision and venue answer (ADR 0005 p. 6), and the trader's own book of demo trades.
+        """
+        CREATE TABLE IF NOT EXISTS exec_audit (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts INTEGER NOT NULL,                   -- unix ms
+            venue TEXT NOT NULL,                   -- 'bybit-demo'
+            kind TEXT NOT NULL,                    -- signal | refused | sent | rejected | filled | closed | error | halt
+            link_id TEXT,                          -- orderLinkId (idempotency key of one signal)
+            symbol TEXT,
+            setup TEXT,                            -- e.g. 'S14'
+            payload TEXT                           -- JSON: proposal, violations, venue answer (never keys)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS exec_audit_ts ON exec_audit (ts)",
+        "CREATE INDEX IF NOT EXISTS exec_audit_link ON exec_audit (link_id)",
+        "CREATE TRIGGER IF NOT EXISTS exec_audit_no_update BEFORE UPDATE ON exec_audit BEGIN SELECT RAISE(ABORT, 'exec_audit is append-only'); END",
+        "CREATE TRIGGER IF NOT EXISTS exec_audit_no_delete BEFORE DELETE ON exec_audit BEGIN SELECT RAISE(ABORT, 'exec_audit is append-only'); END",
+        """
+        CREATE TABLE IF NOT EXISTS demo_trade (
+            link_id TEXT PRIMARY KEY,              -- orderLinkId sent to the venue
+            venue TEXT NOT NULL,
+            symbol TEXT NOT NULL,                  -- ccxt unified, e.g. 'BTC/USDT:USDT'
+            side TEXT NOT NULL,                    -- 'long' | 'short'
+            setup TEXT NOT NULL,                   -- 'S14', 'S16', ...
+            timeframe TEXT NOT NULL,               -- candles the signal came from, e.g. '4h'
+            signal_ts INTEGER NOT NULL,            -- unix ms: open time of the signal bar
+            entry REAL NOT NULL,                   -- planned entry (quote currency)
+            stop REAL NOT NULL,
+            target REAL NOT NULL,
+            qty REAL NOT NULL,                     -- base units
+            leverage INTEGER NOT NULL,             -- isolated leverage set on the venue (tier, lowered for the liquidation)
+            risk_usd REAL NOT NULL,                -- loss at the stop with both taker fees (USD)
+            score INTEGER,                         -- confidence points (analytics/setup_signals.score)
+            score_reasons TEXT,                    -- JSON list of the points, Ukrainian
+            comment TEXT NOT NULL,                 -- why: setup, indicators and their values, levels (shown to the owner)
+            status TEXT NOT NULL,                  -- 'unknown' (written before the order) | 'open' | 'closed' | 'rejected'
+            order_id TEXT,                         -- venue order id
+            fill REAL,                             -- average entry fill
+            opened_ts INTEGER,                     -- unix ms of the fill
+            exit REAL,
+            closed_ts INTEGER,
+            pnl_usd REAL,                          -- venue closed P&L (fees included)
+            r_multiple REAL,                       -- pnl_usd / risk_usd
+            exit_reason TEXT,                      -- 'target' | 'stop' | 'breakeven' | 'time'
+            be_ts INTEGER,                         -- unix ms when the stop was moved to break-even (+30 % ROE rule)
+            be_stop REAL,                          -- that break-even stop (entry +- both taker fees)
+            journal_id INTEGER,                    -- mirror row in journal (tags demo-paper, setup:<S>)
+            plan_id INTEGER                        -- shadow row in trade_plan (same levels, no break-even rule)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS demo_trade_status ON demo_trade (status, symbol)",
     ],
 }

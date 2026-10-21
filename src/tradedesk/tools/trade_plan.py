@@ -36,6 +36,8 @@ MAX_HORIZON_S = 180 * 86400
 RULE_KEYS = {str(i) for i in range(1, 9)}  # the owner's 8 rules (docs/knowledge/trading-strategy.md)
 STALE_S = 86400
 
+SHADOW_TAG = "src:demo-shadow"  # execution/demo_trader.py: one plan per setup signal, not the assistant's judgment
+
 
 def _iso(ts: int | None) -> str | None:
     return None if ts is None else datetime.fromtimestamp(ts, UTC).isoformat(timespec="seconds")
@@ -305,7 +307,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "underlying. Returns the ids resolved now, the open plans and a summary by verdict (enter / wait / skip; "
             "wait and skip are counterfactual) and by tag within verdict: n, fills, outcomes, hit rate (targets / "
             "filled), win rate (R > 0), mean and median R with a t 95 % CI on the mean. A venue failure goes into "
-            "`missing` and its plans stay open. Paper scoring on candle highs / lows: not a fill guarantee, a forward "
+            "`missing` and its plans stay open. The demo trader's shadow plans (tag src:demo-shadow, one per setup signal) "
+            "are resolved too but kept out of `open` and `summary` (they are not the assistant's judgment); their own "
+            "summary is in `demo_shadow` (compare demo:taken with demo:skipped). Paper scoring on candle highs / lows: not a fill guarantee, a forward "
             "record of the assistant's judgment, not proven edge."
         ),
     )
@@ -317,12 +321,15 @@ def register(server: MCPServer, rt: Runtime) -> None:
         await rt.store.init()
         resolved_now = await review_open(rt, b)
         now_ts = int(rt.now().timestamp())
-        open_now = await rt.store.plan_list(status="open", limit=5000)
+        open_now = await rt.store.plan_list(status="open", exclude_tag=SHADOW_TAG, limit=5000)
+        open_shadow = await rt.store.plan_list(status="open", tag=SHADOW_TAG, limit=100_000)
         stale = [p["id"] for p in open_now if p["expires_ts"] + STALE_S < now_ts and p["rec_paper_id"] is None]
         if stale:
             b.warn(f"plans {stale} are past their horizon by more than a day and still open: candles missing for their market")
-        done = await rt.store.plan_list(status="resolved", limit=5000)
+        done = await rt.store.plan_list(status="resolved", exclude_tag=SHADOW_TAG, limit=5000)
+        shadow = await rt.store.plan_list(status="resolved", tag=SHADOW_TAG, limit=100_000)
         summary = summarize_plans(done)
+        shadow_summary = summarize_plans(shadow)
 
         def rnd(s: dict[str, Any]) -> dict[str, Any]:
             out = dict(s)
@@ -339,6 +346,11 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 "by_tag": {t: {v: rnd(s) for v, s in g.items()} for t, g in summary["by_tag"].items()},
             },
             "recent_resolved": [_view(p) for p in done[:50]],
+            "demo_shadow": {
+                "open": len(open_shadow),
+                "by_verdict": {v: rnd(s) for v, s in shadow_summary["by_verdict"].items()},
+                "by_tag": {t: {v: rnd(s) for v, s in g.items()} for t, g in shadow_summary["by_tag"].items()},
+            },
         }
         return b.build(data)
 

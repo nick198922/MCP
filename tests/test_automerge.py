@@ -127,3 +127,16 @@ def test_gh_pr_ready_marks_the_body(tmp_path, monkeypatch):
     monkeypatch.setattr(gh_pr, "open_pr", fake_open)
     assert gh_pr.main(["--repo", "o/r", "--head", "agent/x", "--body-file", str(tmp_path / "s.md"), "--ready"]) == 0
     assert sent["body"].endswith(am.READY_MARK) and sent["body"].startswith("summary")
+
+
+def test_demo_trader_inputs_are_owner_only():
+    for path in (
+        "src/tradedesk/execution/guard.py",
+        "src/tradedesk/analytics/setup_signals.py",
+        "src/tradedesk/analytics/course_basics.py",
+        "src/tradedesk/analytics/course_s14_ema.py",
+        "deploy/user-units/tradedesk-demo-trader.service",
+        "deploy/user-units/tradedesk-demo-manage.timer",
+    ):
+        assert am.protected(path), path
+    assert not am.protected("deploy/user-units/tradedesk-pm-gap-report.timer")

@@ -161,11 +161,11 @@ def test_topics_setup_follows_the_supergroup_migration(monkeypatch, tmp_path):
     assert tt.main() == 0
     env = tg_send.load_env(env_file)
     assert env["TELEGRAM_CHAT_ID"] == "-1001"
-    assert [env[f"TELEGRAM_TOPIC_{k}"] for k in ("AGENTS", "STATUS", "ALERTS", "CHAT")] == ["1", "2", "3", "4"]
+    assert [env[f"TELEGRAM_TOPIC_{k}"] for k in ("AGENTS", "STATUS", "ALERTS", "CHAT", "DEMO")] == ["1", "2", "3", "4", "5"]
     assert env["TELEGRAM_OWNER_ID"] == "777"
     assert env["TELEGRAM_BOT_TOKEN"] == "1:a"
     assert env_file.stat().st_mode & 0o777 == 0o600
-    assert tt.main() == 0 and len(made) == 4  # a second run keeps the topics
+    assert tt.main() == 0 and len(made) == 5  # a second run keeps the topics
 
 
 def test_topics_setup_stops_when_topics_are_off(monkeypatch, tmp_path, capsys):

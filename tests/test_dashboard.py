@@ -659,11 +659,13 @@ def test_journal_tab_renders_trades_sources_and_paper_recs(tmp_path):
         "aria-current=page>Журнал",
         "лише читання",
         "<b>Застереження</b>",
-        "Угод (закритих)</span><span class='v'>4</span>",
+        "Угод (закритих)<span class='info'",
+        "<span class='v'>4</span>",
         "75 %",
         "−$40",
         "−$10",
-        "Найбільша просадка</span><span class='v'>−$100</span>",
+        "Найбільша просадка<span class='info'",
+        "<span class='v'>−$100</span>",
         "+0.50 R",
         "Відкритих</span><span class='v'>1</span>",
         "<td>Bybit</td><td class='num'>2</td>",
@@ -893,7 +895,8 @@ def test_journal_tab_summarizes_trade_plans(tmp_path):
     assert err is None and len(data["trade_plan"]) == 7 and data["plan_shadow"] == 1
     page = db.render_journal(data, None, float(T0 + 86400), path=p)
     for text in (
-        "Плани угод асистента<span class='chip calm'>облік</span>",
+        "Плани угод асистента<span class='info'",
+        "<span class='chip calm'>облік</span>",
         "src:demo-shadow) до підсумку не входять",
         # counts by verdict and status (the shadow plan is not counted)
         "<td>enter (✅ входити)</td><td class='num'>5</td><td class='num'>1</td><td class='num'>4</td>",
@@ -1254,3 +1257,85 @@ def test_pm_tab_escapes_question_and_slug(tmp_path):
         assert raw not in page, raw
     assert "&lt;script&gt;alert(1)&lt;/script&gt; above?" in page
     assert "href='https://polymarket.com/event/x%27%20onmouseover%3D%27alert%282%29'" in page
+
+
+# ---------------------------------------------------------------- help icons and trade-lean highlights
+
+
+def test_help_keys_used_by_the_pages_all_exist():
+    src = (Path(__file__).resolve().parents[1] / "scripts" / "dashboard.py").read_text()
+    import re
+
+    used = set(re.findall(r"help=\"(\w+)\"", src)) | set(re.findall(r"_h2\([^)]*?, '(\w+)'", src))
+    used |= set(re.findall(r"\"(\w+)\", block_\w+\)", src)) - {""}
+    used |= set(re.findall(r"_info\('(\w+)'\)", src))
+    missing = {k for k in used if k not in db.HELP}
+    assert not missing, missing
+    for title, what, read, trade in db.HELP.values():
+        assert title and what and read and trade
+
+
+def test_info_icon_is_escaped_static_text_and_unknown_key_is_empty():
+    html_ = db._info("dvol")
+    assert html_.startswith("<span class='info' tabindex='0' role='button'")
+    assert "DVOL" in html_ and "Для угоди:" in html_
+    assert db._info("no-such-key") == ""
+    tile = db._tile("K", "1", "s", help="iv", tone="good", badge="a<b")
+    assert "class='tile t-good'" in tile and "a&lt;b" in tile and "class='info'" in tile
+
+
+def test_vol_lean_thresholds():
+    assert db.vol_lean(0.1, None)[0][0] == "good"
+    assert db.vol_lean(0.5, None)[0][0] == ""
+    assert db.vol_lean(0.9, None)[0][0] == "bad"
+    assert db.vol_lean(None, -0.01)[0][0] == "good"
+    assert db.vol_lean(None, 0.05)[0][0] == ""
+    assert db.vol_lean(None, 0.12)[0][0] == "bad"
+    assert db.vol_lean(None, None) == []
+    assert db._flip("good") == "bad" and db._flip("warn") == "warn"
+
+
+def test_brief_has_help_icons_conditions_and_howto():
+    snap, asof = _snap()
+    page = db.render_brief(snap, None, asof + 300)
+    assert page.count("class='info' tabindex='0'") >= 8
+    assert "class='howto'" in page
+    assert "Купувати чи продавати опціони зараз" in page
+    assert "<h3>Купувати опціони</h3>" in page and "<h3>Продавати опціони</h3>" in page
+    assert "class='pcsum'" in page
+    # buyer and seller read the price of volatility with opposite tones
+    buy, sell = db.market_lean(snap)
+    assert [db._flip(t) for t, _ in buy[:1]] == [t for t, _ in sell[:1]]
+
+
+def test_page_wrappers_add_the_tooltip_script(monkeypatch):
+    monkeypatch.setattr(db, "SNAPSHOT_PATH", SNAP_FIXTURE)
+    for page in (db.brief_page(), db.options_page("")):
+        assert page.count("<script>") >= 1 and "querySelectorAll('.info')" in page
+        assert page.endswith("</body></html>")
+    assert db.with_help("<body>x</body>") == f"<body>x<script>{db.HELP_JS}</script></body>"
+
+
+def test_options_pros_and_cons_for_buyer_and_seller():
+    snap, asof = _snap()
+    page = db.render_options(snap, None, asof + 300, db.parse_options_query(""))
+    assert "За і проти цієї угоди" in page and "class='pcsum'" in page
+    assert "Для прибутку BTC має пройти щонайменше" in page
+    assert "Час забирає" in page and "сплаченої премії щодня" in page
+    sell = db.render_options(snap, None, asof + 300, db.parse_options_query("s=short_strangle"))
+    assert "Збиток необмежений" in sell and "Час працює на тебе" in sell
+    assert "class='tile t-bad'" in sell  # unbounded max loss
+
+
+def test_position_pros_cons_risk_fit_and_required_move():
+    fit_ok = {"unbounded": False, "fits": True, "loss": 80.0, "budget": 100.0, "qmax": 0.2}
+    fit_big = {"unbounded": False, "fits": False, "loss": 300.0, "budget": 100.0, "qmax": 0.03}
+    legs = [{"kind": "call", "side": "long", "strike": 100.0, "size": 1.0, "entry_premium": 5.0}]
+    G = {"delta": 0.5, "gamma": 0.0, "vega": 1.0, "theta": -0.5}
+    ext = {"max_loss": -5.0, "max_profit": None}
+    near = db.position_pros_cons(legs, 100.0, 30 / 365, 0.5, -5.0, [105.0], G, ext, fit_ok, {})
+    assert near[0][0] == "good" and near[1][0] == "good"  # 5 % needed vs 1σ ≈ 14 %
+    assert near[2][0] == "bad" and "10.0 % сплаченої премії щодня" in near[2][1]
+    far = db.position_pros_cons(legs, 100.0, 30 / 365, 0.5, -5.0, [130.0], G, ext, fit_big, {})
+    assert far[0][0] == "bad" and "під нього — до 0.03 BTC" in far[0][1]
+    assert far[1][0] == "bad"  # 30 % needed vs ≈ 14 %

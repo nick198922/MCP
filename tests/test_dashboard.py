@@ -853,6 +853,108 @@ def test_journal_escapes_hostile_strings_from_the_database(tmp_path):
     assert "&lt;script&gt;alert(1)" in page and "&lt;img src=x" in page and "&lt;svg onload" in page
 
 
+# ---------------------------------------------------------------- «Журнал» tab: the assistant's trade plans
+
+P_COLS = (
+    "created_ts, exchange, symbol, instrument, side, entry_type, entry, stop, target, expires_ts, verdict, tags, status, outcome, r_result"
+)
+
+
+def _prow(i: int, verdict: str, status: str = "open", outcome: str | None = None, r: float | None = None, tags: str = '["src:own"]'):
+    return (T0 + i * 3600, "binance", "BTC/USDT:USDT", "perp", "long", "limit", 80000.0, 79000.0, 82000.0, T0 + 86400 * 3,
+            verdict, tags, status, outcome, r)  # fmt: skip
+
+
+def _plan_db(path: Path, plans: list[tuple], versions=None) -> Path:
+    _journal_db(path, [], [], versions=versions)
+    con = sqlite3.connect(path)
+    con.executemany(f"INSERT INTO trade_plan ({P_COLS}) VALUES ({','.join('?' * 15)})", plans)
+    con.commit()
+    con.close()
+    return path
+
+
+def _sample_plans() -> list[tuple]:
+    return [
+        _prow(0, "enter", "resolved", "target", 1.9),
+        _prow(1, "enter", "resolved", "stop", -1.05),
+        _prow(2, "enter", "resolved", "expired", 0.3),
+        _prow(3, "enter", "resolved", "not_filled", None),
+        _prow(4, "enter"),
+        _prow(5, "wait", "resolved", "stop", -1.0),
+        _prow(6, "skip"),
+        _prow(7, "enter", "resolved", "target", 2.0, tags='["src:demo-shadow", "demo:taken"]'),  # out of the summary
+    ]
+
+
+def test_journal_tab_summarizes_trade_plans(tmp_path):
+    p = _plan_db(tmp_path / "s.sqlite", _sample_plans())
+    data, err = db.load_journal(p)
+    assert err is None and len(data["trade_plan"]) == 7 and data["plan_shadow"] == 1
+    page = db.render_journal(data, None, float(T0 + 86400), path=p)
+    for text in (
+        "Плани угод асистента<span class='chip calm'>облік</span>",
+        "src:demo-shadow) до підсумку не входять",
+        # counts by verdict and status (the shadow plan is not counted)
+        "<td>enter (✅ входити)</td><td class='num'>5</td><td class='num'>1</td><td class='num'>4</td>",
+        "<td>wait (⏳ чекати)</td><td class='num'>1</td><td class='num'>0</td><td class='num'>1</td>",
+        "<td>skip (❌ пропустити)</td><td class='num'>1</td><td class='num'>1</td><td class='num'>0</td>",
+        # resolved enter: R 1.9, −1.05, 0.3 (+ one never filled): mean +0.38 R, 2 of 3 in profit, CI wide around 0
+        "Розв'язано</span><span class='v'>4</span><span class='s '>з входом 3 · з R 3",
+        "67 %",
+        "+0.38 R",
+        "95 % ДІ містить 0: переваги не видно",
+        "1 / 1</span><span class='s '>ціль / стоп · за строком 1 · без входу 1",
+        "Замало планів: n = 3 планів enter з R (потрібно ≥ 30)",
+        "Тіньових планів демо-трейдера (src:demo-shadow): 1",
+    ):
+        assert text in page, text
+    assert "+0.67 R" not in page  # the shadow plan's +2.0 R is not mixed into the mean
+
+
+def test_trade_plan_stats_match_the_analytics_reference(tmp_path):
+    from tradedesk.analytics.trade_plan import summarize_plans
+
+    rs = [1.9 if i % 3 else -1.05 for i in range(31)]  # 31 R values: df 30 and the normal quantile beyond it
+    for plans, vs0 in (
+        (_sample_plans(), "95 % ДІ містить 0"),
+        ([_prow(i, "enter", "resolved", "target" if v > 0 else "stop", v) for i, v in enumerate(rs)], "95 % ДІ вище 0"),
+        ([_prow(i, "enter", "resolved", "stop", -1.0 - 0.01 * i) for i in range(3)], "95 % ДІ нижче 0"),
+        ([_prow(0, "enter", "resolved", "stop", -1.0)], "ДІ — від 2 планів з R"),
+    ):
+        p = _plan_db(tmp_path / f"s{len(plans)}.sqlite", plans)
+        data, _ = db.load_journal(p)
+        mine = db.plan_stats([x for x in data["trade_plan"] if x["status"] == "resolved" and x["verdict"] == "enter"])
+        ref = summarize_plans(data["trade_plan"])["by_verdict"]["enter"]
+        for key in ("n", "n_filled", "outcomes", "hit_rate", "win_rate", "mean_r", "median_r", "ci95_mean_r"):
+            assert mine[key] == pytest.approx(ref[key]), key
+        page = db.block_trade_plans(data["trade_plan"], data["plan_shadow"])
+        assert vs0 in page, vs0
+        assert ("Замало планів" in page) == (mine["n_r"] < 30)
+    assert [db.t975(d) for d in (0, 1, 30, 31)] == [float("inf"), 12.706, 2.042, 1.96]
+
+
+def test_journal_tab_trade_plans_empty_and_old_store(tmp_path):
+    p = _plan_db(tmp_path / "empty.sqlite", [])
+    data, err = db.load_journal(p)
+    assert err is None and data["trade_plan"] == [] and data["plan_shadow"] == 0
+    page = db.render_journal(data, None, float(T0))
+    assert "Планів асистента ще немає" in page and "plan_add" in page and "Тіньових планів" not in page
+    # only shadow plans: still empty for the assistant, the shadow count shown
+    p = _plan_db(tmp_path / "shadow.sqlite", [_prow(0, "enter", tags='["src:demo-shadow"]')])
+    page = db.render_journal(*db.load_journal(p), float(T0))
+    assert "Планів асистента ще немає" in page and "Тіньових планів демо-трейдера (src:demo-shadow): 1" in page
+    # open plans only: counts, no outcome yet, the small-sample note
+    p = _plan_db(tmp_path / "open.sqlite", [_prow(0, "enter"), _prow(1, "wait")])
+    page = db.render_journal(*db.load_journal(p), float(T0))
+    assert "язаних планів enter ще немає" in page and "Замало планів: n = 0" in page
+    # a store before schema v17: no trade_plan table
+    p = _journal_db(tmp_path / "old.sqlite", _sample_journal(), _sample_rec(), versions=range(1, 17))
+    data, err = db.load_journal(p)
+    assert err is None and data["trade_plan"] is None
+    assert "Таблиці trade_plan у базі ще немає" in db.render_journal(data, err, float(T0))
+
+
 # ---------------------------------------------------------------- «Polymarket» tab
 
 PM_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "pm_gap_snapshot_2026-10-21.json"

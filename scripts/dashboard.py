@@ -20,7 +20,8 @@ conclusion and an «is vol expensive» block (DVOL percentile, VRP backtest by l
 and size in the browser (localStorage) and resubmits on a change.
 
 The «Журнал» tab (/journal) reads the owner's trade journal and the assistant's paper recommendations (rec_paper,
-labelled «гіпотеза») from the SQLite store over a read-only connection: summary, by source, the trades page by page.
+labelled «гіпотеза») from the SQLite store over a read-only connection: summary, by source, the trades page by page,
+and a summary of the assistant's trade plans (trade_plan: counts by verdict and status, the resolved 'enter' plans' R).
 Every string from the database is untrusted text and is escaped; no database or no table gives an empty state.
 
 The «Polymarket» tab (/polymarket) lists the CURRENT Polymarket <-> Deribit-options gaps of the latest pm_gap_snapshot
@@ -38,6 +39,7 @@ import os
 import re
 import shutil
 import sqlite3
+import statistics
 import subprocess
 import sys
 import threading
@@ -2258,8 +2260,9 @@ def options_page(query: str = "", now: float | None = None) -> str:
 
 # ---------------------------------------------------------------- «Журнал» tab: the owner's journal and the paper recommendations
 #
-# Read-only SQLite (mode=ro URI), no network. Summaries are stdlib copies of analytics.journal.summary and
-# analytics.rec_paper.summarize (tests compare the two). Every string from the database (symbol, thesis, tags, note,
+# Read-only SQLite (mode=ro URI), no network. Summaries are stdlib copies of analytics.journal.summary,
+# analytics.rec_paper.summarize and analytics.trade_plan._stats (tests compare each pair): the service runs on the
+# system python3 -I, without the project's environment. Every string from the database (symbol, thesis, tags, note,
 # structure) is untrusted text and is escaped.
 
 JOURNAL_DB = DATA_DIR / "tradedesk.sqlite"
@@ -2281,6 +2284,24 @@ REC_CAVEAT = (
     "(95 % CI [−2.43; +1.51], n = 27); великий ефект виключено, перевагу ≈ +0.2 R — ні. Паперовий журнал це перевіряє. "
     "Угоди паперові: ціни входу — марки Deribit ± 1 вп, розрахунок на delivery."
 )
+PLAN_MAX_ROWS = 20000
+PLAN_SHADOW_TAG = "src:demo-shadow"  # tools/trade_plan.py SHADOW_TAG: the demo trader's shadow plans, kept out of the summary
+PLAN_MIN_N = 30  # BACKLOG: the first honest cut of the 'enter' plans after ~30 of them
+PLAN_OUTCOMES = ("target", "stop", "expired", "not_filled")  # analytics.trade_plan.OUTCOMES
+PLAN_VERDICT_UA = {"enter": "enter (✅ входити)", "wait": "wait (⏳ чекати)", "skip": "skip (❌ пропустити)"}
+PLAN_CAVEAT = (
+    "Облік планів асистента, не реальні угоди: паперова оцінка на свічках (high / low), без гарантії виконання. "
+    "R — у одиницях запланованого ризику |вхід − стоп|, за вирахуванням тейкер-комісії 0.05 % на бік; без іншого "
+    "проковзування й funding; свічка, що торкнулась і стопу, і цілі, — стоп. Опціонні плани з rec_paper оцінено "
+    "паперовою угодою (r_worst_case). Тіньові плани демо-трейдера (src:demo-shadow) до підсумку не входять, як у plan_review. "
+    "Це запис судження асистента, не доказ переваги."
+)
+# Two-sided 97.5 % Student-t quantiles by degrees of freedom (1..30); normal beyond (analytics.smart_money.t975).
+_T975 = (
+    12.706, 4.303, 3.182, 2.776, 2.571, 2.447, 2.365, 2.306, 2.262, 2.228,
+    2.201, 2.179, 2.160, 2.145, 2.131, 2.120, 2.110, 2.101, 2.093, 2.086,
+    2.080, 2.074, 2.069, 2.064, 2.060, 2.056, 2.052, 2.048, 2.045, 2.042,
+)  # fmt: skip
 
 
 def journal_tags(raw: object) -> list[str]:
@@ -2357,9 +2378,39 @@ def rec_summary(rows: list[dict]) -> dict:
     }
 
 
+def t975(df: int) -> float:
+    """Student-t 97.5 % quantile (two-sided 95 % CI); 1.96 for df > 30. Copy of analytics.smart_money.t975."""
+    if df < 1:
+        return float("inf")
+    return _T975[df - 1] if df <= 30 else 1.96
+
+
+def plan_stats(rows: list[dict]) -> dict:
+    """Stdlib copy of analytics.trade_plan._stats: n plans, fills, outcome counts, hit rate (targets / filled), win rate
+    (R > 0) and mean / median R with a t 95 % CI on the mean. A non-numeric r_result is skipped instead of raising."""
+    filled = [x for x in rows if x.get("outcome") in ("target", "stop", "expired")]
+    rs = [v for x in filled if (v := _num(x.get("r_result"))) is not None]
+    s: dict = {
+        "n": len(rows),
+        "n_filled": len(filled),
+        "outcomes": {k: sum(1 for x in rows if x.get("outcome") == k) for k in PLAN_OUTCOMES},
+        "hit_rate": sum(1 for x in filled if x["outcome"] == "target") / len(filled) if filled else None,
+        "win_rate": sum(1 for v in rs if v > 0) / len(rs) if rs else None,
+        "mean_r": statistics.fmean(rs) if rs else None,
+        "median_r": statistics.median(rs) if rs else None,
+        "ci95_mean_r": None,
+    }
+    if len(rs) >= 2:
+        h = t975(len(rs) - 1) * statistics.stdev(rs) / len(rs) ** 0.5
+        s["ci95_mean_r"] = [s["mean_r"] - h, s["mean_r"] + h]
+    s["n_r"] = len(rs)
+    return s
+
+
 def load_journal(path: Path) -> tuple[dict | None, str | None]:
-    """{'journal': rows | None, 'rec_paper': rows | None} (None = no such table), or (None, reason) with reason
-    'missing' | 'unreadable: …'. Read-only connection; never raises."""
+    """{'journal': rows | None, 'rec_paper': rows | None, 'trade_plan': rows | None, 'plan_shadow': int} (None = no
+    such table; trade_plan without the demo trader's shadow plans, which are only counted), or (None, reason) with
+    reason 'missing' | 'unreadable: …'. Read-only connection; never raises."""
     try:
         if not path.exists():
             return None, "missing"
@@ -2369,7 +2420,7 @@ def load_journal(path: Path) -> tuple[dict | None, str | None]:
     try:
         con.row_factory = sqlite3.Row
         names = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
-        out: dict = {"journal": None, "rec_paper": None}
+        out: dict = {"journal": None, "rec_paper": None, "trade_plan": None, "plan_shadow": 0}
         if "journal" in names:
             out["journal"] = [
                 dict(r)
@@ -2381,6 +2432,17 @@ def load_journal(path: Path) -> tuple[dict | None, str | None]:
             out["rec_paper"] = [
                 dict(r) for r in con.execute("SELECT * FROM rec_paper ORDER BY opened_ts DESC, id DESC LIMIT ?", (REC_MAX_ROWS,))
             ]
+        if "trade_plan" in names:
+            shadow = f'%"{PLAN_SHADOW_TAG}"%'  # the same JSON-array match as Store.plan_list(exclude_tag=...)
+            out["trade_plan"] = [
+                dict(r)
+                for r in con.execute(
+                    "SELECT id, created_ts, verdict, status, outcome, r_result FROM trade_plan WHERE tags NOT LIKE ?"
+                    " ORDER BY created_ts DESC, id DESC LIMIT ?",
+                    (shadow, PLAN_MAX_ROWS),
+                )
+            ]
+            out["plan_shadow"] = int(con.execute("SELECT COUNT(*) FROM trade_plan WHERE tags LIKE ?", (shadow,)).fetchone()[0])
         return out, None
     except (sqlite3.Error, OSError) as e:
         return None, f"unreadable: {type(e).__name__}"
@@ -2607,6 +2669,72 @@ def block_rec_paper(rows: list[dict] | None) -> str:
     return "".join(out)
 
 
+def _ci(ci: object) -> str:
+    if not isinstance(ci, list) or len(ci) != 2 or _num(ci[0]) is None or _num(ci[1]) is None:
+        return "—"
+    return f"[{ci[0]:+.2f}; {ci[1]:+.2f}]".replace("-", "−")
+
+
+def block_trade_plans(rows: list[dict] | None, n_shadow: int = 0) -> str:
+    """Counts of the assistant's plans by verdict and status, and the resolved 'enter' plans' R (as plan_review's
+    summary.by_verdict.enter). Below PLAN_MIN_N plans with R it says so: the numbers are descriptive only."""
+    if rows is None:
+        return _empty("Таблиці trade_plan у базі ще немає (з'являється зі схемою v17, коли MCP-сервер або колектор відкриють базу).")
+    shadow = (
+        f"<p class='note'>Тіньових планів демо-трейдера (src:demo-shadow): {n_shadow}; до підсумку не входять, їхній підсумок — plan_review → demo_shadow.</p>"
+        if n_shadow
+        else ""
+    )
+    if not rows:
+        return _empty("Планів асистента ще немає: їх записує інструмент MCP plan_add (крок 10 чекліста), оцінює plan_review.") + shadow
+    table = ["<div class='scroll'><table><tr><th>Вердикт</th><th>Усього</th><th>Відкритих</th><th>Розв'язаних</th></tr>"]
+    for v, label in PLAN_VERDICT_UA.items():
+        g = [x for x in rows if x.get("verdict") == v]
+        n_open = sum(1 for x in g if x.get("status") == "open")
+        n_done = sum(1 for x in g if x.get("status") == "resolved")
+        table.append(
+            f"<tr><td>{_e(label)}</td><td class='num'>{len(g)}</td><td class='num'>{n_open}</td><td class='num'>{n_done}</td></tr>"
+        )
+    table.append("</table></div>")
+    out = ["".join(table)]
+    s = plan_stats([x for x in rows if x.get("status") == "resolved" and x.get("verdict") == "enter"])
+    out.append("<h3 style='font-size:14px;margin:10px 0 4px'>Плани enter: результат розв'язаних</h3>")
+    if not s["n"]:
+        out.append(_empty("Розв'язаних планів enter ще немає: підсумок з'явиться після першої оцінки (plan_review або щогодинна задача)."))
+    else:
+        o = s["outcomes"]
+        mean, ci = s["mean_r"], s["ci95_mean_r"]
+        if ci is None:
+            vs0, cls = "ДІ — від 2 планів з R", ""
+        elif ci[0] > 0:
+            vs0, cls = "95 % ДІ вище 0", "ok"
+        elif ci[1] < 0:
+            vs0, cls = "95 % ДІ нижче 0", "bad"
+        else:
+            vs0, cls = "95 % ДІ містить 0: переваги не видно", ""
+        tiles = [
+            _tile("Розв'язано", _nf(s["n"]), f"з входом {s['n_filled']} · з R {s['n_r']}"),
+            _tile("У плюсі", _share(s["win_rate"]), "частка планів з R > 0"),
+            _tile("Середній R", f"<span class='{_signed_cls(mean)}'>{_r(mean)}</span>", f"95 % ДІ {_ci(ci)}"),
+            _tile("Проти 0", f"<span class='{cls}'>{_e(vs0)}</span>", "t-інтервал середнього R"),
+            _tile(
+                "Виходи",
+                f"{o['target']} / {o['stop']}",
+                f"ціль / стоп · за строком {o['expired']} · без входу {o['not_filled']}",
+            ),
+        ]
+        out.append(f"<div class='tiles'>{''.join(tiles)}</div>")
+    if s["n_r"] < PLAN_MIN_N:
+        out.append(
+            f"<p class='note warn'>Замало планів: n = {s['n_r']} планів enter з R (потрібно ≥ {PLAN_MIN_N}). "
+            "Підсумок описовий, не доказ переваги; перший чесний зріз — після ~30 планів enter.</p>"
+        )
+    out.append(shadow)
+    if len(rows) >= PLAN_MAX_ROWS:
+        out.append(f"<p class='note warn'>Прочитано лише {PLAN_MAX_ROWS} останніх планів.</p>")
+    return "".join(out)
+
+
 JOURNAL_CSS = """
 .scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}.scroll table{min-width:560px}
 .pager{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin:8px 0 0}.pager a{color:var(--acc);font-weight:600}
@@ -2671,6 +2799,14 @@ def render_journal(data: dict | None, err: str | None, now: float, params: dict 
         out.append(
             "<section class='wide'><h2>Паперові рекомендації асистента<span class='chip ev'>гіпотеза</span></h2>"
             f"<p class='note warn'>{_e(REC_CAVEAT)}</p>{rec}</section>"
+        )
+        try:
+            plans = block_trade_plans(data.get("trade_plan"), int(_num(data.get("plan_shadow")) or 0))
+        except Exception as e:  # noqa: BLE001 - one odd row must not take the page down
+            plans = _empty(f"Блок не вдалося показати: несподіваний формат даних ({type(e).__name__}).")
+        out.append(
+            "<section class='wide'><h2>Плани угод асистента<span class='chip calm'>облік</span></h2>"
+            f"<p class='note warn'>{_e(PLAN_CAVEAT)}</p>{plans}</section>"
         )
         out.append("</main></body></html>")
         return "".join(out)

@@ -17,6 +17,10 @@ The «Опціони» tab (/options) is a strategy builder on the snapshot's mo
 straddle, iron condor; P&L at expiry, breakevens, max profit/loss, risk-neutral probability of profit and the fit to the
 owner's risk budget. Everything is computed here on a plain GET form; the inline script only remembers deposit, risk
 and size in the browser (localStorage) and resubmits on a change.
+
+The «Журнал» tab (/journal) reads the owner's trade journal and the assistant's paper recommendations (rec_paper,
+labelled «гіпотеза») from the SQLite store over a read-only connection: summary, by source, the trades page by page.
+Every string from the database is untrusted text and is escaped; no database or no table gives an empty state.
 """
 
 from __future__ import annotations
@@ -426,7 +430,7 @@ nav.tabs a[aria-current=page]{color:var(--fg);border-bottom-color:var(--acc)}
 
 
 def _nav(active: str) -> str:
-    tabs = (("/", "project", "Проєкт"), ("/brief", "brief", "Бриф"), ("/options", "options", "Опціони"))
+    tabs = (("/", "project", "Проєкт"), ("/brief", "brief", "Бриф"), ("/options", "options", "Опціони"), ("/journal", "journal", "Журнал"))
     return (
         "<nav class='tabs'>"
         + "".join(f"<a href='{href}'{' aria-current=page' if key == active else ''}>{label}</a>" for href, key, label in tabs)
@@ -1952,6 +1956,436 @@ def options_page(query: str = "", now: float | None = None) -> str:
     return render_options(snap, err, time.time() if now is None else now, parse_options_query(query), SNAPSHOT_PATH)
 
 
+# ---------------------------------------------------------------- «Журнал» tab: the owner's journal and the paper recommendations
+#
+# Read-only SQLite (mode=ro URI), no network. Summaries are stdlib copies of analytics.journal.summary and
+# analytics.rec_paper.summarize (tests compare the two). Every string from the database (symbol, thesis, tags, note,
+# structure) is untrusted text and is escaped.
+
+JOURNAL_DB = DATA_DIR / "tradedesk.sqlite"
+JOURNAL_PAGE_ROWS = 50
+JOURNAL_MAX_ROWS = 20000  # the whole journal is read for the summary (≈ 400 rows today)
+REC_MAX_ROWS = 2000
+REC_TABLE_ROWS = 20
+JOURNAL_VENUES = {"bybit": "Bybit", "binance": "Binance", "hyperliquid": "Hyperliquid", "okx": "OKX", "deribit": "Deribit"}
+JOURNAL_PLAIN_TAGS = {"import", "linear", "usdm", "perp", "option"}  # import bookkeeping, not worth a column
+SIDE_UA = {"long": "лонг", "short": "шорт"}
+REC_TRIGGER_UA = {"chain": "ланцюг (як у тесті H1)", "regime": "зміна режиму", "event": "подія"}
+JOURNAL_CAVEATS = (
+    "Реальні угоди — з імпорту бірж і з journal_add; P&L у USD — як його записав імпорт (дані біржі), без перерахунку.",
+    "Рядки з тегом airdrop і паперові carry-угоди (теги *-paper) до підсумку реальних угод не входять: їх показано окремо.",
+    "Минулий результат не гарантує майбутнього. Не інвестиційна порада: сторінка лише читає базу, нічого не торгує.",
+)
+REC_CAVEAT = (
+    "Гіпотеза, не доказ переваги: у перевірці кванта 18.10 угоди, обрані методом, дали −0.59 % спота за угоду "
+    "(95 % CI [−2.43; +1.51], n = 27); великий ефект виключено, перевагу ≈ +0.2 R — ні. Паперовий журнал це перевіряє. "
+    "Угоди паперові: ціни входу — марки Deribit ± 1 вп, розрахунок на delivery."
+)
+
+
+def journal_tags(raw: object) -> list[str]:
+    """Tags of a journal row (a JSON array of strings); anything else gives []."""
+    try:
+        v = json.loads(raw) if isinstance(raw, str) else raw
+    except (ValueError, RecursionError):
+        return []
+    return [str(x) for x in v if isinstance(x, (str, int, float)) and not isinstance(x, bool)][:30] if isinstance(v, list) else []
+
+
+def journal_kind(tags: list[str]) -> tuple[str, str]:
+    """('real' | 'paper' | 'airdrop', source label). Airdrop and *-paper rows are kept out of the real-trade stats,
+    as scripts/bybit_import.py and scripts/journal_rules.py do."""
+    paper = next((t for t in tags if t.endswith("-paper")), None)
+    if paper:
+        return "paper", paper
+    venue = next((JOURNAL_VENUES[t] for t in tags if t in JOURNAL_VENUES), None)
+    label = (venue + (" опціони" if "option" in tags else "")) if venue else "без біржі"
+    return ("airdrop" if "airdrop" in tags else "real"), label
+
+
+def journal_summary(rows: list[dict]) -> dict:
+    """Stdlib copy of analytics.journal.summary (the fields the tab shows): closed trades with a numeric pnl."""
+    closed = [t for t in rows if t.get("status") == "closed" and _num(t.get("pnl")) is not None]
+    n = len(closed)
+    if n == 0:
+        return {"closed_trades": 0}
+    pnls = [float(t["pnl"]) for t in closed]
+    rs = [float(t["r_multiple"]) for t in closed if _num(t.get("r_multiple")) is not None]
+    return {
+        "closed_trades": n,
+        "wins": sum(1 for t in closed if (t.get("outcome") or "") == "win"),
+        "losses": sum(1 for t in closed if (t.get("outcome") or "") == "loss"),
+        "win_rate": sum(1 for t in closed if (t.get("outcome") or "") == "win") / n,
+        "total_pnl": sum(pnls),
+        "expectancy_per_trade": sum(pnls) / n,
+        "avg_r": (sum(rs) / len(rs)) if rs else None,
+        "r_count": len(rs),
+    }
+
+
+def max_drawdown_usd(rows: list[dict]) -> float:
+    """Largest peak-to-trough fall (USD, >= 0) of the cumulative P&L of closed trades in closing order, from 0."""
+    closed = [t for t in rows if t.get("status") == "closed" and _num(t.get("pnl")) is not None]
+    closed.sort(key=lambda t: (_num(t.get("closed_ts")) or _num(t.get("opened_ts")) or 0.0, _num(t.get("id")) or 0.0))
+    cum = peak = worst = 0.0
+    for t in closed:
+        cum += float(t["pnl"])
+        peak = max(peak, cum)
+        worst = max(worst, peak - cum)
+    return worst
+
+
+def rec_summary(rows: list[dict]) -> dict:
+    """Stdlib copy of analytics.rec_paper.summarize over the settled rows with numeric P&L."""
+    settled = [
+        t for t in rows if t.get("status") == "settled" and _num(t.get("pnl_usd")) is not None and _num(t.get("pnl_pct_spot")) is not None
+    ]
+    n = len(settled)
+    if n == 0:
+        return {"n": 0}
+    pct = [float(t["pnl_pct_spot"]) for t in settled]
+    rw = [float(t["r_worst_case"]) for t in settled if _num(t.get("r_worst_case")) is not None]
+    rs = [float(t["r_study"]) for t in settled if _num(t.get("r_study")) is not None]
+    return {
+        "n": n,
+        "win_share": sum(1 for t in settled if float(t["pnl_usd"]) > 0) / n,
+        "mean_pnl_pct_spot": sum(pct) / n,
+        "mean_r_worst_case": sum(rw) / len(rw) if rw else None,
+        "mean_r_study": sum(rs) / len(rs) if rs else None,
+        "n_r_study": len(rs),
+        "sum_pnl_usd": sum(float(t["pnl_usd"]) for t in settled),
+    }
+
+
+def load_journal(path: Path) -> tuple[dict | None, str | None]:
+    """{'journal': rows | None, 'rec_paper': rows | None} (None = no such table), or (None, reason) with reason
+    'missing' | 'unreadable: …'. Read-only connection; never raises."""
+    try:
+        if not path.exists():
+            return None, "missing"
+        con = sqlite3.connect(f"file:{urllib.parse.quote(str(path))}?mode=ro", uri=True, timeout=5)
+    except (sqlite3.Error, OSError) as e:  # OSError: e.g. PermissionError from exists() on a closed directory
+        return None, f"unreadable: {type(e).__name__}"
+    try:
+        con.row_factory = sqlite3.Row
+        names = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        out: dict = {"journal": None, "rec_paper": None}
+        if "journal" in names:
+            out["journal"] = [
+                dict(r)
+                for r in con.execute(
+                    "SELECT * FROM journal ORDER BY COALESCE(closed_ts, opened_ts) DESC, id DESC LIMIT ?", (JOURNAL_MAX_ROWS,)
+                )
+            ]
+        if "rec_paper" in names:
+            out["rec_paper"] = [
+                dict(r) for r in con.execute("SELECT * FROM rec_paper ORDER BY opened_ts DESC, id DESC LIMIT ?", (REC_MAX_ROWS,))
+            ]
+        return out, None
+    except (sqlite3.Error, OSError) as e:
+        return None, f"unreadable: {type(e).__name__}"
+    finally:
+        con.close()
+
+
+def parse_journal_query(query: str) -> dict:
+    """Page number from the URL query (untrusted): anything odd gives page 1."""
+    try:
+        v = urllib.parse.parse_qs(query or "", max_num_fields=20).get("page", ["1"])[0][:6]
+    except ValueError:
+        v = "1"
+    return {"page": int(v) if v.isascii() and v.isdigit() and 1 <= int(v) <= 100000 else 1}
+
+
+def _day(ts: object) -> str:
+    v = _num(ts)
+    if v is None or v <= 0:
+        return "—"
+    try:
+        return kyiv(datetime.fromtimestamp(v / 1000 if v > 1e12 else v, timezone.utc), "%d.%m.%Y")  # noqa: UP017
+    except (OverflowError, OSError, ValueError):
+        return "—"
+
+
+def _signed_cls(x: float | None) -> str:
+    return "" if x is None or abs(x) < 0.005 else "ok" if x > 0 else "bad"
+
+
+def _share(x: object) -> str:
+    v = _num(x)
+    return "—" if v is None else f"{100 * v:.0f} %"
+
+
+def _px(x: object) -> str:
+    """A price with enough decimals for cheap coins (0.0123), two for the rest."""
+    v = _num(x)
+    if v is None:
+        return "—"
+    d = 2 if abs(v) >= 10 else 4 if abs(v) >= 0.01 or v == 0 else 8
+    return _nf(v, d)
+
+
+def _r(x: object) -> str:
+    v = _num(x)
+    return "—" if v is None else f"{v:+.2f} R".replace("-", "−")
+
+
+def block_journal_tiles(real: list[dict], n_open: int) -> str:
+    s = journal_summary(real)
+    if not s["closed_trades"]:
+        return _empty("Закритих реальних угод ще немає.") + (f"<p class='note'>Відкритих: {n_open}.</p>" if n_open else "")
+    total, exp = s["total_pnl"], s["expectancy_per_trade"]
+    tiles = [
+        _tile("Угод (закритих)", _nf(s["closed_trades"]), f"у плюсі {s['wins']} · у мінусі {s['losses']}"),
+        _tile("Частка в плюсі", _share(s["win_rate"]), "за полем outcome"),
+        _tile("P&L разом", f"<span class='{_signed_cls(total)}'>{_usd(total, True)}</span>", "USD, усі біржі й опціони разом"),
+        _tile("Середнє на угоду", f"<span class='{_signed_cls(exp)}'>{_usd(exp, True)}</span>", "USD, усі джерела разом"),
+        _tile("Середній R", _r(s["avg_r"]), f"угод зі стопом {s['r_count']}" if s["r_count"] else "стопи не записані"),
+        _tile("Найбільша просадка", _usd(-max_drawdown_usd(real)), "USD, одна крива P&L усіх бірж і опціонів за датою закриття"),
+    ]
+    if n_open:
+        tiles.append(_tile("Відкритих", _nf(n_open)))
+    return f"<div class='tiles'>{''.join(tiles)}</div>"
+
+
+def block_journal_sources(groups: dict[str, list[dict]]) -> str:
+    rows = []
+    for label, items in sorted(groups.items(), key=lambda kv: -len(kv[1])):
+        s = journal_summary(items)
+        if not s["closed_trades"]:
+            continue
+        rows.append(
+            f"<tr><td>{_e(label)}</td><td class='num'>{s['closed_trades']}</td><td class='num'>{_share(s['win_rate'])}</td>"
+            f"<td class='num {_signed_cls(s['total_pnl'])}'>{_usd(s['total_pnl'], True)}</td>"
+            f"<td class='num {_signed_cls(s['expectancy_per_trade'])}'>{_usd(s['expectancy_per_trade'], True)}</td></tr>"
+        )
+    if not rows:
+        return _empty("Закритих угод немає.")
+    return (
+        "<div class='scroll'><table><tr><th>Джерело</th><th>Угод</th><th>У плюсі</th><th>P&amp;L</th><th>Середнє</th></tr>"
+        + "".join(rows)
+        + "</table></div>"
+    )
+
+
+def block_journal_table(real: list[dict], page: int) -> str:
+    if not real:
+        return _empty("Угод ще немає.")
+    pages = max(1, math.ceil(len(real) / JOURNAL_PAGE_ROWS))
+    page = min(page, pages)
+    chunk = real[(page - 1) * JOURNAL_PAGE_ROWS : page * JOURNAL_PAGE_ROWS]
+    out = [
+        "<div class='scroll'><table><tr><th>Закрито</th><th>Джерело</th><th>Інструмент</th><th>Сторона</th><th>Розмір</th>"
+        "<th>Вхід → вихід</th><th>P&amp;L</th><th>R</th><th>Теза · теги · нотатка</th></tr>"
+    ]
+    for t in chunk:
+        tags = journal_tags(t.get("tags"))
+        _, src = journal_kind(tags)
+        pnl = _num(t.get("pnl"))
+        when = _day(t.get("closed_ts")) if t.get("status") == "closed" else f"відкрита з {_day(t.get('opened_ts'))}"
+        if t.get("status") == "cancelled":
+            when = "скасована"
+        extra = [x for x in tags if x not in JOURNAL_PLAIN_TAGS and x not in JOURNAL_VENUES]
+        text = _e(_clean(t.get("thesis") or "", 120))
+        if extra:
+            text += f" <span class='chip calm'>{_e(', '.join(_clean(x, 30) for x in extra[:6]))}</span>"
+        if t.get("note"):
+            text += f"<br><span class='mut'>{_e(_clean(t['note'], 80))}</span>"
+        side = str(t.get("side") or "")
+        out.append(
+            f"<tr><td class='num'>{_e(when)}</td><td>{_e(src)}</td><td>{_e(_clean(t.get('symbol') or '—', 40))}</td>"
+            f"<td>{_e(SIDE_UA.get(side, _clean(side, 12)))}</td><td class='num'>{_e(_nf(t.get('size'), 4).rstrip('0').rstrip('.'))}</td>"
+            f"<td class='num'>{_e(_px(t.get('entry')))} → {_e(_px(t.get('exit')))}</td>"
+            f"<td class='num {_signed_cls(pnl)}'>{_usd(pnl, True)}</td><td class='num'>{_r(t.get('r_multiple'))}</td><td>{text}</td></tr>"
+        )
+    out.append("</table></div>")
+    nav = [f"<span class='mut'>сторінка {page} з {pages} · {len(real)} угод, нові зверху</span>"]
+    if page > 1:
+        nav.insert(0, f"<a href='/journal?page={page - 1}'>← новіші</a>")
+    if page < pages:
+        nav.append(f"<a href='/journal?page={page + 1}'>старіші →</a>")
+    out.append(f"<p class='pager'>{' '.join(nav)}</p>")
+    return "".join(out)
+
+
+def block_journal_other(paper: list[dict], airdrop: list[dict]) -> str:
+    notes = []
+    if paper:
+        s = journal_summary(paper)
+        notes.append(
+            f"Паперові carry-угоди (теги *-paper): {len(paper)} рядків, закритих {s['closed_trades']}"
+            + (f", P&L разом {_usd(s['total_pnl'], True)}" if s["closed_trades"] else "")
+            + ". Не реальні угоди; детально — інструменти carry_paper_* і journal_stats(tag=…)."
+        )
+    if airdrop:
+        notes.append(f"Рядків з тегом airdrop: {len(airdrop)} — не торгові угоди, до підсумку не входять.")
+    return "".join(f"<p class='note'>{_e(x)}</p>" for x in notes)
+
+
+def rec_groups(rows: list[dict]) -> dict[str, list[dict]]:
+    """The three groups assistant_paper_status summarizes separately (same definitions): 'method' = the chain trades
+    (trigger None or 'chain'), comparable with the H1 walk-forward; 'method_triggered' = extra method trades opened on
+    a regime change or an event (overlap the chain, correlated); 'manual' = picked by a person or a model."""
+    meth = [t for t in rows if t.get("source") == "method"]
+    return {
+        "method": [t for t in meth if t.get("trigger") in (None, "chain")],
+        "method_triggered": [t for t in meth if t.get("trigger") not in (None, "chain")],
+        "manual": [t for t in rows if t.get("source") == "manual"],
+    }
+
+
+REC_OTHER_UA = {
+    "method_triggered": "Додаткові угоди методу (зміна режиму / подія; перекриваються з ланцюгом, корельовані)",
+    "manual": "Ручні угоди (обрані людиною чи моделлю, не метод)",
+}
+
+
+def _rec_tiles(s: dict, n_open: int) -> str:
+    if not s["n"]:
+        return _empty(
+            f"Розрахованих паперових угод методу за ланцюгом (порівнянних з H1) ще немає (відкритих: {n_open}); "
+            "підсумок з'явиться після першої експірації."
+        )
+    mean = 100 * s["mean_pnl_pct_spot"]
+    tiles = [
+        _tile("Розраховано", _nf(s["n"]), f"метод за ланцюгом · відкритих {n_open}"),
+        _tile("У плюсі", _share(s["win_share"])),
+        _tile("Середнє, % спота", f"<span class='{_signed_cls(mean)}'>{_pc(mean, 2)}</span>", "на 1 BTC, порівнянне з H1, основна метрика"),
+        _tile("Середній R (як у тесті)", _r(s["mean_r_study"]), f"угод з R {s['n_r_study']}"),
+        _tile("Середній R (від найгіршого)", _r(s["mean_r_worst_case"]), "P&L / ризик угоди"),
+        _tile("P&L разом", f"<span class='{_signed_cls(s['sum_pnl_usd'])}'>{_usd(s['sum_pnl_usd'], True)}</span>", "USD на розмір угод"),
+    ]
+    return f"<div class='tiles'>{''.join(tiles)}</div>"
+
+
+def block_rec_paper(rows: list[dict] | None) -> str:
+    if rows is None:
+        return _empty("Таблиці rec_paper у базі ще немає (з'являється зі схемою v16, коли MCP-сервер або колектор відкриють базу).")
+    if not rows:
+        return _empty("Паперових рекомендацій ще немає: завдання колектора assistant_paper записує їх щоранку.")
+    groups = rec_groups(rows)
+    n_open = sum(1 for t in groups["method"] if t.get("status") == "open")
+    out = [
+        "<p class='note'>Головний підсумок — лише угоди методу за ланцюгом (порівнянні з тестом H1), як method у "
+        "assistant_paper_status; інші групи нижче, окремо, з власним n.</p>",
+        _rec_tiles(rec_summary(groups["method"]), n_open),
+    ]
+    for key in ("method_triggered", "manual"):
+        g = groups[key]
+        if not g:
+            continue
+        s = rec_summary(g)
+        n_o = sum(1 for t in g if t.get("status") == "open")
+        line = f"{REC_OTHER_UA[key]}: розраховано {s['n']}, відкритих {n_o}"
+        if s["n"]:
+            line += (
+                f"; у плюсі {_share(s['win_share'])}, середнє {_pc(100 * s['mean_pnl_pct_spot'], 2)} спота, "
+                f"P&L разом {_usd(s['sum_pnl_usd'], True)}"
+            )
+        out.append(f"<p class='note'>{_e(line)}.</p>")
+    out.append(
+        "<div class='scroll'><table style='margin-top:8px'><tr><th>Відкрито</th><th>Структура</th><th>Експірація</th><th>Розмір</th>"
+        "<th>Ризик</th><th>Чому</th><th>Стан</th><th>P&amp;L</th><th>% спота</th><th>R</th></tr>"
+    )
+    for t in rows[:REC_TABLE_ROWS]:
+        pnl, pct = _num(t.get("pnl_usd")), _num(t.get("pnl_pct_spot"))
+        within = "" if t.get("within_risk") else " <span class='warn'>понад ризик</span>"
+        trig = str(t.get("trigger") or "")
+        why = REC_TRIGGER_UA.get(trig, _clean(trig, 20)) if trig else ("вручну" if t.get("source") != "method" else "—")
+        state = "розрахована" if t.get("status") == "settled" else "відкрита" if t.get("status") == "open" else _clean(t.get("status"), 12)
+        cur = _clean(t.get("currency") or "", 8)
+        out.append(
+            f"<tr><td class='num'>{_e(_day(t.get('opened_ts')))}</td><td>{_e(_clean(t.get('structure') or '—', 40))} {_e(cur)}</td>"
+            f"<td class='num'>{_e(_day(t.get('expiry_ts')))}</td><td class='num'>{_e(_nf(t.get('size_btc'), 2))}</td>"
+            f"<td class='num'>{_usd(_num(t.get('risk_usd')))}{within}</td><td>{_e(why)}</td><td>{_e(state)}</td>"
+            f"<td class='num {_signed_cls(pnl)}'>{_usd(pnl, True)}</td><td class='num'>{_e(_pc(None if pct is None else 100 * pct, 2))}</td>"
+            f"<td class='num'>{_r(t.get('r_study'))}</td></tr>"
+        )
+    out.append("</table></div>")
+    if len(rows) > REC_TABLE_ROWS:
+        out.append(f"<p class='note'>Показано {REC_TABLE_ROWS} останніх з {len(rows)}.</p>")
+    return "".join(out)
+
+
+JOURNAL_CSS = """
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}.scroll table{min-width:560px}
+.pager{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin:8px 0 0}.pager a{color:var(--acc);font-weight:600}
+h2 .chip{margin-left:8px;vertical-align:middle}
+"""
+
+
+def render_journal(data: dict | None, err: str | None, now: float, params: dict | None = None, path: Path | None = None) -> str:
+    """The «Журнал» tab. Never raises: no database, no table or no rows gives an explained empty state."""
+    p = params or {"page": 1}
+    head = (
+        "<!doctype html><html lang='uk'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+        f"<title>tradedesk — журнал</title><style>{CSS}{BRIEF_CSS}{JOURNAL_CSS}</style></head><body>"
+    )
+    caveats = "<div class='caveat'><b>Застереження</b><ul>" + "".join(f"<li>{_e(c)}</li>" for c in JOURNAL_CAVEATS) + "</ul></div>"
+    where = f" <code>{_e(path)}</code>" if path else ""
+    try:
+        if data is None:
+            msg = (
+                f"Бази ще немає{where}: журнал з'явиться, коли MCP-сервер або колектор її створять."
+                if err == "missing"
+                else f"Базу не вдалося прочитати{where}: {_e(err)}."
+            )
+            return head + f"<header><h1>Журнал</h1><span class='bad'>{msg}</span></header>{_nav('journal')}{caveats}</body></html>"
+        stamp = f"<span class='mut'>База{where} · лише читання · прочитано {_e(kyiv(datetime.fromtimestamp(now, timezone.utc)))} за Києвом</span>"  # noqa: UP017
+        out = [head, f"<header><h1>Журнал</h1>{stamp}</header>{_nav('journal')}{caveats}<main class='brief'>"]
+        rows = data.get("journal")
+        if rows is None:
+            out.append(
+                "<section class='wide'><h2>Мої угоди</h2>"
+                + _empty("Таблиці journal у базі ще немає: вона з'являється, коли MCP-сервер уперше відкриває базу.")
+                + "</section>"
+            )
+        elif not rows:
+            out.append(
+                "<section class='wide'><h2>Мої угоди</h2>"
+                + _empty("Угод ще немає.")
+                + "<p class='note'>Додати першу: інструмент MCP <code>journal_add</code> (теза, стоп, ціль) і "
+                "<code>journal_close</code> при виході; угоди з бірж — <code>scripts/bybit_import.py</code>.</p></section>"
+            )
+        else:
+            kinds: dict[str, list[dict]] = {"real": [], "paper": [], "airdrop": []}
+            groups: dict[str, list[dict]] = {}
+            for t in rows:
+                kind, src = journal_kind(journal_tags(t.get("tags")))
+                kinds[kind].append(t)
+                if kind == "real":
+                    groups.setdefault(src, []).append(t)
+            real = kinds["real"]
+            n_open = sum(1 for t in real if t.get("status") == "open")
+            out.append(f"<section class='wide'><h2>Мої угоди</h2>{block_journal_tiles(real, n_open)}")
+            out.append(block_journal_other(kinds["paper"], kinds["airdrop"]))
+            if len(rows) >= JOURNAL_MAX_ROWS:
+                out.append(f"<p class='note warn'>Прочитано лише {JOURNAL_MAX_ROWS} останніх рядків журналу.</p>")
+            out.append("</section>")
+            out.append(f"<section><h2>За джерелом</h2>{block_journal_sources(groups)}</section>")
+            out.append(f"<section class='wide'><h2>Угоди</h2>{block_journal_table(real, p['page'])}</section>")
+        try:
+            rec = block_rec_paper(data.get("rec_paper"))
+        except Exception as e:  # noqa: BLE001 - one odd row must not take the page down
+            rec = _empty(f"Блок не вдалося показати: несподіваний формат даних ({type(e).__name__}).")
+        out.append(
+            "<section class='wide'><h2>Паперові рекомендації асистента<span class='chip ev'>гіпотеза</span></h2>"
+            f"<p class='note warn'>{_e(REC_CAVEAT)}</p>{rec}</section>"
+        )
+        out.append("</main></body></html>")
+        return "".join(out)
+    except Exception as e:  # noqa: BLE001 - the page always renders
+        return (
+            head
+            + f"<header><h1>Журнал</h1><span class='bad'>Журнал не вдалося показати ({_e(type(e).__name__)}).</span></header>{_nav('journal')}{caveats}</body></html>"
+        )
+
+
+def journal_page(query: str = "", now: float | None = None) -> str:
+    data, err = load_journal(JOURNAL_DB)
+    return render_journal(data, err, time.time() if now is None else now, parse_journal_query(query), JOURNAL_DB)
+
+
 # ---------------------------------------------------------------- server
 
 
@@ -1984,6 +2418,8 @@ class _Handler(BaseHTTPRequestHandler):
             body, ctype = brief_page().encode(), "text/html; charset=utf-8"  # read per request: the age is always current
         elif path == "/options":
             body, ctype = options_page(query).encode(), "text/html; charset=utf-8"
+        elif path == "/journal":
+            body, ctype = journal_page(query).encode(), "text/html; charset=utf-8"
         elif self.path == "/status.json":
             body, ctype = json.dumps(snap or {}, ensure_ascii=False, default=str).encode(), "application/json; charset=utf-8"
         else:
@@ -2019,9 +2455,10 @@ def main() -> None:
     on.add_argument("--out", type=Path, required=True)
     on.add_argument("--brief", action="store_true", help="the «Бриф» tab from the assistant snapshot instead of the project page")
     on.add_argument("--options", action="store_true", help="the «Опціони» tab (default strategy and size) from the snapshot")
+    on.add_argument("--journal", action="store_true", help="the «Журнал» tab (first page) from the SQLite store, read-only")
     a = ap.parse_args()
     if a.cmd == "once":
-        page = brief_page() if a.brief else options_page() if a.options else render(snapshot())
+        page = brief_page() if a.brief else options_page() if a.options else journal_page() if a.journal else render(snapshot())
         a.out.write_text(page, encoding="utf-8")
         print(f"-> {a.out}")
         return

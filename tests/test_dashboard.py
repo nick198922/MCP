@@ -483,3 +483,267 @@ def test_options_escapes_hostile_strings_from_the_snapshot():
     for raw in ("<img", "<script>alert", "<svg onload"):
         assert raw not in page, raw
     assert "&lt;img src=x" in page and "Платиш премію" in page
+
+
+# ---------------------------------------------------------------- «Журнал» tab
+
+T0 = 1_790_000_000
+J_COLS = "opened_ts, closed_ts, symbol, side, size, entry, thesis, tags, status, exit, outcome, pnl, r_multiple, note"
+R_COLS = (
+    "opened_ts, currency, structure, expiry_ts, spot, forward, t_years, legs, premium_per_btc, entry_fees_per_btc, max_loss_per_btc,"
+    " risk_basis, size_btc, deposit_usd, risk_pct, risk_usd, within_risk, status, pnl_usd, pnl_pct_spot, r_worst_case, r_study,"
+    " source, trigger"
+)
+
+
+def _jrow(day: int, symbol: str, side: str, tags: str, status: str, outcome: str | None, pnl: float | None, r=None, thesis="t", note=None):
+    closed = T0 + day * 86400 + 3600 if status == "closed" else None
+    return (T0 + day * 86400, closed, symbol, side, 0.01, 80000.0, thesis, tags, status, 81000.0, outcome, pnl, r, note)
+
+
+def _rrow(day: int, status: str, pnl=None, pct=None, rw=None, rs=None, source="method", trigger="chain", structure="long_strangle_25d"):
+    return (
+        T0 + day * 86400, "BTC", structure, T0 + (day + 40) * 86400, 80000.0, 80100.0, 40 / 365, "[]", 2900.0, 48.0, 2950.0,
+        "max_loss", 0.1, 10000.0, 1.0, 295.0, 0, status, pnl, pct, rw, rs, source, trigger,
+    )  # fmt: skip
+
+
+def _journal_db(path: Path, journal: list[tuple] | None, rec: list[tuple] | None, versions=None) -> Path:
+    """A store built from the real migrations; ``versions`` limits them (e.g. without v16 = no rec_paper)."""
+    from tradedesk.store.schema import MIGRATIONS
+
+    con = sqlite3.connect(path)
+    for v in sorted(MIGRATIONS):
+        if versions is None or v in versions:
+            for sql in MIGRATIONS[v]:
+                con.execute(sql)
+    con.executemany(f"INSERT INTO journal ({J_COLS}) VALUES ({','.join('?' * 14)})", journal or [])
+    if rec is not None:
+        con.executemany(f"INSERT INTO rec_paper ({R_COLS}) VALUES ({','.join('?' * 24)})", rec)
+    con.commit()
+    con.close()
+    return path
+
+
+def _sample_journal() -> list[tuple]:
+    return [
+        _jrow(0, "BTCUSDT", "long", '["bybit", "import", "linear"]', "closed", "win", 10.0, note="bybit:linear:1"),
+        _jrow(1, "ETHUSDT", "short", '["bybit", "import", "linear"]', "closed", "loss", -100.0),
+        _jrow(2, "SOLUSDT", "long", '["binance", "import", "usdm"]', "closed", "win", 30.0),
+        _jrow(3, "BTC-31OCT26-90000-C", "long", '["bybit", "import", "option"]', "closed", "win", 20.0, r=0.5),
+        _jrow(4, "HYPE", "long", '["hyperliquid", "import", "perp", "airdrop"]', "closed", "win", 500.0),
+        _jrow(5, "BTC", "long", '["pp-paper", "carry"]', "closed", "loss", -5.0),
+        _jrow(6, "ETHUSDT", "long", '["setup:breakout", "conf:2"]', "open", None, None, thesis="пробій рейнджу"),
+    ]
+
+
+def _sample_rec() -> list[tuple]:
+    return [
+        _rrow(0, "settled", 50.0, 0.02, 0.4, 0.5),
+        _rrow(1, "settled", -30.0, -0.01, -0.3, -0.3, source="manual", trigger=None),
+        _rrow(2, "open"),
+    ]
+
+
+def test_journal_tab_renders_trades_sources_and_paper_recs(tmp_path):
+    p = _journal_db(tmp_path / "s.sqlite", _sample_journal(), _sample_rec())
+    data, err = db.load_journal(p)
+    assert err is None and len(data["journal"]) == 7 and len(data["rec_paper"]) == 3
+    page = db.render_journal(data, None, float(T0 + 10 * 86400), path=p)
+    # real closed trades: +10 −100 +30 +20 (airdrop and *-paper rows left out); 3 of 4 in profit; drawdown 100 after the loss
+    for text in (
+        "aria-current=page>Журнал",
+        "лише читання",
+        "<b>Застереження</b>",
+        "Угод (закритих)</span><span class='v'>4</span>",
+        "75 %",
+        "−$40",
+        "−$10",
+        "Найбільша просадка</span><span class='v'>−$100</span>",
+        "+0.50 R",
+        "Відкритих</span><span class='v'>1</span>",
+        "<td>Bybit</td><td class='num'>2</td>",
+        "<td>Binance</td>",
+        "<td>Bybit опціони</td>",
+        "Паперові carry-угоди (теги *-paper): 1 рядків",
+        "Рядків з тегом airdrop: 1",
+        "пробій рейнджу",
+        "setup:breakout, conf:2",
+        "відкрита з",
+        "сторінка 1 з 1 · 5 угод",
+        "USD, усі біржі й опціони разом",
+        "USD, одна крива P&L усіх бірж і опціонів",
+        # paper recommendations: the main tiles are the method chain group only (+50, 2 % of spot, 1 open);
+        # the manual trade (−30) is shown on its own line
+        "гіпотеза</span>",
+        "−0.59 % спота",
+        "Розраховано</span><span class='v'>1</span>",
+        "метод за ланцюгом · відкритих 1",
+        "+2.00 %",
+        "+0.40 R",
+        "+$50",
+        "порівнянні з тестом H1), як method",
+        "Ручні угоди (обрані людиною чи моделлю, не метод): розраховано 1, відкритих 0; у плюсі 0 %, "
+        "середнє −1.00 % спота, P&amp;L разом −$30.",
+        "ланцюг (як у тесті H1)",
+        "вручну",
+    ):
+        assert text in page, text
+    assert "+0.50 %" not in page and "Додаткові угоди методу" not in page  # no mixed mean, no empty group line
+    assert "HYPE" not in page and "<svg" not in page and "<script" not in page
+    snap, asof = _snap()
+    assert "href='/journal'" in db.render_brief(snap, None, asof)  # the tab is in the shared nav
+
+
+def test_journal_summaries_match_the_analytics_reference(tmp_path):
+    from tradedesk.analytics import journal as aj
+    from tradedesk.analytics import rec_paper as ar
+
+    data, _ = db.load_journal(_journal_db(tmp_path / "s.sqlite", _sample_journal(), _sample_rec()))
+    real = [t for t in data["journal"] if db.journal_kind(db.journal_tags(t["tags"]))[0] == "real"]
+    mine, ref = db.journal_summary(real), aj.summary(real)
+    for key in ("closed_trades", "wins", "losses", "win_rate", "total_pnl", "expectancy_per_trade", "avg_r", "r_count"):
+        assert mine[key] == pytest.approx(ref[key]), key
+    settled = [t for t in data["rec_paper"] if t["status"] == "settled"]
+    assert db.rec_summary(data["rec_paper"]) == pytest.approx(ar.summarize(settled))
+    assert db.journal_summary([]) == aj.summary([]) and db.rec_summary([]) == ar.summarize([])
+    assert db.max_drawdown_usd(real) == pytest.approx(100.0) and db.max_drawdown_usd([]) == 0.0
+    # tags: the kind and the source label
+    assert db.journal_kind(["hyperliquid", "import", "perp", "airdrop"]) == ("airdrop", "Hyperliquid")
+    assert db.journal_kind(["cc-paper"]) == ("paper", "cc-paper") and db.journal_kind([]) == ("real", "без біржі")
+    assert db.journal_tags("{bad") == [] and db.journal_tags('{"a": 1}') == [] and db.journal_tags(None) == []
+
+
+def test_journal_missing_db_tables_and_empty_states(tmp_path):
+    none = tmp_path / "none.sqlite"
+    data, err = db.load_journal(none)
+    assert data is None and err == "missing" and not none.exists()  # read-only: nothing is created
+    page = db.render_journal(data, err, float(T0), path=none)
+    assert "Бази ще немає" in page and "Не інвестиційна порада" in page and "aria-current=page>Журнал" in page
+    # an old store: journal without rec_paper (schema before v16)
+    p = _journal_db(tmp_path / "old.sqlite", _sample_journal(), None, versions=range(1, 16))
+    page = db.render_journal(*db.load_journal(p), float(T0))
+    assert "Таблиці rec_paper у базі ще немає" in page and "Угод (закритих)" in page
+    # no journal table at all
+    p = tmp_path / "bare.sqlite"
+    con = sqlite3.connect(p)
+    con.execute("CREATE TABLE funding_hist (ts INTEGER)")
+    con.close()
+    page = db.render_journal(*db.load_journal(p), float(T0))
+    assert "Таблиці journal у базі ще немає" in page and "Таблиці rec_paper" in page
+    # empty tables: how to add the first trade; open-only paper recs
+    p = _journal_db(tmp_path / "empty.sqlite", [], [_rrow(0, "open")])
+    page = db.render_journal(*db.load_journal(p), float(T0))
+    assert "Угод ще немає." in page and "journal_add" in page
+    assert "Розрахованих паперових угод методу за ланцюгом (порівнянних з H1) ще немає (відкритих: 1)" in page
+    p = _journal_db(tmp_path / "empty2.sqlite", [], [])
+    assert "assistant_paper записує їх щоранку" in db.render_journal(*db.load_journal(p), float(T0))
+    # not a database
+    p = tmp_path / "junk.sqlite"
+    p.write_bytes(b"not a database at all" * 100)
+    data, err = db.load_journal(p)
+    assert data is None and err.startswith("unreadable")
+    assert "Базу не вдалося прочитати" in db.render_journal(data, err, float(T0))
+
+
+def test_rec_paper_main_tiles_use_the_tools_method_group(tmp_path):
+    """Main tiles = assistant_paper_status 'method' (source method, trigger NULL or 'chain'); the triggered and the
+    manual trades are summarized separately, never mixed in."""
+    from tradedesk.analytics import rec_paper as ar
+
+    rec = [
+        _rrow(0, "settled", 50.0, 0.02, 0.4, 0.5),
+        _rrow(1, "settled", -10.0, -0.004, -0.1, -0.1, trigger=None),  # method with NULL trigger: H1-comparable
+        _rrow(2, "settled", 100.0, 0.05, 0.8, 1.0, trigger="regime"),
+        _rrow(3, "settled", 80.0, 0.04, 0.6, 0.8, trigger="event"),
+        _rrow(4, "settled", -30.0, -0.01, -0.3, -0.3, source="manual", trigger=None),
+        _rrow(5, "open"),
+        _rrow(6, "open", trigger="event"),
+    ]
+    data, _ = db.load_journal(_journal_db(tmp_path / "s.sqlite", [], rec))
+    rows = data["rec_paper"]
+    groups = db.rec_groups(rows)
+    # the tool's definitions (src/tradedesk/tools/assistant_paper.py, summary_settled)
+    meth = [x for x in rows if x["source"] == "method"]
+    ref = {
+        "method": [x for x in meth if x.get("trigger") in (None, "chain")],
+        "method_triggered": [x for x in meth if x.get("trigger") not in (None, "chain")],
+        "manual": [x for x in rows if x["source"] == "manual"],
+    }
+    for key in ref:
+        assert [t["id"] for t in groups[key]] == [t["id"] for t in ref[key]], key
+        settled = [t for t in ref[key] if t["status"] == "settled"]
+        assert db.rec_summary(groups[key]) == pytest.approx(ar.summarize(settled)), key
+    assert [db.rec_summary(groups[k])["n"] for k in ref] == [2, 2, 1]
+    page = db.block_rec_paper(rows)
+    for text in (
+        "Розраховано</span><span class='v'>2</span>",
+        "метод за ланцюгом · відкритих 1",
+        "+0.80 %",  # (2 % − 0.4 %) / 2: method group only
+        "+$40",
+        "Додаткові угоди методу (зміна режиму / подія; перекриваються з ланцюгом, корельовані): розраховано 2, "
+        "відкритих 1; у плюсі 100 %, середнє +4.50 % спота, P&amp;L разом +$180.",
+        "Ручні угоди (обрані людиною чи моделлю, не метод): розраховано 1, відкритих 0; у плюсі 0 %, "
+        "середнє −1.00 % спота, P&amp;L разом −$30.",
+    ):
+        assert text in page, text
+    assert "+1.92 %" not in page  # the mixed mean over all five settled trades
+
+
+def test_load_journal_os_error_is_reported_not_raised(tmp_path, monkeypatch):
+    p = _journal_db(tmp_path / "s.sqlite", _sample_journal(), _sample_rec())
+
+    def denied(self, *a, **k):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "exists", denied)
+    data, err = db.load_journal(p)
+    assert data is None and err == "unreadable: PermissionError"
+    assert "Базу не вдалося прочитати" in db.render_journal(data, err, float(T0))
+
+
+def test_load_journal_connection_is_read_only(tmp_path, monkeypatch):
+    p = _journal_db(tmp_path / "s.sqlite", _sample_journal(), _sample_rec())
+    seen = {}
+    real_connect = sqlite3.connect
+
+    def spy(database, *a, **k):
+        con = real_connect(database, *a, **k)
+        seen.update(uri=database, kw=k)
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            con.execute("INSERT INTO journal (opened_ts, symbol, side, status) VALUES (1, 'X', 'long', 'open')")
+        return con
+
+    monkeypatch.setattr(db.sqlite3, "connect", spy)
+    data, err = db.load_journal(p)
+    assert err is None and len(data["journal"]) == 7
+    assert seen["uri"].startswith("file:") and seen["uri"].endswith("?mode=ro") and seen["kw"].get("uri") is True
+
+
+def test_journal_pages_and_query(tmp_path, monkeypatch):
+    rows = [_jrow(i, f"S{i:03d}", "long", '["bybit", "import", "linear"]', "closed", "win", 1.0) for i in range(120)]
+    p = _journal_db(tmp_path / "s.sqlite", rows, [])
+    monkeypatch.setattr(db, "JOURNAL_DB", p)
+    page = db.journal_page("", now=float(T0))
+    assert "сторінка 1 з 3 · 120 угод" in page and "href='/journal?page=2'>старіші" in page and "новіші" not in page
+    assert "S119" in page and "S069" not in page  # newest first, 50 a page
+    page = db.journal_page("page=3", now=float(T0))
+    assert "S019" in page and "S020" not in page and "href='/journal?page=2'>← новіші" in page and "старіші" not in page
+    assert "сторінка 3 з 3" in db.journal_page("page=999", now=float(T0))  # clamped to the last page
+    for q in ("page=0", "page=-1", "page=²", "page=<x>", "page=1e3", "x=1&" * 40):
+        assert db.parse_journal_query(q) == {"page": 1}, q
+    assert db.parse_journal_query("page=2") == {"page": 2}
+    assert [db._px(x) for x in (82076.6, 3.4412, 0.0123, 0.00001234, None)] == ["82 076.60", "3.4412", "0.0123", "0.00001234", "—"]
+
+
+def test_journal_escapes_hostile_strings_from_the_database(tmp_path):
+    hostile = [
+        _jrow(0, "<script>alert(1)</script>", "<b>x</b>", '["bybit", "<svg onload=alert(3)>"]', "closed", "win", 5.0,
+              thesis="<img src=x onerror=alert(2)>", note="</td><iframe src=//e>"),
+    ]  # fmt: skip
+    rec = [_rrow(0, "settled", 1.0, 0.001, 0.1, 0.1, structure="<iframe>", trigger="<b>t</b>")]
+    p = _journal_db(tmp_path / "s.sqlite", hostile, rec)
+    page = db.render_journal(*db.load_journal(p), float(T0), path=tmp_path / "<i>.sqlite")
+    for raw in ("<script>alert", "<img", "<svg onload", "<iframe", "<b>x", "<b>t", "<i>.sqlite"):
+        assert raw not in page, raw
+    assert "&lt;script&gt;alert(1)" in page and "&lt;img src=x" in page and "&lt;svg onload" in page

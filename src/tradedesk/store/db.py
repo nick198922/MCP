@@ -237,7 +237,8 @@ class Store:
     PM_GAP_COLUMNS = (
         "market_id asset kind direction strike event_slug question end_ts window_start hours_to_end yes_bid yes_ask yes_bid_usd "
         "yes_ask_usd no_bid no_ask no_bid_usd no_ask_usd volume_usd fee_rate fee_exp rules rules_hash rules_standard path_high "
-        "path_low binance_last model_prob model_note model_iv model_expiry expiry_gap_hours model_covered spot dvol"
+        "path_low binance_last model_prob model_note model_iv model_expiry expiry_gap_hours model_covered spot dvol book_ts surface_ts "
+        "model_forward"
     ).split()
 
     async def insert_pm_gap(self, ts: int, rows: list[dict[str, Any]]) -> int:
@@ -263,6 +264,43 @@ class Store:
         await self.conn.executemany(f"INSERT OR REPLACE INTO pm_gap_snapshot (ts, {', '.join(cols)}) VALUES ({marks})", payload)
         await self.conn.commit()
         return len(payload)
+
+    async def pm_gap_outcome_pending(self, ended_before: int, ended_after: int, limit: int) -> list[dict[str, Any]]:
+        """Snapshotted markets that ended in [``ended_after``, ``ended_before``] and still need a fetch: no settled
+        outcome yet, or (threshold markets) no Binance close for the cross-check yet. Fewest attempts first, then the
+        latest end, so markets Gamma never settles cannot crowd fresh ones out of the batch."""
+        cur = await self.conn.execute(
+            "SELECT s.market_id, s.asset, s.kind, s.strike, s.end_ts, o.outcome_yes, o.binance_close_end, o.binance_close_next"
+            " FROM (SELECT market_id, MAX(asset) AS asset, MAX(kind) AS kind, MAX(strike) AS strike, MAX(end_ts) AS end_ts"
+            "       FROM pm_gap_snapshot WHERE end_ts <= ? AND end_ts >= ? GROUP BY market_id) s"
+            " LEFT JOIN pm_gap_outcome o ON o.market_id = s.market_id"
+            " WHERE o.market_id IS NULL OR o.outcome_yes IS NULL"
+            "    OR (s.kind = 'above' AND (o.binance_close_end IS NULL OR o.binance_close_next IS NULL))"
+            " ORDER BY COALESCE(o.attempts, 0), s.end_ts DESC, s.market_id LIMIT ?",
+            (ended_before, ended_after, limit),
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def upsert_pm_gap_outcome(self, row: dict[str, Any], now_ts: int) -> None:
+        """Record one fetch attempt. A settled outcome or a Binance close, once stored, is never overwritten by NULL."""
+        await self.conn.execute(
+            "INSERT INTO pm_gap_outcome (market_id, asset, kind, strike, end_ts, outcome_yes, outcome_prices, outcomes,"
+            " binance_close_end, binance_close_next, attempts, checked_ts, resolved_ts) VALUES (?,?,?,?,?,?,?,?,?,?,1,?,?)"
+            " ON CONFLICT(market_id) DO UPDATE SET"
+            " outcome_yes = COALESCE(outcome_yes, excluded.outcome_yes),"
+            " outcome_prices = COALESCE(excluded.outcome_prices, outcome_prices),"
+            " outcomes = COALESCE(excluded.outcomes, outcomes),"
+            " binance_close_end = COALESCE(binance_close_end, excluded.binance_close_end),"
+            " binance_close_next = COALESCE(binance_close_next, excluded.binance_close_next),"
+            " attempts = attempts + 1, checked_ts = excluded.checked_ts,"
+            " resolved_ts = COALESCE(resolved_ts, excluded.resolved_ts)",
+            (
+                row["market_id"], row["asset"], row["kind"], row["strike"], row["end_ts"], row.get("outcome_yes"),
+                row.get("outcome_prices"), row.get("outcomes"), row.get("binance_close_end"), row.get("binance_close_next"), now_ts,
+                now_ts if row.get("outcome_yes") is not None else None,
+            ),
+        )  # fmt: skip
+        await self.conn.commit()
 
     async def insert_trader_snapshot(self, day: str, ts: int, venue: str, rows: list[dict[str, Any]]) -> int:
         """Leaderboard rows of one venue for one UTC day; idempotent per (day, venue, account). ``rank_month`` is

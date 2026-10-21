@@ -19,7 +19,8 @@ from typing import Any
 
 from . import probability
 from .options import Smile
-from .pm_threshold import _EVENT_SLUG, _iso_ts, _json_list, outcome_yes, settle_ts, standard_rules
+from .pm_gap_paper import rules_accepted
+from .pm_threshold import _EVENT_SLUG, _iso_ts, _json_list, outcome_yes, settle_ts
 from .pm_threshold import parse_strike as parse_above_strike
 from .pm_touch import (
     _Q_DATE,
@@ -87,7 +88,9 @@ def classify_open_market(event: dict[str, Any], market: dict[str, Any], now_ts: 
         return {**out, "status": "strike"}
     description = str(market.get("description") or event.get("description") or "")
     if kind == "above":
-        direction, standard = "above", standard_rules(description, name)
+        # the standard text or the wording used since 2026-10-07 ("... candle for <PAIR> closing at 12:00 ..."), the same
+        # acceptance as the paper test's (registration section 2)
+        direction, standard = "above", rules_accepted(description, TICKER[name])
     else:
         direction = question_direction(question)  # type: ignore[assignment]
         if direction is None:

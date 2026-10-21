@@ -396,6 +396,110 @@ def test_options_numbers_match_the_analytics_reference():
     assert db.prob_of_profit(ls, F, T, iv) + db.prob_of_profit(ss, F, T, iv) == pytest.approx(1.0)
 
 
+def test_options_greeks_and_scenarios_match_the_analytics_reference():
+    from tradedesk.analytics import strategy
+
+    snap, _ = _snap()
+    rows = {r["strike"]: r for r in snap["sections"]["chain"]["data"]["strikes"]}
+    for strat in db.OPT_STRATEGIES:
+        ch, legs = _legs(strat, qty=0.3)
+        F, T, days, iv = ch["F"], ch["T"], ch["days"], ch["iv"]
+        mine = db.position_greeks(legs, F, T, iv)
+        ref = {"delta": 0.0, "gamma": 0.0, "vega": 0.0, "theta": 0.0}
+        deribit = dict(ref)
+        for leg in legs:  # aggregate_greeks takes one IV, so it is applied leg by leg at the leg's own IV
+            g = strategy.aggregate_greeks([leg], forward=F, days=days, iv=leg["iv"])
+            sign = 1 if leg["side"] == "long" else -1
+            dg = rows[leg["strike"]][leg["kind"]]
+            for k in ref:
+                ref[k] += g[k]
+                deribit[k] += sign * leg["size"] * dg[k]
+        for k in ref:
+            assert mine[k] == pytest.approx(ref[k], rel=1e-9, abs=1e-12), (strat, k)
+            assert mine[k] == pytest.approx(deribit[k], rel=0.02, abs=2e-3 if k == "delta" else 1e-9), (strat, k)  # Deribit's own greeks
+        for s in (F * 0.8, F, F * 1.13):
+            for left, d_iv in ((days, 0.0), (days, 0.05), (days - 10, 0.0), (0.5, -0.03)):
+                want = sum(
+                    strategy.mtm_value([lg], forward=s, days=left, iv=lg["iv"] + d_iv)
+                    - strategy.mtm_value([lg], forward=F, days=days, iv=lg["iv"])
+                    for lg in legs
+                )
+                assert db.value_change(legs, s, left, F, T, iv, d_iv) == pytest.approx(want, abs=1e-6)
+        sc = db.scenario_rows(legs, ch, "27.11")
+        assert [r["label"] for r in sc] == ["сьогодні", "сьогодні, IV +5 п.", "через 10 дн", "через 20 дн", "на експірацію 27.11"]
+        prices = [F * (1 + m / 100) for m in db.OPT_MOVES]
+        assert sc[-1]["pnl"] == pytest.approx(strategy.payoff_curve(legs, prices), abs=1e-9)
+        assert sc[0]["pnl"][db.OPT_MOVES.index(0)] == pytest.approx(0.0, abs=1e-9)  # today, no move: exactly zero
+
+
+def test_options_greeks_against_analytic_references():
+    # ATM straddle, F = K = 100, σ = 0.5, 30 d: Δ = 2Φ(v/2) − 1, vega = 2·F·φ(v/2)·√T / 100, θ = −2·F·φ·σ / (2√T) / 365
+    F, days, iv = 100.0, 30.0, 0.5
+    T = days / 365
+    legs = [
+        {"kind": "call", "side": "long", "size": 1.0, "strike": 100.0, "entry_premium": 5.0, "iv": None},
+        {"kind": "put", "side": "long", "size": 1.0, "strike": 100.0, "entry_premium": 5.0, "iv": None},
+    ]
+    v = iv * T**0.5
+    phi = db._npdf(v / 2)
+    G = db.position_greeks(legs, F, T, iv)  # no leg IV: the ATM IV is used
+    assert G["delta"] == pytest.approx(2 * db._ncdf(v / 2) - 1, abs=1e-12)
+    assert G["vega"] == pytest.approx(2 * F * phi * T**0.5 / 100, rel=1e-12)
+    assert G["theta"] == pytest.approx(-2 * F * phi * iv / (2 * T**0.5) / 365, rel=1e-12)
+    assert G["gamma"] == pytest.approx(2 * phi / (F * v), rel=1e-12)
+    # +5 vol points ≈ 5 × vega (vega of an ATM straddle is almost linear in σ); a short day ≈ theta
+    assert db.value_change(legs, F, days, F, T, iv, 0.05) == pytest.approx(5 * G["vega"], rel=0.01)
+    assert db.value_change(legs, F, days - 1, F, T, iv) == pytest.approx(G["theta"], rel=0.03)
+    # at expiry the model value is the intrinsic one: value_change = intrinsic − model price now
+    now = db._b76(F, 100.0, T, iv, True) + db._b76(F, 100.0, T, iv, False)
+    assert db.value_change(legs, 112.0, 0.0, F, T, iv) == pytest.approx(12.0 - now, abs=1e-12)
+    # the slider: whole days, clamped to the last day before expiry
+    assert db.horizon_days(10, 37.46) == 10 and db.horizon_days(99, 37.46) == 37 and db.horizon_days(-3, 37.46) == 0
+    assert db.horizon_days(5, 0.4) == 0
+    assert db.parse_options_query("hzn=12.7")["hzn"] == 12 and db.parse_options_query("hzn=abc")["hzn"] == db.OPT_HZN_DEFAULT
+
+
+def test_options_tab_shows_greeks_verdict_vol_and_scenarios():
+    snap, asof = _snap()
+    page = db.render_options(snap, None, asof + 60, db.parse_options_query(""))
+    for text in (
+        "Греки позиції",
+        "Вега</td><td class='r num ok' style='white-space:nowrap'>+$17",
+        "Тета</td><td class='r num bad' style='white-space:nowrap'>−$8",
+        "зросте на 1 пункт",
+        "Що це означає",
+        "Ти купуєш волатильність за <b class='num'>$291</b> на 0.10 BTC",
+        "нижче <b class='num'>$74.1k</b> або вище <b class='num'>$92.9k</b>",
+        "Чи дорога зараз волатильність",
+        "16-й",
+        "<tr class=cur><td>0%-20% · зараз",
+        "відхилено (H1)",
+        "лише гіпотеза",
+        "ризик-нейтральні",
+        "Сценарії · P&amp;L позиції, USD",
+        "сьогодні, IV +5 п.",
+        "через 20 дн",
+        "на експірацію 27.11",
+        "type='range' id='hzn' name='hzn' min='0' max='37' step='1' value='10'",
+        "через 10 дн (ті самі IV)",
+        "stroke-dasharray:6 4",  # the «through N days» line
+    ):
+        assert text in page, text
+    page = db.render_options(snap, None, asof, db.parse_options_query("s=short_strangle&hzn=99"))
+    assert "Ти продаєш волатильність" in page and "Ризик необмежений" in page and "value='37'" in page
+    # no VRP section: the vol block still shows the chain's ATM IV, the verdict skips the DVOL line
+    snap["sections"]["vrp"] = {"ok": False, "data": None, "missing": [{"detail": "deribit_vrp: timeout"}], "warnings": []}
+    page = db.render_options(snap, None, asof)
+    assert "Чи дорога зараз волатильність" in page and "ATM IV 27.11" in page and "deribit_vrp: timeout" in page
+    assert "перцентилі за рік" not in page and "не вдалося" not in page
+    # hostile VRP strings are escaped
+    snap, asof = _snap()
+    snap["sections"]["vrp"]["data"]["by_dvol_level"][0]["dvol_percentile_365d"] = "<img src=x onerror=alert(1)>"
+    snap["sections"]["vrp"]["data"]["current"]["dvol_percentile_365d"] = "<b>x</b>"
+    page = db.render_options(snap, None, asof)
+    assert "<img" not in page and "&lt;img src=x" in page and "<b>x" not in page and "не вдалося" not in page
+
+
 def test_options_formulas_against_analytic_references():
     F, T, iv = 100.0, 30 / 365, 0.5
     # long straddle at K = F, premium P: breakevens K ± P, PoP = 1 − [Φ(z(K+P)) − Φ(z(K−P))]

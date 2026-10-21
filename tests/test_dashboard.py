@@ -867,17 +867,20 @@ def _pm_rows() -> tuple[list[str], list[dict]]:
     return d["columns"], [dict(zip(d["columns"], r, strict=True)) for r in d["rows"]]
 
 
-def _pm_db(path: Path, rows: list[dict], cols: list[str], extra_cols: tuple[str, ...] = ()) -> Path:
-    """A store from the real migrations with the given pm_gap_snapshot rows; ``extra_cols`` adds the columns of a later
-    schema (book_ts, surface_ts, model_forward)."""
+def _pm_db(path: Path, rows: list[dict], cols: list[str], extra_cols: tuple[str, ...] = (), upto: int | None = 17) -> Path:
+    """A store from the real migrations up to ``upto`` (17 = before book_ts / surface_ts / model_forward; None = all)
+    with the given pm_gap_snapshot rows; ``extra_cols`` are added when the migrations did not add them."""
     from tradedesk.store.schema import MIGRATIONS
 
     con = sqlite3.connect(path)
     for v in sorted(MIGRATIONS):
-        for sql in MIGRATIONS[v]:
-            con.execute(sql)
+        if upto is None or v <= upto:
+            for sql in MIGRATIONS[v]:
+                con.execute(sql)
+    have = {r[1] for r in con.execute("PRAGMA table_info(pm_gap_snapshot)")}
     for c in extra_cols:
-        con.execute(f"ALTER TABLE pm_gap_snapshot ADD COLUMN {c} REAL")
+        if c not in have:
+            con.execute(f"ALTER TABLE pm_gap_snapshot ADD COLUMN {c} REAL")
     allc = [*cols, *extra_cols]
     con.executemany(
         f"INSERT INTO pm_gap_snapshot ({', '.join(allc)}) VALUES ({','.join('?' * len(allc))})",
@@ -1017,16 +1020,26 @@ def test_pm_tab_renders_the_real_snapshot(tmp_path):
         "виплата $124",
         "нижче правила 5 власника",
         "R:R нижче 2 (правило 5 власника): 2 з 2.",
-        f"Близько (3–5 п.п.): {len(ref_near)}",
+        f"Близько (3–5 п.п.) — нижче порогу реєстрації, не сигнал: {len(ref_near)}",
         "ризик-нейтральні",
         "≈ 23.02.2027",
-        "plan_add з тегом idea:polymarket-vs-options-forward",
+        "власні угоди на тих самих тонких ринках можуть зсунути книги",
+        "правило 2 (сумарний ризик ≤ $300) і в денний стоп правила 4",
+        # a workable record: journal_add with the market id (plan_review scores exchange candles only)
+        "journal_add: symbol PM:&lt;market_id&gt;:&lt;YES|NO&gt;",
+        "stop 0.001, теги idea:polymarket-vs-options-forward і pm:&lt;market_id&gt;",
+        "journal_close з exit 1 (виграш) або 0.001 (програш)",
+        "plan_add тут не підходить",
+        "<code>PM:5690024:NO</code>",
+        "pm:5690024</span>",
         "не перевірено: колектор ще не пише book_ts",
         "10 хв тому",
+        "4.5 год",  # 16 769 s - 600 s to the end
     ):
         assert text in page, text
     assert page.index("bitcoin-above") < page.index("ethereum-above")  # sorted by net edge
-    assert "старший за 2 год" not in page and "<script" not in page
+    assert "старший за 2 год" not in page and "<script" not in page and "це не сигнали" not in page
+    assert "на тест вона не впливає" not in page and "через plan_add з тегом" not in page
     snap, asof = _snap()
     assert "href='/polymarket'" in db.render_brief(snap, None, asof)  # the tab is in the shared nav
 
@@ -1041,7 +1054,7 @@ def test_pm_tab_near_table_on_the_earlier_snapshot(tmp_path):
     yes = v["near"][0]
     assert yes["rr"] >= 2 and v["near"][1]["rr"] < 2
     page = db.render_polymarket(data, None, float(a + 600))
-    assert "Зараз жоден бік не проходить поріг 5 п.п." in page and "Близько (3–5 п.п.): 2</summary>" in page
+    assert "Зараз жоден бік не проходить поріг 5 п.п." in page and "нижче порогу реєстрації, не сигнал: 2</summary>" in page
     assert "Will Ethereum dip to $2,350 on October 21?" in page and "<b>YES</b>" in page
     assert page.count("нижче правила 5 власника") == 1  # only the expensive NO side is flagged
 
@@ -1051,17 +1064,32 @@ def test_pm_tab_with_the_sync_columns_stale_and_ended(tmp_path):
     for r in rows:
         r.update(book_ts=r["ts"] + 5, surface_ts=r["ts"] + 40, model_forward=None)
     rows.append({**_pm_base(rows, "5690001"), "market_id": "skewed", "surface_ts": PM_B + 70})
-    p = _pm_db(tmp_path / "s.sqlite", rows, cols, extra_cols=("book_ts", "surface_ts", "model_forward"))
+    p = _pm_db(tmp_path / "s.sqlite", rows, cols, extra_cols=("book_ts", "surface_ts", "model_forward"), upto=None)
     data, err = db.load_pm_gap(p)
     assert err is None and data["rows"][0]["book_ts"] is not None
     v = db.pm_gap_view(data, float(PM_B + 600))
     assert [s["market_id"] for s in v["pass"]] == ["5690024", "5690001"]  # the copy read 65 s apart is left out
-    page = db.render_polymarket(data, None, float(PM_B + 3 * 3600))
-    assert "старший за 2 год" in page and "не перевірено" not in page
-    # both passing markets end at PM_END: from then on they are dropped and counted
-    v = db.pm_gap_view(data, float(PM_END))
-    assert not v["pass"] and v["n_ended"] >= 2
-    assert "вже завершились після знімка, не показано" in db.render_polymarket(data, None, float(PM_END))
+    page = db.render_polymarket(data, None, float(PM_B + 600))
+    assert "не перевірено" not in page and "<code>PM:5690024:NO</code>" in page and "це не сигнали" not in page
+    # a snapshot older than 2 h: the rows stay, collapsed and labelled as stale, not as signals
+    stale = db.render_polymarket(data, None, float(PM_B + 2 * 3600 + 60))
+    assert "старший за 2 год" in stale
+    assert "<details class='near'><summary>Ціни застарілі (знімок старший за 2 год): це не сигнали · рядків 2</summary>" in stale
+    assert "не сигнал · ціни застарілі: 0</summary>" in stale
+    # the horizon is also checked from NOW: 1.5 h before the end both passing sides are dropped and counted
+    for now in (PM_END - 1.5 * 3600, PM_END - 2 * 3600 + 1, float(PM_END)):
+        v = db.pm_gap_view(data, now)
+        assert not v["pass"] and v["n_short"] >= 2, now
+    page = db.render_polymarket(data, None, PM_END - 1.5 * 3600)
+    assert "ближче ніж за 2 год до кінця (правило там уже не входить), не показано: 2" in page
+    assert "<code>PM:5690024:NO</code>" not in page
+    assert len(db.pm_gap_view(data, PM_END - 2 * 3600)["pass"]) == 2  # exactly 2 h left: still in
+
+
+def test_pm_hours_left_format():
+    assert [db._hours_left(h) for h in (-0.1, 0.4, 0.6, 1.5, 9.96, 30.2, 72.0)] == [
+        "0 хв", "24 хв", "36 хв", "1.5 год", "10.0 год", "30 год", "3.0 дн",
+    ]  # fmt: skip
 
 
 def test_pm_tab_missing_db_table_and_empty_snapshot(tmp_path):

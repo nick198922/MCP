@@ -2712,9 +2712,15 @@ PM_CAVEATS = (
     "Ймовірності з опціонів Deribit — ризик-нейтральні (ціна страхування в ринку), а не реальні. Бік показано, лише якщо "
     "розрив пережив обидва читання моделі: як зібрано і з IV × 0.92.",
     "Перевага не доведена: паперовий тест (картка polymarket-vs-options-forward) дасть вердикт лише після 16 тижнів, "
-    "≈ 23.02.2027. Ця вкладка — підказка для ручних угод; на тест вона не впливає.",
+    "≈ 23.02.2027. Ця вкладка — підказка для ручних угод. Код вкладки тест не змінює, але власні угоди на тих самих "
+    "тонких ринках можуть зсунути книги, з яких тест рахує CLV: тому кожну угоду записуй з market_id.",
     "Книги тонкі й рухаються: аск і обсяг — на момент щогодинного знімка. Перед угодою перевір книгу на polymarket.com.",
-    f"Якщо береш угоду — запиши її через plan_add з тегом {PM_IDEA_TAG}, щоб її оцінили.",
+    "Кожна позиція ризикує всією ставкою (до $100): вона входить у правило 2 (сумарний ризик ≤ $300) і в денний стоп "
+    "правила 4, як і будь-яка інша угода.",
+    "Якщо береш угоду — запиши її через journal_add: symbol PM:<market_id>:<YES|NO> (стовпець «Запис»), side long, "
+    "size = кількість акцій, entry = ціна з комісією, stop 0.001, теги "
+    f"{PM_IDEA_TAG} і pm:<market_id>; після розв'язання — journal_close з exit 1 (виграш) або 0.001 (програш). "
+    "plan_add тут не підходить: plan_review оцінює плани на свічках бірж, бінарний ринок так не оцінити.",
     "Не інвестиційна порада: сторінка лише читає базу, нічого не торгує.",
 )
 PM_CSS = """
@@ -2859,11 +2865,12 @@ def pm_sides(row: dict, accepted: set[str]) -> list[dict]:
 
 def pm_gap_view(data: dict, now: float) -> dict:
     """Rows of the latest snapshot split for the tab: 'pass' (edge >= 5 pp) and 'near' (3-5 pp), each sorted by net
-    edge (largest first). Markets that already ended by ``now`` are dropped and counted; a row the copies cannot read
-    (odd types) is skipped and counted, never raised."""
+    edge (largest first). The registered filters are applied at the snapshot time; on top of that a side whose market
+    ends less than 2 h after ``now`` is dropped and counted ('n_short': the rule no longer enters there, the snapshot
+    may be up to hours old). A row the copies cannot read (odd types) is skipped and counted, never raised."""
     rows = data.get("rows") or []
     accepted = pm_accepted_hashes(list(data.get("text_rows") or []) + list(rows))
-    out: dict = {"pass": [], "near": [], "n_rows": len(rows), "n_eligible": 0, "n_ended": 0, "n_bad": 0, "n_synced": 0}
+    out: dict = {"pass": [], "near": [], "n_rows": len(rows), "n_eligible": 0, "n_short": 0, "n_bad": 0, "n_synced": 0}
     for r in rows:
         try:
             if r.get("book_ts") is not None and r.get("surface_ts") is not None:
@@ -2878,8 +2885,8 @@ def pm_gap_view(data: dict, now: float) -> dict:
         for s in sides:
             if s["edge"] < PM_NEAR:
                 continue
-            if s["end_ts"] <= now:
-                out["n_ended"] += 1
+            if s["end_ts"] - now < PM_MIN_HOURS * 3600:
+                out["n_short"] += 1
                 continue
             out["pass" if s["edge"] >= PM_PASS else "near"].append(s)
     for key in ("pass", "near"):
@@ -2927,7 +2934,9 @@ def _pp(x: float) -> str:
 
 
 def _hours_left(h: float) -> str:
-    return f"{h:.0f} год" if h < 48 else f"{h / 24:.1f} дн"
+    if h < 1:
+        return f"{max(0.0, h) * 60:.0f} хв"
+    return f"{h:.1f} год" if h < 10 else f"{h:.0f} год" if h < 48 else f"{h / 24:.1f} дн"
 
 
 def _pm_expiry(s: dict) -> str:
@@ -2946,7 +2955,7 @@ def block_pm_table(sides: list[dict], now: float) -> str:
     out = [
         "<div class='scroll'><table class='pm'><tr><th>Актив</th><th>Ринок</th><th>Купити</th><th>Аск</th>"
         "<th>Модель: шанс боку<br>k=1 · k=0.92</th><th>Чистий edge</th><th>$ на аску</th><th>До кінця</th>"
-        "<th>Експірація Deribit<br>(різниця)</th><th>R:R</th><th>На ризик $100</th></tr>"
+        "<th>Експірація Deribit<br>(різниця)</th><th>R:R</th><th>На ризик $100</th><th>Запис (journal_add)</th></tr>"
     ]
     for s in sides:
         slug = str(s.get("event_slug") or "")
@@ -2954,6 +2963,9 @@ def block_pm_table(sides: list[dict], now: float) -> str:
         if slug:
             href = "https://polymarket.com/event/" + urllib.parse.quote(slug[:200], safe="-_.")
             q = f"<a href='{_e(href)}' target='_blank' rel='noopener noreferrer'>{q}</a>"
+        mid = _clean(s.get("market_id") or "—", 40)
+        side = "YES" if s["side"] == "yes" else "NO"
+        record = f"<code>PM:{_e(mid)}:{side}</code><br><span class='mut'>теги {_e(PM_IDEA_TAG)}, pm:{_e(mid)}</span>"
         rr = s["rr"]
         flag = "" if rr >= PM_MIN_RR else "<br><span class='warn'>нижче правила 5 власника</span>"
         size = (
@@ -2962,11 +2974,11 @@ def block_pm_table(sides: list[dict], now: float) -> str:
         )
         out.append(
             f"<tr><td>{_e(_clean(s.get('asset') or '—', 8))}</td><td class='q'>{q}</td>"
-            f"<td><b>{'YES' if s['side'] == 'yes' else 'NO'}</b></td><td class='num'>{s['ask']:.3f}</td>"
+            f"<td><b>{side}</b></td><td class='num'>{s['ask']:.3f}</td>"
             f"<td class='num'>{100 * s['p_k1']:.1f} % · {100 * s['p_k092']:.1f} %</td>"
             f"<td class='num ok'><b>{_pp(s['edge'])}</b></td><td class='num'>{_usd(s['depth_usd'])}</td>"
             f"<td class='num'>{_hours_left((s['end_ts'] - now) / 3600)}</td><td class='num'>{_e(_pm_expiry(s))}</td>"
-            f"<td class='num'>{rr:.2f}{flag}</td><td class='num'>{size}</td></tr>"
+            f"<td class='num'>{rr:.2f}{flag}</td><td class='num'>{size}</td><td>{record}</td></tr>"
         )
     out.append("</table></div>")
     return "".join(out)
@@ -3013,24 +3025,33 @@ def render_polymarket(data: dict | None, err: str | None, now: float, path: Path
         ]
         if not v["n_synced"]:
             notes.append("Синхронність книги й поверхні Deribit (≤ 60 с) не перевірено: колектор ще не пише book_ts / surface_ts.")
-        if v["n_ended"]:
-            notes.append(f"Ринків, що вже завершились після знімка, не показано: {v['n_ended']}.")
+        if v["n_short"]:
+            notes.append(f"Боків, чиї ринки зараз ближче ніж за 2 год до кінця (правило там уже не входить), не показано: {v['n_short']}.")
         if v["n_bad"]:
             notes.append(f"Рядків з несподіваним форматом пропущено: {v['n_bad']}.")
+        stale = age > PM_STALE_S
         n_low = sum(1 for s in v["pass"] if s["rr"] < PM_MIN_RR)
         out.append("<section class='wide'><h2>Проходять поріг (≥ 5 п.п.)<span class='chip ev'>підказка</span></h2>")
         if v["pass"]:
-            out.append(block_pm_table(v["pass"], now))
+            table = block_pm_table(v["pass"], now)
             if n_low:
                 low = f"R:R нижче 2 (правило 5 власника): {n_low} з {len(v['pass'])}. Дорогий бік: мала виплата на великий ризик."
-                out.append(f"<p class='note warn'>{_e(low)}</p>")
+                table += f"<p class='note warn'>{_e(low)}</p>"
+            if stale:  # old prices: kept for reference, never presented as entries
+                table = (
+                    f"<details class='near'><summary>Ціни застарілі (знімок старший за 2 год): це не сигнали · рядків "
+                    f"{len(v['pass'])}</summary>{table}</details>"
+                )
+            out.append(table)
         else:
             out.append(_empty("Зараз жоден бік не проходить поріг 5 п.п. з усіма фільтрами."))
         out.append("".join(f"<p class='note'>{_e(x)}</p>" for x in notes))
         out.append("</section>")
         near = block_pm_table(v["near"], now) if v["near"] else _empty("Немає.")
+        old = " · ціни застарілі" if stale else ""
         out.append(
-            f"<section class='wide'><details class='near'><summary>Близько (3–5 п.п.): {len(v['near'])}</summary>{near}</details></section>"
+            "<section class='wide'><details class='near'><summary>Близько (3–5 п.п.) — нижче порогу реєстрації, не сигнал"
+            f"{old}: {len(v['near'])}</summary>{near}</details></section>"
         )
         out.append("</main></body></html>")
         return "".join(out)

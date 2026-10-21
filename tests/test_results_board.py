@@ -40,7 +40,7 @@ def test_repo_cards_all_parse():
     root = Path(__file__).resolve().parent.parent / "docs/ideas"
     cards = [rb.parse_card(p.read_text(encoding="utf-8"), p.stem) for p in root.glob("IDEA-*.md")]
     assert cards and all(
-        c["status"] in {"proposed", "accepted", "testing", "confirmed", "rejected", "inconclusive", "built"} for c in cards
+        c["status"] in {"proposed", "accepted", "forward", "testing", "confirmed", "rejected", "inconclusive", "built"} for c in cards
     )
 
 

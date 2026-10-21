@@ -851,3 +851,276 @@ def test_journal_escapes_hostile_strings_from_the_database(tmp_path):
     for raw in ("<script>alert", "<img", "<svg onload", "<iframe", "<b>x", "<b>t", "<i>.sqlite"):
         assert raw not in page, raw
     assert "&lt;script&gt;alert(1)" in page and "&lt;img src=x" in page and "&lt;svg onload" in page
+
+
+# ---------------------------------------------------------------- «Polymarket» tab
+
+PM_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "pm_gap_snapshot_2026-10-21.json"
+PM_B = 1792581631  # the latest of the two snapshots in the fixture (the other is 1792563645)
+PM_END = 1792598400  # end of both markets that pass the threshold at PM_B (12:00 ET, 21.10)
+
+
+def _pm_rows() -> tuple[list[str], list[dict]]:
+    import json
+
+    d = json.loads(PM_FIXTURE.read_text(encoding="utf-8"))
+    return d["columns"], [dict(zip(d["columns"], r, strict=True)) for r in d["rows"]]
+
+
+def _pm_db(path: Path, rows: list[dict], cols: list[str], extra_cols: tuple[str, ...] = ()) -> Path:
+    """A store from the real migrations with the given pm_gap_snapshot rows; ``extra_cols`` adds the columns of a later
+    schema (book_ts, surface_ts, model_forward)."""
+    from tradedesk.store.schema import MIGRATIONS
+
+    con = sqlite3.connect(path)
+    for v in sorted(MIGRATIONS):
+        for sql in MIGRATIONS[v]:
+            con.execute(sql)
+    for c in extra_cols:
+        con.execute(f"ALTER TABLE pm_gap_snapshot ADD COLUMN {c} REAL")
+    allc = [*cols, *extra_cols]
+    con.executemany(
+        f"INSERT INTO pm_gap_snapshot ({', '.join(allc)}) VALUES ({','.join('?' * len(allc))})",
+        [[r.get(c) for c in allc] for r in rows],
+    )
+    con.commit()
+    con.close()
+    return path
+
+
+def _pm_base(rows: list[dict], market_id: str = "5690024") -> dict:
+    return next(r for r in rows if r["ts"] == PM_B and r["market_id"] == market_id)
+
+
+def test_pm_copies_match_the_analytics_reference_on_real_rows():
+    from dataclasses import replace
+
+    from tradedesk.analytics import pm_gap_paper as P
+    from tradedesk.analytics.pm_touch import fee_per_share
+    from tradedesk.analytics.probability import prob_touch
+
+    _, rows = _pm_rows()
+    acc = db.pm_accepted_hashes(rows)
+    assert acc == P.accepted_rule_hashes(rows) and len(acc) >= 2
+    for r in rows:
+        if r["rules"]:
+            assert db.pm_rules_accepted(r["rules"], r["asset"]) == P.rules_accepted(r["rules"], r["asset"]), r["market_id"]
+    rule = P.EntryRule()
+    assert (db.PM_PASS, db.PM_MIN_DEPTH_USD, db.PM_MIN_ASK, db.PM_MAX_ASK) == (
+        rule.threshold,
+        rule.min_depth_usd,
+        rule.min_ask,
+        rule.max_ask,
+    )
+    assert (db.PM_MIN_HOURS, db.PM_MAX_HOURS, db.PM_VOL_KS, db.PM_MAX_SKEW_S) == (
+        rule.min_hours_to_end, rule.max_hours_to_end, rule.vol_ks, rule.max_quote_skew_s,
+    )  # fmt: skip
+    n_elig = 0
+    for r in rows:
+        assert db.pm_eligible(r, acc) == P.eligible(r, rule, acc), r["market_id"]
+        n_elig += db.pm_eligible(r, acc)
+        for k in (1.0, 0.92):
+            mine, ref = db.pm_model_prob(r, k), P.model_prob(r, k)
+            assert (mine is None) == (ref is None) and (mine is None or mine == pytest.approx(ref, abs=1e-12)), (r["market_id"], k)
+    assert n_elig >= 30
+    # the same sides with the same numbers, at the registered threshold and below it
+    n_seen = {}
+    for th in (0.0, 0.03, 0.05):
+        ref = {(r["ts"], s["market_id"], s["side"]): s for r in rows for s in P.entry_signals(r, replace(rule, threshold=th), acc)}
+        mine = {(r["ts"], s["market_id"], s["side"]): s for r in rows for s in db.pm_sides(r, acc) if s["edge"] >= th}
+        assert mine.keys() == ref.keys(), th
+        for key, s in mine.items():
+            for f in ("edge", "cost", "p_win", "ask", "depth_usd"):
+                assert s[f] == pytest.approx(ref[key][f], abs=1e-12), (key, f)
+        n_seen[th] = len(mine)
+    assert n_seen[0.05] == 2 and n_seen[0.03] > n_seen[0.05] and n_seen[0.0] > n_seen[0.03]
+    for p, rate, ex in ((0.79, 0.07, 1.0), (0.1, 0.25, 2.0), (0.5, 0.0, 1.0)):
+        assert db.pm_fee(p, rate, ex) == pytest.approx(fee_per_share(p, rate, ex))
+    for F, K, s, T in ((100.0, 110.0, 0.6, 3 / 365), (100.0, 90.0, 0.5, 7 / 365), (100.0, 100.0, 0.5, 0.01), (100.0, 120.0, 0.0, 0.1)):
+        assert db.pm_prob_touch(F, K, s, T) == pytest.approx(prob_touch(F, K, s, T), abs=1e-12)
+
+
+def test_pm_filters_skew_horizon_rules_and_book():
+    from tradedesk.analytics import pm_gap_paper as P
+
+    _, rows = _pm_rows()
+    acc = db.pm_accepted_hashes(rows)
+    base, rule = _pm_base(rows), P.EntryRule()
+    cases = {
+        "synced": ({"book_ts": PM_B + 10, "surface_ts": PM_B - 49}, True),
+        "skew": ({"book_ts": PM_B + 12, "surface_ts": PM_B - 49}, False),  # 61 s apart
+        "one_time_only": ({"book_ts": PM_B + 500, "surface_ts": None}, True),  # rows without both times pass
+        "too_close": ({"end_ts": PM_B + 7199}, False),
+        "too_far": ({"end_ts": PM_B + 14 * 86400 + 1}, False),
+        "rules": ({"rules_hash": "not-accepted"}, False),
+        "uncovered": ({"model_covered": 0}, False),
+        "touched": ({"model_note": "touched"}, False),
+    }
+    for name, (patch, ok) in cases.items():
+        r = {**base, **patch}
+        assert db.pm_eligible(r, acc) is ok and P.eligible(r, rule, acc) is ok, name
+    # book filters: less than $200 at the ask, ask outside [0.02; 0.98]
+    assert [s["side"] for s in db.pm_sides(base, acc) if s["edge"] >= 0.05] == ["no"]
+    assert not [s for s in db.pm_sides({**base, "no_ask_usd": 199.0}, acc) if s["side"] == "no"]
+    assert not [s for s in db.pm_sides({**base, "no_ask": 0.985}, acc) if s["side"] == "no"]
+
+
+def test_pm_edge_rr_and_size_math():
+    _, rows = _pm_rows()
+    acc = db.pm_accepted_hashes(rows)
+    base = _pm_base(rows)
+    s = next(x for x in db.pm_sides(base, acc) if x["side"] == "no")
+    cost = 0.79 + 0.07 * 0.79 * 0.21  # ask + fee bound 0.07 * p (1 - p)
+    assert s["ask"] == 0.79 and s["cost"] == pytest.approx(cost)
+    assert s["rr"] == pytest.approx((1 - cost) / cost) and s["rr"] < 2
+    assert s["shares"] == 124 and s["stake"] == pytest.approx(124 * cost) and s["payout"] == 124.0
+    assert s["edge"] == pytest.approx(s["p_win"] - cost)
+    # NO wins with 1 - the larger YES reading: the less favourable of k = 1 and k = 0.92
+    assert s["p_win"] == pytest.approx(min(s["p_k1"], s["p_k092"])) and s["p_k1"] == pytest.approx(1 - base["model_prob"])
+    # a fee-free cheap side: 0.25 -> R:R 3, 400 shares for $100, payout $400
+    row = {**base, "fee_rate": 0.0, "yes_ask": 0.25, "yes_ask_usd": 500.0}
+    y = next(x for x in db.pm_sides(row, acc) if x["side"] == "yes")
+    assert (y["cost"], y["rr"], y["shares"], y["stake"], y["payout"]) == (0.25, 3.0, 400, 100.0, 400.0)
+
+
+def test_pm_tab_renders_the_real_snapshot(tmp_path):
+    from dataclasses import replace
+
+    from tradedesk.analytics import pm_gap_paper as P
+
+    cols, rows = _pm_rows()
+    p = _pm_db(tmp_path / "s.sqlite", rows, cols)
+    data, err = db.load_pm_gap(p)
+    assert err is None and data["ts"] == PM_B and {r["ts"] for r in data["rows"]} == {PM_B}
+    # the resolution texts are read from any row of the latest snapshot's markets
+    latest = [r for r in rows if r["ts"] == PM_B]
+    ids = {r["market_id"] for r in latest}
+    acc = P.accepted_rule_hashes(rows)
+    assert db.pm_accepted_hashes(data["text_rows"] + data["rows"]) == P.accepted_rule_hashes([r for r in rows if r["market_id"] in ids])
+    now = float(PM_B + 600)
+    v = db.pm_gap_view(data, now)
+    ref_pass = sorted((s for r in latest for s in P.entry_signals(r, P.EntryRule(), acc)), key=lambda s: -s["edge"])
+    ref_near = [s for r in latest for s in P.entry_signals(r, replace(P.EntryRule(), threshold=0.03), acc) if s["edge"] < 0.05]
+    assert [(s["market_id"], s["side"]) for s in v["pass"]] == [(s["market_id"], s["side"]) for s in ref_pass]
+    assert [(s["market_id"], s["side"]) for s in v["pass"]] == [("5690024", "no"), ("5690001", "no")]
+    assert len(v["near"]) == len(ref_near)
+    assert v["n_rows"] == len(latest) and v["n_eligible"] == sum(P.eligible(r, P.EntryRule(), acc) for r in latest)
+    page = db.render_polymarket(data, None, now, p)
+    for text in (
+        "aria-current=page>Polymarket",
+        "Проходять поріг (≥ 5 п.п.)",
+        "href='https://polymarket.com/event/bitcoin-above-on-october-21-2026'",
+        "Will the price of Bitcoin be above $84,000 on October 21?",
+        "<b>NO</b>",
+        "<td class='num'>0.790</td>",
+        "124 шт · ставка $99.40",
+        "виплата $124",
+        "нижче правила 5 власника",
+        "R:R нижче 2 (правило 5 власника): 2 з 2.",
+        f"Близько (3–5 п.п.): {len(ref_near)}",
+        "ризик-нейтральні",
+        "≈ 23.02.2027",
+        "plan_add з тегом idea:polymarket-vs-options-forward",
+        "не перевірено: колектор ще не пише book_ts",
+        "10 хв тому",
+    ):
+        assert text in page, text
+    assert page.index("bitcoin-above") < page.index("ethereum-above")  # sorted by net edge
+    assert "старший за 2 год" not in page and "<script" not in page
+    snap, asof = _snap()
+    assert "href='/polymarket'" in db.render_brief(snap, None, asof)  # the tab is in the shared nav
+
+
+def test_pm_tab_near_table_on_the_earlier_snapshot(tmp_path):
+    cols, rows = _pm_rows()
+    a = 1792563645  # the earlier snapshot: nothing passes 5 pp, two sides are at 3-5 pp
+    data, err = db.load_pm_gap(_pm_db(tmp_path / "a.sqlite", [r for r in rows if r["ts"] <= a], cols))
+    assert err is None and data["ts"] == a
+    v = db.pm_gap_view(data, float(a + 600))
+    assert not v["pass"] and [(s["market_id"], s["side"]) for s in v["near"]] == [("6002443", "yes"), ("5690024", "no")]
+    yes = v["near"][0]
+    assert yes["rr"] >= 2 and v["near"][1]["rr"] < 2
+    page = db.render_polymarket(data, None, float(a + 600))
+    assert "Зараз жоден бік не проходить поріг 5 п.п." in page and "Близько (3–5 п.п.): 2</summary>" in page
+    assert "Will Ethereum dip to $2,350 on October 21?" in page and "<b>YES</b>" in page
+    assert page.count("нижче правила 5 власника") == 1  # only the expensive NO side is flagged
+
+
+def test_pm_tab_with_the_sync_columns_stale_and_ended(tmp_path):
+    cols, rows = _pm_rows()
+    for r in rows:
+        r.update(book_ts=r["ts"] + 5, surface_ts=r["ts"] + 40, model_forward=None)
+    rows.append({**_pm_base(rows, "5690001"), "market_id": "skewed", "surface_ts": PM_B + 70})
+    p = _pm_db(tmp_path / "s.sqlite", rows, cols, extra_cols=("book_ts", "surface_ts", "model_forward"))
+    data, err = db.load_pm_gap(p)
+    assert err is None and data["rows"][0]["book_ts"] is not None
+    v = db.pm_gap_view(data, float(PM_B + 600))
+    assert [s["market_id"] for s in v["pass"]] == ["5690024", "5690001"]  # the copy read 65 s apart is left out
+    page = db.render_polymarket(data, None, float(PM_B + 3 * 3600))
+    assert "старший за 2 год" in page and "не перевірено" not in page
+    # both passing markets end at PM_END: from then on they are dropped and counted
+    v = db.pm_gap_view(data, float(PM_END))
+    assert not v["pass"] and v["n_ended"] >= 2
+    assert "вже завершились після знімка, не показано" in db.render_polymarket(data, None, float(PM_END))
+
+
+def test_pm_tab_missing_db_table_and_empty_snapshot(tmp_path):
+    none = tmp_path / "none.sqlite"
+    data, err = db.load_pm_gap(none)
+    assert data is None and err == "missing" and not none.exists()  # read-only: nothing is created
+    page = db.render_polymarket(data, err, float(PM_B), none)
+    assert "Бази ще немає" in page and "aria-current=page>Polymarket" in page and "ризик-нейтральні" in page
+    bare = tmp_path / "bare.sqlite"
+    con = sqlite3.connect(bare)
+    con.execute("CREATE TABLE funding_hist (ts INTEGER)")
+    con.close()
+    data, err = db.load_pm_gap(bare)
+    assert err is None and data["rows"] is None
+    assert "Таблиці pm_gap_snapshot у базі ще немає" in db.render_polymarket(data, err, float(PM_B))
+    cols, rows = _pm_rows()
+    data, err = db.load_pm_gap(_pm_db(tmp_path / "empty.sqlite", [], cols))
+    assert err is None and data == {"ts": None, "rows": [], "text_rows": []}
+    assert "Знімків ще немає" in db.render_polymarket(data, err, float(PM_B))
+    junk = tmp_path / "junk.sqlite"
+    junk.write_bytes(b"not a database at all" * 100)
+    data, err = db.load_pm_gap(junk)
+    assert data is None and err.startswith("unreadable")
+    assert "Базу не вдалося прочитати" in db.render_polymarket(data, err, float(PM_B))
+    # an odd row is skipped and counted, the page still renders
+    bad = {"ts": PM_B, "rows": [{**_pm_base(rows), "end_ts": "x"}], "text_rows": rows}
+    assert db.pm_gap_view(bad, float(PM_B))["n_bad"] == 1
+    assert "несподіваним форматом пропущено: 1" in db.render_polymarket(bad, None, float(PM_B))
+
+
+def test_pm_tab_page_reads_the_store_read_only(tmp_path, monkeypatch):
+    cols, rows = _pm_rows()
+    p = _pm_db(tmp_path / "s.sqlite", rows, cols)
+    seen = {}
+    real_connect = sqlite3.connect
+
+    def spy(database, *a, **k):
+        con = real_connect(database, *a, **k)
+        seen.update(uri=database, kw=k)
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            con.execute("DELETE FROM pm_gap_snapshot")
+        return con
+
+    monkeypatch.setattr(db.sqlite3, "connect", spy)
+    monkeypatch.setattr(db, "PM_DB", p)
+    page = db.polymarket_page(now=float(PM_B + 60))
+    assert seen["uri"].endswith("?mode=ro") and seen["kw"].get("uri") is True
+    assert "Проходять поріг" in page and "bitcoin-above-on-october-21-2026" in page
+
+
+def test_pm_tab_escapes_question_and_slug(tmp_path):
+    cols, rows = _pm_rows()
+    for r in rows:
+        if r["market_id"] == "5690024":
+            r["question"] = "<script>alert(1)</script> above?"
+            r["event_slug"] = "x' onmouseover='alert(2)"
+    p = _pm_db(tmp_path / "s.sqlite", rows, cols)
+    page = db.render_polymarket(*db.load_pm_gap(p), float(PM_B + 600), path=tmp_path / "<i>.sqlite")
+    for raw in ("<script>alert", "onmouseover='alert", "<i>.sqlite"):
+        assert raw not in page, raw
+    assert "&lt;script&gt;alert(1)&lt;/script&gt; above?" in page
+    assert "href='https://polymarket.com/event/x%27%20onmouseover%3D%27alert%282%29'" in page

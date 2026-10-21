@@ -22,6 +22,10 @@ and size in the browser (localStorage) and resubmits on a change.
 The «Журнал» tab (/journal) reads the owner's trade journal and the assistant's paper recommendations (rec_paper,
 labelled «гіпотеза») from the SQLite store over a read-only connection: summary, by source, the trades page by page.
 Every string from the database is untrusted text and is escaped; no database or no table gives an empty state.
+
+The «Polymarket» tab (/polymarket) lists the CURRENT Polymarket <-> Deribit-options gaps of the latest pm_gap_snapshot
+that pass the paper test's registered entry filters (net edge >= 5 pp; a collapsed 3-5 pp table), with R:R and the size
+for a $100 risk: a hint for manual trades. It reads the store read-only and does not feed the paper test.
 """
 
 from __future__ import annotations
@@ -424,14 +428,20 @@ th{color:var(--mut);font-weight:600}.bar{height:8px;background:var(--line);borde
 pre{white-space:pre-wrap;word-break:break-word;font:12px/1.4 Menlo,Consolas,monospace;margin:0;max-height:330px;overflow:auto}
 .kpi{display:flex;flex-wrap:wrap;gap:8px}.kpi div{border:1px solid var(--line);border-radius:6px;padding:4px 10px}.kpi b{font-size:17px}
 code{font:12px Menlo,Consolas,monospace}
-nav.tabs{display:flex;gap:4px;padding:0 18px;border-bottom:1px solid var(--line);margin:0 0 12px}
+nav.tabs{display:flex;flex-wrap:wrap;gap:4px;padding:0 18px;border-bottom:1px solid var(--line);margin:0 0 12px}
 nav.tabs a{padding:6px 12px;color:var(--mut);text-decoration:none;font-weight:600;border-bottom:3px solid transparent}
 nav.tabs a[aria-current=page]{color:var(--fg);border-bottom-color:var(--acc)}
 """
 
 
 def _nav(active: str) -> str:
-    tabs = (("/", "project", "Проєкт"), ("/brief", "brief", "Бриф"), ("/options", "options", "Опціони"), ("/journal", "journal", "Журнал"))
+    tabs = (
+        ("/", "project", "Проєкт"),
+        ("/brief", "brief", "Бриф"),
+        ("/options", "options", "Опціони"),
+        ("/journal", "journal", "Журнал"),
+        ("/polymarket", "polymarket", "Polymarket"),
+    )
     return (
         "<nav class='tabs'>"
         + "".join(f"<a href='{href}'{' aria-current=page' if key == active else ''}>{label}</a>" for href, key, label in tabs)
@@ -2676,6 +2686,366 @@ def journal_page(query: str = "", now: float | None = None) -> str:
     return render_journal(data, err, time.time() if now is None else now, parse_journal_query(query), JOURNAL_DB)
 
 
+# ---------------------------------------------------------------- «Polymarket» tab: current Polymarket <-> Deribit gaps
+#
+# A hint for manual trades, not the paper test: the paper test (docs/ideas/IDEA-20261017-polymarket-vs-options-forward.md,
+# «Реєстрація») reads the same table on its own and nothing here feeds it. Read-only SQLite (mode=ro URI), no network.
+# The filters are stdlib copies of analytics.pm_gap_paper (rules_accepted, accepted_rule_hashes, eligible, model_prob /
+# vol_scaled_prob, the edge of entry_signals), pm_touch.fee_per_share and probability.prob_touch; tests compare them
+# with the originals on real rows. Every string from the database (question, slug, rules) is untrusted text.
+
+PM_DB = JOURNAL_DB
+PM_PASS = 0.05  # registered entry threshold: net edge, decimal of the $1 payoff
+PM_NEAR = 0.03  # the «близько» table: PM_NEAR <= edge < PM_PASS
+PM_MIN_DEPTH_USD = 200.0  # USD standing at the best ask of the bought side
+PM_MIN_ASK, PM_MAX_ASK = 0.02, 0.98
+PM_MIN_HOURS, PM_MAX_HOURS = 2.0, 14 * 24.0  # snapshot to market end
+PM_VOL_KS = (1.0, 0.92)  # the side's win probability is the lower one over these implied-vol multipliers
+PM_MAX_SKEW_S = 60.0  # book vs Deribit surface read times, applied when the row has both
+PM_STALE_S = 2 * 3600  # the collector runs hourly
+PM_RISK_USD = 100.0  # the owner's risk per trade (deposit ~$10k, 1 %)
+PM_MIN_RR = 2.0  # the owner's rule 5
+PM_YEAR_S = 365 * 86_400
+PM_PAIRS = {"BTC": "BTC/USDT", "ETH": "ETH/USDT"}
+PM_IDEA_TAG = "idea:polymarket-vs-options-forward"
+PM_CAVEATS = (
+    "Ймовірності з опціонів Deribit — ризик-нейтральні (ціна страхування в ринку), а не реальні. Бік показано, лише якщо "
+    "розрив пережив обидва читання моделі: як зібрано і з IV × 0.92.",
+    "Перевага не доведена: паперовий тест (картка polymarket-vs-options-forward) дасть вердикт лише після 16 тижнів, "
+    "≈ 23.02.2027. Ця вкладка — підказка для ручних угод; на тест вона не впливає.",
+    "Книги тонкі й рухаються: аск і обсяг — на момент щогодинного знімка. Перед угодою перевір книгу на polymarket.com.",
+    f"Якщо береш угоду — запиши її через plan_add з тегом {PM_IDEA_TAG}, щоб її оцінили.",
+    "Не інвестиційна порада: сторінка лише читає базу, нічого не торгує.",
+)
+PM_CSS = """
+details.near{font-size:13px;color:var(--fg)}details.near summary{cursor:pointer;color:var(--acc);font-weight:600}
+table.pm td,table.pm th{white-space:nowrap}table.pm td.q{white-space:normal;min-width:180px;max-width:320px}
+table.pm a{color:var(--acc)}.scroll table.pm{min-width:900px}
+"""
+
+
+def pm_rules_accepted(description: object, asset: object) -> bool:
+    """Stdlib copy of pm_gap_paper.rules_accepted (with pm_threshold.standard_rules): the standard Binance-candle text or
+    the wording used since 2026-10-07, both with the strict "Close ... higher than" clause."""
+    d = str(description or "").replace("\n", " ").replace("“", '"').replace("”", '"')
+    pair = PM_PAIRS.get(str(asset))
+    if not pair or '"Close" price higher than the price specified in the title' not in d:
+        return False
+    return f"Binance 1 minute candle for {pair} 12:00 in the ET timezone" in d or (
+        f"Binance 1 minute candle for {pair} closing at 12:00 in the ET timezone" in d
+    )
+
+
+def pm_accepted_hashes(rows: list[dict]) -> set[str]:
+    """Stdlib copy of pm_gap_paper.accepted_rule_hashes: rules_standard = 1, or a threshold text pm_rules_accepted."""
+    ok: set[str] = set()
+    for r in rows:
+        h = r.get("rules_hash")
+        if not h:
+            continue
+        if r.get("rules_standard") == 1:
+            ok.add(str(h))
+        elif r.get("kind") == "above" and r.get("rules") and pm_rules_accepted(r["rules"], r.get("asset")):
+            ok.add(str(h))
+    return ok
+
+
+def pm_fee(price: float, rate: float, exponent: float) -> float:
+    """Stdlib copy of pm_touch.fee_per_share: upper bound of Polymarket's taker fee per share."""
+    return rate * (price * (1.0 - price)) ** exponent if rate > 0 else 0.0
+
+
+def pm_prob_touch(F: float, barrier: float, sigma: float, T: float) -> float:
+    """Stdlib copy of probability.prob_touch (continuous monitoring, driftless forward, constant sigma)."""
+    if T <= 0 or sigma <= 0:
+        return 1.0 if barrier == F else 0.0
+    s = sigma * math.sqrt(T)
+    mu = -0.5 * sigma * sigma
+    if barrier == F:
+        return 1.0
+    if barrier > F:
+        b = math.log(barrier / F)
+        return _ncdf((-b + mu * T) / s) + math.exp(2 * mu * b / (sigma * sigma)) * _ncdf((-b - mu * T) / s)
+    a = math.log(F / barrier)
+    return _ncdf((-a - mu * T) / s) + math.exp(-2 * mu * a / (sigma * sigma)) * _ncdf((-a + mu * T) / s)
+
+
+def _pm_g(kind: str, F: float, K: float, T: float, sigma: float) -> float:
+    if kind == "above":
+        v = sigma * math.sqrt(T)
+        return _ncdf((math.log(F / K) + 0.5 * v * v) / v - v)  # N(d2)
+    return pm_prob_touch(F, K, sigma, T)
+
+
+def pm_model_prob(row: dict, k: float = 1.0) -> float | None:
+    """Stdlib copy of pm_gap_paper.model_prob: the row's model probability of YES with implied vol x ``k``
+    (p_k = p + g(k sigma) - g(sigma), forward = the snapshot's Deribit index ``spot``; clipped to [0, 1])."""
+    p = row.get("model_prob")
+    if p is None:
+        return None
+    if k == 1.0:
+        return float(p)
+    iv, F, K = row.get("model_iv"), row.get("spot"), float(row["strike"])
+    tau = (int(row["end_ts"]) - int(row["ts"])) / PM_YEAR_S
+    if iv is None or F is None or iv <= 0 or F <= 0 or K <= 0 or tau <= 0:
+        return None
+    kind = str(row["kind"])
+    q = float(p) + _pm_g(kind, float(F), K, tau, k * float(iv)) - _pm_g(kind, float(F), K, tau, float(iv))
+    return min(1.0, max(0.0, q))
+
+
+def pm_eligible(row: dict, accepted: set[str]) -> bool:
+    """Stdlib copy of pm_gap_paper.eligible with the registered rule: model note 'ok', strike inside the quoted strikes,
+    accepted resolution text, book and surface read within 60 s (when the row has both times), 2 h <= to end <= 14 d
+    (measured from the snapshot, as registered)."""
+    if row.get("model_note") != "ok" or row.get("model_prob") is None or row.get("model_covered") != 1:
+        return False
+    if str(row.get("rules_hash")) not in accepted:
+        return False
+    bt, st_ = row.get("book_ts"), row.get("surface_ts")
+    if bt is not None and st_ is not None and abs(float(bt) - float(st_)) > PM_MAX_SKEW_S:
+        return False
+    h = (int(row["end_ts"]) - int(row["ts"])) / 3600
+    return PM_MIN_HOURS <= h <= PM_MAX_HOURS
+
+
+def pm_sides(row: dict, accepted: set[str]) -> list[dict]:
+    """Both sides of one eligible snapshot row that have a tradable book (ask in [0.02; 0.98], >= $200 at the ask),
+    whatever their edge: net edge = p_win - (ask + taker fee bound), p_win = the less favourable reading over PM_VOL_KS
+    (the same number as pm_gap_paper.entry_signals). Plus R:R of buying the side and the size for a $100 risk."""
+    if not pm_eligible(row, accepted):
+        return []
+    ps = [pm_model_prob(row, k) for k in PM_VOL_KS]
+    if any(p is None for p in ps):
+        return []
+    p_lo, p_hi = min(ps), max(ps)  # type: ignore[type-var]
+    fr, fe = float(row.get("fee_rate") or 0.0), float(row.get("fee_exp") or 1.0)
+    out = []
+    for side, p_win, p_k1, p_k2 in (
+        ("yes", p_lo, ps[0], ps[1]),
+        ("no", 1.0 - p_hi, 1.0 - ps[0], 1.0 - ps[1]),  # type: ignore[operator]
+    ):
+        ask, depth = row.get(f"{side}_ask"), row.get(f"{side}_ask_usd")
+        if ask is None or not PM_MIN_ASK <= ask <= PM_MAX_ASK or depth is None or depth < PM_MIN_DEPTH_USD:
+            continue
+        cost = ask + pm_fee(ask, fr, fe)
+        shares = math.floor(PM_RISK_USD / cost + 1e-9)
+        out.append(
+            {
+                "market_id": str(row["market_id"]),
+                "side": side,
+                "asset": row.get("asset"),
+                "kind": row.get("kind"),
+                "question": row.get("question"),
+                "event_slug": row.get("event_slug"),
+                "end_ts": int(row["end_ts"]),
+                "model_expiry": row.get("model_expiry"),
+                "expiry_gap_hours": row.get("expiry_gap_hours"),
+                "ask": float(ask),
+                "cost": cost,
+                "p_win": p_win,
+                "p_k1": p_k1,
+                "p_k092": p_k2,
+                "edge": p_win - cost,
+                "depth_usd": float(depth),
+                "rr": (1.0 - cost) / cost,
+                "shares": shares,
+                "stake": shares * cost,
+                "payout": float(shares),
+            }
+        )
+    return out
+
+
+def pm_gap_view(data: dict, now: float) -> dict:
+    """Rows of the latest snapshot split for the tab: 'pass' (edge >= 5 pp) and 'near' (3-5 pp), each sorted by net
+    edge (largest first). Markets that already ended by ``now`` are dropped and counted; a row the copies cannot read
+    (odd types) is skipped and counted, never raised."""
+    rows = data.get("rows") or []
+    accepted = pm_accepted_hashes(list(data.get("text_rows") or []) + list(rows))
+    out: dict = {"pass": [], "near": [], "n_rows": len(rows), "n_eligible": 0, "n_ended": 0, "n_bad": 0, "n_synced": 0}
+    for r in rows:
+        try:
+            if r.get("book_ts") is not None and r.get("surface_ts") is not None:
+                out["n_synced"] += 1
+            if not pm_eligible(r, accepted):
+                continue
+            out["n_eligible"] += 1
+            sides = pm_sides(r, accepted)
+        except (TypeError, ValueError, KeyError, OverflowError, ZeroDivisionError):
+            out["n_bad"] += 1
+            continue
+        for s in sides:
+            if s["edge"] < PM_NEAR:
+                continue
+            if s["end_ts"] <= now:
+                out["n_ended"] += 1
+                continue
+            out["pass" if s["edge"] >= PM_PASS else "near"].append(s)
+    for key in ("pass", "near"):
+        out[key].sort(key=lambda s: -s["edge"])
+    return out
+
+
+def load_pm_gap(path: Path) -> tuple[dict | None, str | None]:
+    """{'ts': latest snapshot ts | None, 'rows': its rows | None (no table), 'text_rows': resolution texts of its
+    markets}, or (None, 'missing' | 'unreadable: …'). Read-only connection; works with and without the book_ts /
+    surface_ts columns (SELECT *); never raises."""
+    try:
+        if not path.exists():
+            return None, "missing"
+        con = sqlite3.connect(f"file:{urllib.parse.quote(str(path))}?mode=ro", uri=True, timeout=5)
+    except (sqlite3.Error, OSError) as e:
+        return None, f"unreadable: {type(e).__name__}"
+    try:
+        con.row_factory = sqlite3.Row
+        names = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        if "pm_gap_snapshot" not in names:
+            return {"ts": None, "rows": None, "text_rows": []}, None
+        ts = con.execute("SELECT MAX(ts) FROM pm_gap_snapshot").fetchone()[0]
+        if ts is None:
+            return {"ts": None, "rows": [], "text_rows": []}, None
+        rows = [dict(r) for r in con.execute("SELECT * FROM pm_gap_snapshot WHERE ts = ?", (ts,))]
+        # the store keeps the resolution text only when its hash changes: read it from any row of these markets
+        text_rows = [
+            dict(r)
+            for r in con.execute(
+                "SELECT market_id, asset, kind, rules_hash, rules_standard, rules FROM pm_gap_snapshot"
+                " WHERE market_id IN (SELECT market_id FROM pm_gap_snapshot WHERE ts = ?) AND rules IS NOT NULL",
+                (ts,),
+            )
+        ]
+        return {"ts": int(ts), "rows": rows, "text_rows": text_rows}, None
+    except (sqlite3.Error, OSError, TypeError, ValueError) as e:
+        return None, f"unreadable: {type(e).__name__}"
+    finally:
+        con.close()
+
+
+def _pp(x: float) -> str:
+    return f"{100 * x:+.1f} п.п.".replace("-", "−")
+
+
+def _hours_left(h: float) -> str:
+    return f"{h:.0f} год" if h < 48 else f"{h / 24:.1f} дн"
+
+
+def _pm_expiry(s: dict) -> str:
+    try:
+        exp = datetime.fromisoformat(str(s.get("model_expiry")))
+    except ValueError:
+        return "—"
+    if exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)  # noqa: UP017
+    gap = _num(s.get("expiry_gap_hours"))
+    gap_s = "" if gap is None else f" ({gap:+.0f} год)".replace("-", "−")
+    return kyiv(exp) + gap_s
+
+
+def block_pm_table(sides: list[dict], now: float) -> str:
+    out = [
+        "<div class='scroll'><table class='pm'><tr><th>Актив</th><th>Ринок</th><th>Купити</th><th>Аск</th>"
+        "<th>Модель: шанс боку<br>k=1 · k=0.92</th><th>Чистий edge</th><th>$ на аску</th><th>До кінця</th>"
+        "<th>Експірація Deribit<br>(різниця)</th><th>R:R</th><th>На ризик $100</th></tr>"
+    ]
+    for s in sides:
+        slug = str(s.get("event_slug") or "")
+        q = _e(_clean(s.get("question") or "—", 140))
+        if slug:
+            href = "https://polymarket.com/event/" + urllib.parse.quote(slug[:200], safe="-_.")
+            q = f"<a href='{_e(href)}' target='_blank' rel='noopener noreferrer'>{q}</a>"
+        rr = s["rr"]
+        flag = "" if rr >= PM_MIN_RR else "<br><span class='warn'>нижче правила 5 власника</span>"
+        size = (
+            f"{s['shares']} шт · ставка ${_nf(s['stake'], 2)}<br>якщо вгадав: виплата ${_nf(s['payout'])} "
+            f"(+${_nf(s['payout'] - s['stake'], 2)})"
+        )
+        out.append(
+            f"<tr><td>{_e(_clean(s.get('asset') or '—', 8))}</td><td class='q'>{q}</td>"
+            f"<td><b>{'YES' if s['side'] == 'yes' else 'NO'}</b></td><td class='num'>{s['ask']:.3f}</td>"
+            f"<td class='num'>{100 * s['p_k1']:.1f} % · {100 * s['p_k092']:.1f} %</td>"
+            f"<td class='num ok'><b>{_pp(s['edge'])}</b></td><td class='num'>{_usd(s['depth_usd'])}</td>"
+            f"<td class='num'>{_hours_left((s['end_ts'] - now) / 3600)}</td><td class='num'>{_e(_pm_expiry(s))}</td>"
+            f"<td class='num'>{rr:.2f}{flag}</td><td class='num'>{size}</td></tr>"
+        )
+    out.append("</table></div>")
+    return "".join(out)
+
+
+def render_polymarket(data: dict | None, err: str | None, now: float, path: Path | None = None) -> str:
+    """The «Polymarket» tab. Never raises: no database, no table, an empty or a stale snapshot gives an explained state."""
+    head = (
+        "<!doctype html><html lang='uk'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+        f"<meta http-equiv='refresh' content='{5 * REFRESH_S}'><title>tradedesk — Polymarket</title>"
+        f"<style>{CSS}{BRIEF_CSS}{JOURNAL_CSS}{PM_CSS}</style></head><body>"
+    )
+    title = "<h1>Polymarket ↔ опціони</h1>"
+    caveats = "<div class='caveat'><b>Застереження</b><ul>" + "".join(f"<li>{_e(c)}</li>" for c in PM_CAVEATS) + "</ul></div>"
+    where = f" <code>{_e(path)}</code>" if path else ""
+    try:
+        if data is None:
+            msg = (
+                f"Бази ще немає{where}: вона з'являється, коли MCP-сервер або колектор її створять."
+                if err == "missing"
+                else f"Базу не вдалося прочитати{where}: {_e(err)}."
+            )
+            return head + f"<header>{title}<span class='bad'>{msg}</span></header>{_nav('polymarket')}{caveats}</body></html>"
+        if data.get("rows") is None or data.get("ts") is None:
+            msg = (
+                "Таблиці pm_gap_snapshot у базі ще немає (схема v15)."
+                if data.get("rows") is None
+                else "Знімків ще немає: завдання колектора pm_gap (TRADEDESK_PM_GAP_ENABLED=1) ще не відпрацювало."
+            )
+            return head + f"<header>{title}<span class='warn'>{_e(msg)}</span></header>{_nav('polymarket')}{caveats}</body></html>"
+        ts = int(data["ts"])
+        age = now - ts
+        cls = "bad" if age > PM_STALE_S else "mut"
+        stamp = f"<span class='{cls}'>Знімок {_e(kyiv(datetime.fromtimestamp(ts, timezone.utc)))} за Києвом · {_e(fmt_age(age))}"  # noqa: UP017
+        if age > PM_STALE_S:
+            stamp += " · старший за 2 год: колектор pm_gap, схоже, зупинився, ціни неактуальні"
+        stamp += "</span>"
+        v = pm_gap_view(data, now)
+        out = [head, f"<header>{title}{stamp}</header>{_nav('polymarket')}{caveats}<main class='brief'>"]
+        notes = [
+            f"У знімку ринків: {v['n_rows']}; пройшли відбір реєстрації (модель ok, страйк у котируваннях Deribit, прийнятий "
+            f"текст правил, 2 год – 14 дн до кінця): {v['n_eligible']}. Бік показано, якщо аск у [0.02; 0.98] і на аску "
+            f"≥ ${PM_MIN_DEPTH_USD:.0f}; edge = менша з двох ймовірностей моделі − (аск + верхня межа комісії).",
+        ]
+        if not v["n_synced"]:
+            notes.append("Синхронність книги й поверхні Deribit (≤ 60 с) не перевірено: колектор ще не пише book_ts / surface_ts.")
+        if v["n_ended"]:
+            notes.append(f"Ринків, що вже завершились після знімка, не показано: {v['n_ended']}.")
+        if v["n_bad"]:
+            notes.append(f"Рядків з несподіваним форматом пропущено: {v['n_bad']}.")
+        n_low = sum(1 for s in v["pass"] if s["rr"] < PM_MIN_RR)
+        out.append("<section class='wide'><h2>Проходять поріг (≥ 5 п.п.)<span class='chip ev'>підказка</span></h2>")
+        if v["pass"]:
+            out.append(block_pm_table(v["pass"], now))
+            if n_low:
+                low = f"R:R нижче 2 (правило 5 власника): {n_low} з {len(v['pass'])}. Дорогий бік: мала виплата на великий ризик."
+                out.append(f"<p class='note warn'>{_e(low)}</p>")
+        else:
+            out.append(_empty("Зараз жоден бік не проходить поріг 5 п.п. з усіма фільтрами."))
+        out.append("".join(f"<p class='note'>{_e(x)}</p>" for x in notes))
+        out.append("</section>")
+        near = block_pm_table(v["near"], now) if v["near"] else _empty("Немає.")
+        out.append(
+            f"<section class='wide'><details class='near'><summary>Близько (3–5 п.п.): {len(v['near'])}</summary>{near}</details></section>"
+        )
+        out.append("</main></body></html>")
+        return "".join(out)
+    except Exception as e:  # noqa: BLE001 - the page always renders
+        return (
+            head
+            + f"<header>{title}<span class='bad'>Розриви не вдалося показати ({_e(type(e).__name__)}).</span></header>{_nav('polymarket')}{caveats}</body></html>"
+        )
+
+
+def polymarket_page(now: float | None = None) -> str:
+    data, err = load_pm_gap(PM_DB)
+    return render_polymarket(data, err, time.time() if now is None else now, PM_DB)
+
+
 # ---------------------------------------------------------------- server
 
 
@@ -2710,6 +3080,8 @@ class _Handler(BaseHTTPRequestHandler):
             body, ctype = options_page(query).encode(), "text/html; charset=utf-8"
         elif path == "/journal":
             body, ctype = journal_page(query).encode(), "text/html; charset=utf-8"
+        elif path == "/polymarket":
+            body, ctype = polymarket_page().encode(), "text/html; charset=utf-8"
         elif self.path == "/status.json":
             body, ctype = json.dumps(snap or {}, ensure_ascii=False, default=str).encode(), "application/json; charset=utf-8"
         else:
@@ -2746,9 +3118,20 @@ def main() -> None:
     on.add_argument("--brief", action="store_true", help="the «Бриф» tab from the assistant snapshot instead of the project page")
     on.add_argument("--options", action="store_true", help="the «Опціони» tab (default strategy and size) from the snapshot")
     on.add_argument("--journal", action="store_true", help="the «Журнал» tab (first page) from the SQLite store, read-only")
+    on.add_argument("--polymarket", action="store_true", help="the «Polymarket» tab (current gaps) from the SQLite store, read-only")
     a = ap.parse_args()
     if a.cmd == "once":
-        page = brief_page() if a.brief else options_page() if a.options else journal_page() if a.journal else render(snapshot())
+        page = (
+            brief_page()
+            if a.brief
+            else options_page()
+            if a.options
+            else journal_page()
+            if a.journal
+            else polymarket_page()
+            if a.polymarket
+            else render(snapshot())
+        )
         a.out.write_text(page, encoding="utf-8")
         print(f"-> {a.out}")
         return

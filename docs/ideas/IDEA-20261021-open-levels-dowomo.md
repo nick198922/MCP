@@ -1,7 +1,7 @@
 # IDEA-20261021-open-levels-dowomo: чи реагує ціна на відкриття дня, тижня й місяця (DO / WO / MO) сильніше, ніж на випадковий рівень
 
 Статус: rejected
-Пріоритет: власник
+Пріоритет: звичайний (картку написав Claude з уроків курсу, не запит власника)
 <!-- proposed → accepted | rejected | forward → testing → confirmed | rejected | inconclusive → built -->
 Походження: курс DoubleTop, урок «IPDA | 3» (сторінки 17.10, розбір 21.10) — [LIB-20261021-course-gem3-part2](../library/LIB-20261021-course-gem3-part2.md), гіпотеза H2; [smc](../knowledge/smc.md), розділ «друга партія сторінок».
 

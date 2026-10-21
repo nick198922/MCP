@@ -1,7 +1,7 @@
 # IDEA-20261021-smt-weaker-asset-amplitude: чи «слабший» актив після SMT-дивергенції BTC/ETH дає більший рух у бік розвороту (з поправкою на бету)
 
 Статус: rejected
-Пріоритет: власник
+Пріоритет: звичайний (картку написав Claude з уроків курсу, не запит власника)
 <!-- proposed → accepted | rejected | forward → testing → confirmed | rejected | inconclusive → built -->
 Походження: курс DoubleTop, урок «SMT | 2» (сторінки 17.10, розбір 21.10) — [LIB-20261021-course-gem3-part2](../library/LIB-20261021-course-gem3-part2.md), гіпотеза H1; сетап S35 у [setups](../knowledge/setups.md).
 

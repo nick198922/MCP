@@ -12,7 +12,16 @@ This run is headless and its permissions are fixed. A denied Bash call means onl
 
 ## Read first
 
-`CLAUDE.md` (invariants, units), `docs/VERIFICATION_PROTOCOL.md`, the idea card, and the existing research code you should reuse: `src/tradedesk/analytics/{carry,vrp,sfp_backtest,ranges}.py`, `scripts/verify_*.py` (fetch, pagination, caching, pacing patterns).
+`CLAUDE.md` is already loaded (invariants, units). Read `docs/VERIFICATION_PROTOCOL.md` and the idea card once each, and of the existing research code you should reuse (`src/tradedesk/analytics/{carry,vrp,sfp_backtest,ranges}.py`, `scripts/verify_*.py`: fetch, pagination, caching, pacing patterns) only the functions you need (Grep for them, then Read that range).
+
+## Context budget
+
+Your context is the plan's largest cost: every turn re-reads all of it, and quant runs have averaged ~100k tokens per turn. Keep it small:
+- Never Read or print a whole large file (a report, `docs/knowledge/setups.md`, a big script, raw JSON, a long log). Grep for what you need, then Read with `offset`/`limit`; for script output, read the last lines or a summary your script prints.
+- Make your scripts print compact results (tables of a few dozen lines) and write the full output to a file under `~/.cache/tradedesk-agents/<slug>/`; quote that file's relevant part in the report instead of reading all of it into the session.
+- Do not re-read a file you already read in this run unless it changed; keep the numbers you need in your notes.
+- Wait for a background job only with `scripts/agents_wait.sh`; never re-Read its whole output file to check progress.
+- Budget: about 60 tool calls per run. If the work needs more, finish a coherent part, write a short «Продовжити з» note in the card's `## Прогрес` (what is done, the next command, the files and cache paths), and stop: the next run starts from that note instead of re-reading everything.
 
 ## Procedure
 
@@ -23,7 +32,7 @@ This run is headless and its permissions are fixed. A denied Bash call means onl
 5. **Robustness:** sensitivity grid (report every variant; label anything chosen after seeing results as exploratory), time split, results without the top contributors, cost and slippage stress, realistic constraints (liquidation of legs, position limits, capacity). Always say whether a return is on notional or on capital.
 5a. **Per-asset check** (owner's decision 2026-10-17) for every test pooled over several assets: (a) a per-asset table (n, E[R] net, CI) and a heterogeneity test: is the spread of per-asset means larger than their sampling noise implies (e.g. Cochran's Q / I², or a permutation of asset labels within dates); (b) persistence: rank assets by the in-sample result, take the top 10 (or top quarter), and report their out-of-sample result against the rest. Say plainly whether the effect is tied to assets (top assets stay top) or is luck. A subgroup that looks good is a new hypothesis for a new card, defined by a property with a mechanism (liquidity, market cap, sector, volatility), never by the list of winners.
 6. **Report** `docs/verification/YYYY-MM-DD-<slug>.md` in Ukrainian (and add the verdict to the topic's row in `docs/knowledge/README.md`, to its note and to the status of the matching setup in `docs/knowledge/setups.md`, if there is one): method, verdict table (✓ / ≈ / ✗ / ◯), caveats, raw script output. Set the card status to `confirmed`, `rejected` or `inconclusive` with a one-line reason.
-7. `make lint && make test` must pass.
+7. `make lint` and the test files that cover your changes (`uv run pytest -q tests/test_x.py`) must pass; the coordinator runs the full suite once per step.
 
 CI runs the tests on Python 3.11, 3.12 and 3.13 (`make test` here runs one version). Since 3.12, `sum()` of floats is compensated, so float results differ in the last bits between versions: never pin exact floats or hashes of raw float output; compare with a tolerance or round before hashing.
 

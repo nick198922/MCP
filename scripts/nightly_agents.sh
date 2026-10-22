@@ -335,6 +335,10 @@ ALLOWED=(
   "Bash(cd:*)" "Bash(mkdir:*)" "Bash(printf:*)" "Bash(echo:*)" "Bash(ps:*)" "Bash(free:*)" "Bash(stat:*)"
   "Bash(awk:*)" "Bash(tr:*)" "Bash(diff:*)" "Bash(jq:*)" "Bash(python3:*)"
   "Bash(scripts/agents_rm.py:*)" "Bash(python3 scripts/agents_rm.py:*)" "Bash(uv run python scripts/agents_rm.py:*)"
+  # Read-only git in the agents' clone by absolute path, git diff with the pager off, the dashboard by absolute path.
+  "Bash(git -C /home/tradedesk/tradedesk-agents status:*)" "Bash(git -C /home/tradedesk/tradedesk-agents log:*)"
+  "Bash(git -c core.pager=cat diff:*)"
+  "Bash(/usr/bin/python3 -I /home/tradedesk/tradedesk-agents/scripts/dashboard.py:*)"
 )
 # The claude.ai DOUBLETOP connector (the owner's account; access is temporary): read-only data tools for parity checks
 # and real response samples (docs/AGENTS.md, «MCP DOUBLETOP»). Never a runtime dependency. Its generic fetch and

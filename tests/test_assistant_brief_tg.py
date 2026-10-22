@@ -25,6 +25,12 @@ def _snap() -> tuple[dict, float]:
     return snap, db.parse_utc(snap["asof_utc"]).timestamp()
 
 
+@pytest.fixture(autouse=True)
+def _no_dashboard_url(tmp_path, monkeypatch):
+    """The server's real URL file (step 23) must not change these tests."""
+    monkeypatch.setattr(ab, "DASHBOARD_URL_PATH", tmp_path / "no_dashboard_url")
+
+
 def test_brief_on_the_real_snapshot():
     snap, asof = _snap()
     text = ab.build_brief(snap, asof + 300)
@@ -302,3 +308,27 @@ def test_flag_path_matches_between_the_unit_and_step_22():
     flag = re.search(r'^FLAG="\$DIR/(\S+)"$', step, re.M).group(1)
     assert cond == f"{d}/{flag}"
     assert "runuser" not in step and "sudo bash" not in step and '"$(id -un)" == "$SVC"' in step  # runs as tradedesk
+
+
+def test_short_brief_with_dashboard_buttons(tmp_path, monkeypatch):
+    snap, _ = _snap()
+    now = ab.db.parse_utc(snap["asof_utc"]).timestamp() + 300
+    full, short = ab.build_brief(snap, now), ab.build_brief(snap, now, short=True)
+    assert "<b>Події" in full and "<b>Funding" in full
+    assert "<b>Події" not in short and "<b>Funding" not in short and "Додатний funding" not in short
+    assert "<b>Головне сьогодні</b>" in short and all(ab._h(c) in short for c in ab.CAVEATS)
+    url = tmp_path / "dashboard_url"
+    assert ab.dashboard_buttons(url) == []  # no step 23 yet
+    for bad in ("http://tradedesk.example.ts.net/", "https://a b/", ""):
+        url.write_text(bad, encoding="utf-8")
+        assert ab.dashboard_buttons(url) == []
+    url.write_text("https://tradedesk.tail1234.ts.net\n", encoding="utf-8")
+    assert ab.dashboard_buttons(url)[1] == ("Радар", "https://tradedesk.tail1234.ts.net/radar")
+    sent = []
+    monkeypatch.setattr(ab, "DASHBOARD_URL_PATH", url)
+    monkeypatch.setattr(ab.time, "time", lambda: now)
+    monkeypatch.setattr(tg_send, "send", lambda text, **k: sent.append((text, k)) or True)
+    assert ab.main(["--snapshot", str(SNAP_FIXTURE), "--no-chart"]) == 0
+    text, kw = sent[0]
+    assert "<b>Події" not in text and len(kw["buttons"]) == len(ab.PAGES)
+    assert tg_send.payload("1", text, buttons=kw["buttons"])["reply_markup"]["inline_keyboard"][0][0]["text"] == "Бриф"

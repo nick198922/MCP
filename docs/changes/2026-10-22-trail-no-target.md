@@ -1,0 +1,7 @@
+# 2026-10-22 — трейлінг без цілі (C2) на нових символах
+
+- Нове: `src/tradedesk/analytics/trail_no_target.py`. Чисті хелпери: діапазон рангів point-in-time рейтингу (дедуплікація за базою, виключення без зсуву рангів); фандинг, сплачений за час утримання (фактична історія, а до неї плоска ставка проти позиції); маска без найкращих угод. Тести: `tests/test_trail_no_target.py`, зокрема перевірка «без зазирання вперед» для фандингу. Симулятор угод не дублюється: використовується `stop_management.simulate_stop_rule`.
+- Нове: `scripts/verify_trail_no_target.py`. Етапи `universe`, `fetch`, `sanity`, `run`, `report`; кеш у `~/.cache/tradedesk-agents/trail_no_target/`. Дані: 1h-бари data.binance.vision через `rt.binance_vision`; файли з кешу кроку 1 використовуються повторно. Входи й правила взято з `verify_demo_stop_management`; на старому всесвіті раннер побітово відтворює угоди першого прогону.
+- Картка `docs/ideas/IDEA-20261022-trail-no-target.md`: статус `inconclusive`, попередня реєстрація закомічена до результатів. Звіт: `docs/verification/2026-10-22-trail-no-target.md`. Додано рядки в `docs/knowledge/risk-management.md` і `docs/knowledge/README.md`.
+- Вердикт `inconclusive`. На 571 новому символі (ранг 31–100) C2 − A = +0.057R [+0.023; +0.092]. Але E[R] самого C2 = −0.006R [−0.054; +0.045], а вся перевага припадає на 1 % найкращих угод.
+- `src/tradedesk/execution/` не змінювалось.

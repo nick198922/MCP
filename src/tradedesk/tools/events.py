@@ -108,7 +108,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
     @server.tool(
         annotations=READ_ONLY,
         description=(
-            "Load the bundled historical events seed (FOMC / CPI / NFP ~2024-2026) into the "
+            "Load the bundled historical events seed (FOMC / CPI / NFP 2024-2027, plus US election "
+            "day 2026-11-03 as kind 'election' with a nominal 12:00 UTC time) into the "
             "local store. Idempotent — rows with the same (ts, kind, label) are ignored. 2026 "
             "Fed dates in the seed are PROJECTED; verify against the official Fed/BLS calendars."
         ),

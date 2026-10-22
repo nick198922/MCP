@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 
 # Each migration is a list of SQL statements executed in a single transaction.
 # `PRAGMA user_version` is bumped by Store.init() inside the same explicit transaction,
@@ -608,5 +608,19 @@ MIGRATIONS: dict[int, list[str]] = {
         )
         """,
         "CREATE INDEX IF NOT EXISTS forecast_log_status_expiry ON forecast_log (status, expiry_ts)",
+    ],
+    21: [
+        # Demo trader order types (owner 22.10): maker entries and targets, the market only when the situation asks.
+        # New statuses: 'pending' (a resting entry order, not complete yet) and 'missed' (cancelled with nothing filled).
+        "ALTER TABLE demo_trade ADD COLUMN entry_order TEXT",  # orderLinkId of the working entry order (NULL = link_id)
+        "ALTER TABLE demo_trade ADD COLUMN entry_px REAL",  # its limit price; NULL = a market entry
+        "ALTER TABLE demo_trade ADD COLUMN entry_kind TEXT",  # 'maker' | 'taker' | 'mixed' (how the entry filled)
+        "ALTER TABLE demo_trade ADD COLUMN tp_link TEXT",  # orderLinkId of the resting reduce-only target limit
+        "ALTER TABLE demo_trade ADD COLUMN exit_order TEXT",  # orderLinkId of a calm (time) exit limit
+        "ALTER TABLE demo_trade ADD COLUMN exit_px REAL",  # its limit price
+        "ALTER TABLE demo_trade ADD COLUMN exit_ts INTEGER",  # unix ms when the calm exit started
+        "ALTER TABLE demo_trade ADD COLUMN exit_kind TEXT",  # 'maker' | 'taker' (how the position left)
+        "ALTER TABLE demo_trade ADD COLUMN fees_usd REAL",  # open + close fees from the venue's closed-pnl, USD
+        "ALTER TABLE demo_trade ADD COLUMN note TEXT",  # why an entry was missed or went to the market
     ],
 }

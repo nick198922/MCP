@@ -178,22 +178,55 @@ class BybitDemo:
             if not any(x in str(e).lower() for x in ("not modified", "110043", "same", "unchanged")):
                 raise
 
-    async def place_bracket(self, symbol: str, side: str, qty: float, stop: float, target: float, link_id: str) -> dict[str, Any]:
-        """Market entry with the stop-loss and take-profit attached to the position (Bybit tpslMode Full)."""
+    async def quote(self, symbol: str) -> tuple[float, float]:
+        """Best bid and ask (public ticker)."""
+        t = await self.ex.fetch_ticker(symbol)
+        return float(t["bid"]), float(t["ask"])
+
+    async def place_bracket(
+        self, symbol: str, side: str, qty: float, stop: float, target: float | None, link_id: str, price: float | None = None
+    ) -> dict[str, Any]:
+        """Entry with the stop-loss attached to the position (Bybit tpslMode Full; stop-market). ``price`` given: a
+        post-only limit (maker; the venue cancels it rather than let it take). ``target`` None: no take-profit attached
+        (the demo trader rests a reduce-only limit there once the entry is complete)."""
         self._demo_only()
+        params: dict[str, Any] = {"orderLinkId": link_id, "positionIdx": 0, "stopLoss": {"triggerPrice": stop, "type": "market"}}
+        if target is not None:
+            params["takeProfit"] = {"triggerPrice": target, "type": "market"}
+        if price is not None:
+            params["postOnly"] = True
         return await self.ex.create_order(
-            symbol,
-            "market",
-            "buy" if side == "long" else "sell",
-            qty,
-            None,
-            {
-                "orderLinkId": link_id,
-                "positionIdx": 0,
-                "stopLoss": {"triggerPrice": stop, "type": "market"},
-                "takeProfit": {"triggerPrice": target, "type": "market"},
-            },
+            symbol, "limit" if price is not None else "market", "buy" if side == "long" else "sell", qty, price, params
         )
+
+    async def place_reduce_limit(self, symbol: str, side: str, qty: float, price: float, link_id: str, post_only: bool) -> dict[str, Any]:
+        """Reduce-only limit that closes (part of) the position ``side``: the resting target or a calm exit."""
+        self._demo_only()
+        params: dict[str, Any] = {"reduceOnly": True, "orderLinkId": link_id, "positionIdx": 0}
+        if post_only:
+            params["postOnly"] = True
+        return await self.ex.create_order(symbol, "limit", "sell" if side == "long" else "buy", qty, price, params)
+
+    async def amend(self, symbol: str, link_id: str, price: float, qty: float | None = None) -> dict[str, Any]:
+        """Re-quote an open order (Bybit /v5/order/amend by orderLinkId; ``qty`` is the total, filled part included)."""
+        self._demo_only()
+        m = await self.market(symbol)
+        req = {"category": "linear", "symbol": m.market_id, "orderLinkId": link_id, "price": self.ex.price_to_precision(symbol, price)}
+        if qty is not None:
+            req["qty"] = self.ex.amount_to_precision(symbol, qty)
+        return await self.ex.privatePostV5OrderAmend(req)
+
+    async def cancel(self, symbol: str, link_id: str) -> bool:
+        """Cancel an open order by orderLinkId; False when the venue no longer has it open (filled or cancelled)."""
+        self._demo_only()
+        m = await self.market(symbol)
+        try:
+            await self.ex.privatePostV5OrderCancel({"category": "linear", "symbol": m.market_id, "orderLinkId": link_id})
+        except Exception as e:  # noqa: BLE001 - 110001: order does not exist or is too late to cancel
+            if "110001" in str(e) or "not exist" in str(e).lower():
+                return False
+            raise
+        return True
 
     async def order_by_link(self, market_id: str, link_id: str) -> dict[str, Any] | None:
         """The venue's raw order row for ``link_id`` (open or history), or None if Bybit has no such order."""
@@ -219,8 +252,22 @@ class BybitDemo:
             }
         )
 
+    async def set_take_profit(self, symbol: str, target: float) -> dict[str, Any]:
+        """Market take-profit on the whole position (the fallback when the resting target limit is refused)."""
+        self._demo_only()
+        m = await self.market(symbol)
+        return await self.ex.privatePostV5PositionTradingStop(
+            {
+                "category": "linear",
+                "symbol": m.market_id,
+                "takeProfit": self.ex.price_to_precision(symbol, target),
+                "tpslMode": "Full",
+                "positionIdx": 0,
+            }
+        )
+
     async def close_position(self, symbol: str, side: str, qty: float, link_id: str) -> dict[str, Any]:
-        """Reduce-only market order that flattens the position (time exit)."""
+        """Reduce-only market order that flattens the position (time exit when the limit did not fill or near the stop)."""
         self._demo_only()
         return await self.ex.create_order(
             symbol, "market", "sell" if side == "long" else "buy", qty, None, {"reduceOnly": True, "orderLinkId": link_id}

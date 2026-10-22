@@ -1,14 +1,20 @@
 """Demo trader (ADR 0007): trade the course setups on the Bybit Demo Trading account and keep the journal.
 
     uv run python -m tradedesk.execution.demo_trader [--db PATH] [--dry-run]   # hourly: sync, scan, select, enter
-    uv run python -m tradedesk.execution.demo_trader --manage                  # every minute: break-even stops only
+    uv run python -m tradedesk.execution.demo_trader --manage                  # every minute: orders and break-even
+
+Order types (owner 22.10, ``orders.py``): entries are post-only limits (maker) re-quoted each minute; the target is a
+resting reduce-only limit; the stops stay stop-market; a time exit is a limit first and the market only when it does not
+fill or the price nears the stop.
 
 Hourly cycle:
 1. Sync every trade of the book with the venue. An order whose answer was lost ('unknown') is looked up by its
-   orderLinkId. A closed trade gets its P&L from Bybit's closed-pnl (fees included), R = P&L / planned risk, the
-   journal row is closed and the owner gets a Telegram message. A position held longer than ``MAX_HOLD_MS`` of its
-   timeframe is flattened with a reduce-only market order (outside the guard: it only reduces).
-2. Break-even (also every minute): at +30 % ROE the stop moves to the entry plus both taker fees (owner 21.10).
+   orderLinkId. A closed trade gets its P&L from Bybit's closed-pnl (fees included), R = P&L / risk of the filled size,
+   the journal row is closed and the owner gets a Telegram message. A position held longer than ``MAX_HOLD_MS`` of its
+   timeframe starts a time exit (reduce-only orders, outside the guard: they only reduce).
+2. Orders and break-even (also every minute): a resting entry ('pending') is re-quoted, completed at the market or
+   cancelled ('missed'); a complete entry gets its target limit; a time exit is re-quoted or sent to the market; at +30 %
+   ROE the stop moves to the entry plus both taker fees (owner 21.10).
 3. Universe: today's top 100 crypto USDT perpetuals by turnover (no tokenised stocks, ETFs or commodities). Scan the setups of ``analytics/setup_signals.py`` on the last
    closed 1d and 4h bars; a signal older than ``FRESH_MS`` is ignored, and each signal is decided once.
 4. Each candidate is sized for $100 at the stop (fees included) from the live price, gets its leverage (the owner's
@@ -48,6 +54,7 @@ from .bybit_demo import CROSS, BybitDemo, is_refusal, load_keys
 from .guard import (
     BE_ROE,
     DEFAULT,
+    TAKER_FEE,
     GuardConfig,
     Proposal,
     State,
@@ -60,6 +67,7 @@ from .guard import (
     roe,
     universe,
 )
+from .orders import ENTRY_WAIT_MS, entry_step, exit_step, maker_quote
 
 VENUE = "bybit-demo"
 HALT_FILE = Path.home() / ".config" / "tradedesk" / "demo.halt"
@@ -80,6 +88,19 @@ Notify = Callable[[str], Awaitable[None]]
 def link_id(sig: LiveSignal, symbol: str) -> str:
     """Idempotency key of one signal (Bybit orderLinkId, max 36 chars)."""
     return f"td-{sig.setup}-{sig.side[0]}-{sig.timeframe}-{base_of(symbol)}-{sig.signal_ts // 1000}"[:36]
+
+
+def _link(lid: str, prefix: str) -> str:
+    """Link id of a follow-up order of the trade ``lid``: 'em-' market rest of the entry, 'tp-' target limit, 'xl-' time
+    exit limit, 'tx-' time exit at the market (same length as ``lid``, unique per trade)."""
+    return prefix + lid[3:]
+
+
+LIVE = ("New", "PartiallyFilled", "Untriggered")  # Bybit orderStatus of an order still working
+
+
+def _risk(qty: float, fill: float, stop: float) -> float:
+    return qty * (abs(fill - stop) + TAKER_FEE * (fill + stop))
 
 
 def _round(x: float, tick: float) -> float:
@@ -144,9 +165,10 @@ async def _journal_open(ctx: Ctx, t: dict[str, Any], fill: float) -> int:
 
 
 async def _resolve_unknown(ctx: Ctx, t: dict[str, Any]) -> str:
-    """'unknown' (order answer lost or not yet recorded) → 'open' / 'rejected' / still 'unknown', by the link id."""
+    """'unknown' (order answer lost or not yet recorded) → 'pending' (the venue has it: the entry steps take over) /
+    'rejected' / still 'unknown', by the link id."""
     m = await ctx.client.market(t["symbol"])
-    o = await ctx.client.order_by_link(m.market_id, t["link_id"])
+    o = await ctx.client.order_by_link(m.market_id, t["entry_order"] or t["link_id"])
     if o is None:
         if ctx.now - (t["opened_ts"] or ctx.now) > UNKNOWN_GRACE_MS:
             await ctx.store.demo_trade_update(t["link_id"], status="rejected")
@@ -154,20 +176,194 @@ async def _resolve_unknown(ctx: Ctx, t: dict[str, Any]) -> str:
             return "rejected"
         return "unknown"
     st = str(o.get("orderStatus") or "")
-    if st in ("Rejected", "Cancelled", "Deactivated") and float(o.get("cumExecQty") or 0) == 0:
+    if st == "Rejected" and float(o.get("cumExecQty") or 0) == 0:
         await ctx.store.demo_trade_update(t["link_id"], status="rejected", order_id=str(o.get("orderId") or ""))
         await ctx.audit("rejected", link_id=t["link_id"], symbol=t["symbol"], setup=t["setup"], payload={"orderStatus": st})
         return "rejected"
-    if float(o.get("cumExecQty") or 0) <= 0:
-        return "unknown"
-    fill = float(o.get("avgPrice") or 0) or t["entry"]
-    opened = int(o.get("updatedTime") or o.get("createdTime") or ctx.now)
-    await ctx.store.demo_trade_update(t["link_id"], status="open", order_id=str(o.get("orderId") or ""), fill=fill, opened_ts=opened)
+    await ctx.store.demo_trade_update(t["link_id"], status="pending", order_id=str(o.get("orderId") or ""))
+    await ctx.audit("recovered", link_id=t["link_id"], symbol=t["symbol"], setup=t["setup"], payload={"orderStatus": st})
+    return "pending"
+
+
+# ---------------------------------------------------------------- entry orders
+
+
+async def _progress_entry(ctx: Ctx, t: dict[str, Any]) -> None:
+    """One step of a resting entry: wait, re-quote, complete at the market, or cancel (``orders.entry_step``)."""
+    sym, lid = t["symbol"], t["link_id"]
+    if (t["entry_order"] or lid) != lid:  # the market rest was sent (its answer lost): the venue's position is the trade
+        await _complete_entry(ctx, t, t["entry_kind"] or "mixed")
+        return
+    m = await ctx.client.market(sym)
+    o = await ctx.client.order_by_link(m.market_id, lid)
+    if o is None:
+        if ctx.now - (t["opened_ts"] or ctx.now) > UNKNOWN_GRACE_MS:  # the venue lost it: free the coin
+            await ctx.store.demo_trade_update(lid, status="missed", note="the venue has no such order", closed_ts=ctx.now)
+            await ctx.audit("missed", link_id=lid, symbol=sym, setup=t["setup"], payload={"why": "no order"})
+        return  # else the venue does not show it yet; the next minute looks again
+    st, cum = str(o.get("orderStatus") or ""), float(o.get("cumExecQty") or 0)
+    if st == "Filled":
+        await _complete_entry(ctx, t, "maker" if t["entry_px"] else "taker")
+        return
+    live = st in LIVE
+    bid, ask = await ctx.client.quote(sym)
+    step = entry_step(
+        side=t["side"],
+        planned=t["entry"],
+        stop=t["stop"],
+        target=t["target"],
+        plan_qty=t["qty"],
+        order_px=t["entry_px"] or t["entry"],
+        order_live=live,
+        filled=cum,
+        bid=bid,
+        ask=ask,
+        age_ms=ctx.now - (t["opened_ts"] or ctx.now),
+        risk_usd=ctx.cfg.risk_usd,
+        lot_step=m.lot_step,
+        min_qty=m.min_qty,
+        min_reward_risk=ctx.cfg.min_reward_risk,
+    )
+    if step.action == "wait":
+        return
+    if step.action == "requote":
+        px = _round(step.price, m.tick)
+        await ctx.client.amend(sym, lid, px, step.qty)
+        await ctx.store.demo_trade_update(lid, entry_px=px, qty=step.qty, risk_usd=_risk(step.qty, px, t["stop"]))
+        await ctx.audit("requote", link_id=lid, symbol=sym, setup=t["setup"], payload={"price": px, "qty": step.qty})
+        ctx.bump("requotes")
+        return
+    if live and not await ctx.client.cancel(sym, lid):
+        return  # filled meanwhile: the next minute completes it
+    if step.action == "market":
+        em, kind = _link(lid, "em-"), "taker" if cum == 0 else "mixed"
+        await ctx.store.demo_trade_update(lid, entry_order=em, entry_kind=kind, note=step.reason)  # before the order
+        await ctx.client.place_bracket(sym, t["side"], step.qty, t["stop"], None, em)
+        await ctx.audit("chased", link_id=lid, symbol=sym, setup=t["setup"], payload={"qty": step.qty, "filled": cum, "why": step.reason})
+        await _complete_entry(ctx, t, kind)
+        return
+    if cum > 0:
+        await ctx.store.demo_trade_update(lid, note=step.reason)
+        await _complete_entry(ctx, t, "maker")
+        return
+    await ctx.store.demo_trade_update(lid, status="missed", note=step.reason, closed_ts=ctx.now)
+    await ctx.audit("missed", link_id=lid, symbol=sym, setup=t["setup"], payload={"why": step.reason, "bid": bid, "ask": ask})
+    ctx.bump("missed")
+    await ctx.safe(
+        "notify",
+        lambda: ctx.notify(
+            f"⏭ Демо: лімітний вхід {t['setup']} {_side_ua(t['side'])} {sym.split(':')[0]} не виконано, ордер знято — "
+            f"{_why_ua(step.reason)} (план {_fmt(t['entry'])}, зараз {_fmt(bid)} / {_fmt(ask)})"
+        ),
+    )
+
+
+def _why_ua(reason: str) -> str:
+    if reason.startswith("price ran"):
+        return "ціна пішла до цілі без нас, наздоганяти дорожче за план"
+    if reason.startswith("price at the stop"):
+        return "ціна дійшла до стопу раніше за вхід, ідея зламана"
+    if reason.startswith("reward/risk"):
+        return "по ринку R:R уже нижчий за поріг"
+    return reason
+
+
+async def _complete_entry(ctx: Ctx, t: dict[str, Any], kind: str) -> None:
+    """The entry is done: size and price from the venue's position, journal row, resting target limit, message."""
+    sym, lid = t["symbol"], t["link_id"]
+    pos = (await ctx.client.positions()).get(sym)
+    if not pos:
+        await ctx.store.demo_trade_update(
+            lid, status="missed", note=(t.get("note") or "") + "; no position after the fill", closed_ts=ctx.now
+        )
+        await ctx.audit("missed", link_id=lid, symbol=sym, setup=t["setup"], payload={"why": "no position"})
+        return
+    qty, fill = float(pos["contracts"]), float(pos.get("entryPrice") or t["entry_px"] or t["entry"])
+    await ctx.store.demo_trade_update(
+        lid, status="open", qty=qty, fill=fill, opened_ts=ctx.now, entry_kind=kind, risk_usd=_risk(qty, fill, t["stop"])
+    )
+    await ctx.audit("filled", link_id=lid, symbol=sym, setup=t["setup"], payload={"fill": fill, "qty": qty, "kind": kind})
+    ctx.bump("filled")
     if not t["journal_id"]:
-        jid = await _journal_open(ctx, {**t, "opened_ts": opened}, fill)
-        await ctx.store.demo_trade_update(t["link_id"], journal_id=jid)
-    await ctx.audit("filled", link_id=t["link_id"], symbol=t["symbol"], setup=t["setup"], payload={"recovered": True, "fill": fill})
-    return "open"
+        jid = await ctx.safe("journal", lambda: _journal_open(ctx, {**t, "qty": qty, "opened_ts": ctx.now}, fill), link_id=lid)
+        if jid:
+            await ctx.safe("journal_link", lambda: ctx.store.demo_trade_update(lid, journal_id=jid), link_id=lid)
+    target_kind = await ctx.safe("target", lambda: _place_target(ctx, t, qty), link_id=lid, symbol=sym)
+    word = {"maker": "лімітом (мейкер)", "taker": "по ринку (тейкер)", "mixed": "частково лімітом, решта по ринку"}[kind]
+    await ctx.safe(
+        "notify",
+        lambda: ctx.notify(
+            f"✅ Демо: вхід {t['setup']} {_side_ua(t['side'])} {sym.split(':')[0]} виконано {word} по {_fmt(fill)}, "
+            f"{qty:g} шт., ризик {_risk(qty, fill, t['stop']):.0f} USD. "
+            f"Ціль {_fmt(t['target'])} — {'лімітка' if target_kind == 'limit' else 'по ринку'}, стоп {_fmt(t['stop'])} — по ринку"
+        ),
+    )
+
+
+async def _place_target(ctx: Ctx, t: dict[str, Any], qty: float) -> str:
+    """Resting reduce-only limit at the target (maker when it fills); refused → the venue's market take-profit."""
+    tp = _link(t["link_id"], "tp-")
+    try:
+        await ctx.client.place_reduce_limit(t["symbol"], t["side"], qty, t["target"], tp, post_only=False)
+    except Exception as e:  # noqa: BLE001 - a trade must never stay without a target
+        await ctx.audit(
+            "error", link_id=t["link_id"], symbol=t["symbol"], payload={"step": "target_limit", "error": ctx.client.safe_error(e)}
+        )
+        await ctx.client.set_take_profit(t["symbol"], t["target"])
+        return "market"
+    await ctx.store.demo_trade_update(t["link_id"], tp_link=tp)
+    return "limit"
+
+
+# ---------------------------------------------------------------- time exit
+
+
+async def _progress_exit(ctx: Ctx, t: dict[str, Any], pos: dict[str, Any]) -> None:
+    """One step of a time exit: a post-only limit at the best quote, the market when it does not fill in time or the
+    price nears the stop (``orders.exit_step``)."""
+    sym, lid = t["symbol"], t["link_id"]
+    m = await ctx.client.market(sym)
+    live = False
+    if t["exit_order"]:
+        o = await ctx.client.order_by_link(m.market_id, t["exit_order"])
+        live = bool(o) and str(o.get("orderStatus") or "") in LIVE
+    bid, ask = await ctx.client.quote(sym)
+    step = exit_step(
+        side=t["side"],
+        entry=t["fill"] or t["entry"],
+        stop=t["be_stop"] or t["stop"],
+        order_px=t["exit_px"] or 0.0,
+        order_live=live,
+        bid=bid,
+        ask=ask,
+        age_ms=ctx.now - (t["exit_ts"] or ctx.now),
+    )
+    if step.action == "wait":
+        return
+    if not t["exit_ts"]:
+        await ctx.store.demo_trade_update(lid, exit_reason="time", exit_ts=ctx.now)
+        ctx.bump("time_exits")
+        if t["tp_link"]:  # the target limit would add to the reduce-only size; the time exit replaces it
+            await ctx.safe("cancel_target", lambda: ctx.client.cancel(sym, t["tp_link"]), link_id=lid)
+    if step.action == "requote":
+        px = _round(step.price, m.tick)
+        if live:
+            await ctx.client.amend(sym, t["exit_order"], px)
+        else:
+            xl = _link(lid, "xl-")
+            await ctx.store.demo_trade_update(lid, exit_order=xl)
+            await ctx.client.place_reduce_limit(sym, t["side"], float(pos["contracts"]), px, xl, post_only=True)
+        await ctx.store.demo_trade_update(lid, exit_px=px)
+        await ctx.audit("exit_limit", link_id=lid, symbol=sym, setup=t["setup"], payload={"price": px, "why": step.reason})
+        return
+    if live and not await ctx.client.cancel(sym, t["exit_order"]):
+        return  # filled meanwhile
+    qty = float(((await ctx.client.positions()).get(sym) or {}).get("contracts") or 0) if live else float(pos["contracts"])
+    if qty <= 0:
+        return
+    await ctx.client.close_position(sym, t["side"], qty, _link(lid, "tx-"))
+    await ctx.store.demo_trade_update(lid, exit_kind="taker", note=step.reason)
+    await ctx.audit("sent", link_id=lid, symbol=sym, setup=t["setup"], payload={"time_exit": "market", "why": step.reason})
 
 
 def _exit_reason(t: dict[str, Any], exit_px: float | None) -> str:
@@ -183,19 +379,15 @@ def _exit_reason(t: dict[str, Any], exit_px: float | None) -> str:
 
 async def _sync_trade(ctx: Ctx, t: dict[str, Any], positions: dict[str, Any]) -> None:
     if t["status"] == "unknown":
-        if await _resolve_unknown(ctx, t) != "open":
-            return
-        t = next(x for x in await ctx.store.demo_trade_list(("open",)) if x["link_id"] == t["link_id"])
+        await _resolve_unknown(ctx, t)
+        return  # a 'pending' entry is taken over by the entry steps of ``manage``
     sym, lid = t["symbol"], t["link_id"]
     pos = positions.get(sym)
     if pos:
-        if t["fill"] is None and pos.get("entryPrice"):
-            await ctx.store.demo_trade_update(lid, fill=float(pos["entryPrice"]))
-        if ctx.now - (t["opened_ts"] or ctx.now) > MAX_HOLD_MS.get(t["timeframe"], 7 * 86_400_000) and t["exit_reason"] != "time":
-            await ctx.client.close_position(sym, t["side"], float(pos["contracts"]), "tx-" + lid[3:])
-            await ctx.store.demo_trade_update(lid, exit_reason="time")
-            await ctx.audit("sent", link_id=lid, symbol=sym, setup=t["setup"], payload={"time_exit": True})
-            ctx.bump("time_exits")
+        if pos.get("entryPrice") and float(pos["entryPrice"]) != t["fill"]:
+            await ctx.store.demo_trade_update(lid, fill=float(pos["entryPrice"]))  # the venue's average is the truth
+        if ctx.now - (t["opened_ts"] or ctx.now) > MAX_HOLD_MS.get(t["timeframe"], 7 * 86_400_000) and not t["exit_ts"]:
+            await _progress_exit(ctx, t, pos)
         return
     m = await ctx.client.market(sym)
     opened = t["opened_ts"] or ctx.now
@@ -203,14 +395,30 @@ async def _sync_trade(ctx: Ctx, t: dict[str, Any], positions: dict[str, Any]) ->
     if not rows:
         return  # the venue has not reported the close yet
     pnl = sum(float(r.get("closedPnl") or 0) for r in rows)
+    fee_rows = [r for r in rows if r.get("openFee") is not None or r.get("closeFee") is not None]
+    fees = sum(float(r.get("openFee") or 0) + float(r.get("closeFee") or 0) for r in fee_rows) if fee_rows else None
     exit_px = float(rows[0].get("avgExitPrice") or 0) or None
     reason = _exit_reason(t, exit_px)
+    kind = t["exit_kind"] or ("maker" if (reason == "target" and t["tp_link"]) or (reason == "time") else "taker")
     r_mult = pnl / t["risk_usd"] if t["risk_usd"] else 0.0
     await ctx.store.demo_trade_update(
-        lid, status="closed", exit=exit_px, closed_ts=ctx.now, pnl_usd=pnl, r_multiple=r_mult, exit_reason=reason
+        lid,
+        status="closed",
+        exit=exit_px,
+        closed_ts=ctx.now,
+        pnl_usd=pnl,
+        r_multiple=r_mult,
+        exit_reason=reason,
+        exit_kind=kind,
+        fees_usd=fees,
     )
-    await ctx.audit("closed", link_id=lid, symbol=sym, setup=t["setup"], payload={"pnl_usd": pnl, "exit": exit_px, "reason": reason})
+    await ctx.audit(
+        "closed", link_id=lid, symbol=sym, setup=t["setup"], payload={"pnl_usd": pnl, "exit": exit_px, "reason": reason, "fees": fees}
+    )
     ctx.bump("closed")
+    for left in (t["tp_link"], t["exit_order"]):  # a reduce-only order left on the book after the close
+        if left:
+            await ctx.safe("cancel_left", lambda left=left: ctx.client.cancel(sym, left), link_id=lid)
     if t["journal_id"]:
         outcome = "win" if pnl > 0 else "loss" if pnl < 0 else "break_even"
         await ctx.safe(
@@ -233,7 +441,9 @@ async def _sync_trade(ctx: Ctx, t: dict[str, Any], positions: dict[str, Any]) ->
         lambda: ctx.notify(
             f"{'✅' if pnl > 0 else '❌' if pnl < 0 else '➖'} Демо: закрито {t['setup']} {_side_ua(t['side'])} "
             f"{sym.split(':')[0]} ({t['timeframe']}) — {word}, P&L {pnl:+.2f} USD = {r_mult:+.2f}R "
-            f"(вхід {_fmt(t['fill'] or t['entry'])}, вихід {_fmt(exit_px)})"
+            f"(вхід {_fmt(t['fill'] or t['entry'])}, вихід {_fmt(exit_px)}"
+            + (f"; комісії {fees:.2f} USD" if fees is not None else "")
+            + ")"
         ),
     )
 
@@ -242,7 +452,14 @@ async def _sync_trade(ctx: Ctx, t: dict[str, Any], positions: dict[str, Any]) ->
 
 
 async def manage(ctx: Ctx, positions: dict[str, Any]) -> None:
-    """Owner's rule: at +30 % ROE move the stop to the entry plus both taker fees (once per trade)."""
+    """Resting entries and time exits one step each; then the owner's rule: at +30 % ROE move the stop to the entry plus
+    both taker fees (once per trade)."""
+    for t in await ctx.store.demo_trade_list(("pending",)):
+        await ctx.safe("entry", lambda t=t: _progress_entry(ctx, t), link_id=t["link_id"], symbol=t["symbol"])
+    for t in await ctx.store.demo_trade_list(("open",)):
+        pos = positions.get(t["symbol"])
+        if t["exit_ts"] and t["exit_kind"] != "taker" and pos:
+            await ctx.safe("time_exit", lambda t=t, pos=pos: _progress_exit(ctx, t, pos), link_id=t["link_id"], symbol=t["symbol"])
     for t in await ctx.store.demo_trade_list(("open",)):
         pos = positions.get(t["symbol"])
         if t["be_ts"] or not pos or not pos.get("markPrice"):
@@ -288,7 +505,7 @@ async def _move_to_breakeven(ctx: Ctx, t: dict[str, Any], pos: dict[str, Any], e
 
 async def _state(ctx: Ctx, positions: dict[str, Any], uni: tuple[str, ...], equity: float) -> State:
     trades = await ctx.store.demo_trade_list(limit=5000)
-    open_rows = [t for t in trades if t["status"] in ("open", "unknown")]
+    open_rows = [t for t in trades if t["status"] in ("open", "unknown", "pending")]
     day0 = day_start_ms(ctx.now)
     seen_audit = await ctx.store.exec_audit_list(ctx.now - 3 * 86_400_000, ("refused", "skipped"), limit=5000)
     return State(
@@ -296,7 +513,8 @@ async def _state(ctx: Ctx, positions: dict[str, Any], uni: tuple[str, ...], equi
         universe=uni,
         halted=HALT_FILE.exists(),
         open_symbols=tuple(sorted(set(positions) | {t["symbol"] for t in open_rows})),
-        trades_today=sum(1 for t in trades if t["status"] in ("open", "unknown", "closed") and (t["opened_ts"] or 0) >= day0),
+        # a missed limit entry is not a trade: the daily cap counts only orders that are or may be filled
+        trades_today=sum(1 for t in trades if t["status"] in ("open", "unknown", "pending", "closed") and (t["opened_ts"] or 0) >= day0),
         orders_last_hour=len(await ctx.store.exec_audit_list(ctx.now - HOUR_MS, ("sent",))),
         open_risk_usd=open_risk_usd([(t["qty"], t["fill"] or t["entry"], t["be_stop"] or t["stop"]) for t in open_rows]),
         open_margin_usd=sum(t["qty"] * (t["fill"] or t["entry"]) / max(1, t["leverage"]) for t in open_rows),
@@ -419,7 +637,7 @@ async def _shadow(ctx: Ctx, c: Candidate, taken: bool) -> int | None:
     )
 
 
-async def _insert_trade(ctx: Ctx, c: Candidate) -> None:
+async def _insert_trade(ctx: Ctx, c: Candidate, px: float) -> None:
     p, sig = c.p, c.sig
     await ctx.store.demo_trade_insert(
         {
@@ -440,7 +658,9 @@ async def _insert_trade(ctx: Ctx, c: Candidate) -> None:
             "score_reasons": json.dumps(c.score.reasons, ensure_ascii=False),
             "comment": sig.comment,
             "status": "unknown",
-            "opened_ts": ctx.now,
+            "opened_ts": ctx.now,  # the placement; set again to the fill time when the entry completes
+            "entry_order": p.link_id,
+            "entry_px": px,
         }
     )  # written before the order: if the answer is lost, the next sync finds the order by its link id
 
@@ -449,7 +669,11 @@ async def _enter(ctx: Ctx, c: Candidate, state: State) -> State:
     p, sig = c.p, c.sig
     try:
         await ctx.client.prepare(p.symbol, p.leverage)
-        await _insert_trade(ctx, c)
+        m = await ctx.client.market(p.symbol)
+        px = _round(maker_quote(p.side, *await ctx.client.quote(p.symbol)), m.tick)
+        if not px > 0:
+            raise ValueError(f"no quote for {p.symbol}")
+        await _insert_trade(ctx, c, px)
     except Exception as e:  # noqa: BLE001 - nothing was sent: the signal is refused, the cycle goes on
         err = ctx.client.safe_error(e)
         ctx.bump("refused")
@@ -471,7 +695,7 @@ async def _enter(ctx: Ctx, c: Candidate, state: State) -> State:
         seen_link_ids=(*state.seen_link_ids, p.link_id),
     )
     try:
-        order = await ctx.client.place_bracket(p.symbol, p.side, p.qty, p.stop, p.target, p.link_id)
+        order = await ctx.client.place_bracket(p.symbol, p.side, p.qty, p.stop, None, p.link_id, price=px)
     except Exception as e:  # noqa: BLE001
         err = ctx.client.safe_error(e)
         if is_refusal(e):
@@ -497,16 +721,12 @@ async def _enter(ctx: Ctx, c: Candidate, state: State) -> State:
             link_id=lid,
             symbol=p.symbol,
             setup=sig.setup,
-            payload={"order_id": order.get("id"), "qty": p.qty, "leverage": p.leverage},
+            payload={"order_id": order.get("id"), "qty": p.qty, "leverage": p.leverage, "limit": px},
         ),
     )
-    await ctx.safe("trade_open", lambda: ctx.store.demo_trade_update(lid, status="open", order_id=str(order.get("id") or "")), link_id=lid)
-
-    async def journal() -> None:
-        t = next(x for x in await ctx.store.demo_trade_list(("open", "unknown")) if x["link_id"] == lid)
-        await ctx.store.demo_trade_update(lid, journal_id=await _journal_open(ctx, t, p.entry))
-
-    await ctx.safe("journal", journal, link_id=lid)
+    await ctx.safe(
+        "trade_pending", lambda: ctx.store.demo_trade_update(lid, status="pending", order_id=str(order.get("id") or "")), link_id=lid
+    )  # the journal row comes with the fill (``_complete_entry``)
     plan_id = await ctx.safe("shadow", lambda: _shadow(ctx, c, True), link_id=lid)
     if plan_id:
         await ctx.safe("plan_link", lambda: ctx.store.demo_trade_update(lid, plan_id=plan_id), link_id=lid)
@@ -515,7 +735,7 @@ async def _enter(ctx: Ctx, c: Candidate, state: State) -> State:
         "notify",
         lambda: ctx.notify(
             f"🧪 Демо: вхід {sig.setup} {_side_ua(p.side)} {p.symbol.split(':')[0]} ({sig.timeframe}), бал {c.score.points}\n"
-            f"Вхід ≈ {_fmt(p.entry)}, стоп {_fmt(p.stop)}, ціль {_fmt(p.target)}, R:R {p.reward_risk:.1f} після комісій, "
+            f"Лімітний ордер (мейкер) по {_fmt(px)}, чекаю до {ENTRY_WAIT_MS // 60_000} хв; ціна {_fmt(p.entry)}, стоп {_fmt(p.stop)}, ціль {_fmt(p.target)}, R:R {p.reward_risk:.1f} після комісій, "
             f"ризик {p.risk_usd:.0f} USD, плече {p.leverage}x, позиція {p.notional:,.0f} USD (застава {p.margin:,.0f})\n"
             f"Чому: {sig.comment}\nБали: {why}"
         ),
@@ -592,7 +812,7 @@ async def cycle(
 async def manage_only(store: Store, client: BybitDemo, now: int, notify: Notify) -> dict[str, Any]:
     ctx = Ctx(store, client, now, notify, out={"breakeven": 0, "errors": 0})
     positions = await ctx.safe("positions", client.positions)
-    if positions:
+    if positions is not None:  # no position yet still leaves resting entries to manage
         await manage(ctx, positions)
     return ctx.out
 

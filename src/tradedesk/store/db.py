@@ -70,6 +70,18 @@ _DEMO_TRADE_MUTABLE = frozenset(
         "be_stop",
         "journal_id",
         "plan_id",
+        "qty",
+        "risk_usd",
+        "entry_order",
+        "entry_px",
+        "entry_kind",
+        "tp_link",
+        "exit_order",
+        "exit_px",
+        "exit_ts",
+        "exit_kind",
+        "fees_usd",
+        "note",
     }
 )
 

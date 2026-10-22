@@ -19,7 +19,7 @@
   - ліквідації через WebSocket — **вимкнено** (знайдено 17.10; вмикає `scripts/server/16-collector-liquidations.sh`), історія OHLCV — вимкнено (є архів Binance);
   - історію OHLCV, пропозицію токенів;
   - лідерборди й позиції трейдерів HL і Polymarket.
-- **Панель проєкту:** `scripts/dashboard.py` на сервері (127.0.0.1:8090, служба ставиться `scripts/server/15-dashboard.sh`); відкрити на Маці — `bash scripts/dashboard-open.sh`; Claude читає її `scripts/server/dashboard-check.sh`.
+- **Панель проєкту:** `scripts/dashboard.py` на сервері (127.0.0.1:8090, служба ставиться `scripts/server/15-dashboard.sh`); відкрити на Маці — `bash scripts/dashboard-open.sh`; Claude читає її `scripts/server/dashboard-check.sh`. З 22.10 — постійне посилання з ключем через Tailscale Funnel (`scripts/server/24-dashboard-link.sh`; без ключа — 401; ключ у `~/.config/tradedesk/dashboard.env`).
 - **Перевірка стану з Мака** (лише читання): `scripts/server/` — `health-check.sh`, `disk-check.sh`, `usage-check.sh`, `agents-status.sh`, `agents-progress.sh`, `coinalyze-check.sh`, `doubletop-check.sh`. Адмінське — лише нумеровані скрипти, їх запускає власник.
 - **Ключі:**
   - Coinalyze — у `/etc/tradedesk-mcp.env`, лише MCP-сервіс;

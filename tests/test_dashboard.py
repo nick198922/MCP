@@ -2110,3 +2110,20 @@ def test_journal_tab_shows_weekly_rule_violations(tmp_path):
     bare = tmp_path / "bare.sqlite"
     sqlite3.connect(bare).execute("CREATE TABLE funding_hist (ts INTEGER)").connection.close()
     assert "Таблиці journal у базі ще немає: перевіряти нема що." in db.render_journal(*db.load_journal(bare), now)
+
+
+def test_access_by_key_link_then_cookie(tmp_path):
+    key = db.dashboard_key(tmp_path / "d.env", create=True)
+    assert key and db.dashboard_key(tmp_path / "d.env") == key
+    assert oct((tmp_path / "d.env").stat().st_mode & 0o777) == "0o600"
+    proxied = [("Host", "tradedesk.x.ts.net"), ("X-Forwarded-For", "1.2.3.4")]
+    assert db.access("127.0.0.1", [("Host", "127.0.0.1:8090")], "", key) == "ok"  # server scripts, SSH tunnel
+    assert db.access("127.0.0.1", proxied, "", key) == "deny"
+    assert db.access("127.0.0.1", [("Tailscale-Funnel-Request", "?1")], "", key) == "deny"
+    assert db.access("10.0.0.5", [], "", key) == "deny"
+    assert db.access("127.0.0.1", proxied, "k=wrong", key) == "deny"
+    assert db.access("127.0.0.1", proxied, f"asset=ETH&k={key}", key) == "set"
+    assert db.access("127.0.0.1", [*proxied, ("Cookie", f"a=1; td_key={key}")], "", key) == "ok"
+    assert db.access("127.0.0.1", [*proxied, ("Cookie", "td_key=nope")], "", key) == "deny"
+    assert db.access("127.0.0.1", [*proxied, ("Cookie", 'td_key="')], "", key) == "deny"
+    assert db.access("127.0.0.1", proxied, "k=", None) == "deny"  # no key file: proxied requests never pass

@@ -385,7 +385,7 @@ def test_short_brief_escapes_and_survives_odd_data():
 
 def test_panel_url_from_env_or_step_23_file(tmp_path):
     url = tmp_path / "dashboard_url"
-    assert ab.dashboard_buttons(url, environ={}) == []  # no step 23, no env
+    assert ab.dashboard_buttons(url, key_file=tmp_path / "nokey", environ={}) == []  # no step 23, no env
     bad_urls = (
         "http://tradedesk.example.ts.net/",
         "https://a b/",
@@ -399,16 +399,20 @@ def test_panel_url_from_env_or_step_23_file(tmp_path):
     )
     for bad in bad_urls:
         url.write_text(bad, encoding="utf-8")
-        assert ab.dashboard_buttons(url, environ={}) == [], bad
-        assert ab.dashboard_buttons(tmp_path / "none", environ={ab.PANEL_URL_ENV: bad}) == [], bad
+        assert ab.dashboard_buttons(url, key_file=tmp_path / "nokey", environ={}) == [], bad
+        assert ab.dashboard_buttons(tmp_path / "none", key_file=tmp_path / "nokey", environ={ab.PANEL_URL_ENV: bad}) == [], bad
     url.write_text("https://tradedesk.tail1234.ts.net\n", encoding="utf-8")
-    buttons = ab.dashboard_buttons(url, environ={})
+    buttons = ab.dashboard_buttons(url, key_file=tmp_path / "nokey", environ={})
     assert [b[0] for b in buttons] == ["Бриф", "Опціони", "Радар", "Журнал", "Polymarket"]
     assert buttons[2] == ("Радар", "https://tradedesk.tail1234.ts.net/radar")
     env = {ab.PANEL_URL_ENV: " https://panel.tail9.ts.net/ "}  # the env var wins over the file
-    assert ab.dashboard_buttons(url, environ=env)[0] == ("Бриф", "https://panel.tail9.ts.net/brief")
-    assert ab.dashboard_buttons(url, environ={ab.PANEL_URL_ENV: ""})[0][1].startswith("https://tradedesk.tail1234")
-    assert ab.dashboard_buttons(url, environ={ab.PANEL_URL_ENV: "http://x"}) == []  # set but unusable: no buttons
+    assert ab.dashboard_buttons(url, key_file=tmp_path / "nokey", environ=env)[0] == ("Бриф", "https://panel.tail9.ts.net/brief")
+    assert ab.dashboard_buttons(url, key_file=tmp_path / "nokey", environ={ab.PANEL_URL_ENV: ""})[0][1].startswith(
+        "https://tradedesk.tail1234"
+    )
+    assert (
+        ab.dashboard_buttons(url, key_file=tmp_path / "nokey", environ={ab.PANEL_URL_ENV: "http://x"}) == []
+    )  # set but unusable: no buttons
 
 
 def test_main_sends_buttons_in_rows(monkeypatch):
@@ -443,3 +447,14 @@ def test_payload_button_rows_and_https_only():
     rows = tg_send.payload("1", "t", buttons=btn, per_row=4)["reply_markup"]["inline_keyboard"]
     assert [len(r) for r in rows] == [4, 2] and all(b["url"].startswith("https://") for r in rows for b in r)
     assert tg_send.payload("1", "t", buttons=btn, per_row=0)["reply_markup"]["inline_keyboard"][0] == [{"text": "b0", "url": "https://x/0"}]
+
+
+def test_dashboard_buttons_carry_the_key(tmp_path):
+    url = tmp_path / "dashboard_url"
+    url.write_text("https://tradedesk.tail1234.ts.net/\n")
+    key = tmp_path / "dashboard.env"
+    key.write_text("DASHBOARD_KEY=abcdefghijklmnopqrstuvwxyz\n")
+    assert ab.dashboard_buttons(url, environ={}, key_file=key)[0] == (
+        "Бриф",
+        "https://tradedesk.tail1234.ts.net/brief?k=abcdefghijklmnopqrstuvwxyz",
+    )

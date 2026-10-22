@@ -419,6 +419,7 @@ def test_main_sends_buttons_in_rows(monkeypatch):
     snap, asof = _snap()
     sent = []
     monkeypatch.setenv(ab.PANEL_URL_ENV, "https://tradedesk.tail1234.ts.net/")
+    monkeypatch.setattr(ab.db, "KEY_FILE", Path("/nonexistent/dashboard.key"))  # not the machine's real key
     monkeypatch.setattr(ab.time, "time", lambda: asof + 300)
     monkeypatch.setattr(tg_send, "send", lambda text, **k: sent.append((text, k)) or True)
     assert ab.main(["--snapshot", str(SNAP_FIXTURE), "--no-chart"]) == 0

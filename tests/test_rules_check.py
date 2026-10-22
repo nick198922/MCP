@@ -97,12 +97,76 @@ def test_pre_trade_long_strangle_against_the_owners_one_percent():
     assert (c["premium"]["status"], c["risk"]["status"]) == (rc.OK, rc.OK)
 
 
-def test_pre_trade_days_to_expiry_boundary():
+def test_pre_trade_rule_8_zones_and_their_boundaries():
     legs = _strangle(size=0.01)
-    assert _pre(legs, now_ts=EXP - 3 * 86400)["days_to_expiry"]["status"] == rc.VIOLATED  # exactly 3 days
-    assert _pre(legs, now_ts=EXP - 3 * 86400 - 60)["days_to_expiry"]["status"] == rc.OK
-    assert _pre(legs, now_ts=EXP - 0.5 * 86400)["days_to_expiry"]["status"] == rc.VIOLATED  # 0DTE is worse, not exempt
-    assert _pre(legs, expiry_ts=None)["days_to_expiry"]["status"] == rc.UNKNOWN
+    zone = lambda h: _pre(legs, now_ts=EXP - h * H)["days_to_expiry"]  # noqa: E731
+    # under 24 h: never, whatever the reasons; past the delivery too
+    for h in (23.99, 12.0, 0.0, -1.0):
+        assert (zone(h)["status"], zone(h)["zone"]) == (rc.VIOLATED, rc.ZONE_BAN), h
+    # 24 h and 72 h exactly are the conditional zone; without a thesis it is violated
+    for h in (24.0, 48.0, 72.0):
+        assert (zone(h)["zone"], zone(h)["status"]) == (rc.ZONE_COND, rc.VIOLATED), h
+    assert (zone(72.0 + 1 / 60)["zone"], zone(72.0 + 1 / 60)["status"]) == (rc.ZONE_FREE, rc.OK)
+    assert zone(12.0)["limit"] == 1.0 and zone(12.0)["value"] == pytest.approx(0.5)
+    # the three checks are rows of their own only in the 1-3 day zone
+    assert not {"thesis", "breakeven_move", "iv_vs_rv"} & set(_pre(legs, now_ts=EXP - 12 * H))
+    assert not {"thesis", "breakeven_move", "iv_vs_rv"} & set(_pre(legs, now_ts=EXP - 80 * H))
+    c = _pre(legs, expiry_ts=None)["days_to_expiry"]
+    assert (c["status"], c["zone"]) == (rc.UNKNOWN, None)
+
+
+def _call(k=80000.0, prem=500.0, iv=0.40, size=0.1):
+    return [{**_leg("call", "long", k, prem, size), "iv": iv}]
+
+
+def test_pre_trade_rule_8_conditions_one_to_three_days():
+    # 48 h before the delivery: T = 2/365; RV30 40 % -> 1 sigma = 0.40 * sqrt(2/365) = 2.961 % of spot
+    now, sig = EXP - 48 * H, 0.40 * (2 / 365) ** 0.5
+    kw = {"now_ts": now, "spot": 80000.0, "rv": 0.40, "thesis": "long: CPI, above 81k", "target": 82000.0}
+    # an ATM call for $500: breakeven 80 500, 0.625 % away; IV 40 % <= 1.2 x 40 % = 48 %
+    c = _pre(_call(), **kw)
+    assert [c[k]["status"] for k in ("thesis", "breakeven_move", "iv_vs_rv")] == [rc.OK, rc.OK, rc.OK]
+    assert c["days_to_expiry"]["status"] == rc.OK and c["days_to_expiry"]["zone"] == rc.ZONE_COND
+    assert c["breakeven_move"]["value"] == pytest.approx(500 / 80000) and c["breakeven_move"]["limit"] == pytest.approx(sig)
+    assert c["iv_vs_rv"]["value"] == pytest.approx(0.40) and c["iv_vs_rv"]["limit"] == pytest.approx(0.48)
+    assert "RV30" in c["breakeven_move"]["detail"]
+    # (a) no thesis, or a thesis without a target
+    for th, tg, why in ((None, 82000.0, "no thesis"), ("  ", None, "no thesis and no target"), ("long", None, "no target")):
+        a = _pre(_call(), **{**kw, "thesis": th, "target": tg})
+        assert (a["thesis"]["status"], a["thesis"]["detail"], a["days_to_expiry"]["status"]) == (rc.VIOLATED, why, rc.VIOLATED)
+    # (b) a far OTM call: breakeven 84 500 is 5.6 % away > 2.96 %; (c) IV 50 % > 48 %
+    b = _pre(_call(k=84000.0, prem=500.0), **kw)
+    assert b["breakeven_move"]["status"] == rc.VIOLATED and b["breakeven_move"]["value"] == pytest.approx(4500 / 80000)
+    assert _pre(_call(iv=0.50), **kw)["iv_vs_rv"]["status"] == rc.VIOLATED
+    assert _pre(_call(iv=0.48), **kw)["iv_vs_rv"]["status"] == rc.OK  # 1.2 x RV exactly is within
+    # already past the breakeven at spot: no move needed
+    assert _pre(_call(k=70000.0, prem=500.0), **kw)["breakeven_move"]["value"] == 0.0
+    # a long strangle pays both premiums (2910 per unit): breakevens 77 000 - 2910 and 90 000 + 2910, the nearer counts
+    s = _pre([{**lg, "iv": 0.4} for lg in _strangle()], **kw)
+    assert s["breakeven_move"]["value"] == pytest.approx(min(80000 - 74090, 92910 - 80000) / 80000)
+    # no spot / RV / IV: unknown, and a thesis alone cannot make the zone ok
+    u = _pre(_strangle(), **{**kw, "rv": None})
+    assert (u["breakeven_move"]["status"], u["iv_vs_rv"]["status"], u["days_to_expiry"]["status"]) == (rc.UNKNOWN, rc.UNKNOWN, rc.UNKNOWN)
+    # any failed check wins over unknown ones
+    assert _pre(_strangle(), **{**kw, "rv": None, "thesis": None})["days_to_expiry"]["status"] == rc.VIOLATED
+    # a leg without a premium: (b) is unknown, not a move computed as if the option were free (critic, 22.10)
+    p = _pre(_call(prem=None), **kw)
+    assert (p["breakeven_move"]["status"], p["breakeven_move"]["detail"], p["premium"]["status"]) == (
+        rc.UNKNOWN,
+        "premium unknown",
+        rc.UNKNOWN,
+    )
+    assert p["days_to_expiry"]["status"] == rc.UNKNOWN
+
+
+def test_breakeven_move_shapes():
+    put = [_leg("put", "long", 80000.0, 400.0, 1.0)]
+    assert rc.breakeven_move(put, 80000.0) == pytest.approx(400 / 80000)
+    # a bear put spread bought for more than its width never profits at expiry
+    bad = [_leg("put", "long", 80000.0, 1500.0, 1.0), _leg("put", "short", 79000.0, 100.0, 1.0)]
+    assert rc.breakeven_move(bad, 80000.0) is None
+    assert rc.breakeven_move([], 80000.0) is None and rc.breakeven_move(put, 0.0) is None
+    assert rc.buy_zone(23.9) == rc.ZONE_BAN and rc.buy_zone(24.0) == rc.buy_zone(72.0) == rc.ZONE_COND and rc.buy_zone(72.1) == rc.ZONE_FREE
 
 
 def test_pre_trade_sales_and_credit_condor():
@@ -213,27 +277,54 @@ def test_hip3_symbols_are_left_out_of_the_alt_long_count():
 
 def _option_rows():
     return [
-        # bought 1.83 days before the 10.10 08:00 delivery, $20 premium
+        # bought 1.83 days before the 10.10 08:00 delivery, $20 premium; an import: no thesis, no target
         _t(1, "BTC-10OCT25-120000-C", "long", D - 20 * H, D + 8 * H, -20.0, BYBIT_OPT, size=0.05, entry=400.0),
         # $150 premium, 30 days to expiry
         _t(2, "ETH-31OCT25-5000-P-USDT", "long", D - 9 * 86400 + 8 * H, D + 2 * H, 30.0, BYBIT_OPT, size=1.0, entry=150.0),
         # no opening time: the days cannot be told; $50 premium is fine
         _t(3, "BTC-17OCT25-110000-P", "long", D + 3 * H, D + 3 * H, -50.0, BYBIT_OPT, size=0.1, entry=500.0),
-        # exactly 3 days before delivery
+        # exactly 3 days before delivery: still the 1-3 day zone, and no thesis
         _t(4, "BTC-17OCT25-130000-C", "long", D + 4 * 86400 + 8 * H, D + 5 * 86400, -9.0, BYBIT_OPT, size=0.1, entry=90.0),
         # a sale: rule 8 does not apply, its risk needs a stop
         _t(5, "BTC-17OCT25-100000-P", "short", D + 4 * H, D + 5 * H, 15.0, BYBIT_OPT, size=0.1, entry=300.0),
     ]
 
 
+def _odte_row():
+    # 0DTE: 6 h before the 17.10 delivery, $10 premium
+    return _t(6, "BTC-17OCT25-108000-C", "long", D + 7 * 86400 + 2 * H, D + 7 * 86400 + 8 * H, -10.0, BYBIT_OPT, size=0.1, entry=100.0)
+
+
 def test_option_buys_rule_8_and_their_premium_as_rule_1():
-    c = _by_id(rc.trade_checks(_option_rows(), now_ts=D + 10 * 86400))
+    c = _by_id(rc.trade_checks([*_option_rows(), _odte_row()], now_ts=D + 10 * 86400))
     assert (c[1]["late_buy"], c[1]["big_premium"], c[1]["rules"][8], c[1]["rules"][1]) == (True, False, rc.VIOLATED, rc.OK)
+    assert c[1]["buy_zone"] == rc.ZONE_COND
+    assert c[1]["buy_conditions"] == {"thesis": rc.VIOLATED, "breakeven_move": rc.UNKNOWN, "iv_vs_rv": rc.UNKNOWN}
     assert (c[2]["late_buy"], c[2]["big_premium"], c[2]["rules"][8], c[2]["rules"][1]) == (False, True, rc.VIOLATED, rc.VIOLATED)
-    assert (c[3]["late_buy"], c[3]["big_premium"], c[3]["rules"][8]) == (None, False, rc.UNKNOWN)
-    assert c[4]["late_buy"] is True and c[4]["rules"][8] == rc.VIOLATED
-    assert c[5]["rules"][8] == rc.NA and c[5]["rules"][1] == rc.UNKNOWN
+    assert (c[2]["buy_zone"], c[2]["buy_conditions"]) == (rc.ZONE_FREE, None)
+    assert (c[3]["late_buy"], c[3]["big_premium"], c[3]["rules"][8], c[3]["buy_zone"]) == (None, False, rc.UNKNOWN, None)
+    assert c[4]["late_buy"] is True and c[4]["rules"][8] == rc.VIOLATED and c[4]["buy_zone"] == rc.ZONE_COND
+    assert c[5]["rules"][8] == rc.NA and c[5]["rules"][1] == rc.UNKNOWN and c[5]["buy_zone"] is None
+    assert (c[6]["buy_zone"], c[6]["late_buy"], c[6]["rules"][8], c[6]["buy_conditions"]) == (rc.ZONE_BAN, True, rc.VIOLATED, None)
     assert all(c[i]["rules"][2] == rc.NA and c[i]["rules"][5] == rc.NA for i in c)
+
+
+def test_journal_rule_8_one_to_three_days_with_a_thesis():
+    # journal_add with a thesis and a target, 48 h before the delivery: (a) holds, but the journal has no spot or IV at
+    # the opening, so (b) and (c) cannot be told: unknown, not ok
+    own = _t(
+        1, "BTC-17OCT25-110000-C", "long", D + 5 * 86400 + 8 * H, D + 6 * 86400, 5.0, '["option"]', size=0.1, entry=500.0, target=115000.0
+    )
+    row = {**own, "thesis": "CPI on 16.10: a move up past 112k"}
+    (c,) = rc.trade_checks([row], now_ts=D + 10 * 86400)
+    assert c["buy_conditions"] == {"thesis": rc.OK, "breakeven_move": rc.UNKNOWN, "iv_vs_rv": rc.UNKNOWN}
+    assert (c["late_buy"], c["rules"][8]) == (None, rc.UNKNOWN)
+    # without the target, or an import's placeholder thesis, (a) fails
+    (c,) = rc.trade_checks([{**row, "target": None}], now_ts=D + 10 * 86400)
+    assert (c["late_buy"], c["rules"][8]) == (True, rc.VIOLATED)
+    imp = {**row, "tags": BYBIT_OPT, "thesis": "імпорт з Bybit: теза не записана"}
+    (c,) = rc.trade_checks([imp], now_ts=D + 10 * 86400)
+    assert c["buy_conditions"]["thesis"] == rc.VIOLATED and c["rules"][8] == rc.VIOLATED
 
 
 def test_stop_and_target_from_journal_add():
@@ -298,10 +389,12 @@ def test_approximate_day_stop_alone_is_not_an_exact_violation():
 
 
 def test_weekly_option_counts_and_a_stop_week_without_openings():
-    w = {x["week"]: x for x in rc.weekly_violations(_option_rows(), now_ts=D + 10 * 86400)}
+    w = {x["week"]: x for x in rc.weekly_violations([*_option_rows(), _odte_row()], now_ts=D + 10 * 86400)}
     assert w["2025-W41"]["late_buys"] == 1 and w["2025-W41"]["big_premiums"] == 0
+    assert (w["2025-W41"]["buys_under_24h"], w["2025-W41"]["buys_cond_failed"]) == (0, 1)
     assert w["2025-W41"]["rules"][8] == {"status": rc.VIOLATED, "violated": 1, "checked": 1, "unknown": 1}
-    assert w["2025-W40"]["big_premiums"] == 1 and w["2025-W42"]["late_buys"] == 1
+    assert w["2025-W40"]["big_premiums"] == 1 and w["2025-W42"]["late_buys"] == 2
+    assert (w["2025-W42"]["buys_under_24h"], w["2025-W42"]["buys_cond_failed"]) == (1, 1)
     # a trade opened on Sunday closes on Monday with a −$250 loss: the stop day is in the next week, with no openings
     sun = datetime(2025, 10, 12, 20, tzinfo=UTC).timestamp()
     w = rc.weekly_violations([_t(1, "SOL", "long", sun, sun + 6 * H, -250.0)], now_ts=sun + 86400)

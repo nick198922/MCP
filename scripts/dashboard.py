@@ -570,7 +570,10 @@ HELP: dict[str, tuple[str, str, str, str]] = {
         "Конструктор",
         "Збери опціонну позицію на місячній експірації BTC: стратегія, страйки, депозит, ризик і розмір.",
         "Купівля стреддлу / стренглу — ставка на сильний рух у будь-який бік. Продаж — на спокій. Кондор — продаж із захистом.",
-        "Нижче — графік P&L, «за і проти», греки, ризик і сценарії для цієї позиції.",
+        "Нижче — графік P&L, «за і проти», греки, ризик і сценарії для цієї позиції. Поля «Теза» і «Ціль» — для "
+        "правила 8 за 1–3 доби до експірації, але конструктор бере лише місячну експірацію (≥ 25 днів), тож тут ця "
+        "зона не трапляється і поля поки ні на що не впливають. Купівлю за 1–3 доби перевіряй чеклістом "
+        "pre_trade_checklist.",
     ),
     "payoff": (
         "Прибуток і збиток",
@@ -628,12 +631,15 @@ HELP: dict[str, tuple[str, str, str, str]] = {
     ),
     "rules_pre": (
         "Правила власника перед угодою",
-        "Твої правила 1 і 8 (затверджено 18.10) на цій структурі: макс. збиток ≤ 1 % депозиту, премія ≤ 1 % депозиту, "
-        "не купувати опціони за 3 дні й менше до експірації.",
-        "«Порушено» — угода суперечить правилу; «не стосується» — наприклад, продаж: премію отримуєш, а не платиш. "
-        "Ліміт — 1 % від депозиту у формі, а не поле «Ризик на угоду».",
-        "Будь-яке «порушено» — переробити угоду (менший розмір, дальша експірація, захисні опціони) або не входити. "
-        "Решту правил (стоп, денний стоп, R:R) перевір чеклістом.",
+        "Твої правила 1 і 8 (затверджено 18.10, правило 8 уточнено 22.10) на цій структурі: макс. збиток ≤ 1 % депозиту, "
+        "премія ≤ 1 % депозиту; менше 24 год до експірації — не купувати ніколи; за 1–3 доби — лише коли виконано три "
+        "умови: записані теза й ціль, рух до беззбитку не більший за 1σ руху за реалізованою волою (RV30) до "
+        "експірації, IV не вище 1.2 × RV30; понад 3 доби — лише ліміт премії.",
+        "«Порушено» — угода суперечить правилу; «невідомо» — бракує даних (теза, RV30, IV); «не стосується» — "
+        "наприклад, продаж: премію отримуєш, а не платиш. Ліміт — 1 % від депозиту у формі, а не поле «Ризик на угоду». "
+        "Пороги 1σ і 1.2 — стартовий вибір, не доведена перевага.",
+        "Будь-яке «порушено» — переробити угоду (менший розмір, дальша експірація, спред замість купленого опціону, "
+        "захисні опціони) або не входити. Решту правил (стоп, денний стоп, R:R) перевір чеклістом.",
     ),
     "verdict": (
         "Що це означає",
@@ -906,7 +912,9 @@ HELP: dict[str, tuple[str, str, str, str]] = {
         "Твої реальні угоди, перевірені на правила 1, 2, 4, 5 і 8 (затверджено 18.10), за ISO-тижнем відкриття, нові зверху.",
         "«2 з 8» — порушили 2 з 8 угод, які вдалося перевірити; «невідомо» — правило стосується, але даних нема (стопу "
         "в імпорті з бірж немає, Bybit не дає часу відкриття). «P&L цих угод» — результат угод, що точно порушили хоч "
-        "одне правило; «наближено» — угоди, де єдине порушення — денний стоп, оцінений за часом закриття (окремо).",
+        "одне правило; «наближено» — угоди, де єдине порушення — денний стоп, оцінений за часом закриття (окремо). "
+        "Правило 8: «< 24 год» — куплено в останню добу до експірації; «1–3 доби без умов» — без тези й цілі (імпорт "
+        "з бірж їх не має).",
         "Ефект правил міряє журнал: через 4–8 тижнів порівняй P&L угод з порушеннями і без. Правила змінює лише власник.",
     ),
     "rec_n": (
@@ -2325,6 +2333,7 @@ OPT_DEFAULT_STRAT = "long_strangle"
 # (default, min, max): deposit USD, risk per trade %, size BTC (the owner trades 0.1, card «Депозит і ризик»)
 OPT_SIZE = {"dep": (10000.0, 100.0, 1e8), "riskp": (1.0, 0.1, 100.0), "qty": (0.1, 0.01, 100.0)}
 OPT_STRIKES = ("kput", "kcall", "kputw", "kcallw")
+OPT_THESIS_MAX = 200  # characters of the builder's thesis field (rule 8 (a))
 OPT_RANGE = 0.3  # chart: forward ±30 %
 OPT_CAVEATS = (
     "Ймовірність прибутку — ризик-нейтральна (лог-нормальна за ATM IV експірації): це ціна страхування в ринку, а не прогноз.",
@@ -2338,7 +2347,7 @@ OPT_CSS = """
 .seg button[aria-pressed=true]{background:var(--acc);border-color:var(--acc);color:var(--card)}
 .ctl{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:end;margin-top:10px}
 .ctl label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--mut)}
-select,input[type=number]{font:14px Menlo,Consolas,monospace;color:var(--fg);background:var(--card);border:1px solid var(--line);border-radius:6px;padding:6px 8px;min-width:0;max-width:100%}
+select,input[type=number],input[type=text]{font:14px Menlo,Consolas,monospace;color:var(--fg);background:var(--card);border:1px solid var(--line);border-radius:6px;padding:6px 8px;min-width:0;max-width:100%}
 select:disabled{opacity:.6}.ctl button.go{font-weight:600;border:0;border-radius:999px;padding:7px 14px;background:var(--acc);color:var(--card);cursor:pointer}
 button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
 .fit{font-size:14px;line-height:1.6}
@@ -2628,6 +2637,10 @@ def parse_options_query(query: str) -> dict:
         out[name] = fnum(name, 0.0, 1e9)
     hzn = fnum("hzn", 0.0, 3650.0)
     out["hzn"] = OPT_HZN_DEFAULT if hzn is None else math.floor(hzn)
+    # rule 8 (a) in the 1-3 day zone: the owner's thesis (free text, shown escaped) and target price
+    th = q.get("thesis")
+    out["thesis"] = _clean(th[0], OPT_THESIS_MAX) if th else ""
+    out["target"] = fnum("target", 0.0, 1e9) or None
     return out
 
 
@@ -2824,6 +2837,14 @@ def block_builder(ch: dict, snap: dict, p: dict, now: float | None = None) -> st
         f"<label for='hzn'>Лінія «через N днів»: <span id='hznv' class='num'>{hzn} дн</span>"
         f"<input type='range' id='hzn' name='hzn' min='0' max='{horizon_days(1e9, ch['days'])}' step='1' value='{hzn}'></label>"
     )
+    tgt = p.get("target")
+    out.append(
+        "</div><div class='ctl'>"
+        f"<label for='thesis'>Теза: напрям і причина руху (подія чи рівень)<input type='text' id='thesis' name='thesis' "
+        f"maxlength='{OPT_THESIS_MAX}' size='40' value='{_e(p.get('thesis') or '')}'></label>"
+        "<label for='target'>Ціль, $<input type='number' id='target' name='target' min='0' step='any' "
+        f"value='{'' if tgt is None else f'{tgt:.10g}'}'></label>"
+    )
     out.append("<button class='go' type='submit'>Порахувати</button></div></form>")
     out.append(
         "<p class='note'>Страйки — з ланцюжка знімка (Δ і IV Deribit); стреддл — на страйку, найближчому до форварду. "
@@ -2929,7 +2950,8 @@ def block_builder(ch: dict, snap: dict, p: dict, now: float | None = None) -> st
             per = fit["loss"] / qty * 0.01
             out.append(f"<p class='mut'>Навіть 0.01 BTC — це {_e(_usd(per))} збитку: більше за ризик.</p>")
     out.append("</div></section>")
-    out.append(block_rules_pre(legs, ch, dep, now))
+    rv30 = _num(((_data(snap, "vrp") or {}).get("current") or {}).get("rv_30d")) if isinstance(snap, dict) else None
+    out.append(block_rules_pre(legs, ch, dep, now, rv30, p.get("thesis"), p.get("target")))
     pct365 = _num(((_data(snap, "vrp") or {}).get("current") or {}).get("dvol_percentile_365d")) if isinstance(snap, dict) else None
     out.append(
         f"<section>{_h2('Що це означає', 'verdict')}"
@@ -4181,7 +4203,11 @@ RULES_DAY_LOSS_PCT = 2.0  # rule 4, % of the deposit
 RULES_STREAK = 2  # rule 4: losing trades in a row
 RULES_MIN_RR = 2.0  # rule 5
 RULES_PREMIUM_PCT = 1.0  # rule 8, % of the deposit
-RULES_MIN_BUY_DAYS = 3.0  # rule 8: buying with this many days or fewer to expiry
+RULES_BUY_BAN_HOURS = 24.0  # rule 8: under this many hours to expiry never buy
+RULES_BUY_COND_HOURS = 72.0  # rule 8: from 24 h up to this (inclusive) only with all three checks
+RULES_BE_MAX_SIGMA = 1.0  # rule 8 (b): breakeven move <= this many 1-sigma moves at RV over the time left
+RULES_IV_MAX_RV = 1.2  # rule 8 (c): the bought option's IV <= this x RV
+RULES_ZONE_BAN, RULES_ZONE_COND, RULES_ZONE_FREE = "under_24h", "1_3_days", "over_3_days"
 RULES_MAJORS = frozenset({"BTC", "ETH"})
 RULES_NUMS = (1, 2, 4, 5, 8)
 RULES_WEEKS = 12  # newest ISO weeks in the journal table
@@ -4209,8 +4235,11 @@ RULES_WEEK_NOTE = (
     "4 — угода, відкрита того ж дня UTC після 2 збиткових поспіль або −2 % депозиту за день (порядок закриття); "
     "рядки без часу відкриття (здебільшого Bybit) оцінено за часом закриття — це «наближено», вони рахуються окремо "
     "від точних порушень і не входять у «Порушили» та «P&L цих угод». "
-    "8 — купівля опціону за ≤ 3 дні до експірації (08:00 UTC) або премія > 1 % депозиту. Депозит — сьогоднішні $10 000 "
-    "для всіх тижнів. 3, 6, 7 і «48 год перерви» з журналу не перевіряються. Минуле не гарантує майбутнього."
+    "8 — куплений опціон: премія > 1 % депозиту; менше 24 год до експірації (08:00 UTC) — порушено завжди; за 1–3 доби — "
+    "лише з тезою й ціллю, беззбитком у межах 1σ руху за реалізованою волою і IV ≤ 1.2 × RV: в імпорті з бірж тези й цілі "
+    "немає, тож такі купівлі — «порушено», а спота й IV на час відкриття журнал не має (ці дві умови — «невідомо»). "
+    "Депозит — сьогоднішні $10 000 для всіх тижнів. 3, 6, 7 і «48 год перерви» з журналу не перевіряються. "
+    "Минуле не гарантує майбутнього."
 )
 
 
@@ -4258,7 +4287,46 @@ def _rules_status(violated: int, checked: int, unknown: int) -> str:
     return "unknown" if unknown else "na"
 
 
-def rules_pre_trade(legs: list[dict], now_ts: float, expiry_ts: float | None, dep: float = RULES_DEPOSIT) -> list[dict]:
+def rules_buy_zone(hours: float) -> str:
+    """Copy of analytics.rules_check.buy_zone: rule 8 zone of a purchase this many hours before the delivery."""
+    return RULES_ZONE_BAN if hours < RULES_BUY_BAN_HOURS else RULES_ZONE_COND if hours <= RULES_BUY_COND_HOURS else RULES_ZONE_FREE
+
+
+def rules_thesis_check(thesis: object, target: object) -> tuple[str, str]:
+    """Copy of analytics.rules_check.thesis_check: rule 8 (a), a thesis and a target price both needed."""
+    has_thesis = isinstance(thesis, str) and bool(thesis.strip())
+    t = _num(target)
+    has_target = t is not None and t > 0
+    if has_thesis and has_target:
+        return "ok", "thesis and target recorded"
+    miss = [w for w, ok in (("thesis", has_thesis), ("target", has_target)) if not ok]
+    return "violated", "no " + " and no ".join(miss)
+
+
+def rules_conditions_status(*statuses: str) -> str:
+    return "violated" if "violated" in statuses else "unknown" if "unknown" in statuses else "ok"
+
+
+def rules_breakeven_move(legs: list[dict], spot: float) -> float | None:
+    """Copy of analytics.rules_check.breakeven_move: smallest move from spot (fraction) to a profit at expiry."""
+    if not legs or spot <= 0:
+        return None
+    if payoff(legs, spot) > 0:
+        return 0.0
+    bes = payoff_breakevens(legs)
+    return min(abs(b - spot) for b in bes) / spot if bes else None
+
+
+def rules_pre_trade(
+    legs: list[dict],
+    now_ts: float,
+    expiry_ts: float | None,
+    dep: float = RULES_DEPOSIT,
+    spot: float | None = None,
+    rv: float | None = None,
+    thesis: str | None = None,
+    target: float | None = None,
+) -> list[dict]:
     """Copy of analytics.rules_check.pre_trade_option (rules 1 and 8 on the builder's legs)."""
     d = _num(dep)
     d = d if d is not None and d > 0 else None
@@ -4290,10 +4358,11 @@ def rules_pre_trade(legs: list[dict], now_ts: float, expiry_ts: float | None, de
     debit = None
     if bought and all(p is not None for p in prems):
         debit = sum((1.0 if lg.get("side") == "long" else -1.0) * float(lg["size"]) * float(p) for lg, p in zip(opts, prems, strict=True))  # type: ignore[arg-type]
+    floor = RULES_BUY_BAN_HOURS / 24.0
     if not bought or (debit is not None and debit <= 0):
         why = "nothing bought" if not bought else "net premium received"
         out.append({"rule": 8, "key": "premium", "status": "na", "value": debit, "limit": limit, "detail": why})
-        out.append({"rule": 8, "key": "days_to_expiry", "status": "na", "value": None, "limit": RULES_MIN_BUY_DAYS, "detail": why})
+        out.append({"rule": 8, "key": "days_to_expiry", "status": "na", "value": None, "limit": floor, "zone": None, "detail": why})
         return out
     if debit is None or limit is None:
         out.append(
@@ -4309,23 +4378,63 @@ def rules_pre_trade(legs: list[dict], now_ts: float, expiry_ts: float | None, de
                 "key": "days_to_expiry",
                 "status": "unknown",
                 "value": None,
-                "limit": RULES_MIN_BUY_DAYS,
+                "limit": floor,
+                "zone": None,
                 "detail": "expiry unknown",
             }
         )
+        return out
+    hours = (float(expiry_ts) - float(now_ts)) / 3600.0  # type: ignore[arg-type]
+    days = hours / 24.0
+    zone = rules_buy_zone(hours)
+    row = {"rule": 8, "key": "days_to_expiry", "value": days, "limit": floor, "zone": zone}
+    if zone == RULES_ZONE_BAN:
+        out.append({**row, "status": "violated", "detail": "under 24 h to expiry: never buy"})
+        return out
+    if zone == RULES_ZONE_FREE:
+        out.append({**row, "status": "ok", "detail": "over 3 days to expiry: the premium limit only"})
+        return out
+    th_st, th_why = rules_thesis_check(thesis, target)
+    a = {"rule": 8, "key": "thesis", "status": th_st, "value": th_st == "ok", "limit": None, "detail": th_why}
+    s, r = _num(spot), _num(rv)
+    s = s if s is not None and s > 0 else None
+    r = r if r is not None and r > 0 else None
+    rv_why = "RV30: 30 daily closes, zero mean, x365 (the forecast log's RV30 model)"
+    if debit is None:  # mirrors the analytics; the builder's legs always carry a premium (its payoff needs one)
+        b = {"rule": 8, "key": "breakeven_move", "status": "unknown", "value": None, "limit": None, "detail": "premium unknown"}
+    elif s is None or r is None:
+        b = {"rule": 8, "key": "breakeven_move", "status": "unknown", "value": None, "limit": None, "detail": "spot or RV unknown"}
     else:
-        days = (float(expiry_ts) - float(now_ts)) / 86400.0  # type: ignore[arg-type]
-        st = "violated" if days <= RULES_MIN_BUY_DAYS else "ok"
-        out.append(
-            {
-                "rule": 8,
-                "key": "days_to_expiry",
-                "status": st,
-                "value": days,
-                "limit": RULES_MIN_BUY_DAYS,
-                "detail": "buying this close to expiry",
-            }
-        )
+        move, cap = rules_breakeven_move(opts, s), RULES_BE_MAX_SIGMA * r * math.sqrt(days / 365.0)
+        if move is None:
+            b_st, b_why = "violated", "no breakeven: the structure never profits at expiry"
+        else:
+            b_st = "ok" if move <= cap * (1 + 1e-9) else "violated"
+            b_why = f"move to the nearest breakeven vs {RULES_BE_MAX_SIGMA:g} sigma at RV over the time left; {rv_why}"
+        b = {"rule": 8, "key": "breakeven_move", "status": b_st, "value": move, "limit": cap, "detail": b_why}
+    ivs = [_num(lg.get("iv")) for lg in bought]
+    if r is None or not ivs or any(v is None or v <= 0 for v in ivs):
+        c = {"rule": 8, "key": "iv_vs_rv", "status": "unknown", "value": None, "limit": None, "detail": "option IV or RV unknown"}
+    else:
+        iv = max(v for v in ivs if v is not None)
+        cap_iv = RULES_IV_MAX_RV * r
+        c_st = "ok" if iv <= cap_iv * (1 + 1e-9) else "violated"
+        c = {
+            "rule": 8,
+            "key": "iv_vs_rv",
+            "status": c_st,
+            "value": iv,
+            "limit": cap_iv,
+            "detail": f"highest bought IV vs {RULES_IV_MAX_RV:g} x RV; {rv_why}",
+        }
+    out.append(
+        {
+            **row,
+            "status": rules_conditions_status(a["status"], b["status"], c["status"]),
+            "detail": "1-3 days to expiry: only with all three checks below",
+        }
+    )
+    out.extend((a, b, c))
     return out
 
 
@@ -4341,7 +4450,8 @@ def _rules_normalize(rows: list[dict]) -> list[dict]:
             closed = opened
         symbol = str(t.get("symbol") or "")
         exp = rules_option_expiry_ts(symbol)
-        is_opt = exp is not None or "option" in journal_tags(t.get("tags"))
+        tags = journal_tags(t.get("tags"))
+        is_opt = exp is not None or "option" in tags
         out.append(
             {
                 "i": i,
@@ -4358,6 +4468,7 @@ def _rules_normalize(rows: list[dict]) -> list[dict]:
                 "entry": _num(t.get("entry")),
                 "stop": _num(t.get("stop")),
                 "target": _num(t.get("target")),
+                "thesis": None if "import" in tags else t.get("thesis"),  # an import's thesis is a placeholder
                 "pnl": _num(t.get("pnl")) if status == "closed" else None,
             }
         )
@@ -4441,10 +4552,17 @@ def rules_trade_checks(rows: list[dict], now_ts: float, dep: float = RULES_DEPOS
             r[5] = "unknown"
         else:
             r[5] = "ok" if abs(x["target"] - x["entry"]) / abs(x["entry"] - x["stop"]) >= RULES_MIN_RR - 1e-9 else "violated"
-        late = big = None
+        late = big = zone = conds = None
         if long_opt:
             big = None if premium is None else premium > prem_cap * (1 + 1e-9)
-            late = None if x["expiry"] is None or not x["open_known"] else (x["expiry"] - x["opened"]) / 86400.0 <= RULES_MIN_BUY_DAYS
+            if x["expiry"] is not None and x["open_known"]:
+                zone = rules_buy_zone((x["expiry"] - x["opened"]) / 3600.0)
+            if zone == RULES_ZONE_COND:
+                conds = {"thesis": rules_thesis_check(x["thesis"], x["target"])[0], "breakeven_move": "unknown", "iv_vs_rv": "unknown"}
+                cst = rules_conditions_status(*conds.values())
+                late = True if cst == "violated" else None if cst == "unknown" else False
+            elif zone is not None:
+                late = zone == RULES_ZONE_BAN
             r[8] = "violated" if late or big else "unknown" if late is None or big is None else "ok"
         else:
             r[8] = "na"
@@ -4457,6 +4575,8 @@ def rules_trade_checks(rows: list[dict], now_ts: float, dep: float = RULES_DEPOS
                 "rules": r,
                 "approx": r[4] == "violated" and not x["open_known"],
                 "alt_longs": alt_n[x["i"]][0] if x["i"] in alt_n else None,
+                "buy_zone": zone,
+                "buy_conditions": conds,
                 "late_buy": late,
                 "big_premium": big,
             }
@@ -4495,6 +4615,8 @@ def rules_weekly(rows: list[dict], now_ts: float, dep: float = RULES_DEPOSIT) ->
                 "approx": sum(1 for c in cs if c["approx"]),
                 "max_alt_longs": max(alts) if alts else None,
                 "late_buys": sum(1 for c in cs if c["late_buy"]),
+                "buys_under_24h": sum(1 for c in cs if c["buy_zone"] == RULES_ZONE_BAN),
+                "buys_cond_failed": sum(1 for c in cs if c["buy_zone"] == RULES_ZONE_COND and c["late_buy"]),
                 "big_premiums": sum(1 for c in cs if c["big_premium"]),
                 "n_violating": len(bad),
                 "pnl_violating": sum(pnls) if pnls else None,
@@ -4541,29 +4663,84 @@ def _rule_pre_text(c: dict) -> tuple[str, str]:
             return name, "Премію чи депозит не відомо."
         more = f" — у {_nf(v / lim, 1)} раза більше за ліміт" if st == "violated" and lim > 0 else ""
         return name, f"Платиш {_usd(v)}{more}."
-    name = f"Не купувати за ≤ {RULES_MIN_BUY_DAYS:g} дні до експірації"
+    if c.get("key") == "thesis":
+        name = "8а · Теза і ціль записані"
+        if st == "ok":
+            return name, "Напрям і причину (поле «Теза») та ціль записано."
+        miss = {"no thesis": "тези", "no target": "цілі", "no thesis and no target": "тези й цілі"}.get(str(why), "тези чи цілі")
+        return name, f"Немає {miss}: напиши напрям, причину руху (подія чи рівень) і ціль у формі вище."
+    if c.get("key") == "breakeven_move":
+        name = f"8б · Рух до беззбитку ≤ {RULES_BE_MAX_SIGMA:g}σ за реалізованою волою"
+        if st == "unknown":
+            return name, "Спот чи реалізована вола (RV30) невідомі."
+        if v is None:
+            return name, "Беззбитку немає: на експірацію структура прибутку не дає."
+        return name, f"До беззбитку {_nf(v * 100, 1)} % від форварду; 1σ за RV30 до експірації — {_nf((lim or 0.0) * 100, 1)} %."
+    if c.get("key") == "iv_vs_rv":
+        name = f"8в · IV ≤ {RULES_IV_MAX_RV:g} × реалізованої"
+        if st == "unknown":
+            return name, "IV опціону чи RV30 невідомі."
+        rv = (lim or 0.0) / RULES_IV_MAX_RV
+        more = " Той самий погляд дешевше — спредом." if st == "violated" else ""
+        return name, f"IV куплених ніг до {_vp(v)}; межа {_vp(lim)} ({RULES_IV_MAX_RV:g} × RV30 {_vp(rv)}).{more}"
+    name = "Час до експірації: < 24 год — ні; 1–3 доби — з умовами"
     if st == "na":
         return name, "Нічого не купуєш." if why == "nothing bought" else "Чиста премія отримується: це продаж, не купівля."
     if v is None:
         return name, "Дату експірації не розпізнано."
-    return name, f"До експірації {_nf(v, 1)} дн."
+    zone = c.get("zone")
+    left = _rule_time_left(v, zone)
+    if zone == RULES_ZONE_BAN:
+        return name, f"До експірації {left}: менше доби — не купувати ніколи."
+    if zone == RULES_ZONE_COND:
+        return name, f"До експірації {left}: 1–3 доби — лише коли виконано всі три умови нижче."
+    return name, f"До експірації {left}. Понад 3 доби — лише ліміт премії."
 
 
-def block_rules_pre(legs: list[dict], ch: dict, dep: float, now: float | None) -> str:
-    """Rules 1 and 8 on the constructed structure (copy of analytics.rules_check.pre_trade_option)."""
+def _rule_time_left(days: float, zone: object) -> str:
+    """Time to expiry for rule 8's row, rounded so it never contradicts the zone: hours to 0.1 h, rounded down under
+    24 h and in the 24-72 h zone (23.96 h is '23.9 год', not '24'), up just above 72 h (72.04 h is '72.1 год');
+    days (to 0.1) from 96 h on, where rounding cannot cross a boundary."""
+    h = days * 24.0
+    if zone == RULES_ZONE_FREE and h >= 96.0:
+        return f"{_nf(days, 1)} дн"
+    t = h * 10.0  # tenths of an hour; the clamps absorb float noise from days * 24
+    ban, cond = round(RULES_BUY_BAN_HOURS * 10), round(RULES_BUY_COND_HOURS * 10)
+    if zone == RULES_ZONE_BAN:
+        x = min(math.floor(t + 1e-6), ban - 1)
+    elif zone == RULES_ZONE_COND:
+        x = min(max(math.floor(t + 1e-6), ban), cond)
+    else:
+        x = max(math.ceil(t - 1e-6), cond + 1)
+    return f"{_nf(x / 10.0, 1).removesuffix('.0')} год"
+
+
+def block_rules_pre(
+    legs: list[dict],
+    ch: dict,
+    dep: float,
+    now: float | None,
+    rv: float | None = None,
+    thesis: str | None = None,
+    target: float | None = None,
+) -> str:
+    """Rules 1 and 8 on the constructed structure (copy of analytics.rules_check.pre_trade_option); ``rv`` is the
+    snapshot's RV30 (decimal), the forward stands in for spot (days before expiry they are close)."""
     exp = expiry_utc(ch.get("expiry"))
     exp_ts = exp.timestamp() if exp else None
     now_ts = now if now is not None else (exp_ts - ch["days"] * 86400.0 if exp_ts is not None else 0.0)
     rows = ["<div class='scroll'><table><tr><th>№</th><th>Правило</th><th>Стан</th><th>Що з цією угодою</th></tr>"]
-    for c in rules_pre_trade(legs, now_ts, exp_ts, dep):
+    for c in rules_pre_trade(legs, now_ts, exp_ts, dep, ch.get("F"), rv, thesis, target):
         name, text = _rule_pre_text(c)
         rows.append(
             f"<tr><td class='num'>{_e(c['rule'])}</td><td>{_e(name)}</td><td>{_rule_chip(str(c['status']))}</td><td>{_e(text)}</td></tr>"
         )
     rows.append("</table></div>")
     note = (
-        f"Правила власника 1 і 8 (затверджено 18.10, база знань «Торгова стратегія»). Ліміти — {RULES_RISK_PCT:g} % від "
-        "депозиту у формі, незалежно від поля «Ризик на угоду». Решту правил (стоп на біржі, денний стоп, R:R ≥ 2, "
+        f"Правила власника 1 і 8 (затверджено 18.10, правило 8 уточнено 22.10; база знань «Торгова стратегія»). Ліміти — "
+        f"{RULES_RISK_PCT:g} % від депозиту у формі, незалежно від поля «Ризик на угоду». За 1–3 доби до експірації "
+        "купівля — лише з тезою й ціллю, беззбитком у межах 1σ руху за реалізованою волою (RV30) і IV ≤ 1.2 × RV30; "
+        "пороги 1σ і 1.2 — стартовий вибір, а не доведена перевага. Решту правил (стоп на біржі, денний стоп, R:R ≥ 2, "
         "не більше 3 лонгів в альтах) перевіряє чекліст перед угодою (pre_trade_checklist); тижневий звіт порушень — "
         "вкладка «Журнал»."
     )
@@ -4588,7 +4765,10 @@ def _rule_cell(w: dict, n: int) -> str:
         if w.get("approx"):
             extra.append(f"+ наближено {w['approx']} (за часом закриття)")
     if n == 8 and (w.get("late_buys") or w.get("big_premiums")):
-        extra.append(f"пізніх {w.get('late_buys') or 0} · дорогих {w.get('big_premiums') or 0}")
+        extra.append(
+            f"< 24 год {w.get('buys_under_24h') or 0} · 1–3 доби без умов {w.get('buys_cond_failed') or 0} · "
+            f"дорогих {w.get('big_premiums') or 0}"
+        )
     return main + "".join(f"<br><span class='mut'>{_e(x)}</span>" for x in extra)
 
 

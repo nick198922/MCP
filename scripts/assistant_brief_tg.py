@@ -14,6 +14,9 @@ straddle breakevens) needs matplotlib, imported lazily: without it only the text
 scripts/tg_send.py (token and chat id from ~/.config/tradedesk/agents.env, never read or printed here).
 Scheduled by deploy/user-units/tradedesk-assistant-brief.* (08:00 Europe/Kyiv) while the flag file of
 scripts/server/22-assistant-brief-timer.sh exists (a tradedesk-owned file, so not an owner-only switch).
+When the dashboard is on the owner's tailnet (scripts/server/23-tailscale.sh writes its https URL to DASHBOARD_URL_PATH),
+the message is the short version (stamp, market, key points, caveats) with buttons to the dashboard pages, which carry
+the rest (owner 22.10: a long text in Telegram is hard to read).
 """
 
 from __future__ import annotations
@@ -39,6 +42,8 @@ CAVEATS = (
     "Не інвестиційна порада: бриф лише показує дані й нічого не торгує.",
 )
 LABELS = {"calm": "спокій", "risk": "ризик", "ev": "подія"}
+DASHBOARD_URL_PATH = Path("/var/lib/tradedesk-mcp/assistant/dashboard_url")
+PAGES = (("Бриф", "brief"), ("Радар", "radar"), ("Опціони", "options"), ("Журнал", "journal"))
 
 
 def _h(x: object) -> str:
@@ -231,8 +236,9 @@ def _funding(snap: dict, now: float) -> list[str]:
     return out
 
 
-def build_brief(snap: dict | None, now: float, err: str | None = None) -> str:
-    """The brief as Telegram HTML. Pure (no I/O, time passed in); never raises."""
+def build_brief(snap: dict | None, now: float, err: str | None = None, short: bool = False) -> str:
+    """The brief as Telegram HTML. Pure (no I/O, time passed in); never raises. `short` leaves out the events and
+    funding blocks (the dashboard's «Бриф» page has them), never the caveats."""
     head = f"<b>Бриф асистента · {_h(db.kyiv(datetime.fromtimestamp(now, timezone.utc)))}{_tz()}</b>"  # noqa: UP017
     tail = ["", "<b>Застереження</b>"] + [f"• {_h(c)}" for c in CAVEATS]
     if snap is None:
@@ -246,23 +252,36 @@ def build_brief(snap: dict | None, now: float, err: str | None = None) -> str:
         age = _age(snap, now)
         if age is not None and age > db.SNAPSHOT_OLD_S:  # yesterday's prices and countdowns would mislead
             return _fit(out, tail)
-        for title, fn in (
+        blocks = (
             ("Ринок", _market),
             ("Головне сьогодні", _key),
             ("Події · час " + ("Київ" if db.KYIV is not None else "UTC"), _events),
             ("Funding · річних", _funding),
-        ):
+        )
+        for title, fn in blocks[:2] if short else blocks:
             try:
                 lines = fn(snap, now)
             except Exception as e:  # noqa: BLE001 - one odd section must not drop the brief
                 lines = [_h(f"Блок не вдалося зібрати: несподіваний формат даних ({type(e).__name__}).")]
             if lines:
                 out += ["", f"<b>{title}</b>"] + lines
-        if db._data(snap, "funding_btc") or db._data(snap, "funding_eth"):
+        if not short and (db._data(snap, "funding_btc") or db._data(snap, "funding_eth")):
             out.append("<i>Додатний funding — лонги платять шортам; до комісій і базису.</i>")
         return _fit(out, tail)
     except Exception as e:  # noqa: BLE001 - the brief always goes out
         return _fit([head, _h(f"Знімок не вдалося прочитати ({type(e).__name__}).")], tail)
+
+
+def dashboard_buttons(path: Path | None = None) -> list[tuple[str, str]]:
+    """(label, url) buttons to the dashboard pages when step 23 wrote an https base URL; [] otherwise."""
+    try:
+        base = (path or DASHBOARD_URL_PATH).read_text(encoding="utf-8").strip()
+    except OSError:
+        return []
+    if not base.startswith("https://") or any(c.isspace() for c in base):
+        return []
+    base = base.rstrip("/") + "/"
+    return [(label, base + page) for label, page in PAGES]
 
 
 def _fit(body: list[str], tail: list[str]) -> str:
@@ -340,7 +359,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--silent", action="store_true", help="deliver without a sound")
     a = ap.parse_args(argv)
     snap, err = db.load_snapshot(a.snapshot)
-    text = build_brief(snap, time.time(), err)
+    buttons = dashboard_buttons()
+    text = build_brief(snap, time.time(), err, short=bool(buttons))
     png = None if a.no_chart else chart_png(snap)
     if a.print_only or a.out:
         if a.print_only:
@@ -352,7 +372,7 @@ def main(argv: list[str] | None = None) -> int:
             if png:
                 (a.out / "brief.png").write_bytes(png)
         return 0
-    ok = tg_send.send(text, silent=a.silent, topic=a.topic)
+    ok = tg_send.send(text, silent=a.silent, topic=a.topic, buttons=buttons)
     if ok and png:
         caption = f"BTC 120 днів, ±1σ до {_h(db._exp_label(snap, 'month'))} з опціонів (ризик-нейтрально)"
         tg_send.send_photo(png, caption, silent=True, topic=a.topic)

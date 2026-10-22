@@ -1,0 +1,11 @@
+[Unit]
+Description=tradedesk-journal-weekly (Sunday 20:00 Europe/Kyiv)
+
+[Timer]
+# End of the week: this ISO week (UTC) so far, and the one before, complete.
+OnCalendar=Sun *-*-* 20:00:00 Europe/Kyiv
+# A weekly review sent days later after a reboot is not wanted: no catch-up run.
+Persistent=false
+
+[Install]
+WantedBy=timers.target

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 22
+SCHEMA_VERSION = 23
 
 # Each migration is a list of SQL statements executed in a single transaction.
 # `PRAGMA user_version` is bumped by Store.init() inside the same explicit transaction,
@@ -647,5 +647,11 @@ MIGRATIONS: dict[int, list[str]] = {
             PRIMARY KEY (day, asset)
         )
         """,
+    ],
+    23: [
+        # Forecast log: the RV30 model beside each risk-neutral forecast (analytics/forecast_log.py), scored on the same outcome.
+        "ALTER TABLE forecast_log ADD COLUMN rv30 REAL",  # decimal, trailing 30-day zero-mean realized vol at issue; NULL = none
+        "ALTER TABLE forecast_log ADD COLUMN prob_rv REAL",  # P(lo < S_T < hi) of the RV30 model, decimal; NULL = none
+        "ALTER TABLE forecast_log ADD COLUMN brier_rv REAL",  # (prob_rv - outcome)^2 once settled
     ],
 }

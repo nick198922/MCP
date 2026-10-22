@@ -729,6 +729,14 @@ HELP: dict[str, tuple[str, str, str, str]] = {
         "У тижні лише кілька експірацій, тож окремий рядок дуже шумний; дивись на тенденцію за багато тижнів.",
         "Один добрий чи поганий тиждень — не сигнал.",
     ),
+    "fc_rv": (
+        "Опціони проти RV30",
+        "Ті самі чотири події оцінює проста модель на історії: логнормальний розподіл від спота з волатильністю останніх "
+        "30 днів (Binance, денні закриття), без скью і подій. Число — різниця Brier опціонів і цієї моделі на однакових прогнозах.",
+        "Мінус — опціони прогнозують точніше, плюс — проста історія точніша. ДІ рахується по експіраціях; поки він містить 0, "
+        "різниці не видно.",
+        "Стабільний плюс означав би, що опціони систематично помиляються з розміром руху — гіпотеза, перевіряється лише від 30 експірацій.",
+    ),
     "r_price": (
         "Ціна за тиждень",
         "Індекс Deribit о 19:00 UTC останнього дня архіву поверхні і того самого часу тиждень тому.",
@@ -4373,6 +4381,35 @@ def fc_score(rows: list[dict], n_bins: int = FC_N_BINS) -> dict:
     return out
 
 
+def fc_compare(rows: list[dict]) -> dict:
+    """Stdlib copy of analytics.forecast_log.compare: paired Brier of the risk-neutral forecast against the RV30 model
+    on the settled rows that have both, clustered by (asset, expiry); diff < 0 means the options forecast better."""
+    xs = [x for x in _fc_settled(rows) if _num(x.get("prob_rv")) is not None]
+    if not xs:
+        return {"n": 0, "n_expiries": 0}
+    clusters: dict[tuple, list[float]] = {}
+    for x in xs:
+        o = int(x["outcome"])
+        clusters.setdefault((x.get("asset"), x.get("expiry_ts")), []).append(
+            _fc_brier(float(x["prob"]), o) - _fc_brier(float(x["prob_rv"]), o)
+        )
+    means = [_fc_mean(v) for v in clusters.values()]
+    k = len(means)
+    diff = _fc_mean(means)
+    se = math.sqrt(sum((m - diff) ** 2 for m in means) / (k - 1) / k) if k >= 2 else None
+    return {
+        "n": len(xs),
+        "n_expiries": k,
+        "brier_risk_neutral": _fc_mean([_fc_brier(float(x["prob"]), int(x["outcome"])) for x in xs]),
+        "brier_rv30": _fc_mean([_fc_brier(float(x["prob_rv"]), int(x["outcome"])) for x in xs]),
+        "diff": diff,
+        "se": se,
+        "ci95": None if se is None else [diff - 1.96 * se, diff + 1.96 * se],
+        "better": "risk_neutral" if diff < 0 else "rv30" if diff > 0 else "tie",
+        "enough": k >= FC_MIN_EXPIRIES,
+    }
+
+
 def fc_iso_week(ts: object) -> str:
     """ISO week of a unix timestamp (UTC), e.g. '2026-W43' (copy of analytics.forecast_log.iso_week)."""
     y, w, _ = datetime.fromtimestamp(int(ts), timezone.utc).isocalendar()  # noqa: UP017 - runs on the system python3
@@ -4443,10 +4480,13 @@ def load_journal(path: Path) -> tuple[dict | None, str | None]:
             ]
             out["plan_shadow"] = int(con.execute("SELECT COUNT(*) FROM trade_plan WHERE tags LIKE ?", (shadow,)).fetchone()[0])
         if "forecast_log" in names:
+            # prob_rv (the RV30 model) arrives with schema v23; an older store reads it as NULL
+            cols = {r[1] for r in con.execute("PRAGMA table_info(forecast_log)")}
+            rv = "prob_rv" if "prob_rv" in cols else "NULL AS prob_rv"
             out["forecast_log"] = [
                 dict(r)
                 for r in con.execute(
-                    "SELECT asset, kind, expiry_ts, prob, ref_prob, status, outcome FROM forecast_log"
+                    f"SELECT asset, kind, expiry_ts, prob, ref_prob, {rv}, status, outcome FROM forecast_log"
                     " ORDER BY issued_ts DESC, id DESC LIMIT ?",
                     (FC_MAX_ROWS,),
                 )
@@ -4911,6 +4951,21 @@ def block_forecasts(rows: list[dict] | None) -> str:
             help="fc_clim",
         ),
     ]
+    c = fc_compare(rows)
+    if c["n"]:
+        ci = c["ci95"]
+        tiles.append(
+            _tile(
+                "Опціони проти RV30",
+                f"<span class='{_signed_cls(-c['diff'])}'>{c['diff']:+.3f}</span>",
+                f"Brier {_bs(c['brier_risk_neutral'])} проти {_bs(c['brier_rv30'])} · "
+                + (f"95 % ДІ {ci[0]:+.3f} … {ci[1]:+.3f}" if ci else "ДІ — від 2 експірацій")
+                + f" · {c['n_expiries']} експірацій · мінус — опціони точніші",
+                help="fc_rv",
+                tone="" if c["enough"] else "warn",
+                badge="" if c["enough"] else "замало для висновку",
+            )
+        )
     out = [f"<div class='tiles'>{''.join(tiles)}</div>"]
     if small:
         out.append(

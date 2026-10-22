@@ -1,0 +1,12 @@
+[Unit]
+Description=tradedesk: weekly forecast-log summary to Telegram (scripts/forecast_weekly_tg.py)
+# Off until this file exists: scripts/server/26-forecast-weekly-timer.sh creates it ("off" removes it). The directory
+# belongs to tradedesk, so any tradedesk process can flip it; not an owner-only switch (as for the brief, Q-20261021-1).
+ConditionPathExists=/var/lib/tradedesk-mcp/assistant/forecast-telegram.on
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/tradedesk/tradedesk-mcp
+ExecStart=/home/tradedesk/.local/bin/uv run --quiet python scripts/forecast_weekly_tg.py
+TimeoutStartSec=5min
+NoNewPrivileges=true

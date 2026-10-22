@@ -234,6 +234,86 @@ async def test_run_due_records_missed_cycles_as_skips(store):
     assert len(skipped) == 2 and all("missed" in c["reason"] for c in skipped)
 
 
+async def test_run_due_skip_reason_names_failed_attempts(store):
+    mk = markets_a(days=110)
+    params = replace(PARAMS_A, slots=SLOTS, entry_apr=0.10)
+    t = _grid(min(d["funding"][0]["ts_ms"] for d in mk.values()), 10**15)[0]
+    feed, down = FixtureFeed(mk, "A"), FixtureFeed(mk, "A", fail=True)
+    assert (await run_due(store, feed, params, clock=lambda: t))["status"] == "done"
+    failed_cycle = t + H8 - DECISION_DELAY_MS
+    for k in range(3):  # three job ticks inside the next cycle, all failing
+        out = await run_due(store, down, params, clock=lambda k=k: t + H8 + k * 600_000)
+        assert out["status"] == "failed" and out["cycle_ts"] == failed_cycle
+    later = t + 3 * H8 + 60_000  # the engine recovers two cycles later: one failed cycle, one never attempted
+    assert (await run_due(store, feed, params, clock=lambda: later))["status"] == "done"
+    rows = {c["cycle_ts"]: c for c in await store.cp_cycles("A")}
+    failed, missed = rows[failed_cycle], rows[failed_cycle + H8]
+    assert failed["status"] == "skipped" and failed["reason"] == "failed: 3 attempts, last error: RuntimeError: venue down"
+    assert missed["status"] == "skipped" and missed["reason"] == "missed: engine did not run in time"
+
+
+def _known_at(series: list[dict[str, Any]], t: int, bar_ms: int) -> list[dict[str, Any]]:
+    """Funding events paid at or before ``t``; bars closed at or before ``t`` (bar ``ts`` is its open)."""
+    return [e for e in series if ("ts_ms" in e and e["ts_ms"] <= t) or ("ts" in e and e["ts"] + bar_ms <= t)]
+
+
+class TruncatedFeed(FixtureFeed):
+    """Serves only what was knowable at the decision time: the source cut to data <= t on every series."""
+
+    async def load(self, params: CarryParams, decision_ts: int, open_positions: list[dict[str, Any]]) -> FeedData:
+        data = await super().load(params, decision_ts, open_positions)
+        t, bm = decision_ts, params.bar_ms
+        if self.strategy == "A":
+            data.markets = {s: {k: _known_at(v, t, bm) for k, v in d.items()} for s, d in data.markets.items()}
+        else:
+            data.markets = {
+                s: {leg: {k: _known_at(v, t, bm) for k, v in d[leg].items()} for leg in ("a", "b")} for s, d in data.markets.items()
+            }
+        return data
+
+
+async def _snapshot(store: Store, strategy: str) -> dict[str, Any]:
+    logs = {
+        k: [(x["cycle_ts"], x["trade_id"], x["payload"]) for x in await store.cp_logs(strategy, k, limit=None)]
+        for k in ("side", "funding", "mark", "close", "event")
+    }
+    return {
+        "cycles": [(c["cycle_ts"], c["status"], c["payload"]) for c in await store.cp_cycles(strategy, 10_000)],
+        "positions": [(p["trade_id"], p["status"], p["state"], p["trade"]) for p in await store.cp_positions(strategy)],
+        "logs": logs,
+    }
+
+
+@pytest.mark.parametrize("strategy", ["A", "B"])
+async def test_no_lookahead_truncated_source_gives_the_same_cycles(strategy):
+    # The engine run on a source cut to data <= decision time must record exactly what it records on the full source:
+    # same cycles (ranking, candidates, decisions, flags), positions, funding, marks and closes.
+    if strategy == "A":
+        mk = markets_a(days=110)
+        params = replace(PARAMS_A, slots=SLOTS, entry_apr=0.10)
+        times = _grid(min(d["funding"][0]["ts_ms"] for d in mk.values()), max(e["ts_ms"] for d in mk.values() for e in d["funding"]))
+    else:
+        mk = markets_b(days=110)
+        params = replace(PARAMS_B, slots=SLOTS, entry_apr=0.10, stop_move=0.2)
+        firsts = [max(d["a"]["funding"][0]["ts_ms"], d["b"]["funding"][0]["ts_ms"]) for d in mk.values()]
+        end = max(min(d["a"]["funding"][-1]["ts_ms"], d["b"]["funding"][-1]["ts_ms"]) for d in mk.values())
+        times = _grid(min(firsts), end)
+    snaps = []
+    for feed in (FixtureFeed(mk, strategy), TruncatedFeed(mk, strategy)):
+        s = Store(":memory:")
+        await s.init()
+        try:
+            await _drive(s, feed, params, times)
+            snaps.append(await _snapshot(s, strategy))
+        finally:
+            await s.aclose()
+    full, cut = snaps
+    assert any(p[1] == "closed" for p in full["positions"])  # the segment is not vacuous
+    if strategy == "B":
+        assert any(p[3] and p[3]["stopped"] for p in full["positions"])  # stops read bar extremes: covered too
+    assert cut == full
+
+
 async def test_exchange_interval_change_is_an_event(store):
     mk = markets_a(days=110)
     params = replace(PARAMS_A, slots=SLOTS, entry_apr=0.10)

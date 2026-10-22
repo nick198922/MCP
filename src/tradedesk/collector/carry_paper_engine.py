@@ -597,8 +597,18 @@ async def run_cycle(
         return {"status": "failed", "cycle_ts": cycle_ts, "error": err}
 
 
+async def _skip_reason(store: Any, strategy: str, cycle_ts: int) -> str:
+    """'failed: N attempts, last error: ...' when ``run_cycle`` tried this cycle and failed; else 'missed: ...'."""
+    events = await store.cp_logs(strategy, "event", cycle_ts=cycle_ts, limit=None)
+    fails = [e["payload"] for e in events if (e.get("payload") or {}).get("type") == "cycle_failed"]
+    if not fails:
+        return "missed: engine did not run in time"
+    return f"failed: {len(fails)} attempts, last error: {fails[-1].get('error')}"
+
+
 async def run_due(store: Any, feed: CarryFeed, params: CarryParams, *, clock: Callable[[], int]) -> dict[str, Any]:
-    """Run the latest due cycle; cycles missed since the last recorded one become recorded skips (with the reason)."""
+    """Run the latest due cycle; cycles missed since the last recorded one become recorded skips (with the reason:
+    'failed: N attempts, last error: ...' when attempts were journaled as ``cycle_failed``, else 'missed: ...')."""
     now = clock()
     cur = cycle_grid(now)
     last = await store.cp_cycles(params.strategy, 1)
@@ -612,7 +622,7 @@ async def run_due(store: Any, feed: CarryFeed, params: CarryParams, *, clock: Ca
                     "strategy": params.strategy,
                     "cycle_ts": ts,
                     "status": "skipped",
-                    "reason": "missed: engine did not run in time",
+                    "reason": await _skip_reason(store, params.strategy, ts),
                     "started_ms": now,
                     "finished_ms": now,
                     "git_sha": git_sha(),

@@ -38,11 +38,13 @@ for a $100 risk: a hint for manual trades. It reads the store read-only and does
 from __future__ import annotations
 
 import argparse
+import hmac
 import html
 import json
 import math
 import os
 import re
+import secrets
 import shutil
 import sqlite3
 import statistics
@@ -53,6 +55,7 @@ import time
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
+from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -5987,8 +5990,60 @@ def polymarket_page(now: float | None = None) -> str:
 # ---------------------------------------------------------------- server
 
 
+# The link with a key (owner 22.10: a permanent link instead of the Tailscale app): requests that came through a proxy
+# (tailscale serve / funnel add X-Forwarded-For) need the key once in the link (?k=…), which becomes a year-long cookie;
+# direct loopback requests (the server's own scripts, the Mac's SSH tunnel) pass as before.
+KEY_FILE = Path.home() / ".config" / "tradedesk" / "dashboard.env"  # DASHBOARD_KEY=…, 0600, made on the first start
+KEY_COOKIE = "td_key"
+PROXY_HEADERS = ("x-forwarded-for", "forwarded", "x-real-ip", "tailscale-funnel-request", "tailscale-user-login")
+
+
+def dashboard_key(path: Path | None = None, create: bool = False) -> str | None:
+    """The dashboard's access key from KEY_FILE; with ``create`` a new random one is written (0600) when missing."""
+    path = path or KEY_FILE
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.startswith("DASHBOARD_KEY=") and len(line.split("=", 1)[1].strip()) >= 20:
+                return line.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    if not create:
+        return None
+    key = secrets.token_urlsafe(24)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(f"DASHBOARD_KEY={key}\n")
+    return key
+
+
+def access(client: str, headers: list[tuple[str, str]], query: str, key: str | None) -> str:
+    """'ok', 'set' (the right key in the link: set the cookie and redirect without it) or 'deny'."""
+    h: dict[str, str] = {}
+    for k, v in headers:
+        h.setdefault(k.lower(), v)
+    if client in ("127.0.0.1", "::1") and not any(x in h for x in PROXY_HEADERS):
+        return "ok"
+    if not key:
+        return "deny"
+    if any(hmac.compare_digest(v.encode(), key.encode()) for v in urllib.parse.parse_qs(query).get("k", [])):
+        return "set"
+    try:
+        morsel = SimpleCookie(h.get("cookie", "")).get(KEY_COOKIE)
+    except CookieError:
+        morsel = None
+    return "ok" if morsel is not None and hmac.compare_digest(morsel.value.encode(), key.encode()) else "deny"
+
+
+DENIED_PAGE = (
+    "<!doctype html><meta charset='utf-8'><meta name='viewport' content='width=device-width'>"
+    "<p style='font:16px system-ui;margin:2em'>Панель відкривається лише за посиланням з ключем. Попросіть його в Claude.</p>"
+)
+
+
 class _State:
     lock = threading.Lock()
+    key: str | None = None
     snap: dict | None = None
     page = "<!doctype html><meta charset='utf-8'><p>Збираю дані…</p><meta http-equiv='refresh' content='5'>"
 
@@ -6010,6 +6065,19 @@ class _Handler(BaseHTTPRequestHandler):
         with _State.lock:
             snap, page = _State.snap, _State.page
         path, _, query = self.path.partition("?")
+        verdict = access(self.client_address[0], list(self.headers.items()), query, _State.key)
+        if verdict == "deny":
+            self._send(401, DENIED_PAGE.encode(), "text/html; charset=utf-8")
+            return
+        if verdict == "set":
+            rest = urllib.parse.urlencode([(k, v) for k, v in urllib.parse.parse_qsl(query) if k != "k"])
+            self.send_response(302)
+            self.send_header("Location", path + (f"?{rest}" if rest else ""))
+            self.send_header("Set-Cookie", f"{KEY_COOKIE}={_State.key}; Max-Age=31536000; Path=/; Secure; HttpOnly; SameSite=Lax")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         if path in ("/", "/index.html"):
             body, ctype = page.encode(), "text/html; charset=utf-8"
         elif path == "/brief":
@@ -6027,9 +6095,13 @@ class _Handler(BaseHTTPRequestHandler):
         else:
             self.send_error(404)
             return
-        self.send_response(200)
+        self._send(200, body, ctype)
+
+    def _send(self, code: int, body: bytes, ctype: str) -> None:
+        self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Cache-Control", "no-store")
+        self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -6078,9 +6150,10 @@ def main() -> None:
         a.out.write_text(page, encoding="utf-8")
         print(f"-> {a.out}")
         return
+    _State.key = dashboard_key(create=True)
     threading.Thread(target=_refresh_loop, daemon=True).start()
     threading.Thread(target=_watch_self, daemon=True).start()
-    ThreadingHTTPServer(("127.0.0.1", a.port), _Handler).serve_forever()  # loopback only: no auth on this page
+    ThreadingHTTPServer(("127.0.0.1", a.port), _Handler).serve_forever()  # loopback only; proxied requests need the key
 
 
 if __name__ == "__main__":

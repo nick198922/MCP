@@ -15,7 +15,7 @@ text and is escaped; a missing, stale or corrupt snapshot gives an empty state, 
 
 The «Опціони» tab (/options) is a strategy builder on the snapshot's month chain (marks, Δ, IV): sell/buy strangle and
 straddle, iron condor; P&L at expiry, breakevens, max profit/loss, risk-neutral probability of profit and the fit to the
-owner's risk budget; position greeks, a «through N days» line, a scenario table (incl. IV +5 points), a plain-language
+owner's risk budget and his rules 1 and 8 (analytics.rules_check); position greeks, a «through N days» line, a scenario table (incl. IV +5 points), a plain-language
 conclusion and an «is vol expensive» block (DVOL percentile, VRP backtest by level). Everything is computed here on a plain GET form; the inline script only remembers deposit, risk
 and size in the browser (localStorage) and resubmits on a change.
 
@@ -26,7 +26,8 @@ ago» dates (surface rows vs daily DVOL). Null fields show their reason from the
 
 The «Журнал» tab (/journal) reads the owner's trade journal and the assistant's paper recommendations (rec_paper,
 labelled «гіпотеза») from the SQLite store over a read-only connection: summary, by source, the trades page by page,
-and a summary of the assistant's trade plans (trade_plan: counts by verdict and status, the resolved 'enter' plans' R).
+the owner's rule violations by ISO week (analytics.rules_check), and a summary of the assistant's trade plans
+(trade_plan: counts by verdict and status, the resolved 'enter' plans' R).
 Every string from the database is untrusted text and is escaped; no database or no table gives an empty state.
 
 The «Polymarket» tab (/polymarket) lists the CURRENT Polymarket <-> Deribit-options gaps of the latest pm_gap_snapshot
@@ -622,6 +623,15 @@ HELP: dict[str, tuple[str, str, str, str]] = {
         "Зелене — вкладається; червоне — більше за ризик, і показано, який розмір вкладається.",
         "Твоє правило — ризик ≈ 1 % депозиту на угоду. Позиція понад нього — зменш розмір.",
     ),
+    "rules_pre": (
+        "Правила власника перед угодою",
+        "Твої правила 1 і 8 (затверджено 18.10) на цій структурі: макс. збиток ≤ 1 % депозиту, премія ≤ 1 % депозиту, "
+        "не купувати опціони за 3 дні й менше до експірації.",
+        "«Порушено» — угода суперечить правилу; «не стосується» — наприклад, продаж: премію отримуєш, а не платиш. "
+        "Ліміт — 1 % від депозиту у формі, а не поле «Ризик на угоду».",
+        "Будь-яке «порушено» — переробити угоду (менший розмір, дальша експірація, захисні опціони) або не входити. "
+        "Решту правил (стоп, денний стоп, R:R) перевір чеклістом.",
+    ),
     "verdict": (
         "Що це означає",
         "Та сама позиція простими словами: що купуєш, коли заробляєш, скільки забирає час, де межа збитку.",
@@ -887,6 +897,14 @@ HELP: dict[str, tuple[str, str, str, str]] = {
         "Усі реальні угоди, нові зверху: дата, джерело, інструмент, сторона, розмір, вхід і вихід, P&L у USD, R, теза.",
         "R порожній, якщо стоп не записано. Теги й нотатки — з імпорту або journal_add.",
         "Шукай повтори: той самий інструмент чи сетап раз у раз у мінусі — кандидат на паузу.",
+    ),
+    "rules_week": (
+        "Порушення правил за тиждень",
+        "Твої реальні угоди, перевірені на правила 1, 2, 4, 5 і 8 (затверджено 18.10), за ISO-тижнем відкриття, нові зверху.",
+        "«2 з 8» — порушили 2 з 8 угод, які вдалося перевірити; «невідомо» — правило стосується, але даних нема (стопу "
+        "в імпорті з бірж немає, Bybit не дає часу відкриття). «P&L цих угод» — результат угод, що точно порушили хоч "
+        "одне правило; «наближено» — угоди, де єдине порушення — денний стоп, оцінений за часом закриття (окремо).",
+        "Ефект правил міряє журнал: через 4–8 тижнів порівняй P&L угод з порушеннями і без. Правила змінює лише власник.",
     ),
     "rec_n": (
         "Розраховано",
@@ -2765,7 +2783,7 @@ def position_pros_cons(
     return items
 
 
-def block_builder(ch: dict, snap: dict, p: dict) -> str:
+def block_builder(ch: dict, snap: dict, p: dict, now: float | None = None) -> str:
     strat = p["strat"]
     strikes = default_strikes(ch, strat)
     if p["keep_strikes"]:
@@ -2908,6 +2926,7 @@ def block_builder(ch: dict, snap: dict, p: dict) -> str:
             per = fit["loss"] / qty * 0.01
             out.append(f"<p class='mut'>Навіть 0.01 BTC — це {_e(_usd(per))} збитку: більше за ризик.</p>")
     out.append("</div></section>")
+    out.append(block_rules_pre(legs, ch, dep, now))
     pct365 = _num(((_data(snap, "vrp") or {}).get("current") or {}).get("dvol_percentile_365d")) if isinstance(snap, dict) else None
     out.append(
         f"<section>{_h2('Що це означає', 'verdict')}"
@@ -3147,7 +3166,7 @@ def render_options(snap: dict | None, err: str | None, now: float, params: dict 
             )
             return "".join(out)
         try:
-            out.append(block_builder(ch, snap, p))
+            out.append(block_builder(ch, snap, p, now))
         except Exception as e:  # noqa: BLE001 - one odd chain must not take the page down
             out.append(
                 f"<section class='wide'>{_empty(f'Конструктор не вдалося показати: несподіваний формат даних ({type(e).__name__}).')}</section>"
@@ -4146,6 +4165,474 @@ def radar_page(query: str = "", now: float | None = None) -> str:
     return with_help(render_radar(snap, err, time.time() if now is None else now, parse_radar_query(query), SNAPSHOT_PATH))
 
 
+# ---------------------------------------------------------------- the owner's rules (docs/knowledge/trading-strategy.md, 18.10)
+#
+# Stdlib copies of analytics.rules_check (pre_trade_option, trade_checks, weekly_violations; tests compare each pair on
+# the same inputs): rules 1 and 8 before an option trade («Опціони»), rules 1, 2, 4, 5 and 8 week by week on the
+# owner's real trades («Журнал»). Statuses: ok / violated / unknown (the data cannot tell) / na (does not apply).
+
+RULES_DEPOSIT = 10_000.0  # the card: deposit ≈ $10 000, 1 % = $100 (the journal has no deposit column)
+RULES_RISK_PCT = 1.0  # rule 1, % of the deposit
+RULES_MAX_ALT_LONGS = 3  # rule 2
+RULES_DAY_LOSS_PCT = 2.0  # rule 4, % of the deposit
+RULES_STREAK = 2  # rule 4: losing trades in a row
+RULES_MIN_RR = 2.0  # rule 5
+RULES_PREMIUM_PCT = 1.0  # rule 8, % of the deposit
+RULES_MIN_BUY_DAYS = 3.0  # rule 8: buying with this many days or fewer to expiry
+RULES_MAJORS = frozenset({"BTC", "ETH"})
+RULES_NUMS = (1, 2, 4, 5, 8)
+RULES_WEEKS = 12  # newest ISO weeks in the journal table
+RULES_OPTION_RE = re.compile(r"([A-Z0-9]+)-(\d{1,2})([A-Z]{3})(\d{2})-\d+(?:[.d]\d+)?-[CP](?:-[A-Z]+)?")
+RULES_QUOTES = ("USDT", "USDC", "BUSD", "USD", "PERP")
+RULE_STATUS_UA = {
+    "ok": ("виконано", "opp"),
+    "violated": ("порушено", "risk"),
+    "unknown": ("невідомо", "calm"),
+    "na": ("не стосується", "calm"),
+}
+RULES_WEEK_HEAD = (
+    (1, "1 · ризик ≤ 1 %"),
+    (2, "2 · ≤ 3 лонги в альтах"),
+    (4, "4 · денний стоп"),
+    (5, "5 · R:R ≥ 2"),
+    (8, "8 · опціони"),
+)
+RULES_WEEK_NOTE = (
+    "Правила власника, затверджені 18.10 (база знань «Торгова стратегія»). Тиждень — ISO-тиждень відкриття угоди (UTC), "
+    "нові зверху; у клітинці «порушено з перевірених», «невідомо» — правило стосується угоди, але даних не вистачає. "
+    "1 і 5 потребують стопу (і цілі): в імпорті з бірж їх немає, тож там лише куплені опціони (ризик = премія). "
+    "2 — відкриття 4-го різного альта (усе, крім BTC і ETH, без опціонів) при трьох уже відкритих; рядки Bybit без часу "
+    "відкриття — «невідомо», як і символи HIP-3 Hyperliquid (xyz:TSLA — акції, золото, не крипто-альти). "
+    "4 — угода, відкрита того ж дня UTC після 2 збиткових поспіль або −2 % депозиту за день (порядок закриття); "
+    "рядки без часу відкриття (здебільшого Bybit) оцінено за часом закриття — це «наближено», вони рахуються окремо "
+    "від точних порушень і не входять у «Порушили» та «P&L цих угод». "
+    "8 — купівля опціону за ≤ 3 дні до експірації (08:00 UTC) або премія > 1 % депозиту. Депозит — сьогоднішні $10 000 "
+    "для всіх тижнів. 3, 6, 7 і «48 год перерви» з журналу не перевіряються. Минуле не гарантує майбутнього."
+)
+
+
+def rules_option_expiry_ts(symbol: object) -> float | None:
+    """Delivery time (unix s, 08:00 UTC) of an option symbol ('BTC-31OCT26-90000-C', '…-C-USDT'); None otherwise."""
+    m = RULES_OPTION_RE.fullmatch(str(symbol or "").upper())
+    if not m or m.group(3) not in _MON_EN:
+        return None
+    try:
+        return datetime(2000 + int(m.group(4)), _MON_EN[m.group(3)], int(m.group(2)), 8, tzinfo=timezone.utc).timestamp()  # noqa: UP017
+    except ValueError:
+        return None
+
+
+def rules_is_hip3(symbol: object) -> bool:
+    """A Hyperliquid HIP-3 symbol 'dex:ASSET' ('xyz:TSLA': stocks, gold): not a crypto alt for rule 2."""
+    s = str(symbol or "")
+    return ":" in s and "/" not in s
+
+
+def rules_base_asset(symbol: object) -> str:
+    s = str(symbol or "").upper().strip()
+    s = s.split(":")[-1] if rules_is_hip3(s) else s.split("/")[0].split(":")[0]
+    s = s.split("-")[0] if "-" in s else s
+    for q in RULES_QUOTES:
+        if s.endswith(q) and len(s) > len(q):
+            return s[: -len(q)]
+    return s
+
+
+def _rules_day(ts: float) -> str:
+    return datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%d")  # noqa: UP017
+
+
+def _rules_week(ts: float) -> str:
+    y, w, _ = datetime.fromtimestamp(ts, timezone.utc).isocalendar()  # noqa: UP017
+    return f"{y}-W{w:02d}"
+
+
+def _rules_status(violated: int, checked: int, unknown: int) -> str:
+    if violated:
+        return "violated"
+    if checked:
+        return "ok"
+    return "unknown" if unknown else "na"
+
+
+def rules_pre_trade(legs: list[dict], now_ts: float, expiry_ts: float | None, dep: float = RULES_DEPOSIT) -> list[dict]:
+    """Copy of analytics.rules_check.pre_trade_option (rules 1 and 8 on the builder's legs)."""
+    d = _num(dep)
+    d = d if d is not None and d > 0 else None
+    opts = [lg for lg in legs if lg.get("kind") in ("call", "put") and (_num(lg.get("size")) or 0.0) > 0]
+    bought = [lg for lg in opts if lg.get("side") == "long"]
+    out: list[dict] = []
+    budget = d * RULES_RISK_PCT / 100.0 if d else None
+    if not opts:
+        out.append({"rule": 1, "key": "risk", "status": "na", "value": None, "limit": budget, "detail": "no option legs"})
+    else:
+        ml = payoff_extremes(legs)["max_loss"]
+        if ml is None:
+            out.append(
+                {
+                    "rule": 1,
+                    "key": "risk",
+                    "status": "violated",
+                    "value": None,
+                    "limit": budget,
+                    "detail": "loss unbounded at expiry: needs a stop on the exchange or protective wings",
+                }
+            )
+        else:
+            loss = max(0.0, -ml)
+            st = "unknown" if budget is None else "ok" if loss <= budget * (1 + 1e-9) else "violated"
+            out.append({"rule": 1, "key": "risk", "status": st, "value": loss, "limit": budget, "detail": "max loss at expiry"})
+    limit = d * RULES_PREMIUM_PCT / 100.0 if d else None
+    prems = [_num(lg.get("entry_premium")) for lg in opts]
+    debit = None
+    if bought and all(p is not None for p in prems):
+        debit = sum((1.0 if lg.get("side") == "long" else -1.0) * float(lg["size"]) * float(p) for lg, p in zip(opts, prems, strict=True))  # type: ignore[arg-type]
+    if not bought or (debit is not None and debit <= 0):
+        why = "nothing bought" if not bought else "net premium received"
+        out.append({"rule": 8, "key": "premium", "status": "na", "value": debit, "limit": limit, "detail": why})
+        out.append({"rule": 8, "key": "days_to_expiry", "status": "na", "value": None, "limit": RULES_MIN_BUY_DAYS, "detail": why})
+        return out
+    if debit is None or limit is None:
+        out.append(
+            {"rule": 8, "key": "premium", "status": "unknown", "value": debit, "limit": limit, "detail": "premium or deposit unknown"}
+        )
+    else:
+        st = "ok" if debit <= limit * (1 + 1e-9) else "violated"
+        out.append({"rule": 8, "key": "premium", "status": st, "value": debit, "limit": limit, "detail": "net premium paid"})
+    if _num(expiry_ts) is None:
+        out.append(
+            {
+                "rule": 8,
+                "key": "days_to_expiry",
+                "status": "unknown",
+                "value": None,
+                "limit": RULES_MIN_BUY_DAYS,
+                "detail": "expiry unknown",
+            }
+        )
+    else:
+        days = (float(expiry_ts) - float(now_ts)) / 86400.0  # type: ignore[arg-type]
+        st = "violated" if days <= RULES_MIN_BUY_DAYS else "ok"
+        out.append(
+            {
+                "rule": 8,
+                "key": "days_to_expiry",
+                "status": st,
+                "value": days,
+                "limit": RULES_MIN_BUY_DAYS,
+                "detail": "buying this close to expiry",
+            }
+        )
+    return out
+
+
+def _rules_normalize(rows: list[dict]) -> list[dict]:
+    out = []
+    for i, t in enumerate(rows):
+        status = t.get("status")
+        opened = _num(t.get("opened_ts"))
+        if status not in ("open", "closed") or opened is None:
+            continue
+        closed = _num(t.get("closed_ts")) if status == "closed" else None
+        if status == "closed" and closed is None:
+            closed = opened
+        symbol = str(t.get("symbol") or "")
+        exp = rules_option_expiry_ts(symbol)
+        is_opt = exp is not None or "option" in journal_tags(t.get("tags"))
+        out.append(
+            {
+                "i": i,
+                "id": t.get("id"),
+                "opened": opened,
+                "closed": closed,
+                "open_known": status == "open" or (closed is not None and closed > opened),
+                "side": t.get("side"),
+                "base": "" if is_opt else rules_base_asset(symbol),
+                "hip3": rules_is_hip3(symbol),
+                "option": is_opt,
+                "expiry": exp,
+                "size": _num(t.get("size")),
+                "entry": _num(t.get("entry")),
+                "stop": _num(t.get("stop")),
+                "target": _num(t.get("target")),
+                "pnl": _num(t.get("pnl")) if status == "closed" else None,
+            }
+        )
+    return out
+
+
+def _rules_day_stops(xs: list[dict], day_loss: float, streak: int = RULES_STREAK) -> dict[str, dict]:
+    closed = sorted((x for x in xs if x["closed"] is not None and x["pnl"] is not None), key=lambda x: (x["closed"], x["i"]))
+    stops: dict[str, dict] = {}
+    run: dict[str, tuple[int, float]] = {}
+    for x in closed:
+        day = _rules_day(x["closed"])
+        if day in stops:
+            continue
+        n, cum = run.get(day, (0, 0.0))
+        n = n + 1 if x["pnl"] < 0 else 0
+        cum += x["pnl"]
+        run[day] = (n, cum)
+        hit_streak, hit_loss = n >= streak, cum <= -day_loss + 1e-9
+        if hit_streak or hit_loss:
+            stops[day] = {"ts": x["closed"], "reason": "both" if hit_streak and hit_loss else "streak" if hit_streak else "day_loss"}
+    return stops
+
+
+def rules_day_stops(rows: list[dict], dep: float = RULES_DEPOSIT) -> dict[str, dict]:
+    """Copy of analytics.rules_check.day_stops: {UTC day: {ts, reason}} where rule 4's day stop was hit."""
+    return _rules_day_stops(_rules_normalize(rows), dep * RULES_DAY_LOSS_PCT / 100.0)
+
+
+def _rules_alt_counts(xs: list[dict], now_ts: float) -> dict[int, tuple[int, bool]]:
+    alts = sorted(
+        (
+            x
+            for x in xs
+            if not x["option"] and x["side"] == "long" and x["base"] and x["base"] not in RULES_MAJORS and x["open_known"] and not x["hip3"]
+        ),
+        key=lambda x: (x["opened"], x["i"]),
+    )
+    active: list[tuple[float, str]] = []
+    out: dict[int, tuple[int, bool]] = {}
+    for x in alts:
+        t = x["opened"]
+        active = [(end, b) for end, b in active if end > t]
+        held = {b for _, b in active}
+        new = x["base"] not in held
+        n = len(held) + (1 if new else 0)
+        out[x["i"]] = (n, new and n > RULES_MAX_ALT_LONGS)
+        end = x["closed"] if x["closed"] is not None else max(float(now_ts), t)
+        active.append((end, x["base"]))
+    return out
+
+
+def rules_trade_checks(rows: list[dict], now_ts: float, dep: float = RULES_DEPOSIT) -> list[dict]:
+    """Copy of analytics.rules_check.trade_checks with the card's thresholds."""
+    xs = _rules_normalize(rows)
+    risk_cap, prem_cap = dep * RULES_RISK_PCT / 100.0, dep * RULES_PREMIUM_PCT / 100.0
+    stops = _rules_day_stops(xs, dep * RULES_DAY_LOSS_PCT / 100.0)
+    alt_n = _rules_alt_counts(xs, now_ts)
+    out = []
+    for x in xs:
+        r: dict[int, str] = {}
+        long_opt = x["option"] and x["side"] == "long"
+        premium = x["size"] * x["entry"] if long_opt and x["size"] is not None and x["entry"] is not None else None
+        if long_opt:
+            r[1] = "unknown" if premium is None else "ok" if premium <= risk_cap * (1 + 1e-9) else "violated"
+        elif x["option"] or None in (x["stop"], x["size"], x["entry"]):
+            r[1] = "unknown"
+        else:
+            r[1] = "ok" if x["size"] * abs(x["entry"] - x["stop"]) <= risk_cap * (1 + 1e-9) else "violated"
+        if x["option"] or x["side"] != "long" or x["base"] in RULES_MAJORS or not x["base"]:
+            r[2] = "na"
+        elif x["hip3"] or x["i"] not in alt_n:
+            r[2] = "unknown"
+        else:
+            r[2] = "violated" if alt_n[x["i"]][1] else "ok"
+        stop = stops.get(_rules_day(x["opened"]))
+        r[4] = "violated" if stop is not None and x["opened"] > stop["ts"] else "ok"
+        if x["option"]:
+            r[5] = "na"
+        elif None in (x["stop"], x["target"], x["entry"]) or x["entry"] == x["stop"]:
+            r[5] = "unknown"
+        else:
+            r[5] = "ok" if abs(x["target"] - x["entry"]) / abs(x["entry"] - x["stop"]) >= RULES_MIN_RR - 1e-9 else "violated"
+        late = big = None
+        if long_opt:
+            big = None if premium is None else premium > prem_cap * (1 + 1e-9)
+            late = None if x["expiry"] is None or not x["open_known"] else (x["expiry"] - x["opened"]) / 86400.0 <= RULES_MIN_BUY_DAYS
+            r[8] = "violated" if late or big else "unknown" if late is None or big is None else "ok"
+        else:
+            r[8] = "na"
+        out.append(
+            {
+                "id": x["id"],
+                "week": _rules_week(x["opened"]),
+                "opened_ts": x["opened"],
+                "pnl": x["pnl"],
+                "rules": r,
+                "approx": r[4] == "violated" and not x["open_known"],
+                "alt_longs": alt_n[x["i"]][0] if x["i"] in alt_n else None,
+                "late_buy": late,
+                "big_premium": big,
+            }
+        )
+    return out
+
+
+def rules_weekly(rows: list[dict], now_ts: float, dep: float = RULES_DEPOSIT) -> list[dict]:
+    """Copy of analytics.rules_check.weekly_violations: violations by ISO week of the opening (UTC), newest first."""
+    checks = rules_trade_checks(rows, now_ts, dep)
+    stops = rules_day_stops(rows, dep)
+    weeks: dict[str, list[dict]] = {}
+    for c in checks:
+        weeks.setdefault(c["week"], []).append(c)
+    for s in stops.values():
+        weeks.setdefault(_rules_week(s["ts"]), [])
+    out = []
+    for wk in sorted(weeks, reverse=True):
+        cs = weeks[wk]
+        rules = {}
+        for n in RULES_NUMS:
+            st = [c["rules"][n] for c in cs if not (n == 4 and c["approx"])]  # rule 4 on the close time: apart
+            v, k, u = st.count("violated"), st.count("ok") + st.count("violated"), st.count("unknown")
+            rules[n] = {"status": _rules_status(v, k, u), "violated": v, "checked": k, "unknown": u}
+        bad = [c for c in cs if _rules_exact_violation(c)]
+        bad_approx = [c for c in cs if c["approx"] and not _rules_exact_violation(c)]
+        pnls = [c["pnl"] for c in bad if c["pnl"] is not None]
+        pnls_approx = [c["pnl"] for c in bad_approx if c["pnl"] is not None]
+        alts = [c["alt_longs"] for c in cs if c["alt_longs"] is not None]
+        out.append(
+            {
+                "week": wk,
+                "n_trades": len(cs),
+                "rules": rules,
+                "days_stopped": sum(1 for s in stops.values() if _rules_week(s["ts"]) == wk),
+                "approx": sum(1 for c in cs if c["approx"]),
+                "max_alt_longs": max(alts) if alts else None,
+                "late_buys": sum(1 for c in cs if c["late_buy"]),
+                "big_premiums": sum(1 for c in cs if c["big_premium"]),
+                "n_violating": len(bad),
+                "pnl_violating": sum(pnls) if pnls else None,
+                "n_violating_approx": len(bad_approx),
+                "pnl_violating_approx": sum(pnls_approx) if pnls_approx else None,
+            }
+        )
+    return out
+
+
+def _rules_exact_violation(c: dict) -> bool:
+    """Copy of analytics.rules_check._exact_violation: any violation but a rule 4 judged on the close time."""
+    return any(st == "violated" and not (n == 4 and c["approx"]) for n, st in c["rules"].items())
+
+
+def _rule_chip(status: str) -> str:
+    label, cls = RULE_STATUS_UA.get(status, ("невідомо", "calm"))
+    return f"<span class='chip {cls}'>{_e(label)}</span>"
+
+
+def _rule_pre_text(c: dict) -> tuple[str, str]:
+    """(rule name, what the check found) in Ukrainian for one rules_pre_trade row."""
+    v, lim, st, why = c.get("value"), c.get("limit"), c.get("status"), c.get("detail")
+    lim_s = f" ({_usd(lim)})" if lim is not None else ""
+    if c.get("key") == "risk":
+        name = f"Ризик ≤ {RULES_RISK_PCT:g} % депозиту{lim_s}"
+        if st == "na":
+            return name, "Немає опціонних ніг."
+        if v is None:
+            return name, "Збиток на експірацію необмежений: потрібен стоп на біржі або захисні опціони (залізний кондор)."
+        if lim is None:
+            return name, f"Макс. збиток {_usd(v)}; депозит не задано."
+        more = f" — у {_nf(v / lim, 1)} раза більше за ліміт" if st == "violated" and lim > 0 else ""
+        return name, f"Макс. збиток на експірацію {_usd(v)}{more}."
+    if c.get("key") == "premium":
+        name = f"Премія ≤ {RULES_PREMIUM_PCT:g} % депозиту{lim_s}"
+        if st == "na":
+            return name, (
+                "Нічого не купуєш."
+                if why == "nothing bought"
+                else f"Чиста премія отримується ({_usd(-(v or 0.0))}): правило про купівлю не стосується."
+            )
+        if v is None or lim is None:
+            return name, "Премію чи депозит не відомо."
+        more = f" — у {_nf(v / lim, 1)} раза більше за ліміт" if st == "violated" and lim > 0 else ""
+        return name, f"Платиш {_usd(v)}{more}."
+    name = f"Не купувати за ≤ {RULES_MIN_BUY_DAYS:g} дні до експірації"
+    if st == "na":
+        return name, "Нічого не купуєш." if why == "nothing bought" else "Чиста премія отримується: це продаж, не купівля."
+    if v is None:
+        return name, "Дату експірації не розпізнано."
+    return name, f"До експірації {_nf(v, 1)} дн."
+
+
+def block_rules_pre(legs: list[dict], ch: dict, dep: float, now: float | None) -> str:
+    """Rules 1 and 8 on the constructed structure (copy of analytics.rules_check.pre_trade_option)."""
+    exp = expiry_utc(ch.get("expiry"))
+    exp_ts = exp.timestamp() if exp else None
+    now_ts = now if now is not None else (exp_ts - ch["days"] * 86400.0 if exp_ts is not None else 0.0)
+    rows = ["<div class='scroll'><table><tr><th>№</th><th>Правило</th><th>Стан</th><th>Що з цією угодою</th></tr>"]
+    for c in rules_pre_trade(legs, now_ts, exp_ts, dep):
+        name, text = _rule_pre_text(c)
+        rows.append(
+            f"<tr><td class='num'>{_e(c['rule'])}</td><td>{_e(name)}</td><td>{_rule_chip(str(c['status']))}</td><td>{_e(text)}</td></tr>"
+        )
+    rows.append("</table></div>")
+    note = (
+        f"Правила власника 1 і 8 (затверджено 18.10, база знань «Торгова стратегія»). Ліміти — {RULES_RISK_PCT:g} % від "
+        "депозиту у формі, незалежно від поля «Ризик на угоду». Решту правил (стоп на біржі, денний стоп, R:R ≥ 2, "
+        "не більше 3 лонгів в альтах) перевіряє чекліст перед угодою (pre_trade_checklist); тижневий звіт порушень — "
+        "вкладка «Журнал»."
+    )
+    return f"<section>{_h2('Правила власника перед угодою', 'rules_pre')}{''.join(rows)}<p class='note'>{_e(note)}</p></section>"
+
+
+def _rule_cell(w: dict, n: int) -> str:
+    r = w["rules"][n]
+    st, v, k, u = r["status"], r["violated"], r["checked"], r["unknown"]
+    if st == "na":
+        main = "<span class='mut'>—</span>"
+    elif st == "unknown":
+        main = f"<span class='mut'>невідомо ({u})</span>"
+    else:
+        main = f"<span class='{'bad' if v else 'ok'}'>{v} з {k}</span>" + (f" <span class='mut'>· невідомо {u}</span>" if u else "")
+    extra = []
+    if n == 2 and w.get("max_alt_longs") is not None:
+        extra.append(f"макс. одночасно {w['max_alt_longs']}")
+    if n == 4:
+        if w.get("days_stopped"):
+            extra.append(f"стоп-днів {w['days_stopped']}")
+        if w.get("approx"):
+            extra.append(f"+ наближено {w['approx']} (за часом закриття)")
+    if n == 8 and (w.get("late_buys") or w.get("big_premiums")):
+        extra.append(f"пізніх {w.get('late_buys') or 0} · дорогих {w.get('big_premiums') or 0}")
+    return main + "".join(f"<br><span class='mut'>{_e(x)}</span>" for x in extra)
+
+
+def block_rules_week(rows: list[dict] | None, now: float) -> str:
+    """«Порушення правил за тиждень»: the owner's real trades (pass them without airdrop and *-paper rows)."""
+    if rows is None:
+        return _empty("Таблиці journal у базі ще немає: перевіряти нема що.")
+    if not rows:
+        return _empty("Угод ще немає: звіт порушень з'явиться з першою угодою.")
+    weeks = rules_weekly(rows, now)
+    if not weeks:
+        return _empty("Відкритих чи закритих угод з часом відкриття немає: перевіряти нема що.")
+    head = "".join(f"<th>{_e(t)}</th>" for _, t in RULES_WEEK_HEAD)
+    out = [f"<div class='scroll'><table><tr><th>Тиждень</th><th>Угод</th>{head}<th>Порушили</th><th>P&amp;L цих угод</th></tr>"]
+    for w in weeks[:RULES_WEEKS]:
+        pnl, n_ax, pnl_ax = w["pnl_violating"], w["n_violating_approx"], w["pnl_violating_approx"]
+        cells = "".join(f"<td class='num'>{_rule_cell(w, n)}</td>" for n, _ in RULES_WEEK_HEAD)
+        ax_n = f"<br><span class='mut'>+ наближено {n_ax}</span>" if n_ax else ""
+        ax_pnl = f"<br><span class='mut'>наближені {_usd(pnl_ax, True)}</span>" if n_ax and pnl_ax is not None else ""
+        out.append(
+            f"<tr><td class='num'>{_e(w['week'])}</td><td class='num'>{w['n_trades']}</td>{cells}"
+            f"<td class='num'>{w['n_violating']}{ax_n}</td><td class='num {_signed_cls(pnl)}'>{_usd(pnl, True)}{ax_pnl}</td></tr>"
+        )
+    out.append("</table></div>")
+    n_bad = sum(w["n_violating"] for w in weeks)
+    n_ax = sum(w["n_violating_approx"] for w in weeks)
+    n_all = sum(w["n_trades"] for w in weeks)
+    pnls = [w["pnl_violating"] for w in weeks if w["pnl_violating"] is not None]
+    pnls_ax = [w["pnl_violating_approx"] for w in weeks if w["pnl_violating_approx"] is not None]
+    total = (
+        f"За весь журнал: хоч одне правило точно порушили {n_bad} угод з {n_all}"
+        + (f", їхній P&L разом {_usd(sum(pnls), True)}" if pnls else "")
+        + "."
+        + (
+            f" Ще {n_ax} угод — лише наближене порушення правила 4 (немає часу відкриття, оцінено за часом закриття: "
+            "угода могла відкритися задовго до стопу)"
+            + (f", їхній P&L {_usd(sum(pnls_ax), True)}" if pnls_ax else "")
+            + "; у порівнянні з чистими угодами їх не враховано."
+            if n_ax
+            else ""
+        )
+        + (f" Показано {RULES_WEEKS} останніх тижнів з {len(weeks)}." if len(weeks) > RULES_WEEKS else "")
+    )
+    out.append(f"<p class='note'>{_e(total)}</p><p class='note'>{_e(RULES_WEEK_NOTE)}</p>")
+    return "".join(out)
+
+
 # ---------------------------------------------------------------- «Журнал» tab: the owner's journal and the paper recommendations
 #
 # Read-only SQLite (mode=ro URI), no network. Summaries are stdlib copies of analytics.journal.summary,
@@ -5072,6 +5559,11 @@ def render_journal(data: dict | None, err: str | None, now: float, params: dict 
             out.append("</section>")
             out.append(f"<section>{_h2('За джерелом', 'sources')}{block_journal_sources(groups)}</section>")
             out.append(f"<section class='wide'>{_h2('Угоди', 'j_table')}{block_journal_table(real, p['page'])}</section>")
+        try:
+            rules = block_rules_week(kinds["real"] if rows else rows, now)
+        except Exception as e:  # noqa: BLE001 - one odd row must not take the page down
+            rules = _empty(f"Блок не вдалося показати: несподіваний формат даних ({type(e).__name__}).")
+        out.append(f"<section class='wide'>{_h2('Порушення правил за тиждень', 'rules_week')}{rules}</section>")
         try:
             rec = block_rec_paper(data.get("rec_paper"))
         except Exception as e:  # noqa: BLE001 - one odd row must not take the page down

@@ -1,8 +1,9 @@
 """scripts/dashboard.py: the project dashboard (pure helpers and the page)."""
 
+import json
 import sqlite3
 import sys
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -1339,3 +1340,177 @@ def test_position_pros_cons_risk_fit_and_required_move():
     far = db.position_pros_cons(legs, 100.0, 30 / 365, 0.5, -5.0, [130.0], G, ext, fit_big, {})
     assert far[0][0] == "bad" and "під нього — до 0.03 BTC" in far[0][1]
     assert far[1][0] == "bad"  # 30 % needed vs ≈ 14 %
+
+
+# ---------------------------------------------------------------- «Радар» tab (the snapshot's radar section)
+
+# archive rows of 11.10 and 18.10, daily DVOL and Binance closes, fetched 2026-10-22 from this server (see test_radar.py)
+RADAR_INPUTS = Path(__file__).resolve().parent / "fixtures" / "radar_snapshot_inputs_2026-10-22.json"
+AT_1810 = datetime(2026, 10, 18, 21, tzinfo=UTC)  # 18.10 is the newest due archive day
+
+
+def _radar_section(at: datetime, keep: set[str] | None = None) -> dict:
+    """The snapshot's `radar` section as `collector.assistant_snapshot.build_radar` writes it, from the real inputs;
+    `keep` limits the archive rows to these days. JSON round trip, as the dashboard reads it from the file."""
+    from tradedesk.analytics.macro_calendar import build_macro_calendar
+    from tradedesk.analytics.radar import METHOD, radar_view
+    from tradedesk.tools.macro import _load_seed
+
+    d = json.loads(RADAR_INPUTS.read_text())
+    ms = at.timestamp() * 1000
+    events = build_macro_calendar([], _load_seed(), at, 400)["events"]
+    assets = {}
+    for asset in ("BTC", "ETH"):
+        rows = [r for r in d["rows"][asset].values() if keep is None or r["day"] in keep]
+        dvol = [tuple(x) for x in d["dvol"][asset] if x[0] <= ms]
+        closes = [tuple(x) for x in d["closes"][asset] if x[0] <= ms]
+        assets[asset] = radar_view(asset, rows, dvol, closes, events, at)
+    sec = {"ok": True, "data": {"method": METHOD, "event_kinds": [], "assets": assets}, "missing": [], "warnings": []}
+    return json.loads(json.dumps(sec))
+
+
+def _radar_snap(at: datetime = AT_1810, keep: set[str] | None = None) -> tuple[dict, float]:
+    snap, _ = _snap()
+    snap["sections"]["radar"] = _radar_section(at, keep)
+    snap["asof_utc"] = at.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return snap, at.timestamp()
+
+
+def test_radar_tab_renders_the_real_section():
+    snap, t = _radar_snap()
+    v = snap["sections"]["radar"]["data"]["assets"]["BTC"]
+    assert v["missing"] == []
+    page = db.render_radar(snap, None, t + 300, db.parse_radar_query("asset=BTC"))
+    for text in (
+        "aria-current=page>Радар",
+        "href='/radar?asset=BTC' aria-current=page>BTC",
+        "href='/radar?asset=ETH'>ETH",
+        "1 · Ціна",
+        "2 · ATM IV за строками",
+        "3 · IV Rank за рік",
+        "4 · IV проти реального руху",
+        "5 · Скью 25Δ · 30 днів",
+        "Усмішка на 30 днів",
+        "6 · Форвардна вола між експіраціями і події",
+        "81 093",  # the card's «Підсумки 18.10»
+        "83 565",
+        db._pc(v["price"]["change"] * 100),
+        "30.10–06.11 <span class='chip ev'>гарячий тиждень</span>",  # the US midterms window
+        "Не інвестиційна порада",
+        "H1 відхилено",
+        "5 хв тому",
+    ):
+        assert text in page, text
+    for k in ("7", "30", "90", "180"):
+        assert f"{v['atm']['now'][k] * 100:.1f} %" in page and f"{v['atm']['week'][k] * 100:.1f} %" in page, k
+    assert db._dvp(v["atm"]["change"]["7"]) in page
+    assert f"{v['iv_rank']['now']['rank'] * 100:.1f} %" in page and f"{v['iv_rank']['week']['rank'] * 100:.1f} %" in page
+    assert db._lvp(v["skew"]["now"]["put_skew_25"]) in page and db._dvp(v["skew"]["change"]["put_skew_25"]) in page
+    assert db._lvp(v["skew"]["now"]["rr_25"]).startswith("−")  # RR < 0: puts over calls
+    far = [w for w in v["forward_vol"]["windows"] if w["to_days"] > db.RADAR_FWD_DAYS]
+    assert (
+        far and f"не показано, як у макеті: {len(far)}." in page and db._dd(far[0]["from_utc"]) + "–" not in page
+    )  # the mock-up's horizon
+    assert "<tr class=mut><td class='num'>20.10–21.10" in page  # a one-day window is muted
+    assert db._vp(v["iv_vs_rv"]["rv30"]) in page and db._dvp(v["iv_vs_rv"]["premium_rv30"]) in page
+    assert f"<td class='r num'>{v['smile']['now']['10P'] * 100:.1f}</td>" in page
+    hot = [w for w in v["forward_vol"]["windows"] if w["hot"]]
+    assert len(hot) == 1 and page.count("гарячий тиждень</span>") == 1
+    assert [e["kind"] for e in hot[0]["events"]] == ["election"] and db._e(db._clean(hot[0]["events"][0]["title"], 60)) in page
+    assert page.count("<svg") == 3  # ATM term, IV Rank dial, smile
+    assert "Блок не вдалося" not in page and "немає даних" not in page and "<script" not in page
+    eth = db.render_radar(snap, None, t + 300, db.parse_radar_query("asset=eth"))
+    e = snap["sections"]["radar"]["data"]["assets"]["ETH"]
+    assert "2 363" in eth and "href='/radar?asset=ETH' aria-current=page>ETH" in eth
+    assert f"{e['atm']['now']['7'] * 100:.1f} %" in eth  # the card's front inversion: 52.0 %
+    assert "href='/radar'" in db.render_brief(snap, None, t)  # the tab is in the shared nav
+
+
+def test_radar_tab_shows_each_blocks_own_week_dates():
+    """Card review 22.10, p. 4: the surface compares archive rows, IV Rank daily DVOL closes; the dates differ."""
+    at = datetime(2026, 10, 21, 19, 30, tzinfo=UTC)  # newest due day 20.10 -> the 18.10 row is «now»; DVOL runs to 21.10
+    snap, t = _radar_snap(at)
+    v = snap["sections"]["radar"]["data"]["assets"]["BTC"]
+    assert (v["surface"]["now_day"], v["surface"]["week_day"]) == ("2026-10-18", "2026-10-11")
+    assert (v["iv_rank"]["now"]["day"], v["iv_rank"]["week"]["day"]) == ("2026-10-21", "2026-10-14")
+    page = db.render_radar(snap, None, t + 60)
+    assert "<b>18.10</b> 19:00 UTC проти <b>11.10</b>" in page and "(денний DVOL): <b>21.10</b> проти <b>14.10</b>" in page
+    assert "DVOL 21.10: IV Rank" in page and "Тиждень тому (DVOL 14.10, пунктир)" in page
+    assert "Зараз · 18.10" in page and "Тиждень тому · 11.10" in page and "18.10, 19:00 UTC, індекс Deribit" in page
+
+
+def test_radar_tab_null_fields_show_their_reasons():
+    snap, t = _radar_snap(keep={"2026-10-18"})  # no row a week earlier
+    page = db.render_radar(snap, None, t + 60)
+    assert "немає даних «поверхня тиждень тому»: no radar archive row for 2026-10-11" in page
+    assert "81 093" in page and "Блок не вдалося" not in page and page.endswith("</body></html>")
+    empty, t = _radar_snap(keep=set())  # the archive job is off
+    page = db.render_radar(empty, None, t + 60)
+    assert "Архіву поверхні BTC ще немає" in page and "немає даних «поверхня зараз»: no radar archive row from" in page
+    assert "Ціни з архіву поверхні немає" in page and "Форвардної воли немає" in page
+    assert page.count("<svg") == 1  # the IV Rank dial still comes from DVOL
+    sec = empty["sections"]["radar"]
+    sec["missing"] = [
+        {"field": "radar:ohlcv:BTC", "provider": "ccxt:binance", "reason": "error", "detail": "btc timeout"},
+        {"field": "radar:ohlcv:ETH", "provider": "ccxt:binance", "reason": "error", "detail": "eth timeout"},
+        {"field": "radar:events_seed", "provider": "tradedesk", "reason": "data_unavailable", "detail": "no seed"},
+    ]
+    sec["data"]["assets"]["BTC"]["iv_vs_rv"] = {"iv30": None, "rv30": None, "rv7": None}
+    page = db.render_radar(empty, None, t + 60)
+    assert "btc timeout" in page and "no seed" in page and "eth timeout" not in page
+    assert "Ні IV, ні реалізованої волатильності в знімку немає" in page
+
+
+def test_radar_tab_missing_section_snapshot_and_malformed(tmp_path, monkeypatch):
+    snap, asof = _snap()  # the 20.10 fixture predates the radar section
+    page = db.render_radar(snap, None, asof + 60)
+    assert "Секції «радар» у знімку ще немає" in page and "aria-current=page>Радар" in page
+    monkeypatch.setattr(db, "SNAPSHOT_PATH", tmp_path / "none.json")
+    assert "Знімка асистента ще немає" in db.radar_page("asset=ETH", now=asof)
+    monkeypatch.setattr(db, "SNAPSHOT_PATH", SNAP_FIXTURE)
+    page = db.radar_page("")
+    assert "querySelectorAll('.info')" in page and page.endswith("</body></html>")
+    snap["sections"]["radar"] = {"ok": False, "data": None, "missing": [{"detail": "radar: KeyError: x"}], "warnings": []}
+    page = db.render_radar(snap, None, asof + 60)
+    assert "Даних BTC у секції радару немає" in page and "radar: KeyError: x" in page
+    snap["sections"]["radar"] = {
+        "ok": True,
+        "data": {
+            "assets": {
+                "BTC": {
+                    "surface": [],
+                    "price": "x",
+                    "atm": {"now": {"7": "a", "30": float("nan")}, "week": None},
+                    "iv_rank": {"now": {"rank": 5}, "week": 3},
+                    "iv_vs_rv": {"iv30": True, "rv30": -1},
+                    "skew": {"now": [], "week": {"rr_25": "z"}},
+                    "smile": {"now": {"ATM": 0.4}},
+                    "forward_vol": {"windows": [1, None, {"fwd": "x", "events": [5, {"ts_utc": "bad"}]}], "median_weekly": "m"},
+                    "missing": "z",
+                }
+            }
+        },
+        "missing": {"x": 1},
+    }
+    page = db.render_radar(snap, None, asof + 60)
+    assert "1 · Ціна" in page and page.endswith("</body></html>") and "Знімок не вдалося показати" not in page
+    assert db.parse_radar_query("asset=eth") == {"asset": "ETH"}
+    assert db.parse_radar_query("asset=%3Cx%3E") == {"asset": "BTC"} and db.parse_radar_query("") == {"asset": "BTC"}
+
+
+def test_radar_tab_escapes_hostile_strings_from_the_snapshot():
+    snap, t = _radar_snap()
+    sec = snap["sections"]["radar"]
+    a = sec["data"]["assets"]["BTC"]
+    hot = next(w for w in a["forward_vol"]["windows"] if w["hot"])
+    hot["events"][0]["title"] = "<script>alert(1)</script>"
+    a["forward_vol"]["windows"][0].update(fwd=None, reason="<img src=x onerror=alert(2)>", from_utc="<b>x</b>")
+    a["missing"] = [{"field": "rv7", "reason": "<iframe src=//x.example>"}, {"field": "<svg onload=alert(3)>", "reason": "r"}]
+    a["surface"]["week_day"] = "<u>w</u>"
+    a["iv_rank"]["now"]["day"] = "<i>d</i>"
+    sec["missing"] = [{"field": "radar:dvol:BTC", "detail": "<b>evil</b>"}]
+    page = db.render_radar(snap, None, t + 60)
+    for raw in ("<script", "<img", "<iframe", "<b>evil", "<b>x", "<u>w", "<i>d", "<svg onload"):
+        assert raw not in page, raw
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in page and "&lt;img src=x" in page and "&lt;iframe" in page
+    assert "&lt;b&gt;evil" in page

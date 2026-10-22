@@ -19,6 +19,10 @@ owner's risk budget; position greeks, a «through N days» line, a scenario tabl
 conclusion and an «is vol expensive» block (DVOL percentile, VRP backtest by level). Everything is computed here on a plain GET form; the inline script only remembers deposit, risk
 and size in the browser (localStorage) and resubmits on a change.
 
+The «Радар» tab (/radar?asset=BTC|ETH) renders the snapshot's ``radar`` section (analytics.radar.radar_view): price,
+ATM IV 7/30/90/180, IV Rank, IV vs RV, 25-delta skew, 30-day smile and forward vol with events, each block with its
+own «week ago» dates (surface rows vs daily DVOL). Null fields show their reason from the section's ``missing``.
+
 The «Журнал» tab (/journal) reads the owner's trade journal and the assistant's paper recommendations (rec_paper,
 labelled «гіпотеза») from the SQLite store over a read-only connection: summary, by source, the trades page by page,
 and a summary of the assistant's trade plans (trade_plan: counts by verdict and status, the resolved 'enter' plans' R).
@@ -441,6 +445,7 @@ def _nav(active: str) -> str:
         ("/", "project", "Проєкт"),
         ("/brief", "brief", "Бриф"),
         ("/options", "options", "Опціони"),
+        ("/radar", "radar", "Радар"),
         ("/journal", "journal", "Журнал"),
         ("/polymarket", "polymarket", "Polymarket"),
     )
@@ -669,6 +674,48 @@ HELP: dict[str, tuple[str, str, str, str]] = {
         "Плани з вердиктами enter / wait / skip і їх паперова оцінка на свічках.",
         "95 % ДІ — інтервал, де з 95 % впевненості лежить справжній середній R. Містить 0 — переваги не видно.",
         "Перший чесний висновок — після ≈ 30 розв'язаних планів enter.",
+    ),
+    "r_price": (
+        "Ціна за тиждень",
+        "Індекс Deribit о 19:00 UTC останнього дня архіву поверхні і того самого часу тиждень тому.",
+        "Дати біля чисел — дні рядків архіву; «зараз» — не живий ринок, а останній записаний день.",
+        "Тижнева зміна — контекст для IV і скью нижче: падіння ціни зазвичай супроводжує зростання IV і put skew.",
+    ),
+    "r_term": (
+        "ATM IV за строками",
+        "Закладена волатильність біля поточної ціни на 7, 30, 90 і 180 днів — зараз і тиждень тому.",
+        "Вища лінія «зараз» — опціони подорожчали. 7 днів вище за 30 — інверсія фронту: ринок платить за найближчі дні.",
+        "При інверсії тижневі опціони дорогі: купувати краще довший строк, а тижневі — продавати проти нього меншим обсягом.",
+    ),
+    "r_rank": (
+        "IV Rank і перцентиль",
+        "Де денний DVOL зараз у своєму річному діапазоні: Rank = (DVOL − мін) / (макс − мін), перцентиль — частка днів року нижче.",
+        "До 20 % — біля дна року (зелене), 20–60 % — посередині, понад 60 % — біля верху. Пунктир — тиждень тому.",
+        "Низький — опціони дешеві відносно року, але як сигнал купувати це перевагу не показало (H1 відхилено 18.10).",
+    ),
+    "r_ivrv": (
+        "IV проти реального руху",
+        "ATM IV на 30 днів проти фактичної волатильності за 30 і 7 днів (денні закриття Binance).",
+        "IV вища за реалізовану — опціони дорожчі за рух, що був. Реалізована 7 днів вища за 30 — ринок пожвавився.",
+        "Покупець опціону виграє, лише якщо майбутній рух перевищить закладений. Велика премія — на користь продавця, але без гарантій.",
+    ),
+    "r_skew": (
+        "Скью 25Δ на 30 днів",
+        "Put skew — IV 25-дельтового пута мінус ATM; RR — IV 25Δ кола мінус 25Δ пута.",
+        "Зростання put skew або падіння RR за тиждень — захист від падіння подорожчав.",
+        "Коли захист дорогий, пут-спред вигідніший за голий пут. Рівні з іншими джерелами не порівнювати — лише зміни.",
+    ),
+    "r_smile": (
+        "Усмішка на 30 днів",
+        "IV за дельтами: пути 10/25/35Δ, ATM, коли 35/25/10Δ — зараз і тиждень тому.",
+        "Ліва частина вища — пути дорожчі за коли (страх падіння). Підйом усієї кривої — опціони подорожчали загалом.",
+        "Показує, яку частину опціонів дешевше купувати чи продавати саме зараз.",
+    ),
+    "r_fwd": (
+        "Форвардна вола і події",
+        "Волатильність, закладена між двома сусідніми експіраціями, і макроподії, що припадають на це вікно.",
+        "«Гарячий тиждень» — вікно, де вола помітно вища за сусідні (≥ медіани + 3 вп): ринок кладе туди подію.",
+        "Опціон під подію береться з експірацією після неї, і він уже дорожчий. Підпис події — за датою, не доказ причини.",
     ),
     "pm": (
         "Розриви Polymarket ↔ опціони",
@@ -2843,6 +2890,463 @@ def options_page(query: str = "", now: float | None = None) -> str:
     return with_help(render_options(snap, err, time.time() if now is None else now, parse_options_query(query), SNAPSHOT_PATH))
 
 
+# ---------------------------------------------------------------- «Радар» tab: the snapshot's radar section (BTC, ETH)
+#
+# Renders `analytics.radar.radar_view` of one asset from the snapshot's `radar` section; nothing is recomputed here
+# (the changes are the file's own). «A week ago» has two anchors: the surface (price, ATM IV, skew, smile, forward vol)
+# compares archive rows `surface.now_day` / `surface.week_day` (19:00 UTC), IV Rank compares daily DVOL closes
+# `iv_rank.now.day` / `iv_rank.week.day` (1-3 days apart from the surface dates); each block names its own dates.
+# A null field shows the reason from the asset's `missing`. Every string from the file is untrusted and escaped.
+
+RADAR_ASSETS = ("BTC", "ETH")
+RADAR_TENORS = (("7", "7 дн"), ("30", "30 дн"), ("90", "90 дн"), ("180", "180 дн"))
+RADAR_SMILE = (("10P", "10Δ P"), ("25P", "25Δ P"), ("35P", "35Δ P"), ("ATM", "ATM"), ("35C", "35Δ C"), ("25C", "25Δ C"), ("10C", "10Δ C"))
+RADAR_FWD_DAYS = 100  # forward-vol table horizon, days to the window's end (analytics.radar.HOT_HORIZON_DAYS)
+RADAR_FWD_MIN_DAYS = 5  # shorter windows are noisy and never «hot» (analytics.radar.HOT_MIN_DAYS)
+RADAR_MISS_UA = {
+    "surface": "поверхня зараз",
+    "surface_week": "поверхня тиждень тому",
+    "iv_rank": "IV Rank зараз",
+    "iv_rank_week": "IV Rank тиждень тому",
+    "rv30": "реалізована 30 дн",
+    "rv7": "реалізована 7 дн",
+    "forward_vol": "форвардна вола",
+}
+RADAR_CAVEATS = (
+    "Поверхня — марки Deribit з угод за 6 год до 19:00 UTC, один рядок архіву на день: «зараз» — останній день архіву, "
+    "а не живий ринок. IV Rank рахується за денним DVOL, тож його дати можуть відрізнятися від дат поверхні на 1–3 дні.",
+    "Скью й усмішка — за форвардними дельтами Black-76, не за дельтами Deribit: рівні можуть відрізнятися від інших "
+    "джерел, порівнюй зміни за тиждень.",
+    "IV Rank і перцентиль — денний DVOL за 365 днів (30-денний індекс, а не ATM кожного строку). «Низький IV Rank — "
+    "купувати опціони» як перевагу наші дані не підтвердили (H1 відхилено 18.10).",
+    "Форвардна вола підписана подіями лише за датою (час у календарі орієнтовний): високе значення на тижні не доводить, "
+    "що ринок закладає саме цю подію.",
+    "Не інвестиційна порада: сторінка лише показує дані й нічого не торгує.",
+)
+RADAR_CSS = """
+.rhead{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;margin:0 12px 12px;font-size:13px}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+.seg a{padding:4px 16px;color:var(--mut);text-decoration:none;font-weight:600}
+.seg a[aria-current=page]{background:var(--acc);color:var(--card)}
+td.r,th.r{text-align:right}.scroll{overflow-x:auto}tr.hot td{background:rgba(184,118,29,.13)}
+"""
+
+
+def parse_radar_query(query: str) -> dict:
+    q = urllib.parse.parse_qs(query)
+    a = (q.get("asset") or [""])[0].strip().upper()
+    return {"asset": a if a in RADAR_ASSETS else RADAR_ASSETS[0]}
+
+
+def _rd(x: object) -> dict:
+    return x if isinstance(x, dict) else {}
+
+
+def _vp(x: object, d: int = 1) -> str:
+    """A decimal vol as percent: 0.371 -> '37.1 %'."""
+    v = _num(x)
+    return "—" if v is None else f"{_nf(v * 100, d)} %"
+
+
+def _dvp(x: object, d: int = 1) -> str:
+    """A decimal vol difference in signed vol points: 0.015 -> '+1.5 вп'."""
+    v = _num(x)
+    return "—" if v is None else f"{v * 100:+.{d}f} вп".replace("-", "−")
+
+
+def _lvp(x: object, d: int = 1) -> str:
+    """A decimal vol difference as a level in vol points (skew, RR): 0.0265 -> '2.6 вп'."""
+    v = _num(x)
+    return "—" if v is None else f"{_nf(v * 100, d)} вп"
+
+
+def _dd(day: object) -> str:
+    """'2026-10-18' (or an ISO UTC stamp) -> '18.10'; '—' for anything else."""
+    m = re.match(r"(\d{4})-(\d{2})-(\d{2})", str(day or ""))
+    return f"{m.group(3)}.{m.group(2)}" if m else "—"
+
+
+def _radar_missing(a: dict, *fields: str) -> str:
+    """The asset's `missing` reasons for these fields (escaped notes)."""
+    out = []
+    for m in _list(a.get("missing")):
+        if isinstance(m, dict) and isinstance(m.get("field"), str) and m["field"] in fields:
+            out.append(f"немає даних «{RADAR_MISS_UA.get(m['field'], m['field'])}»: {_clean(m.get('reason'))}")
+    return "".join(f"<p class='note warn'>{_e(x)}</p>" for x in out)
+
+
+def _radar_source_notes(sec: dict, asset: str) -> str:
+    """The section's provider failures that concern this asset (fields `radar:<what>:<asset>`) or both (no asset)."""
+    out = []
+    for m in _list(sec.get("missing")):
+        if not isinstance(m, dict):
+            continue
+        field = str(m.get("field") or "")
+        tail = field.rsplit(":", 1)[-1]
+        if tail in RADAR_ASSETS and tail != asset:
+            continue
+        out.append(f"збій джерела {_clean(field, 40)}: {_clean(m.get('detail') or m.get('reason'))}")
+    return "".join(f"<p class='note warn'>{_e(x)}</p>" for x in out)
+
+
+def radar_lines_svg(cats: list[str], now: list[float | None], week: list[float | None], aria: str) -> str:
+    """Two lines over categories (decimal vols): «тиждень тому» dashed, «зараз» with value labels; gaps for None."""
+    vals = [v for v in (*now, *week) if v is not None]
+    if not vals:
+        return ""
+    W, H, L, R, Tp, B = 520, 200, 40, 16, 18, 26
+    lo, hi = min(vals), max(vals)
+    pad = max((hi - lo) * 0.25, 0.005)
+    lo, hi = lo - pad, hi + pad
+    n = len(cats)
+
+    def X(i: int) -> float:
+        return L + (i / (n - 1) if n > 1 else 0.5) * (W - L - R)
+
+    def Y(v: float) -> float:
+        return Tp + (hi - v) / (hi - lo) * (H - Tp - B)
+
+    g = []
+    st_ = nice_step((hi - lo) * 100, 4) / 100
+    for i in range(int(math.ceil(lo / st_)), int(math.floor(hi / st_)) + 1):
+        v = i * st_
+        g.append(
+            f'<line x1="{L}" x2="{W - R}" y1="{Y(v):.1f}" y2="{Y(v):.1f}" style="stroke:var(--line)"/>'
+            f'<text x="{L - 6}" y="{Y(v) + 4:.1f}" text-anchor="end">{_e(_nf(v * 100, 1 if st_ < 0.01 else 0))}</text>'
+        )
+    g += [f'<text x="{X(i):.1f}" y="{H - 6}" text-anchor="middle">{_e(c)}</text>' for i, c in enumerate(cats)]
+    for vs, style, labels in ((week, "stroke:var(--mut);stroke-dasharray:5 4", False), (now, "stroke:var(--acc)", True)):
+        d, pen = "", False
+        for i, v in enumerate(vs):
+            if v is None:
+                pen = False
+                continue
+            d += f"{'L' if pen else 'M'}{X(i):.1f},{Y(v):.1f}"
+            pen = True
+        if d:
+            g.append(f'<path d="{d}" style="fill:none;stroke-width:2;{style}"/>')
+        col = "var(--acc)" if labels else "var(--mut)"
+        for i, v in enumerate(vs):
+            if v is None:
+                continue
+            g.append(f'<circle cx="{X(i):.1f}" cy="{Y(v):.1f}" r="3.5" style="fill:{col}"/>')
+            if labels:
+                g.append(
+                    f'<text x="{X(i):.1f}" y="{Y(v) - 8:.1f}" text-anchor="middle" style="fill:var(--acc);font-weight:600">{_e(_nf(v * 100, 1))}</text>'
+                )
+    return f'<svg viewBox="0 0 {W} {H}" role="img" aria-label="{_e(aria)}">{"".join(g)}</svg>'
+
+
+def rank_gauge_svg(now: float | None, week: float | None) -> str:
+    """A half-dial 0..100 % (green to 20, amber to 60, red above, as in the mock-up): solid needle now, dashed a week ago."""
+    W, H, cx, cy, r, sw = 300, 186, 150.0, 156.0, 114.0, 21
+
+    def P(p: float) -> tuple[float, float]:
+        p = min(max(p, 0.0), 1.0)
+        return cx - r * math.cos(math.pi * p), cy - r * math.sin(math.pi * p)
+
+    def arc(p0: float, p1: float, col: str) -> str:
+        (x0, y0), (x1, y1) = P(p0), P(p1)
+        return f'<path d="M{x0:.1f},{y0:.1f} A{r:.0f},{r:.0f} 0 0 1 {x1:.1f},{y1:.1f}" style="fill:none;stroke:{col};stroke-width:{sw}"/>'
+
+    g = [arc(0, 0.2, "var(--ok)"), arc(0.2, 0.6, "var(--warn)"), arc(0.6, 1, "var(--bad)")]
+    if week is not None:
+        x, y = P(week)
+        g.append(
+            f'<line x1="{cx:.0f}" y1="{cy:.0f}" x2="{x:.1f}" y2="{y:.1f}" style="stroke:var(--mut);stroke-width:2;stroke-dasharray:3 3"/>'
+        )
+    if now is not None:
+        x, y = P(now)
+        g.append(
+            f'<line x1="{cx:.0f}" y1="{cy:.0f}" x2="{x:.1f}" y2="{y:.1f}" style="stroke:var(--fg);stroke-width:3.5;stroke-linecap:round"/>'
+        )
+    g.append(f'<circle cx="{cx:.0f}" cy="{cy:.0f}" r="6" style="fill:var(--fg)"/>')
+    g.append(
+        f'<text x="{cx - r:.0f}" y="{cy + 20:.0f}" text-anchor="middle">0</text><text x="{cx + r:.0f}" y="{cy + 20:.0f}" text-anchor="middle">100</text>'
+    )
+    label = "—" if now is None else f"{_nf(now * 100, 1)} %"
+    g.append(
+        f'<text x="{cx:.0f}" y="{cy - r * 0.4:.0f}" text-anchor="middle" style="font:700 28px Menlo,Consolas,monospace;fill:var(--fg)">{_e(label)}</text>'
+    )
+    return f'<svg viewBox="0 0 {W} {H}" role="img" aria-label="IV Rank: зараз і тиждень тому" style="max-width:340px;margin:0 auto">{"".join(g)}</svg>'
+
+
+def _surface_days(a: dict) -> tuple[str, str]:
+    s = _rd(a.get("surface"))
+    return _dd(s.get("now_day")), _dd(s.get("week_day"))
+
+
+def _two_lines_legend(nd: str, wd: str) -> str:
+    return (
+        f"<div class='legend'><span><i style='background:var(--acc)'></i>зараз · {_e(nd)}</span>"
+        f"<span><i style='background:var(--mut)'></i>тиждень тому · {_e(wd)}</span></div>"
+    )
+
+
+def block_r_price(a: dict) -> str:
+    p, (nd, wd) = _rd(a.get("price")), _surface_days(a)
+    now, week, ch = _num(p.get("now")), _num(p.get("week")), _num(p.get("change"))
+    miss = _radar_missing(a, "surface", "surface_week")
+    if now is None and week is None:
+        return _empty("Ціни з архіву поверхні немає.") + miss
+    cls = "" if ch is None else "ok" if ch >= 0 else "bad"
+    tiles = (
+        _tile("Зараз", f"<span class='num'>{_e(_nf(now))}</span>", f"{_e(nd)}, 19:00 UTC, індекс Deribit")
+        + _tile("Тиждень тому", f"<span class='num mut'>{_e(_nf(week))}</span>", f"{_e(wd)}, 19:00 UTC")
+        + _tile("Зміна", f"<span class='num {cls}'>{_e(_pc(ch * 100) if ch is not None else '—')}</span>", f"{_e(nd)} проти {_e(wd)}")
+    )
+    return f"<div class='tiles'>{tiles}</div>" + miss
+
+
+def block_r_term(a: dict) -> str:
+    at, (nd, wd) = _rd(a.get("atm")), _surface_days(a)
+    n, w, c = _rd(at.get("now")), _rd(at.get("week")), _rd(at.get("change"))
+    miss = _radar_missing(a, "surface", "surface_week")
+    if not n and not w:
+        return _empty("ATM IV з архіву поверхні немає.") + miss
+    nv = [_num(n.get(k)) for k, _ in RADAR_TENORS]
+    wv = [_num(w.get(k)) for k, _ in RADAR_TENORS]
+    svg = radar_lines_svg([lab for _, lab in RADAR_TENORS], nv, wv, "ATM IV за строками: зараз і тиждень тому")
+    rows = []
+    for (k, lab), x, y in zip(RADAR_TENORS, nv, wv, strict=True):
+        d = _num(c.get(k))
+        cls = " warn" if d is not None and d > 0.002 else ""
+        rows.append(
+            f"<tr><td>{lab}</td><td class='r num'>{_e(_vp(x))}</td><td class='r num mut'>{_e(_vp(y))}</td><td class='r num{cls}'>{_e(_dvp(d))}</td></tr>"
+        )
+    table = (
+        f"<div class='scroll'><table><tr><th>Строк</th><th class='r'>Зараз · {_e(nd)}</th><th class='r'>Тиждень тому · {_e(wd)}</th>"
+        f"<th class='r'>Зміна</th></tr>{''.join(rows)}</table></div>"
+    )
+    note = "<p class='note'>ATM IV на постійний строк: інтерполяція сумарної дисперсії між сусідніми експіраціями; без екстраполяції, тому крайній строк може бути порожнім.</p>"
+    return svg + _two_lines_legend(nd, wd) + table + note + miss
+
+
+def block_r_rank(a: dict) -> str:
+    r = _rd(a.get("iv_rank"))
+    n, w = _rd(r.get("now")), _rd(r.get("week"))
+    rn, rw, ch = _num(n.get("rank")), _num(w.get("rank")), _num(r.get("change"))
+    miss = _radar_missing(a, "iv_rank", "iv_rank_week")
+    if rn is None and rw is None:
+        return _empty("IV Rank порахувати нема з чого.") + miss
+    parts = []
+    if rn is not None:
+        pct = _num(n.get("percentile"))
+        parts.append(
+            f"DVOL {_e(_dd(n.get('day')))}: IV Rank <b class='num'>{_e(_nf(rn * 100, 1))} %</b>, "
+            f"перцентиль {_e(_vp(pct, 0))}; DVOL {_e(_vp(n.get('dvol')))}, за рік {_e(_vp(n.get('min')))} … {_e(_vp(n.get('max')))}."
+        )
+    if rw is not None:
+        chs = "" if ch is None else f", зміна <b class='num'>{_e(f'{ch * 100:+.1f}'.replace('-', '−'))} п.</b>"
+        parts.append(f"Тиждень тому (DVOL {_e(_dd(w.get('day')))}, пунктир): <b class='num'>{_e(_nf(rw * 100, 1))} %</b>{chs}.")
+    note = (
+        "<p class='note'>"
+        + " ".join(parts)
+        + " Rank — де DVOL між мінімумом і максимумом року; перцентиль — частка днів року з нижчим DVOL. Один сплеск IV тримає "
+        "Rank низьким надовго, тому дивись і на перцентиль. Дати — за денним DVOL, не за поверхнею.</p>"
+    )
+    return rank_gauge_svg(rn, rw) + note + miss
+
+
+def block_r_ivrv(a: dict) -> str:
+    x, (nd, _) = _rd(a.get("iv_vs_rv")), _surface_days(a)
+    iv, rv30, rv7 = _num(x.get("iv30")), _num(x.get("rv30")), _num(x.get("rv7"))
+    miss = _radar_missing(a, "surface", "rv30", "rv7")
+    vals = [v for v in (iv, rv30, rv7) if v is not None]
+    if not vals:
+        return _empty("Ні IV, ні реалізованої волатильності в знімку немає.") + miss
+    mx = max(vals) * 1.1 if max(vals) > 0 else 1.0
+    bars = "".join(
+        _hbar(lab, (v or 0.0) / mx, _e(_vp(v)), bold=bold)
+        for lab, v, bold in ((f"IV 30 дн · {_e(nd)}", iv, True), ("Реалізована 30 дн", rv30, False), ("Реалізована 7 дн", rv7, False))
+    )
+    p30, p7 = _num(x.get("premium_rv30")), _num(x.get("premium_rv7"))
+    if p30 is not None:
+        lead = "ринок закладає більший рух, ніж монета реально ходила" if p30 > 0 else "опціони дешевші за реальний рух"
+        prem = f"Премія IV − RV30 <b class='num'>{_e(_dvp(p30))}</b>, IV − RV7 <b class='num'>{_e(_dvp(p7))}</b>: {lead}. "
+    else:
+        prem = ""
+    note = (
+        f"<p class='note'>{prem}IV — ATM на 30 днів з поверхні {_e(nd)} 19:00 UTC; реалізована — денні закриття Binance до "
+        "моменту знімка (останнє — поточна ціна дня). На реальних марках Deribit продаж ATM-стреддлу з хеджем дав ≈ 0: "
+        "премія сама по собі ще не перевага.</p>"
+    )
+    return f"<div class='hbars'>{bars}</div>" + note + miss
+
+
+def block_r_skew(a: dict) -> str:
+    s, (nd, wd) = _rd(a.get("skew")), _surface_days(a)
+    n, w, c = _rd(s.get("now")), _rd(s.get("week")), _rd(s.get("change"))
+    miss = _radar_missing(a, "surface", "surface_week")
+    if not n and not w:
+        return _empty("Скью з архіву поверхні немає.") + miss
+    tiles = ""
+    for key, lab in (("put_skew_25", "Put skew 25Δ"), ("rr_25", "RR 25Δ")):
+        d = _num(c.get(key))
+        cls = "warn" if d is not None and abs(d) > 0.002 else ""
+        sub = f"{_e(nd)}; тиждень тому ({_e(wd)}) {_e(_lvp(w.get(key)))} · <span class='{cls}'>{_e(_dvp(d))}</span>"
+        tiles += _tile(lab, f"<span class='num'>{_e(_lvp(n.get(key)))}</span>", sub, help="skew" if key == "rr_25" else "")
+    note = (
+        "<p class='note'>Put skew — на скільки 25-дельтовий пут дорожчий за ATM: ціна захисту від падіння. RR — 25Δ кол мінус "
+        "25Δ пут: нижче нуля — пути дорожчі за коли. Строк 30 днів.</p>"
+    )
+    return f"<div class='tiles'>{tiles}</div>" + note + miss
+
+
+def block_r_smile(a: dict) -> str:
+    sm, (nd, wd) = _rd(a.get("smile")), _surface_days(a)
+    n, w = _rd(sm.get("now")), _rd(sm.get("week"))
+    miss = _radar_missing(a, "surface", "surface_week")
+    if not n and not w:
+        return _empty("Усмішки з архіву поверхні немає.") + miss
+    nv = [_num(n.get(k)) for k, _ in RADAR_SMILE]
+    wv = [_num(w.get(k)) for k, _ in RADAR_SMILE]
+    svg = radar_lines_svg([lab.replace(" ", "") for _, lab in RADAR_SMILE], nv, wv, "Усмішка на 30 днів: зараз і тиждень тому")
+    head = "".join(f"<th class='r'>{_e(lab)}</th>" for _, lab in RADAR_SMILE)
+    row_n = "".join(f"<td class='r num'>{_e(_nf(v * 100, 1) if v is not None else '—')}</td>" for v in nv)
+    row_w = "".join(f"<td class='r num mut'>{_e(_nf(v * 100, 1) if v is not None else '—')}</td>" for v in wv)
+    table = (
+        f"<div class='scroll'><table><tr><th>IV, %</th>{head}</tr><tr><td>{_e(nd)}</td>{row_n}</tr>"
+        f"<tr><td class='mut'>{_e(wd)}</td>{row_w}</tr></table></div>"
+    )
+    return svg + _two_lines_legend(nd, wd) + table + miss
+
+
+def block_r_fwd(a: dict) -> str:
+    fv, (nd, _) = _rd(a.get("forward_vol")), _surface_days(a)
+    windows = [x for x in _list(fv.get("windows")) if isinstance(x, dict)]
+    miss = _radar_missing(a, "surface", "forward_vol")
+    if not windows:
+        return _empty("Форвардної воли немає: потрібен рядок архіву поверхні з двома й більше експіраціями.") + miss
+    med = _num(fv.get("median_weekly"))
+    # the mock-up's horizon: windows ending within RADAR_FWD_DAYS (the quarterly ones list a dozen events each)
+    far = [x for x in windows if (_num(x.get("to_days")) or 0.0) > RADAR_FWD_DAYS]
+    windows = [x for x in windows if x not in far]
+    rows, hot = [], []
+    for x in windows:
+        f = _num(x.get("fwd"))
+        short = (_num(x.get("days")) or 0.0) < RADAR_FWD_MIN_DAYS
+        span = f"{_dd(x.get('from_utc'))}–{_dd(x.get('to_utc'))}"
+        if x.get("hot") is True and f is not None:
+            hot.append((span, f))
+        evs = []
+        for ev in _list(x.get("events")):
+            if isinstance(ev, dict):
+                title = _clean(ev.get("title") or ev.get("kind") or "подія", 60)
+                evs.append(f"{_e(title)} <span class='mut'>{_e(kyiv(parse_utc(ev.get('ts_utc'))))}</span>")
+        val = _e(_vp(f)) if f is not None else f"— <span class='mut'>{_e(_clean(x.get('reason') or 'немає', 80))}</span>"
+        chip = " <span class='chip ev'>гарячий тиждень</span>" if x.get("hot") is True else ""
+        row_cls = " class=hot" if chip else " class=mut" if short else ""
+        rows.append(
+            f"<tr{row_cls}><td class='num'>{_e(span)}{chip}</td><td class='r num'>{_e(_nf(x.get('days')))}</td>"
+            f"<td class='r num'>{val}</td><td>{', '.join(evs) or '<span class=mut>—</span>'}</td></tr>"
+        )
+    table = (
+        "<div class='scroll'><table><tr><th>Між експіраціями (UTC)</th><th class='r'>Днів</th><th class='r'>Форвардна вола</th>"
+        f"<th>Події · час Київ</th></tr>{''.join(rows)}</table></div>"
+    )
+    if far:
+        last = _dd(far[-1].get("to_utc"))
+        table += f"<p class='note'>Вікна, що закінчуються далі ніж за {RADAR_FWD_DAYS} днів (до {_e(last)}), не показано, як у макеті: {len(far)}.</p>"
+    if hot:
+        lead = "Виділяється " + ", ".join(f"{_e(s)} ({_e(_vp(v))})" for s, v in hot) + f" проти медіани тижневих вікон {_e(_vp(med))}. "
+    else:
+        lead = f"Жоден тиждень не виділяється (медіана тижневих вікон {_e(_vp(med))}). " if med is not None else ""
+    note = (
+        f"<p class='note'>{lead}Форвардна вола — скільки руху ринок закладає саме між двома сусідніми експіраціями (з ATM IV "
+        f"поверхні {_e(nd)} 19:00 UTC): так видно, на який тиждень ринок кладе подію. «Гарячий тиждень» — вікно від 5 днів, що "
+        "закінчується в межах 100 днів, з волою не нижче медіани таких вікон + 3 вп. Вікна коротші за 5 днів шумні (сірим). "
+        "Події — FOMC, CPI, PCE, NFP, PPI, ВВП, вибори, за датою.</p>"
+    )
+    return table + note + miss
+
+
+def _radar_switch(asset: str) -> str:
+    links = "".join(f"<a href='/radar?asset={a}'{' aria-current=page' if a == asset else ''}>{a}</a>" for a in RADAR_ASSETS)
+    return f"<div class='seg' role='group' aria-label='Актив'>{links}</div>"
+
+
+def _radar_dates(a: dict) -> str:
+    nd, wd = _surface_days(a)
+    r = _rd(a.get("iv_rank"))
+    rn, rw = _dd(_rd(r.get("now")).get("day")), _dd(_rd(r.get("week")).get("day"))
+    return (
+        f"<span class='mut'>Поверхня (ціна, IV, скью, усмішка, форвардна вола): <b>{_e(nd)}</b> 19:00 UTC проти <b>{_e(wd)}</b> · "
+        f"IV Rank (денний DVOL): <b>{_e(rn)}</b> проти <b>{_e(rw)}</b></span>"
+    )
+
+
+def render_radar(snap: dict | None, err: str | None, now: float, params: dict | None = None, path: Path | None = None) -> str:
+    """The «Радар» tab. Never raises: no snapshot, no radar section or an empty archive gives an explained state."""
+    asset = (params or parse_radar_query(""))["asset"]
+    head = (
+        "<!doctype html><html lang='uk'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+        f"<meta http-equiv='refresh' content='{REFRESH_S}'><title>tradedesk — радар</title><style>{CSS}{BRIEF_CSS}{RADAR_CSS}</style></head><body>"
+    )
+    caveats = "<div class='caveat'><b>Застереження</b><ul>" + "".join(f"<li>{_e(c)}</li>" for c in RADAR_CAVEATS) + "</ul></div>"
+    try:
+        if snap is None:
+            msg = _snapshot_problem(err, path)
+            return head + f"<header><h1>Радар</h1><span class='bad'>{msg}</span></header>{_nav('radar')}{caveats}</body></html>"
+        out = [head, f"<header><h1>Радар</h1>{_snapshot_stamp(snap, now)}</header>{_nav('radar')}{caveats}"]
+        sec = _section(snap, "radar")
+        if not sec:
+            out.append(
+                f"<div class='rhead'>{_radar_switch(asset)}</div><main class='brief'><section class='wide'>"
+                + _empty(
+                    "Секції «радар» у знімку ще немає: знімок зібрано версією колектора без радару або завдання "
+                    "assistant_snapshot ще не відпрацювало з новим кодом."
+                )
+                + "</section></main></body></html>"
+            )
+            return "".join(out)
+        a = _rd(_rd(sec.get("data")).get("assets")).get(asset)
+        notes = _section_notes(snap, "radar") + _radar_source_notes(sec, asset)
+        if not isinstance(a, dict):
+            out.append(
+                f"<div class='rhead'>{_radar_switch(asset)}</div><main class='brief'><section class='wide'>"
+                + _empty(f"Даних {asset} у секції радару немає.")
+                + notes
+                + "</section></main></body></html>"
+            )
+            return "".join(out)
+        out.append(f"<div class='rhead'>{_radar_switch(asset)}{_radar_dates(a)}</div><main class='brief'>")
+        if _rd(a.get("surface")).get("now_day") is None:
+            notes = (
+                _empty(
+                    f"Архіву поверхні {asset} ще немає або він відстає: ціна, ATM IV, скью, усмішка й форвардна вола з'являться, "
+                    "коли завдання колектора radar_archive запише рядок (або буде прогнано бекфіл scripts/radar_backfill.py). "
+                    "IV Rank і реалізована вола від архіву не залежать."
+                )
+                + notes
+            )
+        if notes:
+            out.append(f"<section class='wide'>{notes}</section>")
+        cards = (
+            ("", "1 · Ціна", "r_price", block_r_price),
+            ("", "2 · ATM IV за строками", "r_term", block_r_term),
+            ("", "3 · IV Rank за рік", "r_rank", block_r_rank),
+            ("", "4 · IV проти реального руху", "r_ivrv", block_r_ivrv),
+            ("", "5 · Скью 25Δ · 30 днів", "r_skew", block_r_skew),
+            ("", "Усмішка на 30 днів", "r_smile", block_r_smile),
+            ("wide", "6 · Форвардна вола між експіраціями і події", "r_fwd", block_r_fwd),
+        )
+        for cls, title, key, fn in cards:
+            out.append(f"<section class='{cls}'>{_h2(title, key)}{_guard(fn, a)}</section>")
+        out.append("</main></body></html>")
+        return "".join(out)
+    except Exception as e:  # noqa: BLE001 - the page always renders
+        return (
+            head
+            + f"<header><h1>Радар</h1><span class='bad'>Знімок не вдалося показати ({_e(type(e).__name__)}).</span></header>{_nav('radar')}{caveats}</body></html>"
+        )
+
+
+def radar_page(query: str = "", now: float | None = None) -> str:
+    snap, err = load_snapshot(SNAPSHOT_PATH)
+    return with_help(render_radar(snap, err, time.time() if now is None else now, parse_radar_query(query), SNAPSHOT_PATH))
+
+
 # ---------------------------------------------------------------- «Журнал» tab: the owner's journal and the paper recommendations
 #
 # Read-only SQLite (mode=ro URI), no network. Summaries are stdlib copies of analytics.journal.summary,
@@ -3831,6 +4335,8 @@ class _Handler(BaseHTTPRequestHandler):
             body, ctype = brief_page().encode(), "text/html; charset=utf-8"  # read per request: the age is always current
         elif path == "/options":
             body, ctype = options_page(query).encode(), "text/html; charset=utf-8"
+        elif path == "/radar":
+            body, ctype = radar_page(query).encode(), "text/html; charset=utf-8"
         elif path == "/journal":
             body, ctype = journal_page(query).encode(), "text/html; charset=utf-8"
         elif path == "/polymarket":
@@ -3870,6 +4376,7 @@ def main() -> None:
     on.add_argument("--out", type=Path, required=True)
     on.add_argument("--brief", action="store_true", help="the «Бриф» tab from the assistant snapshot instead of the project page")
     on.add_argument("--options", action="store_true", help="the «Опціони» tab (default strategy and size) from the snapshot")
+    on.add_argument("--radar", default="", metavar="ASSET", help="the «Радар» tab of BTC or ETH from the assistant snapshot")
     on.add_argument("--journal", action="store_true", help="the «Журнал» tab (first page) from the SQLite store, read-only")
     on.add_argument("--polymarket", action="store_true", help="the «Polymarket» tab (current gaps) from the SQLite store, read-only")
     a = ap.parse_args()
@@ -3879,6 +4386,8 @@ def main() -> None:
             if a.brief
             else options_page()
             if a.options
+            else radar_page(urllib.parse.urlencode({"asset": a.radar}))
+            if a.radar
             else journal_page()
             if a.journal
             else polymarket_page()

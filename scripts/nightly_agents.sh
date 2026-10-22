@@ -262,7 +262,8 @@ EOF
 
 # Hand the work to the owner: a pull request (or a compare link without a GitHub token) and a Telegram message.
 # A finished step ("delivered") is marked ready: GitHub (or scripts/pr_watch.py) merges it by itself once CI passes,
-# control-plane changes included (the owner's decision 2026-10-22); a stuck one is not marked and waits.
+# control-plane changes included (the owner's decision 2026-10-22); the demo trader's code waits for Claude's review
+# (scripts/trader_review.py); a stuck one is not marked and waits.
 handover() {
   local br="$1" status="$2" head="$3" title url ready="" verdict how
   title="$(head -1 .agent/commit-msg.txt 2>/dev/null || true)"
@@ -270,6 +271,9 @@ handover() {
   if [[ "$status" == delivered && "$verdict" == auto ]]; then
     ready="--ready"
     how="🤖 Зіллється сам, щойно на GitHub пройдуть тести."
+  elif [[ "$status" == delivered && "$verdict" == claude:* ]]; then
+    ready="--ready"
+    how="🔍 Код демо-трейдера або правил злиття: зіллється після рев'ю Claude (scripts/trader_review.py)."
   else
     how="👀 Чекає на ваше злиття (${verdict#owner: })."
   fi

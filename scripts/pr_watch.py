@@ -24,7 +24,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from automerge import BRANCH_PREFIXES  # noqa: E402
+from automerge import BRANCH_PREFIXES, classify, pr_files  # noqa: E402
 from automerge import run as merge  # noqa: E402
 from gh_pr import READY_MARK, TOKEN_FILE, Call, caller  # noqa: E402
 from tg_send import load_env, send  # noqa: E402
@@ -72,10 +72,12 @@ def findings(pr: dict, check_runs: list[dict], now: datetime) -> list[tuple[str,
     return out
 
 
-def message(pr: dict, kind: str, detail: str) -> str:
+def message(pr: dict, kind: str, detail: str, held: bool = False) -> str:
     title = f"#{pr['number']} {pr.get('title', '')}".strip()
     if kind == "red":
         return f"🔴 <b>CI впав у PR</b> {title}: {detail} (і після перезапуску). Автозлиття не буде, доки не виправлять."
+    if held:
+        return f"⏳ <b>PR чекає рев'ю Claude</b> {detail} год (код демо-трейдера або правила злиття): {title}."
     return f"⏳ <b>PR застряг</b> {detail} год без руху, хоча мав злитись сам: {title}."
 
 
@@ -98,8 +100,10 @@ def watch(call: Call, repo: str, state: dict, now: datetime) -> tuple[list[tuple
         ready = READY_MARK in (pr.get("body") or "")
         if ready and all_passed(check_runs):
             try:
-                print(merge(call, repo, pr["number"], sha))
-                continue
+                result = merge(call, repo, pr["number"], sha)  # a 'claude:' hold waits for scripts/trader_review.py
+                print(result)
+                if result.startswith(f"PR #{pr['number']} merged"):
+                    continue
             except RuntimeError as e:  # e.g. merged meanwhile by the workflow, or a conflict: the stale check tells
                 print(e, file=sys.stderr)
         rerun = failed_run_ids(check_runs) if ready and not told.get("rerun") else []
@@ -113,7 +117,8 @@ def watch(call: Call, repo: str, state: dict, now: datetime) -> tuple[list[tuple
         for kind, detail in findings(pr, check_runs, now):
             if kind in told["kinds"]:
                 continue
-            out.append((message(pr, kind, detail), pr["html_url"]))
+            hold = kind == "stale" and classify(pr_files(call, repo, pr["number"])).startswith("claude:")
+            out.append((message(pr, kind, detail, hold), pr["html_url"]))
             told["kinds"].append(kind)
         new_state[str(pr["number"])] = told
     return out, new_state

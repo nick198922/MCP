@@ -5,12 +5,15 @@ branches too), the launcher (or Claude's session, scripts/gh_pr.py --ready) mark
 the step over; a step stuck after its run limit is not ready) and CI passed on its current head. Since 2026-10-22 the
 owner wants every such merge automatic, the control plane included (the agents' own scripts, permissions and
 instructions, the server scripts, GitHub workflows, dependencies, CLAUDE.md, the security notes, ADRs, the execution
-package): those paths are still listed below, but only to name them in the merge report, not to hold the PR. The
-rules are read from main, never from the pull request. scripts/pr_watch.py merges by the same rules when this
-workflow never ran (a hung or flaky CI run).
+package): those paths are listed below only to name them in the merge report. One exception, also the owner's
+(2026-10-22): the demo trader is Claude's responsibility, so a PR that touches what places its orders (HELD: the
+execution package, the signal adapters and detectors, its timers, ADR 0007) or what could switch this hold off (the
+merge rules, the watch, the trader review and their timers, GitHub workflows) is held until scripts/trader_review.py
+(Claude, Opus) approves that very commit. The rules are read from main, never from the pull request.
+scripts/pr_watch.py merges by the same rules when this workflow never ran (a hung or flaky CI run).
 
     python3 scripts/automerge.py --repo owner/name --pr N --sha TESTED_SHA     # in Actions, with GH_TOKEN
-    git diff --name-only origin/main...BRANCH | python3 scripts/automerge.py --classify    # prints "auto" (or "owner: no changes")
+    git diff --name-only origin/main...BRANCH | python3 scripts/automerge.py --classify    # prints "auto", "claude: paths" or "owner: no changes"
 """
 
 from __future__ import annotations
@@ -56,6 +59,29 @@ PROTECTED_GLOBS = (
 )
 
 
+# Held for Claude's review (scripts/trader_review.py): the demo trader (ADR 0007) and the guards of this hold.
+HELD_PREFIXES = ("src/tradedesk/execution/", ".github/", "docs/adr/0007")
+HELD_FILES = {
+    "src/tradedesk/analytics/setup_signals.py",
+    "src/tradedesk/analytics/course_s14_ema.py",
+    "src/tradedesk/analytics/course_basics.py",
+    "scripts/automerge.py",
+    "scripts/pr_watch.py",
+    "scripts/trader_review.py",
+    "scripts/user_units_sync.sh",
+    ".claude/trader-review.md",
+}
+HELD_GLOBS = (
+    "deploy/user-units/tradedesk-demo-*",
+    "deploy/user-units/tradedesk-pr-watch.*",
+    "deploy/user-units/tradedesk-trader-review.*",
+)
+
+
+def held(path: str) -> bool:
+    return path.startswith(HELD_PREFIXES) or path in HELD_FILES or any(fnmatch.fnmatch(path, g) for g in HELD_GLOBS)
+
+
 def protected(path: str) -> bool:
     if path.startswith("deploy/") and not path.startswith(DEPLOY_OPEN):
         return True
@@ -68,11 +94,19 @@ def system_files(files: list[str]) -> list[str]:
 
 
 def classify(files: list[str]) -> str:
-    """'auto' when there is anything to merge, otherwise 'owner: no changes'."""
-    return "auto" if any(files) else "owner: no changes"
+    """'auto'; 'claude: <paths>' when it touches the demo trader or the hold's guards (merged only after Claude's
+    review); 'owner: no changes' when there is nothing to merge."""
+    files = [f for f in files if f]
+    if not files:
+        return "owner: no changes"
+    hit = [f for f in files if held(f)]
+    if hit:
+        return "claude: " + ", ".join(hit[:3]) + (" …" if len(hit) > 3 else "")
+    return "auto"
 
 
-def decide(pr: dict, files: list[str], tested_sha: str) -> tuple[bool, str]:
+def decide(pr: dict, files: list[str], tested_sha: str, reviewed: bool = False) -> tuple[bool, str]:
+    """``reviewed``: scripts/trader_review.py approved exactly ``tested_sha``, which releases a 'claude:' hold."""
     head, base = pr.get("head") or {}, pr.get("base") or {}
     ref = str(head.get("ref", ""))
     if pr.get("state") != "open" or pr.get("merged"):
@@ -88,7 +122,7 @@ def decide(pr: dict, files: list[str], tested_sha: str) -> tuple[bool, str]:
     if head.get("sha") != tested_sha:
         return False, "new commits since CI ran"
     verdict = classify(files)
-    return verdict == "auto", verdict
+    return verdict == "auto" or (reviewed and verdict.startswith("claude:")), verdict
 
 
 def pr_files(call: Call, repo: str, number: int) -> list[str]:
@@ -104,12 +138,12 @@ def pr_files(call: Call, repo: str, number: int) -> list[str]:
     raise RuntimeError("too many files to check")
 
 
-def run(call: Call, repo: str, number: int, sha: str) -> str:
+def run(call: Call, repo: str, number: int, sha: str, reviewed: bool = False) -> str:
     status, pr = call("GET", f"/repos/{repo}/pulls/{number}", None)
     if status != 200 or not isinstance(pr, dict):
         raise RuntimeError(f"cannot read PR #{number}: HTTP {status} {message(pr)}")
     files = pr_files(call, repo, number)
-    ok, why = decide(pr, files, sha)
+    ok, why = decide(pr, files, sha, reviewed)
     if not ok:
         return f"PR #{number} not merged: {why}"
     ref = pr["head"]["ref"]

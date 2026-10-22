@@ -332,13 +332,13 @@ async def test_daily_cap_and_low_score_are_skipped_and_shadowed(world, monkeypat
                 "status": "closed",
                 "opened_ts": T0 + 1,
                 "closed_ts": T0 + 2,
-                "pnl_usd": 0.0,
+                "pnl_usd": -1.0,  # five losses: the risk of the day is spent
             }
         )
     res = await w.run()
     assert res["sent"] == 0 and res.get("skipped") == 1
     skipped = await w.store.exec_audit_list(kinds=("skipped",))
-    assert "trades today" in " ".join(skipped[0]["payload"]["violations"])
+    assert "trades at risk today" in " ".join(skipped[0]["payload"]["violations"])
     assert (await _plans(w.store))[0]["verdict"] == "skip"
 
     monkeypatch.setattr(demo_trader, "score", lambda *a, **k: ss.Score(1, ("x",)))
@@ -637,3 +637,33 @@ async def test_dry_run_does_not_touch_open_trades(world):
     await w.run(w.now + demo_trader.MAX_HOLD_MS["4h"] + 1, dry_run=True)
     assert w.venue.orders[n:] == [] and w.venue.stops == []
     assert (await w.store.demo_trade_list())[0]["exit_reason"] is None
+
+
+async def _today(store, k, **kw):
+    row = {
+        "link_id": f"d{k}", "venue": "bybit-demo", "symbol": f"X{k}/USDT:USDT", "side": "long", "setup": "S3", "timeframe": "4h",
+        "signal_ts": T0, "entry": 1.0, "stop": 0.99, "target": 1.05, "qty": 1.0, "leverage": 5, "risk_usd": 1.0, "comment": "-",
+        "status": "open", "opened_ts": T0 + 1,
+    }  # fmt: skip
+    await store.demo_trade_insert({**row, **kw})
+
+
+async def test_break_even_frees_a_slot_of_the_daily_cap(world):
+    """Owner 22.10: five entries today, two of them with the stop at break-even and one closed at break-even: three
+    slots are free again; a loss keeps its slot."""
+    w = world
+    await _today(w.store, 0, be_ts=T0 + 2, be_stop=1.001)
+    await _today(w.store, 1, be_ts=T0 + 2, be_stop=1.001)
+    await _today(w.store, 2, status="closed", closed_ts=T0 + 3, pnl_usd=-0.05)  # break-even exit: slippage only
+    await _today(w.store, 3, status="closed", closed_ts=T0 + 3, pnl_usd=-1.0)  # a stop: keeps its slot
+    await _today(w.store, 4)
+    res = await w.run()
+    assert res["sent"] == 1 and res["trades_today"] == 2 and res["entries_today"] == 5
+
+
+async def test_hard_ceiling_of_entries_per_day(world):
+    w = world
+    for k in range(10):
+        await _today(w.store, k, be_ts=T0 + 2, be_stop=1.001)  # all protected, but ten entries already
+    res = await w.run()
+    assert res["sent"] == 0 and "10 entries today = max" in str(await w.store.exec_audit_list(kinds=("skipped",)))

@@ -30,7 +30,8 @@ class GuardConfig:
     mode: str = MODE
     venue: str = "bybit-demo"
     risk_usd: float = 100.0  # lost at the stop including fees (the owner's rule: 1 % of ~$10k)
-    max_trades_per_day: int = 5  # owner 21.10: at most 5 entries per UTC day, the highest-scored signals
+    max_trades_per_day: int = 5  # owner 21.10/22.10: at most 5 of today's entries still at risk (break-even frees a slot)
+    max_entries_per_day: int = 10  # hard ceiling of entries per UTC day, freed slots included
     max_open_positions: int = 15
     max_open_risk_usd: float = 1500.0  # sum of the losses at the stops of all open positions
     daily_max_loss_usd: float = 500.0  # realised loss of the UTC day; then no new entries until 00:00 UTC
@@ -101,7 +102,8 @@ class State:
     universe: tuple[str, ...] = ()  # today's tradable symbols (top by turnover)
     halted: bool = False  # kill-switch
     open_symbols: tuple[str, ...] = ()
-    trades_today: int = 0
+    trades_today: int = 0  # today's entries still at risk: no break-even stop yet, or closed at a loss
+    entries_today: int = 0  # all of today's entries
     orders_last_hour: int = 0
     open_risk_usd: float = 0.0
     open_margin_usd: float = 0.0
@@ -193,7 +195,9 @@ def check(p: Proposal, s: State, cfg: GuardConfig = DEFAULT) -> list[str]:
     if len(s.open_symbols) >= cfg.max_open_positions:
         out.append(f"{len(s.open_symbols)} open positions = max")
     if s.trades_today >= cfg.max_trades_per_day:
-        out.append(f"{s.trades_today} trades today = max")
+        out.append(f"{s.trades_today} trades at risk today = max")
+    if s.entries_today >= cfg.max_entries_per_day:
+        out.append(f"{s.entries_today} entries today = max")
     if s.orders_last_hour >= cfg.orders_per_hour:
         out.append(f"{s.orders_last_hour} orders in the last hour = max")
     if s.open_risk_usd + p.risk_usd > cfg.max_open_risk_usd:

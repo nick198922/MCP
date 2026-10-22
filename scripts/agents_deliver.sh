@@ -79,7 +79,7 @@ $(tail -40 <<<"$checks")"
 
 # open_pr <branch> <title> <body file> [--ready]: prints the URL of the branch's pull request, opened by
 # scripts/gh_pr.py with the token in ~/.config/tradedesk/github.env; the compare link if there is no token or GitHub
-# refuses. --ready lets .github/workflows/automerge.yml merge it once CI passes, if it touches no control-plane file.
+# refuses. --ready lets .github/workflows/automerge.yml (or scripts/pr_watch.py) merge it once CI passes.
 open_pr() {
   python3 "$REPO/scripts/gh_pr.py" --repo "$(repo_slug)" --head "$1" --title "$2" --body-file "$3" ${4:+"$4"} ||
     echo "https://github.com/$(repo_slug)/compare/main...$1?expand=1"

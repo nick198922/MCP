@@ -261,8 +261,8 @@ EOF
 }
 
 # Hand the work to the owner: a pull request (or a compare link without a GitHub token) and a Telegram message.
-# A finished step ("delivered") is marked ready: GitHub merges it by itself once CI passes, unless it changes the
-# control plane (scripts/automerge.py); a stuck one always waits for the owner.
+# A finished step ("delivered") is marked ready: GitHub (or scripts/pr_watch.py) merges it by itself once CI passes,
+# control-plane changes included (the owner's decision 2026-10-22); a stuck one is not marked and waits.
 handover() {
   local br="$1" status="$2" head="$3" title url ready="" verdict how
   title="$(head -1 .agent/commit-msg.txt 2>/dev/null || true)"

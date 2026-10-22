@@ -79,7 +79,7 @@ set -e
 echo "claude exit code $rc"
 
 deliver "$REPORT" '^agent/[0-9]{4}-[0-9]{2}-[0-9]{2}-fix-[a-z0-9][a-z0-9-]*$' || echo "delivery refused: $NOTE"
-[[ -n "$DELIVERED" ]] && DELIVERED_URL="$(open_pr "$DELIVERED" "$(head -1 .agent/commit-msg.txt)" "$REPORT")"
+[[ -n "$DELIVERED" ]] && DELIVERED_URL="$(open_pr "$DELIVERED" "$(head -1 .agent/commit-msg.txt)" "$REPORT" --ready)"
 if [[ -n "$(git status --porcelain)" ]]; then
   git stash push -q --include-untracked -m "doctor-undelivered-$STAMP" || true
 fi

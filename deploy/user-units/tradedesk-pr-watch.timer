@@ -1,8 +1,8 @@
 [Unit]
-Description=tradedesk-pr-watch (*-*-* *:50:00)
+Description=tradedesk-pr-watch (*-*-* *:05/15:00)
 
 [Timer]
-OnCalendar=*-*-* *:50:00
+OnCalendar=*-*-* *:05/15:00
 Persistent=true
 RandomizedDelaySec=60
 

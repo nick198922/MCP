@@ -1,5 +1,5 @@
 [Unit]
-Description=tradedesk: stuck pull requests to Telegram
+Description=tradedesk: finish automatic merges, stuck pull requests to Telegram
 
 [Service]
 Type=oneshot

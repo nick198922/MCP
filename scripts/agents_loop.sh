@@ -131,7 +131,7 @@ wip_branch() {
   esac
   return 1
 }
-# Agent branches that wait for the owner's review: not merged, not a doctor's fix, not work in progress.
+# Agent branches that wait to be merged: not merged, not a doctor's fix, not work in progress.
 open_branches() {
   local work b
   work="$(work_branch)"
@@ -257,12 +257,12 @@ while true; do
   n_open="$(grep -c . <<<"$open")"
   if ((n_open >= MAX_OPEN && leftovers == 0)); then
     log "waiting ${WAIT_REVIEW}s: $n_open agent branches await the owner's review"
-    loop_state "чекають на ваш перегляд: $n_open гілки"
+    loop_state "чекають на злиття: $n_open гілки"
     buttons=()
     while IFS= read -r b; do
       [[ -n "$b" ]] && buttons+=(--button "🔀 ${b#agent/}|https://github.com/nick198922/MCP/compare/main...$b?expand=1")
     done <<<"$open"
-    announce "review:$open" "⏸ **Агенти чекають на ваш перегляд** ($n_open гілки). Злийте або закрийте PR, і вони продовжать." ${buttons[@]+"${buttons[@]}"}
+    announce "review:$open" "⏸ **Агенти чекають, поки зіллються їхні PR** ($n_open гілки). Сторож PR кожні 15 хв перезапускає впалий CI і доливає зелені; якщо CI червоний і після перезапуску, прийде 🔴." ${buttons[@]+"${buttons[@]}"}
     sleep "$WAIT_REVIEW"
     continue
   fi

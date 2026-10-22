@@ -26,9 +26,9 @@ from ..analytics.carry_rules import DECISION_DELAY_MS
 from ..core.envelope import Builder
 from ..core.errors import ProviderError
 from ..runtime import Runtime
-from ..tools.carry_paper import _bars, _entries
 from ..tools.perps import current_funding
 from .carry_paper_engine import BYBIT, PERP_VENUE, SPOT_VENUE, CarryParams, FeedData
+from .market_data import bars_4h, funding_entries
 
 STABLES = {"USDC", "FDUSD", "TUSD", "USDP", "DAI", "BUSD", "USDE", "PYUSD", "USD1", "RLUSD", "EUR", "XUSD", "BFUSD"}
 MULT = re.compile(r"^(1000000|10000|1000)([A-Z].*)$")
@@ -173,7 +173,7 @@ class LiveFeed:
             if got is None:
                 flags.append({"symbol": sym, "venue": venue, "issue": "funding_history_unavailable"})
                 return None
-            entries = _entries(got["rows"])
+            entries = funding_entries(got["rows"])
             if not got["complete"]:
                 flags.append({"symbol": sym, "venue": venue, "issue": "funding_history_incomplete"})
             await store.cp_funding_put(venue, sym, [(e["ts_ms"], e["rate"]) for e in entries], covered_from=None, covered_to=None)
@@ -191,7 +191,7 @@ class LiveFeed:
         if got is None:
             flags.append({"symbol": sym, "venue": venue, "issue": "funding_history_unavailable"})
             return None
-        entries = _entries(got["rows"])
+        entries = funding_entries(got["rows"])
         if not got["complete"]:
             flags.append({"symbol": sym, "venue": venue, "issue": "funding_history_incomplete"})
         if store is None:
@@ -273,8 +273,8 @@ class LiveFeed:
         async def bars(sym: str) -> tuple[str, dict[str, Any] | None]:
             since = opened.get(sym, t) - 3 * params.bar_ms
             spot_sym, mult = uni[sym]
-            perp_bars = await _bars(self.rt, b, PERP_VENUE, sym, since, t)
-            spot_bars = await _bars(self.rt, b, SPOT_VENUE, spot_sym, since, t)
+            perp_bars = await bars_4h(self.rt, b, PERP_VENUE, sym, since, t)
+            spot_bars = await bars_4h(self.rt, b, SPOT_VENUE, spot_sym, since, t)
             if not perp_bars or not spot_bars or not funding.get(sym):
                 flags.append({"symbol": sym, "issue": "bars_or_funding_unavailable"})
                 return sym, None
@@ -323,8 +323,8 @@ class LiveFeed:
         async def bars(sym: str) -> tuple[str, dict[str, Any] | None]:
             fa, fb = h[sym]
             since = min(opened.get(sym, t) - 3 * params.bar_ms, t - lb)
-            ba = await _bars(self.rt, b, PERP_VENUE, sym, since, t)
-            bb = await _bars(self.rt, b, BYBIT, sym, since, t)
+            ba = await bars_4h(self.rt, b, PERP_VENUE, sym, since, t)
+            bb = await bars_4h(self.rt, b, BYBIT, sym, since, t)
             if not fa or not fb or not ba or not bb:
                 flags.append({"symbol": sym, "issue": "bars_or_funding_unavailable"})
                 return sym, None

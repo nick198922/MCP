@@ -204,6 +204,40 @@ async def test_book_view_uses_the_latest_mark_past_5000_log_rows(store):
     assert len(await store.cp_logs("A", "event", limit=None)) == n
 
 
+async def test_open_pnl_counts_entry_costs_of_positions_opened_in_the_last_cycle(store):
+    # Regression: a position opened in the last cycle has no mark row yet and counted as 0 in open_marked_at_last_cycle,
+    # though its entry costs (state.fees, a fraction of notional) are already paid. Marked positions keep their mark.
+    from types import SimpleNamespace
+
+    from tradedesk.tools.paper_carry import book_view
+
+    mk = markets_a(days=110)
+    params = replace(PARAMS_A, slots=SLOTS, entry_apr=0.10)
+    times = _grid(min(d["funding"][0]["ts_ms"] for d in mk.values()), 10**15)
+    feed = FixtureFeed(mk, "A")
+    i = 0
+    while not await store.cp_positions("A", "open"):
+        await _drive(store, feed, params, [times[i]])
+        i += 1
+    rows = await store.cp_positions("A", "open")
+    assert not await store.cp_latest_marks("A")  # all opened in this very cycle: nothing marked yet
+    entry_costs = sum(r["state"]["fees"] * r["slot_notional"] for r in rows)
+    assert entry_costs > 0
+    view = await book_view(SimpleNamespace(store=store), "A", times[i - 1], False)  # type: ignore[arg-type]
+    assert view["pnl_usd"]["open_marked_at_last_cycle"] == pytest.approx(-entry_costs, abs=0.01)
+    assert view["pnl_usd"]["total"] == pytest.approx(-entry_costs, abs=0.01)
+
+    # One marked position (its mark already includes its own entry costs) and one opened in the last cycle.
+    t0 = times[i] - DECISION_DELAY_MS
+    pos = {"strategy": "B", "status": "open", "opened_ts": t0, "slot_notional": 2000.0}
+    marked = pos | {"trade_id": "B-OLD", "symbol": "OLD", "state": {"dir": 1, "fees": 0.0011}}
+    fresh = pos | {"trade_id": "B-NEW", "symbol": "NEW", "state": {"dir": 1, "fees": 0.0015}}
+    mark = {"strategy": "B", "cycle_ts": t0, "kind": "mark", "trade_id": "B-OLD", "payload": {"pnl_usd": 7.5}}
+    assert await store.cp_cycle_commit({"strategy": "B", "cycle_ts": t0, "status": "done", "payload": {}}, [marked, fresh], [mark])
+    view_b = await book_view(SimpleNamespace(store=store), "B", t0 + H8, False)  # type: ignore[arg-type]
+    assert view_b["pnl_usd"]["open_marked_at_last_cycle"] == pytest.approx(7.5 - 0.0015 * 2000.0, abs=0.01)
+
+
 async def test_cycle_is_idempotent_and_failure_is_logged(store):
     mk = markets_a(days=110)
     params = replace(PARAMS_A, slots=SLOTS, entry_apr=0.10)
@@ -343,6 +377,38 @@ async def test_exchange_interval_change_is_an_event(store):
     await _drive(store, Changed4(mk, "A"), params, [times[i + 1]])
     ev = [e["payload"] for e in await store.cp_logs("A", "event") if e["payload"]["type"] == "funding_interval_change"]
     assert ev and ev[0]["old"] == 8.0 and ev[0]["new"] == 4.0
+
+
+async def test_interval_change_across_a_skipped_cycle_is_an_event(store):
+    # Regression: the previous intervals came from the last cycle of any status; a skipped cycle has an empty payload,
+    # so a change across a skip was never logged. They now come from the last cycle with status 'done'.
+    mk = markets_a(days=110)
+    params = replace(PARAMS_A, slots=SLOTS, entry_apr=0.10)
+    times = _grid(min(d["funding"][0]["ts_ms"] for d in mk.values()), 10**15)
+    feed = FixtureFeed(mk, "A")
+    i = 0
+    while not await store.cp_positions("A", "open"):
+        await _drive(store, feed, params, [times[i]])
+        i += 1
+    sym = (await store.cp_positions("A", "open"))[0]["symbol"]
+
+    def reporting(hours: float) -> FixtureFeed:
+        class Reported(FixtureFeed):
+            async def load(self, params, decision_ts, open_positions):
+                d = await super().load(params, decision_ts, open_positions)
+                d.current = {sym: {"interval_hours": hours}}
+                return d
+
+        return Reported(mk, "A")
+
+    await _drive(store, reporting(8.0), params, [times[i]])
+    skip = {"strategy": "A", "cycle_ts": times[i + 1] - DECISION_DELAY_MS, "status": "skipped", "reason": "missed", "payload": {}}
+    assert await store.cp_cycle_commit(skip, [], [])
+    assert (await store.cp_cycles("A", 1))[0]["status"] == "skipped"
+    assert (await store.cp_cycles("A", 1, status="done"))[0]["cycle_ts"] == times[i] - DECISION_DELAY_MS
+    await _drive(store, reporting(4.0), params, [times[i + 2]])
+    ev = [e for e in await store.cp_logs("A", "event") if e["payload"]["type"] == "funding_interval_change"]
+    assert [(e["cycle_ts"], e["payload"]["old"], e["payload"]["new"]) for e in ev] == [(times[i + 2] - DECISION_DELAY_MS, 8.0, 4.0)]
 
 
 class DroppingFeed(FixtureFeed):
@@ -671,6 +737,7 @@ def test_engine_code_has_no_order_calls():
     files = [
         root / "collector" / "carry_paper_engine.py",
         root / "collector" / "carry_paper_feed.py",
+        root / "collector" / "market_data.py",
         root / "analytics" / "carry_rules.py",
         root / "tools" / "paper_carry.py",
         Path(__file__).parent.parent / "scripts" / "paper_carry_once.py",

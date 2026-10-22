@@ -64,6 +64,11 @@ def test_a_perp_trade_is_written_like_journal_add_and_rule_1_is_checked(journal_
     assert f"угода #{r['id']}" in out
     assert "BTC · лонг · 0.1 за 84 000 · стоп 82 000 · ціль 90 000" in out
     assert "Правило 1 · ризик ≤ 1 % депозиту: ✗ порушено — ризик до стопу $200 при межі $100." in out
+    assert (
+        "Правило 2 · відкритий ризик ≤ 3 %, ≤ 3 лонги в альтах: ✓ виконано — відкритий ризик $200 при межі $300 (відкритих угод 1)." in out
+    )
+    assert "Правило 4 · денний стоп: ✓ виконано — сьогодні (UTC) за закритими угодами журналу не спрацював" in out
+    assert "Правило 5 · ціль ≥ 2 × стоп: ✓ виконано — R:R 3." in out
     assert "Правило 8 · купівля опціонів: — не стосується" in out
     assert "жодних ордерів" in out
 
@@ -132,6 +137,102 @@ def test_build_reply_agrees_with_rules_check_on_the_same_row():
     assert check["rules"][1] == rc.OK and check["rules"][8] == rc.UNKNOWN and check["buy_zone"] == rc.ZONE_COND
     assert f"Правило 1 · ризик ≤ 1 % депозиту: {jt.STATUS_UA[rc.OK]}" in out
     assert f"Правило 8 · купівля опціонів: {jt.STATUS_UA[rc.UNKNOWN]}" in out
+
+
+H = 3600
+
+
+def seed(path, *trades):
+    """Journal rows through the store, as journal_add / journal_close write them; a 'pnl' key closes the row."""
+
+    async def go():
+        s = Store(path)
+        await s.init()
+        try:
+            for t in trades:
+                i = await s.journal_insert(
+                    opened_ts=int(t["opened"]),
+                    symbol=t["symbol"],
+                    side=t.get("side", "long"),
+                    size=t.get("size", 1.0),
+                    entry=t.get("entry", 1.0),
+                    stop=t.get("stop"),
+                    tags=t.get("tags", ["telegram"]),
+                )
+                if "pnl" in t:
+                    await s.journal_update_close(
+                        i, closed_ts=int(t["closed"]), status="closed", exit_=1.0, outcome="loss", pnl=t["pnl"], r_multiple=None, note=None
+                    )
+        finally:
+            await s.aclose()
+
+    asyncio.run(go())
+
+
+def test_rules_2_4_5_broken_by_the_journal_and_the_new_row(journal_db):
+    seed(
+        journal_db,
+        # three alt longs still open, $60 risk each to their stops
+        {"symbol": "SOL/USDT:USDT", "opened": NOW - 5 * H, "size": 3.0, "entry": 180.0, "stop": 160.0},
+        {"symbol": "DOGEUSDT", "opened": NOW - 5 * H, "size": 600.0, "entry": 0.2, "stop": 0.1},
+        {"symbol": "XRP", "opened": NOW - 5 * H, "size": 60.0, "entry": 2.5, "stop": 1.5},
+        # two losses in a row closed today (UTC) before the new trade: the day stop at 09:00 UTC
+        {"symbol": "ETHUSDT", "opened": NOW - 3 * H, "closed": NOW - 2 * H, "pnl": -40.0},
+        {"symbol": "ETHUSDT", "opened": NOW - 1.5 * H, "closed": NOW - H, "pnl": -30.0},
+        # the demo bot's open row and an airdrop are not the owner's trades: left out of rules 2 and 4
+        {"symbol": "TIA/USDT:USDT", "opened": NOW - H, "size": 4625.8, "entry": 0.5739, "stop": 0.5512, "tags": ["demo-paper", "auto"]},
+        {"symbol": "HYPE", "opened": NOW - 3 * H, "closed": NOW - 0.5 * H, "pnl": -500.0, "tags": ["airdrop"]},
+    )
+    # a 4th alt long, $100 risk to the stop, target only 1 x the stop away
+    out = jt.handle("/trade ADA long 1.0 size 1000 stop 0.9 target 1.1", journal_db, NOW)
+    assert (
+        "Правило 2 · відкритий ризик ≤ 3 %, ≤ 3 лонги в альтах: ✗ порушено — відкритий ризик $280 при межі $300 "
+        "(відкритих угод 4); лонгів в альтах відкрито 4 — новий альт понад межу." in out
+    )
+    assert "Правило 4 · денний стоп: ✗ порушено — сьогодні спрацював о 09:00 UTC (2 збиткові поспіль)" in out
+    assert "Правило 5 · ціль ≥ 2 × стоп: ✗ порушено — R:R 1." in out
+    assert "Правило 1 · ризик ≤ 1 % депозиту: ✓ виконано — ризик до стопу $100 при межі $100." in out
+    assert len(rows(journal_db)) == 8
+
+
+def test_open_risk_over_three_percent_breaks_rule_2_for_a_major(journal_db):
+    seed(journal_db, {"symbol": "ETHUSDT", "side": "short", "opened": NOW - H, "size": 1.0, "entry": 4000.0, "stop": 4250.0})
+    out = jt.handle("/trade BTC long 84000 size 0.05 stop 82000", journal_db, NOW)
+    assert (
+        "Правило 2 · відкритий ризик ≤ 3 %, ≤ 3 лонги в альтах: ✗ порушено — відкритий ризик $350 при межі $300 (відкритих угод 2)." in out
+    )
+
+
+def test_rules_2_4_5_unknown_without_a_stop_or_the_journal(journal_db, monkeypatch):
+    seed(journal_db, {"symbol": "SOLUSDT", "opened": NOW - H, "tags": ["bybit", "import", "linear"]})  # an import: no stop
+    out = jt.handle("/trade ETH short 2400 size 0.1", journal_db, NOW)
+    assert (
+        "Правило 2 · відкритий ризик ≤ 3 %, ≤ 3 лонги в альтах: ? невідомо — відкритий ризик $0 при межі $300 "
+        "(відкритих угод 2); ризик ще 2 не пораховано (без стопу або проданий опціон)." in out
+    )
+    assert "Правило 5 · ціль ≥ 2 × стоп: ? невідомо — R:R не порахувати: додайте stop і target." in out
+    # a HIP-3 long is left out of the alt-long count: unknown, not ok
+    out = jt.handle("/trade xyz:TSLA long 250 size 1 stop 245 target 265", journal_db, NOW)
+    assert "символ HIP-3 (акції, золото) у ліміт лонгів в альтах не входить" in out
+    assert "Правило 2 · відкритий ризик ≤ 3 %, ≤ 3 лонги в альтах: ? невідомо" in out
+    assert "Правило 5 · ціль ≥ 2 × стоп: ✓ виконано — R:R 3." in out
+
+    async def unreadable(*a, **k):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(Store, "journal_list", unreadable)
+    out = jt.handle("/trade BTC long 84000 size 0.05 stop 82000 target 90000", journal_db, NOW)
+    assert out.startswith("<b>✅ Записано в журнал")  # the row is written; only rules 2 and 4 cannot be told
+    assert "Правило 2 · відкритий ризик ≤ 3 %, ≤ 3 лонги в альтах: ? невідомо — журнал не прочитано." in out
+    assert "Правило 4 · денний стоп: ? невідомо — журнал не прочитано." in out
+    assert "Правило 1 · ризик ≤ 1 % депозиту: ✓ виконано" in out and "Правило 5 · ціль ≥ 2 × стоп: ✓ виконано" in out
+    assert len(rows(journal_db)) == 4
+
+
+def test_an_option_reply_has_rule_5_not_applicable(journal_db):
+    out = jt.handle("/trade BTC-27NOV26-90000-C long 800 size 0.1", journal_db, NOW)
+    assert "Правило 5 · ціль ≥ 2 × стоп: — не стосується (опціон)." in out
+    assert "відкритий ризик $80 при межі $300 (відкритих угод 1)" in out
 
 
 def test_untrusted_thesis_is_escaped_in_the_reply_and_stored_as_text(journal_db):

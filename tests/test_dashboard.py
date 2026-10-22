@@ -2023,6 +2023,8 @@ def test_rules_copies_match_the_analytics_reference():
             _same(db.rules_trade_checks(rs, now, dep), rc.trade_checks(rs, now_ts=now, deposit_usd=dep))
             _same(db.rules_weekly(rs, now, dep), rc.weekly_violations(rs, now_ts=now, deposit_usd=dep))
             _same(db.rules_day_stops(rs, dep), rc.day_stops(rs, deposit_usd=dep))
+    at_now, rs = trc._at_now_rows()  # an alt long opened at now_ts itself
+    _same(db.rules_trade_checks(rs, at_now), rc.trade_checks(rs, now_ts=at_now))
     assert len(db.rules_weekly(rows, now)) == 3 and db.rules_weekly([], now) == []
     assert db.rules_is_hip3("xyz:TSLA") and not db.rules_is_hip3("SOL/USDT:USDT")
     for sym in (

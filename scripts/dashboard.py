@@ -4507,17 +4507,18 @@ def _rules_alt_counts(xs: list[dict], now_ts: float) -> dict[int, tuple[int, boo
         ),
         key=lambda x: (x["opened"], x["i"]),
     )
-    active: list[tuple[float, str]] = []
+    active: list[tuple[float, str, bool]] = []
     out: dict[int, tuple[int, bool]] = {}
     for x in alts:
         t = x["opened"]
-        active = [(end, b) for end, b in active if end > t]
-        held = {b for _, b in active}
+        # a closed trade is held until its close (exclusive), an open one up to now_ts inclusive
+        active = [(end, b, still) for end, b, still in active if end > t or (still and end >= t)]
+        held = {b for _, b, _ in active}
         new = x["base"] not in held
         n = len(held) + (1 if new else 0)
         out[x["i"]] = (n, new and n > RULES_MAX_ALT_LONGS)
-        end = x["closed"] if x["closed"] is not None else max(float(now_ts), t)
-        active.append((end, x["base"]))
+        still_open = x["closed"] is None
+        active.append((max(float(now_ts), t) if still_open else x["closed"], x["base"], still_open))
     return out
 
 

@@ -13,7 +13,7 @@ Rules covered:
   distinct alt long violates it. Needs a real opening time (opened_ts < closed_ts, or still open): Bybit linear
   imports have none (opened_ts = closed_ts) and are ``unknown``. Hyperliquid HIP-3 symbols ('dex:ASSET', e.g.
   'xyz:TSLA': stocks, gold) are not crypto alts the rule is about: ``unknown`` and left out of the count. The
-  "total open risk <= 3 %" half needs stops.
+  "total open risk <= 3 %" half (open_risk, on the trades open now) sums rule 1's risk and needs stops.
 * 4 — day stop: after 2 losing trades in a row or a day's realized P&L <= -2 % of the deposit, no new trade that
   day. UTC day and closing order as in scripts/journal_rules.py that produced the rule's effect, but "in a row" is
   stricter than that script, which stopped the day after any 2 losses. A trade opened after the stop moment of its
@@ -52,6 +52,7 @@ OK, VIOLATED, UNKNOWN, NA = "ok", "violated", "unknown", "na"
 DEPOSIT_USD = 10_000.0
 RISK_PCT = 1.0  # rule 1, % of the deposit
 MAX_ALT_LONGS = 3  # rule 2
+OPEN_RISK_PCT = 3.0  # rule 2, total risk of the open trades, % of the deposit
 DAY_LOSS_PCT = 2.0  # rule 4, % of the deposit
 DAY_LOSING_STREAK = 2  # rule 4
 MIN_RR = 2.0  # rule 5
@@ -411,12 +412,8 @@ def trade_checks(
         long_opt = x["option"] and x["side"] == "long"
         premium = x["size"] * x["entry"] if long_opt and x["size"] is not None and x["entry"] is not None else None
         # rule 1: a bought option risks its premium; anything else needs a recorded stop
-        if long_opt:
-            r[1] = UNKNOWN if premium is None else OK if premium <= risk_cap * (1 + _EPS) else VIOLATED
-        elif x["option"] or None in (x["stop"], x["size"], x["entry"]):
-            r[1] = UNKNOWN
-        else:
-            r[1] = OK if x["size"] * abs(x["entry"] - x["stop"]) <= risk_cap * (1 + _EPS) else VIOLATED
+        risk = _risk(x)
+        r[1] = UNKNOWN if risk is None else OK if risk <= risk_cap * (1 + _EPS) else VIOLATED
         # rule 2
         if x["option"] or x["side"] != "long" or x["base"] in MAJORS or not x["base"]:
             r[2] = NA
@@ -467,9 +464,43 @@ def trade_checks(
     return out
 
 
+def _risk(x: Mapping[str, Any]) -> float | None:
+    """Rule 1 risk (USD) of a normalized row: the premium of a bought option, size x |entry - stop| of anything else
+    with a recorded stop; None when the row cannot tell (no stop, a sold option)."""
+    if x["option"] and x["side"] == "long":
+        return x["size"] * x["entry"] if x["size"] is not None and x["entry"] is not None else None
+    if x["option"] or None in (x["stop"], x["size"], x["entry"]):
+        return None
+    return x["size"] * abs(x["entry"] - x["stop"])
+
+
+def open_risk(
+    rows: Iterable[Mapping[str, Any]], *, deposit_usd: float = DEPOSIT_USD, open_risk_pct: float = OPEN_RISK_PCT
+) -> dict[str, Any]:
+    """Rule 2, first half: the total risk of the trades open now (status 'open'; pass the owner's real trades) <=
+    open_risk_pct % of the deposit. {status, total: USD over the open trades whose rule 1 risk is known, limit,
+    n_open, n_unknown: open trades without a stop (or a sold option)}. ``violated`` once the known part alone is over
+    the limit, else ``unknown`` while any open risk is unknown, else ``ok``; ``na`` with nothing open. The risk is to
+    the recorded stop: a stop moved since, slippage or a gap are not seen."""
+    xs = [x for x in _normalize(rows) if x["closed"] is None]
+    risks = [_risk(x) for x in xs]
+    total = sum(v for v in risks if v is not None)
+    limit = deposit_usd * open_risk_pct / 100.0
+    n_unknown = sum(1 for v in risks if v is None)
+    if not xs:
+        st = NA
+    elif total > limit * (1 + _EPS):
+        st = VIOLATED
+    else:
+        st = UNKNOWN if n_unknown else OK
+    return {"status": st, "total": total, "limit": limit, "n_open": len(xs), "n_unknown": n_unknown}
+
+
 def _alt_long_counts(xs: list[dict[str, Any]], now_ts: float, cap: int = MAX_ALT_LONGS) -> dict[int, tuple[int, bool]]:
     """Rule 2 sweep over alt longs with a real opening time: {row index: (distinct alt longs open right after it
-    opened, it opened a new alt beyond ``cap``)}. A second row of an alt already open adds no new long."""
+    opened, it opened a new alt beyond ``cap``)}. A second row of an alt already open adds no new long. A closed trade
+    is held until its close (exclusive), an open one up to ``now_ts`` inclusive, so a trade opened at ``now_ts`` (a
+    /trade from Telegram) still sees the open ones."""
     alts = sorted(
         (
             x
@@ -478,17 +509,17 @@ def _alt_long_counts(xs: list[dict[str, Any]], now_ts: float, cap: int = MAX_ALT
         ),
         key=lambda x: (x["opened"], x["i"]),
     )
-    active: list[tuple[float, str]] = []
+    active: list[tuple[float, str, bool]] = []
     out: dict[int, tuple[int, bool]] = {}
     for x in alts:
         t = x["opened"]
-        active = [(end, b) for end, b in active if end > t]
-        held = {b for _, b in active}
+        active = [(end, b, still) for end, b, still in active if end > t or (still and end >= t)]
+        held = {b for _, b, _ in active}
         new = x["base"] not in held
         n = len(held) + (1 if new else 0)
         out[x["i"]] = (n, new and n > cap)
-        end = x["closed"] if x["closed"] is not None else max(float(now_ts), t)
-        active.append((end, x["base"]))
+        still_open = x["closed"] is None
+        active.append((max(float(now_ts), t) if still_open else x["closed"], x["base"], still_open))
     return out
 
 

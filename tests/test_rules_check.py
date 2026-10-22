@@ -253,6 +253,26 @@ def test_simultaneous_alt_longs():
     assert c[6]["rules"][2] == c[7]["rules"][2] == rc.NA and c[10]["rules"][2] == rc.UNKNOWN and c[10]["alt_longs"] is None
 
 
+def _at_now_rows():
+    # three alt longs still open and a 4th opened at now_ts itself (a /trade from Telegram); an alt closed at that same
+    # second is no longer held
+    now = D + 6 * H
+    return now, [
+        _t(1, "SOL", "long", D, None, None, status="open"),
+        _t(2, "DOGE", "long", D + H, None, None, status="open"),
+        _t(3, "XRP", "long", D + 2 * H, None, None, status="open"),
+        _t(4, "AVAX", "long", D + 3 * H, now, -1.0),
+        _t(5, "ADA", "long", now, None, None, status="open"),
+    ]
+
+
+def test_a_trade_opened_at_now_still_sees_the_open_alt_longs():
+    now, rows = _at_now_rows()
+    c = _by_id(rc.trade_checks(rows, now_ts=now))
+    assert (c[5]["alt_longs"], c[5]["rules"][2]) == (4, rc.VIOLATED)
+    assert c[4]["alt_longs"] == 4 and c[4]["rules"][2] == rc.VIOLATED  # AVAX, opened while SOL, DOGE, XRP were open
+
+
 def _hip3_rows():
     return [
         _t(1, "SOL", "long", D, D + 10 * H, 1.0),
@@ -339,6 +359,24 @@ def test_stop_and_target_from_journal_add():
     assert (c[2]["rules"][1], c[2]["rules"][5]) == (rc.VIOLATED, rc.VIOLATED)  # risk $200, R:R 1
     assert (c[3]["rules"][1], c[3]["rules"][5]) == (rc.OK, rc.UNKNOWN)  # risk $50, no target
     assert (c[4]["rules"][1], c[4]["rules"][5]) == (rc.UNKNOWN, rc.UNKNOWN)  # an import: no stop
+
+
+def test_open_risk_sums_rule_1_risk_of_the_open_trades():
+    btc = _t(1, "BTCUSDT", "long", D, None, None, "[]", size=0.05, entry=84000.0, stop=82000.0, status="open")  # $100
+    opt = _t(2, "BTC-17OCT25-110000-C", "long", D, None, None, '["option"]', size=0.1, entry=800.0, status="open")  # $80
+    done = _t(3, "SOLUSDT", "long", D, D + H, -50.0, "[]", size=10.0, entry=200.0, stop=180.0)  # closed: not open risk
+    r = rc.open_risk([btc, opt, done])
+    assert r == {"status": rc.OK, "total": pytest.approx(180.0), "limit": 300.0, "n_open": 2, "n_unknown": 0}
+    # an open import without a stop: its risk cannot be told, so the total is a floor
+    imp = _t(4, "SOLUSDT", "long", D, None, None, BYBIT, status="open")
+    r = rc.open_risk([btc, opt, done, imp])
+    assert (r["status"], r["n_open"], r["n_unknown"]) == (rc.UNKNOWN, 3, 1)
+    # the known part alone over $300 is a violation whatever the unknown rows hold; exactly $300 is within the rule
+    big = _t(5, "ETHUSDT", "short", D, None, None, "[]", size=1.0, entry=4000.0, stop=4150.0, status="open")  # $150
+    assert rc.open_risk([btc, opt, imp, big])["status"] == rc.VIOLATED
+    edge = _t(6, "ETHUSDT", "short", D, None, None, "[]", size=1.0, entry=4000.0, stop=4120.0, status="open")  # $120
+    assert rc.open_risk([btc, opt, edge]) == {"status": rc.OK, "total": pytest.approx(300.0), "limit": 300.0, "n_open": 3, "n_unknown": 0}
+    assert rc.open_risk([done])["status"] == rc.NA and rc.open_risk([btc], deposit_usd=2_000.0)["status"] == rc.VIOLATED
 
 
 def test_weekly_violations_newest_first_with_counts():

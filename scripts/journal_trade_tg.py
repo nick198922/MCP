@@ -1,4 +1,4 @@
-"""Record a trade in the local journal from the owner's Telegram command and answer with rules 1 and 8 for it.
+"""Record a trade in the local journal from the owner's Telegram command and answer with rules 1, 2, 4, 5 and 8 for it.
 
     uv run python scripts/journal_trade_tg.py --text "/trade BTC long 84000 size 0.1 stop 82000 target 90000 thesis ..."
     uv run python scripts/journal_trade_tg.py --text "..." --db PATH      # another SQLite file
@@ -9,9 +9,12 @@ topic it serves, and sends the printed Telegram HTML back. The text is untrusted
 strictly (an unknown word is an error, not a guess) into the journal_add fields only. The row goes in through the
 same store call as the journal_add tool (Store.init + journal_insert, status 'open', opened now, tags ['telegram']
 plus 'option' for an option symbol), into the dashboard's journal DB that the MCP server writes too; a missing file is
-refused rather than created. Rules 1 and 8 come from analytics.rules_check.trade_checks on the new row with its
-default thresholds (deposit $10 000), as on the panel. Nothing here places, changes or cancels an order or touches a
-limit: it only writes one journal row. Never raises: any failure is a short message.
+refused rather than created. The rules come from analytics.rules_check with its default thresholds (deposit
+$10 000), as on the panel: trade_checks on the new row among the owner's real trades of the journal (no airdrop, no
+*-paper rows: dashboard.journal_kind), read back through the same Store right after the insert, and open_risk on the
+open ones. Rules 1, 5 and 8 depend on the new row only; rule 2 (total open risk <= 3 %, at most 3 alt longs) and rule
+4 (day stop) on the journal, so they are 'unknown' when it cannot be read. Nothing here places, changes or cancels an
+order or touches a limit: it only writes one journal row. Never raises: any failure is a short message.
 """
 
 from __future__ import annotations
@@ -22,12 +25,17 @@ import html
 import os
 import sys
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from tradedesk.analytics import rules_check as rc
-from tradedesk.analytics.trade_command import MAX_THESIS, parse_trade_command
-from tradedesk.store.db import Store
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import dashboard as db  # noqa: E402
+
+from tradedesk.analytics import rules_check as rc  # noqa: E402
+from tradedesk.analytics.trade_command import MAX_THESIS, parse_trade_command  # noqa: E402
+from tradedesk.store.db import Store  # noqa: E402
 
 DB_DEFAULT = Path(os.environ.get("TRADEDESK_DATA_DIR", "/var/lib/tradedesk-mcp")) / "tradedesk.sqlite"  # = dashboard.JOURNAL_DB
 SOURCE_TAG = "telegram"
@@ -61,8 +69,10 @@ STATUS_UA = {rc.OK: "✓ виконано", rc.VIOLATED: "✗ порушено",
 SIDE_UA = {"long": "лонг", "short": "шорт"}
 CAVEAT = (
     "Лише запис у локальний журнал: жодних ордерів, ліміти не змінюються. Правила — з депозитом $10 000; "
-    "правила 2, 4 і 5 — на панелі й у тижневому звіті."
+    "2 і 4 — за реальними угодами журналу (відкрита — доки не закрито /close; імпорт з бірж може запізнюватися)."
 )
+STOP_REASON_UA = {"streak": "2 збиткові поспіль", "day_loss": "−2 % за день", "both": "2 збиткові поспіль і −2 % за день"}
+NO_JOURNAL = "журнал не прочитано"
 
 
 def _h(x: object) -> str:
@@ -109,6 +119,54 @@ def _rule1_line(trade: dict[str, Any], status: str, budget: float) -> str:
     return f"Правило 1 · ризик ≤ 1 % депозиту: {STATUS_UA[status]} — {_h(why)}."
 
 
+def _rule2_line(check: dict[str, Any], risk: dict[str, Any] | None) -> str:
+    head = f"Правило 2 · відкритий ризик ≤ {fmt(rc.OPEN_RISK_PCT)} %, ≤ {rc.MAX_ALT_LONGS} лонги в альтах"
+    if risk is None:
+        return f"{head}: {STATUS_UA[rc.UNKNOWN]} — {NO_JOURNAL}."
+    alt = check["rules"][2]
+    status = rc.NA if risk["status"] == alt == rc.NA else rc.conditions_status(risk["status"], alt)
+    parts = [f"відкритий ризик {usd(risk['total'])} при межі {usd(risk['limit'])} (відкритих угод {risk['n_open']})"]
+    if risk["n_unknown"]:
+        parts.append(f"ризик ще {risk['n_unknown']} не пораховано (без стопу або проданий опціон)")
+    if alt in (rc.OK, rc.VIOLATED):
+        parts.append(f"лонгів в альтах відкрито {check['alt_longs']}" + (" — новий альт понад межу" if alt == rc.VIOLATED else ""))
+    elif alt == rc.UNKNOWN:
+        parts.append("символ HIP-3 (акції, золото) у ліміт лонгів в альтах не входить")
+    return f"{head}: {STATUS_UA[status]} — {_h('; '.join(parts))}."
+
+
+def _rule4_line(check: dict[str, Any], stops: dict[str, dict[str, Any]] | None) -> str:
+    head = "Правило 4 · денний стоп"
+    if stops is None:
+        return f"{head}: {STATUS_UA[rc.UNKNOWN]} — {NO_JOURNAL}."
+    status = check["rules"][4]
+    if status == rc.VIOLATED:
+        s = stops[rc.utc_day(check["opened_ts"])]
+        at = datetime.fromtimestamp(s["ts"], UTC).strftime("%H:%M")
+        why = f"сьогодні спрацював о {at} UTC ({STOP_REASON_UA.get(s['reason'], s['reason'])}): нових угод до кінця дня UTC не відкривати"
+    else:
+        why = f"сьогодні (UTC) за закритими угодами журналу не спрацював ({rc.DAY_LOSING_STREAK} збиткові поспіль або −{fmt(rc.DAY_LOSS_PCT)} %)"
+    return f"{head}: {STATUS_UA[status]} — {_h(why)}."
+
+
+def _rule5_line(trade: dict[str, Any], status: str) -> str:
+    head = f"Правило 5 · ціль ≥ {fmt(rc.MIN_RR)} × стоп"
+    if status == rc.NA:
+        return f"{head}: {STATUS_UA[status]} (опціон)."
+    entry, stop, target = trade["entry"], trade["stop"], trade["target"]
+    if status == rc.UNKNOWN:
+        miss = [w for w, v in (("stop", stop), ("target", target)) if v is None]
+        why = "R:R не порахувати" + (": додайте " + " і ".join(miss) if miss else "")
+    else:
+        why = f"R:R {fmt(round(abs(target - entry) / abs(entry - stop), 2))}"
+    return f"{head}: {STATUS_UA[status]} — {_h(why)}."
+
+
+def real_trades(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The owner's real trades, as the dashboard's rules block takes them: no airdrop, no *-paper rows."""
+    return [t for t in rows if db.journal_kind(db.journal_tags(t.get("tags")))[0] == "real"]
+
+
 def _rule8_line(trade: dict[str, Any], check: dict[str, Any], cap: float, now: float) -> str:
     status = check["rules"][8]
     if status == rc.NA:
@@ -132,9 +190,10 @@ def _rule8_line(trade: dict[str, Any], check: dict[str, Any], cap: float, now: f
     return f"Правило 8 · купівля опціонів: {STATUS_UA[status]} — {_h('; '.join(parts))}."
 
 
-def build_reply(trade: dict[str, Any], trade_id: int, now: float) -> str:
-    """Telegram HTML for a recorded trade: what was written and rules 1 and 8 on it. Pure (time passed in); the rules
-    are analytics.rules_check.trade_checks on this one row with its default thresholds."""
+def build_reply(trade: dict[str, Any], trade_id: int, now: float, journal: list[dict[str, Any]] | None = None) -> str:
+    """Telegram HTML for a recorded trade: what was written and rules 1, 2, 4, 5 and 8 on it. Pure (time passed in);
+    the rules are analytics.rules_check (trade_checks, open_risk, day_stops) with its default thresholds on this row
+    among the real trades of ``journal`` (all journal rows; None = not read: rules 2 and 4 are 'unknown')."""
     row = {
         "id": trade_id,
         "opened_ts": int(now),
@@ -150,7 +209,9 @@ def build_reply(trade: dict[str, Any], trade_id: int, now: float) -> str:
         "tags": tags_for(trade),
         "pnl": None,
     }
-    check = rc.trade_checks([row], now_ts=now)[0]
+    others = None if journal is None else [r for r in real_trades(journal) if r.get("id") != trade_id]
+    rows = [row] if others is None else [*others, row]
+    check = next(c for c in rc.trade_checks(rows, now_ts=now) if c["id"] == trade_id)
     head = f"<b>✅ Записано в журнал: угода #{trade_id}</b>"
     what = [_h(trade["symbol"]), SIDE_UA[trade["side"]], f"{fmt(trade['size'])} за {fmt(trade['entry'])}"]
     if trade["stop"] is not None:
@@ -165,17 +226,21 @@ def build_reply(trade: dict[str, Any], trade_id: int, now: float) -> str:
     else:
         lines.append("Тези немає (для купівлі опціону за 1–3 доби до експірації вона обов'язкова).")
     lines.append(_rule1_line(trade, check["rules"][1], rc.DEPOSIT_USD * rc.RISK_PCT / 100.0))
+    lines.append(_rule2_line(check, None if others is None else rc.open_risk(rows)))
+    lines.append(_rule4_line(check, None if others is None else rc.day_stops(rows)))
+    lines.append(_rule5_line(trade, check["rules"][5]))
     lines.append(_rule8_line(trade, check, rc.DEPOSIT_USD * rc.PREMIUM_PCT / 100.0, now))
     lines += ["", f"<i>{_h(CAVEAT)} Закрити: /close {trade_id} ЦІНА_ВИХОДУ.</i>"]
     return "\n".join(lines)
 
 
-async def record(db_path: Path, trade: dict[str, Any], now: float) -> int:
-    """Write the trade as journal_add does (Store.init, then journal_insert, status 'open'); the new id."""
+async def record(db_path: Path, trade: dict[str, Any], now: float) -> tuple[int, list[dict[str, Any]] | None]:
+    """Write the trade as journal_add does (Store.init, then journal_insert, status 'open'); the new id and the
+    journal read back through the same store (journal_list, the new row included; None if that read failed)."""
     store = Store(db_path)
     try:
         await store.init()
-        return await store.journal_insert(
+        trade_id = await store.journal_insert(
             opened_ts=int(now),
             symbol=trade["symbol"],
             side=trade["side"],
@@ -186,6 +251,11 @@ async def record(db_path: Path, trade: dict[str, Any], now: float) -> int:
             thesis=trade["thesis"],
             tags=tags_for(trade),
         )
+        try:
+            journal = await store.journal_list(limit=db.JOURNAL_MAX_ROWS)
+        except Exception:  # noqa: BLE001 - the row is written; rules 2 and 4 become 'unknown'
+            journal = None
+        return trade_id, journal
     finally:
         await store.aclose()
 
@@ -199,11 +269,11 @@ def handle(text: str, db_path: Path, now: float) -> str:
     if not db_path.exists():
         return f"❌ Угоду не записано: файла журналу {_h(db_path)} немає (його створює MCP-сервер)."
     try:
-        trade_id = asyncio.run(record(db_path, trade, now))
+        trade_id, journal = asyncio.run(record(db_path, trade, now))
     except Exception as e:  # noqa: BLE001 - the owner gets a reason, the bridge keeps running
         return f"❌ Угоду не записано: збій бази ({_h(type(e).__name__)}). Спробуйте ще раз або journal_add у Claude."
     try:
-        return build_reply(trade, trade_id, now)
+        return build_reply(trade, trade_id, now, journal)
     except Exception as e:  # noqa: BLE001 - the row is written; only the rules text failed
         return f"✅ Записано в журнал: угода #{trade_id}. Перевірку правил не вдалося зібрати ({_h(type(e).__name__)})."
 

@@ -84,7 +84,9 @@ def payload(
     silent: bool = False,
     buttons: Sequence[tuple[str, str]] = (),
     thread: int | None = None,
+    per_row: int = 1,
 ) -> dict:
+    """sendMessage body. `buttons` become inline-keyboard URL buttons (https only, at most 6), `per_row` per row."""
     body: dict = {
         "chat_id": chat_id,
         "text": text,
@@ -95,9 +97,10 @@ def payload(
         body["message_thread_id"] = thread
     if html_mode:
         body["parse_mode"] = "HTML"
-    good = [(label, url) for label, url in buttons if url.startswith("https://")]
+    good = [{"text": label[:60], "url": url} for label, url in buttons if url.startswith("https://")][:6]
     if good:
-        body["reply_markup"] = {"inline_keyboard": [[{"text": label[:60], "url": url}] for label, url in good[:6]]}
+        n = max(1, per_row)
+        body["reply_markup"] = {"inline_keyboard": [good[i : i + n] for i in range(0, len(good), n)]}
     return body
 
 
@@ -133,6 +136,7 @@ def send(
     buttons: Sequence[tuple[str, str]] = (),
     topic: str | None = None,
     env: dict[str, str] | None = None,
+    per_row: int = 1,
 ) -> bool:
     from_file = env is None
     env = load_env() if env is None else env
@@ -141,24 +145,23 @@ def send(
         print("telegram is not configured", file=sys.stderr)
         return False
     thread = topic_thread(env, topic)
-    ok, err, params = _post(token, payload(chat, clip(text_html), silent=silent, buttons=buttons, thread=thread))
+    kb = {"buttons": buttons, "per_row": per_row}
+    ok, err, params = _post(token, payload(chat, clip(text_html), silent=silent, thread=thread, **kb))
     if not ok and params.get("migrate_to_chat_id"):
         # The group became a supergroup (e.g. Topics switched on): follow it and remember the new id.
         chat = str(params["migrate_to_chat_id"])
         print(f"the group moved to chat id {chat}; settings updated", file=sys.stderr)
         if from_file:
             write_env({**env, "TELEGRAM_CHAT_ID": chat})
-        ok, err, params = _post(token, payload(chat, clip(text_html), silent=silent, buttons=buttons, thread=thread))
+        ok, err, params = _post(token, payload(chat, clip(text_html), silent=silent, thread=thread, **kb))
     if not ok and thread and "thread" in err.lower():
         print(f"topic {topic} is not usable ({err}); sending to the general chat", file=sys.stderr)
         thread = None
-        ok, err, params = _post(token, payload(chat, clip(text_html), silent=silent, buttons=buttons))
+        ok, err, params = _post(token, payload(chat, clip(text_html), silent=silent, **kb))
     if not ok:
         print(f"telegram rejected the HTML message ({err}); sending plain text", file=sys.stderr)
         plain = re.sub(r"<[^>]+>", "", text_html)
-        ok, err, params = _post(
-            token, payload(chat, clip(html.unescape(plain)), html_mode=False, silent=silent, buttons=buttons, thread=thread)
-        )
+        ok, err, params = _post(token, payload(chat, clip(html.unescape(plain)), html_mode=False, silent=silent, thread=thread, **kb))
         if not ok:
             print(f"telegram send failed: {err}", file=sys.stderr)
     return ok

@@ -27,8 +27,9 @@ def _snap() -> tuple[dict, float]:
 
 @pytest.fixture(autouse=True)
 def _no_dashboard_url(tmp_path, monkeypatch):
-    """The server's real URL file (step 23) must not change these tests."""
+    """The server's real URL file (step 23) or a set $TRADEDESK_PANEL_URL must not change these tests."""
     monkeypatch.setattr(ab, "DASHBOARD_URL_PATH", tmp_path / "no_dashboard_url")
+    monkeypatch.delenv(ab.PANEL_URL_ENV, raising=False)
 
 
 def test_brief_on_the_real_snapshot():
@@ -206,6 +207,10 @@ def test_main_preview_sends_nothing(tmp_path, monkeypatch, capsys):
     asof = ab.db.parse_utc(snap["asof_utc"]).timestamp()
     monkeypatch.setattr(ab.time, "time", lambda: asof + 300)  # the fixture must stay fresh, whatever today's date
     assert ab.main(["--snapshot", str(SNAP_FIXTURE), "--print", "--no-chart"]) == 0
+    out = capsys.readouterr().out
+    assert "<b>Головне сьогодні</b>" not in out and ab._h(ab.CAVEAT_SHORT) in out  # the short text by default
+    assert "[buttons: none (no $TRADEDESK_PANEL_URL" in out
+    assert ab.main(["--snapshot", str(SNAP_FIXTURE), "--print", "--no-chart", "--full"]) == 0
     assert "<b>Головне сьогодні</b>" in capsys.readouterr().out
     assert ab.main(["--snapshot", str(SNAP_FIXTURE), "--out", str(tmp_path / "o"), "--no-chart"]) == 0
     assert "Бриф асистента" in (tmp_path / "o" / "brief.html").read_text(encoding="utf-8")
@@ -310,25 +315,131 @@ def test_flag_path_matches_between_the_unit_and_step_22():
     assert "runuser" not in step and "sudo bash" not in step and '"$(id -un)" == "$SVC"' in step  # runs as tradedesk
 
 
-def test_short_brief_with_dashboard_buttons(tmp_path, monkeypatch):
-    snap, _ = _snap()
-    now = ab.db.parse_utc(snap["asof_utc"]).timestamp() + 300
-    full, short = ab.build_brief(snap, now), ab.build_brief(snap, now, short=True)
-    assert "<b>Події" in full and "<b>Funding" in full
-    assert "<b>Події" not in short and "<b>Funding" not in short and "Додатний funding" not in short
-    assert "<b>Головне сьогодні</b>" in short and all(ab._h(c) in short for c in ab.CAVEATS)
+def test_short_brief_is_a_few_lines():
+    snap, asof = _snap()
+    text = ab.build_brief(snap, asof + 300, short=True)
+    lines = [ln for ln in text.splitlines() if ln]
+    assert len(lines) <= 9 and len(text) < 800, text  # header, 2 market lines, ≤ 3 items, ≤ 2 events, 1 caveat
+    assert lines[1] == "BTC <b>82 791</b> +0.94 % · ETH <b>2 448</b> +1.92 % <i>за 24 год</i>"
+    assert lines[2] == "DVOL <b>37.0</b> · 16-й перцентиль за рік"
+    assert "SOL" not in text and "Страх і жадібність" not in text and "IV − RV30" not in text
+    for gone in ("<b>Ринок</b>", "<b>Головне сьогодні</b>", "<b>Події", "<b>Funding", "<b>Застереження</b>", "Знімок "):
+        assert gone not in text, gone  # no block titles; a fresh snapshot needs no stamp line
+    items = [ln for ln in lines if ln.startswith("• <i>") and "FOMC" not in ln]
+    assert len(items) == 3 and "ризик" in items[0] and "Пути 25Δ дорожчі" in items[0]  # risk first
+    assert "Рівень волатильності сам по собі не сигнал" not in text  # 4th item, cut
+    ev = [ln for ln in lines if "FOMC" in ln]
+    assert len(ev) == 1 and "<i>подія</i>" in ev[0] and "через 8 дн" in ev[0] and "час орієнтовний" in ev[0]
+    if db.KYIV is not None:
+        assert "28.10 20:00 за Києвом — Oct 2026 FOMC" in ev[0]
+    assert lines[-1] == f"<i>{ab._h(ab.CAVEAT_SHORT)}</i>"
+    for part in ("ризик-нейтральні", "«гіпотеза»", "Не інвестиційна порада"):
+        assert part in lines[-1]
+    assert text == ab.build_brief(snap, asof + 300, short=True)  # pure
+
+
+def test_short_brief_events_and_stale_snapshot():
+    snap, asof = _snap()
+    ev = snap["sections"]["events"]["data"]
+    fomc = ev["events"][0]
+    near = {**fomc, "ts_utc": "2026-10-22T09:00:00+00:00", "title": "Near CPI", "source": "feed"}
+    past = {**fomc, "ts_utc": "2026-10-20T12:00:00+00:00", "title": "Past PPI"}
+    ev["events"] = [past, near, fomc, {**fomc, "title": "Third"}]
+    text = ab.build_brief(snap, asof + 60, short=True)
+    assert "Past PPI" not in text and "Third" not in text  # past dropped, at most 2
+    line = next(ln for ln in text.splitlines() if "Near CPI" in ln)
+    assert "<i>ризик</i>" in line and "менше 48 год" in line and "через 36 год" in line
+    ev["events"] = [past]
+    assert "Подій з високим впливом на 14 днів немає." in ab.build_brief(snap, asof + 60, short=True)
+    ev["events"], ev["next_event"] = [], near  # only next_event: still shown
+    assert "Near CPI" in ab.build_brief(snap, asof + 60, short=True)
+    snap["missing"] = ["ohlc"]
+    text = ab.build_brief(snap, asof + 2 * 3600, short=True)
+    assert "<b>Увага: знімок старший за 30 хв</b>" in text and "2 год тому" in text and "Без даних: свічки BTC" in text
+    text = ab.build_brief(snap, asof + 7 * 3600, short=True)
+    assert "старший за 6 год" in text and "BTC <b>" not in text and "Near CPI" not in text
+    assert text.endswith(f"<i>{ab._h(ab.CAVEAT_SHORT)}</i>")
+    none = ab.build_brief(None, asof, "missing", short=True)
+    assert "Брифу сьогодні немає" in none and none.endswith(f"<i>{ab._h(ab.CAVEAT_SHORT)}</i>")
+
+
+def test_short_brief_escapes_and_survives_odd_data():
+    snap, asof = _snap()
+    s = snap["sections"]
+    evil = "<a href='https://evil.example'>x</a>"
+    s["events"]["data"]["events"][0]["title"] = evil
+    db._skew_ref(snap)["expiry"] = "<q>x</q>"
+    snap["missing"] = ["<s>m</s>"]
+    text = ab.build_brief(snap, asof + 60, short=True)
+    for raw in ("<a ", "<q>x", "<s>m"):
+        assert raw not in text, raw
+    assert "&lt;a href='https://evil.example'&gt;x&lt;/a&gt;" in text and "&lt;q&gt;x&lt;/q&gt;" in text
+    s["tickers"]["data"]["tickers"] = [{"symbol": "BTC/USDT", "last": "x"}, 5]
+    s["vrp"]["data"]["current"] = "odd"
+    s["dvol"] = {"ok": False, "data": None}
+    s["events"]["data"]["events"] = [{"ts_utc": "never"}, "x"]
+    text = ab.build_brief(snap, asof + 60, short=True)
+    assert "BTC <b>" not in text and "DVOL" not in text and "не вдалося" not in text
+    assert text.endswith(f"<i>{ab._h(ab.CAVEAT_SHORT)}</i>")
+
+
+def test_panel_url_from_env_or_step_23_file(tmp_path):
     url = tmp_path / "dashboard_url"
-    assert ab.dashboard_buttons(url) == []  # no step 23 yet
-    for bad in ("http://tradedesk.example.ts.net/", "https://a b/", ""):
+    assert ab.dashboard_buttons(url, environ={}) == []  # no step 23, no env
+    bad_urls = (
+        "http://tradedesk.example.ts.net/",
+        "https://a b/",
+        "",
+        "https://user:pw@tradedesk.ts.net/",
+        "https://tradedesk.ts.net/?token=1",
+        "https://tradedesk.ts.net/#x",
+        "https:///nohost",
+        "javascript:alert(1)",
+        'https://x.ts.net/"><b>',
+    )
+    for bad in bad_urls:
         url.write_text(bad, encoding="utf-8")
-        assert ab.dashboard_buttons(url) == []
+        assert ab.dashboard_buttons(url, environ={}) == [], bad
+        assert ab.dashboard_buttons(tmp_path / "none", environ={ab.PANEL_URL_ENV: bad}) == [], bad
     url.write_text("https://tradedesk.tail1234.ts.net\n", encoding="utf-8")
-    assert ab.dashboard_buttons(url)[1] == ("Радар", "https://tradedesk.tail1234.ts.net/radar")
+    buttons = ab.dashboard_buttons(url, environ={})
+    assert [b[0] for b in buttons] == ["Бриф", "Опціони", "Радар", "Журнал", "Polymarket"]
+    assert buttons[2] == ("Радар", "https://tradedesk.tail1234.ts.net/radar")
+    env = {ab.PANEL_URL_ENV: " https://panel.tail9.ts.net/ "}  # the env var wins over the file
+    assert ab.dashboard_buttons(url, environ=env)[0] == ("Бриф", "https://panel.tail9.ts.net/brief")
+    assert ab.dashboard_buttons(url, environ={ab.PANEL_URL_ENV: ""})[0][1].startswith("https://tradedesk.tail1234")
+    assert ab.dashboard_buttons(url, environ={ab.PANEL_URL_ENV: "http://x"}) == []  # set but unusable: no buttons
+
+
+def test_main_sends_buttons_in_rows(monkeypatch):
+    snap, asof = _snap()
     sent = []
-    monkeypatch.setattr(ab, "DASHBOARD_URL_PATH", url)
-    monkeypatch.setattr(ab.time, "time", lambda: now)
+    monkeypatch.setenv(ab.PANEL_URL_ENV, "https://tradedesk.tail1234.ts.net/")
+    monkeypatch.setattr(ab.time, "time", lambda: asof + 300)
     monkeypatch.setattr(tg_send, "send", lambda text, **k: sent.append((text, k)) or True)
     assert ab.main(["--snapshot", str(SNAP_FIXTURE), "--no-chart"]) == 0
     text, kw = sent[0]
-    assert "<b>Події" not in text and len(kw["buttons"]) == len(ab.PAGES)
-    assert tg_send.payload("1", text, buttons=kw["buttons"])["reply_markup"]["inline_keyboard"][0][0]["text"] == "Бриф"
+    assert ab._h(ab.CAVEAT_SHORT) in text and "<b>Головне сьогодні</b>" not in text
+    assert len(kw["buttons"]) == len(ab.PAGES) and kw["per_row"] == ab.BUTTONS_PER_ROW
+    kb = tg_send.payload("1", text, buttons=kw["buttons"], per_row=kw["per_row"])["reply_markup"]["inline_keyboard"]
+    assert [[b["text"] for b in row] for row in kb] == [["Бриф", "Опціони", "Радар"], ["Журнал", "Polymarket"]]
+    assert kb[1][1]["url"] == "https://tradedesk.tail1234.ts.net/polymarket"
+
+
+def test_main_without_a_panel_url_sends_text_without_buttons(monkeypatch):
+    snap, asof = _snap()
+    sent = []
+    monkeypatch.setattr(ab.time, "time", lambda: asof + 300)
+    monkeypatch.setattr(tg_send, "send", lambda text, **k: sent.append((text, k)) or True)
+    assert ab.main(["--snapshot", str(SNAP_FIXTURE), "--no-chart"]) == 0
+    text, kw = sent[0]
+    assert kw["buttons"] == [] and ab._h(ab.CAVEAT_SHORT) in text
+    assert "reply_markup" not in tg_send.payload("1", text, buttons=kw["buttons"], per_row=kw["per_row"])
+
+
+def test_payload_button_rows_and_https_only():
+    btn = [(f"b{i}", f"https://x/{i}") for i in range(8)] + [("bad", "http://x")]
+    assert [len(r) for r in tg_send.payload("1", "t", buttons=btn)["reply_markup"]["inline_keyboard"]] == [1] * 6
+    rows = tg_send.payload("1", "t", buttons=btn, per_row=4)["reply_markup"]["inline_keyboard"]
+    assert [len(r) for r in rows] == [4, 2] and all(b["url"].startswith("https://") for r in rows for b in r)
+    assert tg_send.payload("1", "t", buttons=btn, per_row=0)["reply_markup"]["inline_keyboard"][0] == [{"text": "b0", "url": "https://x/0"}]

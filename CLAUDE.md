@@ -11,7 +11,7 @@
 ## Команди
 ```bash
 make install   # uv sync --extra dev
-make test      # pytest, 1400+ тестів, мережа не потрібна
+make test      # pytest -n auto (xdist), 1700+ тестів, мережа не потрібна
 make lint      # ruff check + format --check
 make fmt       # ruff format + --fix
 make smoke     # scripts/live_smoke.py: реальні біржі (запускає ВЛАСНИК на своїй машині)

@@ -15,4 +15,4 @@ jobs:
       - run: uv sync --extra dev --python ${{ matrix.python-version }}
       - run: uv run ruff check .
       - run: uv run ruff format --check .
-      - run: uv run pytest -q
+      - run: uv run pytest -q -n auto

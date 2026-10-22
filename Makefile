@@ -4,7 +4,7 @@ install:
 	uv sync --extra dev
 
 test:
-	uv run pytest -q
+	uv run --extra dev pytest -q -n auto
 
 lint:
 	uv run ruff check .

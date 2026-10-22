@@ -13,7 +13,7 @@
 ## Де що
 - **Сервер:** Contabo `169.58.169.184`, користувач `tradedesk`.
   - Служби: `tradedesk-mcp` (MCP і колектор 24/7), `tradedesk-agents-loop`, `tradedesk-tgbridge`.
-  - Оновлення з `main` щогодини о :20 (після кроку 20; до нього — о 02:15). Нові функції вмикаються без root: `deploy/features.env`, таймери — `deploy/user-units/`. PR агентів і `claude/*` зливаються самі, власнику — лише системні. Шляхи — `docs/AGENTS.md` → «Запуск».
+  - Оновлення з `main` щогодини о :20 (після кроку 20; до нього — о 02:15). З 22.10 (крок 21) Claude перезапускає MCP одразу після злиття: `sudo -n /usr/local/sbin/tradedesk-update --force` (єдина команда root для `tradedesk`). Нові функції вмикаються без root: `deploy/features.env`, таймери — `deploy/user-units/`. PR агентів і `claude/*` зливаються самі, власнику — лише системні. Шляхи — `docs/AGENTS.md` → «Запуск».
 - **Сховище:** SQLite, схема 18 (`cp_*` — книги паперового carry; `pm_gap_snapshot` — розриви Polymarket ↔ опціони, `pm_gap_outcome` — їхні результати). Колектор пише:
   - ATM-строки, funding, basis;
   - ліквідації через WebSocket — **вимкнено** (знайдено 17.10; вмикає `scripts/server/16-collector-liquidations.sh`), історія OHLCV — вимкнено (є архів Binance);

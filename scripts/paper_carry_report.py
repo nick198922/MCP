@@ -156,12 +156,11 @@ async def _build(db: str, now_ms: int) -> str:
         for key in ("A", "B"):
             v = await book_view(rt, key, now_ms, include_closed=False)  # type: ignore[arg-type]
             events: dict[str, int] = {}
-            for ev in await store.cp_logs(key, "event"):
+            all_events = await store.cp_logs(key, "event", limit=None)  # counts over the whole history, not the oldest 5000
+            for ev in all_events:
                 t = (ev["payload"] or {}).get("type", "?")
                 events[t] = events.get(t, 0) + 1
-            deferred_ids = {
-                ev["trade_id"] for ev in await store.cp_logs(key, "event") if (ev["payload"] or {}).get("type") == "funding_payment_missing"
-            }
+            deferred_ids = {ev["trade_id"] for ev in all_events if (ev["payload"] or {}).get("type") == "funding_payment_missing"}
             total = len(await store.cp_positions(key))
             lines += render_book(key, v, events, (len(deferred_ids), total))
         return "\n".join(lines).rstrip() + "\n"

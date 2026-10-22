@@ -56,8 +56,8 @@ async def book_view(rt: Runtime, key: str, now_ms: int, include_closed: bool) ->
     done = [c for c in cycles if c["status"] == "done"]
     last = done[0] if done else None
     marks: dict[str, dict[str, Any]] = {}
-    for m in await store.cp_logs(key, "mark"):
-        marks[m["trade_id"]] = {**m["payload"], "cycle_ts": m["cycle_ts"]}  # ordered by id: the latest wins
+    for m in await store.cp_latest_marks(key):  # one row per trade: the latest by id
+        marks[m["trade_id"]] = {**m["payload"], "cycle_ts": m["cycle_ts"]}
     open_rows = await store.cp_positions(key, "open")
     open_view = []
     for row in open_rows:
@@ -77,7 +77,7 @@ async def book_view(rt: Runtime, key: str, now_ms: int, include_closed: bool) ->
         open_view.append(view)
     closed_rows = await store.cp_positions(key, "closed", limit=5000)
     trades = [x["trade"] for x in closed_rows if x.get("trade")]
-    sides = [s["payload"] for s in await store.cp_logs(key, "side")]
+    sides = [s["payload"] for s in await store.cp_logs(key, "side", limit=None)]  # cost realism is over every side
     unrealised = sum((marks.get(x["trade_id"]) or {}).get("pnl_usd", 0.0) for x in open_rows)
     realised = sum(t["pnl_usd"] for t in trades)
     notional = p.slot_notional * p.slots

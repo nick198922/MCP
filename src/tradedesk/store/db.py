@@ -917,9 +917,23 @@ class Store:
         cur = await self.conn.execute(sql, [strategy, status, limit] if status else [strategy, limit])
         return [_parse_json_cols(dict(r), ("state", "trade")) for r in await cur.fetchall()]
 
-    async def cp_logs(self, strategy: str, kind: str, *, trade_id: str | None = None, limit: int = 5000) -> list[dict[str, Any]]:
-        sql = "SELECT * FROM cp_log WHERE strategy = ? AND kind = ?" + (" AND trade_id = ?" if trade_id else "") + " ORDER BY id LIMIT ?"
-        cur = await self.conn.execute(sql, [strategy, kind, trade_id, limit] if trade_id else [strategy, kind, limit])
+    async def cp_logs(self, strategy: str, kind: str, *, trade_id: str | None = None, limit: int | None = 5000) -> list[dict[str, Any]]:
+        """Log rows oldest first; ``limit=None`` reads all of them (for aggregates over the whole history)."""
+        sql = "SELECT * FROM cp_log WHERE strategy = ? AND kind = ?" + (" AND trade_id = ?" if trade_id else "") + " ORDER BY id"
+        args: list[Any] = [strategy, kind, trade_id] if trade_id else [strategy, kind]
+        if limit is not None:
+            sql += " LIMIT ?"
+            args.append(limit)
+        cur = await self.conn.execute(sql, args)
+        return [_parse_json_cols(dict(r), ("payload",)) for r in await cur.fetchall()]
+
+    async def cp_latest_marks(self, strategy: str) -> list[dict[str, Any]]:
+        """The latest 'mark' row (highest id) of every trade of a strategy, ordered by id; no row-count cap."""
+        cur = await self.conn.execute(
+            "SELECT l.* FROM cp_log l JOIN (SELECT MAX(id) AS id FROM cp_log WHERE strategy = ? AND kind = 'mark' GROUP BY trade_id) m"
+            " ON l.id = m.id ORDER BY l.id",
+            (strategy,),
+        )
         return [_parse_json_cols(dict(r), ("payload",)) for r in await cur.fetchall()]
 
     async def cp_log_add(self, logs: list[dict[str, Any]]) -> int:

@@ -157,6 +157,53 @@ async def test_records_funding_sides_marks_and_journal(store):
     assert c["git_sha"] and c["params_hash"] == params.hash() and c["payload"]["on_time"] and c["payload"]["decisions"] is not None
 
 
+async def test_book_view_uses_the_latest_mark_past_5000_log_rows(store):
+    # Regression: book_view read cp_logs(key, "mark") = the OLDEST 5000 rows, so a long-held position showed a stale mark.
+    from types import SimpleNamespace
+
+    from tradedesk.tools.paper_carry import _iso, book_view
+
+    t0, n = 1_700_000_000_000 // H8 * H8, 5_200
+    last_ts = t0 + (n - 1) * H8
+
+    def pos(tid: str) -> dict[str, Any]:
+        return {
+            "trade_id": tid, "strategy": "A", "symbol": tid, "status": "open", "opened_ts": t0,
+            "slot_notional": 2000.0, "state": {"entry_apr": 0.25},
+        }  # fmt: skip
+
+    def log(kind: str, tid: str | None, ts: int, payload: dict[str, Any]) -> dict[str, Any]:
+        return {"strategy": "A", "cycle_ts": ts, "kind": kind, "trade_id": tid, "payload": payload}
+
+    side = {"actual_cost": 0.0012, "model_cost": 0.001, "spread_bps": 2.0, "depth_short": False}
+    logs = [log("mark", "A-EARLY", t0, {"pnl_usd": -5.25, "funding_usd": 1.0})]
+    for i in range(n):
+        ts = t0 + i * H8
+        logs += [
+            log("mark", "A-LONG", ts, {"pnl_usd": i + 0.5, "funding_usd": float(i)}),
+            log("side", "A-LONG", ts, side),
+            log("event", None, ts, {"type": "funding_interval_change"}),
+        ]
+    logs.append(log("mark", "B-OTHER", last_ts, {"pnl_usd": 999.0}) | {"strategy": "B"})
+    cycle = {"strategy": "A", "cycle_ts": last_ts, "status": "done", "payload": {"on_time": True}}
+    assert await store.cp_cycle_commit(cycle, [pos("A-EARLY"), pos("A-LONG")], logs)
+    assert len(await store.cp_logs("A", "mark")) == 5_000  # the default cap still applies to the generic reader
+
+    latest = await store.cp_latest_marks("A")
+    assert [(m["trade_id"], m["payload"]["pnl_usd"], m["cycle_ts"]) for m in latest] == [
+        ("A-EARLY", -5.25, t0),
+        ("A-LONG", n - 1 + 0.5, last_ts),
+    ]
+    view = await book_view(SimpleNamespace(store=store), "A", last_ts + H8, False)  # type: ignore[arg-type]
+    by = {o["trade_id"]: o for o in view["open"]}
+    assert by["A-LONG"]["mark"]["pnl_usd"] == pytest.approx(n - 1 + 0.5)  # the old reader gave 4998.5
+    assert by["A-LONG"]["last_mark_at"] == _iso(last_ts)
+    assert by["A-EARLY"]["mark"] == {"pnl_usd": -5.25, "funding_usd": 1.0}
+    assert view["pnl_usd"]["open_marked_at_last_cycle"] == pytest.approx(n - 1 + 0.5 - 5.25, abs=0.01)
+    assert view["cost_realism"]["sides"] == n and view["cost_realism"]["with_book"] == n  # every side, not the oldest 5000
+    assert len(await store.cp_logs("A", "event", limit=None)) == n
+
+
 async def test_cycle_is_idempotent_and_failure_is_logged(store):
     mk = markets_a(days=110)
     params = replace(PARAMS_A, slots=SLOTS, entry_apr=0.10)

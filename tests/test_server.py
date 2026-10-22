@@ -82,6 +82,7 @@ EXPECTED_TOOLS = {
     "paper_carry_status",
     "assistant_paper_open",
     "assistant_paper_status",
+    "forecast_log_status",
     "plan_add",
     "plan_list",
     "plan_review",

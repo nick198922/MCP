@@ -88,6 +88,10 @@ class Settings:
     # Trade-plan scoring (tools/trade_plan.py): the job resolves the assistant's open plans on candles. Off by default.
     plan_resolve_enabled: bool = False
     plan_resolve_seconds: int = 3600
+    # Forecast journal (tools/forecast_log.py): once a day after 09:00 UTC the job records the risk-neutral range forecasts
+    # of BTC and ETH and settles the matured ones at the Deribit delivery price. Off by default.
+    forecast_log_enabled: bool = False
+    forecast_log_seconds: int = 3600
     # Alerts
     alerts_enabled: bool = False
     alerts_rules_path: str = ""
@@ -152,6 +156,8 @@ class Settings:
             # TRADEDESK_PAPER_ prefix: already on the deploy/features.env allow-list (src/tradedesk/features.py)
             plan_resolve_enabled=os.environ.get("TRADEDESK_PAPER_PLAN_RESOLVE_ENABLED", "").lower() in ("1", "true", "yes"),
             plan_resolve_seconds=int(_float("TRADEDESK_PAPER_PLAN_RESOLVE_SECONDS", 3600)),
+            forecast_log_enabled=os.environ.get("TRADEDESK_PAPER_FORECAST_LOG_ENABLED", "").lower() in ("1", "true", "yes"),
+            forecast_log_seconds=int(_float("TRADEDESK_PAPER_FORECAST_LOG_SECONDS", 3600)),
             http_bearer_tokens=os.environ.get("TRADEDESK_HTTP_BEARER_TOKENS") or os.environ.get("TRADEDESK_HTTP_BEARER_TOKEN", ""),
             alerts_enabled=os.environ.get("TRADEDESK_ALERTS_ENABLED", "").lower() in ("1", "true", "yes"),
             alerts_rules_path=os.environ.get("TRADEDESK_ALERTS_RULES_PATH", ""),

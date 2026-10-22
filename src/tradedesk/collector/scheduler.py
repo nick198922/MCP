@@ -607,6 +607,10 @@ def build_default_scheduler(rt: "Runtime") -> Scheduler | None:
         from .trade_plan import collect_plan_resolve  # noqa: PLC0415
 
         jobs.append(PeriodicJob(name="plan_resolve", period_seconds=s.plan_resolve_seconds, fn=collect_plan_resolve))
+    if s.forecast_log_enabled:
+        from .forecast_log import collect_forecast_log  # noqa: PLC0415
+
+        jobs.append(PeriodicJob(name="forecast_log", period_seconds=s.forecast_log_seconds, fn=collect_forecast_log))
     if s.alerts_enabled:
         # JSON file is optional in Phase 3.1 — DB-backed rules work on their own.
         jobs.append(PeriodicJob(name="alerts", period_seconds=s.alerts_seconds, fn=_evaluate_alerts))

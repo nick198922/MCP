@@ -98,3 +98,18 @@ async def test_migration_block_is_atomic_and_retried_after_a_failure(tmp_path, m
         assert await s.version() == v + 1
     finally:
         await s.aclose()
+
+
+async def test_concurrent_inits_on_one_file_apply_each_migration_once(tmp_path):
+    # Several processes (the service, a backfill script, parallel test workers) may open a fresh or older database at
+    # the same time: the version must be read under the write lock, or the second one repeats an applied ALTER.
+    import asyncio
+
+    path = tmp_path / "shared.sqlite"
+    stores = [Store(path) for _ in range(6)]
+    try:
+        await asyncio.gather(*(s.init() for s in stores))
+        assert {await s.version() for s in stores} == {SCHEMA_VERSION}
+    finally:
+        for s in stores:
+            await s.aclose()

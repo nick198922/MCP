@@ -83,11 +83,17 @@ usage_wait() {
 }
 
 # Prints "<seconds> <used>% <planned>%" when the weekly usage runs ahead of the even schedule, nothing otherwise or
-# when unknown: planned = (100 - RESERVE) * (share of the week since the reset) + PACE_SLACK; <seconds> is when the
-# schedule reaches the usage (past the reset: 5 minutes after it).
+# when unknown: planned = (100 - RESERVE) * (share of the week since the reset) + PACE_SLACK + the weekly audit's
+# cost this week (\$LOG_DIR/audit.cost, "<resets_at> <percent>", written by scripts/agents_audit.sh), so the agents do
+# not pay for the audit with a day of pause; <seconds> is when the schedule reaches the usage (past the reset: 5 minutes
+# after it).
 pace_wait() {
-  jq -r --argjson res "$RESERVE" --argjson slack "$PACE_SLACK" '
+  local audit
+  audit="$(head -c 100 "$LOG_DIR/audit.cost" 2>/dev/null || true)"
+  jq -r --argjson res "$RESERVE" --argjson base "$PACE_SLACK" --arg audit "$audit" '
     .seven_day as $w
+    | ($audit | split(" ")) as $a
+    | ($base + (if ($a | length) == 2 and $a[0] == $w.resets_at then ($a[1] | tonumber? // 0) else 0 end)) as $slack
     | ($w.utilization // empty) as $u
     | ($w.resets_at | sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601) as $r
     | 604800 as $week

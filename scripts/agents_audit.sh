@@ -74,7 +74,12 @@ perl -e 'alarm shift; exec @ARGV' "${TRADEDESK_AUDIT_MAX_SECONDS:-10800}" "${TRA
 rc=${PIPESTATUS[0]}
 set -e
 echo "claude exit code $rc"
-spent="$(usage_change "$before" "$(usage_now)")"
+after="$(usage_now)"
+spent="$(usage_change "$before" "$after")"
+# The audit's share of this week's limit, for the agents' pace (scripts/agents_loop.sh, pace_wait).
+week="$(usage_json | jq -r '.seven_day.resets_at // empty' 2>/dev/null || true)"
+cost="$(awk -v a="$before" -v b="$after" 'BEGIN { split(a, x, " "); split(b, y, " "); if (y[2] > x[2]) printf "%.1f", y[2] - x[2] }')"
+[[ -n "$week" && -n "$cost" ]] && printf '%s %s\n' "$week" "$cost" >"$LOG_DIR/audit.cost"
 
 deliver "$REPORT" '^agent/[0-9]{4}-[0-9]{2}-[0-9]{2}-audit-[a-z0-9][a-z0-9-]*$' || echo "delivery refused: $NOTE"
 [[ -n "$DELIVERED" ]] && DELIVERED_URL="$(open_pr "$DELIVERED" "$(head -1 .agent/commit-msg.txt)" "$REPORT" --ready)"

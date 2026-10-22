@@ -611,6 +611,10 @@ def build_default_scheduler(rt: "Runtime") -> Scheduler | None:
         from .forecast_log import collect_forecast_log  # noqa: PLC0415
 
         jobs.append(PeriodicJob(name="forecast_log", period_seconds=s.forecast_log_seconds, fn=collect_forecast_log))
+    if s.collect_radar_enabled:
+        from .radar_archive import collect_radar_archive  # noqa: PLC0415
+
+        jobs.append(PeriodicJob(name="radar_archive", period_seconds=s.collect_radar_seconds, fn=collect_radar_archive))
     if s.alerts_enabled:
         # JSON file is optional in Phase 3.1 — DB-backed rules work on their own.
         jobs.append(PeriodicJob(name="alerts", period_seconds=s.alerts_seconds, fn=_evaluate_alerts))

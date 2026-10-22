@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 22
 
 # Each migration is a list of SQL statements executed in a single transaction.
 # `PRAGMA user_version` is bumped by Store.init() inside the same explicit transaction,
@@ -622,5 +622,30 @@ MIGRATIONS: dict[int, list[str]] = {
         "ALTER TABLE demo_trade ADD COLUMN exit_kind TEXT",  # 'maker' | 'taker' (how the position left)
         "ALTER TABLE demo_trade ADD COLUMN fees_usd REAL",  # open + close fees from the venue's closed-pnl, USD
         "ALTER TABLE demo_trade ADD COLUMN note TEXT",  # why an entry was missed or went to the market
+    ],
+    22: [
+        # Radar archive (docs/ideas/IDEA-20261018-assistant.md, «Радар»): the Deribit surface of BTC and ETH at 19:00 UTC,
+        # one row per day and asset (analytics/radar.py; live job `radar_archive` and scripts/radar_backfill.py).
+        # Read-only market data, independent of `journal`.
+        """
+        CREATE TABLE IF NOT EXISTS radar_surface (
+            day TEXT NOT NULL,                     -- UTC date YYYY-MM-DD of the 19:00 UTC reference
+            asset TEXT NOT NULL,                   -- 'BTC' | 'ETH'
+            ts INTEGER NOT NULL,                   -- unix seconds of the reference time (19:00 UTC)
+            spot REAL NOT NULL,                    -- Deribit index, USD
+            atm_7d REAL,                           -- decimal, ATM IV at a constant 7-day tenor (total variance); NULL = not bracketed
+            atm_30d REAL,
+            atm_90d REAL,
+            atm_180d REAL,
+            put_skew_25 REAL,                      -- decimal vol difference, 30 d: IV(25-delta put) - ATM
+            rr_25 REAL,                            -- decimal vol difference, 30 d: IV(25-delta call) - IV(25-delta put)
+            smile TEXT NOT NULL,                   -- JSON {"10P","25P","35P","ATM","35C","25C","10C": IV decimal | null}, 30 d
+            expiries TEXT NOT NULL,                -- JSON [[expiry unix s, days, forward USD, ATM IV decimal | null], ...]
+            n_prints INTEGER NOT NULL,             -- option prints in the 6 h window that built the surface
+            method TEXT NOT NULL,                  -- analytics.radar.METHOD
+            created_ts INTEGER NOT NULL,           -- unix seconds when the row was written
+            PRIMARY KEY (day, asset)
+        )
+        """,
     ],
 }

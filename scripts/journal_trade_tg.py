@@ -230,7 +230,7 @@ def build_reply(trade: dict[str, Any], trade_id: int, now: float, journal: list[
     lines.append(_rule4_line(check, None if others is None else rc.day_stops(rows)))
     lines.append(_rule5_line(trade, check["rules"][5]))
     lines.append(_rule8_line(trade, check, rc.DEPOSIT_USD * rc.PREMIUM_PCT / 100.0, now))
-    lines += ["", f"<i>{_h(CAVEAT)} Закрити: /close {trade_id} ЦІНА_ВИХОДУ.</i>"]
+    lines += ["", f"<i>{_h(CAVEAT)} Закрити: /close {trade_id} ЦІНА_ВИХОДУ; не відбулася: /cancel {trade_id}.</i>"]
     return "\n".join(lines)
 
 

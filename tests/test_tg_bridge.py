@@ -104,6 +104,38 @@ def test_close_trade_reports_a_failed_script_in_its_own_words(monkeypatch):
     assert br.close_trade("/close 1 2 note a\x00b").startswith("❌ Угоду не закрито: у тексті є недопустимий символ")
 
 
+def test_cancel_command_is_one_argument_and_only_for_the_owner_in_the_topic(monkeypatch):
+    assert br.command("/cancel 12") == "/cancel" and br.command("/cancel@WWHite2_bot 12") == "/cancel"
+    text = "/cancel 12 note $(rm -rf ~); --db /tmp/x"
+    argv = br.cancel_argv(text)
+    assert argv[-1] == f"--text={text}" and argv[-2].endswith("journal_cancel_tg.py") and br.CANCEL_SCRIPT.exists()
+    calls, sent = [], []
+    monkeypatch.setattr(br, "cancel_trade", lambda text: calls.append(text) or "✅ Скасовано")
+    monkeypatch.setattr(br, "close_trade", lambda text: pytest.fail("a /cancel must not close a trade"))
+    monkeypatch.setattr(br, "record_trade", lambda text: pytest.fail("a /cancel must not record a trade"))
+    monkeypatch.setattr(br, "reply", lambda env, text, **k: sent.append((text, k)))
+    monkeypatch.setattr(br, "log", lambda line: None)
+    monkeypatch.setattr(br, "ask_claude", lambda *a: pytest.fail("a /cancel must not go to Claude"))
+    t = "/cancel 12"
+    br.handle(ENV, {}, [msg(text=t, **{"from": {"id": 5}})])
+    br.handle(ENV, {}, [msg(text=t, message_thread_id=2)])
+    br.handle(ENV, {}, [msg(text=t, chat={"id": -42})])
+    assert calls == [] and sent == []
+    br.handle(ENV, {}, [msg(text=t, message_id=9)])
+    assert calls == [t] and sent == [("✅ Скасовано", {"mode": "html", "to": 9})]
+    assert "/cancel" in br.HELP
+
+
+def test_cancel_trade_reports_a_failed_script_in_its_own_words(monkeypatch):
+    logged = []
+    monkeypatch.setattr(br, "log", logged.append)
+    monkeypatch.setattr(br, "cancel_argv", lambda text: [sys.executable, "-c", "import sys; sys.exit(2)"])
+    assert br.cancel_trade("/cancel 1") == "❌ Угоду не скасовано: скрипт журналу завершився з кодом 2."
+    assert any(line.startswith("cancel stderr:") for line in logged)
+    monkeypatch.setattr(br, "cancel_argv", lambda text: [sys.executable, "-c", "pass", text])
+    assert br.cancel_trade("/cancel 1 note a\x00b").startswith("❌ Угоду не скасовано: у тексті є недопустимий символ")
+
+
 def test_record_trade_refuses_a_nul_byte(monkeypatch):
     monkeypatch.setattr(br, "log", lambda line: None)
     monkeypatch.setattr(br, "trade_argv", lambda text: [sys.executable, "-c", "pass", text])

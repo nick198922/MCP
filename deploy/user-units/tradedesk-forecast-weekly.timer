@@ -1,0 +1,11 @@
+[Unit]
+Description=tradedesk-forecast-weekly (Saturday 12:00 Europe/Kyiv)
+
+[Timer]
+# After Friday's 08:00 UTC Deribit delivery has been settled by the collector's forecast_log job.
+OnCalendar=Sat *-*-* 12:00:00 Europe/Kyiv
+# A weekly summary sent days later after a reboot is not wanted: no catch-up run.
+Persistent=false
+
+[Install]
+WantedBy=timers.target

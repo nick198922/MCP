@@ -5686,15 +5686,25 @@ def block_forecasts(rows: list[dict] | None) -> str:
 
 
 JOURNAL_CSS = """
+form.jr{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;margin:0 12px 12px}
+form.jr button{font:600 14px -apple-system,"Segoe UI",Helvetica,Arial,sans-serif;border:0;border-radius:999px;padding:9px 18px;
+background:var(--acc);color:var(--card);cursor:pointer}form.jr button:disabled{opacity:.6;cursor:default}.jrs{font-size:13px}
 .scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}.scroll table{min-width:560px}
 .pager{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin:8px 0 0}.pager a{color:var(--acc);font-weight:600}
 h2 .chip{margin-left:8px;vertical-align:middle}
 """
 
 
-def render_journal(data: dict | None, err: str | None, now: float, params: dict | None = None, path: Path | None = None) -> str:
-    """The «Журнал» tab. Never raises: no database, no table or no rows gives an explained empty state."""
+def render_journal(
+    data: dict | None, err: str | None, now: float, params: dict | None = None, path: Path | None = None, refresh: dict | None = None
+) -> str:
+    """The «Журнал» tab. Never raises: no database, no table or no rows gives an explained empty state. `refresh` is
+    the status of the «Оновити угоди» run (journal_refresh.py)."""
     p = params or {"page": 1}
+    try:
+        bar = block_journal_refresh(refresh or {}, now)
+    except Exception:  # noqa: BLE001 - an odd status file must not take the page down
+        bar = block_journal_refresh({}, now)
     head = (
         "<!doctype html><html lang='uk'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
         f"<title>tradedesk — журнал</title><style>{CSS}{BRIEF_CSS}{JOURNAL_CSS}</style></head><body>"
@@ -5710,7 +5720,7 @@ def render_journal(data: dict | None, err: str | None, now: float, params: dict 
             )
             return head + f"<header><h1>Журнал</h1><span class='bad'>{msg}</span></header>{_nav('journal')}{caveats}</body></html>"
         stamp = f"<span class='mut'>База{where} · лише читання · прочитано {_e(kyiv(datetime.fromtimestamp(now, timezone.utc)))} за Києвом</span>"  # noqa: UP017
-        out = [head, f"<header><h1>Журнал</h1>{stamp}</header>{_nav('journal')}{caveats}<main class='brief'>"]
+        out = [head, f"<header><h1>Журнал</h1>{stamp}</header>{_nav('journal')}{bar}{caveats}<main class='brief'>"]
         rows = data.get("journal")
         if rows is None:
             out.append(
@@ -5782,7 +5792,89 @@ def render_journal(data: dict | None, err: str | None, now: float, params: dict 
 
 def journal_page(query: str = "", now: float | None = None) -> str:
     data, err = load_journal(JOURNAL_DB)
-    return with_help(render_journal(data, err, time.time() if now is None else now, parse_journal_query(query), JOURNAL_DB))
+    page = render_journal(data, err, time.time() if now is None else now, parse_journal_query(query), JOURNAL_DB, read_refresh_status())
+    return with_help(page)
+
+
+# The «Оновити угоди» button: POST /journal/refresh starts scripts/journal_refresh.py (Bybit + Hyperliquid imports,
+# read-only, duplicates skipped) in the background with the project's uv; the page shows its status file and reloads
+# itself while it runs. One run at a time (the script's lock) and not more often than once a minute.
+REFRESH_STATUS = STATE / "journal-refresh.json"
+REFRESH_STALE_S = 20 * 60  # a 'running' status older than this is a crashed run: a new one may start
+REFRESH_MIN_GAP_S = 60
+UV = HOME / ".local" / "bin" / "uv"
+VENUE_UA = {"bybit": "Bybit", "hyperliquid": "Hyperliquid"}
+
+
+def read_refresh_status(path: Path | None = None) -> dict:
+    try:
+        d = json.loads((path or REFRESH_STATUS).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return d if isinstance(d, dict) else {}
+
+
+def refresh_running(st: dict, now: float) -> bool:
+    started = _num(st.get("started"))
+    return st.get("state") == "running" and started is not None and now - started < REFRESH_STALE_S
+
+
+def start_journal_refresh(now: float | None = None, status: dict | None = None, spawn=None) -> str:
+    """'started', 'running' or 'too_soon'. `spawn` (tests) replaces the background process start."""
+    now = time.time() if now is None else now
+    st = read_refresh_status() if status is None else status
+    if refresh_running(st, now):
+        return "running"
+    last = _num(st.get("finished")) or _num(st.get("started"))
+    if last is not None and now - last < REFRESH_MIN_GAP_S:
+        return "too_soon"
+    cmd = [str(UV), "run", "-q", "python", str(REPO / "scripts" / "journal_refresh.py")]
+    if spawn is None:
+        STATE.mkdir(parents=True, exist_ok=True)
+        # the status file says 'running' at once, so the redirected page already shows it
+        tmp = REFRESH_STATUS.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"state": "running", "started": now, "finished": None, "venues": {}}), encoding="utf-8")
+        tmp.replace(REFRESH_STATUS)
+        subprocess.Popen(
+            cmd, cwd=REPO, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True
+        )  # noqa: S603
+    else:
+        spawn(cmd)
+    return "started"
+
+
+def block_journal_refresh(st: dict, now: float) -> str:
+    """The refresh button and the last run's result (our own status file: venue names, counts, short reasons)."""
+    running = refresh_running(st, now)
+    btn = (
+        "<form method='post' action='/journal/refresh' class='jr'>"
+        f"<button type='submit'{' disabled' if running else ''}>{'⏳ Оновлюю…' if running else '🔄 Оновити угоди'}</button>"
+    )
+    if running:
+        msg = f"Тягну нові угоди з Bybit і Hyperliquid · почато {fmt_age(now - (_num(st.get('started')) or now))}"
+        done = [f"{VENUE_UA.get(k, k)} ✓" for k, v in (st.get("venues") or {}).items() if isinstance(v, dict) and v.get("ok")]
+        if done:
+            msg += " · " + ", ".join(done)
+        line = f"<span class='mut'>{_e(msg)}</span><script>setTimeout(function () {{ location.replace('/journal'); }}, 4000);</script>"
+    elif st.get("state") in ("done", "error"):
+        parts = []
+        for k in ("bybit", "hyperliquid"):
+            v = (st.get("venues") or {}).get(k)
+            if not isinstance(v, dict):
+                continue
+            n = int(_num(v.get("added")) or 0)
+            if v.get("ok"):
+                parts.append(f"<span class='ok'>{_e(VENUE_UA[k])}: +{n}</span>")
+            elif v.get("skipped"):
+                parts.append(f"<span class='warn'>{_e(VENUE_UA[k])}: пропущено — {_e(_clean(v.get('error'), 120))}</span>")
+            else:
+                parts.append(f"<span class='bad'>{_e(VENUE_UA[k])}: помилка — {_e(_clean(v.get('error'), 120))}</span>")
+        when = _num(st.get("finished"))
+        stamp = f"оновлено {_e(kyiv(datetime.fromtimestamp(when, timezone.utc)))} · {_e(fmt_age(now - when))}" if when else ""  # noqa: UP017
+        line = f"<span class='mut'>{stamp}</span> " + " · ".join(parts)
+    else:
+        line = "<span class='mut'>Ще не оновлювали з панелі. Кнопка тягне закриті угоди Bybit за 30 днів і Hyperliquid.</span>"
+    return btn + f"<span class='jrs'>{line}</span></form>"
 
 
 # ---------------------------------------------------------------- «Polymarket» tab: current Polymarket <-> Deribit gaps
@@ -6276,6 +6368,24 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_error(404)
             return
         self._send(200, body, ctype)
+
+    def do_POST(self) -> None:  # noqa: N802
+        path, _, _query = self.path.partition("?")
+        # the cookie (SameSite=Lax) or loopback only: a key in the link is not accepted for a POST
+        if access(self.client_address[0], list(self.headers.items()), "", _State.key) != "ok":
+            self._send(401, DENIED_PAGE.encode(), "text/html; charset=utf-8")
+            return
+        if path != "/journal/refresh":
+            self.send_error(404)
+            return
+        try:
+            start_journal_refresh()
+        except OSError as e:
+            print(f"journal refresh did not start: {type(e).__name__}", file=sys.stderr, flush=True)
+        self.send_response(303)
+        self.send_header("Location", "/journal")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def _send(self, code: int, body: bytes, ctype: str) -> None:
         self.send_response(code)

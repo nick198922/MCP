@@ -917,10 +917,19 @@ class Store:
         cur = await self.conn.execute(sql, [strategy, status, limit] if status else [strategy, limit])
         return [_parse_json_cols(dict(r), ("state", "trade")) for r in await cur.fetchall()]
 
-    async def cp_logs(self, strategy: str, kind: str, *, trade_id: str | None = None, limit: int | None = 5000) -> list[dict[str, Any]]:
+    async def cp_logs(
+        self, strategy: str, kind: str, *, trade_id: str | None = None, cycle_ts: int | None = None, limit: int | None = 5000
+    ) -> list[dict[str, Any]]:
         """Log rows oldest first; ``limit=None`` reads all of them (for aggregates over the whole history)."""
-        sql = "SELECT * FROM cp_log WHERE strategy = ? AND kind = ?" + (" AND trade_id = ?" if trade_id else "") + " ORDER BY id"
-        args: list[Any] = [strategy, kind, trade_id] if trade_id else [strategy, kind]
+        sql = "SELECT * FROM cp_log WHERE strategy = ? AND kind = ?"
+        args: list[Any] = [strategy, kind]
+        if trade_id:
+            sql += " AND trade_id = ?"
+            args.append(trade_id)
+        if cycle_ts is not None:
+            sql += " AND cycle_ts = ?"
+            args.append(cycle_ts)
+        sql += " ORDER BY id"
         if limit is not None:
             sql += " LIMIT ?"
             args.append(limit)

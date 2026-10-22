@@ -206,7 +206,16 @@ def run_symbol(args: tuple[str, str, str, str, bool]) -> dict[str, Any]:
         (Path(out_dir) / "trades").mkdir(parents=True, exist_ok=True)
         (Path(out_dir) / "trades" / f"{s}.json").write_text(json.dumps({"rows": rows, "check": check, "why": dict(why)}))
     gaps = int(np.sum(np.diff(h1.t) > HOUR_MS)) if len(h1) else 0
-    return {"sym": s, "n": len(rows), "why": dict(why), "check": check, "sec": time.time() - t0, "bars": len(h1), "gaps": gaps, "rss": rss_mb()}
+    return {
+        "sym": s,
+        "n": len(rows),
+        "why": dict(why),
+        "check": check,
+        "sec": time.time() - t0,
+        "bars": len(h1),
+        "gaps": gaps,
+        "rss": rss_mb(),
+    }
 
 
 def all_syms(s1_cache: Path) -> list[str]:
@@ -222,7 +231,14 @@ def boot(v: np.ndarray, day: np.ndarray) -> np.ndarray:
 
 def summ(v: np.ndarray, day: np.ndarray) -> dict[str, Any]:
     if v.size < 2:
-        return {"n": int(v.size), "d": int(np.unique(day).size), "m": float(v.mean()) if v.size else math.nan, "lo": math.nan, "hi": math.nan, "p": math.nan}
+        return {
+            "n": int(v.size),
+            "d": int(np.unique(day).size),
+            "m": float(v.mean()) if v.size else math.nan,
+            "lo": math.nan,
+            "hi": math.nan,
+            "p": math.nan,
+        }
     b = boot(v, day)
     p2 = min(1.0, 2 * min((np.sum(b <= 0) + 1) / (b.size + 1), (np.sum(b >= 0) + 1) / (b.size + 1)))
     return {
@@ -293,7 +309,9 @@ def stage_report(cache: Path) -> None:
     emit("\n## Розподіл входів")
     for key in ("setup", "tf", "side"):
         emit(f"{key}: " + ", ".join(f"{k} {v}" for k, v in sorted(Counter(T[key].tolist()).items())))
-    emit(f"IS {int(IS.sum())} / OOS {int(OOS.sum())}; mean stop {np.mean(T['stop_pct']):.2%}, median target {np.median(T['target_r']):.2f}R")
+    emit(
+        f"IS {int(IS.sum())} / OOS {int(OOS.sum())}; mean stop {np.mean(T['stop_pct']):.2%}, median target {np.median(T['target_r']):.2f}R"
+    )
 
     # primary
     emit("\n## Основне порівняння (IS), сім'я Holm {C-B, B-A, C-A}")
@@ -309,7 +327,9 @@ def stage_report(cache: Path) -> None:
     emit(f"OOS C-B: {fs(oos_cb)} n={oos_cb['n']} дат={oos_cb['d']}")
     cb = fam["C-B"]
     switch = cb["m"] >= 0.05 and cb["lo"] > 0 and adj[0] < 0.05 and oos_cb["m"] > 0
-    emit(f"ПРАВИЛО РІШЕННЯ: перевести на C = {switch} (IS Δ={cb['m']:+.3f}, CI lo={cb['lo']:+.3f}, Holm p={adj[0]:.4f}, OOS Δ={oos_cb['m']:+.3f})")
+    emit(
+        f"ПРАВИЛО РІШЕННЯ: перевести на C = {switch} (IS Δ={cb['m']:+.3f}, CI lo={cb['lo']:+.3f}, Holm p={adj[0]:.4f}, OOS Δ={oos_cb['m']:+.3f})"
+    )
 
     emit("\n## Вторинні різниці (без поправки)")
     sec = [("D", "A"), ("E", "A"), ("C2", "A"), ("C2", "C"), ("C", "B"), ("B", "A"), ("C", "A")]
@@ -328,7 +348,9 @@ def stage_report(cache: Path) -> None:
         k = ak[mv]
         st = np.isin(k, ["stop", "stop_gap"]).mean() if k.size else math.nan
         tg = (k == "target").mean() if k.size else math.nan
-        emit(f"| {v} | {mv.sum()} ({mv.mean():.1%}) | {st:.1%} | {tg:.1%} | {1 - st - tg:.1%} | {T[f'{v}_r'][mv].mean():+.3f} | {T['A_r'][mv].mean():+.3f} |")
+        emit(
+            f"| {v} | {mv.sum()} ({mv.mean():.1%}) | {st:.1%} | {tg:.1%} | {1 - st - tg:.1%} | {T[f'{v}_r'][mv].mean():+.3f} | {T['A_r'][mv].mean():+.3f} |"
+        )
 
     emit("\n## Розрізи: Δ C-B і B-A (IS / OOS)")
     pairs = [("C", "B"), ("B", "A"), ("C", "A")]
@@ -348,7 +370,9 @@ def stage_report(cache: Path) -> None:
         for tf in ("4h", "1d"):
             m = (T["setup"] == st) & (T["tf"] == tf)
             if m.sum() >= 2:
-                emit(f"| {st} | {tf} | {int(m.sum())} | " + " | ".join(fs(summ(T[f"{v}_r"][m], T["day"][m])) for v in ("A", "B", "C")) + " |")
+                emit(
+                    f"| {st} | {tf} | {int(m.sum())} | " + " | ".join(fs(summ(T[f"{v}_r"][m], T["day"][m])) for v in ("A", "B", "C")) + " |"
+                )
 
     emit("\n## Стійкість (IS / OOS)")
     for sp, m0 in (("IS", IS), ("OOS", OOS)):
@@ -414,7 +438,9 @@ def stage_sanity(s1_cache: Path, data_dir: Path, out: Path) -> None:
     syms = all_syms(s1_cache)
     info = s1.rd(data_dir / "exchange_info.json")["info"]
     emit(f"members {len(syms)}; not TRADING today: {sum(1 for s in syms if (info.get(s) or {}).get('status') != 'TRADING')}")
-    emit(f"tier leverage: BTCUSDT {lev_of('BTCUSDT')}, ETHUSDT {lev_of('ETHUSDT')}, SOLUSDT {lev_of('SOLUSDT')}, 1000PEPEUSDT {lev_of('1000PEPEUSDT')}")
+    emit(
+        f"tier leverage: BTCUSDT {lev_of('BTCUSDT')}, ETHUSDT {lev_of('ETHUSDT')}, SOLUSDT {lev_of('SOLUSDT')}, 1000PEPEUSDT {lev_of('1000PEPEUSDT')}"
+    )
     t0 = time.time()
     for s in ("BTCUSDT", "SOLUSDT", "DOGEUSDT"):
         r = run_symbol((s, str(s1_cache), str(data_dir), str(out / "sanity"), True))

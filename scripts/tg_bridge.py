@@ -8,7 +8,8 @@ on marked as someone else's text: data, never instructions. Each message goes to
 owner's server permissions from its .claude/settings.local.json), continuing one conversation; the answer is sent back
 to the topic. Commands: /new (a fresh conversation), /status (the project status), /trade (one row into the local
 journal through scripts/journal_trade_tg.py, with rules 1, 2, 4, 5 and 8 in the answer; never an order), /close (closes an open
-journal trade through scripts/journal_close_tg.py, with its P&L and R; never an order), /help.
+journal trade through scripts/journal_close_tg.py, with its P&L and R; never an order), /cancel (marks an open journal
+trade cancelled through scripts/journal_cancel_tg.py, no exit or P&L; never an order), /help.
 """
 
 from __future__ import annotations
@@ -41,6 +42,7 @@ UV = os.environ.get("TRADEDESK_UV_BIN", str(HOME / ".local" / "bin" / "uv"))
 TRADE_SCRIPT = Path(__file__).resolve().with_name("journal_trade_tg.py")
 TRADE_SECONDS = 120
 CLOSE_SCRIPT = Path(__file__).resolve().with_name("journal_close_tg.py")
+CANCEL_SCRIPT = Path(__file__).resolve().with_name("journal_cancel_tg.py")
 HELP = (
     "Пишіть сюди, як у розмові з Claude: питання про проєкт, рішення для агентів, доручення.\n"
     "Фото й скріни графіків (підпис — ваше питання) і переслані пости теж приймаю.\n"
@@ -49,7 +51,9 @@ HELP = (
     "(лише запис, без ордерів) і перевірити правила 1, 2, 4, 5 і 8\n"
     "• /close 12 86000 fees 4.5 note … — закрити угоду #12 у журналі за ціною 86000 (лише запис, без ордерів): "
     "P&L і R; опціон, що згорів: /close 12 0. Закриття з Telegram не скасувати — перевіряйте id; "
-    "угоди демо-бота не закриваються\n• /help — ця підказка\n"
+    "угоди демо-бота не закриваються\n"
+    "• /cancel 12 note … — скасувати угоду #12, що не відбулася (лише запис, без ордерів): без виходу й P&L, "
+    "у статистику не йде. Скасування з Telegram не відкотити — перевіряйте id\n• /help — ця підказка\n"
     "Зміни приходять PR-гілками chat/…; зливаєте ви."
 )
 
@@ -73,7 +77,7 @@ def accept(msg: dict, env: dict[str, str]) -> str:
 def command(text: str) -> str | None:
     word = text.strip().split()[0].lower() if text.strip() else ""
     word = word.split("@", 1)[0]
-    return word if word in ("/new", "/status", "/help", "/start", "/trade", "/close") else None
+    return word if word in ("/new", "/status", "/help", "/start", "/trade", "/close", "/cancel") else None
 
 
 def image_ref(msg: dict) -> tuple[str, str] | None:
@@ -171,6 +175,11 @@ def trade_argv(text: str) -> list[str]:
 def close_argv(text: str) -> list[str]:
     """The command that closes "/close …" (scripts/journal_close_tg.py), passed the same way as trade_argv."""
     return [UV, "run", "--frozen", "--quiet", "python", str(CLOSE_SCRIPT), f"--text={text}"]
+
+
+def cancel_argv(text: str) -> list[str]:
+    """The command that cancels "/cancel …" (scripts/journal_cancel_tg.py), passed the same way as trade_argv."""
+    return [UV, "run", "--frozen", "--quiet", "python", str(CANCEL_SCRIPT), f"--text={text}"]
 
 
 def parse_result(stdout: str) -> tuple[str, str | None, bool]:
@@ -336,6 +345,11 @@ def close_trade(text: str) -> str:
     return run_journal_script(close_argv(text), "close", "❌ Угоду не закрито")
 
 
+def cancel_trade(text: str) -> str:
+    """Cancel the owner's "/cancel …" in the local journal (one row updated, no orders); the script's Telegram HTML."""
+    return run_journal_script(cancel_argv(text), "cancel", "❌ Угоду не скасовано")
+
+
 def handle(env: dict[str, str], state: dict, msgs: list[dict]) -> None:
     """One request: a message, an album, or the owner's comment with the posts he forwarded after it."""
     msg = msgs[0]
@@ -370,6 +384,8 @@ def handle(env: dict[str, str], state: dict, msgs: list[dict]) -> None:
         reply(env, record_trade(text), mode="html", to=msg.get("message_id"))
     elif cmd == "/close":
         reply(env, close_trade(text), mode="html", to=msg.get("message_id"))
+    elif cmd == "/cancel":
+        reply(env, cancel_trade(text), mode="html", to=msg.get("message_id"))
     else:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         saved = [

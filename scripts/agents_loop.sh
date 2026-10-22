@@ -4,6 +4,9 @@
 #  - weekly pace: the agents spend the week evenly, (100 - TRADEDESK_AGENTS_OWNER_RESERVE) % over 7 days from the
 #    reset (about 1/7 a day), the rest kept for the owner's sessions; ahead of that schedule they sleep until it
 #    catches up
+#    Both pace brakes (this one and OWNER_ONLY_AT) are off while the owner's boost runs: scripts/agents_boost.sh writes
+#    an end time (epoch seconds) into $LOG_DIR/boost-until; the MAX_USAGE brake stays, so the plan is never driven
+#    into its hard limit
 #  - review backlog: if TRADEDESK_AGENTS_MAX_OPEN agent branches wait for the owner, sleep and check again
 #    (the agents' own work in progress is continued anyway: its branch does not wait for the owner; nor do the
 #    doctor's fixes)
@@ -38,6 +41,7 @@ STATUS_EVERY="${TRADEDESK_STATUS_EVERY_SECONDS:-7200}"
 STATUS_QUIET="${TRADEDESK_STATUS_QUIET:-23-8}"
 FAIL_MAX_WAIT="${TRADEDESK_AGENTS_FAIL_MAX_WAIT_SECONDS:-14400}"
 FAIL_ALERT=3
+BOOST_FILE="$LOG_DIR/boost-until"
 export TRADEDESK_AGENTS_WORKTREE="$WT" TRADEDESK_AGENTS_LOG_DIR="$LOG_DIR"
 mkdir -p "$LOG_DIR"
 # Also keep the loop's own log next to the run logs, where the doctor can read it (once: a re-exec keeps the tee).
@@ -94,6 +98,13 @@ pace_wait() {
         | (if $need >= 1 then $r - now + 300 else ($need - $f) * $week + 60 end | floor) as $s
         | "\($s) \($u)% \($plan | floor)%"
       end' <<<"$1" 2>/dev/null || true
+}
+
+# True while the owner's boost (scripts/agents_boost.sh) runs: an end time in the future.
+boost_on() {
+  local u
+  u="$(head -c 20 "$BOOST_FILE" 2>/dev/null | tr -cd '0-9')"
+  [[ -n "$u" ]] && ((u > $(date +%s)))
 }
 
 # Branches waiting for the owner; the doctor's fixes (agent/*-fix-*) and the agents' work in progress do not count.
@@ -259,7 +270,8 @@ while true; do
     sleep "$secs"
     continue
   fi
-  p="$(pace_wait "$(usage_json)")"
+  p=""
+  boost_on || p="$(pace_wait "$(usage_json)")"
   if [[ -n "$p" ]]; then
     secs="${p%% *}"
     read -r used plan <<<"${p#* }"
@@ -273,7 +285,7 @@ while true; do
     continue
   fi
   week="$(usage_now | awk '{print $2}')"
-  if ((leftovers == 0)) && [[ -n "$week" ]] && awk -v w="$week" -v m="$OWNER_ONLY_AT" 'BEGIN { exit !(w >= m) }' &&
+  if ((leftovers == 0)) && ! boost_on && [[ -n "$week" ]] && awk -v w="$week" -v m="$OWNER_ONLY_AT" 'BEGIN { exit !(w >= m) }' &&
     [[ -z "$(owner_cards_open)" ]]; then
     log "waiting ${WAIT_BUDGET}s: weekly usage ${week}% >= ${OWNER_ONLY_AT}%, kept for the owner's cards, none open"
     loop_state "бюджет тижня (${week}%) лише для ваших карток; їх немає, наступна перевірка о $(at "$WAIT_BUDGET")"

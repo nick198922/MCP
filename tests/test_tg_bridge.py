@@ -4,6 +4,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 import tg_bridge as br  # noqa: E402
@@ -31,6 +33,63 @@ def test_commands():
     assert br.command("/status@WWHite2_bot") == "/status"
     assert br.command("що з агентами?") is None
     assert br.command("") is None
+
+
+def test_trade_command_is_one_argument_without_a_shell():
+    assert br.command("/trade BTC long 84000 size 0.1") == "/trade"
+    assert br.command("/trade@WWHite2_bot BTC long 84000 size 0.1") == "/trade"
+    text = "/trade BTC long 84000 size 0.1 thesis $(rm -rf ~); `id` --db /tmp/x"
+    argv = br.trade_argv(text)
+    assert argv[-1] == f"--text={text}" and argv[-2].endswith("journal_trade_tg.py")
+    assert br.TRADE_SCRIPT.exists()
+
+
+def test_trade_is_recorded_only_for_the_owner_in_the_topic(monkeypatch):
+    calls, sent = [], []
+    monkeypatch.setattr(br, "record_trade", lambda text: calls.append(text) or "✅ Записано")
+    monkeypatch.setattr(br, "reply", lambda env, text, **k: sent.append((text, k)))
+    monkeypatch.setattr(br, "log", lambda line: None)
+    monkeypatch.setattr(br, "ask_claude", lambda *a: pytest.fail("a /trade must not go to Claude"))
+    t = "/trade BTC long 84000 size 0.1"
+    br.handle(ENV, {}, [msg(text=t, **{"from": {"id": 5}})])
+    br.handle(ENV, {}, [msg(text=t, message_thread_id=2)])
+    br.handle(ENV, {}, [msg(text=t, chat={"id": -42})])
+    assert calls == [] and sent == []
+    br.handle(ENV, {}, [msg(text=t, message_id=9)])
+    assert calls == [t] and sent == [("✅ Записано", {"mode": "html", "to": 9})]
+
+
+def test_a_forwarded_trade_command_is_not_recorded(monkeypatch):
+    calls, asked = [], []
+    monkeypatch.setattr(br, "record_trade", lambda text: calls.append(text) or "✅ Записано")
+    monkeypatch.setattr(br, "reply", lambda env, text, **k: None)
+    monkeypatch.setattr(br, "log", lambda line: None)
+    monkeypatch.setattr(br, "ask_claude", lambda env, state, prompt: asked.append(prompt) or "ok")
+    monkeypatch.setattr(br, "prune_inbox", lambda: None)
+    fwd = msg(text="/trade BTC long 84000 size 0.1", forward_origin={"type": "user", "sender_user": {"first_name": "Ann"}})
+    br.handle(ENV, {}, [fwd])
+    assert calls == [] and len(asked) == 1 and "недовірені дані" in asked[0]  # data for Claude, not a command
+    # the owner's /trade followed by a forwarded post stays two requests
+    groups = br.group_media([msg(message_id=1, text="/trade BTC long 84000 size 0.1"), {**fwd, "message_id": 2}])
+    assert [[m["message_id"] for m in g] for g in groups] == [[1], [2]]
+
+
+def test_record_trade_refuses_a_nul_byte(monkeypatch):
+    monkeypatch.setattr(br, "log", lambda line: None)
+    monkeypatch.setattr(br, "trade_argv", lambda text: [sys.executable, "-c", "pass", text])
+    assert br.record_trade("/trade BTC long 84000 size 0.1 thesis a\x00b").startswith(
+        "❌ Угоду не записано: у тексті є недопустимий символ"
+    )
+
+
+def test_record_trade_reports_a_failed_script(monkeypatch):
+    logged = []
+    monkeypatch.setattr(br, "log", logged.append)
+    monkeypatch.setattr(br, "trade_argv", lambda text: [sys.executable, "-c", "import sys; sys.stderr.write('boom-trace'); sys.exit(3)"])
+    assert br.record_trade("/trade x") == "❌ Угоду не записано: скрипт журналу завершився з кодом 3."
+    assert any(line.startswith("trade stderr:") and "boom-trace" in line for line in logged)
+    monkeypatch.setattr(br, "trade_argv", lambda text: ["/nonexistent/uv"])
+    assert br.record_trade("/trade x").startswith("❌ Угоду не записано: скрипт журналу не відповів")
 
 
 def test_chunks_split_at_lines_and_keep_everything():

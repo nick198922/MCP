@@ -57,8 +57,8 @@ def test_table_freshness_reads_seconds_millis_and_days(tmp_path):
     assert db.table_freshness(tmp_path / "none.sqlite", now) == []
 
 
-def test_render_has_all_sections_and_escapes():
-    snap = {
+def _project_snap() -> dict:
+    return {
         "generated_at": 1_800_000_000.0,
         "agents": {
             "line": "🟢 Працюють над кроком з 10:10",
@@ -120,7 +120,10 @@ def test_render_has_all_sections_and_escapes():
         },
         "tables": [{"label": "funding", "table": "funding_hist", "rows": 12345, "age_s": 600.0, "ok": True}],
     }
-    page = db.render(snap)
+
+
+def test_render_has_all_sections_and_escapes():
+    page = db.render(_project_snap())
     for text in (
         "Прогрес проєкту",
         "Фінал: прогін і обгортка",
@@ -138,7 +141,8 @@ def test_render_has_all_sections_and_escapes():
         "agent/2026-10-17-y",
     ):
         assert text in page
-    assert "<script>" not in page and "&lt;script&gt;" in page
+    assert "«<script>»" not in page and "«&lt;script&gt;»" in page  # the only <script> is the tooltip one
+    assert page.count("<script>") == 1 and "querySelectorAll('.info')" in page
     assert "http-equiv='refresh'" in page and 'class="bar"' in page
     assert "href='/brief'" in page  # the «Бриф» tab
 
@@ -668,7 +672,7 @@ def test_journal_tab_renders_trades_sources_and_paper_recs(tmp_path):
         "Найбільша просадка<span class='info'",
         "<span class='v'>−$100</span>",
         "+0.50 R",
-        "Відкритих</span><span class='v'>1</span>",
+        f"Відкритих{db._info('j_open')}</span><span class='v'>1</span>",
         "<td>Bybit</td><td class='num'>2</td>",
         "<td>Binance</td>",
         "<td>Bybit опціони</td>",
@@ -684,7 +688,7 @@ def test_journal_tab_renders_trades_sources_and_paper_recs(tmp_path):
         # the manual trade (−30) is shown on its own line
         "гіпотеза</span>",
         "−0.59 % спота",
-        "Розраховано</span><span class='v'>1</span>",
+        f"Розраховано{db._info('rec_n')}</span><span class='v'>1</span>",
         "метод за ланцюгом · відкритих 1",
         "+2.00 %",
         "+0.40 R",
@@ -784,7 +788,7 @@ def test_rec_paper_main_tiles_use_the_tools_method_group(tmp_path):
     assert [db.rec_summary(groups[k])["n"] for k in ref] == [2, 2, 1]
     page = db.block_rec_paper(rows)
     for text in (
-        "Розраховано</span><span class='v'>2</span>",
+        f"Розраховано{db._info('rec_n')}</span><span class='v'>2</span>",
         "метод за ланцюгом · відкритих 1",
         "+0.80 %",  # (2 % − 0.4 %) / 2: method group only
         "+$40",
@@ -904,7 +908,7 @@ def test_journal_tab_summarizes_trade_plans(tmp_path):
         "<td>wait (⏳ чекати)</td><td class='num'>1</td><td class='num'>0</td><td class='num'>1</td>",
         "<td>skip (❌ пропустити)</td><td class='num'>1</td><td class='num'>1</td><td class='num'>0</td>",
         # resolved enter: R 1.9, −1.05, 0.3 (+ one never filled): mean +0.38 R, 2 of 3 in profit, CI wide around 0
-        "Розв'язано</span><span class='v'>4</span><span class='s '>з входом 3 · з R 3",
+        f"Розв'язано{db._info('plan_n')}</span><span class='v'>4</span><span class='s '>з входом 3 · з R 3",
         "67 %",
         "+0.38 R",
         "95 % ДІ містить 0: переваги не видно",
@@ -1160,7 +1164,10 @@ def test_pm_tab_near_table_on_the_earlier_snapshot(tmp_path):
     yes = v["near"][0]
     assert yes["rr"] >= 2 and v["near"][1]["rr"] < 2
     page = db.render_polymarket(data, None, float(a + 600))
-    assert "Зараз жоден бік не проходить поріг 5 п.п." in page and "нижче порогу реєстрації, не сигнал: 2</summary>" in page
+    assert (
+        "Зараз жоден бік не проходить поріг 5 п.п." in page
+        and f"нижче порогу реєстрації, не сигнал: 2{db._info('pm_near')}</summary>" in page
+    )
     assert "Will Ethereum dip to $2,350 on October 21?" in page and "<b>YES</b>" in page
     assert page.count("нижче правила 5 власника") == 1  # only the expensive NO side is flagged
 
@@ -1181,7 +1188,7 @@ def test_pm_tab_with_the_sync_columns_stale_and_ended(tmp_path):
     stale = db.render_polymarket(data, None, float(PM_B + 2 * 3600 + 60))
     assert "старший за 2 год" in stale
     assert "<details class='near'><summary>Ціни застарілі (знімок старший за 2 год): це не сигнали · рядків 2</summary>" in stale
-    assert "не сигнал · ціни застарілі: 0</summary>" in stale
+    assert f"не сигнал · ціни застарілі: 0{db._info('pm_near')}</summary>" in stale
     # the horizon is also checked from NOW: 1.5 h before the end both passing sides are dropped and counted
     for now in (PM_END - 1.5 * 3600, PM_END - 2 * 3600 + 1, float(PM_END)):
         v = db.pm_gap_view(data, now)
@@ -1315,6 +1322,65 @@ def test_page_wrappers_add_the_tooltip_script(monkeypatch):
         assert page.count("<script>") >= 1 and "querySelectorAll('.info')" in page
         assert page.endswith("</body></html>")
     assert db.with_help("<body>x</body>") == f"<body>x<script>{db.HELP_JS}</script></body>"
+
+
+def _all_tab_pages(tmp_path) -> dict[str, str]:
+    """Every tab rendered from real fixtures, including the empty states that have their own headings."""
+    snap, asof = _snap()
+    no_chain = json.loads(json.dumps(snap))
+    no_chain["sections"].pop("chain")
+    pages = {"project": db.render(_project_snap()), "brief": db.render_brief(snap, None, asof + 300)}
+    for q in ("", "s=short_strangle", "s=iron_condor"):
+        pages[f"options {q}"] = db.render_options(snap, None, asof + 300, db.parse_options_query(q))
+    pages["options no chain"] = db.render_options(no_chain, None, asof + 300)
+    rsnap, t = _radar_snap()
+    for asset in ("BTC", "ETH"):
+        pages[f"radar {asset}"] = db.render_radar(rsnap, None, t + 300, db.parse_radar_query(f"asset={asset}"))
+    p = _journal_db(tmp_path / "j.sqlite", _sample_journal(), _sample_rec())
+    con = sqlite3.connect(p)
+    con.executemany(f"INSERT INTO trade_plan ({P_COLS}) VALUES ({','.join('?' * 15)})", _sample_plans())
+    con.commit()
+    con.close()
+    pages["journal"] = db.render_journal(*db.load_journal(p), float(T0 + 10 * 86400))
+    pages["journal empty"] = db.render_journal(*db.load_journal(_journal_db(tmp_path / "e.sqlite", [], [])), float(T0))
+    cols, rows = _pm_rows()
+    pages["polymarket"] = db.render_polymarket(*db.load_pm_gap(_pm_db(tmp_path / "pm.sqlite", rows, cols)), float(PM_B + 600))
+    return pages
+
+
+def test_every_heading_and_tile_on_every_tab_has_a_help_note(tmp_path):
+    import re
+
+    icon = "<span class='info' tabindex='0' role='button'"
+    pages = _all_tab_pages(tmp_path)
+    n_heads = n_tiles = 0
+    for name, page in pages.items():
+        heads = re.findall(r"<h2>(.*?)</h2>", page, re.S)
+        assert heads, name
+        for h in heads:  # _info() gives '' for a key missing from HELP, so this also checks the key exists
+            assert icon in h, (name, h[:80])
+        tiles = re.findall(r"<div class='tile[^']*'><span class='k'>(.*?)<span class='v'>", page, re.S)
+        for k in tiles:
+            assert icon in k, (name, k[:80])
+        n_heads, n_tiles = n_heads + len(heads), n_tiles + len(tiles)
+        assert "Знімок не вдалося показати" not in page and "Блок не вдалося показати" not in page, name
+    # the headings asked for by the owner (22.10), each with its icon
+    for name, title in (
+        ("project", "Черга"),
+        ("project", "Питання агентів до тебе"),
+        ("options ", "Позиція"),
+        ("options no chain", "Конструктор"),
+        ("journal", "Мої угоди"),
+        ("journal", "Угоди"),
+        ("journal empty", "Мої угоди"),
+        ("polymarket", "Проходять поріг (≥ 5 п.п.)"),
+    ):
+        assert f"<h2>{title}{icon}" in pages[name], (name, title)
+    assert "Чистий edge" + icon in pages["polymarket"] and "R:R" + icon in pages["polymarket"]
+    assert n_heads >= 60 and n_tiles >= 40, (n_heads, n_tiles)  # the regexes really matched the pages
+    # every note is static text from HELP: what it is, how to read it, what it means for a trade
+    for key, (title, what, read, trade) in db.HELP.items():
+        assert title and what and read and trade, key
 
 
 def test_options_pros_and_cons_for_buyer_and_seller():

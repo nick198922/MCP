@@ -742,6 +742,200 @@ HELP: dict[str, tuple[str, str, str, str]] = {
         "Edge — різниця в п.п. після комісії. R:R — скільки виграєш на кожен $ ризику.",
         "Edge ≥ 5 п.п. і R:R ≥ 2 — проходить правила. Це паперова гіпотеза: перевага ще перевіряється.",
     ),
+    "pm_near": (
+        "Близько до порогу",
+        "Боки, де розрив між ціною Polymarket і ймовірністю з опціонів 3–5 п.п. після комісії — нижче порогу реєстрації.",
+        "Лише для спостереження: до наступного знімка (щогодини) розрив може вирости або зникнути.",
+        "Не сигнал: правило входу — edge ≥ 5 п.п. і R:R ≥ 2.",
+    ),
+    "pm_model": (
+        "Модель: шанс боку",
+        "Ризик-нейтральна ймовірність виграшу боку з поверхні IV Deribit, %: k=1 — IV як зібрано, k=0.92 — IV × 0.92.",
+        "Edge рахується від гіршого з двох читань: бік показано, лише якщо розрив пережив обидва.",
+        "Це ціна страхування в ринку опціонів, а не прогноз; на хвостах і при різних експіраціях модель помиляється сильніше.",
+    ),
+    "pm_edge": (
+        "Чистий edge",
+        "Шанс боку з моделі (гірше читання) мінус ціна входу: аск + верхня межа комісії, у п.п.",
+        "+6 п.п. — за моделлю бік дешевший приблизно на 6 центів на кожен $1 виплати.",
+        "Поріг правила — ≥ 5 п.п. Перевага не доведена: паперовий тест дасть вердикт ≈ 23.02.2027.",
+    ),
+    "pm_rr": (
+        "R:R",
+        "Скільки виграєш на кожен $ ставки, якщо бік зіграє: (1 − ціна входу) / ціна входу, ціна входу = аск + комісія.",
+        "2 — виграш удвічі більший за ставку; нижче 2 — дорогий бік: мала виплата на великий ризик.",
+        "Правило 5 власника — R:R ≥ 2, рядки нижче підсвічено. Розмір під ризик $100 — у сусідній колонці.",
+    ),
+    "position": (
+        "Позиція",
+        "Головні числа зібраної позиції, USD: премія, беззбиток, макс. прибуток і збиток на експірацію, ймовірність прибутку.",
+        "У кожної плитки своя «i». Червоний край — збиток необмежений або більший за твій ризик, зелений — у межах ризику.",
+        "Почни з максимального збитку: він має вкластися в ризик на угоду. Ймовірність прибутку ризик-нейтральна — не прогноз.",
+    ),
+    "r_spot": (
+        "Ціна зараз",
+        "Індекс Deribit (≈ спот) о 19:00 UTC останнього дня архіву поверхні, USD.",
+        "Дата під числом — день рядка архіву: це не живий ринок, відставання до доби.",
+        "Для входу бери живу ціну біржі; тут — точка, на яку пораховано IV і скью нижче.",
+    ),
+    "r_week": (
+        "Ціна тиждень тому",
+        "Той самий індекс Deribit о 19:00 UTC на 7 днів раніше, USD.",
+        "Порівнюй із «Зараз»: різниця — рух за тиждень.",
+        "Контекст для блоків нижче: вони порівнюють ці самі два дні.",
+    ),
+    "r_change": (
+        "Зміна за тиждень",
+        "Зміна індексу Deribit між двома днями архіву, %.",
+        "Зелене — ціна зросла, червоне — впала.",
+        "Сама зміна — не сигнал. Після різкого падіння IV і захист від падіння зазвичай дорожчі: купувати опціони дорожче.",
+    ),
+    "put_skew": (
+        "Put skew 25Δ",
+        "На скільки пунктів волатильності 25-дельтовий пут на 30 днів дорожчий за ATM: ціна захисту від падіння.",
+        "Вище — захист дорожчий, ринок більше боїться падіння. Зміна за тиждень понад 0.2 вп підсвічена.",
+        "Дорогий захист — пут-спред замість голого пута; продаж путів платить більше, але й ризик обвалу більший.",
+    ),
+    "j_winrate": (
+        "Частка в плюсі",
+        "Частка закритих реальних угод з результатом «win», %.",
+        "Сама по собі мало що каже: багато дрібних виграшів і кілька великих збитків дають мінус. Дивись разом із середнім.",
+        "Висока частка при від'ємному середньому — ознака, що прибутки ріжуться рано, а збитки тримаються довго.",
+    ),
+    "j_pnl": (
+        "P&L разом",
+        "Сума прибутків і збитків закритих реальних угод, USD: імпорт бірж і записи journal_add, без airdrop і паперових.",
+        "Зелене — у плюсі, червоне — у мінусі.",
+        "Залежить від розміру угод: систему краще оцінювати за середнім на угоду і середнім R.",
+    ),
+    "j_expectancy": (
+        "Середнє на угоду",
+        "Середній P&L однієї закритої реальної угоди, USD.",
+        "Нижче нуля — система за цей період збиткова (червоний край).",
+        "Від'ємне середнє — менший розмір і суворіші правила входу, поки воно не стане додатним на ≥ 30 угодах.",
+    ),
+    "j_open": (
+        "Відкриті угоди",
+        "Реальні угоди журналу, ще не закриті.",
+        "У підсумки вище не входять: P&L з'являється після journal_close або імпорту закриття.",
+        "Перевір, що в кожної є стоп і що разом вони не перевищують твого ризику.",
+    ),
+    "j_table": (
+        "Угоди",
+        "Усі реальні угоди, нові зверху: дата, джерело, інструмент, сторона, розмір, вхід і вихід, P&L у USD, R, теза.",
+        "R порожній, якщо стоп не записано. Теги й нотатки — з імпорту або journal_add.",
+        "Шукай повтори: той самий інструмент чи сетап раз у раз у мінусі — кандидат на паузу.",
+    ),
+    "rec_n": (
+        "Розраховано",
+        "Скільки паперових угод методу за ланцюгом уже дійшли до експірації й пораховані; поруч — відкриті.",
+        "Менше ≈ 30 — підсумок описовий, висновку про перевагу не дає.",
+        "Метод — гіпотеза (H1 відхилено 18.10): за цими угодами не торгувати, лише стежити.",
+    ),
+    "rec_win": (
+        "У плюсі (папір)",
+        "Частка розрахованих паперових угод з P&L > 0, %.",
+        "У покупця опціонів частка в плюсі зазвичай низька, зате виграш більший за збиток: дивись разом із середнім.",
+        "Сама по собі перевагу не доводить.",
+    ),
+    "rec_pct": (
+        "Середнє, % спота",
+        "Середній P&L паперової угоди на 1 BTC у % від спота на вході — та сама метрика, що в тесті H1 (−0.59 %, n = 27).",
+        "Вище нуля — метод на папері поки в плюсі; на малій вибірці це шум.",
+        "Основна метрика перевірки. Поки n мале, це не доказ переваги.",
+    ),
+    "rec_r_worst": (
+        "Середній R (від найгіршого)",
+        "Середній P&L угоди, поділений на її найгірший можливий збиток (ризик угоди).",
+        "−1 R — втрачено весь ризик. Консервативніша оцінка, ніж R «як у тесті».",
+        "Показує, скільки дає кожен $ ризику; на малій вибірці — не доказ.",
+    ),
+    "rec_pnl": (
+        "P&L разом (папір)",
+        "Сумарний паперовий P&L розрахованих угод методу, USD, на розміри, які пропонував метод.",
+        "Залежить від розміру угод, тож для оцінки краще «% спота».",
+        "Гроші не задіяні: це перевірка гіпотези, не результат торгівлі.",
+    ),
+    "plan_n": (
+        "Розв'язано",
+        "Скільки планів enter уже оцінено на свічках: ціль, стоп, строк або вхід так і не стався.",
+        "«З входом» — ціна дійшла до входу; «з R» — у плану є результат у ризиках.",
+        "Перший чесний висновок — після ≈ 30 планів з R; до того — описово.",
+    ),
+    "plan_win": (
+        "У плюсі (плани)",
+        "Частка розв'язаних планів enter з R > 0, %.",
+        "Читай разом із середнім R і його 95 % ДІ.",
+        "Висока частка без додатного середнього R переваги не означає.",
+    ),
+    "plan_exits": (
+        "Виходи",
+        "Чим завершились розв'язані плани enter: ціль / стоп, за строком, без входу.",
+        "Багато «без входу» — вхід надто далеко; багато «за строком» — ціль надто далеко для строку.",
+        "Підказує, що підправити в планах (вхід, ціль, строк); перевагу не доводить.",
+    ),
+    # project page (meta: about the project, not the market)
+    "p_progress": (
+        "Прогрес проєкту",
+        "Скільки кроків до готового продукту зроблено: кроки карток власника й етапи з docs/PROGRESS.md, у штуках і %.",
+        "Кожен крок важить однаково; нові задачі збільшують загальну кількість, тож % може й падати. Дні — грубо, за темпом 7 днів.",
+        "Прямо на угоди не впливає: показує, коли з'являться нові інструменти. Незробленим кроком не користуйся як готовим.",
+    ),
+    "p_agents": (
+        "Агенти зараз",
+        "Що робить конвеєр агентів (скаут → критик → квант → розробник → PR): гілка в роботі, відкладені, ті, що чекають тебе.",
+        "«Чекають твого перегляду» — PR, які без тебе не зіллються. Рядок «за добу» — скільки кроків здано, з помилкою тощо.",
+        "На угоди не впливає: нове в панелі й MCP з'являється лише після злиття в main.",
+    ),
+    "p_limit": (
+        "Ліміт Claude",
+        "Використання плану Claude за 5 годин і за тиждень, %; темп тижня — у п. п. на добу.",
+        "Пороги під смужками: від першого агенти беруть лише твої картки, від другого — пауза. Ліміт спільний із твоїми сесіями.",
+        "На угоди не впливає; біля порогу асистент у Telegram і агенти відповідатимуть повільніше.",
+    ),
+    "p_queue": (
+        "Черга",
+        "Картки ідей у роботі: спершу твої (з номером черги), потім від агентів; статус і зроблені кроки.",
+        "proposed — запропоновано, accepted — прийнято, testing — іде перевірка. Смужка — частка кроків розділу «Прогрес» картки.",
+        "Ідея в черзі ще не перевірена: торгувати за нею рано, чекай вердикту в «Результатах перевірок».",
+    ),
+    "p_results": (
+        "Результати перевірок",
+        "Скільки ідей уже перевірено на наших даних і з яким вердиктом; нижче — останні 12.",
+        "«Підтверджено» — результат є (або інструмент збудовано), «форвард» — паперова перевірка в реальному часі, "
+        "«без вердикту» — даних замало, «відхилено» — переваги не знайдено.",
+        "За відхиленою ідеєю не торгувати. Навіть підтверджена — це минуле: розмір усе одно за правилом ризику.",
+    ),
+    "p_steps": (
+        "Кроки агентів",
+        "Останні кроки конвеєра: коли, результат, що зроблено, скільки часу й ліміту пішло.",
+        "Зелене — здано, червоне — помилка або завис. Кілька червоних поспіль — варто глянути логи.",
+        "На угоди не впливає.",
+    ),
+    "p_server": (
+        "Сервер",
+        "Стан сервера: пам'ять і диск у ГБ, навантаження (load), час роботи, розмір бази в МБ, вік бекапу.",
+        "Смужка жовтіє від 70 % і червоніє від 90 %. Бекап — вік найсвіжішого файлу бекапу: помітно старший, ніж звично, — бекап не спрацював.",
+        "Перевантажений сервер або повний диск — дані колектора можуть відставати: перевір їх свіжість.",
+    ),
+    "p_collector": (
+        "Колектор даних",
+        "Таблиці бази, які колектор 24/7 поповнює з бірж: вік останнього запису і приблизна кількість рядків.",
+        "Зелене — свіже, червоне — запис запізнюється (завдання стало або біржа недоступна), сіре — норми свіжості нема.",
+        "Червоний рядок — інструменти на цих даних показують застарілу картину: не спирайся на них, поки не оновиться.",
+    ),
+    "p_changes": (
+        "Останні зміни в main",
+        "Останні коміти основної гілки: дата і короткий опис.",
+        "Нове в панелі й MCP з'являється після злиття сюди; сервер підтягує main сам.",
+        "На угоди не впливає; пояснює, чому щось у панелі змінилось.",
+    ),
+    "p_questions": (
+        "Питання агентів до тебе",
+        "Відкриті питання з docs/QUESTIONS.md, на які агенти чекають твоєї відповіді.",
+        "Поки питання відкрите, пов'язана робота може стояти.",
+        "На угоди не впливає напряму; відповідь прискорює картки, від яких залежать нові інструменти.",
+    ),
 }
 
 HOWTO = (
@@ -942,7 +1136,7 @@ def render(s: dict) -> str:
     a, u, m = s["agents"], s.get("usage"), s["machine"]
     out = [
         f"<!doctype html><html lang='uk'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-        f"<meta http-equiv='refresh' content='{REFRESH_S}'><title>tradedesk — панель</title><style>{CSS}</style></head><body>"
+        f"<meta http-equiv='refresh' content='{REFRESH_S}'><title>tradedesk — панель</title><style>{CSS}{HELP_CSS}</style></head><body>"
     ]
     svc = " ".join(f"<span class='{'ok' if x['state'] == 'active' else 'bad'}'>● {_e(x['label'])}</span>" for x in s["services"])
     out.append(
@@ -952,7 +1146,7 @@ def render(s: dict) -> str:
     # Project progress
     pr = s.get("progress")
     if pr:
-        out.append("<section class='wide'><h2>Прогрес проєкту</h2>")
+        out.append(f"<section class='wide'>{_h2('Прогрес проєкту', 'p_progress')}")
         out.append(
             f"<p><b style='font-size:17px'>{pr['pct']:.0f} %</b> — зроблено {pr['done']} з {pr['total']} кроків до готового продукту "
             "<span class='mut'>(кожен крок важить однаково; коли додаються нові задачі, загальна кількість росте)</span></p>"
@@ -977,7 +1171,7 @@ def render(s: dict) -> str:
         )
 
     # Agents now
-    out.append("<section><h2>Агенти зараз</h2>")
+    out.append(f"<section>{_h2('Агенти зараз', 'p_agents')}")
     out.append(f"<p><b>{_e(a['line'])}</b></p>")
     if a["activity"]:
         out.append(f"<p>{_e(a['activity'])}</p>")
@@ -1007,7 +1201,7 @@ def render(s: dict) -> str:
     out.append("</section>")
 
     # Usage
-    out.append("<section><h2>Ліміт Claude</h2>")
+    out.append(f"<section>{_h2('Ліміт Claude', 'p_limit')}")
     if u:
         for k, label in (("five_hour", "5 годин"), ("seven_day", "тиждень")):
             pct = u[k]["pct"]
@@ -1039,7 +1233,7 @@ def render(s: dict) -> str:
         key=lambda x: (x["order"] if x["order"] is not None else 99, x["name"]),
     )
     other = [x for x in cards if not x["owner"] and x["status"] in ("accepted", "testing", "proposed")]
-    out.append("<section><h2>Черга</h2><table><tr><th>#</th><th>Картка</th><th>Статус</th><th>Кроки</th></tr>")
+    out.append(f"<section>{_h2('Черга', 'p_queue')}<table><tr><th>#</th><th>Картка</th><th>Статус</th><th>Кроки</th></tr>")
     for x in owner:
         d, t = rb.card_progress(x)
         out.append(
@@ -1059,7 +1253,7 @@ def render(s: dict) -> str:
         ("без вердикту", ("inconclusive",), "mut"),
         ("відхилено", ("rejected",), "bad"),
     ]
-    out.append("<section><h2>Результати перевірок</h2><div class='kpi'>")
+    out.append(f"<section>{_h2('Результати перевірок', 'p_results')}<div class='kpi'>")
     for label, sts, cls in groups:
         out.append(f"<div><b class='{cls}'>{sum(x['status'] in sts for x in cards)}</b> {label}</div>")
     out.append("</div><table style='margin-top:8px'><tr><th>Картка</th><th>Вердикт</th></tr>")
@@ -1074,7 +1268,9 @@ def render(s: dict) -> str:
     out.append("</table><p class='mut'>Повністю — <code>docs/RESULTS.md</code>.</p></section>")
 
     # History
-    out.append("<section class='wide'><h2>Кроки агентів</h2><table><tr><th>Коли</th><th>Результат</th><th>Що</th><th>Час і ліміт</th></tr>")
+    out.append(
+        f"<section class='wide'>{_h2('Кроки агентів', 'p_steps')}<table><tr><th>Коли</th><th>Результат</th><th>Що</th><th>Час і ліміт</th></tr>"
+    )
     for h in a["history"]:
         cls = {"delivered": "ok", "error": "bad", "stuck": "bad"}.get(h["status"], "mut")
         out.append(
@@ -1084,7 +1280,7 @@ def render(s: dict) -> str:
 
     # Server
     gb = 1024**3
-    out.append("<section><h2>Сервер</h2>")
+    out.append(f"<section>{_h2('Сервер', 'p_server')}")
     if m["mem_total"]:
         mp = m["mem_used"] / m["mem_total"] * 100
         out.append(f"<div>Пам'ять: <b>{m['mem_used'] / gb:.1f}</b> з {m['mem_total'] / gb:.0f} ГБ</div>{_bar(mp, 70, 90)}")
@@ -1101,7 +1297,7 @@ def render(s: dict) -> str:
     out.append(f"<p class='mut'>{_e(' · '.join(extra))}</p></section>")
 
     # Collector
-    out.append("<section><h2>Колектор даних</h2><table><tr><th>Дані</th><th>Останній запис</th><th>Рядків</th></tr>")
+    out.append(f"<section>{_h2('Колектор даних', 'p_collector')}<table><tr><th>Дані</th><th>Останній запис</th><th>Рядків</th></tr>")
     for t in s["tables"]:
         cls = "mut" if t["ok"] is None else ("ok" if t["ok"] else "bad")
         out.append(
@@ -1111,17 +1307,19 @@ def render(s: dict) -> str:
     out.append("</table></section>")
 
     # Commits and questions
-    out.append("<section><h2>Останні зміни в main</h2><table>")
+    out.append(f"<section>{_h2('Останні зміни в main', 'p_changes')}<table>")
     for row in s["commits"]:
         if len(row) == 3:
             out.append(f"<tr><td class='mut'>{_e(row[1])}</td><td>{_e(row[2][:110])}</td></tr>")
     out.append("</table></section>")
     if s["questions"]:
         out.append(
-            "<section><h2>Питання агентів до тебе</h2><ul>" + "".join(f"<li>{_e(q)}</li>" for q in s["questions"]) + "</ul></section>"
+            f"<section>{_h2('Питання агентів до тебе', 'p_questions')}<ul>"
+            + "".join(f"<li>{_e(q)}</li>" for q in s["questions"])
+            + "</ul></section>"
         )
     out.append("</main></body></html>")
-    return "".join(out)
+    return with_help("".join(out))
 
 
 # ---------------------------------------------------------------- assistant brief tab (snapshot JSON only, no network)
@@ -2552,7 +2750,7 @@ def block_builder(ch: dict, snap: dict, p: dict) -> str:
 
     legs, err = option_legs(ch, strat, strikes, qty)
     if err:
-        out.append(f"<section class='wide'><h2>Позиція</h2>{_empty(err)}</section>")
+        out.append(f"<section class='wide'>{_h2('Позиція', 'position')}{_empty(err)}</section>")
         return "".join(out)
     F, T, iv = ch["F"], ch["T"], ch["iv"]
     credit = -sum((1 if lg["side"] == "long" else -1) * lg["size"] * lg["entry_premium"] for lg in legs)
@@ -2611,7 +2809,7 @@ def block_builder(ch: dict, snap: dict, p: dict) -> str:
             )
         )
     tiles.append(_tile("Ймовірність прибутку", _e(f"{_nf(pop * 100)} %"), "ризик-нейтральна, за ATM IV", help="pop"))
-    out.append(f"<section>{_h2('Позиція')}<div class='tiles'>{''.join(tiles)}</div></section>")
+    out.append(f"<section>{_h2('Позиція', 'position')}<div class='tiles'>{''.join(tiles)}</div></section>")
     G = position_greeks(legs, F, T, iv)
     out.append(
         f"<section>{_h2('За і проти цієї угоди', 'proscons')}"
@@ -2880,7 +3078,7 @@ def render_options(snap: dict | None, err: str | None, now: float, params: dict 
         ch = option_chain(snap)
         if ch is None:
             out.append(
-                "<section class='wide'><h2>Конструктор</h2>"
+                f"<section class='wide'>{_h2('Конструктор', 'builder')}"
                 + _empty("Ланцюжка опціонів у знімку немає: конструктор порахувати нема з чого.")
                 + _section_notes(snap, "chain")
                 + "</section></main></body></html>"
@@ -3241,9 +3439,14 @@ def block_r_price(a: dict, asset: str = "") -> str:
         return _empty("Ціни з архіву поверхні немає.") + miss + chart
     cls = "" if ch is None else "ok" if ch >= 0 else "bad"
     tiles = (
-        _tile("Зараз", f"<span class='num'>{_e(_nf(now))}</span>", f"{_e(nd)}, 19:00 UTC, індекс Deribit")
-        + _tile("Тиждень тому", f"<span class='num mut'>{_e(_nf(week))}</span>", f"{_e(wd)}, 19:00 UTC")
-        + _tile("Зміна", f"<span class='num {cls}'>{_e(_pc(ch * 100) if ch is not None else '—')}</span>", f"{_e(nd)} проти {_e(wd)}")
+        _tile("Зараз", f"<span class='num'>{_e(_nf(now))}</span>", f"{_e(nd)}, 19:00 UTC, індекс Deribit", help="r_spot")
+        + _tile("Тиждень тому", f"<span class='num mut'>{_e(_nf(week))}</span>", f"{_e(wd)}, 19:00 UTC", help="r_week")
+        + _tile(
+            "Зміна",
+            f"<span class='num {cls}'>{_e(_pc(ch * 100) if ch is not None else '—')}</span>",
+            f"{_e(nd)} проти {_e(wd)}",
+            help="r_change",
+        )
     )
     return f"<div class='tiles'>{tiles}</div>" + miss + chart
 
@@ -3364,7 +3567,7 @@ def block_r_skew(a: dict) -> str:
         d = _num(c.get(key))
         cls = "warn" if d is not None and abs(d) > 0.002 else ""
         sub = f"{_e(nd)}; тиждень тому ({_e(wd)}) {_e(_lvp(w.get(key)))} · <span class='{cls}'>{_e(_dvp(d))}</span>"
-        tiles += _tile(lab, f"<span class='num'>{_e(_lvp(n.get(key)))}</span>", sub, help="skew" if key == "rr_25" else "")
+        tiles += _tile(lab, f"<span class='num'>{_e(_lvp(n.get(key)))}</span>", sub, help="skew" if key == "rr_25" else "put_skew")
     note = (
         "<p class='note'>Put skew — на скільки 25-дельтовий пут дорожчий за ATM: ціна захисту від падіння. RR — 25Δ кол мінус "
         "25Δ пут: нижче нуля — пути дорожчі за коли. Строк 30 днів.</p>"
@@ -4122,12 +4325,15 @@ def block_journal_tiles(real: list[dict], n_open: int) -> str:
     total, exp = s["total_pnl"], s["expectancy_per_trade"]
     tiles = [
         _tile("Угод (закритих)", _nf(s["closed_trades"]), f"у плюсі {s['wins']} · у мінусі {s['losses']}", help="j_trades"),
-        _tile("Частка в плюсі", _share(s["win_rate"]), "за полем outcome"),
-        _tile("P&L разом", f"<span class='{_signed_cls(total)}'>{_usd(total, True)}</span>", "USD, усі біржі й опціони разом"),
+        _tile("Частка в плюсі", _share(s["win_rate"]), "за полем outcome", help="j_winrate"),
+        _tile(
+            "P&L разом", f"<span class='{_signed_cls(total)}'>{_usd(total, True)}</span>", "USD, усі біржі й опціони разом", help="j_pnl"
+        ),
         _tile(
             "Середнє на угоду",
             f"<span class='{_signed_cls(exp)}'>{_usd(exp, True)}</span>",
             "USD, усі джерела разом",
+            help="j_expectancy",
             tone="bad" if exp is not None and exp < 0 else "",
             badge="система поки в мінусі" if exp is not None and exp < 0 else "",
         ),
@@ -4140,7 +4346,7 @@ def block_journal_tiles(real: list[dict], n_open: int) -> str:
         ),
     ]
     if n_open:
-        tiles.append(_tile("Відкритих", _nf(n_open)))
+        tiles.append(_tile("Відкритих", _nf(n_open), help="j_open"))
     return f"<div class='tiles'>{''.join(tiles)}</div>"
 
 
@@ -4244,12 +4450,22 @@ def _rec_tiles(s: dict, n_open: int) -> str:
         )
     mean = 100 * s["mean_pnl_pct_spot"]
     tiles = [
-        _tile("Розраховано", _nf(s["n"]), f"метод за ланцюгом · відкритих {n_open}"),
-        _tile("У плюсі", _share(s["win_share"])),
-        _tile("Середнє, % спота", f"<span class='{_signed_cls(mean)}'>{_pc(mean, 2)}</span>", "на 1 BTC, порівнянне з H1, основна метрика"),
+        _tile("Розраховано", _nf(s["n"]), f"метод за ланцюгом · відкритих {n_open}", help="rec_n"),
+        _tile("У плюсі", _share(s["win_share"]), help="rec_win"),
+        _tile(
+            "Середнє, % спота",
+            f"<span class='{_signed_cls(mean)}'>{_pc(mean, 2)}</span>",
+            "на 1 BTC, порівнянне з H1, основна метрика",
+            help="rec_pct",
+        ),
         _tile("Середній R (як у тесті)", _r(s["mean_r_study"]), f"угод з R {s['n_r_study']}", help="r"),
-        _tile("Середній R (від найгіршого)", _r(s["mean_r_worst_case"]), "P&L / ризик угоди"),
-        _tile("P&L разом", f"<span class='{_signed_cls(s['sum_pnl_usd'])}'>{_usd(s['sum_pnl_usd'], True)}</span>", "USD на розмір угод"),
+        _tile("Середній R (від найгіршого)", _r(s["mean_r_worst_case"]), "P&L / ризик угоди", help="rec_r_worst"),
+        _tile(
+            "P&L разом",
+            f"<span class='{_signed_cls(s['sum_pnl_usd'])}'>{_usd(s['sum_pnl_usd'], True)}</span>",
+            "USD на розмір угод",
+            help="rec_pnl",
+        ),
     ]
     return f"<div class='tiles'>{''.join(tiles)}</div>"
 
@@ -4347,14 +4563,15 @@ def block_trade_plans(rows: list[dict] | None, n_shadow: int = 0) -> str:
         else:
             vs0, cls = "95 % ДІ містить 0: переваги не видно", ""
         tiles = [
-            _tile("Розв'язано", _nf(s["n"]), f"з входом {s['n_filled']} · з R {s['n_r']}"),
-            _tile("У плюсі", _share(s["win_rate"]), "частка планів з R > 0"),
+            _tile("Розв'язано", _nf(s["n"]), f"з входом {s['n_filled']} · з R {s['n_r']}", help="plan_n"),
+            _tile("У плюсі", _share(s["win_rate"]), "частка планів з R > 0", help="plan_win"),
             _tile("Середній R", f"<span class='{_signed_cls(mean)}'>{_r(mean)}</span>", f"95 % ДІ {_ci(ci)}", help="r"),
             _tile("Проти 0", f"<span class='{cls}'>{_e(vs0)}</span>", "t-інтервал середнього R", help="plans"),
             _tile(
                 "Виходи",
                 f"{o['target']} / {o['stop']}",
                 f"ціль / стоп · за строком {o['expired']} · без входу {o['not_filled']}",
+                help="plan_exits",
             ),
         ]
         out.append(f"<div class='tiles'>{''.join(tiles)}</div>")
@@ -4398,13 +4615,13 @@ def render_journal(data: dict | None, err: str | None, now: float, params: dict 
         rows = data.get("journal")
         if rows is None:
             out.append(
-                "<section class='wide'><h2>Мої угоди</h2>"
+                f"<section class='wide'>{_h2('Мої угоди', 'j_trades')}"
                 + _empty("Таблиці journal у базі ще немає: вона з'являється, коли MCP-сервер уперше відкриває базу.")
                 + "</section>"
             )
         elif not rows:
             out.append(
-                "<section class='wide'><h2>Мої угоди</h2>"
+                f"<section class='wide'>{_h2('Мої угоди', 'j_trades')}"
                 + _empty("Угод ще немає.")
                 + "<p class='note'>Додати першу: інструмент MCP <code>journal_add</code> (теза, стоп, ціль) і "
                 "<code>journal_close</code> при виході; угоди з бірж — <code>scripts/bybit_import.py</code>.</p></section>"
@@ -4425,7 +4642,7 @@ def render_journal(data: dict | None, err: str | None, now: float, params: dict 
                 out.append(f"<p class='note warn'>Прочитано лише {JOURNAL_MAX_ROWS} останніх рядків журналу.</p>")
             out.append("</section>")
             out.append(f"<section>{_h2('За джерелом', 'sources')}{block_journal_sources(groups)}</section>")
-            out.append(f"<section class='wide'><h2>Угоди</h2>{block_journal_table(real, p['page'])}</section>")
+            out.append(f"<section class='wide'>{_h2('Угоди', 'j_table')}{block_journal_table(real, p['page'])}</section>")
         try:
             rec = block_rec_paper(data.get("rec_paper"))
         except Exception as e:  # noqa: BLE001 - one odd row must not take the page down
@@ -4724,8 +4941,9 @@ def _pm_expiry(s: dict) -> str:
 def block_pm_table(sides: list[dict], now: float) -> str:
     out = [
         "<div class='scroll'><table class='pm'><tr><th>Актив</th><th>Ринок</th><th>Купити</th><th>Аск</th>"
-        "<th>Модель: шанс боку<br>k=1 · k=0.92</th><th>Чистий edge</th><th>$ на аску</th><th>До кінця</th>"
-        "<th>Експірація Deribit<br>(різниця)</th><th>R:R</th><th>На ризик $100</th><th>Запис (journal_add)</th></tr>"
+        f"<th>Модель: шанс боку{_info('pm_model')}<br>k=1 · k=0.92</th><th>Чистий edge{_info('pm_edge')}</th><th>$ на аску</th>"
+        f"<th>До кінця</th><th>Експірація Deribit<br>(різниця)</th><th>R:R{_info('pm_rr')}</th><th>На ризик $100</th>"
+        "<th>Запис (journal_add)</th></tr>"
     ]
     for s in sides:
         slug = str(s.get("event_slug") or "")
@@ -4821,7 +5039,7 @@ def render_polymarket(data: dict | None, err: str | None, now: float, path: Path
         old = " · ціни застарілі" if stale else ""
         out.append(
             "<section class='wide'><details class='near'><summary>Близько (3–5 п.п.) — нижче порогу реєстрації, не сигнал"
-            f"{old}: {len(v['near'])}</summary>{near}</details></section>"
+            f"{old}: {len(v['near'])}{_info('pm_near')}</summary>{near}</details></section>"
         )
         out.append("</main></body></html>")
         return "".join(out)

@@ -215,7 +215,7 @@ def open_risk_usd(positions: Sequence[tuple[float, float, float]]) -> float:
 
 
 def breakeven_stop(side: str, entry: float, tick: float = 0.0) -> float:
-    """Stop price that loses nothing after both taker fees (the owner's rule: move here at +30 % ROE), rounded to the
+    """Stop price that loses nothing after both taker fees (the owner's rule: move here half the way to the target), rounded to the
     tick away from the entry (up for a long, down for a short) so it never lands on the losing side."""
     raw = entry * (1 + 2 * TAKER_FEE) if side == "long" else entry * (1 - 2 * TAKER_FEE)
     if tick <= 0:
@@ -231,7 +231,17 @@ def roe(side: str, entry: float, mark: float, leverage: float) -> float:
     return (1 if side == "long" else -1) * (mark - entry) / entry * leverage
 
 
-BE_ROE = 0.30  # owner 21.10: at +30 % ROE the stop goes to the entry
+def path_to_target(side: str, entry: float, target: float, mark: float) -> float:
+    """Share of the way from the entry to the target the price has gone (0.5 = halfway; negative = against us)."""
+    way = (1 if side == "long" else -1) * (target - entry)
+    return (1 if side == "long" else -1) * (mark - entry) / way if way > 0 else 0.0
+
+
+# Owner 22.10: the stop goes to break-even when the price has gone half the way to the target. It replaced +30 % ROE
+# (21.10), which depended on the leverage, not on the setup: 0.75R on BTC at 20x, but 2-5R on 5x coins, beyond most
+# targets, so it never fired there. In R it is 0.5 x the setup's target (1.1-1.5R on the 21.10 trades, the course's
+# 1-1.5R). Course step 2 (17.10): break-even at 1R / 1.5R changes E[R] little (IS -0.008R / +0.003R, OOS +0.06R / +0.05R).
+BE_PATH = 0.5
 
 
 CRYPTO_KINDS = ("", "innovation")  # Bybit symbolType: '' = crypto, 'innovation' = new crypto listings; no stock/ETF/commodity

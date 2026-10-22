@@ -13,8 +13,8 @@ Hourly cycle:
    the journal row is closed and the owner gets a Telegram message. A position held longer than ``MAX_HOLD_MS`` of its
    timeframe starts a time exit (reduce-only orders, outside the guard: they only reduce).
 2. Orders and break-even (also every minute): a resting entry ('pending') is re-quoted, completed at the market or
-   cancelled ('missed'); a complete entry gets its target limit; a time exit is re-quoted or sent to the market; at +30 %
-   ROE the stop moves to the entry plus both taker fees (owner 21.10).
+   cancelled ('missed'); a complete entry gets its target limit; a time exit is re-quoted or sent to the market; half the
+   way to the target the stop moves to the entry plus both taker fees (owner 22.10; was +30 % ROE).
 3. Universe: today's top 100 crypto USDT perpetuals by turnover (no tokenised stocks, ETFs or commodities). Scan the setups of ``analytics/setup_signals.py`` on the last
    closed 1d and 4h bars; a signal older than ``FRESH_MS`` is ignored, and each signal is decided once.
 4. Each candidate is sized for $100 at the stop (fees included) from the live price, gets its leverage (the owner's
@@ -52,7 +52,7 @@ from ..analytics.setup_signals import TF_MS, LiveSignal, Score, closed_bars, sca
 from ..store import Store
 from .bybit_demo import CROSS, BybitDemo, is_refusal, load_keys
 from .guard import (
-    BE_ROE,
+    BE_PATH,
     DEFAULT,
     TAKER_FEE,
     GuardConfig,
@@ -63,8 +63,8 @@ from .guard import (
     check,
     day_start_ms,
     open_risk_usd,
+    path_to_target,
     plan_order,
-    roe,
     universe,
 )
 from .orders import ENTRY_WAIT_MS, entry_step, exit_step, maker_quote
@@ -452,8 +452,8 @@ async def _sync_trade(ctx: Ctx, t: dict[str, Any], positions: dict[str, Any]) ->
 
 
 async def manage(ctx: Ctx, positions: dict[str, Any]) -> None:
-    """Resting entries and time exits one step each; then the owner's rule: at +30 % ROE move the stop to the entry plus
-    both taker fees (once per trade)."""
+    """Resting entries and time exits one step each; then the owner's rule: half the way to the target moves the stop to
+    the entry plus both taker fees (once per trade)."""
     for t in await ctx.store.demo_trade_list(("pending",)):
         await ctx.safe("entry", lambda t=t: _progress_entry(ctx, t), link_id=t["link_id"], symbol=t["symbol"])
     for t in await ctx.store.demo_trade_list(("open",)):
@@ -466,35 +466,41 @@ async def manage(ctx: Ctx, positions: dict[str, Any]) -> None:
             continue
         entry = float(t["fill"] or pos.get("entryPrice") or t["entry"])
         mark = float(pos["markPrice"])
-        r = roe(t["side"], entry, mark, t["leverage"])
-        if r < BE_ROE:
+        way = path_to_target(t["side"], entry, t["target"], mark)
+        if way < BE_PATH:
             continue
         await ctx.safe(
             "breakeven",
-            lambda t=t, pos=pos, entry=entry, mark=mark, r=r: _move_to_breakeven(ctx, t, pos, entry, mark, r),
+            lambda t=t, pos=pos, entry=entry, mark=mark, way=way: _move_to_breakeven(ctx, t, pos, entry, mark, way),
             link_id=t["link_id"],
             symbol=t["symbol"],
         )
 
 
-async def _move_to_breakeven(ctx: Ctx, t: dict[str, Any], pos: dict[str, Any], entry: float, mark: float, r: float) -> None:
+async def _move_to_breakeven(ctx: Ctx, t: dict[str, Any], pos: dict[str, Any], entry: float, mark: float, way: float) -> None:
     m = await ctx.client.market(t["symbol"])
     be = breakeven_stop(t["side"], entry, m.tick)
     sign = 1 if t["side"] == "long" else -1
     if sign * (mark - be) <= 0:
         return  # the price is already back through the break-even level
+    r_now = sign * (mark - entry) / abs(entry - t["stop"]) if entry != t["stop"] else 0.0
     current = float(pos.get("stopLossPrice") or 0)
     if not (current and sign * (current - be) >= 0):  # a stop already at break-even (an earlier move) is only recorded
         await ctx.client.set_stop(t["symbol"], be)
     await ctx.store.demo_trade_update(t["link_id"], be_ts=ctx.now, be_stop=be)
     await ctx.audit(
-        "stop_moved", link_id=t["link_id"], symbol=t["symbol"], setup=t["setup"], payload={"be_stop": be, "roe": r, "mark": mark}
+        "stop_moved",
+        link_id=t["link_id"],
+        symbol=t["symbol"],
+        setup=t["setup"],
+        payload={"be_stop": be, "path": way, "r": r_now, "mark": mark},
     )
     ctx.bump("breakeven")
     await ctx.safe(
         "notify",
         lambda: ctx.notify(
-            f"🛡 Демо: {t['setup']} {_side_ua(t['side'])} {t['symbol'].split(':')[0]} — ROE {r:+.0%}, "
+            f"🛡 Демо: {t['setup']} {_side_ua(t['side'])} {t['symbol'].split(':')[0]} — пройдено {way * 100:.0f} % шляху до цілі "
+            f"({r_now:+.1f}R), "
             f"стоп перенесено в беззбиток {_fmt(be)} (вхід {_fmt(entry)}, ціна {_fmt(mark)})"
         ),
     )

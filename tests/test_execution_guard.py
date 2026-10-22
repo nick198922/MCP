@@ -102,6 +102,13 @@ def test_short_levels_mirror():
     assert check(short, S) == []
 
 
+def test_path_to_target():
+    assert g.path_to_target("long", 100.0, 106.0, 103.0) == pytest.approx(0.5)
+    assert g.path_to_target("short", 100.0, 94.0, 97.0) == pytest.approx(0.5)
+    assert g.path_to_target("long", 100.0, 106.0, 99.0) < 0
+    assert g.path_to_target("long", 100.0, 100.0, 101.0) == 0.0  # no way to go: never triggers
+
+
 def test_breakeven_and_roe():
     assert g.breakeven_stop("long", 100.0) == pytest.approx(100.11) and g.breakeven_stop("short", 100.0) == pytest.approx(99.89)
     assert g.breakeven_stop("long", 100.0, 0.5) == 100.5 and g.breakeven_stop("short", 100.0, 0.5) == 99.5  # away from entry

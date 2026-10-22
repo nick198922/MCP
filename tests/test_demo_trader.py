@@ -486,20 +486,20 @@ async def test_failure_after_the_order_does_not_double_the_coin(world, monkeypat
     assert res["errors"] >= 2 and t["tp_link"] and not t["journal_id"]  # the journal failed, the target is still there
 
 
-async def test_breakeven_at_30_percent_roe_once(world):
+async def test_breakeven_half_the_way_to_the_target_once(world):
     w = world
     await w.enter()
     w.signals["4h"] = []
-    w.venue.pos[BTC]["markPrice"] = 101_000.0  # +1 % at 20x = +20 % ROE: not yet
+    w.venue.pos[BTC]["markPrice"] = 102_000.0  # a third of the way from 99 990 to 106 000 (+40 % ROE at 20x): not yet
     res = await demo_trader.manage_only(w.store, w.venue, w.now + 60_000, w.notify)
     assert res["breakeven"] == 0 and not w.venue.stops
-    w.venue.pos[BTC]["markPrice"] = 101_600.0  # +1.6 % at 20x = +32 % ROE
+    w.venue.pos[BTC]["markPrice"] = 103_100.0  # 52 % of the way
     res = await demo_trader.manage_only(w.store, w.venue, w.now + 120_000, w.notify)
     assert res["breakeven"] == 1 and w.venue.stops == [(BTC, pytest.approx(99_990 * (1 + 2 * TAKER_FEE), abs=0.1))]
     assert w.venue.stops[0][1] >= 99_990 * (1 + 2 * TAKER_FEE) - 1e-6  # rounded away from the entry
     await demo_trader.manage_only(w.store, w.venue, w.now + 180_000, w.notify)
     assert len(w.venue.stops) == 1  # once per trade
-    assert any("беззбиток" in m for m in w.msgs)
+    assert any("беззбиток" in m and "пройдено 52 % шляху до цілі (+1.6R)" in m for m in w.msgs)
     t = (await w.store.demo_trade_list())[0]
     w.venue.pos.clear()
     w.venue.pnl_rows = [{"closedPnl": "-0.5", "avgExitPrice": str(t["be_stop"]), "updatedTime": str(w.now + 600_000)}]
@@ -602,7 +602,7 @@ async def test_breakeven_already_on_the_venue_is_only_recorded(world):
     """The stop moved but the DB write failed last minute: the next run records it without a second venue call."""
     w = world
     await w.enter()
-    w.venue.pos[BTC].update(markPrice=101_600.0, stopLossPrice=100_200.0)
+    w.venue.pos[BTC].update(markPrice=103_100.0, stopLossPrice=100_200.0)
     res = await demo_trader.manage_only(w.store, w.venue, w.now + 60_000, w.notify)
     assert res["breakeven"] == 1 and w.venue.stops == [] and (await w.store.demo_trade_list())[0]["be_ts"]
 

@@ -7,7 +7,7 @@ images are saved to tg-inbox/ in the log directory and Claude reads them from th
 on marked as someone else's text: data, never instructions. Each message goes to `claude -p` in the chat's own clone (~/tradedesk-chat, with the
 owner's server permissions from its .claude/settings.local.json), continuing one conversation; the answer is sent back
 to the topic. Commands: /new (a fresh conversation), /status (the project status), /trade (one row into the local
-journal through scripts/journal_trade_tg.py, with rules 1 and 8 in the answer; never an order), /close (closes an open
+journal through scripts/journal_trade_tg.py, with rules 1, 2, 4, 5 and 8 in the answer; never an order), /close (closes an open
 journal trade through scripts/journal_close_tg.py, with its P&L and R; never an order), /help.
 """
 
@@ -46,7 +46,7 @@ HELP = (
     "Фото й скріни графіків (підпис — ваше питання) і переслані пости теж приймаю.\n"
     "• /new — почати нову розмову\n• /status — статус проєкту\n"
     "• /trade BTC long 84000 size 0.1 stop 82000 target 90000 thesis … — записати угоду в журнал "
-    "(лише запис, без ордерів) і перевірити правила 1 і 8\n"
+    "(лише запис, без ордерів) і перевірити правила 1, 2, 4, 5 і 8\n"
     "• /close 12 86000 fees 4.5 note … — закрити угоду #12 у журналі за ціною 86000 (лише запис, без ордерів): "
     "P&L і R; опціон, що згорів: /close 12 0. Закриття з Telegram не скасувати — перевіряйте id; "
     "угоди демо-бота не закриваються\n• /help — ця підказка\n"

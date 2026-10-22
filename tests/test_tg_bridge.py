@@ -74,6 +74,36 @@ def test_a_forwarded_trade_command_is_not_recorded(monkeypatch):
     assert [[m["message_id"] for m in g] for g in groups] == [[1], [2]]
 
 
+def test_close_command_is_one_argument_and_only_for_the_owner_in_the_topic(monkeypatch):
+    assert br.command("/close 12 86000") == "/close" and br.command("/close@WWHite2_bot 12 86000") == "/close"
+    text = "/close 12 86000 note $(rm -rf ~); --db /tmp/x"
+    argv = br.close_argv(text)
+    assert argv[-1] == f"--text={text}" and argv[-2].endswith("journal_close_tg.py") and br.CLOSE_SCRIPT.exists()
+    calls, sent = [], []
+    monkeypatch.setattr(br, "close_trade", lambda text: calls.append(text) or "✅ Закрито")
+    monkeypatch.setattr(br, "record_trade", lambda text: pytest.fail("a /close must not record a trade"))
+    monkeypatch.setattr(br, "reply", lambda env, text, **k: sent.append((text, k)))
+    monkeypatch.setattr(br, "log", lambda line: None)
+    monkeypatch.setattr(br, "ask_claude", lambda *a: pytest.fail("a /close must not go to Claude"))
+    t = "/close 12 86000"
+    br.handle(ENV, {}, [msg(text=t, **{"from": {"id": 5}})])
+    br.handle(ENV, {}, [msg(text=t, message_thread_id=2)])
+    assert calls == [] and sent == []
+    br.handle(ENV, {}, [msg(text=t, message_id=9)])
+    assert calls == [t] and sent == [("✅ Закрито", {"mode": "html", "to": 9})]
+    assert "/close" in br.HELP
+
+
+def test_close_trade_reports_a_failed_script_in_its_own_words(monkeypatch):
+    logged = []
+    monkeypatch.setattr(br, "log", logged.append)
+    monkeypatch.setattr(br, "close_argv", lambda text: [sys.executable, "-c", "import sys; sys.exit(2)"])
+    assert br.close_trade("/close 1 2") == "❌ Угоду не закрито: скрипт журналу завершився з кодом 2."
+    assert any(line.startswith("close stderr:") for line in logged)
+    monkeypatch.setattr(br, "close_argv", lambda text: [sys.executable, "-c", "pass", text])
+    assert br.close_trade("/close 1 2 note a\x00b").startswith("❌ Угоду не закрито: у тексті є недопустимий символ")
+
+
 def test_record_trade_refuses_a_nul_byte(monkeypatch):
     monkeypatch.setattr(br, "log", lambda line: None)
     monkeypatch.setattr(br, "trade_argv", lambda text: [sys.executable, "-c", "pass", text])

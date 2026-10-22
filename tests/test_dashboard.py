@@ -1981,14 +1981,31 @@ def test_rules_copies_match_the_analytics_reference():
     from tradedesk.analytics import rules_check as rc
 
     exp = datetime(2026, 11, 27, 8, tzinfo=UTC).timestamp()
+    ctx = (  # rule 8 in the 1-3 day zone: spot, RV30, thesis, target
+        (None, None, None, None),
+        (83215.0, 0.35, "long vol into CPI", 90000.0),
+        (83215.0, 0.20, "", 90000.0),
+        (83215.0, 0.60, "x", None),
+    )
     for strat in db.OPT_STRATEGIES:
         for qty in (0.01, 0.03, 0.1):
             _, legs = _legs(strat, qty)
             for dep in (10_000.0, 30_000.0, 0.0):
-                for days in (37.46, 3.0, 0.5):
+                for days in (37.46, 3.0, 2.0, 1.0, 0.5):
                     now = exp - days * 86400
-                    _same(db.rules_pre_trade(legs, now, exp, dep), rc.pre_trade_option(legs, now_ts=now, expiry_ts=exp, deposit_usd=dep))
+                    for spot, rv, th, tg in ctx:
+                        _same(
+                            db.rules_pre_trade(legs, now, exp, dep, spot, rv, th, tg),
+                            rc.pre_trade_option(legs, now_ts=now, expiry_ts=exp, deposit_usd=dep, spot=spot, rv=rv, thesis=th, target=tg),
+                        )
             _same(db.rules_pre_trade(legs, exp, None), rc.pre_trade_option(legs, now_ts=exp, expiry_ts=None))
+    for spot in (60000.0, 74090.0, 80000.0, 95000.0):  # breakeven moves on both sides, and past a breakeven
+        _, legs = _legs("long_strangle", 0.1)
+        assert db.rules_breakeven_move(legs, spot) == pytest.approx(rc.breakeven_move(legs, spot), abs=1e-12)
+    for h in (0.0, 23.9, 24.0, 50.0, 72.0, 72.1):
+        assert db.rules_buy_zone(h) == rc.buy_zone(h)
+    for th, tg in (("a", 1.0), ("", 1.0), ("a", None), (None, None), ("a", 0.0)):
+        assert db.rules_thesis_check(th, tg) == rc.thesis_check(th, tg)
     import test_rules_check as trc
 
     rows = _rules_rows()
@@ -1997,8 +2014,12 @@ def test_rules_copies_match_the_analytics_reference():
         {**r, "id": 400 + r["id"], "opened_ts": r["opened_ts"] + 14 * 86400, "closed_ts": r["closed_ts"] + 14 * 86400}
         for r in trc._hip3_rows()
     ]
+    own = trc._t(
+        501, "BTC-17OCT25-110000-C", "long", trc.D + 5 * 86400 + 8 * H, trc.D + 6 * 86400, 5.0, '["option"]', size=0.1, entry=500.0
+    )
+    rule8 = [trc._odte_row(), {**own, "thesis": "CPI: up past 112k", "target": 115000.0}, {**own, "id": 502, "thesis": "no target"}]
     for dep in (10_000.0, 5_000.0):
-        for rs in (rows, rows + hip3):
+        for rs in (rows, rows + hip3, rows + rule8):
             _same(db.rules_trade_checks(rs, now, dep), rc.trade_checks(rs, now_ts=now, deposit_usd=dep))
             _same(db.rules_weekly(rs, now, dep), rc.weekly_violations(rs, now_ts=now, deposit_usd=dep))
             _same(db.rules_day_stops(rs, dep), rc.day_stops(rs, deposit_usd=dep))
@@ -2028,10 +2049,11 @@ def test_options_tab_shows_the_owners_rules_for_the_structure():
         "Макс. збиток на експірацію $291 — у 2.9 раза більше за ліміт.",
         "Премія ≤ 1 % депозиту ($100)",
         "Платиш $291 — у 2.9 раза більше за ліміт.",
-        "Не купувати за ≤ 3 дні до експірації",
-        "<span class='chip opp'>виконано</span></td><td>До експірації 37.5 дн.",
+        "Час до експірації: &lt; 24 год — ні; 1–3 доби — з умовами",
+        "<span class='chip opp'>виконано</span></td><td>До експірації 37.5 дн. Понад 3 доби — лише ліміт премії.",
     ):
         assert text in rules, text
+    assert "8а · Теза" not in rules  # the three checks only show in the 1-3 day zone
     assert rules.count("<span class='chip risk'>порушено</span>") == 2
     # 0.03 BTC fits; a $30 000 deposit lifts both limits to $300
     small = _between(db.render_options(snap, None, asof + 300, db.parse_options_query("qty=0.03")), "Правила власника", "</section>")
@@ -2040,9 +2062,37 @@ def test_options_tab_shows_the_owners_rules_for_the_structure():
     # a sale: unbounded loss breaks rule 1, rule 8 does not apply
     sale = _between(db.render_options(snap, None, asof + 300, db.parse_options_query("s=short_strangle")), "Правила власника", "</section>")
     assert "Збиток на експірацію необмежений" in sale and sale.count("<span class='chip calm'>не стосується</span>") == 2
-    # three days before the expiry buying is against rule 8
-    late = db.render_options(snap, None, datetime(2026, 11, 24, 8, tzinfo=UTC).timestamp(), db.parse_options_query("qty=0.01"))
-    assert "<span class='chip risk'>порушено</span></td><td>До експірації 3.0 дн." in late
+    # under 24 h before the expiry buying is against rule 8 whatever the reasons
+    odte = db.render_options(snap, None, datetime(2026, 11, 26, 20, tzinfo=UTC).timestamp(), db.parse_options_query("qty=0.01"))
+    assert "<span class='chip risk'>порушено</span></td><td>До експірації 12 год: менше доби — не купувати ніколи." in odte
+    # three days before: the conditional zone, three checks as rows of their own; no thesis in the form -> violated
+    t3 = datetime(2026, 11, 24, 8, tzinfo=UTC).timestamp()
+    late = _between(db.render_options(snap, None, t3, db.parse_options_query("qty=0.01")), "Правила власника", "</section>")
+    assert (
+        "<span class='chip risk'>порушено</span></td><td>До експірації 72 год: 1–3 доби — лише коли виконано всі три умови нижче." in late
+    )
+    # near the 24 h and 72 h boundaries the shown time never contradicts the status (critic, 22.10)
+    exp = datetime(2026, 11, 27, 8, tzinfo=UTC).timestamp()
+    for hours, chip, text in (
+        (23.5, "risk", "До експірації 23.5 год: менше доби"),
+        (23.99, "risk", "До експірації 23.9 год: менше доби"),
+        (24.0, "risk", "До експірації 24 год: 1–3 доби"),  # no thesis in the form
+        (72.0, "risk", "До експірації 72 год: 1–3 доби"),
+        (72.5, "opp", "До експірації 72.5 год. Понад 3 доби"),
+        (72.01, "opp", "До експірації 72.1 год. Понад 3 доби"),
+        (95.0, "opp", "До експірації 95 год. Понад 3 доби"),
+    ):
+        edge = db.render_options(snap, None, exp - hours * 3600, db.parse_options_query("qty=0.01"))
+        assert f"<span class='chip {chip}'>{'порушено' if chip == 'risk' else 'виконано'}</span></td><td>{text}" in edge, hours
+    assert "8а · Теза і ціль записані</td><td><span class='chip risk'>порушено</span></td><td>Немає тези й цілі" in late
+    for name in ("8б · Рух до беззбитку ≤ 1σ за реалізованою волою", "8в · IV ≤ 1.2 × реалізованої"):
+        assert name in late, name
+    # the thesis and the target from the form satisfy (a); the page shows them back, escaped
+    q = "qty=0.01&thesis=%3Cb%3ECPI%3C%2Fb%3E+up&target=90000"
+    page = db.render_options(snap, None, t3, db.parse_options_query(q))
+    assert "value='&lt;b&gt;CPI&lt;/b&gt; up'" in page and "<b>CPI" not in page and "value='90000'" in page
+    ok = _between(page, "Правила власника", "</section>")
+    assert "8а · Теза і ціль записані</td><td><span class='chip opp'>виконано</span>" in ok
 
 
 def _rules_db(path: Path, rows: list[dict]) -> Path:
@@ -2078,7 +2128,8 @@ def test_journal_tab_shows_weekly_rule_violations(tmp_path):
     # the alt longs of _alt_rows a week later + the late 3-day option buy (−$9): ADA, WIF (rule 2), WIF, AVAX (rule 4)
     # and the option (rule 8) for sure; Bybit LINK (+$3) only on its close time: shown apart
     for text in ("<span class='bad'>2 з 7</span> <span class='mut'>· невідомо 1</span>", "макс. одночасно 4", "стоп-днів 1",
-                 "<span class='bad'>2 з 10</span>", "+ наближено 1 (за часом закриття)", "пізніх 1 · дорогих 0",
+                 "<span class='bad'>2 з 10</span>", "+ наближено 1 (за часом закриття)",
+                 "&lt; 24 год 0 · 1–3 доби без умов 1 · дорогих 0",
                  "<td class='num'>4<br><span class='mut'>+ наближено 1</span></td>",
                  "<td class='num bad'>−$607<br><span class='mut'>наближені +$3</span></td>"):  # fmt: skip
         assert text in w42, text

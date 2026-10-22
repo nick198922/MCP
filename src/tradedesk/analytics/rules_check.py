@@ -21,9 +21,17 @@ Rules covered:
   trade may have been opened long before the stop), counted in ``approx`` and kept apart from exact violations in
   the weekly totals. The "48 h pause after a big-loss day" half has no threshold in the rule: not checked.
 * 5 — target >= 2 x the stop distance (R:R >= 2): rows with both stop and target, else ``unknown``.
-* 8 — options: no buying with <= 3 days to expiry (Deribit/Bybit delivery 08:00 UTC, the date in the symbol);
-  premium paid <= 1 % of the deposit per trade. A structure that nets a credit buys nothing on balance (``na``).
-  Journal: bought option rows (side long); the days need a real opening time, else ``unknown``.
+* 8 — options (owner, 22.10, Q-20261022-1): premium paid <= 1 % of the deposit per trade, and by the time from the
+  purchase to the delivery (Deribit/Bybit 08:00 UTC, the date in the symbol) three zones: under 24 h — never buy
+  (``violated``); 24-72 h (both ends included) — only when all three checks hold: (a) a recorded thesis (direction,
+  reason and a target), (b) the move from spot to the nearest breakeven at expiry <= 1 sigma of the move at
+  realized vol over the time left (RV x sqrt(T/365); RV = RV30, 30 daily closes, zero mean, x365, as the forecast
+  log's RV30 model), (c) the option's IV <= 1.2 x RV; any check failed = ``violated``, a check without data =
+  ``unknown``; over 72 h — the premium limit only. The 1-sigma and 1.2x thresholds are a starting choice, not a
+  proven edge. A structure that nets a credit buys nothing on balance (``na``). Journal: bought option rows (side
+  long); the time needs a real opening time, else ``unknown``. Imports carry neither a thesis nor IV: (a) fails
+  without a thesis and a target (an 'import' row's placeholder thesis does not count), and the journal has no spot
+  or IV at the opening, so (b) and (c) stay ``unknown``.
 
 Rules 3, 6 and 7 need data the journal has no column for (liquidation price, the reason for a long, stop moves).
 The journal check judges every week against today's deposit, not the deposit of that week.
@@ -38,7 +46,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
-from .strategy import payoff_extremes
+from .strategy import payoff_curve, payoff_extremes
 
 OK, VIOLATED, UNKNOWN, NA = "ok", "violated", "unknown", "na"
 DEPOSIT_USD = 10_000.0
@@ -48,7 +56,11 @@ DAY_LOSS_PCT = 2.0  # rule 4, % of the deposit
 DAY_LOSING_STREAK = 2  # rule 4
 MIN_RR = 2.0  # rule 5
 PREMIUM_PCT = 1.0  # rule 8, % of the deposit
-MIN_BUY_DAYS = 3.0  # rule 8: buying with this many days or fewer to expiry violates it
+BUY_BAN_HOURS = 24.0  # rule 8: buying with less than this many hours to expiry violates it, whatever the reasons
+BUY_COND_HOURS = 72.0  # rule 8: from BUY_BAN_HOURS up to this many hours (inclusive) only with all three checks
+BE_MAX_SIGMA = 1.0  # rule 8 (b): breakeven move <= this many 1-sigma moves at RV over the time left
+IV_MAX_RV = 1.2  # rule 8 (c): the bought option's IV <= this x RV
+ZONE_BAN, ZONE_COND, ZONE_FREE = "under_24h", "1_3_days", "over_3_days"  # rule 8 zones by the time to expiry
 MAJORS = frozenset({"BTC", "ETH"})
 RULES = (1, 2, 4, 5, 8)
 DAY_S = 86400.0
@@ -121,6 +133,50 @@ def _status(violated: int, checked: int, unknown: int) -> str:
     return UNKNOWN if unknown else NA
 
 
+def buy_zone(hours: float, ban_hours: float = BUY_BAN_HOURS, cond_hours: float = BUY_COND_HOURS) -> str:
+    """Rule 8 zone of a purchase ``hours`` before the delivery: ZONE_BAN (< ban_hours, also past the delivery),
+    ZONE_COND (ban_hours..cond_hours, both inclusive) or ZONE_FREE (> cond_hours)."""
+    return ZONE_BAN if hours < ban_hours else ZONE_COND if hours <= cond_hours else ZONE_FREE
+
+
+def thesis_check(thesis: object, target: object) -> tuple[str, str]:
+    """Rule 8 (a): (status, detail); a thesis (direction and reason, non-empty text) and a target price both needed."""
+    has_thesis = isinstance(thesis, str) and bool(thesis.strip())
+    t = _num(target)
+    has_target = t is not None and t > 0
+    if has_thesis and has_target:
+        return OK, "thesis and target recorded"
+    miss = [w for w, ok in (("thesis", has_thesis), ("target", has_target)) if not ok]
+    return VIOLATED, "no " + " and no ".join(miss)
+
+
+def conditions_status(*statuses: str) -> str:
+    """Rule 8 in the 1-3 day zone: any check failed = violated, else any without data = unknown, else ok."""
+    return VIOLATED if VIOLATED in statuses else UNKNOWN if UNKNOWN in statuses else OK
+
+
+def breakeven_move(legs: Sequence[Mapping[str, Any]], spot: float) -> float | None:
+    """Smallest relative move from ``spot`` (fraction of it) to a price where the option legs' payoff at expiry
+    turns strictly positive: 0.0 when it already is at ``spot``, None when it never is."""
+    opts = [dict(lg) for lg in legs if lg.get("kind") in ("call", "put") and (_num(lg.get("size")) or 0.0) > 0]
+    if not opts or spot <= 0:
+        return None
+    if payoff_curve(opts, [spot])[0] > 0:
+        return 0.0
+    kinks = [0.0] + sorted({float(lg["strike"]) for lg in opts})
+    values = payoff_curve(opts, kinks)
+    bes = []
+    for i in range(1, len(kinks)):
+        v0, v1 = values[i - 1], values[i]
+        if (v0 > 0) != (v1 > 0):
+            bes.append(kinks[i - 1] + (0.0 - v0) * (kinks[i] - kinks[i - 1]) / (v1 - v0))
+    slope = sum((1.0 if lg.get("side") == "long" else -1.0) * float(lg.get("size") or 0.0) for lg in opts if lg["kind"] == "call")
+    last = values[-1]
+    if (last > 0) != (slope > 0 or (slope == 0 and last > 0)):
+        bes.append(kinks[-1] - last / slope)
+    return min(abs(b - spot) for b in bes) / spot if bes else None
+
+
 # ---------------------------------------------------------------- before a trade: an option structure
 
 
@@ -132,13 +188,25 @@ def pre_trade_option(
     deposit_usd: float = DEPOSIT_USD,
     risk_pct: float = RISK_PCT,
     premium_pct: float = PREMIUM_PCT,
-    min_buy_days: float = MIN_BUY_DAYS,
+    spot: float | None = None,
+    rv: float | None = None,
+    thesis: str | None = None,
+    target: float | None = None,
+    ban_hours: float = BUY_BAN_HOURS,
+    cond_hours: float = BUY_COND_HOURS,
+    be_max_sigma: float = BE_MAX_SIGMA,
+    iv_max_rv: float = IV_MAX_RV,
 ) -> list[dict[str, Any]]:
     """Rules 1 and 8 on a planned option structure (legs in the analytics.strategy format: kind 'call' | 'put',
-    side 'long' | 'short', size, strike, entry_premium in USD per unit). One dict per check:
-    {rule, key, status, value, limit, detail}; ``key`` is 'risk' (max loss at expiry, USD), 'premium' (net premium
-    paid, USD) or 'days_to_expiry' (days from ``now_ts`` to ``expiry_ts``). Rule 8 is about paying premium: a
-    structure that nets a credit (a sale, an iron condor) gives ``na`` for both of its checks."""
+    side 'long' | 'short', size, strike, entry_premium in USD per unit, optional iv as a decimal). One dict per
+    check: {rule, key, status, value, limit, detail}; ``key`` is 'risk' (max loss at expiry, USD), 'premium' (net
+    premium paid, USD) or 'days_to_expiry' (days from ``now_ts`` to ``expiry_ts``; limit = the never-buy floor in
+    days; plus ``zone``). In the 1-3 day zone three more rows follow, and 'days_to_expiry' carries their combined
+    status: 'thesis' (value: thesis and target recorded), 'breakeven_move' (value: move from ``spot`` to the nearest
+    breakeven at expiry, limit: be_max_sigma x ``rv`` x sqrt(days/365), both fractions of spot) and 'iv_vs_rv'
+    (value: the highest IV among the bought legs, limit: iv_max_rv x ``rv``; decimals). ``rv`` is the trailing
+    realized vol (decimal, RV30). Rule 8 is about paying premium: a structure that nets a credit (a sale, an iron
+    condor) gives ``na`` for its checks."""
     dep = _num(deposit_usd)
     dep = dep if dep is not None and dep > 0 else None
     opts = [lg for lg in legs if lg.get("kind") in ("call", "put") and (_num(lg.get("size")) or 0.0) > 0]
@@ -171,10 +239,11 @@ def pre_trade_option(
     debit = None
     if bought and all(p is not None for p in prems):
         debit = sum((1.0 if lg.get("side") == "long" else -1.0) * float(lg["size"]) * float(p) for lg, p in zip(opts, prems, strict=True))  # type: ignore[arg-type]
+    floor = ban_hours / 24.0
     if not bought or (debit is not None and debit <= 0):
         why = "nothing bought" if not bought else "net premium received"
         out.append({"rule": 8, "key": "premium", "status": NA, "value": debit, "limit": limit, "detail": why})
-        out.append({"rule": 8, "key": "days_to_expiry", "status": NA, "value": None, "limit": min_buy_days, "detail": why})
+        out.append({"rule": 8, "key": "days_to_expiry", "status": NA, "value": None, "limit": floor, "zone": None, "detail": why})
         return out
     if debit is None or limit is None:
         out.append({"rule": 8, "key": "premium", "status": UNKNOWN, "value": debit, "limit": limit, "detail": "premium or deposit unknown"})
@@ -184,21 +253,56 @@ def pre_trade_option(
 
     if _num(expiry_ts) is None:
         out.append(
-            {"rule": 8, "key": "days_to_expiry", "status": UNKNOWN, "value": None, "limit": min_buy_days, "detail": "expiry unknown"}
+            {"rule": 8, "key": "days_to_expiry", "status": UNKNOWN, "value": None, "limit": floor, "zone": None, "detail": "expiry unknown"}
         )
+        return out
+    hours = (float(expiry_ts) - float(now_ts)) / 3600.0  # type: ignore[arg-type]
+    days = hours / 24.0
+    zone = buy_zone(hours, ban_hours, cond_hours)
+    row = {"rule": 8, "key": "days_to_expiry", "value": days, "limit": floor, "zone": zone}
+    if zone == ZONE_BAN:
+        out.append({**row, "status": VIOLATED, "detail": "under 24 h to expiry: never buy"})
+        return out
+    if zone == ZONE_FREE:
+        out.append({**row, "status": OK, "detail": "over 3 days to expiry: the premium limit only"})
+        return out
+
+    th_st, th_why = thesis_check(thesis, target)
+    a = {"rule": 8, "key": "thesis", "status": th_st, "value": th_st == OK, "limit": None, "detail": th_why}
+    s, r = _num(spot), _num(rv)
+    s = s if s is not None and s > 0 else None
+    r = r if r is not None and r > 0 else None
+    rv_why = "RV30: 30 daily closes, zero mean, x365 (the forecast log's RV30 model)"
+    if debit is None:  # a leg without a premium: the payoff would treat it as free and understate the move
+        b = {"rule": 8, "key": "breakeven_move", "status": UNKNOWN, "value": None, "limit": None, "detail": "premium unknown"}
+    elif s is None or r is None:
+        b = {"rule": 8, "key": "breakeven_move", "status": UNKNOWN, "value": None, "limit": None, "detail": "spot or RV unknown"}
     else:
-        days = (float(expiry_ts) - float(now_ts)) / DAY_S  # type: ignore[arg-type]
-        st = VIOLATED if days <= min_buy_days else OK
-        out.append(
-            {
-                "rule": 8,
-                "key": "days_to_expiry",
-                "status": st,
-                "value": days,
-                "limit": min_buy_days,
-                "detail": "buying this close to expiry",
-            }
-        )
+        move, cap = breakeven_move(opts, s), be_max_sigma * r * math.sqrt(days / 365.0)
+        if move is None:
+            b_st, b_why = VIOLATED, "no breakeven: the structure never profits at expiry"
+        else:
+            b_st = OK if move <= cap * (1 + _EPS) else VIOLATED
+            b_why = f"move to the nearest breakeven vs {be_max_sigma:g} sigma at RV over the time left; {rv_why}"
+        b = {"rule": 8, "key": "breakeven_move", "status": b_st, "value": move, "limit": cap, "detail": b_why}
+    ivs = [_num(lg.get("iv")) for lg in bought]
+    if r is None or not ivs or any(v is None or v <= 0 for v in ivs):
+        c = {"rule": 8, "key": "iv_vs_rv", "status": UNKNOWN, "value": None, "limit": None, "detail": "option IV or RV unknown"}
+    else:
+        iv = max(v for v in ivs if v is not None)
+        cap_iv = iv_max_rv * r
+        c_st = OK if iv <= cap_iv * (1 + _EPS) else VIOLATED
+        c = {
+            "rule": 8,
+            "key": "iv_vs_rv",
+            "status": c_st,
+            "value": iv,
+            "limit": cap_iv,
+            "detail": f"highest bought IV vs {iv_max_rv:g} x RV; {rv_why}",
+        }
+    st = conditions_status(a["status"], b["status"], c["status"])
+    out.append({**row, "status": st, "detail": "1-3 days to expiry: only with all three checks below"})
+    out.extend((a, b, c))
     return out
 
 
@@ -235,6 +339,8 @@ def _normalize(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
                 "entry": _num(t.get("entry")),
                 "stop": _num(t.get("stop")),
                 "target": _num(t.get("target")),
+                # an import writes a placeholder ("теза не записана"), not the owner's thesis
+                "thesis": None if "import" in tags else t.get("thesis"),
                 "pnl": _num(t.get("pnl")) if status == "closed" else None,
             }
         )
@@ -283,11 +389,16 @@ def trade_checks(
     streak: int = DAY_LOSING_STREAK,
     min_rr: float = MIN_RR,
     premium_pct: float = PREMIUM_PCT,
-    min_buy_days: float = MIN_BUY_DAYS,
+    ban_hours: float = BUY_BAN_HOURS,
+    cond_hours: float = BUY_COND_HOURS,
 ) -> list[dict[str, Any]]:
     """Each open or closed journal row (pass the owner's real trades: no airdrop, no *-paper rows) with the status of
     rules 1, 2, 4, 5 and 8: {id, week, opened_ts, pnl, rules: {n: status}, approx: rule 4 judged on the close time,
-    alt_longs: distinct alt longs open right after this one opened (rule 2, or None), late_buy, big_premium}.
+    alt_longs: distinct alt longs open right after this one opened (rule 2, or None), buy_zone, buy_conditions,
+    late_buy, big_premium}. For a bought option: ``buy_zone`` is the rule 8 zone of the opening (None without a real
+    opening time or expiry), ``buy_conditions`` the three checks in the 1-3 day zone ({thesis, breakeven_move,
+    iv_vs_rv}: statuses; the journal has no spot or IV at the opening, so the last two are ``unknown``), ``late_buy``
+    True when the timing broke the rule (under 24 h, or 1-3 days with a check failed), None when it cannot tell.
     ``week`` is the ISO week (UTC) of the opening; open trades count up to ``now_ts``."""
     xs = _normalize(rows)
     risk_cap = deposit_usd * risk_pct / 100.0
@@ -324,10 +435,17 @@ def trade_checks(
         else:
             r[5] = OK if abs(x["target"] - x["entry"]) / abs(x["entry"] - x["stop"]) >= min_rr - _EPS else VIOLATED
         # rule 8
-        late = big = None
+        late = big = zone = conds = None
         if long_opt:
             big = None if premium is None else premium > prem_cap * (1 + _EPS)
-            late = None if x["expiry"] is None or not x["open_known"] else (x["expiry"] - x["opened"]) / DAY_S <= min_buy_days
+            if x["expiry"] is not None and x["open_known"]:
+                zone = buy_zone((x["expiry"] - x["opened"]) / 3600.0, ban_hours, cond_hours)
+            if zone == ZONE_COND:
+                conds = {"thesis": thesis_check(x["thesis"], x["target"])[0], "breakeven_move": UNKNOWN, "iv_vs_rv": UNKNOWN}
+                cst = conditions_status(*conds.values())
+                late = True if cst == VIOLATED else None if cst == UNKNOWN else False
+            elif zone is not None:
+                late = zone == ZONE_BAN
             r[8] = VIOLATED if late or big else UNKNOWN if late is None or big is None else OK
         else:
             r[8] = NA
@@ -340,6 +458,8 @@ def trade_checks(
                 "rules": r,
                 "approx": r[4] == VIOLATED and not x["open_known"],
                 "alt_longs": alt_n[x["i"]][0] if x["i"] in alt_n else None,
+                "buy_zone": zone,
+                "buy_conditions": conds,
                 "late_buy": late,
                 "big_premium": big,
             }
@@ -374,8 +494,9 @@ def _alt_long_counts(xs: list[dict[str, Any]], now_ts: float, cap: int = MAX_ALT
 
 def weekly_violations(rows: Iterable[Mapping[str, Any]], *, now_ts: float, **params: Any) -> list[dict[str, Any]]:
     """Rule violations by ISO week of the opening (UTC), newest first: {week, n_trades, rules: {n: {status, violated,
-    checked, unknown}}, days_stopped, approx, max_alt_longs, late_buys, big_premiums, n_violating, pnl_violating,
-    n_violating_approx, pnl_violating_approx}.
+    checked, unknown}}, days_stopped, approx, max_alt_longs, late_buys, buys_under_24h, buys_cond_failed,
+    big_premiums, n_violating, pnl_violating, n_violating_approx, pnl_violating_approx}. Rule 8: ``late_buys`` =
+    ``buys_under_24h`` (never buy) + ``buys_cond_failed`` (1-3 days with a check failed).
     ``checked`` = trades the rule applies to with enough data, ``unknown`` = applies but the data cannot tell.
     Exact and approximate are kept apart: rule 4's ``violated`` / ``checked`` leave out the flags judged on the close
     time (``approx`` counts those); ``n_violating`` / ``pnl_violating`` are the trades with at least one exact
@@ -415,6 +536,8 @@ def weekly_violations(rows: Iterable[Mapping[str, Any]], *, now_ts: float, **par
                 "approx": sum(1 for c in cs if c["approx"]),
                 "max_alt_longs": max(alts) if alts else None,
                 "late_buys": sum(1 for c in cs if c["late_buy"]),
+                "buys_under_24h": sum(1 for c in cs if c["buy_zone"] == ZONE_BAN),
+                "buys_cond_failed": sum(1 for c in cs if c["buy_zone"] == ZONE_COND and c["late_buy"]),
                 "big_premiums": sum(1 for c in cs if c["big_premium"]),
                 "n_violating": len(bad),
                 "pnl_violating": sum(pnls) if pnls else None,

@@ -13,7 +13,7 @@ the same method. Units and conventions (same as `put_skew`):
     @DataHawks put skew does not match ours); compare changes over time, not levels.
 
 `radar_view` turns archive rows plus daily DVOL, daily spot closes and calendar events into the snapshot's ``radar``
-block of one asset (now / a week ago, IV Rank, IV vs RV, skew, smile, forward vol with events).
+block of one asset (now / a week ago, IV Rank, IV vs RV, skew, smile, forward vol with events, yearly chart series).
 """
 
 from __future__ import annotations
@@ -138,6 +138,7 @@ WEEK_DAYS = 7
 MAX_ROW_AGE_DAYS = 2  # «now» is the newest archive row at most this many days before the latest due day
 IV_RANK_DAYS = 365
 IV_RANK_MIN_DAYS = 330  # fewer daily DVOL closes in the year window -> no IV Rank
+YEAR_DAYS = 365  # the yearly chart series (price, DVOL, skew history)
 # forward-vol windows are tagged with these calendar kinds (analytics.macro_calendar); speeches, claims, minutes are not
 FWD_EVENT_KINDS = frozenset({"fomc", "cpi", "core_pce", "pce", "nfp", "ppi", "gdp", "election"})
 # «hot» window, as in the prototype: >= 5 days long, ending within 100 days, forward vol >= median of those + 3 vol points
@@ -342,6 +343,77 @@ def forward_vols(expiries: list[Any], events: list[dict[str, Any]], now_ms: int 
     return {"windows": windows, "median_weekly": med}
 
 
+def _sig(v: float, sig: int) -> float:
+    """``v`` rounded to ``sig`` significant digits: keeps the snapshot's yearly series short."""
+    return float(f"{v:.{sig}g}")
+
+
+def daily_grid(cols: dict[str, dict[int, float]], end_day_ms: int, days: int = YEAR_DAYS, sig: int = 4) -> dict[str, Any] | None:
+    """Compact daily series for a chart: each column's values on the UTC-day grid of the ``days`` days ending
+    ``end_day_ms`` (inclusive), None on days without a point, rounded to ``sig`` significant digits. Days empty in
+    every column are trimmed at both ends. Returns {"start": "YYYY-MM-DD", <column>: [...], "n": days with a value}
+    (day i of a column is ``start`` + i days), or None when no column has a point in the window.
+    """
+    first = end_day_ms - (days - 1) * DAY_MS
+    have = sorted({t for pts in cols.values() for t in pts if first <= t <= end_day_ms})
+    if not have:
+        return None
+    lo, hi = have[0], have[-1]
+    out: dict[str, Any] = {"start": _iso_day(lo)}
+    for name, pts in cols.items():
+        out[name] = [None if (v := pts.get(t)) is None else _sig(v, sig) for t in range(lo, hi + DAY_MS, DAY_MS)]
+    out["n"] = len(have)
+    return out
+
+
+def year_series(
+    rows: list[dict[str, Any]],
+    dvol: list[tuple[int, float]],
+    closes: list[tuple[int, float]],
+    now: datetime,
+    miss: Callable[[str, str], None],
+) -> dict[str, Any]:
+    """The radar's yearly chart series (`YEAR_DAYS` UTC days ending on ``now``'s day), each `daily_grid` or None with a
+    reason through ``miss``:
+
+    * ``price``: daily spot closes (USD; the bar's UTC day; the newest bar may be the live current-day price);
+    * ``dvol``: daily DVOL closes as decimals (Deribit publishes percent);
+    * ``skew``: the archive rows' 30-day ``put_skew_25`` and ``rr_25`` (decimal vol differences), rows up to the latest
+      due day only.
+    Points after ``now`` are ignored; non-positive prices and DVOL are dropped.
+    """
+    now_ms = int(now.timestamp() * 1000)
+    today = now_ms // DAY_MS * DAY_MS
+    first = _iso_day(today - (YEAR_DAYS - 1) * DAY_MS)
+    px = {int(t) // DAY_MS * DAY_MS: float(c) for t, c in closes if int(t) <= now_ms and (_num(c) or 0.0) > 0}
+    price = daily_grid({"values": px}, today, sig=6)
+    if price is None:
+        miss("year_price", f"no daily close from {first} to {_iso_day(today)}")
+    dv = {int(t) // DAY_MS * DAY_MS: float(v) / 100.0 for t, v in dvol if int(t) <= now_ms and (_num(v) or 0.0) > 0}
+    dvol_s = daily_grid({"values": dv}, today)
+    if dvol_s is None:
+        miss("year_dvol", f"no daily DVOL from {first} to {_iso_day(today)}")
+    due = due_days(now, 1)[0]
+    ps: dict[int, float] = {}
+    rr: dict[int, float] = {}
+    for r in rows:
+        try:
+            n = normalize_row(r)
+        except (KeyError, TypeError, ValueError):
+            continue
+        t = _day_ms(n["day"])
+        if t > due:
+            continue
+        if n["put_skew_25"] is not None:
+            ps[t] = n["put_skew_25"]
+        if n["rr_25"] is not None:
+            rr[t] = n["rr_25"]
+    skew = daily_grid({"put_skew_25": ps, "rr_25": rr}, due)
+    if skew is None:
+        miss("year_skew", f"no radar archive skew from {_iso_day(due - (YEAR_DAYS - 1) * DAY_MS)} to {_iso_day(due)} (backfill not run)")
+    return {"price": price, "dvol": dvol_s, "skew": skew}
+
+
 def _sub(a: dict[str, Any] | None, b: dict[str, Any] | None, keys: Any) -> dict[str, float | None] | None:
     if a is None or b is None:
         return None
@@ -368,7 +440,8 @@ def radar_view(
     * ``iv_vs_rv``: 30-day ATM IV of the newest row against 30- and 7-day realized vol of the closes (``premium_*`` =
       IV - RV);
     * ``skew``: 30-day put skew 25-delta and RR 25-delta now / week / change; ``smile``: the 30-day smile now / week;
-    * ``forward_vol``: `forward_vols` on the newest row's term structure, without the windows that ended by ``now``.
+    * ``forward_vol``: `forward_vols` on the newest row's term structure, without the windows that ended by ``now``;
+    * ``year``: `year_series` for the charts (price, DVOL, skew history over the year), compact daily grids.
     """
     missing: list[dict[str, str]] = []
 
@@ -429,5 +502,6 @@ def radar_view(
     out["forward_vol"] = forward_vols(now_row["expiries"], events, now_ms) if now_row else {"windows": [], "median_weekly": None}
     if now_row and not out["forward_vol"]["windows"]:
         miss("forward_vol", "fewer than two expiries with an ATM IV, or every window has ended")
+    out["year"] = year_series(rows, dvol, closes, now, miss)
     out["missing"] = missing
     return out

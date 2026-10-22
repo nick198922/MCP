@@ -116,14 +116,18 @@ class Store:
         # BEGIN each ALTER TABLE would commit on its own and a crash mid-block would leave
         # the columns without the version bump ("duplicate column" on the next start).
         # user_version lives in the db header and is rolled back together with the block.
+        # The version is read again under the write lock: another process (the service, a script, a test worker) may
+        # have applied the block while this one waited for BEGIN IMMEDIATE.
         conn = self.conn
-        cur = await conn.execute("PRAGMA user_version")
-        row = await cur.fetchone()
-        current = int(row[0]) if row else 0
+        current = await self._user_version()
         for v in sorted(MIGRATIONS):
             if v <= current:
                 continue
             await conn.execute("BEGIN IMMEDIATE")
+            current = await self._user_version()
+            if v <= current:
+                await conn.rollback()
+                continue
             try:
                 for stmt in MIGRATIONS[v]:
                     await conn.execute(stmt)
@@ -132,6 +136,11 @@ class Store:
                 await conn.rollback()
                 raise
             await conn.commit()
+
+    async def _user_version(self) -> int:
+        cur = await self.conn.execute("PRAGMA user_version")
+        row = await cur.fetchone()
+        return int(row[0]) if row else 0
 
     async def aclose(self) -> None:
         if self._conn is not None:

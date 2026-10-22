@@ -1066,15 +1066,16 @@ def test_forecast_rv30_comparison_matches_the_analytics_and_renders(tmp_path):
     data, err = db.load_journal(p)
     rows = data["forecast_log"]
     mine, ref = db.fc_compare(rows), af.compare(rows)
-    assert ref["n"] == 24 and ref["n_expiries"] == 3 and ref["enough"] is False
+    assert ref["n"] == 24 and ref["n_dates"] == 2 and ref["enough"] is False
     assert {k: v for k, v in mine.items() if k != "ci95"} == pytest.approx({k: v for k, v in ref.items() if k != "ci95"})
     assert mine["ci95"] == pytest.approx(ref["ci95"])
-    assert db.fc_compare([]) == af.compare([]) == {"n": 0, "n_expiries": 0}
+    assert db.fc_compare([]) == af.compare([]) == {"n": 0, "n_dates": 0}
+    assert tuple(db.FC_T975) == af.T975
     page = db.render_journal(data, None, float(FC_E2 + 86400), path=p)
     for text in (
         f"Опціони проти RV30{db._info('fc_rv')}",
         f"{ref['diff']:+.3f}</span>",
-        f"Brier {ref['brier_risk_neutral']:.3f} проти {ref['brier_rv30']:.3f} · 95 % ДІ {ref['ci95'][0]:+.3f} … {ref['ci95'][1]:+.3f} · 3 експірацій",
+        f"Brier {ref['brier_risk_neutral']:.3f} проти {ref['brier_rv30']:.3f} · 95 % ДІ {ref['ci95'][0]:+.3f} … {ref['ci95'][1]:+.3f} · 2 дат експірації",
     ):
         assert text in page, text
     # a store before schema v23 (no prob_rv column) still reads, and the tile is left out

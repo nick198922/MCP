@@ -45,7 +45,40 @@ TARGET_DTE, DTE_BAND = 7.0, (4.0, 11.0)
 N_BINS = 10
 RV_DAYS = 30  # trailing daily returns of the RV30 model
 MODELS = ("risk_neutral", "rv30")
-MIN_EXPIRIES = 30  # below this many settled expiries a comparison is descriptive only
+MIN_EXPIRIES = 30  # below this many settled expiry dates a comparison is descriptive only
+# Student t 0.975 quantiles for 1..30 degrees of freedom (above: 1.96), for the comparison's ci95 with few dates
+T975 = (
+    12.706,
+    4.303,
+    3.182,
+    2.776,
+    2.571,
+    2.447,
+    2.365,
+    2.306,
+    2.262,
+    2.228,
+    2.201,
+    2.179,
+    2.160,
+    2.145,
+    2.131,
+    2.120,
+    2.110,
+    2.101,
+    2.093,
+    2.086,
+    2.080,
+    2.074,
+    2.069,
+    2.064,
+    2.060,
+    2.056,
+    2.052,
+    2.048,
+    2.045,
+    2.042,
+)
 
 
 def pick_expiry(
@@ -244,32 +277,37 @@ def as_model(rows: Iterable[Mapping[str, Any]], model: str) -> list[dict[str, An
     raise ValueError(f"unknown forecast model {model!r}")
 
 
+def _t975(df: int) -> float:
+    return T975[df - 1] if 1 <= df <= len(T975) else 1.96
+
+
 def compare(rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     """Paired Brier of the risk-neutral forecast against the RV30 model on the settled rows that have both.
 
-    ``diff`` = BS(risk-neutral) - BS(RV30): negative means the options forecast better. Rows of one (asset, expiry)
-    share the outcome, so the unit is the expiry: ``diff`` is the mean of the per-expiry mean differences, ``se`` their
-    standard error and ``ci95`` = diff +- 1.96 se (a normal approximation, too narrow with few expiries; None below
-    two). ``enough`` is False below :data:`MIN_EXPIRIES` expiries: the result is then descriptive, not a finding."""
+    ``diff`` = BS(risk-neutral) - BS(RV30): negative means the options forecast better. Rows of one expiry date share
+    the outcome, and BTC and ETH settle at the same 08:00 delivery and move together, so the unit is the expiry DATE
+    (``n_dates``): ``diff`` is the mean of the per-date mean differences, ``se`` their standard error and ``ci95`` =
+    diff +- t(0.975, k - 1) se (Student t, None below two dates). ``enough`` is False below :data:`MIN_EXPIRIES`
+    dates: the result is then descriptive, not a finding."""
     xs = [x for x in _settled(rows) if x.get("prob_rv") is not None]
     if not xs:
-        return {"n": 0, "n_expiries": 0}
-    clusters: dict[tuple[Any, Any], list[float]] = {}
+        return {"n": 0, "n_dates": 0}
+    clusters: dict[Any, list[float]] = {}
     for x in xs:
         o = int(x["outcome"])
-        clusters.setdefault((x.get("asset"), x.get("expiry_ts")), []).append(brier(float(x["prob"]), o) - brier(float(x["prob_rv"]), o))
+        clusters.setdefault(x.get("expiry_ts"), []).append(brier(float(x["prob"]), o) - brier(float(x["prob_rv"]), o))
     means = [_mean(v) for v in clusters.values()]
     k = len(means)
     diff = _mean(means)
     se = math.sqrt(sum((m - diff) ** 2 for m in means) / (k - 1) / k) if k >= 2 else None
     return {
         "n": len(xs),
-        "n_expiries": k,
+        "n_dates": k,
         "brier_risk_neutral": _mean([brier(float(x["prob"]), int(x["outcome"])) for x in xs]),
         "brier_rv30": _mean([brier(float(x["prob_rv"]), int(x["outcome"])) for x in xs]),
         "diff": diff,
         "se": se,
-        "ci95": None if se is None else [diff - 1.96 * se, diff + 1.96 * se],
+        "ci95": None if se is None else [diff - _t975(k - 1) * se, diff + _t975(k - 1) * se],
         "better": "risk_neutral" if diff < 0 else "rv30" if diff > 0 else "tie",
         "enough": k >= MIN_EXPIRIES,
     }

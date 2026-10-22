@@ -148,24 +148,26 @@ def test_compare_hand_computed():
         # expiry 1: the options better on both rows
         {"asset": "BTC", "kind": "above_spot", "expiry_ts": 1, "prob": 0.6, "prob_rv": 0.5, "outcome": 1},
         {"asset": "BTC", "kind": "in_pct_5", "expiry_ts": 1, "prob": 0.9, "prob_rv": 0.7, "outcome": 1},
-        # expiry 2: RV30 better
+        # expiry 2: RV30 better; ETH of the same date is the same unit (BTC and ETH settle together)
         {"asset": "BTC", "kind": "in_pct_5", "expiry_ts": 2, "prob": 0.9, "prob_rv": 0.7, "outcome": 0},
+        {"asset": "ETH", "kind": "above_spot", "expiry_ts": 2, "prob": 0.5, "prob_rv": 0.5, "outcome": 1},
         {"asset": "ETH", "kind": "in_pct_5", "expiry_ts": 2, "prob": 0.8, "prob_rv": None, "outcome": 0},  # no RV30: left out
         {"asset": "BTC", "kind": "in_pct_10", "expiry_ts": 3, "prob": 0.9, "prob_rv": 0.8, "outcome": None},  # open: left out
     ]
     d1 = ((0.16 - 0.25) + (0.01 - 0.09)) / 2
-    d2 = 0.81 - 0.49
+    d2 = ((0.81 - 0.49) + 0.0) / 2
     c = compare(rows)
-    assert c["n"] == 3 and c["n_expiries"] == 2 and c["diff"] == pytest.approx((d1 + d2) / 2)
+    assert c["n"] == 4 and c["n_dates"] == 2 and c["diff"] == pytest.approx((d1 + d2) / 2)
     assert c["se"] == pytest.approx(abs(d1 - d2) / 2)  # sd of two means / sqrt(2)
-    assert c["ci95"] == pytest.approx([c["diff"] - 1.96 * c["se"], c["diff"] + 1.96 * c["se"]])
-    assert c["brier_risk_neutral"] == pytest.approx((0.16 + 0.01 + 0.81) / 3) and c["brier_rv30"] == pytest.approx((0.25 + 0.09 + 0.49) / 3)
+    assert c["ci95"] == pytest.approx([c["diff"] - 12.706 * c["se"], c["diff"] + 12.706 * c["se"]])  # t(0.975, 1 df)
+    assert c["brier_risk_neutral"] == pytest.approx((0.16 + 0.01 + 0.81 + 0.25) / 4)
+    assert c["brier_rv30"] == pytest.approx((0.25 + 0.09 + 0.49 + 0.25) / 4)
     assert c["better"] == "rv30" and c["enough"] is False and MIN_EXPIRIES == 30
     one = compare(rows[:2])
-    assert one["n_expiries"] == 1 and one["se"] is None and one["ci95"] is None and one["better"] == "risk_neutral"
-    assert compare([]) == {"n": 0, "n_expiries": 0}
+    assert one["n_dates"] == 1 and one["se"] is None and one["ci95"] is None and one["better"] == "risk_neutral"
+    assert compare([]) == {"n": 0, "n_dates": 0}
     rv = as_model(rows, "rv30")
-    assert [x["prob"] for x in rv] == [0.5, 0.7, 0.7, 0.8] and score(rv)["n"] == 3
+    assert [x["prob"] for x in rv] == [0.5, 0.7, 0.7, 0.5, 0.8] and score(rv)["n"] == 4
     assert as_model(rows, "risk_neutral")[0]["prob"] == 0.6
     with pytest.raises(ValueError):
         as_model(rows, "gut")
@@ -360,7 +362,7 @@ async def test_rv30_model_recorded_settled_and_compared(tmp_path):
     try:
         assert await collect_forecast_log(rt) == 8
         rows = await rt.store.forecast_list()
-        assert all(r["rv30"] == pytest.approx(RV_EXPECTED) and 0 < r["prob_rv"] < 1 for r in rows)
+        assert all(r["rv30"] == pytest.approx(RV_EXPECTED) and 0 < r["prob_rv"] < 1 for r in rows)  # today's partial bar is dropped
         assert all(r["prob_rv"] == pytest.approx(0.5) for r in rows if r["kind"] == "above_spot")
         rt.now = lambda: datetime(2026, 10, 31, 12, tzinfo=UTC)
         srv, _ = build_server(rt)
@@ -370,8 +372,8 @@ async def test_rv30_model_recorded_settled_and_compared(tmp_path):
         assert all(r["brier_rv"] == pytest.approx((r["prob_rv"] - r["outcome"]) ** 2, abs=1e-4) for r in d["settled"])
         assert d["scores_rv30"]["all"]["n"] == 8
         c = d["comparison"]["all"]
-        assert c["n"] == 8 and c["n_expiries"] == 2 and c["enough"] is False
-        assert c["diff"] == pytest.approx(c["brier_risk_neutral"] - c["brier_rv30"], abs=1e-4)  # equal rows per expiry
+        assert c["n"] == 8 and c["n_dates"] == 1 and c["enough"] is False and c["se"] is None  # BTC and ETH: one date
+        assert c["diff"] == pytest.approx(c["brier_risk_neutral"] - c["brier_rv30"], abs=1e-4)
         assert d["comparison"]["by_kind"]["above_spot"]["n"] == 2
         assert any("RV30 model is a naive physical baseline" in w for w in out["warnings"])
     finally:
@@ -388,7 +390,7 @@ async def test_rv30_closes_down_still_records_the_options_forecast(tmp_path):
         rt.now = lambda: datetime(2026, 10, 31, 12, tzinfo=UTC)
         srv, _ = build_server(rt)
         out = await _call(srv, "forecast_log_status")
-        assert out["ok"] and out["data"]["comparison"]["all"] == {"n": 0, "n_expiries": 0}
+        assert out["ok"] and out["data"]["comparison"]["all"] == {"n": 0, "n_dates": 0}
         assert out["data"]["scores_rv30"]["all"] == {"n": 0} and out["data"]["scores"]["all"]["n"] == 8
     finally:
         DailyEx.down = False

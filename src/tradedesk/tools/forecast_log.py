@@ -31,7 +31,9 @@ FORECAST_WARNING = (
     "expiry share the outcome, so they are correlated: read `n_expiries`, not `n`, as the sample size. The climatology "
     "reference is in-sample (it knows the base rate in hindsight). Few settled expiries: the scores are descriptive. "
     "The RV30 model is a naive physical baseline (zero-drift lognormal at the trailing 30-day realized vol, no skew or "
-    "events), not the assistant's judgment; `comparison` is descriptive until `enough` (30 settled expiries)."
+    "events), not the assistant's judgment. Compare the two models only through `comparison` (paired on the same rows); "
+    "`scores_rv30` covers only rows that have the RV30 model, so it is not on the same sample as `scores`. The comparison's "
+    "unit is the expiry date (BTC and ETH of one date move together): it is descriptive until `enough` (30 dates)."
 )
 
 
@@ -98,15 +100,18 @@ async def forecast_rows(rt: Runtime, b: Builder, asset: str) -> list[dict[str, A
 
 
 async def _rv30(rt: Runtime, b: Builder, asset: str) -> float | None:
-    """Trailing RV30 of ``asset`` from Binance daily closes; None (with a warning, not a `missing` entry) when it fails.
+    """Trailing RV30 of ``asset`` from Binance completed daily closes (today's partial bar is dropped: weighted as a full
+    day it would shrink the vol); None (with a warning, not a `missing` entry) when it fails.
 
     The risk-neutral forecast does not depend on it, so a closes failure must not make the collector retry the day."""
     rb = Builder()
     bars = await rb.guard(f"rv30:{asset}", f"ccxt:{RV_VENUE}", rt.exchanges.ohlcv(RV_VENUE, f"{asset}/USDT", "1d", RV_DAYS + 3))
+    today_ms = int(rt.now().timestamp()) // 86400 * 86_400_000
     closes = []
     for x in bars or []:
         try:
-            closes.append((int(x[0]), float(x[4])))
+            if int(x[0]) < today_ms:
+                closes.append((int(x[0]), float(x[4])))
         except (TypeError, ValueError, IndexError):
             continue
     rv, why = (
@@ -187,8 +192,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "Beside it, the RV30 model, a naive PHYSICAL baseline: ln(S_T/S0) ~ N(0, RV30^2 T), RV30 = trailing 30-day "
             "zero-mean close-to-close realized vol of Binance spot (decimal, annualised x365; `above_spot` is always 0.5): "
             "`scores_rv30` (the same scores on the rows that have it) and `comparison` (all and per kind, paired on the same "
-            "rows: Brier of each, diff = BS risk-neutral - BS RV30, negative = options better, clustered by expiry with se "
-            "and a normal ci95, `enough` once 30 expiries are settled). "
+            "rows: Brier of each, diff = BS risk-neutral - BS RV30, negative = options better, clustered by expiry date "
+            "(`n_dates`) with se and a Student-t ci95, `enough` once 30 dates are settled). RV30 uses completed daily bars only. "
             "Probabilities are what options price, not real-world odds (see `warnings`); forecasts on consecutive days share "
             "an outcome, so `n_expiries` is the sample size. A delivery price not yet published leaves the row open (`missing`)."
         ),

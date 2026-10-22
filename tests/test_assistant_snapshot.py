@@ -247,7 +247,13 @@ async def test_snapshot_radar_section_from_archive(state, tmp_path):
     assert any(w["hot"] for w in btc["forward_vol"]["windows"])
     # ETH has no archive rows: its surface fields are null with a reason, the rest is there
     assert eth["price"]["now"] is None and eth["atm"]["now"] is None and eth["iv_rank"]["now"] is not None
-    assert [m["field"] for m in eth["missing"]] == ["surface"]
+    assert [m["field"] for m in eth["missing"]] == ["surface", "year_skew"] and eth["year"]["skew"] is None
+    # yearly chart series: a year of closes (one Binance request) and DVOL; the skew of the two archive rows
+    y = btc["year"]
+    assert len(y["price"]["values"]) == 365 and y["price"]["n"] == 365 and y["price"]["start"] == "2025-10-11"
+    assert len(y["dvol"]["values"]) == 365 and y["dvol"]["values"][-1] > y["dvol"]["values"][0]  # the fake DVOL drifts up
+    assert y["skew"]["start"] == "2026-10-02" and y["skew"]["n"] == 2 and len(y["skew"]["put_skew_25"]) == 8
+    assert any("Yearly series" in w for w in sec["warnings"]) and eth["year"]["price"]["n"] == 365
 
 
 async def test_snapshot_radar_provider_failure_lands_in_missing(state, tmp_path):

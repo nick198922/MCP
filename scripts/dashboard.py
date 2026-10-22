@@ -51,7 +51,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -711,6 +711,12 @@ HELP: dict[str, tuple[str, str, str, str]] = {
         "IV за дельтами: пути 10/25/35Δ, ATM, коли 35/25/10Δ — зараз і тиждень тому.",
         "Ліва частина вища — пути дорожчі за коли (страх падіння). Підйом усієї кривої — опціони подорожчали загалом.",
         "Показує, яку частину опціонів дешевше купувати чи продавати саме зараз.",
+    ),
+    "r_skewhist": (
+        "Скью за рік",
+        "Put skew і RR 25Δ на 30 днів з архіву поверхні за кожен день, медіана за 7 днів.",
+        "Put skew вгору або RR вниз — захист від падіння дорожчає; лінія біля верху року — страх високий.",
+        "Порівнюй поточний скью з його ж історією, а не з іншими джерелами: конвенція дельти в них інша.",
     ),
     "r_fwd": (
         "Форвардна вола і події",
@@ -2926,7 +2932,14 @@ RADAR_MISS_UA = {
     "rv30": "реалізована 30 дн",
     "rv7": "реалізована 7 дн",
     "forward_vol": "форвардна вола",
+    "year_price": "ціна за рік",
+    "year_dvol": "DVOL за рік",
+    "year_skew": "скью за рік",
 }
+RADAR_YEAR_MAX_DAYS = 400  # a yearly series longer than this is cut (analytics.radar.YEAR_DAYS = 365)
+RADAR_YEAR_FULL_DAYS = 360  # fewer days with data: the chart notes «N з 365 днів»
+RADAR_HIST_MIN_DAYS = 20  # skew history: fewer archive days draw no chart (as the mock-up)
+RADAR_HIST_MEDIAN = 7  # skew history: rolling median over this many days, at least 3 with data (as the mock-up)
 RADAR_CAVEATS = (
     "Поверхня — марки Deribit з угод за 6 год до 19:00 UTC, один рядок архіву на день: «зараз» — останній день архіву, "
     "а не живий ринок. IV Rank рахується за денним DVOL, тож його дати можуть відрізнятися від дат поверхні на 1–3 дні.",
@@ -3098,19 +3111,141 @@ def _two_lines_legend(nd: str, wd: str) -> str:
     )
 
 
-def block_r_price(a: dict) -> str:
+def _year_grid(obj: object, *cols: str) -> tuple[datetime, list[list[float | None]]] | None:
+    """(first day, columns) of a yearly series (`analytics.radar.daily_grid`: day i = start + i days); None if malformed."""
+    g = _rd(obj)
+    m = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})", str(g.get("start") or ""))
+    if not m:
+        return None
+    try:
+        start = datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)), tzinfo=timezone.utc)  # noqa: UP017
+    except ValueError:
+        return None
+    out = []
+    for c in cols:
+        vals = g.get(c)
+        if not isinstance(vals, list):
+            return None
+        out.append([_num(v) for v in vals[:RADAR_YEAR_MAX_DAYS]])
+    return start, out
+
+
+def _day_label(start: datetime, i: int) -> str:
+    return (start + timedelta(days=i)).strftime("%d.%m.%y")
+
+
+def year_svg(
+    start: datetime,
+    lines: list[tuple[list[float | None], str]],
+    aria: str,
+    ylab,
+    *,
+    pad: float = 0.08,
+    zero: bool = False,
+    hlines: tuple = (),
+    dots: tuple = (),
+) -> str:
+    """Lines over a daily grid (index i = start + i days) with month labels, as the mock-up's year charts: gaps for None,
+    ``hlines`` = ((value, label), ...) dashed reference lines, ``dots`` = ((index, value, colour), ...). '' if too little."""
+    n = max((len(v) for v, _ in lines), default=0)
+    vals = [v for vs, _ in lines for v in vs if v is not None]
+    if n < 2 or len(vals) < 2:
+        return ""
+    lo, hi = min(vals), max(vals)
+    if zero:
+        lo, hi = min(lo, 0.0), max(hi, 0.0)
+    span = hi - lo or abs(hi) * 0.1 or 1.0
+    lo, hi = lo - span * pad, hi + span * pad
+    W, H, L, R, Tp, B = 520, 190, 48, 12, 12, 24
+
+    def X(i: float) -> float:
+        return L + i / (n - 1) * (W - L - R)
+
+    def Y(v: float) -> float:
+        return Tp + (hi - v) / (hi - lo) * (H - Tp - B)
+
+    g = []
+    st_ = nice_step(hi - lo, 4)
+    for k in range(int(math.ceil(lo / st_)), int(math.floor(hi / st_)) + 1):
+        v = k * st_
+        axis = zero and abs(v) < st_ / 1000
+        g.append(
+            f'<line x1="{L}" x2="{W - R}" y1="{Y(v):.1f}" y2="{Y(v):.1f}" style="stroke:var({"--mut" if axis else "--line"})"/>'
+            f'<text x="{L - 6}" y="{Y(v) + 4:.1f}" text-anchor="end">{_e(ylab(v, st_))}</text>'
+        )
+    firsts = [i for i in range(n) if (start + timedelta(days=i)).day == 1]
+    for i in firsts[:: 2 if len(firsts) > 6 else 1]:
+        g.append(f'<text x="{X(i):.1f}" y="{H - 6}" text-anchor="middle">{MONTHS_UA[(start + timedelta(days=i)).month - 1]}</text>')
+    for v, lab in hlines:
+        g.append(
+            f'<line x1="{L}" x2="{W - R}" y1="{Y(v):.1f}" y2="{Y(v):.1f}" style="stroke:var(--mut);stroke-dasharray:4 3"/>'
+            f'<text x="{W - R - 2}" y="{Y(v) - 3:.1f}" text-anchor="end" style="fill:var(--mut)">{_e(lab)}</text>'
+        )
+    for vs, style in lines:
+        d, pen = "", False
+        for i, v in enumerate(vs):
+            if v is None:
+                pen = False
+                continue
+            d += f"{'L' if pen else 'M'}{X(i):.1f},{Y(v):.1f}"
+            pen = True
+        if d:
+            g.append(f'<path d="{d}" style="fill:none;stroke-width:1.5;{style}"/>')
+    for i, v, col in dots:
+        g.append(f'<circle cx="{X(i):.1f}" cy="{Y(v):.1f}" r="3.5" style="fill:{col}"/>')
+    return f'<svg viewBox="0 0 {W} {H}" role="img" aria-label="{_e(aria)}">{"".join(g)}</svg>'
+
+
+def _vol_tick(v: float, st_: float) -> str:
+    return _nf(v * 100, 0 if round(st_ * 100, 6) % 1 == 0 else 1)
+
+
+def _last_and_week(vals: list[float | None]) -> tuple[int | None, int | None]:
+    """Index of the newest value and of the value 7 days before it (None when that day is empty)."""
+    last = next((i for i in range(len(vals) - 1, -1, -1) if vals[i] is not None), None)
+    week = last - 7 if last is not None and last >= 7 and vals[last - 7] is not None else None
+    return last, week
+
+
+def block_r_year_price(a: dict, asset: str) -> str:
+    """Price over the year (the snapshot's `year.price`: Binance daily closes), as the mock-up's block 1 chart."""
+    miss = _radar_missing(a, "year_price")
+    g = _year_grid(_rd(a.get("year")).get("price"), "values")
+    if g is None:
+        return miss
+    start, (vals,) = g
+    vals = [v if v is not None and v > 0 else None for v in vals]
+    last, week = _last_and_week(vals)
+    dots = ((week, vals[week], "var(--mut)"),) if week is not None else ()
+    if last is not None:
+        dots += ((last, vals[last], "var(--fg)"),)
+    svg = year_svg(start, [(vals, "stroke:var(--fg)")], f"{asset}: ціна за рік", lambda v, _: _k(v), pad=0.06, dots=dots)
+    if not svg:
+        return miss
+    n = sum(1 for v in vals if v is not None)
+    short = f", {n} з 365 днів" if n < RADAR_YEAR_FULL_DAYS else ""
+    note = (
+        f"<p class='note'>Ціна за рік: денні закриття Binance {_e(asset)}/USDT за днями UTC, {_e(_day_label(start, 0))}–"
+        f"{_e(_day_label(start, last or 0))}{short}. Остання точка — поточна ціна дня, тож вона відрізняється від індексу "
+        "Deribit о 19:00 UTC у плитках; сіра точка — тиждень тому.</p>"
+    )
+    return svg + note + miss
+
+
+def block_r_price(a: dict, asset: str = "") -> str:
     p, (nd, wd) = _rd(a.get("price")), _surface_days(a)
     now, week, ch = _num(p.get("now")), _num(p.get("week")), _num(p.get("change"))
     miss = _radar_missing(a, "surface", "surface_week")
+    chart = block_r_year_price(a, asset)
     if now is None and week is None:
-        return _empty("Ціни з архіву поверхні немає.") + miss
+        return _empty("Ціни з архіву поверхні немає.") + miss + chart
     cls = "" if ch is None else "ok" if ch >= 0 else "bad"
     tiles = (
         _tile("Зараз", f"<span class='num'>{_e(_nf(now))}</span>", f"{_e(nd)}, 19:00 UTC, індекс Deribit")
         + _tile("Тиждень тому", f"<span class='num mut'>{_e(_nf(week))}</span>", f"{_e(wd)}, 19:00 UTC")
         + _tile("Зміна", f"<span class='num {cls}'>{_e(_pc(ch * 100) if ch is not None else '—')}</span>", f"{_e(nd)} проти {_e(wd)}")
     )
-    return f"<div class='tiles'>{tiles}</div>" + miss
+    return f"<div class='tiles'>{tiles}</div>" + miss + chart
 
 
 def block_r_term(a: dict) -> str:
@@ -3137,13 +3272,42 @@ def block_r_term(a: dict) -> str:
     return svg + _two_lines_legend(nd, wd) + table + note + miss
 
 
+def block_r_year_dvol(a: dict) -> str:
+    """DVOL over the year (the snapshot's `year.dvol`) with the series' min / max and the IV Rank 20 % / 60 % levels."""
+    miss = _radar_missing(a, "year_dvol")
+    g = _year_grid(_rd(a.get("year")).get("dvol"), "values")
+    if g is None:
+        return miss
+    start, (vals,) = g
+    vals = [v if v is not None and v > 0 else None for v in vals]
+    pts = [v for v in vals if v is not None]
+    last, week = _last_and_week(vals)
+    if last is None or len(pts) < 2:
+        return miss
+    lo, hi = min(pts), max(pts)
+    hl = ((lo, f"мін {_vp(lo)}"), (hi, f"макс {_vp(hi)}"))
+    if hi > lo:
+        hl += ((lo + 0.2 * (hi - lo), "Rank 20 %"), (lo + 0.6 * (hi - lo), "Rank 60 %"))
+    dots = ((week, vals[week], "var(--mut)"),) if week is not None else ()
+    dots += ((last, vals[last], "var(--acc)"),)
+    svg = year_svg(start, [(vals, "stroke:var(--acc)")], "DVOL за рік", _vol_tick, hlines=hl, dots=dots)
+    n = len(pts)
+    short = f", {n} з 365 днів" if n < RADAR_YEAR_FULL_DAYS else ""
+    note = (
+        f"<p class='note'>DVOL за рік, {_e(_day_label(start, 0))}–{_e(_day_label(start, last))}{_e(short)}: зараз "
+        f"{_e(_vp(vals[last]))}, діапазон {_e(_vp(lo))} … {_e(_vp(hi))}. Пунктир — межі ряду і рівні IV Rank 20 % і 60 % "
+        "(межі зон спідометра); сіра точка — тиждень тому.</p>"
+    )
+    return svg + note + miss
+
+
 def block_r_rank(a: dict) -> str:
     r = _rd(a.get("iv_rank"))
     n, w = _rd(r.get("now")), _rd(r.get("week"))
     rn, rw, ch = _num(n.get("rank")), _num(w.get("rank")), _num(r.get("change"))
     miss = _radar_missing(a, "iv_rank", "iv_rank_week")
     if rn is None and rw is None:
-        return _empty("IV Rank порахувати нема з чого.") + miss
+        return _empty("IV Rank порахувати нема з чого.") + miss + block_r_year_dvol(a)
     parts = []
     if rn is not None:
         pct = _num(n.get("percentile"))
@@ -3160,7 +3324,7 @@ def block_r_rank(a: dict) -> str:
         + " Rank — де DVOL між мінімумом і максимумом року; перцентиль — частка днів року з нижчим DVOL. Один сплеск IV тримає "
         "Rank низьким надовго, тому дивись і на перцентиль. Дати — за денним DVOL, не за поверхнею.</p>"
     )
-    return rank_gauge_svg(rn, rw) + note + miss
+    return rank_gauge_svg(rn, rw) + note + miss + block_r_year_dvol(a)
 
 
 def block_r_ivrv(a: dict) -> str:
@@ -3225,6 +3389,52 @@ def block_r_smile(a: dict) -> str:
         f"<tr><td class='mut'>{_e(wd)}</td>{row_w}</tr></table></div>"
     )
     return svg + _two_lines_legend(nd, wd) + table + miss
+
+
+def rolling_median(vals: list[float | None], w: int = RADAR_HIST_MEDIAN, min_n: int = 3) -> list[float | None]:
+    """Median of the last ``w`` days (this one included) with at least ``min_n`` values, else None (the mock-up's rule)."""
+    out: list[float | None] = []
+    for i in range(len(vals)):
+        win = [v for v in vals[max(0, i - w + 1) : i + 1] if v is not None]
+        out.append(statistics.median(win) if len(win) >= min_n else None)
+    return out
+
+
+def block_r_skewhist(a: dict) -> str:
+    """Skew over the year (the snapshot's `year.skew`, from the radar archive): 7-day medians of put skew and RR 25Δ."""
+    miss = _radar_missing(a, "year_skew")
+    g = _year_grid(_rd(a.get("year")).get("skew"), "put_skew_25", "rr_25")
+    if g is None:
+        return _empty("Історії скью ще немає: в архіві поверхні нема рядків за рік (бекфіл scripts/radar_backfill.py не прогнано).") + miss
+    start, (ps, rr) = g
+    days = [i for i in range(min(len(ps), len(rr))) if ps[i] is not None or rr[i] is not None]
+    if len(days) < RADAR_HIST_MIN_DAYS:
+        return (
+            _empty(
+                f"Історії скью ще мало: {len(days)} дн. в архіві поверхні; графік — від {RADAR_HIST_MIN_DAYS} днів, повний рік — після "
+                "бекфілу scripts/radar_backfill.py."
+            )
+            + miss
+        )
+    sp, sr = rolling_median(ps), rolling_median(rr)
+    svg = year_svg(
+        start,
+        [(sp, "stroke:var(--bad)"), (sr, "stroke:var(--acc)")],
+        "Put skew і RR 25Δ за рік",
+        _vol_tick,
+        zero=True,
+    )
+    legend = (
+        "<div class='legend'><span><i style='background:var(--bad)'></i>put skew 25Δ</span>"
+        "<span><i style='background:var(--acc)'></i>RR 25Δ</span><span>медіана за 7 днів, вп</span></div>"
+    )
+    short = f", {len(days)} з 365 днів" if len(days) < RADAR_YEAR_FULL_DAYS else ""
+    note = (
+        f"<p class='note'>Архів поверхні {_e(_day_label(start, days[0]))}–{_e(_day_label(start, days[-1]))}{_e(short)}, строк 30 днів, "
+        "медіана за 7 днів (щонайменше 3 дні з даними). Put skew вгору або RR вниз — захист від падіння дорожчає. Рівні з "
+        "іншими джерелами не порівнювати (інша конвенція дельти), лише зміни.</p>"
+    )
+    return svg + legend + note + miss
 
 
 def _fwd_split(a: dict) -> tuple[list[dict], list[dict], float | None]:
@@ -3643,12 +3853,13 @@ def render_radar(snap: dict | None, err: str | None, now: float, params: dict | 
             out.append(f"<section class='wide'>{notes}</section>")
         out.append(f"<section class='wide'>{_h2('Поточна ситуація', 'r_now')}{_guard(lambda x: block_r_now(x, asset), a)}</section>")
         cards = (
-            ("", "1 · Ціна", "r_price", block_r_price),
+            ("", "1 · Ціна", "r_price", lambda x: block_r_price(x, asset)),
             ("", "2 · ATM IV за строками", "r_term", block_r_term),
             ("", "3 · IV Rank за рік", "r_rank", block_r_rank),
             ("", "4 · IV проти реального руху", "r_ivrv", block_r_ivrv),
             ("", "5 · Скью 25Δ · 30 днів", "r_skew", block_r_skew),
             ("", "Усмішка на 30 днів", "r_smile", block_r_smile),
+            ("", "Скью за рік", "r_skewhist", block_r_skewhist),
             ("wide", "6 · Форвардна вола між експіраціями і події", "r_fwd", block_r_fwd),
         )
         for cls, title, key, fn in cards:

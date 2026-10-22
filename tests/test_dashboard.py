@@ -3,7 +3,7 @@
 import json
 import sqlite3
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -1419,7 +1419,8 @@ def test_radar_tab_renders_the_real_section():
     hot = [w for w in v["forward_vol"]["windows"] if w["hot"]]
     assert len(hot) == 1 and page.count("chip ev'>гарячий тиждень</span>") == 1
     assert [e["kind"] for e in hot[0]["events"]] == ["election"] and db._e(db._clean(hot[0]["events"][0]["title"], 60)) in page
-    assert page.count("<svg") == 4  # ATM term, IV Rank dial, smile, forward vol
+    assert page.count("<svg") == 6  # year price, ATM term, IV Rank dial, year DVOL, smile, forward vol (skew history: 2 days)
+    assert "Історії скью ще мало: 2 дн. в архіві поверхні" in page
     assert "Блок не вдалося" not in page and "немає даних" not in page and "<script" not in page
     eth = db.render_radar(snap, None, t + 300, db.parse_radar_query("asset=eth"))
     e = snap["sections"]["radar"]["data"]["assets"]["ETH"]
@@ -1557,7 +1558,8 @@ def test_radar_tab_null_fields_show_their_reasons():
     page = db.render_radar(empty, None, t + 60)
     assert "Архіву поверхні BTC ще немає" in page and "немає даних «поверхня зараз»: no radar archive row from" in page
     assert "Ціни з архіву поверхні немає" in page and "Форвардної воли немає" in page
-    assert page.count("<svg") == 1  # the IV Rank dial still comes from DVOL
+    assert page.count("<svg") == 3  # the IV Rank dial and the year DVOL and price charts do not need the archive
+    assert "Історії скью ще немає" in page and "немає даних «скью за рік»: no radar archive skew from" in page
     sec = empty["sections"]["radar"]
     sec["missing"] = [
         {"field": "radar:ohlcv:BTC", "provider": "ccxt:binance", "reason": "error", "detail": "btc timeout"},
@@ -1606,6 +1608,73 @@ def test_radar_tab_missing_section_snapshot_and_malformed(tmp_path, monkeypatch)
     assert "Поточна ситуація" in page and "Що це означає для угод" in page
     assert db.parse_radar_query("asset=eth") == {"asset": "ETH"}
     assert db.parse_radar_query("asset=%3Cx%3E") == {"asset": "BTC"} and db.parse_radar_query("") == {"asset": "BTC"}
+
+
+def _full_year(asset: str = "BTC") -> dict:
+    """`year_series` of a backfilled year: the real 11.10 / 18.10 archive rows alternating over 365 days, the real DVOL
+    and Binance closes (JSON round trip, as the dashboard reads it)."""
+    from tradedesk.analytics.radar import year_series
+
+    d = json.loads(RADAR_INPUTS.read_text())
+    src = [d["rows"][asset]["2026-10-11"], d["rows"][asset]["2026-10-18"]]
+    end = datetime(2026, 10, 18, tzinfo=UTC)
+    rows = [dict(src[(i + 1) % 2], day=(end - timedelta(days=i)).strftime("%Y-%m-%d")) for i in range(365)]
+    ms = AT_1810.timestamp() * 1000
+    dvol = [tuple(x) for x in d["dvol"][asset] if x[0] <= ms]
+    closes = [tuple(x) for x in d["closes"][asset] if x[0] <= ms]
+    return json.loads(json.dumps(year_series(rows, dvol, closes, AT_1810, lambda f, r: None)))
+
+
+def test_radar_year_charts_on_a_backfilled_year():
+    snap, t = _radar_snap()
+    a = snap["sections"]["radar"]["data"]["assets"]["BTC"]
+    a["year"] = _full_year()
+    page = db.render_radar(snap, None, t + 60)
+    price = _between(page, "1 · Ціна", "</section>")
+    assert price.count("<svg") == 1 and 'aria-label="BTC: ціна за рік"' in price
+    assert "Ціна за рік: денні закриття Binance BTC/USDT за днями UTC, 25.07.26–18.10.26, 86 з 365 днів" in price
+    assert ">80k</text>" in price and ">сер</text>" in price  # price ticks and month labels
+    rank = _between(page, "3 · IV Rank за рік", "</section>")
+    assert rank.count("<svg") == 2 and 'aria-label="DVOL за рік"' in rank  # the dial and the year chart
+    assert "DVOL за рік, 19.10.25–18.10.26: зараз 38.8 %, діапазон 33.6 % … 82.6 %" in rank and "з 365 днів" not in rank
+    assert ">мін 33.6 %</text>" in rank and ">макс 82.6 %</text>" in rank and ">Rank 20 %</text>" in rank
+    hist = _between(page, "Скью за рік", "</section>")
+    assert hist.count("<svg") == 1 and hist.count("<path") == 2 and "медіана за 7 днів, вп" in hist
+    assert "Архів поверхні 19.10.25–18.10.26, строк 30 днів" in hist and "з 365 днів" not in hist
+    assert 'stroke:var(--mut)"/><text' in hist  # the zero line is drawn: RR is below zero
+    assert page.count("<svg") == 7 and "Блок не вдалося" not in page and "немає даних" not in page
+
+
+def test_radar_rolling_median_and_year_grid():
+    N = None
+    # from day 7 the 7-day window holds only 3.0, 2.0 (then 2.0, 9.0): fewer than 3 values
+    assert db.rolling_median([1.0, N, 3.0, 2.0, N, N, N, N, N, 9.0], w=7, min_n=3) == [N, N, N, 2.0, 2.0, 2.0, 2.0, N, N, N]
+    assert db.rolling_median([1.0, 4.0, 2.0, 8.0], w=3, min_n=2) == [None, 2.5, 2.0, 4.0]
+    assert db._year_grid({"start": "2026-02-30", "values": [1]}, "values") is None  # not a date
+    assert db._year_grid({"start": "2026-10-01", "values": "x"}, "values") is None
+    start, (vals,) = db._year_grid({"start": "2026-10-01", "values": [1, "a", None, True, float("nan")] * 100}, "values")
+    assert start.day == 1 and len(vals) == db.RADAR_YEAR_MAX_DAYS and vals[:5] == [1.0, None, None, None, None]
+    assert db.year_svg(start, [([None, 1.0], "")], "x", db._vol_tick) == ""  # one point: no chart
+
+
+def test_radar_year_charts_null_short_and_malformed():
+    snap, t = _radar_snap()
+    a = snap["sections"]["radar"]["data"]["assets"]["BTC"]
+    a["year"] = None  # a snapshot from before this slice: blocks render as before
+    page = db.render_radar(snap, None, t + 60)
+    assert page.count("<svg") == 4 and "Історії скью ще немає" in page and "Блок не вдалося" not in page
+    a["year"] = {
+        "price": {"start": "2026-10-17", "values": [80000.0, None]},  # one point
+        "dvol": {"start": "<b>x</b>", "values": [0.4, 0.5]},  # malformed start: no chart
+        "skew": {"start": "2026-10-01", "put_skew_25": [0.02] * 25, "rr_25": "z"},
+    }
+    a["missing"] = [{"field": "year_dvol", "reason": "<script>x</script>"}]
+    page = db.render_radar(snap, None, t + 60)
+    assert page.count("<svg") == 4 and "Історії скью ще немає" in page and "Блок не вдалося" not in page
+    assert "немає даних «DVOL за рік»: &lt;script&gt;x&lt;/script&gt;" in page and "<script" not in page and "<b>x" not in page
+    a["year"]["skew"] = {"start": "2026-10-01", "put_skew_25": [0.02] * 10 + [None] * 20, "rr_25": [None] * 30}
+    page = db.render_radar(snap, None, t + 60)
+    assert "Історії скью ще мало: 10 дн. в архіві поверхні; графік — від 20 днів" in page
 
 
 def test_radar_tab_escapes_hostile_strings_from_the_snapshot():

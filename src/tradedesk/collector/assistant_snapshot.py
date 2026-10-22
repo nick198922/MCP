@@ -7,7 +7,8 @@ list; it never fails the job. Strings from external APIs are kept as plain text 
 
 The ``radar`` section is not a tool call: it reads the radar archive (table ``radar_surface``, job ``radar_archive``),
 daily DVOL (Deribit) and daily closes (Binance) through the providers and builds `analytics.radar.radar_view` for BTC
-and ETH; fields without data are null with a reason in the asset's ``missing``.
+and ETH (with the yearly chart series: a year of closes, DVOL and archive rows); fields without data are null with a
+reason in the asset's ``missing``.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..analytics.assistant import pick_expiries
 from ..analytics.macro_calendar import build_macro_calendar
-from ..analytics.radar import FWD_EVENT_KINDS, IV_RANK_DAYS, METHOD, WEEK_DAYS, radar_view
+from ..analytics.radar import FWD_EVENT_KINDS, IV_RANK_DAYS, METHOD, WEEK_DAYS, YEAR_DAYS, radar_view
 from ..core.envelope import Builder
 
 if TYPE_CHECKING:
@@ -114,8 +115,8 @@ def _expiry_rows(term: dict[str, Any]) -> list[dict[str, Any]]:
 
 RADAR_ASSETS = ("BTC", "ETH")
 RADAR_DVOL_DAYS = IV_RANK_DAYS + WEEK_DAYS + 3  # a year window for today and for a week ago
-RADAR_CLOSES = 40  # daily closes for RV30 (31 needed)
-RADAR_ROW_DAYS = 14  # archive rows read: «now» (up to 2 days back) and the row a week before it
+RADAR_CLOSES = YEAR_DAYS + 5  # daily closes for the year price chart (RV30 needs 31); one Binance request (max 1000)
+RADAR_ROW_DAYS = YEAR_DAYS + 3  # archive rows read: the year of skew history (and «now» / the row a week before it)
 RADAR_EVENT_DAYS = 400  # seed events beyond the calendar section's horizon, for the longest forward-vol windows
 _DAY_MS = 86_400_000
 RADAR_WARNINGS = [
@@ -128,6 +129,9 @@ RADAR_WARNINGS = [
     "Realized vol: zero-mean close-to-close of Binance spot daily closes; the newest close is the live current-day price.",
     "Forward vol: total-variance difference of neighbouring expiries' ATM IV; events are matched by date only (seed "
     "times are approximate), so a high window does not prove the market prices that event. Not investment advice.",
+    "Yearly series (charts): price = Binance spot daily closes by UTC day (the newest is the live current-day price, so it "
+    "differs from the 19:00 UTC Deribit index of 'price'); DVOL = daily closes; skew = the archive's 30-day put skew and "
+    "RR 25-delta, as long as the archive goes back (a year only after the backfill). Values rounded to 4-6 significant digits.",
 ]
 
 

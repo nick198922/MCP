@@ -21,6 +21,7 @@ from tradedesk.analytics.radar import (
     WINDOW_HOURS,
     build_surface,
     constant_tenor_iv,
+    daily_grid,
     due_days,
     forward_vols,
     iv_rank,
@@ -29,6 +30,7 @@ from tradedesk.analytics.radar import (
     radar_view,
     trailing_rv,
     window_ms,
+    year_series,
 )
 from tradedesk.analytics.vrp import realized_vol
 from tradedesk.analytics.weekly_straddle import constant_maturity_atm_iv
@@ -472,11 +474,14 @@ def test_radar_view_without_archive_is_null_with_reasons():
     assert v["iv_vs_rv"]["iv30"] is None and v["iv_vs_rv"]["premium_rv30"] is None and v["iv_vs_rv"]["rv30"] is not None
     assert v["iv_rank"]["now"] is not None
     assert v["missing"] == [
-        {"field": "surface", "reason": "no radar archive row from 2026-10-16 to 2026-10-18 (job radar_archive off or behind)"}
+        {"field": "surface", "reason": "no radar archive row from 2026-10-16 to 2026-10-18 (job radar_archive off or behind)"},
+        {"field": "year_skew", "reason": "no radar archive skew from 2025-10-19 to 2026-10-18 (backfill not run)"},
     ]
+    assert v["year"]["skew"] is None and v["year"]["price"] is not None and v["year"]["dvol"] is not None
     # nothing at all: every block null, all reasons listed
     empty = radar_view("BTC", [], [], [], [], AT_1810)
-    assert {m["field"] for m in empty["missing"]} == {"surface", "iv_rank", "rv30", "rv7"} and empty["iv_rank"]["now"] is None
+    assert {m["field"] for m in empty["missing"]} == {"surface", "iv_rank", "rv30", "rv7", "year_price", "year_dvol", "year_skew"}
+    assert empty["iv_rank"]["now"] is None and empty["year"] == {"price": None, "dvol": None, "skew": None}
 
 
 def test_radar_view_week_row_missing_and_stale_now_row():
@@ -492,3 +497,80 @@ def test_radar_view_week_row_missing_and_stale_now_row():
     later = AT_1810 + timedelta(days=3)
     assert radar_view("BTC", only_now, dvol, closes, [], later)["surface"]["now_day"] is None
     assert radar_view("BTC", [*only_now, {"day": "bad"}, {"day": "2026-10-17"}], dvol, closes, [], AT_1810)["price"]["now"] is not None
+
+
+# ----------------------------------------------------------------------------- yearly chart series
+
+
+def test_daily_grid_hand_computed():
+    end = _day("2026-10-18")
+    cols = {
+        "a": {end - 400 * DAY_MS: 9.0, end - 5 * DAY_MS: 1.23456, end - 3 * DAY_MS: 2.0, end + DAY_MS: 7.0},
+        "b": {end - 4 * DAY_MS: -0.0123456},
+    }
+    g = daily_grid(cols, end, days=365, sig=3)
+    # outside the window (400 days back, the day after) dropped; empty days trimmed at both ends (13.10 .. 15.10)
+    assert g == {"start": "2026-10-13", "a": [1.23, None, 2.0], "b": [None, -0.0123, None], "n": 3}
+    assert daily_grid({"a": {end + DAY_MS: 1.0}}, end) is None and daily_grid({"a": {}}, end) is None
+    assert daily_grid({"a": {end: 84441.234}}, end, sig=6)["a"] == [84441.2]
+
+
+def test_radar_view_year_series_real_sample():
+    """18.10 21:00 UTC on the real inputs: a year of DVOL (its range equals the IV Rank window), 86 Binance closes, and
+    the skew of the two archive rows 11.10 and 18.10 with the days between empty."""
+    rows, dvol, closes = _inputs("BTC", AT_1810)
+    v = radar_view("BTC", rows, dvol, closes, [], AT_1810)
+    y = v["year"]
+    d = y["dvol"]
+    assert d["start"] == "2025-10-19" and len(d["values"]) == 365 and d["n"] == 365
+    assert d["values"][-1] == pytest.approx(0.3882)  # the 18.10 daily close, percent -> decimal
+    assert min(d["values"]) == pytest.approx(v["iv_rank"]["now"]["min"]) and max(d["values"]) == pytest.approx(v["iv_rank"]["now"]["max"])
+    p = y["price"]
+    assert p["start"] == _iso(closes[0][0]) and p["n"] == len(closes) == len(p["values"]) == 86
+    assert p["values"][-1] == pytest.approx(closes[-1][1], rel=1e-5) and None not in p["values"]
+    s = y["skew"]
+    assert s["start"] == "2026-10-11" and s["n"] == 2 and len(s["put_skew_25"]) == 8 and s["put_skew_25"][1:7] == [None] * 6
+    assert s["put_skew_25"][0] == pytest.approx(v["skew"]["week"]["put_skew_25"], rel=1e-3)
+    assert s["put_skew_25"][-1] == pytest.approx(v["skew"]["now"]["put_skew_25"], rel=1e-3)
+    assert s["rr_25"][-1] == pytest.approx(v["skew"]["now"]["rr_25"], rel=1e-3) and s["rr_25"][-1] < 0
+    assert v["missing"] == []
+
+
+def _iso(ms: int) -> str:
+    return datetime.fromtimestamp(ms / 1000, UTC).strftime("%Y-%m-%d")
+
+
+def test_year_series_full_year_is_compact_and_cut_at_now():
+    """A backfilled year (the two real rows repeated over 400 days), plus rows and points after `now` and broken rows."""
+    real = json.loads(INPUTS.read_text())["rows"]["BTC"]
+    src = [real["2026-10-11"], real["2026-10-18"]]
+    due = _day("2026-10-18")
+    rows = [dict(src[(i + 1) % 2], day=_iso(due - i * DAY_MS)) for i in range(400)]  # 18.10 carries the 18.10 row
+    rows += [dict(src[0], day="2026-10-19"), {"day": "bad"}, {"ts": 1}]  # 19.10 is not due at 18.10 21:00 UTC
+    _, dvol, closes = _inputs("BTC", datetime(2026, 10, 22, tzinfo=UTC))  # DVOL and closes run to 21.10, past `now`
+    assert closes[-1][0] > AT_1810.timestamp() * 1000 and dvol[-1][0] > AT_1810.timestamp() * 1000
+    miss: list = []
+    y = year_series(rows, [*dvol, (dvol[-1][0] + DAY_MS, None)], closes, AT_1810, lambda f, r: miss.append(f))
+    assert miss == []
+    s = y["skew"]
+    assert s["start"] == "2025-10-19" and s["n"] == 365 and len(s["rr_25"]) == 365 and None not in s["put_skew_25"]
+    assert s["put_skew_25"][-1] == pytest.approx(src[1]["put_skew_25"], rel=1e-3)
+    assert _iso(_day(y["dvol"]["start"]) + (len(y["dvol"]["values"]) - 1) * DAY_MS) == "2026-10-18"
+    assert y["price"]["values"][-1] == pytest.approx(next(c for t, c in reversed(closes) if t <= AT_1810.timestamp() * 1000), rel=1e-5)
+    size = len(json.dumps(y, separators=(",", ":")))
+    assert size < 12_000, size  # a full year of four series per asset stays small in the snapshot
+
+
+def test_year_series_short_and_null_inputs():
+    """Short history gives a short series (no exception); null / non-positive points are dropped, not charted."""
+    rows, dvol, closes = _inputs("BTC", AT_1810)
+    miss: list = []
+    y = year_series(
+        rows[-1:], dvol[-3:], [(t, None) for t, _ in closes[:-2]] + [(closes[-1][0], -1.0)], AT_1810, lambda f, r: miss.append((f, r))
+    )
+    assert y["price"] is None and y["dvol"]["n"] == 3 and y["skew"]["n"] == 1 and y["skew"]["start"] == "2026-10-18"
+    assert miss == [("year_price", "no daily close from 2025-10-19 to 2026-10-18")]
+    nulls = [dict(r, put_skew_25=None, rr_25=None) for r in rows]
+    miss.clear()
+    assert year_series(nulls, [], [], AT_1810, lambda f, r: miss.append(f))["skew"] is None
+    assert miss == ["year_price", "year_dvol", "year_skew"]

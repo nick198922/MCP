@@ -1,0 +1,42 @@
+#!/bin/bash
+# Step 27: the weekly summary of the owner's rule violations in Telegram, Mondays at 09:00 Europe/Kyiv
+# (docs/ideas/IDEA-20261018-assistant.md, «Правила власника»). The timer itself is a user unit kept in git
+# (deploy/user-units/tradedesk-rules-weekly.*) and is installed by tradedesk-update on its own; it does nothing until the
+# flag file below exists. This step checks the prerequisites, prints a preview, creates the flag and sends one summary
+# now so you see it; "off" removes the flag.
+# Not a root step: everything runs as tradedesk, no sudo. The flag lives in a tradedesk-owned directory, so any process
+# running as tradedesk can create or remove it as well (the same shared switch as steps 22, 25 and 26, Q-20261021-1).
+# Read-only: it reads the journal table of the SQLite store (mode=ro) and posts a short text with a button to the
+# dashboard's /journal page into the alerts topic through scripts/tg_send.py (token from ~/.config/tradedesk/agents.env;
+# step 9 / telegram-setup.sh first). It never places or changes orders.
+# Run as tradedesk (its ssh session):
+#   bash scripts/server/27-rules-weekly-timer.sh        # turn on
+#   bash scripts/server/27-rules-weekly-timer.sh off    # turn off
+set -euo pipefail
+SVC=tradedesk
+[[ "$(id -un)" == "$SVC" ]] || { echo "run this as $SVC (no sudo needed)"; exit 1; }
+REPO="/home/$SVC/tradedesk-mcp"
+DIR=/var/lib/tradedesk-mcp/assistant
+FLAG="$DIR/rules-telegram.on"
+DB=/var/lib/tradedesk-mcp/tradedesk.sqlite
+UV="/home/$SVC/.local/bin/uv"
+SRC="/home/$SVC/.config/tradedesk/agents.env"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+if [[ "${1:-}" == off ]]; then
+  rm -f "$FLAG"
+  echo "weekly rules summary: off (the timer stays, it skips while $FLAG is absent)"
+  exit 0
+fi
+[[ -f "$SRC" ]] || { echo "no $SRC: run scripts/server/telegram-setup.sh first"; exit 1; }
+[[ -d "$DIR" && -w "$DIR" ]] || { echo "no writable $DIR: run scripts/server/19-assistant-snapshot.sh first"; exit 1; }
+git -C "$REPO" pull -q --ff-only
+test -f "$REPO/scripts/rules_weekly_tg.py"
+test -f "$REPO/deploy/user-units/tradedesk-rules-weekly.timer"
+[[ -f "$DB" ]] || echo "warning: no $DB yet: the summary will say so"
+echo "== preview (sends nothing)"
+(cd "$REPO" && "$UV" run --quiet python scripts/rules_weekly_tg.py --print)
+touch "$FLAG"
+bash "$REPO/scripts/user_units_sync.sh"
+echo "== sending one summary now"
+(cd "$REPO" && "$UV" run --quiet python scripts/rules_weekly_tg.py) || echo "send failed: see the message above"
+systemctl --user list-timers tradedesk-rules-weekly.timer --no-pager

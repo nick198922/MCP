@@ -691,6 +691,51 @@ class Store:
         await self.conn.commit()
         return int(cur.rowcount or 0)
 
+    # ---------- forecast_log (the assistant's daily risk-neutral range forecasts, scored at delivery) ----------
+
+    _FORECAST_COLS = tuple("day issued_ts asset kind expiry_ts spot forward atm_iv t_years lo hi prob ref_prob".split())
+
+    async def forecast_insert_many(self, rows: list[dict[str, Any]]) -> int:
+        """Insert forecasts in one commit; a (day, asset, kind) already stored is skipped. Returns the rows written."""
+        cols = [*self._FORECAST_COLS, "covered"]
+        sql = f"INSERT OR IGNORE INTO forecast_log ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})"
+        n = 0
+        for row in rows:
+            cur = await self.conn.execute(sql, [*(row.get(c) for c in self._FORECAST_COLS), int(bool(row.get("covered")))])
+            n += int(cur.rowcount or 0)
+        await self.conn.commit()
+        return n
+
+    async def forecast_has_day(self, day: str, asset: str) -> bool:
+        cur = await self.conn.execute("SELECT 1 FROM forecast_log WHERE day = ? AND asset = ? LIMIT 1", (day, asset))
+        return await cur.fetchone() is not None
+
+    async def forecast_list(self, *, status: str | None = None, asset: str | None = None, limit: int = 5000) -> list[dict[str, Any]]:
+        where: list[str] = []
+        params: list[Any] = []
+        for col, v in (("status", status), ("asset", asset)):
+            if v:
+                where.append(f"{col} = ?")
+                params.append(v)
+        sql = (
+            "SELECT * FROM forecast_log" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY issued_ts DESC, id DESC LIMIT ?"
+        )
+        cur = await self.conn.execute(sql, [*params, limit])
+        rows = [dict(r) for r in await cur.fetchall()]
+        for row in rows:
+            row["covered"] = bool(row["covered"])
+        return rows
+
+    async def forecast_settle(self, row_id: int, *, settled_ts: int, delivery_price: float, outcome: int, brier: float) -> int:
+        """Settle an open forecast with one conditional UPDATE; 1 when this call settled it, 0 when it was not open."""
+        cur = await self.conn.execute(
+            "UPDATE forecast_log SET status = 'settled', settled_ts = ?, delivery_price = ?, outcome = ?, brier = ?"
+            " WHERE id = ? AND status = 'open'",
+            (settled_ts, delivery_price, outcome, brier, row_id),
+        )
+        await self.conn.commit()
+        return int(cur.rowcount or 0)
+
     # ---------- trade_plan (the assistant's trade plans, scored on candles; bookkeeping only) ----------
 
     async def plan_insert(self, **f: Any) -> int:

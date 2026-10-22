@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 
 # Each migration is a list of SQL statements executed in a single transaction.
 # `PRAGMA user_version` is bumped by Store.init() inside the same explicit transaction,
@@ -577,5 +577,36 @@ MIGRATIONS: dict[int, list[str]] = {
         )
         """,
         "CREATE INDEX IF NOT EXISTS demo_trade_status ON demo_trade (status, symbol)",
+    ],
+    20: [
+        # Daily probabilistic range forecasts of the assistant (analytics/forecast_log.py), scored at the expiry delivery.
+        # Risk-neutral probabilities from the Deribit smile, a hypothesis under test; kept apart from `journal`.
+        """
+        CREATE TABLE IF NOT EXISTS forecast_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            day TEXT NOT NULL,                     -- UTC date of issue, YYYY-MM-DD (one forecast per day, asset and kind)
+            issued_ts INTEGER NOT NULL,            -- unix seconds
+            asset TEXT NOT NULL,                   -- 'BTC' | 'ETH'
+            kind TEXT NOT NULL,                    -- 'above_spot' | 'in_1sigma' | 'in_pct_5' | 'in_pct_10'
+            expiry_ts INTEGER NOT NULL,            -- unix seconds, Deribit 08:00 UTC delivery the event is settled on
+            spot REAL NOT NULL,                    -- Deribit index at issue, USD
+            forward REAL NOT NULL,                 -- forward of the expiry at issue, USD
+            atm_iv REAL NOT NULL,                  -- decimal, smile IV at the forward
+            t_years REAL NOT NULL,                 -- days / 365 at issue
+            lo REAL,                               -- USD; NULL = open side
+            hi REAL,                               -- USD; NULL = open side
+            prob REAL NOT NULL,                    -- risk-neutral P(lo < S_T < hi), decimal
+            ref_prob REAL,                         -- fixed reference (0.5 above_spot, 0.6827 in_1sigma); NULL if none
+            covered INTEGER NOT NULL,              -- 1 when the bounds lie inside the quoted strikes
+            label TEXT NOT NULL DEFAULT 'risk_neutral',
+            status TEXT NOT NULL DEFAULT 'open',   -- 'open' | 'settled'
+            settled_ts INTEGER,
+            delivery_price REAL,                   -- Deribit delivery price, USD
+            outcome INTEGER,                       -- 1 the event happened, 0 not
+            brier REAL,                            -- (prob - outcome)^2
+            UNIQUE (day, asset, kind)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS forecast_log_status_expiry ON forecast_log (status, expiry_ts)",
     ],
 }

@@ -9,6 +9,7 @@ from tradedesk.analytics.stop_management import (
     Fees,
     StopRule,
     Swings,
+    chi2_sf,
     cochran_q,
     max_drawdown,
     risk_unit,
@@ -191,3 +192,15 @@ def test_fee_stress_and_helpers():
     assert (q, df) == (pytest.approx(2.0), 1) and i2 == pytest.approx(0.5)
     q, df, i2 = cochran_q(np.array([1.0, 1.0, 1.0]), np.array([1.0, 2.0, 3.0]))
     assert q == pytest.approx(0.0) and i2 == 0.0
+    assert chi2_sf(43.773, 30) == pytest.approx(0.05, abs=0.002)  # tabulated 95 % critical value
+    assert chi2_sf(50.892, 30) == pytest.approx(0.01, abs=0.001)
+
+
+def test_breakeven_inside_trigger_bar_bound():
+    # bar 0 reaches the half-way trigger and dips to 99.5 (below the break-even 100.11, above the stop 98)
+    p = bars([(100, 102.2, 99.5, 101), (101, 101.5, 99.9, 100)])
+    o = simulate_stop_rule(p, T0, 100, 98, 104, 10 * HOUR_MS, StopRule("Bx", be_frac=0.5, be_same_bar=True))
+    assert o.exit_kind == "be" and o.exit_ms == T0 + HOUR_MS and o.move_ms == T0
+    # the stop keeps priority in the trigger bar
+    q = bars([(100, 102.2, 97.5, 101)])
+    assert simulate_stop_rule(q, T0, 100, 98, 104, 10 * HOUR_MS, StopRule("Bx", be_frac=0.5, be_same_bar=True)).exit_kind == "stop"

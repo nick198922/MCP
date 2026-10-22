@@ -19,6 +19,7 @@ distance plus the taker fee on both prices (``execution.guard``), so R is a retu
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -50,6 +51,9 @@ class StopRule:
     be_move: float | None = None  # break-even after a high >= entry + be_move * |entry| (e.g. 0.30 / leverage)
     trail: bool = False  # structural trailing stop under confirmed swing lows (only tightening)
     use_target: bool = True  # False: no target, exit by a stop or the time exit
+    # True: the break-even stop also acts inside the trigger bar (its high assumed first): the optimistic bound of a
+    # monitor that moves the stop within minutes; False (default): from the next bar, the pessimistic bound
+    be_same_bar: bool = False
 
     def trigger(self, entry: float, stop: float, target: float) -> float | None:
         if self.be_frac is not None:
@@ -184,6 +188,10 @@ def simulate_stop_rule(
         best = max(best, float(path.h[k]))
         if trig is not None and not armed and path.h[k] >= trig:
             armed = True
+            if rule.be_same_bar and be_stop > cur and path.low[k] <= be_stop:
+                # optimistic bound of a live (minute) monitor: the high came first, the stop moved, the dip hit it
+                px, kind, j, move_ms = be_stop, "be", k, tk
+                break
     if kind == "time" and i1 == len(path) and int(path.t[i1 - 1]) + path.bar_ms < entry_ms + hold_ms:
         kind = "data_end"
     fee_out = fees.maker if kind == "target" else fees.taker_exit
@@ -201,6 +209,14 @@ def max_drawdown(r: np.ndarray) -> float:
         return 0.0
     eq = np.concatenate([[0.0], np.cumsum(r)])
     return float(np.max(np.maximum.accumulate(eq) - eq))
+
+
+def chi2_sf(x: float, df: int) -> float:
+    """Upper tail of the chi-square distribution, Wilson-Hilferty normal approximation (good to ~1e-3 for df >= 10)."""
+    if df <= 0 or not np.isfinite(x):
+        return float("nan")
+    z = ((x / df) ** (1 / 3) - (1 - 2 / (9 * df))) / np.sqrt(2 / (9 * df))
+    return float(0.5 * math.erfc(z / math.sqrt(2)))
 
 
 def cochran_q(means: np.ndarray, ses: np.ndarray) -> tuple[float, int, float]:

@@ -83,6 +83,14 @@ def test_a_ready_green_pr_is_merged_even_without_the_workflow():
     assert ("PUT", "/repos/o/r/pulls/1/merge") in calls
 
 
+def test_a_held_pr_is_not_merged_and_its_stale_note_names_claude():
+    calls = []
+    old = pr(updated="2026-10-20T08:00:00Z", ready=True)
+    msgs, _ = pw.watch(fake([old], {"abc": GREEN}, files=("src/tradedesk/execution/guard.py",), calls=calls), "o/r", {}, NOW)
+    assert not any(m == "PUT" for m, _ in calls)
+    assert len(msgs) == 1 and "рев'ю Claude" in msgs[0][0]
+
+
 def test_a_failed_merge_falls_back_to_the_stale_message():
     old = pr(updated="2026-10-20T08:00:00Z", ready=True)
     ((msg, _),) = pw.watch(fake([old], {"abc": GREEN}, merge_status=405), "o/r", {}, NOW)[0]

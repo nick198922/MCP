@@ -1,0 +1,10 @@
+[Unit]
+Description=tradedesk: Claude's review of held pull requests (demo trader, merge rules)
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/tradedesk/tradedesk-mcp
+ExecStart=/usr/bin/python3 scripts/trader_review.py
+TimeoutStartSec=40min
+Nice=10
+NoNewPrivileges=true

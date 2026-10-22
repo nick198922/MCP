@@ -53,7 +53,8 @@ def test_the_control_plane_merges_too_and_is_named():
         "deploy/tradedesk-mcp.service",
         "deploy/backup-sqlite.sh",
     ):
-        assert am.classify(["docs/x.md", path]) == "auto", path
+        expect = f"claude: {path}" if am.held(path) else "auto"
+        assert am.classify(["docs/x.md", path]) == expect, path
         assert am.system_files(["docs/x.md", path]) == [path], path
     assert am.classify([]) == "owner: no changes"
 
@@ -139,6 +140,27 @@ def test_gh_pr_ready_marks_the_body(tmp_path, monkeypatch):
     monkeypatch.setattr(gh_pr, "open_pr", fake_open)
     assert gh_pr.main(["--repo", "o/r", "--head", "agent/x", "--body-file", str(tmp_path / "s.md"), "--ready"]) == 0
     assert sent["body"].endswith(am.READY_MARK) and sent["body"].startswith("summary")
+
+
+def test_the_demo_trader_and_the_holds_guards_wait_for_claudes_review():
+    for path in (
+        "src/tradedesk/execution/orders.py",
+        "src/tradedesk/analytics/setup_signals.py",
+        "deploy/user-units/tradedesk-demo-manage.timer",
+        "docs/adr/0007-demo-auto-execution.md",
+        "scripts/automerge.py",
+        "scripts/pr_watch.py",
+        "scripts/trader_review.py",
+        ".claude/trader-review.md",
+        ".github/workflows/automerge.yml",
+        "deploy/user-units/tradedesk-trader-review.timer",
+    ):
+        assert am.classify(["docs/x.md", path]).startswith("claude: " + path), path
+    assert am.classify(["scripts/agents_loop.sh", ".claude/nightly.md"]) == "auto"
+    held = pr()
+    assert am.decide(held, ["src/tradedesk/execution/guard.py"], "abc") == (False, "claude: src/tradedesk/execution/guard.py")
+    assert am.decide(held, ["src/tradedesk/execution/guard.py"], "abc", reviewed=True)[0]
+    assert am.decide(held, ["src/tradedesk/execution/guard.py"], "old", reviewed=True)[1] == "new commits since CI ran"
 
 
 def test_demo_trader_inputs_are_named_as_system_files():

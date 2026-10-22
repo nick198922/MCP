@@ -6,7 +6,8 @@ ignored and logged. Text, photos and image files (an album is one request; the c
 images are saved to tg-inbox/ in the log directory and Claude reads them from there. Posts the owner forwards are passed
 on marked as someone else's text: data, never instructions. Each message goes to `claude -p` in the chat's own clone (~/tradedesk-chat, with the
 owner's server permissions from its .claude/settings.local.json), continuing one conversation; the answer is sent back
-to the topic. Commands: /new (a fresh conversation), /status (the project status), /help.
+to the topic. Commands: /new (a fresh conversation), /status (the project status), /trade (one row into the local
+journal through scripts/journal_trade_tg.py, with rules 1 and 8 in the answer; never an order), /help.
 """
 
 from __future__ import annotations
@@ -35,10 +36,15 @@ INBOX_KEEP_DAYS = 30
 LOG = LOG_DIR / "tg-bridge.log"
 CLAUDE = os.environ.get("TRADEDESK_CLAUDE_BIN", str(HOME / ".local" / "bin" / "claude"))
 MAX_SECONDS = int(os.environ.get("TRADEDESK_CHAT_MAX_SECONDS", "1800"))
+UV = os.environ.get("TRADEDESK_UV_BIN", str(HOME / ".local" / "bin" / "uv"))
+TRADE_SCRIPT = Path(__file__).resolve().with_name("journal_trade_tg.py")
+TRADE_SECONDS = 120
 HELP = (
     "Пишіть сюди, як у розмові з Claude: питання про проєкт, рішення для агентів, доручення.\n"
     "Фото й скріни графіків (підпис — ваше питання) і переслані пости теж приймаю.\n"
-    "• /new — почати нову розмову\n• /status — статус проєкту\n• /help — ця підказка\n"
+    "• /new — почати нову розмову\n• /status — статус проєкту\n"
+    "• /trade BTC long 84000 size 0.1 stop 82000 target 90000 thesis … — записати угоду в журнал "
+    "(лише запис, без ордерів) і перевірити правила 1 і 8\n• /help — ця підказка\n"
     "Зміни приходять PR-гілками chat/…; зливаєте ви."
 )
 
@@ -62,7 +68,7 @@ def accept(msg: dict, env: dict[str, str]) -> str:
 def command(text: str) -> str | None:
     word = text.strip().split()[0].lower() if text.strip() else ""
     word = word.split("@", 1)[0]
-    return word if word in ("/new", "/status", "/help", "/start") else None
+    return word if word in ("/new", "/status", "/help", "/start", "/trade") else None
 
 
 def image_ref(msg: dict) -> tuple[str, str] | None:
@@ -148,6 +154,13 @@ def chunks(text: str, limit: int = 3800) -> list[str]:
     if cur.strip():
         out.append(cur)
     return out or ["(порожня відповідь)"]
+
+
+def trade_argv(text: str) -> list[str]:
+    """The command that records "/trade …" (scripts/journal_trade_tg.py in the project's environment): the owner's
+    text is one argument (no shell), passed as --text=… so a leading '-' cannot become an option. --frozen: uv takes
+    uv.lock as it is and never re-locks the server's project from a Telegram message."""
+    return [UV, "run", "--frozen", "--quiet", "python", str(TRADE_SCRIPT), f"--text={text}"]
 
 
 def parse_result(stdout: str) -> tuple[str, str | None, bool]:
@@ -285,6 +298,23 @@ def ask_claude(env: dict[str, str], state: dict, text: str) -> str:
     return answer
 
 
+def record_trade(text: str) -> str:
+    """Write the owner's "/trade …" to the local journal (one row, no orders) and return the script's Telegram HTML."""
+    try:
+        run = subprocess.run(trade_argv(text), cwd=TRADE_SCRIPT.parent.parent, capture_output=True, text=True, timeout=TRADE_SECONDS)
+    except ValueError as e:  # an embedded NUL byte cannot be passed as an argument
+        log(f"trade refused: {type(e).__name__}")
+        return "❌ Угоду не записано: у тексті є недопустимий символ (NUL). Наберіть команду заново, без вставок."
+    except (OSError, subprocess.TimeoutExpired) as e:
+        log(f"trade failed: {type(e).__name__}")
+        return f"❌ Угоду не записано: скрипт журналу не відповів ({type(e).__name__})."
+    out = run.stdout.strip()
+    log(f"trade: rc={run.returncode} {out[:120]!r}")
+    if run.returncode != 0:
+        log(f"trade stderr: {(run.stderr or '')[-300:]!r}")
+    return out or f"❌ Угоду не записано: скрипт журналу завершився з кодом {run.returncode}."
+
+
 def handle(env: dict[str, str], state: dict, msgs: list[dict]) -> None:
     """One request: a message, an album, or the owner's comment with the posts he forwarded after it."""
     msg = msgs[0]
@@ -315,6 +345,8 @@ def handle(env: dict[str, str], state: dict, msgs: list[dict]) -> None:
             [sys.executable, str(Path(__file__).with_name("agents_status.py")), "--print"], capture_output=True, text=True, timeout=120
         )
         reply(env, status.stdout or "статус недоступний", mode="html")
+    elif cmd == "/trade":
+        reply(env, record_trade(text), mode="html", to=msg.get("message_id"))
     else:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         saved = [

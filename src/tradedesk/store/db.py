@@ -748,6 +748,53 @@ class Store:
         await self.conn.commit()
         return int(cur.rowcount or 0)
 
+    # ---------- radar_surface (daily Deribit surface at 19:00 UTC for the assistant's radar) ----------
+
+    async def radar_insert(self, row: dict[str, Any]) -> int:
+        """Insert one `analytics.radar.radar_row` (plus ``asset``, ``created_ts``); a stored (day, asset) is kept. Returns 0/1."""
+        atm = row.get("atm") or {}
+        vals = (
+            row["day"],
+            row["asset"],
+            int(row["ts"]),
+            float(row["spot"]),
+            atm.get("7"),
+            atm.get("30"),
+            atm.get("90"),
+            atm.get("180"),
+            row.get("put_skew_25"),
+            row.get("rr_25"),
+            json.dumps(row.get("smile") or {}),
+            json.dumps(row.get("expiries") or []),
+            int(row.get("n_prints") or 0),
+            row["method"],
+            int(row["created_ts"]),
+        )
+        cur = await self.conn.execute(
+            "INSERT OR IGNORE INTO radar_surface (day, asset, ts, spot, atm_7d, atm_30d, atm_90d, atm_180d, put_skew_25, rr_25,"
+            " smile, expiries, n_prints, method, created_ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            vals,
+        )
+        await self.conn.commit()
+        return int(cur.rowcount or 0)
+
+    async def radar_days(self, asset: str, *, since: str = "") -> set[str]:
+        """Stored days (YYYY-MM-DD) of an asset on or after ``since``."""
+        cur = await self.conn.execute("SELECT day FROM radar_surface WHERE asset = ? AND day >= ?", (asset, since))
+        return {r[0] for r in await cur.fetchall()}
+
+    async def radar_list(self, asset: str, *, since: str = "", limit: int = 1000) -> list[dict[str, Any]]:
+        """Rows of an asset on or after ``since``, oldest first; ``smile`` and ``expiries`` decoded from JSON."""
+        cur = await self.conn.execute(
+            "SELECT * FROM (SELECT * FROM radar_surface WHERE asset = ? AND day >= ? ORDER BY day DESC LIMIT ?) ORDER BY day",
+            (asset, since, limit),
+        )
+        rows = [dict(r) for r in await cur.fetchall()]
+        for row in rows:
+            row["smile"] = json.loads(row["smile"])
+            row["expiries"] = json.loads(row["expiries"])
+        return rows
+
     # ---------- trade_plan (the assistant's trade plans, scored on candles; bookkeeping only) ----------
 
     async def plan_insert(self, **f: Any) -> int:

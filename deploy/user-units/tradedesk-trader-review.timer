@@ -1,0 +1,10 @@
+[Unit]
+Description=tradedesk-trader-review (*-*-* *:10/15:00)
+
+[Timer]
+OnCalendar=*-*-* *:10/15:00
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

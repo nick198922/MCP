@@ -13,13 +13,13 @@
 ## Де що
 - **Сервер:** Contabo `169.58.169.184`, користувач `tradedesk`.
   - Служби: `tradedesk-mcp` (MCP і колектор 24/7), `tradedesk-agents-loop`, `tradedesk-tgbridge`.
-  - Оновлення з `main` щогодини о :20 (після кроку 20; до нього — о 02:15). З 22.10 (крок 21) Claude перезапускає MCP одразу після злиття: `sudo -n /usr/local/sbin/tradedesk-update --force` (єдина команда root для `tradedesk`). Нові функції вмикаються без root: `deploy/features.env`, таймери — `deploy/user-units/`. PR агентів і `claude/*` зливаються самі, власнику — лише системні. Шляхи — `docs/AGENTS.md` → «Запуск».
+  - Оновлення з `main` щогодини о :20 (після кроку 20; до нього — о 02:15). З 22.10 (крок 21) Claude перезапускає MCP одразу після злиття: `sudo -n /usr/local/sbin/tradedesk-update --force` (єдина команда root для `tradedesk`). Нові функції вмикаються без root: `deploy/features.env`, таймери — `deploy/user-units/`. PR агентів і `claude/*` зливаються самі, з 22.10 і системні (рішення власника; сторож PR кожні 15 хв перезапускає нестабільний CI і доливає PR, якщо GitHub не спрацював). Шляхи — `docs/AGENTS.md` → «Запуск».
 - **Сховище:** SQLite, схема 18 (`cp_*` — книги паперового carry; `pm_gap_snapshot` — розриви Polymarket ↔ опціони, `pm_gap_outcome` — їхні результати). Колектор пише:
   - ATM-строки, funding, basis;
   - ліквідації через WebSocket — **вимкнено** (знайдено 17.10; вмикає `scripts/server/16-collector-liquidations.sh`), історія OHLCV — вимкнено (є архів Binance);
   - історію OHLCV, пропозицію токенів;
   - лідерборди й позиції трейдерів HL і Polymarket.
-- **Панель проєкту:** `scripts/dashboard.py` на сервері (127.0.0.1:8090, служба ставиться `scripts/server/15-dashboard.sh`); відкрити на Маці — `bash scripts/dashboard-open.sh`; Claude читає її `scripts/server/dashboard-check.sh`.
+- **Панель проєкту:** `scripts/dashboard.py` на сервері (127.0.0.1:8090, служба ставиться `scripts/server/15-dashboard.sh`); відкрити на Маці — `bash scripts/dashboard-open.sh`; Claude читає її `scripts/server/dashboard-check.sh`. З 22.10 — постійне посилання з ключем через Tailscale Funnel (`scripts/server/24-dashboard-link.sh`; без ключа — 401; ключ у `~/.config/tradedesk/dashboard.env`).
 - **Перевірка стану з Мака** (лише читання): `scripts/server/` — `health-check.sh`, `disk-check.sh`, `usage-check.sh`, `agents-status.sh`, `agents-progress.sh`, `coinalyze-check.sh`, `doubletop-check.sh`. Адмінське — лише нумеровані скрипти, їх запускає власник.
 - **Ключі:**
   - Coinalyze — у `/etc/tradedesk-mcp.env`, лише MCP-сервіс;
@@ -35,7 +35,7 @@
   - Від 80 % тижневого ліміту — лише картки власника; пауза — при 97 %.
   - Правила з obra/superpowers в інструкціях: лікар — причина до виправлення, розробник/квант — перевіряти зауваження критика, координатор — доказ перед «готово».
   - Сторож PR (`scripts/pr_watch.py`, щогодини): червоний CI або PR без руху > 2 год → Telegram.
-  - Системні PR (`scripts/agents_*`, `.claude/`, `scripts/server/`) зливає власник, решту — автозлиття.
+  - Усі готові PR, зокрема системні (`scripts/agents_*`, `.claude/`, `scripts/server/`), зливаються самі (рішення власника 22.10, ризик — `docs/SECURITY.md`); код демо-трейдера й правил злиття — після рев'ю Claude (`scripts/trader_review.py`, «ризики трейдера за Claude», власник 22.10); правило 8 уточнено власником 22.10 (Q-20261022-1), реалізація — картка `assistant`.
 - **Дослідження:** 47 карток — 0 підтверджених, 23 ✗, 12 ◯, 6 у тесті, 5 прийнятих, 1 запропонована. Дошка — на панелі проєкту або `uv run python scripts/results_board.py` → `docs/RESULTS.md` (не в git).
   - Кандидати з позитивним бектестом: carry альтів, carry перп-перп (на повній історії Bybit −8.7 %), VRP BTC (на реальних марках не значущий).
   - Технічний аналіз (курс DoubleTop, SMC, заклики трейдерів) — ✗ або ◯ скрізь.

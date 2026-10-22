@@ -373,10 +373,15 @@ def panel_base(path: Path | None = None, environ: dict[str, str] | None = None) 
     return base.rstrip("/") + "/"
 
 
-def dashboard_buttons(path: Path | None = None, environ: dict[str, str] | None = None) -> list[tuple[str, str]]:
-    """(label, url) buttons to the dashboard pages under panel_base(); [] when there is no usable URL."""
+def dashboard_buttons(
+    path: Path | None = None, environ: dict[str, str] | None = None, key_file: Path | None = None
+) -> list[tuple[str, str]]:
+    """(label, url) buttons to the dashboard pages under panel_base(), with the dashboard's key (?k=) when it has one;
+    [] when there is no usable URL."""
     base = panel_base(path, environ)
-    return [(label, base + page) for label, page in PAGES] if base else []
+    key = db.dashboard_key(key_file)
+    q = f"?{urllib.parse.urlencode({'k': key})}" if key else ""  # the link opens in Telegram's browser too
+    return [(label, base + page + q) for label, page in PAGES] if base else []
 
 
 def _fit(body: list[str], tail: list[str]) -> str:

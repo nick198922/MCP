@@ -11,9 +11,10 @@ import pr_watch as pw  # noqa: E402
 NOW = datetime(2026, 10, 20, 12, 0, tzinfo=UTC)
 
 
-def pr(number=1, ref="agent/2026-10-20-x", sha="abc", updated="2026-10-20T11:30:00Z"):
+def pr(number=1, ref="agent/2026-10-20-x", sha="abc", updated="2026-10-20T11:30:00Z", ready=False):
     return {
         "number": number,
+        "body": "s\n\n" + pw.READY_MARK if ready else "s",
         "title": "t",
         "draft": False,
         "updated_at": updated,
@@ -22,8 +23,24 @@ def pr(number=1, ref="agent/2026-10-20-x", sha="abc", updated="2026-10-20T11:30:
     }
 
 
-def fake(prs, runs=None, files=("docs/x.md",)):
+def fake(prs, runs=None, files=("docs/x.md",), calls=None, merge_status=200):
     def call(method, path, body):
+        if calls is not None:
+            calls.append((method, path))
+        if method == "PUT" and path.endswith("/merge"):
+            return merge_status, {"merged": merge_status == 200}
+        if method in ("POST", "DELETE"):
+            return 201, {}
+        if "/pulls/" in path and "/files" not in path:
+            n = int(path.rsplit("/", 1)[1])
+            p = next(x for x in prs if x["number"] == n)
+            return 200, {
+                **p,
+                "state": "open",
+                "merged": False,
+                "base": {"ref": "main", "repo": {"full_name": "o/r"}},
+                "head": {**p["head"], "repo": {"full_name": "o/r"}},
+            }
         if "/pulls?" in path:
             return 200, prs
         if "/check-runs" in path:
@@ -46,12 +63,53 @@ def test_red_ci_is_told_once_per_commit():
     assert len(later) == 1
 
 
-def test_stale_pr_names_who_must_act():
+def test_stale_pr_is_told():
     old = pr(updated="2026-10-20T08:00:00Z")
     ((msg, url),) = pw.watch(fake([old]), "o/r", {}, NOW)[0]
     assert "мав злитись сам" in msg and url.endswith("/pull/1")
-    ((msg, _),) = pw.watch(fake([old], files=("scripts/agents_loop.sh",)), "o/r", {}, NOW)[0]
-    assert "чекає на ваше злиття" in msg
+
+
+GREEN = [{"name": "test", "status": "completed", "conclusion": "success"}]
+RED = [
+    {"name": "test (3.12)", "status": "completed", "conclusion": "failure", "details_url": "https://github.com/o/r/actions/runs/555/job/9"}
+]
+
+
+def test_a_ready_green_pr_is_merged_even_without_the_workflow():
+    calls = []
+    old = pr(updated="2026-10-20T08:00:00Z", ready=True)
+    msgs, state = pw.watch(fake([old], {"abc": GREEN}, files=("scripts/agents_loop.sh",), calls=calls), "o/r", {}, NOW)
+    assert msgs == [] and "1" not in state
+    assert ("PUT", "/repos/o/r/pulls/1/merge") in calls
+
+
+def test_a_held_pr_is_not_merged_and_its_stale_note_names_claude():
+    calls = []
+    old = pr(updated="2026-10-20T08:00:00Z", ready=True)
+    msgs, _ = pw.watch(fake([old], {"abc": GREEN}, files=("src/tradedesk/execution/guard.py",), calls=calls), "o/r", {}, NOW)
+    assert not any(m == "PUT" for m, _ in calls)
+    assert len(msgs) == 1 and "рев'ю Claude" in msgs[0][0]
+
+
+def test_a_failed_merge_falls_back_to_the_stale_message():
+    old = pr(updated="2026-10-20T08:00:00Z", ready=True)
+    ((msg, _),) = pw.watch(fake([old], {"abc": GREEN}, merge_status=405), "o/r", {}, NOW)[0]
+    assert "мав злитись сам" in msg
+
+
+def test_a_green_pr_not_marked_ready_is_not_merged():
+    calls = []
+    pw.watch(fake([pr()], {"abc": GREEN}, calls=calls), "o/r", {}, NOW)
+    assert not any(m == "PUT" for m, _ in calls)
+
+
+def test_red_ci_of_a_ready_pr_is_rerun_once_then_told():
+    calls = []
+    msgs, state = pw.watch(fake([pr(ready=True)], {"abc": RED}, calls=calls), "o/r", {}, NOW)
+    assert msgs == [] and ("POST", "/repos/o/r/actions/runs/555/rerun-failed-jobs") in calls
+    calls.clear()
+    msgs, _ = pw.watch(fake([pr(ready=True)], {"abc": RED}, calls=calls), "o/r", state, NOW)
+    assert len(msgs) == 1 and "після перезапуску" in msgs[0][0] and not any(m == "POST" for m, _ in calls)
 
 
 def test_fresh_green_and_foreign_prs_are_quiet():

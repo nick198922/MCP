@@ -1,13 +1,19 @@
 """Merge an agents' pull request by itself when it is safe to (run by .github/workflows/automerge.yml from main).
 
-A pull request qualifies when it comes from an agent/* or claude/* branch of this repository (not a doctor's -fix-
-branch), the launcher (or Claude's session, scripts/gh_pr.py --ready) marked it ready (the coordinator handed the step over; a step stuck after its run limit is not ready), CI
-passed on its current head, and it changes nothing of the control plane: the agents' own scripts, permissions and
-instructions, the server scripts, GitHub workflows, dependencies, CLAUDE.md, the security notes, ADRs or an execution
-package. Anything else waits for the owner. The rules are read from main, never from the pull request.
+A pull request qualifies when it comes from an agent/* or claude/* branch of this repository (the doctor's -fix-
+branches too), the launcher (or Claude's session, scripts/gh_pr.py --ready) marked it ready (the coordinator handed
+the step over; a step stuck after its run limit is not ready) and CI passed on its current head. Since 2026-10-22 the
+owner wants every such merge automatic, the control plane included (the agents' own scripts, permissions and
+instructions, the server scripts, GitHub workflows, dependencies, CLAUDE.md, the security notes, ADRs, the execution
+package): those paths are listed below only to name them in the merge report. One exception, also the owner's
+(2026-10-22): the demo trader is Claude's responsibility, so a PR that touches what places its orders (HELD: the
+execution package, the signal adapters and detectors, its timers, ADR 0007) or what could switch this hold off (the
+merge rules, the watch, the trader review and their timers, GitHub workflows) is held until scripts/trader_review.py
+(Claude, Opus) approves that very commit. The rules are read from main, never from the pull request.
+scripts/pr_watch.py merges by the same rules when this workflow never ran (a hung or flaky CI run).
 
     python3 scripts/automerge.py --repo owner/name --pr N --sha TESTED_SHA     # in Actions, with GH_TOKEN
-    git diff --name-only origin/main...BRANCH | python3 scripts/automerge.py --classify    # prints "auto" or "owner: why"
+    git diff --name-only origin/main...BRANCH | python3 scripts/automerge.py --classify    # prints "auto", "claude: paths" or "owner: no changes"
 """
 
 from __future__ import annotations
@@ -21,8 +27,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gh_pr import READY_MARK, Call, caller, message  # noqa: E402
 
-# deploy/ stays the owner's except the feature switches and the user timers (both run as the unprivileged service user,
-# like the rest of the code); their guards, src/tradedesk/features.py and scripts/user_units_sync.sh, are protected.
+# The control plane, named in the merge report: deploy/ except the feature switches and the user timers (both run as
+# the unprivileged service user, like the rest of the code); their guards, src/tradedesk/features.py and
+# scripts/user_units_sync.sh, are listed.
 PROTECTED_PREFIXES = (".github/", ".claude/", "scripts/server/", "docs/adr/", "src/tradedesk/execution/")
 DEPLOY_OPEN = ("deploy/features.env", "deploy/env.example", "deploy/README.md", "deploy/user-units/")
 BRANCH_PREFIXES = ("agent/", "claude/")  # the agents' launcher and Claude's own sessions with the owner
@@ -52,24 +59,54 @@ PROTECTED_GLOBS = (
 )
 
 
+# Held for Claude's review (scripts/trader_review.py): the demo trader (ADR 0007) and the guards of this hold.
+HELD_PREFIXES = ("src/tradedesk/execution/", ".github/", "docs/adr/0007")
+HELD_FILES = {
+    "src/tradedesk/analytics/setup_signals.py",
+    "src/tradedesk/analytics/course_s14_ema.py",
+    "src/tradedesk/analytics/course_basics.py",
+    "scripts/automerge.py",
+    "scripts/pr_watch.py",
+    "scripts/trader_review.py",
+    "scripts/user_units_sync.sh",
+    ".claude/trader-review.md",
+}
+HELD_GLOBS = (
+    "deploy/user-units/tradedesk-demo-*",
+    "deploy/user-units/tradedesk-pr-watch.*",
+    "deploy/user-units/tradedesk-trader-review.*",
+)
+
+
+def held(path: str) -> bool:
+    return path.startswith(HELD_PREFIXES) or path in HELD_FILES or any(fnmatch.fnmatch(path, g) for g in HELD_GLOBS)
+
+
 def protected(path: str) -> bool:
     if path.startswith("deploy/") and not path.startswith(DEPLOY_OPEN):
         return True
     return path.startswith(PROTECTED_PREFIXES) or path in PROTECTED_FILES or any(fnmatch.fnmatch(path, g) for g in PROTECTED_GLOBS)
 
 
+def system_files(files: list[str]) -> list[str]:
+    """The changed control-plane paths (reported with the merge, never a reason to hold it)."""
+    return [f for f in files if f and protected(f)]
+
+
 def classify(files: list[str]) -> str:
-    """'auto' when the changed files may be merged without the owner, otherwise 'owner: <why>'."""
+    """'auto'; 'claude: <paths>' when it touches the demo trader or the hold's guards (merged only after Claude's
+    review); 'owner: no changes' when there is nothing to merge."""
     files = [f for f in files if f]
     if not files:
         return "owner: no changes"
-    hit = [f for f in files if protected(f)]
+    hit = [f for f in files if held(f)]
     if hit:
-        return "owner: changes " + ", ".join(hit[:3]) + (" …" if len(hit) > 3 else "")
+        return "claude: " + ", ".join(hit[:3]) + (" …" if len(hit) > 3 else "")
     return "auto"
 
 
-def decide(pr: dict, files: list[str], tested_sha: str) -> tuple[bool, str]:
+def decide(pr: dict, files: list[str], tested_sha: str, reviewed: bool = False) -> tuple[bool, str]:
+    """``reviewed``: scripts/trader_review.py approved exactly ``tested_sha``, which releases a 'claude:' hold."""
     head, base = pr.get("head") or {}, pr.get("base") or {}
     ref = str(head.get("ref", ""))
     if pr.get("state") != "open" or pr.get("merged"):
@@ -78,14 +115,14 @@ def decide(pr: dict, files: list[str], tested_sha: str) -> tuple[bool, str]:
         return False, "not into main"
     if (head.get("repo") or {}).get("full_name") != (base.get("repo") or {}).get("full_name"):
         return False, "from a fork"
-    if not ref.startswith(BRANCH_PREFIXES) or "-fix-" in ref:
+    if not ref.startswith(BRANCH_PREFIXES):
         return False, f"{ref} is not an agents' or Claude's step branch"
     if READY_MARK not in (pr.get("body") or ""):
         return False, "not marked ready by the launcher"
     if head.get("sha") != tested_sha:
         return False, "new commits since CI ran"
     verdict = classify(files)
-    return verdict == "auto", verdict
+    return verdict == "auto" or (reviewed and verdict.startswith("claude:")), verdict
 
 
 def pr_files(call: Call, repo: str, number: int) -> list[str]:
@@ -101,20 +138,22 @@ def pr_files(call: Call, repo: str, number: int) -> list[str]:
     raise RuntimeError("too many files to check")
 
 
-def run(call: Call, repo: str, number: int, sha: str) -> str:
+def run(call: Call, repo: str, number: int, sha: str, reviewed: bool = False) -> str:
     status, pr = call("GET", f"/repos/{repo}/pulls/{number}", None)
     if status != 200 or not isinstance(pr, dict):
         raise RuntimeError(f"cannot read PR #{number}: HTTP {status} {message(pr)}")
-    ok, why = decide(pr, pr_files(call, repo, number), sha)
+    files = pr_files(call, repo, number)
+    ok, why = decide(pr, files, sha, reviewed)
     if not ok:
-        return f"PR #{number} waits for the owner: {why}"
+        return f"PR #{number} not merged: {why}"
     ref = pr["head"]["ref"]
     body = {"merge_method": "merge", "sha": sha, "commit_title": f"Merge pull request #{number} from {ref} (auto)"}
     status, data = call("PUT", f"/repos/{repo}/pulls/{number}/merge", body)
     if status != 200:
         raise RuntimeError(f"GitHub did not merge PR #{number}: HTTP {status} {message(data)}")
     call("DELETE", f"/repos/{repo}/git/refs/heads/{ref}", None)
-    return f"PR #{number} merged ({ref})"
+    system = system_files(files)
+    return f"PR #{number} merged ({ref})" + (f"; system files: {', '.join(system[:5])}" if system else "")
 
 
 def main(argv: list[str] | None = None) -> int:

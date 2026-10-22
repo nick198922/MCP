@@ -34,7 +34,7 @@ def test_research_and_tools_merge_by_themselves():
     assert am.classify(files) == "auto"
 
 
-def test_the_control_plane_waits_for_the_owner():
+def test_the_control_plane_merges_too_and_is_named():
     for path in (
         ".github/workflows/ci.yml",
         ".claude/nightly.md",
@@ -53,7 +53,9 @@ def test_the_control_plane_waits_for_the_owner():
         "deploy/tradedesk-mcp.service",
         "deploy/backup-sqlite.sh",
     ):
-        assert am.classify(["docs/x.md", path]).startswith("owner: changes " + path), path
+        expect = f"claude: {path}" if am.held(path) else "auto"
+        assert am.classify(["docs/x.md", path]) == expect, path
+        assert am.system_files(["docs/x.md", path]) == [path], path
     assert am.classify([]) == "owner: no changes"
 
 
@@ -76,10 +78,10 @@ def test_decide_needs_a_ready_open_agent_pr_tested_at_its_head():
     assert am.decide(pr(), ok_files, "old")[1] == "new commits since CI ran"
     assert am.decide(pr(state="closed"), ok_files, "abc")[1] == "not open"
     fix = pr(head={"ref": "agent/2026-10-14-fix-loop", "sha": "abc", "repo": REPO})
-    assert not am.decide(fix, ok_files, "abc")[0]
+    assert am.decide(fix, ok_files, "abc") == (True, "auto")
     fork = pr(head={"ref": "agent/x", "sha": "abc", "repo": {"full_name": "evil/r"}})
     assert am.decide(fork, ok_files, "abc")[1] == "from a fork"
-    assert am.decide(pr(), ["scripts/agents_loop.sh"], "abc") == (False, "owner: changes scripts/agents_loop.sh")
+    assert am.decide(pr(), ["scripts/agents_loop.sh"], "abc") == (True, "auto")
 
 
 class FakeGitHub:
@@ -107,10 +109,21 @@ def test_run_merges_at_the_tested_sha_and_deletes_the_branch():
     assert gh.calls[-1][0] == "DELETE"
 
 
-def test_run_leaves_a_renamed_control_file_for_the_owner():
+def test_run_names_a_renamed_control_file_in_the_report():
     renamed = [{"filename": "docs/old-loop.sh", "previous_filename": "scripts/agents_loop.sh"}]
-    gh = FakeGitHub({("GET", "/repos/o/r/pulls/7"): (200, pr()), ("GET", "/repos/o/r/pulls/7/files"): (200, renamed)})
-    assert "waits for the owner" in am.run(gh, "o/r", 7, "abc")
+    gh = FakeGitHub(
+        {
+            ("GET", "/repos/o/r/pulls/7"): (200, pr()),
+            ("GET", "/repos/o/r/pulls/7/files"): (200, renamed),
+            ("PUT", "/repos/o/r/pulls/7/merge"): (200, {"merged": True}),
+        }
+    )
+    assert am.run(gh, "o/r", 7, "abc").endswith("; system files: scripts/agents_loop.sh")
+
+
+def test_run_does_not_merge_an_unready_pr():
+    gh = FakeGitHub({("GET", "/repos/o/r/pulls/7"): (200, pr(body="summary")), ("GET", "/repos/o/r/pulls/7/files"): (200, [])})
+    assert "not merged: not marked ready" in am.run(gh, "o/r", 7, "abc")
     assert not any(c[0] == "PUT" for c in gh.calls)
 
 
@@ -129,7 +142,28 @@ def test_gh_pr_ready_marks_the_body(tmp_path, monkeypatch):
     assert sent["body"].endswith(am.READY_MARK) and sent["body"].startswith("summary")
 
 
-def test_demo_trader_inputs_are_owner_only():
+def test_the_demo_trader_and_the_holds_guards_wait_for_claudes_review():
+    for path in (
+        "src/tradedesk/execution/orders.py",
+        "src/tradedesk/analytics/setup_signals.py",
+        "deploy/user-units/tradedesk-demo-manage.timer",
+        "docs/adr/0007-demo-auto-execution.md",
+        "scripts/automerge.py",
+        "scripts/pr_watch.py",
+        "scripts/trader_review.py",
+        ".claude/trader-review.md",
+        ".github/workflows/automerge.yml",
+        "deploy/user-units/tradedesk-trader-review.timer",
+    ):
+        assert am.classify(["docs/x.md", path]).startswith("claude: " + path), path
+    assert am.classify(["scripts/agents_loop.sh", ".claude/nightly.md"]) == "auto"
+    held = pr()
+    assert am.decide(held, ["src/tradedesk/execution/guard.py"], "abc") == (False, "claude: src/tradedesk/execution/guard.py")
+    assert am.decide(held, ["src/tradedesk/execution/guard.py"], "abc", reviewed=True)[0]
+    assert am.decide(held, ["src/tradedesk/execution/guard.py"], "old", reviewed=True)[1] == "new commits since CI ran"
+
+
+def test_demo_trader_inputs_are_named_as_system_files():
     for path in (
         "src/tradedesk/execution/guard.py",
         "src/tradedesk/analytics/setup_signals.py",

@@ -1,0 +1,10 @@
+[Unit]
+Description=tradedesk-radar-weekly (Sunday 19:30 Europe/Kyiv)
+
+[Timer]
+OnCalendar=Sun *-*-* 19:30:00 Europe/Kyiv
+# A Sunday radar sent on Monday after a reboot is not wanted: no catch-up run.
+Persistent=false
+
+[Install]
+WantedBy=timers.target

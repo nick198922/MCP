@@ -1395,7 +1395,7 @@ def test_radar_tab_renders_the_real_section():
         "81 093",  # the card's «Підсумки 18.10»
         "83 565",
         db._pc(v["price"]["change"] * 100),
-        "30.10–06.11 <span class='chip ev'>гарячий тиждень</span>",  # the US midterms window
+        "<span class='chip ev'>гарячий тиждень</span> <b class='num'>30.10–06.11</b>: 42.1 %",  # the US midterms window
         "Не інвестиційна порада",
         "H1 відхилено",
         "5 хв тому",
@@ -1411,19 +1411,128 @@ def test_radar_tab_renders_the_real_section():
     assert (
         far and f"не показано, як у макеті: {len(far)}." in page and db._dd(far[0]["from_utc"]) + "–" not in page
     )  # the mock-up's horizon
-    assert "<tr class=mut><td class='num'>20.10–21.10" in page  # a one-day window is muted
+    # the forward-vol chart: three one-day windows grey, the midterms week amber, the events as labelled lines
+    assert page.count("fill:var(--line);stroke:var(--mut)") == 3 and page.count("fill:var(--warn);stroke:var(--warn)") == 1
+    assert ">Вибори 03.11</text>" in page and ">FOMC 28.10</text>" in page and ">25.12</text>" in page
     assert db._vp(v["iv_vs_rv"]["rv30"]) in page and db._dvp(v["iv_vs_rv"]["premium_rv30"]) in page
     assert f"<td class='r num'>{v['smile']['now']['10P'] * 100:.1f}</td>" in page
     hot = [w for w in v["forward_vol"]["windows"] if w["hot"]]
-    assert len(hot) == 1 and page.count("гарячий тиждень</span>") == 1
+    assert len(hot) == 1 and page.count("chip ev'>гарячий тиждень</span>") == 1
     assert [e["kind"] for e in hot[0]["events"]] == ["election"] and db._e(db._clean(hot[0]["events"][0]["title"], 60)) in page
-    assert page.count("<svg") == 3  # ATM term, IV Rank dial, smile
+    assert page.count("<svg") == 4  # ATM term, IV Rank dial, smile, forward vol
     assert "Блок не вдалося" not in page and "немає даних" not in page and "<script" not in page
     eth = db.render_radar(snap, None, t + 300, db.parse_radar_query("asset=eth"))
     e = snap["sections"]["radar"]["data"]["assets"]["ETH"]
     assert "2 363" in eth and "href='/radar?asset=ETH' aria-current=page>ETH" in eth
     assert f"{e['atm']['now']['7'] * 100:.1f} %" in eth  # the card's front inversion: 52.0 %
     assert "href='/radar'" in db.render_brief(snap, None, t)  # the tab is in the shared nav
+
+
+def _between(page: str, start: str, end: str) -> str:
+    i = page.index(start)
+    return page[i : page.index(end, i)]
+
+
+def test_radar_tab_situation_and_deal_blocks_on_the_real_section():
+    snap, t = _radar_snap()
+    v = snap["sections"]["radar"]["data"]["assets"]["BTC"]
+    page = db.render_radar(snap, None, t + 300, db.parse_radar_query("asset=BTC"))
+    # «Поточна ситуація» comes first, «Що це означає для угод» last
+    assert page.index("Поточна ситуація") < page.index("1 · Ціна") < page.index("Що це означає для угод")
+    now = _between(page, "Поточна ситуація", "</section>")
+    assert now.count("<li>") == 5
+    for text in (
+        "<span class='chip calm'>ціна</span><span>BTC −3.0 % за тиждень: 81 093 проти 83 565 (18.10 проти 11.10, 19:00 UTC).",
+        "<span class='chip ev'>вола</span><span>IV змінилась по-різному: 7 дн +1.9 вп, 30 дн +1.6 вп, 90 дн −0.3 вп",
+        "структура висхідна: 7 днів нижче 30 на 2.9 вп.",
+        f"<span class='chip opp'>IV Rank</span><span>IV Rank {v['iv_rank']['now']['rank'] * 100:.1f} % (тиждень тому "
+        f"{v['iv_rank']['week']['rank'] * 100:.1f} %)",
+        "річного діапазону DVOL 33.6–82.6 % (DVOL 18.10)",
+        "<span class='chip risk'>скью</span><span>Put skew 2.2 вп → 2.6 вп, RR −2.4 вп → −3.7 вп: захист від падіння подорожчав",
+        "<span class='chip ev'>події</span><span>Найдорожчий тиждень — 30.10–06.11: форвардна вола 42.1 % проти медіани 36.5 %; "
+        "на нього припадає: US midterm elections 2026 (election day) 03.11",
+    ):
+        assert text in now, text
+    deal = _between(page, "Що це означає для угод", "</section>")
+    call = db._b76(v["price"]["now"], v["price"]["now"], 30 / 365, v["atm"]["now"]["30"], True)
+    for text in (
+        "<b>Опціони дешеві відносно року</b> (IV Rank 11 %), але це не сигнал купувати",
+        "Куплена волатильність з хеджем у нас програвала (−1.18 % спота за угоду [−1.81; −0.48])",
+        "опціони <b>не дешеві</b>: IV 30 днів 37.0 % проти реалізованої 31.6 % за 30 днів",
+        "Ринок закладає підвищений рух на <b>30.10–06.11</b> (US midterm elections 2026 (election day))",
+        "Захист від падіння подорожчав за тиждень (put skew +0.5 вп, RR −1.4 вп): пути дорожчають відносно ATM",
+        "Правило макета, нами не перевірено.",
+        f"коштує ≈ {db._usd(call)} за 1 BTC",
+        f"тож $100 — це ≈ {db._nf(100 / call, 3)} BTC",
+        "H1) і відхилено",
+        "ризик-нейтральні",
+        "не порада",
+    ):
+        assert text in deal, text
+    assert "Фронт дорожчий за місяць" not in deal  # BTC's front is upward-sloping on 18.10
+    assert "пут-спред дешевший за голий пут" not in deal and "+1.43" not in deal  # review 22.10, p. 1-2
+    eth = db.render_radar(snap, None, t + 300, db.parse_radar_query("asset=ETH"))
+    now = _between(eth, "Поточна ситуація", "</section>")
+    assert "<span class='chip risk'>вола</span>" in now and "інверсія фронту: 7 днів дорожчі за 30" in now
+    assert "Жоден тиждень до 100 днів не виділяється" in now and "ETH −6.6 % за тиждень" in now
+    deal = _between(eth, "Що це означає для угод", "</section>")
+    assert "Фронт дорожчий за місяць (7 днів 52.0 %" in deal and "Ринок закладає підвищений рух" not in deal
+    assert "лот 0.01 BTC" not in deal and " ETH. Спред" in deal
+
+
+def test_radar_deal_quotes_h2_only_in_the_tested_percentile_regime():
+    """Review 22.10, p. 1: H2 tested the DVOL 365-day percentile ≥ 0.80, not IV Rank > 0.6."""
+    snap, t = _radar_snap()
+    now = snap["sections"]["radar"]["data"]["assets"]["BTC"]["iv_rank"]["now"]
+    pages = {}
+    for p in (0.75, 0.85, None):
+        now["rank"], now["percentile"] = 0.7, p
+        page = db.render_radar(snap, None, t + 300, db.parse_radar_query("asset=BTC"))
+        pages[p] = _between(page, "Що це означає для угод", "</section>")
+    hi = pages[0.85]
+    assert "(IV Rank 70 %, перцентиль DVOL 85 % за рік)" in hi and "«перцентиль DVOL ≥ 80 % за рік»" in hi
+    assert "+1.43 % спота [−0.13; +3.45], але це описово (n = 16" in hi and "+0.09 % [−0.49; +0.88]" in hi
+    for p, shown in ((0.75, "75 %"), (None, "—")):
+        d = pages[p]
+        assert "+1.43" not in d and "n = 16" not in d, p
+        assert "(IV Rank 70 %), але перевірений режим (перцентиль DVOL ≥ 80 % за рік) не настав" in d, p
+        assert f"зараз перцентиль {shown}. Загалом продаж ATM-стреддлу" in d and "+0.09 % [−0.49; +0.88]" in d, p
+
+
+def test_radar_situation_range_needs_both_ends_and_fwd_chart_survives_past_windows():
+    """Review 22.10, p. 4-5: a null DVOL max drops the range; windows ending at or before the row's day draw nothing."""
+    snap, _ = _radar_snap()
+    a = snap["sections"]["radar"]["data"]["assets"]["BTC"]
+    a["iv_rank"]["now"]["max"] = None
+    line = next(t for _, lab, t in db.radar_situation(a, "BTC") if lab == "IV Rank")
+    assert "річного діапазону DVOL (DVOL 18.10)" in line and "–0.0 %" not in line
+    assert db.fwd_vol_svg([{"fwd": 0.4, "to_days": 0.0, "days": 7.0}, {"fwd": 0.4, "to_days": -3.0, "days": 7.0}]) == ""
+
+
+def test_radar_tab_situation_and_deal_blocks_with_null_fields():
+    snap, t = _radar_snap(keep={"2026-10-18"})  # no row a week earlier
+    page = db.render_radar(snap, None, t + 60)
+    now = _between(page, "Поточна ситуація", "</section>")
+    assert "BTC 81 093 (18.10, 19:00 UTC); порівняти з тижнем тому нема з чим." in now
+    assert "IV змінилась" not in now and "Структура висхідна: 7 днів нижче 30" in now
+    assert "Put skew — → 2.6 вп, RR — → −3.7 вп: порівняти з тижнем тому нема з чим." in now
+    assert "Захист від падіння подорожчав" not in _between(page, "Що це означає для угод", "</section>")
+    empty, t = _radar_snap(keep=set())  # the archive job is off: only DVOL-based fields
+    page = db.render_radar(empty, None, t + 60)
+    now = _between(page, "Поточна ситуація", "</section>")
+    assert now.count("<li>") == 1 and "IV Rank" in now
+    deal = _between(page, "Що це означає для угод", "</section>")
+    assert "IV Rank" in deal and "правилом 8: ризик" not in deal and "Відносно реального руху" not in deal
+    a = empty["sections"]["radar"]["data"]["assets"]["BTC"]
+    for k in list(a):
+        a[k] = None
+    page = db.render_radar(empty, None, t + 60)
+    assert "Поточну ситуацію скласти нема з чого" in page and "Даних для висновків у секції радару немає" in page
+    assert db._e(db.RADAR_DEAL_NOTE) in page and "Блок не вдалося" not in page
+    # no radar section: neither block is drawn
+    snap, asof = _snap()
+    page = db.render_radar(snap, None, asof + 60)
+    assert "Секції «радар» у знімку ще немає" in page and "Поточна ситуація" not in page and "Що це означає для угод" not in page
 
 
 def test_radar_tab_shows_each_blocks_own_week_dates():
@@ -1494,6 +1603,7 @@ def test_radar_tab_missing_section_snapshot_and_malformed(tmp_path, monkeypatch)
     }
     page = db.render_radar(snap, None, asof + 60)
     assert "1 · Ціна" in page and page.endswith("</body></html>") and "Знімок не вдалося показати" not in page
+    assert "Поточна ситуація" in page and "Що це означає для угод" in page
     assert db.parse_radar_query("asset=eth") == {"asset": "ETH"}
     assert db.parse_radar_query("asset=%3Cx%3E") == {"asset": "BTC"} and db.parse_radar_query("") == {"asset": "BTC"}
 
@@ -1514,3 +1624,8 @@ def test_radar_tab_escapes_hostile_strings_from_the_snapshot():
         assert raw not in page, raw
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in page and "&lt;img src=x" in page and "&lt;iframe" in page
     assert "&lt;b&gt;evil" in page
+    # the same title in «Поточна ситуація», «Що це означає для угод» and the chart's event notes, escaped each time
+    assert page.count("&lt;script&gt;alert(1)&lt;/script&gt;") == 3 and ">Вибори 03.11</text>" in page
+    hot["events"][0]["kind"] = "<x>"  # an unknown kind: the chart labels it with the (escaped) title
+    page = db.render_radar(snap, None, t + 60)
+    assert "&lt;script&gt;alert( 03.11</text>" in page and "<script" not in page  # cut to 14 characters

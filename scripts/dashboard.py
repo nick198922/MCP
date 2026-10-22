@@ -19,9 +19,10 @@ owner's risk budget; position greeks, a «through N days» line, a scenario tabl
 conclusion and an «is vol expensive» block (DVOL percentile, VRP backtest by level). Everything is computed here on a plain GET form; the inline script only remembers deposit, risk
 and size in the browser (localStorage) and resubmits on a change.
 
-The «Радар» tab (/radar?asset=BTC|ETH) renders the snapshot's ``radar`` section (analytics.radar.radar_view): price,
-ATM IV 7/30/90/180, IV Rank, IV vs RV, 25-delta skew, 30-day smile and forward vol with events, each block with its
-own «week ago» dates (surface rows vs daily DVOL). Null fields show their reason from the section's ``missing``.
+The «Радар» tab (/radar?asset=BTC|ETH) renders the snapshot's ``radar`` section (analytics.radar.radar_view): five
+«current situation» lines, price, ATM IV 7/30/90/180, IV Rank, IV vs RV, 25-delta skew, 30-day smile, a forward-vol
+chart with events and rule-based «what it means for trades» (hypotheses, not advice), each block with its own «week
+ago» dates (surface rows vs daily DVOL). Null fields show their reason from the section's ``missing``.
 
 The «Журнал» tab (/journal) reads the owner's trade journal and the assistant's paper recommendations (rec_paper,
 labelled «гіпотеза») from the SQLite store over a read-only connection: summary, by source, the trades page by page,
@@ -716,6 +717,18 @@ HELP: dict[str, tuple[str, str, str, str]] = {
         "Волатильність, закладена між двома сусідніми експіраціями, і макроподії, що припадають на це вікно.",
         "«Гарячий тиждень» — вікно, де вола помітно вища за сусідні (≥ медіани + 3 вп): ринок кладе туди подію.",
         "Опціон під подію береться з експірацією після неї, і він уже дорожчий. Підпис події — за датою, не доказ причини.",
+    ),
+    "r_now": (
+        "Поточна ситуація",
+        "П'ять рядків з блоків нижче: ціна, IV за строками, IV Rank, скью, найдорожчий тиждень форвардної воли.",
+        "Колір мітки: синій — спокійно, зелений — опціони дешеві відносно року, червоний — ризик, жовтий — подія.",
+        "Це опис ринку, а не сигнал: доведеної переваги жоден рядок не має.",
+    ),
+    "r_deal": (
+        "Що це означає для угод",
+        "Детерміновані правила макета: режим IV за роком, IV проти реального руху, події, фронт, скью, розмір.",
+        "На наші перевірки спираються лише рядки про режим IV і IV проти RV; решта — правила макета, не перевірені. Тексту від моделі немає.",
+        "Не порада: метод рекомендацій асистента (H1) перевіркою 18.10 відхилено. Ризик на угоду — за правилом 8.",
     ),
     "pm": (
         "Розриви Polymarket ↔ опціони",
@@ -2903,6 +2916,8 @@ RADAR_TENORS = (("7", "7 дн"), ("30", "30 дн"), ("90", "90 дн"), ("180", "
 RADAR_SMILE = (("10P", "10Δ P"), ("25P", "25Δ P"), ("35P", "35Δ P"), ("ATM", "ATM"), ("35C", "35Δ C"), ("25C", "25Δ C"), ("10C", "10Δ C"))
 RADAR_FWD_DAYS = 100  # forward-vol table horizon, days to the window's end (analytics.radar.HOT_HORIZON_DAYS)
 RADAR_FWD_MIN_DAYS = 5  # shorter windows are noisy and never «hot» (analytics.radar.HOT_MIN_DAYS)
+# short chart labels of the forward-vol event kinds (analytics.radar.FWD_EVENT_KINDS); other kinds show their title
+RADAR_EVN = {"fomc": "FOMC", "cpi": "CPI", "core_pce": "PCE", "pce": "PCE", "nfp": "NFP", "ppi": "PPI", "gdp": "ВВП", "election": "Вибори"}
 RADAR_MISS_UA = {
     "surface": "поверхня зараз",
     "surface_week": "поверхня тиждень тому",
@@ -3212,53 +3227,357 @@ def block_r_smile(a: dict) -> str:
     return svg + _two_lines_legend(nd, wd) + table + miss
 
 
-def block_r_fwd(a: dict) -> str:
-    fv, (nd, _) = _rd(a.get("forward_vol")), _surface_days(a)
+def _fwd_split(a: dict) -> tuple[list[dict], list[dict], float | None]:
+    """(windows ending within RADAR_FWD_DAYS, the farther ones, median of the weekly windows) of the forward-vol block."""
+    fv = _rd(a.get("forward_vol"))
     windows = [x for x in _list(fv.get("windows")) if isinstance(x, dict)]
-    miss = _radar_missing(a, "surface", "forward_vol")
-    if not windows:
-        return _empty("Форвардної воли немає: потрібен рядок архіву поверхні з двома й більше експіраціями.") + miss
-    med = _num(fv.get("median_weekly"))
     # the mock-up's horizon: windows ending within RADAR_FWD_DAYS (the quarterly ones list a dozen events each)
     far = [x for x in windows if (_num(x.get("to_days")) or 0.0) > RADAR_FWD_DAYS]
-    windows = [x for x in windows if x not in far]
-    rows, hot = [], []
-    for x in windows:
-        f = _num(x.get("fwd"))
-        short = (_num(x.get("days")) or 0.0) < RADAR_FWD_MIN_DAYS
-        span = f"{_dd(x.get('from_utc'))}–{_dd(x.get('to_utc'))}"
-        if x.get("hot") is True and f is not None:
-            hot.append((span, f))
-        evs = []
+    return [x for x in windows if x not in far], far, _num(fv.get("median_weekly"))
+
+
+def _fwd_hot(shown: list[dict]) -> list[dict]:
+    """The «hot» windows (flagged by analytics.radar), the highest forward vol first."""
+    return sorted((x for x in shown if x.get("hot") is True and _num(x.get("fwd")) is not None), key=lambda x: -_num(x.get("fwd")))
+
+
+def _fwd_span(x: dict) -> str:
+    return f"{_dd(x.get('from_utc'))}–{_dd(x.get('to_utc'))}"
+
+
+def _ev_title(ev: dict, n: int = 60) -> str:
+    return _clean(ev.get("title") or ev.get("kind") or "подія", n)
+
+
+def fwd_vol_svg(shown: list[dict]) -> str:
+    """Forward vol per window as bars on a day axis from the archive row's 19:00 UTC (as in the mock-up): «hot» windows
+    amber, windows shorter than RADAR_FWD_MIN_DAYS grey and unlabelled; calendar events as dashed red lines."""
+    bars = []
+    for x in shown:
+        f, to, days = _num(x.get("fwd")), _num(x.get("to_days")), _num(x.get("days"))
+        if f is None or to is None or days is None or f <= 0 or days <= 0 or to <= 0:
+            continue
+        bars.append((to - days, to, f, x))
+    if not bars:
+        return ""
+    W, H, L, R, Tp, B = 720, 260, 40, 12, 50, 34
+    t1 = max(b[1] for b in bars)  # > 0: bars ending at or before the row's day are dropped above
+    hi = max(b[2] for b in bars) * 1.15
+
+    def X(d: float) -> float:
+        return L + max(0.0, min(d, t1)) / t1 * (W - L - R)
+
+    def Y(v: float) -> float:
+        return Tp + (hi - v) / hi * (H - Tp - B)
+
+    g = []
+    st_ = nice_step(hi * 100, 4) / 100
+    for i in range(int(math.floor(hi / st_)) + 1):
+        v = i * st_
+        g.append(
+            f'<line x1="{L}" x2="{W - R}" y1="{Y(v):.1f}" y2="{Y(v):.1f}" style="stroke:var(--line)"/>'
+            f'<text x="{L - 6}" y="{Y(v) + 4:.1f}" text-anchor="end">{_e(_nf(v * 100, 0))}</text>'
+        )
+    for d0, d1, f, x in bars:
+        hot, short = x.get("hot") is True, d1 - d0 < RADAR_FWD_MIN_DAYS
+        style = (
+            "fill:var(--warn);stroke:var(--warn)"
+            if hot
+            else "fill:var(--line);stroke:var(--mut)"
+            if short
+            else "fill:rgba(47,109,181,.25);stroke:var(--acc)"
+        )
+        x0, x1 = X(d0), X(d1)
+        g.append(
+            f'<rect x="{x0 + 0.5:.1f}" y="{Y(f):.1f}" width="{max(x1 - x0 - 1, 1):.1f}" height="{Y(0) - Y(f):.1f}" style="{style};stroke-width:1"/>'
+        )
+        if not short:
+            g.append(
+                f'<text x="{(x0 + x1) / 2:.1f}" y="{Y(f) - 5:.1f}" text-anchor="middle" style="fill:var(--fg);font-weight:600">{_e(_nf(f * 100, 0))}</text>'
+            )
+    # expiry dates under the axis, skipping ones that would overlap
+    ticks = sorted({(d0, _dd(x.get("from_utc"))) for d0, _, _, x in bars} | {(d1, _dd(x.get("to_utc"))) for _, d1, _, x in bars})
+    last = -1e9
+    for d, lab in ticks:
+        if X(d) - last < 34:
+            continue
+        last = X(d)
+        anchor = "end" if X(d) > W - R - 20 else "middle"
+        g.append(f'<text x="{X(d):.1f}" y="{H - 18}" text-anchor="{anchor}">{_e(lab)}</text>')
+    # events: days from the row's reference, which is the window's end minus its `to_days`
+    ref = None
+    for _, d1, _, x in bars:
+        end = parse_utc(x.get("to_utc"))
+        if end is not None:
+            ref = end.timestamp() - d1 * 86400
+            break
+    rows_end = [-1e9, -1e9, -1e9]
+    for _, _, _, x in bars:
+        for ev in _list(x.get("events")):
+            ts = parse_utc(ev.get("ts_utc")) if isinstance(ev, dict) else None
+            if ts is None or ref is None:
+                continue
+            d = (ts.timestamp() - ref) / 86400
+            if not 0 < d <= t1:
+                continue
+            lab = f"{RADAR_EVN.get(str(ev.get('kind')), _ev_title(ev, 14))} {_dd(ts.isoformat())}"
+            xe = X(d)
+            row = next((i for i, r in enumerate(rows_end) if r < xe), 2)
+            wpx = len(lab) * 6.6 + 8
+            rows_end[row] = xe + wpx
+            tx, anchor = (xe - 4, "end") if xe + wpx > W - R else (xe + 4, "start")
+            g.append(
+                f'<line x1="{xe:.1f}" x2="{xe:.1f}" y1="{Tp - 30 + row * 11}" y2="{Y(0):.1f}" style="stroke:var(--bad);stroke-width:1.5;stroke-dasharray:4 3"/>'
+                f'<text x="{tx:.1f}" y="{Tp - 22 + row * 11}" text-anchor="{anchor}" style="fill:var(--bad)">{_e(lab)}</text>'
+            )
+    g.append(f'<text x="{L}" y="{H - 4}">експірації Deribit (дата UTC); висота — форвардна вола між сусідніми експіраціями, %</text>')
+    return (
+        "<div class='scroll'><div style='min-width:560px'>"
+        f'<svg viewBox="0 0 {W} {H}" role="img" aria-label="Форвардна вола між експіраціями і події">{"".join(g)}</svg></div></div>'
+    )
+
+
+def block_r_fwd(a: dict) -> str:
+    nd, _ = _surface_days(a)
+    shown, far, med = _fwd_split(a)
+    miss = _radar_missing(a, "surface", "forward_vol")
+    if not shown and not far:
+        return _empty("Форвардної воли немає: потрібен рядок архіву поверхні з двома й більше експіраціями.") + miss
+    svg = fwd_vol_svg(shown)
+    legend = (
+        "<div class='legend'><span><i style='background:var(--acc)'></i>вікно від 5 днів</span>"
+        "<span><i style='background:var(--warn)'></i>гарячий тиждень</span><span><i style='background:var(--mut)'></i>коротше 5 днів (шум)</span>"
+        "<span><i style='background:var(--bad)'></i>подія</span></div>"
+    )
+    hot = _fwd_hot(shown)
+    if hot:
+        lead = "".join(
+            f"<p><span class='chip ev'>гарячий тиждень</span> <b class='num'>{_e(_fwd_span(x))}</b>: {_e(_vp(x.get('fwd')))} проти медіани "
+            f"тижневих вікон {_e(_vp(med))}.</p>"
+            for x in hot
+        )
+    else:
+        lead = f"<p>Жоден тиждень не виділяється (медіана тижневих вікон {_e(_vp(med))}).</p>" if med is not None else ""
+    evs, gaps = [], []
+    for x in shown:
+        if _num(x.get("fwd")) is None:
+            gaps.append(f"{_e(_fwd_span(x))} ({_e(_clean(x.get('reason') or 'немає', 80))})")
         for ev in _list(x.get("events")):
             if isinstance(ev, dict):
-                title = _clean(ev.get("title") or ev.get("kind") or "подія", 60)
-                evs.append(f"{_e(title)} <span class='mut'>{_e(kyiv(parse_utc(ev.get('ts_utc'))))}</span>")
-        val = _e(_vp(f)) if f is not None else f"— <span class='mut'>{_e(_clean(x.get('reason') or 'немає', 80))}</span>"
-        chip = " <span class='chip ev'>гарячий тиждень</span>" if x.get("hot") is True else ""
-        row_cls = " class=hot" if chip else " class=mut" if short else ""
-        rows.append(
-            f"<tr{row_cls}><td class='num'>{_e(span)}{chip}</td><td class='r num'>{_e(_nf(x.get('days')))}</td>"
-            f"<td class='r num'>{val}</td><td>{', '.join(evs) or '<span class=mut>—</span>'}</td></tr>"
-        )
-    table = (
-        "<div class='scroll'><table><tr><th>Між експіраціями (UTC)</th><th class='r'>Днів</th><th class='r'>Форвардна вола</th>"
-        f"<th>Події · час Київ</th></tr>{''.join(rows)}</table></div>"
-    )
+                evs.append(
+                    f"{_e(_ev_title(ev))} <span class='mut'>{_e(kyiv(parse_utc(ev.get('ts_utc'))))}</span> — вікно {_e(_fwd_span(x))}, "
+                    f"{_e(_vp(x.get('fwd')))}"
+                )
+    out = svg + legend + lead
+    if evs:
+        out += "<p class='note'>Події у вікнах (час Київ): " + "; ".join(evs) + ".</p>"
+    if gaps:
+        out += "<p class='note'>Без форвардної воли: " + "; ".join(gaps) + ".</p>"
     if far:
         last = _dd(far[-1].get("to_utc"))
-        table += f"<p class='note'>Вікна, що закінчуються далі ніж за {RADAR_FWD_DAYS} днів (до {_e(last)}), не показано, як у макеті: {len(far)}.</p>"
-    if hot:
-        lead = "Виділяється " + ", ".join(f"{_e(s)} ({_e(_vp(v))})" for s, v in hot) + f" проти медіани тижневих вікон {_e(_vp(med))}. "
-    else:
-        lead = f"Жоден тиждень не виділяється (медіана тижневих вікон {_e(_vp(med))}). " if med is not None else ""
+        out += f"<p class='note'>Вікна, що закінчуються далі ніж за {RADAR_FWD_DAYS} днів (до {_e(last)}), не показано, як у макеті: {len(far)}.</p>"
     note = (
-        f"<p class='note'>{lead}Форвардна вола — скільки руху ринок закладає саме між двома сусідніми експіраціями (з ATM IV "
+        "<p class='note'>Форвардна вола — скільки руху ринок закладає саме між двома сусідніми експіраціями (з ATM IV "
         f"поверхні {_e(nd)} 19:00 UTC): так видно, на який тиждень ринок кладе подію. «Гарячий тиждень» — вікно від 5 днів, що "
-        "закінчується в межах 100 днів, з волою не нижче медіани таких вікон + 3 вп. Вікна коротші за 5 днів шумні (сірим). "
-        "Події — FOMC, CPI, PCE, NFP, PPI, ВВП, вибори, за датою.</p>"
+        "закінчується в межах 100 днів, з волою не нижче медіани таких вікон + 3 вп. Вікна коротші за 5 днів шумні (сірим, без "
+        "підпису). Події — FOMC, CPI, PCE, NFP, PPI, ВВП, вибори, за датою; підпис події — не доказ, що ринок закладає саме її.</p>"
     )
-    return table + note + miss
+    return out + note + miss
+
+
+# ---- «Поточна ситуація» and «Що це означає для угод»: deterministic text from the same fields, no recomputation
+
+
+def radar_situation(a: dict, asset: str) -> list[tuple[str, str, str]]:
+    """Up to five (chip class, chip label, plain text) lines in the mock-up's style: price, IV by tenor and the front,
+    IV Rank, skew, the «hot» week. A line whose fields are null is left out. Text is plain: the caller escapes it."""
+    nd, wd = _surface_days(a)
+    out: list[tuple[str, str, str]] = []
+    p = _rd(a.get("price"))
+    pn, pw, ch = _num(p.get("now")), _num(p.get("week")), _num(p.get("change"))
+    if pn is not None:
+        if pw is not None and ch is not None:
+            out.append(("calm", "ціна", f"{asset} {_pc(ch * 100)} за тиждень: {_nf(pn)} проти {_nf(pw)} ({nd} проти {wd}, 19:00 UTC)."))
+        else:
+            out.append(("calm", "ціна", f"{asset} {_nf(pn)} ({nd}, 19:00 UTC); порівняти з тижнем тому нема з чим."))
+    at = _rd(a.get("atm"))
+    n, c = _rd(at.get("now")), _rd(at.get("change"))
+    d = [_num(c.get(k)) for k, _ in RADAR_TENORS]
+    ok = [x for x in d if x is not None]
+    parts, tone = [], "ev" if d[0] is not None and d[0] > 0.01 else "calm"
+    if ok:
+        how = (
+            "виросла на всіх строках"
+            if all(x > 0.002 for x in ok)
+            else "знизилась на всіх строках"
+            if all(x < -0.002 for x in ok)
+            else "змінилась по-різному"
+        )
+        parts.append(f"IV {how}: " + ", ".join(f"{lab} {_dvp(x)}" for (_, lab), x in zip(RADAR_TENORS, d, strict=True) if x is not None))
+    v7, v30 = _num(n.get("7")), _num(n.get("30"))
+    if v7 is not None and v30 is not None:
+        sl = v7 - v30
+        if sl > 0.005:
+            parts.append(f"інверсія фронту: 7 днів дорожчі за 30 на {_lvp(sl)}, ринок платить за найближчі дні")
+            tone = "risk"
+        elif sl < -0.005:
+            parts.append(f"структура висхідна: 7 днів нижче 30 на {_lvp(-sl)}")
+        else:
+            parts.append(f"фронт плаский: 7 днів {_vp(v7)} проти 30 днів {_vp(v30)}")
+    if parts:
+        txt = "; ".join(parts) + "."
+        out.append((tone, "вола", txt[0].upper() + txt[1:]))
+    r = _rd(a.get("iv_rank"))
+    rn_, rw_ = _rd(r.get("now")), _rd(r.get("week"))
+    rn, rw = _num(rn_.get("rank")), _num(rw_.get("rank"))
+    if rn is not None:
+        pos, tone = ("біля дна", "opp") if rn < 0.2 else ("біля верху", "risk") if rn > 0.6 else ("посередині", "calm")
+        wk = f" (тиждень тому {_nf(rw * 100, 1)} %)" if rw is not None else ""
+        lo, hi = _num(rn_.get("min")), _num(rn_.get("max"))
+        rng = f" {_nf(lo * 100, 1)}–{_nf(hi * 100, 1)} %" if lo is not None and hi is not None else ""
+        out.append(
+            (
+                tone,
+                "IV Rank",
+                f"IV Rank {_nf(rn * 100, 1)} %{wk}, перцентиль {_vp(rn_.get('percentile'), 0)}: IV {pos} річного діапазону DVOL{rng} "
+                f"(DVOL {_dd(rn_.get('day'))}).",
+            )
+        )
+    s = _rd(a.get("skew"))
+    sn, sw, sc = _rd(s.get("now")), _rd(s.get("week")), _rd(s.get("change"))
+    if _num(sn.get("put_skew_25")) is not None or _num(sn.get("rr_25")) is not None:
+        ds, dr = _num(sc.get("put_skew_25")), _num(sc.get("rr_25"))
+        fear = (ds is not None and ds > 0.004) or (dr is not None and dr < -0.008)
+        calm = (ds is not None and ds < -0.004) or (dr is not None and dr > 0.008)
+        how = (
+            "порівняти з тижнем тому нема з чим"
+            if ds is None and dr is None
+            else "захист від падіння подорожчав відносно ATM і колів"
+            if fear
+            else "захист від падіння подешевшав"
+            if calm
+            else "захист від падіння майже не змінився"
+        )
+        out.append(
+            (
+                "risk" if fear else "calm",
+                "скью",
+                f"Put skew {_lvp(sw.get('put_skew_25'))} → {_lvp(sn.get('put_skew_25'))}, RR {_lvp(sw.get('rr_25'))} → {_lvp(sn.get('rr_25'))}: {how}.",
+            )
+        )
+    shown, _, med = _fwd_split(a)
+    hot = _fwd_hot(shown)
+    if hot:
+        x = hot[0]
+        evs = [f"{_ev_title(ev)} {kyiv(parse_utc(ev.get('ts_utc')))}" for ev in _list(x.get("events")) if isinstance(ev, dict)]
+        tail = f"; на нього припадає: {', '.join(evs)}" if evs else "; подій з календаря на нього не припадає"
+        out.append(
+            ("ev", "події", f"Найдорожчий тиждень — {_fwd_span(x)}: форвардна вола {_vp(x.get('fwd'))} проти медіани {_vp(med)}{tail}.")
+        )
+    elif med is not None:
+        out.append(("calm", "події", f"Жоден тиждень до {RADAR_FWD_DAYS} днів не виділяється: форвардна вола близько медіани {_vp(med)}."))
+    return out
+
+
+def block_r_now(a: dict, asset: str) -> str:
+    lines = radar_situation(a, asset)
+    if not lines:
+        return _empty("Поточну ситуацію скласти нема з чого: у секції радару немає ні ціни, ні IV, ні IV Rank, ні скью.")
+    items = "".join(f"<li><span class='chip {c}'>{_e(lab)}</span><span>{_e(t)}</span></li>" for c, lab, t in lines)
+    return f"<ul class='key'>{items}</ul>"
+
+
+RADAR_DEAL_NOTE = (
+    "Це детерміновані правила макета, а не порада й не сигнал: на наші перевірки спираються лише рядки про режим IV і IV проти "
+    "RV, решта не перевірена; доведеної переваги жодне з них не має, тож усе тут — гіпотези. Метод рекомендацій асистента перевірено 18.10 (H1) і відхилено: його угоди без хеджу дали −0.59 % спота за угоду "
+    "[−2.43; +1.51], n = 27. IV, «закладений рух» і ймовірності з цін опціонів — ризик-нейтральні: це ціна страхування в ринку, а "
+    "не прогноз. Сторінка нічого не торгує."
+)
+
+
+def block_r_deal(a: dict, asset: str) -> str:
+    """«Що це означає для угод»: cautious rule-based lines from the mock-up (no LLM text). Only the IV-regime and IV-vs-RV
+    lines cite our checks; the H2 number is quoted only in the regime H2 tested (DVOL 365-day percentile ≥ 0.80)."""
+    L: list[str] = []
+    rk = _rd(_rd(a.get("iv_rank")).get("now"))
+    rn, pct = _num(rk.get("rank")), _num(rk.get("percentile"))
+    if rn is not None:
+        r = _e(_nf(rn * 100, 0))
+        if rn < 0.2:
+            L.append(
+                f"<b>Опціони дешеві відносно року</b> (IV Rank {r} %), але це не сигнал купувати: за нашими перевірками при низькій IV "
+                "ні купівля, ні продаж волатильності переваги не мають. Куплена волатильність з хеджем у нас програвала "
+                "(−1.18 % спота за угоду [−1.81; −0.48]); без хеджу заробляв лише напрям. Купувати — лише під власну тезу чи подію "
+                "і закритою конструкцією (спред), розмір — за правилом 8."
+            )
+        elif rn > 0.6:
+            sell = (
+                "загалом продаж ATM-стреддлу з хеджем на реальних марках Deribit дав +0.09 % [−0.49; +0.88], перевагу не доведено. "
+                "Якщо продавати — лише закриті конструкції (кондор, метелик) і малий розмір."
+            )
+            if pct is not None and pct >= 0.8:
+                L.append(
+                    f"<b>IV у верхній частині року</b> (IV Rank {r} %, перцентиль DVOL {_e(_vp(pct, 0))} за рік). У перевіреному "
+                    "режимі «перцентиль DVOL ≥ 80 % за рік» продаж ATM-стреддлу з хеджем на реальних марках Deribit дав +1.43 % спота "
+                    "[−0.13; +3.45], але це описово (n = 16, тримається на 5 угодах 2021–23); " + sell
+                )
+            else:
+                L.append(
+                    f"<b>IV у верхній частині діапазону</b> (IV Rank {r} %), але перевірений режим (перцентиль DVOL ≥ 80 % за рік) "
+                    f"не настав: зараз перцентиль {_e(_vp(pct, 0))}. " + sell[0].upper() + sell[1:]
+                )
+        else:
+            L.append(
+                f"<b>IV посередині річного діапазону</b> (IV Rank {r} %): режим нейтральний, перевага не на боці ні покупця, ні продавця."
+            )
+    iv30, rv30 = _num(_rd(a.get("iv_vs_rv")).get("iv30")), _num(_rd(a.get("iv_vs_rv")).get("rv30"))
+    if iv30 is not None and rv30 is not None:
+        if iv30 - rv30 > 0.03:
+            L.append(
+                f"Відносно реального руху опціони <b>не дешеві</b>: IV 30 днів {_e(_vp(iv30))} проти реалізованої {_e(_vp(rv30))} за 30 днів. "
+                "Куплений опціон у середньому програє, якщо рух лишиться таким, як був; продаж ATM-стреддлу з хеджем на реальних марках дав ≈ 0 "
+                "(+0.09 % [−0.49; +0.88]), тож премія сама по собі ще не перевага й для продавця."
+            )
+        else:
+            L.append(
+                f"Відносно реального руху опціони <b>дешеві або чесні</b>: IV 30 днів {_e(_vp(iv30))} проти реалізованої {_e(_vp(rv30))} за 30 днів."
+            )
+    hot = _fwd_hot(_fwd_split(a)[0])
+    if hot:
+        x = hot[0]
+        titles = [_ev_title(ev) for ev in _list(x.get("events")) if isinstance(ev, dict)]
+        evs = f" ({_e(', '.join(titles))})" if titles else ""
+        L.append(
+            f"Ринок закладає підвищений рух на <b>{_e(_fwd_span(x))}</b>{evs}. Опціон під подію береться з експірацією після неї, "
+            "і він уже дорожчий за сусідні тижні. Підпис події — за датою, не доказ, що ринок закладає саме її."
+        )
+    n = _rd(_rd(a.get("atm")).get("now"))
+    v7, v30 = _num(n.get("7")), _num(n.get("30"))
+    if v7 is not None and v30 is not None and v7 - v30 > 0.005:
+        L.append(
+            f"Фронт дорожчий за місяць (7 днів {_e(_vp(v7))} проти 30 днів {_e(_vp(v30))}): тижневі опціони дорогі; якщо купувати, "
+            "то довший строк. Правило макета, нами не перевірено."
+        )
+    sc = _rd(_rd(a.get("skew")).get("change"))
+    ds, dr = _num(sc.get("put_skew_25")), _num(sc.get("rr_25"))
+    if (ds is not None and ds > 0.004) or (dr is not None and dr < -0.008):
+        L.append(
+            f"Захист від падіння подорожчав за тиждень (put skew {_e(_dvp(ds))}, RR {_e(_dvp(dr))}): пути дорожчають відносно ATM, "
+            "тож у пут-спреді проданий дальший пут окуповує більшу частку ціни купленого, ніж тиждень тому. Правило макета, нами "
+            "не перевірено."
+        )
+    spot = _num(_rd(a.get("price")).get("now"))
+    if spot is not None and spot > 0 and v30 is not None and v30 > 0:
+        call = _b76(spot, spot, 30 / 365, v30, True)
+        qty = 100 / call if call > 0 else None
+        lot = " (на Bybit чи OKX лот 0.01 BTC; на Deribit мінімум 0.1 — завеликий)" if asset == "BTC" else ""
+        L.append(
+            f"Розмір — за правилом 8: ризик на угоду не більше $100. Куплений ATM-кол на 30 днів коштує ≈ {_e(_usd(call))} за 1 {asset} "
+            f"(Black-76 за ATM IV 30 днів, r = 0, ціна індексу замість форварду), тож $100 — це ≈ "
+            f"{_e(_nf(qty, 3 if asset == 'BTC' else 2))} {asset}{_e(lot)}. Спред чи дальший страйк дозволяє взяти більше."
+        )
+    body = "".join(f"<p style='margin:0 0 8px'>{x}</p>" for x in L) if L else _empty("Даних для висновків у секції радару немає.")
+    return body + f"<p class='note'>{_e(RADAR_DEAL_NOTE)}</p>"
 
 
 def _radar_switch(asset: str) -> str:
@@ -3322,6 +3641,7 @@ def render_radar(snap: dict | None, err: str | None, now: float, params: dict | 
             )
         if notes:
             out.append(f"<section class='wide'>{notes}</section>")
+        out.append(f"<section class='wide'>{_h2('Поточна ситуація', 'r_now')}{_guard(lambda x: block_r_now(x, asset), a)}</section>")
         cards = (
             ("", "1 · Ціна", "r_price", block_r_price),
             ("", "2 · ATM IV за строками", "r_term", block_r_term),
@@ -3333,6 +3653,9 @@ def render_radar(snap: dict | None, err: str | None, now: float, params: dict | 
         )
         for cls, title, key, fn in cards:
             out.append(f"<section class='{cls}'>{_h2(title, key)}{_guard(fn, a)}</section>")
+        out.append(
+            f"<section class='wide'>{_h2('Що це означає для угод', 'r_deal')}{_guard(lambda x: block_r_deal(x, asset), a)}</section>"
+        )
         out.append("</main></body></html>")
         return "".join(out)
     except Exception as e:  # noqa: BLE001 - the page always renders

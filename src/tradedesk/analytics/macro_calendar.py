@@ -180,7 +180,9 @@ def build_macro_calendar(
     events.sort(key=lambda e: (e["ts_utc"], e["title"]))
 
     if seed_added:
-        warnings.append("seed events (FOMC/CPI/NFP) have approximate times and no forecast; confirm against the official calendars")
+        warnings.append(
+            "seed events (FOMC/CPI/NFP, US election day) have approximate times and no forecast; confirm against the official calendars"
+        )
     if last_seed is not None and end > last_seed:
         warnings.append(f"the seed ends {last_seed.date().isoformat()}; later dates are only listed while the feed covers them")
     if skipped:

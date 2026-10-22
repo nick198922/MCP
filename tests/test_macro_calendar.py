@@ -12,6 +12,7 @@ import httpx
 from conftest import NOW, FakeEx, make_transports
 from test_server import call
 from tradedesk.analytics.macro_calendar import build_macro_calendar, classify, clean_text
+from tradedesk.collector.assistant_paper import EVENT_KINDS
 from tradedesk.config import Settings
 from tradedesk.runtime import Runtime
 from tradedesk.server import build_server
@@ -106,6 +107,23 @@ def test_feed_down_falls_back_to_seed_only():
     assert res["feed"]["rows"] == 0 and res["seed_added"] >= 2
     assert all(e["source"] == "seed" for e in res["events"])
     assert any("approximate" in w for w in res["warnings"])
+
+
+def test_seed_is_sorted_and_has_the_2026_midterms():
+    ts = [e["ts"] for e in SEED]
+    assert ts == sorted(ts)
+    el = [e for e in SEED if e["kind"] == "election"]
+    assert len(el) == 1 and el[0]["impact"] == "high"
+    assert datetime.fromtimestamp(el[0]["ts"], UTC) == datetime(2026, 11, 3, 12, 0, tzinfo=UTC)  # nominal time, a Tuesday
+
+
+def test_midterms_explain_the_week_and_do_not_trigger_paper_trades():
+    # the week 30.10 -> 06.11: FOMC is the week before, the election sits inside it (forward-vol bump in the card)
+    res = build_macro_calendar([], SEED, datetime(2026, 10, 30, 8, 0, tzinfo=UTC), 7)
+    ev = [e for e in res["events"] if e["kind"] == "election"]
+    assert len(ev) == 1 and ev[0]["source"] == "seed" and ev[0]["ts_utc"].startswith("2026-11-03")
+    assert ev[0]["ts_kyiv"].startswith("2026-11-03T14:00:00") and ev[0]["hours_ahead"] == 100.0
+    assert "election" not in EVENT_KINDS  # the paper method trades around FOMC/CPI only
 
 
 def test_warns_when_horizon_passes_end_of_seed():

@@ -106,5 +106,12 @@ async def test_events_seed_load_installs_bundled_dataset(state, tmp_path):
         again = await _call(srv, "events_seed_load")
         assert again["data"]["inserted"] == 0
         assert again["data"]["already_present"] == d["candidates"]
+        assert d["meta"]["generated_at"] == "2026-10-22"
+
+        el = await _call(srv, "events_list", kind="election", since_date="2026-11-01", until_date="2026-11-30")
+        assert el["data"]["count"] == 1
+        row = el["data"]["events"][0]
+        assert row["ts"] == 1_793_707_200 and row["impact"] == "high"  # 2026-11-03 12:00 UTC, nominal
+        assert "midterm" in row["label"]
     finally:
         await rt.aclose()

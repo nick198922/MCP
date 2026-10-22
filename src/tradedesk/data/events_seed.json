@@ -1,9 +1,9 @@
 {
   "_meta": {
-    "generated_at": "2026-10-18",
+    "generated_at": "2026-10-22",
     "coverage": "2024-01 … 2027-12",
-    "source": "Federal Reserve FOMC calendar + BLS CPI/NFP schedules and release archives",
-    "note": "Times are the official ET release times converted to UTC (CPI/NFP 08:30 ET, FOMC decision 14:00 ET). Verified by Claude 2026-10-18 against https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm (2026, 2027), https://www.bls.gov/schedule/news_release/cpi.htm and empsit.htm (Nov 2026 … Dec 2027) and the BLS release archives (Feb … Oct 2026). Dates before 2026-02 are as originally approximated. FOMC dates are tentative until confirmed at the preceding meeting."
+    "source": "Federal Reserve FOMC calendar + BLS CPI/NFP schedules and release archives; US federal election day (kind 'election')",
+    "note": "Times are the official ET release times converted to UTC (CPI/NFP 08:30 ET, FOMC decision 14:00 ET). Verified by Claude 2026-10-18 against https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm (2026, 2027), https://www.bls.gov/schedule/news_release/cpi.htm and empsit.htm (Nov 2026 … Dec 2027) and the BLS release archives (Feb … Oct 2026). Dates before 2026-02 are as originally approximated. FOMC dates are tentative until confirmed at the preceding meeting. Added 2026-10-22: US midterm elections on 2026-11-03 (the Tuesday after the first Monday in November); its time 12:00 UTC is NOMINAL (polls close from ~23:00 UTC on 11-03 to ~06:00 UTC on 11-04, results arrive overnight), so use it as a date marker only, not for intraday event studies. Earlier elections are deliberately not back-filled: the verify_* scripts block control days on every seed date."
   },
   "events": [
     {
@@ -550,6 +550,12 @@
       "ts": 1793210400,
       "kind": "fomc",
       "label": "Oct 2026 FOMC",
+      "impact": "high"
+    },
+    {
+      "ts": 1793707200,
+      "kind": "election",
+      "label": "US midterm elections 2026 (election day)",
       "impact": "high"
     },
     {

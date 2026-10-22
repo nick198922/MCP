@@ -676,6 +676,59 @@ HELP: dict[str, tuple[str, str, str, str]] = {
         "95 % ДІ — інтервал, де з 95 % впевненості лежить справжній середній R. Містить 0 — переваги не видно.",
         "Перший чесний висновок — після ≈ 30 розв'язаних планів enter.",
     ),
+    "fc": (
+        "Журнал прогнозів",
+        "Щодня для BTC і ETH — ймовірності чотирьох подій на ціну delivery експірації приблизно через 7 днів: вище спота, "
+        "у межах ±1σ, ±5 % і ±10 %. Їх дає усмішка опціонів Deribit.",
+        "Після експірації кожен прогноз отримує результат 1 / 0 і оцінку Brier; плитки — підсумок уже розрахованих.",
+        "Це ризик-нейтральні ймовірності (ціна опціонів), а не прогноз асистента і не сигнал: журнал перевіряє, "
+        "чи переоцінюють опціони рух.",
+    ),
+    "fc_n": (
+        "Прогнозів розраховано",
+        "Скільки прогнозів уже отримали результат на delivery; відкриті ще чекають своєї експірації.",
+        "Щодня 8 прогнозів (2 активи × 4 події), але вони не незалежні: багато з них мають спільний результат.",
+        "Кількість прогнозів — не розмір вибірки: дивись плитку «Експірацій».",
+    ),
+    "fc_expiries": (
+        "Експірацій — розмір вибірки",
+        "Скільки різних пар «актив × експірація» вже розраховано.",
+        "Прогнози різних днів на одну експірацію мають спільний результат, тож вибірка — не більше за це число (BTC і ETH одного дня сильно корельовані, ефективно менше). Менше 30 — висновку немає.",
+        "Поки експірацій мало, жодна цифра цього блоку не підстава для угоди.",
+    ),
+    "fc_brier": (
+        "Brier",
+        "Середній квадрат різниці між ймовірністю і результатом (1 — подія сталась, 0 — ні).",
+        "0 — ідеально, 0.25 — завжди казати 50 %, 1 — завжди впевнено помилятися. Менше — краще.",
+        "Сам по собі мало що каже: порівнюй з еталонами в сусідніх плитках.",
+    ),
+    "fc_ref": (
+        "Проти фіксованого еталона",
+        "Навичка = 1 − Brier прогнозів / Brier наївної ймовірності: 50 % для «вище спота» і 68.27 % для ±1σ (нормальний "
+        "розподіл). Лише ці дві події: для ±5 % і ±10 % природного еталона немає.",
+        "Вище 0 — опціони точніші за наївну оцінку, нижче 0 — гірші.",
+        "Навичка вище 0 на ≥ 30 експіраціях може вказувати, що ринок оцінює діапазони краще за наївну оцінку (перевірки значущості немає); це не перевага для угоди.",
+    ),
+    "fc_clim": (
+        "Проти кліматології",
+        "Навичка проти частоти кожної події в цій самій вибірці — скільки разів подія справді сталась.",
+        "Цю частоту відомо лише заднім числом, тож еталон суворий: нижче 0 — прогнози гірші за просту частоту.",
+        "Еталон обчислено заднім числом на тій самій вибірці, тож програш йому мало що доводить; "
+        "премія за волатильність — плата за ризик, не помилка. Як угоду це треба перевіряти окремо.",
+    ),
+    "fc_calib": (
+        "Калібрування",
+        "Прогнози в 10 кошиках за ймовірністю: середній прогноз кошика проти частоти, з якою подія сталась.",
+        "Точка на діагоналі — ймовірності чесні; вище діагоналі — подія стається частіше, ніж оцінено, нижче — рідше. "
+        "Більша точка — більше прогнозів.",
+        "Діапазони стабільно вище діагоналі означали б, що опціони переоцінюють рух (на користь продавця) — гіпотеза, не доведено.",
+    ),
+    "fc_weekly": (
+        "Прогнози за тижнями",
+        "Brier прогнозів, згрупованих за ISO-тижнем експірації (UTC), загалом і за кожною подією.",
+        "У тижні лише кілька експірацій, тож окремий рядок дуже шумний; дивись на тенденцію за багато тижнів.",
+        "Один добрий чи поганий тиждень — не сигнал.",
+    ),
     "r_price": (
         "Ціна за тиждень",
         "Індекс Deribit о 19:00 UTC останнього дня архіву поверхні і того самого часу тиждень тому.",
@@ -4233,10 +4286,130 @@ def plan_stats(rows: list[dict]) -> dict:
     return s
 
 
+# The forecast journal (table forecast_log, schema v20): stdlib copies of analytics.forecast_log calibration / score /
+# iso_week / weekly (tests compare each pair). Risk-neutral probabilities from the Deribit smile, settled at delivery.
+FC_MAX_ROWS = 20000  # 8 forecasts a day ≈ 2 900 a year
+FC_N_BINS = 10  # analytics.forecast_log.N_BINS
+FC_WEEKS = 12  # newest ISO weeks in the weekly table (as forecast_log_status's default)
+FC_MIN_EXPIRIES = 30  # below this many settled (asset, expiry) outcomes the block says: no conclusion
+FC_KINDS = ("above_spot", "in_1sigma", "in_pct_5", "in_pct_10")  # analytics.forecast_log.KINDS
+FC_KIND_UA = {"above_spot": "вище спота", "in_1sigma": "±1σ", "in_pct_5": "±5 %", "in_pct_10": "±10 %"}
+FC_CAVEAT = (
+    "Це ймовірності, які закладають опціони Deribit (усмішка експірації ≈ 7 днів), а не реальні шанси і не порада. "
+    "Премія за волатильність сама по собі має робити діапазони влучними частіше, ніж оцінено: журнал це перевіряє "
+    "(гіпотеза, перевагу не показано). Прогнози різних днів на одну експірацію мають спільний результат і корельовані: "
+    "розмір вибірки — кількість експірацій (n_expiries), а не прогнозів; мала n — висновку немає. Кліматологія — частота "
+    "подій у цій самій вибірці, відома лише заднім числом."
+)
+
+
+def _fc_settled(rows: list[dict]) -> list[dict]:
+    return [x for x in rows if x.get("outcome") is not None and x.get("prob") is not None]
+
+
+def _fc_mean(xs: list[float]) -> float:
+    return sum(xs) / len(xs)
+
+
+def _fc_brier(p: float, o: int) -> float:
+    return (float(p) - float(o)) ** 2
+
+
+def fc_calibration(rows: list[dict], n_bins: int = FC_N_BINS) -> list[dict]:
+    """Stdlib copy of analytics.forecast_log.calibration: settled forecasts in equal probability bins (the last one
+    includes 1.0), non-empty bins only, with n, mean forecast and observed frequency."""
+    bins: dict[int, list[dict]] = {}
+    for x in _fc_settled(rows):
+        bins.setdefault(min(int(float(x["prob"]) * n_bins), n_bins - 1), []).append(x)
+    return [
+        {
+            "lo": i / n_bins,
+            "hi": (i + 1) / n_bins,
+            "n": len(xs),
+            "mean_prob": _fc_mean([float(x["prob"]) for x in xs]),
+            "freq": _fc_mean([float(x["outcome"]) for x in xs]),
+        }
+        for i, xs in sorted(bins.items())
+    ]
+
+
+def fc_score(rows: list[dict], n_bins: int = FC_N_BINS) -> dict:
+    """Stdlib copy of analytics.forecast_log.score: Brier, the fixed and the in-sample climatology references, skill,
+    calibration and the binned Murphy decomposition of the settled rows."""
+    xs = _fc_settled(rows)
+    n = len(xs)
+    if n == 0:
+        return {"n": 0}
+    ps = [float(x["prob"]) for x in xs]
+    os_ = [int(x["outcome"]) for x in xs]
+    bs = _fc_mean([_fc_brier(p, o) for p, o in zip(ps, os_, strict=True)])
+    by_kind: dict[str, list[int]] = {}
+    for x, o in zip(xs, os_, strict=True):
+        by_kind.setdefault(str(x["kind"]), []).append(o)
+    base = {k: _fc_mean(v) for k, v in by_kind.items()}
+    bs_clim = _fc_mean([_fc_brier(base[str(x["kind"])], o) for x, o in zip(xs, os_, strict=True)])
+    ref = [(p, float(x["ref_prob"]), o) for x, p, o in zip(xs, ps, os_, strict=True) if x.get("ref_prob") is not None]
+    bins = fc_calibration(xs, n_bins)
+    obar = _fc_mean([float(o) for o in os_])
+    out: dict = {
+        "n": n,
+        "n_expiries": len({(x.get("asset"), x.get("expiry_ts")) for x in xs}),
+        "mean_prob": _fc_mean(ps),
+        "base_rate": obar,
+        "brier": bs,
+        "brier_climatology": bs_clim,
+        "skill_vs_climatology": 1.0 - bs / bs_clim if bs_clim > 0 else None,
+        "n_ref": len(ref),
+        "brier_on_ref": _fc_mean([_fc_brier(p, o) for p, _, o in ref]) if ref else None,
+        "brier_ref": _fc_mean([_fc_brier(q, o) for _, q, o in ref]) if ref else None,
+        "skill_vs_ref": None,
+        "reliability": sum(b["n"] * (b["mean_prob"] - b["freq"]) ** 2 for b in bins) / n,
+        "resolution": sum(b["n"] * (b["freq"] - obar) ** 2 for b in bins) / n,
+        "uncertainty": obar * (1.0 - obar),
+        "calibration": bins,
+    }
+    if ref and out["brier_ref"] > 0:
+        out["skill_vs_ref"] = 1.0 - out["brier_on_ref"] / out["brier_ref"]
+    return out
+
+
+def fc_iso_week(ts: object) -> str:
+    """ISO week of a unix timestamp (UTC), e.g. '2026-W43' (copy of analytics.forecast_log.iso_week)."""
+    y, w, _ = datetime.fromtimestamp(int(ts), timezone.utc).isocalendar()  # noqa: UP017 - runs on the system python3
+    return f"{y}-W{w:02d}"
+
+
+def fc_weekly(rows: list[dict]) -> list[dict]:
+    """Stdlib copy of analytics.forecast_log.weekly: settled forecasts by the ISO week of their expiry, oldest first."""
+    weeks: dict[str, list[dict]] = {}
+    for x in _fc_settled(rows):
+        weeks.setdefault(fc_iso_week(x["expiry_ts"]), []).append(x)
+    out = []
+    for wk, xs in sorted(weeks.items()):
+        s = fc_score(xs)
+        kinds: dict[str, list[float]] = {}
+        for x in xs:
+            kinds.setdefault(str(x["kind"]), []).append(_fc_brier(float(x["prob"]), int(x["outcome"])))
+        out.append(
+            {
+                "week": wk,
+                "n": s["n"],
+                "n_expiries": s["n_expiries"],
+                "brier": s["brier"],
+                "n_ref": s["n_ref"],
+                "brier_on_ref": s["brier_on_ref"],
+                "brier_ref": s["brier_ref"],
+                "skill_vs_ref": s["skill_vs_ref"],
+                "brier_by_kind": {k: _fc_mean(v) for k, v in sorted(kinds.items())},
+            }
+        )
+    return out
+
+
 def load_journal(path: Path) -> tuple[dict | None, str | None]:
-    """{'journal': rows | None, 'rec_paper': rows | None, 'trade_plan': rows | None, 'plan_shadow': int} (None = no
-    such table; trade_plan without the demo trader's shadow plans, which are only counted), or (None, reason) with
-    reason 'missing' | 'unreadable: …'. Read-only connection; never raises."""
+    """{'journal': rows | None, 'rec_paper': rows | None, 'trade_plan': rows | None, 'plan_shadow': int,
+    'forecast_log': rows | None} (None = no such table; trade_plan without the demo trader's shadow plans, which are
+    only counted), or (None, reason) with reason 'missing' | 'unreadable: …'. Read-only connection; never raises."""
     try:
         if not path.exists():
             return None, "missing"
@@ -4246,7 +4419,7 @@ def load_journal(path: Path) -> tuple[dict | None, str | None]:
     try:
         con.row_factory = sqlite3.Row
         names = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
-        out: dict = {"journal": None, "rec_paper": None, "trade_plan": None, "plan_shadow": 0}
+        out: dict = {"journal": None, "rec_paper": None, "trade_plan": None, "plan_shadow": 0, "forecast_log": None}
         if "journal" in names:
             out["journal"] = [
                 dict(r)
@@ -4269,6 +4442,15 @@ def load_journal(path: Path) -> tuple[dict | None, str | None]:
                 )
             ]
             out["plan_shadow"] = int(con.execute("SELECT COUNT(*) FROM trade_plan WHERE tags LIKE ?", (shadow,)).fetchone()[0])
+        if "forecast_log" in names:
+            out["forecast_log"] = [
+                dict(r)
+                for r in con.execute(
+                    "SELECT asset, kind, expiry_ts, prob, ref_prob, status, outcome FROM forecast_log"
+                    " ORDER BY issued_ts DESC, id DESC LIMIT ?",
+                    (FC_MAX_ROWS,),
+                )
+            ]
         return out, None
     except (sqlite3.Error, OSError) as e:
         return None, f"unreadable: {type(e).__name__}"
@@ -4586,6 +4768,164 @@ def block_trade_plans(rows: list[dict] | None, n_shadow: int = 0) -> str:
     return "".join(out)
 
 
+def _bs(x: object) -> str:
+    """A Brier score (decimal), three digits."""
+    return _nf(x, 3)
+
+
+def _skill(x: object) -> str:
+    """Skill 1 − BS / BS_ref as a signed percent, coloured."""
+    v = _num(x)
+    return "—" if v is None else f"<span class='{_signed_cls(v)}'>{_pc(100 * v, 0)}</span>"
+
+
+def calibration_svg(bins: list[dict]) -> str:
+    """Reliability diagram: mean forecast (x) vs observed frequency (y), both 0..1, dot area ~ n; '' without bins."""
+    pts = [
+        (p, f, n)
+        for b in bins
+        if (p := _num(b.get("mean_prob"))) is not None and (f := _num(b.get("freq"))) is not None and (n := _num(b.get("n")))
+    ]
+    if not pts:
+        return ""
+    W, H, L, R, Tp, B = 300, 270, 40, 12, 10, 40
+
+    def X(p: float) -> float:
+        return L + max(0.0, min(1.0, p)) * (W - L - R)
+
+    def Y(f: float) -> float:
+        return Tp + (1.0 - max(0.0, min(1.0, f))) * (H - Tp - B)
+
+    g = []
+    for v in (0.0, 0.25, 0.5, 0.75, 1.0):
+        g.append(
+            f'<line x1="{L}" x2="{W - R}" y1="{Y(v):.1f}" y2="{Y(v):.1f}" style="stroke:var(--line)"/>'
+            f'<line x1="{X(v):.1f}" x2="{X(v):.1f}" y1="{Tp}" y2="{H - B}" style="stroke:var(--line)"/>'
+            f'<text x="{L - 6}" y="{Y(v) + 4:.1f}" text-anchor="end">{100 * v:.0f}</text>'
+            f'<text x="{X(v):.1f}" y="{H - B + 14}" text-anchor="middle">{100 * v:.0f}</text>'
+        )
+    g.append(
+        f'<line x1="{X(0):.1f}" y1="{Y(0):.1f}" x2="{X(1):.1f}" y2="{Y(1):.1f}" style="stroke:var(--mut);stroke-dasharray:5 4"/>'
+        f'<text x="{(L + W - R) / 2:.1f}" y="{H - 6}" text-anchor="middle">прогноз, %</text>'
+        f'<text x="12" y="{(Tp + H - B) / 2:.1f}" text-anchor="middle" transform="rotate(-90 12 {(Tp + H - B) / 2:.1f})">частота події, %</text>'
+    )
+    nmax = max(n for _, _, n in pts)
+    g += [
+        f'<circle cx="{X(p):.1f}" cy="{Y(f):.1f}" r="{3 + 6 * math.sqrt(n / nmax):.1f}" style="fill:var(--acc);fill-opacity:.75"/>'
+        for p, f, n in pts
+    ]
+    return (
+        f'<svg viewBox="0 0 {W} {H}" role="img" aria-label="Калібрування: прогноз проти частоти події" '
+        f'style="max-width:340px">{"".join(g)}</svg>'
+    )
+
+
+def _fc_calibration_block(s: dict) -> str:
+    rows = [
+        "<div class='scroll'><table><tr><th>Кошик</th><th>Прогнозів</th><th>Середній прогноз</th><th>Частота події</th>"
+        "<th>Частота − прогноз</th></tr>"
+    ]
+    for b in s["calibration"]:
+        gap = 100 * (b["freq"] - b["mean_prob"])
+        rows.append(
+            f"<tr><td class='num'>{100 * b['lo']:.0f}–{100 * b['hi']:.0f} %</td><td class='num'>{b['n']}</td>"
+            f"<td class='num'>{_share(b['mean_prob'])}</td><td class='num'>{_share(b['freq'])}</td>"
+            f"<td class='num'>{_e(_pc(gap, 0).replace(' %', ' вп'))}</td></tr>"
+        )
+    rows.append("</table></div>")
+    note = (
+        f"Усього: середній прогноз {_share(s['mean_prob'])}, частота подій {_share(s['base_rate'])}. Розклад Brier за "
+        f"кошиками: надійність {_bs(s['reliability'])} (менше — краще, 0 — ідеальне калібрування), роздільність "
+        f"{_bs(s['resolution'])} (більше — краще), невизначеність {_bs(s['uncertainty'])}; Brier ≈ надійність − "
+        "роздільність + невизначеність (точно, лише коли прогнози в кошику однакові)."
+    )
+    return calibration_svg(s["calibration"]) + "".join(rows) + f"<p class='note'>{_e(note)}</p>"
+
+
+def _fc_weekly_block(rows: list[dict]) -> str:
+    weeks = fc_weekly(rows)
+    if not weeks:
+        return ""
+    head = "".join(f"<th>Brier {_e(FC_KIND_UA[k])}</th>" for k in FC_KINDS)
+    out = [
+        "<div class='scroll'><table><tr><th>Тиждень експірації</th><th>Прогнозів</th><th>Експірацій</th><th>Brier</th>"
+        f"<th>Brier на еталонних / еталон</th><th>Навичка проти еталона</th>{head}</tr>"
+    ]
+    for w in reversed(weeks[-FC_WEEKS:]):
+        ref = "—" if w["brier_on_ref"] is None else f"{_bs(w['brier_on_ref'])} / {_bs(w['brier_ref'])}"
+        kinds = "".join(f"<td class='num'>{_bs(w['brier_by_kind'].get(k))}</td>" for k in FC_KINDS)
+        out.append(
+            f"<tr><td class='num'>{_e(w['week'])}</td><td class='num'>{w['n']}</td><td class='num'>{w['n_expiries']}</td>"
+            f"<td class='num'>{_bs(w['brier'])}</td><td class='num'>{_e(ref)}</td><td class='num'>{_skill(w['skill_vs_ref'])}</td>{kinds}</tr>"
+        )
+    out.append("</table></div>")
+    more = f" Показано {FC_WEEKS} останніх тижнів з {len(weeks)}." if len(weeks) > FC_WEEKS else ""
+    out.append(
+        "<p class='note'>Тиждень — ISO-тиждень експірації (UTC), нові зверху. Кліматології тут немає: у тижні замало "
+        f"результатів.{_e(more)}</p>"
+    )
+    return "".join(out)
+
+
+def block_forecasts(rows: list[dict] | None) -> str:
+    """Weekly Brier and calibration of the risk-neutral range forecasts (table forecast_log), as forecast_log_status
+    scores them. Small n_expiries is said out loud: the numbers are descriptive."""
+    if rows is None:
+        return _empty("Таблиці forecast_log у базі ще немає (з'являється зі схемою v20, коли MCP-сервер або колектор відкриють базу).")
+    if not rows:
+        return _empty("Прогнозів ще немає: завдання колектора forecast_log записує їх щодня після 09:00 UTC (BTC і ETH).")
+    n_open = sum(1 for x in rows if x.get("status") == "open")
+    s = fc_score(rows)
+    if not s["n"]:
+        nxt = min((v for x in rows if x.get("status") == "open" and (v := _num(x.get("expiry_ts"))) is not None), default=None)
+        return _empty(
+            f"Розрахованих прогнозів ще немає (відкритих: {n_open}); перша оцінка — після delivery експірації "
+            f"{_day(nxt)} (08:00 UTC), коли колектор її розрахує."
+        )
+    small = s["n_expiries"] < FC_MIN_EXPIRIES
+    tiles = [
+        _tile("Прогнозів розраховано", _nf(s["n"]), f"відкритих {n_open} · 4 події × BTC і ETH щодня", help="fc_n"),
+        _tile(
+            "Експірацій",
+            _nf(s["n_expiries"]),
+            "розмір вибірки: актив × експірація, результат спільний",
+            help="fc_expiries",
+            tone="warn" if small else "",
+            badge="замало для висновку" if small else "",
+        ),
+        _tile("Brier", _bs(s["brier"]), "середнє (p − o)² · 0 — ідеально, 0.25 — завжди 50 %", help="fc_brier"),
+        _tile(
+            "Проти фіксованого еталона",
+            _skill(s["skill_vs_ref"]),
+            (
+                f"Brier {_bs(s['brier_on_ref'])} проти {_bs(s['brier_ref'])} · {s['n_ref']} прогнозів «вище спота» і «±1σ»"
+                if s["n_ref"]
+                else "еталон є лише для «вище спота» і «±1σ»"
+            ),
+            help="fc_ref",
+        ),
+        _tile(
+            "Проти кліматології",
+            _skill(s["skill_vs_climatology"]),
+            f"Brier {_bs(s['brier'])} проти {_bs(s['brier_climatology'])} · частота в цій вибірці, заднім числом",
+            help="fc_clim",
+        ),
+    ]
+    out = [f"<div class='tiles'>{''.join(tiles)}</div>"]
+    if small:
+        out.append(
+            f"<p class='note warn'>Замало експірацій: n_expiries = {s['n_expiries']} (потрібно ≥ {FC_MIN_EXPIRIES}). "
+            "Цифри описові, висновку немає.</p>"
+        )
+    out.append(f"<h3 style='font-size:14px;margin:12px 0 4px'>Калібрування, 10 кошиків{_info('fc_calib')}</h3>")
+    out.append(_fc_calibration_block(s))
+    out.append(f"<h3 style='font-size:14px;margin:12px 0 4px'>За тижнями{_info('fc_weekly')}</h3>")
+    out.append(_fc_weekly_block(rows))
+    if len(rows) >= FC_MAX_ROWS:
+        out.append(f"<p class='note warn'>Прочитано лише {FC_MAX_ROWS} останніх прогнозів.</p>")
+    return "".join(out)
+
+
 JOURNAL_CSS = """
 .scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}.scroll table{min-width:560px}
 .pager{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin:8px 0 0}.pager a{color:var(--acc);font-weight:600}
@@ -4658,6 +4998,14 @@ def render_journal(data: dict | None, err: str | None, now: float, params: dict 
         out.append(
             f"<section class='wide'>{_h2('Плани угод асистента', 'plans', CHIP_LEDGER)}"
             f"<p class='note warn'>{_e(PLAN_CAVEAT)}</p>{plans}</section>"
+        )
+        try:
+            fc = block_forecasts(data.get("forecast_log"))
+        except Exception as e:  # noqa: BLE001 - one odd row must not take the page down
+            fc = _empty(f"Блок не вдалося показати: несподіваний формат даних ({type(e).__name__}).")
+        out.append(
+            f"<section class='wide'>{_h2('Журнал прогнозів', 'fc', CHIP_LEDGER)}"
+            f"<p class='note warn'><b>Ризик-нейтральні ймовірності, не прогноз асистента.</b> {_e(FC_CAVEAT)}</p>{fc}</section>"
         )
         out.append("</main></body></html>")
         return "".join(out)

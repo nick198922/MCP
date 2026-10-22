@@ -963,6 +963,147 @@ def test_journal_tab_trade_plans_empty_and_old_store(tmp_path):
     assert "Таблиці trade_plan у базі ще немає" in db.render_journal(data, err, float(T0))
 
 
+# ---- «Журнал прогнозів»: forecast_log (schema v20), risk-neutral range forecasts settled at delivery
+
+F_COLS = (
+    "day, issued_ts, asset, kind, expiry_ts, spot, forward, atm_iv, t_years, lo, hi, prob, ref_prob, covered, status,"
+    " settled_ts, delivery_price, outcome, brier"
+)
+FC_E1 = int(datetime(2026, 10, 30, 8, tzinfo=UTC).timestamp())  # ISO 2026-W44
+FC_E2 = FC_E1 + 7 * 86400  # 2026-W45
+FC_E3 = FC_E1 + 14 * 86400  # still open
+FC_REF = {"above_spot": 0.5, "in_1sigma": 0.6827}
+# (asset, expiry) -> kind -> outcome; prob by issue day 7 and 6 days before the expiry
+FC_OUTCOMES = {
+    ("BTC", FC_E1): {"above_spot": 1, "in_1sigma": 1, "in_pct_5": 1, "in_pct_10": 1},
+    ("ETH", FC_E1): {"above_spot": 0, "in_1sigma": 1, "in_pct_5": 0, "in_pct_10": 1},
+    ("BTC", FC_E2): {"above_spot": 0, "in_1sigma": 0, "in_pct_5": 0, "in_pct_10": 1},
+    ("ETH", FC_E2): {"above_spot": 1, "in_1sigma": 1, "in_pct_5": 1, "in_pct_10": 1},
+}
+FC_PROBS = {"above_spot": (0.527, 0.48), "in_1sigma": (0.718, 0.70), "in_pct_5": (0.734, 0.585), "in_pct_10": (0.951, 1.0)}
+
+
+def _frow(asset: str, kind: str, expiry: int, days_before: int, prob: float, outcome: int | None) -> tuple:
+    issued = expiry - days_before * 86400
+    day = datetime.fromtimestamp(issued, UTC).date().isoformat()
+    settled = outcome is not None
+    return (
+        day, issued, asset, kind, expiry, 80000.0, 80100.0, 0.35, days_before / 365, 76000.0, 84000.0, prob,
+        FC_REF.get(kind), 1, "settled" if settled else "open", expiry + 3600 if settled else None,
+        81000.0 if settled else None, outcome, (prob - outcome) ** 2 if settled else None,
+    )  # fmt: skip
+
+
+def _sample_forecasts(with_settled: bool = True) -> list[tuple]:
+    rows = []
+    if with_settled:
+        for (asset, exp), kinds in FC_OUTCOMES.items():
+            for kind, o in kinds.items():
+                for i, d in enumerate((7, 6)):
+                    rows.append(_frow(asset, kind, exp, d, FC_PROBS[kind][i], o))
+    for asset in ("BTC", "ETH"):
+        for kind in FC_PROBS:
+            rows.append(_frow(asset, kind, FC_E3, 7, FC_PROBS[kind][0], None))
+    return rows
+
+
+def _fc_db(path: Path, forecasts: list[tuple], versions=None) -> Path:
+    p = _journal_db(path, [], [], versions)
+    con = sqlite3.connect(p)
+    con.executemany(f"INSERT INTO forecast_log ({F_COLS}) VALUES ({','.join('?' * 19)})", forecasts)
+    con.commit()
+    con.close()
+    return p
+
+
+def test_journal_tab_shows_forecast_brier_calibration_and_weeks(tmp_path):
+    from tradedesk.analytics import forecast_log as af
+
+    p = _fc_db(tmp_path / "f.sqlite", _sample_forecasts())
+    data, err = db.load_journal(p)
+    assert err is None and len(data["forecast_log"]) == 40
+    page = db.render_journal(data, None, float(FC_E2 + 86400), path=p)
+    ref = af.score([x for x in data["forecast_log"] if x["status"] == "settled"])
+    assert ref["n"] == 32 and ref["n_expiries"] == 4
+    for text in (
+        f"<h2>Журнал прогнозів{db._info('fc')}",
+        "Ризик-нейтральні ймовірності, не прогноз асистента.",
+        "розмір вибірки — кількість експірацій (n_expiries)",
+        f"Прогнозів розраховано{db._info('fc_n')}</span><span class='v'>32</span>",
+        "відкритих 8",
+        f"Експірацій{db._info('fc_expiries')}</span><span class='v'>4</span>",
+        "замало для висновку",
+        "Замало експірацій: n_expiries = 4 (потрібно ≥ 30)",
+        f"<span class='v'>{ref['brier']:.3f}</span>",
+        f"Brier {ref['brier_on_ref']:.3f} проти {ref['brier_ref']:.3f} · 16 прогнозів",
+        f"Brier {ref['brier']:.3f} проти {ref['brier_climatology']:.3f}",
+        f"Калібрування, 10 кошиків{db._info('fc_calib')}",
+        'aria-label="Калібрування: прогноз проти частоти події"',
+        "90–100 %",
+        f"За тижнями{db._info('fc_weekly')}",
+        "<td class='num'>2026-W44</td>",
+        "<td class='num'>2026-W45</td>",
+        "Brier ±1σ",
+    ):
+        assert text in page, text
+    assert page.index("2026-W45") < page.index("2026-W44")  # newest week first
+    assert "Блок не вдалося показати" not in page and "<script" not in page
+    # one calibration row per non-empty bin of the analytics reference (prob 1.0 falls into the last bin)
+    for b in ref["calibration"]:
+        assert f"{100 * b['lo']:.0f}–{100 * b['hi']:.0f} %</td><td class='num'>{b['n']}</td>" in page, b
+
+
+def test_forecast_scores_match_the_analytics_reference(tmp_path):
+    from tradedesk.analytics import forecast_log as af
+
+    data, _ = db.load_journal(_fc_db(tmp_path / "f.sqlite", _sample_forecasts()))
+    rows = data["forecast_log"]
+    mine, ref = db.fc_score(rows), af.score(rows)
+    assert set(mine) == set(ref)
+    for key in ref:
+        if key != "calibration":
+            assert mine[key] == pytest.approx(ref[key]), key
+    assert len(mine["calibration"]) == len(ref["calibration"])
+    for a, b in zip(mine["calibration"], ref["calibration"], strict=True):
+        assert a == pytest.approx(b)
+    assert db.fc_calibration(rows) == db.fc_score(rows)["calibration"]
+    mw, rw = db.fc_weekly(rows), af.weekly(rows)
+    assert [w["week"] for w in mw] == [w["week"] for w in rw] == ["2026-W44", "2026-W45"]
+    for a, b in zip(mw, rw, strict=True):
+        assert a["brier_by_kind"] == pytest.approx(b["brier_by_kind"])
+        assert {k: v for k, v in a.items() if k != "brier_by_kind"} == pytest.approx({k: v for k, v in b.items() if k != "brier_by_kind"})
+    assert db.fc_score([]) == af.score([]) == {"n": 0} and db.fc_weekly([]) == af.weekly([]) == []
+    for ts in (FC_E1, FC_E2, int(datetime(2027, 1, 1, tzinfo=UTC).timestamp())):
+        assert db.fc_iso_week(ts) == af.iso_week(ts)
+    assert tuple(db.FC_KINDS) == af.KINDS and db.FC_N_BINS == af.N_BINS
+
+
+def test_journal_tab_forecasts_empty_open_only_and_missing_table(tmp_path):
+    # the table exists but is empty
+    data, err = db.load_journal(_fc_db(tmp_path / "e.sqlite", []))
+    assert err is None and data["forecast_log"] == []
+    page = db.render_journal(data, None, float(T0))
+    assert f"<h2>Журнал прогнозів{db._info('fc')}" in page and "Прогнозів ще немає" in page and "forecast_log" in page
+    assert "Калібрування, 10 кошиків" not in page and "<svg" not in page
+    # only open forecasts: nothing settled yet, the first delivery date
+    page = db.render_journal(*db.load_journal(_fc_db(tmp_path / "o.sqlite", _sample_forecasts(with_settled=False))), float(T0))
+    assert "Розрахованих прогнозів ще немає (відкритих: 8)" in page and db._day(FC_E3) in page
+    # a store before schema v20: no forecast_log table
+    p = _journal_db(tmp_path / "old.sqlite", _sample_journal(), _sample_rec(), versions=range(1, 20))
+    data, err = db.load_journal(p)
+    assert err is None and data["forecast_log"] is None
+    page = db.render_journal(data, err, float(T0))
+    assert "Таблиці forecast_log у базі ще немає" in page and "Угод (закритих)" in page
+    # an odd row (non-numeric prob) does not take the page down
+    con = sqlite3.connect(tmp_path / "e.sqlite")
+    con.execute(f"INSERT INTO forecast_log ({F_COLS}) VALUES ({','.join('?' * 19)})", _frow("BTC", "<b>x", FC_E1, 7, 0.5, 1))
+    con.execute("UPDATE forecast_log SET prob = 'abc'")
+    con.commit()
+    con.close()
+    page = db.render_journal(*db.load_journal(tmp_path / "e.sqlite"), float(T0))
+    assert "Блок не вдалося показати" in page and "<b>x" not in page and "Мої угоди" in page
+
+
 # ---------------------------------------------------------------- «Polymarket» tab
 
 PM_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "pm_gap_snapshot_2026-10-21.json"
@@ -1339,6 +1480,7 @@ def _all_tab_pages(tmp_path) -> dict[str, str]:
     p = _journal_db(tmp_path / "j.sqlite", _sample_journal(), _sample_rec())
     con = sqlite3.connect(p)
     con.executemany(f"INSERT INTO trade_plan ({P_COLS}) VALUES ({','.join('?' * 15)})", _sample_plans())
+    con.executemany(f"INSERT INTO forecast_log ({F_COLS}) VALUES ({','.join('?' * 19)})", _sample_forecasts())
     con.commit()
     con.close()
     pages["journal"] = db.render_journal(*db.load_journal(p), float(T0 + 10 * 86400))
@@ -1373,6 +1515,8 @@ def test_every_heading_and_tile_on_every_tab_has_a_help_note(tmp_path):
         ("journal", "Мої угоди"),
         ("journal", "Угоди"),
         ("journal empty", "Мої угоди"),
+        ("journal", "Журнал прогнозів"),
+        ("journal empty", "Журнал прогнозів"),
         ("polymarket", "Проходять поріг (≥ 5 п.п.)"),
     ):
         assert f"<h2>{title}{icon}" in pages[name], (name, title)

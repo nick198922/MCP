@@ -828,6 +828,34 @@ async def test_migration_18_adds_columns_and_the_outcome_table_to_an_old_db(tmp_
         await s.aclose()
 
 
+async def test_latest_snapshot_queries_of_the_dashboard_use_an_index(tmp_path):
+    """The «Polymarket» tab (scripts/dashboard.py) reads the latest snapshot on every refresh; the primary key
+    (ts, market_id) must serve MAX(ts) and ts = ? as an index SEARCH, never a full SCAN (review 2026-10-21-pm-gap-tab,
+    item 4: a separate (ts) index would only duplicate the PK's leading column)."""
+    path = tmp_path / "plan.sqlite"
+    s = Store(path)
+    await s.init()
+    await s.aclose()
+    con = sqlite3.connect(path)
+    try:
+        con.executemany(
+            "INSERT INTO pm_gap_snapshot (ts, market_id, asset, kind, direction, strike, end_ts, hours_to_end)"
+            " VALUES (?, ?, 'BTC', 'above', 'above', 1, 1, 1)",
+            [(t, f"m{i}") for t in range(50) for i in range(40)],
+        )
+        con.execute("ANALYZE")  # the plan must hold with real statistics too, not only on an empty table
+        queries = [
+            ("SELECT MAX(ts) FROM pm_gap_snapshot", ()),
+            ("SELECT * FROM pm_gap_snapshot WHERE ts = ?", (49,)),
+        ]
+        for sql, args in queries:
+            plan = [r[3] for r in con.execute("EXPLAIN QUERY PLAN " + sql, args)]
+            steps = [p for p in plan if "pm_gap_snapshot" in p]
+            assert steps and all(p.startswith("SEARCH") and "INDEX" in p for p in steps), (sql, plan)
+    finally:
+        con.close()
+
+
 # ----------------------------------------------------------------------------- settled results (registration section 7)
 
 REAL_GAMMA = {

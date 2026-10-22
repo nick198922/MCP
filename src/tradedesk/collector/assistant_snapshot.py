@@ -4,6 +4,10 @@ Docs: docs/ideas/IDEA-20261018-assistant.md. The job calls our own read-only MCP
 MCPServer sharing the Runtime, so rate limits, cache and health are the same as for any other call) and stores each
 tool's envelope as one section. A failing section lands in that section's ``missing`` and in the top-level ``missing``
 list; it never fails the job. Strings from external APIs are kept as plain text (escaping is done at render time).
+
+The ``radar`` section is not a tool call: it reads the radar archive (table ``radar_surface``, job ``radar_archive``),
+daily DVOL (Deribit) and daily closes (Binance) through the providers and builds `analytics.radar.radar_view` for BTC
+and ETH; fields without data are null with a reason in the asset's ``missing``.
 """
 
 from __future__ import annotations
@@ -14,11 +18,14 @@ import logging
 import math
 import os
 import tempfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..analytics.assistant import pick_expiries
+from ..analytics.macro_calendar import build_macro_calendar
+from ..analytics.radar import FWD_EVENT_KINDS, IV_RANK_DAYS, METHOD, WEEK_DAYS, radar_view
+from ..core.envelope import Builder
 
 if TYPE_CHECKING:
     from ..runtime import Runtime
@@ -103,6 +110,114 @@ def _expiry_rows(term: dict[str, Any]) -> list[dict[str, Any]]:
     return list((data or {}).get("expiries") or [])
 
 
+# ----------------------------------------------------------------------------- radar section
+
+RADAR_ASSETS = ("BTC", "ETH")
+RADAR_DVOL_DAYS = IV_RANK_DAYS + WEEK_DAYS + 3  # a year window for today and for a week ago
+RADAR_CLOSES = 40  # daily closes for RV30 (31 needed)
+RADAR_ROW_DAYS = 14  # archive rows read: «now» (up to 2 days back) and the row a week before it
+RADAR_EVENT_DAYS = 400  # seed events beyond the calendar section's horizon, for the longest forward-vol windows
+_DAY_MS = 86_400_000
+RADAR_WARNINGS = [
+    "Radar surface: Deribit marks from option prints of the 6 h before 19:00 UTC (history.deribit.com), one archive row "
+    "per day; 'now' is the newest archived day, not the live market, and 'week' the row 7 days earlier.",
+    "Skew and smile use Black-76 forward deltas at each strike's own mark IV, not Deribit's premium-adjusted deltas: "
+    "levels differ from other sources (docs/library/LIB-20261018-datahawks-options.md), compare changes over time.",
+    "IV Rank and percentile: daily Deribit DVOL (a 30-day index, not the ATM of each tenor) over 365 days; the newest "
+    "close is the live current day. 'Low IV Rank -> buy options' is not confirmed as an edge by our data (LIB H1).",
+    "Realized vol: zero-mean close-to-close of Binance spot daily closes; the newest close is the live current-day price.",
+    "Forward vol: total-variance difference of neighbouring expiries' ATM IV; events are matched by date only (seed "
+    "times are approximate), so a high window does not prove the market prices that event. Not investment advice.",
+]
+
+
+async def _radar_dvol(rt: "Runtime", b: Builder, asset: str, now: datetime) -> list[tuple[int, float]]:
+    end = int(now.timestamp() * 1000)
+    start = end - RADAR_DVOL_DAYS * _DAY_MS
+    pts: dict[int, float] = {}
+    for _ in range(5):  # Deribit pages with `continuation`
+        page = await b.guard(f"radar:dvol:{asset}", "deribit", rt.deribit.volatility_index_data(asset, start, end, 86400))
+        if not page:
+            break
+        for x in page.get("data") or []:
+            try:
+                pts[int(x[0])] = float(x[4])
+            except (TypeError, ValueError, IndexError):
+                continue
+        cont = page.get("continuation")
+        if not cont or int(cont) <= start or int(cont) >= end:
+            break
+        end = int(cont)
+    return sorted(pts.items())
+
+
+async def _radar_closes(rt: "Runtime", b: Builder, asset: str) -> list[tuple[int, float]]:
+    bars = await b.guard(f"radar:ohlcv:{asset}", f"ccxt:{SPOT_VENUE}", rt.exchanges.ohlcv(SPOT_VENUE, f"{asset}/USDT", "1d", RADAR_CLOSES))
+    out = []
+    for x in bars or []:
+        try:
+            out.append((int(x[0]), float(x[4])))
+        except (TypeError, ValueError, IndexError):
+            continue
+    return out
+
+
+async def _radar_rows(rt: "Runtime", b: Builder, asset: str, now: datetime) -> list[dict[str, Any]]:
+    if rt.store is None:
+        b.miss(f"radar:archive:{asset}", "tradedesk", "data_unavailable", "no SQLite store (TRADEDESK_DB_PATH)")
+        return []
+    since = (now - timedelta(days=RADAR_ROW_DAYS)).strftime("%Y-%m-%d")
+    try:
+        await rt.store.init()
+        return await rt.store.radar_list(asset, since=since)
+    except Exception as e:  # noqa: BLE001 - a broken archive must not fail the snapshot
+        b.miss(f"radar:archive:{asset}", "tradedesk", "error", f"{type(e).__name__}: {e}")
+        return []
+
+
+def _radar_events(sections: dict[str, Any], now: datetime, b: Builder) -> list[dict[str, Any]]:
+    """The calendar section's events (feed + seed) within its horizon, then the bundled seed beyond it."""
+    from ..tools.macro import _load_seed  # noqa: PLC0415 - the same seed file macro_calendar reads
+
+    sec = sections.get("events") or {}
+    data = sec.get("data") if sec.get("ok") and isinstance(sec.get("data"), dict) else None
+    events = [e for e in (data or {}).get("events") or [] if isinstance(e, dict)]
+    cutoff = now + timedelta(days=int((data or {}).get("horizon_days") or 0)) if data else None
+    try:
+        seed = _load_seed()
+    except (FileNotFoundError, ValueError, OSError) as e:
+        b.miss("radar:events_seed", "tradedesk", "data_unavailable", f"{type(e).__name__}: {e}")
+        return events
+    for e in build_macro_calendar([], seed, now, RADAR_EVENT_DAYS)["events"]:
+        if cutoff is None or datetime.fromisoformat(e["ts_utc"]) > cutoff:
+            events.append(e)
+    return events
+
+
+async def build_radar(rt: "Runtime", sections: dict[str, Any], now: datetime) -> dict[str, Any]:
+    """The `radar` section: `analytics.radar.radar_view` for BTC and ETH. Never raises (invariant 1)."""
+    try:
+        b = Builder()
+        events = _radar_events(sections, now, b)
+        assets: dict[str, Any] = {}
+        for asset in RADAR_ASSETS:
+            rows, dvol, closes = await asyncio.gather(
+                _radar_rows(rt, b, asset, now), _radar_dvol(rt, b, asset, now), _radar_closes(rt, b, asset)
+            )
+            assets[asset] = radar_view(asset, rows, dvol, closes, events, now)
+        ok = any(
+            a["price"]["now"] is not None or a["iv_rank"]["now"] is not None or a["iv_vs_rv"]["rv30"] is not None for a in assets.values()
+        )
+        return {
+            "ok": ok,
+            "data": {"method": METHOD, "event_kinds": sorted(FWD_EVENT_KINDS), "assets": assets},
+            "missing": [m.model_dump() for m in b.missing],
+            "warnings": [*RADAR_WARNINGS, *b.warnings],
+        }
+    except Exception as e:  # noqa: BLE001 - invariant 1: a section never fails the job
+        return _failed("tradedesk", "error", f"radar: {type(e).__name__}: {e}")
+
+
 async def build_snapshot(rt: "Runtime") -> dict[str, Any]:
     """Collect all sections. Pure orchestration over tool calls; the file is written by the caller."""
     from mcp import Client  # noqa: PLC0415
@@ -145,6 +260,7 @@ async def build_snapshot(rt: "Runtime") -> dict[str, Any]:
             sections[n] = (
                 next(it) if cl is not None else _failed("tradedesk", "data_unavailable", "no suitable expiry in the ATM term structure")
             )
+    sections["radar"] = await build_radar(rt, sections, now)
     asof = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     for s in sections.values():
         s["asof_utc"] = asof
@@ -160,6 +276,7 @@ async def build_snapshot(rt: "Runtime") -> dict[str, Any]:
 
 
 MAX_STALE_HOURS = 6.0  # a carried-forward section older than this is dropped (stays in `missing`)
+OFFLINE_SECTIONS = frozenset({"radar"})  # may have data without the network: not counted by the all-failed check
 
 
 def _age_hours(old: Any, new: str) -> float:
@@ -217,8 +334,8 @@ def _load_previous(path: Path) -> dict[str, Any] | None:
 async def collect_assistant_snapshot(rt: "Runtime") -> int:
     """Collector job: build the snapshot and write it atomically. Returns the number of sections that have data.
 
-    Fails (so the scheduler records it) only when no section has data or no path is configured: an all-empty
-    snapshot would overwrite the last useful one.
+    Fails (so the scheduler records it) only when no tool section has data (``radar`` alone does not count: it can
+    come from the local archive) or no path is configured: an all-empty snapshot would overwrite the last useful one.
     """
     s = rt.settings
     path = snapshot_path(s.db_path, s.assistant_snapshot_path)
@@ -226,8 +343,10 @@ async def collect_assistant_snapshot(rt: "Runtime") -> int:
         raise RuntimeError("assistant snapshot: set TRADEDESK_ASSISTANT_SNAPSHOT_PATH (the store is in memory)")
     snap = await build_snapshot(rt)
     ok = len(snap["sections"]) - len(snap["missing"])
-    if ok == 0:
-        raise RuntimeError("assistant snapshot: every section failed, keeping the previous file")
+    # `radar` can be ok from the local archive alone, so it does not count: with the network down every tool
+    # section fails and the previous file must stay (the brief then says the snapshot is old)
+    if not any(s["ok"] for n, s in snap["sections"].items() if n not in OFFLINE_SECTIONS):
+        raise RuntimeError("assistant snapshot: every network section failed, keeping the previous file")
     prev = await asyncio.to_thread(_load_previous, path)
     carry_forward(snap, prev)
     if snap["missing"] or snap["stale"]:

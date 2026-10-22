@@ -11,6 +11,7 @@ import httpx
 import pytest
 
 from conftest import FakeEx, State, make_transports
+from tradedesk.analytics.macro_calendar import build_macro_calendar
 from tradedesk.analytics.options import black76_greeks
 from tradedesk.analytics.put_skew import DAY_MS, HOUR_MS, build_day, inverse_price, iv_at_put_delta, iv_at_strike, year_frac
 from tradedesk.analytics.radar import (
@@ -21,9 +22,15 @@ from tradedesk.analytics.radar import (
     build_surface,
     constant_tenor_iv,
     due_days,
+    forward_vols,
+    iv_rank,
+    normalize_row,
     radar_row,
+    radar_view,
+    trailing_rv,
     window_ms,
 )
+from tradedesk.analytics.vrp import realized_vol
 from tradedesk.analytics.weekly_straddle import constant_maturity_atm_iv
 from tradedesk.collector.radar_archive import collect_radar_archive
 from tradedesk.collector.scheduler import build_default_scheduler
@@ -31,8 +38,11 @@ from tradedesk.config import Settings
 from tradedesk.core.ratelimit import TokenBucket
 from tradedesk.features import allowed
 from tradedesk.runtime import Runtime
+from tradedesk.tools.macro import _load_seed
 
 FIXTURE = Path(__file__).parent / "fixtures" / "deribit_radar_surface_2026-10-18.json"
+# archive rows of 11.10 and 18.10, daily DVOL 2025-08-25 .. 2026-10-22, Binance daily closes (fetched 2026-10-22)
+INPUTS = Path(__file__).parent / "fixtures" / "radar_snapshot_inputs_2026-10-22.json"
 D0 = int(datetime(2026, 10, 18, tzinfo=UTC).timestamp() * 1000)
 T_REF = D0 + 19 * HOUR_MS
 
@@ -286,3 +296,199 @@ def test_job_off_by_default_and_switch_allow_listed(tmp_path, monkeypatch):
     on, _ = _rt(tmp_path, collector_enabled=True, collect_radar_enabled=True)
     names = lambda rt: {j.name for j in build_default_scheduler(rt).jobs}  # noqa: E731
     assert "radar_archive" not in names(off) and "radar_archive" in names(on)
+
+
+# ----------------------------------------------------------------------------- snapshot view (radar_view)
+
+AT_1810 = datetime(2026, 10, 18, 21, tzinfo=UTC)  # after 19:00 UTC + the 60 min lag: 18.10 is the newest due day
+
+
+def _day(iso: str) -> int:
+    return int(datetime.strptime(iso, "%Y-%m-%d").replace(tzinfo=UTC).timestamp() * 1000)
+
+
+def _inputs(asset: str, now: datetime) -> tuple[list, list, list]:
+    d = json.loads(INPUTS.read_text())
+    ms = now.timestamp() * 1000
+    rows = list(d["rows"][asset].values())
+    return rows, [tuple(x) for x in d["dvol"][asset] if x[0] <= ms], [tuple(x) for x in d["closes"][asset] if x[0] <= ms]
+
+
+def _seed_events(now: datetime) -> list:
+    return build_macro_calendar([], _load_seed(), now, 400)["events"]
+
+
+def test_iv_rank_hand_computed():
+    series = [(_day("2025-10-19") + i * DAY_MS, 10.0 + i) for i in range(365)]  # 10 .. 374 %
+    last = series[-1][0]
+    v, why = iv_rank(series, last)
+    assert why is None and v["rank"] == pytest.approx(1.0) and v["percentile"] == pytest.approx(364 / 365)
+    assert v["dvol"] == pytest.approx(3.74) and v["min"] == pytest.approx(0.10) and v["n_days"] == 365
+    mid, _ = iv_rank([*series[:-1], (last, 192.0)], last)  # (192 - 10) / (373 - 10)
+    assert mid["rank"] == pytest.approx(182 / 363) and mid["percentile"] == pytest.approx(182 / 365)
+    assert iv_rank(series, last + DAY_MS) == (None, "no DVOL close for 2026-10-19")
+    assert iv_rank(series[-100:], last)[1] == "DVOL history: 100 of 365 days"
+    assert iv_rank([(t, 40.0) for t, _ in series], last)[1] == "DVOL flat over the window"
+
+
+def test_iv_rank_matches_the_lib_table():
+    """LIB-20261018 «Звірка радару»: our IV Rank on daily DVOL over 365 days, rounded to 0.1 %."""
+    _, dvol, _ = _inputs("BTC", datetime(2026, 10, 22, tzinfo=UTC))
+    lib = {"2026-09-02": 0.069, "2026-09-13": 0.104, "2026-09-27": 0.030, "2026-10-04": 0.059, "2026-10-11": 0.076}
+    for day, ref in lib.items():
+        v, why = iv_rank(dvol, _day(day))
+        assert why is None and v["rank"] == pytest.approx(ref, abs=0.0015), day
+    # the card's 10 % for 18.10 was the live close at 15:13 UTC (38.49); the final daily close is 38.82
+    v, _ = iv_rank(dvol, _day("2026-10-18"))
+    assert v["rank"] == pytest.approx(0.10, abs=0.01) and v["min"] == pytest.approx(0.3359) and v["max"] == pytest.approx(0.8262)
+
+
+def test_trailing_rv_hand_computed_and_gaps():
+    now = datetime(2026, 10, 18, 15, tzinfo=UTC)
+    d0 = _day("2026-10-18")
+    closes = [(d0 - (30 - i) * DAY_MS, 100.0 * (1.02 if i % 2 else 1.0)) for i in range(31)]
+    rv, why = trailing_rv(closes, now, 30)
+    assert why is None and rv == pytest.approx(math.sqrt(365) * math.log(1.02), rel=1e-12)
+    assert trailing_rv(closes, now, 7)[0] == pytest.approx(math.sqrt(365) * math.log(1.02), rel=1e-12)
+    assert trailing_rv(closes[:-1], now, 30) == (None, "30 daily closes, need 31")
+    assert trailing_rv([*closes[:5], *closes[6:]], now, 7)[0] is not None  # the gap is outside the 7-day window
+    assert trailing_rv([*closes[:-5], *closes[-4:]], now, 7) == (None, "gap in the daily closes")
+    stale = trailing_rv(closes, now + timedelta(days=3), 30)
+    assert stale == (None, "newest daily close 2026-10-18 is stale")
+    assert trailing_rv([(t + 16 * HOUR_MS, c) for t, c in closes], now, 30)[0] is None  # a bar after `now` is not used
+
+
+def test_forward_vols_hand_computed_and_events():
+    t0, t1, t2 = 1_793_347_200, 1_793_952_000, 1_795_766_400  # 30.10, 06.11, 27.11 08:00 UTC
+    events = [
+        {"ts_utc": "2026-10-30T08:00:00+00:00", "kind": "fomc", "title": "on t0: excluded"},
+        {"ts_utc": "2026-11-03T12:00:00+00:00", "kind": "election", "title": "Mid\x00terms\n <b>x</b>"},
+        {"ts_utc": "2026-11-06T08:00:00+00:00", "kind": "CPI", "title": "on t1: included"},
+        {"ts_utc": "2026-11-05T13:30:00+00:00", "kind": "jobless_claims", "title": "not a forward-vol kind"},
+        {"ts_utc": "2026-11-04T00:00:00", "kind": "nfp", "title": "no timezone: dropped"},
+        {"ts_utc": "bad", "kind": "nfp"},
+        "not a dict",
+    ]
+    exp = [[t1, 20.0, 1.0, 0.5], [t0, 10.0, 1.0, 0.4], [t2, 40.0, 1.0, 0.3], [t2 + 1, 50.0, 1.0, None]]
+    fv = forward_vols(exp, events)
+    w1, w2 = fv["windows"]
+    assert w1["fwd"] == pytest.approx(math.sqrt((0.25 * 20 - 0.16 * 10) / 10)) and w1["days"] == 10.0
+    assert w1["from_utc"] == "2026-10-30T08:00:00Z" and w1["to_utc"] == "2026-11-06T08:00:00Z"
+    assert [e["kind"] for e in w1["events"]] == ["election", "cpi"]
+    assert w1["events"][0]["title"] == "Mid terms <b>x</b>"  # control characters dropped; HTML is escaped at render time
+    assert w2["fwd"] is None and "non-positive" in w2["reason"]  # 0.09 * 40 < 0.25 * 20
+    assert fv["median_weekly"] == pytest.approx(w1["fwd"]) and w1["hot"] is False  # the only weekly window is the median
+
+
+def test_normalize_row_store_shape_equals_row_shape():
+    row = json.loads(INPUTS.read_text())["rows"]["BTC"]["2026-10-18"]
+    stored = {k: v for k, v in row.items() if k != "atm"}
+    stored.update({f"atm_{d}d": row["atm"][d] for d in ("7", "30", "90", "180")}, asset="BTC", created_ts=0)
+    assert normalize_row(stored) == normalize_row(row)
+
+
+def test_radar_view_real_sample_matches_the_lib_and_card():
+    """BTC 18.10 (LIB-20261018 and the card's «Підсумки 18.10»): price, ATM 7/30/90/180, skew, IV Rank, forward vol."""
+    rows, dvol, closes = _inputs("BTC", AT_1810)
+    v = radar_view("BTC", rows, dvol, closes, _seed_events(AT_1810), AT_1810)
+    assert v["missing"] == []
+    assert v["surface"]["now_day"] == "2026-10-18" and v["surface"]["week_day"] == "2026-10-11"
+    assert v["surface"]["ref_utc"] == "2026-10-18T19:00:00Z" and v["surface"]["method"] == METHOD
+    p = v["price"]
+    assert p["now"] == pytest.approx(81_093, abs=1) and p["week"] == pytest.approx(83_565, abs=1)
+    assert p["change"] == pytest.approx(-0.030, abs=0.0005)
+    for d, now_ref, week_ref in zip(("7", "30", "90", "180"), (0.341, 0.370, 0.371, 0.382), (0.322, 0.355, 0.374, 0.384), strict=True):
+        assert v["atm"]["now"][d] == pytest.approx(now_ref, abs=0.0015), d
+        assert v["atm"]["week"][d] == pytest.approx(week_ref, abs=0.0015), d
+        assert v["atm"]["change"][d] == pytest.approx(v["atm"]["now"][d] - v["atm"]["week"][d], abs=1e-12)
+    sk = v["skew"]
+    assert sk["now"]["put_skew_25"] == pytest.approx(0.0265, abs=0.0005)  # LIB: 2.65 vp
+    assert sk["week"]["put_skew_25"] == pytest.approx(0.022, abs=0.0005)  # card: 2.2 -> 2.7
+    assert sk["now"]["rr_25"] < 0 and sk["change"]["put_skew_25"] == pytest.approx(0.0046, abs=0.0005)
+    assert v["smile"]["now"]["ATM"] == pytest.approx(v["atm"]["now"]["30"]) and set(v["smile"]["week"]) == set(v["smile"]["now"])
+    r = v["iv_rank"]
+    assert r["now"]["day"] == "2026-10-18" and r["now"]["rank"] == pytest.approx(0.10, abs=0.01)
+    assert r["week"]["day"] == "2026-10-11" and r["week"]["rank"] == pytest.approx(0.076, abs=0.0015)
+    assert 0 < r["now"]["percentile"] < 0.5 and r["change"] == pytest.approx(r["now"]["rank"] - r["week"]["rank"])
+    rv = v["iv_vs_rv"]
+    cl = [c for _, c in closes]
+    assert rv["rv30"] == pytest.approx(realized_vol(cl[-31:]), rel=1e-12) and rv["rv7"] == pytest.approx(realized_vol(cl[-8:]), rel=1e-12)
+    assert rv["rv30"] == pytest.approx(0.316, abs=0.005)  # the card: 31.6 % (its last close was live at 15:13)
+    assert rv["premium_rv30"] == pytest.approx(rv["iv30"] - rv["rv30"]) and rv["iv30"] == v["atm"]["now"]["30"]
+    fv = v["forward_vol"]
+    by_from = {w["from_utc"][:10]: w for w in fv["windows"]}
+    elec = by_from["2026-10-30"]  # LIB H4: 30.10 -> 06.11 at 42 % against 34-37 % around it; US midterms 03.11
+    assert elec["to_utc"] == "2026-11-06T08:00:00Z" and elec["fwd"] == pytest.approx(0.42, abs=0.005) and elec["hot"]
+    assert [e["kind"] for e in elec["events"]] == ["election"]
+    fomc = by_from["2026-10-23"]  # FOMC 28.10 is in 23.10 -> 30.10 and carries no premium there (34 %)
+    assert fomc["fwd"] == pytest.approx(0.34, abs=0.005) and not fomc["hot"] and [e["kind"] for e in fomc["events"]] == ["fomc"]
+    assert [w["from_utc"][:10] for w in fv["windows"] if w["hot"]] == ["2026-10-30"]
+    assert 0.34 < fv["median_weekly"] < 0.37
+
+
+def test_radar_view_ignores_dvol_and_closes_after_now():
+    """The fixture runs to 22.10: fed unfiltered at 18.10 21:00 UTC, the view equals the one on data up to `now`."""
+    d = json.loads(INPUTS.read_text())
+    rows, dvol, closes = _inputs("BTC", AT_1810)
+    later = [x for x in d["dvol"]["BTC"] if x[0] > AT_1810.timestamp() * 1000]
+    assert later and len(closes) < len(d["closes"]["BTC"])  # the unfiltered series really has future points
+    events = _seed_events(AT_1810)
+    full = radar_view("BTC", rows, [tuple(x) for x in d["dvol"]["BTC"]], [tuple(x) for x in d["closes"]["BTC"]], events, AT_1810)
+    cut = radar_view("BTC", rows, dvol, closes, events, AT_1810)
+    assert full["iv_rank"] == cut["iv_rank"] and full["iv_vs_rv"] == cut["iv_vs_rv"]
+    assert full["iv_rank"]["now"]["day"] == "2026-10-18" and full == cut
+
+
+def test_radar_view_two_day_old_row_drops_ended_windows():
+    """21.10 19:30 UTC: the newest due day is 20.10, so the 18.10 row is «now»; its 20.10 -> 21.10 window has ended."""
+    at = datetime(2026, 10, 21, 19, 30, tzinfo=UTC)
+    rows, dvol, closes = _inputs("BTC", at)
+    v = radar_view("BTC", rows, dvol, closes, _seed_events(at), at)
+    assert v["surface"]["now_day"] == "2026-10-18"
+    fresh = radar_view("BTC", rows, dvol, closes, _seed_events(AT_1810), AT_1810)["forward_vol"]["windows"]
+    assert fresh[0]["to_utc"] == "2026-10-21T08:00:00Z"  # present while it had not ended
+    windows = v["forward_vol"]["windows"]
+    assert windows and all(w["to_utc"] > "2026-10-21T19:30:00Z" for w in windows)
+    assert len(windows) == len(fresh) - 1 and windows[0]["from_utc"] == "2026-10-21T08:00:00Z"
+
+
+def test_radar_view_eth_real_sample():
+    rows, dvol, closes = _inputs("ETH", AT_1810)
+    v = radar_view("ETH", rows, dvol, closes, _seed_events(AT_1810), AT_1810)
+    assert v["missing"] == [] and v["price"]["now"] == pytest.approx(2_363, abs=1)
+    assert v["price"]["change"] == pytest.approx(-0.066, abs=0.0005)  # card: -6.6 %
+    assert v["atm"]["now"]["7"] == pytest.approx(0.520, abs=0.0015) and v["atm"]["week"]["7"] == pytest.approx(0.422, abs=0.0015)
+    assert v["atm"]["now"]["7"] > v["atm"]["now"]["30"]  # the card's front inversion
+    assert v["skew"]["now"]["put_skew_25"] == pytest.approx(0.039, abs=0.0015)  # prototype 4.0
+
+
+def test_radar_view_without_archive_is_null_with_reasons():
+    """No archive rows (the job is off): surface fields are None with a reason; IV Rank and RV still come; no exception."""
+    _, dvol, closes = _inputs("BTC", AT_1810)
+    v = radar_view("BTC", [], dvol, closes, [], AT_1810)
+    assert v["price"] == {"now": None, "week": None, "change": None}
+    assert v["atm"] == {"now": None, "week": None, "change": None} and v["skew"]["now"] is None and v["smile"]["now"] is None
+    assert v["forward_vol"] == {"windows": [], "median_weekly": None}
+    assert v["iv_vs_rv"]["iv30"] is None and v["iv_vs_rv"]["premium_rv30"] is None and v["iv_vs_rv"]["rv30"] is not None
+    assert v["iv_rank"]["now"] is not None
+    assert v["missing"] == [
+        {"field": "surface", "reason": "no radar archive row from 2026-10-16 to 2026-10-18 (job radar_archive off or behind)"}
+    ]
+    # nothing at all: every block null, all reasons listed
+    empty = radar_view("BTC", [], [], [], [], AT_1810)
+    assert {m["field"] for m in empty["missing"]} == {"surface", "iv_rank", "rv30", "rv7"} and empty["iv_rank"]["now"] is None
+
+
+def test_radar_view_week_row_missing_and_stale_now_row():
+    rows, dvol, closes = _inputs("BTC", AT_1810)
+    only_now = [r for r in rows if r["day"] == "2026-10-18"]
+    v = radar_view("BTC", only_now, dvol, closes, [], AT_1810)
+    assert v["price"]["now"] is not None and v["price"]["week"] is None and v["price"]["change"] is None
+    assert v["atm"]["week"] is None and v["atm"]["change"] is None and v["skew"]["change"] is None
+    assert v["missing"] == [{"field": "surface_week", "reason": "no radar archive row for 2026-10-11"}]
+    # before 20:00 UTC on 18.10 its row is not due yet (newest due day 17.10); three days later it is too old for «now»
+    early = datetime(2026, 10, 18, 19, 30, tzinfo=UTC)
+    assert radar_view("BTC", only_now, dvol, closes, [], early)["surface"]["now_day"] is None
+    later = AT_1810 + timedelta(days=3)
+    assert radar_view("BTC", only_now, dvol, closes, [], later)["surface"]["now_day"] is None
+    assert radar_view("BTC", [*only_now, {"day": "bad"}, {"day": "2026-10-17"}], dvol, closes, [], AT_1810)["price"]["now"] is not None

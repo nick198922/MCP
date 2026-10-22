@@ -4,6 +4,7 @@ import json
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
+import ccxt
 import pytest
 
 from conftest import NOW, FakeEx, make_transports
@@ -14,7 +15,7 @@ from tradedesk.config import Settings
 from tradedesk.runtime import Runtime
 
 
-def _rt(state, tmp_path: Path, **kw) -> Runtime:
+def _rt(state, tmp_path: Path, exchange_factory=FakeEx, **kw) -> Runtime:
     settings = Settings(
         http_retries=1,
         cache_scale=0.0,
@@ -22,7 +23,7 @@ def _rt(state, tmp_path: Path, **kw) -> Runtime:
         assistant_snapshot_path=str(tmp_path / "out" / "snapshot.json"),
         **kw,
     )
-    rt = Runtime(settings, transports=make_transports(state), exchange_factory=FakeEx)
+    rt = Runtime(settings, transports=make_transports(state), exchange_factory=exchange_factory)
     rt.now = lambda: NOW
     return rt
 
@@ -207,6 +208,125 @@ async def test_snapshot_all_failed_keeps_previous_file(state, tmp_path, monkeypa
     finally:
         await rt.aclose()
     assert json.loads(out.read_text()) == {"old": True}
+
+
+INPUTS = Path(__file__).parent / "fixtures" / "radar_snapshot_inputs_2026-10-22.json"
+
+
+async def _seed_archive(rt: Runtime) -> None:
+    """The real BTC rows of 18.10 and 11.10, relabelled as 09.10 and 02.10 (NOW is 10.10 13:07, before 20:00 UTC)."""
+    rows = json.loads(INPUTS.read_text())["rows"]["BTC"]
+    await rt.store.init()
+    for src, day in (("2026-10-18", "2026-10-09"), ("2026-10-11", "2026-10-02")):
+        ts = int(datetime.strptime(day, "%Y-%m-%d").replace(hour=19, tzinfo=UTC).timestamp())
+        assert await rt.store.radar_insert(dict(rows[src], day=day, ts=ts, asset="BTC", created_ts=0)) == 1
+
+
+async def test_snapshot_radar_section_from_archive(state, tmp_path):
+    rt = _rt(state, tmp_path)
+    try:
+        await _seed_archive(rt)
+        await collect_assistant_snapshot(rt)
+    finally:
+        await rt.aclose()
+    snap = json.loads((tmp_path / "out" / "snapshot.json").read_text())
+    sec = snap["sections"]["radar"]
+    assert sec["ok"] and sec["missing"] == [] and "radar" not in snap["missing"] and sec["asof_utc"] == snap["asof_utc"]
+    assert any("not confirmed as an edge" in w for w in sec["warnings"]) and any("premium-adjusted" in w for w in sec["warnings"])
+    btc, eth = sec["data"]["assets"]["BTC"], sec["data"]["assets"]["ETH"]
+    assert btc["missing"] == []
+    assert btc["surface"]["now_day"] == "2026-10-09" and btc["surface"]["week_day"] == "2026-10-02"
+    assert btc["price"]["now"] == pytest.approx(81_093.3) and btc["price"]["change"] == pytest.approx(-0.0296, abs=0.0001)
+    assert btc["atm"]["now"]["30"] == pytest.approx(0.3704, abs=0.0001) and btc["skew"]["now"]["put_skew_25"] == pytest.approx(
+        0.0265, abs=0.0001
+    )
+    assert btc["iv_rank"]["now"]["rank"] == pytest.approx(1.0)  # the fake DVOL drifts up every day
+    assert btc["iv_vs_rv"]["rv30"] > 0 and btc["iv_vs_rv"]["premium_rv30"] == pytest.approx(
+        btc["iv_vs_rv"]["iv30"] - btc["iv_vs_rv"]["rv30"]
+    )
+    assert any(w["hot"] for w in btc["forward_vol"]["windows"])
+    # ETH has no archive rows: its surface fields are null with a reason, the rest is there
+    assert eth["price"]["now"] is None and eth["atm"]["now"] is None and eth["iv_rank"]["now"] is not None
+    assert [m["field"] for m in eth["missing"]] == ["surface"]
+
+
+async def test_snapshot_radar_provider_failure_lands_in_missing(state, tmp_path):
+    state.deribit_status = 500
+    rt = _rt(state, tmp_path)
+    try:
+        await _seed_archive(rt)
+        await collect_assistant_snapshot(rt)
+    finally:
+        await rt.aclose()
+    sec = json.loads((tmp_path / "out" / "snapshot.json").read_text())["sections"]["radar"]
+    assert sec["ok"]  # the archive and the Binance closes still give data
+    assert {(m["field"], m["provider"]) for m in sec["missing"]} >= {("radar:dvol:BTC", "deribit"), ("radar:dvol:ETH", "deribit")}
+    btc = sec["data"]["assets"]["BTC"]
+    assert btc["iv_rank"] == {"now": None, "week": None, "change": None} and btc["price"]["now"] is not None
+    assert {"field": "iv_rank", "reason": "no daily DVOL"} in btc["missing"]
+
+
+class _DeadOhlcvEx(FakeEx):
+    async def fetch_ohlcv(self, *a, **k):
+        raise ccxt.NetworkError("binance down")
+
+
+async def test_snapshot_network_down_archive_alone_keeps_previous_file(state, tmp_path, monkeypatch):
+    """No network (every tool call, Deribit and Binance fail) but a seeded archive: the radar section has data from
+    SQLite alone, which must not count as a successful snapshot (the old file stays, the job fails)."""
+    import tradedesk.collector.assistant_snapshot as mod
+
+    async def dead(client, tool, args):
+        return mod._failed("tradedesk", "error", "x")
+
+    monkeypatch.setattr(mod, "_call", dead)
+    state.deribit_status = 500
+    out = tmp_path / "out" / "snapshot.json"
+    out.parent.mkdir()
+    out.write_text('{"old": true}')
+    rt = _rt(state, tmp_path, exchange_factory=_DeadOhlcvEx)
+    try:
+        await _seed_archive(rt)
+        radar = await mod.build_radar(rt, {}, NOW)
+        btc = radar["data"]["assets"]["BTC"]
+        assert radar["ok"] and btc["price"]["now"] is not None  # the archive alone makes the radar section ok
+        assert btc["iv_rank"]["now"] is None and btc["iv_vs_rv"]["rv30"] is None  # nothing from the network
+        with pytest.raises(RuntimeError, match="every network section failed"):
+            await collect_assistant_snapshot(rt)
+    finally:
+        await rt.aclose()
+    assert json.loads(out.read_text()) == {"old": True}
+
+
+async def test_snapshot_radar_error_never_fails_the_job(state, tmp_path, monkeypatch):
+    import tradedesk.collector.assistant_snapshot as mod
+
+    def boom(*a, **k):
+        raise ValueError("bad row")
+
+    monkeypatch.setattr(mod, "radar_view", boom)
+    rt = _rt(state, tmp_path)
+    try:
+        await collect_assistant_snapshot(rt)
+    finally:
+        await rt.aclose()
+    snap = json.loads((tmp_path / "out" / "snapshot.json").read_text())
+    sec = snap["sections"]["radar"]
+    assert not sec["ok"] and sec["data"] is None and "radar: ValueError: bad row" in sec["missing"][0]["detail"]
+    assert "radar" in snap["missing"] and snap["sections"]["tickers"]["ok"]
+
+
+async def test_build_radar_without_store_and_calendar(state):
+    from tradedesk.collector.assistant_snapshot import build_radar
+
+    rt = Runtime(Settings(http_retries=1, cache_scale=0.0, db_path=""), transports=make_transports(state), exchange_factory=FakeEx)
+    rt.now = lambda: NOW
+    try:
+        sec = await build_radar(rt, {}, NOW)  # no events section: the seed alone tags the windows
+    finally:
+        await rt.aclose()
+    assert sec["ok"] and {m["field"] for m in sec["missing"]} == {"radar:archive:BTC", "radar:archive:ETH"}
+    assert all(m["reason"] == "data_unavailable" for m in sec["missing"])
 
 
 async def test_job_off_by_default_and_on_by_switch(state, tmp_path):

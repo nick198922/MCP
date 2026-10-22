@@ -19,6 +19,13 @@ climatology (base rate of each event kind in the scored set, a hindsight referen
 calibration in ten probability bins and the binned Murphy decomposition BS ~ reliability - resolution + uncertainty
 (exact only when the forecasts inside a bin are equal). Forecasts issued on consecutive days for one expiry share the
 outcome and are correlated: ``n_expiries`` counts the distinct (asset, expiry) outcomes, the honest sample size.
+
+Beside each risk-neutral probability the row keeps a PHYSICAL baseline, the "RV30 model": the log return to the
+delivery is normal with zero mean and the trailing 30-day zero-mean close-to-close realized vol (`vrp.realized_vol`,
+Binance spot, annualised with 365), so P(lo < S_T < hi) = N(ln(hi/S0) / s) - N(ln(lo/S0) / s), s = RV30 sqrt(T). It
+is a naive history-only forecast (no skew, no events; ``above_spot`` is always 0.5), there to answer one question:
+do the options forecast the range better than recent realized vol does? `compare` scores both on the same settled
+rows, paired, with the expiry as the unit of the sample.
 """
 
 from __future__ import annotations
@@ -36,6 +43,42 @@ ONE_SIGMA = 2.0 * ncdf(1.0) - 1.0  # 0.6827: P(|Z| < 1)
 REFERENCE: dict[str, float] = {"above_spot": 0.5, "in_1sigma": ONE_SIGMA}
 TARGET_DTE, DTE_BAND = 7.0, (4.0, 11.0)
 N_BINS = 10
+RV_DAYS = 30  # trailing daily returns of the RV30 model
+MODELS = ("risk_neutral", "rv30")
+MIN_EXPIRIES = 30  # below this many settled expiry dates a comparison is descriptive only
+# Student t 0.975 quantiles for 1..30 degrees of freedom (above: 1.96), for the comparison's ci95 with few dates
+T975 = (
+    12.706,
+    4.303,
+    3.182,
+    2.776,
+    2.571,
+    2.447,
+    2.365,
+    2.306,
+    2.262,
+    2.228,
+    2.201,
+    2.179,
+    2.160,
+    2.145,
+    2.131,
+    2.120,
+    2.110,
+    2.101,
+    2.093,
+    2.086,
+    2.080,
+    2.074,
+    2.069,
+    2.064,
+    2.060,
+    2.056,
+    2.052,
+    2.048,
+    2.045,
+    2.042,
+)
 
 
 def pick_expiry(
@@ -66,10 +109,23 @@ def event_bounds(kind: str, *, spot: float, forward: float, sigma: float, t_year
     raise ValueError(f"unknown forecast kind {kind!r}")
 
 
-def build_forecasts(smile: Smile, *, asset: str, spot: float, expiry: datetime, now: datetime) -> list[dict[str, Any]]:
+def prob_lognormal(lo: float | None, hi: float | None, *, spot: float, sigma: float, t_years: float) -> float:
+    """P(lo < S_T < hi) when ln(S_T / spot) ~ N(0, sigma^2 T) (the RV30 model); ``None`` is an open side."""
+    s = sigma * math.sqrt(t_years)
+    if s <= 0 or spot <= 0:
+        raise ValueError("prob_lognormal needs sigma > 0, t_years > 0 and spot > 0")
+    p_lo = 1.0 if lo is None or lo <= 0 else 1.0 - ncdf(math.log(lo / spot) / s)
+    p_hi = 0.0 if hi is None else 1.0 if hi <= 0 else 1.0 - ncdf(math.log(hi / spot) / s)
+    return min(1.0, max(0.0, p_lo - p_hi))
+
+
+def build_forecasts(
+    smile: Smile, *, asset: str, spot: float, expiry: datetime, now: datetime, rv: float | None = None
+) -> list[dict[str, Any]]:
     """One row per kind in :data:`KINDS` for the issue time ``now``; [] when the smile has no time or vol left.
 
     ``covered`` is True when every finite bound lies inside the quoted strikes (else the smile IV is flat-extrapolated).
+    ``rv``: the trailing RV30 (decimal) for the RV30 model's ``prob_rv``; None leaves ``rv30`` / ``prob_rv`` empty.
     """
     sigma, t = atm_iv(smile), smile.T
     if t <= 0 or sigma <= 0 or spot <= 0:
@@ -93,6 +149,8 @@ def build_forecasts(smile: Smile, *, asset: str, spot: float, expiry: datetime, 
                 "prob": prob_between(smile, lo, hi),
                 "ref_prob": REFERENCE.get(kind),
                 "covered": all(smile.covers(x) for x in (lo, hi) if x is not None),
+                "rv30": rv if rv and rv > 0 else None,
+                "prob_rv": prob_lognormal(lo, hi, spot=spot, sigma=rv, t_years=t) if rv and rv > 0 else None,
             }
         )
     return out
@@ -207,3 +265,49 @@ def weekly(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
             }
         )
     return out
+
+
+def as_model(rows: Iterable[Mapping[str, Any]], model: str) -> list[dict[str, Any]]:
+    """The rows as forecasts of ``model`` (:data:`MODELS`): for ``rv30``, ``prob`` is the RV30 model's and rows
+    without it are left out; outcome, references and expiry are shared, so `score` and `weekly` apply unchanged."""
+    if model == "risk_neutral":
+        return [dict(x) for x in rows]
+    if model == "rv30":
+        return [{**x, "prob": x["prob_rv"]} for x in rows if x.get("prob_rv") is not None]
+    raise ValueError(f"unknown forecast model {model!r}")
+
+
+def _t975(df: int) -> float:
+    return T975[df - 1] if 1 <= df <= len(T975) else 1.96
+
+
+def compare(rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+    """Paired Brier of the risk-neutral forecast against the RV30 model on the settled rows that have both.
+
+    ``diff`` = BS(risk-neutral) - BS(RV30): negative means the options forecast better. Rows of one expiry date share
+    the outcome, and BTC and ETH settle at the same 08:00 delivery and move together, so the unit is the expiry DATE
+    (``n_dates``): ``diff`` is the mean of the per-date mean differences, ``se`` their standard error and ``ci95`` =
+    diff +- t(0.975, k - 1) se (Student t, None below two dates). ``enough`` is False below :data:`MIN_EXPIRIES`
+    dates: the result is then descriptive, not a finding."""
+    xs = [x for x in _settled(rows) if x.get("prob_rv") is not None]
+    if not xs:
+        return {"n": 0, "n_dates": 0}
+    clusters: dict[Any, list[float]] = {}
+    for x in xs:
+        o = int(x["outcome"])
+        clusters.setdefault(x.get("expiry_ts"), []).append(brier(float(x["prob"]), o) - brier(float(x["prob_rv"]), o))
+    means = [_mean(v) for v in clusters.values()]
+    k = len(means)
+    diff = _mean(means)
+    se = math.sqrt(sum((m - diff) ** 2 for m in means) / (k - 1) / k) if k >= 2 else None
+    return {
+        "n": len(xs),
+        "n_dates": k,
+        "brier_risk_neutral": _mean([brier(float(x["prob"]), int(x["outcome"])) for x in xs]),
+        "brier_rv30": _mean([brier(float(x["prob_rv"]), int(x["outcome"])) for x in xs]),
+        "diff": diff,
+        "se": se,
+        "ci95": None if se is None else [diff - _t975(k - 1) * se, diff + _t975(k - 1) * se],
+        "better": "risk_neutral" if diff < 0 else "rv30" if diff > 0 else "tie",
+        "enough": k >= MIN_EXPIRIES,
+    }

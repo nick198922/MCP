@@ -42,6 +42,8 @@ async def collect_forecast_log(rt: "Runtime") -> int:
         return n
     rb = Builder()
     n += await record_today(rt, rb)
+    for w in rb.warnings:
+        log.info("forecast log: %s", w)
     if rb.missing:
         raise RuntimeError("forecast log: no data, will retry: " + "; ".join(f"{m.field}: {m.detail}" for m in rb.missing))
     return n

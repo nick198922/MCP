@@ -5,6 +5,7 @@ import math
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import ccxt
 import httpx
 import pytest
 from mcp import Client
@@ -12,15 +13,19 @@ from mcp import Client
 from conftest import FakeEx, State, make_transports
 from tradedesk.analytics.forecast_log import (
     KINDS,
+    MIN_EXPIRIES,
     ONE_SIGMA,
+    as_model,
     brier,
     build_forecasts,
     calibration,
+    compare,
     event_bounds,
     iso_week,
     outcome,
     pick_expiry,
     prob_between,
+    prob_lognormal,
     score,
     weekly,
 )
@@ -115,6 +120,59 @@ def test_calibration_and_weekly():
     assert w[1]["brier_by_kind"] == {"above_spot": 0.0} and w[1]["skill_vs_ref"] == pytest.approx(1.0)
 
 
+def test_rv30_model_lognormal_reference():
+    spot, sig, T = 80_000.0, 0.4, 7 / 365
+    w = sig * math.sqrt(T)
+    assert prob_lognormal(spot * math.exp(-w), spot * math.exp(w), spot=spot, sigma=sig, t_years=T) == pytest.approx(ONE_SIGMA, abs=1e-12)
+    assert prob_lognormal(spot, None, spot=spot, sigma=sig, t_years=T) == pytest.approx(0.5)  # zero median drift
+    assert prob_lognormal(None, None, spot=spot, sigma=sig, t_years=T) == 1.0
+    p5 = ncdf(math.log(1.05) / w) - ncdf(math.log(0.95) / w)
+    assert prob_lognormal(spot * 0.95, spot * 1.05, spot=spot, sigma=sig, t_years=T) == pytest.approx(p5, abs=1e-12)
+    with pytest.raises(ValueError):
+        prob_lognormal(1.0, 2.0, spot=spot, sigma=0.0, t_years=T)
+
+    F, iv = 80_400.0, 0.5
+    exp = datetime(2026, 10, 30, 8, tzinfo=UTC)
+    now = exp - timedelta(days=7)
+    rows = {r["kind"]: r for r in build_forecasts(_flat(F, T, iv), asset="BTC", spot=spot, expiry=exp, now=now, rv=sig)}
+    assert rows["above_spot"]["prob_rv"] == pytest.approx(0.5) and rows["in_pct_5"]["prob_rv"] == pytest.approx(p5, abs=1e-12)
+    lo, hi = rows["in_1sigma"]["lo"], rows["in_1sigma"]["hi"]  # the options' band around F at the ATM IV, priced by RV30
+    assert rows["in_1sigma"]["prob_rv"] == pytest.approx(ncdf(math.log(hi / spot) / w) - ncdf(math.log(lo / spot) / w), abs=1e-12)
+    assert all(r["rv30"] == sig for r in rows.values())
+    bare = build_forecasts(_flat(F, T, iv), asset="BTC", spot=spot, expiry=exp, now=now)
+    assert all(r["rv30"] is None and r["prob_rv"] is None for r in bare)
+
+
+def test_compare_hand_computed():
+    rows = [
+        # expiry 1: the options better on both rows
+        {"asset": "BTC", "kind": "above_spot", "expiry_ts": 1, "prob": 0.6, "prob_rv": 0.5, "outcome": 1},
+        {"asset": "BTC", "kind": "in_pct_5", "expiry_ts": 1, "prob": 0.9, "prob_rv": 0.7, "outcome": 1},
+        # expiry 2: RV30 better; ETH of the same date is the same unit (BTC and ETH settle together)
+        {"asset": "BTC", "kind": "in_pct_5", "expiry_ts": 2, "prob": 0.9, "prob_rv": 0.7, "outcome": 0},
+        {"asset": "ETH", "kind": "above_spot", "expiry_ts": 2, "prob": 0.5, "prob_rv": 0.5, "outcome": 1},
+        {"asset": "ETH", "kind": "in_pct_5", "expiry_ts": 2, "prob": 0.8, "prob_rv": None, "outcome": 0},  # no RV30: left out
+        {"asset": "BTC", "kind": "in_pct_10", "expiry_ts": 3, "prob": 0.9, "prob_rv": 0.8, "outcome": None},  # open: left out
+    ]
+    d1 = ((0.16 - 0.25) + (0.01 - 0.09)) / 2
+    d2 = ((0.81 - 0.49) + 0.0) / 2
+    c = compare(rows)
+    assert c["n"] == 4 and c["n_dates"] == 2 and c["diff"] == pytest.approx((d1 + d2) / 2)
+    assert c["se"] == pytest.approx(abs(d1 - d2) / 2)  # sd of two means / sqrt(2)
+    assert c["ci95"] == pytest.approx([c["diff"] - 12.706 * c["se"], c["diff"] + 12.706 * c["se"]])  # t(0.975, 1 df)
+    assert c["brier_risk_neutral"] == pytest.approx((0.16 + 0.01 + 0.81 + 0.25) / 4)
+    assert c["brier_rv30"] == pytest.approx((0.25 + 0.09 + 0.49 + 0.25) / 4)
+    assert c["better"] == "rv30" and c["enough"] is False and MIN_EXPIRIES == 30
+    one = compare(rows[:2])
+    assert one["n_dates"] == 1 and one["se"] is None and one["ci95"] is None and one["better"] == "risk_neutral"
+    assert compare([]) == {"n": 0, "n_dates": 0}
+    rv = as_model(rows, "rv30")
+    assert [x["prob"] for x in rv] == [0.5, 0.7, 0.7, 0.5, 0.8] and score(rv)["n"] == 4
+    assert as_model(rows, "risk_neutral")[0]["prob"] == 0.6
+    with pytest.raises(ValueError):
+        as_model(rows, "gut")
+
+
 # ----------------------------------------------------------------------------- real sample (Deribit, 2026-10-22)
 
 
@@ -150,7 +208,27 @@ DAY1 = datetime(2026, 10, 23, 10, 0, tzinfo=UTC)  # 30OCT26 08:00 is 6.9 days aw
 DELIVERY = "2026-10-30"
 
 
-def _rt(tmp_path, *, status: int = 200, delivery: float | None = 83_000.0, **kw) -> tuple[Runtime, State]:
+class DailyEx(FakeEx):
+    """FakeEx whose daily bars end on the day of DAY1 (FakeEx's own end on 10.10, stale for the RV30 model):
+    closes alternate x1.015 and /1.015, so every |log return| is ln 1.015 and RV30 = ln(1.015) sqrt(365)."""
+
+    async def fetch_ohlcv(self, symbol, timeframe="1h", limit=100, since=None, params=None):
+        if timeframe != "1d":
+            return await super().fetch_ohlcv(symbol, timeframe, limit, since, params)
+        if self.id == "binance" and getattr(DailyEx, "down", False):
+            raise ccxt.NetworkError("binance down")
+        end = int(DAY1.replace(hour=0).timestamp() * 1000)
+        price, rows = 80_000.0, []
+        for i in range(limit):
+            price *= 1.015 if i % 2 else 1 / 1.015
+            rows.append([end - (limit - 1 - i) * 86_400_000, price, price, price, price, 10.0])
+        return rows
+
+
+RV_EXPECTED = math.log(1.015) * math.sqrt(365)
+
+
+def _rt(tmp_path, *, status: int = 200, delivery: float | None = 83_000.0, ex=FakeEx, **kw) -> tuple[Runtime, State]:
     state = State()
     state.deribit_status = status
     tr = make_transports(state)
@@ -170,7 +248,7 @@ def _rt(tmp_path, *, status: int = 200, delivery: float | None = 83_000.0, **kw)
 
     tr["deribit"] = httpx.MockTransport(deribit)
     s = Settings(http_retries=1, cache_scale=0.0, db_path=str(tmp_path / "fc.sqlite"), **kw)
-    rt = Runtime(s, transports=tr, exchange_factory=FakeEx)
+    rt = Runtime(s, transports=tr, exchange_factory=ex)
     rt.now = lambda: DAY1
     return rt, state
 
@@ -276,3 +354,44 @@ def test_job_off_by_default_and_switch_allow_listed(tmp_path, monkeypatch):
     on, _ = _rt(tmp_path, collector_enabled=True, forecast_log_enabled=True)
     names = lambda rt: {j.name for j in build_default_scheduler(rt).jobs}  # noqa: E731
     assert "forecast_log" not in names(off) and "forecast_log" in names(on)
+
+
+async def test_rv30_model_recorded_settled_and_compared(tmp_path):
+    rt, _ = _rt(tmp_path, ex=DailyEx)
+    DailyEx.down = False
+    try:
+        assert await collect_forecast_log(rt) == 8
+        rows = await rt.store.forecast_list()
+        assert all(r["rv30"] == pytest.approx(RV_EXPECTED) and 0 < r["prob_rv"] < 1 for r in rows)  # today's partial bar is dropped
+        assert all(r["prob_rv"] == pytest.approx(0.5) for r in rows if r["kind"] == "above_spot")
+        rt.now = lambda: datetime(2026, 10, 31, 12, tzinfo=UTC)
+        srv, _ = build_server(rt)
+        out = await _call(srv, "forecast_log_status", include_settled=True)
+        d = out["data"]
+        assert out["ok"] and d["n_settled"] == 8
+        assert all(r["brier_rv"] == pytest.approx((r["prob_rv"] - r["outcome"]) ** 2, abs=1e-4) for r in d["settled"])
+        assert d["scores_rv30"]["all"]["n"] == 8
+        c = d["comparison"]["all"]
+        assert c["n"] == 8 and c["n_dates"] == 1 and c["enough"] is False and c["se"] is None  # BTC and ETH: one date
+        assert c["diff"] == pytest.approx(c["brier_risk_neutral"] - c["brier_rv30"], abs=1e-4)
+        assert d["comparison"]["by_kind"]["above_spot"]["n"] == 2
+        assert any("RV30 model is a naive physical baseline" in w for w in out["warnings"])
+    finally:
+        await rt.aclose()
+
+
+async def test_rv30_closes_down_still_records_the_options_forecast(tmp_path):
+    rt, _ = _rt(tmp_path, ex=DailyEx)
+    DailyEx.down = True
+    try:
+        assert await collect_forecast_log(rt) == 8  # no raise: the risk-neutral rows do not depend on the closes
+        rows = await rt.store.forecast_list()
+        assert all(r["prob_rv"] is None and r["rv30"] is None and r["prob"] is not None for r in rows)
+        rt.now = lambda: datetime(2026, 10, 31, 12, tzinfo=UTC)
+        srv, _ = build_server(rt)
+        out = await _call(srv, "forecast_log_status")
+        assert out["ok"] and out["data"]["comparison"]["all"] == {"n": 0, "n_dates": 0}
+        assert out["data"]["scores_rv30"]["all"] == {"n": 0} and out["data"]["scores"]["all"]["n"] == 8
+    finally:
+        DailyEx.down = False
+        await rt.aclose()

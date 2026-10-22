@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -101,15 +102,27 @@ class Store:
             Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         self._conn = await aiosqlite.connect(self.path)
         self._conn.row_factory = aiosqlite.Row
-        await self._conn.execute("PRAGMA journal_mode=WAL")
-        await self._conn.execute("PRAGMA synchronous=NORMAL")
-        await self._conn.execute("PRAGMA foreign_keys=ON")
         try:
+            await self._wal()
+            await self._conn.execute("PRAGMA synchronous=NORMAL")
+            await self._conn.execute("PRAGMA foreign_keys=ON")
             await self._migrate()
         except BaseException:
             await self._conn.close()  # a half-open store would skip migrations on the next init()
             self._conn = None
             raise
+
+    async def _wal(self) -> None:
+        # Switching a NEW file to WAL takes an exclusive lock and SQLite answers "database is locked" at once, without
+        # the busy timeout, while another process does the same: retry briefly (an existing WAL file never needs it).
+        for attempt in range(40):
+            try:
+                await self.conn.execute("PRAGMA journal_mode=WAL")
+                return
+            except sqlite3.OperationalError as e:
+                if "locked" not in str(e) or attempt == 39:
+                    raise
+                await asyncio.sleep(0.05)
 
     async def _migrate(self) -> None:
         # Python sqlite3 opens no implicit transaction before DDL, so without an explicit
@@ -714,7 +727,7 @@ class Store:
 
     # ---------- forecast_log (the assistant's daily risk-neutral range forecasts, scored at delivery) ----------
 
-    _FORECAST_COLS = tuple("day issued_ts asset kind expiry_ts spot forward atm_iv t_years lo hi prob ref_prob".split())
+    _FORECAST_COLS = tuple("day issued_ts asset kind expiry_ts spot forward atm_iv t_years lo hi prob ref_prob rv30 prob_rv".split())
 
     async def forecast_insert_many(self, rows: list[dict[str, Any]]) -> int:
         """Insert forecasts in one commit; a (day, asset, kind) already stored is skipped. Returns the rows written."""
@@ -747,12 +760,14 @@ class Store:
             row["covered"] = bool(row["covered"])
         return rows
 
-    async def forecast_settle(self, row_id: int, *, settled_ts: int, delivery_price: float, outcome: int, brier: float) -> int:
+    async def forecast_settle(
+        self, row_id: int, *, settled_ts: int, delivery_price: float, outcome: int, brier: float, brier_rv: float | None = None
+    ) -> int:
         """Settle an open forecast with one conditional UPDATE; 1 when this call settled it, 0 when it was not open."""
         cur = await self.conn.execute(
-            "UPDATE forecast_log SET status = 'settled', settled_ts = ?, delivery_price = ?, outcome = ?, brier = ?"
+            "UPDATE forecast_log SET status = 'settled', settled_ts = ?, delivery_price = ?, outcome = ?, brier = ?, brier_rv = ?"
             " WHERE id = ? AND status = 'open'",
-            (settled_ts, delivery_price, outcome, brier, row_id),
+            (settled_ts, delivery_price, outcome, brier, brier_rv, row_id),
         )
         await self.conn.commit()
         return int(cur.rowcount or 0)

@@ -1053,6 +1053,38 @@ def test_journal_tab_shows_forecast_brier_calibration_and_weeks(tmp_path):
         assert f"{100 * b['lo']:.0f}–{100 * b['hi']:.0f} %</td><td class='num'>{b['n']}</td>" in page, b
 
 
+def test_forecast_rv30_comparison_matches_the_analytics_and_renders(tmp_path):
+    from tradedesk.analytics import forecast_log as af
+
+    p = _fc_db(tmp_path / "f.sqlite", _sample_forecasts())
+    con = sqlite3.connect(p)
+    # the RV30 model: a bit wider than the options on in-range events, 0.5 on above_spot (zero drift)
+    con.execute("UPDATE forecast_log SET prob_rv = CASE kind WHEN 'above_spot' THEN 0.5 ELSE MIN(1.0, prob * 1.05) END")
+    con.execute("UPDATE forecast_log SET prob_rv = NULL WHERE asset = 'ETH' AND expiry_ts = ?", (FC_E2,))  # no RV30 that day
+    con.commit()
+    con.close()
+    data, err = db.load_journal(p)
+    rows = data["forecast_log"]
+    mine, ref = db.fc_compare(rows), af.compare(rows)
+    assert ref["n"] == 24 and ref["n_dates"] == 2 and ref["enough"] is False
+    assert {k: v for k, v in mine.items() if k != "ci95"} == pytest.approx({k: v for k, v in ref.items() if k != "ci95"})
+    assert mine["ci95"] == pytest.approx(ref["ci95"])
+    assert db.fc_compare([]) == af.compare([]) == {"n": 0, "n_dates": 0}
+    assert tuple(db.FC_T975) == af.T975
+    page = db.render_journal(data, None, float(FC_E2 + 86400), path=p)
+    for text in (
+        f"Опціони проти RV30{db._info('fc_rv')}",
+        f"{ref['diff']:+.3f}</span>",
+        f"Brier {ref['brier_risk_neutral']:.3f} проти {ref['brier_rv30']:.3f} · 95 % ДІ {ref['ci95'][0]:+.3f} … {ref['ci95'][1]:+.3f} · 2 дат експірації",
+    ):
+        assert text in page, text
+    # a store before schema v23 (no prob_rv column) still reads, and the tile is left out
+    old = _fc_db(tmp_path / "v22.sqlite", _sample_forecasts(), versions=range(1, 23))
+    data, err = db.load_journal(old)
+    assert err is None and all(x["prob_rv"] is None for x in data["forecast_log"])
+    assert "Опціони проти RV30" not in db.render_journal(data, None, float(FC_E2 + 86400), path=old)
+
+
 def test_forecast_scores_match_the_analytics_reference(tmp_path):
     from tradedesk.analytics import forecast_log as af
 

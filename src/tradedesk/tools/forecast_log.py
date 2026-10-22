@@ -2,7 +2,8 @@
 
 Docs: docs/ideas/IDEA-20261018-assistant.md ("Журнал прогнозів"). The collector job `forecast_log` (off by default) writes
 the day's forecasts once a day; the tool here settles the matured ones and reports Brier, calibration and the weekly
-table. Local bookkeeping only (table `forecast_log`), nothing is traded or sent anywhere.
+table, and the same scores for the RV30 model (a physical, history-only baseline) with a paired comparison. Local
+bookkeeping only (table `forecast_log`), nothing is traded or sent anywhere.
 """
 
 from __future__ import annotations
@@ -13,20 +14,26 @@ from typing import Annotated, Any, Literal
 from mcp.server.mcpserver import MCPServer
 from pydantic import Field
 
-from ..analytics.forecast_log import KINDS, brier, build_forecasts, outcome, pick_expiry, score, weekly
+from ..analytics.forecast_log import KINDS, RV_DAYS, as_model, brier, build_forecasts, compare, outcome, pick_expiry, score, weekly
 from ..analytics.options import build_chain, build_smile, group_by_expiry
+from ..analytics.radar import trailing_rv
 from ..core.envelope import Builder
 from ..runtime import Runtime
 from ._util import READ_ONLY
 from .journal import _store_guard
 
 ASSETS = ("BTC", "ETH")
+RV_VENUE = "binance"  # spot daily closes of the RV30 model, as the radar's RV30
 FORECAST_WARNING = (
     "RISK-NEUTRAL probabilities from the Deribit smile (what options price), NOT real-world odds and not advice: the "
     "volatility risk premium alone should make the bands contain the outcome more often than priced, and the log is "
     "kept to measure that gap (a hypothesis under test, no edge shown). Forecasts issued on consecutive days for one "
     "expiry share the outcome, so they are correlated: read `n_expiries`, not `n`, as the sample size. The climatology "
-    "reference is in-sample (it knows the base rate in hindsight). Few settled expiries: the scores are descriptive."
+    "reference is in-sample (it knows the base rate in hindsight). Few settled expiries: the scores are descriptive. "
+    "The RV30 model is a naive physical baseline (zero-drift lognormal at the trailing 30-day realized vol, no skew or "
+    "events), not the assistant's judgment. Compare the two models only through `comparison` (paired on the same rows); "
+    "`scores_rv30` covers only rows that have the RV30 model, so it is not on the same sample as `scores`. The comparison's "
+    "unit is the expiry date (BTC and ETH of one date move together): it is descriptive until `enough` (30 dates)."
 )
 
 
@@ -59,11 +66,14 @@ def _view(x: dict[str, Any]) -> dict[str, Any]:
         "hi": None if x["hi"] is None else round(float(x["hi"]), 2),
         "prob": round(float(x["prob"]), 4),
         "ref_prob": None if x["ref_prob"] is None else round(float(x["ref_prob"]), 4),
+        "rv30": None if x.get("rv30") is None else round(float(x["rv30"]), 4),
+        "prob_rv": None if x.get("prob_rv") is None else round(float(x["prob_rv"]), 4),
         "covered": x["covered"],
         "status": x["status"],
     }
     if x["status"] == "settled":
         out.update(delivery_price=x["delivery_price"], outcome=x["outcome"], brier=round(float(x["brier"]), 4))
+        out["brier_rv"] = None if x.get("brier_rv") is None else round(float(x["brier_rv"]), 4)
     return out
 
 
@@ -81,11 +91,37 @@ async def forecast_rows(rt: Runtime, b: Builder, asset: str) -> list[dict[str, A
     rows = by[exp]
     smile = build_smile(rows)
     spot = next((x.index for x in rows if x.index), None)
-    out = build_forecasts(smile, asset=asset, spot=float(spot), expiry=exp, now=now) if smile is not None and spot else []
+    rv = await _rv30(rt, b, asset) if smile is not None and spot else None
+    out = build_forecasts(smile, asset=asset, spot=float(spot), expiry=exp, now=now, rv=rv) if smile is not None and spot else []
     if not out:
         b.miss(f"smile:{asset}", "tradedesk", "data_unavailable", f"no usable smile or index on {exp.date().isoformat()}")
         return None
     return out
+
+
+async def _rv30(rt: Runtime, b: Builder, asset: str) -> float | None:
+    """Trailing RV30 of ``asset`` from Binance completed daily closes (today's partial bar is dropped: weighted as a full
+    day it would shrink the vol); None (with a warning, not a `missing` entry) when it fails.
+
+    The risk-neutral forecast does not depend on it, so a closes failure must not make the collector retry the day."""
+    rb = Builder()
+    bars = await rb.guard(f"rv30:{asset}", f"ccxt:{RV_VENUE}", rt.exchanges.ohlcv(RV_VENUE, f"{asset}/USDT", "1d", RV_DAYS + 3))
+    today_ms = int(rt.now().timestamp()) // 86400 * 86_400_000
+    closes = []
+    for x in bars or []:
+        try:
+            if int(x[0]) < today_ms:
+                closes.append((int(x[0]), float(x[4])))
+        except (TypeError, ValueError, IndexError):
+            continue
+    rv, why = (
+        trailing_rv(closes, rt.now(), RV_DAYS)
+        if closes
+        else (None, "; ".join(f"{m.reason}: {m.detail}" for m in rb.missing) or "no closes")
+    )
+    if rv is None:
+        b.warn(f"rv30:{asset}: the RV30 model is left empty for today ({why})")
+    return rv
 
 
 async def record_today(rt: Runtime, b: Builder, assets: tuple[str, ...] = ASSETS) -> int:
@@ -130,7 +166,10 @@ async def settle_due(rt: Runtime, b: Builder) -> int:
                 missing_days.add(day)
                 continue
             o = outcome(x["lo"], x["hi"], dp)
-            n += await rt.store.forecast_settle(x["id"], settled_ts=x["expiry_ts"], delivery_price=dp, outcome=o, brier=brier(x["prob"], o))
+            brv = None if x.get("prob_rv") is None else brier(x["prob_rv"], o)
+            n += await rt.store.forecast_settle(
+                x["id"], settled_ts=x["expiry_ts"], delivery_price=dp, outcome=o, brier=brier(x["prob"], o), brier_rv=brv
+            )
         for day in sorted(missing_days):
             b.miss(f"forecast_log:{asset}:{day}", "deribit", "data_unavailable", f"no {asset} delivery price for {day} published yet")
     return n
@@ -150,6 +189,11 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "n_expiries, mean prob, base rate, Brier, Brier of the in-sample climatology and of the fixed reference 0.5 / "
             "0.6827 where it exists, skill = 1 - BS/BS_ref, calibration in 10 probability bins with forecast mean vs observed "
             "frequency, binned reliability / resolution / uncertainty) and `weekly` (by ISO week of the expiry, UTC). "
+            "Beside it, the RV30 model, a naive PHYSICAL baseline: ln(S_T/S0) ~ N(0, RV30^2 T), RV30 = trailing 30-day "
+            "zero-mean close-to-close realized vol of Binance spot (decimal, annualised x365; `above_spot` is always 0.5): "
+            "`scores_rv30` (the same scores on the rows that have it) and `comparison` (all and per kind, paired on the same "
+            "rows: Brier of each, diff = BS risk-neutral - BS RV30, negative = options better, clustered by expiry date "
+            "(`n_dates`) with se and a Student-t ci95, `enough` once 30 dates are settled). RV30 uses completed daily bars only. "
             "Probabilities are what options price, not real-world odds (see `warnings`); forecasts on consecutive days share "
             "an outcome, so `n_expiries` is the sample size. A delivery price not yet published leaves the row open (`missing`)."
         ),
@@ -167,6 +211,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
         settled_now = await settle_due(rt, b)
         rows = await rt.store.forecast_list(asset=asset, limit=100_000)
         settled = [x for x in rows if x["status"] == "settled"]
+        rv = as_model(settled, "rv30")
         latest: dict[str, list[dict[str, Any]]] = {}
         order = {k: i for i, k in enumerate(KINDS)}
         for a in sorted({x["asset"] for x in rows}):
@@ -182,6 +227,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "n_settled": len(settled),
             "latest": latest,
             "scores": _rounded({"all": score(settled), "by_kind": {k: score([x for x in settled if x["kind"] == k]) for k in KINDS}}),
+            "scores_rv30": _rounded({"all": score(rv), "by_kind": {k: score([x for x in rv if x["kind"] == k]) for k in KINDS}}),
+            "comparison": _rounded(
+                {"all": compare(settled), "by_kind": {k: compare([x for x in settled if x["kind"] == k]) for k in KINDS}}, 5
+            ),
             "weekly": _rounded(weekly(settled)[-weeks:]),
         }
         if include_settled:

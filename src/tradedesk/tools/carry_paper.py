@@ -18,14 +18,13 @@ from pydantic import Field
 from ..analytics.carry import bar_gaps, carry_snapshot, pair_paper_mark, paper_summary, spread_snapshot
 from ..analytics.journal import outcome_of
 from ..analytics.journal import pnl as pnl_fn
+from ..collector.market_data import BAR_MS, bars_4h, funding_entries
 from ..core.envelope import Builder
 from ..runtime import Runtime
 from ._util import READ_ONLY, r
 from .journal import _store_guard
 from .perps import TAKER_FEES, current_funding
 
-BAR_MS = 4 * 3_600_000
-BAR_PAGE = 100  # OKX caps candles per request at 100; paginate rather than rely on a bigger page
 MISMATCH_GAP = 0.20
 PAPER_WARNING = (
     "Paper trade, local bookkeeping only: no order is sent. Fills are the last (or mark) price plus modelled costs "
@@ -61,58 +60,18 @@ async def _last_price(rt: Runtime, b: Builder, venue: str, sym: str, fallback: f
     return fallback
 
 
-def _parse_bar(x: Any) -> dict[str, Any] | None:
-    """ccxt row [ts, o, h, l, c, v] -> bar dict; None for malformed rows (None / non-numeric / non-positive prices)."""
-    try:
-        bar = {"ts": int(x[0]), "high": float(x[2]), "low": float(x[3]), "close": float(x[4])}
-    except (TypeError, ValueError, IndexError, KeyError):
-        return None
-    return bar if min(bar["high"], bar["low"], bar["close"]) > 0 else None
-
-
-async def _bars(rt: Runtime, b: Builder, venue: str, sym: str, since_ms: int, now_ms: int) -> list[dict[str, Any]] | None:
-    """4h bars from ``since_ms`` to now, paged forward with an explicit upper bound per page (Bybit's request carries
-    only ``start`` otherwise and may answer with the latest bars). None when the first page fails."""
-    out: dict[int, dict[str, Any]] = {}
-    cursor = since_ms
-    for page in range(60):
-        until = min(cursor + BAR_PAGE * BAR_MS - 1, now_ms)
-        rows = await b.guard(f"ohlcv:{venue}:{sym}", f"ccxt:{venue}", rt.exchanges.ohlcv(venue, sym, "4h", BAR_PAGE, cursor, until))
-        if rows is None:
-            if page == 0:
-                return None
-            b.warn(f"{venue} {sym}: 4h bars incomplete (a later page failed); stop detection may be incomplete")
-            break
-        for x in rows if isinstance(rows, list) else []:
-            bar = _parse_bar(x)
-            if bar is not None:
-                out[bar["ts"]] = bar
-        if until >= now_ms:
-            break
-        cursor = until + 1
-    return [out[k] for k in sorted(out)]
-
-
-def _entries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        {"ts_ms": int(x["timestamp"]), "rate": float(x["fundingRate"])}
-        for x in rows
-        if x.get("fundingRate") is not None and x.get("timestamp")
-    ]
-
-
 async def _leg_data(rt: Runtime, b: Builder, venue: str, sym: str, opened_ms: int, now_ms: int, lookback_ms: int) -> dict[str, Any] | None:
     since = min(opened_ms, now_ms - lookback_ms) - 3_600_000
     hist = await b.guard(
         f"funding_history:{venue}:{sym}", f"ccxt:{venue}", rt.exchanges.funding_rate_history_range(venue, sym, since, now_ms)
     )
-    bars = await _bars(rt, b, venue, sym, opened_ms - 2 * BAR_MS, now_ms)
+    bars = await bars_4h(rt, b, venue, sym, opened_ms - 2 * BAR_MS, now_ms)
     px = await _last_price(rt, b, venue, sym)
     if hist is None or bars is None or px is None:
         return None
     if not hist["complete"]:
         b.warn(f"{venue} {sym}: funding history incomplete (page limit or a later page failed); funding P&L may be understated")
-    entries = _entries(hist["rows"])
+    entries = funding_entries(hist["rows"])
     if not entries:
         return None
     return {"entries": entries, "bars": bars, "price": px}
@@ -279,7 +238,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 f"funding_history:{v}:{sym}", f"ccxt:{v}", rt.exchanges.funding_rate_history_range(v, sym, since_ms, now_ms)
             )
             px = await _last_price(rt, b, v, sym, fallback=(cur or {}).get("mark"))
-            entries = _entries(hist["rows"]) if hist else []
+            entries = funding_entries(hist["rows"]) if hist else []
             if cur is None or not entries or px is None:
                 b.miss(
                     f"carry_paper_leg:{v}",

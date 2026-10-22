@@ -525,8 +525,9 @@ async def run_cycle(
                     "slot_notional": params.slot_notional, "state": p,
                 }
             )  # fmt: skip
-        # Interval change on a held symbol is an exchange event worth keeping.
-        prev = await store.cp_cycles(strat, 1)
+        # Interval change on a held symbol is an exchange event worth keeping. Compare with the last cycle that ran: a
+        # skipped cycle has an empty payload and would hide the change.
+        prev = await store.cp_cycles(strat, 1, status="done")
         prev_iv = ((prev[0].get("payload") or {}).get("intervals") or {}) if prev else {}
         intervals: dict[str, Any] = {}
         for sym in list(open_pos) + list(aside):

@@ -906,8 +906,10 @@ class Store:
         row = await cur.fetchone()
         return _parse_json_cols(dict(row), ("payload",)) if row else None
 
-    async def cp_cycles(self, strategy: str, limit: int = 200) -> list[dict[str, Any]]:
-        cur = await self.conn.execute("SELECT * FROM cp_cycle WHERE strategy = ? ORDER BY cycle_ts DESC LIMIT ?", (strategy, limit))
+    async def cp_cycles(self, strategy: str, limit: int = 200, *, status: str | None = None) -> list[dict[str, Any]]:
+        """Cycles newest first; ``status`` ('done' / 'skipped') filters before the limit."""
+        sql = "SELECT * FROM cp_cycle WHERE strategy = ?" + (" AND status = ?" if status else "") + " ORDER BY cycle_ts DESC LIMIT ?"
+        cur = await self.conn.execute(sql, (strategy, status, limit) if status else (strategy, limit))
         return [_parse_json_cols(dict(r), ("payload",)) for r in await cur.fetchall()]
 
     async def cp_positions(self, strategy: str, status: str | None = None, limit: int = 1000) -> list[dict[str, Any]]:

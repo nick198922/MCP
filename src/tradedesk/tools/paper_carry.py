@@ -78,7 +78,11 @@ async def book_view(rt: Runtime, key: str, now_ms: int, include_closed: bool) ->
     closed_rows = await store.cp_positions(key, "closed", limit=5000)
     trades = [x["trade"] for x in closed_rows if x.get("trade")]
     sides = [s["payload"] for s in await store.cp_logs(key, "side", limit=None)]  # cost realism is over every side
-    unrealised = sum((marks.get(x["trade_id"]) or {}).get("pnl_usd", 0.0) for x in open_rows)
+    # A position opened in the last cycle has no mark yet, but its entry costs are already paid: count -fees x notional.
+    unrealised = sum(
+        marks[x["trade_id"]].get("pnl_usd", 0.0) if x["trade_id"] in marks else -float(x["state"].get("fees") or 0.0) * x["slot_notional"]
+        for x in open_rows
+    )
     realised = sum(t["pnl_usd"] for t in trades)
     notional = p.slot_notional * p.slots
     out: dict[str, Any] = {

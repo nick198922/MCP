@@ -1,0 +1,2 @@
+- Панель на телефоні через Tailscale (власник 22.10, варіант A): адмінський крок `scripts/server/23-tailscale.sh` (через `nick`, інтерактивний вхід) ставить Tailscale, `tailscale serve` → `https://tradedesk.<tailnet>.ts.net/` до `127.0.0.1:8090` лише в tailnet власника, пише адресу в `/var/lib/tradedesk-mcp/assistant/dashboard_url`. Правила — `docs/SECURITY.md`, «Панель через Tailscale».
+- Ранковий бриф: коли адреса панелі є, у Telegram іде короткий текст (штамп, ринок, «Головне сьогодні», застереження) з кнопками «Бриф», «Радар», «Опціони», «Журнал»; без неї — як раніше.

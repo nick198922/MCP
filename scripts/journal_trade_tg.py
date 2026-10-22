@@ -166,7 +166,7 @@ def build_reply(trade: dict[str, Any], trade_id: int, now: float) -> str:
         lines.append("Тези немає (для купівлі опціону за 1–3 доби до експірації вона обов'язкова).")
     lines.append(_rule1_line(trade, check["rules"][1], rc.DEPOSIT_USD * rc.RISK_PCT / 100.0))
     lines.append(_rule8_line(trade, check, rc.DEPOSIT_USD * rc.PREMIUM_PCT / 100.0, now))
-    lines += ["", f"<i>{_h(CAVEAT)} Закрити — journal_close (id {trade_id}).</i>"]
+    lines += ["", f"<i>{_h(CAVEAT)} Закрити: /close {trade_id} ЦІНА_ВИХОДУ.</i>"]
     return "\n".join(lines)
 
 

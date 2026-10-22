@@ -1908,3 +1908,173 @@ def test_radar_tab_escapes_hostile_strings_from_the_snapshot():
     hot["events"][0]["kind"] = "<x>"  # an unknown kind: the chart labels it with the (escaped) title
     page = db.render_radar(snap, None, t + 60)
     assert "&lt;script&gt;alert( 03.11</text>" in page and "<script" not in page  # cut to 14 characters
+
+
+# ---------------------------------------------------------------- the owner's rules (stdlib copies of analytics.rules_check)
+
+
+def _rules_rows() -> list[dict]:
+    """Journal rows shaped as the imports and journal_add write them (tests/test_rules_check.py, by hand)."""
+    import test_rules_check as trc
+
+    rows = trc._day_stop_rows() + trc._option_rows()
+    rows += [
+        {**r, "id": 100 + r["id"], "opened_ts": r["opened_ts"] + 7 * 86400, "closed_ts": r["closed_ts"] and r["closed_ts"] + 7 * 86400}
+        for r in trc._alt_rows()
+    ]
+    rows += [
+        trc._t(201, "BTCUSDT", "long", trc.D + 30 * H, trc.D + 31 * H, 20.0, "[]", size=0.01, entry=80000.0, stop=79000.0, target=82000.0),
+        trc._t(202, "BTCUSDT", "long", trc.D + 32 * H, trc.D + 33 * H, 50.0, "[]", size=0.2, entry=80000.0, stop=79000.0, target=81000.0),
+    ]
+    return rows
+
+
+def _same(mine, ref) -> None:
+    """Exact on everything but floats (approx): the copies do the same arithmetic in the same order."""
+    if isinstance(ref, dict):
+        assert isinstance(mine, dict) and mine.keys() == ref.keys()
+        for k in ref:
+            _same(mine[k], ref[k])
+    elif isinstance(ref, list):
+        assert isinstance(mine, list) and len(mine) == len(ref)
+        for a, b in zip(mine, ref, strict=True):
+            _same(a, b)
+    elif isinstance(ref, float):
+        assert mine == pytest.approx(ref, abs=1e-9)
+    else:
+        assert mine == ref
+
+
+def test_rules_copies_match_the_analytics_reference():
+    from tradedesk.analytics import rules_check as rc
+
+    exp = datetime(2026, 11, 27, 8, tzinfo=UTC).timestamp()
+    for strat in db.OPT_STRATEGIES:
+        for qty in (0.01, 0.03, 0.1):
+            _, legs = _legs(strat, qty)
+            for dep in (10_000.0, 30_000.0, 0.0):
+                for days in (37.46, 3.0, 0.5):
+                    now = exp - days * 86400
+                    _same(db.rules_pre_trade(legs, now, exp, dep), rc.pre_trade_option(legs, now_ts=now, expiry_ts=exp, deposit_usd=dep))
+            _same(db.rules_pre_trade(legs, exp, None), rc.pre_trade_option(legs, now_ts=exp, expiry_ts=None))
+    import test_rules_check as trc
+
+    rows = _rules_rows()
+    now = datetime(2025, 10, 25, tzinfo=UTC).timestamp()
+    hip3 = [
+        {**r, "id": 400 + r["id"], "opened_ts": r["opened_ts"] + 14 * 86400, "closed_ts": r["closed_ts"] + 14 * 86400}
+        for r in trc._hip3_rows()
+    ]
+    for dep in (10_000.0, 5_000.0):
+        for rs in (rows, rows + hip3):
+            _same(db.rules_trade_checks(rs, now, dep), rc.trade_checks(rs, now_ts=now, deposit_usd=dep))
+            _same(db.rules_weekly(rs, now, dep), rc.weekly_violations(rs, now_ts=now, deposit_usd=dep))
+            _same(db.rules_day_stops(rs, dep), rc.day_stops(rs, deposit_usd=dep))
+    assert len(db.rules_weekly(rows, now)) == 3 and db.rules_weekly([], now) == []
+    assert db.rules_is_hip3("xyz:TSLA") and not db.rules_is_hip3("SOL/USDT:USDT")
+    for sym in (
+        "BTC-31OCT26-90000-C",
+        "ETH-3OCT25-4000-P-USDT",
+        "BTC-31FEB26-1-C",
+        "SOL/USDT:USDT",
+        "1000PEPEUSDT",
+        "SOL-PERP",
+        "HYPE",
+        "xyz:TSLA",
+        None,
+    ):
+        assert db.rules_option_expiry_ts(sym) == rc.option_expiry_ts(sym) and db.rules_base_asset(sym) == rc.base_asset(sym), sym
+
+
+def test_options_tab_shows_the_owners_rules_for_the_structure():
+    snap, asof = _snap()
+    page = db.render_options(snap, None, asof + 300, db.parse_options_query(""))
+    rules = _between(page, "Правила власника перед угодою", "</section>")
+    # 0.1 BTC of the 25Δ strangle: $291 paid, also the max loss; 37.5 days to the 27.11 expiry
+    for text in (
+        "Ризик ≤ 1 % депозиту ($100)",
+        "Макс. збиток на експірацію $291 — у 2.9 раза більше за ліміт.",
+        "Премія ≤ 1 % депозиту ($100)",
+        "Платиш $291 — у 2.9 раза більше за ліміт.",
+        "Не купувати за ≤ 3 дні до експірації",
+        "<span class='chip opp'>виконано</span></td><td>До експірації 37.5 дн.",
+    ):
+        assert text in rules, text
+    assert rules.count("<span class='chip risk'>порушено</span>") == 2
+    # 0.03 BTC fits; a $30 000 deposit lifts both limits to $300
+    small = _between(db.render_options(snap, None, asof + 300, db.parse_options_query("qty=0.03")), "Правила власника", "</section>")
+    assert "chip risk" not in small and small.count("chip opp") == 3 and "Платиш $87." in small
+    assert "Премія ≤ 1 % депозиту ($300)" in db.render_options(snap, None, asof + 300, db.parse_options_query("dep=30000"))
+    # a sale: unbounded loss breaks rule 1, rule 8 does not apply
+    sale = _between(db.render_options(snap, None, asof + 300, db.parse_options_query("s=short_strangle")), "Правила власника", "</section>")
+    assert "Збиток на експірацію необмежений" in sale and sale.count("<span class='chip calm'>не стосується</span>") == 2
+    # three days before the expiry buying is against rule 8
+    late = db.render_options(snap, None, datetime(2026, 11, 24, 8, tzinfo=UTC).timestamp(), db.parse_options_query("qty=0.01"))
+    assert "<span class='chip risk'>порушено</span></td><td>До експірації 3.0 дн." in late
+
+
+def _rules_db(path: Path, rows: list[dict]) -> Path:
+    from tradedesk.store.schema import MIGRATIONS
+
+    con = sqlite3.connect(path)
+    for v in sorted(MIGRATIONS):
+        for sql in MIGRATIONS[v]:
+            con.execute(sql)
+    cols = ("opened_ts", "closed_ts", "symbol", "side", "size", "entry", "stop", "target", "tags", "status", "pnl")
+    con.executemany(
+        f"INSERT INTO journal ({', '.join(cols)}) VALUES ({','.join('?' * len(cols))})", [tuple(r[c] for c in cols) for r in rows]
+    )
+    con.commit()
+    con.close()
+    return path
+
+
+def test_journal_tab_shows_weekly_rule_violations(tmp_path):
+    import test_rules_check as trc
+
+    rows = _rules_rows()
+    # an airdrop and a paper row opened after the 10.10 stop: not real trades, not judged
+    rows += [
+        trc._t(301, "HYPE", "long", trc.D + 15 * H, trc.D + 16 * H, 500.0, '["hyperliquid", "import", "perp", "airdrop"]'),
+        trc._t(302, "SOL", "long", trc.D + 15 * H, trc.D + 16 * H, -5.0, '["pp-paper", "carry"]'),
+    ]
+    now = datetime(2025, 10, 25, tzinfo=UTC).timestamp()
+    page = db.render_journal(*db.load_journal(_rules_db(tmp_path / "r.sqlite", rows)), now)
+    block = _between(page, "Порушення правил за тиждень", "</section>")
+    assert block.index("2025-W42") < block.index("2025-W41") < block.index("2025-W40")  # newest first
+    w42 = _between(block, "2025-W42", "</tr>")
+    # the alt longs of _alt_rows a week later + the late 3-day option buy (−$9): ADA, WIF (rule 2), WIF, AVAX (rule 4)
+    # and the option (rule 8) for sure; Bybit LINK (+$3) only on its close time: shown apart
+    for text in ("<span class='bad'>2 з 7</span> <span class='mut'>· невідомо 1</span>", "макс. одночасно 4", "стоп-днів 1",
+                 "<span class='bad'>2 з 10</span>", "+ наближено 1 (за часом закриття)", "пізніх 1 · дорогих 0",
+                 "<td class='num'>4<br><span class='mut'>+ наближено 1</span></td>",
+                 "<td class='num bad'>−$607<br><span class='mut'>наближені +$3</span></td>"):  # fmt: skip
+        assert text in w42, text
+    w41 = _between(block, "2025-W41", "</tr>")
+    # 10.10 in closing order: +30, −50, +15, −20 (the 1.8-day option buy), −50 at 09:00 = 2 losses in a row: the day
+    # stops at 09:00, so SOL short (−30, opened 09:30) and DOGE (+40) broke rule 4, Bybit XRP (−20) only on its close
+    # time; the option broke rule 8; journal_add: risk $200 and R:R 1 (+50) broke rules 1 and 5. 11 trades, 4 of them
+    # broke a rule for sure: −30+40−20+50; XRP apart
+    for text in (
+        "<td class='num'>11</td>",
+        "<span class='bad'>1 з 4</span> <span class='mut'>· невідомо 7</span>",
+        "<span class='ok'>0 з 2</span> <span class='mut'>· невідомо 1</span>",
+        "<span class='bad'>2 з 10</span>",
+        "<span class='bad'>1 з 2</span> <span class='mut'>· невідомо 6</span>",
+        "<span class='bad'>1 з 1</span> <span class='mut'>· невідомо 1</span>",
+        "<td class='num'>4<br><span class='mut'>+ наближено 1</span></td>",
+        "<td class='num ok'>+$40<br><span class='mut'>наближені −$20</span></td>",
+    ):
+        assert text in w41, text
+    assert "дорогих 1" in _between(block, "2025-W40", "</tr>")
+    # the airdrop and the paper row are left out: 11 + 11 + 1 real trades; exact −607 + 40 + 30 (the $150 put, rules 1
+    # and 8); approximate +3 − 20
+    assert "За весь журнал: хоч одне правило точно порушили 9 угод з 23, їхній P&amp;L разом −$537." in block
+    assert "Ще 2 угод — лише наближене порушення правила 4" in block and "їхній P&amp;L −$17;" in block
+    assert "4 · денний стоп" in block
+    # empty journal, no journal table
+    p = _journal_db(tmp_path / "e.sqlite", [], [])
+    assert "Угод ще немає: звіт порушень з&#x27;явиться з першою угодою." in db.render_journal(*db.load_journal(p), now)
+    bare = tmp_path / "bare.sqlite"
+    sqlite3.connect(bare).execute("CREATE TABLE funding_hist (ts INTEGER)").connection.close()
+    assert "Таблиці journal у базі ще немає: перевіряти нема що." in db.render_journal(*db.load_journal(bare), now)

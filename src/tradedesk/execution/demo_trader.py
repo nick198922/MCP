@@ -20,7 +20,8 @@ Hourly cycle:
 4. Each candidate is sized for $100 at the stop (fees included) from the live price, gets its leverage (the owner's
    tier, capped by the venue's maximum) and a confidence score. The account is on cross margin (owner 21.10): the guard
    keeps the maintenance margin plus the loss at every stop within half of the equity, so stops come before liquidation. Candidates that pass the guard and score at least ``MIN_SCORE`` are
-   entered best first, at most 5 a UTC day (owner 21.10); the rest are recorded as skipped with the reason.
+   entered best first, at most 5 still at risk a UTC day: a trade with its stop at break-even, or closed without a real
+   loss, frees its slot (owner 21.10/22.10), at most 10 entries a day in all; the rest are recorded as skipped.
 5. Every candidate, taken or not, is also written to ``trade_plan`` as a shadow plan (tag ``src:demo-shadow``, verdict
    'enter' if taken, else 'skip'), which the collector resolves on candles without the break-even rule: so selection
    and break-even can both be compared with the plain setup.
@@ -513,14 +514,17 @@ async def _state(ctx: Ctx, positions: dict[str, Any], uni: tuple[str, ...], equi
     trades = await ctx.store.demo_trade_list(limit=5000)
     open_rows = [t for t in trades if t["status"] in ("open", "unknown", "pending")]
     day0 = day_start_ms(ctx.now)
+    today = [t for t in trades if t["status"] in ("open", "unknown", "pending", "closed") and (t["opened_ts"] or 0) >= day0]
     seen_audit = await ctx.store.exec_audit_list(ctx.now - 3 * 86_400_000, ("refused", "skipped"), limit=5000)
     return State(
         now_ms=ctx.now,
         universe=uni,
         halted=HALT_FILE.exists(),
         open_symbols=tuple(sorted(set(positions) | {t["symbol"] for t in open_rows})),
-        # a missed limit entry is not a trade: the daily cap counts only orders that are or may be filled
-        trades_today=sum(1 for t in trades if t["status"] in ("open", "unknown", "pending", "closed") and (t["opened_ts"] or 0) >= day0),
+        # owner 22.10: the daily cap counts risk, not entries: a trade whose stop is at break-even (or that closed
+        # without a real loss) frees its slot; a missed limit entry never took one
+        trades_today=sum(1 for t in today if _at_risk(t)),
+        entries_today=len(today),
         orders_last_hour=len(await ctx.store.exec_audit_list(ctx.now - HOUR_MS, ("sent",))),
         open_risk_usd=open_risk_usd([(t["qty"], t["fill"] or t["entry"], t["be_stop"] or t["stop"]) for t in open_rows]),
         open_margin_usd=sum(t["qty"] * (t["fill"] or t["entry"]) / max(1, t["leverage"]) for t in open_rows),
@@ -532,6 +536,14 @@ async def _state(ctx: Ctx, positions: dict[str, Any], uni: tuple[str, ...], equi
         equity_usd=equity,
         seen_link_ids=tuple({t["link_id"] for t in trades} | {a["link_id"] for a in seen_audit if a["link_id"]}),
     )
+
+
+def _at_risk(t: dict[str, Any]) -> bool:
+    """Does this trade still take one of the day's slots? Open: until its stop is at break-even. Closed: if it lost more
+    than a tenth of its risk (a break-even exit loses only slippage)."""
+    if t["status"] == "closed":
+        return (t["pnl_usd"] or 0.0) < -0.1 * (t["risk_usd"] or 0.0)
+    return not t["be_ts"]
 
 
 def _maint(pos: dict[str, Any] | None, t: dict[str, Any]) -> float:
@@ -548,7 +560,7 @@ class Candidate:
     structural: list[str]  # guard violations other than the daily / hourly caps
 
 
-_CAPS = ("trades today", "orders in the last hour")
+_CAPS = ("at risk today", "entries today", "orders in the last hour")
 
 
 async def _candidates(ctx: Ctx, uni: tuple[str, ...], state: State) -> list[Candidate]:
@@ -600,7 +612,8 @@ async def _candidate(ctx: Ctx, symbol: str, sig: LiveSignal, htf: dict[str, Bars
         equity_usd=state.equity_usd,
     )
     sc = score(sig, p.reward_risk, htf.get(symbol), htf.get(BTC), base_of(symbol) == "BTC")
-    structural = [v for v in check(p, replace(state, trades_today=0, orders_last_hour=0), ctx.cfg) if not any(c in v for c in _CAPS)]
+    free = replace(state, trades_today=0, entries_today=0, orders_last_hour=0)
+    structural = [v for v in check(p, free, ctx.cfg) if not any(c in v for c in _CAPS)]
     await ctx.audit(
         "signal",
         link_id=p.link_id,
@@ -693,6 +706,7 @@ async def _enter(ctx: Ctx, c: Candidate, state: State) -> State:
         state,
         open_symbols=(*state.open_symbols, p.symbol),
         trades_today=state.trades_today + 1,
+        entries_today=state.entries_today + 1,
         orders_last_hour=state.orders_last_hour + 1,
         open_risk_usd=state.open_risk_usd + p.risk_usd,
         open_margin_usd=state.open_margin_usd + p.margin,
@@ -762,7 +776,12 @@ async def _select_and_enter(ctx: Ctx, cands: list[Candidate], state: State) -> N
         if ctx.dry_run:
             ctx.bump("would_send")
             chosen.add(c.p.link_id)
-            state = replace(state, trades_today=state.trades_today + 1, open_symbols=(*state.open_symbols, c.p.symbol))
+            state = replace(
+                state,
+                trades_today=state.trades_today + 1,
+                entries_today=state.entries_today + 1,
+                open_symbols=(*state.open_symbols, c.p.symbol),
+            )
             continue
         state = await _enter(ctx, c, state)
         chosen.add(c.p.link_id)
@@ -809,7 +828,7 @@ async def cycle(
         await ctx.safe("audit_margin", lambda: ctx.audit("margin_mode", payload={"was": mode, "now": "cross" if not dry_run else mode}))
     uni = universe(turnovers)
     state = await _state(ctx, positions, uni, equity)
-    ctx.out.update(halted=state.halted, universe=len(uni), trades_today=state.trades_today)
+    ctx.out.update(halted=state.halted, universe=len(uni), trades_today=state.trades_today, entries_today=state.entries_today)
     cands = await _candidates(ctx, uni, state)
     await _select_and_enter(ctx, cands, state)
     return ctx.out

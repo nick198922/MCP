@@ -64,6 +64,7 @@ IV_MAX_RV = 1.2  # rule 8 (c): the bought option's IV <= this x RV
 ZONE_BAN, ZONE_COND, ZONE_FREE = "under_24h", "1_3_days", "over_3_days"  # rule 8 zones by the time to expiry
 MAJORS = frozenset({"BTC", "ETH"})
 RULES = (1, 2, 4, 5, 8)
+MIN_CHECKED = 30  # compliance_summary: under this many checked trades the share is descriptive only
 DAY_S = 86400.0
 _EPS = 1e-9
 _MONTHS = {m: i for i, m in enumerate(("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"), 1)}
@@ -582,3 +583,37 @@ def weekly_violations(rows: Iterable[Mapping[str, Any]], *, now_ts: float, **par
 def _exact_violation(c: Mapping[str, Any]) -> bool:
     """A trade_checks row breaks a rule for sure: any violation but a rule 4 judged on the close time."""
     return any(st == VIOLATED and not (n == 4 and c["approx"]) for n, st in c["rules"].items())
+
+
+def compliance_summary(
+    rows: Iterable[Mapping[str, Any]], *, now_ts: float, min_checked: int = MIN_CHECKED, **params: Any
+) -> dict[str, Any]:
+    """The share of trades "by the rules" over the whole journal (pass the owner's real trades, as to
+    weekly_violations). Each trade_checks row falls in exactly one class: ``violated`` (at least one exact violation),
+    ``approx`` (its only violation is rule 4 judged on the close time), ``unknown`` (no violation, but a rule that
+    applies cannot be told: no stop, no target, no opening time; unknown is not compliant) or ``ok`` (every rule that
+    applies was checked and held). {n_trades, n_checked = n_ok + n_violated, n_ok, n_violated, n_unknown, n_approx,
+    share_ok = n_ok / n_checked (None with nothing checked), enough: n_checked >= min_checked}. A rule-compliance
+    count, not a measure of edge. ``params`` are trade_checks' thresholds (deposit_usd, risk_pct, ...)."""
+    n_ok = n_bad = n_unknown = n_approx = 0
+    checks = trade_checks(rows, now_ts=now_ts, **params)
+    for c in checks:
+        if _exact_violation(c):
+            n_bad += 1
+        elif c["approx"]:
+            n_approx += 1
+        elif UNKNOWN in c["rules"].values():
+            n_unknown += 1
+        else:
+            n_ok += 1
+    n_checked = n_ok + n_bad
+    return {
+        "n_trades": len(checks),
+        "n_checked": n_checked,
+        "n_ok": n_ok,
+        "n_violated": n_bad,
+        "n_unknown": n_unknown,
+        "n_approx": n_approx,
+        "share_ok": n_ok / n_checked if n_checked else None,
+        "enough": n_checked >= min_checked,
+    }

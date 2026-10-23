@@ -426,6 +426,53 @@ def test_approximate_day_stop_alone_is_not_an_exact_violation():
     assert (w["n_violating"], w["n_violating_approx"], w["pnl_violating"], w["pnl_violating_approx"]) == (0, 0, None, None)
 
 
+def test_compliance_summary_counts_unknown_and_approximate_apart():
+    rows = [
+        _t(1, "BTCUSDT", "long", D, D + H, 20.0, '["setup:breakout"]', size=0.01, entry=80000.0, stop=79000.0, target=82000.0),
+        _t(2, "BTCUSDT", "long", D + 2 * H, D + 3 * H, 50.0, "[]", size=0.2, entry=80000.0, stop=79000.0, target=81000.0),
+        _t(3, "ETHUSDT", "short", D + 4 * H, D + 5 * H, 5.0, "[]", size=1.0, entry=4000.0, stop=4050.0),
+        _t(4, "ETHUSDT", "short", D + 6 * H, D + 7 * H, 5.0, BYBIT),
+    ]
+    # 1: every rule that applies held (risk $10, R:R 2); 2: risk $200 and R:R 1; 3: no target (rule 5 unknown);
+    # 4: an import without a stop (rules 1 and 5 unknown): unknown is not compliant and stays out of the share
+    s = rc.compliance_summary(rows, now_ts=D + 10 * H)
+    assert s == {
+        "n_trades": 4,
+        "n_checked": 2,
+        "n_ok": 1,
+        "n_violated": 1,
+        "n_unknown": 2,
+        "n_approx": 0,
+        "share_ok": 0.5,
+        "enough": False,
+    }
+    # thresholds pass through to trade_checks: on $20 000 trade 2 risks 1 % exactly, but R:R 1 still breaks rule 5
+    s = rc.compliance_summary(rows, now_ts=D + 10 * H, deposit_usd=20_000.0, min_checked=2)
+    assert (s["n_ok"], s["n_violated"], s["enough"]) == (1, 1, True)
+    # the approximate rule 4 alone is neither ok nor an exact violation; the $300 option (rule 8) is exact
+    approx = [
+        _t(1, "SOLUSDT", "long", D + 1 * H, D + 2 * H, -60.0, BINANCE),
+        _t(2, "SOLUSDT", "long", D + 3 * H, D + 4 * H, -60.0, BINANCE),
+        _t(3, "ADAUSDT", "long", D + 5 * H, D + 5 * H, -30.0, BYBIT),
+        _t(4, "BTC-31OCT25-120000-C", "long", D + 6 * H, D + 6 * H, -300.0, BYBIT_OPT, size=0.1, entry=3000.0),
+    ]
+    s = rc.compliance_summary(approx, now_ts=D + 20 * H)
+    assert (s["n_checked"], s["n_ok"], s["n_violated"], s["n_unknown"], s["n_approx"], s["share_ok"]) == (1, 0, 1, 2, 1, 0.0)
+    # the classes add up to the trades; nothing checked gives no share, not 0 %
+    assert s["n_ok"] + s["n_violated"] + s["n_unknown"] + s["n_approx"] == s["n_trades"] == 4
+    assert rc.compliance_summary(rows[3:], now_ts=D + 10 * H)["share_ok"] is None
+    assert rc.compliance_summary([], now_ts=D) == {
+        "n_trades": 0,
+        "n_checked": 0,
+        "n_ok": 0,
+        "n_violated": 0,
+        "n_unknown": 0,
+        "n_approx": 0,
+        "share_ok": None,
+        "enough": False,
+    }
+
+
 def test_weekly_option_counts_and_a_stop_week_without_openings():
     w = {x["week"]: x for x in rc.weekly_violations([*_option_rows(), _odte_row()], now_ts=D + 10 * 86400)}
     assert w["2025-W41"]["late_buys"] == 1 and w["2025-W41"]["big_premiums"] == 0

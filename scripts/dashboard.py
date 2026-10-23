@@ -908,6 +908,18 @@ HELP: dict[str, tuple[str, str, str, str]] = {
         "R порожній, якщо стоп не записано. Теги й нотатки — з імпорту або journal_add.",
         "Шукай повтори: той самий інструмент чи сетап раз у раз у мінусі — кандидат на паузу.",
     ),
+    "j_rules": (
+        "За правилами",
+        "Частка твоїх реальних угод (без airdrop, паперових і демо-бота), що перевірені на правила 1, 2, 4, 5 і 8 і не "
+        "порушили жодного: «без порушень» з «перевірених», %. Це статистика дотримання правил, не порада і не міра переваги.",
+        "Перевірена — коли кожне правило, що стосується угоди, вдалося оцінити, або коли хоч одне точно порушено. "
+        "«Невідомо» — порушень не видно, але даних не вистачає (в імпорті з бірж немає стопу й цілі): це не «за правилами», "
+        "у частку не входить. Угоди, де єдине порушення — денний стоп за часом закриття (наближено), теж окремо. "
+        "Угода без стопу потрапляє в перевірені лише тоді, коли щось точно порушила, тож поки стопів у журналі мало, "
+        "частка занижена. Менше 30 перевірених — «замало для висновку».",
+        "Записуй стоп і ціль у journal_add чи /trade: тоді угода стає перевіреною, а частка — чесною. Розбивка за тижнями "
+        "й правилами — у тижневому звіті порушень нижче.",
+    ),
     "rules_week": (
         "Порушення правил за тиждень",
         "Твої реальні угоди, перевірені на правила 1, 2, 4, 5 і 8 (затверджено 18.10), за ISO-тижнем відкриття, нові зверху.",
@@ -4265,7 +4277,7 @@ def radar_page(query: str = "", now: float | None = None) -> str:
 
 # ---------------------------------------------------------------- the owner's rules (docs/knowledge/trading-strategy.md, 18.10)
 #
-# Stdlib copies of analytics.rules_check (pre_trade_option, trade_checks, weekly_violations; tests compare each pair on
+# Stdlib copies of analytics.rules_check (pre_trade_option, trade_checks, weekly_violations, compliance_summary; tests compare each pair on
 # the same inputs): rules 1 and 8 before an option trade («Опціони»), rules 1, 2, 4, 5 and 8 week by week on the
 # owner's real trades («Журнал»). Statuses: ok / violated / unknown (the data cannot tell) / na (does not apply).
 
@@ -4284,6 +4296,7 @@ RULES_ZONE_BAN, RULES_ZONE_COND, RULES_ZONE_FREE = "under_24h", "1_3_days", "ove
 RULES_MAJORS = frozenset({"BTC", "ETH"})
 RULES_NUMS = (1, 2, 4, 5, 8)
 RULES_WEEKS = 12  # newest ISO weeks in the journal table
+RULES_MIN_CHECKED = 30  # «За правилами»: under this many checked trades the share is descriptive only
 RULES_OPTION_RE = re.compile(r"([A-Z0-9]+)-(\d{1,2})([A-Z]{3})(\d{2})-\d+(?:[.d]\d+)?-[CP](?:-[A-Z]+)?")
 RULES_QUOTES = ("USDT", "USDC", "BUSD", "USD", "PERP")
 RULE_STATUS_UA = {
@@ -4704,6 +4717,60 @@ def rules_weekly(rows: list[dict], now_ts: float, dep: float = RULES_DEPOSIT) ->
 def _rules_exact_violation(c: dict) -> bool:
     """Copy of analytics.rules_check._exact_violation: any violation but a rule 4 judged on the close time."""
     return any(st == "violated" and not (n == 4 and c["approx"]) for n, st in c["rules"].items())
+
+
+def rules_compliance(rows: list[dict], now_ts: float, dep: float = RULES_DEPOSIT) -> dict:
+    """Copy of analytics.rules_check.compliance_summary: each trade is violated (exact), approx (rule 4 on the close
+    time only), unknown (no violation, a rule cannot be told; not compliant) or ok; share_ok = ok / (ok + violated)."""
+    n_ok = n_bad = n_unknown = n_approx = 0
+    checks = rules_trade_checks(rows, now_ts, dep)
+    for c in checks:
+        if _rules_exact_violation(c):
+            n_bad += 1
+        elif c["approx"]:
+            n_approx += 1
+        elif "unknown" in c["rules"].values():
+            n_unknown += 1
+        else:
+            n_ok += 1
+    n_checked = n_ok + n_bad
+    return {
+        "n_trades": len(checks),
+        "n_checked": n_checked,
+        "n_ok": n_ok,
+        "n_violated": n_bad,
+        "n_unknown": n_unknown,
+        "n_approx": n_approx,
+        "share_ok": n_ok / n_checked if n_checked else None,
+        "enough": n_checked >= RULES_MIN_CHECKED,
+    }
+
+
+def tile_rules_compliance(rows: list[dict], now: float) -> str:
+    """«За правилами» tile: the owner's real trades (pass them without airdrop and *-paper rows, as to
+    block_rules_week). Never raises: an odd row gives an explained tile."""
+    try:
+        c = rules_compliance(rows, now)
+    except Exception as e:  # noqa: BLE001 - one odd row must not take the tiles down
+        return _tile("За правилами", "—", _e(f"не вдалося порахувати: несподіваний формат даних ({type(e).__name__})"), help="j_rules")
+    if not c["n_trades"]:
+        return _tile("За правилами", "—", "немає угод з часом відкриття: перевіряти нема що", help="j_rules")
+    sub = (
+        f"{c['n_ok']} з {c['n_checked']} перевірених без жодного порушення"
+        + (f" · порушили {c['n_violated']}" if c["n_violated"] else "")
+        + f" · невідомо {c['n_unknown']} (бракує стопу, цілі чи часу відкриття — не «за правилами», поза часткою)"
+        + (f" · лише наближене правило 4: {c['n_approx']} (поза часткою)" if c["n_approx"] else "")
+        + f" · усього {c['n_trades']} угод. Статистика дотримання правил, не порада"
+        + (". Угода без стопу стає перевіреною лише через порушення, тож частка занижена" if c["n_unknown"] else "")
+    )
+    return _tile(
+        "За правилами",
+        _share(c["share_ok"]),
+        _e(sub),
+        help="j_rules",
+        tone="" if c["enough"] else "warn",
+        badge="" if c["enough"] else "замало для висновку",
+    )
 
 
 def _rule_chip(status: str) -> str:
@@ -5318,10 +5385,15 @@ def _r(x: object) -> str:
     return "—" if v is None else f"{v:+.2f} R".replace("-", "−")
 
 
-def block_journal_tiles(real: list[dict], n_open: int) -> str:
+def block_journal_tiles(real: list[dict], n_open: int, now: float) -> str:
     s = journal_summary(real)
+    rules = tile_rules_compliance(real, now)
     if not s["closed_trades"]:
-        return _empty("Закритих реальних угод ще немає.") + (f"<p class='note'>Відкритих: {n_open}.</p>" if n_open else "")
+        return (
+            _empty("Закритих реальних угод ще немає.")
+            + (f"<p class='note'>Відкритих: {n_open}.</p>" if n_open else "")
+            + (f"<div class='tiles'>{rules}</div>" if real else "")
+        )
     total, exp = s["total_pnl"], s["expectancy_per_trade"]
     tiles = [
         _tile("Угод (закритих)", _nf(s["closed_trades"]), f"у плюсі {s['wins']} · у мінусі {s['losses']}", help="j_trades"),
@@ -5344,6 +5416,7 @@ def block_journal_tiles(real: list[dict], n_open: int) -> str:
             "USD, одна крива P&L усіх бірж і опціонів за датою закриття",
             help="drawdown",
         ),
+        rules,
     ]
     if n_open:
         tiles.append(_tile("Відкритих", _nf(n_open), help="j_open"))
@@ -5819,7 +5892,7 @@ def render_journal(
                     groups.setdefault(src, []).append(t)
             real = kinds["real"]
             n_open = sum(1 for t in real if t.get("status") == "open")
-            out.append(f"<section class='wide'>{_h2('Мої угоди', 'j_trades')}{block_journal_tiles(real, n_open)}")
+            out.append(f"<section class='wide'>{_h2('Мої угоди', 'j_trades')}{block_journal_tiles(real, n_open, now)}")
             out.append(block_journal_other(kinds["paper"], kinds["airdrop"]))
             if len(rows) >= JOURNAL_MAX_ROWS:
                 out.append(f"<p class='note warn'>Прочитано лише {JOURNAL_MAX_ROWS} останніх рядків журналу.</p>")

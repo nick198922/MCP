@@ -11,7 +11,7 @@ DOUBLETOP: **74 інструменти** (66 від 17 бекендів + 8 вл
 | `provider_readiness` | ✅ `system_health` (+ `probe=true` для живої перевірки; у DOUBLETOP 15 з 17 перевірок були застарілими) |
 | `whoami` | ⏭ автентифікація буде нашою (Фаза 6) |
 | `chain_trend_snapshot` (панелі TVL, DEX-обсяг, fees), `pair_discovery` | ✅ `chain_metrics` (DefiLlama: TVL, DEX-обсяг і fees за 24 год зі змінами 7д/30д та week-over-week, десяткові частки) і `dex_pairs` (DexScreener: числа числами, symbol без пробілів, сортування за ліквідністю, прапорець `likely_fake` для «SOL»-підробок). `trending_tokens` не відтворюємо: у DOUBLETOP це фейкові токени ([IDEA-20261017-doubletop-to-ours](ideas/IDEA-20261017-doubletop-to-ours.md)) |
-| `token_card_snapshot`, `risk_hints_token`, `risk_hints_address`, `wallet_snapshot` | 🔜 Фаза 5. Перевірка 17.10: картка ETH порожня, ризики PEPE порожні (зразки в `tests/fixtures/doubletop/`) |
+| `token_card_snapshot`, `risk_hints_token`, `risk_hints_address`, `wallet_snapshot` | 🟡 `risk_hints_token` ≈ `contract_risk` (23.10: GoPlus token_security для 7 EVM-мереж + ліквідність / кап DexScreener; вердикти pass / fail / unknown за порогами курсу; Solana, honeypot.is і Etherscan — далі). Решта 🔜 Фаза 5. Перевірка 17.10: картка ETH порожня, ризики PEPE порожні (зразки в `tests/fixtures/doubletop/`); GoPlus 23.10 для PEPE теж дав порожній `result` |
 
 ## Біржі та деривативи
 

@@ -1,0 +1,8 @@
+{
+ "_source": "LIVE sample, 2026-10-23, fetched from the Contabo server through tradedesk Http: GET https://api.gopluslabs.io/api/v1/token_security/1?contract_addresses=0x6982508145454ce325ddbf47a25d4ec3d2311933 (PEPE, Ethereum), free tier, no key. GoPlus answered code 1 with an empty result (no data for this token at that moment). Body unchanged.",
+ "response": {
+  "code": 1,
+  "message": "OK",
+  "result": {}
+ }
+}

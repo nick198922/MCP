@@ -106,9 +106,11 @@ class Exchanges:
     async def public_get(self, ex_id: str, endpoint: str, params: dict[str, Any], ttl: float = 0) -> Fetched:
         """Raw public GET through a ccxt implicit endpoint, e.g. ``("binance", "dapiPublicGetContinuousKlines", {...})``.
 
-        Research-only escape hatch for venue endpoints ccxt does not unify (continuous/index klines, delivery
-        contract klines). Only ``*PublicGet*`` endpoints are allowed, so nothing private or state-changing can be
-        reached through it. Returns the venue's JSON as-is (native units, strings for numbers on Binance).
+        Escape hatch for venue endpoints ccxt does not unify (continuous/index klines, delivery contract klines,
+        Bybit v5 option tickers). Used by research scripts and by the 24/7 collector (``collector/option_xvenue``),
+        so it goes through ``_call`` like every other read (health, ``Evidence``, error mapping, rate limit). Only
+        ``*PublicGet*`` endpoints are allowed, so nothing private or state-changing can be reached through it.
+        Returns the venue's JSON as-is (native units, strings for numbers on Binance).
         """
         if "PublicGet" not in endpoint and not endpoint.startswith("publicGet"):
             raise ProviderError(f"ccxt:{ex_id.lower()}", "config", f"only public GET endpoints are allowed, got '{endpoint}'")

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 import math
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import ccxt
@@ -225,6 +225,9 @@ def _rt(tmp_path, *, deribit_down: bool = False, empty_summary: bool = False, by
             body = json.loads(json.dumps(SAMPLE["bybit"]))
             if params["baseCoin"] != "BTC" or bybit == "no_daily":
                 body["result"]["list"] = [r for r in body["result"]["list"] if params["baseCoin"] == "BTC" and "23OCT26" not in r["symbol"]]
+            if bybit == "usdc_dup":  # the same strikes listed again as USDC-settled (no suffix), after the USDT rows
+                dup = [dict(r, symbol=r["symbol"].removesuffix("-USDT"), bid1Price="1") for r in body["result"]["list"]]
+                body["result"]["list"] += dup
             return body
 
     tr = make_transports(State())
@@ -271,6 +274,34 @@ async def test_bybit_down_keeps_deribit_and_never_raises(tmp_path):
         assert len(rows) == 14 and all(r["b_bid"] is None and r["d_index"] for r in rows)
         assert [m.field for m in b.missing] == ["bybit_options:BTC"] and b.missing[0].reason == "network"
         assert await collect_option_xvenue(rt) == 14  # partial snapshot is stored, job does not fail
+    finally:
+        await rt.aclose()
+
+
+async def test_row_ts_and_tau_share_one_clock_read(tmp_path):
+    rt, _ = _rt(tmp_path)
+    ticks = iter(range(100))
+    rt.now = lambda: NOW + timedelta(seconds=30 * next(ticks))  # every clock read 30 s later
+    try:
+        assert await collect_option_xvenue(rt) == 14
+        rows = await rt.store.option_xvenue_rows()
+        assert {r["ts"] for r in rows} == {int(NOW.timestamp())}  # the first read
+        assert all(r["tau_hours"] == pytest.approx((r["expiry_ts"] - r["ts"]) / 3600.0, abs=1e-9) for r in rows)
+    finally:
+        await rt.aclose()
+
+
+async def test_bybit_other_settle_is_skipped_with_a_warning(tmp_path):
+    rt, _ = _rt(tmp_path, bybit="usdc_dup")
+    try:
+        b = Builder()
+        rows = await scan_option_xvenue(rt, b)
+        r = next(r for r in rows if r["strike"] == 82000.0 and r["opt"] == "C")
+        assert r["b_symbol"] == "BTC-23OCT26-82000-C-USDT" and r["b_bid"] == 180.0  # USDT row kept, not overwritten
+        assert all(r["b_symbol"] is None or r["b_symbol"].endswith("-USDT") for r in rows)
+        want = "BTC: Bybit option symbols with settle suffix none (USDC) skipped (only USDT is stored)"
+        assert [w for w in b.warnings if "settle" in w] == [want]
+        assert not b.missing
     finally:
         await rt.aclose()
 

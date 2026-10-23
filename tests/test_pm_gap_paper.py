@@ -13,6 +13,7 @@ from tradedesk.analytics.pm_gap_paper import (
     YEAR_S,
     EntryRule,
     accepted_rule_hashes,
+    asset_permutation_p,
     brier_by_market,
     closing_value,
     cluster_mean_ci,
@@ -33,6 +34,7 @@ from tradedesk.analytics.pm_gap_paper import (
     side_book,
     verdict,
     vol_scaled_prob,
+    worse_entry,
 )
 from tradedesk.analytics.pm_threshold import settle_ts
 from tradedesk.analytics.pm_touch import day_window
@@ -209,6 +211,38 @@ def test_delayed_entry_next_snapshot_or_dropped():
     assert d is not None and d["ts"] == t + H and d["cost"] == pytest.approx(0.52) and d["delayed_from"] == t
     assert delayed_entry(pos, [row(t), row(t + H, yes_ask=0.57, yes_bid=0.55)], RN, ACC) is None  # gap gone
     assert delayed_entry(pos, [row(t), row(t + 3 * H)], RN, ACC) is None  # no snapshot within 2 h
+
+
+def test_worse_entry_one_cent_above_the_ask_with_the_fee_at_that_price():
+    t = END - 48 * H
+    (pos,) = open_positions([row(t)], RN, ACC)
+    w = worse_entry(pos)
+    assert w["ask"] == pytest.approx(0.51) and w["cost"] == pytest.approx(0.51) and w["ts"] == t and w["side"] == "yes"
+    (pf,) = open_positions([row(t, fee_rate=0.07, fee_exp=1.0)], RN, ACC)
+    assert pf["fee_rate"] == 0.07 and pf["fee_exp"] == 1.0
+    assert worse_entry(pf)["cost"] == pytest.approx(0.51 + 0.07 * 0.51 * 0.49)  # fee upper bound at the worse price
+    assert pos["cost"] == pytest.approx(0.50)  # the original is untouched
+
+
+def test_asset_permutation_within_week_analytic():
+    # 4 weeks, one BTC and one ETH each, BTC always 1 above ETH: within-week permutations flip each week's sign with
+    # probability 1/2, so |diff*| >= 1 only when all four agree: p = 2 / 2**4 = 0.125
+    weeks = ["w1", "w2", "w3", "w4"]
+    base = [0.0, 3.0, -2.0, 5.0]
+    vals = [x + d for x in base for d in (1.0, 0.0)]
+    assets = ["BTC", "ETH"] * 4
+    cl = [w for w in weeks for _ in (0, 1)]
+    r = asset_permutation_p(vals, assets, cl)
+    assert r["diff"] == pytest.approx(1.0) and r["n_a"] == r["n_b"] == 4 and r["n_perm"] == 10_000
+    assert r["p"] == pytest.approx(0.125, abs=0.015)
+    # equal within every week: no difference, p = 1
+    assert asset_permutation_p([1.0, 1.0, 2.0, 2.0], assets[:4], ["w1", "w1", "w2", "w2"])["p"] == pytest.approx(1.0)
+    # each week holds one asset only: within-week permutation cannot move anything, whatever the gap (p = 1)
+    one = asset_permutation_p([1.0, 1.0, 0.0, 0.0], ["BTC", "BTC", "ETH", "ETH"], ["w1", "w1", "w2", "w2"], n_perm=200)
+    assert one["diff"] == pytest.approx(1.0) and one["p"] == pytest.approx(1.0)
+    # other assets are ignored; a missing asset gives no test
+    assert asset_permutation_p(vals + [99.0], assets + ["SOL"], cl + ["w1"], n_perm=200)["diff"] == pytest.approx(1.0)
+    assert asset_permutation_p([1.0, 2.0], ["BTC", "BTC"], ["w1", "w2"]) == {"n_a": 2, "n_b": 0, "diff": None, "p": None, "n_perm": 0}
 
 
 def test_closing_value_windows_and_no_outcome_fallback():

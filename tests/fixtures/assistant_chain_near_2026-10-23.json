@@ -1,0 +1,732 @@
+{
+ "source": "deribit_option_chain via collector _call, live Deribit",
+ "near": "24OCT26",
+ "section": {
+  "ok": true,
+  "data": {
+   "currency": "BTC",
+   "expiry": "24OCT26",
+   "forward": 81122.84,
+   "days": 1.33,
+   "atm_iv": 0.2975,
+   "strikes": [
+    {
+     "strike": 72000.0,
+     "call": {
+      "iv": 0.7616,
+      "delta": 0.9956,
+      "gamma": 3.44e-06,
+      "vega": 0.63,
+      "theta": -17.99,
+      "mark_usd": 9133.7,
+      "oi": 0.0,
+      "volume": 0.0
+     },
+     "put": {
+      "iv": 0.7616,
+      "delta": -0.0043,
+      "gamma": 3.42e-06,
+      "vega": 0.62,
+      "theta": -17.88,
+      "mark_usd": 5.1,
+      "oi": 5.9,
+      "volume": 2.0
+     }
+    },
+    {
+     "strike": 73000.0,
+     "call": {
+      "iv": 0.6881,
+      "delta": 0.9949,
+      "gamma": 4.39e-06,
+      "vega": 0.72,
+      "theta": -18.73,
+      "mark_usd": 8134.49,
+      "oi": 0.0,
+      "volume": 0.0
+     },
+     "put": {
+      "iv": 0.6881,
+      "delta": -0.0052,
+      "gamma": 4.42e-06,
+      "vega": 0.73,
+      "theta": -18.86,
+      "mark_usd": 5.52,
+      "oi": 39.6,
+      "volume": 36.1
+     }
+    },
+    {
+     "strike": 74000.0,
+     "call": {
+      "iv": 0.6394,
+      "delta": 0.9919,
+      "gamma": 7.09e-06,
+      "vega": 1.08,
+      "theta": -26.13,
+      "mark_usd": 7137.83,
+      "oi": 0.0,
+      "volume": 0.0
+     },
+     "put": {
+      "iv": 0.6394,
+      "delta": -0.0081,
+      "gamma": 7.09e-06,
+      "vega": 1.08,
+      "theta": -26.13,
+      "mark_usd": 8.42,
+      "oi": 122.1,
+      "volume": 124.4
+     }
+    },
+    {
+     "strike": 75000.0,
+     "call": {
+      "iv": 0.597,
+      "delta": 0.9861,
+      "gamma": 1.217e-05,
+      "vega": 1.74,
+      "theta": -39.1,
+      "mark_usd": 6144.04,
+      "oi": 0.0,
+      "volume": 0.0
+     },
+     "put": {
+      "iv": 0.597,
+      "delta": -0.0138,
+      "gamma": 1.208e-05,
+      "vega": 1.72,
+      "theta": -38.84,
+      "mark_usd": 14.33,
+      "oi": 3.2,
+      "volume": 3.1
+     }
+    },
+    {
+     "strike": 76000.0,
+     "call": {
+      "iv": 0.5501,
+      "delta": 0.9764,
+      "gamma": 2.071e-05,
+      "vega": 2.72,
+      "theta": -56.5,
+      "mark_usd": 5154.01,
+      "oi": 0.0,
+      "volume": 0.0
+     },
+     "put": {
+      "iv": 0.5501,
+      "delta": -0.0234,
+      "gamma": 2.057e-05,
+      "vega": 2.7,
+      "theta": -56.12,
+      "mark_usd": 23.87,
+      "oi": 13.6,
+      "volume": 5.0
+     }
+    },
+    {
+     "strike": 77000.0,
+     "call": {
+      "iv": 0.4885,
+      "delta": 0.9633,
+      "gamma": 3.363e-05,
+      "vega": 3.93,
+      "theta": -72.35,
+      "mark_usd": 4165.74,
+      "oi": 0.0,
+      "volume": 0.0
+     },
+     "put": {
+      "iv": 0.4885,
+      "delta": -0.0367,
+      "gamma": 3.363e-05,
+      "vega": 3.93,
+      "theta": -72.35,
+      "mark_usd": 35.29,
+      "oi": 31.8,
+      "volume": 29.0
+     }
+    },
+    {
+     "strike": 78000.0,
+     "call": {
+      "iv": 0.4359,
+      "delta": 0.9347,
+      "gamma": 5.969e-05,
+      "vega": 6.22,
+      "theta": -102.27,
+      "mark_usd": 3192.24,
+      "oi": 0.0,
+      "volume": 0.0
+     },
+     "put": {
+      "iv": 0.4359,
+      "delta": -0.0658,
+      "gamma": 6.009e-05,
+      "vega": 6.26,
+      "theta": -102.93,
+      "mark_usd": 61.41,
+      "oi": 86.0,
+      "volume": 20.7
+     }
+    },
+    {
+     "strike": 78500.0,
+     "call": {
+      "iv": 0.4052,
+      "delta": 0.9135,
+      "gamma": 7.956e-05,
+      "vega": 7.7,
+      "theta": -117.78,
+      "mark_usd": 2710.55,
+      "oi": 0.0,
+      "volume": 0.0
+     },
+     "put": {
+      "iv": 0.4052,
+      "delta": -0.0865,
+      "gamma": 7.956e-05,
+      "vega": 7.7,
+      "theta": -117.78,
+      "mark_usd": 79.55,
+      "oi": 67.3,
+      "volume": 61.7
+     }
+    },
+    {
+     "strike": 79000.0,
+     "call": {
+      "iv": 0.3764,
+      "delta": 0.8811,
+      "gamma": 0.00010802,
+      "vega": 9.72,
+      "theta": -137.97,
+      "mark_usd": 2238.63,
+      "oi": 0.0,
+      "volume": 0.0
+     },
+     "put": {
+      "iv": 0.3764,
+      "delta": -0.1189,
+      "gamma": 0.00010802,
+      "vega": 9.72,
+      "theta": -137.97,
+      "mark_usd": 107.37,
+      "oi": 54.5,
+      "volume": 60.4
+     }
+    },
+    {
+     "strike": 79500.0,
+     "call": {
+      "iv": 0.3512,
+      "delta": 0.8328,
+      "gamma": 0.00014581,
+      "vega": 12.24,
+      "theta": -162.13,
+      "mark_usd": 1784.13,
+      "oi": 0.0,
+      "volume": 0.0
+     },
+     "put": {
+      "iv": 0.3512,
+      "delta": -0.1672,
+      "gamma": 0.00014581,
+      "vega": 12.24,
+      "theta": -162.13,
+      "mark_usd": 152.68,
+      "oi": 43.7,
+      "volume": 28.2
+     }
+    },
+    {
+     "strike": 80000.0,
+     "call": {
+      "iv": 0.3283,
+      "delta": 0.7643,
+      "gamma": 0.00019178,
+      "vega": 15.05,
+      "theta": -186.38,
+      "mark_usd": 1355.4,
+      "oi": 8.7,
+      "volume": 0.0
+     },
+     "put": {
+      "iv": 0.3284,
+      "delta": -0.2375,
+      "gamma": 0.00019256,
+      "vega": 15.11,
+      "theta": -187.22,
+      "mark_usd": 223.83,
+      "oi": 48.0,
+      "volume": 40.7
+     }
+    },
+    {
+     "strike": 80500.0,
+     "call": {
+      "iv": 0.3095,
+      "delta": 0.6637,
+      "gamma": 0.00024116,
+      "vega": 17.84,
+      "theta": -208.25,
+      "mark_usd": 969.09,
+      "oi": 0.0,
+      "volume": 0.0
+     },
+     "put": {
+      "iv": 0.3095,
+      "delta": -0.3363,
+      "gamma": 0.00024116,
+      "vega": 17.84,
+      "theta": -208.25,
+      "mark_usd": 337.27,
+      "oi": 59.4,
+      "volume": 49.9
+     }
+    },
+    {
+     "strike": 81000.0,
+     "call": {
+      "iv": 0.2993,
+      "delta": 0.5371,
+      "gamma": 0.0002715,
+      "vega": 19.42,
+      "theta": -219.25,
+      "mark_usd": 651.42,
+      "oi": 121.0,
+      "volume": 121.0
+     },
+     "put": {
+      "iv": 0.2993,
+      "delta": -0.4629,
+      "gamma": 0.0002715,
+      "vega": 19.42,
+      "theta": -219.25,
+      "mark_usd": 519.42,
+      "oi": 111.8,
+      "volume": 57.5
+     }
+    },
+    {
+     "strike": 81500.0,
+     "call": {
+      "iv": 0.2921,
+      "delta": 0.3995,
+      "gamma": 0.00027048,
+      "vega": 18.88,
+      "theta": -208.04,
+      "mark_usd": 405.64,
+      "oi": 9.7,
+      "volume": 5.7
+     },
+     "put": {
+      "iv": 0.2921,
+      "delta": -0.6005,
+      "gamma": 0.00027048,
+      "vega": 18.88,
+      "theta": -208.04,
+      "mark_usd": 773.46,
+      "oi": 149.0,
+      "volume": 49.3
+     }
+    },
+    {
+     "strike": 82000.0,
+     "call": {
+      "iv": 0.2876,
+      "delta": 0.2703,
+      "gamma": 0.00023532,
+      "vega": 16.17,
+      "theta": -175.47,
+      "mark_usd": 233.07,
+      "oi": 10.6,
+      "volume": 7.5
+     },
+     "put": {
+      "iv": 0.2876,
+      "delta": -0.7297,
+      "gamma": 0.00023532,
+      "vega": 16.17,
+      "theta": -175.47,
+      "mark_usd": 1100.7,
+      "oi": 19.9,
+      "volume": 9.5
+     }
+    },
+    {
+     "strike": 82500.0,
+     "call": {
+      "iv": 0.2898,
+      "delta": 0.1697,
+      "gamma": 0.00017845,
+      "vega": 12.36,
+      "theta": -135.1,
+      "mark_usd": 128.96,
+      "oi": 33.9,
+      "volume": 27.3
+     },
+     "put": {
+      "iv": 0.2898,
+      "delta": -0.8286,
+      "gamma": 0.00017953,
+      "vega": 12.44,
+      "theta": -135.96,
+      "mark_usd": 1496.45,
+      "oi": 18.2,
+      "volume": 11.3
+     }
+    },
+    {
+     "strike": 83000.0,
+     "call": {
+      "iv": 0.2977,
+      "delta": 0.1027,
+      "gamma": 0.00012297,
+      "vega": 8.75,
+      "theta": -98.25,
+      "mark_usd": 71.62,
+      "oi": 20.0,
+      "volume": 15.2
+     },
+     "put": {
+      "iv": 0.2977,
+      "delta": -0.8962,
+      "gamma": 0.00012394,
+      "vega": 8.82,
+      "theta": -99.05,
+      "mark_usd": 1938.93,
+      "oi": 25.2,
+      "volume": 5.7
+     }
+    },
+    {
+     "strike": 83500.0,
+     "call": {
+      "iv": 0.3109,
+      "delta": 0.0627,
+      "gamma": 8.115e-05,
+      "vega": 6.03,
+      "theta": -70.71,
+      "mark_usd": 41.64,
+      "oi": 43.5,
+      "volume": 10.8
+     },
+     "put": {
+      "iv": 0.3109,
+      "delta": -0.9373,
+      "gamma": 8.115e-05,
+      "vega": 6.03,
+      "theta": -70.71,
+      "mark_usd": 2408.71,
+      "oi": 116.1,
+      "volume": 31.7
+     }
+    },
+    {
+     "strike": 84000.0,
+     "call": {
+      "iv": 0.3394,
+      "delta": 0.0451,
+      "gamma": 5.728e-05,
+      "vega": 4.65,
+      "theta": -59.48,
+      "mark_usd": 30.99,
+      "oi": 33.0,
+      "volume": 29.7
+     },
+     "put": {
+      "iv": 0.3394,
+      "delta": -0.9543,
+      "gamma": 5.781e-05,
+      "vega": 4.69,
+      "theta": -60.05,
+      "mark_usd": 2897.94,
+      "oi": 113.0,
+      "volume": 0.0
+     }
+    },
+    {
+     "strike": 84500.0,
+     "call": {
+      "iv": 0.3574,
+      "delta": 0.0298,
+      "gamma": 3.878e-05,
+      "vega": 3.31,
+      "theta": -44.65,
+      "mark_usd": 20.33,
+      "oi": 19.4,
+      "volume": 9.6
+     },
+     "put": {
+      "iv": 0.3574,
+      "delta": -0.9698,
+      "gamma": 3.916e-05,
+      "vega": 3.35,
+      "theta": -45.1,
+      "mark_usd": 3387.09,
+      "oi": 25.7,
+      "volume": 0.0
+     }
+    },
+    {
+     "strike": 85000.0,
+     "call": {
+      "iv": 0.3856,
+      "delta": 0.0231,
+      "gamma": 2.906e-05,
+      "vega": 2.68,
+      "theta": -38.96,
+      "mark_usd": 16.19,
+      "oi": 140.6,
+      "volume": 29.8
+     },
+     "put": {
+      "iv": 0.3856,
+      "delta": -0.9771,
+      "gamma": 2.878e-05,
+      "vega": 2.65,
+      "theta": -38.57,
+      "mark_usd": 3882.77,
+      "oi": 2.0,
+      "volume": 0.0
+     }
+    },
+    {
+     "strike": 85500.0,
+     "call": {
+      "iv": 0.4115,
+      "delta": 0.0178,
+      "gamma": 2.175e-05,
+      "vega": 2.14,
+      "theta": -33.22,
+      "mark_usd": 12.84,
+      "oi": 46.4,
+      "volume": 10.2
+     },
+     "put": {
+      "iv": 0.4116,
+      "delta": -0.9824,
+      "gamma": 2.157e-05,
+      "vega": 2.12,
+      "theta": -32.94,
+      "mark_usd": 4379.17,
+      "oi": 0.0,
+      "volume": 0.0
+     }
+    },
+    {
+     "strike": 86000.0,
+     "call": {
+      "iv": 0.4333,
+      "delta": 0.0133,
+      "gamma": 1.607e-05,
+      "vega": 1.66,
+      "theta": -27.21,
+      "mark_usd": 9.74,
+      "oi": 53.4,
+      "volume": 6.6
+     },
+     "put": {
+      "iv": 0.4333,
+      "delta": -0.9867,
+      "gamma": 1.607e-05,
+      "vega": 1.66,
+      "theta": -27.21,
+      "mark_usd": 4875.95,
+      "oi": 0.0,
+      "volume": 0.0
+     }
+    },
+    {
+     "strike": 86500.0,
+     "call": {
+      "iv": 0.4424,
+      "delta": 0.0084,
+      "gamma": 1.061e-05,
+      "vega": 1.12,
+      "theta": -18.72,
+      "mark_usd": 6.02,
+      "oi": 4.5,
+      "volume": 4.7
+     },
+     "put": {
+      "iv": 0.4424,
+      "delta": -0.9916,
+      "gamma": 1.061e-05,
+      "vega": 1.12,
+      "theta": -18.72,
+      "mark_usd": 5372.05,
+      "oi": 0.0,
+      "volume": 0.0
+     }
+    },
+    {
+     "strike": 87000.0,
+     "call": {
+      "iv": 0.4683,
+      "delta": 0.0069,
+      "gamma": 8.36e-06,
+      "vega": 0.94,
+      "theta": -16.53,
+      "mark_usd": 5.14,
+      "oi": 131.6,
+      "volume": 10.3
+     },
+     "put": {
+      "iv": 0.4683,
+      "delta": -0.9931,
+      "gamma": 8.44e-06,
+      "vega": 0.95,
+      "theta": -16.7,
+      "mark_usd": 5870.99,
+      "oi": 0.0,
+      "volume": 0.0
+     }
+    },
+    {
+     "strike": 88000.0,
+     "call": {
+      "iv": 0.4823,
+      "delta": 0.0027,
+      "gamma": 3.54e-06,
+      "vega": 0.41,
+      "theta": -7.42,
+      "mark_usd": 1.89,
+      "oi": 86.6,
+      "volume": 2.9
+     },
+     "put": {
+      "iv": 0.4823,
+      "delta": -0.9973,
+      "gamma": 3.54e-06,
+      "vega": 0.41,
+      "theta": -7.42,
+      "mark_usd": 6867.37,
+      "oi": 0.0,
+      "volume": 0.0
+     }
+    },
+    {
+     "strike": 89000.0,
+     "call": {
+      "iv": 0.4859,
+      "delta": 0.0008,
+      "gamma": 1.17e-06,
+      "vega": 0.14,
+      "theta": -2.5,
+      "mark_usd": 0.53,
+      "oi": 25.2,
+      "volume": 10.1
+     },
+     "put": {
+      "iv": 0.4859,
+      "delta": -0.9992,
+      "gamma": 1.19e-06,
+      "vega": 0.14,
+      "theta": -2.53,
+      "mark_usd": 7865.64,
+      "oi": 0.0,
+      "volume": 0.0
+     }
+    },
+    {
+     "strike": 90000.0,
+     "call": {
+      "iv": 0.486,
+      "delta": 0.0002,
+      "gamma": 3.3e-07,
+      "vega": 0.04,
+      "theta": -0.71,
+      "mark_usd": 0.12,
+      "oi": 24.5,
+      "volume": 0.3
+     },
+     "put": {
+      "iv": 0.486,
+      "delta": -0.9998,
+      "gamma": 3.3e-07,
+      "vega": 0.04,
+      "theta": -0.71,
+      "mark_usd": 8864.86,
+      "oi": 1.4,
+      "volume": 0.0
+     }
+    },
+    {
+     "strike": 91000.0,
+     "call": {
+      "iv": 0.4862,
+      "delta": 0.0,
+      "gamma": 8e-08,
+      "vega": 0.01,
+      "theta": -0.17,
+      "mark_usd": 0.03,
+      "oi": 1.0,
+      "volume": 0.4
+     },
+     "put": {
+      "iv": 0.4862,
+      "delta": -1.0,
+      "gamma": 8e-08,
+      "vega": 0.01,
+      "theta": -0.18,
+      "mark_usd": 9864.39,
+      "oi": 0.0,
+      "volume": 0.0
+     }
+    },
+    {
+     "strike": 92000.0,
+     "call": {
+      "iv": 0.4967,
+      "delta": 0.0,
+      "gamma": 3e-08,
+      "vega": 0.0,
+      "theta": -0.06,
+      "mark_usd": 0.01,
+      "oi": 0.3,
+      "volume": 0.0
+     },
+     "put": {
+      "iv": 0.4967,
+      "delta": -1.0,
+      "gamma": 3e-08,
+      "vega": 0.0,
+      "theta": -0.06,
+      "mark_usd": 10864.0,
+      "oi": 0.0,
+      "volume": 0.0
+     }
+    },
+    {
+     "strike": 93000.0,
+     "call": {
+      "iv": 0.4993,
+      "delta": 0.0,
+      "gamma": 1e-08,
+      "vega": 0.0,
+      "theta": -0.01,
+      "mark_usd": 0.0,
+      "oi": 0.0,
+      "volume": 0.0
+     },
+     "put": {
+      "iv": 0.4993,
+      "delta": -1.0,
+      "gamma": 1e-08,
+      "vega": 0.0,
+      "theta": -0.01,
+      "mark_usd": 11863.62,
+      "oi": 0.0,
+      "volume": 0.0
+     }
+    }
+   ]
+  },
+  "missing": [],
+  "warnings": [],
+  "asof_utc": "2026-10-23T00:11:30Z"
+ }
+}

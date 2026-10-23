@@ -8,7 +8,7 @@ import ccxt
 import pytest
 
 from conftest import NOW, FakeEx, make_transports
-from tradedesk.analytics.assistant import is_last_friday, pick_expiries
+from tradedesk.analytics.assistant import NEAR_MIN_DAYS, is_last_friday, pick_expiries, pick_near_expiry
 from tradedesk.collector.assistant_snapshot import collect_assistant_snapshot, snapshot_path, write_atomic
 from tradedesk.collector.scheduler import build_default_scheduler
 from tradedesk.config import Settings
@@ -80,6 +80,18 @@ def test_pick_expiries_edge_cases():
     assert pick_expiries([{"expiry": "bad", "days": None}]) == (None, None)
 
 
+def test_pick_near_expiry_skips_the_last_day_before_delivery():
+    # Monday 10:00 UTC: Tuesday's daily is 22 h away (rule 8 bans buys under 24 h), Wednesday's 46 h -> Wednesday
+    mon = datetime(2026, 10, 19, 10, 0, tzinfo=UTC)
+    assert pick_near_expiry(_listing(mon)) == "21OCT26"
+    # 07:00 UTC: Tuesday's daily is 25 h away, exactly NEAR_MIN_DAYS (24 h + 1 h margin) -> taken; 1 min later it is not
+    assert pick_near_expiry([{"expiry": "20OCT26", "days": 25 / 24}, {"expiry": "21OCT26", "days": 49 / 24}]) == "20OCT26"
+    assert pick_near_expiry([{"expiry": "20OCT26", "days": 25 / 24 - 1 / 1440}, {"expiry": "21OCT26", "days": 2.0}]) == "21OCT26"
+    assert NEAR_MIN_DAYS * 24 == pytest.approx(25.0)
+    assert pick_near_expiry([]) is None and pick_near_expiry([{"expiry": "bad", "days": 3.0}, {"expiry": "1NOV26", "days": None}]) is None
+    assert pick_near_expiry([{"expiry": "27NOV26", "days": 39.7}]) == "27NOV26"  # no daily listed: the next one at all
+
+
 def test_snapshot_path_default_and_memory(tmp_path):
     assert snapshot_path(str(tmp_path / "x.sqlite"), "") == tmp_path.resolve() / "assistant" / "snapshot.json"
     assert snapshot_path(":memory:", "") is None
@@ -101,11 +113,11 @@ async def test_snapshot_happy_path(state, tmp_path):
         await rt.aclose()
     snap = json.loads((tmp_path / "out" / "snapshot.json").read_text())
     assert snap["asof_utc"] == "2026-10-10T13:07:00Z"
-    # the fixture has no Friday 2..10 days out, so there is honestly no weekly expiry
-    assert snap["expiries"] == {"week": None, "month": "27NOV26"}
+    # the fixture has no Friday 2..10 days out, so there is honestly no weekly expiry; its nearest is 30OCT26
+    assert snap["expiries"] == {"week": None, "month": "27NOV26", "near": "30OCT26"}
     for name in (
         "tickers", "ohlc", "fng", "dvol", "vrp", "term", "skew",
-        "funding_btc", "funding_eth", "events", "em_month", "chain",
+        "funding_btc", "funding_eth", "events", "em_month", "chain", "chain_near",
     ):  # fmt: skip
         assert snap["sections"][name]["ok"], name
         assert snap["sections"][name]["asof_utc"] == "2026-10-10T13:07:00Z"
@@ -113,6 +125,8 @@ async def test_snapshot_happy_path(state, tmp_path):
     assert snap["sections"]["em_week"]["missing"][0]["reason"] == "data_unavailable"
     assert snap["stale"] == []
     assert snap["sections"]["chain"]["data"]["expiry"] == "27NOV26"
+    near = snap["sections"]["chain_near"]["data"]  # the builder's nearer expiry, same shape as the month chain
+    assert near["expiry"] == "30OCT26" and near["strikes"] and set(near) == set(snap["sections"]["chain"]["data"])
     assert ok == len(snap["sections"]) - len(snap["missing"])
     assert "evidence" not in snap["sections"]["term"]  # envelopes are trimmed to data / missing / warnings
 
@@ -125,9 +139,10 @@ async def test_snapshot_provider_failure_lands_in_missing(state, tmp_path):
     finally:
         await rt.aclose()
     snap = json.loads((tmp_path / "out" / "snapshot.json").read_text())  # the file is still written
-    assert {"term", "skew", "dvol", "chain", "em_week", "em_month"} <= set(snap["missing"])
+    assert {"term", "skew", "dvol", "chain", "chain_near", "em_week", "em_month"} <= set(snap["missing"])
     assert snap["sections"]["chain"]["missing"]  # per-section reason
-    assert snap["expiries"] == {"week": None, "month": None}
+    assert snap["sections"]["chain_near"]["missing"][0]["reason"] == "data_unavailable"
+    assert snap["expiries"] == {"week": None, "month": None, "near": None}
     assert snap["sections"]["tickers"]["ok"] and snap["sections"]["fng"]["ok"]
     assert ok >= 1
 
@@ -148,14 +163,14 @@ async def test_failed_section_carries_previous_good_one_as_stale(state, tmp_path
         await rt.aclose()
     snap = json.loads((tmp_path / "out" / "snapshot.json").read_text())
     assert snap["asof_utc"] == "2026-10-10T13:17:00Z"
-    for name in ("term", "skew", "chain", "em_month"):
+    for name in ("term", "skew", "chain", "chain_near", "em_month"):
         sec = snap["sections"][name]
         assert sec["stale"] is True and sec["ok"], name
         assert sec["asof_utc"] == "2026-10-10T13:07:00Z"
         assert sec["data"] == first["sections"][name]["data"]
         assert sec["missing"]  # why the refresh failed
         assert name in snap["stale"] and name not in snap["missing"]
-    assert snap["expiries"] == {"week": None, "month": "27NOV26"}
+    assert snap["expiries"] == {"week": None, "month": "27NOV26", "near": "30OCT26"}
     assert snap["sections"]["tickers"].get("stale") is None
     assert snap["sections"]["tickers"]["asof_utc"] == "2026-10-10T13:17:00Z"
 

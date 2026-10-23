@@ -23,7 +23,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from ..analytics.assistant import pick_expiries
+from ..analytics.assistant import pick_expiries, pick_near_expiry
 from ..analytics.macro_calendar import build_macro_calendar
 from ..analytics.radar import FWD_EVENT_KINDS, IV_RANK_DAYS, METHOD, WEEK_DAYS, YEAR_DAYS, radar_view
 from ..core.envelope import Builder
@@ -251,10 +251,13 @@ async def build_snapshot(rt: "Runtime") -> dict[str, Any]:
         sections = dict(zip(names, results, strict=True))
 
         week, month = pick_expiries(_expiry_rows(sections["term"]))
+        near = pick_near_expiry(_expiry_rows(sections["term"]))
         dependent: dict[str, tuple[str, dict[str, Any]] | None] = {
             "em_week": ("deribit_expected_move", {"currency": "BTC", "expiry": week}) if week else None,
             "em_month": ("deribit_expected_move", {"currency": "BTC", "expiry": month}) if month else None,
             "chain": ("deribit_option_chain", {"currency": "BTC", "expiry": month, "width_pct": 20}) if month else None,
+            # the options builder's nearer expiry (rule 8's 1-3 day zone); the same cached Deribit book as `chain`
+            "chain_near": ("deribit_option_chain", {"currency": "BTC", "expiry": near, "width_pct": 20}) if near else None,
         }
         dnames = list(dependent)
         calls = [_call(c, *dependent[n]) if dependent[n] else None for n in dnames]
@@ -272,7 +275,7 @@ async def build_snapshot(rt: "Runtime") -> dict[str, Any]:
         "schema": SCHEMA,
         "asof_utc": asof,
         "currency": "BTC",
-        "expiries": {"week": week, "month": month},
+        "expiries": {"week": week, "month": month, "near": near},
         "sections": sections,
         "missing": [n for n, s in sections.items() if not s["ok"]],
         "stale": [],
@@ -299,7 +302,7 @@ def carry_forward(snap: dict[str, Any], prev: dict[str, Any] | None) -> None:
     """
     if not isinstance(prev, dict) or not isinstance(prev.get("sections"), dict):
         return
-    dependent = {"em_week": "week", "em_month": "month", "chain": "month"}
+    dependent = {"em_week": "week", "em_month": "month", "chain": "month", "chain_near": "near"}
     for name in list(snap["missing"]):
         old = prev["sections"].get(name)
         if not isinstance(old, dict) or not old.get("ok"):

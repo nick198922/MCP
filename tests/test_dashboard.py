@@ -2097,6 +2097,81 @@ def test_options_tab_shows_the_owners_rules_for_the_structure():
     assert "8а · Теза і ціль записані</td><td><span class='chip opp'>виконано</span>" in ok
 
 
+NEAR_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "assistant_chain_near_2026-10-23.json"
+
+
+def _snap_near() -> tuple[dict, float]:
+    """The 20.10 snapshot plus the real `chain_near` section of 23.10 (Deribit 24OCT26, 1.33 days), stamped 23.10."""
+    snap, _ = _snap()
+    near = json.loads(NEAR_FIXTURE.read_text(encoding="utf-8"))
+    snap["sections"]["chain_near"] = near["section"]
+    snap["expiries"]["near"] = near["near"]
+    snap["asof_utc"] = near["section"]["asof_utc"]
+    return snap, db.parse_utc(snap["asof_utc"]).timestamp()
+
+
+def test_options_nearer_expiry_reaches_rule_8_conditional_zone():
+    from tradedesk.analytics import rules_check as rc
+
+    snap, asof = _snap_near()
+    now = asof + 300
+    page = db.render_options(snap, None, now, db.parse_options_query("exp=near&qty=0.01"))
+    assert "Конструктор · BTC, експірація 24.10 · 1.3 дн · форвард 81 123" in page and "не вдалося" not in page
+    # both expiries in the select, the near one chosen; the hidden field remembers it for the strike reset
+    assert "<option value='near' selected>найближча · 24.10 · 1.3 дн</option>" in page
+    assert "<option value='month'>місячна · 27.11 · 37.5 дн</option>" in page and "name='cexp' value='near'" in page
+    # 31.8 h to the delivery: the conditional zone, so the thesis and target fields and rows 8a-8c show up
+    assert "name='thesis'" in page and "name='target'" in page and "До експірації 1–3 доби: за правилом 8" in page
+    assert "type='range' id='hzn' name='hzn' min='0' max='1' step='1' value='1'" in page  # the slider fits 1.3 days
+    rules = _between(page, "Правила власника перед угодою", "</section>")
+    assert "До експірації 31.7 год: 1–3 доби" in rules
+    assert "8а · Теза і ціль записані</td><td><span class='chip risk'>порушено</span></td><td>Немає тези й цілі" in rules
+    # 8b / 8c: the same statuses and numbers as analytics.rules_check on these legs, RV30 from the snapshot (31.8 %)
+    ch = db.option_chain(snap, "near")
+    assert ch["which"] == "near" and ch["expiry"] == "24OCT26"
+    legs, err = db.option_legs(ch, "long_strangle", db.default_strikes(ch, "long_strangle"), 0.01)
+    assert err is None
+    exp = datetime(2026, 10, 24, 8, tzinfo=UTC).timestamp()
+    rv = snap["sections"]["vrp"]["data"]["current"]["rv_30d"]
+    ref = {c["key"]: c for c in rc.pre_trade_option(legs, now_ts=now, expiry_ts=exp, deposit_usd=10_000.0, spot=ch["F"], rv=rv)}
+    assert ref["days_to_expiry"]["zone"] == "1_3_days" and ref["thesis"]["status"] == "violated"
+    chip = {"ok": "<span class='chip opp'>виконано</span>", "violated": "<span class='chip risk'>порушено</span>"}
+    be, ivr = ref["breakeven_move"], ref["iv_vs_rv"]
+    assert f"{chip[be['status']]}</td><td>До беззбитку {db._nf(be['value'] * 100, 1)} % від форварду; 1σ за RV30 до експірації — " in rules
+    assert f"{db._nf(be['limit'] * 100, 1)} %." in rules
+    assert f"8в · IV ≤ 1.2 × реалізованої</td><td>{chip[ivr['status']]}</td><td>IV куплених ніг до {db._vp(ivr['value'])}" in rules
+    assert "1.2 × RV30 31.8 %" in rules
+    # the month chain stays the default: far from expiry, so no thesis fields
+    month = db.render_options(snap, None, now, db.parse_options_query("qty=0.01"))
+    assert "<option value='month' selected>" in month and "name='thesis'" not in month and "8а · Теза" not in month
+    # under 24 h (the snapshot got old) the near chain is a plain «never buy», the fields are gone again
+    late = db.render_options(snap, None, exp - 12 * 3600, db.parse_options_query("exp=near&qty=0.01"))
+    assert "name='thesis'" not in late and "До експірації 12 год: менше доби — не купувати ніколи." in late
+
+
+def test_options_nearer_expiry_missing_chain_falls_back_to_the_month():
+    snap, asof = _snap()  # the 20.10 snapshot was written before `chain_near` existed
+    page = db.render_options(snap, None, asof, db.parse_options_query("exp=near"))
+    assert "Конструктор · BTC, експірація 27.11" in page and "Платиш премію" in page
+    assert "Ланцюжка експірації «найближча» у знімку немає (старий знімок чи збій колектора): показано «місячна»." in page
+    assert "<option value='month' selected>" in page and "value='near'" not in page and "name='thesis'" not in page
+    assert "name='cexp' value='month'" in page
+    assert "немає даних «ланцюжок опціонів (найближча експірація)»: секції немає в знімку" in page
+    # a failed section: its reason is shown; the month view alone does not nag about it
+    snap["sections"]["chain_near"] = {"ok": False, "data": None, "missing": [{"detail": "no suitable expiry"}], "warnings": []}
+    assert "no suitable expiry" in db.render_options(snap, None, asof, db.parse_options_query("exp=near"))
+    assert "no suitable expiry" not in db.render_options(snap, None, asof, db.parse_options_query(""))
+    # neither chain: an explained empty state with both reasons
+    snap["sections"]["chain"] = {"ok": False, "data": None, "missing": [{"detail": "deribit_option_chain: timeout"}], "warnings": []}
+    page = db.render_options(snap, None, asof, db.parse_options_query("exp=near"))
+    assert "Ланцюжка опціонів у знімку немає" in page and "no suitable expiry" in page and "deribit_option_chain: timeout" in page
+    # switching the expiry resets the strikes; unknown values fall back to the month
+    assert db.parse_options_query("exp=near&cexp=month&kput=77000")["keep_strikes"] is False
+    assert db.parse_options_query("exp=near&cexp=near&kput=77000")["keep_strikes"] is True
+    assert db.parse_options_query("kput=77000")["keep_strikes"] is True and db.parse_options_query("exp=<script>")["exp"] == "month"
+    assert db.option_chain(snap, "<script>") is None  # unknown key -> the (here missing) month chain
+
+
 def _rules_db(path: Path, rows: list[dict]) -> Path:
     from tradedesk.store.schema import MIGRATIONS
 

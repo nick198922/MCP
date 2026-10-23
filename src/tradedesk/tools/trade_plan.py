@@ -15,6 +15,7 @@ from typing import Annotated, Any, Literal
 from mcp.server.mcpserver import MCPServer
 from pydantic import Field
 
+from ..analytics.demo_option_pairs import paired_report
 from ..analytics.trade_plan import TAKER_FEE, geometry, resolve_plan, summarize_plans, validate_levels
 from ..core.envelope import Builder
 from ..runtime import Runtime
@@ -309,7 +310,12 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "filled), win rate (R > 0), mean and median R with a t 95 % CI on the mean. A venue failure goes into "
             "`missing` and its plans stay open. The demo trader's shadow plans (tag src:demo-shadow, one per setup signal) "
             "are resolved too but kept out of `open` and `summary` (they are not the assistant's judgment); their own "
-            "summary is in `demo_shadow` (compare demo:taken with demo:skipped). Paper scoring on candle highs / lows: not a fill guarantee, a forward "
+            "summary is in `demo_shadow` (compare demo:taken with demo:skipped). `demo_option_pairs`: the demo trader's "
+            "BTC / ETH signals traded both as futures and as a long option (premium = the stop): n pairs with both legs "
+            "closed, mean R of each leg (futures R = P&L / risk at the stop, option R = P&L / premium + fee), mean of "
+            "option R - futures R with a 95 % t CI, and how often the option outlived a futures stop-out and closed at "
+            "the target; under 30 pairs marked 'замало даних'. Buying options loses the variance risk premium on average: "
+            "this is a live paired test, not a claimed edge. Paper scoring on candle highs / lows: not a fill guarantee, a forward "
             "record of the assistant's judgment, not proven edge."
         ),
     )
@@ -351,6 +357,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 "by_verdict": {v: rnd(s) for v, s in shadow_summary["by_verdict"].items()},
                 "by_tag": {t: {v: rnd(s) for v, s in g.items()} for t, g in shadow_summary["by_tag"].items()},
             },
+            "demo_option_pairs": paired_report(
+                await rt.store.demo_trade_list(limit=100_000), await rt.store.demo_option_list(limit=100_000)
+            ),
         }
         return b.build(data)
 

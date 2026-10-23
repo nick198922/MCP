@@ -26,6 +26,11 @@ Hourly cycle:
    'enter' if taken, else 'skip'), which the collector resolves on candles without the break-even rule: so selection
    and break-even can both be compared with the plain setup.
 
+Option leg (owner 23.10, ``option_leg.py``): a BTC / ETH entry that was sent also buys a ~40-delta call (long) or put
+(short) for at most $100 of premium + fee, held to the setup's target, its time exit or a day before expiry, whatever the
+futures leg does; table ``demo_option_leg``, paired report in ``plan_review``. A live paired test, not a claimed edge.
+``OPTIONS_OFF_FILE`` switches new legs off.
+
 A dry run reads and scans only: no sync writes, no time exit, no stop move, no order; its audit rows are 'dry_*'.
 
 Kill-switch: the file ~/.config/tradedesk/demo.halt (any content) stops new entries; open positions keep their stop
@@ -51,7 +56,7 @@ from typing import Any
 from ..analytics.course_s14_ema import Bars
 from ..analytics.setup_signals import TF_MS, LiveSignal, Score, closed_bars, scan, score
 from ..store import Store
-from .bybit_demo import CROSS, BybitDemo, is_refusal, load_keys
+from .bybit_demo import CROSS, BybitDemo, OptionInstrument, is_refusal, load_keys
 from .guard import (
     BE_PATH,
     DEFAULT,
@@ -62,16 +67,37 @@ from .guard import (
     base_of,
     breakeven_stop,
     check,
+    check_option,
     day_start_ms,
     open_risk_usd,
+    option_fee,
     path_to_target,
+    plan_option,
     plan_order,
     universe,
+)
+from .option_leg import (
+    OPTION_LEG,
+    OptionLegConfig,
+    close_leg_step,
+    entry_leg_step,
+    entry_price,
+    exit_reason,
+    fills_total,
+    leg_link,
+    min_dte_days,
+    nth_link,
+    pick_expiry,
+    pick_strike,
+    underlying_extreme,
 )
 from .orders import ENTRY_WAIT_MS, entry_step, exit_step, maker_quote
 
 VENUE = "bybit-demo"
 HALT_FILE = Path.home() / ".config" / "tradedesk" / "demo.halt"
+# The option leg (owner 23.10, ``option_leg.py``) is on; this file (any content) switches new legs off, open legs are
+# still managed to their close.
+OPTIONS_OFF_FILE = Path.home() / ".config" / "tradedesk" / "demo-options.off"
 DEFAULT_DB = "/var/lib/tradedesk-mcp/tradedesk.sqlite"
 TIMEFRAMES = ("1d", "4h")  # 1d first: its bars also feed the score of the 4h signals
 SETUPS = ("S14", "S16", "S3")
@@ -127,6 +153,7 @@ class Ctx:
     cfg: GuardConfig = DEFAULT
     dry_run: bool = False
     out: dict[str, Any] = field(default_factory=dict)
+    leg: OptionLegConfig = OPTION_LEG
 
     def bump(self, k: str, n: int = 1) -> None:
         self.out[k] = self.out.get(k, 0) + n
@@ -476,6 +503,7 @@ async def manage(ctx: Ctx, positions: dict[str, Any]) -> None:
             link_id=t["link_id"],
             symbol=t["symbol"],
         )
+    await manage_options(ctx)
 
 
 async def _move_to_breakeven(ctx: Ctx, t: dict[str, Any], pos: dict[str, Any], entry: float, mark: float, way: float) -> None:
@@ -513,28 +541,34 @@ async def _move_to_breakeven(ctx: Ctx, t: dict[str, Any], pos: dict[str, Any], e
 async def _state(ctx: Ctx, positions: dict[str, Any], uni: tuple[str, ...], equity: float) -> State:
     trades = await ctx.store.demo_trade_list(limit=5000)
     open_rows = [t for t in trades if t["status"] in ("open", "unknown", "pending")]
+    # option legs (owner 23.10): no daily slot of their own (same signal), but their premium is open risk and their
+    # realised loss counts toward the day's loss
+    legs = await ctx.store.demo_option_list(limit=5000)
+    open_legs = [x for x in legs if x["status"] in LEG_OPEN]
     day0 = day_start_ms(ctx.now)
     today = [t for t in trades if t["status"] in ("open", "unknown", "pending", "closed") and (t["opened_ts"] or 0) >= day0]
     seen_audit = await ctx.store.exec_audit_list(ctx.now - 3 * 86_400_000, ("refused", "skipped"), limit=5000)
+    closed_today = [t for t in [*trades, *legs] if t["status"] == "closed" and (t["closed_ts"] or 0) >= day0]
     return State(
         now_ms=ctx.now,
         universe=uni,
         halted=HALT_FILE.exists(),
-        open_symbols=tuple(sorted(set(positions) | {t["symbol"] for t in open_rows})),
+        open_symbols=tuple(sorted(set(positions) | {t["symbol"] for t in open_rows} | {x["symbol"] for x in open_legs})),
         # owner 22.10: the daily cap counts risk, not entries: a trade whose stop is at break-even (or that closed
         # without a real loss) frees its slot; a missed limit entry never took one
         trades_today=sum(1 for t in today if _at_risk(t)),
         entries_today=len(today),
         orders_last_hour=len(await ctx.store.exec_audit_list(ctx.now - HOUR_MS, ("sent",))),
-        open_risk_usd=open_risk_usd([(t["qty"], t["fill"] or t["entry"], t["be_stop"] or t["stop"]) for t in open_rows]),
+        open_risk_usd=open_risk_usd([(t["qty"], t["fill"] or t["entry"], t["be_stop"] or t["stop"]) for t in open_rows])
+        + sum(x["risk_usd"] for x in open_legs),
         open_margin_usd=sum(t["qty"] * (t["fill"] or t["entry"]) / max(1, t["leverage"]) for t in open_rows),
         open_maint_usd=sum(_maint(positions.get(t["symbol"]), t) for t in open_rows),
         open_notional_usd=sum(t["qty"] * (t["fill"] or t["entry"]) for t in open_rows),
-        day_realised_loss_usd=-sum(
-            min(0.0, t["pnl_usd"] or 0.0) for t in trades if t["status"] == "closed" and (t["closed_ts"] or 0) >= day0
-        ),
+        day_realised_loss_usd=-sum(min(0.0, t["pnl_usd"] or 0.0) for t in closed_today),
         equity_usd=equity,
-        seen_link_ids=tuple({t["link_id"] for t in trades} | {a["link_id"] for a in seen_audit if a["link_id"]}),
+        seen_link_ids=tuple(
+            {t["link_id"] for t in trades} | {x["link_id"] for x in legs} | {a["link_id"] for a in seen_audit if a["link_id"]}
+        ),
     )
 
 
@@ -771,7 +805,8 @@ async def _enter(ctx: Ctx, c: Candidate, state: State) -> State:
             f"Чому: {sig.comment}\nБали: {why}"
         ),
     )
-    return taken
+    with_leg = await ctx.safe("option_leg", lambda: _option_leg(ctx, c, state, taken), link_id=lid, symbol=p.symbol)
+    return with_leg or taken
 
 
 async def _select_and_enter(ctx: Ctx, cands: list[Candidate], state: State) -> None:
@@ -787,12 +822,14 @@ async def _select_and_enter(ctx: Ctx, cands: list[Candidate], state: State) -> N
         if ctx.dry_run:
             ctx.bump("would_send")
             chosen.add(c.p.link_id)
-            state = replace(
+            after = replace(
                 state,
                 trades_today=state.trades_today + 1,
                 entries_today=state.entries_today + 1,
                 open_symbols=(*state.open_symbols, c.p.symbol),
             )
+            await ctx.safe("option_leg", lambda c=c, before=state, after=after: _option_leg(ctx, c, before, after), symbol=c.p.symbol)
+            state = after
             continue
         state = await _enter(ctx, c, state)
         chosen.add(c.p.link_id)
@@ -814,6 +851,483 @@ async def _select_and_enter(ctx: Ctx, cands: list[Candidate], state: State) -> N
             ),
         )
         await ctx.safe("shadow", lambda c=c: _shadow(ctx, c, False), link_id=c.p.link_id)
+
+
+# ---------------------------------------------------------------- option leg (owner 23.10, slice 2; option_leg.py)
+
+LEG_OPEN = ("unknown", "pending", "open", "closing")
+LEG_NOTE_UA = (
+    "Парний тест проти ф'ючерса на тому самому сигналі, не доведена перевага: у середньому купівля опціонів "
+    "втрачає премію за волатильність (VRP, docs/knowledge/options.md)."
+)
+
+
+def options_enabled() -> bool:
+    return not OPTIONS_OFF_FILE.exists()
+
+
+def _leg_inst(leg: dict[str, Any]) -> OptionInstrument:
+    return OptionInstrument(
+        leg["symbol"],
+        leg["symbol"].split("-")[0],
+        "USDT",
+        bool(leg["is_call"]),
+        leg["strike"],
+        leg["expiry_ms"],
+        leg["tick"],
+        leg["lot_step"],
+        leg["min_qty"],
+    )
+
+
+def _size(pos: dict[str, Any] | None) -> float:
+    try:
+        return float((pos or {}).get("size") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _kind_ua(is_call: Any) -> str:
+    return "колл" if is_call else "пут"
+
+
+async def _option_leg(ctx: Ctx, c: Candidate, before: State, after: State) -> State:
+    """The futures entry of ``c`` was sent (or would be, in a dry run): buy its option leg on BTC / ETH. Checked by the
+    guard with the day's trade and entry counts from before the futures entry (the same signal takes one slot); its
+    premium + fee counts toward the open risk and its order toward the orders per hour. Returns the state after it."""
+    p, sig = c.p, c.sig
+    base = base_of(p.symbol)
+    if base not in ctx.leg.bases:
+        return after
+    lid = leg_link(p.link_id)
+
+    async def skipped(why: Any, **extra: Any) -> State:
+        ctx.bump("option_skipped")
+        await ctx.audit(
+            "option_skipped", link_id=lid, symbol=p.symbol, setup=sig.setup, payload={"pair_id": p.link_id, "why": why, **extra}
+        )
+        return after
+
+    if not options_enabled():
+        return await skipped(f"switched off ({OPTIONS_OFF_FILE})")
+    is_call = p.side == "long"
+    insts = await ctx.client.option_instruments(base)
+    quotes = await ctx.client.option_quotes(base)
+    hold = MAX_HOLD_MS.get(sig.timeframe, 7 * 86_400_000)
+    expiry = pick_expiry(insts, ctx.now, hold, ctx.leg, ctx.cfg)
+    if expiry is None:
+        return await skipped(f"no USDT expiry with >= {min_dte_days(hold, ctx.leg, ctx.cfg):g} days to go")
+    pick, why = pick_strike(insts, quotes, expiry, is_call, ctx.now, ctx.leg, ctx.cfg.option_max_spread)
+    if pick is None:
+        return await skipped(why, expiry_ms=expiry)
+    inst, q = pick.inst, pick.quote
+    op = plan_option(
+        inst.symbol, entry_price(q.bid, q.ask, inst.tick), inst.expiry_ms, q.bid, q.ask, q.index, sig.setup, lid,
+        inst.lot_step, inst.min_qty, ctx.cfg,
+    )  # fmt: skip
+    dte = (expiry - ctx.now) / 86_400_000
+    info = {
+        "pair_id": p.link_id, "option": inst.symbol, "delta": round(pick.delta, 4), "mark_iv": q.mark_iv,
+        "underlying": q.underlying, "dte_days": round(dte, 2), "bid": q.bid, "ask": q.ask, "price": op.price,
+        "qty": op.qty, "premium_usd": round(op.premium_usd, 2), "risk_usd": round(op.risk_usd, 2),
+    }  # fmt: skip
+    bad = check_option(op, replace(after, trades_today=before.trades_today, entries_today=before.entries_today), ctx.cfg)
+    if bad:
+        return await skipped(bad, **info)
+    if ctx.dry_run:
+        ctx.bump("would_send_option")
+        await ctx.audit("option_plan", link_id=lid, symbol=inst.symbol, setup=sig.setup, payload=info)
+        return after
+    comment = (
+        f"{_kind_ua(is_call)} до {sig.setup} {_side_ua(p.side)} {base} ({sig.timeframe}): дельта {pick.delta:+.2f}, "
+        f"IV {q.mark_iv:.0%}, {dte:.0f} дн. до експірації. Вихід: ціль {_fmt(p.target)} на {base}, вихід за часом "
+        f"сетапу або за день до експірації; стоп ф'ючерса опціон не закриває. {LEG_NOTE_UA}"
+    )
+    await ctx.store.demo_option_insert(
+        {
+            "link_id": lid, "pair_id": p.link_id, "venue": VENUE, "symbol": inst.symbol, "underlying": p.symbol,
+            "side": p.side, "is_call": int(is_call), "strike": inst.strike, "expiry_ms": inst.expiry_ms, "tick": inst.tick,
+            "lot_step": inst.lot_step, "min_qty": inst.min_qty, "setup": sig.setup, "timeframe": sig.timeframe,
+            "signal_ts": sig.signal_ts, "target": p.target, "delta": pick.delta, "mark_iv": q.mark_iv,
+            "underlying_px": q.underlying, "dte_days": dte, "comment": comment, "status": "unknown", "placed_ts": ctx.now,
+            "entry_order": lid, "entry_px": op.price, "qty": op.qty, "risk_usd": op.risk_usd,
+        }
+    )  # fmt: skip  # written before the order: a lost answer is found again by the link id
+    taken = replace(
+        after,
+        orders_last_hour=after.orders_last_hour + 1,
+        open_risk_usd=after.open_risk_usd + op.risk_usd,
+        open_symbols=(*after.open_symbols, inst.symbol),
+        seen_link_ids=(*after.seen_link_ids, lid),
+    )
+    try:
+        await ctx.client.place_option_buy(inst, op.qty, op.price, lid)
+    except Exception as e:  # noqa: BLE001
+        err = ctx.client.safe_error(e)
+        if is_refusal(e):
+            ctx.bump("option_rejected")
+            await ctx.store.demo_option_update(lid, status="rejected", note=err)
+            await ctx.audit("rejected", link_id=lid, symbol=inst.symbol, setup=sig.setup, payload={"option": True, "error": err})
+            return replace(after, seen_link_ids=taken.seen_link_ids)
+        await ctx.audit(
+            "error", link_id=lid, symbol=inst.symbol, setup=sig.setup, payload={"option": True, "order": err, "state": "unknown"}
+        )
+        return taken  # the order may exist: the minute job looks it up by its link id
+    ctx.bump("option_sent")
+    await ctx.audit("sent", link_id=lid, symbol=inst.symbol, setup=sig.setup, payload={**info, "option_buy": True})
+    await ctx.store.demo_option_update(lid, status="pending")
+    await ctx.safe(
+        "notify",
+        lambda: ctx.notify(
+            f"🧪 Демо-опціон: {comment}\nЛімітна купівля (мейкер) {inst.symbol} по {_fmt(op.price)} × {op.qty:g} = премія "
+            f"{op.premium_usd:.0f} USD + комісія ≤ {op.fee_usd:.2f}; чекаю до {ctx.leg.entry_wait_ms // 60_000} хв."
+        ),
+    )
+    return taken
+
+
+async def manage_options(ctx: Ctx) -> None:
+    """Every minute: each option leg one step (entry, exit check, close, final P&L)."""
+    legs = await ctx.store.demo_option_list(LEG_OPEN)
+    if not legs:
+        return
+    held = await ctx.safe("option_positions", ctx.client.option_positions)
+    if held is None:
+        return
+    for leg in legs:
+        await ctx.safe("option_leg", lambda leg=leg: _progress_leg(ctx, leg, held), link_id=leg["link_id"], symbol=leg["symbol"])
+
+
+async def _progress_leg(ctx: Ctx, leg: dict[str, Any], held: dict[str, Any]) -> None:
+    st, pos = leg["status"], held.get(leg["symbol"])
+    if st == "unknown":
+        await _leg_resolve(ctx, leg)
+        return
+    if st == "pending":
+        await _leg_entry(ctx, leg, pos)
+        return
+    if _size(pos) <= 0 and st == "open":  # no close of ours yet: read once more before booking it as gone
+        pos = (await ctx.client.option_positions()).get(leg["symbol"])
+    if _size(pos) <= 0:  # the venue holds nothing: our close filled, or it expired / was closed by hand
+        await _leg_finish(ctx, leg)
+        return
+    if st == "open":
+        why = await _leg_exit_reason(ctx, leg)
+        if why is None:
+            return
+        await ctx.store.demo_option_update(leg["link_id"], status="closing", exit_reason=why, exit_ts=ctx.now, exit_phase="maker")
+        await ctx.audit("option_exit", link_id=leg["link_id"], symbol=leg["symbol"], setup=leg["setup"], payload={"why": why})
+        leg = {**leg, "status": "closing", "exit_reason": why, "exit_ts": ctx.now, "exit_phase": "maker"}
+    await _leg_close(ctx, leg, pos)
+
+
+async def _leg_resolve(ctx: Ctx, leg: dict[str, Any]) -> None:
+    lid, sym = leg["link_id"], leg["symbol"]
+    o = await ctx.client.option_order_by_link(sym, leg["entry_order"] or lid)
+    if o is None:
+        if ctx.now - leg["placed_ts"] > UNKNOWN_GRACE_MS:
+            await ctx.store.demo_option_update(lid, status="rejected", note="the venue has no such order")
+            await ctx.audit("rejected", link_id=lid, symbol=sym, setup=leg["setup"], payload={"option": True, "unknown": "no order"})
+        return
+    st = str(o.get("orderStatus") or "")
+    if st == "Rejected" and float(o.get("cumExecQty") or 0) == 0:
+        await ctx.store.demo_option_update(lid, status="rejected")
+        await ctx.audit("rejected", link_id=lid, symbol=sym, setup=leg["setup"], payload={"option": True, "orderStatus": st})
+        return
+    await ctx.store.demo_option_update(lid, status="pending")
+    await ctx.audit("recovered", link_id=lid, symbol=sym, setup=leg["setup"], payload={"option": True, "orderStatus": st})
+
+
+async def _leg_entry(ctx: Ctx, leg: dict[str, Any], pos: dict[str, Any] | None) -> None:
+    """One step of a resting option entry (``option_leg.entry_leg_step``)."""
+    lid, sym, inst = leg["link_id"], leg["symbol"], _leg_inst(leg)
+    o = await ctx.client.option_order_by_link(sym, leg["entry_order"] or lid)
+    have = _size(pos)
+    if o is None and have <= 0:
+        if ctx.now - leg["placed_ts"] > UNKNOWN_GRACE_MS:
+            await _leg_missed(ctx, leg, "the venue has no such order")
+        return  # else the venue does not show it yet
+    live = o is not None and str(o.get("orderStatus") or "") in LIVE
+    q = await ctx.client.option_quote(sym)
+    step = entry_leg_step(
+        order_px=leg["entry_px"] or 0.0,
+        order_live=live,
+        held=have,
+        plan_qty=leg["qty"],
+        bid=q.bid,
+        ask=q.ask,
+        tick=inst.tick,
+        index=q.index,
+        age_ms=ctx.now - leg["placed_ts"],
+        risk_usd=ctx.cfg.risk_usd,
+        lot_step=inst.lot_step,
+        min_qty=inst.min_qty,
+        halted=HALT_FILE.exists(),
+        cfg=ctx.leg,
+    )
+    if step.action == "wait":
+        return
+    risk = step.qty * (step.price + option_fee(step.price, q.index))
+    if step.action == "requote":
+        await ctx.client.amend_option(inst, leg["entry_order"] or lid, step.price, step.qty)
+        await ctx.store.demo_option_update(lid, entry_px=step.price, qty=step.qty, risk_usd=risk)
+        await ctx.audit("option_requote", link_id=lid, symbol=sym, setup=leg["setup"], payload={"price": step.price, "qty": step.qty})
+        return
+    if step.action == "replace":
+        n = (leg["entry_n"] or 0) + 1
+        link = nth_link(lid, n)
+        await ctx.store.demo_option_update(lid, entry_order=link, entry_n=n, entry_px=step.price, qty=step.qty, risk_usd=risk)
+        await ctx.client.place_option_buy(inst, step.qty, step.price, link)
+        await ctx.audit(
+            "option_replace", link_id=lid, symbol=sym, setup=leg["setup"], payload={"order": link, "price": step.price, "why": step.reason}
+        )
+        return
+    if live:
+        if not await ctx.client.cancel_option(sym, leg["entry_order"] or lid):
+            return  # filled meanwhile: the next minute completes it
+        pos = (await ctx.client.option_positions()).get(sym)  # what filled up to the cancel
+    if _size(pos) > 0:
+        await _leg_complete(ctx, leg, pos, step.reason)
+    else:
+        await _leg_missed(ctx, leg, step.reason)
+
+
+async def _leg_missed(ctx: Ctx, leg: dict[str, Any], why: str) -> None:
+    lid = leg["link_id"]
+    await ctx.store.demo_option_update(lid, status="missed", note=why, closed_ts=ctx.now)
+    await ctx.audit("missed", link_id=lid, symbol=leg["symbol"], setup=leg["setup"], payload={"option": True, "why": why})
+    ctx.bump("option_missed")
+    await ctx.safe(
+        "notify", lambda: ctx.notify(f"⏭ Демо-опціон {leg['symbol']} до {leg['setup']}: купівлю не виконано, ордер знято — {why}")
+    )
+
+
+async def _fills(ctx: Ctx, sym: str, links: list[str]) -> tuple[float, float, float, str]:
+    """(qty, value, fee, source) of the orders ``links``: the venue's execution list; an order it lists no fill for is
+    read from its order row (cumExecQty, avgPrice, cumExecFee) and the source says 'order'."""
+    q = v = f = 0.0
+    src = "executions"
+    for link in links:
+        eq, ev, ef = fills_total(await ctx.client.option_executions(sym, link))
+        if eq <= 0:
+            o = await ctx.client.option_order_by_link(sym, link) or {}
+            eq = float(o.get("cumExecQty") or 0)
+            if eq <= 0:
+                continue
+            ev, ef, src = eq * float(o.get("avgPrice") or 0), float(o.get("cumExecFee") or 0), "order"
+        q, v, f = q + eq, v + ev, f + ef
+    return q, v, f, src
+
+
+async def _leg_complete(ctx: Ctx, leg: dict[str, Any], pos: dict[str, Any] | None, why: str) -> None:
+    """The entry is done: size and price from the venue, the actual fee from its execution list, R base = premium +
+    fee, journal row, message."""
+    lid, sym = leg["link_id"], leg["symbol"]
+    qty = _size(pos)
+    eq, ev, fee, src = await _fills(ctx, sym, [nth_link(lid, k) for k in range((leg["entry_n"] or 0) + 1)])
+    fill = ev / eq if eq > 0 else float((pos or {}).get("avgPrice") or leg["entry_px"] or 0.0)
+    q = await ctx.client.option_quote(sym)
+    bound = qty * option_fee(fill, q.index)
+    risk = qty * fill + (fee if eq > 0 else bound)
+    await ctx.store.demo_option_update(
+        lid, status="open", qty=qty, fill=fill, fee_open=fee if eq > 0 else None, fee_open_bound=bound, risk_usd=risk, opened_ts=ctx.now
+    )
+    await ctx.audit(
+        "filled",
+        link_id=lid,
+        symbol=sym,
+        setup=leg["setup"],
+        payload={
+            "option": True,
+            "fill": fill,
+            "qty": qty,
+            "fee": fee if eq > 0 else None,
+            "fee_bound": bound,
+            "fee_source": src,
+            "why": why,
+        },
+    )
+    ctx.bump("option_filled")
+    jid = await ctx.safe(
+        "journal",
+        lambda: ctx.store.journal_insert(
+            opened_ts=ctx.now // 1000,
+            symbol=sym,
+            side="long",
+            size=qty,
+            entry=fill,
+            thesis=leg["comment"],
+            tags=["demo-paper", "bybit-demo", f"setup:{leg['setup']}", f"tf:{leg['timeframe']}", "auto", "option"],
+        ),
+        link_id=lid,
+    )
+    if jid:
+        await ctx.safe("journal_link", lambda: ctx.store.demo_option_update(lid, journal_id=jid), link_id=lid)
+    await ctx.safe(
+        "notify",
+        lambda: ctx.notify(
+            f"✅ Демо-опціон {sym} ({_kind_ua(leg['is_call'])} до {leg['setup']} {_side_ua(leg['side'])}): куплено {qty:g} по "
+            f"{_fmt(fill)}, премія + комісія {risk:.2f} USD = 1R" + (f" (комісія {fee:.2f}, оцінка guard ≤ {bound:.2f})" if eq > 0 else "")
+        ),
+    )
+
+
+async def _leg_exit_reason(ctx: Ctx, leg: dict[str, Any]) -> str | None:
+    opened = leg["opened_ts"] or leg["placed_ts"]
+    bars = await ctx.safe("ohlcv", lambda: ctx.client.ohlcv(leg["underlying"], "1m", limit=ctx.leg.target_lookback_bars)) or []
+    last = await ctx.safe("last_price", lambda: ctx.client.last_price(leg["underlying"])) or 0.0
+    return exit_reason(
+        is_call=bool(leg["is_call"]),
+        target=leg["target"],
+        extreme=underlying_extreme(bool(leg["is_call"]), bars, opened, last),
+        now_ms=ctx.now,
+        time_exit_ms=opened + MAX_HOLD_MS.get(leg["timeframe"], 7 * 86_400_000),
+        expiry_ms=leg["expiry_ms"],
+        cfg=ctx.leg,
+    )
+
+
+async def _leg_close(ctx: Ctx, leg: dict[str, Any], pos: dict[str, Any] | None) -> None:
+    """One step of a close (``option_leg.close_leg_step``): reduce-only post-only at the ask minus a tick (a refused
+    combination falls back to a reduce-only GTC limit, audited), then a limit at the bid."""
+    lid, sym, inst = leg["link_id"], leg["symbol"], _leg_inst(leg)
+    q = await ctx.client.option_quote(sym)
+    o = await ctx.client.option_order_by_link(sym, leg["exit_order"]) if leg["exit_order"] else None
+    live = o is not None and str(o.get("orderStatus") or "") in LIVE
+    rejected = o is not None and str(o.get("orderStatus") or "") == "Rejected" and leg["exit_kind"] == "post_only"
+    step = close_leg_step(
+        phase=leg["exit_phase"] or "maker",
+        order_px=leg["exit_px"] or 0.0,
+        order_live=live,
+        order_rejected=rejected,
+        bid=q.bid,
+        ask=q.ask,
+        tick=inst.tick,
+        age_ms=ctx.now - (leg["exit_ts"] or ctx.now),
+        cfg=ctx.leg,
+    )
+    if step.action == "wait":
+        return
+    if step.action == "requote":
+        await ctx.client.amend_option(inst, leg["exit_order"], step.price)
+        await ctx.store.demo_option_update(lid, exit_px=step.price)
+        await ctx.audit(
+            "option_close_requote", link_id=lid, symbol=sym, setup=leg["setup"], payload={"price": step.price, "why": step.reason}
+        )
+        return
+    if live and not await ctx.client.cancel_option(sym, leg["exit_order"]):
+        return  # filled meanwhile
+    if live:
+        pos = (await ctx.client.option_positions()).get(sym)
+    qty = _size(pos)
+    if qty <= 0:
+        return  # nothing left: the next minute books the close
+    if step.action == "to_bid":
+        await ctx.store.demo_option_update(lid, exit_phase="bid")
+        if step.price > 0:
+            await _close_order(ctx, leg, inst, qty, step.price, "tdb-", "bid", post_only=False, why=step.reason)
+        return
+    if step.action == "fallback":
+        await _close_fallback(ctx, leg, inst, qty, step.price, f"order {leg['exit_order']} Rejected")
+        return
+    if (leg["exit_phase"] or "maker") == "bid":
+        await _close_order(ctx, leg, inst, qty, step.price, "tdb-", "bid", post_only=False, why=step.reason)
+        return
+    try:
+        await _close_order(ctx, leg, inst, qty, step.price, "tdx-", "post_only", post_only=True, why=step.reason)
+    except Exception as e:  # noqa: BLE001 - reduceOnly + PostOnly on options is untested live: a refusal falls back
+        if not is_refusal(e):
+            raise
+        await _close_fallback(ctx, leg, inst, qty, step.price, ctx.client.safe_error(e))
+
+
+async def _close_order(
+    ctx: Ctx, leg: dict[str, Any], inst: OptionInstrument, qty: float, px: float, prefix: str, kind: str, *, post_only: bool, why: str
+) -> None:
+    """A new reduce-only limit sell of the whole position; its link id is recorded before the order."""
+    lid = leg["link_id"]
+    n = (leg["exit_n"] or 0) + 1
+    link = nth_link(leg_link(leg["pair_id"], prefix), n - 1)
+    links = [*json.loads(leg.get("exit_links") or "[]"), link]
+    await ctx.store.demo_option_update(lid, exit_order=link, exit_n=n, exit_px=px, exit_kind=kind, exit_links=json.dumps(links))
+    leg.update(exit_order=link, exit_n=n, exit_px=px, exit_kind=kind, exit_links=json.dumps(links))
+    await ctx.client.close_option(inst, qty, px, link, post_only=post_only)
+    await ctx.audit(
+        "option_close",
+        link_id=lid,
+        symbol=leg["symbol"],
+        setup=leg["setup"],
+        payload={"order": link, "price": px, "qty": qty, "kind": kind, "why": why},
+    )
+
+
+async def _close_fallback(ctx: Ctx, leg: dict[str, Any], inst: OptionInstrument, qty: float, px: float, err: str) -> None:
+    await ctx.audit(
+        "option_close_fallback",
+        link_id=leg["link_id"],
+        symbol=leg["symbol"],
+        setup=leg["setup"],
+        payload={"why": "reduceOnly + PostOnly refused: plain GTC reduce-only limit instead", "error": err},
+    )
+    await _close_order(ctx, leg, inst, qty, px, "tdg-", "gtc_fallback", post_only=False, why="fallback")
+
+
+async def _leg_finish(ctx: Ctx, leg: dict[str, Any]) -> None:
+    """The venue holds no more of the option: P&L from the fills of the close orders (actual fees), R = P&L / (premium
+    + fee at entry). No close fill (expired or delivered before our close): closed without P&L, flagged."""
+    lid, sym = leg["link_id"], leg["symbol"]
+    xq, xv, xfee, src = await _fills(ctx, sym, json.loads(leg.get("exit_links") or "[]"))
+    reason = leg["exit_reason"] or "gone"
+    if xq <= 0:
+        note = "the position left without a fill of our close orders (expiry, delivery or a manual close): P&L not booked"
+        await ctx.store.demo_option_update(lid, status="closed", exit_reason=reason, closed_ts=ctx.now, note=note)
+        await ctx.audit("closed", link_id=lid, symbol=sym, setup=leg["setup"], payload={"option": True, "reason": reason, "note": note})
+        await ctx.safe(
+            "notify",
+            lambda: ctx.notify(f"⚠️ Демо-опціон {sym}: позиції вже нема, а нашого закриття не було — P&L не записано, перевірити вручну"),
+        )
+        return
+    fee_open = leg["fee_open"] if leg["fee_open"] is not None else leg["fee_open_bound"] or 0.0
+    entry_value = (leg["fill"] or 0.0) * min(xq, leg["qty"])
+    pnl = xv - entry_value - fee_open - xfee
+    r_mult = pnl / leg["risk_usd"] if leg["risk_usd"] else 0.0
+    exit_px = xv / xq
+    await ctx.store.demo_option_update(
+        lid, status="closed", exit=exit_px, fee_close=xfee, closed_ts=ctx.now, pnl_usd=pnl, r_multiple=r_mult, exit_reason=reason
+    )
+    await ctx.audit(
+        "closed",
+        link_id=lid,
+        symbol=sym,
+        setup=leg["setup"],
+        payload={"option": True, "pnl_usd": pnl, "r": r_mult, "exit": exit_px, "reason": reason, "fee_close": xfee, "fee_source": src},
+    )
+    ctx.bump("option_closed")
+    if leg["journal_id"]:
+        outcome = "win" if pnl > 0 else "loss" if pnl < 0 else "break_even"
+        await ctx.safe(
+            "journal_close",
+            lambda: ctx.store.journal_update_close(
+                leg["journal_id"],
+                closed_ts=ctx.now // 1000,
+                status="closed",
+                exit_=exit_px,
+                outcome=outcome,
+                pnl=pnl,
+                r_multiple=r_mult,
+                note=f"bybit-demo option {reason}",
+            ),
+            link_id=lid,
+        )
+    word = {"target": "ціль на базовому активі", "time": "вихід за часом", "expiry": "за день до експірації"}.get(reason, reason)
+    await ctx.safe(
+        "notify",
+        lambda: ctx.notify(
+            f"{'✅' if pnl > 0 else '❌' if pnl < 0 else '➖'} Демо-опціон {sym} ({leg['setup']} {_side_ua(leg['side'])}) закрито — "
+            f"{word}, P&L {pnl:+.2f} USD = {r_mult:+.2f}R (премія {_fmt(leg['fill'])} → {_fmt(exit_px)}, комісії "
+            f"{fee_open + xfee:.2f} USD)"
+        ),
+    )
 
 
 async def cycle(

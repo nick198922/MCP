@@ -186,7 +186,10 @@ def _lock_state(h: dict[str, Any], until: datetime) -> str:
 
 
 def _v2_liquidity_share(token: dict[str, Any]) -> float | None:
-    """Share of the token's DEX liquidity (GoPlus `dex`) held in V2-style pools; None without usable data."""
+    """Share of the token's DEX liquidity (GoPlus `dex`) held by the single largest V2-style pool; None without
+    usable data. GoPlus `lp_holders` describes one LP token (assumed the largest V2 pair, not verified), so the
+    lock says nothing about liquidity split over several pools. With over 100 pairs the total is understated
+    upstream (summarise_pairs limit), which only errs towards fail/unknown."""
     rows = _holders(token.get("dex"))
     total = v2 = 0.0
     for d in rows:
@@ -196,7 +199,7 @@ def _v2_liquidity_share(token: dict[str, Any]) -> float | None:
         typ = d.get("liquidity_type")
         total += liq
         if isinstance(typ, str) and typ.strip().lower() in _V2_TYPES:
-            v2 += liq
+            v2 = max(v2, liq)
     return v2 / total if total > 0 else None
 
 
@@ -228,22 +231,23 @@ def _lp_check(token: dict[str, Any], now: datetime) -> dict[str, Any]:
             unverified += share
         elif state == "expiring":
             expiring += share
-    locked = min(locked, 1.0)
+    if listed > 1 + 1e-6:
+        return _check("lp_locked", "unknown", "red_flag", None, thr, "LP holder shares sum above 1 (inconsistent data)")
     best_case = locked + unverified + max(0.0, 1.0 - listed)
     verdict = "pass" if locked >= LP_LOCKED_MIN else ("fail" if best_case < LP_LOCKED_MIN else "unknown")
     v2 = _v2_liquidity_share(token)
     v2_txt = "unknown" if v2 is None else f"{v2:.4f}"
     detail = (
         f"burned or locked (> {LP_LOCK_MIN_DAYS} days) share of the V2-style LP token among the {len(rows)} listed "
-        f"LP holders (listed holders own {min(listed, 1.0):.4f}; lock ending within {LP_LOCK_MIN_DAYS} days "
-        f"{expiring:.4f}; locked without a readable end time {unverified:.4f}); V2-style pools hold {v2_txt} of "
-        "DEX liquidity"
+        f"LP holders (listed holders own {listed:.4f}; lock ending within {LP_LOCK_MIN_DAYS} days "
+        f"{expiring:.4f}; locked without a readable end time {unverified:.4f}); largest V2-style pool holds "
+        f"{v2_txt} of DEX liquidity"
     )
     if verdict == "pass" and (v2 is None or v2 < V2_LIQ_MIN):
         verdict = "unknown"
         detail += (
-            "; liquidity mainly in V3/V4 (concentrated) positions or pool liquidity not reported, so the lock of "
-            "most liquidity is not visible"
+            "; liquidity split across several pools or mainly in V3/V4 (concentrated) positions, or pool liquidity "
+            "not reported; GoPlus LP holders describe one LP token, so the lock of most liquidity is not visible"
         )
     return _check("lp_locked", verdict, "red_flag", round(locked, 6), thr, detail)
 

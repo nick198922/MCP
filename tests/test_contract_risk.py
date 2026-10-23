@@ -300,7 +300,35 @@ def test_lp_lock_needs_v2_pools_to_hold_the_liquidity():
     assert by_name(assess(clean_token(dex=dex)))["lp_locked"]["verdict"] == "pass"
     # Live SHIB sample: V2 pools hold most liquidity, its LP is unlocked -> still fail.
     c = by_name(assess(SHIB_TOKEN))["lp_locked"]
-    assert c["verdict"] == "fail" and "V2-style pools hold 0.8" in c["detail"]
+    assert c["verdict"] == "fail" and "largest V2-style pool holds" in c["detail"]
+
+
+def test_lp_lock_unknown_when_liquidity_split_across_v2_pools():
+    dex = [
+        {"liquidity_type": "UniV2", "liquidity": "200000", "pair": V2_POOL},
+        {"liquidity_type": "UniV2", "liquidity": "800000", "pair": "0x" + "8" * 40},
+    ]
+    assert by_name(assess(clean_token(dex=dex)))["lp_locked"]["verdict"] == "unknown"
+    dex = [
+        {"liquidity_type": "UniV2", "liquidity": "500000", "pair": V2_POOL},
+        {"liquidity_type": "UniV2", "liquidity": "500000", "pair": "0x" + "8" * 40},
+    ]
+    assert by_name(assess(clean_token(dex=dex)))["lp_locked"]["verdict"] == "unknown"
+    dex = [{"liquidity_type": "UniV2", "liquidity": "950000", "pair": V2_POOL}]
+    assert by_name(assess(clean_token(dex=dex)))["lp_locked"]["verdict"] == "pass"
+
+
+def test_lp_shares_above_one_are_unknown():
+    one = "0x" + "1" * 40
+    two = "0x" + "2" * 40
+    burn = "0x" + "0" * 40
+
+    def row(addr, pct):
+        return {"address": addr, "percent": pct, "is_locked": 1, "is_contract": 1}
+
+    for rows in ([row(burn, "5")], [row(one, "0.6"), row(two, "0.6")]):
+        c = by_name(assess(clean_token(lp_holders=rows)))["lp_locked"]
+        assert c["verdict"] == "unknown" and "above 1" in c["detail"]
 
 
 def test_lp_lock_expiry():

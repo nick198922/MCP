@@ -1,3 +1,5 @@
+<img src="docs/brand/logo.svg" alt="tradedesk" width="96" align="right">
+
 # tradedesk-mcp
 
 Особистий MCP-сервер «трейдинг-деска»: ф'ючерси та перпи, опціони, prediction markets, квант-інструменти. Замінює та розширює DOUBLETOP, але з акцентом на **деривативи та професійну аналітику**, а не на ончейн.

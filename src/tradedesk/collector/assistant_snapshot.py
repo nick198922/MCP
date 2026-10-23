@@ -9,6 +9,10 @@ The ``radar`` section is not a tool call: it reads the radar archive (table ``ra
 daily DVOL (Deribit) and daily closes (Binance) through the providers and builds `analytics.radar.radar_view` for BTC
 and ETH (with the yearly chart series: a year of closes, DVOL and archive rows); fields without data are null with a
 reason in the asset's ``missing``.
+
+The ``paper_rec`` section is not a tool call either: it reads the local state file of the ``assistant_paper`` job
+(``<dir of db_path>/assistant/paper_state.json``, no network) through `analytics.assistant.paper_rec_view`, so the brief
+can say whether the paper recommendation (a hypothesis) is still current.
 """
 
 from __future__ import annotations
@@ -23,7 +27,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from ..analytics.assistant import pick_expiries, pick_near_expiry
+from ..analytics.assistant import paper_rec_view, pick_expiries, pick_near_expiry
 from ..analytics.macro_calendar import build_macro_calendar
 from ..analytics.radar import FWD_EVENT_KINDS, IV_RANK_DAYS, METHOD, WEEK_DAYS, YEAR_DAYS, radar_view
 from ..core.envelope import Builder
@@ -222,6 +226,31 @@ async def build_radar(rt: "Runtime", sections: dict[str, Any], now: datetime) ->
         return _failed("tradedesk", "error", f"radar: {type(e).__name__}: {e}")
 
 
+PAPER_WARNINGS = [
+    "Paper recommendation = a hypothesis, not advice: the method showed no edge (H1 rejected 18.10, "
+    "docs/verification/2026-10-18-assistant-recommendations.md); the paper journal (rec_paper) tests it, no orders.",
+    "State of the job assistant_paper's last daily decision (after 09:00 UTC), not a live view: actual = the standing paper "
+    "trade is the method's pick or a new one was booked; changed = the method prefers another structure or a regime / "
+    "FOMC-CPI trigger booked a new one; no_longer_actual = the method picks nothing.",
+]
+
+
+def build_paper_rec(db_path: str, now: datetime) -> dict[str, Any]:
+    """The `paper_rec` section from the assistant_paper job's local state file. Never raises (invariant 1)."""
+    try:
+        from .assistant_paper import state_path  # noqa: PLC0415 - that module imports this one (write_atomic)
+
+        path = state_path(db_path)
+        if path is None:
+            return _failed("tradedesk", "data_unavailable", "paper_rec: no SQLite store (TRADEDESK_DB_PATH), no paper journal")
+        data, why = paper_rec_view(_load_previous(path), now)
+        if data is None:
+            return _failed("tradedesk", "data_unavailable", f"paper_rec: {why}")
+        return {"ok": True, "data": data, "missing": [], "warnings": list(PAPER_WARNINGS)}
+    except Exception as e:  # noqa: BLE001 - invariant 1: a section never fails the job
+        return _failed("tradedesk", "error", f"paper_rec: {type(e).__name__}: {e}")
+
+
 async def build_snapshot(rt: "Runtime") -> dict[str, Any]:
     """Collect all sections. Pure orchestration over tool calls; the file is written by the caller."""
     from mcp import Client  # noqa: PLC0415
@@ -268,6 +297,7 @@ async def build_snapshot(rt: "Runtime") -> dict[str, Any]:
                 next(it) if cl is not None else _failed("tradedesk", "data_unavailable", "no suitable expiry in the ATM term structure")
             )
     sections["radar"] = await build_radar(rt, sections, now)
+    sections["paper_rec"] = await asyncio.to_thread(build_paper_rec, rt.settings.db_path, now)
     asof = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     for s in sections.values():
         s["asof_utc"] = asof
@@ -283,7 +313,7 @@ async def build_snapshot(rt: "Runtime") -> dict[str, Any]:
 
 
 MAX_STALE_HOURS = 6.0  # a carried-forward section older than this is dropped (stays in `missing`)
-OFFLINE_SECTIONS = frozenset({"radar"})  # may have data without the network: not counted by the all-failed check
+OFFLINE_SECTIONS = frozenset({"radar", "paper_rec"})  # may have data without the network: not counted by the all-failed check
 
 
 def _age_hours(old: Any, new: str) -> float:
@@ -341,8 +371,8 @@ def _load_previous(path: Path) -> dict[str, Any] | None:
 async def collect_assistant_snapshot(rt: "Runtime") -> int:
     """Collector job: build the snapshot and write it atomically. Returns the number of sections that have data.
 
-    Fails (so the scheduler records it) only when no tool section has data (``radar`` alone does not count: it can
-    come from the local archive) or no path is configured: an all-empty snapshot would overwrite the last useful one.
+    Fails (so the scheduler records it) only when no tool section has data (``radar`` and ``paper_rec`` do not count:
+    they come from local files) or no path is configured: an all-empty snapshot would overwrite the last useful one.
     """
     s = rt.settings
     path = snapshot_path(s.db_path, s.assistant_snapshot_path)

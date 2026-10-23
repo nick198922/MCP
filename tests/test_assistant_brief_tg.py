@@ -383,6 +383,71 @@ def test_short_brief_escapes_and_survives_odd_data():
     assert text.endswith(f"<i>{ab._h(ab.CAVEAT_SHORT)}</i>")
 
 
+def _with_paper(snap: dict, **data) -> dict:
+    """The fixture (20.10, before the section existed) with a `paper_rec` section as collector.assistant_snapshot writes it."""
+    base = {"label": "hypothesis", "state": "actual", "action": "hold", "trigger": None, "pick": "short_strangle25"}
+    base |= {"asof_utc": "2026-10-20T09:05:00Z", "age_hours": 14.9, "trade_id": None, "standing_trade": 3}
+    snap["sections"]["paper_rec"] = {"ok": True, "data": base | data, "missing": [], "warnings": []}
+    return snap
+
+
+def test_short_brief_has_one_paper_recommendation_line():
+    snap, asof = _snap()
+    plain = [ln for ln in ab.build_brief(snap, asof + 300, short=True).splitlines() if ln]
+    text = ab.build_brief(_with_paper(snap), asof + 300, short=True)
+    lines = [ln for ln in text.splitlines() if ln]
+    assert len(lines) == len(plain) + 1 <= 10, text  # exactly one extra line, the brief stays ~10 lines
+    paper = [ln for ln in lines if "Паперова рекомендація" in ln]
+    day = db.kyiv(db.parse_utc("2026-10-20T09:05:00Z"), "%d.%m")  # '20.10' ('20.10 UTC' without tzdata)
+    assert paper == [
+        f"• <i>гіпотеза</i> · Паперова рекомендація актуальна: продаж стренглу 25Δ, ~40 дн — чинна паперова угода (рішення {day})."
+    ]
+    i = lines.index(paper[0])
+    assert "FOMC" in lines[i + 1] and lines[i - 1].startswith("• <i>")  # after the day's items, before the events
+    raw = text.splitlines()
+    assert raw[raw.index(paper[0]) - 1] != ""  # same group as the items: no blank line before it
+    assert lines[-1] == f"<i>{ab._h(ab.CAVEAT_SHORT)}</i>"  # «гіпотеза», H1 rejected, not advice
+    cases = {
+        ("changed", "hold", None, "long_straddle_14d"): "змінилась: метод тепер обрав би купівля стреддлу ATM, ~14 дн; чинну угоду лишено",
+        ("changed", "open", "regime", "iron_condor"): "змінилась: нова паперова угода через зміну режиму — залізний кондор 25/10Δ",
+        ("changed", "open", "event", "long_strangle25_14d"): "нова паперова угода перед FOMC / CPI — купівля стренглу 25Δ, ~14 дн",
+        ("actual", "open", "chain", "put_debit_spread"): "актуальна: нова паперова угода — пут-дебетовий спред, ~40 дн (рішення",
+        ("no_longer_actual", "none", None, None): "більше не актуальна: метод сьогодні не обирає жодної структури",
+        ("actual", "hold", None, "new_structure_x"): "актуальна: new_structure_x — чинна паперова угода",
+    }
+    for (state, action, trigger, pick), part in cases.items():
+        out = ab.build_brief(_with_paper(snap, state=state, action=action, trigger=trigger, pick=pick), asof + 300, short=True)
+        assert part in out, (state, part)
+        assert out.count("Паперова рекомендація") == 1
+    full = ab.build_brief(_with_paper(snap), asof + 300)
+    assert "Паперова рекомендація актуальна" in full  # the long text has it too, under «Головне сьогодні»
+
+
+def test_brief_without_paper_recommendation_data_omits_the_line():
+    snap, asof = _snap()
+    assert "Паперова" not in ab.build_brief(snap, asof + 300, short=True)  # no section at all (old snapshot)
+    _with_paper(snap)
+    snap["sections"]["paper_rec"] = {"ok": False, "data": None, "missing": [{"detail": "no paper state file yet"}]}
+    snap["missing"] = ["paper_rec"]
+    text = ab.build_brief(snap, asof + 300, short=True)
+    assert "Паперова" not in text and "Без даних: паперова рекомендація" in text  # said once, briefly, in the stamp
+    for odd in ({"state": "weird"}, {"state": None}, "x"):
+        snap["sections"]["paper_rec"] = {"ok": True, "data": odd}
+        out = ab.build_brief(snap, asof + 300, short=True)
+        assert "Паперова рекомендація" not in out and "не вдалося" not in out and "<i>гіпотеза</i>" not in out
+    _with_paper(snap, asof_utc="bad", pick=5)
+    out = ab.build_brief(snap, asof + 300, short=True)
+    assert "Паперова рекомендація актуальна (" not in out and "• <i>гіпотеза</i> · Паперова рекомендація актуальна." in out
+
+
+def test_brief_escapes_the_paper_recommendation_pick():
+    snap, asof = _snap()
+    evil = "<a href='https://evil.example'>x</a>"
+    for short in (True, False):
+        text = ab.build_brief(_with_paper(snap, pick=evil, state="changed", action="hold"), asof + 300, short=short)
+        assert "<a " not in text and "&lt;a href='https://evil.example'&gt;x&lt;/a&gt;" in text
+
+
 def test_panel_url_from_env_or_step_23_file(tmp_path):
     url = tmp_path / "dashboard_url"
     assert ab.dashboard_buttons(url, key_file=tmp_path / "nokey", environ={}) == []  # no step 23, no env

@@ -41,6 +41,7 @@ log = logging.getLogger("tradedesk.collector")
 CURRENCIES = ("BTC", "ETH")
 BYBIT = "bybit"
 BYBIT_TICKERS = "publicGetV5MarketTickers"  # GET /v5/market/tickers?category=option&baseCoin=<COIN>
+BYBIT_SETTLE = "USDT"  # symbol suffix kept (``BTC-23OCT26-82000-C-USDT``); others (no suffix = USDC) are skipped + warned
 QUOTE_KEYS = ("bid", "ask", "bid_size", "ask_size", "bid_iv", "ask_iv", "mark_iv", "index", "underlying", "ts_ms")
 
 Chain = dict[datetime, dict[float, dict[str, Any]]]  # expiry -> strike -> {"C": x, "P": x}
@@ -61,17 +62,27 @@ def _deribit_chain(summary: Any, cur: str) -> tuple[Chain, dict[datetime, float]
     return chain, fwd
 
 
-def _bybit_chain(body: Any, cur: str) -> tuple[Chain, int | None]:
-    """Ticker rows by expiry/strike/type and the response time (unix ms) of the Bybit v5 option tickers."""
+def _bybit_chain(body: Any, cur: str, b: Builder, settle: str = BYBIT_SETTLE) -> tuple[Chain, int | None]:
+    """Ticker rows by expiry/strike/type and the response time (unix ms) of the Bybit v5 option tickers. Only symbols
+    settled in ``settle`` are kept, so a strike listed in two settle currencies is never silently overwritten; any other
+    suffix seen is reported once through ``b.warn``."""
     chain: Chain = {}
     if not isinstance(body, dict):
         return chain, None
     rows = (body.get("result") or {}).get("list") if isinstance(body.get("result"), dict) else None
+    other: set[str] = set()
     for r in rows or []:
         p = parse_bybit_symbol(str(r.get("symbol", ""))) if isinstance(r, dict) else None
         if p is None or p["base"] != cur:
             continue
+        if p["settle"] != settle:
+            other.add(p["settle"] or "none (USDC)")
+            continue
         chain.setdefault(p["expiry"], {}).setdefault(p["strike"], {})["C" if p["is_call"] else "P"] = r
+    if other:
+        msg = f"{cur}: Bybit option symbols with settle suffix {', '.join(sorted(other))} skipped (only {settle} is stored)"
+        b.warn(msg)
+        log.warning("option_xvenue: %s", msg)
     t = body.get("time")
     try:
         ts = int(t) if t is not None and not isinstance(t, bool) else None
@@ -101,7 +112,7 @@ async def _scan_currency(rt: "Runtime", b: Builder, cur: str, now: datetime) -> 
     body = await b.guard(
         f"bybit_options:{cur}", f"ccxt:{BYBIT}", rt.exchanges.public_get(BYBIT, BYBIT_TICKERS, {"category": "option", "baseCoin": cur})
     )
-    b_chain, b_ts = _bybit_chain(body, cur)
+    b_chain, b_ts = _bybit_chain(body, cur, b)
     if summary is None:  # Deribit down: Bybit picks the expiry and the strikes
         expiry = pick_daily_expiry(b_chain, now)
         if expiry is None:
@@ -142,10 +153,11 @@ async def _scan_currency(rt: "Runtime", b: Builder, cur: str, now: datetime) -> 
     return rows
 
 
-async def scan_option_xvenue(rt: "Runtime", b: Builder) -> list[dict[str, Any]]:
-    """One snapshot for every currency (see ``Store.OPTION_XVENUE_COLUMNS``). Never raises on a provider failure: it
-    lands in ``b.missing`` and the other venue / currency is still stored."""
-    now = rt.now()
+async def scan_option_xvenue(rt: "Runtime", b: Builder, now: datetime | None = None) -> list[dict[str, Any]]:
+    """One snapshot for every currency (see ``Store.OPTION_XVENUE_COLUMNS``). ``now`` (default ``rt.now()``) is the
+    snapshot time: ``tau_hours`` is measured from it, and the job stores it as the row ``ts``. Never raises on a provider
+    failure: it lands in ``b.missing`` and the other venue / currency is still stored."""
+    now = now or rt.now()
     rows: list[dict[str, Any]] = []
     for cur in CURRENCIES:
         rows += await _scan_currency(rt, b, cur, now)
@@ -159,9 +171,10 @@ async def collect_option_xvenue(rt: "Runtime") -> int:
         raise RuntimeError("option_xvenue: needs a SQLite store (set TRADEDESK_DB_PATH)")
     await rt.store.init()
     b = Builder()
-    rows = await scan_option_xvenue(rt, b)
+    now = rt.now()  # one clock read: the row ts and the base of tau_hours agree
+    rows = await scan_option_xvenue(rt, b, now)
     if not rows and b.missing:
         raise RuntimeError("option_xvenue: no rows; " + "; ".join(f"{m.field}: {m.reason}" for m in b.missing[:4]))
     if b.missing:
         log.warning("option_xvenue: partial snapshot, missing: %s", "; ".join(f"{m.field}: {m.reason}" for m in b.missing[:6]))
-    return await rt.store.insert_option_xvenue(int(rt.now().timestamp()), rows)
+    return await rt.store.insert_option_xvenue(int(now.timestamp()), rows)

@@ -791,6 +791,30 @@ async def test_scan_reads_the_surface_after_the_books(state):
         await rt.aclose()
 
 
+async def test_migration_24_adds_the_ts_index_and_the_planner_uses_it(tmp_path):
+    path = tmp_path / "v23.sqlite"
+    con = sqlite3.connect(path)
+    for v in sorted(MIGRATIONS):
+        if v <= 23:
+            for stmt in MIGRATIONS[v]:
+                con.execute(stmt)
+    con.execute("PRAGMA user_version = 23")
+    con.commit()
+    con.close()
+    s = Store(path)
+    await s.init()
+    try:
+        assert await s.version() == SCHEMA_VERSION >= 24
+        cur = await s.conn.execute("PRAGMA index_list(pm_gap_snapshot)")
+        assert "pm_gap_snapshot_ts" in {r[1] for r in await cur.fetchall()}
+        for sql in ("SELECT MAX(ts) FROM pm_gap_snapshot", "SELECT * FROM pm_gap_snapshot WHERE ts = 1"):
+            cur = await s.conn.execute("EXPLAIN QUERY PLAN " + sql)
+            plan = " ".join(str(r[-1]) for r in await cur.fetchall())
+            assert "SCAN pm_gap_snapshot" not in plan.replace("SCAN pm_gap_snapshot USING", ""), plan
+    finally:
+        await s.aclose()
+
+
 async def test_migration_18_adds_columns_and_the_outcome_table_to_an_old_db(tmp_path):
     path = tmp_path / "v17.sqlite"
     con = sqlite3.connect(path)

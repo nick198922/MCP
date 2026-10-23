@@ -1,0 +1,3 @@
+- Скаут: три картки ідей на опціонах до 24 год (правило 8 не змінюється).
+- Критик: `daily-iv-vs-intraday-vol-forecast` — accepted з умовами 1–6; `deribit-twap-settlement-last-hours` — rejected; `bybit-deribit-daily-option-dislocation-forward` — forward.
+- Рев'ю: `docs/reviews/2026-10-23-options-24h-triage.md`.

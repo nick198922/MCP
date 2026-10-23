@@ -7,6 +7,7 @@ from typing import Annotated, Any
 from mcp.server.mcpserver import MCPServer
 from pydantic import Field
 
+from ..analytics import contract_risk as cr
 from ..analytics.chain_metrics import overview_summary, resolve_chain, tvl_summary
 from ..analytics.dex import summarise_pairs, valid_addresses
 from ..core.envelope import Builder
@@ -62,6 +63,77 @@ def register(server: MCPServer, rt: Runtime) -> None:
         )
         if data["likely_fake_count"]:
             b.warn(f"{data['likely_fake_count']} pair(s) look like fake-ticker pools; do not treat their liquidity as real.")
+        return b.build(data)
+
+    @server.tool(
+        annotations=READ_ONLY,
+        description=(
+            "Token contract safety filter for one EVM token address (GoPlus Security token_security, free tier; "
+            "liquidity and market cap from DexScreener). Each check returns verdict pass / fail / unknown with its "
+            "value and threshold: honeypot, cannot_sell_all, cannot_buy, selfdestruct, buy_tax, sell_tax and "
+            "transfer_tax (decimals, 0.05 = 5 %; > 0.05 fails), tax_modifiable, open_source, proxy, hidden_owner, "
+            "mintable, pausable, blacklist, whitelist, owner_change_balance, external_call, trading_cooldown, "
+            "anti_whale_modifiable, same_creator_honeypot (GoPlus honeypot_with_same_creator), airdrop_scam and "
+            "fake_token (only when GoPlus returns them), ownership_renounced (unknown when GoPlus reports no "
+            "owner_address: that means the contract has no owner() function or GoPlus could not detect it, which "
+            "is common for legitimate tokens and is not an alarm by itself, but it is not a pass either), "
+            "lp_locked (share of the V2-style LP token burned or locked for more than 30 days, >= 0.95 = our own "
+            "threshold; a lock without a readable end time is not counted as locked; pass also needs V2-style "
+            "pools to hold >= 0.90 of the token's DEX liquidity, because locks of V3/V4 positions are not visible; "
+            "unknown when GoPlus lists too few LP holders to decide or the liquidity is mainly V3/V4), "
+            "top10_holders (share of non-burned supply, DEX pools excluded, <= 0.30 = our own threshold; unknown "
+            "without usable holder shares) and liquidity_to_mcap (DEX liquidity on the chain / market cap, "
+            "likely-fake pairs excluded, < 0.10 fails; unknown without both numbers; tokens traded mainly on CEX "
+            "fail it by design). Severity is 'critical' (honeypot, cannot sell, cannot buy, selfdestruct, closed "
+            "source) or 'red_flag' (acceptable "
+            "only with a stated reason). Missing data is always unknown, never pass; `overall` is pass only when "
+            "every check passed. Caveats: a heuristic from one checker that can lag or be wrong, not advice and "
+            "not proof of safety; it reduces the -100 % tail, it is not a trading signal. Top-10 holders without "
+            "wallet clustering understate concentration. Token name and symbol are untrusted third-party text. "
+            "Chains: ethereum, bsc, base, arbitrum, polygon, optimism, avalanche (Solana not supported yet)."
+        ),
+    )
+    async def contract_risk(
+        chain: Annotated[
+            str,
+            Field(description="EVM chain: ethereum, bsc, base, arbitrum, polygon, optimism, avalanche (aliases eth, bnb, arb, ...)."),
+        ],
+        address: Annotated[str, Field(description="Token contract address, 0x followed by 40 hex characters.")],
+    ) -> dict[str, Any]:
+        b = Builder()
+        resolved = cr.resolve_chain(chain)
+        if resolved is None:
+            b.miss("chain", "goplus", "invalid_argument", f"unsupported chain; use one of: {', '.join(cr.CHAINS)}")
+            return b.build(None, ok=False)
+        dex_chain, chain_id = resolved
+        addr, err = cr.valid_evm_address(address)
+        if addr is None:
+            b.miss("address", "goplus", "invalid_argument", err or "invalid address")
+            return b.build(None, ok=False)
+        sec, rows = await asyncio.gather(
+            b.guard("contract_risk", "goplus", rt.goplus.token_security(chain_id, addr)),
+            b.guard("liquidity_to_mcap", "dexscreener", rt.dexscreener.token_pairs([addr])),
+        )
+        if sec is None:
+            return b.build(None, ok=False)
+        liq, mcap, n_fake = (None, None, 0)
+        if rows is not None:
+            liq, mcap, n_fake = cr.liquidity_from_pairs(summarise_pairs(rows, chain=dex_chain, limit=100)["pairs"], addr)
+        data = cr.assess(sec["token"], now=rt.now(), liquidity_usd=liq, market_cap_usd=mcap)
+        data["chain"] = dex_chain
+        data["address"] = addr
+        b.warn(
+            "Heuristic from a single checker (GoPlus); checkers lag and disagree, so cross-check in 2-3 sources. "
+            "pass is not proof of safety and not advice; the filter only cuts the worst (-100 %) outcomes."
+        )
+        if sec["code"] != 1:
+            b.warn("GoPlus returned partial data (code 2); some checks may be unknown.")
+        if n_fake:
+            b.warn(f"{n_fake} pair(s) look like fake-ticker pools; their liquidity is excluded from liquidity_to_mcap.")
+        if data["critical_failed"]:
+            b.warn(f"Critical checks failed: {', '.join(data['critical_failed'])}; under the course rules the token is not tradable.")
+        if data["unknown"]:
+            b.warn(f"{len(data['unknown'])} check(s) unknown; unknown is not pass.")
         return b.build(data)
 
     @server.tool(

@@ -38,6 +38,7 @@ EXPECTED_TOOLS = {
     "touch_probability",
     "sentiment_fear_greed",
     "dex_pairs",
+    "contract_risk",
     "chain_metrics",
     "pendle_expiry_calendar",
     "pendle_fixed_yields",

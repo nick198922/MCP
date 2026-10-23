@@ -23,6 +23,7 @@ from .providers import defillama as llama_mod
 from .providers import deribit as deribit_mod
 from .providers import dexscreener as dexs_mod
 from .providers import forexfactory as ff_mod
+from .providers import goplus as goplus_mod
 from .providers import hyperliquid as hl_mod
 from .providers import pendle as pendle_mod
 from .providers import polymarket as poly_mod
@@ -37,6 +38,7 @@ from .providers.deribit import Deribit
 from .providers.dexscreener import DexScreener
 from .providers.exchanges import Exchanges
 from .providers.forexfactory import ForexFactory
+from .providers.goplus import GoPlus
 from .providers.hyperliquid import Hyperliquid
 from .providers.pendle import Pendle
 from .providers.polymarket import Polymarket
@@ -88,6 +90,13 @@ class Runtime:
         self.alternative_me = AlternativeMe(http("alternative_me", altme_mod.BASE_URL, rate=2, burst=4))
         self.forexfactory = ForexFactory(http("forexfactory", ff_mod.BASE_URL, rate=0.5, burst=2))
         self.dexscreener = DexScreener(http("dexscreener", dexs_mod.BASE_URL, rate=4, burst=8))
+        # Free tier without a key. Its request limit is not published in a source we verified (GoPlus answers
+        # code 4029 when it is hit), so 0.2/s = 12 per minute is a conservative guess; one call per contract_risk.
+        self.goplus = GoPlus(
+            http("goplus", goplus_mod.BASE_URL, rate=0.2, burst=2),
+            health=self.health,
+            ttl=goplus_mod.TTL_SECONDS * s.cache_scale,
+        )
         self.defillama = DefiLlama(http("defillama", llama_mod.BASE_URL, rate=4, burst=8))
         self.pendle = Pendle(http("pendle", pendle_mod.BASE_URL, rate=2, burst=4))
         self.coinalyze = Coinalyze(
@@ -148,6 +157,7 @@ class Runtime:
         await self.alternative_me.http.aclose()
         await self.forexfactory.http.aclose()
         await self.dexscreener.http.aclose()
+        await self.goplus.http.aclose()
         await self.defillama.http.aclose()
         await self.pendle.http.aclose()
         await self.coinalyze.http.aclose()

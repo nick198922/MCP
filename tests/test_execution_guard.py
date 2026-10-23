@@ -152,3 +152,98 @@ def test_universe_top_crypto_by_turnover():
 def test_helpers():
     assert g.day_start_ms(NOW) % 86_400_000 == 0 and NOW - g.day_start_ms(NOW) < 86_400_000
     assert g.open_risk_usd([(0.05, 100_000, 98_000)]) == pytest.approx(0.05 * (2000 + g.TAKER_FEE * 198_000))
+
+
+# ---------------------------------------------------------------- options (slice 1)
+# numbers from tests/fixtures/bybit_demo_options_btc_2026-10-23.json (Bybit demo, 2026-10-23 15:58 UTC)
+OPT_NOW = 1_792_771_111_675
+OPT = "BTC-6NOV26-96000-C-USDT"
+OPT_EXPIRY = 1_793_952_000_000  # deliveryTime: 2026-11-06 08:00 UTC
+INDEX = 81_704.14
+OP = g.plan_option(OPT, 65.0, OPT_EXPIRY, 65.0, 70.0, INDEX, "probe", "tdo-1", 0.01, 0.01)
+OS = State(now_ms=OPT_NOW, equity_usd=10_000.0)
+
+
+def test_option_symbol_parsing():
+    s = g.parse_option_symbol(OPT)
+    assert s is not None and (s.base, s.strike, s.is_call, s.settle) == ("BTC", 96_000.0, True, "USDT")
+    assert s.expiry_ms == OPT_EXPIRY  # 08:00 UTC, same as the venue's deliveryTime
+    p = g.parse_option_symbol("ETH-30OCT26-3000-P")
+    assert p is not None and not p.is_call and p.settle == "" and p.expiry_ms == 1_793_347_200_000
+    for bad in (
+        "BTCUSDT",
+        "BTC/USDT:USDT",
+        "BTC-31FEB26-90000-C-USDT",
+        "BTC-6XYZ26-90000-C-USDT",
+        "BTC-6NOV26-x-C-USDT",
+        "BTC-6NOV26-90000-F",
+    ):
+        assert g.parse_option_symbol(bad) is None, bad
+
+
+def test_option_sizing_premium_plus_fee_is_the_risk():
+    # cheap option: the fee is 7 % of the premium (below 0.03 % of the index)
+    assert g.option_fee(65.0, INDEX) == pytest.approx(0.07 * 65.0)
+    assert OP.qty == 1.43 and OP.risk_usd == pytest.approx(1.43 * 65.0 * 1.07) and OP.risk_usd <= 100.0
+    assert (OP.qty + 0.01) * 65.0 * 1.07 > 100.0  # floored: one more lot would break the cap
+    # near the money: the fee is 0.03 % of the index
+    assert g.option_fee(1_500.0, INDEX) == pytest.approx(0.0003 * INDEX)
+    assert g.size_option(1_500.0, INDEX, 100.0, 0.01, 0.01) == 0.06
+    assert g.size_option(20_000.0, INDEX, 100.0, 0.01, 0.01) == 0.0  # one minimum lot already costs more than $100
+    assert g.size_option(0.0, INDEX, 100.0, 0.01, 0.01) == 0.0
+    # no index: the premium cap alone, still an upper bound of the fee
+    assert g.option_fee(1_500.0, 0.0) == g.option_fee(1_500.0, float("nan")) == pytest.approx(0.07 * 1_500.0)
+    assert OP.side == "buy" and OP.spread == pytest.approx(5 / 67.5)
+
+
+def test_a_sane_option_proposal_passes():
+    assert g.check_option(OP, OS) == []
+    assert g.check_option(replace(OP, symbol="ETH-6NOV26-4000-C-USDT"), OS) == []  # ETH is allowed too
+    assert g.check_option(OP, replace(OS, now_ms=OPT_EXPIRY - 4 * g.DAY_MS)) == []  # exactly 4 days: allowed
+
+
+@pytest.mark.parametrize(
+    ("p", "s", "needle"),
+    [
+        (replace(OP, side="sell"), OS, "only buying options to open"),
+        (replace(OP, side="short"), OS, "only buying options to open"),
+        (replace(OP, symbol="SOL-6NOV26-200-C-USDT"), OS, "underlying SOL not allowed"),
+        (replace(OP, symbol="BTC-6NOV26-96000-C"), OS, "only USDT-settled"),
+        (replace(OP, symbol="BTCUSDT"), OS, "not an option symbol"),
+        (OP, replace(OS, now_ms=OPT_EXPIRY - int(3.9 * g.DAY_MS)), "no option buys with 1-3 DTE"),
+        (OP, replace(OS, now_ms=OPT_EXPIRY - g.DAY_MS), "no option buys with 1-3 DTE"),
+        (OP, replace(OS, now_ms=OPT_EXPIRY + 1), "no option buys with 1-3 DTE"),
+        # the date in the symbol is earlier than the delivery time given: the earlier one counts
+        (replace(OP, symbol="BTC-24OCT26-96000-C-USDT"), OS, "no option buys with 1-3 DTE"),
+        (replace(OP, bid=0.0), OS, "no two-sided quote"),
+        (replace(OP, bid=75.0), OS, "no two-sided quote"),
+        (replace(OP, bid=15.0, ask=45.0, price=15.0), OS, "spread 100.0% of mid > 10%"),
+        (replace(OP, price=70.0), OS, "would take liquidity"),
+        (replace(OP, price=0.0), OS, "limit price must be positive"),
+        (replace(OP, qty=0.0), OS, "size is zero"),
+        (replace(OP, qty=2.0), OS, "premium + fee"),
+        (replace(OP, qty=float("nan")), OS, "size is zero"),
+        (replace(OP, price=float("nan")), OS, "limit price must be positive"),
+        (OP, replace(OS, equity_usd=0.0), "equity unknown"),
+        (OP, replace(OS, equity_usd=150.0), "cross margin"),
+        (OP, replace(OS, halted=True), "kill-switch"),
+        (OP, replace(OS, open_symbols=(OPT,)), "already in"),
+        (OP, replace(OS, open_symbols=tuple(f"s{i}" for i in range(15))), "open positions = max"),
+        # the daily caps are shared with the futures entries (same State fields, same messages)
+        (OP, replace(OS, trades_today=5), "trades at risk today = max"),
+        (OP, replace(OS, entries_today=10), "entries today = max"),
+        (OP, replace(OS, orders_last_hour=5), "orders in the last hour"),
+        (OP, replace(OS, open_risk_usd=1450.0), "open risk"),
+        (OP, replace(OS, day_realised_loss_usd=500.0), "realised loss today"),
+        (OP, replace(OS, seen_link_ids=("tdo-1",)), "already decided"),
+    ],
+)
+def test_each_option_limit_refuses(p, s, needle):
+    assert any(needle in v for v in g.check_option(p, s)), g.check_option(p, s)
+
+
+def test_option_guard_only_in_testnet_mode_and_config_defaults():
+    assert any("not allowed" in v for v in g.check_option(OP, OS, GuardConfig(mode="live")))
+    assert DEFAULT.option_bases == ("BTC", "ETH") and DEFAULT.option_min_dte_days == 4.0 and DEFAULT.option_max_spread == 0.10
+    tight = GuardConfig(option_max_spread=0.05)
+    assert any("spread" in v for v in g.check_option(OP, OS, tight))  # 7.4 % > 5 %

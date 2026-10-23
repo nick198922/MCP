@@ -134,7 +134,7 @@
 - **Перевіряти в 2–3 джерелах:** чекери оновлюються не миттєво й розходяться. На прикладі курсу (AEGIS, січень 2024): honeypot-бот — «low risk», rug.ai — 73/100 «moderate vulnerabilities»; топ-10 холдерів 12.6 % у TTF проти **кластера деплоєра 13.3 % (17 гаманців)** у rug.ai; ліквідність 6 % капіталізації — нижче порога самого курсу; pausable, blacklist, tax modifiable, not renounced. Тобто «зелений» чекер ≠ безпечний, а топ-N гаманців без кластеризації занижує концентрацію. Token Sniffer дав RSTK 0/100, хоча автор робить для RSTK виняток.
 - **Burner-гаманець** для он-чейну завжди окремий від основного: один зайвий підпис може злити гаманець.
 - **Механізм:** скам-токени забирають гроші в покупців; фільтр зменшує лівий хвіст (−100 %), а не дає прибутку.
-- **Для проєкту:** у `pre_trade_checklist` і `token_deep_analysis` перевірки контракту нема. Кандидат — інструмент лише для читання `contract_risk(address)` (GoPlus Security API, honeypot.is, Etherscan verified source; безкоштовність перевірити з сервера) — пункт у BACKLOG. Rug.ai (інвайт), PIRBView (Telegram-бот), Token Sniffer (платний API) — без API для нас.
+- **Для проєкту:** інструмент лише для читання `contract_risk(chain, address)` (GoPlus Security API; honeypot.is і Etherscan verified source — у BACKLOG); з 23.10 його першим кроком викликають `pre_trade_checklist` і `token_deep_analysis` для он-чейн токенів. Rug.ai (інвайт), PIRBView (Telegram-бот), Token Sniffer (платний API) — без API для нас.
 
 ### ICO / IDO / IEO, TGE і «вихід тіла»
 

@@ -136,6 +136,10 @@ async def test_token_deep_analysis_prompt(server):
         text = res.messages[0].content.text
     assert "SOL" in text and "[НАЗВАНИЕ ПРОЕКТА" not in text
     assert "tradedesk-mcp" in text  # the hint block is appended
+    # contract safety comes before the analysis sections and names a tool that is registered
+    assert "contract_risk(chain, address)" in text and text.index("contract_risk") < text.index("## 1.")
+    assert "unknown" in text and "PEPE" in text and "−100 %" in text
+    assert "contract_risk" in EXPECTED_TOOLS
 
 
 async def test_fomc_playbook_prompt(server):
@@ -155,6 +159,10 @@ async def test_pre_trade_checklist_prompt(server):
         text = res.messages[0].content.text
     assert "ETH/USDT:USDT" in text and "short" in text and "2 ETH" in text
     assert "{{" not in text  # every placeholder filled, defaults included
+    # on-chain contract safety step runs before the thesis; unknown is never a pass; CEX-only is n/a
+    assert "contract_risk(chain, address)" in text and text.index("contract_risk") < text.index("## 1.")
+    assert "не застосовується" in text and "не перевірено" in text and "critical_failed" in text
+    assert "contract_risk" in EXPECTED_TOOLS
 
 
 async def test_pre_trade_checklist_sizing_and_journal_review(server):

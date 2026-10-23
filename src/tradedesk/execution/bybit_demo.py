@@ -12,9 +12,10 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from ..core.health import redact
 
@@ -54,6 +55,93 @@ class RiskTier:
     mmr: float  # maintenance margin rate, decimal
     max_leverage: float
     limit_usd: float  # position value up to which this tier holds
+
+
+@dataclass(frozen=True)
+class OptionInstrument:
+    """One Bybit option (/v5/market/instruments-info?category=option). One contract = one coin of the underlying."""
+
+    symbol: str  # e.g. 'BTC-30OCT26-90000-C-USDT'
+    base: str
+    settle: str
+    is_call: bool
+    strike: float
+    expiry_ms: int  # the venue's deliveryTime (08:00 UTC)
+    tick: float  # premium tick, USDT
+    lot_step: float  # contracts
+    min_qty: float
+
+
+@dataclass(frozen=True)
+class OptionQuote:
+    """Top of the option's book (/v5/market/tickers?category=option); prices in USDT, IV as decimals (0.45 = 45 %).
+    A side without an order reads 0."""
+
+    symbol: str
+    bid: float
+    ask: float
+    bid_size: float
+    ask_size: float
+    mark: float
+    bid_iv: float
+    ask_iv: float
+    mark_iv: float
+    index: float  # underlying index price
+    underlying: float  # the venue's underlying (forward) price for this expiry
+
+
+OPTION_PAGES = 20  # pagination guard for the option lists (one page is 1000 instruments or 50 orders)
+
+
+def _num(x: Any) -> float:
+    try:
+        return float(x or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _on_step(x: float, step: float, up: bool = False) -> str:
+    """``x`` floored (or ceiled) to ``step``, as the decimal string Bybit expects (no float noise)."""
+    d, s = Decimal(str(x)), Decimal(str(step))
+    n = (d / s).to_integral_value(rounding=ROUND_CEILING if up else ROUND_FLOOR)
+    return format((n * s).normalize(), "f")
+
+
+def _option_instrument(x: dict[str, Any]) -> OptionInstrument:
+    lot = x.get("lotSizeFilter") or {}
+    parts = str(x["symbol"]).split("-")
+    return OptionInstrument(
+        symbol=str(x["symbol"]),
+        base=str(x.get("baseCoin") or parts[0]),
+        settle=str(x.get("settleCoin") or ""),
+        is_call=str(x.get("optionsType")) == "Call",
+        strike=float(parts[2]),
+        expiry_ms=int(x["deliveryTime"]),
+        tick=float((x.get("priceFilter") or {})["tickSize"]),
+        lot_step=float(lot["qtyStep"]),
+        min_qty=float(lot.get("minOrderQty") or lot["qtyStep"]),
+    )
+
+
+def _option_quote(t: dict[str, Any]) -> OptionQuote:
+    return OptionQuote(
+        symbol=str(t["symbol"]),
+        bid=_num(t.get("bid1Price")),
+        ask=_num(t.get("ask1Price")),
+        bid_size=_num(t.get("bid1Size")),
+        ask_size=_num(t.get("ask1Size")),
+        mark=_num(t.get("markPrice")),
+        bid_iv=_num(t.get("bid1Iv")),
+        ask_iv=_num(t.get("ask1Iv")),
+        mark_iv=_num(t.get("markIv")),
+        index=_num(t.get("indexPrice")),
+        underlying=_num(t.get("underlyingPrice")),
+    )
+
+
+def _rows(r: Any) -> tuple[list[dict[str, Any]], str]:
+    res = (r or {}).get("result") or {}
+    return list(res.get("list") or []), unquote(str(res.get("nextPageCursor") or ""))
 
 
 def _make_exchange(key: str, secret: str) -> Any:
@@ -281,3 +369,121 @@ class BybitDemo:
             {"category": "linear", "symbol": market_id, "startTime": start_ms, "endTime": end_ms, "limit": 50}
         )
         return list(((r or {}).get("result") or {}).get("list") or [])
+
+    # ------------------------------------------------------------ options (owner 23.10, slice 1)
+    # Raw V5 calls with category 'option' on Bybit symbols ('BTC-30OCT26-90000-C-USDT'): ccxt's option markets are not
+    # loaded (defaultType swap). Every call, public ones included, first checks the demo host. Only long options: the
+    # one opening order is a post-only limit buy; the close is a reduce-only limit sell.
+
+    async def _pages(self, call: Callable[[dict[str, Any]], Any], req: dict[str, Any]) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        cursor = ""
+        for _ in range(OPTION_PAGES):
+            rows, cursor = _rows(await call({**req, "cursor": cursor} if cursor else req))
+            out += rows
+            if not cursor or not rows:
+                break
+        return out
+
+    async def option_instruments(self, base: str) -> list[OptionInstrument]:
+        """Tradable options on ``base`` (BTC, ETH): strike, call/put, expiry, tick and lot (public data)."""
+        self._demo_only()
+        rows = await self._pages(self.ex.publicGetV5MarketInstrumentsInfo, {"category": "option", "baseCoin": base, "limit": 1000})
+        return [_option_instrument(x) for x in rows if x.get("status") == "Trading"]
+
+    async def option_quotes(self, base: str) -> dict[str, OptionQuote]:
+        """Book tops, mark and IV of every option on ``base``, by symbol (public data)."""
+        self._demo_only()
+        r = await self.ex.publicGetV5MarketTickers({"category": "option", "baseCoin": base})
+        return {q.symbol: q for q in (_option_quote(t) for t in _rows(r)[0])}
+
+    async def option_quote(self, symbol: str) -> OptionQuote:
+        """Book top, mark and IV of one option (public data)."""
+        self._demo_only()
+        rows = _rows(await self.ex.publicGetV5MarketTickers({"category": "option", "symbol": symbol}))[0]
+        row = next((t for t in rows if t.get("symbol") == symbol), None)
+        if row is None:
+            raise ValueError(f"no ticker for {symbol}")
+        return _option_quote(row)
+
+    async def place_option_buy(self, inst: OptionInstrument, qty: float, price: float, link_id: str) -> dict[str, Any]:
+        """Post-only limit buy to open (maker; the venue cancels it rather than let it take). ``price`` is floored to
+        the tick and ``qty`` to the lot step, so the order never pays or buys more than planned."""
+        self._demo_only()
+        q, px = _on_step(qty, inst.lot_step), _on_step(price, inst.tick)
+        if float(q) < inst.min_qty or float(px) <= 0:
+            raise ValueError(f"option order below the venue's minimum: qty {q}, price {px}")
+        req = {
+            "category": "option",
+            "symbol": inst.symbol,
+            "side": "Buy",
+            "orderType": "Limit",
+            "qty": q,
+            "price": px,
+            "timeInForce": "PostOnly",
+            "orderLinkId": link_id,
+        }
+        return await self.ex.privatePostV5OrderCreate(req)
+
+    async def amend_option(self, inst: OptionInstrument, link_id: str, price: float, qty: float | None = None) -> dict[str, Any]:
+        """Re-quote an open option order by orderLinkId (``qty`` is the total, filled part included)."""
+        self._demo_only()
+        req = {"category": "option", "symbol": inst.symbol, "orderLinkId": link_id, "price": _on_step(price, inst.tick)}
+        if qty is not None:
+            req["qty"] = _on_step(qty, inst.lot_step)
+        return await self.ex.privatePostV5OrderAmend(req)
+
+    async def cancel_option(self, symbol: str, link_id: str) -> bool:
+        """Cancel an open option order by orderLinkId; False when the venue no longer has it open."""
+        self._demo_only()
+        try:
+            await self.ex.privatePostV5OrderCancel({"category": "option", "symbol": symbol, "orderLinkId": link_id})
+        except Exception as e:  # noqa: BLE001 - 110001: order does not exist or is too late to cancel
+            if "110001" in str(e) or "not exist" in str(e).lower():
+                return False
+            raise
+        return True
+
+    async def option_open_orders(self, base: str) -> list[dict[str, Any]]:
+        """The venue's raw rows of every open option order on ``base``."""
+        self._demo_only()
+        return await self._pages(self.ex.privateGetV5OrderRealtime, {"category": "option", "baseCoin": base, "limit": 50})
+
+    async def option_order_by_link(self, symbol: str, link_id: str) -> dict[str, Any] | None:
+        """The venue's raw option order row for ``link_id`` (open or history), or None if Bybit has no such order."""
+        self._demo_only()
+        for call in (self.ex.privateGetV5OrderRealtime, self.ex.privateGetV5OrderHistory):
+            rows = _rows(await call({"category": "option", "symbol": symbol, "orderLinkId": link_id}))[0]
+            if rows:
+                return rows[0]
+        return None
+
+    async def option_positions(self, bases: tuple[str, ...] = ("BTC", "ETH")) -> dict[str, dict[str, Any]]:
+        """Open option positions by Bybit symbol (non-zero size only), raw rows."""
+        self._demo_only()
+        out = {}
+        for base in bases:
+            for p in await self._pages(self.ex.privateGetV5PositionList, {"category": "option", "baseCoin": base, "limit": 200}):
+                if _num(p.get("size")) > 0:
+                    out[str(p["symbol"])] = p
+        return out
+
+    async def close_option(self, inst: OptionInstrument, qty: float, price: float, link_id: str, post_only: bool = True) -> dict[str, Any]:
+        """Reduce-only limit sell that closes (part of) a long option; never opens a short. ``price`` is ceiled to the
+        tick (a sell never goes cheaper than asked), ``qty`` floored to the lot step."""
+        self._demo_only()
+        q, px = _on_step(qty, inst.lot_step), _on_step(price, inst.tick, up=True)
+        if float(q) <= 0 or float(px) <= 0:
+            raise ValueError(f"option close below the venue's minimum: qty {q}, price {px}")
+        req = {
+            "category": "option",
+            "symbol": inst.symbol,
+            "side": "Sell",
+            "orderType": "Limit",
+            "qty": q,
+            "price": px,
+            "reduceOnly": True,
+            "timeInForce": "PostOnly" if post_only else "GTC",
+            "orderLinkId": link_id,
+        }
+        return await self.ex.privatePostV5OrderCreate(req)

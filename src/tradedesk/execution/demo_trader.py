@@ -538,6 +538,17 @@ async def _state(ctx: Ctx, positions: dict[str, Any], uni: tuple[str, ...], equi
     )
 
 
+async def shared_state(store: Store, client: BybitDemo, now: int, positions: dict[str, Any], equity: float) -> State:
+    """The account state the futures entries see (kill-switch, the day's trades and entries, orders in the last hour,
+    open risk, the day's loss, decided link ids), so an option order shares the same caps (owner 23.10). No universe:
+    options have their own allowlist in the guard."""
+
+    async def quiet(_: str) -> None:
+        return None
+
+    return await _state(Ctx(store, client, now, quiet), positions, (), equity)
+
+
 def _at_risk(t: dict[str, Any]) -> bool:
     """Does this trade still take one of the day's slots? Open: until its stop is at break-even. Closed: if it lost more
     than a tenth of its risk (a break-even exit loses only slippage)."""

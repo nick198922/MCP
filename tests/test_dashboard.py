@@ -2519,3 +2519,23 @@ def test_access_by_key_link_then_cookie(tmp_path):
     assert db.access("127.0.0.1", [*proxied, ("Cookie", "td_key=nope")], "", key) == "deny"
     assert db.access("127.0.0.1", [*proxied, ("Cookie", 'td_key="')], "", key) == "deny"
     assert db.access("127.0.0.1", proxied, "k=", None) == "deny"  # no key file: proxied requests never pass
+
+
+def test_brand_adds_tab_icon_and_header_mark():
+    page = "<!doctype html><html><head><meta charset='utf-8'></head><body><header><h1>Бриф</h1></header><header><h1>x</h1></header></body></html>"
+    out = db.brand(page)
+    assert out.count("rel='icon' type='image/svg+xml'") == 1
+    assert "rel='apple-touch-icon' href='/apple-touch-icon.png'" in out
+    assert out.count("<header><h1><img src='data:image/svg+xml,") == 1  # only the first title gets the mark
+    assert "'" not in out.split("href='data:image/svg+xml,", 1)[1].split("'", 1)[0]  # the quoted SVG cannot break the attribute
+
+
+def test_brand_without_logo_file_leaves_page(monkeypatch, tmp_path):
+    monkeypatch.setattr(db, "BRAND", tmp_path)
+    assert db.brand("<head></head><header><h1>a</h1>") == "<head></head><header><h1>a</h1>"
+
+
+def test_icon_files_exist_for_public_routes():
+    for name in db.ICONS.values():
+        data = (db.BRAND / name).read_bytes()
+        assert data[:8] == b"\x89PNG\r\n\x1a\n"

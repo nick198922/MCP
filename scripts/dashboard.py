@@ -6716,6 +6716,32 @@ def access(client: str, headers: list[tuple[str, str]], query: str, key: str | N
     return "ok" if morsel is not None and hmac.compare_digest(morsel.value.encode(), key.encode()) else "deny"
 
 
+BRAND = Path(__file__).resolve().parent.parent / "docs" / "brand"
+# public icons (no key needed: the logo is not secret, and a home-screen icon is fetched without the cookie)
+ICONS = {"/favicon.ico": "logo-64.png", "/apple-touch-icon.png": "logo-180.png", "/logo-512.png": "logo-512.png"}
+
+
+def _logo_uri() -> str:
+    """docs/brand/logo.svg as a data URI ('' when the file is missing)."""
+    try:
+        return "data:image/svg+xml," + urllib.parse.quote((BRAND / "logo.svg").read_text(encoding="utf-8").strip())
+    except OSError:
+        return ""
+
+
+def brand(page: str) -> str:
+    """The logo on every page: the tab icon, the home-screen icon and a small mark before the first title."""
+    uri = _logo_uri()
+    if not uri:
+        return page
+    links = (
+        f"<link rel='icon' type='image/svg+xml' href='{uri}'><link rel='icon' type='image/png' href='/favicon.ico'>"
+        "<link rel='apple-touch-icon' href='/apple-touch-icon.png'><meta name='theme-color' content='#3a2a9e'>"
+    )
+    mark = f"<img src='{uri}' alt='' width='22' height='22' style='vertical-align:-3px;margin-right:8px'>"
+    return page.replace("<head>", "<head>" + links, 1).replace("<header><h1>", "<header><h1>" + mark, 1)
+
+
 DENIED_PAGE = (
     "<!doctype html><meta charset='utf-8'><meta name='viewport' content='width=device-width'>"
     "<p style='font:16px system-ui;margin:2em'>Панель відкривається лише за посиланням з ключем. Попросіть його в Claude.</p>"
@@ -6746,6 +6772,12 @@ class _Handler(BaseHTTPRequestHandler):
         with _State.lock:
             snap, page = _State.snap, _State.page
         path, _, query = self.path.partition("?")
+        if path in ICONS:
+            try:
+                self._send(200, (BRAND / ICONS[path]).read_bytes(), "image/png")
+            except OSError:
+                self.send_error(404)
+            return
         verdict = access(self.client_address[0], list(self.headers.items()), query, _State.key)
         if verdict == "deny":
             self._send(401, DENIED_PAGE.encode(), "text/html; charset=utf-8")
@@ -6760,17 +6792,17 @@ class _Handler(BaseHTTPRequestHandler):
             self.end_headers()
             return
         if path in ("/", "/index.html"):
-            body, ctype = page.encode(), "text/html; charset=utf-8"
+            body, ctype = brand(page).encode(), "text/html; charset=utf-8"
         elif path == "/brief":
-            body, ctype = brief_page().encode(), "text/html; charset=utf-8"  # read per request: the age is always current
+            body, ctype = brand(brief_page()).encode(), "text/html; charset=utf-8"  # read per request: the age is always current
         elif path == "/options":
-            body, ctype = options_page(query).encode(), "text/html; charset=utf-8"
+            body, ctype = brand(options_page(query)).encode(), "text/html; charset=utf-8"
         elif path == "/radar":
-            body, ctype = radar_page(query).encode(), "text/html; charset=utf-8"
+            body, ctype = brand(radar_page(query)).encode(), "text/html; charset=utf-8"
         elif path == "/journal":
-            body, ctype = journal_page(query).encode(), "text/html; charset=utf-8"
+            body, ctype = brand(journal_page(query)).encode(), "text/html; charset=utf-8"
         elif path == "/polymarket":
-            body, ctype = polymarket_page().encode(), "text/html; charset=utf-8"
+            body, ctype = brand(polymarket_page()).encode(), "text/html; charset=utf-8"
         elif self.path == "/status.json":
             body, ctype = json.dumps(snap or {}, ensure_ascii=False, default=str).encode(), "application/json; charset=utf-8"
         else:

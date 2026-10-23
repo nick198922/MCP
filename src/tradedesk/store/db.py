@@ -367,6 +367,35 @@ class Store:
         cur = await self.conn.execute("SELECT * FROM option_xvenue_snapshot WHERE ts >= ? ORDER BY ts, currency, strike, opt", (since_ts,))
         return [dict(r) for r in await cur.fetchall()]
 
+    COINALYZE_HISTORY_COLUMNS = "open high low close ratio long_share short_share".split()
+
+    async def insert_coinalyze_history(self, symbol: str, metric: str, rows: list[dict[str, Any]], fetched_ts: int) -> int:
+        """Daily Coinalyze bars of one series; idempotent per (symbol, metric, ts): a repeated bar replaces the old one."""
+        if metric not in ("oi_usd", "funding", "long_short"):
+            raise ValueError(f"unknown coinalyze metric {metric!r}")
+        cols = self.COINALYZE_HISTORY_COLUMNS
+        payload = [(symbol, metric, int(r["ts"]), *(r.get(c) for c in cols), fetched_ts) for r in rows if r.get("ts") is not None]
+        if not payload:
+            return 0
+        marks = ",".join("?" * (len(cols) + 4))
+        await self.conn.executemany(
+            f"INSERT OR REPLACE INTO coinalyze_history (symbol, metric, ts, {', '.join(cols)}, fetched_ts) VALUES ({marks})", payload
+        )
+        await self.conn.commit()
+        return len(payload)
+
+    async def coinalyze_history_last_ts(self, symbol: str, metric: str) -> int | None:
+        cur = await self.conn.execute("SELECT MAX(ts) FROM coinalyze_history WHERE symbol = ? AND metric = ?", (symbol, metric))
+        row = await cur.fetchone()
+        return None if row is None or row[0] is None else int(row[0])
+
+    async def coinalyze_history_rows(self, symbol: str, metric: str, since_ts: int = 0) -> list[dict[str, Any]]:
+        """Stored bars of one series with ts >= ``since_ts``, oldest first."""
+        cur = await self.conn.execute(
+            "SELECT * FROM coinalyze_history WHERE symbol = ? AND metric = ? AND ts >= ? ORDER BY ts", (symbol, metric, since_ts)
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
     async def pm_gap_outcome_pending(self, ended_before: int, ended_after: int, limit: int) -> list[dict[str, Any]]:
         """Snapshotted markets that ended in [``ended_after``, ``ended_before``] and still need a fetch: no settled
         outcome yet, or (threshold markets) no Binance close for the cross-check yet. Fewest attempts first, then the
@@ -520,6 +549,7 @@ class Store:
             "liquidations",
             "ohlcv_hist",
             "option_xvenue_snapshot",
+            "coinalyze_history",
         }:
             raise ValueError(f"unknown table {table!r}")
         cur = await self.conn.execute(f"DELETE FROM {table} WHERE ts < ?", (cutoff_ts,))

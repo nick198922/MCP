@@ -8,10 +8,12 @@ Replay of one closed ``demo_trade`` row:
    closed bars of the signal timeframe ending at the signal bar (the demo fetches 1000 bars and drops the forming one).
    The window matters: EMA warm-up and the S14 "one signal per impulse" memory depend on its start.
 2. **Path.** The backtest trade enters at the signal-bar close and walks 1h bars with ``stop_management`` conventions
-   (maker entry and target, taker stop plus slippage, R = the live risk unit with fees), under the live break-even rule
-   (stop to entry plus both taker fees after ``be_frac`` of the way to the target). The order of prices inside an hour
-   is unknown, so R is a band: the pessimistic bound moves the stop from the next bar (rule "B"), the optimistic bound
-   also inside the trigger bar ("Bx"). ``r_plain`` is the same trade without break-even (the shadow plan's rule). A
+   (maker entry and target, taker stop plus slippage, R = the live risk unit with fees), under the break-even rule the
+   demo applied when the trade opened (``be_rules``; stop to entry plus both taker fees): from ``BE_SWITCH_MS`` (owner
+   22.10) after ``be_frac`` of the way to the target, before it at +30 % ROE at the trade's leverage. The order of prices
+   inside an hour is unknown, so R is a band: the pessimistic bound moves the stop from the next bar (rule "B"), the
+   optimistic bound also inside the trigger bar ("Bx"). ``r_plain`` is the same trade without break-even (the shadow
+   plan's rule). A
    missing 1h bar cuts the path: a trade the path does not resolve is ``pending`` while its horizon has not passed and
    the path reaches ``now_ms``, otherwise ``no_data``.
 3. **Same risk units.** The demo's R divides its P&L by the risk from its own fill, the backtest's by the risk from the
@@ -23,14 +25,18 @@ Replay of one closed ``demo_trade`` row:
 4. **Verdict.** ``match``: a signal of the same setup and side on the same bar, the demo fill within ``entry_r`` of the
    backtest entry, stop and target within ``level_r`` (R units of the backtest risk), the demo R within ``r`` of the
    backtest band from the fill. ``no_signal``: the detector gives no such signal on that bar. ``mismatch``: a signal,
-   but a side, an entry, a level or the R differs (``reasons``). Undecided: ``pending`` (the backtest trade is still
+   but a side, an entry, a level or the R differs (``reasons``). A trade opened under the old rule whose R agrees with
+   the old-rule band but not with today's (``r_bt_fill_now``) gets the reason ``be_rule`` instead of ``r``: the gap
+   comes only from the rule change, not from the backtest. Undecided: ``pending`` (the backtest trade is still
    open at ``now_ms``), ``no_data`` (bars missing or the path cut), ``unsupported`` (a setup without a candle detector,
    e.g. an option trade).
 
 Caveats: the demo's own candles come from api-demo.bybit.com, the replay from the venue the caller fetched (default
 Bybit mainnet); small level differences there are what ``level_r`` absorbs. The demo enters up to 2 hours after the
-signal close at a maker quote and starts its hold clock at the fill; the backtest enters at the close. Trades opened
-before 22.10 moved the stop at +30 % ROE, not half the way, so their R is compared with today's rule.
+signal close at a maker quote and starts its hold clock at the fill; the backtest enters at the close. The rule is
+chosen by the open time only: the live monitor switched the trades still open at ``BE_SWITCH_MS`` to the new rule from
+that minute (``extra['be_switch_inside']`` marks them), and it read ROE from the mark price, the replay from 1h highs
+and lows. A trade opened before the switch without a known leverage is replayed under today's rule (``extra``).
 """
 
 from __future__ import annotations
@@ -51,6 +57,10 @@ from .stop_management import TAKER, Outcome, StopRule, simulate_stop_rule
 
 LIVE_WINDOW = 999  # demo_trader fetches 1000 bars (bybit_demo.ohlcv) and drops the one still forming
 BE_FRAC = 0.5  # execution.guard.BE_PATH (owner 22.10); passed in so analytics never imports execution
+BE_ROE = 0.30  # the rule it replaced (owner 21.10): break-even at +30 % ROE at the trade's leverage
+# 2026-10-22 07:12:39 UTC: commit 8d82847 ("break-even half the way to the target instead of +30 % ROE"), committed on
+# the server straight to main; assumed live from that minute (the deploy time is not recorded in the repo)
+BE_SWITCH_MS = 1_792_653_159_000
 MIN_TRADES = 30  # owner 23.10: no conclusion before ~30 closed trades
 DECIDED = ("match", "no_signal", "mismatch")
 VERDICTS = (*DECIDED, "pending", "no_data", "unsupported")
@@ -82,6 +92,7 @@ class DemoTrade:
     opened_ts: int | None
     closed_ts: int | None
     be_ts: int | None
+    leverage: float | None = None  # the trade's leverage (the +30 % ROE rule before BE_SWITCH_MS depends on it)
 
     @classmethod
     def from_row(cls, row: Mapping[str, Any]) -> DemoTrade:
@@ -110,6 +121,7 @@ class DemoTrade:
             i("opened_ts"),
             i("closed_ts"),
             i("be_ts"),
+            f("leverage"),
         )
 
 
@@ -143,6 +155,9 @@ class Replay:
     r_bt_fill: float | None = None  # rule B replayed from the demo fill (the path and exit check)
     r_bt_fill_fast: float | None = None  # rule Bx replayed from the demo fill
     r_diff: float | None = None  # r_demo_bt - r_bt (same units: entry plus path)
+    be_rule: str | None = None  # break-even rule of every r_bt* above: 'path' (from BE_SWITCH_MS) | 'roe' (before)
+    r_bt_fill_now: float | None = None  # rule 'roe' only: today's rule B replayed from the demo fill
+    r_bt_fill_now_fast: float | None = None  # rule 'roe' only: today's rule Bx replayed from the demo fill
     extra: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
@@ -183,6 +198,30 @@ def backtest_outcome(
     return simulate_stop_rule(p.mirrored(), entry_ms, -entry, -stop, -target, hold_ms, rule, max_gap_ms=max_gap_ms)
 
 
+def be_rules(
+    open_ms: int,
+    leverage: float | None,
+    *,
+    be_frac: float = BE_FRAC,
+    be_roe: float = BE_ROE,
+    switch_ms: int = BE_SWITCH_MS,
+) -> tuple[str, StopRule, StopRule]:
+    """(name, pessimistic rule, optimistic rule) of the break-even the demo applied to a trade opened at ``open_ms``:
+    'path' (``be_frac`` of the way to the target) from ``switch_ms`` on, 'roe' before it (+``be_roe`` ROE, i.e. a move of
+    ``be_roe / leverage`` of the entry price in the trade's favour). A trade before the switch without a positive
+    ``leverage`` gets 'path': the old trigger cannot be placed without it."""
+    if open_ms < switch_ms and leverage is not None and leverage > 0:
+        move = be_roe / leverage
+        return "roe", StopRule("E", be_move=move), StopRule("Ex", be_move=move, be_same_bar=True)
+    return "path", StopRule("B", be_frac=be_frac), StopRule("Bx", be_frac=be_frac, be_same_bar=True)
+
+
+def _outside(lo_hi: tuple[Outcome, Outcome], r: float) -> float:
+    """How far ``r`` lies outside the band of the two outcomes (0 inside)."""
+    lo, hi = sorted((lo_hi[0].r_net, lo_hi[1].r_net))
+    return max(lo - r, r - hi, 0.0)
+
+
 def _risk_unit(entry: float, stop: float) -> float:
     """The live risk per unit of quantity in real prices (``demo_trader._risk``): distance plus both taker fees."""
     return abs(entry - stop) + TAKER * (abs(entry) + abs(stop))
@@ -213,12 +252,15 @@ def replay(
     now_ms: int,
     hold_ms: int,
     be_frac: float = BE_FRAC,
+    be_roe: float = BE_ROE,
+    be_switch_ms: int = BE_SWITCH_MS,
     tol: Tolerance = Tolerance(),
     window: int = LIVE_WINDOW,
 ) -> Replay:
     """Verdict of one closed demo trade (module docstring). ``bars``: candles of the signal timeframe covering the
     live window; ``path``: 1h candles from the signal-bar close over the hold; ``hold_ms``: the demo's maximum hold for
-    the timeframe (``demo_trader.MAX_HOLD_MS``)."""
+    the timeframe (``demo_trader.MAX_HOLD_MS``). The break-even rule follows the trade's open time (``opened_ts``, else
+    the signal close) against ``be_switch_ms`` (``be_rules``)."""
     t = trade if isinstance(trade, DemoTrade) else DemoTrade.from_row(trade)
     base = {
         "link_id": t.link_id,
@@ -255,7 +297,7 @@ def replay(
     fill = t.fill if t.fill is not None else t.entry
     sgn = 1.0 if t.side == "long" else -1.0
     edge = sgn * (same.entry - fill) / risk
-    lv = {
+    lv0 = {
         "bt_entry": same.entry,
         "bt_stop": same.stop,
         "bt_target": same.target,
@@ -267,13 +309,26 @@ def replay(
     }
     entry_ms = t.signal_ts + TF_MS[t.timeframe]
     gap = path.bar_ms  # never walk over a missing 1h bar
-    rb, rbx = StopRule("B", be_frac=be_frac), StopRule("Bx", be_frac=be_frac, be_same_bar=True)
+    open_ms = t.opened_ts if t.opened_ts is not None else entry_ms
+    name, rb, rbx = be_rules(open_ms, t.leverage, be_frac=be_frac, be_roe=be_roe, switch_ms=be_switch_ms)
+    extra: dict[str, Any] = {}
+    if open_ms < be_switch_ms and name == "path":
+        extra["be_rule_note"] = "opened before the break-even switch, leverage unknown: today's rule"
+    if name == "roe" and t.closed_ts is not None and t.closed_ts > be_switch_ms:
+        extra["be_switch_inside"] = True  # the live monitor used the new rule from the switch on
+    lv: dict[str, Any] = {**lv0, "be_rule": name, "extra": extra}
 
     def run(entry: float, rule: StopRule) -> Outcome | None:
         return backtest_outcome(t.side, path, entry_ms, entry, same.stop, same.target, hold_ms, rule, now_ms, gap)
 
     b, bx, a = run(same.entry, rb), run(same.entry, rbx), run(same.entry, StopRule("A"))
     bf, bfx = run(fill, rb), run(fill, rbx)  # None when the fill is at or beyond the stop
+    now_band: tuple[Outcome, Outcome] | None = None  # today's rule from the fill, for a trade under the old rule
+    if name == "roe":
+        _, nb, nbx = be_rules(be_switch_ms, None, be_frac=be_frac, switch_ms=be_switch_ms)
+        nf, nfx = run(fill, nb), run(fill, nbx)
+        if nf is not None and nfx is not None and "data_end" not in (nf.exit_kind, nfx.exit_kind):
+            now_band = (nf, nfx)
     horizon_open = entry_ms + hold_ms > now_ms
     if b is None or bx is None:
         if horizon_open and entry_ms + path.bar_ms > now_ms:
@@ -291,14 +346,16 @@ def replay(
         "r_plain": None if a is None or a.exit_kind == "data_end" else a.r_net,
         "r_bt_fill": None if bf is None else bf.r_net,
         "r_bt_fill_fast": None if bfx is None else bfx.r_net,
+        "r_bt_fill_now": None if now_band is None else now_band[0].r_net,
+        "r_bt_fill_now_fast": None if now_band is None else now_band[1].r_net,
         "bt_exit": _KIND.get(b.exit_kind, "time"),
     }
     reasons = []
-    if lv["entry_diff_r"] > tol.entry_r:
+    if lv0["entry_diff_r"] > tol.entry_r:
         reasons.append("entry")
-    if lv["stop_diff_r"] > tol.level_r:
+    if lv0["stop_diff_r"] > tol.level_r:
         reasons.append("stop")
-    if lv["target_diff_r"] > tol.level_r:
+    if lv0["target_diff_r"] > tol.level_r:
         reasons.append("target")
     r_diff = r_demo_bt = None
     if t.r_multiple is None:
@@ -307,9 +364,10 @@ def replay(
         r_demo_bt = t.r_multiple * _risk_unit(fill, t.stop) / _risk_unit(same.entry, same.stop)
         r_diff = r_demo_bt - b.r_net
         if bf is not None and bfx is not None:  # a fill beyond the stop is already an 'entry' reason
-            lo, hi = sorted((bf.r_net, bfx.r_net))
-            if max(lo - t.r_multiple, t.r_multiple - hi, 0.0) > tol.r:
+            if _outside((bf, bfx), t.r_multiple) > tol.r:
                 reasons.append("r")
+            elif now_band is not None and _outside(now_band, t.r_multiple) > tol.r:
+                reasons.append("be_rule")  # the old rule reproduces the demo R, today's does not
     return Replay(
         **base,
         verdict="mismatch" if reasons else "match",
@@ -323,7 +381,8 @@ def replay(
 
 def summary(rows: Sequence[Replay], *, min_n: int = MIN_TRADES) -> dict[str, Any]:
     """The 'demo vs backtest' numbers of ``rows`` (the caller passes the running total from the first demo trade, so
-    trades pending last week are counted once resolved): verdict counts (all and per setup), mismatch reasons, mean R
+    trades pending last week are counted once resolved): verdict counts (all and per setup), mismatch reasons (and how
+    many mismatches the break-even rule change alone explains), mean R
     of the demo (in the backtest's risk units) and of the backtest over the trades with both, the mean difference with a
     t 95 % CI, the mean signed entry edge, and a Ukrainian conclusion that says 'замало для висновку' below ``min_n``
     decided trades."""
@@ -341,6 +400,8 @@ def summary(rows: Sequence[Replay], *, min_n: int = MIN_TRADES) -> dict[str, Any
         "counts": counts,
         "per_setup": per_setup,
         "mismatch_reasons": dict(Counter(r for x in rows if x.verdict == "mismatch" for r in x.reasons)),
+        # mismatches explained by the break-even rule change alone: the backtest under the rule in force agrees
+        "mismatch_rule_only": sum(1 for x in rows if x.verdict == "mismatch" and x.reasons == ("be_rule",)),
         "match_share": counts["match"] / decided if decided else None,
         "n_r": len(both),
         "mean_r_demo_bt": statistics.fmean(float(x.r_demo_bt) for x in both if x.r_demo_bt is not None) if both else None,

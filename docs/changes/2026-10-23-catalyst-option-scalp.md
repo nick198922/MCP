@@ -1,0 +1,3 @@
+- Картка `catalyst-option-scalp`: шлюз на споті не пройдено (влучність фейду ранкового руху перед відкриттям США 46.7 % [42.8; 50.6], OOS 44.4 %), статус `rejected`; опціонні дані не качали, правило 8 без змін.
+- Нова чиста аналітика `analytics/catalyst_scalp.py` з тестами і `scripts/verify_catalyst_scalp.py` (виправлено lookahead 5-хвилинного бара, DST через ZoneInfo).
+- Звіт `docs/verification/2026-10-23-catalyst-option-scalp.md`, рев'ю критика — approve.

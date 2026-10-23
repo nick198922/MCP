@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 25
+SCHEMA_VERSION = 26
 
 # Each migration is a list of SQL statements executed in a single transaction.
 # `PRAGMA user_version` is bumped by Store.init() inside the same explicit transaction,
@@ -688,5 +688,18 @@ MIGRATIONS: dict[int, list[str]] = {
             PRIMARY KEY (ts, currency, strike, opt)
         )
         """,
+    ],
+    26: [
+        # option_xvenue minute mode (card «Час життя»): after a crossing the collector reads ATM +- 2 every minute for 30 min.
+        # 'hourly' = the registered sample (frequency p), 'minute' = the window rows (episode lifetime). Earlier rows: hourly.
+        "ALTER TABLE option_xvenue_snapshot ADD COLUMN mode TEXT NOT NULL DEFAULT 'hourly'",
+        # 1 = the row is in its snapshot's registered ATM +- 1 (analytics/option_xvenue.registered_rows, the trigger's set),
+        # 0 = read for tracking only (ATM +- 2 / +- 3); NULL on rows written before this column.
+        "ALTER TABLE option_xvenue_snapshot ADD COLUMN reg_atm INTEGER",
+        # Local receive time of each leg, unix ms (rt.now() right after the response; NULL if the leg failed or came from
+        # the in-process cache). d_ts_ms is Deribit's last-change time (0.3-5.7 s before the request, live 23.10), so
+        # b_recv_ms - d_recv_ms is the read gap and d_recv_ms - d_ts_ms the age of the Deribit quote.
+        "ALTER TABLE option_xvenue_snapshot ADD COLUMN d_recv_ms INTEGER",
+        "ALTER TABLE option_xvenue_snapshot ADD COLUMN b_recv_ms INTEGER",
     ],
 }

@@ -617,9 +617,11 @@ def build_default_scheduler(rt: "Runtime") -> Scheduler | None:
 
         jobs.append(PeriodicJob(name="radar_archive", period_seconds=s.collect_radar_seconds, fn=collect_radar_archive))
     if s.collect_option_xvenue_enabled:
-        from .option_xvenue import collect_option_xvenue  # noqa: PLC0415
+        from .option_xvenue import MINUTE_TICK_SECONDS, OptionXvenueJob  # noqa: PLC0415
 
-        jobs.append(PeriodicJob(name="option_xvenue", period_seconds=s.collect_option_xvenue_seconds, fn=collect_option_xvenue))
+        # Ticks every minute; the job itself keeps the hourly cadence and opens minute windows after a crossing.
+        xvenue = OptionXvenueJob(hourly_seconds=s.collect_option_xvenue_seconds)
+        jobs.append(PeriodicJob(name="option_xvenue", period_seconds=MINUTE_TICK_SECONDS, fn=xvenue))
     if s.alerts_enabled:
         # JSON file is optional in Phase 3.1 — DB-backed rules work on their own.
         jobs.append(PeriodicJob(name="alerts", period_seconds=s.alerts_seconds, fn=_evaluate_alerts))

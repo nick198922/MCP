@@ -651,17 +651,39 @@ def spread_snapshot(
     }
 
 
-def _bar_price(bars: list[dict[str, Any]], t_ms: int, bar_ms: int, fallback: float) -> float:
-    """Close of the latest bar that closed at or before ``t_ms`` (60 s grace), like ``_Leg.price``; else ``fallback``."""
+def _bar_price(rows: list[tuple[int, int, dict[str, Any]]], t_ms: int, bar_ms: int, fallback: float) -> float:
+    """Close of the latest ``(ts, duration, bar)`` row that closed at or before ``t_ms`` (60 s grace), like
+    ``_Leg.price``; ``fallback`` when none closed within ``bar_ms`` before ``t_ms``."""
     best: float | None = None
     best_t = -1
-    for b in bars:
-        close_t = int(b["ts"]) + bar_ms
+    for ts, dur, b in rows:
+        close_t = ts + dur
         if close_t <= t_ms + 60_000 and close_t > best_t:
             best, best_t = float(b["close"]), close_t
     if best is None or t_ms - best_t > bar_ms:
         return fallback
     return best
+
+
+def _leg_rows(
+    bars: list[dict[str, Any]], fine: list[dict[str, Any]] | None, opened_ms: int, now_ms: int, bar_ms: int, fine_ms: int
+) -> tuple[list[tuple[int, int, dict[str, Any]]], bool]:
+    """``(ts, duration, bar)`` rows of one leg and whether the entry bar was refined.
+
+    The bar containing ``opened_ms`` would mix in up to ``bar_ms`` of prices from before the entry, so it is replaced
+    by the ``fine`` bars (``fine_ms`` each) inside it whose close is after ``opened_ms``, provided they cover every
+    fine slot from the entry to ``min(bar end, now_ms)`` that has closed. Otherwise (``fine`` None or with holes) the
+    whole bar is kept: conservative, prices before the entry may then trigger the stop."""
+    rows = [(int(b["ts"]), bar_ms, b) for b in bars]
+    if fine is None:
+        return rows, False
+    start = next((ts for ts, _, _ in rows if ts <= opened_ms < ts + bar_ms), opened_ms - opened_ms % bar_ms)
+    end = start + bar_ms
+    inside = [b for b in fine if start <= int(b["ts"]) < end and int(b["ts"]) + fine_ms > opened_ms]
+    have = {int(b["ts"]) // fine_ms for b in inside}
+    if any(k not in have for k in range(opened_ms // fine_ms, min(end, now_ms) // fine_ms)):
+        return rows, False
+    return [x for x in rows if x[0] != start] + [(int(b["ts"]), fine_ms, b) for b in inside], True
 
 
 def pair_paper_mark(
@@ -685,6 +707,9 @@ def pair_paper_mark(
     stop_penalty: float = 0.01,
     exit_apr: float = 0.0,
     bar_ms: int = 4 * 3_600_000,
+    long_entry_bars: list[dict[str, Any]] | None = None,
+    short_entry_bars: list[dict[str, Any]] | None = None,
+    entry_bar_ms: int = 15 * 60_000,
 ) -> dict[str, Any]:
     """Mark one paper perp-perp carry pair (long one venue, short another, same coin quantity) to ``now_ms``.
 
@@ -697,7 +722,10 @@ def pair_paper_mark(
 
     Stop, defined as ``mark()`` in the backtest does: ``max_up`` is the largest ``high / entry - 1`` over BOTH legs and
     ``max_down`` the largest ``1 - low / entry`` over both legs, from bars whose close is after ``opened_ms`` (the bar
-    containing the entry included, conservative) and which opened at or before ``now_ms``. The first bar (in time
+    containing the entry included, conservative) and which opened at or before ``now_ms``. With
+    ``long_entry_bars`` / ``short_entry_bars`` (``entry_bar_ms`` bars, e.g. 15m), the bar containing the entry is
+    replaced by those finer bars from the entry on, so prices before the entry cannot trigger the stop (see
+    ``_leg_rows``; ``long_entry_fine`` / ``short_entry_fine`` report whether that happened). The first bar (in time
     order) where either reaches ``stop_move`` (= 1 / leverage) is the stop: ``stop_ts`` = that bar's close (at most
     ``now_ms``), and funding, price P&L, exit costs and the penalty are frozen there (``end = stop_ts``, prices =
     the bars' closes at ``stop_ts``). Without a bar trigger the current prices are checked at ``now_ms``.
@@ -705,19 +733,21 @@ def pair_paper_mark(
     ``exit_signal = "spread_exit"``. Returns are fractions of ``notional_usd``.
     """
     qty = notional_usd / long_entry
-    legs = ((long_bars, long_entry, long_now), (short_bars, short_entry, short_now))
+    long_rows, long_fine = _leg_rows(long_bars, long_entry_bars, opened_ms, now_ms, bar_ms, entry_bar_ms)
+    short_rows, short_fine = _leg_rows(short_bars, short_entry_bars, opened_ms, now_ms, bar_ms, entry_bar_ms)
+    legs = ((long_rows, long_entry, long_now), (short_rows, short_entry, short_now))
     max_up = max_down = 0.0
     stop_ts: int | None = None
     window = sorted(
-        (int(b["ts"]), float(b["high"]) / e - 1.0, 1.0 - float(b["low"]) / e)
-        for bars, e, _ in legs
-        for b in bars
-        if int(b["ts"]) + bar_ms > opened_ms and int(b["ts"]) <= now_ms
+        (ts, dur, float(b["high"]) / e - 1.0, 1.0 - float(b["low"]) / e)
+        for rows, e, _ in legs
+        for ts, dur, b in rows
+        if ts + dur > opened_ms and ts <= now_ms
     )
-    for ts, up, down in window:
+    for ts, dur, up, down in window:
         max_up, max_down = max(max_up, up), max(max_down, down)
         if stop_move is not None and max(max_up, max_down) >= stop_move:
-            stop_ts = min(ts + bar_ms, now_ms)
+            stop_ts = min(ts + dur, now_ms)
             break
     if stop_ts is None:
         for _, e, px in legs:
@@ -726,14 +756,14 @@ def pair_paper_mark(
             stop_ts = now_ms
     end = stop_ts if stop_ts is not None else now_ms
     if stop_ts is not None and stop_ts < now_ms:
-        long_x = _bar_price(long_bars, end, bar_ms, long_now)
-        short_x = _bar_price(short_bars, end, bar_ms, short_now)
+        long_x = _bar_price(long_rows, end, bar_ms, long_now)
+        short_x = _bar_price(short_rows, end, bar_ms, short_now)
     else:
         long_x, short_x = long_now, short_now
     funding = 0.0
     n_payments = 0
-    for rows, bars, entry, sign in ((long_funding, long_bars, long_entry, -1.0), (short_funding, short_bars, short_entry, 1.0)):
-        for e in rows:
+    for pays, bars, entry, sign in ((long_funding, long_rows, long_entry, -1.0), (short_funding, short_rows, short_entry, 1.0)):
+        for e in pays:
             ts = int(e["ts_ms"])
             if e.get("rate") is None or not opened_ms < ts <= end:
                 continue
@@ -769,18 +799,21 @@ def pair_paper_mark(
         "stop_ts_ms": stop_ts,
         "long_x": long_x,
         "short_x": short_x,
+        "long_entry_fine": long_fine,
+        "short_entry_fine": short_fine,
     }
 
 
 def bar_gaps(bars: list[dict[str, Any]], opened_ms: int, now_ms: int, bar_ms: int = 4 * 3_600_000) -> int:
-    """Number of bars missing between the entry bar and the bar containing ``now_ms`` (0 = full coverage)."""
-    ts = sorted({int(b["ts"]) for b in bars if int(b["ts"]) + bar_ms > opened_ms and int(b["ts"]) <= now_ms})
-    expected = (now_ms // bar_ms) - ((opened_ms) // bar_ms) + 1
-    if not ts:
-        return max(expected, 1)
-    # distinct grid slots covered vs. expected slots between the entry bar and the current bar
-    covered = len({t // bar_ms for t in ts})
-    return max(expected - covered, 0)
+    """Number of completed bars missing from the entry bar to the last bar closed by ``now_ms`` (0 = full coverage).
+
+    The bar still in progress at ``now_ms`` is not expected: some venues return only closed bars, and counting it
+    gave a false "incomplete" on every call. Grid slots are ``ts // bar_ms``."""
+    first, last = opened_ms // bar_ms, now_ms // bar_ms - 1  # `last`: the latest slot whose bar closed by now_ms
+    if last < first:
+        return 0
+    covered = {int(b["ts"]) // bar_ms for b in bars if first <= int(b["ts"]) // bar_ms <= last}
+    return (last - first + 1) - len(covered)
 
 
 def paper_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:

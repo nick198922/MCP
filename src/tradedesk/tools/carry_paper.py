@@ -3,7 +3,8 @@
 A paper pair is long the perp on one venue and short it on another with the same coin quantity. Marking mirrors
 ``simulate_perp_spread_portfolio`` (funding at the leg price of the payment, price P&L, fees + slippage, stop at
 ``1 / leverage``) so paper results are comparable with docs/verification/2026-10-13-funding-carry-perp-perp.md.
-Closed pairs are mirrored into the ``journal`` as one synthetic pair index tagged ``pp-paper``.
+Closed pairs are mirrored into the ``journal`` as one synthetic pair index tagged ``pp-paper`` plus ``pp-paper-rule``
+(opened while ``tradable_now`` held) or ``pp-paper-offrule``.
 """
 
 from __future__ import annotations
@@ -13,18 +14,24 @@ from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
 from mcp.server.mcpserver import MCPServer
+from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from ..analytics.carry import bar_gaps, carry_snapshot, pair_paper_mark, paper_summary, spread_snapshot
 from ..analytics.journal import outcome_of
 from ..analytics.journal import pnl as pnl_fn
-from ..collector.market_data import BAR_MS, bars_4h, funding_entries
+from ..collector.market_data import BAR_MS, bars_4h, funding_entries, parse_bar
 from ..core.envelope import Builder
 from ..runtime import Runtime
 from ._util import READ_ONLY, r
 from .journal import _store_guard
 from .perps import TAKER_FEES, current_funding
 
+# carry_paper_open writes a new row on every call (a retry after a timeout records a second pair), so it is not idempotent.
+# Re-validated through the aliases: model_copy(update=...) would not map the camelCase alias onto the field.
+OPEN_ANNOTATIONS = ToolAnnotations(**{**READ_ONLY.model_dump(by_alias=True), "idempotentHint": False})
+ENTRY_BAR_MS = 15 * 60_000  # the 4h bar containing the entry is checked on 15m bars from the entry on
+JOURNAL_TAGS = ("pp-paper", "pp-paper-rule", "pp-paper-offrule")  # set by the tracker, never copied from user tags
 MISMATCH_GAP = 0.20
 PAPER_WARNING = (
     "Paper trade, local bookkeeping only: no order is sent. Fills are the last (or mark) price plus modelled costs "
@@ -34,7 +41,8 @@ PAPER_WARNING = (
     "on notional at 2x per leg with stop (397 trades, 67 % losing, 130 stopped) and +2.9 % without the stop. Not "
     "modelled: per-symbol position limits, venues changing caps / intervals / leverage, two separate margins that need "
     "top-ups, real liquidation prices (the stop here is the backtest's: either leg's 4h bar high / low moving >= 1 / leverage "
-    "from its entry, frozen at that bar). Compare journal_stats(tag='pp-paper') with the backtest only after many closed trades."
+    "from its entry, frozen at that bar). Compare journal_stats(tag='pp-paper-rule') (pairs opened while tradable_now held) "
+    "with the backtest only after many closed trades."
 )
 Venue = Literal["binanceusdm", "bybit", "okx"]
 
@@ -60,6 +68,17 @@ async def _last_price(rt: Runtime, b: Builder, venue: str, sym: str, fallback: f
     return fallback
 
 
+async def _entry_bars(rt: Runtime, b: Builder, venue: str, sym: str, opened_ms: int, now_ms: int) -> list[dict[str, Any]] | None:
+    """15m bars from the entry's 15m slot to the end of the 4h bar containing the entry (at most 16, one request
+    under every venue's cap). None when the request fails: the whole 4h bar is then used (conservative)."""
+    start = opened_ms - opened_ms % ENTRY_BAR_MS
+    until = min(opened_ms - opened_ms % BAR_MS + BAR_MS - 1, now_ms)
+    rows = await b.guard(f"ohlcv_15m:{venue}:{sym}", f"ccxt:{venue}", rt.exchanges.ohlcv(venue, sym, "15m", 20, start, until))
+    if rows is None:
+        return None
+    return [bar for bar in (parse_bar(x) for x in (rows if isinstance(rows, list) else [])) if bar is not None]
+
+
 async def _leg_data(rt: Runtime, b: Builder, venue: str, sym: str, opened_ms: int, now_ms: int, lookback_ms: int) -> dict[str, Any] | None:
     since = min(opened_ms, now_ms - lookback_ms) - 3_600_000
     hist = await b.guard(
@@ -74,7 +93,8 @@ async def _leg_data(rt: Runtime, b: Builder, venue: str, sym: str, opened_ms: in
     entries = funding_entries(hist["rows"])
     if not entries:
         return None
-    return {"entries": entries, "bars": bars, "price": px}
+    fine = await _entry_bars(rt, b, venue, sym, opened_ms, now_ms)
+    return {"entries": entries, "bars": bars, "fine": fine, "price": px}
 
 
 async def mark_trade(rt: Runtime, b: Builder, t: dict[str, Any], now_ms: int) -> dict[str, Any] | None:
@@ -119,7 +139,16 @@ async def mark_trade(rt: Runtime, b: Builder, t: dict[str, Any], now_ms: int) ->
         slippage=float(t.get("slippage") if t.get("slippage") is not None else 0.0005),
         stop_move=float(t["stop_move"]),
         exit_apr=float(t["exit_apr"]),
+        long_entry_bars=lg["fine"],
+        short_entry_bars=sg["fine"],
+        entry_bar_ms=ENTRY_BAR_MS,
     )
+    coarse = [v for v, k in ((lv, "long_entry_fine"), (sv, "short_entry_fine")) if not m[k]]
+    if coarse:
+        b.warn(
+            f"carry_paper {t['id']}: 15m bars of the entry bar unavailable or incomplete on {', '.join(coarse)}; the whole 4h "
+            "entry bar is used, so prices from before the entry may trigger the stop (conservative)"
+        )
     return {**m, "long_now": lg["price"], "short_now": sg["price"], "stop_check": stop_check}
 
 
@@ -191,7 +220,7 @@ def _closed_view(t: dict[str, Any]) -> dict[str, Any]:
 
 def register(server: MCPServer, rt: Runtime) -> None:
     @server.tool(
-        annotations=READ_ONLY,  # carry_paper_open writes to the LOCAL store only — no orders, no external effects
+        annotations=OPEN_ANNOTATIONS,  # writes to the LOCAL store only — no orders, no external effects; not idempotent
         description=(
             "Open a PAPER perp-perp funding-carry pair in the local store: long the perp on `long_venue`, short it on "
             "`short_venue` (binanceusdm / bybit / okx USDT perps), same coin quantity = notional_usd / long price. Entry "
@@ -200,7 +229,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "nothing written) when the price gap between the venues exceeds `max_entry_gap` or looks like different tokens "
             "(> 20 %), as the backtest never opens those. If the pair is not `tradable_now` or opposes the scan's direction "
             "it is still recorded, with a warning. Stop distance = 1 / `leverage`. Close with carry_paper_close; track with "
-            "carry_paper_status. See `warnings`: the backtest median trade was negative."
+            "carry_paper_status. Not idempotent: every call records a new pair (a repeat warns about the duplicate). "
+            "See `warnings`: the backtest median trade was negative."
         ),
     )
     async def carry_paper_open(
@@ -216,7 +246,13 @@ def register(server: MCPServer, rt: Runtime) -> None:
         max_entry_gap: Annotated[float, Field(ge=0, le=0.2, description="Largest price gap between the legs, fraction.")] = 0.02,
         slippage: Annotated[float, Field(ge=0, le=0.01, description="Slippage per leg per side, fraction of notional.")] = 0.0005,
         note: Annotated[str | None, Field(description="Free-form note.")] = None,
-        tags: Annotated[list[str] | None, Field(description="Free-form tags (journal gets them plus 'pp-paper').")] = None,
+        tags: Annotated[
+            list[str] | None,
+            Field(
+                description="Free-form tags. On close the journal gets them plus 'pp-paper' and either 'pp-paper-rule' "
+                "(opened while tradable_now held) or 'pp-paper-offrule'; those three are set by the tracker only."
+            ),
+        ] = None,
     ) -> dict[str, Any]:
         b = Builder()
         b.warn(PAPER_WARNING)
@@ -365,7 +401,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "when the trailing spread <= exit_apr / 'stop'). The stop is the backtest's: the first 4h bar where either leg's "
             "high or low is >= 1 / leverage away from that leg's entry; the result is then FROZEN at that bar (funding up to "
             "it, price P&L at its close, exit costs and the 1 % penalty) with `stop_at`, and later moves do not count. "
-            "`stop_check` says whether bar coverage was complete. `id` marks a single pair. `summary_closed` covers closed "
+            "The 4h bar containing the entry is replaced by 15m bars from the entry on, so prices before the entry do "
+            "not count (if they cannot be fetched the whole 4h bar is used, with a warning). `stop_check` says whether "
+            "completed-bar coverage was complete (the bar in progress is not required). `id` marks a single pair. `summary_closed` covers closed "
             "pairs: n, mean / median return on notional, share losing, share stopped, mean held days, sums of funding / "
             "price / costs in USD, and the same under `entry_tradable` for pairs opened while tradable_now held (the "
             "backtest-comparable subset). A pair whose data cannot be fetched goes to `missing`; the others are still "
@@ -428,8 +466,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "adds no penalty (warning). The close is atomic: a repeated or concurrent close returns ok=false and writes "
             "nothing. Stores funding / price / cost P&L in USD and the return on notional, "
             "and mirrors the pair into the journal as symbol 'PP:<BASE>:<long_venue>/<short_venue>' with tags ['pp-paper', "
-            "...] (side long, size = notional, entry 1.0, exit = 1 + return) so journal_stats(tag='pp-paper') reports it: "
-            "journal PnL is in USD on the notional. `cancelled=true` drops the pair without a P&L or journal row. If live "
+            "'pp-paper-rule' or 'pp-paper-offrule', ...] (side long, size = notional, entry 1.0, exit = 1 + return) so "
+            "journal_stats(tag='pp-paper') reports it: journal PnL is in USD on the notional. Compare with the backtest "
+            "through journal_stats(tag='pp-paper-rule') (opened while tradable_now held) or summary_closed.entry_tradable. `cancelled=true` drops the pair without a P&L or journal row. If live "
             "data is unavailable the pair stays open and ok=false."
         ),
     )
@@ -479,9 +518,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
             f"funding {m['funding_pnl']:+.2f}, price {m['price_pnl']:+.2f}, costs {-m['costs']:+.2f} USD"
             f"{', stopped' if stopped else ''}; carry_paper id {id}. Journal entry 1.0 / exit 1 + return encodes the return on notional."
         )
-        j_tags = ["pp-paper", *[x for x in (t.get("tags") or []) if x != "pp-paper"]]
-        if not t.get("entry_tradable"):
-            j_tags.append("pp-paper-offrule")  # opened outside the backtest's entry rule
+        # pp-paper-rule: opened under the backtest's entry rule (the comparable subset); pp-paper-offrule: outside it
+        rule_tag = "pp-paper-rule" if t.get("entry_tradable") else "pp-paper-offrule"
+        j_tags = ["pp-paper", rule_tag, *[x for x in (t.get("tags") or []) if x not in JOURNAL_TAGS]]
         j_pnl = pnl_fn("long", float(t["notional_usd"]), 1.0, 1.0 + ret)
         won = await rt.store.carry_paper_close(
             id,

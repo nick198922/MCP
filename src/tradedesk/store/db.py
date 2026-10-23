@@ -677,8 +677,13 @@ class Store:
     ) -> int:
         """Claim an open pair with one conditional UPDATE (``WHERE status='open'``) and, when ``journal`` is given,
         write its mirror row in the same transaction. Returns 1 when this call closed the pair, 0 when it was no
-        longer open (nothing is written). Calls are serialised so concurrent closes on the shared connection cannot
-        interleave their transactions."""
+        longer open (nothing is written).
+
+        The claim itself is atomic, so a pair is never closed twice. The ``_tx_lock`` serialises this call only against
+        other callers of that lock (concurrent closes, ``cp_cycle_commit``, ``cp_funding_put``); it does NOT
+        isolate writes that skip the lock on the shared connection (e.g. ``journal_add``, collector inserts). Such a
+        write landing between the UPDATE and the commit can commit this transaction half-way, and the rollback on the
+        error path can undo that other write if it was not yet committed."""
         lock = self._tx_lock or asyncio.Lock()
         async with lock:
             try:

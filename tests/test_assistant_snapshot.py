@@ -8,7 +8,16 @@ import ccxt
 import pytest
 
 from conftest import NOW, FakeEx, make_transports
-from tradedesk.analytics.assistant import NEAR_MIN_DAYS, is_last_friday, pick_expiries, pick_near_expiry
+from tradedesk.analytics.assistant import (
+    NEAR_MIN_DAYS,
+    PAPER_MAX_AGE_HOURS,
+    PAPER_PICK_MAX_LEN,
+    is_last_friday,
+    paper_rec_view,
+    pick_expiries,
+    pick_near_expiry,
+)
+from tradedesk.collector.assistant_snapshot import build_paper_rec as mod_build_paper_rec
 from tradedesk.collector.assistant_snapshot import collect_assistant_snapshot, snapshot_path, write_atomic
 from tradedesk.collector.scheduler import build_default_scheduler
 from tradedesk.config import Settings
@@ -105,7 +114,43 @@ def test_write_atomic_leaves_no_tmp_and_cleans_nan(tmp_path):
     assert [f.name for f in p.parent.iterdir()] == ["s.json"]
 
 
+def _paper_state(**kw) -> dict:
+    """The assistant_paper job's state file as collector.assistant_paper writes it (only the keys the view reads + extras)."""
+    return {
+        "schema": 1, "label": "hypothesis", "date": "2026-10-10", "asof_utc": "2026-10-10T09:00:00Z", "state": "actual",
+        "action": "hold", "reason": "a standing paper trade is the method's pick", "pick": "short_strangle25",
+        "regime": "mid", "rv30": 0.41, "event": None, "trigger": None, "trade_id": None, "standing_trade": 7,
+    } | kw  # fmt: skip
+
+
+def _write_paper_state(tmp_path: Path, payload: object) -> None:
+    p = tmp_path / "assistant" / "paper_state.json"  # state_path(<tmp>/t.sqlite)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_paper_rec_view_keeps_known_fields_and_drops_old_or_odd_states():
+    now = datetime(2026, 10, 11, 5, 0, tzinfo=UTC)  # the 08:00 Kyiv brief sees yesterday's 09:00 UTC decision
+    data, why = paper_rec_view(_paper_state(extra="<x>", standing_trade=True), now)
+    assert why is None and data == {
+        "label": "hypothesis", "state": "actual", "action": "hold", "trigger": None, "pick": "short_strangle25",
+        "asof_utc": "2026-10-10T09:00:00Z", "age_hours": 20.0, "trade_id": None, "standing_trade": None,
+    }  # fmt: skip
+    data, _ = paper_rec_view(_paper_state(state="changed", action="open", trigger="regime", pick="p" * 99, trade_id=9), now)
+    assert data["trigger"] == "regime" and data["pick"] == "p" * PAPER_PICK_MAX_LEN and data["trade_id"] == 9
+    data, _ = paper_rec_view(_paper_state(state="no_longer_actual", action="none", pick=None, trigger="bogus"), now)
+    assert data["state"] == "no_longer_actual" and data["pick"] is None and data["trigger"] is None
+    late = now + timedelta(hours=PAPER_MAX_AGE_HOURS - 20 + 1)
+    assert paper_rec_view(_paper_state(), late)[0] is None and "seems stopped" in paper_rec_view(_paper_state(), late)[1]
+    assert paper_rec_view(_paper_state(), now + timedelta(hours=PAPER_MAX_AGE_HOURS - 20))[0] is not None  # at the limit
+    for bad in (None, [], "x"):
+        assert paper_rec_view(bad, now) == (None, "no paper state file yet (collector job assistant_paper off or not run)")
+    assert "unknown paper state" in paper_rec_view(_paper_state(state="<b>maybe</b>"), now)[1]
+    assert "asof_utc" in paper_rec_view(_paper_state(asof_utc=None), now)[1]
+
+
 async def test_snapshot_happy_path(state, tmp_path):
+    _write_paper_state(tmp_path, _paper_state(asof_utc="2026-10-10T09:00:00Z"))
     rt = _rt(state, tmp_path)
     try:
         ok = await collect_assistant_snapshot(rt)
@@ -129,6 +174,38 @@ async def test_snapshot_happy_path(state, tmp_path):
     assert near["expiry"] == "30OCT26" and near["strikes"] and set(near) == set(snap["sections"]["chain"]["data"])
     assert ok == len(snap["sections"]) - len(snap["missing"])
     assert "evidence" not in snap["sections"]["term"]  # envelopes are trimmed to data / missing / warnings
+    paper = snap["sections"]["paper_rec"]  # from the local state file, no network
+    assert paper["ok"] and paper["data"]["state"] == "actual" and paper["data"]["label"] == "hypothesis"
+    assert paper["data"]["age_hours"] == pytest.approx(4.12, abs=0.01) and any("H1 rejected" in w for w in paper["warnings"])
+
+
+async def test_snapshot_paper_rec_without_state_or_with_a_stale_one(state, tmp_path):
+    rt = _rt(state, tmp_path)
+    try:
+        await collect_assistant_snapshot(rt)  # the job assistant_paper never ran: no state file
+        snap = json.loads((tmp_path / "out" / "snapshot.json").read_text())
+        sec = snap["sections"]["paper_rec"]
+        assert not sec["ok"] and sec["data"] is None and "paper_rec" in snap["missing"]
+        assert sec["missing"][0]["reason"] == "data_unavailable" and "no paper state file" in sec["missing"][0]["detail"]
+        _write_paper_state(tmp_path, _paper_state(asof_utc="2026-10-08T09:00:00Z"))  # two days old: the job stopped
+        sec = mod_build_paper_rec(rt.settings.db_path, NOW)
+        assert not sec["ok"] and "seems stopped" in sec["missing"][0]["detail"]
+        (tmp_path / "assistant" / "paper_state.json").write_text("{broken", encoding="utf-8")
+        assert not mod_build_paper_rec(rt.settings.db_path, NOW)["ok"]
+    finally:
+        await rt.aclose()
+    assert mod_build_paper_rec(":memory:", NOW)["missing"][0]["detail"].startswith("paper_rec: no SQLite store")
+
+
+def test_build_paper_rec_never_raises(monkeypatch):
+    import tradedesk.collector.assistant_snapshot as mod
+
+    def boom(*a, **k):
+        raise ValueError("odd")
+
+    monkeypatch.setattr(mod, "paper_rec_view", boom)
+    sec = mod.build_paper_rec("/tmp/x.sqlite", NOW)
+    assert not sec["ok"] and sec["missing"][0]["reason"] == "error" and "ValueError: odd" in sec["missing"][0]["detail"]
 
 
 async def test_snapshot_provider_failure_lands_in_missing(state, tmp_path):

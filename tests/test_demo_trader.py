@@ -181,6 +181,9 @@ class FakeVenue(BybitDemo):
 @pytest.fixture
 async def world(tmp_path, monkeypatch):
     monkeypatch.setattr(demo_trader, "HALT_FILE", tmp_path / "demo.halt")
+    off = tmp_path / "demo-options.off"  # the futures tests run without the option leg (tests/test_demo_option_leg.py)
+    off.write_text("off")
+    monkeypatch.setattr(demo_trader, "OPTIONS_OFF_FILE", off)
     signals: dict = {"4h": [_sig()], "1d": []}
     monkeypatch.setattr(demo_trader, "scan", lambda bars, tf, setups: list(signals.get(tf, [])))
     store = Store(tmp_path / "db.sqlite")

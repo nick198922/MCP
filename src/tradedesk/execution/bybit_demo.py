@@ -468,6 +468,14 @@ class BybitDemo:
                     out[str(p["symbol"])] = p
         return out
 
+    async def option_executions(self, symbol: str, link_id: str) -> list[dict[str, Any]]:
+        """The venue's raw fills of one option order (/v5/execution/list by orderLinkId, last 7 days): execQty,
+        execPrice, execFee (the fee actually charged, USDT), execType."""
+        self._demo_only()
+        return await self._pages(
+            self.ex.privateGetV5ExecutionList, {"category": "option", "symbol": symbol, "orderLinkId": link_id, "limit": 100}
+        )
+
     async def close_option(self, inst: OptionInstrument, qty: float, price: float, link_id: str, post_only: bool = True) -> dict[str, Any]:
         """Reduce-only limit sell that closes (part of) a long option; never opens a short. ``price`` is ceiled to the
         tick (a sell never goes cheaper than asked), ``qty`` floored to the lot step."""

@@ -1,0 +1,14 @@
+[Unit]
+Description=tradedesk: weekly demo vs backtest summary to Telegram (scripts/demo_vs_backtest_weekly_tg.py)
+# Off until this file exists: scripts/server/29-demo-vs-backtest-weekly-timer.sh creates it ("off" removes it). The
+# directory belongs to tradedesk, so any tradedesk process can flip it; not an owner-only switch (as for the brief, Q-20261021-1).
+ConditionPathExists=/var/lib/tradedesk-mcp/assistant/demo-vs-backtest-telegram.on
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/tradedesk/tradedesk-mcp
+ExecStart=/home/tradedesk/.local/bin/uv run --quiet python scripts/demo_vs_backtest_weekly_tg.py
+# Public candles for every closed demo trade (two requests each, cached): minutes at most.
+TimeoutStartSec=15min
+Nice=10
+NoNewPrivileges=true

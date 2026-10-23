@@ -1,0 +1,11 @@
+[Unit]
+Description=tradedesk-demo-vs-backtest-weekly (Sunday 20:30 Europe/Kyiv)
+
+[Timer]
+# End of the week, half an hour after the journal review (20:00): the last 7 days and the running total.
+OnCalendar=Sun *-*-* 20:30:00 Europe/Kyiv
+# A weekly summary sent days later after a reboot is not wanted: no catch-up run.
+Persistent=false
+
+[Install]
+WantedBy=timers.target

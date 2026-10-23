@@ -14,6 +14,19 @@ from typing import Any
 INTERVALS = {"daily": 86_400, "hourly": 3_600}
 _API_INTERVAL = {"daily": "daily", "hourly": "1hour"}
 _BASE_OK = re.compile(r"^[A-Z0-9]{1,15}$")
+TS_MIN = 1_230_768_000  # 2009-01-01T00:00:00Z: no crypto derivatives data before this
+TS_MAX = 4_102_444_800  # 2100-01-01T00:00:00Z
+# Everything a malformed untrusted row can raise while being parsed (int(inf) -> OverflowError, fromtimestamp -> OSError).
+ROW_ERRORS = (KeyError, TypeError, ValueError, OverflowError, OSError)
+
+
+def parse_ts(x: Any) -> tuple[int, str]:
+    """Untrusted unix-seconds value -> (ts, ISO-8601 UTC). Raises one of ROW_ERRORS when it is not a number, not
+    finite, or outside [2009, 2100), so callers drop the row instead of failing."""
+    t = int(x)
+    if not TS_MIN <= t < TS_MAX:
+        raise ValueError("timestamp out of range")
+    return t, datetime.fromtimestamp(t, UTC).isoformat(timespec="seconds")
 
 
 def api_interval(interval: str) -> str:
@@ -41,17 +54,17 @@ def summarise(history: list[dict[str, Any]], interval: str, *, limit: int | None
     rows: list[dict[str, Any]] = []
     for h in history or []:
         try:
-            t = int(h["t"])
+            t, iso = parse_ts(h["t"])
             lg = float(h["l"])
             sh = float(h["s"])
-        except (KeyError, TypeError, ValueError):
+        except ROW_ERRORS:
             continue
         if lg < 0 or sh < 0:
             continue
         tot = lg + sh
         rows.append(
             {
-                "t": datetime.fromtimestamp(t, UTC).isoformat(timespec="seconds"),
+                "t": iso,
                 "ts": t,
                 "long": lg,
                 "short": sh,

@@ -243,6 +243,116 @@ def test_main_preview_and_send(tmp_path, monkeypatch, capsys):
     assert jw.main(["--db", str(tmp_path / "none.sqlite")]) == 1 and "файла бази ще немає" in sent[-1][0]
 
 
+# ---------- the assistant's trade plans line ----------
+
+PLAN_COLS = (
+    "created_ts", "exchange", "symbol", "instrument", "side", "entry_type", "entry", "stop", "target", "expires_ts",
+    "verdict", "thesis", "tags", "status", "outcome", "resolved_ts", "r_result",
+)  # fmt: skip
+PLANS_LINE = (
+    "Плани асистента enter (папір на свічках), розв'язані за 2025-W41–W42: 4, у плюсі 67 %, середній R +0.50, "
+    "95 % ДІ [−3.23; +4.23] — містить 0, переваги не видно; замало планів (з R 3, потрібно ≥ 30)."
+)
+
+
+def _plan(verdict, status, outcome, r, resolved, *, tags='["telegram"]', thesis="<b>BUY NOW</b> evil") -> dict:
+    """A trade_plan row as plan_add + plan_review write it (levels are irrelevant here)."""
+    return {
+        "created_ts": _ts(6), "exchange": "binance", "symbol": "<i>SOL</i>/USDT:USDT", "instrument": "perp", "side": "long",
+        "entry_type": "market", "entry": 100.0, "stop": 95.0, "target": 110.0, "expires_ts": _ts(20), "verdict": verdict,
+        "thesis": thesis, "tags": tags, "status": status, "outcome": outcome, "resolved_ts": resolved, "r_result": r,
+    }  # fmt: skip
+
+
+def _plans() -> list[dict]:
+    """Four resolved 'enter' plans in W41-W42 (R +2, −1, +0.5 and one never filled), plus rows that must not count:
+    a 'wait' plan, an open one, one resolved before W41, and a resolved shadow plan of the demo trader."""
+    return [
+        _plan("enter", "resolved", "target", 2.0, _ts(8)),
+        _plan("enter", "resolved", "stop", -1.0, _ts(12, 23)),
+        _plan("enter", "resolved", "expired", 0.5, _ts(16)),
+        _plan("enter", "resolved", "not_filled", None, _ts(19, 12)),
+        _plan("wait", "resolved", "target", 3.0, _ts(9)),
+        _plan("enter", "open", None, None, None),
+        _plan("enter", "resolved", "target", 9.0, _ts(5, 23)),  # Sunday of W40: outside the two weeks
+        _plan("enter", "resolved", "target", 7.0, _ts(10), tags='["src:demo-shadow", "setup:S3"]'),
+    ]
+
+
+def _plan_store(path: Path, version: int, journal: list[dict] = (), plans: list[dict] = ()) -> Path:
+    _store(path, version, journal)
+    con = sqlite3.connect(path)
+    for p in plans:
+        con.execute(
+            f"INSERT INTO trade_plan ({', '.join(PLAN_COLS)}) VALUES ({', '.join('?' * len(PLAN_COLS))})", [p[c] for c in PLAN_COLS]
+        )
+    con.commit()
+    con.close()
+    return path
+
+
+def test_plans_line_in_the_weekly_review(tmp_path):
+    path = _plan_store(tmp_path / "p.sqlite", max(MIGRATIONS), _journal(), _plans())
+    before = path.read_bytes()
+    plans, err = jw.load_plans(path)
+    assert err is None and path.read_bytes() == before  # read-only
+    assert len(plans) == 6 and all(set(p) == {"verdict", "status", "outcome", "r_result", "resolved_ts"} for p in plans)
+    rows, _ = jw.load_journal(path)
+    text = jw.build_summary(rows, SEND_AT, None, plans, err)
+    lines = text.splitlines()
+    assert len(lines) == 8 and lines[5] == jw._h(PLANS_LINE) and lines[-1] == f"<i>{jw._h(jw.CAVEAT)}</i>", text
+    assert lines[1].startswith("Минулий тиждень 2025-W41") and lines[4].startswith("Найкраща: XRPUSDT")  # journal lines kept
+    for gone in ("BUY NOW", "evil", "SOL</", "&lt;i&gt;", "+7", "+9", "+3.00"):  # no plan text, no shadow / old / wait plans
+        assert gone not in text
+    assert text == jw.build_summary(rows, SEND_AT, None, plans, err)  # pure
+    # the plans line also comes with the short journal explanations
+    assert jw._h(PLANS_LINE) in jw.build_summary([], SEND_AT, None, plans)
+    # 30 plans with R: no small-sample mark; all positive → the CI is above 0
+    many = [
+        {"verdict": "enter", "status": "resolved", "outcome": "target", "r_result": 1.0 + (i % 3) / 10, "resolved_ts": _ts(14)}
+        for i in range(30)
+    ]
+    line = jw.plans_line(many, SEND_AT)
+    assert line.startswith("Плани асистента enter (папір на свічках), розв'язані за 2025-W41–W42: 30, у плюсі 100 %, середній R +1.10")
+    assert "— вище 0." in line and "замало" not in line
+    # one filled plan: no CI yet; only unfilled plans: no R
+    assert "ДІ — від 2 планів з R; замало планів (з R 1" in jw.plans_line(many[:1], SEND_AT)
+    unfilled = [{"verdict": "enter", "status": "resolved", "outcome": "not_filled", "r_result": None, "resolved_ts": _ts(14)}]
+    assert jw.plans_line(unfilled, SEND_AT) == jw._h(
+        "Плани асистента enter (папір на свічках), розв'язані за 2025-W41–W42: 1, R немає (жоден не виконався або R не записано); "
+        "замало планів (з R 0, потрібно ≥ 30)."
+    )
+
+
+def test_plans_line_without_plans_or_table(tmp_path):
+    rows, _ = jw.load_journal(_store(tmp_path / "j.sqlite", 23, _journal()))
+    base = jw.build_summary(rows, SEND_AT)
+    # a store before schema v17: no trade_plan table → no plans line, the message as before
+    old = _store(tmp_path / "v16.sqlite", 16, _journal())
+    assert jw.load_plans(old) == (None, "no_table")
+    assert jw.build_summary(rows, SEND_AT, None, *jw.load_plans(old)) == base and "Плани" not in base
+    assert jw.load_plans(tmp_path / "none.sqlite") == (None, "missing") and jw.plans_line(None, SEND_AT, "missing") is None
+    no_db = jw.build_summary(None, SEND_AT, "missing", None, "missing")
+    assert "Плани" not in no_db and len(no_db.splitlines()) <= 8
+    # an empty plan table, or only plans outside the two weeks / of other verdicts / shadow ones: a short line
+    empty = _plan_store(tmp_path / "e.sqlite", max(MIGRATIONS), _journal())
+    assert jw.load_plans(empty) == ([], None)
+    nothing = "Плани асистента enter (папір на свічках), розв'язані за 2025-W41–W42: жодного."
+    assert jw.build_summary(rows, SEND_AT, None, *jw.load_plans(empty)).splitlines()[5] == nothing
+    others = _plan_store(tmp_path / "o.sqlite", max(MIGRATIONS), (), [p for i, p in enumerate(_plans()) if i >= 4])
+    assert jw.plans_line(jw.load_plans(others)[0], SEND_AT) == nothing
+    # an unreadable store: a short note, never an error
+    bad = jw.load_plans(tmp_path)
+    assert bad[0] is None and bad[1].startswith("unreadable: ")
+    assert jw.plans_line(bad[0], SEND_AT, bad[1]) == "Плани асистента: таблицю trade_plan не вдалося прочитати."
+    # odd rows never raise: odd R counts as no R; odd rows fall to a short note
+    odd = [{"verdict": "enter", "status": "resolved", "outcome": "stop", "r_result": "x", "resolved_ts": _ts(14)}, {"resolved_ts": "?"}]
+    assert ": 1, R немає (жоден не виконався або R не записано); замало планів (з R 0" in jw.plans_line(odd, SEND_AT)
+    assert jw.plans_line([1, None], SEND_AT).startswith("Плани асистента: несподіваний формат даних (")
+    # across the new year: both weeks in full
+    assert "розв'язані за 2025-W52–2026-W01: жодного." in jw.plans_line([], datetime(2026, 1, 1, tzinfo=UTC).timestamp())
+
+
 def test_flag_path_matches_between_the_unit_and_step_28():
     unit = (ROOT / "deploy" / "user-units" / "tradedesk-journal-weekly.service").read_text(encoding="utf-8")
     timer = (ROOT / "deploy" / "user-units" / "tradedesk-journal-weekly.timer").read_text(encoding="utf-8")

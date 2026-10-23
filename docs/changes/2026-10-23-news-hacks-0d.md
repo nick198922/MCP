@@ -1,0 +1,3 @@
+- Етап 0d news-events (злами з точним часом першого твіту): `inconclusive` — ворота потужності не пройдено (MDE 5.1 > 5 п. п.), описово шорт через 15 хв на 24 год +0.0 % net [−3.3; +3.8], переваги не видно. Звіт `docs/verification/2026-10-23-news-hacks-0d.md`.
+- `analytics/news_events.py`: `parse_hacks`, `hack_candidates`, `hack_exclusion`, `residual_short` (чисті функції, з тестами); скрипт `scripts/verify_news_events_0d.py` (`prereg`, `prices`, `stage0`, `report`).
+- Після рев'ю: у звіті перелічено пізні t0 і сумнівні прив'язки злам → токен, дослідницькі зрізи без них, 1 − S(15 хв), збіг 27 / 43 з етапом 0; твердження «падіння до твіту» пом'якшено до описового.

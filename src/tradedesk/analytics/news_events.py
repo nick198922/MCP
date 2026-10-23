@@ -260,6 +260,80 @@ def closure_exclusion(c: Closure) -> str | None:
     return None
 
 
+# ------------------------------------------------------------------ stage 0d: hacks with the exact first-tweet time
+
+HACK_TIME_PRECISE = frozenset({"security_alert_tweet", "protocol_tweet", "earlier_tweet", "community_tweet"})
+HACK_TIME_MONITORED = frozenset({"security_alert_tweet", "protocol_tweet", "earlier_tweet"})  # not a third party
+
+
+@dataclass(frozen=True)
+class Hack:
+    """One row of ``docs/verification/2026-10-23-news-hacks.csv`` (times in epoch ms UTC; ``second_ms`` 0 if none)."""
+
+    token: str  # as written in the CSV, may hold two names ("SHIB/BONE")
+    ms: int
+    time_source: str  # security_alert_tweet | protocol_tweet | earlier_tweet | community_tweet | article_date
+    perp_at_t0: tuple[str, ...]  # "venue:SYMBOL" items found by Claude in exchangeInfo (may be empty)
+    amount_usd: float
+    second_ms: int
+    url: str
+
+    @property
+    def key(self) -> str:
+        return f"{self.token}@{self.ms}"
+
+
+def _utc_ms(s: str) -> int:
+    return int(datetime.strptime(s.strip(), "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC).timestamp() * 1000)
+
+
+def parse_hacks(text: str) -> list[Hack]:
+    """Rows of the hacks CSV (the closures columns plus ``perp_at_t0``, ``amount_usd``, ``second_utc``...). The text is
+    untrusted: fields are only stored (tickers upper-cased), never interpreted as instructions."""
+    out: list[Hack] = []
+    for r in csv.DictReader(io.StringIO(text)):
+        perps = tuple(p.strip() for p in (r.get("perp_at_t0") or "").split(";") if p.strip())
+        try:
+            amt = float(r.get("amount_usd") or 0)
+        except ValueError:
+            amt = 0.0
+        sec = (r.get("second_utc") or "").strip()
+        out.append(
+            Hack(
+                r["token"].strip().upper(),
+                _utc_ms(r["t0_utc"]),
+                r["time_source"].strip(),
+                perps,
+                amt,
+                _utc_ms(sec) if sec else 0,
+                r["url"].strip(),
+            )
+        )
+    return out
+
+
+def hack_candidates(h: Hack) -> list[str]:
+    """Base tickers to look up a perp for, in order: the bases of the CSV's ``perp_at_t0`` symbols (multiplier
+    stripped), then the first ``/``-separated part of the token field (the second part names a related asset, e.g.
+    ``KERNEL/ETH``, and is never priced). Only ticker-shaped strings are kept."""
+    out = [perp_base(p.split(":", 1)[-1])[0] for p in h.perp_at_t0]
+    out.append(h.token.split("/", 1)[0].strip())
+    return [t for t in dict.fromkeys(out) if _TICK.match(t) and t not in STABLES]
+
+
+def hack_exclusion(h: Hack) -> str | None:
+    """Why a hack row is outside the registered primary pool of stage 0d (None: it is in the pool)."""
+    if h.time_source not in HACK_TIME_PRECISE:
+        return "time is a date only"
+    return None
+
+
+def residual_short(r_h: float, r_end: float) -> float:
+    """Gross short return from t0+h to the end horizon, given both reactions measured from t0:
+    1 - (1 + r_end) / (1 + r_h). What is left for a trader who enters at h."""
+    return 1.0 - (1.0 + r_end) / (1.0 + r_h)
+
+
 def flat_share(b: Bars, t: int, window_ms: int = HOUR_MS) -> float:
     """Share of bars closed in (t - window_ms, t] whose high equals low (no price movement: a dead or illiquid
     market); NaN if there are none. Uses only bars closed at or before ``t``."""

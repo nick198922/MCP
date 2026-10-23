@@ -16,6 +16,7 @@ from tradedesk.analytics.news_events import (
     MIN_MS,
     Bars,
     Event,
+    Hack,
     _chi2_sf,
     classify_delisting,
     classify_listing,
@@ -25,7 +26,9 @@ from tradedesk.analytics.news_events import (
     cochran_q,
     dedupe,
     flat_share,
+    hack_candidates,
     hack_events,
+    hack_exclusion,
     holm,
     max_move,
     mde_clusters,
@@ -35,11 +38,13 @@ from tradedesk.analytics.news_events import (
     one_sided_p,
     paired_diff_bootstrap,
     parse_closures,
+    parse_hacks,
     perp_base,
     perp_live,
     placebo_times,
     price_at,
     reaction,
+    residual_short,
     second_bars,
     short_trade,
     snowflake_ms,
@@ -49,6 +54,7 @@ from tradedesk.analytics.news_events import (
 )
 
 CLOSURES_CSV = Path(__file__).resolve().parent.parent / "docs" / "verification" / "2026-10-17-news-closures.csv"
+HACKS_CSV = Path(__file__).resolve().parent.parent / "docs" / "verification" / "2026-10-23-news-hacks.csv"
 
 T0 = 1_760_000_000_000 // MIN_MS * MIN_MS  # a minute boundary
 
@@ -338,6 +344,43 @@ def test_closures_csv_times_match_snowflakes_and_pool() -> None:
     assert reasons.count("leak") == 1 and reasons.count("hack (stage 0d)") == 1
     assert reasons.count("direction prior up") == 1 and reasons.count("hypothesis source") == 2
     assert reasons.count(None) == 28
+
+
+def test_hacks_csv_parse_times_and_candidates() -> None:
+    rows = parse_hacks(HACKS_CSV.read_text())
+    assert len(rows) == 76
+    assert sum(hack_exclusion(h) is None for h in rows) == 74  # two rows carry only an article date
+    for h in rows:
+        if hack_exclusion(h) is None:  # t0 is the first tweet's own creation time, to the second
+            tid = int(re.search(r"/status/(\d+)", h.url).group(1))  # type: ignore[union-attr]
+            assert h.ms == snowflake_ms(tid) // 1000 * 1000, h.key
+    by = {h.token: h for h in rows}
+    assert hack_candidates(by["SHIB/BONE"]) == ["SHIB"]  # 1000SHIBUSDT -> SHIB; BONE (second part) never priced
+    assert hack_candidates(by["RON"]) == ["RONIN", "RON"]
+    assert hack_candidates(by["KERNEL/ETH"]) == ["KERNEL"]
+    assert hack_candidates(by["SOCKET/BUNGEE"]) == ["SOCKET"]
+    assert by["EUL"].perp_at_t0 == () and by["EUL"].amount_usd == 197e6
+    assert by["EUL"].second_ms - by["EUL"].ms == (57 * 60 + 3) * 1000
+    h = Hack("X", T0, "community_tweet", ("binance:1000XUSDT",), 0.0, 0, "")
+    assert hack_candidates(h) == ["X"] and hack_exclusion(h) is None
+    assert hack_exclusion(Hack("X", T0, "article_date", (), 0.0, 0, "")) == "time is a date only"
+
+
+def test_residual_short_closed_form_and_no_lookahead() -> None:
+    assert residual_short(-0.10, -0.19) == pytest.approx(0.10)  # 90 -> 81: a short entered at 90 earns 10 %
+    assert residual_short(0.0, -0.05) == pytest.approx(0.05)
+    assert residual_short(-0.05, -0.05) == pytest.approx(0.0)
+    rows = ramp(1600)
+    cut = T0 + 24 * HOUR_MS
+    rows2 = [r if r[0] + MIN_MS <= cut else [r[0], r[1], r[2] * 3, r[3] / 3, r[4] * 3] for r in rows]
+    b1, b2 = Bars.from_rows(rows), Bars.from_rows(rows2)
+
+    def left(b: Bars) -> float:
+        return residual_short(reaction(b, T0, 5 * MIN_MS), reaction(b, T0, 24 * HOUR_MS))  # type: ignore[arg-type]
+
+    assert left(b1) == left(b2)  # bars after t0 + 24 h do not change it
+    want = 1 - (100 - 0.1 * (59 + 1440)) / (100 - 0.1 * (59 + 5))
+    assert left(b1) == pytest.approx(want)
 
 
 def test_move_share_closed_forms() -> None:

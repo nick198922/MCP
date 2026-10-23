@@ -5,7 +5,7 @@ import math
 import numpy as np
 import pytest
 
-from tradedesk.analytics.crash_leader import beta, compound_index, detect_events, hold_return, terciles
+from tradedesk.analytics.crash_leader import basket_path, beta, compound_index, detect_events, hold_return, terciles
 
 
 def test_compound_index_treats_nan_as_flat():
@@ -47,3 +47,14 @@ def test_terciles_and_beta():
     x = np.linspace(-0.05, 0.05, 30)
     assert beta(0.8 * x + 0.001, x) == pytest.approx(0.8)
     assert math.isnan(beta(x[:5], x[:5]))
+
+
+def test_basket_path_matches_hold_return_per_leg():
+    close = np.array([[100.0, 10.0], [110.0, 9.0], [120.0, np.nan], [np.nan, 12.0], [np.nan, 8.0], [np.nan, 10.0]])
+    fund = np.array([[0.0, 0.0], [0.01, 0.0], [0.0, np.nan], [np.nan, 0.02], [np.nan, 0.0], [np.nan, 0.0]])
+    path = basket_path(close, fund, [0, 1], 0, 5)
+    assert path[0] == pytest.approx(1.0)
+    assert path[1] == pytest.approx(1 + ((0.10 - 0.01) + (-0.10)) / 2)
+    # Leg 0 is delisted (3 days without a bar) and stays at its last close; leg 1 keeps trading.
+    assert path[-1] - 1 == pytest.approx((hold_return(close, fund, 0, 0, 5) + hold_return(close, fund, 1, 0, 5)) / 2)
+    assert len(basket_path(close, fund, [0], 3, 2)) == 1  # no price at the start → flat

@@ -86,6 +86,36 @@ _DEMO_TRADE_MUTABLE = frozenset(
     }
 )
 
+_DEMO_OPTION_MUTABLE = frozenset(
+    {
+        "status",
+        "entry_order",
+        "entry_n",
+        "entry_px",
+        "qty",
+        "risk_usd",
+        "fill",
+        "fee_open",
+        "fee_open_bound",
+        "opened_ts",
+        "exit_reason",
+        "exit_ts",
+        "exit_phase",
+        "exit_order",
+        "exit_n",
+        "exit_px",
+        "exit_kind",
+        "exit_links",
+        "exit",
+        "fee_close",
+        "closed_ts",
+        "pnl_usd",
+        "r_multiple",
+        "journal_id",
+        "note",
+    }
+)
+
 
 class Store:
     def __init__(self, path: str | Path) -> None:
@@ -1549,4 +1579,32 @@ class Store:
             sql += f" WHERE status IN ({','.join('?' * len(statuses))})"
             params = list(statuses)
         cur = await self.conn.execute(sql + " ORDER BY signal_ts DESC LIMIT ?", [*params, limit])
+        return [dict(r) for r in await cur.fetchall()]
+
+    # ---------- demo option leg (schema 28, owner 23.10) ----------
+
+    async def demo_option_insert(self, row: dict[str, Any]) -> None:
+        cols = [c for c in row if c.isidentifier()]
+        await self.conn.execute(
+            f"INSERT INTO demo_option_leg ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})", [row[c] for c in cols]
+        )
+        await self.conn.commit()
+
+    async def demo_option_update(self, link_id: str, **fields: Any) -> int:
+        if not fields:
+            return 0
+        bad = set(fields) - _DEMO_OPTION_MUTABLE
+        if bad:
+            raise ValueError(f"demo_option_leg: not updatable {sorted(bad)}")
+        sets = ", ".join(f"{k} = ?" for k in fields)
+        cur = await self.conn.execute(f"UPDATE demo_option_leg SET {sets} WHERE link_id = ?", [*fields.values(), link_id])
+        await self.conn.commit()
+        return cur.rowcount or 0
+
+    async def demo_option_list(self, statuses: tuple[str, ...] = (), limit: int = 500) -> list[dict[str, Any]]:
+        sql, params = "SELECT * FROM demo_option_leg", []
+        if statuses:
+            sql += f" WHERE status IN ({','.join('?' * len(statuses))})"
+            params = list(statuses)
+        cur = await self.conn.execute(sql + " ORDER BY signal_ts DESC, placed_ts DESC LIMIT ?", [*params, limit])
         return [dict(r) for r in await cur.fetchall()]

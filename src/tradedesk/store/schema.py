@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 27
+SCHEMA_VERSION = 28
 
 # Each migration is a list of SQL statements executed in a single transaction.
 # `PRAGMA user_version` is bumped by Store.init() inside the same explicit transaction,
@@ -719,5 +719,62 @@ MIGRATIONS: dict[int, list[str]] = {
             PRIMARY KEY (symbol, metric, ts)
         )
         """,
+    ],
+    28: [
+        # Demo trader option leg (owner 23.10, slice 2; execution/option_leg.py): a BTC / ETH setup signal also bought as a
+        # long call / put next to the futures trade, compared on the same signal (analytics/demo_option_pairs.py).
+        """
+        CREATE TABLE IF NOT EXISTS demo_option_leg (
+            link_id TEXT PRIMARY KEY,              -- orderLinkId of the first entry order ('tdo-...')
+            pair_id TEXT NOT NULL,                 -- demo_trade.link_id of the futures trade of the same signal
+            venue TEXT NOT NULL,
+            symbol TEXT NOT NULL,                  -- Bybit option symbol, e.g. 'BTC-13NOV26-84000-C-USDT'
+            underlying TEXT NOT NULL,              -- ccxt perp the target is read on, e.g. 'BTC/USDT:USDT'
+            side TEXT NOT NULL,                    -- the signal's side: 'long' (a call) | 'short' (a put)
+            is_call INTEGER NOT NULL,
+            strike REAL NOT NULL,
+            expiry_ms INTEGER NOT NULL,            -- unix ms, 08:00 UTC
+            tick REAL NOT NULL,                    -- premium tick, USDT
+            lot_step REAL NOT NULL,                -- contracts (1 contract = 1 coin)
+            min_qty REAL NOT NULL,
+            setup TEXT NOT NULL,
+            timeframe TEXT NOT NULL,
+            signal_ts INTEGER NOT NULL,            -- unix ms, open of the signal bar
+            target REAL NOT NULL,                  -- the setup's target on the underlying (same level as the futures)
+            delta REAL,                            -- Black-76 delta at decision (venue mark IV, r = 0)
+            mark_iv REAL,                          -- decimal
+            underlying_px REAL,                    -- the expiry's underlying price at decision, USD
+            dte_days REAL,                         -- days to expiry at decision
+            comment TEXT NOT NULL,                 -- why (shown to the owner); says it is a paired test, not an edge
+            status TEXT NOT NULL,                  -- unknown | pending | open | closing | closed | missed | rejected
+            placed_ts INTEGER NOT NULL,            -- unix ms of the first entry order
+            entry_order TEXT,                      -- orderLinkId of the working entry order (re-placed: link_id-N)
+            entry_n INTEGER NOT NULL DEFAULT 0,
+            entry_px REAL,                         -- its limit premium, USDT per contract
+            qty REAL NOT NULL,                     -- planned contracts; the filled size once open
+            risk_usd REAL NOT NULL,                -- premium + fee: planned (guard's fee bound), then the actual at the fill
+            fill REAL,                             -- average entry premium, USDT per contract
+            fee_open REAL,                         -- actual entry fee from the venue's execution list, USD
+            fee_open_bound REAL,                   -- the guard's fee upper bound for the same fill, USD
+            opened_ts INTEGER,                     -- unix ms of the complete fill
+            exit_reason TEXT,                      -- target | time | expiry | gone
+            exit_ts INTEGER,                       -- unix ms when the close started
+            exit_phase TEXT,                       -- 'maker' (ask - tick) | 'bid'
+            exit_order TEXT,                       -- orderLinkId of the working close order
+            exit_n INTEGER NOT NULL DEFAULT 0,
+            exit_px REAL,                          -- its limit premium
+            exit_kind TEXT,                        -- 'post_only' | 'gtc_fallback' | 'bid' (how the close was sent last)
+            exit_links TEXT,                       -- JSON list of every close order's orderLinkId (their fills = the exit)
+            exit REAL,                             -- average exit premium
+            fee_close REAL,                        -- actual close fees, USD
+            closed_ts INTEGER,
+            pnl_usd REAL,                          -- exit value - entry value - both fees, USD
+            r_multiple REAL,                       -- pnl_usd / risk_usd (premium + fee at entry)
+            journal_id INTEGER,                    -- mirror row in journal (tags demo-paper, option)
+            note TEXT
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS demo_option_leg_status ON demo_option_leg (status)",
+        "CREATE INDEX IF NOT EXISTS demo_option_leg_pair ON demo_option_leg (pair_id)",
     ],
 }

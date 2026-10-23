@@ -96,6 +96,12 @@ class Settings:
     # 19:00 UTC (table radar_surface) and fills missing days of the last week. Off by default.
     collect_radar_enabled: bool = False
     collect_radar_seconds: int = 3600
+    # Deribit <-> Bybit daily option quotes (collector/option_xvenue.py, IDEA-20261023-bybit-deribit-daily-option-dislocation-
+    # forward): hourly, nearest expiry 2-20 h away, ATM +- 3 strikes. Off by default (switch on only after the threshold is
+    # registered, card condition 3). Retention like atm_term / funding_hist / basis_hist.
+    collect_option_xvenue_enabled: bool = False
+    collect_option_xvenue_seconds: int = 3600
+    retention_option_xvenue_days: int = 365
     # Alerts
     alerts_enabled: bool = False
     alerts_rules_path: str = ""
@@ -164,6 +170,9 @@ class Settings:
             forecast_log_seconds=int(_float("TRADEDESK_PAPER_FORECAST_LOG_SECONDS", 3600)),
             collect_radar_enabled=os.environ.get("TRADEDESK_COLLECT_RADAR_ENABLED", "").lower() in ("1", "true", "yes"),
             collect_radar_seconds=int(_float("TRADEDESK_COLLECT_RADAR_SECONDS", 3600)),
+            collect_option_xvenue_enabled=os.environ.get("TRADEDESK_COLLECT_OPTION_XVENUE_ENABLED", "").lower() in ("1", "true", "yes"),
+            collect_option_xvenue_seconds=int(_float("TRADEDESK_COLLECT_OPTION_XVENUE_SECONDS", 3600)),
+            retention_option_xvenue_days=int(_float("TRADEDESK_RETENTION_OPTION_XVENUE_DAYS", 365)),
             http_bearer_tokens=os.environ.get("TRADEDESK_HTTP_BEARER_TOKENS") or os.environ.get("TRADEDESK_HTTP_BEARER_TOKEN", ""),
             alerts_enabled=os.environ.get("TRADEDESK_ALERTS_ENABLED", "").lower() in ("1", "true", "yes"),
             alerts_rules_path=os.environ.get("TRADEDESK_ALERTS_RULES_PATH", ""),

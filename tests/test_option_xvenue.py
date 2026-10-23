@@ -4,6 +4,7 @@ option_xvenue_snapshot and the collector job `option_xvenue` (IDEA-20261023-bybi
 from __future__ import annotations
 
 import json
+import math
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -15,6 +16,11 @@ from conftest import FakeEx, State, make_transports
 from tradedesk.analytics.option_xvenue import (
     FEE_RATE,
     MIN_DEPTH,
+    REG_GAP_SOURCE,
+    REG_STRIKES_EACH_SIDE,
+    REG_SYNC_MS,
+    REG_THRESHOLD,
+    adjusted_crossing_from_row,
     atm_strikes,
     bybit_quote,
     crossing,
@@ -79,6 +85,74 @@ def test_crossing_from_row_converts_deribit_coin_prices():
     assert c["index_gap"] == pytest.approx(0.0015) and c["dt_ms"] == 800
     assert crossing_from_row(dict(row, d_index=None)) is None
     assert crossing_from_row(dict(row, b_index=None, b_ts_ms=None))["index_gap"] is None
+
+
+def _ncdf(x: float) -> float:
+    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+
+def _call(F: float, K: float, T: float, s: float) -> float:
+    d1 = (math.log(F / K) + 0.5 * s * s * T) / (s * math.sqrt(T))
+    return F * _ncdf(d1) - K * _ncdf(d1 - s * math.sqrt(T))
+
+
+def test_adjusted_crossing_shift_is_delta_times_gap():
+    # ATM call, F = K = 100 000, tau 10 h, IV 40 %: d1 = sigma sqrt(T) / 2, delta = N(d1); gap +0.15 %
+    row = {
+        "d_bid": 0.009, "d_ask": 0.010, "d_bid_size": 1.0, "d_ask_size": 1.0, "d_index": 100_000.0,
+        "d_underlying": 100_000.0, "d_mark_iv": 0.40, "d_ts_ms": 1_000, "strike": 100_000.0, "tau_hours": 10.0,
+        "opt": "C", "b_bid": 1200.0, "b_ask": 1250.0, "b_bid_size": 1.0, "b_ask_size": 1.0, "b_index": 100_150.0,
+        "b_ts_ms": 4_000,
+    }  # fmt: skip
+    delta = _ncdf(0.5 * 0.40 * math.sqrt(10.0 / 8760.0))
+    a = adjusted_crossing_from_row(row)
+    assert a["gap"] == pytest.approx(0.0015) and a["delta"] == pytest.approx(delta) and a["dt_ms"] == 3_000
+    assert a["shift_usd"] == pytest.approx(-delta * 0.0015 * 100_000.0)  # ~ -75.4: Bybit call made cheaper
+    assert a["b_over_d"]["gross_usd"] == pytest.approx(1200.0 + a["shift_usd"] - 1000.0)
+    assert a["b_over_d"]["net_usd"] == pytest.approx(a["b_over_d"]["gross_usd"] - 60.0)  # 2 x 0.03 % x 100 000
+    put = adjusted_crossing_from_row(dict(row, opt="P"))
+    assert put["delta"] == pytest.approx(delta - 1.0) and put["shift_usd"] > 0  # Bybit put made dearer
+    fees = adjusted_crossing_from_row(row, fee_deribit=0.0003, fee_bybit=0.0007)
+    assert fees["b_over_d"]["net_usd"] == pytest.approx(a["b_over_d"]["gross_usd"] - 100.0)  # per-venue fees
+    raw = adjusted_crossing_from_row(dict(row, d_mark_iv=None), gap_source="none")
+    assert raw["shift_usd"] == 0.0 and raw["b_over_d"]["gross_usd"] == pytest.approx(200.0)
+    assert raw["b_over_d"]["net_frac"] == pytest.approx(crossing_from_row(row)["b_over_d"]["net_frac"])
+
+
+def test_adjusted_crossing_removes_a_pure_settlement_basis():
+    # Bybit quoted exactly at its fair USDT price (1 + g) C(F, K / (1 + g)), Deribit at C(F, K), no spread, no fees:
+    # the raw comparison shows a "crossing" of ~ g F delta, the adjusted one is ~ 0 (second order only).
+    F, T, s, g = 100_000.0, 10.0 / 8760.0, 0.40, 0.0015
+    for K in (99_000.0, 100_000.0, 101_000.0):
+        d = _call(F, K, T, s)
+        b = (1.0 + g) * _call(F, K / (1.0 + g), T, s)
+        row = {
+            "d_bid": d / F, "d_ask": d / F, "d_bid_size": 1.0, "d_ask_size": 1.0, "d_index": F, "d_underlying": F,
+            "d_mark_iv": s, "strike": K, "tau_hours": 10.0, "opt": "C", "b_bid": b, "b_ask": b, "b_bid_size": 1.0,
+            "b_ask_size": 1.0, "b_index": F * (1.0 + g),
+        }  # fmt: skip
+        raw = adjusted_crossing_from_row(row, gap_source="none", fee_deribit=0.0, fee_bybit=0.0)
+        adj = adjusted_crossing_from_row(row, fee_deribit=0.0, fee_bybit=0.0)
+        assert raw["b_over_d"]["gross_usd"] > 20.0  # the basis looks like a dislocation
+        # gone up to second order: 0.5 g^2 K^2 C_KK = 0.5 g^2 K phi(d2) / (sigma sqrt T), ~ $3.3 at the money
+        d2 = (math.log(F / K) - 0.5 * s * s * T) / (s * math.sqrt(T))
+        second = 0.5 * g * g * K * math.exp(-0.5 * d2 * d2) / math.sqrt(2.0 * math.pi) / (s * math.sqrt(T))
+        assert 1.0 < second < 4.0 and adj["b_over_d"]["gross_usd"] == pytest.approx(second, abs=0.3)
+
+
+def test_adjusted_crossing_unmeasurable_rows():
+    row = {"d_index": 100_000.0, "d_underlying": 100_100.0, "b_underlying": 100_250.0, "b_index": 100_150.0,
+           "d_mark_iv": 0.4, "strike": 100_000.0, "tau_hours": 5.0, "opt": "C", "d_ask": 0.01, "b_bid": 1000.0}  # fmt: skip
+    u = adjusted_crossing_from_row(row, gap_source="underlying")
+    assert u["gap"] == pytest.approx(100_250.0 / 100_100.0 - 1.0) and u["b_over_d"]["gross_usd"] is not None
+    assert adjusted_crossing_from_row(dict(row, d_index=None)) is None
+    assert adjusted_crossing_from_row(dict(row, d_mark_iv=None)) is None  # no IV on either venue -> no delta
+    assert adjusted_crossing_from_row(dict(row, d_mark_iv=None, b_mark_iv=0.5))["delta"] is not None  # Bybit IV fallback
+    assert adjusted_crossing_from_row(dict(row, b_index=None)) is None
+    assert adjusted_crossing_from_row(dict(row, opt="X")) is None
+    with pytest.raises(ValueError):
+        adjusted_crossing_from_row(row, gap_source="mid")
+    assert (REG_THRESHOLD, REG_STRIKES_EACH_SIDE, REG_SYNC_MS, REG_GAP_SOURCE) == (0.0015, 1, 5_000, "index")
 
 
 def test_parse_bybit_symbol():
@@ -179,6 +253,9 @@ async def test_job_stores_both_legs_of_the_atm_strikes(tmp_path):
         assert r["d_mark_iv"] == pytest.approx(0.2399) and r["b_mark_iv"] == pytest.approx(0.2549)
         c = crossing_from_row(r)  # live sample: no crossing; Bybit's index 0.15 % above Deribit's
         assert c["best"] < 0 and c["index_gap"] == pytest.approx(0.001456, abs=1e-5) and c["dt_ms"] == 2205
+        a = adjusted_crossing_from_row(r)  # registered measure: the call's basis (~ delta x gap x F) taken off Bybit
+        assert 0.3 < a["delta"] < 0.45 and a["shift_usd"] < 0
+        assert a["b_over_d"]["gross_usd"] == pytest.approx(c["b_over_d"]["gross_usd"] + a["shift_usd"])
         tickers = [x[2] for x in calls if x[1] == "ticker"]
         assert len(tickers) == 14 and all("23OCT26" in n for n in tickers)  # only the ATM +- 3 of the daily expiry
         assert [x for x in calls if x[0] == "bybit"] == [("bybit", "option", "BTC")]  # ETH: no expiry, Bybit not asked

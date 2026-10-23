@@ -658,8 +658,9 @@ def ann_spot_price(cache: Path, source: str, token: str, t0: int) -> float | Non
     return price_at(Bars.from_rows(rows), t0, max_stale_ms=6 * HOUR_MS) if rows else None
 
 
-def measure(cache: Path, e: Event, r: list | None, blocked: list[int] | None = None) -> dict[str, Any] | None:
-    """All registered numbers of one event, from the cached files only."""
+def measure(cache: Path, e: Event, r: list | None, blocked: list[int] | None = None, sign: float | None = None) -> dict[str, Any] | None:
+    """All registered numbers of one event, from the cached files only. ``sign`` overrides the trade direction
+    (1 short, -1 long; default: long for listings, short otherwise)."""
     if not r:
         return None
     venue, sym, mult = r
@@ -709,7 +710,8 @@ def measure(cache: Path, e: Event, r: list | None, blocked: list[int] | None = N
     for k in range(0, 6):
         btc_rows += cached(cache, "binance", "BTCUSDT", "1m", ymd(d0 + k * DAY_MS)) or []
     btc = Bars.from_rows(btc_rows) if btc_rows else None
-    sign = -1.0 if e.category == "listing" else 1.0  # H2: long; negative categories: short
+    if sign is None:
+        sign = -1.0 if e.category == "listing" else 1.0  # H2: long; negative categories: short
     trades: dict[str, Any] = {}
     for d in DELAYS:
         for hh in HOLDS:

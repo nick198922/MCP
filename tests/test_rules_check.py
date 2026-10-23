@@ -4,6 +4,7 @@ rows shaped as scripts/{bybit,binance,hyperliquid}_import.py and journal_add wri
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
@@ -345,6 +346,21 @@ def test_journal_rule_8_one_to_three_days_with_a_thesis():
     imp = {**row, "tags": BYBIT_OPT, "thesis": "імпорт з Bybit: теза не записана"}
     (c,) = rc.trade_checks([imp], now_ts=D + 10 * 86400)
     assert c["buy_conditions"]["thesis"] == rc.VIOLATED and c["rules"][8] == rc.VIOLATED
+    # a thesis the owner wrote later on the imported row counts: only the importer's placeholder is dropped (critic, 22.10)
+    (c,) = rc.trade_checks([{**imp, "thesis": "CPI on 16.10: a move up past 112k"}], now_ts=D + 10 * 86400)
+    assert c["buy_conditions"]["thesis"] == rc.OK and c["rules"][8] == rc.UNKNOWN
+    # the placeholder text on a row the importer did not write is the owner's own text
+    (c,) = rc.trade_checks([{**imp, "tags": '["option"]'}], now_ts=D + 10 * 86400)
+    assert c["buy_conditions"]["thesis"] == rc.OK
+
+
+def test_owner_thesis_drops_only_the_import_placeholder():
+    importer = Path(__file__).resolve().parents[1] / "scripts" / "bybit_import.py"
+    assert f': {rc.IMPORT_THESIS_PLACEHOLDER}"' in importer.read_text(encoding="utf-8")  # the text the importer writes
+    assert rc.owner_thesis("імпорт з Bybit: теза не записана", ["bybit", "import", "option"]) is None
+    assert rc.owner_thesis("CPI: up past 112k", ["bybit", "import", "option"]) == "CPI: up past 112k"
+    assert rc.owner_thesis("імпорт з Bybit: теза не записана", ["option"]) == "імпорт з Bybit: теза не записана"
+    assert rc.owner_thesis(None, ["bybit", "import"]) is None
 
 
 def test_stop_and_target_from_journal_add():

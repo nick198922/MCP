@@ -4293,6 +4293,7 @@ RULES_BUY_COND_HOURS = 72.0  # rule 8: from 24 h up to this (inclusive) only wit
 RULES_BE_MAX_SIGMA = 1.0  # rule 8 (b): breakeven move <= this many 1-sigma moves at RV over the time left
 RULES_IV_MAX_RV = 1.2  # rule 8 (c): the bought option's IV <= this x RV
 RULES_ZONE_BAN, RULES_ZONE_COND, RULES_ZONE_FREE = "under_24h", "1_3_days", "over_3_days"
+RULES_IMPORT_THESIS_PLACEHOLDER = "теза не записана"  # what scripts/bybit_import.py writes as an import's thesis
 RULES_MAJORS = frozenset({"BTC", "ETH"})
 RULES_NUMS = (1, 2, 4, 5, 8)
 RULES_WEEKS = 12  # newest ISO weeks in the journal table
@@ -4387,6 +4388,13 @@ def rules_thesis_check(thesis: object, target: object) -> tuple[str, str]:
         return "ok", "thesis and target recorded"
     miss = [w for w, ok in (("thesis", has_thesis), ("target", has_target)) if not ok]
     return "violated", "no " + " and no ".join(miss)
+
+
+def rules_owner_thesis(thesis: object, tags: list[str]) -> object:
+    """Copy of analytics.rules_check.owner_thesis: an import's placeholder thesis is no thesis, any other text counts."""
+    if "import" in tags and isinstance(thesis, str) and RULES_IMPORT_THESIS_PLACEHOLDER in thesis:
+        return None
+    return thesis
 
 
 def rules_conditions_status(*statuses: str) -> str:
@@ -4485,7 +4493,7 @@ def rules_pre_trade(
     s, r = _num(spot), _num(rv)
     s = s if s is not None and s > 0 else None
     r = r if r is not None and r > 0 else None
-    rv_why = "RV30: 30 daily closes, zero mean, x365 (the forecast log's RV30 model)"
+    rv_why = "RV30: 30 daily closes, zero mean, x365 (same method as the forecast log's RV30 model)"
     if debit is None:  # mirrors the analytics; the builder's legs always carry a premium (its payoff needs one)
         b = {"rule": 8, "key": "breakeven_move", "status": "unknown", "value": None, "limit": None, "detail": "premium unknown"}
     elif s is None or r is None:
@@ -4554,7 +4562,7 @@ def _rules_normalize(rows: list[dict]) -> list[dict]:
                 "entry": _num(t.get("entry")),
                 "stop": _num(t.get("stop")),
                 "target": _num(t.get("target")),
-                "thesis": None if "import" in tags else t.get("thesis"),  # an import's thesis is a placeholder
+                "thesis": rules_owner_thesis(t.get("thesis"), tags),
                 "pnl": _num(t.get("pnl")) if status == "closed" else None,
             }
         )

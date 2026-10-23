@@ -25,13 +25,15 @@ Rules covered:
   purchase to the delivery (Deribit/Bybit 08:00 UTC, the date in the symbol) three zones: under 24 h — never buy
   (``violated``); 24-72 h (both ends included) — only when all three checks hold: (a) a recorded thesis (direction,
   reason and a target), (b) the move from spot to the nearest breakeven at expiry <= 1 sigma of the move at
-  realized vol over the time left (RV x sqrt(T/365); RV = RV30, 30 daily closes, zero mean, x365, as the forecast
-  log's RV30 model), (c) the option's IV <= 1.2 x RV; any check failed = ``violated``, a check without data =
+  realized vol over the time left (RV x sqrt(T/365); RV = RV30, 30 daily closes, zero mean, x365: the same method
+  as the forecast log's RV30 model, though the candle series may differ), (c) the option's IV <= 1.2 x RV; any
+  check failed = ``violated``, a check without data =
   ``unknown``; over 72 h — the premium limit only. The 1-sigma and 1.2x thresholds are a starting choice, not a
   proven edge. A structure that nets a credit buys nothing on balance (``na``). Journal: bought option rows (side
   long); the time needs a real opening time, else ``unknown``. Imports carry neither a thesis nor IV: (a) fails
-  without a thesis and a target (an 'import' row's placeholder thesis does not count), and the journal has no spot
-  or IV at the opening, so (b) and (c) stay ``unknown``.
+  without a thesis and a target (the importer's placeholder thesis, «…теза не записана» on an 'import' row, does
+  not count; a thesis the owner later writes on that row does), and the journal has no spot or IV at the opening,
+  so (b) and (c) stay ``unknown``.
 
 Rules 3, 6 and 7 need data the journal has no column for (liquidation price, the reason for a long, stop moves).
 The journal check judges every week against today's deposit, not the deposit of that week.
@@ -62,6 +64,7 @@ BUY_COND_HOURS = 72.0  # rule 8: from BUY_BAN_HOURS up to this many hours (inclu
 BE_MAX_SIGMA = 1.0  # rule 8 (b): breakeven move <= this many 1-sigma moves at RV over the time left
 IV_MAX_RV = 1.2  # rule 8 (c): the bought option's IV <= this x RV
 ZONE_BAN, ZONE_COND, ZONE_FREE = "under_24h", "1_3_days", "over_3_days"  # rule 8 zones by the time to expiry
+IMPORT_THESIS_PLACEHOLDER = "теза не записана"  # scripts/bybit_import.py: "імпорт з Bybit: теза не записана"
 MAJORS = frozenset({"BTC", "ETH"})
 RULES = (1, 2, 4, 5, 8)
 MIN_CHECKED = 30  # compliance_summary: under this many checked trades the share is descriptive only
@@ -150,6 +153,14 @@ def thesis_check(thesis: object, target: object) -> tuple[str, str]:
         return OK, "thesis and target recorded"
     miss = [w for w, ok in (("thesis", has_thesis), ("target", has_target)) if not ok]
     return VIOLATED, "no " + " and no ".join(miss)
+
+
+def owner_thesis(thesis: object, tags: Sequence[str]) -> object:
+    """The journal row's thesis as rule 8 (a) sees it: on an 'import' row the importer's placeholder (text with
+    IMPORT_THESIS_PLACEHOLDER) is no thesis (None); any other text, including one the owner wrote later, counts."""
+    if "import" in tags and isinstance(thesis, str) and IMPORT_THESIS_PLACEHOLDER in thesis:
+        return None
+    return thesis
 
 
 def conditions_status(*statuses: str) -> str:
@@ -274,7 +285,7 @@ def pre_trade_option(
     s, r = _num(spot), _num(rv)
     s = s if s is not None and s > 0 else None
     r = r if r is not None and r > 0 else None
-    rv_why = "RV30: 30 daily closes, zero mean, x365 (the forecast log's RV30 model)"
+    rv_why = "RV30: 30 daily closes, zero mean, x365 (same method as the forecast log's RV30 model)"
     if debit is None:  # a leg without a premium: the payoff would treat it as free and understate the move
         b = {"rule": 8, "key": "breakeven_move", "status": UNKNOWN, "value": None, "limit": None, "detail": "premium unknown"}
     elif s is None or r is None:
@@ -341,8 +352,7 @@ def _normalize(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
                 "entry": _num(t.get("entry")),
                 "stop": _num(t.get("stop")),
                 "target": _num(t.get("target")),
-                # an import writes a placeholder ("теза не записана"), not the owner's thesis
-                "thesis": None if "import" in tags else t.get("thesis"),
+                "thesis": owner_thesis(t.get("thesis"), tags),
                 "pnl": _num(t.get("pnl")) if status == "closed" else None,
             }
         )

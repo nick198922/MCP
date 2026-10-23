@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import json
 import math
+import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import ccxt
 import httpx
@@ -16,6 +18,7 @@ from conftest import FakeEx, State, make_transports
 from tradedesk.analytics.option_xvenue import (
     FEE_RATE,
     MIN_DEPTH,
+    MINUTE_WINDOW_SECONDS,
     REG_GAP_SOURCE,
     REG_STRIKES_EACH_SIDE,
     REG_SYNC_MS,
@@ -26,16 +29,24 @@ from tradedesk.analytics.option_xvenue import (
     crossing,
     crossing_from_row,
     deribit_quote,
+    extend_windows,
     parse_bybit_symbol,
     pick_daily_expiry,
+    plan_tick,
+    registered_rows,
+    seed_schedule,
+    snapshot_crossings,
+    sync_ok,
 )
-from tradedesk.collector.option_xvenue import collect_option_xvenue, scan_option_xvenue
+from tradedesk.collector.option_xvenue import OptionXvenueJob, _received, collect_option_xvenue, scan_option_xvenue
 from tradedesk.collector.scheduler import _retention_sweep, build_default_scheduler
 from tradedesk.config import Settings
-from tradedesk.core.envelope import Builder
+from tradedesk.core.envelope import Builder, Evidence, Fetched
 from tradedesk.core.ratelimit import TokenBucket
 from tradedesk.features import allowed
 from tradedesk.runtime import Runtime
+from tradedesk.store import SCHEMA_VERSION, Store
+from tradedesk.store.schema import MIGRATIONS
 
 FIXTURE = Path(__file__).parent / "fixtures" / "option_xvenue_btc_2026-10-23.json"
 SAMPLE = json.loads(FIXTURE.read_text())
@@ -192,39 +203,54 @@ def test_quotes_from_the_real_sample():
 # ----------------------------------------------------------------------------- collector job
 
 
-def _summary() -> list[dict]:
+def _summary(fwd_shift: float = 0.0) -> list[dict]:
     """Book summary: the sample's 23OCT26 strikes plus far strikes and a next-day expiry the job must ignore."""
-    fwd = SAMPLE["deribit_ticker"]["BTC-23OCT26-82000-C"]["underlying_price"]
+    fwd = SAMPLE["deribit_ticker"]["BTC-23OCT26-82000-C"]["underlying_price"] + fwd_shift
     names = list(SAMPLE["deribit_ticker"])
     names += [f"BTC-23OCT26-{k}-{t}" for k in (78000, 79000, 80000, 84000, 85000) for t in "CP"]
     names += [f"BTC-24OCT26-{k}-{t}" for k in (81000, 82000) for t in "CP"]
     return [{"instrument_name": n, "underlying_price": fwd, "estimated_delivery_price": 81847.32} for n in names]
 
 
-def _rt(tmp_path, *, deribit_down: bool = False, empty_summary: bool = False, bybit: str = "ok", **kw) -> tuple[Runtime, list]:
+def _rt(
+    tmp_path, *, deribit_down: bool = False, empty_summary: bool = False, bybit: str = "ok", opts: dict | None = None, **kw
+) -> tuple[Runtime, list]:
+    """Fake venues. ``opts`` (mutable, read on every request) lets a test change "bybit" / "deribit_down" / "fwd_shift"
+    (USD added to Deribit's forward in the summary and the tickers) between ticks."""
     calls: list = []
+    opts = opts if opts is not None else {}
+    opts.setdefault("bybit", bybit)
+    opts.setdefault("deribit_down", deribit_down)
+    opts.setdefault("fwd_shift", 0.0)
 
     def deribit(req: httpx.Request) -> httpx.Response:
-        calls.append(("deribit", req.url.path.rsplit("/", 1)[-1], req.url.params.get("instrument_name")))
-        if deribit_down:
+        calls.append(("deribit", req.url.path.rsplit("/", 1)[-1], req.url.params.get("instrument_name") or req.url.params.get("currency")))
+        if opts["deribit_down"]:
             return httpx.Response(500, text="down")
         if req.url.path.endswith("get_book_summary_by_currency"):
             far = [{"instrument_name": "ETH-30OCT26-2400-C", "underlying_price": 2412.5}]  # ETH: no daily expiry in the fake
-            res = ([] if empty_summary else _summary()) if req.url.params["currency"] == "BTC" else far
+            res = ([] if empty_summary else _summary(opts["fwd_shift"])) if req.url.params["currency"] == "BTC" else far
             return httpx.Response(200, json={"jsonrpc": "2.0", "result": res})
         name = req.url.params.get("instrument_name")
         if req.url.path.endswith("/ticker") and name in SAMPLE["deribit_ticker"]:
-            return httpx.Response(200, json={"jsonrpc": "2.0", "result": SAMPLE["deribit_ticker"][name]})
+            t = SAMPLE["deribit_ticker"][name]
+            t = dict(t, underlying_price=t["underlying_price"] + opts["fwd_shift"])
+            return httpx.Response(200, json={"jsonrpc": "2.0", "result": t})
         return httpx.Response(200, json={"jsonrpc": "2.0", "error": {"code": 13020, "message": "instrument_not_found"}})
 
     class Ex(FakeEx):
         async def publicGetV5MarketTickers(self, params):  # noqa: N802 - ccxt implicit endpoint name
             calls.append(("bybit", params["category"], params["baseCoin"]))
+            bybit = opts["bybit"]
             if bybit == "down":
                 raise ccxt.NetworkError("bybit unreachable")
             body = json.loads(json.dumps(SAMPLE["bybit"]))
             if params["baseCoin"] != "BTC" or bybit == "no_daily":
                 body["result"]["list"] = [r for r in body["result"]["list"] if params["baseCoin"] == "BTC" and "23OCT26" not in r["symbol"]]
+            if bybit == "cross":  # Bybit bids 1000 USD for 1 BTC of the ATM call Deribit offers at ~131: a registered crossing
+                for r in body["result"]["list"]:
+                    if r["symbol"] == "BTC-23OCT26-82000-C-USDT":
+                        r.update(bid1Price="1000", bid1Size="1")
             if bybit == "usdc_dup":  # the same strikes listed again as USDC-settled (no suffix), after the USDT rows
                 dup = [dict(r, symbol=r["symbol"].removesuffix("-USDT"), bid1Price="1") for r in body["result"]["list"]]
                 body["result"]["list"] += dup
@@ -254,6 +280,8 @@ async def test_job_stores_both_legs_of_the_atm_strikes(tmp_path):
         assert r["d_ts_ms"] == 1792724299253 and r["b_ts_ms"] == SAMPLE["bybit"]["time"]
         assert r["tau_hours"] == pytest.approx(5.0278, abs=1e-3) and r["ts"] == int(NOW.timestamp())
         assert r["d_mark_iv"] == pytest.approx(0.2399) and r["b_mark_iv"] == pytest.approx(0.2549)
+        assert {r["d_instrument"] for r in rows if r["reg_atm"] == 1} == ATM1 and sum(r["reg_atm"] for r in rows) == 6
+        assert r["d_recv_ms"] == r["b_recv_ms"] == int(NOW.timestamp() * 1000)  # the fake clock does not move
         c = crossing_from_row(r)  # live sample: no crossing; Bybit's index 0.15 % above Deribit's
         assert c["best"] < 0 and c["index_gap"] == pytest.approx(0.001456, abs=1e-5) and c["dt_ms"] == 2205
         a = adjusted_crossing_from_row(r)  # registered measure: the call's basis (~ delta x gap x F) taken off Bybit
@@ -347,7 +375,7 @@ async def test_both_venues_down_scan_never_raises_job_reports(tmp_path):
         b = Builder()
         assert await scan_option_xvenue(rt, b) == []
         assert {m.field for m in b.missing} == {"deribit_options:BTC", "deribit_options:ETH", "bybit_options:BTC", "bybit_options:ETH"}
-        with pytest.raises(RuntimeError, match="option_xvenue: no rows"):  # the scheduler records it as a failed run
+        with pytest.raises(RuntimeError, match=r"option_xvenue \(hourly\): no rows"):  # the scheduler records it as a failed run
             await collect_option_xvenue(rt)
     finally:
         await rt.aclose()
@@ -387,3 +415,259 @@ def test_job_off_by_default_and_switch_allow_listed(tmp_path, monkeypatch):
     on, _ = _rt(tmp_path, collector_enabled=True, collect_option_xvenue_enabled=True)
     names = lambda rt: {j.name for j in build_default_scheduler(rt).jobs}  # noqa: E731
     assert "option_xvenue" not in names(off) and "option_xvenue" in names(on)
+    job = next(j for j in build_default_scheduler(on).jobs if j.name == "option_xvenue")
+    assert job.period_seconds == 60 and isinstance(job.fn, OptionXvenueJob) and job.fn.hourly_seconds == 3600
+
+
+# ----------------------------------------------------------------------------- minute mode and leg sync
+
+ATM1 = {f"BTC-23OCT26-{k}-{t}" for k in (81500, 82000, 82500) for t in "CP"}  # registered ATM +- 1 around 81 856.69
+ATM2 = {f"BTC-23OCT26-{k}-{t}" for k in (81000, 81500, 82000, 82500, 83000) for t in "CP"}  # minute-mode read
+
+
+def _xrow(strike: float, *, dt_ms: int = 1_000, b_bid: float = 1300.0, **kw) -> dict:
+    """A stored row, no index gap (shift 0): Bybit bid 1300 vs Deribit ask 1000 USD -> net 300 - 60 = +0.24 % of spot,
+    a registered crossing on b_over_d; Bybit ask 1350 vs Deribit bid 900 -> no crossing on d_over_b."""
+    row = {
+        "ts": 1_000, "mode": "hourly", "currency": "BTC", "strike": strike, "opt": "C", "tau_hours": 10.0,
+        "d_instrument": f"BTC-X-{strike:g}-C", "d_bid": 0.009, "d_ask": 0.0100, "d_bid_size": 1.0, "d_ask_size": 1.0,
+        "d_index": 100_000.0, "d_underlying": 100_000.0, "d_mark_iv": 0.40, "d_ts_ms": 10_000,
+        "b_bid": b_bid, "b_ask": 1350.0, "b_bid_size": 1.0, "b_ask_size": 1.0, "b_index": 100_000.0,
+        "b_ts_ms": 10_000 + dt_ms,
+    }  # fmt: skip
+    return row | kw
+
+
+def test_registered_rows_sync_class_and_snapshot_crossings():
+    rows = [_xrow(k, b_bid=0.0) for k in (98_500.0, 99_000.0, 99_500.0, 100_000.0, 100_500.0, 101_000.0, 101_500.0)]
+    assert sorted(r["strike"] for r in registered_rows(rows)) == [99_500.0, 100_000.0, 100_500.0]
+    assert registered_rows([dict(r, d_underlying=None) for r in rows]) == []  # no Deribit forward -> nothing measurable
+    assert snapshot_crossings(rows) == []  # Bybit bid 0 -> no quote -> no crossing
+    assert sync_ok(_xrow(1.0, dt_ms=REG_SYNC_MS)) and not sync_ok(_xrow(1.0, dt_ms=-REG_SYNC_MS - 1))
+    assert not sync_ok(_xrow(1.0, b_ts_ms=None))
+    hit = [dict(r, b_bid=1300.0) if r["strike"] == 100_000.0 else r for r in rows]
+    assert snapshot_crossings(hit) == [("BTC", 100_000.0, "C", "b_over_d")]
+    far = [dict(r, b_bid=1300.0) if r["strike"] == 101_500.0 else r for r in rows]
+    assert snapshot_crossings(far) == []  # ATM + 3: collected, but not the registered ATM +- 1
+    slow = [dict(r, b_ts_ms=r["d_ts_ms"] + 5_001) for r in hit]
+    assert snapshot_crossings(slow) == []  # class B (5-60 s) never triggers
+    thin = [dict(r, b_bid_size=0.05) for r in hit]
+    assert snapshot_crossings(thin) == []  # depth < 0.1 BTC on the crossing side
+    small = [dict(r, b_bid=1200.0) for r in hit]  # net 200 - 60 = +0.14 % < 0.15 %
+    assert snapshot_crossings(small) == []
+
+
+def test_plan_tick_and_windows():
+    t0 = NOW
+    until = {"BTC": t0 + timedelta(minutes=30)}
+    kw = {"hourly_seconds": 3600, "currencies": ("BTC", "ETH")}
+    assert plan_tick(t0, None, {}, **kw) == ("hourly", ("BTC", "ETH"))  # first tick
+    assert plan_tick(t0 + timedelta(seconds=3570), t0, {}, **kw) == ("hourly", ("BTC", "ETH"))  # half a tick of slack
+    assert plan_tick(t0 + timedelta(seconds=3569), t0, {}, **kw) == (None, ())
+    assert plan_tick(t0 + timedelta(minutes=29), t0, until, **kw) == ("minute", ("BTC",))
+    assert plan_tick(t0 + timedelta(minutes=30), t0, until, **kw) == (None, ())  # window over
+    assert plan_tick(t0 + timedelta(minutes=60), t0, until | {"ETH": t0 + timedelta(hours=2)}, **kw)[0] == "hourly"
+    hit = [("BTC", 82000.0, "C", "b_over_d")]
+    later = t0 + timedelta(minutes=20)
+    assert extend_windows(until, hit, later) == {"BTC": later + timedelta(seconds=MINUTE_WINDOW_SECONDS)}  # re-armed
+    assert extend_windows(until, [], later) == until and extend_windows({}, [("ETH", 1.0, "P", "d_over_b")], t0) == {
+        "ETH": t0 + timedelta(minutes=30)
+    }
+
+
+def test_seed_schedule_from_stored_rows():
+    t = int(NOW.timestamp())
+    rows = [_xrow(k, ts=t, b_bid=0.0) for k in (99_500.0, 100_000.0, 100_500.0)]  # hourly, no crossing
+    rows += [_xrow(100_000.0, ts=t + 600, mode="minute")]  # minute row with a crossing
+    rows += [_xrow(100_000.0, ts=t + 660, mode="minute", b_bid=0.0)]  # gone a minute later
+    last, until = seed_schedule(rows)
+    assert last == NOW and until == {"BTC": NOW + timedelta(seconds=600 + MINUTE_WINDOW_SECONDS)}
+    assert seed_schedule([]) == (None, {})
+
+
+def _clock(rt) -> list:
+    clock = [NOW]
+    rt.now = lambda: clock[0]
+    return clock
+
+
+async def test_crossing_starts_minute_window_and_it_ends_after_30_min(tmp_path):
+    opts = {"bybit": "cross"}
+    rt, calls = _rt(tmp_path, opts=opts)
+    clock, job = _clock(rt), OptionXvenueJob()
+    try:
+        assert await job(rt) == 14  # hourly: ATM +- 3, BTC (ETH has no daily expiry in the fake)
+        assert job.minute_until == {"BTC": NOW + timedelta(minutes=30)}
+        calls.clear()
+        opts["bybit"] = "ok"  # the crossing is gone from here on: the window is not re-armed
+        clock[0] = NOW + timedelta(seconds=61)
+        assert await job(rt) == 10  # minute: ATM +- 2 of BTC only
+        assert {x[2] for x in calls if x[1] == "ticker"} == ATM2 and len([x for x in calls if x[1] == "ticker"]) == 10
+        assert [x[2] for x in calls if x[1] == "get_book_summary_by_currency"] == ["BTC"]  # ETH not read in BTC's window
+        assert [x for x in calls if x[0] == "bybit"] == [("bybit", "option", "BTC")]
+        clock[0] = NOW + timedelta(minutes=20)
+        assert await job(rt) == 10 and job.minute_until == {"BTC": NOW + timedelta(minutes=30)}
+        calls.clear()
+        clock[0] = NOW + timedelta(minutes=30, seconds=1)
+        assert await job(rt) == 0 and calls == []  # window over, hourly not due: nothing is read
+        clock[0] = NOW + timedelta(minutes=60)
+        assert await job(rt) == 14  # back to the hourly snapshot
+        rows = await rt.store.option_xvenue_rows()
+        modes = {(r["ts"] - int(NOW.timestamp()), r["mode"]) for r in rows}
+        assert modes == {(0, "hourly"), (61, "minute"), (1200, "minute"), (3600, "hourly")}
+        assert {r["strike"] for r in rows if r["mode"] == "minute"} == {81000.0, 81500.0, 82000.0, 82500.0, 83000.0}
+        assert {r["strike"] for r in rows if r["mode"] == "minute" and r["reg_atm"] == 1} == {81500.0, 82000.0, 82500.0}
+        first = [r for r in rows if r["ts"] == int(NOW.timestamp())]
+        assert snapshot_crossings(first) == [("BTC", 82000.0, "C", "b_over_d")]  # the stored rows reproduce the trigger
+    finally:
+        await rt.aclose()
+
+
+async def test_no_crossing_stays_hourly(tmp_path):
+    rt, calls = _rt(tmp_path)
+    clock, job = _clock(rt), OptionXvenueJob()
+    try:
+        assert await job(rt) == 14
+        assert snapshot_crossings(await rt.store.option_xvenue_rows()) == [] and job.minute_until == {}
+        calls.clear()
+        for minutes in (1, 15, 59):
+            clock[0] = NOW + timedelta(minutes=minutes)
+            assert await job(rt) == 0
+        assert calls == []
+        clock[0] = NOW + timedelta(minutes=60)
+        assert await job(rt) == 14
+        assert {r["mode"] for r in await rt.store.option_xvenue_rows()} == {"hourly"}
+    finally:
+        await rt.aclose()
+
+
+async def test_crossing_rearms_the_window_and_a_restart_resumes_it(tmp_path):
+    rt, _ = _rt(tmp_path, bybit="cross")
+    clock = _clock(rt)
+    try:
+        job = OptionXvenueJob()
+        assert await job(rt) == 14
+        clock[0] = NOW + timedelta(minutes=20)
+        assert await job(rt) == 10 and job.minute_until == {"BTC": NOW + timedelta(minutes=50)}  # re-armed by a minute snapshot
+        restarted = OptionXvenueJob()  # a new process: state from the store, no extra hourly snapshot
+        clock[0] = NOW + timedelta(minutes=40)
+        assert await restarted(rt) == 10
+        assert restarted.last_hourly == NOW and restarted.minute_until == {"BTC": NOW + timedelta(minutes=70)}
+    finally:
+        await rt.aclose()
+
+
+async def test_minute_mode_provider_failure_never_crashes_the_schedule(tmp_path):
+    opts = {"bybit": "cross"}
+    rt, _ = _rt(tmp_path, opts=opts)
+    clock, job = _clock(rt), OptionXvenueJob()
+    try:
+        assert await job(rt) == 14
+        opts["bybit"] = "down"
+        clock[0] = NOW + timedelta(minutes=1)
+        assert await job(rt) == 10  # Deribit legs stored, Bybit in missing; no crossing measurable, window unchanged
+        assert job.minute_until == {"BTC": NOW + timedelta(minutes=30)}
+        opts["deribit_down"] = True
+        clock[0] = NOW + timedelta(minutes=2)
+        with pytest.raises(RuntimeError, match=r"option_xvenue \(minute\): no rows"):  # recorded as a failed run
+            await job(rt)
+        opts.update(bybit="ok", deribit_down=False)
+        clock[0] = NOW + timedelta(minutes=3)
+        assert await job(rt) == 10  # the window survived the failure
+        rows = await rt.store.option_xvenue_rows()
+        down = [r for r in rows if r["ts"] == int((NOW + timedelta(minutes=1)).timestamp())]
+        assert len(down) == 10 and all(r["mode"] == "minute" and r["b_symbol"] is None and r["d_instrument"] for r in down)
+        assert all(r["b_recv_ms"] is None and r["d_recv_ms"] is not None for r in down)  # failed leg: no receive time
+    finally:
+        await rt.aclose()
+
+
+async def test_bybit_leaves_in_the_same_gather_before_the_deribit_tickers(tmp_path):
+    rt, calls = _rt(tmp_path)
+    try:
+        assert await collect_option_xvenue(rt) == 14
+        order = [x for x in calls if x[0] == "bybit" or x[1] == "ticker"]
+        assert order[0] == ("bybit", "option", "BTC")  # was after all 14 Deribit tickers
+        assert {x[2] for x in order[1:7]} == ATM1  # the registered strikes first in the Deribit rate-limit queue
+    finally:
+        await rt.aclose()
+
+
+async def test_minute_mode_keeps_the_episode_strike_when_the_forward_moves(tmp_path):
+    opts = {"bybit": "cross"}
+    rt, _ = _rt(tmp_path, opts=opts)
+    clock, job = _clock(rt), OptionXvenueJob()
+    try:
+        assert await job(rt) == 14 and job.minute_until == {"BTC": NOW + timedelta(minutes=30)}  # episode at 82 000 C (ATM)
+        opts["fwd_shift"] = -1000.0  # forward 80 856.69: ATM 81 000, the registered ATM +- 1 no longer holds 82 000
+        assert 82_000.0 not in atm_strikes(ATM, 80_856.69, REG_STRIKES_EACH_SIDE)  # what an ATM +- 1 read would lose
+        clock[0] = NOW + timedelta(minutes=5)
+        assert await job(rt) == 10  # ATM +- 2: 80 000 .. 82 000 (80 000: Bybit only, Deribit lists no ticker in the fake)
+        rows = [r for r in await rt.store.option_xvenue_rows() if r["mode"] == "minute"]
+        assert sorted({r["strike"] for r in rows}) == [80_000.0, 80_500.0, 81_000.0, 81_500.0, 82_000.0]
+        assert sorted({r["strike"] for r in rows if r["reg_atm"] == 1}) == [80_500.0, 81_000.0, 81_500.0]
+        ep = next(r for r in rows if r["strike"] == 82_000.0 and r["opt"] == "C")
+        assert ep["reg_atm"] == 0 and ep["d_instrument"] and ep["b_symbol"]  # still read, both legs: trackable
+        assert adjusted_crossing_from_row(ep)["b_over_d"]["net_frac"] >= REG_THRESHOLD  # the episode is still there ...
+        assert snapshot_crossings(rows) == []  # ... but the registered trigger (ATM +- 1) is unchanged: no re-arm
+        assert job.minute_until == {"BTC": NOW + timedelta(minutes=30)}
+    finally:
+        await rt.aclose()
+
+
+async def test_receive_time_of_each_leg_lies_inside_the_tick(tmp_path):
+    rt, _ = _rt(tmp_path)
+    ticks = iter(range(10_000))
+    rt.now = lambda: NOW + timedelta(milliseconds=next(ticks))  # every clock read 1 ms later
+    try:
+        assert await collect_option_xvenue(rt) == 14
+        end = int(rt.now().timestamp() * 1000)
+        rows = await rt.store.option_xvenue_rows()
+        start = int(NOW.timestamp() * 1000)
+        assert {r["ts"] for r in rows} == {int(NOW.timestamp())}
+        assert all(start < r["d_recv_ms"] < end and start < r["b_recv_ms"] < end for r in rows)
+        assert len({r["d_recv_ms"] for r in rows}) == 14  # one Deribit request per instrument
+        assert len({r["b_recv_ms"] for r in rows}) == 1  # one Bybit chain request for the currency
+    finally:
+        await rt.aclose()
+
+
+async def test_receive_time_is_unknown_for_a_cached_answer():
+    clock = SimpleNamespace(now=lambda: NOW)
+
+    async def answer(cached: bool) -> Fetched:
+        return Fetched({"x": 1}, Evidence(provider="deribit", tool="ticker", cached=cached))
+
+    assert (await _received(clock, answer(False))).data == ({"x": 1}, int(NOW.timestamp() * 1000))
+    assert (await _received(clock, answer(True))).data == ({"x": 1}, None)
+
+
+async def test_migration_26_tags_old_rows_hourly_and_mode_is_stored(tmp_path):
+    path = tmp_path / "v25.sqlite"
+    con = sqlite3.connect(path)
+    for v in sorted(MIGRATIONS):
+        if v <= 25:
+            for stmt in MIGRATIONS[v]:
+                con.execute(stmt)
+    con.execute("INSERT INTO option_xvenue_snapshot (ts, currency, expiry_ts, tau_hours, strike, opt) VALUES (1, 'BTC', 9, 5.0, 1.0, 'C')")
+    con.execute("PRAGMA user_version = 25")
+    con.commit()
+    con.close()
+    s = Store(path)
+    await s.init()
+    try:
+        assert await s.version() == SCHEMA_VERSION >= 26
+        assert [r["mode"] for r in await s.option_xvenue_rows()] == ["hourly"]
+        row = {"currency": "BTC", "expiry_ts": 9, "tau_hours": 5.0, "strike": 1.0, "opt": "C"}
+        assert await s.insert_option_xvenue(2, [row], mode="minute") == 1
+        assert [(r["ts"], r["mode"]) for r in await s.option_xvenue_rows()] == [(1, "hourly"), (2, "minute")]
+        old = (await s.option_xvenue_rows())[0]
+        assert (old["reg_atm"], old["d_recv_ms"], old["b_recv_ms"]) == (None, None, None)  # unknown for earlier rows
+        tagged = row | {"reg_atm": 1, "d_recv_ms": 1_792_724_300_100, "b_recv_ms": 1_792_724_300_350}
+        assert await s.insert_option_xvenue(4, [tagged], mode="minute") == 1
+        new = (await s.option_xvenue_rows(4))[0]
+        assert (new["reg_atm"], new["d_recv_ms"], new["b_recv_ms"]) == (1, 1_792_724_300_100, 1_792_724_300_350)
+        with pytest.raises(ValueError):
+            await s.insert_option_xvenue(3, [row], mode="burst")
+    finally:
+        await s.aclose()

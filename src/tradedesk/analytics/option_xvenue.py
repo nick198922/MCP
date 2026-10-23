@@ -8,13 +8,16 @@ Units: option prices are USD per 1 unit of the underlying (Deribit quotes in the
 Deribit index); sizes are base-coin units at the best level; IV decimals (0.45 = 45 %); edges are decimal fractions of
 spot (0.0015 = 0.15 %). The registered analysis parameters (``REG_*``, card section «Реєстрація (до збору)», 23.10.2026)
 were committed before the collector was switched on; :func:`adjusted_crossing_from_row` is the registered primary measure.
+The minute-mode scheduling (:func:`snapshot_crossings`, :func:`plan_tick`, :func:`extend_windows`, :func:`seed_schedule`)
+uses that measure unchanged and only decides when the collector reads.
 """
 
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable
-from datetime import datetime
+import statistics
+from collections.abc import Iterable, Mapping
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .instruments import parse_option_name
@@ -32,6 +35,15 @@ REG_STRIKES_EACH_SIDE = 1  # ATM +- 1 Deribit strike around the Deribit forward
 REG_SYNC_MS = 5_000  # |b_ts_ms - d_ts_ms| for the primary count; 5-60 s reported separately
 REG_SYNC_LOOSE_MS = 60_000
 REG_GAP_SOURCE = "index"  # primary index gap b_index / d_index - 1; sensitivity "underlying"
+
+# Minute mode (card «Форвард» and «Час життя»): a crossing by the registered rule opens, per currency, a window of minute
+# snapshots lasting MINUTE_WINDOW_SECONDS after the latest crossing; otherwise the job stays hourly. A minute snapshot reads
+# ATM +- 2 (tracking only: an episode's strike stays in view when the forward moves by about one strike step); the trigger
+# stays the registered ATM +- 1, and each row's ``reg_atm`` tags whether it belongs to that ATM +- 1 (:func:`registered_rows`).
+MINUTE_WINDOW_SECONDS = 1800
+MINUTE_TICK_SECONDS = 60
+MINUTE_STRIKES_EACH_SIDE = 2
+MODES = ("hourly", "minute")  # option_xvenue_snapshot.mode
 
 
 def num(v: Any) -> float | None:
@@ -264,3 +276,109 @@ def adjusted_crossing_from_row(
         fee_rate=(fee_deribit + fee_bybit) / 2.0,  # crossing() charges 2 x fee_rate x spot
         min_depth=min_depth,
     )
+
+
+# ----------------------------------------------------------------------------- minute mode (pure scheduling)
+
+Crossing = tuple[str, float, str, str]  # (currency, strike, opt 'C' | 'P', side 'b_over_d' | 'd_over_b')
+
+
+def sync_ok(row: Mapping[str, Any], sync_ms: int = REG_SYNC_MS) -> bool:
+    """Sync class A of the registration: both leg read times known and |b_ts_ms - d_ts_ms| <= ``sync_ms``."""
+    d, b = row.get("d_ts_ms"), row.get("b_ts_ms")
+    return d is not None and b is not None and abs(int(b) - int(d)) <= sync_ms
+
+
+def registered_rows(rows: Iterable[Mapping[str, Any]], each_side: int = REG_STRIKES_EACH_SIDE) -> list[Mapping[str, Any]]:
+    """The registered ATM +- 1 rows of ONE currency's snapshot: among the stored rows with a Deribit instrument, the
+    strike nearest the Deribit forward (median ``d_underlying`` of those rows; tie -> the lower) and ``each_side``
+    neighbours (:func:`atm_strikes`). Empty when no row carries a Deribit forward."""
+    deribit = [r for r in rows if r.get("d_instrument") and r.get("strike") is not None]
+    fwd = [x for x in (num(r.get("d_underlying")) for r in deribit) if x is not None]
+    if not fwd:
+        return []
+    keep = set(atm_strikes([float(r["strike"]) for r in deribit], statistics.median(fwd), each_side))
+    return [r for r in deribit if float(r["strike"]) in keep]
+
+
+def snapshot_crossings(
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    threshold: float = REG_THRESHOLD,
+    sync_ms: int = REG_SYNC_MS,
+    each_side: int = REG_STRIKES_EACH_SIDE,
+) -> list[Crossing]:
+    """Crossings of ONE snapshot by the registered primary rule (card «Реєстрація (до збору)»): per currency, its
+    ATM +- 1 rows (:func:`registered_rows`) of sync class A (:func:`sync_ok`) whose :func:`adjusted_crossing_from_row`
+    side has ``depth_ok`` and ``net_frac`` >= ``threshold``. Unmeasurable rows are skipped. Returns sorted
+    (currency, strike, opt, side) keys: the trigger of the minute mode and the episode key of the lifetime analysis
+    (same strike / type / direction). Both currencies are evaluated; only BTC carries the verdict (ETH descriptive)."""
+    by_cur: dict[str, list[Mapping[str, Any]]] = {}
+    for r in rows:
+        if r.get("currency"):
+            by_cur.setdefault(str(r["currency"]), []).append(r)
+    out: list[Crossing] = []
+    for cur, rs in by_cur.items():
+        for r in registered_rows(rs, each_side):
+            if not sync_ok(r, sync_ms):
+                continue
+            a = adjusted_crossing_from_row(dict(r))
+            if a is None:
+                continue
+            for side in ("b_over_d", "d_over_b"):
+                s = a[side]
+                if s is not None and s["depth_ok"] and s["net_frac"] >= threshold:
+                    out.append((cur, float(r["strike"]), str(r["opt"]), side))
+    return sorted(out)
+
+
+def plan_tick(
+    now: datetime,
+    last_hourly: datetime | None,
+    minute_until: Mapping[str, datetime],
+    *,
+    hourly_seconds: float,
+    currencies: Iterable[str],
+    tick_seconds: float = MINUTE_TICK_SECONDS,
+) -> tuple[str | None, tuple[str, ...]]:
+    """What one collector tick does. ``("hourly", all currencies)`` when the hourly snapshot is due (``hourly_seconds``
+    since ``last_hourly``, minus half a tick so a tick-paced job keeps the hour; it also covers any open minute window,
+    ATM +- 3 containing the minute ATM +- 2); else ``("minute", currencies whose window ends after now)``; else ``(None, ())``."""
+    curs = tuple(currencies)
+    if last_hourly is None or (now - last_hourly).total_seconds() >= hourly_seconds - tick_seconds / 2.0:
+        return "hourly", curs
+    open_ = tuple(c for c in curs if c in minute_until and minute_until[c] > now)
+    return ("minute", open_) if open_ else (None, ())
+
+
+def extend_windows(
+    minute_until: Mapping[str, datetime], hits: Iterable[Crossing], now: datetime, window_seconds: float = MINUTE_WINDOW_SECONDS
+) -> dict[str, datetime]:
+    """New minute windows after a snapshot taken at ``now``: each currency with a crossing gets ``now + window_seconds``
+    (re-armed by every crossing, so an episode is followed until it has been gone for the whole window); others keep
+    theirs."""
+    out = dict(minute_until)
+    end = now + timedelta(seconds=window_seconds)
+    for cur in {h[0] for h in hits}:
+        out[cur] = max(out.get(cur, end), end)
+    return out
+
+
+def seed_schedule(
+    rows: Iterable[Mapping[str, Any]], *, window_seconds: float = MINUTE_WINDOW_SECONDS
+) -> tuple[datetime | None, dict[str, datetime]]:
+    """Scheduler state rebuilt from stored ``option_xvenue_snapshot`` rows (after a restart, so a restart neither adds an
+    hourly snapshot nor cuts a minute window short): the time of the latest ``mode = 'hourly'`` snapshot and, per
+    currency, the window end opened by its latest crossing (:func:`snapshot_crossings` per ``ts``)."""
+    by_ts: dict[int, list[Mapping[str, Any]]] = {}
+    for r in rows:
+        if r.get("ts") is not None:
+            by_ts.setdefault(int(r["ts"]), []).append(r)
+    last_hourly: datetime | None = None
+    until: dict[str, datetime] = {}
+    for ts in sorted(by_ts):
+        at = datetime.fromtimestamp(ts, UTC)
+        if any(r.get("mode", "hourly") == "hourly" for r in by_ts[ts]):
+            last_hourly = at
+        until = extend_windows(until, snapshot_crossings(by_ts[ts]), at, window_seconds)
+    return last_hourly, until

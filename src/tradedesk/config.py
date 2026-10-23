@@ -97,8 +97,9 @@ class Settings:
     collect_radar_enabled: bool = False
     collect_radar_seconds: int = 3600
     # Deribit <-> Bybit daily option quotes (collector/option_xvenue.py, IDEA-20261023-bybit-deribit-daily-option-dislocation-
-    # forward): hourly, nearest expiry 2-20 h away, ATM +- 3 strikes. Off by default (switch on only after the threshold is
-    # registered, card condition 3). Retention like atm_term / funding_hist / basis_hist.
+    # forward): hourly (this cadence), nearest expiry 2-20 h away, ATM +- 3 strikes; plus ATM +- 2 every minute for 30 min after
+    # a registered (ATM +- 1) crossing (the job ticks every 60 s). Off by default (switch on only after the threshold is registered, card
+    # condition 3). Retention like atm_term / funding_hist / basis_hist.
     collect_option_xvenue_enabled: bool = False
     collect_option_xvenue_seconds: int = 3600
     retention_option_xvenue_days: int = 365

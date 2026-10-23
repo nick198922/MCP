@@ -26,8 +26,9 @@ chart with events and rule-based «what it means for trades» (hypotheses, not a
 ago» dates (surface rows vs daily DVOL). Null fields show their reason from the section's ``missing``.
 
 The «Журнал» tab (/journal) reads the owner's trade journal and the assistant's paper recommendations (rec_paper,
-labelled «гіпотеза») from the SQLite store over a read-only connection: summary, by source, the trades page by page,
-the owner's rule violations by ISO week (analytics.rules_check), and a summary of the assistant's trade plans
+labelled «гіпотеза») from the SQLite store over a read-only connection: summary, the cumulative R curve and the weekly
+review by ISO week of the close (analytics.journal.week_stats copies), by source, the trades page by page, the owner's
+rule violations by ISO week (analytics.rules_check), and a summary of the assistant's trade plans
 (trade_plan: counts by verdict and status, the resolved 'enter' plans' R).
 Every string from the database is untrusted text and is escaped; no database or no table gives an empty state.
 
@@ -907,6 +908,29 @@ HELP: dict[str, tuple[str, str, str, str]] = {
         "Усі реальні угоди, нові зверху: дата, джерело, інструмент, сторона, розмір, вхід і вихід, P&L у USD, R, теза.",
         "R порожній, якщо стоп не записано. Теги й нотатки — з імпорту або journal_add.",
         "Шукай повтори: той самий інструмент чи сетап раз у раз у мінусі — кандидат на паузу.",
+    ),
+    "j_review": (
+        "Крива в R і тижневий розбір",
+        "Статистика твоїх закритих реальних угод (без airdrop, паперових і демо-бота), не порада: накопичений R угода за "
+        "угодою і підсумок кожного ISO-тижня закриття (UTC).",
+        "R є лише в угодах із записаним стопом; угоди з бірж стопів не мають, тож у криву не входять. P&L — у USD, як "
+        "записано в журналі. Менше 30 угод — «замало для висновку»: це опис, а не доказ переваги чи її відсутності.",
+        "Записуй стоп у /trade чи journal_add: тоді угода потрапляє в криву, і за ≥ 30 угодами видно, чи є перевага.",
+    ),
+    "j_rcurve": (
+        "Крива в R",
+        "Сума R угод зі стопом за порядком закриття, від 0. R = результат угоди, поділений на ризик до стопу; "
+        "вісь X — номер угоди, вісь Y — накопичений R.",
+        "Крива, що росте, — угоди в сумі заробляють більше, ніж ризикують; просадка — найглибше падіння від максимуму, у R. "
+        "Зелена точка — угода в плюсі, червона — у мінусі.",
+        "Довга просадка в R при дотриманих стопах — привід зменшити розмір чи переглянути сетап, а не збільшувати ризик.",
+    ),
+    "j_weeks": (
+        "Розбір за тижнями",
+        "Закриті реальні угоди, згруповані за ISO-тижнем закриття (UTC), нові зверху: скільки закрито, скільки в плюсі, "
+        "P&L разом і на угоду (USD), середній R лише серед угод зі стопом, найкраща й найгірша угода за P&L.",
+        "«Невідомо» в колонці R — у тижні не було угод зі стопом. У тижні зазвичай кілька угод, тож окремий рядок шумний.",
+        "Один добрий чи поганий тиждень — не сигнал; дивись, чи повторюється той самий інструмент серед найгірших.",
     ),
     "j_rules": (
         "За правилами",
@@ -5063,6 +5087,105 @@ def max_drawdown_usd(rows: list[dict]) -> float:
     return worst
 
 
+# The «Крива в R і тижневий розбір» block: stdlib copies of analytics.journal week_start / _closed_rows / week_stats
+# (the fields shown; tests compare the pairs) over the owner's real trades, as scripts/journal_weekly_tg.py picks them.
+JOURNAL_BOT_TAGS = frozenset({"auto", "demo-paper", "bybit-demo"})  # scripts/journal_close_tg.BOT_TAGS: the demo trader
+JR_SMALL_SAMPLE = 30  # analytics.journal.SMALL_SAMPLE: fewer is a description, not a conclusion
+JR_WEEK_S = 7 * 86400.0
+JR_WEEKS = 12  # newest ISO weeks in the table
+JR_DOTS_MAX = 80  # a dot per trade on the R curve up to this many trades
+JR_SYMBOL_SHOWN = 24  # characters of a symbol in the weekly table
+
+
+def journal_owner_trades(rows: list[dict]) -> list[dict]:
+    """The owner's real trades: journal_kind 'real' (no airdrop, no *-paper) and no demo-trader row (JOURNAL_BOT_TAGS),
+    the same rows as scripts/journal_weekly_tg.real_trades."""
+    out = []
+    for t in rows:
+        tags = journal_tags(t.get("tags"))
+        if journal_kind(tags)[0] == "real" and not JOURNAL_BOT_TAGS.intersection(tags):
+            out.append(t)
+    return out
+
+
+def jr_week_start(ts: float) -> float:
+    """Monday 00:00 UTC (unix s) of the ISO week holding ``ts`` (copy of analytics.journal.week_start)."""
+    d = datetime.fromtimestamp(ts, timezone.utc)  # noqa: UP017 - runs on the system python3
+    return (d - timedelta(days=d.weekday())).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+
+
+def jr_closed_rows(rows: list[dict]) -> list[dict]:
+    """Copy of analytics.journal._closed_rows: closed rows with a finite P&L and a close time (the opening time when a
+    closed row has none), as copies with ``ts``, a numeric ``pnl``, ``r_multiple`` only when finite and ``outcome``
+    filled from the P&L when missing."""
+    out = []
+    for t in rows:
+        pnl = _num(t.get("pnl"))
+        ts = _num(t.get("closed_ts"))
+        ts = _num(t.get("opened_ts")) if ts is None else ts
+        if t.get("status") != "closed" or pnl is None or ts is None:
+            continue
+        outcome = t.get("outcome") if t.get("outcome") in ("win", "loss", "break_even") else None
+        if outcome is None:
+            outcome = "win" if pnl > 0 else "loss" if pnl < 0 else "break_even"
+        out.append({**t, "ts": ts, "pnl": pnl, "r_multiple": _num(t.get("r_multiple")), "outcome": outcome})
+    return out
+
+
+def jr_week_stats(rows: list[dict], start_ts: float, end_ts: float) -> dict:
+    """Copy of analytics.journal.week_stats (without by_source): the summary of the trades closed in [start_ts, end_ts),
+    best / worst by P&L and small_sample (fewer than JR_SMALL_SAMPLE)."""
+    return _jr_bucket_stats([x for x in jr_closed_rows(rows) if start_ts <= x["ts"] < end_ts], start_ts, end_ts)
+
+
+def _jr_bucket_stats(closed: list[dict], start_ts: float, end_ts: float) -> dict:
+    """jr_week_stats over ``closed``: jr_closed_rows output already limited to [start_ts, end_ts)."""
+    xs = sorted(closed, key=lambda x: (x["ts"], str(x.get("id"))))
+    s = journal_summary(xs)
+    return {
+        **s,
+        "start_ts": start_ts,
+        "end_ts": end_ts,
+        "best": max(xs, key=lambda x: x["pnl"]) if xs else None,
+        "worst": min(xs, key=lambda x: x["pnl"]) if xs else None,
+        "small_sample": s["closed_trades"] < JR_SMALL_SAMPLE,
+    }
+
+
+def jr_week_buckets(rows: list[dict]) -> list[tuple[float, list[dict]]]:
+    """The closed trades (jr_closed_rows) grouped by ISO week (UTC) of the close in one pass: [(week start, rows)],
+    newest first; every bucket is non-empty and its length is the week's closed_trades."""
+    groups: dict[float, list[dict]] = {}
+    for x in jr_closed_rows(rows):
+        groups.setdefault(jr_week_start(x["ts"]), []).append(x)
+    return sorted(groups.items(), key=lambda kv: kv[0], reverse=True)
+
+
+def jr_weeks(rows: list[dict]) -> list[dict]:
+    """jr_week_stats of every ISO week (UTC) with a closed trade, newest first."""
+    return [_jr_bucket_stats(xs, s, s + JR_WEEK_S) for s, xs in jr_week_buckets(rows)]
+
+
+def jr_r_curve(rows: list[dict]) -> list[dict]:
+    """Cumulative R of the closed trades with a recorded R (only rows with a stop have one), in closing order:
+    [{'id', 'ts', 'r', 'cum'}]."""
+    xs = sorted((x for x in jr_closed_rows(rows) if x["r_multiple"] is not None), key=lambda x: (x["ts"], _num(x.get("id")) or 0.0))
+    out, cum = [], 0.0
+    for x in xs:
+        cum += x["r_multiple"]
+        out.append({"id": x.get("id"), "ts": x["ts"], "r": x["r_multiple"], "cum": cum})
+    return out
+
+
+def jr_r_drawdown(curve: list[dict]) -> float:
+    """Largest peak-to-trough fall of the cumulative R curve (R, >= 0), starting from 0."""
+    peak = worst = 0.0
+    for c in curve:
+        peak = max(peak, c["cum"])
+        worst = max(worst, peak - c["cum"])
+    return worst
+
+
 def rec_summary(rows: list[dict]) -> dict:
     """Stdlib copy of analytics.rec_paper.summarize over the settled rows with numeric P&L."""
     settled = [
@@ -5505,6 +5628,128 @@ def block_journal_other(paper: list[dict], airdrop: list[dict]) -> str:
     return "".join(f"<p class='note'>{_e(x)}</p>" for x in notes)
 
 
+def r_curve_svg(curve: list[dict]) -> str:
+    """Cumulative R (y) by trade number in closing order (x), from 0; '' with fewer than two trades."""
+    n = len(curve)
+    if n < 2:
+        return ""
+    W, H, L, R, Tp, B = 720, 240, 48, 16, 12, 26
+    ys = [0.0] + [c["cum"] for c in curve]
+    pad = max(0.5, (max(ys) - min(ys)) * 0.08)
+    lo, hi = min(ys) - pad, max(ys) + pad
+
+    def X(i: float) -> float:
+        return L + i / n * (W - L - R)
+
+    def Y(v: float) -> float:
+        return Tp + (hi - v) / (hi - lo) * (H - Tp - B)
+
+    g = []
+    st_ = nice_step(hi - lo, 4)
+    p = math.ceil(lo / st_) * st_
+    while p <= hi:
+        g.append(
+            f'<line x1="{L}" x2="{W - R}" y1="{Y(p):.1f}" y2="{Y(p):.1f}" style="stroke:var(--line)"/>'
+            f'<text x="{L - 6}" y="{Y(p) + 4:.1f}" text-anchor="end">{_e(_nf(p, 0 if st_ >= 1 else 1))}</text>'
+        )
+        p += st_
+    g.append(f'<line x1="{L}" x2="{W - R}" y1="{Y(0):.1f}" y2="{Y(0):.1f}" style="stroke:var(--mut);stroke-dasharray:4 3"/>')
+    xs = max(1, round(nice_step(n, 5)))
+    for i in range(xs, n + 1, xs):
+        g.append(f'<text x="{X(i):.1f}" y="{H - 8}" text-anchor="middle">{i}</text>')
+    g.append(f'<text x="{L}" y="{H - 8}" text-anchor="start">угода №</text>')
+    pts = [(0, 0.0)] + [(i + 1, c["cum"]) for i, c in enumerate(curve)]
+    path = "".join(f"{'L' if i else 'M'}{X(k):.1f},{Y(v):.1f}" for i, (k, v) in enumerate(pts))
+    g.append(f'<path d="{path}" style="fill:none;stroke:var(--acc);stroke-width:2"/>')
+    if n <= JR_DOTS_MAX:
+        g += [
+            f'<circle cx="{X(i + 1):.1f}" cy="{Y(c["cum"]):.1f}" r="2.5" style="fill:var(--{"ok" if c["r"] > 0 else "bad" if c["r"] < 0 else "mut"})"/>'
+            for i, c in enumerate(curve)
+        ]
+    last = curve[-1]["cum"]
+    g.append(f'<text x="{X(n) - 4:.1f}" y="{Y(last) - 8:.1f}" text-anchor="end" style="fill:var(--fg)">{_e(_r(last))}</text>')
+    return f'<svg viewBox="0 0 {W} {H}" role="img" aria-label="Крива результату в R за угодами">{"".join(g)}</svg>'
+
+
+JR_NO_STOP = (
+    "R з'явиться, коли в угодах будуть стопи: /trade СИМВОЛ long ВХІД size N stop X у Telegram або journal_add зі "
+    "стопом. Імпорт з бірж стопів не має, тож у цих угодах R невідомий."
+)
+
+
+def _jr_trade(t: dict | None) -> str:
+    """'SYMBOL +$12 (#7)' for the weekly table; the symbol is untrusted text: cleaned, cut and escaped."""
+    if not t:
+        return "—"
+    sym = _clean(t.get("symbol") or "?", JR_SYMBOL_SHOWN)
+    return f"{_e(sym)} <span class='{_signed_cls(t['pnl'])}'>{_usd(t['pnl'], True)}</span> <span class='mut'>#{_e(t.get('id'))}</span>"
+
+
+def block_journal_review(rows: list[dict] | None, now: float) -> str:
+    """«Крива в R і тижневий розбір»: the cumulative R of the owner's closed real trades with a recorded R (a stop), in
+    closing order, and the weekly review by ISO week (UTC) of the close. ``rows`` = all journal rows (None = no
+    table); the owner's real trades (journal_owner_trades) are picked here."""
+    if rows is None:
+        return _empty("Таблиці journal у базі ще немає: крива й розбір з'являться з першою закритою угодою.")
+    real = journal_owner_trades(rows)
+    buckets = jr_week_buckets(real)
+    if not buckets:
+        return _empty("Закритих реальних угод ще немає: крива в R і тижневий розбір з'являться з першою закритою угодою.")
+    # stats only for the shown weeks; totals and the 30+ count come from the bucket sizes (= closed_trades)
+    weeks = [_jr_bucket_stats(xs, s, s + JR_WEEK_S) for s, xs in buckets[:JR_WEEKS]]
+    n_closed = sum(len(xs) for _, xs in buckets)
+    n_weeks = len(buckets)
+    n_big = sum(1 for _, xs in buckets if len(xs) >= JR_SMALL_SAMPLE)
+    curve = jr_r_curve(real)
+    out = [f"<h3 style='font-size:14px;margin:6px 0 4px'>Крива в R{_info('j_rcurve')}</h3>"]
+    if not curve:
+        out.append(_empty(JR_NO_STOP))
+    else:
+        n, total = len(curve), curve[-1]["cum"]
+        small = n < JR_SMALL_SAMPLE
+        dd = jr_r_drawdown(curve)
+        one = f"Поки одна угода з R ({_r(total)}): крива з'явиться з другою."
+        out.append(r_curve_svg(curve) or f"<p class='note'>{_e(one)}</p>")
+        line = (
+            f"Угод з R: {n} з {n_closed} закритих; сума {_r(total)}, середній {_r(total / n)} на угоду, "
+            f"найбільша просадка {_r(-dd) if dd > 0 else '0.00 R'}."
+            + (f" Решта {n_closed - n} без стопу: R невідомий, у криву не входять." if n < n_closed else "")
+        )
+        chip = f" <span class='chip ev'>замало для висновку</span> {_e(f'менше {JR_SMALL_SAMPLE} угод з R')}" if small else ""
+        out.append(f"<p class='note'>{_e(line)}{chip}</p>")
+    out.append(f"<h3 style='font-size:14px;margin:12px 0 4px'>За тижнями{_info('j_weeks')}</h3>")
+    cur = jr_week_start(now)
+    rows_html = [
+        "<div class='scroll'><table><tr><th>Тиждень</th><th>Закрито</th><th>У плюсі</th><th>P&amp;L</th><th>На угоду</th>"
+        "<th>Середній R</th><th>Найкраща</th><th>Найгірша</th></tr>"
+    ]
+    for w in weeks:
+        mon = datetime.fromtimestamp(w["start_ts"], timezone.utc)  # noqa: UP017
+        label = f"{_rules_week(w['start_ts'])} <span class='mut'>з {mon:%d.%m}{' · поточний' if w['start_ts'] == cur else ''}</span>"
+        r = (
+            f"{_r(w['avg_r'])} <span class='mut'>за {w['r_count']} з {w['closed_trades']}</span>"
+            if w["r_count"]
+            else "<span class='mut'>невідомо</span>"
+        )
+        rows_html.append(
+            f"<tr><td class='num'>{label}</td><td class='num'>{w['closed_trades']}</td>"
+            f"<td class='num'>{w['wins']} ({_share(w['win_rate'])})</td>"
+            f"<td class='num {_signed_cls(w['total_pnl'])}'>{_usd(w['total_pnl'], True)}</td>"
+            f"<td class='num {_signed_cls(w['expectancy_per_trade'])}'>{_usd(w['expectancy_per_trade'], True)}</td>"
+            f"<td class='num'>{r}</td><td>{_jr_trade(w['best'])}</td><td>{_jr_trade(w['worst'])}</td></tr>"
+        )
+    rows_html.append("</table></div>")
+    out.append("".join(rows_html))
+    note = (
+        "Тиждень — ISO-тиждень закриття (UTC), нові зверху; P&L у USD — як записано в журналі, усі біржі разом. "
+        f"Тижнів із {JR_SMALL_SAMPLE} і більше угодами: {n_big} з {n_weeks}; решта — опис, не висновок."
+        + (f" Показано {JR_WEEKS} останніх тижнів з {n_weeks}." if n_weeks > JR_WEEKS else "")
+        + " Статистика твоїх угод, не порада."
+    )
+    out.append(f"<p class='note'>{_e(note)}</p>")
+    return "".join(out)
+
+
 def rec_groups(rows: list[dict]) -> dict[str, list[dict]]:
     """The three groups assistant_paper_status summarizes separately (same definitions): 'method' = the chain trades
     (trigger None or 'chain'), comparable with the H1 walk-forward; 'method_triggered' = extra method trades opened on
@@ -5877,12 +6122,18 @@ def render_journal(
         stamp = f"<span class='mut'>База{where} · лише читання · прочитано {_e(kyiv(datetime.fromtimestamp(now, timezone.utc)))} за Києвом</span>"  # noqa: UP017
         out = [head, f"<header><h1>Журнал</h1>{stamp}</header>{_nav('journal')}{bar}{caveats}<main class='brief'>"]
         rows = data.get("journal")
+        try:
+            review = block_journal_review(rows, now)
+        except Exception as e:  # noqa: BLE001 - one odd row must not take the page down
+            review = _empty(f"Блок не вдалося показати: несподіваний формат даних ({type(e).__name__}).")
+        review = f"<section class='wide'>{_h2('Крива в R і тижневий розбір', 'j_review')}{review}</section>"
         if rows is None:
             out.append(
                 f"<section class='wide'>{_h2('Мої угоди', 'j_trades')}"
                 + _empty("Таблиці journal у базі ще немає: вона з'являється, коли MCP-сервер уперше відкриває базу.")
                 + "</section>"
             )
+            out.append(review)
         elif not rows:
             out.append(
                 f"<section class='wide'>{_h2('Мої угоди', 'j_trades')}"
@@ -5890,6 +6141,7 @@ def render_journal(
                 + "<p class='note'>Додати першу: інструмент MCP <code>journal_add</code> (теза, стоп, ціль) і "
                 "<code>journal_close</code> при виході; угоди з бірж — <code>scripts/bybit_import.py</code>.</p></section>"
             )
+            out.append(review)
         else:
             kinds: dict[str, list[dict]] = {"real": [], "paper": [], "airdrop": []}
             groups: dict[str, list[dict]] = {}
@@ -5905,6 +6157,7 @@ def render_journal(
             if len(rows) >= JOURNAL_MAX_ROWS:
                 out.append(f"<p class='note warn'>Прочитано лише {JOURNAL_MAX_ROWS} останніх рядків журналу.</p>")
             out.append("</section>")
+            out.append(review)
             out.append(f"<section>{_h2('За джерелом', 'sources')}{block_journal_sources(groups)}</section>")
             out.append(f"<section class='wide'>{_h2('Угоди', 'j_table')}{block_journal_table(real, p['page'])}</section>")
         try:

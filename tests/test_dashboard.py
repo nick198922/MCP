@@ -860,6 +860,180 @@ def test_journal_escapes_hostile_strings_from_the_database(tmp_path):
     assert "&lt;script&gt;alert(1)" in page and "&lt;img src=x" in page and "&lt;svg onload" in page
 
 
+# ---------------------------------------------------------------- «Журнал» tab: the R curve and the weekly review
+
+TG, BOT = '["telegram"]', '["demo-paper", "bybit-demo", "setup:S3", "tf:4h", "auto"]'
+
+
+def _review_journal() -> list[tuple]:
+    """T0 is Monday 2026-09-21 (ISO 2026-W39); day 8 on is 2026-W40. Five real trades with a stop (R 1, −1, 2, −0.5,
+    1.5 → cumulative 1, 0, 2, 1.5, 3), one real trade without, and stopped rows that must stay out."""
+    return [
+        _jrow(0, "BTCUSDT", "long", TG, "closed", "win", 100.0, r=1.0),
+        _jrow(1, "ETHUSDT", "short", TG, "closed", "loss", -50.0, r=-1.0),
+        _jrow(2, "SOLUSDT", "long", TG, "closed", "win", 200.0, r=2.0),
+        _jrow(3, "HYPE", "long", '["hyperliquid", "airdrop"]', "closed", "win", 900.0, r=5.0),
+        _jrow(4, "CARRY", "long", '["cc-paper"]', "closed", "win", 900.0, r=5.0),
+        _jrow(5, "DEMOBOT", "long", BOT, "closed", "win", 900.0, r=5.0),
+        _jrow(5, "AUTOBOT", "long", '["auto"]', "closed", "win", 900.0, r=5.0),
+        _jrow(8, "BTCUSDT", "long", TG, "closed", "loss", -25.0, r=-0.5),
+        _jrow(9, "ETHUSDT", "long", TG, "closed", "win", 150.0, r=1.5),
+        _jrow(10, "XRPUSDT", "long", '["bybit", "import", "linear"]', "closed", "loss", -10.0),
+        _jrow(11, "ADAUSDT", "long", TG, "open", None, None),
+    ]
+
+
+def test_journal_r_curve_and_weekly_review(tmp_path):
+    data, _ = db.load_journal(_journal_db(tmp_path / "r.sqlite", _review_journal(), []))
+    real = db.journal_owner_trades(data["journal"])
+    assert sorted(t["symbol"] for t in real if t["status"] == "closed") == [
+        "BTCUSDT",
+        "BTCUSDT",
+        "ETHUSDT",
+        "ETHUSDT",
+        "SOLUSDT",
+        "XRPUSDT",
+    ]
+    curve = db.jr_r_curve(real)
+    assert [c["r"] for c in curve] == pytest.approx([1.0, -1.0, 2.0, -0.5, 1.5])
+    assert [c["cum"] for c in curve] == pytest.approx([1.0, 0.0, 2.0, 1.5, 3.0])
+    assert db.jr_r_drawdown(curve) == pytest.approx(1.0) and db.jr_r_drawdown([]) == 0.0
+    now = float(T0 + 12 * 86400)  # in 2026-W40
+    block = db.block_journal_review(data["journal"], now)
+    for text in (
+        "Крива в R<span class='info'",
+        'aria-label="Крива результату в R за угодами"',
+        "Угод з R: 5 з 6 закритих; сума +3.00 R, середній +0.60 R на угоду, найбільша просадка −1.00 R. "
+        "Решта 1 без стопу: R невідомий, у криву не входять.",
+        "<span class='chip ev'>замало для висновку</span>",
+        "За тижнями<span class='info'",
+        # W40 (current): −25, +150, −10 → 1 of 3 in profit, +$115, +$38 a trade, R (−0.5 + 1.5) / 2 over 2 of 3
+        "2026-W40 <span class='mut'>з 28.09 · поточний</span></td><td class='num'>3</td><td class='num'>1 (33 %)</td>"
+        "<td class='num ok'>+$115</td><td class='num ok'>+$38</td><td class='num'>+0.50 R <span class='mut'>за 2 з 3</span>",
+        "ETHUSDT <span class='ok'>+$150</span>",
+        "BTCUSDT <span class='bad'>−$25</span>",
+        # W39: +100, −50, +200 → 2 of 3, +$250, +$83, R (1 − 1 + 2) / 3
+        "2026-W39 <span class='mut'>з 21.09</span></td><td class='num'>3</td><td class='num'>2 (67 %)</td>"
+        "<td class='num ok'>+$250</td><td class='num ok'>+$83</td><td class='num'>+0.67 R <span class='mut'>за 3 з 3</span>",
+        "SOLUSDT <span class='ok'>+$200</span>",
+        "Тижнів із 30 і більше угодами: 0 з 2",
+        "не порада",
+    ):
+        assert text in block, text
+    assert block.count("<circle") == 5 and "+3.00 R</text>" in block
+    for out in ("HYPE", "CARRY", "DEMOBOT", "AUTOBOT", "ADAUSDT", "+$900"):
+        assert out not in block, out
+    assert block.index("2026-W40") < block.index("2026-W39")  # newest first
+    page = db.render_journal(data, None, now)
+    assert "<h2>Крива в R і тижневий розбір<span class='info'" in page and "Блок не вдалося показати" not in page
+    assert page.index("Крива в R і тижневий розбір") < page.index("<h2>За джерелом")
+    # 30 trades with R: no "too few" label
+    many = [_jrow(i % 6, f"S{i}", "long", TG, "closed", "win", 10.0, r=0.5) for i in range(30)]
+    data, _ = db.load_journal(_journal_db(tmp_path / "m.sqlite", many, []))
+    block = db.block_journal_review(data["journal"], now)
+    assert "Угод з R: 30 з 30 закритих; сума +15.00 R" in block and "замало для висновку" not in block
+    assert "Тижнів із 30 і більше угодами: 1 з 1" in block
+
+
+def test_journal_review_without_stops_one_r_trade_and_empty_states(tmp_path):
+    no_stop = [_jrow(d, "BTCUSDT", "long", '["bybit", "import", "linear"]', "closed", "win", 5.0) for d in range(3)]
+    data, _ = db.load_journal(_journal_db(tmp_path / "n.sqlite", no_stop, []))
+    block = db.block_journal_review(data["journal"], float(T0 + 7 * 86400))
+    assert "R з&#x27;явиться, коли в угодах будуть стопи: /trade СИМВОЛ long ВХІД size N stop X" in block
+    assert "<svg" not in block and "Угод з R" not in block  # an explanation, not an empty chart
+    assert "<span class='mut'>невідомо</span>" in block and "2026-W39" in block  # the weekly table is still there
+    # one trade with R: no curve from one point, the value in words
+    data, _ = db.load_journal(_journal_db(tmp_path / "s.sqlite", _sample_journal(), _sample_rec()))
+    block = db.block_journal_review(data["journal"], float(T0 + 10 * 86400))
+    assert "Поки одна угода з R (+0.50 R): крива з&#x27;явиться з другою." in block and "<svg" not in block
+    # empty journal, open trades only, no table
+    p = _journal_db(tmp_path / "e.sqlite", [], [])
+    page = db.render_journal(*db.load_journal(p), float(T0))
+    assert "<h2>Крива в R і тижневий розбір" in page
+    assert "Закритих реальних угод ще немає: крива в R і тижневий розбір з&#x27;являться з першою закритою угодою." in page
+    opened, _ = db.load_journal(_journal_db(tmp_path / "o.sqlite", [_jrow(0, "BTCUSDT", "long", TG, "open", None, None)], []))
+    assert "Закритих реальних угод ще немає" in db.block_journal_review(opened["journal"], float(T0))
+    assert "Таблиці journal у базі ще немає" in db.block_journal_review(None, float(T0))
+    assert db.r_curve_svg([]) == "" and db.r_curve_svg([{"id": 1, "ts": 0.0, "r": 1.0, "cum": 1.0}]) == ""
+
+
+def test_journal_review_matches_the_analytics_reference(tmp_path):
+    import journal_close_tg
+    import journal_weekly_tg
+
+    from tradedesk.analytics import journal as aj
+
+    assert db.JOURNAL_BOT_TAGS == journal_close_tg.BOT_TAGS and db.JR_SMALL_SAMPLE == aj.SMALL_SAMPLE
+    assert db.JR_WEEK_S == aj.WEEK_S
+    data, _ = db.load_journal(_journal_db(tmp_path / "r.sqlite", _review_journal(), []))
+    rows = data["journal"]
+    real = db.journal_owner_trades(rows)
+    assert [t["id"] for t in real] == [t["id"] for t in journal_weekly_tg.real_trades(rows)]
+    for ts in (T0, T0 + 5.5 * 86400, T0 + 8 * 86400, 0.0):
+        assert db.jr_week_start(ts) == aj.week_start(ts)
+    keys = ("closed_trades", "wins", "losses", "win_rate", "total_pnl", "expectancy_per_trade", "avg_r", "r_count", "small_sample")
+    weeks = db.jr_weeks(real)
+    assert len(weeks) == 2
+    for w in weeks:
+        ref = aj.week_stats(real, w["start_ts"], w["end_ts"])
+        for k in keys:
+            assert w[k] == pytest.approx(ref[k]), k
+        assert w["best"]["id"] == ref["best"]["id"] and w["worst"]["id"] == ref["worst"]["id"]
+    rev = aj.weekly_review(real, now_ts=float(T0 + 12 * 86400))
+    for mine, ref in ((weeks[0], rev["this"]), (weeks[1], rev["last"])):
+        assert mine["start_ts"] == ref["start_ts"] and mine["total_pnl"] == pytest.approx(ref["total_pnl"])
+    empty, ref = db.jr_week_stats(real, 0.0, 1.0), aj.week_stats(real, 0.0, 1.0)
+    assert empty["closed_trades"] == ref["closed_trades"] == 0 and empty["best"] is ref["best"] is None
+    # odd values are skipped as in the reference: a non-numeric P&L, an infinite R
+    odd = [
+        {"id": 1, "status": "closed", "closed_ts": T0, "pnl": "x"},
+        {"id": 2, "status": "closed", "closed_ts": T0, "pnl": 1.0, "r_multiple": float("inf")},
+    ]
+    assert [x["id"] for x in db.jr_closed_rows(odd)] == [x["id"] for x in aj._closed_rows(odd)] == [2]
+    assert db.jr_r_curve(odd) == [] and db.jr_closed_rows(odd)[0]["outcome"] == aj._closed_rows(odd)[0]["outcome"] == "win"
+
+
+def test_journal_review_drawdown_without_a_fall_has_no_sign(tmp_path):
+    rising = [_jrow(d, "BTCUSDT", "long", TG, "closed", "win", 10.0, r=r) for d, r in ((0, 1.0), (1, 0.5), (2, 0.0))]
+    data, _ = db.load_journal(_journal_db(tmp_path / "u.sqlite", rising, []))
+    block = db.block_journal_review(data["journal"], float(T0 + 3 * 86400))
+    assert "найбільша просадка 0.00 R." in block and "−0.00 R" not in block and "+0.00 R" not in block
+
+
+def test_journal_review_many_rows_is_fast_and_counts_every_week():
+    import time
+
+    def row(i: int, day: int) -> dict:
+        ts = T0 + day * 86400 + 3600
+        return {"id": i, "symbol": "BTCUSDT", "tags": TG, "status": "closed", "opened_ts": ts - 60, "closed_ts": ts,
+                "pnl": 1.0 if i % 2 else -1.0, "r_multiple": 0.5 if i % 2 else -0.5, "outcome": None}  # fmt: skip
+
+    # 5 000 trades over 100 weeks (50 a week, all 30+), then 3 newer weeks with one trade each
+    rows = [row(i, i % 700) for i in range(5000)] + [row(5000 + k, 800 + 7 * k) for k in range(3)]
+    real = db.journal_owner_trades(rows)
+    weeks = db.jr_weeks(real)
+    n_big = sum(1 for w in weeks if not w["small_sample"])
+    assert len(weeks) > db.JR_WEEKS and 0 < n_big < len(weeks) and sum(w["closed_trades"] for w in weeks) == 5003
+    t = time.perf_counter()
+    block = db.block_journal_review(rows, float(T0 + 820 * 86400))
+    assert time.perf_counter() - t < 1.0
+    assert f"Тижнів із 30 і більше угодами: {n_big} з {len(weeks)}" in block  # the big weeks are past the 12 shown
+    assert f"Показано {db.JR_WEEKS} останніх тижнів з {len(weeks)}." in block and "з 5003 закритих" in block
+    assert block.count("<tr>") == db.JR_WEEKS + 1
+
+
+def test_journal_review_escapes_hostile_symbols(tmp_path):
+    hostile = [
+        _jrow(0, "<script>alert(1)</script>", "long", TG, "closed", "win", 50.0, r=1.0),
+        _jrow(1, "<img src=x onerror=alert(2)>", "long", TG, "closed", "loss", -20.0, r=-1.0),
+    ]
+    data, _ = db.load_journal(_journal_db(tmp_path / "h.sqlite", hostile, []))
+    block = db.block_journal_review(data["journal"], float(T0 + 3 * 86400))
+    for raw in ("<script", "<img"):
+        assert raw not in block, raw
+    assert "&lt;script&gt;alert(1)" in block and "&lt;img src=x" in block and "<svg" in block
+
+
 # ---------------------------------------------------------------- «Журнал» tab: the assistant's trade plans
 
 P_COLS = (

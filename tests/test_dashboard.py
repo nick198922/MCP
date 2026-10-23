@@ -2006,6 +2006,10 @@ def test_rules_copies_match_the_analytics_reference():
         assert db.rules_buy_zone(h) == rc.buy_zone(h)
     for th, tg in (("a", 1.0), ("", 1.0), ("a", None), (None, None), ("a", 0.0)):
         assert db.rules_thesis_check(th, tg) == rc.thesis_check(th, tg)
+    assert db.RULES_IMPORT_THESIS_PLACEHOLDER == rc.IMPORT_THESIS_PLACEHOLDER
+    for th in ("імпорт з Bybit: теза не записана", "CPI: up", "", None, 5):
+        for tags in (["bybit", "import", "option"], ["option"], []):
+            assert db.rules_owner_thesis(th, tags) == rc.owner_thesis(th, tags), (th, tags)
     import test_rules_check as trc
 
     rows = _rules_rows()
@@ -2017,7 +2021,14 @@ def test_rules_copies_match_the_analytics_reference():
     own = trc._t(
         501, "BTC-17OCT25-110000-C", "long", trc.D + 5 * 86400 + 8 * H, trc.D + 6 * 86400, 5.0, '["option"]', size=0.1, entry=500.0
     )
-    rule8 = [trc._odte_row(), {**own, "thesis": "CPI: up past 112k", "target": 115000.0}, {**own, "id": 502, "thesis": "no target"}]
+    imp = {**own, "tags": trc.BYBIT_OPT, "target": 115000.0}
+    rule8 = [
+        trc._odte_row(),
+        {**own, "thesis": "CPI: up past 112k", "target": 115000.0},
+        {**own, "id": 502, "thesis": "no target"},
+        {**imp, "id": 503, "thesis": "імпорт з Bybit: теза не записана"},  # the importer's placeholder: no thesis
+        {**imp, "id": 504, "thesis": "CPI: up past 112k"},  # the owner's thesis written later on an import
+    ]
     for dep in (10_000.0, 5_000.0):
         for rs in (rows, rows + hip3, rows + rule8):
             _same(db.rules_trade_checks(rs, now, dep), rc.trade_checks(rs, now_ts=now, deposit_usd=dep))
@@ -2091,14 +2102,37 @@ def test_options_tab_shows_the_owners_rules_for_the_structure():
         edge = db.render_options(snap, None, exp - hours * 3600, db.parse_options_query("qty=0.01"))
         assert f"<span class='chip {chip}'>{'порушено' if chip == 'risk' else 'виконано'}</span></td><td>{text}" in edge, hours
     assert "8а · Теза і ціль записані</td><td><span class='chip risk'>порушено</span></td><td>Немає тези й цілі" in late
-    for name in ("8б · Рух до беззбитку ≤ 1σ за реалізованою волою", "8в · IV ≤ 1.2 × реалізованої"):
-        assert name in late, name
+    # the snapshot's RV30 (vrp.current.rv_30d = 31.8 %) reaches (b) and (c): values and states, not only the row names
+    # (critic, 22.10); 1 sigma over 3 days = 0.318 x sqrt(3/365) = 2.9 %, the IV cap 1.2 x 31.8 % = 38.1 %
+    assert snap["sections"]["vrp"]["data"]["current"]["rv_30d"] == pytest.approx(0.318, abs=5e-4)
+    for text in (
+        "8б · Рух до беззбитку ≤ 1σ за реалізованою волою</td><td><span class='chip risk'>порушено</span></td><td>"
+        "До беззбитку 11.0 % від форварду; 1σ за RV30 до експірації — 2.9 %.",
+        "8в · IV ≤ 1.2 × реалізованої</td><td><span class='chip opp'>виконано</span></td><td>"
+        "IV куплених ніг до 38.0 %; межа 38.1 % (1.2 × RV30 31.8 %).",
+    ):
+        assert text in late, text
+    # without RV30 in the snapshot both checks cannot be told, and the page says so
+    snap_no_rv, _ = _snap()
+    del snap_no_rv["sections"]["vrp"]["data"]["current"]["rv_30d"]
+    no_rv = _between(db.render_options(snap_no_rv, None, t3, db.parse_options_query("qty=0.01")), "Правила власника", "</section>")
+    for text in (
+        "8б · Рух до беззбитку ≤ 1σ за реалізованою волою</td><td><span class='chip calm'>невідомо</span></td><td>"
+        "Спот чи реалізована вола (RV30) невідомі.",
+        "8в · IV ≤ 1.2 × реалізованої</td><td><span class='chip calm'>невідомо</span></td><td>IV опціону чи RV30 невідомі.",
+    ):
+        assert text in no_rv, text
     # the thesis and the target from the form satisfy (a); the page shows them back, escaped
     q = "qty=0.01&thesis=%3Cb%3ECPI%3C%2Fb%3E+up&target=90000"
     page = db.render_options(snap, None, t3, db.parse_options_query(q))
     assert "value='&lt;b&gt;CPI&lt;/b&gt; up'" in page and "<b>CPI" not in page and "value='90000'" in page
     ok = _between(page, "Правила власника", "</section>")
     assert "8а · Теза і ціль записані</td><td><span class='chip opp'>виконано</span>" in ok
+    # the field sits in single quotes: a quote in the thesis must not break out of the value attribute (critic, 22.10)
+    q = "qty=0.01&thesis=%27+onfocus%3Dalert(1)+x%3D%27&target=90000"
+    page = db.render_options(snap, None, t3, db.parse_options_query(q))
+    assert "value='&#x27; onfocus=alert(1) x=&#x27;'" in page
+    assert "' onfocus" not in page and "onfocus=alert(1) x='" not in page
 
 
 NEAR_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "assistant_chain_near_2026-10-23.json"

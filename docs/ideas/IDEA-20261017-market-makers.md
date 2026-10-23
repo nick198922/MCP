@@ -7,7 +7,7 @@
 
 ## Прогрес
 - [x] A. Вихід ліквідності з книги заявок (архів `bookDepth`) — 2026-10-18, H1 ✗ (`rejected`), волатильність за 7 днів ≈ (+7 %), H2 ✗; лише top-200; вердикт остаточний на 2024-11 … 2026-09, пропуск 2024-01 … 2024-09 не дозавантажується в цю перевірку (див. «Відступи від реєстрації (частина A)»), звіт [`2026-10-18-market-makers-depth`](../verification/2026-10-18-market-makers-depth.md)
-- [ ] C. Новини про ММ (події — Claude)
+- [ ] C. Новини про ММ — події зібрав Claude 2026-10-23 ([`2026-10-23-news-mm.csv`](../verification/2026-10-23-news-mm.csv): 33 події, 29 з точним часом, 25 з перпом на t0); далі — квант
 - [ ] Рішення власника про ключі Etherscan / Dune
 - [ ] B. Потоки ММ у блокчейні
 
@@ -41,6 +41,7 @@
   - Ключі API Etherscan і Dune — безкоштовний рівень, лише за рішенням власника.
   - Arkham і Nansen — платні.
 - **C. Новини про ММ:** збирає Claude, як набір закриттів у [IDEA-20261017-news-events](IDEA-20261017-news-events.md).
+  - **Набір (Claude, 2026-10-23):** [`2026-10-23-news-mm.csv`](../verification/2026-10-23-news-mm.csv), формат закриттів плюс `perp_at_t0`, `market_maker`. Типи: `mm_offboard` (Binance: GPS / SHELL 03.2025, MOVE 03.2025), `mm_scandal` (MOVE / Web3Port, OM 04.2025, Kronos → WOO 11.2023, DWF → YGG, Jump, Wintermute, LAB, Gotbit), `mm_partnership` (DWF Labs «інвестиції» 2023–2025, GSR, Wintermute). Час — зі snowflake ID твіту (перевірено проти `created_at`); 4 рядки лише з датою (`article_date`). `direction_prior` — апріорна думка, не замір. Слабкі рядки: Gotbit / NexFundAI (токени без перпа), ETH / LUNC / BTC-ETH-SOL (зв'язок з ММ непрямий), ARB і USUAL (не перше джерело). Сторінки анонсів Binance сервер не відкрив: для MOVE узято твіт @binancezh (07:07 UTC, англійський — на ≈ 6 год пізніше).
 
 ## Як тестувати (частина A, квант → критик, режим B)
 - **Всесвіт:** point-in-time top-200 перпів Binance за обсягом, 2023-01 … 2026-09.

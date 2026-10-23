@@ -427,8 +427,9 @@ def snapshot() -> dict:
 # ---------------------------------------------------------------- page
 
 CSS = """
-:root{--bg:#f5f7fa;--card:#fff;--fg:#1d2329;--mut:#66717d;--line:#e2e7ec;--acc:#2f6db5;--ok:#2f7a4b;--warn:#b8761d;--bad:#b33a36}
-@media (prefers-color-scheme:dark){:root{--bg:#11161c;--card:#1a2129;--fg:#e3e8ee;--mut:#94a0ad;--line:#2b343e;--acc:#6aa3e8;--ok:#5fbf83;--warn:#e0a54a;--bad:#e2716c}}
+:root{--brand:#5b3fd1;--brand-deep:#2a1a7a;--mint:#7ff0b0;--bg:#f6f5fb;--card:#fff;--fg:#1c1838;--mut:#615c7e;--line:#e3e0ef;--acc:#5b3fd1;--ok:#1e7f50;--warn:#9a5b0c;--bad:#b33a36;--acc-rgb:91,63,209;--ok-rgb:30,127,80;--warn-rgb:154,91,12;--bad-rgb:179,58,54}
+@media (prefers-color-scheme:dark){:root{--bg:#100d22;--card:#1a1633;--fg:#ece9fb;--mut:#a29dc4;--line:#2d2752;--acc:#a28cff;--ok:#6ee7a8;--warn:#f0b45a;--bad:#ff8a84;--acc-rgb:162,140,255;--ok-rgb:110,231,168;--warn-rgb:240,180,90;--bad-rgb:255,138,132}}
+body::before{content:'';display:block;height:4px;background:linear-gradient(90deg,var(--brand),var(--mint))}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 -apple-system,"Segoe UI",Helvetica,Arial,sans-serif}
 header{padding:14px 18px 8px;display:flex;flex-wrap:wrap;gap:8px 18px;align-items:baseline}
 h1{font-size:19px;margin:0}.mut{color:var(--mut)}.ok{color:var(--ok)}.warn{color:var(--warn)}.bad{color:var(--bad)}
@@ -1096,7 +1097,7 @@ ul.pc li{display:grid;grid-template-columns:22px 1fr;gap:6px;padding:6px 8px;bor
 ul.pc .pi{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;
 font:700 13px/1 -apple-system,"Segoe UI",Helvetica,Arial,sans-serif;color:#fff;background:var(--mut);margin-top:1px}
 ul.pc li.good .pi{background:var(--ok)}ul.pc li.bad .pi{background:var(--bad)}ul.pc li.warn .pi{background:var(--warn)}
-ul.pc li.good{background:rgba(47,122,75,.11)}ul.pc li.bad{background:rgba(179,58,54,.11)}ul.pc li.warn{background:rgba(184,118,29,.13)}
+ul.pc li.good{background:rgba(var(--ok-rgb),.11)}ul.pc li.bad{background:rgba(var(--bad-rgb),.11)}ul.pc li.warn{background:rgba(var(--warn-rgb),.13)}
 .pcsum{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 8px}
 .cols2{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:12px}
 .cols2 h3{font-size:13px;margin:0 0 6px}
@@ -1505,8 +1506,8 @@ main.brief{grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr))}
 .num{font-family:Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
 ul.key{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px}ul.key li{display:grid;grid-template-columns:auto 1fr;gap:10px}
 .chip{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;border-radius:999px;padding:1px 8px;white-space:nowrap;height:fit-content}
-.chip.calm{background:rgba(47,109,181,.16);color:var(--acc)}.chip.risk{background:rgba(179,58,54,.16);color:var(--bad)}
-.chip.opp{background:rgba(47,122,75,.16);color:var(--ok)}.chip.ev{background:rgba(184,118,29,.18);color:var(--warn)}
+.chip.calm{background:rgba(var(--acc-rgb),.16);color:var(--acc)}.chip.risk{background:rgba(var(--bad-rgb),.16);color:var(--bad)}
+.chip.opp{background:rgba(var(--ok-rgb),.16);color:var(--ok)}.chip.ev{background:rgba(var(--warn-rgb),.18);color:var(--warn)}
 .hbars{display:flex;flex-direction:column;gap:5px}
 .hb{display:grid;grid-template-columns:minmax(90px,130px) 1fr 56px;gap:8px;align-items:center;font-size:13px}
 .hb .t{height:10px;background:var(--line);border-radius:5px;overflow:hidden}.hb .t i{display:block;height:100%;background:var(--acc)}
@@ -2394,7 +2395,7 @@ select,input[type=number],input[type=text]{font:14px Menlo,Consolas,monospace;co
 select:disabled{opacity:.6}.ctl button.go{font-weight:600;border:0;border-radius:999px;padding:7px 14px;background:var(--acc);color:var(--card);cursor:pointer}
 button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
 .fit{font-size:14px;line-height:1.6}
-.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}td.r,th.r{text-align:right}tr.cur{background:rgba(47,109,181,.12)}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}td.r,th.r{text-align:right}tr.cur{background:rgba(var(--acc-rgb),.12)}
 table.greeks td.mut{font-size:12px}table.scen th,table.scen td{white-space:nowrap}
 input[type=range]{accent-color:var(--acc);width:min(220px,100%)}
 """
@@ -3370,7 +3371,7 @@ RADAR_CSS = """
 .seg{display:inline-flex;border:1px solid var(--line);border-radius:6px;overflow:hidden}
 .seg a{padding:4px 16px;color:var(--mut);text-decoration:none;font-weight:600}
 .seg a[aria-current=page]{background:var(--acc);color:var(--card)}
-td.r,th.r{text-align:right}.scroll{overflow-x:auto}tr.hot td{background:rgba(184,118,29,.13)}
+td.r,th.r{text-align:right}.scroll{overflow-x:auto}tr.hot td{background:rgba(var(--warn-rgb),.13)}
 """
 
 
@@ -3914,7 +3915,7 @@ def fwd_vol_svg(shown: list[dict]) -> str:
             if hot
             else "fill:var(--line);stroke:var(--mut)"
             if short
-            else "fill:rgba(47,109,181,.25);stroke:var(--acc)"
+            else "fill:rgba(var(--acc-rgb),.25);stroke:var(--acc)"
         )
         x0, x1 = X(d0), X(d1)
         g.append(
@@ -6716,6 +6717,32 @@ def access(client: str, headers: list[tuple[str, str]], query: str, key: str | N
     return "ok" if morsel is not None and hmac.compare_digest(morsel.value.encode(), key.encode()) else "deny"
 
 
+BRAND = Path(__file__).resolve().parent.parent / "docs" / "brand"
+# public icons (no key needed: the logo is not secret, and a home-screen icon is fetched without the cookie)
+ICONS = {"/favicon.ico": "logo-64.png", "/apple-touch-icon.png": "logo-180.png", "/logo-512.png": "logo-512.png"}
+
+
+def _logo_uri() -> str:
+    """docs/brand/logo.svg as a data URI ('' when the file is missing)."""
+    try:
+        return "data:image/svg+xml," + urllib.parse.quote((BRAND / "logo.svg").read_text(encoding="utf-8").strip())
+    except OSError:
+        return ""
+
+
+def brand(page: str) -> str:
+    """The logo on every page: the tab icon, the home-screen icon and a small mark before the first title."""
+    uri = _logo_uri()
+    if not uri:
+        return page
+    links = (
+        f"<link rel='icon' type='image/svg+xml' href='{uri}'><link rel='icon' type='image/png' href='/favicon.ico'>"
+        "<link rel='apple-touch-icon' href='/apple-touch-icon.png'><meta name='theme-color' content='#3a2a9e'>"
+    )
+    mark = f"<img src='{uri}' alt='' width='22' height='22' style='vertical-align:-3px;margin-right:8px'>"
+    return page.replace("<head>", "<head>" + links, 1).replace("<header><h1>", "<header><h1>" + mark, 1)
+
+
 DENIED_PAGE = (
     "<!doctype html><meta charset='utf-8'><meta name='viewport' content='width=device-width'>"
     "<p style='font:16px system-ui;margin:2em'>Панель відкривається лише за посиланням з ключем. Попросіть його в Claude.</p>"
@@ -6746,6 +6773,12 @@ class _Handler(BaseHTTPRequestHandler):
         with _State.lock:
             snap, page = _State.snap, _State.page
         path, _, query = self.path.partition("?")
+        if path in ICONS:
+            try:
+                self._send(200, (BRAND / ICONS[path]).read_bytes(), "image/png")
+            except OSError:
+                self.send_error(404)
+            return
         verdict = access(self.client_address[0], list(self.headers.items()), query, _State.key)
         if verdict == "deny":
             self._send(401, DENIED_PAGE.encode(), "text/html; charset=utf-8")
@@ -6760,17 +6793,17 @@ class _Handler(BaseHTTPRequestHandler):
             self.end_headers()
             return
         if path in ("/", "/index.html"):
-            body, ctype = page.encode(), "text/html; charset=utf-8"
+            body, ctype = brand(page).encode(), "text/html; charset=utf-8"
         elif path == "/brief":
-            body, ctype = brief_page().encode(), "text/html; charset=utf-8"  # read per request: the age is always current
+            body, ctype = brand(brief_page()).encode(), "text/html; charset=utf-8"  # read per request: the age is always current
         elif path == "/options":
-            body, ctype = options_page(query).encode(), "text/html; charset=utf-8"
+            body, ctype = brand(options_page(query)).encode(), "text/html; charset=utf-8"
         elif path == "/radar":
-            body, ctype = radar_page(query).encode(), "text/html; charset=utf-8"
+            body, ctype = brand(radar_page(query)).encode(), "text/html; charset=utf-8"
         elif path == "/journal":
-            body, ctype = journal_page(query).encode(), "text/html; charset=utf-8"
+            body, ctype = brand(journal_page(query)).encode(), "text/html; charset=utf-8"
         elif path == "/polymarket":
-            body, ctype = polymarket_page().encode(), "text/html; charset=utf-8"
+            body, ctype = brand(polymarket_page()).encode(), "text/html; charset=utf-8"
         elif self.path == "/status.json":
             body, ctype = json.dumps(snap or {}, ensure_ascii=False, default=str).encode(), "application/json; charset=utf-8"
         else:

@@ -9,7 +9,9 @@ Read-only and offline: the text is built from the same snapshot file as the dash
 (``assistant_snapshot`` collector job; path and field names from scripts/dashboard.py), never from the network. Every
 string from the snapshot is untrusted and HTML-escaped for Telegram. The message is short (owner 22.10: a long text in
 Telegram is hard to read): BTC and ETH with the 24 h change, DVOL with its 1-year percentile, the 1-3 most important
-items of the day, the next events in Kyiv time and one caveat line; the dashboard pages carry the rest. A missing or
+items of the day, one line with the state of the paper recommendation (section ``paper_rec``: «актуальна / змінилась /
+більше не актуальна», labelled «гіпотеза»; omitted without data), the next events in Kyiv time and one caveat line;
+the dashboard pages carry the rest. A missing or
 unreadable snapshot gives an explained message, not an error; older than 30 min adds a warning; older than 6 h gives
 only the stamp and the warning (no prices, no countdowns). Event countdowns are counted from the send time, past events
 are dropped. The caveats are never cut by the length limit.
@@ -56,6 +58,19 @@ PANEL_URL_ENV = "TRADEDESK_PANEL_URL"
 DASHBOARD_URL_PATH = Path("/var/lib/tradedesk-mcp/assistant/dashboard_url")  # written by scripts/server/23-tailscale.sh
 PAGES = (("Бриф", "brief"), ("Опціони", "options"), ("Радар", "radar"), ("Журнал", "journal"), ("Polymarket", "polymarket"))
 BUTTONS_PER_ROW = 3
+PAPER_STATE_UA = {"actual": "актуальна", "changed": "змінилась", "no_longer_actual": "більше не актуальна"}
+PAPER_PICK_UA = {  # analytics.option_replay.STRUCTURES; "_14d" = the ~14-day expiry, the rest ~40 days
+    "long_straddle": "купівля стреддлу ATM",
+    "short_straddle": "продаж стреддлу ATM",
+    "long_strangle25": "купівля стренглу 25Δ",
+    "short_strangle25": "продаж стренглу 25Δ",
+    "iron_condor": "залізний кондор 25/10Δ",
+    "long_strangle10": "купівля стренглу 10Δ",
+    "reverse_iron_fly": "зворотний залізний метелик",
+    "call_debit_spread": "колл-дебетовий спред",
+    "put_debit_spread": "пут-дебетовий спред",
+}
+PAPER_TRIGGER_UA = {"regime": "через зміну режиму", "event": "перед FOMC / CPI"}
 
 
 def _h(x: object) -> str:
@@ -241,6 +256,44 @@ def _key_items(snap: dict, now: float, events: bool = True) -> list[tuple[str, s
     return items
 
 
+def _pick_ua(pick: object) -> str | None:
+    """A method candidate ('short_strangle25', 'long_straddle_14d') in Ukrainian with its tenor; unknown names as text."""
+    if not isinstance(pick, str) or not pick:
+        return None
+    base, short = (pick[:-4], True) if pick.endswith("_14d") else (pick, False)
+    if base not in PAPER_PICK_UA:
+        return db._clean(pick, 40)
+    return f"{PAPER_PICK_UA[base]}, ~{14 if short else 40} дн"
+
+
+def _paper(snap: dict, now: float) -> list[str]:
+    """One line: the state of the paper recommendation (section ``paper_rec``), labelled «гіпотеза»; [] without data
+    (the stamp's «Без даних» line already names the section). Never raises."""
+    try:
+        d = db._data(snap, "paper_rec")
+        state = PAPER_STATE_UA.get(str(d.get("state"))) if d else None
+        if state is None:
+            return []
+        name, action = _pick_ua(d.get("pick")), d.get("action")
+        if d.get("state") == "no_longer_actual":
+            detail = "метод сьогодні не обирає жодної структури"
+        elif not name:
+            detail = ""
+        elif action == "open":
+            trig = PAPER_TRIGGER_UA.get(str(d.get("trigger")))
+            detail = "нова паперова угода" + (f" {trig}" if trig else "") + f" — {name}"
+        elif d.get("state") == "changed":
+            detail = f"метод тепер обрав би {name}; чинну угоду лишено (тригера немає)"
+        else:
+            detail = f"{name} — чинна паперова угода"
+        asof = db.parse_utc(d.get("asof_utc"))
+        when = f" (рішення {db.kyiv(asof, '%d.%m')})" if asof else ""
+        txt = f"Паперова рекомендація {state}" + (f": {detail}" if detail else "") + f"{when}."
+        return [f"• <i>гіпотеза</i> · {_h(txt)}"]
+    except Exception:  # noqa: BLE001 - an odd section only drops this line
+        return []
+
+
 def _events(snap: dict, now: float) -> list[str]:
     ev = db._data(snap, "events")
     if ev is None:
@@ -330,11 +383,12 @@ def build_brief(snap: dict | None, now: float, err: str | None = None, short: bo
         if age is not None and age > db.SNAPSHOT_OLD_S:  # yesterday's prices and countdowns would mislead
             return _fit(out, tail)
         if short:
-            blocks = (("", _market_short), ("", _key_short), ("", _events_short))
+            # the paper recommendation's line sits with the day's items (one extra line, no blank before it)
+            blocks = (("", _market_short), ("", lambda s, n: _key_short(s, n) + _paper(s, n)), ("", _events_short))
         else:
             blocks = (
                 ("Ринок", _market),
-                ("Головне сьогодні", _key),
+                ("Головне сьогодні", lambda s, n: _key(s, n) + _paper(s, n)),
                 ("Події · час " + ("Київ" if db.KYIV is not None else "UTC"), _events),
                 ("Funding · річних", _funding),
             )

@@ -2023,8 +2023,12 @@ def test_rules_copies_match_the_analytics_reference():
             _same(db.rules_trade_checks(rs, now, dep), rc.trade_checks(rs, now_ts=now, deposit_usd=dep))
             _same(db.rules_weekly(rs, now, dep), rc.weekly_violations(rs, now_ts=now, deposit_usd=dep))
             _same(db.rules_day_stops(rs, dep), rc.day_stops(rs, deposit_usd=dep))
+            _same(db.rules_compliance(rs, now, dep), rc.compliance_summary(rs, now_ts=now, deposit_usd=dep))
     at_now, rs = trc._at_now_rows()  # an alt long opened at now_ts itself
     _same(db.rules_trade_checks(rs, at_now), rc.trade_checks(rs, now_ts=at_now))
+    _same(db.rules_compliance(rs, at_now), rc.compliance_summary(rs, now_ts=at_now))
+    _same(db.rules_compliance([], now), rc.compliance_summary([], now_ts=now))
+    assert db.RULES_MIN_CHECKED == rc.MIN_CHECKED
     assert len(db.rules_weekly(rows, now)) == 3 and db.rules_weekly([], now) == []
     assert db.rules_is_hip3("xyz:TSLA") and not db.rules_is_hip3("SOL/USDT:USDT")
     for sym in (
@@ -2238,6 +2242,58 @@ def test_journal_tab_shows_weekly_rule_violations(tmp_path):
     bare = tmp_path / "bare.sqlite"
     sqlite3.connect(bare).execute("CREATE TABLE funding_hist (ts INTEGER)").connection.close()
     assert "Таблиці journal у базі ще немає: перевіряти нема що." in db.render_journal(*db.load_journal(bare), now)
+
+
+def test_journal_tile_share_of_trades_by_the_rules(tmp_path):
+    import test_rules_check as trc
+
+    rows = _rules_rows()
+    rows += [  # an airdrop and a paper row: not real trades, left out as in the weekly block
+        trc._t(301, "HYPE", "long", trc.D + 15 * H, trc.D + 16 * H, 500.0, '["hyperliquid", "import", "perp", "airdrop"]'),
+        trc._t(302, "SOL", "long", trc.D + 15 * H, trc.D + 16 * H, -5.0, '["demo-paper", "bybit-demo", "auto"]'),
+    ]
+    now = datetime(2025, 10, 25, tzinfo=UTC).timestamp()
+    page = db.render_journal(*db.load_journal(_rules_db(tmp_path / "r.sqlite", rows)), now)
+    tile = _between(page, f"За правилами{db._info('j_rules')}", "</div>")
+    # 23 real trades as in «Порушення правил за тиждень»: 9 broke a rule for sure, 2 only the approximate rule 4,
+    # 11 cannot be told (imports carry no stop) and one journal_add trade with a stop and a 2R target held every rule
+    for text in (
+        "<span class='v'>10 %</span>",
+        "1 з 10 перевірених без жодного порушення · порушили 9",
+        "невідомо 11 (бракує стопу, цілі чи часу відкриття — не «за правилами», поза часткою)",
+        "лише наближене правило 4: 2 (поза часткою)",
+        "усього 23 угод. Статистика дотримання правил, не порада. Угода без стопу стає перевіреною лише через "
+        "порушення, тож частка занижена",
+        "<span class='sig warn'>замало для висновку</span>",
+    ):
+        assert text in tile, text
+    assert "class='tile t-warn'" in page
+    # 30 checked trades: no «too few» badge (30 journal_add trades with a stop and a 2R target, a day apart)
+    kw = {"size": 0.01, "entry": 80000.0, "stop": 79000.0, "target": 82000.0}
+    good = [trc._t(i, "BTCUSDT", "long", trc.D + i * 86400, trc.D + i * 86400 + H, 20.0, "[]", **kw) for i in range(1, 31)]
+    tile = db.tile_rules_compliance(good, trc.D + 40 * 86400).replace(db._info("j_rules"), "")
+    assert "<span class='v'>100 %</span>" in tile and "30 з 30 перевірених" in tile and "замало" not in tile
+    assert "невідомо 0" in tile and "наближене" not in tile and "порушили" not in tile and "t-warn" not in tile
+    assert "занижена" not in tile  # every trade checked: no bias note
+    # only imports without a stop: nothing checked -> a dash, not 0 %, and the tile is still there with its note
+    imp = [trc._t(1, "ETHUSDT", "short", trc.D, trc.D + H, 5.0, trc.BINANCE)]
+    tile = db.tile_rules_compliance(imp, now)
+    assert "<span class='v'>—</span>" in tile and "0 з 0 перевірених" in tile and "невідомо 1" in tile
+    # no trade with an opening time, an odd row: an explanation, never an exception
+    assert "немає угод з часом відкриття" in db.tile_rules_compliance([{"status": "closed", "opened_ts": None}], now)
+    assert "не вдалося порахувати" in db.tile_rules_compliance([None], now)
+    # open trades only: the tile shows under the «no closed trades» note
+    opened = [trc._t(1, "BTCUSDT", "long", trc.D, None, None, "[]", size=0.01, entry=80000.0, stop=79000.0, target=82000.0, status="open")]
+    page = db.render_journal(*db.load_journal(_rules_db(tmp_path / "o.sqlite", opened)), now)
+    assert "Закритих реальних угод ще немає." in page and f"За правилами{db._info('j_rules')}" in page
+    # empty journal or no journal table: the «Мої угоди» empty state explains it, no tile
+    p = _journal_db(tmp_path / "e.sqlite", [], [])
+    page = db.render_journal(*db.load_journal(p), now)
+    assert "Угод ще немає." in page and "За правилами" not in page
+    bare = tmp_path / "bare.sqlite"
+    sqlite3.connect(bare).execute("CREATE TABLE funding_hist (ts INTEGER)").connection.close()
+    page = db.render_journal(*db.load_journal(bare), now)
+    assert "Таблиці journal у базі ще немає" in page and "За правилами" not in page
 
 
 def test_access_by_key_link_then_cookie(tmp_path):

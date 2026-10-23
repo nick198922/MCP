@@ -9,7 +9,7 @@ import pytest
 from mcp import Client
 
 from conftest import NOW, FakeEx, make_transports
-from tradedesk.analytics.carry import DAY_MS, _Leg, pair_paper_mark, paper_summary, simulate_perp_spread_portfolio
+from tradedesk.analytics.carry import DAY_MS, _Leg, bar_gaps, pair_paper_mark, paper_summary, simulate_perp_spread_portfolio
 from tradedesk.config import Settings
 from tradedesk.runtime import Runtime
 from tradedesk.server import build_server
@@ -135,6 +135,57 @@ def test_stop_and_exit_signals():
     assert _mark(spread_apr=-1.0, short_bars=_bars(high=160.0))["exit_signal"] == "stop"
     # no stop configured
     assert _mark(stop_move=None, short_bars=_bars(high=160.0))["exit_signal"] is None
+
+
+M15 = 15 * 60_000
+
+
+def _fine(start, n, price=100.0):
+    return [{"ts": start + i * M15, "close": price, "high": price, "low": price} for i in range(n)]
+
+
+def test_entry_bar_refined_by_15m_bars_ignores_prices_before_entry():
+    # N1: entry at 03:45 inside the 4h bar 00:00-04:00 whose high (+200 %) printed before the entry
+    opened = H4 - M15
+    sb = _bars()
+    sb[3]["high"] = 300.0  # bar ts = 0
+    coarse = _mark(opened_ms=opened, short_bars=sb)
+    assert coarse["stopped"] and coarse["stop_ts_ms"] == H4 and not coarse["short_entry_fine"]  # old, conservative
+    fine = _mark(opened_ms=opened, short_bars=sb, short_entry_bars=_fine(opened, 1))
+    assert not fine["stopped"] and fine["max_up"] == 0.0 and fine["short_entry_fine"] and not fine["long_entry_fine"]
+    # a 15m slot with a hole: the whole 4h bar is used again
+    opened2, sb2 = 2 * H4 - 4 * M15, _bars()
+    sb2[4]["high"] = 300.0  # bar ts = H4, the entry bar for an entry at 07:00
+    full = _mark(opened_ms=opened2, short_bars=sb2, short_entry_bars=_fine(opened2, 4))
+    assert not full["stopped"] and full["short_entry_fine"]
+    holed = _mark(opened_ms=opened2, short_bars=sb2, short_entry_bars=_fine(opened2, 4)[1:])
+    assert holed["stopped"] and not holed["short_entry_fine"]
+
+
+def test_stop_inside_the_entry_bar_freezes_at_the_15m_bar():
+    opened = H4 // 2  # 02:00
+    fine = _fine(opened, 8)
+    fine[2].update(high=160.0, close=130.0)  # 02:30-02:45
+    for b in fine[3:]:
+        b["close"] = 90.0  # after the stop; must not count
+    m = _mark(opened_ms=opened, short_entry_bars=fine, short_now=90.0)
+    assert m["stopped"] and m["stop_ts_ms"] == opened + 3 * M15 and m["max_up"] == pytest.approx(0.6)
+    assert m["short_x"] == 130.0 and m["price_pnl"] == pytest.approx(10 * (0.0 - 30.0))
+    # entry bar still in progress: only closed 15m slots are required
+    live = _mark(opened_ms=opened, now_ms=opened + 2 * M15 + 1, short_entry_bars=_fine(opened, 2), short_bars=_bars(high=300.0))
+    assert live["short_entry_fine"] and not live["stopped"]
+
+
+def test_bar_gaps_counts_only_completed_bars():
+    # N2: a venue that returns only closed bars is complete; the bar in progress is not expected
+    now = 3 * H4 + 3_600_000
+    closed = _bars(start=0, n=3)
+    assert bar_gaps(closed, 0, now) == 0
+    assert bar_gaps(_bars(start=0, n=4), 0, now) == 0  # the bar in progress may be there too
+    assert bar_gaps([closed[0], closed[2]], 0, now) == 1
+    assert bar_gaps([], H4 // 2, H4 - 1) == 0  # entry bar still open: nothing expected yet
+    assert bar_gaps([], 0, 2 * H4) == 2
+    assert bar_gaps(_bars(start=-2 * H4, n=2) + closed, H4 // 2, now) == 0  # bars before the entry bar are ignored
 
 
 def test_held_days_and_realized_apr():
@@ -620,7 +671,7 @@ async def test_entry_tradable_subset_in_summary_and_journal_tags(state, tmp_path
             await rt.store.carry_paper_insert(
                 opened_ts=int(NOW.timestamp()) - 3600, base="BTC", symbol="BTC/USDT:USDT", long_venue="binanceusdm",
                 short_venue="bybit", qty=0.01, notional_usd=1000.0, long_entry=82750.0, short_entry=82750.0, leverage=2.0,
-                stop_move=0.5, lookback_days=7.0, exit_apr=0.0, entry_tradable=tradable,
+                stop_move=0.5, lookback_days=7.0, exit_apr=0.0, entry_tradable=tradable, tags=["pp-paper-rule", "mine"],
             )  # fmt: skip
         for i in (1, 2):
             assert (await _call(srv, "carry_paper_close", id=i, reason="manual"))["ok"]
@@ -628,5 +679,92 @@ async def test_entry_tradable_subset_in_summary_and_journal_tags(state, tmp_path
         assert s["data"]["summary_closed"]["n"] == 2 and s["data"]["summary_closed"]["entry_tradable"]["n"] == 1
         tags = [t["tags"] for t in (await _call(srv, "journal_list", tag="pp-paper"))["data"]["trades"]]
         assert sum("pp-paper-offrule" in t for t in tags) == 1
+        # N3: the rule-based pair carries pp-paper-rule; a user tag of that name is not copied to the off-rule pair
+        assert sum("pp-paper-rule" in t for t in tags) == 1
+        assert not any("pp-paper-rule" in t and "pp-paper-offrule" in t for t in tags)
+        assert all(t.count("pp-paper") == 1 for t in tags)
+        assert (await _call(srv, "journal_stats", tag="pp-paper-rule"))["data"]["closed_trades"] == 1
+    finally:
+        await rt.store.aclose()
+
+
+ENTRY_BAR_TS = SPIKE_TS + 2 * 4 * 3_600_000  # 08:00-12:00 UTC; the pair below opens at 11:07
+
+
+class PreEntrySpikeEx(FakeEx):
+    """bybit's 4h bar containing the entry has a +60 % wick printed before the entry; its 15m bars are flat."""
+
+    fail_15m = False
+
+    async def fetch_ohlcv(self, symbol, timeframe="1h", limit=100, since=None, params=None):
+        if timeframe == "15m" and type(self).fail_15m:
+            raise ccxt.NetworkError("15m down")
+        rows = await super().fetch_ohlcv(symbol, timeframe, limit, since, params)
+        if timeframe == "4h" and self.id == "bybit":
+            for x in rows:
+                if x[0] == ENTRY_BAR_TS:
+                    x[2] = 82750.0 * 1.6
+        return rows
+
+
+@pytest.mark.parametrize("fail_15m", [False, True])
+async def test_status_ignores_prices_before_entry_inside_the_entry_bar(state, tmp_path, fail_15m):
+    PreEntrySpikeEx.fail_15m = fail_15m
+    rt = await _rt_with(state, tmp_path, PreEntrySpikeEx)
+    srv, _ = build_server(rt)
+    try:
+        rt.now = lambda: NOW - timedelta(hours=2)
+        assert (await _call(srv, "carry_paper_open", base="BTC", long_venue="binanceusdm", short_venue="bybit"))["ok"]
+        rt.now = lambda: NOW
+        s = await _call(srv, "carry_paper_status")
+        assert s["ok"] is True, s
+        mk = s["data"]["open"][0]["mark"]
+        assert mk["stop_check"] == "complete"
+        if not fail_15m:
+            assert mk["stopped"] is False and mk["max_up"] < 0.01
+            assert not any("15m bars" in w for w in s["warnings"])
+        else:  # provider failure: the whole 4h bar is used (conservative), with a warning and a `missing` entry
+            assert mk["stopped"] is True and mk["stop_at"] == "2026-10-10T12:00:00+00:00"
+            assert any("15m bars" in w and "binanceusdm, bybit" in w for w in s["warnings"])
+            assert any(m["field"].startswith("ohlcv_15m:") for m in s["missing"])
+    finally:
+        PreEntrySpikeEx.fail_15m = False
+        await rt.store.aclose()
+
+
+class ClosedBarsOnlyEx(FakeEx):
+    """A venue that never returns the 4h bar in progress."""
+
+    async def fetch_ohlcv(self, symbol, timeframe="1h", limit=100, since=None, params=None):
+        rows = await super().fetch_ohlcv(symbol, timeframe, limit, since, params)
+        if timeframe != "4h":
+            return rows
+        return [x for x in rows if x[0] + 4 * 3_600_000 <= int(NOW.timestamp() * 1000)]
+
+
+async def test_status_complete_when_venue_returns_only_closed_bars(state, tmp_path):
+    rt = await _rt_with(state, tmp_path, ClosedBarsOnlyEx)
+    srv, _ = build_server(rt)
+    try:
+        rt.now = lambda: NOW - timedelta(days=2)
+        assert (await _call(srv, "carry_paper_open", base="BTC", long_venue="binanceusdm", short_venue="bybit"))["ok"]
+        rt.now = lambda: NOW
+        s = await _call(srv, "carry_paper_status")
+        assert s["data"]["open"][0]["mark"]["stop_check"] == "complete"
+        assert not any("bar(s) missing" in w for w in s["warnings"])
+    finally:
+        await rt.store.aclose()
+
+
+async def test_open_is_not_idempotent_in_annotations(state, tmp_path):
+    rt = await _rt(state, tmp_path)
+    srv, _ = build_server(rt)
+    try:
+        async with Client(srv) as c:
+            tools = {t.name: t for t in (await c.list_tools()).tools}
+        op = tools["carry_paper_open"].annotations.model_dump(by_alias=True)
+        assert op["idempotentHint"] is False and op["readOnlyHint"] is True and op["destructiveHint"] is False
+        assert op["openWorldHint"] is True
+        assert tools["carry_paper_status"].annotations.model_dump(by_alias=True)["idempotentHint"] is True
     finally:
         await rt.store.aclose()

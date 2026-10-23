@@ -1,0 +1,12 @@
+[Unit]
+Description=tradedesk: new posts of @DataHawks into the library (scripts/channel_watch.py run)
+# Off while this file is absent ("rm" it to stop; the directory belongs to tradedesk, as for the other Telegram jobs).
+ConditionPathExists=/var/lib/tradedesk-mcp/assistant/channel-watch.on
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/tradedesk/tradedesk-mcp
+ExecStart=/usr/bin/python3 -I scripts/channel_watch.py run
+TimeoutStartSec=3h
+Nice=10
+NoNewPrivileges=true

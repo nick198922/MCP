@@ -564,6 +564,7 @@ async def _retention_sweep(rt: "Runtime") -> int:
         ("basis_hist", s.retention_basis_days),
         ("ohlcv_hist", s.retention_ohlcv_hist_days),
         ("option_xvenue_snapshot", s.retention_option_xvenue_days),
+        ("coinalyze_history", s.retention_coinalyze_history_days),
     )
     for table, days in pairs:
         if days <= 0:
@@ -622,6 +623,10 @@ def build_default_scheduler(rt: "Runtime") -> Scheduler | None:
         # Ticks every minute; the job itself keeps the hourly cadence and opens minute windows after a crossing.
         xvenue = OptionXvenueJob(hourly_seconds=s.collect_option_xvenue_seconds)
         jobs.append(PeriodicJob(name="option_xvenue", period_seconds=MINUTE_TICK_SECONDS, fn=xvenue))
+    if s.collect_coinalyze_history_enabled:
+        from .coinalyze_history import CoinalyzeHistoryJob  # noqa: PLC0415
+
+        jobs.append(PeriodicJob(name="coinalyze_history", period_seconds=s.collect_coinalyze_history_seconds, fn=CoinalyzeHistoryJob()))
     if s.alerts_enabled:
         # JSON file is optional in Phase 3.1 — DB-backed rules work on their own.
         jobs.append(PeriodicJob(name="alerts", period_seconds=s.alerts_seconds, fn=_evaluate_alerts))

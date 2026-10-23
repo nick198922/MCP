@@ -103,6 +103,15 @@ class Settings:
     collect_option_xvenue_enabled: bool = False
     collect_option_xvenue_seconds: int = 3600
     retention_option_xvenue_days: int = 365
+    # Coinalyze daily history of Binance BTC/ETH perps (collector/coinalyze_history.py): OI in USD, funding, long/short ratio.
+    # Needs COINALYZE_API_KEY (no key: the job does nothing). Backfills at most 120 days per series per run, from
+    # `backfill_days` ago (values below 1 count as 1: only new days; never older than the retention window when one is
+    # set, so the sweep and the backfill do not chase each other). Retention 0 = never pruned: the table is tiny
+    # (2 symbols x 3 series x 365 ~ 2.2k rows a year) and years of daily history are the point of it.
+    collect_coinalyze_history_enabled: bool = False
+    collect_coinalyze_history_seconds: int = 3600
+    collect_coinalyze_history_backfill_days: int = 1460
+    retention_coinalyze_history_days: int = 0
     # Alerts
     alerts_enabled: bool = False
     alerts_rules_path: str = ""
@@ -174,6 +183,11 @@ class Settings:
             collect_option_xvenue_enabled=os.environ.get("TRADEDESK_COLLECT_OPTION_XVENUE_ENABLED", "").lower() in ("1", "true", "yes"),
             collect_option_xvenue_seconds=int(_float("TRADEDESK_COLLECT_OPTION_XVENUE_SECONDS", 3600)),
             retention_option_xvenue_days=int(_float("TRADEDESK_RETENTION_OPTION_XVENUE_DAYS", 365)),
+            collect_coinalyze_history_enabled=os.environ.get("TRADEDESK_COLLECT_COINALYZE_HISTORY_ENABLED", "").lower()
+            in ("1", "true", "yes"),
+            collect_coinalyze_history_seconds=int(_float("TRADEDESK_COLLECT_COINALYZE_HISTORY_SECONDS", 3600)),
+            collect_coinalyze_history_backfill_days=int(_float("TRADEDESK_COLLECT_COINALYZE_HISTORY_BACKFILL_DAYS", 1460)),
+            retention_coinalyze_history_days=int(_float("TRADEDESK_RETENTION_COINALYZE_HISTORY_DAYS", 0)),
             http_bearer_tokens=os.environ.get("TRADEDESK_HTTP_BEARER_TOKENS") or os.environ.get("TRADEDESK_HTTP_BEARER_TOKEN", ""),
             alerts_enabled=os.environ.get("TRADEDESK_ALERTS_ENABLED", "").lower() in ("1", "true", "yes"),
             alerts_rules_path=os.environ.get("TRADEDESK_ALERTS_RULES_PATH", ""),

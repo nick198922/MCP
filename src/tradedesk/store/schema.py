@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 26
+SCHEMA_VERSION = 27
 
 # Each migration is a list of SQL statements executed in a single transaction.
 # `PRAGMA user_version` is bumped by Store.init() inside the same explicit transaction,
@@ -701,5 +701,23 @@ MIGRATIONS: dict[int, list[str]] = {
         # b_recv_ms - d_recv_ms is the read gap and d_recv_ms - d_ts_ms the age of the Deribit quote.
         "ALTER TABLE option_xvenue_snapshot ADD COLUMN d_recv_ms INTEGER",
         "ALTER TABLE option_xvenue_snapshot ADD COLUMN b_recv_ms INTEGER",
+    ],
+    27: [
+        # Coinalyze daily history of Binance perps (collector/coinalyze_history.py; symbol suffix '.A' = Binance, not an
+        # all-exchange sum): open interest in USD, funding and the long/short account ratio. Closed UTC days only; one row
+        # per (symbol, metric, ts), rewritten idempotently. Read-only market data, independent of `journal`.
+        """
+        CREATE TABLE IF NOT EXISTS coinalyze_history (
+            symbol TEXT NOT NULL,                  -- Coinalyze symbol, e.g. BTCUSDT_PERP.A
+            metric TEXT NOT NULL,                  -- 'oi_usd' | 'funding' | 'long_short'
+            ts INTEGER NOT NULL,                   -- unix seconds, START of the daily bar (00:00 UTC)
+            open REAL, high REAL, low REAL, close REAL,  -- oi_usd: USD; funding: decimal per funding interval (API % / 100);
+                                                   -- NULL for long_short. Funding open/low may carry the previous day's rate.
+            ratio REAL,                            -- long_short: longs / shorts (accounts, not notional)
+            long_share REAL, short_share REAL,     -- long_short: fractions of accounts in [0, 1]
+            fetched_ts INTEGER NOT NULL,           -- unix seconds when the row was written
+            PRIMARY KEY (symbol, metric, ts)
+        )
+        """,
     ],
 }

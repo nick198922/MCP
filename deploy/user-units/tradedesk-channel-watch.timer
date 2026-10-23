@@ -1,0 +1,10 @@
+[Unit]
+Description=tradedesk-channel-watch (every 20 minutes)
+
+[Timer]
+OnCalendar=*-*-* *:07/20:00
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

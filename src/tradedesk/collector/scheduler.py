@@ -563,6 +563,7 @@ async def _retention_sweep(rt: "Runtime") -> int:
         ("funding_hist", s.retention_funding_days),
         ("basis_hist", s.retention_basis_days),
         ("ohlcv_hist", s.retention_ohlcv_hist_days),
+        ("option_xvenue_snapshot", s.retention_option_xvenue_days),
     )
     for table, days in pairs:
         if days <= 0:
@@ -615,6 +616,10 @@ def build_default_scheduler(rt: "Runtime") -> Scheduler | None:
         from .radar_archive import collect_radar_archive  # noqa: PLC0415
 
         jobs.append(PeriodicJob(name="radar_archive", period_seconds=s.collect_radar_seconds, fn=collect_radar_archive))
+    if s.collect_option_xvenue_enabled:
+        from .option_xvenue import collect_option_xvenue  # noqa: PLC0415
+
+        jobs.append(PeriodicJob(name="option_xvenue", period_seconds=s.collect_option_xvenue_seconds, fn=collect_option_xvenue))
     if s.alerts_enabled:
         # JSON file is optional in Phase 3.1 — DB-backed rules work on their own.
         jobs.append(PeriodicJob(name="alerts", period_seconds=s.alerts_seconds, fn=_evaluate_alerts))

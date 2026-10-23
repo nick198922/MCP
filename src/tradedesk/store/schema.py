@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 24
+SCHEMA_VERSION = 25
 
 # Each migration is a list of SQL statements executed in a single transaction.
 # `PRAGMA user_version` is bumped by Store.init() inside the same explicit transaction,
@@ -657,5 +657,36 @@ MIGRATIONS: dict[int, list[str]] = {
     24: [
         # The dashboard's Polymarket tab reads `SELECT MAX(ts)` and `WHERE ts = ?`; the (market_id, ts) index cannot serve them.
         "CREATE INDEX IF NOT EXISTS pm_gap_snapshot_ts ON pm_gap_snapshot (ts)",
+    ],
+    25: [
+        # Deribit <-> Bybit quotes of the same daily option (docs/ideas/IDEA-20261023-bybit-deribit-daily-option-dislocation-
+        # forward.md; collector/option_xvenue.py): nearest expiry 2-20 h away, ATM +- 3 strikes, calls and puts. Raw quotes
+        # only, both venues side by side; the crossing is computed at read time (analytics/option_xvenue.py). A venue
+        # without a quote leaves its columns NULL. Read-only market data, independent of `journal`.
+        """
+        CREATE TABLE IF NOT EXISTS option_xvenue_snapshot (
+            ts INTEGER NOT NULL,                   -- unix seconds of the snapshot
+            currency TEXT NOT NULL,                -- 'BTC' | 'ETH'
+            expiry_ts INTEGER NOT NULL,            -- unix seconds, 08:00 UTC expiry
+            tau_hours REAL NOT NULL,               -- hours from ts to expiry_ts
+            strike REAL NOT NULL,                  -- USD
+            opt TEXT NOT NULL,                     -- 'C' | 'P'
+            d_instrument TEXT,                     -- Deribit instrument name
+            b_symbol TEXT,                         -- Bybit symbol (e.g. BTC-24OCT26-110000-C-USDT)
+            d_bid REAL, d_ask REAL,                -- Deribit best bid/ask, in the coin per 1 coin of underlying (x d_index = USD)
+            d_bid_size REAL, d_ask_size REAL,      -- Deribit size at the best level, base-coin units
+            d_bid_iv REAL, d_ask_iv REAL, d_mark_iv REAL,  -- decimal
+            d_index REAL,                          -- Deribit index (spot), USD
+            d_underlying REAL,                     -- Deribit underlying (forward of the expiry), USD
+            d_ts_ms INTEGER,                       -- Deribit ticker timestamp, unix ms
+            b_bid REAL, b_ask REAL,                -- Bybit best bid/ask, USD(T) per 1 coin of underlying
+            b_bid_size REAL, b_ask_size REAL,      -- Bybit size at the best level, base-coin units (unverified contract size)
+            b_bid_iv REAL, b_ask_iv REAL, b_mark_iv REAL,  -- decimal
+            b_index REAL,                          -- Bybit index price, USD
+            b_underlying REAL,                     -- Bybit underlying price of the expiry, USD
+            b_ts_ms INTEGER,                       -- Bybit tickers response time, unix ms
+            PRIMARY KEY (ts, currency, strike, opt)
+        )
+        """,
     ],
 }

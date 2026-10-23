@@ -337,6 +337,28 @@ class Store:
         await self.conn.commit()
         return len(payload)
 
+    OPTION_XVENUE_COLUMNS = (
+        "currency expiry_ts tau_hours strike opt d_instrument b_symbol "
+        "d_bid d_ask d_bid_size d_ask_size d_bid_iv d_ask_iv d_mark_iv d_index d_underlying d_ts_ms "
+        "b_bid b_ask b_bid_size b_ask_size b_bid_iv b_ask_iv b_mark_iv b_index b_underlying b_ts_ms"
+    ).split()
+
+    async def insert_option_xvenue(self, ts: int, rows: list[dict[str, Any]]) -> int:
+        """Deribit <-> Bybit daily option quotes of one snapshot; idempotent per (ts, currency, strike, opt)."""
+        cols = self.OPTION_XVENUE_COLUMNS
+        payload = [(ts, *(r.get(c) for c in cols)) for r in rows if r.get("currency") and r.get("strike") is not None and r.get("opt")]
+        if not payload:
+            return 0
+        marks = ",".join("?" * (len(cols) + 1))
+        await self.conn.executemany(f"INSERT OR REPLACE INTO option_xvenue_snapshot (ts, {', '.join(cols)}) VALUES ({marks})", payload)
+        await self.conn.commit()
+        return len(payload)
+
+    async def option_xvenue_rows(self, since_ts: int = 0) -> list[dict[str, Any]]:
+        """Stored snapshot rows with ts >= ``since_ts``, oldest first."""
+        cur = await self.conn.execute("SELECT * FROM option_xvenue_snapshot WHERE ts >= ? ORDER BY ts, currency, strike, opt", (since_ts,))
+        return [dict(r) for r in await cur.fetchall()]
+
     async def pm_gap_outcome_pending(self, ended_before: int, ended_after: int, limit: int) -> list[dict[str, Any]]:
         """Snapshotted markets that ended in [``ended_after``, ``ended_before``] and still need a fetch: no settled
         outcome yet, or (threshold markets) no Binance close for the cross-check yet. Fewest attempts first, then the
@@ -481,7 +503,16 @@ class Store:
 
     async def prune(self, table: str, cutoff_ts: int) -> int:
         """Delete rows with ts < cutoff_ts. Returns the number of rows deleted."""
-        if table not in {"atm_term", "funding_hist", "basis_hist", "snapshots", "alerts", "liquidations", "ohlcv_hist"}:
+        if table not in {
+            "atm_term",
+            "funding_hist",
+            "basis_hist",
+            "snapshots",
+            "alerts",
+            "liquidations",
+            "ohlcv_hist",
+            "option_xvenue_snapshot",
+        }:
             raise ValueError(f"unknown table {table!r}")
         cur = await self.conn.execute(f"DELETE FROM {table} WHERE ts < ?", (cutoff_ts,))
         await self.conn.commit()

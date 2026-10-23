@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 23
+SCHEMA_VERSION = 24
 
 # Each migration is a list of SQL statements executed in a single transaction.
 # `PRAGMA user_version` is bumped by Store.init() inside the same explicit transaction,
@@ -653,5 +653,9 @@ MIGRATIONS: dict[int, list[str]] = {
         "ALTER TABLE forecast_log ADD COLUMN rv30 REAL",  # decimal, trailing 30-day zero-mean realized vol at issue; NULL = none
         "ALTER TABLE forecast_log ADD COLUMN prob_rv REAL",  # P(lo < S_T < hi) of the RV30 model, decimal; NULL = none
         "ALTER TABLE forecast_log ADD COLUMN brier_rv REAL",  # (prob_rv - outcome)^2 once settled
+    ],
+    24: [
+        # The dashboard's Polymarket tab reads `SELECT MAX(ts)` and `WHERE ts = ?`; the (market_id, ts) index cannot serve them.
+        "CREATE INDEX IF NOT EXISTS pm_gap_snapshot_ts ON pm_gap_snapshot (ts)",
     ],
 }

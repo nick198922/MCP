@@ -1,0 +1,2 @@
+- Схема 24: індекс `pm_gap_snapshot (ts)` — `SELECT MAX(ts)` і `WHERE ts = ?` вкладки «Polymarket» більше не сканують таблицю (≈ 560 тис. рядків за 16 тижнів). Міграція застосовується колектором сама при старті.
+- Тест `test_migration_24_adds_the_ts_index_and_the_planner_uses_it`: міграція з v23 і перевірка плану запиту.

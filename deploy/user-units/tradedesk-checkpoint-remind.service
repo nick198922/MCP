@@ -1,0 +1,9 @@
+[Unit]
+Description=tradedesk: one-off reminder to the owner, review before the 30.11 checkpoint (docs/CHECKPOINT-2026-11-30.md)
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/tradedesk/tradedesk-mcp
+ExecStart=/bin/bash -c '{ printf "**Нагадування: за тиждень контрольна точка 30.11.** Напиши Claude «розбір чекпоінту» — оновлю список і разом вирішимо, від чого відмовитись і чи переносимо на місяць.\n\n"; cat docs/CHECKPOINT-2026-11-30.md; } | python3 scripts/tg_send.py'
+TimeoutStartSec=2min
+NoNewPrivileges=true

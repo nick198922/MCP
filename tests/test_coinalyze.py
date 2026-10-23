@@ -58,10 +58,28 @@ def test_summarise_totals_and_shares():
 
 def test_summarise_edge_cases():
     assert summarise([], "daily") is None
-    assert summarise([{"t": "x"}, {"t": 1, "l": -1, "s": 0}], "daily") is None
-    s = summarise([{"t": 0, "l": 0, "s": 0}, {"t": 3 * 86400, "l": 1, "s": 1}], "daily", limit=5)
+    t0 = 1_704_067_200  # 2024-01-01T00:00:00Z
+    assert summarise([{"t": "x"}, {"t": t0, "l": -1, "s": 0}], "daily") is None
+    s = summarise([{"t": t0, "l": 0, "s": 0}, {"t": t0 + 3 * 86400, "l": 1, "s": 1}], "daily", limit=5)
     assert s["rows"][0]["long_share"] is None and s["totals"]["gaps"] == 1
     assert summarise(SAMPLE[0]["history"], "daily", limit=2)["totals"]["intervals"] == 2
+
+
+@pytest.mark.parametrize("t", [10**14, -(10**13), float("inf"), float("-inf"), float("nan"), 0, 4_102_444_800])
+def test_summarise_drops_bad_timestamps(t):
+    good = {"t": 1_704_067_200, "l": 1, "s": 2}
+    assert summarise([{**good, "t": t}], "daily") is None
+    assert summarise([{**good, "t": t}, good], "daily")["totals"]["intervals"] == 1
+
+
+@pytest.mark.parametrize("ts", ["100000000000000", "-10000000000000", "Infinity", "NaN", "1e400"])
+async def test_liquidations_history_bad_timestamp_returns_envelope(ts):
+    def handler(req):
+        return httpx.Response(200, content=f'[{{"symbol": "BTCUSDT_PERP.A", "history": [{{"t": {ts}, "l": 1, "s": 2}}]}}]'.encode())
+
+    srv, _ = make_server(handler)
+    env = await call(srv, "liquidations_history", symbol="BTC")
+    assert env["ok"] is False and env["data"] is None and env["missing"][0]["reason"] == "data_unavailable"
 
 
 def test_symbol_and_interval_helpers():

@@ -73,6 +73,7 @@ HELD_FILES = {
 }
 HELD_GLOBS = (
     "deploy/user-units/tradedesk-demo-*",
+    "scripts/demo_*.py",  # scripts that place demo orders (demo_option_probe.py, 23.10)
     "deploy/user-units/tradedesk-pr-watch.*",
     "deploy/user-units/tradedesk-trader-review.*",
 )

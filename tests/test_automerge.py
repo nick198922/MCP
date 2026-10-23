@@ -174,3 +174,8 @@ def test_demo_trader_inputs_are_named_as_system_files():
     ):
         assert am.protected(path), path
     assert not am.protected("deploy/user-units/tradedesk-pm-gap-report.timer")
+
+
+def test_scripts_that_place_demo_orders_wait_for_claude():
+    assert am.classify(["docs/x.md", "scripts/demo_option_probe.py"]) == "claude: scripts/demo_option_probe.py"
+    assert am.classify(["scripts/demo_anything.py"]).startswith("claude:")

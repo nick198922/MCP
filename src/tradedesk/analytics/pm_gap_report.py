@@ -27,16 +27,20 @@ from .pm_gap_paper import (
     PRIMARY_H,
     SECONDARY_H,
     VOL_HAIRCUT_K,
+    WORSE_ENTRY,
     EntryRule,
     accepted_rule_hashes,
+    asset_permutation_p,
     brier_by_market,
     closing_value,
     cluster_mean_ci,
+    delayed_entry,
     eligible,
     horizon_clv,
     open_positions,
     position_metrics,
     verdict,
+    worse_entry,
 )
 from .pm_threshold import _json_list, outcome_yes
 
@@ -44,6 +48,8 @@ DAY_S = 86_400
 MAIN_PERIOD_DAYS = 112  # registration section 1: positions opened in [T0, T0 + 112 days) form the main test
 VERDICT_DAYS = 126  # the verdict is taken once, at T0 + 126 days (last main-period market resolved by then)
 T0_TS = 1792520435  # registered T0: the first pm_gap_snapshot, 2026-10-20 18:20:35 UTC (card and HANDOFF)
+SENS_THRESHOLDS = (0.03, 0.08)  # registration sections 4 and 12: descriptive thresholds beside the primary 5 pp
+STRESS_DEPTH_USD = 500.0  # registration section 12: USD at the best ask >= $500 instead of $200
 
 
 def main_period(t0: int) -> tuple[int, int]:
@@ -349,7 +355,8 @@ def final_metrics(
 
     Primary: CLV +24 h per position (cluster = ISO week of the entry, ET). Secondary: P&L and the closing CLV (cluster =
     resolution week), Brier D = model (k = 1) - Polymarket per resolved market over the main period's eligible snapshots
-    (cluster = resolution week); k = 0.92 alongside. Robustness and stress (sections 6 and 12) are not computed here.
+    (cluster = resolution week); k = 0.92 alongside. Stress and robustness (sections 6 and 12) under ``robustness``:
+    descriptive, they never change the verdict (see :func:`_robustness`).
 
     A pure function cannot know the real time: the gate is held by the runner (scripts/pm_gap_paper_report.py), which
     calls this only with the wall clock and the registered :data:`T0_TS`, never with values from the command line."""
@@ -379,6 +386,7 @@ def final_metrics(
             **cluster_mean_ci([b["diff"] for b in bm], [b["week_res"] for b in bm], [b["day"] for b in bm]),
         }
     v, reason = verdict(primary, pnl, brier["1.0"])
+    ctx = {"period": period, "by_mkt": by_mkt, "outcomes": outcomes, "excluded": excluded, "acc": acc}
     return {
         "t0": int(t0),
         "now": int(now_ts),
@@ -391,6 +399,71 @@ def final_metrics(
         "brier_diff": brier,
         "verdict": v,
         "reason": reason,
+        "robustness": _robustness(ctx, rule, pm, start, end),
+    }
+
+
+def _summ(pm: Sequence[Mapping[str, Any]], key: str, cluster: str) -> dict[str, Any]:
+    xs = [m for m in pm if m[key] is not None]
+    return cluster_mean_ci([m[key] for m in xs], [m[cluster] for m in xs], [m["day"] for m in xs])
+
+
+def _block(pm: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Positions, primary CLV +24 h (cluster = entry week) and P&L (cluster = resolution week) of one variant."""
+    return {"positions": len(pm), "clv_24h": _summ(pm, "clv_24h", "week_entry"), "pnl": _summ(pm, "pnl", "week_res")}
+
+
+def _robustness(ctx: Mapping[str, Any], rule: EntryRule, pm: Sequence[Mapping[str, Any]], start: int, end: int) -> dict[str, Any]:
+    """Stress (section 6) and robustness (section 12), all descriptive; only called from the gated :func:`final_metrics`.
+
+    * ``variants``: the rule re-run with threshold 3 / 8 pp, k = 1 only, k = 0.92 only, USD at the ask >= $500; the
+      primary positions bought 1 cent above the ask (:func:`worse_entry`); re-entered at the next snapshot within 2 h
+      (:func:`delayed_entry`, the dropped ones counted).
+    * ``halves``: primary positions by entry in the first / second half of the main period; ``by_asset``, ``by_kind``.
+    * ``asset_permutation``: BTC - ETH mean primary CLV, asset labels permuted within the entry week.
+    * ``cluster_day``: closing CLV, P&L and Brier D (k = 1) with cluster = resolution day; ``clv_close_only_close``.
+    Not computed (see docs/BACKLOG.md): "without the 3 weeks of the largest contribution"."""
+    period, by_mkt, outcomes, excluded, acc = ctx["period"], ctx["by_mkt"], ctx["outcomes"], ctx["excluded"], ctx["acc"]
+
+    def metrics(positions: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+        return [position_metrics(p, by_mkt[p["market_id"]], outcomes.get(p["market_id"])) for p in positions]
+
+    def rerun(r: EntryRule) -> dict[str, Any]:
+        return _block(metrics(p for p in open_positions(period, r, acc) if p["market_id"] not in excluded))
+
+    variants: dict[str, Any] = {f"threshold_{t}": rerun(replace(rule, threshold=t)) for t in SENS_THRESHOLDS}
+    variants["k_1.0"] = rerun(replace(rule, vol_ks=(1.0,)))
+    variants[f"k_{VOL_HAIRCUT_K}"] = rerun(replace(rule, vol_ks=(VOL_HAIRCUT_K,)))
+    variants["depth_500"] = rerun(replace(rule, min_depth_usd=STRESS_DEPTH_USD))
+    variants["entry_plus_1c"] = _block(metrics(worse_entry(p, WORSE_ENTRY) for p in pm))
+    delayed = [d for p in pm if (d := delayed_entry(p, by_mkt[p["market_id"]], rule, acc)) is not None]
+    variants["next_snapshot"] = {
+        **_block(metrics(delayed)),
+        "dropped": len(pm) - len(delayed),
+        "share_dropped": _share(len(pm) - len(delayed), len(pm)),
+    }
+
+    mid = start + (end - start) // 2
+    with24 = [m for m in pm if m["clv_24h"] is not None]
+    brier = brier_by_market(period, outcomes, rule, acc, 1.0)
+    return {
+        "variants": variants,
+        "halves": {
+            "first": _block([m for m in pm if int(m["ts"]) < mid]),
+            "second": _block([m for m in pm if int(m["ts"]) >= mid]),
+            "split_ts": mid,
+        },
+        "by_asset": {a: _block([m for m in pm if m["asset"] == a]) for a in ("BTC", "ETH")},
+        "by_kind": {k: _block([m for m in pm if m["kind"] == k]) for k in ("above", "touch")},
+        "asset_permutation": asset_permutation_p(
+            [m["clv_24h"] for m in with24], [m["asset"] for m in with24], [m["week_entry"] for m in with24]
+        ),
+        "cluster_day": {
+            "clv_close": _summ(pm, "clv", "day"),
+            "pnl": _summ(pm, "pnl", "day"),
+            "brier_k1": cluster_mean_ci([b["diff"] for b in brier], [b["day"] for b in brier], [b["day"] for b in brier]),
+        },
+        "clv_close_only_close": _summ([m for m in pm if m["close_src"] == "close"], "clv", "week_res"),
     }
 
 
@@ -416,6 +489,47 @@ def render_verdict(f: Mapping[str, Any]) -> str:
         row("Brier D, k = 1 (модель − Polymarket; > 0 — Polymarket точніший)", f["brier_diff"]["1.0"]),
         row(f"Brier D, k = {VOL_HAIRCUT_K}", f["brier_diff"][str(VOL_HAIRCUT_K)]),
         "",
-        "Стійкість і стрес (розділи 6 і 12) тут не пораховано.",
+        *render_robustness(f["robustness"]),
     ]
     return "\n".join(lines) + "\n"
+
+
+VARIANT_NAMES = {
+    "threshold_0.03": "поріг 3 п. п.",
+    "threshold_0.08": "поріг 8 п. п.",
+    "k_1.0": "лише k = 1",
+    f"k_{VOL_HAIRCUT_K}": f"лише k = {VOL_HAIRCUT_K}",
+    "depth_500": "глибина на аску ≥ 500 $",
+    "entry_plus_1c": "вхід на 1 цент гірше",
+    "next_snapshot": "вхід на наступному знімку (≤ 2 год)",
+}
+
+
+def render_robustness(r: Mapping[str, Any]) -> list[str]:
+    """Markdown lines (Ukrainian) of the ``robustness`` block of :func:`final_metrics`."""
+
+    def ci(s: Mapping[str, Any]) -> str:
+        return f"n {s['n']}, кластерів {s['n_clusters']}; середнє {_pp(s['mean'])}, 95 % CI [{_pp(s['lo'])}; {_pp(s['hi'])}]"
+
+    def blk(name: str, b: Mapping[str, Any], extra: str = "") -> str:
+        return f"- {name}: позицій {b['positions']}{extra}; CLV +24 год: {ci(b['clv_24h'])}; P&L: {ci(b['pnl'])}"
+
+    v, perm, cd = r["variants"], r["asset_permutation"], r["cluster_day"]
+    p_perm = "n/a" if perm["p"] is None else f"{perm['p']:.4f}"
+    return [
+        "**Стрес і стійкість** (розділи 6 і 12; описово, вердикт за ними не виноситься)",
+        *(
+            blk(VARIANT_NAMES.get(k, k), b, f" (випало {b['dropped']}, {_p(b['share_dropped'])})" if k == "next_snapshot" else "")
+            for k, b in v.items()
+        ),
+        blk("перша половина періоду (вхід)", r["halves"]["first"]),
+        blk("друга половина періоду (вхід)", r["halves"]["second"]),
+        *(blk(a, b) for a, b in r["by_asset"].items()),
+        *(blk("пороговий" if k == "above" else "дотик", b) for k, b in r["by_kind"].items()),
+        f"- BTC − ETH, CLV +24 год: різниця {_pp(perm['diff'])} (n {perm['n_a']} / {perm['n_b']}); перестановка міток "
+        f"активу всередині тижня входу: p = {p_perm} ({perm['n_perm']} перестановок)",
+        f"- кластер = день розв'язання: CLV до закриття {ci(cd['clv_close'])}; P&L {ci(cd['pnl'])}; Brier D (k = 1) {ci(cd['brier_k1'])}",
+        f"- CLV до закриття лише з close: {ci(r['clv_close_only_close'])}",
+        "",
+        "Не пораховано: «без 3 тижнів з найбільшим внеском» (неоднозначно, питання до кванта в BACKLOG).",
+    ]

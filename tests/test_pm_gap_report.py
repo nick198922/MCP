@@ -20,6 +20,7 @@ from tradedesk.analytics.pm_gap_report import (
     final_metrics,
     gamma_outcome,
     main_period,
+    render_verdict,
     render_weekly,
     settled_outcomes,
     verdict_ts,
@@ -230,6 +231,56 @@ def test_final_metrics_refuse_before_the_verdict_date_and_decide_after():
     bad = [dict(OUTCOMES[0], binance_close_end=69_000.0, binance_close_next=69_000.0), *OUTCOMES[1:]]
     g = final_metrics(ROWS, bad, verdict_ts(T0), T0)
     assert g["positions"] == 3 and g["excluded_markets"] == ["m1"]
+    assert g["robustness"]["variants"]["threshold_0.03"]["positions"] == 3  # the exclusion holds in every variant
+
+
+CLV, PNL = 0.7371 - 0.4329, 1 - 0.4329
+
+
+def test_verdict_stress_and_robustness_sections_6_and_12():
+    r = final_metrics(ROWS, OUTCOMES, verdict_ts(T0), T0)["robustness"]
+    v = r["variants"]
+    # model 0.60 vs ask 0.4329: edge ~16.7 pp passes 3 and 8 pp, each k alone and $500 of depth
+    for name in ("threshold_0.03", "threshold_0.08", "k_1.0", "k_0.92", "depth_500"):
+        assert v[name]["positions"] == 4, name
+        assert v[name]["clv_24h"]["mean"] == pytest.approx(CLV) and v[name]["pnl"]["mean"] == pytest.approx(PNL)
+    # one cent worse: same positions, CLV and P&L both 1 cent lower (fee 0 in the fixture)
+    assert v["entry_plus_1c"]["positions"] == 4
+    assert v["entry_plus_1c"]["clv_24h"]["mean"] == pytest.approx(CLV - 0.01)
+    assert v["entry_plus_1c"]["pnl"]["mean"] == pytest.approx(PNL - 0.01)
+    # at the next snapshot the market already agrees with the model: every position drops out
+    assert (v["next_snapshot"]["positions"], v["next_snapshot"]["dropped"], v["next_snapshot"]["share_dropped"]) == (0, 4, 1.0)
+    assert v["next_snapshot"]["clv_24h"]["mean"] is None
+    # halves of the main period by entry; by asset; by kind
+    assert r["halves"]["first"]["positions"] == 4 and r["halves"]["second"]["positions"] == 0
+    assert r["halves"]["split_ts"] == T0 + 56 * DAY_S
+    assert {a: b["positions"] for a, b in r["by_asset"].items()} == {"BTC": 2, "ETH": 2}
+    assert {k: b["positions"] for k, b in r["by_kind"].items()} == {"above": 4, "touch": 0}
+    # identical CLV for both assets: no difference, permutation p = 1
+    perm = r["asset_permutation"]
+    assert perm["diff"] == pytest.approx(0.0, abs=1e-12) and perm["p"] == pytest.approx(1.0) and (perm["n_a"], perm["n_b"]) == (2, 2)
+    # resolution-day clusters and the closing CLV from 'close' only
+    assert r["cluster_day"]["clv_close"]["n_clusters"] == 1 and r["cluster_day"]["pnl"]["mean"] == pytest.approx(PNL)
+    assert r["cluster_day"]["brier_k1"]["n"] == 4
+    assert r["clv_close_only_close"]["n"] == 4 and r["clv_close_only_close"]["mean"] == pytest.approx(CLV)
+
+
+def test_verdict_stress_delayed_survivors_and_thin_books():
+    # m1 keeps the entry book one more hour (its gap survives the next snapshot); m2 has only $300 at the ask
+    rows = [dict(r, **ENTRY, model_prob=0.60) if r["market_id"] == "m1" and r["ts"] == T0 + H else r for r in ROWS]
+    rows = [dict(r, yes_ask_usd=300.0) if r["market_id"] == "m2" else r for r in rows]
+    f = final_metrics(rows, OUTCOMES, verdict_ts(T0), T0)
+    v = f["robustness"]["variants"]
+    assert f["positions"] == 4 and v["depth_500"]["positions"] == 3
+    nxt = v["next_snapshot"]
+    assert (nxt["positions"], nxt["dropped"], nxt["share_dropped"]) == (1, 3, 0.75)
+    assert nxt["clv_24h"]["mean"] == pytest.approx(CLV)  # entered at T0 + 1 h at the same ask, +24 h from there
+    # the primary metric and the verdict are not changed by any of this
+    assert f["primary_clv_24h"]["mean"] == pytest.approx(CLV) and f["verdict"] == "inconclusive"
+    text = render_verdict(f)
+    assert "Стрес і стійкість" in text and "глибина на аску ≥ 500 $: позицій 3" in text
+    assert "вхід на наступному знімку (≤ 2 год): позицій 1 (випало 3, 75.0 %)" in text
+    assert "перестановка міток активу всередині тижня входу" in text and "без 3 тижнів" in text
 
 
 # ----------------------------------------------------------------------------- the runner (read-only DB)

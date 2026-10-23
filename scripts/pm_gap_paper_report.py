@@ -12,7 +12,9 @@ migration, no write, no network) and applies the registration of
 docs/ideas/IDEA-20261017-polymarket-vs-options-forward.md with the pure ``analytics/pm_gap_report.py``. The weekly report
 shows only what registration section 1 allows (counts, resolution days and weeks, CLV source shares, SD per position,
 skew and read-time shares); the mean of the main metric, its CI, the P&L and the Brier comparison exist only in
-``--verdict`` mode. Weekly T0 = the first snapshot unless ``--t0`` is given. Output: ``--out``, else $TRADEDESK_PM_GAP_REPORT,
+``--verdict`` mode, together with the descriptive stress and robustness checks of registration sections 6 and 12
+(thresholds 3 / 8 pp, k separately, depth >= $500, entry +1 cent, next-snapshot entry, period halves, BTC vs ETH with a
+within-week permutation, by kind, resolution-day clusters, closing CLV from 'close' only). Weekly T0 = the first snapshot unless ``--t0`` is given. Output: ``--out``, else $TRADEDESK_PM_GAP_REPORT,
 else /var/lib/tradedesk-mcp/paper/pm_gap_REPORT.md (outside git). ``--telegram`` sends the text to the group's ``agents``
 topic through scripts/tg_send.py. Paper positions only: nothing here trades.
 """

@@ -29,6 +29,7 @@ import numpy as np
 
 from .liquidation_flush import cluster_bootstrap_means
 from .options import d1d2, ncdf
+from .per_asset import permute_within
 from .pm_threshold import PAIRS, standard_rules
 from .pm_touch import et_date, fee_per_share
 from .probability import prob_touch
@@ -44,6 +45,7 @@ SECONDARY_H = 6  # hours: the secondary short CLV horizon
 HORIZON_TOL_S = HOUR_S  # the snapshot for a horizon may be at most 1 h away from entry + horizon
 MIN_DAYS = 20  # resolution days needed for any verdict other than 'inconclusive'
 MIN_CLUSTERS = 10  # ISO-week clusters needed for any verdict other than 'inconclusive'
+WORSE_ENTRY = 0.01  # stress (section 6): entry one cent above the best ask
 
 
 @dataclass(frozen=True)
@@ -239,6 +241,8 @@ def entry_signals(row: Mapping[str, Any], rule: EntryRule, accepted_hashes: set[
                     "mid_entry": b["mid"],
                     "edge": edge,
                     "depth_usd": depth,
+                    "fee_rate": fr,
+                    "fee_exp": fe,
                 }
             )
     return out
@@ -276,6 +280,14 @@ def delayed_entry(
         if s["side"] == pos["side"]:
             return {**s, "delayed_from": t0}
     return None
+
+
+def worse_entry(pos: Mapping[str, Any], worse_by: float = WORSE_ENTRY) -> dict[str, Any]:
+    """Stress for the fill (registration section 6): the same position bought ``worse_by`` above its best ask, cost =
+    :func:`entry_cost` at that price (fee upper bound included). The selection of positions is not changed."""
+    ask = float(pos["ask"]) + worse_by
+    cost = entry_cost(ask, float(pos.get("fee_rate") or 0.0), float(pos.get("fee_exp") or 1.0))
+    return {**pos, "ask": ask, "cost": cost, "worse_by": worse_by}
 
 
 # ----------------------------------------------------------------------------- closing line value and P&L
@@ -431,6 +443,37 @@ def cluster_mean_ci(
         "hi": float(np.quantile(b, 0.975)),
         "se": float(np.std(b, ddof=1)),
     }
+
+
+def asset_permutation_p(
+    values: Sequence[float],
+    assets: Sequence[Any],
+    clusters: Sequence[Any],
+    a: str = "BTC",
+    b: str = "ETH",
+    *,
+    n_perm: int = 10_000,
+    seed: int = BOOT_SEED,
+) -> dict[str, Any]:
+    """Heterogeneity of two assets (registration section 12): observed ``diff`` = mean(a) - mean(b), and a two-sided p
+    from permuting the asset labels WITHIN each cluster (ISO week), which keeps every week's mix of assets.
+    p = (1 + #{|diff*| >= |diff|}) / (1 + n_perm). Values of other assets are ignored. Descriptive: no verdict on it."""
+    keep = [i for i, s in enumerate(assets) if s in (a, b)]
+    v = np.asarray([float(values[i]) for i in keep], dtype=float)
+    lab = np.asarray([assets[i] == a for i in keep], dtype=bool)
+    na, nb = int(lab.sum()), int((~lab).sum())
+    if na == 0 or nb == 0:
+        return {"n_a": na, "n_b": nb, "diff": None, "p": None, "n_perm": 0}
+    diff = float(v[lab].mean() - v[~lab].mean())
+    codes = {c: j for j, c in enumerate(sorted({str(clusters[i]) for i in keep}))}
+    cl = np.asarray([codes[str(clusters[i])] for i in keep])
+    rng = np.random.default_rng(seed)
+    hits = 0
+    for _ in range(n_perm):
+        p = permute_within(lab, cl, rng)
+        if abs(float(v[p].mean() - v[~p].mean())) >= abs(diff) - 1e-12:
+            hits += 1
+    return {"n_a": na, "n_b": nb, "diff": diff, "p": (1 + hits) / (1 + n_perm), "n_perm": n_perm}
 
 
 def mde(sd_cluster: float, n_clusters: int, k: float = Z_POWER) -> float:

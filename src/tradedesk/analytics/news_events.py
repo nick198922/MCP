@@ -328,6 +328,93 @@ def hack_exclusion(h: Hack) -> str | None:
     return None
 
 
+# ------------------------------------------------------------------ market-maker news (IDEA-20261017-market-makers, part C)
+
+MM_NEGATIVE = frozenset({"mm_offboard", "mm_scandal"})  # traded short
+MM_POSITIVE = frozenset({"mm_partnership"})  # traded long
+MM_MARKET_WIDE = frozenset({"BTC", "ETH"})  # news about these is not token-specific MM news
+
+
+@dataclass(frozen=True)
+class MmNews:
+    """One row of ``docs/verification/2026-10-23-news-mm.csv`` (time in epoch ms UTC)."""
+
+    token: str  # as written in the CSV (may be a description such as "MULTI (GOTBIT CLIENTS)" or "BTC/ETH/SOL")
+    ms: int
+    type: str  # mm_offboard | mm_scandal | mm_partnership
+    direction_prior: str  # down | up | unclear (an a-priori opinion, not a measurement)
+    time_source: str  # tweet_id | article_date
+    url: str
+    perp_at_t0: tuple[str, ...]  # "venue:SYMBOL" items found by Claude (a hint; liveness is checked on candles)
+    market_maker: str
+
+    @property
+    def key(self) -> str:
+        return f"{self.token}@{self.ms}"
+
+
+def parse_mm_news(text: str) -> list[MmNews]:
+    """Rows of the market-maker news CSV (the closures columns plus ``perp_at_t0``, ``market_maker``). The text is
+    untrusted: fields are only stored (token upper-cased), never interpreted as instructions."""
+    out: list[MmNews] = []
+    for r in csv.DictReader(io.StringIO(text)):
+        perps = tuple(p.strip() for p in (r.get("perp_at_t0") or "").split(";") if p.strip())
+        out.append(
+            MmNews(
+                r["token"].strip().upper(),
+                _utc_ms(r["t0_utc"]),
+                r["type"].strip(),
+                r["direction_prior"].strip(),
+                r["time_source"].strip(),
+                r["url"].strip(),
+                perps,
+                (r.get("market_maker") or "").strip(),
+            )
+        )
+    return out
+
+
+def mm_side(n: MmNews) -> float:
+    """Trade direction of the class as the ``sign`` of ``short_trade``: 1.0 short (negative news), -1.0 long
+    (partnership), 0.0 for an unknown type."""
+    if n.type in MM_NEGATIVE:
+        return 1.0
+    if n.type in MM_POSITIVE:
+        return -1.0
+    return 0.0
+
+
+def mm_candidates(n: MmNews) -> list[str]:
+    """Base tickers to look up a perp for: the bases of ``perp_at_t0`` (multiplier stripped), then the token field up
+    to the first ``/``. A token field with a parenthesis is a description, not a ticker, so only ``perp_at_t0`` counts."""
+    out = [perp_base(p.split(":", 1)[-1])[0] for p in n.perp_at_t0]
+    if "(" not in n.token:
+        out.append(n.token.split("/", 1)[0].strip())
+    return [t for t in dict.fromkeys(out) if _TICK.match(t) and t not in STABLES]
+
+
+def mm_exclusion(n: MmNews) -> str | None:
+    """Why a row is outside the registered primary pool of part C (None: in the pool before the perp check and the
+    72 h dedupe). Rules in order: exact tweet time, a directional prior that agrees with the class, token-specific."""
+    if n.time_source != "tweet_id":
+        return "time is a date only"
+    side = mm_side(n)
+    if side == 0.0:
+        return "unknown type"
+    if n.direction_prior not in ("down", "up"):
+        return "direction prior unclear"
+    if (n.direction_prior == "down") != (side > 0):
+        return "prior contradicts class"
+    if "/" in n.token or n.token in MM_MARKET_WIDE:
+        return "not token-specific"
+    return None
+
+
+def in_direction(r: float, side: float) -> float:
+    """A price change seen from the class's position: -r for a short (side 1), r for a long (side -1)."""
+    return -side * r
+
+
 def residual_short(r_h: float, r_end: float) -> float:
     """Gross short return from t0+h to the end horizon, given both reactions measured from t0:
     1 - (1 + r_end) / (1 + r_h). What is left for a trader who enters at h."""

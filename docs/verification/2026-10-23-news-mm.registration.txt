@@ -1,0 +1,6 @@
+Registration of IDEA-20261017-market-makers, part C (market-maker news, H4).
+Section "## Попередня реєстрація (частина C: новини про ММ, H4)" of docs/ideas/IDEA-20261017-market-makers.md,
+from the heading to the end of the file (or to "## Частина C: результати"), UTF-8 bytes.
+Hashed before any price of the events was fetched (the first run of `scripts/verify_market_makers_news.py prices`).
+
+2026-10-23T08:57:46+00:00 sha256=4de4745e0b08b0a27b2d8d87c6b78025ca2db21907ce6a5f73cf6a058fc0c953 bytes=9768

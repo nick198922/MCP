@@ -1,0 +1,6 @@
+IDEA-20261017-news-events, stage 0d: pre-registration fingerprint (no commit allowed in this run)
+Section: "## Попередня реєстрація 0d" of docs/ideas/IDEA-20261017-news-events.md, from the heading up to the
+"## 0d: результати" heading appended after the run (or to the end of the file, before it existed)
+Computed by: uv run python scripts/verify_news_events_0d.py prereg
+Hash 1 (before any price download for 0d): 2026-10-23T08:19:55+00:00 sha256=e827e7dc1285280f30c801c5047a98bcdca7aae4d6c354800c00a965aae6daf4 bytes=9603
+Re-check after the run and the results block: 2026-10-23T08:25:58+00:00 sha256=e827e7dc1285280f30c801c5047a98bcdca7aae4d6c354800c00a965aae6daf4 (unchanged)

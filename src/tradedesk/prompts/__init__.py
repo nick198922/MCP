@@ -47,7 +47,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "10-section investment research template for a crypto project / token: product, funding, partnerships, tokenomics, "
             "unlocks, revenue, value accrual, roadmap, narrative fit, chart. Finishes with bull / base / bear cases, numeric scores "
             "and a short/mid/long-term outlook. Russian text. Use for serious due diligence; it will reach for tradedesk-mcp tools "
-            "where live market data helps (chart, funding, OI, options)."
+            "where live market data helps (chart, funding, OI, options). For an on-chain EVM token it starts with "
+            "contract_risk (any fail = do not trade; unknown checks named as unverified; a -100 % filter, not a strategy)."
         ),
     )
     async def token_deep_analysis(
@@ -92,7 +93,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
         name="pre_trade_checklist",
         title="Trade plan / pre-trade checklist",
         description=(
-            "Trade plan before opening a position, in Ukrainian: honest frame (no entry-timing edge is verified), thesis and "
+            "Trade plan before opening a position, in Ukrainian: honest frame (no entry-timing edge is verified), contract "
+            "safety via contract_risk for on-chain EVM tokens (any fail = skip; unknown is not pass; n/a for CEX-only), thesis and "
             "source, regime, derivatives positioning, volatility vs stop distance, calendar (defined-risk alternatives on "
             "macro days: options or Polymarket vs touch_probability), "
             "position size from account and risk %, execution, "

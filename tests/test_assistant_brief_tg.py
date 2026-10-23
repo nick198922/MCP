@@ -319,15 +319,17 @@ def test_short_brief_is_a_few_lines():
     snap, asof = _snap()
     text = ab.build_brief(snap, asof + 300, short=True)
     lines = [ln for ln in text.splitlines() if ln]
-    assert len(lines) <= 9 and len(text) < 800, text  # header, 2 market lines, ≤ 3 items, ≤ 2 events, 1 caveat
+    assert len(lines) <= 9 and len(text) < 800, text  # header, 2 market lines, ≤ 3 items, range line, ≤ 2 events, 1 caveat
     assert lines[1] == "BTC <b>82 791</b> +0.94 % · ETH <b>2 448</b> +1.92 % <i>за 24 год</i>"
     assert lines[2] == "DVOL <b>37.0</b> · 16-й перцентиль за рік"
     assert "SOL" not in text and "Страх і жадібність" not in text and "IV − RV30" not in text
     for gone in ("<b>Ринок</b>", "<b>Головне сьогодні</b>", "<b>Події", "<b>Funding", "<b>Застереження</b>", "Знімок "):
         assert gone not in text, gone  # no block titles; a fresh snapshot needs no stamp line
-    items = [ln for ln in lines if ln.startswith("• <i>") and "FOMC" not in ln]
+    items = [ln for ln in lines if ln.startswith("• <i>") and "FOMC" not in ln and "ризик-нейтральна" not in ln]
     assert len(items) == 3 and "ризик" in items[0] and "Пути 25Δ дорожчі" in items[0]  # risk first
-    assert "Рівень волатильності сам по собі не сигнал" not in text  # 4th item, cut
+    assert "(1σ) до" not in text  # the month ±1σ item gives way to the range line (same band)
+    assert "Рівень волатильності сам по собі не сигнал" in items[2]
+    assert len([ln for ln in lines if "<i>ризик-нейтральна</i>" in ln]) == 1
     ev = [ln for ln in lines if "FOMC" in ln]
     assert len(ev) == 1 and "<i>подія</i>" in ev[0] and "через 8 дн" in ev[0] and "час орієнтовний" in ev[0]
     if db.KYIV is not None:
@@ -381,6 +383,63 @@ def test_short_brief_escapes_and_survives_odd_data():
     text = ab.build_brief(snap, asof + 60, short=True)
     assert "BTC <b>" not in text and "DVOL" not in text and "не вдалося" not in text
     assert text.endswith(f"<i>{ab._h(ab.CAVEAT_SHORT)}</i>")
+
+
+def test_short_brief_has_one_risk_neutral_range_line():
+    snap, asof = _snap()
+    text = ab.build_brief(snap, asof + 300, short=True)
+    rng = [ln for ln in text.splitlines() if "<i>ризик-нейтральна</i>" in ln]
+    day = db.kyiv(db.expiry_utc("27NOV26"), "%d.%m")  # '27.11' ('27.11 UTC' without tzdata)
+    # month expiry 27NOV26 of the fixture: ±1σ band from em_month, tails from the «Бриф» tab's scenario bands
+    assert rng == [f"• <i>ризик-нейтральна</i> · BTC до {day}: ±1σ (±11.5 %, 74.2k – 93.3k) — 71 %; нижче 70k — 8 %; вище 95k — 10 %."]
+    F, T, pts = db.chain_smile(snap["sections"]["chain"]["data"])
+    bands = db.range_probabilities(pts, F, T, db.scenario_cuts(F))
+    assert (bands[0]["hi"], bands[-1]["lo"]) == (70000, 95000)  # the tab's tails: «нижче 70k» 8 %, «вище 95k» 10 %
+    assert round(bands[0]["p"] * 100) == 8 and round(bands[-1]["p"] * 100) == 10
+    lines = [ln for ln in text.splitlines() if ln]
+    i = lines.index(rng[0])
+    assert lines[i - 1].startswith("• <i>спокій</i>") and "FOMC" in lines[i + 1]  # after the day's items, before events
+    assert len(lines) <= 9  # one line more than the items, one item less (the month ±1σ item)
+    for word in ("купуй", "продавай", "рекоменд", "сигнал"):
+        assert word not in rng[0].lower(), word  # a market price, not advice
+    assert "ризик-нейтральна ·" not in ab.build_brief(snap, asof + 300)  # the long text is unchanged
+    assert "±11.5 % (1σ) до" in ab.build_brief(snap, asof + 300)
+
+
+def test_short_brief_range_line_without_data():
+    snap, asof = _snap()
+    del snap["sections"]["chain"]
+    snap["missing"] = ["chain"]
+    text = ab.build_brief(snap, asof + 300, short=True)
+    assert "ризик-нейтральна</i>" not in text and "Без даних: ланцюжок опціонів" in text  # said once, in the stamp
+    assert "±11.5 % (1σ) до" in text and "не вдалося" not in text  # the month ±1σ item is back
+    snap, _ = _snap()
+    snap["sections"]["em_month"] = {"ok": False, "data": None}
+    snap["missing"] = ["em_month"]
+    text = ab.build_brief(snap, asof + 300, short=True)
+    assert "ризик-нейтральна</i>" not in text and "Без даних: очікуваний рух (місяць)" in text
+    odd = (
+        ("em_month", "expiry", "26DEC26"),  # band of another expiry than the chain: no mixed line
+        ("em_month", "sigma_lo", None),
+        ("em_month", "sigma_hi", 1.0),  # hi below lo
+        ("chain", "expiry", "<b>27NOV26</b>"),  # hostile / unparsable expiry: dropped, never printed
+        ("chain", "strikes", "x"),
+        ("chain", "forward", -1),
+    )
+    for sec, key, val in odd:
+        snap, _ = _snap()
+        data = snap["sections"][sec]["data"]
+        (data["expiries"][0] if sec == "em_month" else data)[key] = val
+        text = ab.build_brief(snap, asof + 300, short=True)
+        assert "ризик-нейтральна</i>" not in text and "не вдалося" not in text and "<b>27NOV26" not in text, (sec, key)
+        assert text.endswith(f"<i>{ab._h(ab.CAVEAT_SHORT)}</i>")
+
+
+def test_short_brief_range_line_drops_a_tail_inside_the_band():
+    snap, asof = _snap()
+    snap["sections"]["em_month"]["data"]["expiries"][0]["sigma_lo"] = 65000.0  # wider than the tab's 70k cut
+    rng = [ln for ln in ab.build_brief(snap, asof + 300, short=True).splitlines() if "ризик-нейтральна</i>" in ln]
+    assert len(rng) == 1 and "65k – 93.3k" in rng[0] and "нижче" not in rng[0] and "вище 95k — 10 %" in rng[0]
 
 
 def _with_paper(snap: dict, **data) -> dict:

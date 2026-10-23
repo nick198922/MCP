@@ -9,7 +9,9 @@ Read-only and offline: the text is built from the same snapshot file as the dash
 (``assistant_snapshot`` collector job; path and field names from scripts/dashboard.py), never from the network. Every
 string from the snapshot is untrusted and HTML-escaped for Telegram. The message is short (owner 22.10: a long text in
 Telegram is hard to read): BTC and ETH with the 24 h change, DVOL with its 1-year percentile, the 1-3 most important
-items of the day, one line with the state of the paper recommendation (section ``paper_rec``: «актуальна / змінилась /
+items of the day, one line with BTC's risk-neutral probabilities to the month expiry (inside ±1σ and in the «Бриф»
+tab's two tail ranges, labelled «ризик-нейтральна»; it replaces the ±1σ item; omitted without ``chain`` / ``em_month``),
+one line with the state of the paper recommendation (section ``paper_rec``: «актуальна / змінилась /
 більше не актуальна», labelled «гіпотеза»; omitted without data), the next events in Kyiv time and one caveat line;
 the dashboard pages carry the rest. A missing or
 unreadable snapshot gives an explained message, not an error; older than 30 min adds a warning; older than 6 h gives
@@ -189,16 +191,53 @@ def _key(snap: dict, now: float) -> list[str]:
     return [f"• <i>{LABELS[c]}</i> · {_h(t)}" for c, t in _key_items(snap, now)]
 
 
-def _key_short(snap: dict, now: float) -> list[str]:
+def _key_short(snap: dict, now: float, month: bool = True) -> list[str]:
     """The 1-3 most important key items: risk first, then in the dashboard's order; events have their own lines."""
-    items = sorted(_key_items(snap, now, events=False), key=lambda it: it[0] != "risk")[:MAX_KEY_SHORT]
+    items = sorted(_key_items(snap, now, events=False, month=month), key=lambda it: it[0] != "risk")[:MAX_KEY_SHORT]
     return [f"• <i>{LABELS[c]}</i> · {_h(t)}" for c, t in items]
 
 
-def _key_items(snap: dict, now: float, events: bool = True) -> list[tuple[str, str]]:
-    """(label key, plain text) of «Головне сьогодні»; `events` adds the next-event item."""
+def _ranges(snap: dict, now: float) -> list[str]:
+    """One line: BTC's risk-neutral probability to finish the month expiry inside the ±1σ band (section ``em_month``)
+    and in the two open tails of the «Бриф» tab's scenarios (db.range_probabilities on the ``chain`` smile, same
+    numbers as the tab). A tail that overlaps the ±1σ band is left out. [] without data (the stamp's «Без даних» line
+    already names the section). Never raises."""
+    try:
+        chain, m = db._data(snap, "chain"), db._em(snap, "em_month")
+        sm = db.chain_smile(chain) if chain else None
+        if not sm or not m:
+            return []
+        lo, hi, move = db._num(m.get("sigma_lo")), db._num(m.get("sigma_hi")), db._num(m.get("sigma_move_pct"))
+        exp = db.expiry_utc(chain.get("expiry"))
+        if lo is None or hi is None or not 0 < lo < hi or exp is None or m.get("expiry") != chain.get("expiry"):
+            return []
+        F, T, pts = sm
+        inside = max(0.0, db.prob_above(pts, F, T, lo) - db.prob_above(pts, F, T, hi))
+        bands = db.range_probabilities(pts, F, T, db.scenario_cuts(F))
+        width = f"±{db._nf(move, 1)} %, " if move is not None else ""
+        parts = [f"±1σ ({width}{db._k(lo)} – {db._k(hi)}) — {db._nf(inside * 100)} %"]
+        if bands[0]["hi"] <= lo:
+            parts.append(f"нижче {db._k(bands[0]['hi'])} — {db._nf(bands[0]['p'] * 100)} %")
+        if bands[-1]["lo"] >= hi:
+            parts.append(f"вище {db._k(bands[-1]['lo'])} — {db._nf(bands[-1]['p'] * 100)} %")
+        txt = f"BTC до {db.kyiv(exp, '%d.%m')}: " + "; ".join(parts) + "."
+        return [f"• <i>ризик-нейтральна</i> · {_h(txt)}"]
+    except Exception:  # noqa: BLE001 - an odd section only drops this line
+        return []
+
+
+def _day_short(snap: dict, now: float) -> list[str]:
+    """The day's group of the short brief: the key items, the range line (it replaces the month ±1σ item), the paper
+    recommendation."""
+    rng = _ranges(snap, now)
+    return _key_short(snap, now, month=not rng) + rng + _paper(snap, now)
+
+
+def _key_items(snap: dict, now: float, events: bool = True, month: bool = True) -> list[tuple[str, str]]:
+    """(label key, plain text) of «Головне сьогодні»; `events` adds the next-event item, `month` the ±1σ-to-the-month
+    item (the short brief drops it when its range line already gives the same band)."""
     items: list[tuple[str, str]] = []
-    w, m = db._em(snap, "em_week"), db._em(snap, "em_month")
+    w, m = db._em(snap, "em_week"), (db._em(snap, "em_month") if month else None)
     if w and db._num(w.get("straddle_pct")) is not None:
         items.append(
             (
@@ -364,7 +403,8 @@ def _funding(snap: dict, now: float) -> list[str]:
 
 def build_brief(snap: dict | None, now: float, err: str | None = None, short: bool = False) -> str:
     """The brief as Telegram HTML. Pure (no I/O, time passed in); never raises. `short` (what is sent): a few lines
-    without block titles — BTC/ETH, DVOL, the 1-3 most important items, the next events, one caveat line; the long
+    without block titles — BTC/ETH, DVOL, the 1-3 most important items, the risk-neutral range line, the paper
+    recommendation, the next events, one caveat line; the long
     version has every block and the three caveats."""
     head = f"<b>Бриф асистента · {_h(db.kyiv(datetime.fromtimestamp(now, timezone.utc)))}{_tz()}</b>"  # noqa: UP017
     if short:
@@ -383,8 +423,8 @@ def build_brief(snap: dict | None, now: float, err: str | None = None, short: bo
         if age is not None and age > db.SNAPSHOT_OLD_S:  # yesterday's prices and countdowns would mislead
             return _fit(out, tail)
         if short:
-            # the paper recommendation's line sits with the day's items (one extra line, no blank before it)
-            blocks = (("", _market_short), ("", lambda s, n: _key_short(s, n) + _paper(s, n)), ("", _events_short))
+            # the range and paper recommendation lines sit with the day's items (no blank before them)
+            blocks = (("", _market_short), ("", _day_short), ("", _events_short))
         else:
             blocks = (
                 ("Ринок", _market),

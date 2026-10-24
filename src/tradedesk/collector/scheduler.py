@@ -565,6 +565,7 @@ async def _retention_sweep(rt: "Runtime") -> int:
         ("ohlcv_hist", s.retention_ohlcv_hist_days),
         ("option_xvenue_snapshot", s.retention_option_xvenue_days),
         ("coinalyze_history", s.retention_coinalyze_history_days),
+        ("tradfi_spread", s.retention_tradfi_spread_days),
     )
     for table, days in pairs:
         if days <= 0:
@@ -627,6 +628,10 @@ def build_default_scheduler(rt: "Runtime") -> Scheduler | None:
         from .coinalyze_history import CoinalyzeHistoryJob  # noqa: PLC0415
 
         jobs.append(PeriodicJob(name="coinalyze_history", period_seconds=s.collect_coinalyze_history_seconds, fn=CoinalyzeHistoryJob()))
+    if s.collect_tradfi_spread_enabled:
+        from .tradfi_spread import TradfiSpreadJob  # noqa: PLC0415
+
+        jobs.append(PeriodicJob(name="tradfi_spread", period_seconds=s.collect_tradfi_spread_seconds, fn=TradfiSpreadJob()))
     if s.alerts_enabled:
         # JSON file is optional in Phase 3.1 — DB-backed rules work on their own.
         jobs.append(PeriodicJob(name="alerts", period_seconds=s.alerts_seconds, fn=_evaluate_alerts))

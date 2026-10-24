@@ -371,6 +371,80 @@ def test_constants_follow_the_demo_trader_and_the_reconciliation():
     assert f"до {ENTRY_WAIT_MS // 60_000} хв" in db.HELP["demo_open"][2] and "2 год" not in db.HELP["demo_open"][2]
 
 
+# ---------------------------------------------------------------- setup versions (stdlib copy of analytics.setup_versions)
+
+LIVE_TRADES = json.loads((Path(__file__).parent / "fixtures" / "demo_trades_live_2026-10-24.json").read_text())
+
+
+def _same(mine, ref) -> None:
+    """Exact on everything but floats (approx): the copies do the same arithmetic in the same order."""
+    if isinstance(ref, dict):
+        assert isinstance(mine, dict) and mine.keys() == ref.keys()
+        for k in ref:
+            _same(mine[k], ref[k])
+    elif isinstance(ref, list):
+        assert isinstance(mine, list) and len(mine) == len(ref)
+        for a, b in zip(mine, ref, strict=True):
+            _same(a, b)
+    elif isinstance(ref, float):
+        assert mine == pytest.approx(ref, abs=1e-9)
+    else:
+        assert mine == ref
+
+
+def test_setup_versions_copy_matches_the_analytics_reference():
+    from tradedesk.analytics import setup_versions as sv
+
+    assert db.DEMO_EPOCHS == tuple((e.tag, e.from_ms, e.what, e.source, e.setups) for e in sv.EPOCHS)
+    now = int(LIVE_TRADES["now_ms"])
+    v3 = sv.EPOCHS[2].from_ms
+    extra = [  # the boundary, no setup, no open time, no R, an odd value, closed after now
+        {"setup": "S14", "status": "closed", "opened_ts": v3, "closed_ts": v3 + 1, "r_multiple": 0.5, "pnl_usd": 50.0},
+        {"setup": "S14", "status": "closed", "opened_ts": v3 - 1, "closed_ts": v3 + 1, "r_multiple": -1.0, "pnl_usd": -100.0},
+        {"setup": None, "status": "closed", "opened_ts": v3 + 5, "closed_ts": v3 + 9, "r_multiple": 1.5, "pnl_usd": 150.0},
+        {"setup": " ", "status": "closed", "opened_ts": None, "closed_ts": v3 + 9, "r_multiple": None, "pnl_usd": 3.0},
+        {"setup": "S3", "status": "closed", "opened_ts": v3 + 5, "closed_ts": v3 + 9, "r_multiple": "x", "pnl_usd": float("nan")},
+        {"setup": "S3", "status": "closed", "opened_ts": v3 + 5, "closed_ts": now + 1, "r_multiple": 9.0, "pnl_usd": 900.0},
+    ]
+    trades = LIVE_TRADES["trades"] + extra
+    for t_now in (now, sv.EPOCHS[1].from_ms + 1, sv.EPOCHS[0].from_ms - 1):
+        _same(db.demo_version_stats(trades, t_now), sv.version_stats(trades, now_ms=t_now))
+    for open_ms in (None, v3 - 1, v3, sv.EPOCHS[0].from_ms - 1):
+        ref = sv.version_of("S3", open_ms, now_ms=now)
+        mine = db.demo_version_of("S3", open_ms, now)
+        assert (None if ref is None else ref.tag) == (None if mine is None else mine[0])
+
+
+def test_setup_versions_block_on_the_live_sample():
+    now = LIVE_TRADES["now_ms"] / 1000
+    page = db.render_demo({"trades": LIVE_TRADES["trades"], "audit": [], "option_legs": {}}, None, now)
+    assert f"<h2>Версії сетапів{ICON}" in page and "Блок не вдалося показати" not in page
+    block = page.split("<h2>Версії сетапів")[1].split("<h2>")[0]
+    assert "<td>S3</td><td>v1</td>" in block and "<td>S3</td><td>v3</td>" in block and "<td>S16</td><td>v3</td>" in block
+    assert "замало для висновку (4 з 30)" in block and "замало для висновку (8 з 30)" in block
+    assert "<td class='num'>100 %</td>" in block and "<td class='num'>25 %</td>" in block
+    assert "4 закритих угод були відкриті, коли почалася наступна версія" in block
+    assert "Без версії" not in block
+    for tag in ("v1", "v2", "v3"):  # the epochs table lists every rule change, v2 too (no trades in it)
+        assert f"<tr><td>{tag}</td>" in block
+    assert "8d82847" in block and "за часом відкриття угоди" in block
+
+
+def test_setup_versions_block_empty_unversioned_and_escaped(tmp_path):
+    empty = db.render_demo(*db.load_demo(_store(tmp_path / "e.sqlite")), NOW / 1000)
+    block = empty.split("<h2>Версії сетапів")[1].split("<h2>")[0]
+    assert "Закритих демо-угод ще немає: статистика за версіями" in block and "<tr><td>v3</td>" in block
+    odd = [
+        {"setup": XSS, "status": "closed", "opened_ts": T0, "closed_ts": T0 + 1, "r_multiple": 1.0, "pnl_usd": 100.0},
+        {"setup": "S3", "status": "closed", "opened_ts": None, "closed_ts": T0 + 1, "r_multiple": 1.0, "pnl_usd": 100.0},
+    ]
+    html = db.block_demo_versions(odd, NOW / 1000)
+    assert XSS not in html and "&lt;img src=x " in html
+    assert "<td>без версії</td>" in html and "Без версії: 1 закритих угод" in html
+    no_setup = db.block_demo_versions([{**odd[1], "setup": None, "opened_ts": T0}], NOW / 1000)
+    assert "<td>без сетапу</td><td>v3</td>" in no_setup
+
+
 def test_option_legs_are_flagged_as_left_out_with_their_count(tmp_path):
     p = _filled(tmp_path, NOW)
     page = db.render_demo(*db.load_demo(p), NOW / 1000)

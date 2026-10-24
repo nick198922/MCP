@@ -1,0 +1,9 @@
+- Картка `IDEA-20261024-toptrader-vs-crowd-divergence` (розбіжність топ-трейдерів і натовпу за архівом Binance `metrics`): крок 0 пройдено (151 монета з ≥ 2 роками, MDE 0.0249 ≤ 0.025), крок 1 — вердикт `rejected`.
+  - Первинний IC7 = −0.023, CI [−0.040; −0.006] (188 тижнів, медіана 211 монет) — знак протилежний H1; топ-трейдери самі IC ≈ 0, ефект несе натовп і його здебільшого пояснюють R7/IVOL30/MAX30 (частковий −0.012, p 0.15). H2 не запускалась.
+  - Побічна знахідка: колонки топ-трейдерів архіву порожні майже весь 2022 рік; `count_long_short_ratio` збігається з біржовим API (0.0005) при зсуві мітки +5 хв.
+- Додано:
+  - `providers/binance_vision.py`: `parse_metrics_ratios_zip` і `um_metrics_ratios_daily` (усі колонки `metrics`, включно зі співвідношеннями лонг/шорт; колонки за заголовком, порожня клітинка → NaN);
+  - `analytics/toptrader_divergence.py`: знімок дня з урахуванням семантики `create_time`, причинна ковзна z-оцінка, D, тижневий IC, плацебо з перемішуванням дат усередині активу, хіт-рейт, ворота потужності;
+  - `scripts/verify_toptrader_divergence.py` (стадії plan / fetch / consistency / stage0 / full; кеш `~/.cache/tradedesk-agents/toptrader_divergence/`);
+  - `tests/test_toptrader_divergence.py` (реальний зразок `metrics` BTCUSDT 2025-10-10, аналітичні еталони, тест причинності).
+- Звіт: `docs/verification/2026-10-24-toptrader-vs-crowd-divergence.md`; рядки в `docs/knowledge/README.md`, `data-sources.md`, `setups.md` (S8).

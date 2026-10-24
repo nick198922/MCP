@@ -121,6 +121,46 @@ def parse_metrics_zip(blob: bytes) -> list[list[float]]:
     return out
 
 
+METRICS_COLUMNS = (
+    "sum_open_interest",
+    "sum_open_interest_value",
+    "count_toptrader_long_short_ratio",
+    "sum_toptrader_long_short_ratio",
+    "count_long_short_ratio",
+    "sum_taker_long_short_vol_ratio",
+)
+
+
+def parse_metrics_ratios_zip(blob: bytes) -> list[list[float]]:
+    """Rows ``[create_time_ms, *METRICS_COLUMNS]`` from a daily USD-M ``metrics`` zip (every numeric column).
+
+    Long/short ratios are long / short (1.25 = 1.25 longs per short): ``count_long_short_ratio`` counts all accounts,
+    ``count_toptrader_long_short_ratio`` counts top-trader accounts, ``sum_toptrader_long_short_ratio`` weights top
+    traders by position; ``sum_taker_long_short_vol_ratio`` is taker buy / sell volume. Columns are found by the
+    header when there is one (archive order otherwise); an empty cell becomes NaN. Same ``create_time`` semantics as
+    ``parse_metrics_zip`` (observation time: ``analytics.oi_flush.archive_obs_times``). Sorted by time."""
+    text = _csv_text(blob)
+    idx = list(range(2, 2 + len(METRICS_COLUMNS)))
+    out: list[list[float]] = []
+    for row in csv.reader(io.StringIO(text)):
+        if not row:
+            continue
+        if not row[0][:1].isdigit():
+            names = [c.strip() for c in row]
+            if all(c in names for c in METRICS_COLUMNS):
+                idx = [names.index(c) for c in METRICS_COLUMNS]
+            continue
+        if len(row) <= max(idx):
+            continue
+        try:
+            vals = [float(row[i]) if row[i].strip() else float("nan") for i in idx]
+            out.append([float(_epoch_s(row[0]) * 1000), *vals])
+        except ValueError as e:
+            raise ProviderError("binance_vision", "backend_error", f"bad metrics csv: {e}") from None
+    out.sort(key=lambda r: r[0])
+    return out
+
+
 def _epoch_s(stamp: str) -> int:
     s = stamp.strip()
     if s.isdigit():  # epoch ms or us in some archive generations
@@ -271,6 +311,15 @@ class BinanceVision:
         name = f"{symbol}-metrics-{day}.zip"
         f = await self.http.get_bytes(f"/{UM_KLINES}/daily/metrics/{symbol}/{name}", tool="um_metrics_daily")
         return Fetched(parse_metrics_zip(f.data), f.evidence)
+
+    async def um_metrics_ratios_daily(self, symbol: str, day: str) -> Fetched:
+        """One UTC day of USDT-M ``metrics`` with every column (OI and long/short ratios, see
+        ``parse_metrics_ratios_zip``); 404 -> ``data_unavailable``. Same file and time semantics as ``um_metrics_daily``."""
+        _check(symbol, "1d")
+        _check_day(day)
+        name = f"{symbol}-metrics-{day}.zip"
+        f = await self.http.get_bytes(f"/{UM_KLINES}/daily/metrics/{symbol}/{name}", tool="um_metrics_ratios_daily")
+        return Fetched(parse_metrics_ratios_zip(f.data), f.evidence)
 
     async def spot_symbols(self) -> Fetched:
         """Every spot symbol that ever had monthly klines in the archive (including delisted pairs)."""

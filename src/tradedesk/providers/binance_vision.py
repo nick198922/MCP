@@ -60,6 +60,25 @@ def parse_klines_zip(blob: bytes) -> list[list[float]]:
     return out
 
 
+def parse_klines_taker_zip(blob: bytes) -> list[list[float]]:
+    """Rows ``[open_ms, open, high, low, close, base_volume, quote_volume, taker_buy_base, taker_buy_quote]``.
+
+    Same archive file as ``parse_klines_zip`` (which keeps its 7-column layout for existing callers) plus the
+    aggressor columns 9 and 10: base / quote volume of trades where the taker bought. Header optional; microsecond
+    timestamps (spot files from 2025) are converted to ms. Rows with fewer than 11 columns are skipped."""
+    text = _csv_text(blob)
+    out: list[list[float]] = []
+    for row in csv.reader(io.StringIO(text)):
+        if len(row) < 11 or not row[0].strip().isdigit():
+            continue
+        ts = int(row[0])
+        if ts > 10**14:
+            ts //= 1000
+        out.append([float(ts)] + [float(row[i]) for i in (1, 2, 3, 4, 5, 7, 9, 10)])
+    out.sort(key=lambda r: r[0])
+    return out
+
+
 def parse_funding_zip(blob: bytes) -> list[list[float]]:
     """Rows ``[calc_time_ms, funding_interval_hours, funding_rate]`` from an archive ``fundingRate`` zip.
 
@@ -238,6 +257,20 @@ class BinanceVision:
         name = f"{symbol}-{interval}-{day}.zip"
         f = await self.http.get_bytes(f"/{SPOT}/daily/klines/{symbol}/{interval}/{name}", tool="spot_klines_daily")
         return Fetched(parse_klines_zip(f.data), f.evidence)
+
+    async def um_klines_taker_monthly(self, symbol: str, interval: str, year: int, month: int) -> Fetched:
+        """One month of USDT-M klines with taker-buy columns (``parse_klines_taker_zip`` rows); 404 -> ``data_unavailable``."""
+        _check(symbol, interval)
+        name = f"{symbol}-{interval}-{year:04d}-{month:02d}.zip"
+        f = await self.http.get_bytes(f"/{UM_KLINES}/monthly/klines/{symbol}/{interval}/{name}", tool="um_klines_monthly")
+        return Fetched(parse_klines_taker_zip(f.data), f.evidence)
+
+    async def spot_klines_taker_monthly(self, symbol: str, interval: str, year: int, month: int) -> Fetched:
+        """One month of spot klines with taker-buy columns (``parse_klines_taker_zip`` rows); 404 -> ``data_unavailable``."""
+        _check(symbol, interval)
+        name = f"{symbol}-{interval}-{year:04d}-{month:02d}.zip"
+        f = await self.http.get_bytes(f"/{SPOT}/monthly/klines/{symbol}/{interval}/{name}", tool="spot_klines_monthly")
+        return Fetched(parse_klines_taker_zip(f.data), f.evidence)
 
     async def aclose(self) -> None:
         await self.http.aclose()

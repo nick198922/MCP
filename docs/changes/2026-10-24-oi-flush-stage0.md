@@ -1,0 +1,10 @@
+- Картка `IDEA-20261024-oi-confirmed-liquidation-flush` (відкуп флешу лише при падінні OI ≥ 2 %): стадія 0 виконана, вердикт `inconclusive`. Середні доходи не рахувались.
+  - Ворота потужності не пройдено: A має 1823 події у 596 днях; MDE(A) 0.82 п.п. (поріг ≤ 0.80), MDE(A − B) 1.42 п.п. (поріг ≤ 1.20).
+  - Що прив'язує: MDE(A) ≈ 0.80–0.82 п.п. у кожному варіанті SE, потужність H1 при +0.5 % ≈ 40 %. Провал A − B дає хвіст одного дня 2025-10-10; без нього MDE(A − B) ≈ 0.94 п.п. (дослідницьке, перерахунок критика).
+  - Побічна знахідка: архів `metrics` змінив семантику `create_time` між 2024-03-03 14:30 і 2024-03-04 00:45 UTC. Межу 2024-03-04 00:00 прийнято як припущення. До неї знімок зроблено в момент мітки, після неї через 5 хв.
+- Додано:
+  - `providers/binance_vision.py`: `um_metrics_daily` (денні 5-хв OI USDT-M, 404 → `data_unavailable`) і `parse_metrics_zip` (OI у монетах, value в USDT);
+  - `analytics/oi_flush.py`: час спостереження рядків архіву (`archive_obs_times`, `SEMANTICS_SWITCH_MS`), ΔOI без lookahead, кошики A/B, кластерні SE (CR1 по днях) для середнього й різниці, MDE;
+  - `scripts/verify_oi_liquidation_flush.py`: стадія 0 (покриття, семантика, кількості, SE/MDE без середніх); стадія `report` блокується, поки ворота не пройдено;
+  - `tests/test_oi_flush.py` з реальним зразком `tests/fixtures/binance_vision_BTCUSDT-metrics-2025-10-10_2100-2135_2026-10-24.zip`.
+- Звіт: `docs/verification/2026-10-24-oi-confirmed-liquidation-flush.md`; рядки в `docs/knowledge/README.md`, `setups.md` (S9), `data-sources.md`.

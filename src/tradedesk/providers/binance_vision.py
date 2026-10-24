@@ -97,6 +97,30 @@ def parse_funding_zip(blob: bytes) -> list[list[float]]:
     return out
 
 
+def parse_metrics_zip(blob: bytes) -> list[list[float]]:
+    """Rows ``[create_time_ms, sum_open_interest, sum_open_interest_value]`` from a daily USD-M ``metrics`` zip.
+
+    Archive columns: ``create_time, symbol, sum_open_interest`` (base units: coins/contracts of the symbol, e.g. BTC),
+    ``sum_open_interest_value`` (USDT), then long/short and taker ratios (dropped). One row per 5 minutes, rows can be
+    missing. The stamp's meaning changed between 2024-03-03 14:30 and 2024-03-04 00:45 UTC (measured on 6 383 flush
+    events via value / OI vs the 1m price, docs/verification/2026-10-24-oi-confirmed-liquidation-flush.md); the switch
+    is ASSUMED at 2024-03-04 00:00 UTC (file boundary), not checked on raw rows. Before, the snapshot is taken AT
+    ``create_time``; from then on, ``create_time`` is the interval start and the snapshot is taken 5 min later (e.g.
+    BTCUSDT 2025-10-10 cascade). Use
+    ``analytics.oi_flush.archive_obs_times`` for observation times. Header optional; sorted by time."""
+    text = _csv_text(blob)
+    out: list[list[float]] = []
+    for row in csv.reader(io.StringIO(text)):
+        if len(row) < 4 or not row[0][:1].isdigit():
+            continue
+        try:
+            out.append([float(_epoch_s(row[0]) * 1000), float(row[2]), float(row[3])])
+        except ValueError as e:
+            raise ProviderError("binance_vision", "backend_error", f"bad metrics csv: {e}") from None
+    out.sort(key=lambda r: r[0])
+    return out
+
+
 def _epoch_s(stamp: str) -> int:
     s = stamp.strip()
     if s.isdigit():  # epoch ms or us in some archive generations
@@ -236,6 +260,17 @@ class BinanceVision:
         name = f"{symbol}-bookDepth-{day}.zip"
         f = await self.http.get_bytes(f"/{UM_KLINES}/daily/bookDepth/{symbol}/{name}", tool="um_book_depth_daily")
         return Fetched(parse_book_depth_zip(f.data), f.evidence)
+
+    async def um_metrics_daily(self, symbol: str, day: str) -> Fetched:
+        """One UTC day of USDT-M ``metrics`` (5-min open interest, see ``parse_metrics_zip``); 404 -> ``data_unavailable``.
+
+        Rows are observed at ``create_time`` before 2024-03-04 (assumed switch, see ``parse_metrics_zip``) and at
+        ``create_time + 5 min`` after. Most alts start 2021-12."""
+        _check(symbol, "1d")
+        _check_day(day)
+        name = f"{symbol}-metrics-{day}.zip"
+        f = await self.http.get_bytes(f"/{UM_KLINES}/daily/metrics/{symbol}/{name}", tool="um_metrics_daily")
+        return Fetched(parse_metrics_zip(f.data), f.evidence)
 
     async def spot_symbols(self) -> Fetched:
         """Every spot symbol that ever had monthly klines in the archive (including delisted pairs)."""

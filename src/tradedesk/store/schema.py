@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 28
+SCHEMA_VERSION = 29
 
 # Each migration is a list of SQL statements executed in a single transaction.
 # `PRAGMA user_version` is bumped by Store.init() inside the same explicit transaction,
@@ -776,5 +776,21 @@ MIGRATIONS: dict[int, list[str]] = {
         """,
         "CREATE INDEX IF NOT EXISTS demo_option_leg_status ON demo_option_leg (status)",
         "CREATE INDEX IF NOT EXISTS demo_option_leg_pair ON demo_option_leg (pair_id)",
+    ],
+    29: [
+        # Best bid/ask, mark and index of Binance TradFi perps (US equities/ETFs + commodities), one snapshot a minute
+        # (collector/tradfi_spread.py; IDEA-20261024-tradfi-perp-offhours-reopen, early cost check). No depth. ~200 symbols
+        # x 1440 a day: WITHOUT ROWID so the (ts, symbol) key is the table itself. Read-only market data.
+        """
+        CREATE TABLE IF NOT EXISTS tradfi_spread (
+            ts INTEGER NOT NULL,                   -- unix seconds of the snapshot (one clock read per tick)
+            symbol TEXT NOT NULL,                  -- Binance USD-M symbol, e.g. SPYUSDT
+            bid REAL, ask REAL,                    -- best bid / ask, USDT (bookTicker); NULL if that request failed
+            mark_price REAL, index_price REAL,     -- USDT (premiumIndex); NULL if that request failed
+            book_ms INTEGER,                       -- bookTicker `time` (venue transaction time), unix ms
+            premium_ms INTEGER,                    -- premiumIndex `time`, unix ms
+            PRIMARY KEY (ts, symbol)
+        ) WITHOUT ROWID
+        """,
     ],
 }

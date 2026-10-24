@@ -397,6 +397,28 @@ class Store:
         cur = await self.conn.execute("SELECT * FROM option_xvenue_snapshot WHERE ts >= ? ORDER BY ts, currency, strike, opt", (since_ts,))
         return [dict(r) for r in await cur.fetchall()]
 
+    TRADFI_SPREAD_COLUMNS = "bid ask mark_price index_price book_ms premium_ms".split()
+
+    async def insert_tradfi_spread(self, ts: int, rows: list[dict[str, Any]]) -> int:
+        """One minute snapshot of TradFi perp quotes; idempotent per (ts, symbol)."""
+        cols = self.TRADFI_SPREAD_COLUMNS
+        payload = [(ts, r["symbol"], *(r.get(c) for c in cols)) for r in rows if r.get("symbol")]
+        if not payload:
+            return 0
+        marks = ",".join("?" * (len(cols) + 2))
+        await self.conn.executemany(f"INSERT OR REPLACE INTO tradfi_spread (ts, symbol, {', '.join(cols)}) VALUES ({marks})", payload)
+        await self.conn.commit()
+        return len(payload)
+
+    async def tradfi_spread_rows(self, since_ts: int = 0, symbol: str | None = None) -> list[dict[str, Any]]:
+        """Stored rows with ts >= ``since_ts`` (optionally one ``symbol``), oldest first."""
+        sql, args = "SELECT * FROM tradfi_spread WHERE ts >= ?", [since_ts]
+        if symbol is not None:
+            sql += " AND symbol = ?"
+            args.append(symbol)
+        cur = await self.conn.execute(sql + " ORDER BY ts, symbol", args)
+        return [dict(r) for r in await cur.fetchall()]
+
     COINALYZE_HISTORY_COLUMNS = "open high low close ratio long_share short_share".split()
 
     async def insert_coinalyze_history(self, symbol: str, metric: str, rows: list[dict[str, Any]], fetched_ts: int) -> int:
@@ -580,6 +602,7 @@ class Store:
             "ohlcv_hist",
             "option_xvenue_snapshot",
             "coinalyze_history",
+            "tradfi_spread",
         }:
             raise ValueError(f"unknown table {table!r}")
         cur = await self.conn.execute(f"DELETE FROM {table} WHERE ts < ?", (cutoff_ts,))

@@ -1,0 +1,334 @@
+{
+ "_source": "live Binance USD-M fapi.binance.com, trimmed to a few symbols (tests/test_tradfi_spread.py)",
+ "_fetched_utc": "2026-10-24T12:33:16+00:00",
+ "exchange_info": {
+  "symbols": [
+   {
+    "symbol": "SPYUSDT",
+    "contractType": "TRADIFI_PERPETUAL",
+    "underlyingType": "EQUITY",
+    "underlyingSubType": [
+     "TradFi"
+    ],
+    "quoteAsset": "USDT",
+    "status": "TRADING"
+   },
+   {
+    "symbol": "AAPLUSDT",
+    "contractType": "TRADIFI_PERPETUAL",
+    "underlyingType": "EQUITY",
+    "underlyingSubType": [
+     "TradFi"
+    ],
+    "quoteAsset": "USDT",
+    "status": "TRADING"
+   },
+   {
+    "symbol": "XAUUSDT",
+    "contractType": "TRADIFI_PERPETUAL",
+    "underlyingType": "COMMODITY",
+    "underlyingSubType": [
+     "TradFi"
+    ],
+    "quoteAsset": "USDT",
+    "status": "TRADING"
+   },
+   {
+    "symbol": "CLUSDT",
+    "contractType": "TRADIFI_PERPETUAL",
+    "underlyingType": "COMMODITY",
+    "underlyingSubType": [
+     "TradFi"
+    ],
+    "quoteAsset": "USDT",
+    "status": "TRADING"
+   },
+   {
+    "symbol": "BTCUSDT",
+    "contractType": "PERPETUAL",
+    "underlyingType": "COIN",
+    "underlyingSubType": [
+     "PoW",
+     "Crypto"
+    ],
+    "quoteAsset": "USDT",
+    "status": "TRADING"
+   },
+   {
+    "symbol": "ETHUSDT",
+    "contractType": "PERPETUAL",
+    "underlyingType": "COIN",
+    "underlyingSubType": [
+     "Layer-1",
+     "Crypto"
+    ],
+    "quoteAsset": "USDT",
+    "status": "TRADING"
+   },
+   {
+    "symbol": "BYDUSDT",
+    "contractType": "TRADIFI_PERPETUAL",
+    "underlyingType": "HK_EQUITY",
+    "underlyingSubType": [
+     "TradFi"
+    ],
+    "quoteAsset": "USDT",
+    "status": "TRADING"
+   },
+   {
+    "symbol": "HANMIUSDT",
+    "contractType": "TRADIFI_PERPETUAL",
+    "underlyingType": "KR_EQUITY",
+    "underlyingSubType": [
+     "TradFi"
+    ],
+    "quoteAsset": "USDT",
+    "status": "TRADING"
+   },
+   {
+    "symbol": "ANTHROPICUSDT",
+    "contractType": "TRADIFI_PERPETUAL",
+    "underlyingType": "PREMARKET",
+    "underlyingSubType": [
+     "Pre-IPO",
+     "TradFi"
+    ],
+    "quoteAsset": "USDT",
+    "status": "TRADING"
+   },
+   {
+    "symbol": "USDBRLUSDT",
+    "contractType": "TRADIFI_PERPETUAL",
+    "underlyingType": "FX",
+    "underlyingSubType": [
+     "TradFi"
+    ],
+    "quoteAsset": "USDT",
+    "status": "TRADING"
+   },
+   {
+    "symbol": "SPCXUSD1",
+    "contractType": "TRADIFI_PERPETUAL",
+    "underlyingType": "EQUITY",
+    "underlyingSubType": [
+     "TradFi"
+    ],
+    "quoteAsset": "USD1",
+    "status": "TRADING"
+   }
+  ]
+ },
+ "book_ticker": [
+  {
+   "symbol": "BTCUSDT",
+   "bidPrice": "80751.50",
+   "bidQty": "20.024",
+   "askPrice": "80751.60",
+   "askQty": "1.384",
+   "time": 1792845196037,
+   "lastUpdateId": 11910662761900
+  },
+  {
+   "symbol": "ETHUSDT",
+   "bidPrice": "2369.11",
+   "bidQty": "139.817",
+   "askPrice": "2369.12",
+   "askQty": "61.699",
+   "time": 1792845194055,
+   "lastUpdateId": 11910662611182
+  },
+  {
+   "symbol": "XAUUSDT",
+   "bidPrice": "4000.55",
+   "bidQty": "57.941",
+   "askPrice": "4000.56",
+   "askQty": "6.802",
+   "time": 1792845195854,
+   "lastUpdateId": 11910662749567
+  },
+  {
+   "symbol": "CLUSDT",
+   "bidPrice": "103.63000",
+   "bidQty": "642.73",
+   "askPrice": "103.64000",
+   "askQty": "396.74",
+   "time": 1792845195740,
+   "lastUpdateId": 11910662740505
+  },
+  {
+   "symbol": "SPYUSDT",
+   "bidPrice": "761.88000",
+   "bidQty": "40.30",
+   "askPrice": "761.89000",
+   "askQty": "17.41",
+   "time": 1792845196075,
+   "lastUpdateId": 11910662765339
+  },
+  {
+   "symbol": "AAPLUSDT",
+   "bidPrice": "346.88000",
+   "bidQty": "1.97",
+   "askPrice": "346.89000",
+   "askQty": "620.55",
+   "time": 1792845190341,
+   "lastUpdateId": 11910662341534
+  },
+  {
+   "symbol": "ANTHROPICUSDT",
+   "bidPrice": "1881.83000",
+   "bidQty": "0.03",
+   "askPrice": "1882.70000",
+   "askQty": "0.13",
+   "time": 1792845160996,
+   "lastUpdateId": 11910659582412
+  },
+  {
+   "symbol": "SPCXUSD1",
+   "bidPrice": "146.93000",
+   "bidQty": "1.08",
+   "askPrice": "146.98000",
+   "askQty": "1.03",
+   "time": 1792845168466,
+   "lastUpdateId": 11910660334702
+  },
+  {
+   "symbol": "HANMIUSDT",
+   "bidPrice": "141.50000",
+   "bidQty": "0.14",
+   "askPrice": "141.64000",
+   "askQty": "0.04",
+   "time": 1792845120408,
+   "lastUpdateId": 11910655274047
+  },
+  {
+   "symbol": "BYDUSDT",
+   "bidPrice": "9.11000",
+   "bidQty": "256.94",
+   "askPrice": "9.12000",
+   "askQty": "273.17",
+   "time": 1792845170015,
+   "lastUpdateId": 11910660520509
+  },
+  {
+   "symbol": "USDBRLUSDT",
+   "bidPrice": "4.97860",
+   "bidQty": "15.86",
+   "askPrice": "4.98080",
+   "askQty": "17.13",
+   "time": 1792844725070,
+   "lastUpdateId": 11910620290019
+  }
+ ],
+ "premium_index": [
+  {
+   "symbol": "CLUSDT",
+   "markPrice": "103.63374247",
+   "indexPrice": "103.70014036",
+   "estimatedSettlePrice": "103.74959259",
+   "lastFundingRate": "0.00000000",
+   "interestRate": "0.00000000",
+   "nextFundingTime": 1792857600000,
+   "time": 1792845194844
+  },
+  {
+   "symbol": "ETHUSDT",
+   "markPrice": "2369.23152713",
+   "indexPrice": "2370.13930233",
+   "estimatedSettlePrice": "2367.45851382",
+   "lastFundingRate": "0.00006029",
+   "interestRate": "0.00010000",
+   "nextFundingTime": 1792857600000,
+   "time": 1792845195000
+  },
+  {
+   "symbol": "BTCUSDT",
+   "markPrice": "80751.84543478",
+   "indexPrice": "80785.68521739",
+   "estimatedSettlePrice": "80687.95639396",
+   "lastFundingRate": "0.00003450",
+   "interestRate": "0.00010000",
+   "nextFundingTime": 1792857600000,
+   "time": 1792845195000
+  },
+  {
+   "symbol": "USDBRLUSDT",
+   "markPrice": "4.97990000",
+   "indexPrice": "4.98328931",
+   "estimatedSettlePrice": "4.98328931",
+   "lastFundingRate": "0.00000000",
+   "interestRate": "0.00000000",
+   "nextFundingTime": 1792857600000,
+   "time": 1792845194844
+  },
+  {
+   "symbol": "SPCXUSD1",
+   "markPrice": "146.95000000",
+   "indexPrice": "146.90457161",
+   "estimatedSettlePrice": "146.87066891",
+   "lastFundingRate": "0.00000000",
+   "interestRate": "0.00000000",
+   "nextFundingTime": 1792857600000,
+   "time": 1792845194844
+  },
+  {
+   "symbol": "AAPLUSDT",
+   "markPrice": "346.87982856",
+   "indexPrice": "346.83618092",
+   "estimatedSettlePrice": "346.82912237",
+   "lastFundingRate": "0.00000000",
+   "interestRate": "0.00000000",
+   "nextFundingTime": 1792857600000,
+   "time": 1792845194844
+  },
+  {
+   "symbol": "ANTHROPICUSDT",
+   "markPrice": "1882.50166667",
+   "indexPrice": "1882.50166667",
+   "estimatedSettlePrice": "1880.71313959",
+   "lastFundingRate": "0.00005000",
+   "interestRate": "0.00005000",
+   "nextFundingTime": 1792857600000,
+   "time": 1792845194844
+  },
+  {
+   "symbol": "HANMIUSDT",
+   "markPrice": "141.42000000",
+   "indexPrice": "141.40407496",
+   "estimatedSettlePrice": "141.37447491",
+   "lastFundingRate": "0.00000000",
+   "interestRate": "0.00000000",
+   "nextFundingTime": 1792857600000,
+   "time": 1792845194844
+  },
+  {
+   "symbol": "XAUUSDT",
+   "markPrice": "4000.46344831",
+   "indexPrice": "3999.99544842",
+   "estimatedSettlePrice": "3999.54050659",
+   "lastFundingRate": "0.00000000",
+   "interestRate": "0.00000000",
+   "nextFundingTime": 1792857600000,
+   "time": 1792845194844
+  },
+  {
+   "symbol": "BYDUSDT",
+   "markPrice": "9.11503449",
+   "indexPrice": "9.11294687",
+   "estimatedSettlePrice": "9.11158784",
+   "lastFundingRate": "0.00000000",
+   "interestRate": "0.00000000",
+   "nextFundingTime": 1792857600000,
+   "time": 1792845194844
+  },
+  {
+   "symbol": "SPYUSDT",
+   "markPrice": "761.89000000",
+   "indexPrice": "761.49067872",
+   "estimatedSettlePrice": "761.30345961",
+   "lastFundingRate": "0.00000000",
+   "interestRate": "0.00000000",
+   "nextFundingTime": 1792857600000,
+   "time": 1792845194844
+  }
+ ]
+}

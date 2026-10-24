@@ -3,6 +3,7 @@
 These are the `/futures/data/*` endpoints — a separate surface from the ccxt-handled matching engine.
 Account long/short ratio and open-interest history are not exposed uniformly through ccxt, so we hit the
 underlying REST directly through our own `Http` so retries / rate-limit / cache / health all apply.
+Also the all-symbol `/fapi/v1` book ticker, premium index and exchangeInfo (collector/tradfi_spread.py).
 """
 
 from __future__ import annotations
@@ -51,3 +52,20 @@ class BinanceFutures:
             ttl=30,
             tool="futures/data/openInterestHist",
         )
+
+    # Matching-engine market data, all symbols in one request (no ``symbol``). Weights: 5 / 10 / 1 per call.
+
+    async def book_tickers(self) -> Fetched:
+        """Best bid/ask of every USD-M symbol: ``[{symbol, bidPrice, bidQty, askPrice, askQty, time, ...}]``."""
+        return await self._get("/fapi/v1/ticker/bookTicker", {}, ttl=0, tool="fapi/v1/ticker/bookTicker")
+
+    async def premium_index(self) -> Fetched:
+        """Mark and index price of every USD-M symbol: ``[{symbol, markPrice, indexPrice, time, ...}]``."""
+        return await self._get("/fapi/v1/premiumIndex", {}, ttl=0, tool="fapi/v1/premiumIndex")
+
+    async def exchange_info(self) -> Fetched:
+        """USD-M ``exchangeInfo`` (``{"symbols": [{symbol, contractType, underlyingType, quoteAsset, ...}], ...}``)."""
+        f = await self.http.get_json("/fapi/v1/exchangeInfo", ttl=0, tool="fapi/v1/exchangeInfo", args={})
+        if not isinstance(f.data, dict) or not isinstance(f.data.get("symbols"), list):
+            raise ProviderError(self.name, "backend_error", "unexpected response shape at /fapi/v1/exchangeInfo")
+        return f

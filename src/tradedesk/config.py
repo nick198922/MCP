@@ -112,6 +112,12 @@ class Settings:
     collect_coinalyze_history_seconds: int = 3600
     collect_coinalyze_history_backfill_days: int = 1460
     retention_coinalyze_history_days: int = 0
+    # Binance TradFi perps best bid/ask + mark/index every minute (collector/tradfi_spread.py; IDEA-20261024-tradfi-perp-
+    # offhours-reopen, early cost check). Two all-symbol requests a tick (weight 15), ~200 rows a minute (~0.3 M a day).
+    # Off by default: switch on only after the critic approves. Retention like option_xvenue.
+    collect_tradfi_spread_enabled: bool = False
+    collect_tradfi_spread_seconds: int = 60
+    retention_tradfi_spread_days: int = 365
     # Alerts
     alerts_enabled: bool = False
     alerts_rules_path: str = ""
@@ -188,6 +194,9 @@ class Settings:
             collect_coinalyze_history_seconds=int(_float("TRADEDESK_COLLECT_COINALYZE_HISTORY_SECONDS", 3600)),
             collect_coinalyze_history_backfill_days=int(_float("TRADEDESK_COLLECT_COINALYZE_HISTORY_BACKFILL_DAYS", 1460)),
             retention_coinalyze_history_days=int(_float("TRADEDESK_RETENTION_COINALYZE_HISTORY_DAYS", 0)),
+            collect_tradfi_spread_enabled=os.environ.get("TRADEDESK_COLLECT_TRADFI_SPREAD_ENABLED", "").lower() in ("1", "true", "yes"),
+            collect_tradfi_spread_seconds=int(_float("TRADEDESK_COLLECT_TRADFI_SPREAD_SECONDS", 60)),
+            retention_tradfi_spread_days=int(_float("TRADEDESK_RETENTION_TRADFI_SPREAD_DAYS", 365)),
             http_bearer_tokens=os.environ.get("TRADEDESK_HTTP_BEARER_TOKENS") or os.environ.get("TRADEDESK_HTTP_BEARER_TOKEN", ""),
             alerts_enabled=os.environ.get("TRADEDESK_ALERTS_ENABLED", "").lower() in ("1", "true", "yes"),
             alerts_rules_path=os.environ.get("TRADEDESK_ALERTS_RULES_PATH", ""),

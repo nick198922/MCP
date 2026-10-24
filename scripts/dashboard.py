@@ -1123,6 +1123,14 @@ HELP: dict[str, tuple[str, str, str, str]] = {
         "Жовта позначка «замало для висновку» — менше 30 угод з R.",
         "Не збільшуй ризик на сетапі, доки його ДІ не стане вищим за 0 на достатній вибірці.",
     ),
+    "demo_versions": (
+        "Версії сетапів",
+        "Закриті демо-угоди окремо за кожною версією правил сетапу (вхід, ціль, беззбиток, виходи): кількість, частка в плюсі "
+        "(R > 0), середній R, P&L. Версія угоди — за часом її відкриття; нижче — таблиця змін правил з комітами.",
+        "До 30 закритих угод з R у версії — «замало для висновку». «Правила змінились під час угоди» — угода "
+        "була відкрита, коли почалась наступна версія, і далі велась за новими правилами.",
+        "Судити про сетап за його поточною версією; результат старої версії не переносити на нову.",
+    ),
     "demo_recent": (
         "Останні демо-угоди",
         "Двадцять останніх угод демо-трейдера (новіші за закриттям угори): дати сигналу й закриття (Київ), монета, сетап і "
@@ -6800,6 +6808,32 @@ DEMO_NE_GROUPS = (  # analytics.demo_shadow.GROUPS
     ("refused", "Відмова guard"),  # since 24.10; an older schema-2 file has no such group (the block says so)
     ("taken", "Виконані (для порівняння)"),
 )
+# analytics.setup_versions.EPOCHS (stdlib copy, a test compares the pair): (tag, from unix ms UTC, what changed, source,
+# setups it applies to; () = every setup). A trade's version follows its open time; changes of which signals are taken
+# (daily cap, option leg) are not versions.
+DEMO_EPOCHS: tuple[tuple[str, int, str, str, tuple[str, ...]], ...] = (
+    (
+        "v1",
+        1_792_607_957_000,  # 2026-10-21 18:39:17 UTC
+        "запуск: ринковий вхід зі стопом і ціллю на біржі, беззбиток за +30 % ROE на плечі угоди",
+        "de3540f, docs/changes/2026-10-21-demo-trader.md",
+        (),
+    ),
+    (
+        "v2",
+        1_792_649_599_000,  # 2026-10-22 06:13:19 UTC
+        "мейкерські лімітні вхід і ціль, ринок лише за потреби (беззбиток ще за +30 % ROE)",
+        "8ec1f37, docs/changes/2026-10-22-demo-maker-orders.md",
+        (),
+    ),
+    (
+        "v3",
+        1_792_653_159_000,  # 2026-10-22 07:12:39 UTC
+        "беззбиток на половині шляху до цілі замість +30 % ROE",
+        "8d82847, docs/changes/2026-10-22-demo-breakeven-path.md",
+        (),
+    ),
+)
 DEMO_STATUS_UA = {
     "open": "відкрита",
     "pending": "чекає входу",
@@ -6813,7 +6847,8 @@ DEMO_CAVEATS = (
     "Демо-рахунок Bybit (api-demo.bybit.com), ігрові гроші. Сторінка лише читає базу: нічого не торгує й лімітів не змінює.",
     f"R = P&L біржі (з комісіями) / ризик на стопі з обома тейкер-комісіями. До {DEMO_MIN_N} закритих угод сетапу числа "
     "описові, не доказ переваги.",
-    "Правило беззбитку змінювалось: до 22.10 стоп переносили за +30 % ROE, далі — на половині шляху до цілі; R цих періодів змішано.",
+    "Правила змінювались (22.10: мейкерські ордери, беззбиток на половині шляху до цілі замість +30 % ROE): плитки й «R за "
+    "сетапом» змішують версії, окремо за версіями — у блоці «Версії сетапів».",
     "Минулий результат не гарантує майбутнього. Не інвестиційна порада.",
 )
 # guard / selection messages (execution/guard.py check, demo_trader._select_and_enter) -> a Ukrainian reason; the
@@ -6958,6 +6993,80 @@ def demo_setup_stats(trades: list[dict]) -> dict[str, dict]:
     return out
 
 
+def _demo_epoch_applies(e: tuple, setup: str | None) -> bool:
+    return not e[4] or setup in e[4]
+
+
+def demo_version_of(setup: str | None, open_ms: float | None, now_ms: float, epochs: tuple = DEMO_EPOCHS) -> tuple | None:
+    """Copy of analytics.setup_versions.version_of: the latest epoch of the setup started by both the open time and
+    now (the exact epoch minute is in the new version); None without an open time or before the first epoch."""
+    if open_ms is None:
+        return None
+    best = None
+    for e in epochs:
+        if _demo_epoch_applies(e, setup) and e[1] <= open_ms and e[1] <= now_ms and (best is None or e[1] >= best[1]):
+            best = e
+    return best
+
+
+def demo_version_stats(trades: list[dict], now_ms: float, epochs: tuple = DEMO_EPOCHS, min_n: int = DEMO_MIN_N) -> dict:
+    """Copy of analytics.setup_versions.version_stats (same keys; a test compares the pair): per (setup, version) closed
+    trades, R > 0 share, mean R, P&L USD, the trades a later epoch began inside, and the «замало для висновку» verdict
+    below ``min_n`` closed trades with R."""
+    eps = sorted((e for e in epochs if e[1] <= now_ms), key=lambda e: e[1])
+    groups: dict = {}
+    for t in trades:
+        if t.get("status") != "closed":
+            continue
+        closed_ms = _num(t.get("closed_ts"))
+        if closed_ms is not None and closed_ms > now_ms:
+            continue
+        raw = t.get("setup")
+        setup = ("" if raw is None else str(raw).strip()) or None
+        e = demo_version_of(setup, _num(t.get("opened_ts")), now_ms, eps)
+        tag = None if e is None else e[0]
+        g = groups.setdefault(
+            (setup, tag),
+            {"setup": setup, "version": tag, "from_ms": None if e is None else e[1], "rs": [], "closed": 0, "pnl": 0.0, "inside": 0},
+        )
+        g["closed"] += 1
+        g["pnl"] += _num(t.get("pnl_usd")) or 0.0
+        r = _num(t.get("r_multiple"))
+        if r is not None:
+            g["rs"].append(r)
+        if e is not None and closed_ms is not None:
+            later = [x[1] for x in eps if _demo_epoch_applies(x, setup) and x[1] > e[1]]
+            if later and closed_ms > min(later):
+                g["inside"] += 1
+    rows = []
+    for g in groups.values():
+        rs = g["rs"]
+        wins = sum(1 for v in rs if v > 0)
+        rows.append(
+            {
+                "setup": g["setup"],
+                "version": g["version"],
+                "from_ms": g["from_ms"],
+                "closed": g["closed"],
+                "n_r": len(rs),
+                "wins": wins,
+                "win_share": wins / len(rs) if rs else None,
+                "mean_r": statistics.fmean(rs) if rs else None,
+                "pnl_usd": g["pnl"],
+                "changed_inside": g["inside"],
+                "enough": len(rs) >= min_n,
+                "verdict": f"замало для висновку ({len(rs)} з {min_n})" if len(rs) < min_n else "достатньо угод для висновку",
+            }
+        )
+    rows.sort(key=lambda x: (x["setup"] is None, x["setup"] or "", x["from_ms"] is None, x["from_ms"] or 0))
+    return {
+        "rows": rows,
+        "epochs": [{"tag": e[0], "from_ms": e[1], "what": e[2], "source": e[3], "setups": list(e[4])} for e in eps],
+        "unversioned": sum(x["closed"] for x in rows if x["version"] is None),
+        "min_n": min_n,
+    }
+
+
 def demo_refusals(audit: list[dict], now_ms: float) -> list[dict]:
     """exec_audit 'refused' / 'skipped' rows grouped by reason: {'reason', 'refused', 'skipped', 'week', 'last_ts'},
     most frequent first. A row counts once per reason even when its message list repeats it."""
@@ -7070,6 +7179,58 @@ def block_demo_setups(trades: list[dict]) -> str:
         "те, що вже сталось.</p>"
     )
     return f"<div class='tiles'>{''.join(tiles)}</div>{note}"
+
+
+def _demo_at(ms: object) -> str:
+    v = _num(ms)
+    return "—" if v is None else kyiv(datetime.fromtimestamp(v / 1000, timezone.utc))  # noqa: UP017
+
+
+def block_demo_versions(trades: list[dict], now: float) -> str:
+    """Closed demo trades per (setup, version) of the rules (demo_version_stats), then the table of the rule epochs."""
+    s = demo_version_stats(trades, now * 1000)
+    epochs = [
+        "<div class='scroll'><table><tr><th>Версія</th><th>Діє з (Київ)</th><th>Що змінилось</th><th>Джерело</th></tr>",
+        *(
+            f"<tr><td>{_e(e['tag'])}</td><td>{_e(_demo_at(e['from_ms']))}</td><td>{_e(e['what'])}</td><td class='mut'>{_e(e['source'])}</td></tr>"
+            for e in s["epochs"]
+        ),
+        "</table></div>",
+    ]
+    how = (
+        f"<p class='note'>Зміна правил ведення угоди = нова версія; висновок про версію — не раніше {DEMO_MIN_N} закритих угод з R. "
+        "Демо-трейдер версії поки не записує, тож версію визначено за часом відкриття угоди. Час зміни — час коміту (демо-трейдер "
+        "працює з тієї самої копії коду), фактичний час розгортання не записано. Зміни відбору сигналів (денний ліміт угод під "
+        "ризиком, опціонна нога) версією не вважаються: вони змінюють, які сигнали беруться, а не як ведеться угода.</p>"
+    )
+    if not s["rows"]:
+        return _empty("Закритих демо-угод ще немає: статистика за версіями з'явиться після першого закриття.") + "".join(epochs) + how
+    rows = [
+        "<div class='scroll'><table><tr><th>Сетап</th><th>Версія</th><th>Діє з (Київ)</th><th>Закрито</th><th>З R</th><th>У плюсі</th>"
+        "<th>Середній R</th><th>P&amp;L, USD</th><th>Правила змінились під час угоди</th><th>Висновок</th></tr>"
+    ]
+    for x in s["rows"]:
+        mr = _num(x["mean_r"])
+        setup = "без сетапу" if x["setup"] is None else _clean(x["setup"], 12)
+        rows.append(
+            f"<tr><td>{_e(setup)}</td><td>{_e(x['version'] or 'без версії')}</td><td>{_e(_demo_at(x['from_ms']))}</td>"
+            f"<td class='num'>{x['closed']}</td><td class='num'>{x['n_r']}</td><td class='num'>{_share(x['win_share'])}</td>"
+            f"<td class='num {_signed_cls(mr)}'>{_r(mr)}</td><td class='num {_signed_cls(x['pnl_usd'])}'>{_usd(x['pnl_usd'], True)}</td>"
+            f"<td class='num'>{x['changed_inside']}</td><td class='{'' if x['enough'] else 'warn'}'>{_e(x['verdict'])}</td></tr>"
+        )
+    rows.append("</table></div>")
+    out = ["".join(rows)]
+    inside = sum(x["changed_inside"] for x in s["rows"])
+    if inside:
+        out.append(
+            f"<p class='note warn'>{inside} закритих угод були відкриті, коли почалася наступна версія: демо-трейдер вів їх далі вже за "
+            "новими правилами, тож їхній результат змішує дві версії.</p>"
+        )
+    if s["unversioned"]:
+        out.append(
+            f"<p class='note warn'>Без версії: {s['unversioned']} закритих угод (немає часу відкриття або відкриті до першої версії).</p>"
+        )
+    return "".join(out) + "".join(epochs) + how
 
 
 def block_demo_table(trades: list[dict]) -> str:
@@ -7331,6 +7492,9 @@ def render_demo(
                 f"{guarded(demo_option_legs_note, data.get('option_legs'))}</section>"
             )
             out.append(f"<section class='wide'>{_h2('R за сетапом', 'demo_setups')}{guarded(block_demo_setups, trades)}</section>")
+            out.append(
+                f"<section class='wide'>{_h2('Версії сетапів', 'demo_versions')}{guarded(block_demo_versions, trades, now)}</section>"
+            )
             out.append(f"<section class='wide'>{_h2('Останні демо-угоди', 'demo_recent')}{guarded(block_demo_table, trades)}</section>")
         out.append(
             f"<section class='wide'>{_h2('Відмови guard за причинами', 'demo_refusals')}{guarded(block_demo_refusals, data.get('audit'), now)}</section>"

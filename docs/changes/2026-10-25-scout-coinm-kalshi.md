@@ -1,0 +1,2 @@
+- Скаут: дві нові картки — `coinm-vs-usdtm-funding-carry` (прийнято критиком) і `kalshi-polymarket-matched-gap` (відхилено).
+- Критик (режим A): `docs/reviews/2026-10-25-idea-triage-coinm-kalshi.md`.

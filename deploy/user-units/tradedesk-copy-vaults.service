@@ -1,0 +1,11 @@
+[Unit]
+Description=tradedesk: paper copy of two HL vaults at Bybit prices (scripts/copy_vaults.py run)
+# Off until this file exists (the owner's choice «А» of 2026-10-24 created it; removing it stops the copy).
+ConditionPathExists=/var/lib/tradedesk-mcp/assistant/copy-vaults.on
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/tradedesk/tradedesk-mcp
+ExecStart=/home/tradedesk/.local/bin/uv run --quiet python scripts/copy_vaults.py run
+TimeoutStartSec=90
+NoNewPrivileges=true

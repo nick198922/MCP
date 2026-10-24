@@ -1,0 +1,9 @@
+[Unit]
+Description=tradedesk-copy-vaults (every 2 minutes)
+
+[Timer]
+OnCalendar=*-*-* *:00/2:15
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

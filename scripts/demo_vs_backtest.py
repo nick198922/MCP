@@ -10,8 +10,8 @@ match / no signal / mismatch (or pending / no data / unsupported). The summary i
 trade (or ``--since``): a trade the backtest had not resolved last week is counted once it is, and the 30-trade
 threshold applies to the total. A separate block lists the trades closed in the last ``--days``. A second block
 (``analytics/demo_shadow.py``, no network) sets the signals the demo selected but did not execute (missed maker entries,
-skipped by score or daily caps) against their shadow plans, which the collector already resolved: R by reason, next
-to the shadow plans of the filled trades. The text (Ukrainian, for the owner) is printed and, with ``--out``, written
+skipped by score or daily caps, refused by the guard) against their shadow plans, which the collector already
+resolved: R by reason, next to the shadow plans of the filled trades. The text (Ukrainian, for the owner) is printed and, with ``--out``, written
 to a file; ``--json`` writes the rows, both summaries and the not-executed block (schema ``JSON_SCHEMA``, replaced
 atomically, so the dashboard «Демо» tab can show the numbers without network). Read-only public market data: nothing
 here places, changes or cancels an order.
@@ -47,7 +47,9 @@ DAY_MS = 86_400_000
 HOUR_MS = 3_600_000
 PAGE = 1000  # Bybit caps klines at 1000 a request; the cursor follows the last bar, so smaller caps page too
 MAX_PAGES = 12
-JSON_SCHEMA = 2  # 2: + not_executed, schema, generated_ms, venue, notes (1 had summary, week, rows)
+# 2: + not_executed, schema, generated_ms, venue, notes (1 had summary, week, rows). Additive since (no bump, readers
+# skip what they do not know): not_executed.groups.refused with .excluded (24.10)
+JSON_SCHEMA = 2
 MAX_ROWS = 100_000
 
 Fetch = Callable[[str, str, int, int], Awaitable[list[list[float]]]]
@@ -76,8 +78,8 @@ def load_closed(db: str, since_ms: int, until_ms: int) -> tuple[list[dict[str, A
 
 
 def load_not_executed(db: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], str | None]:
-    """(demo_trade rows, exec_audit 'skipped' rows, demo shadow trade_plan rows, error) over a read-only connection; a
-    missing table gives an empty list (an older store). Never raises."""
+    """(demo_trade rows, exec_audit 'skipped' and 'refused' rows, demo shadow trade_plan rows, error) over a read-only
+    connection; a missing table gives an empty list (an older store). Never raises."""
     path = Path(db)
     if not path.exists():
         return [], [], [], f"no database at {db}"
@@ -94,7 +96,8 @@ def load_not_executed(db: str) -> tuple[list[dict[str, Any]], list[dict[str, Any
 
         trades = q("demo_trade", "SELECT * FROM demo_trade ORDER BY signal_ts LIMIT ?")
         audit = q(
-            "exec_audit", "SELECT ts, kind, link_id, symbol, setup, payload FROM exec_audit WHERE kind = 'skipped' ORDER BY id LIMIT ?"
+            "exec_audit",
+            "SELECT ts, kind, link_id, symbol, setup, payload FROM exec_audit WHERE kind IN ('skipped', 'refused') ORDER BY id LIMIT ?",
         )
         plans = q("trade_plan", f"SELECT * FROM trade_plan WHERE tags LIKE '%{demo_shadow.SHADOW_TAG}%' ORDER BY id LIMIT ?")
         return trades, audit, plans, None
@@ -270,6 +273,7 @@ def render(
 GROUP_UA = {
     "missed": "вхід не заповнився",
     "skipped": "не відібрано",
+    "refused": "відмова guard",
     "taken": "виконані (для порівняння)",
 }
 
@@ -292,11 +296,17 @@ def render_not_executed(ne: dict[str, Any], err: str | None = None) -> str:
         )
         for x in s["reasons"][:10]:
             lines.append(f"  - {x['reason']}: {x['n']}, з R {x['n_r']}, середній {_r(x['mean_r'])}, сума {_r(x['sum_r'])}.")
+        ex = s.get("excluded")
+        if isinstance(ex, dict) and ex.get("n"):
+            lines.append(
+                f"  - без тіньового плану за правилом (стоп далі від входу, ніж дозволяє guard, або помилка рівнів): {ex['n']} "
+                f"(за 7 днів {ex['week']}), у R не входять."
+            )
     lines += [
         "",
         "R тіньового плану — в одиницях ризику демо (як «R без беззбитку» бектесту): ринковий вхід за ціною рішення (до 2 год "
         "після закриття сигнальної свічки), 1h-свічки Bybit, стоп виграє свічку, що торкнулась обох рівнів, без беззбитку. "
-        "Це простий сетап, а не те, що записало б демо. Відмови guard (refused) сюди не входять.",
+        "Це простий сетап, а не те, що записало б демо. Відмова guard з кількома правилами рахується за першим.",
     ]
     return "\n".join(lines) + "\n"
 

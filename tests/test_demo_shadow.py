@@ -1,5 +1,6 @@
 """analytics/demo_shadow.py and its part of scripts/demo_vs_backtest.py: selected but not executed demo signals (missed,
-skipped) against their shadow plans, on a sample of the live store (24.10) and analytic references."""
+skipped, refused by the guard) against their shadow plans, on samples of the live store (24.10) and analytic
+references."""
 
 from __future__ import annotations
 
@@ -150,6 +151,66 @@ def test_missed_entries_use_the_linked_plan_and_the_order_note():
     )
 
 
+REF = json.loads((Path(__file__).parent / "fixtures" / "demo_shadow_refused_live_2026-10-24.json").read_text())
+REF_NOW = int(REF["now_ms"])
+
+
+def test_planless_refusals_follow_the_guard_wording():
+    # execution.guard.check wording; execution.demo_trader._shadow writes no plan for these
+    assert ds.planless_refusal(["levels: stop and target must be on opposite sides of the entry"])
+    assert ds.planless_refusal(["stop 12.0% from the entry > 10%", "reward/risk 1.10 after fees < 1.5"])
+    assert ds.planless_refusal(["reward/risk 0.79 after fees < 1.5", "stop 30.3% from the entry > 10%"])
+    assert not ds.planless_refusal(["reward/risk 1.38 after fees < 1.5"])
+    assert not ds.planless_refusal(["already in TIA/USDT:USDT"])
+    assert not ds.planless_refusal(["maintenance + loss at all stops 2,100 USD > 20% of equity (cross margin)"])
+    assert not ds.planless_refusal(["bybit: stop loss price invalid"])  # a venue error from _enter: its plan is written
+    assert not ds.planless_refusal([]) and not ds.planless_refusal([None, 3])
+
+
+def test_real_sample_guard_refusals_meet_their_shadow_plans():
+    """Every 'refused' row of the live store up to 24.10 10:00 UTC: 44 with a plan, 34 without one by design."""
+    s = ds.not_executed([], REF["audit"], REF["plans"], now_ms=REF_NOW)
+    g = s["groups"]["refused"]
+    assert len(REF["audit"]) == 78 and g["n"] == 44 and g["excluded"] == {"n": 34, "week": 34}
+    assert g["no_plan"] == 0 and g["resolved"] == 27 and g["open"] == 17 and g["n_r"] == 27  # nothing lost
+    assert g["outcomes"] == {"target": 11, "stop": 16, "expired": 0, "not_filled": 0}
+    assert not g["enough"] and g["conclusion"].startswith("замало для висновку: тіньових планів з R 27")
+    assert s["groups"]["skipped"]["n"] == 0  # the plans are tagged demo:skipped, the group comes from the audit kind
+    plans = {p["id"]: p for p in REF["plans"]}
+    rows = [x for x in s["rows"] if x["group"] == "refused"]
+    for x in rows:
+        p = plans[x["plan_id"]]
+        assert (x["symbol"], x["side"], x["decided_ts"] // 1000) == (p["symbol"], p["side"], p["created_ts"])
+        if x["status"] == "resolved":
+            assert x["r"] == pytest.approx(ds.shadow_r(p["side"], p["fill"], p["stop"], p["exit"], p["outcome"]))
+    assert len({x["plan_id"] for x in rows}) == 44  # one plan per refusal
+    by = {x["reason"]: x for x in g["reasons"]}
+    assert list(by) == ["reward/risk N after fees < 1.5", "already in <symbol>"]  # the threshold kept, the value masked
+    rr = by["reward/risk N after fees < 1.5"]
+    rs = [x["r"] for x in rows if x["reason"] == rr["reason"] and x["r"] is not None]
+    assert rr["n"] == 36 and rr["n_r"] == 20 and rr["outcomes"]["target"] == 11 and rr["outcomes"]["stop"] == 9
+    assert rr["mean_r"] == pytest.approx(statistics.fmean(rs)) and rr["sum_r"] == pytest.approx(sum(rs)) and not rr["enough"]
+    assert by["already in <symbol>"]["n_r"] == 7 and by["already in <symbol>"]["outcomes"]["stop"] == 7
+    assert json.loads(json.dumps(s)) == s
+
+
+def test_a_planless_rule_with_a_plan_found_is_kept():
+    """The exclusion is by design only: if a plan does exist for such a refusal, it is scored; a refusal of another rule
+    without a plan stays visible as 'no_plan'."""
+    a = next(x for x in REF["audit"] if "stop " in x["payload"])
+    other = next(x for x in REF["audit"] if "already in" in x["payload"])
+    plan = {
+        "id": 9001, "created_ts": a["ts"] // 1000, "symbol": a["symbol"], "side": ds.parse_link(a["link_id"])[1],
+        "tags": ["src:demo-shadow", f"setup:{a['setup']}", f"tf:{ds.parse_link(a['link_id'])[2]}", "demo:skipped"],
+        "status": "open",
+    }  # fmt: skip
+    s = ds.not_executed([], [a, other], [plan], now_ms=REF_NOW)
+    g = s["groups"]["refused"]
+    assert g["n"] == 2 and g["open"] == 1 and g["no_plan"] == 1 and g["excluded"]["n"] == 0
+    assert ds.planless_refusals([a, other], [], now_ms=REF_NOW) == [a["ts"]]
+    assert ds.planless_refusals([a], [], now_ms=a["ts"] - 1) == []  # decided after now
+
+
 def test_time_is_a_parameter():
     avax = next(a for a in FIX["audit"] if a["symbol"].startswith("AVAX"))
     rows = ds.match_rows(FIX["trades"], FIX["audit"], FIX["plans"], now_ms=avax["ts"] - 1)
@@ -172,13 +233,19 @@ def test_odd_rows_never_raise():
     audit = [
         {"ts": NOW - 1, "kind": "skipped", "link_id": "weird", "symbol": "X", "setup": "S3", "payload": "not json"},
         {"ts": "x", "kind": "skipped"},
-        {"ts": NOW - 1, "kind": "refused", "link_id": "td-S3-l-4h-X-1", "payload": "{}"},  # not this slice
+        {"ts": NOW - 1, "kind": "refused", "link_id": "td-S3-l-4h-X-1", "payload": "{}"},  # no reason, no plan: a lost plan
+        {"ts": NOW - 1, "kind": "refused", "payload": {"violations": "not a list"}},
+        {"ts": NOW - 1, "kind": "dry_refused", "link_id": "td-S3-l-4h-X-2", "payload": "{}"},  # a dry run: not a decision
+        {"ts": None, "kind": "refused"},
     ]
     plans = [{"id": 5, "tags": "not json"}, {"id": "x", "tags": ["src:demo-shadow"]}, {"tags": None}]
     trades = [{"status": "missed", "opened_ts": None, "signal_ts": None}, {"status": "closed", "opened_ts": NOW - 1, "plan_id": 99}]
     s = ds.not_executed(trades, audit, plans, now_ms=NOW)
     assert s["groups"]["skipped"]["n"] == 1 and s["groups"]["skipped"]["no_plan"] == 1
     assert s["groups"]["skipped"]["reasons"][0]["reason"] == ds.NO_REASON
+    ref = s["groups"]["refused"]
+    assert ref["n"] == 2 and ref["no_plan"] == 2 and ref["excluded"] == {"n": 0, "week": 0} and ref["mean_r"] is None
+    assert [x["reason"] for x in ref["reasons"]] == [ds.NO_REASON]
     assert s["groups"]["taken"]["no_plan"] == 1
     bad = {"id": 7, "tags": ["src:demo-shadow"], "status": "resolved", "outcome": "stop", "side": "long", "fill": "x", "stop": 1, "exit": 1}
     r = ds.match_rows([{"status": "closed", "opened_ts": 1, "plan_id": 7, "side": "long"}], [], [bad], now_ms=NOW)
@@ -188,7 +255,8 @@ def test_odd_rows_never_raise():
 # ---------------------------------------------------------------- script: read-only store, JSON file
 
 
-def _store(tmp_path: Path) -> Path:
+def _store(tmp_path: Path, refused: bool = False) -> Path:
+    """The 24.10 sample in a migrated store; with ``refused`` also every live 'refused' row and its plans."""
     from tradedesk.store.schema import MIGRATIONS
 
     p = tmp_path / "t.sqlite"
@@ -196,13 +264,17 @@ def _store(tmp_path: Path) -> Path:
     for v in sorted(MIGRATIONS):
         for sql in MIGRATIONS[v]:
             con.execute(sql)
-    for a in FIX["audit"]:
+    for a in FIX["audit"] + (REF["audit"] if refused else []):
         con.execute(
             "INSERT INTO exec_audit (ts, venue, kind, link_id, symbol, setup, payload) VALUES (?, 'bybit-demo', ?, ?, ?, ?, ?)",
             (a["ts"], a["kind"], a["link_id"], a["symbol"], a["setup"], a["payload"]),
         )
-    con.execute("INSERT INTO exec_audit (ts, venue, kind, link_id, payload) VALUES (?, 'bybit-demo', 'refused', 'td-x', '{}')", (NOW - 1,))
-    for p_ in FIX["plans"]:
+    # before both samples' now and the wall clock of any run (main() reads the real time)
+    con.execute(
+        "INSERT INTO exec_audit (ts, venue, kind, link_id, payload) VALUES (?, 'bybit-demo', 'refused', 'td-x', '{}')", (REF_NOW - 1,)
+    )
+    con.execute("INSERT INTO exec_audit (ts, venue, kind, link_id, payload) VALUES (?, 'bybit-demo', 'sent', 'td-y', '{}')", (REF_NOW - 1,))
+    for p_ in FIX["plans"] + (REF["plans"] if refused else []):
         cols = ",".join(p_)
         con.execute(f"INSERT INTO trade_plan ({cols}) VALUES ({','.join('?' * len(p_))})", tuple(p_.values()))
     for t in FIX["trades"]:
@@ -217,13 +289,22 @@ def test_script_reads_the_store_read_only(tmp_path):
     db = _store(tmp_path)
     before = db.stat().st_mtime_ns
     trades, audit, plans, err = script.load_not_executed(str(db))
-    assert err is None and len(trades) == 3 and len(audit) == 9 and len(plans) == 12  # 'refused' is not read
+    assert err is None and len(trades) == 3 and len(audit) == 10 and len(plans) == 12  # skipped + refused, not 'sent'
     assert db.stat().st_mtime_ns == before
     s = ds.not_executed(trades, audit, plans, now_ms=NOW)
     assert s["groups"]["skipped"]["n_r"] == 8 and s["groups"]["taken"]["n_r"] == 3
+    assert s["groups"]["refused"]["n"] == 1 and s["groups"]["refused"]["no_plan"] == 1  # the bare refusal: a lost plan
     text = script.render_not_executed(s)
     assert "Відібрані, але не виконані сигнали проти тіньових планів" in text and "не відібрано: 9" in text
-    assert "score N < 2: 8, з R 7" in text and "замало для висновку" in text and "refused" in text
+    assert "score N < 2: 8, з R 7" in text and "замало для висновку" in text and "відмова guard: 1" in text
+    assert "без тіньового плану за правилом" not in text  # none excluded here
+    (tmp_path / "r").mkdir()
+    trades, audit, plans, err = script.load_not_executed(str(_store(tmp_path / "r", refused=True)))
+    assert err is None and len(audit) == 9 + 78 + 1 and len(plans) == 12 + 44
+    s = ds.not_executed(trades, audit, plans, now_ms=NOW)
+    text = script.render_not_executed(s)
+    assert "відмова guard: 45" in text and "reward/risk N after fees < 1.5: 36, з R 20" in text
+    assert "без тіньового плану за правилом (стоп далі від входу, ніж дозволяє guard, або помилка рівнів): 34" in text
     assert script.load_not_executed(str(tmp_path / "none.sqlite"))[3].startswith("no database")
     assert "Звірки немає: no database" in script.render_not_executed({}, "no database")
 
@@ -258,8 +339,18 @@ def test_script_json_holds_the_not_executed_block(tmp_path, monkeypatch):
     assert doc["schema"] == script.JSON_SCHEMA == 2 and isinstance(doc["generated_ms"], int) and doc["venue"] == "bybit"
     assert doc["summary"]["n"] == 3 and len(doc["rows"]) == 3  # the three closed demo trades of the sample
     ne = doc["not_executed"]
-    assert ne["error"] is None and ne["groups"]["skipped"]["n"] == 9 and len(ne["rows"]) == 12
+    assert ne["error"] is None and ne["groups"]["skipped"]["n"] == 9 and len(ne["rows"]) == 13  # + the bare refusal
+    assert ne["groups"]["refused"]["excluded"] == {"n": 0, "week": 0}
     assert not (out.parent / "latest.json.tmp").exists()  # replaced atomically
+
+
+def test_script_json_holds_the_guard_refusals(tmp_path, monkeypatch):
+    monkeypatch.setattr(script, "Runtime", _runtime(_Failing()))
+    out = tmp_path / "latest.json"
+    assert script.main(["--db", str(_store(tmp_path, refused=True)), "--json", str(out)]) == 0
+    ref = json.loads(out.read_text(encoding="utf-8"))["not_executed"]["groups"]["refused"]
+    assert ref["n"] == 45 and ref["no_plan"] == 1 and ref["n_r"] == 27 and ref["excluded"]["n"] == 34  # the real clock
+    assert [x["reason"] for x in ref["reasons"]][:2] == ["reward/risk N after fees < 1.5", "already in <symbol>"]
 
 
 def test_script_json_survives_a_provider_failure(tmp_path, monkeypatch):

@@ -1,0 +1,4 @@
+- Сито: нова специфікація `dca_martingale` (`analytics/sieve_specs/dca_martingale.py`): лонг (або шорт) на першому перетині ±4 % за 24 год, ціль 1.5 %, загальний стоп 12 % / 6 %, 168 год, без доливок; тести `tests/test_sieve_dca_martingale.py`.
+- Реєстр сита: 3 прогони (S-DCA-1 лонг 12 %, S-DCA-2 лонг 6 %, S-DCA-3 шорт 12 %), усі «ні»: E[R] IS −0.008 / −0.022 / +0.002R, верхні межі CI < +0.05R; OOS ≤ 0.
+- Картка `IDEA-20261024-dca-martingale-bots-sieve` → `rejected`. Клас «усереднення проти руху» закрито лише за обмеженою версією (один вхід + загальний стоп); повне усереднення з доливками не тестувалось, «доливки знак не змінюють» — теоретичне твердження.
+- Звіт `docs/verification/2026-10-25-dca-martingale-sieve.md` (форма виплати, хвіст за датами, перевірка за активами) і скрипт `scripts/verify_dca_martingale_sieve.py`; нотатка в `docs/knowledge/risk-management.md` (правило 4), рядок у `docs/knowledge/README.md`, статус у `docs/knowledge/setups.md`.

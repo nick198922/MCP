@@ -1,10 +1,14 @@
-"""Watch of the open agent/* and claude/* pull requests every 15 minutes: finishes the automatic merge when GitHub
+"""Watch of the open agent/*, claude/* and chat/* pull requests every 15 minutes: finishes the automatic merge when GitHub
 did not, and tells the owner's Telegram when a PR is stuck.
 
 The owner wants every merge automatic (2026-10-22), so before telling anything the watch
 - re-runs the failed jobs once per PR head commit (a flaky test), and
 - merges a ready PR whose checks all passed on its head by the rules of scripts/automerge.py (the merge workflow
-  never fires when GitHub leaves a finished CI run "in progress").
+  never fires when GitHub leaves a finished CI run "in progress"), and
+- brings a fresh main into a ready PR that conflicts with it when every conflict is in the documentation (docs/,
+  top-level *.md) and both sides only added lines at the same place (two new rows of a table, two new BACKLOG items):
+  the merge keeps main's lines, then the branch's, and is pushed to the branch in its own clone (~/tradedesk-prfix,
+  never the live or the agents' clone); CI then runs and the merge follows. Any other conflict is told once.
 Stuck means: CI failed again after the re-run, or the PR has not moved for STALE_HOURS. Each finding is told once
 per PR head commit. No Claude tokens are spent; fixing is left to the doctor or a Claude session. Runs as a user
 timer (deploy/user-units/tradedesk-pr-watch.*), reads the GitHub token like scripts/gh_pr.py and remembers what it
@@ -19,7 +23,9 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -32,6 +38,9 @@ from tg_send import load_env, send  # noqa: E402
 STALE_HOURS = 2.0
 FAILED = {"failure", "timed_out", "cancelled", "action_required", "startup_failure"}
 LOG_DIR = Path(os.environ.get("TRADEDESK_AGENTS_LOG_DIR") or Path.home() / ".local/state/tradedesk-agents")
+REPO_DIR = Path(__file__).resolve().parent.parent
+FIX_DIR = Path(os.environ.get("TRADEDESK_PRFIX_DIR") or Path.home() / "tradedesk-prfix")
+Fixer = Callable[[str], tuple[str, list[str]]]  # branch -> ("fixed" | "blocked", conflicted paths or reasons)
 
 
 def parse_time(s: str) -> datetime:
@@ -72,8 +81,85 @@ def findings(pr: dict, check_runs: list[dict], now: datetime) -> list[tuple[str,
     return out
 
 
+def is_docs(path: str) -> bool:
+    return path.startswith("docs/") or ("/" not in path and path.endswith(".md"))
+
+
+def union_resolve(text: str) -> str | None:
+    """The file with every conflict hunk (diff3 style) replaced by main's lines, then the branch's; None when a hunk
+    changed lines both sides started from (a real edit conflict) or the file has no hunk at all."""
+    out: list[str] = []
+    hunks = 0
+    part, ours, base, theirs = "", [], [], []
+    for line in text.splitlines(keepends=True):
+        if line.startswith("<<<<<<< ") and not part:
+            part, ours, base, theirs = "ours", [], [], []
+        elif line.startswith("||||||| ") and part == "ours":
+            part = "base"
+        elif line.rstrip("\r\n") == "=======" and part == "base":
+            part = "theirs"
+        elif line.startswith(">>>>>>> ") and part == "theirs":
+            if base:
+                return None
+            out += theirs + ours  # theirs = origin/main (merged in), ours = the PR branch
+            hunks += 1
+            part = ""
+        elif part == "ours":
+            ours.append(line)
+        elif part == "base":
+            base.append(line)
+        elif part == "theirs":
+            theirs.append(line)
+        else:
+            out.append(line)
+    if part or not hunks:
+        return None
+    return "".join(out)
+
+
+def git(*args: str, cwd: Path | None = None, check: bool = True) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], cwd=cwd or FIX_DIR, capture_output=True, text=True, check=check)
+
+
+def merge_main(ref: str) -> tuple[str, list[str]]:
+    """Merge origin/main into the PR branch in FIX_DIR; push it when it merges cleanly or every conflict is an
+    additive docs one (union_resolve). Never forces: a branch that moved meanwhile is left for the next run."""
+    if not (FIX_DIR / ".git").exists():
+        url = git("remote", "get-url", "origin", cwd=REPO_DIR).stdout.strip()
+        subprocess.run(["git", "clone", "-q", url, str(FIX_DIR)], check=True)
+        git("config", "user.name", "tradedesk pr watch")
+        git("config", "user.email", "tradedesk-pr-watch@users.noreply.github.com")
+    git("fetch", "-q", "origin", "main", f"+refs/heads/{ref}:refs/remotes/origin/{ref}")
+    git("checkout", "-q", "-f", "-B", "prfix", f"origin/{ref}")
+    git("clean", "-fdxq")
+    merged = git("-c", "merge.conflictStyle=diff3", "merge", "--no-edit", "-q", "origin/main", check=False)
+    conflicted: list[str] = []
+    if merged.returncode != 0:
+        conflicted = git("diff", "--name-only", "--diff-filter=U").stdout.split()
+        if not conflicted:
+            git("merge", "--abort", check=False)
+            return "blocked", [f"git merge: {(merged.stderr or merged.stdout).strip()[:200]}"]
+        not_docs = [f for f in conflicted if not is_docs(f)]
+        if not_docs:
+            git("merge", "--abort", check=False)
+            return "blocked", [f"не документація: {', '.join(not_docs[:5])}"]
+        for f in conflicted:
+            path = FIX_DIR / f
+            resolved = union_resolve(path.read_text(encoding="utf-8")) if path.is_file() else None
+            if resolved is None:
+                git("merge", "--abort", check=False)
+                return "blocked", [f"{f}: обидві сторони змінили ті самі рядки"]
+            path.write_text(resolved, encoding="utf-8")
+            git("add", "--", f)
+        git("commit", "-q", "--no-edit")
+    git("push", "-q", "origin", f"HEAD:refs/heads/{ref}")
+    return "fixed", conflicted
+
+
 def message(pr: dict, kind: str, detail: str, held: bool = False) -> str:
     title = f"#{pr['number']} {pr.get('title', '')}".strip()
+    if kind == "conflict":
+        return f"⚔️ <b>Конфлікт з main у PR</b> {title}: {detail}. Сам не розвʼязав, потрібен Claude або агенти."
     if kind == "red":
         return f"🔴 <b>CI впав у PR</b> {title}: {detail} (і після перезапуску). Автозлиття не буде, доки не виправлять."
     if held:
@@ -81,9 +167,9 @@ def message(pr: dict, kind: str, detail: str, held: bool = False) -> str:
     return f"⏳ <b>PR застряг</b> {detail} год без руху, хоча мав злитись сам: {title}."
 
 
-def watch(call: Call, repo: str, state: dict, now: datetime) -> tuple[list[tuple[str, str]], dict]:
-    """Messages to send (text, PR url) and the new state; a finding is told once per head commit. Merges and
-    re-runs on the way (printed, not sent)."""
+def watch(call: Call, repo: str, state: dict, now: datetime, fix: Fixer | None = merge_main) -> tuple[list[tuple[str, str]], dict]:
+    """Messages to send (text, PR url) and the new state; a finding is told once per head commit. Merges, re-runs
+    and docs conflict fixes on the way (printed, not sent); ``fix=None`` (a dry run) only tells about conflicts."""
     status, prs = call("GET", f"/repos/{repo}/pulls?state=open&per_page=100", None)
     if status != 200 or not isinstance(prs, list):
         raise RuntimeError(f"GitHub pulls: HTTP {status}")
@@ -98,6 +184,22 @@ def watch(call: Call, repo: str, state: dict, now: datetime) -> tuple[list[tuple
         told = state.get(str(pr["number"]), {})
         told = told if told.get("sha") == sha else {"sha": sha, "kinds": []}
         ready = READY_MARK in (pr.get("body") or "")
+        if ready:
+            status, detail = call("GET", f"/repos/{repo}/pulls/{pr['number']}", None)
+            if status == 200 and isinstance(detail, dict) and detail.get("mergeable_state") == "dirty":
+                verdict, paths = ("blocked", ["dry run"]) if fix is None else ("", [])
+                if fix is not None:
+                    try:
+                        verdict, paths = fix(ref)
+                    except (subprocess.CalledProcessError, OSError) as e:
+                        verdict, paths = "error", [str(e)[:200]]
+                print(f"PR #{pr['number']}: conflict with main: {verdict} {', '.join(paths)}")
+                if verdict == "fixed":
+                    new_state[str(pr["number"])] = told
+                    continue
+                if verdict == "blocked" and "conflict" not in told["kinds"]:
+                    out.append((message(pr, "conflict", "; ".join(paths)), pr["html_url"]))
+                    told["kinds"].append("conflict")
         if ready and all_passed(check_runs):
             try:
                 result = merge(call, repo, pr["number"], sha)  # a 'claude:' hold waits for scripts/trader_review.py
@@ -138,7 +240,7 @@ def main(argv: list[str] | None = None) -> int:
         state = json.loads(state_file.read_text())
     except (OSError, ValueError):
         state = {}
-    msgs, new_state = watch(caller(token), args.repo, state, datetime.now(UTC))
+    msgs, new_state = watch(caller(token), args.repo, state, datetime.now(UTC), fix=None if args.dry_run else merge_main)
     for text, url in msgs:
         if args.dry_run:
             print(text, url)

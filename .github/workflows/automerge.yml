@@ -1,5 +1,5 @@
 name: automerge
-# Merges an agents' (or Claude's claude/*) pull request by itself once CI has passed on it, if scripts/automerge.py finds it safe. A
+# Merges an agents' (or Claude's claude/* and chat/*) pull request by itself once CI has passed on it, if scripts/automerge.py finds it safe. A
 # workflow_run always uses this file and the checkout of main, so a pull request cannot change these rules for itself.
 on:
   workflow_run:
@@ -16,7 +16,8 @@ jobs:
       github.event.workflow_run.event == 'pull_request' &&
       github.event.workflow_run.conclusion == 'success' &&
       (startsWith(github.event.workflow_run.head_branch, 'agent/') ||
-       startsWith(github.event.workflow_run.head_branch, 'claude/'))
+       startsWith(github.event.workflow_run.head_branch, 'claude/') ||
+       startsWith(github.event.workflow_run.head_branch, 'chat/'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

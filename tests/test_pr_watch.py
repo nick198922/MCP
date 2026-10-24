@@ -1,8 +1,11 @@
 """The stuck pull request watch in scripts/pr_watch.py (a fake GitHub, no network)."""
 
+import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
@@ -117,3 +120,100 @@ def test_fresh_green_and_foreign_prs_are_quiet():
     prs = [pr(), pr(number=2, ref="dependabot/x", updated="2026-10-01T00:00:00Z")]
     msgs, state = pw.watch(fake(prs, runs), "o/r", {}, NOW)
     assert msgs == [] and list(state) == ["1"]
+
+
+def hunk(ours, base, theirs):
+    return f"<<<<<<< HEAD\n{ours}||||||| base\n{base}=======\n{theirs}>>>>>>> origin/main\n"
+
+
+def test_union_resolve_keeps_mains_rows_then_the_branchs():
+    text = "| a |\n" + hunk("| branch |\n", "", "| main |\n") + "end\n"
+    assert pw.union_resolve(text) == "| a |\n| main |\n| branch |\nend\n"
+
+
+def test_union_resolve_refuses_edits_of_the_same_lines_and_files_without_hunks():
+    assert pw.union_resolve("x\n" + hunk("new A\n", "old\n", "new B\n")) is None
+    assert pw.union_resolve("no conflict\n") is None
+    assert pw.union_resolve("<<<<<<< HEAD\nhalf\n") is None
+
+
+def test_is_docs():
+    assert pw.is_docs("docs/library/README.md") and pw.is_docs("CHANGELOG.md")
+    assert not pw.is_docs("scripts/x.py") and not pw.is_docs("src/tradedesk/README.md")
+
+
+def dirty(prs):
+    base = fake(prs)
+
+    def call(method, path, body):
+        status, data = base(method, path, body)
+        if method == "GET" and "/pulls/" in path and "/files" not in path:
+            data = {**data, "mergeable_state": "dirty"}
+        return status, data
+
+    return call
+
+
+def test_a_ready_dirty_pr_gets_main_merged_in_and_waits_for_ci():
+    seen = []
+    msgs, state = pw.watch(dirty([pr(ready=True)]), "o/r", {}, NOW, fix=lambda ref: seen.append(ref) or ("fixed", ["docs/a.md"]))
+    assert seen == ["agent/2026-10-20-x"] and msgs == []
+
+
+def test_a_conflict_outside_docs_is_told_once():
+    def fix(ref):
+        return "blocked", ["не документація: scripts/x.py"]
+
+    msgs, state = pw.watch(dirty([pr(ready=True)]), "o/r", {}, NOW, fix=fix)
+    assert len(msgs) == 1 and "Конфлікт з main" in msgs[0][0] and "scripts/x.py" in msgs[0][0]
+    again, _ = pw.watch(dirty([pr(ready=True)]), "o/r", state, NOW, fix=fix)
+    assert again == []
+
+
+def test_a_dirty_pr_not_marked_ready_is_left_to_its_author():
+    msgs, _ = pw.watch(dirty([pr()]), "o/r", {}, NOW, fix=lambda ref: pytest.fail("not ready: no fix"))
+    assert msgs == []
+
+
+def sh(*args, cwd):
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+
+def test_merge_main_resolves_additive_docs_conflicts_and_pushes(tmp_path, monkeypatch):
+    origin, work = tmp_path / "origin.git", tmp_path / "work"
+    sh("init", "-q", "--bare", "-b", "main", str(origin), cwd=tmp_path)
+    sh("clone", "-q", str(origin), str(work), cwd=tmp_path)
+    for k, v in (("user.name", "t"), ("user.email", "t@x")):
+        sh("config", k, v, cwd=work)
+    (work / "docs").mkdir()
+    (work / "docs" / "t.md").write_text("| h |\n")
+    (work / "x.py").write_text("a = 1\n")
+    sh("add", ".", cwd=work)
+    sh("commit", "-qm", "base", cwd=work)
+    sh("push", "-q", "origin", "main", cwd=work)
+    sh("checkout", "-qb", "agent/x", cwd=work)
+    (work / "docs" / "t.md").write_text("| h |\n| branch |\n")
+    sh("commit", "-qam", "branch row", cwd=work)
+    sh("push", "-q", "origin", "agent/x", cwd=work)
+    sh("checkout", "-q", "main", cwd=work)
+    (work / "docs" / "t.md").write_text("| h |\n| main |\n")
+    sh("commit", "-qam", "main row", cwd=work)
+    sh("push", "-q", "origin", "main", cwd=work)
+    monkeypatch.setattr(pw, "REPO_DIR", work)
+    monkeypatch.setattr(pw, "FIX_DIR", tmp_path / "fix")
+    assert pw.merge_main("agent/x") == ("fixed", ["docs/t.md"])
+    shown = subprocess.run(["git", "show", "agent/x:docs/t.md"], cwd=origin, capture_output=True, text=True, check=True)
+    assert shown.stdout == "| h |\n| main |\n| branch |\n"
+    # a code conflict is not touched: the branch on origin stays where it was
+    sh("checkout", "-q", "agent/x", cwd=work)
+    sh("pull", "-q", "--no-rebase", "origin", "agent/x", cwd=work)
+    (work / "x.py").write_text("a = 2\n")
+    sh("commit", "-qam", "branch code", cwd=work)
+    sh("push", "-q", "origin", "agent/x", cwd=work)
+    sh("checkout", "-q", "main", cwd=work)
+    (work / "x.py").write_text("a = 3\n")
+    sh("commit", "-qam", "main code", cwd=work)
+    sh("push", "-q", "origin", "main", cwd=work)
+    before = subprocess.run(["git", "rev-parse", "agent/x"], cwd=origin, capture_output=True, text=True).stdout
+    assert pw.merge_main("agent/x") == ("blocked", ["не документація: x.py"])
+    assert subprocess.run(["git", "rev-parse", "agent/x"], cwd=origin, capture_output=True, text=True).stdout == before

@@ -1,0 +1,4 @@
+- Картка `tradfi-perp-offhours-reopen`: крок 0 → `inconclusive` (ворота G2 не пройдено: MDE 0.150 % > 0.10 %, SD цільової 2.89 % замість 0.45 %); середні не рахувались.
+- Знахідка: індекс TradFi-перпів Binance у будні вночі не заморожений (нахил 0.02–0.27; у вихідні 0.69–0.89), тож передумова H1 не підтверджується.
+- Додано `analytics/tradfi_offhours.py`, `scripts/verify_tradfi_offhours_reopen.py`, 34 тести; звіт `docs/verification/2026-10-24-tradfi-perp-offhours-reopen.md`.
+- BACKLOG: збір bid/ask колектором з раннім «вбити» за витратами через 20 торгових днів.

@@ -55,7 +55,7 @@
 ## Фаза 3 — правила, стратегії, бектест
 
 - [ ] **Сито стратегій** (картка [strategy-sieve](ideas/IDEA-20261024-strategy-sieve.md), пріоритет власника 24.10).
-  - ◐ 24.10, крок 1 (розробник; виправлено за рев'ю критика C — Б1–Б7 і П1, П2, П5, П6; чекає повторного рев'ю): `analytics/strategy_sieve.py`, `analytics/sieve_specs/`, `scripts/sieve.py`, реєстр `docs/sieve/registry.csv` (2 рядки: S3 «ні», Donchian «замало угод»), нотатка `docs/sieve/README.md`.
+  - ◐ 24.10, крок 1 (розробник; виправлено за рев'ю критика C — Б1–Б7 і П1, П2, П5, П6; за повторним рев'ю — Р1, Р2, Н2, Н3; чекає третього рев'ю): `analytics/strategy_sieve.py`, `analytics/sieve_specs/`, `scripts/sieve.py`, реєстр `docs/sieve/registry.csv` (2 рядки: S3 «ні», Donchian «замало угод»), нотатка `docs/sieve/README.md`.
   - «Сигнал − плацебо» входить в умову проходу (рекомендація критика, власник делегував).
   - Далі:
     - (крок 2) агент-збирач — робить Claude;

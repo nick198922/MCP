@@ -14,8 +14,13 @@ included) come from the step-1 cache (``--s1-cache``), listings and funding from
 Every full-universe run is appended to the canonical registry (there is no option to skip it or to use another file);
 the pass bar uses Holm over all its rows with at least 100 tests. The hidden period (>= 2026-03-01) is simulated and
 shown only when the run passes IS and OOS and the strategy (its NAME or its spec content hash) has not opened it
-before; the reveal is recorded in the same row. ``--limit N`` (at most 10 symbols) prints only signal and trade
-counts and the causality check: no E[R], no CI, no verdict, no registry row.
+before; the reveal is recorded in the same row. Everything is computed before the row is written and the report is
+printed after it. The bootstrap size is ``strategy_sieve.N_BOOT`` (no option: it is covered by ``code_hash``).
+``--limit N`` (at most 10 symbols) prints only signal and trade counts and the causality check: no E[R], no CI, no
+verdict, no registry row.
+
+Causality is checked in every worker, on every symbol and timeframe: stamps and entries of all signals, up to 13
+signal times re-decided on the bars closing up to them, two cuts. A spec without a single checked signal is refused.
 """
 
 from __future__ import annotations
@@ -63,7 +68,6 @@ from tradedesk.analytics.strategy_sieve import (  # noqa: E402
     p_threshold,
     revealed_before,
     simulate_signals,
-    stamp_violations,
     summarize,
     symbol_seed,
     verdict,
@@ -114,7 +118,8 @@ COLUMNS = [
     "lo_hidden",
     "hi_hidden",
 ]
-CAUSALITY_SYMBOL = "BTCUSDT"
+# causality check per symbol and timeframe: signal times re-decided on a prefix (random sample + the last ones)
+CHECK_SAMPLE, CHECK_LAST = 10, 3
 # the files a result depends on besides the spec: their hash makes a row verifiable against the merged commit
 CODE_FILES = (
     "src/tradedesk/analytics/strategy_sieve.py",
@@ -215,7 +220,7 @@ def run_symbol(args: tuple[str, str, dict[str, Any], str, str, str, bool]) -> di
         h1 = cut_hidden(h1)  # no hidden-period price reaches a trade either (it ends at the data end)
     end = s1.END_MS if include_hidden else HIDDEN_MS
     pairs = []
-    n_sig = 0
+    n_sig = n_checked = 0
     bad: list[str] = []
     for hours in spec.TIMEFRAMES:
         tb = tf_bars(h1, int(hours), include_hidden)
@@ -223,7 +228,12 @@ def run_symbol(args: tuple[str, str, dict[str, Any], str, str, str, bool]) -> di
             continue
         sigs = spec.signals(tb, **params)
         n_sig += len(sigs)
-        bad += stamp_violations(tb, sigs)
+        # on every symbol and timeframe (rare signals may never occur on one liquid symbol): stamps and entries of all
+        # signals, a sample of signal times re-decided on the bars closing up to them, and two cuts
+        m = len(tb)
+        cuts = (m // 2, int(m * 0.97))
+        bad += [f"{hours}h: {b}" for b in causality_violations(spec.signals, tb, params, cuts, n_sample=CHECK_SAMPLE, n_last=CHECK_LAST)]
+        n_checked += min(len({sg.t_ms for sg in sigs}), CHECK_SAMPLE + CHECK_LAST)
         pairs += [(tb.bar_ms, sg) for sg in sigs]
     trades = simulate_signals(
         h1,
@@ -236,6 +246,7 @@ def run_symbol(args: tuple[str, str, dict[str, Any], str, str, str, bool]) -> di
     return {
         "sym": s,
         "signals": n_sig,
+        "checked": n_checked,
         "bad": [f"{s}: {b}" for b in bad[:3]],
         "n_bad": len(bad),
         "trades": [{"sym": s, **asdict(t)} for t in trades],
@@ -248,19 +259,27 @@ def run_all(
     jobs = [(s, spec_name, params, management, str(a.s1_cache), str(a.data_dir), include_hidden) for s in syms]
     rows: list[dict[str, Any]] = []
     bad: list[str] = []
-    n_bad = 0
+    n_bad = n_sig = n_checked = 0
     t0 = time.time()
-    n_sig = 0
-    with Pool(a.workers) as pool:
-        for k, r in enumerate(pool.imap_unordered(run_symbol, jobs), 1):
-            rows += r["trades"]
+
+    def consume(results: Any) -> None:
+        nonlocal n_bad, n_sig, n_checked
+        for k, r in enumerate(results, 1):
+            rows.extend(r["trades"])
             n_sig += r["signals"]
-            bad += r["bad"]
+            n_checked += r["checked"]
+            bad.extend(r["bad"])
             n_bad += r["n_bad"]
             if k % 50 == 0 or k == len(jobs):
                 emit(f"  {k}/{len(jobs)} symbols, {time.time() - t0:.0f}s, signals {n_sig}, trades {len(rows)}")
+
+    if a.workers <= 1:
+        consume(map(run_symbol, jobs))  # in-process (tests, debugging)
+    else:
+        with Pool(a.workers) as pool:
+            consume(pool.imap_unordered(run_symbol, jobs))
     rows.sort(key=lambda r: (r["t_ms"], r["sym"]))
-    return {"rows": rows, "signals": n_sig, "bad": bad, "n_bad": n_bad}
+    return {"rows": rows, "signals": n_sig, "checked": n_checked, "bad": bad, "n_bad": n_bad}
 
 
 # ---------------------------------------------------------------- report helpers
@@ -344,7 +363,6 @@ def main() -> int:
     ap.add_argument("--out", type=Path, help="also write the printed report to this file")
     ap.add_argument("--limit", type=int, help=f"first N <= {LIMIT_MAX} symbols: counts and causality only, no result, no registry")
     ap.add_argument("--workers", type=int, default=4)
-    ap.add_argument("--n-boot", type=int, default=N_BOOT)
     ap.add_argument("--s1-cache", type=Path, default=Path.home() / ".cache/tradedesk-agents/course_s14_ema")
     ap.add_argument("--data-dir", type=Path, default=Path.home() / ".cache/tradedesk-agents/funding_crowding")
     a = ap.parse_args()
@@ -386,23 +404,22 @@ def run(a: argparse.Namespace, spec: Any, params: dict[str, Any], management: st
         f"+ 0.02 % проковзування; фандинг за історією Binance, без історії — стрес {FUND_8H:.2%} / 8 год проти позиції), не на капітал"
     )
 
-    # causality self-check on one liquid symbol, every timeframe: stamps and entries, every signal (or a sample), cuts
-    h1 = cut_hidden(s1.load_1h(a.s1_cache, a.data_dir, CAUSALITY_SYMBOL))
-    for hours in spec.TIMEFRAMES:
-        tb = tf_bars(h1, int(hours), include_hidden=False)
-        m = len(tb)
-        cuts = sorted({int(m * f) for f in (0.2, 0.4, 0.6, 0.8, 0.97)})
-        bad = causality_violations(spec.signals, tb, params, cuts)
-        if bad:
-            return refuse(f"сигнали залежать від майбутніх барів або вхід не на закритті ({CAUSALITY_SYMBOL} {hours}h)", bad, len(bad))
-    emit(f"- причинність: {CAUSALITY_SYMBOL}, {len(spec.TIMEFRAMES)} тф: кожен сигнал (до 220) і 5 зрізів, порушень немає")
-
     syms = sorted({x for v in s1.members(a.s1_cache).values() for x in v})
     if a.limit:
         syms = syms[: a.limit]
+    # causality runs inside every worker, on every symbol and timeframe (run_symbol)
     res = run_all(syms, a.spec, params, management, a, include_hidden=False)
     if res["n_bad"]:
-        return refuse("сигнал не на закритті бару або вхід не за ціною закриття", res["bad"], res["n_bad"])
+        return refuse(
+            "сигнали залежать від майбутніх барів, штамп не на закритті бару або вхід не за ціною закриття", res["bad"], res["n_bad"]
+        )
+    if res["checked"] == 0:
+        return refuse("причинність не перевірено: специфікація не дала жодного сигналу на жодному символі", [f"символів {len(syms)}"])
+    emit(
+        f"- причинність: {len(syms)} символів × {len(spec.TIMEFRAMES)} тф; перевірено {res['checked']} моментів сигналів "
+        f"(до {CHECK_SAMPLE + CHECK_LAST} на символ і тф, кожен заново на барах до нього), 2 зрізи на ряд, штампи й входи "
+        f"всіх {res['signals']} сигналів; порушень немає"
+    )
     rows = res["rows"]
     if any(r["period"] == "hidden" for r in rows):
         raise SystemExit("internal error: hidden-period trade in a non-reveal run")
@@ -413,14 +430,19 @@ def run(a: argparse.Namespace, spec: Any, params: dict[str, Any], management: st
         emit("- результат (E[R], CI, вердикт) у прогоні з --limit не показується; у реєстр не записано")
         return 0
 
+    # everything (the hidden period included) is computed first, then the registry row is written, then the report is
+    # printed: a crash in between shows nothing rather than a result without a row
+    nb = N_BOOT  # fixed by the code (code_hash), so registry rows are comparable
+    report: list[str] = []
+    say = report.append
     IS = [r for r in rows if r["period"] == "is"]
     OOS = [r for r in rows if r["period"] == "oos"]
-    s_is, s_oos = summ(IS, n_boot=a.n_boot), summ(OOS, n_boot=a.n_boot)
-    p_is, p_oos = summ(IS, "placebo_r", a.n_boot), summ(OOS, "placebo_r", a.n_boot)
+    s_is, s_oos = summ(IS, n_boot=nb), summ(OOS, n_boot=nb)
+    p_is, p_oos = summ(IS, "placebo_r", nb), summ(OOS, "placebo_r", nb)
     vs: dict[str, Summary] = {}
     for lab, part in (("IS", IS), ("OOS", OOS)):
         d = paired(part, "r_net", "placebo_r")
-        vs[lab] = summarize([x["d"] for x in d], [x["day"] for x in d], n_boot=a.n_boot)
+        vs[lab] = summarize([x["d"] for x in d], [x["day"] for x in d], n_boot=nb)
 
     registry = DEFAULT_REGISTRY
     reg = read_registry(registry)
@@ -430,53 +452,53 @@ def run(a: argparse.Namespace, spec: Any, params: dict[str, Any], management: st
     p_holm = holm_with_registry(p_test, [to_float(r.get("p_test", "")) for r in reg])
     outcome = verdict(s_is, s_oos, vs["IS"], vs["OOS"], p_holm, n_eff=n_eff)
 
-    emit(f"\n## Результат ({len(syms)} символів, сигналів {res['signals']}, угод {len(rows)})")
-    emit("| вибірка | n | дат | E[R] net [95 % CI] | R > 0 | p (E>0) | MDE 80 % (N=100) |")
-    emit("|---|---|---|---|---|---|---|")
-    emit(row_line("IS", s_is))
-    emit(row_line("OOS", s_oos))
-    emit(row_line(f"плацебо IS (середнє {PLACEBO_K} входів)", p_is))
-    emit(row_line(f"плацебо OOS (середнє {PLACEBO_K} входів)", p_oos))
-    emit(row_line("сигнал − плацебо IS", vs["IS"]))
-    emit(row_line("сигнал − плацебо OOS", vs["OOS"]))
-    s_stress = summ(IS, "r_stress", a.n_boot)
-    emit(row_line("довідково: стрес IS (тейкер-вхід, витрати × 2)", s_stress))
-    emit(row_line("довідково: стрес OOS (тейкер-вхід, витрати × 2)", summ(OOS, "r_stress", a.n_boot)))
+    say(f"\n## Результат ({len(syms)} символів, сигналів {res['signals']}, угод {len(rows)})")
+    say("| вибірка | n | дат | E[R] net [95 % CI] | R > 0 | p (E>0) | MDE 80 % (N=100) |")
+    say("|---|---|---|---|---|---|---|")
+    say(row_line("IS", s_is))
+    say(row_line("OOS", s_oos))
+    say(row_line(f"плацебо IS (середнє {PLACEBO_K} входів)", p_is))
+    say(row_line(f"плацебо OOS (середнє {PLACEBO_K} входів)", p_oos))
+    say(row_line("сигнал − плацебо IS", vs["IS"]))
+    say(row_line("сигнал − плацебо OOS", vs["OOS"]))
+    s_stress = summ(IS, "r_stress", nb)
+    say(row_line("довідково: стрес IS (тейкер-вхід, витрати × 2)", s_stress))
+    say(row_line("довідково: стрес OOS (тейкер-вхід, витрати × 2)", summ(OOS, "r_stress", nb)))
     nofund = [{**r, "r_nofund": r["r_net"] + r["fund_r"]} for r in IS]
-    emit(row_line("довідково: IS без фандингу", summ(nofund, "r_nofund", a.n_boot)))
+    say(row_line("довідково: IS без фандингу", summ(nofund, "r_nofund", nb)))
     other = "B" if management == "strategy" else "strategy"
-    emit(row_line(f"довідково: ведення {other}, IS", summ(IS, "r_alt", a.n_boot)))
-    emit(row_line(f"довідково: ведення {other}, OOS", summ(OOS, "r_alt", a.n_boot)))
+    say(row_line(f"довідково: ведення {other}, IS", summ(IS, "r_alt", nb)))
+    say(row_line(f"довідково: ведення {other}, OOS", summ(OOS, "r_alt", nb)))
     for key, vals in (("side", ("long", "short")), ("tf_ms", sorted({r["tf_ms"] for r in rows}))):
         for v in vals:
             part = [r for r in IS if r[key] == v]
             if part:
                 lab = v if key == "side" else f"{int(v) // HOUR_MS}h"
-                emit(row_line(f"IS, {lab}", summ(part, n_boot=min(a.n_boot, 2000))))
-    emit(f"\nвиходи (IS+OOS): {dict(sorted(Counter(r['exit_kind'] for r in rows).items()))}")
+                say(row_line(f"IS, {lab}", summ(part, n_boot=min(nb, 2000))))
+    say(f"\nвиходи (IS+OOS): {dict(sorted(Counter(r['exit_kind'] for r in rows).items()))}")
     if rows:
         src = Counter(r["fund_src"] for r in rows)
-        emit(
+        say(
             f"медіана стопу {np.median([r['stop_frac'] for r in rows]):.2%} ціни; середні витрати {np.mean([r['cost_r'] for r in rows]):.3f}R; "
             f"середній фандинг {np.mean([r['fund_r'] for r in rows]):+.3f}R (історія {src.get('actual', 0)}, стрес {src.get('flat', 0)} угод); "
             f"медіана холду {np.median([(r['exit_ms'] - r['t_ms']) / HOUR_MS for r in rows]):.0f} год"
         )
 
     mde = mde_z(n_eff) * s_is.se if math.isfinite(s_is.se) else math.inf
-    emit("\n## Вердикт")
-    emit(
+    say("\n## Вердикт")
+    say(
         f"- множинність: Holm над {n_reg} прогонами реєстру (з цим), рахується N_eff = max({n_reg}, {N_PLAN}) = {n_eff}; "
         f"p IS = max(p E[R] {s_is.p:.3g}, p сигнал − плацебо {vs['IS'].p:.3g}) = {p_test:.3g} → Holm {p_holm:.3g}; "
-        f"найсуворіший крок α/N_eff = {p_threshold(n_reg):.2g}"
+        f"найсуворіший крок α/N_eff = {p_threshold(n_reg):.2g}; бутстреп {nb} повторів"
     )
-    emit(
+    say(
         f"- умови: E[R] IS ≥ +{MIN_EFFECT}R ({s_is.mean:+.3f}), CI IS > 0 ({s_is.lo:+.3f}), CI сигнал − плацебо IS > 0 "
         f"({vs['IS'].lo:+.3f}), Holm p < 0.05 ({p_holm:.3g}), OOS > 0 ({s_oos.mean:+.3f}), сигнал − плацебо OOS > 0 "
         f"({vs['OOS'].mean:+.3f}); MDE IS при N_eff {mde:.3f}R"
     )
-    emit(f"- **{outcome}**")
+    say(f"- **{outcome}**")
     if outcome == PASS and not (math.isfinite(s_stress.mean) and s_stress.mean > 0):
-        emit("- УВАГА: у стресі (тейкер-вхід, витрати × 2) E[R] IS ≤ 0; на демо перевага може зникнути на витратах")
+        say("- УВАГА: у стресі (тейкер-вхід, витрати × 2) E[R] IS ≤ 0; на демо перевага може зникнути на витратах")
 
     row: dict[str, Any] = {
         "run_id": f"{now:%Y%m%dT%H%M%SZ}-{spec.NAME}",
@@ -520,19 +542,21 @@ def run(a: argparse.Namespace, spec: Any, params: dict[str, Any], management: st
     if outcome == PASS:
         prev = revealed_before(reg, spec.NAME, spec.SIEVE_HASH)
         if prev is not None:
-            emit(f"- приховане вже відкрито прогоном {prev.get('run_id')} ({prev.get('date')}); повторно не показується")
+            say(f"- приховане вже відкрито прогоном {prev.get('run_id')} ({prev.get('date')}); повторно не показується")
         else:
-            emit("\n## Приховане (≥ 2026-03-01), відкрито один раз")
             full = run_all(syms, a.spec, params, management, a, include_hidden=True)["rows"]
             H = [r for r in full if r["period"] == "hidden"]
-            s_h = summ(H, n_boot=a.n_boot)
-            emit("| вибірка | n | дат | E[R] net [95 % CI] | R > 0 | p (E>0) | MDE 80 % (N=100) |")
-            emit("|---|---|---|---|---|---|---|")
-            emit(row_line("приховане", s_h))
-            emit(row_line("плацебо приховане", summ(H, "placebo_r", a.n_boot)))
-            emit(f"- той самий знак у прихованому: {'так' if s_h.n and s_h.mean > 0 else 'ні'}")
+            s_h = summ(H, n_boot=nb)
+            say("\n## Приховане (≥ 2026-03-01), відкрито один раз")
+            say("| вибірка | n | дат | E[R] net [95 % CI] | R > 0 | p (E>0) | MDE 80 % (N=100) |")
+            say("|---|---|---|---|---|---|---|")
+            say(row_line("приховане", s_h))
+            say(row_line("плацебо приховане", summ(H, "placebo_r", nb)))
+            say(f"- той самий знак у прихованому: {'так' if s_h.n and s_h.mean > 0 else 'ні'}")
             row.update(revealed=1, n_hidden=s_h.n, mean_hidden=s_h.mean, lo_hidden=s_h.lo, hi_hidden=s_h.hi)
     append_registry(registry, row)
+    for line in report:
+        emit(line)
     emit(f"\nзаписано в реєстр: {registry.relative_to(ROOT) if registry.is_relative_to(ROOT) else registry} (рядок {n_reg})")
     return 0
 

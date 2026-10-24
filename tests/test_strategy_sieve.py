@@ -267,10 +267,42 @@ def test_every_package_spec_passes_the_allow_list_and_names_itself():
         "x = {}['__builtins__']",
         "x = globals()",
         "def f():\n    global y\n    y = 1",
+        # critic's re-review probes: stdlib modules held by numpy submodules, dunder names built from strings
+        "import numpy as np\ndef f():\n    return 0\ng = np.ma.core.operator.attrgetter('_' * 2 + 'globals' + '_' * 2)(f)",
+        "import numpy as np\ndef f():\n    return 0\ng = np.ma.core.inspect.getattr_static(f, 'x')",
+        "import numpy as np\ndef f():\n    return 0\ng = np.ma.core.inspect.get_annotations(f, eval_str=True)",
+        "import numpy as np\nx = np.char.functools",
+        "import numpy as np\nx = np.random.mtrand",
+        # a module only as the root of a resolved chain: no aliasing, passing, rebinding or monkeypatching
+        "import numpy as np\nm = np\nx = m.ma",
+        "import numpy as np\nx = [np][0].ma",
+        "import numpy as np\nr = np.random",
+        "import numpy as np\ndef f(np):\n    return np.ma",
+        "import numpy as np\nnp.mean = len",
+        # stdlib names re-exported by our modules, other specs
+        "from tradedesk.analytics.strategy_sieve import dataclass",
+        "import tradedesk.analytics.strategy_sieve as ss\nx = ss.dataclass",
+        "from tradedesk.analytics.sieve_specs.donchian_breakout import signals",
+        # string-built attribute access
+        "x = '{0.a}'.format(1)",
+        "x = '{0.__class__}'",
+        "x = type(1)",
     ],
 )
 def test_allow_list_refuses_unsafe_spec_code(src):
     assert sieve_specs.check_source(src), src
+
+
+def test_allow_list_resolves_chains_to_the_module_that_holds_them():
+    """The probe is refused at the first link outside the allowed modules, not only by the banned attribute name."""
+    bad = sieve_specs.check_source("import numpy as np\nx = np.ma.core.operator.itemgetter(0)")
+    assert bad and "np.ma reaches the module numpy.ma" in " ".join(bad)
+    ok = (
+        "import math\nimport numpy as np\nimport numpy.random as npr\n"
+        "x = np.random.default_rng(1).normal() + np.linalg.norm(np.ones(2)) + math.sqrt(2) + np.pi\n"
+        "y = np.ndarray.mean\nz = npr.default_rng\n"
+    )
+    assert sieve_specs.check_source(ok) == []
 
 
 def test_allow_list_accepts_plain_spec_code():
@@ -550,19 +582,28 @@ def fake_runner(tmp_path, monkeypatch):
     """The runner without market data: a passing fake strategy, the registry in tmp (as if canonical)."""
     sieve = _runner()
     calls: list[bool] = []
-    state = {"n_bad": 0}
+    state = {"n_bad": 0, "checked": 40, "run_all": sieve.run_all, "fail_hidden": False}
 
     def fake_run_all(syms, spec_name, params, management, a, include_hidden):
         calls.append(include_hidden)
+        if include_hidden and state["fail_hidden"]:
+            raise MemoryError("hidden-period run died")
         rows = _fake_rows(include_hidden)
-        return {"rows": rows, "signals": len(rows), "bad": ["AAAUSDT: bad stamp"] * min(3, state["n_bad"]), "n_bad": state["n_bad"]}
+        return {
+            "rows": rows,
+            "signals": len(rows),
+            "checked": state["checked"],
+            "bad": ["AAAUSDT: bad stamp"] * min(3, state["n_bad"]),
+            "n_bad": state["n_bad"],
+        }
 
     monkeypatch.setattr(sieve, "run_all", fake_run_all)
+    monkeypatch.setattr(sieve, "N_BOOT", 500)  # the bootstrap size of a full run (no CLI option)
     monkeypatch.setattr(sieve.s1, "load_1h", lambda c, d, s: random_walk(24 * 300, seed=3))
     monkeypatch.setattr(sieve.s1, "members", lambda c: {"2020-02": ["AAAUSDT"]})
     monkeypatch.setattr(sieve, "DEFAULT_REGISTRY", tmp_path / "registry.csv")
     out = tmp_path / "report.md"
-    base = ["sieve.py", "s3_range_sweep", "--n-boot", "500", "--out", str(out)]
+    base = ["sieve.py", "s3_range_sweep", "--out", str(out)]
     return sieve, calls, state, base, out
 
 
@@ -585,7 +626,9 @@ def test_runner_reveals_the_hidden_period_once_and_records_it(fake_runner, monke
     assert "вже відкрито" in out.read_text()
 
 
-@pytest.mark.parametrize("extra", [["--no-register"], ["--registry", "/tmp/empty.csv"], ["--limit", "11"], ["--limit", "0"]])
+@pytest.mark.parametrize(
+    "extra", [["--no-register"], ["--registry", "/tmp/empty.csv"], ["--limit", "11"], ["--limit", "0"], ["--n-boot", "50"]]
+)
 def test_runner_has_no_way_around_the_registry(fake_runner, monkeypatch, extra):
     sieve, calls, _, base, _ = fake_runner
     monkeypatch.setattr(sys, "argv", [*base, *extra])
@@ -610,6 +653,70 @@ def test_runner_refuses_a_spec_with_bad_stamps(fake_runner, monkeypatch):
     assert sieve.main() == 2
     assert calls == [False] and not sieve.DEFAULT_REGISTRY.exists()
     assert "ВІДХИЛЕНО" in out.read_text() and "E[R] net" not in out.read_text()
+
+
+def test_runner_refuses_a_spec_with_no_checked_signal(fake_runner, monkeypatch):
+    sieve, calls, state, base, out = fake_runner
+    state["checked"] = 0
+    monkeypatch.setattr(sys, "argv", base)
+    assert sieve.main() == 2
+    assert calls == [False] and not sieve.DEFAULT_REGISTRY.exists()
+    assert "причинність не перевірено" in out.read_text() and "E[R] net" not in out.read_text()
+
+
+def test_runner_prints_nothing_and_records_nothing_when_the_hidden_run_fails(fake_runner, monkeypatch):
+    """N3: the result is shown only after its registry row is written."""
+    sieve, calls, state, base, out = fake_runner
+    state["fail_hidden"] = True
+    monkeypatch.setattr(sys, "argv", base)
+    with pytest.raises(MemoryError):
+        sieve.main()
+    assert calls == [False, True] and not sieve.DEFAULT_REGISTRY.exists()
+    assert "E[R] net" not in out.read_text() and PASS not in out.read_text()
+
+
+def _two_symbol_market(monkeypatch, sieve, quiet: str):
+    """``quiet`` gets a calm walk (no 2 % 4h move: the back-dated spec gives it no signal), the other a lively one."""
+    monkeypatch.setattr(sieve.s1, "load_1h", lambda c, d, s: random_walk(24 * 300, seed=5, vol=0.0003 if s == quiet else 0.006))
+    monkeypatch.setattr(sieve.s1, "members", lambda c: {"2020-02": ["AAAUSDT", quiet]})
+
+
+def test_runner_checks_causality_on_every_symbol(fake_runner, monkeypatch, tmp_path):
+    """R2: a back-dated spec that gives no signal on BTCUSDT (where the old runner checked causality) is refused,
+    through the real per-symbol workers."""
+    sieve, _, state, _, out = fake_runner
+    monkeypatch.setattr(sieve, "run_all", state["run_all"])
+    _two_symbol_market(monkeypatch, sieve, "BTCUSDT")
+    spec = argparse.Namespace(
+        NAME="backdated_probe", SOURCE="test", TIMEFRAMES=(4,), MANAGEMENT="strategy", PARAMS={}, signals=backdated, SIEVE_HASH="0" * 12
+    )
+    monkeypatch.setattr(sieve.sieve_specs, "load", lambda name: spec)
+    assert backdated(resample(sieve.s1.load_1h(None, None, "BTCUSDT"), 4)) == []
+    assert len(backdated(resample(sieve.s1.load_1h(None, None, "AAAUSDT"), 4))) > 20
+    argv = ["sieve.py", "backdated_probe", "--workers", "1", "--s1-cache", str(tmp_path), "--data-dir", str(tmp_path), "--out", str(out)]
+    monkeypatch.setattr(sys, "argv", argv)
+    assert sieve.main() == 2
+    text = out.read_text()
+    assert "ВІДХИЛЕНО" in text and "AAAUSDT: 4h: signal time" in text and "E[R] net" not in text
+    assert not sieve.DEFAULT_REGISTRY.exists()
+
+
+def test_runner_reports_the_number_of_checked_signals(fake_runner, monkeypatch, tmp_path):
+    """An honest spec through the real workers: not refused, and the report states how many signal times were
+    re-decided (up to 13 per symbol and timeframe)."""
+    sieve, _, state, _, out = fake_runner
+    monkeypatch.setattr(sieve, "run_all", state["run_all"])
+    _two_symbol_market(monkeypatch, sieve, "BTCUSDT")
+    argv = ["sieve.py", "donchian_breakout", "--limit", "2", "--workers", "1", "--s1-cache", str(tmp_path), "--data-dir", str(tmp_path)]
+    monkeypatch.setattr(sys, "argv", [*argv, "--out", str(out)])
+    assert sieve.main() == 0
+    text = out.read_text()
+    spec = sieve_specs.load("donchian_breakout")
+    want = 0
+    for s in ("AAAUSDT", "BTCUSDT"):
+        b = sieve.tf_bars(sieve.s1.load_1h(None, None, s), 24, include_hidden=False)
+        want += min(len({x.t_ms for x in spec.signals(b, **spec.PARAMS)}), sieve.CHECK_SAMPLE + sieve.CHECK_LAST)
+    assert want > 0 and f"перевірено {want} моментів сигналів" in text and "ВІДХИЛЕНО" not in text
 
 
 # ---------------------------------------------------------------- known result (local caches only)

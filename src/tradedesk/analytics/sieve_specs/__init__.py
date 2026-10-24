@@ -14,10 +14,23 @@ module defines:
   that fails the causality check.
 
 Specs are written by agents from untrusted text, so ``load`` parses the module before importing it and refuses
-anything outside a small allow-list (``check_source``): imports only from ``__future__``, ``math``, ``numpy`` and
-``tradedesk.analytics``; no ``open`` / ``eval`` / ``exec`` / ``getattr`` / ``globals`` / ``__import__``, no attribute
-starting with ``_``, no frame or code introspection, no numpy file I/O. The check is static and conservative, not a
-sandbox: the critic still reads every spec diff.
+anything outside a small allow-list (``check_source``):
+
+- imports only from ``__future__``, ``math``, ``numpy`` (``numpy.random``, ``numpy.linalg``) and
+  ``tradedesk.analytics.*`` (not other specs);
+- every imported name and every attribute chain rooted at one (``np.random.default_rng``) is resolved at check time
+  (``import_module`` + ``getattr``); each link must be one of the modules ``numpy``, ``numpy.random``,
+  ``numpy.linalg``, ``math``, ``tradedesk.analytics.*``, a function / class / value defined in them, or a plain
+  number / string / container. So ``np.ma.core.operator.attrgetter`` or a stdlib name re-exported by one of our
+  modules is refused;
+- a module is only the root of such a chain: never assigned, passed or returned (no aliasing past the check), and an
+  imported name is never rebound;
+- no ``open`` / ``eval`` / ``exec`` / ``getattr`` / ``globals`` / ``__import__`` / ``type`` / ``format``, no attribute
+  starting with ``_``, no ``.format`` (string-built attribute access), no string containing ``__``, no frame or code
+  introspection, no numpy file I/O.
+
+The check is static and conservative, not a sandbox: attributes of runtime values (``bars.c``) are only checked by
+name, and the critic still reads every spec diff.
 """
 
 from __future__ import annotations
@@ -30,11 +43,20 @@ from types import ModuleType
 
 _NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 REQUIRED = ("NAME", "SOURCE", "TIMEFRAMES", "MANAGEMENT", "PARAMS", "signals")
-ALLOWED_MODULES = ("__future__", "math", "numpy")
+ALLOWED_MODULES = ("__future__", "math", "numpy", "numpy.random", "numpy.linalg")
 ALLOWED_PREFIX = "tradedesk.analytics."
+# modules a spec may reach at run time (as import targets or along attribute chains)
+RUNTIME_MODULES = frozenset({"math", "numpy", "numpy.random", "numpy.linalg"})
+SPECS_PKG = __name__  # a spec never imports another spec (it would run before its own check)
+# values a link may be without an owning module (contents of containers are not inspected)
+PLAIN_TYPES = frozenset({int, float, complex, bool, str, bytes, type(None), tuple, frozenset, list, dict, set})
 BANNED_NAMES = frozenset(
     {
         "open",
+        "type",
+        "object",
+        "super",
+        "format",
         "eval",
         "exec",
         "compile",
@@ -107,28 +129,82 @@ BANNED_ATTRS = frozenset(
         "modules",
         "dump",
         "dumps",
+        # attribute access built from strings, and the stdlib helpers that do it
+        "format",
+        "format_map",
+        "attrgetter",
+        "methodcaller",
+        "getattr_static",
+        "get_annotations",
+        "test",  # numpy's pytest runner
     }
 )
 BANNED_ATTR_PREFIXES = ("_", "gi_", "cr_", "ag_", "f_", "tb_", "co_", "func_")
 
 
+def _under(mod: str, pkg: str) -> bool:
+    return mod == pkg or mod.startswith(pkg + ".")
+
+
+def _ours(mod: str) -> bool:
+    """A ``tradedesk.analytics`` module other than the spec package and the specs."""
+    return mod.startswith(ALLOWED_PREFIX) and not _under(mod, SPECS_PKG)
+
+
 def _module_ok(mod: str) -> bool:
-    return mod in ALLOWED_MODULES or mod.startswith(ALLOWED_PREFIX)
+    """An import statement's target."""
+    return mod in ALLOWED_MODULES or _ours(mod)
+
+
+def _owner_ok(mod: str) -> bool:
+    """The module a function, class or value reached by a spec is defined in: an allowed module or a private
+    implementation module of one (``numpy._core.fromnumeric``, ``numpy.random._generator``)."""
+    return mod in RUNTIME_MODULES or _ours(mod) or any(mod.startswith(m + "._") for m in RUNTIME_MODULES)
 
 
 def _attr_ok(name: str) -> bool:
     return name not in BANNED_ATTRS and not name.startswith(BANNED_ATTR_PREFIXES)
 
 
-def check_source(src: str) -> list[str]:
-    """Problems of a spec module source against the allow-list (empty = accepted). Imports of names from
-    ``tradedesk.analytics`` modules are resolved (our own pure modules): a name that is a module outside the package
-    (a re-exported ``io``, ``os`` ...) is refused."""
-    try:
-        tree = ast.parse(src)
-    except SyntaxError as e:
-        return [f"syntax error: {e}"]
-    bad: list[str] = []
+def _owner(obj: object, depth: int = 0) -> str:
+    """Name of the module that defines ``obj`` (method descriptors and bound builtins: their class or receiver)."""
+    m = getattr(obj, "__module__", None)
+    if isinstance(m, str):
+        return m
+    if depth < 3:
+        for a in ("__objclass__", "__self__"):
+            o = getattr(obj, a, None)
+            if o is not None and o is not obj:
+                return o.__name__ if isinstance(o, ModuleType) else _owner(o, depth + 1)
+    return type(obj).__module__
+
+
+def _link_problem(obj: object) -> str | None:
+    """Why a value reached statically by a spec is refused (None = allowed)."""
+    if isinstance(obj, ModuleType):
+        return None if obj.__name__ in RUNTIME_MODULES or _ours(obj.__name__) else f"the module {obj.__name__}"
+    if type(obj) in PLAIN_TYPES:
+        return None
+    owner = _owner(obj)
+    return None if _owner_ok(owner) else f"a {type(obj).__name__} from {owner}"
+
+
+def _chain(node: ast.Attribute) -> tuple[ast.expr, list[str]]:
+    """``a.b.c`` -> (Name a, ["b", "c"]); the root is whatever expression the chain hangs from."""
+    attrs: list[str] = []
+    cur: ast.expr = node
+    while isinstance(cur, ast.Attribute):
+        attrs.append(cur.attr)
+        cur = cur.value
+    return cur, attrs[::-1]
+
+
+_MISSING = object()
+
+
+def _imports(tree: ast.Module, bad: list[str]) -> dict[str, object]:
+    """Check the import statements and resolve what each binds (only allowed modules are imported here)."""
+    bound: dict[str, object] = {}
     for node in ast.walk(tree):
         line = getattr(node, "lineno", 0)
         if isinstance(node, ast.Import):
@@ -137,27 +213,105 @@ def check_source(src: str) -> list[str]:
                     bad.append(f"line {line}: import {a.name} is not allowed")
                 elif "." in a.name and not a.asname:
                     bad.append(f"line {line}: import {a.name} binds the top package; use 'import {a.name} as x'")
+                else:
+                    try:
+                        bound[a.asname or a.name] = import_module(a.name)
+                    except ImportError as e:
+                        bad.append(f"line {line}: import {a.name} fails: {e}")
         elif isinstance(node, ast.ImportFrom):
             mod = node.module or ""
             if node.level or not _module_ok(mod):
                 bad.append(f"line {line}: from {'.' * node.level}{mod} import is not allowed")
                 continue
+            if mod == "__future__":
+                continue
+            try:
+                m = import_module(mod)
+            except ImportError as e:
+                bad.append(f"line {line}: from {mod} import fails: {e}")
+                continue
             for a in node.names:
                 if a.name == "*" or not _attr_ok(a.name):
                     bad.append(f"line {line}: from {mod} import {a.name} is not allowed")
-                elif mod.startswith(ALLOWED_PREFIX):
-                    obj = getattr(import_module(mod), a.name, None)
-                    if isinstance(obj, ModuleType) and not obj.__name__.startswith(ALLOWED_PREFIX):
-                        bad.append(f"line {line}: from {mod} import {a.name} imports the module {obj.__name__}")
-        elif isinstance(node, ast.Name):
+                    continue
+                try:
+                    obj = getattr(m, a.name, _MISSING)
+                except Exception:
+                    obj = _MISSING
+                if obj is _MISSING:
+                    bad.append(f"line {line}: from {mod} import {a.name}: no such name")
+                    continue
+                p = _link_problem(obj)
+                if p:
+                    bad.append(f"line {line}: from {mod} import {a.name} reaches {p}")
+                else:
+                    bound[a.asname or a.name] = obj
+    return bound
+
+
+def check_source(src: str) -> list[str]:
+    """Problems of a spec module source against the allow-list (empty = accepted); see the module docstring. Allowed
+    modules are imported to resolve names and attribute chains (numpy, math and our own pure modules only)."""
+    try:
+        tree = ast.parse(src)
+    except SyntaxError as e:
+        return [f"syntax error: {e}"]
+    bad: list[str] = []
+    bound = _imports(tree, bad)
+    parent: dict[ast.AST, ast.AST] = {c: n for n in ast.walk(tree) for c in ast.iter_child_nodes(n)}
+
+    def chain_head(node: ast.expr) -> bool:  # node is the object of a longer attribute chain
+        p = parent.get(node)
+        return isinstance(p, ast.Attribute) and p.value is node
+
+    for node in ast.walk(tree):
+        line = getattr(node, "lineno", 0)
+        if isinstance(node, ast.Name):
             if node.id in BANNED_NAMES or node.id.startswith("__"):
                 bad.append(f"line {line}: name {node.id} is not allowed")
+            elif node.id in bound:
+                if not isinstance(node.ctx, ast.Load):
+                    bad.append(f"line {line}: the imported name {node.id} is rebound")
+                elif isinstance(bound[node.id], ModuleType) and not chain_head(node):
+                    bad.append(f"line {line}: the module {node.id} is used as a value (only 'module.name' is allowed)")
+        elif isinstance(node, ast.arg | ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef | ast.ExceptHandler):
+            name = node.arg if isinstance(node, ast.arg) else node.name
+            if name in bound:
+                bad.append(f"line {line}: the imported name {name} is rebound")
         elif isinstance(node, ast.Attribute):
             if not _attr_ok(node.attr):
                 bad.append(f"line {line}: attribute .{node.attr} is not allowed")
+            if chain_head(node):
+                continue  # the outermost chain resolves this part
+            root, attrs = _chain(node)
+            if not (isinstance(root, ast.Name) and root.id in bound):
+                continue  # a runtime value: its attributes are checked by name only
+            text = ".".join([root.id, *attrs])
+            if not isinstance(node.ctx, ast.Load):
+                bad.append(f"line {line}: {text} assigns to an imported object")
+                continue
+            obj = bound[root.id]
+            for k, at in enumerate(attrs):
+                if not _attr_ok(at):
+                    break  # reported above
+                try:
+                    obj = getattr(obj, at, _MISSING)
+                except Exception:  # a lazy module attribute that fails to import, a raising descriptor
+                    obj = _MISSING
+                where = ".".join([root.id, *attrs[: k + 1]])
+                if obj is _MISSING:
+                    bad.append(f"line {line}: {where} cannot be resolved")
+                    break
+                p = _link_problem(obj)
+                if p:
+                    bad.append(f"line {line}: {where} reaches {p}")
+                    break
+            else:
+                if isinstance(obj, ModuleType):
+                    bad.append(f"line {line}: the module {text} is used as a value (only 'module.name' is allowed)")
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
-            if node.value.startswith("__") and node.value.endswith("__") and len(node.value) > 4:
-                bad.append(f"line {line}: string {node.value!r} is not allowed")
+            if "__" in node.value:
+                bad.append(f"line {line}: a string containing '__' is not allowed: {node.value[:40]!r}")
         elif isinstance(node, ast.Global | ast.Nonlocal):
             bad.append(f"line {line}: global / nonlocal is not allowed")
     return bad

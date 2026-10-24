@@ -1,0 +1,9 @@
+[Unit]
+Description=tradedesk-copy-vaults-weekly (Sunday 20:45 Europe/Kyiv)
+
+[Timer]
+OnCalendar=Sun *-*-* 20:45:00 Europe/Kyiv
+Persistent=false
+
+[Install]
+WantedBy=timers.target

@@ -32,6 +32,11 @@ rule violations by ISO week (analytics.rules_check), and a summary of the assist
 (trade_plan: counts by verdict and status, the resolved 'enter' plans' R).
 Every string from the database is untrusted text and is escaped; no database or no table gives an empty state.
 
+The «Демо» tab (/demo) reads the demo trader's book (demo_trade) and its 'refused' / 'skipped' decisions (exec_audit)
+over a read-only connection: counts, R by setup with a t 95 % CI against 0 («замало для висновку» under 30 per setup),
+the latest trades and the refusals by reason. The «demo vs backtest» replay needs candles, so only its whereabouts
+(the weekly Telegram message) is shown. Symbols and reasons from the database are untrusted text and are escaped.
+
 The «Polymarket» tab (/polymarket) lists the CURRENT Polymarket <-> Deribit-options gaps of the latest pm_gap_snapshot
 that pass the paper test's registered entry filters (net edge >= 5 pp; a collapsed 3-5 pp table), with R:R and the size
 for a $100 risk: a hint for manual trades. It reads the store read-only and does not feed the paper test.
@@ -455,6 +460,7 @@ def _nav(active: str) -> str:
         ("/options", "options", "Опціони"),
         ("/radar", "radar", "Радар"),
         ("/journal", "journal", "Журнал"),
+        ("/demo", "demo", "Демо"),
         ("/polymarket", "polymarket", "Polymarket"),
     )
     return (
@@ -474,6 +480,8 @@ def _e(x: object) -> str:
 # Every tile and block of the assistant tabs gets an «i» icon: hover (desktop) or tap (phone) opens a short note —
 # what the number is, how to read it, what it means for a trade. Tiles whose number speaks for or against buying
 # options get a coloured edge and a one-line badge. All texts are ours (static), never data from the snapshot.
+
+DEMO_ENTRY_WAIT_MS = 10 * 60_000  # execution.orders.ENTRY_WAIT_MS (no execution import here; a test pins it)
 
 # key -> (title, what it is, how to read it, what it means for a trade)
 HELP: dict[str, tuple[str, str, str, str]] = {
@@ -1064,6 +1072,87 @@ HELP: dict[str, tuple[str, str, str, str]] = {
         "Відкриті питання з docs/QUESTIONS.md, на які агенти чекають твоєї відповіді.",
         "Поки питання відкрите, пов'язана робота може стояти.",
         "На угоди не впливає напряму; відповідь прискорює картки, від яких залежать нові інструменти.",
+    ),
+    # «Демо» tab (demo trader on the Bybit Demo Trading account, play money)
+    "demo": (
+        "Демо-угоди",
+        "Угоди демо-трейдера на демо-рахунку Bybit (ігрові гроші): сетапи S14, S16, S3, вхід зі стопом і ціллю, ризик ≈ $100.",
+        "Закриті, відкриті й невиконані входи, P&L і середній R усіх сетапів разом.",
+        "Це полігон для перевірки сетапів наживо, не твої реальні угоди; рішення — за R окремого сетапу на ≥ 30 угодах.",
+    ),
+    "demo_closed": (
+        "Закрито",
+        "Демо-угоди, що вже вийшли з позиції, і як саме: ціль, стоп, беззбиток або вихід за часом.",
+        "Багато виходів у беззбиток — правило беззбитку часто спрацьовує раніше за ціль.",
+        "Кількість закритих угод визначає, чи можна вже робити висновок про сетап (≥ 30).",
+    ),
+    "demo_open": (
+        "Відкрито",
+        "Позиції на демо зараз, разом з лімітними входами, що ще чекають заповнення, і рядками до відповіді біржі.",
+        f"«Чекають входу» — мейкер-ордер стоїть до {DEMO_ENTRY_WAIT_MS // 60_000} хв (переставляється щохвилини); далі решта йде "
+        "ринком, лише якщо ціна ще поруч із планом, інакше угода стане «вхід не заповнився».",
+        "Відкриті угоди ще не дають R: до підсумків вони не входять.",
+    ),
+    "demo_missed": (
+        "Не виконано",
+        "Сигнали, які демо-трейдер узяв, але позиції не відкрив: лімітний вхід не заповнився або біржа відхилила ордер.",
+        "Багато незаповнених входів — ціна йде без відкату, мейкер-вхід пропускає рух.",
+        "Такі сигнали в R не входять; їх звірка з тіньовими планами — наступний крок.",
+    ),
+    "demo_pnl": (
+        "P&L демо",
+        "Сума закритого P&L біржі за демо-угодами, USD, з комісіями. Гроші ігрові.",
+        "Залежить від розміру ризику на угоду; для порівняння сетапів дивись R, а не долари.",
+        "Позитивний P&L на малій вибірці — не доказ переваги.",
+    ),
+    "demo_r_all": (
+        "Середній R, усі сетапи",
+        "Середній результат закритих демо-угод у ризиках (P&L / ризик на стопі) і його 95 % довірчий інтервал.",
+        "ДІ містить 0 — переваги не видно; вище 0 — є ознака переваги, якщо угод ≥ 30.",
+        "Сетапи різні: висновок робити за кожним окремо, нижче.",
+    ),
+    "demo_setups": (
+        "R за сетапом",
+        "Для кожного сетапу демо (S14, S16, S3): закриті угоди, частка в плюсі, середній R і його 95 % ДІ проти 0.",
+        "Менше 30 угод з R — «замало для висновку»: числа описові.",
+        "Сетап із ДІ вище 0 на ≥ 30 угодах — кандидат на реальні гроші; з ДІ нижче 0 — кандидат на вимкнення.",
+    ),
+    "demo_setup": (
+        "Середній R сетапу",
+        "Середній R закритих демо-угод цього сетапу, t-інтервал 95 % середнього, частка в плюсі й P&L.",
+        "Жовта позначка «замало для висновку» — менше 30 угод з R.",
+        "Не збільшуй ризик на сетапі, доки його ДІ не стане вищим за 0 на достатній вибірці.",
+    ),
+    "demo_recent": (
+        "Останні демо-угоди",
+        "Двадцять останніх угод демо-трейдера (новіші за закриттям угори): дати сигналу й закриття (Київ), монета, сетап і "
+        "таймфрейм, сторона, стан, вихід, R і P&L.",
+        "Стан «чекає входу» — лімітний ордер ще стоїть; «вхід не заповнився» — його зняли без заповнення.",
+        "Опис, не рекомендація: це угоди автоматичного сканера на демо.",
+    ),
+    "demo_refusals": (
+        "Відмови guard за причинами",
+        "Сигнали, які демо-трейдер не відкрив, з журналу рішень exec_audit: відмова guard (ліміт чи правило) або не відібрано.",
+        "Найчастіші причини вгорі; «за 7 днів» — свіжі. Одне рішення може мати кілька причин.",
+        "Часті відмови за R:R або стопом — детектор дає сигнали, що не проходять правила ризику; варто дивитись сам сетап.",
+    ),
+    "demo_refused": (
+        "Відмов guard",
+        "Рішень «refused»: сигнал порушив правило guard (R:R, відстань стопу, позиція вже є, список монет) або не вдалось підготувати ордер.",
+        "Це запобіжники ризику: такий сигнал не міг стати угодою за жодних умов.",
+        "Не означає втрачену угоду: guard відсікає те, що поза правилами.",
+    ),
+    "demo_skipped": (
+        "Не відібрано",
+        "Рішень «skipped»: сигнал пройшов правила ризику guard, але мав низький бал, упирався в денні ліміти або поступився сильнішому.",
+        "Багато пропусків через бал — фільтр балів відсікає частину сигналів; чи даремно, покаже звірка з тіньовими планами.",
+        "Тіньові плани таких сигналів оцінюються окремо (plan_review → demo_shadow).",
+    ),
+    "demo_vs_bt": (
+        "Демо проти бектесту",
+        "Звірка кожної закритої демо-угоди з бектестом того самого сетапу: чи бектест дав би цю угоду з тим самим входом, стопом і R.",
+        "Панель без мережі, а звірці потрібні свічки біржі: результат — у тижневому повідомленні Telegram (тема «🧪 Демо-рахунок»).",
+        "Якщо демо систематично розходиться з бектестом, історичним тестам сетапу вірити не можна.",
     ),
 }
 
@@ -6669,6 +6758,409 @@ def polymarket_page(now: float | None = None) -> str:
     return with_help(render_polymarket(data, err, time.time() if now is None else now, PM_DB))
 
 
+# ---------------------------------------------------------------- «Демо» tab: the demo trader's book (read-only)
+#
+# BACKLOG 0.5 (a) «блок на панелі» and Phase 4.4 «Вкладка «Демо»»: the demo trader's own trades (demo_trade, schema
+# v19), R by setup with a t 95 % CI against 0, and the decisions it did not take (exec_audit kinds 'refused' /
+# 'skipped') grouped by reason. Read-only SQLite, no network. The «demo vs backtest» replay needs public candles, so it
+# is not computed here: the block only says where its result is (the weekly Telegram message) and what the store has.
+
+DEMO_DB = JOURNAL_DB  # execution.demo_trader.DEFAULT_DB: the same store
+DEMO_SETUPS = ("S14", "S16", "S3")  # execution.demo_trader.SETUPS
+DEMO_MIN_N = 30  # analytics.demo_vs_backtest.MIN_TRADES (owner 23.10: no conclusion before ~30 closed trades)
+DEMO_MAX_ROWS = 20000
+DEMO_AUDIT_MAX_ROWS = 20000
+DEMO_TABLE_ROWS = 20
+DEMO_REASONS_SHOWN = 15
+DEMO_WEEK_MS = 7 * 86_400_000
+DEMO_OPEN = ("open", "pending", "unknown")
+DEMO_VS_BT_FLAG = DATA_DIR / "assistant" / "demo-vs-backtest-telegram.on"  # scripts/server/29-demo-vs-backtest-weekly-timer.sh
+DEMO_STATUS_UA = {
+    "open": "відкрита",
+    "pending": "чекає входу",
+    "unknown": "невідомо (до відповіді біржі)",
+    "closed": "закрита",
+    "missed": "вхід не заповнився",
+    "rejected": "біржа відхилила",
+}
+DEMO_EXIT_UA = {"target": "ціль", "stop": "стоп", "breakeven": "беззбиток", "time": "за часом"}
+DEMO_CAVEATS = (
+    "Демо-рахунок Bybit (api-demo.bybit.com), ігрові гроші. Сторінка лише читає базу: нічого не торгує й лімітів не змінює.",
+    f"R = P&L біржі (з комісіями) / ризик на стопі з обома тейкер-комісіями. До {DEMO_MIN_N} закритих угод сетапу числа "
+    "описові, не доказ переваги.",
+    "Правило беззбитку змінювалось: до 22.10 стоп переносили за +30 % ROE, далі — на половині шляху до цілі; R цих періодів змішано.",
+    "Минулий результат не гарантує майбутнього. Не інвестиційна порада.",
+)
+# guard / selection messages (execution/guard.py check, demo_trader._select_and_enter) -> a Ukrainian reason; the
+# numbers of each message differ, so they are grouped by the rule, with the rule's threshold where it is in the text
+_DEMO_REASONS: tuple[tuple[re.Pattern[str], str], ...] = tuple(
+    (re.compile(p), ua)
+    for p, ua in (
+        (r"^score \d+ < (\d+)$", "бал сигналу нижче {0}"),
+        (r"^reward/risk .* after fees < ([\d.]+)$", "R:R після комісій нижче {0}"),
+        (r"^stop .* from the entry > (\d+%)$", "стоп далі {0} від входу"),
+        (r"^already in ", "уже є позиція в цій монеті"),
+        (r"is not in today's universe$", "монети немає в сьогоднішньому списку"),
+        (r"^levels:", "стоп і ціль не по різні боки входу"),
+        (r"^lower rank$", "обрано сильніший сигнал"),
+        (r"trades at risk today = max$", "денний ліміт угод під ризиком"),
+        (r"entries today = max$", "денний ліміт входів"),
+        (r"orders in the last hour = max$", "ліміт ордерів за годину"),
+        (r"open positions = max$", "максимум відкритих позицій"),
+        (r"^kill-switch is on$", "kill-switch увімкнено"),
+        (r"^open risk ", "відкритий ризик понад ліміт"),
+        (r"^realised loss today ", "денний ліміт збитку"),
+        (r"^this signal was already decided$", "сигнал уже вирішено"),
+        (r"^maintenance \+ loss at all stops ", "крос-маржа: підтримка + збиток на стопах понад ліміт"),
+        (r"^margin .* of equity$", "застава понад частку капіталу"),
+        (r"^open size ", "сукупний розмір позицій понад ліміт"),
+        (r"^notional ", "розмір позиції понад ліміт"),
+        (r"^risk .* USD > ", "ризик угоди понад ліміт"),
+        (r"^leverage ", "плече поза межами"),
+        (r"^size is zero", "розмір нульовий (крок лота)"),
+        (r"^equity unknown", "капітал невідомий"),
+        (r"^mode ", "режим не дозволено"),
+        (r"^side ", "невідома сторона"),
+    )
+)
+
+
+def demo_reason(v: object) -> str:
+    """A Ukrainian label of one guard / selection message (untrusted text from exec_audit); an unknown one is kept with
+    its numbers and pair symbols masked, so the same rule groups together. Plain text: escape it when rendering."""
+    s = "" if v is None else _clean(v, 200)
+    if not s:
+        return "причину не записано"
+    for rx, ua in _DEMO_REASONS:
+        m = rx.search(s)
+        if m:
+            return ua.format(*m.groups())
+    s = re.sub(r"\b[A-Z0-9]{1,20}/[A-Z0-9]{1,10}(?::[A-Z0-9]{1,10})?", "<символ>", s)
+    return re.sub(r"\d[\d,]*(?:\.\d+)?%?", "N", s)[:80]
+
+
+def load_demo(path: Path) -> tuple[dict | None, str | None]:
+    """{'trades': demo_trade rows | None, 'audit': exec_audit 'refused' / 'skipped' rows | None, 'option_legs':
+    {status: count} of demo_option_leg | None} (None = no such table, an older store), or (None, reason) with reason
+    'missing' | 'unreadable: …'. Read-only connection; never raises. Dry-run rows (kinds 'dry_*') are not read."""
+    try:
+        if not path.exists():
+            return None, "missing"
+        con = sqlite3.connect(f"file:{urllib.parse.quote(str(path))}?mode=ro", uri=True, timeout=5)
+    except (sqlite3.Error, OSError) as e:
+        return None, f"unreadable: {type(e).__name__}"
+    try:
+        con.row_factory = sqlite3.Row
+        names = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        out: dict = {"trades": None, "audit": None, "option_legs": None}
+        if "demo_trade" in names:
+            out["trades"] = [
+                dict(r)
+                for r in con.execute(
+                    "SELECT symbol, side, setup, timeframe, signal_ts, status, opened_ts, closed_ts, pnl_usd, r_multiple,"
+                    " exit_reason FROM demo_trade ORDER BY COALESCE(closed_ts, opened_ts, signal_ts) DESC LIMIT ?",
+                    (DEMO_MAX_ROWS,),
+                )
+            ]
+        if "exec_audit" in names:
+            out["audit"] = [
+                dict(r)
+                for r in con.execute(
+                    "SELECT ts, kind, setup, payload FROM exec_audit WHERE kind IN ('refused', 'skipped')"
+                    " ORDER BY ts DESC, id DESC LIMIT ?",
+                    (DEMO_AUDIT_MAX_ROWS,),
+                )
+            ]
+        if "demo_option_leg" in names:
+            out["option_legs"] = {str(r[0]): int(r[1]) for r in con.execute("SELECT status, COUNT(*) FROM demo_option_leg GROUP BY status")}
+        return out, None
+    except (sqlite3.Error, OSError) as e:
+        return None, f"unreadable: {type(e).__name__}"
+    finally:
+        con.close()
+
+
+def demo_r_stats(rs: list[float]) -> dict:
+    """n, share of R > 0, mean R and its t 95 % CI (from 2 values), as plan_stats does for the plans."""
+    s: dict = {"n": len(rs), "win_rate": None, "mean_r": None, "ci95": None}
+    if rs:
+        s["win_rate"] = sum(1 for v in rs if v > 0) / len(rs)
+        s["mean_r"] = statistics.fmean(rs)
+    if len(rs) >= 2:
+        h = t975(len(rs) - 1) * statistics.stdev(rs) / len(rs) ** 0.5
+        s["ci95"] = [s["mean_r"] - h, s["mean_r"] + h]
+    return s
+
+
+def demo_setup_stats(trades: list[dict]) -> dict[str, dict]:
+    """Per setup (S14, S16, S3 always, then any other in the store): closed trades, R stats of those with R, P&L USD."""
+    out: dict[str, dict] = {}
+    names = list(DEMO_SETUPS) + sorted({str(t.get("setup")) for t in trades} - set(DEMO_SETUPS))
+    for name in names:
+        closed = [t for t in trades if str(t.get("setup")) == name and t.get("status") == "closed"]
+        rs = [v for t in closed if (v := _num(t.get("r_multiple"))) is not None]
+        s = demo_r_stats(rs)
+        s.update(closed=len(closed), pnl=sum(_num(t.get("pnl_usd")) or 0.0 for t in closed))
+        out[name] = s
+    return out
+
+
+def demo_refusals(audit: list[dict], now_ms: float) -> list[dict]:
+    """exec_audit 'refused' / 'skipped' rows grouped by reason: {'reason', 'refused', 'skipped', 'week', 'last_ts'},
+    most frequent first. A row counts once per reason even when its message list repeats it."""
+    groups: dict[str, dict] = {}
+    for a in audit:
+        try:
+            p = json.loads(a.get("payload") or "{}")
+        except (TypeError, ValueError):
+            p = {}
+        vs = p.get("violations") if isinstance(p, dict) else None
+        labels = {demo_reason(v) for v in vs} if isinstance(vs, list) and vs else {"причину не записано"}
+        ts = _num(a.get("ts")) or 0.0
+        kind = "refused" if a.get("kind") == "refused" else "skipped"
+        for lab in labels:
+            g = groups.setdefault(lab, {"reason": lab, "refused": 0, "skipped": 0, "week": 0, "last_ts": 0.0})
+            g[kind] += 1
+            g["week"] += ts >= now_ms - DEMO_WEEK_MS
+            g["last_ts"] = max(g["last_ts"], ts)
+    return sorted(groups.values(), key=lambda g: (-(g["refused"] + g["skipped"]), g["reason"]))
+
+
+def _demo_vs0(ci: object, n: int) -> tuple[str, str]:
+    if not isinstance(ci, list):
+        return ("угод з R ще немає" if not n else "ДІ — від 2 угод з R"), ""
+    if ci[0] > 0:
+        return "95 % ДІ вище 0", "ok"
+    if ci[1] < 0:
+        return "95 % ДІ нижче 0", "bad"
+    return "95 % ДІ містить 0: переваги не видно", ""
+
+
+def _demo_no_table(name: str) -> str:
+    return _empty(
+        f"Таблиці {name} у базі ще немає: база до схеми v19 (з'явиться, коли демо-трейдер або MCP-сервер відкриють її новим кодом)."
+    )
+
+
+def block_demo_tiles(trades: list[dict]) -> str:
+    if not trades:
+        return _empty("Демо-угод ще немає: демо-трейдер записує угоду перед першим ордером (таймер tradedesk-demo-trader, щогодини).")
+    by = {k: sum(1 for t in trades if t.get("status") == k) for k in (*DEMO_OPEN, "closed", "missed", "rejected")}
+    closed = [t for t in trades if t.get("status") == "closed"]
+    exits = {k: sum(1 for t in closed if t.get("exit_reason") == k) for k in DEMO_EXIT_UA}
+    exits_s = " · ".join(f"{DEMO_EXIT_UA[k]} {n}" for k, n in exits.items() if n) or "причини виходу не записані"
+    n_open = sum(by[k] for k in DEMO_OPEN)
+    pnl = sum(_num(t.get("pnl_usd")) or 0.0 for t in closed)
+    s = demo_r_stats([v for t in closed if (v := _num(t.get("r_multiple"))) is not None])
+    vs0, cls = _demo_vs0(s["ci95"], s["n"])
+    tiles = [
+        _tile("Закрито", _nf(by["closed"]), _e(exits_s), help="demo_closed"),
+        _tile("Відкрито", _nf(n_open), f"з них чекають входу {by['pending']}" if by["pending"] else "позиції на демо", help="demo_open"),
+        _tile(
+            "Не виконано",
+            _nf(by["missed"] + by["rejected"]),
+            f"вхід не заповнився {by['missed']} · біржа відхилила {by['rejected']}",
+            help="demo_missed",
+        ),
+        _tile(
+            "P&L демо", f"<span class='{_signed_cls(pnl)}'>{_usd(pnl, True)}</span>", "USD, закриті угоди, ігрові гроші", help="demo_pnl"
+        ),
+        _tile(
+            "Середній R, усі сетапи",
+            f"<span class='{_signed_cls(s['mean_r'])}'>{_r(s['mean_r'])}</span>",
+            f"угод з R {s['n']} · 95 % ДІ {_ci(s['ci95'])} · <span class='{cls}'>{_e(vs0)}</span>",
+            help="demo_r_all",
+        ),
+    ]
+    return f"<div class='tiles'>{''.join(tiles)}</div>"
+
+
+def demo_option_legs_note(legs: object) -> str:
+    """The futures tiles leave the option legs out (demo_option_leg, a separate paired test): say so, with their count."""
+    if isinstance(legs, dict) and legs:
+        n = sum(v for v in legs.values() if isinstance(v, int))
+        closed = legs.get("closed", 0) if isinstance(legs.get("closed"), int) else 0
+        count = f"У базі опціонних ніг: {n} (закрито {closed}). "
+    elif isinstance(legs, dict):
+        count = "Опціонних ніг у базі ще немає. "
+    else:
+        count = "Таблиці demo_option_leg у базі ще немає. "
+    return (
+        "<p class='note warn'>Лише ф'ючерсні угоди (demo_trade): опціонні ноги демо-трейдера (demo_option_leg) не враховано ні в "
+        f"лічильниках, P&amp;L і R, ні серед відмов нижче (рішення option_skipped). {_e(count)}"
+        "Парне порівняння ф'ючерс / опціон — у plan_review → demo_option_pairs.</p>"
+    )
+
+
+def block_demo_setups(trades: list[dict]) -> str:
+    stats = demo_setup_stats(trades)
+    tiles = []
+    for name, s in stats.items():
+        vs0, cls = _demo_vs0(s["ci95"], s["n"])
+        few = s["n"] < DEMO_MIN_N
+        sub = (
+            f"закрито {s['closed']} · з R {s['n']} · у плюсі {_share(s['win_rate'])} · 95 % ДІ {_ci(s['ci95'])} · "
+            f"<span class='{cls}'>{_e(vs0)}</span> · P&L {_usd(s['pnl'], True)}"
+        )
+        tiles.append(
+            _tile(
+                f"{_e(_clean(name, 12))} · середній R",
+                f"<span class='{_signed_cls(s['mean_r'])}'>{_r(s['mean_r'])}</span>",
+                sub,
+                help="demo_setup",
+                tone="warn" if few else "",
+                badge=f"замало для висновку ({s['n']} з {DEMO_MIN_N})" if few else "",
+            )
+        )
+    note = (
+        f"<p class='note warn'>Висновок про сетап — не раніше {DEMO_MIN_N} закритих угод з R; до того середній R і ДІ лише описують "
+        "те, що вже сталось.</p>"
+    )
+    return f"<div class='tiles'>{''.join(tiles)}</div>{note}"
+
+
+def block_demo_table(trades: list[dict]) -> str:
+    if not trades:
+        return _empty("Угод ще немає.")
+    rows = [
+        "<div class='scroll'><table><tr><th>Сигнал</th><th>Закрито</th><th>Монета</th><th>Сетап</th><th>Сторона</th><th>Стан</th>"
+        "<th>Вихід</th><th>R</th><th>P&amp;L, USD</th></tr>"
+    ]
+    for t in trades[:DEMO_TABLE_ROWS]:
+        r = _num(t.get("r_multiple"))
+        pnl = _num(t.get("pnl_usd"))
+        status = str(t.get("status"))
+        rows.append(
+            f"<tr><td>{_e(_day(t.get('signal_ts')))}</td><td>{_e(_day(t.get('closed_ts')))}</td>"
+            f"<td>{_e(_clean(str(t.get('symbol') or '—').split(':')[0], 24))}</td>"
+            f"<td>{_e(_clean(t.get('setup'), 12))} {_e(_clean(t.get('timeframe'), 6))}</td>"
+            f"<td>{_e(SIDE_UA.get(str(t.get('side')), _clean(t.get('side'), 8)))}</td>"
+            f"<td>{_e(DEMO_STATUS_UA.get(status, _clean(status, 20)))}</td>"
+            f"<td>{_e(DEMO_EXIT_UA.get(str(t.get('exit_reason')), '—'))}</td>"
+            f"<td class='num {_signed_cls(r)}'>{_r(r)}</td><td class='num {_signed_cls(pnl)}'>{_usd(pnl, True) if pnl is not None else '—'}</td></tr>"
+        )
+    rows.append("</table></div>")
+    if len(trades) > DEMO_TABLE_ROWS:
+        rows.append(f"<p class='note'>Показано {DEMO_TABLE_ROWS} останніх з {len(trades)}.</p>")
+    return "".join(rows)
+
+
+def block_demo_refusals(audit: list[dict] | None, now: float) -> str:
+    if audit is None:
+        return _demo_no_table("exec_audit")
+    n_ref = sum(1 for a in audit if a.get("kind") == "refused")
+    n_skip = len(audit) - n_ref
+    tiles = [
+        _tile("Відмов guard", _nf(n_ref), "сигнал порушив ліміт або правило guard", help="demo_refused"),
+        _tile("Не відібрано", _nf(n_skip), "низький бал, денні ліміти або сильніший сигнал", help="demo_skipped"),
+    ]
+    out = [f"<div class='tiles'>{''.join(tiles)}</div>"]
+    if not audit:
+        out.append(_empty("Відмов і пропусків ще не було."))
+        return "".join(out)
+    groups = demo_refusals(audit, now * 1000)
+    table = [
+        "<div class='scroll'><table><tr><th>Причина</th><th>Відмова guard</th><th>Не відібрано</th><th>За 7 днів</th><th>Останній раз</th></tr>"
+    ]
+    for g in groups[:DEMO_REASONS_SHOWN]:
+        table.append(
+            f"<tr><td>{_e(g['reason'])}</td><td class='num'>{g['refused']}</td><td class='num'>{g['skipped']}</td>"
+            f"<td class='num'>{g['week']}</td><td>{_e(_day(g['last_ts']))}</td></tr>"
+        )
+    table.append("</table></div>")
+    out.append("".join(table))
+    if len(groups) > DEMO_REASONS_SHOWN:
+        out.append(f"<p class='note'>Показано {DEMO_REASONS_SHOWN} найчастіших причин з {len(groups)}.</p>")
+    out.append(
+        "<p class='note'>Одне рішення може мати кілька причин, тож сума за причинами більша за кількість рішень. "
+        "Звірки пропущених сигналів з тіньовими планами тут ще немає.</p>"
+    )
+    if len(audit) >= DEMO_AUDIT_MAX_ROWS:
+        out.append(f"<p class='note warn'>Прочитано лише {DEMO_AUDIT_MAX_ROWS} останніх рішень.</p>")
+    return "".join(out)
+
+
+def block_demo_vs_bt(trades: list[dict], flag_on: bool | None) -> str:
+    """No replay here: it needs public candles and the panel has no network; scripts/demo_vs_backtest.py writes its text
+    only with --out and the weekly job sends it straight to Telegram, so nothing of it is in the store."""
+    closed = sum(1 for t in trades if t.get("status") == "closed")
+    when = (
+        "стан прапорця тижневого повідомлення не вдалося прочитати"
+        if flag_on is None
+        else "тижневе повідомлення увімкнене"
+        if flag_on
+        else "тижневе повідомлення поки вимкнене (вмикає власник кроком scripts/server/29-demo-vs-backtest-weekly-timer.sh)"
+    )
+    return (
+        "<p>Звірка кожної закритої демо-угоди з бектестом того самого сетапу потребує публічних свічок Bybit, а панель працює "
+        "без мережі. Результат звірки ніде в базі не зберігається, тож тут його немає.</p>"
+        f"<p><b>Дані — тижневе повідомлення в Telegram</b> (тема «🧪 Демо-рахунок», неділя 20:30 за Києвом): {_e(when)}. Вручну: "
+        "<code>uv run python scripts/demo_vs_backtest.py</code>.</p>"
+        f"<p class='note'>Закритих демо-угод для звірки: {closed}. Висновок звірки — не раніше {DEMO_MIN_N} звірених угод; до того "
+        "«замало для висновку».</p>"
+    )
+
+
+def render_demo(data: dict | None, err: str | None, now: float, path: Path | None = None, vs_bt_on: bool | None = None) -> str:
+    """The «Демо» tab. Never raises: no database, no table or no rows gives an explained empty state."""
+    head = (
+        "<!doctype html><html lang='uk'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+        f"<title>tradedesk — демо</title><style>{CSS}{BRIEF_CSS}{JOURNAL_CSS}</style></head><body>"
+    )
+    title = "<h1>Демо-трейдер</h1>"
+    caveats = "<div class='caveat'><b>Застереження</b><ul>" + "".join(f"<li>{_e(c)}</li>" for c in DEMO_CAVEATS) + "</ul></div>"
+    where = f" <code>{_e(path)}</code>" if path else ""
+    try:
+        if data is None:
+            msg = (
+                f"Бази ще немає{where}: вона з'являється, коли MCP-сервер, колектор або демо-трейдер її створять."
+                if err == "missing"
+                else f"Базу не вдалося прочитати{where}: {_e(err)}."
+            )
+            return head + f"<header>{title}<span class='bad'>{msg}</span></header>{_nav('demo')}{caveats}</body></html>"
+        stamp = f"<span class='mut'>База{where} · лише читання · прочитано {_e(kyiv(datetime.fromtimestamp(now, timezone.utc)))} за Києвом</span>"  # noqa: UP017
+        out = [head, f"<header>{title}{stamp}</header>{_nav('demo')}{caveats}<main class='brief'>"]
+        trades = data.get("trades")
+
+        def guarded(fn, *args) -> str:
+            try:
+                return fn(*args)
+            except Exception as e:  # noqa: BLE001 - one odd row must not take the page down
+                return _empty(f"Блок не вдалося показати: несподіваний формат даних ({type(e).__name__}).")
+
+        if trades is None:
+            out.append(f"<section class='wide'>{_h2('Демо-угоди', 'demo')}{_demo_no_table('demo_trade')}</section>")
+        else:
+            out.append(
+                f"<section class='wide'>{_h2('Демо-угоди', 'demo', CHIP_LEDGER)}{guarded(block_demo_tiles, trades)}"
+                f"{guarded(demo_option_legs_note, data.get('option_legs'))}</section>"
+            )
+            out.append(f"<section class='wide'>{_h2('R за сетапом', 'demo_setups')}{guarded(block_demo_setups, trades)}</section>")
+            out.append(f"<section class='wide'>{_h2('Останні демо-угоди', 'demo_recent')}{guarded(block_demo_table, trades)}</section>")
+        out.append(
+            f"<section class='wide'>{_h2('Відмови guard за причинами', 'demo_refusals')}{guarded(block_demo_refusals, data.get('audit'), now)}</section>"
+        )
+        out.append(
+            f"<section class='wide'>{_h2('Демо проти бектесту', 'demo_vs_bt')}{guarded(block_demo_vs_bt, trades or [], vs_bt_on)}</section>"
+        )
+        out.append("</main></body></html>")
+        return "".join(out)
+    except Exception as e:  # noqa: BLE001 - the page always renders
+        return (
+            head
+            + f"<header>{title}<span class='bad'>Демо не вдалося показати ({_e(type(e).__name__)}).</span></header>{_nav('demo')}{caveats}</body></html>"
+        )
+
+
+def demo_page(now: float | None = None) -> str:
+    data, err = load_demo(DEMO_DB)
+    try:
+        flag = DEMO_VS_BT_FLAG.exists()
+    except OSError:
+        flag = None
+    return with_help(render_demo(data, err, time.time() if now is None else now, DEMO_DB, flag))
+
+
 # ---------------------------------------------------------------- server
 
 
@@ -6802,6 +7294,8 @@ class _Handler(BaseHTTPRequestHandler):
             body, ctype = brand(radar_page(query)).encode(), "text/html; charset=utf-8"
         elif path == "/journal":
             body, ctype = brand(journal_page(query)).encode(), "text/html; charset=utf-8"
+        elif path == "/demo":
+            body, ctype = brand(demo_page()).encode(), "text/html; charset=utf-8"
         elif path == "/polymarket":
             body, ctype = brand(polymarket_page()).encode(), "text/html; charset=utf-8"
         elif self.path == "/status.json":

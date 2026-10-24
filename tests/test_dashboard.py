@@ -1693,6 +1693,10 @@ def _all_tab_pages(tmp_path) -> dict[str, str]:
     pages["journal empty"] = db.render_journal(*db.load_journal(_journal_db(tmp_path / "e.sqlite", [], [])), float(T0))
     cols, rows = _pm_rows()
     pages["polymarket"] = db.render_polymarket(*db.load_pm_gap(_pm_db(tmp_path / "pm.sqlite", rows, cols)), float(PM_B + 600))
+    import test_dashboard_demo as td
+
+    pages["demo"] = db.render_demo(*db.load_demo(td._filled(tmp_path, td.NOW)), td.NOW / 1000, vs_bt_on=False)
+    pages["demo empty"] = db.render_demo(*db.load_demo(td._store(tmp_path / "de.sqlite")), td.NOW / 1000)
     return pages
 
 
@@ -1724,6 +1728,8 @@ def test_every_heading_and_tile_on_every_tab_has_a_help_note(tmp_path):
         ("journal", "Журнал прогнозів"),
         ("journal empty", "Журнал прогнозів"),
         ("polymarket", "Проходять поріг (≥ 5 п.п.)"),
+        ("demo", "R за сетапом"),
+        ("demo empty", "Відмови guard за причинами"),
     ):
         assert f"<h2>{title}{icon}" in pages[name], (name, title)
     assert "Чистий edge" + icon in pages["polymarket"] and "R:R" + icon in pages["polymarket"]

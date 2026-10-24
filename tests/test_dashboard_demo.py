@@ -240,15 +240,21 @@ def test_vs_backtest_block_says_where_the_data_is():
 # ---------------------------------------------------------------- the reconciliation file (scripts/demo_vs_backtest.py --json)
 
 SHADOW_FIX = json.loads((Path(__file__).parent / "fixtures" / "demo_shadow_live_2026-10-24.json").read_text())
+REFUSED_FIX = json.loads((Path(__file__).parent / "fixtures" / "demo_shadow_refused_live_2026-10-24.json").read_text())
 
 
 def _vs_bt_doc(now_ms: int) -> dict:
     """A file as scripts/demo_vs_backtest.main writes it: the replay summary and the not-executed block of the live
-    sample (24.10), built by the same functions."""
+    samples (24.10: skipped and filled, guard refusals), built by the same functions."""
     from tradedesk.analytics import demo_shadow as ds
     from tradedesk.analytics import demo_vs_backtest as dvb
 
-    ne = ds.not_executed(SHADOW_FIX["trades"], SHADOW_FIX["audit"], SHADOW_FIX["plans"], now_ms=int(SHADOW_FIX["now_ms"]))
+    ne = ds.not_executed(
+        SHADOW_FIX["trades"],
+        SHADOW_FIX["audit"] + REFUSED_FIX["audit"],
+        SHADOW_FIX["plans"] + REFUSED_FIX["plans"],
+        now_ms=int(SHADOW_FIX["now_ms"]),
+    )
     rows = [
         dvb.Replay("a", "S/USDT:USDT", "S3", "4h", "short", 0, 0, "match", r_demo=2.2, r_demo_bt=2.1, r_bt=1.9, r_diff=0.2, entry_edge_r=0.05),
         dvb.Replay("b", "S/USDT:USDT", "S3", "4h", "long", 0, 0, "mismatch", ("entry",), r_demo=-1.0, r_demo_bt=-1.1, r_bt=-1.0, r_diff=-0.1),
@@ -283,7 +289,13 @@ def test_vs_backtest_block_shows_the_file_numbers(tmp_path):
     assert "<td>Не відібрано</td><td class='num'>9</td>" in block and "<td class='num'>8 / 1 / 0</td>" in block
     assert "<td>Виконані (для порівняння)</td><td class='num'>3</td>" in block
     assert "бал сигналу нижче 2" in block and "денний ліміт угод під ризиком" in block  # reasons labelled from the examples
-    assert "замало для висновку (8 з 30)" in block and "Відмови guard сюди не входять" in block
+    assert "замало для висновку (8 з 30)" in block
+    # guard refusals with a shadow plan (44 of 78), by rule; the 34 without a plan by design are only counted
+    assert "<td>Відмова guard</td><td class='num'>44</td>" in block and "<td class='num'>27 / 17 / 0</td>" in block
+    assert "<td>Відмова guard</td><td>R:R після комісій нижче 1.5</td><td class='num'>36</td><td class='num'>20</td>" in block
+    assert "<td>Відмова guard</td><td>уже є позиція в цій монеті</td><td class='num'>8</td>" in block
+    assert "замало для висновку (27 з 30)" in block
+    assert "помилка рівнів): 34 (за 7 днів 34)" in block and "Відмов guard у файлі звірки ще немає" not in block
     assert "тижневе повідомлення увімкнене" in block and "старіша за 36 год" not in block
     # every new tile and the sub-heading have their help note
     tiles = re.findall(r"<div class='tile[^']*'><span class='k'>(.*?)<span class='v'>", block, re.S)
@@ -313,6 +325,20 @@ def test_vs_backtest_file_stale_corrupt_and_untrusted(tmp_path):
     assert db.load_demo_vs_bt(p) == (None, "corrupt")
     broken = db.render_demo({"trades": [], "audit": []}, None, NOW / 1000, vs_bt=({"schema": 2, "summary": {"counts": "x"}}, None))
     assert broken.endswith("</body></html>")  # an odd file breaks at most its own block
+
+
+def test_vs_backtest_file_written_before_the_refusals_still_shows():
+    """A schema-2 file of 24.10 morning has no 'refused' group: the rest shows, the block says the refusals come next run."""
+    old = _vs_bt_doc(NOW)
+    del old["not_executed"]["groups"]["refused"]
+    html = db.block_demo_vs_bt([], True, old, None, NOW / 1000)
+    assert "<td>Не відібрано</td><td class='num'>9</td>" in html and "<td>Відмова guard</td>" not in html
+    assert "Відмов guard у файлі звірки ще немає" in html
+    odd = _vs_bt_doc(NOW)
+    odd["not_executed"]["groups"]["refused"]["excluded"] = "x"  # an odd value: zero, not an error
+    odd["not_executed"]["groups"]["refused"]["reasons"][0]["example"] = XSS
+    html = db.block_demo_vs_bt([], True, odd, None, NOW / 1000)
+    assert "помилка рівнів): 0 (за 7 днів 0)" in html and XSS not in html
 
 
 def test_vs_backtest_file_constants_follow_the_script_and_the_unit():

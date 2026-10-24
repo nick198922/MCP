@@ -1,0 +1,3 @@
+- Картка `funding-interval-cut-stress`: крок 0 виконано, вердикт `inconclusive` (ворота потужності не пройдено: MDE(H1) 9.0 п.п. > 3.5 п.п.; середні не рахувались).
+- Додано чисті функції `analytics/funding_interval_cut.py` (події зміни інтервалу фандингу за розкладом розрахунків, дедуплікація, контроль за схожою просадкою, кластери за тижнями), тести та `scripts/verify_funding_interval_cut.py`.
+- Звіт: `docs/verification/2026-10-25-funding-interval-cut-stress.md`; рев'ю критика: `docs/reviews/2026-10-25-funding-interval-cut-stress-review.md`.

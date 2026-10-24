@@ -1,0 +1,4 @@
+- Сито: нова специфікація `grid_ladder` (`analytics/sieve_specs/grid_ladder.py`): один щабель гріда на 20-добовому діапазоні (ціль +1 крок, стоп −3 кроки, 72 год), опційний фільтр режиму (ER20 < 0.25, σ7 / σ30 ≤ 1), тести `tests/test_sieve_grid_ladder.py`.
+- Реєстр сита: 3 прогони (без фільтра 0.5σ, з фільтром 0.5σ, з фільтром 1.0σ), усі «ні»: ≈ −0.03R net в IS, не краще за плацебо, OOS теж від'ємний.
+- Картка `IDEA-20261024-grid-short-vol-regime` → `rejected`; крок 2 (симулятор гріда з інвентарем) не починати.
+- Звіт `docs/verification/2026-10-24-grid-short-vol-regime.md` (перевірка за активами, H3 за σ7 / σ30 і DVOL — описово) і скрипт `scripts/verify_grid_short_vol_regime.py`; рядок теми в `docs/knowledge/README.md`.

@@ -44,9 +44,10 @@ FLAG = Path("/var/lib/tradedesk-mcp/assistant/vault-watch.on")
 CARD = "docs/ideas/IDEA-20261015-smart-money-persistence.md"
 
 
-def since(details: dict, start_ms: int) -> dict:
-    """Return, largest fall and capital since ``start_ms`` from one ``vaultDetails`` answer (allTime series)."""
-    av, pnl = vp.series(details, "accountValueHistory"), vp.series(details, "pnlHistory")
+def since(details: dict, start_ms: int, window: str = "allTime") -> dict:
+    """Return, largest fall and capital since ``start_ms`` from one ``vaultDetails`` answer (``window``: allTime, or
+    month for finer points when the start is within its 30 days)."""
+    av, pnl = vp.series(details, "accountValueHistory", window), vp.series(details, "pnlHistory", window)
     if len(pnl) < 2 or not av:
         return {"error": "немає історії"}
     nav = vp.twr_curve(av, pnl)

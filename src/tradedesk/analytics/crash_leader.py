@@ -70,6 +70,33 @@ def hold_return(close: np.ndarray, fund: np.ndarray, j: int, start: int, horizon
     return float(last / p0 - 1 - paid)
 
 
+def basket_path(close: np.ndarray, fund: np.ndarray, cols: list[int], start: int, horizon: int, *, gap: int = 3) -> np.ndarray:
+    """Equal-weight buy-and-hold NAV of ``cols`` bought at the close of ``start``: values for days start … start+horizon.
+
+    Each leg follows ``hold_return`` rules (funding paid by the long, closed at its last close after ``gap`` days
+    without a bar, cash afterwards). Legs without a price on ``start`` are dropped. Ends early at the panel's end.
+    """
+    end = min(start + horizon, close.shape[0] - 1)
+    legs = [j for j in cols if np.isfinite(close[start, j]) and close[start, j] > 0]
+    if not legs:
+        return np.array([1.0])
+    navs = np.ones((end - start + 1, len(legs)))
+    for k, j in enumerate(legs):
+        p0, last, missing, paid, dead = close[start, j], close[start, j], 0, 0.0, False
+        for i, d in enumerate(range(start + 1, end + 1), start=1):
+            c = close[d, j]
+            if not dead:
+                if np.isfinite(c):
+                    last, missing = c, 0
+                    f = fund[d, j]
+                    paid += 0.0 if not np.isfinite(f) else f
+                else:
+                    missing += 1
+                    dead = missing >= gap
+            navs[i, k] = last / p0 - paid
+    return navs.mean(axis=1)
+
+
 def terciles(scores: dict[int, float]) -> tuple[list[int], list[int]]:
     """(strong, weak): the top and bottom thirds of columns by score; ties broken by column index."""
     order = sorted(scores, key=lambda j: (-scores[j], j))

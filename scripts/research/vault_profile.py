@@ -153,20 +153,52 @@ def max_drawdown(values: list[float]) -> tuple[float, int, int]:
     return out
 
 
-def twr_curve(account_value: list[tuple[int, float]], pnl: list[tuple[int, float]]) -> list[tuple[int, float]]:
-    """Time-weighted NAV (start 1.0): each interval's return = ΔPnL / account value at its start.
+def dietz_base(av: dict[int, float], flows: list[tuple[int, float]] | None, t0: int, t1: int) -> float:
+    """Capital an official interval's PnL was earned on.
 
-    Follower deposits move account value but not PnL, so this strips the flows out (approximately: a flow inside
-    an interval is attributed to its end).
+    Normally the account value at the interval's start. When the net flows inside the interval exceed it (a vault's
+    launch: a $100 seed, then millions deposited), modified Dietz instead: start value + half the net flows; dividing
+    by the seed would make the return explode. Dietz is not used everywhere: followers deposit into falls and
+    withdraw into rallies, and on BredoStrategy it doubled the return seen by a follower who stayed from day one.
+    """
+    start = av.get(t0, 0.0)
+    inside = sum(f for t, f in flows if t0 < t <= t1) if flows else 0.0
+    return start + 0.5 * inside if abs(inside) > start else start
+
+
+def follower_returns(details: dict[str, Any], min_days: float) -> list[float]:
+    """allTimePnl / (equity − allTimePnl) of followers in the vault for at least ``min_days`` (leader excluded).
+
+    A follower who never added or withdrew earns exactly the vault's time-weighted return; adds pull the ratio
+    down, partial withdrawals push it up, so the median of the long-standing followers is a cross-check.
+    """
+    out = []
+    leader = str(details.get("leader", "")).lower()
+    for f in details.get("followers") or []:
+        if str(f.get("user", "")).lower() == leader or float(f.get("daysFollowing") or 0) < min_days:
+            continue
+        eq, pnl = float(f.get("vaultEquity") or 0), float(f.get("allTimePnl") or 0)
+        if eq - pnl > 0:
+            out.append(pnl / (eq - pnl))
+    return out
+
+
+def twr_curve(
+    account_value: list[tuple[int, float]], pnl: list[tuple[int, float]], flows: list[tuple[int, float]] | None = None
+) -> list[tuple[int, float]]:
+    """Time-weighted NAV (start 1.0): each interval's return = ΔPnL / capital at work (``dietz_base``).
+
+    Follower deposits move account value but not PnL, so this strips the flows out. Without ``flows`` the base is
+    the account value at the interval's start (a flow inside the interval is attributed to its end).
     """
     av = dict(account_value)
     nav, out = 1.0, []
     for (t0, p0), (t1, p1) in zip(pnl, pnl[1:], strict=False):
-        base = av.get(t0, 0.0)
+        base = dietz_base(av, flows, t0, t1)
         if not out:
             out.append((t0, nav))
         if base > 0:
-            nav *= 1 + (p1 - p0) / base
+            nav = max(0.0, nav * (1 + (p1 - p0) / base))  # a loss above the capital at work wipes the unit out
         out.append((t1, nav))
     return out
 
@@ -250,6 +282,44 @@ def daily_equity(flow_by_day: dict[int, float], pnl: list[tuple[int, float]], da
     for day in days:
         before = cum[bisect.bisect_left(flow_days, day)]
         out[day] = before + interp(pnl, day) + 0.5 * flow_by_day.get(day, 0.0)
+    return out
+
+
+def ledger_flows(ledger: list[dict]) -> list[tuple[int, float]]:
+    """Timestamped net flows into the vault (deposits +, withdrawals and distributions −), USD."""
+    out = []
+    for row in ledger:
+        d = row.get("delta") or {}
+        kind = d.get("type")
+        if kind in ("vaultDeposit", "vaultCreate"):
+            out.append((int(row["time"]), float(d.get("usdc") or 0)))
+        elif kind == "vaultWithdraw":
+            out.append((int(row["time"]), -float(d.get("netWithdrawnUsd") or d.get("requestedUsd") or 0)))
+        elif kind == "vaultDistribution":
+            out.append((int(row["time"]), -float(d.get("usdc") or 0)))
+    return sorted(out)
+
+
+def anchored_equity(
+    av: list[tuple[int, float]], flows: list[tuple[int, float]], day_pnl: dict[int, float], days: list[int]
+) -> dict[int, float]:
+    """Equity working on each day, using only information up to that day (no look-ahead).
+
+    Start from the last official account value at or before the day opens, then add the rebuilt PnL of the full
+    days since that point and the flows since its timestamp; flows during the day count half. ``daily_equity``
+    interpolates the official PnL between weekly points instead, which leaks the rest of the
+    week into the denominator and makes the leverage path unusable for a sizing test.
+    """
+    ts = [t for t, _ in av]
+    out = {}
+    for day in days:
+        i = bisect.bisect_right(ts, day) - 1
+        if i < 0 or av[i][1] <= 0:
+            continue
+        t0, base = av[i]
+        eq = base + sum(p for d, p in day_pnl.items() if day_of(t0) < d < day)
+        eq += sum(f for t, f in flows if t0 < t < day) + 0.5 * sum(f for t, f in flows if day <= t < day + DAY_MS)
+        out[day] = eq
     return out
 
 
@@ -546,7 +616,10 @@ def ret_between(cs: dict[int, tuple], d0: int, d1: int) -> float:
 
 
 def interval_returns(
-    av: list[tuple[int, float]], pnl: list[tuple[int, float]], candles: dict[str, dict[int, tuple]]
+    av: list[tuple[int, float]],
+    pnl: list[tuple[int, float]],
+    candles: dict[str, dict[int, tuple]],
+    flows: list[tuple[int, float]] | None = None,
 ) -> list[tuple[int, float, float, float]]:
     """Per official portfolio interval: (start, vault return = ΔPnL / account value, BTC return, EW alt basket return).
 
@@ -556,7 +629,7 @@ def interval_returns(
     avd = dict(av)
     out = []
     for (t0, p0), (t1, p1) in zip(pnl, pnl[1:], strict=False):
-        d0, d1, base = day_of(t0), day_of(t1), avd.get(t0, 0.0)
+        d0, d1, base = day_of(t0), day_of(t1), dietz_base(avd, flows, t0, t1)
         if d1 <= d0 or base <= 0 or d0 not in btc or d1 not in btc:
             continue
         alts = [cs[d1][0] / cs[d0][0] - 1 for c in ALT_BASKET if (cs := candles.get(c)) and d0 in cs and d1 in cs]
@@ -629,11 +702,19 @@ def report(vault: str, data: dict[str, Any], candles: dict[str, dict[int, tuple]
     )
     for m, (d, w) in sorted(fl["by_month"].items()):
         print(f"    {m}: in {_usd(d)}, out {_usd(w)}")
-    nav = twr_curve(av, pnl)
+    lf = ledger_flows(ledger)
+    nav = twr_curve(av, pnl, lf)
     dd, pi, ti = max_drawdown([v for _, v in nav])
     pnl_dd = max((max(v for _, v in pnl[: i + 1]) - pnl[i][1]) for i in range(len(pnl)))
     print(
         f"  time-weighted return {nav[-1][1] - 1:+.1%} over {(nav[-1][0] - nav[0][0]) / DAY_MS:.0f} days; max drawdown {dd:.1%} ({ymd(nav[pi][0])} → {ymd(nav[ti][0])}); max PnL giveback {_usd(-pnl_dd)}"
+    )
+    age = (nav[-1][0] - nav[0][0]) / DAY_MS
+    fr = follower_returns(det, 0.9 * age)
+    print(
+        f"  cross-check, followers in the vault ≥ 90 % of its life (top-100 list, leader excluded): median return {_med(fr):+.1%} (n={len(fr)}, quartiles {_q(fr, qs=(0.25, 0.75))})"
+        if fr
+        else "  cross-check: no follower in the vault ≥ 90 % of its life"
     )
     print("  NAV points: " + ", ".join(f"{ymd(t)[5:]} {v:.2f}" for t, v in nav[:: max(1, len(nav) // 12)]))
 
@@ -646,10 +727,10 @@ def report(vault: str, data: dict[str, Any], candles: dict[str, dict[int, tuple]
     book = daily_book(pos, candles)
     print(f"\n## Daily book from funding rows  {ymd(min(book))} … {ymd(last_day)}  (coins ever held: {len(pos)})")
     days = list(book)
-    equity = daily_equity(daily_flows(ledger), pnl, days)
+    equity = anchored_equity(av, lf, {d: b["pnl"] for d, b in book.items()}, days)
     lev = []
     for day in days:
-        eq = equity[day]
+        eq = equity.get(day, 0.0)
         b = book[day]
         lev.append((day, b["gross"] / eq if eq > 0 else float("nan"), (b["long"] - b["short"]) / eq if eq > 0 else float("nan")))
     print(f"  gross leverage x (gross notional / equity): {_q([x[1] for x in lev], False)}  [p10/p25/med/p75/p90]")
@@ -675,7 +756,7 @@ def report(vault: str, data: dict[str, Any], candles: dict[str, dict[int, tuple]
     btc = candles.get("BTC") or {}
     y, xb, xa, used, gross_btc, gross_alt = [], [], [], [], 0.0, 0.0
     for day in days:
-        eq = equity[day]
+        eq = equity.get(day, 0.0)
         rb, ra = (btc[day][3] / btc[day][0] - 1) if day in btc else float("nan"), day_returns(candles, ALT_BASKET, day)
         if eq <= 0 or math.isnan(rb) or math.isnan(ra):
             continue
@@ -704,7 +785,7 @@ def report(vault: str, data: dict[str, Any], candles: dict[str, dict[int, tuple]
         # Compounding the rebuilt daily returns is NOT reported: at ~9 %/day volatility a 10–20 % error in the
         # daily equity denominator moves the compounded result by more than 100 pp. The official intervals are used.
         lev_med = _med([g for _, g, _ in lev])
-        iv = interval_returns(av, pnl, candles)
+        iv = interval_returns(av, pnl, candles, lf)
         if len(iv) > 5:
             ri = ols([r[1] for r in iv], [[r[3] for r in iv]])
             span = _med([(b[0] - a[0]) / DAY_MS for a, b in zip(iv, iv[1:], strict=False)])

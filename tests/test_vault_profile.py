@@ -177,3 +177,27 @@ def test_ols_recovers_beta_and_alpha():
     y = [0.002 + 3 * v for v in x]
     r = vp.ols(y, [x])
     assert r["coef"][0] == pytest.approx(0.002) and r["coef"][1] == pytest.approx(3) and r["r2"] == pytest.approx(1)
+
+
+def test_twr_dietz_base_handles_a_seeded_vault():
+    # Seed $100, then $1M deposited inside the first interval and a $10k loss on it: −2 %, not −10 000 %.
+    av = [(T0, 100.0), (T0 + 7 * DAY, 990_100.0)]
+    pnl = [(T0, 0.0), (T0 + 7 * DAY, -10_000.0)]
+    flows = [(T0 + DAY, 1_000_000.0)]
+    assert vp.twr_curve(av, pnl, flows)[-1][1] == pytest.approx(1 - 10_000 / (100 + 500_000))
+    assert vp.twr_curve(av, pnl)[-1][1] == 0.0  # the plain start-of-interval base wipes the unit out
+    # Flows smaller than the start value keep the plain base.
+    assert vp.dietz_base({T0: 1000.0}, [(T0 + 1, 400.0)], T0, T0 + DAY) == 1000.0
+
+
+def test_follower_returns_skip_leader_and_newcomers():
+    det = {
+        "leader": "0xL",
+        "followers": [
+            {"user": "0xl", "vaultEquity": "500", "allTimePnl": "400", "daysFollowing": 100},
+            {"user": "0xa", "vaultEquity": "220", "allTimePnl": "120", "daysFollowing": 100},
+            {"user": "0xb", "vaultEquity": "50", "allTimePnl": "80", "daysFollowing": 100},  # withdrew more than in
+            {"user": "0xc", "vaultEquity": "150", "allTimePnl": "50", "daysFollowing": 5},
+        ],
+    }
+    assert vp.follower_returns(det, 90) == [pytest.approx(1.2)]

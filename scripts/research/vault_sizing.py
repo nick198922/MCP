@@ -24,7 +24,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import bisect
 import math
 import sys
 from pathlib import Path
@@ -35,12 +34,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from vault_profile import (  # noqa: E402
     ALT_BASKET,
     DAY_MS,
+    anchored_equity,
     daily_book,
     daily_equity,
     daily_flows,
     daily_positions,
-    day_of,
     day_returns,
+    ledger_flows,
     load_candles,
     load_data,
     max_drawdown,
@@ -51,44 +51,6 @@ from vault_profile import (  # noqa: E402
 )
 
 # ------------------------------------------------------------------------------------------------ pure analytics
-
-
-def ledger_flows(ledger: list[dict]) -> list[tuple[int, float]]:
-    """Timestamped net flows into the vault (deposits +, withdrawals and distributions −), USD."""
-    out = []
-    for row in ledger:
-        d = row.get("delta") or {}
-        kind = d.get("type")
-        if kind in ("vaultDeposit", "vaultCreate"):
-            out.append((int(row["time"]), float(d.get("usdc") or 0)))
-        elif kind == "vaultWithdraw":
-            out.append((int(row["time"]), -float(d.get("netWithdrawnUsd") or d.get("requestedUsd") or 0)))
-        elif kind == "vaultDistribution":
-            out.append((int(row["time"]), -float(d.get("usdc") or 0)))
-    return sorted(out)
-
-
-def anchored_equity(
-    av: list[tuple[int, float]], flows: list[tuple[int, float]], day_pnl: dict[int, float], days: list[int]
-) -> dict[int, float]:
-    """Equity working on each day, using only information up to that day (no look-ahead).
-
-    Start from the last official account value at or before the day opens, then add the rebuilt PnL of the full
-    days since that point and the flows since its timestamp; flows during the day count half. ``daily_equity`` in
-    ``vault_profile.py`` interpolates the official PnL between weekly points instead, which leaks the rest of the
-    week into the denominator and makes the leverage path unusable for a sizing test.
-    """
-    ts = [t for t, _ in av]
-    out = {}
-    for day in days:
-        i = bisect.bisect_right(ts, day) - 1
-        if i < 0 or av[i][1] <= 0:
-            continue
-        t0, base = av[i]
-        eq = base + sum(p for d, p in day_pnl.items() if day_of(t0) < d < day)
-        eq += sum(f for t, f in flows if t0 < t < day) + 0.5 * sum(f for t, f in flows if day <= t < day + DAY_MS)
-        out[day] = eq
-    return out
 
 
 def nav_path(lev: np.ndarray, ret: np.ndarray) -> np.ndarray:
@@ -165,7 +127,7 @@ def build(vault: str, data_dir: Path, anchored: bool = True) -> dict[str, np.nda
             continue
         rows.append((day, g / eq, alt, b["pnl"] / g, b["pnl"] / eq))
     a = np.array(rows)
-    official = twr_curve(av, pnl)
+    official = twr_curve(av, pnl, ledger_flows(data["ledger"]))
     off_dd = max_drawdown([v for _, v in official])[0]
     return {
         "day": a[:, 0],

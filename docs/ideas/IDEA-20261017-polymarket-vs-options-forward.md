@@ -1,6 +1,7 @@
 # IDEA-20261017-polymarket-vs-options-forward: цінові ринки Polymarket проти ймовірностей з опціонів Deribit — форвард-сканер з оцінкою за closing line value
 
-Статус: accepted (рішення власника 2026-10-17: «згоден зі всім» — пропозиція 3 звіту `docs/reports/2026-10-17-project-report.pdf`)
+Статус: forward (2026-10-24, Claude за рішенням власника 23.10 «правило скаута не має зупиняти агентів»: форвард-папір іде, відкриті пункти чекають тижнів даних; крок p працює з нею як і раніше)
+Попередній статус: accepted (рішення власника 2026-10-17: «згоден зі всім» — пропозиція 3 звіту `docs/reports/2026-10-17-project-report.pdf`)
 Пріоритет: власник
 Порядок: 10
 <!-- proposed → accepted | rejected → testing → confirmed | rejected | inconclusive → built -->

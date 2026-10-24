@@ -1,0 +1,2 @@
+- Скаут: дві нові картки — `polymarket-static-noarb-ladders` (безмодельні межі між контрактами Polymarket) і `toptrader-vs-crowd-divergence` (розбіжність топ-трейдерів і натовпу Binance).
+- Критик (тріаж A): перша — `forward` (потрібно ≥ 30 днів `pm_gap_snapshot`, не раніше 17.11), друга — `accepted` з умовами (ворота потужності на кроці 0).

@@ -8,9 +8,13 @@ the signal timeframe (the live scan's window) and the 1h path are fetched throug
 rate limits, health; paged with an upper bound per page), and the pure ``analytics/demo_vs_backtest.py`` decides:
 match / no signal / mismatch (or pending / no data / unsupported). The summary is a running total from the first demo
 trade (or ``--since``): a trade the backtest had not resolved last week is counted once it is, and the 30-trade
-threshold applies to the total. A separate block lists the trades closed in the last ``--days``. The text (Ukrainian,
-for the owner) is printed and, with ``--out``, written to a file; ``--json`` writes the rows and both summaries.
-Read-only public market data: nothing here places, changes or cancels an order.
+threshold applies to the total. A separate block lists the trades closed in the last ``--days``. A second block
+(``analytics/demo_shadow.py``, no network) sets the signals the demo selected but did not execute (missed maker entries,
+skipped by score or daily caps) against their shadow plans, which the collector already resolved: R by reason, next
+to the shadow plans of the filled trades. The text (Ukrainian, for the owner) is printed and, with ``--out``, written
+to a file; ``--json`` writes the rows, both summaries and the not-executed block (schema ``JSON_SCHEMA``, replaced
+atomically, so the dashboard «Демо» tab can show the numbers without network). Read-only public market data: nothing
+here places, changes or cancels an order.
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ import argparse
 import asyncio
 import dataclasses
 import json
+import os
 import sqlite3
 import sys
 import time
@@ -28,6 +33,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from tradedesk.analytics import demo_shadow
 from tradedesk.analytics.course_s14_ema import Bars
 from tradedesk.analytics.demo_vs_backtest import LIVE_WINDOW, DemoTrade, Replay, replay, summary
 from tradedesk.analytics.setup_signals import TF_MS
@@ -41,6 +47,8 @@ DAY_MS = 86_400_000
 HOUR_MS = 3_600_000
 PAGE = 1000  # Bybit caps klines at 1000 a request; the cursor follows the last bar, so smaller caps page too
 MAX_PAGES = 12
+JSON_SCHEMA = 2  # 2: + not_executed, schema, generated_ms, venue, notes (1 had summary, week, rows)
+MAX_ROWS = 100_000
 
 Fetch = Callable[[str, str, int, int], Awaitable[list[list[float]]]]
 
@@ -63,6 +71,35 @@ def load_closed(db: str, since_ms: int, until_ms: int) -> tuple[list[dict[str, A
         return [dict(r) for r in cur.fetchall()], None
     except sqlite3.Error as e:
         return [], f"query failed: {type(e).__name__}"
+    finally:
+        con.close()
+
+
+def load_not_executed(db: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], str | None]:
+    """(demo_trade rows, exec_audit 'skipped' rows, demo shadow trade_plan rows, error) over a read-only connection; a
+    missing table gives an empty list (an older store). Never raises."""
+    path = Path(db)
+    if not path.exists():
+        return [], [], [], f"no database at {db}"
+    try:
+        con = sqlite3.connect(f"file:{urllib.parse.quote(str(path))}?mode=ro", uri=True, timeout=5)
+    except (sqlite3.Error, OSError) as e:
+        return [], [], [], f"unreadable: {type(e).__name__}"
+    try:
+        con.row_factory = sqlite3.Row
+        names = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+
+        def q(table: str, sql: str) -> list[dict[str, Any]]:
+            return [dict(r) for r in con.execute(sql, (MAX_ROWS,))] if table in names else []
+
+        trades = q("demo_trade", "SELECT * FROM demo_trade ORDER BY signal_ts LIMIT ?")
+        audit = q(
+            "exec_audit", "SELECT ts, kind, link_id, symbol, setup, payload FROM exec_audit WHERE kind = 'skipped' ORDER BY id LIMIT ?"
+        )
+        plans = q("trade_plan", f"SELECT * FROM trade_plan WHERE tags LIKE '%{demo_shadow.SHADOW_TAG}%' ORDER BY id LIMIT ?")
+        return trades, audit, plans, None
+    except sqlite3.Error as e:
+        return [], [], [], f"query failed: {type(e).__name__}"
     finally:
         con.close()
 
@@ -230,6 +267,49 @@ def render(
     return "\n".join(lines) + "\n"
 
 
+GROUP_UA = {
+    "missed": "вхід не заповнився",
+    "skipped": "не відібрано",
+    "taken": "виконані (для порівняння)",
+}
+
+
+def _ci(ci: list[float] | None) -> str:
+    return "—" if not ci else f"[{_r(ci[0])}; {_r(ci[1])}]"
+
+
+def render_not_executed(ne: dict[str, Any], err: str | None = None) -> str:
+    """The Ukrainian block of ``demo_shadow.not_executed``: one line per group, then its reasons."""
+    lines = ["", "## Відібрані, але не виконані сигнали проти тіньових планів", ""]
+    if err:
+        return "\n".join([*lines, f"Звірки немає: {err}."]) + "\n"
+    for g in demo_shadow.GROUPS:
+        s = ne["groups"][g]
+        lines.append(
+            f"- {GROUP_UA[g]}: {s['n']} (за 7 днів {s['week']}); план закрито {s['resolved']}, ще відкритий {s['open']}, "
+            f"без плану {s['no_plan']}; R тіньових планів: середній {_r(s['mean_r'])}, 95 % ДІ {_ci(s['ci95_r'])}, "
+            f"сума {_r(s['sum_r'])} на {s['n_r']}; {s['conclusion']}."
+        )
+        for x in s["reasons"][:10]:
+            lines.append(f"  - {x['reason']}: {x['n']}, з R {x['n_r']}, середній {_r(x['mean_r'])}, сума {_r(x['sum_r'])}.")
+    lines += [
+        "",
+        "R тіньового плану — в одиницях ризику демо (як «R без беззбитку» бектесту): ринковий вхід за ціною рішення (до 2 год "
+        "після закриття сигнальної свічки), 1h-свічки Bybit, стоп виграє свічку, що торкнулась обох рівнів, без беззбитку. "
+        "Це простий сетап, а не те, що записало б демо. Відмови guard (refused) сюди не входять.",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def write_json(path: str, doc: dict[str, Any]) -> None:
+    """``doc`` as JSON at ``path`` (parent created), replaced atomically: a reader never sees half a file."""
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8")
+    os.replace(tmp, p)
+
+
 async def run(
     db: str, since_ms: int, days: float, venue: str, now_ms: int
 ) -> tuple[list[Replay], dict[str, Any], dict[str, Any], int, list[str]]:
@@ -261,19 +341,32 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--days", type=float, default=7.0, help="the separate block of trades closed in the last N days")
     ap.add_argument("--venue", default="bybit", help="ccxt id of the candles (default bybit; binanceusdm also works)")
     ap.add_argument("--out", help="also write the text to this file")
-    ap.add_argument("--json", help="write the rows and both summaries as JSON to this file")
+    ap.add_argument(
+        "--json",
+        help="write the rows, both summaries and the not-executed block as JSON to this file (replaced atomically; the "
+        "dashboard reads /var/lib/tradedesk-mcp/demo-vs-backtest/latest.json)",
+    )
     a = ap.parse_args(argv)
     now = int(time.time() * 1000)
     rows, total, week, week_ms, notes = asyncio.run(run(a.db, _since(a.since), a.days, a.venue, now))
-    text = render(rows, total, week, week_ms, now, a.venue, notes)
+    trades, audit, plans, ne_err = load_not_executed(a.db)
+    ne = demo_shadow.not_executed(trades, audit, plans, now_ms=now)
+    text = render(rows, total, week, week_ms, now, a.venue, notes) + render_not_executed(ne, ne_err)
     print(text, end="")
     if a.out:
         Path(a.out).write_text(text, encoding="utf-8")
     if a.json:
-        Path(a.json).write_text(
-            json.dumps({"summary": total, "week": week, "rows": [x.as_dict() for x in rows]}, ensure_ascii=False, indent=1),
-            encoding="utf-8",
-        )
+        doc = {
+            "schema": JSON_SCHEMA,
+            "generated_ms": now,
+            "venue": a.venue,
+            "notes": notes,
+            "summary": total,
+            "week": week,
+            "rows": [x.as_dict() for x in rows],
+            "not_executed": {**ne, "error": ne_err},
+        }
+        write_json(a.json, doc)
     return 0
 
 

@@ -228,9 +228,120 @@ def test_an_odd_row_does_not_take_the_page_down():
 
 def test_vs_backtest_block_says_where_the_data_is():
     on = db.block_demo_vs_bt([], True)
-    assert "тижневе повідомлення увімкнене" in on and "Дані — тижневе повідомлення в Telegram" in on
+    assert "тижневе повідомлення увімкнене" in on and "файла звірки ще немає" in on
+    assert "tradedesk-demo-vs-backtest-daily" in on and str(db.DEMO_VS_BT_JSON) in on
     assert "не вдалося прочитати" in db.block_demo_vs_bt([], None)
     assert "29-demo-vs-backtest-weekly-timer.sh" in db.block_demo_vs_bt([], False)
+    for err, text in (("corrupt", "пошкоджений"), ("old_schema", "старого формату"), ("too_big", "завеликий")):
+        assert text in db.block_demo_vs_bt([], True, None, err)
+    assert "не вдалося прочитати (unreadable: PermissionError)" in db.block_demo_vs_bt([], True, None, "unreadable: PermissionError")
+
+
+# ---------------------------------------------------------------- the reconciliation file (scripts/demo_vs_backtest.py --json)
+
+SHADOW_FIX = json.loads((Path(__file__).parent / "fixtures" / "demo_shadow_live_2026-10-24.json").read_text())
+
+
+def _vs_bt_doc(now_ms: int) -> dict:
+    """A file as scripts/demo_vs_backtest.main writes it: the replay summary and the not-executed block of the live
+    sample (24.10), built by the same functions."""
+    from tradedesk.analytics import demo_shadow as ds
+    from tradedesk.analytics import demo_vs_backtest as dvb
+
+    ne = ds.not_executed(SHADOW_FIX["trades"], SHADOW_FIX["audit"], SHADOW_FIX["plans"], now_ms=int(SHADOW_FIX["now_ms"]))
+    rows = [
+        dvb.Replay("a", "S/USDT:USDT", "S3", "4h", "short", 0, 0, "match", r_demo=2.2, r_demo_bt=2.1, r_bt=1.9, r_diff=0.2, entry_edge_r=0.05),
+        dvb.Replay("b", "S/USDT:USDT", "S3", "4h", "long", 0, 0, "mismatch", ("entry",), r_demo=-1.0, r_demo_bt=-1.1, r_bt=-1.0, r_diff=-0.1),
+        dvb.Replay("c", "S/USDT:USDT", "S16", "4h", "long", 0, 0, "no_data"),
+    ]  # fmt: skip
+    s = dvb.summary(rows)
+    return {
+        "schema": 2,
+        "generated_ms": now_ms,
+        "venue": "bybit",
+        "notes": [],
+        "summary": s,
+        "week": s,
+        "rows": [],
+        "not_executed": {**ne, "error": None},
+    }
+
+
+def test_vs_backtest_block_shows_the_file_numbers(tmp_path):
+    import demo_vs_backtest as script
+
+    path = tmp_path / "dvb" / "latest.json"
+    script.write_json(str(path), _vs_bt_doc(NOW - 3_600_000))
+    doc, err = db.load_demo_vs_bt(path)
+    assert err is None and doc["schema"] == 2
+    page = db.render_demo(*db.load_demo(_filled(tmp_path, NOW)), NOW / 1000, vs_bt_on=True, vs_bt=(doc, err))
+    assert "Блок не вдалося показати" not in page
+    block = page.split("<h2>Демо проти бектесту")[1]
+    assert "Звірено угод" in block and "замало для висновку (2 з 30)" in block and "50 %" in block  # 1 match of 2 decided
+    assert "збіг 1 · немає сигналу 0 · розбіжність 1" in block and "не вирішено 1" in block
+    assert "Відібрані, але не виконані сигнали проти тіньових планів" in block
+    assert "<td>Не відібрано</td><td class='num'>9</td>" in block and "<td class='num'>8 / 1 / 0</td>" in block
+    assert "<td>Виконані (для порівняння)</td><td class='num'>3</td>" in block
+    assert "бал сигналу нижче 2" in block and "денний ліміт угод під ризиком" in block  # reasons labelled from the examples
+    assert "замало для висновку (8 з 30)" in block and "Відмови guard сюди не входять" in block
+    assert "тижневе повідомлення увімкнене" in block and "старіша за 36 год" not in block
+    # every new tile and the sub-heading have their help note
+    tiles = re.findall(r"<div class='tile[^']*'><span class='k'>(.*?)<span class='v'>", block, re.S)
+    assert len(tiles) == 3 and all(ICON in k for k in tiles)
+    assert f"тіньових планів{ICON}" in block
+
+
+def test_vs_backtest_file_stale_corrupt_and_untrusted(tmp_path):
+    old = _vs_bt_doc(NOW - 40 * 3_600_000)
+    html = db.block_demo_vs_bt([], True, old, None, NOW / 1000)
+    assert "старіша за 36 год" in html
+    odd = _vs_bt_doc(NOW)
+    odd["not_executed"]["groups"]["skipped"]["reasons"][0]["example"] = f"<script>alert(1)</script> {XSS}"
+    odd["summary"]["conclusion"] = XSS
+    html = db.block_demo_vs_bt([], True, odd, None, NOW / 1000)
+    assert XSS not in html and "<script>alert" not in html and "&lt;img" in html
+    odd["not_executed"] = {"groups": {}, "error": "query failed: OperationalError"}
+    assert "Не вдалося прочитати базу для цього блоку" in db.block_demo_vs_bt([], True, odd, None, NOW / 1000)
+    assert "цього блоку немає" in db.block_demo_vs_bt([], True, {**odd, "not_executed": None}, None, NOW / 1000)
+    p = tmp_path / "x.json"
+    assert db.load_demo_vs_bt(p) == (None, "missing")
+    p.write_text("{not json")
+    assert db.load_demo_vs_bt(p) == (None, "corrupt")
+    p.write_text(json.dumps({"summary": {}, "schema": 1}))
+    assert db.load_demo_vs_bt(p) == (None, "old_schema")
+    p.write_text(json.dumps([1, 2]))
+    assert db.load_demo_vs_bt(p) == (None, "corrupt")
+    broken = db.render_demo({"trades": [], "audit": []}, None, NOW / 1000, vs_bt=({"schema": 2, "summary": {"counts": "x"}}, None))
+    assert broken.endswith("</body></html>")  # an odd file breaks at most its own block
+
+
+def test_vs_backtest_file_constants_follow_the_script_and_the_unit():
+    import demo_vs_backtest as script
+
+    from tradedesk.analytics.demo_shadow import GROUPS
+
+    assert db.DEMO_VS_BT_SCHEMA == script.JSON_SCHEMA
+    assert tuple(k for k, _ in db.DEMO_NE_GROUPS) == GROUPS
+    unit = (Path(__file__).resolve().parent.parent / "deploy" / "user-units" / "tradedesk-demo-vs-backtest-daily.service").read_text()
+    assert (
+        f"--json {db.DATA_DIR / 'demo-vs-backtest' / 'latest.json'}" in unit
+        or "--json /var/lib/tradedesk-mcp/demo-vs-backtest/latest.json" in unit
+    )
+    assert db.DEMO_VS_BT_JSON.parts[-2:] == ("demo-vs-backtest", "latest.json")
+
+
+@pytest.mark.parametrize(
+    ("msg", "label"),
+    [  # why a maker entry was cancelled (execution/orders.py entry_step, demo_trader)
+        ("price at the stop before the fill: the idea is invalidated", "ціна дійшла до стопу до заповнення"),
+        ("price ran 0.31R from the planned entry (> 0.25R)", "ціна втекла від плану далі 0.25R"),
+        ("reward/risk at the market 1.20 < 1.5", "R:R за ринком нижче 1.5"),
+        ("the venue has no such order", "біржа не знає ордера"),
+        ("not filled in time; the price is still near the plan; no position after the fill", "після заповнення позиції немає"),
+    ],
+)
+def test_missed_entry_reason_labels(msg, label):
+    assert db.demo_reason(msg) == label
 
 
 def test_demo_page_reads_the_store_and_is_in_the_shared_nav(tmp_path, monkeypatch):
@@ -238,9 +349,15 @@ def test_demo_page_reads_the_store_and_is_in_the_shared_nav(tmp_path, monkeypatc
     flag = tmp_path / "demo-vs-backtest-telegram.on"
     flag.write_text("")
     monkeypatch.setattr(db, "DEMO_VS_BT_FLAG", flag)
+    monkeypatch.setattr(db, "DEMO_VS_BT_JSON", tmp_path / "dvb" / "latest.json")
     page = db.demo_page(now=NOW / 1000)
     assert "querySelectorAll('.info')" in page and page.endswith("</body></html>")
     assert "href='/demo' aria-current=page" in page and "тижневе повідомлення увімкнене" in page
+    assert "файла звірки ще немає" in page
+    import demo_vs_backtest as script
+
+    script.write_json(str(tmp_path / "dvb" / "latest.json"), _vs_bt_doc(NOW))
+    assert "Звірено угод" in db.demo_page(now=NOW / 1000)  # the page reads the file the daily job writes
     assert "href='/demo'" in db.render_polymarket(None, "missing", NOW / 1000)
 
 

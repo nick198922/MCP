@@ -1,0 +1,9 @@
+[Unit]
+Description=tradedesk-demo-vs-backtest-daily (07:40 Europe/Kyiv)
+
+[Timer]
+OnCalendar=*-*-* 07:40:00 Europe/Kyiv
+Persistent=true
+
+[Install]
+WantedBy=timers.target

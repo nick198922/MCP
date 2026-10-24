@@ -67,6 +67,9 @@ def test_feature_switches_and_user_timers_merge_by_themselves():
 def test_claudes_own_branches_merge_like_the_agents():
     claude = pr(head={"ref": "claude/2026-10-19-self-service", "sha": "abc", "repo": REPO})
     assert am.decide(claude, ["docs/x.md"], "abc") == (True, "auto")
+    chat = pr(head={"ref": "chat/2026-10-24-x", "sha": "abc", "repo": REPO})
+    assert am.decide(chat, ["docs/x.md"], "abc") == (True, "auto")
+    assert not am.decide(pr(head=chat["head"], body="summary"), ["docs/x.md"], "abc")[0]  # still needs the mark
     other = pr(head={"ref": "feature/x", "sha": "abc", "repo": REPO})
     assert not am.decide(other, ["docs/x.md"], "abc")[0]
 

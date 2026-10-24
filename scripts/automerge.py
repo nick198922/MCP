@@ -1,6 +1,6 @@
 """Merge an agents' pull request by itself when it is safe to (run by .github/workflows/automerge.yml from main).
 
-A pull request qualifies when it comes from an agent/* or claude/* branch of this repository (the doctor's -fix-
+A pull request qualifies when it comes from an agent/*, claude/* or chat/* branch of this repository (the doctor's -fix-
 branches too), the launcher (or Claude's session, scripts/gh_pr.py --ready) marked it ready (the coordinator handed
 the step over; a step stuck after its run limit is not ready) and CI passed on its current head. Since 2026-10-22 the
 owner wants every such merge automatic, the control plane included (the agents' own scripts, permissions and
@@ -32,7 +32,7 @@ from gh_pr import READY_MARK, Call, caller, message  # noqa: E402
 # scripts/user_units_sync.sh, are listed.
 PROTECTED_PREFIXES = (".github/", ".claude/", "scripts/server/", "docs/adr/", "src/tradedesk/execution/")
 DEPLOY_OPEN = ("deploy/features.env", "deploy/env.example", "deploy/README.md", "deploy/user-units/")
-BRANCH_PREFIXES = ("agent/", "claude/")  # the agents' launcher and Claude's own sessions with the owner
+BRANCH_PREFIXES = ("agent/", "claude/", "chat/")  # the agents' launcher, Claude's own sessions, the owner's Telegram chat
 PROTECTED_FILES = {
     "CLAUDE.md",
     "docs/SECURITY.md",

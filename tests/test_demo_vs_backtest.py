@@ -193,6 +193,95 @@ def test_window_is_the_live_one():
     assert len(dvb.setup_window(bars, row["signal_ts"], NOW, window=100)) == 100
 
 
+# ---------------------------------------------------------------- break-even rule in force at the open
+
+
+SWITCH = dvb.BE_SWITCH_MS
+
+
+def test_be_switch_is_the_commit_of_the_new_rule():
+    from datetime import UTC, datetime
+
+    assert datetime(2026, 10, 22, 7, 12, 39, tzinfo=UTC).timestamp() * 1000 == SWITCH  # commit 8d82847, 10:12 Kyiv
+    assert dvb.BE_ROE == 0.30
+
+
+def test_be_rules_follow_the_open_time():
+    name, lo, hi = dvb.be_rules(SWITCH - 1, 20)  # opened a millisecond before the switch: +30 % ROE at 20x
+    assert name == "roe" and not lo.be_same_bar and hi.be_same_bar
+    assert lo.trigger(100.0, 95.0, 110.0) == pytest.approx(101.5) and hi.trigger(100.0, 95.0, 110.0) == pytest.approx(101.5)
+    assert lo.trigger(-100.0, -105.0, -90.0) == pytest.approx(-98.5)  # a short on negated prices: 1.5 % down
+    name, lo, hi = dvb.be_rules(SWITCH, 20)  # at the switch: half the way, whatever the leverage
+    assert name == "path" and lo.trigger(100.0, 95.0, 110.0) == pytest.approx(105.0) and hi.be_same_bar
+    assert dvb.be_rules(SWITCH - 1, None)[0] == "path" and dvb.be_rules(SWITCH - 1, 0)[0] == "path"  # no leverage
+    assert dvb.be_rules(SWITCH - 1, 20, switch_ms=SWITCH - 2)[0] == "path"  # the switch is a parameter
+
+
+def _before(row: dict[str, Any], lev: float | None, **kw: Any) -> dict[str, Any]:
+    return {**row, "opened_ts": SWITCH - 3_600_000, "closed_ts": SWITCH - 60_000, "leverage": lev, **kw}
+
+
+def test_trade_after_the_switch_uses_todays_rule():
+    row, bars, path = _sample("FIL")  # opened 2026-10-22 12:04 UTC, after the switch
+    assert row["opened_ts"] > SWITCH
+    x = _replay({**row, "leverage": 5}, bars, path)
+    assert x.be_rule == "path" and x.verdict == "match" and x.extra == {}
+    assert x.r_bt_fill_now is None and x.r_bt_fill_now_fast is None  # nothing to compare: the rule in force is today's
+    assert dvb.DemoTrade.from_row({**row, "leverage": 5}).leverage == 5.0 and dvb.DemoTrade.from_row(row).leverage is None
+
+
+def test_trade_before_the_switch_is_replayed_under_plus_30_roe():
+    row, bars, path = _sample("DOT")  # short, target hit after the hour that crossed half the way and came back
+    after = _replay(row, bars, path)
+    assert after.be_rule == "path" and after.r_bt_fast == pytest.approx(0.01, abs=0.01)  # break-even possible
+    # at 5x the old trigger is a 6 % move, beyond the target (5.8 % away): break-even never fires, R is the target's
+    x = _replay(_before(row, 5), bars, path)
+    assert x.be_rule == "roe" and x.verdict == "match" and x.bt_exit == "target"
+    assert x.r_bt == pytest.approx(after.r_bt) and x.r_bt_fast == pytest.approx(x.r_bt)
+    assert x.r_bt_fill_now == pytest.approx(after.r_bt_fill) and x.r_bt_fill_now_fast == pytest.approx(after.r_bt_fill_fast)
+    # so a break-even exit cannot come from the old rule at 5x: 'r', though today's band [0.01, 2.02] holds it
+    assert _replay({**row, "r_multiple": 0.0}, bars, path).verdict == "match"
+    y = _replay(_before(row, 5, r_multiple=0.0), bars, path)
+    assert y.verdict == "mismatch" and y.reasons == ("r",)
+    # at 20x the trigger is 1.5 %: the backtest moves the stop early and exits at break-even
+    z = _replay(_before(row, 20, r_multiple=0.0), bars, path)
+    assert z.be_rule == "roe" and z.verdict == "match" and z.bt_exit == "breakeven"
+    assert z.r_bt == pytest.approx(0.0, abs=0.01) and z.r_bt_fast == pytest.approx(0.0, abs=0.01)
+
+
+def test_divergence_from_the_rule_change_alone_is_its_own_reason():
+    # FIL long, stopped out; synthetic 50x so the old trigger (0.6 % above the fill) is reached before the stop
+    row, bars, path = _sample("FIL")
+    x = _replay(_before(row, 50, r_multiple=0.0), bars, path)  # the demo left at break-even: the old rule says so
+    assert x.be_rule == "roe" and x.r_bt_fill == pytest.approx(0.0, abs=0.01)
+    assert x.r_bt_fill_now == pytest.approx(-1.0, abs=0.01)  # today's rule would have been stopped out
+    assert x.verdict == "mismatch" and x.reasons == ("be_rule",)
+    # the same trade opened at the switch: today's rule only, a plain R divergence
+    y = _replay({**_before(row, 50, r_multiple=0.0), "opened_ts": SWITCH}, bars, path)
+    assert y.be_rule == "path" and y.reasons == ("r",)
+    # the demo R of the stop disagrees with the old rule: 'r', not the rule change
+    assert _replay(_before(row, 50), bars, path).reasons == ("r",)
+    s = dvb.summary([x, y, _replay(row, bars, path)])
+    assert s["mismatch_reasons"] == {"be_rule": 1, "r": 1} and s["mismatch_rule_only"] == 1
+    text = script.render([x, y], s, s, 0, NOW, "bybit", [])
+    assert "лише зміна правила беззбитку 1" in text
+
+
+def test_rule_edges_open_time_fallback_and_switch_inside():
+    row, bars, path = _sample("DOT")
+    # no leverage before the switch: today's rule, said so
+    x = _replay(_before(row, None), bars, path)
+    assert x.be_rule == "path" and "leverage unknown" in x.extra["be_rule_note"] and x.verdict == "match"
+    # opened before, closed after the switch: the live monitor changed the rule mid-trade; flagged
+    x = _replay({**row, "opened_ts": SWITCH - 1, "leverage": 10}, bars, path)
+    assert x.be_rule == "roe" and x.extra == {"be_switch_inside": True}
+    # no open time: the signal close decides (a signal bar closing before the switch)
+    x = _replay({**row, "opened_ts": None, "leverage": 10}, bars, path, now=NOW)
+    assert x.be_rule == "path"  # the DOT signal closed on 23.10
+    x = dvb.replay({**row, "opened_ts": None, "leverage": 10}, bars, path, now_ms=NOW, hold_ms=HOLD_4H, be_switch_ms=NOW)
+    assert x.be_rule == "roe"
+
+
 # ---------------------------------------------------------------- analytic reference
 
 

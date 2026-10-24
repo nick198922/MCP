@@ -1,0 +1,13 @@
+[Unit]
+Description=tradedesk: daily demo vs backtest snapshot for the dashboard «Демо» tab (scripts/demo_vs_backtest.py --json)
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/tradedesk/tradedesk-mcp
+# Read-only: the demo journal over a mode=ro connection, public Bybit candles through rt.exchanges; no Telegram, no
+# orders. The file is replaced atomically; the dashboard reads it without network.
+ExecStart=/home/tradedesk/.local/bin/uv run --quiet python scripts/demo_vs_backtest.py --json /var/lib/tradedesk-mcp/demo-vs-backtest/latest.json
+# Public candles for every closed demo trade (two requests each, cached): minutes at most.
+TimeoutStartSec=15min
+Nice=10
+NoNewPrivileges=true

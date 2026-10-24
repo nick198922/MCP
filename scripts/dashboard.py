@@ -1097,7 +1097,7 @@ HELP: dict[str, tuple[str, str, str, str]] = {
         "Не виконано",
         "Сигнали, які демо-трейдер узяв, але позиції не відкрив: лімітний вхід не заповнився або біржа відхилила ордер.",
         "Багато незаповнених входів — ціна йде без відкату, мейкер-вхід пропускає рух.",
-        "Такі сигнали в R не входять; їх звірка з тіньовими планами — наступний крок.",
+        "Такі сигнали в R не входять; що дали б їхні тіньові плани — у блоці «Демо проти бектесту».",
     ),
     "demo_pnl": (
         "P&L демо",
@@ -1151,8 +1151,21 @@ HELP: dict[str, tuple[str, str, str, str]] = {
     "demo_vs_bt": (
         "Демо проти бектесту",
         "Звірка кожної закритої демо-угоди з бектестом того самого сетапу: чи бектест дав би цю угоду з тим самим входом, стопом і R.",
-        "Панель без мережі, а звірці потрібні свічки біржі: результат — у тижневому повідомленні Telegram (тема «🧪 Демо-рахунок»).",
+        "Панель без мережі, а звірці потрібні свічки біржі: щоденний таймер пише її вихід у файл, панель лише читає файл.",
         "Якщо демо систематично розходиться з бектестом, історичним тестам сетапу вірити не можна.",
+    ),
+    "demo_vs_bt_total": (
+        "Звірка з бектестом",
+        "Скільки закритих демо-угод бектест відтворив: збіг, немає сигналу, розбіжність; наростаючим підсумком від першої угоди.",
+        "Частка збігів і різниця R (демо − бектест) в одиницях ризику бектесту; до 30 звірених угод — «замало для висновку».",
+        "Низька частка збігів — бектест сетапу описує не ту торгівлю, що веде демо.",
+    ),
+    "demo_not_executed": (
+        "Не виконані проти тіньових планів",
+        "Сигнали, які демо відібрало, але не виконало (вхід не заповнився; не відібрано за балом чи денними лімітами), і що дали б "
+        "їхні тіньові плани; поруч — тіньові плани виконаних угод.",
+        "R в одиницях ризику демо, без беззбитку, ринковий вхід за ціною рішення; до 30 планів з R — «замало для висновку».",
+        "Якщо пропущені дають стабільно більше R, ніж виконані, — фільтр балів або мейкер-вхід відсікає добрі угоди.",
     ),
 }
 
@@ -6763,7 +6776,8 @@ def polymarket_page(now: float | None = None) -> str:
 # BACKLOG 0.5 (a) «блок на панелі» and Phase 4.4 «Вкладка «Демо»»: the demo trader's own trades (demo_trade, schema
 # v19), R by setup with a t 95 % CI against 0, and the decisions it did not take (exec_audit kinds 'refused' /
 # 'skipped') grouped by reason. Read-only SQLite, no network. The «demo vs backtest» replay needs public candles, so it
-# is not computed here: the block only says where its result is (the weekly Telegram message) and what the store has.
+# is not computed here: the block reads the JSON file scripts/demo_vs_backtest.py --json writes daily (with the
+# missed / skipped signals against their shadow plans) and explains its absence.
 
 DEMO_DB = JOURNAL_DB  # execution.demo_trader.DEFAULT_DB: the same store
 DEMO_SETUPS = ("S14", "S16", "S3")  # execution.demo_trader.SETUPS
@@ -6775,6 +6789,16 @@ DEMO_REASONS_SHOWN = 15
 DEMO_WEEK_MS = 7 * 86_400_000
 DEMO_OPEN = ("open", "pending", "unknown")
 DEMO_VS_BT_FLAG = DATA_DIR / "assistant" / "demo-vs-backtest-telegram.on"  # scripts/server/29-demo-vs-backtest-weekly-timer.sh
+# scripts/demo_vs_backtest.py --json, written daily by deploy/user-units/tradedesk-demo-vs-backtest-daily.*
+DEMO_VS_BT_JSON = DATA_DIR / "demo-vs-backtest" / "latest.json"
+DEMO_VS_BT_SCHEMA = 2  # scripts/demo_vs_backtest.JSON_SCHEMA (a test pins it)
+DEMO_VS_BT_STALE_S = 36 * 3600  # the job runs daily: older than this means it stopped or failed
+DEMO_VS_BT_MAX_BYTES = 50_000_000
+DEMO_NE_GROUPS = (  # analytics.demo_shadow.GROUPS
+    ("missed", "Вхід не заповнився"),
+    ("skipped", "Не відібрано"),
+    ("taken", "Виконані (для порівняння)"),
+)
 DEMO_STATUS_UA = {
     "open": "відкрита",
     "pending": "чекає входу",
@@ -6821,6 +6845,12 @@ _DEMO_REASONS: tuple[tuple[re.Pattern[str], str], ...] = tuple(
         (r"^equity unknown", "капітал невідомий"),
         (r"^mode ", "режим не дозволено"),
         (r"^side ", "невідома сторона"),
+        # why a maker entry was cancelled ('missed', execution/orders.py entry_step, demo_trader._sync_pending)
+        (r"^price at the stop before the fill", "ціна дійшла до стопу до заповнення"),
+        (r"^price ran .* from the planned entry \(> ([\d.]+R)\)$", "ціна втекла від плану далі {0}"),
+        (r"^reward/risk at the market .* < ([\d.]+)$", "R:R за ринком нижче {0}"),
+        (r"^the venue has no such order$", "біржа не знає ордера"),
+        (r"no position after the fill$", "після заповнення позиції немає"),
     )
 )
 
@@ -6878,6 +6908,28 @@ def load_demo(path: Path) -> tuple[dict | None, str | None]:
         return None, f"unreadable: {type(e).__name__}"
     finally:
         con.close()
+
+
+def load_demo_vs_bt(path: Path) -> tuple[dict | None, str | None]:
+    """The JSON of scripts/demo_vs_backtest.py --json, or (None, reason) with reason 'missing' | 'too_big' | 'corrupt' |
+    'old_schema' | 'unreadable: …'. Read-only, no network; never raises."""
+    try:
+        if path.stat().st_size > DEMO_VS_BT_MAX_BYTES:
+            return None, "too_big"
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None, "missing"
+    except (OSError, UnicodeDecodeError) as e:
+        return None, f"unreadable: {type(e).__name__}"
+    try:
+        doc = json.loads(raw)
+    except (ValueError, RecursionError):
+        return None, "corrupt"
+    if not isinstance(doc, dict) or not isinstance(doc.get("summary"), dict):
+        return None, "corrupt"
+    if doc.get("schema") != DEMO_VS_BT_SCHEMA:
+        return None, "old_schema"
+    return doc, None
 
 
 def demo_r_stats(rs: list[float]) -> dict:
@@ -7073,16 +7125,137 @@ def block_demo_refusals(audit: list[dict] | None, now: float) -> str:
         out.append(f"<p class='note'>Показано {DEMO_REASONS_SHOWN} найчастіших причин з {len(groups)}.</p>")
     out.append(
         "<p class='note'>Одне рішення може мати кілька причин, тож сума за причинами більша за кількість рішень. "
-        "Звірки пропущених сигналів з тіньовими планами тут ще немає.</p>"
+        "Що дали б тіньові плани не відібраних сигналів — у блоці «Демо проти бектесту» нижче.</p>"
     )
     if len(audit) >= DEMO_AUDIT_MAX_ROWS:
         out.append(f"<p class='note warn'>Прочитано лише {DEMO_AUDIT_MAX_ROWS} останніх рішень.</p>")
     return "".join(out)
 
 
-def block_demo_vs_bt(trades: list[dict], flag_on: bool | None) -> str:
-    """No replay here: it needs public candles and the panel has no network; scripts/demo_vs_backtest.py writes its text
-    only with --out and the weekly job sends it straight to Telegram, so nothing of it is in the store."""
+DEMO_VS_BT_ERR_UA = {
+    "missing": "файла звірки ще немає",
+    "too_big": "файл звірки завеликий, його не читаю",
+    "corrupt": "файл звірки пошкоджений або має несподіваний формат",
+    "old_schema": "файл звірки старого формату (буде перезаписаний наступним запуском)",
+}
+
+
+def _demo_vs_bt_file_note(doc_err: str | None) -> str:
+    why = DEMO_VS_BT_ERR_UA.get(str(doc_err), f"файл звірки не вдалося прочитати ({_clean(doc_err, 60)})")
+    return (
+        f"<p class='note warn'>Чисел звірки тут немає: {_e(why)} (<code>{_e(DEMO_VS_BT_JSON)}</code>). Звірці потрібні публічні "
+        "свічки Bybit, а панель працює без мережі, тож вона лише читає файл, який щодня о 07:40 за Києвом пише user-таймер "
+        "<code>tradedesk-demo-vs-backtest-daily</code>. Вручну: <code>uv run python scripts/demo_vs_backtest.py --json "
+        f"{_e(DEMO_VS_BT_JSON)}</code>.</p>"
+    )
+
+
+def _demo_vs_bt_summary(doc: dict, now: float) -> str:
+    s = doc["summary"]
+    c = s.get("counts") if isinstance(s.get("counts"), dict) else {}
+    decided = int(_num(s.get("decided")) or 0)
+    n = int(_num(s.get("n")) or 0)
+    min_n = int(_num(s.get("min_n")) or DEMO_MIN_N)
+    few = not s.get("enough")
+    gen = _num(doc.get("generated_ms"))
+    age = None if gen is None else now - gen / 1000
+    at = None if gen is None else datetime.fromtimestamp(gen / 1000, timezone.utc)  # noqa: UP017
+    stamp = "час звірки не записано" if at is None else f"звірка від {_day(gen)} {kyiv(at, '%H:%M')}"
+    old = age is not None and age > DEMO_VS_BT_STALE_S
+    undecided = sum(int(_num(c.get(k)) or 0) for k in ("pending", "no_data", "unsupported"))
+    md = _num(s.get("mean_r_diff"))
+    tiles = [
+        _tile(
+            "Звірено угод",
+            _nf(decided),
+            f"із закритих {n} · не вирішено {undecided}",
+            help="demo_vs_bt_total",
+            tone="warn" if few else "",
+            badge=f"замало для висновку ({decided} з {min_n})" if few else "",
+        ),
+        _tile(
+            "Збіг з бектестом",
+            _share(s.get("match_share")),
+            f"збіг {int(_num(c.get('match')) or 0)} · немає сигналу {int(_num(c.get('no_signal')) or 0)} · розбіжність "
+            f"{int(_num(c.get('mismatch')) or 0)}",
+            help="demo_vs_bt_total",
+        ),
+        _tile(
+            "Різниця R, демо − бектест",
+            f"<span class='{_signed_cls(md)}'>{_r(md)}</span>",
+            f"угод з обома R {int(_num(s.get('n_r')) or 0)} · 95 % ДІ {_ci(s.get('ci95_r_diff'))}",
+            help="demo_vs_bt_total",
+        ),
+    ]
+    out = [f"<div class='tiles'>{''.join(tiles)}</div>"]
+    out.append(f"<p>Висновок: {_e(_clean(s.get('conclusion') or '—', 300))}.</p>")
+    cls = "note warn" if old or gen is None else "note"
+    late = " — старіша за 36 год: таймер, схоже, не спрацював" if old else ""
+    out.append(f"<p class='{cls}'>{_e(stamp)}{_e(late)}; свічки {_e(_clean(doc.get('venue') or '—', 20))}, файл — лише читання.</p>")
+    return "".join(out)
+
+
+def _demo_ne_cells(s: dict) -> str:
+    mr = _num(s.get("mean_r"))
+    sr = _num(s.get("sum_r"))
+    return (
+        f"<td class='num'>{int(_num(s.get('n')) or 0)}</td><td class='num'>{int(_num(s.get('n_r')) or 0)}</td>"
+        f"<td class='num {_signed_cls(mr)}'>{_r(mr)}</td><td class='num'>{_ci(s.get('ci95_r'))}</td>"
+        f"<td class='num {_signed_cls(sr)}'>{_r(sr)}</td>"
+    )
+
+
+def _demo_not_executed(ne: object) -> str:
+    """The not-executed block of the file (analytics.demo_shadow.not_executed): groups, then reasons."""
+    head = f"<h3>Відібрані, але не виконані сигнали проти тіньових планів{_info('demo_not_executed')}</h3>"
+    if not isinstance(ne, dict) or not isinstance(ne.get("groups"), dict):
+        return head + _empty("У файлі звірки цього блоку немає.")
+    if ne.get("error"):
+        return head + _empty(f"Не вдалося прочитати базу для цього блоку: {_clean(ne.get('error'), 80)}.")
+    groups = ne["groups"]
+    rows = [
+        "<div class='scroll'><table><tr><th>Група</th><th>Сигналів</th><th>За 7 днів</th><th>План закрито / відкритий / без плану</th>"
+        "<th>З R</th><th>Середній R</th><th>95 % ДІ</th><th>Сума R</th><th>Висновок</th></tr>"
+    ]
+    reasons = []
+    for key, label in DEMO_NE_GROUPS:
+        s = groups.get(key)
+        if not isinstance(s, dict):
+            continue
+        n, n_r = int(_num(s.get("n")) or 0), int(_num(s.get("n_r")) or 0)
+        few = n_r < DEMO_MIN_N
+        verdict = f"замало для висновку ({n_r} з {DEMO_MIN_N})" if few else "достатньо планів для висновку"
+        rows.append(
+            f"<tr><td>{_e(label)}</td><td class='num'>{n}</td><td class='num'>{int(_num(s.get('week')) or 0)}</td>"
+            f"<td class='num'>{int(_num(s.get('resolved')) or 0)} / {int(_num(s.get('open')) or 0)} / {int(_num(s.get('no_plan')) or 0)}</td>"
+            f"<td class='num'>{n_r}</td><td class='num {_signed_cls(_num(s.get('mean_r')))}'>{_r(s.get('mean_r'))}</td>"
+            f"<td class='num'>{_ci(s.get('ci95_r'))}</td><td class='num {_signed_cls(_num(s.get('sum_r')))}'>{_r(s.get('sum_r'))}</td>"
+            f"<td class='{'warn' if few else ''}'>{_e(verdict)}</td></tr>"
+        )
+        for x in (s.get("reasons") if isinstance(s.get("reasons"), list) else [])[:DEMO_REASONS_SHOWN]:
+            if isinstance(x, dict):
+                reasons.append(f"<tr><td>{_e(label)}</td><td>{_e(demo_reason(x.get('example') or None))}</td>{_demo_ne_cells(x)}</tr>")
+    rows.append("</table></div>")
+    out = [head, "".join(rows)]
+    if reasons:
+        out.append(
+            "<div class='scroll'><table><tr><th>Група</th><th>Причина</th><th>Сигналів</th><th>З R</th><th>Середній R</th>"
+            f"<th>95 % ДІ</th><th>Сума R</th></tr>{''.join(reasons)}</table></div>"
+        )
+    out.append(
+        "<p class='note'>R тіньового плану — в одиницях ризику демо, як «R без беззбитку» бектесту: ринковий вхід за ціною "
+        "рішення (до 2 год після закриття сигнальної свічки), 1h-свічки Bybit, стоп виграє свічку, що торкнулась обох рівнів, "
+        "без переносу в беззбиток. Це простий сетап, а не те, що записало б демо. Відмови guard сюди не входять. До "
+        f"{DEMO_MIN_N} планів з R у групі — лише опис.</p>"
+    )
+    return "".join(out)
+
+
+def block_demo_vs_bt(
+    trades: list[dict], flag_on: bool | None, doc: dict | None = None, doc_err: str | None = "missing", now: float | None = None
+) -> str:
+    """No replay here (it needs public candles and the panel has no network): the numbers come from the file of
+    scripts/demo_vs_backtest.py --json (``DEMO_VS_BT_JSON``, daily user timer); without it the block says why."""
     closed = sum(1 for t in trades if t.get("status") == "closed")
     when = (
         "стан прапорця тижневого повідомлення не вдалося прочитати"
@@ -7091,18 +7264,27 @@ def block_demo_vs_bt(trades: list[dict], flag_on: bool | None) -> str:
         if flag_on
         else "тижневе повідомлення поки вимкнене (вмикає власник кроком scripts/server/29-demo-vs-backtest-weekly-timer.sh)"
     )
-    return (
-        "<p>Звірка кожної закритої демо-угоди з бектестом того самого сетапу потребує публічних свічок Bybit, а панель працює "
-        "без мережі. Результат звірки ніде в базі не зберігається, тож тут його немає.</p>"
-        f"<p><b>Дані — тижневе повідомлення в Telegram</b> (тема «🧪 Демо-рахунок», неділя 20:30 за Києвом): {_e(when)}. Вручну: "
-        "<code>uv run python scripts/demo_vs_backtest.py</code>.</p>"
-        f"<p class='note'>Закритих демо-угод для звірки: {closed}. Висновок звірки — не раніше {DEMO_MIN_N} звірених угод; до того "
-        "«замало для висновку».</p>"
-    )
+    weekly = f"<p class='note'>Тижневе повідомлення в Telegram (тема «🧪 Демо-рахунок», неділя 20:30 за Києвом): {_e(when)}.</p>"
+    if doc is None:
+        return (
+            _demo_vs_bt_file_note(doc_err)
+            + weekly
+            + f"<p class='note'>Закритих демо-угод для звірки: {closed}. Висновок звірки — не раніше {DEMO_MIN_N} звірених угод; до того "
+            "«замало для висновку».</p>"
+        )
+    return _demo_vs_bt_summary(doc, time.time() if now is None else now) + _demo_not_executed(doc.get("not_executed")) + weekly
 
 
-def render_demo(data: dict | None, err: str | None, now: float, path: Path | None = None, vs_bt_on: bool | None = None) -> str:
-    """The «Демо» tab. Never raises: no database, no table or no rows gives an explained empty state."""
+def render_demo(
+    data: dict | None,
+    err: str | None,
+    now: float,
+    path: Path | None = None,
+    vs_bt_on: bool | None = None,
+    vs_bt: tuple[dict | None, str | None] = (None, "missing"),
+) -> str:
+    """The «Демо» tab. Never raises: no database, no table or no rows gives an explained empty state. ``vs_bt``: the
+    result of load_demo_vs_bt (the reconciliation file)."""
     head = (
         "<!doctype html><html lang='uk'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
         f"<title>tradedesk — демо</title><style>{CSS}{BRIEF_CSS}{JOURNAL_CSS}</style></head><body>"
@@ -7141,7 +7323,8 @@ def render_demo(data: dict | None, err: str | None, now: float, path: Path | Non
             f"<section class='wide'>{_h2('Відмови guard за причинами', 'demo_refusals')}{guarded(block_demo_refusals, data.get('audit'), now)}</section>"
         )
         out.append(
-            f"<section class='wide'>{_h2('Демо проти бектесту', 'demo_vs_bt')}{guarded(block_demo_vs_bt, trades or [], vs_bt_on)}</section>"
+            f"<section class='wide'>{_h2('Демо проти бектесту', 'demo_vs_bt')}"
+            f"{guarded(block_demo_vs_bt, trades or [], vs_bt_on, vs_bt[0], vs_bt[1], now)}</section>"
         )
         out.append("</main></body></html>")
         return "".join(out)
@@ -7158,7 +7341,7 @@ def demo_page(now: float | None = None) -> str:
         flag = DEMO_VS_BT_FLAG.exists()
     except OSError:
         flag = None
-    return with_help(render_demo(data, err, time.time() if now is None else now, DEMO_DB, flag))
+    return with_help(render_demo(data, err, time.time() if now is None else now, DEMO_DB, flag, load_demo_vs_bt(DEMO_VS_BT_JSON)))
 
 
 # ---------------------------------------------------------------- server

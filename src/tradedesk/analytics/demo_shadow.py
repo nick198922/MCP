@@ -1,6 +1,7 @@
 """Signals the demo trader selected but did not execute, against their shadow plans (BACKLOG 0.5, owner 23.10, item a):
-what R would the entries that did not fill ('missed') and the signals left out by score or daily caps ('skipped') have
-made, grouped by reason, next to the shadow plans of the trades the demo did fill ('taken', the reference).
+what R would the entries that did not fill ('missed'), the signals left out by score or daily caps ('skipped') and the
+signals the guard refused ('refused': R:R after fees, a coin already held, ...) have made, grouped by reason, next to
+the shadow plans of the trades the demo did fill ('taken', the reference).
 
 Pure functions, no I/O, time is a parameter (``now_ms``: decisions after it are ignored).
 
@@ -11,8 +12,12 @@ Inputs are rows of the store (read by the caller over a read-only connection):
 - ``exec_audit`` kind 'skipped' (score below the minimum, a daily cap, a stronger signal): its reason is the first of
   ``payload.violations``. Its shadow plan (``trade_plan`` tag ``src:demo-shadow`` + ``demo:skipped``) is written in the
   same cycle with the same clock, so it is found by (decision second, symbol, side, setup, timeframe); side and
-  timeframe come from the link id ``td-<setup>-<l|s>-<tf>-<base>-<signal s>``. 'refused' decisions (guard rules) are not
-  part of this slice.
+  timeframe come from the link id ``td-<setup>-<l|s>-<tf>-<base>-<signal s>``.
+- ``exec_audit`` kind 'refused' (a guard rule, or nothing sent because the quote failed): the same reason and the same
+  plan lookup (the demo trader tags these plans ``demo:skipped`` too). A refusal with a level error or a stop farther
+  than the guard's maximum gets no shadow plan by design (``execution.demo_trader._shadow``, ``NO_PLAN_RULES``): it is
+  left out of the rows and only counted (``groups.refused.excluded``), so 'no_plan' keeps meaning a plan that is lost.
+  The reason is the first violation, so a signal refused for two rules is grouped under the first in guard order.
 
 R is the unit of ``demo_vs_backtest`` (``r_plain``, no break-even): the live risk unit |fill - stop| + taker fee on both
 prices, a maker fee on the entry and on a target exit, taker plus slippage on a stop or a time exit
@@ -39,8 +44,13 @@ from .demo_vs_backtest import MIN_TRADES
 from .smart_money import t975
 from .stop_management import Fees
 
-GROUPS = ("missed", "skipped", "taken")
+GROUPS = ("missed", "skipped", "refused", "taken")
 FILLED = ("open", "closing", "closed")
+AUDIT_GROUPS = ("skipped", "refused")
+# execution.demo_trader._shadow writes no plan when a guard violation is a level error ('levels: stop and target must be
+# on opposite sides of the entry') or a stop too far ('stop 12.0% from the entry > 10%'): such a refusal has nothing to
+# score. Matched on the guard wording, so a venue error that merely mentions a stop is not taken for it.
+NO_PLAN_RULES = re.compile(r"^(?:levels\b|stop \S+ from the entry > )")
 SHADOW_TAG = "src:demo-shadow"
 R_OUTCOMES = ("target", "stop", "expired")
 WEEK_MS = 7 * 86_400_000
@@ -135,6 +145,15 @@ def _violations(payload: object) -> list[Any]:
     return vs if isinstance(vs, list) else []
 
 
+def planless_refusal(violations: Sequence[object]) -> bool:
+    """True when the demo trader writes no shadow plan for a refusal with these violations (``NO_PLAN_RULES``)."""
+    return any(NO_PLAN_RULES.match(" ".join(str(v).split())) for v in violations)
+
+
+def _decided(a: Mapping[str, Any], now_ms: int) -> bool:
+    return a.get("kind") in AUDIT_GROUPS and isinstance(a.get("ts"), int) and int(a["ts"]) <= now_ms
+
+
 def _row(group: str, msg: object, base: dict[str, Any], plan: Mapping[str, Any] | None, fees: Fees) -> ShadowRow:
     reason = "" if group == "taken" else reason_key(msg)
     example = "" if group == "taken" else " ".join(str(msg or "").split())[:200]
@@ -163,9 +182,26 @@ def match_rows(
     now_ms: int,
     fees: Fees = Fees(),
 ) -> list[ShadowRow]:
-    """Every missed demo entry, skipped signal and filled demo trade decided by ``now_ms``, with its shadow plan (module
-    docstring). ``plans``: trade_plan rows (only the demo shadow ones are used); ``audit``: exec_audit rows (only kind
-    'skipped'). Odd rows are skipped, never raised on."""
+    """Every missed demo entry, skipped or refused signal and filled demo trade decided by ``now_ms``, with its shadow
+    plan (module docstring); refusals that get no plan by design are left out (``planless_refusals``). ``plans``:
+    trade_plan rows (only the demo shadow ones are used); ``audit``: exec_audit rows (only kinds 'skipped' and
+    'refused'). Odd rows are skipped, never raised on."""
+    return _match(trades, audit, plans, now_ms, fees)[0]
+
+
+def planless_refusals(audit: Sequence[Mapping[str, Any]], plans: Sequence[Mapping[str, Any]], *, now_ms: int) -> list[int]:
+    """Decision times (unix ms) of the refusals decided by ``now_ms`` that have no shadow plan by design: a level error
+    or a stop too far (``NO_PLAN_RULES``) and no plan found."""
+    return _match([], audit, plans, now_ms, Fees())[1]
+
+
+def _match(
+    trades: Sequence[Mapping[str, Any]],
+    audit: Sequence[Mapping[str, Any]],
+    plans: Sequence[Mapping[str, Any]],
+    now_ms: int,
+    fees: Fees,
+) -> tuple[list[ShadowRow], list[int]]:
     by_id: dict[int, Mapping[str, Any]] = {}
     by_key: dict[tuple[int, str, str, str, str], Mapping[str, Any]] = {}
     for p in plans:
@@ -195,10 +231,11 @@ def match_rows(
         pid = t.get("plan_id")
         plan = by_id.get(pid) if isinstance(pid, int) else None
         out.append(_row("missed" if status == "missed" else "taken", t.get("note"), base, plan, fees))
+    planless: list[int] = []
     for a in audit:
-        ts = a.get("ts")
-        if a.get("kind") != "skipped" or not isinstance(ts, int) or ts > now_ms:
+        if not _decided(a, now_ms):
             continue
+        ts, kind = int(a["ts"]), str(a["kind"])
         link = parse_link(a.get("link_id"))
         setup, side, tf = link if link else (str(a.get("setup")), "", "")
         base = {
@@ -211,8 +248,11 @@ def match_rows(
         }
         vs = _violations(a.get("payload"))
         plan = by_key.get((ts // 1000, base["symbol"], side, setup, tf)) if link else None
-        out.append(_row("skipped", vs[0] if vs else None, base, plan, fees))
-    return out
+        if kind == "refused" and plan is None and planless_refusal(vs):
+            planless.append(ts)
+            continue
+        out.append(_row(kind, vs[0] if vs else None, base, plan, fees))
+    return out, planless
 
 
 def _stats(rows: Sequence[ShadowRow], now_ms: int, min_n: int) -> dict[str, Any]:
@@ -242,7 +282,7 @@ def _stats(rows: Sequence[ShadowRow], now_ms: int, min_n: int) -> dict[str, Any]
 
 
 def summary(rows: Sequence[ShadowRow], *, now_ms: int, min_n: int = MIN_TRADES) -> dict[str, Any]:
-    """Per group (missed, skipped, taken) and per (group, reason): counts (all, last 7 days, resolved, open, without a
+    """Per group (missed, skipped, refused, taken) and per (group, reason): counts (all, last 7 days, resolved, open, without a
     plan), outcomes, the shadow R (mean, t 95 % CI from 2 values, share above 0, sum) and the stored plan R over the same
     plans; 'enough' from ``min_n`` resolved plans with R. Reasons sorted by count. A Ukrainian conclusion per group says
     'замало для висновку' below ``min_n``."""
@@ -276,8 +316,10 @@ def not_executed(
     min_n: int = MIN_TRADES,
     fees: Fees = Fees(),
 ) -> dict[str, Any]:
-    """``summary`` of ``match_rows`` plus the rows themselves (``rows``, dicts)."""
-    rows = match_rows(trades, audit, plans, now_ms=now_ms, fees=fees)
+    """``summary`` of ``match_rows`` plus the rows themselves (``rows``, dicts) and, under ``groups.refused.excluded``,
+    the count of refusals without a plan by design (all and last 7 days: ``n``, ``week``)."""
+    rows, planless = _match(trades, audit, plans, now_ms, fees)
     out = summary(rows, now_ms=now_ms, min_n=min_n)
+    out["groups"]["refused"]["excluded"] = {"n": len(planless), "week": sum(1 for ts in planless if ts >= now_ms - WEEK_MS)}
     out["rows"] = [x.as_dict() for x in rows]
     return out

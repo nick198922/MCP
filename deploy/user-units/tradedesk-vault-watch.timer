@@ -1,0 +1,9 @@
+[Unit]
+Description=tradedesk-vault-watch (the 1st of each month, 10:00 Europe/Kyiv)
+
+[Timer]
+OnCalendar=*-*-01 10:00:00 Europe/Kyiv
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,3 @@
+- Картка `xs-anchor-nearness-high-short`: ворота потужності кроку 0 не пройдено (MDE 0.0384 > 0.03, 217 тижнів), статус `inconclusive`; середні не рахувались.
+- Нове: `analytics/xs_anchor.py` (NEAR365, без lookahead, 8 тестів), `scripts/verify_xs_anchor_nearness.py`, звіт `docs/verification/2026-10-25-xs-anchor-nearness-high-short.md`.
+- Критик: approve (`docs/reviews/2026-10-25-xs-anchor-nearness-review.md`). Повтор кроку 0 має сенс, коли набереться ≈ 355 тижнів.

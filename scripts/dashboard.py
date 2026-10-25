@@ -1076,7 +1076,7 @@ HELP: dict[str, tuple[str, str, str, str]] = {
     # «Демо» tab (demo trader on the Bybit Demo Trading account, play money)
     "demo": (
         "Демо-угоди",
-        "Угоди демо-трейдера на демо-рахунку Bybit (ігрові гроші): сетапи S14, S16, S3 і S12 (S12 бектест відкинув), вхід зі стопом і ціллю, ризик ≈ $100.",
+        "Угоди демо-трейдера на демо-рахунку Bybit (ігрові гроші): сетапи S14, S16, S3, S12 (S12 бектест відкинув) і шорти S38, S39 (переваги не доведено), вхід зі стопом і ціллю, ризик ≈ $100.",
         "Закриті, відкриті й невиконані входи, P&L і середній R усіх сетапів разом.",
         "Це полігон для перевірки сетапів наживо, не твої реальні угоди; рішення — за R окремого сетапу на ≥ 30 угодах.",
     ),
@@ -1113,7 +1113,7 @@ HELP: dict[str, tuple[str, str, str, str]] = {
     ),
     "demo_setups": (
         "R за сетапом",
-        "Для кожного сетапу демо (S14, S16, S3, S12): закриті угоди, частка в плюсі, середній R і його 95 % ДІ проти 0.",
+        "Для кожного сетапу демо (S14, S16, S3, S12, S38, S39): закриті угоди, частка в плюсі, середній R і його 95 % ДІ проти 0.",
         "Менше 30 угод з R — «замало для висновку»: числа описові.",
         "Сетап із ДІ вище 0 на ≥ 30 угодах — кандидат на реальні гроші; з ДІ нижче 0 — кандидат на вимкнення.",
     ),
@@ -6813,7 +6813,7 @@ def polymarket_page(now: float | None = None) -> str:
 # missed / skipped signals against their shadow plans) and explains its absence.
 
 DEMO_DB = JOURNAL_DB  # execution.demo_trader.DEFAULT_DB: the same store
-DEMO_SETUPS = ("S14", "S16", "S3", "S12")  # execution.demo_trader.SETUPS
+DEMO_SETUPS = ("S14", "S16", "S3", "S12", "S38", "S39")  # execution.demo_trader.SETUPS
 DEMO_MIN_N = 30  # analytics.demo_vs_backtest.MIN_TRADES (owner 23.10: no conclusion before ~30 closed trades)
 DEMO_MAX_ROWS = 20000
 DEMO_AUDIT_MAX_ROWS = 20000
@@ -6865,6 +6865,14 @@ DEMO_EPOCHS: tuple[tuple[str, int, str, str, tuple[str, ...]], ...] = (
         "docs/changes/2026-10-25-demo-s12-fvg.md (S12 not on the demo before this change)",
         ("S12",),
     ),
+    (
+        "v5",
+        1_792_944_900_000,  # 2026-10-25 16:15:00 UTC
+        "S38 (пробій рейнджу і ретест) і S39 (провалений свип) — шорти на продовження падіння, 4h, на демо без доведеної "
+        "переваги; S38 не більше 2 входів на 4h-свічку; правила ведення угоди — як у v3",
+        "docs/changes/2026-10-25-demo-short-setups.md (S38 / S39 not on the demo before this change)",
+        ("S38", "S39"),
+    ),
 )
 DEMO_STATUS_UA = {
     "open": "відкрита",
@@ -6897,6 +6905,8 @@ _DEMO_REASONS: tuple[tuple[re.Pattern[str], str], ...] = tuple(
         (r"^lower rank$", "обрано сильніший сигнал"),
         (r"trades at risk today = max$", "денний ліміт угод під ризиком"),
         (r"trades at risk today = temporary (\w+) cap (\d+)", "тимчасовий кап {0}: {1} слоти на день"),
+        (r"entries on this (\w+) bar = (\w+) cap (\d+) per bar$", "кап {1}: {2} входи на {0}-свічку"),
+        (r"entries on this (\w+) bar unknown \(book not read\)", "кап на свічку: журнал угод не прочитано"),
         (r"entries today = max$", "денний ліміт входів"),
         (r"orders in the last hour = max$", "ліміт ордерів за годину"),
         (r"open positions = max$", "максимум відкритих позицій"),
@@ -7014,7 +7024,7 @@ def demo_r_stats(rs: list[float]) -> dict:
 
 
 def demo_setup_stats(trades: list[dict]) -> dict[str, dict]:
-    """Per setup (S14, S16, S3, S12 always, then any other in the store): closed trades, R stats of those with R, P&L USD."""
+    """Per setup (DEMO_SETUPS always, then any other in the store): closed trades, R stats of those with R, P&L USD."""
     out: dict[str, dict] = {}
     names = list(DEMO_SETUPS) + sorted({str(t.get("setup")) for t in trades} - set(DEMO_SETUPS))
     for name in names:

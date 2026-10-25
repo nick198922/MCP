@@ -148,10 +148,10 @@ def test_enough_trades_drop_the_small_sample_badge():
     rs = [1.0 if i % 2 else 0.5 for i in range(30)]
     trades = [{"setup": "S14", "status": "closed", "r_multiple": r, "pnl_usd": 100 * r} for r in rs]
     html = db.block_demo_setups(trades)
-    assert "замало для висновку (0 з 30)" in html  # S16, S3 and S12 have none
+    assert "замало для висновку (0 з 30)" in html  # S16, S3, S12, S38 and S39 have none
     s14 = html.split("S14 · середній R")[1].split("</div>")[0]
     assert "<span class='sig" not in s14 and "95 % ДІ вище 0" in s14  # no «замало для висновку» badge
-    assert html.count("<span class='sig warn'>замало для висновку") == 3
+    assert html.count("<span class='sig warn'>замало для висновку") == 5
 
 
 def test_demo_refusals_group_by_rule_and_count_the_week():
@@ -178,6 +178,8 @@ def test_demo_refusals_group_by_rule_and_count_the_week():
         ("lower rank", "обрано сильніший сигнал"),
         ("3 trades at risk today = max", "денний ліміт угод під ризиком"),
         ("2 S12 trades at risk today = temporary S12 cap 2 (docs/QUESTIONS.md)", "тимчасовий кап S12: 2 слоти на день"),
+        ("2 S38 entries on this 4h bar = S38 cap 2 per bar", "кап S38: 2 входи на 4h-свічку"),
+        ("S38 entries on this 4h bar unknown (book not read) = S38 cap 2 per bar", "кап на свічку: журнал угод не прочитано"),
         (
             "maintenance + loss at all stops 4,100 USD > 40% of equity (cross margin)",
             "крос-маржа: підтримка + збиток на стопах понад ліміт",

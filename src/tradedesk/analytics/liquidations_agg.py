@@ -1,4 +1,4 @@
-"""Pure helpers for liquidation history (Binance symbols) (Coinalyze `/liquidation-history`). No I/O.
+"""Pure helpers for liquidation history (Coinalyze `/liquidation-history`, per-exchange symbols). No I/O.
 
 Coinalyze rows are `{"t": unix_s, "l": long_liquidations, "s": short_liquidations}`; units are base-asset
 contracts/coins, or USD when the request set `convert_to_usd=true`. A long liquidation is a forced SELL of a long
@@ -8,12 +8,18 @@ position; a short liquidation is a forced BUY.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 
 INTERVALS = {"daily": 86_400, "hourly": 3_600}
 _API_INTERVAL = {"daily": "daily", "hourly": "1hour"}
 _BASE_OK = re.compile(r"^[A-Z0-9]{1,15}$")
+# Coinalyze exchange codes (symbol suffix), each verified by matching Coinalyze OI with the venue's live OI:
+# '.A' = Binance (docs/reviews/2026-10-18-doubletop-parity-1b.md, 2026-10-25), '.6' = Bybit (BTCUSDT.6, 2026-10-25,
+# docs/reviews/2026-10-25-doubletop-parity-2.md). Only these are accepted; nothing else reaches the URL.
+EXCHANGE_CODES = {"binance": ".A", "bybit": ".6"}
+_EXCHANGE_ALIASES = {"binance": "binance", ".a": "binance", "a": "binance", "bybit": "bybit", ".6": "bybit", "6": "bybit"}
 TS_MIN = 1_230_768_000  # 2009-01-01T00:00:00Z: no crypto derivatives data before this
 TS_MAX = 4_102_444_800  # 2100-01-01T00:00:00Z
 # Everything a malformed untrusted row can raise while being parsed (int(inf) -> OverflowError, fromtimestamp -> OSError).
@@ -43,6 +49,40 @@ def aggregated_symbol(base: str, margin: str = "usdt") -> str | None:
     if not _BASE_OK.match(b) or m not in ("USDT", "USD"):
         return None
     return f"{b}{m}_PERP.A"
+
+
+def parse_exchanges(values: Sequence[Any] | None) -> tuple[list[str], list[str]]:
+    """Requested exchanges -> (known exchange names in request order without repeats, rejected values).
+
+    Accepts names ('binance', 'bybit') or Coinalyze codes ('.A', '.6', with or without the dot), case-insensitive;
+    None means ['binance']. Rejected values are returned truncated to 20 characters (for the error message only).
+    """
+    if values is None:
+        return ["binance"], []
+    names: list[str] = []
+    bad: list[str] = []
+    for v in values:
+        name = _EXCHANGE_ALIASES.get(str(v).strip().lower())
+        if name is None:
+            bad.append(str(v)[:20])
+        elif name not in names:
+            names.append(name)
+    return names, bad
+
+
+def exchange_symbol(base: str, margin: str, exchange: str) -> str | None:
+    """Coinalyze perpetual symbol of `base` on a known exchange, or None if the ticker is invalid or the pair is not
+    verified. Binance: BTCUSDT_PERP.A / BTCUSD_PERP.A; Bybit: BTCUSDT.6 (USDT-margined only; the coin-margined Bybit
+    symbol format is not verified, so it is refused)."""
+    if exchange == "binance":
+        return aggregated_symbol(base, margin)
+    if exchange == "bybit":
+        b = (base or "").strip().upper()
+        m = (margin or "").strip().upper()
+        if not _BASE_OK.match(b) or m != "USDT":
+            return None
+        return f"{b}USDT.6"
+    return None
 
 
 def summarise(history: list[dict[str, Any]], interval: str, *, limit: int | None = None) -> dict[str, Any] | None:

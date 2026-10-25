@@ -1,0 +1,3 @@
+- Перевірено картку `deribit-expiry-pin-mirror-control` (дзеркальний страйк): вердикт `inconclusive`, n = 1 393 серій BTC 2021–2026; систематичний зсув розрахунку до страйка з найбільшим обсягом ≥ ≈ 0.2 % спота виключено, слабший і «прилипання» до страйка не визначені.
+- Нова чиста аналітика `analytics/expiry_pin.py`, скрипт `scripts/verify_expiry_pin_mirror.py`, тести `tests/test_expiry_pin.py`, звіт у `docs/verification/`.
+- База знань (`options.md`) доповнена; в `BACKLOG.md` пункт для розробника: застереження «пінінг не підтверджено» в описах `deribit_max_pain` і GEX.

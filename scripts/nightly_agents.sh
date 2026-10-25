@@ -307,9 +307,15 @@ $(cat "$LOG_DIR/refusal.txt")"
 
 CONTINUE (run $RUNS of at most $MAX_RUNS on this work): an earlier run started this step and did not hand it to the owner.$on_branch Uncommitted changes (git status) are its work too. Do not start another step and do not discard that work. Find where it stopped (the card in docs/ideas, docs/reviews, docs/verification, docs/agents/runs$hint) and carry on from there; ignore the 'clean tree at origin/main' and work-in-progress-limit parts of the preflight (this work adds no new branch). Stage every file of the step, including the ones earlier runs changed. Any valid name in .agent/branch will do: the launcher keeps this work on its branch.$refused"
 fi
-# Late in the weekly window the plan is kept for the owner's cards (step p of .claude/nightly.md).
+# Late in the weekly window the plan is kept for the owner's cards (step p of .claude/nightly.md), unless the owner's
+# boost runs (scripts/agents_boost.sh: an end time in $LOG_DIR/boost-until), which lifts this brake as it lifts the
+# loop's pace (owner 24.10: «без лімітів»; the agents idled at 80 % with the boost on). The 97 % pause stays.
 OWNER_ONLY_AT="${TRADEDESK_AGENTS_OWNER_ONLY_AT:-80}"
 WEEK="$(usage_now | awk '{print $2}')"
+BOOST_UNTIL="$(head -c 20 "$LOG_DIR/boost-until" 2>/dev/null | tr -cd '0-9' || true)"
+if [[ -n "$BOOST_UNTIL" ]] && ((BOOST_UNTIL > $(date +%s))); then
+  WEEK=""
+fi
 if [[ -n "$WEEK" ]] && awk -v w="$WEEK" -v m="$OWNER_ONLY_AT" 'BEGIN { exit !(w >= m) }'; then
   PROMPT="$PROMPT
 

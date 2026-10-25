@@ -23,6 +23,16 @@ Rules taken from the verification runs (status of each setup: docs/knowledge/set
   setups tested live (BACKLOG 0.5 item "в", IDEA-20261024-short-setups-demo step 2). The backtest rests a limit at the middle;
   here the entry is the close of the bar that touched it, and a touch bar that already reached the stop (or closed at the
   target) gives no signal.
+- S38 and S39 (trend-continuation shorts; 4h, shorts only): the step-1 detectors of IDEA-20261024-short-setups-demo,
+  ``short_setups.breakout_retest`` (A) and ``short_setups.failed_sweep`` (B) on mirrored prices, with their registered
+  parameters (``docs/verification/2026-10-24-short-setups-demo.md``). S38: a close below the S3 range low, then within
+  6 bars the first bar whose high comes back to 0.25 ATR of the broken low decides: a close below it is a short at that
+  close, stop 0.5 ATR over the retest bar's high, target 2R. S39: a live S3 long (sweep of the range low) whose stop is
+  closed below within 6 bars, before the range middle was reached: a short at that close, stop 0.5 ATR over the highest
+  high since the sweep, target 2R. Neither has a proven edge (S38 ✗ by the card's kill rule, the OOS sign is opposite;
+  S39 ◯, too little data, and a random short of the same coin and BTC regime earned about as much); they are on the
+  demo because the owner wants them tested live (card step 3: IS E[R] >= -0.05R). The longs are not traded: A-long
+  failed that condition, and the card is about shorts.
 """
 
 from __future__ import annotations
@@ -36,6 +46,7 @@ import numpy as np
 from .course_basics import range_events
 from .course_fvg_ob import Zone, fvg_zones
 from .course_s14_ema import DAY_MS, Bars, Params, align_daily, atr, ema, find_signals, indicators, segment_pos
+from .short_setups import breakout_retest, failed_sweep
 
 S14_PARAMS = Params()
 RANGE_W = 30
@@ -59,10 +70,34 @@ S12_BACKTEST_UA = (
     "На демо — перевірка наживо, не доведена перевага."
 )
 
+# S38 / S39, as registered in step 1 of IDEA-20261024-short-setups-demo (scripts/verify_short_setups.py, "base")
+SHORT_TIMEFRAMES = ("4h",)  # the registered main sample; 1d was a side row (A 237 trades, B 5: its stops exceed 10 %)
+SHORT_WAIT = 6  # bars after the breakout (A) or the sweep (B) in which the retest / the failure counts
+S38_TOUCH_ATR = 0.25  # A: the retest bar's high comes back to within this many ATR14 of the broken range low
+SHORT_STOP_ATR = 0.5  # stop over the retest high (A) or the highest high since the sweep (B), in ATR14 of the entry bar
+SHORT_TARGET_R = 2.0  # target below the entry, in units of the price risk (stop - entry)
+SHORT_PLACEBO_UA = (
+    "Випадковий шорт того самого символу в тому самому режимі BTC (плацебо) у бектесті теж заробляв, тож результат "
+    "демо порівнювати з плацебо, а не з нулем. Бектест: Binance, топ-30, вхід мейкером за закриттям завжди виконаний; "
+    "демо: Bybit, топ-100, відбір за балом. На демо — перевірка наживо (рішення власника), не доведена перевага."
+)
+S38_BACKTEST_UA = (
+    "Бектест кроку 1 (docs/verification/2026-10-24-short-setups-demo.md; 4h, 2020-02 … 2026-09, вихід як на демо: "
+    "беззбиток на половині шляху, 7 днів): шорти в IS (до 2025-03) E[R] net +0.105R [+0.013; +0.200], в OOS −0.062R "
+    "[−0.186; +0.061] — знак протилежний, тож за критерієм картки сетап відкинуто; проти плацебо IS +0.054R, OOS −0.131R. "
+    + SHORT_PLACEBO_UA
+)
+S39_BACKTEST_UA = (
+    "Бектест кроку 1 (docs/verification/2026-10-24-short-setups-demo.md; 4h, 2020-02 … 2026-09, вихід як на демо: "
+    "беззбиток на половині шляху, 7 днів): шорти в IS (до 2025-03) E[R] net +0.177R [+0.003; +0.350], в OOS +0.060R "
+    "[−0.163; +0.280]; проти плацебо IS +0.051R, OOS −0.068R (CI містять 0), без 10 найкращих дат IS −0.036R: "
+    "даних замало для висновку. Стопи широкі (медіана 7 %). " + SHORT_PLACEBO_UA
+)
+
 
 @dataclass(frozen=True)
 class LiveSignal:
-    setup: str  # 'S14' | 'S16' | 'S3' | 'S12'
+    setup: str  # 'S14' | 'S16' | 'S3' | 'S12' | 'S38' | 'S39'
     side: str  # 'long' | 'short'
     timeframe: str
     signal_ts: int  # open time of the signal bar, ms UTC
@@ -278,7 +313,129 @@ def s12(b: Bars, timeframe: str) -> list[LiveSignal]:
     return s12_all(b, timeframe, lo=len(b) - 1)
 
 
-DETECTORS = {"S14": s14, "S16": range_setups, "S3": range_setups, "S12": s12}
+def _range_at(b: Bars, s: int) -> tuple[float, float]:
+    """(low, high) of the RANGE_W bars before bar ``s`` (the S3 range of a breakout or sweep at ``s``), real prices."""
+    return float(b.low[s - RANGE_W : s].min()), float(b.h[s - RANGE_W : s].max())
+
+
+def s38_all(b: Bars, timeframe: str, lo: int = 0) -> list[LiveSignal]:
+    """S38 shorts decided on bars lo .. n-1 (the full-history form of ``s38``): ``short_setups.breakout_retest`` on the
+    mirrored bars with the registered parameters. Causal: the signal on bar j uses bars <= j only."""
+    out: list[LiveSignal] = []
+    n = len(b)
+    if timeframe not in SHORT_TIMEFRAMES or n < RANGE_W + 20:
+        return out
+    m = b.mirrored()
+    pos = segment_pos(m.t)
+    a_arr = atr(m, 14, pos)
+    sigs = breakout_retest(
+        m,
+        pos,
+        a_arr,
+        w=RANGE_W,
+        width_atr=RANGE_WIDTH_ATR,
+        max_wait=SHORT_WAIT,
+        touch_atr=S38_TOUCH_ATR,
+        stop_atr=SHORT_STOP_ATR,
+        target_r=SHORT_TARGET_R,
+    )
+    for sg in sigs:
+        if sg.i < lo:
+            continue
+        s, j = sg.start, sg.i
+        r_lo, r_hi = _range_at(b, s)
+        e, st, tg, level = -sg.entry, -sg.stop, -sg.target, -sg.level
+        comment = (
+            f"S38 ({timeframe}): пробій рейнджу вниз і ретест — свічка {j - s} св. тому закрилась на {_px(float(b.c[s]))}, "
+            f"нижче мінімуму {_px(level)} рейнджу {RANGE_W} свічок {_px(r_lo)}–{_px(r_hi)} (ширина ≤ {RANGE_WIDTH_ATR:g} ATR); "
+            f"ця свічка повернулась до пробитого рівня (хай {_px(float(b.h[j]))} ≥ рівень − {S38_TOUCH_ATR:g} ATR) "
+            f"і закрилась нижче нього. Вхід {_px(e)} за закриттям, стоп {_px(st)} (хай ретесту + {SHORT_STOP_ATR:g} ATR, "
+            f"ATR14 {_px(sg.atr)}), ціль {_px(tg)} ({SHORT_TARGET_R:g}R). {S38_BACKTEST_UA}"
+        )
+        out.append(
+            LiveSignal(
+                "S38",
+                "short",
+                timeframe,
+                int(b.t[j]),
+                e,
+                st,
+                tg,
+                comment,
+                {
+                    "range_low": r_lo,
+                    "range_high": r_hi,
+                    "retest_high": float(b.h[j]),
+                    "atr14": sg.atr,
+                    "breakout_ts": float(b.t[s]),
+                },
+            )
+        )
+    return out
+
+
+def s38(b: Bars, timeframe: str) -> list[LiveSignal]:
+    """S38 on the last closed bar (module docstring)."""
+    return s38_all(b, timeframe, lo=len(b) - 1)
+
+
+def s39_all(b: Bars, timeframe: str, lo: int = 0) -> list[LiveSignal]:
+    """S39 shorts decided on bars lo .. n-1 (the full-history form of ``s39``): ``short_setups.failed_sweep`` on the
+    mirrored bars (its S3 shorts there are the S3 longs of ``b``) with the registered parameters. Causal: the signal on
+    bar j uses bars <= j only."""
+    out: list[LiveSignal] = []
+    n = len(b)
+    if timeframe not in SHORT_TIMEFRAMES or n < RANGE_W + 20:
+        return out
+    m = b.mirrored()
+    pos = segment_pos(m.t)
+    a_arr = atr(m, 14, pos)
+    sigs = failed_sweep(
+        m, pos, a_arr, w=RANGE_W, width_atr=RANGE_WIDTH_ATR, max_wait=SHORT_WAIT, stop_atr=SHORT_STOP_ATR, target_r=SHORT_TARGET_R
+    )
+    for sg in sigs:
+        if sg.i < lo:
+            continue
+        r, j = sg.start, sg.i
+        r_lo, r_hi = _range_at(b, r)
+        e, st, tg, s3_stop = -sg.entry, -sg.stop, -sg.target, -sg.level
+        mid = (r_lo + r_hi) / 2
+        comment = (
+            f"S39 ({timeframe}): провалений свип — {j - r} св. тому свічка проколола низ {_px(r_lo)} рейнджу {RANGE_W} свічок "
+            f"{_px(r_lo)}–{_px(r_hi)} до {_px(float(b.low[r]))} і закрилась назад (лонг S3, його стоп {_px(s3_stop)}); "
+            f"до середини рейнджу {_px(mid)} ціна не дійшла, а ця свічка закрилась нижче стопу S3. "
+            f"Вхід {_px(e)} за закриттям, стоп {_px(st)} (найвищий хай від свипу + {SHORT_STOP_ATR:g} ATR, ATR14 {_px(sg.atr)}), "
+            f"ціль {_px(tg)} ({SHORT_TARGET_R:g}R). {S39_BACKTEST_UA}"
+        )
+        out.append(
+            LiveSignal(
+                "S39",
+                "short",
+                timeframe,
+                int(b.t[j]),
+                e,
+                st,
+                tg,
+                comment,
+                {
+                    "range_low": r_lo,
+                    "range_high": r_hi,
+                    "range_mid": mid,
+                    "s3_stop": s3_stop,
+                    "atr14": sg.atr,
+                    "sweep_ts": float(b.t[r]),
+                },
+            )
+        )
+    return out
+
+
+def s39(b: Bars, timeframe: str) -> list[LiveSignal]:
+    """S39 on the last closed bar (module docstring)."""
+    return s39_all(b, timeframe, lo=len(b) - 1)
+
+
+DETECTORS = {"S14": s14, "S16": range_setups, "S3": range_setups, "S12": s12, "S38": s38, "S39": s39}
 
 
 def scan(b: Bars, timeframe: str, setups: Sequence[str] = ("S14", "S16", "S3")) -> list[LiveSignal]:

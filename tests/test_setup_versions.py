@@ -42,9 +42,11 @@ def test_epochs_are_the_dated_rule_changes():
         ("v2", _ms(2026, 10, 22, 6, 13, 19)),
         ("v3", _ms(2026, 10, 22, 7, 12, 39)),
         ("v4", _ms(2026, 10, 25, 14, 30, 0)),  # S12 joins the demo (rejected by its backtest)
+        ("v5", _ms(2026, 10, 25, 16, 15, 0)),  # S38 / S39 shorts join the demo (no proven edge)
     ]
     assert sv.EPOCHS[2].from_ms == BE_SWITCH_MS
     assert all(e.setups == () for e in sv.EPOCHS[:3]) and sv.EPOCHS[3].setups == ("S12",)
+    assert sv.EPOCHS[4].setups == ("S38", "S39")
     assert all(e.source and e.what for e in sv.EPOCHS)
     assert [e.from_ms for e in sv.EPOCHS] == sorted(e.from_ms for e in sv.EPOCHS)
     first_open = min(t["opened_ts"] for t in LIVE["trades"])
@@ -134,6 +136,23 @@ def test_s12_is_v4_and_the_other_setups_stay_v3():
     assert [(x["setup"], x["version"]) for x in s["rows"]] == [("S12", "v4"), ("S3", "v3")]
     assert _row(s, "S3", "v3")["changed_inside"] == 0  # v4 does not apply to S3
     assert [e["tag"] for e in sv.version_stats([], now_ms=v4 - 1)["epochs"]] == ["v1", "v2", "v3"]
+
+
+def test_s38_s39_are_v5_and_the_other_setups_keep_their_version():
+    from tradedesk.execution.demo_trader import SETUPS
+
+    v5 = sv.EPOCHS[4].from_ms
+    assert {"S38", "S39"} <= set(SETUPS)
+    later = v5 + 10 * H
+    for setup in ("S38", "S39"):
+        assert sv.version_of(setup, later, now_ms=later).tag == "v5"
+    assert sv.version_of("S12", later, now_ms=later).tag == "v4"
+    for setup in ("S14", "S16", "S3"):
+        assert sv.version_of(setup, later, now_ms=later).tag == "v3"
+    s = sv.version_stats([_t("S38", later), _t("S39", later), _t("S12", later)], now_ms=later + 2 * H)
+    assert [(x["setup"], x["version"]) for x in s["rows"]] == [("S12", "v4"), ("S38", "v5"), ("S39", "v5")]
+    assert _row(s, "S12", "v4")["changed_inside"] == 0  # v5 does not apply to S12
+    assert [e["tag"] for e in sv.version_stats([], now_ms=v5 - 1)["epochs"]] == ["v1", "v2", "v3", "v4"]
 
 
 def test_time_is_a_parameter_and_setup_specific_epochs():

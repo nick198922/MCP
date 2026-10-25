@@ -258,3 +258,152 @@ def test_s12_levels_comment_and_timeframe():
     assert ss.s12_all(b, "1d") == [] and ss.scan(b, "1d", ("S12",)) == []  # 4h only
     assert ss.s12_all(b.slice(0, 90), "4h") == []
     assert "S12" in ss.DETECTORS and "S12" not in {s.setup for s in ss.scan(b, "4h")}  # not in the default scan
+
+
+# ---------------------------------------------------------------- S38 / S39 (trend-continuation shorts, short-setups-demo step 3)
+
+
+def _s38_reference(b: Bars) -> list[tuple[int, float, float, float]]:
+    """(entry bar, entry, stop, target) of the registered rule A for shorts, by a plain loop in real prices (no
+    mirroring): a close below the 30-bar range low L, then the first bar of the next 6 whose high >= L - 0.25 ATR decides."""
+    pos = segment_pos(b.t)
+    a = atr(b, 14, pos)
+    out, resolved = [], -1
+    for s in range(30, len(b)):
+        if s <= resolved or pos[s] < 30 or not (np.isfinite(a[s - 1]) and a[s - 1] > 0):
+            continue
+        lo, hi = b.low[s - 30 : s].min(), b.h[s - 30 : s].max()
+        if hi - lo > 6 * a[s - 1] or not b.c[s] < lo:
+            continue
+        resolved = s
+        for j in range(s + 1, min(len(b), s + 7)):
+            if pos[j] != pos[s] + (j - s):
+                break
+            resolved = j
+            if not (np.isfinite(a[j]) and a[j] > 0) or b.h[j] < lo - 0.25 * a[j]:
+                continue
+            if b.c[j] < lo:
+                stop = b.h[j] + 0.5 * a[j]
+                out.append((j, float(b.c[j]), float(stop), float(b.c[j] - 2 * (stop - b.c[j]))))
+            break
+    return out
+
+
+def _s39_reference(b: Bars) -> list[tuple[int, float, float, float]]:
+    """(entry bar, entry, stop, target) of the registered rule B for shorts in real prices: a live S3 long (a sweep of
+    the range low, stop 0.5 ATR under it) closed below its stop within 6 bars before the range middle was reached."""
+    pos = segment_pos(b.t)
+    a = atr(b, 14, pos)
+    out, used = [], set()
+    for ev in range_events(b, pos, a, w=30, width_atr=6.0):
+        r = ev.r
+        if ev.kind != "sweep" or not (np.isfinite(a[r]) and a[r] > 0):
+            continue
+        s3_stop = ev.ld - 0.5 * a[r]
+        for j in range(r + 1, min(len(b), r + 7)):
+            if pos[j] != pos[r] + (j - r):
+                break
+            if b.c[j] < s3_stop:
+                stop = b.h[r : j + 1].max() + 0.5 * a[j]
+                if j not in used and stop > b.c[j]:
+                    used.add(j)
+                    out.append((j, float(b.c[j]), float(stop), float(b.c[j] - 2 * (stop - b.c[j]))))
+                break
+            if b.h[j] >= ev.mid:
+                break
+    return sorted(out)
+
+
+def _rows(b: Bars, sigs) -> list[tuple[int, float, float, float]]:
+    idx = {int(t): k for k, t in enumerate(b.t)}
+    return sorted((idx[s.signal_ts], s.entry, s.stop, s.target) for s in sigs)
+
+
+@pytest.mark.parametrize("seed", [1, 3, 7])
+def test_s38_s39_equal_the_registered_rules_and_the_step1_detectors(seed):
+    """The live adapters give the registered short rules (a plain loop in real prices) and the step-1 detectors of
+    ``short_setups`` with their default ("base") parameters on the mirrored bars, as scripts/verify_short_setups.py
+    calls them."""
+    import inspect
+
+    from tradedesk.analytics.short_setups import breakout_retest, failed_sweep
+
+    b = _bars(1000, seed)
+    for bb in (b, _with_hole(b, 500, 20)):  # a hole restarts the segment
+        for fn, ref, det in ((ss.s38_all, _s38_reference, breakout_retest), (ss.s39_all, _s39_reference, failed_sweep)):
+            sigs = fn(bb, "4h")
+            got = _rows(bb, sigs)
+            want = ref(bb)
+            assert len(got) == len(want) > 3
+            for g, w in zip(got, want, strict=True):
+                assert g[0] == w[0] and g[1:] == pytest.approx(w[1:], rel=1e-12)
+            m = bb.mirrored()
+            pos = segment_pos(m.t)
+            step1 = det(m, pos, atr(m, 14, pos))
+            assert got == sorted((x.i, -x.entry, -x.stop, -x.target) for x in step1)
+            assert {s.side for s in sigs} == {"short"}
+    p = inspect.signature(breakout_retest).parameters  # the live constants are the registered defaults
+    assert (p["w"].default, p["width_atr"].default, p["max_wait"].default) == (ss.RANGE_W, ss.RANGE_WIDTH_ATR, ss.SHORT_WAIT)
+    assert (p["touch_atr"].default, p["stop_atr"].default, p["target_r"].default) == (
+        ss.S38_TOUCH_ATR,
+        ss.SHORT_STOP_ATR,
+        ss.SHORT_TARGET_R,
+    )
+    q = inspect.signature(failed_sweep).parameters
+    assert (q["max_wait"].default, q["stop_atr"].default, q["target_r"].default) == (ss.SHORT_WAIT, ss.SHORT_STOP_ATR, ss.SHORT_TARGET_R)
+
+
+@pytest.mark.parametrize("setup", ["S38", "S39"])
+def test_s38_s39_live_scan_on_each_prefix_equals_the_full_history(setup):
+    b = _bars(600, 3)
+    full_fn = {"S38": ss.s38_all, "S39": ss.s39_all}[setup]
+    full = {(s.signal_ts, s.entry, s.stop, s.target) for s in full_fn(b, "4h") if s.signal_ts >= int(b.t[60])}
+    live = set()
+    for i in range(60, len(b)):
+        sigs = ss.scan(b.slice(0, i + 1), "4h", (setup,))
+        assert all(s.setup == setup and s.side == "short" and s.signal_ts == int(b.t[i]) for s in sigs)
+        live |= {(s.signal_ts, s.entry, s.stop, s.target) for s in sigs}
+    assert live == full and len(live) > 3
+
+
+@pytest.mark.parametrize("setup", ["S38", "S39"])
+def test_s38_s39_are_causal_a_different_future_after_each_signal_bar_changes_nothing_up_to_it(setup):
+    """Cut at every signal bar t (and the bar before it), give the history a different future: the signals up to t,
+    levels and comment included, stay the same, and the live scan on bars 0..t sees the signal of bar t."""
+    full_fn, live_fn = {"S38": (ss.s38_all, ss.s38), "S39": (ss.s39_all, ss.s39)}[setup]
+    b = _bars(700, 1)
+    full = full_fn(b, "4h")
+    rng = np.random.default_rng(42)
+    cuts = sorted({k for s in full for k in (int(np.searchsorted(b.t, s.signal_ts)) - 1, int(np.searchsorted(b.t, s.signal_ts)))})
+    assert len(cuts) > 6
+    for t in cuts:
+        upto = int(b.t[t])
+        want = [s for s in full if s.signal_ts <= upto]
+        assert [s for s in full_fn(_other_future(b, t, rng), "4h") if s.signal_ts <= upto] == want, t
+        assert live_fn(b.slice(0, t + 1), "4h") == [s for s in want if s.signal_ts == upto], t
+
+
+def test_s38_s39_levels_comment_and_timeframe():
+    b = _bars(1000, 3)
+    idx = {int(t): k for k, t in enumerate(b.t)}
+    s38, s39 = ss.s38_all(b, "4h"), ss.s39_all(b, "4h")
+    assert s38 and s39
+    for s in s38 + s39:
+        j = idx[s.signal_ts]
+        assert s.side == "short" and s.entry == pytest.approx(float(b.c[j]))
+        assert s.stop > s.entry > s.target and s.target == pytest.approx(s.entry - 2 * (s.stop - s.entry))
+        assert s.indicators["atr14"] > 0 and s.indicators["range_low"] < s.indicators["range_high"]
+        assert s.comment.startswith(f"{s.setup} (4h)") and "Вхід" in s.comment and "стоп" in s.comment and "ATR14" in s.comment
+        assert "Бектест кроку 1" in s.comment and "плацебо" in s.comment and "не доведена перевага" in s.comment
+    for s in s38:
+        j, lo = idx[s.signal_ts], s.indicators["range_low"]
+        assert b.c[j] < lo and b.h[j] >= lo - 0.25 * s.indicators["atr14"]  # a retest from below that closed under
+        assert s.stop == pytest.approx(s.indicators["retest_high"] + 0.5 * s.indicators["atr14"])
+        assert "−0.062R" in s.comment and "відкинуто" in s.comment  # the OOS sign is opposite: said plainly
+    for s in s39:
+        j = idx[s.signal_ts]
+        assert b.c[j] < s.indicators["s3_stop"] < s.indicators["range_low"] < s.indicators["range_mid"]
+        assert "+0.177R" in s.comment and "даних замало" in s.comment
+    assert ss.s38_all(b, "1d") == [] and ss.s39_all(b, "1d") == [] and ss.scan(b, "1d", ("S38", "S39")) == []  # 4h only
+    assert ss.s38_all(b.slice(0, 40), "4h") == [] and ss.s39_all(b.slice(0, 40), "4h") == []
+    assert {"S38", "S39"} <= set(ss.DETECTORS) and not {"S38", "S39"} & {s.setup for s in ss.scan(b, "4h")}  # not default

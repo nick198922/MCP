@@ -136,6 +136,36 @@ def test_cancel_trade_reports_a_failed_script_in_its_own_words(monkeypatch):
     assert br.cancel_trade("/cancel 1 note a\x00b").startswith("❌ Угоду не скасовано: у тексті є недопустимий символ")
 
 
+def test_check_command_is_one_argument_only_for_the_owner_and_records_nothing(monkeypatch):
+    assert br.command("/check BTC call premium 80 expiry 36h") == "/check" and br.command("/check@WWHite2_bot BTC") == "/check"
+    text = "/check BTC call premium 80 expiry 36h thesis $(rm -rf ~); --db /tmp/x"
+    argv = br.check_argv(text)
+    assert argv[-1] == f"--text={text}" and argv[-2].endswith("rules_pretrade_tg.py") and br.CHECK_SCRIPT.exists()
+    calls, sent = [], []
+    monkeypatch.setattr(br, "check_rules", lambda text: calls.append(text) or "<b>Перевірка</b>")
+    for name in ("record_trade", "close_trade", "cancel_trade"):
+        monkeypatch.setattr(br, name, lambda text, name=name: pytest.fail(f"a /check must not call {name}"))
+    monkeypatch.setattr(br, "reply", lambda env, text, **k: sent.append((text, k)))
+    monkeypatch.setattr(br, "log", lambda line: None)
+    monkeypatch.setattr(br, "ask_claude", lambda *a: pytest.fail("a /check must not go to Claude"))
+    t = "/check SOL long 180 stop 170 risk 90"
+    br.handle(ENV, {}, [msg(text=t, **{"from": {"id": 5}})])
+    br.handle(ENV, {}, [msg(text=t, message_thread_id=2)])
+    br.handle(ENV, {}, [msg(text=t, chat={"id": -42})])
+    assert calls == [] and sent == []
+    br.handle(ENV, {}, [msg(text=t, message_id=9)])
+    assert calls == [t] and sent == [("<b>Перевірка</b>", {"mode": "html", "to": 9})]
+    assert "/check" in br.HELP
+
+
+def test_check_rules_reports_a_failed_script_in_its_own_words(monkeypatch):
+    logged = []
+    monkeypatch.setattr(br, "log", logged.append)
+    monkeypatch.setattr(br, "check_argv", lambda text: [sys.executable, "-c", "import sys; sys.exit(2)"])
+    assert br.check_rules("/check BTC long 1") == "❌ Перевірку не виконано: скрипт журналу завершився з кодом 2."
+    assert any(line.startswith("check stderr:") for line in logged)
+
+
 def test_record_trade_refuses_a_nul_byte(monkeypatch):
     monkeypatch.setattr(br, "log", lambda line: None)
     monkeypatch.setattr(br, "trade_argv", lambda text: [sys.executable, "-c", "pass", text])

@@ -8,16 +8,17 @@
 
 ## Прогрес
 - [x] 1a. Звірка наших інструментів з DOUBLETOP на одному вході (18.10, шість пар, BTC/Xi; docs/reviews/2026-10-18-doubletop-parity.md)
-- [ ] 1b. Звірка (зроблено: BTC, ETH, SOL проти DT, `.A` = Binance; лишилась Bybit-гілка — потрібні коди бірж `/exchanges`, ключ у власника): ETH і альт (до 3–5 входів, як у кроці 1), Bybit-гілки, з'ясувати, що означає суфікс `.A` у Coinalyze (дані звірки вказують на Binance, а не агрегат; див. docs/reviews/2026-10-18-doubletop-parity-critic.md)
+- [x] 1b. Звірка (25.10, Claude: `.A` = Binance і `.6` = Bybit підтверджено збігом OI з живими біржами; ETH збігається; [звіт](../reviews/2026-10-25-doubletop-parity-2.md)): ETH і альт (до 3–5 входів, як у кроці 1), Bybit-гілки, з'ясувати, що означає суфікс `.A` у Coinalyze (дані звірки вказують на Binance, а не агрегат; див. docs/reviews/2026-10-18-doubletop-parity-critic.md)
 - [x] 2. `dex_pairs`
 - [x] 3. `chain_metrics`
 - [x] Ключ Coinalyze (власник, 17.10)
 - [x] 4a. Провайдер Coinalyze + `liquidations_history`
-- [ ] 4b. Жива перевірка власником (USD/одиниці) і бекфіл колектором
+- [x] 4b. Жива перевірка одиниць (25.10, Claude, з DoubleTop: монети збігаються до знака, USD = монети × close дня; [звіт](../reviews/2026-10-25-doubletop-parity-2.md))
+- [ ] 4c. Бекфіл колектором; агрегат ліквідацій / OI кількох бірж (`.A` + `.6` + …) — пункт BACKLOG
 - [ ] 5. Повтор перевірок на історії Coinalyze
 - [x] 6a. Pendle (нижчий пріоритет): фіксована дохідність, `pendle_fixed_yields`, `pendle_market` змерджено (PR #78)
 - [x] 6b. Pendle: крива дохідності — інструмент `pendle_yield_curve` (критик: approve, `docs/reviews/2026-10-18-pendle-yield-curve.md`)
-- [ ] 6c. Звірка `pendle_yield_curve` з відповіддю DoubleTop `pendle__yield_curve` на тому самому вході (потрібен зразок DT від Claude в інтерактивній сесії)
+- [x] 6c. Звірка `pendle_yield_curve` з DoubleTop (25.10, `sUSDe`): спільні точки збігаються; у DT бракує ринку мережі 143 ($16 млн), тож їхня форма «flat» хибна, наша «downward» правильна ([звіт](../reviews/2026-10-25-doubletop-parity-2.md))
 
 ## Черга
 - Після [IDEA-20261017-deviation-weekly-trend](IDEA-20261017-deviation-weekly-trend.md) (H1 — першою).

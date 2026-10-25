@@ -1,0 +1,36 @@
+{
+ "captured_at": "2026-10-25T20:23:00Z",
+ "source": "claude.ai DOUBLETOP MCP (interactive session)",
+ "args": {
+  "asset": "sUSDe"
+ },
+ "response": {
+  "asset_query": "sUSDe",
+  "matched_markets": 2,
+  "shape": "flat",
+  "shape_reason": "Spread between shortest and longest only 0 bps — flat curve.",
+  "curve": [
+   {
+    "market_address": "0x47ad2cd1dd15739a7a035b9d3b7828d916fef77e",
+    "chain": "eth",
+    "market_name": "PENDLE-LPT",
+    "expiry": "2026-11-26T00:00:00.000Z",
+    "days": 31,
+    "implied_apy": 0.047726,
+    "underlying_apy": 0.049147,
+    "liquidity_usd": 5109541.246081482
+   },
+   {
+    "market_address": "0xdb96b529d19ff4a7d711e6e082172c77cfe88ed8",
+    "chain": "plasma",
+    "market_name": "PENDLE-LPT",
+    "expiry": "2027-01-28T00:00:00.000Z",
+    "days": 94,
+    "implied_apy": 0.047696,
+    "underlying_apy": 0.049096,
+    "liquidity_usd": 30576.56273325632
+   }
+  ],
+  "arbitrage_pairs": []
+ }
+}

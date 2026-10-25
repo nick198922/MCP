@@ -1,0 +1,2 @@
+- Скаут: картка `trend-long-beta-hedged` (лонг-нога Donchian з хеджем BTC); критик відхилив її на тріажі (потужність: MDE ≈ 0.23R проти воріт 0.15R, форкінг за боком).
+- Рев'ю тріажу: `docs/reviews/2026-10-25-idea-triage-trend-long-beta-hedged.md`.

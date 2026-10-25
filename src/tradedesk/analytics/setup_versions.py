@@ -19,7 +19,10 @@ made in, so a change is assumed live from the commit minute, the deploy time is 
 - ``v2`` 2026-10-22 06:13:19 UTC, 8ec1f37: maker limit entry and target, the market only when the situation asks
   (``docs/changes/2026-10-22-demo-maker-orders.md``, ADR 0007 p. 10a);
 - ``v3`` 2026-10-22 07:12:39 UTC, 8d82847: break-even half the way to the target instead of +30 % ROE
-  (``docs/changes/2026-10-22-demo-breakeven-path.md``; the same minute as ``demo_vs_backtest.BE_SWITCH_MS``).
+  (``docs/changes/2026-10-22-demo-breakeven-path.md``; the same minute as ``demo_vs_backtest.BE_SWITCH_MS``);
+- ``v4`` 2026-10-25 14:30 UTC, S12 only: the setup S12 (a FVG retest, rejected by its backtest) joins the demo
+  (``docs/changes/2026-10-25-demo-s12-fvg.md``). Its start is the time the change was written, before it can be
+  merged and deployed, so no S12 trade can predate it; the other setups keep v3.
 
 Not versioned, because they change which signals are taken, not how a taken trade runs: eb3af15 (22.10 07:45 UTC, the
 daily cap counts trades at risk, ``docs/changes/2026-10-22-demo-risk-cap.md``), f9f7cb5 (23.10 16:14 UTC, the option
@@ -76,6 +79,13 @@ EPOCHS: tuple[Epoch, ...] = (
         BE_SWITCH_MS,
         "беззбиток на половині шляху до цілі замість +30 % ROE",
         "8d82847, docs/changes/2026-10-22-demo-breakeven-path.md",
+    ),
+    Epoch(
+        "v4",
+        _ms(2026, 10, 25, 14, 30, 0),
+        "S12 (ретест FVG за денним трендом, 4h) на демо як відкинутий бектестом сетап; правила ведення угоди — як у v3",
+        "docs/changes/2026-10-25-demo-s12-fvg.md (S12 not on the demo before this change)",
+        ("S12",),
     ),
 )
 

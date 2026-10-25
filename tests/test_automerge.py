@@ -149,6 +149,7 @@ def test_the_demo_trader_and_the_holds_guards_wait_for_claudes_review():
     for path in (
         "src/tradedesk/execution/orders.py",
         "src/tradedesk/analytics/setup_signals.py",
+        "src/tradedesk/analytics/course_fvg_ob.py",
         "deploy/user-units/tradedesk-demo-manage.timer",
         "docs/adr/0007-demo-auto-execution.md",
         "scripts/automerge.py",
@@ -172,6 +173,7 @@ def test_demo_trader_inputs_are_named_as_system_files():
         "src/tradedesk/analytics/setup_signals.py",
         "src/tradedesk/analytics/course_basics.py",
         "src/tradedesk/analytics/course_s14_ema.py",
+        "src/tradedesk/analytics/course_fvg_ob.py",
         "deploy/user-units/tradedesk-demo-trader.service",
         "deploy/user-units/tradedesk-demo-manage.timer",
     ):

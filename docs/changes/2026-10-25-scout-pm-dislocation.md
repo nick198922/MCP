@@ -1,0 +1,3 @@
+- Скаут: дві нові картки ідей, тріаж критика (`docs/reviews/2026-10-25-triage-pm-dislocation-hl-volume-share.md`).
+- `pm-dislocation-reversion` — `accepted` (відкат Polymarket після зсувів від концентрованих гаманців; довгий шанс, MDE ≈ 0.5 п.п.).
+- `hl-volume-share-lead` — `rejected` (потужність на межі, схожий фактор уже не підтвердився).

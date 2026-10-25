@@ -283,6 +283,15 @@ class BinanceVision:
         )
         return Fetched(parse_klines_zip(f.data), f.evidence)
 
+    async def um_mark_price_monthly(self, symbol: str, interval: str, year: int, month: int) -> Fetched:
+        """One month of USDT-M ``markPriceKlines``: kline rows whose prices are the exchange mark price (the median of
+        the last price, the funding-adjusted index and the index plus a smoothed basis), in quote currency like klines.
+        Volume columns are 0; 404 -> ``data_unavailable``."""
+        _check(symbol, interval)
+        name = f"{symbol}-{interval}-{year:04d}-{month:02d}.zip"
+        f = await self.http.get_bytes(f"/{UM_KLINES}/monthly/markPriceKlines/{symbol}/{interval}/{name}", tool="um_mark_price_monthly")
+        return Fetched(parse_klines_zip(f.data), f.evidence)
+
     async def um_premium_index_daily(self, symbol: str, interval: str, day: str) -> Fetched:
         """One UTC day (``YYYY-MM-DD``) of USDT-M ``premiumIndexKlines`` (see ``um_premium_index_monthly``)."""
         _check(symbol, interval)

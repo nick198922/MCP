@@ -1,0 +1,3 @@
+- Картка `ethena-usde-supply-funding-regime`: ✗ rejected. Приріст пропозиції USDe не передбачає funding BTC/ETH наступного тижня (r −0.114, CI [−0.271; +0.043], n = 143, MDE 0.235).
+- Додано `analytics/usde_funding.py` (чисті функції вирівнювання й H1), `scripts/verify_usde_funding.py`, 19 тестів.
+- База знань: описовий ряд USDe у `regime-indicators.md`, сетап S11 у `setups.md`.

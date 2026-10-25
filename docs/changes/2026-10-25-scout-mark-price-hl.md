@@ -1,0 +1,3 @@
+- Скаут: дві нові картки — `mark-price-stop-trigger` (стоп за mark price замість last, accepted з умовами) і `hl-whale-liquidation-magnet` (форвард: магніт ліквідацій китів Hyperliquid).
+- Критик (режим A): тріаж у `docs/reviews/2026-10-25-scout-mark-price-hl-triage.md`.
+- База знань: розділ про funding, mark price і ліквідації HL (`market-structure.md`), сетап S37 у `setups.md`.

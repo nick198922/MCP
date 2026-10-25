@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import json
 import re
 import sys
 from datetime import UTC, datetime
@@ -166,6 +167,168 @@ def test_a_bad_command_gives_the_format_and_a_failure_never_raises(journal_db, m
     monkeypatch.setattr(rp.rc, "trade_checks", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
     out = rp.handle("/check BTC call premium 80 expiry 4d", journal_db, NOW)
     assert out == "❌ Перевірку не вдалося зібрати (RuntimeError). Нічого не записано."
+
+
+# ---------------------------------------------------------------- rule 8 (b) / (c) from the assistant snapshot
+
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
+
+
+def _near_snap() -> tuple[dict, float]:
+    """The dashboard tests' input: the 20.10 snapshot plus the real chain_near of 23.10 (Deribit 24OCT26), stamped
+    23.10 00:11:30 UTC; ``now`` 5 min later (31.7 h to the delivery: the 1-3 day zone)."""
+    snap = json.loads((FIXTURES / "assistant_snapshot_2026-10-20.json").read_text(encoding="utf-8"))
+    near = json.loads((FIXTURES / "assistant_chain_near_2026-10-23.json").read_text(encoding="utf-8"))
+    snap["sections"]["chain_near"] = near["section"]
+    snap["expiries"]["near"] = near["near"]
+    snap["asof_utc"] = near["section"]["asof_utc"]
+    return snap, rp.db.parse_utc(snap["asof_utc"]).timestamp() + 300
+
+
+def _write(tmp_path, snap) -> Path:
+    path = tmp_path / "snapshot.json"
+    path.write_text(json.dumps(snap), encoding="utf-8")
+    return path
+
+
+def _rule8_line(out: str) -> str:
+    return next(x for x in out.split("\n") if x.startswith("Правило 8"))
+
+
+def test_rule_8_b_and_c_come_from_the_real_snapshot(journal_db, tmp_path):
+    snap, now = _near_snap()
+    path = _write(tmp_path, snap)
+    # 80000 put at $300 per coin: breakeven 79 700, 1.75 % from the forward 81 123 <= 1 sigma 1.9 %; IV 32.8 % <= 38.1 %
+    out = rp.handle("/check BTC-24OCT26-80000-P long 300 size 0.1 target 78000 thesis пробій вниз", journal_db, now, path)
+    assert statuses(out) == {"1": "✓ виконано", "2": "✓ виконано", "4": "✓ виконано", "5": "— не стосується", "8": "✓ виконано"}
+    line = _rule8_line(out)
+    assert "(б) ✓ до беззбитку 1.8 % від форварду 81 123, межа 1.9 % (1σ до експірації)" in line
+    assert "(в) ✓ IV 32.8 %, межа 38.1 % (1.2 × RV30)" in line and "RV30 31.8 %, знімок 00:11 UTC" in line
+    assert "премія $30 при межі $100" in line and "марка" not in line  # entry + size: the owner's per-coin price
+    # a far call by its total premium: per coin at the snapshot's mark ($9.74), breakeven 6 % away, IV 43.3 % > 38.1 %
+    out = rp.handle("/check BTC-24OCT26-86000-C premium 20 target 88000 thesis x", journal_db, now, path)
+    assert statuses(out)["8"] == "✗ порушено" and out.startswith("<b>Перевірка перед угодою: ✗ порушено: 8</b>")
+    line = _rule8_line(out)
+    assert "(б) ✗ до беззбитку 6 %" in line and "(в) ✗ IV 43.3 %" in line and "премія за монету — марка $9.74" in line
+    # (b) and (c) hold but (a) does not: still violated
+    out = rp.handle("/check BTC-24OCT26-80000-P long 300 size 0.1", journal_db, now, path)
+    assert statuses(out)["8"] == "✗ порушено" and "немає тези й цілі — умова (а) не виконана" in out and "(б) ✓" in out
+    # a premium over the limit is violated whatever (b) and (c) say
+    out = rp.handle("/check BTC-24OCT26-80000-P long 1200 size 0.1 target 78000 thesis x", journal_db, now, path)
+    assert statuses(out)["8"] == "✗ порушено" and "завелика" in out
+
+
+def test_check_and_the_dashboard_copy_agree_on_8b_8c():
+    from tradedesk.analytics import rules_check as rc
+
+    snap, now = _near_snap()
+    ch = rp.db.option_chain(snap, "near")
+    rv = snap["sections"]["vrp"]["data"]["current"]["rv_30d"]
+    exp = datetime(2026, 10, 24, 8, tzinfo=UTC).timestamp()
+    seen = set()
+    for k, right, how in (
+        (80000, "P", "long 300 size 0.1"),
+        (82500, "C", "premium 50"),
+        (86000, "C", "premium 20"),
+        (78000, "P", "premium 40"),
+        (81000, "C", "long 900 size 0.05"),
+        (90000, "C", "premium 5"),
+    ):
+        check = rp.parse_check_command(f"/check BTC-24OCT26-{k}-{right} {how} target 95000 thesis x", now)["check"]
+        ev = rp.evaluate(check, now, [], rp.market_inputs(check, snap, None, now))
+        cond = ev["conditions"]
+        assert cond is not None, k
+        row = next(r for r in ch["rows"] if r["k"] == k)["c" if right == "C" else "p"]
+        per = check["entry"] if check["entry"] is not None else row["mark"]
+        size = check["size"] if check["entry"] is not None else check["premium"] / row["mark"]
+        leg = {"kind": check["right"], "side": "long", "size": size, "strike": float(k), "entry_premium": per, "iv": row["iv"]}
+        dash = {c["key"]: c for c in rp.db.rules_pre_trade([leg], int(now), exp, 10_000.0, ch["F"], rv, "x", 95000.0)}
+        ref = {
+            c["key"]: c for c in rc.pre_trade_option([leg], now_ts=int(now), expiry_ts=exp, spot=ch["F"], rv=rv, thesis="x", target=95000.0)
+        }
+        for key in ("breakeven_move", "iv_vs_rv"):
+            assert cond[key]["status"] == dash[key]["status"] == ref[key]["status"], (k, key)
+            assert cond[key]["value"] == pytest.approx(dash[key]["value"], rel=1e-9), (k, key)
+            seen.add(cond[key]["status"])
+        assert ev["statuses"][8] == rc.conditions_status(dash["premium"]["status"], dash["days_to_expiry"]["status"])
+    assert seen == {"ok", "violated"}  # the inputs cover both outcomes
+
+
+@pytest.mark.parametrize(
+    ("text", "edit", "phrase"),
+    [
+        ("/check BTC call premium 50 expiry 36h target 95000 thesis x", None, "немає страйку: вкажіть символ опціону з датою"),
+        ("/check BTC-25OCT26-80000-P premium 30 target 78000 thesis x", None, "у знімку найближча експірація 24OCT26, а не дата символу"),
+        ("/check ETH-24OCT26-4000-C premium 30 target 4200 thesis x", None, "ланцюжок знімка — BTC, а не ETH"),
+        ("/check BTC-24OCT26-80250-P premium 30 target 78000 thesis x", None, "страйка 80 250 (пут) у знімку немає"),
+        ("/check BTC-24OCT26-80000-P premium 30 target 78000 thesis x", "no_chain", "у знімку немає ланцюжка найближчої експірації"),
+        ("/check BTC-24OCT26-80000-P premium 30 target 78000 thesis x", "no_rv", "у знімку немає RV30"),
+        ("/check BTC-24OCT26-80000-P premium 30 target 78000 thesis x", "no_asof", "час знімка невідомий"),
+        ("/check BTC-24OCT26-80000-P premium 30 target 78000 thesis x", "odd_vrp", "у знімку немає RV30"),
+    ],
+)
+def test_rule_8_b_and_c_stay_unknown_without_snapshot_inputs(journal_db, tmp_path, text, edit, phrase):
+    snap, now = _near_snap()
+    if edit == "no_chain":
+        snap["sections"]["chain_near"] = {"ok": False, "data": None, "missing": [{"detail": "no suitable expiry"}], "warnings": []}
+    elif edit == "no_rv":
+        del snap["sections"]["vrp"]["data"]["current"]["rv_30d"]
+    elif edit == "no_asof":
+        snap["asof_utc"] = "вчора"
+    elif edit == "odd_vrp":
+        snap["sections"]["vrp"]["data"]["current"] = [0.3]
+    out = rp.handle(text, journal_db, now, _write(tmp_path, snap))
+    line = _rule8_line(out)
+    assert statuses(out)["8"] == "? невідомо" and "(б) рух до беззбитку й (в) IV проти RV — невідомо: " + phrase in line, line
+    assert "(б) ✓" not in line and "(в) ✓" not in line
+
+
+def test_a_missing_corrupt_or_stale_snapshot_never_makes_8b_8c_ok(journal_db, tmp_path, monkeypatch):
+    text = "/check BTC-24OCT26-80000-P long 300 size 0.1 target 78000 thesis x"  # ok with a fresh snapshot (above)
+    snap, now = _near_snap()
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json", encoding="utf-8")
+    for path, phrase in (
+        (None, "знімок асистента не задано"),
+        (tmp_path / "missing.json", "знімка асистента немає"),
+        (bad, "файл знімка асистента пошкоджений"),
+    ):
+        out = rp.handle(text, journal_db, now, path)
+        assert statuses(out)["8"] == "? невідомо" and "невідомо: " + phrase in out, phrase
+    assert not (tmp_path / "missing.json").exists()
+    path = _write(tmp_path, snap)
+    # 31 min after the stamp: stale, so the old prices are not judged
+    out = rp.handle(text, journal_db, now - 300 + 31 * 60, path)
+    assert statuses(out)["8"] == "? невідомо" and "знімок 23.10 00:11 UTC старший за 30 хв" in out
+    assert statuses(rp.handle(text, journal_db, now - 300 + 29 * 60, path))["8"] == "✓ виконано"
+    # a chain carried from an older snapshot keeps its own (old) time: stale too, though the file is fresh
+    snap["sections"]["chain_near"]["asof_utc"] = "2026-10-22T20:00:00Z"
+    out = rp.handle(text, journal_db, now, _write(tmp_path, snap))
+    assert statuses(out)["8"] == "? невідомо" and "знімок 22.10 20:00 UTC старший за 30 хв" in out
+    # a strike without IV: (c) unknown, so rule 8 is unknown even with (b) held
+    snap, now = _near_snap()
+    for r in snap["sections"]["chain_near"]["data"]["strikes"]:
+        if r["strike"] == 80000.0:
+            r["put"]["iv"] = None
+    out = rp.handle(text, journal_db, now, _write(tmp_path, snap))
+    assert statuses(out)["8"] == "? невідомо" and "(б) ✓" in out and "(в) ? IV страйка в знімку немає" in out
+    # an unexpected failure while reading leaves (b), (c) unknown, the reply still comes
+    monkeypatch.setattr(rp, "market_inputs", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
+    out = rp.handle(text, journal_db, now, path)
+    assert statuses(out)["8"] == "? невідомо" and "несподіваний формат знімка (RuntimeError)" in out
+
+
+def test_snapshot_text_is_escaped_and_never_changes_a_limit(journal_db, tmp_path):
+    snap, now = _near_snap()
+    snap["sections"]["chain_near"]["data"]["currency"] = "<b>BTC</b>"
+    snap["deposit_usd"] = 1e9  # not read: the limits are rules_check's constants
+    out = rp.handle("/check BTC-24OCT26-80000-P long 300 size 0.1 target 78000 thesis x", journal_db, now, _write(tmp_path, snap))
+    assert "<b>BTC</b>" not in out and "&lt;b&gt;BTC&lt;/b&gt;" in out and statuses(out)["8"] == "? невідомо"
+    assert "премія $30 при межі $100" in out
+    snap, now = _near_snap()
+    snap["sections"]["vrp"]["data"]["current"]["rv_30d"] = 5.0  # a wild RV moves the checks, never the premium cap
+    out = rp.handle("/check BTC-24OCT26-80000-P long 1200 size 0.1 target 78000 thesis x", journal_db, now, _write(tmp_path, snap))
+    assert statuses(out)["8"] == "✗ порушено" and "при межі $100 — завелика" in out
 
 
 def test_every_parser_error_code_has_ukrainian_words():

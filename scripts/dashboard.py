@@ -2326,12 +2326,37 @@ def block_conditions(snap: dict) -> str:
     )
 
 
+def merge_same_day(events: object) -> list[dict]:
+    """Calendar rows of one kind on one UTC day as one row (a live calendar lists one FOMC as statement + rate + press
+    conference): the earliest row, the other titles appended, high impact if any row is high. Rows without a kind stay."""
+    out: list[dict] = []
+    by_key: dict[tuple[str, str], dict] = {}
+    for x in _list(events):
+        if not isinstance(x, dict):
+            continue
+        kind, day = str(x.get("kind") or ""), str(x.get("ts_utc") or "")[:10]
+        if not kind or not day:
+            out.append(x)
+            continue
+        m = by_key.get((kind, day))
+        if m is None:
+            by_key[(kind, day)] = m = dict(x, title=_clean(x.get("title"), 100))
+            out.append(m)
+            continue
+        title = _clean(x.get("title"), 100)
+        if title and title not in m["title"].split(" · "):
+            m["title"] = f"{m['title']} · {title}"
+        if x.get("impact") == "high":
+            m["impact"] = "high"
+    return out
+
+
 def block_events(snap: dict) -> str:
     ev = _data(snap, "events")
     if ev is None:
         return _empty("Календаря подій у знімку немає.") + _section_notes(snap, "events")
     rows = []
-    for x in _list(ev.get("events"))[:12]:
+    for x in merge_same_day(ev.get("events"))[:12]:
         if not isinstance(x, dict):
             continue
         when = kyiv(_iso(x.get("ts_utc")))

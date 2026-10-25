@@ -108,6 +108,26 @@ def test_brief_counts_down_from_now_and_drops_past_events():
     assert "Near FOMC" in text and "менше 48 год" in text
 
 
+def test_one_fomc_listed_as_three_rows_is_one_line():
+    """forexfactory, snapshot 25.10: FOMC 28.10 as statement + rate + press conference; brief and panel show one row."""
+    snap, asof = _snap()
+    ev = snap["sections"]["events"]["data"]
+    fomc = dict(ev["events"][0], kind="fomc", impact="high", ts_utc="2026-10-28T18:00:00+00:00")
+    ev["events"] = [
+        {**fomc, "title": "FOMC Statement"},
+        {**fomc, "title": "Federal Funds Rate", "forecast": "4.00%"},
+        {**fomc, "title": "FOMC Press Conference", "ts_utc": "2026-10-28T18:30:00+00:00"},
+        {**fomc, "title": "FOMC Statement", "ts_utc": "2026-10-29T18:00:00+00:00"},  # another day stays
+        {**fomc, "kind": "gdp", "title": "Advance GDP q/q"},  # another kind on the same day stays
+    ]
+    merged = "FOMC Statement · Federal Funds Rate · FOMC Press Conference"
+    assert [x["title"] for x in db.merge_same_day(ev["events"])] == [merged, "FOMC Statement", "Advance GDP q/q"]
+    assert ev["events"][0]["title"] == "FOMC Statement"  # the snapshot itself is not changed
+    text = ab.build_brief(snap, asof + 60)
+    assert text.count("Federal Funds Rate") == 1 and merged in text and "29.10" in text  # next 2 events: 28.10 and 29.10
+    assert db.block_events(snap).count("Federal Funds Rate") == 1
+
+
 def test_brief_without_tzdata_does_not_claim_kyiv_time(monkeypatch):
     snap, asof = _snap()
     monkeypatch.setattr(db, "KYIV", None)
@@ -346,7 +366,7 @@ def test_short_brief_events_and_stale_snapshot():
     fomc = ev["events"][0]
     near = {**fomc, "ts_utc": "2026-10-22T09:00:00+00:00", "title": "Near CPI", "source": "feed"}
     past = {**fomc, "ts_utc": "2026-10-20T12:00:00+00:00", "title": "Past PPI"}
-    ev["events"] = [past, near, fomc, {**fomc, "title": "Third"}]
+    ev["events"] = [past, near, fomc, {**fomc, "title": "Third", "ts_utc": "2026-10-29T18:00:00+00:00"}]
     text = ab.build_brief(snap, asof + 60, short=True)
     assert "Past PPI" not in text and "Third" not in text  # past dropped, at most 2
     line = next(ln for ln in text.splitlines() if "Near CPI" in ln)

@@ -382,6 +382,24 @@ def test_forward_vols_hand_computed_and_events():
     assert fv["median_weekly"] == pytest.approx(w1["fwd"]) and w1["hot"] is False  # the only weekly window is the median
 
 
+def test_forward_vols_one_event_per_kind_and_day():
+    """A live calendar lists one FOMC as statement + rate + press conference (snapshot 25.10): one event in the window."""
+    t0, t1 = 1_793_347_200, 1_793_952_000  # 30.10, 06.11 08:00 UTC
+    events = [
+        {"ts_utc": "2026-11-04T18:30:00Z", "kind": "fomc", "title": "FOMC Press Conference"},
+        {"ts_utc": "2026-11-04T18:00:00Z", "kind": "fomc", "title": "FOMC Statement"},
+        {"ts_utc": "2026-11-04T18:00:00Z", "kind": "fomc", "title": "Federal Funds Rate"},
+        {"ts_utc": "2026-11-04T12:30:00Z", "kind": "gdp", "title": "Advance GDP q/q"},
+        {"ts_utc": "2026-11-05T18:00:00Z", "kind": "fomc", "title": "next day: kept"},
+    ]
+    (w,) = forward_vols([[t0, 10.0, 1.0, 0.4], [t1, 20.0, 1.0, 0.5]], events)["windows"]
+    assert [(e["kind"], e["title"]) for e in w["events"]] == [
+        ("gdp", "Advance GDP q/q"),
+        ("fomc", "FOMC Statement"),
+        ("fomc", "next day: kept"),
+    ]
+
+
 def test_normalize_row_store_shape_equals_row_shape():
     row = json.loads(INPUTS.read_text())["rows"]["BTC"]["2026-10-18"]
     stored = {k: v for k, v in row.items() if k != "atm"}

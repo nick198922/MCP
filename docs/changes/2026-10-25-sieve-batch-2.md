@@ -1,0 +1,2 @@
+- Сито, партія 2: п'ять нових специфікацій (`ibs_reversion`, `turn_of_month`, `supertrend_flip`, `turtle_soup`, `nr7_breakout`) у `analytics/sieve_specs/`, прогнані ситом; у каталозі тепер 11 стратегій.
+- Реєстр `docs/sieve/registry.csv`: 5 нових прогонів (усього 19 рядків); жодна стратегія не пройшла.

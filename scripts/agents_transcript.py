@@ -22,7 +22,7 @@ from typing import Any
 
 PROJECTS = Path.home() / ".claude" / "projects"
 DEFAULT_PROJECT = "-Users-nick-MCP-tradedesk-agents"
-NAMES = {"scout": "скаут", "quant": "квант", "builder": "розробник", "critic": "критик"}
+NAMES = {"scout": "скаут", "quant": "квант", "builder": "розробник", "critic": "критик", "harvester": "збирач"}
 
 
 def _load(path: Path) -> list[dict[str, Any]]:

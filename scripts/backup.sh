@@ -6,7 +6,8 @@
 #   bash scripts/backup.sh daily     # snapshot + retention + integrity check; Sundays also a restore test and a
 #                                    # one-line summary in Telegram
 #   bash scripts/backup.sh status    # the latest snapshots and the repository size
-# Failures go to the Telegram status topic. No Claude tokens are used.
+# Failures go to the Telegram status topic, the same failure once a day (it repeats every hour until fixed: 21-25.10
+# sent ~100 identical messages), and the first success after a failure says so. No Claude tokens are used.
 set -euo pipefail
 MODE="${1:-hourly}"
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
@@ -20,10 +21,23 @@ source "$ENV"
 set +a
 export RESTIC_CACHE_DIR="$HOME/.cache/restic"
 
+FAILED="${XDG_STATE_HOME:-$HOME/.local/state}/tradedesk-backup.failed"  # "<day> <reason>" of the last told failure
 fail() {
   echo "backup $MODE failed: $1" >&2
-  python3 "$REPO/scripts/tg_send.py" --topic status "🛑 Бекап ($MODE) не вдався: $1" >/dev/null 2>&1 || true
+  local key
+  key="$(date +%F) $1"
+  if [[ "$(cat "$FAILED" 2>/dev/null)" != "$key" ]]; then
+    python3 "$REPO/scripts/tg_send.py" --topic status \
+      "🛑 Бекап ($MODE) не вдався: $1. Повторюватиметься щогодини; наступне повідомлення — завтра або коли причина зміниться." \
+      >/dev/null 2>&1 || true
+    mkdir -p "$(dirname "$FAILED")" && echo "$key" >"$FAILED"
+  fi
   exit 1
+}
+recovered() {
+  [[ -e "$FAILED" ]] || return 0
+  rm -f "$FAILED"
+  python3 "$REPO/scripts/tg_send.py" --silent --topic status "✅ Бекап ($MODE) знову працює." >/dev/null 2>&1 || true
 }
 
 snapshot() {
@@ -37,11 +51,23 @@ snapshot() {
     [[ -e "$p" ]] && paths+=("$p")
   done
   # Raw video and audio (~/private/yt-inbox, ~9 GB) can be fetched again; transcripts and frames next to them stay.
+  local rc=0
   "$RESTIC" backup --quiet --tag "$MODE" --exclude-caches \
     --exclude '*.mp4' --exclude '*.m4a' --exclude '*.webm' --exclude '*.mkv' --exclude '*.mov' \
-    "${paths[@]}" || fail "restic backup"
+    "${paths[@]}" 2>"$STAGE/restic.err" || rc=$?
+  cat "$STAGE/restic.err" >&2
+  ((rc == 0)) || fail "$(why)"
+  recovered
 }
 
+# The reason of a failed restic run in a few words (the storage cap is the one seen in practice).
+why() {
+  if grep -q "storage cap exceeded" "$STAGE/restic.err" 2>/dev/null; then
+    echo "сховище Backblaze переповнене (storage cap exceeded)"
+  else
+    echo "restic backup"
+  fi
+}
 case "$MODE" in
   hourly)
     snapshot

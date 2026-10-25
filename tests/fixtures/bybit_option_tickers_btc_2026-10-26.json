@@ -1,0 +1,40 @@
+{
+ "_source": "Bybit GET /v5/market/tickers?category=option&baseCoin=BTC (public, no key), trimmed to 3 symbols; fetched from the Contabo server by the developer agent (26.10 01:05 Kyiv)",
+ "_fetched_utc": "2026-10-25T22:05:34Z",
+ "_fetched_ms": 1792965934529,
+ "list": [
+  {
+   "symbol": "BTC-27NOV26-81000-C-USDT",
+   "markPrice": "3572.95609884",
+   "markIv": "0.365",
+   "underlyingPrice": "81115.4",
+   "indexPrice": "80661.88890915",
+   "delta": "0.52684785",
+   "gamma": "0.00004512",
+   "vega": "96.21315976",
+   "theta": "-54.17225779"
+  },
+  {
+   "symbol": "BTC-27NOV26-77000-P-USDT",
+   "markPrice": "1923.75834553",
+   "markIv": "0.3849",
+   "underlyingPrice": "81115.4",
+   "indexPrice": "80661.88890915",
+   "delta": "-0.30460439",
+   "gamma": "0.00003763",
+   "vega": "84.6199192",
+   "theta": "-50.23977097"
+  },
+  {
+   "symbol": "BTC-27NOV26-70000-P-USDT",
+   "markPrice": "676.01312804",
+   "markIv": "0.4464",
+   "underlyingPrice": "81115.4",
+   "indexPrice": "80661.88890915",
+   "delta": "-0.12010758",
+   "gamma": "0.00001856",
+   "vega": "48.38397134",
+   "theta": "-33.3131568"
+  }
+ ]
+}

@@ -1,0 +1,3 @@
+- Дослідження `gex-taker-flow-range`: гама дилерів Deribit, відновлена з потоку тейкерів, не передбачає діапазон BTC наступної доби понад HAR-RV + DVOL (H1 ✗, H3 ✗) — картка `rejected`.
+- Нова чиста аналітика `analytics/gex_flow.py`, тести `tests/test_gex_flow.py`, runner `scripts/verify_gex_taker_flow.py`.
+- База знань: `deribit_gamma_exposure` — лише опис позиціонування, не прогноз волатильності.

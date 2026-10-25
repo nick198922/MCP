@@ -1,0 +1,3 @@
+- Квант: перевірено картку `btc-shock-alt-lag` (запізнення малоліквідних альтів після різкого руху BTC за 15 хв, 5-хв бари Binance, 949 подій). Вердикт **rejected**: брутто +0.014 % за 60 хв проти витрат 0.32 %, градієнта ліквідності нема.
+- Додано `analytics/btc_shock_lag.py` (чисті функції входу/виходу/β, тести на lookahead), `scripts/verify_btc_shock_alt_lag.py` (стадії compute / missing / fetch / report), `tests/test_btc_shock_lag.py`.
+- Звіт `docs/verification/2026-10-25-btc-shock-alt-lag.md`, рев'ю критика (approve після одного раунду) `docs/reviews/2026-10-25-btc-shock-alt-lag.md`.

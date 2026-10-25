@@ -1,0 +1,2 @@
+- Скаут: дві картки шортових ідей на кешах Binance — `extreme-pump-fade-short` (accepted, основна комірка +30 % за 7 діб) і `post-listing-midage-decay-short` (forward; історії замало за потужністю).
+- Критик (режим A): рев'ю `docs/reviews/2026-10-25-scout-shorts-triage.md`; сетап S36 у `docs/knowledge/setups.md`.

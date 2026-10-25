@@ -108,3 +108,9 @@
 
 - Контекст: BTC → старший таймфрейм → структура → де ми в рейнджі. Угоди в середині рейнджу не брати.
 - Сетапи: S2, S3 і S16 у [книзі сетапів](setups.md).
+
+## Технічні факти біржі, що впливають на стопи й funding (25.10, документація; не наші виміри)
+
+- **Funding Binance:** F = [середня премія P + clamp(відсоткова ставка − P; −0.05 %; +0.05 %)] / (8 / N), N — інтервал у годинах. Відсоткова ставка 0.01 % за 8 год (0.03 % на добу, ETHBTC 0 %) ([Binance FAQ](https://www.binance.com/en/support/faq/introduction-to-binance-futures-funding-rates-360033525031)). Тобто за спокійного ринку лонг платить шорту ≈ 11 % річних; на стопі 7 % і утриманні 1 доба це ≈ 0.004R, тож для стандартних сетапів демо funding мізерний, а для гарячих альтів (0.1 % і вище на добу) вже суттєвий. Дослідження стопів funding не враховували.
+- **Mark price Binance:** медіана з трьох: ціна контракту, індекс з поправкою на funding, індекс + згладжена середина стакана; призначений проти маніпуляцій і зайвих ліквідацій ([Binance FAQ](https://www.binance.com/en/support/faq/introduction-to-mark-price-and-price-index-360033525071)). Стоп на Bybit за замовчуванням за `LastPrice`, можна `MarkPrice` / `IndexPrice` ([Bybit v5](https://bybit-exchange.github.io/docs/v5/order/create-order)). Картка: [mark-price-stop-trigger](../ideas/IDEA-20261025-mark-price-stop-trigger.md) (гіпотеза, не перевірено).
+- **Ліквідації Hyperliquid:** за mark price; спершу в книгу, для позицій понад 100 тис. USDC лише 20 % за раз з паузою 30 с, далі HLP як резерв ([Hyperliquid Docs](https://hyperliquid.gitbook.io/hyperliquid-docs/trading/liquidations)). Публічні liq_px китів — предмет картки [hl-whale-liquidation-magnet](../ideas/IDEA-20261025-hl-whale-liquidation-magnet.md) (forward, не перевірено).

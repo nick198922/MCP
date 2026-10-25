@@ -674,7 +674,7 @@ async def test_s12_rejected_by_the_backtest_is_scanned_and_traded_under_the_same
         return list(w.signals.get(tf, []))
 
     monkeypatch.setattr(demo_trader, "scan", scan)
-    assert demo_trader.SETUPS == ("S14", "S16", "S3", "S12")
+    assert demo_trader.SETUPS == ("S14", "S16", "S3", "S12", "S38", "S39")
     w.signals["4h"] = [_sig(setup="S12", target=104_500.0)]
     await w.enter()
     assert asked and all(a == demo_trader.SETUPS for a in asked)
@@ -761,6 +761,86 @@ async def test_temporary_s12_cap_counts_todays_s12_slots_at_risk(world, monkeypa
     res = await w.run(T0 + 2 * H4 + 60_000)
     new = [o[6] for o in w.venue.kinds("limit")[before:]]
     assert res["sent"] >= 1 and new and all(lid.startswith("td-S3-") for lid in new) and res["errors"] >= 1
+
+
+def _short(setup: str, ts: int = T0 - H4) -> ss.LiveSignal:
+    """A short with R:R 5 (two score points from R:R alone; the fake candles rise, so no trend point)."""
+    return _sig(setup=setup, side="short", stop=102_000.0, target=90_000.0, ts=ts)
+
+
+async def test_short_setups_s38_s39_are_traded_with_their_tags_under_the_same_caps(world):
+    """IDEA-20261024-short-setups-demo step 3: S38 and S39 enter as shorts with their own setup tag, journal and shadow
+    plan; S39 has no per-bar cap, so five S39 shorts fill the five daily slots and the sixth is skipped by the daily cap."""
+    w = world
+    w.signals["4h"] = [_short("S39")]
+    await w.enter()
+    t = (await w.store.demo_trade_list())[0]
+    assert t["setup"] == "S39" and t["side"] == "short" and t["status"] == "open" and t["link_id"].startswith("td-S39-s-4h-BTC-")
+    assert "setup:S39" in (await w.store.journal_get(t["journal_id"]))["tags"]
+    assert any("Демо: вхід S39 шорт BTC/USDT" in m for m in w.msgs)
+    assert "setup:S39" in (await _plans(w.store))[0]["tags"]
+    await w.store.conn.execute("DELETE FROM demo_trade")
+    await w.store.conn.commit()
+    w.venue.pos.clear()
+    _coins(w, 6)
+    w.signals["4h"] = [_short("S39", ts=T0)]
+    res = await w.run(T0 + H4 + 60_000)
+    sent = [o[6] for o in w.venue.kinds("limit")[1:]]
+    assert res["sent"] == 5 and all(lid.startswith("td-S39-s-4h-") for lid in sent)
+    (sk,) = await w.store.exec_audit_list(kinds=("skipped",))
+    assert sk["setup"] == "S39" and any("trades at risk today = max" in x for x in sk["payload"]["violations"])
+    assert not any("per bar" in x for x in sk["payload"]["violations"])
+
+
+async def test_s38_takes_at_most_two_shorts_per_4h_bar(world):
+    """Owner 25.10: S38 ranks first on every coin here, yet only two of its shorts of one 4h bar enter; the other
+    coins get their S3 signal, and the skipped S38 shorts say why."""
+    w = world
+    assert demo_trader.BAR_CAP == {"S38": 2}
+    _coins(w, 5)
+    w.signals["4h"] = [_short("S38"), _sig(setup="S3", target=104_000.0)]
+    res = await w.run()
+    sent = [o[6] for o in w.venue.kinds("limit")]
+    assert res["sent"] == 5 and sorted(lid.split("-")[1] for lid in sent) == ["S3", "S3", "S3", "S38", "S38"]
+    assert {lid.split("-")[4] for lid in sent if "-S38-" in lid} == {"C0", "C1"}  # the best two, then the cap
+    skipped = {a["link_id"]: a["payload"]["violations"] for a in await w.store.exec_audit_list(kinds=("skipped",))}
+    s38 = [v for lid, v in skipped.items() if "-S38-" in lid]
+    assert len(s38) == 3 and all(any("2 S38 entries on this 4h bar = S38 cap 2 per bar" in x for x in v) for v in s38)
+    assert not any("per bar" in x for lid, v in skipped.items() if "-S3-" in lid for x in v)  # other setups: no cap
+
+
+async def test_s38_bar_cap_counts_the_book_and_fails_closed(world, monkeypatch):
+    """Two S38 entries of a bar in the book close that bar for S38 (a break-even does not reopen it), the next bar is
+    open again; an unreadable book keeps S38 out rather than uncapped, the other setups still trade."""
+    w = world
+    await _today(w.store, 0, setup="S38", side="short", signal_ts=T0 - H4, be_ts=T0 + 2, be_stop=0.999)
+    await _today(w.store, 1, setup="S38", side="short", signal_ts=T0 - H4, status="closed", closed_ts=T0 + 3, pnl_usd=2.0)
+    await _today(w.store, 2, setup="S38", side="short", signal_ts=T0 - H4, status="missed")  # never entered: not counted
+    _coins(w, 2)
+    w.signals["4h"] = [_short("S38")]
+    res = await w.run()
+    assert res["sent"] == 0 and res.get("skipped") == 2
+    sk = await w.store.exec_audit_list(kinds=("skipped",))
+    assert all(any("2 S38 entries on this 4h bar" in x for x in a["payload"]["violations"]) for a in sk)
+    # the next 4h bar: a fresh cap of two
+    _coins(w, 3)
+    w.signals["4h"] = [_short("S38", ts=T0)]
+    res = await w.run(T0 + H4 + 60_000)
+    new = [o[6] for o in w.venue.kinds("limit")]
+    assert res["sent"] == 2 and len(new) == 2 and all(lid.startswith("td-S38-s-4h-") for lid in new)
+
+    async def broken(ctx):
+        raise RuntimeError("db locked")
+
+    monkeypatch.setattr(demo_trader, "_bar_entries", broken)
+    before = len(w.venue.kinds("limit"))
+    _coins(w, 4)
+    w.signals["4h"] = [_short("S38", ts=T0 + H4), _sig(setup="S3", target=104_000.0, ts=T0 + H4)]
+    res = await w.run(T0 + 2 * H4 + 60_000)
+    new = [o[6] for o in w.venue.kinds("limit")[before:]]
+    assert res["sent"] >= 1 and new and all(lid.startswith("td-S3-") for lid in new) and res["errors"] >= 1
+    sk = [a for a in await w.store.exec_audit_list(kinds=("skipped",)) if a["link_id"].startswith("td-S38-") and "-C3-" in a["link_id"]]
+    assert sk and any("book not read" in x for x in sk[0]["payload"]["violations"])
 
 
 async def test_hard_ceiling_of_entries_per_day(world):

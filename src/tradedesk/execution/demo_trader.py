@@ -22,7 +22,8 @@ Hourly cycle:
    keeps the maintenance margin plus the loss at every stop within half of the equity, so stops come before liquidation. Candidates that pass the guard and score at least ``MIN_SCORE`` are
    entered best first, at most 5 still at risk a UTC day: a trade with its stop at break-even, or closed without a real
    loss, frees its slot (owner 21.10/22.10), at most 10 entries a day in all; S12 holds at most 2 of the 5 slots
-   (``SETUP_SLOTS``, temporary until the owner decides); the rest are recorded as skipped.
+   (``SETUP_SLOTS``, temporary until the owner decides) and S38 enters at most 2 shorts per 4h signal bar
+   (``BAR_CAP``, owner 25.10); the rest are recorded as skipped.
 5. Every candidate, taken or not, is also written to ``trade_plan`` as a shadow plan (tag ``src:demo-shadow``, verdict
    'enter' if taken, else 'skip'), which the collector resolves on candles without the break-even rule: so selection
    and break-even can both be compared with the plain setup.
@@ -104,13 +105,20 @@ DEFAULT_DB = "/var/lib/tradedesk-mcp/tradedesk.sqlite"
 TIMEFRAMES = ("1d", "4h")  # 1d first: its bars also feed the score of the 4h signals
 # S12 is rejected by its backtest and traded anyway (owner 23.10: the demo tests rejected setups too; BACKLOG 0.5 item
 # "в"); same caps, guard and selection as the others, version v4 in analytics/setup_versions.py
-SETUPS = ("S14", "S16", "S3", "S12")
+# S38 / S39 (trend-continuation shorts, IDEA-20261024-short-setups-demo step 3; no proven edge, owner 24.10: "we need
+# short setups"): same caps, guard and selection, version v5
+SETUPS = ("S14", "S16", "S3", "S12", "S38", "S39")
 # Temporary per-setup cap of the day's slots at risk (critic 25.10, docs/reviews/2026-10-25-demo-s12-fvg.md p. 1; the
 # owner's answer is pending in docs/QUESTIONS.md): S12 fires on many coins at once and ranks high, so without it the
 # rejected setup could take most of the 5 slots and slow the sample of S3 / S14 / S16. Counted like the daily cap
 # (break-even or a close without a real loss frees the slot); every new entry starts at risk, so this also bounds S12
 # to 2 entries per 4h bar.
 SETUP_SLOTS = {"S12": 2}
+# Per signal bar cap of entries (owner 25.10, IDEA-20261024-short-setups-demo "Ризики"): S38 shorts come in batches (up
+# to 11 on one 4h bar in the backtest), so at most 2 of them per bar, else the first random ones fill the day. Counted
+# from the book like the day's entries (open, pending, unknown or closed trades of that setup and signal bar; a break-
+# even does not free it), so a signal of the same bar decided in a later cycle sees the earlier ones.
+BAR_CAP = {"S38": 2}
 FRESH_MS = 2 * 3_600_000  # the signal bar must have closed within the last 2 hours
 MAX_HOLD_MS = {"4h": 7 * 86_400_000, "1d": 30 * 86_400_000}  # S14 registered hold: 7 days on 4h
 MIN_SCORE = 2
@@ -611,6 +619,27 @@ def _setup_cap(setup: str, used: Counter[str]) -> list[str]:
     return [f"{used[setup]} {setup} trades at risk today = temporary {setup} cap {cap} (docs/QUESTIONS.md)"]
 
 
+async def _bar_entries(ctx: Ctx) -> Counter[tuple[str, int]]:
+    """Entries per (setup, signal bar) of the setups in ``BAR_CAP`` (the statuses of ``State.entries_today``)."""
+    trades = await ctx.store.demo_trade_list(limit=5000)
+    return Counter(
+        (t["setup"], int(t["signal_ts"] or 0))
+        for t in trades
+        if t["setup"] in BAR_CAP and t["status"] in ("open", "unknown", "pending", "closed")
+    )
+
+
+def _bar_cap(sig: LiveSignal, used: Counter[tuple[str, int]] | None) -> list[str]:
+    """Violation of the per-bar cap; ``used`` None = the book was not read, so a capped setup waits (fail closed)."""
+    cap = BAR_CAP.get(sig.setup)
+    if cap is None:
+        return []
+    if used is None:
+        return [f"{sig.setup} entries on this {sig.timeframe} bar unknown (book not read) = {sig.setup} cap {cap} per bar"]
+    n = used[(sig.setup, sig.signal_ts)]
+    return [f"{n} {sig.setup} entries on this {sig.timeframe} bar = {sig.setup} cap {cap} per bar"] if n >= cap else []
+
+
 def _at_risk(t: dict[str, Any]) -> bool:
     """Does this trade still take one of the day's slots? Open: until its stop is at break-even. Closed: if it lost more
     than a tenth of its risk (a break-even exit loses only slippage)."""
@@ -844,17 +873,23 @@ async def _select_and_enter(ctx: Ctx, cands: list[Candidate], state: State) -> N
     if any(c.sig.setup in SETUP_SLOTS for c in ok):
         got = await ctx.safe("setup_slots", lambda: _setup_slots(ctx))
         used = got if got is not None else Counter(SETUP_SLOTS)  # unreadable book: the capped setups wait
+    per_bar: Counter[tuple[str, int]] | None = Counter()
+    if any(c.sig.setup in BAR_CAP for c in ok):
+        per_bar = await ctx.safe("bar_entries", lambda: _bar_entries(ctx))  # None: the capped setups wait
     chosen: set[str] = set()
     for c in ok:
         if c.p.symbol in state.open_symbols:
             continue  # a better signal on the same coin was just taken
-        bad = check(c.p, state, ctx.cfg) or _setup_cap(c.sig.setup, used)
+        bad = check(c.p, state, ctx.cfg) or _setup_cap(c.sig.setup, used) or _bar_cap(c.sig, per_bar)
         if bad:
             continue
+        bar = (c.sig.setup, c.sig.signal_ts)
         if ctx.dry_run:
             ctx.bump("would_send")
             chosen.add(c.p.link_id)
             used[c.sig.setup] += 1
+            if per_bar is not None:
+                per_bar[bar] += 1
             after = replace(
                 state,
                 trades_today=state.trades_today + 1,
@@ -866,6 +901,8 @@ async def _select_and_enter(ctx: Ctx, cands: list[Candidate], state: State) -> N
             continue
         after = await _enter(ctx, c, state)
         used[c.sig.setup] += after.trades_today > state.trades_today  # sent (or unknown): the trade holds a slot
+        if per_bar is not None:
+            per_bar[bar] += after.entries_today > state.entries_today  # an entry of this bar (sent or unknown)
         state = after
         chosen.add(c.p.link_id)
     for c in cands:
@@ -877,7 +914,8 @@ async def _select_and_enter(ctx: Ctx, cands: list[Candidate], state: State) -> N
         elif c.score.points < MIN_SCORE:
             reason, kind = [f"score {c.score.points} < {MIN_SCORE}"], "skipped"
         else:
-            reason, kind = check(c.p, state, ctx.cfg) + _setup_cap(c.sig.setup, used) or ["lower rank"], "skipped"
+            reason = check(c.p, state, ctx.cfg) + _setup_cap(c.sig.setup, used) + _bar_cap(c.sig, per_bar) or ["lower rank"]
+            kind = "skipped"
         ctx.bump(kind)
         await ctx.safe(
             "audit_skip",

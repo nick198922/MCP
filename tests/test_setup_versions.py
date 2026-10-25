@@ -43,10 +43,12 @@ def test_epochs_are_the_dated_rule_changes():
         ("v3", _ms(2026, 10, 22, 7, 12, 39)),
         ("v4", _ms(2026, 10, 25, 14, 30, 0)),  # S12 joins the demo (rejected by its backtest)
         ("v5", _ms(2026, 10, 25, 16, 15, 0)),  # S38 / S39 shorts join the demo (no proven edge)
+        ("v6", _ms(2026, 10, 25, 20, 15, 0)),  # S40 (B-long) joins the demo (owner 25.10, Q-20261025-3)
     ]
     assert sv.EPOCHS[2].from_ms == BE_SWITCH_MS
     assert all(e.setups == () for e in sv.EPOCHS[:3]) and sv.EPOCHS[3].setups == ("S12",)
     assert sv.EPOCHS[4].setups == ("S38", "S39")
+    assert sv.EPOCHS[5].setups == ("S40",)
     assert all(e.source and e.what for e in sv.EPOCHS)
     assert [e.from_ms for e in sv.EPOCHS] == sorted(e.from_ms for e in sv.EPOCHS)
     first_open = min(t["opened_ts"] for t in LIVE["trades"])
@@ -166,3 +168,14 @@ def test_time_is_a_parameter_and_setup_specific_epochs():
     # before v4 starts it does not exist; a trade closed after now is not counted yet
     s = sv.version_stats(trades, now_ms=v3 + 5 * H, epochs=eps)
     assert s["rows"] == [] and [e["tag"] for e in s["epochs"]] == ["v1", "v2", "v3"]
+
+
+def test_s40_is_v6_and_the_shorts_keep_v5():
+    from tradedesk.execution.demo_trader import SETUPS
+
+    v6 = sv.EPOCHS[5].from_ms
+    assert "S40" in SETUPS
+    later = v6 + 10 * H
+    assert sv.version_of("S40", later, now_ms=later).tag == "v6"
+    for setup in ("S38", "S39"):
+        assert sv.version_of(setup, later, now_ms=later).tag == "v5"

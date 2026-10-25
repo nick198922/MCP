@@ -407,3 +407,63 @@ def test_s38_s39_levels_comment_and_timeframe():
     assert ss.s38_all(b, "1d") == [] and ss.s39_all(b, "1d") == [] and ss.scan(b, "1d", ("S38", "S39")) == []  # 4h only
     assert ss.s38_all(b.slice(0, 40), "4h") == [] and ss.s39_all(b.slice(0, 40), "4h") == []
     assert {"S38", "S39"} <= set(ss.DETECTORS) and not {"S38", "S39"} & {s.setup for s in ss.scan(b, "4h")}  # not default
+
+
+# ---------------------------------------------------------------- S40 (the long side of detector B, owner 25.10, Q-20261025-3)
+
+
+def _s40_reference(b: Bars) -> list[tuple[int, float, float, float]]:
+    """(entry bar, entry, stop, target) of rule B for longs in real prices: a live S3 short (a sweep of the range high,
+    stop 0.5 ATR over it) closed above its stop within 6 bars before the range middle was reached."""
+    m = b.mirrored()
+    return [(j, -e, -st, -tg) for j, e, st, tg in _s39_reference(m)]
+
+
+@pytest.mark.parametrize("seed", [1, 3, 7])
+def test_s40_is_the_mirror_of_s39_and_the_step1_long_detector(seed):
+    from tradedesk.analytics.short_setups import failed_sweep
+
+    b = _bars(1000, seed)
+    for bb in (b, _with_hole(b, 500, 20)):
+        sigs = ss.s40_all(bb, "4h")
+        got = _rows(bb, sigs)
+        want = sorted(_s40_reference(bb))
+        assert len(got) == len(want) > 3
+        for g, w in zip(got, want, strict=True):
+            assert g[0] == w[0] and g[1:] == pytest.approx(w[1:], rel=1e-12)
+        pos = segment_pos(bb.t)
+        step1 = failed_sweep(bb, pos, atr(bb, 14, pos))  # the long form, as the backtest's B-long rows
+        assert got == sorted((x.i, x.entry, x.stop, x.target) for x in step1)
+        assert {s.side for s in sigs} == {"long"}
+
+
+def test_s40_live_scan_on_each_prefix_equals_the_full_history_and_is_causal():
+    b = _bars(700, 1)
+    full = ss.s40_all(b, "4h")
+    live = set()
+    for i in range(60, len(b)):
+        sigs = ss.scan(b.slice(0, i + 1), "4h", ("S40",))
+        assert all(s.setup == "S40" and s.side == "long" and s.signal_ts == int(b.t[i]) for s in sigs)
+        live |= {(s.signal_ts, s.entry, s.stop, s.target) for s in sigs}
+    assert live == {(s.signal_ts, s.entry, s.stop, s.target) for s in full if s.signal_ts >= int(b.t[60])} and len(live) > 3
+    rng = np.random.default_rng(42)
+    for s in full:
+        t = int(np.searchsorted(b.t, s.signal_ts))
+        want = [x for x in full if x.signal_ts <= s.signal_ts]
+        assert [x for x in ss.s40_all(_other_future(b, t, rng), "4h") if x.signal_ts <= s.signal_ts] == want, t
+
+
+def test_s40_levels_comment_and_timeframe():
+    b = _bars(1000, 3)
+    idx = {int(t): k for k, t in enumerate(b.t)}
+    s40 = ss.s40_all(b, "4h")
+    assert s40
+    for s in s40:
+        j = idx[s.signal_ts]
+        assert s.setup == "S40" and s.side == "long" and s.entry == pytest.approx(float(b.c[j]))
+        assert s.stop < s.entry < s.target and s.target == pytest.approx(s.entry + 2 * (s.entry - s.stop))
+        assert b.c[j] > s.indicators["s3_stop"] > s.indicators["range_high"] > s.indicators["range_mid"]
+        assert s.comment.startswith("S40 (4h)") and "+0.056R" in s.comment and "плацебо" in s.comment
+        assert "не доведена перевага" in s.comment and "Q-20261025-3" in s.comment
+    assert ss.s40_all(b, "1d") == [] and ss.s40_all(b.slice(0, 40), "4h") == []
+    assert "S40" in ss.DETECTORS and "S40" not in {s.setup for s in ss.scan(b, "4h")}  # not default

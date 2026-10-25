@@ -335,6 +335,8 @@ def _normalize(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
         tags = _tags(t.get("tags"))
         symbol = str(t.get("symbol") or "")
         exp = option_expiry_ts(symbol)
+        if exp is None and "option" in tags:  # a planned purchase (analytics.check_command) gives the delivery itself
+            exp = _num(t.get("expiry_ts"))
         is_opt = exp is not None or "option" in tags
         out.append(
             {
@@ -411,7 +413,9 @@ def trade_checks(
     opening time or expiry), ``buy_conditions`` the three checks in the 1-3 day zone ({thesis, breakeven_move,
     iv_vs_rv}: statuses; the journal has no spot or IV at the opening, so the last two are ``unknown``), ``late_buy``
     True when the timing broke the rule (under 24 h, or 1-3 days with a check failed), None when it cannot tell.
-    ``week`` is the ISO week (UTC) of the opening; open trades count up to ``now_ts``."""
+    ``week`` is the ISO week (UTC) of the opening; open trades count up to ``now_ts``. A row tagged 'option' whose
+    symbol carries no date may give its delivery as ``expiry_ts`` (unix s): a planned purchase checked from Telegram
+    (/check, analytics.check_command); journal rows have no such column, so their checks do not change."""
     xs = _normalize(rows)
     risk_cap = deposit_usd * risk_pct / 100.0
     prem_cap = deposit_usd * premium_pct / 100.0

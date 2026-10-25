@@ -501,3 +501,16 @@ def test_weekly_option_counts_and_a_stop_week_without_openings():
     w = rc.weekly_violations([_t(1, "SOL", "long", sun, sun + 6 * H, -250.0)], now_ts=sun + 86400)
     assert [(x["week"], x["n_trades"], x["days_stopped"]) for x in w] == [("2025-W42", 0, 1), ("2025-W41", 1, 0)]
     assert all(r["status"] == rc.NA for r in w[0]["rules"].values())
+
+
+def test_an_option_row_without_a_dated_symbol_may_give_its_expiry():
+    # a planned purchase from /check: the underlying, tag 'option', the delivery as expiry_ts
+    def row(tags, h):
+        return {**_t("p", "BTC", "long", D, None, None, tags=tags, size=1.0, entry=80.0, status="open"), "expiry_ts": D + h * H}
+
+    zones = {h: _by_id(rc.trade_checks([row(["option"], h)], now_ts=D))["p"] for h in (12, 36, 100)}
+    assert [zones[h]["buy_zone"] for h in (12, 36, 100)] == [rc.ZONE_BAN, rc.ZONE_COND, rc.ZONE_FREE]
+    assert [zones[h]["rules"][8] for h in (12, 36, 100)] == [rc.VIOLATED, rc.VIOLATED, rc.OK]  # 36 h: no thesis
+    # without the 'option' tag the field means nothing: a linear BTC row, as a journal row with such a key would be
+    lin = _by_id(rc.trade_checks([row([], 12)], now_ts=D))["p"]
+    assert lin["buy_zone"] is None and lin["rules"][8] == rc.NA

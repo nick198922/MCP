@@ -9,7 +9,8 @@ owner's server permissions from its .claude/settings.local.json), continuing one
 to the topic. Commands: /new (a fresh conversation), /status (the project status), /trade (one row into the local
 journal through scripts/journal_trade_tg.py, with rules 1, 2, 4, 5 and 8 in the answer; never an order), /close (closes an open
 journal trade through scripts/journal_close_tg.py, with its P&L and R; never an order), /cancel (marks an open journal
-trade cancelled through scripts/journal_cancel_tg.py, no exit or P&L; never an order), /help.
+trade cancelled through scripts/journal_cancel_tg.py, no exit or P&L; never an order), /check (rules 1, 2, 4, 5 and 8 on
+a planned trade through scripts/rules_pretrade_tg.py; reads the journal, writes nothing; never an order), /help.
 """
 
 from __future__ import annotations
@@ -43,6 +44,7 @@ TRADE_SCRIPT = Path(__file__).resolve().with_name("journal_trade_tg.py")
 TRADE_SECONDS = 120
 CLOSE_SCRIPT = Path(__file__).resolve().with_name("journal_close_tg.py")
 CANCEL_SCRIPT = Path(__file__).resolve().with_name("journal_cancel_tg.py")
+CHECK_SCRIPT = Path(__file__).resolve().with_name("rules_pretrade_tg.py")
 HELP = (
     "Пишіть сюди, як у розмові з Claude: питання про проєкт, рішення для агентів, доручення.\n"
     "Фото й скріни графіків (підпис — ваше питання) і переслані пости теж приймаю.\n"
@@ -53,7 +55,10 @@ HELP = (
     "P&L і R; опціон, що згорів: /close 12 0. Закриття з Telegram не скасувати — перевіряйте id; "
     "угоди демо-бота не закриваються\n"
     "• /cancel 12 note … — скасувати угоду #12, що не відбулася (лише запис, без ордерів): без виходу й P&L, "
-    "у статистику не йде. Скасування з Telegram не відкотити — перевіряйте id\n• /help — ця підказка\n"
+    "у статистику не йде. Скасування з Telegram не відкотити — перевіряйте id\n"
+    "• /check BTC call premium 80 expiry 36h target 95000 thesis … або /check SOL long 180 stop 170 risk 90 — "
+    "перевірити правила 1, 2, 4, 5 і 8 перед угодою (нічого не записує, без ордерів; рядок /trade теж підходить, крім продажу опціону; thesis — останнім)\n"
+    "• /help — ця підказка\n"
     "Зміни приходять PR-гілками chat/…; зливаєте ви."
 )
 
@@ -77,7 +82,7 @@ def accept(msg: dict, env: dict[str, str]) -> str:
 def command(text: str) -> str | None:
     word = text.strip().split()[0].lower() if text.strip() else ""
     word = word.split("@", 1)[0]
-    return word if word in ("/new", "/status", "/help", "/start", "/trade", "/close", "/cancel") else None
+    return word if word in ("/new", "/status", "/help", "/start", "/trade", "/close", "/cancel", "/check") else None
 
 
 def image_ref(msg: dict) -> tuple[str, str] | None:
@@ -180,6 +185,11 @@ def close_argv(text: str) -> list[str]:
 def cancel_argv(text: str) -> list[str]:
     """The command that cancels "/cancel …" (scripts/journal_cancel_tg.py), passed the same way as trade_argv."""
     return [UV, "run", "--frozen", "--quiet", "python", str(CANCEL_SCRIPT), f"--text={text}"]
+
+
+def check_argv(text: str) -> list[str]:
+    """The command that checks "/check …" (scripts/rules_pretrade_tg.py, read-only), passed the same way as trade_argv."""
+    return [UV, "run", "--frozen", "--quiet", "python", str(CHECK_SCRIPT), f"--text={text}"]
 
 
 def parse_result(stdout: str) -> tuple[str, str | None, bool]:
@@ -318,8 +328,8 @@ def ask_claude(env: dict[str, str], state: dict, text: str) -> str:
 
 
 def run_journal_script(argv: list[str], label: str, failed: str) -> str:
-    """Run a journal script (one row written or updated, no orders) and return its Telegram HTML; ``failed`` opens
-    every error reply ("❌ Угоду не записано" / "❌ Угоду не закрито")."""
+    """Run a journal script (one row written or updated, or only read for /check; no orders) and return its Telegram
+    HTML; ``failed`` opens every error reply ("❌ Угоду не записано" / "❌ Угоду не закрито")."""
     try:
         run = subprocess.run(argv, cwd=TRADE_SCRIPT.parent.parent, capture_output=True, text=True, timeout=TRADE_SECONDS)
     except ValueError as e:  # an embedded NUL byte cannot be passed as an argument
@@ -348,6 +358,11 @@ def close_trade(text: str) -> str:
 def cancel_trade(text: str) -> str:
     """Cancel the owner's "/cancel …" in the local journal (one row updated, no orders); the script's Telegram HTML."""
     return run_journal_script(cancel_argv(text), "cancel", "❌ Угоду не скасовано")
+
+
+def check_rules(text: str) -> str:
+    """Check the owner's "/check …" against his rules (the journal only read, nothing written, no orders)."""
+    return run_journal_script(check_argv(text), "check", "❌ Перевірку не виконано")
 
 
 def handle(env: dict[str, str], state: dict, msgs: list[dict]) -> None:
@@ -386,6 +401,8 @@ def handle(env: dict[str, str], state: dict, msgs: list[dict]) -> None:
         reply(env, close_trade(text), mode="html", to=msg.get("message_id"))
     elif cmd == "/cancel":
         reply(env, cancel_trade(text), mode="html", to=msg.get("message_id"))
+    elif cmd == "/check":
+        reply(env, check_rules(text), mode="html", to=msg.get("message_id"))
     else:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         saved = [

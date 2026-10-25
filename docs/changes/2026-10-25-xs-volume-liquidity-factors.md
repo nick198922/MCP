@@ -1,0 +1,3 @@
+- Перевірено картку `xs-volume-liquidity-factors`: премії за ліквідність (AMI30) у торговому всесвіті Binance USD-M немає, картка `rejected` (звіт `docs/verification/2026-10-25-xs-volume-liquidity-factors.md`).
+- Нові чисті функції `analytics/xs_volume.py`, тести `tests/test_xs_volume.py`, скрипт `scripts/verify_xs_volume_liquidity_factors.py`.
+- Рев'ю критика: `docs/reviews/2026-10-25-xs-volume-liquidity-factors.md`.

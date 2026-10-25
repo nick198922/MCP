@@ -1,0 +1,2 @@
+- Скаут: дві нові картки — `btc-intraday-momentum-us-hours` (відхилено критиком: ефект не перевищує витрати, тест недопотужний) і `ethena-usde-supply-funding-regime` (прийнято з 7 умовами, довгий шанс).
+- Тріаж критика: `docs/reviews/2026-10-25-scout-triage-intraday-ethena.md`.

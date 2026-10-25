@@ -1,0 +1,2 @@
+- Скаут: картка `xs-anchor-nearness-high-short` (шорт монет, найдальших від річного максимуму; `accepted` з умовами критика).
+- Критик (A): тріаж у `docs/reviews/2026-10-25-idea-triage-xs-anchor-nearness.md`.

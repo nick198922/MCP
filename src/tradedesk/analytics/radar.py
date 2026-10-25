@@ -292,7 +292,15 @@ def _events(events: list[dict[str, Any]]) -> list[tuple[int, dict[str, Any]]]:
         ms = int(ts.timestamp() * 1000)
         out.append((ms, {"ts_utc": _iso_ts(ms), "kind": kind, "title": clean_text(e.get("title"), 120)}))
     out.sort(key=lambda x: x[0])
-    return out
+    # one event per kind and UTC day: a live calendar lists FOMC as statement + rate + press conference; keep the earliest
+    seen: set[tuple[str, str]] = set()
+    uniq = []
+    for ms, x in out:
+        key = (x["kind"], x["ts_utc"][:10])
+        if key not in seen:
+            seen.add(key)
+            uniq.append((ms, x))
+    return uniq
 
 
 def forward_vols(expiries: list[Any], events: list[dict[str, Any]], now_ms: int | None = None) -> dict[str, Any]:

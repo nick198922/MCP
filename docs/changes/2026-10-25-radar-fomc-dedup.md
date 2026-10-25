@@ -1,0 +1,1 @@
+- Радар: у вікнах форвардної воли кожна подія календаря тепер одна на тип і день UTC. Раніше FOMC 28.10 показувався тричі (Statement, Federal Funds Rate, Press Conference), бо живий календар дає ці записи окремо; лишається найраніший. Тест `test_forward_vols_one_event_per_kind_and_day`.

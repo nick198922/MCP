@@ -1,0 +1,2 @@
+- Скаут: дві нові картки — `alt-absorption-ratio-crash-warning` (індикатор раннього попередження, форвард) і `sector-pair-weekly-spread-reversion` (accepted, довгий шанс).
+- Критик (тріаж A): `docs/reviews/2026-10-25-scout-absorption-pairs-triage.md`.

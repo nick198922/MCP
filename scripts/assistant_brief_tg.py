@@ -338,7 +338,7 @@ def _events(snap: dict, now: float) -> list[str]:
     if ev is None:
         return []
     out = []
-    for x in db._list(ev.get("events")):
+    for x in db.merge_same_day(ev.get("events")):
         if len(out) >= MAX_EVENTS:
             break
         if not isinstance(x, dict):
@@ -362,7 +362,7 @@ def _events_short(snap: dict, now: float) -> list[str]:
     ev = db._data(snap, "events")
     if ev is None:
         return []
-    picked = [x for x in db._list(ev.get("events")) if isinstance(x, dict)]
+    picked = db.merge_same_day(ev.get("events"))
     if not picked and isinstance(ev.get("next_event"), dict):
         picked = [ev["next_event"]]
     out = []

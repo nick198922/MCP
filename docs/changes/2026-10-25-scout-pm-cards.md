@@ -1,0 +1,2 @@
+- Скаут: дві картки Polymarket — `pm-updown-late-window-calibration` (відхилено критиком: потрібне автоматичне виконання) і `pm-longdated-tail-no` (прийнято, довга ставка, ворота G1 ≥ 3 000 подій).
+- Тріаж критика: `docs/reviews/2026-10-25-scout-pm-triage.md`.

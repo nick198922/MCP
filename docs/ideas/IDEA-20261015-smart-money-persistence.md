@@ -1,7 +1,14 @@
 # IDEA-20261015-smart-money-persistence: чи сильні трейдери Hyperliquid і Polymarket лишаються сильними, і чи їхні нові позиції випереджають ціну
 
 Статус: testing — стадія 0 завершена 2026-10-17: `inconclusive` за воротами потужності (H1 у цьому формулюванні потребує ~150–970 місячних періодів форварду, H2 — ≥ 8 місяців; потужність H3 не оцінена). Звіт `docs/verification/2026-10-17-smart-money-persistence.md`. Раніше: accepted — запит власника (2026-10-15): стежити за топ-трейдерами, будувати таблиці, а коли буде впевненість — сигнали в Telegram. Тріаж критика замінено рішенням власника; попередню реєстрацію і потужність критик перевіряє в режимі B.
+Пріоритет: власник
+Порядок: 16
 <!-- proposed → accepted | rejected → testing → confirmed | rejected | inconclusive → built -->
+
+## Прогрес
+- [ ] Ключ The Graph (власник, рішення 25.10): безкоштовний ключ на https://thegraph.com/studio/apikeys/, потім з Мака `scripts/server/thegraph-key.sh` (кладе `GRAPH_API_KEY` у `~/.config/tradedesk/onchain.env` і перевіряє на сервері).
+- [ ] Провайдер The Graph (розробник → критик C, лише після ключа): `providers/thegraph.py` через `core.http.Http`, ключ з `onchain.env` кодом (не друкувати, не писати в evidence); підграфи Polymarket — основний (`Bx1W4S7kDVxs9gC3s2G6DS8kdNBJNVhMviCtin2DiBp`, https://thegraph.com/docs/en/subgraphs/guides/polymarket/) і P&L (id — з Graph Explorer, сторінка «Polymarket Profit & Loss»); зразки відповідей у `tests/fixtures/`; ліміт 100 тис. запитів на місяць — кеш і власний rate-limit.
+- [ ] Історична перевірка H1 (квант → критик B, лише після провайдера): чи лишаються топ-трейдери Polymarket за зафіксованим P&L місяця M у верхній частині в місяці M+1, на історії підграфа (стадія 0 закінчилась `inconclusive` саме через брак форвардних періодів). Попередня реєстрація до прогону: вибірка трейдерів point-in-time (без відбору за сьогоднішнім рейтингом), мінімум угод, плацебо — перестановка рангів.
 
 ## Інструменти і ринок
 - **Hyperliquid:** акаунти й позиції публічні: лідерборд усіх акаунтів (PnL, ROI, обсяг за день, тиждень, місяць і весь час) і `clearinghouseState` (відкриті позиції). Сигнал — на перпи Hyperliquid, Binance, Bybit.

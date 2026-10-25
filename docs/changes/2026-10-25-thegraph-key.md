@@ -1,0 +1,1 @@
+- Ключ The Graph: скрипт `scripts/server/thegraph-key.sh` (власник 25.10) і план у картці `smart-money-persistence` (провайдер підграфів Polymarket → історична перевірка H1); пункт BACKLOG про пропозицію стейблкоїнів (DefiLlama).

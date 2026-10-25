@@ -1,0 +1,3 @@
+- Перевірено картку `extreme-pump-fade-short` (шорт пампу ≥ +30 % за 7 д з хеджем BTC): ✗ rejected, нетто −0.03 п.п. [−2.14; +2.32], n = 3 132.
+- Додано `analytics/pump_fade.py`, `scripts/verify_pump_fade.py`, `tests/test_pump_fade.py` і звіт `docs/verification/2026-10-25-extreme-pump-fade-short.md`.
+- База знань: рядок про крос-секційні фактори доповнено подієвим варіантом MAX.

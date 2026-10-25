@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import math
 
 import numpy as np
@@ -145,7 +146,8 @@ def test_signals_up_to_t_do_not_depend_on_later_bars(mirror: bool) -> None:
             b = bars(rows)
             b = b.mirrored() if mirror else b
             pos = segment_pos(b.t)
-            res.append([x for x in fn(b, pos, atr(b, 14, pos)) if x.i <= t])
+            # astuple + repr: alt_target is NaN for A, and NaN != NaN in dataclass __eq__ on Python 3.13
+            res.append([repr(dataclasses.astuple(x)) for x in fn(b, pos, atr(b, 14, pos)) if x.i <= t])
         assert res[0] == res[1]
         found += len(res[0])
     assert found > 0

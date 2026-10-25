@@ -3,6 +3,7 @@
     uv run python scripts/rules_pretrade_tg.py --text "/check BTC call premium 80 expiry 36h target 95000 thesis ..."
     uv run python scripts/rules_pretrade_tg.py --text "/check SOL long 180 stop 170 target 200 risk 90"
     uv run python scripts/rules_pretrade_tg.py --text "..." --db PATH      # another SQLite file
+    uv run python scripts/rules_pretrade_tg.py --text "..." --snapshot PATH  # another assistant snapshot JSON
 
 Called by scripts/tg_bridge.py for "/check …" (the bridge runs on the system python3, so it starts this script with
 uv in the project's environment); the bridge has already checked that the message is the owner's, in the group and
@@ -14,6 +15,14 @@ gets the same statuses here (an option sale, which /trade records, is refused). 
 ``mode=ro`` connection (rules_weekly_tg.load_journal), so they are 'unknown' when it cannot be read. 'unknown' is
 never 'ok'. At most 8 lines: the verdict, the trade, rules 1, 2, 4, 5, 8 and one disclaimer line.
 
+Rule 8 (b) and (c) in the 1-3 day zone come from the assistant snapshot (``--snapshot``, the dashboard's file, read
+with dashboard.load_snapshot): a dated option symbol whose expiry is the snapshot's ``chain_near`` and whose strike
+it lists gets the chain's forward as spot, RV30 of the ``vrp`` section and the strike's mark IV, as the «Опціони»
+builder does, and analytics.rules_check.pre_trade_option judges the one bought leg (the premium per coin is the
+``entry`` of an entry + size line, else the snapshot's mark, the size then premium / mark). No snapshot, one older
+than 30 min (dashboard.SNAPSHOT_STALE_S), another expiry, underlying or strike, no RV: (b) and (c) stay 'unknown'
+with the reason. The snapshot is untrusted: only its numbers reach the check, never a limit, and its text is escaped.
+
 Read-only: nothing is written to the journal (or anywhere), no order is placed, changed or cancelled, no limit is
 touched, no key is read, no network. Never raises: any failure is a short message.
 """
@@ -21,6 +30,7 @@ touched, no key is read, no network. Never raises: any failure is a short messag
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 import time
 from datetime import UTC, datetime
@@ -29,6 +39,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import dashboard as db  # noqa: E402
 import rules_weekly_tg as rw  # noqa: E402
 from journal_trade_tg import SIDE_UA, STATUS_UA, STOP_REASON_UA, _h, fmt, usd  # noqa: E402
 
@@ -80,6 +91,109 @@ DISCLAIMER = (
     "Статистика дотримання правил, не порада: нічого не записано, жодних ордерів; депозит $10 000, 2 і 4 — за реальними угодами журналу."
 )
 VERDICT_UA = {rc.VIOLATED: "✗ порушено", rc.UNKNOWN: "? невідомо", rc.OK: "✓ виконано"}
+MARK = {rc.OK: "✓", rc.VIOLATED: "✗", rc.UNKNOWN: "?"}
+NEAR = "near"  # dashboard.OPT_EXPIRIES key of the snapshot's chain_near section
+SNAPSHOT_STALE_S = db.SNAPSHOT_STALE_S  # the job runs every 10 minutes: older than 30 min = (b), (c) unknown
+SNAPSHOT_ERR_UA = {"missing": "знімка асистента немає", "corrupt": "файл знімка асистента пошкоджений"}
+NO_SNAPSHOT = "знімок асистента не задано"
+
+
+def _strike(symbol: str) -> float | None:
+    """Strike of a dated option symbol 'BTC-24OCT26-82500-C' (a Bybit '1D5' decimal too); None otherwise."""
+    parts = symbol.split("-")
+    try:
+        k = float(parts[2].replace("D", "."))
+    except (IndexError, ValueError):
+        return None
+    return k if math.isfinite(k) and k > 0 else None
+
+
+def market_inputs(check: dict[str, Any], snap: dict | None, err: str | None, now: float) -> dict[str, Any]:
+    """Rule 8 (b) / (c) inputs for a bought dated option from the assistant snapshot (dashboard.load_snapshot's
+    (snap, err)): {ok, spot: the chain_near forward (the builder's stand-in for spot), rv: RV30 of the vrp section,
+    iv: the strike's mark IV (decimals; None when the chain has none), mark: USD per coin, strike, asof (datetime UTC),
+    why: the Ukrainian reason when not ok}. Not ok keeps (b) and (c) 'unknown'. The snapshot is untrusted: only
+    numbers pass (dashboard._num), strings in ``why`` are clipped and escaped by the caller. Pure (time passed in)."""
+    out: dict[str, Any] = {"ok": False, "spot": None, "rv": None, "iv": None, "mark": None, "strike": None, "asof": None, "why": None}
+
+    def no(why: str) -> dict[str, Any]:
+        out["why"] = why
+        return out
+
+    if check.get("kind") != "option" or check.get("expiry_from") != "symbol":
+        return no("немає страйку: вкажіть символ опціону з датою, напр. BTC-27OCT26-90000-C")
+    if snap is None:
+        return no(SNAPSHOT_ERR_UA.get(err or "", "знімок асистента не прочитано"))
+    sec = db._section(snap, "chain_near")
+    snap_asof = db.parse_utc(snap.get("asof_utc"))
+    if snap_asof is None:
+        return no("час знімка невідомий")
+    sec_asof = db.parse_utc(sec.get("asof_utc"))  # a section carried from an older snapshot keeps its own time
+    asof = min(snap_asof, sec_asof) if sec_asof else snap_asof
+    out["asof"] = asof
+    age = now - asof.timestamp()
+    if age > SNAPSHOT_STALE_S or age < -SNAPSHOT_STALE_S:
+        return no(f"знімок {asof:%d.%m %H:%M} UTC старший за 30 хв або з майбутнього")
+    ch = db.option_chain(snap, NEAR)
+    if ch is None or ch.get("which") != NEAR:
+        return no("у знімку немає ланцюжка найближчої експірації")
+    base = check["symbol"].split("-")[0]
+    cur = (db._data(snap, "chain_near") or {}).get("currency")
+    if cur != base:
+        return no(f"ланцюжок знімка — {db._clean(cur, 12)}, а не {base}")
+    exp = db.expiry_utc(ch.get("expiry"))
+    if exp is None or exp.timestamp() != check["expiry_ts"]:
+        return no(f"у знімку найближча експірація {db._clean(ch.get('expiry'), 12)}, а не дата символу")
+    k = _strike(check["symbol"])
+    row = next((r for r in ch["rows"] if r["k"] == k), None) if k is not None else None
+    leg = row.get("c" if check["right"] == "call" else "p") if row else None
+    if leg is None:
+        return no(f"страйка {fmt(k) if k else '?'} ({RIGHT_UA.get(check['right'], '?')}) у знімку немає")
+    vrp = db._data(snap, "vrp") or {}
+    cur_vrp = vrp.get("current") if isinstance(vrp.get("current"), dict) else {}
+    rv = db._num(cur_vrp.get("rv_30d"))
+    if rv is None or rv <= 0:
+        return no("у знімку немає RV30")
+    iv = leg["iv"] if leg["iv"] is not None and leg["iv"] > 0 else None
+    out.update(ok=True, spot=ch["F"], rv=rv, iv=iv, mark=leg["mark"], strike=k)
+    return out
+
+
+def rule8_conditions(check: dict[str, Any], now: float, market: dict[str, Any]) -> dict[str, Any] | None:
+    """Rule 8 on the one bought leg by analytics.rules_check.pre_trade_option with the snapshot's spot, RV30 and IV
+    (the same call as the dashboard builder's copy): {status (premium and timing together), breakeven_move, iv_vs_rv
+    (its rows), per_coin (USD), from_mark: the per-coin premium is the snapshot's mark}. None when the snapshot
+    gives no inputs or the purchase is not in the 1-3 day zone. The opening is int(now), as as_journal_row."""
+    if not market.get("ok"):
+        return None
+    if check["entry"] is not None:  # entry + size: USD per coin as given
+        per, size = check["entry"], check["size"]
+    else:  # premium in total: per coin at the snapshot's mark
+        per = market["mark"]
+        size = check["premium"] / per
+    leg = {"kind": check["right"], "side": "long", "size": size, "strike": market["strike"], "entry_premium": per, "iv": market["iv"]}
+    rows = {
+        r["key"]: r
+        for r in rc.pre_trade_option(
+            [leg],
+            now_ts=int(now),
+            expiry_ts=check["expiry_ts"],
+            spot=market["spot"],
+            rv=market["rv"],
+            thesis=check["thesis"],
+            target=check["target"],
+        )
+    }
+    if "breakeven_move" not in rows:
+        return None
+    status = rc.conditions_status(rows["premium"]["status"], rows["days_to_expiry"]["status"])
+    return {
+        "status": status,
+        "breakeven_move": rows["breakeven_move"],
+        "iv_vs_rv": rows["iv_vs_rv"],
+        "per_coin": per,
+        "from_mark": check["entry"] is None,
+    }
 
 
 def error_reply(parsed: dict[str, Any]) -> str:
@@ -171,7 +285,40 @@ def _rule5(check: dict[str, Any], st: str) -> str:
     return f"{head}: {STATUS_UA[st]} — {_h(why)}."
 
 
-def _rule8(check: dict[str, Any], c: dict[str, Any], st: str) -> str:
+def _pct(v: float | None) -> str:
+    return "—" if v is None else f"{fmt(round(v * 100, 1))} %"
+
+
+def _conditions_bc(cond: dict[str, Any] | None, market: dict[str, Any] | None) -> str:
+    """Rule 8 (b) and (c) in words: values and limits from the snapshot, or why they stay unknown."""
+    if cond is None:
+        why = (market or {}).get("why") or NO_SNAPSHOT
+        return f"(б) рух до беззбитку й (в) IV проти RV — невідомо: {why}"
+    b, c = cond["breakeven_move"], cond["iv_vs_rv"]
+    if b["value"] is None:
+        cond_b = f"(б) {MARK[b['status']]} беззбитку на експірацію немає"
+    else:
+        cond_b = (
+            f"(б) {MARK[b['status']]} до беззбитку {_pct(b['value'])} від форварду {fmt(round(market['spot']))}, "
+            f"межа {_pct(b['limit'])} ({fmt(rc.BE_MAX_SIGMA)}σ до експірації)"
+        )
+    if c["status"] == rc.UNKNOWN:
+        cond_c = "(в) ? IV страйка в знімку немає"
+    else:
+        cond_c = f"(в) {MARK[c['status']]} IV {_pct(c['value'])}, межа {_pct(c['limit'])} ({fmt(rc.IV_MAX_RV)} × RV30)"
+    src = f"RV30 {_pct(market['rv'])}, знімок {market['asof']:%H:%M} UTC" + (
+        f", премія за монету — марка {usd(cond['per_coin'])}" if cond["from_mark"] else ""
+    )
+    return f"{cond_b}; {cond_c} ({src})"
+
+
+def _rule8(
+    check: dict[str, Any],
+    c: dict[str, Any],
+    st: str,
+    cond: dict[str, Any] | None = None,
+    market: dict[str, Any] | None = None,
+) -> str:
     head = "Правило 8 · купівля опціонів"
     if st == rc.NA:
         return f"{head}: {STATUS_UA[st]} (це не купівля опціону)."
@@ -187,7 +334,7 @@ def _rule8(check: dict[str, Any], c: dict[str, Any], st: str) -> str:
             miss = [w for w, v in (("тези", check["thesis"]), ("цілі", check["target"])) if not v]
             cond_a = "немає " + (" й ".join(miss) or "тези й цілі") + " — умова (а) не виконана"
         parts.append("1–3 доби: лише з трьома умовами; " + cond_a)
-        parts.append("рух до беззбитку й IV проти RV тут не перевіряються — конструктор «Опціони»")
+        parts.append(_conditions_bc(cond, market))
     elif zone == rc.ZONE_FREE:
         parts.append("понад 3 доби — лише ліміт премії")
     else:
@@ -195,10 +342,14 @@ def _rule8(check: dict[str, Any], c: dict[str, Any], st: str) -> str:
     return f"{head}: {STATUS_UA[st]} — {_h('; '.join(parts))}."
 
 
-def evaluate(check: dict[str, Any], now: float, journal: list[dict[str, Any]] | None) -> dict[str, Any]:
+def evaluate(
+    check: dict[str, Any], now: float, journal: list[dict[str, Any]] | None, market: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Rule statuses of the planned trade: {statuses: {n: status}, check: its trade_checks row, risk: open_risk or
-    None, stops: day_stops or None}. ``journal`` = all journal rows (None = not read: rules 2 and 4 'unknown').
-    Pure: analytics.rules_check on the hypothetical row among the real trades, as journal_trade_tg.build_reply."""
+    None, stops: day_stops or None, conditions: rule8_conditions or None}. ``journal`` = all journal rows (None = not
+    read: rules 2 and 4 'unknown'); ``market`` = market_inputs (None = no snapshot: rule 8 (b), (c) 'unknown').
+    Pure: analytics.rules_check on the hypothetical row among the real trades, as journal_trade_tg.build_reply; in the
+    1-3 day zone with snapshot inputs rule 8 is pre_trade_option's on the bought leg."""
     row = as_journal_row(check, now)
     others = None if journal is None else rw.real_trades(journal)
     rows = [row] if others is None else [*others, row]
@@ -211,7 +362,12 @@ def evaluate(check: dict[str, Any], now: float, journal: list[dict[str, Any]] | 
     else:
         alt = c["rules"][2]
         st[2] = rc.NA if risk["status"] == alt == rc.NA else rc.conditions_status(risk["status"], alt)
-    return {"statuses": st, "check": c, "risk": risk, "stops": stops}
+    cond = None
+    if market is not None and c["buy_zone"] == rc.ZONE_COND:
+        cond = rule8_conditions(check, now, market)
+        if cond is not None:
+            st[8] = cond["status"]
+    return {"statuses": st, "check": c, "risk": risk, "stops": stops, "conditions": cond}
 
 
 def verdict_text(st: dict[int, str]) -> str:
@@ -222,9 +378,9 @@ def verdict_text(st: dict[int, str]) -> str:
     return " · ".join(f"{VERDICT_UA[s]}: {', '.join(groups[s])}" for s in (rc.VIOLATED, rc.UNKNOWN) if groups[s])
 
 
-def build_reply(check: dict[str, Any], now: float, journal: list[dict[str, Any]] | None) -> str:
+def build_reply(check: dict[str, Any], now: float, journal: list[dict[str, Any]] | None, market: dict[str, Any] | None = None) -> str:
     """Telegram HTML, at most 8 lines: verdict, the trade, rules 1, 2, 4, 5, 8, one disclaimer. Pure (time passed in)."""
-    ev = evaluate(check, now, journal)
+    ev = evaluate(check, now, journal, market)
     st, c = ev["statuses"], ev["check"]
     verdict = verdict_text(st)
     lines = [
@@ -234,20 +390,35 @@ def build_reply(check: dict[str, Any], now: float, journal: list[dict[str, Any]]
         _rule2(c, ev["risk"], st[2]),
         _rule4(ev["stops"], st[4], now),
         _rule5(check, st[5]),
-        _rule8(check, c, st[8]),
+        _rule8(check, c, st[8], ev["conditions"], market),
         f"<i>{_h(DISCLAIMER)}</i>",
     ]
     return "\n".join(lines)
 
 
-def handle(text: str, db_path: Path, now: float) -> str:
-    """Parse, read the journal (read-only) and answer. Never raises."""
+def load_market(check: dict[str, Any], snapshot_path: Path | None, now: float) -> dict[str, Any] | None:
+    """market_inputs from the snapshot file (read only), None for a linear trade; never raises: a failure is a
+    reason that keeps rule 8 (b), (c) 'unknown'."""
+    if check["kind"] != "option":
+        return None
+    if snapshot_path is None:
+        return {"ok": False, "why": NO_SNAPSHOT}
+    try:
+        snap, err = db.load_snapshot(snapshot_path)
+        return market_inputs(check, snap, err, now)
+    except Exception as e:  # noqa: BLE001 - an odd snapshot leaves (b), (c) unknown, never the reply
+        return {"ok": False, "why": f"несподіваний формат знімка ({type(e).__name__})"}
+
+
+def handle(text: str, db_path: Path, now: float, snapshot_path: Path | None = None) -> str:
+    """Parse, read the journal and the assistant snapshot (both read-only) and answer. Never raises."""
     parsed = parse_check_command(text, now=now)
     if not parsed["ok"]:
         return error_reply(parsed)
     journal, _err = rw.load_journal(db_path)
+    market = load_market(parsed["check"], snapshot_path, now)
     try:
-        return build_reply(parsed["check"], now, journal)
+        return build_reply(parsed["check"], now, journal, market)
     except Exception as e:  # noqa: BLE001 - the owner gets a reason, the bridge keeps running
         return f"❌ Перевірку не вдалося зібрати ({_h(type(e).__name__)}). Нічого не записано."
 
@@ -256,8 +427,9 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--text", required=True, help="the owner's /check message")
     ap.add_argument("--db", type=Path, default=rw.db.JOURNAL_DB, help="SQLite file (default: the dashboard's journal DB)")
+    ap.add_argument("--snapshot", type=Path, default=db.SNAPSHOT_PATH, help="assistant snapshot JSON (default: the dashboard's)")
     a = ap.parse_args(argv)
-    print(handle(a.text, a.db, time.time()))
+    print(handle(a.text, a.db, time.time(), a.snapshot))
     return 0
 
 

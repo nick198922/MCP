@@ -1,0 +1,9 @@
+[Unit]
+Description=tradedesk-bybit-options (hourly at :50, so the 08:00 Europe/Kyiv brief sees positions 10 min old)
+
+[Timer]
+OnCalendar=*-*-* *:50:00 Europe/Kyiv
+Persistent=false
+
+[Install]
+WantedBy=timers.target

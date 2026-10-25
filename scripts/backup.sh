@@ -50,10 +50,10 @@ snapshot() {
     "$HOME/private"; do
     [[ -e "$p" ]] && paths+=("$p")
   done
-  # Raw video and audio (~/private/yt-inbox, ~9 GB) can be fetched again; transcripts and frames next to them stay.
+  # Raw video and audio (~/private/yt-inbox, ~10 GB) are kept too (owner 25.10: a source may vanish from YouTube;
+  # B2 above its free 10 GB costs cents a month, the bucket's daily cap guards against a runaway).
   local rc=0
   "$RESTIC" backup --quiet --tag "$MODE" --exclude-caches \
-    --exclude '*.mp4' --exclude '*.m4a' --exclude '*.webm' --exclude '*.mkv' --exclude '*.mov' \
     "${paths[@]}" 2>"$STAGE/restic.err" || rc=$?
   cat "$STAGE/restic.err" >&2
   ((rc == 0)) || fail "$(why)"

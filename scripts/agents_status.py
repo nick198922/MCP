@@ -39,7 +39,7 @@ STATUS_ICON = {
     "rejected": "✖️",
     "inconclusive": "❔",
 }
-ROLE = {"scout": "скаут", "quant": "квант", "builder": "розробник", "critic": "критик"}
+ROLE = {"scout": "скаут", "quant": "квант", "builder": "розробник", "critic": "критик", "harvester": "збирач"}
 OUTCOME_ICON = {
     "delivered": "✅",
     "continues": "🔄",

@@ -1,0 +1,3 @@
+- Квант: `pm-longdated-tail-no` (Polymarket, NO на хвостах довгих ринків), крок 0 — ворота G1–G3 не пройдено (1 124 події, покриття цін 50.4 %, MDE 2.15 п.п.); вердикт `inconclusive`, картка стає `forward`. Результати подій не відкривались.
+- Нове: `analytics/pm_longdated.py` з тестами, `scripts/verify_pm_longdated_tail_no.py`, звіт `docs/verification/2026-10-25-pm-longdated-tail-no.md`.
+- У картці: розділ «Форвард» і реєстрація об'єднаного перегляду «історія + форвард».

@@ -41,9 +41,11 @@ def test_epochs_are_the_dated_rule_changes():
         ("v1", _ms(2026, 10, 21, 18, 39, 17)),
         ("v2", _ms(2026, 10, 22, 6, 13, 19)),
         ("v3", _ms(2026, 10, 22, 7, 12, 39)),
+        ("v4", _ms(2026, 10, 25, 14, 30, 0)),  # S12 joins the demo (rejected by its backtest)
     ]
-    assert sv.EPOCHS[-1].from_ms == BE_SWITCH_MS
-    assert all(e.setups == () and e.source and e.what for e in sv.EPOCHS)
+    assert sv.EPOCHS[2].from_ms == BE_SWITCH_MS
+    assert all(e.setups == () for e in sv.EPOCHS[:3]) and sv.EPOCHS[3].setups == ("S12",)
+    assert all(e.source and e.what for e in sv.EPOCHS)
     assert [e.from_ms for e in sv.EPOCHS] == sorted(e.from_ms for e in sv.EPOCHS)
     first_open = min(t["opened_ts"] for t in LIVE["trades"])
     assert sv.EPOCHS[0].from_ms <= first_open < sv.EPOCHS[1].from_ms  # the first live trade (21.10 20:02 UTC) is v1
@@ -117,6 +119,21 @@ def test_empty_open_only_and_odd_values():
     s = sv.version_stats(odd, now_ms=NOW)
     assert _row(s, "S3", "v3")["n_r"] == 0 and _row(s, "S3", "v3")["pnl_usd"] == 0.0 and _row(s, "S3", "v3")["mean_r"] is None
     assert _row(s, "S3", None)["closed"] == 1  # a bool is not a timestamp
+
+
+def test_s12_is_v4_and_the_other_setups_stay_v3():
+    from tradedesk.execution.demo_trader import SETUPS
+
+    v4 = sv.EPOCHS[3].from_ms
+    assert "S12" in SETUPS
+    later = v4 + 10 * H
+    assert sv.version_of("S12", later, now_ms=later).tag == "v4"
+    for setup in ("S14", "S16", "S3"):
+        assert sv.version_of(setup, later, now_ms=later).tag == "v3"
+    s = sv.version_stats([_t("S12", later), _t("S3", later)], now_ms=later + 2 * H)
+    assert [(x["setup"], x["version"]) for x in s["rows"]] == [("S12", "v4"), ("S3", "v3")]
+    assert _row(s, "S3", "v3")["changed_inside"] == 0  # v4 does not apply to S3
+    assert [e["tag"] for e in sv.version_stats([], now_ms=v4 - 1)["epochs"]] == ["v1", "v2", "v3"]
 
 
 def test_time_is_a_parameter_and_setup_specific_epochs():

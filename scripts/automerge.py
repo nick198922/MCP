@@ -49,6 +49,7 @@ PROTECTED_FILES = {
     "src/tradedesk/analytics/setup_signals.py",
     "src/tradedesk/analytics/course_s14_ema.py",
     "src/tradedesk/analytics/course_basics.py",
+    "src/tradedesk/analytics/course_fvg_ob.py",  # S12 (25.10)
 }
 PROTECTED_GLOBS = (
     "scripts/agents_*",
@@ -65,6 +66,7 @@ HELD_FILES = {
     "src/tradedesk/analytics/setup_signals.py",
     "src/tradedesk/analytics/course_s14_ema.py",
     "src/tradedesk/analytics/course_basics.py",
+    "src/tradedesk/analytics/course_fvg_ob.py",
     "scripts/automerge.py",
     "scripts/pr_watch.py",
     "scripts/trader_review.py",

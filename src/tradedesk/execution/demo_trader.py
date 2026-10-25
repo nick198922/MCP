@@ -21,7 +21,8 @@ Hourly cycle:
    tier, capped by the venue's maximum) and a confidence score. The account is on cross margin (owner 21.10): the guard
    keeps the maintenance margin plus the loss at every stop within half of the equity, so stops come before liquidation. Candidates that pass the guard and score at least ``MIN_SCORE`` are
    entered best first, at most 5 still at risk a UTC day: a trade with its stop at break-even, or closed without a real
-   loss, frees its slot (owner 21.10/22.10), at most 10 entries a day in all; the rest are recorded as skipped.
+   loss, frees its slot (owner 21.10/22.10), at most 10 entries a day in all; S12 holds at most 2 of the 5 slots
+   (``SETUP_SLOTS``, temporary until the owner decides); the rest are recorded as skipped.
 5. Every candidate, taken or not, is also written to ``trade_plan`` as a shadow plan (tag ``src:demo-shadow``, verdict
    'enter' if taken, else 'skip'), which the collector resolves on candles without the break-even rule: so selection
    and break-even can both be compared with the plain setup.
@@ -48,6 +49,7 @@ import json
 import os
 import sys
 import time
+from collections import Counter
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -100,7 +102,15 @@ HALT_FILE = Path.home() / ".config" / "tradedesk" / "demo.halt"
 OPTIONS_OFF_FILE = Path.home() / ".config" / "tradedesk" / "demo-options.off"
 DEFAULT_DB = "/var/lib/tradedesk-mcp/tradedesk.sqlite"
 TIMEFRAMES = ("1d", "4h")  # 1d first: its bars also feed the score of the 4h signals
-SETUPS = ("S14", "S16", "S3")
+# S12 is rejected by its backtest and traded anyway (owner 23.10: the demo tests rejected setups too; BACKLOG 0.5 item
+# "в"); same caps, guard and selection as the others, version v4 in analytics/setup_versions.py
+SETUPS = ("S14", "S16", "S3", "S12")
+# Temporary per-setup cap of the day's slots at risk (critic 25.10, docs/reviews/2026-10-25-demo-s12-fvg.md p. 1; the
+# owner's answer is pending in docs/QUESTIONS.md): S12 fires on many coins at once and ranks high, so without it the
+# rejected setup could take most of the 5 slots and slow the sample of S3 / S14 / S16. Counted like the daily cap
+# (break-even or a close without a real loss frees the slot); every new entry starts at risk, so this also bounds S12
+# to 2 entries per 4h bar.
+SETUP_SLOTS = {"S12": 2}
 FRESH_MS = 2 * 3_600_000  # the signal bar must have closed within the last 2 hours
 MAX_HOLD_MS = {"4h": 7 * 86_400_000, "1d": 30 * 86_400_000}  # S14 registered hold: 7 days on 4h
 MIN_SCORE = 2
@@ -583,6 +593,24 @@ async def shared_state(store: Store, client: BybitDemo, now: int, positions: dic
     return await _state(Ctx(store, client, now, quiet), positions, (), equity)
 
 
+async def _setup_slots(ctx: Ctx) -> Counter[str]:
+    """Today's trades still at risk, per setup (the same count as ``State.trades_today``)."""
+    day0 = day_start_ms(ctx.now)
+    trades = await ctx.store.demo_trade_list(limit=5000)
+    return Counter(
+        t["setup"]
+        for t in trades
+        if t["status"] in ("open", "unknown", "pending", "closed") and (t["opened_ts"] or 0) >= day0 and _at_risk(t)
+    )
+
+
+def _setup_cap(setup: str, used: Counter[str]) -> list[str]:
+    cap = SETUP_SLOTS.get(setup)
+    if cap is None or used[setup] < cap:
+        return []
+    return [f"{used[setup]} {setup} trades at risk today = temporary {setup} cap {cap} (docs/QUESTIONS.md)"]
+
+
 def _at_risk(t: dict[str, Any]) -> bool:
     """Does this trade still take one of the day's slots? Open: until its stop is at break-even. Closed: if it lost more
     than a tenth of its risk (a break-even exit loses only slippage)."""
@@ -812,16 +840,21 @@ async def _enter(ctx: Ctx, c: Candidate, state: State) -> State:
 async def _select_and_enter(ctx: Ctx, cands: list[Candidate], state: State) -> None:
     ok = [c for c in cands if not c.structural and c.score.points >= MIN_SCORE]
     ok.sort(key=lambda c: (-c.score.points, -c.p.reward_risk))
+    used: Counter[str] = Counter()
+    if any(c.sig.setup in SETUP_SLOTS for c in ok):
+        got = await ctx.safe("setup_slots", lambda: _setup_slots(ctx))
+        used = got if got is not None else Counter(SETUP_SLOTS)  # unreadable book: the capped setups wait
     chosen: set[str] = set()
     for c in ok:
         if c.p.symbol in state.open_symbols:
             continue  # a better signal on the same coin was just taken
-        bad = check(c.p, state, ctx.cfg)
+        bad = check(c.p, state, ctx.cfg) or _setup_cap(c.sig.setup, used)
         if bad:
             continue
         if ctx.dry_run:
             ctx.bump("would_send")
             chosen.add(c.p.link_id)
+            used[c.sig.setup] += 1
             after = replace(
                 state,
                 trades_today=state.trades_today + 1,
@@ -831,7 +864,9 @@ async def _select_and_enter(ctx: Ctx, cands: list[Candidate], state: State) -> N
             await ctx.safe("option_leg", lambda c=c, before=state, after=after: _option_leg(ctx, c, before, after), symbol=c.p.symbol)
             state = after
             continue
-        state = await _enter(ctx, c, state)
+        after = await _enter(ctx, c, state)
+        used[c.sig.setup] += after.trades_today > state.trades_today  # sent (or unknown): the trade holds a slot
+        state = after
         chosen.add(c.p.link_id)
     for c in cands:
         if c.p.link_id in chosen:
@@ -842,7 +877,7 @@ async def _select_and_enter(ctx: Ctx, cands: list[Candidate], state: State) -> N
         elif c.score.points < MIN_SCORE:
             reason, kind = [f"score {c.score.points} < {MIN_SCORE}"], "skipped"
         else:
-            reason, kind = check(c.p, state, ctx.cfg) or ["lower rank"], "skipped"
+            reason, kind = check(c.p, state, ctx.cfg) + _setup_cap(c.sig.setup, used) or ["lower rank"], "skipped"
         ctx.bump(kind)
         await ctx.safe(
             "audit_skip",

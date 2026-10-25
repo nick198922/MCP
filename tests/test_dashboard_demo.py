@@ -148,10 +148,10 @@ def test_enough_trades_drop_the_small_sample_badge():
     rs = [1.0 if i % 2 else 0.5 for i in range(30)]
     trades = [{"setup": "S14", "status": "closed", "r_multiple": r, "pnl_usd": 100 * r} for r in rs]
     html = db.block_demo_setups(trades)
-    assert "замало для висновку (0 з 30)" in html  # S16 and S3 have none
+    assert "замало для висновку (0 з 30)" in html  # S16, S3 and S12 have none
     s14 = html.split("S14 · середній R")[1].split("</div>")[0]
     assert "<span class='sig" not in s14 and "95 % ДІ вище 0" in s14  # no «замало для висновку» badge
-    assert html.count("<span class='sig warn'>замало для висновку") == 2
+    assert html.count("<span class='sig warn'>замало для висновку") == 3
 
 
 def test_demo_refusals_group_by_rule_and_count_the_week():
@@ -177,6 +177,7 @@ def test_demo_refusals_group_by_rule_and_count_the_week():
         ("FOO/USDT:USDT is not in today's universe", "монети немає в сьогоднішньому списку"),
         ("lower rank", "обрано сильніший сигнал"),
         ("3 trades at risk today = max", "денний ліміт угод під ризиком"),
+        ("2 S12 trades at risk today = temporary S12 cap 2 (docs/QUESTIONS.md)", "тимчасовий кап S12: 2 слоти на день"),
         (
             "maintenance + loss at all stops 4,100 USD > 40% of equity (cross margin)",
             "крос-маржа: підтримка + збиток на стопах понад ліміт",

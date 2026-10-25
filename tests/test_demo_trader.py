@@ -664,6 +664,105 @@ async def test_break_even_frees_a_slot_of_the_daily_cap(world):
     assert res["sent"] == 1 and res["trades_today"] == 2 and res["entries_today"] == 5
 
 
+async def test_s12_rejected_by_the_backtest_is_scanned_and_traded_under_the_same_caps(world, monkeypatch):
+    """BACKLOG 0.5 item "в": S12 joins the demo with its own setup tag; the guard and the daily caps apply as to the rest."""
+    w = world
+    asked: list = []
+
+    def scan(bars, tf, setups):
+        asked.append(tuple(setups))
+        return list(w.signals.get(tf, []))
+
+    monkeypatch.setattr(demo_trader, "scan", scan)
+    assert demo_trader.SETUPS == ("S14", "S16", "S3", "S12")
+    w.signals["4h"] = [_sig(setup="S12", target=104_500.0)]
+    await w.enter()
+    assert asked and all(a == demo_trader.SETUPS for a in asked)
+    t = (await w.store.demo_trade_list())[0]
+    assert t["setup"] == "S12" and t["status"] == "open" and t["link_id"].startswith("td-S12-l-4h-BTC-")
+    assert "setup:S12" in (await w.store.journal_get(t["journal_id"]))["tags"]
+    assert any("Демо: вхід S12 лонг BTC/USDT" in m for m in w.msgs)
+    plans = await _plans(w.store)
+    assert "setup:S12" in plans[0]["tags"] and plans[0]["verdict"] == "enter"
+    # the daily cap: five trades at risk today, a new S12 signal is skipped like any other
+    await w.store.conn.execute("DELETE FROM demo_trade")
+    await w.store.conn.commit()
+    for k in range(5):
+        await _today(w.store, k)
+    w.venue.pos.clear()
+    w.signals["4h"] = [_sig(setup="S12", target=104_500.0, ts=T0)]
+    res = await w.run(T0 + H4 + 60_000)
+    assert res["sent"] == 0 and res.get("skipped") == 1
+    skipped = await w.store.exec_audit_list(kinds=("skipped",))
+    assert skipped[0]["setup"] == "S12" and "trades at risk today" in " ".join(skipped[0]["payload"]["violations"])
+
+
+def _coins(w, n: int) -> list[str]:
+    """``n`` crypto coins at the same price as BTC in the fake venue's universe (the patched scan gives each the same
+    signals)."""
+    coins = [f"C{k}/USDT:USDT" for k in range(n)]
+    for s in coins:
+        w.venue.last[s], w.venue.book[s] = 100_000.0, (99_990.0, 100_010.0)
+
+    async def turnovers():
+        return [(s, 1e9 - k, "") for k, s in enumerate(coins)]
+
+    w.venue.turnovers = turnovers
+    return coins
+
+
+async def test_temporary_s12_cap_keeps_three_of_five_slots_for_the_other_setups(world):
+    """Critic 25.10 (docs/QUESTIONS.md): S12 ranks first on every coin here, yet takes only 2 slots; the S3 signals of
+    the other coins get the rest, and the skipped S12 signals say why."""
+    w = world
+    assert demo_trader.SETUP_SLOTS == {"S12": 2}
+    _coins(w, 5)
+    w.signals["4h"] = [_sig(setup="S12", target=106_000.0), _sig(setup="S3", target=104_000.0)]
+    res = await w.run()
+    sent = [o[6] for o in w.venue.kinds("limit")]
+    assert res["sent"] == 5 and sorted(lid.split("-")[1] for lid in sent) == ["S12", "S12", "S3", "S3", "S3"]
+    assert {lid.split("-")[4] for lid in sent if "-S12-" in lid} == {"C0", "C1"}  # the best two, then the cap
+    skipped = {a["link_id"]: a["payload"]["violations"] for a in await w.store.exec_audit_list(kinds=("skipped",))}
+    s12_skipped = [v for lid, v in skipped.items() if "-S12-" in lid]
+    assert len(s12_skipped) == 3 and all(any("temporary S12 cap 2" in x for x in v) for v in s12_skipped)
+    assert not any("temporary" in x for lid, v in skipped.items() if "-S3-" in lid for x in v)  # other setups: no cap
+
+
+async def test_temporary_s12_cap_counts_todays_s12_slots_at_risk(world, monkeypatch):
+    """Two S12 trades at risk today fill the cap; one at break-even does not count (the daily-slot rule); an unreadable
+    book keeps S12 out rather than uncapped."""
+    w = world
+    await _today(w.store, 0, setup="S12")
+    await _today(w.store, 1, setup="S12", status="closed", closed_ts=T0 + 3, pnl_usd=-1.0)  # a stop keeps its slot
+    await _today(w.store, 2, setup="S12", be_ts=T0 + 2, be_stop=1.001)  # break-even: free
+    _coins(w, 1)
+    w.signals["4h"] = [_sig(setup="S12", target=106_000.0), _sig(setup="S3", target=104_000.0)]
+    res = await w.run()
+    assert res["sent"] == 1 and w.venue.kinds("limit")[0][6].startswith("td-S3-l-4h-C0-")
+    (sk,) = await w.store.exec_audit_list(kinds=("skipped",))
+    assert sk["setup"] == "S12" and any("2 S12 trades at risk today" in x for x in sk["payload"]["violations"])
+    # one S12 slot frees (its stop moves to break-even): the next S12 signal is taken, then the cap holds again
+    await w.store.conn.execute("UPDATE demo_trade SET be_ts = ?, be_stop = 1.001 WHERE link_id = 'd0'", (T0 + 5,))
+    await w.store.conn.commit()
+    before = len(w.venue.kinds("limit"))
+    _coins(w, 3)
+    w.signals["4h"] = [_sig(setup="S12", target=106_000.0, ts=T0)]
+    res = await w.run(T0 + H4 + 60_000)
+    new = [o[6] for o in w.venue.kinds("limit")[before:]]
+    assert res["sent"] == 1 and len(new) == 1 and new[0].startswith("td-S12-l-4h-")
+
+    async def broken(ctx):
+        raise RuntimeError("db locked")
+
+    monkeypatch.setattr(demo_trader, "_setup_slots", broken)
+    before = len(w.venue.kinds("limit"))
+    _coins(w, 3)
+    w.signals["4h"] = [_sig(setup="S12", target=106_000.0, ts=T0 + H4), _sig(setup="S3", target=104_000.0, ts=T0 + H4)]
+    res = await w.run(T0 + 2 * H4 + 60_000)
+    new = [o[6] for o in w.venue.kinds("limit")[before:]]
+    assert res["sent"] >= 1 and new and all(lid.startswith("td-S3-") for lid in new) and res["errors"] >= 1
+
+
 async def test_hard_ceiling_of_entries_per_day(world):
     w = world
     for k in range(10):

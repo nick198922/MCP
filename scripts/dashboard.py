@@ -459,6 +459,7 @@ def _nav(active: str) -> str:
         ("/", "project", "Проєкт"),
         ("/brief", "brief", "Бриф"),
         ("/options", "options", "Опціони"),
+        ("/positions", "positions", "Позиції"),
         ("/radar", "radar", "Радар"),
         ("/journal", "journal", "Журнал"),
         ("/demo", "demo", "Демо"),
@@ -670,6 +671,72 @@ HELP: dict[str, tuple[str, str, str, str]] = {
         "P&L позиції, якщо BTC зміниться на ±N % — зараз, через кілька днів і на експірацію; плюс сценарій «IV +5 пунктів».",
         "Зелене — прибуток, червоне — збиток.",
         "Знайди рядок, де тобі боляче: чи готовий ти до такого руху?",
+    ),
+    "lp_sum": (
+        "Позиції Bybit наживо",
+        "Твої відкриті позиції з Bybit (ключ лише для читання): збирач оновлює ціни кожні 10 с, позиції — кожні 30 с.",
+        "Зелена крапка — дані свіжі; червона — збирач зупинився, числа застарілі.",
+        "Сторінка лише показує: ордерів тут немає. Закривати й ставити стопи — на Bybit.",
+    ),
+    "lp_equity": (
+        "Капітал",
+        "Equity уніфікованого рахунку Bybit: баланс плюс нереалізований P&L.",
+        "«Вільно» — скільки ще доступно під нову маржу.",
+        "Ризик на угоду рахуй від депозиту за правилами (≈ 1 %), а не від вільного залишку.",
+    ),
+    "lp_pnl": (
+        "P&L відкритих позицій",
+        "Сума за марками Bybit наживо плюс уже сплачені комісії за вхід (від'ємні).",
+        "Марка — розрахункова ціна біржі; закрити ринковим ордером вийде за bid (продаж) чи ask (купівля).",
+        "Не рішення само по собі: дивись беззбиток і тету нижче — скільки ще часу й руху треба.",
+    ),
+    "lp_theta": (
+        "Тета на добу",
+        "Скільки вартості опціонів зникне за добу, якщо ціна й IV не зміняться (Black-76).",
+        "Мінус — ти платиш за час (купив опціони); плюс — заробляєш на часі (продав).",
+        "Чим ближче експірація, тим швидше тане куплений опціон: тримати без руху стає дорожче щодня.",
+    ),
+    "lp_dte": (
+        "До експірації",
+        "Час до найближчої експірації твоїх опціонів (Bybit, 08:00 UTC).",
+        "Менше 2 діб — у годинах.",
+        "Останні дні — найшвидша тета й найбільша гамма: P&L стрибає від малих рухів.",
+    ),
+    "lp_legs": (
+        "Ноги позиції",
+        "Кожен опціон: ціна входу, поточна марка, bid/ask, mark IV, P&L і реалізоване (комісія за вхід).",
+        "P&L у % — від сплаченої премії.",
+        "Широкий bid/ask — закриття коштуватиме помітно більше за марку.",
+    ),
+    "lp_be": (
+        "Беззбиток",
+        "Ціна, за якої P&L від входу = 0 (з комісіями): зараз, через кілька днів і на експірацію.",
+        "Кожен день до експірації беззбиток купленої позиції відсувається далі від ціни — це тета. Остання колонка — P&L, якщо ціна стоїть.",
+        "Якщо до потрібного беззбитку далі, ніж ринок реально проходить за залишок часу, — тримати, сподіваючись, дорого.",
+    ),
+    "lp_greeks": (
+        "Греки позиції",
+        "Дельта — як скільки монет на споті; гамма — як змінюється дельта на 1 % руху; вега — на 1 пункт IV; тета — за добу.",
+        "«Рух за добу» — денний рух ціни, за якого гамма окупає тету (для куплених опціонів), поруч із реальним середнім денним рухом за 7 і 30 днів.",
+        "Якщо ринок рухається менше за цей поріг — куплені опціони втрачають, продані заробляють; і навпаки.",
+    ),
+    "lp_chart": (
+        "P&L від ціни",
+        "P&L від входу залежно від ціни: зараз, посередині строку і на експірацію.",
+        "Відстань між лініями — те, що забере час, якщо ціна стоїть.",
+        "Дивись, де пунктирна «зараз» перетинає нуль: це ціна, на якій вийдеш у нуль, якщо закриєш сьогодні.",
+    ),
+    "lp_scen": (
+        "Сценарії",
+        "P&L від входу при русі ціни на ±N % — зараз, з IV ±5 пунктів, через кілька днів і на експірацію.",
+        "Зелене — прибуток, червоне — збиток, з комісіями за вхід і вихід.",
+        "Знайди рядок і рух, де тобі боляче, — і чи є план на цей випадок.",
+    ),
+    "lp_linear": (
+        "Ф'ючерси",
+        "Відкриті лінійні позиції (перпи, ф'ючерси): вхід, марка, P&L, беззбиток і ціна ліквідації від Bybit.",
+        "Ліквідація червоним: стоп має стояти далеко перед нею.",
+        "Без стопа біля ліквідації — порушення правил ризику.",
     ),
     "j_trades": (
         "Мої угоди",
@@ -1234,15 +1301,17 @@ HELP_JS = """
   }
   function show(i) { if (open && open !== i) hide(open); if (open !== i) at = Date.now(); open = i; i.classList.add('open'); place(i); }
   function hide(i) { i.classList.remove('open'); var t = i.querySelector('.tip'); if (t) t.removeAttribute('style'); if (open === i) open = null; }
-  document.querySelectorAll('.info').forEach(function (i) {
-    if (!i.querySelector('.tip')) return;
+  function bind(root) { root.querySelectorAll('.info').forEach(function (i) {
+    if (!i.querySelector('.tip') || i.dataset.tdh) return;
+    i.dataset.tdh = '1';
     i.addEventListener('pointerenter', function (e) { if (e.pointerType === 'mouse') show(i); });
     i.addEventListener('pointerleave', function (e) { if (e.pointerType === 'mouse') hide(i); });
     i.addEventListener('focus', function () { show(i); });
     i.addEventListener('blur', function () { hide(i); });
     i.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); if (open === i && Date.now() - at > 400) { hide(i); } else { show(i); } });
     i.addEventListener('keydown', function (e) { if (e.key === 'Escape') { hide(i); i.blur(); } });
-  });
+  }); }
+  bind(document); window.tdHelp = bind;
   document.addEventListener('click', function () { if (open) hide(open); });
   addEventListener('scroll', function () { if (open) place(open); }, { passive: true });
   addEventListener('resize', function () { if (open) place(open); });
@@ -3510,6 +3579,465 @@ def render_options(snap: dict | None, err: str | None, now: float, params: dict 
 def options_page(query: str = "", now: float | None = None) -> str:
     snap, err = load_snapshot(SNAPSHOT_PATH)
     return with_help(render_options(snap, err, time.time() if now is None else now, parse_options_query(query), SNAPSHOT_PATH))
+
+
+# ---------------------------------------------------------------- «Позиції» tab: the owner's live Bybit positions
+#
+# Reads the state file of scripts/bybit_live.py (read-only key, refreshed every 10 s by the minutely timer
+# tradedesk-bybit-live) and computes everything here: live P&L from the tickers' marks, position greeks and the
+# breakevens now, through N days and at expiry. Model: Black-76 on each expiry's forward (Bybit's underlyingPrice),
+# r = 0, every leg at its own mark IV held fixed (sticky strike); T = days / 365, expiry 08:00 UTC. Breakevens include
+# the realised P&L Bybit reports for the open position (the opening fees) and an exit fee estimated as the same
+# amount again, capped at Bybit's share of the option's value in that scenario. Every string from the file is untrusted and escaped; numbers come as strings and are parsed.
+
+LIVE_PATH = Path(os.environ.get("TRADEDESK_LIVE_POSITIONS", "/var/lib/tradedesk-mcp/assistant/live_positions.json"))
+LIVE_STALE_S = 150  # the timer writes every 10 s; older means the collector stopped
+LIVE_POLL_MS = 10_000
+LIVE_HORIZONS = (1, 3, 7, 14, 30)  # breakeven rows: days from now (only those before expiry)
+LIVE_MOVES = (-10, -5, -2, 0, 2, 5, 10)  # scenario columns: forward move, %
+# Bybit caps an option's fee at a share of its price: 7 % for a trade, 12.5 % for the delivery at expiry
+LIVE_FEE_CAP_TRADE, LIVE_FEE_CAP_DELIVERY = 0.07, 0.125
+LIVE_STATUS_UA = {
+    "no_key": "На сервері немає ключа Bybit (/etc/tradedesk-bybit.env): позицій не видно.",
+    "key_not_read_only": "Ключ Bybit не лише для читання: збирач нічого не запитує. Потрібен ключ read-only.",
+    "error": "Bybit не відповів на запит позицій: показати нічого.",
+}
+LIVE_CAVEATS = (
+    "Модель: Black-76 на форварді експірації, кожна нога за своєю поточною mark IV, яка вважається незмінною. "
+    "Насправді IV рухається разом з ціною, тож беззбиток «через N днів» — орієнтир, а не точка.",
+    "Беззбиток враховує вже сплачену комісію за вхід (realised P&L позиції на Bybit) і таку саму оцінку комісії за "
+    "вихід (не більше 7 % вартості опціону, на експірації — 12.5 %, як ліміт Bybit); спред bid/ask не враховано: закриття ринковим ордером коштує ще половину спреду.",
+    "Ймовірностей тут немає навмисно: ризик-нейтральні ймовірності з IV — не прогноз.",
+)
+LIVE_CSS = """
+.lp-age{font-size:13px}.lp-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--ok);margin-right:6px;vertical-align:1px}
+.lp-dot.stale{background:var(--bad)}.lp-grp h3{margin:4px 0 8px;font-size:15px}
+table.lp td,table.lp th{white-space:nowrap}table.lp td.r,table.lp th.r{text-align:right}
+.lp-be b{font-size:15px}.lp-sub{font-size:12px;color:var(--mut)}
+"""
+LIVE_JS = (
+    """
+(function () {
+  var box = document.getElementById('live'); if (!box) return;
+  function tick() {
+    if (document.hidden || document.querySelector('.info.open')) return;
+    fetch(location.pathname + '?frag=1', { credentials: 'same-origin', cache: 'no-store' })
+      .then(function (r) { if (!r.ok) throw r.status; return r.text(); })
+      .then(function (t) { box.innerHTML = t; if (window.tdHelp) window.tdHelp(box); })
+      .catch(function () { var a = document.getElementById('lp-age'); if (a) a.classList.add('bad'); });
+  }
+  setInterval(tick, """
+    + str(LIVE_POLL_MS)
+    + """);
+  document.addEventListener('visibilitychange', function () { if (!document.hidden) tick(); });
+})();
+"""
+)
+
+
+def _sn(x: object) -> float | None:
+    """A finite float from a number or a numeric string (Bybit sends strings), else None."""
+    if isinstance(x, str):
+        try:
+            x = float(x.strip())
+        except ValueError:
+            return None
+    return _num(x)
+
+
+def load_live(path: Path) -> tuple[dict | None, str | None]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None, "missing"
+    except (OSError, ValueError) as e:
+        return None, type(e).__name__
+    return (data, None) if isinstance(data, dict) else (None, "format")
+
+
+def live_groups(data: dict, now: float) -> tuple[list[dict], list[dict]]:
+    """Option positions grouped by (base, expiry) with live marks, plus the linear positions. Skips malformed rows."""
+    tick = data.get("tickers") if isinstance(data.get("tickers"), dict) else {}
+    groups: dict[tuple, dict] = {}
+    linear: list[dict] = []
+    for p in _list(data.get("positions")):
+        if not isinstance(p, dict):
+            continue
+        sym = str(p.get("symbol") or "")
+        t = tick.get(sym) if isinstance(tick.get(sym), dict) else {}
+        size, entry = _sn(p.get("size")), _sn(p.get("avgPrice"))
+        side = "long" if p.get("side") == "Buy" else "short" if p.get("side") == "Sell" else None
+        if not size or entry is None or side is None:
+            continue
+        sign, size = (1 if side == "long" else -1), abs(size)
+        mark = _sn(t.get("markPrice")) or _sn(p.get("markPrice"))
+        realised = _sn(p.get("curRealisedPnl")) or 0.0
+        if p.get("category") == "linear":
+            linear.append(
+                {"symbol": _clean(sym, 30), "side": side, "size": size, "entry": entry, "mark": mark, "realised": realised,
+                 "upnl": sign * size * (mark - entry) if mark is not None else _sn(p.get("unrealisedPnl")),
+                 "be": _sn(p.get("breakEvenPrice")), "liq": _sn(p.get("liqPrice")), "lev": _sn(p.get("leverage"))}
+            )  # fmt: skip
+            continue
+        c = option_contract(sym)
+        F = _sn(t.get("underlyingPrice")) or _sn(t.get("indexPrice"))
+        iv = _sn(t.get("markIv"))
+        if c is None or mark is None or not F or not iv or iv <= 0:
+            continue
+        rv = data.get("rv") if isinstance(data.get("rv"), dict) else {}
+        rvb = rv.get(c["base"]) if isinstance(rv.get(c["base"]), dict) else {}
+        g = groups.setdefault(
+            (c["base"], c["expiry_ts"]),
+            {"base": c["base"], "exp_ts": c["expiry_ts"], "legs": [], "F": F, "rv7": _sn(rvb.get("rv7")), "rv30": _sn(rvb.get("rv30"))},
+        )
+        g["legs"].append(
+            {"symbol": _clean(sym, 40), "kind": "call" if c["kind"] == "C" else "put", "side": side, "size": size,
+             "strike": c["strike"], "entry_premium": entry, "iv": iv, "mark": mark, "realised": realised,
+             "fee_in": max(0.0, -realised), "upnl": sign * size * (mark - entry), "bid": _sn(t.get("bid1Price")), "ask": _sn(t.get("ask1Price"))}
+        )  # fmt: skip
+    out = []
+    for g in sorted(groups.values(), key=lambda g: (g["exp_ts"], g["base"])):
+        g["days"] = max((g["exp_ts"] - now) / 86400.0, 0.0)
+        g["realised"] = sum(leg["realised"] for leg in g["legs"])
+        g["upnl"] = sum(leg["upnl"] for leg in g["legs"])
+        out.append(g)
+    return out, linear
+
+
+def live_pnl(g: dict, s: float, days_left: float, d_iv: float = 0.0) -> float:
+    """P&L from entry in USD at forward s with days_left to expiry and every IV shifted by d_iv, net of the realised
+    P&L (opening fees) and the estimated exit fee (the opening fee again, capped at Bybit's share of the option's value
+    then). At days_left 0 it is the exact payoff."""
+    total = g["realised"]
+    cap = LIVE_FEE_CAP_TRADE if days_left > 0 else LIVE_FEE_CAP_DELIVERY
+    for leg in g["legs"]:
+        sign = 1 if leg["side"] == "long" else -1
+        v = _b76(s, leg["strike"], max(days_left, 0.0) / 365.0, max(leg["iv"] + d_iv, 1e-6), leg["kind"] == "call")
+        total += sign * leg["size"] * (v - leg["entry_premium"]) - min(leg["fee_in"], cap * v * leg["size"])
+    return total
+
+
+def live_breakevens(g: dict, days_left: float, lo: float = 0.3, hi: float = 2.5, n: int = 900) -> list[float]:
+    """Forwards where live_pnl changes sign, scanned on [lo·F, hi·F] and refined by bisection."""
+    F = g["F"]
+    xs = [F * (lo + (hi - lo) * i / (n - 1)) for i in range(n)]
+    ys = [live_pnl(g, x, days_left) for x in xs]
+    out = []
+    for i in range(1, n):
+        if (ys[i - 1] > 0) == (ys[i] > 0):
+            continue
+        a, b, ya = xs[i - 1], xs[i], ys[i - 1]
+        for _ in range(50):
+            m = (a + b) / 2
+            ym = live_pnl(g, m, days_left)
+            if (ym > 0) == (ya > 0):
+                a, ya = m, ym
+            else:
+                b = m
+        out.append((a + b) / 2)
+    return out
+
+
+def live_greeks(g: dict) -> dict[str, float]:
+    """Position greeks (Black-76, each leg at its mark IV) plus the theta/gamma breakeven daily move and the
+    vega-weighted IV's implied one-day move, USD."""
+    T = g["days"] / 365.0
+    G = position_greeks(g["legs"], g["F"], T, g["legs"][0]["iv"])
+    vw = [
+        (abs(_b76_greeks(g["F"], leg["strike"], T, leg["iv"], leg["kind"] == "call")["vega"]) * leg["size"], leg["iv"]) for leg in g["legs"]
+    ]
+    wsum = sum(w for w, _ in vw)
+    iv = sum(w * v for w, v in vw) / wsum if wsum > 0 else g["legs"][0]["iv"]
+    G["iv"] = iv
+    G["move_1d"] = g["F"] * iv / math.sqrt(365.0)
+    G["tg_move"] = math.sqrt(2.0 * abs(G["theta"]) / abs(G["gamma"])) if abs(G["gamma"]) > 1e-15 and G["theta"] * G["gamma"] < 0 else None
+    return G
+
+
+def _live_exp(ts: float) -> str:
+    return datetime.fromtimestamp(ts, timezone.utc).strftime("%d.%m %H:%M UTC")  # noqa: UP017
+
+
+def _dte(days: float) -> str:
+    return f"{days * 24:.0f} год" if days < 2 else f"{days:.1f} дн"
+
+
+def _be_cell(bes: list[float], F: float) -> str:
+    if not bes:
+        return "<td colspan='2' class='mut'>беззбитку в межах −70…+150 % нема</td>"
+    lo = [b for b in bes if b < F]
+    hi = [b for b in bes if b >= F]
+
+    def one(b: float | None) -> str:
+        if b is None:
+            return "<td class='r mut'>—</td>"
+        return f"<td class='r num'><b>{_e(_kd(b))}</b> <span class='lp-sub'>{_e(_pc((b / F - 1) * 100))}</span></td>"
+
+    return one(max(lo) if lo else None) + one(min(hi) if hi else None)
+
+
+def block_live_be(g: dict) -> str:
+    F, days = g["F"], g["days"]
+    plan = [("зараз", days)] + [(f"через {h} дн", days - h) for h in LIVE_HORIZONS if h < days - 0.25]
+    plan.append((f"на експірацію {_live_exp(g['exp_ts'])}", 0.0))
+    rows = []
+    for label, left in plan:
+        flat = live_pnl(g, F, left)
+        rows.append(
+            f"<tr><td>{_e(label)}<br><span class='lp-sub'>до експірації {_e(_dte(left)) if left > 0 else '0'}</span></td>"
+            f"{_be_cell(live_breakevens(g, left), F)}<td class='r num {_cls(round(flat))}'>{_e(_usd(flat, True))}</td></tr>"
+        )
+    return (
+        f"<section class='wide'>{_h2('Беззбиток', 'lp_be')}<div class='scroll'><table class='lp lp-be'>"
+        f"<tr><th>Коли</th><th class='r'>нижній</th><th class='r'>верхній</th><th class='r'>P&amp;L, якщо {g['base']} стоїть</th></tr>"
+        + "".join(rows)
+        + f"</table></div><p class='note'>Ціна — форвард експірації ({_e(_kd(F))}), відсоток — відстань від нього. "
+        "Беззбиток з комісіями за вхід і вихід, при незмінних IV.</p></section>"
+    )
+
+
+def block_live_greeks(g: dict) -> str:
+    G, F, b = live_greeks(g), g["F"], g["base"]
+    d, gm, v, t = G["delta"], G["gamma"], G["vega"], G["theta"]
+    one = F * 0.01
+    rows = [
+        ("Дельта", f"{_sg(d, 3)} {b}", d, f"≈ {_usd(d * F, True)} експозиції; {b} +1 % ({_kd(one)}) → {_usd(d * one, True)}"),
+        ("Гамма", f"{_sg(gm * one, 4)} {b}", gm, f"на стільки зміниться дельта при русі {b} на 1 %; рух на 1 % у будь-який бік {'додає' if gm >= 0 else 'забирає'} ще ≈ {_usd(abs(0.5 * gm * one * one))}"),
+        ("Вега", _usd(v, True), v, f"IV +1 пункт (зараз {G['iv'] * 100:.1f} %); IV +5 п. → {_usd(live_pnl(g, F, g['days'], 0.05) - live_pnl(g, F, g['days']), True)}"),
+        ("Тета", _usd(t, True), t, "за добу, якщо ціна й IV стоять"),
+    ]  # fmt: skip
+    if G["tg_move"] is not None:
+        want = "окупає тету" if gm > 0 else "ще не з'їдає отриману тету"
+        real = [
+            f"{lb} ≈ {_kd(F * x / math.sqrt(365.0))} ({x / math.sqrt(365.0) * 100:.2f} %)"
+            for lb, x in (("7 дн", g.get("rv7")), ("30 дн", g.get("rv30")))
+            if x
+        ]
+        tail = f"; реальний рух {b} за добу: {', '.join(real)}" if real else ""
+        rows.append(("Рух за добу", _kd(G["tg_move"]), gm, f"такий денний рух {want} ({G['tg_move'] / F * 100:.2f} %){tail}"))
+    body = "".join(
+        f"<tr><td>{_e(k)}</td><td class='r num {_cls(x)}' style='white-space:nowrap'>{_e(val)}</td><td class='mut'>{_e(s)}</td></tr>"
+        for k, val, x, s in rows
+    )
+    return (
+        f"<section>{_h2('Греки', 'lp_greeks')}<table class='greeks'>{body}</table>"
+        "<p class='note'>Black-76, кожна нога за своєю mark IV; для малих рухів. «Рух за добу» — √(2·|тета| / гамма), це рух, який закладає IV; реальний — середній денний рух за 7 і 30 повних днів (Bybit, перп). Реальний більший — купленим опціонам рух окупає тету, менший — ні.</p></section>"
+    )
+
+
+def block_live_legs(g: dict) -> str:
+    rows = []
+    for leg in g["legs"]:
+        pct = leg["upnl"] / (leg["entry_premium"] * leg["size"]) * 100 if leg["entry_premium"] > 0 else None
+        spread = f"{_nf(leg['bid'])} / {_nf(leg['ask'])}" if leg["bid"] is not None and leg["ask"] is not None else "—"
+        rows.append(
+            f"<tr><td>{_e(_nf(leg['strike']))} <b>{'CALL' if leg['kind'] == 'call' else 'PUT'}</b></td>"
+            f"<td>{'купив' if leg['side'] == 'long' else 'продав'}</td><td class='r num'>{_e(_nf(leg['size'], 2))}</td>"
+            f"<td class='r num'>{_e(_nf(leg['entry_premium'], 1))} → {_e(_nf(leg['mark'], 1))}</td><td class='r num mut'>{_e(spread)}</td>"
+            f"<td class='r num'>{leg['iv'] * 100:.1f} %</td><td class='r num {_cls(round(leg['upnl'], 2))}'>{_e(_usd(leg['upnl'], True))}"
+            f"{f' <span class=lp-sub>{_e(_pc(pct, 0))}</span>' if pct is not None else ''}</td>"
+            f"<td class='r num mut'>{_e(_usd(leg['realised'], True))}</td></tr>"
+        )
+    return (
+        f"<section class='wide'>{_h2('Ноги', 'lp_legs')}<div class='scroll'><table class='lp'>"
+        "<tr><th>Опціон</th><th>Сторона</th><th class='r'>К-сть</th><th class='r'>Вхід → марка</th><th class='r'>Bid / ask</th>"
+        "<th class='r'>IV</th><th class='r'>P&amp;L</th><th class='r'>Реаліз. (комісії)</th></tr>"
+        + "".join(rows)
+        + "</table></div></section>"
+    )
+
+
+def block_live_scen(g: dict) -> str:
+    F, days = g["F"], g["days"]
+    plan = [("зараз", days, 0.0), ("зараз, IV +5 п.", days, 0.05), ("зараз, IV −5 п.", days, -0.05)]
+    mid = [h for h in LIVE_HORIZONS if h < days - 0.25]
+    if mid:
+        h = mid[min(1, len(mid) - 1)]
+        plan.append((f"через {h} дн", days - h, 0.0))
+    plan.append(("на експірацію", 0.0, 0.0))
+    head = "".join(
+        f"<th class='r num'>{_e(('+' if m > 0 else '−' if m < 0 else '') + f'{abs(m)} %')}<br><span class='mut'>{_e(_kd(F * (1 + m / 100)))}</span></th>"
+        for m in LIVE_MOVES
+    )
+    body = "".join(
+        f"<tr><td>{_e(lb)}</td>"
+        + "".join(
+            f"<td class='r num {_cls(round(x))}'>{_e(_usd(x, True))}</td>"
+            for x in [live_pnl(g, F * (1 + m / 100), left, div) for m in LIVE_MOVES]
+        )
+        + "</tr>"
+        for lb, left, div in plan
+    )
+    return (
+        f"<section class='wide'>{_h2('Сценарії · P&L від входу, USD', 'lp_scen')}<div class='scroll'><table class='scen'>"
+        f"<tr><th>{_e(g['base'])}</th>{head}</tr>{body}</table></div>"
+        "<p class='note'>P&amp;L від цін входу з комісіями за вхід і вихід; до експірації — Black-76 за поточними IV.</p></section>"
+    )
+
+
+def live_svg(g: dict) -> str:
+    """P&L from entry over the forward: at expiry (solid), now (dashed) and halfway (dotted); breakevens of «now»."""
+    F, days = g["F"], g["days"]
+    iv = live_greeks(g)["iv"]
+    r = min(0.3, max(0.06, 2.5 * iv * math.sqrt(max(days, 0.5) / 365.0)))
+    lo, hi, n = F * (1 - r), F * (1 + r), 161
+    xs = [lo + (hi - lo) * i / (n - 1) for i in range(n)]
+    curves = [("exp", 0.0), ("now", days)] + ([("mid", days / 2)] if days > 2 else [])
+    ys = {k: [live_pnl(g, x, left) for x in xs] for k, left in curves}
+    W, H, L, R, Tp, B = 720, 280, 70, 14, 12, 28
+    allv = [y for v in ys.values() for y in v] + [0.0]
+    ymin, ymax = min(allv), max(allv)
+    pad = (ymax - ymin) * 0.08 or 1.0
+    ymin, ymax = ymin - pad, ymax + pad
+
+    def X(x: float) -> float:
+        return L + (x - lo) / (hi - lo) * (W - L - R)
+
+    def Y(y: float) -> float:
+        return Tp + (ymax - y) / (ymax - ymin) * (H - Tp - B)
+
+    out = []
+    sy = nice_step(ymax - ymin, 6)
+    y = math.ceil(ymin / sy) * sy
+    while y <= ymax:
+        out.append(
+            f'<line x1="{L}" x2="{W - R}" y1="{Y(y):.1f}" y2="{Y(y):.1f}" style="stroke:var(--line)"/><text x="{L - 6}" y="{Y(y) + 4:.1f}" text-anchor="end">{_e(_usd(y))}</text>'
+        )
+        y += sy
+    sx = nice_step(hi - lo, 7)
+    x = math.ceil(lo / sx) * sx
+    while x <= hi:
+        out.append(f'<text x="{X(x):.1f}" y="{H - 8}" text-anchor="middle">{_e(_kd(x))}</text>')
+        x += sx
+    out.append(f'<line x1="{L}" x2="{W - R}" y1="{Y(0):.1f}" y2="{Y(0):.1f}" style="stroke:var(--mut)"/>')
+    out.append(
+        f'<line x1="{X(F):.1f}" x2="{X(F):.1f}" y1="{Tp}" y2="{H - B}" style="stroke:var(--mut);stroke-dasharray:2 3"/><text x="{X(F) + 4:.1f}" y="{Tp + 10}">зараз {_e(_kd(F))}</text>'
+    )
+    style = {
+        "exp": "stroke:var(--acc);stroke-width:2.4",
+        "now": "stroke:var(--warn);stroke-width:2;stroke-dasharray:6 4",
+        "mid": "stroke:var(--mut);stroke-width:1.6;stroke-dasharray:2 3",
+    }
+    for k, _ in curves:
+        d = "".join(f"{'L' if i else 'M'}{X(a):.1f},{Y(b):.1f}" for i, (a, b) in enumerate(zip(xs, ys[k], strict=True)))
+        out.append(f'<path d="{d}" style="fill:none;{style[k]}"/>')
+    shown = [b for b in live_breakevens(g, days) if lo <= b <= hi]
+    for i, b in enumerate(shown):
+        # neighbouring labels sit below and above the zero line so close breakevens do not overlap
+        ty, anchor = (Y(0) + 18, "end" if i + 1 < len(shown) else "middle") if i % 2 == 0 else (Y(0) - 10, "start")
+        out.append(
+            f'<circle cx="{X(b):.1f}" cy="{Y(0):.1f}" r="4" style="fill:var(--card);stroke:var(--warn);stroke-width:1.5"/>'
+            f'<text x="{X(b):.1f}" y="{ty:.1f}" text-anchor="{anchor}" style="fill:var(--fg)">{_e(_kd(b))}</text>'
+        )
+    legend = "<span style='color:var(--acc)'>━ на експірацію</span> · <span style='color:var(--warn)'>╍ зараз</span>" + (
+        f" · <span class='mut'>┈ через {days / 2:.1f} дн</span>" if days > 2 else ""
+    )
+    return (
+        f"<section class='wide'>{_h2('P&L від ціни', 'lp_chart')}"
+        f'<svg viewBox="0 0 {W} {H}" role="img" aria-label="P&amp;L позиції від ціни, USD">{"".join(out)}</svg>'
+        f"<p class='note'>{legend}. Кружки — беззбиток зараз.</p></section>"
+    )
+
+
+def block_live_linear(rows: list[dict]) -> str:
+    body = "".join(
+        f"<tr><td>{_e(r['symbol'])}</td><td>{'лонг' if r['side'] == 'long' else 'шорт'}</td><td class='r num'>{_e(_nf(r['size'], 4))}</td>"
+        f"<td class='r num'>{_e(_nf(r['entry'], 2))} → {_e(_nf(r['mark'], 2))}</td><td class='r num {_cls(round(r['upnl'] or 0, 2))}'>{_e(_usd(r['upnl'], True))}</td>"
+        f"<td class='r num'>{_e(_nf(r['be'], 2))}</td><td class='r num bad'>{_e(_nf(r['liq'], 2))}</td><td class='r num'>{_e(_nf(r['lev'], 1))}×</td></tr>"
+        for r in rows
+    )
+    return (
+        f"<section class='wide'>{_h2('Ф’ючерси', 'lp_linear')}<div class='scroll'><table class='lp'>"
+        "<tr><th>Контракт</th><th>Сторона</th><th class='r'>Розмір</th><th class='r'>Вхід → марка</th><th class='r'>P&amp;L</th>"
+        "<th class='r'>Беззбиток</th><th class='r'>Ліквідація</th><th class='r'>Плече</th></tr>" + body + "</table></div>"
+        "<p class='note'>Беззбиток і ліквідація — від Bybit (з комісіями й funding, які біржа вже врахувала).</p></section>"
+    )
+
+
+def render_live_main(data: dict | None, err: str | None, now: float) -> str:
+    """The live part of the tab (also served alone for the 10-second refresh). Never raises."""
+    try:
+        if data is None:
+            why = (
+                "Живих даних ще нема: збирач (таймер tradedesk-bybit-live) пише їх щохвилини."
+                if err == "missing"
+                else f"Файл живих даних не прочитано ({_e(err)})."
+            )
+            return f"<section class='wide'>{_h2('Позиції', 'lp_sum')}{_empty(why)}</section>"
+        asof = parse_utc(data.get("asof_utc"))
+        age = now - asof.timestamp() if asof else None
+        stale = age is None or age > LIVE_STALE_S
+        stamp = (
+            f"<p id='lp-age' class='lp-age {'bad' if stale else 'mut'}'><span class='lp-dot{' stale' if stale else ''}'></span>"
+            + (f"Bybit {_e(kyiv(asof))} за Києвом · {_e(fmt_age(age))}" if asof else "час даних невідомий")
+            + (" · дані застарілі: збирач, схоже, зупинився" if stale else " · оновлюється кожні 10 с")
+            + "</p>"
+        )
+        status = str(data.get("status") or "")
+        if status != "ok":
+            return f"<section class='wide'>{_h2('Позиції', 'lp_sum')}{stamp}{_empty(LIVE_STATUS_UA.get(status, 'Невідомий стан збирача.'))}</section>"
+        groups, linear = live_groups(data, now)
+        w = data.get("wallet") if isinstance(data.get("wallet"), dict) else {}
+        upnl = sum(g["upnl"] for g in groups) + sum(r["upnl"] or 0 for r in linear)
+        real = sum(g["realised"] for g in groups) + sum(r["realised"] for r in linear)
+        theta = sum(position_greeks(g["legs"], g["F"], g["days"] / 365.0, g["legs"][0]["iv"])["theta"] for g in groups)
+        eq = _sn(w.get("totalEquity"))
+        tiles = [
+            _tile("Капітал", _e(_usd(eq)), _e(f"вільно {_usd(_sn(w.get('totalAvailableBalance')))}"), help="lp_equity"),
+            _tile("P&amp;L відкритих", f"<span class='{_cls(round(upnl + real))}'>{_e(_usd(upnl + real, True))}</span>",
+                  _e(f"марки {_usd(upnl, True)} · комісії {_usd(real, True)}" + (f" · {_pc((upnl + real) / eq * 100)} капіталу" if eq else "")), help="lp_pnl"),
+            _tile("Тета на добу", f"<span class='{_cls(theta)}'>{_e(_usd(theta, True))}</span>", "усі опціони, ціна й IV стоять", help="lp_theta"),
+        ]  # fmt: skip
+        if groups:
+            g0 = groups[0]
+            tiles.append(_tile("До експірації", _e(_dte(g0["days"])), _e(f"найближча {_live_exp(g0['exp_ts'])}"), help="lp_dte"))
+        out = [f"<section class='wide'>{_h2('Позиції', 'lp_sum')}{stamp}<div class='tiles'>{''.join(tiles)}</div></section>"]
+        if not groups and not linear:
+            out.append(f"<section class='wide'>{_empty('Відкритих позицій немає.')}</section>")
+        for g in groups:
+            G = live_greeks(g)
+            net = g["upnl"] + g["realised"]
+            out.append(
+                f"<section class='wide lp-grp'><h3>{_e(g['base'])} · експірація {_e(_live_exp(g['exp_ts']))} · до неї {_e(_dte(g['days']))}"
+                f" · форвард {_e(_kd(g['F']))} · P&amp;L <span class='{_cls(round(net))}'>{_e(_usd(net, True))}</span>"
+                f" · тета {_e(_usd(G['theta'], True))}/добу</h3></section>"
+            )
+            for blk in (block_live_legs, block_live_be, block_live_greeks, live_svg, block_live_scen):
+                try:
+                    out.append(blk(g))
+                except Exception as e:  # noqa: BLE001 - one odd position must not take the page down
+                    out.append(f"<section class='wide'>{_empty(f'Блок не порахувався ({type(e).__name__}).')}</section>")
+        if linear:
+            out.append(block_live_linear(linear))
+        errs = [_clean(x, 80) for x in _list(data.get("errors"))][:5]
+        if errs:
+            out.append(
+                f"<section class='wide'><p class='note warn'>Частина запитів до Bybit не вдалась: {_e('; '.join(errs))}</p></section>"
+            )
+        return "".join(out)
+    except Exception as e:  # noqa: BLE001 - the page always renders
+        return f"<section class='wide'>{_h2('Позиції', 'lp_sum')}{_empty(f'Дані не вдалося показати ({type(e).__name__}).')}</section>"
+
+
+def render_positions(data: dict | None, err: str | None, now: float) -> str:
+    head = (
+        "<!doctype html><html lang='uk'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+        f"<title>tradedesk — позиції</title><style>{CSS}{BRIEF_CSS}{OPT_CSS}{LIVE_CSS}</style></head><body>"
+    )
+    caveats = "<div class='caveat'><b>Застереження</b><ul>" + "".join(f"<li>{_e(c)}</li>" for c in LIVE_CAVEATS) + "</ul></div>"
+    return (
+        head
+        + f"<header><h1>Позиції Bybit</h1></header>{_nav('positions')}<main class='brief' id='live'>{render_live_main(data, err, now)}</main>"
+        + f"{caveats}<script>{LIVE_JS}</script></body></html>"
+    )
+
+
+def positions_page(query: str = "", now: float | None = None) -> str:
+    data, err = load_live(LIVE_PATH)
+    t = time.time() if now is None else now
+    if "frag=1" in (query or "").split("&"):
+        return render_live_main(data, err, t)
+    return with_help(render_positions(data, err, t))
 
 
 # ---------------------------------------------------------------- «Радар» tab: the snapshot's radar section (BTC, ETH)
@@ -7941,6 +8469,9 @@ class _Handler(BaseHTTPRequestHandler):
             body, ctype = brand(brief_page()).encode(), "text/html; charset=utf-8"  # read per request: the age is always current
         elif path == "/options":
             body, ctype = brand(options_page(query)).encode(), "text/html; charset=utf-8"
+        elif path == "/positions":
+            frag = "frag=1" in query.split("&")
+            body, ctype = (positions_page(query) if frag else brand(positions_page(query))).encode(), "text/html; charset=utf-8"
         elif path == "/radar":
             body, ctype = brand(radar_page(query)).encode(), "text/html; charset=utf-8"
         elif path == "/journal":

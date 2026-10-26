@@ -1,0 +1,12 @@
+[Unit]
+Description=tradedesk: owner's live Bybit positions for the dashboard tab «Позиції» (scripts/bybit_live.py, read-only key)
+# No key on this machine -> nothing runs. The key file is root:tradedesk 0640 (scripts/server/bybit-key.sh); the script
+# checks that the key is read-only and calls only GET endpoints. Refreshes the file every 10 s for 55 s, then exits.
+ConditionPathExists=/etc/tradedesk-bybit.env
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/tradedesk/tradedesk-mcp
+ExecStart=/home/tradedesk/.local/bin/uv run --quiet python scripts/bybit_live.py --run-for 55
+TimeoutStartSec=2min
+NoNewPrivileges=true

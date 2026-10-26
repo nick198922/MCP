@@ -71,6 +71,39 @@ def _payload(**over) -> dict:
     return d
 
 
+def _calls_and_strangle() -> dict:
+    """The account on 26.10: 84C and 86C (30OCT26) bought a day apart, plus the strangle whose legs are 19 min apart."""
+    d = _payload()
+    d["positions"][0]["openTime"] = 1793006243022  # 78P 09:17
+    d["positions"][1]["openTime"] = "1793005121350"  # 83C 08:58 (a string, as Bybit sends createdTime)
+    d["positions"] += [
+        {"symbol": "BTC-30OCT26-86000-C-USDT", "category": "option", "side": "Buy", "size": "0.7", "avgPrice": "528.86",
+         "curRealisedPnl": "-11.5", "openTime": 1791381486625},
+        {"symbol": "BTC-30OCT26-84000-C-USDT", "category": "option", "side": "Buy", "size": "0.25", "avgPrice": "1069",
+         "curRealisedPnl": "-4.08", "openTime": 1791477003361},
+    ]  # fmt: skip
+    d["tickers"]["BTC-30OCT26-86000-C-USDT"] = {"markPrice": "41.4", "markIv": "0.396", "underlyingPrice": "80129.2"}
+    d["tickers"]["BTC-30OCT26-84000-C-USDT"] = {"markPrice": "125.1", "markIv": "0.367", "underlyingPrice": "80129.2"}
+    return d
+
+
+def test_separate_trades_get_separate_breakevens_and_a_strangle_stays_whole():
+    groups, _ = db.live_groups(_calls_and_strangle(), NOW)
+    assert [g["title"] for g in groups] == ["84 000 CALL", "86 000 CALL", "78 000 PUT + 83 000 CALL"]
+    c84 = groups[0]
+    (be,) = db.live_breakevens(c84, 0.0)
+    assert be == pytest.approx(84000 + (1069 * 0.25 + 4.08 + 4.08) / 0.25, abs=1.0)  # strike + premium + fees in and out
+    joined, _ = db.live_groups(_calls_and_strangle(), NOW, join=True)
+    assert [g["title"] for g in joined] == ["84 000 CALL + 86 000 CALL", "78 000 PUT + 83 000 CALL"]
+
+
+def test_page_toggles_between_separate_and_joined():
+    sep = db.render_live_main(_calls_and_strangle(), None, NOW)
+    assert "BTC 84 000 CALL · експірація" in sep and "href='/positions?join=1'" in sep
+    joined = db.render_live_main(_calls_and_strangle(), None, NOW, join=True)
+    assert "BTC 84 000 CALL + 86 000 CALL · експірація" in joined and "href='/positions'>окремо" in joined
+
+
 def test_groups_use_live_marks_and_keep_fees():
     groups, linear = db.live_groups(_payload(), NOW)
     assert linear == [] and len(groups) == 1

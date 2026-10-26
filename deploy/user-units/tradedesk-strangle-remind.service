@@ -1,0 +1,9 @@
+[Unit]
+Description=tradedesk: one-off reminder to the owner, his 13NOV26 BTC strangle (journal #419, #420): P&L and the 04.11 exit plan
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/tradedesk/tradedesk-mcp
+ExecStart=/bin/bash -c '/home/tradedesk/.local/bin/uv run --quiet python scripts/position_remind.py --symbols BTC-13NOV26-83000-C-USDT,BTC-13NOV26-78000-P-USDT --title "стренгл 13NOV26 (журнал #419, #420)" --plan "якщо BTC до 04.11 стоїть на місці — закрити обидві ноги разом, у мінус. Ризик завищено свідомо (3.1 %% депозиту)." --cost 314.21 | python3 scripts/tg_send.py --topic chat'
+TimeoutStartSec=2min
+NoNewPrivileges=true

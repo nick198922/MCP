@@ -1,0 +1,2 @@
+- Сито: партія 3 — п'ять нових специфікацій (`ttm_squeeze`, `turnaround_tuesday`, `hour_2200_seasonality`, `ichimoku_tk_cloud`, `double_7s`), прогони в `docs/sieve/registry.csv`, рядки в каталозі.
+- Рев'ю специфікацій критиком (режим D): `docs/reviews/2026-10-26-sieve-batch-3-specs.md`.

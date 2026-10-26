@@ -711,7 +711,7 @@ HELP: dict[str, tuple[str, str, str, str]] = {
     "lp_be": (
         "Беззбиток",
         "Ціна, за якої P&L від входу = 0 (з комісіями): зараз, через кілька днів і на експірацію.",
-        "Кожен день до експірації беззбиток купленої позиції відсувається далі від ціни — це тета. Остання колонка — P&L, якщо ціна стоїть.",
+        "Кожен день до експірації беззбиток купленої позиції відсувається далі від ціни — це тета. Остання колонка — інше питання: P&L, якщо ціна не зрушить з поточної (для купленого OTM-опціону на експірацію це вся премія з комісіями).",
         "Якщо до потрібного беззбитку далі, ніж ринок реально проходить за залишок часу, — тримати, сподіваючись, дорого.",
     ),
     "lp_greeks": (
@@ -3616,7 +3616,7 @@ LIVE_CSS = """
 .lp-age{font-size:13px}.lp-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--ok);margin-right:6px;vertical-align:1px}
 .lp-dot.stale{background:var(--bad)}.lp-grp h3{margin:4px 0 8px;font-size:15px}
 table.lp td,table.lp th{white-space:nowrap}table.lp td.r,table.lp th.r{text-align:right}
-.lp-be b{font-size:15px}.lp-sub{font-size:12px;color:var(--mut)}
+.lp-be b{font-size:15px}table.lp td.lp-flat,table.lp th.lp-flat{border-left:2px solid var(--line);padding-left:10px}.lp-sub{font-size:12px;color:var(--mut)}
 """
 LIVE_JS = (
     """
@@ -3814,14 +3814,17 @@ def block_live_be(g: dict) -> str:
         flat = live_pnl(g, F, left)
         rows.append(
             f"<tr><td>{_e(label)}<br><span class='lp-sub'>до експірації {_e(_dte(left)) if left > 0 else '0'}</span></td>"
-            f"{_be_cell(live_breakevens(g, left), F)}<td class='r num {_cls(round(flat))}'>{_e(_usd(flat, True))}</td></tr>"
+            f"{_be_cell(live_breakevens(g, left), F)}<td class='r num lp-flat {_cls(round(flat))}'>{_e(_usd(flat, True))}</td></tr>"
         )
     return (
         f"<section class='wide'>{_h2('Беззбиток', 'lp_be')}<div class='scroll'><table class='lp lp-be'>"
-        f"<tr><th>Коли</th><th class='r'>нижній</th><th class='r'>верхній</th><th class='r'>P&amp;L, якщо {g['base']} стоїть</th></tr>"
+        f"<tr><th>Коли</th><th class='r'>беззбиток нижче<br><span class='lp-sub'>тут P&amp;L = 0</span></th>"
+        f"<th class='r'>беззбиток вище<br><span class='lp-sub'>тут P&amp;L = 0</span></th>"
+        f"<th class='r lp-flat'>P&amp;L, якщо {_e(g['base'])} лишиться<br><span class='lp-sub'>на {_e(_kd(F))}, як зараз</span></th></tr>"
         + "".join(rows)
         + f"</table></div><p class='note'>Ціна — форвард експірації ({_e(_kd(F))}), відсоток — відстань від нього. "
-        "Беззбиток з комісіями за вхід і вихід, при незмінних IV.</p></section>"
+        "Беззбиток з комісіями за вхід і вихід, при незмінних IV. Остання колонка — не P&amp;L на беззбитку, а що буде, "
+        f"якщо {_e(g['base'])} не зрушить з місця.</p></section>"
     )
 
 

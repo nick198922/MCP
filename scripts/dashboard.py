@@ -711,7 +711,7 @@ HELP: dict[str, tuple[str, str, str, str]] = {
     "lp_be": (
         "Беззбиток",
         "Ціна, до якої треба дійти до певного дня, щоб позиція була в нулі (P&L від входу = 0 з комісіями).",
-        "Рядок — дата й час за Києвом: щодня о часі експірації (08:00 UTC: 10:00 взимку, 11:00 влітку), після першого тижня — щотижня. Беззбиток купленої позиції щодня відсувається далі від ціни — це тета.",
+        "Рядки ⚡ — засідання ФРС і важливі макрорелізи до експірації. Рядок — дата й час за Києвом: щодня о часі експірації (08:00 UTC: 10:00 взимку, 11:00 влітку), після першого тижня — щотижня. Беззбиток купленої позиції щодня відсувається далі від ціни — це тета.",
         "Якщо до потрібного беззбитку далі, ніж ринок реально проходить за залишок часу, — тримати, сподіваючись, дорого.",
     ),
     "lp_greeks": (
@@ -3616,7 +3616,7 @@ LIVE_CSS = """
 .lp-age{font-size:13px}.lp-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--ok);margin-right:6px;vertical-align:1px}
 .lp-dot.stale{background:var(--bad)}.lp-grp h3{margin:4px 0 8px;font-size:15px}
 table.lp td,table.lp th{white-space:nowrap}table.lp td.r,table.lp th.r{text-align:right}
-.lp-be b{font-size:15px}table.lp td.lp-flat,table.lp th.lp-flat{border-left:2px solid var(--line);padding-left:10px}.lp-sub{font-size:12px;color:var(--mut)}
+.lp-be b{font-size:15px}table.lp tr.lp-ev td{background:rgba(var(--warn-rgb),.12)}table.lp td.lp-flat,table.lp th.lp-flat{border-left:2px solid var(--line);padding-left:10px}.lp-sub{font-size:12px;color:var(--mut)}
 """
 LIVE_JS = (
     """
@@ -3831,33 +3831,105 @@ def _live_when(ts: float) -> str:
     return f"{WEEKDAYS_UA[d.weekday()]} {d:%d.%m, %H:%M}"
 
 
+LIVE_EVENTS_SEED = REPO / "src" / "tradedesk" / "data" / "events_seed.json"  # FOMC / CPI / NFP / elections, UTC
+LIVE_EVENT_UA = {
+    "fomc": "ФРС: рішення щодо ставки",
+    "cpi": "CPI США (інфляція)",
+    "core_pce": "PCE США (інфляція)",
+    "pce": "PCE США (інфляція)",
+    "ppi": "PPI США",
+    "nfp": "NFP США (зайнятість)",
+    "gdp": "ВВП США",
+    "retail_sales": "роздрібні продажі США",
+    "ism": "ISM США",
+    "election": "вибори в США",
+    "ecb_decision": "ЄЦБ: ставка",
+    "boj_decision": "Банк Японії: ставка",
+    "boe_decision": "Банк Англії: ставка",
+}
+
+
+def _iso_utc(s: object) -> datetime | None:
+    """An ISO time with an offset ('2026-10-28T18:00:00+00:00'), else None."""
+    try:
+        dt = datetime.fromisoformat(str(s))
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else None
+
+
+def live_events(snap: dict | None, seed: object, now: float) -> list[dict]:
+    """Macro events ahead for the breakeven table: the snapshot's calendar (live feed + seed) within its horizon, the
+    bundled seed beyond it; only the kinds of LIVE_EVENT_UA. Rows of one kind on one day merge into the earliest;
+    rows at the same minute share a line. Each: {'ts', 'label'} (ours, never the feed's text)."""
+    ev = _data(snap, "events") if snap else None
+    rows: list[tuple[float, str]] = []
+    horizon = now
+    if isinstance(ev, dict):
+        horizon = now + (_num(ev.get("horizon_days")) or 0) * 86400.0
+        for x in merge_same_day(ev.get("events")):
+            dt = _iso_utc(x.get("ts_utc")) if isinstance(x, dict) else None
+            kind = str(x.get("kind") or "") if isinstance(x, dict) else ""
+            if dt and kind in LIVE_EVENT_UA:
+                rows.append((dt.timestamp(), kind))
+    seen = {(k, datetime.fromtimestamp(t, timezone.utc).date()) for t, k in rows}  # noqa: UP017
+    for x in _list(seed):
+        t, kind = _num(x.get("ts")) if isinstance(x, dict) else None, str(x.get("kind") or "") if isinstance(x, dict) else ""
+        if t and t > horizon and kind in LIVE_EVENT_UA and (kind, datetime.fromtimestamp(t, timezone.utc).date()) not in seen:  # noqa: UP017
+            rows.append((t, kind))
+    by_ts: dict[float, list[str]] = {}
+    for t, kind in sorted(rows, key=lambda r: r[0]):  # stable: the feed's order within a minute
+        if t > now:
+            labels = by_ts.setdefault(t, [])
+            if LIVE_EVENT_UA[kind] not in labels:
+                labels.append(LIVE_EVENT_UA[kind])
+    return [{"ts": t, "label": " · ".join(v)} for t, v in sorted(by_ts.items())]
+
+
+def load_live_events(now: float) -> list[dict]:
+    snap, _ = load_snapshot(SNAPSHOT_PATH)
+    try:
+        seed = json.loads(LIVE_EVENTS_SEED.read_text(encoding="utf-8")).get("events")
+    except (OSError, ValueError, AttributeError):
+        seed = []
+    return live_events(snap, seed, now)
+
+
 def block_live_be(g: dict) -> str:
     F, days = g["F"], g["days"]
     now = g["exp_ts"] - days * 86400.0
-    plan = [("зараз", f"до експірації {_dte(days)}", days)]
-    for ts in live_be_dates(g):
+
+    def sub(ts: float) -> str:
         left = (g["exp_ts"] - ts) / 86400.0
-        plan.append(
-            (
-                _live_when(ts),
-                "експірація" if left <= 0 else f"через {_dte((ts - now) / 86400.0)} · до експірації {_dte(left)}",
-                max(left, 0.0),
-            )
-        )
-    bes = [live_breakevens(g, left) for _, _, left in plan]
+        return "експірація" if left <= 0 else f"через {_dte((ts - now) / 86400.0)} · до експірації {_dte(left)}"
+
+    plan = [("зараз", f"до експірації {_dte(days)}", days, False)]
+    points = [(ts, _live_when(ts), False) for ts in live_be_dates(g)]
+    points += [(e["ts"], f"{_live_when(e['ts'])} · {e['label']}", True) for e in g.get("events") or [] if now < e["ts"] < g["exp_ts"]]
+    for ts, label, is_ev in sorted(points, key=lambda x: x[0]):
+        plan.append((label, sub(ts), max((g["exp_ts"] - ts) / 86400.0, 0.0), is_ev))
+    bes = [live_breakevens(g, left) for _, _, left, _ in plan]
     cols = (any(b < F for x in bes for b in x), any(b >= F for x in bes for b in x))
     if not any(cols):
         cols = (False, True)
     head = ("<th class='r'>беззбиток нижче</th>" if cols[0] else "") + ("<th class='r'>беззбиток вище</th>" if cols[1] else "")
     rows = "".join(
-        f"<tr><td>{_e(label)}<br><span class='lp-sub'>{_e(sub)}</span></td>{_be_cell(b, F, cols)}</tr>"
-        for (label, sub, _), b in zip(plan, bes, strict=True)
+        f"<tr{' class=lp-ev' if ev else ''}><td>{'⚡ ' if ev else ''}{_e(label)}<br><span class='lp-sub'>{_e(s)}</span></td>{_be_cell(b, F, cols)}</tr>"
+        for (label, s, _, ev), b in zip(plan, bes, strict=True)
     )
+    has_ev = any(p[3] for p in plan)
     return (
         f"<section class='wide'>{_h2('Беззбиток', 'lp_be')}<div class='scroll'><table class='lp lp-be'>"
         f"<tr><th>Коли (за Києвом)</th>{head}</tr>{rows}"
         f"</table></div><p class='note'>Ціна, до якої {_e(g['base'])} має дійти до цього моменту, щоб позиція була в нулі "
-        f"(P&amp;L = 0 з комісіями за вхід і вихід, IV незмінні). Відсоток — відстань від форварду експірації ({_e(_kd(F))}).</p></section>"
+        f"(P&amp;L = 0 з комісіями за вхід і вихід, IV незмінні). Відсоток — відстань від форварду експірації ({_e(_kd(F))})."
+        + (
+            " ⚡ — макроподії до експірації (календар знімка асистента, далі — статичний; час подій зі статичного календаря "
+            "приблизний). Навколо релізу IV часто падає одразу після нього — беззбиток у цей момент рахується без цього."
+            if has_ev
+            else ""
+        )
+        + "</p></section>"
     )
 
 
@@ -4019,7 +4091,7 @@ def block_live_linear(rows: list[dict]) -> str:
     )
 
 
-def render_live_main(data: dict | None, err: str | None, now: float, join: bool = False) -> str:
+def render_live_main(data: dict | None, err: str | None, now: float, join: bool = False, events: list[dict] | None = None) -> str:
     """The live part of the tab (also served alone for the 10-second refresh). Never raises."""
     try:
         if data is None:
@@ -4042,6 +4114,8 @@ def render_live_main(data: dict | None, err: str | None, now: float, join: bool 
         if status != "ok":
             return f"<section class='wide'>{_h2('Позиції', 'lp_sum')}{stamp}{_empty(LIVE_STATUS_UA.get(status, 'Невідомий стан збирача.'))}</section>"
         groups, linear = live_groups(data, now, join)
+        for g in groups:
+            g["events"] = events or []
         w = data.get("wallet") if isinstance(data.get("wallet"), dict) else {}
         upnl = sum(g["upnl"] for g in groups) + sum(r["upnl"] or 0 for r in linear)
         real = sum(g["realised"] for g in groups) + sum(r["realised"] for r in linear)
@@ -4093,7 +4167,7 @@ def render_live_main(data: dict | None, err: str | None, now: float, join: bool 
         return f"<section class='wide'>{_h2('Позиції', 'lp_sum')}{_empty(f'Дані не вдалося показати ({type(e).__name__}).')}</section>"
 
 
-def render_positions(data: dict | None, err: str | None, now: float, join: bool = False) -> str:
+def render_positions(data: dict | None, err: str | None, now: float, join: bool = False, events: list[dict] | None = None) -> str:
     head = (
         "<!doctype html><html lang='uk'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
         f"<title>tradedesk — позиції</title><style>{CSS}{BRIEF_CSS}{OPT_CSS}{LIVE_CSS}</style></head><body>"
@@ -4101,7 +4175,7 @@ def render_positions(data: dict | None, err: str | None, now: float, join: bool 
     caveats = "<div class='caveat'><b>Застереження</b><ul>" + "".join(f"<li>{_e(c)}</li>" for c in LIVE_CAVEATS) + "</ul></div>"
     return (
         head
-        + f"<header><h1>Позиції Bybit</h1></header>{_nav('positions')}<main class='brief' id='live'>{render_live_main(data, err, now, join)}</main>"
+        + f"<header><h1>Позиції Bybit</h1></header>{_nav('positions')}<main class='brief' id='live'>{render_live_main(data, err, now, join, events)}</main>"
         + f"{caveats}<script>{LIVE_JS}</script></body></html>"
     )
 
@@ -4112,8 +4186,8 @@ def positions_page(query: str = "", now: float | None = None) -> str:
     args = (query or "").split("&")
     join = "join=1" in args
     if "frag=1" in args:
-        return render_live_main(data, err, t, join)
-    return with_help(render_positions(data, err, t, join))
+        return render_live_main(data, err, t, join, load_live_events(t))
+    return with_help(render_positions(data, err, t, join, load_live_events(t)))
 
 
 # ---------------------------------------------------------------- «Радар» tab: the snapshot's radar section (BTC, ETH)

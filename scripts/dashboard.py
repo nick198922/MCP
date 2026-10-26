@@ -3595,6 +3595,9 @@ LIVE_STALE_S = 150  # the timer writes every 10 s; older means the collector sto
 LIVE_POLL_MS = 10_000
 LIVE_HORIZONS = (1, 3, 7, 14, 30)  # breakeven rows: days from now (only those before expiry)
 LIVE_MOVES = (-10, -5, -2, 0, 2, 5, 10)  # scenario columns: forward move, %
+# legs of one base and expiry opened this close together are one structure (a strangle's legs: minutes apart); legs
+# opened further apart are separate trades with their own breakevens (owner, 26.10: «це ж окремі профілі»)
+LIVE_COMBO_GAP_S = 2 * 3600
 # Bybit caps an option's fee at a share of its price: 7 % for a trade, 12.5 % for the delivery at expiry
 LIVE_FEE_CAP_TRADE, LIVE_FEE_CAP_DELIVERY = 0.07, 0.125
 LIVE_STATUS_UA = {
@@ -3621,7 +3624,8 @@ LIVE_JS = (
   var box = document.getElementById('live'); if (!box) return;
   function tick() {
     if (document.hidden || document.querySelector('.info.open')) return;
-    fetch(location.pathname + '?frag=1', { credentials: 'same-origin', cache: 'no-store' })
+    var q = new URLSearchParams(location.search); q.set('frag', '1');
+    fetch(location.pathname + '?' + q.toString(), { credentials: 'same-origin', cache: 'no-store' })
       .then(function (r) { if (!r.ok) throw r.status; return r.text(); })
       .then(function (t) { box.innerHTML = t; if (window.tdHelp) window.tdHelp(box); })
       .catch(function () { var a = document.getElementById('lp-age'); if (a) a.classList.add('bad'); });
@@ -3655,8 +3659,26 @@ def load_live(path: Path) -> tuple[dict | None, str | None]:
     return (data, None) if isinstance(data, dict) else (None, "format")
 
 
-def live_groups(data: dict, now: float) -> tuple[list[dict], list[dict]]:
-    """Option positions grouped by (base, expiry) with live marks, plus the linear positions. Skips malformed rows."""
+def _live_split(legs: list[dict]) -> list[list[dict]]:
+    """Legs of one base and expiry split into structures: sorted by opening time, a leg joins the previous structure
+    when it opened within LIVE_COMBO_GAP_S of that structure's last leg. Without every leg's time nothing is split."""
+    if any(leg["open_ts"] is None for leg in legs):
+        return [legs]
+    out: list[list[dict]] = []
+    last: float | None = None
+    for leg in sorted(legs, key=lambda x: (x["open_ts"], x["strike"])):
+        t = leg["open_ts"]
+        if out and last is not None and t - last <= LIVE_COMBO_GAP_S:
+            out[-1].append(leg)
+        else:
+            out.append([leg])
+        last = t
+    return out
+
+
+def live_groups(data: dict, now: float, join: bool = False) -> tuple[list[dict], list[dict]]:
+    """Option positions as separate structures (or, with ``join``, one per base and expiry) with live marks, plus the
+    linear positions. Skips malformed rows."""
     tick = data.get("tickers") if isinstance(data.get("tickers"), dict) else {}
     groups: dict[tuple, dict] = {}
     linear: list[dict] = []
@@ -3693,14 +3715,21 @@ def live_groups(data: dict, now: float) -> tuple[list[dict], list[dict]]:
         g["legs"].append(
             {"symbol": _clean(sym, 40), "kind": "call" if c["kind"] == "C" else "put", "side": side, "size": size,
              "strike": c["strike"], "entry_premium": entry, "iv": iv, "mark": mark, "realised": realised,
-             "fee_in": max(0.0, -realised), "upnl": sign * size * (mark - entry), "bid": _sn(t.get("bid1Price")), "ask": _sn(t.get("ask1Price"))}
+             "fee_in": max(0.0, -realised), "upnl": sign * size * (mark - entry), "bid": _sn(t.get("bid1Price")), "ask": _sn(t.get("ask1Price")),
+             "open_ts": _ts(_sn(p.get("openTime"))) or _ts(_sn(p.get("createdTime")))}
         )  # fmt: skip
     out = []
-    for g in sorted(groups.values(), key=lambda g: (g["exp_ts"], g["base"])):
+    for whole in sorted(groups.values(), key=lambda g: (g["exp_ts"], g["base"])):
+        parts = [whole["legs"]] if join else sorted(_live_split(whole["legs"]), key=lambda ls: min(x["strike"] for x in ls))
+        for legs in parts:
+            out.append(dict(whole, legs=legs))
+    for g in out:
         g["days"] = max((g["exp_ts"] - now) / 86400.0, 0.0)
         g["realised"] = sum(leg["realised"] for leg in g["legs"])
         g["upnl"] = sum(leg["upnl"] for leg in g["legs"])
-        out.append(g)
+        g["title"] = " + ".join(
+            f"{_nf(leg['strike'])} {'CALL' if leg['kind'] == 'call' else 'PUT'}" for leg in sorted(g["legs"], key=lambda x: x["strike"])
+        )
     return out, linear
 
 
@@ -3954,7 +3983,7 @@ def block_live_linear(rows: list[dict]) -> str:
     )
 
 
-def render_live_main(data: dict | None, err: str | None, now: float) -> str:
+def render_live_main(data: dict | None, err: str | None, now: float, join: bool = False) -> str:
     """The live part of the tab (also served alone for the 10-second refresh). Never raises."""
     try:
         if data is None:
@@ -3976,7 +4005,7 @@ def render_live_main(data: dict | None, err: str | None, now: float) -> str:
         status = str(data.get("status") or "")
         if status != "ok":
             return f"<section class='wide'>{_h2('Позиції', 'lp_sum')}{stamp}{_empty(LIVE_STATUS_UA.get(status, 'Невідомий стан збирача.'))}</section>"
-        groups, linear = live_groups(data, now)
+        groups, linear = live_groups(data, now, join)
         w = data.get("wallet") if isinstance(data.get("wallet"), dict) else {}
         upnl = sum(g["upnl"] for g in groups) + sum(r["upnl"] or 0 for r in linear)
         real = sum(g["realised"] for g in groups) + sum(r["realised"] for r in linear)
@@ -3991,14 +4020,23 @@ def render_live_main(data: dict | None, err: str | None, now: float) -> str:
         if groups:
             g0 = groups[0]
             tiles.append(_tile("До експірації", _e(_dte(g0["days"])), _e(f"найближча {_live_exp(g0['exp_ts'])}"), help="lp_dte"))
-        out = [f"<section class='wide'>{_h2('Позиції', 'lp_sum')}{stamp}<div class='tiles'>{''.join(tiles)}</div></section>"]
+        toggle = "<a href='/positions'>окремо кожна угода</a>" if join else "<a href='/positions?join=1'>зведено за експірацією</a>"
+        mode = (
+            "Ноги однієї експірації зведено в одну позицію"
+            if join
+            else "Кожна угода окремо; ноги, відкриті з різницею до 2 год (стренгл, спред), — одна позиція"
+        )
+        out = [
+            f"<section class='wide'>{_h2('Позиції', 'lp_sum')}{stamp}<div class='tiles'>{''.join(tiles)}</div>"
+            f"<p class='note'>{_e(mode)} · показати {toggle}</p></section>"
+        ]
         if not groups and not linear:
             out.append(f"<section class='wide'>{_empty('Відкритих позицій немає.')}</section>")
         for g in groups:
             G = live_greeks(g)
             net = g["upnl"] + g["realised"]
             out.append(
-                f"<section class='wide lp-grp'><h3>{_e(g['base'])} · експірація {_e(_live_exp(g['exp_ts']))} · до неї {_e(_dte(g['days']))}"
+                f"<section class='wide lp-grp'><h3>{_e(g['base'])} {_e(g['title'])} · експірація {_e(_live_exp(g['exp_ts']))} · до неї {_e(_dte(g['days']))}"
                 f" · форвард {_e(_kd(g['F']))} · P&amp;L <span class='{_cls(round(net))}'>{_e(_usd(net, True))}</span>"
                 f" · тета {_e(_usd(G['theta'], True))}/добу</h3></section>"
             )
@@ -4019,7 +4057,7 @@ def render_live_main(data: dict | None, err: str | None, now: float) -> str:
         return f"<section class='wide'>{_h2('Позиції', 'lp_sum')}{_empty(f'Дані не вдалося показати ({type(e).__name__}).')}</section>"
 
 
-def render_positions(data: dict | None, err: str | None, now: float) -> str:
+def render_positions(data: dict | None, err: str | None, now: float, join: bool = False) -> str:
     head = (
         "<!doctype html><html lang='uk'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
         f"<title>tradedesk — позиції</title><style>{CSS}{BRIEF_CSS}{OPT_CSS}{LIVE_CSS}</style></head><body>"
@@ -4027,7 +4065,7 @@ def render_positions(data: dict | None, err: str | None, now: float) -> str:
     caveats = "<div class='caveat'><b>Застереження</b><ul>" + "".join(f"<li>{_e(c)}</li>" for c in LIVE_CAVEATS) + "</ul></div>"
     return (
         head
-        + f"<header><h1>Позиції Bybit</h1></header>{_nav('positions')}<main class='brief' id='live'>{render_live_main(data, err, now)}</main>"
+        + f"<header><h1>Позиції Bybit</h1></header>{_nav('positions')}<main class='brief' id='live'>{render_live_main(data, err, now, join)}</main>"
         + f"{caveats}<script>{LIVE_JS}</script></body></html>"
     )
 
@@ -4035,9 +4073,11 @@ def render_positions(data: dict | None, err: str | None, now: float) -> str:
 def positions_page(query: str = "", now: float | None = None) -> str:
     data, err = load_live(LIVE_PATH)
     t = time.time() if now is None else now
-    if "frag=1" in (query or "").split("&"):
-        return render_live_main(data, err, t)
-    return with_help(render_positions(data, err, t))
+    args = (query or "").split("&")
+    join = "join=1" in args
+    if "frag=1" in args:
+        return render_live_main(data, err, t, join)
+    return with_help(render_positions(data, err, t, join))
 
 
 # ---------------------------------------------------------------- «Радар» tab: the snapshot's radar section (BTC, ETH)

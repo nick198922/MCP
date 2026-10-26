@@ -2,6 +2,7 @@
 
     python3 scripts/channel_backfill.py qivty                 # all posts, newest to oldest, with photos
     python3 scripts/channel_backfill.py qivty --no-photos     # text only
+    python3 scripts/channel_backfill.py qivty --tv            # then the charts behind tradingview.com/x/ links
     python3 scripts/channel_backfill.py qivty --md            # only rebuild posts.md / parts/ from posts.json
 
 Output (outside git): ~/private/library/courses/<channel>/
@@ -18,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 from collections import defaultdict
@@ -56,8 +58,8 @@ def post_block(p: dict) -> str:
         meta.append(f"відповідь на #{p['reply_to']}: «{p.get('reply_text', '')[:200]}»")
     if p.get("forwarded_from"):
         meta.append(f"переслано з {p['forwarded_from']}")
-    if p.get("photo_files"):
-        meta.append("фото: " + ", ".join(p["photo_files"]))
+    if p.get("photo_files") or p.get("tv_files"):
+        meta.append("фото: " + ", ".join(p.get("photo_files", []) + p.get("tv_files", [])))
     if p.get("videos"):
         meta.append(f"відео: {len(p['videos'])}")
     if p.get("documents"):
@@ -91,6 +93,31 @@ def photos(channel: str, post: dict, get=cw.fetch) -> list[str]:
                 continue
         names.append(name)
     return names
+
+
+TV_RE = re.compile(r"tradingview\.com/x/([A-Za-z0-9]+)")
+
+
+def tv_snapshots(channel: str, posts: dict[int, dict], pause: float = 0.2, get=cw.fetch) -> int:
+    """Charts behind tradingview.com/x/<id>/ links -> photos/<post id>-tv-<id>.png (post field tv_files)."""
+    n = 0
+    for p in posts.values():
+        names = []
+        for sid in dict.fromkeys(TV_RE.findall(p["text"])):
+            name = f"{p['id']}-tv-{sid}.png"
+            dst = out_dir(channel) / "photos" / name
+            if not dst.exists():
+                try:
+                    dst.write_bytes(get(f"https://s3.tradingview.com/snapshots/{sid[0].lower()}/{sid}.png"))
+                    n += 1
+                    time.sleep(pause)
+                except (OSError, ValueError):
+                    continue
+            names.append(name)
+        if names:
+            p["tv_files"] = names
+    save(channel, posts)
+    return n
 
 
 def backfill(channel: str, with_photos: bool = True, pause: float = 1.0, get=cw.fetch) -> dict[int, dict]:
@@ -136,8 +163,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("channel")
     ap.add_argument("--no-photos", action="store_true")
     ap.add_argument("--md", action="store_true", help="only rebuild posts.md and parts/ from posts.json")
+    ap.add_argument("--tv", action="store_true", help="only download TradingView snapshots of the kept posts")
     ap.add_argument("--pause", type=float, default=1.0, help="seconds between pages")
     a = ap.parse_args(argv)
+    if a.tv:
+        posts = load(a.channel)
+        print(f"{tv_snapshots(a.channel, posts)} TradingView snapshots")
+        write_md(a.channel, posts)
+        return 0
     if a.md:
         write_md(a.channel, load(a.channel))
         return 0

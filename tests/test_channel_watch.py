@@ -154,3 +154,16 @@ def test_channel_backfill_pages_back_and_resumes(tmp_path, monkeypatch):
     calls.clear()
     cb.backfill("qivty", pause=0, get=get)  # resumed: newest page, then below the oldest kept post
     assert [c for c in calls if "t.me" in c] == ["https://t.me/s/qivty", "https://t.me/s/qivty?before=6181"]
+
+
+def test_channel_backfill_downloads_tradingview_snapshots(tmp_path, monkeypatch):
+    import channel_backfill as cb
+
+    monkeypatch.setattr(cb, "ROOT", tmp_path)
+    (tmp_path / "qivty" / "photos").mkdir(parents=True)
+    posts = {7: {"id": 7, "date": "2026-10-16T12:00:00+00:00", "text": "see https://www.tradingview.com/x/QX6fhhEN/ ok"}}
+    urls = []
+    n = cb.tv_snapshots("qivty", posts, pause=0, get=lambda url, timeout=30: urls.append(url) or b"png")
+    assert n == 1 and urls == ["https://s3.tradingview.com/snapshots/q/QX6fhhEN.png"]
+    assert posts[7]["tv_files"] == ["7-tv-QX6fhhEN.png"]
+    assert (tmp_path / "qivty" / "photos" / "7-tv-QX6fhhEN.png").read_bytes() == b"png"

@@ -679,7 +679,7 @@ def test_journal_tab_renders_trades_sources_and_paper_recs(tmp_path):
         "Паперові carry-угоди (теги *-paper): 1 рядків",
         "Рядків з тегом airdrop: 1",
         "пробій рейнджу",
-        "setup:breakout, conf:2",
+        "<i>setup:breakout</i><i>conf:2</i>",
         "<span class='chip jo' title='відкрита з цієї дати'>відкрита</span>",
         "сторінка 1 з 1 · 5 угод",
         "USD, усі біржі й опціони разом",
@@ -870,6 +870,48 @@ def test_journal_filter_open_closed_cancelled(tmp_path, monkeypatch):
     assert "href='/journal?status=closed&page=2#trades'>старіші" in page  # the pager keeps the filter
     page = db.journal_page("status=cancelled", now=float(T0))
     assert "Скасованих угод немає." in page and "aria-current='page'>Скасовані" in page
+
+
+def test_journal_option_rows_comment_duration_fees_and_premium_r():
+    exp = 1790841600  # 2026-10-01 08:00 UTC
+    burnt = {
+        "id": 1, "opened_ts": exp - 77280, "closed_ts": exp + 1, "symbol": "BTC-1OCT26-83000-P-USDT", "side": "long",
+        "size": 0.25, "entry": 250.0, "exit": 0.0, "pnl": -66.25, "r_multiple": None, "status": "closed",
+        "tags": '["bybit", "import", "option"]', "thesis": "<b>пут</b> на пробій", "note": "bybit:option:x; комісії 3.7500; плече -",
+    }  # fmt: skip
+    paid = {**burnt, "id": 2, "symbol": "BTC-1OCT26-86000-P", "exit": 875.0, "pnl": 150.0, "note": None, "thesis": None}
+    sold = {**burnt, "id": 3, "closed_ts": exp - 70000, "exit": 360.0, "pnl": 27.5, "thesis": None, "note": None, "tags": "[]"}
+    perp = {
+        "id": 4, "opened_ts": exp, "closed_ts": exp, "symbol": "BTCUSDT", "side": "short", "size": 0.01, "entry": 80000.0,
+        "exit": 79000.0, "pnl": 10.0, "r_multiple": 0.5, "status": "closed", "tags": '["bybit"]', "thesis": None,
+        "note": "bybit:linear:1; комісії 0.3600; плече 5; час відкриття Bybit не віддає — opened_ts = час закриття",
+    }  # fmt: skip
+    live = {**sold, "id": 5, "status": "open", "closed_ts": None, "exit": None, "pnl": None, "symbol": "ETH-13NOV26-2800-C-USDT"}
+    html_ = db.block_journal_table([burnt, paid, sold, perp, live], 1, now=float(exp + 3 * 86400))
+    assert "<b>BTC</b> 83 000 <span class='put'>PUT</span> · 01.10.26" in html_ and "DTE на вході 0.9" in html_
+    assert "<span class='call'>CALL</span> · 13.11.26" in html_
+    assert "250.00 → <span class='mut'>0 · згорів</span>" in html_  # settled worthless at 08:00 UTC
+    assert "875.00 <span class='mut'>· експірація</span>" in html_  # Deribit-style symbol, paid out
+    assert "250.00 → 360.00" in html_  # sold before expiry: a plain exit
+    assert "21 год" in html_ and "$3.75" in html_ and "−0.66 %" in html_ and "+0.10 %" in html_
+    assert "−1.06 R*" in html_ and "+0.44 R*" in html_ and "+0.50 R" in html_  # premium R only where no R was recorded
+    assert "триває 3 д" in html_  # open trade: running time
+    # the comment: thesis escaped, tags as chips, note muted; the corner mark only where there is something to show
+    assert "class='info cmt'" in html_ and "&lt;b&gt;пут&lt;/b&gt; на пробій" in html_ and "<b>пут</b>" not in html_
+    assert "<span class='rd'>bybit:option:x; комісії 3.7500; плече -</span>" in html_
+    assert html_.count("class=has-cmt>") == 1  # burnt: own thesis -> orange corner
+    assert html_.count("class='has-cmt auto'") == 1  # perp: only the import note -> grey corner; the rest show nothing
+    assert "R* — від премії" in html_
+
+
+def test_option_contract_parses_only_option_symbols():
+    o = db.option_contract("BTC-13NOV26-78000-P-USDT")
+    assert o["base"] == "BTC" and o["strike"] == 78000 and o["kind"] == "P"
+    assert o["expiry_ts"] == db.datetime(2026, 11, 13, 8, tzinfo=db.timezone.utc).timestamp()
+    assert db.option_contract("ETH-3OCT26-2740-C")["kind"] == "C"
+    for bad in ("BTCUSDT", "BTC-PERP", "BTC-31FEB26-1-C", "BTC-13XXX26-1-C", None, "<x>"):
+        assert db.option_contract(bad) is None, bad
+    assert db._span(34 * 60) == "34 хв" and db._span(79 * 60) == "1 год 19 хв" and db._span(3 * 86400 + 4 * 3600) == "3 д 4 год"
 
 
 def test_journal_escapes_hostile_strings_from_the_database(tmp_path):

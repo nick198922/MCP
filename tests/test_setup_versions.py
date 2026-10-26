@@ -43,10 +43,11 @@ def test_epochs_are_the_dated_rule_changes():
         ("v3", _ms(2026, 10, 22, 7, 12, 39)),
         ("v4", _ms(2026, 10, 25, 14, 30, 0)),  # S12 joins the demo (rejected by its backtest)
         ("v5", _ms(2026, 10, 25, 16, 15, 0)),  # S38 / S39 shorts join the demo (no proven edge)
+        ("v6", _ms(2026, 10, 26, 11, 30, 0)),  # S12 enters with a limit resting at the gap's middle
     ]
     assert sv.EPOCHS[2].from_ms == BE_SWITCH_MS
     assert all(e.setups == () for e in sv.EPOCHS[:3]) and sv.EPOCHS[3].setups == ("S12",)
-    assert sv.EPOCHS[4].setups == ("S38", "S39")
+    assert sv.EPOCHS[4].setups == ("S38", "S39") and sv.EPOCHS[5].setups == ("S12",)
     assert all(e.source and e.what for e in sv.EPOCHS)
     assert [e.from_ms for e in sv.EPOCHS] == sorted(e.from_ms for e in sv.EPOCHS)
     first_open = min(t["opened_ts"] for t in LIVE["trades"])
@@ -153,6 +154,9 @@ def test_s38_s39_are_v5_and_the_other_setups_keep_their_version():
     assert [(x["setup"], x["version"]) for x in s["rows"]] == [("S12", "v4"), ("S38", "v5"), ("S39", "v5")]
     assert _row(s, "S12", "v4")["changed_inside"] == 0  # v5 does not apply to S12
     assert [e["tag"] for e in sv.version_stats([], now_ms=v5 - 1)["epochs"]] == ["v1", "v2", "v3", "v4"]
+    v6 = sv.EPOCHS[5].from_ms
+    assert sv.version_of("S12", v6, now_ms=v6).tag == "v6" and sv.version_of("S38", v6, now_ms=v6).tag == "v5"
+    assert sv.version_of("S3", v6, now_ms=v6).tag == "v3"
 
 
 def test_time_is_a_parameter_and_setup_specific_epochs():

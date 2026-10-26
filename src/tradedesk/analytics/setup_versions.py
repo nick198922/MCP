@@ -26,6 +26,10 @@ made in, so a change is assumed live from the commit minute, the deploy time is 
 - ``v5`` 2026-10-25 16:15 UTC, S38 and S39 only: the trend-continuation shorts of IDEA-20261024-short-setups-demo
   (step 3; S38 at most 2 entries per 4h bar) join the demo (``docs/changes/2026-10-25-demo-short-setups.md``). Same
   rule as v4: the time the change was written, so no S38 / S39 trade can predate it.
+- ``v6`` 2026-10-26 11:30 UTC, S12 only: the entry is a limit resting at the middle of a new gap for 20 bars instead of
+  the close of the bar that touched it (``docs/changes/2026-10-26-demo-s12-resting-limit.md``). Its start is the time the
+  change was written; it goes live only after the trader review merges and deploys it, so an S12 trade opened between
+  the two ran the v4 entry (its ``rest_until`` is NULL in ``demo_trade``).
 
 Not versioned, because they change which signals are taken, not how a taken trade runs: eb3af15 (22.10 07:45 UTC, the
 daily cap counts trades at risk, ``docs/changes/2026-10-22-demo-risk-cap.md``), f9f7cb5 (23.10 16:14 UTC, the option
@@ -97,6 +101,14 @@ EPOCHS: tuple[Epoch, ...] = (
         "переваги; S38 не більше 2 входів на 4h-свічку; правила ведення угоди — як у v3",
         "docs/changes/2026-10-25-demo-short-setups.md (S38 / S39 not on the demo before this change)",
         ("S38", "S39"),
+    ),
+    Epoch(
+        "v6",
+        _ms(2026, 10, 26, 11, 30, 0),
+        "S12: вхід лімітом, виставленим заздалегідь на середині нового FVG (живе 20 свічок 4h), замість входу"
+        " за закриттям свічки дотику; стоп, ціль і ведення угоди — як у v4",
+        "docs/changes/2026-10-26-demo-s12-resting-limit.md, docs/verification/2026-10-26-prelimit-entries.md",
+        ("S12",),
     ),
 )
 

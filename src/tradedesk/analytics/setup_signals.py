@@ -20,9 +20,11 @@ Rules taken from the verification runs (status of each setup: docs/knowledge/set
   "trend" (daily close above its EMA21 at the gap's third candle), the first bar within 20 bars whose low reaches the
   gap's middle; stop 1 ATR (of the gap bar) under the middle, target 2R from the middle. **Rejected by the backtest**
   (``docs/verification/2026-10-17-course-step4-fvg-ob.md``) and traded on the demo only because the owner wants rejected
-  setups tested live (BACKLOG 0.5 item "в", IDEA-20261024-short-setups-demo step 2). The backtest rests a limit at the middle;
-  here the entry is the close of the bar that touched it, and a touch bar that already reached the stop (or closed at the
-  target) gives no signal.
+  setups tested live (BACKLOG 0.5 item "в", IDEA-20261024-short-setups-demo step 2). ``s12`` enters at the close of the
+  bar that touched the middle (a touch bar already at the stop or closed at the target gives no signal): the demo's rule
+  until v6. Since v6 (owner 26.10, ``docs/verification/2026-10-26-prelimit-entries.md``) the demo trades ``s12_rest``: the
+  signal is the gap's third candle itself, and its entry is a limit resting at the middle for ``S12_WAIT`` bars
+  (indicator ``rest_until_ms``), as in the backtest; same stop and target.
 - S38 and S39 (trend-continuation shorts; 4h, shorts only): the step-1 detectors of IDEA-20261024-short-setups-demo,
   ``short_setups.breakout_retest`` (A) and ``short_setups.failed_sweep`` (B) on mirrored prices, with their registered
   parameters (``docs/verification/2026-10-24-short-setups-demo.md``). S38: a close below the S3 range low, then within
@@ -60,6 +62,12 @@ S12_WAIT = 20  # bars after the gap's third candle in which the first test count
 S12_STOP_ATR = 1.0  # stop under the gap's middle, in ATR14 of the gap's third candle
 S12_TARGET_R = 2.0  # target above the middle, in units of (middle - stop)
 S12_WARMUP = 100  # bars of the segment before the gap (the backtest's warm-up)
+S12_REST_UA = (
+    "Вхід лімітом, виставленим заздалегідь на середині FVG (з v6, рішення власника 26.10): у бектесті на тих самих правилах "
+    "виходу (беззбиток на половині шляху, 7 днів, топ-30, 2020–2026) E[R] net +0.185R проти 0.000R за входом за закриттям "
+    "свічки дотику; з вимогою пройти рівень на 0.1 % — +0.154R (docs/verification/2026-10-26-prelimit-entries.md). "
+    "Перевага саме FVG над випадковим рівнем не доведена (бектест 17.10)."
+)
 S12_TREND_EMA = 21  # daily close vs its EMA21: the backtest's higher-timeframe trend
 S12_BACKTEST_UA = (
     "Бектест відкинув цей сетап (docs/verification/2026-10-17-course-step4-fvg-ob.md): ліміт від середини FVG за денним "
@@ -254,19 +262,10 @@ def s12_all(b: Bars, timeframe: str, lo: int = 0) -> list[LiveSignal]:
     if timeframe not in S12_TIMEFRAMES or n < S12_WARMUP + 2:
         return out
     for side, bb in (("long", b), ("short", b.mirrored())):
-        pos = segment_pos(bb.t)
-        a_arr = atr(bb, 14, pos)
-        d = daily_bars(bb)
-        e_d = ema(d.c, S12_TREND_EMA, segment_pos(d.t))
-        with np.errstate(invalid="ignore"):
-            up_d = (d.c > e_d).astype(float)  # NaN EMA (warm-up) = no trend
-        htf_up = align_daily(bb, d, up_d) > 0.5
-        ema_at, dclose_at = align_daily(bb, d, e_d), align_daily(bb, d, d.c)
+        pos, zones, ema_at, dclose_at = _s12_zones(bb, max(2, lo - S12_WAIT), n - 1)
         best: dict[int, tuple[Zone, float, float, float]] = {}
-        for z in fvg_zones(bb, pos, a_arr, htf_up, lo=max(2, lo - S12_WAIT), hi=n - 1):
+        for z in zones:
             i = z.form
-            if "trend" not in z.arms or pos[i] < S12_WARMUP:
-                continue
             level = z.levels["mid"]
             j = _first_test(bb, pos, i, level)
             if j < max(lo, 0):
@@ -311,6 +310,57 @@ def s12_all(b: Bars, timeframe: str, lo: int = 0) -> list[LiveSignal]:
 def s12(b: Bars, timeframe: str) -> list[LiveSignal]:
     """S12 on the last closed bar (module docstring)."""
     return s12_all(b, timeframe, lo=len(b) - 1)
+
+
+def _s12_zones(bb: Bars, lo: int, hi: int) -> tuple[np.ndarray, list[Zone], np.ndarray, np.ndarray]:
+    """(segment positions, the gaps with third candle in lo .. hi-1 that have the daily trend flag and the warm-up,
+    daily EMA21 and daily close aligned to the bars) in the long frame ``bb``."""
+    pos = segment_pos(bb.t)
+    a_arr = atr(bb, 14, pos)
+    d = daily_bars(bb)
+    e_d = ema(d.c, S12_TREND_EMA, segment_pos(d.t))
+    with np.errstate(invalid="ignore"):
+        up_d = (d.c > e_d).astype(float)  # NaN EMA (warm-up) = no trend
+    htf_up = align_daily(bb, d, up_d) > 0.5
+    zones = [z for z in fvg_zones(bb, pos, a_arr, htf_up, lo=lo, hi=hi) if "trend" in z.arms and pos[z.form] >= S12_WARMUP]
+    return pos, zones, align_daily(bb, d, e_d), align_daily(bb, d, d.c)
+
+
+def s12_rest_all(b: Bars, timeframe: str, lo: int = 0) -> list[LiveSignal]:
+    """S12 since v6, decided on bars lo .. n-1: a gap with the daily trend whose third candle is bar i gives a signal on
+    bar i; the entry is a limit resting at the gap's middle until ``rest_until_ms`` (the close of bar i + S12_WAIT
+    bars), stop 1 ATR beyond the middle, target 2R from it. Causal: the signal on bar i uses bars <= i only."""
+    out: list[LiveSignal] = []
+    n = len(b)
+    if timeframe not in S12_TIMEFRAMES or n < S12_WARMUP + 2:
+        return out
+    for side, bb in (("long", b), ("short", b.mirrored())):
+        _, zones, ema_at, dclose_at = _s12_zones(bb, max(2, lo), n)
+        for z in zones:
+            i = z.form
+            mid = z.levels["mid"]
+            stop = mid - S12_STOP_ATR * z.atr
+            target = mid + S12_TARGET_R * (mid - stop)
+            e, st, tg = (_flip(side, v) for v in (mid, stop, target))
+            g1, g2 = _flip(side, z.levels["full"]), _flip(side, z.levels["near"])
+            g_lo, g_hi = min(g1, g2), max(g1, g2)
+            em, dc = _flip(side, float(ema_at[i])), _flip(side, float(dclose_at[i]))
+            until = bb.close_time(i) + S12_WAIT * bb.bar_ms
+            word, sgn = ("вище", "−") if side == "long" else ("нижче", "+")
+            comment = (
+                f"S12 ({timeframe}): новий імбаланс FVG {_px(g_lo)}–{_px(g_hi)} за денним трендом (денне закриття {_px(dc)} "
+                f"{word} EMA{S12_TREND_EMA} {_px(em)}). Лімітка заздалегідь на середині FVG {_px(e)}, живе {S12_WAIT} свічок "
+                f"({S12_WAIT * bb.bar_ms // 3_600_000} год); стоп {_px(st)} (середина {sgn} {S12_STOP_ATR:g} ATR, ATR14 "
+                f"{_px(z.atr)}), ціль {_px(tg)} ({S12_TARGET_R:g}R). {S12_REST_UA} {S12_BACKTEST_UA}"
+            )
+            ind = {"fvg_low": g_lo, "fvg_high": g_hi, "fvg_mid": e, "atr14": z.atr, "ema21_1d": em, "fvg_ts": float(bb.t[i])}
+            out.append(LiveSignal("S12", side, timeframe, int(bb.t[i]), e, st, tg, comment, {**ind, "rest_until_ms": float(until)}))
+    return out
+
+
+def s12_rest(b: Bars, timeframe: str) -> list[LiveSignal]:
+    """S12 since v6 on the last closed bar (module docstring)."""
+    return s12_rest_all(b, timeframe, lo=len(b) - 1)
 
 
 def _range_at(b: Bars, s: int) -> tuple[float, float]:
@@ -435,7 +485,7 @@ def s39(b: Bars, timeframe: str) -> list[LiveSignal]:
     return s39_all(b, timeframe, lo=len(b) - 1)
 
 
-DETECTORS = {"S14": s14, "S16": range_setups, "S3": range_setups, "S12": s12, "S38": s38, "S39": s39}
+DETECTORS = {"S14": s14, "S16": range_setups, "S3": range_setups, "S12": s12_rest, "S38": s38, "S39": s39}
 
 
 def scan(b: Bars, timeframe: str, setups: Sequence[str] = ("S14", "S16", "S3")) -> list[LiveSignal]:

@@ -207,10 +207,52 @@ def test_s12_live_scan_on_each_prefix_equals_the_full_history():
     full = _s12_keys(b, ss.s12_all(b, "4h"))
     live = set()
     for i in range(120, len(b)):
-        sigs = ss.scan(b.slice(0, i + 1), "4h", ("S12",))
+        sigs = ss.s12(b.slice(0, i + 1), "4h")
         assert all(s.setup == "S12" and s.signal_ts == int(b.t[i]) for s in sigs)
         live |= _s12_keys(b, sigs)
     assert live == {w for w in full if w[1] >= 120} and live
+
+
+def _s12_rest_reference(b: Bars) -> set[tuple[str, int, float, float, float]]:
+    """(side, gap bar, middle, stop, target) of every trend gap, from the backtest's pieces (long frame)."""
+    out = set()
+    for side, bb in (("long", b), ("short", b.mirrored())):
+        pos = segment_pos(bb.t)
+        a = atr(bb, 14, pos)
+        d = _daily_loop(bb)
+        e = ema(d.c, 21, segment_pos(d.t))
+        with np.errstate(invalid="ignore"):
+            up = align_daily(bb, d, (d.c > e).astype(float)) > 0.5
+        for z in fvg_zones(bb, pos, a, up):
+            if "trend" in z.arms and pos[z.form] >= 100:
+                mid = z.levels["mid"]
+                out.add((side, z.form, round(mid, 9), round(mid - z.atr, 9), round(mid + 2 * z.atr, 9)))
+    return out
+
+
+def test_s12_rest_is_every_trend_gap_with_a_limit_at_its_middle():
+    b = _bars(1000, 2)
+    sigs = ss.s12_rest_all(b, "4h")
+    idx = {int(t): k for k, t in enumerate(b.t)}
+    flip = lambda side, x: x if side == "long" else -x  # noqa: E731
+    got = {
+        (s.side, idx[s.signal_ts], round(flip(s.side, s.entry), 9), round(flip(s.side, s.stop), 9), round(flip(s.side, s.target), 9))
+        for s in sigs
+    }
+    assert got == _s12_rest_reference(b) and {g[0] for g in got} == {"long", "short"}
+    for s in sigs:
+        i = idx[s.signal_ts]
+        assert s.indicators["rest_until_ms"] == b.close_time(i) + 20 * H4 and s.indicators["fvg_ts"] == s.signal_ts
+        assert s.entry == s.indicators["fvg_mid"] and (s.stop < s.entry < s.target if s.side == "long" else s.stop > s.entry > s.target)
+        assert "Лімітка заздалегідь на середині FVG" in s.comment
+        assert abs(s.target - s.entry) == pytest.approx(2 * abs(s.entry - s.stop))
+    # the live scan (S12 = the resting form since v6) on each prefix finds the same signals as the full history
+    live = []
+    for i in range(120, len(b)):
+        got_i = ss.scan(b.slice(0, i + 1), "4h", ("S12",))
+        assert all(x.signal_ts == int(b.t[i]) for x in got_i)
+        live += got_i
+    assert {(x.side, x.signal_ts) for x in live} == {(x.side, x.signal_ts) for x in sigs if idx[x.signal_ts] >= 120} and live
 
 
 def _other_future(b: Bars, t: int, rng: np.random.Generator) -> Bars:

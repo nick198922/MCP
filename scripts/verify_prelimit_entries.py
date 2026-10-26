@@ -69,6 +69,7 @@ HOLD_MS = 7 * DAY_MS
 START_MS, END_MS, OOS_MS = s1.START_MS, s1.END_MS, s1.OOS_MS
 VARIANTS = {"S12": ("close", "lim_mid", "lim_near"), "S38": ("close", "lim_touch", "lim_level")}
 OUT: dict[str, Any] = {}
+THROUGH = [0.0]  # robustness (not registered): a limit fills only when the low trades this fraction through it
 
 
 def emit(s: str = "") -> None:
@@ -147,7 +148,7 @@ def s38_candidates(bb: Bars) -> list[tuple[str, str, int, int, float, float, flo
 def fill_bar(path: Bars, t0: int, t1: int, px: float) -> int:
     """First 1h bar opening in [t0, t1) whose low reaches the buy limit ``px``; -1 if none."""
     i0, i1 = int(np.searchsorted(path.t, t0)), int(np.searchsorted(path.t, t1))
-    hit = np.flatnonzero(path.low[i0:i1] <= px)
+    hit = np.flatnonzero(path.low[i0:i1] <= px - THROUGH[0] * abs(px))
     return i0 + int(hit[0]) if hit.size else -1
 
 
@@ -165,7 +166,8 @@ def simulate(path: Bars, kind: str, t0: int, t1: int, px: float, stop: float, ta
 
 
 def run_symbol(args: tuple[str, str, str, str]) -> dict[str, Any]:
-    s, s1_cache, data_dir, out_dir = args
+    s, s1_cache, data_dir, out_dir, through = args
+    THROUGH[0] = through
     s1c, dd = Path(s1_cache), Path(data_dir)
     member_months = {vss.mo_int(mo) for mo, v in s1.members(s1c).items() if s in v}
     h1 = s1.load_1h(s1c, dd, s)
@@ -224,7 +226,7 @@ def run_symbol(args: tuple[str, str, str, str]) -> dict[str, Any]:
 
 def stage_run(a: argparse.Namespace) -> None:
     syms = vss.all_syms(a.s1_cache)[: a.limit] if a.limit else vss.all_syms(a.s1_cache)
-    jobs = [(s, str(a.s1_cache), str(a.data_dir), str(a.cache_dir)) for s in syms]
+    jobs = [(s, str(a.s1_cache), str(a.data_dir), str(a.cache_dir), a.through) for s in syms]
     with Pool(a.workers) as p:
         for r in p.imap_unordered(run_symbol, jobs):
             emit(f"{r['sym']}: {r['n']} trades")
@@ -276,6 +278,7 @@ def main() -> int:
     ap.add_argument("--data-dir", type=Path, default=Path.home() / ".cache/tradedesk-agents/funding_crowding")
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--workers", type=int, default=4)
+    ap.add_argument("--through", type=float, default=0.0, help="robustness: fill only when the low trades this fraction through")
     a = ap.parse_args()
     a.cache_dir.mkdir(parents=True, exist_ok=True)
     with (a.cache_dir / f"{a.stage}.txt").open("w") as fh:

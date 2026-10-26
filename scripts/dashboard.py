@@ -710,8 +710,8 @@ HELP: dict[str, tuple[str, str, str, str]] = {
     ),
     "lp_be": (
         "Беззбиток",
-        "Ціна, за якої P&L від входу = 0 (з комісіями): зараз, через кілька днів і на експірацію.",
-        "Кожен день до експірації беззбиток купленої позиції відсувається далі від ціни — це тета. Остання колонка — інше питання: P&L, якщо ціна не зрушить з поточної (для купленого OTM-опціону на експірацію це вся премія з комісіями).",
+        "Ціна, до якої треба дійти до певного дня, щоб позиція була в нулі (P&L від входу = 0 з комісіями).",
+        "Рядок — дата й час за Києвом: щодня о часі експірації (08:00 UTC: 10:00 взимку, 11:00 влітку), після першого тижня — щотижня. Беззбиток купленої позиції щодня відсувається далі від ціни — це тета.",
         "Якщо до потрібного беззбитку далі, ніж ринок реально проходить за залишок часу, — тримати, сподіваючись, дорого.",
     ),
     "lp_greeks": (
@@ -3791,9 +3791,11 @@ def _dte(days: float) -> str:
     return f"{days * 24:.0f} год" if days < 2 else f"{days:.1f} дн"
 
 
-def _be_cell(bes: list[float], F: float) -> str:
+def _be_cell(bes: list[float], F: float, cols: tuple[bool, bool] = (True, True)) -> str:
+    """The nearest breakeven below and above the forward, only the columns asked for (a long call has none below)."""
+    n = sum(cols)
     if not bes:
-        return "<td colspan='2' class='mut'>беззбитку в межах −70…+150 % нема</td>"
+        return f"<td colspan='{n}' class='mut'>беззбитку в межах −70…+150 % нема</td>"
     lo = [b for b in bes if b < F]
     hi = [b for b in bes if b >= F]
 
@@ -3802,29 +3804,60 @@ def _be_cell(bes: list[float], F: float) -> str:
             return "<td class='r mut'>—</td>"
         return f"<td class='r num'><b>{_e(_kd(b))}</b> <span class='lp-sub'>{_e(_pc((b / F - 1) * 100))}</span></td>"
 
-    return one(max(lo) if lo else None) + one(min(hi) if hi else None)
+    return (one(max(lo) if lo else None) if cols[0] else "") + (one(min(hi) if hi else None) if cols[1] else "")
+
+
+LIVE_BE_DAILY = 7  # breakeven rows: every day for the first week, then weekly
+WEEKDAYS_UA = ("пн", "вт", "ср", "чт", "пт", "сб", "нд")
+
+
+def live_be_dates(g: dict) -> list[float]:
+    """Timestamps of the breakeven rows: each day at the expiry's time of day (08:00 UTC) from the next one on, daily
+    for LIVE_BE_DAILY days and weekly after, the last one at least an hour before expiry; then the expiry itself."""
+    now, exp = g["exp_ts"] - g["days"] * 86400.0, g["exp_ts"]
+    t = exp - math.floor((exp - now) / 86400.0) * 86400.0
+    if t - now < 3600:
+        t += 86400.0
+    out, i = [], 0
+    while t < exp - 3600:
+        if i < LIVE_BE_DAILY or (i - LIVE_BE_DAILY) % 7 == 6:
+            out.append(t)
+        t, i = t + 86400.0, i + 1
+    return out + [exp]
+
+
+def _live_when(ts: float) -> str:
+    d = datetime.fromtimestamp(ts, KYIV)
+    return f"{WEEKDAYS_UA[d.weekday()]} {d:%d.%m, %H:%M}"
 
 
 def block_live_be(g: dict) -> str:
     F, days = g["F"], g["days"]
-    plan = [("зараз", days)] + [(f"через {h} дн", days - h) for h in LIVE_HORIZONS if h < days - 0.25]
-    plan.append((f"на експірацію {_live_exp(g['exp_ts'])}", 0.0))
-    rows = []
-    for label, left in plan:
-        flat = live_pnl(g, F, left)
-        rows.append(
-            f"<tr><td>{_e(label)}<br><span class='lp-sub'>до експірації {_e(_dte(left)) if left > 0 else '0'}</span></td>"
-            f"{_be_cell(live_breakevens(g, left), F)}<td class='r num lp-flat {_cls(round(flat))}'>{_e(_usd(flat, True))}</td></tr>"
+    now = g["exp_ts"] - days * 86400.0
+    plan = [("зараз", f"до експірації {_dte(days)}", days)]
+    for ts in live_be_dates(g):
+        left = (g["exp_ts"] - ts) / 86400.0
+        plan.append(
+            (
+                _live_when(ts),
+                "експірація" if left <= 0 else f"через {_dte((ts - now) / 86400.0)} · до експірації {_dte(left)}",
+                max(left, 0.0),
+            )
         )
+    bes = [live_breakevens(g, left) for _, _, left in plan]
+    cols = (any(b < F for x in bes for b in x), any(b >= F for x in bes for b in x))
+    if not any(cols):
+        cols = (False, True)
+    head = ("<th class='r'>беззбиток нижче</th>" if cols[0] else "") + ("<th class='r'>беззбиток вище</th>" if cols[1] else "")
+    rows = "".join(
+        f"<tr><td>{_e(label)}<br><span class='lp-sub'>{_e(sub)}</span></td>{_be_cell(b, F, cols)}</tr>"
+        for (label, sub, _), b in zip(plan, bes, strict=True)
+    )
     return (
         f"<section class='wide'>{_h2('Беззбиток', 'lp_be')}<div class='scroll'><table class='lp lp-be'>"
-        f"<tr><th>Коли</th><th class='r'>беззбиток нижче<br><span class='lp-sub'>тут P&amp;L = 0</span></th>"
-        f"<th class='r'>беззбиток вище<br><span class='lp-sub'>тут P&amp;L = 0</span></th>"
-        f"<th class='r lp-flat'>P&amp;L, якщо {_e(g['base'])} лишиться<br><span class='lp-sub'>на {_e(_kd(F))}, як зараз</span></th></tr>"
-        + "".join(rows)
-        + f"</table></div><p class='note'>Ціна — форвард експірації ({_e(_kd(F))}), відсоток — відстань від нього. "
-        "Беззбиток з комісіями за вхід і вихід, при незмінних IV. Остання колонка — не P&amp;L на беззбитку, а що буде, "
-        f"якщо {_e(g['base'])} не зрушить з місця.</p></section>"
+        f"<tr><th>Коли (за Києвом)</th>{head}</tr>{rows}"
+        f"</table></div><p class='note'>Ціна, до якої {_e(g['base'])} має дійти до цього моменту, щоб позиція була в нулі "
+        f"(P&amp;L = 0 з комісіями за вхід і вихід, IV незмінні). Відсоток — відстань від форварду експірації ({_e(_kd(F))}).</p></section>"
     )
 
 

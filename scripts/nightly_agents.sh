@@ -352,7 +352,8 @@ ALLOWED=(
   "Bash(git -C /home/tradedesk/tradedesk-agents diff:*)" "Bash(git -C /home/tradedesk/tradedesk-agents show:*)"
   "Bash(git -C /home/tradedesk/tradedesk-agents ls-files:*)"
   "Bash(git -c core.pager=cat status:*)" "Bash(git -c core.pager=cat log:*)" "Bash(git -c core.quotepath=off status:*)"
-  "Bash(git hash-object:*)"
+  "Bash(git hash-object:*)" "Bash(git check-ignore:*)"
+  "Bash(git -C /home/tradedesk/tradedesk-agents -c core.pager=cat diff:*)"
   # Read-only: show/ls-files with the pager off, grep in the clone, status via --git-dir of the clone.
   "Bash(git -c core.pager=cat show:*)" "Bash(git -c core.pager=cat ls-files:*)"
   "Bash(git -C /home/tradedesk/tradedesk-agents grep:*)"

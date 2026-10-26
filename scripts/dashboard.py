@@ -13,8 +13,9 @@ The «Бриф» tab (/brief) renders the assistant's morning brief from the sna
 ``assistant_snapshot`` (no network here: the collector does all fetching). Every string from that file is untrusted
 text and is escaped; a missing, stale or corrupt snapshot gives an empty state, never an error.
 
-The «Опціони» tab (/options) is a strategy builder on a snapshot chain (marks, Δ, IV) of the month expiry or of the
-nearest one at least 25 h away (``chain_near``, where rule 8's 1-3 day zone and its thesis / target fields show up): sell/buy strangle and
+The «Опціони» tab (/options) is a strategy builder on a snapshot chain (marks, Δ, IV) of the month expiry, of the
+nearest one at least 25 h away (``chain_near``, where rule 8's 1-3 day zone and its thesis / target fields show up) or of
+any other listed expiry (section ``chains``: dailies, weeklies, monthlies, quarterlies): sell/buy strangle and
 straddle, iron condor; P&L at expiry, breakevens, max profit/loss, risk-neutral probability of profit and the fit to the
 owner's risk budget and his rules 1 and 8 (analytics.rules_check); position greeks, a «through N days» line, a scenario table (incl. IV +5 points), a plain-language
 conclusion and an «is vol expensive» block (DVOL percentile, VRP backtest by level). Everything is computed here on a plain GET form; the inline script only remembers deposit, risk
@@ -579,7 +580,7 @@ HELP: dict[str, tuple[str, str, str, str]] = {
     ),
     "builder": (
         "Конструктор",
-        "Збери опціонну позицію на експірації BTC — місячній (≥ 25 днів) чи найближчій (≥ 25 год): стратегія, страйки, "
+        "Збери опціонну позицію на будь-якій експірації BTC Deribit (денні, тижневі, місячні, квартальні — ті самі дати, що на Bybit): стратегія, страйки, "
         "депозит, ризик і розмір.",
         "Купівля стреддлу / стренглу — ставка на сильний рух у будь-який бік. Продаж — на спокій. Кондор — продаж із захистом.",
         "Нижче — графік P&L, «за і проти», греки, ризик і сценарії для цієї позиції. Поля «Теза» і «Ціль» з'являються, "
@@ -1598,6 +1599,7 @@ SECTION_UA = {
     "em_month": "очікуваний рух (місяць)",
     "chain": "ланцюжок опціонів",
     "chain_near": "ланцюжок опціонів (найближча експірація)",
+    "chains": "ланцюжки опціонів (усі експірації)",
     "radar": "радар",
     "paper_rec": "паперова рекомендація",
     "my_options": "мої опціони Bybit",
@@ -2510,6 +2512,9 @@ OPT_DEFAULT_STRAT = "long_strangle"
 # (analytics.assistant.pick_near_expiry), where rule 8's 1-3 day zone shows up; the month chain stays the default
 OPT_EXPIRIES = {"near": ("chain_near", "найближча"), "month": ("chain", "місячна")}
 OPT_DEFAULT_EXP = "month"
+# every other expiry of the term structure: query value = Deribit token ('25DEC26'), chain from the «chains» section
+OPT_ALL_SECTION = "chains"
+_EXP_TOKEN = re.compile(r"\d{1,2}[A-Z]{3}\d{2}")
 # (default, min, max): deposit USD, risk per trade %, size BTC (the owner trades 0.1, card «Депозит і ризик»)
 OPT_SIZE = {"dep": (10000.0, 100.0, 1e8), "riskp": (1.0, 0.1, 100.0), "qty": (0.1, 0.01, 100.0)}
 OPT_STRIKES = ("kput", "kcall", "kputw", "kcallw")
@@ -2554,12 +2559,44 @@ OPT_JS = """
 """
 
 
+def _exp_valid(which: object) -> bool:
+    return which in OPT_EXPIRIES or (isinstance(which, str) and _EXP_TOKEN.fullmatch(which) is not None)
+
+
+def _exp_section(which: str) -> str:
+    """Snapshot section of a builder expiry: its own one for an OPT_EXPIRIES key, else «chains»."""
+    return OPT_EXPIRIES[which][0] if which in OPT_EXPIRIES else OPT_ALL_SECTION
+
+
+def _exp_kind(token: object) -> str:
+    """Deribit expiry kind by its date: денна / тижнева (Friday) / місячна (last Friday) / квартальна (Mar, Jun, Sep, Dec)."""
+    d = expiry_utc(token)
+    if d is None:
+        return "—"
+    if d.weekday() != 4:
+        return "денна"
+    if (d + timedelta(days=7)).month == d.month:
+        return "тижнева"
+    return "квартальна" if d.month in (3, 6, 9, 12) else "місячна"
+
+
+def _exp_name(which: object) -> str:
+    return OPT_EXPIRIES[which][1] if which in OPT_EXPIRIES else f"{_exp_kind(which)} {which}" if _exp_valid(which) else "обрана"
+
+
 def option_chain(snap: dict | None, which: str = OPT_DEFAULT_EXP) -> dict | None:
-    """The chain of one builder expiry (OPT_EXPIRIES key; the month by default): forward, days, ATM IV, expiry and rows
-    {k, c/p: {mark, iv, delta}} (legs with a positive mark only), plus ``which``. None when the snapshot has no usable
-    chain for it."""
-    which = which if which in OPT_EXPIRIES else OPT_DEFAULT_EXP
-    chain = _data(snap, OPT_EXPIRIES[which][0]) if isinstance(snap, dict) else None
+    """The chain of one builder expiry (OPT_EXPIRIES key, the month by default, or an expiry token of the «chains»
+    section): forward, days, ATM IV, expiry and rows {k, c/p: {mark, iv, delta}} (legs with a positive mark only), plus
+    ``which``. None when the snapshot has no usable chain for it."""
+    which = which if _exp_valid(which) else OPT_DEFAULT_EXP
+    chain = None
+    if isinstance(snap, dict) and which in OPT_EXPIRIES:
+        chain = _data(snap, OPT_EXPIRIES[which][0])
+    elif isinstance(snap, dict):
+        by = (_data(snap, OPT_ALL_SECTION) or {}).get("by_expiry")
+        chain = by.get(which) if isinstance(by, dict) else None
+    if not isinstance(chain, dict):
+        return None
     if not chain:
         return None
     F, days = _num(chain.get("forward")), _num(chain.get("days"))
@@ -2822,7 +2859,7 @@ def parse_options_query(query: str) -> dict:
     cur = cur if cur in OPT_STRATEGIES else None
     out: dict = {"strat": s or cur or OPT_DEFAULT_STRAT, "keep_strikes": s is None or s == cur}
     e, cexp = one("exp"), one("cexp")
-    out["exp"] = e if e in OPT_EXPIRIES else OPT_DEFAULT_EXP
+    out["exp"] = e if _exp_valid(e) else OPT_DEFAULT_EXP
     # another expiry's strikes are not kept: switching the expiry resets them, like switching the strategy
     out["keep_strikes"] = out["keep_strikes"] and (cexp is None or cexp == out["exp"])
     for name, (default, lo, hi) in OPT_SIZE.items():
@@ -2939,15 +2976,28 @@ def _exp_short(ch: dict) -> str:
     return kyiv(exp, "%d.%m") if exp else _clean(ch.get("expiry") or "—", 12)
 
 
-def _expiry_select(snap: dict, cur: str) -> str:
-    """The expiry choice: only the expiries whose chain the snapshot has (label, date, days at the snapshot)."""
-    opts = []
+def _expiry_select(snap: dict, cur: str, now: float | None = None) -> str:
+    """The expiry choice: every expiry whose chain the snapshot has, nearest first (kind, date, days at the snapshot).
+    The near and month expiries keep their own keys; an expiry already delivered at ``now`` is left out (unless shown)."""
+    found: list[tuple[str, dict, str]] = []
     for key, (_, label) in OPT_EXPIRIES.items():
         c = option_chain(snap, key)
-        if c is None:
+        if c is not None and c["which"] == key:
+            found.append((key, c, label))
+    seen = {c["expiry"] for _, c, _ in found}
+    by = (_data(snap, OPT_ALL_SECTION) or {}).get("by_expiry")
+    for tok in by if isinstance(by, dict) else ():
+        c = None if tok in seen else option_chain(snap, tok)
+        if c is not None and c["which"] == tok:
+            found.append((tok, c, _exp_kind(tok)))
+            seen.add(tok)
+    opts = []
+    for key, c, label in sorted(found, key=lambda x: x[1]["days"]):
+        exp = expiry_utc(c.get("expiry"))
+        if key != cur and now is not None and exp is not None and exp.timestamp() <= now:
             continue
         text = f"{label} · {_exp_short(c)} · {_nf(c['days'], 1)} дн"
-        opts.append(f"<option value='{key}'{' selected' if key == cur else ''}>{_e(text)}</option>")
+        opts.append(f"<option value='{_e(key)}'{' selected' if key == cur else ''}>{_e(text)}</option>")
     return f"<label for='exp'>Експірація<select id='exp' name='exp'>{''.join(opts)}</select></label>"
 
 
@@ -3049,7 +3099,7 @@ def block_builder(ch: dict, snap: dict, p: dict, now: float | None = None) -> st
     for key, label in OPT_STRATEGIES.items():
         out.append(f"<button type='submit' name='s' value='{key}' aria-pressed={'true' if key == strat else 'false'}>{_e(label)}</button>")
     out.append("</div><div class='ctl'>")
-    out.append(_expiry_select(snap, which))
+    out.append(_expiry_select(snap, which, now))
     strad, condor = "straddle" in strat, strat == "iron_condor"
     out.append(_strike_select(ch, "kput", "p", strikes["kput"], "Пут, страйк", strad))
     out.append(_strike_select(ch, "kcall", "c", strikes["kcall"], "Кол, страйк", strad))
@@ -3077,10 +3127,9 @@ def block_builder(ch: dict, snap: dict, p: dict, now: float | None = None) -> st
         )
     out.append("<button class='go' type='submit'>Порахувати</button></div></form>")
     if which != p.get("exp", which):
-        want = OPT_EXPIRIES.get(p.get("exp"), ("", "обрана"))[1]
         out.append(
-            f"<p class='note warn'>Ланцюжка експірації «{_e(want)}» у знімку немає (старий знімок чи збій колектора): "
-            f"показано «{_e(OPT_EXPIRIES[which][1])}».</p>"
+            f"<p class='note warn'>Ланцюжка експірації «{_e(_exp_name(p.get('exp')))}» у знімку немає (старий знімок чи збій колектора): "
+            f"показано «{_e(_exp_name(which))}».</p>"
         )
     if cond:
         out.append(
@@ -3425,7 +3474,7 @@ def render_options(snap: dict | None, err: str | None, now: float, params: dict 
         out = [head, f"<header><h1>Опціони</h1>{_snapshot_stamp(snap, now)}</header>{_nav('options')}{caveats}<main class='brief'>"]
         want = p.get("exp", OPT_DEFAULT_EXP)
         # the chosen expiry's section first, then the month one (tried when the chosen chain is missing)
-        secs = list(dict.fromkeys((OPT_EXPIRIES.get(want, OPT_EXPIRIES[OPT_DEFAULT_EXP])[0], OPT_EXPIRIES[OPT_DEFAULT_EXP][0])))
+        secs = list(dict.fromkeys((_exp_section(want), _exp_section(OPT_DEFAULT_EXP))))
         ch = option_chain(snap, want)
         if ch is None and want != OPT_DEFAULT_EXP:  # e.g. a snapshot written before the nearer chain: the month one
             ch = option_chain(snap, OPT_DEFAULT_EXP)
@@ -3443,7 +3492,7 @@ def render_options(snap: dict | None, err: str | None, now: float, params: dict 
             out.append(
                 f"<section class='wide'>{_empty(f'Конструктор не вдалося показати: несподіваний формат даних ({type(e).__name__}).')}</section>"
             )
-        notes = _section_notes(snap, *dict.fromkeys((OPT_EXPIRIES[ch["which"]][0], secs[0])))  # the shown and the chosen chain
+        notes = _section_notes(snap, *dict.fromkeys((_exp_section(ch["which"]), secs[0])))  # the shown and the chosen chain
         if notes:
             out.append(f"<section class='wide'>{notes}</section>")
         out.append("</main>" + tail)

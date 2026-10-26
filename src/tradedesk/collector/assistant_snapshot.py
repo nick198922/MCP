@@ -18,6 +18,9 @@ The ``my_options`` section is not a tool call either: it reads the owner's open 
 file ``<dir of db_path>/assistant/my_options.json`` (written hourly by scripts/bybit_options_positions.py with the
 read-only key; this job never sees the key and makes no request) through `analytics.my_options.my_options_view`. It is
 never carried forward from an older snapshot.
+
+The ``chains`` section holds the option chain of every expiry of the ATM term structure (``{"by_expiry": {token:
+chain}}``, the same shape as ``chain``) for the options builder's expiry list; the strike window widens with time to expiry.
 """
 
 from __future__ import annotations
@@ -48,6 +51,8 @@ SECTION_TIMEOUT_SECONDS = 120.0
 VENUE = "binanceusdm"
 SPOT_VENUE = "binance"
 TICKER_SYMBOLS = ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT"]
+CHAIN_WIDTH_PCT = 20.0  # strike window (± % log-moneyness) of the month and near chains, the floor of the others
+CHAIN_WIDTH_MAX_PCT = 60.0
 
 
 def snapshot_path(db_path: str, configured: str) -> Path | None:
@@ -119,6 +124,31 @@ async def _call(client: Any, tool: str, args: dict[str, Any]) -> dict[str, Any]:
 def _expiry_rows(term: dict[str, Any]) -> list[dict[str, Any]]:
     data = term.get("data") if term.get("ok") else None
     return list((data or {}).get("expiries") or [])
+
+
+def chain_width_pct(days: float) -> float:
+    """Strike window of one ``chains`` expiry: 60 % × √(days/365) (about ±1.2σ at 50 % vol), within 20..60 %."""
+    return float(min(CHAIN_WIDTH_MAX_PCT, max(CHAIN_WIDTH_PCT, round(60 * math.sqrt(max(days, 0.0) / 365)))))
+
+
+async def build_chains(client: Any, expiries: list[dict[str, Any]]) -> dict[str, Any]:
+    """Section ``chains``: deribit_option_chain of every term-structure expiry, keyed by expiry token. One cached
+    Deribit book serves all of them. ok when at least one chain came back; each failed expiry lands in ``missing``."""
+    rows = [x for x in expiries if isinstance(x.get("expiry"), str) and isinstance(x.get("days"), (int, float)) and x["days"] > 0]
+    if not rows:
+        return _failed("tradedesk", "data_unavailable", "no expiries in the ATM term structure")
+    args = [{"currency": "BTC", "expiry": x["expiry"], "width_pct": chain_width_pct(x["days"])} for x in rows]
+    done = await asyncio.gather(*(_call(client, "deribit_option_chain", a) for a in args))
+    by: dict[str, Any] = {}
+    missing: list[dict[str, Any]] = []
+    for x, sec in zip(rows, done, strict=True):
+        if sec["ok"] and isinstance(sec.get("data"), dict):
+            by[x["expiry"]] = sec["data"]
+        else:
+            missing += [{**m, "field": f"chain {x['expiry']}"} for m in sec["missing"] if isinstance(m, dict)]
+    if not by:
+        return {"ok": False, "data": None, "missing": missing or _failed("tradedesk", "error", "no chain")["missing"], "warnings": []}
+    return {"ok": True, "data": {"by_expiry": by}, "missing": missing, "warnings": []}
 
 
 # ----------------------------------------------------------------------------- radar section
@@ -334,6 +364,7 @@ async def build_snapshot(rt: "Runtime") -> dict[str, Any]:
             sections[n] = (
                 next(it) if cl is not None else _failed("tradedesk", "data_unavailable", "no suitable expiry in the ATM term structure")
             )
+        sections["chains"] = await build_chains(c, _expiry_rows(sections["term"]))  # the builder's full expiry list
     sections["radar"] = await build_radar(rt, sections, now)
     sections["paper_rec"] = await asyncio.to_thread(build_paper_rec, rt.settings.db_path, now)
     sections["my_options"] = await asyncio.to_thread(build_my_options, rt.settings.db_path, now)

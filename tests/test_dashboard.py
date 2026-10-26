@@ -2390,6 +2390,57 @@ def test_options_nearer_expiry_missing_chain_falls_back_to_the_month():
     assert db.option_chain(snap, "<script>") is None  # unknown key -> the (here missing) month chain
 
 
+def _snap_all() -> tuple[dict, float]:
+    """`_snap_near` plus a `chains` section: the near and month chains under their tokens, a December copy of the month
+    chain (same strikes, 28 days later: only the plumbing is tested) and a 23OCT26 weekly delivered the same morning."""
+    snap, asof = _snap_near()
+    month, near = snap["sections"]["chain"]["data"], snap["sections"]["chain_near"]["data"]
+    by = {
+        "23OCT26": {**near, "expiry": "23OCT26", "days": 0.33},
+        "24OCT26": near,
+        "27NOV26": month,
+        "25DEC26": {**month, "expiry": "25DEC26", "days": month["days"] + 28},
+    }
+    snap["sections"]["chains"] = {"ok": True, "data": {"by_expiry": by}, "missing": [], "warnings": []}
+    return snap, asof
+
+
+def test_options_lists_every_snapshot_expiry():
+    snap, asof = _snap_all()
+    page = db.render_options(snap, None, asof + 300, db.parse_options_query(""))
+    sel = _between(page, "<select id='exp' name='exp'>", "</select>")
+    # nearest first; near and month keep their keys and are not listed twice under their tokens
+    assert sel == (
+        "<select id='exp' name='exp'>"
+        "<option value='23OCT26'>тижнева · 23.10 · 0.3 дн</option>"
+        "<option value='near'>найближча · 24.10 · 1.3 дн</option>"
+        "<option value='month' selected>місячна · 27.11 · 37.5 дн</option>"
+        "<option value='25DEC26'>квартальна · 25.12 · 65.5 дн</option>"
+    )
+    # a token from the list: its chain, remembered for the strike reset
+    dec = db.render_options(snap, None, asof + 300, db.parse_options_query("exp=25DEC26&qty=0.01"))
+    assert "Конструктор · BTC, експірація 25.12 · 65.5 дн" in dec and "name='cexp' value='25DEC26'" in dec
+    assert "<option value='25DEC26' selected>" in dec and "не вдалося" not in dec
+    # after its delivery the weekly drops out of the list
+    later = db.render_options(snap, None, datetime(2026, 10, 23, 9, tzinfo=UTC).timestamp(), db.parse_options_query(""))
+    assert "value='23OCT26'" not in later and "value='25DEC26'" in later
+    # a token the snapshot has no chain for: the month, with a note naming both
+    miss = db.render_options(snap, None, asof + 300, db.parse_options_query("exp=26MAR27"))
+    assert "Ланцюжка експірації «квартальна 26MAR27» у знімку немає (старий знімок чи збій колектора): показано «місячна»." in miss
+    assert db.parse_options_query("exp=25DEC26")["exp"] == "25DEC26" and db.parse_options_query("exp=25dec26")["exp"] == "month"
+    assert [db._exp_kind(t) for t in ("24OCT26", "6NOV26", "30OCT26", "25DEC26", "x")] == ["денна", "тижнева", "місячна", "квартальна", "—"]
+    # a failed `chains` section: the two own chains still work, its reason shows only for a token
+    snap["sections"]["chains"] = {
+        "ok": False,
+        "data": None,
+        "missing": [{"detail": "no expiries in the ATM term structure"}],
+        "warnings": [],
+    }
+    page = db.render_options(snap, None, asof + 300, db.parse_options_query(""))
+    assert "value='near'" in page and "value='25DEC26'" not in page and "no expiries" not in page
+    assert "no expiries in the ATM term structure" in db.render_options(snap, None, asof + 300, db.parse_options_query("exp=25DEC26"))
+
+
 def _rules_db(path: Path, rows: list[dict]) -> Path:
     from tradedesk.store.schema import MIGRATIONS
 

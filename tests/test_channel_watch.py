@@ -167,3 +167,48 @@ def test_channel_backfill_downloads_tradingview_snapshots(tmp_path, monkeypatch)
     assert n == 1 and urls == ["https://s3.tradingview.com/snapshots/q/QX6fhhEN.png"]
     assert posts[7]["tv_files"] == ["7-tv-QX6fhhEN.png"]
     assert (tmp_path / "qivty" / "photos" / "7-tv-QX6fhhEN.png").read_bytes() == b"png"
+
+
+def test_store_downloads_tradingview_charts_of_the_post(tmp_path, monkeypatch):
+    monkeypatch.setattr(cw, "PRIVATE", tmp_path)
+    post = {**cw.parse_page(PAGE, "DataHawks")[-1], "channel": "qivty", "id": 9, "photos": []}
+    post["text"] = "DXY https://www.tradingview.com/x/QX6fhhEN/ and again https://www.tradingview.com/x/QX6fhhEN/"
+    urls = []
+    stored = cw.store(post, get=lambda url, timeout=30: urls.append(url) or b"png")
+    assert urls == ["https://s3.tradingview.com/snapshots/q/QX6fhhEN.png"]
+    assert stored["tv_files"] == ["tv-QX6fhhEN.png"]
+    d = tmp_path / "library" / "courses" / "qivty" / "live" / "9"
+    assert (d / "tv-QX6fhhEN.png").exists() and "tv-QX6fhhEN.png" in (d / "post.md").read_text(encoding="utf-8")
+    assert "tv-QX6fhhEN.png" in cw.prompt([stored]) and "дайджест" in cw.prompt([stored])
+
+
+def test_batch_due_waits_for_a_daily_digest():
+    cfg = cw.settings("qivty")
+    now = cw.datetime(2026, 10, 27, 12, tzinfo=cw.UTC)
+    fresh = [{"date": "2026-10-27T08:00:00+00:00"}]
+    assert cw.batch_due(fresh, cfg, now) is False
+    assert cw.batch_due([{"date": "2026-10-26T15:00:00+00:00"}, *fresh], cfg, now) is True  # oldest waits 21 h
+    assert cw.batch_due(fresh * cfg["max_batch"], cfg, now) is True
+    assert cw.batch_due(fresh, cw.settings("DataHawks"), now) is True  # per-post channel: at once
+    assert cw.batch_due([], cfg, now) is False
+
+
+def test_poll_of_a_digest_channel_sends_no_notice_per_post(tmp_path, monkeypatch):
+    import tg_send
+
+    monkeypatch.setattr(cw, "PRIVATE", tmp_path)
+    monkeypatch.setattr(cw, "fetch_new", lambda channel, last: [{**cw.parse_page(PAGE, "DataHawks")[-1], "channel": "qivty"}])
+    monkeypatch.setattr(cw, "store", lambda p: p)
+    sent = []
+    monkeypatch.setattr(tg_send, "send", lambda *a, **k: sent.append(a))
+    (tmp_path / "library" / "courses" / "qivty" / "live").mkdir(parents=True)
+    (tmp_path / "library" / "courses" / "qivty" / "live" / "state.json").write_text('{"last_id": 1}')
+    assert len(cw.poll("qivty")) == 1 and sent == []
+
+
+def test_main_runs_every_watched_channel(monkeypatch):
+    seen = []
+    monkeypatch.setattr(cw, "run_one", lambda cmd, channel, dry: seen.append(channel) or True)
+    assert cw.main(["status"]) == 0 and seen == cw.CHANNELS and "qivty" in seen
+    monkeypatch.setattr(cw, "run_one", lambda cmd, channel, dry: channel != "qivty")
+    assert cw.main(["run"]) == 1

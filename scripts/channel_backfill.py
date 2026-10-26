@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 import time
 from collections import defaultdict
@@ -95,20 +94,17 @@ def photos(channel: str, post: dict, get=cw.fetch) -> list[str]:
     return names
 
 
-TV_RE = re.compile(r"tradingview\.com/x/([A-Za-z0-9]+)")
-
-
 def tv_snapshots(channel: str, posts: dict[int, dict], pause: float = 0.2, get=cw.fetch) -> int:
     """Charts behind tradingview.com/x/<id>/ links -> photos/<post id>-tv-<id>.png (post field tv_files)."""
     n = 0
     for p in posts.values():
         names = []
-        for sid in dict.fromkeys(TV_RE.findall(p["text"])):
+        for sid in dict.fromkeys(cw.TV_RE.findall(p["text"])):
             name = f"{p['id']}-tv-{sid}.png"
             dst = out_dir(channel) / "photos" / name
             if not dst.exists():
                 try:
-                    dst.write_bytes(get(f"https://s3.tradingview.com/snapshots/{sid[0].lower()}/{sid}.png"))
+                    dst.write_bytes(get(cw.tv_snapshot_url(sid)))
                     n += 1
                     time.sleep(pause)
                 except (OSError, ValueError):

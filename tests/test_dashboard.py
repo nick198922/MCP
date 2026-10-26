@@ -680,7 +680,7 @@ def test_journal_tab_renders_trades_sources_and_paper_recs(tmp_path):
         "Рядків з тегом airdrop: 1",
         "пробій рейнджу",
         "setup:breakout, conf:2",
-        "відкрита з",
+        "<span class='chip jo' title='відкрита з цієї дати'>відкрита</span>",
         "сторінка 1 з 1 · 5 угод",
         "USD, усі біржі й опціони разом",
         "USD, одна крива P&L усіх бірж і опціонів",
@@ -836,15 +836,40 @@ def test_journal_pages_and_query(tmp_path, monkeypatch):
     p = _journal_db(tmp_path / "s.sqlite", rows, [])
     monkeypatch.setattr(db, "JOURNAL_DB", p)
     page = db.journal_page("", now=float(T0))
-    assert "сторінка 1 з 3 · 120 угод" in page and "href='/journal?page=2'>старіші" in page and "новіші" not in page
+    assert "сторінка 1 з 3 · 120 угод" in page and "href='/journal?page=2#trades'>старіші" in page and "новіші" not in page
     assert "S119" in page and "S069" not in page  # newest first, 50 a page
     page = db.journal_page("page=3", now=float(T0))
-    assert "S019" in page and "S020" not in page and "href='/journal?page=2'>← новіші" in page and "старіші" not in page
+    assert "S019" in page and "S020" not in page and "href='/journal?page=2#trades'>← новіші" in page and "старіші" not in page
     assert "сторінка 3 з 3" in db.journal_page("page=999", now=float(T0))  # clamped to the last page
     for q in ("page=0", "page=-1", "page=²", "page=<x>", "page=1e3", "x=1&" * 40):
-        assert db.parse_journal_query(q) == {"page": 1}, q
-    assert db.parse_journal_query("page=2") == {"page": 2}
+        assert db.parse_journal_query(q) == {"page": 1, "status": "all"}, q
+    assert db.parse_journal_query("page=2") == {"page": 2, "status": "all"}
+    assert db.parse_journal_query("status=open&page=3") == {"page": 3, "status": "open"}
+    for q in ("status=<b>", "status=OPEN", "status=" + "x" * 100):
+        assert db.parse_journal_query(q)["status"] == "all", q
     assert [db._px(x) for x in (82076.6, 3.4412, 0.0123, 0.00001234, None)] == ["82 076.60", "3.4412", "0.0123", "0.00001234", "—"]
+
+
+def test_journal_filter_open_closed_cancelled(tmp_path, monkeypatch):
+    tags = '["bybit", "import", "linear"]'
+    rows = [_jrow(i, f"C{i:03d}", "long", tags, "closed", "win", 1.0) for i in range(60)]
+    rows += [_jrow(100 + i, f"O{i:03d}", "short", tags, "open", None, None) for i in range(3)]
+    p = _journal_db(tmp_path / "s.sqlite", rows, [])
+    monkeypatch.setattr(db, "JOURNAL_DB", p)
+    page = db.journal_page("", now=float(T0))
+    assert "id='trades'" in page and "aria-label='Фільтр угод'" in page
+    assert "href='/journal#trades' aria-current='page'>Всі <span class='n'>63</span>" in page
+    assert "href='/journal?status=open#trades'>Відкриті <span class='n'>3</span>" in page
+    assert "href='/journal?status=closed#trades'>Закриті <span class='n'>60</span>" in page
+    assert "Скасовані" not in page  # no cancelled trades: no tab
+    page = db.journal_page("status=open", now=float(T0))
+    assert "aria-current='page'>Відкриті" in page and "<th>Відкрито</th>" in page
+    assert "O002" in page and "C059" not in page and "1 з 1 · 3 угод" in page
+    page = db.journal_page("status=closed", now=float(T0))
+    assert "O002" not in page and "сторінка 1 з 2 · 60 угод" in page
+    assert "href='/journal?status=closed&page=2#trades'>старіші" in page  # the pager keeps the filter
+    page = db.journal_page("status=cancelled", now=float(T0))
+    assert "Скасованих угод немає." in page and "aria-current='page'>Скасовані" in page
 
 
 def test_journal_escapes_hostile_strings_from_the_database(tmp_path):

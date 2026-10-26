@@ -127,7 +127,10 @@ def parse_page(page: str, channel: str = CHANNEL) -> list[dict]:
     posts = []
     for i, (pos, m) in enumerate(starts):
         block = page[pos : starts[i + 1][0] if i + 1 < len(starts) else len(page)]
-        text_html = _first(r'<div class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>', block)
+        # js-message_text only: a reply also has js-message_reply_text (the quoted post), which comes first in the block
+        text_html = _first(r'<div class="tgme_widget_message_text js-message_text"[^>]*>(.*?)</div>', block)
+        reply_html = _first(r'<div class="tgme_widget_message_text js-message_reply_text"[^>]*>(.*?)</div>', block)
+        reply_id = _first(rf'class="tgme_widget_message_reply[^"]*" href="https://t\.me/{re.escape(channel)}/(\d+)"', block)
         videos = []
         for vm in re.finditer(r"tgme_widget_message_video_player(.*?)(?=tgme_widget_message_video_player|$)", block, flags=re.S):
             part = vm.group(1)
@@ -141,6 +144,8 @@ def parse_page(page: str, channel: str = CHANNEL) -> list[dict]:
                 "url": f"https://t.me/{channel}/{m.group(2)}",
                 "date": _first(r'<time datetime="([^"]+)"', block),
                 "text": html_to_text(text_html) if text_html else "",
+                "reply_to": int(reply_id) if reply_id else None,
+                "reply_text": html_to_text(reply_html) if reply_html else "",
                 "forwarded_from": html.unescape(
                     re.sub(r"<[^>]+>", "", _first(r"tgme_widget_message_forwarded_from_name[^>]*>(.*?)</", block))
                 ).strip(),
@@ -240,6 +245,8 @@ def post_md(post: dict) -> str:
     lines = [f"# {post['channel']} #{post['id']}", "", f"- Посилання: {post['url']}", f"- Дата (UTC): {post['date']}"]
     if post["forwarded_from"]:
         lines.append(f"- Переслано з: {post['forwarded_from']}")
+    if post.get("reply_to") or post.get("reply_text"):
+        lines.append(f"- Відповідь на #{post.get('reply_to') or '?'}: «{post.get('reply_text', '')}»")
     for i, _ in enumerate(post["photos"], 1):
         lines.append(f"- Фото {i}: photo-{i}.jpg")
     for i, v in enumerate(post["videos"], 1):

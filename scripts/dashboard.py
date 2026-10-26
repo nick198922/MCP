@@ -915,7 +915,8 @@ HELP: dict[str, tuple[str, str, str, str]] = {
     ),
     "j_table": (
         "Угоди",
-        "Усі реальні угоди, нові зверху: дата, джерело, інструмент, сторона, розмір, вхід і вихід, P&L у USD, R, теза.",
+        "Реальні угоди, нові зверху: дата, джерело, інструмент, сторона, розмір, вхід і вихід, P&L у USD, R, теза. "
+        "Фільтр над таблицею: всі, відкриті, закриті (і скасовані, якщо такі є).",
         "R порожній, якщо стоп не записано. Теги й нотатки — з імпорту або journal_add.",
         "Шукай повтори: той самий інструмент чи сетап раз у раз у мінусі — кандидат на паузу.",
     ),
@@ -5661,13 +5662,44 @@ def load_journal(path: Path) -> tuple[dict | None, str | None]:
         con.close()
 
 
+# The trades table filter: ?status=… (untrusted, whitelisted); «Скасовані» shows only when there are such trades.
+JOURNAL_FILTERS = (("all", "Всі"), ("open", "Відкриті"), ("closed", "Закриті"), ("cancelled", "Скасовані"))
+
+
 def parse_journal_query(query: str) -> dict:
-    """Page number from the URL query (untrusted): anything odd gives page 1."""
+    """Page number and the trades filter from the URL query (untrusted): anything odd gives page 1, all trades."""
     try:
-        v = urllib.parse.parse_qs(query or "", max_num_fields=20).get("page", ["1"])[0][:6]
+        q = urllib.parse.parse_qs(query or "", max_num_fields=20)
     except ValueError:
-        v = "1"
-    return {"page": int(v) if v.isascii() and v.isdigit() and 1 <= int(v) <= 100000 else 1}
+        q = {}
+    v = q.get("page", ["1"])[0][:6]
+    status = q.get("status", ["all"])[0][:12]
+    return {
+        "page": int(v) if v.isascii() and v.isdigit() and 1 <= int(v) <= 100000 else 1,
+        "status": status if status in dict(JOURNAL_FILTERS) else "all",
+    }
+
+
+def journal_href(status: str, page: int = 1) -> str:
+    """The trades table URL (status and page are whitelisted values), anchored at the table."""
+    q = [f"status={status}"] if status != "all" else []
+    q += [f"page={page}"] if page > 1 else []
+    return "/journal" + ("?" + "&".join(q) if q else "") + "#trades"
+
+
+def block_journal_filter(real: list[dict], status: str) -> str:
+    counts = {"all": len(real)}
+    for t in real:
+        k = str(t.get("status") or "")
+        counts[k] = counts.get(k, 0) + 1
+    links = []
+    for key, label in JOURNAL_FILTERS:
+        n = counts.get(key, 0)
+        if key == "cancelled" and not n and status != key:
+            continue
+        cur = " aria-current='page'" if key == status else ""
+        links.append(f"<a href='{journal_href(key)}'{cur}>{_e(label)} <span class='n'>{n}</span></a>")
+    return f"<nav class='jf' aria-label='Фільтр угод'>{''.join(links)}</nav>"
 
 
 def _day(ts: object) -> str:
@@ -5761,23 +5793,42 @@ def block_journal_sources(groups: dict[str, list[dict]]) -> str:
     )
 
 
-def block_journal_table(real: list[dict], page: int) -> str:
+JOURNAL_EMPTY = {
+    "open": "Відкритих угод немає.",
+    "closed": "Закритих угод ще немає.",
+    "cancelled": "Скасованих угод немає.",
+}
+
+
+def block_journal_table(real: list[dict], page: int, status: str = "all") -> str:
     if not real:
         return _empty("Угод ще немає.")
-    pages = max(1, math.ceil(len(real) / JOURNAL_PAGE_ROWS))
+    bar = block_journal_filter(real, status)
+    rows = real if status == "all" else [t for t in real if t.get("status") == status]
+    if not rows:
+        return bar + _empty(JOURNAL_EMPTY.get(status, "Угод немає."))
+    pages = max(1, math.ceil(len(rows) / JOURNAL_PAGE_ROWS))
     page = min(page, pages)
-    chunk = real[(page - 1) * JOURNAL_PAGE_ROWS : page * JOURNAL_PAGE_ROWS]
+    chunk = rows[(page - 1) * JOURNAL_PAGE_ROWS : page * JOURNAL_PAGE_ROWS]
+    first = {"open": "Відкрито", "closed": "Закрито"}.get(status, "Дата")
     out = [
-        "<div class='scroll'><table><tr><th>Закрито</th><th>Джерело</th><th>Інструмент</th><th>Сторона</th><th>Розмір</th>"
-        "<th>Вхід → вихід</th><th>P&amp;L</th><th>R</th><th>Теза · теги · нотатка</th></tr>"
+        bar,
+        f"<div class='scroll'><table><tr><th>{first}</th><th>Джерело</th><th>Інструмент</th><th>Сторона</th><th>Розмір</th>"
+        "<th>Вхід → вихід</th><th>P&amp;L</th><th>R</th><th>Теза · теги · нотатка</th></tr>",
     ]
     for t in chunk:
         tags = journal_tags(t.get("tags"))
         _, src = journal_kind(tags)
         pnl = _num(t.get("pnl"))
-        when = _day(t.get("closed_ts")) if t.get("status") == "closed" else f"відкрита з {_day(t.get('opened_ts'))}"
-        if t.get("status") == "cancelled":
-            when = "скасована"
+        # trusted HTML: dates and fixed labels only
+        if t.get("status") == "closed":
+            when = _e(_day(t.get("closed_ts")))
+        elif t.get("status") == "cancelled":
+            when = "<span class='chip calm'>скасована</span>"
+        elif status == "open":
+            when = _e(_day(t.get("opened_ts")))
+        else:
+            when = f"{_e(_day(t.get('opened_ts')))}<br><span class='chip jo' title='відкрита з цієї дати'>відкрита</span>"
         extra = [x for x in tags if x not in JOURNAL_PLAIN_TAGS and x not in JOURNAL_VENUES]
         text = _e(_clean(t.get("thesis") or "", 120))
         if extra:
@@ -5786,17 +5837,17 @@ def block_journal_table(real: list[dict], page: int) -> str:
             text += f"<br><span class='mut'>{_e(_clean(t['note'], 80))}</span>"
         side = str(t.get("side") or "")
         out.append(
-            f"<tr><td class='num'>{_e(when)}</td><td>{_e(src)}</td><td>{_e(_clean(t.get('symbol') or '—', 40))}</td>"
+            f"<tr><td class='num'>{when}</td><td>{_e(src)}</td><td>{_e(_clean(t.get('symbol') or '—', 40))}</td>"
             f"<td>{_e(SIDE_UA.get(side, _clean(side, 12)))}</td><td class='num'>{_e(_nf(t.get('size'), 4).rstrip('0').rstrip('.'))}</td>"
             f"<td class='num'>{_e(_px(t.get('entry')))} → {_e(_px(t.get('exit')))}</td>"
             f"<td class='num {_signed_cls(pnl)}'>{_usd(pnl, True)}</td><td class='num'>{_r(t.get('r_multiple'))}</td><td>{text}</td></tr>"
         )
     out.append("</table></div>")
-    nav = [f"<span class='mut'>сторінка {page} з {pages} · {len(real)} угод, нові зверху</span>"]
+    nav = [f"<span class='mut'>сторінка {page} з {pages} · {len(rows)} угод, нові зверху</span>"]
     if page > 1:
-        nav.insert(0, f"<a href='/journal?page={page - 1}'>← новіші</a>")
+        nav.insert(0, f"<a href='{journal_href(status, page - 1)}'>← новіші</a>")
     if page < pages:
-        nav.append(f"<a href='/journal?page={page + 1}'>старіші →</a>")
+        nav.append(f"<a href='{journal_href(status, page + 1)}'>старіші →</a>")
     out.append(f"<p class='pager'>{' '.join(nav)}</p>")
     return "".join(out)
 
@@ -6279,6 +6330,14 @@ background:var(--acc);color:var(--card);cursor:pointer}form.jr button:disabled{o
 .scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}.scroll table{min-width:560px}
 .pager{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin:8px 0 0}.pager a{color:var(--acc);font-weight:600}
 h2 .chip{margin-left:8px;vertical-align:middle}
+#trades{scroll-margin-top:8px}
+.jf{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 12px}
+.jf a{display:inline-flex;align-items:center;gap:6px;padding:6px 14px;border:1px solid var(--line);border-radius:999px;
+background:var(--card);color:var(--fg);text-decoration:none;font-weight:600;font-size:13px}
+.jf a:hover{border-color:var(--acc)}
+.jf a[aria-current=page]{background:var(--acc);border-color:var(--acc);color:var(--card)}
+.jf .n{font-weight:500;opacity:.7;font-variant-numeric:tabular-nums}
+.chip.jo{background:var(--acc);color:var(--card);font-family:-apple-system,"Segoe UI",Helvetica,Arial,sans-serif}
 """
 
 
@@ -6346,7 +6405,8 @@ def render_journal(
             out.append("</section>")
             out.append(review)
             out.append(f"<section>{_h2('За джерелом', 'sources')}{block_journal_sources(groups)}</section>")
-            out.append(f"<section class='wide'>{_h2('Угоди', 'j_table')}{block_journal_table(real, p['page'])}</section>")
+            table = block_journal_table(real, p["page"], p.get("status", "all"))
+            out.append(f"<section class='wide' id='trades'>{_h2('Угоди', 'j_table')}{table}</section>")
         try:
             rules = block_rules_week(kinds["real"] if rows else rows, now)
         except Exception as e:  # noqa: BLE001 - one odd row must not take the page down

@@ -192,6 +192,10 @@ async def test_snapshot_happy_path(state, tmp_path):
     assert snap["sections"]["chain"]["data"]["expiry"] == "27NOV26"
     near = snap["sections"]["chain_near"]["data"]  # the builder's nearer expiry, same shape as the month chain
     assert near["expiry"] == "30OCT26" and near["strikes"] and set(near) == set(snap["sections"]["chain"]["data"])
+    # every term-structure expiry for the builder's list, same shape; the window widens with time to expiry
+    by = snap["sections"]["chains"]["data"]["by_expiry"]
+    assert snap["sections"]["chains"]["ok"] and list(by) == [x["expiry"] for x in snap["sections"]["term"]["data"]["expiries"]]
+    assert by["27NOV26"] == snap["sections"]["chain"]["data"] and all(set(c) == set(near) for c in by.values())
     assert ok == len(snap["sections"]) - len(snap["missing"])
     assert "evidence" not in snap["sections"]["term"]  # envelopes are trimmed to data / missing / warnings
     paper = snap["sections"]["paper_rec"]  # from the local state file, no network
@@ -280,6 +284,7 @@ async def test_snapshot_provider_failure_lands_in_missing(state, tmp_path):
     assert snap["sections"]["chain"]["missing"]  # per-section reason
     assert snap["sections"]["chain_near"]["missing"][0]["reason"] == "data_unavailable"
     assert snap["expiries"] == {"week": None, "month": None, "near": None}
+    assert "chains" in snap["missing"] and snap["sections"]["chains"]["missing"][0]["reason"] == "data_unavailable"
     assert snap["sections"]["tickers"]["ok"] and snap["sections"]["fng"]["ok"]
     assert ok >= 1
 
@@ -498,3 +503,9 @@ async def test_job_off_by_default_and_on_by_switch(state, tmp_path):
     finally:
         await rt.aclose()
         await rt2.aclose()
+
+
+def test_chain_width_widens_with_time_to_expiry():
+    from tradedesk.collector.assistant_snapshot import chain_width_pct
+
+    assert [chain_width_pct(d) for d in (0.5, 32, 60, 151, 333, 700)] == [20.0, 20.0, 24.0, 39.0, 57.0, 60.0]

@@ -1764,6 +1764,10 @@ def _all_tab_pages(tmp_path) -> dict[str, str]:
 
     pages["demo"] = db.render_demo(*db.load_demo(td._filled(tmp_path, td.NOW)), td.NOW / 1000, vs_bt_on=False)
     pages["demo empty"] = db.render_demo(*db.load_demo(td._store(tmp_path / "de.sqlite")), td.NOW / 1000)
+    import test_dashboard_positions as tp
+
+    pages["positions"] = db.render_positions(tp._payload(), None, tp.NOW)
+    pages["positions empty"] = db.render_positions(None, "missing", tp.NOW)
     return pages
 
 

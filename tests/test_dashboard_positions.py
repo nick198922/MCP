@@ -253,3 +253,23 @@ def test_dashboard_has_no_duplicate_top_level_names():
     tree = ast.parse((Path(db.__file__)).read_text(encoding="utf-8"))
     names = [n.name for n in tree.body if isinstance(n, ast.FunctionDef)]
     assert sorted({n for n in names if names.count(n) > 1}) == []
+
+
+def test_breakeven_rows_are_dated_daily_then_weekly():
+    g = db.live_groups(_payload(), NOW)[0][0]  # 26.10 19:30 UTC, expiry 13.11 08:00 UTC
+    ts = db.live_be_dates(g)
+    days = [datetime.fromtimestamp(t, UTC).strftime("%d.%m %H") for t in ts]
+    assert days[:7] == ["27.10 08", "28.10 08", "29.10 08", "30.10 08", "31.10 08", "01.11 08", "02.11 08"]
+    assert days[7:] == ["09.11 08", "13.11 08"] and ts[-1] == EXP
+    html = db.block_live_be(g)
+    assert "лишиться" not in html and "вт 27.10, 10:00" in html and "пт 13.11, 10:00" in html  # Kyiv, winter time
+    rows = html.count("<tr>") - 1
+    assert rows == 1 + len(ts)
+
+
+def test_a_long_call_has_no_lower_breakeven_column():
+    c84 = db.live_groups(_calls_and_strangle(), NOW)[0][0]
+    html = db.block_live_be(c84)
+    assert "беззбиток вище" in html and "беззбиток нижче" not in html
+    strangle = db.block_live_be(db.live_groups(_calls_and_strangle(), NOW)[0][2])
+    assert "беззбиток нижче" in strangle and "беззбиток вище" in strangle

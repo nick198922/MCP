@@ -273,3 +273,52 @@ def test_a_long_call_has_no_lower_breakeven_column():
     assert "беззбиток вище" in html and "беззбиток нижче" not in html
     strangle = db.block_live_be(db.live_groups(_calls_and_strangle(), NOW)[0][2])
     assert "беззбиток нижче" in strangle and "беззбиток вище" in strangle
+
+
+def _events_snap() -> dict:
+    """The snapshot's calendar on 26.10 (ForexFactory rows, as the live snapshot): FOMC as three rows, GDP and Core PCE
+    at the same minute, a jobless-claims row that the table leaves out; horizon 14 days."""
+    rows = [
+        ("2026-10-28T18:00:00+00:00", "fomc", "FOMC Statement"),
+        ("2026-10-28T18:00:00+00:00", "fomc", "Federal Funds Rate"),
+        ("2026-10-28T18:30:00+00:00", "fomc", "FOMC Press Conference"),
+        ("2026-10-29T12:30:00+00:00", "gdp", "Advance GDP q/q"),
+        ("2026-10-29T12:30:00+00:00", "core_pce", "Core PCE Price Index m/m"),
+        ("2026-10-29T12:30:00+00:00", "jobless_claims", "Unemployment Claims"),
+        ("2026-11-06T13:30:00+00:00", "nfp", "Non-Farm Employment Change <script>"),
+    ]
+    ev = [{"ts_utc": t, "kind": k, "title": n, "impact": "high"} for t, k, n in rows]
+    return {"sections": {"events": {"ok": True, "data": {"horizon_days": 14, "events": ev}}}}
+
+
+SEED = [
+    {"ts": 1793210400, "kind": "fomc", "label": "Oct 2026 FOMC"},  # inside the horizon: the feed has it already
+    {"ts": 1794317400, "kind": "cpi", "label": "US CPI 2026-11"},  # 10.11, beyond the 14-day horizon
+]
+
+
+def test_live_events_merge_feed_and_seed():
+    ev = db.live_events(_events_snap(), SEED, NOW)
+    when = [(datetime.fromtimestamp(e["ts"], UTC).strftime("%d.%m %H:%M"), e["label"]) for e in ev]
+    assert when == [
+        ("28.10 18:00", "ФРС: рішення щодо ставки"),
+        ("29.10 12:30", "ВВП США · PCE США (інфляція)"),
+        ("06.11 13:30", "NFP США (зайнятість)"),
+        ("10.11 13:30", "CPI США (інфляція)"),
+    ]
+    # without a snapshot only the seed is left, from now on
+    assert [e["label"] for e in db.live_events(None, SEED, NOW)] == ["ФРС: рішення щодо ставки", "CPI США (інфляція)"]
+
+
+def test_breakeven_table_has_event_rows_before_expiry_only():
+    groups, _ = db.live_groups(_calls_and_strangle(), NOW)
+    ev = db.live_events(_events_snap(), SEED, NOW)
+    for g in groups:
+        g["events"] = ev
+    c84 = db.block_live_be(groups[0])  # expiry 30.10
+    assert "⚡ ср 28.10, 20:00 · ФРС: рішення щодо ставки" in c84 and "ВВП США · PCE США" in c84 and "NFP" not in c84
+    assert c84.index("ср 28.10, 10:00") < c84.index("ср 28.10, 20:00") < c84.index("чт 29.10, 10:00")
+    strangle = db.block_live_be(groups[2])  # expiry 13.11
+    assert "NFP США" in strangle and "CPI США" in strangle and "<script>" not in strangle
+    page = db.render_live_main(_calls_and_strangle(), None, NOW, events=ev)
+    assert page.count("class=lp-ev") >= 6

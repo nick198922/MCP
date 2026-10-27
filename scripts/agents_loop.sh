@@ -3,7 +3,8 @@
 #  - plan usage: if the 5-hour or 7-day utilization is at or above TRADEDESK_AGENTS_MAX_USAGE (%), sleep until it resets
 #  - weekly pace: the agents spend the week evenly, (100 - TRADEDESK_AGENTS_OWNER_RESERVE) % over 7 days from the
 #    reset (about 1/7 a day), the rest kept for the owner's sessions; ahead of that schedule they sleep until it
-#    catches up
+#    catches up, unless an owner-priority card is open: then they take only those cards (owner 27.10: «хай беруть
+#    пріоритетні задачі не дивлячись на ліміти, до 97 %»; the agents had idled 40 h on the pace brake)
 #    Both pace brakes (this one and OWNER_ONLY_AT) are off while the owner's boost runs: scripts/agents_boost.sh writes
 #    an end time (epoch seconds) into $LOG_DIR/boost-until; the MAX_USAGE brake stays, so the plan is never driven
 #    into its hard limit
@@ -278,6 +279,12 @@ while true; do
   fi
   p=""
   boost_on || p="$(pace_wait "$(usage_json)")"
+  export TRADEDESK_AGENTS_OWNER_ONLY=""
+  if [[ -n "$p" && -n "$(owner_cards_open)" ]]; then
+    log "ahead of the weekly schedule (${p#* }), owner-priority cards open: taking only those"
+    TRADEDESK_AGENTS_OWNER_ONLY="ahead of the weekly schedule (${p#* })"
+    p=""
+  fi
   if [[ -n "$p" ]]; then
     secs="${p%% *}"
     read -r used plan <<<"${p#* }"

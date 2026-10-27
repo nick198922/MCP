@@ -321,6 +321,13 @@ if [[ -n "$WEEK" ]] && awk -v w="$WEEK" -v m="$OWNER_ONLY_AT" 'BEGIN { exit !(w 
 
 BUDGET: the weekly plan usage is ${WEEK}% (>= ${OWNER_ONLY_AT}%). Take only step p or the CONTINUE work."
 fi
+# Ahead of the weekly pace the loop runs a step only for the owner's priority cards (scripts/agents_loop.sh, owner
+# 27.10), and says so in TRADEDESK_AGENTS_OWNER_ONLY.
+if [[ -n "${TRADEDESK_AGENTS_OWNER_ONLY:-}" && "$PROMPT" != *"BUDGET:"* ]]; then
+  PROMPT="$PROMPT
+
+BUDGET: the agents are ${TRADEDESK_AGENTS_OWNER_ONLY}; the owner lets them work on his priority cards anyway, up to the 97 % pause. Take only step p or the CONTINUE work."
+fi
 if [[ -n "$PARKED_NOTE" ]]; then
   PROMPT="$PROMPT
 
@@ -391,7 +398,8 @@ for t in "${DT_TOOLS[@]}"; do ALLOWED+=("mcp__claude_ai_DOUBLETOP__$t"); done
 DENIED=(
   "Bash(git push origin main:*)" "Bash(git push --force:*)" "Bash(git push -f:*)" "Bash(git reset --hard:*)"
   "Bash(git config:*)" "Bash(rm -rf:*)" "Bash(sudo:*)"
-  "Read(~/.claude/.credentials.json)" "Read(~/.ssh/**)" "Read(~/.config/tradedesk/**)" "Read(//etc/tradedesk-mcp.env)"
+  "Read(~/.claude/.credentials.json)" "Read(~/.ssh/**)" "Read(~/.config/tradedesk/**)" "Read(//etc/tradedesk-mcp.env)" "Read(//etc/tradedesk-bybit.env)"
+  "Bash(cat /etc/tradedesk-bybit.env:*)" "Bash(head /etc/tradedesk-bybit.env:*)" "Bash(tail /etc/tradedesk-bybit.env:*)" "Bash(grep /etc/tradedesk-bybit.env:*)"
   "mcp__claude_ai_DOUBLETOP__fetch__fetch" "mcp__claude_ai_DOUBLETOP__coingecko__execute"
   "mcp__claude_ai_Google_Drive" "mcp__claude_ai_Claude_Docs"
 )

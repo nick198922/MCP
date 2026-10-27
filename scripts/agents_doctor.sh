@@ -67,7 +67,8 @@ ALLOWED=(
 )
 DENIED=(
   "Bash(git push:*)" "Bash(git commit:*)" "Bash(git reset --hard:*)" "Bash(git config:*)" "Bash(rm -rf:*)" "Bash(sudo:*)"
-  "Read(~/.claude/.credentials.json)" "Read(~/.ssh/**)" "Read(~/.config/tradedesk/**)" "Read(//etc/tradedesk-mcp.env)"
+  "Read(~/.claude/.credentials.json)" "Read(~/.ssh/**)" "Read(~/.config/tradedesk/**)" "Read(//etc/tradedesk-mcp.env)" "Read(//etc/tradedesk-bybit.env)"
+  "Bash(cat /etc/tradedesk-bybit.env:*)" "Bash(head /etc/tradedesk-bybit.env:*)" "Bash(tail /etc/tradedesk-bybit.env:*)" "Bash(grep /etc/tradedesk-bybit.env:*)"
 )
 
 set +e

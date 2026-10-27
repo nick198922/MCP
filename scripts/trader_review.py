@@ -37,7 +37,16 @@ MODEL = os.environ.get("TRADEDESK_REVIEW_MODEL", "opus")
 MAX_SECONDS = 1800
 MAX_ATTEMPTS = 2
 ALLOWED = ["Read", "Grep", "Glob", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)", "Bash(git status:*)"]
-DENIED = ["Write", "Edit", "WebFetch", "WebSearch", "Read(~/.config/tradedesk/**)", "Read(~/.claude/.credentials.json)", "Read(~/.ssh/**)"]
+DENIED = [
+    "Write",
+    "Edit",
+    "WebFetch",
+    "WebSearch",
+    "Read(~/.config/tradedesk/**)",
+    "Read(//etc/tradedesk-bybit.env)",
+    "Read(~/.claude/.credentials.json)",
+    "Read(~/.ssh/**)",
+]
 
 Reviewer = Callable[[str, Path], tuple[str, bool]]
 

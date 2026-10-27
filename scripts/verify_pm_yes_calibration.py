@@ -596,7 +596,7 @@ async def _fetch_trade_windows(jobs: list[tuple[Path, str, int | None, int | Non
 def stage_ts_check(cache: Path, out: str, rate: float, n_pick: int = 150, n_empty: int = 50) -> None:
     """Condition 7 of the triage: timestamps of ``/prices-history`` points vs data-api prints, plus (critic's review,
     finding 7) an independent check of empty ``/trades?end=t0`` answers. Re-implements ``ts_check.log`` of 2026-10-15
-    (the scratch ``scripts/_pm_ts_check.py`` was not kept; ``scripts/verify_pm_ts_check.py`` is now an alias of this
+    (the scratch ``scripts/_pm_ts_check.py`` was not kept; ``scripts/research/verify_pm_ts_check.py`` is now an alias of this
     stage); the market pick is new, so the 150 markets are not the same ones. Trades reach t0 + 5 min so that the
     k > 0 shifts see prints after the point; they are used only here, never in the estimates. Cached per market under
     ``ts_check/`` and ``ts_check_empty/``.

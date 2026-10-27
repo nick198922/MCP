@@ -538,12 +538,13 @@ async def test_leg_shares_the_signals_daily_slot(ow):
 
 async def test_orders_per_hour_cap_refuses_the_leg(ow):
     w = ow
-    for _ in range(4):
+    cap = demo_trader.DEFAULT.orders_per_hour
+    for _ in range(cap - 1):
         await w.store.exec_audit_add(NOW - 60_000, demo_trader.VENUE, "sent", link_id="td-x")
     res = await w.run()
     assert res["sent"] == 1 and not w.venue.okinds("buy") and res.get("option_skipped") == 1
     skipped = await w.store.exec_audit_list(kinds=("option_skipped",))
-    assert "5 orders in the last hour = max" in str(skipped[0]["payload"]["why"])
+    assert f"{cap} orders in the last hour = max" in str(skipped[0]["payload"]["why"])
 
 
 async def test_switch_off_file_skips_new_legs(ow):

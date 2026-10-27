@@ -345,9 +345,14 @@ def test_env_flag_is_off_by_default(monkeypatch):
 
 async def test_migration_from_26(tmp_path):
     from tradedesk.store import SCHEMA_VERSION, Store
+    from tradedesk.store.schema import MIGRATIONS
 
     path = tmp_path / "old.sqlite"
     con = sqlite3.connect(path)
+    for v in sorted(MIGRATIONS):  # a real store at version 26: its tables, so later ALTERs have something to alter
+        if v <= 26:
+            for stmt in MIGRATIONS[v]:
+                con.execute(stmt)
     con.execute("PRAGMA user_version = 26")
     con.commit()
     con.close()

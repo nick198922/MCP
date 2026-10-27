@@ -20,10 +20,14 @@ Hourly cycle:
 4. Each candidate is sized for $100 at the stop (fees included) from the live price, gets its leverage (the owner's
    tier, capped by the venue's maximum) and a confidence score. The account is on cross margin (owner 21.10): the guard
    keeps the maintenance margin plus the loss at every stop within half of the equity, so stops come before liquidation. Candidates that pass the guard and score at least ``MIN_SCORE`` are
-   entered best first, at most 5 still at risk a UTC day: a trade with its stop at break-even, or closed without a real
-   loss, frees its slot (owner 21.10/22.10), at most 10 entries a day in all; S12 holds at most 2 of the 5 slots
-   (``SETUP_SLOTS``, temporary until the owner decides) and S38 enters at most 2 shorts per 4h signal bar
-   (``BAR_CAP``, owner 25.10); the rest are recorded as skipped.
+   entered best first, each setup with ``OWN_SLOTS`` trades still at risk a UTC day of its own plus ``RESERVE_SLOTS``
+   shared (owner 27.10): a trade with its stop at break-even, or closed without a real loss, frees its slot (owner
+   21.10/22.10), at most 30 entries a day in all; S38 enters at most 2 shorts per 4h signal bar (``BAR_CAP``, owner
+   25.10); the rest are recorded as skipped.
+   S12 since v7 (owner 26.10, ``docs/verification/2026-10-26-prelimit-entries.md``): its signal is a new gap, and the
+   entry is a post-only limit resting at the gap's middle (stop attached) until ``rest_until`` (20 bars), not the
+   10-minute maker entry; a fill (or a part) completes the trade, the deadline or the kill-switch cancels it ('missed').
+   A resting order holds its slot and its risk until it fills or goes, whatever day it was placed; it has no option leg.
 5. Every candidate, taken or not, is also written to ``trade_plan`` as a shadow plan (tag ``src:demo-shadow``, verdict
    'enter' if taken, else 'skip'), which the collector resolves on candles without the break-even rule: so selection
    and break-even can both be compared with the plain setup.
@@ -106,14 +110,17 @@ TIMEFRAMES = ("1d", "4h")  # 1d first: its bars also feed the score of the 4h si
 # S12 is rejected by its backtest and traded anyway (owner 23.10: the demo tests rejected setups too; BACKLOG 0.5 item
 # "в"); same caps, guard and selection as the others, version v4 in analytics/setup_versions.py
 # S38 / S39 (trend-continuation shorts, IDEA-20261024-short-setups-demo step 3; no proven edge, owner 24.10: "we need
-# short setups"): same caps, guard and selection, version v5
-SETUPS = ("S14", "S16", "S3", "S12", "S38", "S39")
-# Temporary per-setup cap of the day's slots at risk (critic 25.10, docs/reviews/2026-10-25-demo-s12-fvg.md p. 1; the
-# owner's answer is pending in docs/QUESTIONS.md): S12 fires on many coins at once and ranks high, so without it the
-# rejected setup could take most of the 5 slots and slow the sample of S3 / S14 / S16. Counted like the daily cap
-# (break-even or a close without a real loss frees the slot); every new entry starts at risk, so this also bounds S12
-# to 2 entries per 4h bar.
-SETUP_SLOTS = {"S12": 2}
+# short setups"): same guard and selection, version v5. S40 (the long side of detector B, owner 25.10, Q-20261025-3):
+# version v6
+SETUPS = ("S14", "S16", "S3", "S12", "S38", "S39", "S40")
+# The day's slots at risk (owner 27.10, Q-20261025-1/2: "testing the setups matters now ... 2 slots for every
+# setup"): a shared 5 let the high-scoring setups starve the others (S12 took 62 % of the entries uncapped; S38 got 1
+# entry in 14 days offline), so every setup has OWN_SLOTS trades at risk a day of its own and RESERVE_SLOTS more are
+# shared, taken best first by a setup whose own slots are full (S3 fires most and is the one setup with a sample).
+# Counted like the guard's daily cap (break-even or a close without a real loss frees the slot); the guard's
+# max_trades_per_day is their sum, so the guard and this split agree.
+OWN_SLOTS = 2
+RESERVE_SLOTS = 3
 # Per signal bar cap of entries (owner 25.10, IDEA-20261024-short-setups-demo "Ризики"): S38 shorts come in batches (up
 # to 11 on one 4h bar in the backtest), so at most 2 of them per bar, else the first random ones fill the day. Counted
 # from the book like the day's entries (open, pending, unknown or closed trades of that setup and signal bar; a break-
@@ -252,6 +259,9 @@ async def _progress_entry(ctx: Ctx, t: dict[str, Any]) -> None:
         await _complete_entry(ctx, t, "maker" if t["entry_px"] else "taker")
         return
     live = st in LIVE
+    if t.get("rest_until"):
+        await _progress_rest(ctx, t, live, cum)
+        return
     bid, ask = await ctx.client.quote(sym)
     step = entry_step(
         side=t["side"],
@@ -300,6 +310,41 @@ async def _progress_entry(ctx: Ctx, t: dict[str, Any]) -> None:
         lambda: ctx.notify(
             f"⏭ Демо: лімітний вхід {t['setup']} {_side_ua(t['side'])} {sym.split(':')[0]} не виконано, ордер знято — "
             f"{_why_ua(step.reason)} (план {_fmt(t['entry'])}, зараз {_fmt(bid)} / {_fmt(ask)})"
+        ),
+    )
+
+
+async def _progress_rest(ctx: Ctx, t: dict[str, Any], live: bool, cum: float) -> None:
+    """A limit resting at the S12 level (v7): it waits for the price until ``rest_until``. A fill or a part of one starts
+    the trade at once (the unfilled rest is cancelled); the deadline, the kill-switch or the venue's own cancel (post-only
+    would take) ends it unfilled ('missed')."""
+    sym, lid = t["symbol"], t["link_id"]
+    halted = HALT_FILE.exists()
+    if live and cum == 0 and ctx.now < t["rest_until"] and not halted:
+        return
+    if live and not await ctx.client.cancel(sym, lid):
+        return  # filled meanwhile: the next minute completes it
+    if cum > 0:
+        await _complete_entry(ctx, t, "maker")
+        return
+    why = (
+        "kill-switch: the resting limit is cancelled"
+        if halted and ctx.now < t["rest_until"]
+        else "the resting limit expired untouched"
+        if ctx.now >= t["rest_until"]
+        else "the venue cancelled the resting limit"
+    )
+    await ctx.store.demo_trade_update(lid, status="missed", note=why, closed_ts=ctx.now)
+    await ctx.audit("expired", link_id=lid, symbol=sym, setup=t["setup"], payload={"why": why, "limit": t["entry_px"]})
+    ctx.bump("expired")
+    await ctx.safe(
+        "notify",
+        lambda: ctx.notify(
+            f"⏹ Демо: лімітку {t['setup']} {_side_ua(t['side'])} {sym.split(':')[0]} по {_fmt(t['entry_px'])} знято — "
+            + {
+                "the resting limit expired untouched": "ціна до неї так і не дійшла за відведений час",
+                "kill-switch: the resting limit is cancelled": "увімкнено зупинку нових входів",
+            }.get(why, "біржа скасувала ордер")
         ),
     )
 
@@ -564,7 +609,7 @@ async def _state(ctx: Ctx, positions: dict[str, Any], uni: tuple[str, ...], equi
     legs = await ctx.store.demo_option_list(limit=5000)
     open_legs = [x for x in legs if x["status"] in LEG_OPEN]
     day0 = day_start_ms(ctx.now)
-    today = [t for t in trades if t["status"] in ("open", "unknown", "pending", "closed") and (t["opened_ts"] or 0) >= day0]
+    today = [t for t in trades if _today(t, day0)]
     seen_audit = await ctx.store.exec_audit_list(ctx.now - 3 * 86_400_000, ("refused", "skipped"), limit=5000)
     closed_today = [t for t in [*trades, *legs] if t["status"] == "closed" and (t["closed_ts"] or 0) >= day0]
     return State(
@@ -602,21 +647,31 @@ async def shared_state(store: Store, client: BybitDemo, now: int, positions: dic
 
 
 async def _setup_slots(ctx: Ctx) -> Counter[str]:
-    """Today's trades still at risk, per setup (the same count as ``State.trades_today``)."""
+    """Today's futures trades still at risk, per setup. ``State.trades_today`` also counts the option legs (owner 23.10:
+    a leg shares its signal's slot), so the guard's total of 17 can bind before every setup's slots are used."""
     day0 = day_start_ms(ctx.now)
     trades = await ctx.store.demo_trade_list(limit=5000)
-    return Counter(
-        t["setup"]
-        for t in trades
-        if t["status"] in ("open", "unknown", "pending", "closed") and (t["opened_ts"] or 0) >= day0 and _at_risk(t)
-    )
+    return Counter(t["setup"] for t in trades if _today(t, day0) and _at_risk(t))
 
 
-def _setup_cap(setup: str, used: Counter[str]) -> list[str]:
-    cap = SETUP_SLOTS.get(setup)
-    if cap is None or used[setup] < cap:
+def _today(t: dict[str, Any], day0: int) -> bool:
+    """Counts toward today's slots and entries: placed or filled today, or a resting entry (S12 v7) still on the book
+    from an earlier day (it can fill any minute)."""
+    return t["status"] == "pending" or (t["status"] in ("open", "unknown", "pending", "closed") and (t["opened_ts"] or 0) >= day0)
+
+
+def _setup_cap(setup: str, used: Counter[str] | None) -> list[str]:
+    """Violation of the day's slots: the setup's own ``OWN_SLOTS`` first, then the shared ``RESERVE_SLOTS`` (a setup's
+    trades above its own slots hold the reserve). ``used`` None = the book was not read: every setup waits (fail
+    closed)."""
+    if used is None:
+        return [f"{setup} trades at risk today unknown (book not read)"]
+    if used[setup] < OWN_SLOTS:
         return []
-    return [f"{used[setup]} {setup} trades at risk today = temporary {setup} cap {cap} (docs/QUESTIONS.md)"]
+    reserve = sum(max(0, n - OWN_SLOTS) for n in used.values())
+    if reserve < RESERVE_SLOTS:
+        return []
+    return [f"{used[setup]} {setup} trades at risk today: its {OWN_SLOTS} slots and the reserve of {RESERVE_SLOTS} are taken"]
 
 
 async def _bar_entries(ctx: Ctx) -> Counter[tuple[str, int]]:
@@ -688,6 +743,12 @@ async def _candidates(ctx: Ctx, uni: tuple[str, ...], state: State) -> list[Cand
     return out
 
 
+def _rest_until(sig: LiveSignal) -> int | None:
+    """Deadline (unix ms) of a signal whose entry is a resting limit at ``sig.entry`` (S12 since v7); None otherwise."""
+    v = sig.indicators.get("rest_until_ms")
+    return int(v) if v else None
+
+
 async def _bars(ctx: Ctx, symbol: str, tf: str) -> Bars:
     return closed_bars(await ctx.client.ohlcv(symbol, tf), tf, ctx.now)
 
@@ -697,10 +758,11 @@ async def _candidate(ctx: Ctx, symbol: str, sig: LiveSignal, htf: dict[str, Bars
     m = await ctx.client.market(symbol)
     tier = await ctx.client.risk_tier(symbol)
     last = await ctx.client.last_price(symbol)
+    rest = _rest_until(sig)
     p = plan_order(
         symbol,
         sig.side,
-        last,
+        last if rest is None else _round(sig.entry, m.tick),
         _round(sig.stop, m.tick),
         _round(sig.target, m.tick),
         sig.setup,
@@ -716,6 +778,8 @@ async def _candidate(ctx: Ctx, symbol: str, sig: LiveSignal, htf: dict[str, Bars
     sc = score(sig, p.reward_risk, htf.get(symbol), htf.get(BTC), base_of(symbol) == "BTC")
     free = replace(state, trades_today=0, entries_today=0, orders_last_hour=0)
     structural = [v for v in check(p, free, ctx.cfg) if not any(c in v for c in _CAPS)]
+    if rest is not None and (last - p.entry) * (1 if sig.side == "long" else -1) <= 0:
+        structural.append(f"price {last:g} already at the resting level {p.entry:g}: post-only would take")
     await ctx.audit(
         "signal",
         link_id=p.link_id,
@@ -735,17 +799,18 @@ async def _shadow(ctx: Ctx, c: Candidate, taken: bool) -> int | None:
     """The same levels as a plan the collector resolves on candles (no break-even): selection and BE are compared."""
     if ctx.dry_run or any("levels" in v or "stop " in v for v in c.structural):
         return None
+    rest = _rest_until(c.sig)
     return await ctx.store.plan_insert(
         created_ts=ctx.now // 1000,
         exchange=SHADOW_EXCHANGE,
         symbol=c.p.symbol,
         instrument="perp",
         side=c.p.side,
-        entry_type="market",
+        entry_type="market" if rest is None else "limit",
         entry=c.p.entry,
         stop=c.p.stop,
         target=c.p.target,
-        expires_ts=(ctx.now + MAX_HOLD_MS[c.sig.timeframe]) // 1000,
+        expires_ts=((rest or ctx.now) + MAX_HOLD_MS[c.sig.timeframe]) // 1000,
         verdict="enter" if taken else "skip",
         thesis=c.sig.comment,
         tags=[
@@ -782,6 +847,7 @@ async def _insert_trade(ctx: Ctx, c: Candidate, px: float) -> None:
             "opened_ts": ctx.now,  # the placement; set again to the fill time when the entry completes
             "entry_order": p.link_id,
             "entry_px": px,
+            "rest_until": _rest_until(sig),
         }
     )  # written before the order: if the answer is lost, the next sync finds the order by its link id
 
@@ -791,7 +857,8 @@ async def _enter(ctx: Ctx, c: Candidate, state: State) -> State:
     try:
         await ctx.client.prepare(p.symbol, p.leverage)
         m = await ctx.client.market(p.symbol)
-        px = _round(maker_quote(p.side, *await ctx.client.quote(p.symbol)), m.tick)
+        rest = _rest_until(sig)
+        px = _round(maker_quote(p.side, *await ctx.client.quote(p.symbol)), m.tick) if rest is None else p.entry
         if not px > 0:
             raise ValueError(f"no quote for {p.symbol}")
         await _insert_trade(ctx, c, px)
@@ -853,11 +920,16 @@ async def _enter(ctx: Ctx, c: Candidate, state: State) -> State:
     if plan_id:
         await ctx.safe("plan_link", lambda: ctx.store.demo_trade_update(lid, plan_id=plan_id), link_id=lid)
     why = "; ".join(c.score.reasons) or "—"
+    wait = (
+        f"чекаю до {ENTRY_WAIT_MS // 60_000} хв"
+        if rest is None
+        else f"лімітка заздалегідь на рівні, живе до {time.strftime('%d.%m %H:%M', time.gmtime(rest / 1000))} UTC"
+    )
     await ctx.safe(
         "notify",
         lambda: ctx.notify(
             f"🧪 Демо: вхід {sig.setup} {_side_ua(p.side)} {p.symbol.split(':')[0]} ({sig.timeframe}), бал {c.score.points}\n"
-            f"Лімітний ордер (мейкер) по {_fmt(px)}, чекаю до {ENTRY_WAIT_MS // 60_000} хв; ціна {_fmt(p.entry)}, стоп {_fmt(p.stop)}, ціль {_fmt(p.target)}, R:R {p.reward_risk:.1f} після комісій, "
+            f"Лімітний ордер (мейкер) по {_fmt(px)}, {wait}; ціна {_fmt(p.entry)}, стоп {_fmt(p.stop)}, ціль {_fmt(p.target)}, R:R {p.reward_risk:.1f} після комісій, "
             f"ризик {p.risk_usd:.0f} USD, плече {p.leverage}x, позиція {p.notional:,.0f} USD (застава {p.margin:,.0f})\n"
             f"Чому: {sig.comment}\nБали: {why}"
         ),
@@ -869,10 +941,9 @@ async def _enter(ctx: Ctx, c: Candidate, state: State) -> State:
 async def _select_and_enter(ctx: Ctx, cands: list[Candidate], state: State) -> None:
     ok = [c for c in cands if not c.structural and c.score.points >= MIN_SCORE]
     ok.sort(key=lambda c: (-c.score.points, -c.p.reward_risk))
-    used: Counter[str] = Counter()
-    if any(c.sig.setup in SETUP_SLOTS for c in ok):
-        got = await ctx.safe("setup_slots", lambda: _setup_slots(ctx))
-        used = got if got is not None else Counter(SETUP_SLOTS)  # unreadable book: the capped setups wait
+    used: Counter[str] | None = Counter()
+    if ok:
+        used = await ctx.safe("setup_slots", lambda: _setup_slots(ctx))  # None: every setup waits
     per_bar: Counter[tuple[str, int]] | None = Counter()
     if any(c.sig.setup in BAR_CAP for c in ok):
         per_bar = await ctx.safe("bar_entries", lambda: _bar_entries(ctx))  # None: the capped setups wait
@@ -881,7 +952,7 @@ async def _select_and_enter(ctx: Ctx, cands: list[Candidate], state: State) -> N
         if c.p.symbol in state.open_symbols:
             continue  # a better signal on the same coin was just taken
         bad = check(c.p, state, ctx.cfg) or _setup_cap(c.sig.setup, used) or _bar_cap(c.sig, per_bar)
-        if bad:
+        if bad or used is None:
             continue
         bar = (c.sig.setup, c.sig.signal_ts)
         if ctx.dry_run:
@@ -970,7 +1041,7 @@ async def _option_leg(ctx: Ctx, c: Candidate, before: State, after: State) -> St
     premium + fee counts toward the open risk and its order toward the orders per hour. Returns the state after it."""
     p, sig = c.p, c.sig
     base = base_of(p.symbol)
-    if base not in ctx.leg.bases:
+    if base not in ctx.leg.bases or _rest_until(sig) is not None:  # a resting entry may never fill: no paired leg
         return after
     lid = leg_link(p.link_id)
 

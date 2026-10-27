@@ -207,10 +207,52 @@ def test_s12_live_scan_on_each_prefix_equals_the_full_history():
     full = _s12_keys(b, ss.s12_all(b, "4h"))
     live = set()
     for i in range(120, len(b)):
-        sigs = ss.scan(b.slice(0, i + 1), "4h", ("S12",))
+        sigs = ss.s12(b.slice(0, i + 1), "4h")
         assert all(s.setup == "S12" and s.signal_ts == int(b.t[i]) for s in sigs)
         live |= _s12_keys(b, sigs)
     assert live == {w for w in full if w[1] >= 120} and live
+
+
+def _s12_rest_reference(b: Bars) -> set[tuple[str, int, float, float, float]]:
+    """(side, gap bar, middle, stop, target) of every trend gap, from the backtest's pieces (long frame)."""
+    out = set()
+    for side, bb in (("long", b), ("short", b.mirrored())):
+        pos = segment_pos(bb.t)
+        a = atr(bb, 14, pos)
+        d = _daily_loop(bb)
+        e = ema(d.c, 21, segment_pos(d.t))
+        with np.errstate(invalid="ignore"):
+            up = align_daily(bb, d, (d.c > e).astype(float)) > 0.5
+        for z in fvg_zones(bb, pos, a, up):
+            if "trend" in z.arms and pos[z.form] >= 100:
+                mid = z.levels["mid"]
+                out.add((side, z.form, round(mid, 9), round(mid - z.atr, 9), round(mid + 2 * z.atr, 9)))
+    return out
+
+
+def test_s12_rest_is_every_trend_gap_with_a_limit_at_its_middle():
+    b = _bars(1000, 2)
+    sigs = ss.s12_rest_all(b, "4h")
+    idx = {int(t): k for k, t in enumerate(b.t)}
+    flip = lambda side, x: x if side == "long" else -x  # noqa: E731
+    got = {
+        (s.side, idx[s.signal_ts], round(flip(s.side, s.entry), 9), round(flip(s.side, s.stop), 9), round(flip(s.side, s.target), 9))
+        for s in sigs
+    }
+    assert got == _s12_rest_reference(b) and {g[0] for g in got} == {"long", "short"}
+    for s in sigs:
+        i = idx[s.signal_ts]
+        assert s.indicators["rest_until_ms"] == b.close_time(i) + 20 * H4 and s.indicators["fvg_ts"] == s.signal_ts
+        assert s.entry == s.indicators["fvg_mid"] and (s.stop < s.entry < s.target if s.side == "long" else s.stop > s.entry > s.target)
+        assert "Лімітка заздалегідь на середині FVG" in s.comment
+        assert abs(s.target - s.entry) == pytest.approx(2 * abs(s.entry - s.stop))
+    # the live scan (S12 = the resting form since v7) on each prefix finds the same signals as the full history
+    live = []
+    for i in range(120, len(b)):
+        got_i = ss.scan(b.slice(0, i + 1), "4h", ("S12",))
+        assert all(x.signal_ts == int(b.t[i]) for x in got_i)
+        live += got_i
+    assert {(x.side, x.signal_ts) for x in live} == {(x.side, x.signal_ts) for x in sigs if idx[x.signal_ts] >= 120} and live
 
 
 def _other_future(b: Bars, t: int, rng: np.random.Generator) -> Bars:
@@ -407,3 +449,63 @@ def test_s38_s39_levels_comment_and_timeframe():
     assert ss.s38_all(b, "1d") == [] and ss.s39_all(b, "1d") == [] and ss.scan(b, "1d", ("S38", "S39")) == []  # 4h only
     assert ss.s38_all(b.slice(0, 40), "4h") == [] and ss.s39_all(b.slice(0, 40), "4h") == []
     assert {"S38", "S39"} <= set(ss.DETECTORS) and not {"S38", "S39"} & {s.setup for s in ss.scan(b, "4h")}  # not default
+
+
+# ---------------------------------------------------------------- S40 (the long side of detector B, owner 25.10, Q-20261025-3)
+
+
+def _s40_reference(b: Bars) -> list[tuple[int, float, float, float]]:
+    """(entry bar, entry, stop, target) of rule B for longs in real prices: a live S3 short (a sweep of the range high,
+    stop 0.5 ATR over it) closed above its stop within 6 bars before the range middle was reached."""
+    m = b.mirrored()
+    return [(j, -e, -st, -tg) for j, e, st, tg in _s39_reference(m)]
+
+
+@pytest.mark.parametrize("seed", [1, 3, 7])
+def test_s40_is_the_mirror_of_s39_and_the_step1_long_detector(seed):
+    from tradedesk.analytics.short_setups import failed_sweep
+
+    b = _bars(1000, seed)
+    for bb in (b, _with_hole(b, 500, 20)):
+        sigs = ss.s40_all(bb, "4h")
+        got = _rows(bb, sigs)
+        want = sorted(_s40_reference(bb))
+        assert len(got) == len(want) > 3
+        for g, w in zip(got, want, strict=True):
+            assert g[0] == w[0] and g[1:] == pytest.approx(w[1:], rel=1e-12)
+        pos = segment_pos(bb.t)
+        step1 = failed_sweep(bb, pos, atr(bb, 14, pos))  # the long form, as the backtest's B-long rows
+        assert got == sorted((x.i, x.entry, x.stop, x.target) for x in step1)
+        assert {s.side for s in sigs} == {"long"}
+
+
+def test_s40_live_scan_on_each_prefix_equals_the_full_history_and_is_causal():
+    b = _bars(700, 1)
+    full = ss.s40_all(b, "4h")
+    live = set()
+    for i in range(60, len(b)):
+        sigs = ss.scan(b.slice(0, i + 1), "4h", ("S40",))
+        assert all(s.setup == "S40" and s.side == "long" and s.signal_ts == int(b.t[i]) for s in sigs)
+        live |= {(s.signal_ts, s.entry, s.stop, s.target) for s in sigs}
+    assert live == {(s.signal_ts, s.entry, s.stop, s.target) for s in full if s.signal_ts >= int(b.t[60])} and len(live) > 3
+    rng = np.random.default_rng(42)
+    for s in full:
+        t = int(np.searchsorted(b.t, s.signal_ts))
+        want = [x for x in full if x.signal_ts <= s.signal_ts]
+        assert [x for x in ss.s40_all(_other_future(b, t, rng), "4h") if x.signal_ts <= s.signal_ts] == want, t
+
+
+def test_s40_levels_comment_and_timeframe():
+    b = _bars(1000, 3)
+    idx = {int(t): k for k, t in enumerate(b.t)}
+    s40 = ss.s40_all(b, "4h")
+    assert s40
+    for s in s40:
+        j = idx[s.signal_ts]
+        assert s.setup == "S40" and s.side == "long" and s.entry == pytest.approx(float(b.c[j]))
+        assert s.stop < s.entry < s.target and s.target == pytest.approx(s.entry + 2 * (s.entry - s.stop))
+        assert b.c[j] > s.indicators["s3_stop"] > s.indicators["range_high"] > s.indicators["range_mid"]
+        assert s.comment.startswith("S40 (4h)") and "+0.056R" in s.comment and "плацебо" in s.comment
+        assert "не доведена перевага" in s.comment and "Q-20261025-3" in s.comment
+    assert ss.s40_all(b, "1d") == [] and ss.s40_all(b.slice(0, 40), "4h") == []
+    assert "S40" in ss.DETECTORS and "S40" not in {s.setup for s in ss.scan(b, "4h")}  # not default

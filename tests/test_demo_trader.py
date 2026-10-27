@@ -315,7 +315,7 @@ async def test_refused_target_limit_falls_back_to_the_market_take_profit(world):
 
 async def test_daily_cap_and_low_score_are_skipped_and_shadowed(world, monkeypatch):
     w = world
-    for k in range(5):  # five trades already today
+    for k in range(demo_trader.DEFAULT.max_trades_per_day):  # all the day's slots taken
         await w.store.demo_trade_insert(
             {
                 "link_id": f"old{k}",
@@ -335,7 +335,7 @@ async def test_daily_cap_and_low_score_are_skipped_and_shadowed(world, monkeypat
                 "status": "closed",
                 "opened_ts": T0 + 1,
                 "closed_ts": T0 + 2,
-                "pnl_usd": -1.0,  # five losses: the risk of the day is spent
+                "pnl_usd": -1.0,  # losses: the risk of the day is spent
             }
         )
     res = await w.run()
@@ -684,11 +684,11 @@ async def test_s12_rejected_by_the_backtest_is_scanned_and_traded_under_the_same
     assert any("Демо: вхід S12 лонг BTC/USDT" in m for m in w.msgs)
     plans = await _plans(w.store)
     assert "setup:S12" in plans[0]["tags"] and plans[0]["verdict"] == "enter"
-    # the daily cap: five trades at risk today, a new S12 signal is skipped like any other
+    # the day's slots: S12's own 2 and the reserve of 3 (S3's trades above its own 2) at risk, a new S12 signal waits
     await w.store.conn.execute("DELETE FROM demo_trade")
     await w.store.conn.commit()
-    for k in range(5):
-        await _today(w.store, k)
+    for k in range(7):
+        await _today(w.store, k, setup="S12" if k < 2 else "S3")
     w.venue.pos.clear()
     w.signals["4h"] = [_sig(setup="S12", target=104_500.0, ts=T0)]
     res = await w.run(T0 + H4 + 60_000)
@@ -711,38 +711,45 @@ def _coins(w, n: int) -> list[str]:
     return coins
 
 
-async def test_s12_cap_keeps_three_of_five_slots_for_the_other_setups(world):
-    """Critic 25.10, owner 25.10 (Q-20261025-1: 2): S12 ranks first on every coin here, yet takes only 2 slots; the S3 signals of
-    the other coins get the rest, and the skipped S12 signals say why."""
+async def test_every_setup_has_two_slots_and_the_reserve_goes_best_first(world):
+    """Owner 27.10 (Q-20261025-1/2): S12 ranks first on every coin here, yet takes its 2 slots and the reserve of 3;
+    S3 still gets its own 2 slots, and the skipped signals of both say why."""
     w = world
-    assert demo_trader.SETUP_SLOTS == {"S12": 2}
-    _coins(w, 5)
+    assert (demo_trader.OWN_SLOTS, demo_trader.RESERVE_SLOTS) == (2, 3)
+    assert demo_trader.DEFAULT.max_trades_per_day == demo_trader.OWN_SLOTS * len(demo_trader.SETUPS) + demo_trader.RESERVE_SLOTS
+
+    async def rich():
+        return 100_000.0  # the size caps of the guard stay out of this test
+
+    w.venue.equity_usd = rich
+    _coins(w, 9)
     w.signals["4h"] = [_sig(setup="S12", target=106_000.0), _sig(setup="S3", target=104_000.0)]
     res = await w.run()
     sent = [o[6] for o in w.venue.kinds("limit")]
-    assert res["sent"] == 5 and sorted(lid.split("-")[1] for lid in sent) == ["S12", "S12", "S3", "S3", "S3"]
-    assert {lid.split("-")[4] for lid in sent if "-S12-" in lid} == {"C0", "C1"}  # the best two, then the cap
+    assert res["sent"] == 7 and sorted(lid.split("-")[1] for lid in sent) == ["S12"] * 5 + ["S3"] * 2
+    assert {lid.split("-")[4] for lid in sent if "-S12-" in lid} == {"C0", "C1", "C2", "C3", "C4"}  # best first
     skipped = {a["link_id"]: a["payload"]["violations"] for a in await w.store.exec_audit_list(kinds=("skipped",))}
-    s12_skipped = [v for lid, v in skipped.items() if "-S12-" in lid]
-    assert len(s12_skipped) == 3 and all(any("trades at risk today = S12 cap 2" in x for x in v) for v in s12_skipped)
-    assert not any("S12 cap" in x for lid, v in skipped.items() if "-S3-" in lid for x in v)  # other setups: no cap
+    full = [v for lid, v in skipped.items() if "-C7-" in lid or "-C8-" in lid]
+    assert len(full) == 4 and all(any("slots and the reserve of 3 are taken" in x for x in v) for v in full)
 
 
-async def test_s12_cap_counts_todays_s12_slots_at_risk(world, monkeypatch):
-    """Two S12 trades at risk today fill the cap; one at break-even does not count (the daily-slot rule); an unreadable
-    book keeps S12 out rather than uncapped."""
+async def test_slots_count_todays_trades_at_risk_and_fail_closed(world, monkeypatch):
+    """Two S12 trades at risk today fill its own slots and five S3 trades the reserve; a break-even frees a slot (the
+    daily-slot rule); an unreadable book keeps every setup out."""
     w = world
     await _today(w.store, 0, setup="S12")
     await _today(w.store, 1, setup="S12", status="closed", closed_ts=T0 + 3, pnl_usd=-1.0)  # a stop keeps its slot
     await _today(w.store, 2, setup="S12", be_ts=T0 + 2, be_stop=1.001)  # break-even: free
+    for k in range(3, 8):
+        await _today(w.store, k, setup="S3")  # S3: its 2 slots and the reserve of 3
     _coins(w, 1)
-    w.signals["4h"] = [_sig(setup="S12", target=106_000.0), _sig(setup="S3", target=104_000.0)]
+    w.signals["4h"] = [_sig(setup="S12", target=106_000.0), _sig(setup="S14", target=104_000.0)]
     res = await w.run()
-    assert res["sent"] == 1 and w.venue.kinds("limit")[0][6].startswith("td-S3-l-4h-C0-")
+    assert res["sent"] == 1 and w.venue.kinds("limit")[0][6].startswith("td-S14-l-4h-C0-")
     (sk,) = await w.store.exec_audit_list(kinds=("skipped",))
     assert sk["setup"] == "S12" and any("2 S12 trades at risk today" in x for x in sk["payload"]["violations"])
-    # one S12 slot frees (its stop moves to break-even): the next S12 signal is taken, then the cap holds again
-    await w.store.conn.execute("UPDATE demo_trade SET be_ts = ?, be_stop = 1.001 WHERE link_id = 'd0'", (T0 + 5,))
+    # one S3 trade reaches break-even: a reserve slot frees and the next S12 signal takes it
+    await w.store.conn.execute("UPDATE demo_trade SET be_ts = ?, be_stop = 1.001 WHERE link_id = 'd3'", (T0 + 5,))
     await w.store.conn.commit()
     before = len(w.venue.kinds("limit"))
     _coins(w, 3)
@@ -756,11 +763,10 @@ async def test_s12_cap_counts_todays_s12_slots_at_risk(world, monkeypatch):
 
     monkeypatch.setattr(demo_trader, "_setup_slots", broken)
     before = len(w.venue.kinds("limit"))
-    _coins(w, 3)
-    w.signals["4h"] = [_sig(setup="S12", target=106_000.0, ts=T0 + H4), _sig(setup="S3", target=104_000.0, ts=T0 + H4)]
+    _coins(w, 4)
+    w.signals["4h"] = [_sig(setup="S16", target=106_000.0, ts=T0 + H4)]
     res = await w.run(T0 + 2 * H4 + 60_000)
-    new = [o[6] for o in w.venue.kinds("limit")[before:]]
-    assert res["sent"] >= 1 and new and all(lid.startswith("td-S3-") for lid in new) and res["errors"] >= 1
+    assert res["sent"] == 0 and len(w.venue.kinds("limit")) == before and res["errors"] >= 1
 
 
 def _short(setup: str, ts: int = T0 - H4) -> ss.LiveSignal:
@@ -770,8 +776,8 @@ def _short(setup: str, ts: int = T0 - H4) -> ss.LiveSignal:
 
 async def test_short_setups_s38_s39_are_traded_with_their_tags_under_the_same_caps(world):
     """IDEA-20261024-short-setups-demo step 3: S38 and S39 enter as shorts with their own setup tag, journal and shadow
-    plan; S39 has no per-bar cap, but its own pool (owner 25.10, Q-20261025-2): two S39 shorts fill the pool's two slots
-    and the others are skipped by it."""
+    plan; S39 has no per-bar cap, but its own 2 slots and then the reserve of 3 (owner 27.10, Q-20261025-2): the sixth
+    S39 short is skipped by them."""
     w = world
     w.signals["4h"] = [_short("S39")]
     await w.enter()
@@ -787,51 +793,10 @@ async def test_short_setups_s38_s39_are_traded_with_their_tags_under_the_same_ca
     w.signals["4h"] = [_short("S39", ts=T0)]
     res = await w.run(T0 + H4 + 60_000)
     sent = [o[6] for o in w.venue.kinds("limit")[1:]]
-    assert res["sent"] == 2 and all(lid.startswith("td-S39-s-4h-") for lid in sent)
-    skipped = await w.store.exec_audit_list(kinds=("skipped",))
-    assert len(skipped) == 4
-    for sk in skipped:
-        assert sk["setup"] == "S39" and any("2 trades at risk today = max" in x for x in sk["payload"]["violations"])
-        assert not any("per bar" in x for x in sk["payload"]["violations"])
-
-
-async def test_pool_setups_have_two_slots_above_the_five_and_do_not_take_theirs(world, monkeypatch):
-    """Owner 25.10 (Q-20261025-2, Q-20261025-3): with the day's five slots taken by S3, S39 and S40 (a long) still
-    enter, two in all; the pool's trades do not count toward the five, so an S3 signal enters once one S3 slot frees;
-    an unreadable book keeps the pool out and counts its trades toward the five."""
-    w = world
-    for k in range(5):
-        await _today(w.store, k)  # S14 trades at risk today: the five are full
-    _coins(w, 4)
-    w.signals["4h"] = [_short("S39", ts=T0), _sig(setup="S40", target=106_000.0, ts=T0), _sig(setup="S3", target=104_000.0, ts=T0)]
-    res = await w.run(T0 + H4 + 60_000)
-    sent = [o[6] for o in w.venue.kinds("limit")]
-    assert res["sent"] == 2 and {lid.split("-")[1] for lid in sent} <= {"S39", "S40"}
-    reasons = {a["link_id"]: a["payload"]["violations"] for a in await w.store.exec_audit_list(kinds=("skipped",))}
-    assert any(any("5 trades at risk today = max" in x for x in v) for lid, v in reasons.items() if "-S3-" in lid)
-    assert any(any("2 trades at risk today = max" in x for x in v) for lid, v in reasons.items() if "-S40-" in lid or "-S39-" in lid)
-    # one S3-day slot frees: an S3 signal enters although seven trades were at risk, the pool's two do not count
-    await w.store.conn.execute("UPDATE demo_trade SET be_ts = ?, be_stop = 1.001 WHERE link_id = 'd0'", (T0 + 5,))
-    await w.store.conn.commit()
-    before = len(w.venue.kinds("limit"))
-    _coins(w, 8)
-    w.signals["4h"] = [_sig(setup="S3", target=104_000.0, ts=T0 + H4), _short("S39", ts=T0 + H4)]
-    res = await w.run(T0 + 2 * H4 + 60_000)
-    new = [o[6] for o in w.venue.kinds("limit")[before:]]
-    assert res["sent"] == 1 and new[0].startswith("td-S3-")
-
-    async def broken(ctx):
-        raise RuntimeError("db locked")
-
-    monkeypatch.setattr(demo_trader, "_setup_slots", broken)
-    await w.store.conn.execute("UPDATE demo_trade SET be_ts = ?, be_stop = 1.001 WHERE link_id IN ('d1', 'd2')", (T0 + 5,))
-    await w.store.conn.commit()
-    before = len(w.venue.kinds("limit"))
-    _coins(w, 12)
-    w.signals["4h"] = [_short("S39", ts=T0 + 2 * H4), _sig(setup="S3", target=104_000.0, ts=T0 + 2 * H4)]
-    res = await w.run(T0 + 3 * H4 + 60_000)
-    new = [o[6] for o in w.venue.kinds("limit")[before:]]
-    assert not any(lid.startswith("td-S39-") for lid in new) and res["errors"] >= 1
+    assert res["sent"] == 5 and all(lid.startswith("td-S39-s-4h-") for lid in sent)
+    (sk,) = await w.store.exec_audit_list(kinds=("skipped",))
+    assert sk["setup"] == "S39" and any("reserve of 3 are taken" in x for x in sk["payload"]["violations"])
+    assert not any("per bar" in x for x in sk["payload"]["violations"])
 
 
 async def test_s38_takes_at_most_two_shorts_per_4h_bar(world):
@@ -887,7 +852,8 @@ async def test_s38_bar_cap_counts_the_book_and_fails_closed(world, monkeypatch):
 
 async def test_hard_ceiling_of_entries_per_day(world):
     w = world
-    for k in range(10):
-        await _today(w.store, k, be_ts=T0 + 2, be_stop=1.001)  # all protected, but ten entries already
+    n = demo_trader.DEFAULT.max_entries_per_day
+    for k in range(n):
+        await _today(w.store, k, status="closed", closed_ts=T0 + 3, pnl_usd=0.0)  # no risk left, but the ceiling of entries reached
     res = await w.run()
-    assert res["sent"] == 0 and "10 entries today = max" in str(await w.store.exec_audit_list(kinds=("skipped",)))
+    assert res["sent"] == 0 and f"{n} entries today = max" in str(await w.store.exec_audit_list(kinds=("skipped",)))

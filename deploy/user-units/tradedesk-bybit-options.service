@@ -1,0 +1,12 @@
+[Unit]
+Description=tradedesk: owner's open Bybit option positions for the brief (scripts/bybit_options_positions.py, read-only key)
+# No key on this machine -> nothing runs. The key file is root:tradedesk 0640 (scripts/server/bybit-key.sh); the script
+# checks that the key is read-only and calls only GET endpoints.
+ConditionPathExists=/etc/tradedesk-bybit.env
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/tradedesk/tradedesk-mcp
+ExecStart=/home/tradedesk/.local/bin/uv run --quiet python scripts/bybit_options_positions.py
+TimeoutStartSec=5min
+NoNewPrivileges=true

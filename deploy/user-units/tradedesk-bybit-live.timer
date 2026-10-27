@@ -1,0 +1,10 @@
+[Unit]
+Description=tradedesk-bybit-live (every minute; each run refreshes for 55 s, so the dashboard sees data ≤ 10 s old)
+
+[Timer]
+OnCalendar=*-*-* *:*:00
+AccuracySec=1s
+Persistent=false
+
+[Install]
+WantedBy=timers.target

@@ -519,6 +519,89 @@ def test_brief_without_paper_recommendation_data_omits_the_line():
     assert "Паперова рекомендація актуальна (" not in out and "• <i>гіпотеза</i> · Паперова рекомендація актуальна." in out
 
 
+MY_TICKERS = json.loads((Path(__file__).resolve().parent / "fixtures" / "bybit_option_tickers_btc_2026-10-26.json").read_text())
+
+
+def _with_my_options(snap: dict, positions: list[dict]) -> dict:
+    """The fixture with a `my_options` section built the way the collector builds it (analytics.my_options on the
+    positions file; ticker values from the live Bybit sample 26.10, positions at 20.10 21:00 UTC)."""
+    from tradedesk.analytics.my_options import my_options_view
+
+    state = {
+        "schema": 1, "source": "bybit", "asof_utc": "2026-10-20T20:50:00Z", "status": "ok", "detail": "", "errors": [],
+        "positions": positions, "tickers": {t["symbol"]: t for t in MY_TICKERS["list"]},
+    }  # fmt: skip
+    data, why = my_options_view(state, db.parse_utc(snap["asof_utc"]))
+    assert why is None
+    snap["sections"]["my_options"] = {"ok": True, "data": data, "missing": [], "warnings": []}
+    return snap
+
+
+def _leg(symbol: str, side: str, size: str, avg: str, upnl: str) -> dict:
+    return {"symbol": symbol, "side": side, "size": size, "avgPrice": avg, "markPrice": None, "unrealisedPnl": upnl}
+
+
+LEGS = [
+    _leg("BTC-27NOV26-81000-C-USDT", "Buy", "0.1", "3000", "57.3"),
+    _leg("BTC-27NOV26-70000-P-USDT", "Sell", "0.2", "900", "-44.8"),
+    _leg("BTC-27NOV26-77000-P-USDT", "Buy", "0.05", "2100", "-8.8"),
+    _leg("BTC-27NOV26-90000-C-USDT", "Buy", "0.01", "500", "-1.2"),  # no ticker: no theta, no chance
+]
+
+
+def test_short_brief_shows_my_bybit_options_total_and_at_most_three():
+    snap, asof = _snap()
+    plain = [ln for ln in ab.build_brief(snap, asof + 300, short=True).splitlines() if ln]
+    text = ab.build_brief(_with_my_options(snap, LEGS), asof + 300, short=True)
+    lines = [ln for ln in text.splitlines() if ln]
+    mine = [ln for ln in lines if "<i>мої опціони</i>" in ln or ln.startswith("  ◦ ")]
+    assert len(mine) == 4 and len(lines) == len(plain) + 4, text  # one total line + 3 of the 4 positions
+    when = db.kyiv(db.parse_utc("2026-10-20T20:50:00Z"), "%H:%M")
+    d = snap["sections"]["my_options"]["data"]
+    assert mine[0] == (
+        f"• <i>мої опціони</i> · Мої опціони Bybit (4, на {when}): P&amp;L +$2.50, тета {ab._usd(d['theta_usd_day'])}/день; "
+        "шанс прибутку — ризик-нейтральний, не порада."
+    )
+    assert mine[1].startswith("  ◦ BTC-27NOV26-81000-C-USDT лонг 0.1: P&amp;L +$57, тета −$")
+    assert mine[2].startswith("  ◦ BTC-27NOV26-70000-P-USDT шорт 0.2: P&amp;L −$45, тета +$")
+    assert "90000-C" not in text  # the 4th by |P&L| is left to Bybit
+    for ln in mine[1:]:
+        assert re.search(r"шанс прибутку \d+ %, \d+\.\d дн$", ln), ln
+    assert (ab._usd(0.537), ab._usd(-0.537), ab._usd(9.999), ab._usd(12.4), ab._usd(None)) == ("+$0.54", "−$0.54", "+$10.00", "+$12", "—")
+    i = lines.index(mine[0])
+    assert "FOMC" in lines[i + 4] and text.splitlines()[text.splitlines().index(mine[0]) - 1] == ""  # own group, before events
+    assert lines[-1] == f"<i>{ab._h(ab.CAVEAT_SHORT)}</i>"
+    for word in ("купуй", "продавай", "закрий", "рекоменд"):
+        assert word not in "\n".join(mine).lower(), word
+    assert "<b>Мої опціони Bybit</b>" in ab.build_brief(snap, asof + 300)  # the long text has its own block
+
+
+def test_brief_without_my_options_data_says_so_once_in_the_stamp():
+    snap, asof = _snap()
+    assert "мої опціони" not in ab.build_brief(snap, asof + 300, short=True)  # old snapshot without the section
+    snap["sections"]["my_options"] = {"ok": False, "data": None, "missing": [{"detail": "my_options: the Bybit request failed"}]}
+    snap["missing"] = ["my_options"]
+    text = ab.build_brief(snap, asof + 300, short=True)
+    assert "<i>мої опціони</i>" not in text and "Без даних: мої опціони Bybit" in text
+    snap, _ = _snap()
+    text = ab.build_brief(_with_my_options(snap, []), asof + 300, short=True)  # no open positions: nothing to say
+    assert "мої опціони" not in text and "Без даних" not in text
+    for odd in ({"positions": "x"}, {"positions": [5, None]}, "x", {"positions": [{"size": "a", "days": "b"}]}):
+        snap["sections"]["my_options"] = {"ok": True, "data": odd}
+        out = ab.build_brief(snap, asof + 300, short=True)
+        assert "не вдалося" not in out and out.endswith(f"<i>{ab._h(ab.CAVEAT_SHORT)}</i>")
+
+
+def test_brief_escapes_my_options_text():
+    snap, asof = _snap()
+    _with_my_options(snap, LEGS[:1])
+    snap["sections"]["my_options"]["data"]["positions"][0]["symbol"] = "<a href='https://evil.example'>x</a>"
+    snap["sections"]["my_options"]["data"]["positions"][0]["side"] = "<b>long</b>"
+    for short in (True, False):
+        text = ab.build_brief(snap, asof + 300, short=short)
+        assert "<a " not in text and "<b>long" not in text and "&lt;a href='https://evil.example'&gt;x&lt;/a&gt; ?" in text
+
+
 def test_brief_escapes_the_paper_recommendation_pick():
     snap, asof = _snap()
     evil = "<a href='https://evil.example'>x</a>"

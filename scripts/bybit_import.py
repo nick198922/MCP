@@ -5,9 +5,15 @@
     uv run python scripts/bybit_import.py stats [--db PATH] [--out REPORT.md]
 
 The key pair is read from the env file (never from the command line, never printed). Only GET endpoints are called:
-user/query-api (the key's own permissions), position/closed-pnl and its pre-upgrade twin (linear and inverse), and
-position/get-closed-positions (options). `check` refuses any key that is not read-only. Each closed-P&L record becomes
-one closed journal row (tags "bybit", "import", the category; note holds the Bybit order id, used to skip duplicates).
+user/query-api (the key's own permissions), position/closed-pnl and its pre-upgrade twin (linear and inverse), and for
+options execution/list, asset/delivery-record and position/list. `check` refuses any key that is not read-only. Each
+closed-P&L record becomes one closed journal row (tags "bybit", "import", the category; note holds the Bybit order id,
+used to skip duplicates). Options are rebuilt from fills (``option_trips``): each round trip is one row, marked
+``bybit:option:<symbol>:<first fill ms>``; a position still open becomes an open row with the same mark, closed in place
+by a later import. A row the owner entered by hand for the same contract (no mark) is reused instead of duplicated:
+its thesis and tags stay, the import adds the mark and, when the trip closes, the exit and P&L.
+(position/get-closed-positions, used before 26.10, answered nothing for this account, so option trades after the one-off
+``options-probe`` of 14.10 never reached the journal.)
 Bybit gives no opening time for a closed position, so `opened_ts` is the close time and the note says so. R is empty:
 there is no planned stop. The report goes outside git: it is the owner's private trading record.
 """
@@ -143,15 +149,8 @@ def fetch(env: str, days: int) -> tuple[list[dict[str, Any]], list[str]]:
             got += len(part)
             t += WINDOW_MS
         notes.append(f"{cat} closed-pnl: {got} records, {errors} failed windows")
-    # The pre-upgrade (classic account) history needs a symbol per request; it is fetched only when asked for
-    try:
-        opts = _pages(ex.privateGetV5PositionGetClosedPositions, {"category": "option"})
-        for x in opts:
-            x["_category"] = "option"
-        notes.append(f"options closed positions (Bybit keeps the last 6 months): {len(opts)} records")
-        rows += [dict(x, _option=True) for x in opts]
-    except Exception as e:  # noqa: BLE001
-        notes.append(f"options: {type(e).__name__}: {str(e)[:120]}")
+    # The pre-upgrade (classic account) history needs a symbol per request; it is fetched only when asked for.
+    # Options come from fills (import_options), not from position/get-closed-positions: that one returned nothing.
     return rows, notes
 
 
@@ -234,11 +233,12 @@ def options_raw(env: str, days: int = 729) -> dict[str, Any]:
     return out
 
 
-def option_trips(fills: list[dict[str, Any]], delivery: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def option_trips(fills: list[dict[str, Any]], delivery: list[dict[str, Any]], include_open: bool = False) -> list[dict[str, Any]]:
     """Group option fills per contract into round trips; a position still open at expiry closes at the delivery value.
 
     P&L = premium received - premium paid + expiry value of what was left - fees (USD). Entry and exit are average
-    premiums per contract; a trip closed at expiry exits at its intrinsic value."""
+    premiums per contract; a trip closed at expiry exits at its intrinsic value. With ``include_open``, a position still
+    open (no delivery yet) is returned too, with ``open`` True, the remaining size and the fees paid so far."""
     deliv = {d.get("symbol"): d for d in delivery}
     by_sym: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for f in fills:
@@ -287,6 +287,11 @@ def option_trips(fills: list[dict[str, Any]], delivery: list[dict[str, Any]]) ->
             pos += signed
             if abs(pos) < 1e-12:
                 flush(ts)
+        if abs(pos) > 1e-12 and sym not in deliv and include_open and in_q > 0:
+            trips.append(
+                {"venue": "bybit", "category": "option", "oid": f"{sym}:{first}", "symbol": sym, "side": side, "size": abs(pos),
+                 "entry": in_v / in_q, "fees": fees, "open": True, "open_ts": first, "ts": None}
+            )  # fmt: skip
         if abs(pos) > 1e-12 and sym in deliv:
             d = deliv[sym]
             parts = sym.split("-")
@@ -526,6 +531,100 @@ def stats(db_path: str, venue: str | None = "bybit") -> str:
     return "\n".join(out) + "\n"
 
 
+OPTION_LOOKBACK_DAYS = 60  # fills read further back than --days, so a trip opened before the window is whole
+
+
+async def store_options(trips: list[dict[str, Any]], db_path: str) -> tuple[int, int, int]:
+    """Option round trips into the journal: (added, closed in place, already there). See the module docstring."""
+    from tradedesk.analytics.journal import outcome_of  # noqa: PLC0415
+    from tradedesk.store.db import Store  # noqa: PLC0415
+
+    st = Store(db_path)
+    await st.init()
+    added = closed = skipped = 0
+
+    async def one(sql: str, args: tuple) -> tuple | None:
+        cur = await st.conn.execute(sql, args)
+        return await cur.fetchone()
+
+    try:
+        for t in sorted(trips, key=lambda z: z.get("open_ts") or 0):
+            mark = f"bybit:option:{t['oid']}"
+            row = await one("SELECT id, status, note FROM journal WHERE note LIKE ? LIMIT 1", (f"%{mark}%",))
+            manual = None
+            if row is None:  # a row the owner entered by hand for this contract: open first, else closed near this close
+                manual = await one(
+                    "SELECT id, status, note, closed_ts FROM journal WHERE symbol = ? AND tags LIKE '%\"bybit\"%'"
+                    " AND (note IS NULL OR note NOT LIKE '%bybit:option:%') ORDER BY status = 'open' DESC, id LIMIT 1",
+                    (t["symbol"],),
+                )
+                if manual is not None and manual[1] != "open":
+                    near = t.get("ts") and manual[3] and abs(manual[3] - t["ts"] // 1000) <= 2 * 86400
+                    manual = manual if near else None
+            fees = f"комісії {t['fees']:.4f}; плече -; час відкриття — з першого fill"
+            if t.get("open"):
+                if row is not None:
+                    skipped += 1
+                elif manual is not None:
+                    await st.conn.execute(
+                        "UPDATE journal SET note = ? WHERE id = ?", (f"{mark}; {fees}" + (f"; {manual[2]}" if manual[2] else ""), manual[0])
+                    )
+                    await st.conn.commit()
+                    skipped += 1
+                else:
+                    tid = await st.journal_insert(
+                        opened_ts=t["open_ts"] // 1000, symbol=t["symbol"], side=t["side"], size=t["size"], entry=t["entry"],
+                        tags=["bybit", "import", "option"], thesis=f"імпорт з {VENUES['bybit']}: теза не записана",
+                    )  # fmt: skip
+                    await st.conn.execute("UPDATE journal SET note = ? WHERE id = ?", (f"{mark}; {fees}", tid))
+                    await st.conn.commit()
+                    added += 1
+                continue
+            target = row if row is not None else manual
+            if target is not None and target[1] != "open":
+                if row is None:  # the owner closed it by hand: keep his numbers, only attach the mark
+                    await st.conn.execute(
+                        "UPDATE journal SET note = ? WHERE id = ?", (f"{mark}" + (f"; {target[2]}" if target[2] else ""), target[0])
+                    )
+                    await st.conn.commit()
+                skipped += 1
+                continue
+            note = f"{mark}; {fees}"
+            if target is None:
+                tid = await st.journal_insert(
+                    opened_ts=t["open_ts"] // 1000, symbol=t["symbol"], side=t["side"], size=t["size"], entry=t["entry"],
+                    tags=["bybit", "import", "option"], thesis=f"імпорт з {VENUES['bybit']}: теза не записана",
+                )  # fmt: skip
+                added += 1
+            else:
+                tid = target[0]
+                own = target[2] or ""
+                note = f"{mark}; {fees}" + ("" if own.startswith(mark) else f"; {own}" if own else "")
+                if row is not None:  # our own open row: the final size and entry come from the whole trip
+                    await st.conn.execute("UPDATE journal SET size = ?, entry = ? WHERE id = ?", (t["size"], t["entry"], tid))
+                closed += 1
+            await st.journal_update_close(
+                tid, closed_ts=t["ts"] // 1000, status="closed", exit_=t["exit"], outcome=outcome_of(t["pnl"]),
+                pnl=t["pnl"], r_multiple=None, note=note,
+            )  # fmt: skip
+    finally:
+        await st.aclose()
+    return added, closed, skipped
+
+
+def import_options(env: str, db_path: str, days: int) -> str:
+    """Fetch option fills, deliveries and open positions and store the round trips; one summary line."""
+    raw = options_raw(env, min(days + OPTION_LOOKBACK_DAYS, 729))
+    trips = option_trips(raw["fills"], raw["delivery"], include_open=True)
+    added, closed, skipped = asyncio.run(store_options(trips, db_path))
+    notes = "; ".join(raw["notes"][:3])
+    n_open = sum(1 for t in trips if t.get("open"))
+    return (
+        f"options: fills {len(raw['fills'])}, trips {len(trips)} ({n_open} open), added {added}, closed in place {closed}, already in the journal {skipped}"
+        + (f"; {notes}" if notes else "")
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--env", default="/etc/tradedesk-bybit.env")
@@ -554,6 +653,7 @@ def main(argv: list[str] | None = None) -> int:
         added, skipped = asyncio.run(store(trades, a.db))
         print("\n".join(notes))
         print(f"records {len(raw)}, usable {len(trades)}, added {added}, already in the journal {skipped}")
+        print(import_options(a.env, a.db, a.days))
         return 0
     if a.cmd == "options-probe":
         if check(a.env):
@@ -572,9 +672,9 @@ def main(argv: list[str] | None = None) -> int:
         keys = ("symbol", "side", "size", "avgPrice", "markPrice", "unrealisedPnl", "delta", "gamma", "vega", "theta", "positionValue")
         for x in raw["open"]:
             print("OPEN", json.dumps({k: x.get(k) for k in keys}, ensure_ascii=False))
-        trips = option_trips(raw["fills"], raw["delivery"])
-        added, skipped = asyncio.run(store(trips, a.db))
-        print(f"option round trips closed: {len(trips)}, added {added}, already in the journal {skipped}")
+        trips = option_trips(raw["fills"], raw["delivery"], include_open=True)
+        added, closed, skipped = asyncio.run(store_options(trips, a.db))
+        print(f"option round trips: {len(trips)}, added {added}, closed in place {closed}, already in the journal {skipped}")
         if a.save:
             Path(a.save).parent.mkdir(parents=True, exist_ok=True)
             Path(a.save).write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")

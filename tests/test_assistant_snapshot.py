@@ -17,6 +17,7 @@ from tradedesk.analytics.assistant import (
     pick_expiries,
     pick_near_expiry,
 )
+from tradedesk.collector.assistant_snapshot import build_my_options as mod_build_my_options
 from tradedesk.collector.assistant_snapshot import build_paper_rec as mod_build_paper_rec
 from tradedesk.collector.assistant_snapshot import collect_assistant_snapshot, snapshot_path, write_atomic
 from tradedesk.collector.scheduler import build_default_scheduler
@@ -149,8 +150,27 @@ def test_paper_rec_view_keeps_known_fields_and_drops_old_or_odd_states():
     assert "asof_utc" in paper_rec_view(_paper_state(asof_utc=None), now)[1]
 
 
+def _my_options_state(**kw) -> dict:
+    """The file scripts/bybit_options_positions.py writes (one long call; ticker values from the live 26.10 sample)."""
+    return {
+        "schema": 1, "source": "bybit", "asof_utc": "2026-10-10T12:50:00Z", "status": "ok", "detail": "",
+        "positions": [{"symbol": "BTC-27NOV26-81000-C-USDT", "side": "Buy", "size": "0.1", "avgPrice": "3000",
+                       "markPrice": "3572.95", "unrealisedPnl": "57.3", "positionValue": "357.3", "delta": "0.05", "theta": "-5"}],
+        "tickers": {"BTC-27NOV26-81000-C-USDT": {"markPrice": "3572.95", "markIv": "0.365", "underlyingPrice": "81115.4",
+                                                 "indexPrice": "80661.9"}},
+        "errors": [],
+    } | kw  # fmt: skip
+
+
+def _write_my_options(tmp_path: Path, payload: object) -> None:
+    p = tmp_path / "assistant" / "my_options.json"  # my_options_path(<tmp>/t.sqlite)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(payload), encoding="utf-8")
+
+
 async def test_snapshot_happy_path(state, tmp_path):
     _write_paper_state(tmp_path, _paper_state(asof_utc="2026-10-10T09:00:00Z"))
+    _write_my_options(tmp_path, _my_options_state())
     rt = _rt(state, tmp_path)
     try:
         ok = await collect_assistant_snapshot(rt)
@@ -172,11 +192,55 @@ async def test_snapshot_happy_path(state, tmp_path):
     assert snap["sections"]["chain"]["data"]["expiry"] == "27NOV26"
     near = snap["sections"]["chain_near"]["data"]  # the builder's nearer expiry, same shape as the month chain
     assert near["expiry"] == "30OCT26" and near["strikes"] and set(near) == set(snap["sections"]["chain"]["data"])
+    # every term-structure expiry for the builder's list, same shape; the window widens with time to expiry
+    by = snap["sections"]["chains"]["data"]["by_expiry"]
+    assert snap["sections"]["chains"]["ok"] and list(by) == [x["expiry"] for x in snap["sections"]["term"]["data"]["expiries"]]
+    assert by["27NOV26"] == snap["sections"]["chain"]["data"] and all(set(c) == set(near) for c in by.values())
     assert ok == len(snap["sections"]) - len(snap["missing"])
     assert "evidence" not in snap["sections"]["term"]  # envelopes are trimmed to data / missing / warnings
     paper = snap["sections"]["paper_rec"]  # from the local state file, no network
     assert paper["ok"] and paper["data"]["state"] == "actual" and paper["data"]["label"] == "hypothesis"
     assert paper["data"]["age_hours"] == pytest.approx(4.12, abs=0.01) and any("H1 rejected" in w for w in paper["warnings"])
+    mine = snap["sections"]["my_options"]  # from the local positions file: no network, no key in this job
+    assert mine["ok"] and mine["data"]["n_positions"] == 1 and mine["data"]["upnl_usd"] == 57.3
+    assert mine["data"]["theta_usd_day"] < 0 and 0 < mine["data"]["positions"][0]["pop"] < 1
+    assert any("risk-neutral" in w and "not advice" in w for w in mine["warnings"])
+
+
+async def test_snapshot_my_options_failure_lands_in_missing_and_is_never_carried(state, tmp_path):
+    _write_my_options(tmp_path, _my_options_state())
+    rt = _rt(state, tmp_path)
+    try:
+        await collect_assistant_snapshot(rt)
+        assert "my_options" not in json.loads((tmp_path / "out" / "snapshot.json").read_text())["missing"]
+        _write_my_options(tmp_path, _my_options_state(status="error", detail="position/list: every request failed"))
+        await collect_assistant_snapshot(rt)  # the previous snapshot had good positions: they are not carried
+    finally:
+        await rt.aclose()
+    snap = json.loads((tmp_path / "out" / "snapshot.json").read_text())
+    sec = snap["sections"]["my_options"]
+    assert not sec["ok"] and sec["data"] is None and "my_options" in snap["missing"] and "my_options" not in snap["stale"]
+    assert sec["missing"][0]["provider"] == "bybit" and "every request failed" in sec["missing"][0]["detail"]
+    assert "the Bybit request failed" in sec["missing"][0]["detail"]
+    (tmp_path / "assistant" / "my_options.json").unlink()
+    assert "no Bybit positions file yet" in mod_build_my_options(str(tmp_path / "t.sqlite"), NOW)["missing"][0]["detail"]
+    _write_my_options(tmp_path, _my_options_state(asof_utc="2026-10-10T08:00:00Z"))  # 5 h old: the timer stopped
+    assert "seems stopped" in mod_build_my_options(str(tmp_path / "t.sqlite"), NOW)["missing"][0]["detail"]
+    _write_my_options(tmp_path, _my_options_state(errors=["position/list SOL: NetworkError"]))
+    sec = mod_build_my_options(str(tmp_path / "t.sqlite"), NOW)
+    assert sec["ok"] and any("Partial Bybit fetch" in w and "SOL" in w for w in sec["warnings"])
+    assert mod_build_my_options(":memory:", NOW)["missing"][0]["detail"].startswith("my_options: no SQLite store")
+
+
+def test_build_my_options_never_raises(monkeypatch):
+    import tradedesk.collector.assistant_snapshot as mod
+
+    def boom(*a, **k):
+        raise ValueError("odd")
+
+    monkeypatch.setattr(mod, "my_options_view", boom)
+    sec = mod.build_my_options("/tmp/x.sqlite", NOW)
+    assert not sec["ok"] and sec["missing"][0]["reason"] == "error" and "ValueError: odd" in sec["missing"][0]["detail"]
 
 
 async def test_snapshot_paper_rec_without_state_or_with_a_stale_one(state, tmp_path):
@@ -220,6 +284,7 @@ async def test_snapshot_provider_failure_lands_in_missing(state, tmp_path):
     assert snap["sections"]["chain"]["missing"]  # per-section reason
     assert snap["sections"]["chain_near"]["missing"][0]["reason"] == "data_unavailable"
     assert snap["expiries"] == {"week": None, "month": None, "near": None}
+    assert "chains" in snap["missing"] and snap["sections"]["chains"]["missing"][0]["reason"] == "data_unavailable"
     assert snap["sections"]["tickers"]["ok"] and snap["sections"]["fng"]["ok"]
     assert ok >= 1
 
@@ -438,3 +503,9 @@ async def test_job_off_by_default_and_on_by_switch(state, tmp_path):
     finally:
         await rt.aclose()
         await rt2.aclose()
+
+
+def test_chain_width_widens_with_time_to_expiry():
+    from tradedesk.collector.assistant_snapshot import chain_width_pct
+
+    assert [chain_width_pct(d) for d in (0.5, 32, 60, 151, 333, 700)] == [20.0, 20.0, 24.0, 39.0, 57.0, 60.0]

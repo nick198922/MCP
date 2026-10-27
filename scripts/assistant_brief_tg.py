@@ -12,8 +12,10 @@ Telegram is hard to read): BTC and ETH with the 24 h change, DVOL with its 1-yea
 items of the day, one line with BTC's risk-neutral probabilities to the month expiry (inside ±1σ and in the «Бриф»
 tab's two tail ranges, labelled «ризик-нейтральна»; it replaces the ±1σ item; omitted without ``chain`` / ``em_month``),
 one line with the state of the paper recommendation (section ``paper_rec``: «актуальна / змінилась /
-більше не актуальна», labelled «гіпотеза»; omitted without data), the next events in Kyiv time and one caveat line;
-the dashboard pages carry the rest. A missing or
+більше не актуальна», labelled «гіпотеза»; omitted without data), the owner's open Bybit options (section
+``my_options``: a total line with P&L and theta per day, then at most 3 positions with the risk-neutral chance of
+profit, labelled «ризик-нейтральний, не порада»; omitted without data or without open positions), the next events in
+Kyiv time and one caveat line; the dashboard pages carry the rest. A missing or
 unreadable snapshot gives an explained message, not an error; older than 30 min adds a warning; older than 6 h gives
 only the stamp and the warning (no prices, no countdowns). Event countdowns are counted from the send time, past events
 are dropped. The caveats are never cut by the length limit.
@@ -73,6 +75,8 @@ PAPER_PICK_UA = {  # analytics.option_replay.STRUCTURES; "_14d" = the ~14-day ex
     "put_debit_spread": "пут-дебетовий спред",
 }
 PAPER_TRIGGER_UA = {"regime": "через зміну режиму", "event": "перед FOMC / CPI"}
+MAX_MY_OPTIONS = 3  # the owner's Bybit option positions listed under their total line
+SIDE_UA = {"long": "лонг", "short": "шорт"}
 
 
 def _h(x: object) -> str:
@@ -333,6 +337,43 @@ def _paper(snap: dict, now: float) -> list[str]:
         return []
 
 
+def _usd(x: object) -> str:
+    """Signed dollars, whole from $10 (+$1 234, −$15) and with cents below (−$0.54: the owner's lots are 0.01 BTC);
+    '—' without a number."""
+    v = db._num(x)
+    return "—" if v is None else ("+" if v >= 0 else "−") + "$" + db._nf(abs(v), 2 if abs(v) < 10 else 0)
+
+
+def _my_options(snap: dict, now: float) -> list[str]:
+    """The owner's open Bybit options (section ``my_options``): one total line and at most MAX_MY_OPTIONS positions,
+    the largest unrealised P&L first. The chance of profit is labelled risk-neutral and not advice. [] without data
+    (the stamp's «Без даних» line names the section) or without open positions. Never raises."""
+    try:
+        d = db._data(snap, "my_options")
+        rows = [p for p in db._list(d.get("positions")) if isinstance(p, dict)] if d else []
+        if not rows:
+            return []
+        asof = db.parse_utc(d.get("asof_utc"))
+        when = f", на {db.kyiv(asof, '%H:%M')}" if asof else ""
+        head = (
+            f"Мої опціони Bybit ({len(rows)}{when}): P&L {_usd(d.get('upnl_usd'))}, тета {_usd(d.get('theta_usd_day'))}/день; "
+            "шанс прибутку — ризик-нейтральний, не порада."
+        )
+        out = [f"• <i>мої опціони</i> · {_h(head)}"]
+        for p in rows[:MAX_MY_OPTIONS]:
+            size, pop, days = db._num(p.get("size")), db._num(p.get("pop")), db._num(p.get("days"))
+            txt = f"{db._clean(p.get('symbol') or '?', 40)} {SIDE_UA.get(str(p.get('side')), '?')} {f'{size:g}' if size is not None else '?'}: "
+            txt += f"P&L {_usd(p.get('upnl_usd'))}, тета {_usd(p.get('theta_usd_day'))}/день"
+            if pop is not None:
+                txt += f", шанс прибутку {db._nf(pop * 100)} %"
+            if days is not None:
+                txt += f", {db._nf(days, 1)} дн"
+            out.append("  ◦ " + _h(txt))
+        return out
+    except Exception:  # noqa: BLE001 - an odd section only drops these lines
+        return []
+
+
 def _events(snap: dict, now: float) -> list[str]:
     ev = db._data(snap, "events")
     if ev is None:
@@ -424,11 +465,12 @@ def build_brief(snap: dict | None, now: float, err: str | None = None, short: bo
             return _fit(out, tail)
         if short:
             # the range and paper recommendation lines sit with the day's items (no blank before them)
-            blocks = (("", _market_short), ("", _day_short), ("", _events_short))
+            blocks = (("", _market_short), ("", _day_short), ("", _my_options), ("", _events_short))
         else:
             blocks = (
                 ("Ринок", _market),
                 ("Головне сьогодні", lambda s, n: _key(s, n) + _paper(s, n)),
+                ("Мої опціони Bybit", _my_options),
                 ("Події · час " + ("Київ" if db.KYIV is not None else "UTC"), _events),
                 ("Funding · річних", _funding),
             )

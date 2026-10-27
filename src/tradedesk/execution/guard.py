@@ -35,19 +35,23 @@ class GuardConfig:
     mode: str = MODE
     venue: str = "bybit-demo"
     risk_usd: float = 100.0  # lost at the stop including fees (the owner's rule: 1 % of ~$10k)
-    max_trades_per_day: int = 5  # owner 21.10/22.10: at most 5 of today's entries still at risk (break-even frees a slot)
-    max_entries_per_day: int = 10  # hard ceiling of entries per UTC day, freed slots included
-    max_open_positions: int = 15
-    max_open_risk_usd: float = 1500.0  # sum of the losses at the stops of all open positions
-    daily_max_loss_usd: float = 500.0  # realised loss of the UTC day; then no new entries until 00:00 UTC
+    # owner 27.10 (Q-20261025-2): testing the setups comes first, so the day's limits follow the demo trader's slots
+    # (2 per setup for 7 setups + a reserve of 3) and do not brake it on their own; the cross-margin checks below stay
+    max_trades_per_day: int = 17  # today's entries still at risk (break-even frees a slot), = demo_trader slots
+    max_entries_per_day: int = 30  # hard ceiling of entries per UTC day, freed slots included
+    max_open_positions: int = 30
+    max_open_risk_usd: float = 3000.0  # sum of the losses at the stops of all open positions
+    daily_max_loss_usd: float = 1700.0  # realised loss of the UTC day (= a full day of stops); then no entries until 00:00 UTC
     max_margin_share: float = 0.90  # initial margin of all open positions / equity
     max_maint_and_risk_share: float = 0.50  # (maintenance margin of all + loss at all stops) / equity: cross-margin safety
     max_notional_usd: float = 50_000.0  # per order; a tighter stop shrinks the size to this cap (risk below $100)
     max_order_equity_share: float = 1.0  # per order also at most 1x equity (cross margin: a gap fills past the stop)
-    max_open_notional_share: float = 3.0  # all open positions together at most 3x equity
+    max_open_notional_share: float = (
+        6.0  # all open positions together at most 6x equity (owner 27.10: slots for tests; 3x bound at ~6 trades)
+    )
     min_reward_risk: float = 1.5  # after fees
     max_stop_pct: float = 0.10  # stop farther than 10 % of the entry is a broken setup, not a trade
-    orders_per_hour: int = 5
+    orders_per_hour: int = 15  # a 4h bar can bring several setups' entries in one cycle
     # options (owner 23.10, slice 1): buy to open only, premium paid + fee = the risk
     option_bases: tuple[str, ...] = ("BTC", "ETH")
     option_min_dte_days: float = 4.0  # owner's rule: no option buys with 1-3 days to expiry (expiry 08:00 UTC)

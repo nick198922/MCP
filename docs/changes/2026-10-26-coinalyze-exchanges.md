@@ -1,0 +1,8 @@
+- BACKLOG «Coinalyze: агрегат кількох бірж і точність USD» (картка `IDEA-20261017-doubletop-to-ours`, звіт `docs/reviews/2026-10-25-doubletop-parity-2.md`): у `liquidations_history` і `coinalyze_oi_history` новий параметр `exchanges`.
+  - За замовчуванням Binance (`.A`), як і раніше; `bybit` / `.6` — Bybit, лише USDT-перпи (символ `BTCUSDT.6`; формат coin-margined Bybit не звірено, тому відмова). Будь-яке інше значення відхиляється з `missing` `invalid_argument` без жодного запиту: у URL потрапляють лише символи з білого списку.
+  - Сума по вибраних біржах: збій або порожня відповідь однієї біржі → `missing` для неї, решта сумується з попередженням «partial sum»; сумуються лише інтервали, які є на кожній біржі (кількість відкинутих — у `warnings`). У відповіді `symbol` (символи через кому) і `exchanges` (біржа, код, символ, кількість інтервалів).
+  - У сумі OI high/low — суми екстремумів бірж, тобто межі, а не екстремуми сумарного ряду (сказано в описі).
+- В описах обох інструментів і в `warnings` (коли `in_usd=true`): USD у Coinalyze = монети × close дня (інтервалу), тож у день обвалу суми зсунуті; точні суми ліквідацій дає `liquidations_summary`.
+- Чисті функції: `parse_exchanges`, `exchange_symbol` (`analytics/liquidations_agg.py`), `sum_histories` (`analytics/coinalyze_series.py`).
+- Тести `tests/test_coinalyze_exchanges.py` на зразках DoubleTop від 25.10 (ліквідації BTC `.A` і `.6` за 18–24.10, годинний OI): сума, збій однієї й обох бірж, відмова невідомого коду без запиту, Bybit coin-margined, пропущений інтервал, текст описів.
+- Живий виклик Bybit із нашим ключем ще не робили; інші коди (OKX тощо) — лише після звірки OI з `perps_open_interest`.

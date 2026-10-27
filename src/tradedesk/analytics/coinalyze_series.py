@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from typing import Any
 
 from .liquidations_agg import INTERVALS, ROW_ERRORS, parse_ts
@@ -83,6 +84,36 @@ def ohlc_series(history: list[dict[str, Any]], interval: str, *, scale: float = 
         }
     )
     return {"rows": rows, "stats": stats}
+
+
+def sum_histories(histories: Sequence[Sequence[Any]], keys: Sequence[str]) -> tuple[list[dict[str, Any]], int]:
+    """Sum raw Coinalyze rows of several exchanges per timestamp (for liquidations `("l", "s")`, for OI
+    `("o", "h", "l", "c")`), keeping only timestamps that every exchange has.
+
+    Per exchange, rows with a malformed timestamp (see ohlc_series) or a missing, non-finite or negative value are
+    dropped first; a repeated timestamp keeps the last row. Returns (raw rows `{"t", *keys}` sorted by t, ready for
+    summarise / ohlc_series; number of timestamps dropped because at least one exchange lacked them). Summed highs
+    and lows are sums of per-exchange extremes (bounds), not the extremes of the summed series.
+    """
+    per: list[dict[int, list[float]]] = []
+    for hist in histories:
+        by_ts: dict[int, list[float]] = {}
+        for h in hist or []:
+            try:
+                t, _ = parse_ts(h["t"])
+                vals = [_num(h[k]) for k in keys]
+            except ROW_ERRORS:
+                continue
+            if any(v < 0 for v in vals):
+                continue
+            by_ts[t] = vals
+        per.append(by_ts)
+    if not per:
+        return [], 0
+    common = set(per[0]).intersection(*per[1:])
+    union = set(per[0]).union(*per[1:])
+    rows = [{"t": t, **{k: sum(p[t][i] for p in per) for i, k in enumerate(keys)}} for t in sorted(common)]
+    return rows, len(union) - len(common)
 
 
 def long_short_series(history: list[dict[str, Any]], interval: str) -> dict[str, Any] | None:

@@ -13,6 +13,14 @@ reason in the asset's ``missing``.
 The ``paper_rec`` section is not a tool call either: it reads the local state file of the ``assistant_paper`` job
 (``<dir of db_path>/assistant/paper_state.json``, no network) through `analytics.assistant.paper_rec_view`, so the brief
 can say whether the paper recommendation (a hypothesis) is still current.
+
+The ``my_options`` section is not a tool call either: it reads the owner's open Bybit option positions from the local
+file ``<dir of db_path>/assistant/my_options.json`` (written hourly by scripts/bybit_options_positions.py with the
+read-only key; this job never sees the key and makes no request) through `analytics.my_options.my_options_view`. It is
+never carried forward from an older snapshot.
+
+The ``chains`` section holds the option chain of every expiry of the ATM term structure (``{"by_expiry": {token:
+chain}}``, the same shape as ``chain``) for the options builder's expiry list; the strike window widens with time to expiry.
 """
 
 from __future__ import annotations
@@ -29,6 +37,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..analytics.assistant import paper_rec_view, pick_expiries, pick_near_expiry
 from ..analytics.macro_calendar import build_macro_calendar
+from ..analytics.my_options import my_options_view
 from ..analytics.radar import FWD_EVENT_KINDS, IV_RANK_DAYS, METHOD, WEEK_DAYS, YEAR_DAYS, radar_view
 from ..core.envelope import Builder
 
@@ -42,6 +51,8 @@ SECTION_TIMEOUT_SECONDS = 120.0
 VENUE = "binanceusdm"
 SPOT_VENUE = "binance"
 TICKER_SYMBOLS = ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT"]
+CHAIN_WIDTH_PCT = 20.0  # strike window (± % log-moneyness) of the month and near chains, the floor of the others
+CHAIN_WIDTH_MAX_PCT = 60.0
 
 
 def snapshot_path(db_path: str, configured: str) -> Path | None:
@@ -113,6 +124,31 @@ async def _call(client: Any, tool: str, args: dict[str, Any]) -> dict[str, Any]:
 def _expiry_rows(term: dict[str, Any]) -> list[dict[str, Any]]:
     data = term.get("data") if term.get("ok") else None
     return list((data or {}).get("expiries") or [])
+
+
+def chain_width_pct(days: float) -> float:
+    """Strike window of one ``chains`` expiry: 60 % × √(days/365) (about ±1.2σ at 50 % vol), within 20..60 %."""
+    return float(min(CHAIN_WIDTH_MAX_PCT, max(CHAIN_WIDTH_PCT, round(60 * math.sqrt(max(days, 0.0) / 365)))))
+
+
+async def build_chains(client: Any, expiries: list[dict[str, Any]]) -> dict[str, Any]:
+    """Section ``chains``: deribit_option_chain of every term-structure expiry, keyed by expiry token. One cached
+    Deribit book serves all of them. ok when at least one chain came back; each failed expiry lands in ``missing``."""
+    rows = [x for x in expiries if isinstance(x.get("expiry"), str) and isinstance(x.get("days"), (int, float)) and x["days"] > 0]
+    if not rows:
+        return _failed("tradedesk", "data_unavailable", "no expiries in the ATM term structure")
+    args = [{"currency": "BTC", "expiry": x["expiry"], "width_pct": chain_width_pct(x["days"])} for x in rows]
+    done = await asyncio.gather(*(_call(client, "deribit_option_chain", a) for a in args))
+    by: dict[str, Any] = {}
+    missing: list[dict[str, Any]] = []
+    for x, sec in zip(rows, done, strict=True):
+        if sec["ok"] and isinstance(sec.get("data"), dict):
+            by[x["expiry"]] = sec["data"]
+        else:
+            missing += [{**m, "field": f"chain {x['expiry']}"} for m in sec["missing"] if isinstance(m, dict)]
+    if not by:
+        return {"ok": False, "data": None, "missing": missing or _failed("tradedesk", "error", "no chain")["missing"], "warnings": []}
+    return {"ok": True, "data": {"by_expiry": by}, "missing": missing, "warnings": []}
 
 
 # ----------------------------------------------------------------------------- radar section
@@ -251,6 +287,38 @@ def build_paper_rec(db_path: str, now: datetime) -> dict[str, Any]:
         return _failed("tradedesk", "error", f"paper_rec: {type(e).__name__}: {e}")
 
 
+MY_OPTIONS_WARNINGS = [
+    "The owner's open Bybit option positions, fetched with the read-only key by scripts/bybit_options_positions.py "
+    "(hourly user timer tradedesk-bybit-options) and valued at that file's own time, not live; this job only reads the file.",
+    "Chance of profit = risk-neutral probability that the leg ends above / below its breakeven at expiry (Black-76, r = 0, "
+    "the leg's Bybit mark IV, flat, fees ignored), per leg: spreads are not combined. The market's price, not a forecast; "
+    "not advice.",
+    "Theta = Black-76 theta per calendar day at the mark IV x signed size, USD (a long pays it); P&L = Bybit's unrealised P&L at the mark.",
+]
+
+
+def my_options_path(db_path: str) -> Path | None:
+    """<dir of db_path>/assistant/my_options.json (written by scripts/bybit_options_positions.py); None for an in-memory store."""
+    if not db_path or db_path == ":memory:":
+        return None
+    return Path(db_path).resolve().parent / "assistant" / "my_options.json"
+
+
+def build_my_options(db_path: str, now: datetime) -> dict[str, Any]:
+    """The `my_options` section from the local positions file (no network, no key here). Never raises (invariant 1)."""
+    try:
+        path = my_options_path(db_path)
+        if path is None:
+            return _failed("bybit", "data_unavailable", "my_options: no SQLite store (TRADEDESK_DB_PATH), no positions file")
+        data, why = my_options_view(_load_previous(path), now)
+        if data is None:
+            return _failed("bybit", "data_unavailable", f"my_options: {why}")
+        extra = [f"Partial Bybit fetch, positions may be missing: {e}" for e in data["errors"]]
+        return {"ok": True, "data": data, "missing": [], "warnings": [*MY_OPTIONS_WARNINGS, *extra]}
+    except Exception as e:  # noqa: BLE001 - invariant 1: a section never fails the job
+        return _failed("tradedesk", "error", f"my_options: {type(e).__name__}: {e}")
+
+
 async def build_snapshot(rt: "Runtime") -> dict[str, Any]:
     """Collect all sections. Pure orchestration over tool calls; the file is written by the caller."""
     from mcp import Client  # noqa: PLC0415
@@ -296,8 +364,10 @@ async def build_snapshot(rt: "Runtime") -> dict[str, Any]:
             sections[n] = (
                 next(it) if cl is not None else _failed("tradedesk", "data_unavailable", "no suitable expiry in the ATM term structure")
             )
+        sections["chains"] = await build_chains(c, _expiry_rows(sections["term"]))  # the builder's full expiry list
     sections["radar"] = await build_radar(rt, sections, now)
     sections["paper_rec"] = await asyncio.to_thread(build_paper_rec, rt.settings.db_path, now)
+    sections["my_options"] = await asyncio.to_thread(build_my_options, rt.settings.db_path, now)
     asof = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     for s in sections.values():
         s["asof_utc"] = asof
@@ -313,7 +383,8 @@ async def build_snapshot(rt: "Runtime") -> dict[str, Any]:
 
 
 MAX_STALE_HOURS = 6.0  # a carried-forward section older than this is dropped (stays in `missing`)
-OFFLINE_SECTIONS = frozenset({"radar", "paper_rec"})  # may have data without the network: not counted by the all-failed check
+OFFLINE_SECTIONS = frozenset({"radar", "paper_rec", "my_options"})  # may have data without the network: not counted by the all-failed check
+NO_CARRY = frozenset({"my_options"})  # the owner's positions may be closed since: no older copy, the file's own age limit rules
 
 
 def _age_hours(old: Any, new: str) -> float:
@@ -334,6 +405,8 @@ def carry_forward(snap: dict[str, Any], prev: dict[str, Any] | None) -> None:
         return
     dependent = {"em_week": "week", "em_month": "month", "chain": "month", "chain_near": "near"}
     for name in list(snap["missing"]):
+        if name in NO_CARRY:
+            continue
         old = prev["sections"].get(name)
         if not isinstance(old, dict) or not old.get("ok"):
             continue

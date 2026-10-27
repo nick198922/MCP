@@ -13,8 +13,9 @@ The «Бриф» tab (/brief) renders the assistant's morning brief from the sna
 ``assistant_snapshot`` (no network here: the collector does all fetching). Every string from that file is untrusted
 text and is escaped; a missing, stale or corrupt snapshot gives an empty state, never an error.
 
-The «Опціони» tab (/options) is a strategy builder on a snapshot chain (marks, Δ, IV) of the month expiry or of the
-nearest one at least 25 h away (``chain_near``, where rule 8's 1-3 day zone and its thesis / target fields show up): sell/buy strangle and
+The «Опціони» tab (/options) is a strategy builder on a snapshot chain (marks, Δ, IV) of the month expiry, of the
+nearest one at least 25 h away (``chain_near``, where rule 8's 1-3 day zone and its thesis / target fields show up) or of
+any other listed expiry (section ``chains``: dailies, weeklies, monthlies, quarterlies): sell/buy strangle and
 straddle, iron condor; P&L at expiry, breakevens, max profit/loss, risk-neutral probability of profit and the fit to the
 owner's risk budget and his rules 1 and 8 (analytics.rules_check); position greeks, a «through N days» line, a scenario table (incl. IV +5 points), a plain-language
 conclusion and an «is vol expensive» block (DVOL percentile, VRP backtest by level). Everything is computed here on a plain GET form; the inline script only remembers deposit, risk
@@ -458,6 +459,7 @@ def _nav(active: str) -> str:
         ("/", "project", "Проєкт"),
         ("/brief", "brief", "Бриф"),
         ("/options", "options", "Опціони"),
+        ("/positions", "positions", "Позиції"),
         ("/radar", "radar", "Радар"),
         ("/journal", "journal", "Журнал"),
         ("/demo", "demo", "Демо"),
@@ -579,7 +581,7 @@ HELP: dict[str, tuple[str, str, str, str]] = {
     ),
     "builder": (
         "Конструктор",
-        "Збери опціонну позицію на експірації BTC — місячній (≥ 25 днів) чи найближчій (≥ 25 год): стратегія, страйки, "
+        "Збери опціонну позицію на будь-якій експірації BTC Deribit (денні, тижневі, місячні, квартальні — ті самі дати, що на Bybit): стратегія, страйки, "
         "депозит, ризик і розмір.",
         "Купівля стреддлу / стренглу — ставка на сильний рух у будь-який бік. Продаж — на спокій. Кондор — продаж із захистом.",
         "Нижче — графік P&L, «за і проти», греки, ризик і сценарії для цієї позиції. Поля «Теза» і «Ціль» з'являються, "
@@ -669,6 +671,72 @@ HELP: dict[str, tuple[str, str, str, str]] = {
         "P&L позиції, якщо BTC зміниться на ±N % — зараз, через кілька днів і на експірацію; плюс сценарій «IV +5 пунктів».",
         "Зелене — прибуток, червоне — збиток.",
         "Знайди рядок, де тобі боляче: чи готовий ти до такого руху?",
+    ),
+    "lp_sum": (
+        "Позиції Bybit наживо",
+        "Твої відкриті позиції з Bybit (ключ лише для читання): збирач оновлює ціни кожні 10 с, позиції — кожні 30 с.",
+        "Зелена крапка — дані свіжі; червона — збирач зупинився, числа застарілі.",
+        "Сторінка лише показує: ордерів тут немає. Закривати й ставити стопи — на Bybit.",
+    ),
+    "lp_equity": (
+        "Капітал",
+        "Equity уніфікованого рахунку Bybit: баланс плюс нереалізований P&L.",
+        "«Вільно» — скільки ще доступно під нову маржу.",
+        "Ризик на угоду рахуй від депозиту за правилами (≈ 1 %), а не від вільного залишку.",
+    ),
+    "lp_pnl": (
+        "P&L відкритих позицій",
+        "Сума за марками Bybit наживо плюс уже сплачені комісії за вхід (від'ємні).",
+        "Марка — розрахункова ціна біржі; закрити ринковим ордером вийде за bid (продаж) чи ask (купівля).",
+        "Не рішення само по собі: дивись беззбиток і тету нижче — скільки ще часу й руху треба.",
+    ),
+    "lp_theta": (
+        "Тета на добу",
+        "Скільки вартості опціонів зникне за добу, якщо ціна й IV не зміняться (Black-76).",
+        "Мінус — ти платиш за час (купив опціони); плюс — заробляєш на часі (продав).",
+        "Чим ближче експірація, тим швидше тане куплений опціон: тримати без руху стає дорожче щодня.",
+    ),
+    "lp_dte": (
+        "До експірації",
+        "Час до найближчої експірації твоїх опціонів (Bybit, 08:00 UTC).",
+        "Менше 2 діб — у годинах.",
+        "Останні дні — найшвидша тета й найбільша гамма: P&L стрибає від малих рухів.",
+    ),
+    "lp_legs": (
+        "Ноги позиції",
+        "Кожен опціон: ціна входу, поточна марка, bid/ask, mark IV, P&L і реалізоване (комісія за вхід).",
+        "P&L у % — від сплаченої премії.",
+        "Широкий bid/ask — закриття коштуватиме помітно більше за марку.",
+    ),
+    "lp_be": (
+        "Беззбиток",
+        "Ціна, до якої треба дійти до певного дня, щоб позиція була в нулі (P&L від входу = 0 з комісіями).",
+        "Рядки ⚡ — засідання ФРС і важливі макрорелізи до експірації. Рядок — дата й час за Києвом: щодня о часі експірації (08:00 UTC: 10:00 взимку, 11:00 влітку), після першого тижня — щотижня. Беззбиток купленої позиції щодня відсувається далі від ціни — це тета.",
+        "Якщо до потрібного беззбитку далі, ніж ринок реально проходить за залишок часу, — тримати, сподіваючись, дорого.",
+    ),
+    "lp_greeks": (
+        "Греки позиції",
+        "Дельта — як скільки монет на споті; гамма — як змінюється дельта на 1 % руху; вега — на 1 пункт IV; тета — за добу.",
+        "«Рух за добу» — денний рух ціни, за якого гамма окупає тету (для куплених опціонів), поруч із реальним середнім денним рухом за 7 і 30 днів.",
+        "Якщо ринок рухається менше за цей поріг — куплені опціони втрачають, продані заробляють; і навпаки.",
+    ),
+    "lp_chart": (
+        "P&L від ціни",
+        "P&L від входу залежно від ціни: зараз, посередині строку і на експірацію.",
+        "Відстань між лініями — те, що забере час, якщо ціна стоїть.",
+        "Дивись, де пунктирна «зараз» перетинає нуль: це ціна, на якій вийдеш у нуль, якщо закриєш сьогодні.",
+    ),
+    "lp_scen": (
+        "Сценарії",
+        "P&L від входу при русі ціни на ±N % — зараз, з IV ±5 пунктів, через кілька днів і на експірацію.",
+        "Зелене — прибуток, червоне — збиток, з комісіями за вхід і вихід.",
+        "Знайди рядок і рух, де тобі боляче, — і чи є план на цей випадок.",
+    ),
+    "lp_linear": (
+        "Ф'ючерси",
+        "Відкриті лінійні позиції (перпи, ф'ючерси): вхід, марка, P&L, беззбиток і ціна ліквідації від Bybit.",
+        "Ліквідація червоним: стоп має стояти далеко перед нею.",
+        "Без стопа біля ліквідації — порушення правил ризику.",
     ),
     "j_trades": (
         "Мої угоди",
@@ -914,8 +982,11 @@ HELP: dict[str, tuple[str, str, str, str]] = {
     ),
     "j_table": (
         "Угоди",
-        "Усі реальні угоди, нові зверху: дата, джерело, інструмент, сторона, розмір, вхід і вихід, P&L у USD, R, теза.",
-        "R порожній, якщо стоп не записано. Теги й нотатки — з імпорту або journal_add.",
+        "Реальні угоди, нові зверху: дата, джерело, інструмент, вхід і вихід, тривалість, P&L у USD і в % депозиту, комісія, R. "
+        "Опціон — страйк, PUT/CALL, експірація й DTE на вході; «згорів» — експірація без виплати. Теза, теги й нотатка — "
+        "у спливаючому вікні інструмента. Фільтр: всі, відкриті, закриті (і скасовані, якщо такі є).",
+        "R порожній, якщо стоп не записано; R* у купленого опціону — від премії. Тривалість «—»: Bybit не дав часу "
+        "відкриття угоди ф'ючерса.",
         "Шукай повтори: той самий інструмент чи сетап раз у раз у мінусі — кандидат на паузу.",
     ),
     "j_review": (
@@ -1230,15 +1301,17 @@ HELP_JS = """
   }
   function show(i) { if (open && open !== i) hide(open); if (open !== i) at = Date.now(); open = i; i.classList.add('open'); place(i); }
   function hide(i) { i.classList.remove('open'); var t = i.querySelector('.tip'); if (t) t.removeAttribute('style'); if (open === i) open = null; }
-  document.querySelectorAll('.info').forEach(function (i) {
-    if (!i.querySelector('.tip')) return;
+  function bind(root) { root.querySelectorAll('.info').forEach(function (i) {
+    if (!i.querySelector('.tip') || i.dataset.tdh) return;
+    i.dataset.tdh = '1';
     i.addEventListener('pointerenter', function (e) { if (e.pointerType === 'mouse') show(i); });
     i.addEventListener('pointerleave', function (e) { if (e.pointerType === 'mouse') hide(i); });
     i.addEventListener('focus', function () { show(i); });
     i.addEventListener('blur', function () { hide(i); });
     i.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); if (open === i && Date.now() - at > 400) { hide(i); } else { show(i); } });
     i.addEventListener('keydown', function (e) { if (e.key === 'Escape') { hide(i); i.blur(); } });
-  });
+  }); }
+  bind(document); window.tdHelp = bind;
   document.addEventListener('click', function () { if (open) hide(open); });
   addEventListener('scroll', function () { if (open) place(open); }, { passive: true });
   addEventListener('resize', function () { if (open) place(open); });
@@ -1598,8 +1671,10 @@ SECTION_UA = {
     "em_month": "очікуваний рух (місяць)",
     "chain": "ланцюжок опціонів",
     "chain_near": "ланцюжок опціонів (найближча експірація)",
+    "chains": "ланцюжки опціонів (усі експірації)",
     "radar": "радар",
     "paper_rec": "паперова рекомендація",
+    "my_options": "мої опціони Bybit",
 }
 BRIEF_CAVEATS = (
     "Ймовірності з цін опціонів — ризик-нейтральні: це ціна страхування в ринку, а не прогноз; "
@@ -2509,6 +2584,9 @@ OPT_DEFAULT_STRAT = "long_strangle"
 # (analytics.assistant.pick_near_expiry), where rule 8's 1-3 day zone shows up; the month chain stays the default
 OPT_EXPIRIES = {"near": ("chain_near", "найближча"), "month": ("chain", "місячна")}
 OPT_DEFAULT_EXP = "month"
+# every other expiry of the term structure: query value = Deribit token ('25DEC26'), chain from the «chains» section
+OPT_ALL_SECTION = "chains"
+_EXP_TOKEN = re.compile(r"\d{1,2}[A-Z]{3}\d{2}")
 # (default, min, max): deposit USD, risk per trade %, size BTC (the owner trades 0.1, card «Депозит і ризик»)
 OPT_SIZE = {"dep": (10000.0, 100.0, 1e8), "riskp": (1.0, 0.1, 100.0), "qty": (0.1, 0.01, 100.0)}
 OPT_STRIKES = ("kput", "kcall", "kputw", "kcallw")
@@ -2553,12 +2631,44 @@ OPT_JS = """
 """
 
 
+def _exp_valid(which: object) -> bool:
+    return which in OPT_EXPIRIES or (isinstance(which, str) and _EXP_TOKEN.fullmatch(which) is not None)
+
+
+def _exp_section(which: str) -> str:
+    """Snapshot section of a builder expiry: its own one for an OPT_EXPIRIES key, else «chains»."""
+    return OPT_EXPIRIES[which][0] if which in OPT_EXPIRIES else OPT_ALL_SECTION
+
+
+def _exp_kind(token: object) -> str:
+    """Deribit expiry kind by its date: денна / тижнева (Friday) / місячна (last Friday) / квартальна (Mar, Jun, Sep, Dec)."""
+    d = expiry_utc(token)
+    if d is None:
+        return "—"
+    if d.weekday() != 4:
+        return "денна"
+    if (d + timedelta(days=7)).month == d.month:
+        return "тижнева"
+    return "квартальна" if d.month in (3, 6, 9, 12) else "місячна"
+
+
+def _exp_name(which: object) -> str:
+    return OPT_EXPIRIES[which][1] if which in OPT_EXPIRIES else f"{_exp_kind(which)} {which}" if _exp_valid(which) else "обрана"
+
+
 def option_chain(snap: dict | None, which: str = OPT_DEFAULT_EXP) -> dict | None:
-    """The chain of one builder expiry (OPT_EXPIRIES key; the month by default): forward, days, ATM IV, expiry and rows
-    {k, c/p: {mark, iv, delta}} (legs with a positive mark only), plus ``which``. None when the snapshot has no usable
-    chain for it."""
-    which = which if which in OPT_EXPIRIES else OPT_DEFAULT_EXP
-    chain = _data(snap, OPT_EXPIRIES[which][0]) if isinstance(snap, dict) else None
+    """The chain of one builder expiry (OPT_EXPIRIES key, the month by default, or an expiry token of the «chains»
+    section): forward, days, ATM IV, expiry and rows {k, c/p: {mark, iv, delta}} (legs with a positive mark only), plus
+    ``which``. None when the snapshot has no usable chain for it."""
+    which = which if _exp_valid(which) else OPT_DEFAULT_EXP
+    chain = None
+    if isinstance(snap, dict) and which in OPT_EXPIRIES:
+        chain = _data(snap, OPT_EXPIRIES[which][0])
+    elif isinstance(snap, dict):
+        by = (_data(snap, OPT_ALL_SECTION) or {}).get("by_expiry")
+        chain = by.get(which) if isinstance(by, dict) else None
+    if not isinstance(chain, dict):
+        return None
     if not chain:
         return None
     F, days = _num(chain.get("forward")), _num(chain.get("days"))
@@ -2821,7 +2931,7 @@ def parse_options_query(query: str) -> dict:
     cur = cur if cur in OPT_STRATEGIES else None
     out: dict = {"strat": s or cur or OPT_DEFAULT_STRAT, "keep_strikes": s is None or s == cur}
     e, cexp = one("exp"), one("cexp")
-    out["exp"] = e if e in OPT_EXPIRIES else OPT_DEFAULT_EXP
+    out["exp"] = e if _exp_valid(e) else OPT_DEFAULT_EXP
     # another expiry's strikes are not kept: switching the expiry resets them, like switching the strategy
     out["keep_strikes"] = out["keep_strikes"] and (cexp is None or cexp == out["exp"])
     for name, (default, lo, hi) in OPT_SIZE.items():
@@ -2938,15 +3048,28 @@ def _exp_short(ch: dict) -> str:
     return kyiv(exp, "%d.%m") if exp else _clean(ch.get("expiry") or "—", 12)
 
 
-def _expiry_select(snap: dict, cur: str) -> str:
-    """The expiry choice: only the expiries whose chain the snapshot has (label, date, days at the snapshot)."""
-    opts = []
+def _expiry_select(snap: dict, cur: str, now: float | None = None) -> str:
+    """The expiry choice: every expiry whose chain the snapshot has, nearest first (kind, date, days at the snapshot).
+    The near and month expiries keep their own keys; an expiry already delivered at ``now`` is left out (unless shown)."""
+    found: list[tuple[str, dict, str]] = []
     for key, (_, label) in OPT_EXPIRIES.items():
         c = option_chain(snap, key)
-        if c is None:
+        if c is not None and c["which"] == key:
+            found.append((key, c, label))
+    seen = {c["expiry"] for _, c, _ in found}
+    by = (_data(snap, OPT_ALL_SECTION) or {}).get("by_expiry")
+    for tok in by if isinstance(by, dict) else ():
+        c = None if tok in seen else option_chain(snap, tok)
+        if c is not None and c["which"] == tok:
+            found.append((tok, c, _exp_kind(tok)))
+            seen.add(tok)
+    opts = []
+    for key, c, label in sorted(found, key=lambda x: x[1]["days"]):
+        exp = expiry_utc(c.get("expiry"))
+        if key != cur and now is not None and exp is not None and exp.timestamp() <= now:
             continue
         text = f"{label} · {_exp_short(c)} · {_nf(c['days'], 1)} дн"
-        opts.append(f"<option value='{key}'{' selected' if key == cur else ''}>{_e(text)}</option>")
+        opts.append(f"<option value='{_e(key)}'{' selected' if key == cur else ''}>{_e(text)}</option>")
     return f"<label for='exp'>Експірація<select id='exp' name='exp'>{''.join(opts)}</select></label>"
 
 
@@ -3048,7 +3171,7 @@ def block_builder(ch: dict, snap: dict, p: dict, now: float | None = None) -> st
     for key, label in OPT_STRATEGIES.items():
         out.append(f"<button type='submit' name='s' value='{key}' aria-pressed={'true' if key == strat else 'false'}>{_e(label)}</button>")
     out.append("</div><div class='ctl'>")
-    out.append(_expiry_select(snap, which))
+    out.append(_expiry_select(snap, which, now))
     strad, condor = "straddle" in strat, strat == "iron_condor"
     out.append(_strike_select(ch, "kput", "p", strikes["kput"], "Пут, страйк", strad))
     out.append(_strike_select(ch, "kcall", "c", strikes["kcall"], "Кол, страйк", strad))
@@ -3076,10 +3199,9 @@ def block_builder(ch: dict, snap: dict, p: dict, now: float | None = None) -> st
         )
     out.append("<button class='go' type='submit'>Порахувати</button></div></form>")
     if which != p.get("exp", which):
-        want = OPT_EXPIRIES.get(p.get("exp"), ("", "обрана"))[1]
         out.append(
-            f"<p class='note warn'>Ланцюжка експірації «{_e(want)}» у знімку немає (старий знімок чи збій колектора): "
-            f"показано «{_e(OPT_EXPIRIES[which][1])}».</p>"
+            f"<p class='note warn'>Ланцюжка експірації «{_e(_exp_name(p.get('exp')))}» у знімку немає (старий знімок чи збій колектора): "
+            f"показано «{_e(_exp_name(which))}».</p>"
         )
     if cond:
         out.append(
@@ -3424,7 +3546,7 @@ def render_options(snap: dict | None, err: str | None, now: float, params: dict 
         out = [head, f"<header><h1>Опціони</h1>{_snapshot_stamp(snap, now)}</header>{_nav('options')}{caveats}<main class='brief'>"]
         want = p.get("exp", OPT_DEFAULT_EXP)
         # the chosen expiry's section first, then the month one (tried when the chosen chain is missing)
-        secs = list(dict.fromkeys((OPT_EXPIRIES.get(want, OPT_EXPIRIES[OPT_DEFAULT_EXP])[0], OPT_EXPIRIES[OPT_DEFAULT_EXP][0])))
+        secs = list(dict.fromkeys((_exp_section(want), _exp_section(OPT_DEFAULT_EXP))))
         ch = option_chain(snap, want)
         if ch is None and want != OPT_DEFAULT_EXP:  # e.g. a snapshot written before the nearer chain: the month one
             ch = option_chain(snap, OPT_DEFAULT_EXP)
@@ -3442,7 +3564,7 @@ def render_options(snap: dict | None, err: str | None, now: float, params: dict 
             out.append(
                 f"<section class='wide'>{_empty(f'Конструктор не вдалося показати: несподіваний формат даних ({type(e).__name__}).')}</section>"
             )
-        notes = _section_notes(snap, *dict.fromkeys((OPT_EXPIRIES[ch["which"]][0], secs[0])))  # the shown and the chosen chain
+        notes = _section_notes(snap, *dict.fromkeys((_exp_section(ch["which"]), secs[0])))  # the shown and the chosen chain
         if notes:
             out.append(f"<section class='wide'>{notes}</section>")
         out.append("</main>" + tail)
@@ -3457,6 +3579,615 @@ def render_options(snap: dict | None, err: str | None, now: float, params: dict 
 def options_page(query: str = "", now: float | None = None) -> str:
     snap, err = load_snapshot(SNAPSHOT_PATH)
     return with_help(render_options(snap, err, time.time() if now is None else now, parse_options_query(query), SNAPSHOT_PATH))
+
+
+# ---------------------------------------------------------------- «Позиції» tab: the owner's live Bybit positions
+#
+# Reads the state file of scripts/bybit_live.py (read-only key, refreshed every 10 s by the minutely timer
+# tradedesk-bybit-live) and computes everything here: live P&L from the tickers' marks, position greeks and the
+# breakevens now, through N days and at expiry. Model: Black-76 on each expiry's forward (Bybit's underlyingPrice),
+# r = 0, every leg at its own mark IV held fixed (sticky strike); T = days / 365, expiry 08:00 UTC. Breakevens include
+# the realised P&L Bybit reports for the open position (the opening fees) and an exit fee estimated as the same
+# amount again, capped at Bybit's share of the option's value in that scenario. Every string from the file is untrusted and escaped; numbers come as strings and are parsed.
+
+LIVE_PATH = Path(os.environ.get("TRADEDESK_LIVE_POSITIONS", "/var/lib/tradedesk-mcp/assistant/live_positions.json"))
+LIVE_STALE_S = 150  # the timer writes every 10 s; older means the collector stopped
+LIVE_POLL_MS = 10_000
+LIVE_HORIZONS = (1, 3, 7, 14, 30)  # breakeven rows: days from now (only those before expiry)
+LIVE_MOVES = (-10, -5, -2, 0, 2, 5, 10)  # scenario columns: forward move, %
+# legs of one base and expiry opened this close together are one structure (a strangle's legs: minutes apart); legs
+# opened further apart are separate trades with their own breakevens (owner, 26.10: «це ж окремі профілі»)
+LIVE_COMBO_GAP_S = 2 * 3600
+# Bybit caps an option's fee at a share of its price: 7 % for a trade, 12.5 % for the delivery at expiry
+LIVE_FEE_CAP_TRADE, LIVE_FEE_CAP_DELIVERY = 0.07, 0.125
+LIVE_STATUS_UA = {
+    "no_key": "На сервері немає ключа Bybit (/etc/tradedesk-bybit.env): позицій не видно.",
+    "key_not_read_only": "Ключ Bybit не лише для читання: збирач нічого не запитує. Потрібен ключ read-only.",
+    "error": "Bybit не відповів на запит позицій: показати нічого.",
+}
+LIVE_CAVEATS = (
+    "Модель: Black-76 на форварді експірації, кожна нога за своєю поточною mark IV, яка вважається незмінною. "
+    "Насправді IV рухається разом з ціною, тож беззбиток «через N днів» — орієнтир, а не точка.",
+    "Беззбиток враховує вже сплачену комісію за вхід (realised P&L позиції на Bybit) і таку саму оцінку комісії за "
+    "вихід (не більше 7 % вартості опціону, на експірації — 12.5 %, як ліміт Bybit); спред bid/ask не враховано: закриття ринковим ордером коштує ще половину спреду.",
+    "Ймовірностей тут немає навмисно: ризик-нейтральні ймовірності з IV — не прогноз.",
+)
+LIVE_CSS = """
+.lp-age{font-size:13px}.lp-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--ok);margin-right:6px;vertical-align:1px}
+.lp-dot.stale{background:var(--bad)}.lp-grp h3{margin:4px 0 8px;font-size:15px}
+table.lp td,table.lp th{white-space:nowrap}table.lp td.r,table.lp th.r{text-align:right}
+.lp-be b{font-size:15px}table.lp tr.lp-ev td{background:rgba(var(--warn-rgb),.12)}table.lp td.lp-flat,table.lp th.lp-flat{border-left:2px solid var(--line);padding-left:10px}.lp-sub{font-size:12px;color:var(--mut)}
+"""
+LIVE_JS = (
+    """
+(function () {
+  var box = document.getElementById('live'); if (!box) return;
+  function tick() {
+    if (document.hidden || document.querySelector('.info.open')) return;
+    var q = new URLSearchParams(location.search); q.set('frag', '1');
+    fetch(location.pathname + '?' + q.toString(), { credentials: 'same-origin', cache: 'no-store' })
+      .then(function (r) { if (!r.ok) throw r.status; return r.text(); })
+      .then(function (t) { box.innerHTML = t; if (window.tdHelp) window.tdHelp(box); })
+      .catch(function () { var a = document.getElementById('lp-age'); if (a) a.classList.add('bad'); });
+  }
+  setInterval(tick, """
+    + str(LIVE_POLL_MS)
+    + """);
+  document.addEventListener('visibilitychange', function () { if (!document.hidden) tick(); });
+})();
+"""
+)
+
+
+def _sn(x: object) -> float | None:
+    """A finite float from a number or a numeric string (Bybit sends strings), else None."""
+    if isinstance(x, str):
+        try:
+            x = float(x.strip())
+        except ValueError:
+            return None
+    return _num(x)
+
+
+def load_live(path: Path) -> tuple[dict | None, str | None]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None, "missing"
+    except (OSError, ValueError) as e:
+        return None, type(e).__name__
+    return (data, None) if isinstance(data, dict) else (None, "format")
+
+
+def _live_split(legs: list[dict]) -> list[list[dict]]:
+    """Legs of one base and expiry split into structures: sorted by opening time, a leg joins the previous structure
+    when it opened within LIVE_COMBO_GAP_S of that structure's last leg. Without every leg's time nothing is split."""
+    if any(leg["open_ts"] is None for leg in legs):
+        return [legs]
+    out: list[list[dict]] = []
+    last: float | None = None
+    for leg in sorted(legs, key=lambda x: (x["open_ts"], x["strike"])):
+        t = leg["open_ts"]
+        if out and last is not None and t - last <= LIVE_COMBO_GAP_S:
+            out[-1].append(leg)
+        else:
+            out.append([leg])
+        last = t
+    return out
+
+
+def live_groups(data: dict, now: float, join: bool = False) -> tuple[list[dict], list[dict]]:
+    """Option positions as separate structures (or, with ``join``, one per base and expiry) with live marks, plus the
+    linear positions. Skips malformed rows."""
+    tick = data.get("tickers") if isinstance(data.get("tickers"), dict) else {}
+    groups: dict[tuple, dict] = {}
+    linear: list[dict] = []
+    for p in _list(data.get("positions")):
+        if not isinstance(p, dict):
+            continue
+        sym = str(p.get("symbol") or "")
+        t = tick.get(sym) if isinstance(tick.get(sym), dict) else {}
+        size, entry = _sn(p.get("size")), _sn(p.get("avgPrice"))
+        side = "long" if p.get("side") == "Buy" else "short" if p.get("side") == "Sell" else None
+        if not size or entry is None or side is None:
+            continue
+        sign, size = (1 if side == "long" else -1), abs(size)
+        mark = _sn(t.get("markPrice")) or _sn(p.get("markPrice"))
+        realised = _sn(p.get("curRealisedPnl")) or 0.0
+        if p.get("category") == "linear":
+            linear.append(
+                {"symbol": _clean(sym, 30), "side": side, "size": size, "entry": entry, "mark": mark, "realised": realised,
+                 "upnl": sign * size * (mark - entry) if mark is not None else _sn(p.get("unrealisedPnl")),
+                 "be": _sn(p.get("breakEvenPrice")), "liq": _sn(p.get("liqPrice")), "lev": _sn(p.get("leverage"))}
+            )  # fmt: skip
+            continue
+        c = option_contract(sym)
+        F = _sn(t.get("underlyingPrice")) or _sn(t.get("indexPrice"))
+        iv = _sn(t.get("markIv"))
+        if c is None or mark is None or not F or not iv or iv <= 0:
+            continue
+        rv = data.get("rv") if isinstance(data.get("rv"), dict) else {}
+        rvb = rv.get(c["base"]) if isinstance(rv.get(c["base"]), dict) else {}
+        g = groups.setdefault(
+            (c["base"], c["expiry_ts"]),
+            {"base": c["base"], "exp_ts": c["expiry_ts"], "legs": [], "F": F, "rv7": _sn(rvb.get("rv7")), "rv30": _sn(rvb.get("rv30"))},
+        )
+        g["legs"].append(
+            {"symbol": _clean(sym, 40), "kind": "call" if c["kind"] == "C" else "put", "side": side, "size": size,
+             "strike": c["strike"], "entry_premium": entry, "iv": iv, "mark": mark, "realised": realised,
+             "fee_in": max(0.0, -realised), "upnl": sign * size * (mark - entry), "bid": _sn(t.get("bid1Price")), "ask": _sn(t.get("ask1Price")),
+             "open_ts": _ts(_sn(p.get("openTime"))) or _ts(_sn(p.get("createdTime")))}
+        )  # fmt: skip
+    out = []
+    for whole in sorted(groups.values(), key=lambda g: (g["exp_ts"], g["base"])):
+        parts = [whole["legs"]] if join else sorted(_live_split(whole["legs"]), key=lambda ls: min(x["strike"] for x in ls))
+        for legs in parts:
+            out.append(dict(whole, legs=legs))
+    for g in out:
+        g["days"] = max((g["exp_ts"] - now) / 86400.0, 0.0)
+        g["realised"] = sum(leg["realised"] for leg in g["legs"])
+        g["upnl"] = sum(leg["upnl"] for leg in g["legs"])
+        g["title"] = " + ".join(
+            f"{_nf(leg['strike'])} {'CALL' if leg['kind'] == 'call' else 'PUT'}" for leg in sorted(g["legs"], key=lambda x: x["strike"])
+        )
+    return out, linear
+
+
+def live_pnl(g: dict, s: float, days_left: float, d_iv: float = 0.0) -> float:
+    """P&L from entry in USD at forward s with days_left to expiry and every IV shifted by d_iv, net of the realised
+    P&L (opening fees) and the estimated exit fee (the opening fee again, capped at Bybit's share of the option's value
+    then). At days_left 0 it is the exact payoff."""
+    total = g["realised"]
+    cap = LIVE_FEE_CAP_TRADE if days_left > 0 else LIVE_FEE_CAP_DELIVERY
+    for leg in g["legs"]:
+        sign = 1 if leg["side"] == "long" else -1
+        v = _b76(s, leg["strike"], max(days_left, 0.0) / 365.0, max(leg["iv"] + d_iv, 1e-6), leg["kind"] == "call")
+        total += sign * leg["size"] * (v - leg["entry_premium"]) - min(leg["fee_in"], cap * v * leg["size"])
+    return total
+
+
+def live_breakevens(g: dict, days_left: float, lo: float = 0.3, hi: float = 2.5, n: int = 900) -> list[float]:
+    """Forwards where live_pnl changes sign, scanned on [lo·F, hi·F] and refined by bisection."""
+    F = g["F"]
+    xs = [F * (lo + (hi - lo) * i / (n - 1)) for i in range(n)]
+    ys = [live_pnl(g, x, days_left) for x in xs]
+    out = []
+    for i in range(1, n):
+        if (ys[i - 1] > 0) == (ys[i] > 0):
+            continue
+        a, b, ya = xs[i - 1], xs[i], ys[i - 1]
+        for _ in range(50):
+            m = (a + b) / 2
+            ym = live_pnl(g, m, days_left)
+            if (ym > 0) == (ya > 0):
+                a, ya = m, ym
+            else:
+                b = m
+        out.append((a + b) / 2)
+    return out
+
+
+def live_greeks(g: dict) -> dict[str, float]:
+    """Position greeks (Black-76, each leg at its mark IV) plus the theta/gamma breakeven daily move and the
+    vega-weighted IV's implied one-day move, USD."""
+    T = g["days"] / 365.0
+    G = position_greeks(g["legs"], g["F"], T, g["legs"][0]["iv"])
+    vw = [
+        (abs(_b76_greeks(g["F"], leg["strike"], T, leg["iv"], leg["kind"] == "call")["vega"]) * leg["size"], leg["iv"]) for leg in g["legs"]
+    ]
+    wsum = sum(w for w, _ in vw)
+    iv = sum(w * v for w, v in vw) / wsum if wsum > 0 else g["legs"][0]["iv"]
+    G["iv"] = iv
+    G["move_1d"] = g["F"] * iv / math.sqrt(365.0)
+    G["tg_move"] = math.sqrt(2.0 * abs(G["theta"]) / abs(G["gamma"])) if abs(G["gamma"]) > 1e-15 and G["theta"] * G["gamma"] < 0 else None
+    return G
+
+
+def _live_exp(ts: float) -> str:
+    return datetime.fromtimestamp(ts, timezone.utc).strftime("%d.%m %H:%M UTC")  # noqa: UP017
+
+
+def _dte(days: float) -> str:
+    return f"{days * 24:.0f} год" if days < 2 else f"{days:.1f} дн"
+
+
+def _be_cell(bes: list[float], F: float, cols: tuple[bool, bool] = (True, True)) -> str:
+    """The nearest breakeven below and above the forward, only the columns asked for (a long call has none below)."""
+    n = sum(cols)
+    if not bes:
+        return f"<td colspan='{n}' class='mut'>беззбитку в межах −70…+150 % нема</td>"
+    lo = [b for b in bes if b < F]
+    hi = [b for b in bes if b >= F]
+
+    def one(b: float | None) -> str:
+        if b is None:
+            return "<td class='r mut'>—</td>"
+        return f"<td class='r num'><b>{_e(_kd(b))}</b> <span class='lp-sub'>{_e(_pc((b / F - 1) * 100))}</span></td>"
+
+    return (one(max(lo) if lo else None) if cols[0] else "") + (one(min(hi) if hi else None) if cols[1] else "")
+
+
+LIVE_BE_DAILY = 7  # breakeven rows: every day for the first week, then weekly
+WEEKDAYS_UA = ("пн", "вт", "ср", "чт", "пт", "сб", "нд")
+
+
+def live_be_dates(g: dict) -> list[float]:
+    """Timestamps of the breakeven rows: each day at the expiry's time of day (08:00 UTC) from the next one on, daily
+    for LIVE_BE_DAILY days and weekly after, the last one at least an hour before expiry; then the expiry itself."""
+    now, exp = g["exp_ts"] - g["days"] * 86400.0, g["exp_ts"]
+    t = exp - math.floor((exp - now) / 86400.0) * 86400.0
+    if t - now < 3600:
+        t += 86400.0
+    out, i = [], 0
+    while t < exp - 3600:
+        if i < LIVE_BE_DAILY or (i - LIVE_BE_DAILY) % 7 == 6:
+            out.append(t)
+        t, i = t + 86400.0, i + 1
+    return out + [exp]
+
+
+def _live_when(ts: float) -> str:
+    d = datetime.fromtimestamp(ts, KYIV)
+    return f"{WEEKDAYS_UA[d.weekday()]} {d:%d.%m, %H:%M}"
+
+
+LIVE_EVENTS_SEED = REPO / "src" / "tradedesk" / "data" / "events_seed.json"  # FOMC / CPI / NFP / elections, UTC
+LIVE_EVENT_UA = {
+    "fomc": "ФРС: рішення щодо ставки",
+    "cpi": "CPI США (інфляція)",
+    "core_pce": "PCE США (інфляція)",
+    "pce": "PCE США (інфляція)",
+    "ppi": "PPI США",
+    "nfp": "NFP США (зайнятість)",
+    "gdp": "ВВП США",
+    "retail_sales": "роздрібні продажі США",
+    "ism": "ISM США",
+    "election": "вибори в США",
+    "ecb_decision": "ЄЦБ: ставка",
+    "boj_decision": "Банк Японії: ставка",
+    "boe_decision": "Банк Англії: ставка",
+}
+
+
+def _iso_utc(s: object) -> datetime | None:
+    """An ISO time with an offset ('2026-10-28T18:00:00+00:00'), else None."""
+    try:
+        dt = datetime.fromisoformat(str(s))
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else None
+
+
+def live_events(snap: dict | None, seed: object, now: float) -> list[dict]:
+    """Macro events ahead for the breakeven table: the snapshot's calendar (live feed + seed) within its horizon, the
+    bundled seed beyond it; only the kinds of LIVE_EVENT_UA. Rows of one kind on one day merge into the earliest;
+    rows at the same minute share a line. Each: {'ts', 'label'} (ours, never the feed's text)."""
+    ev = _data(snap, "events") if snap else None
+    rows: list[tuple[float, str]] = []
+    horizon = now
+    if isinstance(ev, dict):
+        horizon = now + (_num(ev.get("horizon_days")) or 0) * 86400.0
+        for x in merge_same_day(ev.get("events")):
+            dt = _iso_utc(x.get("ts_utc")) if isinstance(x, dict) else None
+            kind = str(x.get("kind") or "") if isinstance(x, dict) else ""
+            if dt and kind in LIVE_EVENT_UA:
+                rows.append((dt.timestamp(), kind))
+    seen = {(k, datetime.fromtimestamp(t, timezone.utc).date()) for t, k in rows}  # noqa: UP017
+    for x in _list(seed):
+        t, kind = _num(x.get("ts")) if isinstance(x, dict) else None, str(x.get("kind") or "") if isinstance(x, dict) else ""
+        if t and t > horizon and kind in LIVE_EVENT_UA and (kind, datetime.fromtimestamp(t, timezone.utc).date()) not in seen:  # noqa: UP017
+            rows.append((t, kind))
+    by_ts: dict[float, list[str]] = {}
+    for t, kind in sorted(rows, key=lambda r: r[0]):  # stable: the feed's order within a minute
+        if t > now:
+            labels = by_ts.setdefault(t, [])
+            if LIVE_EVENT_UA[kind] not in labels:
+                labels.append(LIVE_EVENT_UA[kind])
+    return [{"ts": t, "label": " · ".join(v)} for t, v in sorted(by_ts.items())]
+
+
+def load_live_events(now: float) -> list[dict]:
+    snap, _ = load_snapshot(SNAPSHOT_PATH)
+    try:
+        seed = json.loads(LIVE_EVENTS_SEED.read_text(encoding="utf-8")).get("events")
+    except (OSError, ValueError, AttributeError):
+        seed = []
+    return live_events(snap, seed, now)
+
+
+def block_live_be(g: dict) -> str:
+    F, days = g["F"], g["days"]
+    now = g["exp_ts"] - days * 86400.0
+
+    def sub(ts: float) -> str:
+        left = (g["exp_ts"] - ts) / 86400.0
+        return "експірація" if left <= 0 else f"через {_dte((ts - now) / 86400.0)} · до експірації {_dte(left)}"
+
+    plan = [("зараз", f"до експірації {_dte(days)}", days, False)]
+    points = [(ts, _live_when(ts), False) for ts in live_be_dates(g)]
+    points += [(e["ts"], f"{_live_when(e['ts'])} · {e['label']}", True) for e in g.get("events") or [] if now < e["ts"] < g["exp_ts"]]
+    for ts, label, is_ev in sorted(points, key=lambda x: x[0]):
+        plan.append((label, sub(ts), max((g["exp_ts"] - ts) / 86400.0, 0.0), is_ev))
+    bes = [live_breakevens(g, left) for _, _, left, _ in plan]
+    cols = (any(b < F for x in bes for b in x), any(b >= F for x in bes for b in x))
+    if not any(cols):
+        cols = (False, True)
+    head = ("<th class='r'>беззбиток нижче</th>" if cols[0] else "") + ("<th class='r'>беззбиток вище</th>" if cols[1] else "")
+    rows = "".join(
+        f"<tr{' class=lp-ev' if ev else ''}><td>{'⚡ ' if ev else ''}{_e(label)}<br><span class='lp-sub'>{_e(s)}</span></td>{_be_cell(b, F, cols)}</tr>"
+        for (label, s, _, ev), b in zip(plan, bes, strict=True)
+    )
+    has_ev = any(p[3] for p in plan)
+    return (
+        f"<section class='wide'>{_h2('Беззбиток', 'lp_be')}<div class='scroll'><table class='lp lp-be'>"
+        f"<tr><th>Коли (за Києвом)</th>{head}</tr>{rows}"
+        f"</table></div><p class='note'>Ціна, до якої {_e(g['base'])} має дійти до цього моменту, щоб позиція була в нулі "
+        f"(P&amp;L = 0 з комісіями за вхід і вихід, IV незмінні). Відсоток — відстань від форварду експірації ({_e(_kd(F))})."
+        + (
+            " ⚡ — макроподії до експірації (календар знімка асистента, далі — статичний; час подій зі статичного календаря "
+            "приблизний). Навколо релізу IV часто падає одразу після нього — беззбиток у цей момент рахується без цього."
+            if has_ev
+            else ""
+        )
+        + "</p></section>"
+    )
+
+
+def block_live_greeks(g: dict) -> str:
+    G, F, b = live_greeks(g), g["F"], g["base"]
+    d, gm, v, t = G["delta"], G["gamma"], G["vega"], G["theta"]
+    one = F * 0.01
+    rows = [
+        ("Дельта", f"{_sg(d, 3)} {b}", d, f"≈ {_usd(d * F, True)} експозиції; {b} +1 % ({_kd(one)}) → {_usd(d * one, True)}"),
+        ("Гамма", f"{_sg(gm * one, 4)} {b}", gm, f"на стільки зміниться дельта при русі {b} на 1 %; рух на 1 % у будь-який бік {'додає' if gm >= 0 else 'забирає'} ще ≈ {_usd(abs(0.5 * gm * one * one))}"),
+        ("Вега", _usd(v, True), v, f"IV +1 пункт (зараз {G['iv'] * 100:.1f} %); IV +5 п. → {_usd(live_pnl(g, F, g['days'], 0.05) - live_pnl(g, F, g['days']), True)}"),
+        ("Тета", _usd(t, True), t, "за добу, якщо ціна й IV стоять"),
+    ]  # fmt: skip
+    if G["tg_move"] is not None:
+        want = "окупає тету" if gm > 0 else "ще не з'їдає отриману тету"
+        real = [
+            f"{lb} ≈ {_kd(F * x / math.sqrt(365.0))} ({x / math.sqrt(365.0) * 100:.2f} %)"
+            for lb, x in (("7 дн", g.get("rv7")), ("30 дн", g.get("rv30")))
+            if x
+        ]
+        tail = f"; реальний рух {b} за добу: {', '.join(real)}" if real else ""
+        rows.append(("Рух за добу", _kd(G["tg_move"]), gm, f"такий денний рух {want} ({G['tg_move'] / F * 100:.2f} %){tail}"))
+    body = "".join(
+        f"<tr><td>{_e(k)}</td><td class='r num {_cls(x)}' style='white-space:nowrap'>{_e(val)}</td><td class='mut'>{_e(s)}</td></tr>"
+        for k, val, x, s in rows
+    )
+    return (
+        f"<section>{_h2('Греки', 'lp_greeks')}<table class='greeks'>{body}</table>"
+        "<p class='note'>Black-76, кожна нога за своєю mark IV; для малих рухів. «Рух за добу» — √(2·|тета| / гамма), це рух, який закладає IV; реальний — середній денний рух за 7 і 30 повних днів (Bybit, перп). Реальний більший — купленим опціонам рух окупає тету, менший — ні.</p></section>"
+    )
+
+
+def block_live_legs(g: dict) -> str:
+    rows = []
+    for leg in g["legs"]:
+        pct = leg["upnl"] / (leg["entry_premium"] * leg["size"]) * 100 if leg["entry_premium"] > 0 else None
+        spread = f"{_nf(leg['bid'])} / {_nf(leg['ask'])}" if leg["bid"] is not None and leg["ask"] is not None else "—"
+        rows.append(
+            f"<tr><td>{_e(_nf(leg['strike']))} <b>{'CALL' if leg['kind'] == 'call' else 'PUT'}</b></td>"
+            f"<td>{'купив' if leg['side'] == 'long' else 'продав'}</td><td class='r num'>{_e(_nf(leg['size'], 2))}</td>"
+            f"<td class='r num'>{_e(_nf(leg['entry_premium'], 1))} → {_e(_nf(leg['mark'], 1))}</td><td class='r num mut'>{_e(spread)}</td>"
+            f"<td class='r num'>{leg['iv'] * 100:.1f} %</td><td class='r num {_cls(round(leg['upnl'], 2))}'>{_e(_usd(leg['upnl'], True))}"
+            f"{f' <span class=lp-sub>{_e(_pc(pct, 0))}</span>' if pct is not None else ''}</td>"
+            f"<td class='r num mut'>{_e(_usd(leg['realised'], True))}</td></tr>"
+        )
+    return (
+        f"<section class='wide'>{_h2('Ноги', 'lp_legs')}<div class='scroll'><table class='lp'>"
+        "<tr><th>Опціон</th><th>Сторона</th><th class='r'>К-сть</th><th class='r'>Вхід → марка</th><th class='r'>Bid / ask</th>"
+        "<th class='r'>IV</th><th class='r'>P&amp;L</th><th class='r'>Реаліз. (комісії)</th></tr>"
+        + "".join(rows)
+        + "</table></div></section>"
+    )
+
+
+def block_live_scen(g: dict) -> str:
+    F, days = g["F"], g["days"]
+    plan = [("зараз", days, 0.0), ("зараз, IV +5 п.", days, 0.05), ("зараз, IV −5 п.", days, -0.05)]
+    mid = [h for h in LIVE_HORIZONS if h < days - 0.25]
+    if mid:
+        h = mid[min(1, len(mid) - 1)]
+        plan.append((f"через {h} дн", days - h, 0.0))
+    plan.append(("на експірацію", 0.0, 0.0))
+    head = "".join(
+        f"<th class='r num'>{_e(('+' if m > 0 else '−' if m < 0 else '') + f'{abs(m)} %')}<br><span class='mut'>{_e(_kd(F * (1 + m / 100)))}</span></th>"
+        for m in LIVE_MOVES
+    )
+    body = "".join(
+        f"<tr><td>{_e(lb)}</td>"
+        + "".join(
+            f"<td class='r num {_cls(round(x))}'>{_e(_usd(x, True))}</td>"
+            for x in [live_pnl(g, F * (1 + m / 100), left, div) for m in LIVE_MOVES]
+        )
+        + "</tr>"
+        for lb, left, div in plan
+    )
+    return (
+        f"<section class='wide'>{_h2('Сценарії · P&L від входу, USD', 'lp_scen')}<div class='scroll'><table class='scen'>"
+        f"<tr><th>{_e(g['base'])}</th>{head}</tr>{body}</table></div>"
+        "<p class='note'>P&amp;L від цін входу з комісіями за вхід і вихід; до експірації — Black-76 за поточними IV.</p></section>"
+    )
+
+
+def live_svg(g: dict) -> str:
+    """P&L from entry over the forward: at expiry (solid), now (dashed) and halfway (dotted); breakevens of «now»."""
+    F, days = g["F"], g["days"]
+    iv = live_greeks(g)["iv"]
+    r = min(0.3, max(0.06, 2.5 * iv * math.sqrt(max(days, 0.5) / 365.0)))
+    lo, hi, n = F * (1 - r), F * (1 + r), 161
+    xs = [lo + (hi - lo) * i / (n - 1) for i in range(n)]
+    curves = [("exp", 0.0), ("now", days)] + ([("mid", days / 2)] if days > 2 else [])
+    ys = {k: [live_pnl(g, x, left) for x in xs] for k, left in curves}
+    W, H, L, R, Tp, B = 720, 280, 70, 14, 12, 28
+    allv = [y for v in ys.values() for y in v] + [0.0]
+    ymin, ymax = min(allv), max(allv)
+    pad = (ymax - ymin) * 0.08 or 1.0
+    ymin, ymax = ymin - pad, ymax + pad
+
+    def X(x: float) -> float:
+        return L + (x - lo) / (hi - lo) * (W - L - R)
+
+    def Y(y: float) -> float:
+        return Tp + (ymax - y) / (ymax - ymin) * (H - Tp - B)
+
+    out = []
+    sy = nice_step(ymax - ymin, 6)
+    y = math.ceil(ymin / sy) * sy
+    while y <= ymax:
+        out.append(
+            f'<line x1="{L}" x2="{W - R}" y1="{Y(y):.1f}" y2="{Y(y):.1f}" style="stroke:var(--line)"/><text x="{L - 6}" y="{Y(y) + 4:.1f}" text-anchor="end">{_e(_usd(y))}</text>'
+        )
+        y += sy
+    sx = nice_step(hi - lo, 7)
+    x = math.ceil(lo / sx) * sx
+    while x <= hi:
+        out.append(f'<text x="{X(x):.1f}" y="{H - 8}" text-anchor="middle">{_e(_kd(x))}</text>')
+        x += sx
+    out.append(f'<line x1="{L}" x2="{W - R}" y1="{Y(0):.1f}" y2="{Y(0):.1f}" style="stroke:var(--mut)"/>')
+    out.append(
+        f'<line x1="{X(F):.1f}" x2="{X(F):.1f}" y1="{Tp}" y2="{H - B}" style="stroke:var(--mut);stroke-dasharray:2 3"/><text x="{X(F) + 4:.1f}" y="{Tp + 10}">зараз {_e(_kd(F))}</text>'
+    )
+    style = {
+        "exp": "stroke:var(--acc);stroke-width:2.4",
+        "now": "stroke:var(--warn);stroke-width:2;stroke-dasharray:6 4",
+        "mid": "stroke:var(--mut);stroke-width:1.6;stroke-dasharray:2 3",
+    }
+    for k, _ in curves:
+        d = "".join(f"{'L' if i else 'M'}{X(a):.1f},{Y(b):.1f}" for i, (a, b) in enumerate(zip(xs, ys[k], strict=True)))
+        out.append(f'<path d="{d}" style="fill:none;{style[k]}"/>')
+    shown = [b for b in live_breakevens(g, days) if lo <= b <= hi]
+    for i, b in enumerate(shown):
+        # neighbouring labels sit below and above the zero line so close breakevens do not overlap
+        ty, anchor = (Y(0) + 18, "end" if i + 1 < len(shown) else "middle") if i % 2 == 0 else (Y(0) - 10, "start")
+        out.append(
+            f'<circle cx="{X(b):.1f}" cy="{Y(0):.1f}" r="4" style="fill:var(--card);stroke:var(--warn);stroke-width:1.5"/>'
+            f'<text x="{X(b):.1f}" y="{ty:.1f}" text-anchor="{anchor}" style="fill:var(--fg)">{_e(_kd(b))}</text>'
+        )
+    legend = "<span style='color:var(--acc)'>━ на експірацію</span> · <span style='color:var(--warn)'>╍ зараз</span>" + (
+        f" · <span class='mut'>┈ через {days / 2:.1f} дн</span>" if days > 2 else ""
+    )
+    return (
+        f"<section class='wide'>{_h2('P&L від ціни', 'lp_chart')}"
+        f'<svg viewBox="0 0 {W} {H}" role="img" aria-label="P&amp;L позиції від ціни, USD">{"".join(out)}</svg>'
+        f"<p class='note'>{legend}. Кружки — беззбиток зараз.</p></section>"
+    )
+
+
+def block_live_linear(rows: list[dict]) -> str:
+    body = "".join(
+        f"<tr><td>{_e(r['symbol'])}</td><td>{'лонг' if r['side'] == 'long' else 'шорт'}</td><td class='r num'>{_e(_nf(r['size'], 4))}</td>"
+        f"<td class='r num'>{_e(_nf(r['entry'], 2))} → {_e(_nf(r['mark'], 2))}</td><td class='r num {_cls(round(r['upnl'] or 0, 2))}'>{_e(_usd(r['upnl'], True))}</td>"
+        f"<td class='r num'>{_e(_nf(r['be'], 2))}</td><td class='r num bad'>{_e(_nf(r['liq'], 2))}</td><td class='r num'>{_e(_nf(r['lev'], 1))}×</td></tr>"
+        for r in rows
+    )
+    return (
+        f"<section class='wide'>{_h2('Ф’ючерси', 'lp_linear')}<div class='scroll'><table class='lp'>"
+        "<tr><th>Контракт</th><th>Сторона</th><th class='r'>Розмір</th><th class='r'>Вхід → марка</th><th class='r'>P&amp;L</th>"
+        "<th class='r'>Беззбиток</th><th class='r'>Ліквідація</th><th class='r'>Плече</th></tr>" + body + "</table></div>"
+        "<p class='note'>Беззбиток і ліквідація — від Bybit (з комісіями й funding, які біржа вже врахувала).</p></section>"
+    )
+
+
+def render_live_main(data: dict | None, err: str | None, now: float, join: bool = False, events: list[dict] | None = None) -> str:
+    """The live part of the tab (also served alone for the 10-second refresh). Never raises."""
+    try:
+        if data is None:
+            why = (
+                "Живих даних ще нема: збирач (таймер tradedesk-bybit-live) пише їх щохвилини."
+                if err == "missing"
+                else f"Файл живих даних не прочитано ({_e(err)})."
+            )
+            return f"<section class='wide'>{_h2('Позиції', 'lp_sum')}{_empty(why)}</section>"
+        asof = parse_utc(data.get("asof_utc"))
+        age = now - asof.timestamp() if asof else None
+        stale = age is None or age > LIVE_STALE_S
+        stamp = (
+            f"<p id='lp-age' class='lp-age {'bad' if stale else 'mut'}'><span class='lp-dot{' stale' if stale else ''}'></span>"
+            + (f"Bybit {_e(kyiv(asof))} за Києвом · {_e(fmt_age(age))}" if asof else "час даних невідомий")
+            + (" · дані застарілі: збирач, схоже, зупинився" if stale else " · оновлюється кожні 10 с")
+            + "</p>"
+        )
+        status = str(data.get("status") or "")
+        if status != "ok":
+            return f"<section class='wide'>{_h2('Позиції', 'lp_sum')}{stamp}{_empty(LIVE_STATUS_UA.get(status, 'Невідомий стан збирача.'))}</section>"
+        groups, linear = live_groups(data, now, join)
+        for g in groups:
+            g["events"] = events or []
+        w = data.get("wallet") if isinstance(data.get("wallet"), dict) else {}
+        upnl = sum(g["upnl"] for g in groups) + sum(r["upnl"] or 0 for r in linear)
+        real = sum(g["realised"] for g in groups) + sum(r["realised"] for r in linear)
+        theta = sum(position_greeks(g["legs"], g["F"], g["days"] / 365.0, g["legs"][0]["iv"])["theta"] for g in groups)
+        eq = _sn(w.get("totalEquity"))
+        tiles = [
+            _tile("Капітал", _e(_usd(eq)), _e(f"вільно {_usd(_sn(w.get('totalAvailableBalance')))}"), help="lp_equity"),
+            _tile("P&amp;L відкритих", f"<span class='{_cls(round(upnl + real))}'>{_e(_usd(upnl + real, True))}</span>",
+                  _e(f"марки {_usd(upnl, True)} · комісії {_usd(real, True)}" + (f" · {_pc((upnl + real) / eq * 100)} капіталу" if eq else "")), help="lp_pnl"),
+            _tile("Тета на добу", f"<span class='{_cls(theta)}'>{_e(_usd(theta, True))}</span>", "усі опціони, ціна й IV стоять", help="lp_theta"),
+        ]  # fmt: skip
+        if groups:
+            g0 = groups[0]
+            tiles.append(_tile("До експірації", _e(_dte(g0["days"])), _e(f"найближча {_live_exp(g0['exp_ts'])}"), help="lp_dte"))
+        toggle = "<a href='/positions'>окремо кожна угода</a>" if join else "<a href='/positions?join=1'>зведено за експірацією</a>"
+        mode = (
+            "Ноги однієї експірації зведено в одну позицію"
+            if join
+            else "Кожна угода окремо; ноги, відкриті з різницею до 2 год (стренгл, спред), — одна позиція"
+        )
+        out = [
+            f"<section class='wide'>{_h2('Позиції', 'lp_sum')}{stamp}<div class='tiles'>{''.join(tiles)}</div>"
+            f"<p class='note'>{_e(mode)} · показати {toggle}</p></section>"
+        ]
+        if not groups and not linear:
+            out.append(f"<section class='wide'>{_empty('Відкритих позицій немає.')}</section>")
+        for g in groups:
+            G = live_greeks(g)
+            net = g["upnl"] + g["realised"]
+            out.append(
+                f"<section class='wide lp-grp'><h3>{_e(g['base'])} {_e(g['title'])} · експірація {_e(_live_exp(g['exp_ts']))} · до неї {_e(_dte(g['days']))}"
+                f" · форвард {_e(_kd(g['F']))} · P&amp;L <span class='{_cls(round(net))}'>{_e(_usd(net, True))}</span>"
+                f" · тета {_e(_usd(G['theta'], True))}/добу</h3></section>"
+            )
+            for blk in (block_live_legs, block_live_be, block_live_greeks, live_svg, block_live_scen):
+                try:
+                    out.append(blk(g))
+                except Exception as e:  # noqa: BLE001 - one odd position must not take the page down
+                    out.append(f"<section class='wide'>{_empty(f'Блок не порахувався ({type(e).__name__}).')}</section>")
+        if linear:
+            out.append(block_live_linear(linear))
+        errs = [_clean(x, 80) for x in _list(data.get("errors"))][:5]
+        if errs:
+            out.append(
+                f"<section class='wide'><p class='note warn'>Частина запитів до Bybit не вдалась: {_e('; '.join(errs))}</p></section>"
+            )
+        return "".join(out)
+    except Exception as e:  # noqa: BLE001 - the page always renders
+        return f"<section class='wide'>{_h2('Позиції', 'lp_sum')}{_empty(f'Дані не вдалося показати ({type(e).__name__}).')}</section>"
+
+
+def render_positions(data: dict | None, err: str | None, now: float, join: bool = False, events: list[dict] | None = None) -> str:
+    head = (
+        "<!doctype html><html lang='uk'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+        f"<title>tradedesk — позиції</title><style>{CSS}{BRIEF_CSS}{OPT_CSS}{LIVE_CSS}</style></head><body>"
+    )
+    caveats = "<div class='caveat'><b>Застереження</b><ul>" + "".join(f"<li>{_e(c)}</li>" for c in LIVE_CAVEATS) + "</ul></div>"
+    return (
+        head
+        + f"<header><h1>Позиції Bybit</h1></header>{_nav('positions')}<main class='brief' id='live'>{render_live_main(data, err, now, join, events)}</main>"
+        + f"{caveats}<script>{LIVE_JS}</script></body></html>"
+    )
+
+
+def positions_page(query: str = "", now: float | None = None) -> str:
+    data, err = load_live(LIVE_PATH)
+    t = time.time() if now is None else now
+    args = (query or "").split("&")
+    join = "join=1" in args
+    if "frag=1" in args:
+        return render_live_main(data, err, t, join, load_live_events(t))
+    return with_help(render_positions(data, err, t, join, load_live_events(t)))
 
 
 # ---------------------------------------------------------------- «Радар» tab: the snapshot's radar section (BTC, ETH)
@@ -5611,13 +6342,44 @@ def load_journal(path: Path) -> tuple[dict | None, str | None]:
         con.close()
 
 
+# The trades table filter: ?status=… (untrusted, whitelisted); «Скасовані» shows only when there are such trades.
+JOURNAL_FILTERS = (("all", "Всі"), ("open", "Відкриті"), ("closed", "Закриті"), ("cancelled", "Скасовані"))
+
+
 def parse_journal_query(query: str) -> dict:
-    """Page number from the URL query (untrusted): anything odd gives page 1."""
+    """Page number and the trades filter from the URL query (untrusted): anything odd gives page 1, all trades."""
     try:
-        v = urllib.parse.parse_qs(query or "", max_num_fields=20).get("page", ["1"])[0][:6]
+        q = urllib.parse.parse_qs(query or "", max_num_fields=20)
     except ValueError:
-        v = "1"
-    return {"page": int(v) if v.isascii() and v.isdigit() and 1 <= int(v) <= 100000 else 1}
+        q = {}
+    v = q.get("page", ["1"])[0][:6]
+    status = q.get("status", ["all"])[0][:12]
+    return {
+        "page": int(v) if v.isascii() and v.isdigit() and 1 <= int(v) <= 100000 else 1,
+        "status": status if status in dict(JOURNAL_FILTERS) else "all",
+    }
+
+
+def journal_href(status: str, page: int = 1) -> str:
+    """The trades table URL (status and page are whitelisted values), anchored at the table."""
+    q = [f"status={status}"] if status != "all" else []
+    q += [f"page={page}"] if page > 1 else []
+    return "/journal" + ("?" + "&".join(q) if q else "") + "#trades"
+
+
+def block_journal_filter(real: list[dict], status: str) -> str:
+    counts = {"all": len(real)}
+    for t in real:
+        k = str(t.get("status") or "")
+        counts[k] = counts.get(k, 0) + 1
+    links = []
+    for key, label in JOURNAL_FILTERS:
+        n = counts.get(key, 0)
+        if key == "cancelled" and not n and status != key:
+            continue
+        cur = " aria-current='page'" if key == status else ""
+        links.append(f"<a href='{journal_href(key)}'{cur}>{_e(label)} <span class='n'>{n}</span></a>")
+    return f"<nav class='jf' aria-label='Фільтр угод'>{''.join(links)}</nav>"
 
 
 def _day(ts: object) -> str:
@@ -5711,42 +6473,185 @@ def block_journal_sources(groups: dict[str, list[dict]]) -> str:
     )
 
 
-def block_journal_table(real: list[dict], page: int) -> str:
+JOURNAL_EMPTY = {
+    "open": "Відкритих угод немає.",
+    "closed": "Закритих угод ще немає.",
+    "cancelled": "Скасованих угод немає.",
+}
+# An option symbol of the journal: Bybit BTC-13NOV26-78000-P-USDT, Deribit BTC-13NOV26-78000-P. Expiry 08:00 UTC.
+OPTION_SYMBOL_RE = re.compile(r"^([A-Z0-9]{2,10})-(\d{1,2})([A-Z]{3})(\d{2})-(\d+(?:\.\d+)?)-([CP])(?:-(?:USDT|USDC))?$")
+MONTHS_EN = {m: i for i, m in enumerate(("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"), 1)}
+EXPIRY_MATCH_S = 15 * 60  # a close this near the expiry is the settlement, not a sale
+FEES_RE = re.compile(r"комісії\s+(\d+(?:\.\d+)?)")
+NO_OPEN_TIME = "opened_ts = час закриття"  # scripts/bybit_import.py: Bybit gave no opening time for a linear trade
+
+
+def option_contract(symbol: object) -> dict | None:
+    """{'base', 'strike', 'kind' ('C'|'P'), 'expiry_ts'} of an option symbol; None for anything else."""
+    m = OPTION_SYMBOL_RE.match(str(symbol or "").strip().upper())
+    if not m or m.group(3) not in MONTHS_EN:
+        return None
+    try:
+        exp = datetime(2000 + int(m.group(4)), MONTHS_EN[m.group(3)], int(m.group(2)), 8, tzinfo=timezone.utc)  # noqa: UP017
+    except ValueError:
+        return None
+    return {"base": m.group(1), "strike": float(m.group(5)), "kind": m.group(6), "expiry_ts": exp.timestamp()}
+
+
+def _ts(x: object) -> float | None:
+    v = _num(x)
+    return None if v is None or v <= 0 else v / 1000 if v > 1e12 else v
+
+
+def _span(seconds: float) -> str:
+    """34 хв · 1 год 19 хв · 3 д 4 год."""
+    m = int(seconds // 60)
+    if m < 60:
+        return f"{max(m, 0)} хв"
+    h, m = divmod(m, 60)
+    if h < 48:
+        return f"{h} год {m} хв" if m and h < 10 else f"{h} год"
+    d, h = divmod(h, 24)
+    return f"{d} д {h} год" if h else f"{d} д"
+
+
+def journal_duration(t: dict, now: float) -> str:
+    """How long the trade was (or still is) open; '—' when the opening time is unknown."""
+    opened, closed = _ts(t.get("opened_ts")), _ts(t.get("closed_ts"))
+    if opened is None or NO_OPEN_TIME in str(t.get("note") or ""):
+        return "—"
+    if t.get("status") == "open":
+        return f"триває {_span(now - opened)}"
+    if closed is None or closed <= opened:
+        return "—"
+    return _span(closed - opened)
+
+
+def journal_fees(t: dict) -> float | None:
+    """Fees in USD as the exchange import writes them into the note («комісії 18.4500»)."""
+    m = FEES_RE.search(str(t.get("note") or ""))
+    return float(m.group(1)) if m else None
+
+
+def journal_r(t: dict, opt: dict | None) -> tuple[float | None, bool]:
+    """(R, derived): the recorded R, else for a closed long option R from its premium (the premium is the whole risk)."""
+    r = _num(t.get("r_multiple"))
+    if r is not None:
+        return r, False
+    entry, size, pnl = _num(t.get("entry")), _num(t.get("size")), _num(t.get("pnl"))
+    if opt and t.get("side") == "long" and t.get("status") == "closed" and entry and size and pnl is not None and entry * size > 0:
+        return pnl / (entry * size), True
+    return None, False
+
+
+def journal_instrument(t: dict, opt: dict | None) -> str:
+    """Trusted HTML of the instrument cell: an option as «BTC 78 000 PUT · 13.11.26» with DTE at entry."""
+    if not opt:
+        return _e(_clean(t.get("symbol") or "—", 40))
+    kind = "PUT" if opt["kind"] == "P" else "CALL"
+    exp = datetime.fromtimestamp(opt["expiry_ts"], timezone.utc).strftime("%d.%m.%y")  # noqa: UP017
+    strike = _nf(opt["strike"], 0 if opt["strike"] >= 100 else 2)
+    out = f"<b>{_e(opt['base'])}</b> {_e(strike)} <span class='{kind.lower()}'>{kind}</span> · {exp}"
+    opened = _ts(t.get("opened_ts"))
+    if opened is not None and opt["expiry_ts"] > opened:
+        dte = (opt["expiry_ts"] - opened) / 86400
+        out += f"<br><span class='mut'>DTE на вході {dte:.1f}</span>" if dte < 2 else f"<br><span class='mut'>DTE на вході {dte:.0f}</span>"
+    return out
+
+
+def journal_exit(t: dict, opt: dict | None) -> str:
+    """Trusted HTML of «вхід → вихід»; an option settled at expiry says so (worthless or paid out)."""
+    entry, exit_ = _px(t.get("entry")), _px(t.get("exit"))
+    closed, x = _ts(t.get("closed_ts")), _num(t.get("exit"))
+    if opt and t.get("status") == "closed" and closed is not None and x is not None and abs(closed - opt["expiry_ts"]) <= EXPIRY_MATCH_S:
+        tail = "<span class='mut'>0 · згорів</span>" if x == 0 else f"{_e(exit_)} <span class='mut'>· експірація</span>"
+        return f"{_e(entry)} → {tail}"
+    return f"{_e(entry)} → {_e(exit_)}"
+
+
+IMPORT_THESIS = "імпорт з "  # scripts/bybit_import.py / hl_import: «імпорт з Bybit: теза не записана»
+
+
+def journal_comment(t: dict, tags: list[str]) -> tuple[str, bool]:
+    """(the thesis, tags and note as a cell comment — hover or tap, like a Google Sheets note — or '', whether the
+    owner wrote any of it: a thesis or own tags, not only the import's bookkeeping note)."""
+    extra = [x for x in tags if x not in JOURNAL_PLAIN_TAGS and x not in JOURNAL_VENUES]
+    thesis = str(t.get("thesis") or "")
+    parts = []
+    if thesis:
+        parts.append(f"<span>{_e(_clean(thesis, 2000))}</span>")
+    if extra:
+        parts.append(f"<span class='cmt-tags'>{''.join(f'<i>{_e(_clean(x, 30))}</i>' for x in extra[:10])}</span>")
+    if t.get("note"):
+        parts.append(f"<span class='rd'>{_e(_clean(t['note'], 400))}</span>")
+    if not parts:
+        return "", False
+    own = bool(extra) or bool(thesis and not thesis.startswith(IMPORT_THESIS))
+    return f"<span class='tip' role='tooltip'><b>Теза · теги · нотатка</b>{''.join(parts)}</span>", own
+
+
+def block_journal_table(real: list[dict], page: int, status: str = "all", now: float | None = None) -> str:
     if not real:
         return _empty("Угод ще немає.")
-    pages = max(1, math.ceil(len(real) / JOURNAL_PAGE_ROWS))
+    now = time.time() if now is None else now
+    bar = block_journal_filter(real, status)
+    rows = real if status == "all" else [t for t in real if t.get("status") == status]
+    if not rows:
+        return bar + _empty(JOURNAL_EMPTY.get(status, "Угод немає."))
+    pages = max(1, math.ceil(len(rows) / JOURNAL_PAGE_ROWS))
     page = min(page, pages)
-    chunk = real[(page - 1) * JOURNAL_PAGE_ROWS : page * JOURNAL_PAGE_ROWS]
+    chunk = rows[(page - 1) * JOURNAL_PAGE_ROWS : page * JOURNAL_PAGE_ROWS]
+    first = {"open": "Відкрито", "closed": "Закрито"}.get(status, "Дата")
     out = [
-        "<div class='scroll'><table><tr><th>Закрито</th><th>Джерело</th><th>Інструмент</th><th>Сторона</th><th>Розмір</th>"
-        "<th>Вхід → вихід</th><th>P&amp;L</th><th>R</th><th>Теза · теги · нотатка</th></tr>"
+        bar,
+        f"<div class='scroll'><table class='jt'><tr><th>{first}</th><th>Джерело</th><th>Інструмент</th><th>Сторона</th>"
+        "<th>Розмір</th><th>Вхід → вихід</th><th>Тривалість</th><th>P&amp;L</th><th>% депо</th><th>Комісія</th><th>R</th></tr>",
     ]
     for t in chunk:
         tags = journal_tags(t.get("tags"))
         _, src = journal_kind(tags)
+        opt = option_contract(t.get("symbol"))
         pnl = _num(t.get("pnl"))
-        when = _day(t.get("closed_ts")) if t.get("status") == "closed" else f"відкрита з {_day(t.get('opened_ts'))}"
-        if t.get("status") == "cancelled":
-            when = "скасована"
-        extra = [x for x in tags if x not in JOURNAL_PLAIN_TAGS and x not in JOURNAL_VENUES]
-        text = _e(_clean(t.get("thesis") or "", 120))
-        if extra:
-            text += f" <span class='chip calm'>{_e(', '.join(_clean(x, 30) for x in extra[:6]))}</span>"
-        if t.get("note"):
-            text += f"<br><span class='mut'>{_e(_clean(t['note'], 80))}</span>"
+        # trusted HTML: dates and fixed labels only
+        if t.get("status") == "closed":
+            when = _e(_day(t.get("closed_ts")))
+        elif t.get("status") == "cancelled":
+            when = "<span class='chip calm'>скасована</span>"
+        elif status == "open":
+            when = _e(_day(t.get("opened_ts")))
+        else:
+            when = f"{_e(_day(t.get('opened_ts')))}<br><span class='chip jo' title='відкрита з цієї дати'>відкрита</span>"
+        tip, own = journal_comment(t, tags)
+        inst = journal_instrument(t, opt)
+        if tip:
+            inst = f"<span class='info cmt' tabindex='0' role='button' aria-label='Теза й нотатка'>{inst}{tip}</span>"
+        pct = None if pnl is None else 100 * pnl / RULES_DEPOSIT
+        fees = journal_fees(t)
+        r, derived = journal_r(t, opt)
+        r_cell = f"<span class='mut' title='R від премії: у купленого опціону ризик — уся премія'>{_r(r)}*</span>" if derived else _r(r)
         side = str(t.get("side") or "")
+        cmt_cls = (" class=has-cmt" if own else " class='has-cmt auto'") if tip else ""
         out.append(
-            f"<tr><td class='num'>{_e(when)}</td><td>{_e(src)}</td><td>{_e(_clean(t.get('symbol') or '—', 40))}</td>"
+            f"<tr><td class='num'>{when}</td><td>{_e(src)}</td><td{cmt_cls}>{inst}</td>"
             f"<td>{_e(SIDE_UA.get(side, _clean(side, 12)))}</td><td class='num'>{_e(_nf(t.get('size'), 4).rstrip('0').rstrip('.'))}</td>"
-            f"<td class='num'>{_e(_px(t.get('entry')))} → {_e(_px(t.get('exit')))}</td>"
-            f"<td class='num {_signed_cls(pnl)}'>{_usd(pnl, True)}</td><td class='num'>{_r(t.get('r_multiple'))}</td><td>{text}</td></tr>"
+            f"<td class='num'>{journal_exit(t, opt)}</td><td class='num'>{_e(journal_duration(t, now))}</td>"
+            f"<td class='num {_signed_cls(pnl)}'>{_usd(pnl, True)}</td>"
+            f"<td class='num {_signed_cls(pct)}'>{'—' if pct is None else f'{pct:+.2f} %'.replace('-', '−')}</td>"
+            f"<td class='num mut'>{'—' if fees is None else f'${fees:.2f}'}</td><td class='num'>{r_cell}</td></tr>"
         )
     out.append("</table></div>")
-    nav = [f"<span class='mut'>сторінка {page} з {pages} · {len(real)} угод, нові зверху</span>"]
+    legend = (
+        "Наведи на інструмент з трикутником у куті (на телефоні торкнись): помаранчевий — твоя теза чи теги, "
+        "сірий — лише технічна нотатка імпорту (комісії, плече)."
+    )
+    if any(journal_r(t, option_contract(t.get("symbol")))[1] for t in chunk):
+        legend += " R* — від премії купленого опціону (ризик — уся премія)."
+    out.append(f"<p class='note'>{_e(legend)} % депо — від депозиту ${_nf(RULES_DEPOSIT)}.</p>")
+    nav = [f"<span class='mut'>сторінка {page} з {pages} · {len(rows)} угод, нові зверху</span>"]
     if page > 1:
-        nav.insert(0, f"<a href='/journal?page={page - 1}'>← новіші</a>")
+        nav.insert(0, f"<a href='{journal_href(status, page - 1)}'>← новіші</a>")
     if page < pages:
-        nav.append(f"<a href='/journal?page={page + 1}'>старіші →</a>")
+        nav.append(f"<a href='{journal_href(status, page + 1)}'>старіші →</a>")
     out.append(f"<p class='pager'>{' '.join(nav)}</p>")
     return "".join(out)
 
@@ -6229,6 +7134,26 @@ background:var(--acc);color:var(--card);cursor:pointer}form.jr button:disabled{o
 .scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}.scroll table{min-width:560px}
 .pager{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin:8px 0 0}.pager a{color:var(--acc);font-weight:600}
 h2 .chip{margin-left:8px;vertical-align:middle}
+#trades{scroll-margin-top:8px}
+.jf{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 12px}
+.jf a{display:inline-flex;align-items:center;gap:6px;padding:6px 14px;border:1px solid var(--line);border-radius:999px;
+background:var(--card);color:var(--fg);text-decoration:none;font-weight:600;font-size:13px}
+.jf a:hover{border-color:var(--acc)}
+.jf a[aria-current=page]{background:var(--acc);border-color:var(--acc);color:var(--card)}
+.jf .n{font-weight:500;opacity:.7;font-variant-numeric:tabular-nums}
+.chip.jo{background:var(--acc);color:var(--card);font-family:-apple-system,"Segoe UI",Helvetica,Arial,sans-serif}
+.jt td.has-cmt{position:relative;padding-right:14px}
+.jt td.has-cmt::after{content:"";position:absolute;top:0;right:0;border-style:solid;border-width:0 9px 9px 0;
+border-color:transparent var(--warn) transparent transparent;pointer-events:none}
+.jt td.has-cmt.auto::after{border-color:transparent var(--line) transparent transparent}
+.info.cmt{display:block;width:auto;height:auto;margin:0;border:0;border-radius:4px;font:inherit;color:inherit;cursor:pointer;
+text-transform:none;letter-spacing:0;user-select:text;-webkit-user-select:text}
+.info.cmt:hover,.info.cmt:focus,.info.cmt.open{background:rgba(var(--warn-rgb),.12);color:inherit;outline:none}
+.info.cmt .tip{font-style:normal;max-height:min(60vh,420px);overflow-y:auto}.cmt-tags{display:flex!important;flex-wrap:wrap;gap:4px;margin-top:6px}
+.cmt-tags i{font:600 11px -apple-system,"Segoe UI",Helvetica,Arial,sans-serif;font-style:normal;text-transform:uppercase;
+letter-spacing:.04em;border-radius:999px;padding:1px 8px;background:rgba(var(--warn-rgb),.16)}
+.jt .put{color:var(--bad)}.jt .call{color:var(--ok)}.jt .put,.jt .call{font-weight:700;font-size:12px}
+.scroll table.jt{min-width:900px}
 """
 
 
@@ -6296,7 +7221,8 @@ def render_journal(
             out.append("</section>")
             out.append(review)
             out.append(f"<section>{_h2('За джерелом', 'sources')}{block_journal_sources(groups)}</section>")
-            out.append(f"<section class='wide'>{_h2('Угоди', 'j_table')}{block_journal_table(real, p['page'])}</section>")
+            table = block_journal_table(real, p["page"], p.get("status", "all"), now)
+            out.append(f"<section class='wide' id='trades'>{_h2('Угоди', 'j_table')}{table}</section>")
         try:
             rules = block_rules_week(kinds["real"] if rows else rows, now)
         except Exception as e:  # noqa: BLE001 - one odd row must not take the page down
@@ -6876,8 +7802,7 @@ DEMO_EPOCHS: tuple[tuple[str, int, str, str, tuple[str, ...]], ...] = (
     (
         "v6",
         1_792_959_300_000,  # 2026-10-25 20:15:00 UTC
-        "S40 (провалений свип угору → лонг, дзеркало S39), 4h, на демо без доведеної переваги; S38 / S39 / S40 — "
-        "2 власні слоти понад 5; правила ведення угоди — як у v3",
+        "S40 (провалений свип угору → лонг, дзеркало S39), 4h, на демо без доведеної переваги; правила ведення угоди — як у v3",
         "docs/changes/2026-10-25-demo-slots-answers.md (S40 not on the demo before this change)",
         ("S40",),
     ),
@@ -7701,6 +8626,9 @@ class _Handler(BaseHTTPRequestHandler):
             body, ctype = brand(brief_page()).encode(), "text/html; charset=utf-8"  # read per request: the age is always current
         elif path == "/options":
             body, ctype = brand(options_page(query)).encode(), "text/html; charset=utf-8"
+        elif path == "/positions":
+            frag = "frag=1" in query.split("&")
+            body, ctype = (positions_page(query) if frag else brand(positions_page(query))).encode(), "text/html; charset=utf-8"
         elif path == "/radar":
             body, ctype = brand(radar_page(query)).encode(), "text/html; charset=utf-8"
         elif path == "/journal":

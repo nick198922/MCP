@@ -679,8 +679,8 @@ def test_journal_tab_renders_trades_sources_and_paper_recs(tmp_path):
         "Паперові carry-угоди (теги *-paper): 1 рядків",
         "Рядків з тегом airdrop: 1",
         "пробій рейнджу",
-        "setup:breakout, conf:2",
-        "відкрита з",
+        "<i>setup:breakout</i><i>conf:2</i>",
+        "<span class='chip jo' title='відкрита з цієї дати'>відкрита</span>",
         "сторінка 1 з 1 · 5 угод",
         "USD, усі біржі й опціони разом",
         "USD, одна крива P&L усіх бірж і опціонів",
@@ -836,15 +836,82 @@ def test_journal_pages_and_query(tmp_path, monkeypatch):
     p = _journal_db(tmp_path / "s.sqlite", rows, [])
     monkeypatch.setattr(db, "JOURNAL_DB", p)
     page = db.journal_page("", now=float(T0))
-    assert "сторінка 1 з 3 · 120 угод" in page and "href='/journal?page=2'>старіші" in page and "новіші" not in page
+    assert "сторінка 1 з 3 · 120 угод" in page and "href='/journal?page=2#trades'>старіші" in page and "новіші" not in page
     assert "S119" in page and "S069" not in page  # newest first, 50 a page
     page = db.journal_page("page=3", now=float(T0))
-    assert "S019" in page and "S020" not in page and "href='/journal?page=2'>← новіші" in page and "старіші" not in page
+    assert "S019" in page and "S020" not in page and "href='/journal?page=2#trades'>← новіші" in page and "старіші" not in page
     assert "сторінка 3 з 3" in db.journal_page("page=999", now=float(T0))  # clamped to the last page
     for q in ("page=0", "page=-1", "page=²", "page=<x>", "page=1e3", "x=1&" * 40):
-        assert db.parse_journal_query(q) == {"page": 1}, q
-    assert db.parse_journal_query("page=2") == {"page": 2}
+        assert db.parse_journal_query(q) == {"page": 1, "status": "all"}, q
+    assert db.parse_journal_query("page=2") == {"page": 2, "status": "all"}
+    assert db.parse_journal_query("status=open&page=3") == {"page": 3, "status": "open"}
+    for q in ("status=<b>", "status=OPEN", "status=" + "x" * 100):
+        assert db.parse_journal_query(q)["status"] == "all", q
     assert [db._px(x) for x in (82076.6, 3.4412, 0.0123, 0.00001234, None)] == ["82 076.60", "3.4412", "0.0123", "0.00001234", "—"]
+
+
+def test_journal_filter_open_closed_cancelled(tmp_path, monkeypatch):
+    tags = '["bybit", "import", "linear"]'
+    rows = [_jrow(i, f"C{i:03d}", "long", tags, "closed", "win", 1.0) for i in range(60)]
+    rows += [_jrow(100 + i, f"O{i:03d}", "short", tags, "open", None, None) for i in range(3)]
+    p = _journal_db(tmp_path / "s.sqlite", rows, [])
+    monkeypatch.setattr(db, "JOURNAL_DB", p)
+    page = db.journal_page("", now=float(T0))
+    assert "id='trades'" in page and "aria-label='Фільтр угод'" in page
+    assert "href='/journal#trades' aria-current='page'>Всі <span class='n'>63</span>" in page
+    assert "href='/journal?status=open#trades'>Відкриті <span class='n'>3</span>" in page
+    assert "href='/journal?status=closed#trades'>Закриті <span class='n'>60</span>" in page
+    assert "Скасовані" not in page  # no cancelled trades: no tab
+    page = db.journal_page("status=open", now=float(T0))
+    assert "aria-current='page'>Відкриті" in page and "<th>Відкрито</th>" in page
+    assert "O002" in page and "C059" not in page and "1 з 1 · 3 угод" in page
+    page = db.journal_page("status=closed", now=float(T0))
+    assert "O002" not in page and "сторінка 1 з 2 · 60 угод" in page
+    assert "href='/journal?status=closed&page=2#trades'>старіші" in page  # the pager keeps the filter
+    page = db.journal_page("status=cancelled", now=float(T0))
+    assert "Скасованих угод немає." in page and "aria-current='page'>Скасовані" in page
+
+
+def test_journal_option_rows_comment_duration_fees_and_premium_r():
+    exp = 1790841600  # 2026-10-01 08:00 UTC
+    burnt = {
+        "id": 1, "opened_ts": exp - 77280, "closed_ts": exp + 1, "symbol": "BTC-1OCT26-83000-P-USDT", "side": "long",
+        "size": 0.25, "entry": 250.0, "exit": 0.0, "pnl": -66.25, "r_multiple": None, "status": "closed",
+        "tags": '["bybit", "import", "option"]', "thesis": "<b>пут</b> на пробій", "note": "bybit:option:x; комісії 3.7500; плече -",
+    }  # fmt: skip
+    paid = {**burnt, "id": 2, "symbol": "BTC-1OCT26-86000-P", "exit": 875.0, "pnl": 150.0, "note": None, "thesis": None}
+    sold = {**burnt, "id": 3, "closed_ts": exp - 70000, "exit": 360.0, "pnl": 27.5, "thesis": None, "note": None, "tags": "[]"}
+    perp = {
+        "id": 4, "opened_ts": exp, "closed_ts": exp, "symbol": "BTCUSDT", "side": "short", "size": 0.01, "entry": 80000.0,
+        "exit": 79000.0, "pnl": 10.0, "r_multiple": 0.5, "status": "closed", "tags": '["bybit"]', "thesis": None,
+        "note": "bybit:linear:1; комісії 0.3600; плече 5; час відкриття Bybit не віддає — opened_ts = час закриття",
+    }  # fmt: skip
+    live = {**sold, "id": 5, "status": "open", "closed_ts": None, "exit": None, "pnl": None, "symbol": "ETH-13NOV26-2800-C-USDT"}
+    html_ = db.block_journal_table([burnt, paid, sold, perp, live], 1, now=float(exp + 3 * 86400))
+    assert "<b>BTC</b> 83 000 <span class='put'>PUT</span> · 01.10.26" in html_ and "DTE на вході 0.9" in html_
+    assert "<span class='call'>CALL</span> · 13.11.26" in html_
+    assert "250.00 → <span class='mut'>0 · згорів</span>" in html_  # settled worthless at 08:00 UTC
+    assert "875.00 <span class='mut'>· експірація</span>" in html_  # Deribit-style symbol, paid out
+    assert "250.00 → 360.00" in html_  # sold before expiry: a plain exit
+    assert "21 год" in html_ and "$3.75" in html_ and "−0.66 %" in html_ and "+0.10 %" in html_
+    assert "−1.06 R*" in html_ and "+0.44 R*" in html_ and "+0.50 R" in html_  # premium R only where no R was recorded
+    assert "триває 3 д" in html_  # open trade: running time
+    # the comment: thesis escaped, tags as chips, note muted; the corner mark only where there is something to show
+    assert "class='info cmt'" in html_ and "&lt;b&gt;пут&lt;/b&gt; на пробій" in html_ and "<b>пут</b>" not in html_
+    assert "<span class='rd'>bybit:option:x; комісії 3.7500; плече -</span>" in html_
+    assert html_.count("class=has-cmt>") == 1  # burnt: own thesis -> orange corner
+    assert html_.count("class='has-cmt auto'") == 1  # perp: only the import note -> grey corner; the rest show nothing
+    assert "R* — від премії" in html_
+
+
+def test_option_contract_parses_only_option_symbols():
+    o = db.option_contract("BTC-13NOV26-78000-P-USDT")
+    assert o["base"] == "BTC" and o["strike"] == 78000 and o["kind"] == "P"
+    assert o["expiry_ts"] == db.datetime(2026, 11, 13, 8, tzinfo=db.timezone.utc).timestamp()
+    assert db.option_contract("ETH-3OCT26-2740-C")["kind"] == "C"
+    for bad in ("BTCUSDT", "BTC-PERP", "BTC-31FEB26-1-C", "BTC-13XXX26-1-C", None, "<x>"):
+        assert db.option_contract(bad) is None, bad
+    assert db._span(34 * 60) == "34 хв" and db._span(79 * 60) == "1 год 19 хв" and db._span(3 * 86400 + 4 * 3600) == "3 д 4 год"
 
 
 def test_journal_escapes_hostile_strings_from_the_database(tmp_path):
@@ -1697,6 +1764,10 @@ def _all_tab_pages(tmp_path) -> dict[str, str]:
 
     pages["demo"] = db.render_demo(*db.load_demo(td._filled(tmp_path, td.NOW)), td.NOW / 1000, vs_bt_on=False)
     pages["demo empty"] = db.render_demo(*db.load_demo(td._store(tmp_path / "de.sqlite")), td.NOW / 1000)
+    import test_dashboard_positions as tp
+
+    pages["positions"] = db.render_positions(tp._payload(), None, tp.NOW)
+    pages["positions empty"] = db.render_positions(None, "missing", tp.NOW)
     return pages
 
 
@@ -2388,6 +2459,57 @@ def test_options_nearer_expiry_missing_chain_falls_back_to_the_month():
     assert db.parse_options_query("exp=near&cexp=near&kput=77000")["keep_strikes"] is True
     assert db.parse_options_query("kput=77000")["keep_strikes"] is True and db.parse_options_query("exp=<script>")["exp"] == "month"
     assert db.option_chain(snap, "<script>") is None  # unknown key -> the (here missing) month chain
+
+
+def _snap_all() -> tuple[dict, float]:
+    """`_snap_near` plus a `chains` section: the near and month chains under their tokens, a December copy of the month
+    chain (same strikes, 28 days later: only the plumbing is tested) and a 23OCT26 weekly delivered the same morning."""
+    snap, asof = _snap_near()
+    month, near = snap["sections"]["chain"]["data"], snap["sections"]["chain_near"]["data"]
+    by = {
+        "23OCT26": {**near, "expiry": "23OCT26", "days": 0.33},
+        "24OCT26": near,
+        "27NOV26": month,
+        "25DEC26": {**month, "expiry": "25DEC26", "days": month["days"] + 28},
+    }
+    snap["sections"]["chains"] = {"ok": True, "data": {"by_expiry": by}, "missing": [], "warnings": []}
+    return snap, asof
+
+
+def test_options_lists_every_snapshot_expiry():
+    snap, asof = _snap_all()
+    page = db.render_options(snap, None, asof + 300, db.parse_options_query(""))
+    sel = _between(page, "<select id='exp' name='exp'>", "</select>")
+    # nearest first; near and month keep their keys and are not listed twice under their tokens
+    assert sel == (
+        "<select id='exp' name='exp'>"
+        "<option value='23OCT26'>тижнева · 23.10 · 0.3 дн</option>"
+        "<option value='near'>найближча · 24.10 · 1.3 дн</option>"
+        "<option value='month' selected>місячна · 27.11 · 37.5 дн</option>"
+        "<option value='25DEC26'>квартальна · 25.12 · 65.5 дн</option>"
+    )
+    # a token from the list: its chain, remembered for the strike reset
+    dec = db.render_options(snap, None, asof + 300, db.parse_options_query("exp=25DEC26&qty=0.01"))
+    assert "Конструктор · BTC, експірація 25.12 · 65.5 дн" in dec and "name='cexp' value='25DEC26'" in dec
+    assert "<option value='25DEC26' selected>" in dec and "не вдалося" not in dec
+    # after its delivery the weekly drops out of the list
+    later = db.render_options(snap, None, datetime(2026, 10, 23, 9, tzinfo=UTC).timestamp(), db.parse_options_query(""))
+    assert "value='23OCT26'" not in later and "value='25DEC26'" in later
+    # a token the snapshot has no chain for: the month, with a note naming both
+    miss = db.render_options(snap, None, asof + 300, db.parse_options_query("exp=26MAR27"))
+    assert "Ланцюжка експірації «квартальна 26MAR27» у знімку немає (старий знімок чи збій колектора): показано «місячна»." in miss
+    assert db.parse_options_query("exp=25DEC26")["exp"] == "25DEC26" and db.parse_options_query("exp=25dec26")["exp"] == "month"
+    assert [db._exp_kind(t) for t in ("24OCT26", "6NOV26", "30OCT26", "25DEC26", "x")] == ["денна", "тижнева", "місячна", "квартальна", "—"]
+    # a failed `chains` section: the two own chains still work, its reason shows only for a token
+    snap["sections"]["chains"] = {
+        "ok": False,
+        "data": None,
+        "missing": [{"detail": "no expiries in the ATM term structure"}],
+        "warnings": [],
+    }
+    page = db.render_options(snap, None, asof + 300, db.parse_options_query(""))
+    assert "value='near'" in page and "value='25DEC26'" not in page and "no expiries" not in page
+    assert "no expiries in the ATM term structure" in db.render_options(snap, None, asof + 300, db.parse_options_query("exp=25DEC26"))
 
 
 def _rules_db(path: Path, rows: list[dict]) -> Path:

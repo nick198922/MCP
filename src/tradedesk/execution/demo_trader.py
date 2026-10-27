@@ -20,11 +20,10 @@ Hourly cycle:
 4. Each candidate is sized for $100 at the stop (fees included) from the live price, gets its leverage (the owner's
    tier, capped by the venue's maximum) and a confidence score. The account is on cross margin (owner 21.10): the guard
    keeps the maintenance margin plus the loss at every stop within half of the equity, so stops come before liquidation. Candidates that pass the guard and score at least ``MIN_SCORE`` are
-   entered best first, at most 5 still at risk a UTC day: a trade with its stop at break-even, or closed without a real
-   loss, frees its slot (owner 21.10/22.10), at most 10 entries a day in all; S12 holds at most 2 of the 5 slots
-   (``SETUP_SLOTS``, owner 25.10), S38 / S39 / S40 have 2 slots of their own above the 5 (``POOL_SETUPS``, owner
-   25.10) and S38 enters at most 2 shorts per 4h signal bar (``BAR_CAP``, owner 25.10); the rest are recorded as
-   skipped.
+   entered best first, each setup with ``OWN_SLOTS`` trades still at risk a UTC day of its own plus ``RESERVE_SLOTS``
+   shared (owner 27.10): a trade with its stop at break-even, or closed without a real loss, frees its slot (owner
+   21.10/22.10), at most 30 entries a day in all; S38 enters at most 2 shorts per 4h signal bar (``BAR_CAP``, owner
+   25.10); the rest are recorded as skipped.
 5. Every candidate, taken or not, is also written to ``trade_plan`` as a shadow plan (tag ``src:demo-shadow``, verdict
    'enter' if taken, else 'skip'), which the collector resolves on candles without the break-even rule: so selection
    and break-even can both be compared with the plain setup.
@@ -110,17 +109,14 @@ TIMEFRAMES = ("1d", "4h")  # 1d first: its bars also feed the score of the 4h si
 # short setups"): same guard and selection, version v5. S40 (the long side of detector B, owner 25.10, Q-20261025-3):
 # version v6
 SETUPS = ("S14", "S16", "S3", "S12", "S38", "S39", "S40")
-# Per-setup cap of the day's slots at risk (critic 25.10, docs/reviews/2026-10-25-demo-s12-fvg.md p. 1; owner 25.10,
-# Q-20261025-1: 2): S12 fires on many coins at once and ranks high, so without it the rejected setup could take most
-# of the 5 slots and slow the sample of S3 / S14 / S16. Counted like the daily cap (break-even or a close without a
-# real loss frees the slot); every new entry starts at risk, so this also bounds S12 to 2 entries per 4h bar.
-SETUP_SLOTS = {"S12": 2}
-# Slots of their own (owner 25.10, Q-20261025-2: "можна навіть 2"): the short-setups card's setups scored low (R:R
-# after fees < 2) and found the day's 5 slots taken (1 S38 entry in 14 days offline), so they get POOL_SLOTS trades at
-# risk a day above the 5 and do not count toward them; the other setups never use the pool. Up to 7 trades at risk
-# a day in all; the day's realised-loss stop, the entries ceiling and the open-risk cap of the guard are unchanged.
-POOL_SETUPS = ("S38", "S39", "S40")
-POOL_SLOTS = 2
+# The day's slots at risk (owner 27.10, Q-20261025-1/2: "testing the setups matters now ... 2 slots for every
+# setup"): a shared 5 let the high-scoring setups starve the others (S12 took 62 % of the entries uncapped; S38 got 1
+# entry in 14 days offline), so every setup has OWN_SLOTS trades at risk a day of its own and RESERVE_SLOTS more are
+# shared, taken best first by a setup whose own slots are full (S3 fires most and is the one setup with a sample).
+# Counted like the guard's daily cap (break-even or a close without a real loss frees the slot); the guard's
+# max_trades_per_day is their sum, so the guard and this split agree.
+OWN_SLOTS = 2
+RESERVE_SLOTS = 3
 # Per signal bar cap of entries (owner 25.10, IDEA-20261024-short-setups-demo "Ризики"): S38 shorts come in batches (up
 # to 11 on one 4h bar in the backtest), so at most 2 of them per bar, else the first random ones fill the day. Counted
 # from the book like the day's entries (open, pending, unknown or closed trades of that setup and signal bar; a break-
@@ -619,23 +615,18 @@ async def _setup_slots(ctx: Ctx) -> Counter[str]:
     )
 
 
-def _setup_cap(setup: str, used: Counter[str]) -> list[str]:
-    cap = SETUP_SLOTS.get(setup)
-    if cap is None or used[setup] < cap:
-        return []
-    return [f"{used[setup]} {setup} trades at risk today = {setup} cap {cap}"]
-
-
-def _slot_view(setup: str, state: State, used: Counter[str] | None, cfg: GuardConfig) -> tuple[State, GuardConfig]:
-    """The state and limits the guard sees for one candidate: a setup of the pool counts only the pool's trades at
-    risk against ``POOL_SLOTS``, the others count the day's trades at risk without the pool's against the 5. ``used``
-    None = the book was not read: the pool waits (fail closed) and the others count every trade, the pool's too."""
+def _setup_cap(setup: str, used: Counter[str] | None) -> list[str]:
+    """Violation of the day's slots: the setup's own ``OWN_SLOTS`` first, then the shared ``RESERVE_SLOTS`` (a setup's
+    trades above its own slots hold the reserve). ``used`` None = the book was not read: every setup waits (fail
+    closed)."""
     if used is None:
-        return (replace(state, trades_today=0), replace(cfg, max_trades_per_day=0)) if setup in POOL_SETUPS else (state, cfg)
-    pool = sum(used[s] for s in POOL_SETUPS)
-    if setup in POOL_SETUPS:
-        return replace(state, trades_today=pool), replace(cfg, max_trades_per_day=POOL_SLOTS)
-    return replace(state, trades_today=max(0, state.trades_today - pool)), cfg
+        return [f"{setup} trades at risk today unknown (book not read)"]
+    if used[setup] < OWN_SLOTS:
+        return []
+    reserve = sum(max(0, n - OWN_SLOTS) for n in used.values())
+    if reserve < RESERVE_SLOTS:
+        return []
+    return [f"{used[setup]} {setup} trades at risk today: its {OWN_SLOTS} slots and the reserve of {RESERVE_SLOTS} are taken"]
 
 
 async def _bar_entries(ctx: Ctx) -> Counter[tuple[str, int]]:
@@ -888,16 +879,9 @@ async def _enter(ctx: Ctx, c: Candidate, state: State) -> State:
 async def _select_and_enter(ctx: Ctx, cands: list[Candidate], state: State) -> None:
     ok = [c for c in cands if not c.structural and c.score.points >= MIN_SCORE]
     ok.sort(key=lambda c: (-c.score.points, -c.p.reward_risk))
-    used: Counter[str] = Counter()
-    book_ok = True
-    if any(c.sig.setup in SETUP_SLOTS or c.sig.setup in POOL_SETUPS for c in ok) or state.trades_today:
-        got = await ctx.safe("setup_slots", lambda: _setup_slots(ctx))
-        used = got if got is not None else Counter(SETUP_SLOTS)  # unreadable book: the capped setups wait
-        book_ok = got is not None
-
-    def view(c: Candidate) -> tuple[State, GuardConfig]:
-        return _slot_view(c.sig.setup, state, used if book_ok else None, ctx.cfg)
-
+    used: Counter[str] | None = Counter()
+    if ok:
+        used = await ctx.safe("setup_slots", lambda: _setup_slots(ctx))  # None: every setup waits
     per_bar: Counter[tuple[str, int]] | None = Counter()
     if any(c.sig.setup in BAR_CAP for c in ok):
         per_bar = await ctx.safe("bar_entries", lambda: _bar_entries(ctx))  # None: the capped setups wait
@@ -905,9 +889,8 @@ async def _select_and_enter(ctx: Ctx, cands: list[Candidate], state: State) -> N
     for c in ok:
         if c.p.symbol in state.open_symbols:
             continue  # a better signal on the same coin was just taken
-        seen, cfg = view(c)
-        bad = check(c.p, seen, cfg) or _setup_cap(c.sig.setup, used) or _bar_cap(c.sig, per_bar)
-        if bad:
+        bad = check(c.p, state, ctx.cfg) or _setup_cap(c.sig.setup, used) or _bar_cap(c.sig, per_bar)
+        if bad or used is None:
             continue
         bar = (c.sig.setup, c.sig.signal_ts)
         if ctx.dry_run:
@@ -917,20 +900,19 @@ async def _select_and_enter(ctx: Ctx, cands: list[Candidate], state: State) -> N
             if per_bar is not None:
                 per_bar[bar] += 1
             after = replace(
-                seen,
-                trades_today=seen.trades_today + 1,
-                entries_today=seen.entries_today + 1,
-                open_symbols=(*seen.open_symbols, c.p.symbol),
+                state,
+                trades_today=state.trades_today + 1,
+                entries_today=state.entries_today + 1,
+                open_symbols=(*state.open_symbols, c.p.symbol),
             )
-            await ctx.safe("option_leg", lambda c=c, before=seen, after=after: _option_leg(ctx, c, before, after), symbol=c.p.symbol)
-            state = replace(after, trades_today=state.trades_today + 1)
+            await ctx.safe("option_leg", lambda c=c, before=state, after=after: _option_leg(ctx, c, before, after), symbol=c.p.symbol)
+            state = after
             continue
-        after = await _enter(ctx, c, seen)  # the pool's view: its option leg is checked against the pool's count too
-        took = after.trades_today - seen.trades_today  # sent (or unknown): the trade holds a slot
-        used[c.sig.setup] += took
+        after = await _enter(ctx, c, state)
+        used[c.sig.setup] += after.trades_today > state.trades_today  # sent (or unknown): the trade holds a slot
         if per_bar is not None:
-            per_bar[bar] += after.entries_today > seen.entries_today  # an entry of this bar (sent or unknown)
-        state = replace(after, trades_today=state.trades_today + took)
+            per_bar[bar] += after.entries_today > state.entries_today  # an entry of this bar (sent or unknown)
+        state = after
         chosen.add(c.p.link_id)
     for c in cands:
         if c.p.link_id in chosen:
@@ -941,8 +923,7 @@ async def _select_and_enter(ctx: Ctx, cands: list[Candidate], state: State) -> N
         elif c.score.points < MIN_SCORE:
             reason, kind = [f"score {c.score.points} < {MIN_SCORE}"], "skipped"
         else:
-            seen, cfg = view(c)
-            reason = check(c.p, seen, cfg) + _setup_cap(c.sig.setup, used) + _bar_cap(c.sig, per_bar) or ["lower rank"]
+            reason = check(c.p, state, ctx.cfg) + _setup_cap(c.sig.setup, used) + _bar_cap(c.sig, per_bar) or ["lower rank"]
             kind = "skipped"
         ctx.bump(kind)
         await ctx.safe(

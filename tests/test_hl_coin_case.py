@@ -58,6 +58,15 @@ async def test_resolve_keeps_universe_spelling(state, typed):
         await rt.aclose()
 
 
+@pytest.mark.parametrize("typed", ["xyz:SP500", "XYZ:SP500", "xyz:sp500"])
+async def test_builder_dex_coin_keeps_lower_case_prefix(state, typed):
+    rt = _runtime(state, [])
+    try:
+        assert await rt.hyperliquid.lookup_coin(typed) == ("xyz:SP500", "dex")
+    finally:
+        await rt.aclose()
+
+
 async def test_resolve_matches_delisted_coin(state):
     rt = _runtime(state, [])
     try:

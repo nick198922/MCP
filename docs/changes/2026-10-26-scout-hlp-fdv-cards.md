@@ -1,0 +1,2 @@
+- Дві нові картки ідей від скаута, обидві після тріажу критика зі статусом `forward`: `hlp-inventory-crowding` (інвентар HLP як ознака скупчення лонгів, шортовий сетап) і `pm-token-launch-fdv-ladders` (щаблі FDV токена на Polymarket).
+- Рев'ю тріажу: `docs/reviews/2026-10-26-idea-triage-scout.md`. Коду немає.

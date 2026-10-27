@@ -1,0 +1,10 @@
+[Unit]
+Description=tradedesk-strangle-remind (once, 2026-11-04 09:00 Europe/Kyiv)
+
+[Timer]
+OnCalendar=2026-11-04 09:00:00 Europe/Kyiv
+# Send it after a reboot if the moment was missed.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

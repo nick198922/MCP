@@ -25,7 +25,7 @@ Claude (Desktop / Code / claude.ai)
 │               HealthRegistry, Envelope/Evidence, errors    │
 └──────────────────────────────────────────────────┘
 Фаза 2–3 (є): store/ (SQLite, міграції) · collector/ (планувальник, знімки, паперові рушії) · alerts/ · rules/ (DSL) · prompts/ · data/ (сіди) · features.py (перемикачі з deploy/features.env) · http_auth.py
-Фаза 4 (нема): execution/ (ExecutionGuard, ADR 0005)
+Фаза 4 (лише демо): execution/ (ExecutionGuard, демо-трейдер на Bybit Demo Trading за ADR 0007; live-режиму нема — ADR 0005)
 ```
 
 `runtime.py` збирає налаштування, кеш, health і провайдерів в один об'єкт `Runtime`. Інструменти отримують його через замикання `register(server, rt)`, тому в тестах підміняються транспорт, біржі й годинник (`rt.now`).
@@ -66,7 +66,7 @@ Claude (Desktop / Code / claude.ai)
 
   Обидва методи повертають до 1000 угод, пагінація за `timestamp`; `iv` у відсотках, ціни опціонів у BTC.
 
-`delivery_prices` і funding на history-хості дають HTTP 400. Використовується лише дослідницькими скриптами (`scripts/verify_put_skew.py`, `scripts/verify_dated_basis.py`), MCP-інструменти його поки не викликають.
+`delivery_prices` і funding на history-хості дають HTTP 400. Використовується дослідницькими скриптами (`scripts/verify_put_skew.py`, `scripts/verify_dated_basis.py`) і завданням колектора `radar_archive` (архів поверхні, з 22.10); MCP-інструменти його не викликають.
 
 `tradingview_chart_data` (OHLCV одного інструмента, `resolution` у хвилинах або `1D`) працює на обох хостах, зокрема для давно експірованих ф'ючерсів (перевірено BTC-28JUN19, 2026-10-14).
 
@@ -97,7 +97,7 @@ Mac засинає, тому для автономної роботи потрі
 | Fly.io / Railway | простий деплой із git | вартість росте з диском і CPU, ліміти на IP |
 | Mac, що не засинає | безкоштовно | вимкнений ноутбук або мережа вбивають збір даних |
 
-Рекомендація: **VPS + Docker + Caddy (TLS) + доступ через Tailscale або Cloudflare Tunnel з авторизацією**. Сервер стартує в режимі `streamable-http`. Поки немає автентифікації (Фаза 6), його не можна відкривати в публічний інтернет.
+Рекомендація: **VPS + Docker + Caddy (TLS) + доступ через Tailscale або Cloudflare Tunnel з авторизацією**. Сервер стартує в режимі `streamable-http`. Bearer-токени є (`http_auth.py`, `TRADEDESK_HTTP_BEARER_TOKEN`), але без TLS, ролей і лімітів на клієнта (Фаза 6) сервер слухає лише `127.0.0.1` і в публічний інтернет не відкривається.
 
 Фонові задачі виконуються в тому самому процесі (asyncio): збирач знімків, WebSocket-збирач ліквідацій, рушій алертів. Алерти йдуть у Telegram-бот (потрібен токен бота).
 

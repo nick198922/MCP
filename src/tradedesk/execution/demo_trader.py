@@ -605,7 +605,8 @@ async def shared_state(store: Store, client: BybitDemo, now: int, positions: dic
 
 
 async def _setup_slots(ctx: Ctx) -> Counter[str]:
-    """Today's trades still at risk, per setup (the same count as ``State.trades_today``)."""
+    """Today's futures trades still at risk, per setup. ``State.trades_today`` also counts the option legs (owner 23.10:
+    a leg shares its signal's slot), so the guard's total of 17 can bind before every setup's slots are used."""
     day0 = day_start_ms(ctx.now)
     trades = await ctx.store.demo_trade_list(limit=5000)
     return Counter(

@@ -23,9 +23,9 @@ reason for `changes`.
 - **Demo only.** Orders go only to `api-demo.bybit.com` through `execution/`; no live endpoint, no switch, env var or
   default that could reach a live account. Live mode needs a new ADR and the owner — not in a PR.
 - **ExecutionGuard intact.** Every order path passes `guard.py`; limits are not raised, bypassed or made configurable
-  from outside: risk $100 per trade, open risk $1 500, day loss $500, 5 trades under risk / 10 entries per UTC day,
-  cross-margin maintenance + stop losses ≤ 50 % of equity, the kill-switch file `~/.config/tradedesk/demo.halt`.
-  A limit may change only if ADR 0007 on main already says so.
+  from outside: they are the constants of `guard.py` as ADR 0007 on main lists them (p. 5 and 8; risk $100 per trade,
+  the day's slots and entries, day loss, open risk, cross-margin maintenance + stop losses ≤ 50 % of equity), and
+  the kill-switch file `~/.config/tradedesk/demo.halt`. A limit may change only if ADR 0007 on main already says so.
 - **Every position has a stop** attached at entry; break-even and time exits cannot widen a stop.
 - **No duplicate or runaway orders:** idempotent order ids / client ids, retries cannot double an entry, a crash
   mid-cycle leaves a state the next run reconciles; the shared lock between `demo-trader` and `demo-manage` stays.

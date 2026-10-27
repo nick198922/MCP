@@ -857,3 +857,95 @@ async def test_hard_ceiling_of_entries_per_day(world):
         await _today(w.store, k, status="closed", closed_ts=T0 + 3, pnl_usd=0.0)  # no risk left, but the ceiling of entries reached
     res = await w.run()
     assert res["sent"] == 0 and f"{n} entries today = max" in str(await w.store.exec_audit_list(kinds=("skipped",)))
+
+
+# ---------------------------------------------------------------- S12 v7: a limit resting at the gap's middle (owner 26.10)
+
+REST_UNTIL = T0 + 20 * H4  # the gap bar (T0 - H4 .. T0) closes at T0; the limit lives 20 bars
+
+
+def _rest(entry=99_000.0, stop=98_000.0, target=102_000.0, ts=T0 - H4) -> ss.LiveSignal:
+    ind = {"atr14": 500.0, "fvg_mid": entry, "rest_until_ms": float(ts + H4 + 20 * H4)}
+    return ss.LiveSignal("S12", "long", "4h", ts, entry, stop, target, "S12 лімітка заздалегідь", ind)
+
+
+async def test_s12_resting_limit_waits_at_the_level_past_the_maker_window_then_fills(world):
+    w = world
+    w.signals["4h"] = [_rest()]
+    res = await w.run()
+    assert res["sent"] == 1, res
+    _, sym, side, qty, stop, target, lid, px = w.venue.kinds("limit")[0]
+    assert (sym, side, px, stop, target) == (BTC, "long", 99_000.0, 98_000.0, None)  # at the level, stop attached
+    assert qty * (99_000 - stop + TAKER_FEE * (99_000 + stop)) <= DEFAULT.risk_usd  # sized at the level, not the price
+    t = (await w.store.demo_trade_list())[0]
+    assert t["status"] == "pending" and t["rest_until"] == REST_UNTIL and t["entry"] == 99_000.0
+    cur = await w.store.conn.execute("SELECT entry_type, expires_ts FROM trade_plan")
+    plan = dict(await cur.fetchone())
+    assert plan == {"entry_type": "limit", "expires_ts": (REST_UNTIL + demo_trader.MAX_HOLD_MS["4h"]) // 1000}
+    assert any("лімітка заздалегідь на рівні, живе до" in m for m in w.msgs)
+    # far from the price, hours past the 10-minute maker window: no re-quote, no cancel, no market rest
+    for k in (1, 30, 600):
+        await w.manage(w.now + k * 60_000)
+    assert not w.venue.kinds("amend", "cancel", "bracket")
+    assert (await w.store.demo_trade_list())[0]["status"] == "pending"
+    w.venue.fill_limit(lid)
+    fill_at = w.now + 2 * D1
+    await w.manage(fill_at)
+    t = (await w.store.demo_trade_list())[0]
+    assert t["status"] == "open" and t["fill"] == 99_000.0 and t["entry_kind"] == "maker" and t["opened_ts"] == fill_at
+    assert w.venue.kinds("reduce")[0][4] == 102_000.0 and t["journal_id"]  # the target limit, the journal row
+
+
+async def test_s12_resting_limit_expires_untouched_or_is_cut_by_the_kill_switch(world):
+    w = world
+    w.signals["4h"] = [_rest()]
+    await w.run()
+    lid = (await w.store.demo_trade_list())[0]["link_id"]
+    await w.manage(REST_UNTIL - 60_000)
+    assert not w.venue.kinds("cancel")
+    await w.manage(REST_UNTIL)
+    t = (await w.store.demo_trade_list())[0]
+    assert ("cancel", BTC, lid) in w.venue.orders and t["status"] == "missed" and t["note"] == "the resting limit expired untouched"
+    assert (await w.store.exec_audit_list(kinds=("expired",)))[0]["payload"]["limit"] == 99_000.0
+    assert any("ціна до неї так і не дійшла" in m for m in w.msgs) and not t["journal_id"]
+    # a new one, then the kill-switch: the resting order is not a position, so it goes at once
+    await w.store.conn.execute("DELETE FROM demo_trade")
+    await w.store.conn.commit()
+    w.signals["4h"] = [_rest(ts=T0)]
+    await w.run(T0 + H4 + 60_000)
+    (w.tmp / "demo.halt").write_text("stop")
+    await w.manage(T0 + H4 + 120_000)
+    t = (await w.store.demo_trade_list())[0]
+    assert t["status"] == "missed" and t["note"].startswith("kill-switch") and any("зупинку нових входів" in m for m in w.msgs)
+
+
+async def test_s12_resting_partial_fill_starts_the_trade_at_once(world):
+    w = world
+    w.signals["4h"] = [_rest()]
+    await w.run()
+    lid = (await w.store.demo_trade_list())[0]["link_id"]
+    w.venue.fill_limit(lid, qty=0.01)
+    await w.manage(w.now + 3_600_000)
+    t = (await w.store.demo_trade_list())[0]
+    assert ("cancel", BTC, lid) in w.venue.orders and t["status"] == "open" and t["qty"] == pytest.approx(0.01)
+    assert w.venue.kinds("reduce")[0][3] == pytest.approx(0.01)
+
+
+async def test_s12_resting_refused_when_the_price_is_already_at_the_level(world):
+    w = world
+    w.venue.last[BTC] = 98_900.0  # below the long limit: post-only would take
+    w.signals["4h"] = [_rest()]
+    res = await w.run()
+    assert res["sent"] == 0 and res.get("refused") == 1 and not w.venue.kinds("limit")
+    assert "already at the resting level" in str(await w.store.exec_audit_list(kinds=("refused",)))
+
+
+async def test_s12_resting_order_holds_its_slot_on_the_next_days(world):
+    w = world
+    w.signals["4h"] = [_rest()]
+    await w.run()
+    w.signals["4h"] = []
+    res = await w.run(T0 + D1 + 60_000)  # the next UTC day: still on the book, still one of the day's slots
+    assert res["trades_today"] == 1 and res["entries_today"] == 1
+    t = (await w.store.demo_trade_list())[0]
+    assert demo_trader._today(t, T0 + D1) and not demo_trader._today({**t, "status": "missed"}, T0 + D1)

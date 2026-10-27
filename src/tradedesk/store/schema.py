@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 29
+SCHEMA_VERSION = 30
 
 # Each migration is a list of SQL statements executed in a single transaction.
 # `PRAGMA user_version` is bumped by Store.init() inside the same explicit transaction,
@@ -792,5 +792,10 @@ MIGRATIONS: dict[int, list[str]] = {
             PRIMARY KEY (ts, symbol)
         ) WITHOUT ROWID
         """,
+    ],
+    30: [
+        # Demo trader S12 v7 (owner 26.10, docs/verification/2026-10-26-prelimit-entries.md): a limit resting at the
+        # gap's middle until this time (unix ms) instead of the 10-minute maker entry; NULL = the usual entry
+        "ALTER TABLE demo_trade ADD COLUMN rest_until INTEGER",
     ],
 }

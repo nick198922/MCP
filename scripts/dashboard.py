@@ -7806,6 +7806,14 @@ DEMO_EPOCHS: tuple[tuple[str, int, str, str, tuple[str, ...]], ...] = (
         "docs/changes/2026-10-25-demo-slots-answers.md (S40 not on the demo before this change)",
         ("S40",),
     ),
+    (
+        "v7",
+        1_793_124_000_000,  # 2026-10-27 18:00:00 UTC
+        "S12: вхід лімітом, виставленим заздалегідь на середині нового FVG (живе 20 свічок 4h), замість входу"
+        " за закриттям свічки дотику; стоп, ціль і ведення угоди — як у v4",
+        "docs/changes/2026-10-26-demo-s12-resting-limit.md, docs/verification/2026-10-26-prelimit-entries.md",
+        ("S12",),
+    ),
 )
 DEMO_STATUS_UA = {
     "open": "відкрита",

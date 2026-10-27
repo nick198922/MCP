@@ -29,7 +29,12 @@ made in, so a change is assumed live from the commit minute, the deploy time is 
 - ``v6`` 2026-10-25 20:15 UTC, S40 only: the long side of detector B (owner 25.10, Q-20261025-3) joins the demo
   (``docs/changes/2026-10-25-demo-slots-answers.md``). Same rule as v4. The same change (owner 27.10) gave every setup two slots
   of their own plus a shared reserve of 3 instead of the day's shared 5: not versioned (which signals are taken, not
-  how a taken trade runs).
+  how a taken trade runs);
+- ``v7`` 2026-10-27 18:00 UTC, S12 only: the entry is a limit resting at the middle of a new gap for 20 bars instead of
+  the close of the bar that touched it (``docs/changes/2026-10-26-demo-s12-resting-limit.md``). Its start is the time the
+  change was rebased onto v6 (written 26.10 11:30 UTC as v6);
+  it goes live only after the trader review merges and deploys it, so an S12 trade opened between
+  the two ran the v4 entry (its ``rest_until`` is NULL in ``demo_trade``).
 
 Not versioned, because they change which signals are taken, not how a taken trade runs: eb3af15 (22.10 07:45 UTC, the
 daily cap counts trades at risk, ``docs/changes/2026-10-22-demo-risk-cap.md``), f9f7cb5 (23.10 16:14 UTC, the option
@@ -108,6 +113,14 @@ EPOCHS: tuple[Epoch, ...] = (
         "S40 (провалений свип угору → лонг, дзеркало S39), 4h, на демо без доведеної переваги; правила ведення угоди — як у v3",
         "docs/changes/2026-10-25-demo-slots-answers.md (S40 not on the demo before this change)",
         ("S40",),
+    ),
+    Epoch(
+        "v7",
+        _ms(2026, 10, 27, 18, 0, 0),
+        "S12: вхід лімітом, виставленим заздалегідь на середині нового FVG (живе 20 свічок 4h), замість входу"
+        " за закриттям свічки дотику; стоп, ціль і ведення угоди — як у v4",
+        "docs/changes/2026-10-26-demo-s12-resting-limit.md, docs/verification/2026-10-26-prelimit-entries.md",
+        ("S12",),
     ),
 )
 

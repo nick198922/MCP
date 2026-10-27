@@ -1147,7 +1147,7 @@ HELP: dict[str, tuple[str, str, str, str]] = {
     # «Демо» tab (demo trader on the Bybit Demo Trading account, play money)
     "demo": (
         "Демо-угоди",
-        "Угоди демо-трейдера на демо-рахунку Bybit (ігрові гроші): сетапи S14, S16, S3, S12 (S12 бектест відкинув) і шорти S38, S39 (переваги не доведено), вхід зі стопом і ціллю, ризик ≈ $100.",
+        "Угоди демо-трейдера на демо-рахунку Bybit (ігрові гроші): сетапи S14, S16, S3, S12 (S12 бектест відкинув), шорти S38, S39 і лонг S40 (переваги не доведено), вхід зі стопом і ціллю, ризик ≈ $100.",
         "Закриті, відкриті й невиконані входи, P&L і середній R усіх сетапів разом.",
         "Це полігон для перевірки сетапів наживо, не твої реальні угоди; рішення — за R окремого сетапу на ≥ 30 угодах.",
     ),
@@ -1184,7 +1184,7 @@ HELP: dict[str, tuple[str, str, str, str]] = {
     ),
     "demo_setups": (
         "R за сетапом",
-        "Для кожного сетапу демо (S14, S16, S3, S12, S38, S39): закриті угоди, частка в плюсі, середній R і його 95 % ДІ проти 0.",
+        "Для кожного сетапу демо (S14, S16, S3, S12, S38, S39, S40): закриті угоди, частка в плюсі, середній R і його 95 % ДІ проти 0.",
         "Менше 30 угод з R — «замало для висновку»: числа описові.",
         "Сетап із ДІ вище 0 на ≥ 30 угодах — кандидат на реальні гроші; з ДІ нижче 0 — кандидат на вимкнення.",
     ),
@@ -7739,7 +7739,7 @@ def polymarket_page(now: float | None = None) -> str:
 # missed / skipped signals against their shadow plans) and explains its absence.
 
 DEMO_DB = JOURNAL_DB  # execution.demo_trader.DEFAULT_DB: the same store
-DEMO_SETUPS = ("S14", "S16", "S3", "S12", "S38", "S39")  # execution.demo_trader.SETUPS
+DEMO_SETUPS = ("S14", "S16", "S3", "S12", "S38", "S39", "S40")  # execution.demo_trader.SETUPS
 DEMO_MIN_N = 30  # analytics.demo_vs_backtest.MIN_TRADES (owner 23.10: no conclusion before ~30 closed trades)
 DEMO_MAX_ROWS = 20000
 DEMO_AUDIT_MAX_ROWS = 20000
@@ -7798,6 +7798,13 @@ DEMO_EPOCHS: tuple[tuple[str, int, str, str, tuple[str, ...]], ...] = (
         "переваги; S38 не більше 2 входів на 4h-свічку; правила ведення угоди — як у v3",
         "docs/changes/2026-10-25-demo-short-setups.md (S38 / S39 not on the demo before this change)",
         ("S38", "S39"),
+    ),
+    (
+        "v6",
+        1_792_959_300_000,  # 2026-10-25 20:15:00 UTC
+        "S40 (провалений свип угору → лонг, дзеркало S39), 4h, на демо без доведеної переваги; правила ведення угоди — як у v3",
+        "docs/changes/2026-10-25-demo-slots-answers.md (S40 not on the demo before this change)",
+        ("S40",),
     ),
 )
 DEMO_STATUS_UA = {

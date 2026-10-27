@@ -257,7 +257,7 @@ async def test_probe_places_sees_and_cancels_one_order(store):
 
 
 async def test_probe_shares_the_futures_caps(store):
-    for _ in range(5):  # five orders in the last hour from the futures trader
+    for _ in range(demo_trader.DEFAULT.orders_per_hour):  # the hour's orders all spent by the futures trader
         await store.exec_audit_add(NOW - 60_000, demo_trader.VENUE, "sent", link_id="td-x")
     c, ex = _client()
     code, rep = await probe.run(c, store, NOW, place=True)

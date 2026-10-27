@@ -47,8 +47,8 @@ def test_size_caps_tied_to_equity():
     tight = plan_order(BTC, "long", 100_000.0, 99_800.0, 101_000.0, "S14", "x", 0.001, 0.001, equity_usd=10_000.0)
     assert tight.notional <= 10_000.0  # 0.2 % stop: $100 risk would be ~$38k, shrunk to 1x equity
     assert any("1x equity" in v for v in check(replace(tight, qty=0.2), S))
-    assert any("open size" in v for v in check(P, replace(S, open_notional_usd=26_000.0)))
-    assert not any("open size" in v for v in check(P, replace(S, open_notional_usd=20_000.0)))
+    assert any("open size" in v for v in check(P, replace(S, open_notional_usd=56_000.0)))
+    assert not any("open size" in v for v in check(P, replace(S, open_notional_usd=50_000.0)))
 
 
 def test_cross_margin_account_limit():
@@ -80,12 +80,12 @@ def test_a_sane_proposal_passes():
         (P, replace(S, equity_usd=0.0), "equity unknown"),
         (P, replace(S, open_margin_usd=8_900.0), "margin"),
         (P, replace(S, open_symbols=(BTC,)), "already in"),
-        (P, replace(S, open_symbols=tuple(f"s{i}" for i in range(15))), "open positions = max"),
-        (P, replace(S, trades_today=5), "trades at risk today = max"),
-        (P, replace(S, entries_today=10), "entries today = max"),
-        (P, replace(S, orders_last_hour=5), "orders in the last hour"),
-        (P, replace(S, open_risk_usd=1450.0), "open risk"),
-        (P, replace(S, day_realised_loss_usd=500.0), "realised loss today"),
+        (P, replace(S, open_symbols=tuple(f"s{i}" for i in range(DEFAULT.max_open_positions))), "open positions = max"),
+        (P, replace(S, trades_today=DEFAULT.max_trades_per_day), "trades at risk today = max"),
+        (P, replace(S, entries_today=DEFAULT.max_entries_per_day), "entries today = max"),
+        (P, replace(S, orders_last_hour=DEFAULT.orders_per_hour), "orders in the last hour"),
+        (P, replace(S, open_risk_usd=DEFAULT.max_open_risk_usd - 50.0), "open risk"),
+        (P, replace(S, day_realised_loss_usd=DEFAULT.daily_max_loss_usd), "realised loss today"),
         (P, replace(S, seen_link_ids=("td-S14-1",)), "already decided"),
     ],
 )
@@ -95,7 +95,7 @@ def test_each_limit_refuses(p, s, needle):
 
 def test_only_testnet_mode_exists():
     assert any("not allowed" in v for v in check(P, S, GuardConfig(mode="live")))
-    assert DEFAULT.mode == g.MODE == "testnet" and DEFAULT.venue == "bybit-demo" and DEFAULT.max_trades_per_day == 5
+    assert DEFAULT.mode == g.MODE == "testnet" and DEFAULT.venue == "bybit-demo" and DEFAULT.max_trades_per_day == 17
 
 
 def test_short_levels_mirror():
@@ -228,13 +228,13 @@ def test_a_sane_option_proposal_passes():
         (OP, replace(OS, equity_usd=150.0), "cross margin"),
         (OP, replace(OS, halted=True), "kill-switch"),
         (OP, replace(OS, open_symbols=(OPT,)), "already in"),
-        (OP, replace(OS, open_symbols=tuple(f"s{i}" for i in range(15))), "open positions = max"),
+        (OP, replace(OS, open_symbols=tuple(f"s{i}" for i in range(DEFAULT.max_open_positions))), "open positions = max"),
         # the daily caps are shared with the futures entries (same State fields, same messages)
-        (OP, replace(OS, trades_today=5), "trades at risk today = max"),
-        (OP, replace(OS, entries_today=10), "entries today = max"),
-        (OP, replace(OS, orders_last_hour=5), "orders in the last hour"),
-        (OP, replace(OS, open_risk_usd=1450.0), "open risk"),
-        (OP, replace(OS, day_realised_loss_usd=500.0), "realised loss today"),
+        (OP, replace(OS, trades_today=DEFAULT.max_trades_per_day), "trades at risk today = max"),
+        (OP, replace(OS, entries_today=DEFAULT.max_entries_per_day), "entries today = max"),
+        (OP, replace(OS, orders_last_hour=DEFAULT.orders_per_hour), "orders in the last hour"),
+        (OP, replace(OS, open_risk_usd=DEFAULT.max_open_risk_usd - 50.0), "open risk"),
+        (OP, replace(OS, day_realised_loss_usd=DEFAULT.daily_max_loss_usd), "realised loss today"),
         (OP, replace(OS, seen_link_ids=("tdo-1",)), "already decided"),
     ],
 )

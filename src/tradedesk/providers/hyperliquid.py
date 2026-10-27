@@ -166,9 +166,14 @@ class Hyperliquid:
         """Resolve ``coin`` to the exact HL name (case-sensitive: ``kPEPE``, not ``KPEPE``). Never raises.
 
         Returns ``(name, status)``: ``exact`` (matched the universe), ``unknown`` (universe loaded, no match;
-        name is the upper-cased input, the old behaviour) or ``unavailable`` (universe not loadable; same fallback).
+        name is the upper-cased input, the old behaviour), ``unavailable`` (universe not loadable; same fallback) or
+        ``dex`` (a builder-deployed perp ``<dex>:<NAME>`` such as ``xyz:SP500``, outside the main universe: the dex
+        prefix is lower-case on HL, so upper-casing the whole name would make the API answer HTTP 500).
         """
         raw = coin.strip()
+        if ":" in raw:
+            dex, _, name = raw.partition(":")
+            return f"{dex.lower()}:{name.upper()}", "dex"
         table = await self._name_table()
         if table is None:
             return raw.upper(), "unavailable"

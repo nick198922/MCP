@@ -228,3 +228,82 @@ def test_binance_fills_to_round_trips():
     t, skipped = bn.trips_from_fills(F)
     got = sorted((x["symbol"], x["side"], x["entry"], x["exit"], round(x["pnl"], 2)) for x in t)
     assert skipped == 1 and got == [("ETHUSDT", "long", 3000, 3100, 99.8), ("SOLUSDT", "short", 100, 90, 99.9)]
+
+
+def _fill(sym, side, qty, px, ts, fee="1"):
+    return {"symbol": sym, "side": side, "execQty": qty, "execPrice": px, "execFee": fee, "execTime": str(ts), "execType": "Trade"}
+
+
+C30 = "BTC-30OCT26-84000-C-USDT"
+P13 = "BTC-13NOV26-78000-P-USDT"
+
+
+def _rows(db):
+    import sqlite3
+
+    con = sqlite3.connect(db)
+    out = {r[0]: r for r in con.execute("SELECT symbol, id, status, size, entry, pnl, tags, note, thesis FROM journal ORDER BY id")}
+    con.close()
+    return out
+
+
+def test_open_option_becomes_an_open_row_and_closes_in_place(tmp_path):
+    db = str(tmp_path / "j.sqlite")
+    buys = [_fill(C30, "Buy", "0.25", "1069", 1791477003361), _fill(C30, "Buy", "0.25", "1000", 1791477003999)]
+    trips = bi.option_trips(buys, [], include_open=True)
+    assert len(trips) == 1 and trips[0]["open"] and trips[0]["size"] == 0.5 and trips[0]["fees"] == 2
+    assert bi.option_trips(buys, []) == []  # the default stays «closed trips only»
+    assert asyncio.run(bi.store_options(trips, db)) == (1, 0, 0)
+    assert asyncio.run(bi.store_options(trips, db)) == (0, 0, 1)
+    r = _rows(db)[C30]
+    assert r[2] == "open" and f"bybit:option:{C30}:1791477003361" in r[7] and '"import"' in r[6]
+    sold = buys + [_fill(C30, "Sell", "0.5", "1500", 1791500000000)]
+    assert asyncio.run(bi.store_options(bi.option_trips(sold, [], include_open=True), db)) == (0, 1, 0)
+    after = _rows(db)[C30]
+    assert after[1] == r[1] and after[2] == "closed" and round(after[5], 2) == round(0.5 * 1500 - (0.25 * 1069 + 0.25 * 1000) - 3, 2)
+
+
+def test_manual_rows_are_reused_not_duplicated(tmp_path):
+    from tradedesk.store.db import Store
+
+    db = str(tmp_path / "j.sqlite")
+
+    async def manual():
+        st = Store(db)
+        await st.init()
+        await st.journal_insert(
+            opened_ts=1793006243, symbol=P13, side="long", size=0.1, entry=1590, thesis="моя теза", tags=["bybit", "option", "manual"]
+        )
+        await st.aclose()
+
+    asyncio.run(manual())
+    buy = [_fill(P13, "Buy", "0.1", "1590", 1793006243022, fee="1.6")]
+    assert asyncio.run(bi.store_options(bi.option_trips(buy, [], include_open=True), db)) == (0, 0, 1)
+    r = _rows(db)[P13]
+    assert r[2] == "open" and r[8] == "моя теза" and '"manual"' in r[6] and f"bybit:option:{P13}:1793006243022" in r[7]
+    D = [{"symbol": P13, "deliveryPrice": "76000", "fee": "0.3", "deliveryTime": "1794556800000"}]
+    assert asyncio.run(bi.store_options(bi.option_trips(buy, D, include_open=True), db)) == (0, 1, 0)
+    r = _rows(db)[P13]
+    assert r[2] == "closed" and r[8] == "моя теза" and round(r[5], 2) == round(0.1 * 2000 - 159 - 1.6 - 0.3, 2)
+    assert len(_rows(db)) == 1
+
+
+def test_a_trade_the_owner_closed_by_hand_keeps_his_numbers(tmp_path):
+    from tradedesk.store.db import Store
+
+    db = str(tmp_path / "j.sqlite")
+
+    async def manual():
+        st = Store(db)
+        await st.init()
+        tid = await st.journal_insert(opened_ts=1791477003, symbol=C30, side="long", size=0.25, entry=1069, tags=["bybit", "option"])
+        await st.journal_update_close(
+            tid, closed_ts=1791500100, status="closed", exit_=1500, outcome="win", pnl=100.0, r_multiple=None, note="закрив сам"
+        )
+        await st.aclose()
+
+    asyncio.run(manual())
+    fills = [_fill(C30, "Buy", "0.25", "1069", 1791477003361), _fill(C30, "Sell", "0.25", "1500", 1791500000000)]
+    assert asyncio.run(bi.store_options(bi.option_trips(fills, []), db)) == (0, 0, 1)
+    r = _rows(db)[C30]
+    assert r[5] == 100.0 and r[7].startswith(f"bybit:option:{C30}:") and r[7].endswith("закрив сам") and len(_rows(db)) == 1

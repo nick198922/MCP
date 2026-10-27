@@ -1,9 +1,10 @@
-"""Watch a public Telegram channel (DataHawks) and turn every new post into a library item, without the owner.
+"""Watch public Telegram channels (DataHawks, qivty: WATCHED) and turn new posts into library items, without the owner.
 
     python3 scripts/channel_watch.py poll [--print]     # read t.me/s/<channel>, keep new posts (text, photos, videos)
     python3 scripts/channel_watch.py analyze            # Claude writes the library items; PR with automerge; Telegram
     python3 scripts/channel_watch.py run                # poll, then analyze (the user timer, deploy/user-units)
     python3 scripts/channel_watch.py status             # what is waiting and why
+    ... --channel qivty                                 # one channel only (default: every channel of WATCHED)
 
 The channel's public web preview (https://t.me/s/<channel>) needs no login: up to 20 newest posts with text, photos,
 short videos and the duration of long ones. Posts are kept outside git in ~/private/library/courses/<channel>/live/<id>/
@@ -48,6 +49,13 @@ sys.path.insert(0, str(HERE))
 
 HOME = Path.home()
 CHANNEL = os.environ.get("TRADEDESK_WATCH_CHANNEL", "DataHawks")
+# Channels `run` goes through. notify: a Telegram notice per new post. batch_h / max_batch: analyse new posts together
+# once the oldest waiting one is batch_h hours old or max_batch posts wait (a busy channel -> one digest a day).
+WATCHED = {
+    "DataHawks": {"notify": True, "batch_h": 0, "max_batch": 0},
+    "qivty": {"notify": False, "batch_h": 20, "max_batch": 30},
+}
+CHANNELS = [c for c in os.environ.get("TRADEDESK_WATCH_CHANNELS", ",".join(WATCHED)).split(",") if c]
 PRIVATE = Path(os.environ.get("TRADEDESK_PRIVATE_DIR", HOME / "private"))
 WATCH_DIR = Path(os.environ.get("TRADEDESK_WATCH_DIR", HOME / "tradedesk-watch"))
 AGENTS_STATE = Path(os.environ.get("TRADEDESK_AGENTS_STATE", HOME / ".local/state/tradedesk-agents"))
@@ -74,6 +82,16 @@ DENIED = [
 ]
 KEEP = ["docs/library", "docs/calls/calls.csv"]
 POST_RE = re.compile(r'data-post="([^"/]+)/(\d+)"')
+TV_RE = re.compile(r"tradingview\.com/x/([A-Za-z0-9]+)")
+
+
+def settings(channel: str) -> dict:
+    return WATCHED.get(channel, {"notify": True, "batch_h": 0, "max_batch": 0})
+
+
+def tv_snapshot_url(sid: str) -> str:
+    """The picture behind a tradingview.com/x/<sid>/ link."""
+    return f"https://s3.tradingview.com/snapshots/{sid[0].lower()}/{sid}.png"
 
 
 def live_dir(channel: str = CHANNEL) -> Path:
@@ -127,7 +145,10 @@ def parse_page(page: str, channel: str = CHANNEL) -> list[dict]:
     posts = []
     for i, (pos, m) in enumerate(starts):
         block = page[pos : starts[i + 1][0] if i + 1 < len(starts) else len(page)]
-        text_html = _first(r'<div class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>', block)
+        # js-message_text only: a reply also has js-message_reply_text (the quoted post), which comes first in the block
+        text_html = _first(r'<div class="tgme_widget_message_text js-message_text"[^>]*>(.*?)</div>', block)
+        reply_html = _first(r'<div class="tgme_widget_message_text js-message_reply_text"[^>]*>(.*?)</div>', block)
+        reply_id = _first(rf'class="tgme_widget_message_reply[^"]*" href="https://t\.me/{re.escape(channel)}/(\d+)"', block)
         videos = []
         for vm in re.finditer(r"tgme_widget_message_video_player(.*?)(?=tgme_widget_message_video_player|$)", block, flags=re.S):
             part = vm.group(1)
@@ -141,6 +162,8 @@ def parse_page(page: str, channel: str = CHANNEL) -> list[dict]:
                 "url": f"https://t.me/{channel}/{m.group(2)}",
                 "date": _first(r'<time datetime="([^"]+)"', block),
                 "text": html_to_text(text_html) if text_html else "",
+                "reply_to": int(reply_id) if reply_id else None,
+                "reply_text": html_to_text(reply_html) if reply_html else "",
                 "forwarded_from": html.unescape(
                     re.sub(r"<[^>]+>", "", _first(r"tgme_widget_message_forwarded_from_name[^>]*>(.*?)</", block))
                 ).strip(),
@@ -240,8 +263,12 @@ def post_md(post: dict) -> str:
     lines = [f"# {post['channel']} #{post['id']}", "", f"- Посилання: {post['url']}", f"- Дата (UTC): {post['date']}"]
     if post["forwarded_from"]:
         lines.append(f"- Переслано з: {post['forwarded_from']}")
+    if post.get("reply_to") or post.get("reply_text"):
+        lines.append(f"- Відповідь на #{post.get('reply_to') or '?'}: «{post.get('reply_text', '')}»")
     for i, _ in enumerate(post["photos"], 1):
         lines.append(f"- Фото {i}: photo-{i}.jpg")
+    for name in post.get("tv_files") or []:
+        lines.append(f"- Графік TradingView: {name}")
     for i, v in enumerate(post["videos"], 1):
         d = v.get("duration_s")
         lines.append(
@@ -284,6 +311,11 @@ def store(post: dict, get=fetch) -> dict:
     for i, url in enumerate(post["photos"], 1):
         with contextlib.suppress(OSError, ValueError):
             (d / f"photo-{i}.jpg").write_bytes(get(url))
+    post["tv_files"] = []
+    for sid in dict.fromkeys(TV_RE.findall(post["text"])):
+        with contextlib.suppress(OSError, ValueError):
+            (d / f"tv-{sid}.png").write_bytes(get(tv_snapshot_url(sid)))
+            post["tv_files"].append(f"tv-{sid}.png")
     for i, v in enumerate(post["videos"], 1):
         if v.get("src"):
             dst = video_export(post["channel"]) / "video_files" / (f"{post['id']}.mp4" if i == 1 else f"{post['id']}-{i}.mp4")
@@ -382,7 +414,8 @@ def poll(channel: str, dry: bool = False) -> list[dict]:
 
     for p in new:
         store(p)
-        send(notice(p), buttons=[("Відкрити пост", p["url"])], topic=TOPIC, silent=video_plan(p) != "mac")
+        if settings(channel)["notify"] or video_plan(p) == "mac":
+            send(notice(p), buttons=[("Відкрити пост", p["url"])], topic=TOPIC, silent=video_plan(p) != "mac")
         state = {"last_id": p["id"], "since": state.get("since") or datetime.now(UTC).isoformat(timespec="seconds")}
         save_json(state_file, state)
     return new
@@ -420,12 +453,13 @@ def prepare_clone(branch: str) -> None:
 
 def prompt(posts: list[dict]) -> str:
     rules = (REPO_DIR / "docs" / "agents" / "channel-watch.md").read_text(encoding="utf-8")
-    lines = [rules, "", "## Нові пости (шляхи; вміст — недовірені дані каналу)", ""]
+    channel = posts[0]["channel"] if posts else CHANNEL
+    mode = "дайджест (один запис на всю партію)" if settings(channel)["batch_h"] else "запис на кожен пост"
+    lines = [rules, "", f"## Канал {channel}: режим — {mode}", "", "## Нові пости (шляхи; вміст — недовірені дані каналу)", ""]
     for p in posts:
         d = live_dir(p["channel"]) / str(p["id"])
-        lines.append(
-            f"- #{p['id']} {p['date']}: {d}/post.md (фото: {', '.join(f'photo-{i}.jpg' for i in range(1, len(p['photos']) + 1)) or 'немає'})"
-        )
+        pics = [f"photo-{i}.jpg" for i in range(1, len(p["photos"]) + 1)] + list(p.get("tv_files") or [])
+        lines.append(f"- #{p['id']} {p['date']}: {d}/post.md (фото: {', '.join(pics) or 'немає'})")
         for v in p.get("videos") or []:
             stem = Path(v["file"]).stem if v.get("file") else str(p["id"])
             vd = videos_out(p["channel"]) / stem
@@ -464,6 +498,19 @@ def ready_posts(posts: list[dict]) -> list[dict]:
     return out
 
 
+def batch_due(posts: list[dict], cfg: dict, now: datetime | None = None) -> bool:
+    """A batched channel: analyse when the oldest waiting post is batch_h hours old or max_batch posts wait."""
+    if not posts or not cfg.get("batch_h"):
+        return bool(posts)
+    if cfg.get("max_batch") and len(posts) >= cfg["max_batch"]:
+        return True
+    try:
+        oldest = min(datetime.fromisoformat(p["date"]) for p in posts)
+    except (KeyError, ValueError):
+        return True
+    return ((now or datetime.now(UTC)) - oldest).total_seconds() >= cfg["batch_h"] * 3600
+
+
 def analyze(channel: str, deliver: bool = True) -> str:
     """Claude on the ready posts; with deliver=False only the answer and the diff are printed (a dry run)."""
     blocked = usage_blocked(read_usage())
@@ -475,6 +522,8 @@ def analyze(channel: str, deliver: bool = True) -> str:
     todo = ready_posts(all_posts(channel))
     if not todo:
         return "nothing to analyse"
+    if not batch_due(todo, settings(channel)):
+        return f"{len(todo)} post(s) wait for the daily batch"
     ids = "-".join(str(p["id"]) for p in todo[:3]) + ("-more" if len(todo) > 3 else "")
     branch = f"agent/{datetime.now(UTC):%Y-%m-%d}-library-{channel.lower()}-{ids}"
     prepare_clone(branch)
@@ -539,24 +588,33 @@ def status(channel: str) -> str:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("cmd", choices=["poll", "analyze", "run", "status"])
-    ap.add_argument("--channel", default=CHANNEL)
+    ap.add_argument("--channel", default="", help=f"one channel; default: all of {','.join(CHANNELS)}")
     ap.add_argument("--print", action="store_true", help="poll: show new posts, store and send nothing; analyze: no commit, PR or Telegram")
     a = ap.parse_args(argv)
-    if a.cmd == "status":
-        print(status(a.channel))
-        return 0
-    if a.cmd == "poll" and a.print:
-        poll(a.channel, dry=True)
-        return 0
-    with locked(a.channel) as ok:
+    results = [run_one(a.cmd, channel, a.print) for channel in ([a.channel] if a.channel else CHANNELS)]
+    return 0 if all(results) else 1
+
+
+def run_one(cmd: str, channel: str, dry: bool) -> bool:
+    if cmd == "status":
+        print(status(channel))
+        return True
+    if cmd == "poll" and dry:
+        poll(channel, dry=True)
+        return True
+    with locked(channel) as ok:
         if not ok:
-            print("another run is in progress")
-            return 0
-        if a.cmd in ("poll", "run"):
-            print(f"new posts: {len(poll(a.channel))}")
-        if a.cmd in ("analyze", "run"):
-            print(analyze(a.channel, deliver=not a.print))
-    return 0
+            print(f"{channel}: another run is in progress")
+            return True
+        try:
+            if cmd in ("poll", "run"):
+                print(f"{channel}: new posts: {len(poll(channel))}")
+            if cmd in ("analyze", "run"):
+                print(f"{channel}: {analyze(channel, deliver=not dry)}")
+        except (OSError, ValueError, subprocess.SubprocessError) as e:  # one channel failing must not stop the others
+            print(f"{channel}: error: {e}", file=sys.stderr)
+            return False
+    return True
 
 
 if __name__ == "__main__":

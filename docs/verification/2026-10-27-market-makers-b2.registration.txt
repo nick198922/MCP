@@ -1,0 +1,4 @@
+IDEA-20261017-market-makers, part B2 pre-registration
+written_utc=2026-10-27T09:19:11Z
+section «Попередня реєстрація (частина B2…)» sha256=cff69d52449ff78dc732661330deb755b3a8bac8a4328c451cde327bec6cd567 bytes=10242
+written by scripts/verify_market_makers_b2.py prereg before the first B2 Etherscan call or price load

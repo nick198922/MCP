@@ -22,7 +22,7 @@ Rules taken from the verification runs (status of each setup: docs/knowledge/set
   (``docs/verification/2026-10-17-course-step4-fvg-ob.md``) and traded on the demo only because the owner wants rejected
   setups tested live (BACKLOG 0.5 item "в", IDEA-20261024-short-setups-demo step 2). ``s12`` enters at the close of the
   bar that touched the middle (a touch bar already at the stop or closed at the target gives no signal): the demo's rule
-  until v6. Since v6 (owner 26.10, ``docs/verification/2026-10-26-prelimit-entries.md``) the demo trades ``s12_rest``: the
+  until v7. Since v7 (owner 26.10, ``docs/verification/2026-10-26-prelimit-entries.md``) the demo trades ``s12_rest``: the
   signal is the gap's third candle itself, and its entry is a limit resting at the middle for ``S12_WAIT`` bars
   (indicator ``rest_until_ms``), as in the backtest; same stop and target.
 - S38 and S39 (trend-continuation shorts; 4h, shorts only): the step-1 detectors of IDEA-20261024-short-setups-demo,
@@ -33,8 +33,13 @@ Rules taken from the verification runs (status of each setup: docs/knowledge/set
   closed below within 6 bars, before the range middle was reached: a short at that close, stop 0.5 ATR over the highest
   high since the sweep, target 2R. Neither has a proven edge (S38 ✗ by the card's kill rule, the OOS sign is opposite;
   S39 ◯, too little data, and a random short of the same coin and BTC regime earned about as much); they are on the
-  demo because the owner wants them tested live (card step 3: IS E[R] >= -0.05R). The longs are not traded: A-long
-  failed that condition, and the card is about shorts.
+  demo because the owner wants them tested live (card step 3: IS E[R] >= -0.05R). A-long failed that condition and is
+  not traded.
+- S40 (B-long; 4h): ``short_setups.failed_sweep`` on real prices, the mirror of S39: a live S3 short (sweep of the range
+  high) whose stop is closed above within 6 bars, before the range middle was reached: a long at that close, stop
+  0.5 ATR under the lowest low since the sweep, target 2R. The step-1 backtest: IS +0.056R [-0.041; +0.153], OOS
+  +0.170R [-0.057; +0.402], against the placebo both CI contain 0: no proven edge; on the demo by the owner's answer
+  to Q-20261025-3.
 """
 
 from __future__ import annotations
@@ -63,7 +68,7 @@ S12_STOP_ATR = 1.0  # stop under the gap's middle, in ATR14 of the gap's third c
 S12_TARGET_R = 2.0  # target above the middle, in units of (middle - stop)
 S12_WARMUP = 100  # bars of the segment before the gap (the backtest's warm-up)
 S12_REST_UA = (
-    "Вхід лімітом, виставленим заздалегідь на середині FVG (з v6, рішення власника 26.10): у бектесті на тих самих правилах "
+    "Вхід лімітом, виставленим заздалегідь на середині FVG (з v7, рішення власника 26.10): у бектесті на тих самих правилах "
     "виходу (беззбиток на половині шляху, 7 днів, топ-30, 2020–2026) E[R] net +0.185R проти 0.000R за входом за закриттям "
     "свічки дотику; з вимогою пройти рівень на 0.1 % — +0.154R (docs/verification/2026-10-26-prelimit-entries.md). "
     "Перевага саме FVG над випадковим рівнем не доведена (бектест 17.10)."
@@ -101,11 +106,18 @@ S39_BACKTEST_UA = (
     "[−0.163; +0.280]; проти плацебо IS +0.051R, OOS −0.068R (CI містять 0), без 10 найкращих дат IS −0.036R: "
     "даних замало для висновку. Стопи широкі (медіана 7 %). " + SHORT_PLACEBO_UA
 )
+S40_BACKTEST_UA = (
+    "Бектест кроку 1 (docs/verification/2026-10-24-short-setups-demo.md; 4h, 2020-02 … 2026-09, вихід як на демо: "
+    "беззбиток на половині шляху, 7 днів): лонги детектора B в IS (до 2025-03) E[R] net +0.056R [−0.041; +0.153], "
+    "в OOS +0.170R [−0.057; +0.402]; проти плацебо IS +0.041R, OOS +0.126R (CI містять 0): доведеної переваги немає. "
+    "Бектест: Binance, топ-30, вхід мейкером за закриттям завжди виконаний; демо: Bybit, топ-100, відбір за балом. "
+    "На демо — перевірка наживо (рішення власника 25.10, Q-20261025-3), не доведена перевага."
+)
 
 
 @dataclass(frozen=True)
 class LiveSignal:
-    setup: str  # 'S14' | 'S16' | 'S3' | 'S12' | 'S38' | 'S39'
+    setup: str  # 'S14' | 'S16' | 'S3' | 'S12' | 'S38' | 'S39' | 'S40'
     side: str  # 'long' | 'short'
     timeframe: str
     signal_ts: int  # open time of the signal bar, ms UTC
@@ -327,7 +339,7 @@ def _s12_zones(bb: Bars, lo: int, hi: int) -> tuple[np.ndarray, list[Zone], np.n
 
 
 def s12_rest_all(b: Bars, timeframe: str, lo: int = 0) -> list[LiveSignal]:
-    """S12 since v6, decided on bars lo .. n-1: a gap with the daily trend whose third candle is bar i gives a signal on
+    """S12 since v7, decided on bars lo .. n-1: a gap with the daily trend whose third candle is bar i gives a signal on
     bar i; the entry is a limit resting at the gap's middle until ``rest_until_ms`` (the close of bar i + S12_WAIT
     bars), stop 1 ATR beyond the middle, target 2R from it. Causal: the signal on bar i uses bars <= i only."""
     out: list[LiveSignal] = []
@@ -359,7 +371,7 @@ def s12_rest_all(b: Bars, timeframe: str, lo: int = 0) -> list[LiveSignal]:
 
 
 def s12_rest(b: Bars, timeframe: str) -> list[LiveSignal]:
-    """S12 since v6 on the last closed bar (module docstring)."""
+    """S12 since v7 on the last closed bar (module docstring)."""
     return s12_rest_all(b, timeframe, lo=len(b) - 1)
 
 
@@ -485,7 +497,62 @@ def s39(b: Bars, timeframe: str) -> list[LiveSignal]:
     return s39_all(b, timeframe, lo=len(b) - 1)
 
 
-DETECTORS = {"S14": s14, "S16": range_setups, "S3": range_setups, "S12": s12_rest, "S38": s38, "S39": s39}
+def s40_all(b: Bars, timeframe: str, lo: int = 0) -> list[LiveSignal]:
+    """S40 longs decided on bars lo .. n-1 (the full-history form of ``s40``): ``short_setups.failed_sweep`` on the
+    real bars (the long form of detector B: S3 shorts that fail upwards) with the registered parameters. Causal: the
+    signal on bar j uses bars <= j only."""
+    out: list[LiveSignal] = []
+    n = len(b)
+    if timeframe not in SHORT_TIMEFRAMES or n < RANGE_W + 20:
+        return out
+    pos = segment_pos(b.t)
+    a_arr = atr(b, 14, pos)
+    sigs = failed_sweep(
+        b, pos, a_arr, w=RANGE_W, width_atr=RANGE_WIDTH_ATR, max_wait=SHORT_WAIT, stop_atr=SHORT_STOP_ATR, target_r=SHORT_TARGET_R
+    )
+    for sg in sigs:
+        if sg.i < lo:
+            continue
+        r, j = sg.start, sg.i
+        r_lo, r_hi = _range_at(b, r)
+        e, st, tg, s3_stop = sg.entry, sg.stop, sg.target, sg.level
+        mid = (r_lo + r_hi) / 2
+        comment = (
+            f"S40 ({timeframe}): провалений свип угору — {j - r} св. тому свічка проколола верх {_px(r_hi)} рейнджу {RANGE_W} свічок "
+            f"{_px(r_lo)}–{_px(r_hi)} до {_px(float(b.h[r]))} і закрилась назад (шорт S3, його стоп {_px(s3_stop)}); "
+            f"до середини рейнджу {_px(mid)} ціна не дійшла, а ця свічка закрилась вище стопу S3. "
+            f"Вхід {_px(e)} за закриттям, стоп {_px(st)} (найнижчий лоу від свипу − {SHORT_STOP_ATR:g} ATR, ATR14 {_px(sg.atr)}), "
+            f"ціль {_px(tg)} ({SHORT_TARGET_R:g}R). {S40_BACKTEST_UA}"
+        )
+        out.append(
+            LiveSignal(
+                "S40",
+                "long",
+                timeframe,
+                int(b.t[j]),
+                e,
+                st,
+                tg,
+                comment,
+                {
+                    "range_low": r_lo,
+                    "range_high": r_hi,
+                    "range_mid": mid,
+                    "s3_stop": s3_stop,
+                    "atr14": sg.atr,
+                    "sweep_ts": float(b.t[r]),
+                },
+            )
+        )
+    return out
+
+
+def s40(b: Bars, timeframe: str) -> list[LiveSignal]:
+    """S40 on the last closed bar (module docstring)."""
+    return s40_all(b, timeframe, lo=len(b) - 1)
+
+
+DETECTORS = {"S14": s14, "S16": range_setups, "S3": range_setups, "S12": s12_rest, "S38": s38, "S39": s39, "S40": s40}
 
 
 def scan(b: Bars, timeframe: str, setups: Sequence[str] = ("S14", "S16", "S3")) -> list[LiveSignal]:

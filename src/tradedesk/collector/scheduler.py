@@ -632,6 +632,10 @@ def build_default_scheduler(rt: "Runtime") -> Scheduler | None:
         from .tradfi_spread import TradfiSpreadJob  # noqa: PLC0415
 
         jobs.append(PeriodicJob(name="tradfi_spread", period_seconds=s.collect_tradfi_spread_seconds, fn=TradfiSpreadJob()))
+    if s.collect_hl_oi_cap_enabled:
+        from .hl_oi_cap import collect_hl_oi_cap  # noqa: PLC0415
+
+        jobs.append(PeriodicJob(name="hl_oi_cap", period_seconds=s.collect_hl_oi_cap_seconds, fn=collect_hl_oi_cap))
     if s.alerts_enabled:
         # JSON file is optional in Phase 3.1 — DB-backed rules work on their own.
         jobs.append(PeriodicJob(name="alerts", period_seconds=s.alerts_seconds, fn=_evaluate_alerts))

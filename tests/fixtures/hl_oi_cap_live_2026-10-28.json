@@ -1,0 +1,27 @@
+{
+ "_source": "live api.hyperliquid.xyz POST /info from the Contabo server, 2026-10-28 10:35 UTC; metaAndAssetCtxs trimmed to 7 of 235 perps (BTC, ETH, ATOM with negative funding, kPEPE, delisted MATIC not capped, delisted FTM and JELLY capped), marginTables dropped; perpsAtOpenInterestCap whole. At that time every capped ticker was a delisted perp with OI 0. Tests add a listed ticker to the cap list to cover the at_cap = 1 path (synthetic on top of this live sample).",
+ "perps_at_oi_cap": ["CANTO", "FTM", "JELLY", "LOOM", "RLB", "VINE", "ZEREBRO"],
+ "meta_and_asset_ctxs": [
+  {
+   "universe": [
+    {"szDecimals": 5, "name": "BTC", "maxLeverage": 40, "marginTableId": 56},
+    {"szDecimals": 4, "name": "ETH", "maxLeverage": 25, "marginTableId": 55},
+    {"szDecimals": 2, "name": "ATOM", "maxLeverage": 5, "marginTableId": 5},
+    {"szDecimals": 1, "name": "MATIC", "maxLeverage": 20, "marginTableId": 20, "isDelisted": true},
+    {"szDecimals": 0, "name": "kPEPE", "maxLeverage": 10, "marginTableId": 52},
+    {"szDecimals": 0, "name": "FTM", "maxLeverage": 10, "marginTableId": 10, "isDelisted": true},
+    {"szDecimals": 0, "name": "JELLY", "maxLeverage": 3, "marginTableId": 3, "isDelisted": true}
+   ],
+   "collateralToken": 0
+  },
+  [
+   {"funding": "0.0000125", "openInterest": "42465.64556", "prevDayPx": "79908.0", "dayNtlVlm": "1847395436.3323497772", "premium": "-0.0002869602", "oraclePx": "81544.4", "markPx": "81520.1", "midPx": "81520.5", "impactPxs": ["81518.4", "81521.0"], "dayBaseVlm": "22907.18651"},
+   {"funding": "0.0000125", "openInterest": "1117752.1546", "prevDayPx": "2315.2", "dayNtlVlm": "673052975.3623497486", "premium": "-0.0003585666", "oraclePx": "2370.55", "markPx": "2369.69", "midPx": "2369.65", "impactPxs": ["2369.6", "2369.7"], "dayBaseVlm": "287555.3916"},
+   {"funding": "-0.0000565426", "openInterest": "2407811.8399999999", "prevDayPx": "1.6186", "dayNtlVlm": "1100630.536421", "premium": "-0.0010284332", "oraclePx": "1.653", "markPx": "1.6503", "midPx": "1.6504", "impactPxs": ["1.649", "1.6513"], "dayBaseVlm": "676774.9700000001"},
+   {"funding": "0.0", "openInterest": "0.0", "prevDayPx": "0.37621", "dayNtlVlm": "0.0", "premium": null, "oraclePx": "0.3754", "markPx": "0.37621", "midPx": null, "impactPxs": null, "dayBaseVlm": "0.0"},
+   {"funding": "0.0000125", "openInterest": "10192768474.0", "prevDayPx": "0.004292", "dayNtlVlm": "29579921.4306869991", "premium": "0.0", "oraclePx": "0.004988", "markPx": "0.004989", "midPx": "0.004989", "impactPxs": ["0.004988", "0.00499"], "dayBaseVlm": "6266700272.0"},
+   {"funding": "0.0", "openInterest": "0.0", "prevDayPx": "0.73", "dayNtlVlm": "0.0", "premium": null, "oraclePx": "0.712", "markPx": "0.71688", "midPx": null, "impactPxs": null, "dayBaseVlm": "0.0"},
+   {"funding": "0.0", "openInterest": "0.0", "prevDayPx": "0.037555", "dayNtlVlm": "0.0", "premium": null, "oraclePx": "0.03719", "markPx": "0.037555", "midPx": null, "impactPxs": null, "dayBaseVlm": "0.0"}
+  ]
+ ]
+}

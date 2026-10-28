@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 30
+SCHEMA_VERSION = 31
 
 # Each migration is a list of SQL statements executed in a single transaction.
 # `PRAGMA user_version` is bumped by Store.init() inside the same explicit transaction,
@@ -797,5 +797,23 @@ MIGRATIONS: dict[int, list[str]] = {
         # Demo trader S12 v7 (owner 26.10, docs/verification/2026-10-26-prelimit-entries.md): a limit resting at the
         # gap's middle until this time (unix ms) instead of the 10-minute maker entry; NULL = the usual entry
         "ALTER TABLE demo_trade ADD COLUMN rest_until INTEGER",
+    ],
+    31: [
+        # Hyperliquid open-interest-cap state, one snapshot per UTC hour of every listed main-dex perp
+        # (collector/hl_oi_cap.py, analytics/hl_oi_cap.py; IDEA-20261028-hl-oi-cap-state-forward, step 0). The venue only
+        # exposes the current state, so this table is the only history. ~180 listed perps x 24 a day. Read-only market data.
+        """
+        CREATE TABLE IF NOT EXISTS hl_oi_cap_snapshot (
+            ts INTEGER NOT NULL,                   -- unix seconds, start of the UTC hour (the snapshot key)
+            coin TEXT NOT NULL,                    -- Hyperliquid ticker, exact case (e.g. kPEPE)
+            at_cap INTEGER NOT NULL,               -- 1: in perpsAtOpenInterestCap at fetch time, 0: not
+            oi_usd REAL,                           -- openInterest (coins) x markPx, USD
+            funding REAL,                          -- hourly funding rate, decimal fraction, as Hyperliquid reports it
+            mark REAL, oracle REAL,                -- markPx, oraclePx, USD
+            vol24h REAL,                           -- dayNtlVlm, 24 h notional volume, USD
+            fetched_ts INTEGER NOT NULL,           -- unix seconds when both answers were in (inside the hour `ts`)
+            PRIMARY KEY (ts, coin)
+        ) WITHOUT ROWID
+        """,
     ],
 }

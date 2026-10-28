@@ -1,0 +1,3 @@
+- Сито, партія 8: п'ять нових специфікацій (`rsi4h_3commas_dca`, `cumulative_rsi2`, `faber_sma10m`, `trix_signal_cross`, `friday_effect`) і тести `tests/test_sieve_batch8.py`.
+- Каталог: ще три правила позначено `не тестується` (`opening_range_breakout`, `darvas_box`, `quantpedia_btc_max_min`).
+- Реєстр: 47 прогонів з 100; жодна стратегія не пройшла (1 «ні», 4 «замало угод»).

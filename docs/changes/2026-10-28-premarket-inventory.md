@@ -1,0 +1,3 @@
+- Пре-маркет перпи, крок 0: перелік подій Binance (29 запусків, 28 конвертовано); ворота G1 не пройдено (28 < 30), G2 ✓, G3 строго 21/28 — картка лишається `forward`.
+- Додано `scripts/verify_premarket_inventory.py`, `analytics/premarket_inventory.py`, тести; звіт `docs/verification/2026-10-28-premarket-conversion-inventory.md`.
+- MET/CC/MON позначено як уже бачені (не out-of-sample) для кроку 1.

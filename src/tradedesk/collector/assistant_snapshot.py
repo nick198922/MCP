@@ -19,7 +19,9 @@ file ``<dir of db_path>/assistant/my_options.json`` (written hourly by scripts/b
 read-only key; this job never sees the key and makes no request) through `analytics.my_options.my_options_view`. It is
 never carried forward from an older snapshot.
 
-The ``flows`` section is `market_flow` for BTC (1h, 2 days, summaries only) for the brief's «Потоки» lines.
+The ``flows`` section is `market_flow` for BTC (1h, 2 days, summaries only) for the brief's «Потоки» lines; the
+``flow_btc`` / ``flow_eth`` sections are `market_flow` (1h, 7 days, with the per-bar series) for the dashboard's
+«Потоки» tab.
 
 The ``chains`` section holds the option chain of every expiry of the ATM term structure (``{"by_expiry": {token:
 chain}}``, the same shape as ``chain``) for the options builder's expiry list; the strike window widens with time to expiry.
@@ -55,6 +57,7 @@ SPOT_VENUE = "binance"
 TICKER_SYMBOLS = ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT"]
 CHAIN_WIDTH_PCT = 20.0  # strike window (± % log-moneyness) of the month and near chains, the floor of the others
 CHAIN_WIDTH_MAX_PCT = 60.0
+FLOW_TAB_DAYS = 7  # market_flow window of the dashboard's «Потоки» tab (1h bars)
 
 
 def snapshot_path(db_path: str, configured: str) -> Path | None:
@@ -346,6 +349,9 @@ async def build_snapshot(rt: "Runtime") -> dict[str, Any]:
             "events": ("macro_calendar", {"horizon_days": 14}),
             # the brief's 3 «Потоки» lines (IDEA-20261028-market-flow-reader): summaries only, no per-bar series
             "flows": ("market_flow", {"base": "BTC", "timeframe": "1h", "days": 2, "include_series": False}),
+            # the dashboard's «Потоки» tab: a week of hourly bars per coin (charts), summaries and the quadrant
+            "flow_btc": ("market_flow", {"base": "BTC", "timeframe": "1h", "days": FLOW_TAB_DAYS, "include_series": True}),
+            "flow_eth": ("market_flow", {"base": "ETH", "timeframe": "1h", "days": FLOW_TAB_DAYS, "include_series": True}),
         }
         names = list(plan)
         results = await asyncio.gather(*(_call(c, *plan[n]) for n in names))

@@ -26,6 +26,11 @@ The «Радар» tab (/radar?asset=BTC|ETH) renders the snapshot's ``radar`` s
 chart with events and rule-based «what it means for trades» (hypotheses, not advice), each block with its own «week
 ago» dates (surface rows vs daily DVOL). Null fields show their reason from the section's ``missing``.
 
+The «Потоки» tab (/flows?asset=BTC|ETH) renders the snapshot's ``flow_btc`` / ``flow_eth`` sections (the market_flow
+tool, 1h bars over 7 days): the 24 h / 4 h sentences and quadrant, totals for 4 h / 24 h / the window, and charts of
+price, spot and perp CVD, OI, funding, long / short liquidations and the Coinbase premium. Descriptive, not a signal;
+failed sources show from the section's ``missing``.
+
 The «Журнал» tab (/journal) reads the owner's trade journal and the assistant's paper recommendations (rec_paper,
 labelled «гіпотеза») from the SQLite store over a read-only connection: summary, the cumulative R curve and the weekly
 review by ISO week of the close (analytics.journal.week_stats copies), by source, the trades page by page, the owner's
@@ -461,6 +466,7 @@ def _nav(active: str) -> str:
         ("/options", "options", "Опціони"),
         ("/positions", "positions", "Позиції"),
         ("/radar", "radar", "Радар"),
+        ("/flows", "flows", "Потоки"),
         ("/journal", "journal", "Журнал"),
         ("/demo", "demo", "Демо"),
         ("/polymarket", "polymarket", "Polymarket"),
@@ -895,6 +901,56 @@ HELP: dict[str, tuple[str, str, str, str]] = {
         "Детерміновані правила макета: режим IV за роком, IV проти реального руху, події, фронт, скью, розмір.",
         "На наші перевірки спираються лише рядки про режим IV і IV проти RV; решта — правила макета, не перевірені. Тексту від моделі немає.",
         "Не порада: метод рекомендацій асистента (H1) перевіркою 18.10 відхилено. Ризик на угоду — за правилом 8.",
+    ),
+    "flow_now": (
+        "Що зараз у потоках",
+        "Речення інструмента market_flow за 24 і 4 години: ціна, OI у монетах, хто агресивніше купує чи продає на ф'ючерсах і "
+        "на споті, і квадрант «ціна × OI» з названими комбінаціями картки.",
+        "«Ріст на нових позиціях» — ціна й OI вгору; «закриття лонгів» — ціна й OI вниз; «збалансовані» — CVD менше 1 % обсягу.",
+        "Описово, не сигнал: поодинці ці метрики напрямок не передбачили; перевірку всіх разом ще не зроблено.",
+    ),
+    "flow_totals": (
+        "Підсумки потоків",
+        "Суми й зміни за останні 4 год, 24 год і все вікно: ціна, OI, CVD споту й ф'ючерсів, ліквідації, funding, частка "
+        "лонгів, премія Coinbase.",
+        "Зміни — від закриття години перед вікном до останньої закритої години; CVD і ліквідації — суми за вікно, у $.",
+        "Контекст для власного рішення: жодна з цих цифр окремо переваги в наших тестах не дала.",
+    ),
+    "flow_price": (
+        "Ціна",
+        "Закриття годинних свічок Binance спот (BASE/USDT) за вікно.",
+        "Порівнюй з графіками нижче: хто рухав ціну — спот, ф'ючерси, нові позиції чи ліквідації.",
+        "Описово: напрям ціни з цих графіків наші перевірки не передбачили.",
+    ),
+    "flow_cvd": (
+        "CVD спот і ф'ючерси",
+        "Наростаюча сума агресивних купівель мінус продажів від початку вікна, у $: спот і USD-M ф'ючерси Binance окремо.",
+        "Лінія вгору — тейкери купують; ф'ючерси вгору при споті вниз — рух на плечі без спот-попиту. Лише одна біржа.",
+        "Розбіжність споту й ф'ючерсів як сигнал не підтвердилась (spot-vs-perp-flow-divergence ✗).",
+    ),
+    "flow_oi": (
+        "Відкритий інтерес",
+        "OI Binance + Bybit у $ (монети × ціна ф'ючерса Binance) на закриття кожної години.",
+        "Зміну позицій читай у підсумках (у монетах): у $ OI росте й від самої ціни.",
+        "Квадрант «ціна × OI» як сигнал не підтвердився (oi-quadrant-squeeze-vs-newlong ✗).",
+    ),
+    "flow_funding": (
+        "Funding",
+        "Останній сплачений funding на закриття години, простий річний, середнє Binance і Bybit.",
+        "Плюс — лонги платять шортам (плече в лонгах); біля нуля чи мінус — шорти платять.",
+        "Перекіс funding як сигнал не доведено (funding-crowding-longshort ◯).",
+    ),
+    "flow_liq": (
+        "Ліквідації",
+        "Ліквідації лонгів (вгору, червоні) і шортів (вниз, зелені) за кожну годину, у $, Binance + Bybit з Coinalyze.",
+        "Біржі звітують їх занижено; остання година може бути ще не опублікована.",
+        "Відскок після хвилі ліквідацій як сигнал не підтвердився (liquidation-flush-overshoot ✗).",
+    ),
+    "flow_premium": (
+        "Премія Coinbase",
+        "Ціна Coinbase BASE-USD до Binance BASE-USDT мінус 1, у базисних пунктах: сира і мінус медіана 30 днів.",
+        "Сира містить базис USDT/USD; «до медіани» плюс — у США купують дорожче, ніж звично.",
+        "Як сигнал напрямку не підтвердилась (us-demand-flows ✗).",
     ),
     "pm": (
         "Розриви Polymarket ↔ опціони",
@@ -1676,6 +1732,8 @@ SECTION_UA = {
     "paper_rec": "паперова рекомендація",
     "my_options": "мої опціони Bybit",
     "flows": "потоки BTC",
+    "flow_btc": "потоки BTC (вкладка)",
+    "flow_eth": "потоки ETH (вкладка)",
 }
 BRIEF_CAVEATS = (
     "Ймовірності з цін опціонів — ризик-нейтральні: це ціна страхування в ринку, а не прогноз; "
@@ -5168,6 +5226,392 @@ def radar_page(query: str = "", now: float | None = None) -> str:
     return with_help(render_radar(snap, err, time.time() if now is None else now, parse_radar_query(query), SNAPSHOT_PATH))
 
 
+# ---------------------------------------------------------------- «Потоки» tab: market_flow of BTC / ETH from the snapshot
+#
+# Renders the snapshot's `flow_btc` / `flow_eth` sections (the market_flow tool, 1h bars, 7 days, with the per-bar
+# series; written by the collector job assistant_snapshot). Nothing is fetched or recomputed here: the series, totals,
+# quadrant and sentences are the tool's own. Descriptive context, not a signal (IDEA-20261028-market-flow-reader).
+# A failed source shows from the section's `missing`. Every string from the file is untrusted and escaped.
+
+FLOW_ASSETS = ("BTC", "ETH")
+FLOW_MAX_BARS = 400  # a longer series is cut to its newest bars (7 days of 1h bars = 168)
+FLOW_SOURCE_UA = {
+    "spot_klines": "спот-свічки Binance (ціна, CVD споту, премія)",
+    "perp_klines": "ф'ючерсні свічки Binance (CVD ф'ючерсів, OI у $)",
+    "premium:coinbase": "свічки Coinbase (премія)",
+    "open_interest": "OI",
+    "funding": "funding",
+    "liquidations": "ліквідації",
+    "long_short": "частка лонгів",
+}
+FLOW_VENUE_UA = {"binance": "Binance", "bybit": "Bybit"}
+FLOW_CAVEATS = (
+    "Описово, не сигнал. Поодинці ці метрики напрямок ціни в наших перевірках не передбачили: ✗ spot-vs-perp-flow-divergence, "
+    "taker-imbalance-8h-continuation, oi-quadrant-squeeze-vs-newlong, liquidation-flush-overshoot, gex-taker-flow-range, "
+    "us-demand-flows (премія Coinbase); ◯ (не доведено) funding-crowding-longshort, oi-confirmed-liquidation-flush, "
+    "perp-spot-premium-spike-convergence. Перевірку всіх метрик разом (крок 3 картки market-flow-reader) ще не зроблено.",
+    "CVD — агресивні купівлі мінус продажі лише Binance (спот і USD-M), не весь ринок; USDT читається як USD.",
+    "OI — сума Binance і Bybit у монетах на закриття години, у $ — монети × ціна ф'ючерса Binance. Funding — останній "
+    "сплачений рейт, простий річний, середнє бірж. Ліквідації — Coinalyze, біржі їх занижують.",
+    "Премія Coinbase сира містить базис USDT/USD; «до медіани» — мінус медіана 30 днів годинних премій.",
+    "Не інвестиційна порада: сторінка лише показує дані й нічого не торгує.",
+)
+
+
+def parse_flow_query(query: str) -> dict:
+    q = urllib.parse.parse_qs(query)
+    a = (q.get("asset") or [""])[0].strip().upper()
+    return {"asset": a if a in FLOW_ASSETS else FLOW_ASSETS[0]}
+
+
+def flow_usd(x: object, signed: bool = True) -> str:
+    """USD in short Ukrainian form (a stdlib copy of analytics.market_flow.usd_ua): +137 млн $, −1.25 млрд $."""
+    v = _num(x)
+    if v is None:
+        return "—"
+    sign = ("+" if v >= 0 else "−") if signed else ""
+    a = abs(v)
+    if a >= 1e9:
+        return f"{sign}{a / 1e9:.2f} млрд $"
+    if a >= 1e6:
+        return f"{sign}{a / 1e6:.0f} млн $"
+    return f"{sign}{a / 1e3:.0f} тис $"
+
+
+def _flow_axis_usd(v: float, st_: float) -> str:
+    """An axis tick in USD, unit and decimals by the tick step: 1.5 млрд, 250 млн, 40 тис."""
+    for unit, name in ((1e9, "млрд"), (1e6, "млн"), (1e3, "тис")):
+        if st_ >= unit / 10:
+            return f"{_nf(v / unit, 0 if st_ >= unit else 1)} {name}"
+    return _nf(v)
+
+
+def _flow_source(field: object) -> str:
+    """A `missing` field of market_flow in words: 'open_interest:bybit' -> 'OI Bybit'."""
+    f = str(field or "")
+    if f in FLOW_SOURCE_UA:
+        return FLOW_SOURCE_UA[f]
+    head, _, venue = f.partition(":")
+    if head in FLOW_SOURCE_UA and venue:
+        return f"{FLOW_SOURCE_UA[head]} {FLOW_VENUE_UA.get(venue, _clean(venue, 20))}"
+    return _clean(f, 40)
+
+
+def _flow_missing(sec: dict) -> str:
+    """The section's failed sources (escaped notes), one per field."""
+    out, seen = [], set()
+    for m in _list(sec.get("missing")):
+        if not isinstance(m, dict) or str(m.get("field")) in seen or m.get("field") == "section":  # 'section': _section_notes
+            continue
+        seen.add(str(m.get("field")))
+        out.append(f"немає даних «{_flow_source(m.get('field'))}»: {_clean(m.get('detail') or m.get('reason'))}")
+    return "".join(f"<p class='note warn'>{_e(x)}</p>" for x in out)
+
+
+def _flow_series(d: dict) -> list[dict]:
+    rows = [r for r in _list(d.get("series")) if isinstance(r, dict) and isinstance(_num(r.get("ts")), float)]
+    return rows[-FLOW_MAX_BARS:]
+
+
+def _col(rows: list[dict], field: str, scale: float = 1.0) -> list[float | None]:
+    out = []
+    for r in rows:
+        v = _num(r.get(field))
+        out.append(None if v is None else v * scale)
+    return out
+
+
+def flow_chart_svg(
+    ts: list[float], lines: list[tuple[list[float | None], str]], aria: str, ylab, *, zero: bool = False, bars: tuple = ()
+) -> str:
+    """Lines over hourly bars (``ts`` unix ms, oldest first) with day labels at 00:00 UTC; ``bars`` = ((values, colour,
+    sign), ...) drawn from zero (sign −1 below it). Gaps for None; '' with fewer than two values."""
+    n = len(ts)
+    vals = [v for vs, _ in lines for v in vs if v is not None] + [s * v for vs, _, s in bars for v in vs if v is not None]
+    if n < 2 or len(vals) < 2:
+        return ""
+    lo, hi = min(vals), max(vals)
+    if zero or bars:
+        lo, hi = min(lo, 0.0), max(hi, 0.0)
+    span = hi - lo or abs(hi) * 0.1 or 1.0
+    lo, hi = lo - span * 0.06, hi + span * 0.06
+    W, H, L, R, Tp, B = 520, 180, 58, 10, 10, 22
+
+    def X(i: float) -> float:
+        return L + i / (n - 1) * (W - L - R)
+
+    def Y(v: float) -> float:
+        return Tp + (hi - v) / (hi - lo) * (H - Tp - B)
+
+    g = []
+    st_ = nice_step(hi - lo, 4)
+    for k in range(int(math.ceil(lo / st_)), int(math.floor(hi / st_)) + 1):
+        v = k * st_
+        axis = (zero or bars) and abs(v) < st_ / 1000
+        g.append(
+            f'<line x1="{L}" x2="{W - R}" y1="{Y(v):.1f}" y2="{Y(v):.1f}" style="stroke:var({"--mut" if axis else "--line"})"/>'
+            f'<text x="{L - 6}" y="{Y(v) + 4:.1f}" text-anchor="end">{_e(ylab(v, st_))}</text>'
+        )
+    days = [i for i, t in enumerate(ts) if int(t) % 86_400_000 == 0]
+    for i in days[:: 2 if len(days) > 8 else 1]:
+        day = datetime.fromtimestamp(ts[i] / 1000, timezone.utc).strftime("%d.%m")  # noqa: UP017
+        g.append(f'<text x="{X(i):.1f}" y="{H - 6}" text-anchor="middle">{day}</text>')
+    w = max((W - L - R) / n * 0.8, 1.0)
+    for vs, col, s in bars:
+        for i, v in enumerate(vs):
+            if v is None or v == 0:
+                continue
+            y0, y1 = sorted((Y(0.0), Y(s * v)))
+            g.append(f'<rect x="{X(i) - w / 2:.1f}" y="{y0:.1f}" width="{w:.1f}" height="{max(y1 - y0, 0.5):.1f}" style="fill:{col}"/>')
+    for vs, style in lines:
+        d, pen = "", False
+        for i, v in enumerate(vs):
+            if v is None:
+                pen = False
+                continue
+            d += f"{'L' if pen else 'M'}{X(i):.1f},{Y(v):.1f}"
+            pen = True
+        if d:
+            g.append(f'<path d="{d}" style="fill:none;stroke-width:1.5;{style}"/>')
+    return f'<svg viewBox="0 0 {W} {H}" role="img" aria-label="{_e(aria)}">{"".join(g)}</svg>'
+
+
+def _flow_legend(*items: tuple[str, str]) -> str:
+    return "<div class='legend'>" + "".join(f"<span><i style='background:{c}'></i>{_e(t)}</span>" for t, c in items) + "</div>"
+
+
+def _flow_last(vals: list[float | None]) -> float | None:
+    return next((v for v in reversed(vals) if v is not None), None)
+
+
+def block_f_now(d: dict, sec: dict) -> str:
+    out = []
+    for key, label in (("sentence_ua", "24 год"), ("sentence_4h_ua", "4 год")):
+        text = d.get(key)
+        if isinstance(text, str) and text.strip():
+            out.append(f"<p style='margin:0 0 8px'><span class='chip calm'>{label}</span> {_e(_clean(text, 400))}</p>")
+    if not out:
+        out.append(_empty("Речення немає: за 4 і 24 години бракує ціни чи OI."))
+    for key in ("24h", "4h"):
+        q = _rd(_rd(d.get("quadrant")).get(key))
+        pats = [_clean(p, 120) for p in _list(q.get("patterns_ua")) if isinstance(p, str)]
+        if pats:
+            out.append(
+                f"<p class='note'>Комбінація картки за {_e(key.replace('h', ' год'))}: {_e('; '.join(pats))} — описово, не сигнал.</p>"
+            )
+    return "".join(out) + _flow_missing(sec)
+
+
+def block_f_totals(d: dict) -> str:
+    summ = _rd(d.get("summary"))
+    cols = [(k, _rd(summ.get(k))) for k in ("4h", "24h", "window")]
+    if not any(s for _, s in cols):
+        return _empty("Підсумків немає: замало закритих годин у вікні.")
+    head = "".join(
+        f"<th class='r'>{_e('вікно, ' + _nf(s.get('hours')) + ' год' if k == 'window' else k.replace('h', ' год'))}</th>" for k, s in cols
+    )
+
+    def pct(v: object, d_: int = 2) -> str:
+        x = _num(v)
+        return "—" if x is None else _pc(x * 100, d_)
+
+    def pp(v: object) -> str:
+        x = _num(v)
+        return "—" if x is None else f"{x * 100:+.1f} п.п.".replace("-", "−")
+
+    def bp(v: object) -> str:
+        x = _num(v)
+        return "—" if x is None else f"{x * 1e4:+.1f} б.п.".replace("-", "−")
+
+    rows = (
+        ("Ціна", lambda s: pct(s.get("price_change"))),
+        ("OI, монети", lambda s: pct(s.get("oi_change"))),
+        ("OI, $", lambda s: flow_usd(s.get("oi_usd_change"))),
+        ("CVD спот", lambda s: flow_usd(s.get("spot_cvd"))),
+        ("CVD ф'ючерси", lambda s: flow_usd(s.get("perp_cvd"))),
+        ("Ліквідації лонгів", lambda s: flow_usd(s.get("liq_long"), signed=False)),
+        ("Ліквідації шортів", lambda s: flow_usd(s.get("liq_short"), signed=False)),
+        ("Funding, річних, середнє", lambda s: pct(s.get("funding_annualized_mean"), 1)),
+        ("Частка лонгів (рахунки)", lambda s: pp(s.get("long_share_change"))),
+        ("Премія Coinbase до медіани, середнє", lambda s: bp(s.get("premium_adj_mean"))),
+    )
+    body = "".join(
+        f"<tr><td>{_e(label)}</td>" + "".join(f"<td class='r num'>{_e(fn(s)) if s else '—'}</td>" for _, s in cols) + "</tr>"
+        for label, fn in rows
+    )
+    quad = _rd(d.get("quadrant"))
+    reg = "".join(f"<td class='r'>{_e(_clean(_rd(quad.get(k)).get('regime_ua') or '—', 80))}</td>" for k, _ in cols[:2])
+    body += f"<tr><td>Квадрант «ціна × OI»</td>{reg}<td class='r'>—</td></tr>"
+    return (
+        f"<div class='scroll'><table><tr><th></th>{head}</tr>{body}</table></div>"
+        "<p class='note'>Зміни — від закриття години перед вікном до останньої закритої; CVD і ліквідації — суми, у $. "
+        "Частка лонгів — зміна частки рахунків у лонгах, не обсягу.</p>"
+    )
+
+
+def block_f_price(rows: list[dict], asset: str) -> str:
+    ts, vals = _col(rows, "ts"), _col(rows, "price")
+    svg = flow_chart_svg(ts, [(vals, "stroke:var(--fg)")], f"{asset}: ціна", lambda v, _: _k(v))
+    if not svg:
+        return _empty("Ціни немає: спот-свічки Binance не прийшли.")
+    return svg + f"<p class='note'>Закриття годин Binance {_e(asset)}/USDT, остання {_e(_k(_flow_last(vals)))}; дати — 00:00 UTC.</p>"
+
+
+def block_f_cvd(rows: list[dict], asset: str) -> str:
+    ts, sp, pe = _col(rows, "ts"), _col(rows, "spot_cvd"), _col(rows, "perp_cvd")
+    svg = flow_chart_svg(
+        ts, [(sp, "stroke:var(--ok)"), (pe, "stroke:var(--acc)")], f"{asset}: CVD спот і ф'ючерси", _flow_axis_usd, zero=True
+    )
+    if not svg:
+        return _empty("CVD немає: свічки Binance не прийшли.")
+    return (
+        svg
+        + _flow_legend((f"спот {flow_usd(_flow_last(sp))}", "var(--ok)"), (f"ф'ючерси {flow_usd(_flow_last(pe))}", "var(--acc)"))
+        + "<p class='note'>Наростаюча сума від початку вікна; лише Binance.</p>"
+    )
+
+
+def block_f_oi(rows: list[dict], asset: str) -> str:
+    ts, vals = _col(rows, "ts"), _col(rows, "oi_usd")
+    svg = flow_chart_svg(ts, [(vals, "stroke:var(--acc)")], f"{asset}: відкритий інтерес", _flow_axis_usd)
+    if not svg:
+        return _empty("OI немає: Binance і Bybit не віддали історію OI або ф'ючерсні свічки.")
+    coins = _flow_last(_col(rows, "oi_coins"))
+    return svg + f"<p class='note'>Останнє: {_e(flow_usd(_flow_last(vals), signed=False))} ({_e(_nf(coins))} {_e(asset)}).</p>"
+
+
+def block_f_funding(rows: list[dict], asset: str) -> str:
+    ts, vals = _col(rows, "ts"), _col(rows, "funding_annualized")
+    svg = flow_chart_svg(ts, [(vals, "stroke:var(--warn)")], f"{asset}: funding", lambda v, s: _vol_tick(v, s) + " %", zero=True)
+    if not svg:
+        return _empty("Funding немає: історію ставок не отримано.")
+    last = _flow_last(vals)
+    return (
+        svg
+        + f"<p class='note'>Річних, простий; останній {_e('—' if last is None else _pc(last * 100, 1))}. Плюс — лонги платять шортам.</p>"
+    )
+
+
+def block_f_liq(rows: list[dict], asset: str) -> str:
+    ts, lg, sh = _col(rows, "ts"), _col(rows, "liq_long"), _col(rows, "liq_short")
+    if all(v is None for v in (*lg, *sh)):
+        return _empty("Ліквідацій немає: Coinalyze не віддав дані (потрібен ключ COINALYZE_API_KEY) — див. «Що зараз».")
+    svg = flow_chart_svg(ts, [], f"{asset}: ліквідації", _flow_axis_usd, bars=((lg, "var(--bad)", 1), (sh, "var(--ok)", -1)))
+    tl, ts_ = sum(v for v in lg if v is not None), sum(v for v in sh if v is not None)
+    return (
+        svg
+        + _flow_legend((f"лонги {flow_usd(tl, signed=False)}", "var(--bad)"), (f"шорти {flow_usd(ts_, signed=False)}", "var(--ok)"))
+        + "<p class='note'>За годину, у $; лонги вгору, шорти вниз; суми — за вікно.</p>"
+    )
+
+
+def block_f_premium(rows: list[dict], asset: str) -> str:
+    ts, raw, adj = _col(rows, "ts"), _col(rows, "premium", 1e4), _col(rows, "premium_adj", 1e4)
+    svg = flow_chart_svg(
+        ts,
+        [(raw, "stroke:var(--mut);stroke-dasharray:4 3"), (adj, "stroke:var(--acc)")],
+        f"{asset}: премія Coinbase",
+        lambda v, s: _nf(v, 0 if s >= 1 else 1),
+        zero=True,
+    )
+    if not svg:
+        return _empty("Премії немає: свічки Coinbase чи Binance не прийшли.")
+    la, lr = _flow_last(adj), _flow_last(raw)
+
+    def bp(x: float | None) -> str:
+        return "—" if x is None else f"{x:+.1f} б.п.".replace("-", "−")
+
+    return (
+        svg
+        + _flow_legend((f"до медіани 30 дн {bp(la)}", "var(--acc)"), (f"сира {bp(lr)}", "var(--mut)"))
+        + "<p class='note'>У базисних пунктах.</p>"
+    )
+
+
+def _flow_switch(asset: str) -> str:
+    links = "".join(f"<a href='/flows?asset={a}'{' aria-current=page' if a == asset else ''}>{a}</a>" for a in FLOW_ASSETS)
+    return f"<div class='seg' role='group' aria-label='Актив'>{links}</div>"
+
+
+def _flow_window(d: dict) -> str:
+    w = _rd(d.get("window"))
+
+    def t(x: object) -> str:
+        try:
+            return kyiv(datetime.fromisoformat(str(x)))
+        except ValueError:
+            return "—"
+
+    venues = ", ".join(FLOW_VENUE_UA.get(str(v), _clean(v, 20)) for v in _list(d.get("venues")))
+    return (
+        f"<span class='mut'>Бари {_e(_clean(d.get('timeframe') or '—', 4))}, {_e(_nf(d.get('days')))} дн: <b>{_e(t(w.get('start')))}</b> – "
+        f"<b>{_e(t(w.get('last_closed_hour_end')))}</b> за Києвом · OI, funding, ліквідації: {_e(venues or '—')}</span>"
+    )
+
+
+def render_flows(snap: dict | None, err: str | None, now: float, params: dict | None = None, path: Path | None = None) -> str:
+    """The «Потоки» tab. Never raises: no snapshot, no section or a failed one gives an explained state."""
+    asset = (params or parse_flow_query(""))["asset"]
+    name = f"flow_{asset.lower()}"
+    head = (
+        "<!doctype html><html lang='uk'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+        f"<meta http-equiv='refresh' content='{REFRESH_S}'><title>tradedesk — потоки</title><style>{CSS}{BRIEF_CSS}{RADAR_CSS}</style></head><body>"
+    )
+    caveats = "<div class='caveat'><b>Застереження</b><ul>" + "".join(f"<li>{_e(c)}</li>" for c in FLOW_CAVEATS) + "</ul></div>"
+    try:
+        if snap is None:
+            msg = _snapshot_problem(err, path)
+            return head + f"<header><h1>Потоки</h1><span class='bad'>{msg}</span></header>{_nav('flows')}{caveats}</body></html>"
+        out = [head, f"<header><h1>Потоки</h1>{_snapshot_stamp(snap, now)}</header>{_nav('flows')}{caveats}"]
+        sec = _section(snap, name)
+        d = _data(snap, name)
+        if d is None:
+            why = (
+                _section_notes(snap, name) + _flow_missing(sec)
+                if sec
+                else _empty(
+                    f"Секції «{SECTION_UA.get(name, name)}» у знімку ще немає: завдання assistant_snapshot ще не відпрацювало з новим кодом."
+                )
+            )
+            out.append(
+                f"<div class='rhead'>{_flow_switch(asset)}</div><main class='brief'><section class='wide'>{why}</section></main></body></html>"
+            )
+            return "".join(out)
+        rows = _flow_series(d)
+        out.append(f"<div class='rhead'>{_flow_switch(asset)}{_flow_window(d)}</div><main class='brief'>")
+        stale = _section_notes(snap, name)
+        out.append(f"<section class='wide'>{_h2('Що зараз', 'flow_now')}{stale}{_guard(lambda x: block_f_now(x, sec), d)}</section>")
+        out.append(f"<section class='wide'>{_h2('Підсумки', 'flow_totals')}{_guard(block_f_totals, d)}</section>")
+        for title, key, fn in (
+            ("Ціна", "flow_price", block_f_price),
+            ("CVD спот і ф'ючерси", "flow_cvd", block_f_cvd),
+            ("Відкритий інтерес, $", "flow_oi", block_f_oi),
+            ("Funding · річних", "flow_funding", block_f_funding),
+            ("Ліквідації лонгів і шортів", "flow_liq", block_f_liq),
+            ("Премія Coinbase", "flow_premium", block_f_premium),
+        ):
+            out.append(f"<section>{_h2(title, key)}{_guard(lambda x, f=fn: f(x, asset), rows)}</section>")
+        warns = [_clean(w, 400) for w in _list(sec.get("warnings")) if isinstance(w, str)]
+        if warns:
+            out.append(
+                "<section class='wide'><details><summary>Примітки інструмента market_flow (англ.)</summary><ul>"
+                + "".join(f"<li>{_e(w)}</li>" for w in warns)
+                + "</ul></details></section>"
+            )
+        out.append("</main></body></html>")
+        return "".join(out)
+    except Exception as e:  # noqa: BLE001 - the page always renders
+        return (
+            head
+            + f"<header><h1>Потоки</h1><span class='bad'>Знімок не вдалося показати ({_e(type(e).__name__)}).</span></header>{_nav('flows')}{caveats}</body></html>"
+        )
+
+
+def flows_page(query: str = "", now: float | None = None) -> str:
+    snap, err = load_snapshot(SNAPSHOT_PATH)
+    return with_help(render_flows(snap, err, time.time() if now is None else now, parse_flow_query(query), SNAPSHOT_PATH))
+
+
 # ---------------------------------------------------------------- the owner's rules (docs/knowledge/trading-strategy.md, 18.10)
 #
 # Stdlib copies of analytics.rules_check (pre_trade_option, trade_checks, weekly_violations, compliance_summary; tests compare each pair on
@@ -8640,6 +9084,8 @@ class _Handler(BaseHTTPRequestHandler):
             body, ctype = (positions_page(query) if frag else brand(positions_page(query))).encode(), "text/html; charset=utf-8"
         elif path == "/radar":
             body, ctype = brand(radar_page(query)).encode(), "text/html; charset=utf-8"
+        elif path == "/flows":
+            body, ctype = brand(flows_page(query)).encode(), "text/html; charset=utf-8"
         elif path == "/journal":
             body, ctype = brand(journal_page(query)).encode(), "text/html; charset=utf-8"
         elif path == "/demo":
@@ -8704,6 +9150,7 @@ def main() -> None:
     on.add_argument("--brief", action="store_true", help="the «Бриф» tab from the assistant snapshot instead of the project page")
     on.add_argument("--options", action="store_true", help="the «Опціони» tab (default strategy and size) from the snapshot")
     on.add_argument("--radar", default="", metavar="ASSET", help="the «Радар» tab of BTC or ETH from the assistant snapshot")
+    on.add_argument("--flows", default="", metavar="ASSET", help="the «Потоки» tab of BTC or ETH from the assistant snapshot")
     on.add_argument("--journal", action="store_true", help="the «Журнал» tab (first page) from the SQLite store, read-only")
     on.add_argument("--polymarket", action="store_true", help="the «Polymarket» tab (current gaps) from the SQLite store, read-only")
     a = ap.parse_args()
@@ -8715,6 +9162,8 @@ def main() -> None:
             if a.options
             else radar_page(urllib.parse.urlencode({"asset": a.radar}))
             if a.radar
+            else flows_page(urllib.parse.urlencode({"asset": a.flows}))
+            if a.flows
             else journal_page()
             if a.journal
             else polymarket_page()

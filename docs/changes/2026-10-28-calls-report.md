@@ -1,0 +1,1 @@
+- Оновлено звіт трекера закликів `docs/calls/REPORT.md` (на 2026-10-28): 54 заклики, у звіт додано LIB-20261026-f1ntech-strangle (8) і LIB-20261026-qivty-channel (4).

@@ -1,0 +1,3 @@
+- Скаут: дві нові картки — `oi-turnover-leverage-short-basket` (шорт квінтиля альтів за OI/оборот, хедж BTC) і `coingecko-trending-attention-fade-forward` (шорт при вході в тренд CoinGecko).
+- Критик (A): перша `accepted` (первинний тест — IC, контроль «дрібна монета»), друга `forward` (історії нема, потрібен лог колектора).
+- У `docs/knowledge/setups.md` додано сетап S44 (◯).

@@ -24,7 +24,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "notional, longs/shorts USD split, imbalance (buy − sell)/total, top-N by notional, "
             "and a per-symbol breakdown. Venues: Binance USD-M, Bybit, OKX (TRADEDESK_COLLECT_LIQUIDATIONS_VENUES). "
             "Binance undercounts: its stream sends at most the latest liquidation per symbol each second, so cascades "
-            "are understated (a lower bound, not the full volume)."
+            "are understated (a lower bound, not the full volume). Bybit covers only the configured symbols (default "
+            "BTC/ETH/SOL USDT perps); OKX says its channel is not the total of its liquidations. Prices: Binance "
+            "average fill, Bybit bankruptcy price, OKX liquidation mark price."
         ),
     )
     async def liquidations_summary(
@@ -78,6 +80,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
         top = sorted(rows, key=lambda x: x["notional_usd"], reverse=True)[:top_n]
         if any("binance" in str(row.get("venue", "")) for row in rows):
             b.warn("Binance sends at most one liquidation per symbol per second: its figures are a lower bound in cascades")
+        if any(row.get("venue") == "okx" for row in rows):
+            b.warn("OKX's liquidation channel is not the total of its liquidations (OKX docs): its figures are a lower bound")
 
         return b.build(
             {

@@ -50,9 +50,8 @@ class Settings:
     http_bearer_tokens: str = ""
     # Liquidations collector (WebSocket)
     collect_liquidations_enabled: bool = False
-    # Comma-separated subset of binance,bybit,okx. Binance only by default: the Bybit (side) and OKX (contracts read as
-    # coins) parsers are known to be wrong (docs/BACKLOG.md); add them only after those are fixed.
-    collect_liquidations_venues: str = "binance"
+    # Comma-separated subset of binance,bybit,okx (Bybit side and OKX contract sizes fixed 2026-10-28).
+    collect_liquidations_venues: str = "binance,bybit,okx"
     collect_liquidations_window_seconds: int = 60
     collect_liquidations_restart_seconds: int = 5
     collect_liquidations_bybit_symbols: str = "BTCUSDT,ETHUSDT,SOLUSDT"
@@ -171,7 +170,7 @@ class Settings:
             retention_basis_days=int(_float("TRADEDESK_RETENTION_BASIS_DAYS", 365)),
             retention_seconds=int(_float("TRADEDESK_RETENTION_SECONDS", 86_400)),
             collect_liquidations_enabled=os.environ.get("TRADEDESK_COLLECT_LIQUIDATIONS_ENABLED", "").lower() in ("1", "true", "yes"),
-            collect_liquidations_venues=os.environ.get("TRADEDESK_COLLECT_LIQUIDATIONS_VENUES", "binance"),
+            collect_liquidations_venues=os.environ.get("TRADEDESK_COLLECT_LIQUIDATIONS_VENUES", "binance,bybit,okx"),
             collect_liquidations_window_seconds=int(_float("TRADEDESK_COLLECT_LIQUIDATIONS_WINDOW_SECONDS", 60)),
             collect_liquidations_restart_seconds=int(_float("TRADEDESK_COLLECT_LIQUIDATIONS_RESTART_SECONDS", 5)),
             collect_liquidations_bybit_symbols=os.environ.get("TRADEDESK_COLLECT_LIQUIDATIONS_BYBIT_SYMBOLS", "BTCUSDT,ETHUSDT,SOLUSDT"),

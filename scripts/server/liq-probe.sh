@@ -12,10 +12,13 @@ async def count(name, gen):
         return f\"{name}: error {type(e).__name__}: {e}\"
     return f\"{name}: {n} events in 45 s\"
 async def main():
+    import json, urllib.request
+    raw = json.load(urllib.request.urlopen(\"https://www.okx.com/api/v5/public/instruments?instType=SWAP\", timeout=20))
+    specs = L.okx_contract_specs(raw[\"data\"])
     for r in await asyncio.gather(
         count(\"binance\", L.binance_liquidation_stream(max_seconds=45)),
         count(\"bybit\", L.bybit_liquidation_stream([\"BTCUSDT\", \"ETHUSDT\", \"SOLUSDT\"], max_seconds=45)),
-        count(\"okx\", L.okx_liquidation_stream(\"SWAP\", max_seconds=45))):
+        count(\"okx\", L.okx_liquidation_stream(specs, \"SWAP\", max_seconds=45))):
         print(r)
 asyncio.run(main())
 con = sqlite3.connect(\"file:/var/lib/tradedesk-mcp/tradedesk.sqlite?mode=ro\", uri=True)

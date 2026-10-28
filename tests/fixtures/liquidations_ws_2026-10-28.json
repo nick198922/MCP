@@ -1,0 +1,888 @@
+{
+ "_source": "Live capture from the Contabo server 2026-10-28 ~17:53-17:58 UTC: OKX wss://ws.okx.com:8443/ws/v5/public liquidation-orders SWAP, Bybit wss://stream.bybit.com/v5/public/linear allLiquidation.<top-120 USDT symbols by 24h turnover>; OKX GET /api/v5/public/instruments?instType=SWAP (rows trimmed to the instruments below and to the listed keys); mark prices (OKX /api/v5/public/mark-price, Bybit /v5/market/tickers markPrice) read right after the 300 s window. documented_* = response examples copied from the venue docs (Bybit v5 'All Liquidation', OKX v5 'Liquidation orders channel'), checked 2026-10-28.",
+ "documented_bybit": {
+  "topic": "allLiquidation.ROSEUSDT",
+  "type": "snapshot",
+  "ts": 1739502303204,
+  "data": [
+   {
+    "T": 1739502302929,
+    "s": "ROSEUSDT",
+    "S": "Sell",
+    "v": "20000",
+    "p": "0.04499"
+   }
+  ]
+ },
+ "documented_okx": {
+  "id": "1512",
+  "arg": {
+   "channel": "liquidation-orders",
+   "instType": "SWAP"
+  },
+  "data": [
+   {
+    "details": [
+     {
+      "bkLoss": "0",
+      "bkPx": "0.007831",
+      "ccy": "",
+      "posSide": "short",
+      "side": "buy",
+      "sz": "13",
+      "ts": "1692266434010"
+     }
+    ],
+    "instFamily": "IOST-USDT",
+    "instId": "IOST-USDT-SWAP",
+    "instType": "SWAP",
+    "uly": "IOST-USDT"
+   }
+  ]
+ },
+ "okx_messages": [
+  {
+   "event": "notice",
+   "msg": "WebSocket port 8443 will be retired soon. Please migrate to port 443.",
+   "code": "64010",
+   "connId": "4fd3c18c"
+  },
+  {
+   "event": "subscribe",
+   "arg": {
+    "channel": "liquidation-orders",
+    "instType": "SWAP"
+   },
+   "connId": "4fd3c18c"
+  },
+  {
+   "arg": {
+    "channel": "liquidation-orders",
+    "instType": "SWAP"
+   },
+   "data": [
+    {
+     "details": [
+      {
+       "bkLoss": "0",
+       "bkPx": "80844.9",
+       "ccy": "",
+       "posSide": "short",
+       "side": "buy",
+       "sz": "1.18",
+       "ts": "1793210146299"
+      }
+     ],
+     "instFamily": "BTC-USDT",
+     "instId": "BTC-USDT-SWAP",
+     "instType": "SWAP",
+     "uly": "BTC-USDT"
+    }
+   ]
+  },
+  {
+   "arg": {
+    "channel": "liquidation-orders",
+    "instType": "SWAP"
+   },
+   "data": [
+    {
+     "details": [
+      {
+       "bkLoss": "0",
+       "bkPx": "80876.8",
+       "ccy": "",
+       "posSide": "short",
+       "side": "buy",
+       "sz": "0.61",
+       "ts": "1793210155839"
+      }
+     ],
+     "instFamily": "BTC-USDT",
+     "instId": "BTC-USDT-SWAP",
+     "instType": "SWAP",
+     "uly": "BTC-USDT"
+    }
+   ]
+  },
+  {
+   "arg": {
+    "channel": "liquidation-orders",
+    "instType": "SWAP"
+   },
+   "data": [
+    {
+     "details": [
+      {
+       "bkLoss": "0",
+       "bkPx": "80879.2",
+       "ccy": "",
+       "posSide": "short",
+       "side": "buy",
+       "sz": "0.29",
+       "ts": "1793210168081"
+      }
+     ],
+     "instFamily": "BTC-USDT",
+     "instId": "BTC-USDT-SWAP",
+     "instType": "SWAP",
+     "uly": "BTC-USDT"
+    }
+   ]
+  },
+  {
+   "arg": {
+    "channel": "liquidation-orders",
+    "instType": "SWAP"
+   },
+   "data": [
+    {
+     "details": [
+      {
+       "bkLoss": "0",
+       "bkPx": "80919.8",
+       "ccy": "",
+       "posSide": "short",
+       "side": "buy",
+       "sz": "0.4",
+       "ts": "1793210172509"
+      }
+     ],
+     "instFamily": "BTC-USDT",
+     "instId": "BTC-USDT-SWAP",
+     "instType": "SWAP",
+     "uly": "BTC-USDT"
+    }
+   ]
+  },
+  {
+   "arg": {
+    "channel": "liquidation-orders",
+    "instType": "SWAP"
+   },
+   "data": [
+    {
+     "details": [
+      {
+       "bkLoss": "0",
+       "bkPx": "2345.12",
+       "ccy": "",
+       "posSide": "short",
+       "side": "buy",
+       "sz": "288",
+       "ts": "1793210172352"
+      }
+     ],
+     "instFamily": "ETH-USDT",
+     "instId": "ETH-USDT-SWAP",
+     "instType": "SWAP",
+     "uly": "ETH-USDT"
+    }
+   ]
+  },
+  {
+   "arg": {
+    "channel": "liquidation-orders",
+    "instType": "SWAP"
+   },
+   "data": [
+    {
+     "details": [
+      {
+       "bkLoss": "0",
+       "bkPx": "80930.5",
+       "ccy": "",
+       "posSide": "short",
+       "side": "buy",
+       "sz": "13",
+       "ts": "1793210187569"
+      }
+     ],
+     "instFamily": "BTC-USDT",
+     "instId": "BTC-USDT-SWAP",
+     "instType": "SWAP",
+     "uly": "BTC-USDT"
+    }
+   ]
+  },
+  {
+   "arg": {
+    "channel": "liquidation-orders",
+    "instType": "SWAP"
+   },
+   "data": [
+    {
+     "details": [
+      {
+       "bkLoss": "0",
+       "bkPx": "80939.4",
+       "ccy": "",
+       "posSide": "short",
+       "side": "buy",
+       "sz": "2.2",
+       "ts": "1793210194427"
+      }
+     ],
+     "instFamily": "BTC-USDT",
+     "instId": "BTC-USDT-SWAP",
+     "instType": "SWAP",
+     "uly": "BTC-USDT"
+    }
+   ]
+  },
+  {
+   "arg": {
+    "channel": "liquidation-orders",
+    "instType": "SWAP"
+   },
+   "data": [
+    {
+     "details": [
+      {
+       "bkLoss": "0",
+       "bkPx": "58.35",
+       "ccy": "",
+       "posSide": "long",
+       "side": "sell",
+       "sz": "35",
+       "ts": "1793210238005"
+      }
+     ],
+     "instFamily": "LTC-USDT",
+     "instId": "LTC-USDT-SWAP",
+     "instType": "SWAP",
+     "uly": "LTC-USDT"
+    }
+   ]
+  },
+  {
+   "arg": {
+    "channel": "liquidation-orders",
+    "instType": "SWAP"
+   },
+   "data": [
+    {
+     "details": [
+      {
+       "bkLoss": "0",
+       "bkPx": "0.001927",
+       "ccy": "",
+       "posSide": "long",
+       "side": "sell",
+       "sz": "8",
+       "ts": "1793210328511"
+      }
+     ],
+     "instFamily": "DOOD-USDT",
+     "instId": "DOOD-USDT-SWAP",
+     "instType": "SWAP",
+     "uly": "DOOD-USDT"
+    }
+   ]
+  },
+  {
+   "arg": {
+    "channel": "liquidation-orders",
+    "instType": "SWAP"
+   },
+   "data": [
+    {
+     "details": [
+      {
+       "bkLoss": "0",
+       "bkPx": "0.3272",
+       "ccy": "",
+       "posSide": "long",
+       "side": "sell",
+       "sz": "46",
+       "ts": "1793210336042"
+      }
+     ],
+     "instFamily": "DOS-USDT",
+     "instId": "DOS-USDT-SWAP",
+     "instType": "SWAP",
+     "uly": "DOS-USDT"
+    }
+   ]
+  }
+ ],
+ "bybit_messages": [
+  {
+   "success": true,
+   "ret_msg": "",
+   "conn_id": "db294pd7qk6al3src5t0-78546",
+   "req_id": "",
+   "op": "subscribe"
+  },
+  {
+   "success": true,
+   "ret_msg": "",
+   "conn_id": "db294pd7qk6al3src5t0-78546",
+   "req_id": "",
+   "op": "subscribe"
+  },
+  {
+   "success": true,
+   "ret_msg": "",
+   "conn_id": "db294pd7qk6al3src5t0-78546",
+   "req_id": "",
+   "op": "subscribe"
+  },
+  {
+   "success": true,
+   "ret_msg": "",
+   "conn_id": "db294pd7qk6al3src5t0-78546",
+   "req_id": "",
+   "op": "subscribe"
+  },
+  {
+   "success": true,
+   "ret_msg": "",
+   "conn_id": "db294pd7qk6al3src5t0-78546",
+   "req_id": "",
+   "op": "subscribe"
+  },
+  {
+   "success": true,
+   "ret_msg": "",
+   "conn_id": "db294pd7qk6al3src5t0-78546",
+   "req_id": "",
+   "op": "subscribe"
+  },
+  {
+   "success": true,
+   "ret_msg": "",
+   "conn_id": "db294pd7qk6al3src5t0-78546",
+   "req_id": "",
+   "op": "subscribe"
+  },
+  {
+   "success": true,
+   "ret_msg": "",
+   "conn_id": "db294pd7qk6al3src5t0-78546",
+   "req_id": "",
+   "op": "subscribe"
+  },
+  {
+   "success": true,
+   "ret_msg": "",
+   "conn_id": "db294pd7qk6al3src5t0-78546",
+   "req_id": "",
+   "op": "subscribe"
+  },
+  {
+   "success": true,
+   "ret_msg": "",
+   "conn_id": "db294pd7qk6al3src5t0-78546",
+   "req_id": "",
+   "op": "subscribe"
+  },
+  {
+   "success": true,
+   "ret_msg": "",
+   "conn_id": "db294pd7qk6al3src5t0-78546",
+   "req_id": "",
+   "op": "subscribe"
+  },
+  {
+   "success": true,
+   "ret_msg": "",
+   "conn_id": "db294pd7qk6al3src5t0-78546",
+   "req_id": "",
+   "op": "subscribe"
+  },
+  {
+   "topic": "allLiquidation.EVAAUSDT",
+   "type": "snapshot",
+   "ts": 1793210044968,
+   "data": [
+    {
+     "T": 1793210044777,
+     "s": "EVAAUSDT",
+     "S": "Sell",
+     "v": "52.3",
+     "p": "1.6140"
+    }
+   ]
+  },
+  {
+   "topic": "allLiquidation.BTCUSDT",
+   "type": "snapshot",
+   "ts": 1793210147428,
+   "data": [
+    {
+     "T": 1793210147150,
+     "s": "BTCUSDT",
+     "S": "Sell",
+     "v": "0.001",
+     "p": "81110.90"
+    }
+   ]
+  },
+  {
+   "topic": "allLiquidation.NILUSDT",
+   "type": "snapshot",
+   "ts": 1793210155324,
+   "data": [
+    {
+     "T": 1793210154996,
+     "s": "NILUSDT",
+     "S": "Buy",
+     "v": "3438",
+     "p": "0.07711"
+    }
+   ]
+  },
+  {
+   "topic": "allLiquidation.BTCUSDT",
+   "type": "snapshot",
+   "ts": 1793210155928,
+   "data": [
+    {
+     "T": 1793210155864,
+     "s": "BTCUSDT",
+     "S": "Sell",
+     "v": "0.003",
+     "p": "81139.30"
+    }
+   ]
+  },
+  {
+   "topic": "allLiquidation.SOXLUSDT",
+   "type": "snapshot",
+   "ts": 1793210165337,
+   "data": [
+    {
+     "T": 1793210164872,
+     "s": "SOXLUSDT",
+     "S": "Sell",
+     "v": "5.00",
+     "p": "105.63"
+    }
+   ]
+  },
+  {
+   "topic": "allLiquidation.BTCUSDT",
+   "type": "snapshot",
+   "ts": 1793210173428,
+   "data": [
+    {
+     "T": 1793210173137,
+     "s": "BTCUSDT",
+     "S": "Sell",
+     "v": "0.005",
+     "p": "81160.90"
+    },
+    {
+     "T": 1793210173186,
+     "s": "BTCUSDT",
+     "S": "Sell",
+     "v": "0.001",
+     "p": "81177.40"
+    }
+   ]
+  },
+  {
+   "topic": "allLiquidation.BLESSUSDT",
+   "type": "snapshot",
+   "ts": 1793210179192,
+   "data": [
+    {
+     "T": 1793210179171,
+     "s": "BLESSUSDT",
+     "S": "Buy",
+     "v": "44370",
+     "p": "0.010366"
+    }
+   ]
+  },
+  {
+   "topic": "allLiquidation.BLESSUSDT",
+   "type": "snapshot",
+   "ts": 1793210179692,
+   "data": [
+    {
+     "T": 1793210179204,
+     "s": "BLESSUSDT",
+     "S": "Buy",
+     "v": "860",
+     "p": "0.010326"
+    }
+   ]
+  },
+  {
+   "topic": "allLiquidation.BLESSUSDT",
+   "type": "snapshot",
+   "ts": 1793210180191,
+   "data": [
+    {
+     "T": 1793210179806,
+     "s": "BLESSUSDT",
+     "S": "Buy",
+     "v": "78270",
+     "p": "0.010359"
+    }
+   ]
+  },
+  {
+   "topic": "allLiquidation.BTCUSDT",
+   "type": "snapshot",
+   "ts": 1793210188928,
+   "data": [
+    {
+     "T": 1793210188555,
+     "s": "BTCUSDT",
+     "S": "Sell",
+     "v": "0.035",
+     "p": "81183.90"
+    }
+   ]
+  },
+  {
+   "topic": "allLiquidation.PUMPFUNUSDT",
+   "type": "snapshot",
+   "ts": 1793210251824,
+   "data": [
+    {
+     "T": 1793210251446,
+     "s": "PUMPFUNUSDT",
+     "S": "Buy",
+     "v": "1600",
+     "p": "0.0041690"
+    }
+   ]
+  },
+  {
+   "topic": "allLiquidation.ARBUSDT",
+   "type": "snapshot",
+   "ts": 1793210255256,
+   "data": [
+    {
+     "T": 1793210254928,
+     "s": "ARBUSDT",
+     "S": "Buy",
+     "v": "12790.6",
+     "p": "0.16480"
+    }
+   ]
+  },
+  {
+   "topic": "allLiquidation.QUSDT",
+   "type": "snapshot",
+   "ts": 1793210261911,
+   "data": [
+    {
+     "T": 1793210261469,
+     "s": "QUSDT",
+     "S": "Buy",
+     "v": "2430",
+     "p": "0.068250"
+    }
+   ]
+  },
+  {
+   "topic": "allLiquidation.QUSDT",
+   "type": "snapshot",
+   "ts": 1793210263411,
+   "data": [
+    {
+     "T": 1793210263082,
+     "s": "QUSDT",
+     "S": "Buy",
+     "v": "570",
+     "p": "0.068050"
+    }
+   ]
+  },
+  {
+   "topic": "allLiquidation.QUSDT",
+   "type": "snapshot",
+   "ts": 1793210267911,
+   "data": [
+    {
+     "T": 1793210267628,
+     "s": "QUSDT",
+     "S": "Buy",
+     "v": "130",
+     "p": "0.067590"
+    }
+   ]
+  },
+  {
+   "topic": "allLiquidation.QUSDT",
+   "type": "snapshot",
+   "ts": 1793210268411,
+   "data": [
+    {
+     "T": 1793210268348,
+     "s": "QUSDT",
+     "S": "Buy",
+     "v": "3060",
+     "p": "0.066700"
+    }
+   ]
+  },
+  {
+   "topic": "allLiquidation.QUSDT",
+   "type": "snapshot",
+   "ts": 1793210268911,
+   "data": [
+    {
+     "T": 1793210268421,
+     "s": "QUSDT",
+     "S": "Buy",
+     "v": "70",
+     "p": "0.066760"
+    },
+    {
+     "T": 1793210268482,
+     "s": "QUSDT",
+     "S": "Buy",
+     "v": "1200",
+     "p": "0.066870"
+    },
+    {
+     "T": 1793210268515,
+     "s": "QUSDT",
+     "S": "Buy",
+     "v": "8090",
+     "p": "0.067110"
+    }
+   ]
+  },
+  {
+   "topic": "allLiquidation.QUSDT",
+   "type": "snapshot",
+   "ts": 1793210269411,
+   "data": [
+    {
+     "T": 1793210269160,
+     "s": "QUSDT",
+     "S": "Buy",
+     "v": "80",
+     "p": "0.066830"
+    },
+    {
+     "T": 1793210269220,
+     "s": "QUSDT",
+     "S": "Buy",
+     "v": "4710",
+     "p": "0.066690"
+    },
+    {
+     "T": 1793210269239,
+     "s": "QUSDT",
+     "S": "Buy",
+     "v": "5200",
+     "p": "0.067040"
+    },
+    {
+     "T": 1793210269351,
+     "s": "QUSDT",
+     "S": "Buy",
+     "v": "1960",
+     "p": "0.066510"
+    }
+   ]
+  },
+  {
+   "topic": "allLiquidation.QUSDT",
+   "type": "snapshot",
+   "ts": 1793210271912,
+   "data": [
+    {
+     "T": 1793210271555,
+     "s": "QUSDT",
+     "S": "Buy",
+     "v": "5500",
+     "p": "0.066020"
+    },
+    {
+     "T": 1793210271851,
+     "s": "QUSDT",
+     "S": "Buy",
+     "v": "13550",
+     "p": "0.066030"
+    }
+   ]
+  },
+  {
+   "topic": "allLiquidation.QUSDT",
+   "type": "snapshot",
+   "ts": 1793210277911,
+   "data": [
+    {
+     "T": 1793210277648,
+     "s": "QUSDT",
+     "S": "Buy",
+     "v": "80",
+     "p": "0.065140"
+    }
+   ]
+  },
+  {
+   "topic": "allLiquidation.QUSDT",
+   "type": "snapshot",
+   "ts": 1793210278411,
+   "data": [
+    {
+     "T": 1793210277952,
+     "s": "QUSDT",
+     "S": "Buy",
+     "v": "210",
+     "p": "0.065000"
+    },
+    {
+     "T": 1793210278026,
+     "s": "QUSDT",
+     "S": "Buy",
+     "v": "790",
+     "p": "0.065250"
+    }
+   ]
+  },
+  {
+   "topic": "allLiquidation.QUSDT",
+   "type": "snapshot",
+   "ts": 1793210284911,
+   "data": [
+    {
+     "T": 1793210284647,
+     "s": "QUSDT",
+     "S": "Buy",
+     "v": "70",
+     "p": "0.064580"
+    },
+    {
+     "T": 1793210284819,
+     "s": "QUSDT",
+     "S": "Buy",
+     "v": "4500",
+     "p": "0.064640"
+    }
+   ]
+  },
+  {
+   "topic": "allLiquidation.QUSDT",
+   "type": "snapshot",
+   "ts": 1793210285411,
+   "data": [
+    {
+     "T": 1793210285076,
+     "s": "QUSDT",
+     "S": "Buy",
+     "v": "2500",
+     "p": "0.064790"
+    }
+   ]
+  },
+  {
+   "topic": "allLiquidation.APRUSDT",
+   "type": "snapshot",
+   "ts": 1793210304692,
+   "data": [
+    {
+     "T": 1793210304518,
+     "s": "APRUSDT",
+     "S": "Buy",
+     "v": "101",
+     "p": "0.04760"
+    }
+   ]
+  }
+ ],
+ "okx_instruments": {
+  "code": "0",
+  "msg": "",
+  "data": [
+   {
+    "instType": "SWAP",
+    "instId": "BTC-USD-SWAP",
+    "ctType": "inverse",
+    "ctVal": "100",
+    "ctMult": "1",
+    "ctValCcy": "USD",
+    "settleCcy": "BTC",
+    "state": "live"
+   },
+   {
+    "instType": "SWAP",
+    "instId": "ETH-USD-SWAP",
+    "ctType": "inverse",
+    "ctVal": "10",
+    "ctMult": "1",
+    "ctValCcy": "USD",
+    "settleCcy": "ETH",
+    "state": "live"
+   },
+   {
+    "instType": "SWAP",
+    "instId": "BTC-USDT-SWAP",
+    "ctType": "linear",
+    "ctVal": "0.01",
+    "ctMult": "1",
+    "ctValCcy": "BTC",
+    "settleCcy": "USDT",
+    "state": "live"
+   },
+   {
+    "instType": "SWAP",
+    "instId": "ETH-USDT-SWAP",
+    "ctType": "linear",
+    "ctVal": "0.1",
+    "ctMult": "1",
+    "ctValCcy": "ETH",
+    "settleCcy": "USDT",
+    "state": "live"
+   },
+   {
+    "instType": "SWAP",
+    "instId": "DOOD-USDT-SWAP",
+    "ctType": "linear",
+    "ctVal": "1000",
+    "ctMult": "1",
+    "ctValCcy": "DOOD",
+    "settleCcy": "USDT",
+    "state": "live"
+   },
+   {
+    "instType": "SWAP",
+    "instId": "DOS-USDT-SWAP",
+    "ctType": "linear",
+    "ctVal": "10",
+    "ctMult": "1",
+    "ctValCcy": "DOS",
+    "settleCcy": "USDT",
+    "state": "live"
+   },
+   {
+    "instType": "SWAP",
+    "instId": "LTC-USDT-SWAP",
+    "ctType": "linear",
+    "ctVal": "1",
+    "ctMult": "1",
+    "ctValCcy": "LTC",
+    "settleCcy": "USDT",
+    "state": "live"
+   }
+  ]
+ },
+ "okx_marks": {
+  "BTC-USDT-SWAP": "80840.5",
+  "ETH-USDT-SWAP": "2343.29",
+  "DOS-USDT-SWAP": "0.3276",
+  "LTC-USDT-SWAP": "58.36",
+  "DOOD-USDT-SWAP": "0.001928"
+ },
+ "bybit_marks": {
+  "APRUSDT": "0.04880",
+  "ARBUSDT": "0.16626",
+  "BLESSUSDT": "0.010774",
+  "BTCUSDT": "80835.58",
+  "EVAAUSDT": "1.4642",
+  "NILUSDT": "0.07923",
+  "PUMPFUNUSDT": "0.0042011",
+  "QUSDT": "0.068719",
+  "SOXLUSDT": "104.90"
+ }
+}

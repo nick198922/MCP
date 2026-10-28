@@ -1,0 +1,3 @@
+- Квант: перевірка правила «продати дальній страйк» для купленого BTC-стренгла (картка `long-strangle-sell-far-strike`): вердикт `inconclusive`.
+- Нова чиста аналітика `analytics/strangle_manage.py` з тестами, раннер `scripts/verify_strangle_sell_far.py`, звіт у `docs/verification/`.
+- База знань (`options.md`, `setups.md` S30) доповнена; рев'ю критика — `docs/reviews/2026-10-28-long-strangle-sell-far-strike.md`.

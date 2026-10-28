@@ -7,6 +7,7 @@ history); the state and its components come from `analytics.cycle_regime` (pure)
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from typing import Annotated, Any
 
 from mcp.server.mcpserver import MCPServer
@@ -53,6 +54,37 @@ def _rows_of(b: Builder, field: str, got: Any) -> list[Any]:
     return got.get("rows") or []
 
 
+async def fetch_daily(rt: Runtime, b: Builder, sym_base: str, now: datetime, history_days: int) -> dict[str, Any]:
+    """The daily inputs of `analytics.cycle_regime.cycle_regime` for the last closed day before `now` and the
+    `history_days` days before it: Binance spot / USD-M klines, premium-index klines, funding history. A failed source
+    is in `b.missing` (its series is empty) and `raw[k]` is None. Shared by the tool and the daily journal job."""
+    end = int(now.timestamp() * 1000) // D * D  # open of the day in progress: bars before it are closed
+    span = max(history_days, 1)
+    spot_start = end - (cr.MIN_SPOT_DAYS + span + cr.RSI_WARMUP_DAYS) * D
+    short_start = end - (span + cr.AVG_DAYS + 1) * D
+    symbol = f"{sym_base}USDT"
+    got = await asyncio.gather(
+        b.guard("spot_klines", "binance_spot", rt.binance_spot.klines_range(symbol, "1d", spot_start, end)),
+        b.guard("perp_klines", "binance_futures", rt.binance_futures.klines_range(symbol, "1d", short_start, end)),
+        b.guard("premium_index", "binance_futures", rt.binance_futures.premium_index_klines_range(symbol, "1d", short_start, end)),
+        b.guard(
+            "funding",
+            "ccxt:binanceusdm",
+            rt.exchanges.funding_rate_history_range(
+                "binanceusdm", f"{sym_base}/USDT:USDT", short_start, end + cr.SETTLE_SLACK_MS, trust_short_page=True
+            ),
+        ),
+    )
+    return {
+        "symbol": symbol,
+        "raw": got,
+        "spot": cr.parse_closes(_rows_of(b, "spot_klines", got[0])),
+        "perp": cr.parse_closes(_rows_of(b, "perp_klines", got[1])),
+        "premium": cr.parse_closes(_rows_of(b, "premium_index", got[2]), positive=False),
+        "funding": points(_rows_of(b, "funding", got[3]), "timestamp", "fundingRate", lo=-0.1, hi=0.1),
+    }
+
+
 def register(server: MCPServer, rt: Runtime) -> None:
     @server.tool(
         annotations=READ_ONLY,
@@ -86,27 +118,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
             b.miss("base", "tradedesk", "invalid_argument", "base must be a plain ticker like 'BTC'")
             return b.build(None, ok=False)
         now = rt.now()
-        end = int(now.timestamp() * 1000) // D * D  # open of the day in progress: bars before it are closed
-        span = max(history_days, 1)
-        spot_start = end - (cr.MIN_SPOT_DAYS + span + cr.RSI_WARMUP_DAYS) * D
-        short_start = end - (span + cr.AVG_DAYS + 1) * D
-        symbol = f"{sym_base}USDT"
-        got = await asyncio.gather(
-            b.guard("spot_klines", "binance_spot", rt.binance_spot.klines_range(symbol, "1d", spot_start, end)),
-            b.guard("perp_klines", "binance_futures", rt.binance_futures.klines_range(symbol, "1d", short_start, end)),
-            b.guard("premium_index", "binance_futures", rt.binance_futures.premium_index_klines_range(symbol, "1d", short_start, end)),
-            b.guard(
-                "funding",
-                "ccxt:binanceusdm",
-                rt.exchanges.funding_rate_history_range(
-                    "binanceusdm", f"{sym_base}/USDT:USDT", short_start, end + cr.SETTLE_SLACK_MS, trust_short_page=True
-                ),
-            ),
-        )
-        spot = cr.parse_closes(_rows_of(b, "spot_klines", got[0]))
-        perp = cr.parse_closes(_rows_of(b, "perp_klines", got[1]))
-        premium = cr.parse_closes(_rows_of(b, "premium_index", got[2]), positive=False)
-        funding = points(_rows_of(b, "funding", got[3]), "timestamp", "fundingRate", lo=-0.1, hi=0.1)
+        f = await fetch_daily(rt, b, sym_base, now, history_days)
+        got, symbol = f["raw"], f["symbol"]
+        spot, perp, premium, funding = f["spot"], f["perp"], f["premium"], f["funding"]
         if not spot:
             if got[0] is not None:
                 b.miss("spot_klines", "binance_spot", "data_unavailable", f"no daily {symbol} spot klines")

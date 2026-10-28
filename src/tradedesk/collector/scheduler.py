@@ -650,6 +650,10 @@ def build_default_scheduler(rt: "Runtime") -> Scheduler | None:
         from .flow_snapshot import collect_flow_snapshot  # noqa: PLC0415
 
         jobs.append(PeriodicJob(name="flow_snapshot", period_seconds=s.collect_flow_snapshot_seconds, fn=collect_flow_snapshot))
+    if s.collect_cycle_regime_enabled:
+        from .cycle_regime_log import collect_cycle_regime_log  # noqa: PLC0415
+
+        jobs.append(PeriodicJob(name="cycle_regime_log", period_seconds=s.collect_cycle_regime_seconds, fn=collect_cycle_regime_log))
     if s.alerts_enabled:
         # JSON file is optional in Phase 3.1 — DB-backed rules work on their own.
         jobs.append(PeriodicJob(name="alerts", period_seconds=s.alerts_seconds, fn=_evaluate_alerts))

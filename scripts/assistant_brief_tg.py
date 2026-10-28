@@ -9,7 +9,8 @@ Read-only and offline: the text is built from the same snapshot file as the dash
 (``assistant_snapshot`` collector job; path and field names from scripts/dashboard.py), never from the network. Every
 string from the snapshot is untrusted and HTML-escaped for Telegram. The message is short (owner 22.10: a long text in
 Telegram is hard to read): BTC and ETH with the 24 h change, DVOL with its 1-year percentile, one «Режим циклу» line
-for BTC (section ``cycle``, the cycle_regime tool, labelled «контекст, не сигнал»), the 1-3 most important
+for BTC (section ``cycle``, the cycle_regime tool, labelled «контекст, не сигнал»; when yesterday's state differs from
+the day before, a separate short message follows the brief: `cycle_change`), the 1-3 most important
 items of the day, one line with BTC's risk-neutral probabilities to the month expiry (inside ±1σ and in the «Бриф»
 tab's two tail ranges, labelled «ризик-нейтральна»; it replaces the ±1σ item; omitted without ``chain`` / ``em_month``),
 one line with the state of the paper recommendation (section ``paper_rec``: «актуальна / змінилась /
@@ -42,7 +43,7 @@ import os
 import sys
 import time
 import urllib.parse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -501,6 +502,47 @@ def _cycle(snap: dict, now: float) -> list[str]:
         return []
 
 
+CYCLE_STATE_UA = {"bottom": "дно", "accumulation": "накопичення", "overheat": "перегрів", "growth": "ріст", "decline": "падіння"}
+CYCLE_CHANGE_NOTE = "Контекст, не сигнал: стани зафіксовано в картці до даних і ще не перевірені на історії."
+
+
+def cycle_change(snap: dict | None, now: float) -> str | None:
+    """The separate Telegram message when BTC's cycle state of yesterday (UTC) differs from the last decided day before
+    it (section ``cycle``, its ``history``), as HTML; None when it did not change, the snapshot is older than
+    db.SNAPSHOT_OLD_S, its last day is not yesterday (a carried-forward section: the change was told already) or the
+    data is odd. Pure, never raises. The brief runs once a day, so each change is told once."""
+    try:
+        age = _age(snap, now) if snap else None
+        if age is None or age > db.SNAPSHOT_OLD_S:
+            return None
+        data = db._data(snap, "cycle") or {}
+        hist = [h for h in db._list(data.get("history")) if isinstance(h, dict)]
+        if not hist:
+            return None
+        last = hist[-1]
+        yesterday = (datetime.fromtimestamp(now, timezone.utc) - timedelta(days=1)).date().isoformat()  # noqa: UP017
+        if last.get("date") != yesterday or last.get("state") not in CYCLE_STATE_UA:
+            return None
+        decided = [h for h in hist if h.get("state") in CYCLE_STATE_UA]
+        prev = decided[-2] if len(decided) >= 2 else None
+        if prev is None or prev["state"] == last["state"]:
+            return None
+        changes = sum(1 for a, b in zip(decided, decided[1:], strict=False) if a["state"] != b["state"])
+        d = datetime.fromisoformat(str(last["date"]))
+        out = [
+            f"<b>Режим циклу BTC змінився:</b> {CYCLE_STATE_UA[prev['state']]} → {CYCLE_STATE_UA[last['state']]} "
+            f"(день {d:%d.%m}, закриття 00:00 UTC)"
+        ]
+        line = data.get("line_ua")
+        if isinstance(line, str) and line.strip():
+            out.append(_h(db._clean(line, 300)))
+        out.append(_h(f"Змін стану за {len(hist)} днів: {changes}."))
+        out.append(f"<i>{_h(CYCLE_CHANGE_NOTE)}</i>")
+        return "\n".join(out)
+    except Exception:  # noqa: BLE001 - an odd section only drops the message
+        return None
+
+
 def build_brief(snap: dict | None, now: float, err: str | None = None, short: bool = False) -> str:
     """The brief as Telegram HTML. Pure (no I/O, time passed in); never raises. `short` (what is sent): a few lines
     without block titles — BTC/ETH, DVOL, the 1-3 most important items, the risk-neutral range line, the paper
@@ -665,12 +707,14 @@ def main(argv: list[str] | None = None) -> int:
     buttons = dashboard_buttons()
     text = build_brief(snap, time.time(), err, short=not a.full)
     png = None if a.no_chart else chart_png(snap)
+    change = cycle_change(snap, time.time())
     if a.print_only or a.out:
         if a.print_only:
             print(text)
             links = ", ".join(f"{label} {url}" for label, url in buttons) or f"none (no ${PANEL_URL_ENV} and no {DASHBOARD_URL_PATH})"
             print(f"\n[buttons: {links}]")
             print(f"[chart: {'PNG ' + str(len(png)) + ' bytes' if png else 'none (matplotlib missing or no data)'}]")
+            print(f"[cycle change message: {change or 'none'}]")
         if a.out:
             a.out.mkdir(parents=True, exist_ok=True)
             (a.out / "brief.html").write_text(text + "\n", encoding="utf-8")
@@ -681,6 +725,8 @@ def main(argv: list[str] | None = None) -> int:
     if ok and png:
         caption = f"BTC 120 днів, ±1σ до {_h(db._exp_label(snap, 'month'))} з опціонів (ризик-нейтрально)"
         tg_send.send_photo(png, caption, silent=True, topic=a.topic)
+    if ok and change:  # the card: a change of state is its own message, after the brief
+        tg_send.send(change, silent=a.silent, topic=a.topic)
     return 0 if ok else 1
 
 

@@ -135,6 +135,11 @@ class Settings:
     # rows. Ticks every `_seconds`, fetches only the keys the current hour lacks. No retention (forward-only history).
     collect_flow_snapshot_enabled: bool = False
     collect_flow_snapshot_seconds: int = 600
+    # Daily cycle regime journal (collector/cycle_regime_log.py; IDEA-20261028-btc-cycle-regime-gauge, step 2): from 00:05
+    # UTC one row of BTC's state and components for the day closed at 00:00 (table cycle_regime_log); missing days of the
+    # last week are filled. Ticks every `_seconds`; a tick with nothing due makes no request. Off by default.
+    collect_cycle_regime_enabled: bool = False
+    collect_cycle_regime_seconds: int = 300
     # Alerts
     alerts_enabled: bool = False
     alerts_rules_path: str = ""
@@ -222,6 +227,8 @@ class Settings:
             collect_hl_oi_cap_seconds=int(_float("TRADEDESK_COLLECT_HL_OI_CAP_SECONDS", 600)),
             collect_flow_snapshot_enabled=os.environ.get("TRADEDESK_COLLECT_FLOW_SNAPSHOT_ENABLED", "").lower() in ("1", "true", "yes"),
             collect_flow_snapshot_seconds=int(_float("TRADEDESK_COLLECT_FLOW_SNAPSHOT_SECONDS", 600)),
+            collect_cycle_regime_enabled=os.environ.get("TRADEDESK_COLLECT_CYCLE_REGIME_ENABLED", "").lower() in ("1", "true", "yes"),
+            collect_cycle_regime_seconds=int(_float("TRADEDESK_COLLECT_CYCLE_REGIME_SECONDS", 300)),
             http_bearer_tokens=os.environ.get("TRADEDESK_HTTP_BEARER_TOKENS") or os.environ.get("TRADEDESK_HTTP_BEARER_TOKEN", ""),
             alerts_enabled=os.environ.get("TRADEDESK_ALERTS_ENABLED", "").lower() in ("1", "true", "yes"),
             alerts_rules_path=os.environ.get("TRADEDESK_ALERTS_RULES_PATH", ""),

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 32
+SCHEMA_VERSION = 33
 
 # Each migration is a list of SQL statements executed in a single transaction.
 # `PRAGMA user_version` is bumped by Store.init() inside the same explicit transaction,
@@ -840,6 +840,36 @@ MIGRATIONS: dict[int, list[str]] = {
             missing TEXT,                          -- comma list of the parts that failed (book, oi, funding, ...); NULL = none
             fetched_ts INTEGER NOT NULL,           -- unix seconds of the tick that wrote the row (inside the hour `ts`)
             PRIMARY KEY (ts, base, venue, market)
+        ) WITHOUT ROWID
+        """,
+    ],
+    33: [
+        # Daily journal of the cycle regime (collector/cycle_regime_log.py, analytics/cycle_regime_journal.py;
+        # IDEA-20261028-btc-cycle-regime-gauge, step 2): one row per closed UTC day and base, written from 00:05 UTC.
+        # A stored row is never replaced (INSERT OR IGNORE). Forward-only, not pruned. Read-only market data.
+        """
+        CREATE TABLE IF NOT EXISTS cycle_regime_log (
+            date TEXT NOT NULL,                    -- UTC date YYYY-MM-DD of the closed daily bar (closes at 00:00 next day)
+            base TEXT NOT NULL,                    -- 'BTC'
+            state TEXT NOT NULL,                   -- bottom | accumulation | overheat | growth | decline
+            trend TEXT,                            -- 'growth' | 'decline': side of the price against SMA365
+            trend_confirmed INTEGER,               -- 1: SMA365's 30-day slope agrees with `trend`, 0: not, NULL: no slope
+            close REAL NOT NULL,                   -- Binance spot daily close, USDT
+            perp_close REAL,                       -- Binance USD-M perp daily close, USDT
+            sma365 REAL,                           -- USDT
+            price_to_sma REAL,                     -- decimal: close / sma365 - 1
+            sma_slope_30d REAL,                    -- decimal: sma365 / sma365 30 days earlier - 1
+            drawdown_365d REAL,                    -- decimal <= 0: close / max(365 closes) - 1
+            dist_30d_low REAL,                     -- decimal: close / min(previous 29 closes) - 1
+            rsi14 REAL,                            -- Wilder RSI, points 0-100
+            basis7 REAL,                           -- decimal: mean of 7 daily perp close / spot close - 1
+            funding7 REAL,                         -- decimal a year, simple-annualised mean funding of 7 days
+            premium7 REAL,                         -- decimal: mean daily premium-index close (no rule uses it)
+            components TEXT NOT NULL,              -- JSON: every component of analytics.cycle_regime (lossless)
+            missing TEXT,                          -- comma list of informational sources that failed (premium_index); NULL = none
+            version TEXT NOT NULL,                 -- analytics.cycle_regime.VERSION of the rules that labelled the day
+            created_ts INTEGER NOT NULL,           -- unix seconds when the row was written
+            PRIMARY KEY (date, base)
         ) WITHOUT ROWID
         """,
     ],

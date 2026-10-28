@@ -1,0 +1,2 @@
+- Сито, партія 6: п'ять індикаторних правил StockCharts (`aroon_trend_start`, `cci_100_break`, `vortex_cross`, `williams_r_scan`, `coppock_zero_cross`) — специфікації, тест причинності, повний прогін; усі п'ять «замало угод». Реєстр: 38 рядків.
+- Два правила записано як «не тестується» (немає формальних правил у джерелі): `bollinger_bandwidth_squeeze`, `heikin_ashi_trend`.

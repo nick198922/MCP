@@ -84,4 +84,6 @@ Funding carry: `funding_spread_scan` (крос-біржовий спред дл�
 
 Розриви Polymarket ↔ опціони: `polymarket_options_gap` (поточні розриви відкритих ринків BTC/ETH проти ймовірності з поверхні Deribit після комісії й спреду; колектор `pm_gap` пише щогодини для форвард-тесту CLV). Аналога в DOUBLETOP немає. Ордерів немає.
 
+Потоки ринку (на кшталт панелі Coinglass): `market_flow` — спот-CVD і перп-CVD Binance (з поля taker buy свічок), OI Binance + Bybit у монетах і USD, funding (річний), ліквідації (Coinalyze), частка лонгів рахунків, премія Coinbase (сира і мінус медіана 30 днів), квадрант «ціна × OI × перп-CVD» за 4/24 год і описове речення українською. У DOUBLETOP були лише окремі ряди Coinalyze; комбінованого читання не було. Описові дані, не сигнал ([IDEA-20261028-market-flow-reader](ideas/IDEA-20261028-market-flow-reader.md)).
+
 Price-action за навчальними відео DoubleTop (не з їхнього MCP): `range_detect` (рейнджі, sweeps, deviations, accumulation/distribution), `range_setup` (SFP-сетап: entry/stop/TP/RR), `range_setup_scan` (сканер SFP-сетапів по списку тикерів).

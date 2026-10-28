@@ -686,3 +686,48 @@ def test_dashboard_buttons_carry_the_key(tmp_path):
         "Бриф",
         "https://tradedesk.tail1234.ts.net/brief?k=abcdefghijklmnopqrstuvwxyz",
     )
+
+
+def _flows_section(**s24) -> dict:
+    """A `flows` section in market_flow's shape (numbers from the live call of 28.10, BTC 1h)."""
+    summ = {
+        "hours": 24,
+        "price_change": 0.008683,
+        "oi_change": -0.021832,
+        "funding_annualized_mean": 0.096295,
+        "liq_long": 207_000_000.0,
+        "liq_short": 74_000_000.0,
+        "premium_adj_mean": -0.000444,
+    } | s24
+    sentence = (
+        "За 24 год: ціна +0.9 %, OI −2.2 % (у монетах); ф'ючерси продають (−175 млн $), спот купує (+175 млн $) → ріст на закритті шортів."
+    )
+    return {"ok": True, "data": {"summary": {"24h": summ}, "sentence_ua": sentence}, "missing": [], "warnings": []}
+
+
+def test_brief_flows_block_long_and_short():
+    snap, asof = _snap()
+    snap["sections"]["flows"] = _flows_section()
+    text = ab.build_brief(snap, asof + 300)
+    assert "<b>Потоки BTC · описово, не сигнал</b>" in text
+    assert "ф'ючерси продають (−175 млн $), спот купує (+175 млн $) → ріст на закритті шортів." in text
+    assert "Funding +9.6 % річних (середнє за 24 год); ліквідації за 24 год: лонги 207 млн $, шорти 74 млн $" in text
+    assert "Премія Coinbase до медіани 30 дн: −4.4 б.п. (середнє за 24 год) · описово, не сигнал" in text
+    short = ab.build_brief(snap, asof + 300, short=True)
+    assert "• <i>потоки</i> · За 24 год: ціна +0.9 %" in short and "Премія Coinbase" in short
+    assert len(short) < tg_send.TEXT_LIMIT
+    # without liquidations (no Coinalyze key) and without the premium: fewer parts, the label stays
+    snap["sections"]["flows"] = _flows_section(liq_long=None, premium_adj_mean=None)
+    lines = ab._flows(snap, asof)
+    assert lines[1] == "Funding +9.6 % річних (середнє за 24 год)" and lines[2].startswith("Описово, не сигнал")
+
+
+def test_brief_flows_block_absent_or_odd():
+    snap, asof = _snap()
+    assert "Потоки" not in ab.build_brief(snap, asof + 300)  # the 20.10 snapshot has no flows section
+    for odd in ({"ok": True, "data": {"summary": "x"}}, {"ok": True, "data": {"summary": {"24h": {"liq_long": "a"}}}}, {"ok": False}):
+        snap["sections"]["flows"] = odd
+        assert isinstance(ab._flows(snap, asof), list)
+        assert "Не інвестиційна порада" in ab.build_brief(snap, asof + 300)
+    snap["sections"]["flows"] = {"ok": True, "data": {"summary": {"24h": {"premium_adj_mean": "<b>"}}, "sentence_ua": "<script>"}}
+    assert "<script>" not in ab.build_brief(snap, asof + 300)

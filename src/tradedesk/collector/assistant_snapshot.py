@@ -19,6 +19,8 @@ file ``<dir of db_path>/assistant/my_options.json`` (written hourly by scripts/b
 read-only key; this job never sees the key and makes no request) through `analytics.my_options.my_options_view`. It is
 never carried forward from an older snapshot.
 
+The ``flows`` section is `market_flow` for BTC (1h, 2 days, summaries only) for the brief's «Потоки» lines.
+
 The ``chains`` section holds the option chain of every expiry of the ATM term structure (``{"by_expiry": {token:
 chain}}``, the same shape as ``chain``) for the options builder's expiry list; the strike window widens with time to expiry.
 """
@@ -342,6 +344,8 @@ async def build_snapshot(rt: "Runtime") -> dict[str, Any]:
             "funding_btc": ("perps_funding_compare", {"base": "BTC"}),
             "funding_eth": ("perps_funding_compare", {"base": "ETH"}),
             "events": ("macro_calendar", {"horizon_days": 14}),
+            # the brief's 3 «Потоки» lines (IDEA-20261028-market-flow-reader): summaries only, no per-bar series
+            "flows": ("market_flow", {"base": "BTC", "timeframe": "1h", "days": 2, "include_series": False}),
         }
         names = list(plan)
         results = await asyncio.gather(*(_call(c, *plan[n]) for n in names))

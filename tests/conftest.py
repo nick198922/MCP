@@ -440,7 +440,14 @@ def make_transports(state: State) -> dict:
             return httpx.Response(200, json=body["nextweek"])
         return httpx.Response(404, text="not mocked")
 
+    def not_mocked(req: httpx.Request) -> httpx.Response:
+        # market_flow's spot klines and Coinbase candles: tests that need them build their own transports
+        # (tests/test_market_flow.py); here they only keep every other test off the real network.
+        return httpx.Response(404, text="not mocked")
+
     return {
+        "binance_spot": httpx.MockTransport(not_mocked),
+        "coinbase": httpx.MockTransport(not_mocked),
         "forexfactory": httpx.MockTransport(forexfactory),
         "deribit": httpx.MockTransport(deribit),
         "hyperliquid": httpx.MockTransport(hyperliquid),

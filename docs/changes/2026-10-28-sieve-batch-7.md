@@ -1,0 +1,2 @@
+- Сито, партія 7: п'ять нових специфікацій (`smash_day_reversal`, `mayer_multiple_fade`, `td_setup9`, `elder_impulse_green`, `halloween_nov_apr`) з тестами причинності; чотири прогнано, жодна не пройшла.
+- Каталог і реєстр оновлено (реєстр: 42 рядки); `halloween_nov_apr` і `crypto_overreaction_fade` — «не тестується».

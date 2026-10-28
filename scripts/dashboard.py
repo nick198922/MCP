@@ -745,7 +745,7 @@ HELP: dict[str, tuple[str, str, str, str]] = {
         "Без стопа біля ліквідації — порушення правил ризику.",
     ),
     "j_trades": (
-        "Мої угоди",
+        "Статистика угод",
         "Підсумок закритих реальних угод з імпорту бірж і журналу.",
         "Частка в плюсі, P&L, середнє на угоду, середній R і найбільша просадка.",
         "Середнє на угоду нижче нуля — система поки збиткова: менший розмір, суворіші правила входу.",
@@ -1031,19 +1031,16 @@ HELP: dict[str, tuple[str, str, str, str]] = {
         "Від'ємне середнє — менший розмір і суворіші правила входу, поки воно не стане додатним на ≥ 30 угодах.",
     ),
     "j_open": (
-        "Відкриті угоди",
-        "Реальні угоди журналу, ще не закриті.",
-        "У підсумки вище не входять: P&L з'являється після journal_close або імпорту закриття.",
-        "Перевір, що в кожної є стоп і що разом вони не перевищують твого ризику.",
+        "Відкриті зараз",
+        "Твої реальні угоди, ще не закриті. Марка й результат — з Bybit наживо.",
+        "Результат — у % від сплаченої премії (опціон) чи номіналу (ф'ючерс), під ним USD.",
+        "Перевір, що ризик кожної в межах правила 1 ($100) і що до експірації лишається час на твою тезу.",
     ),
     "j_table": (
         "Угоди",
-        "Реальні угоди, нові зверху: дата, джерело, інструмент, вхід і вихід, тривалість, P&L у USD і в % депозиту, комісія, R. "
-        "Опціон — страйк, PUT/CALL, експірація й DTE на вході; «згорів» — експірація без виплати. Теза, теги й нотатка — "
-        "у спливаючому вікні інструмента. Фільтр: всі, відкриті, закриті (і скасовані, якщо такі є).",
-        "R порожній, якщо стоп не записано; R* у купленого опціону — від премії. Тривалість «—»: Bybit не дав часу "
-        "відкриття угоди ф'ючерса.",
-        "Шукай повтори: той самий інструмент чи сетап раз у раз у мінусі — кандидат на паузу.",
+        "Усі реальні угоди, нові зверху: рахунок, контракт зі стороною, вхід, вихід, тривалість, комісії, результат.",
+        "Результат і комісії — у % від вартості позиції; «0 · згорів» — опціон закінчився без виплати. Теза — при наведенні на контракт.",
+        "Шукай повтори: той самий контракт чи сетап раз у раз у мінусі — кандидат на паузу.",
     ),
     "j_review": (
         "Крива в R і тижневий розбір",
@@ -1323,6 +1320,7 @@ font-style:normal;text-align:left;white-space:normal;cursor:auto}
 .info:hover .tip,.info:focus .tip,.info.open .tip{display:block}
 .tip b{display:block;margin-bottom:4px;color:var(--acc);font-size:13px}.tip span{display:block}
 .tip .rd{margin-top:6px;color:var(--mut)}.tip .tr{margin-top:6px;padding-top:6px;border-top:1px dashed var(--line)}
+.tip .do{margin-top:6px}.tip .do i{font-style:normal;font-weight:600}
 .tile .k{display:flex;align-items:center}
 .tile.t-good{border-left:4px solid var(--ok)}.tile.t-warn{border-left:4px solid var(--warn)}.tile.t-bad{border-left:4px solid var(--bad)}
 .sig{font-size:12px;font-weight:600;margin-top:2px}.sig.good{color:var(--ok)}.sig.warn{color:var(--warn)}.sig.bad{color:var(--bad)}
@@ -1375,16 +1373,94 @@ HELP_JS = """
 """
 
 
+# key -> (low case, what to do; high case, what to do): for these keys the «i» note is an instruction — what it is,
+# then «low → do this», «high → do this» — instead of the «how to read» and «for a trade» lines (owner, 28.10: «що мені
+# з ними робити»; docs/design/PANEL.md). Static text, never data.
+ACT: dict[str, tuple[str, str, str, str]] = {
+    "dvol": (
+        "Низький (до 30-го перцентиля)",
+        "купувати опціони дешевше; продавати мало сенсу — премії мало.",
+        "Високий (від 70-го)",
+        "купівля переплачує; продаж дає більше премії, але й більший ризик.",
+    ),
+    "fng": (
+        "До 25 — паніка",
+        "рухи різкі: менший розмір, ширший стоп.",
+        "Понад 75 — ейфорія",
+        "лонги на плечі під ризиком: менший розмір.",
+    ),
+    "em": (
+        "Ціль усередині діапазону",
+        "опціон під неї дорогий відносно шансу — краще спред або ф'ючерс.",
+        "Ціль за межами",
+        "опціон дешевий, але ринок вважає такий рух малоймовірним. Стоп став за межами діапазону, не всередині.",
+    ),
+    "funding": (
+        "≤ 0 — натовп у шортах",
+        "паливо для різкого росту: шорт без стопа небезпечний.",
+        "Понад 20 % річних — натовп у лонгах",
+        "ризик різкого падіння: лонг меншим розміром.",
+    ),
+    "vrp": (
+        "≤ 0 — опціони не дорожчі за рух",
+        "сприяє покупцю опціонів.",
+        "Понад +10 вп — опціони дорогі",
+        "покупець переплачує; продавцю вигідніше, але бережись подій.",
+    ),
+    "rv": (
+        "7 дн нижча за 30 дн — ринок заспокоївся",
+        "рухи менші: ближчі цілі.",
+        "7 дн вища за 30 дн — ринок пожвавився",
+        "ширший стоп, менший розмір.",
+    ),
+    "term": (
+        "Контанго — далекі дорожчі",
+        "звичний спокій, нічого не робити.",
+        "Беквордація — близькі дорожчі",
+        "ринок чекає руху зараз: короткі опціони дорогі, продавати їх ризиковано.",
+    ),
+    "skew": (
+        "Сильно від'ємний — пути дорожчі",
+        "захист від падіння дорогий; коли відносно дешевші.",
+        "Додатний — коли дорожчі",
+        "ринок женеться за ростом; пути відносно дешевші.",
+    ),
+    "scenarios": (
+        "Твій сценарій імовірніший, ніж тут",
+        "опціон під нього для тебе дешевий.",
+        "Менш імовірний",
+        "переваги нема — не купуй опціон під нього.",
+    ),
+    "conditions": (
+        "Більше «за» у купівлі",
+        "якщо є теза — купувати опціон зараз дешевше, ніж зазвичай.",
+        "Більше «за» у продажу",
+        "продаж платить краще; лише з обмеженим ризиком (спред).",
+    ),
+    "events": (
+        "Подія з високим впливом менше ніж за 48 год",
+        "менший розмір або обмежений ризик; не відкривай за годину до релізу.",
+        "Подій немає",
+        "звичайний режим.",
+    ),
+}
+
+
 def _info(key: str) -> str:
-    """The «i» icon with its note (static text from HELP); '' for an unknown key."""
+    """The «i» icon with its note (static text from HELP, ACT); '' for an unknown key."""
     h = HELP.get(key)
     if not h:
         return ""
     title, what, read, trade = (_e(x) for x in h)
+    act = ACT.get(key)
+    if act:
+        lo, lo_do, hi, hi_do = (_e(x) for x in act)
+        body = f"<span class='do'><i>{lo}</i> → {lo_do}</span><span class='do'><i>{hi}</i> → {hi_do}</span>"
+    else:
+        body = f"<span class='rd'>{read}</span><span class='tr'>Для угоди: {trade}</span>"
     return (
         f"<span class='info' tabindex='0' role='button' aria-label='Пояснення: {title}'>i"
-        f"<span class='tip' role='tooltip'><b>{title}</b><span>{what}</span><span class='rd'>{read}</span>"
-        f"<span class='tr'>Для угоди: {trade}</span></span></span>"
+        f"<span class='tip' role='tooltip'><b>{title}</b><span>{what}</span>{body}</span></span>"
     )
 
 
@@ -1739,6 +1815,8 @@ BRIEF_CAVEATS = (
     "Ймовірності з цін опціонів — ризик-нейтральні: це ціна страхування в ринку, а не прогноз; "
     "реальні ймовірності відрізняються на премію за ризик.",
     "Премія волатильності (VRP) тут рахується за DVOL; перевірка на марках опціонів ще триває (картка vrp-real-marks).",
+    "Рівень волатильності сам по собі не сигнал входу: «купувати дешеву волатильність» і «обирати угоду за режимом "
+    "волатильності» перевірено 18.10 і відхилено — це підказка, де дорожче чи дешевше.",
     "Не інвестиційна порада: сторінка лише показує дані й нічого не торгує.",
 )
 BRIEF_CSS = (
@@ -1763,6 +1841,19 @@ svg{display:block;width:100%;height:auto}svg text{font:11px Menlo,Consolas,monos
 .caveat{border:1px dashed var(--warn);border-radius:8px;padding:6px 12px;margin:0 12px 12px;font-size:13px}
 .caveat ul{margin:4px 0;padding-left:18px}
 details{font-size:12px;color:var(--mut);margin-top:6px}
+section.fold{padding:0}section.fold>details{font-size:inherit;color:inherit;margin:0}
+.fold>details>summary{list-style:none;cursor:pointer;padding:10px 14px;display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 12px}
+.fold>details>summary::-webkit-details-marker{display:none}
+.fold>details>summary h2{margin:0}
+.fold>details>summary::after{content:'›';margin-left:auto;color:var(--mut);font-size:20px;line-height:1;transition:transform .15s}
+.fold>details[open]>summary::after{transform:rotate(90deg)}
+.fold .fs{color:var(--mut);font-size:13px;flex:1 1 260px}
+.fold .fb{padding:0 14px 12px}
+body>.caveat{margin:0 12px 16px}
+.lead{display:grid;gap:4px;margin:0 0 10px}.lead .chip{justify-self:start}
+.lead p{margin:0}.lead .now{font-size:17px;font-weight:600;line-height:1.35}.lead .do{font-size:14px}
+.tile .act{font-size:12px;margin-top:3px;color:var(--fg)}
+@media (prefers-reduced-motion:reduce){.fold>details>summary::after{transition:none}}
 """
     + HELP_CSS
 )
@@ -2102,13 +2193,14 @@ def _tickers(snap: dict) -> dict[str, dict]:
     return out
 
 
-def _tile(k: str, v: str, s: str = "", cls: str = "", help: str = "", tone: str = "", badge: str = "") -> str:
+def _tile(k: str, v: str, s: str = "", cls: str = "", help: str = "", tone: str = "", badge: str = "", act: str = "") -> str:
     """A number tile; `k`, `v`, `s` are trusted HTML. `help` is a HELP key, `tone` good|warn|bad colours the edge and
-    the `badge` line (plain text, escaped here)."""
+    the `badge` line (plain text, escaped here); `act` is the «what to do» line under it (plain text, escaped here)."""
     sig = f"<span class='sig {tone}'>{_e(badge)}</span>" if badge else ""
+    do = f"<span class='act'>{_e(act)}</span>" if act else ""
     return (
         f"<div class='tile{f' t-{tone}' if tone else ''}'><span class='k'>{k}{_info(help)}</span><span class='v'>{v}</span>"
-        f"<span class='s {cls}'>{s}</span>{sig}</div>"
+        f"<span class='s {cls}'>{s}</span>{sig}{do}</div>"
     )
 
 
@@ -2133,22 +2225,6 @@ def block_tiles(snap: dict) -> str:
                 help="price",
             )
         )
-    fng = _data(snap, "fng") or {}
-    latest = fng.get("latest") if isinstance(fng.get("latest"), dict) else {}
-    if _num(latest.get("value")) is not None:
-        s = f"{_fng_zone(latest)} · 7 дн {_nf(fng.get('mean_7d'))}, 30 дн {_nf(fng.get('mean_30d'))}"
-        fv = _num(latest["value"])
-        extreme = fv <= 25 or fv >= 75
-        tiles.append(
-            _tile(
-                "Страх і жадібність",
-                _e(_nf(fv)),
-                _e(s),
-                help="fng",
-                tone="warn" if extreme else "",
-                badge="крайність: менший розмір" if extreme else "",
-            )
-        )
     cur = (_data(snap, "vrp") or {}).get("current")
     cur = cur if isinstance(cur, dict) else {}
     dvol = _num(cur.get("dvol"))
@@ -2159,6 +2235,15 @@ def block_tiles(snap: dict) -> str:
     if dvol is not None:
         pr = _num(cur.get("dvol_percentile_365d"))
         tone = (vol_lean(pr, None) or [("", "")])[0][0]
+        act = (
+            ""
+            if pr is None
+            else "опціони дешеві: купувати вигідніше"
+            if pr < 0.3
+            else "опціони дорогі: купівля переплачує"
+            if pr > 0.7
+            else "опціони за звичною ціною"
+        )
         tiles.append(
             _tile(
                 "DVOL (IV BTC, 30 дн)",
@@ -2166,11 +2251,52 @@ def block_tiles(snap: dict) -> str:
                 _e(f"{_nf(pr * 100)}-й перцентиль за рік" if pr is not None else "перцентиля немає"),
                 help="dvol",
                 tone=tone,
-                badge=lean_badge(tone),
+                act=act,
+            )
+        )
+    w = _em(snap, "em_week")
+    if w and _num(w.get("straddle_pct")) is not None:
+        tiles.append(
+            _tile(
+                f"Рух до {_e(_exp_label(snap, 'week'))}",
+                _e(f"±{_nf(w['straddle_pct'], 1)} %"),
+                _e(f"{_k(w.get('breakeven_lo'))} – {_k(w.get('breakeven_hi'))}"),
+                help="em",
+                act="стоп — за межами цього діапазону",
+            )
+        )
+    fb = [
+        _num(v.get("annualized"))
+        for v in _list((_data(snap, "funding_btc") or {}).get("venues"))
+        if isinstance(v, dict) and _num(v.get("annualized")) is not None
+    ]
+    if fb:
+        lo, hi = min(fb), max(fb)
+        crowd = (
+            "натовп у шортах: паливо для росту" if hi <= 0 else "натовп у лонгах: ризик падіння" if lo >= 0.2 else "перекосу натовпу нема"
+        )
+        rng = _pc(lo * 100, 0) if abs(hi - lo) < 0.005 else f"{_pc(lo * 100, 0).replace(' %', '')}…{_pc(hi * 100, 0)}"
+        tiles.append(
+            _tile("Funding BTC", _e(rng), "річних, по біржах", help="funding", tone="warn" if hi <= 0 or lo >= 0.2 else "", act=crowd)
+        )
+    fng = _data(snap, "fng") or {}
+    latest = fng.get("latest") if isinstance(fng.get("latest"), dict) else {}
+    if _num(latest.get("value")) is not None:
+        s = f"{_fng_zone(latest)} · 30 дн {_nf(fng.get('mean_30d'))}"
+        fv = _num(latest["value"])
+        extreme = fv <= 25 or fv >= 75
+        tiles.append(
+            _tile(
+                "Страх і жадібність",
+                _e(_nf(fv)),
+                _e(s),
+                help="fng",
+                tone="warn" if extreme else "",
+                act="крайність: менший розмір" if extreme else "звичайний розмір",
             )
         )
     body = f"<div class='tiles'>{''.join(tiles)}</div>" if tiles else _empty("Цін у знімку немає.")
-    return body + _section_notes(snap, "tickers", "fng", "vrp")
+    return body + _section_notes(snap, "tickers", "fng", "vrp", "em_week", "funding_btc")
 
 
 def _em(snap: dict, name: str) -> dict | None:
@@ -2196,8 +2322,9 @@ def _in_hours(h: float | None) -> str:
     return f"через {h:.0f} год" if h < 48 else f"через {h / 24:.0f} дн"
 
 
-def block_key(snap: dict) -> str:
-    items: list[tuple[str, str, str]] = []  # (chip class, heading, escaped HTML text)
+def key_items(snap: dict) -> list[tuple[str, str, str]]:
+    """Today's key points: (chip class, heading, escaped HTML text)."""
+    items: list[tuple[str, str, str]] = []
     btc = _tickers(snap).get("BTC")
     fng = _data(snap, "fng") or {}
     latest = fng.get("latest") if isinstance(fng.get("latest"), dict) else {}
@@ -2234,7 +2361,7 @@ def block_key(snap: dict) -> str:
             txt += f" — {_nf(pr * 100)}-й перцентиль за рік"
         if spr is not None:
             txt += f"; премія IV − RV30 {_pc(spr * 100, 1).replace(' %', '')} вп"
-        txt += ". Рівень волатильності сам по собі не сигнал: метод «купувати дешеву волатильність» перевірено 18.10 і відхилено."
+        txt += "."
         items.append(("risk" if pr is not None and pr >= 0.8 else "calm", "Волатильність", _e(txt)))
     sk = _skew_ref(snap)
     if sk:
@@ -2272,9 +2399,27 @@ def block_key(snap: dict) -> str:
                 items.append(("ev", "Подія", _e(txt)))
         else:
             items.append(("calm", "Подія", _e("Подій з високим впливом у календарі на 14 днів немає.")))
+    return items
+
+
+KEY_LABELS = {"calm": "спокій", "opp": "нагода", "risk": "ризик", "ev": "подія"}
+
+
+def key_summary(items: list[tuple[str, str, str]]) -> str:
+    """«ризик: подія · спокій: ринок, діапазон»: the chips first by weight, then the headings under each."""
+    out = []
+    for c in ("risk", "ev", "opp", "calm"):
+        heads = [h.lower() for cc, h, _ in items if cc == c]
+        if heads:
+            out.append(f"{KEY_LABELS[c]}: {', '.join(heads)}")
+    return " · ".join(out)
+
+
+def block_key(snap: dict) -> str:
+    items = key_items(snap)
     if not items:
         return _empty("Даних для головного немає.") + _section_notes(snap, "tickers", "em_week", "em_month", "vrp", "skew", "events")
-    lab = {"calm": "спокій", "opp": "нагода", "risk": "ризик", "ev": "подія"}
+    lab = KEY_LABELS
     return (
         "<ul class='key'>"
         + "".join(f"<li><span class='chip {c}'>{lab[c]}</span><span><b>{_e(h)}.</b> {t}</span></li>" for c, h, t in items)
@@ -2455,8 +2600,7 @@ def block_conditions(snap: dict) -> str:
         + pros_cons_html(buy)
         + "</div><div><h3>Продавати опціони</h3>"
         + pros_cons_html(sell)
-        + "</div></div><p class='note'>Оцінка ціни волатильності й ризику подій, а не напряму ціни. Метод «обирати угоду за режимом "
-        "волатильності» перевірено 18.10 і відхилено: це підказка, де дорожче чи дешевше, а не сигнал входу.</p>"
+        + "</div></div><p class='note'>Це про ціну опціонів, а не про напрям ціни.</p>"
     )
 
 
@@ -2542,6 +2686,99 @@ def block_funding(snap: dict) -> str:
     return "".join(out) + _section_notes(snap, "funding_btc", "funding_eth")
 
 
+def brief_lead(snap: dict) -> str:
+    """The page's first lines (docs/design/PANEL.md): one sentence «what now», one «what to do». The first that applies:
+    a high-impact event within 48 h, expensive volatility (DVOL ≥ 80th percentile), an extreme of fear / greed, calm."""
+    btc = _tickers(snap).get("BTC") or {}
+    px = _num(btc.get("last"))
+    head = f"BTC {_nf(px)} ({_pc(btc.get('percentage'))} за добу)." if px is not None else ""
+    ev = _data(snap, "events") or {}
+    nxt = ev.get("next_event") if isinstance(ev.get("next_event"), dict) else None
+    pr = _num(((_data(snap, "vrp") or {}).get("current") or {}).get("dvol_percentile_365d"))
+    fv = _num(((_data(snap, "fng") or {}).get("latest") or {}).get("value"))
+    w = _em(snap, "em_week")
+    rng = f"{_k(w.get('breakeven_lo'))} – {_k(w.get('breakeven_hi'))}" if w and _num(w.get("breakeven_lo")) else ""
+    if ev.get("high_impact_within_48h") is True and nxt:
+        chip, label = "risk", "подія"
+        what = f"{_clean(nxt.get('title'), 80)} — {kyiv(_iso(nxt.get('ts_utc')))} за Києвом, {_in_hours(_num(nxt.get('hours_ahead')))}."
+        do = "до релізу й кілька годин після — менший розмір або обмежений ризик (куплений опціон, спред)."
+    elif pr is not None and pr >= 0.8:
+        chip, label = "risk", "висока волатильність"
+        what = f"Волатильність висока: DVOL на {_nf(pr * 100)}-му перцентилі за рік."
+        do = "менший розмір і ширший стоп; продаж опціонів платить більше, але лише з обмеженим ризиком."
+    elif fv is not None and (fv <= 25 or fv >= 75):
+        chip, label = "ev", "крайній настрій"
+        what = f"Страх і жадібність {_nf(fv)}: {'паніка' if fv <= 25 else 'ейфорія'}."
+        do = "рухи різкіші за звичні — менший розмір."
+    else:
+        chip, label = "calm", "спокій"
+        what = "Ринок спокійний, подій з високим впливом найближчі 48 год немає."
+        do = f"звичайні правила; стоп — за межами тижневого діапазону {rng}." if rng else "звичайні правила."
+    return (
+        f"<div class='lead'><span class='chip {chip}'>{_e(label)}</span>"
+        f"<p class='now'>{_e(head)} {_e(what)}</p><p class='do'><b>Що робити:</b> {_e(do)}</p></div>"
+    )
+
+
+def _bands(snap: dict) -> list[dict] | None:
+    sm = chain_smile(_data(snap, "chain")) if _data(snap, "chain") else None
+    if not sm:
+        return None
+    F, T, pts = sm
+    return range_probabilities(pts, F, T, scenario_cuts(F))
+
+
+def brief_summaries(snap: dict) -> dict[str, str]:
+    """One plain-text line per folded block (escaped by the caller); '' where there is nothing to say."""
+    out: dict[str, str] = {}
+    buy, sell = market_lean(snap)
+
+    def n(items: list[tuple[str, str]], tone: str) -> int:
+        return sum(1 for t, _ in items if t == tone)
+
+    if buy or sell:
+        out["conditions"] = f"купівля: за {n(buy, 'good')}, проти {n(buy, 'bad')} · продаж: за {n(sell, 'good')}, проти {n(sell, 'bad')}"
+    rows = [r for r in _list((_data(snap, "ohlc") or {}).get("rows")) if isinstance(r, list) and len(r) > 4 and _num(r[0])]
+    closes = [_num(r[4]) for r in sorted(rows, key=lambda r: r[0]) if _num(r[4])]
+    if len(closes) > 1:
+        out["chart"] = f"{len(closes)} днів: {_pc((closes[-1] / closes[0] - 1) * 100, 0)}, від {_k(min(closes))} до {_k(max(closes))}"
+    bands = _bands(snap)
+    if bands:
+        b = max(bands, key=lambda x: x["p"])
+        lab = f"нижче {_k(b['hi'])}" if b["lo"] is None else f"вище {_k(b['lo'])}" if b["hi"] is None else f"{_k(b['lo'])} – {_k(b['hi'])}"
+        out["scenarios"] = f"найімовірніше {lab} — {_nf(b['p'] * 100)} % (ціна страховки, не прогноз)"
+    cur = (_data(snap, "vrp") or {}).get("current")
+    cur = cur if isinstance(cur, dict) else {}
+    parts = []
+    if _num(cur.get("dvol")) is not None:
+        parts.append(f"DVOL {_nf(cur['dvol'] * 100, 1)}")
+    if _num(cur.get("rv_30d")) is not None:
+        parts.append(f"RV30 {_nf(cur['rv_30d'] * 100, 1)}")
+    if _num(cur.get("spread_vs_rv30")) is not None:
+        parts.append(f"премія {_pc(cur['spread_vs_rv30'] * 100, 1).replace(' %', '')} вп")
+    shape = (_data(snap, "term") or {}).get("shape")
+    if isinstance(shape, str):
+        parts.append(f"крива {TERM_SHAPE_UA.get(shape, _clean(shape, 30))}")
+    if parts:
+        out["vol"] = " · ".join(parts)
+    ev = _data(snap, "events")
+    if ev is not None:
+        evs = [x for x in merge_same_day(ev.get("events")) if isinstance(x, dict)][:2]
+        out["events"] = (
+            " · ".join(f"{_clean(x.get('title'), 40).split(' · ')[0]} {kyiv(_iso(x.get('ts_utc')))}" for x in evs)
+            or "подій на 14 днів немає"
+        )
+    fparts = []
+    for base, name in (("BTC", "funding_btc"), ("ETH", "funding_eth")):
+        vs = [_num(v.get("annualized")) for v in _list((_data(snap, name) or {}).get("venues")) if isinstance(v, dict)]
+        vs = [v for v in vs if v is not None]
+        if vs:
+            fparts.append(f"{base} {_pc(min(vs) * 100, 0).replace(' %', '')}…{_pc(max(vs) * 100, 0)}")
+    if fparts:
+        out["funding"] = " · ".join(fparts) + " річних"
+    return out
+
+
 def _guard(fn, snap: dict) -> str:
     try:
         return fn(snap)
@@ -2594,24 +2831,33 @@ def render_brief(snap: dict | None, err: str | None, now: float, path: Path | No
             msg = _snapshot_problem(err, path)
             return head + f"<header><h1>Бриф</h1><span class='bad'>{msg}</span></header>{_nav('brief')}{caveats}</body></html>"
         out = [head, f"<header><h1>Бриф</h1>{_snapshot_stamp(snap, now)}"]
-        out.append(f"</header>{_nav('brief')}{caveats}<main class='brief'>")
+        out.append(f"</header>{_nav('brief')}<main class='brief'>")
+        # docs/design/PANEL.md: «what now / what to do» first, the tiles with their action lines, today's key points
+        # open; the rest folded with a one-line summary; the caveats once at the end
+        out.append(f"<section class='wide'>{_guard(brief_lead, snap)}{_guard(block_tiles, snap)}</section>")
         # the expiry label only next to its data: `expiries` can name an expiry whose section was dropped as too old
         month = _exp_label(snap, "month") if _data(snap, "chain") else "—"
         scen = f"Сценарії на {month}" if month != "—" else "Сценарії на місячну експірацію"
-        cards = (
-            ("wide", "", "", block_tiles),
-            ("", "Головне сьогодні", "key", block_key),
-            ("", "Купувати чи продавати опціони зараз", "conditions", block_conditions),
-            ("", "BTC за 120 днів і що закладають опціони", "chart", block_chart),
-            ("", f"{scen} · ймовірності з цін опціонів", "scenarios", block_scenarios),
-            ("", "Волатильність", "iv", block_vol),
-            ("", "Події · час Київ", "events", block_events),
-            ("", "Funding · річних", "funding", block_funding),
+        try:
+            summ = brief_summaries(snap)
+        except Exception:  # noqa: BLE001 - a summary line must not take the page down
+            summ = {}
+        try:
+            summ["key"] = key_summary(key_items(snap))
+        except Exception:  # noqa: BLE001
+            pass
+        folds = (
+            ("Головне сьогодні", "key", "key", block_key),
+            ("Купувати чи продавати опціони зараз", "conditions", "conditions", block_conditions),
+            (f"{scen} · з цін опціонів", "scenarios", "scenarios", block_scenarios),
+            ("Події · час Київ", "events", "events", block_events),
+            ("BTC за 120 днів і що закладають опціони", "chart", "chart", block_chart),
+            ("Волатильність", "vol", "iv", block_vol),
+            ("Funding · річних", "funding", "funding", block_funding),
         )
-        for cls, title, key, fn in cards:
-            h2 = _h2(title, key) if title else ""
-            out.append(f"<section class='{cls}'>{h2}{_guard(fn, snap)}</section>")
-        out.append("</main></body></html>")
+        for title, sk, key, fn in folds:
+            out.append(_fold(title, key, _e(summ.get(sk, "")), _guard(fn, snap)))
+        out.append(f"</main>{caveats}</body></html>")
         return "".join(out)
     except Exception as e:  # noqa: BLE001 - the page always renders
         return (
@@ -6990,28 +7236,62 @@ def journal_r(t: dict, opt: dict | None) -> tuple[float | None, bool]:
 
 
 def journal_instrument(t: dict, opt: dict | None) -> str:
-    """Trusted HTML of the instrument cell: an option as «BTC 78 000 PUT · 13.11.26» with DTE at entry."""
+    """Trusted HTML of the contract cell (the owner's screenshot of a trade log, 26.10): an option as
+    «BTC 78 000 put 13.11.2026», then the side badge; DTE at entry for an option."""
+    side = str(t.get("side") or "")
+    badge = f"<span class='badge {side}'>{_e(SIDE_UA[side])}</span>" if side in SIDE_UA else ""
     if not opt:
-        return _e(_clean(t.get("symbol") or "—", 40))
-    kind = "PUT" if opt["kind"] == "P" else "CALL"
-    exp = datetime.fromtimestamp(opt["expiry_ts"], timezone.utc).strftime("%d.%m.%y")  # noqa: UP017
+        return f"<b>{_e(_clean(t.get('symbol') or '—', 40))}</b>{badge}"
+    kind = "put" if opt["kind"] == "P" else "call"
+    exp = datetime.fromtimestamp(opt["expiry_ts"], timezone.utc).strftime("%d.%m.%Y")  # noqa: UP017
     strike = _nf(opt["strike"], 0 if opt["strike"] >= 100 else 2)
-    out = f"<b>{_e(opt['base'])}</b> {_e(strike)} <span class='{kind.lower()}'>{kind}</span> · {exp}"
+    out = f"<b>{_e(opt['base'])}</b> {_e(strike)} <span class='{kind}'>{kind}</span> {exp}{badge}"
     opened = _ts(t.get("opened_ts"))
     if opened is not None and opt["expiry_ts"] > opened:
         dte = (opt["expiry_ts"] - opened) / 86400
-        out += f"<br><span class='mut'>DTE на вході {dte:.1f}</span>" if dte < 2 else f"<br><span class='mut'>DTE на вході {dte:.0f}</span>"
+        out += f"<span class='sub'>DTE на вході {dte:.1f}</span>" if dte < 2 else f"<span class='sub'>DTE на вході {dte:.0f}</span>"
     return out
 
 
 def journal_exit(t: dict, opt: dict | None) -> str:
-    """Trusted HTML of «вхід → вихід»; an option settled at expiry says so (worthless or paid out)."""
-    entry, exit_ = _px(t.get("entry")), _px(t.get("exit"))
+    """Trusted HTML of the exit cell; an option settled at expiry says so (worthless or paid out)."""
+    exit_ = _px(t.get("exit"))
     closed, x = _ts(t.get("closed_ts")), _num(t.get("exit"))
     if opt and t.get("status") == "closed" and closed is not None and x is not None and abs(closed - opt["expiry_ts"]) <= EXPIRY_MATCH_S:
-        tail = "<span class='mut'>0 · згорів</span>" if x == 0 else f"{_e(exit_)} <span class='mut'>· експірація</span>"
-        return f"{_e(entry)} → {tail}"
-    return f"{_e(entry)} → {_e(exit_)}"
+        return "<span class='mut'>0 · згорів</span>" if x == 0 else f"{_e(exit_)} <span class='mut'>· експірація</span>"
+    return "—" if x is None else _e(exit_)
+
+
+def journal_cost(t: dict) -> float | None:
+    """What the position cost: the premium paid for an option, the notional for a perp (entry × size, USD)."""
+    entry, size = _num(t.get("entry")), _num(t.get("size"))
+    return entry * size if entry and size and entry * size > 0 else None
+
+
+def _pct(x: float | None, d: int = 2) -> str:
+    return "—" if x is None else f"{x:+.{d}f} %".replace("-", "−")
+
+
+def journal_result(pnl: float | None, cost: float | None, r: float | None = None, derived: bool = False) -> str:
+    """Trusted HTML of the result cell: % of the position's cost (big), then USD and R (small)."""
+    if pnl is None:
+        return "—"
+    pct = None if cost is None else 100 * pnl / cost
+    sub = [_usd(pnl, True)]
+    if r is not None and not derived:
+        sub.append(_r(r))
+    head = f"<span class='{_signed_cls(pnl)}'>{_pct(pct) if pct is not None else _usd(pnl, True)}</span>"
+    return head + (f"<span class='sub'>{' · '.join(sub)}</span>" if pct is not None else "")
+
+
+def journal_fee_cell(t: dict) -> str:
+    """Fees as % of the position's cost, USD on hover; USD alone when the cost is unknown."""
+    fees, cost = journal_fees(t), journal_cost(t)
+    if fees is None:
+        return "—"
+    if cost is None:
+        return f"${fees:.2f}"
+    return f"<span class='bad' title='${fees:.2f}'>−{100 * fees / cost:.2f} %</span>"
 
 
 IMPORT_THESIS = "імпорт з "  # scripts/bybit_import.py / hl_import: «імпорт з Bybit: теза не записана»
@@ -7049,14 +7329,14 @@ def block_journal_table(real: list[dict], page: int, status: str = "all", now: f
     first = {"open": "Відкрито", "closed": "Закрито"}.get(status, "Дата")
     out = [
         bar,
-        f"<div class='scroll'><table class='jt'><tr><th>{first}</th><th>Джерело</th><th>Інструмент</th><th>Сторона</th>"
-        "<th>Розмір</th><th>Вхід → вихід</th><th>Тривалість</th><th>P&amp;L</th><th>% депо</th><th>Комісія</th><th>R</th></tr>",
+        f"<div class='scroll'><table class='jt'><tr><th>{first}</th><th>Рахунок</th><th>Контракт</th><th class='num'>К-сть</th>"
+        "<th class='num'>Вхід</th><th class='num'>Вихід</th><th class='num'>Тривалість</th><th class='num'>Комісії</th>"
+        "<th class='num'>Результат</th></tr>",
     ]
     for t in chunk:
         tags = journal_tags(t.get("tags"))
         _, src = journal_kind(tags)
         opt = option_contract(t.get("symbol"))
-        pnl = _num(t.get("pnl"))
         # trusted HTML: dates and fixed labels only
         if t.get("status") == "closed":
             when = _e(_day(t.get("closed_ts")))
@@ -7065,33 +7345,28 @@ def block_journal_table(real: list[dict], page: int, status: str = "all", now: f
         elif status == "open":
             when = _e(_day(t.get("opened_ts")))
         else:
-            when = f"{_e(_day(t.get('opened_ts')))}<br><span class='chip jo' title='відкрита з цієї дати'>відкрита</span>"
+            when = (
+                f"{_e(_day(t.get('opened_ts')))}<span class='sub'><span class='chip jo' title='відкрита з цієї дати'>відкрита</span></span>"
+            )
         tip, own = journal_comment(t, tags)
         inst = journal_instrument(t, opt)
         if tip:
             inst = f"<span class='info cmt' tabindex='0' role='button' aria-label='Теза й нотатка'>{inst}{tip}</span>"
-        pct = None if pnl is None else 100 * pnl / RULES_DEPOSIT
-        fees = journal_fees(t)
         r, derived = journal_r(t, opt)
-        r_cell = f"<span class='mut' title='R від премії: у купленого опціону ризик — уся премія'>{_r(r)}*</span>" if derived else _r(r)
-        side = str(t.get("side") or "")
         cmt_cls = (" class=has-cmt" if own else " class='has-cmt auto'") if tip else ""
         out.append(
-            f"<tr><td class='num'>{when}</td><td>{_e(src)}</td><td{cmt_cls}>{inst}</td>"
-            f"<td>{_e(SIDE_UA.get(side, _clean(side, 12)))}</td><td class='num'>{_e(_nf(t.get('size'), 4).rstrip('0').rstrip('.'))}</td>"
+            f"<tr><td class='num'>{when}</td><td class='acct'>{_e(src)}</td><td{cmt_cls}>{inst}</td>"
+            f"<td class='num'>{_e(_nf(t.get('size'), 4).rstrip('0').rstrip('.'))}</td><td class='num'>{_e(_px(t.get('entry')))}</td>"
             f"<td class='num'>{journal_exit(t, opt)}</td><td class='num'>{_e(journal_duration(t, now))}</td>"
-            f"<td class='num {_signed_cls(pnl)}'>{_usd(pnl, True)}</td>"
-            f"<td class='num {_signed_cls(pct)}'>{'—' if pct is None else f'{pct:+.2f} %'.replace('-', '−')}</td>"
-            f"<td class='num mut'>{'—' if fees is None else f'${fees:.2f}'}</td><td class='num'>{r_cell}</td></tr>"
+            f"<td class='num'>{journal_fee_cell(t)}</td>"
+            f"<td class='num'>{journal_result(_num(t.get('pnl')), journal_cost(t), r, derived)}</td></tr>"
         )
     out.append("</table></div>")
     legend = (
-        "Наведи на інструмент з трикутником у куті (на телефоні торкнись): помаранчевий — твоя теза чи теги, "
-        "сірий — лише технічна нотатка імпорту (комісії, плече)."
+        "Результат і комісії — у % від вартості позиції (премії опціону, номіналу ф'ючерса); під ним USD і R, якщо записано стоп. "
+        "Трикутник у куті контракту — теза чи нотатка: помаранчевий — твоя, сірий — лише нотатка імпорту."
     )
-    if any(journal_r(t, option_contract(t.get("symbol")))[1] for t in chunk):
-        legend += " R* — від премії купленого опціону (ризик — уся премія)."
-    out.append(f"<p class='note'>{_e(legend)} % депо — від депозиту ${_nf(RULES_DEPOSIT)}.</p>")
+    out.append(f"<p class='note'>{_e(legend)}</p>")
     nav = [f"<span class='mut'>сторінка {page} з {pages} · {len(rows)} угод, нові зверху</span>"]
     if page > 1:
         nav.insert(0, f"<a href='{journal_href(status, page - 1)}'>← новіші</a>")
@@ -7099,6 +7374,99 @@ def block_journal_table(real: list[dict], page: int, status: str = "all", now: f
         nav.append(f"<a href='{journal_href(status, page + 1)}'>старіші →</a>")
     out.append(f"<p class='pager'>{' '.join(nav)}</p>")
     return "".join(out)
+
+
+def journal_live_marks(live: dict | None) -> dict[str, dict]:
+    """symbol -> {'mark', 'upnl'} of the open positions in the live Bybit state file (scripts/bybit_live.py), as the
+    «Позиції» tab counts them: the ticker's mark (else the position's), P&L from it plus the realised opening fees."""
+    out: dict[str, dict] = {}
+    live = live or {}
+    tick = live.get("tickers") if isinstance(live.get("tickers"), dict) else {}
+    for p in _list(live.get("positions")):
+        if not isinstance(p, dict) or not isinstance(p.get("symbol"), str):
+            continue
+        t = tick.get(p["symbol"]) if isinstance(tick.get(p["symbol"]), dict) else {}
+        size, entry = _sn(p.get("size")), _sn(p.get("avgPrice"))
+        sign = 1 if p.get("side") == "Buy" else -1 if p.get("side") == "Sell" else 0
+        mark = _sn(t.get("markPrice")) or _sn(p.get("markPrice"))
+        upnl = None
+        if mark is not None and size and entry is not None and sign:
+            upnl = sign * abs(size) * (mark - entry) + (_sn(p.get("curRealisedPnl")) or 0.0)
+        out[p["symbol"].upper()] = {"mark": mark, "upnl": upnl}
+    return out
+
+
+def block_journal_open(real: list[dict], live: dict | None, now: float) -> str:
+    """The open real trades first, so they are never lost below the statistics: one row each, the mark and P&L from
+    the live Bybit file where the symbol is there (other venues: «—»)."""
+    rows = sorted((t for t in real if t.get("status") == "open"), key=lambda t: _ts(t.get("opened_ts")) or 0, reverse=True)
+    if not rows:
+        return _empty("Відкритих угод немає.")
+    marks = journal_live_marks(live)
+    out = [
+        "<div class='scroll'><table class='jt'><tr><th>Відкрито</th><th>Рахунок</th><th>Контракт</th><th class='num'>К-сть</th>"
+        "<th class='num'>Вхід</th><th class='num'>Зараз</th><th class='num'>Строк</th><th class='num'>Результат</th></tr>"
+    ]
+    for t in rows:
+        tags = journal_tags(t.get("tags"))
+        _, src = journal_kind(tags)
+        opt = option_contract(t.get("symbol"))
+        m = marks.get(str(t.get("symbol") or "").upper(), {})
+        tip, own = journal_comment(t, tags)
+        inst = journal_instrument(t, opt)
+        if tip:
+            inst = f"<span class='info cmt' tabindex='0' role='button' aria-label='Теза й нотатка'>{inst}{tip}</span>"
+        cmt_cls = (" class=has-cmt" if own else " class='has-cmt auto'") if tip else ""
+        if opt and opt["expiry_ts"] > now:
+            term = f"до експірації {_span(opt['expiry_ts'] - now)}"
+        else:
+            term = journal_duration(t, now)
+        out.append(
+            f"<tr><td class='num'>{_e(_day(t.get('opened_ts')))}</td><td class='acct'>{_e(src)}</td><td{cmt_cls}>{inst}</td>"
+            f"<td class='num'>{_e(_nf(t.get('size'), 4).rstrip('0').rstrip('.'))}</td><td class='num'>{_e(_px(t.get('entry')))}</td>"
+            f"<td class='num'>{_e(_px(m.get('mark')))}</td><td class='num'>{_e(term)}</td>"
+            f"<td class='num'>{journal_result(m.get('upnl'), journal_cost(t))}</td></tr>"
+        )
+    out.append("</table></div>")
+    asof = parse_utc((live or {}).get("asof_utc")) if live else None
+    when = f" (оновлено {kyiv(asof, '%H:%M')} за Києвом)" if asof else ""
+    out.append(
+        f"<p class='note'>Марка й результат — Bybit наживо{_e(when)}; для інших бірж — «—». Греки, беззбиток і сценарії — "
+        "<a href='/positions'>вкладка «Позиції»</a>.</p>"
+    )
+    return "".join(out)
+
+
+def _fold(title: str, key: str, summary: str, body: str, extra: str = "", sid: str = "") -> str:
+    """A collapsed section: the heading and a one-line summary stay visible, the body opens on a tap. `summary` and
+    `body` are trusted HTML."""
+    ident = f" id='{sid}'" if sid else ""
+    return (
+        f"<section class='wide fold'{ident}><details><summary>{_h2(title, key, extra)}<span class='fs'>{summary}</span></summary>"
+        f"<div class='fb'>{body}</div></details></section>"
+    )
+
+
+def journal_stats_line(real: list[dict]) -> str:
+    """The folded statistics' one line: closed trades, share in profit, total P&L, the worst drawdown."""
+    s = journal_summary(real)
+    if not s["closed_trades"]:
+        return "закритих угод ще немає"
+    total = s["total_pnl"]
+    return (
+        f"{s['closed_trades']} закритих · у плюсі {_share(s['win_rate'])} · "
+        f"P&amp;L <span class='{_signed_cls(total)}'>{_usd(total, True)}</span> · просадка {_usd(-max_drawdown_usd(real))}"
+    )
+
+
+def journal_sources_line(groups: dict[str, list[dict]]) -> str:
+    """The three busiest sources with their P&L."""
+    parts = []
+    for label, items in sorted(groups.items(), key=lambda kv: -len(kv[1]))[:3]:
+        s = journal_summary(items)
+        if s["closed_trades"]:
+            parts.append(f"{_e(label)} <span class='{_signed_cls(s['total_pnl'])}'>{_usd(s['total_pnl'], True)}</span>")
+    return " · ".join(parts) or "закритих угод немає"
 
 
 def block_journal_other(paper: list[dict], airdrop: list[dict]) -> str:
@@ -7597,16 +7965,33 @@ text-transform:none;letter-spacing:0;user-select:text;-webkit-user-select:text}
 .info.cmt .tip{font-style:normal;max-height:min(60vh,420px);overflow-y:auto}.cmt-tags{display:flex!important;flex-wrap:wrap;gap:4px;margin-top:6px}
 .cmt-tags i{font:600 11px -apple-system,"Segoe UI",Helvetica,Arial,sans-serif;font-style:normal;text-transform:uppercase;
 letter-spacing:.04em;border-radius:999px;padding:1px 8px;background:rgba(var(--warn-rgb),.16)}
-.jt .put{color:var(--bad)}.jt .call{color:var(--ok)}.jt .put,.jt .call{font-weight:700;font-size:12px}
-.scroll table.jt{min-width:900px}
+.jt .put{color:var(--bad)}.jt .call{color:var(--ok)}.jt .put,.jt .call{font-weight:600}
+.scroll table.jt{min-width:820px}
+.jt th{font-size:11px;text-transform:uppercase;letter-spacing:.06em;font-weight:500;padding:6px 8px}
+.jt td{padding:9px 8px;vertical-align:middle}.jt th.num,.jt td.num{text-align:right;font-variant-numeric:tabular-nums}
+.jt tr:hover td{background:rgba(var(--acc-rgb),.04)}
+.jt td.acct{color:var(--acc);font-weight:600;white-space:nowrap;border-left:3px solid rgba(var(--acc-rgb),.55)}
+.jt .sub{display:block;font-size:12px;color:var(--mut);margin-top:2px}
+.badge{display:inline-block;margin-left:8px;padding:2px 6px;border-radius:4px;border:1px solid;font:700 10.5px/1.2 -apple-system,"Segoe UI",Helvetica,Arial,sans-serif;
+text-transform:uppercase;letter-spacing:.06em;vertical-align:1px}
+.badge.long{color:var(--ok);border-color:rgba(var(--ok-rgb),.45);background:rgba(var(--ok-rgb),.1)}
+.badge.short{color:var(--bad);border-color:rgba(var(--bad-rgb),.45);background:rgba(var(--bad-rgb),.1)}
 """
 
 
 def render_journal(
-    data: dict | None, err: str | None, now: float, params: dict | None = None, path: Path | None = None, refresh: dict | None = None
+    data: dict | None,
+    err: str | None,
+    now: float,
+    params: dict | None = None,
+    path: Path | None = None,
+    refresh: dict | None = None,
+    live: dict | None = None,
 ) -> str:
     """The «Журнал» tab. Never raises: no database, no table or no rows gives an explained empty state. `refresh` is
-    the status of the «Оновити угоди» run (journal_refresh.py)."""
+    the status of the «Оновити угоди» run (journal_refresh.py), `live` the live Bybit file (marks of open trades).
+    Layout (owner, 28.10): open trades, then the trades table; everything else folded with a one-line summary, the
+    caveats once at the end."""
     p = params or {"page": 1}
     try:
         bar = block_journal_refresh(refresh or {}, now)
@@ -7627,20 +8012,19 @@ def render_journal(
             )
             return head + f"<header><h1>Журнал</h1><span class='bad'>{msg}</span></header>{_nav('journal')}{caveats}</body></html>"
         stamp = f"<span class='mut'>База{where} · лише читання · прочитано {_e(kyiv(datetime.fromtimestamp(now, timezone.utc)))} за Києвом</span>"  # noqa: UP017
-        out = [head, f"<header><h1>Журнал</h1>{stamp}</header>{_nav('journal')}{bar}{caveats}<main class='brief'>"]
+        out = [head, f"<header><h1>Журнал</h1>{stamp}</header>{_nav('journal')}{bar}<main class='brief'>"]
         rows = data.get("journal")
         try:
             review = block_journal_review(rows, now)
         except Exception as e:  # noqa: BLE001 - one odd row must not take the page down
             review = _empty(f"Блок не вдалося показати: несподіваний формат даних ({type(e).__name__}).")
-        review = f"<section class='wide'>{_h2('Крива в R і тижневий розбір', 'j_review')}{review}</section>"
+        real: list[dict] = []
         if rows is None:
             out.append(
                 f"<section class='wide'>{_h2('Мої угоди', 'j_trades')}"
                 + _empty("Таблиці journal у базі ще немає: вона з'являється, коли MCP-сервер уперше відкриває базу.")
                 + "</section>"
             )
-            out.append(review)
         elif not rows:
             out.append(
                 f"<section class='wide'>{_h2('Мої угоди', 'j_trades')}"
@@ -7648,7 +8032,6 @@ def render_journal(
                 + "<p class='note'>Додати першу: інструмент MCP <code>journal_add</code> (теза, стоп, ціль) і "
                 "<code>journal_close</code> при виході; угоди з бірж — <code>scripts/bybit_import.py</code>.</p></section>"
             )
-            out.append(review)
         else:
             kinds: dict[str, list[dict]] = {"real": [], "paper": [], "airdrop": []}
             groups: dict[str, list[dict]] = {}
@@ -7659,45 +8042,67 @@ def render_journal(
                     groups.setdefault(src, []).append(t)
             real = kinds["real"]
             n_open = sum(1 for t in real if t.get("status") == "open")
-            out.append(f"<section class='wide'>{_h2('Мої угоди', 'j_trades')}{block_journal_tiles(real, n_open, now)}")
-            out.append(block_journal_other(kinds["paper"], kinds["airdrop"]))
-            if len(rows) >= JOURNAL_MAX_ROWS:
-                out.append(f"<p class='note warn'>Прочитано лише {JOURNAL_MAX_ROWS} останніх рядків журналу.</p>")
-            out.append("</section>")
-            out.append(review)
-            out.append(f"<section>{_h2('За джерелом', 'sources')}{block_journal_sources(groups)}</section>")
+            out.append(f"<section class='wide'>{_h2('Відкриті зараз', 'j_open')}{block_journal_open(real, live, now)}</section>")
             table = block_journal_table(real, p["page"], p.get("status", "all"), now)
+            if len(rows) >= JOURNAL_MAX_ROWS:
+                table += f"<p class='note warn'>Прочитано лише {JOURNAL_MAX_ROWS} останніх рядків журналу.</p>"
             out.append(f"<section class='wide' id='trades'>{_h2('Угоди', 'j_table')}{table}</section>")
+            out.append(
+                _fold(
+                    "Статистика",
+                    "j_trades",
+                    journal_stats_line(real),
+                    block_journal_tiles(real, n_open, now) + block_journal_other(kinds["paper"], kinds["airdrop"]),
+                )
+            )
+            out.append(_fold("За джерелом", "sources", journal_sources_line(groups), block_journal_sources(groups)))
+        r_count = journal_summary(real).get("r_count", 0)
+        out.append(_fold("Крива в R і тижневий розбір", "j_review", f"угод зі стопом (є R): {r_count}; висновки — з 30", review))
         try:
-            rules = block_rules_week(kinds["real"] if rows else rows, now)
+            rules = block_rules_week(real if rows else rows, now)
         except Exception as e:  # noqa: BLE001 - one odd row must not take the page down
             rules = _empty(f"Блок не вдалося показати: несподіваний формат даних ({type(e).__name__}).")
-        out.append(f"<section class='wide'>{_h2('Порушення правил за тиждень', 'rules_week')}{rules}</section>")
+        out.append(_fold("Порушення правил за тиждень", "rules_week", "які з твоїх правил порушено і скільки це коштувало", rules))
         try:
             rec = block_rec_paper(data.get("rec_paper"))
         except Exception as e:  # noqa: BLE001 - one odd row must not take the page down
             rec = _empty(f"Блок не вдалося показати: несподіваний формат даних ({type(e).__name__}).")
         out.append(
-            f"<section class='wide'>{_h2('Паперові рекомендації асистента', 'rec', CHIP_HYPOTHESIS)}"
-            f"<p class='note warn'>{_e(REC_CAVEAT)}</p>{rec}</section>"
+            _fold(
+                "Паперові рекомендації асистента",
+                "rec",
+                "угоди методу асистента на папері: чи є перевага",
+                f"<p class='note warn'>{_e(REC_CAVEAT)}</p>{rec}",
+                CHIP_HYPOTHESIS,
+            )
         )
         try:
             plans = block_trade_plans(data.get("trade_plan"), int(_num(data.get("plan_shadow")) or 0))
         except Exception as e:  # noqa: BLE001 - one odd row must not take the page down
             plans = _empty(f"Блок не вдалося показати: несподіваний формат даних ({type(e).__name__}).")
         out.append(
-            f"<section class='wide'>{_h2('Плани угод асистента', 'plans', CHIP_LEDGER)}"
-            f"<p class='note warn'>{_e(PLAN_CAVEAT)}</p>{plans}</section>"
+            _fold(
+                "Плани угод асистента",
+                "plans",
+                "плани входу з вердиктами «вхід / чекати / пропустити»",
+                f"<p class='note warn'>{_e(PLAN_CAVEAT)}</p>{plans}",
+                CHIP_LEDGER,
+            )
         )
         try:
             fc = block_forecasts(data.get("forecast_log"))
         except Exception as e:  # noqa: BLE001 - one odd row must not take the page down
             fc = _empty(f"Блок не вдалося показати: несподіваний формат даних ({type(e).__name__}).")
         out.append(
-            f"<section class='wide'>{_h2('Журнал прогнозів', 'fc', CHIP_LEDGER)}"
-            f"<p class='note warn'><b>Ризик-нейтральні ймовірності, не прогноз асистента.</b> {_e(FC_CAVEAT)}</p>{fc}</section>"
+            _fold(
+                "Журнал прогнозів",
+                "fc",
+                "щоденні ймовірності з опціонів і як вони справдились",
+                f"<p class='note warn'><b>Ризик-нейтральні ймовірності, не прогноз асистента.</b> {_e(FC_CAVEAT)}</p>{fc}",
+                CHIP_LEDGER,
+            )
         )
-        out.append("</main></body></html>")
+        out.append(f"</main>{caveats}</body></html>")
         return "".join(out)
     except Exception as e:  # noqa: BLE001 - the page always renders
         return (
@@ -7708,7 +8113,10 @@ def render_journal(
 
 def journal_page(query: str = "", now: float | None = None) -> str:
     data, err = load_journal(JOURNAL_DB)
-    page = render_journal(data, err, time.time() if now is None else now, parse_journal_query(query), JOURNAL_DB, read_refresh_status())
+    live, _ = load_live(LIVE_PATH)  # no live file: open trades show «—» for the mark
+    page = render_journal(
+        data, err, time.time() if now is None else now, parse_journal_query(query), JOURNAL_DB, read_refresh_status(), live
+    )
     return with_help(page)
 
 

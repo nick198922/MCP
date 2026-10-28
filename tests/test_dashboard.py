@@ -244,6 +244,32 @@ def test_range_probabilities_match_the_analytics_reference():
     assert bands[3]["lo"] == 80000.0 and bands[3]["p"] == max(b["p"] for b in bands)  # the forward's band is the likeliest
 
 
+def test_brief_lead_actions_and_folded_blocks():
+    """docs/design/PANEL.md (owner, 28.10): «what now / what to do» first, an action line under the tiles, the rest
+    folded with a one-line summary, the caveats once at the end."""
+    snap, asof = _snap()
+    lead = db.brief_lead(snap)
+    assert "<span class='chip calm'>спокій</span>" in lead and "BTC 82 791 (+0.9 % за добу)." in lead
+    assert "<b>Що робити:</b> звичайні правила; стоп — за межами тижневого діапазону 81.1k – 84.4k." in lead
+    # a high-impact event within 48 h wins over calm
+    ev = json.loads(json.dumps(snap))
+    ev["sections"]["events"]["data"]["high_impact_within_48h"] = True
+    assert "<span class='chip risk'>подія</span>" in db.brief_lead(ev) and "Oct 2026 FOMC" in db.brief_lead(ev)
+    s = db.brief_summaries(snap)
+    assert s["conditions"] == "купівля: за 1, проти 0 · продаж: за 0, проти 1"
+    assert s["chart"] == "120 днів: +32 %, від 58.6k до 86.6k"
+    assert s["scenarios"] == "найімовірніше 80k – 85k — 22 % (ціна страховки, не прогноз)"
+    assert s["funding"] == "BTC +4…+11 % · ETH +3…+11 % річних" and s["events"].startswith("Oct 2026 FOMC 28.10 20:00")
+    assert db.key_summary(db.key_items(snap)) == "ризик: захист · подія: подія · спокій: ринок, діапазон, волатильність"
+    page = db.render_brief(snap, None, asof)
+    for act in ("опціони дешеві: купувати вигідніше", "стоп — за межами цього діапазону", "перекосу натовпу нема", "звичайний розмір"):
+        assert f"<span class='act'>{act}</span>" in page, act
+    assert page.count("<section class='wide fold'><details><summary>") == 7 and "<details open" not in page
+    assert page.index("class='lead'") < page.index("<summary><h2>Головне сьогодні") < page.index("</main>")
+    assert page.index("</main>") < page.index("<b>Застереження</b>") and page.count("перевірено 18.10") == 1
+    assert db.brief_summaries({"sections": {}}) == {} and "звичайні правила." in db.brief_lead({"sections": {}})
+
+
 def test_brief_missing_and_corrupt_snapshot(tmp_path, monkeypatch):
     snap, err = db.load_snapshot(tmp_path / "none.json")
     assert (snap, err) == (None, "missing")
@@ -866,7 +892,9 @@ def test_journal_filter_open_closed_cancelled(tmp_path, monkeypatch):
     assert "aria-current='page'>Відкриті" in page and "<th>Відкрито</th>" in page
     assert "O002" in page and "C059" not in page and "1 з 1 · 3 угод" in page
     page = db.journal_page("status=closed", now=float(T0))
-    assert "O002" not in page and "сторінка 1 з 2 · 60 угод" in page
+    trades = page.split("id='trades'")[1].split("</section>")[0]  # open trades stay in «Відкриті зараз» above
+    assert "O002" not in trades and "сторінка 1 з 2 · 60 угод" in trades
+    assert page.index("<h2>Відкриті зараз") < page.index("id='trades'") and "O002" in page
     assert "href='/journal?status=closed&page=2#trades'>старіші" in page  # the pager keeps the filter
     page = db.journal_page("status=cancelled", now=float(T0))
     assert "Скасованих угод немає." in page and "aria-current='page'>Скасовані" in page
@@ -888,20 +916,68 @@ def test_journal_option_rows_comment_duration_fees_and_premium_r():
     }  # fmt: skip
     live = {**sold, "id": 5, "status": "open", "closed_ts": None, "exit": None, "pnl": None, "symbol": "ETH-13NOV26-2800-C-USDT"}
     html_ = db.block_journal_table([burnt, paid, sold, perp, live], 1, now=float(exp + 3 * 86400))
-    assert "<b>BTC</b> 83 000 <span class='put'>PUT</span> · 01.10.26" in html_ and "DTE на вході 0.9" in html_
-    assert "<span class='call'>CALL</span> · 13.11.26" in html_
-    assert "250.00 → <span class='mut'>0 · згорів</span>" in html_  # settled worthless at 08:00 UTC
+    # the contract as on the owner's screenshot (26.10): strike, put/call, expiry, then the side badge
+    assert "<b>BTC</b> 83 000 <span class='put'>put</span> 01.10.2026<span class='badge long'>лонг</span>" in html_
+    assert "DTE на вході 0.9" in html_ and "<span class='call'>call</span> 13.11.2026" in html_
+    assert "<b>BTCUSDT</b><span class='badge short'>шорт</span>" in html_
+    assert "<td class='num'><span class='mut'>0 · згорів</span></td>" in html_  # settled worthless at 08:00 UTC
     assert "875.00 <span class='mut'>· експірація</span>" in html_  # Deribit-style symbol, paid out
-    assert "250.00 → 360.00" in html_  # sold before expiry: a plain exit
-    assert "21 год" in html_ and "$3.75" in html_ and "−0.66 %" in html_ and "+0.10 %" in html_
-    assert "−1.06 R*" in html_ and "+0.44 R*" in html_ and "+0.50 R" in html_  # premium R only where no R was recorded
+    assert "<td class='num'>360.00</td>" in html_  # sold before expiry: a plain exit
+    # fees and the result in % of the position's cost (premium 62.50; the perp's notional 800), USD and R below
+    assert "21 год" in html_ and "title='$3.75'>−6.00 %" in html_
+    assert "−106.00 %" in html_ and "+240.00 %" in html_ and "+44.00 %" in html_
+    assert "+1.25 %" in html_ and "+$10 · +0.50 R" in html_  # a recorded R is shown; a premium R would repeat the %
     assert "триває 3 д" in html_  # open trade: running time
     # the comment: thesis escaped, tags as chips, note muted; the corner mark only where there is something to show
     assert "class='info cmt'" in html_ and "&lt;b&gt;пут&lt;/b&gt; на пробій" in html_ and "<b>пут</b>" not in html_
     assert "<span class='rd'>bybit:option:x; комісії 3.7500; плече -</span>" in html_
     assert html_.count("class=has-cmt>") == 1  # burnt: own thesis -> orange corner
     assert html_.count("class='has-cmt auto'") == 1  # perp: only the import note -> grey corner; the rest show nothing
-    assert "R* — від премії" in html_
+
+
+def test_journal_open_trades_first_with_live_marks_and_folded_sections(tmp_path):
+    """Owner, 28.10: the 13NOV strangle was lost below the statistics. Open trades now come first, with the mark and
+    P&L as the «Позиції» tab counts them (ticker mark, plus the realised opening fee); the rest is folded."""
+    now = db.datetime(2026, 10, 28, 16, tzinfo=db.timezone.utc).timestamp()
+    put = {
+        "id": 1, "opened_ts": now - 2 * 86400, "closed_ts": None, "symbol": "BTC-13NOV26-78000-P-USDT", "side": "long",
+        "size": 0.1, "entry": 1590.0, "exit": None, "pnl": None, "r_multiple": None, "status": "open",
+        "tags": '["bybit", "option", "strangle"]', "thesis": "стренгл", "note": "комісії 1.6061",
+    }  # fmt: skip
+    perp = {
+        **put,
+        "id": 2,
+        "symbol": "ETHUSDT",
+        "side": "short",
+        "size": 1.0,
+        "entry": 4000.0,
+        "tags": '["hyperliquid"]',
+        "opened_ts": now - 3 * 86400,
+    }
+    closed = {**put, "id": 3, "status": "closed", "closed_ts": now - 86400, "pnl": -10.0, "exit": 1490.0}
+    live = {
+        "asof_utc": "2026-10-28T15:57:22Z",
+        "positions": [{"symbol": "BTC-13NOV26-78000-P-USDT", "side": "Buy", "size": "0.1", "avgPrice": "1590",
+                       "markPrice": "1300", "curRealisedPnl": "-1.6061"}],
+        "tickers": {"BTC-13NOV26-78000-P-USDT": {"markPrice": "1331.08"}},
+    }  # fmt: skip
+    html_ = db.block_journal_open([closed, perp, put], live, now)
+    assert html_.count("<tr>") == 3 and "1 490" not in html_  # the header and the two open trades only
+    assert "1 331.08" in html_ and "до експірації 15 д 16 год" in html_
+    assert "−17.29 %" in html_ and "−$27" in html_  # (1331.08 − 1590) × 0.1 − 1.61 = −27.50 of a $159 premium
+    assert html_.index("BTC</b> 78 000") < html_.index("ETHUSDT")  # newest first
+    assert "<td class='num'>—</td><td class='num'>триває" in html_  # Hyperliquid: no live mark
+    assert "оновлено 17:57 за Києвом" in html_ and "href='/positions'" in html_
+    assert db.block_journal_open([closed], None, now) == "<p class='empty'>Відкритих угод немає.</p>"
+    assert db.journal_live_marks({"positions": [None, {"symbol": 5}, {"symbol": "X", "side": "Buy"}]}) == {
+        "X": {"mark": None, "upnl": None}
+    }
+    data, _ = db.load_journal(_journal_db(tmp_path / "s.sqlite", _sample_journal(), _sample_rec()))
+    page = db.render_journal(data, None, float(T0 + 10 * 86400), live=live)
+    assert page.index("<h2>Відкриті зараз") < page.index("<h2>Угоди") < page.index("<summary><h2>Статистика")
+    assert "4 закритих · у плюсі 75 % · P&amp;L <span class='bad'>−$40</span> · просадка −$100" in page
+    assert page.count("<details>") == 7 and "<details open" not in page  # everything below the table starts folded
+    assert page.index("</main>") < page.index("<b>Застереження</b>")  # the caveats once, at the end
 
 
 def test_option_contract_parses_only_option_symbols():
@@ -993,7 +1069,8 @@ def test_journal_r_curve_and_weekly_review(tmp_path):
     assert block.index("2026-W40") < block.index("2026-W39")  # newest first
     page = db.render_journal(data, None, now)
     assert "<h2>Крива в R і тижневий розбір<span class='info'" in page and "Блок не вдалося показати" not in page
-    assert page.index("Крива в R і тижневий розбір") < page.index("<h2>За джерелом")
+    assert page.index("<h2>Угоди") < page.index("<h2>За джерелом") < page.index("<h2>Крива в R і тижневий розбір")
+    assert "<summary><h2>Крива в R і тижневий розбір" in page  # folded, its summary line visible
     # 30 trades with R: no "too few" label
     many = [_jrow(i % 6, f"S{i}", "long", TG, "closed", "win", 10.0, r=0.5) for i in range(30)]
     data, _ = db.load_journal(_journal_db(tmp_path / "m.sqlite", many, []))
@@ -1700,7 +1777,10 @@ def test_help_keys_used_by_the_pages_all_exist():
 def test_info_icon_is_escaped_static_text_and_unknown_key_is_empty():
     html_ = db._info("dvol")
     assert html_.startswith("<span class='info' tabindex='0' role='button'")
-    assert "DVOL" in html_ and "Для угоди:" in html_
+    # an ACT key: what it is, then «low → do», «high → do» (owner, 28.10) instead of the read / trade lines
+    assert "DVOL" in html_ and "<i>Низький (до 30-го перцентиля)</i> → купувати опціони дешевше" in html_ and "Для угоди:" not in html_
+    assert "Для угоди:" in db._info("iv")  # keys without ACT keep the long form
+    assert set(db.ACT) <= set(db.HELP) and all(all(x) for x in db.ACT.values())
     assert db._info("no-such-key") == ""
     tile = db._tile("K", "1", "s", help="iv", tone="good", badge="a<b")
     assert "class='tile t-good'" in tile and "a&lt;b" in tile and "class='info'" in tile
@@ -1798,7 +1878,8 @@ def test_every_heading_and_tile_on_every_tab_has_a_help_note(tmp_path):
         ("project", "Питання агентів до тебе"),
         ("options ", "Позиція"),
         ("options no chain", "Конструктор"),
-        ("journal", "Мої угоди"),
+        ("journal", "Відкриті зараз"),
+        ("journal", "Статистика"),
         ("journal", "Угоди"),
         ("journal empty", "Мої угоди"),
         ("journal", "Журнал прогнозів"),

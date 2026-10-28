@@ -1,0 +1,2 @@
+- Перевірено ідею «тейкер-дисбаланс 4 год → продовження 8 год» на 28 перпах Binance (2022-05…2026-10): `rejected` (IC ≈ 0 і в OOS, брутто кошика 2 б.п. проти витрат ≈ 16 б.п.).
+- Додано `analytics/taker_imbalance.py`, `scripts/verify_taker_imbalance.py`, 12 тестів; виміряно покриття тейкер-колонки `metrics` і зміну семантики `create_time` 2024-03-04 (`docs/knowledge/data-sources.md`).

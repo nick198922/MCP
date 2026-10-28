@@ -1,0 +1,2 @@
+- Скаут: дві нові картки — `hodler-airdrop-listing-fade-short` (шорт лістингів HODLer Airdrops) і `dat-mnav-forced-seller-forward` (DAT з mNAV < 1 як примусовий продавець).
+- Критик (A): обидві → `forward` (історичної потужності бракує); у `docs/knowledge/setups.md` додано S41 і S42.

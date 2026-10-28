@@ -507,6 +507,20 @@ async def test_goplus_error_codes_are_not_cached_and_hit_health():
         await rt.aclose()
 
 
+async def test_goplus_repeated_error_codes_mark_provider_down():
+    limited = {"code": 4029, "message": "too many requests", "result": {}}
+    rt = Runtime(Settings(http_retries=0), transports={"goplus": httpx.MockTransport(lambda req: httpx.Response(200, json=limited))})
+    try:
+        for _ in range(3):
+            with pytest.raises(cr_errors.ProviderError):
+                await rt.goplus.token_security("1", SHIB)
+        h = rt.health.snapshot()["providers"]["goplus"]
+        # one health record per call (an error, not ok + error), so three in a row read as down
+        assert (h["calls"], h["failures"], h["status"]) == (3, 3, "down")
+    finally:
+        await rt.aclose()
+
+
 async def test_contract_risk_warns_about_fake_pairs():
     env = await call(
         make_server(

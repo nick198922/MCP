@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 def _float(name: str, default: float) -> float:
@@ -30,6 +30,11 @@ class Settings:
     coinalyze_api_key: str | None = None
     coingecko_api_key: str | None = None
     coingecko_plan: str = "demo"  # "demo" or "pro"
+    # The Graph gateway (providers/thegraph.py; research scripts, no tool). The key lives in ~/.config/tradedesk/onchain.env,
+    # which the MCP service does not load: a script reads it there and passes it in. The Polymarket P&L subgraph id is
+    # not pinned in code (read it off Graph Explorer).
+    graph_api_key: str | None = field(default=None, repr=False)
+    graph_pnl_subgraph_id: str | None = None
     # Local SQLite history (Phase 2). Empty string disables the store entirely.
     db_path: str = "data/tradedesk.sqlite"
     collector_enabled: bool = False
@@ -139,6 +144,10 @@ class Settings:
             coinalyze_api_key=os.environ.get("COINALYZE_API_KEY") or None,
             coingecko_api_key=os.environ.get("COINGECKO_API_KEY") or None,
             coingecko_plan=os.environ.get("COINGECKO_PLAN", "demo").lower(),
+            # stripped: a trailing space or \r from an env file would make the header invalid (a `network` error, not `auth`);
+            # non-ASCII keys are refused by the provider as `config` (providers/thegraph.key_problem)
+            graph_api_key=(os.environ.get("GRAPH_API_KEY") or "").strip() or None,
+            graph_pnl_subgraph_id=os.environ.get("TRADEDESK_GRAPH_PNL_SUBGRAPH_ID") or None,
             db_path=os.environ.get("TRADEDESK_DB_PATH", "data/tradedesk.sqlite"),
             collector_enabled=os.environ.get("TRADEDESK_COLLECTOR_ENABLED", "").lower() in ("1", "true", "yes"),
             collect_atm_term_seconds=int(_float("TRADEDESK_COLLECT_ATM_TERM_SECONDS", 300)),

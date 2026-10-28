@@ -11,6 +11,7 @@ import json as jsonlib
 import random
 import re
 import time
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -23,6 +24,11 @@ from .ratelimit import TokenBucket
 
 _SECRET_KEY = re.compile(r"(?i)(key|token|secret|signature|pass)")
 _RETRY_STATUS = {429, 500, 502, 503, 504}
+
+# For APIs that report failures inside an HTTP 200 body (GraphQL `errors`, GoPlus codes): a pure function of the decoded
+# body returning None when it is usable, or (reason, detail) when it is a failure. A failure is recorded in health once,
+# as an error (never also as a success), its detail is scrubbed like any other, and it is never cached.
+BodyCheck = Callable[[Any], tuple[str, str] | None]
 
 
 def _clean_args(params: dict[str, Any] | None) -> dict[str, Any]:
@@ -45,8 +51,11 @@ class Http:
         health: HealthRegistry | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
         backoff_base: float = 0.4,
+        secrets: tuple[str, ...] = (),
     ) -> None:
         self.provider = provider
+        # Exact strings (API keys sent in headers) scrubbed from every error detail, before health and ProviderError see it.
+        self._secrets = tuple(s for s in secrets if s)
         self._client_args: dict[str, Any] = {
             "base_url": base_url,
             "timeout": timeout,
@@ -76,8 +85,18 @@ class Http:
             await self._client_obj.aclose()
         self._client_obj = None
 
+    def _unsecret(self, text: str) -> str:
+        for s in self._secrets:
+            text = text.replace(s, "***")
+        return text
+
+    def scrub(self, text: str) -> str:
+        """Error text without this client's secrets and without key=value pairs (see `health.redact`), max 200 chars.
+        Secrets go first: a length cut before it could leave a prefix of a secret behind."""
+        return redact(self._unsecret(text))
+
     def _fail(self, reason: str, detail: str) -> ProviderError:
-        detail = redact(detail)
+        detail = self.scrub(detail)
         if self._health:
             self._health.error(self.provider, reason, detail)
         return ProviderError(self.provider, reason, detail)
@@ -103,7 +122,7 @@ class Http:
                         return resp.json(), ms
                     except (ValueError, jsonlib.JSONDecodeError):
                         raise self._fail("backend_error", f"non-JSON response ({resp.headers.get('content-type')})") from None
-                snippet = resp.text[:160].replace("\n", " ")
+                snippet = self._unsecret(resp.text)[:160].replace("\n", " ")
                 if code in (401, 403):
                     raise self._fail("auth", f"HTTP {code}: {snippet}")
                 if code == 402:
@@ -133,11 +152,15 @@ class Http:
         ttl: float = 0.0,
         tool: str | None = None,
         args: dict[str, Any] | None = None,
+        check: BodyCheck | None = None,
     ) -> Fetched:
         key = (self.provider, method, path, tuple(sorted((params or {}).items())), jsonlib.dumps(json, sort_keys=True))
 
         async def fetch() -> Fetched:
             data, ms = await self._once(method, path, params, json)
+            bad = check(data) if check is not None else None
+            if bad is not None:
+                raise self._fail(*bad)
             if self._health:
                 self._health.ok(self.provider, ms)
             ev = Evidence(

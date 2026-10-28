@@ -1,0 +1,17 @@
+{
+ "_source": "SYNTHETIC, hand-built 2026-10-28 without network access; shape per the Graph docs (GraphQL over HTTP: {data} or {errors:[{message}], data}). Not a live answer: block numbers, hashes, ids and error texts are made up, and the entity name 'positions' is a placeholder, not checked against the Polymarket subgraph schema. Replace with live samples once fetched on the server.",
+ "meta": {
+  "data": {
+   "_meta": {
+    "block": {"number": 78000000, "hash": "0x00000000000000000000000000000000000000000000000000000000deadbeef", "timestamp": 1761609600},
+    "deployment": "QmSyntheticDeploymentId000000000000000000000000",
+    "hasIndexingErrors": false
+   }
+  }
+ },
+ "page_1": {"data": {"positions": [{"id": "0x01", "amount": "10"}, {"id": "0x02", "amount": "20"}]}},
+ "page_2": {"data": {"positions": [{"id": "0x03", "amount": "30"}]}},
+ "error_query": {"errors": [{"message": "Type `Query` has no field `foo`", "locations": [{"line": 1, "column": 3}]}], "data": null},
+ "error_partial": {"errors": [{"message": "indexing_error"}], "data": {"positions": [{"id": "0x01", "amount": "10"}]}},
+ "error_auth": {"errors": [{"message": "auth error: malformed API key"}]}
+}

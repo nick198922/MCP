@@ -3,7 +3,8 @@
 These are the `/futures/data/*` endpoints — a separate surface from the ccxt-handled matching engine.
 Account long/short ratio and open-interest history are not exposed uniformly through ccxt, so we hit the
 underlying REST directly through our own `Http` so retries / rate-limit / cache / health all apply.
-Also the all-symbol `/fapi/v1` book ticker, premium index and exchangeInfo (collector/tradfi_spread.py).
+Also the all-symbol `/fapi/v1` book ticker, premium index and exchangeInfo (collector/tradfi_spread.py), and
+`/fapi/v1/klines` with the taker-buy split (tools/flow.py: perp CVD).
 """
 
 from __future__ import annotations
@@ -13,8 +14,10 @@ from typing import Any
 from ..core.envelope import Fetched
 from ..core.errors import ProviderError
 from ..core.http import Http
+from .binance_spot import check_interval, walk_klines
 
 BASE_URL = "https://fapi.binance.com"
+KLINES_PAGE = 1500
 
 VALID_PERIODS = ("5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d")
 
@@ -51,6 +54,36 @@ class BinanceFutures:
             {"symbol": symbol, "period": check_period(period), "limit": limit},
             ttl=30,
             tool="futures/data/openInterestHist",
+        )
+
+    async def klines(self, symbol: str, interval: str, start_ms: int, end_ms: int, limit: int = KLINES_PAGE) -> Fetched:
+        """One page of USD-M `/fapi/v1/klines` with open time in [start_ms, end_ms] (both inclusive), at most 1500 rows.
+
+        Same row shape as spot (`providers.binance_spot`), incl. taker-buy base/quote volume (ccxt OHLCV drops them).
+        """
+        check_interval(self.name, interval)
+        params = {
+            "symbol": symbol,
+            "interval": interval,
+            "startTime": int(start_ms),
+            "endTime": int(end_ms),
+            "limit": min(int(limit), KLINES_PAGE),
+        }
+        return await self._get("/fapi/v1/klines", params, ttl=300, tool="fapi/v1/klines")
+
+    async def klines_range(self, symbol: str, interval: str, start_ms: int, end_ms: int, *, max_pages: int = 4) -> Fetched:
+        """USD-M klines with open time in [start_ms, end_ms): ``{"rows": [...], "complete": bool}`` (see `walk_klines`)."""
+        check_interval(self.name, interval)
+        return await walk_klines(
+            self.name,
+            "fapi/v1/klines",
+            lambda s, e, n: self.klines(symbol, interval, s, e, n),
+            symbol,
+            interval,
+            start_ms,
+            end_ms,
+            KLINES_PAGE,
+            max_pages,
         )
 
     # Matching-engine market data, all symbols in one request (no ``symbol``). Weights: 5 / 10 / 1 per call.

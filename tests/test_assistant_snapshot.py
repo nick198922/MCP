@@ -189,6 +189,10 @@ async def test_snapshot_happy_path(state, tmp_path):
     assert snap["missing"] == ["em_week"]
     assert snap["sections"]["em_week"]["missing"][0]["reason"] == "data_unavailable"
     assert snap["stale"] == []
+    # market_flow for the brief: summaries only (no series); the fake venues here give it funding, the rest is missing
+    flows = snap["sections"]["flows"]
+    assert flows["ok"] and "series" not in flows["data"] and flows["data"]["base"] == "BTC"
+    assert {"spot_klines", "premium:coinbase"} <= {m["field"] for m in flows["missing"]}
     assert snap["sections"]["chain"]["data"]["expiry"] == "27NOV26"
     near = snap["sections"]["chain_near"]["data"]  # the builder's nearer expiry, same shape as the month chain
     assert near["expiry"] == "30OCT26" and near["strikes"] and set(near) == set(snap["sections"]["chain"]["data"])

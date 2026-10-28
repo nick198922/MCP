@@ -14,7 +14,9 @@ tab's two tail ranges, labelled «ризик-нейтральна»; it replaces
 one line with the state of the paper recommendation (section ``paper_rec``: «актуальна / змінилась /
 більше не актуальна», labelled «гіпотеза»; omitted without data), the owner's open Bybit options (section
 ``my_options``: a total line with P&L and theta per day, then at most 3 positions with the risk-neutral chance of
-profit, labelled «ризик-нейтральний, не порада»; omitted without data or without open positions), the next events in
+profit, labelled «ризик-нейтральний, не порада»; omitted without data or without open positions), up to three
+«Потоки» lines for BTC (section ``flows``, the market_flow tool: the 24 h descriptive sentence, funding and
+liquidations, the Coinbase premium against its 30-day median, labelled «описово, не сигнал»), the next events in
 Kyiv time and one caveat line; the dashboard pages carry the rest. A missing or
 unreadable snapshot gives an explained message, not an error; older than 30 min adds a warning; older than 6 h gives
 only the stamp and the warning (no prices, no countdowns). Event countdowns are counted from the send time, past events
@@ -442,6 +444,50 @@ def _funding(snap: dict, now: float) -> list[str]:
     return out
 
 
+def _musd(x: float) -> str:
+    """Unsigned dollars in short form: 850 тис $, 12 млн $, 1.23 млрд $."""
+    a = abs(x)
+    return f"{a / 1e9:.2f} млрд $" if a >= 1e9 else (f"{a / 1e6:.0f} млн $" if a >= 1e6 else f"{a / 1e3:.0f} тис $")
+
+
+def _flows(snap: dict, now: float, short: bool = False) -> list[str]:
+    """«Потоки» (section ``flows``: market_flow for BTC, 1h, summaries only), at most three lines: the tool's 24 h
+    descriptive sentence; funding and liquidations over 24 h; the Coinbase premium against its 30-day median with the
+    label «описово, не сигнал» (single flow metrics did not predict direction in our tests). [] without data; never
+    raises. `short` marks the first line «потоки» (the short brief has no block titles)."""
+    try:
+        d = db._data(snap, "flows") or {}
+        summ = d.get("summary") if isinstance(d.get("summary"), dict) else {}
+        s = summ.get("24h")
+        if not isinstance(s, dict):
+            return []
+        out = []
+        text = d.get("sentence_ua")
+        if isinstance(text, str) and text.strip():
+            out.append(_h(db._clean(text, 300)))
+        parts = []
+        f = db._num(s.get("funding_annualized_mean"))
+        if f is not None:
+            parts.append(f"Funding {db._pc(f * 100, 1)} річних (середнє за 24 год)")
+        lg, sh = db._num(s.get("liq_long")), db._num(s.get("liq_short"))
+        if lg is not None and sh is not None:
+            parts.append(f"{'л' if parts else 'Л'}іквідації за 24 год: лонги {_musd(lg)}, шорти {_musd(sh)}")
+        if parts:
+            out.append(_h("; ".join(parts)))
+        p = db._num(s.get("premium_adj_mean"))
+        tail = "описово, не сигнал"
+        if p is not None:
+            bp = f"{p * 1e4:+.1f}".replace("-", "−")
+            out.append(_h(f"Премія Coinbase до медіани 30 дн: {bp} б.п. (середнє за 24 год) · {tail}"))
+        elif out:
+            out.append(_h("Описово, не сигнал: поодинці ці метрики напрямок не передбачали."))
+        if short and out:
+            out[0] = f"• <i>потоки</i> · {out[0]}"
+        return out
+    except Exception:  # noqa: BLE001 - an odd section only drops this block
+        return []
+
+
 def build_brief(snap: dict | None, now: float, err: str | None = None, short: bool = False) -> str:
     """The brief as Telegram HTML. Pure (no I/O, time passed in); never raises. `short` (what is sent): a few lines
     without block titles — BTC/ETH, DVOL, the 1-3 most important items, the risk-neutral range line, the paper
@@ -465,11 +511,18 @@ def build_brief(snap: dict | None, now: float, err: str | None = None, short: bo
             return _fit(out, tail)
         if short:
             # the range and paper recommendation lines sit with the day's items (no blank before them)
-            blocks = (("", _market_short), ("", _day_short), ("", _my_options), ("", _events_short))
+            blocks = (
+                ("", _market_short),
+                ("", _day_short),
+                ("", lambda s, n: _flows(s, n, short=True)),
+                ("", _my_options),
+                ("", _events_short),
+            )
         else:
             blocks = (
                 ("Ринок", _market),
                 ("Головне сьогодні", lambda s, n: _key(s, n) + _paper(s, n)),
+                ("Потоки BTC · описово, не сигнал", _flows),
                 ("Мої опціони Bybit", _my_options),
                 ("Події · час " + ("Київ" if db.KYIV is not None else "UTC"), _events),
                 ("Funding · річних", _funding),

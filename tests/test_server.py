@@ -20,6 +20,7 @@ EXPECTED_TOOLS = {
     "perps_long_short_ratio",
     "perps_oi_history",
     "perps_open_interest",
+    "market_flow",
     "hyperliquid_overview",
     "hyperliquid_candles",
     "hyperliquid_book",

@@ -1,0 +1,2 @@
+- Скаут: дві нові картки — `hl-oi-cap-state-forward` (шорт перпів Hyperliquid на ліміті OI, форвард) і `premarket-perp-conversion-fade` (шорт після конверсії pre-market перпа).
+- Критик (A): обидві `forward` — MDE історії вищий за очікуваний ефект; у `docs/knowledge/setups.md` додано S45 і S46 (◯).

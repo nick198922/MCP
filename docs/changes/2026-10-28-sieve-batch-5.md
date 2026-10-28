@@ -1,0 +1,2 @@
+- Сито, партія 5: п'ять нових специфікацій (`rsi14_failure_swing`, `stochastic_full_cross`, `parabolic_sar_flip`, `inside_bar_breakout`, `london_breakout_asia_range`), тести причинності в `tests/test_sieve_batch5.py`.
+- Каталог `docs/sieve/catalog.md` і реєстр: 33 рядки зі 100; жодна не пройшла, прихований період не відкривався.

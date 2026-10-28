@@ -123,6 +123,12 @@ class Settings:
     collect_tradfi_spread_enabled: bool = False
     collect_tradfi_spread_seconds: int = 60
     retention_tradfi_spread_days: int = 365
+    # Hyperliquid OI-cap state (collector/hl_oi_cap.py; IDEA-20261028-hl-oi-cap-state-forward, step 0): one snapshot per UTC
+    # hour of perpsAtOpenInterestCap + metaAndAssetCtxs (2 requests). The job ticks every `_seconds` and fetches only while
+    # the current hour has no snapshot, so restarts and a failed attempt do not lose the hour. No retention: forward-only
+    # history (~180 listed perps, ~4.3k rows a day). Off by default.
+    collect_hl_oi_cap_enabled: bool = False
+    collect_hl_oi_cap_seconds: int = 600
     # Alerts
     alerts_enabled: bool = False
     alerts_rules_path: str = ""
@@ -206,6 +212,8 @@ class Settings:
             collect_tradfi_spread_enabled=os.environ.get("TRADEDESK_COLLECT_TRADFI_SPREAD_ENABLED", "").lower() in ("1", "true", "yes"),
             collect_tradfi_spread_seconds=int(_float("TRADEDESK_COLLECT_TRADFI_SPREAD_SECONDS", 60)),
             retention_tradfi_spread_days=int(_float("TRADEDESK_RETENTION_TRADFI_SPREAD_DAYS", 365)),
+            collect_hl_oi_cap_enabled=os.environ.get("TRADEDESK_COLLECT_HL_OI_CAP_ENABLED", "").lower() in ("1", "true", "yes"),
+            collect_hl_oi_cap_seconds=int(_float("TRADEDESK_COLLECT_HL_OI_CAP_SECONDS", 600)),
             http_bearer_tokens=os.environ.get("TRADEDESK_HTTP_BEARER_TOKENS") or os.environ.get("TRADEDESK_HTTP_BEARER_TOKEN", ""),
             alerts_enabled=os.environ.get("TRADEDESK_ALERTS_ENABLED", "").lower() in ("1", "true", "yes"),
             alerts_rules_path=os.environ.get("TRADEDESK_ALERTS_RULES_PATH", ""),

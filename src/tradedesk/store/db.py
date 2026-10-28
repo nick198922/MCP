@@ -419,6 +419,36 @@ class Store:
         cur = await self.conn.execute(sql + " ORDER BY ts, symbol", args)
         return [dict(r) for r in await cur.fetchall()]
 
+    HL_OI_CAP_COLUMNS = "at_cap oi_usd funding mark oracle vol24h".split()
+
+    async def insert_hl_oi_cap_snapshot(self, ts: int, fetched_ts: int, rows: list[dict[str, Any]]) -> int:
+        """One hourly Hyperliquid OI-cap snapshot. Idempotent per (ts, coin): the first snapshot of an hour is kept and
+        a repeat for the same ``ts`` writes nothing (returns the rows actually inserted)."""
+        cols = self.HL_OI_CAP_COLUMNS
+        payload = [(ts, r["coin"], *(r.get(c) for c in cols), fetched_ts) for r in rows if r.get("coin") and r.get("at_cap") is not None]
+        if not payload:
+            return 0
+        before = self.conn.total_changes
+        marks = ",".join("?" * (len(cols) + 3))
+        await self.conn.executemany(
+            f"INSERT OR IGNORE INTO hl_oi_cap_snapshot (ts, coin, {', '.join(cols)}, fetched_ts) VALUES ({marks})", payload
+        )
+        await self.conn.commit()
+        return self.conn.total_changes - before
+
+    async def hl_oi_cap_has_hour(self, ts: int) -> bool:
+        cur = await self.conn.execute("SELECT 1 FROM hl_oi_cap_snapshot WHERE ts = ? LIMIT 1", (ts,))
+        return await cur.fetchone() is not None
+
+    async def hl_oi_cap_rows(self, since_ts: int = 0, coin: str | None = None) -> list[dict[str, Any]]:
+        """Stored rows with ts >= ``since_ts`` (optionally one ``coin``), oldest first."""
+        sql, args = "SELECT * FROM hl_oi_cap_snapshot WHERE ts >= ?", [since_ts]
+        if coin is not None:
+            sql += " AND coin = ?"
+            args.append(coin)
+        cur = await self.conn.execute(sql + " ORDER BY ts, coin", args)
+        return [dict(r) for r in await cur.fetchall()]
+
     COINALYZE_HISTORY_COLUMNS = "open high low close ratio long_share short_share".split()
 
     async def insert_coinalyze_history(self, symbol: str, metric: str, rows: list[dict[str, Any]], fetched_ts: int) -> int:

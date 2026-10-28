@@ -24,8 +24,9 @@ def _f(x: Any) -> float | None:
         return None
 
 
-def parse_asset_contexts(raw: Any) -> list[dict[str, Any]]:
-    """metaAndAssetCtxs -> flat per-coin rows."""
+def parse_asset_contexts(raw: Any, include_delisted: bool = False) -> list[dict[str, Any]]:
+    """metaAndAssetCtxs -> flat per-coin rows. Delisted perps are dropped unless ``include_delisted`` (then their rows
+    carry ``delisted: True``; the others ``delisted: False``)."""
     try:
         meta, ctxs = raw[0], raw[1]
         universe = meta["universe"]
@@ -33,7 +34,7 @@ def parse_asset_contexts(raw: Any) -> list[dict[str, Any]]:
         raise ProviderError("hyperliquid", "backend_error", f"unexpected metaAndAssetCtxs shape: {e}") from e
     rows: list[dict[str, Any]] = []
     for u, c in zip(universe, ctxs, strict=False):
-        if u.get("isDelisted"):
+        if u.get("isDelisted") and not include_delisted:
             continue
         mark, oi, fund = _f(c.get("markPx")), _f(c.get("openInterest")), _f(c.get("funding"))
         prev = _f(c.get("prevDayPx"))
@@ -50,9 +51,19 @@ def parse_asset_contexts(raw: Any) -> list[dict[str, Any]]:
                 "open_interest_usd": oi * mark if oi is not None and mark is not None else None,
                 "day_volume_usd": _f(c.get("dayNtlVlm")),
                 "change_24h_pct": (mark / prev - 1.0) * 100.0 if mark and prev else None,
+                **({"delisted": bool(u.get("isDelisted"))} if include_delisted else {}),
             }
         )
     return rows
+
+
+def parse_oi_cap(raw: Any) -> list[str]:
+    """perpsAtOpenInterestCap -> the tickers whose open interest is at the protocol cap (a JSON array of strings).
+
+    Any other shape is a ``backend_error``: an empty list is a valid answer (no perp at its cap), a reshaped one is not."""
+    if not isinstance(raw, list) or not all(isinstance(x, str) for x in raw):
+        raise ProviderError("hyperliquid", "backend_error", f"unexpected perpsAtOpenInterestCap shape: {str(raw)[:80]}")
+    return list(raw)
 
 
 WINDOWS = {"day": "day", "week": "week", "month": "month", "allTime": "all"}
@@ -138,9 +149,14 @@ class Hyperliquid:
         """One account's margin summary and open perp positions (public for every address)."""
         return await self._info({"type": "clearinghouseState", "user": user}, ttl=30)
 
-    async def asset_contexts(self) -> Fetched:
+    async def asset_contexts(self, include_delisted: bool = False) -> Fetched:
         f = await self._info({"type": "metaAndAssetCtxs"}, ttl=5)
-        return Fetched(parse_asset_contexts(f.data), f.evidence)
+        return Fetched(parse_asset_contexts(f.data, include_delisted), f.evidence)
+
+    async def perps_at_oi_cap(self) -> Fetched:
+        """Tickers of the main-dex perps whose open interest is at the cap right now (current state only, no history)."""
+        f = await self._info({"type": "perpsAtOpenInterestCap"}, ttl=5)
+        return Fetched(parse_oi_cap(f.data), f.evidence)
 
     async def _name_table(self) -> dict[str, str] | None:
         """lower -> exact name for the FULL universe (delisted included); cached, refreshed at most every 10 min.

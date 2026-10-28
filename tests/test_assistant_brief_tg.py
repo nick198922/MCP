@@ -5,7 +5,7 @@ import json
 import re
 import sys
 import urllib.error
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -763,3 +763,49 @@ def test_brief_cycle_line_absent_or_odd():
         assert ab._cycle(snap, asof) == [] and "Не інвестиційна порада" in ab.build_brief(snap, asof + 300)
     snap["sections"]["cycle"] = _cycle_section("<script>Режим циклу</script>")
     assert "<script>" not in ab.build_brief(snap, asof + 300, short=True)
+
+
+def _with_history(snap: dict, now: float, states: list) -> None:
+    """A `cycle` section whose history ends yesterday (UTC of `now`) with `states`, oldest first."""
+    last = (datetime.fromtimestamp(now, timezone.utc) - timedelta(days=1)).date()  # noqa: UP017
+    hist = [{"date": (last - timedelta(days=len(states) - 1 - i)).isoformat(), "state": s, "close": 80000.0} for i, s in enumerate(states)]
+    sec = _cycle_section(CYCLE_LINE)
+    sec["data"]["history"] = hist
+    snap["sections"]["cycle"] = sec
+
+
+def test_cycle_change_message_only_when_yesterday_differs():
+    snap, asof = _snap()
+    now = asof + 300
+    _with_history(snap, now, ["accumulation", "growth", "growth", "accumulation", None, "growth"])
+    msg = ab.cycle_change(snap, now)
+    assert msg.startswith("<b>Режим циклу BTC змінився:</b> накопичення → ріст (день ")  # the undecided day is skipped
+    assert ab._h(CYCLE_LINE) in msg and "Змін стану за 6 днів: 3." in msg and "Контекст, не сигнал" in msg
+    _with_history(snap, now, ["growth", "accumulation", "accumulation"])
+    assert ab.cycle_change(snap, now) is None  # no change yesterday
+    _with_history(snap, now, ["accumulation", "growth", None])
+    assert ab.cycle_change(snap, now) is None  # yesterday undecided
+    _with_history(snap, now - 86_400, ["accumulation", "growth"])  # a carried-forward section: told the day before
+    assert ab.cycle_change(snap, now) is None
+    _with_history(snap, now, ["accumulation", "growth"])
+    assert ab.cycle_change(snap, now + 7 * 3600) is None  # the snapshot is too old
+    for odd in ({"ok": True, "data": {"history": "x"}}, {"ok": False}, {"ok": True, "data": {"history": [None, 1]}}):
+        snap["sections"]["cycle"] = odd
+        assert ab.cycle_change(snap, now) is None
+    assert ab.cycle_change(None, now) is None
+
+
+def test_main_sends_the_cycle_change_after_the_brief(tmp_path, monkeypatch):
+    snap, asof = _snap()
+    _with_history(snap, asof + 300, ["decline", "accumulation"])
+    path = tmp_path / "snap.json"
+    path.write_text(json.dumps(snap), encoding="utf-8")
+    sent = []
+    monkeypatch.setattr(tg_send, "send", lambda text, **k: sent.append(text) or True)
+    monkeypatch.setattr(ab.time, "time", lambda: asof + 300)
+    assert ab.main(["--snapshot", str(path), "--no-chart"]) == 0
+    assert len(sent) == 2 and "Бриф асистента" in sent[0] and sent[1].startswith("<b>Режим циклу BTC змінився:</b> падіння → накопичення")
+    sent.clear()
+    _with_history(snap, asof + 300, ["accumulation", "accumulation"])
+    path.write_text(json.dumps(snap), encoding="utf-8")
+    assert ab.main(["--snapshot", str(path), "--no-chart"]) == 0 and len(sent) == 1

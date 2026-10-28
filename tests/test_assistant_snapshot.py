@@ -202,9 +202,12 @@ async def test_snapshot_happy_path(state, tmp_path):
         assert snap["sections"][name]["asof_utc"] == "2026-10-10T13:07:00Z"
     assert snap["missing"] == ["em_week"]
     assert snap["sections"]["em_week"]["missing"][0]["reason"] == "data_unavailable"
-    # cycle_regime for the brief: today's state, no history; funding from the shared FakeEx (0.01 %/8 h, about 11 %/yr)
+    # cycle_regime for the brief: today's state and 30 days of states (the state-change message); funding from the
+    # shared FakeEx (0.01 %/8 h, about 11 %/yr)
     cycle = snap["sections"]["cycle"]
-    assert cycle["missing"] == [] and cycle["data"]["date"] == "2026-10-09" and cycle["data"]["history"] == []
+    assert cycle["missing"] == [] and cycle["data"]["date"] == "2026-10-09"
+    hist = cycle["data"]["history"]
+    assert len(hist) == 30 and hist[-1]["date"] == "2026-10-09" and hist[-1]["state"] == cycle["data"]["state"]
     assert cycle["data"]["state"] == "growth"  # 28.10's prices, but funding ≥ 8 %/yr: not accumulation
     assert cycle["data"]["line_ua"].startswith("Режим циклу: ріст (") and "найближче" not in cycle["data"]["line_ua"]
     assert snap["stale"] == []

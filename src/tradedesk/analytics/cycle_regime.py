@@ -52,6 +52,9 @@ MIN_SPOT_DAYS = SMA_DAYS + SLOPE_DAYS  # closes needed for SMA365 and its 30-day
 RSI_WARMUP_DAYS = 60  # extra closes before the window so Wilder's smoothing has settled
 SETTLE_SLACK_MS = 60_000  # a settlement stamped a few ms after 00:00 still belongs to the day that closes then
 BASE_FUNDING = 0.0001 * 8760 / 8  # Binance base rate 0.01 % per 8 h, simple-annualised: 0.1095
+# Code version of the states and components, stored with every journal row (cycle_regime_log.version). Bump it when
+# RULES, the precedence or a component formula changes, so rows of different versions are never pooled silently.
+VERSION = "cycle-regime-v1"
 
 STATES = ("bottom", "accumulation", "overheat", "growth", "decline")
 SPECIAL = STATES[:3]

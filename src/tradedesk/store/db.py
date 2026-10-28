@@ -1031,6 +1031,33 @@ class Store:
             row["expiries"] = json.loads(row["expiries"])
         return rows
 
+    # ---------- cycle_regime_log (daily cycle regime journal, IDEA-20261028-btc-cycle-regime-gauge step 2) ----------
+
+    CYCLE_REGIME_LOG_COLUMNS = (
+        "date base state trend trend_confirmed close perp_close sma365 price_to_sma sma_slope_30d drawdown_365d "
+        "dist_30d_low rsi14 basis7 funding7 premium7 components missing version created_ts"
+    ).split()
+
+    async def cycle_regime_log_insert(self, row: dict[str, Any]) -> int:
+        """Insert one `analytics.cycle_regime_journal.log_row`; a stored (date, base) is never replaced. Returns 0/1."""
+        cols = self.CYCLE_REGIME_LOG_COLUMNS
+        cur = await self.conn.execute(
+            f"INSERT OR IGNORE INTO cycle_regime_log ({', '.join(cols)}) VALUES ({','.join('?' * len(cols))})",
+            [row.get(c) for c in cols],
+        )
+        await self.conn.commit()
+        return int(cur.rowcount or 0)
+
+    async def cycle_regime_log_dates(self, base: str, *, since: str = "") -> set[str]:
+        """Stored dates (YYYY-MM-DD) of a base on or after ``since``."""
+        cur = await self.conn.execute("SELECT date FROM cycle_regime_log WHERE base = ? AND date >= ?", (base, since))
+        return {r[0] for r in await cur.fetchall()}
+
+    async def cycle_regime_log_rows(self, base: str, *, since: str = "") -> list[dict[str, Any]]:
+        """Rows of a base on or after ``since``, oldest first; ``components`` decoded from JSON."""
+        cur = await self.conn.execute("SELECT * FROM cycle_regime_log WHERE base = ? AND date >= ? ORDER BY date", (base, since))
+        return [_parse_json_cols(dict(r), ("components",)) for r in await cur.fetchall()]
+
     # ---------- trade_plan (the assistant's trade plans, scored on candles; bookkeeping only) ----------
 
     async def plan_insert(self, **f: Any) -> int:

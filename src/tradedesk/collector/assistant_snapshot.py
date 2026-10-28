@@ -23,7 +23,8 @@ The ``flows`` section is `market_flow` for BTC (1h, 2 days, summaries only) for 
 ``flow_btc`` / ``flow_eth`` sections are `market_flow` (1h, 7 days, with the per-bar series) for the dashboard's
 «Потоки» tab.
 
-The ``cycle`` section is `cycle_regime` for BTC (today's state, no history) for the brief's «Режим циклу» line.
+The ``cycle`` section is `cycle_regime` for BTC (today's state and the states of the last 30 days) for the brief's
+«Режим циклу» line and its separate state-change message.
 
 The ``chains`` section holds the option chain of every expiry of the ATM term structure (``{"by_expiry": {token:
 chain}}``, the same shape as ``chain``) for the options builder's expiry list; the strike window widens with time to expiry.
@@ -60,6 +61,7 @@ TICKER_SYMBOLS = ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT"]
 CHAIN_WIDTH_PCT = 20.0  # strike window (± % log-moneyness) of the month and near chains, the floor of the others
 CHAIN_WIDTH_MAX_PCT = 60.0
 FLOW_TAB_DAYS = 7  # market_flow window of the dashboard's «Потоки» tab (1h bars)
+CYCLE_HISTORY_DAYS = 30  # cycle_regime states for the brief's state-change message (and its 30-day change count)
 
 
 def snapshot_path(db_path: str, configured: str) -> Path | None:
@@ -354,8 +356,9 @@ async def build_snapshot(rt: "Runtime") -> dict[str, Any]:
             # the dashboard's «Потоки» tab: a week of hourly bars per coin (charts), summaries and the quadrant
             "flow_btc": ("market_flow", {"base": "BTC", "timeframe": "1h", "days": FLOW_TAB_DAYS, "include_series": True}),
             "flow_eth": ("market_flow", {"base": "ETH", "timeframe": "1h", "days": FLOW_TAB_DAYS, "include_series": True}),
-            # the brief's «Режим циклу» line (IDEA-20261028-btc-cycle-regime-gauge): today's state only, no history
-            "cycle": ("cycle_regime", {"base": "BTC", "history_days": 0}),
+            # the brief's «Режим циклу» line and state-change message (IDEA-20261028-btc-cycle-regime-gauge): today's
+            # state and 30 days of states (yesterday vs the day before, and how often it changed)
+            "cycle": ("cycle_regime", {"base": "BTC", "history_days": CYCLE_HISTORY_DAYS}),
         }
         names = list(plan)
         results = await asyncio.gather(*(_call(c, *plan[n]) for n in names))

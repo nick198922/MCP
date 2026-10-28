@@ -1,0 +1,2 @@
+- Скаут: дві картки — `eth-btc-variance-premium-spread` (відхилено критиком: MDE 2.4 вп > очікуваних 1.5) і `eth-exit-queue-forward` (форвард: 4–6 епізодів в історії).
+- Тріаж критика: `docs/reviews/2026-10-28-idea-triage-eth-cards.md`; у `docs/knowledge/setups.md` додано S43 (◯).

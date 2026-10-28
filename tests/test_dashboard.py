@@ -1750,6 +1750,11 @@ def _all_tab_pages(tmp_path) -> dict[str, str]:
     rsnap, t = _radar_snap()
     for asset in ("BTC", "ETH"):
         pages[f"radar {asset}"] = db.render_radar(rsnap, None, t + 300, db.parse_radar_query(f"asset={asset}"))
+    import test_dashboard_flows as tf
+
+    fsnap = tf.snap(flow_btc=tf.section(), flow_eth=tf.section(("coinalyze", "coinbase")))
+    for asset in ("BTC", "ETH"):
+        pages[f"flows {asset}"] = db.render_flows(fsnap, None, tf.NOW, db.parse_flow_query(f"asset={asset}"))
     p = _journal_db(tmp_path / "j.sqlite", _sample_journal(), _sample_rec())
     con = sqlite3.connect(p)
     con.executemany(f"INSERT INTO trade_plan ({P_COLS}) VALUES ({','.join('?' * 15)})", _sample_plans())

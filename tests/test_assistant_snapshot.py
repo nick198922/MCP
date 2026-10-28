@@ -193,6 +193,10 @@ async def test_snapshot_happy_path(state, tmp_path):
     flows = snap["sections"]["flows"]
     assert flows["ok"] and "series" not in flows["data"] and flows["data"]["base"] == "BTC"
     assert {"spot_klines", "premium:coinbase"} <= {m["field"] for m in flows["missing"]}
+    for name, base in (("flow_btc", "BTC"), ("flow_eth", "ETH")):  # the dashboard's «Потоки» tab: a week of hourly bars
+        tab = snap["sections"][name]
+        assert tab["ok"] and tab["data"]["base"] == base and tab["data"]["days"] == 7 and tab["data"]["timeframe"] == "1h", name
+        assert len(tab["data"]["series"]) == 7 * 24 and "spot_klines" in {m["field"] for m in tab["missing"]}, name
     assert snap["sections"]["chain"]["data"]["expiry"] == "27NOV26"
     near = snap["sections"]["chain_near"]["data"]  # the builder's nearer expiry, same shape as the month chain
     assert near["expiry"] == "30OCT26" and near["strikes"] and set(near) == set(snap["sections"]["chain"]["data"])

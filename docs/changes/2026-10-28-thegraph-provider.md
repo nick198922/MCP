@@ -1,0 +1,4 @@
+- Новий провайдер `providers/thegraph.py` (The Graph, підграфи Polymarket): GraphQL через `core.http.Http`, ключ `GRAPH_API_KEY` лише в заголовку Bearer, ліміти, кеш, денний бюджет запитів. MCP-інструмента немає (для дослідницьких скриптів).
+- `Http(secrets=…)` і `scrub()`: ключі вирізаються з тексту помилок; `Http.request_json(check=…)` (тип `BodyCheck`): збій у тілі HTTP 200 рахується в health один раз як помилка. GoPlus переведено на цей механізм.
+- `config.py`: `graph_api_key` (обрізається, не-ASCII відхиляється як `config`), `graph_pnl_subgraph_id`.
+- `scripts/thegraph_sample.py`: збирає живий зразок для `tests/fixtures/`; ще не запускався (потрібне виконання власником, Q-20261028-1). Тести поки на синтетичному зразку.

@@ -9,8 +9,8 @@ Only EVM chains go through this route (Solana has a different endpoint and shape
 
 Caching: GoPlus reports errors such as 4029 inside an HTTP 200 body, so the generic `Http` cache would keep an
 error answer for its whole TTL and health would show the provider as ok. The request therefore goes through
-`Http` uncached, and this class caches only successful answers itself; non-success codes are recorded in health
-as errors.
+`Http` uncached, and this class caches only successful answers itself; non-success codes go through the `Http` body
+check, so health records them once, as errors (not as a success plus an error).
 """
 
 from __future__ import annotations
@@ -39,19 +39,27 @@ def _code(body: dict[str, Any]) -> int | None:
         return None
 
 
+def _body_check(body: Any) -> tuple[str, str] | None:
+    """`Http` body check: a non-success code (or shape) in an HTTP 200 answer is a failure, counted once in health."""
+    if not isinstance(body, dict):
+        return "backend_error", "unexpected response shape at /token_security"
+    code = _code(body)
+    if code not in OK_CODES:
+        # `message` is third-party text: never echoed, only the numeric code.
+        return ("rate_limited" if code == RATE_LIMIT_CODE else "backend_error"), f"GoPlus code {code}"
+    if not isinstance(body.get("result"), dict):
+        return "backend_error", "result is not an object at /token_security"
+    return None
+
+
 class GoPlus:
     name = "goplus"
 
     def __init__(self, http: Http, *, health: HealthRegistry | None = None, ttl: float = TTL_SECONDS) -> None:
         self.http = http
-        self._health = health
+        self._health = health  # kept for the constructor contract; failures reach health through Http (see _body_check)
         self._ttl = ttl
         self._cache = TTLCache(max_items=512)
-
-    def _error(self, reason: str, detail: str) -> ProviderError:
-        if self._health:
-            self._health.error(self.name, reason, detail)
-        return ProviderError(self.name, reason, detail)
 
     async def _fetch(self, chain_id: str, addr: str) -> Fetched:
         f = await self.http.get_json(
@@ -60,18 +68,11 @@ class GoPlus:
             ttl=0,  # never cache in Http: an HTTP 200 body may carry an error code (see module docstring)
             tool="token_security",
             args={"chain_id": chain_id, "address": addr},
+            check=_body_check,
         )
         body = f.data
-        if not isinstance(body, dict):
-            raise self._error("backend_error", "unexpected response shape at /token_security")
         code = _code(body)
-        if code not in OK_CODES:
-            # `message` is third-party text: never echoed, only the numeric code.
-            reason = "rate_limited" if code == RATE_LIMIT_CODE else "backend_error"
-            raise self._error(reason, f"GoPlus code {code}")
-        result = body.get("result")
-        if not isinstance(result, dict):
-            raise self._error("backend_error", "result is not an object at /token_security")
+        result = body["result"]
         token = next((v for k, v in result.items() if isinstance(k, str) and k.lower() == addr), None)
         if not isinstance(token, dict) or not token:
             raise ProviderError(self.name, "data_unavailable", "GoPlus returned no data for this token on this chain")

@@ -27,6 +27,7 @@ from .providers import goplus as goplus_mod
 from .providers import hyperliquid as hl_mod
 from .providers import pendle as pendle_mod
 from .providers import polymarket as poly_mod
+from .providers import thegraph as graph_mod
 from .providers.alternative_me import AlternativeMe
 from .providers.binance_futures import BinanceFutures
 from .providers.binance_vision import BinanceVision
@@ -42,6 +43,7 @@ from .providers.goplus import GoPlus
 from .providers.hyperliquid import Hyperliquid
 from .providers.pendle import Pendle
 from .providers.polymarket import Polymarket
+from .providers.thegraph import TheGraph
 from .store import Store
 
 
@@ -121,6 +123,29 @@ class Runtime:
             # Trade prints (research scripts, not tools).
             data=http("polymarket:data", poly_mod.DATA_URL, rate=3, burst=5),
         )
+        # GraphQL subgraphs (research scripts, not tools). Free tier 100k queries a month: slow bucket, at most one retry,
+        # a daily budget and a cache of successful answers in the provider (providers/thegraph.py).
+        self.thegraph = TheGraph(
+            Http(
+                "thegraph",
+                graph_mod.BASE_URL,
+                rate=graph_mod.RATE_PER_SECOND,
+                burst=graph_mod.BURST,
+                timeout=s.http_timeout,
+                retries=min(s.http_retries, 1),
+                headers=graph_mod.headers(s.graph_api_key),
+                secrets=(s.graph_api_key,) if s.graph_api_key else (),
+                cache=self.cache,
+                cache_scale=s.cache_scale,
+                health=self.health,
+                transport=tr.get("thegraph"),
+            ),
+            has_key=bool(s.graph_api_key),
+            key_problem=graph_mod.key_problem(s.graph_api_key),
+            pnl_subgraph_id=s.graph_pnl_subgraph_id,
+            health=self.health,
+            ttl=graph_mod.TTL_SECONDS * s.cache_scale,
+        )
         self.store: Store | None = Store(s.db_path) if s.db_path else None
         self.scheduler: Any | None = None  # built after providers below (see server.lifespan)
         cg_rate = 5.0 if (s.coingecko_api_key or s.coingecko_plan == "pro") else 0.5
@@ -162,6 +187,7 @@ class Runtime:
         await self.pendle.http.aclose()
         await self.coinalyze.http.aclose()
         await self.polymarket.aclose()
+        await self.thegraph.aclose()
         await self.coingecko.http.aclose()
         await self.exchanges.aclose()
         if self.store is not None:

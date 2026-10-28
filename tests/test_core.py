@@ -131,6 +131,28 @@ async def test_http_cache_marks_second_call_cached_and_skips_network():
     assert seen["n"] == 3  # cache_scale=0 disables caching
 
 
+async def test_http_body_check_counts_one_error_scrubs_and_never_caches():
+    seen = {"n": 0}
+
+    def handler(req):
+        seen["n"] += 1
+        return httpx.Response(200, json={"err": "bad SeCrEt42 api_key=abc"} if seen["n"] <= 3 else {"v": 1})
+
+    def check(body):
+        return ("auth", f"body says {body['err']}") if "err" in body else None
+
+    http, health = make_http(handler, secrets=("SeCrEt42",))
+    for _ in range(3):
+        with pytest.raises(ProviderError) as ei:
+            await http.get_json("/x", ttl=10, check=check)
+        assert ei.value.reason == "auth" and "SeCrEt42" not in ei.value.detail and "abc" not in ei.value.detail
+    h = health.snapshot()["providers"]["test"]
+    assert (h["calls"], h["failures"], h["status"]) == (3, 3, "down")  # an error only, never a success as well
+    f = await http.get_json("/x", ttl=10, check=check)  # failures were not cached: the 4th call reaches the network
+    assert f.data == {"v": 1} and seen["n"] == 4
+    assert health.snapshot()["providers"]["test"]["status"] == "ok"
+
+
 def test_health_degraded_then_down_then_recovers():
     h = HealthRegistry()
     h.ok("p", 100)

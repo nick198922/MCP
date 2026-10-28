@@ -1,0 +1,3 @@
+- Крок 0 картки `post-listing-midage-decay-short`: ворота потужності не пройдено (n 513, MDE 8.2 п.п. > 6), статус `inconclusive`, форвард лишається.
+- Нова чиста аналітика `analytics/post_listing_midage.py`, тести й `scripts/verify_post_listing_midage.py`; звіт у `docs/verification/`.
+- Рев'ю критика: числа відтворено, виправлено прогноз приросту подій.

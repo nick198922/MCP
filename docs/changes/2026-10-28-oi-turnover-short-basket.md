@@ -1,0 +1,3 @@
+- Перевірено ідею «шорт альтів із високим OI/обігом» (`oi-turnover-leverage-short-basket`): `rejected` — IC нейтралізованого L +0.012 (CI містить 0), сирого +0.051 (протилежний знак), OOS +0.029.
+- Додано `analytics/oi_turnover.py` (чисті функції), `scripts/verify_oi_turnover_short.py` і 13 тестів.
+- Звіт у `docs/verification/`, рев'ю критика (approve) у `docs/reviews/`, рядок у `docs/knowledge/README.md`.

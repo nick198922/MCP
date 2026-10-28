@@ -496,6 +496,41 @@ async def test_max_pain_and_gex(server):
     assert gx["data"]["profile"]
 
 
+async def test_max_pain_and_gex_carry_pin_caveat(server, state):
+    import httpx
+
+    from conftest import NOW, FakeEx, make_transports
+    from tradedesk.config import Settings
+    from tradedesk.runtime import Runtime
+    from tradedesk.server import build_server
+    from tradedesk.tools.options import PIN_WARNING
+
+    assert "n = 1 393" in PIN_WARNING and "not as a settlement target" in PIN_WARNING
+    async with Client(server) as c:
+        desc = {t.name: t.description for t in (await c.list_tools()).tools}
+    assert PIN_WARNING in desc["deribit_max_pain"]
+    assert PIN_WARNING in desc["deribit_gamma_exposure"]
+
+    mp = await call(server, "deribit_max_pain", expiry="30OCT26")
+    assert mp["ok"] and PIN_WARNING in mp["warnings"]
+    gx = await call(server, "deribit_gamma_exposure", currency="BTC")
+    assert gx["ok"] and gx["data"]["top_positive_strikes"] and PIN_WARNING in gx["warnings"]
+    one = await call(server, "deribit_gamma_exposure", currency="BTC", expiry="30OCT26")
+    assert one["ok"] and PIN_WARNING in one["warnings"]
+
+    # provider failure: envelope still returned, no levels and so no caveat
+    tr = make_transports(state)
+    tr["deribit"] = httpx.MockTransport(lambda req: httpx.Response(503, text="down"))
+    rt2 = Runtime(Settings(http_retries=1, cache_scale=0.0), transports=tr, exchange_factory=FakeEx)
+    rt2.now = lambda: NOW
+    srv, _ = build_server(rt2)
+    for name, args in (("deribit_max_pain", {"expiry": "30OCT26"}), ("deribit_gamma_exposure", {"currency": "BTC"})):
+        env = await call(srv, name, **args)
+        assert env["ok"] is False and env["data"] is None
+        assert any(m["provider"] == "deribit" for m in env["missing"])
+        assert PIN_WARNING not in env["warnings"]
+
+
 async def test_expected_move_breakevens_bracket_forward(server):
     env = await call(server, "deribit_expected_move", currency="BTC")
     exps = env["data"]["expiries"]

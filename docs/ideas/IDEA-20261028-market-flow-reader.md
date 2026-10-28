@@ -26,6 +26,7 @@ H (крок 3): модель на ознаках потоків (див. «Да�
 
 ## Дані
 Безкоштовно і з історією:
+- **Прямо з бірж, перевірено Claude 28.10 (HTTP 200 на зразках):** архів Binance `data.binance.vision` — `futures/um/daily/metrics` (5-хв: `sum_open_interest`, `sum_open_interest_value`, лонг/шорт топ-трейдерів за рахунками й позиціями, лонг/шорт рахунків, `sum_taker_long_short_vol_ratio`; щонайменше з 2020-09), `futures/um/daily/bookDepth` (глибина стакану ±1…5 %, ≈ кожні 30 с; з 2023, у 2022-06 ще нема), `spot/daily/aggTrades` (з 2017) і USD-M `aggTrades` — CVD будь-якої роздільності; Bybit — `public.bybit.com/trading` (усі угоди деривативів, з 2020) і `/v5/market/open-interest` (годинний OI щонайменше з 2021-01, сторінками). Ліквідацій в архіві Binance нема (`liquidationSnapshot` → 404): історія ліквідацій — лише Coinalyze (денні роки, годинні недавно) і наш потік уперед.
 - **CVD споту й перпів:** свічки Binance (поле taker buy volume) — спот з 2017, USD-M з 2019, архів `data.binance.vision` (уже в кешах агентів для USD-M); Bybit v5 kline — без розбивки на тейкера, тож для Bybit — лише forward через колектор угод.
 - **OI, funding, ліквідації, лонг/шорт:** Coinalyze (ключ є): денні — роки, годинні — обмежене недавнє вікно; Binance `/futures/data/*` — 30 днів; Bybit `account-ratio` — 30 днів.
 - **Премія Coinbase:** свічки Coinbase BTC-USD (з 2015, 300 свічок на запит) мінус Binance BTC-USDT, мінус ковзна медіана 30 днів (USDT/USD).

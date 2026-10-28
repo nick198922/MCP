@@ -509,3 +509,123 @@ def test_s40_levels_comment_and_timeframe():
         assert "не доведена перевага" in s.comment and "Q-20261025-3" in s.comment
     assert ss.s40_all(b, "1d") == [] and ss.s40_all(b.slice(0, 40), "4h") == []
     assert "S40" in ss.DETECTORS and "S40" not in {s.setup for s in ss.scan(b, "4h")}  # not default
+
+
+# ---------------------------------------------------------------- S28 (valid order block, long only; rejected by the backtest)
+
+
+def _ob_bars(*, fractal: bool = True, e_open: float = 100.0, fvg_low: float = 101.5) -> Bars:
+    """An analytic order block. Bars 0..110 alternate a bullish (o 100, c 100.5) and a bearish (o 100.5, c 100) candle,
+    high/low 0.25 beyond the body: every true range is 1.0, so the Wilder ATR is exactly 1, no candle engulfs the one
+    before it (100.5 is not > 100.5) and no high is a strict fractal. Bar 109 (bearish) is lifted by 0.25: a fractal
+    high at 101 (true range still 1). Then: bar 111 bearish (o 100.5, c 100, h 100.75); bar 112 bullish, o ``e_open``,
+    c 101.9, h 102.15, l 99.75 (engulfs 111; body 1.9 >= ATR 1; true range 2.4, so ATR (13 + 2.4) / 14 = 1.1; BOS: the
+    close is above the fractal 101); bar 113 o 101.9, c 102.4, h 102.6, l ``fvg_low`` (101.5 > high of 111 = 100.75: a
+    bullish FVG with the middle at 112; true range 1.1)."""
+    o = [100.0 if k % 2 == 0 else 100.5 for k in range(111)]
+    c = [100.5 if k % 2 == 0 else 100.0 for k in range(111)]
+    h = [max(x, y) + 0.25 for x, y in zip(o, c, strict=True)]
+    lo = [min(x, y) - 0.25 for x, y in zip(o, c, strict=True)]
+    if fractal:
+        o[109], c[109], h[109], lo[109] = 100.75, 100.25, 101.0, 100.0
+    o += [100.5, e_open, 101.9]
+    c += [100.0, 101.9, 102.4]
+    h += [100.75, 102.15, 102.6]
+    lo += [99.75, 99.75, fvg_low]
+    t = 1_700_000_000_000 // H4 * H4 + np.arange(len(o)) * H4
+    return Bars(t.astype(np.int64), np.array(o), np.array(h), np.array(lo), np.array(c), H4)
+
+
+def test_s28_on_an_analytic_order_block():
+    b = _ob_bars()
+    assert atr(b, 14, segment_pos(b.t))[111] == 1.0  # the base is exact
+    sigs = ss.s28_all(b, "4h")
+    assert len(sigs) == 1
+    s = sigs[0]
+    # hand-computed: level = open of the bearish candle 111 = 100.5; ATR14 of the engulfing candle 112 = 1.1;
+    # stop 100.5 - 1.1 = 99.4; target 100.5 + 2 * 1.1 = 102.7; the flags complete at the close of bar 113 (the FVG)
+    assert (s.setup, s.side, s.timeframe, s.signal_ts) == ("S28", "long", "4h", int(b.t[113]))
+    assert s.entry == 100.5 and s.stop == pytest.approx(99.4, abs=1e-12) and s.target == pytest.approx(102.7, abs=1e-12)
+    assert s.indicators["atr14"] == pytest.approx(1.1, abs=1e-12) and s.rr == pytest.approx(2.0)
+    ind = s.indicators
+    assert (ind["ob_low"], ind["ob_high"], ind["ob_body_low"], ind["ob_body_high"]) == (99.75, 100.75, 100.0, 100.5)
+    assert ind["ob_ts"] == b.t[111] and ind["bos_ts"] == b.t[112] and ind["rest_until_ms"] == b.close_time(113) + 20 * H4
+    assert ss.s28(b, "4h") == sigs and ss.scan(b, "4h", ("S28",)) == sigs
+    assert s.comment.startswith("S28 (4h)") and "Лімітка заздалегідь на верху тіла OB 100.5" in s.comment
+    assert "стоп 99.4" in s.comment and "ціль 102.7" in s.comment and "на свічці поглинання" in s.comment
+    assert "Бектест відкинув" in s.comment and "−0.044R" in s.comment and "Доведеної переваги немає" in s.comment
+    # the FVG is not known before the close of bar 113: nothing on the bars up to 112
+    assert ss.s28_all(b.slice(0, 113), "4h") == [] and ss.s28(b.slice(0, 113), "4h") == []
+    # each flag is required: no fractal high (no BOS), a body of 0.94 < 1 ATR (no impulse), no gap over bar 111's high
+    assert ss.s28_all(_ob_bars(fractal=False), "4h") == []
+    assert ss.s28_all(_ob_bars(e_open=100.96), "4h") == []
+    assert ss.s28_all(_ob_bars(fvg_low=100.7), "4h") == []
+    # other timeframes, short history, and the default scan: no S28
+    assert ss.s28_all(b, "1d") == [] and ss.s28_all(b.slice(0, 101), "4h") == []
+    assert ss.scan(b, "4h") == ss.scan(b, "4h", ("S14", "S16", "S3")) and "S28" not in {x.setup for x in ss.scan(b, "4h")}
+
+
+def _s28_reference(b: Bars) -> list[tuple[int, float, float, float]]:
+    """(arm bar, level, stop, target) as the backtest's primary row B builds its events (long side): the valid OB
+    zones, ``ok[arm]`` (warm-up and ATR), first test (level untouched up to the arm), the close not inside the zone."""
+    from tradedesk.analytics.course_fvg_ob import bos_up, ob_zones, untouched
+
+    pos = segment_pos(b.t)
+    a = atr(b, 14, pos)
+    out = []
+    for z in ob_zones(b, pos, a, bos_up(b, pos)):
+        arm = z.arms.get("valid")
+        if arm is None or pos[arm] < 100 or not np.isfinite(a[arm]):
+            continue
+        level = z.levels["body"]
+        if not untouched(b, z.form, arm, level) or b.c[arm] < level:
+            continue
+        out.append((arm, level, level - z.atr, level + 2 * z.atr))
+    return sorted(out)
+
+
+@pytest.mark.parametrize("seed", [1, 5, 7])
+def test_s28_equals_the_backtest_pieces(seed):
+    b = _bars(1000, seed)
+    for bb in (b, _with_hole(b, 500, 20)):  # a hole restarts the segment
+        sigs = ss.s28_all(bb, "4h")
+        got = _rows(bb, sigs)
+        want = _s28_reference(bb)
+        assert len(got) == len(want) > 3
+        for g, w in zip(got, want, strict=True):
+            assert g[0] == w[0] and g[1:] == pytest.approx(w[1:], rel=1e-12)
+        assert {s.side for s in sigs} == {"long"} and all(s.rr == pytest.approx(2.0) for s in sigs)
+
+
+def test_s28_never_looks_ahead():
+    """The signal at bar i is the same when the bars after i are removed (the live scan on bars 0..i) or replaced by a
+    different future, and the live scan on every prefix finds exactly the full-history signals."""
+    b = _bars(700, 1)
+    full = ss.s28_all(b, "4h")
+    assert len(full) > 3
+    rng = np.random.default_rng(7)
+    for s in full:
+        t = int(np.searchsorted(b.t, s.signal_ts))
+        for cut in (t - 1, t):
+            upto = int(b.t[cut])
+            want = [x for x in full if x.signal_ts <= upto]
+            assert ss.s28_all(b.slice(0, cut + 1), "4h") == want, cut
+            assert [x for x in ss.s28_all(_other_future(b, cut, rng), "4h") if x.signal_ts <= upto] == want, cut
+    live = []
+    for i in range(100, len(b)):
+        got = ss.scan(b.slice(0, i + 1), "4h", ("S28",))
+        assert all(x.setup == "S28" and x.side == "long" and x.signal_ts == int(b.t[i]) for x in got)
+        live += got
+    assert live == [x for x in full if x.signal_ts >= int(b.t[100])] and live
+
+
+def test_s28_is_opt_in_only():
+    import inspect
+
+    assert inspect.signature(ss.scan).parameters["setups"].default == ("S14", "S16", "S3")
+    b = _bars(1000, 1)
+    assert ss.s28_all(b, "4h") and "S28" in ss.DETECTORS
+    assert "S28" not in {s.setup for s in ss.scan(b, "4h")}
+    assert ss.scan(b, "4h", ("S12", "S38", "S39", "S40")) == [
+        s for s in ss.scan(b, "4h", ("S12", "S28", "S38", "S39", "S40")) if s.setup != "S28"
+    ]

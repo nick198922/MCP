@@ -1,0 +1,3 @@
+- Сито, партія 4: п'ять нових специфікацій (`macd_signal_cross`, `adx_di_cross`, `holy_grail_pullback`, `camarilla_h3_l3_fade`, `monday_effect`), рев'ю критика (режим D) у `docs/reviews/2026-10-28-sieve-batch-4-specs.md`.
+- Прогнано чотири: `macd_signal_cross` і `adx_di_cross` — «замало угод», `camarilla_h3_l3_fade` і `monday_effect` — «ні». `holy_grail_pullback` — `не тестується` (drop критика).
+- Каталог має 21 рядок, 20 із `run_id`: крок 3 картки сита закрито.

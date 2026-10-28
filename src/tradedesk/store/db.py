@@ -449,6 +449,61 @@ class Store:
         cur = await self.conn.execute(sql + " ORDER BY ts, coin", args)
         return [dict(r) for r in await cur.fetchall()]
 
+    FLOW_SNAPSHOT_COLUMNS = (
+        "mid reach_bid reach_ask bid_usd_10bp ask_usd_10bp bid_usd_50bp ask_usd_50bp bid_usd_100bp ask_usd_100bp "
+        "oi_coins oi_usd funding_rate funding_hours funding_annualized long_share missing"
+    ).split()
+
+    @staticmethod
+    def _flow_gaps_sql(col: str) -> str:
+        """SQL: how many parts a flow_snapshot ``missing`` value names, not counting ``funding_interval`` (an interval the
+        venue does not list; 8 h is assumed and a retry would not find it either). 0 = a complete row."""
+        return (
+            f"(CASE WHEN {col} IS NULL THEN 0 ELSE length({col}) - length(replace({col}, ',', '')) + 1"
+            f" - (instr({col}, 'funding_interval') > 0) END)"
+        )
+
+    async def insert_flow_snapshot(self, ts: int, fetched_ts: int, rows: list[dict[str, Any]]) -> int:
+        """Rows of one hourly flow snapshot (each with ``base``, ``venue``, ``market``), one per (ts, base, venue, market).
+        A stored row is replaced only by one with fewer missing parts (see :meth:`_flow_gaps_sql`), whole, with this
+        ``fetched_ts``; a complete row is final and a repeat writes nothing. Returns the rows inserted or replaced."""
+        cols = self.FLOW_SNAPSHOT_COLUMNS
+        payload = [
+            (ts, r["base"], r["venue"], r["market"], *(r.get(c) for c in cols), fetched_ts)
+            for r in rows
+            if r.get("base") and r.get("venue") and r.get("market")
+        ]
+        if not payload:
+            return 0
+        before = self.conn.total_changes
+        marks = ",".join("?" * (len(cols) + 5))
+        sets = ", ".join(f"{c} = excluded.{c}" for c in (*cols, "fetched_ts"))
+        await self.conn.executemany(
+            f"INSERT INTO flow_snapshot (ts, base, venue, market, {', '.join(cols)}, fetched_ts) VALUES ({marks})"
+            f" ON CONFLICT(ts, base, venue, market) DO UPDATE SET {sets}"
+            f" WHERE {self._flow_gaps_sql('excluded.missing')} < {self._flow_gaps_sql('flow_snapshot.missing')}",
+            payload,
+        )
+        await self.conn.commit()
+        return self.conn.total_changes - before
+
+    async def flow_snapshot_keys(self, ts: int) -> set[tuple[str, str, str]]:
+        """(base, venue, market) with a complete row for the hour ``ts`` (no missing part but ``funding_interval``);
+        a partial row is not counted, so the collector fetches that key again and may replace it."""
+        cur = await self.conn.execute(
+            f"SELECT base, venue, market FROM flow_snapshot WHERE ts = ? AND {self._flow_gaps_sql('missing')} = 0", (ts,)
+        )
+        return {(r[0], r[1], r[2]) for r in await cur.fetchall()}
+
+    async def flow_snapshot_rows(self, since_ts: int = 0, base: str | None = None) -> list[dict[str, Any]]:
+        """Stored rows with ts >= ``since_ts`` (optionally one ``base``), oldest first."""
+        sql, args = "SELECT * FROM flow_snapshot WHERE ts >= ?", [since_ts]
+        if base is not None:
+            sql += " AND base = ?"
+            args.append(base)
+        cur = await self.conn.execute(sql + " ORDER BY ts, base, venue, market", args)
+        return [dict(r) for r in await cur.fetchall()]
+
     COINALYZE_HISTORY_COLUMNS = "open high low close ratio long_share short_share".split()
 
     async def insert_coinalyze_history(self, symbol: str, metric: str, rows: list[dict[str, Any]], fetched_ts: int) -> int:

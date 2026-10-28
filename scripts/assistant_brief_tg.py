@@ -8,7 +8,8 @@
 Read-only and offline: the text is built from the same snapshot file as the dashboard's «Бриф» tab
 (``assistant_snapshot`` collector job; path and field names from scripts/dashboard.py), never from the network. Every
 string from the snapshot is untrusted and HTML-escaped for Telegram. The message is short (owner 22.10: a long text in
-Telegram is hard to read): BTC and ETH with the 24 h change, DVOL with its 1-year percentile, the 1-3 most important
+Telegram is hard to read): BTC and ETH with the 24 h change, DVOL with its 1-year percentile, one «Режим циклу» line
+for BTC (section ``cycle``, the cycle_regime tool, labelled «контекст, не сигнал»), the 1-3 most important
 items of the day, one line with BTC's risk-neutral probabilities to the month expiry (inside ±1σ and in the «Бриф»
 tab's two tail ranges, labelled «ризик-нейтральна»; it replaces the ±1σ item; omitted without ``chain`` / ``em_month``),
 one line with the state of the paper recommendation (section ``paper_rec``: «актуальна / змінилась /
@@ -488,6 +489,18 @@ def _flows(snap: dict, now: float, short: bool = False) -> list[str]:
         return []
 
 
+def _cycle(snap: dict, now: float) -> list[str]:
+    """«Режим циклу» (section ``cycle``: cycle_regime for BTC), one line under the market lines: the tool's Ukrainian
+    one-liner labelled «контекст, не сигнал» (pre-registered states, not backtested yet). [] without data; never raises."""
+    try:
+        text = (db._data(snap, "cycle") or {}).get("line_ua")
+        if not isinstance(text, str) or not text.strip():
+            return []
+        return [_h(f"{db._clean(text, 300)} · контекст, не сигнал")]
+    except Exception:  # noqa: BLE001 - an odd section only drops this line
+        return []
+
+
 def build_brief(snap: dict | None, now: float, err: str | None = None, short: bool = False) -> str:
     """The brief as Telegram HTML. Pure (no I/O, time passed in); never raises. `short` (what is sent): a few lines
     without block titles — BTC/ETH, DVOL, the 1-3 most important items, the risk-neutral range line, the paper
@@ -512,7 +525,7 @@ def build_brief(snap: dict | None, now: float, err: str | None = None, short: bo
         if short:
             # the range and paper recommendation lines sit with the day's items (no blank before them)
             blocks = (
-                ("", _market_short),
+                ("", lambda s, n: _market_short(s, n) + _cycle(s, n)),
                 ("", _day_short),
                 ("", lambda s, n: _flows(s, n, short=True)),
                 ("", _my_options),
@@ -520,7 +533,7 @@ def build_brief(snap: dict | None, now: float, err: str | None = None, short: bo
             )
         else:
             blocks = (
-                ("Ринок", _market),
+                ("Ринок", lambda s, n: _market(s, n) + _cycle(s, n)),
                 ("Головне сьогодні", lambda s, n: _key(s, n) + _paper(s, n)),
                 ("Потоки BTC · описово, не сигнал", _flows),
                 ("Мої опціони Bybit", _my_options),

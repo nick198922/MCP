@@ -731,3 +731,35 @@ def test_brief_flows_block_absent_or_odd():
         assert "Не інвестиційна порада" in ab.build_brief(snap, asof + 300)
     snap["sections"]["flows"] = {"ok": True, "data": {"summary": {"24h": {"premium_adj_mean": "<b>"}}, "sentence_ua": "<script>"}}
     assert "<script>" not in ab.build_brief(snap, asof + 300)
+
+
+def _cycle_section(line: object) -> dict:
+    """A `cycle` section in cycle_regime's shape (the one-liner of the card's 28.10 sample)."""
+    return {"ok": True, "data": {"state": "accumulation", "line_ua": line}, "missing": [], "warnings": []}
+
+
+# cycle_regime's line_ua on the real Binance responses of 28.10 (tests/test_cycle_regime.py): the tail says what would
+# end the state, never which state comes next (a named next state reads like a forecast, critic 28.10)
+CYCLE_LINE = "Режим циклу: накопичення (базис −0.05 %, funding 6 % < 11 %, +4 % над SMA365); зміниться, якщо: ціна на 30-денному мінімумі"
+
+
+def test_brief_cycle_line_long_and_short():
+    snap, asof = _snap()
+    snap["sections"]["cycle"] = _cycle_section(CYCLE_LINE)
+    want = ab._h(CYCLE_LINE + " · контекст, не сигнал")
+    for short in (False, True):
+        lines = ab.build_brief(snap, asof + 300, short=short).split("\n")
+        i = lines.index(want)  # one line, right under the market lines
+        assert "DVOL" in lines[i - 1], short
+        assert "найближче" not in lines[i] and not any(w in lines[i] for w in ("ріст", "падіння", "дно", "перегрів")), short
+    assert len(ab.build_brief(snap, asof + 300, short=True)) < tg_send.TEXT_LIMIT
+
+
+def test_brief_cycle_line_absent_or_odd():
+    snap, asof = _snap()
+    assert "Режим циклу" not in ab.build_brief(snap, asof + 300)  # the 20.10 snapshot has no cycle section
+    for odd in ({"ok": False, "data": None}, _cycle_section(None), _cycle_section(["x"]), _cycle_section("  ")):
+        snap["sections"]["cycle"] = odd
+        assert ab._cycle(snap, asof) == [] and "Не інвестиційна порада" in ab.build_brief(snap, asof + 300)
+    snap["sections"]["cycle"] = _cycle_section("<script>Режим циклу</script>")
+    assert "<script>" not in ab.build_brief(snap, asof + 300, short=True)

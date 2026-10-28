@@ -244,6 +244,32 @@ def test_range_probabilities_match_the_analytics_reference():
     assert bands[3]["lo"] == 80000.0 and bands[3]["p"] == max(b["p"] for b in bands)  # the forward's band is the likeliest
 
 
+def test_brief_lead_actions_and_folded_blocks():
+    """docs/design/PANEL.md (owner, 28.10): «what now / what to do» first, an action line under the tiles, the rest
+    folded with a one-line summary, the caveats once at the end."""
+    snap, asof = _snap()
+    lead = db.brief_lead(snap)
+    assert "<span class='chip calm'>спокій</span>" in lead and "BTC 82 791 (+0.9 % за добу)." in lead
+    assert "<b>Що робити:</b> звичайні правила; стоп — за межами тижневого діапазону 81.1k – 84.4k." in lead
+    # a high-impact event within 48 h wins over calm
+    ev = json.loads(json.dumps(snap))
+    ev["sections"]["events"]["data"]["high_impact_within_48h"] = True
+    assert "<span class='chip risk'>подія</span>" in db.brief_lead(ev) and "Oct 2026 FOMC" in db.brief_lead(ev)
+    s = db.brief_summaries(snap)
+    assert s["conditions"] == "купівля: за 1, проти 0 · продаж: за 0, проти 1"
+    assert s["chart"] == "120 днів: +32 %, від 58.6k до 86.6k"
+    assert s["scenarios"] == "найімовірніше 80k – 85k — 22 % (ціна страховки, не прогноз)"
+    assert s["funding"] == "BTC +4…+11 % · ETH +3…+11 % річних" and s["events"].startswith("Oct 2026 FOMC 28.10 20:00")
+    assert db.key_summary(db.key_items(snap)) == "ризик: захист · подія: подія · спокій: ринок, діапазон, волатильність"
+    page = db.render_brief(snap, None, asof)
+    for act in ("опціони дешеві: купувати вигідніше", "стоп — за межами цього діапазону", "перекосу натовпу нема", "звичайний розмір"):
+        assert f"<span class='act'>{act}</span>" in page, act
+    assert page.count("<section class='wide fold'><details><summary>") == 7 and "<details open" not in page
+    assert page.index("class='lead'") < page.index("<summary><h2>Головне сьогодні") < page.index("</main>")
+    assert page.index("</main>") < page.index("<b>Застереження</b>") and page.count("перевірено 18.10") == 1
+    assert db.brief_summaries({"sections": {}}) == {} and "звичайні правила." in db.brief_lead({"sections": {}})
+
+
 def test_brief_missing_and_corrupt_snapshot(tmp_path, monkeypatch):
     snap, err = db.load_snapshot(tmp_path / "none.json")
     assert (snap, err) == (None, "missing")
@@ -1751,7 +1777,10 @@ def test_help_keys_used_by_the_pages_all_exist():
 def test_info_icon_is_escaped_static_text_and_unknown_key_is_empty():
     html_ = db._info("dvol")
     assert html_.startswith("<span class='info' tabindex='0' role='button'")
-    assert "DVOL" in html_ and "Для угоди:" in html_
+    # an ACT key: what it is, then «low → do», «high → do» (owner, 28.10) instead of the read / trade lines
+    assert "DVOL" in html_ and "<i>Низький (до 30-го перцентиля)</i> → купувати опціони дешевше" in html_ and "Для угоди:" not in html_
+    assert "Для угоди:" in db._info("iv")  # keys without ACT keep the long form
+    assert set(db.ACT) <= set(db.HELP) and all(all(x) for x in db.ACT.values())
     assert db._info("no-such-key") == ""
     tile = db._tile("K", "1", "s", help="iv", tone="good", badge="a<b")
     assert "class='tile t-good'" in tile and "a&lt;b" in tile and "class='info'" in tile

@@ -275,12 +275,22 @@ async def _collect_liquidations_bybit(rt: "Runtime") -> int:
 
 
 async def _collect_liquidations_okx(rt: "Runtime") -> int:
-    """Subscribe to OKX v5 ``liquidation-orders`` for one instType."""
-    from ..providers.liquidations import okx_liquidation_stream  # noqa: PLC0415
+    """Subscribe to OKX v5 ``liquidation-orders`` for one instType.
+
+    OKX sizes are contracts, so the instType's contract values are read first (``public/instruments``, cached 1 h);
+    without them the run fails instead of storing wrong sizes."""
+    from ..core.errors import ProviderError  # noqa: PLC0415
+    from ..providers.liquidations import okx_contract_specs, okx_liquidation_stream  # noqa: PLC0415
 
     s = rt.settings
+    inst_type = s.collect_liquidations_okx_inst_type.strip().upper()
+    raw = (await rt.exchanges.public_get("okx", "publicGetPublicInstruments", {"instType": inst_type}, ttl=3600)).data
+    data = raw.get("data") if isinstance(raw, dict) and str(raw.get("code")) == "0" else None
+    specs = okx_contract_specs(data if isinstance(data, list) else [])
+    if not specs:
+        raise ProviderError("ccxt:okx", "data_unavailable", f"no contract values for instType {inst_type}")
     return await _consume_liquidation_stream(
-        rt, okx_liquidation_stream(s.collect_liquidations_okx_inst_type, max_seconds=float(s.collect_liquidations_window_seconds))
+        rt, okx_liquidation_stream(specs, inst_type, max_seconds=float(s.collect_liquidations_window_seconds))
     )
 
 

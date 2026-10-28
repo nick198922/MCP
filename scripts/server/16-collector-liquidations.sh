@@ -8,8 +8,8 @@ set -euo pipefail
 ENV=/etc/tradedesk-mcp.env
 tmp="$(mktemp /etc/tradedesk-mcp.env.XXXXXX)"
 grep -v -E '^TRADEDESK_COLLECT_LIQUIDATIONS_(ENABLED|VENUES)=' "$ENV" >"$tmp" || true
-# Binance only: the Bybit (side) and OKX (contracts read as coins) liquidation parsers are buggy, see docs/BACKLOG.md.
-printf 'TRADEDESK_COLLECT_LIQUIDATIONS_ENABLED=1\nTRADEDESK_COLLECT_LIQUIDATIONS_VENUES=binance\n' >>"$tmp"
+# All three venues (Bybit side and OKX contract sizes fixed 2026-10-28).
+printf 'TRADEDESK_COLLECT_LIQUIDATIONS_ENABLED=1\nTRADEDESK_COLLECT_LIQUIDATIONS_VENUES=binance,bybit,okx\n' >>"$tmp"
 chown root:tradedesk "$tmp"
 chmod 640 "$tmp"
 mv "$tmp" "$ENV"

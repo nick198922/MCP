@@ -9,6 +9,8 @@
 - `global_market()` — total MC change_24h, BTC.D, ETH.D.
 - `market_regime` для BTC на 4h / 1d — одним словом (up/down/chop +
   strength).
+- `cycle_regime('BTC', history_days=0)` — один рядок «Режим циклу» (поле
+  `line_ua`) з позначкою «контекст, не сигнал».
 
 ## 2. Sentiment / funding
 - `sentiment_fear_greed(days=7)` — latest + zone + change_7d.

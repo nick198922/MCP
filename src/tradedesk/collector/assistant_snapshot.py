@@ -23,6 +23,8 @@ The ``flows`` section is `market_flow` for BTC (1h, 2 days, summaries only) for 
 ``flow_btc`` / ``flow_eth`` sections are `market_flow` (1h, 7 days, with the per-bar series) for the dashboard's
 «Потоки» tab.
 
+The ``cycle`` section is `cycle_regime` for BTC (today's state, no history) for the brief's «Режим циклу» line.
+
 The ``chains`` section holds the option chain of every expiry of the ATM term structure (``{"by_expiry": {token:
 chain}}``, the same shape as ``chain``) for the options builder's expiry list; the strike window widens with time to expiry.
 """
@@ -352,6 +354,8 @@ async def build_snapshot(rt: "Runtime") -> dict[str, Any]:
             # the dashboard's «Потоки» tab: a week of hourly bars per coin (charts), summaries and the quadrant
             "flow_btc": ("market_flow", {"base": "BTC", "timeframe": "1h", "days": FLOW_TAB_DAYS, "include_series": True}),
             "flow_eth": ("market_flow", {"base": "ETH", "timeframe": "1h", "days": FLOW_TAB_DAYS, "include_series": True}),
+            # the brief's «Режим циклу» line (IDEA-20261028-btc-cycle-regime-gauge): today's state only, no history
+            "cycle": ("cycle_regime", {"base": "BTC", "history_days": 0}),
         }
         names = list(plan)
         results = await asyncio.gather(*(_call(c, *plan[n]) for n in names))

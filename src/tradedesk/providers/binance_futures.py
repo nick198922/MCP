@@ -4,7 +4,7 @@ These are the `/futures/data/*` endpoints — a separate surface from the ccxt-h
 Account long/short ratio and open-interest history are not exposed uniformly through ccxt, so we hit the
 underlying REST directly through our own `Http` so retries / rate-limit / cache / health all apply.
 Also the all-symbol `/fapi/v1` book ticker, premium index and exchangeInfo (collector/tradfi_spread.py), and
-`/fapi/v1/klines` with the taker-buy split (tools/flow.py: perp CVD).
+`/fapi/v1/klines` with the taker-buy split (tools/flow.py: perp CVD) and `/fapi/v1/premiumIndexKlines` (tools/cycle.py).
 """
 
 from __future__ import annotations
@@ -78,6 +78,35 @@ class BinanceFutures:
             self.name,
             "fapi/v1/klines",
             lambda s, e, n: self.klines(symbol, interval, s, e, n),
+            symbol,
+            interval,
+            start_ms,
+            end_ms,
+            KLINES_PAGE,
+            max_pages,
+        )
+
+    async def premium_index_klines(self, symbol: str, interval: str, start_ms: int, end_ms: int, limit: int = KLINES_PAGE) -> Fetched:
+        """One page of `/fapi/v1/premiumIndexKlines` with open time in [start_ms, end_ms] (both inclusive), at most 1500
+        rows. Kline-shaped rows whose open/high/low/close are the premium index (perp vs index, a decimal that can be
+        negative); the volume fields are zeros."""
+        check_interval(self.name, interval)
+        params = {
+            "symbol": symbol,
+            "interval": interval,
+            "startTime": int(start_ms),
+            "endTime": int(end_ms),
+            "limit": min(int(limit), KLINES_PAGE),
+        }
+        return await self._get("/fapi/v1/premiumIndexKlines", params, ttl=300, tool="fapi/v1/premiumIndexKlines")
+
+    async def premium_index_klines_range(self, symbol: str, interval: str, start_ms: int, end_ms: int, *, max_pages: int = 4) -> Fetched:
+        """Premium-index klines with open time in [start_ms, end_ms): ``{"rows": [...], "complete": bool}``."""
+        check_interval(self.name, interval)
+        return await walk_klines(
+            self.name,
+            "fapi/v1/premiumIndexKlines",
+            lambda s, e, n: self.premium_index_klines(symbol, interval, s, e, n),
             symbol,
             interval,
             start_ms,

@@ -21,6 +21,7 @@ EXPECTED_TOOLS = {
     "perps_oi_history",
     "perps_open_interest",
     "market_flow",
+    "cycle_regime",
     "hyperliquid_overview",
     "hyperliquid_candles",
     "hyperliquid_book",

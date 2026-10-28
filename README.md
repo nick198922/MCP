@@ -43,7 +43,7 @@ claude mcp add tradedesk -- uv run --directory /ABSOLUTE/PATH/TO/tradedesk-mcp t
 
 - `token_deep_analysis(project)` — глибокий 10-секційний інвест-аналіз крипто-проекту / токена (російською): продукт, залучений капітал, партнерства, токеноміка, розлоки, revenue, value accrual, roadmap, нарратив, тех. аналіз → bull/base/bear + оцінки 1–10 на 3 горизонтах. Промт автоматично підказує моделі, які інструменти tradedesk-mcp використати для частини «графік + позиціювання». Файл: `src/tradedesk/prompts/token_deep_analysis.md` — редагуйте, перезапуск сервера не потрібен (перечитується на кожен виклик).
 
-## Інструменти (107)
+## Інструменти (108)
 
 | Група | Інструмент | Що дає |
 |---|---|---|
@@ -59,6 +59,7 @@ claude mcp add tradedesk -- uv run --directory /ABSOLUTE/PATH/TO/tradedesk-mcp t
 | | `perps_open_interest` | OI в USD по майданчиках і частки |
 | | `perps_basis_compare` | крос-венюз perp premium (bps) + Deribit dated-futures basis, cash-and-carry snapshot |
 | | `market_flow` | «читання ринку» з потоків (описово, не сигнал), 1h/4h за ≤ 14 днів: спот-CVD і перп-CVD у USD (свічки Binance, поле taker buy), OI у монетах і USD зі зміною (Binance + Bybit), funding річний, ліквідації лонг/шорт (Coinalyze, потрібен ключ), частка лонгів рахунків, премія Coinbase (сира і мінус медіана 30 днів); квадрант «ціна × OI × перп-CVD» за 4/24 год і коротке речення українською. Поодинці ці метрики напрямок не передбачили (картка `IDEA-20261028-market-flow-reader`) |
+| | `cycle_regime` | денний «режим циклу» монети (BTC): дно / накопичення / перегрів / ріст / падіння за порогами, зафіксованими в картці до даних (просадка від 365-денного максимуму, funding7 річний, базис7 перп/спот, RSI14, ціна до SMA365 і нахил SMA365 за 30 днів; Binance, денні закриття); усі складові, найближчий інший стан і що має змінитись, рядок українською, історія станів до 365 днів. Контекст, не сигнал; ще не перевірено на історії (картка `IDEA-20261028-btc-cycle-regime-gauge`) |
 | Hyperliquid | `hyperliquid_overview` | скринінг усього Hyperliquid за OI, funding, обсягом |
 | | `hyperliquid_candles` | OHLCV + реалізована вола |
 | | `hyperliquid_book` | L2-стакан (20 рівнів) + slippage під розмір |

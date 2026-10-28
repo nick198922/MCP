@@ -5,9 +5,11 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import ccxt
+import httpx
 import pytest
 
 from conftest import NOW, FakeEx, make_transports
+from test_cycle_regime import FX, serve_daily
 from tradedesk.analytics.assistant import (
     NEAR_MIN_DAYS,
     PAPER_MAX_AGE_HOURS,
@@ -25,7 +27,7 @@ from tradedesk.config import Settings
 from tradedesk.runtime import Runtime
 
 
-def _rt(state, tmp_path: Path, exchange_factory=FakeEx, **kw) -> Runtime:
+def _rt(state, tmp_path: Path, exchange_factory=FakeEx, transports: dict | None = None, **kw) -> Runtime:
     settings = Settings(
         http_retries=1,
         cache_scale=0.0,
@@ -33,7 +35,7 @@ def _rt(state, tmp_path: Path, exchange_factory=FakeEx, **kw) -> Runtime:
         assistant_snapshot_path=str(tmp_path / "out" / "snapshot.json"),
         **kw,
     )
-    rt = Runtime(settings, transports=make_transports(state), exchange_factory=exchange_factory)
+    rt = Runtime(settings, transports=transports or make_transports(state), exchange_factory=exchange_factory)
     rt.now = lambda: NOW
     return rt
 
@@ -168,10 +170,22 @@ def _write_my_options(tmp_path: Path, payload: object) -> None:
     p.write_text(json.dumps(payload), encoding="utf-8")
 
 
+def _with_daily_binance(state) -> dict:
+    """The shared fake transports plus the real BTCUSDT daily klines of 28.10 (spot, perp, premium index) moved 18 days
+    earlier so the last closed day is 09.10 (NOW is 10.10): cycle_regime's section gets real-shaped data. Every other
+    request goes to the shared fakes (spot 1h klines stay unmocked, as market_flow's tests expect here)."""
+    tr = make_transports(state)
+    shift = FX["end_ms"] - int(NOW.timestamp() * 1000) // 86_400_000 * 86_400_000
+    for name in ("binance_spot", "binance_futures"):
+        inner = tr[name].handler
+        tr[name] = httpx.MockTransport(lambda req, inner=inner: serve_daily(req, shift) or inner(req))
+    return tr
+
+
 async def test_snapshot_happy_path(state, tmp_path):
     _write_paper_state(tmp_path, _paper_state(asof_utc="2026-10-10T09:00:00Z"))
     _write_my_options(tmp_path, _my_options_state())
-    rt = _rt(state, tmp_path)
+    rt = _rt(state, tmp_path, transports=_with_daily_binance(state))
     try:
         ok = await collect_assistant_snapshot(rt)
     finally:
@@ -182,12 +196,17 @@ async def test_snapshot_happy_path(state, tmp_path):
     assert snap["expiries"] == {"week": None, "month": "27NOV26", "near": "30OCT26"}
     for name in (
         "tickers", "ohlc", "fng", "dvol", "vrp", "term", "skew",
-        "funding_btc", "funding_eth", "events", "em_month", "chain", "chain_near",
+        "funding_btc", "funding_eth", "events", "em_month", "chain", "chain_near", "cycle",
     ):  # fmt: skip
         assert snap["sections"][name]["ok"], name
         assert snap["sections"][name]["asof_utc"] == "2026-10-10T13:07:00Z"
     assert snap["missing"] == ["em_week"]
     assert snap["sections"]["em_week"]["missing"][0]["reason"] == "data_unavailable"
+    # cycle_regime for the brief: today's state, no history; funding from the shared FakeEx (0.01 %/8 h, about 11 %/yr)
+    cycle = snap["sections"]["cycle"]
+    assert cycle["missing"] == [] and cycle["data"]["date"] == "2026-10-09" and cycle["data"]["history"] == []
+    assert cycle["data"]["state"] == "growth"  # 28.10's prices, but funding ≥ 8 %/yr: not accumulation
+    assert cycle["data"]["line_ua"].startswith("Режим циклу: ріст (") and "найближче" not in cycle["data"]["line_ua"]
     assert snap["stale"] == []
     # market_flow for the brief: summaries only (no series); the fake venues here give it funding, the rest is missing
     flows = snap["sections"]["flows"]

@@ -1,0 +1,2 @@
+- Скаут: дві нові картки (корейська премія Upbit/Binance, CPI-діапазони Polymarket проти nowcast).
+- Критик (режим A): `kimchi-premium-alt-short` відхилено (Upbit прибрано з проєкту 19.10, ознака дублює pump-fade); `pm-cpi-brackets-vs-nowcast-forward` — статус `forward` (історії ≈ 30 подій замало, лише форвардний журнал).

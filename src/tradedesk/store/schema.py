@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 31
+SCHEMA_VERSION = 32
 
 # Each migration is a list of SQL statements executed in a single transaction.
 # `PRAGMA user_version` is bumped by Store.init() inside the same explicit transaction,
@@ -813,6 +813,33 @@ MIGRATIONS: dict[int, list[str]] = {
             vol24h REAL,                           -- dayNtlVlm, 24 h notional volume, USD
             fetched_ts INTEGER NOT NULL,           -- unix seconds when both answers were in (inside the hour `ts`)
             PRIMARY KEY (ts, coin)
+        ) WITHOUT ROWID
+        """,
+    ],
+    32: [
+        # Hourly flow snapshot of BTC / ETH on Binance, Bybit, OKX (spot + perp) and Hyperliquid (perp) (collector/
+        # flow_snapshot.py, analytics/flow_snapshot.py; IDEA-20261028-market-flow-reader, step 2). Forward-only history of
+        # book depth, OI, funding and long/short; 14 rows an hour (336 a day, ~123k a year). Not pruned. Read-only data.
+        """
+        CREATE TABLE IF NOT EXISTS flow_snapshot (
+            ts INTEGER NOT NULL,                   -- unix seconds, start of the UTC hour (the snapshot key)
+            base TEXT NOT NULL,                    -- 'BTC' | 'ETH'
+            venue TEXT NOT NULL,                   -- 'binance' | 'bybit' | 'okx' | 'hyperliquid'
+            market TEXT NOT NULL,                  -- 'spot' (BASE/USDT) | 'perp' (USDT linear perp; Hyperliquid USDC)
+            mid REAL,                              -- book mid, USD(T)
+            reach_bid REAL, reach_ask REAL,        -- how far the fetched levels went from the mid, decimal (0.01 = 1 %)
+            bid_usd_10bp REAL, ask_usd_10bp REAL,  -- quote notional resting within 0.1 % of the mid, USD;
+            bid_usd_50bp REAL, ask_usd_50bp REAL,  -- 0.5 %; NULL = the fetched book does not reach the band on that side
+            bid_usd_100bp REAL, ask_usd_100bp REAL,  -- 1 % (or, Hyperliquid, its aggregated levels are too coarse)
+            oi_coins REAL,                         -- open interest, base coins (perp only)
+            oi_usd REAL,                           -- oi_coins x mid, USD
+            funding_rate REAL,                     -- current (predicted) rate per interval, decimal fraction
+            funding_hours REAL,                    -- funding interval, hours
+            funding_annualized REAL,               -- simple: funding_rate x 8760 / funding_hours, decimal
+            long_share REAL,                       -- fraction of accounts long (latest 5-min value; not notional)
+            missing TEXT,                          -- comma list of the parts that failed (book, oi, funding, ...); NULL = none
+            fetched_ts INTEGER NOT NULL,           -- unix seconds of the tick that wrote the row (inside the hour `ts`)
+            PRIMARY KEY (ts, base, venue, market)
         ) WITHOUT ROWID
         """,
     ],

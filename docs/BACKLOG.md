@@ -41,7 +41,9 @@
 ## Фаза 1 — дані та деривативи (залишок)
 - [x] ~~Потоки ринку: `market_flow` + 3 рядки «Потоки» в брифі~~ (28.10, картка [market-flow-reader](ideas/IDEA-20261028-market-flow-reader.md), крок 1а–1б; [зміни](changes/2026-10-28-market-flow.md)).
 - [x] ~~Потоки ринку: вкладка панелі «Потоки» (BTC / ETH)~~ (28.10, крок 1в; [зміни](changes/2026-10-28-flow-dashboard-tab.md)).
-- [ ] Потоки ринку, решта: щогодинний колектор `flow_snapshot` (крок 2), живий виклик ліквідацій Coinalyze на MCP-сервісі (у клоні агентів ключа немає).
+- [x] ~~Потоки ринку: щогодинний колектор `flow_snapshot` (крок 2)~~ (28.10, увімкнено в `deploy/features.env`; потік ліквідацій WebSocket — лише Binance; [зміни](changes/2026-10-28-flow-collector.md)).
+- [ ] Потоки ринку, решта: живий виклик ліквідацій Coinalyze на MCP-сервісі (у клоні агентів ключа немає).
+- [ ] Ліквідації Bybit і OKX у WebSocket-колекторі (`providers/liquidations.py`), потім додати їх до `TRADEDESK_COLLECT_LIQUIDATIONS_VENUES` у `deploy/features.env` (і до дефолту в `config.py`, `deploy/env.example`, скрипта `scripts/server/16-collector-liquidations.sh`, які зараз — лише `binance`): (1) OKX `sz` у свопах — контракти, а парсер рахує `notional_usd = sz × bkPx` (живцем 28.10: DOS-USDT-SWAP qty 1 → $0.33); потрібен `ctVal` інструменту (`/api/v5/public/instruments` через `Exchanges.public_get`) і множення; (2) Bybit `allLiquidation`: за документацією v5 `S=Buy` означає ліквідований **лонг**, а парсер вважає навпаки, як у Binance (перевірити на живих подіях проти Coinalyze); за 4 хв 28.10 подій BTC/ETH/SOL не було. Також вирішити, чи потрібне зберігання для `liquidations` (зараз не чиститься; Binance — усі символи, ~25 тис. рядків/добу в спокійний день).
 - [ ] VRP точніше: ATM-вола зі смайла Deribit (через `atm_term`-історію колектора) замість DVOL; хедж частіше за день (1h); маржа Deribit і funding перпа-хеджу; розрахунок о 08:00 UTC.
 - [ ] Перевірити ефект рівня DVOL як заздалегідь зафіксовану гіпотезу на нових даних (з 2026-10 наперед, або на інших активах/індексах волатильності).
 

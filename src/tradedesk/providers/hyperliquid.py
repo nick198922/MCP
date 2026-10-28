@@ -252,8 +252,13 @@ class Hyperliquid:
             req["endTime"] = end_ms
         return await self._info({"type": "candleSnapshot", "req": req}, ttl=15)
 
-    async def l2_book(self, coin: str) -> Fetched:
-        return await self._info({"type": "l2Book", "coin": await self.resolve_coin(coin)}, ttl=1)
+    async def l2_book(self, coin: str, n_sig_figs: int | None = None) -> Fetched:
+        """20 levels a side. ``n_sig_figs`` (2-5) aggregates the levels to that many significant figures of the price
+        (bids rounded down, asks up; checked live 2026-10-28), so the 20 levels reach further from the mid."""
+        payload: dict[str, Any] = {"type": "l2Book", "coin": await self.resolve_coin(coin)}
+        if n_sig_figs is not None:
+            payload["nSigFigs"] = int(n_sig_figs)
+        return await self._info(payload, ttl=1)
 
     async def recent_trades(self, coin: str) -> Fetched:
         return await self._info({"type": "recentTrades", "coin": await self.resolve_coin(coin)}, ttl=2)

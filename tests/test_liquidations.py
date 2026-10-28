@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 
 import pytest
 from mcp import Client
 
 from conftest import NOW, FakeEx, make_transports
+from tradedesk.collector.scheduler import build_default_scheduler
 from tradedesk.config import Settings
 from tradedesk.providers.liquidations import (
     parse_binance_force_order,
@@ -124,6 +126,26 @@ def test_parse_rejects_bad_events():
     assert parse_binance_force_order(bad) is None
     # unknown side
     assert parse_binance_force_order(_event(S="SIDE")) is None
+
+
+# ---------- collector jobs ----------
+
+
+def test_enabling_liquidations_without_venues_starts_binance_only(state, tmp_path, monkeypatch):
+    # The Bybit (side) and OKX (contracts read as coins) parsers are known to be wrong (docs/BACKLOG.md): a bare
+    # switch-on must not start them.
+    monkeypatch.delenv("TRADEDESK_COLLECT_LIQUIDATIONS_VENUES", raising=False)
+    monkeypatch.setenv("TRADEDESK_COLLECT_LIQUIDATIONS_ENABLED", "1")
+    s = Settings.from_env()
+    assert Settings().collect_liquidations_venues == "binance" and s.collect_liquidations_venues == "binance"
+    rt = Runtime(
+        dataclasses.replace(s, collector_enabled=True, db_path=str(tmp_path / "liq.sqlite")),
+        transports=make_transports(state),
+        exchange_factory=FakeEx,
+    )
+    sched = build_default_scheduler(rt)
+    assert sched is not None
+    assert sorted(j.name for j in sched.jobs if j.name.startswith("liquidations")) == ["liquidations:binance"]
 
 
 # ---------- MCP summary tool ----------

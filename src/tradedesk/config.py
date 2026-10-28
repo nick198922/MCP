@@ -50,7 +50,9 @@ class Settings:
     http_bearer_tokens: str = ""
     # Liquidations collector (WebSocket)
     collect_liquidations_enabled: bool = False
-    collect_liquidations_venues: str = "binance,bybit,okx"  # comma-separated subset
+    # Comma-separated subset of binance,bybit,okx. Binance only by default: the Bybit (side) and OKX (contracts read as
+    # coins) parsers are known to be wrong (docs/BACKLOG.md); add them only after those are fixed.
+    collect_liquidations_venues: str = "binance"
     collect_liquidations_window_seconds: int = 60
     collect_liquidations_restart_seconds: int = 5
     collect_liquidations_bybit_symbols: str = "BTCUSDT,ETHUSDT,SOLUSDT"
@@ -129,6 +131,11 @@ class Settings:
     # history (~180 listed perps, ~4.3k rows a day). Off by default.
     collect_hl_oi_cap_enabled: bool = False
     collect_hl_oi_cap_seconds: int = 600
+    # Hourly flow snapshot (collector/flow_snapshot.py; IDEA-20261028-market-flow-reader, step 2): book depth +-0.1/0.5/1 %,
+    # OI, funding and long/short of BTC/ETH on Binance/Bybit/OKX (spot + perp) and Hyperliquid, ~40 requests an hour, 14
+    # rows. Ticks every `_seconds`, fetches only the keys the current hour lacks. No retention (forward-only history).
+    collect_flow_snapshot_enabled: bool = False
+    collect_flow_snapshot_seconds: int = 600
     # Alerts
     alerts_enabled: bool = False
     alerts_rules_path: str = ""
@@ -164,7 +171,7 @@ class Settings:
             retention_basis_days=int(_float("TRADEDESK_RETENTION_BASIS_DAYS", 365)),
             retention_seconds=int(_float("TRADEDESK_RETENTION_SECONDS", 86_400)),
             collect_liquidations_enabled=os.environ.get("TRADEDESK_COLLECT_LIQUIDATIONS_ENABLED", "").lower() in ("1", "true", "yes"),
-            collect_liquidations_venues=os.environ.get("TRADEDESK_COLLECT_LIQUIDATIONS_VENUES", "binance,bybit,okx"),
+            collect_liquidations_venues=os.environ.get("TRADEDESK_COLLECT_LIQUIDATIONS_VENUES", "binance"),
             collect_liquidations_window_seconds=int(_float("TRADEDESK_COLLECT_LIQUIDATIONS_WINDOW_SECONDS", 60)),
             collect_liquidations_restart_seconds=int(_float("TRADEDESK_COLLECT_LIQUIDATIONS_RESTART_SECONDS", 5)),
             collect_liquidations_bybit_symbols=os.environ.get("TRADEDESK_COLLECT_LIQUIDATIONS_BYBIT_SYMBOLS", "BTCUSDT,ETHUSDT,SOLUSDT"),
@@ -214,6 +221,8 @@ class Settings:
             retention_tradfi_spread_days=int(_float("TRADEDESK_RETENTION_TRADFI_SPREAD_DAYS", 365)),
             collect_hl_oi_cap_enabled=os.environ.get("TRADEDESK_COLLECT_HL_OI_CAP_ENABLED", "").lower() in ("1", "true", "yes"),
             collect_hl_oi_cap_seconds=int(_float("TRADEDESK_COLLECT_HL_OI_CAP_SECONDS", 600)),
+            collect_flow_snapshot_enabled=os.environ.get("TRADEDESK_COLLECT_FLOW_SNAPSHOT_ENABLED", "").lower() in ("1", "true", "yes"),
+            collect_flow_snapshot_seconds=int(_float("TRADEDESK_COLLECT_FLOW_SNAPSHOT_SECONDS", 600)),
             http_bearer_tokens=os.environ.get("TRADEDESK_HTTP_BEARER_TOKENS") or os.environ.get("TRADEDESK_HTTP_BEARER_TOKEN", ""),
             alerts_enabled=os.environ.get("TRADEDESK_ALERTS_ENABLED", "").lower() in ("1", "true", "yes"),
             alerts_rules_path=os.environ.get("TRADEDESK_ALERTS_RULES_PATH", ""),

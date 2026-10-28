@@ -1,0 +1,2 @@
+- Скаут: дві картки — `cme-expiry-fix-window-reversal` і `liq-level-map-magnet`.
+- Критик (тріаж A): обидві `rejected` (витрати з'їдають ефект; потужність нижча за очікуваний ефект; дубль `hl-whale-liquidation-magnet`). Рев'ю: `docs/reviews/2026-10-28-idea-triage-cme-fix-liqmap.md`.

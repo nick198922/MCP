@@ -40,6 +40,13 @@ Rules taken from the verification runs (status of each setup: docs/knowledge/set
   0.5 ATR under the lowest low since the sweep, target 2R. The step-1 backtest: IS +0.056R [-0.041; +0.153], OOS
   +0.170R [-0.057; +0.402], against the placebo both CI contain 0: no proven edge; on the demo by the owner's answer
   to Q-20261025-3.
+- S28 (a valid order block, long only; 4h): ``course_fvg_ob.ob_zones`` with the flag set "valid" (a bearish candle
+  engulfed by a bullish one whose body is >= 1 ATR, a bullish FVG right after, a close-BOS up within 20 bars), as the
+  primary row B of step 4 (``scripts/verify_course_step4_fvg_ob.py``): the signal is the bar at whose close all three
+  flags are known (``arm``), if the top of the bearish candle's body was not touched since the engulfing candle; the
+  entry is a limit resting at that level for ``S28_WAIT`` bars (indicator ``rest_until_ms``), stop 1 ATR (of the
+  engulfing candle) under it, target 2R. **Rejected by the backtest** (``docs/verification/2026-10-17-course-step4-fvg-ob.md``);
+  a detector for the scanner only (opt-in name "S28"), not traded by the demo.
 """
 
 from __future__ import annotations
@@ -51,7 +58,7 @@ from typing import Any
 import numpy as np
 
 from .course_basics import range_events
-from .course_fvg_ob import Zone, fvg_zones
+from .course_fvg_ob import BOS_WINDOW, Zone, bos_up, fvg_zones, ob_zones, untouched
 from .course_s14_ema import DAY_MS, Bars, Params, align_daily, atr, ema, find_signals, indicators, segment_pos
 from .short_setups import breakout_retest, failed_sweep
 
@@ -114,10 +121,24 @@ S40_BACKTEST_UA = (
     "На демо — перевірка наживо (рішення власника 25.10, Q-20261025-3), не доведена перевага."
 )
 
+# S28, as registered in step 4 of IDEA-20261016-course-setups-crypto (primary row B of scripts/verify_course_step4_fvg_ob.py)
+S28_TIMEFRAMES = ("4h",)  # the registered primary row; 1d was a side row (also rejected)
+S28_WAIT = 20  # bars after the arm bar in which the resting limit at the level may fill (the backtest's WAIT_BARS)
+S28_STOP_ATR = 1.0  # stop under the level, in ATR14 of the engulfing candle
+S28_TARGET_R = 2.0  # target above the level, in units of (level - stop)
+S28_WARMUP = 100  # bars of the segment before the arm bar (the backtest's warm-up)
+S28_BACKTEST_UA = (
+    "Бектест відкинув цей сетап (docs/verification/2026-10-17-course-step4-fvg-ob.md): ліміт від верху тіла валідного OB "
+    "на першому тесті, 4h, топ-30 Binance, 2020 … 2025-03: лонги E[R] net −0.044R [−0.125; +0.034], проти випадкового "
+    "рівня на тій самій відстані +0.005R; після 2025-03 лонги −0.105R; обидві сторони разом −0.052R [−0.113; +0.009], "
+    "на BTC+ETH −0.172R. «Валідні» OB не кращі за решту OB (−0.030R). Ліміт у бектесті виконувався за дотиком "
+    "(з вимогою проколу на 0.05 ATR — гірше на ≈ 0.05R), утримання 20 свічок. Доведеної переваги немає."
+)
+
 
 @dataclass(frozen=True)
 class LiveSignal:
-    setup: str  # 'S14' | 'S16' | 'S3' | 'S12' | 'S38' | 'S39' | 'S40'
+    setup: str  # 'S14' | 'S16' | 'S3' | 'S12' | 'S28' | 'S38' | 'S39' | 'S40'
     side: str  # 'long' | 'short'
     timeframe: str
     signal_ts: int  # open time of the signal bar, ms UTC
@@ -552,7 +573,84 @@ def s40(b: Bars, timeframe: str) -> list[LiveSignal]:
     return s40_all(b, timeframe, lo=len(b) - 1)
 
 
-DETECTORS = {"S14": s14, "S16": range_setups, "S3": range_setups, "S12": s12_rest, "S38": s38, "S39": s39, "S40": s40}
+def s28_all(b: Bars, timeframe: str, lo: int = 0) -> list[LiveSignal]:
+    """S28 longs decided on bars lo .. n-1 (the full-history form of ``s28``): every bullish order block whose flag set
+    "valid" (impulse, FVG after, close-BOS after) completes on bar j = ``arm``, with the level (top of the bearish
+    candle's body) untouched on the bars after the engulfing candle up to j and j past the warm-up; the entry is a
+    limit resting at the level until ``rest_until_ms`` (the close of j + S28_WAIT bars), stop 1 ATR of the engulfing
+    candle under it, target 2R. Causal: the signal on bar j uses bars <= j only (``ob_zones`` arms a flag on the bar
+    that decides it; ``bos_up`` and the ATR are causal)."""
+    out: list[LiveSignal] = []
+    n = len(b)
+    if timeframe not in S28_TIMEFRAMES or n < S28_WARMUP + 2:
+        return out
+    pos = segment_pos(b.t)
+    a_arr = atr(b, 14, pos)
+    bos = bos_up(b, pos)
+    # the latest flag of a zone with engulfing candle e is known by e + BOS_WINDOW - 1, so earlier zones cannot arm in lo..
+    for z in ob_zones(b, pos, a_arr, bos, lo=max(1, lo - BOS_WINDOW)):
+        j = z.arms.get("valid")
+        if j is None or j < max(lo, 0) or j >= n or pos[j] < S28_WARMUP or not np.isfinite(a_arr[j]):
+            continue
+        level = z.levels["body"]
+        if not untouched(b, z.form, j, level) or float(b.c[j]) < level:
+            continue  # not the first test any more, or the price is already inside the zone
+        stop = level - S28_STOP_ATR * z.atr
+        target = level + S28_TARGET_R * (level - stop)
+        i, e = z.meta["i"], z.form
+        k_bos = z.arms["bos"]
+        until = b.close_time(j) + S28_WAIT * b.bar_ms
+        body = float(b.c[e] - b.o[e])
+        when = "на свічці поглинання" if k_bos == e else f"через {k_bos - e} св. після поглинання"
+        comment = (
+            f"S28 ({timeframe}): валідний ордер-блок — ведмежа свічка (тіло {_px(float(b.c[i]))}–{_px(level)}) поглинута "
+            f"бичачою з тілом {_px(body)} (≥ ATR), після неї бичачий FVG і BOS (закриття {_px(float(b.c[k_bos]))} вище "
+            f"фрактального хаю {when}); рівень {_px(level)} ще не тестувався. "
+            f"Лімітка заздалегідь на верху тіла OB {_px(level)}, живе {S28_WAIT} свічок "
+            f"({S28_WAIT * b.bar_ms // 3_600_000} год); стоп {_px(stop)} (рівень − {S28_STOP_ATR:g} ATR, ATR14 {_px(z.atr)}), "
+            f"ціль {_px(target)} ({S28_TARGET_R:g}R). {S28_BACKTEST_UA}"
+        )
+        out.append(
+            LiveSignal(
+                "S28",
+                "long",
+                timeframe,
+                int(b.t[j]),
+                level,
+                stop,
+                target,
+                comment,
+                {
+                    "ob_low": float(b.low[i]),
+                    "ob_high": float(b.h[i]),
+                    "ob_body_low": float(b.c[i]),
+                    "ob_body_high": level,
+                    "atr14": z.atr,
+                    "ob_ts": float(b.t[i]),
+                    "bos_ts": float(b.t[k_bos]),
+                    "rest_until_ms": float(until),
+                },
+            )
+        )
+    out.sort(key=lambda s: s.signal_ts)
+    return out
+
+
+def s28(b: Bars, timeframe: str) -> list[LiveSignal]:
+    """S28 on the last closed bar (module docstring)."""
+    return s28_all(b, timeframe, lo=len(b) - 1)
+
+
+DETECTORS = {
+    "S14": s14,
+    "S16": range_setups,
+    "S3": range_setups,
+    "S12": s12_rest,
+    "S28": s28,
+    "S38": s38,
+    "S39": s39,
+    "S40": s40,
+}
 
 
 def scan(b: Bars, timeframe: str, setups: Sequence[str] = ("S14", "S16", "S3")) -> list[LiveSignal]:

@@ -1,0 +1,2 @@
+- Режим циклу BTC, крок 3: зареєстрована перевірка станів на історії Binance 2019-09…2026-09 (`analytics/cycle_regime_eval.py`, `scripts/verify_cycle_regime.py`, тести). Вердикт ◯ inconclusive: знаки правильні, але Холм-p ≥ 0.92, MDE 12–17 п.п.
+- Звіт `docs/verification/2026-10-28-btc-cycle-regime.md`, рев'ю критика, нотатка в базі знань; рішення про користь — за журналом уперед.

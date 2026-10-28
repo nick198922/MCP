@@ -1,0 +1,3 @@
+- Сито, партія 9: чотири нові специфікації (`connors_rsi_composite`, `kst_signal_cross`, `ao_saucer`, `engulfing_bar`) із тестами `tests/test_sieve_batch9.py`; усі прогнані, у реєстрі 51 рядок.
+- Усі чотири — «замало угод»: жодна не пройшла Holm і OOS; плюс `ao_saucer`, `kst_signal_cross`, `engulfing_bar` майже весь з лонгів (бета).
+- `pi_cycle_top` відхилено критиком D (≈1 подія в історії), у каталозі `не тестується`.

@@ -58,6 +58,13 @@ GEX_NOTE = (
     "Heuristic: assumes dealers are long calls / short puts. Real positioning is unknown, so treat the sign and "
     "flip level as a model output, not a fact."
 )
+# docs/verification/2026-10-25-deribit-expiry-pin-mirror-control.md
+PIN_WARNING = (
+    "Pinning of settlement to these levels is not confirmed on our data (Deribit BTC daily expiries 2021-2026, "
+    "n = 1 393): a systematic shift of settlement toward the top-volume strike of ≥ ~0.2 % of spot is ruled out at "
+    "95 %; weaker shifts and local sticking to a strike were not tested. Treat these levels as a description of "
+    "positioning, not as a settlement target."
+)
 
 
 async def _chain(rt: Runtime, b: Builder, currency: str) -> list[OptionRow] | None:
@@ -207,7 +214,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
         annotations=READ_ONLY,
         description=(
             "Max-pain level for one Deribit expiry (settlement price minimising total option-holder payout, USD), distance from the "
-            "forward, put/call ratios, and the five strikes with the largest open interest. Max pain is a heuristic, not a forecast."
+            "forward, put/call ratios, and the five strikes with the largest open interest. Max pain is a heuristic, not a forecast. "
+            + PIN_WARNING
         ),
     )
     async def deribit_max_pain(expiry: EXPIRY, currency: CUR = "BTC") -> dict[str, Any]:
@@ -232,6 +240,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
         top = sorted(oi_by_strike.items(), key=lambda kv: kv[1], reverse=True)[:5]
         curve = [c for c in mp["curve"] if abs(c["settle"] / F - 1) <= 0.25]
         pc = put_call_ratios(rs)
+        b.warn(PIN_WARNING)
         return b.build(
             {
                 "currency": currency,
@@ -249,7 +258,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
         annotations=READ_ONLY,
         description=(
             "Dealer gamma exposure (GEX) model for Deribit BTC/ETH options: net GEX in USD per 1 % move, largest positive/negative "
-            "strikes, and the estimated spot level where net GEX flips sign. " + GEX_NOTE
+            "strikes, and the estimated spot level where net GEX flips sign. "
+            + GEX_NOTE
+            + " Key levels (flip level, top strikes): "
+            + PIN_WARNING
         ),
     )
     async def deribit_gamma_exposure(
@@ -285,6 +297,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "profile": [{"spot_shift_pct": r((s - 1) * 100, 0), "net_gex_usd": r(g, 0)} for s, g in prof if round((s - 1) * 100) % 5 == 0],
             "notes": GEX_NOTE,
         }
+        if data["flip_level"] is not None or ranked:
+            b.warn(PIN_WARNING)
         return b.build(data)
 
     @server.tool(

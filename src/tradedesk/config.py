@@ -140,6 +140,11 @@ class Settings:
     # last week are filled. Ticks every `_seconds`; a tick with nothing due makes no request. Off by default.
     collect_cycle_regime_enabled: bool = False
     collect_cycle_regime_seconds: int = 300
+    # CoinGecko trending list (collector/coingecko_trending.py; IDEA-20261028-coingecko-trending-attention-fade-forward,
+    # step 0): one snapshot per UTC hour of the free /search/trending coins (1 request). Ticks every `_seconds`, fetches
+    # only while the current hour has no snapshot. No retention: forward-only history (~15 rows an hour). Off by default.
+    collect_coingecko_trending_enabled: bool = False
+    collect_coingecko_trending_seconds: int = 600
     # Alerts
     alerts_enabled: bool = False
     alerts_rules_path: str = ""
@@ -229,6 +234,9 @@ class Settings:
             collect_flow_snapshot_seconds=int(_float("TRADEDESK_COLLECT_FLOW_SNAPSHOT_SECONDS", 600)),
             collect_cycle_regime_enabled=os.environ.get("TRADEDESK_COLLECT_CYCLE_REGIME_ENABLED", "").lower() in ("1", "true", "yes"),
             collect_cycle_regime_seconds=int(_float("TRADEDESK_COLLECT_CYCLE_REGIME_SECONDS", 300)),
+            collect_coingecko_trending_enabled=os.environ.get("TRADEDESK_COLLECT_COINGECKO_TRENDING_ENABLED", "").lower()
+            in ("1", "true", "yes"),
+            collect_coingecko_trending_seconds=int(_float("TRADEDESK_COLLECT_COINGECKO_TRENDING_SECONDS", 600)),
             http_bearer_tokens=os.environ.get("TRADEDESK_HTTP_BEARER_TOKENS") or os.environ.get("TRADEDESK_HTTP_BEARER_TOKEN", ""),
             alerts_enabled=os.environ.get("TRADEDESK_ALERTS_ENABLED", "").lower() in ("1", "true", "yes"),
             alerts_rules_path=os.environ.get("TRADEDESK_ALERTS_RULES_PATH", ""),

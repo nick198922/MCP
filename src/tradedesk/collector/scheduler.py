@@ -654,6 +654,12 @@ def build_default_scheduler(rt: "Runtime") -> Scheduler | None:
         from .cycle_regime_log import collect_cycle_regime_log  # noqa: PLC0415
 
         jobs.append(PeriodicJob(name="cycle_regime_log", period_seconds=s.collect_cycle_regime_seconds, fn=collect_cycle_regime_log))
+    if s.collect_coingecko_trending_enabled:
+        from .coingecko_trending import collect_coingecko_trending  # noqa: PLC0415
+
+        jobs.append(
+            PeriodicJob(name="coingecko_trending", period_seconds=s.collect_coingecko_trending_seconds, fn=collect_coingecko_trending)
+        )
     if s.alerts_enabled:
         # JSON file is optional in Phase 3.1 — DB-backed rules work on their own.
         jobs.append(PeriodicJob(name="alerts", period_seconds=s.alerts_seconds, fn=_evaluate_alerts))

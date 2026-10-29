@@ -449,6 +449,38 @@ class Store:
         cur = await self.conn.execute(sql + " ORDER BY ts, coin", args)
         return [dict(r) for r in await cur.fetchall()]
 
+    COINGECKO_TRENDING_COLUMNS = (
+        "coin_id coin_num symbol name market_cap_rank score price_usd price_btc change_24h market_cap_usd volume_usd"
+    ).split()
+
+    async def insert_coingecko_trending(self, ts: int, fetched_ts: int, rows: list[dict[str, Any]]) -> int:
+        """One hourly CoinGecko trending snapshot. Idempotent per (ts, rank): the first snapshot of an hour is kept and a
+        repeat for the same ``ts`` writes nothing (returns the rows actually inserted)."""
+        cols = self.COINGECKO_TRENDING_COLUMNS
+        payload = [(ts, r["rank"], *(r.get(c) for c in cols), fetched_ts) for r in rows if r.get("rank") and r.get("coin_id")]
+        if not payload:
+            return 0
+        before = self.conn.total_changes
+        marks = ",".join("?" * (len(cols) + 3))
+        await self.conn.executemany(
+            f"INSERT OR IGNORE INTO coingecko_trending (ts, rank, {', '.join(cols)}, fetched_ts) VALUES ({marks})", payload
+        )
+        await self.conn.commit()
+        return self.conn.total_changes - before
+
+    async def coingecko_trending_has_hour(self, ts: int) -> bool:
+        cur = await self.conn.execute("SELECT 1 FROM coingecko_trending WHERE ts = ? LIMIT 1", (ts,))
+        return await cur.fetchone() is not None
+
+    async def coingecko_trending_rows(self, since_ts: int = 0, coin_id: str | None = None) -> list[dict[str, Any]]:
+        """Stored rows with ts >= ``since_ts`` (optionally one ``coin_id``), oldest first, by rank."""
+        sql, args = "SELECT * FROM coingecko_trending WHERE ts >= ?", [since_ts]
+        if coin_id is not None:
+            sql += " AND coin_id = ?"
+            args.append(coin_id)
+        cur = await self.conn.execute(sql + " ORDER BY ts, rank", args)
+        return [dict(r) for r in await cur.fetchall()]
+
     FLOW_SNAPSHOT_COLUMNS = (
         "mid reach_bid reach_ask bid_usd_10bp ask_usd_10bp bid_usd_50bp ask_usd_50bp bid_usd_100bp ask_usd_100bp "
         "oi_coins oi_usd funding_rate funding_hours funding_annualized long_share missing"

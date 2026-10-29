@@ -1,0 +1,184 @@
+{
+  "_source": "HAND-BUILT 2026-10-29, NOT a live capture: shaped after the documented response of GET https://api.coingecko.com/api/v3/search/trending (docs.coingecko.com/reference/trending-search). The agents' clone could not take a live sample; the owner/coordinator takes one on the server before enabling the job and replaces this file. Coin ids are real CoinGecko ids, every number is illustrative. The free list has 15 coins; trimmed to 6 here.",
+  "coins": [
+    {
+      "item": {
+        "id": "hyperliquid",
+        "coin_id": 50882,
+        "name": "Hyperliquid",
+        "symbol": "HYPE",
+        "market_cap_rank": 14,
+        "thumb": "https://coin-images.coingecko.com/coins/images/50882/thumb/hyperliquid.jpg",
+        "small": "https://coin-images.coingecko.com/coins/images/50882/small/hyperliquid.jpg",
+        "large": "https://coin-images.coingecko.com/coins/images/50882/large/hyperliquid.jpg",
+        "slug": "hyperliquid",
+        "price_btc": 0.000460724,
+        "score": 0,
+        "data": {
+          "price": 38.12,
+          "price_btc": "0.000460724",
+          "price_change_percentage_24h": {"btc": 3.91, "eth": 4.4, "usd": 5.27},
+          "market_cap": "$12,734,601,288",
+          "market_cap_btc": "153879.2",
+          "total_volume": "$412,905,113",
+          "total_volume_btc": "4989.3",
+          "sparkline": "https://www.coingecko.com/coins/50882/sparkline.svg",
+          "content": null
+        }
+      }
+    },
+    {
+      "item": {
+        "id": "pudgy-penguins",
+        "coin_id": 52622,
+        "name": "Pudgy Penguins",
+        "symbol": "PENGU",
+        "market_cap_rank": 95,
+        "thumb": "https://coin-images.coingecko.com/coins/images/52622/thumb/PUDGY_PENGUINS_PENGU_PFP.png",
+        "small": "https://coin-images.coingecko.com/coins/images/52622/small/PUDGY_PENGUINS_PENGU_PFP.png",
+        "large": "https://coin-images.coingecko.com/coins/images/52622/large/PUDGY_PENGUINS_PENGU_PFP.png",
+        "slug": "pudgy-penguins",
+        "price_btc": 1.8123e-07,
+        "score": 1,
+        "data": {
+          "price": 0.014996,
+          "price_btc": "0.00000018123",
+          "price_change_percentage_24h": {"btc": -9.02, "eth": -8.61, "usd": -7.84},
+          "market_cap": "$942,817,004",
+          "market_cap_btc": "11392.6",
+          "total_volume": "$188,402,551",
+          "total_volume_btc": "2276.6",
+          "sparkline": "https://www.coingecko.com/coins/52622/sparkline.svg",
+          "content": null
+        }
+      }
+    },
+    {
+      "item": {
+        "id": "bitcoin",
+        "coin_id": 1,
+        "name": "Bitcoin",
+        "symbol": "BTC",
+        "market_cap_rank": 1,
+        "thumb": "https://coin-images.coingecko.com/coins/images/1/thumb/bitcoin.png",
+        "small": "https://coin-images.coingecko.com/coins/images/1/small/bitcoin.png",
+        "large": "https://coin-images.coingecko.com/coins/images/1/large/bitcoin.png",
+        "slug": "bitcoin",
+        "price_btc": 1.0,
+        "score": 2,
+        "data": {
+          "price": 82750.4,
+          "price_btc": "1.0",
+          "price_change_percentage_24h": {"btc": 0.0, "eth": 0.47, "usd": 1.21},
+          "market_cap": "$1,647,201,559,310",
+          "market_cap_btc": "19905688.0",
+          "total_volume": "$41,377,860,215",
+          "total_volume_btc": "500028.4",
+          "sparkline": "https://www.coingecko.com/coins/1/sparkline.svg",
+          "content": {"title": "What is Bitcoin?", "description": "Bitcoin is the first decentralized cryptocurrency."}
+        }
+      }
+    },
+    {
+      "item": {
+        "id": "zora",
+        "coin_id": 54693,
+        "name": "Zora",
+        "symbol": "ZORA",
+        "market_cap_rank": 312,
+        "thumb": "https://coin-images.coingecko.com/coins/images/54693/thumb/zora.jpg",
+        "small": "https://coin-images.coingecko.com/coins/images/54693/small/zora.jpg",
+        "large": "https://coin-images.coingecko.com/coins/images/54693/large/zora.jpg",
+        "slug": "zora",
+        "price_btc": 1.0412e-06,
+        "score": 3,
+        "data": {
+          "price": 0.08616,
+          "price_btc": "0.0000010412",
+          "price_change_percentage_24h": {"btc": 21.6, "eth": 22.1, "usd": 23.05},
+          "market_cap": "$286,110,957",
+          "market_cap_btc": "3457.6",
+          "total_volume": "$97,553,212",
+          "total_volume_btc": "1178.9",
+          "sparkline": "https://www.coingecko.com/coins/54693/sparkline.svg",
+          "content": null
+        }
+      }
+    },
+    {
+      "item": {
+        "id": "freshly-listed-meme",
+        "coin_id": 61207,
+        "name": "Freshly Listed Meme",
+        "symbol": "FLM",
+        "market_cap_rank": null,
+        "thumb": "missing_thumb.png",
+        "small": "missing_small.png",
+        "large": "missing_large.png",
+        "slug": "freshly-listed-meme",
+        "price_btc": 3.1e-11,
+        "score": 4,
+        "data": {
+          "price": 2.566e-06,
+          "price_btc": "0.000000000031",
+          "price_change_percentage_24h": {"usd": 412.8},
+          "market_cap": "$0",
+          "market_cap_btc": "0.0",
+          "total_volume": "$5,904,118",
+          "total_volume_btc": "71.35",
+          "sparkline": "https://www.coingecko.com/coins/61207/sparkline.svg",
+          "content": null
+        }
+      }
+    },
+    {
+      "item": {
+        "id": "ethena",
+        "coin_id": 36530,
+        "name": "Ethena",
+        "symbol": "ENA",
+        "market_cap_rank": 41,
+        "thumb": "https://coin-images.coingecko.com/coins/images/36530/thumb/ethena.png",
+        "small": "https://coin-images.coingecko.com/coins/images/36530/small/ethena.png",
+        "large": "https://coin-images.coingecko.com/coins/images/36530/large/ethena.png",
+        "slug": "ethena",
+        "price_btc": 5.437e-06,
+        "score": 5,
+        "data": {
+          "price": 0.4499,
+          "price_btc": "0.000005437",
+          "price_change_percentage_24h": {"btc": -2.6, "eth": -2.2, "usd": -1.41},
+          "market_cap": "$3,079,425,611",
+          "market_cap_btc": "37213.9",
+          "total_volume": "$301,766,240",
+          "total_volume_btc": "3646.8",
+          "sparkline": "https://www.coingecko.com/coins/36530/sparkline.svg",
+          "content": null
+        }
+      }
+    }
+  ],
+  "nfts": [
+    {
+      "id": "pudgy-penguins",
+      "name": "Pudgy Penguins",
+      "symbol": "PPG",
+      "thumb": "https://coin-images.coingecko.com/nft_contracts/images/38/standard/pudgy.jpg",
+      "nft_contract_id": 38,
+      "native_currency_symbol": "eth",
+      "floor_price_in_native_currency": 9.71,
+      "floor_price_24h_percentage_change": 2.4,
+      "data": {"floor_price": "9.71 ETH", "floor_price_in_usd_24h_percentage_change": "2.4", "h24_volume": "112.3 ETH"}
+    }
+  ],
+  "categories": [
+    {
+      "id": 384,
+      "name": "Meme",
+      "market_cap_1h_change": 0.62,
+      "slug": "meme-token",
+      "coins_count": 712,
+      "data": {"market_cap": 61042118733.4, "market_cap_btc": 737660.1, "total_volume": 7905114202.6, "market_cap_change_percentage_24h": {"usd": 3.1}}
+    }
+  ]
+}

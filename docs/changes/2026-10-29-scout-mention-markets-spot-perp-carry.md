@@ -1,0 +1,2 @@
+- Дві нові картки ідей: `hl-spot-perp-carry` (accepted, умови критика) і `pm-mention-markets-series-prior` (forward).
+- Тріаж критика: `docs/reviews/2026-10-29-scout-cards-mention-markets-spot-perp-carry.md`; сетап S49 у `docs/knowledge/setups.md`.

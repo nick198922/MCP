@@ -226,6 +226,7 @@
   - CME планував перейти на торгівлю 24/7 із 29.05.2026 ([Forklog](https://forklog.com/en/cme-announces-launch-date-for-24-7-cryptocurrency-trading/), [The Block](https://theblock.co/post/390491/cme-group-launch-24-7-crypto-futures-options-trading-may-29); запуск не підтверджено) — тоді гепів більше не буде, і сигнал мав би лише історичну цікавість;
   - «частка закритих гепів» з блогів (77–95 %) без методики й без плацебо ([Phemex](https://phemex.com/academy/cme-futures-gap)) — не доказ; «рано чи пізно» для ціни, що ходить сотні днів, майже тривіальне.
   - Якщо захочеться все ж перевірити: вихідний розворот (Пт 22:00 → Нд 23:00 UTC проти наступних 24 год) на всіх перпах, але це споріднено з відхиленим `daily-residual-reversal-perps` (витрати з'їдають ефект).
+    - Спробували 29.10 (`weekend-idio-reversal-alt-perps`, β-нейтральний рух альта Сб 00:00 → Нд 22:00 UTC проти Пн 01:00 → Вт 01:00): ◯ `inconclusive` на кроці 0 — потужності забракло (MDE_Holm3 рангової IC 0.029 > ворота 0.025; 255 вихідних, медіана 186 монет), доходи не рахувались (`docs/verification/2026-10-29-weekend-idio-reversal-alt-perps.md`).
 
 ## Як користуватись зараз
 

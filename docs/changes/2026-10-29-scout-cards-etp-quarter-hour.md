@@ -1,0 +1,2 @@
+- Скаут: дві нові картки — `alt-etp-launch-sell-the-news` (шорт альта напередодні запуску ETF, `forward`) і `quarter-hour-execution-bursts` (`rejected`).
+- Критик (режим A): рев'ю `docs/reviews/2026-10-29-scout-cards-etp-quarter-hour-triage.md`; у `docs/knowledge/setups.md` додано сетап S48 зі статусом ◯.

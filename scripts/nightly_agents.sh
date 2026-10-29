@@ -366,6 +366,7 @@ ALLOWED=(
   "Bash(git -C /home/tradedesk/tradedesk-agents grep:*)"
   "Bash(git -c core.pager=cat --git-dir=/home/tradedesk/tradedesk-agents/.git status:*)"
   "Bash(git -c core.pager=cat --git-dir=/home/tradedesk/tradedesk-agents/.git ls-files:*)"
+  "Bash(git -c core.pager=cat --git-dir=/home/tradedesk/tradedesk-agents/.git log:*)"
   "Bash(/usr/bin/python3 -I /home/tradedesk/tradedesk-agents/scripts/dashboard.py:*)"
 )
 # The claude.ai DOUBLETOP connector (the owner's account; access is temporary): read-only data tools for parity checks

@@ -1,0 +1,2 @@
+- Квант: перевірено `residual-momentum-short-leg` (залишковий моментум альтів RM28, шорт нижнього квінтиля з BTC-хеджем): `rejected`.
+- Додано `analytics/residual_momentum.py`, `scripts/verify_residual_momentum_short_leg.py`, тести `tests/test_residual_momentum.py`, звіт у `docs/verification/` і рев'ю критика.

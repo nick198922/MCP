@@ -22,8 +22,13 @@ Components (decimals, 0.01 = 1 %; RSI in points 0-100):
 * rsi14 = Wilder's RSI of the daily closes (seeded at the first close given);
 * basis7 = mean over the last 7 days of perp close / spot close - 1 (at least 5 of the 7 days);
 * funding7 = mean rate of the settlements in the 7 days to the close, simple-annualised (rate x 8760 / interval hours,
-  interval = median spacing); the Binance base rate 0.01 %/8 h is 0.1095;
+  interval = median spacing); the Binance base rate 0.01 %/8 h is 0.1095. When the spacing inside the window varies
+  (the venue changed the interval mid-window, or a settlement is missing) it is the sum of the window's rates x 365 / 7
+  instead, with a warning (a missing settlement then counts as zero);
 * premium7 = mean of the daily premium-index closes (perp vs index), reported only: no rule uses it.
+
+The 365-, 395- and 30-close windows are positional; a window whose closes do not span consecutive calendar days (the
+series misses days) gives None for its components, with a warning, instead of silently stretching.
 
 `transitions` ranks the other states by how many components must change, then by the summed size of the moves in
 rough typical units (`SCALE`, a presentation choice, not part of the pre-registered rules). It is a greedy estimate:
@@ -41,6 +46,7 @@ from .market_flow import funding_interval_hours
 from .markup import rsi as wilder_rsi
 
 DAY_MS = 86_400_000
+HOUR_MS = 3_600_000
 SMA_DAYS = 365
 HIGH_DAYS = 365
 SLOPE_DAYS = 30
@@ -100,6 +106,11 @@ def _mean(xs: Sequence[float]) -> float:
     return math.fsum(xs) / len(xs)
 
 
+def _consecutive(opens: Sequence[int], i: int, n: int) -> bool:
+    """True when the n bars ending at index i open on n consecutive days (opens are sorted and unique)."""
+    return opens[i] - opens[i - n + 1] == (n - 1) * DAY_MS
+
+
 def _components(
     opens: Sequence[int],
     closes: Sequence[float],
@@ -107,8 +118,10 @@ def _components(
     perp: Mapping[int, float],
     funding: Sequence[tuple[int, float]],
     premium: Mapping[int, float],
+    warns: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Components of the day whose bar opens at opens[i] (closes at opens[i] + 1 day), from data up to that close."""
+    """Components of the day whose bar opens at opens[i] (closes at opens[i] + 1 day), from data up to that close.
+    Notes on calendar gaps and on a funding window with varying spacing are appended to `warns` when given."""
     c = closes[: i + 1]
     t_last = opens[i]
     day_end = t_last + DAY_MS
@@ -133,22 +146,40 @@ def _components(
     )
     out.update({"close": price, "perp_close": perp.get(t_last), "basis_days": 0, "funding_settlements": 0, "premium_days": 0})
     out["premium_negative_days"] = 0
+    gaps: list[str] = []  # windows long enough by count whose closes are not consecutive calendar days
     if len(c) >= SMA_DAYS:
-        sma = _mean(c[-SMA_DAYS:])
-        out["sma365"] = sma
-        out["price_to_sma"] = price / sma - 1.0
+        if _consecutive(opens, i, SMA_DAYS):
+            sma = _mean(c[-SMA_DAYS:])
+            out["sma365"] = sma
+            out["price_to_sma"] = price / sma - 1.0
+        else:
+            gaps.append(f"sma365 / price_to_sma (last {SMA_DAYS} closes)")
     if len(c) >= SMA_DAYS + SLOPE_DAYS:
-        prev = _mean(c[-SMA_DAYS - SLOPE_DAYS : -SLOPE_DAYS])
-        out["sma365_30d_ago"] = prev
-        out["sma_slope_30d"] = out["sma365"] / prev - 1.0
+        if out["sma365"] is not None and _consecutive(opens, i, SMA_DAYS + SLOPE_DAYS):
+            prev = _mean(c[-SMA_DAYS - SLOPE_DAYS : -SLOPE_DAYS])
+            out["sma365_30d_ago"] = prev
+            out["sma_slope_30d"] = out["sma365"] / prev - 1.0
+        else:
+            gaps.append(f"sma_slope_30d (last {SMA_DAYS + SLOPE_DAYS} closes)")
     if len(c) >= HIGH_DAYS:
-        hi = max(c[-HIGH_DAYS:])
-        out["high_365d"] = hi
-        out["drawdown_365d"] = price / hi - 1.0
+        if _consecutive(opens, i, HIGH_DAYS):
+            hi = max(c[-HIGH_DAYS:])
+            out["high_365d"] = hi
+            out["drawdown_365d"] = price / hi - 1.0
+        else:
+            gaps.append(f"high_365d / drawdown_365d (last {HIGH_DAYS} closes)")
     if len(c) >= LOW_DAYS:
-        lo = min(c[-LOW_DAYS:-1])
-        out["low_30d_prior"] = lo
-        out["dist_30d_low"] = price / lo - 1.0
+        if _consecutive(opens, i, LOW_DAYS):
+            lo = min(c[-LOW_DAYS:-1])
+            out["low_30d_prior"] = lo
+            out["dist_30d_low"] = price / lo - 1.0
+        else:
+            gaps.append(f"low_30d_prior / dist_30d_low (last {LOW_DAYS} closes)")
+    if gaps and warns is not None:
+        warns.append(
+            f"Daily spot series misses days in the windows ending {_date(t_last)}: {'; '.join(gaps)} are null, because "
+            "their window of N closes spans more than N calendar days."
+        )
     out["rsi14"] = wilder_rsi(list(c), RSI_DAYS)
 
     days = [day_end - k * DAY_MS for k in range(AVG_DAYS, 0, -1)]  # bar opens of the last 7 days
@@ -171,7 +202,19 @@ def _components(
     hrs = funding_interval_hours(win)
     if hrs is not None and len(win) >= 0.5 * AVG_DAYS * 24 / hrs:
         out["funding_interval_hours"] = hrs
-        out["funding7"] = _mean([r for _, r in win]) * 8760.0 / hrs
+        spacing = sorted({round((b - a) / HOUR_MS, 2) for (a, _), (b, _) in zip(win, win[1:], strict=False) if b > a})
+        if len(spacing) > 1:
+            # mean x 8760 / median interval is wrong when the interval changes inside the window: the sum of what was
+            # actually paid over the 7 days, scaled to a year, is right then (but counts a missing settlement as zero)
+            out["funding7"] = math.fsum(r for _, r in win) * 365.0 / AVG_DAYS
+            if warns is not None:
+                warns.append(
+                    f"Funding settlement spacing varies in the 7 days to {_date(day_end)} 00:00 UTC "
+                    f"({', '.join(f'{h:g} h' for h in spacing)}): the venue changed the interval or a settlement is "
+                    "missing; funding7 = sum of the window's rates x 365 / 7 (a missing settlement counts as zero)."
+                )
+        else:
+            out["funding7"] = _mean([r for _, r in win]) * 8760.0 / hrs
     return out
 
 
@@ -393,18 +436,20 @@ def cycle_regime(
     (`transitions`, `closest`), a Ukrainian one-liner and the state of each of the last `history_days` closed days
     (oldest first). Inputs: daily closes keyed by bar open (ms) of spot, perp and the premium index; funding
     settlements (ts_ms, rate per interval). `state` is None when the day's spot bar is missing or a component that
-    decides it has no data (`undecided_by`)."""
+    decides it has no data (`undecided_by`). `warnings` holds the last day's notes on calendar gaps in the spot series
+    and on a funding window with varying settlement spacing."""
     day_end = int(now.timestamp() * 1000) // DAY_MS * DAY_MS
     opens = sorted(spot)
     closes = [spot[t] for t in opens]
     idx = {t: i for i, t in enumerate(opens)}
     fpts = sorted(funding)
+    warns: list[str] = []
 
-    def at(end: int) -> dict[str, Any] | None:
+    def at(end: int, notes: list[str] | None = None) -> dict[str, Any] | None:
         i = idx.get(end - DAY_MS)
-        return None if i is None else _components(opens, closes, i, perp, fpts, premium)
+        return None if i is None else _components(opens, closes, i, perp, fpts, premium, notes)
 
-    comps = at(day_end)
+    comps = at(day_end, warns)
     state = classify(comps)
     trans = transitions(comps, state)
     closest = trans[0] if trans else None
@@ -437,4 +482,5 @@ def cycle_regime(
         "transitions": trans,
         "line_ua": line_ua(comps, state, closest),
         "history": history,
+        "warnings": warns,
     }

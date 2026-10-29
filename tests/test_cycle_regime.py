@@ -179,6 +179,43 @@ def test_missing_last_bar_or_short_history_gives_no_state():
     assert "price_to_sma" in out["undecided_by"] and out["history"] == []
 
 
+def test_funding_window_with_mixed_intervals_sums_the_rates_and_warns():
+    # 8 h settlements for the first 4 days of the window, then 4 h (the venue halved the interval): the same
+    # 0.00125 %/h throughout, i.e. 0.1095 a year. Mean x 8760 / median interval (4 h) would give 0.1533.
+    eight = [(END - 7 * DAY + k * 8 * H, 0.0001) for k in range(-6, 13)]  # a few before the window too
+    four = [(END - 3 * DAY + k * 4 * H, 0.00005) for k in range(1, 19)]
+    out = cr.cycle_regime(SPOT, PERP, eight + four, PREM, NOW)
+    c = out["components"]
+    assert c["funding_settlements"] == 12 + 18 and c["funding_interval_hours"] == pytest.approx(4.0)
+    assert c["funding7"] == pytest.approx((12 * 0.0001 + 18 * 0.00005) * 365 / 7, abs=1e-12)
+    assert c["funding7"] == pytest.approx(cr.BASE_FUNDING, abs=1e-12)
+    assert len(out["warnings"]) == 1 and "spacing varies" in out["warnings"][0] and "4 h, 8 h" in out["warnings"][0]
+    # a steady interval keeps the old formula and no note (BTC on Binance: unchanged output)
+    steady = cr.cycle_regime(SPOT, PERP, FUNDING, PREM, NOW)
+    assert steady["warnings"] == [] and steady["components"]["funding7"] == pytest.approx(FUNDING_RATE * 1095, abs=1e-12)
+
+
+def test_calendar_gap_nulls_the_stretched_windows_with_a_warning():
+    full = cr.cycle_regime(SPOT, PERP, FUNDING, PREM, NOW)
+    old_gap = {t: c for t, c in SPOT.items() if t != END - 500 * DAY}  # before every window: nothing changes
+    out = cr.cycle_regime(old_gap, PERP, FUNDING, PREM, NOW)
+    assert out["warnings"] == [] and out["components"] == full["components"] and out["state"] == full["state"]
+
+    mid_gap = {t: c for t, c in SPOT.items() if t != END - 100 * DAY}  # inside the 365-day window, not the 30-day one
+    out = cr.cycle_regime(mid_gap, PERP, FUNDING, PREM, NOW)
+    c = out["components"]
+    assert c["sma365"] is None and c["price_to_sma"] is None and c["sma_slope_30d"] is None
+    assert c["high_365d"] is None and c["drawdown_365d"] is None
+    assert c["dist_30d_low"] == pytest.approx(full["components"]["dist_30d_low"], abs=1e-12)
+    assert out["state"] is None and "price_to_sma" in out["undecided_by"] and out["trend"] is None
+    assert len(out["warnings"]) == 1 and "misses days" in out["warnings"][0] and "sma365" in out["warnings"][0]
+    assert "dist_30d_low" not in out["warnings"][0]
+
+    recent_gap = {t: c for t, c in SPOT.items() if t != END - 10 * DAY}  # inside the 30-day window too
+    c = cr.cycle_regime(recent_gap, PERP, FUNDING, PREM, NOW)["components"]
+    assert c["low_30d_prior"] is None and c["dist_30d_low"] is None and c["sma365"] is None
+
+
 # ------------------------------------------------------------------------------------------------------ the tool
 
 
@@ -269,6 +306,22 @@ async def test_cycle_regime_tool_provider_failures_land_in_missing():
     assert env["ok"] is False and env["data"] is None and "spot_klines" in {m["field"] for m in env["missing"]}
 
 
+async def test_cycle_regime_tool_reports_calendar_gaps_in_warnings():
+    gapped = {t: c for t, c in SPOT.items() if t != END - 100 * DAY}
+
+    def spot(req: httpx.Request) -> httpx.Response:
+        return _klines(gapped, req) if req.url.path == "/api/v3/klines" else httpx.Response(404)
+
+    rt = _rt(spot=spot)
+    srv, _ = build_server(rt)
+    env = await call(srv, "cycle_regime", history_days=0)
+    await rt.aclose()
+    assert env["ok"] and env["missing"] == [] and env["data"]["components"]["sma365"] is None
+    assert "warnings" not in env["data"] and env["data"]["state"] is None
+    assert any("misses days" in w and "sma365" in w for w in env["warnings"])
+    assert not any(w.startswith("Only ") or w.startswith("Fewer than") for w in env["warnings"])  # not a count problem
+
+
 async def test_cycle_regime_tool_rejects_bad_base_without_requests():
     seen: list = []
 
@@ -329,6 +382,8 @@ async def test_cycle_regime_tool_on_real_binance_responses_of_28_10():
     env = await call(srv, "cycle_regime", base="BTC", history_days=90)
     await rt.aclose()
     assert env["ok"] and env["missing"] == [] and not any("incomplete" in w for w in env["warnings"])
+    # BTC on Binance: no calendar gaps, a steady 8 h funding interval
+    assert not any("misses days" in w or w.startswith("Funding settlement spacing") for w in env["warnings"])
     d = env["data"]
     c = d["components"]
     assert d["date"] == "2026-10-27" and d["state"] == "accumulation" and d["undecided_by"] == []

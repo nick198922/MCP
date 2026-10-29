@@ -32,7 +32,7 @@ CONTEXT_NOTE = (
 UNITS_NOTE = (
     "Daily UTC closes of Binance only. price = spot close; basis7 = mean of 7 daily (USD-M perp close / spot close - "
     "1); funding7 = mean Binance funding of the last 7 days, simple-annualised decimal (0.10 = 10 %/yr; base rate "
-    "0.01 %/8 h = 0.1095); premium7 = mean of the daily premium-index closes (reported, no rule uses it); RSI14 = "
+    "0.01 %/8 h = 0.1095; sum of the window's rates x 365 / 7 when the settlement spacing varies); premium7 = mean of the daily premium-index closes (reported, no rule uses it); RSI14 = "
     "Wilder, points. All other components are decimals (0.01 = 1 %)."
 )
 TREND_NOTE = (
@@ -127,13 +127,15 @@ def register(server: MCPServer, rt: Runtime) -> None:
             return b.build(None, ok=False)
 
         data = cr.cycle_regime(spot, perp, funding, premium, now, history_days=history_days)
+        notes = data.pop("warnings", [])  # calendar gaps, varying funding spacing (analytics)
         comps = data["components"]
         if comps is None:
             b.warn(f"No spot close for {data['date']} (the last closed day): no state.")
         else:
-            if comps["sma365"] is None:
+            # a long enough series with a null SMA has calendar gaps: that note comes from the analytics below
+            if comps["sma365"] is None and len(spot) < cr.SMA_DAYS:
                 b.warn(f"Only {len(spot)} daily spot closes: SMA365, the 365-day drawdown and the state need at least 365.")
-            elif comps["sma_slope_30d"] is None:
+            elif comps["sma_slope_30d"] is None and len(spot) < cr.MIN_SPOT_DAYS:
                 b.warn("Fewer than 395 daily spot closes: no 30-day slope of SMA365 (trend_confirmed is null).")
             # fetched fine but too thin for the 7-day mean (a failed fetch is already in `missing`)
             for raw, field, provider, key, have in (
@@ -143,6 +145,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
             ):
                 if raw is not None and comps[key] is None:
                     b.miss(field, provider, "data_unavailable", f"{key}: too little data in the last 7 days ({comps[have]})")
+        for note in notes:
+            b.warn(note)
         if data["state"] is None and data["undecided_by"]:
             b.warn(f"State undecided: no data for {', '.join(data['undecided_by'])}.")
         b.warn(CONTEXT_NOTE)

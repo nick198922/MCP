@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 33
+SCHEMA_VERSION = 34
 
 # Each migration is a list of SQL statements executed in a single transaction.
 # `PRAGMA user_version` is bumped by Store.init() inside the same explicit transaction,
@@ -870,6 +870,29 @@ MIGRATIONS: dict[int, list[str]] = {
             version TEXT NOT NULL,                 -- analytics.cycle_regime.VERSION of the rules that labelled the day
             created_ts INTEGER NOT NULL,           -- unix seconds when the row was written
             PRIMARY KEY (date, base)
+        ) WITHOUT ROWID
+        """,
+    ],
+    34: [
+        # CoinGecko trending list (free /search/trending), one snapshot per UTC hour, one row per listed coin
+        # (collector/coingecko_trending.py, analytics/coingecko_trending.py; IDEA-20261028-coingecko-trending-attention-
+        # fade-forward, step 0). The API has no history of the list, so this table is the only one. ~15 rows an hour, not
+        # pruned. Names and symbols are untrusted display text (cleaned, capped). Read-only market data.
+        """
+        CREATE TABLE IF NOT EXISTS coingecko_trending (
+            ts INTEGER NOT NULL,                   -- unix seconds, start of the UTC hour (the snapshot key)
+            rank INTEGER NOT NULL,                 -- 1-based position in the list, as CoinGecko orders it
+            coin_id TEXT NOT NULL,                 -- CoinGecko API id, e.g. 'usd-coin'
+            coin_num INTEGER,                      -- CoinGecko numeric coin_id
+            symbol TEXT, name TEXT,                -- untrusted display text, as listed (symbol case kept)
+            market_cap_rank INTEGER,               -- CoinGecko market-cap rank; NULL = unranked
+            score INTEGER,                         -- CoinGecko `score` as given (documented: 0-based position)
+            price_usd REAL,                        -- data.price, USD
+            price_btc REAL,                        -- price_btc, BTC
+            change_24h REAL,                       -- data.price_change_percentage_24h.usd / 100, decimal fraction
+            market_cap_usd REAL, volume_usd REAL,  -- data.market_cap, data.total_volume, USD (parsed display strings)
+            fetched_ts INTEGER NOT NULL,           -- unix seconds when the answer was in (normally inside the hour `ts`)
+            PRIMARY KEY (ts, rank)
         ) WITHOUT ROWID
         """,
     ],

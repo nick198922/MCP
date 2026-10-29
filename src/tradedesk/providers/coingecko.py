@@ -72,3 +72,12 @@ class CoinGecko:
         if not isinstance(f.data, list):
             raise ProviderError(self.name, "backend_error", "unexpected shape at /coins/markets")
         return f
+
+    async def search_trending(self) -> Fetched:
+        """``GET /search/trending`` (free tier): the trending coins list, ``{"coins": [{"item": {...}}, ...], "nfts": [...],
+        "categories": [...]}``. Only the top-level shape is checked here (``coins`` must be a list); the items are parsed
+        defensively by `analytics.coingecko_trending.snapshot_rows`. Returns the whole object."""
+        f = await self.http.get_json("/search/trending", params={}, ttl=60, tool="search/trending", args={})
+        if not isinstance(f.data, dict) or not isinstance(f.data.get("coins"), list):
+            raise ProviderError(self.name, "backend_error", "unexpected /search/trending shape (no coins list)")
+        return f

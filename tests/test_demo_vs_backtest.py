@@ -429,3 +429,133 @@ def test_replay_accepts_the_dataclass():
     row, bars, path = _sample("FIL")
     t = dvb.DemoTrade.from_row(row)
     assert _replay(replace(t), bars, path).verdict == "match"
+
+
+# ---------------------------------------------------------------- turnover group (owner 29.10: $1-5M apart from >= $5M)
+
+DAY = 86_400_000
+D0 = 1_792_627_200_000  # 2026-10-22 00:00 UTC
+
+
+def test_turnover_group_bands_and_unknown():
+    g = dvb.turnover_group
+    assert [g(5e6), g(80e6), g(4_999_999.99), g(1e6), g(999_999.0), g(0.0)] == ["ge5m", "ge5m", "1to5m", "1to5m", "lt1m", "lt1m"]
+    assert {g(None), g(float("nan")), g(float("inf")), g(-1.0)} == {"unknown"}  # never silently put in a band
+    assert dvb.TURNOVER_GROUPS == ("ge5m", "1to5m", "lt1m", "unknown")
+
+
+def test_entry_day_is_the_utc_day_of_the_fill_else_of_the_signal_close():
+    row, _, _ = _sample("FIL")  # filled 2026-10-22 12:04 UTC
+    t = dvb.DemoTrade.from_row(row)
+    assert dvb.entry_day_ms(t) == D0
+    # no fill time: the close of a 4h bar opened 20:00 UTC is midnight, so the entry day is the next one
+    assert dvb.entry_day_ms(replace(t, opened_ts=None, signal_ts=D0 - 4 * H1)) == D0
+    assert dvb.entry_day_ms(replace(t, opened_ts=None, signal_ts=D0 - 5 * H1)) == D0 - DAY
+    assert dvb.entry_day_ms(replace(t, opened_ts=None, timeframe="option")) is None
+
+
+def test_bybit_linear_id():
+    assert dvb.bybit_linear_id("DOT/USDT:USDT") == "DOTUSDT" and dvb.bybit_linear_id("1000PEPE/USDT:USDT") == "1000PEPEUSDT"
+    assert {dvb.bybit_linear_id(s) for s in ("BTC/USDC:USDC", "BTC/USDT", "BTC-27DEC26-100000-C", "A B/USDT:USDT")} == {None}
+
+
+def test_day_turnover_reads_index_6_of_a_closed_day_only():
+    k = [[str(D0 + DAY), "1", "1", "1", "1", "9", "7000000"], [str(D0), "1.1", "1.2", "1.0", "1.1", "2000000", "2345678.5"]]
+    assert dvb.day_turnover(k, D0, now_ms=D0 + DAY) == pytest.approx(2_345_678.5)  # newest first, as Bybit sends
+    assert dvb.day_turnover(k, D0 + DAY, now_ms=D0 + DAY + 1) is None  # the day is still forming: a partial turnover understates
+    assert dvb.day_turnover(k, D0 - DAY, now_ms=D0 + DAY) is None  # no candle
+    assert dvb.day_turnover([[str(D0), "1", "1", "1", "1", "9"]], D0, now_ms=D0 + DAY) is None  # no turnover field
+    assert dvb.day_turnover([[str(D0), "1", "1", "1", "1", "9", "x"], ["y"]], D0, now_ms=D0 + DAY) is None
+    assert dvb.day_turnover([[str(D0), "1", "1", "1", "1", "9", "-5"]], D0, now_ms=D0 + DAY) is None
+
+
+def test_summary_by_turnover_keeps_the_30_trade_rule_per_group():
+    big = [replace(_r("match"), turnover_usd=8e6, turnover_group="ge5m") for _ in range(30)]
+    thin = [replace(_r("match"), turnover_group="1to5m"), replace(_r("mismatch", reasons=("r",)), turnover_group="1to5m")]
+    unknown = [_r("no_signal", r_bt=None)]  # the default group: no turnover set
+    by = dvb.summary_by_turnover(big + thin + unknown)
+    assert tuple(by) == dvb.TURNOVER_GROUPS
+    assert by["ge5m"]["decided"] == 30 and by["ge5m"]["enough"] and "100%" in by["ge5m"]["conclusion"]
+    assert by["1to5m"]["decided"] == 2 and not by["1to5m"]["enough"] and by["1to5m"]["conclusion"].startswith("замало для висновку")
+    assert by["1to5m"]["match_share"] == pytest.approx(0.5) and by["1to5m"]["counts"]["mismatch"] == 1
+    assert by["unknown"]["n"] == 1 and by["lt1m"]["n"] == 0 and by["lt1m"]["conclusion"].startswith("замало")
+    assert sum(s["n"] for s in by.values()) == len(big + thin + unknown)  # every trade in exactly one group
+    assert dvb.summary(big + thin + unknown)["enough"]  # the whole sample would pass; the thin group alone does not
+
+
+def test_script_adds_turnover_one_fetch_per_symbol_and_pages():
+    rows = [
+        {**_sample("FIL")[0], "link_id": "a", "opened_ts": D0 + 5 * H1},
+        {**_sample("FIL")[0], "link_id": "b", "opened_ts": D0 + DAY + H1},
+        {**_sample("FIL")[0], "link_id": "c", "opened_ts": D0 + 1005 * DAY},  # a second page of 1000 days
+        {**_sample("FIL")[0], "link_id": "d", "symbol": "FIL/USDC:USDC"},  # no Bybit USDT perpetual id
+        {**_sample("FIL")[0], "link_id": "e", "opened_ts": D0 + 1006 * DAY},  # the day has not closed by now
+    ]
+    reps = [dvb.Replay(r["link_id"], r["symbol"], "S3", "4h", "long", 0, 0, "match") for r in rows]
+    calls: list[tuple[str, int, int]] = []
+    tv = {D0: "6000000", D0 + DAY: "1500000", D0 + 1005 * DAY: "400000.5"}
+
+    async def fetch_day(sym: str, start: int, end: int) -> list[Any]:
+        calls.append((sym, start, end))
+        return [[str(d), "1", "1", "1", "1", "1", v] for d, v in tv.items() if start <= d <= end]
+
+    now = D0 + 1006 * DAY + H1
+    out = asyncio.run(script.add_turnover(rows, reps, fetch_day, now))
+    assert [x.turnover_group for x in out] == ["ge5m", "1to5m", "lt1m", "unknown", "unknown"]
+    assert out[0].turnover_usd == pytest.approx(6e6) and out[3].turnover_usd is None and out[0].verdict == "match"
+    assert calls == [("FILUSDT", D0, D0 + 1000 * DAY - 1), ("FILUSDT", D0 + 1000 * DAY, D0 + 1006 * DAY - 1)]
+    assert all(e - s < 1000 * DAY for _, s, e in calls)  # never more than one page of daily candles a request
+    assert out[0].as_dict()["turnover_group"] == "ge5m"  # in the JSON rows
+
+
+class _TurnoverExchanges(_FixtureExchanges):
+    def __init__(self, fail: bool = False) -> None:
+        self.fail = fail
+        self.calls: list[dict[str, Any]] = []
+
+    async def public_get(self, venue: str, endpoint: str, params: dict[str, Any]) -> Any:
+        self.calls.append({"venue": venue, "endpoint": endpoint, **params})
+        if self.fail:
+            raise ProviderError("ccxt:bybit", "network", "down")
+        rows = [[str(D0), "1", "1", "1", "1", "1", "3200000.5"]] if params["symbol"] == "FILUSDT" else []
+        return Fetched({"retCode": 0, "result": {"list": rows}}, Evidence(provider="fixture", tool="kline"))
+
+
+def test_script_run_with_turnover_splits_the_total(tmp_path, monkeypatch):
+    ex = _TurnoverExchanges()
+
+    class Rt(_FixtureRuntime):
+        def __init__(self, *_: Any) -> None:
+            self.exchanges = ex
+
+    monkeypatch.setattr(script, "Runtime", Rt)
+    db = _db(tmp_path)
+    rows, total, week, week_ms, notes = asyncio.run(script.run(db, 0, 7, "bybit", NOW, turnover=True))
+    assert notes == [] and {x.symbol: x.turnover_group for x in rows} == {"FIL/USDT:USDT": "1to5m", "DOT/USDT:USDT": "unknown"}
+    # DOT entered on 23.10 and NOW is 23.10 16:00 UTC: its day has not closed, so it is not asked for
+    assert [(c["endpoint"], c["symbol"], c["interval"], c["category"]) for c in ex.calls] == [
+        ("publicGetV5MarketKline", "FILUSDT", "D", "linear")
+    ]
+    by = dvb.summary_by_turnover(rows)
+    assert by["1to5m"]["n"] == 1 and by["unknown"]["n"] == 1 and by["ge5m"]["n"] == 0
+    text = script.render(rows, total, week, week_ms, NOW, "bybit", notes, by)
+    assert "## За оборотом монети в день входу" in text
+    assert "- $1–5M: закритих демо-угод 1. Звірено 1: збіг 1" in text and "- оборот невідомий: закритих демо-угод 1." in text
+    assert "- ≥ $5M: закритих демо-угод 0." in text and text.count("замало для висновку: звірено") == 5  # total + 4 groups
+    assert "## За оборотом" not in script.render(rows, total, week, week_ms, NOW, "bybit", notes)  # the weekly path
+    # without turnover (the weekly Telegram message) nothing is fetched
+    ex.calls.clear()
+    assert {x.turnover_group for x in asyncio.run(script.run(db, 0, 7, "bybit", NOW))[0]} == {"unknown"} and ex.calls == []
+
+
+def test_script_turnover_provider_failure_goes_to_missing_and_unknown(tmp_path, monkeypatch):
+    ex = _TurnoverExchanges(fail=True)
+
+    class Rt(_FixtureRuntime):
+        def __init__(self, *_: Any) -> None:
+            self.exchanges = ex
+
+    monkeypatch.setattr(script, "Runtime", Rt)
+    rows, total, *_, notes = asyncio.run(script.run(_db(tmp_path), 0, 7, "bybit", NOW, turnover=True))
+    assert [x.verdict for x in rows] == ["match", "match"]  # the replay itself is untouched
+    assert {x.turnover_group for x in rows} == {"unknown"} and notes == ["kline:bybit:FILUSDT:D: network"]

@@ -31,6 +31,12 @@ Replay of one closed ``demo_trade`` row:
    open at ``now_ms``), ``no_data`` (bars missing or the path cut), ``unsupported`` (a setup without a candle detector,
    e.g. an option trade).
 
+5. **Turnover group** (owner 29.10, ADR 0007 p. 8: the rare setups scan coins from $1M, the backtests covered the top
+   30 only). A trade is put in a group by the quote turnover (USD for a USDT perpetual) of the Bybit daily candle of its
+   entry day, UTC (``entry_day_ms``: the fill, else the signal-bar close): ``ge5m`` (>= $5M), ``1to5m`` ($1-5M),
+   ``lt1m`` (< $1M) or ``unknown`` (no candle, a day not closed by ``now_ms``, a failed fetch); ``summary_by_turnover``
+   keeps the 30-trade rule per group. The day's turnover includes the hours after the entry: a size label, not a signal.
+
 Caveats: the demo's own candles come from api-demo.bybit.com, the replay from the venue the caller fetched (default
 Bybit mainnet); small level differences there are what ``level_r`` absorbs. The demo enters up to 2 hours after the
 signal close at a maker quote and starts its hold clock at the fill; the backtest enters at the close. The rule is
@@ -41,6 +47,7 @@ and lows. A trade opened before the switch without a known leverage is replayed 
 
 from __future__ import annotations
 
+import math
 import statistics
 from collections import Counter
 from collections.abc import Mapping, Sequence
@@ -65,6 +72,10 @@ MIN_TRADES = 30  # owner 23.10: no conclusion before ~30 closed trades
 DECIDED = ("match", "no_signal", "mismatch")
 VERDICTS = (*DECIDED, "pending", "no_data", "unsupported")
 _KIND = {"stop": "stop", "stop_gap": "stop", "be": "breakeven", "be_gap": "breakeven", "target": "target"}
+DAY_MS = 86_400_000
+# (group, lower bound of the entry day's quote turnover, USD), checked in order; then 'unknown'
+TURNOVER_BANDS: tuple[tuple[str, float], ...] = (("ge5m", 5e6), ("1to5m", 1e6), ("lt1m", 0.0))
+TURNOVER_GROUPS = (*(g for g, _ in TURNOVER_BANDS), "unknown")
 
 
 @dataclass(frozen=True)
@@ -159,6 +170,8 @@ class Replay:
     r_bt_fill_now: float | None = None  # rule 'roe' only: today's rule B replayed from the demo fill
     r_bt_fill_now_fast: float | None = None  # rule 'roe' only: today's rule Bx replayed from the demo fill
     extra: dict[str, Any] = field(default_factory=dict)
+    turnover_usd: float | None = None  # quote turnover of the Bybit daily candle of the entry day (set by the caller)
+    turnover_group: str = "unknown"  # one of TURNOVER_GROUPS (turnover_group(turnover_usd))
 
     def as_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -426,3 +439,56 @@ def summary(rows: Sequence[Replay], *, min_n: int = MIN_TRADES) -> dict[str, Any
             f"; середня різниця R (демо − бектест) {md:+.2f}{tail}" if md is not None else ""
         )
     return out
+
+
+# ---------------------------------------------------------------- turnover group (module docstring, step 5)
+
+
+def entry_day_ms(trade: DemoTrade) -> int | None:
+    """Open time (unix ms) of the UTC day of the entry: the fill (``opened_ts``), else the signal-bar close; None when
+    neither is known (no fill time and a timeframe without a bar length)."""
+    if trade.opened_ts is not None:
+        ts = trade.opened_ts
+    elif trade.timeframe in TF_MS:
+        ts = trade.signal_ts + TF_MS[trade.timeframe]
+    else:
+        return None
+    return ts // DAY_MS * DAY_MS
+
+
+def bybit_linear_id(symbol: str) -> str | None:
+    """Bybit v5 ``linear`` symbol of a ccxt USDT perpetual ('1000PEPE/USDT:USDT' -> '1000PEPEUSDT'); None otherwise."""
+    base, sep, rest = symbol.partition("/")
+    if not sep or rest != "USDT:USDT" or not base.isalnum():
+        return None
+    return f"{base}USDT"
+
+
+def day_turnover(klines: Sequence[Sequence[Any]], day_ms: int, now_ms: int) -> float | None:
+    """Quote turnover (index 6 of a Bybit v5 kline row ``[start, o, h, l, c, volume, turnover]``, strings as sent) of
+    the daily candle opening at ``day_ms``; None when the day has not closed by ``now_ms`` (a partial day understates),
+    the candle is absent, or its turnover is not a finite number >= 0."""
+    if day_ms + DAY_MS > now_ms:
+        return None
+    for k in klines:
+        try:
+            if int(k[0]) != day_ms:
+                continue
+            v = float(k[6])
+        except (TypeError, ValueError, IndexError):
+            continue
+        return v if math.isfinite(v) and v >= 0 else None
+    return None
+
+
+def turnover_group(turnover_usd: float | None) -> str:
+    """'ge5m' (>= $5M), '1to5m' ($1-5M), 'lt1m' (< $1M) or 'unknown' (None, negative or not finite)."""
+    if turnover_usd is None or not math.isfinite(turnover_usd) or turnover_usd < 0:
+        return "unknown"
+    return next(g for g, lo in TURNOVER_BANDS if turnover_usd >= lo)
+
+
+def summary_by_turnover(rows: Sequence[Replay], *, min_n: int = MIN_TRADES) -> dict[str, dict[str, Any]]:
+    """``summary`` per turnover group (every group of ``TURNOVER_GROUPS``, empty ones too), each with its own
+    'замало для висновку' below ``min_n`` decided trades: the thin coins never borrow the sample of the liquid ones."""
+    return {g: summary([x for x in rows if x.turnover_group == g], min_n=min_n) for g in TURNOVER_GROUPS}

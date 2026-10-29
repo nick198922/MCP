@@ -164,6 +164,16 @@ def version_of(setup: str | None, open_ms: float | None, *, now_ms: int, epochs:
     return best
 
 
+def _tagged(t: Mapping[str, Any], setup: str | None, eps: Iterable[Epoch]) -> Epoch | None:
+    """The epoch named by the trade's own ``version`` column (written by the trader since schema 35), if it is one of
+    ``eps`` and applies to the setup; None = derive it from the open time."""
+    tag = t.get("version")
+    for e in eps:
+        if isinstance(tag, str) and e.tag == tag and applies(e, setup):
+            return e
+    return None
+
+
 def _verdict(n_r: int, min_n: int) -> str:
     if n_r < min_n:
         return f"замало для висновку ({n_r} з {min_n})"
@@ -187,7 +197,7 @@ def version_stats(
         if closed_ms is not None and closed_ms > now_ms:
             continue
         setup = _setup(t.get("setup"))
-        e = version_of(setup, _num(t.get("opened_ts")), now_ms=now_ms, epochs=eps)
+        e = _tagged(t, setup, eps) or version_of(setup, _num(t.get("opened_ts")), now_ms=now_ms, epochs=eps)
         tag = None if e is None else e.tag
         g = groups.setdefault(
             (setup, tag),

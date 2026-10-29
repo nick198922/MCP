@@ -8881,7 +8881,8 @@ def demo_version_stats(trades: list[dict], now_ms: float, epochs: tuple = DEMO_E
             continue
         raw = t.get("setup")
         setup = ("" if raw is None else str(raw).strip()) or None
-        e = demo_version_of(setup, _num(t.get("opened_ts")), now_ms, eps)
+        e = next((x for x in eps if isinstance(t.get("version"), str) and x[0] == t["version"] and _demo_epoch_applies(x, setup)), None)
+        e = e or demo_version_of(setup, _num(t.get("opened_ts")), now_ms, eps)  # the trade's own tag first (schema 35)
         tag = None if e is None else e[0]
         g = groups.setdefault(
             (setup, tag),

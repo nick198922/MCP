@@ -1,0 +1,1 @@
+- Нова картка `IDEA-20261029-pm-post-observation-settlement-lag`: ринки Polymarket, де переможець відомий після закриття свічки Binance, але розрахунок ще не пройшов (статус `forward`, тріаж критика).

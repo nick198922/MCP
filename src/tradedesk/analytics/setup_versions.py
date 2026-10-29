@@ -35,6 +35,8 @@ made in, so a change is assumed live from the commit minute, the deploy time is 
   change was rebased onto v6 (written 26.10 11:30 UTC as v6);
   it goes live only after the trader review merges and deploys it, so an S12 trade opened between
   the two ran the v4 entry (its ``rest_until`` is NULL in ``demo_trade``).
+- ``v8`` 2026-10-29 19:50 UTC, S28 only: the valid order block (longs, 4h, rejected by its backtest) joins the demo
+  with a limit resting at the OB level (``docs/changes/2026-10-29-demo-s28.md``). Same rule as v4.
 
 Not versioned, because they change which signals are taken, not how a taken trade runs: eb3af15 (22.10 07:45 UTC, the
 daily cap counts trades at risk, ``docs/changes/2026-10-22-demo-risk-cap.md``), f9f7cb5 (23.10 16:14 UTC, the option
@@ -121,6 +123,14 @@ EPOCHS: tuple[Epoch, ...] = (
         " за закриттям свічки дотику; стоп, ціль і ведення угоди — як у v4",
         "docs/changes/2026-10-26-demo-s12-resting-limit.md, docs/verification/2026-10-26-prelimit-entries.md",
         ("S12",),
+    ),
+    Epoch(
+        "v8",
+        _ms(2026, 10, 29, 19, 50, 0),
+        "S28 (валідний ордер-блок, лише лонг, 4h) на демо як відкинутий бектестом сетап: вхід лімітом на рівні OB"
+        " (живе 20 свічок 4h), стоп рівень − 1 ATR, ціль 2R; ведення угоди — як у v3",
+        "docs/changes/2026-10-29-demo-s28.md (S28 not on the demo before this change)",
+        ("S28",),
     ),
 )
 

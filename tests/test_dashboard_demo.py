@@ -149,10 +149,10 @@ def test_enough_trades_drop_the_small_sample_badge():
     rs = [1.0 if i % 2 else 0.5 for i in range(30)]
     trades = [{"setup": "S14", "status": "closed", "r_multiple": r, "pnl_usd": 100 * r} for r in rs]
     html = db.block_demo_setups(trades)
-    assert "замало для висновку (0 з 30)" in html  # S16, S3, S12, S38, S39 and S40 have none
+    assert "замало для висновку (0 з 30)" in html  # S16, S3, S12, S38, S39, S40 and S28 have none
     s14 = html.split("S14 · середній R")[1].split("</div>")[0]
     assert "<span class='sig" not in s14 and "95 % ДІ вище 0" in s14  # no «замало для висновку» badge
-    assert html.count("<span class='sig warn'>замало для висновку") == 6
+    assert html.count("<span class='sig warn'>замало для висновку") == 7
 
 
 def test_demo_refusals_group_by_rule_and_count_the_week():

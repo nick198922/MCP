@@ -675,7 +675,7 @@ async def test_s12_rejected_by_the_backtest_is_scanned_and_traded_under_the_same
         return list(w.signals.get(tf, []))
 
     monkeypatch.setattr(demo_trader, "scan", scan)
-    assert demo_trader.SETUPS == ("S14", "S16", "S3", "S12", "S38", "S39", "S40")
+    assert demo_trader.SETUPS == ("S14", "S16", "S3", "S12", "S38", "S39", "S40", "S28")
     w.signals["4h"] = [_sig(setup="S12", target=104_500.0)]
     await w.enter()
     assert asked and all(a == demo_trader.SETUPS for a in asked)

@@ -1,0 +1,2 @@
+- Скаут: дві картки ідей (запуск перпа Binance на вже торгований токен; реверс альтів у стресі).
+- Тріаж критика: `binance-perp-launch-existing-token` — accepted (довга ставка, ворота кроку 0); `stress-conditional-alt-reversal` — rejected (брутто ≪ витрат).

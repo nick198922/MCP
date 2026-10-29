@@ -21,7 +21,7 @@ Hourly cycle:
    tier, capped by the venue's maximum) and a confidence score. The account is on cross margin (owner 21.10): the guard
    keeps the maintenance margin plus the loss at every stop within half of the equity, so stops come before liquidation. Candidates that pass the guard and score at least ``MIN_SCORE`` are
    entered best first, each setup with ``OWN_SLOTS`` trades still at risk a UTC day of its own plus ``RESERVE_SLOTS``
-   shared (owner 27.10): a trade with its stop at break-even, or closed without a real loss, frees its slot (owner
+   shared (owner 27.10; a setup in ``SAMPLE_DONE`` with its sample stops taking the reserve, owner 29.10): a trade with its stop at break-even, or closed without a real loss, frees its slot (owner
    21.10/22.10), at most 30 entries a day in all; S38 enters at most 2 shorts per 4h signal bar (``BAR_CAP``, owner
    25.10); the rest are recorded as skipped.
    S12 since v7 (owner 26.10, ``docs/verification/2026-10-26-prelimit-entries.md``): its signal is a new gap, and the
@@ -121,6 +121,10 @@ SETUPS = ("S14", "S16", "S3", "S12", "S38", "S39", "S40")
 # max_trades_per_day is their sum, so the guard and this split agree.
 OWN_SLOTS = 2
 RESERVE_SLOTS = 3
+# A setup with its sample (owner 29.10: "as soon as S3 has 30, give its limits to the other setups, leave it 1-2 for the
+# best trades") keeps its own slots, taken best first, but no longer the reserve: that goes to the setups still short of
+# a sample. Closed demo trades of the setup; S3 is the one that fires every day (26 of the first 37 trades).
+SAMPLE_DONE = {"S3": 30}
 # Per signal bar cap of entries (owner 25.10, IDEA-20261024-short-setups-demo "Ризики"): S38 shorts come in batches (up
 # to 11 on one 4h bar in the backtest), so at most 2 of them per bar, else the first random ones fill the day. Counted
 # from the book like the day's entries (open, pending, unknown or closed trades of that setup and signal bar; a break-
@@ -654,20 +658,32 @@ async def _setup_slots(ctx: Ctx) -> Counter[str]:
     return Counter(t["setup"] for t in trades if _today(t, day0) and _at_risk(t))
 
 
+async def _sampled(ctx: Ctx) -> frozenset[str]:
+    """The setups of ``SAMPLE_DONE`` with at least that many closed demo trades."""
+    trades = await ctx.store.demo_trade_list(limit=5000)
+    closed = Counter(t["setup"] for t in trades if t["status"] == "closed")
+    return frozenset(s for s, n in SAMPLE_DONE.items() if closed[s] >= n)
+
+
 def _today(t: dict[str, Any], day0: int) -> bool:
     """Counts toward today's slots and entries: placed or filled today, or a resting entry (S12 v7) still on the book
     from an earlier day (it can fill any minute)."""
     return t["status"] == "pending" or (t["status"] in ("open", "unknown", "pending", "closed") and (t["opened_ts"] or 0) >= day0)
 
 
-def _setup_cap(setup: str, used: Counter[str] | None) -> list[str]:
+def _setup_cap(setup: str, used: Counter[str] | None, sampled: frozenset[str] = frozenset()) -> list[str]:
     """Violation of the day's slots: the setup's own ``OWN_SLOTS`` first, then the shared ``RESERVE_SLOTS`` (a setup's
-    trades above its own slots hold the reserve). ``used`` None = the book was not read: every setup waits (fail
-    closed)."""
+    trades above its own slots hold the reserve), which a setup in ``sampled`` no longer takes. ``used`` None = the book
+    was not read: every setup waits (fail closed)."""
     if used is None:
         return [f"{setup} trades at risk today unknown (book not read)"]
     if used[setup] < OWN_SLOTS:
         return []
+    if setup in sampled:
+        return [
+            f"{used[setup]} {setup} trades at risk today: its {OWN_SLOTS} slots are taken and its sample of "
+            f"{SAMPLE_DONE[setup]} closed trades is done, so the reserve is left to the other setups"
+        ]
     reserve = sum(max(0, n - OWN_SLOTS) for n in used.values())
     if reserve < RESERVE_SLOTS:
         return []
@@ -942,8 +958,11 @@ async def _select_and_enter(ctx: Ctx, cands: list[Candidate], state: State) -> N
     ok = [c for c in cands if not c.structural and c.score.points >= MIN_SCORE]
     ok.sort(key=lambda c: (-c.score.points, -c.p.reward_risk))
     used: Counter[str] | None = Counter()
+    sampled: frozenset[str] = frozenset()
     if ok:
         used = await ctx.safe("setup_slots", lambda: _setup_slots(ctx))  # None: every setup waits
+        got = await ctx.safe("setup_samples", lambda: _sampled(ctx))
+        sampled = frozenset(SAMPLE_DONE) if got is None else got  # unread: as if every sample were done (no reserve)
     per_bar: Counter[tuple[str, int]] | None = Counter()
     if any(c.sig.setup in BAR_CAP for c in ok):
         per_bar = await ctx.safe("bar_entries", lambda: _bar_entries(ctx))  # None: the capped setups wait
@@ -951,7 +970,7 @@ async def _select_and_enter(ctx: Ctx, cands: list[Candidate], state: State) -> N
     for c in ok:
         if c.p.symbol in state.open_symbols:
             continue  # a better signal on the same coin was just taken
-        bad = check(c.p, state, ctx.cfg) or _setup_cap(c.sig.setup, used) or _bar_cap(c.sig, per_bar)
+        bad = check(c.p, state, ctx.cfg) or _setup_cap(c.sig.setup, used, sampled) or _bar_cap(c.sig, per_bar)
         if bad or used is None:
             continue
         bar = (c.sig.setup, c.sig.signal_ts)
@@ -985,7 +1004,7 @@ async def _select_and_enter(ctx: Ctx, cands: list[Candidate], state: State) -> N
         elif c.score.points < MIN_SCORE:
             reason, kind = [f"score {c.score.points} < {MIN_SCORE}"], "skipped"
         else:
-            reason = check(c.p, state, ctx.cfg) + _setup_cap(c.sig.setup, used) + _bar_cap(c.sig, per_bar) or ["lower rank"]
+            reason = check(c.p, state, ctx.cfg) + _setup_cap(c.sig.setup, used, sampled) + _bar_cap(c.sig, per_bar) or ["lower rank"]
             kind = "skipped"
         ctx.bump(kind)
         await ctx.safe(

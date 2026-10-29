@@ -1,0 +1,3 @@
+- Картка `weekend-idio-reversal-alt-perps`: крок 0 (ворота потужності) на 1h-свічках Binance; `inconclusive` (MDE з Holm-3 0.0287 > 0.025), доходи не рахувались.
+- Нове: `analytics/weekend_reversal.py`, `scripts/verify_weekend_idio_reversal.py`, тести `tests/test_weekend_reversal.py`.
+- Звіт у `docs/verification/`, рев'ю критика в `docs/reviews/`.

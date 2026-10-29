@@ -1,0 +1,409 @@
+{
+ "_source": "LIVE, 2026-10-29T19:43:04+00:00, https://gateway.thegraph.com/api/subgraphs/id/Bx1W4S7kDVxs9gC3s2G6DS8kdNBJNVhMviCtin2DiBp (Polymarket main subgraph) via scripts/thegraph_sample.py through rt.thegraph (httpx, Authorization: Bearer, User-Agent tradedesk-mcp/0.1). Raw answers per request; the key is not in this file.",
+ "subgraph_id": "Bx1W4S7kDVxs9gC3s2G6DS8kdNBJNVhMviCtin2DiBp",
+ "entity": "conditions",
+ "entity_type": "Condition",
+ "id_type": "ID",
+ "outcomes": {
+  "introspect_fields": "ok",
+  "introspect_entity": "ok",
+  "meta": "ok",
+  "page_1": "ok",
+  "page_2": "ok",
+  "error_query": "backend_error: GraphQL error: Type `Query` has no field `tradedeskNoSuchField`"
+ },
+ "labels": [
+  "introspect_fields",
+  "introspect_entity",
+  "meta",
+  "page_1",
+  "page_2",
+  "error_query"
+ ],
+ "introspect_fields": {
+  "status": 200,
+  "content_type": "application/json",
+  "request": {
+   "path": "/api/subgraphs/id/Bx1W4S7kDVxs9gC3s2G6DS8kdNBJNVhMviCtin2DiBp",
+   "query": "{ __schema { queryType { fields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } } } } }",
+   "variables": {}
+  },
+  "body": {
+   "data": {
+    "__schema": {
+     "queryType": {
+      "fields": [
+       {
+        "name": "split",
+        "type": {
+         "kind": "OBJECT",
+         "name": "Split",
+         "ofType": null
+        }
+       },
+       {
+        "name": "splits",
+        "type": {
+         "kind": "NON_NULL",
+         "name": null,
+         "ofType": {
+          "kind": "LIST",
+          "name": null,
+          "ofType": {
+           "kind": "NON_NULL",
+           "name": null,
+           "ofType": {
+            "kind": "OBJECT",
+            "name": "Split"
+           }
+          }
+         }
+        }
+       },
+       {
+        "name": "merge",
+        "type": {
+         "kind": "OBJECT",
+         "name": "Merge",
+         "ofType": null
+        }
+       },
+       {
+        "name": "merges",
+        "type": {
+         "kind": "NON_NULL",
+         "name": null,
+         "ofType": {
+          "kind": "LIST",
+          "name": null,
+          "ofType": {
+           "kind": "NON_NULL",
+           "name": null,
+           "ofType": {
+            "kind": "OBJECT",
+            "name": "Merge"
+           }
+          }
+         }
+        }
+       },
+       {
+        "name": "redemption",
+        "type": {
+         "kind": "OBJECT",
+         "name": "Redemption",
+         "ofType": null
+        }
+       },
+       {
+        "name": "redemptions",
+        "type": {
+         "kind": "NON_NULL",
+         "name": null,
+         "ofType": {
+          "kind": "LIST",
+          "name": null,
+          "ofType": {
+           "kind": "NON_NULL",
+           "name": null,
+           "ofType": {
+            "kind": "OBJECT",
+            "name": "Redemption"
+           }
+          }
+         }
+        }
+       },
+       {
+        "name": "negRiskConversion",
+        "type": {
+         "kind": "OBJECT",
+         "name": "NegRiskConversion",
+         "ofType": null
+        }
+       },
+       {
+        "name": "negRiskConversions",
+        "type": {
+         "kind": "NON_NULL",
+         "name": null,
+         "ofType": {
+          "kind": "LIST",
+          "name": null,
+          "ofType": {
+           "kind": "NON_NULL",
+           "name": null,
+           "ofType": {
+            "kind": "OBJECT",
+            "name": "NegRiskConversion"
+           }
+          }
+         }
+        }
+       },
+       {
+        "name": "negRiskEvent",
+        "type": {
+         "kind": "OBJECT",
+         "name": "NegRiskEvent",
+         "ofType": null
+        }
+       },
+       {
+        "name": "negRiskEvents",
+        "type": {
+         "kind": "NON_NULL",
+         "name": null,
+         "ofType": {
+          "kind": "LIST",
+          "name": null,
+          "ofType": {
+           "kind": "NON_NULL",
+           "name": null,
+           "ofType": {
+            "kind": "OBJECT",
+            "name": "NegRiskEvent"
+           }
+          }
+         }
+        }
+       },
+       {
+        "name": "fixedProductMarketMaker",
+        "type": {
+         "kind": "OBJECT",
+         "name": "FixedProductMarketMaker",
+         "ofType": null
+        }
+       },
+       {
+        "name": "fixedProductMarketMakers",
+        "type": {
+         "kind": "NON_NULL",
+         "name": null,
+         "ofType": {
+          "kind": "LIST",
+          "name": null,
+          "ofType": {
+           "kind": "NON_NULL",
+           "name": null,
+           "ofType": {
+            "kind": "OBJECT",
+            "name": "FixedProductMarketMaker"
+           }
+          }
+         }
+        }
+       },
+       {
+        "name": "position",
+        "type": {
+         "kind": "OBJECT",
+         "name": "Position",
+         "ofType": null
+        }
+       },
+       {
+        "name": "positions",
+        "type": {
+         "kind": "NON_NULL",
+         "name": null,
+         "ofType": {
+          "kind": "LIST",
+          "name": null,
+          "ofType": {
+           "kind": "NON_NULL",
+           "name": null,
+           "ofType": {
+            "kind": "OBJECT",
+            "name": "Position"
+           }
+          }
+         }
+        }
+       },
+       {
+        "name": "condition",
+        "type": {
+         "kind": "OBJECT",
+         "name": "Condition",
+         "ofType": null
+        }
+       },
+       {
+        "name": "conditions",
+        "type": {
+         "kind": "NON_NULL",
+         "name": null,
+         "ofType": {
+          "kind": "LIST",
+          "name": null,
+          "ofType": {
+           "kind": "NON_NULL",
+           "name": null,
+           "ofType": {
+            "kind": "OBJECT",
+            "name": "Condition"
+           }
+          }
+         }
+        }
+       },
+       {
+        "name": "_meta",
+        "type": {
+         "kind": "OBJECT",
+         "name": "_Meta_",
+         "ofType": null
+        }
+       },
+       {
+        "name": "_logs",
+        "type": {
+         "kind": "NON_NULL",
+         "name": null,
+         "ofType": {
+          "kind": "LIST",
+          "name": null,
+          "ofType": {
+           "kind": "NON_NULL",
+           "name": null,
+           "ofType": {
+            "kind": "OBJECT",
+            "name": "_Log_"
+           }
+          }
+         }
+        }
+       }
+      ]
+     }
+    }
+   }
+  }
+ },
+ "introspect_entity": {
+  "status": 200,
+  "content_type": "application/json",
+  "request": {
+   "path": "/api/subgraphs/id/Bx1W4S7kDVxs9gC3s2G6DS8kdNBJNVhMviCtin2DiBp",
+   "query": "query($t: String!) { __type(name: $t) { name fields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } } } }",
+   "variables": {
+    "t": "Condition"
+   }
+  },
+  "body": {
+   "data": {
+    "__type": {
+     "name": "Condition",
+     "fields": [
+      {
+       "name": "id",
+       "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+         "kind": "SCALAR",
+         "name": "ID",
+         "ofType": null
+        }
+       }
+      }
+     ]
+    }
+   }
+  }
+ },
+ "meta": {
+  "status": 200,
+  "content_type": "application/json",
+  "request": {
+   "path": "/api/subgraphs/id/Bx1W4S7kDVxs9gC3s2G6DS8kdNBJNVhMviCtin2DiBp",
+   "query": "{ _meta { block { number hash timestamp } deployment hasIndexingErrors } }",
+   "variables": {}
+  },
+  "body": {
+   "data": {
+    "_meta": {
+     "block": {
+      "number": 96398364,
+      "hash": "0xbdd849171fc2bfb94753f3d5de07fbf5a3e0130c788406b298d81e7f136975b1",
+      "timestamp": 1793302975
+     },
+     "deployment": "Qmf3qPUsfQ8et6E3QNBmuXXKqUJi91mo5zbsaTkQrSnMAP",
+     "hasIndexingErrors": false
+    }
+   }
+  }
+ },
+ "page_1": {
+  "status": 200,
+  "content_type": "application/json",
+  "request": {
+   "path": "/api/subgraphs/id/Bx1W4S7kDVxs9gC3s2G6DS8kdNBJNVhMviCtin2DiBp",
+   "query": "query($first: Int!, $lastId: ID!) { conditions(first: $first, orderBy: id, orderDirection: asc, where: {id_gt: $lastId}) { id } }",
+   "variables": {
+    "first": 2,
+    "lastId": ""
+   }
+  },
+  "body": {
+   "data": {
+    "conditions": [
+     {
+      "id": "0x000001a99baed5e5d7fb7c3ba765cf01dd8889c08fc5aadabc2ac8ce64f8d3a2"
+     },
+     {
+      "id": "0x000003ac80c5a895a4523650e8d9f97d0e8dd1f8bdb4baf3e511373e6f6b6071"
+     }
+    ]
+   }
+  }
+ },
+ "page_2": {
+  "status": 200,
+  "content_type": "application/json",
+  "request": {
+   "path": "/api/subgraphs/id/Bx1W4S7kDVxs9gC3s2G6DS8kdNBJNVhMviCtin2DiBp",
+   "query": "query($first: Int!, $lastId: ID!) { conditions(first: $first, orderBy: id, orderDirection: asc, where: {id_gt: $lastId}) { id } }",
+   "variables": {
+    "first": 2,
+    "lastId": "0x000003ac80c5a895a4523650e8d9f97d0e8dd1f8bdb4baf3e511373e6f6b6071"
+   }
+  },
+  "body": {
+   "data": {
+    "conditions": [
+     {
+      "id": "0x0000048bd9dcb0e2adb49f52791e9152a39cb491222a6fe4a3e03457b6f2a178"
+     },
+     {
+      "id": "0x000005bfd3cdce6c7bf0cf265a967b6f7a8842a3de182d67474d3625b1544178"
+     }
+    ]
+   }
+  }
+ },
+ "error_query": {
+  "status": 200,
+  "content_type": "application/json",
+  "request": {
+   "path": "/api/subgraphs/id/Bx1W4S7kDVxs9gC3s2G6DS8kdNBJNVhMviCtin2DiBp",
+   "query": "{ tradedeskNoSuchField { id } }",
+   "variables": {}
+  },
+  "body": {
+   "errors": [
+    {
+     "locations": [
+      {
+       "line": 1,
+       "column": 3
+      }
+     ],
+     "message": "Type `Query` has no field `tradedeskNoSuchField`"
+    }
+   ]
+  }
+ }
+}

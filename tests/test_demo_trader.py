@@ -4,6 +4,7 @@ failures after the order."""
 
 from __future__ import annotations
 
+from collections import Counter
 from types import SimpleNamespace
 
 import ccxt
@@ -766,6 +767,45 @@ async def test_slots_count_todays_trades_at_risk_and_fail_closed(world, monkeypa
     _coins(w, 4)
     w.signals["4h"] = [_sig(setup="S16", target=106_000.0, ts=T0 + H4)]
     res = await w.run(T0 + 2 * H4 + 60_000)
+    assert res["sent"] == 0 and len(w.venue.kinds("limit")) == before and res["errors"] >= 1
+
+
+async def test_s3_with_its_sample_keeps_its_own_slots_and_leaves_the_reserve(world, monkeypatch):
+    """Owner 29.10: once S3 has 30 closed demo trades it keeps its 2 own slots, best first, but no longer takes the
+    reserve, which S12 then gets in full; an unreadable sample count also keeps S3 off the reserve (fail closed)."""
+    w = world
+    assert demo_trader.SAMPLE_DONE == {"S3": 30}
+
+    async def rich():
+        return 100_000.0
+
+    w.venue.equity_usd = rich
+    for k in range(30):  # an earlier day's closed S3 trades: the sample, no slot today
+        await _today(w.store, 100 + k, status="closed", opened_ts=T0 - 3 * 86_400_000, closed_ts=T0 - 2 * 86_400_000, pnl_usd=-1.0)
+    _coins(w, 9)
+    w.signals["4h"] = [_sig(setup="S3", target=106_000.0), _sig(setup="S12", target=104_000.0)]
+    res = await w.run()
+    sent = [o[6] for o in w.venue.kinds("limit")]
+    assert res["sent"] == 7 and sorted(lid.split("-")[1] for lid in sent) == ["S12"] * 5 + ["S3"] * 2
+    assert {lid.split("-")[4] for lid in sent if "-S3-" in lid} == {"C0", "C1"}  # its best two
+    skipped = [a["payload"]["violations"] for a in await w.store.exec_audit_list(kinds=("skipped",)) if a["setup"] == "S3"]
+    assert skipped and all(any("sample of 30 closed trades is done" in x for x in v) for v in skipped)
+
+    assert demo_trader._setup_cap("S3", Counter({"S3": 2}), frozenset()) == []  # before the sample: the reserve is open
+    assert demo_trader._setup_cap("S3", Counter({"S3": 1}), frozenset({"S3"})) == []  # own slots stay
+
+    async def broken(ctx):
+        raise RuntimeError("db locked")
+
+    monkeypatch.setattr(demo_trader, "_sampled", broken)
+    await w.store.conn.execute("DELETE FROM demo_trade")
+    await w.store.conn.commit()
+    for k in range(2):
+        await _today(w.store, k, setup="S3")
+    before = len(w.venue.kinds("limit"))
+    _coins(w, 2)
+    w.signals["4h"] = [_sig(setup="S3", target=106_000.0, ts=T0)]
+    res = await w.run(T0 + H4 + 60_000)
     assert res["sent"] == 0 and len(w.venue.kinds("limit")) == before and res["errors"] >= 1
 
 

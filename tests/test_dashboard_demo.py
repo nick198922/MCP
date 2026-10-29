@@ -479,6 +479,26 @@ def test_setup_versions_copy_matches_the_analytics_reference():
         {"setup": " ", "status": "closed", "opened_ts": None, "closed_ts": v3 + 9, "r_multiple": None, "pnl_usd": 3.0},
         {"setup": "S3", "status": "closed", "opened_ts": v3 + 5, "closed_ts": v3 + 9, "r_multiple": "x", "pnl_usd": float("nan")},
         {"setup": "S3", "status": "closed", "opened_ts": v3 + 5, "closed_ts": now + 1, "r_multiple": 9.0, "pnl_usd": 900.0},
+        # the trade's own tag (schema 35) wins over the open time; a foreign or unknown tag falls back to it
+        {
+            "setup": "S12",
+            "status": "closed",
+            "opened_ts": v3 + 5,
+            "closed_ts": v3 + 9,
+            "r_multiple": 1.0,
+            "pnl_usd": 100.0,
+            "version": "v7",
+        },
+        {"setup": "S3", "status": "closed", "opened_ts": v3 + 5, "closed_ts": v3 + 9, "r_multiple": 1.0, "pnl_usd": 100.0, "version": "v7"},
+        {
+            "setup": "S3",
+            "status": "closed",
+            "opened_ts": v3 + 5,
+            "closed_ts": v3 + 9,
+            "r_multiple": 1.0,
+            "pnl_usd": 100.0,
+            "version": "v99",
+        },
     ]
     trades = LIVE_TRADES["trades"] + extra
     for t_now in (now, sv.EPOCHS[1].from_ms + 1, sv.EPOCHS[0].from_ms - 1):

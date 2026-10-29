@@ -63,6 +63,7 @@ from typing import Any
 
 from ..analytics.course_s14_ema import Bars
 from ..analytics.setup_signals import TF_MS, LiveSignal, Score, closed_bars, scan, score
+from ..analytics.setup_versions import version_of
 from ..store import Store
 from .bybit_demo import CROSS, BybitDemo, OptionInstrument, is_refusal, load_keys
 from .guard import (
@@ -851,6 +852,13 @@ async def _shadow(ctx: Ctx, c: Candidate, taken: bool) -> int | None:
     )
 
 
+def _version(setup: str, now: int) -> str | None:
+    """The rule version of this code for ``setup`` (BACKLOG demo item «б»: the tag is written at placement, so the
+    reconciliation no longer derives it from commit times)."""
+    e = version_of(setup, now, now_ms=now)
+    return None if e is None else e.tag
+
+
 async def _insert_trade(ctx: Ctx, c: Candidate, px: float) -> None:
     p, sig = c.p, c.sig
     await ctx.store.demo_trade_insert(
@@ -876,6 +884,7 @@ async def _insert_trade(ctx: Ctx, c: Candidate, px: float) -> None:
             "entry_order": p.link_id,
             "entry_px": px,
             "rest_until": _rest_until(sig),
+            "version": _version(sig.setup, ctx.now),
         }
     )  # written before the order: if the answer is lost, the next sync finds the order by its link id
 

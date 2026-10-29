@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 34
+SCHEMA_VERSION = 35
 
 # Each migration is a list of SQL statements executed in a single transaction.
 # `PRAGMA user_version` is bumped by Store.init() inside the same explicit transaction,
@@ -895,5 +895,10 @@ MIGRATIONS: dict[int, list[str]] = {
             PRIMARY KEY (ts, rank)
         ) WITHOUT ROWID
         """,
+    ],
+    35: [
+        # Demo trader: the rule version the trade was placed under (analytics/setup_versions.EPOCHS tag of the code
+        # that placed it, e.g. 'v8'); NULL = placed before this column, the version then comes from the open time
+        "ALTER TABLE demo_trade ADD COLUMN version TEXT",
     ],
 }

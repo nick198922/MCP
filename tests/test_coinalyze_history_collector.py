@@ -3,7 +3,9 @@
 Samples: DoubleTop's relay of Coinalyze captured 2026-10-18 (tests/fixtures/doubletop/coinalyze__*_2026-10-18.json,
 BTCUSDT_PERP.A daily, 4 rows, real Coinalyze data but not a live call with our key). The OI sample is in COINS; the
 "USD" OI below is that sample times a fixed price (synthetic, only to exercise the USD path). The ETH series reuse the
-BTC sample: the job does not care which numbers come back for which symbol.
+BTC sample: the job does not care which numbers come back for which symbol. The Bybit (``.6``) series reuse the same
+daily samples; only their OI is scaled by the Bybit / Binance OI ratio of DoubleTop's 2026-10-25 hourly sample
+(coinalyze__open_interest_history_BTC.A_BTC.6_1hour_2026-10-25.json), so the two venues' rows can be told apart.
 """
 
 import dataclasses
@@ -26,6 +28,7 @@ from tradedesk.collector.coinalyze_history import (
     oi_not_usd,
     plan_window,
     split_bad_oi,
+    venue_symbols,
 )
 from tradedesk.collector.scheduler import _retention_sweep, build_default_scheduler
 from tradedesk.config import Settings
@@ -51,14 +54,28 @@ FIRST, LAST = OI_COINS[0]["t"], OI_COINS[-1]["t"]
 PATHS = {"/v1/open-interest-history": "oi_usd", "/v1/funding-rate-history": "funding", "/v1/long-short-ratio-history": "long_short"}
 
 
-def sample_handler(oi=OI_USD, fail=()):
+def _bybit_share():
+    """Bybit / Binance BTC OI (coins) on the first common hour of DoubleTop's 2026-10-25 sample (BTCUSDT.6 vs .A)."""
+    resp = json.loads((FIXDIR / "coinalyze__open_interest_history_BTC.A_BTC.6_1hour_2026-10-25.json").read_text())["response"]
+    first = {x["symbol"]: x["history"][0]["c"] for x in resp}
+    return first["BTCUSDT.6"] / first["BTCUSDT_PERP.A"]
+
+
+BYBIT_SHARE = _bybit_share()  # ~0.67: Bybit's daily "USD" OI below is the Binance sample times this (synthetic)
+OI_USD_BYBIT = [{"t": h["t"], **{k: h[k] * BYBIT_SHARE for k in "ohlc"}} for h in OI_USD]
+BYBIT = ("BTCUSDT.6", "ETHUSDT.6")
+
+
+def sample_handler(oi=OI_USD, fail=(), fail_symbols=()):
     samples = {"oi_usd": oi, "funding": FUND, "long_short": LSR}
 
     def handler(req):
         metric = PATHS[req.url.path]
-        if metric in fail:
+        sym = req.url.params["symbols"]
+        if metric in fail or sym in fail_symbols:
             return httpx.Response(500, text="boom")
-        return httpx.Response(200, json=[{"symbol": req.url.params["symbols"], "history": samples[metric]}])
+        hist = OI_USD_BYBIT if metric == "oi_usd" and sym.endswith(".6") else samples[metric]
+        return httpx.Response(200, json=[{"symbol": sym, "history": hist}])
 
     return handler
 
@@ -339,8 +356,105 @@ def test_env_flag_is_off_by_default(monkeypatch):
     s = Settings.from_env()
     assert s.collect_coinalyze_history_enabled and s.retention_coinalyze_history_days == 0  # never pruned
     assert s.collect_coinalyze_history_backfill_days == 1460
+    assert s.collect_coinalyze_history_venues == "binance"  # Bybit only when the owner asks for it
+    monkeypatch.setenv("TRADEDESK_COLLECT_COINALYZE_HISTORY_VENUES", "binance,bybit")
+    assert Settings.from_env().collect_coinalyze_history_venues == "binance,bybit"
     monkeypatch.delenv("TRADEDESK_COLLECT_COINALYZE_HISTORY_ENABLED")
     assert not Settings.from_env().collect_coinalyze_history_enabled
+
+
+def test_venues_switch_is_accepted_by_features_env():
+    from tradedesk.features import allowed
+
+    assert allowed("TRADEDESK_COLLECT_COINALYZE_HISTORY_VENUES")
+
+
+# ---- the Bybit venue ('.6') ---------------------------------------------------------------------------------
+
+
+def test_venue_symbols_whitelist_order_and_fallback():
+    assert venue_symbols("binance") == (list(SYMBOLS), [])
+    assert venue_symbols("binance,bybit") == (["BTCUSDT_PERP.A", "ETHUSDT_PERP.A", *BYBIT], [])
+    assert venue_symbols(" .6 , Bybit ") == (list(BYBIT), [])  # codes, case, spaces, repeats
+    # OKX and the rest are not verified: rejected, never asked.
+    assert venue_symbols("bybit,okx") == (list(BYBIT), ["okx"])
+    # Nothing valid left: the default Binance series go on (a typo does not stop what is running).
+    assert venue_symbols("okx") == (list(SYMBOLS), ["okx"])
+    assert venue_symbols("") == (list(SYMBOLS), [])
+
+
+async def test_job_with_bybit_stores_each_venue_under_its_own_symbol(tmp_path):
+    rt, seen = make_rt(
+        tmp_path, sample_handler(), collect_coinalyze_history_backfill_days=10, collect_coinalyze_history_venues="binance,bybit"
+    )
+    try:
+        assert await CoinalyzeHistoryJob()(rt) == 2 * len(SYMBOLS) * len(METRICS) * 4
+        assert len(seen) == 12  # 6 per venue, all through the one limited Http
+        assert {r.url.params["symbols"] for r in seen} == {*SYMBOLS, *BYBIT}
+        for req in seen:
+            assert req.headers["api_key"] == SECRET and SECRET not in str(req.url)
+            assert int(req.url.params["from"]) == TODAY - 10 * DAY and int(req.url.params["to"]) == TODAY - 1
+        binance = await rt.store.coinalyze_history_rows("BTCUSDT_PERP.A", "oi_usd")
+        bybit = await rt.store.coinalyze_history_rows("BTCUSDT.6", "oi_usd")
+        assert [r["ts"] for r in bybit] == [r["ts"] for r in binance] == [h["t"] for h in OI_USD]
+        assert bybit[-1]["close"] == pytest.approx(binance[-1]["close"] * BYBIT_SHARE)
+        assert 0.3 < BYBIT_SHARE < 1.0 and bybit[-1]["close"] > 1e9  # USD scale, passes the coin guard
+        fund = await rt.store.coinalyze_history_rows("ETHUSDT.6", "funding")
+        assert fund[-1]["close"] == pytest.approx(FUND[-1]["c"] / 100)  # same units as Binance: decimal per interval
+        ls = await rt.store.coinalyze_history_rows("BTCUSDT.6", "long_short")
+        assert ls[-1]["long_share"] == pytest.approx(LSR[-1]["l"] / 100)
+    finally:
+        await rt.aclose()
+    assert SECRET.encode() not in (tmp_path / "c.sqlite").read_bytes()
+
+
+async def test_unverified_venue_is_never_requested(tmp_path, caplog):
+    rt, seen = make_rt(tmp_path, sample_handler(), collect_coinalyze_history_backfill_days=10, collect_coinalyze_history_venues="okx,bybit")
+    job = CoinalyzeHistoryJob()
+    try:
+        with caplog.at_level(logging.WARNING, logger="tradedesk.collector"):
+            assert await job(rt) == 24
+            rt.now = lambda: datetime(2026, 10, 19, 6, 0, tzinfo=UTC)
+            await job(rt)
+        assert {r.url.params["symbols"] for r in seen} == set(BYBIT)
+        assert caplog.text.count("not in the verified whitelist") == 1  # warned once, not every run
+    finally:
+        await rt.aclose()
+
+
+async def test_bybit_provider_failure_keeps_binance_and_does_not_raise(tmp_path, caplog):
+    handler = sample_handler(fail_symbols=BYBIT)
+    rt, seen = make_rt(tmp_path, handler, collect_coinalyze_history_backfill_days=10, collect_coinalyze_history_venues="binance,bybit")
+    try:
+        with caplog.at_level(logging.WARNING, logger="tradedesk.collector"):
+            assert await CoinalyzeHistoryJob()(rt) == 24  # Binance only
+        assert len(seen) == 12
+        assert await rt.store.coinalyze_history_rows("BTCUSDT.6", "oi_usd") == []
+        assert len(await rt.store.coinalyze_history_rows("BTCUSDT_PERP.A", "oi_usd")) == 4
+        assert "partial run, missing" in caplog.text and "BTCUSDT.6" in caplog.text
+    finally:
+        await rt.aclose()
+
+
+async def test_bybit_switched_on_later_backfills_on_its_own_window(tmp_path):
+    rt, seen = make_rt(tmp_path, sample_handler(), collect_coinalyze_history_backfill_days=10)
+    job = CoinalyzeHistoryJob()
+    try:
+        assert await job(rt) == 24  # Binance up to LAST
+        n = len(seen)
+        rt.settings = dataclasses.replace(rt.settings, collect_coinalyze_history_venues="binance,bybit")
+        rt.now = lambda: datetime(2026, 10, 19, 6, 0, tzinfo=UTC)
+        today = TODAY + DAY
+        assert await job(rt) == len(BYBIT) * len(METRICS) * 4  # Binance: nothing new in the sample past LAST
+        new = seen[n:]
+        assert len(new) == 12
+        froms = {r.url.params["symbols"]: int(r.url.params["from"]) for r in new}
+        # Binance resumes the day after its last bar; Bybit starts its own backfill, as plan_window says.
+        assert all(froms[s] == LAST + DAY == plan_window(int(rt.now().timestamp()), LAST, None, 10, 0)[0] for s in SYMBOLS)
+        assert all(froms[s] == today - 10 * DAY == plan_window(int(rt.now().timestamp()), None, None, 10, 0)[0] for s in BYBIT)
+        assert await rt.store.coinalyze_history_last_ts("ETHUSDT.6", "funding") == LAST
+    finally:
+        await rt.aclose()
 
 
 async def test_migration_from_26(tmp_path):

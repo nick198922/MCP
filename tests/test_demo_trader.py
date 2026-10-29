@@ -809,6 +809,41 @@ async def test_s3_with_its_sample_keeps_its_own_slots_and_leaves_the_reserve(wor
     assert res["sent"] == 0 and len(w.venue.kinds("limit")) == before and res["errors"] >= 1
 
 
+async def test_rare_setups_scan_the_thinner_coins_and_s3_s12_stay_on_the_5m_list(world, monkeypatch):
+    """Owner 29.10 (ADR 0007 p. 8): a coin with $2M of turnover is scanned for the rare setups only, and the guard takes
+    it as part of the universe; a coin under $1M is not scanned at all."""
+    w = world
+
+    def scan(b, tf, setups):
+        return [x for x in w.signals.get(tf, []) if x.setup in setups]
+
+    seen: list[tuple[str, tuple[str, ...]]] = []
+    real = demo_trader._candidates
+
+    async def spy(ctx, uni, state, core=None):
+        seen.append((tuple(uni), tuple(core or ())))
+        return await real(ctx, uni, state, core)
+
+    monkeypatch.setattr(demo_trader, "scan", scan)
+    monkeypatch.setattr(demo_trader, "_candidates", spy)
+    thin, tiny = "THIN/USDT:USDT", "TINY/USDT:USDT"
+    for s in (thin, tiny):
+        w.venue.last[s], w.venue.book[s] = 100_000.0, (99_990.0, 100_010.0)
+
+    async def turnovers():
+        return [("BTC/USDT:USDT", 1e9, ""), (thin, 2e6, ""), (tiny, 5e5, "")]
+
+    w.venue.turnovers = turnovers
+    w.signals["4h"] = [_sig(setup="S3", target=104_000.0), _sig(setup="S14", target=110_000.0)]
+    res = await w.run()
+    ((uni, core),) = seen
+    assert core == ("BTC/USDT:USDT",) and uni == ("BTC/USDT:USDT", thin) and res["universe_wide"] == 2
+    entered = sorted((t["setup"], t["symbol"]) for t in await w.store.demo_trade_list())
+    assert ("S14", thin) in entered and ("S3", thin) not in entered and all(s != tiny for _, s in entered)
+    signals = {(x["setup"], x["symbol"]) for x in await w.store.exec_audit_list(kinds=("signal",))}
+    assert ("S3", "BTC/USDT:USDT") in signals and ("S3", thin) not in signals and ("S14", thin) in signals
+
+
 def _short(setup: str, ts: int = T0 - H4) -> ss.LiveSignal:
     """A short with R:R 5 (two score points from R:R alone; the fake candles rise, so no trend point)."""
     return _sig(setup=setup, side="short", stop=102_000.0, target=90_000.0, ts=ts)

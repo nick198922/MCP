@@ -1,0 +1,2 @@
+- Дослідження carry усередині Hyperliquid (спот UBTC/UETH/HYPE проти шорт-перпа): `analytics/spot_perp_carry.py`, `scripts/verify_hl_spot_perp_carry.py`, тести, звіт `docs/verification/2026-10-29-hl-spot-perp-carry.md`. Вердикт `inconclusive`.
+- BTC +5.3 %, ETH +5.7 % на номінал; HL вищий за Binance на +2.4 / +3.9 п.п., але на капітал ≈ T-bill; HL-ногу у форвард-папір не додаємо.

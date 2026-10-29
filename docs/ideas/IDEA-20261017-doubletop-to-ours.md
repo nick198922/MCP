@@ -14,7 +14,7 @@
 - [x] Ключ Coinalyze (власник, 17.10)
 - [x] 4a. Провайдер Coinalyze + `liquidations_history`
 - [x] 4b. Жива перевірка одиниць (25.10, Claude, з DoubleTop: монети збігаються до знака, USD = монети × close дня; [звіт](../reviews/2026-10-25-doubletop-parity-2.md))
-- [ ] 4c. Бекфіл колектором; агрегат ліквідацій / OI кількох бірж (`.A` + `.6` + …) — пункт BACKLOG
+- [ ] 4c. Бекфіл колектором; агрегат ліквідацій / OI кількох бірж (`.A` + `.6` + …) — пункт BACKLOG. Зроблено: колектор `coinalyze_history` (23.10: BTC/ETH `.A`, OI USD / funding / лонг-шорт, денні); сума `.A` + `.6` в інструментах (26.10); 29.10: Bybit `.6` у колекторі за `TRADEDESK_COLLECT_COINALYZE_HISTORY_VENUES=binance,bybit`, кожна біржа окремим символом, за замовчуванням лише Binance ([зміни](../changes/2026-10-29-coinalyze-collector-bybit.md)). Лишилось: увімкнути збір (`features.env`) і перевірити живцем з ключем; funding / лонг-шорт `.6` звірити з Bybit; денні ліквідації в таблиці; топ-30 монет; OKX і Hyperliquid — лише після звірки OI їхніх кодів
 - [ ] 5. Повтор перевірок на історії Coinalyze
 - [x] 6a. Pendle (нижчий пріоритет): фіксована дохідність, `pendle_fixed_yields`, `pendle_market` змерджено (PR #78)
 - [x] 6b. Pendle: крива дохідності — інструмент `pendle_yield_curve` (критик: approve, `docs/reviews/2026-10-18-pendle-yield-curve.md`)

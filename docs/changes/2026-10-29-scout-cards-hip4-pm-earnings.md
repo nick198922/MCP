@@ -1,0 +1,1 @@
+- Скаут: дві нові картки — HIP-4 денний бінар BTC проти Deribit (`forward`) і PM earnings-beat недооцінка фаворитів (`rejected`); тріаж критика в `docs/reviews/2026-10-29-scout-cards-hip4-pm-earnings-triage.md`.

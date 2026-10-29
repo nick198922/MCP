@@ -1,0 +1,3 @@
+- Скаут: дві нові картки ідей (`deribit-vega-pressure-reversion`, `pm-post-count-inplay-forward`).
+- Критик (тріаж A): vega-pressure відхилено (немає що фільтрувати, проксі зміщений); pm-post-count — `forward` з виправленою метрикою (Brier/лог-оцінка основна, CLV вторинна).
+- Рев'ю: `docs/reviews/2026-10-29-scout-triage.md`.

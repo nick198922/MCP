@@ -1,0 +1,1 @@
+- Скаут: картки `residual-momentum-short-leg` (accepted, з умовами G1–G3) і `funding-momentum-cross-section` (rejected), тріаж критика.

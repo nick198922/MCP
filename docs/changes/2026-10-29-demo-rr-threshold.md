@@ -1,0 +1,3 @@
+- Демо-трейдер: перевірка порога «R:R після комісій ≥ 1.5» на тіньових планах відмов — `analytics/demo_rr_threshold.py`, `scripts/verify_demo_rr_threshold.py`, тести.
+- Вердикт ◯ inconclusive: 94 плани з R, −0.12 R [−0.52; +0.28] (кластери-дні, G = 9); потужності замало, повтор ≈ 20.11.
+- Звіт: `docs/verification/2026-10-29-demo-rr-threshold.md`; код `execution/` не змінювався.

@@ -313,8 +313,14 @@ class _NoCandles:
     async def ohlcv(self, *a: Any, **k: Any) -> Any:
         return Fetched([], Evidence(provider="fixture", tool="ohlcv"))
 
+    async def public_get(self, *a: Any, **k: Any) -> Any:
+        return Fetched([], Evidence(provider="fixture", tool="public_get"))
+
 
 class _Failing:
+    async def public_get(self, *a: Any, **k: Any) -> Any:
+        raise ProviderError("ccxt:bybit", "network", "down")
+
     async def ohlcv(self, *a: Any, **k: Any) -> Any:
         raise ProviderError("ccxt:bybit", "network", "down")
 

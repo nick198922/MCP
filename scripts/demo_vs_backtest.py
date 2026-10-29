@@ -11,8 +11,11 @@ trade (or ``--since``): a trade the backtest had not resolved last week is count
 threshold applies to the total. A separate block lists the trades closed in the last ``--days``. A second block
 (``analytics/demo_shadow.py``, no network) sets the signals the demo selected but did not execute (missed maker entries,
 skipped by score or daily caps, refused by the guard) against their shadow plans, which the collector already
-resolved: R by reason, next to the shadow plans of the filled trades. The text (Ukrainian, for the owner) is printed and, with ``--out``, written
-to a file; ``--json`` writes the rows, both summaries and the not-executed block (schema ``JSON_SCHEMA``, replaced
+resolved: R by reason, next to the shadow plans of the filled trades. The running total is also split by the coin's
+turnover on the entry day (the Bybit daily candle, UTC: >= $5M, $1-5M, < $1M, unknown; owner 29.10), so the thin coins
+the rare setups scan from 29.10 are not mixed with the ones the backtests covered; each group keeps the 30-trade rule.
+The text (Ukrainian, for the owner) is printed and, with ``--out``, written
+to a file; ``--json`` writes the rows, both summaries, the turnover split and the not-executed block (schema ``JSON_SCHEMA``, replaced
 atomically, so the dashboard «Демо» tab can show the numbers without network). Read-only public market data: nothing
 here places, changes or cancels an order.
 """
@@ -35,7 +38,19 @@ from typing import Any
 
 from tradedesk.analytics import demo_shadow
 from tradedesk.analytics.course_s14_ema import Bars
-from tradedesk.analytics.demo_vs_backtest import LIVE_WINDOW, DemoTrade, Replay, replay, summary
+from tradedesk.analytics.demo_vs_backtest import (
+    LIVE_WINDOW,
+    TURNOVER_GROUPS,
+    DemoTrade,
+    Replay,
+    bybit_linear_id,
+    day_turnover,
+    entry_day_ms,
+    replay,
+    summary,
+    summary_by_turnover,
+    turnover_group,
+)
 from tradedesk.analytics.setup_signals import TF_MS
 from tradedesk.config import Settings
 from tradedesk.core.envelope import Builder
@@ -48,11 +63,13 @@ HOUR_MS = 3_600_000
 PAGE = 1000  # Bybit caps klines at 1000 a request; the cursor follows the last bar, so smaller caps page too
 MAX_PAGES = 12
 # 2: + not_executed, schema, generated_ms, venue, notes (1 had summary, week, rows). Additive since (no bump, readers
-# skip what they do not know): not_executed.groups.refused with .excluded (24.10)
+# skip what they do not know): not_executed.groups.refused with .excluded (24.10); by_turnover and rows[].turnover_usd /
+# .turnover_group (29.10)
 JSON_SCHEMA = 2
 MAX_ROWS = 100_000
 
 Fetch = Callable[[str, str, int, int], Awaitable[list[list[float]]]]
+DayFetch = Callable[[str, int, int], Awaitable[list[Any]]]  # (Bybit linear id, start ms, end ms) -> raw daily klines
 
 
 def load_closed(db: str, since_ms: int, until_ms: int) -> tuple[list[dict[str, Any]], str | None]:
@@ -161,6 +178,43 @@ async def replay_all(rows: list[dict[str, Any]], fetch: Fetch, now_ms: int) -> l
     return out
 
 
+def bybit_day_fetch(rt: Runtime, b: Builder) -> DayFetch:
+    """Raw Bybit v5 daily klines of a linear symbol in [start, end] (one request: the caller pages by ``PAGE`` days),
+    through ``rt.exchanges.public_get`` (ccxt's unified OHLCV keeps the base volume only); failures go to ``b.missing``."""
+
+    async def fetch(sym: str, start_ms: int, end_ms: int) -> list[Any]:
+        params = {"category": "linear", "symbol": sym, "interval": "D", "start": start_ms, "end": end_ms, "limit": PAGE}
+        got = await b.guard(f"kline:bybit:{sym}:D", "ccxt:bybit", rt.exchanges.public_get("bybit", "publicGetV5MarketKline", params))
+        lst = (got.get("result") or {}).get("list") if isinstance(got, dict) else None
+        return [x for x in lst if isinstance(x, (list, tuple))] if isinstance(lst, list) else []
+
+    return fetch
+
+
+async def add_turnover(trades: list[dict[str, Any]], rows: list[Replay], fetch_day: DayFetch, now_ms: int) -> list[Replay]:
+    """``rows`` (the replays of ``trades``, same order) with the entry day's turnover and its group; one fetch per
+    symbol and ``PAGE`` days. A trade without a Bybit USDT perpetual id, a closed entry day or a candle stays 'unknown'."""
+    days = [entry_day_ms(DemoTrade.from_row(t)) for t in trades]
+    need: dict[str, set[int]] = {}
+    for x, d in zip(rows, days, strict=True):
+        sid = bybit_linear_id(x.symbol)
+        if sid is not None and d is not None and d + DAY_MS <= now_ms:
+            need.setdefault(sid, set()).add(d)
+    klines: dict[str, list[Any]] = {}
+    for sid, ds in sorted(need.items()):
+        lo, hi = min(ds), max(ds)
+        got: list[Any] = []
+        for start in range(lo, hi + 1, PAGE * DAY_MS):
+            got += await fetch_day(sid, start, min(start + PAGE * DAY_MS, hi + DAY_MS) - 1)
+        klines[sid] = got
+    out = []
+    for x, d in zip(rows, days, strict=True):
+        sid = bybit_linear_id(x.symbol)
+        t = None if sid is None or d is None else day_turnover(klines.get(sid, []), d, now_ms)
+        out.append(dataclasses.replace(x, turnover_usd=t, turnover_group=turnover_group(t)))
+    return out
+
+
 def _d(ms: int) -> str:
     return datetime.fromtimestamp(ms / 1000, UTC).strftime("%Y-%m-%d")
 
@@ -186,6 +240,7 @@ REASON_UA = {
     "no demo R": "немає R демо",
     "be_rule": "лише зміна правила беззбитку",
 }
+TURNOVER_UA = {"ge5m": "≥ $5M", "1to5m": "$1–5M", "lt1m": "< $1M", "unknown": "оборот невідомий"}
 
 
 def _counts(s: dict[str, Any]) -> str:
@@ -209,9 +264,11 @@ def render(
     until_ms: int,
     venue: str,
     notes: list[str],
+    by_turnover: dict[str, dict[str, Any]] | None = None,
 ) -> str:
     """``rows``: the running total (all closed demo trades replayed); ``week``: the summary of those closed since
-    ``week_ms``, whose rows get the table."""
+    ``week_ms``, whose rows get the table; ``by_turnover``: ``summary_by_turnover`` of the running total (a block per
+    turnover group when given)."""
     first = min((x.closed_ts for x in rows if x.closed_ts is not None), default=until_ms)
     lines = [
         f"# Демо проти бектесту, наростаючим підсумком {_d(first)} — {_d(until_ms)}",
@@ -235,6 +292,19 @@ def render(
     if total["mismatch_reasons"]:
         lines.append(
             "Причини розбіжностей: " + ", ".join(f"{REASON_UA.get(k, k)} {v}" for k, v in sorted(total["mismatch_reasons"].items())) + "."
+        )
+    if by_turnover is not None:
+        lines += ["", "## За оборотом монети в день входу (денна свічка Bybit, UTC)", ""]
+        for g in TURNOVER_GROUPS:
+            s = by_turnover.get(g)
+            if not isinstance(s, dict):
+                continue
+            tail = f" Різниця R (демо − бектест) {_r(s['mean_r_diff'])} на {s['n_r']} угодах." if s["n_r"] else ""
+            lines.append(f"- {TURNOVER_UA[g]}: {_counts(s)}{tail} **Висновок:** {s['conclusion']}.")
+        lines.append(
+            "З 29.10 рідкі сетапи (S14, S16, S38, S39, S40) сканують монети від $1M обороту, а бектести сетапів робились на "
+            "топ-30: звірку дрібних монет читати окремо. Оборот дня включає години після входу; «невідомий» — свічки немає, "
+            "день ще не закрився або запит не вдався."
         )
     week_rows = [x for x in rows if x.closed_ts is not None and x.closed_ts >= week_ms]
     lines += ["", f"## Закриті {_d(week_ms)} — {_d(until_ms)}", "", f"За період: {_counts(week)}"]
@@ -321,9 +391,11 @@ def write_json(path: str, doc: dict[str, Any]) -> None:
 
 
 async def run(
-    db: str, since_ms: int, days: float, venue: str, now_ms: int
+    db: str, since_ms: int, days: float, venue: str, now_ms: int, turnover: bool = False
 ) -> tuple[list[Replay], dict[str, Any], dict[str, Any], int, list[str]]:
-    """Replays every closed trade since ``since_ms`` (the running total) and summarises the last ``days`` apart."""
+    """Replays every closed trade since ``since_ms`` (the running total) and summarises the last ``days`` apart. With
+    ``turnover`` the rows also get the entry day's Bybit turnover and group (``add_turnover``; the weekly Telegram
+    message does not need it)."""
     week_ms = now_ms - int(days * DAY_MS)
     trades, err = load_closed(db, since_ms, now_ms)
     notes = [err] if err else []
@@ -331,6 +403,8 @@ async def run(
     b = Builder()
     try:
         rows = await replay_all(trades, venue_fetch(rt, b, venue), now_ms)
+        if turnover:
+            rows = await add_turnover(trades, rows, bybit_day_fetch(rt, b), now_ms)
     finally:
         await rt.aclose()
     notes += [f"{m.field}: {m.reason}" for m in b.missing[:10]] + b.warnings[:5]
@@ -358,10 +432,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     a = ap.parse_args(argv)
     now = int(time.time() * 1000)
-    rows, total, week, week_ms, notes = asyncio.run(run(a.db, _since(a.since), a.days, a.venue, now))
+    rows, total, week, week_ms, notes = asyncio.run(run(a.db, _since(a.since), a.days, a.venue, now, turnover=True))
+    by_turnover = summary_by_turnover(rows)
     trades, audit, plans, ne_err = load_not_executed(a.db)
     ne = demo_shadow.not_executed(trades, audit, plans, now_ms=now)
-    text = render(rows, total, week, week_ms, now, a.venue, notes) + render_not_executed(ne, ne_err)
+    text = render(rows, total, week, week_ms, now, a.venue, notes, by_turnover) + render_not_executed(ne, ne_err)
     print(text, end="")
     if a.out:
         Path(a.out).write_text(text, encoding="utf-8")
@@ -373,6 +448,7 @@ def main(argv: list[str] | None = None) -> int:
             "notes": notes,
             "summary": total,
             "week": week,
+            "by_turnover": by_turnover,
             "rows": [x.as_dict() for x in rows],
             "not_executed": {**ne, "error": ne_err},
         }

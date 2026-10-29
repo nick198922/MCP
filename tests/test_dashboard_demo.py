@@ -5,6 +5,7 @@ import re
 import sqlite3
 import statistics
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -264,6 +265,9 @@ def _vs_bt_doc(now_ms: int) -> dict:
         dvb.Replay("c", "S/USDT:USDT", "S16", "4h", "long", 0, 0, "no_data"),
     ]  # fmt: skip
     s = dvb.summary(rows)
+    groups = {"a": ("ge5m", 7.5e6), "b": ("1to5m", 2.5e6)}  # 'c': no turnover, the default 'unknown'
+    g = {k: replace(x, turnover_group=groups[k][0], turnover_usd=groups[k][1]) for x in rows for k in groups if x.link_id == k}
+    by = dvb.summary_by_turnover([g.get(x.link_id, x) for x in rows])
     return {
         "schema": 2,
         "generated_ms": now_ms,
@@ -271,6 +275,7 @@ def _vs_bt_doc(now_ms: int) -> dict:
         "notes": [],
         "summary": s,
         "week": s,
+        "by_turnover": by,
         "rows": [],
         "not_executed": {**ne, "error": None},
     }
@@ -344,13 +349,53 @@ def test_vs_backtest_file_written_before_the_refusals_still_shows():
     assert "помилка рівнів): 0 (за 7 днів 0)" in html and XSS not in html
 
 
+def test_vs_backtest_block_splits_by_turnover_with_the_rule_per_group(tmp_path):
+    import demo_vs_backtest as script
+
+    path = tmp_path / "latest.json"
+    script.write_json(str(path), _vs_bt_doc(NOW))
+    doc, err = db.load_demo_vs_bt(path)
+    assert err is None
+    page = db.render_demo(*db.load_demo(_filled(tmp_path, NOW)), NOW / 1000, vs_bt_on=True, vs_bt=(doc, err))
+    block = page.split("<h2>Демо проти бектесту")[1]
+    assert "Блок не вдалося показати" not in page
+    assert f"<h3>За оборотом монети в день входу{ICON}" in block
+    sub = block.split("За оборотом монети в день входу")[1].split("Відібрані, але не виконані")[0]
+    # one row per group, each with its own «замало для висновку» (decided of 30)
+    assert "<td>≥ $5M</td><td class='num'>1</td><td class='num'>1</td><td class='num'>1 / 0 / 0</td><td class='num'>0</td>" in sub
+    assert "<td>$1–5M</td><td class='num'>1</td><td class='num'>1</td><td class='num'>0 / 0 / 1</td>" in sub
+    assert (
+        "<td>Оборот невідомий</td><td class='num'>1</td><td class='num'>0</td><td class='num'>0 / 0 / 0</td><td class='num'>1</td>" in sub
+    )
+    assert "<td>&lt; $1M</td><td class='num'>0</td>" in sub
+    assert sub.count("замало для висновку (") == 4 and "замало для висновку (1 з 30)" in sub and "замало для висновку (0 з 30)" in sub
+    assert "100 %" in sub and "0 %" in sub and "+0.20 R" in sub and "−0.10 R" in sub
+    # the turnover table sits between the totals and the not-executed block
+    assert block.index("Звірено угод") < block.index("За оборотом монети") < block.index("Відібрані, але не виконані")
+
+
+def test_vs_backtest_file_written_before_the_turnover_split_still_shows():
+    """A schema-2 file of before 29.10 has no 'by_turnover': the totals show, the block says the split comes next run."""
+    old = _vs_bt_doc(NOW)
+    del old["by_turnover"]
+    html = db.block_demo_vs_bt([], True, old, None, NOW / 1000)
+    assert "Звірено угод" in html and "Розбивки за оборотом у файлі звірки ще немає" in html and "<td>≥ $5M</td>" not in html
+    assert "<td>Не відібрано</td><td class='num'>9</td>" in html  # the rest of the file is untouched
+    odd = _vs_bt_doc(NOW)
+    odd["by_turnover"] = {"ge5m": "x", "1to5m": {"counts": "x", "decided": "y", "mean_r_diff": XSS}}
+    html = db.block_demo_vs_bt([], True, odd, None, NOW / 1000)
+    assert "<td>≥ $5M</td>" not in html and "<td>$1–5M</td><td class='num'>0</td>" in html and XSS not in html
+
+
 def test_vs_backtest_file_constants_follow_the_script_and_the_unit():
     import demo_vs_backtest as script
 
     from tradedesk.analytics.demo_shadow import GROUPS
+    from tradedesk.analytics.demo_vs_backtest import TURNOVER_GROUPS
 
     assert db.DEMO_VS_BT_SCHEMA == script.JSON_SCHEMA
     assert tuple(k for k, _ in db.DEMO_NE_GROUPS) == GROUPS
+    assert tuple(k for k, _ in db.DEMO_TURNOVER_GROUPS) == TURNOVER_GROUPS
     unit = (Path(__file__).resolve().parent.parent / "deploy" / "user-units" / "tradedesk-demo-vs-backtest-daily.service").read_text()
     assert (
         f"--json {db.DATA_DIR / 'demo-vs-backtest' / 'latest.json'}" in unit

@@ -1292,6 +1292,13 @@ HELP: dict[str, tuple[str, str, str, str]] = {
         "Частка збігів і різниця R (демо − бектест) в одиницях ризику бектесту; до 30 звірених угод — «замало для висновку».",
         "Низька частка збігів — бектест сетапу описує не ту торгівлю, що веде демо.",
     ),
+    "demo_vs_bt_turnover": (
+        "Звірка за оборотом монети",
+        "Та сама звірка з бектестом, розбита за оборотом монети в день входу (денна свічка Bybit, UTC): ≥ $5M, $1–5M, "
+        "< $1M, невідомий. З 29.10 рідкі сетапи беруть монети від $1M, а бектести робились на топ-30.",
+        "Кожна група — окремо; до 30 звірених угод у групі — «замало для висновку», навіть якщо загалом угод більше.",
+        "Якщо на $1–5M збігів помітно менше, ніж на ≥ $5M, — бектест не описує торгівлю дрібними монетами.",
+    ),
     "demo_not_executed": (
         "Не виконані проти тіньових планів",
         "Сигнали, які демо відібрало, але не виконало (вхід не заповнився; не відібрано за балом чи денними лімітами; відмова "
@@ -8612,6 +8619,12 @@ DEMO_NE_GROUPS = (  # analytics.demo_shadow.GROUPS
     ("refused", "Відмова guard"),  # since 24.10; an older schema-2 file has no such group (the block says so)
     ("taken", "Виконані (для порівняння)"),
 )
+DEMO_TURNOVER_GROUPS = (  # analytics.demo_vs_backtest.TURNOVER_GROUPS: the entry day's Bybit turnover (since 29.10)
+    ("ge5m", "≥ $5M"),
+    ("1to5m", "$1–5M"),
+    ("lt1m", "< $1M"),
+    ("unknown", "Оборот невідомий"),
+)
 # analytics.setup_versions.EPOCHS (stdlib copy, a test compares the pair): (tag, from unix ms UTC, what changed, source,
 # setups it applies to; () = every setup). A trade's version follows its open time; changes of which signals are taken
 # (daily cap, option leg) are not versions.
@@ -9194,6 +9207,45 @@ def _demo_vs_bt_summary(doc: dict, now: float) -> str:
     return "".join(out)
 
 
+def _demo_vs_bt_turnover(doc: dict) -> str:
+    """The running total per turnover group of the entry day (``by_turnover`` of the file, since 29.10), each with its
+    own «замало для висновку»; a file written before has none and the block says so."""
+    head = f"<h3>За оборотом монети в день входу{_info('demo_vs_bt_turnover')}</h3>"
+    bt = doc.get("by_turnover")
+    if not isinstance(bt, dict):
+        return head + _empty("Розбивки за оборотом у файлі звірки ще немає: його записано до 29.10, наступний щоденний запуск її додасть.")
+    rows = [
+        "<div class='scroll'><table><tr><th>Оборот у день входу</th><th>Закритих</th><th>Звірено</th>"
+        "<th>Збіг / немає сигналу / розбіжність</th><th>Не вирішено</th><th>Частка збігів</th><th>Різниця R, демо − бектест</th>"
+        "<th>95 % ДІ</th><th>Висновок</th></tr>"
+    ]
+    for key, label in DEMO_TURNOVER_GROUPS:
+        s = bt.get(key)
+        if not isinstance(s, dict):
+            continue
+        c = s.get("counts") if isinstance(s.get("counts"), dict) else {}
+        decided = int(_num(s.get("decided")) or 0)
+        undecided = sum(int(_num(c.get(k)) or 0) for k in ("pending", "no_data", "unsupported"))
+        few = decided < DEMO_MIN_N
+        verdict = f"замало для висновку ({decided} з {DEMO_MIN_N})" if few else "достатньо угод для висновку"
+        md = _num(s.get("mean_r_diff"))
+        rows.append(
+            f"<tr><td>{_e(label)}</td><td class='num'>{int(_num(s.get('n')) or 0)}</td><td class='num'>{decided}</td>"
+            f"<td class='num'>{int(_num(c.get('match')) or 0)} / {int(_num(c.get('no_signal')) or 0)} / "
+            f"{int(_num(c.get('mismatch')) or 0)}</td><td class='num'>{undecided}</td>"
+            f"<td class='num'>{_share(s.get('match_share'))}</td><td class='num {_signed_cls(md)}'>{_r(md)}</td>"
+            f"<td class='num'>{_ci(s.get('ci95_r_diff'))}</td><td class='{'warn' if few else ''}'>{_e(verdict)}</td></tr>"
+        )
+    rows.append("</table></div>")
+    note = (
+        "<p class='note'>Оборот — з денної свічки Bybit дня входу (UTC), разом із годинами після входу. З 29.10 рідкі сетапи "
+        "(S14, S16, S38, S39, S40) сканують монети від $1M, а бектести сетапів робились на топ-30, тож дрібні монети "
+        f"рахуються окремо; правило «до {DEMO_MIN_N} звірених угод — замало для висновку» діє в кожній групі. «Оборот "
+        "невідомий» — свічки немає, день ще не закрився або запит не вдався.</p>"
+    )
+    return head + "".join(rows) + note
+
+
 def _demo_ne_cells(s: dict) -> str:
     mr = _num(s.get("mean_r"))
     sr = _num(s.get("sum_r"))
@@ -9283,7 +9335,12 @@ def block_demo_vs_bt(
             + f"<p class='note'>Закритих демо-угод для звірки: {closed}. Висновок звірки — не раніше {DEMO_MIN_N} звірених угод; до того "
             "«замало для висновку».</p>"
         )
-    return _demo_vs_bt_summary(doc, time.time() if now is None else now) + _demo_not_executed(doc.get("not_executed")) + weekly
+    return (
+        _demo_vs_bt_summary(doc, time.time() if now is None else now)
+        + _demo_vs_bt_turnover(doc)
+        + _demo_not_executed(doc.get("not_executed"))
+        + weekly
+    )
 
 
 def render_demo(

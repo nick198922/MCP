@@ -113,7 +113,9 @@ TIMEFRAMES = ("1d", "4h")  # 1d first: its bars also feed the score of the 4h si
 # S38 / S39 (trend-continuation shorts, IDEA-20261024-short-setups-demo step 3; no proven edge, owner 24.10: "we need
 # short setups"): same guard and selection, version v5. S40 (the long side of detector B, owner 25.10, Q-20261025-3):
 # version v6
-SETUPS = ("S14", "S16", "S3", "S12", "S38", "S39", "S40")
+# S28 (a valid order block, longs only, 4h; rejected by its backtest, E[R] net -0.044R) joins as the eighth (owner 29.10,
+# ADR 0007 p. 5): a limit resting at the OB level for 20 bars, the same path as S12 v7; version v8
+SETUPS = ("S14", "S16", "S3", "S12", "S38", "S39", "S40", "S28")
 # The rare setups also scan the thinner coins (owner 29.10, ADR 0007 p. 8): from $1M of 24h turnover, 216 coins against
 # 93 at $5M that day, about 2.4x their signals over 30 days offline; S3 and S12, which fire every day, stay on the $5M
 # list. Coins under $5M were never in a backtest (top 30 there): the reconciliation is to read their trades apart

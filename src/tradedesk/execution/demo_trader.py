@@ -15,7 +15,8 @@ Hourly cycle:
 2. Orders and break-even (also every minute): a resting entry ('pending') is re-quoted, completed at the market or
    cancelled ('missed'); a complete entry gets its target limit; a time exit is re-quoted or sent to the market; half the
    way to the target the stop moves to the entry plus both taker fees (owner 22.10; was +30 % ROE).
-3. Universe: today's top 100 crypto USDT perpetuals by turnover (no tokenised stocks, ETFs or commodities). Scan the setups of ``analytics/setup_signals.py`` on the last
+3. Universe: today's top 100 crypto USDT perpetuals by turnover from $5M, and for ``WIDE_SETUPS`` up to 250 from $1M
+   (owner 29.10; no tokenised stocks, ETFs or commodities). Scan the setups of ``analytics/setup_signals.py`` on the last
    closed 1d and 4h bars; a signal older than ``FRESH_MS`` is ignored, and each signal is decided once.
 4. Each candidate is sized for $100 at the stop (fees included) from the live price, gets its leverage (the owner's
    tier, capped by the venue's maximum) and a confidence score. The account is on cross margin (owner 21.10): the guard
@@ -113,6 +114,13 @@ TIMEFRAMES = ("1d", "4h")  # 1d first: its bars also feed the score of the 4h si
 # short setups"): same guard and selection, version v5. S40 (the long side of detector B, owner 25.10, Q-20261025-3):
 # version v6
 SETUPS = ("S14", "S16", "S3", "S12", "S38", "S39", "S40")
+# The rare setups also scan the thinner coins (owner 29.10, ADR 0007 p. 8): from $1M of 24h turnover, 216 coins against
+# 93 at $5M that day, about 2.4x their signals over 30 days offline; S3 and S12, which fire every day, stay on the $5M
+# list. Coins under $5M were never in a backtest (top 30 there): the reconciliation is to read their trades apart
+# (BACKLOG, demo item «а»).
+WIDE_SETUPS = ("S14", "S16", "S38", "S39", "S40")
+WIDE_MIN_TURNOVER_USD = 1e6
+WIDE_SIZE = 250
 # The day's slots at risk (owner 27.10, Q-20261025-1/2: "testing the setups matters now ... 2 slots for every
 # setup"): a shared 5 let the high-scoring setups starve the others (S12 took 62 % of the entries uncapped; S38 got 1
 # entry in 14 days offline), so every setup has OWN_SLOTS trades at risk a day of its own and RESERVE_SLOTS more are
@@ -736,7 +744,9 @@ class Candidate:
 _CAPS = ("at risk today", "entries today", "orders in the last hour")
 
 
-async def _candidates(ctx: Ctx, uni: tuple[str, ...], state: State) -> list[Candidate]:
+async def _candidates(ctx: Ctx, uni: tuple[str, ...], state: State, core: tuple[str, ...] | None = None) -> list[Candidate]:
+    """Signals on every coin of ``uni``: all the setups on the ``core`` list ($5M; None = all of ``uni``), only
+    ``WIDE_SETUPS`` on the rest."""
     htf: dict[str, Bars] = {}
     out: list[Candidate] = []
     btc = await ctx.safe("ohlcv", lambda: _bars(ctx, BTC, "1d"), symbol=BTC)  # the BTC-trend point of every alt
@@ -750,7 +760,7 @@ async def _candidates(ctx: Ctx, uni: tuple[str, ...], state: State) -> list[Cand
                 continue
             if tf == "1d":
                 htf[symbol] = bars
-            for sig in scan(bars, tf, SETUPS):
+            for sig in scan(bars, tf, SETUPS if core is None or symbol in core else WIDE_SETUPS):
                 if sig.signal_ts + TF_MS[tf] < ctx.now - FRESH_MS or link_id(sig, symbol) in state.seen_link_ids:
                     continue
                 c = await ctx.safe("candidate", lambda s=symbol, sig=sig: _candidate(ctx, s, sig, htf, state), symbol=symbol)
@@ -1514,10 +1524,14 @@ async def cycle(
         return ctx.out
     if mode != CROSS:
         await ctx.safe("audit_margin", lambda: ctx.audit("margin_mode", payload={"was": mode, "now": "cross" if not dry_run else mode}))
-    uni = universe(turnovers)
+    core = universe(turnovers)
+    uni = universe(turnovers, size=WIDE_SIZE, min_turnover_usd=WIDE_MIN_TURNOVER_USD)
+    uni = core + tuple(s for s in uni if s not in core)  # the guard's universe: the wide list
     state = await _state(ctx, positions, uni, equity)
-    ctx.out.update(halted=state.halted, universe=len(uni), trades_today=state.trades_today, entries_today=state.entries_today)
-    cands = await _candidates(ctx, uni, state)
+    ctx.out.update(
+        halted=state.halted, universe=len(core), universe_wide=len(uni), trades_today=state.trades_today, entries_today=state.entries_today
+    )
+    cands = await _candidates(ctx, uni, state, core)
     await _select_and_enter(ctx, cands, state)
     return ctx.out
 

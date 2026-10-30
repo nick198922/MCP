@@ -295,33 +295,40 @@ def s14(b: Bars, timeframe: str) -> list[LiveSignal]:
 
 def range_setups(b: Bars, timeframe: str) -> list[LiveSignal]:
     """S16 (deviation) and S3 (one-bar sweep) on the last closed bar, both sides."""
+    if len(b) < RANGE_W + 20:
+        return []
+    return range_all(b, timeframe, lo=len(b) - 1)
+
+
+def range_all(b: Bars, timeframe: str, lo: int = 0) -> list[LiveSignal]:
+    """S16 and S3 signals decided on every bar ``>= lo`` of ``b`` (both sides; longs first, then shorts, each in bar
+    order): the full-history form of ``range_setups`` for the setup passport. ``range_events`` is causal, so the signals
+    of bar k here are those ``range_setups`` gives on ``b[: k + 1]`` (``tests/test_setup_signals.py``)."""
     out: list[LiveSignal] = []
-    n = len(b)
-    if n < RANGE_W + 20:
-        return out
     for side, bb in (("long", b), ("short", b.mirrored())):
         pos = segment_pos(bb.t)
         a_arr = atr(bb, 14, pos)
         for ev in range_events(bb, pos, a_arr, w=RANGE_W, width_atr=RANGE_WIDTH_ATR):
-            if ev.r != n - 1:
+            if ev.r < lo:
                 continue
-            a = float(a_arr[n - 1])
+            i = ev.r
+            a = float(a_arr[i])
             if not (np.isfinite(a) and a > 0):
                 continue
-            entry = float(bb.c[n - 1])
+            entry = float(bb.c[i])
             stop = ev.ld - STOP_ATR * a
             target = ev.tr if ev.kind == "dev" else ev.mid
             e, st, tg = (_flip(side, v) for v in (entry, stop, target))
             broken, opposite, mid, ext = (_flip(side, v) for v in (ev.lr, ev.tr, ev.mid, ev.ld))
-            lo, hi = min(broken, opposite), max(broken, opposite)
+            lo_px, hi_px = min(broken, opposite), max(broken, opposite)
             edge = f"{'низ' if side == 'long' else 'верх'} {_px(broken)}"
             if ev.kind == "dev":
                 k = ev.r - ev.s
-                what = f"S16 ({timeframe}): девіація — {k} закриттів за межею ({edge}) рейнджу {RANGE_W} свічок {_px(lo)}–{_px(hi)}, потім закриття назад у рейндж."
+                what = f"S16 ({timeframe}): девіація — {k} закриттів за межею ({edge}) рейнджу {RANGE_W} свічок {_px(lo_px)}–{_px(hi_px)}, потім закриття назад у рейндж."
                 aim = f"ціль {_px(tg)} (протилежна межа)"
                 setup = "S16"
             else:
-                what = f"S3 ({timeframe}): свип — свічка проколола {edge} рейнджу {RANGE_W} свічок {_px(lo)}–{_px(hi)} і закрилась назад."
+                what = f"S3 ({timeframe}): свип — свічка проколола {edge} рейнджу {RANGE_W} свічок {_px(lo_px)}–{_px(hi_px)} і закрилась назад."
                 aim = f"ціль {_px(tg)} (середина рейнджу)"
                 setup = "S3"
             comment = (
@@ -333,12 +340,12 @@ def range_setups(b: Bars, timeframe: str) -> list[LiveSignal]:
                     setup,
                     side,
                     timeframe,
-                    int(bb.t[n - 1]),
+                    int(bb.t[i]),
                     e,
                     st,
                     tg,
                     comment,
-                    {"range_low": lo, "range_high": hi, "range_mid": mid, "extreme": ext, "atr14": a},
+                    {"range_low": lo_px, "range_high": hi_px, "range_mid": mid, "extreme": ext, "atr14": a},
                 )
             )
     return out

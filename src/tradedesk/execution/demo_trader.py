@@ -25,7 +25,8 @@ Hourly cycle:
    shared (owner 27.10; a setup in ``SAMPLE_DONE`` with its sample stops taking the reserve, owner 29.10): a trade with its stop at break-even, or closed without a real loss, frees its slot (owner
    21.10/22.10), at most 30 entries a day in all; S38 enters at most 2 shorts per 4h signal bar (``BAR_CAP``, owner
    25.10); the rest are recorded as skipped.
-   S12 since v7 (owner 26.10, ``docs/verification/2026-10-26-prelimit-entries.md``): its signal is a new gap, and the
+   S12 since v7 (owner 26.10; its +0.185R basis was a look-ahead artifact, the passport
+   ``docs/verification/2026-10-30-passport-s12v7-s28.md`` gives OOS about 0R): its signal is a new gap, and the
    entry is a post-only limit resting at the gap's middle (stop attached) until ``rest_until`` (20 bars), not the
    10-minute maker entry; a fill (or a part) completes the trade, the deadline or the kill-switch cancels it ('missed').
    A resting order holds its slot and its risk until it fills or goes, whatever day it was placed; it has no option leg.

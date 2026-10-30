@@ -227,3 +227,41 @@ def test_limit_trade_uses_no_bar_before_the_placement_or_after_the_exit():
         o2, tk2 = sp.limit_trade(q, t0, t1, lvl, st, tg, 48 * H1, RULE_B, Fees())
         assert tk2 == tk and o2.exit_ms == o.exit_ms and o2.r_net == pytest.approx(o.r_net), k
     assert seen > 10
+
+
+def _busy_until(p: Bars, t0: int, t1: int) -> tuple[int, int]:
+    """(fill bar open or -1, busy-until) of a long limit at 100 (stop 98, target 104), as ``limit_rows`` of
+    ``scripts/verify_setup_passport.py`` feeds the chain: the exit if filled, else the deadline."""
+    o, tk = sp.limit_trade(p, t0, t1, 100.0, 98.0, 104.0, 48 * H1, RULE_B, Fees())
+    return tk, (o.exit_ms if o is not None else t1)
+
+
+def test_busy_chain_of_resting_limits_is_causal():
+    # Review remark 6 (docs/reviews/2026-10-30-passport-s12v7-s28.md): the 26.10 chain (verify_prelimit_entries.py)
+    # kept a limit j placed while an earlier limit k of the coin was still waiting only if k never filled later:
+    # future information. The passport chain holds the coin from the placement, so j is skipped whether k fills after
+    # j's placement or never does; only k's exit (after t0_j) differs. A limit m placed after k is gone is kept.
+    n = 30
+    lows, highs = [101.0] * n, [102.0] * n
+    never = _hourly(lows, highs)
+    lows_f, highs_f = lows.copy(), highs.copy()
+    lows_f[8], highs_f[8] = 99.5, 101.0  # k fills in bar 8, after j's placement at bar 5
+    lows_f[9], lows_f[10], highs_f[10] = 100.5, 100.5, 104.5  # target in bar 10
+    fills = _hourly(lows_f, highs_f)
+    t = never.t
+    t0 = {"k": int(t[0]), "j": int(t[5]), "m": int(t[21])}
+    t1 = {"k": int(t[20]), "j": int(t[25]), "m": int(t[29])}
+    exits = []
+    for p, k_fills in ((fills, True), (never, False)):
+        tk, xk = _busy_until(p, t0["k"], t1["k"])
+        assert (tk > t0["j"]) if k_fills else (tk == -1)  # at j's placement k is still waiting in both paths
+        assert xk > t0["j"]
+        exits.append(xk)
+        ex = np.array([xk, _busy_until(p, t0["j"], t1["j"])[1], _busy_until(p, t0["m"], t1["m"])[1]])
+        keep = sp.busy_chain(["A", "A", "A"], np.array([t0["k"], t0["j"], t0["m"]]), ex, np.zeros(3, dtype=np.int64))
+        assert keep.tolist() == [True, False, True], k_fills
+    assert exits[0] != exits[1]
+    # any exit of k after t0_j gives the same decision on j: it depends only on what is known at j's placement
+    for xk in range(t0["j"] + 1, t0["m"], H1 // 4):
+        keep = sp.busy_chain(["A", "A"], np.array([t0["k"], t0["j"]]), np.array([xk, t1["j"]]), np.zeros(2, dtype=np.int64))
+        assert keep.tolist() == [True, False]

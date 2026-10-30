@@ -195,6 +195,24 @@ idle_check() { # idle_check <1 = idle run | 0 = real work>
   doctor "IDLE: the agents found nothing to take in $2 runs in a row. Follow the Idle section of your instructions. Latest run log: $last_log"
 }
 
+# Idle wait that ends early once an agent branch is merged (owner 30.10: the agents idled half an hour while the S3
+# passport waited 15 min for the trader review; the card it held is free as soon as it merges).
+idle_wait() { # idle_wait <seconds>
+  local left="$1" before now
+  before="$(open_branches | wc -l)"
+  while ((left > 0)); do
+    sleep 60
+    left=$((left - 60))
+    git -C "$REPO" fetch -q --no-write-fetch-head origin 2>/dev/null || continue
+    now="$(open_branches | wc -l)"
+    if ((now < before)); then
+      log "an agent branch was merged: next step now"
+      return 0
+    fi
+    before="$now"
+  done
+}
+
 # After a failure: wait longer the more failures there were in a row, and tell the owner once when they pile up.
 fails=0
 after_failure() {
@@ -350,8 +368,8 @@ while true; do
     3)
       log "nothing to do; waiting ${WAIT_IDLE}s"
       idle_check 1 2
-      loop_state "роботи немає, наступна перевірка о $(at "$WAIT_IDLE")"
-      sleep "$WAIT_IDLE"
+      loop_state "роботи немає, наступна перевірка о $(at "$WAIT_IDLE") або одразу після злиття гілки агентів"
+      idle_wait "$WAIT_IDLE"
       ;;
     4)
       log "work continues; next run after ${GAP}s"

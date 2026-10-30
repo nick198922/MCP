@@ -629,3 +629,290 @@ def test_s28_is_opt_in_only():
     assert ss.scan(b, "4h", ("S12", "S38", "S39", "S40")) == [
         s for s in ss.scan(b, "4h", ("S12", "S28", "S38", "S39", "S40")) if s.setup != "S28"
     ]
+
+
+# ---------------------------------------------------------------- S17 (retest of an impulsively broken POB; rejected)
+
+D1_MS = ss.TF_MS["1d"]
+H1 = 3_600_000
+
+
+def _reflect(b: Bars, m: float = 200.0) -> Bars:
+    """Prices m - x with positive values: every long pattern becomes the same short pattern."""
+    return Bars(b.t, m - b.o, m - b.low, m - b.h, m - b.c, b.bar_ms)
+
+
+def _pob_bars(*, low_q: float = 89.0, o_k: float = 95.0, bar_ms: int = H4) -> Bars:
+    """An analytic POB. Bars 0..109 alternate o 100 / c 100.5 and o 100.5 / c 100 with wicks of 0.25: every true range
+    is 1, so the Wilder ATR is exactly 1. Bar 110 (the POB): o 100, c 101, h 101.25, l 99.75 (true range 1.5). Bar 111
+    (the impulse): o 101, c low_q + 1, h 101.1, l ``low_q`` (a drop of 101 - 89 = 12 >= 10 % of 101 and >= 3 ATR).
+    Bar 112: o low_q + 1, c 95, h 95.5, l low_q + 0.5. Bar 113 (the break): o ``o_k``, c 102 > 101.25, h 102.5,
+    l o_k - 0.2 (impulsive: it opened at 95 <= the POB's low 99.75). Then five quiet bars near 102."""
+    o = [100.0 if k % 2 == 0 else 100.5 for k in range(110)]
+    c = [100.5 if k % 2 == 0 else 100.0 for k in range(110)]
+    h = [max(x, y) + 0.25 for x, y in zip(o, c, strict=True)]
+    lo = [min(x, y) - 0.25 for x, y in zip(o, c, strict=True)]
+    o += [100.0, 101.0, low_q + 1, o_k]
+    c += [101.0, low_q + 1, 95.0, 102.0]
+    h += [101.25, 101.1, 95.5, 102.5]
+    lo += [99.75, low_q, low_q + 0.5, o_k - 0.2]
+    for k in range(5):
+        o.append(102.0 if k % 2 == 0 else 102.3)
+        c.append(102.3 if k % 2 == 0 else 102.0)
+        h.append(102.5)
+        lo.append(101.8)
+    t = 1_700_000_000_000 // D1_MS * D1_MS + np.arange(len(o)) * bar_ms
+    return Bars(t.astype(np.int64), np.array(o), np.array(h), np.array(lo), np.array(c), bar_ms)
+
+
+def test_s17_on_an_analytic_pob():
+    b = _pob_bars()
+    a = 1.0
+    for tr in (1.5, 12.1, 6.0, 7.7):  # true ranges of bars 110..113 (by hand, previous closes 100, 101, 90, 95)
+        a = (13 * a + tr) / 14
+    assert atr(b, 14, segment_pos(b.t))[113] == pytest.approx(a, abs=1e-12)
+    # level = high of the POB 101.25; stop min(99.75, 101.25 - 0.5 a) - 0.1 a = 99.75 - 0.1 a (a = 2.5224 > 0.5 needed)
+    stop = 99.75 - 0.1 * a
+    target = 101.25 + 2 * (101.25 - stop)
+    sigs = ss.s17_all(b, "4h")
+    assert len(sigs) == 1
+    s = sigs[0]
+    assert (s.setup, s.side, s.timeframe, s.signal_ts) == ("S17", "long", "4h", int(b.t[113]))
+    assert s.entry == 101.25 and s.stop == pytest.approx(stop, abs=1e-12) and s.target == pytest.approx(target, abs=1e-12)
+    assert s.rr == pytest.approx(2.0)
+    ind = s.indicators
+    assert (ind["pob_low"], ind["pob_high"], ind["pob_ts"], ind["impulse_ts"]) == (99.75, 101.25, b.t[110], b.t[111])
+    assert ind["impulse_move"] == pytest.approx(12 / 101) and ind["atr14"] == pytest.approx(a, abs=1e-12)
+    assert ind["rest_until_ms"] == b.close_time(113) + 90 * D1_MS
+    assert s.comment.startswith("S17 (4h)") and "Лімітка заздалегідь на хаї POB 101.25" in s.comment
+    assert "падінням на 11.9%" in s.comment and "відкрилась по той бік POB" in s.comment and "живе 90 діб" in s.comment
+    assert "Бектест відкинув" in s.comment and "+0.036R" in s.comment and "Доведеної переваги немає" in s.comment
+    assert ss.s17(b.slice(0, 114), "4h") == sigs and ss.scan(b.slice(0, 114), "4h", ("S17",)) == sigs
+    assert ss.s17(b, "4h") == []  # decided on bar 113, not on the last bar
+    # the break is not known before the close of bar 113
+    assert ss.s17_all(b.slice(0, 113), "4h") == []
+    # each rule is required: a drop of 10 < 10.1 (10 % of 101); a break that opened inside the POB with a body of 1 < ATR
+    assert ss.s17_all(_pob_bars(low_q=91.0), "4h") == []
+    assert ss.s17_all(_pob_bars(o_k=101.0), "4h") == []
+    # the short is the same POB on reflected prices: a limit at its low, the stop above it
+    r = ss.s17_all(_reflect(b), "4h")
+    assert [(x.side, x.signal_ts) for x in r] == [("short", int(b.t[113]))]
+    assert r[0].entry == pytest.approx(98.75) and r[0].stop == pytest.approx(200 - stop) and r[0].target == pytest.approx(200 - target)
+    assert "Лімітка заздалегідь на лоу POB 98.75" in r[0].comment and "ростом" in r[0].comment
+    # 1d: the same rules, the 1D numbers of the backtest; other timeframes and a short history give nothing
+    d = ss.s17_all(_pob_bars(bar_ms=D1_MS), "1d")
+    assert len(d) == 1 and "−0.007R" in d[0].comment and d[0].comment.startswith("S17 (1d)")
+    assert ss.s17_all(_pob_bars(bar_ms=H1), "1h") == [] and ss.s17_all(b.slice(0, 101), "4h") == []
+
+
+def _h1_walk(n: int, seed: int) -> Bars:
+    """1h bars: a regime-switching walk with rare 12 % one-hour shocks (so that POBs and their breaks happen)."""
+    rng = np.random.default_rng(seed)
+    drift = np.repeat(rng.choice([-0.0008, 0.0, 0.0, 0.0008], size=n // 240 + 1), 240)[:n]
+    r = drift + rng.normal(0, 0.005, n)
+    hit = rng.random(n) < 0.004
+    r[hit] += rng.choice([-0.12, 0.12], size=int(hit.sum()))
+    c = 100 * np.exp(np.cumsum(r))
+    o = np.concatenate([[c[0]], c[:-1]])
+    h = np.maximum(o, c) * (1 + np.abs(rng.normal(0, 0.002, n)))
+    low = np.minimum(o, c) * (1 - np.abs(rng.normal(0, 0.002, n)))
+    t = 1_600_000_000_000 // D1_MS * D1_MS + np.arange(n) * H1
+    return Bars(t.astype(np.int64), o, h, low, c, H1)
+
+
+def _s17_backtest_rows(h1: Bars, hrs: int) -> tuple[Bars, list[tuple[int, int, float, float, float]]]:
+    """The bars of scripts/verify_course_step5_s17.py (1h -> ``resample_partial`` inside 1h segments) and its events
+    of the main variant ``Var(tf)``, the loop of ``run_symbol`` copied (without the universe and date filters):
+    (side, break bar, level, stop, target) in real prices."""
+    from tradedesk.analytics.course_pob import pob_events, pob_stop
+    from tradedesk.analytics.course_s18_trend import pos_from_seg, resample_partial, segments
+
+    bt, segt = resample_partial(h1, segments(h1.t), hrs, hrs)
+    post = pos_from_seg(segt)
+    at = atr(bt, 14, post)
+    ok = (post >= 100) & np.isfinite(at)
+    out = []
+    for side in (1, -1):
+        B = bt if side == 1 else bt.mirrored()
+        for e in pob_events(B, post, at, drop=0.10, look=5, atr_mult=3.0, break_bars=180 * 24 // hrs, imp_atr=1.0, warmup=100):
+            if e.k < 0 or not e.impulsive:
+                continue
+            arm, level = e.k, e.levels["wick"]
+            if arm >= len(B) or not ok[arm] or post[e.k] < 100:
+                continue
+            A = float(at[e.k])
+            stop = pob_stop(level, e.low, A, "pob")
+            if (float(B.c[arm]) - level) / A < 0:
+                continue
+            out.append((side, arm, side * level, side * stop, side * (level + 2.0 * (level - stop))))
+    return bt, sorted(out)
+
+
+@pytest.mark.parametrize(("tf", "hrs", "seed"), [("4h", 4, 1), ("4h", 4, 2), ("1d", 24, 3)])
+def test_s17_equals_the_backtest_events(tf, hrs, seed):
+    """On the backtest's own bars (1h resampled, with a 3-day hole that restarts the segment) the live detector gives
+    exactly the backtest's main-variant events: same break bars, sides, levels, stops and targets."""
+    n_h = 1000 * hrs
+    h1 = _h1_walk(n_h, seed)
+    h1 = _with_hole(h1, n_h // 2, 72)
+    bt, want = _s17_backtest_rows(h1, hrs)
+    sigs = ss.s17_all(bt, tf)
+    idx = {int(t): k for k, t in enumerate(bt.t)}
+    got = sorted((1 if s.side == "long" else -1, idx[s.signal_ts], s.entry, s.stop, s.target) for s in sigs)
+    assert len(got) == len(want) > 3 and {g[0] for g in got} == {1, -1}
+    for g, w in zip(got, want, strict=True):
+        assert g[:2] == w[:2] and g[2:] == pytest.approx(w[2:], rel=1e-12)
+    for s in sigs:
+        k = idx[s.signal_ts]
+        sign = 1 if s.side == "long" else -1
+        assert s.rr == pytest.approx(2.0) and sign * (s.entry - s.stop) > 0 and sign * (float(bt.c[k]) - s.entry) > 0
+        assert s.entry == (s.indicators["pob_high"] if s.side == "long" else s.indicators["pob_low"])
+        assert s.indicators["rest_until_ms"] == bt.close_time(k) + 90 * D1_MS and s.indicators["impulse_move"] >= 0.10
+
+
+def test_s17_never_looks_ahead():
+    """The signals up to bar t are the same when the bars after t are removed or replaced by a different future, and
+    the live scan on every prefix finds exactly the full-history signals."""
+    b, _ = _s17_backtest_rows(_h1_walk(4 * 700, 4), 4)
+    full = ss.s17_all(b, "4h")
+    assert len(full) > 3
+    rng = np.random.default_rng(11)
+    for s in full:
+        t = int(np.searchsorted(b.t, s.signal_ts))
+        for cut in (t - 1, t):
+            upto = int(b.t[cut])
+            want = [x for x in full if x.signal_ts <= upto]
+            assert ss.s17_all(b.slice(0, cut + 1), "4h") == want, cut
+            assert [x for x in ss.s17_all(_other_future(b, cut, rng), "4h") if x.signal_ts <= upto] == want, cut
+    live = []
+    for i in range(100, len(b)):
+        got = ss.scan(b.slice(0, i + 1), "4h", ("S17",))
+        assert all(x.setup == "S17" and x.signal_ts == int(b.t[i]) for x in got)
+        live += got
+    assert live == [x for x in full if x.signal_ts >= int(b.t[100])] and live
+
+
+# ---------------------------------------------------------------- S23 (SFP retest, a QM proxy without BOS; negative)
+
+
+def _sfp_window(*, o: float = 100.2, h: float = 100.5, low: float = 99.0, c: float = 100.4) -> Bars:
+    """An analytic sweep. Bars 0..298 alternate o 100 / c 104 and o 104 / c 100, all with high 104.25 and low 99.75:
+    one range of width 5.25 / 101.625 = 5.2 %, every inner bar a swing low at 99.75 and no candle with a long wick.
+    Bar 299 (the default): o 100.2, c 100.4, h 100.5, l 99.0 — it pierces the swing low 99.75 by 0.75 with a lower wick
+    of 1.2 of its range 1.5 (0.8 >= 0.5) and closes back above it."""
+    o_ = [100.0 if k % 2 == 0 else 104.0 for k in range(299)] + [o]
+    c_ = [104.0 if k % 2 == 0 else 100.0 for k in range(299)] + [c]
+    h_ = [104.25] * 299 + [h]
+    l_ = [99.75] * 299 + [low]
+    t = 1_700_000_000_000 // H4 * H4 + np.arange(300) * H4
+    return Bars(t.astype(np.int64), np.array(o_), np.array(h_), np.array(l_), np.array(c_), H4)
+
+
+def test_s23_on_an_analytic_sweep():
+    b = _sfp_window()
+    sigs = ss.s23_all(b, "4h")
+    assert len(sigs) == 1
+    s = sigs[0]
+    # by hand: the range is 99.0 .. 104.25 (the sweep low included), middle 101.625; the M2 stop is the level minus twice
+    # the overshoot, 99.75 - 2 * 0.75 = 98.25 (lower than the wick - 0.1 % = 98.901); the limit rests at 99.75
+    assert (s.setup, s.side, s.timeframe, s.signal_ts) == ("S23", "long", "4h", int(b.t[299]))
+    assert s.entry == 99.75 and s.stop == pytest.approx(98.25, abs=1e-9) and s.target == pytest.approx(101.625, abs=1e-12)
+    assert s.rr == pytest.approx(1.875 / 1.5)
+    ind = s.indicators
+    assert (ind["swept_level"], ind["sweep_extreme"], ind["range_low"], ind["range_high"]) == (99.75, 99.0, 99.0, 104.25)
+    assert ind["range_mid"] == s.target and ind["rest_until_ms"] == b.close_time(299) + 4 * H1
+    assert ind["max_hold_ms"] == 10 * D1_MS
+    assert s.comment.startswith(
+        "S23 (4h): SFP-ретест (проксі QM, без BOS) — свічка зняла свінг-лоу 99.75 до 99 і закрилась назад вище, на 100.4"
+    )
+    assert "BOS і FVG автора не моделюються" in s.comment and "утримання до 10 діб від входу" in s.comment
+    assert "Лімітка на знятому рівні 99.75" in s.comment and "16 свічок 15m (4 год)" in s.comment
+    assert "скасувати, якщо ціна раніше дійде до цілі" in s.comment and "(300 св., ширина 5.2 % ≤ 15 %)" in s.comment
+    assert "значуще гірший за нуль" in s.comment and "−0.142R" in s.comment and "Доведеної переваги немає" in s.comment
+    assert ss.s23(b, "4h") == sigs and ss.scan(b, "4h", ("S23",)) == sigs
+    # each rule is required: a close below the swing low (no sweep), a short wick (0.3 of 1.5 < 0.5), a close above the
+    # range middle (the backtest takes no trade), one bar too few for the 300-bar window, a timeframe other than 4h
+    assert ss.s23_all(_sfp_window(c=99.6, o=99.7), "4h") == []
+    assert ss.s23_all(_sfp_window(o=99.3), "4h") == []
+    assert ss.s23_all(_sfp_window(o=101.9, c=102.0, h=102.1), "4h") == []
+    assert ss.s23_all(b.slice(1, 300), "4h") == [] and ss.s23_all(b, "1d") == []
+    # the short: the same sweep of the swing high on reflected prices
+    r = ss.s23_all(_reflect(b), "4h")
+    assert [(x.side, x.signal_ts) for x in r] == [("short", int(b.t[299]))]
+    assert r[0].entry == pytest.approx(100.25) and r[0].stop == pytest.approx(101.75) and r[0].target == pytest.approx(98.375)
+    assert "зняла свінг-хай 100.25 до 101 і закрилась назад нижче" in r[0].comment
+
+
+def _sfp_bars(n: int = 700, seed: int = 1) -> Bars:
+    """4h bars with quiet ranges and long wicks (exponential), so that sweeps inside ranges happen."""
+    rng = np.random.default_rng(seed)
+    drift = np.repeat(rng.choice([-0.003, 0.0, 0.0, 0.003], size=n // 60 + 1), 60)[:n]
+    c = 100 * np.exp(np.cumsum(drift + rng.normal(0, 0.006, n)))
+    o = np.concatenate([[c[0]], c[:-1]])
+    h = np.maximum(o, c) * (1 + rng.exponential(0.01, n))
+    low = np.minimum(o, c) * (1 - rng.exponential(0.01, n))
+    t = 1_700_000_000_000 // H4 * H4 + np.arange(n) * H4
+    return Bars(t.astype(np.int64), o, h, low, c, H4)
+
+
+@pytest.mark.parametrize("seed", [1, 2])
+def test_s23_equals_the_walk_forward_backtest(seed):
+    """``walk_forward_sfp`` with the 4h parameters of scripts/verify_sfp_ltf.py: without its one-position skip it finds
+    exactly the live detector's sweeps (the backtest cannot evaluate the last bar: no bars after it); with the skip
+    (the backtest's sample) it is a subset. Level, stop and target are the backtest's swept level, M2 stop and TP1."""
+    from tradedesk.analytics.sfp_backtest import walk_forward_sfp
+
+    b = _sfp_bars(700, seed)
+    rows = ss._ohlc_rows(b, 0, len(b))
+    params = {"window": 300, "max_hold_bars": 60, "max_width_pct": 15.0, "fee_pct": 0.1, "sweep_wick_ratio": 0.5}
+    every = walk_forward_sfp(rows, **params, one_position=False)
+    taken = walk_forward_sfp(rows, **params)
+    ref = {(x["idx"], x["direction"]): x for x in every}
+    sigs = ss.s23_all(b, "4h")
+    idx = {int(t): k for k, t in enumerate(b.t)}
+    got = {(idx[s.signal_ts], s.side): s for s in sigs if idx[s.signal_ts] < len(b) - 1}
+    assert set(got) == set(ref) and len(got) > 10 and {k[1] for k in got} == {"long", "short"}
+    for key, s in got.items():
+        v = ref[key]["variants"]["m2_2x"]
+        assert (s.entry, s.stop, s.target) == (ref[key]["swept_level"], v["stop"], v["tp1"])
+    assert {(x["idx"], x["direction"]) for x in taken} < set(ref)
+
+
+def test_s23_never_looks_ahead():
+    """The signal on bar t is the same when the bars after t are removed (the live scan on bars 0..t) or replaced by a
+    different future, and the live scan on every prefix finds exactly the full-history signals."""
+    b = _sfp_bars(650, 2)
+    full = ss.s23_all(b, "4h")
+    assert len(full) > 10
+    rng = np.random.default_rng(5)
+    for s in full:
+        t = int(np.searchsorted(b.t, s.signal_ts))
+        for cut in (t - 1, t):
+            upto = int(b.t[cut])
+            want = [x for x in full if upto - 5 * H4 <= x.signal_ts <= upto]
+            assert ss.s23_all(b.slice(0, cut + 1), "4h", lo=cut - 5) == want, cut
+            assert [x for x in ss.s23_all(_other_future(b, cut, rng), "4h", lo=cut - 5) if x.signal_ts <= upto] == want, cut
+    live = []
+    for i in range(299, len(b)):
+        got = ss.scan(b.slice(0, i + 1), "4h", ("S23",))
+        assert all(x.setup == "S23" and x.signal_ts == int(b.t[i]) for x in got)
+        live += got
+    assert live == full
+
+
+def test_s17_s23_are_opt_in_only():
+    import inspect
+
+    assert inspect.signature(ss.scan).parameters["setups"].default == ("S14", "S16", "S3")
+    b17, _ = _s17_backtest_rows(_h1_walk(4 * 700, 4), 4)
+    b23 = _sfp_bars(400, 1)
+    for b in (b17, b23):
+        assert "S17" in ss.DETECTORS and "S23" in ss.DETECTORS
+        assert not {"S17", "S23"} & {s.setup for s in ss.scan(b, "4h")}
+        others = ("S12", "S28", "S38", "S39", "S40")
+        assert ss.scan(b, "4h", others) == [s for s in ss.scan(b, "4h", (*others, "S17", "S23")) if s.setup not in {"S17", "S23"}]
+    assert ss.s17_all(b17, "4h") and ss.s23_all(b23, "4h")
+    # the opt-in scan on a prefix ending at a signal bar returns that signal
+    s = ss.s17_all(b17, "4h")[0]
+    k = int(np.searchsorted(b17.t, s.signal_ts))
+    assert s in ss.scan(b17.slice(0, k + 1), "4h", ("S17",))

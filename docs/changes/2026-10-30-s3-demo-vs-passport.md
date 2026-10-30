@@ -1,0 +1,3 @@
+- Пункт 6 картки demo-setups-depth для S3: звірка 33 закритих демо-угод з паспортом (звіт `docs/verification/2026-10-30-s3-demo-vs-passport.md`, скрипт `scripts/verify_s3_demo_vs_passport.py`): середній R демо +0.037 у смузі паспорта, `inconclusive`.
+- Нове питання власнику Q-20261030-3 (тримати S3 v3 на демо до 100 угод із критерієм перегляду).
+- Вердикт додано в базу знань (`docs/knowledge/setups.md`).

@@ -675,7 +675,7 @@ async def test_s12_rejected_by_the_backtest_is_scanned_and_traded_under_the_same
         return list(w.signals.get(tf, []))
 
     monkeypatch.setattr(demo_trader, "scan", scan)
-    assert demo_trader.SETUPS == ("S14", "S16", "S3", "S12", "S38", "S39", "S40")
+    assert demo_trader.SETUPS == ("S14", "S16", "S3", "S12", "S38", "S39", "S40", "S28")
     w.signals["4h"] = [_sig(setup="S12", target=104_500.0)]
     await w.enter()
     assert asked and all(a == demo_trader.SETUPS for a in asked)
@@ -842,6 +842,21 @@ async def test_rare_setups_scan_the_thinner_coins_and_s3_s12_stay_on_the_5m_list
     assert ("S14", thin) in entered and ("S3", thin) not in entered and all(s != tiny for _, s in entered)
     signals = {(x["setup"], x["symbol"]) for x in await w.store.exec_audit_list(kinds=("signal",))}
     assert ("S3", "BTC/USDT:USDT") in signals and ("S3", thin) not in signals and ("S14", thin) in signals
+
+
+async def test_the_trade_row_carries_the_rule_version_of_the_placing_code(world):
+    """BACKLOG demo item «б»: the trader writes the setup's version at placement (schema 35); before the first epoch
+    (the fake clock is 14.10) there is none."""
+    from tradedesk.analytics import setup_versions as sv
+
+    v8 = sv.EPOCHS[7].from_ms
+    assert demo_trader._version("S28", v8) == "v8" and demo_trader._version("S3", v8) == "v3"
+    assert demo_trader._version("S12", v8) == "v7" and demo_trader._version("S3", sv.EPOCHS[0].from_ms - 1) is None
+    w = world
+    w.signals["4h"] = [_sig(setup="S14", target=110_000.0)]
+    await w.enter()
+    (t,) = await w.store.demo_trade_list()
+    assert "version" in t and t["version"] is None
 
 
 def _short(setup: str, ts: int = T0 - H4) -> ss.LiveSignal:

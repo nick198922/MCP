@@ -8599,7 +8599,7 @@ def polymarket_page(now: float | None = None) -> str:
 # missed / skipped signals against their shadow plans) and explains its absence.
 
 DEMO_DB = JOURNAL_DB  # execution.demo_trader.DEFAULT_DB: the same store
-DEMO_SETUPS = ("S14", "S16", "S3", "S12", "S38", "S39", "S40")  # execution.demo_trader.SETUPS
+DEMO_SETUPS = ("S14", "S16", "S3", "S12", "S38", "S39", "S40", "S28")  # execution.demo_trader.SETUPS
 DEMO_MIN_N = 30  # analytics.demo_vs_backtest.MIN_TRADES (owner 23.10: no conclusion before ~30 closed trades)
 DEMO_MAX_ROWS = 20000
 DEMO_AUDIT_MAX_ROWS = 20000
@@ -8679,6 +8679,14 @@ DEMO_EPOCHS: tuple[tuple[str, int, str, str, tuple[str, ...]], ...] = (
         " за закриттям свічки дотику; стоп, ціль і ведення угоди — як у v4",
         "docs/changes/2026-10-26-demo-s12-resting-limit.md, docs/verification/2026-10-26-prelimit-entries.md",
         ("S12",),
+    ),
+    (
+        "v8",
+        1_793_303_400_000,  # 2026-10-29 19:50:00 UTC
+        "S28 (валідний ордер-блок, лише лонг, 4h) на демо як відкинутий бектестом сетап: вхід лімітом на рівні OB"
+        " (живе 20 свічок 4h), стоп рівень − 1 ATR, ціль 2R; ведення угоди — як у v3",
+        "docs/changes/2026-10-29-demo-s28.md (S28 not on the demo before this change)",
+        ("S28",),
     ),
 )
 DEMO_STATUS_UA = {
@@ -8873,7 +8881,8 @@ def demo_version_stats(trades: list[dict], now_ms: float, epochs: tuple = DEMO_E
             continue
         raw = t.get("setup")
         setup = ("" if raw is None else str(raw).strip()) or None
-        e = demo_version_of(setup, _num(t.get("opened_ts")), now_ms, eps)
+        e = next((x for x in eps if isinstance(t.get("version"), str) and x[0] == t["version"] and _demo_epoch_applies(x, setup)), None)
+        e = e or demo_version_of(setup, _num(t.get("opened_ts")), now_ms, eps)  # the trade's own tag first (schema 35)
         tag = None if e is None else e[0]
         g = groups.setdefault(
             (setup, tag),

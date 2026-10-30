@@ -37,11 +37,11 @@ class GuardConfig:
     risk_usd: float = 100.0  # lost at the stop including fees (the owner's rule: 1 % of ~$10k)
     # owner 27.10 (Q-20261025-2): testing the setups comes first, so the day's limits follow the demo trader's slots
     # (2 per setup for 7 setups + a reserve of 3) and do not brake it on their own; the cross-margin checks below stay
-    max_trades_per_day: int = 17  # today's entries still at risk (break-even frees a slot), = demo_trader slots
+    max_trades_per_day: int = 19  # today's entries still at risk (break-even frees a slot), = demo_trader slots
     max_entries_per_day: int = 30  # hard ceiling of entries per UTC day, freed slots included
     max_open_positions: int = 15
     max_open_risk_usd: float = 1500.0  # sum of the losses at the stops of all open positions
-    daily_max_loss_usd: float = 1700.0  # realised loss of the UTC day (= a full day of stops); then no entries until 00:00 UTC
+    daily_max_loss_usd: float = 1900.0  # realised loss of the UTC day (= a full day of stops); then no entries until 00:00 UTC
     max_margin_share: float = 0.90  # initial margin of all open positions / equity
     max_maint_and_risk_share: float = 0.50  # (maintenance margin of all + loss at all stops) / equity: cross-margin safety
     max_notional_usd: float = 50_000.0  # per order; a tighter stop shrinks the size to this cap (risk below $100)

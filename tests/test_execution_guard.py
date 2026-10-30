@@ -95,7 +95,7 @@ def test_each_limit_refuses(p, s, needle):
 
 def test_only_testnet_mode_exists():
     assert any("not allowed" in v for v in check(P, S, GuardConfig(mode="live")))
-    assert DEFAULT.mode == g.MODE == "testnet" and DEFAULT.venue == "bybit-demo" and DEFAULT.max_trades_per_day == 17
+    assert DEFAULT.mode == g.MODE == "testnet" and DEFAULT.venue == "bybit-demo" and DEFAULT.max_trades_per_day == 19
 
 
 def test_short_levels_mirror():

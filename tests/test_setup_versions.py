@@ -45,11 +45,12 @@ def test_epochs_are_the_dated_rule_changes():
         ("v5", _ms(2026, 10, 25, 16, 15, 0)),  # S38 / S39 shorts join the demo (no proven edge)
         ("v6", _ms(2026, 10, 25, 20, 15, 0)),  # S40 (B-long) joins the demo (owner 25.10, Q-20261025-3)
         ("v7", _ms(2026, 10, 27, 18, 0, 0)),  # S12 enters with a limit resting at the gap's middle
+        ("v8", _ms(2026, 10, 29, 19, 50, 0)),  # S28 joins the demo (rejected by its backtest)
     ]
     assert sv.EPOCHS[2].from_ms == BE_SWITCH_MS
     assert all(e.setups == () for e in sv.EPOCHS[:3]) and sv.EPOCHS[3].setups == ("S12",)
     assert sv.EPOCHS[4].setups == ("S38", "S39")
-    assert sv.EPOCHS[5].setups == ("S40",) and sv.EPOCHS[6].setups == ("S12",)
+    assert sv.EPOCHS[5].setups == ("S40",) and sv.EPOCHS[6].setups == ("S12",) and sv.EPOCHS[7].setups == ("S28",)
     assert all(e.source and e.what for e in sv.EPOCHS)
     assert [e.from_ms for e in sv.EPOCHS] == sorted(e.from_ms for e in sv.EPOCHS)
     first_open = min(t["opened_ts"] for t in LIVE["trades"])
@@ -183,3 +184,19 @@ def test_s40_is_v6_and_the_shorts_keep_v5():
     assert sv.version_of("S40", later, now_ms=later).tag == "v6"
     for setup in ("S38", "S39"):
         assert sv.version_of(setup, later, now_ms=later).tag == "v5"
+
+
+def test_the_trades_own_version_tag_wins_over_its_open_time():
+    """BACKLOG demo item «б» (schema 35): a trade tagged by the trader keeps its tag; a tag of another setup's epoch, an
+    unknown one or none falls back to the open time."""
+    v3, v7 = sv.EPOCHS[2].from_ms, sv.EPOCHS[6].from_ms
+    now = v7 + 10
+    base = {"status": "closed", "opened_ts": v7 + 1, "closed_ts": v7 + 2, "r_multiple": 1.0, "pnl_usd": 100.0}
+    trades = [
+        {**base, "setup": "S12", "version": "v4"},  # placed by the v4 code just before the v7 deploy
+        {**base, "setup": "S3", "version": "v7"},  # v7 is S12's only: back to the open time (v3)
+        {**base, "setup": "S3", "version": "v99"},
+        {**base, "setup": "S3"},
+    ]
+    rows = {(r["setup"], r["version"]): r["closed"] for r in sv.version_stats(trades, now_ms=now)["rows"]}
+    assert rows == {("S12", "v4"): 1, ("S3", "v3"): 3} and sv.EPOCHS[2].from_ms == v3

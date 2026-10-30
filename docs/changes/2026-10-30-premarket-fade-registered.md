@@ -1,0 +1,3 @@
+- Пре-маркет перпи (S46): крок 1 виконано — реєстрація H1–H3 і один прогін на n = 25 (+3 бачені події окремо); вердикт `inconclusive`, звіт `docs/verification/2026-10-30-premarket-conversion-fade.md`.
+- Нова чиста функція `analytics/premarket_fade.py`, скрипт `scripts/verify_premarket_fade.py`, тести `tests/test_premarket_fade.py`.
+- Рев'ю критика: `docs/reviews/2026-10-30-premarket-conversion-fade.md` (request changes → текстові правки внесено).

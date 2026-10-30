@@ -68,6 +68,16 @@ def test_levels_and_comment_of_every_signal(live):
     assert seen > 10
 
 
+def test_range_all_equals_the_live_range_scan_on_each_prefix(live):
+    """The passport's full-history S3 / S16 form gives on bar k exactly what the live scan gives on bars[: k + 1]."""
+    b, sigs = live
+    want = {(s.setup, s.side, s.signal_ts, s.entry, s.stop, s.target, s.comment) for _, s in sigs if s.setup in ("S3", "S16")}
+    got = {(s.setup, s.side, s.signal_ts, s.entry, s.stop, s.target, s.comment) for s in ss.range_all(b, "4h", lo=150)}
+    assert got == want and {w[0] for w in got} == {"S3", "S16"}
+    head = ss.range_all(b.slice(0, 600), "4h", lo=150)  # bars after 600 do not change the earlier signals
+    assert {(s.setup, s.side, s.signal_ts) for s in head} == {w[:3] for w in got if w[2] <= int(b.t[599])}
+
+
 def test_closed_bars_drops_the_forming_bar():
     rows = [[0, 1, 2, 0.5, 1.5, 10], [H4, 1.5, 2, 1, 1.8, 10], [2 * H4, 1.8, 1.9, 1.7, 1.75, 1]]
     assert len(ss.closed_bars(rows, "4h", now_ms=2 * H4 + 60_000)) == 2  # the third bar is still forming

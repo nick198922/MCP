@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Setup passport (IDEA-20261030-demo-setups-depth, items 2-5): the demo setup's trades on history with the demo's
-rules and costs, as the reference its live trades are compared with. Pre-registration: the card's section
-«Попередня реєстрація паспорта».
+rules and costs, as the reference its live trades are compared with. Pre-registration: the card's sections
+«Попередня реєстрація паспорта» and, for S14 / S16 (the demo's ``WIDE_SETUPS``: verdict on the top-250 >= $1M list,
+turnover groups on it, a descriptive chain shared by S14 + S16 + S3), «Попередня реєстрація паспортів S14 і S16».
 
     uv run python scripts/verify_setup_passport.py S3 --stage sanity        # coverage, units, known number, timing
     uv run python scripts/verify_setup_passport.py S3 --stage run           # per-symbol candidate files (4 workers)
@@ -62,6 +63,15 @@ RULE_B, RULE_BX = StopRule("B", be_frac=0.5), StopRule("Bx", be_frac=0.5, be_sam
 F1, F15 = Fees(), Fees().scaled(1.5)
 BTC = "BTCUSDT"
 TOP_N = 100  # demo_trader scans guard.universe(size=100, min_turnover_usd=5e6): top-100 by turnover AND >= $5M
+# demo_trader.WIDE_SETUPS also scan guard.universe(size=WIDE_SIZE=250, min_turnover_usd=WIDE_MIN_TURNOVER_USD=1e6); the
+# union with the top-100 >= $5M list is the top-250 >= $1M list (registration «Попередня реєстрація паспортів S14 і S16»)
+WIDE = ("S14", "S16", "S38", "S39", "S40")
+WIDE_TOP_N = 250
+DEMO_ORDER = ("S14", "S16", "S3")  # demo_trader.SETUPS order of the setups with a passport chain (joint-chain ties)
+
+
+def top_n_of(setup: str) -> int:
+    return WIDE_TOP_N if setup in WIDE else TOP_N
 
 
 def _only(name: str, fn: Callable[..., list[ss.LiveSignal]]) -> Callable[[Bars, str], list[ss.LiveSignal]]:
@@ -71,6 +81,7 @@ def _only(name: str, fn: Callable[..., list[ss.LiveSignal]]) -> Callable[[Bars, 
 # setup -> (full-history detector, timeframes, primary turnover floor in USD: the demo's scan list)
 SETUPS: dict[str, tuple[Callable[[Bars, str], list[ss.LiveSignal]], tuple[str, ...], float]] = {
     "S3": (_only("S3", ss.range_all), ("4h", "1d"), 5e6),
+    "S14": (lambda b, tf: ss.s14_all(b, tf), ("4h", "1d"), 1e6),
     "S16": (_only("S16", ss.range_all), ("4h", "1d"), 1e6),
     "S38": (lambda b, tf: ss.s38_all(b, tf), ("4h",), 1e6),
     "S39": (lambda b, tf: ss.s39_all(b, tf), ("4h",), 1e6),
@@ -343,13 +354,18 @@ def stage_report(a: argparse.Namespace, out: Path) -> None:
     IS, OOS = T["t_in"] < OOS_MS, T["t_in"] >= OOS_MS
     elig = s1.eligible_syms(a.data_dir)
     qv = s1.daily_qv(a.s1_cache, a.data_dir, elig)
-    top_days = top_n_days(qv, TOP_N)
+    top_n, wide, fl = top_n_of(a.setup), a.setup in WIDE, f"≥ ${floor / 1e6:g}M"
+    top_days = top_n_days(qv, top_n)
     in_top = in_prev_day_top(T, top_days)
     # Correction after review (2026-10-30): the demo scans guard.universe(size=100, min_turnover_usd=5e6), i.e. the
-    # top-100 by turnover AND >= $5M, not every coin >= $5M as the registration said.
+    # top-100 by turnover AND >= $5M, not every coin >= $5M as the registration said. WIDE setups: top-250 and >= $1M,
+    # registered before their run as the verdict sample (V); S3 keeps its registered >= $5M row as V.
     P100 = chain(T, period & demo & turn5 & in_top)
+    V = P100 if wide else P  # verdict sample
+    G = P100 if wide else W  # base of the turnover table
+    pl = f"усі {fl} + відбір демо (без рангу)" if wide else "основна"
     emit(
-        f"# Паспорт {a.setup}: кандидатів {T['B'].size}; основна вибірка (оборот ≥ ${floor / 1e6:g}M + відбір демо) {int(P.sum())}; ≥ $1M {int(W.sum())}; усі сигнали ≥ ${floor / 1e6:g}M {int(A.sum())}; топ-{TOP_N} і ≥ ${floor / 1e6:g}M + відбір демо {int(P100.sum())}"
+        f"# Паспорт {a.setup}: кандидатів {T['B'].size}; {pl if wide else f'основна вибірка (оборот {fl} + відбір демо)'} {int(P.sum())}; ≥ $1M {int(W.sum())}; усі сигнали {fl} {int(A.sum())}; топ-{top_n} і {fl} + відбір демо {int(P100.sum())}"
     )
     emit(
         f"сигнали за відбором демо (≥ ${floor / 1e6:g}M, 2021+, до ланцюга): R:R≥1.5 {int((period & turn5 & (T['rr'] >= MIN_RR)).sum())}, + стоп≤10 % {int((period & turn5 & (T['rr'] >= MIN_RR) & (T['stop_pct'] <= MAX_STOP)).sum())}, + бал≥2 {int((period & turn5 & demo).sum())} з {int((period & turn5).sum())}"
@@ -360,41 +376,55 @@ def stage_report(a: argparse.Namespace, out: Path) -> None:
             "звірка з 2026-10-22-demo-stop-management (S3 4h топ-30, усі сигнали, з 2020-02; там −0.045 [−0.077; −0.013], n 10712, зайнятість спільна з S14/S16) "
             + fmt(ci(T, kn))
         )
+    if a.setup == "S14":  # known number: step 1 (2026-10-17-course-s14-ema), S14 4h long sweep, top-30, IS: 508 signals
+        kn = (T["tf"] == "4h") & (T["side"] == "long") & T["top30"] & IS
+        emit(
+            "звірка з кроком 1 (2026-10-17-course-s14-ema: S14 4h лонг, топ-30, IS, усі сигнали без ланцюга; там n 508, "
+            f"−0.080R з ринковими витратами і власним виходом — R не порівнюється): кандидатів тут {int(kn.sum())} "
+            "(менше на сигнали з оборотом < $1M / невідомим, рівнями чи без 1h-шляху); правило B " + fmt(ci(T, kn))
+        )
     hdr = "| вибірка | n | E[R] net | 95 % CI (тижневі блоки) | p |\n|---|---|---|---|---|"
     emit("\n## Загалом (правило B; R на ризик угоди)\n" + hdr)
-    for lab, m, k in (
-        ("основна 2021+", P, "B"),
-        ("основна IS (< 2025-03)", P & IS, "B"),
-        ("**основна OOS (≥ 2025-03) — вердикт**", P & OOS, "B"),
-        ("основна OOS, Bx (беззбиток і в барі тригера)", P & OOS, "Bx"),
-        ("основна 2021+, Bx", P, "Bx"),
+    vtag = " — вердикт" if wide else ""
+    rows = [
+        (f"{pl} 2021+", P, "B"),
+        (f"{pl} IS (< 2025-03)", P & IS, "B"),
+        ("**основна OOS (≥ 2025-03) — вердикт**" if not wide else f"{pl} OOS (≥ 2025-03)", P & OOS, "B"),
+        (f"{pl} OOS, Bx (беззбиток і в барі тригера)", P & OOS, "Bx"),
+        (f"{pl} 2021+, Bx", P, "Bx"),
         ("усі сигнали без відбору демо, 2021+", A, "B"),
         ("усі сигнали без відбору демо, OOS", A & OOS, "B"),
-        ("≥ $1M + відбір демо, 2021+", W, "B"),
-        (f"топ-{TOP_N} і ≥ $5M + відбір демо (список демо), 2021+", P100, "B"),
-        (f"топ-{TOP_N} і ≥ $5M, IS", P100 & IS, "B"),
-        (f"**топ-{TOP_N} і ≥ $5M, OOS**", P100 & OOS, "B"),
-        (f"топ-{TOP_N} і ≥ $5M, OOS, Bx", P100 & OOS, "Bx"),
-    ):
+        *([] if wide else [("≥ $1M + відбір демо, 2021+", W, "B")]),
+        (f"топ-{top_n} і {fl} + відбір демо (список демо), 2021+", P100, "B"),
+        (f"топ-{top_n} і {fl}, IS", P100 & IS, "B"),
+        (f"**топ-{top_n} і {fl}, OOS{vtag}**", P100 & OOS, "B"),
+        (f"топ-{top_n} і {fl}, OOS, Bx", P100 & OOS, "Bx"),
+    ]
+    for lab, m, k in rows:
         emit(f"| {lab} " + fmt(ci(T, m, k)))
     emit(
-        f"угод топ-{TOP_N} за роками: "
+        f"угод топ-{top_n} за роками: "
         + ", ".join(f"{y} {int((P100 & (T['year'] == y)).sum())}" for y in sorted(set(T["year"][P100].tolist())))
     )
-    ex = Counter(T["B_k"][P])
-    emit(f"виходи (основна): {dict(ex)}; середні витрати {np.nanmean(T['cost'][P]):.3f}R; частка R>0 {np.mean(T['B'][P] > 0):.1%}")
+    ex = Counter(T["B_k"][V])
+    emit(
+        f"виходи ({'вибірка вердикту' if wide else 'основна'}): {dict(ex)}; середні витрати {np.nanmean(T['cost'][V]):.3f}R; частка R>0 {np.mean(T['B'][V] > 0):.1%}"
+    )
+    if wide:
+        joint_chain(a, out, T, P100, qv)
 
     cells: list[tuple[str, str, np.ndarray, np.ndarray]] = []  # (table, label, sample mask, base)
-    for y in sorted(set(T["year"][P].tolist())):
-        cells.append(("рік", str(y), P & (T["year"] == y), P))
+    for y in sorted(set(T["year"][V].tolist())):
+        cells.append(("рік", str(y), V & (T["year"] == y), V))
     for tf in SETUPS[a.setup][1]:
-        cells.append(("таймфрейм", tf, P & (T["tf"] == tf), P))
+        cells.append(("таймфрейм", tf, V & (T["tf"] == tf), V))
     for sd in ("long", "short"):
-        cells.append(("бік", sd, P & (T["side"] == sd), P))
+        cells.append(("бік", sd, V & (T["side"] == sd), V))
+    glab = f"оборот (топ-{top_n} і {fl}, вибірка вердикту)" if wide else "оборот (≥ $1M, власний ланцюг)"
     for g in (sp.TOP30, sp.GE5M, sp.M1TO5):
-        cells.append(("оборот (≥ $1M, власний ланцюг)", g, W & (T["grp"] == g), W))
+        cells.append((glab, g, G & (T["grp"] == g), G))
     for st in (*cr.STATES, "none"):
-        cells.append(("режим BTC", st, P & (T["regime"] == st), P))
+        cells.append(("режим BTC", st, V & (T["regime"] == st), V))
     res = [ci(T, m) for _, _, m, _ in cells]
     ps = [r["p"] if np.isfinite(r["p"]) else 1.0 for r in res]
     adj = holm(ps)
@@ -408,29 +438,30 @@ def stage_report(a: argparse.Namespace, out: Path) -> None:
         o = ci(T, m & OOS)
         os_ = f"{int(o['n'])} | {o['m']:+.3f} [{o['lo']:+.3f}; {o['hi']:+.3f}]" if o["n"] >= 2 else f"{int(o['n'])} | —"
         emit(f"| {lab} " + fmt(r) + f" {h:.3f} | {os_} |")
-    for lab, mm in (("2021+", W), ("OOS", W & OOS)):
+    for lab, mm in (("2021+", G), ("OOS", G & OOS)):
         d = sp.diff_ci(T["B"][mm], (T["grp"] == sp.M1TO5)[mm], (T["grp"] != sp.M1TO5)[mm], T["week"][mm], n_boot=N_BOOT, seed=SEED)
         emit(f"контраст 1to5m − (top30+ge5m), {lab}: {d['d']:+.3f} [{d['lo']:+.3f}; {d['hi']:+.3f}] p {d['p']:.3f}")
 
-    emit("\n## Стрес (основна вибірка)\n" + hdr)
+    emit(f"\n## Стрес ({'вибірка вердикту' if wide else 'основна вибірка'})\n" + hdr)
     late_ok = np.isfinite(T["L"])
     for lab, m, k in (
-        ("база OOS", P & OOS, "B"),
-        ("витрати ×1.5, 2021+", P, "B15"),
-        ("витрати ×1.5, OOS", P & OOS, "B15"),
-        ("вхід на свічку пізніше, 2021+", P, "L"),
-        ("вхід на свічку пізніше, OOS", P & OOS, "L"),
-        ("пізніше + ×1.5, OOS", P & OOS, "L15"),
-        ("база OOS на тих самих угодах, що мають пізній вхід (відібрано за майбутнім)", P & OOS & late_ok, "B"),
+        ("база OOS", V & OOS, "B"),
+        ("витрати ×1.5, 2021+", V, "B15"),
+        ("витрати ×1.5, OOS", V & OOS, "B15"),
+        ("вхід на свічку пізніше, 2021+", V, "L"),
+        ("вхід на свічку пізніше, OOS", V & OOS, "L"),
+        ("пізніше + ×1.5, OOS", V & OOS, "L15"),
+        ("база OOS на тих самих угодах, що мають пізній вхід (відібрано за майбутнім)", V & OOS & late_ok, "B"),
     ):
         emit(f"| {lab} " + fmt(ci(T, m, k)))
-    emit(f"без пізнього входу (ціна вже за стопом / ціллю або дірка): {int((P & ~late_ok).sum())} з {int(P.sum())}")
+    emit(f"без пізнього входу (ціна вже за стопом / ціллю або дірка): {int((V & ~late_ok).sum())} з {int(V.sum())}")
     emit(
         "\nціна запізнення (пізній − база), два знаменники; демо теж не входить, якщо ціна вже за стопом / ціллю\n"
         "| період | на сигнал (немає пізнього входу = 0R) | на угоду, де пізній вхід можливий | база пропущених: n, E[R] |\n|---|---|---|---|"
     )
     late0 = np.where(late_ok, T["L"], 0.0) - T["B"]
-    for lab, m in (("2021+", P), ("OOS", P & OOS), (f"топ-{TOP_N}, 2021+", P100), (f"топ-{TOP_N}, OOS", P100 & OOS)):
+    late_rows = [("2021+", P), ("OOS", P & OOS), (f"топ-{top_n}, 2021+", P100), (f"топ-{top_n}, OOS", P100 & OOS)]
+    for lab, m in late_rows[2:] if wide else late_rows:
         r = sp.mean_ci(late0[m], T["week"][m], n_boot=N_BOOT, seed=SEED)
         s = sp.mean_ci((T["L"] - T["B"])[m & late_ok], T["week"][m & late_ok], n_boot=N_BOOT, seed=SEED)
         nb = ci(T, m & ~late_ok)
@@ -440,12 +471,12 @@ def stage_report(a: argparse.Namespace, out: Path) -> None:
 
     emit("\n## Смуга R для n = 30 (5-й / 50-й / 95-й перцентиль середнього R)")
     for lab, m in (
-        (f"OOS топ-{TOP_N} (список демо, еталон пункту 6)", P100 & OOS),
-        (f"2021+ топ-{TOP_N}", P100),
-        (f"OOS топ-{TOP_N}, Bx", P100 & OOS),
-        ("OOS основна", P & OOS),
-        ("2021+ основна", P),
-        ("OOS основна, Bx", P & OOS),
+        (f"OOS топ-{top_n} (список демо, еталон пункту 6)", P100 & OOS),
+        (f"2021+ топ-{top_n}", P100),
+        (f"OOS топ-{top_n}, Bx", P100 & OOS),
+        (f"OOS {pl}", P & OOS),
+        (f"2021+ {pl}", P),
+        (f"OOS {pl}, Bx", P & OOS),
     ):
         k = "Bx" if "Bx" in lab else "B"
         idx = np.flatnonzero(m)
@@ -457,24 +488,27 @@ def stage_report(a: argparse.Namespace, out: Path) -> None:
             f"{lab}: i.i.d. {b['iid_p5']:+.3f} / {b['iid_p50']:+.3f} / {b['iid_p95']:+.3f}; ковзні {int(b['windows'])} вікон {b['roll_p5']:+.3f} / {b['roll_p50']:+.3f} / {b['roll_p95']:+.3f}"
         )
 
-    emit(
-        "\n## Розвідувально (не зареєстровано, додано після перших результатів): за балом демо, основна вибірка\n| бал | n | E[R] net | 95 % CI | p | OOS: n | OOS E[R] [CI] |\n|---|---|---|---|---|---|---|"
+    head = (
+        "Описово (зареєстровано до прогону, без Холма): за балом демо, вибірка вердикту"
+        if wide
+        else "Розвідувально (не зареєстровано, додано після перших результатів): за балом демо, основна вибірка"
     )
-    for sc in sorted(set(T["score"][P].tolist())):
-        m = P & (T["score"] == sc)
+    emit(f"\n## {head}\n| бал | n | E[R] net | 95 % CI | p | OOS: n | OOS E[R] [CI] |\n|---|---|---|---|---|---|---|")
+    for sc in sorted(set(T["score"][V].tolist())):
+        m = V & (T["score"] == sc)
         o = ci(T, m & OOS)
         emit(f"| {sc} " + fmt(ci(T, m)) + f" {int(o['n'])} | {o['m']:+.3f} [{o['lo']:+.3f}; {o['hi']:+.3f}] |")
 
     emit("\n## Без найбільших внесків")
-    for lab, m in (("OOS", P & OOS), ("2021+", P)):
+    for lab, m in (("OOS", V & OOS), ("2021+", V)):
         v = T["B"][m]
         top = np.argsort(-v)[:5]
         keep = np.ones(v.size, dtype=bool)
         keep[top] = False
         r = sp.mean_ci(v[keep], T["week"][m][keep], n_boot=N_BOOT, seed=SEED)
         emit(f"{lab} без 5 найкращих угод: {r['m']:+.3f} [{r['lo']:+.3f}; {r['hi']:+.3f}]")
-    per_asset(T, P, IS, OOS)
-    coverage(a, qv, top_days, T, P)
+    per_asset(T, V, IS, OOS)
+    coverage(a, qv, top_days, T, V, floor, top_n)
 
 
 def top_n_days(qv: dict[str, list[tuple[int, float]]], n: int) -> dict[int, set[str]]:
@@ -492,10 +526,68 @@ def in_prev_day_top(T: dict[str, np.ndarray], top_days: dict[int, set[str]]) -> 
     return np.array([str(s) in top_days.get(int(d), ()) for d, s in zip(prev, T["sym"], strict=True)])
 
 
-def coverage(
-    a: argparse.Namespace, qv: dict[str, list[tuple[int, float]]], top_days: dict[int, set[str]], T: dict[str, np.ndarray], P: np.ndarray
+def demo_list(T: dict[str, np.ndarray], setup: str, top_days: dict[int, set[str]]) -> np.ndarray:
+    """Candidates of ``setup`` the demo would take before the occupancy chain: 2021+, its demo list (top-N by the last
+    closed day's Binance volume and the 24h turnover floor) and the demo's selection."""
+    floor = SETUPS[setup][2]
+    return (
+        (T["t_in"] >= PASSPORT_MS)
+        & (T["rr"] >= MIN_RR)
+        & (T["stop_pct"] <= MAX_STOP)
+        & (T["score"] >= MIN_SCORE)
+        & (np.nan_to_num(T["turn"], nan=-1) >= floor)
+        & in_prev_day_top(T, top_days)
+    )
+
+
+def joint_chain(
+    a: argparse.Namespace, out: Path, T: dict[str, np.ndarray], own: np.ndarray, qv: dict[str, list[tuple[int, float]]]
 ) -> None:
-    """Share of universe coin-days with >= 20 cached 1h bars, by period, for >= $5M and for top-N & >= $5M."""
+    """Descriptive row (registered for S14 / S16 before their run): one open trade per coin shared by S14, S16 and S3,
+    as the demo's guard refuses a second position in a coin; each setup on its own demo list with the demo's
+    selection; ties at the same entry time: higher score first, then the demo_trader.SETUPS order, 4h before 1d, long
+    before short. Other demo setups (S12, S28, S38-S40) and the daily slots are not modelled."""
+    for st in DEMO_ORDER:
+        d = out.parent / st / "cands"
+        if not d.is_dir() or not any(d.glob("*.json")):
+            emit(f"\nспільний ланцюг S14 + S16 + S3: немає кандидатів {st} — рядок пропущено (порахувати після прогону всіх трьох)")
+            return
+    tops: dict[int, dict[int, set[str]]] = {}
+    cols: dict[str, list[np.ndarray]] = defaultdict(list)
+    for r, st in enumerate(DEMO_ORDER):
+        U = T if st == a.setup else load_rows(out.parent / st)
+        n = top_n_of(st)
+        if n not in tops:
+            tops[n] = top_n_days(qv, n)
+        m = demo_list(U, st, tops[n])
+        cols["sym"].append(U["sym"][m].astype(str))
+        cols["t_in"].append(U["t_in"][m])
+        cols["B_x"].append(U["B_x"][m])
+        cols["order"].append(-U["score"][m] * 100 + r * 10 + U["order"][m])
+        cols["B"].append(U["B"][m])
+        cols["week"].append(U["week"][m])
+        cols["mine"].append(np.full(int(m.sum()), st == a.setup))
+    J = {k: np.concatenate(v) for k, v in cols.items()}
+    keep = sp.busy_chain(J["sym"].tolist(), J["t_in"], J["B_x"], J["order"])
+    mine = J["mine"] & keep
+    oos = J["t_in"] >= OOS_MS
+    emit(f"\nспільний ланцюг S14 + S16 + S3 (описово): угод {a.setup} {int(mine.sum())} з {int(own.sum())} у власному ланцюгі")
+    for lab, m in (("2021+", mine), ("OOS", mine & oos)):
+        r = sp.mean_ci(J["B"][m], J["week"][m], n_boot=N_BOOT, seed=SEED)
+        emit(f"| {a.setup}, спільний ланцюг, {lab} | {int(r['n'])} | {r['m']:+.3f} | [{r['lo']:+.3f}; {r['hi']:+.3f}] | {r['p']:.3f} |")
+
+
+def coverage(
+    a: argparse.Namespace,
+    qv: dict[str, list[tuple[int, float]]],
+    top_days: dict[int, set[str]],
+    T: dict[str, np.ndarray],
+    P: np.ndarray,
+    floor: float = 5e6,
+    top_n: int = TOP_N,
+) -> None:
+    """Share of universe coin-days with >= 20 cached 1h bars, by period, for >= floor and for top-N & >= floor."""
+    fl = f"≥ ${floor / 1e6:g}M"
     have = {p.name for p in (a.s1_cache / "k1h").iterdir() if p.is_dir()}
     cnt: Counter[str] = Counter()
     miss: Counter[str] = Counter()
@@ -506,24 +598,28 @@ def coverage(
             u, c = np.unique(h1.t // DAY_MS, return_counts=True)
             hours = dict(zip(u.tolist(), c.tolist(), strict=True))
         for t, v in rows:
-            if not (PASSPORT_MS <= t < END["4h"]) or v < 5e6:
+            if not (PASSPORT_MS <= t < END["4h"]) or v < floor:
                 continue
             ok = hours.get(int(t) // DAY_MS, 0) >= 20
             per = "OOS" if t >= OOS_MS else "IS"
-            uni = ["ge5m"] + ([f"top{TOP_N}"] if s in top_days.get(int(t), ()) else [])
+            top = s in top_days.get(int(t), ())
+            uni = ["ge"] + (["top"] if top else []) + (["top_1to5m"] if top and v < 5e6 else [])
             for u_ in uni:
                 for k in (per, s1.month_of(int(t))[:4]):
                     cnt[f"{u_}:{k}:all"] += 1
                     cnt[f"{u_}:{k}:ok"] += int(ok)
-            if not ok and per == "OOS" and f"top{TOP_N}" in uni:
+            if not ok and per == "OOS" and top:
                 miss[s] += 1
     emit(f"\n## Покриття 1h-кешем (монето-дні з ≥ 20 годинними свічками, 2021-01..2026-09); rss {rss_mb():.0f} MB")
     ks = ("IS", "OOS", "2021", "2022", "2023", "2024", "2025", "2026")
     emit("| всесвіт | " + " | ".join(ks) + " |\n|---|" + "---|" * len(ks))
-    for u_, lab in (("ge5m", "усі ≥ $5M (зареєстрована)"), (f"top{TOP_N}", f"топ-{TOP_N} і ≥ $5M (список демо)")):
+    unis = [("ge", f"усі {fl} (зареєстрована)"), ("top", f"топ-{top_n} і {fl} (список демо)")]
+    if floor < 5e6:
+        unis.append(("top_1to5m", f"топ-{top_n}, денний оборот $1–5M"))
+    for u_, lab in unis:
         cells = [f"{cnt[f'{u_}:{k}:ok'] / max(1, cnt[f'{u_}:{k}:all']):.1%} ({cnt[f'{u_}:{k}:all']})" for k in ks]
         emit(f"| {lab} | " + " | ".join(cells) + " |")
-    emit(f"монети топ-{TOP_N} OOS без покриття (днів): " + ", ".join(f"{s} {n}" for s, n in miss.most_common(15)))
+    emit(f"монети топ-{top_n} OOS без покриття (днів): " + ", ".join(f"{s} {n}" for s, n in miss.most_common(15)))
     for old, new in (("RNDRUSDT", "RENDERUSDT"), ("MATICUSDT", "POLUSDT")):
         emit(f"перейменування {old} -> {new}: 1h-кеш {old} {'є' if old in have else 'нема'}, {new} {'є' if new in have else 'нема'}")
     OOS = T["t_in"] >= OOS_MS

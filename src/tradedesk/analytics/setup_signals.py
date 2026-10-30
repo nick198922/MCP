@@ -47,6 +47,36 @@ Rules taken from the verification runs (status of each setup: docs/knowledge/set
   entry is a limit resting at that level for ``S28_WAIT`` bars (indicator ``rest_until_ms``), stop 1 ATR (of the
   engulfing candle) under it, target 2R. **Rejected by the backtest** (``docs/verification/2026-10-17-course-step4-fvg-ob.md``);
   a detector for the scanner only (opt-in name "S28"), not traded by the demo.
+- S17 (the retest of an impulsively broken POB; 1d and 4h, both sides): ``course_pob.pob_events`` with the registered
+  main rules of step 5 (``scripts/verify_course_step5_s17.py``, ``Var(tf)``): the POB is the bar with the highest close
+  among the 5 before an impulse bar whose low is >= 10 % and >= 3 ATR below that close; the signal is the first close
+  above the POB's high within 180 days, if that break is impulsive (opened at or below the POB's low, or a bullish body
+  >= 1 ATR); the entry is a limit resting at the POB's high for 90 days (indicator ``rest_until_ms``), stop
+  ``course_pob.pob_stop`` "pob" (min(POB low, level - 0.5 ATR) - 0.1 ATR, ATR14 of the break bar), target 2R, held up
+  to 20 bars. Shorts: the same on mirrored prices. **Rejected by the backtest** (no better than a random level at the
+  same distance, ``docs/verification/2026-10-17-course-step5-s17.md``); opt-in name "S17", not traded by the demo.
+  History limit on 4h: the break window is 180 days = 1080 bars of 4h, so with the demo's 1000 bars (minus the
+  100-bar warm-up, about 150 days) a POB whose impulse is 150..180 days old gives no live signal although the
+  backtest took it: the live detector misses some signals (never adds false ones). The full window needs at least
+  1080 + 100 + 14 = 1194 bars of 4h (two pages); 1d is not affected.
+- S23 (a proxy of QM without BOS and FVG, as in the backtest; 4h, both sides): the author's QM is sweep of the last
+  swing -> BOS with an FVG -> test of the manipulation zone (``docs/knowledge/setups.md``); the backtested
+  formalisation, which this detector reproduces, is only the SFP sweep of ``sfp_backtest.walk_forward_sfp`` (step 2
+  of ``docs/verification/2026-10-12-sfp-oos-and-15m.md``, ``scripts/verify_sfp_ltf.py``) with the limit at the swept
+  level of ``sfp_backtest.ltf_entry`` mode "retest". On the last bar of a 300-bar window, inside the latest range
+  (>= 20 bars, width <= 15 %), a candle pierces the last swing low with a wick >= half its range and closes back
+  above it; that close back across the swept level is just the definition of the SFP sweep (``detect_sweeps``), not
+  the author's break or engulfing of the manipulation's start, and neither the BOS nor the FVG is modelled. The entry
+  is a limit resting at the swept level for 16 bars of 15m (``rest_until_ms``), cancelled if the price reaches the
+  target first; stop ``ranges.generate_setup`` M2 (level - 2x the overshoot, never closer than 0.1 % beyond the
+  wick), target the range middle, a filled trade held at most 10 days from the fill (the backtest's timeout,
+  indicator ``max_hold_ms``). Shorts: a sweep of the last swing high. The separate lower-timeframe break of
+  structure (``ltf_entry`` mode "confirm") needs 15m bars and was another entry, not this one. The backtest also
+  skipped new sweeps of a symbol while its previous trade was open (an entry at the 4h close held up to 60 bars,
+  about 10 days, whether or not the retest limit filled); the live detector reports every sweep, and the demo blocks
+  a symbol only while a position or a limit lives, so the live signal set is wider than the backtest's sample (a
+  demo-vs-backtest comparison must allow for it). **Significantly negative in the backtest**; opt-in name "S23", not
+  traded by the demo.
 """
 
 from __future__ import annotations
@@ -59,7 +89,9 @@ import numpy as np
 
 from .course_basics import range_events
 from .course_fvg_ob import BOS_WINDOW, Zone, bos_up, fvg_zones, ob_zones, untouched
+from .course_pob import pob_events, pob_stop
 from .course_s14_ema import DAY_MS, Bars, Params, align_daily, atr, ema, find_signals, indicators, segment_pos
+from .ranges import detect_ranges, detect_sweeps, generate_setup, swing_points
 from .short_setups import breakout_retest, failed_sweep
 
 S14_PARAMS = Params()
@@ -135,10 +167,64 @@ S28_BACKTEST_UA = (
     "(з вимогою проколу на 0.05 ATR — гірше на ≈ 0.05R), утримання 20 свічок. Доведеної переваги немає."
 )
 
+# S17, as registered in step 5 of IDEA-20261016-course-setups-crypto (main rules Var(tf) of scripts/verify_course_step5_s17.py)
+S17_TIMEFRAMES = ("1d", "4h")  # 1d: a co-primary row (12h, the other one, is not a scanner timeframe); 4h: a side row
+S17_DROP = 0.10  # the impulse: close of the POB minus the low of the impulse bar, as a fraction of the POB's close
+S17_LOOK = 5  # the POB is the highest close among this many bars before the impulse bar
+S17_IMPULSE_ATR = 3.0  # ... and the impulse is also at least this many ATR14 (of the POB)
+S17_BREAK_DAYS = 180  # the break is the first close beyond the POB's high within this many days of the impulse
+S17_BREAK_BODY_ATR = 1.0  # an impulsive break: opened at or beyond the POB's low, or a body of this many ATR14 (prev bar)
+S17_WAIT_DAYS = 90  # the limit at the POB's high rests this long from the close of the break bar
+S17_HOLD_BARS = 20  # a filled trade is held at most this many bars of the timeframe
+S17_TARGET_R = 2.0  # target beyond the level, in units of (level - stop)
+S17_WARMUP = 100  # bars of the segment before the POB and the break (the backtest's warm-up)
+S17_COMMON_UA = (
+    "Бектест відкинув цей сетап механічно (docs/verification/2026-10-17-course-step5-s17.md; Binance, BTC, ETH + топ-30, "
+    "2020-02 … 2026-06, обидва боки, ліміт на хаї POB 90 діб, стоп за POB, ціль 2R, утримання 20 свічок): ретест POB "
+    "поводиться як ретест випадкового рівня на тій самій відстані від ціни. "
+)
+S17_TAIL_UA = (
+    " Лімітки виконувались майже одразу (91–95 %, медіана 0.3–0.5 доби) і за дотиком; з вимогою проколу на 0.05 ATR "
+    "E[R] гірший на ≈ 0.04–0.05R. Доведеної переваги немає."
+)
+S17_ROW_UA = {
+    "1d": (
+        "1D (основний рядок): E[R] net −0.007R [−0.150; +0.141], проти випадкового рівня −0.083R [−0.236; +0.065]; "
+        "після 2025-03 +0.170R на 167 угодах (н. з.). Перевагу +0.10R над випадковим рівнем виключено."
+    ),
+    "4h": (
+        "4h (другорядний рядок): E[R] net +0.036R [−0.029; +0.102], проти випадкового рівня +0.047R [−0.016; +0.114]; "
+        "після 2025-03 −0.046R (і проти випадкового рівня −0.046R). На 12h (основний рядок) +0.027R, проти випадкового "
+        "рівня +0.014R."
+    ),
+}
+S17_BACKTEST_UA = {tf: S17_COMMON_UA + row + S17_TAIL_UA for tf, row in S17_ROW_UA.items()}
+
+# S23, as backtested in step 2 of docs/verification/2026-10-12-sfp-oos-and-15m.md (scripts/verify_sfp_ltf.py, 4h)
+S23_TIMEFRAMES = ("4h",)  # the backtest's main sample (850 signals); 12h was the other one (not a scanner timeframe)
+S23_WINDOW = 300  # bars the walk-forward scan sees at each closed bar (walk_forward_sfp window on 4h)
+S23_MIN_BARS = 20  # the shortest range
+S23_MAX_WIDTH_PCT = 15.0  # widest range, percent of its middle (the ranges module works in percent)
+S23_SWING_LOOKBACK = 3  # swing pivots: >= / <= the 3 bars on each side
+S23_WICK_RATIO = 0.5  # the piercing wick is at least this share of the sweep candle's range
+S23_STOP_MULT = 2.0  # M2 stop: the swept level plus this many overshoots beyond it
+S23_STOP_MIN_OFFSET_PCT = 0.1  # ... never closer than this percent beyond the wick extreme
+S23_WAIT_MS = 16 * 900_000  # the retest limit waits 16 bars of 15m (verify_sfp_ltf.py --wait-bars)
+S23_HOLD_MS = 10 * DAY_MS  # a filled trade is held at most 10 days from the fill (verify_sfp_ltf.py HOLD_15M = 960)
+S23_BACKTEST_UA = (
+    "Бектест (docs/verification/2026-10-12-sfp-oos-and-15m.md, крок 2; Binance, 20 топ-перпів, 2 роки до 2026-10, "
+    "свип на 4h, вхід і виходи на 15m, таймаут 10 діб, комісія 0.1 % за коло): вхід лімітом на знятому рівні значуще "
+    "гірший за нуль — −0.142R на сигнал [−0.24; −0.05] (невиконані = 0R), −0.272R на угоду [−0.45; −0.09] "
+    "(444 угоди з 850 сигналів, gross −0.159R). Ймовірно, несприятливий відбір: лімітка частіше виконується, коли свип "
+    "не хибний і ціна йде далі. Окремий злам структури на 15m (закриття за екстремумом попередньої свічки) нічого не "
+    "додав: −0.046R на угоду, як і вхід за закриттям свічки 4h. Бектест пропускав свипи, поки була відкрита попередня "
+    "угода тієї самої монети. Доведеної переваги немає."
+)
+
 
 @dataclass(frozen=True)
 class LiveSignal:
-    setup: str  # 'S14' | 'S16' | 'S3' | 'S12' | 'S28' | 'S38' | 'S39' | 'S40'
+    setup: str  # 'S14' | 'S16' | 'S3' | 'S12' | 'S17' | 'S23' | 'S28' | 'S38' | 'S39' | 'S40'
     side: str  # 'long' | 'short'
     timeframe: str
     signal_ts: int  # open time of the signal bar, ms UTC
@@ -641,11 +727,187 @@ def s28(b: Bars, timeframe: str) -> list[LiveSignal]:
     return s28_all(b, timeframe, lo=len(b) - 1)
 
 
+def s17_all(b: Bars, timeframe: str, lo: int = 0) -> list[LiveSignal]:
+    """S17 signals decided on bars lo .. n-1, both sides (the full-history form of ``s17``): every POB event of
+    ``course_pob.pob_events`` (registered main rules) whose impulsive break k is in lo .. n-1, past the warm-up and with
+    a finite ATR; the entry is a limit resting at the POB's high (the low for shorts) until ``rest_until_ms`` (the close
+    of k + 90 days), stop ``pob_stop`` "pob" with ATR14 of k, target 2R. Causal: the POB is known at the close of its
+    impulse bar and the break at the close of k, each from bars up to it (``tests/test_course_pob.py``); the ATR is
+    causal, so the signal on bar k uses bars <= k only. Needs >= 1194 bars of 4h for the full 180-day break window
+    (module docstring); with fewer, older POBs are missed."""
+    out: list[LiveSignal] = []
+    n = len(b)
+    if timeframe not in S17_TIMEFRAMES or n < S17_WARMUP + 2:
+        return out
+    pos = segment_pos(b.t)
+    a_arr = atr(b, 14, pos)  # true ranges do not change on mirrored prices
+    brk_bars = S17_BREAK_DAYS * DAY_MS // b.bar_ms
+    for side, bb in (("long", b), ("short", b.mirrored())):
+        evs = pob_events(
+            bb,
+            pos,
+            a_arr,
+            drop=S17_DROP,
+            look=S17_LOOK,
+            atr_mult=S17_IMPULSE_ATR,
+            break_bars=brk_bars,
+            imp_atr=S17_BREAK_BODY_ATR,
+            warmup=S17_WARMUP,
+        )
+        for e in evs:
+            k = e.k
+            if k < max(lo, 0) or not e.impulsive or pos[k] < S17_WARMUP or not np.isfinite(a_arr[k]):
+                continue
+            a = float(a_arr[k])
+            level = e.levels["wick"]
+            if float(bb.c[k]) < level:
+                continue  # the price inside the POB (the backtest's check; the break closes beyond the level)
+            stop = pob_stop(level, e.low, a, "pob")
+            target = level + S17_TARGET_R * (level - stop)
+            p, q = e.p, e.q
+            lv, st, tg = (_flip(side, v) for v in (level, stop, target))
+            x1, x2 = _flip(side, e.high), _flip(side, e.low)
+            p_lo, p_hi = min(x1, x2), max(x1, x2)
+            ext, c_p, c_k = (_flip(side, float(v)) for v in (bb.low[q], bb.c[p], bb.c[k]))
+            until = b.close_time(k) + S17_WAIT_DAYS * DAY_MS
+            how = "відкрилась по той бік POB" if bb.o[k] <= bb.low[p] else f"тіло ≥ {S17_BREAK_BODY_ATR:g} ATR"
+            if side == "long":
+                move, edge, lim, rule = "падінням", "вище хаю", "хаї", "мін(лоу POB, рівень − 0.5 ATR) − 0.1 ATR"
+            else:
+                move, edge, lim, rule = "ростом", "нижче лоу", "лоу", "макс(хай POB, рівень + 0.5 ATR) + 0.1 ATR"
+            comment = (
+                f"S17 ({timeframe}): ретест імпульсно пробитого POB — свічка POB {_px(p_lo)}–{_px(p_hi)} (закриття "
+                f"{_px(c_p)}) перед {move} на {e.drop:.1%} до {_px(ext)} (≥ {S17_DROP:.0%} і ≥ {S17_IMPULSE_ATR:g} ATR); "
+                f"через {k - q} св. після імпульсу ця свічка закрилась на {_px(c_k)}, {edge} POB ({how}). "
+                f"Лімітка заздалегідь на {lim} POB {_px(lv)}, живе {S17_WAIT_DAYS} діб; стоп {_px(st)} (за POB: {rule}, "
+                f"ATR14 {_px(a)}), ціль {_px(tg)} ({S17_TARGET_R:g}R), утримання до {S17_HOLD_BARS} свічок. "
+                f"{S17_BACKTEST_UA[timeframe]}"
+            )
+            out.append(
+                LiveSignal(
+                    "S17",
+                    side,
+                    timeframe,
+                    int(b.t[k]),
+                    lv,
+                    st,
+                    tg,
+                    comment,
+                    {
+                        "pob_low": p_lo,
+                        "pob_high": p_hi,
+                        "pob_ts": float(b.t[p]),
+                        "impulse_ts": float(b.t[q]),
+                        "impulse_move": e.drop,
+                        "atr14": a,
+                        "rest_until_ms": float(until),
+                    },
+                )
+            )
+    out.sort(key=lambda s: s.signal_ts)
+    return out
+
+
+def s17(b: Bars, timeframe: str) -> list[LiveSignal]:
+    """S17 on the last closed bar (module docstring)."""
+    return s17_all(b, timeframe, lo=len(b) - 1)
+
+
+def _ohlc_rows(b: Bars, i: int, j: int) -> list[dict[str, Any]]:
+    """Bars i .. j-1 as the OHLC dicts of ``analytics/ranges.py`` (the layout ``walk_forward_sfp`` runs on)."""
+    return [
+        {"ts": int(b.t[k]), "open": float(b.o[k]), "high": float(b.h[k]), "low": float(b.low[k]), "close": float(b.c[k])}
+        for k in range(i, j)
+    ]
+
+
+def s23_all(b: Bars, timeframe: str, lo: int = 0) -> list[LiveSignal]:
+    """S23 signals decided on bars lo .. n-1, both sides (the full-history form of ``s23``): at each bar t, exactly the
+    check of ``sfp_backtest.walk_forward_sfp`` on the window of the last S23_WINDOW bars ending at t (latest range,
+    a sweep inside it on the window's last bar, ``generate_setup`` M2 with no R:R floor), without its one-position skip
+    (module docstring: the live set is wider than the backtest's sample). A proxy of QM without BOS and FVG. The entry
+    is ``ltf_entry`` "retest": a limit resting at the swept level until ``rest_until_ms``, stop the M2 stop, target
+    the range middle (TP1), held at most ``max_hold_ms`` (10 days) from the fill. Causal: the signal on bar t uses the
+    window ending at t only."""
+    out: list[LiveSignal] = []
+    n = len(b)
+    if timeframe not in S23_TIMEFRAMES or n < S23_WINDOW:
+        return out
+    first = max(lo, S23_WINDOW - 1)
+    off = first - S23_WINDOW + 1
+    rows = _ohlc_rows(b, off, n)
+    for t in range(first, n):
+        bar = rows[t - off]
+        hi, low, op, cl = bar["high"], bar["low"], bar["open"], bar["close"]
+        rng = hi - low
+        if rng <= 0 or ((hi - max(op, cl)) / rng < S23_WICK_RATIO and (min(op, cl) - low) / rng < S23_WICK_RATIO):
+            continue  # no wick long enough: no sweep on this bar (the same test as detect_sweeps, done first: cheap)
+        win = rows[t - off - S23_WINDOW + 1 : t - off + 1]
+        ranges = detect_ranges(win, min_bars=S23_MIN_BARS, max_width_pct=S23_MAX_WIDTH_PCT)
+        if not ranges or ranges[-1]["end_idx"] != len(win) - 1:
+            continue  # the window's last bar is not inside the latest range
+        sweeps = detect_sweeps(win, swing_points(win, lookback=S23_SWING_LOOKBACK), wick_ratio=S23_WICK_RATIO)
+        if not sweeps or sweeps[-1]["idx"] != len(win) - 1:
+            continue
+        r, sw = ranges[-1], sweeps[-1]
+        setup = generate_setup(r, sw, stop_mult=S23_STOP_MULT, stop_min_offset_pct=S23_STOP_MIN_OFFSET_PCT, min_rr=0.0)
+        if setup is None:
+            continue  # the close is already beyond the range middle (or zero risk): the backtest takes no trade
+        side = str(setup["direction"])
+        level, stop, target = float(sw["swept_level"]), float(setup["stop"]), float(setup["tp1"])
+        bottom, top = float(r["bottom"]), float(r["top"])
+        ext = float(sw["candle_low"] if side == "long" else sw["candle_high"])
+        until = b.close_time(t) + S23_WAIT_MS
+        if side == "long":
+            swing, back, sgn = "свінг-лоу", "вище", "−"
+        else:
+            swing, back, sgn = "свінг-хай", "нижче", "+"
+        comment = (
+            f"S23 ({timeframe}): SFP-ретест (проксі QM, без BOS) — свічка зняла {swing} {_px(level)} до {_px(ext)} і "
+            f"закрилась назад {back}, на {_px(cl)} (тінь ≥ {S23_WICK_RATIO:.0%} свічки), у рейнджі "
+            f"{_px(bottom)}–{_px(top)} ({r['n_bars']} св., ширина {r['width_pct']:.1f} % ≤ {S23_MAX_WIDTH_PCT:g} %). "
+            f"Це лише SFP-свип, як у бектесті: BOS і FVG автора не моделюються. Лімітка на знятому рівні {_px(level)}, "
+            f"живе {S23_WAIT_MS // 900_000} свічок 15m ({S23_WAIT_MS // 3_600_000} год); скасувати, якщо "
+            f"ціна раніше дійде до цілі. Стоп {_px(stop)} (рівень {sgn} {S23_STOP_MULT:g}× прокол, не ближче "
+            f"{S23_STOP_MIN_OFFSET_PCT:g} % за тінню), ціль {_px(target)} (середина рейнджу), утримання до "
+            f"{S23_HOLD_MS // DAY_MS} діб від входу. {S23_BACKTEST_UA}"
+        )
+        out.append(
+            LiveSignal(
+                "S23",
+                side,
+                timeframe,
+                int(b.t[t]),
+                level,
+                stop,
+                target,
+                comment,
+                {
+                    "swept_level": level,
+                    "sweep_extreme": ext,
+                    "range_low": bottom,
+                    "range_high": top,
+                    "range_mid": target,
+                    "rest_until_ms": float(until),
+                    "max_hold_ms": float(S23_HOLD_MS),
+                },
+            )
+        )
+    return out
+
+
+def s23(b: Bars, timeframe: str) -> list[LiveSignal]:
+    """S23 on the last closed bar (module docstring)."""
+    return s23_all(b, timeframe, lo=len(b) - 1)
+
+
 DETECTORS = {
     "S14": s14,
     "S16": range_setups,
     "S3": range_setups,
     "S12": s12_rest,
+    "S17": s17,
+    "S23": s23,
     "S28": s28,
     "S38": s38,
     "S39": s39,

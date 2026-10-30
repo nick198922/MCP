@@ -133,6 +133,36 @@ def test_htf_lows_previous_periods_and_causal() -> None:
     assert not m.htf_match(lv["day"] - 50, lv, 1.0)[0]
 
 
+def test_edge_class_thresholds() -> None:
+    assert m.edge_class(0.0) == m.FRESH
+    assert m.edge_class(1e-4) == m.NEAR
+    assert m.edge_class(0.3) == m.NEAR
+    assert m.edge_class(0.3001) == m.FAR
+    assert m.edge_class(None) is None
+    assert m.edge_class(math.nan) is None
+
+
+def test_edge_class_fresh_when_edge_is_previous_day_low_and_causal() -> None:
+    """A 2h range edge equal to yesterday's 1h low is FRESH; bars after the sweep bar's open never change it."""
+    start = int(datetime(2025, 3, 1, tzinfo=UTC).timestamp() * 1000)
+    n = 24 * 40
+    t = start + np.arange(n, dtype=np.int64) * H
+    rng = np.random.default_rng(3)
+    low = 100 + rng.uniform(0, 1, n)
+    ref = int(datetime(2025, 3, 20, 10, tzinfo=UTC).timestamp() * 1000)
+    y0 = int(datetime(2025, 3, 19, tzinfo=UTC).timestamp() * 1000)
+    j = int(np.searchsorted(t, y0 + 15 * H))
+    low[j] = 90.0  # yesterday's low, also the low of the 2h range before the sweep bar
+    lv = m.htf_lows(t, low, ref)
+    _, d = m.htf_match(90.0, lv, atr_prev=2.0)
+    assert m.edge_class(round(d, 4)) == m.FRESH
+    _, d_far = m.htf_match(85.0, lv, atr_prev=2.0)  # 2.5 ATR below the nearest level
+    assert m.edge_class(round(d_far, 4)) == m.FAR
+    later = low.copy()
+    later[t >= ref] = 50.0
+    assert m.htf_match(90.0, m.htf_lows(t, later, ref), atr_prev=2.0)[1] == d
+
+
 def test_htf_lows_monday_uses_previous_week() -> None:
     t = T0 - 14 * 24 * H + np.arange(15 * 24, dtype=np.int64) * H
     low = np.arange(t.size, dtype=float)

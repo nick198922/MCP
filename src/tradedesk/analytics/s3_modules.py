@@ -150,6 +150,21 @@ def htf_match(edge: float, levels: dict[str, float], atr_prev: float, tol_atr: f
     return d <= tol_atr, d
 
 
+FRESH, NEAR, FAR = "fresh", "near", "far"
+
+
+def edge_class(d_atr: float | None, tol_atr: float = 0.3, eps: float = 1e-9) -> str | None:
+    """Item 10a (registration «Попередня реєстрація 10a»): the swept edge *is* the previous day / week / month
+    extreme (``FRESH``: distance < ``eps``), a level lies within ``tol_atr`` ATR (``NEAR``), or every level is farther
+    (``FAR``); None when the distance is undefined (no level or ATR). ``d_atr`` is ``htf_match``'s distance (rounded
+    to 4 decimals in the runners), so ``FRESH`` means the edge equals a level to 5e-5 ATR."""
+    if d_atr is None or not math.isfinite(d_atr):
+        return None
+    if d_atr < eps:
+        return FRESH
+    return NEAR if d_atr <= tol_atr else FAR
+
+
 # ---------------------------------------------------------------- H5: open-interest change on the sweep bar
 
 

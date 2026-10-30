@@ -100,6 +100,40 @@ def test_s14_live_equals_the_detector_on_more_seeds(seed):
     assert got == want
 
 
+def _key(s: ss.LiveSignal) -> tuple:
+    return (s.setup, s.side, s.timeframe, s.signal_ts, s.entry, s.stop, s.target, s.comment, tuple(sorted(s.indicators.items())))
+
+
+@pytest.mark.parametrize("seed", [3, 5, 10])  # seeds with S14 signals on both sides (S14 is rare: 0..6 in 700 bars)
+def test_s14_all_equals_the_live_s14_on_each_prefix(seed):
+    """The passport's full-history S14 gives on bar k exactly what the live s14 gives on bars[: k + 1] (levels, comment
+    and indicators included), from the first bar the live scan can see; both sides are covered."""
+    b = _bars(700, seed)
+    live = [s for i in range(90, len(b)) for s in ss.s14(b.slice(0, i + 1), "4h")]
+    full = ss.s14_all(b, "4h")
+    assert sorted(map(_key, full)) == sorted(map(_key, live))
+    assert len(full) == len(set(map(_key, full))) and {s.side for s in full} == {"long", "short"}
+    assert all(s.setup == "S14" and s.signal_ts >= int(b.t[ss.S14_PARAMS.warmup + 1]) for s in full)
+    k = 400  # lo keeps the bars >= lo and the earlier bars still feed the used-impulse memory
+    assert sorted(map(_key, ss.s14_all(b, "4h", lo=k))) == sorted(_key(s) for s in full if s.signal_ts >= int(b.t[k]))
+
+
+@pytest.mark.parametrize("seed", [3, 5, 10])
+def test_s14_all_is_causal_a_different_future_after_each_signal_bar_changes_nothing_up_to_it(seed):
+    """Cut at every S14 signal bar t (and the bar before it), give the history a different future: the signals up to
+    t stay the same, and the live s14 on bars 0..t sees the signal of bar t."""
+    b = _bars(700, seed)
+    full = ss.s14_all(b, "4h")
+    rng = np.random.default_rng(42)
+    cuts = sorted({k for s in full for k in (int(np.searchsorted(b.t, s.signal_ts)) - 1, int(np.searchsorted(b.t, s.signal_ts)))})
+    assert len(cuts) >= 8
+    for t in cuts:
+        upto = int(b.t[t])
+        want = sorted(_key(s) for s in full if s.signal_ts <= upto)
+        assert sorted(_key(s) for s in ss.s14_all(_other_future(b, t, rng), "4h") if s.signal_ts <= upto) == want, t
+        assert sorted(map(_key, ss.s14(b.slice(0, t + 1), "4h"))) == [w for w in want if w[3] == upto], t
+
+
 def test_short_s14_comment_names_the_impulse_low():
     b = _bars(700, 1)  # seed 1 has a short S14 whose target is the impulse extreme
     for i in range(150, len(b)):

@@ -22,9 +22,12 @@ Rules taken from the verification runs (status of each setup: docs/knowledge/set
   (``docs/verification/2026-10-17-course-step4-fvg-ob.md``) and traded on the demo only because the owner wants rejected
   setups tested live (BACKLOG 0.5 item "в", IDEA-20261024-short-setups-demo step 2). ``s12`` enters at the close of the
   bar that touched the middle (a touch bar already at the stop or closed at the target gives no signal): the demo's rule
-  until v7. Since v7 (owner 26.10, ``docs/verification/2026-10-26-prelimit-entries.md``) the demo trades ``s12_rest``: the
-  signal is the gap's third candle itself, and its entry is a limit resting at the middle for ``S12_WAIT`` bars
-  (indicator ``rest_until_ms``), as in the backtest; same stop and target.
+  until v7. Since v7 (owner 26.10) the demo trades ``s12_rest``: the signal is the gap's third candle itself, and its
+  entry is a limit resting at the middle for ``S12_WAIT`` bars (indicator ``rest_until_ms``), as in the backtest; same
+  stop and target. v7 was chosen on the +0.185R of ``docs/verification/2026-10-26-prelimit-entries.md``, which turned
+  out to be a look-ahead artifact of that run's trade chain; the passport
+  (``docs/verification/2026-10-30-passport-s12v7-s28.md``) gives OOS -0.004R [-0.077; +0.069], no better than a random
+  limit of the same geometry: no proven edge either way.
 - S38 and S39 (trend-continuation shorts; 4h, shorts only): the step-1 detectors of IDEA-20261024-short-setups-demo,
   ``short_setups.breakout_retest`` (A) and ``short_setups.failed_sweep`` (B) on mirrored prices, with their registered
   parameters (``docs/verification/2026-10-24-short-setups-demo.md``). S38: a close below the S3 range low, then within
@@ -107,10 +110,11 @@ S12_STOP_ATR = 1.0  # stop under the gap's middle, in ATR14 of the gap's third c
 S12_TARGET_R = 2.0  # target above the middle, in units of (middle - stop)
 S12_WARMUP = 100  # bars of the segment before the gap (the backtest's warm-up)
 S12_REST_UA = (
-    "Вхід лімітом, виставленим заздалегідь на середині FVG (з v7, рішення власника 26.10): у бектесті на тих самих правилах "
-    "виходу (беззбиток на половині шляху, 7 днів, топ-30, 2020–2026) E[R] net +0.185R проти 0.000R за входом за закриттям "
-    "свічки дотику; з вимогою пройти рівень на 0.1 % — +0.154R (docs/verification/2026-10-26-prelimit-entries.md). "
-    "Перевага саме FVG над випадковим рівнем не доведена (бектест 17.10)."
+    "Вхід лімітом, виставленим заздалегідь на середині FVG (з v7, рішення власника 26.10). Паспорт сетапу "
+    "(docs/verification/2026-10-30-passport-s12v7-s28.md: топ-100 ≥ $5M, відбір демо, беззбиток на половині шляху, "
+    "7 днів) дає OOS (з 2025-03) E[R] net −0.004R [−0.077; +0.069] (n 6431), тобто ≈ 0 і не краще за випадкову лімітку "
+    "тієї самої геометрії. Перевага лімітки 26.10, на якій стояло рішення про v7, виявилась артефактом заглядання "
+    "вперед у ланцюгу угод (причинно ≈ +0.02R). Перевага саме FVG над випадковим рівнем не доведена (бектест 17.10)."
 )
 S12_TREND_EMA = 21  # daily close vs its EMA21: the backtest's higher-timeframe trend
 S12_BACKTEST_UA = (

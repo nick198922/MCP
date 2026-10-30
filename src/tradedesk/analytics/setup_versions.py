@@ -121,7 +121,8 @@ EPOCHS: tuple[Epoch, ...] = (
         _ms(2026, 10, 27, 18, 0, 0),
         "S12: вхід лімітом, виставленим заздалегідь на середині нового FVG (живе 20 свічок 4h), замість входу"
         " за закриттям свічки дотику; стоп, ціль і ведення угоди — як у v4",
-        "docs/changes/2026-10-26-demo-s12-resting-limit.md, docs/verification/2026-10-26-prelimit-entries.md",
+        "docs/changes/2026-10-26-demo-s12-resting-limit.md, docs/verification/2026-10-26-prelimit-entries.md (its +0.185R"
+        " was a look-ahead artifact; passport docs/verification/2026-10-30-passport-s12v7-s28.md: OOS about 0R)",
         ("S12",),
     ),
     Epoch(

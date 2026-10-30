@@ -94,6 +94,37 @@ def test_busy_chain_keeps_one_trade_per_symbol():
     assert keep.tolist() == [True, False, True, False, True]
 
 
+def test_busy_chain_capped_takes_the_best_two_free_per_bar():
+    # bar t=0: A, B, C, D ranked C < A < D < B -> C and A kept; bar t=5: A busy (exit 9) is skipped without using the
+    # cap, then E and B (rank order) fill it, F is over the cap and does not occupy F; bar t=10: F free again
+    sym = ["A", "B", "C", "D", "A", "E", "B", "F", "F"]
+    t_in = np.array([0, 0, 0, 0, 5, 5, 5, 5, 10])
+    ex = np.array([9, 3, 4, 4, 20, 20, 20, 20, 30])
+    rank = np.array([1, 3, 0, 2, 0, 1, 2, 3, 0])
+    keep = sp.busy_chain_capped(sym, t_in, ex, rank, cap=2)
+    assert keep.tolist() == [True, False, True, False, False, True, True, False, True]
+    # with a large cap it is busy_chain with the rank as order
+    assert sp.busy_chain_capped(sym, t_in, ex, rank, cap=99).tolist() == sp.busy_chain(sym, t_in, ex, rank).tolist()
+
+
+def test_busy_chain_capped_has_no_lookahead():
+    rng = np.random.default_rng(7)
+    n = 200
+    sym = [f"S{k}" for k in rng.integers(0, 12, n)]
+    t_in = rng.integers(0, 40, n) * 4
+    ex = t_in + rng.integers(1, 30, n)
+    rank = rng.random(n)
+    base = sp.busy_chain_capped(sym, t_in, ex, rank, cap=2)
+    cut = 80
+    later = t_in > cut
+    ex2, rank2 = ex.copy(), rank.copy()
+    ex2[later] += 1000
+    rank2[later] = rng.random(int(later.sum()))
+    sym2 = [("Z" if lt else s) for s, lt in zip(sym, later, strict=True)]
+    other = sp.busy_chain_capped(sym2, t_in, ex2, rank2, cap=2)
+    assert (base[~later] == other[~later]).all()
+
+
 def test_late_entry():
     b = Bars(
         np.array([0, 4, 8, 16], dtype=np.int64), *(np.array([1.0, 1.0, 1.0, 1.0]) for _ in range(3)), np.array([1.0, 1.1, 1.3, 1.0]), 4

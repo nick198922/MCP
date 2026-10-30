@@ -11,6 +11,7 @@ is in the card. Everything here is causal: a value attached to a trade entered a
 - ``turnover_group``: disjoint groups top-30 / >= $5M / $1-5M;
 - ``state_before``: the state of the last UTC day closed by a time (the BTC cycle regime on the signal day);
 - ``busy_chain``: one open trade per symbol (a later signal of a busy symbol is skipped);
+- ``busy_chain_capped``: the same with at most ``cap`` entries per entry time (S38's 2 per signal bar on the demo);
 - ``late_entry``: the entry one bar of the signal timeframe later (stress);
 - ``mean_ci`` / ``diff_ci``: mean with a cluster (weekly block) bootstrap CI and two-sided p, and a group contrast;
 - ``r_band``: the 5th..95th percentile of the mean R of ``n`` trades (i.i.d. draws, and rolling consecutive windows).
@@ -107,6 +108,26 @@ def busy_chain(sym: Sequence[str], t_in: np.ndarray, exit_ms: np.ndarray, order:
         if int(t_in[i]) < busy.get(sym[i], -1):
             continue
         keep[i] = True
+        busy[sym[i]] = int(exit_ms[i])
+    return keep
+
+
+def busy_chain_capped(sym: Sequence[str], t_in: np.ndarray, exit_ms: np.ndarray, rank: np.ndarray, cap: int) -> np.ndarray:
+    """``busy_chain`` with at most ``cap`` trades entered at the same ``t_in`` (the demo's ``BAR_CAP``: entries per
+    signal bar of a setup). Candidates of one entry time are taken in ``rank`` order (lower first: the demo's best
+    first); a busy symbol is skipped without using the cap, a candidate over the cap does not occupy its symbol.
+    Whether trade i is kept depends only on candidates entering at or before it."""
+    n = len(sym)
+    keep = np.zeros(n, dtype=bool)
+    idx = sorted(range(n), key=lambda i: (int(t_in[i]), float(rank[i])))
+    busy: dict[str, int] = {}
+    taken: dict[int, int] = {}
+    for i in idx:
+        t = int(t_in[i])
+        if t < busy.get(sym[i], -1) or taken.get(t, 0) >= cap:
+            continue
+        keep[i] = True
+        taken[t] = taken.get(t, 0) + 1
         busy[sym[i]] = int(exit_ms[i])
     return keep
 

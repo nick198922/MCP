@@ -13,6 +13,8 @@ is in the card. Everything here is causal: a value attached to a trade entered a
 - ``busy_chain``: one open trade per symbol (a later signal of a busy symbol is skipped);
 - ``busy_chain_capped``: the same with at most ``cap`` entries per entry time (S38's 2 per signal bar on the demo);
 - ``late_entry``: the entry one bar of the signal timeframe later (stress);
+- ``limit_fill`` / ``limit_trade``: a resting limit (S12 v7, S28) filled only when the price trades through it (or
+  touches it), pessimistic in the fill hour, then the trade under a stop rule;
 - ``mean_ci`` / ``diff_ci``: mean with a cluster (weekly block) bootstrap CI and two-sided p, and a group contrast;
 - ``r_band``: the 5th..95th percentile of the mean R of ``n`` trades (i.i.d. draws, and rolling consecutive windows).
 """
@@ -26,6 +28,7 @@ from typing import Any
 import numpy as np
 
 from .course_s14_ema import DAY_MS, Bars, ema, segment_pos
+from .stop_management import Fees, Outcome, StopRule, simulate_stop_rule
 
 WEEK_MS = 7 * DAY_MS
 TOP30, GE5M, M1TO5, LT1M, UNKNOWN = "top30", "ge5m", "1to5m", "lt1m", "unknown"
@@ -142,6 +145,43 @@ def late_entry(b: Bars, i: int, stop: float, target: float) -> tuple[int, float]
     if not (stop < c < target):
         return None
     return int(b.t[j]) + b.bar_ms, c
+
+
+def limit_fill(path: Bars, t0: int, t1: int, level: float, through: bool = True) -> int:
+    """Index of the first bar of ``path`` (long price space) opening in [t0, t1) that fills a resting buy limit at
+    ``level``: its low trades strictly below the level (``through``) or reaches it (``through=False``, a touch); -1 if
+    none. Bars outside [t0, t1) are never read."""
+    i0, i1 = int(np.searchsorted(path.t, t0)), int(np.searchsorted(path.t, t1))
+    lows = path.low[i0:i1]
+    hit = np.flatnonzero(lows < level if through else lows <= level)
+    return i0 + int(hit[0]) if hit.size else -1
+
+
+def limit_trade(
+    path: Bars,
+    t0: int,
+    t1: int,
+    level: float,
+    stop: float,
+    target: float,
+    hold_ms: int,
+    rule: StopRule,
+    fees: Fees,
+    through: bool = True,
+) -> tuple[Outcome | None, int]:
+    """A buy limit resting at ``level`` from ``t0`` to ``t1`` (long price space, 1h ``path``), then the trade under
+    ``rule``: (outcome, open time of the fill bar). (None, -1): never filled; (None, t): filled without a path.
+    Pessimistic in the fill hour (order inside the bar unknown): a fill bar that also reaches the stop is a loss at the
+    stop; otherwise the trade runs from the next bar, held ``hold_ms`` from the fill hour, and a target or a break-even
+    trigger inside the fill hour is ignored. Uses bars from ``t0`` up to the exit only."""
+    k = limit_fill(path, t0, t1, level, through)
+    if k < 0:
+        return None, -1
+    tk = int(path.t[k])
+    if path.low[k] <= stop or k + 1 >= len(path):
+        return simulate_stop_rule(path, tk, level, stop, target, hold_ms, rule, fees=fees), tk
+    t_next = int(path.t[k + 1])
+    return simulate_stop_rule(path, t_next, level, stop, target, hold_ms - (t_next - tk), rule, fees=fees), tk
 
 
 def _boot(v: np.ndarray, groups: list[np.ndarray], n_boot: int, seed: int) -> np.ndarray:

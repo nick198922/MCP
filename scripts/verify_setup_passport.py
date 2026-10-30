@@ -665,30 +665,43 @@ def stage_report(a: argparse.Namespace, out: Path) -> None:
 
     emit(f"\n## Стрес ({'вибірка вердикту' if wide else 'основна вибірка'})\n" + hdr)
     late_ok = np.isfinite(T["L"])
+    # Review remark 7 (docs/reviews/2026-10-30-passport-s12v7-s28.md): the late-entry rows below belong to the close
+    # entry (no late entry = the price already beyond the stop / target or a hole). For a resting limit the late
+    # placement is not placed or not filled instead, so its rows are only in the limit block (``limit_section``).
+    late_lines: tuple[tuple[str, np.ndarray, str], ...] = (
+        ()
+        if lim
+        else (
+            ("вхід на свічку пізніше, 2021+", V, "L"),
+            ("вхід на свічку пізніше, OOS", V & OOS, "L"),
+            ("пізніше + ×1.5, OOS", V & OOS, "L15"),
+            ("база OOS на тих самих угодах, що мають пізній вхід (відібрано за майбутнім)", V & OOS & late_ok, "B"),
+        )
+    )
     for lab, m, k in (
         ("база OOS", V & OOS, "B"),
         ("витрати ×1.5, 2021+", V, "B15"),
         ("витрати ×1.5, OOS", V & OOS, "B15"),
-        ("вхід на свічку пізніше, 2021+", V, "L"),
-        ("вхід на свічку пізніше, OOS", V & OOS, "L"),
-        ("пізніше + ×1.5, OOS", V & OOS, "L15"),
-        ("база OOS на тих самих угодах, що мають пізній вхід (відібрано за майбутнім)", V & OOS & late_ok, "B"),
+        *late_lines,
     ):
         emit(f"| {lab} " + fmt(ci(T, m, k)))
-    emit(f"без пізнього входу (ціна вже за стопом / ціллю або дірка): {int((V & ~late_ok).sum())} з {int(V.sum())}")
-    emit(
-        "\nціна запізнення (пізній − база), два знаменники; демо теж не входить, якщо ціна вже за стопом / ціллю\n"
-        "| період | на сигнал (немає пізнього входу = 0R) | на угоду, де пізній вхід можливий | база пропущених: n, E[R] |\n|---|---|---|---|"
-    )
-    late0 = np.where(late_ok, T["L"], 0.0) - T["B"]
-    late_rows = [("2021+", P), ("OOS", P & OOS), (f"топ-{top_n}, 2021+", P100), (f"топ-{top_n}, OOS", P100 & OOS)]
-    for lab, m in late_rows[2:] if wide else late_rows:
-        r = sp.mean_ci(late0[m], T["week"][m], n_boot=N_BOOT, seed=SEED)
-        s = sp.mean_ci((T["L"] - T["B"])[m & late_ok], T["week"][m & late_ok], n_boot=N_BOOT, seed=SEED)
-        nb = ci(T, m & ~late_ok)
+    if lim:
+        emit("пізніше розміщення лімітки (не поставлено / не заповнено) — у блоці «Лімітка: модель «дотик» і пізніше розміщення»")
+    else:
+        emit(f"без пізнього входу (ціна вже за стопом / ціллю або дірка): {int((V & ~late_ok).sum())} з {int(V.sum())}")
         emit(
-            f"| {lab} | {r['m']:+.3f} [{r['lo']:+.3f}; {r['hi']:+.3f}] | {s['m']:+.3f} [{s['lo']:+.3f}; {s['hi']:+.3f}] | {int(nb['n'])}, {nb['m']:+.3f} |"
+            "\nціна запізнення (пізній − база), два знаменники; демо теж не входить, якщо ціна вже за стопом / ціллю\n"
+            "| період | на сигнал (немає пізнього входу = 0R) | на угоду, де пізній вхід можливий | база пропущених: n, E[R] |\n|---|---|---|---|"
         )
+        late0 = np.where(late_ok, T["L"], 0.0) - T["B"]
+        late_rows = [("2021+", P), ("OOS", P & OOS), (f"топ-{top_n}, 2021+", P100), (f"топ-{top_n}, OOS", P100 & OOS)]
+        for lab, m in late_rows[2:] if wide else late_rows:
+            r = sp.mean_ci(late0[m], T["week"][m], n_boot=N_BOOT, seed=SEED)
+            s = sp.mean_ci((T["L"] - T["B"])[m & late_ok], T["week"][m & late_ok], n_boot=N_BOOT, seed=SEED)
+            nb = ci(T, m & ~late_ok)
+            emit(
+                f"| {lab} | {r['m']:+.3f} [{r['lo']:+.3f}; {r['hi']:+.3f}] | {s['m']:+.3f} [{s['lo']:+.3f}; {s['hi']:+.3f}] | {int(nb['n'])}, {nb['m']:+.3f} |"
+            )
 
     emit("\n## Смуга R для n = 30 (5-й / 50-й / 95-й перцентиль середнього R)")
     for lab, m in (

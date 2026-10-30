@@ -794,7 +794,8 @@ MIGRATIONS: dict[int, list[str]] = {
         """,
     ],
     30: [
-        # Demo trader S12 v7 (owner 26.10, docs/verification/2026-10-26-prelimit-entries.md): a limit resting at the
+        # Demo trader S12 v7 (owner 26.10; the +0.185R it was chosen on was a look-ahead artifact, passport
+        # docs/verification/2026-10-30-passport-s12v7-s28.md: OOS about 0R): a limit resting at the
         # gap's middle until this time (unix ms) instead of the 10-minute maker entry; NULL = the usual entry
         "ALTER TABLE demo_trade ADD COLUMN rest_until INTEGER",
     ],

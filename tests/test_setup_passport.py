@@ -10,6 +10,7 @@ import pytest
 from tradedesk.analytics import setup_passport as sp
 from tradedesk.analytics import setup_signals as ss
 from tradedesk.analytics.course_s14_ema import DAY_MS, Bars
+from tradedesk.analytics.stop_management import Fees, StopRule
 
 T0 = 1_700_000_000_000 // DAY_MS * DAY_MS
 
@@ -160,3 +161,69 @@ def test_r_band():
     assert b["iid_p5"] == pytest.approx(-1.645 / math.sqrt(30), abs=0.06)
     assert b["windows"] == 71 and b["roll_p5"] == pytest.approx(0.0) and b["roll_p95"] == pytest.approx(0.0)
     assert math.isnan(sp.r_band(v[:10], 30)["iid_p5"])
+
+
+H1 = 3_600_000
+RULE_B = StopRule("B", be_frac=0.5)
+
+
+def _hourly(lows: list[float], highs: list[float], t_start: int = 100 * H1) -> Bars:
+    lo, hi = np.array(lows, dtype=float), np.array(highs, dtype=float)
+    c = (lo + hi) / 2
+    o = np.concatenate([[c[0]], c[:-1]])
+    t = t_start + H1 * np.arange(lo.size, dtype=np.int64)
+    return Bars(t, o, np.maximum(hi, np.maximum(o, c)), np.minimum(lo, np.minimum(o, c)), c, H1)
+
+
+def test_limit_fills_only_when_the_price_trades_through_or_touches_by_choice():
+    p = _hourly([99.0, 100.3, 100.0, 99.9, 99.0], [102, 102, 102, 102, 102])
+    t0, t1 = int(p.t[1]), int(p.t[4])  # bar 0 (before the placement) and bar 4 (after the deadline) are never read
+    assert sp.limit_fill(p, t0, t1, 100.0) == 3  # strictly below
+    assert sp.limit_fill(p, t0, t1, 100.0, through=False) == 2  # a touch is enough
+    assert sp.limit_fill(p, t0, int(p.t[3]), 100.0) == -1
+    o, tk = sp.limit_trade(p, t0, int(p.t[3]), 100.0, 98.0, 104.0, 10 * H1, RULE_B, Fees())
+    assert o is None and tk == -1
+
+
+def test_limit_trade_fill_hour_at_the_stop_is_a_loss_and_a_target_there_is_ignored():
+    # bar 1 fills and reaches the stop: a loss at the stop, whatever its high did
+    p = _hourly([100.5, 97.5, 99.0], [101, 104.5, 105])
+    o, tk = sp.limit_trade(p, int(p.t[1]), int(p.t[2]) + H1, 100.0, 98.0, 104.0, 10 * H1, RULE_B, Fees())
+    assert tk == int(p.t[1]) and o is not None and o.exit_kind == "stop" and o.exit == 98.0
+    assert o.r_net < -0.9
+    # bar 1 fills (low 99.5 above the stop) and its high reaches the target: ignored; bar 2 takes the target
+    p = _hourly([100.5, 99.5, 100.5, 100.5], [101, 104.5, 104.2, 101])
+    o, tk = sp.limit_trade(p, int(p.t[1]), int(p.t[3]), 100.0, 98.0, 104.0, 10 * H1, RULE_B, Fees())
+    assert tk == int(p.t[1]) and o.exit_kind == "target" and o.entry_ms == int(p.t[2]) and o.exit_ms == int(p.t[2]) + H1
+    assert o.r_net == pytest.approx(sp.simulate_stop_rule(p, int(p.t[2]), 100.0, 98.0, 104.0, 9 * H1, RULE_B, fees=Fees()).r_net)
+
+
+def test_limit_trade_holds_from_the_fill_hour():
+    p = _hourly([100.5, 99.5] + [100.2] * 10, [101] * 12)
+    o, tk = sp.limit_trade(p, int(p.t[0]), int(p.t[5]), 100.0, 98.0, 104.0, 5 * H1, RULE_B, Fees())
+    assert tk == int(p.t[1]) and o.exit_kind == "time" and o.exit_ms == tk + 5 * H1
+
+
+def test_limit_trade_uses_no_bar_before_the_placement_or_after_the_exit():
+    rng = np.random.default_rng(4)
+    n = 400
+    c = 100 * np.exp(np.cumsum(rng.normal(0, 0.01, n)))
+    lo, hi = c * (1 - rng.uniform(0, 0.01, n)), c * (1 + rng.uniform(0, 0.01, n))
+    p = _hourly(lo.tolist(), hi.tolist())
+    seen = 0
+    for k in range(20, 300, 7):
+        t0, t1, lvl = int(p.t[k]), int(p.t[k + 40]), float(p.c[k - 1]) * 0.99
+        st, tg = lvl * 0.98, lvl * 1.04
+        o, tk = sp.limit_trade(p, t0, t1, lvl, st, tg, 48 * H1, RULE_B, Fees())
+        if o is None:
+            continue
+        seen += 1
+        e = int(np.searchsorted(p.t, o.exit_ms))  # first bar after the exit bar
+        lo2, hi2 = lo.copy(), hi.copy()
+        lo2[:k] *= 0.5  # a crash before the placement
+        lo2[e:] *= 0.5  # and after the exit
+        hi2[e:] *= 2.0
+        q = Bars(p.t, p.o, np.maximum(p.h, hi2), np.minimum(p.low, lo2), p.c, H1)
+        o2, tk2 = sp.limit_trade(q, t0, t1, lvl, st, tg, 48 * H1, RULE_B, Fees())
+        assert tk2 == tk and o2.exit_ms == o.exit_ms and o2.r_net == pytest.approx(o.r_net), k
+    assert seen > 10

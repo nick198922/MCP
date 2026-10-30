@@ -4,7 +4,9 @@ rules and costs, as the reference its live trades are compared with. Pre-registr
 «Попередня реєстрація паспорта» and, for S14 / S16 (the demo's ``WIDE_SETUPS``: verdict on the top-250 >= $1M list,
 turnover groups on it, a descriptive chain shared by S14 + S16 + S3), «Попередня реєстрація паспортів S14 і S16»;
 for S38 / S39 / S40 (4h; S38 with the demo's 2 entries per signal bar; the turnover contrast by year and pooled over
-the three; a chain shared by all six setups) «Попередня реєстрація паспортів S38, S39 і S40».
+the three; a chain shared by all six setups) «Попередня реєстрація паспортів S38, S39 і S40»; for S12 v7 / S28 (a limit
+resting at the level, filled only when the price trades through it; an unfilled limit holds the coin until its
+deadline; fill rate, R per placement, a placebo of random limits with the same geometry) «… S12 v7 і S28».
 
     uv run python scripts/verify_setup_passport.py S3 --stage sanity        # coverage, units, known number, timing
     uv run python scripts/verify_setup_passport.py S3 --stage run           # per-symbol candidate files (4 workers)
@@ -27,6 +29,7 @@ import math
 import resource
 import sys
 import time
+import zlib
 from collections import Counter, defaultdict
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -45,7 +48,7 @@ from tradedesk.analytics import cycle_regime as cr  # noqa: E402
 from tradedesk.analytics import cycle_regime_eval as cre  # noqa: E402
 from tradedesk.analytics import setup_passport as sp  # noqa: E402
 from tradedesk.analytics import setup_signals as ss  # noqa: E402
-from tradedesk.analytics.course_s14_ema import HOUR_MS, Bars, resample  # noqa: E402
+from tradedesk.analytics.course_s14_ema import HOUR_MS, Bars, resample, segment_pos  # noqa: E402
 from tradedesk.analytics.liquidation_flush import holm  # noqa: E402
 from tradedesk.analytics.market_flow import points  # noqa: E402
 from tradedesk.analytics.stop_management import Fees, StopRule, chi2_sf, cochran_q, simulate_stop_rule  # noqa: E402
@@ -91,7 +94,14 @@ SETUPS: dict[str, tuple[Callable[[Bars, str], list[ss.LiveSignal]], tuple[str, .
     "S38": (lambda b, tf: ss.s38_all(b, tf), ("4h",), 1e6),
     "S39": (lambda b, tf: ss.s39_all(b, tf), ("4h",), 1e6),
     "S40": (lambda b, tf: ss.s40_all(b, tf), ("4h",), 1e6),
+    # S12 v7 / S28: the entry is a limit resting at the level until ``rest_until_ms`` (registration «… S12 v7 і S28»);
+    # not in demo_trader.WIDE_SETUPS, so the demo list is the top-100 >= $5M
+    "S12": (lambda b, tf: ss.s12_rest_all(b, tf), ("4h",), 5e6),
+    "S28": (lambda b, tf: ss.s28_all(b, tf), ("4h",), 5e6),
 }
+LIMIT = ("S12", "S28")
+N_PLACEBO = 2  # random limits of the same geometry per signal (registered)
+LIMIT_WIDE_TOP_N, LIMIT_WIDE_FLOOR = 250, 1e6  # registered side row: could the setup take the $1-5M coins?
 OUT: dict[str, Any] = {"fh": None}
 
 
@@ -170,8 +180,38 @@ def run_symbol(args: tuple[str, str, str, str, str]) -> dict[str, Any]:
     d_tr = sp.trend_series(daily)
     why: Counter[str] = Counter()
     rows: list[dict[str, Any]] = []
+    placebo: list[dict[str, Any]] = []
     for tf in tfs:
         tb = resample(h1, HOURS[tf])
+        if setup in LIMIT:
+
+            def ctx(t_in: int, side: str, e: float, st: float, tg: float) -> dict[str, Any] | None:
+                """The demo's view at a placement (real prices): None if under $1M / unknown turnover."""
+                top = member(s, t_in)
+                turn = sp.trailing_turnover(t_in, h1.t, qv)
+                grp = sp.turnover_group(top, turn)
+                if grp in (sp.LT1M, sp.UNKNOWN):
+                    return None
+                j = int(np.searchsorted(btc_t, t_in, side="right")) - 1
+                rr = reward_risk_at(side, e, st, tg)
+                sc = sp.score_points(side, rr, sp.trend_at(daily, d_tr, t_in), int(btc_tr[j]) if j >= 0 else 0, s == BTC)
+                return {
+                    "sym": s,
+                    "side": side,
+                    "t_in": t_in,
+                    "top30": top,
+                    "turn": turn,
+                    "grp": grp,
+                    "rr": rr,
+                    "stop_pct": abs(e - st) / abs(e),
+                    "score": sc,
+                    "regime": sp.state_before(t_in, states),
+                }
+
+            rows_l, pl_l = limit_rows(setup, s, tf, tb, h1, det(tb, tf), ctx, states, why)
+            rows.extend(rows_l)
+            placebo.extend(pl_l)
+            continue
         for sig in det(tb, tf):
             why[f"{tf}:signal"] += 1
             i = int(np.searchsorted(tb.t, sig.signal_ts))
@@ -232,8 +272,117 @@ def run_symbol(args: tuple[str, str, str, str, str]) -> dict[str, Any]:
             )
             why[f"{tf}:cand"] += 1
     (out / "cands").mkdir(parents=True, exist_ok=True)
-    (out / "cands" / f"{s}.json").write_text(json.dumps({"rows": rows, "why": dict(why)}))
+    (out / "cands" / f"{s}.json").write_text(json.dumps({"rows": rows, "why": dict(why), "placebo": placebo}))
     return {"sym": s, "n": len(rows), "why": dict(why), "sec": time.time() - t0, "bars": len(h1), "rss": rss_mb()}
+
+
+def _lim(path: Bars, t0: int, t1: int, e: float, st: float, tg: float, rule: StopRule, fees: Fees, through: bool = True) -> tuple[Any, int]:
+    return sp.limit_trade(path, t0, t1, e, st, tg, HOLD["4h"], rule, fees, through)
+
+
+def limit_rows(
+    setup: str,
+    s: str,
+    tf: str,
+    tb: Bars,
+    h1: Bars,
+    sigs: list[ss.LiveSignal],
+    ctx: Callable[[int, str, float, float, float], dict[str, Any] | None],
+    states: dict[int, str | None],
+    why: Counter[str],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Rows of a resting-limit setup (S12 v7, S28): one per placement, filled or not (an unfilled limit holds the coin
+    until its deadline, so it stays in the chain with B = None), and the registered placebo rows (random limits of the
+    same coin, side and geometry, pre-filtered to the demo selection at >= $5M: the only sample they are compared with)."""
+    rows: list[dict[str, Any]] = []
+    placebo: list[dict[str, Any]] = []
+    rng = np.random.default_rng(SEED + zlib.crc32(f"{s}{setup}".encode()))
+    pos = segment_pos(tb.t)
+    close_t = tb.t + tb.bar_ms
+    pool = np.flatnonzero((pos >= ss.S12_WARMUP) & (close_t >= START_MS) & (close_t < END[tf]))
+    for sig in sigs:
+        why[f"{tf}:signal"] += 1
+        i = int(np.searchsorted(tb.t, sig.signal_ts))
+        t0 = sig.signal_ts + tb.bar_ms
+        if not (START_MS <= t0 < END[tf]):
+            continue
+        t1 = int(sig.indicators["rest_until_ms"])
+        sg = 1.0 if sig.side == "long" else -1.0
+        e, st, tg = sg * sig.entry, sg * sig.stop, sg * sig.target
+        bb = tb if sig.side == "long" else tb.mirrored()
+        path = h1 if sig.side == "long" else h1.mirrored()
+        if not (st < e < tg):
+            why[f"{tf}:levels"] += 1
+            continue
+        c_sig = float(bb.c[i])
+        for _ in range(N_PLACEBO):  # drawn for every signal in period, before any filter (same draws whatever the filters)
+            if pool.size == 0:
+                break
+            r = int(pool[rng.integers(pool.size)])
+            c_r = float(bb.c[r])
+            e_r, st_r = c_r * e / c_sig, c_r * st / c_sig
+            tg_r = e_r + 2.0 * (e_r - st_r)
+            tr0 = int(tb.t[r]) + tb.bar_ms
+            x = ctx(tr0, sig.side, sg * e_r, sg * st_r, sg * tg_r)
+            if (
+                x is None
+                or x["turn"] < 5e6
+                or x["rr"] < MIN_RR
+                or x["stop_pct"] > MAX_STOP
+                or x["score"] < MIN_SCORE
+                or not (st_r < e_r < tg_r)
+            ):
+                continue
+            o, tk = _lim(path, tr0, tr0 + (t1 - t0), e_r, st_r, tg_r, RULE_B, F1)
+            if o is None and tk >= 0:
+                continue
+            placebo.append(
+                {**x, "tf": tf, "B": o.r_net if o else None, "B_x": o.exit_ms if o else tr0 + (t1 - t0), "filled": o is not None}
+            )
+        x = ctx(t0, sig.side, sig.entry, sig.stop, sig.target)
+        if x is None:
+            why[f"{tf}:under_1m_or_unknown"] += 1
+            continue
+        if not c_sig > e:  # the demo does not place a post-only limit the price already reached
+            why[f"{tf}:at_level"] += 1
+            continue
+        b, tk = _lim(path, t0, t1, e, st, tg, RULE_B, F1)
+        if b is None and tk >= 0:
+            why[f"{tf}:no_path"] += 1
+            continue
+        filled = b is not None
+        bx = b15 = None
+        if filled:
+            bx, _ = _lim(path, t0, t1, e, st, tg, RULE_BX, F1)
+            b15, _ = _lim(path, t0, t1, e, st, tg, RULE_B, F15)
+        bt, tkt = _lim(path, t0, t1, e, st, tg, RULE_B, F1, through=False)
+        lb = lb15 = None
+        late_placed = i + 1 < len(bb) and int(bb.t[i + 1]) - int(bb.t[i]) == bb.bar_ms and float(bb.c[i + 1]) > e
+        if late_placed:
+            lb, _ = _lim(path, t0 + bb.bar_ms, t1 + bb.bar_ms, e, st, tg, RULE_B, F1)
+            lb15, _ = _lim(path, t0 + bb.bar_ms, t1 + bb.bar_ms, e, st, tg, RULE_B, F15)
+        rows.append(
+            {
+                **x,
+                "tf": tf,
+                "filled": filled,
+                "t_fill": tk,
+                "B": b.r_net if b else None,
+                "B_k": b.exit_kind if b else "unfilled",
+                "B_x": b.exit_ms if b else t1,
+                "Bx": bx.r_net if bx else None,
+                "B15": b15.r_net if b15 else None,
+                "L": lb.r_net if lb else None,
+                "L15": lb15.r_net if lb15 else None,
+                "late_placed": bool(late_placed),
+                "T": bt.r_net if bt else None,
+                "T_x": bt.exit_ms if bt else (t1 if tkt < 0 else None),
+                "cost": b.cost_r if b else None,
+            }
+        )
+        why[f"{tf}:cand"] += 1
+        why[f"{tf}:filled"] += int(filled)
+    return rows, placebo
 
 
 def prepare(a: argparse.Namespace, out: Path) -> None:
@@ -305,16 +454,20 @@ def stage_sanity(a: argparse.Namespace, out: Path, syms: list[str]) -> None:
 # ---------------------------------------------------------------- report
 
 
-def load_rows(out: Path) -> dict[str, np.ndarray]:
+def load_rows(out: Path, part: str = "rows") -> dict[str, np.ndarray]:
     rows: list[dict[str, Any]] = []
     for p in sorted((out / "cands").glob("*.json")):
-        rows.extend(json.loads(p.read_text())["rows"])
+        rows.extend(json.loads(p.read_text()).get(part, []))
     keys = rows[0].keys()
     T = {k: np.array([r[k] for r in rows], dtype=object) for k in keys}
     for k in ("t_in", "B_x"):
         T[k] = T[k].astype(np.int64)
-    for k in ("B", "Bx", "B15", "L", "L15", "rr", "stop_pct", "cost"):
-        T[k] = np.array([math.nan if x is None else float(x) for x in T[k]])
+    for k in ("B", "Bx", "B15", "L", "L15", "rr", "stop_pct", "cost", "T", "T_x"):
+        if k in T:
+            T[k] = np.array([math.nan if x is None else float(x) for x in T[k]])
+    for k in ("filled", "late_placed"):
+        if k in T:
+            T[k] = T[k].astype(bool)
     T["turn"] = np.array([math.nan if x is None else float(x) for x in T["turn"]])
     T["score"] = T["score"].astype(np.int64)
     T["top30"] = T["top30"].astype(bool)
@@ -385,8 +538,19 @@ def stage_report(a: argparse.Namespace, out: Path) -> None:
     # registered before their run as the verdict sample (V); S3 keeps its registered >= $5M row as V.
     P100 = chain(T, period & demo & turn5 & in_top, cap)
     P100_nocap = chain(T, period & demo & turn5 & in_top) if cap else P100
+    lim = a.setup in LIMIT
+    if lim:
+        # registration «… S12 v7 і S28»: the chains hold the coin from the placement (an unfilled limit until its
+        # deadline); the statistics are on the filled trades; the side row is the top-250 >= $1M list
+        top250 = top_n_days(qv, LIMIT_WIDE_TOP_N)
+        G = chain(T, period & demo & in_prev_day_top(T, top250))
+        limit_section(a, out, T, {"P100": P100, "P": P, "G": G, "A": A}, IS, OOS, period, demo, qv)
+        F = T["filled"]
+        P, W, A, P100, P100_nocap, G = (x & F for x in (P, W, A, P100, P100_nocap, G))
+    wide = wide or lim  # the verdict is on the demo list (top-N) for both families
     V = P100 if wide else P  # verdict sample
-    G = P100 if wide else W  # base of the turnover table
+    if not lim:
+        G = P100 if wide else W  # base of the turnover table
     pl = f"усі {fl} + відбір демо (без рангу)" if wide else "основна"
     emit(
         f"# Паспорт {a.setup}: кандидатів {T['B'].size}; {pl if wide else f'основна вибірка (оборот {fl} + відбір демо)'} {int(P.sum())}; ≥ $1M {int(W.sum())}; усі сигнали {fl} {int(A.sum())}; топ-{top_n} і {fl} + відбір демо {int(P100.sum())}"
@@ -456,7 +620,7 @@ def stage_report(a: argparse.Namespace, out: Path) -> None:
     emit(
         f"виходи ({'вибірка вердикту' if wide else 'основна'}): {dict(ex)}; середні витрати {np.nanmean(T['cost'][V]):.3f}R; частка R>0 {np.mean(T['B'][V] > 0):.1%}"
     )
-    if wide:
+    if wide and not lim:
         # the per-bar cap does not apply in the joint chain (registration), so compare with the uncapped own chain
         joint_chain(a, out, T, P100_nocap, qv)
 
@@ -469,7 +633,13 @@ def stage_report(a: argparse.Namespace, out: Path) -> None:
     if len(set(T["side"][V].tolist())) > 1:
         for sd in ("long", "short"):
             cells.append(("бік", sd, V & (T["side"] == sd), V))
-    glab = f"оборот (топ-{top_n} і {fl}, вибірка вердикту)" if wide else "оборот (≥ $1M, власний ланцюг)"
+    glab = (
+        f"оборот (топ-{LIMIT_WIDE_TOP_N} і ≥ $1M + відбір демо, власний ланцюг; не вердикт)"
+        if lim
+        else f"оборот (топ-{top_n} і {fl}, вибірка вердикту)"
+        if wide
+        else "оборот (≥ $1M, власний ланцюг)"
+    )
     for g in (sp.TOP30, sp.GE5M, sp.M1TO5):
         cells.append((glab, g, G & (T["grp"] == g), G))
     for st in (*cr.STATES, "none"):
@@ -562,6 +732,126 @@ def stage_report(a: argparse.Namespace, out: Path) -> None:
     coverage(a, qv, top_days, T, V, floor, top_n)
     if a.setup in SHORT_FAMILY:
         short_family(out, qv)
+
+
+def limit_section(
+    a: argparse.Namespace,
+    out: Path,
+    T: dict[str, np.ndarray],
+    M: dict[str, np.ndarray],
+    IS: np.ndarray,
+    OOS: np.ndarray,
+    period: np.ndarray,
+    demo: np.ndarray,
+    qv: dict[str, list[tuple[int, float]]],
+) -> None:
+    """Registered rows of a resting-limit setup (S12 v7, S28) on the placements (chains already applied): fill rate,
+    R per placement (unfilled = 0R), the touch fill model, the late placement, the placebo and the known number."""
+    F = T["filled"]
+    r0 = np.nan_to_num(T["B"], nan=0.0)
+    emit("\n## Лімітка: заповнення і R на розміщення (незаповнена = 0R; ланцюг тримає монету від розміщення)")
+    emit(
+        "| вибірка | період | розміщень | заповнено | частка | E[R] на заповнену [CI] | E[R] на розміщення [CI] | R за рік |\n|---|---|---|---|---|---|---|---|"
+    )
+    names = {
+        "P100": "топ-100 і ≥ $5M + відбір (вердикт)",
+        "P": "усі ≥ $5M + відбір",
+        "G": "топ-250 і ≥ $1M + відбір",
+        "A": "усі сигнали ≥ $5M",
+    }
+    for key, lab in names.items():
+        for plab, pm in (("2021+", np.ones_like(F)), ("IS", IS), ("OOS", OOS)):
+            m = M[key] & pm
+            n, nf = int(m.sum()), int((m & F).sum())
+            if n == 0:
+                continue
+            rf = ci(T, m & F)
+            rp = sp.mean_ci(r0[m], T["week"][m], n_boot=N_BOOT, seed=SEED)
+            yrs = (int(T["t_in"][m].max()) - int(T["t_in"][m].min())) / (365.25 * DAY_MS) or 1.0
+            emit(
+                f"| {lab} | {plab} | {n} | {nf} | {nf / n:.1%} | {rf['m']:+.3f} [{rf['lo']:+.3f}; {rf['hi']:+.3f}] | "
+                f"{rp['m']:+.3f} [{rp['lo']:+.3f}; {rp['hi']:+.3f}] | {r0[m].sum() / yrs:+.1f} |"
+            )
+    V = M["P100"]
+    emit("\n## Лімітка: модель «дотик» і пізніше розміщення (вибірка вердикту, розміщення ланцюга основної моделі)")
+    hdr = "| рядок | n | E[R] net | 95 % CI | p |\n|---|---|---|---|---|"
+    emit(hdr)
+    tf_ = np.isfinite(T["T"])
+    lr = np.nan_to_num(T["L"], nan=0.0)
+    for lab, m, v in (
+        ("«дотик» (лоу ≤ ліміту), заповнені, 2021+", V & tf_, T["T"]),
+        ("«дотик», заповнені, OOS", V & OOS & tf_, T["T"]),
+        ("«дотик», на розміщення, OOS", V & OOS, np.nan_to_num(T["T"], nan=0.0)),
+        ("пізніше на свічку, заповнені, OOS", V & OOS & np.isfinite(T["L"]), T["L"]),
+        ("пізніше на свічку, на розміщення (не поставлено / не заповнено = 0R), OOS", V & OOS, lr),
+        ("база на розміщення, OOS", V & OOS, r0),
+        ("пізніше + витрати ×1.5, заповнені, OOS", V & OOS & np.isfinite(T["L15"]), T["L15"]),
+    ):
+        emit(f"| {lab} " + fmt(sp.mean_ci(v[m], T["week"][m], n_boot=N_BOOT, seed=SEED)))
+    emit(
+        f"частка заповнення OOS: тут {(V & OOS & F).sum() / max(1, (V & OOS).sum()):.1%}, «дотик» {(V & OOS & tf_).sum() / max(1, (V & OOS).sum()):.1%}; "
+        f"пізнє розміщення не поставлено (ціна вже на рівні / дірка) {int((V & OOS & ~T['late_placed']).sum())} з {int((V & OOS).sum())}"
+    )
+
+    emit("\n## Плацебо: випадкова лімітка тієї самої монети, боку й геометрії (зареєстровано)")
+    Q = load_rows(out, "placebo")
+    q_top = in_prev_day_top(Q, top_n_days(qv, TOP_N))
+    QP = chain(Q, (Q["t_in"] >= PASSPORT_MS) & q_top) & Q["filled"]
+    q_place = chain(Q, (Q["t_in"] >= PASSPORT_MS) & q_top)
+    q_oos = Q["t_in"] >= OOS_MS
+    emit(
+        "| період | сетап: n, E[R] | плацебо: n, E[R] | сетап − плацебо [95 % CI] | p | заповнення сетап / плацебо |\n|---|---|---|---|---|---|"
+    )
+    for lab, mt, mq in (("2021+", V & F, QP), ("OOS", V & F & OOS, QP & q_oos)):
+        vals = np.concatenate([T["B"][mt], Q["B"][mq]])
+        wk = np.concatenate([T["week"][mt], Q["week"][mq]])
+        ga = np.concatenate([np.ones(int(mt.sum()), bool), np.zeros(int(mq.sum()), bool)])
+        d = sp.diff_ci(vals, ga, ~ga, wk, n_boot=N_BOOT, seed=SEED)
+        pm_t = V & (OOS if lab == "OOS" else np.ones_like(F))
+        pm_q = q_place & (q_oos if lab == "OOS" else np.ones_like(q_oos))
+        emit(
+            f"| {lab} | {int(mt.sum())}, {np.mean(T['B'][mt]):+.3f} | {int(mq.sum())}, {np.mean(Q['B'][mq]):+.3f} | "
+            f"{d['d']:+.3f} [{d['lo']:+.3f}; {d['hi']:+.3f}] | {d['p']:.3f} | "
+            f"{(pm_t & F).sum() / max(1, pm_t.sum()):.1%} / {(pm_q & Q['filled']).sum() / max(1, pm_q.sum()):.1%} |"
+        )
+
+    emit("\n## Відоме число")
+    guard = (T["rr"] >= MIN_RR) & (T["stop_pct"] <= MAX_STOP) & T["top30"]
+    if a.setup == "S12":  # 2026-10-26-prelimit-entries lim_mid: touch, top-30, guard, chain per symbol + side, busy from fills
+        idx = np.flatnonzero(guard)
+        idx = idx[np.lexsort((T["order"][idx], T["t_in"][idx]))]
+        busy: dict[tuple[str, str], int] = {}
+        keep = []
+        for k in idx:
+            key = (str(T["sym"][k]), str(T["side"][k]))
+            if int(T["t_in"][k]) < busy.get(key, -1):
+                continue
+            if np.isfinite(T["T"][k]):
+                keep.append(k)
+                busy[key] = int(T["T_x"][k])
+        kk = np.zeros(F.size, bool)
+        kk[np.array(keep, dtype=np.int64)] = True
+        r = sp.mean_ci(T["T"][kk], T["t_in"][kk] // DAY_MS, n_boot=N_BOOT, seed=SEED)
+        emit(
+            f"звірка з 2026-10-26-prelimit-entries (S12 lim_mid, «дотик», топ-30, guard, з 2020-02; там n 20 284, +0.185 [+0.155; +0.214], OOS +0.150): "
+            f"тут n {int(r['n'])} ({int(r['n']) - 20284:+d}, {r['n'] / 20284 - 1:+.1%}), {r['m']:+.3f} [{r['lo']:+.3f}; {r['hi']:+.3f}], OOS {np.mean(T['T'][kk & OOS]):+.3f}"
+        )
+    else:  # step 4 row B (2026-10-17-course-step4-fvg-ob): 4h IS 4 137 trades, own exits (R not compared)
+        m = T["top30"] & IS & np.isfinite(T["T"])
+        emit(
+            f"звірка з кроком 4, рядок B (S28 4h IS, там 4 137 угод з власними виходами; R не порівнюється): заповнених «дотиком» кандидатів топ-30 IS "
+            f"тут {int(m.sum())} ({int(m.sum()) - 4137:+d}, {m.sum() / 4137 - 1:+.1%}), без ланцюга; з guard {int((m & guard).sum())}"
+        )
+
+    emit("\n## Смуга R на 30 розміщень (незаповнені = 0R; демо рахує й «missed»)")
+    for lab, m in (("OOS топ-100 (вердикт)", V & OOS), ("2021+ топ-100", V)):
+        idx = np.flatnonzero(m)
+        idx = idx[np.argsort(T["t_in"][idx], kind="stable")]
+        b = sp.r_band(r0[idx], 30, reps=N_BOOT, seed=SEED)
+        emit(
+            f"{lab}: i.i.d. {b['iid_p5']:+.3f} / {b['iid_p50']:+.3f} / {b['iid_p95']:+.3f}; ковзні {int(b['windows'])} вікон {b['roll_p5']:+.3f} / {b['roll_p50']:+.3f} / {b['roll_p95']:+.3f}"
+        )
+    emit(f"rss {rss_mb():.0f} MB")
 
 
 def contrast_by_year(T: dict[str, np.ndarray], G: np.ndarray) -> list[str]:

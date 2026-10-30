@@ -326,6 +326,21 @@ def test_s12_is_causal_a_different_future_after_each_signal_bar_changes_nothing_
         assert ss.s12(b.slice(0, t + 1), "4h") == [s for s in want if s.signal_ts == upto], t
 
 
+def test_s12_rest_is_causal_a_different_future_after_each_gap_bar_changes_nothing_up_to_it():
+    """S12 v7 (the resting limit, the passport's detector): cut at every gap bar t (and the bar before it) and give the
+    history a different future; the signals up to t (levels, deadline and comment) stay the same."""
+    b = _bars(700, 5)
+    full = ss.s12_rest_all(b, "4h")
+    rng = np.random.default_rng(98)
+    cuts = sorted({k for s in full for k in (int(np.searchsorted(b.t, s.signal_ts)) - 1, int(np.searchsorted(b.t, s.signal_ts)))})
+    assert len(cuts) > 20
+    for t in cuts:
+        upto = int(b.t[t])
+        want = [s for s in full if s.signal_ts <= upto]
+        assert [s for s in ss.s12_rest_all(_other_future(b, t, rng), "4h") if s.signal_ts <= upto] == want, t
+        assert ss.s12_rest(b.slice(0, t + 1), "4h") == [s for s in want if s.signal_ts == upto], t
+
+
 def test_s12_levels_comment_and_timeframe():
     b = _bars(1000, 7)
     sigs = ss.s12_all(b, "4h")

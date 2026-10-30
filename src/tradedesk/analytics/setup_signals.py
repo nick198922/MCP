@@ -256,18 +256,30 @@ def _flip(side: str, x: float) -> float:
 
 
 def s14(b: Bars, timeframe: str) -> list[LiveSignal]:
+    """S14 on the last closed bar (module docstring)."""
+    if len(b) < S14_PARAMS.warmup + 2:
+        return []
+    return s14_all(b, timeframe, lo=len(b) - 1)
+
+
+def s14_all(b: Bars, timeframe: str, lo: int = 0) -> list[LiveSignal]:
+    """S14 signals decided on every bar ``>= lo`` of ``b`` (both sides; longs first, then shorts, each in bar order):
+    the full-history form of ``s14`` for the setup passport. ``find_signals`` is causal (EMA / ATR run forward, a
+    fractal needs two later bars that close before the signal bar, the used-impulse memory only grows), and it always
+    runs from bar 0 so that memory is the one the live scan has; the signals of bar k here are those ``s14`` gives on
+    ``b[: k + 1]`` (``tests/test_setup_signals.py``). A bar before ``warmup + 1`` gives none: the live scan needs
+    ``warmup + 2`` bars."""
     out: list[LiveSignal] = []
-    n = len(b)
-    if n < S14_PARAMS.warmup + 2:
-        return out
+    lo = max(lo, S14_PARAMS.warmup + 1)
     for side, bb in (("long", b), ("short", b.mirrored())):
         ind = indicators(bb, S14_PARAMS)
-        # the whole window, not only the last bar: the detector keeps one signal per impulse ("used"), and that memory
-        # needs the earlier bars; only a signal decided on the last bar is returned
-        for s in (x for x in find_signals(bb, ind, S14_PARAMS, variant="sweep") if x.idx == n - 1):
+        # the whole history, not only bars >= lo: the detector keeps one signal per impulse ("used"), and that memory
+        # needs the earlier bars
+        for s in (x for x in find_signals(bb, ind, S14_PARAMS, variant="sweep") if x.idx >= lo):
+            i = s.idx
             e, st, tg = (_flip(side, v) for v in (s.entry, s.stop, s.target))
-            ef, em, es = (_flip(side, float(v[n - 2])) for v in (ind.e_fast, ind.e_mid, ind.e_slow))
-            a = float(ind.atr[n - 1])
+            ef, em, es = (_flip(side, float(v[i - 1])) for v in (ind.e_fast, ind.e_mid, ind.e_slow))
+            a = float(ind.atr[i])
             high = _flip(side, s.high_ref)
             trend = "висхідний" if side == "long" else "низхідний"
             comment = (
@@ -282,7 +294,7 @@ def s14(b: Bars, timeframe: str) -> list[LiveSignal]:
                     "S14",
                     side,
                     timeframe,
-                    int(bb.t[n - 1]),
+                    int(bb.t[i]),
                     e,
                     st,
                     tg,

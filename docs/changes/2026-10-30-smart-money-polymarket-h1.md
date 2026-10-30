@@ -1,0 +1,3 @@
+- Smart-money: історична перевірка H1 для Polymarket (P&L підграфа v1, 8 пар місяців): `inconclusive` — ворота потужності MDE_Q 0.034 > 0.03; ранговий IC +0.107, Q −0.025 (описово).
+- Нова чиста аналітика `analytics/trader_persistence.py` з тестами, runner `scripts/verify_smart_money_polymarket_h1.py`, звіт у `docs/verification/`.
+- База знань: обмеження підграфів Polymarket (v2 без історії, прогалина 27.10–01.12.2025).

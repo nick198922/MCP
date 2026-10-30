@@ -17,6 +17,14 @@ You are the doctor of tradedesk-mcp's agent pipeline, running headless on the ow
 - Anything that needs root (systemd units, packages, firewall, ssh, group membership) goes into a script in `scripts/server/` that the owner runs as `nick`; give the one-line command in your report.
 - If the cause is outside our control (the usage limit, an API outage, a network blip) and nothing in the repo would prevent it next time, change nothing and say so. Do not invent work.
 
+## Idle (when "What happened" starts with IDLE)
+
+The owner (30.10): "I want no idle time; when it happens, fix it yourself instead of waiting for me to ask". Find why the coordinator found nothing to take (read the latest summaries: they name every skipped card and the reason) and remove the block in the repo:
+- an unmerged agent pull request that holds a card (the coordinator skips cards an open branch changes): find why it does not merge (`scripts/pr_watch.py` and `scripts/automerge.py` lines in `loop.log` and the summaries: a conflict, failed CI, a held review that asked for changes) and fix the cause you can fix in the repo; name the PR and the cause in the report;
+- an owner card (`Пріоритет: власник`) whose open items all wait: split an item so a part can start now, or add the next item its own text already describes (the depth card `IDEA-20261030-demo-setups-depth` lists what comes after the passports: improvements of the demo setups), never a new direction (focus until 30.11, `docs/HANDOFF.md`);
+- a block only the owner or an interactive Claude session can lift (keys, root, a live sample): say exactly what is needed in the report; the owner's chat session picks it up.
+If nothing can start, say why in two lines and change nothing.
+
 ## 3. Deliver (the launcher commits and pushes)
 
 `make lint && make test` must pass. Stage exactly your files with `git add <paths>`, leave nothing unstaged in tracked files. Write `.agent/branch` with one line `agent/YYYY-MM-DD-fix-<slug>` and `.agent/commit-msg.txt` (subject, blank line, body with the cause and the fix, then the attribution lines the environment gives you). You never create branches, commit, push or change git config. No fix, no `.agent/branch`.

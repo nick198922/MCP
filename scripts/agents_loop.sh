@@ -173,6 +173,28 @@ doctor() {
   "$REPO/scripts/agents_doctor.sh" "$1" || log "doctor exited with $?"
 }
 
+# Idle watchdog (owner 30.10: "I want no idle time; when it happens, fix it yourself instead of waiting for me to ask"):
+# two idle runs in a row (nothing to take, or a delivery that is only an idle summary) call the doctor in idle mode
+# (.claude/doctor.md, "Idle") to find what blocks the open work and remove it; at most once per IDLE_DOCTOR_GAP, outside
+# the failure quota.
+idles=0
+IDLE_DOCTOR_GAP="${TRADEDESK_IDLE_DOCTOR_GAP_SECONDS:-10800}"
+idle_check() { # idle_check <1 = idle run | 0 = real work>
+  if (($1 == 0)); then
+    idles=0
+    return 0
+  fi
+  idles=$((idles + 1))
+  ((idles >= 2)) || return 0
+  local last now
+  last="$(cat "$LOG_DIR/idle_doctor.ts" 2>/dev/null)"
+  now="$(date +%s)"
+  ((now - ${last:-0} >= IDLE_DOCTOR_GAP)) || return 0
+  echo "$now" >"$LOG_DIR/idle_doctor.ts"
+  idles=0
+  doctor "IDLE: the agents found nothing to take in $2 runs in a row. Follow the Idle section of your instructions. Latest run log: $last_log"
+}
+
 # After a failure: wait longer the more failures there were in a row, and tell the owner once when they pile up.
 fails=0
 after_failure() {
@@ -318,6 +340,7 @@ while true; do
   case $rc in
     0)
       log "step finished"
+      if [[ "$last_outcome" == *-idle* ]]; then idle_check 1 2; else idle_check 0; fi
       if [[ "$last_status" == "stuck" ]]; then
         doctor "The agents could not finish one step in the allowed number of runs; it was handed to the owner as it is. Find why the runs kept ending without delivery. Run log: $last_log" "$last_outcome"
       fi
@@ -326,6 +349,7 @@ while true; do
       ;;
     3)
       log "nothing to do; waiting ${WAIT_IDLE}s"
+      idle_check 1 2
       loop_state "роботи немає, наступна перевірка о $(at "$WAIT_IDLE")"
       sleep "$WAIT_IDLE"
       ;;

@@ -137,6 +137,14 @@ def test_union_resolve_refuses_edits_of_the_same_lines_and_files_without_hunks()
     assert pw.union_resolve("<<<<<<< HEAD\nhalf\n") is None
 
 
+def test_union_resolve_keep_both_takes_mains_edit_then_the_branchs_new_lines():
+    """Owner 30.10 (no idle): an edit conflict in docs keeps main's lines, then the branch's lines main lacks."""
+    text = "x\n" + hunk("old note\nbranch line\n", "old note\n", "main edit\n") + "y\n"
+    assert pw.union_resolve(text, keep_both=True) == "x\nmain edit\nold note\nbranch line\ny\n"
+    same = "x\n" + hunk("same\n", "old\n", "same\n")
+    assert pw.union_resolve(same, keep_both=True) == "x\nsame\n"
+
+
 def test_is_docs():
     assert pw.is_docs("docs/library/README.md") and pw.is_docs("CHANGELOG.md")
     assert not pw.is_docs("scripts/x.py") and not pw.is_docs("src/tradedesk/README.md")

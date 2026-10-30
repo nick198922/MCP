@@ -81,13 +81,18 @@ def findings(pr: dict, check_runs: list[dict], now: datetime) -> list[tuple[str,
     return out
 
 
+KEEP_BOTH_NEVER = ("docs/adr/",)  # a contract: two versions of a limit side by side would be read as either
+
+
 def is_docs(path: str) -> bool:
     return path.startswith("docs/") or ("/" not in path and path.endswith(".md"))
 
 
-def union_resolve(text: str) -> str | None:
+def union_resolve(text: str, keep_both: bool = False) -> str | None:
     """The file with every conflict hunk (diff3 style) replaced by main's lines, then the branch's; None when a hunk
-    changed lines both sides started from (a real edit conflict) or the file has no hunk at all."""
+    changed lines both sides started from (a real edit conflict) or the file has no hunk at all. ``keep_both``: an edit
+    conflict too keeps main's version of the lines, then the branch's lines main does not have (owner 30.10: an agent
+    PR stuck overnight on a HANDOFF line both sides edited idled the agents; a doubled note beats a stalled pipeline)."""
     out: list[str] = []
     hunks = 0
     part, ours, base, theirs = "", [], [], []
@@ -99,9 +104,9 @@ def union_resolve(text: str) -> str | None:
         elif line.rstrip("\r\n") == "=======" and part == "base":
             part = "theirs"
         elif line.startswith(">>>>>>> ") and part == "theirs":
-            if base:
+            if base and not keep_both:
                 return None
-            out += theirs + ours  # theirs = origin/main (merged in), ours = the PR branch
+            out += theirs + ([x for x in ours if x not in theirs] if base else ours)  # theirs = origin/main, ours = the PR
             hunks += 1
             part = ""
         elif part == "ours":
@@ -143,15 +148,21 @@ def merge_main(ref: str) -> tuple[str, list[str]]:
         if not_docs:
             git("merge", "--abort", check=False)
             return "blocked", [f"не документація: {', '.join(not_docs[:5])}"]
+        both: list[str] = []
         for f in conflicted:
             path = FIX_DIR / f
-            resolved = union_resolve(path.read_text(encoding="utf-8")) if path.is_file() else None
+            text = path.read_text(encoding="utf-8") if path.is_file() else None
+            resolved = None if text is None else union_resolve(text)
+            if resolved is None and text is not None and not f.startswith(KEEP_BOTH_NEVER):
+                resolved = union_resolve(text, keep_both=True)
+                both += [f] if resolved is not None else []
             if resolved is None:
                 git("merge", "--abort", check=False)
                 return "blocked", [f"{f}: обидві сторони змінили ті самі рядки"]
             path.write_text(resolved, encoding="utf-8")
             git("add", "--", f)
         git("commit", "-q", "--no-edit")
+        conflicted = [f"{f} (обидві версії рядків)" if f in both else f for f in conflicted]
     git("push", "-q", "origin", f"HEAD:refs/heads/{ref}")
     return "fixed", conflicted
 

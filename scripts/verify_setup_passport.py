@@ -2,7 +2,9 @@
 """Setup passport (IDEA-20261030-demo-setups-depth, items 2-5): the demo setup's trades on history with the demo's
 rules and costs, as the reference its live trades are compared with. Pre-registration: the card's sections
 «Попередня реєстрація паспорта» and, for S14 / S16 (the demo's ``WIDE_SETUPS``: verdict on the top-250 >= $1M list,
-turnover groups on it, a descriptive chain shared by S14 + S16 + S3), «Попередня реєстрація паспортів S14 і S16».
+turnover groups on it, a descriptive chain shared by S14 + S16 + S3), «Попередня реєстрація паспортів S14 і S16»;
+for S38 / S39 / S40 (4h; S38 with the demo's 2 entries per signal bar; the turnover contrast by year and pooled over
+the three; a chain shared by all six setups) «Попередня реєстрація паспортів S38, S39 і S40».
 
     uv run python scripts/verify_setup_passport.py S3 --stage sanity        # coverage, units, known number, timing
     uv run python scripts/verify_setup_passport.py S3 --stage run           # per-symbol candidate files (4 workers)
@@ -67,7 +69,10 @@ TOP_N = 100  # demo_trader scans guard.universe(size=100, min_turnover_usd=5e6):
 # union with the top-100 >= $5M list is the top-250 >= $1M list (registration «Попередня реєстрація паспортів S14 і S16»)
 WIDE = ("S14", "S16", "S38", "S39", "S40")
 WIDE_TOP_N = 250
-DEMO_ORDER = ("S14", "S16", "S3")  # demo_trader.SETUPS order of the setups with a passport chain (joint-chain ties)
+DEMO_ORDER = ("S14", "S16", "S3", "S38", "S39", "S40")  # demo_trader.SETUPS order of the setups with a passport chain
+JOINT = {"S14": DEMO_ORDER[:3], "S16": DEMO_ORDER[:3]}  # S14 / S16 registered the chain with S3 only; S38-S40 all six
+BAR_CAP = {"S38": 2}  # demo_trader.BAR_CAP: entries per signal bar (registration «… S38, S39 і S40»)
+SHORT_FAMILY = ("S38", "S39", "S40")  # pooled turnover contrast and Holm on their 6 contrasts
 
 
 def top_n_of(setup: str) -> int:
@@ -319,9 +324,26 @@ def load_rows(out: Path) -> dict[str, np.ndarray]:
     return T
 
 
-def chain(T: dict[str, np.ndarray], m: np.ndarray) -> np.ndarray:
+def demo_rank(T: dict[str, np.ndarray]) -> np.ndarray:
+    """The demo's order among candidates of one bar (``_select_and_enter``): higher score, then higher R:R after fees;
+    then the larger 24h turnover (assumed order of the demo's list). With the target at exactly 2R, higher R:R means
+    a wider stop; the S38 verdict sample has no same-bar R:R ties, so the turnover key never decides (review
+    2026-10-30: verdict robust to the within-bar order, OOS -0.044 .. +0.006 over 200 random orders)."""
+    o = np.lexsort((-np.nan_to_num(T["turn"], nan=-1.0), -T["rr"], -T["score"]))
+    r = np.empty(o.size, dtype=float)
+    r[o] = np.arange(o.size)
+    return r
+
+
+def chain(T: dict[str, np.ndarray], m: np.ndarray, cap: int | None = None) -> np.ndarray:
     idx = np.flatnonzero(m)
-    keep = sp.busy_chain([str(x) for x in T["sym"][idx]], T["t_in"][idx], T["B_x"][idx], T["order"][idx])
+    syms = [str(x) for x in T["sym"][idx]]
+    if cap is not None:
+        keep = sp.busy_chain_capped(syms, T["t_in"][idx], T["B_x"][idx], demo_rank(T)[idx], cap)
+        out = np.zeros(m.size, dtype=bool)
+        out[idx[keep]] = True
+        return out
+    keep = sp.busy_chain(syms, T["t_in"][idx], T["B_x"][idx], T["order"][idx])
     out = np.zeros(m.size, dtype=bool)
     out[idx[keep]] = True
     return out
@@ -348,7 +370,8 @@ def stage_report(a: argparse.Namespace, out: Path) -> None:
     period = T["t_in"] >= PASSPORT_MS
     demo = (T["rr"] >= MIN_RR) & (T["stop_pct"] <= MAX_STOP) & (T["score"] >= MIN_SCORE)
     turn5 = np.nan_to_num(T["turn"], nan=-1) >= floor
-    P = chain(T, period & demo & turn5)
+    cap = BAR_CAP.get(a.setup)
+    P = chain(T, period & demo & turn5, cap)
     W = chain(T, period & demo)  # >= $1M (the candidates already are)
     A = chain(T, period & turn5)
     IS, OOS = T["t_in"] < OOS_MS, T["t_in"] >= OOS_MS
@@ -360,7 +383,8 @@ def stage_report(a: argparse.Namespace, out: Path) -> None:
     # Correction after review (2026-10-30): the demo scans guard.universe(size=100, min_turnover_usd=5e6), i.e. the
     # top-100 by turnover AND >= $5M, not every coin >= $5M as the registration said. WIDE setups: top-250 and >= $1M,
     # registered before their run as the verdict sample (V); S3 keeps its registered >= $5M row as V.
-    P100 = chain(T, period & demo & turn5 & in_top)
+    P100 = chain(T, period & demo & turn5 & in_top, cap)
+    P100_nocap = chain(T, period & demo & turn5 & in_top) if cap else P100
     V = P100 if wide else P  # verdict sample
     G = P100 if wide else W  # base of the turnover table
     pl = f"усі {fl} + відбір демо (без рангу)" if wide else "основна"
@@ -381,7 +405,15 @@ def stage_report(a: argparse.Namespace, out: Path) -> None:
         emit(
             "звірка з кроком 1 (2026-10-17-course-s14-ema: S14 4h лонг, топ-30, IS, усі сигнали без ланцюга; там n 508, "
             f"−0.080R з ринковими витратами і власним виходом — R не порівнюється): кандидатів тут {int(kn.sum())} "
-            "(менше на сигнали з оборотом < $1M / невідомим, рівнями чи без 1h-шляху); правило B " + fmt(ci(T, kn))
+            f"({int(kn.sum()) - 508:+d}, {int(kn.sum()) / 508 - 1:+.1%}); правило B " + fmt(ci(T, kn))
+        )
+    known = {"S38": 2609, "S39": 862, "S40": 1211}  # 2026-10-24-short-setups-demo, «Потужність»: 4h top-30 IS, guard
+    if a.setup in known:
+        kn = T["top30"] & IS & (T["rr"] >= MIN_RR) & (T["stop_pct"] <= MAX_STOP)
+        k, ref = int(kn.sum()), known[a.setup]
+        emit(
+            f"звірка з кроком 1 (2026-10-24-short-setups-demo: 4h, топ-30, IS з 2020-02, сигнали з guard до правила однієї "
+            f"позиції; там n {ref}; R не порівнюється): кандидатів тут {k} ({k - ref:+d}, {k / ref - 1:+.1%}); правило B " + fmt(ci(T, kn))
         )
     hdr = "| вибірка | n | E[R] net | 95 % CI (тижневі блоки) | p |\n|---|---|---|---|---|"
     emit("\n## Загалом (правило B; R на ризик угоди)\n" + hdr)
@@ -399,6 +431,14 @@ def stage_report(a: argparse.Namespace, out: Path) -> None:
         (f"топ-{top_n} і {fl}, IS", P100 & IS, "B"),
         (f"**топ-{top_n} і {fl}, OOS{vtag}**", P100 & OOS, "B"),
         (f"топ-{top_n} і {fl}, OOS, Bx", P100 & OOS, "Bx"),
+        *(
+            [
+                (f"топ-{top_n} і {fl}, без ліміту {cap} на свічку (описово), 2021+", P100_nocap, "B"),
+                (f"топ-{top_n} і {fl}, без ліміту {cap} на свічку (описово), OOS", P100_nocap & OOS, "B"),
+            ]
+            if cap
+            else []
+        ),
     ]
     for lab, m, k in rows:
         emit(f"| {lab} " + fmt(ci(T, m, k)))
@@ -406,20 +446,29 @@ def stage_report(a: argparse.Namespace, out: Path) -> None:
         f"угод топ-{top_n} за роками: "
         + ", ".join(f"{y} {int((P100 & (T['year'] == y)).sum())}" for y in sorted(set(T["year"][P100].tolist())))
     )
+    if cap:
+        bars = Counter(T["t_in"][P100_nocap].tolist())
+        emit(
+            f"ліміт {cap} на свічку: угод без ліміту {int(P100_nocap.sum())}, з лімітом {int(P100.sum())}; свічок з > {cap} угодами "
+            f"{sum(1 for v in bars.values() if v > cap)} з {len(bars)}, максимум {max(bars.values(), default=0)} на свічку"
+        )
     ex = Counter(T["B_k"][V])
     emit(
         f"виходи ({'вибірка вердикту' if wide else 'основна'}): {dict(ex)}; середні витрати {np.nanmean(T['cost'][V]):.3f}R; частка R>0 {np.mean(T['B'][V] > 0):.1%}"
     )
     if wide:
-        joint_chain(a, out, T, P100, qv)
+        # the per-bar cap does not apply in the joint chain (registration), so compare with the uncapped own chain
+        joint_chain(a, out, T, P100_nocap, qv)
 
     cells: list[tuple[str, str, np.ndarray, np.ndarray]] = []  # (table, label, sample mask, base)
     for y in sorted(set(T["year"][V].tolist())):
         cells.append(("рік", str(y), V & (T["year"] == y), V))
-    for tf in SETUPS[a.setup][1]:
-        cells.append(("таймфрейм", tf, V & (T["tf"] == tf), V))
-    for sd in ("long", "short"):
-        cells.append(("бік", sd, V & (T["side"] == sd), V))
+    if len(SETUPS[a.setup][1]) > 1:
+        for tf in SETUPS[a.setup][1]:
+            cells.append(("таймфрейм", tf, V & (T["tf"] == tf), V))
+    if len(set(T["side"][V].tolist())) > 1:
+        for sd in ("long", "short"):
+            cells.append(("бік", sd, V & (T["side"] == sd), V))
     glab = f"оборот (топ-{top_n} і {fl}, вибірка вердикту)" if wide else "оборот (≥ $1M, власний ланцюг)"
     for g in (sp.TOP30, sp.GE5M, sp.M1TO5):
         cells.append((glab, g, G & (T["grp"] == g), G))
@@ -432,15 +481,17 @@ def stage_report(a: argparse.Namespace, out: Path) -> None:
     for (tab, lab, m, _), r, h in zip(cells, res, adj, strict=True):
         if tab != cur:
             emit(
-                f"\n## За: {tab} (Холм на всі {len(cells)} клітинок)\n| група | n | E[R] net | 95 % CI | p | p Холма | OOS: n | OOS E[R] [CI] |\n|---|---|---|---|---|---|---|---|"
+                f"\n## За: {tab} (Холм на всі {len(cells)} клітинок)\n| група | n | тижнів | E[R] net | 95 % CI | p | p Холма | OOS: n | OOS E[R] [CI] |\n|---|---|---|---|---|---|---|---|---|"
             )
             cur = tab
         o = ci(T, m & OOS)
         os_ = f"{int(o['n'])} | {o['m']:+.3f} [{o['lo']:+.3f}; {o['hi']:+.3f}]" if o["n"] >= 2 else f"{int(o['n'])} | —"
-        emit(f"| {lab} " + fmt(r) + f" {h:.3f} | {os_} |")
+        emit(f"| {lab} | {int(r['n'])} | {int(r['k'])} " + fmt(r)[fmt(r).index("|", 2) :] + f" {h:.3f} | {os_} |")
     for lab, mm in (("2021+", G), ("OOS", G & OOS)):
         d = sp.diff_ci(T["B"][mm], (T["grp"] == sp.M1TO5)[mm], (T["grp"] != sp.M1TO5)[mm], T["week"][mm], n_boot=N_BOOT, seed=SEED)
         emit(f"контраст 1to5m − (top30+ge5m), {lab}: {d['d']:+.3f} [{d['lo']:+.3f}; {d['hi']:+.3f}] p {d['p']:.3f}")
+    if wide:  # registered for S38-S40 (descriptive): the contrast is mixed with time, so also within each year
+        emit("контраст за роками (описово; 1to5m n / решта n): " + "; ".join(contrast_by_year(T, G)))
 
     emit(f"\n## Стрес ({'вибірка вердикту' if wide else 'основна вибірка'})\n" + hdr)
     late_ok = np.isfinite(T["L"])
@@ -509,6 +560,64 @@ def stage_report(a: argparse.Namespace, out: Path) -> None:
         emit(f"{lab} без 5 найкращих угод: {r['m']:+.3f} [{r['lo']:+.3f}; {r['hi']:+.3f}]")
     per_asset(T, V, IS, OOS)
     coverage(a, qv, top_days, T, V, floor, top_n)
+    if a.setup in SHORT_FAMILY:
+        short_family(out, qv)
+
+
+def contrast_by_year(T: dict[str, np.ndarray], G: np.ndarray) -> list[str]:
+    out = []
+    for y in sorted(set(T["year"][G].tolist())):
+        mm = G & (T["year"] == y)
+        g1 = (T["grp"] == sp.M1TO5)[mm]
+        if g1.sum() < 2 or (~g1).sum() < 2:
+            out.append(f"{y} — ({int(g1.sum())} / {int((~g1).sum())})")
+            continue
+        d = sp.diff_ci(T["B"][mm], g1, ~g1, T["week"][mm], n_boot=N_BOOT, seed=SEED)
+        out.append(f"{y} {d['d']:+.3f} [{d['lo']:+.3f}; {d['hi']:+.3f}] ({int(g1.sum())} / {int((~g1).sum())})")
+    return out
+
+
+def short_family(out: Path, qv: dict[str, list[tuple[int, float]]]) -> None:
+    """Registered for S38-S40 (descriptive): the turnover contrast of the three verdict samples pooled (week clusters),
+    and Holm on the six registered contrasts (3 setups x 2021+ / OOS)."""
+    if any(not (out.parent / st / "cands").is_dir() for st in SHORT_FAMILY):
+        emit("\nS38 + S39 + S40 разом: немає кандидатів усіх трьох — рядок пропущено")
+        return
+    days = top_n_days(qv, WIDE_TOP_N)
+    cols: dict[str, list[np.ndarray]] = defaultdict(list)
+    ps, labs = [], []
+    emit("\n## Оборот $1–5M: S38 + S39 + S40 (описово; вибірки вердикту)")
+    for st in SHORT_FAMILY:
+        U = load_rows(out.parent / st)
+        V = chain(U, demo_list(U, st, days), BAR_CAP.get(st))
+        for lab, mm in (("2021+", V), ("OOS", V & (U["t_in"] >= OOS_MS))):
+            d = sp.diff_ci(U["B"][mm], (U["grp"] == sp.M1TO5)[mm], (U["grp"] != sp.M1TO5)[mm], U["week"][mm], n_boot=N_BOOT, seed=SEED)
+            ps.append(d["p"] if np.isfinite(d["p"]) else 1.0)
+            labs.append(f"{st} {lab} {d['d']:+.3f} [{d['lo']:+.3f}; {d['hi']:+.3f}] p {d['p']:.3f}")
+        for k in ("B", "week", "t_in", "year"):
+            cols[k].append(U[k][V])
+        cols["g1"].append(U["grp"][V] == sp.M1TO5)
+        emit(
+            f"{st}: угод групи 1to5m за роками "
+            + ", ".join(f"{y} {int(((U['year'] == y) & V & (U['grp'] == sp.M1TO5)).sum())}" for y in sorted(set(U["year"][V].tolist())))
+        )
+    for lab, h in zip(labs, holm(ps), strict=True):
+        emit(f"контраст {lab}; p Холма (6 контрастів) {h:.3f}")
+    J = {k: np.concatenate(v) for k, v in cols.items()}
+    for lab, mm in (("2021+", np.ones(J["B"].size, dtype=bool)), ("OOS", J["t_in"] >= OOS_MS)):
+        d = sp.diff_ci(J["B"][mm], J["g1"][mm], ~J["g1"][mm], J["week"][mm], n_boot=N_BOOT, seed=SEED)
+        emit(
+            f"разом, {lab}: 1to5m n {int(J['g1'][mm].sum())}, решта n {int((~J['g1'][mm]).sum())}; контраст {d['d']:+.3f} [{d['lo']:+.3f}; {d['hi']:+.3f}] p {d['p']:.3f}"
+        )
+    emit(
+        "разом, контраст за роками: "
+        + "; ".join(
+            contrast_by_year(
+                {"B": J["B"], "grp": np.where(J["g1"], sp.M1TO5, "x"), "week": J["week"], "year": J["year"]},
+                np.ones(J["B"].size, dtype=bool),
+            )
+        )
+    )
 
 
 def top_n_days(qv: dict[str, list[tuple[int, float]]], n: int) -> dict[int, set[str]]:
@@ -546,15 +655,19 @@ def joint_chain(
     """Descriptive row (registered for S14 / S16 before their run): one open trade per coin shared by S14, S16 and S3,
     as the demo's guard refuses a second position in a coin; each setup on its own demo list with the demo's
     selection; ties at the same entry time: higher score first, then the demo_trader.SETUPS order, 4h before 1d, long
-    before short. Other demo setups (S12, S28, S38-S40) and the daily slots are not modelled."""
-    for st in DEMO_ORDER:
+    before short. For S38-S40 the chain has all six setups with a passport (registration «… S38, S39 і S40»; S38's
+    per-bar cap is not applied here, so `own` is its uncapped chain; S38 then occupies more coins than the capped demo
+    would, and the crowding-out of S39 / S40 is an upper bound). Other demo setups (S12, S28) and the daily slots are not modelled."""
+    order = JOINT.get(a.setup, DEMO_ORDER)
+    name = " + ".join(order)
+    for st in order:
         d = out.parent / st / "cands"
         if not d.is_dir() or not any(d.glob("*.json")):
-            emit(f"\nспільний ланцюг S14 + S16 + S3: немає кандидатів {st} — рядок пропущено (порахувати після прогону всіх трьох)")
+            emit(f"\nспільний ланцюг {name}: немає кандидатів {st} — рядок пропущено (порахувати після прогону всіх)")
             return
     tops: dict[int, dict[int, set[str]]] = {}
     cols: dict[str, list[np.ndarray]] = defaultdict(list)
-    for r, st in enumerate(DEMO_ORDER):
+    for r, st in enumerate(order):
         U = T if st == a.setup else load_rows(out.parent / st)
         n = top_n_of(st)
         if n not in tops:
@@ -571,7 +684,8 @@ def joint_chain(
     keep = sp.busy_chain(J["sym"].tolist(), J["t_in"], J["B_x"], J["order"])
     mine = J["mine"] & keep
     oos = J["t_in"] >= OOS_MS
-    emit(f"\nспільний ланцюг S14 + S16 + S3 (описово): угод {a.setup} {int(mine.sum())} з {int(own.sum())} у власному ланцюгі")
+    own_lab = "у власному ланцюгі без ліміту на свічку" if BAR_CAP.get(a.setup) else "у власному ланцюгі"
+    emit(f"\nспільний ланцюг {name} (описово): угод {a.setup} {int(mine.sum())} з {int(own.sum())} {own_lab}")
     for lab, m in (("2021+", mine), ("OOS", mine & oos)):
         r = sp.mean_ci(J["B"][m], J["week"][m], n_boot=N_BOOT, seed=SEED)
         emit(f"| {a.setup}, спільний ланцюг, {lab} | {int(r['n'])} | {r['m']:+.3f} | [{r['lo']:+.3f}; {r['hi']:+.3f}] | {r['p']:.3f} |")

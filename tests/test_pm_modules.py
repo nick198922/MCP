@@ -47,6 +47,31 @@ def test_qlike_zero_at_truth_and_positive() -> None:
         pm.qlike(0.0, 1.0)
 
 
+def test_fit_quality_ok_symmetric_sigma_band() -> None:
+    v_ew = 0.0004
+    assert pm.fit_quality_ok(v_ew, v_ew)
+    assert pm.fit_quality_ok(9 * v_ew, v_ew)  # sigma exactly 3x: inclusive
+    assert pm.fit_quality_ok(v_ew / 9, v_ew)
+    assert not pm.fit_quality_ok(9.01 * v_ew, v_ew)
+    assert not pm.fit_quality_ok(v_ew / 9.01, v_ew)
+    assert not pm.fit_quality_ok(0.0, v_ew)
+    assert pm.fit_quality_ok(3.9 * v_ew, v_ew, ratio=2.0) and not pm.fit_quality_ok(4.1 * v_ew, v_ew, ratio=2.0)
+
+
+def test_projected_mde_and_n_for_mde() -> None:
+    # SE scales as 1/sqrt(n): 4x the units halves the MDE
+    assert pm.projected_mde(0.02, 100, 100) == pytest.approx(0.056)
+    assert pm.projected_mde(0.02, 100, 400) == pytest.approx(0.028)
+    assert pm.projected_mde(0.02, 100, 0) is None
+    # analytic inverse: n = n_ref * (k * se / target)^2
+    assert pm.n_for_mde(0.02, 100, 0.028) == 400
+    assert pm.n_for_mde(0.0264, 737, 0.06) == math.ceil(737 * (2.8 * 0.0264 / 0.06) ** 2)
+    n = pm.n_for_mde(0.0264, 737, 0.06)
+    assert pm.projected_mde(0.0264, 737, n) <= 0.06 < pm.projected_mde(0.0264, 737, n - 1)
+    with pytest.raises(ValueError):
+        pm.n_for_mde(0.02, 100, 0.0)
+
+
 def test_realized_var_window_and_coverage() -> None:
     t0 = _ts(2026, 1, 5, 4)
     closes = [(t0 + i * HOUR_S, 100.0 * math.exp(0.01 * (i % 2))) for i in range(-2, 14)]

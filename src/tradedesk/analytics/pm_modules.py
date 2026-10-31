@@ -65,6 +65,30 @@ def qlike(rv: float, v: float) -> float:
     return x - math.log(x) - 1.0
 
 
+def fit_quality_ok(v_pm: float, v_ewma: float, ratio: float = 3.0) -> bool:
+    """Item 8f filter F (second half): the ladder sigma is within ``1/ratio .. ratio`` of the EWMA sigma.
+
+    Uses forecasts only (no outcome). Variances in, so the bound on variances is ``ratio ** 2``."""
+    if v_pm <= 0 or v_ewma <= 0 or ratio < 1:
+        return False
+    r2 = ratio * ratio
+    return v_ewma / r2 <= v_pm <= v_ewma * r2
+
+
+def projected_mde(se_ref: float, n_ref: float, n: float, k: float = 2.8) -> float | None:
+    """MDE (k * SE; 2.8 = 80 % power at two-sided 5 %) of a mean on ``n`` units, scaling a reference SE as 1/sqrt(n)."""
+    if n <= 0 or n_ref <= 0 or se_ref < 0:
+        return None
+    return k * se_ref * math.sqrt(n_ref / n)
+
+
+def n_for_mde(se_ref: float, n_ref: float, target: float, k: float = 2.8) -> int:
+    """Smallest ``n`` with ``projected_mde(se_ref, n_ref, n, k) <= target``."""
+    if target <= 0:
+        raise ValueError("target must be positive")
+    return math.ceil(n_ref * (k * se_ref / target) ** 2 - 1e-9)
+
+
 def realized_var(closes: Sequence[tuple[int, float]], t0: int, t1: int) -> float | None:
     """Sum of squared log returns of consecutive closes with ``t0 <= close_time <= t1`` (the first close is the one at
     t0, so the returns cover (t0, t1]). None if the window is not fully covered by hourly closes."""

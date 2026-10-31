@@ -9,6 +9,11 @@ and weeks, shares of the closing-line sources (close / late / missing) and of ``
 share of snapshots dropped for quote skew and of rows without read times. It must NOT show the mean of the main metric,
 its CI, the P&L or the Brier comparison before the verdict: :func:`weekly_descriptive` never computes them, and
 :func:`final_metrics` refuses to run before :func:`verdict_ts`.
+
+The labelled variant v2-g (forward x (1 + g), see :mod:`.pm_gap_paper`) is reported beside v1 under the SAME gate: its
+positions largely coincide with v1's, so its CLV, P&L or Brier would reveal v1's. :func:`weekly_v2g` shows counts, the
+entry edge (known at entry, no outcome in it) and SDs; :func:`final_metrics_v2g` (refused before :func:`verdict_ts`)
+adds CLV, P&L, Brier and the v1 positions whose edge held only thanks to the g shift. Nothing of v1 changes.
 """
 
 from __future__ import annotations
@@ -22,8 +27,10 @@ from datetime import UTC, datetime
 from typing import Any
 
 from .pm_gap_paper import (
+    G_STATUSES,
     HORIZON_TOL_S,
     HOUR_S,
+    MODEL_V2G,
     PRIMARY_H,
     SECONDARY_H,
     VOL_HAIRCUT_K,
@@ -31,15 +38,18 @@ from .pm_gap_paper import (
     EntryRule,
     accepted_rule_hashes,
     asset_permutation_p,
+    binance_gap,
     brier_by_market,
     closing_value,
     cluster_mean_ci,
     delayed_entry,
     eligible,
+    g_split,
     horizon_clv,
     open_positions,
     position_metrics,
     verdict,
+    with_snapshot_g,
     worse_entry,
 )
 from .pm_threshold import _json_list, outcome_yes
@@ -533,3 +543,187 @@ def render_robustness(r: Mapping[str, Any]) -> list[str]:
         "",
         "Не пораховано: «без 3 тижнів з найбільшим внеском» (неоднозначно, питання до кванта в BACKLOG).",
     ]
+
+
+# ----------------------------------------------------------------------------- variant v2-g (H8), beside v1
+
+
+def _median(xs: Sequence[float]) -> float | None:
+    return float(statistics.median(xs)) if xs else None
+
+
+def _split_counts(split: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    st: Counter = Counter(s["g_status"] for s in split)
+    dep: Counter = Counter(s["group"] for s in split if s["g_status"] == "g_dependent")
+    return {"status": {k: st[k] for k in G_STATUSES}, "g_dependent_by_group": dict(sorted(dep.items()))}
+
+
+def weekly_v2g(
+    rows: Sequence[Mapping[str, Any]],
+    outcome_rows: Sequence[Mapping[str, Any]],
+    now_ts: int,
+    t0: int,
+    rule: EntryRule | None = None,
+) -> dict[str, Any]:
+    """Weekly block of the variant v2-g, within the limits of :func:`weekly_descriptive` (no mean of any CLV, no CI,
+    no P&L, no Brier): eligible snapshots with / without ``binance_last``, g quantiles, v2-g positions against v1's
+    (same main period and rule, only the model differs), median entry edge of both, SD per position of the known v2-g
+    CLV at +24 h, and v1 positions split by :func:`.pm_gap_paper.g_split`. g is the snapshot's (ts, asset) value
+    (:func:`.pm_gap_paper.with_snapshot_g`). ``outcome_rows`` is unused (same signature)."""
+    del outcome_rows
+    rule = rule or EntryRule()
+    v2 = replace(rule, model=MODEL_V2G)
+    start, end = main_period(t0)
+    acc = accepted_rule_hashes(rows)
+    period = with_snapshot_g(r for r in rows if start <= int(r["ts"]) < end and int(r["ts"]) <= now_ts)
+    by_mkt = _by_market(r for r in rows if int(r["ts"]) <= now_ts)
+    elig = [r for r in period if eligible(r, rule, acc)]
+    gs = [g for r in elig if (g := binance_gap(r)) is not None]
+    p1, p2 = open_positions(period, rule, acc), open_positions(period, v2, acc)
+    k1, k2 = {(p["market_id"], p["side"]) for p in p1}, {(p["market_id"], p["side"]) for p in p2}
+    v24 = [c for p in p2 if (c := _horizon_status(p, by_mkt.get(p["market_id"], []), PRIMARY_H, now_ts)[0]) is not None]
+    return {
+        "model": MODEL_V2G,
+        "eligible": len(elig),
+        "eligible_without_binance": len(elig) - len(gs),
+        "g_median": _median(gs),
+        "g_min": min(gs) if gs else None,
+        "g_max": max(gs) if gs else None,
+        "positions": {
+            "n": len(p2),
+            "by_asset_kind_side": dict(sorted(Counter(f"{p['asset']}/{p['kind']}/{p['side']}" for p in p2).items())),
+            "entry_weeks": len({p["week_entry"] for p in p2}),
+            "resolution_days": len({p["day"] for p in p2}),
+            "same_as_v1": len(k1 & k2),
+            "only_v2g": len(k2 - k1),
+            "only_v1": len(k1 - k2),
+            "edge_median": _median([p["edge"] for p in p2]),
+            "edge_median_v1": _median([p["edge"] for p in p1]),
+        },
+        "sd_per_position": {"h24": {"n": len(v24), "sd": _sd(v24)}},
+        "v1_split": _split_counts(g_split(p1, period, rule)),
+    }
+
+
+V2G_TITLE = (
+    "**Варіант v2-g** (поправка H8: форвард = індекс Deribit × (1 + g), g = binance_last / spot − 1 того самого знімка (момент і актив; "
+    "колектор пише binance_last лише в рядках дотику, порогові рядки беруть g свого знімка); "
+    "описово, поруч із замороженим v1, реєстрацію й поріг v1 не змінює)"
+)
+
+
+def _split_line(s: Mapping[str, Any]) -> str:
+    st = s["status"]
+    return (
+        f"- позиції v1 під поправкою g (той самий знімок, той самий аск): edge ≥ порогу лишається {st['robust']}; "
+        f"тримався лише на зсуві g {st['g_dependent']} ({_kv(s['g_dependent_by_group'])}); без binance_last {st['no_binance']}; "
+        f"не пораховано {st['not_computed']}"
+    )
+
+
+def render_weekly_v2g(d: Mapping[str, Any]) -> str:
+    """Markdown (Ukrainian) of :func:`weekly_v2g`. Shows only the fields of that dict."""
+    p, sd = d["positions"], d["sd_per_position"]
+    lines = [
+        V2G_TITLE,
+        f"- допущених знімків {d['eligible']}, з них без binance_last (v2-g не рахується, g не підставляється): "
+        f"{d['eligible_without_binance']}; g: медіана {_p(d['g_median'], 3)}, від {_p(d['g_min'], 3)} до {_p(d['g_max'], 3)}",
+        f"- позицій v2-g {p['n']}; за активом/типом/боком: {_kv(p['by_asset_kind_side'])}; тижнів входу {p['entry_weeks']}, "
+        f"днів розв'язання {p['resolution_days']}",
+        f"- ті самі (ринок, бік), що й у v1: {p['same_as_v1']}; лише v2-g: {p['only_v2g']}; лише v1: {p['only_v1']}",
+        f"- edge на вході, медіана: v2-g {_pp(p['edge_median'])}, v1 {_pp(p['edge_median_v1'])}",
+        f"- SD CLV +24 год на позицію v2-g: {_pp(sd['h24']['sd'])} (n {sd['h24']['n']})",
+        _split_line(d["v1_split"]),
+        "- CLV, P&L і Brier варіанта v2-g — лише у вердикті: його позиції здебільшого збігаються з v1, тож їхнє середнє розкрило б v1.",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def final_metrics_v2g(
+    rows: Sequence[Mapping[str, Any]],
+    outcome_rows: Sequence[Mapping[str, Any]],
+    now_ts: int,
+    t0: int,
+    rule: EntryRule | None = None,
+) -> dict[str, Any]:
+    """The variant v2-g at the verdict, descriptive (the decision is v1's :func:`final_metrics`). Raises ValueError
+    before :func:`verdict_ts`, like v1. Same period, exclusions, clusters and metrics as v1, with ``model='v2-g'``:
+    positions, mean entry edge, CLV +24 h / +6 h / to close, P&L, Brier D (k = 1 and 0.92, over snapshots that have a
+    v2-g probability). ``v1_split``: v1 positions by :func:`.pm_gap_paper.g_split`, with CLV and P&L of the 'g_dependent'
+    and 'robust' ones. g is the snapshot's (ts, asset) value (:func:`.pm_gap_paper.with_snapshot_g`)."""
+    if now_ts < verdict_ts(t0):
+        raise ValueError(f"the verdict may be computed only from {verdict_ts(t0)} (T0 + {VERDICT_DAYS} days), now {now_ts}")
+    rule = rule or EntryRule()
+    v2 = replace(rule, model=MODEL_V2G)
+    start, end = main_period(t0)
+    acc = accepted_rule_hashes(rows)
+    period = with_snapshot_g(r for r in rows if start <= int(r["ts"]) < end)
+    by_mkt = _by_market(rows)
+    outcomes, res = settled_outcomes(outcome_rows)
+    excluded = set(res["excluded"])
+
+    def metrics(positions: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+        return [position_metrics(p, by_mkt[p["market_id"]], outcomes.get(p["market_id"])) for p in positions]
+
+    p1 = [p for p in open_positions(period, rule, acc) if p["market_id"] not in excluded]
+    pm2 = metrics(p for p in open_positions(period, v2, acc) if p["market_id"] not in excluded)
+    brier = {}
+    for k in (1.0, VOL_HAIRCUT_K):
+        bm = brier_by_market(period, outcomes, v2, acc, k)
+        brier[str(k)] = {
+            "markets": len(bm),
+            **cluster_mean_ci([b["diff"] for b in bm], [b["week_res"] for b in bm], [b["day"] for b in bm]),
+        }
+    split = g_split(p1, period, rule)
+    return {
+        "model": MODEL_V2G,
+        "positions": len(pm2),
+        "edge_mean": float(statistics.fmean(m["edge"] for m in pm2)) if pm2 else None,
+        "clv_24h": _summ(pm2, "clv_24h", "week_entry"),
+        "clv_6h": _summ(pm2, "clv_6h", "week_entry"),
+        "clv_close": _summ(pm2, "clv", "week_res"),
+        "pnl": _summ(pm2, "pnl", "week_res"),
+        "brier_diff": brier,
+        "v1_split": {
+            **_split_counts(split),
+            "g_dependent": _block(metrics(s for s in split if s["g_status"] == "g_dependent")),
+            "robust": _block(metrics(s for s in split if s["g_status"] == "robust")),
+        },
+    }
+
+
+def render_verdict_v2g(f: Mapping[str, Any]) -> str:
+    """Markdown (Ukrainian) of :func:`final_metrics_v2g`."""
+
+    def ci(name: str, s: Mapping[str, Any]) -> str:
+        return (
+            f"- {name}: n {s['n']}, тижнів {s['n_clusters']}, днів {s['n_days']}; середнє {_pp(s['mean'])}, "
+            f"95 % CI [{_pp(s['lo'])}; {_pp(s['hi'])}]"
+        )
+
+    def blk(name: str, b: Mapping[str, Any]) -> str:
+        c, p = b["clv_24h"], b["pnl"]
+        return (
+            f"- {name}: позицій {b['positions']}; CLV +24 год {_pp(c['mean'])} [{_pp(c['lo'])}; {_pp(c['hi'])}] (n {c['n']}); "
+            f"P&L {_pp(p['mean'])} [{_pp(p['lo'])}; {_pp(p['hi'])}] (n {p['n']})"
+        )
+
+    s = f["v1_split"]
+    lines = [
+        V2G_TITLE,
+        "Вердикт виноситься лише за v1 (вище); v2-g — окремі рядки для порівняння.",
+        f"- позицій v2-g {f['positions']}; середній edge на вході {_pp(f['edge_mean'])}",
+        ci("v2-g: CLV +24 год (кластер — тиждень входу)", f["clv_24h"]),
+        ci("v2-g: CLV +6 год", f["clv_6h"]),
+        ci("v2-g: CLV до закриття (кластер — тиждень розв'язання)", f["clv_close"]),
+        ci("v2-g: P&L на акцію", f["pnl"]),
+        ci(f"v2-g: Brier D, k = 1 (ринків {f['brier_diff']['1.0']['markets']})", f["brier_diff"]["1.0"]),
+        ci(
+            f"v2-g: Brier D, k = {VOL_HAIRCUT_K} (ринків {f['brier_diff'][str(VOL_HAIRCUT_K)]['markets']})",
+            f["brier_diff"][str(VOL_HAIRCUT_K)],
+        ),
+        _split_line(s),
+        blk("v1, edge тримався лише на зсуві g", s["g_dependent"]),
+        blk("v1, edge лишається з поправкою g", s["robust"]),
+    ]
+    return "\n".join(lines) + "\n"

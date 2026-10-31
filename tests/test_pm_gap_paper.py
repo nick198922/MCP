@@ -9,11 +9,13 @@ import pytest
 
 from tradedesk.analytics.options import d1d2, ncdf
 from tradedesk.analytics.pm_gap_paper import (
+    MODEL_V2G,
     VOL_HAIRCUT_K,
     YEAR_S,
     EntryRule,
     accepted_rule_hashes,
     asset_permutation_p,
+    binance_gap,
     brier_by_market,
     closing_value,
     cluster_mean_ci,
@@ -21,6 +23,7 @@ from tradedesk.analytics.pm_gap_paper import (
     eligible,
     entry_signals,
     et_week,
+    g_split,
     horizon_clv,
     mde,
     model_prob,
@@ -32,8 +35,10 @@ from tradedesk.analytics.pm_gap_paper import (
     resolution_week,
     rules_accepted,
     side_book,
+    snapshot_gaps,
     verdict,
     vol_scaled_prob,
+    with_snapshot_g,
     worse_entry,
 )
 from tradedesk.analytics.pm_threshold import settle_ts
@@ -348,3 +353,119 @@ def test_verdict_rules():
         assert verdict({**kill, **small}, pnl, nob)[0] == "inconclusive"
         assert verdict({**ok, "lo": -0.01}, pnl, {**against, **small})[0] == "inconclusive"
     assert verdict({**ok, "n_clusters": 5}, pnl, {**against, "n_clusters": 5}) == ("inconclusive", "min_sample")
+
+
+# ----------------------------------------------------------------------------- variant v2-g (H8: forward x (1 + g))
+
+V2G = EntryRule(model=MODEL_V2G)
+
+
+def _phi(x: float) -> float:
+    return math.exp(-0.5 * x * x) / math.sqrt(2 * math.pi)
+
+
+def test_v2g_above_matches_the_first_order_benchmark_and_the_exact_digital():
+    # ATM, 1 day, IV 50 %, g = 0.1 %: delta ~ phi(d2) g / (sigma sqrt tau) ~ 1.5 pp (the report's reference)
+    F, K, s, g = 70_000.0, 70_000.0, 0.50, 0.001
+    t = END - 24 * H
+    tau = 24 * H / YEAR_S
+    p0 = ncdf(d1d2(F, K, tau, s)[1])
+    r = row(t, model_prob=p0, model_iv=s, spot=F, strike=K, binance_last=F * (1 + g))
+    assert binance_gap(r) == pytest.approx(g, abs=1e-15)
+    p1 = model_prob(r, 1.0, MODEL_V2G)
+    assert p1 == pytest.approx(ncdf(d1d2(F * (1 + g), K, tau, s)[1]), abs=1e-12)
+    d2 = d1d2(F, K, tau, s)[1]
+    bench = _phi(d2) * g / (s * math.sqrt(tau))
+    assert p1 - p0 == pytest.approx(bench, rel=0.01) and p1 - p0 == pytest.approx(0.0152, abs=5e-4)
+    # v1 is untouched by binance_last
+    assert model_prob(r) == p0 and model_prob(r, VOL_HAIRCUT_K) == pytest.approx(ncdf(d1d2(F, K, tau, 0.92 * s)[1]), abs=1e-12)
+    # the vol haircut is applied at the shifted forward; the smile-slope term of the stored probability is carried over
+    assert model_prob(r, VOL_HAIRCUT_K, MODEL_V2G) == pytest.approx(ncdf(d1d2(F * (1 + g), K, tau, 0.92 * s)[1]), abs=1e-12)
+    skew = dict(r, model_prob=p0 + 0.03)
+    assert model_prob(skew, 1.0, MODEL_V2G) == pytest.approx(p1 + 0.03, abs=1e-12)
+
+
+def test_v2g_touch_shifts_by_the_barrier_formula_and_the_sign_by_direction():
+    F, s, g, t = 70_000.0, 0.55, 0.0014, END - 72 * H
+    tau = 72 * H / YEAR_S
+    for direction, K in (("down", 0.97 * F), ("up", 1.03 * F)):
+        p0 = prob_touch(F, K, s, tau)
+        r = row(t, kind="touch", direction=direction, strike=K, model_prob=p0, model_iv=s, spot=F, binance_last=F * (1 + g))
+        p1 = model_prob(r, 1.0, MODEL_V2G)
+        assert p1 == pytest.approx(prob_touch(F * (1 + g), K, s, tau), abs=1e-12)
+        # Binance above the index: a dip is less likely, a reach more likely
+        assert (p1 < p0) if direction == "down" else (p1 > p0)
+    bad = row(t, kind="touch", direction=None, model_prob=0.3, binance_last=F * (1 + g))
+    assert model_prob(bad, 1.0, MODEL_V2G) is None  # shift_delta needs the barrier side
+
+
+def test_v2g_with_g_zero_is_identical_to_v1():
+    t = END - 72 * H
+    F, K, s = 70_000.0, 72_100.0, 0.55
+    p_touch = prob_touch(F, K, s, 72 * H / YEAR_S)
+    touch = row(t, kind="touch", direction="up", strike=K, model_iv=s, model_prob=p_touch, yes_ask=round(p_touch - 0.09, 2))
+    touch.update(yes_bid=touch["yes_ask"] - 0.02, no_ask=1 - touch["yes_ask"] + 0.02, no_bid=1 - touch["yes_ask"])
+    rows = [row(END - 48 * H), row(END - 24 * H, market_id="m2", model_prob=0.40), dict(touch, market_id="m3"), row(END - 30 * H)]
+    rows = [dict(r, binance_last=r["spot"]) for r in rows]
+    for r in rows:
+        assert binance_gap(r) == 0.0
+        for k in (1.0, VOL_HAIRCUT_K):
+            assert model_prob(r, k, MODEL_V2G) == model_prob(r, k)
+    strip = [{k: v for k, v in p.items() if k != "model"} for p in open_positions(rows, EntryRule(), ACC)]
+    v2 = open_positions(rows, V2G, ACC)
+    assert len(strip) == 3 and [{k: v for k, v in p.items() if k != "model"} for p in v2] == strip
+    assert {p["model"] for p in v2} == {MODEL_V2G}
+    out = {"m1": 1, "m2": 0, "m3": 0}
+    for k in (1.0, VOL_HAIRCUT_K):
+        assert brier_by_market(rows, out, V2G, ACC, k) == brier_by_market(rows, out, EntryRule(), ACC, k)
+
+
+def test_v2g_without_binance_last_is_not_computed_never_zero():
+    t = END - 48 * H
+    for miss in ({}, {"binance_last": None}, {"binance_last": 0.0}, {"binance_last": float("nan")}):
+        r = row(t, **miss)
+        assert binance_gap(r) is None
+        assert model_prob(r, 1.0, MODEL_V2G) is None and model_prob(r, VOL_HAIRCUT_K, MODEL_V2G) is None
+        assert entry_signals(r, V2G, ACC) == [] and entry_signals(r, EntryRule(), ACC)  # v1 enters, v2-g has no reading
+        assert brier_by_market([r], {"m1": 1}, V2G, ACC) == []
+    with pytest.raises(ValueError, match="model"):
+        model_prob(row(t), 1.0, "v3")
+
+
+def test_snapshot_g_reaches_threshold_rows_of_the_same_moment_and_asset_only():
+    t, F, g = END - 48 * H, 70_000.0, 0.0014
+    touch = row(t, market_id="t1", kind="touch", direction="down", strike=0.97 * F, binance_last=F * (1 + g))
+    above = row(t, market_id="a1")  # threshold rows carry no binance_last in the collector
+    other_asset = row(t, market_id="e1", asset="ETH", spot=2_500.0)
+    other_ts = row(t + H, market_id="a1")
+    assert snapshot_gaps([touch, above, other_asset, other_ts]) == {(t, "BTC"): pytest.approx(g)}
+    out = {(r["market_id"], r["ts"]): r for r in with_snapshot_g([touch, above, other_asset, other_ts])}
+    assert binance_gap(out[("a1", t)]) == pytest.approx(g) and binance_gap(out[("t1", t)]) == pytest.approx(g)
+    assert binance_gap(out[("e1", t)]) is None and binance_gap(out[("a1", t + H)]) is None  # no reading: never g = 0
+    assert model_prob(out[("a1", t + H)], 1.0, MODEL_V2G) is None
+    assert binance_gap(above) is None  # without the snapshot step a threshold row has no g of its own
+    assert model_prob(out[("a1", t)], 1.0, MODEL_V2G) > model_prob(above)  # g > 0 lifts P(above)
+
+
+def test_g_split_flags_v1_positions_whose_edge_rests_on_the_shift():
+    # YES on a dip, 3 days: v1 edge 5.5 pp; with Binance 0.14 % above the index the dip is less likely and the edge < 5 pp
+    F, s, g, t = 70_000.0, 0.55, 0.0014, END - 72 * H
+    K, tau = 0.97 * F, 72 * H / YEAR_S
+    p0, p1 = prob_touch(F, K, s, tau), prob_touch(F * (1 + g), K, s, tau)
+    assert p0 - p1 > 0.006  # the shift moves the probability by more than the 0.5 pp margin below
+    dip = row(t, market_id="dip", kind="touch", direction="down", strike=K, model_iv=s, model_prob=p0, binance_last=F * (1 + g))
+    dip.update(yes_ask=p0 - 0.055, yes_bid=p0 - 0.065, no_ask=1 - p0 + 0.065, no_bid=1 - p0 + 0.055)
+    # ATM threshold market, YES: g > 0 raises P(above), so the edge grows and the position stays
+    above = row(t, market_id="above", model_prob=0.60, binance_last=F * (1 + g))
+    nobin = row(t, market_id="nobin")
+    rows = [dip, above, nobin]
+    v1 = open_positions(rows, RN, ACC)
+    assert sorted(p["market_id"] for p in v1) == ["above", "dip", "nobin"]
+    split = {x["market_id"]: x for x in g_split(v1, rows, RN)}
+    d = split["dip"]
+    assert d["g_status"] == "g_dependent" and d["group"] == "touch:down:yes" and d["g"] == pytest.approx(g)
+    assert d["edge"] == pytest.approx(0.055) and d["edge_v2g"] == pytest.approx(0.055 - (p0 - p1), abs=1e-12)
+    assert split["above"]["g_status"] == "robust" and split["above"]["group"] == "above:above:yes"
+    assert split["nobin"]["g_status"] == "no_binance" and split["nobin"]["edge_v2g"] is None
+    # v2-g itself does not open the dip
+    assert sorted(p["market_id"] for p in open_positions(rows, EntryRule(vol_ks=(1.0,), model=MODEL_V2G), ACC)) == ["above"]

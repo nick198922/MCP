@@ -18,13 +18,17 @@ from tradedesk.analytics.pm_gap_report import (
     binance_check,
     binance_closes,
     final_metrics,
+    final_metrics_v2g,
     gamma_outcome,
     main_period,
     render_verdict,
+    render_verdict_v2g,
     render_weekly,
+    render_weekly_v2g,
     settled_outcomes,
     verdict_ts,
     weekly_descriptive,
+    weekly_v2g,
 )
 from tradedesk.analytics.pm_threshold import settle_ts
 from tradedesk.store import Store
@@ -283,6 +287,70 @@ def test_verdict_stress_delayed_survivors_and_thin_books():
     assert "перестановка міток активу всередині тижня входу" in text and "без 3 тижнів" in text
 
 
+# ----------------------------------------------------------------------------- variant v2-g beside v1
+
+G_UP = 0.0014  # Binance 0.14 % above the index (the H8 measurement)
+
+
+def _with_g(r: dict[str, Any]) -> dict[str, Any]:
+    """binance_last only on m1 (BTC) and m3 (ETH), as the collector stores it only on touch rows; m2 / m4 take the g of
+    their snapshot (same ts and asset). Entry snapshot T0: BTC +0.14 % (YES edge grows), ETH -3 % (the YES edge rested
+    on pricing off the index). Later snapshots: g = 0."""
+    m = r["market_id"]
+    if m in ("m2", "m4"):
+        return dict(r, binance_last=None)
+    up = 1 + G_UP if m == "m1" else 0.97
+    return dict(r, binance_last=r["spot"] * (up if r["ts"] == T0 else 1.0))
+
+
+ROWS_G = [_with_g(r) for r in ROWS]
+
+
+def test_weekly_v2g_counts_split_and_never_shows_the_hidden_metrics():
+    d = weekly_v2g(ROWS_G, OUTCOMES, END + 2 * H, T0)
+    assert not (_keys(d) & FORBIDDEN_KEYS)
+    assert d["model"] == "v2-g" and d["eligible"] == 4 * 99 and d["eligible_without_binance"] == 0
+    assert d["g_median"] == 0.0 and d["g_min"] == pytest.approx(-0.03) and d["g_max"] == pytest.approx(G_UP)
+    p = d["positions"]
+    assert p["n"] == 2 and p["by_asset_kind_side"] == {"BTC/above/yes": 2}  # m2 entered on its snapshot's g
+    assert (p["same_as_v1"], p["only_v2g"], p["only_v1"]) == (2, 0, 2)
+    assert p["edge_median_v1"] == pytest.approx(0.60 - 0.4329) and p["edge_median"] > p["edge_median_v1"]  # g > 0 lifts YES
+    assert d["sd_per_position"]["h24"]["n"] == 2
+    assert d["v1_split"] == {
+        "status": {"robust": 2, "g_dependent": 2, "no_binance": 0, "not_computed": 0},
+        "g_dependent_by_group": {"above:above:yes": 2},
+    }
+    text = render_weekly_v2g(d)
+    for hidden in HIDDEN:
+        assert hidden not in text, hidden
+    assert "Варіант v2-g" in text and "тримався лише на зсуві g 2 (above:above:yes 2)" in text and "без binance_last 0" in text
+    # a snapshot (ts, asset) with no binance_last anywhere: no v2-g reading for its rows, never g = 0
+    bare = [dict(r, binance_last=None) if r["asset"] == "ETH" and r["ts"] == T0 else r for r in ROWS_G]
+    e = weekly_v2g(bare, OUTCOMES, END + 2 * H, T0)
+    assert e["eligible_without_binance"] == 2 and e["v1_split"]["status"]["no_binance"] == 2
+    # v1's own weekly report is unchanged by binance_last
+    assert weekly_descriptive(ROWS_G, OUTCOMES, END + 2 * H, T0) == weekly_descriptive(ROWS, OUTCOMES, END + 2 * H, T0)
+
+
+def test_v2g_metrics_only_at_the_verdict_beside_an_unchanged_v1():
+    with pytest.raises(ValueError, match="T0 \\+ 126 days"):
+        final_metrics_v2g(ROWS_G, OUTCOMES, verdict_ts(T0) - 1, T0)
+    f = final_metrics_v2g(ROWS_G, OUTCOMES, verdict_ts(T0), T0)
+    assert f["positions"] == 2 and f["edge_mean"] > 0.60 - 0.4329
+    assert f["clv_24h"]["mean"] == pytest.approx(CLV) and f["pnl"]["mean"] == pytest.approx(PNL) and f["clv_close"]["n"] == 2
+    # Brier over snapshots with a v2-g reading: every market has its snapshot's g
+    assert f["brier_diff"]["1.0"]["markets"] == 4 and f["brier_diff"]["0.92"]["markets"] == 4
+    s = f["v1_split"]
+    assert s["status"]["g_dependent"] == 2 and s["g_dependent"]["positions"] == 2 and s["robust"]["positions"] == 2
+    assert s["g_dependent"]["clv_24h"]["mean"] == pytest.approx(CLV)
+    # v1 and its verdict do not change
+    v1 = final_metrics(ROWS_G, OUTCOMES, verdict_ts(T0), T0)
+    assert v1 == final_metrics(ROWS, OUTCOMES, verdict_ts(T0), T0) and v1["positions"] == 4
+    text = render_verdict_v2g(f)
+    assert "Вердикт виноситься лише за v1" in text and "v2-g: Brier D, k = 1 (ринків 4)" in text
+    assert "v1, edge тримався лише на зсуві g: позицій 2" in text
+
+
 # ----------------------------------------------------------------------------- the runner (read-only DB)
 
 
@@ -309,6 +377,8 @@ async def test_runner_writes_the_weekly_report_and_refuses_the_early_verdict(tmp
     assert script.main(["--db", str(db), "--out", str(out), "--now", str(END + 2 * H)]) == 0
     text = out.read_text(encoding="utf-8")
     assert "тижневий звіт" in text and "усього 4" in text and "T0 = " in text
+    # v2-g rows follow v1; the fixture has no binance_last, so v2-g has no reading (not g = 0)
+    assert "Варіант v2-g" in text and "позицій v2-g 0" in text and "без binance_last 4" in text
     for hidden in HIDDEN:
         assert hidden not in text, hidden
     # --verdict today (wall clock before the registered T0 + 126 days): refused, nothing written
@@ -337,6 +407,7 @@ async def test_verdict_runs_only_on_the_wall_clock_and_the_registered_t0(tmp_pat
     monkeypatch.setattr(script, "T0_TS", T0)  # the fixture's registered T0
     code, text = script.build_verdict(str(db))
     assert code == 0 and "Вердикт: inconclusive" in text
+    assert text.index("Вердикт: inconclusive") < text.index("Варіант v2-g")
     monkeypatch.setattr(script.time, "time", lambda: float(verdict_ts(T0) - 1))  # one second early
     code, text = script.build_verdict(str(db))
     assert code == 2 and "refused" in text and "Вердикт" not in text

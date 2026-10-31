@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 35
+SCHEMA_VERSION = 36
 
 # Each migration is a list of SQL statements executed in a single transaction.
 # `PRAGMA user_version` is bumped by Store.init() inside the same explicit transaction,
@@ -901,5 +901,39 @@ MIGRATIONS: dict[int, list[str]] = {
         # Demo trader: the rule version the trade was placed under (analytics/setup_versions.EPOCHS tag of the code
         # that placed it, e.g. 'v8'); NULL = placed before this column, the version then comes from the open time
         "ALTER TABLE demo_trade ADD COLUMN version TEXT",
+    ],
+    36: [
+        # Daily quotes of the weekly Deribit condor legs, BTC and ETH (collector/option_legs.py, analytics/option_legs.py;
+        # IDEA-20261031-structural-edges-depth item 8d): forward check of H1 / H4 (docs/verification/2026-10-31-options-
+        # modules.md), from 09:00 UTC, the nearest Friday 08:00 expiry. 10 re-picked legs per currency a day, plus on
+        # Saturday to Thursday up to 10 `hold_<role>` rows (the last Friday entry's instruments), not pruned. The first
+        # snapshot of a (day, currency) is kept. Read-only market data, independent of `journal`.
+        """
+        CREATE TABLE IF NOT EXISTS option_leg_snapshot (
+            day TEXT NOT NULL,                     -- UTC date YYYY-MM-DD of the snapshot
+            currency TEXT NOT NULL,                -- 'BTC' | 'ETH'
+            role TEXT NOT NULL,                    -- atm_p atm_c sp25 sc25 sp10 sc10 lp lc lp15 lc15, re-picked that day; hold_<role>:
+                                                   -- the last Friday entry's leg (its instrument / target / floor), Sat-Thu
+            ts INTEGER NOT NULL,                   -- unix seconds of the snapshot (one clock read; tau_days is from it)
+            expiry_ts INTEGER NOT NULL,            -- unix seconds, Friday 08:00 UTC
+            tau_days REAL NOT NULL,                -- days from ts to expiry_ts
+            spot REAL NOT NULL,                    -- Deribit index (estimated_delivery_price), USD
+            forward REAL NOT NULL,                 -- the expiry's underlying_price, USD
+            opt TEXT NOT NULL,                     -- 'C' | 'P'
+            instrument TEXT NOT NULL,              -- Deribit instrument name
+            target REAL NOT NULL,                  -- target strike of the role, USD
+            strike REAL NOT NULL,                  -- listed strike nearest the target, USD
+            dist REAL NOT NULL,                    -- (strike - target) / spot, decimal (the +-1.5 % band is applied at read time)
+            floor INTEGER,                         -- lp / lc: 1 = H1's w/3 width floor set the wing, 0 = the +-15 % level; else NULL
+            src TEXT NOT NULL,                     -- 'ticker' (public/ticker) | 'summary' (book summary: no sizes / bid-ask IV)
+            bid REAL, ask REAL, mark REAL,         -- in the coin per 1 coin of underlying (x spot = USD); NULL = empty side
+            mark_iv REAL, bid_iv REAL, ask_iv REAL,  -- decimal
+            bid_size REAL, ask_size REAL,          -- size at the best level, base-coin units (ticker only)
+            delta REAL,                            -- Black-76 at mark_iv on `forward`, r = 0
+            quote_ts_ms INTEGER,                   -- ticker / summary generation time, unix ms (not quote age)
+            open_interest REAL, volume REAL,       -- base-coin units; volume over 24 h
+            PRIMARY KEY (day, currency, role)
+        ) WITHOUT ROWID
+        """,
     ],
 }

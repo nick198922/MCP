@@ -449,6 +449,39 @@ class Store:
         cur = await self.conn.execute(sql + " ORDER BY ts, coin", args)
         return [dict(r) for r in await cur.fetchall()]
 
+    OPTION_LEG_COLUMNS = (
+        "ts expiry_ts tau_days spot forward opt instrument target strike dist floor src "
+        "bid ask mark mark_iv bid_iv ask_iv bid_size ask_size delta quote_ts_ms open_interest volume"
+    ).split()
+
+    async def insert_option_legs(self, day: str, rows: list[dict[str, Any]]) -> int:
+        """Leg quotes of the weekly condor for one UTC ``day``. Idempotent per (day, currency, role): the first snapshot
+        is kept and a repeat writes nothing (returns the rows actually inserted)."""
+        cols = self.OPTION_LEG_COLUMNS
+        payload = [(day, r["currency"], r["role"], *(r.get(c) for c in cols)) for r in rows if r.get("currency") and r.get("role")]
+        if not payload:
+            return 0
+        before = self.conn.total_changes
+        marks = ",".join("?" * (len(cols) + 3))
+        await self.conn.executemany(
+            f"INSERT OR IGNORE INTO option_leg_snapshot (day, currency, role, {', '.join(cols)}) VALUES ({marks})", payload
+        )
+        await self.conn.commit()
+        return self.conn.total_changes - before
+
+    async def option_legs_has_day(self, day: str, currency: str) -> bool:
+        cur = await self.conn.execute("SELECT 1 FROM option_leg_snapshot WHERE day = ? AND currency = ? LIMIT 1", (day, currency))
+        return await cur.fetchone() is not None
+
+    async def option_leg_rows(self, since_day: str = "", currency: str | None = None) -> list[dict[str, Any]]:
+        """Stored rows with day >= ``since_day`` (optionally one ``currency``), oldest first."""
+        sql, args = "SELECT * FROM option_leg_snapshot WHERE day >= ?", [since_day]
+        if currency is not None:
+            sql += " AND currency = ?"
+            args.append(currency)
+        cur = await self.conn.execute(sql + " ORDER BY day, currency, strike, opt, role", args)
+        return [dict(r) for r in await cur.fetchall()]
+
     COINGECKO_TRENDING_COLUMNS = (
         "coin_id coin_num symbol name market_cap_rank score price_usd price_btc change_24h market_cap_usd volume_usd"
     ).split()

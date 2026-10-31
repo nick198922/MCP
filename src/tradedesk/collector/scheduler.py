@@ -660,6 +660,10 @@ def build_default_scheduler(rt: "Runtime") -> Scheduler | None:
         jobs.append(
             PeriodicJob(name="coingecko_trending", period_seconds=s.collect_coingecko_trending_seconds, fn=collect_coingecko_trending)
         )
+    if s.collect_option_legs_enabled:
+        from .option_legs import collect_option_legs  # noqa: PLC0415
+
+        jobs.append(PeriodicJob(name="option_legs", period_seconds=s.collect_option_legs_seconds, fn=collect_option_legs))
     if s.alerts_enabled:
         # JSON file is optional in Phase 3.1 — DB-backed rules work on their own.
         jobs.append(PeriodicJob(name="alerts", period_seconds=s.alerts_seconds, fn=_evaluate_alerts))

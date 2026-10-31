@@ -9,7 +9,8 @@ topic through scripts/tg_send.py. The user timer tradedesk-paper-carry-report ru
 The script never writes to the given DB: it takes a consistent snapshot (sqlite3 backup, source opened read-only) into a
 temporary file and works on that, so the schema migration cannot touch the collector's database. Everything comes from the
 engine's own records (``cp_*`` tables) through ``book_view``, the same numbers as the MCP tool ``paper_carry_status``;
-actual-vs-model costs come from ``analytics/carry_report.py``. This is bookkeeping, not a profit claim: the paper P&L at
+actual-vs-model costs come from ``analytics/carry_report.py``. The last section is the shadow version "A v2" of book A
+(A plus the leg-vanish exit, ``analytics/carry_v2.py``), computed from A's records; books A and B are unchanged. This is bookkeeping, not a profit claim: the paper P&L at
 this sample size cannot separate the expected edge from zero, and strategy B is expected at about zero or negative.
 """
 
@@ -27,6 +28,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from tradedesk.analytics.carry_rules import DECISION_DELAY_MS, carry_side_cost
+from tradedesk.analytics.carry_v2 import A_V2_DESCRIPTION, A_V2_LIMITS, A_V2_TAG, A_V2_VERSION, a_v2_shadow
+from tradedesk.collector.carry_paper_engine import PARAMS_A
 from tradedesk.store import Store
 from tradedesk.tools.paper_carry import book_view
 
@@ -118,6 +122,47 @@ def render_book(key: str, v: dict[str, Any], events: dict[str, int], deferred: t
     return out + [""]
 
 
+def _ts(ms: int | None) -> str:
+    return "n/a" if ms is None else datetime.fromtimestamp(ms / 1000, UTC).strftime("%Y-%m-%d %H:%M")
+
+
+async def a_v2_view(store: Store, now_ms: int) -> dict[str, Any]:
+    """Shadow version A v2 (``analytics/carry_v2.py``) from the frozen A book's own records."""
+    positions = await store.cp_positions("A", limit=100_000)
+    funding: dict[str, list[int]] = {}
+    for x in await store.cp_logs("A", "funding", limit=None):
+        funding.setdefault(x["trade_id"], []).append(int(x["payload"]["payment_ts"]))
+    marks: dict[str, list[dict[str, Any]]] = {}
+    for x in await store.cp_logs("A", "mark", limit=None):
+        marks.setdefault(x["trade_id"], []).append(x)
+    side_cost = carry_side_cost(PARAMS_A.fee_1, PARAMS_A.fee_2, PARAMS_A.slippage)
+    return a_v2_shadow(positions, funding, marks, now_ms=now_ms, side_cost=side_cost, decision_delay_ms=DECISION_DELAY_MS)
+
+
+def render_a_v2(v: dict[str, Any]) -> list[str]:
+    out = [f"## {A_V2_VERSION}: A with the leg-vanish exit, tag {A_V2_TAG} (shadow of book A, not a separate engine)", ""]
+    out += [f"Version: {A_V2_DESCRIPTION}", "", f"Limits: {A_V2_LIMITS}", ""]
+    out += [
+        f"- Positions of A: {len(v['positions'])}; rule fired on {v['rule_fired']}, of them priced exits before A's own exit: "
+        f"{v['rule_exits']}; exit due but unpriced: {v['unpriced']}",
+        f"- P&L (USD, realised + open marked at the last cycle, same positions): A v1 {_usd(v['v1_pnl_usd'])}, "
+        f"A v2 {_usd(v['v2_pnl_usd'])}, v2 - v1 {_usd(v['diff_usd'])} (descriptive; not evidence for either version)",
+    ]
+    hit = [x for x in v["positions"] if x["rule_ts"] is not None]
+    if hit:
+        out += [
+            "",
+            "| Symbol | Opened | Rule fired | v2 exit | v2 status | A v1 exit | A v1 P&L USD | A v2 P&L USD |",
+            "|---|---|---|---|---|---|---|---|",
+        ]
+        for x in hit:
+            out.append(
+                f"| {x['symbol']} | {_ts(x['opened_ts'])} | {_ts(x['rule_ts'])} | {_ts(x['v2_exit_ts'])} | {x['v2_status']} | "
+                f"{_ts(x['v1_exit_ts']) if x['v1_status'] == 'closed' else 'open'} | {_num(x['v1_pnl_usd'])} | {_num(x['v2_pnl_usd'])} |"
+            )
+    return out + [""]
+
+
 def _snapshot(src: str, dst: str) -> None:
     """Consistent copy of ``src`` into ``dst`` (the source is opened read-only)."""
     a = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
@@ -163,6 +208,8 @@ async def _build(db: str, now_ms: int) -> str:
             deferred_ids = {ev["trade_id"] for ev in all_events if (ev["payload"] or {}).get("type") == "funding_payment_missing"}
             total = len(await store.cp_positions(key))
             lines += render_book(key, v, events, (len(deferred_ids), total))
+        # Last, so the Telegram clip (3800 characters) cuts this section and not the frozen books above it.
+        lines += render_a_v2(await a_v2_view(store, now_ms))
         return "\n".join(lines).rstrip() + "\n"
     finally:
         await store.aclose()

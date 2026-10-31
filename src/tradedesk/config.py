@@ -148,6 +148,11 @@ class Settings:
     # only while the current hour has no snapshot. No retention: forward-only history (~15 rows an hour). Off by default.
     collect_coingecko_trending_enabled: bool = False
     collect_coingecko_trending_seconds: int = 600
+    # Weekly Deribit condor legs (collector/option_legs.py; IDEA-20261031-structural-edges-depth item 8d): from 09:00 UTC one
+    # snapshot a day of BTC and ETH (book summary + <= 10 tickers per currency) of the nearest Friday expiry. Ticks every
+    # `_seconds`; a tick with the day stored makes no request. No retention (20 rows a day). Off by default.
+    collect_option_legs_enabled: bool = False
+    collect_option_legs_seconds: int = 600
     # Alerts
     alerts_enabled: bool = False
     alerts_rules_path: str = ""
@@ -241,6 +246,8 @@ class Settings:
             collect_coingecko_trending_enabled=os.environ.get("TRADEDESK_COLLECT_COINGECKO_TRENDING_ENABLED", "").lower()
             in ("1", "true", "yes"),
             collect_coingecko_trending_seconds=int(_float("TRADEDESK_COLLECT_COINGECKO_TRENDING_SECONDS", 600)),
+            collect_option_legs_enabled=os.environ.get("TRADEDESK_COLLECT_OPTION_LEGS_ENABLED", "").lower() in ("1", "true", "yes"),
+            collect_option_legs_seconds=int(_float("TRADEDESK_COLLECT_OPTION_LEGS_SECONDS", 600)),
             http_bearer_tokens=os.environ.get("TRADEDESK_HTTP_BEARER_TOKENS") or os.environ.get("TRADEDESK_HTTP_BEARER_TOKEN", ""),
             alerts_enabled=os.environ.get("TRADEDESK_ALERTS_ENABLED", "").lower() in ("1", "true", "yes"),
             alerts_rules_path=os.environ.get("TRADEDESK_ALERTS_RULES_PATH", ""),

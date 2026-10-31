@@ -15,14 +15,22 @@ The registration (the card's section "Реєстрація") fixes every number 
   entered >= 26 h before the end. Secondary: CLV at +6 h, CLV to the closing window (end - 2 h ... end - 1 h), P&L.
 * Clusters for every confidence interval = ISO week (America/New_York): of the entry for the +6 h / +24 h CLV, of the
   resolution day for the closing CLV, the P&L and the Brier comparison. Resolution day is a sensitivity cluster.
+
+Model variants (``EntryRule.model``): ``'v1'`` is the frozen registered model (forward = the snapshot's Deribit index
+``spot``). ``'v2-g'`` (IDEA-20261031-structural-edges-depth, item 8a, module H8) moves the forward to ``spot * (1 + g)``,
+``g = binance_last / spot - 1`` of the SAME snapshot moment and asset (:func:`with_snapshot_g`; Binance <ASSET>/USDT is
+the resolution source and stood ~0.14 % above the USD index in 2026-10): the probability is shifted as in
+:func:`.pm_modules.shift_delta`. A snapshot without ``binance_last`` has no v2-g probability (never g = 0). v2-g is a
+labelled descriptive variant beside v1, not a new registration: it changes no number of v1.
 """
 
 from __future__ import annotations
 
 import math
+import statistics
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import numpy as np
@@ -30,6 +38,7 @@ import numpy as np
 from .liquidation_flush import cluster_bootstrap_means
 from .options import d1d2, ncdf
 from .per_asset import permute_within
+from .pm_modules import shift_delta
 from .pm_threshold import PAIRS, standard_rules
 from .pm_touch import et_date, fee_per_share
 from .probability import prob_touch
@@ -46,6 +55,9 @@ HORIZON_TOL_S = HOUR_S  # the snapshot for a horizon may be at most 1 h away fro
 MIN_DAYS = 20  # resolution days needed for any verdict other than 'inconclusive'
 MIN_CLUSTERS = 10  # ISO-week clusters needed for any verdict other than 'inconclusive'
 WORSE_ENTRY = 0.01  # stress (section 6): entry one cent above the best ask
+MODEL_V1 = "v1"  # the frozen registered model: forward = Deribit index
+MODEL_V2G = "v2-g"  # forward = Deribit index x (1 + g), g = binance_last / spot - 1 of the same snapshot (H8)
+MODELS = (MODEL_V1, MODEL_V2G)
 
 
 @dataclass(frozen=True)
@@ -65,6 +77,8 @@ class EntryRule:
     # Book and Deribit surface must be read within this many seconds of each other (applied only when the row carries
     # both ``book_ts`` and ``surface_ts``; older rows without them pass and are counted in the report).
     max_quote_skew_s: float = 60.0
+    # Model variant of the probability (MODELS). 'v1' is the registered one; 'v2-g' is a labelled descriptive variant.
+    model: str = MODEL_V1
 
 
 # ----------------------------------------------------------------------------- eligibility
@@ -153,11 +167,87 @@ def vol_scaled_prob(
     return float(min(1.0, max(0.0, p)))
 
 
-def model_prob(row: Mapping[str, Any], k: float = 1.0) -> float | None:
-    """The row's model probability of YES under the variant ``k`` (forward = the snapshot's Deribit index ``spot``)."""
+def _pos(x: Any) -> float | None:
+    """``x`` as a finite positive float, else None."""
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return None
+    return v if math.isfinite(v) and v > 0 else None
+
+
+def binance_gap(row: Mapping[str, Any]) -> float | None:
+    """g of a snapshot row (Binance <ASSET>/USDT over the Deribit USD index, minus 1, decimal).
+
+    The row's ``snapshot_g`` when it carries that key (set by :func:`with_snapshot_g`: the asset's g at the same ts,
+    which reaches threshold rows too), else ``binance_last`` / ``spot`` - 1 of the row itself. None when unavailable or
+    not finite: the caller must then skip the row, never assume g = 0."""
+    if "snapshot_g" in row:
+        g = row["snapshot_g"]
+        return float(g) if g is not None and math.isfinite(float(g)) else None
+    b, s = _pos(row.get("binance_last")), _pos(row.get("spot"))
+    return None if b is None or s is None else b / s - 1.0
+
+
+def snapshot_gaps(rows: Iterable[Mapping[str, Any]]) -> dict[tuple[int, str], float]:
+    """g per snapshot moment and asset: median ``binance_last`` / median ``spot`` - 1 over that (ts, asset)'s rows that
+    carry both (the H8 measurement's definition). The collector stores ``binance_last`` only on touch rows; within one
+    (ts, asset) every row has the same Binance close and the same Deribit index, so the median is that one value."""
+    acc: dict[tuple[int, str], tuple[list[float], list[float]]] = {}
+    for r in rows:
+        b, s = _pos(r.get("binance_last")), _pos(r.get("spot"))
+        if b is not None and s is not None:
+            bs, ss = acc.setdefault((int(r["ts"]), str(r.get("asset"))), ([], []))
+            bs.append(b)
+            ss.append(s)
+    return {k: statistics.median(bs) / statistics.median(ss) - 1.0 for k, (bs, ss) in acc.items()}
+
+
+def with_snapshot_g(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Copies of ``rows`` with ``snapshot_g`` = :func:`snapshot_gaps` of their own (ts, asset), None when no row of
+    that snapshot has ``binance_last``. Causal: a row's g uses only rows of its own moment."""
+    rows = list(rows)
+    gs = snapshot_gaps(rows)
+    return [{**r, "snapshot_g": gs.get((int(r["ts"]), str(r.get("asset"))))} for r in rows]
+
+
+def g_shifted_prob(
+    kind: str, direction: str | None, p_model: float, iv: float | None, forward: float | None, strike: float, tau_years: float, g: float
+) -> float | None:
+    """The model probability with the forward moved from F to F (1 + g): ``p_model + shift_delta(...)`` at the strike's
+    IV, clipped to [0, 1] (the smile-slope term of ``p_model`` is kept, as in :func:`vol_scaled_prob`). ``g = 0``
+    returns ``p_model`` unchanged. None for an input :func:`.pm_modules.shift_delta` cannot take."""
+    if g == 0.0:
+        return p_model
+    if iv is None or forward is None or iv <= 0 or forward <= 0 or strike <= 0 or tau_years <= 0:
+        return None
+    try:
+        d = shift_delta(kind, forward, strike, iv, tau_years, g, direction)
+    except ValueError:
+        return None
+    return float(min(1.0, max(0.0, p_model + d)))
+
+
+def model_prob(row: Mapping[str, Any], k: float = 1.0, model: str = MODEL_V1) -> float | None:
+    """The row's model probability of YES under the vol multiplier ``k`` and the model variant ``model``.
+
+    ``'v1'``: forward = the snapshot's Deribit index ``spot`` (registered). ``'v2-g'``: first the forward moves to
+    ``spot * (1 + g)`` with ``g`` = :func:`binance_gap` of this row (:func:`g_shifted_prob`), then ``k`` is applied at
+    that forward; None without ``binance_last``."""
+    if model not in MODELS:
+        raise ValueError(f"model {model!r}: expected one of {MODELS}")
     p = row.get("model_prob")
     if p is None:
         return None
+    if model == MODEL_V2G:
+        g = binance_gap(row)
+        if g is None:
+            return None
+        tau = (int(row["end_ts"]) - int(row["ts"])) / YEAR_S
+        kind, strike, iv, spot = str(row["kind"]), float(row["strike"]), row.get("model_iv"), float(row["spot"])
+        pg = g_shifted_prob(kind, row.get("direction"), float(p), iv, spot, strike, tau, g)
+        return None if pg is None else vol_scaled_prob(kind, pg, iv, spot * (1.0 + g), strike, tau, k)
+    # v1: the registered model, unchanged
     if k == 1.0:
         return float(p)
     tau = (int(row["end_ts"]) - int(row["ts"])) / YEAR_S
@@ -203,18 +293,27 @@ def eligible(row: Mapping[str, Any], rule: EntryRule, accepted_hashes: set[str])
     return rule.min_hours_to_end <= h <= rule.max_hours_to_end
 
 
+def win_probs(row: Mapping[str, Any], rule: EntryRule) -> dict[str, float] | None:
+    """Win probability of each side under ``rule.vol_ks`` and ``rule.model``: the less favourable reading (YES = the
+    lowest YES probability, NO = 1 - the highest). None when any reading is missing."""
+    ps = [model_prob(row, k, rule.model) for k in rule.vol_ks]
+    if not ps or any(p is None for p in ps):
+        return None
+    return {"yes": min(ps), "no": 1.0 - max(ps)}  # type: ignore[type-var,operator]
+
+
 def entry_signals(row: Mapping[str, Any], rule: EntryRule, accepted_hashes: set[str]) -> list[dict[str, Any]]:
     """Sides of one snapshot that meet the rule (usually none, at most one in practice: both edges summing to at least
-    2 x threshold would need a crossed book)."""
+    2 x threshold would need a crossed book). Each signal carries ``model`` (the rule's variant) and ``g``
+    (:func:`binance_gap` of the snapshot, None without ``binance_last``)."""
     if not eligible(row, rule, accepted_hashes):
         return []
-    ps = [model_prob(row, k) for k in rule.vol_ks]
-    if not ps or any(p is None for p in ps):
+    w = win_probs(row, rule)
+    if w is None:
         return []
-    p_lo, p_hi = min(ps), max(ps)  # type: ignore[type-var]
     fr, fe = float(row.get("fee_rate") or 0.0), float(row.get("fee_exp") or 1.0)
     out: list[dict[str, Any]] = []
-    for side, p_win in (("yes", p_lo), ("no", 1.0 - p_hi)):  # the less favourable reading of each side
+    for side, p_win in (("yes", w["yes"]), ("no", w["no"])):  # the less favourable reading of each side
         b = side_book(row, side)
         ask, depth = b["ask"], b["ask_usd"]
         if ask is None or not rule.min_ask <= ask <= rule.max_ask or depth is None or depth < rule.min_depth_usd:
@@ -243,6 +342,8 @@ def entry_signals(row: Mapping[str, Any], rule: EntryRule, accepted_hashes: set[
                     "depth_usd": depth,
                     "fee_rate": fr,
                     "fee_exp": fe,
+                    "model": rule.model,
+                    "g": binance_gap(row),
                 }
             )
     return out
@@ -288,6 +389,36 @@ def worse_entry(pos: Mapping[str, Any], worse_by: float = WORSE_ENTRY) -> dict[s
     ask = float(pos["ask"]) + worse_by
     cost = entry_cost(ask, float(pos.get("fee_rate") or 0.0), float(pos.get("fee_exp") or 1.0))
     return {**pos, "ask": ask, "cost": cost, "worse_by": worse_by}
+
+
+G_STATUSES = ("robust", "g_dependent", "no_binance", "not_computed")
+
+
+def g_split(positions: Iterable[Mapping[str, Any]], rows: Iterable[Mapping[str, Any]], rule: EntryRule) -> list[dict[str, Any]]:
+    """Re-read positions (normally v1's) under v2-g at their OWN entry snapshot: same ask and cost, the side's win
+    probability from the g-shifted forward (``rule`` with ``model='v2-g'``). Descriptive; selects nothing.
+
+    Adds ``edge_v2g`` (None when not computable), ``g`` and ``g_status``: 'g_dependent' when the v2-g edge is below
+    ``rule.threshold`` (the edge held only thanks to pricing off the index instead of the Binance level), 'robust' when it
+    still meets it, 'no_binance' when the snapshot has no ``binance_last`` (never read as g = 0), 'not_computed' for any
+    other missing input. ``group`` = kind:direction:side, e.g. 'touch:down:yes' (YES on a dip), 'above:above:no',
+    'touch:up:no' (NO on a reach): the groups whose edge g > 0 shrinks."""
+    v2 = replace(rule, model=MODEL_V2G)
+    idx = {(str(r["market_id"]), int(r["ts"])): r for r in rows}
+    out: list[dict[str, Any]] = []
+    for p in positions:
+        side = str(p["side"])
+        r = idx.get((str(p["market_id"]), int(p["ts"])))
+        g = None if r is None else binance_gap(r)
+        w = None if r is None or g is None else win_probs(r, v2)
+        edge = None if w is None else w[side] - float(p["cost"])
+        if edge is not None:
+            status = "robust" if edge >= rule.threshold else "g_dependent"
+        else:
+            status = "no_binance" if r is not None and g is None else "not_computed"
+        direction = None if r is None else r.get("direction")
+        out.append({**p, "edge_v2g": edge, "g": g, "g_status": status, "group": f"{p.get('kind')}:{direction}:{side}"})
+    return out
 
 
 # ----------------------------------------------------------------------------- closing line value and P&L
@@ -377,16 +508,16 @@ def brier_by_market(
     accepted_hashes: set[str],
     k: float = 1.0,
 ) -> list[dict[str, Any]]:
-    """Per resolved market: mean Brier of the model (vol multiplier ``k``; 1.0 = risk-neutral as collected, the primary)
-    and of the Polymarket YES mid over its eligible snapshots (each market weighs 1, whatever its number of snapshots).
-    ``diff`` = model - Polymarket (> 0: Polymarket more accurate)."""
+    """Per resolved market: mean Brier of the model (vol multiplier ``k``; 1.0 = risk-neutral as collected, the primary;
+    variant ``rule.model``) and of the Polymarket YES mid over its eligible snapshots that have a model probability (each
+    market weighs 1, whatever its number of snapshots). ``diff`` = model - Polymarket (> 0: Polymarket more accurate)."""
     acc: dict[str, dict[str, Any]] = {}
     for r in rows:
         mid_id = str(r["market_id"])
         y = outcomes.get(mid_id)
         if y is None or not eligible(r, rule, accepted_hashes):
             continue
-        p = model_prob(r, k)
+        p = model_prob(r, k, rule.model)
         q = side_book(r, "yes")["mid"]
         if p is None or q is None:
             continue

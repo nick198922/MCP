@@ -14,7 +14,11 @@ shows only what registration section 1 allows (counts, resolution days and weeks
 skew and read-time shares); the mean of the main metric, its CI, the P&L and the Brier comparison exist only in
 ``--verdict`` mode, together with the descriptive stress and robustness checks of registration sections 6 and 12
 (thresholds 3 / 8 pp, k separately, depth >= $500, entry +1 cent, next-snapshot entry, period halves, BTC vs ETH with a
-within-week permutation, by kind, resolution-day clusters, closing CLV from 'close' only). Weekly T0 = the first snapshot unless ``--t0`` is given. Output: ``--out``, else $TRADEDESK_PM_GAP_REPORT,
+within-week permutation, by kind, resolution-day clusters, closing CLV from 'close' only). Both modes append the labelled
+variant v2-g (forward x (1 + g), g = binance_last / spot - 1 of the same snapshot; IDEA-20261031-structural-edges-depth
+item 8a) as separate rows under the same limits: weekly = counts, entry edge, SD and the v1 positions whose edge held only
+thanks to the g shift; CLV, P&L and Brier of v2-g only in ``--verdict``. v1 and its verdict are unchanged.
+Weekly T0 = the first snapshot unless ``--t0`` is given. Output: ``--out``, else $TRADEDESK_PM_GAP_REPORT,
 else /var/lib/tradedesk-mcp/paper/pm_gap_REPORT.md (outside git). ``--telegram`` sends the text to the group's ``agents``
 topic through scripts/tg_send.py. Paper positions only: nothing here trades.
 """
@@ -35,10 +39,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from tradedesk.analytics.pm_gap_report import (  # noqa: E402
     T0_TS,
     final_metrics,
+    final_metrics_v2g,
     render_verdict,
+    render_verdict_v2g,
     render_weekly,
+    render_weekly_v2g,
     verdict_ts,
     weekly_descriptive,
+    weekly_v2g,
 )
 
 DEFAULT_DB = "/var/lib/tradedesk-mcp/tradedesk.sqlite"
@@ -47,7 +55,8 @@ ENV_OUT = "TRADEDESK_PM_GAP_REPORT"
 # Only the columns the rules and metrics read (the table grows by ~5 000 rows a day; the full rows would waste memory).
 COLS = (
     "ts market_id asset kind direction strike end_ts yes_bid yes_ask yes_ask_usd no_bid no_ask no_ask_usd fee_rate fee_exp "
-    "rules rules_hash rules_standard model_prob model_note model_iv model_covered spot book_ts surface_ts model_forward"
+    "rules rules_hash rules_standard model_prob model_note model_iv model_covered spot book_ts surface_ts model_forward "
+    "binance_last"
 ).split()
 
 
@@ -82,7 +91,8 @@ def build_weekly(db: str, now_ts: int, t0: int | None) -> tuple[int, str]:
     if not rows:
         return 1, NO_ROWS
     start = int(t0) if t0 else min(int(r["ts"]) for r in rows)
-    return 0, render_weekly(weekly_descriptive(rows, outcomes, now_ts, start))
+    v2g = render_weekly_v2g(weekly_v2g(rows, outcomes, now_ts, start))
+    return 0, render_weekly(weekly_descriptive(rows, outcomes, now_ts, start)) + "\n" + v2g
 
 
 def build_verdict(db: str) -> tuple[int, str]:
@@ -98,7 +108,8 @@ def build_verdict(db: str) -> tuple[int, str]:
     first = min(int(r["ts"]) for r in rows)
     if first != T0_TS:
         return 2, f"refused: the DB's first snapshot is {first}, not the registered T0 {T0_TS}; wrong or altered database\n"
-    return 0, render_verdict(final_metrics(rows, outcomes, now_ts, T0_TS))
+    v2g = render_verdict_v2g(final_metrics_v2g(rows, outcomes, now_ts, T0_TS))
+    return 0, render_verdict(final_metrics(rows, outcomes, now_ts, T0_TS)) + "\n" + v2g
 
 
 def main(argv: list[str] | None = None) -> int:

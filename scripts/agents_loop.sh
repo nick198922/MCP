@@ -197,9 +197,13 @@ idle_check() { # idle_check <1 = idle run | 0 = real work>
 
 # Idle wait that ends early once an agent branch is merged (owner 30.10: the agents idled half an hour while the S3
 # passport waited 15 min for the trader review; the card it held is free as soon as it merges).
+# Also ends when main gets new work: a card or an answer in docs/ideas/ or docs/QUESTIONS.md (owner 31.10: his new card
+# from the chat session waited half an hour, it is not an agent branch).
+work_tree() { git -C "$REPO" rev-parse -q origin/main:docs/ideas origin/main:docs/QUESTIONS.md 2>/dev/null | tr '\n' ' '; }
 idle_wait() { # idle_wait <seconds>
-  local left="$1" before now
+  local left="$1" before now tree
   before="$(open_branches | wc -l)"
+  tree="$(work_tree)"
   while ((left > 0)); do
     sleep 60
     left=$((left - 60))
@@ -207,6 +211,10 @@ idle_wait() { # idle_wait <seconds>
     now="$(open_branches | wc -l)"
     if ((now < before)); then
       log "an agent branch was merged: next step now"
+      return 0
+    fi
+    if [[ "$(work_tree)" != "$tree" ]]; then
+      log "new cards or answers on main: next step now"
       return 0
     fi
     before="$now"

@@ -54,7 +54,7 @@ from tradedesk.analytics.demo_vs_backtest import (
 from tradedesk.analytics.setup_signals import TF_MS
 from tradedesk.config import Settings
 from tradedesk.core.envelope import Builder
-from tradedesk.execution.demo_trader import DEFAULT_DB, MAX_HOLD_MS  # read-only constants
+from tradedesk.execution.demo_trader import DEFAULT_DB, hold_ms  # read-only constants
 from tradedesk.execution.guard import BE_PATH  # read-only constant
 from tradedesk.runtime import Runtime
 
@@ -167,7 +167,7 @@ async def replay_all(rows: list[dict[str, Any]], fetch: Fetch, now_ms: int) -> l
     for row in rows:
         t = DemoTrade.from_row(row)
         tf_ms = TF_MS.get(t.timeframe)
-        hold = MAX_HOLD_MS.get(t.timeframe, 7 * DAY_MS)
+        hold = hold_ms(t.setup, t.timeframe)
         if tf_ms is None:
             out.append(replay(t, Bars.from_rows([], HOUR_MS), Bars.from_rows([], HOUR_MS), now_ms=now_ms, hold_ms=hold))
             continue

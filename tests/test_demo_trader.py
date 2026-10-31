@@ -675,7 +675,7 @@ async def test_s12_rejected_by_the_backtest_is_scanned_and_traded_under_the_same
         return list(w.signals.get(tf, []))
 
     monkeypatch.setattr(demo_trader, "scan", scan)
-    assert demo_trader.SETUPS == ("S14", "S16", "S3", "S12", "S38", "S39", "S40", "S28")
+    assert demo_trader.SETUPS == ("S14", "S16", "S3", "S12", "S38", "S39", "S40", "S28", "S17")
     w.signals["4h"] = [_sig(setup="S12", target=104_500.0)]
     await w.enter()
     assert asked and all(a == demo_trader.SETUPS for a in asked)
@@ -857,6 +857,31 @@ async def test_the_trade_row_carries_the_rule_version_of_the_placing_code(world)
     await w.enter()
     (t,) = await w.store.demo_trade_list()
     assert "version" in t and t["version"] is None
+
+
+async def test_s17_trades_on_1d_only_keeps_its_own_slots_without_the_reserve_and_holds_20_days(world, monkeypatch):
+    """Owner 31.10 (Q-20261031-1 «3Б», ADR 0007 p. 5): an S17 signal on 4h is ignored, on 1d it enters; with its 2 own
+    slots taken it waits instead of taking the reserve; its hold is 20 days, not the 1d default of 30. S12 scans the v4
+    detector again (Q-20261030-2 «1А»)."""
+    assert ss.DETECTORS["S12"] is ss.s12
+    assert demo_trader.hold_ms("S17", "1d") == 20 * D1 and demo_trader.hold_ms("S3", "1d") == 30 * D1
+    assert demo_trader.hold_ms("S3", "4h") == 7 * D1 and demo_trader.hold_ms(None, None) == 7 * D1
+    assert demo_trader._setup_cap("S17", Counter({"S17": 2}), frozenset()) and not demo_trader._setup_cap("S17", Counter({"S17": 1}))
+    assert demo_trader._setup_cap("S14", Counter({"S14": 2}), frozenset()) == []  # the others still reach the reserve
+    w = world
+
+    def scan(b, tf, setups):
+        return [x for x in w.signals.get(tf, []) if x.setup in setups]
+
+    monkeypatch.setattr(demo_trader, "scan", scan)
+    w.signals["4h"] = [_sig(setup="S17", target=110_000.0)]
+    res = await w.run()
+    assert res["sent"] == 0 and not await w.store.demo_trade_list()
+    w.signals["4h"] = []
+    w.signals["1d"] = [_sig(setup="S17", tf="1d", ts=T0 - D1, target=110_000.0)]
+    await w.enter()
+    (t,) = await w.store.demo_trade_list()
+    assert t["setup"] == "S17" and t["timeframe"] == "1d" and t["status"] == "open"
 
 
 def _short(setup: str, ts: int = T0 - H4) -> ss.LiveSignal:

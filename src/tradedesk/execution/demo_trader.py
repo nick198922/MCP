@@ -10,7 +10,7 @@ fill or the price nears the stop.
 Hourly cycle:
 1. Sync every trade of the book with the venue. An order whose answer was lost ('unknown') is looked up by its
    orderLinkId. A closed trade gets its P&L from Bybit's closed-pnl (fees included), R = P&L / risk of the filled size,
-   the journal row is closed and the owner gets a Telegram message. A position held longer than ``MAX_HOLD_MS`` of its
+   the journal row is closed and the owner gets a Telegram message. A position held longer than ``hold_ms`` of its
    timeframe starts a time exit (reduce-only orders, outside the guard: they only reduce).
 2. Orders and break-even (also every minute): a resting entry ('pending') is re-quoted, completed at the market or
    cancelled ('missed'); a complete entry gets its target limit; a time exit is re-quoted or sent to the market; half the
@@ -117,7 +117,13 @@ TIMEFRAMES = ("1d", "4h")  # 1d first: its bars also feed the score of the 4h si
 # version v6
 # S28 (a valid order block, longs only, 4h; rejected by its backtest, E[R] net -0.044R) joins as the eighth (owner 29.10,
 # ADR 0007 p. 5): a limit resting at the OB level for 20 bars, the same path as S12 v7; version v8
-SETUPS = ("S14", "S16", "S3", "S12", "S38", "S39", "S40", "S28")
+SETUPS = ("S14", "S16", "S3", "S12", "S38", "S39", "S40", "S28", "S17")
+# S17 (POB retest) on 1d only (owner 31.10, Q-20261031-1 «3Б»; ADR 0007 p. 5): its 4h row is negative in the passport.
+# Its limit rests up to 90 days, so it keeps its own 2 slots but never takes the reserve (NO_RESERVE), and a filled trade
+# is held 20 bars as in the passport (SETUP_HOLD_MS). Version v10; S12 is back to the v4 entry as v9.
+SETUP_TIMEFRAMES = {"S17": ("1d",)}
+NO_RESERVE = frozenset({"S17"})
+SETUP_HOLD_MS = {"S17": 20 * 86_400_000}
 # The rare setups also scan the thinner coins (owner 29.10, ADR 0007 p. 8): from $1M of 24h turnover, 216 coins against
 # 93 at $5M that day, about 2.4x their signals over 30 days offline; S3 and S12, which fire every day, stay on the $5M
 # list. Coins under $5M were never in a backtest (top 30 there): the reconciliation is to read their trades apart
@@ -144,6 +150,13 @@ SAMPLE_DONE = {"S3": 30}
 BAR_CAP = {"S38": 2}
 FRESH_MS = 2 * 3_600_000  # the signal bar must have closed within the last 2 hours
 MAX_HOLD_MS = {"4h": 7 * 86_400_000, "1d": 30 * 86_400_000}  # S14 registered hold: 7 days on 4h
+
+
+def hold_ms(setup: str | None, timeframe: str | None) -> int:
+    """How long a trade of ``setup`` on ``timeframe`` is held: the setup's own hold, else the timeframe's."""
+    return SETUP_HOLD_MS.get(setup or "") or MAX_HOLD_MS.get(timeframe or "", 7 * 86_400_000)
+
+
 MIN_SCORE = 2
 UNKNOWN_GRACE_MS = 10 * 60_000  # an 'unknown' order the venue still does not know after this is rejected
 SHADOW_EXCHANGE = "bybit"  # ccxt id the collector resolves the shadow plans on
@@ -493,7 +506,7 @@ async def _sync_trade(ctx: Ctx, t: dict[str, Any], positions: dict[str, Any]) ->
     if pos:
         if pos.get("entryPrice") and float(pos["entryPrice"]) != t["fill"]:
             await ctx.store.demo_trade_update(lid, fill=float(pos["entryPrice"]))  # the venue's average is the truth
-        if ctx.now - (t["opened_ts"] or ctx.now) > MAX_HOLD_MS.get(t["timeframe"], 7 * 86_400_000) and not t["exit_ts"]:
+        if ctx.now - (t["opened_ts"] or ctx.now) > hold_ms(t["setup"], t["timeframe"]) and not t["exit_ts"]:
             await _progress_exit(ctx, t, pos)
         return
     m = await ctx.client.market(sym)
@@ -691,6 +704,8 @@ def _setup_cap(setup: str, used: Counter[str] | None, sampled: frozenset[str] = 
         return [f"{setup} trades at risk today unknown (book not read)"]
     if used[setup] < OWN_SLOTS:
         return []
+    if setup in NO_RESERVE:
+        return [f"{used[setup]} {setup} trades at risk today: its {OWN_SLOTS} slots are taken and it never takes the reserve"]
     if setup in sampled:
         return [
             f"{used[setup]} {setup} trades at risk today: its {OWN_SLOTS} slots are taken and its sample of "
@@ -765,6 +780,8 @@ async def _candidates(ctx: Ctx, uni: tuple[str, ...], state: State, core: tuple[
             if tf == "1d":
                 htf[symbol] = bars
             for sig in scan(bars, tf, SETUPS if core is None or symbol in core else WIDE_SETUPS):
+                if tf not in SETUP_TIMEFRAMES.get(sig.setup, TIMEFRAMES):
+                    continue
                 if sig.signal_ts + TF_MS[tf] < ctx.now - FRESH_MS or link_id(sig, symbol) in state.seen_link_ids:
                     continue
                 c = await ctx.safe("candidate", lambda s=symbol, sig=sig: _candidate(ctx, s, sig, htf, state), symbol=symbol)
@@ -840,7 +857,7 @@ async def _shadow(ctx: Ctx, c: Candidate, taken: bool) -> int | None:
         entry=c.p.entry,
         stop=c.p.stop,
         target=c.p.target,
-        expires_ts=((rest or ctx.now) + MAX_HOLD_MS[c.sig.timeframe]) // 1000,
+        expires_ts=((rest or ctx.now) + hold_ms(c.sig.setup, c.sig.timeframe)) // 1000,
         verdict="enter" if taken else "skip",
         thesis=c.sig.comment,
         tags=[
@@ -1098,7 +1115,7 @@ async def _option_leg(ctx: Ctx, c: Candidate, before: State, after: State) -> St
     is_call = p.side == "long"
     insts = await ctx.client.option_instruments(base)
     quotes = await ctx.client.option_quotes(base)
-    hold = MAX_HOLD_MS.get(sig.timeframe, 7 * 86_400_000)
+    hold = hold_ms(sig.setup, sig.timeframe)
     expiry = pick_expiry(insts, ctx.now, hold, ctx.leg, ctx.cfg)
     if expiry is None:
         return await skipped(f"no USDT expiry with >= {min_dte_days(hold, ctx.leg, ctx.cfg):g} days to go")
@@ -1366,7 +1383,7 @@ async def _leg_exit_reason(ctx: Ctx, leg: dict[str, Any]) -> str | None:
         target=leg["target"],
         extreme=underlying_extreme(bool(leg["is_call"]), bars, opened, last),
         now_ms=ctx.now,
-        time_exit_ms=opened + MAX_HOLD_MS.get(leg["timeframe"], 7 * 86_400_000),
+        time_exit_ms=opened + hold_ms(leg["setup"], leg["timeframe"]),
         expiry_ms=leg["expiry_ms"],
         cfg=ctx.leg,
     )

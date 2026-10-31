@@ -229,6 +229,24 @@ def test_limit_trade_uses_no_bar_before_the_placement_or_after_the_exit():
     assert seen > 10
 
 
+def test_limit_cancelled_by_the_target_before_the_fill_s23():
+    # S23 (sfp_backtest.ltf_entry "retest"): a bar that does not fill but reaches the target cancels the limit; in the
+    # fill bar the fill comes first; a target after the fill is the trade's own exit
+    p = _hourly([100.5, 100.5, 99.5, 100.5], [101, 104.2, 101, 101])
+    t0, t1 = int(p.t[0]), int(p.t[3]) + H1
+    assert sp.limit_fill(p, t0, t1, 100.0) == 2
+    assert sp.limit_fill(p, t0, t1, 100.0, cancel_at=104.0) == -1
+    o, tk = sp.limit_trade(p, t0, t1, 100.0, 98.0, 104.0, 10 * H1, RULE_B, Fees(), cancel_at_target=True)
+    assert o is None and tk == -1
+    q = _hourly([100.5, 99.5, 100.5, 100.5], [101, 104.2, 104.5, 101])  # fill bar 1 also reaches the target: fill
+    assert sp.limit_fill(q, t0, t1, 100.0, cancel_at=104.0) == 1
+    o, tk = sp.limit_trade(q, t0, t1, 100.0, 98.0, 104.0, 10 * H1, RULE_B, Fees(), cancel_at_target=True)
+    assert tk == int(q.t[1]) and o.exit_kind == "target" and o.exit_ms == int(q.t[2]) + H1
+    # a target before t0 or at / after t1 is never read
+    r = _hourly([100.5, 100.5, 99.5, 100.5, 100.5], [104.5, 101, 101, 101, 104.5])
+    assert sp.limit_fill(r, int(r.t[1]), int(r.t[4]), 100.0, cancel_at=104.0) == 2
+
+
 def _busy_until(p: Bars, t0: int, t1: int) -> tuple[int, int]:
     """(fill bar open or -1, busy-until) of a long limit at 100 (stop 98, target 104), as ``limit_rows`` of
     ``scripts/verify_setup_passport.py`` feeds the chain: the exit if filled, else the deadline."""

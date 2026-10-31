@@ -6,7 +6,9 @@ turnover groups on it, a descriptive chain shared by S14 + S16 + S3), «Попе
 for S38 / S39 / S40 (4h; S38 with the demo's 2 entries per signal bar; the turnover contrast by year and pooled over
 the three; a chain shared by all six setups) «Попередня реєстрація паспортів S38, S39 і S40»; for S12 v7 / S28 (a limit
 resting at the level, filled only when the price trades through it; an unfilled limit holds the coin until its
-deadline; fill rate, R per placement, a placebo of random limits with the same geometry) «… S12 v7 і S28».
+deadline; fill rate, R per placement, a placebo of random limits with the same geometry) «… S12 v7 і S28»; for S17 /
+S23 (the same limit model with each signal's own wait and hold; S23's limit cancelled by its target before the fill;
+S17 reported per timeframe with ``--tf 1d|4h``, each its own chain) «… S17 і S23».
 
     uv run python scripts/verify_setup_passport.py S3 --stage sanity        # coverage, units, known number, timing
     uv run python scripts/verify_setup_passport.py S3 --stage run           # per-symbol candidate files (4 workers)
@@ -98,11 +100,31 @@ SETUPS: dict[str, tuple[Callable[[Bars, str], list[ss.LiveSignal]], tuple[str, .
     # not in demo_trader.WIDE_SETUPS, so the demo list is the top-100 >= $5M
     "S12": (lambda b, tf: ss.s12_rest_all(b, tf), ("4h",), 5e6),
     "S28": (lambda b, tf: ss.s28_all(b, tf), ("4h",), 5e6),
+    # S17 (POB retest, 1d main row, 4h side row) / S23 (SFP retest, QM proxy, 4h): resting limits too (registration
+    # «… S17 і S23», item 11); not in demo_trader.WIDE_SETUPS, so the default demo list (top-100 >= $5M)
+    "S17": (lambda b, tf: ss.s17_all(b, tf), ("1d", "4h"), 5e6),
+    "S23": (lambda b, tf: ss.s23_all(b, tf), ("4h",), 5e6),
 }
-LIMIT = ("S12", "S28")
+LIMIT = ("S12", "S28", "S17", "S23")
+CANCEL_AT_TARGET = ("S23",)  # ltf_entry "retest": a target reached before the fill cancels the limit
+LIMIT_WARMUP = {"S12": ss.S12_WARMUP, "S28": ss.S12_WARMUP, "S17": ss.S17_WARMUP, "S23": ss.S23_WINDOW - 1}  # placebo pool
+RULE_A = StopRule("A")  # no break-even: the known numbers' backtests (step 5 S17, step 2 SFP)
+KNOWN_FROM_MS = s1.ms("2024-10-12T00:00")  # S23 known number: 730 days to 2026-10-12 (verify_sfp_ltf.py --days 730)
+
+
+def own_hold(setup: str, sig: ss.LiveSignal, tf: str, bar_ms: int) -> int:
+    """The registered hold of a limit setup's filled trade, from the signal's fields: S23 ``max_hold_ms`` (10 days);
+    S17 20 bars of its timeframe (``S17_HOLD_BARS``); S12 v7 / S28 the demo's 7 days on 4h."""
+    if "max_hold_ms" in sig.indicators:
+        return int(sig.indicators["max_hold_ms"])
+    if setup == "S17":
+        return ss.S17_HOLD_BARS * bar_ms
+    return HOLD[tf]
+
+
 N_PLACEBO = 2  # random limits of the same geometry per signal (registered)
 LIMIT_WIDE_TOP_N, LIMIT_WIDE_FLOOR = 250, 1e6  # registered side row: could the setup take the $1-5M coins?
-OUT: dict[str, Any] = {"fh": None}
+OUT: dict[str, Any] = {"fh": None, "tf": None}
 
 
 def emit(line: str = "") -> None:
@@ -276,8 +298,20 @@ def run_symbol(args: tuple[str, str, str, str, str]) -> dict[str, Any]:
     return {"sym": s, "n": len(rows), "why": dict(why), "sec": time.time() - t0, "bars": len(h1), "rss": rss_mb()}
 
 
-def _lim(path: Bars, t0: int, t1: int, e: float, st: float, tg: float, rule: StopRule, fees: Fees, through: bool = True) -> tuple[Any, int]:
-    return sp.limit_trade(path, t0, t1, e, st, tg, HOLD["4h"], rule, fees, through)
+def _lim(
+    path: Bars,
+    t0: int,
+    t1: int,
+    e: float,
+    st: float,
+    tg: float,
+    rule: StopRule,
+    fees: Fees,
+    through: bool = True,
+    hold: int = HOLD["4h"],
+    cancel: bool = False,
+) -> tuple[Any, int]:
+    return sp.limit_trade(path, t0, t1, e, st, tg, hold, rule, fees, through, cancel)
 
 
 def limit_rows(
@@ -299,7 +333,8 @@ def limit_rows(
     rng = np.random.default_rng(SEED + zlib.crc32(f"{s}{setup}".encode()))
     pos = segment_pos(tb.t)
     close_t = tb.t + tb.bar_ms
-    pool = np.flatnonzero((pos >= ss.S12_WARMUP) & (close_t >= START_MS) & (close_t < END[tf]))
+    pool = np.flatnonzero((pos >= LIMIT_WARMUP[setup]) & (close_t >= START_MS) & (close_t < END[tf]))
+    cancel = setup in CANCEL_AT_TARGET
     for sig in sigs:
         why[f"{tf}:signal"] += 1
         i = int(np.searchsorted(tb.t, sig.signal_ts))
@@ -307,6 +342,7 @@ def limit_rows(
         if not (START_MS <= t0 < END[tf]):
             continue
         t1 = int(sig.indicators["rest_until_ms"])
+        hold = own_hold(setup, sig, tf, tb.bar_ms)
         sg = 1.0 if sig.side == "long" else -1.0
         e, st, tg = sg * sig.entry, sg * sig.stop, sg * sig.target
         bb = tb if sig.side == "long" else tb.mirrored()
@@ -321,7 +357,9 @@ def limit_rows(
             r = int(pool[rng.integers(pool.size)])
             c_r = float(bb.c[r])
             e_r, st_r = c_r * e / c_sig, c_r * st / c_sig
-            tg_r = e_r + 2.0 * (e_r - st_r)
+            # S23's target is the range middle, not 2R: carried in percent like the level and the stop (registration
+            # «… S17 і S23»); for the 2R setups the two forms are equal, the 2R form is kept so S12 / S28 do not move
+            tg_r = c_r * tg / c_sig if setup == "S23" else e_r + 2.0 * (e_r - st_r)
             tr0 = int(tb.t[r]) + tb.bar_ms
             x = ctx(tr0, sig.side, sg * e_r, sg * st_r, sg * tg_r)
             if (
@@ -333,7 +371,7 @@ def limit_rows(
                 or not (st_r < e_r < tg_r)
             ):
                 continue
-            o, tk = _lim(path, tr0, tr0 + (t1 - t0), e_r, st_r, tg_r, RULE_B, F1)
+            o, tk = _lim(path, tr0, tr0 + (t1 - t0), e_r, st_r, tg_r, RULE_B, F1, hold=hold, cancel=cancel)
             if o is None and tk >= 0:
                 continue
             placebo.append(
@@ -346,21 +384,24 @@ def limit_rows(
         if not c_sig > e:  # the demo does not place a post-only limit the price already reached
             why[f"{tf}:at_level"] += 1
             continue
-        b, tk = _lim(path, t0, t1, e, st, tg, RULE_B, F1)
+        kw = {"hold": hold, "cancel": cancel}
+        b, tk = _lim(path, t0, t1, e, st, tg, RULE_B, F1, **kw)
         if b is None and tk >= 0:
             why[f"{tf}:no_path"] += 1
             continue
         filled = b is not None
-        bx = b15 = None
+        bx = b15 = dh = None
         if filled:
-            bx, _ = _lim(path, t0, t1, e, st, tg, RULE_BX, F1)
-            b15, _ = _lim(path, t0, t1, e, st, tg, RULE_B, F15)
-        bt, tkt = _lim(path, t0, t1, e, st, tg, RULE_B, F1, through=False)
+            bx, _ = _lim(path, t0, t1, e, st, tg, RULE_BX, F1, **kw)
+            b15, _ = _lim(path, t0, t1, e, st, tg, RULE_B, F15, **kw)
+            dh, _ = _lim(path, t0, t1, e, st, tg, RULE_B, F1, hold=HOLD[tf], cancel=cancel)  # demo_trader.MAX_HOLD_MS
+        bt, tkt = _lim(path, t0, t1, e, st, tg, RULE_B, F1, through=False, **kw)
+        ka, _ = _lim(path, t0, t1, e, st, tg, RULE_A, F1, through=False, **kw)  # known numbers: touch, no break-even
         lb = lb15 = None
         late_placed = i + 1 < len(bb) and int(bb.t[i + 1]) - int(bb.t[i]) == bb.bar_ms and float(bb.c[i + 1]) > e
         if late_placed:
-            lb, _ = _lim(path, t0 + bb.bar_ms, t1 + bb.bar_ms, e, st, tg, RULE_B, F1)
-            lb15, _ = _lim(path, t0 + bb.bar_ms, t1 + bb.bar_ms, e, st, tg, RULE_B, F15)
+            lb, _ = _lim(path, t0 + bb.bar_ms, t1 + bb.bar_ms, e, st, tg, RULE_B, F1, **kw)
+            lb15, _ = _lim(path, t0 + bb.bar_ms, t1 + bb.bar_ms, e, st, tg, RULE_B, F15, **kw)
         rows.append(
             {
                 **x,
@@ -378,6 +419,9 @@ def limit_rows(
                 "T": bt.r_net if bt else None,
                 "T_x": bt.exit_ms if bt else (t1 if tkt < 0 else None),
                 "cost": b.cost_r if b else None,
+                "D": dh.r_net if dh else None,
+                "K": ka.r_net if ka else None,
+                "K_c": ka.cost_r if ka else None,
             }
         )
         why[f"{tf}:cand"] += 1
@@ -458,11 +502,13 @@ def load_rows(out: Path, part: str = "rows") -> dict[str, np.ndarray]:
     rows: list[dict[str, Any]] = []
     for p in sorted((out / "cands").glob("*.json")):
         rows.extend(json.loads(p.read_text()).get(part, []))
+    if OUT.get("tf"):  # --tf: one timeframe's rows only (S17: 1d verdict and 4h side row, each its own chain)
+        rows = [r for r in rows if r["tf"] == OUT["tf"]]
     keys = rows[0].keys()
     T = {k: np.array([r[k] for r in rows], dtype=object) for k in keys}
     for k in ("t_in", "B_x"):
         T[k] = T[k].astype(np.int64)
-    for k in ("B", "Bx", "B15", "L", "L15", "rr", "stop_pct", "cost", "T", "T_x"):
+    for k in ("B", "Bx", "B15", "L", "L15", "rr", "stop_pct", "cost", "T", "T_x", "D", "K", "K_c"):
         if k in T:
             T[k] = np.array([math.nan if x is None else float(x) for x in T[k]])
     for k in ("filled", "late_placed"):
@@ -627,7 +673,7 @@ def stage_report(a: argparse.Namespace, out: Path) -> None:
     cells: list[tuple[str, str, np.ndarray, np.ndarray]] = []  # (table, label, sample mask, base)
     for y in sorted(set(T["year"][V].tolist())):
         cells.append(("рік", str(y), V & (T["year"] == y), V))
-    if len(SETUPS[a.setup][1]) > 1:
+    if len(set(T["tf"][V].tolist())) > 1:  # (with --tf one timeframe: no empty cell in Holm)
         for tf in SETUPS[a.setup][1]:
             cells.append(("таймфрейм", tf, V & (T["tf"] == tf), V))
     if len(set(T["side"][V].tolist())) > 1:
@@ -805,6 +851,29 @@ def limit_section(
         f"частка заповнення OOS: тут {(V & OOS & F).sum() / max(1, (V & OOS).sum()):.1%}, «дотик» {(V & OOS & tf_).sum() / max(1, (V & OOS).sum()):.1%}; "
         f"пізнє розміщення не поставлено (ціна вже на рівні / дірка) {int((V & OOS & ~T['late_placed']).sum())} з {int((V & OOS).sum())}"
     )
+    if a.setup in ("S17", "S23"):
+        emit("\n## Утримання `demo_trader.MAX_HOLD_MS` замість власного (описово, не вердикт; підказка для підключення)")
+        emit(hdr)
+        F = T["filled"]
+        for lab, m, k in (
+            ("власне утримання, заповнені, 2021+", V & F, "B"),
+            ("MAX_HOLD_MS (7 діб 4h / 30 діб 1d), заповнені, 2021+", V & F, "D"),
+            ("власне утримання, заповнені, OOS", V & F & OOS, "B"),
+            ("MAX_HOLD_MS, заповнені, OOS", V & F & OOS, "D"),
+        ):
+            emit(f"| {lab} " + fmt(ci(T, m, k)))
+        d = (T["D"] - T["B"])[V & F]
+        r = sp.mean_ci(d[np.isfinite(d)], T["week"][V & F][np.isfinite(d)], n_boot=N_BOOT, seed=SEED)
+        emit(f"MAX_HOLD_MS − власне, попарно, 2021+: {r['m']:+.3f} [{r['lo']:+.3f}; {r['hi']:+.3f}]")
+        emit("\n## Угод і сума R за рік (вибірка вердикту; заповнені / розміщення, R на розміщення = сума R заповнених)")
+        emit("| рік | розміщень | заповнено | сума R | сума R ×1.5 | E[R] на заповнену |\n|---|---|---|---|---|---|")
+        for y in sorted(set(T["year"][V].tolist())):
+            m = V & (T["year"] == y)
+            mf = m & F
+            emit(
+                f"| {y} | {int(m.sum())} | {int(mf.sum())} | {np.nansum(T['B'][mf]):+.1f} | {np.nansum(T['B15'][mf]):+.1f} | "
+                f"{(np.nanmean(T['B'][mf]) if mf.any() else math.nan):+.3f} |"
+            )
 
     emit("\n## Плацебо: випадкова лімітка тієї самої монети, боку й геометрії (зареєстровано)")
     Q = load_rows(out, "placebo")
@@ -849,6 +918,19 @@ def limit_section(
             f"звірка з 2026-10-26-prelimit-entries (S12 lim_mid, «дотик», топ-30, guard, з 2020-02; там n 20 284, +0.185 [+0.155; +0.214], OOS +0.150): "
             f"тут n {int(r['n'])} ({int(r['n']) - 20284:+d}, {r['n'] / 20284 - 1:+.1%}), {r['m']:+.3f} [{r['lo']:+.3f}; {r['hi']:+.3f}], OOS {np.mean(T['T'][kk & OOS]):+.3f}"
         )
+    elif a.setup == "S17":  # step 5 (2026-10-17-course-step5-s17): top-30, IS, every event, touch, no BE, 20 bars
+        ref = {"1d": (1026, -0.007), "4h": (7386, 0.036)}
+        for tf in sorted(set(T["tf"].tolist())):
+            m = T["top30"] & IS & (T["tf"] == tf) & np.isfinite(T["K"])
+            r = sp.mean_ci(T["K"][m], T["week"][m], n_boot=N_BOOT, seed=SEED)
+            n0, m0 = ref[tf]
+            emit(
+                f"звірка з кроком 5 (S17 {tf}, топ-30, IS, усі події без ланцюга, «дотик», без беззбитку; там n {n0}, {m0:+.3f}R): "
+                f"тут n {int(r['n'])} ({int(r['n']) - n0:+d}, {r['n'] / n0 - 1:+.1%}), {r['m']:+.3f} [{r['lo']:+.3f}; {r['hi']:+.3f}] "
+                f"({r['m'] - m0:+.3f}R; межа реєстрації n ± 5 %, E[R] ± 0.03R)"
+            )
+    elif a.setup == "S23":
+        known_s23(a, T)
     else:  # step 4 row B (2026-10-17-course-step4-fvg-ob): 4h IS 4 137 trades, own exits (R not compared)
         m = T["top30"] & IS & np.isfinite(T["T"])
         emit(
@@ -865,6 +947,55 @@ def limit_section(
             f"{lab}: i.i.d. {b['iid_p5']:+.3f} / {b['iid_p50']:+.3f} / {b['iid_p95']:+.3f}; ковзні {int(b['windows'])} вікон {b['roll_p5']:+.3f} / {b['roll_p50']:+.3f} / {b['roll_p95']:+.3f}"
         )
     emit(f"rss {rss_mb():.0f} MB")
+
+
+def known_s23(a: argparse.Namespace, T: dict[str, np.ndarray]) -> None:
+    """Known number of S23 (step 2 of 2026-10-12-sfp-oos-and-15m, registration «… S17 і S23»): the backtest's own
+    signal set, ``walk_forward_sfp`` with its one-position skip on the 20 coins of ``verify_lectures.TOP20`` from
+    2024-10-12, matched to the ``s23_all`` candidates by coin, bar and side; R per signal from the touch, no-BE field
+    with the backtest's fee (0.1 % round trip over the risk in percent), an unfilled limit = 0R."""
+    from verify_lectures import TOP20
+
+    from tradedesk.analytics.sfp_backtest import walk_forward_sfp
+
+    key = {(str(s), int(t), str(d)): k for k, (s, t, d) in enumerate(zip(T["sym"], T["t_in"], T["side"], strict=True))}
+    hit: list[int] = []
+    miss: Counter[str] = Counter()
+    n_sig = 0
+    for base in TOP20:
+        sym = f"{base}USDT"
+        h1, _ = load_1h_qv(a.s1_cache, a.data_dir, sym)
+        if len(h1) == 0:
+            miss["no_1h"] += 1
+            continue
+        b4 = resample(h1, 4)
+        i0 = int(np.searchsorted(b4.t, KNOWN_FROM_MS))
+        rows = ss._ohlc_rows(b4, i0, len(b4))
+        sigs = walk_forward_sfp(rows, window=ss.S23_WINDOW, max_hold_bars=60, fee_pct=0.1, max_width_pct=15.0, sweep_wick_ratio=0.5)
+        for g in sigs:
+            t_in = int(g["ts"]) + 4 * HOUR_MS
+            if t_in >= END["4h"]:
+                continue
+            n_sig += 1
+            k = key.get((sym, t_in, str(g["direction"])))
+            if k is None:
+                miss["unmatched"] += 1
+            else:
+                hit.append(k)
+    idx = np.array(hit, dtype=np.int64)
+    g = T["K"][idx] + T["K_c"][idx]  # gross R (our risk unit)
+    r = np.where(np.isfinite(g), g - 0.001 / T["stop_pct"][idx], 0.0)
+    rs = sp.mean_ci(r, T["week"][idx], n_boot=N_BOOT, seed=SEED)
+    filled = int(np.isfinite(g).sum())
+    rf = sp.mean_ci(r[np.isfinite(g)], T["week"][idx][np.isfinite(g)], n_boot=N_BOOT, seed=SEED)
+    emit(
+        f"звірка з кроком 2 SFP (S23 4h, TOP20, з 2024-10-12, пропуск поки відкрита 4h-угода; там 850 сигналів, −0.142R на сигнал "
+        f"[−0.24; −0.05], 444 угоди, −0.272R на угоду): тут сигналів {n_sig} (зіставлено {idx.size}, {dict(miss)}), "
+        f"на сигнал {rs['m']:+.3f} [{rs['lo']:+.3f}; {rs['hi']:+.3f}] ({rs['m'] + 0.142:+.3f}R), заповнено {filled}, "
+        f"на угоду {rf['m']:+.3f} [{rf['lo']:+.3f}; {rf['hi']:+.3f}]; межа реєстрації n 790 … 870, ± 0.05R"
+    )
+    mine = sp.mean_ci(np.nan_to_num(T["K"][idx], nan=0.0), T["week"][idx], n_boot=N_BOOT, seed=SEED)
+    emit(f"  те саме з нашими витратами Fees() (на сигнал): {mine['m']:+.3f} [{mine['lo']:+.3f}; {mine['hi']:+.3f}]")
 
 
 def contrast_by_year(T: dict[str, np.ndarray], G: np.ndarray) -> list[str]:
@@ -1092,15 +1223,20 @@ def main() -> int:
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--force", action="store_true")
+    ap.add_argument("--tf", choices=("4h", "1d"), default=None, help="report: one timeframe only, its own chain (S17)")
     a = ap.parse_args()
     out = a.cache_dir / a.setup
     out.mkdir(parents=True, exist_ok=True)
     syms = syms_with_1h(a.s1_cache, a.data_dir)
     if a.limit:
         syms = syms[: a.limit]
-    with (out / f"{a.stage}.txt").open("w") as fh:
+    OUT["tf"] = a.tf if a.stage == "report" else None
+    sfx = f"_{a.tf}" if OUT["tf"] else ""
+    with (out / f"{a.stage}{sfx}.txt").open("w") as fh:
         OUT["fh"] = fh
-        emit(f"verify_setup_passport {a.setup} --stage {a.stage} at {datetime.now(UTC):%Y-%m-%d %H:%M} UTC")
+        emit(
+            f"verify_setup_passport {a.setup} --stage {a.stage}{' --tf ' + a.tf if OUT['tf'] else ''} at {datetime.now(UTC):%Y-%m-%d %H:%M} UTC"
+        )
         if a.stage == "sanity":
             stage_sanity(a, out, syms)
         elif a.stage == "run":

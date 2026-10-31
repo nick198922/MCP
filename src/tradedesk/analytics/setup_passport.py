@@ -147,14 +147,20 @@ def late_entry(b: Bars, i: int, stop: float, target: float) -> tuple[int, float]
     return int(b.t[j]) + b.bar_ms, c
 
 
-def limit_fill(path: Bars, t0: int, t1: int, level: float, through: bool = True) -> int:
+def limit_fill(path: Bars, t0: int, t1: int, level: float, through: bool = True, cancel_at: float | None = None) -> int:
     """Index of the first bar of ``path`` (long price space) opening in [t0, t1) that fills a resting buy limit at
     ``level``: its low trades strictly below the level (``through``) or reaches it (``through=False``, a touch); -1 if
-    none. Bars outside [t0, t1) are never read."""
+    none. ``cancel_at`` (S23, ``sfp_backtest.ltf_entry`` "retest"): a bar that does not fill but whose high reaches
+    it cancels the limit (-1); in the fill bar the fill comes first. Bars outside [t0, t1) are never read."""
     i0, i1 = int(np.searchsorted(path.t, t0)), int(np.searchsorted(path.t, t1))
     lows = path.low[i0:i1]
     hit = np.flatnonzero(lows < level if through else lows <= level)
-    return i0 + int(hit[0]) if hit.size else -1
+    k = int(hit[0]) if hit.size else -1
+    if cancel_at is not None:
+        gone = np.flatnonzero(path.h[i0:i1] >= cancel_at)
+        if gone.size and (k < 0 or int(gone[0]) < k):
+            return -1
+    return i0 + k if k >= 0 else -1
 
 
 def limit_trade(
@@ -168,13 +174,15 @@ def limit_trade(
     rule: StopRule,
     fees: Fees,
     through: bool = True,
+    cancel_at_target: bool = False,
 ) -> tuple[Outcome | None, int]:
     """A buy limit resting at ``level`` from ``t0`` to ``t1`` (long price space, 1h ``path``), then the trade under
-    ``rule``: (outcome, open time of the fill bar). (None, -1): never filled; (None, t): filled without a path.
+    ``rule``: (outcome, open time of the fill bar). (None, -1): never filled (or cancelled: with ``cancel_at_target``
+    a bar before the fill that reaches ``target`` cancels the limit, ``limit_fill``); (None, t): filled without a path.
     Pessimistic in the fill hour (order inside the bar unknown): a fill bar that also reaches the stop is a loss at the
     stop; otherwise the trade runs from the next bar, held ``hold_ms`` from the fill hour, and a target or a break-even
     trigger inside the fill hour is ignored. Uses bars from ``t0`` up to the exit only."""
-    k = limit_fill(path, t0, t1, level, through)
+    k = limit_fill(path, t0, t1, level, through, target if cancel_at_target else None)
     if k < 0:
         return None, -1
     tk = int(path.t[k])

@@ -928,7 +928,7 @@ DETECTORS = {
     "S14": s14,
     "S16": range_setups,
     "S3": range_setups,
-    "S12": s12_rest,
+    "S12": s12,  # v4 entry again since v9 (owner 31.10, Q-20261030-2): the v7 resting limit's basis was look-ahead
     "S17": s17,
     "S23": s23,
     "S28": s28,

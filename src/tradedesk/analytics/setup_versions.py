@@ -37,6 +37,8 @@ made in, so a change is assumed live from the commit minute, the deploy time is 
   the two ran the v4 entry (its ``rest_until`` is NULL in ``demo_trade``).
 - ``v8`` 2026-10-29 19:50 UTC, S28 only: the valid order block (longs, 4h, rejected by its backtest) joins the demo
   with a limit resting at the OB level (``docs/changes/2026-10-29-demo-s28.md``). Same rule as v4.
+- ``v9`` 2026-10-31 09:30 UTC, S12 only: back to the v4 entry (owner 31.10, Q-20261030-2); ``v10`` the same minute,
+  S17 only: the POB retest on 1d joins the demo (Q-20261031-1). Same rule as v4.
 
 Not versioned, because they change which signals are taken, not how a taken trade runs: eb3af15 (22.10 07:45 UTC, the
 daily cap counts trades at risk, ``docs/changes/2026-10-22-demo-risk-cap.md``), f9f7cb5 (23.10 16:14 UTC, the option
@@ -132,6 +134,22 @@ EPOCHS: tuple[Epoch, ...] = (
         " (живе 20 свічок 4h), стоп рівень − 1 ATR, ціль 2R; ведення угоди — як у v3",
         "docs/changes/2026-10-29-demo-s28.md (S28 not on the demo before this change)",
         ("S28",),
+    ),
+    Epoch(
+        "v9",
+        _ms(2026, 10, 31, 9, 30, 0),
+        "S12: вхід знову за закриттям свічки дотику (як у v4) замість лімітки на середині FVG; підстава v7 (+0.185R)"
+        " виявилась артефактом заглядання вперед; стоп, ціль і ведення угоди — як у v4",
+        "docs/verification/2026-10-30-passport-s12v7-s28.md, Q-20261030-2 (власник 31.10: 1А)",
+        ("S12",),
+    ),
+    Epoch(
+        "v10",
+        _ms(2026, 10, 31, 9, 30, 0),
+        "S17 (ретест POB) лише на 1d на демо: лімітка на хаї (лоу) POB до 90 діб, стоп за POB, ціль 2R,"
+        " утримання 20 свічок; 2 власні слоти без резерву",
+        "docs/verification/2026-10-31-passport-s17-s23.md, Q-20261031-1 (власник 31.10: 3Б; S17 not on the demo before)",
+        ("S17",),
     ),
 )
 

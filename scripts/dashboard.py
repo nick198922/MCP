@@ -8599,7 +8599,7 @@ def polymarket_page(now: float | None = None) -> str:
 # missed / skipped signals against their shadow plans) and explains its absence.
 
 DEMO_DB = JOURNAL_DB  # execution.demo_trader.DEFAULT_DB: the same store
-DEMO_SETUPS = ("S14", "S16", "S3", "S12", "S38", "S39", "S40", "S28")  # execution.demo_trader.SETUPS
+DEMO_SETUPS = ("S14", "S16", "S3", "S12", "S38", "S39", "S40", "S28", "S17")  # execution.demo_trader.SETUPS
 DEMO_MIN_N = 30  # analytics.demo_vs_backtest.MIN_TRADES (owner 23.10: no conclusion before ~30 closed trades)
 DEMO_MAX_ROWS = 20000
 DEMO_AUDIT_MAX_ROWS = 20000
@@ -8688,6 +8688,22 @@ DEMO_EPOCHS: tuple[tuple[str, int, str, str, tuple[str, ...]], ...] = (
         " (живе 20 свічок 4h), стоп рівень − 1 ATR, ціль 2R; ведення угоди — як у v3",
         "docs/changes/2026-10-29-demo-s28.md (S28 not on the demo before this change)",
         ("S28",),
+    ),
+    (
+        "v9",
+        1793439000000,  # 2026-10-31 09:30:00 UTC
+        "S12: вхід знову за закриттям свічки дотику (як у v4) замість лімітки на середині FVG; підстава v7 (+0.185R)"
+        " виявилась артефактом заглядання вперед; стоп, ціль і ведення угоди — як у v4",
+        "docs/verification/2026-10-30-passport-s12v7-s28.md, Q-20261030-2 (власник 31.10: 1А)",
+        ("S12",),
+    ),
+    (
+        "v10",
+        1793439000000,  # 2026-10-31 09:30:00 UTC
+        "S17 (ретест POB) лише на 1d на демо: лімітка на хаї (лоу) POB до 90 діб, стоп за POB, ціль 2R,"
+        " утримання 20 свічок; 2 власні слоти без резерву",
+        "docs/verification/2026-10-31-passport-s17-s23.md, Q-20261031-1 (власник 31.10: 3Б; S17 not on the demo before)",
+        ("S17",),
     ),
 )
 DEMO_STATUS_UA = {

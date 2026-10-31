@@ -290,10 +290,11 @@ def test_s12_rest_is_every_trend_gap_with_a_limit_at_its_middle():
         assert s.entry == s.indicators["fvg_mid"] and (s.stop < s.entry < s.target if s.side == "long" else s.stop > s.entry > s.target)
         assert "Лімітка заздалегідь на середині FVG" in s.comment
         assert abs(s.target - s.entry) == pytest.approx(2 * abs(s.entry - s.stop))
-    # the live scan (S12 = the resting form since v7) on each prefix finds the same signals as the full history
+    # the live form (the scanner's S12 from v7 to v9; since v9, owner 31.10, the scanner uses the v4 ``s12`` again) on
+    # each prefix finds the same signals as the full history
     live = []
     for i in range(120, len(b)):
-        got_i = ss.scan(b.slice(0, i + 1), "4h", ("S12",))
+        got_i = ss.s12_rest(b.slice(0, i + 1), "4h")
         assert all(x.signal_ts == int(b.t[i]) for x in got_i)
         live += got_i
     assert {(x.side, x.signal_ts) for x in live} == {(x.side, x.signal_ts) for x in sigs if idx[x.signal_ts] >= 120} and live

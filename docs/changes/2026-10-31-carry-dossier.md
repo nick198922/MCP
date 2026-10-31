@@ -1,0 +1,2 @@
+- Досьє carry / funding (12 гіпотез) у картці `structural-edges-depth`; критик A узяв H4, H1, H7, H2 (лише Bybit) для кванта.
+- Рев'ю тріажу: `docs/reviews/2026-10-31-carry-dossier-triage.md`.

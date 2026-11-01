@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import statistics
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -315,6 +316,81 @@ async def test_weekly_expiry_absent_is_missing_not_a_crash(tmp_path):
         assert await scan_option_legs(rt, b, "BTC", NOW + timedelta(days=7)) == []  # the book has no 06NOV26
         assert [(m.field, m.reason) for m in b.missing] == [("weekly_expiry:BTC", "data_unavailable")]
         assert not [c for c in calls if c[0] == "ticker"]
+    finally:
+        await rt.aclose()
+
+
+# Raw JSON-RPC bodies read on the server 2026-11-01 06:08 UTC (item 8i live check): book summaries of the 6NOV26 expiry
+# and the public/ticker of every leg instrument the job read.
+LIVE = json.loads((FIX / "deribit_option_legs_2026-11-01.json").read_text())
+LIVE_NOW = datetime.fromisoformat(LIVE["fetched"])
+LIVE_EXP = datetime(2026, 11, 6, 8, tzinfo=UTC)
+
+
+def _live_rt(tmp_path, down: frozenset[str] = frozenset()) -> Runtime:
+    """Deribit answering with the saved live bodies; tickers named in ``down`` answer HTTP 500."""
+
+    def deribit(req: httpx.Request) -> httpx.Response:
+        method = req.url.path.rsplit("/", 1)[-1]
+        if method == "get_book_summary_by_currency":
+            return httpx.Response(200, json=LIVE["summary"][req.url.params["currency"]])
+        name = req.url.params.get("instrument_name")
+        if method == "ticker" and name in LIVE["ticker"] and name not in down:
+            return httpx.Response(200, json=LIVE["ticker"][name])
+        if name in down:
+            return httpx.Response(500, text="down")
+        return httpx.Response(200, json={"jsonrpc": "2.0", "error": {"code": 13020, "message": "instrument_not_found"}})
+
+    tr = make_transports(State())
+    tr["deribit"] = httpx.MockTransport(deribit)
+    rt = Runtime(Settings(http_retries=1, cache_scale=0.0, db_path=str(tmp_path / "x.sqlite")), transports=tr)
+    rt.deribit.http._limiter = TokenBucket(1_000.0, 1_000)
+    rt.deribit.http._backoff = 0.0
+    return rt
+
+
+async def test_live_answers_parse_into_quoted_legs(tmp_path):
+    rt = _live_rt(tmp_path)
+    try:
+        for cur in ("BTC", "ETH"):
+            b = Builder()
+            rows = await scan_option_legs(rt, b, cur, LIVE_NOW)
+            assert not b.missing and not b.warnings and [r["role"] for r in rows] == list(ROLES)
+            idx = [r["estimated_delivery_price"] for r in LIVE["summary"][cur]["result"]]
+            for r in rows:
+                t = LIVE["ticker"][r["instrument"]]["result"]  # every leg's instrument was read live
+                assert r["src"] == "ticker" and r["expiry_ts"] == int(LIVE_EXP.timestamp()) and r["opt"] == r["instrument"][-1]
+                assert (r["bid"], r["ask"], r["bid_size"], r["ask_size"]) == (
+                    t["best_bid_price"], t["best_ask_price"], t["best_bid_amount"], t["best_ask_amount"]
+                )  # fmt: skip
+                assert 0 < r["bid"] < r["ask"] and r["mark"] == t["mark_price"] and r["quote_ts_ms"] == t["timestamp"]
+                assert r["mark_iv"] == pytest.approx(t["mark_iv"] / 100) and r["bid_iv"] == pytest.approx(t["bid_iv"] / 100)
+                assert r["ask_iv"] == pytest.approx(t["ask_iv"] / 100) and r["open_interest"] == t["open_interest"]
+                assert r["spot"] == pytest.approx(statistics.median(idx)) and r["tau_days"] == pytest.approx(
+                    (LIVE_EXP - LIVE_NOW).total_seconds() / 86400
+                )
+            g = {r["role"]: r for r in rows}
+            for role, delta in {"sp10": -0.10, "sc10": 0.10, "sp25": -0.25, "sc25": 0.25}.items():  # nearest listed strike
+                assert abs(g[role]["delta"] - delta) < 0.06 and abs(g[role]["dist"]) <= 0.015
+            assert g["atm_p"]["strike"] == g["atm_c"]["strike"] and abs(g["atm_c"]["delta"] - 0.5) < 0.08
+            ks = [g[r]["strike"] for r in ("lp", "sp10", "sp25", "atm_p", "sc25", "sc10", "lc")]
+            assert ks == sorted(ks) and len(set(ks)) == 7
+        assert (g["sp10"]["instrument"], g["sp10"]["bid"], g["sp10"]["ask"]) == ("ETH-6NOV26-2050-P", 0.0044, 0.0048)
+    finally:
+        await rt.aclose()
+
+
+async def test_live_answers_ticker_down_falls_back_to_the_live_summary(tmp_path):
+    rt = _live_rt(tmp_path, frozenset({"BTC-6NOV26-72000-P"}))
+    try:
+        b = Builder()
+        rows = await scan_option_legs(rt, b, "BTC", LIVE_NOW)
+        sp = next(r for r in rows if r["role"] == "sp10")
+        row = next(r for r in LIVE["summary"]["BTC"]["result"] if r["instrument_name"] == "BTC-6NOV26-72000-P")
+        assert sp["src"] == "summary" and (sp["bid"], sp["ask"], sp["mark"]) == (row["bid_price"], row["ask_price"], row["mark_price"])
+        assert sp["bid_size"] is None and sp["bid_iv"] is None and sp["quote_ts_ms"] == row["creation_timestamp"]
+        assert [(m.field, m.reason) for m in b.missing] == [("deribit_ticker:BTC-6NOV26-72000-P", "backend_error")]
+        assert sum(r["src"] == "ticker" for r in rows) == 9
     finally:
         await rt.aclose()
 

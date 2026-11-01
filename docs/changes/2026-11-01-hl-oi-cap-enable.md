@@ -1,0 +1,2 @@
+- Увімкнено колектор `hl_oi_cap` (щогодинний знімок стану ліміту OI Hyperliquid): рядок `TRADEDESK_COLLECT_HL_OI_CAP_ENABLED=1` у `deploy/features.env`.
+- Лише читання, 2 запити на годину; історії стану в API немає, тож форвард-вибірка для картки `hl-oi-cap-state-forward` починається тільки з ввімкнення.

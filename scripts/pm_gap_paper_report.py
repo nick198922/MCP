@@ -2,10 +2,14 @@
 
     uv run python scripts/pm_gap_paper_report.py [--db PATH] [--out PATH] [--t0 UNIX_S] [--now UNIX_S] [--print] [--telegram]
     uv run python scripts/pm_gap_paper_report.py --verdict [--db PATH] [--out PATH]   # refused before T0 + 126 days
+    uv run python scripts/pm_gap_paper_report.py --verdict-v2g [--db PATH] [--out PATH]   # v2-g's own test, once
 
 ``--verdict`` takes no ``--now`` / ``--t0`` (refused if given): it uses the wall clock and the registered T0
 (``pm_gap_report.T0_TS``), and refuses when the DB's first snapshot is not that T0. The gate cannot be moved from the
-command line; the weekly mode keeps both flags (it shows no mean).
+command line; the weekly mode keeps both flags (it shows no mean). In ``--verdict`` every v2-g row (the v1 split
+included) is cut to entries before ``T0_V2G_TS``: those belong to v2-g's own forward test
+(docs/ideas/IDEA-20261101-polymarket-v2g-forward.md), whose one-time verdict is ``--verdict-v2g`` (same rules for the
+flags; gate max(T0 v2-g + 126 days, v1's verdict); refused when the DB has no snapshot at ``T0_V2G_TS``).
 
 Reads ``pm_gap_snapshot`` and ``pm_gap_outcome`` from the collector DB through a READ-ONLY connection (``mode=ro``: no
 migration, no write, no network) and applies the registration of
@@ -38,13 +42,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from tradedesk.analytics.pm_gap_report import (  # noqa: E402
     T0_TS,
+    T0_V2G_TS,
     final_metrics,
     final_metrics_v2g,
+    final_metrics_v2g_own,
     render_verdict,
     render_verdict_v2g,
+    render_verdict_v2g_own,
     render_weekly,
     render_weekly_v2g,
     verdict_ts,
+    verdict_ts_v2g,
     weekly_descriptive,
     weekly_v2g,
 )
@@ -86,13 +94,18 @@ NO_ROWS = "no pm_gap_snapshot rows: the collector has not stored anything yet\n"
 
 
 def build_weekly(db: str, now_ts: int, t0: int | None) -> tuple[int, str]:
-    """(exit code, text) of the descriptive weekly report; ``t0`` None = the first snapshot."""
+    """(exit code, text) of the descriptive weekly report; ``t0`` None = the first snapshot. From the registered
+    T0 v2-g on, the v2-g block reports v2-g's own period (from ``T0_V2G_TS``, whatever ``t0`` is); before it, the
+    labelled comparison on v1's period (item 8a)."""
     rows, outcomes = load(db)
     if not rows:
         return 1, NO_ROWS
     start = int(t0) if t0 else min(int(r["ts"]) for r in rows)
-    v2g = render_weekly_v2g(weekly_v2g(rows, outcomes, now_ts, start))
-    return 0, render_weekly(weekly_descriptive(rows, outcomes, now_ts, start)) + "\n" + v2g
+    if now_ts >= T0_V2G_TS:
+        d = weekly_v2g(rows, outcomes, now_ts, T0_V2G_TS, v1_t0=T0_TS)
+    else:
+        d = weekly_v2g(rows, outcomes, now_ts, start)
+    return 0, render_weekly(weekly_descriptive(rows, outcomes, now_ts, start)) + "\n" + render_weekly_v2g(d)
 
 
 def build_verdict(db: str) -> tuple[int, str]:
@@ -108,8 +121,28 @@ def build_verdict(db: str) -> tuple[int, str]:
     first = min(int(r["ts"]) for r in rows)
     if first != T0_TS:
         return 2, f"refused: the DB's first snapshot is {first}, not the registered T0 {T0_TS}; wrong or altered database\n"
-    v2g = render_verdict_v2g(final_metrics_v2g(rows, outcomes, now_ts, T0_TS))
+    v2g = render_verdict_v2g(final_metrics_v2g(rows, outcomes, now_ts, T0_TS, entry_before=T0_V2G_TS))
     return 0, render_verdict(final_metrics(rows, outcomes, now_ts, T0_TS)) + "\n" + v2g
+
+
+def build_verdict_v2g(db: str) -> tuple[int, str]:
+    """(exit code, text) of the one-time verdict of v2-g's own forward test, on the wall clock and the registered
+    ``T0_V2G_TS`` / ``T0_TS`` only. Exit 2 with a refusal before max(T0 v2-g + 126 days, v1's verdict), when the DB's
+    first snapshot is not v1's T0 (another database) or when it has no snapshot at T0 v2-g."""
+    now_ts = int(time.time())
+    gate = verdict_ts_v2g(T0_V2G_TS, T0_TS)
+    if now_ts < gate:
+        when = datetime.fromtimestamp(gate, UTC).isoformat(timespec="minutes")
+        return 2, f"refused: the v2-g verdict is computed once, not before max(T0 v2-g + 126 days, v1's verdict) ({when})\n"
+    rows, outcomes = load(db)
+    if not rows:
+        return 1, NO_ROWS
+    first = min(int(r["ts"]) for r in rows)
+    if first != T0_TS:
+        return 2, f"refused: the DB's first snapshot is {first}, not the registered T0 {T0_TS}; wrong or altered database\n"
+    if not any(int(r["ts"]) == T0_V2G_TS for r in rows):
+        return 2, f"refused: the DB has no snapshot at the registered T0 v2-g {T0_V2G_TS}; wrong or altered database\n"
+    return 0, render_verdict_v2g_own(final_metrics_v2g_own(rows, outcomes, now_ts, T0_V2G_TS, T0_TS))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -119,13 +152,26 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--t0", type=int, default=0, help="weekly mode only: T0 in unix seconds (default: the first snapshot)")
     ap.add_argument("--now", type=int, default=0, help="weekly mode only: report time in unix seconds (default: now)")
     ap.add_argument("--verdict", action="store_true", help="the one-time verdict; refused before T0 + 126 days")
+    ap.add_argument(
+        "--verdict-v2g",
+        action="store_true",
+        help="the one-time verdict of v2-g's own test; refused before max(T0 v2-g + 126 days, v1's verdict)",
+    )
     ap.add_argument("--print", action="store_true", help="also print the text")
     ap.add_argument("--telegram", action="store_true", help="send the text to the Telegram group (topic agents)")
     a = ap.parse_args(argv)
-    if a.verdict and (a.now or a.t0):
-        print("refused: --verdict uses the wall clock and the registered T0; --now / --t0 are not allowed", file=sys.stderr)
+    if a.verdict and a.verdict_v2g:
+        print("refused: --verdict and --verdict-v2g are separate one-time runs; give one", file=sys.stderr)
         return 2
-    code, text = build_verdict(a.db) if a.verdict else build_weekly(a.db, a.now or int(time.time()), a.t0 or None)
+    if (a.verdict or a.verdict_v2g) and (a.now or a.t0):
+        print("refused: --verdict / --verdict-v2g use the wall clock and the registered T0; --now / --t0 are not allowed", file=sys.stderr)
+        return 2
+    if a.verdict:
+        code, text = build_verdict(a.db)
+    elif a.verdict_v2g:
+        code, text = build_verdict_v2g(a.db)
+    else:
+        code, text = build_weekly(a.db, a.now or int(time.time()), a.t0 or None)
     if code:
         print(text, end="", file=sys.stderr)
         return code

@@ -5,30 +5,36 @@ from __future__ import annotations
 import hashlib
 import statistics
 import sys
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from tradedesk.analytics.pm_gap_paper import EntryRule
+from tradedesk.analytics import pm_gap_report as report
+from tradedesk.analytics.pm_gap_paper import EntryRule, accepted_rule_hashes, delayed_entry
 from tradedesk.analytics.pm_gap_report import (
     DAY_S,
     T0_TS,
+    T0_V2G_TS,
     binance_check,
     binance_closes,
     final_metrics,
     final_metrics_v2g,
+    final_metrics_v2g_own,
     gamma_outcome,
     main_period,
     render_verdict,
     render_verdict_v2g,
+    render_verdict_v2g_own,
     render_weekly,
     render_weekly_v2g,
     settled_outcomes,
     verdict_ts,
+    verdict_ts_v2g,
     weekly_descriptive,
     weekly_v2g,
+    without_top_weeks,
 )
 from tradedesk.analytics.pm_threshold import settle_ts
 from tradedesk.store import Store
@@ -334,8 +340,8 @@ def test_weekly_v2g_counts_split_and_never_shows_the_hidden_metrics():
 
 def test_v2g_metrics_only_at_the_verdict_beside_an_unchanged_v1():
     with pytest.raises(ValueError, match="T0 \\+ 126 days"):
-        final_metrics_v2g(ROWS_G, OUTCOMES, verdict_ts(T0) - 1, T0)
-    f = final_metrics_v2g(ROWS_G, OUTCOMES, verdict_ts(T0), T0)
+        final_metrics_v2g(ROWS_G, OUTCOMES, verdict_ts(T0) - 1, T0, entry_before=T0_V2G_TS)
+    f = final_metrics_v2g(ROWS_G, OUTCOMES, verdict_ts(T0), T0, entry_before=T0_V2G_TS)
     assert f["positions"] == 2 and f["edge_mean"] > 0.60 - 0.4329
     assert f["clv_24h"]["mean"] == pytest.approx(CLV) and f["pnl"]["mean"] == pytest.approx(PNL) and f["clv_close"]["n"] == 2
     # Brier over snapshots with a v2-g reading: every market has its snapshot's g
@@ -354,16 +360,16 @@ def test_v2g_metrics_only_at_the_verdict_beside_an_unchanged_v1():
 # ----------------------------------------------------------------------------- the runner (read-only DB)
 
 
-async def _db(path: Path) -> None:
+async def _db(path: Path, all_rows: list[dict[str, Any]] | None = None, outcomes: list[dict[str, Any]] | None = None) -> None:
     s = Store(path)
     await s.init()
     try:
         by_ts: dict[int, list[dict[str, Any]]] = {}
-        for r in ROWS:
+        for r in ROWS if all_rows is None else all_rows:
             by_ts.setdefault(r["ts"], []).append(r)
         for ts, rows in by_ts.items():
             await s.insert_pm_gap(ts, rows)
-        for o in OUTCOMES:
+        for o in OUTCOMES if outcomes is None else outcomes:
             await s.upsert_pm_gap_outcome({**o, "asset": "BTC", "end_ts": END}, END + 3 * H)
     finally:
         await s.aclose()
@@ -447,3 +453,278 @@ def test_runner_on_an_empty_db(tmp_path):
     sqlite3.connect(db).close()
     assert script.build_weekly(str(db), END, None)[0] == 1
     assert EntryRule().threshold == 0.05  # the registered rule is used unchanged
+
+
+# ----------------------------------------------------------------------------- v2-g: its own forward test (own T0)
+
+T0V = T0 + 10 * H  # the fixture's T0 v2-g: a later snapshot of the same DB
+
+
+def _bump_eth(rows: list[dict[str, Any]], times: tuple[int, ...] = (T0V, T0V + H)) -> list[dict[str, Any]]:
+    """ETH snapshots at ``times``: Binance 2 % above the index on m3 (m4, a threshold row without binance_last, takes
+    its snapshot's g). Under v2-g the YES probability rises from 0.74 to ~0.89 against an ask of 0.7471, so m3 and m4 open
+    v2-g positions there; v1 ignores binance_last and opens nothing."""
+    return [dict(r, binance_last=r["spot"] * 1.02) if r["market_id"] == "m3" and r["ts"] in times else r for r in rows]
+
+
+# m5 (BTC, g = 0 from m1): the entry book at T0V, then the market agrees with the model: a position of both v1 and v2-g
+M5 = [dict(row(t, "m5"), **ENTRY, model_prob=0.60) if t == T0V else row(t, "m5") for t in range(T0V, END - H + 1, H)]
+ROWS_OWN = _bump_eth(ROWS_G) + M5
+OUTCOMES_OWN = [*OUTCOMES, {**OUTCOMES[0], "market_id": "m5"}]
+CLV_ETH, PNL_ETH = 0.7371 - 0.7471, 1 - 0.7471
+GATE_OWN = verdict_ts_v2g(T0V, T0)
+
+
+def test_v2g_gate_is_the_later_of_both_verdicts():
+    assert verdict_ts_v2g(T0V, T0) == verdict_ts(T0V) and verdict_ts_v2g(T0, T0V) == verdict_ts(T0V)
+    assert verdict_ts_v2g(T0_V2G_TS, T0_TS) == T0_V2G_TS + 126 * DAY_S > verdict_ts(T0_TS)
+    with pytest.raises(ValueError, match="v2-g verdict"):
+        final_metrics_v2g_own(ROWS_OWN, OUTCOMES_OWN, GATE_OWN - 1, T0V, T0)
+    # v1's T0 + 126 days is not enough when v2-g's own T0 + 126 days is later
+    with pytest.raises(ValueError, match="v2-g verdict"):
+        final_metrics_v2g_own(ROWS_OWN, OUTCOMES_OWN, verdict_ts(T0), T0V, T0)
+
+
+def test_registered_t0_v2g_is_not_before_the_registration_merge():
+    from datetime import UTC, datetime
+
+    merged = int(datetime(2026, 11, 1, 3, 39, tzinfo=UTC).timestamp())
+    assert merged == 1793504340 and merged <= T0_V2G_TS < merged + 2 * H  # the collector writes once an hour
+    assert datetime.fromtimestamp(T0_V2G_TS, UTC).isoformat() == "2026-11-01T04:20:31+00:00"
+
+
+def test_v2g_own_verdict_on_its_own_period():
+    f = final_metrics_v2g_own(ROWS_OWN, OUTCOMES_OWN, GATE_OWN, T0V, T0)
+    # nothing before T0V takes part: m1 / m2 (BTC YES at T0) are not positions here; m3 / m4 open on the g bump, m5 on its book
+    assert sorted(f["entries"]) == [("m3", "yes", T0V), ("m4", "yes", T0V), ("m5", "yes", T0V)]
+    assert f["t0"] == T0V and f["period_end"] == T0V + 112 * DAY_S and f["positions"] == 3
+    assert f["primary_clv_24h"]["mean"] == pytest.approx((CLV + 2 * CLV_ETH) / 3)
+    assert f["pnl"]["mean"] == pytest.approx((PNL + 2 * PNL_ETH) / 3)
+    assert f["brier_diff"]["1.0"]["markets"] == 5  # every market has eligible snapshots with a v2-g reading in the period
+    assert (f["verdict"], f["reason"]) == ("inconclusive", "min_sample")  # one week: never enough
+    vs = f["vs_v1"]
+    assert (vs["same_as_v1"]["positions"], vs["only_v2g"]["positions"], vs["only_v1"]) == (1, 2, 0)
+    assert vs["same_as_v1"]["clv_24h"]["mean"] == pytest.approx(CLV) and vs["only_v2g"]["clv_24h"]["mean"] == pytest.approx(CLV_ETH)
+    text = render_verdict_v2g_own(f)
+    assert "**Вердикт v2-g: inconclusive** (min_sample)" in text and "лише v2-g: позицій 2" in text
+    assert "ризик-нейтральні" in text and "не незалежне підтвердження v1" in text
+    assert "без 3 тижнів входу з найбільшою сумою CLV +24 год" in text and "Не пораховано" not in text
+
+
+def test_v2g_own_robustness_keeps_the_model_and_the_snapshot_g():
+    r = final_metrics_v2g_own(ROWS_OWN, OUTCOMES_OWN, GATE_OWN, T0V, T0)["robustness"]
+    v = r["variants"]
+    # v1's rule on the same snapshots opens only m5: 3 positions in every re-run means model='v2-g' was kept
+    for name in ("threshold_0.03", "threshold_0.08", "k_1.0", "k_0.92", "depth_500"):
+        assert v[name]["positions"] == 3, name
+    # next snapshot: the ETH bump holds one more hour, so m3 AND m4 (threshold row, g from its snapshot) re-enter; m5 drops
+    nxt = v["next_snapshot"]
+    assert (nxt["positions"], nxt["dropped"]) == (2, 1) and nxt["clv_24h"]["mean"] == pytest.approx(CLV_ETH)
+    # the same stress on raw rows (no snapshot g) would drop m4: the bug item 3 of the card guards against
+    pos_m4 = {"market_id": "m4", "side": "yes", "ts": T0V}
+    raw_m4 = [x for x in ROWS_OWN if x["market_id"] == "m4"]
+    assert delayed_entry(pos_m4, raw_m4, EntryRule(model="v2-g"), accepted_rule_hashes(ROWS_OWN)) is None
+    # one entry week only: without the top 3 weeks nothing is left
+    assert r["without_top3_weeks"]["n"] == 0 and len(r["without_top3_weeks"]["weeks_removed"]) == 1
+
+
+def test_without_top_weeks_analytic():
+    def m(week: str, clv: float | None) -> dict[str, Any]:
+        return {"week_entry": week, "clv_24h": clv, "day": week + "-d"}
+
+    pm = [m("W1", 0.10), m("W1", 0.10), m("W2", 0.30), m("W3", -0.05), m("W4", 0.15), m("W5", 0.01), m("W5", 0.02), m("W6", None)]
+    # week sums: W1 0.20, W2 0.30, W3 -0.05, W4 0.15, W5 0.03 -> drop W2, W1, W4; keep W3 and W5
+    out = without_top_weeks(pm)
+    assert out["weeks_removed"] == ["W1", "W2", "W4"]
+    assert out["n"] == 3 and out["n_clusters"] == 2 and out["mean"] == pytest.approx((-0.05 + 0.01 + 0.02) / 3)
+    assert out["lo"] is not None and out["lo"] <= out["mean"] <= out["hi"]
+    # ties broken by the earlier week label; fewer weeks than 3: all dropped, nothing left
+    assert without_top_weeks([m("W2", 0.1), m("W1", 0.1)], 1)["weeks_removed"] == ["W1"]
+    assert without_top_weeks([m("W1", 0.1)])["n"] == 0
+
+
+@pytest.mark.parametrize(
+    "branch",
+    [
+        ("confirmed", "clv"),
+        ("rejected", "clv"),
+        ("rejected", "brier"),
+        ("inconclusive", "min_sample"),
+        ("inconclusive", "ci_spans"),
+        ("inconclusive", "pnl_contradicts"),
+        ("inconclusive", "conflict_brier"),
+    ],
+)
+def test_v2g_own_verdict_is_the_registered_rule_on_v2g_metrics(monkeypatch, branch):
+    seen: list[tuple[Any, ...]] = []
+
+    def spy(primary: Any, pnl: Any, brier: Any, **kw: Any) -> tuple[str, str]:
+        seen.append((primary, pnl, brier, kw))
+        return branch
+
+    monkeypatch.setattr(report, "verdict", spy)
+    f = final_metrics_v2g_own(ROWS_OWN, OUTCOMES_OWN, GATE_OWN, T0V, T0)
+    assert seen == [(f["primary_clv_24h"], f["pnl"], f["brier_diff"]["1.0"], {})]  # registered thresholds, k = 1 Brier
+    assert (f["verdict"], f["reason"]) == branch
+    assert f"**Вердикт v2-g: {branch[0]}** ({branch[1]})" in render_verdict_v2g_own(f)
+
+
+def _many_weeks(later: dict[str, float], outcome: int, n: int = 24) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
+    """``n`` markets resolving every 4 days (~14 entry weeks, ``n`` resolution days), entry book 30 h before the end,
+    then the ``later`` book (the model agrees with it). binance_last = spot (g = 0): v2-g reads as v1."""
+    rows: list[dict[str, Any]] = []
+    outs: list[dict[str, Any]] = []
+    for i in range(n):
+        end = settle_ts(date(2026, 11, 3) + timedelta(days=4 * i))
+        mid, entry = f"w{i}", end - 30 * H
+        for t in range(entry, end - H + 1, H):
+            book = {**ENTRY, "model_prob": 0.60} if t == entry else later
+            rows.append(
+                dict(row(t, mid, asset="BTC" if i % 2 else "ETH"), **book, end_ts=end, hours_to_end=(end - t) / H, binance_last=70_000.0)
+            )
+        outs.append({"market_id": mid, "kind": "above", "strike": 70_000.0, "outcome_yes": outcome})
+    return rows, outs, min(int(r["ts"]) for r in rows)
+
+
+def test_v2g_own_verdict_confirmed_and_rejected_on_enough_weeks():
+    rows, outs, t0v = _many_weeks(LATER, 1)
+    f = final_metrics_v2g_own(rows, outs, verdict_ts(t0v), t0v, t0v - DAY_S)
+    assert f["positions"] == 24 and f["primary_clv_24h"]["n_clusters"] >= 10 and f["primary_clv_24h"]["n_days"] == 24
+    assert f["primary_clv_24h"]["lo"] == pytest.approx(CLV) and (f["verdict"], f["reason"]) == ("confirmed", "clv")
+    low = {"yes_bid": 0.29, "yes_ask": 0.31, "no_bid": 0.69, "no_ask": 0.71, "model_prob": 0.30}
+    rows, outs, t0v = _many_weeks(low, 0)
+    f = final_metrics_v2g_own(rows, outs, verdict_ts(t0v), t0v, t0v - DAY_S)
+    assert f["primary_clv_24h"]["mean"] == pytest.approx(0.30 - 0.4329) and (f["verdict"], f["reason"]) == ("rejected", "clv")
+
+
+def test_v2g_own_entries_are_causal():
+    t = T0V + 5 * H
+    full = final_metrics_v2g_own(ROWS_OWN, OUTCOMES_OWN, GATE_OWN, T0V, T0)
+    # after t every market shows the entry book again and BTC Binance 2 % up: new v2-g entries, none before t may move
+    later = [dict(r, **ENTRY, model_prob=0.60, binance_last=r["spot"] * 1.02) if r["ts"] >= t else r for r in ROWS_OWN]
+    mod = final_metrics_v2g_own(later, OUTCOMES_OWN, GATE_OWN, T0V, T0)
+    assert [e for e in mod["entries"] if e[2] < t] == [e for e in full["entries"] if e[2] < t] != []
+    assert len(mod["entries"]) > len(full["entries"])  # the rows after t did add positions
+    cut = final_metrics_v2g_own([r for r in ROWS_OWN if r["ts"] < t], OUTCOMES_OWN, GATE_OWN, T0V, T0)
+    assert cut["entries"] == [e for e in full["entries"] if e[2] < t]
+
+
+def test_weekly_v2g_own_period_sources_and_stage0():
+    now = END + 2 * H
+    d = weekly_v2g(ROWS_OWN, OUTCOMES_OWN, now, T0V, v1_t0=T0)
+    assert not (_keys(d) & FORBIDDEN_KEYS)
+    assert d["own"] == {"t0": T0V, "period_end": T0V + 112 * DAY_S, "verdict_ts": verdict_ts(T0V), "days_since_t0": (now - T0V) / DAY_S}
+    assert d["positions"]["n"] == 3 and (d["positions"]["same_as_v1"], d["positions"]["only_v2g"]) == (1, 2)
+    assert d["sources"]["h24"] == {"ok": 3} and d["sources"]["h24_share_na"] == 0 and d["sources"]["h24_share_missing"] == 0
+    assert "power" not in d  # stage 0 only from 4 weeks after T0 v2-g
+    text = render_weekly_v2g(d)
+    assert "власний форвард-тест v2-g" in text and "день 3.8 з 112" in text and "частка n/a (< 26 год до кінця) 0.0 %" in text
+    for hidden in HIDDEN:
+        assert hidden not in text, hidden
+    # 4 weeks on: the power numbers appear, still without any mean or SE
+    p = weekly_v2g(ROWS_OWN, OUTCOMES_OWN, T0V + 28 * DAY_S, T0V, v1_t0=T0)
+    assert set(p["power"]) == set(report.POWER_KEYS) and not (_keys(p) & FORBIDDEN_KEYS)
+    assert "стадія 0" in render_weekly_v2g(p)
+    # the weekly v1 block (8a period) is the default without v1_t0
+    assert "own" not in weekly_v2g(ROWS_OWN, OUTCOMES_OWN, now, T0)
+
+
+def test_missing_reasons_at_plus_24h():
+    window = range(T0 + 23 * H, T0 + 25 * H + 1)
+    # (i) no snapshot at all; (ii) m1 dropped out while others were collected; (iii) m2 present but without quotes
+    gap = [r for r in ROWS if r["ts"] not in window]
+    assert weekly_descriptive(gap, [], END + 2 * H, T0)["sources"]["h24_missing_reasons"] == {
+        "collector_gap": 4,
+        "market_absent": 0,
+        "no_mid": 0,
+    }
+    quotes = dict.fromkeys(("yes_bid", "yes_ask", "no_bid", "no_ask"))
+    mixed = [r for r in ROWS if not (r["market_id"] == "m1" and r["ts"] in window)]
+    mixed = [dict(r, **quotes) if r["market_id"] == "m2" and r["ts"] in window else r for r in mixed]
+    d = weekly_descriptive(mixed, [], END + 2 * H, T0)
+    assert d["sources"]["h24"] == {"missing": 2, "ok": 2}
+    assert d["sources"]["h24_missing_reasons"] == {"collector_gap": 0, "market_absent": 1, "no_mid": 1}
+    assert "знімки є, а ринку в них немає 1; ринок є, але без mid 1" in render_weekly(d)
+    # the same counts in the v2-g block
+    e = weekly_v2g([_with_g(r) for r in mixed], [], END + 2 * H, T0)
+    assert e["sources"]["h24_missing_reasons"] == {"collector_gap": 0, "market_absent": 1, "no_mid": 1}  # v2-g: m1, m2 only
+
+
+def test_v1_verdict_cuts_every_v2g_row_to_entries_before_t0_v2g():
+    # v2-g-only entries at / after T0V (the ETH bump): v1 does not see them, v2-g does
+    bumped = _bump_eth(ROWS_G)
+    assert final_metrics(bumped, OUTCOMES, verdict_ts(T0), T0) == final_metrics(ROWS_G, OUTCOMES, verdict_ts(T0), T0)
+    uncut = final_metrics_v2g(bumped, OUTCOMES, verdict_ts(T0), T0, entry_before=END)
+    assert uncut["positions"] == 4  # without the cut the v2-g rows would show the own test's m3 / m4
+    a = final_metrics_v2g(ROWS_G, OUTCOMES, verdict_ts(T0), T0, entry_before=T0V)
+    b = final_metrics_v2g(bumped, OUTCOMES, verdict_ts(T0), T0, entry_before=T0V)
+    assert a == b and a["positions"] == 2 and a["entry_before"] == T0V
+    # a v1 position entered at / after T0V leaves the v1 split too (m5 is v1 and v2-g at T0V)
+    c = final_metrics_v2g(ROWS_G + M5, [*OUTCOMES, {**OUTCOMES[0], "market_id": "m5"}], verdict_ts(T0), T0, entry_before=T0V)
+    assert c["v1_split"] == a["v1_split"] and c["positions"] == 2
+    assert "лише знімки й входи до" in render_verdict_v2g(a)
+
+
+async def test_runner_v1_verdict_text_unchanged_by_v2g_rows_after_t0_v2g(tmp_path, monkeypatch):
+    texts = []
+    for name, rows in (("a", ROWS_G), ("b", _bump_eth(ROWS_G))):
+        db = tmp_path / f"{name}.sqlite"
+        await _db(db, rows)
+        monkeypatch.setattr(script, "T0_TS", T0)
+        monkeypatch.setattr(script, "T0_V2G_TS", T0V)
+        monkeypatch.setattr(script.time, "time", lambda: float(verdict_ts(T0) + 60))
+        code, text = script.build_verdict(str(db))
+        assert code == 0
+        texts.append(text)
+    assert texts[0] == texts[1]  # not one line of the v1 verdict print changes
+
+
+async def test_runner_v1_blocks_do_not_depend_on_t0_v2g(tmp_path, monkeypatch):
+    db = tmp_path / "db.sqlite"
+    await _db(db, ROWS_OWN, OUTCOMES_OWN)
+    monkeypatch.setattr(script, "T0_TS", T0)
+    monkeypatch.setattr(script.time, "time", lambda: float(verdict_ts(T0) + 60))
+    v1_parts, weekly_parts = [], []
+    for t0v in (T0V, T0 + 50 * H, T0_V2G_TS):
+        monkeypatch.setattr(script, "T0_V2G_TS", t0v)
+        code, text = script.build_verdict(str(db))
+        assert code == 0
+        v1_parts.append(text.split(report.V2G_TITLE)[0])
+        code, text = script.build_weekly(str(db), END + 2 * H, None)
+        weekly_parts.append(text.split(report.V2G_TITLE)[0])
+        # the v2-g block of the weekly report switches to the own period from T0 v2-g on, whatever --t0 is
+        own = script.build_weekly(str(db), END + 2 * H, T0 + 3 * H)[1]
+        assert ("власний форвард-тест v2-g" in own) == (END + 2 * H >= t0v)
+    assert v1_parts[0] == v1_parts[1] == v1_parts[2] and weekly_parts[0] == weekly_parts[1] == weekly_parts[2]
+
+
+async def test_runner_v2g_verdict_gate_and_database_checks(tmp_path, monkeypatch, capsys):
+    db = tmp_path / "db.sqlite"
+    await _db(db, ROWS_OWN, OUTCOMES_OWN)
+    out = tmp_path / "v2g.md"
+    # today: refused, nothing written; flags that could move the gate are refused; one verdict mode per run
+    assert script.main(["--db", str(db), "--out", str(out), "--verdict-v2g"]) == 2
+    assert "refused" in capsys.readouterr().err and not out.exists()
+    for flags in (["--now", str(GATE_OWN)], ["--t0", "1"], ["--verdict"]):
+        assert script.main(["--db", str(db), "--out", str(out), "--verdict-v2g", *flags]) == 2
+        assert "refused" in capsys.readouterr().err and not out.exists()
+    monkeypatch.setattr(script, "T0_TS", T0)
+    monkeypatch.setattr(script, "T0_V2G_TS", T0V)
+    # past v1's verdict but one second before T0 v2-g + 126 days: refused
+    monkeypatch.setattr(script.time, "time", lambda: float(GATE_OWN - 1))
+    code, text = script.build_verdict_v2g(str(db))
+    assert code == 2 and "refused" in text and "Вердикт" not in text
+    monkeypatch.setattr(script.time, "time", lambda: float(GATE_OWN + 60))
+    code, text = script.build_verdict_v2g(str(db))
+    assert code == 0 and "**Вердикт v2-g: inconclusive** (min_sample)" in text and f"T0 v2-g = {report._d(T0V)}" in text
+    # no snapshot at the registered T0 v2-g: refused
+    monkeypatch.setattr(script, "T0_V2G_TS", T0V + 1)
+    monkeypatch.setattr(script.time, "time", lambda: float(verdict_ts(T0V + 1) + 60))
+    code, text = script.build_verdict_v2g(str(db))
+    assert code == 2 and "no snapshot at the registered T0 v2-g" in text
+    # another database (first snapshot is not v1's T0): refused
+    monkeypatch.setattr(script, "T0_V2G_TS", T0V)
+    monkeypatch.setattr(script, "T0_TS", T0 - H)
+    monkeypatch.setattr(script.time, "time", lambda: float(GATE_OWN + 60))
+    code, text = script.build_verdict_v2g(str(db))
+    assert code == 2 and "not the registered T0" in text

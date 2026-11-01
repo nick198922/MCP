@@ -13,13 +13,19 @@ its CI, the P&L or the Brier comparison before the verdict: :func:`weekly_descri
 The labelled variant v2-g (forward x (1 + g), see :mod:`.pm_gap_paper`) is reported beside v1 under the SAME gate: its
 positions largely coincide with v1's, so its CLV, P&L or Brier would reveal v1's. :func:`weekly_v2g` shows counts, the
 entry edge (known at entry, no outcome in it) and SDs; :func:`final_metrics_v2g` (refused before :func:`verdict_ts`)
-adds CLV, P&L, Brier and the v1 positions whose edge held only thanks to the g shift. Nothing of v1 changes.
+adds CLV, P&L, Brier and the v1 positions whose edge held only thanks to the g shift, on entries before
+:data:`T0_V2G_TS` only. Nothing of v1 changes.
+
+v2-g's own forward test (docs/ideas/IDEA-20261101-polymarket-v2g-forward.md) has its own T0 (:data:`T0_V2G_TS`),
+main period and one-time verdict (:func:`final_metrics_v2g_own`, gate :func:`verdict_ts_v2g`); the weekly v2-g block
+switches to that period from its T0 (:func:`weekly_v2g` with ``v1_t0``).
 """
 
 from __future__ import annotations
 
 import math
 import statistics
+from bisect import bisect_left
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import replace
@@ -48,6 +54,7 @@ from .pm_gap_paper import (
     horizon_clv,
     open_positions,
     position_metrics,
+    power_stage0,
     verdict,
     with_snapshot_g,
     worse_entry,
@@ -58,6 +65,13 @@ DAY_S = 86_400
 MAIN_PERIOD_DAYS = 112  # registration section 1: positions opened in [T0, T0 + 112 days) form the main test
 VERDICT_DAYS = 126  # the verdict is taken once, at T0 + 126 days (last main-period market resolved by then)
 T0_TS = 1792520435  # registered T0: the first pm_gap_snapshot, 2026-10-20 18:20:35 UTC (card and HANDOFF)
+# Registered T0 of the variant v2-g's own forward test (docs/ideas/IDEA-20261101-polymarket-v2g-forward.md, section 1):
+# the first pm_gap_snapshot with ts >= the merge of the registration PR #542 into main (2026-11-01 03:39:00 UTC, the
+# merge commit's committer date = 1793504340; read from the agents' clone, GitHub's mergedAt may correct it).
+T0_V2G_TS = 1793506831  # 2026-11-01 04:20:31 UTC: min(ts) >= 1793504340, read-only from the collector DB on 2026-11-01
+STAGE0_DAYS = 28  # v2-g card, "Прогрес": stage 0 (power, descriptive) from 4 weeks after T0 v2-g
+POWER_KEYS = ("n", "n_clusters", "sd_position", "sd_cluster", "per_cluster", "mde_now", "mde_projected", "projected_clusters")
+TOP_WEEKS = 3  # registration section 12: "without the 3 weeks of the largest contribution"
 SENS_THRESHOLDS = (0.03, 0.08)  # registration sections 4 and 12: descriptive thresholds beside the primary 5 pp
 STRESS_DEPTH_USD = 500.0  # registration section 12: USD at the best ask >= $500 instead of $200
 
@@ -70,6 +84,12 @@ def main_period(t0: int) -> tuple[int, int]:
 def verdict_ts(t0: int) -> int:
     """The single moment the verdict may be computed: T0 + 126 days."""
     return int(t0) + VERDICT_DAYS * DAY_S
+
+
+def verdict_ts_v2g(t0_v2g: int, t0_v1: int) -> int:
+    """The single moment the verdict of v2-g's own test may be computed: not before its T0 + 126 days AND not before
+    v1's verdict (card IDEA-20261101-polymarket-v2g-forward, section 1)."""
+    return max(verdict_ts(t0_v2g), verdict_ts(t0_v1))
 
 
 # ----------------------------------------------------------------------------- settled results
@@ -183,6 +203,36 @@ def _by_market(rows: Iterable[Mapping[str, Any]]) -> dict[str, list[Mapping[str,
     return out
 
 
+MISSING_REASONS = ("collector_gap", "market_absent", "no_mid")
+
+
+def horizon_missing_reasons(
+    positions: Iterable[Mapping[str, Any]],
+    by_mkt: Mapping[str, Sequence[Mapping[str, Any]]],
+    snapshot_times: Iterable[int],
+    hours: int,
+    now_ts: int,
+) -> dict[str, int]:
+    """Why the CLV point at entry + ``hours`` is 'missing' (counts only, no value): 'collector_gap' = no collector
+    snapshot at all in [entry + hours - 1 h, entry + hours + 1 h]; 'market_absent' = snapshots exist there but none of
+    this market (it dropped out of the collector's list); 'no_mid' = the market's rows are there but the side has no mid."""
+    times = sorted({int(t) for t in snapshot_times})
+    out = dict.fromkeys(MISSING_REASONS, 0)
+    for p in positions:
+        mk = by_mkt.get(str(p["market_id"]), [])
+        if _horizon_status(p, mk, hours, now_ts)[1] != "missing":
+            continue
+        lo, hi = int(p["ts"]) + hours * HOUR_S - HORIZON_TOL_S, int(p["ts"]) + hours * HOUR_S + HORIZON_TOL_S
+        i = bisect_left(times, lo)
+        if i >= len(times) or times[i] > hi:
+            out["collector_gap"] += 1
+        elif not any(lo <= int(r["ts"]) <= hi for r in mk):
+            out["market_absent"] += 1
+        else:
+            out["no_mid"] += 1
+    return out
+
+
 def weekly_descriptive(
     rows: Sequence[Mapping[str, Any]],
     outcome_rows: Sequence[Mapping[str, Any]],
@@ -275,6 +325,9 @@ def weekly_descriptive(
         "sources": {
             "h24": dict(sorted(src24.items())),
             "h24_share_missing": _share(src24["missing"], defined24),
+            "h24_missing_reasons": horizon_missing_reasons(
+                positions, by_mkt, (int(r["ts"]) for r in rows if int(r["ts"]) <= now_ts), PRIMARY_H, now_ts
+            ),
             "h6": dict(sorted(src6.items())),
             "close": dict(sorted(src_close.items())),
             "close_shares": {k: _share(src_close[k], closed) for k in ("close", "late", "missing")},
@@ -302,6 +355,13 @@ def _pp(x: float | None) -> str:
 
 def _kv(d: Mapping[str, Any]) -> str:
     return ", ".join(f"{k} {v}" for k, v in d.items()) or "—"
+
+
+def _missing_line(m: Mapping[str, int]) -> str:
+    return (
+        f"  - причини missing +24 год: у вікні ±1 год немає жодного знімка колектора {m['collector_gap']}; знімки є, "
+        f"а ринку в них немає {m['market_absent']}; ринок є, але без mid {m['no_mid']}"
+    )
 
 
 NO_MEAN_NOTE = (
@@ -337,6 +397,7 @@ def render_weekly(d: Mapping[str, Any]) -> str:
         "",
         "**Джерела точок CLV**",
         f"- +24 год (основна): {_kv(src['h24'])}; частка missing серед визначених {_p(src['h24_share_missing'])}",
+        _missing_line(src["h24_missing_reasons"]),
         f"- +6 год: {_kv(src['h6'])}",
         f"- до закриття: {_kv(src['close'])}; частки close / late / missing: "
         f"{_p(src['close_shares']['close'])} / {_p(src['close_shares']['late'])} / {_p(src['close_shares']['missing'])}",
@@ -432,7 +493,9 @@ def _robustness(ctx: Mapping[str, Any], rule: EntryRule, pm: Sequence[Mapping[st
     * ``halves``: primary positions by entry in the first / second half of the main period; ``by_asset``, ``by_kind``.
     * ``asset_permutation``: BTC - ETH mean primary CLV, asset labels permuted within the entry week.
     * ``cluster_day``: closing CLV, P&L and Brier D (k = 1) with cluster = resolution day; ``clv_close_only_close``.
-    Not computed (see docs/BACKLOG.md): "without the 3 weeks of the largest contribution"."""
+    Not computed here (see docs/BACKLOG.md): "without the 3 weeks of the largest contribution"; the v2-g verdict on its
+    own period adds it (:func:`without_top_weeks`), v1's verdict does not. Every variant is ``replace(rule, ...)``, so
+    ``rule.model`` is kept."""
     period, by_mkt, outcomes, excluded, acc = ctx["period"], ctx["by_mkt"], ctx["outcomes"], ctx["excluded"], ctx["acc"]
 
     def metrics(positions: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -541,7 +604,12 @@ def render_robustness(r: Mapping[str, Any]) -> list[str]:
         f"- кластер = день розв'язання: CLV до закриття {ci(cd['clv_close'])}; P&L {ci(cd['pnl'])}; Brier D (k = 1) {ci(cd['brier_k1'])}",
         f"- CLV до закриття лише з close: {ci(r['clv_close_only_close'])}",
         "",
-        "Не пораховано: «без 3 тижнів з найбільшим внеском» (неоднозначно, питання до кванта в BACKLOG).",
+        (
+            f"- без 3 тижнів входу з найбільшою сумою CLV +24 год ({', '.join(r['without_top3_weeks']['weeks_removed']) or '—'}): "
+            f"CLV +24 год {ci(r['without_top3_weeks'])}"
+            if "without_top3_weeks" in r
+            else "Не пораховано: «без 3 тижнів з найбільшим внеском» (неоднозначно, питання до кванта в BACKLOG)."
+        ),
     ]
 
 
@@ -564,12 +632,19 @@ def weekly_v2g(
     now_ts: int,
     t0: int,
     rule: EntryRule | None = None,
+    *,
+    v1_t0: int | None = None,
 ) -> dict[str, Any]:
     """Weekly block of the variant v2-g, within the limits of :func:`weekly_descriptive` (no mean of any CLV, no CI,
     no P&L, no Brier): eligible snapshots with / without ``binance_last``, g quantiles, v2-g positions against v1's
     (same main period and rule, only the model differs), median entry edge of both, SD per position of the known v2-g
-    CLV at +24 h, and v1 positions split by :func:`.pm_gap_paper.g_split`. g is the snapshot's (ts, asset) value
-    (:func:`.pm_gap_paper.with_snapshot_g`). ``outcome_rows`` is unused (same signature)."""
+    CLV at +24 h, the sources of that point (shares of 'n/a' and 'missing', reasons of 'missing'), and v1 positions
+    split by :func:`.pm_gap_paper.g_split`. g is the snapshot's (ts, asset) value (:func:`.pm_gap_paper.with_snapshot_g`).
+    ``outcome_rows`` is unused (same signature).
+
+    ``v1_t0`` given = v2-g's OWN test (``t0`` = :data:`T0_V2G_TS`): ``own`` adds its day of 112, the end of entry and
+    the verdict date (:func:`verdict_ts_v2g`), and from 4 weeks on ``power`` = :func:`.pm_gap_paper.power_stage0` of the
+    centred CLV +24 h (16 projected week clusters; SDs and MDE only, no mean, no SE)."""
     del outcome_rows
     rule = rule or EntryRule()
     v2 = replace(rule, model=MODEL_V2G)
@@ -581,8 +656,23 @@ def weekly_v2g(
     gs = [g for r in elig if (g := binance_gap(r)) is not None]
     p1, p2 = open_positions(period, rule, acc), open_positions(period, v2, acc)
     k1, k2 = {(p["market_id"], p["side"]) for p in p1}, {(p["market_id"], p["side"]) for p in p2}
-    v24 = [c for p in p2 if (c := _horizon_status(p, by_mkt.get(p["market_id"], []), PRIMARY_H, now_ts)[0]) is not None]
+    st24 = [_horizon_status(p, by_mkt.get(p["market_id"], []), PRIMARY_H, now_ts) for p in p2]
+    v24 = [c for c, _ in st24 if c is not None]
+    src24: Counter = Counter(s for _, s in st24)
+    out_own: dict[str, Any] = {}
+    if v1_t0 is not None:
+        out_own["own"] = {
+            "t0": int(t0),
+            "period_end": end,
+            "verdict_ts": verdict_ts_v2g(t0, v1_t0),
+            "days_since_t0": (now_ts - t0) / DAY_S,
+        }
+        if now_ts >= int(t0) + STAGE0_DAYS * DAY_S:
+            ok = [(c, p["week_entry"]) for (c, _), p in zip(st24, p2, strict=True) if c is not None]
+            pw = power_stage0([c for c, _ in ok], [w for _, w in ok], MAIN_PERIOD_DAYS // 7)
+            out_own["power"] = {k: pw.get(k) for k in POWER_KEYS}
     return {
+        **out_own,
         "model": MODEL_V2G,
         "eligible": len(elig),
         "eligible_without_binance": len(elig) - len(gs),
@@ -601,6 +691,14 @@ def weekly_v2g(
             "edge_median_v1": _median([p["edge"] for p in p1]),
         },
         "sd_per_position": {"h24": {"n": len(v24), "sd": _sd(v24)}},
+        "sources": {
+            "h24": dict(sorted(src24.items())),
+            "h24_share_na": _share(src24["n/a"], len(p2)),
+            "h24_share_missing": _share(src24["missing"], src24["ok"] + src24["missing"]),
+            "h24_missing_reasons": horizon_missing_reasons(
+                p2, by_mkt, (int(r["ts"]) for r in rows if int(r["ts"]) <= now_ts), PRIMARY_H, now_ts
+            ),
+        },
         "v1_split": _split_counts(g_split(p1, period, rule)),
     }
 
@@ -623,9 +721,30 @@ def _split_line(s: Mapping[str, Any]) -> str:
 
 def render_weekly_v2g(d: Mapping[str, Any]) -> str:
     """Markdown (Ukrainian) of :func:`weekly_v2g`. Shows only the fields of that dict."""
-    p, sd = d["positions"], d["sd_per_position"]
+    p, sd, src = d["positions"], d["sd_per_position"], d["sources"]
+    own = d.get("own")
+    head = (
+        [
+            f"- власний форвард-тест v2-g (docs/ideas/IDEA-20261101-polymarket-v2g-forward.md): T0 v2-g = {_d(own['t0'])} "
+            f"(день {own['days_since_t0']:.1f} з 112 входу); вхід до {_d(own['period_end'])}; вердикт v2-g — не раніше "
+            f"{_d(own['verdict_ts'])}; позиції v1 нижче — те саме правило на тих самих знімках періоду v2-g"
+        ]
+        if own
+        else []
+    )
+    pw = d.get("power")
+    power = (
+        [
+            f"- стадія 0 (потужність, без середнього; CLV +24 год центровано): n {pw['n']}, тижнів {pw['n_clusters']}; "
+            f"SD на позицію {_pp(pw['sd_position'])}, SD тижневих середніх {_pp(pw['sd_cluster'])}; MDE зараз {_pp(pw['mde_now'])}, "
+            f"прогноз на {MAIN_PERIOD_DAYS // 7} тижнів {_pp(pw['mde_projected'])}"
+        ]
+        if pw
+        else []
+    )
     lines = [
         V2G_TITLE,
+        *head,
         f"- допущених знімків {d['eligible']}, з них без binance_last (v2-g не рахується, g не підставляється): "
         f"{d['eligible_without_binance']}; g: медіана {_p(d['g_median'], 3)}, від {_p(d['g_min'], 3)} до {_p(d['g_max'], 3)}",
         f"- позицій v2-g {p['n']}; за активом/типом/боком: {_kv(p['by_asset_kind_side'])}; тижнів входу {p['entry_weeks']}, "
@@ -633,6 +752,10 @@ def render_weekly_v2g(d: Mapping[str, Any]) -> str:
         f"- ті самі (ринок, бік), що й у v1: {p['same_as_v1']}; лише v2-g: {p['only_v2g']}; лише v1: {p['only_v1']}",
         f"- edge на вході, медіана: v2-g {_pp(p['edge_median'])}, v1 {_pp(p['edge_median_v1'])}",
         f"- SD CLV +24 год на позицію v2-g: {_pp(sd['h24']['sd'])} (n {sd['h24']['n']})",
+        f"- точки CLV +24 год v2-g: {_kv(src['h24'])}; частка n/a (< 26 год до кінця) {_p(src['h24_share_na'])}; "
+        f"частка missing серед визначених {_p(src['h24_share_missing'])}",
+        _missing_line(src["h24_missing_reasons"]),
+        *power,
         _split_line(d["v1_split"]),
         "- CLV, P&L і Brier варіанта v2-g — лише у вердикті: його позиції здебільшого збігаються з v1, тож їхнє середнє розкрило б v1.",
     ]
@@ -645,17 +768,25 @@ def final_metrics_v2g(
     now_ts: int,
     t0: int,
     rule: EntryRule | None = None,
+    *,
+    entry_before: int,
 ) -> dict[str, Any]:
-    """The variant v2-g at the verdict, descriptive (the decision is v1's :func:`final_metrics`). Raises ValueError
-    before :func:`verdict_ts`, like v1. Same period, exclusions, clusters and metrics as v1, with ``model='v2-g'``:
-    positions, mean entry edge, CLV +24 h / +6 h / to close, P&L, Brier D (k = 1 and 0.92, over snapshots that have a
-    v2-g probability). ``v1_split``: v1 positions by :func:`.pm_gap_paper.g_split`, with CLV and P&L of the 'g_dependent'
-    and 'robust' ones. g is the snapshot's (ts, asset) value (:func:`.pm_gap_paper.with_snapshot_g`)."""
+    """The variant v2-g at v1's verdict, descriptive (the decision is v1's :func:`final_metrics`). Raises ValueError
+    before :func:`verdict_ts`, like v1. Same exclusions, clusters and metrics as v1, with ``model='v2-g'``: positions,
+    mean entry edge, CLV +24 h / +6 h / to close, P&L, Brier D (k = 1 and 0.92, over snapshots that have a v2-g
+    probability). ``v1_split``: v1 positions by :func:`.pm_gap_paper.g_split`, with CLV and P&L of the 'g_dependent'
+    and 'robust' ones. g is the snapshot's (ts, asset) value (:func:`.pm_gap_paper.with_snapshot_g`).
+
+    Required by the v2-g registration (card IDEA-20261101-polymarket-v2g-forward, item 5): EVERY row here, the
+    ``v1_split`` included, uses only snapshots with ts < ``entry_before`` (= :data:`T0_V2G_TS`), i.e. positions entered
+    before v2-g's own test, so v1's verdict prints nothing of that test. Positions are the first qualifying snapshot, so
+    cutting the snapshots cuts the entries exactly; their later CLV / P&L points are read from all rows, as in v1."""
     if now_ts < verdict_ts(t0):
         raise ValueError(f"the verdict may be computed only from {verdict_ts(t0)} (T0 + {VERDICT_DAYS} days), now {now_ts}")
     rule = rule or EntryRule()
     v2 = replace(rule, model=MODEL_V2G)
     start, end = main_period(t0)
+    end = min(end, int(entry_before))
     acc = accepted_rule_hashes(rows)
     period = with_snapshot_g(r for r in rows if start <= int(r["ts"]) < end)
     by_mkt = _by_market(rows)
@@ -677,6 +808,7 @@ def final_metrics_v2g(
     split = g_split(p1, period, rule)
     return {
         "model": MODEL_V2G,
+        "entry_before": int(entry_before),
         "positions": len(pm2),
         "edge_mean": float(statistics.fmean(m["edge"] for m in pm2)) if pm2 else None,
         "clv_24h": _summ(pm2, "clv_24h", "week_entry"),
@@ -712,6 +844,8 @@ def render_verdict_v2g(f: Mapping[str, Any]) -> str:
     lines = [
         V2G_TITLE,
         "Вердикт виноситься лише за v1 (вище); v2-g — окремі рядки для порівняння.",
+        f"Усі рядки v2-g нижче (і розбір позицій v1 за g) — лише знімки й входи до {_d(f['entry_before'])} (T0 власного "
+        "форвард-тесту v2-g, docs/ideas/IDEA-20261101-polymarket-v2g-forward.md): той тест має свій вердикт.",
         f"- позицій v2-g {f['positions']}; середній edge на вході {_pp(f['edge_mean'])}",
         ci("v2-g: CLV +24 год (кластер — тиждень входу)", f["clv_24h"]),
         ci("v2-g: CLV +6 год", f["clv_6h"]),
@@ -725,5 +859,150 @@ def render_verdict_v2g(f: Mapping[str, Any]) -> str:
         _split_line(s),
         blk("v1, edge тримався лише на зсуві g", s["g_dependent"]),
         blk("v1, edge лишається з поправкою g", s["robust"]),
+    ]
+    return "\n".join(lines) + "\n"
+
+
+# ----------------------------------------------------------------------------- v2-g: its own forward test (own T0, once)
+
+
+def without_top_weeks(pm: Sequence[Mapping[str, Any]], n_weeks: int = TOP_WEEKS) -> dict[str, Any]:
+    """Registration section 12, descriptive: drop the ``n_weeks`` ISO entry weeks (ET) with the LARGEST sum of the net
+    CLV +24 h (ties: the earlier week label first), and recompute the mean and the cluster CI of the main metric (same
+    estimator and seed, cluster = entry week) on the rest. Positions without a +24 h point are ignored."""
+    xs = [m for m in pm if m.get("clv_24h") is not None]
+    tot: dict[str, float] = defaultdict(float)
+    for m in xs:
+        tot[str(m["week_entry"])] += float(m["clv_24h"])
+    drop = set(sorted(tot, key=lambda w: (-tot[w], w))[:n_weeks])
+    keep = [m for m in xs if str(m["week_entry"]) not in drop]
+    return {
+        "weeks_removed": sorted(drop),
+        **cluster_mean_ci([m["clv_24h"] for m in keep], [m["week_entry"] for m in keep], [m["day"] for m in keep]),
+    }
+
+
+def final_metrics_v2g_own(
+    rows: Sequence[Mapping[str, Any]],
+    outcome_rows: Sequence[Mapping[str, Any]],
+    now_ts: int,
+    t0_v2g: int,
+    t0_v1: int,
+    rule: EntryRule | None = None,
+) -> dict[str, Any]:
+    """The registered decision of v2-g's OWN forward test (card IDEA-20261101-polymarket-v2g-forward), computed ONCE at
+    :func:`verdict_ts_v2g`; raises ValueError before then. Everything as v1's :func:`final_metrics` (sections 7-10 and
+    12 unchanged), with ``model='v2-g'`` and v2-g's own main period: positions entered in [``t0_v2g``, + 112 days) on
+    snapshots of that interval (none before ``t0_v2g`` takes part). Primary CLV +24 h (cluster = entry week), P&L,
+    Brier D (k = 1 decides, 0.92 beside, over snapshots with a v2-g probability) and :func:`.pm_gap_paper.verdict`.
+
+    g is the snapshot's (ts, asset) value on EVERY row read, the per-market rows of the stress included, so a threshold
+    row (no ``binance_last`` of its own) keeps its snapshot's g at the next-snapshot entry. ``vs_v1``: the v2-g positions
+    split into those v1's rule also opens on the same snapshots and those only v2-g opens. ``robustness`` as v1's, plus
+    ``without_top3_weeks`` (:func:`without_top_weeks`). ``entries``: (market, side, entry ts) of the positions.
+
+    The runner calls this only with the wall clock, :data:`T0_V2G_TS` and :data:`T0_TS`, never values from the
+    command line."""
+    gate = verdict_ts_v2g(t0_v2g, t0_v1)
+    if now_ts < gate:
+        raise ValueError(f"the v2-g verdict may be computed only from {gate} (max of both T0 + {VERDICT_DAYS} days), now {now_ts}")
+    rule = rule or EntryRule()
+    v2 = replace(rule, model=MODEL_V2G)
+    start, end = main_period(t0_v2g)
+    acc = accepted_rule_hashes(rows)
+    g_rows = with_snapshot_g(rows)
+    period = [r for r in g_rows if start <= int(r["ts"]) < end]
+    by_mkt = _by_market(g_rows)
+    outcomes, res = settled_outcomes(outcome_rows)
+    excluded = set(res["excluded"])
+    positions = [p for p in open_positions(period, v2, acc) if p["market_id"] not in excluded]
+    pm = [position_metrics(p, by_mkt[p["market_id"]], outcomes.get(p["market_id"])) for p in positions]
+    primary = _summ(pm, "clv_24h", "week_entry")
+    pnl = _summ(pm, "pnl", "week_res")
+    brier = {}
+    for k in (1.0, VOL_HAIRCUT_K):
+        bm = brier_by_market(period, outcomes, v2, acc, k)
+        brier[str(k)] = {
+            "markets": len(bm),
+            **cluster_mean_ci([b["diff"] for b in bm], [b["week_res"] for b in bm], [b["day"] for b in bm]),
+        }
+    v, reason = verdict(primary, pnl, brier["1.0"])
+    k1 = {(p["market_id"], p["side"]) for p in open_positions(period, rule, acc) if p["market_id"] not in excluded}
+    k2 = {(p["market_id"], p["side"]) for p in positions}
+    ctx = {"period": period, "by_mkt": by_mkt, "outcomes": outcomes, "excluded": excluded, "acc": acc}
+    rob = _robustness(ctx, v2, pm, start, end)
+    rob["without_top3_weeks"] = without_top_weeks(pm)
+    return {
+        "model": MODEL_V2G,
+        "t0": int(t0_v2g),
+        "t0_v1": int(t0_v1),
+        "now": int(now_ts),
+        "period_end": end,
+        "positions": len(pm),
+        "entries": [(p["market_id"], p["side"], int(p["ts"])) for p in positions],
+        "excluded_markets": sorted(excluded),
+        "edge_mean": float(statistics.fmean(m["edge"] for m in pm)) if pm else None,
+        "primary_clv_24h": primary,
+        "clv_6h": _summ(pm, "clv_6h", "week_entry"),
+        "clv_close": _summ(pm, "clv", "week_res"),
+        "pnl": pnl,
+        "brier_diff": brier,
+        "verdict": v,
+        "reason": reason,
+        "vs_v1": {
+            "same_as_v1": _block([m for m in pm if (m["market_id"], m["side"]) in k1]),
+            "only_v2g": _block([m for m in pm if (m["market_id"], m["side"]) not in k1]),
+            "only_v1": len(k1 - k2),
+        },
+        "robustness": rob,
+    }
+
+
+def render_verdict_v2g_own(f: Mapping[str, Any]) -> str:
+    """Markdown (Ukrainian) of :func:`final_metrics_v2g_own`."""
+
+    def row(name: str, s: Mapping[str, Any]) -> str:
+        return (
+            f"- {name}: n {s['n']}, тижнів {s['n_clusters']}, днів {s['n_days']}; середнє {_pp(s['mean'])}, "
+            f"95 % CI [{_pp(s['lo'])}; {_pp(s['hi'])}]"
+        )
+
+    def blk(name: str, b: Mapping[str, Any]) -> str:
+        c, p = b["clv_24h"], b["pnl"]
+        return (
+            f"- {name}: позицій {b['positions']}; CLV +24 год {_pp(c['mean'])} [{_pp(c['lo'])}; {_pp(c['hi'])}] (n {c['n']}); "
+            f"P&L {_pp(p['mean'])} [{_pp(p['lo'])}; {_pp(p['hi'])}] (n {p['n']})"
+        )
+
+    vs = f["vs_v1"]
+    lines = [
+        "## Polymarket проти опціонів Deribit, варіант v2-g: вердикт власного форвард-тесту (один раз)",
+        "",
+        "Картка: docs/ideas/IDEA-20261101-polymarket-v2g-forward.md. Форвард = індекс Deribit × (1 + g), g = binance_last / spot − 1 "
+        "того самого знімка. Позиції паперові, ордерів немає.",
+        f"T0 v2-g = {_d(f['t0'])}, вхід до {_d(f['period_end'])}; обчислено {_d(f['now'])} (T0 v1 = {_d(f['t0_v1'])}). "
+        f"Позицій {f['positions']}; виключено ринків (розбіжність з Binance): {', '.join(f['excluded_markets']) or 'немає'}.",
+        "Застереження: ймовірності моделі ризик-нейтральні (k = 0.92 — лише груба знижка); g прибирає зсув форварда, а не премію "
+        "за волу. Це не незалежне підтвердження v1: періоди перекриваються, позиції здебільшого спільні.",
+        "",
+        f"**Вердикт v2-g: {f['verdict']}** ({f['reason']})",
+        "",
+        row("CLV +24 год (основна, кластер — тиждень входу)", f["primary_clv_24h"]),
+        row("CLV +6 год", f["clv_6h"]),
+        row("CLV до закриття (кластер — тиждень розв'язання)", f["clv_close"]),
+        row("P&L на акцію", f["pnl"]),
+        row(
+            f"Brier D, k = 1 (модель v2-g − Polymarket; > 0 — Polymarket точніший; ринків {f['brier_diff']['1.0']['markets']})",
+            f["brier_diff"]["1.0"],
+        ),
+        row(f"Brier D, k = {VOL_HAIRCUT_K}", f["brier_diff"][str(VOL_HAIRCUT_K)]),
+        f"- середній edge на вході {_pp(f['edge_mean'])}",
+        "",
+        "**Спільні з v1** (правило v1 на тих самих знімках періоду v2-g; описово)",
+        blk("спільні з v1 (ринок, бік)", vs["same_as_v1"]),
+        blk("лише v2-g", vs["only_v2g"]),
+        f"- лише v1: {vs['only_v1']}",
+        "",
+        *render_robustness(f["robustness"]),
     ]
     return "\n".join(lines) + "\n"

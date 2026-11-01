@@ -1,0 +1,4 @@
+- Новий маркер pytest `slow` (зареєстровано в `pyproject.toml`, `[tool.pytest.ini_options] markers`). Ним позначено `tests/test_strategy_sieve.py::test_s3_known_result_in_sample` (≈ 146 с із ≈ 255 с прогону: повне сито S3 на кеші, `n_boot=2000`); що перевіряє тест, не змінилось.
+- `make test` тепер запускає `pytest -n auto -m "not slow"` (саме його ганяють агенти й `agents_deliver.sh`), тож за крок агентів економиться ≈ 2.5 хв на кожен прогін.
+- Нова ціль `make test-slow` (`pytest -m slow`) — лише повільні тести. Явний виклик `uv run pytest -q tests/test_strategy_sieve.py::test_s3_known_result_in_sample` працює як раніше: фільтр стоїть лише в `Makefile`, не в `addopts`.
+- CI (`.github/workflows/ci.yml`) викликає pytest напряму, тож бачить усі тести; там цей тест і так пропускається (`needs_cache`: кешу сита в CI нема).

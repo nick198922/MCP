@@ -42,6 +42,9 @@ packages = ["src/tradedesk"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+    "slow: long-running test (minutes); excluded from `make test`, run with `make test-slow` or `pytest -m slow`",
+]
 
 [tool.ruff]
 line-length = 140

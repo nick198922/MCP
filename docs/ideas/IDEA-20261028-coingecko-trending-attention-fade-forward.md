@@ -5,8 +5,9 @@
 <!-- proposed → accepted | rejected → testing → confirmed | rejected | inconclusive → built -->
 
 ## Прогрес
-- [ ] Крок 0: розробник додає в колектор щогодини запис списку trending (публічний ендпоінт CoinGecko, через `core.http.Http`); без цього ідея не стартує (пункт у BACKLOG).
+- [x] Крок 0: розробник додає в колектор щогодини запис списку trending (публічний ендпоінт CoinGecko, через `core.http.Http`); без цього ідея не стартує (пункт у BACKLOG).
   - 29.10 код і тести готові: завдання `coingecko_trending`, таблиця `coingecko_trending` (схема 34), [зміни](../changes/2026-10-29-coingecko-trending-collector.md). Лишилось (координатор/власник): живий зразок `/search/trending` із сервера замість ручної фікстури й рядок `TRADEDESK_COLLECT_COINGECKO_TRENDING_ENABLED=1` у `deploy/features.env`; лише тоді крок 0 закрито.
+  - 01.11 закрито: завдання увімкнене 29.10 і пише з 29.10 20:00 UTC; на 01.11 07:00 UTC — 60/60 годин без пропусків, 900 рядків (15 на годину), 87 різних монет, NULL у `price_usd`/`change_24h`/капі/обігу 0, `fetched_ts − ts` 16-1245 с. Жива відповідь `/search/trending` (сервер, `scripts/_cg_live.py`) за формою як фікстура: `data.price` число, `usd` у змінах є (разом із ~60 валютами), новий верхній ключ `rwas` ігнорується; парсер без змін, жива фікстура `tests/fixtures/coingecko_trending_live_2026-11-01.json` і тест ([зміни](../changes/2026-11-01-coingecko-trending-step0.md)).
 - [ ] Крок 1: через ~90 діб запису — тест за правилом нижче.
 
 ## Інструменти і ринок

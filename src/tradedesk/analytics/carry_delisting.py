@@ -18,7 +18,7 @@ returns are fractions of portfolio notional (slot = 1 / slots), as in the frozen
 from __future__ import annotations
 
 import bisect
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from functools import partial
 from typing import Any
 
@@ -124,9 +124,13 @@ def simulate_carry_delisting(
     step_hours: float = 8.0,
     bar_ms: int = 4 * 3_600_000,
     end_ms: int | None = None,
+    entry_allowed: Callable[[str, int], bool] | None = None,
 ) -> dict[str, Any]:
     """``simulate_carry_portfolio`` with perp-leg delisting accounting (``perp_end``) and the optional exit rule.
 
+    ``entry_allowed(sym, t)`` (item 8g, optional entry filter): when it returns False the symbol is not opened at
+    cycle ``t``; open positions and exits are untouched. ``None`` keeps the walk unchanged. The caller must make it
+    causal (data at or before ``t`` only).
     ``settle`` picks the perp-leg settlement proxy once the leg is gone ('perp_last' or 'spot', see ``settle_price``).
     Trades carry ``reason`` ('apr<=exit', 'leg_vanished' or 'end') and ``perp_ended`` (perp end inside the holding
     window, from ``perp_end``). ``end_ms`` overrides the walk's end (default: last funding payment of any symbol).
@@ -143,6 +147,11 @@ def simulate_carry_delisting(
     side_cost = carry_side_cost(spot_fee, perp_fee, slippage)
     w = 1.0 / slots
     base_mark, base_entry = carry_observers(ms, lookback_ms)
+    if entry_allowed is not None:
+        raw_entry = base_entry
+
+        def base_entry(sym: str, at: int) -> tuple[float | None, float | None, float | None]:  # type: ignore[no-redef]
+            return raw_entry(sym, at) if entry_allowed(sym, at) else (None, None, None)
 
     def mark_obs(sym: str, p: dict[str, Any], at: int) -> dict[str, Any]:
         o = base_mark(sym, p, at)

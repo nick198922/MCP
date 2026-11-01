@@ -752,6 +752,7 @@ def test_s3_trades_equal_the_stop_management_study(monkeypatch):
         assert t["r_alt"] == pytest.approx(r["A_r"], abs=1e-9)
 
 
+@pytest.mark.slow  # ~146 s: the full S3 sieve over the cache; excluded from `make test`, run with `make test-slow`
 @needs_cache
 def test_s3_known_result_in_sample():
     """The study: E[R] net IS under B about -0.046R (all setups; S3 alone -0.049R) with a day-clustered SE of ~0.016R,

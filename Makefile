@@ -1,10 +1,14 @@
-.PHONY: install test lint fmt smoke run run-http
+.PHONY: install test test-slow lint fmt smoke run run-http
 
 install:
 	uv sync --extra dev
 
+# Tests marked `slow` are skipped here; CI runs plain pytest (all tests), `make test-slow` runs only them.
 test:
-	uv run --extra dev pytest -q -n auto
+	uv run --extra dev pytest -q -n auto -m "not slow"
+
+test-slow:
+	uv run --extra dev pytest -q -m slow
 
 lint:
 	uv run ruff check .

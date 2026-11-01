@@ -73,6 +73,24 @@ def load_rows(db: Path, fridays: list[date], *, with_hold: bool = True) -> list[
     return rows
 
 
+def detect_t0(db: Path, now: datetime) -> date | None:
+    """The registered T0: the first Friday >= EARLIEST_T0 with BTC rows of all four entry roles taken by 10:00 UTC that
+    day. Reads only (day, role, ts) of the entry roles, never a `hold_*` row; non-Friday days are dropped at once."""
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    q = "SELECT day, role, ts FROM option_leg_snapshot WHERE currency = 'BTC' AND day >= ? AND role IN (?, ?, ?, ?)"
+    seen: dict[str, set[str]] = {}
+    for day, role, ts in con.execute(q, [EARLIEST_T0.isoformat(), *H1_QTY]):
+        try:
+            d = date.fromisoformat(day)
+        except (TypeError, ValueError):
+            continue
+        if d.weekday() == 4 and ts is not None and int(ts) <= _cut(d).timestamp() and _cut(d) <= now:
+            seen.setdefault(day, set()).add(role)
+    con.close()
+    full = sorted(d for d, r in seen.items() if r == set(H1_QTY))
+    return date.fromisoformat(full[0]) if full else None
+
+
 def registered_end(t0: date) -> datetime:
     """The last buy-back snapshot of the sample: Thursday T0 + 7 weeks + 6 days, 10:00 UTC."""
     thu = cost_fridays(t0)[-1] + timedelta(days=6)
@@ -116,26 +134,31 @@ def build(rows: list[dict], fridays: list[date], *, interim: bool) -> tuple[list
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--db", type=Path, default=DB_SRC, help="live SQLite store (copied first, read-only)")
-    ap.add_argument("--t0", type=date.fromisoformat, default=EARLIEST_T0, help="first Friday of the sample (T0)")
+    ap.add_argument("--t0", type=date.fromisoformat, default=None, help="optional check only: must equal the T0 found in the store")
     ap.add_argument("--out", type=Path, default=CACHE / "costs_a.md")
     ap.add_argument("--interim", action="store_true", help="allow a run before the last buy-back snapshot (marked INTERIM, (a1) only)")
     a = ap.parse_args(argv)
-    if a.t0.weekday() != 4:
+    if a.t0 is not None and a.t0.weekday() != 4:
         sys.exit(f"T0 {a.t0} is not a Friday")
-    if a.t0 < EARLIEST_T0:
+    if a.t0 is not None and a.t0 < EARLIEST_T0:
         sys.exit(f"T0 {a.t0} is before the earliest registered T0 {EARLIEST_T0}")
     now = _now()
-    for d in (EARLIEST_T0, a.t0):  # the registered T0 guards independently of --t0
-        if now < _cut(d):
-            sys.exit(f"before T0 ({_cut(d):%Y-%m-%d %H:%M} UTC): the registration forbids reading the snapshots")
-    fridays = cost_fridays(a.t0)
-    end = registered_end(a.t0)
-    interim = now < end
-    if interim and not a.interim:
-        sys.exit(f"the sample ends {end:%Y-%m-%d %H:%M} UTC; rerun then, or pass --interim for a marked interim look")
+    if now < _cut(EARLIEST_T0):
+        sys.exit(f"before T0 ({_cut(EARLIEST_T0):%Y-%m-%d %H:%M} UTC): the registration forbids reading the snapshots")
     copy = CACHE / f"store_copy_{now:%Y%m%dT%H%M%S}.sqlite"
     print(f"copying {a.db} -> {copy}", flush=True)
     copy_db(a.db, copy)
+    t0 = detect_t0(copy, now)  # the registered T0 comes from the store, never from the arguments (review R1/R2)
+    if t0 is None:
+        sys.exit("no registered T0 in the store yet (no complete BTC entry on a Friday >= EARLIEST_T0)")
+    if a.t0 is not None and a.t0 != t0:
+        sys.exit(f"--t0 {a.t0} differs from the registered T0 {t0} found in the store; a shifted window is refused")
+    a.t0 = t0
+    fridays = cost_fridays(t0)
+    end = registered_end(t0)
+    interim = now < end
+    if interim and not a.interim:
+        sys.exit(f"the sample ends {end:%Y-%m-%d %H:%M} UTC; rerun then, or pass --interim for a marked interim look")
     rows = load_rows(copy, fridays, with_hold=not interim)
     what = "entries only (interim)" if interim else "and their Thursdays"
     print(f"{len(rows)} rows read (Fridays {fridays[0]} … {fridays[-1]}, {what})", flush=True)

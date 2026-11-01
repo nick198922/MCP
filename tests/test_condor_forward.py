@@ -329,6 +329,7 @@ def test_runtime_whitelist_guard_exits_before_writing(monkeypatch, tmp_path):
     with pytest.raises(SystemExit, match="outside REPORT_KEYS"):
         cfc.build(rows, fr, interim=False)
     monkeypatch.setattr(cfc, "_now", lambda: datetime(2027, 1, 4, tzinfo=UTC))
+    monkeypatch.setattr(cfc, "detect_t0", lambda db, now: T0)
     monkeypatch.setattr(cfc, "copy_db", lambda src, dst: None)
     monkeypatch.setattr(cfc, "load_rows", lambda db, f, *, with_hold=True: rows)
     out = tmp_path / "a.md"
@@ -345,9 +346,6 @@ def test_runtime_whitelist_guard_exits_before_writing(monkeypatch, tmp_path):
         (datetime(2026, 11, 6, 9, 59, tzinfo=UTC), ["--interim"]),  # T0 day, before the 10:00 cutoff
         (datetime(2026, 11, 20, 12, tzinfo=UTC), ["--interim", "--t0", "2026-10-30"]),  # --t0 before EARLIEST_T0
         (datetime(2027, 3, 1, tzinfo=UTC), ["--t0", "2026-10-30"]),
-        (datetime(2026, 11, 20, 12, tzinfo=UTC), ["--interim", "--t0", "2026-11-27"]),  # before the user's T0
-        (datetime(2026, 11, 20, 12, tzinfo=UTC), []),  # registered run before 2026-12-31 10:00 UTC
-        (datetime(2026, 12, 31, 9, 59, tzinfo=UTC), []),
     ],
 )
 def test_main_refuses_without_touching_the_store(monkeypatch, tmp_path, now, argv):
@@ -366,9 +364,86 @@ def test_main_refuses_without_touching_the_store(monkeypatch, tmp_path, now, arg
     assert cfc.EARLIEST_T0 == date(2026, 11, 6)
 
 
+def _entry_db(path, days_roles):
+    import sqlite3
+
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE option_leg_snapshot (day TEXT, currency TEXT, role TEXT, ts INTEGER)")
+    for day, role, ts in days_roles:
+        con.execute("INSERT INTO option_leg_snapshot VALUES (?, 'BTC', ?, ?)", (day, role, ts))
+    con.commit()
+    con.close()
+
+
+def _ts_of(d: date, h: int) -> int:
+    return int(datetime(d.year, d.month, d.day, h, tzinfo=UTC).timestamp())
+
+
+def test_detect_t0_reads_only_complete_entry_fridays(tmp_path):
+    cfc = _script()
+    f1, f2 = T0, T0 + timedelta(days=7)
+    roles = ("lp", "sp10", "sc10", "lc")
+    rows = [(f1.isoformat(), r, _ts_of(f1, 9)) for r in roles[:3]]  # T0 incomplete: one role missing
+    rows += [(f2.isoformat(), r, _ts_of(f2, 9)) for r in roles]
+    rows += [((f1 - timedelta(days=7)).isoformat(), r, _ts_of(f1, 9)) for r in roles]  # before EARLIEST_T0
+    p = tmp_path / "s.sqlite"
+    _entry_db(p, rows)
+    now = datetime(2027, 1, 8, tzinfo=UTC)
+    assert cfc.detect_t0(p, now) == f2
+    _entry_db(tmp_path / "t.sqlite", [(f1.isoformat(), r, _ts_of(f1, 9)) for r in roles])
+    assert cfc.detect_t0(tmp_path / "t.sqlite", now) == f1
+    late = tmp_path / "u.sqlite"
+    _entry_db(late, [(f1.isoformat(), r, _ts_of(f1, 11)) for r in roles])  # taken after the 10:00 cutoff
+    assert cfc.detect_t0(late, now) is None
+
+
+@pytest.mark.parametrize(("detected", "argv"), [(T0 + timedelta(days=7), ["--t0", "2026-11-06"]), (T0, ["--t0", "2026-11-13"]), (None, [])])
+def test_main_refuses_a_shifted_or_missing_t0(monkeypatch, tmp_path, detected, argv):
+    cfc = _script()
+    fr = cost_fridays(T0)
+    rows = [r for f in fr for r in week_rows(f)]
+
+    def no_hold(*a, **k):
+        raise AssertionError("rows were loaded")
+
+    monkeypatch.setattr(cfc, "_now", lambda: datetime(2027, 1, 8, tzinfo=UTC))
+    monkeypatch.setattr(cfc, "copy_db", lambda src, dst: None)
+    monkeypatch.setattr(cfc, "detect_t0", lambda db, now: detected)
+    monkeypatch.setattr(cfc, "load_rows", no_hold)
+    out = tmp_path / "a.md"
+    with pytest.raises(SystemExit):
+        cfc.main([*argv, "--out", str(out)])
+    assert not out.exists() and not out.with_suffix(".json").exists()
+    assert rows  # sample is non-empty: refusal is by T0, not by data
+
+
+@pytest.mark.parametrize(
+    ("now", "argv"),
+    [
+        (datetime(2026, 11, 20, 12, tzinfo=UTC), []),  # registered run before 2026-12-31 10:00 UTC
+        (datetime(2026, 12, 31, 9, 59, tzinfo=UTC), []),
+    ],
+)
+def test_main_refuses_before_the_registered_end(monkeypatch, tmp_path, now, argv):
+    cfc = _script()
+
+    def boom(*a, **k):
+        raise AssertionError("rows were loaded")
+
+    monkeypatch.setattr(cfc, "_now", lambda: now)
+    monkeypatch.setattr(cfc, "copy_db", lambda src, dst: None)
+    monkeypatch.setattr(cfc, "detect_t0", lambda db, n: T0)
+    monkeypatch.setattr(cfc, "load_rows", boom)
+    out = tmp_path / "a.md"
+    with pytest.raises(SystemExit):
+        cfc.main([*argv, "--out", str(out)])
+    assert not out.exists()
+
+
 @pytest.mark.parametrize("interim", [True, False])
 def test_main_writes_standard_json(monkeypatch, tmp_path, interim):
     cfc = _script()
+    monkeypatch.setattr(cfc, "detect_t0", lambda db, now: T0)
     fr = cost_fridays(T0)
     seen = {}
 

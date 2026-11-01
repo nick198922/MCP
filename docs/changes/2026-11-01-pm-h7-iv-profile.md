@@ -1,0 +1,3 @@
+- H7′ Polymarket (пункт 8k картки structural-edges-depth): профіль вихідних на IV-моделі паперу; передреєстрація, ворота потужності не пройдено (576 ринків за 2 тижні, MDE₀ 6.1·10⁻⁴ проти Δ* 0.73·10⁻⁴), вердикт ◯, пункт чекає (визначальна умова — ≈ 39 600 ринків, ≈ 2028-11; 20 тижнів набереться до 2027-03-08).
+- `analytics/pm_h7_iv.py`: `window_weight_exact`, `profile_var_scale`, `profile_prob`, `gate_terms`, `gate_mde`, `n_for_gate` (+ `tests/test_pm_h7_iv.py`); `scripts/verify_pm_h7_iv.py`.
+- Звіт `docs/verification/2026-11-01-pm-h7-iv-profile.md`.

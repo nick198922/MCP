@@ -1,0 +1,3 @@
+- Дослідження (пункт 8g картки `structural-edges-depth`): фільтри входу carry A проти делістингу перп-ноги. F2 (медіана 30-денного обсягу споту Binance ≥ $10M) ≈: приріст +20.5 п.п. на капітал [+2.3; +45.4] лише за зареєстрованою заміною розрахунку, за спотом +2.3 [−4.9; +10.9]; F1 (вік перпа ≥ 180 днів) ✗. Нової версії паперу немає.
+- Код: `analytics/carry_entry_filter.py` (чисті F1, F2, плацебо), необов'язковий параметр `entry_allowed` у `analytics/carry_delisting.py` (за замовчуванням поведінка без змін), `scripts/verify_carry_a_entry_filter.py`, тести `tests/test_carry_entry_filter.py`.
+- Звіт: `docs/verification/2026-11-01-carry-a-entry-filter.md`.

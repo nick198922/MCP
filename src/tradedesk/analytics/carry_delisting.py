@@ -125,12 +125,17 @@ def simulate_carry_delisting(
     bar_ms: int = 4 * 3_600_000,
     end_ms: int | None = None,
     entry_allowed: Callable[[str, int], bool] | None = None,
+    exit_now: Callable[[str, int], bool] | None = None,
 ) -> dict[str, Any]:
     """``simulate_carry_portfolio`` with perp-leg delisting accounting (``perp_end``) and the optional exit rule.
 
     ``entry_allowed(sym, t)`` (item 8g, optional entry filter): when it returns False the symbol is not opened at
     cycle ``t``; open positions and exits are untouched. ``None`` keeps the walk unchanged. The caller must make it
     causal (data at or before ``t`` only).
+    ``exit_now(sym, t)`` (item 8n, optional forced exit, e.g. a delisting announcement published by ``t``): an open
+    position for which it returns True is closed at cycle ``t`` before the frozen step, both legs at the current
+    bar closes (perp at its last close / settlement proxy if it has no bar), reason 'announcement'; it is checked
+    before ``close_on_vanish``. Also caller-causal; ``None`` keeps the walk unchanged.
     ``settle`` picks the perp-leg settlement proxy once the leg is gone ('perp_last' or 'spot', see ``settle_price``).
     Trades carry ``reason`` ('apr<=exit', 'leg_vanished' or 'end') and ``perp_ended`` (perp end inside the holding
     window, from ``perp_end``). ``end_ms`` overrides the walk's end (default: last funding payment of any symbol).
@@ -177,6 +182,22 @@ def simulate_carry_delisting(
     realized = 0.0
     t = start
     while t <= end:
+        if exit_now is not None:
+            for sym in list(open_pos):
+                if not exit_now(sym, t):
+                    continue
+                m = ms[sym]
+                spot = m.spot(t)
+                if not spot:
+                    continue  # no spot price to sell at: retry at the next cycle
+                perp = m.perp(t) or rule_perp(m, t)
+                p = open_pos.pop(sym)
+                o = base_mark(sym, p, t)
+                carry_mark(p, t, payments=o["payments"], perp_high=o["perp_high"], spot=spot, perp=perp)
+                tr = tag(carry_trade(p, t, side_cost, at_end=False), "announcement")
+                realized += w * tr["pnl"]
+                trades.append(tr)
+                rule_closes.append({"symbol": sym, "t": t, "open_ts": tr["open_ts"], "rule": "announcement"})
         if close_on_vanish:
             for sym in list(open_pos):
                 m = ms[sym]

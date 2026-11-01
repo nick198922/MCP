@@ -25,7 +25,7 @@ from tradedesk.store import SCHEMA_VERSION, Store
 from tradedesk.store.schema import MIGRATIONS
 
 FIXTURE = Path(__file__).parent / "fixtures" / "coingecko_trending_sample_2026-10-29.json"
-SAMPLE = json.loads(FIXTURE.read_text())  # hand-built from the documented shape, NOT live (see `_source`)
+SAMPLE = json.loads(FIXTURE.read_text())  # hand-built from the documented shape, NOT live (see `_source`); live: below
 NOW = datetime(2026, 10, 29, 9, 41, 7, tzinfo=UTC)
 HOUR = int(datetime(2026, 10, 29, 9, tzinfo=UTC).timestamp())
 IDS = ["hyperliquid", "pudgy-penguins", "bitcoin", "zora", "freshly-listed-meme", "ethena"]
@@ -53,6 +53,24 @@ def test_snapshot_rows_on_the_sample():
     new = rows[4]
     assert new["market_cap_rank"] is None and new["market_cap_usd"] == 0.0  # unranked; "$0" kept as CoinGecko gives it
     assert new["price_usd"] == pytest.approx(2.566e-06) and new["change_24h"] == pytest.approx(4.128)
+
+
+def test_snapshot_rows_on_the_live_sample():
+    """Live answer taken on the server 2026-11-01 (scripts/_cg_live.py): 15 coins, ~60 currencies in the 24h change,
+    an extra top-level `rwas` list; every column is filled."""
+    live = json.loads((FIXTURE.parent / "coingecko_trending_live_2026-11-01.json").read_text())
+    assert live["_source"].startswith("LIVE") and set(live) >= {"coins", "nfts", "categories", "rwas"}
+    rows = snapshot_rows(live)
+    assert [r["rank"] for r in rows] == list(range(1, 16))
+    assert [r["score"] for r in rows] == list(range(15))
+    assert all(v is not None for r in rows for v in r.values())
+    btc = rows[0]
+    item = live["coins"][0]["item"]
+    assert (btc["coin_id"], btc["symbol"], btc["coin_num"], btc["market_cap_rank"]) == ("bitcoin", "BTC", 1, 1)
+    assert btc["price_usd"] == pytest.approx(item["data"]["price"])
+    assert btc["change_24h"] == pytest.approx(item["data"]["price_change_percentage_24h"]["usd"] / 100)
+    assert btc["market_cap_usd"] == 1_563_309_615_981.0  # "$1,563,309,615,981"
+    assert rows[1]["coin_id"] == "beam-2" and rows[1]["change_24h"] == pytest.approx(0.2504, abs=1e-4)
 
 
 def test_snapshot_rows_survive_a_changed_item_shape():

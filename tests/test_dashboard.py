@@ -288,7 +288,7 @@ def test_market_tab_short_info_notes_and_less_text():
         assert "<h1>Ринок</h1>" in page and "<title>tradedesk — ринок</title>" in page
     assert "<span class='chip risk'>подія</span>" in page and "<b>Що робити:</b> до релізу" in page  # the advice stays in the lead
     assert set(db.ACT) <= set(db.HELP) and {"price", "key", "chart", "vol"} <= set(db.ACT)
-    assert "Для угоди:" in db._info("iv")  # the options tab's IV tile keeps its long note
+    assert "Для угоди:" in db._info("lp_sum")  # tabs not yet redone (here «Позиції») keep the long note
 
 
 def test_nav_three_sections_then_the_rest_under_detailed():
@@ -426,7 +426,7 @@ def test_options_tab_renders_the_real_snapshot():
         "Ризик на угоду: <b class='num'>$100</b>",
         "більше за ризик у 2.9 раза",
         "до <b class='num'>0.03 BTC</b>",
-        "ризик-нейтральна",
+        "ризик-нейтральні",
         "vrp-real-marks",
         "Не інвестиційна порада",
         "5 хв тому",
@@ -1818,7 +1818,7 @@ def test_info_icon_is_escaped_static_text_and_unknown_key_is_empty():
     assert html_.startswith("<span class='info' tabindex='0' role='button'")
     # an ACT key: what it is, then «low → do», «high → do» (owner, 28.10) instead of the read / trade lines
     assert "DVOL" in html_ and "<i>Низький (до 30-го перцентиля)</i> → купувати опціони дешевше" in html_ and "Для угоди:" not in html_
-    assert "Для угоди:" in db._info("iv")  # keys without ACT keep the long form
+    assert "Для угоди:" in db._info("lp_sum")  # keys without ACT keep the long form
     assert set(db.ACT) <= set(db.HELP) and all(all(x) for x in db.ACT.values())
     assert db._info("no-such-key") == ""
     tile = db._tile("K", "1", "s", help="iv", tone="good", badge="a<b")

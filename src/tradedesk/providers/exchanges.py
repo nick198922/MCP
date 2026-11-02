@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import re
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -20,6 +23,9 @@ from ..core.health import HealthRegistry, redact
 FUNDING_PAGE = {"binanceusdm": 1000, "bybit": 200, "okx": 100}
 BYBIT_NEWEST_SLACK_MS = 24 * 3_600_000  # a full newest-first page ends within a funding interval of endTime (slack: 24 h)
 PERP_EXCHANGES = ("binanceusdm", "bybit", "okx")
+_HTTP_4XX = re.compile(r" 4\d\d ")  # an HTTP 4xx status inside a ccxt error text (see is_transient)
+
+log = logging.getLogger("tradedesk.providers")
 
 
 def map_ccxt_error(exc: BaseException) -> tuple[str, str]:
@@ -36,6 +42,19 @@ def map_ccxt_error(exc: BaseException) -> tuple[str, str]:
     return "unknown", f"{type(exc).__name__}: {exc}"
 
 
+def is_transient(exc: BaseException) -> bool:
+    """A failure worth one more try: request timeout, DNS / connection error or an HTTP 5xx (ccxt RequestTimeout,
+    plain NetworkError, ExchangeNotAvailable without a 4xx code). Not retried: rate limits (DDoSProtection /
+    RateLimitExceeded: ccxt already throttles, and the venue asked us to slow down), maintenance, nonce errors and
+    deterministic 4xx answers. ccxt maps HTTP 400/403/404/405/409/410/451 to ExchangeNotAvailable too, with the text
+    "<id> <METHOD> <url> <code> <reason> <body>" (Exchange.handle_http_status_code); a geo-block or WAF 403 must not
+    be hit twice, so any 4xx in the text means no retry (a stray match in a 5xx body only costs the retry)."""
+    skip = (ccxt.DDoSProtection, ccxt.RateLimitExceeded, ccxt.OnMaintenance, ccxt.InvalidNonce)
+    if not isinstance(exc, ccxt.NetworkError) or isinstance(exc, skip):
+        return False
+    return not (isinstance(exc, ccxt.ExchangeNotAvailable) and _HTTP_4XX.search(str(exc)))
+
+
 class Exchanges:
     name = "ccxt"
 
@@ -47,12 +66,17 @@ class Exchanges:
         cache_scale: float = 1.0,
         factory: Callable[[str], Any] | None = None,
         timeout_ms: int = 10_000,
+        retries: int = 1,
+        retry_backoff: float = 0.4,
     ) -> None:
         self._health = health
         self._cache = cache or TTLCache()
         self._scale = cache_scale
         self._factory = factory or self._default_factory
         self._timeout_ms = timeout_ms
+        # Every call here is a public read (see public_get), so repeating it after a transient network failure is safe.
+        self._retries = max(0, retries)
+        self._backoff = retry_backoff
         self._ex: dict[str, Any] = {}
 
     def _default_factory(self, ex_id: str) -> Any:
@@ -83,16 +107,26 @@ class Exchanges:
         key = (label, tool, tuple(sorted((k, str(v)) for k, v in args.items())))
 
         async def fetch() -> Fetched:
-            t0 = time.perf_counter()
-            try:
-                data = await fn(self.get(ex_id))
-            except ProviderError as e:
-                self._health.error(label, e.reason, e.detail)
-                raise ProviderError(label, e.reason, e.detail) from e
-            except Exception as e:  # noqa: BLE001 - mapped below
-                reason, detail = map_ccxt_error(e)
-                self._health.error(label, reason, detail)
-                raise ProviderError(label, reason, redact(detail)) from e
+            attempt = 0
+            while True:
+                t0 = time.perf_counter()
+                try:
+                    data = await fn(self.get(ex_id))
+                    break
+                except ProviderError as e:
+                    self._health.error(label, e.reason, e.detail)
+                    raise ProviderError(label, e.reason, e.detail) from e
+                except Exception as e:  # noqa: BLE001 - mapped below
+                    if attempt < self._retries and is_transient(e):
+                        # Like Http: only the final outcome reaches health, so one timeout that a retry fixes is no failure.
+                        attempt += 1
+                        # Leaves a trace of retries that saved the call (health only sees the final outcome).
+                        log.info("%s %s: retry %d after %s", label, tool, attempt, type(e).__name__)
+                        await asyncio.sleep(self._backoff * attempt)
+                        continue
+                    reason, detail = map_ccxt_error(e)
+                    self._health.error(label, reason, detail)
+                    raise ProviderError(label, reason, redact(detail)) from e
             ms = (time.perf_counter() - t0) * 1000
             self._health.ok(label, ms)
             return Fetched(data, Evidence(provider=label, tool=tool, args=args, latency_ms=int(ms)))

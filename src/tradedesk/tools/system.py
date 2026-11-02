@@ -60,6 +60,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
                     "last_duration_ms": m.last_duration_ms,
                     "last_rows_written": m.last_rows_written,
                     "last_error": m.last_error,
+                    "last_failure": m.last_failure,
+                    "last_failure_ts": m.last_failure_ts,
                 }
                 for m in rt.scheduler.metrics()
             ]

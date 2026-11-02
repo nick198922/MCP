@@ -178,6 +178,7 @@ class Runtime:
             cache_scale=s.cache_scale,
             factory=exchange_factory,
             timeout_ms=int(s.http_timeout * 1000),
+            retries=min(s.http_retries, 1),  # one retry after a timeout / connection error (TRADEDESK_HTTP_RETRIES=0 turns it off)
         )
 
     async def aclose(self) -> None:

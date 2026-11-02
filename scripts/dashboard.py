@@ -554,6 +554,7 @@ def _e(x: object) -> str:
 # options get a coloured edge and a one-line badge. All texts are ours (static), never data from the snapshot.
 
 DEMO_ENTRY_WAIT_MS = 10 * 60_000  # execution.orders.ENTRY_WAIT_MS (no execution import here; a test pins it)
+DEMO_MIN_N = 30  # analytics.demo_vs_backtest.MIN_TRADES (owner 23.10: no conclusion before ~30 closed trades)
 
 # key -> (title, what it is, how to read it, what it means for a trade)
 HELP: dict[str, tuple[str, str, str, str]] = {
@@ -1276,9 +1277,22 @@ HELP: dict[str, tuple[str, str, str, str]] = {
     # «Демо» tab (demo trader on the Bybit Demo Trading account, play money)
     "demo": (
         "Демо-угоди",
-        "Угоди демо-трейдера на демо-рахунку Bybit (ігрові гроші): сетапи S14, S16, S3, S12 (S12 бектест відкинув), шорти S38, S39 і лонг S40 (переваги не доведено), вхід зі стопом і ціллю, ризик ≈ $100.",
+        "Угоди демо-трейдера на демо-рахунку Bybit (ігрові гроші, ризик ≈ $100 на угоду): полігон для перевірки сетапів наживо.",
         "Закриті, відкриті й невиконані входи, P&L і середній R усіх сетапів разом.",
-        "Це полігон для перевірки сетапів наживо, не твої реальні угоди; рішення — за R окремого сетапу на ≥ 30 угодах.",
+        "Це полігон для перевірки сетапів наживо, не твої реальні угоди; рішення — за R поточної версії сетапу на ≥ 30 угодах.",
+    ),
+    "demo_open_pos": (
+        "Відкриті позиції",
+        "Позиції демо-трейдера зараз і лімітні входи, що ще чекають заповнення, зі стопом, ціллю й ризиком; стоп, "
+        "перенесений у беззбиток, позначено «беззбиток», ризик тоді ≈ 0.",
+        "Стоп і ціль стоять на біржі; демо-трейдер переставляє стоп у беззбиток сам, таблиця показує вже перенесений стоп.",
+        "Це демо-рахунок: позиції ведуться автоматично, твоєї дії не потребують.",
+    ),
+    "demo_violations": (
+        "Порушені правила guard",
+        "Сигнали, які guard не пустив в угоду за 7 днів, згруповані за правилом, яке вони порушили.",
+        "Найчастіші правила вгорі; одне рішення може порушити кілька правил.",
+        "Kill-switch чи денний ліміт збитку зупиняють усі входи; решта відсікає окремі сигнали.",
     ),
     "demo_closed": (
         "Закрито",
@@ -1288,7 +1302,7 @@ HELP: dict[str, tuple[str, str, str, str]] = {
     ),
     "demo_open": (
         "Відкрито",
-        "Позиції на демо зараз, разом з лімітними входами, що ще чекають заповнення, і рядками до відповіді біржі.",
+        f"Позиції на демо зараз, разом з лімітними входами, що чекають заповнення до {DEMO_ENTRY_WAIT_MS // 60_000} хв.",
         f"«Чекають входу» — мейкер-ордер стоїть до {DEMO_ENTRY_WAIT_MS // 60_000} хв (переставляється щохвилини); далі решта йде "
         "ринком, лише якщо ціна ще поруч із планом, інакше угода стане «вхід не заповнився».",
         "Відкриті угоди ще не дають R: до підсумків вони не входять.",
@@ -1301,7 +1315,7 @@ HELP: dict[str, tuple[str, str, str, str]] = {
     ),
     "demo_pnl": (
         "P&L демо",
-        "Сума закритого P&L біржі за демо-угодами, USD, з комісіями. Гроші ігрові.",
+        "Сума закритого P&L біржі за демо-угодами, USD, з комісіями (гроші ігрові).",
         "Залежить від розміру ризику на угоду; для порівняння сетапів дивись R, а не долари.",
         "Позитивний P&L на малій вибірці — не доказ переваги.",
     ),
@@ -1313,9 +1327,9 @@ HELP: dict[str, tuple[str, str, str, str]] = {
     ),
     "demo_setups": (
         "R за сетапом",
-        "Для кожного сетапу демо (S14, S16, S3, S12, S38, S39, S40): закриті угоди, частка в плюсі, середній R і його 95 % ДІ проти 0.",
+        "Для кожного сетапу демо: закриті угоди, частка в плюсі, середній R і його 95 % ДІ проти 0.",
         "Менше 30 угод з R — «замало для висновку»: числа описові.",
-        "Сетап із ДІ вище 0 на ≥ 30 угодах — кандидат на реальні гроші; з ДІ нижче 0 — кандидат на вимкнення.",
+        "Тут версії правил змішано: висновок — лише за поточною версією (верхній рядок сторінки, «Версії сетапів»).",
     ),
     "demo_setup": (
         "Середній R сетапу",
@@ -1325,8 +1339,7 @@ HELP: dict[str, tuple[str, str, str, str]] = {
     ),
     "demo_versions": (
         "Версії сетапів",
-        "Закриті демо-угоди окремо за кожною версією правил сетапу (вхід, ціль, беззбиток, виходи): кількість, частка в плюсі "
-        "(R > 0), середній R, P&L. Версія угоди — за часом її відкриття; нижче — таблиця змін правил з комітами.",
+        "Закриті демо-угоди окремо за кожною версією правил сетапу (вхід, ціль, беззбиток), версія — за часом відкриття угоди.",
         "До 30 закритих угод з R у версії — «замало для висновку». «Правила змінились під час угоди» — угода "
         "була відкрита, коли почалась наступна версія, і далі велась за новими правилами.",
         "Судити про сетап за його поточною версією; результат старої версії не переносити на нову.",
@@ -1370,15 +1383,13 @@ HELP: dict[str, tuple[str, str, str, str]] = {
     ),
     "demo_vs_bt_turnover": (
         "Звірка за оборотом монети",
-        "Та сама звірка з бектестом, розбита за оборотом монети в день входу (денна свічка Bybit, UTC): ≥ $5M, $1–5M, "
-        "< $1M, невідомий. З 29.10 рідкі сетапи беруть монети від $1M, а бектести робились на топ-30.",
+        "Та сама звірка з бектестом, розбита за оборотом монети в день входу (≥ $5M, $1–5M, < $1M): бектести робились на топ-30.",
         "Кожна група — окремо; до 30 звірених угод у групі — «замало для висновку», навіть якщо загалом угод більше.",
         "Якщо на $1–5M збігів помітно менше, ніж на ≥ $5M, — бектест не описує торгівлю дрібними монетами.",
     ),
     "demo_not_executed": (
         "Не виконані проти тіньових планів",
-        "Сигнали, які демо відібрало, але не виконало (вхід не заповнився; не відібрано за балом чи денними лімітами; відмова "
-        "guard, напр. R:R після комісій нижче 1.5), і що дали б їхні тіньові плани; поруч — тіньові плани виконаних угод.",
+        "Що дали б тіньові плани сигналів, які демо не виконало (вхід не заповнився, не відібрано, відмова guard), поруч із виконаними.",
         "R в одиницях ризику демо, без беззбитку, ринковий вхід за ціною рішення; до 30 планів з R — «замало для висновку».",
         "Якщо пропущені дають стабільно більше R, ніж виконані, — фільтр балів, мейкер-вхід або запобіжник guard відсікає добрі угоди.",
     ),
@@ -1595,6 +1606,121 @@ ACT: dict[str, tuple[str, str, str, str]] = {
         "купувати вигідніше; продаж дає мало премії.",
         "Опціони дорогі (премія понад +10 вп)",
         "купівля переплачує; продаж лише з обмеженим ризиком.",
+    ),
+    # the «Демо» tab (standing improvements, item 16)
+    "demo": (
+        f"У сетапу менше {DEMO_MIN_N} угод з R",
+        "висновків не роби, чекай.",
+        f"{DEMO_MIN_N}+ угод, 95 % ДІ вище або нижче 0",
+        "кандидат на розгляд або на вимкнення: обговори з Claude.",
+    ),
+    "demo_open_pos": (
+        "Немає",
+        "нічого робити не треба.",
+        "Є відкриті або «чекає входу»",
+        "нічого не роби: стоп і ціль уже на біржі.",
+    ),
+    "demo_violations": (
+        "R:R, стоп, позиція вже є",
+        "guard відсіяв окремі сигнали — нічого не роби.",
+        "Kill-switch або денний ліміт збитку",
+        "входи стоять: перевір відкриті позиції, розбери причину з Claude.",
+    ),
+    "demo_closed": (
+        f"До {DEMO_MIN_N} на сетап",
+        "висновків ще нема, чекай.",
+        "Багато виходів у беззбиток",
+        "беззбиток спрацьовує зарано: варто переглянути правило.",
+    ),
+    "demo_open": (
+        "0",
+        "нічого робити не треба.",
+        "Є відкриті",
+        f"нічого не роби; лімітний вхід чекає до {DEMO_ENTRY_WAIT_MS // 60_000} хв, потім ринок або скасування.",
+    ),
+    "demo_missed": (
+        "Поодинокі",
+        "нічого не роби.",
+        "Багато незаповнених",
+        "мейкер-вхід пропускає рух: глянь «Демо проти бектесту».",
+    ),
+    "demo_pnl": (
+        "Мінус",
+        "сетапи порівнюй за R, а не доларами.",
+        "Плюс",
+        "на малій вибірці це ще не перевага.",
+    ),
+    "demo_r_all": (
+        "ДІ містить 0 або нижче 0",
+        "переваги не видно: реальних грошей не додавай.",
+        f"ДІ вище 0 на {DEMO_MIN_N}+ угодах",
+        "розгорни «R за сетапом»: який сетап дає плюс.",
+    ),
+    "demo_setups": (
+        f"Менше {DEMO_MIN_N} угод з R",
+        "числа описові: чекай.",
+        f"{DEMO_MIN_N}+ угод",
+        "версії тут змішано: суди за верхнім рядком сторінки.",
+    ),
+    "demo_setup": (
+        "Жовта позначка «замало для висновку»",
+        "ризик на сетапі не збільшуй.",
+        "Без позначки, ДІ вище 0",
+        "версії змішано: звір із поточною версією.",
+    ),
+    "demo_versions": (
+        f"У поточній версії менше {DEMO_MIN_N} угод",
+        "про неї ще рано судити.",
+        "Багато угод «правила змінились під час угоди»",
+        "їхній результат змішує дві версії: менше йому довіряй.",
+    ),
+    "demo_recent": (
+        "Кілька стопів підряд",
+        f"для цілі 2R це звично: висновок — за {DEMO_MIN_N} угодами.",
+        "Часто «вхід не заповнився»",
+        "мейкер-вхід пропускає рух: глянь «Демо проти бектесту».",
+    ),
+    "demo_refusals": (
+        "Найчастіше бал і денні ліміти",
+        "фільтр працює, нічого не роби.",
+        "Найчастіше R:R або стоп",
+        "детектор дає погані рівні: варто переглянути сетап.",
+    ),
+    "demo_refused": (
+        "Мало",
+        "нічого не роби.",
+        "Kill-switch або денний ліміт збитку",
+        "входи стоять: перевір відкриті позиції.",
+    ),
+    "demo_skipped": (
+        "Мало",
+        "нічого не роби.",
+        "Багато через бал",
+        "чи даремно — покаже «Демо проти бектесту».",
+    ),
+    "demo_vs_bt": (
+        "Збігів мало",
+        "бектесту сетапу не вір: він описує іншу торгівлю.",
+        "Збігів більшість",
+        "бектест описує демо: його числам можна довіряти більше.",
+    ),
+    "demo_vs_bt_total": (
+        f"Менше {DEMO_MIN_N} звірених",
+        "замало для висновку: чекай.",
+        "Різниця R далеко від 0",
+        "демо торгує інакше, ніж бектест: розбери з Claude.",
+    ),
+    "demo_vs_bt_turnover": (
+        f"У групі менше {DEMO_MIN_N} звірених",
+        "висновку для групи ще нема.",
+        "На $1–5M збігів помітно менше",
+        "бектест не описує дрібні монети: обережно з ними.",
+    ),
+    "demo_not_executed": (
+        "Пропущені дають менше R, ніж виконані",
+        "фільтр працює: нічого не роби.",
+        "Пропущені дають більше R",
+        "фільтр відсікає добрі угоди: обговори з Claude.",
     ),
 }
 
@@ -8811,7 +8937,7 @@ def polymarket_page(now: float | None = None) -> str:
 
 DEMO_DB = JOURNAL_DB  # execution.demo_trader.DEFAULT_DB: the same store
 DEMO_SETUPS = ("S14", "S16", "S3", "S12", "S38", "S39", "S40", "S28", "S17")  # execution.demo_trader.SETUPS
-DEMO_MIN_N = 30  # analytics.demo_vs_backtest.MIN_TRADES (owner 23.10: no conclusion before ~30 closed trades)
+# DEMO_MIN_N is defined above HELP (its «i» notes name it)
 DEMO_MAX_ROWS = 20000
 DEMO_AUDIT_MAX_ROWS = 20000
 DEMO_TABLE_ROWS = 20
@@ -8930,8 +9056,8 @@ DEMO_CAVEATS = (
     "Демо-рахунок Bybit (api-demo.bybit.com), ігрові гроші. Сторінка лише читає базу: нічого не торгує й лімітів не змінює.",
     f"R = P&L біржі (з комісіями) / ризик на стопі з обома тейкер-комісіями. До {DEMO_MIN_N} закритих угод сетапу числа "
     "описові, не доказ переваги.",
-    "Правила змінювались (22.10: мейкерські ордери, беззбиток на половині шляху до цілі замість +30 % ROE): плитки й «R за "
-    "сетапом» змішують версії, окремо за версіями — у блоці «Версії сетапів».",
+    "Правила сетапів змінювались: плитки й «R за сетапом» змішують версії, окремо за версіями — у блоці «Версії сетапів»; "
+    "верхній рядок і поріг 30 угод рахують лише поточну версію кожного сетапу.",
     "Минулий результат не гарантує майбутнього. Не інвестиційна порада.",
 )
 # guard / selection messages (execution/guard.py check, demo_trader._select_and_enter) -> a Ukrainian reason; the
@@ -9010,7 +9136,8 @@ def load_demo(path: Path) -> tuple[dict | None, str | None]:
                 dict(r)
                 for r in con.execute(
                     "SELECT symbol, side, setup, timeframe, signal_ts, status, opened_ts, closed_ts, pnl_usd, r_multiple,"
-                    " exit_reason FROM demo_trade ORDER BY COALESCE(closed_ts, opened_ts, signal_ts) DESC LIMIT ?",
+                    " exit_reason, entry, fill, stop, target, risk_usd, be_stop, be_ts FROM demo_trade"
+                    " ORDER BY COALESCE(closed_ts, opened_ts, signal_ts) DESC LIMIT ?",
                     (DEMO_MAX_ROWS,),
                 )
             ]
@@ -9095,6 +9222,41 @@ def demo_version_of(setup: str | None, open_ms: float | None, now_ms: float, epo
     return best
 
 
+def _demo_trade_epoch(t: dict, setup: str | None, eps: list | tuple, now_ms: float) -> tuple | None:
+    """The epoch of one trade: its own tag first (schema 35) when it is an epoch of the setup, else by its open time."""
+    e = next((x for x in eps if isinstance(t.get("version"), str) and x[0] == t["version"] and _demo_epoch_applies(x, setup)), None)
+    return e or demo_version_of(setup, _num(t.get("opened_ts")), now_ms, eps)
+
+
+def demo_current_stats(trades: list[dict], now_ms: float, epochs: tuple = DEMO_EPOCHS) -> dict[str, dict]:
+    """Per setup (as demo_setup_stats): demo_r_stats of its closed trades in the setup's CURRENT version of the rules
+    only (the latest epoch that applies to it by now; a trade's version as in demo_version_stats), plus 'version' (the
+    tag, None before the first epoch). A verdict on a setup uses these: an old version's result is not carried over."""
+    eps = sorted((e for e in epochs if e[1] <= now_ms), key=lambda e: e[1])
+    out: dict[str, dict] = {}
+    names = list(DEMO_SETUPS) + sorted({str(t.get("setup")) for t in trades} - set(DEMO_SETUPS))
+    for name in names:
+        cur = demo_version_of(name, now_ms, now_ms, eps)
+        tag = None if cur is None else cur[0]
+        rs = []
+        for t in trades:
+            if str(t.get("setup")) != name or t.get("status") != "closed":
+                continue
+            closed_ms = _num(t.get("closed_ts"))
+            if closed_ms is not None and closed_ms > now_ms:
+                continue
+            e = _demo_trade_epoch(t, name, eps, now_ms)
+            if (None if e is None else e[0]) == tag and (r := _num(t.get("r_multiple"))) is not None:
+                rs.append(r)
+        out[name] = {**demo_r_stats(rs), "version": tag}
+    return out
+
+
+def _demo_cur(name: str, s: dict) -> str:
+    """«S3 v3»: a setup with its current version (plain text, escape when rendering)."""
+    return f"{_clean(name, 12)} {s['version']}" if s.get("version") else _clean(name, 12)
+
+
 def demo_version_stats(trades: list[dict], now_ms: float, epochs: tuple = DEMO_EPOCHS, min_n: int = DEMO_MIN_N) -> dict:
     """Copy of analytics.setup_versions.version_stats (same keys; a test compares the pair): per (setup, version) closed
     trades, R > 0 share, mean R, P&L USD, the trades a later epoch began inside, and the «замало для висновку» verdict
@@ -9109,8 +9271,7 @@ def demo_version_stats(trades: list[dict], now_ms: float, epochs: tuple = DEMO_E
             continue
         raw = t.get("setup")
         setup = ("" if raw is None else str(raw).strip()) or None
-        e = next((x for x in eps if isinstance(t.get("version"), str) and x[0] == t["version"] and _demo_epoch_applies(x, setup)), None)
-        e = e or demo_version_of(setup, _num(t.get("opened_ts")), now_ms, eps)  # the trade's own tag first (schema 35)
+        e = _demo_trade_epoch(t, setup, eps, now_ms)
         tag = None if e is None else e[0]
         g = groups.setdefault(
             (setup, tag),
@@ -9202,26 +9363,175 @@ def block_demo_tiles(trades: list[dict]) -> str:
     pnl = sum(_num(t.get("pnl_usd")) or 0.0 for t in closed)
     s = demo_r_stats([v for t in closed if (v := _num(t.get("r_multiple"))) is not None])
     vs0, cls = _demo_vs0(s["ci95"], s["n"])
+    n_missed = by["missed"] + by["rejected"]
+    if s["n"] < DEMO_MIN_N:
+        r_act = "замало угод для висновку: чекай"
+    else:
+        r_act = {"ok": "розгорни «R за сетапом»: хто дає плюс", "bad": "у мінусі: розгорни «R за сетапом»"}.get(
+            cls, "суди за сетапами окремо"
+        )
     tiles = [
-        _tile("Закрито", _nf(by["closed"]), _e(exits_s), help="demo_closed"),
-        _tile("Відкрито", _nf(n_open), f"з них чекають входу {by['pending']}" if by["pending"] else "позиції на демо", help="demo_open"),
+        _tile("Закрито", _nf(by["closed"]), _e(exits_s), help="demo_closed", act=f"висновок — від {DEMO_MIN_N} угод сетапу"),
         _tile(
-            "Не виконано",
-            _nf(by["missed"] + by["rejected"]),
-            f"вхід не заповнився {by['missed']} · біржа відхилила {by['rejected']}",
-            help="demo_missed",
+            "Відкрито",
+            _nf(n_open),
+            f"з них чекають входу {by['pending']}" if by["pending"] else "позиції на демо",
+            help="demo_open",
+            act="стоп і ціль на біржі: нічого не роби" if n_open else "нічого робити не треба",
         ),
         _tile(
-            "P&L демо", f"<span class='{_signed_cls(pnl)}'>{_usd(pnl, True)}</span>", "USD, закриті угоди, ігрові гроші", help="demo_pnl"
+            "Не виконано",
+            _nf(n_missed),
+            f"вхід не заповнився {by['missed']} · біржа відхилила {by['rejected']}",
+            help="demo_missed",
+            act="причини — у «Демо проти бектесту»" if n_missed else "",
+        ),
+        _tile(
+            "P&L демо",
+            f"<span class='{_signed_cls(pnl)}'>{_usd(pnl, True)}</span>",
+            "USD, закриті угоди, ігрові гроші",
+            help="demo_pnl",
+            act="сетапи порівнюй за R, не доларами",
         ),
         _tile(
             "Середній R, усі сетапи",
             f"<span class='{_signed_cls(s['mean_r'])}'>{_r(s['mean_r'])}</span>",
             f"угод з R {s['n']} · 95 % ДІ {_ci(s['ci95'])} · <span class='{cls}'>{_e(vs0)}</span>",
             help="demo_r_all",
+            act=r_act,
         ),
     ]
     return f"<div class='tiles'>{''.join(tiles)}</div>"
+
+
+DEMO_HALT_REASONS = ("kill-switch увімкнено", "денний ліміт збитку")  # demo_reason labels that stop every entry
+DEMO_DAY_MS = 86_400_000
+DEMO_VIOLATIONS_SHOWN = 5
+# the owner's own review point for a setup, named whenever the lead names that setup (docs/HANDOFF.md, decisions 31.10)
+DEMO_REVIEW_NOTES = {"S3": "S3 власник 31.10 вирішив переглядати на 100 угодах (рішення 2А, контроль виконання)."}
+
+
+def _demo_refused_since(audit: list[dict] | None, since_ms: float) -> list[dict]:
+    return [a for a in audit or [] if a.get("kind") == "refused" and (_num(a.get("ts")) or 0.0) >= since_ms]
+
+
+def demo_lead(trades: list[dict] | None, audit: list[dict] | None, now: float) -> str:
+    """The page's first lines (docs/design/PANEL.md): one sentence «what now», one «what to do». The first that
+    applies: no trades yet; guard halted every entry in the last 24 h (kill-switch, daily loss limit); a setup whose
+    CURRENT version (demo_current_stats) has DEMO_MIN_N closed trades with R and a 95 % CI below 0; one whose CI is
+    above 0; else the sample is still small. Trades of a setup's older versions never count towards its verdict."""
+    trades = trades or []
+    now_ms = now * 1000
+    n_open = sum(1 for t in trades if t.get("status") in DEMO_OPEN)
+    closed = [t for t in trades if t.get("status") == "closed"]
+    rs = [v for t in closed if (v := _num(t.get("r_multiple"))) is not None]
+    head = f"Відкрито {n_open}, закрито {len(closed)}" + (f", середній R усіх угод {_r(statistics.fmean(rs))}." if rs else ".")
+    halts = [g for g in demo_refusals(_demo_refused_since(audit, now_ms - DEMO_DAY_MS), now_ms) if g["reason"] in DEMO_HALT_REASONS]
+    stats = demo_current_stats(trades, now_ms) if trades else {}
+    ready = {k: s for k, s in stats.items() if s["n"] >= DEMO_MIN_N and isinstance(s["ci95"], list)}
+
+    def names(keys) -> str:
+        return ", ".join(f"{_demo_cur(k, stats[k])} ({stats[k]['n']})" for k in keys)
+
+    def review_notes(keys) -> str:  # the owner's own review points for a setup (docs/HANDOFF.md)
+        return "".join(f" {DEMO_REVIEW_NOTES[k]}" for k in keys if k in DEMO_REVIEW_NOTES)
+
+    bad = [k for k, s in ready.items() if s["ci95"][1] < 0]
+    good = [k for k, s in ready.items() if s["ci95"][0] > 0]
+    cur = "угод з R у поточній версії правил"
+    if not trades:
+        chip, label, head = "calm", "чекаємо", ""
+        what, do = "Демо-угод ще немає.", "нічого: демо-трейдер щогодини сам шукає сигнали."
+    elif halts:
+        last = max(halts, key=lambda g: g["last_ts"])
+        chip, label = "risk", "guard зупиняв входи"
+        what = f"Guard за 24 год зупиняв усі входи: {last['reason']}, останній раз {_demo_at(last['last_ts'])} за Києвом."
+        do = "перевір, чи зупинка ще діє, і відкриті позиції; розбери причину з Claude."
+    elif bad:
+        chip, label = "risk", "кандидат на вимкнення"
+        what = f"{names(bad)}: {DEMO_MIN_N}+ {cur}, 95 % ДІ середнього R нижче 0.{review_notes(bad)}"
+        do = "обговори з Claude вимкнення сетапу на демо."
+    elif good:
+        chip, label = "opp", "кандидат на розгляд"
+        what = f"{names(good)}: {DEMO_MIN_N}+ {cur}, 95 % ДІ середнього R вище 0.{review_notes(good)}"
+        do = (
+            f"підтвердь на наступних угодах поточної версії: серед {len(stats)} сетапів один може вийти за 0 випадково; "
+            "на демо нічого не міняй."
+        )
+    else:
+        # every setup whose current version has enough trades has a CI around 0; the others still collect their sample
+        few = [(k, s["n"]) for k, s in stats.items() if s["n"] < DEMO_MIN_N]
+        name, n = max(few, key=lambda kv: kv[1]) if few else ("", 0)
+        nearest = f"найближчий до {DEMO_MIN_N} угод поточної версії — {_demo_cur(name, stats[name])} ({n} з {DEMO_MIN_N})" if n else ""
+        if ready:
+            chip, label = "calm", "переваги не видно"
+            what = f"{names(ready)}: {DEMO_MIN_N}+ {cur}, 95 % ДІ середнього R містить 0.{review_notes(ready)}"
+            do = "реальних грошей не додавай" + (f"; з решти {nearest}." if nearest else ".")
+        else:
+            chip, label, what = "calm", "збираємо вибірку", ""
+            do = f"висновків не роби: {nearest}." if nearest else "висновків не роби: у поточних версіях закритих угод з R ще немає."
+    return (
+        f"<div class='lead'><span class='chip {chip}'>{_e(label)}</span>"
+        f"<p class='now'>{_e(' '.join(x for x in (head, what) if x))}</p><p class='do'><b>Що робити:</b> {_e(do)}</p></div>"
+    )
+
+
+def block_demo_open(trades: list[dict], now: float) -> str:
+    """The open demo positions (and entries still waiting or not yet confirmed), newest first; always shown."""
+    rows = sorted(
+        (t for t in trades if t.get("status") in DEMO_OPEN),
+        key=lambda t: _num(t.get("opened_ts")) or _num(t.get("signal_ts")) or 0.0,
+        reverse=True,
+    )
+    if not rows:
+        return _empty("Відкритих позицій на демо немає.")
+    out = [
+        "<div class='scroll'><table class='jt'><tr><th>Відкрито (Київ)</th><th>Контракт</th><th>Сетап</th><th>Стан</th>"
+        "<th class='num'>Вхід</th><th class='num'>Стоп</th><th class='num'>Ціль</th><th class='num'>Ризик, USD</th>"
+        "<th class='num'>Строк</th></tr>"
+    ]
+    for t in rows:
+        status = str(t.get("status"))
+        sym = {"symbol": _clean(str(t.get("symbol") or "—").split(":")[0], 24), "side": t.get("side")}
+        opened = _ts(t.get("opened_ts"))
+        entry = _num(t.get("fill")) or _num(t.get("entry"))
+        risk = _num(t.get("risk_usd"))
+        be = _num(t.get("be_stop"))  # the stop moved to break-even (entry ± both taker fees), as demo_trader's be_stop or stop
+        if be:
+            stop_s = f"{_e(_px(be))}<span class='sub'>беззбиток</span>"
+            risk_s = "≈ 0"
+        else:
+            stop_s = _e(_px(t.get("stop")))
+            risk_s = _e(_nf(risk)) if risk is not None else "—"
+        out.append(
+            f"<tr><td class='num'>{_e(_demo_at(t.get('opened_ts') or t.get('signal_ts')))}</td>"
+            f"<td>{journal_instrument(sym, None)}</td>"
+            f"<td>{_e(_clean(t.get('setup'), 12))} {_e(_clean(t.get('timeframe'), 6))}</td>"
+            f"<td>{_e(DEMO_STATUS_UA.get(status, _clean(status, 20)))}</td>"
+            f"<td class='num'>{_e(_px(entry))}</td><td class='num'>{stop_s}</td>"
+            f"<td class='num'>{_e(_px(t.get('target')))}</td><td class='num'>{risk_s}</td>"
+            f"<td class='num'>{_e(_span(now - opened)) if opened is not None and now >= opened else '—'}</td></tr>"
+        )
+    out.append("</table></div>")
+    return "".join(out)
+
+
+def block_demo_violations(audit: list[dict] | None, now: float) -> str:
+    """Guard refusals of the last 7 days by the rule they broke (exec_audit 'refused'); always shown, short."""
+    if audit is None:
+        return _demo_no_table("exec_audit")
+    now_ms = now * 1000
+    groups = demo_refusals(_demo_refused_since(audit, now_ms - DEMO_WEEK_MS), now_ms)
+    if not groups:
+        return _empty("За 7 днів guard не відхилив жодного сигналу.")
+    rows = ["<div class='scroll'><table><tr><th>Правило</th><th class='num'>Разів</th><th>Останній раз (Київ)</th></tr>"]
+    for g in groups[:DEMO_VIOLATIONS_SHOWN]:
+        cls = " class='bad'" if g["reason"] in DEMO_HALT_REASONS else ""
+        rows.append(f"<tr><td{cls}>{_e(g['reason'])}</td><td class='num'>{g['refused']}</td><td>{_e(_demo_at(g['last_ts']))}</td></tr>")
+    rows.append("</table></div>")
+    if len(groups) > DEMO_VIOLATIONS_SHOWN:
+        rows.append(f"<p class='note'>Ще правил: {len(groups) - DEMO_VIOLATIONS_SHOWN}; усі — у «Відмови guard за причинами».</p>")
+    return "".join(rows)
 
 
 def demo_option_legs_note(legs: object) -> str:
@@ -9236,7 +9546,7 @@ def demo_option_legs_note(legs: object) -> str:
         count = "Таблиці demo_option_leg у базі ще немає. "
     return (
         "<p class='note warn'>Лише ф'ючерсні угоди (demo_trade): опціонні ноги демо-трейдера (demo_option_leg) не враховано ні в "
-        f"лічильниках, P&amp;L і R, ні серед відмов нижче (рішення option_skipped). {_e(count)}"
+        f"лічильниках, P&amp;L і R, ні серед відмов (рішення option_skipped). {_e(count)}"
         "Парне порівняння ф'ючерс / опціон — у plan_review → demo_option_pairs.</p>"
     )
 
@@ -9261,11 +9571,7 @@ def block_demo_setups(trades: list[dict]) -> str:
                 badge=f"замало для висновку ({s['n']} з {DEMO_MIN_N})" if few else "",
             )
         )
-    note = (
-        f"<p class='note warn'>Висновок про сетап — не раніше {DEMO_MIN_N} закритих угод з R; до того середній R і ДІ лише описують "
-        "те, що вже сталось.</p>"
-    )
-    return f"<div class='tiles'>{''.join(tiles)}</div>{note}"
+    return f"<div class='tiles'>{''.join(tiles)}</div>"  # the «до 30 угод — описово» caveat is once, at the bottom
 
 
 def _demo_at(ms: object) -> str:
@@ -9580,6 +9886,72 @@ def block_demo_vs_bt(
     )
 
 
+def demo_summaries(trades: list[dict] | None, audit: list[dict] | None, now: float, vs_bt: tuple) -> dict[str, str]:
+    """One plain-text line per folded block with its main number (escaped by the caller); a key is missing when its
+    block has nothing to say. Every line is guarded on its own: an odd value drops that line only."""
+    out: dict[str, str] = {}
+    tr = trades or []
+
+    def setups() -> str:  # the verdict line: current versions only (the tiles below mix versions)
+        stats = demo_current_stats(tr, now * 1000)
+        name, s = max(stats.items(), key=lambda kv: kv[1]["n"])
+        if not s["n"]:
+            return "у поточних версіях закритих угод з R ще немає"
+        if s["n"] < DEMO_MIN_N:
+            return f"поточні версії: найбільше угод з R — {_demo_cur(name, s)}, {s['n']} з {DEMO_MIN_N}, середній R {_r(s['mean_r'])}"
+        ready = sum(1 for x in stats.values() if x["n"] >= DEMO_MIN_N)
+        return (
+            f"поточні версії: {DEMO_MIN_N}+ угод з R — {ready} сетап(и); найбільше — {_demo_cur(name, s)} ({s['n']}), "
+            f"середній R {_r(s['mean_r'])}, {_demo_vs0(s['ci95'], s['n'])[0]}"
+        )
+
+    def versions() -> str:
+        s = demo_version_stats(tr, now * 1000)
+        last = s["epochs"][-1] if s["epochs"] else None
+        line = f"{len(s['epochs'])} версій правил" + (f", остання {last['tag']} від {_day(last['from_ms'])}" if last else "")
+        inside = sum(x["changed_inside"] for x in s["rows"])
+        return line + (f" · угод на межі версій {inside}" if inside else "")
+
+    def recent() -> str:
+        closed = [t for t in tr if t.get("status") == "closed"]
+        if not closed:
+            return f"угод у базі {len(tr)}, закритих ще немає"
+        t = max(closed, key=lambda t: _num(t.get("closed_ts")) or 0.0)
+        sym = _clean(str(t.get("symbol") or "—").split(":")[0].split("/")[0], 16)
+        how = DEMO_EXIT_UA.get(str(t.get("exit_reason")), "вихід не записано")
+        return f"угод {len(tr)} · остання закрита: {sym} {_clean(t.get('setup'), 12)}, {how}, {_r(t.get('r_multiple'))}"
+
+    def refusals() -> str:
+        n_ref = sum(1 for a in audit or [] if a.get("kind") == "refused")
+        groups = demo_refusals(audit or [], now * 1000)
+        top = f" · найчастіше: {groups[0]['reason']}" if groups else ""
+        return f"за весь час: відмов guard {n_ref} · не відібрано {len(audit or []) - n_ref}{top}"
+
+    def vs() -> str:
+        doc, err = vs_bt
+        if doc is None:
+            return DEMO_VS_BT_ERR_UA.get(str(err), "файл звірки не вдалося прочитати")
+        s = doc["summary"]
+        decided = int(_num(s.get("decided")) or 0)
+        min_n = int(_num(s.get("min_n")) or DEMO_MIN_N)
+        count = f"звірено {decided} з {min_n}" if decided < min_n else f"звірено {decided} угод"
+        return f"{count} · збіг з бектестом {_share(s.get('match_share'))}"
+
+    for key, fn, need in (
+        ("setups", setups, trades is not None),
+        ("versions", versions, trades is not None),
+        ("recent", recent, trades is not None),
+        ("refusals", refusals, audit is not None),
+        ("vs_bt", vs, True),
+    ):
+        if need:
+            try:
+                out[key] = fn()
+            except Exception:  # noqa: BLE001 - a summary line must not take the page down
+                pass
+    return out
+
+
 def render_demo(
     data: dict | None,
     err: str | None,
@@ -9595,7 +9967,8 @@ def render_demo(
         f"<title>tradedesk — демо</title><style>{CSS}{BRIEF_CSS}{JOURNAL_CSS}</style></head><body>"
     )
     title = "<h1>Демо-трейдер</h1>"
-    caveats = "<div class='caveat'><b>Застереження</b><ul>" + "".join(f"<li>{_e(c)}</li>" for c in DEMO_CAVEATS) + "</ul></div>"
+    items = "<div class='caveat'><b>Застереження</b><ul>" + "".join(f"<li>{_e(c)}</li>" for c in DEMO_CAVEATS) + "</ul>"
+    caveats = items + "</div>"
     where = f" <code>{_e(path)}</code>" if path else ""
     try:
         if data is None:
@@ -9606,8 +9979,8 @@ def render_demo(
             )
             return head + f"<header>{title}<span class='bad'>{msg}</span></header>{_nav('demo')}{caveats}</body></html>"
         stamp = f"<span class='mut'>База{where} · лише читання · прочитано {_e(kyiv(datetime.fromtimestamp(now, timezone.utc)))} за Києвом</span>"  # noqa: UP017
-        out = [head, f"<header>{title}{stamp}</header>{_nav('demo')}{caveats}<main class='brief'>"]
-        trades = data.get("trades")
+        out = [head, f"<header>{title}{stamp}</header>{_nav('demo')}<main class='brief'>"]
+        trades, audit = data.get("trades"), data.get("audit")
 
         def guarded(fn, *args) -> str:
             try:
@@ -9615,26 +9988,36 @@ def render_demo(
             except Exception as e:  # noqa: BLE001 - one odd row must not take the page down
                 return _empty(f"Блок не вдалося показати: несподіваний формат даних ({type(e).__name__}).")
 
+        # docs/design/PANEL.md: «what now / what to do» first, then what needs attention (open positions, broken guard
+        # rules) always open; the rest folded with a one-line summary; the caveats once, at the bottom
+        lead = guarded(demo_lead, trades, audit, now)
         if trades is None:
-            out.append(f"<section class='wide'>{_h2('Демо-угоди', 'demo')}{_demo_no_table('demo_trade')}</section>")
+            out.append(f"<section class='wide'>{lead}{_h2('Демо-угоди', 'demo')}{_demo_no_table('demo_trade')}</section>")
         else:
-            out.append(
-                f"<section class='wide'>{_h2('Демо-угоди', 'demo', CHIP_LEDGER)}{guarded(block_demo_tiles, trades)}"
-                f"{guarded(demo_option_legs_note, data.get('option_legs'))}</section>"
-            )
-            out.append(f"<section class='wide'>{_h2('R за сетапом', 'demo_setups')}{guarded(block_demo_setups, trades)}</section>")
-            out.append(
-                f"<section class='wide'>{_h2('Версії сетапів', 'demo_versions')}{guarded(block_demo_versions, trades, now)}</section>"
-            )
-            out.append(f"<section class='wide'>{_h2('Останні демо-угоди', 'demo_recent')}{guarded(block_demo_table, trades)}</section>")
+            out.append(f"<section class='wide'>{lead}{_h2('Демо-угоди', 'demo', CHIP_LEDGER)}{guarded(block_demo_tiles, trades)}</section>")
+            out.append(f"<section class='wide'>{_h2('Відкриті позиції', 'demo_open_pos')}{guarded(block_demo_open, trades, now)}</section>")
         out.append(
-            f"<section class='wide'>{_h2('Відмови guard за причинами', 'demo_refusals')}{guarded(block_demo_refusals, data.get('audit'), now)}</section>"
+            f"<section class='wide'>{_h2('Порушені правила guard · 7 днів', 'demo_violations')}"
+            f"{guarded(block_demo_violations, audit, now)}</section>"
+        )
+        summ = demo_summaries(trades, audit, now, vs_bt)
+        if trades is not None:
+            out.append(_fold("R за сетапом", "demo_setups", _e(summ.get("setups", "")), guarded(block_demo_setups, trades)))
+            out.append(_fold("Версії сетапів", "demo_versions", _e(summ.get("versions", "")), guarded(block_demo_versions, trades, now)))
+            out.append(_fold("Останні демо-угоди", "demo_recent", _e(summ.get("recent", "")), guarded(block_demo_table, trades)))
+        out.append(
+            _fold("Відмови guard за причинами", "demo_refusals", _e(summ.get("refusals", "")), guarded(block_demo_refusals, audit, now))
         )
         out.append(
-            f"<section class='wide'>{_h2('Демо проти бектесту', 'demo_vs_bt')}"
-            f"{guarded(block_demo_vs_bt, trades or [], vs_bt_on, vs_bt[0], vs_bt[1], now)}</section>"
+            _fold(
+                "Демо проти бектесту",
+                "demo_vs_bt",
+                _e(summ.get("vs_bt", "")),
+                guarded(block_demo_vs_bt, trades or [], vs_bt_on, vs_bt[0], vs_bt[1], now),
+            )
         )
-        out.append("</main></body></html>")
+        legs = guarded(demo_option_legs_note, data.get("option_legs")) if trades is not None else ""
+        out.append(f"</main>{items}{legs}</div></body></html>")  # the option-legs note sits with the caveats
         return "".join(out)
     except Exception as e:  # noqa: BLE001 - the page always renders
         return (

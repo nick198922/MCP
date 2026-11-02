@@ -74,6 +74,7 @@ class Runtime:
                 burst=burst,
                 timeout=s.http_timeout,
                 retries=s.http_retries if retries is None else retries,
+                backoff_base=s.http_retry_backoff,
                 cache=self.cache,
                 cache_scale=s.cache_scale,
                 health=self.health,
@@ -117,6 +118,7 @@ class Runtime:
                 burst=5,
                 timeout=s.http_timeout,
                 retries=s.http_retries,
+                backoff_base=s.http_retry_backoff,
                 headers=coinalyze_mod.auth_header(s.coinalyze_api_key),
                 cache=self.cache,
                 cache_scale=s.cache_scale,
@@ -141,6 +143,7 @@ class Runtime:
                 burst=graph_mod.BURST,
                 timeout=s.http_timeout,
                 retries=min(s.http_retries, 1),
+                backoff_base=s.http_retry_backoff,
                 headers=graph_mod.headers(s.graph_api_key),
                 secrets=(s.graph_api_key,) if s.graph_api_key else (),
                 cache=self.cache,
@@ -165,6 +168,7 @@ class Runtime:
                 burst=max(2, int(cg_rate * 2)),
                 timeout=s.http_timeout,
                 retries=s.http_retries,
+                backoff_base=s.http_retry_backoff,
                 headers=cg_mod.auth_header(s.coingecko_plan, s.coingecko_api_key),
                 cache=self.cache,
                 cache_scale=s.cache_scale,
@@ -179,6 +183,7 @@ class Runtime:
             factory=exchange_factory,
             timeout_ms=int(s.http_timeout * 1000),
             retries=min(s.http_retries, 1),  # one retry after a timeout / connection error (TRADEDESK_HTTP_RETRIES=0 turns it off)
+            retry_backoff=s.http_retry_backoff,
         )
 
     async def aclose(self) -> None:

@@ -99,6 +99,57 @@ async def test_http_persistent_429_becomes_rate_limited():
     assert health.snapshot()["providers"]["test"]["status"] == "down"  # never succeeded
 
 
+@pytest.mark.parametrize(
+    "headers,body_wait,sleeps_expected",
+    [
+        ({}, 3, [3.0]),  # Telegram flood control: no header, `parameters.retry_after` in the JSON body
+        ({}, 30, [5.0]),  # capped at 5 s
+        ({"Retry-After": "2"}, 3, [2.0]),  # the header wins over the body
+    ],
+)
+async def test_http_429_waits_retry_after_from_header_or_body(monkeypatch, headers, body_wait, sleeps_expected):
+    sleeps: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def record(delay, *a, **kw):
+        sleeps.append(delay)
+        await real_sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", record)
+    seen = {"n": 0}
+
+    def handler(req):
+        seen["n"] += 1
+        if seen["n"] == 1:
+            body = {"ok": False, "error_code": 429, "parameters": {"retry_after": body_wait}}
+            return httpx.Response(429, headers=headers, json=body)
+        return httpx.Response(200, json={"ok": True})
+
+    # backoff_base=0: without retry_after the plain backoff would sleep 0.0, so a non-zero wait proves it was honoured.
+    http, _ = make_http(handler, retries=2, backoff_base=0.0)
+    f = await http.get_json("/x")
+    assert f.data == {"ok": True} and seen["n"] == 2
+    assert sleeps == sleeps_expected
+
+
+@pytest.mark.parametrize("exc", [httpx.ReadTimeout, httpx.RemoteProtocolError, httpx.ReadError], ids=lambda e: e.__name__)
+async def test_plain_http_still_retries_errors_after_the_request_was_sent(exc):
+    # Mirror of the Telegram test: only `retry_unsent_only=True` (non-idempotent sendMessage) skips these; every
+    # read-only provider keeps retrying a read timeout or a dropped keep-alive connection.
+    seen = {"n": 0}
+
+    def handler(req):
+        seen["n"] += 1
+        if seen["n"] == 1:
+            raise exc("lost after send", request=req)
+        return httpx.Response(200, json={"ok": 1})
+
+    http, health = make_http(handler, retries=1, backoff_base=0.0)
+    f = await http.get_json("/x")
+    assert f.data == {"ok": 1} and seen["n"] == 2
+    assert health.snapshot()["providers"]["test"]["status"] == "ok"
+
+
 async def test_http_network_error_and_non_json():
     def boom(req):
         raise httpx.ConnectError("dns fail")
@@ -244,6 +295,70 @@ async def test_exchanges_retries_one_transient_network_error_only(caplog):
     with pytest.raises(ProviderError):
         await ex.ticker("okx", "BTC/USDT:USDT")
     assert venue.calls == 1  # TRADEDESK_HTTP_RETRIES=0 turns it off
+
+
+@pytest.mark.parametrize("env,http_calls,ccxt_calls", [("0", 1, 1), ("1", 2, 2), ("3", 4, 2)])
+async def test_runtime_wires_http_retries_from_the_environment(monkeypatch, env, http_calls, ccxt_calls):
+    # TRADEDESK_HTTP_RETRIES -> Settings.from_env -> Runtime -> every Http client (retries) and Exchanges (at most one).
+    import dataclasses
+
+    import ccxt
+
+    from tradedesk.config import Settings
+    from tradedesk.runtime import Runtime
+
+    monkeypatch.setenv("TRADEDESK_HTTP_RETRIES", env)
+    seen = {"n": 0}
+
+    def busy(req):
+        seen["n"] += 1
+        return httpx.Response(503, text="busy")
+
+    venue = _FlakyVenue([ccxt.RequestTimeout("t")] * 5)
+    s = dataclasses.replace(Settings.from_env(), db_path="", cache_scale=0.0, http_retry_backoff=0.0)
+    rt = Runtime(s, transports={"deribit": httpx.MockTransport(busy)}, exchange_factory=lambda _id: venue)
+    with pytest.raises(ProviderError):
+        await rt.deribit.http.get_json("/public/test")
+    with pytest.raises(ProviderError):
+        await rt.exchanges.ticker("okx", "BTC/USDT:USDT")
+    await rt.aclose()
+    assert (seen["n"], venue.calls) == (http_calls, ccxt_calls)
+
+
+async def test_runtime_retry_backoff_is_injectable_and_defaults_to_0_4_s(monkeypatch):
+    # The test Runtime (conftest, http_retry_backoff=0) waits nothing between retries; production keeps 0.4 s.
+    import ccxt
+
+    from tradedesk.config import Settings
+    from tradedesk.runtime import Runtime
+
+    sleeps: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def record(delay, *a, **kw):
+        sleeps.append(delay)
+        await real_sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", record)
+
+    def busy(req):
+        return httpx.Response(503, text="busy")
+
+    async def run(settings):
+        sleeps.clear()
+        venue = _FlakyVenue([ccxt.RequestTimeout("t")] * 5)
+        rt = Runtime(settings, transports={"deribit": httpx.MockTransport(busy)}, exchange_factory=lambda _id: venue)
+        with pytest.raises(ProviderError):
+            await rt.deribit.http.get_json("/public/test")
+        with pytest.raises(ProviderError):
+            await rt.exchanges.ticker("okx", "BTC/USDT:USDT")
+        await rt.aclose()
+        return list(sleeps)
+
+    assert Settings().http_retry_backoff == 0.4
+    assert await run(Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path="")) == [0.0, 0.0]
+    http_wait, ccxt_wait = await run(Settings(http_retries=1, cache_scale=0.0, db_path=""))
+    assert 0.4 <= http_wait <= 0.5 and ccxt_wait == 0.4  # Http: 0.4 s + up to 0.1 s jitter; ccxt: 0.4 s x attempt
 
 
 def test_health_degraded_then_down_then_recovers():

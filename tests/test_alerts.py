@@ -173,6 +173,76 @@ async def test_telegram_channel_posts_into_the_alerts_topic():
     assert "message_thread_id" not in bodies[1]
 
 
+@pytest.mark.parametrize(
+    "first,requests,delivered",
+    [
+        ("connect", 2, True),  # TCP/DNS never opened: Telegram never saw it, the retry delivers once
+        ("pool", 2, True),  # no pooled connection: nothing sent either
+        ("429", 2, True),  # flood control rejected it; waits retry_after from the body, then delivers
+        ("read_timeout", 1, False),  # body sent, answer lost: Telegram may have posted it, a retry could duplicate
+        ("disconnect", 1, False),  # server dropped the connection after the send: same
+        ("502", 1, False),  # a 5xx can follow a processed request: no retry
+    ],
+)
+async def test_telegram_send_message_retries_only_when_the_request_surely_did_not_arrive(first, requests, delivered):
+    import httpx
+
+    from tradedesk.alerts.channels import TelegramChannel, build_channels
+    from tradedesk.alerts.engine import FiredAlert
+    from tradedesk.config import Settings
+
+    seen = {"n": 0}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen["n"] += 1
+        if seen["n"] == 1:
+            if first == "connect":
+                raise httpx.ConnectError("dns fail", request=req)
+            if first == "pool":
+                raise httpx.PoolTimeout("no connection", request=req)
+            if first == "read_timeout":
+                raise httpx.ReadTimeout("read", request=req)
+            if first == "disconnect":
+                raise httpx.RemoteProtocolError("Server disconnected without sending a response.", request=req)
+            if first == "429":
+                return httpx.Response(429, json={"ok": False, "error_code": 429, "parameters": {"retry_after": 0}})
+            return httpx.Response(502, text="Bad Gateway")
+        return httpx.Response(200, json={"ok": True, "result": {}})
+
+    settings = Settings(telegram_bot_token="1:abc", telegram_chat_id="-100", http_retries=2, http_retry_backoff=0.0)
+    channel = build_channels(settings)[-1]
+    assert isinstance(channel, TelegramChannel)
+    channel._client.http._client_args["transport"] = httpx.MockTransport(handler)  # the client is created lazily
+    ok, err = await channel.send(FiredAlert("r", 0, 0.5, 0.3, ">", {}, "BTC funding high"))
+    await channel._client.aclose()
+    assert seen["n"] == requests and ok is delivered
+    assert (err is None) is delivered
+    assert "abc" not in (err or "")  # the bot token never reaches the `alerts` table
+
+
+async def test_telegram_error_text_never_carries_the_bot_token():
+    # Without the `/bot` prefix the `_BOT_TOKEN` pattern in `health.redact` does not match; the token is masked only
+    # because build_channels passes it to Http as an exact secret.
+    import httpx
+
+    from tradedesk.alerts.channels import build_channels
+    from tradedesk.alerts.engine import FiredAlert
+    from tradedesk.config import Settings
+
+    token = "123:AAHsecretXYZ"
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError(f"handshake failed for {token}", request=req)
+
+    settings = Settings(telegram_bot_token=token, telegram_chat_id="-100", http_retries=1, http_retry_backoff=0.0)
+    channel = build_channels(settings)[-1]
+    channel._client.http._client_args["transport"] = httpx.MockTransport(handler)
+    ok, err = await channel.send(FiredAlert("r", 0, 0.5, 0.3, ">", {}, "BTC funding high"))
+    await channel._client.aclose()
+    assert ok is False and err and "ConnectError" in err
+    assert "AAHsecretXYZ" not in err and "123:" not in err
+
+
 def test_settings_read_the_alerts_topic(monkeypatch):
     from tradedesk.config import Settings
 

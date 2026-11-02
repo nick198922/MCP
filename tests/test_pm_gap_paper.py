@@ -457,7 +457,7 @@ def test_g_split_flags_v1_positions_whose_edge_rests_on_the_shift():
     dip.update(yes_ask=p0 - 0.055, yes_bid=p0 - 0.065, no_ask=1 - p0 + 0.065, no_bid=1 - p0 + 0.055)
     # ATM threshold market, YES: g > 0 raises P(above), so the edge grows and the position stays
     above = row(t, market_id="above", model_prob=0.60, binance_last=F * (1 + g))
-    nobin = row(t, market_id="nobin")
+    nobin = row(t, market_id="nobin", asset="ETH", spot=2_500.0, strike=2_500.0)  # no ETH row of this moment has binance_last
     rows = [dip, above, nobin]
     v1 = open_positions(rows, RN, ACC)
     assert sorted(p["market_id"] for p in v1) == ["above", "dip", "nobin"]
@@ -469,3 +469,29 @@ def test_g_split_flags_v1_positions_whose_edge_rests_on_the_shift():
     assert split["nobin"]["g_status"] == "no_binance" and split["nobin"]["edge_v2g"] is None
     # v2-g itself does not open the dip
     assert sorted(p["market_id"] for p in open_positions(rows, EntryRule(vol_ks=(1.0,), model=MODEL_V2G), ACC)) == ["above"]
+
+
+def test_g_split_takes_the_snapshot_g_also_from_raw_rows():
+    # review 2026-10-31-pm-paper-v2g, remark 2: a threshold row has no binance_last of its own (the collector writes it
+    # on touch rows only); given raw rows, g_split must still read the g of its snapshot, not report 'no_binance'
+    F, g, t = 70_000.0, 0.0014, END - 48 * H
+    touch = row(t, market_id="t1", kind="touch", direction="down", strike=0.97 * F, model_prob=0.30, binance_last=F * (1 + g))
+    above = row(t, market_id="a1", model_prob=0.60)  # YES ask 0.50: v1 edge 10 pp
+    raw = [touch, above]
+    v1 = [p for p in open_positions(raw, RN, ACC) if p["market_id"] == "a1"]
+    assert len(v1) == 1
+    got = g_split(v1, raw, RN)[0]
+    want = g_split(v1, with_snapshot_g(raw), RN)[0]
+    assert got["g_status"] == want["g_status"] == "robust" and got["g"] == pytest.approx(g)
+    assert got["edge_v2g"] == pytest.approx(want["edge_v2g"], abs=1e-15)
+
+
+def test_v2g_without_a_spot_of_its_own_is_none_not_an_exception():
+    # review 2026-10-31-pm-paper-v2g, remark 1: g comes from the snapshot, the row's own spot may be missing
+    t = END - 48 * H
+    for bad in (None, 0.0, float("nan"), "x"):
+        r = dict(row(t, spot=bad), snapshot_g=0.0014)
+        assert model_prob(r, 1.0, MODEL_V2G) is None and model_prob(r, VOL_HAIRCUT_K, MODEL_V2G) is None
+        assert entry_signals(r, V2G, ACC) == []
+    ok = dict(row(t), snapshot_g=0.0014)
+    assert model_prob(ok, 1.0, MODEL_V2G) is not None  # the same row with its spot is computed

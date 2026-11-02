@@ -28,7 +28,8 @@ FORECAST_WARNING = (
     "RISK-NEUTRAL probabilities from the Deribit smile (what options price), NOT real-world odds and not advice: the "
     "volatility risk premium alone should make the bands contain the outcome more often than priced, and the log is "
     "kept to measure that gap (a hypothesis under test, no edge shown). Forecasts issued on consecutive days for one "
-    "expiry share the outcome, so they are correlated: read `n_expiries`, not `n`, as the sample size. The climatology "
+    "expiry share the outcome, so they are correlated, and BTC and ETH of one expiry move together: read "
+    "`n_expiry_dates`, not `n` (nor `n_expiries`, which counts the two assets apart), as the sample size. The climatology "
     "reference is in-sample (it knows the base rate in hindsight). Few settled expiries: the scores are descriptive. "
     "The RV30 model is a naive physical baseline (zero-drift lognormal at the trailing 30-day realized vol, no skew or "
     "events), not the assistant's judgment. Compare the two models only through `comparison` (paired on the same rows); "
@@ -186,7 +187,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "`in_pct_5` / `in_pct_10` within +-5 % / +-10 % of the index. This tool first settles every open forecast whose "
             "08:00 UTC expiry has passed at the Deribit delivery price (outcome 1/0, Brier (p - o)^2), then returns: `latest` "
             "(the newest day's forecasts per asset: bounds lo/hi in USD, prob decimal), `scores` (all and per kind: n, "
-            "n_expiries, mean prob, base rate, Brier, Brier of the in-sample climatology and of the fixed reference 0.5 / "
+            "n_expiries, n_expiry_dates, mean prob, base rate, Brier, Brier of the in-sample climatology and of the fixed reference 0.5 / "
             "0.6827 where it exists, skill = 1 - BS/BS_ref, calibration in 10 probability bins with forecast mean vs observed "
             "frequency, binned reliability / resolution / uncertainty) and `weekly` (by ISO week of the expiry, UTC). "
             "Beside it, the RV30 model, a naive PHYSICAL baseline: ln(S_T/S0) ~ N(0, RV30^2 T), RV30 = trailing 30-day "
@@ -195,7 +196,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "rows: Brier of each, diff = BS risk-neutral - BS RV30, negative = options better, clustered by expiry date "
             "(`n_dates`) with se and a Student-t ci95, `enough` once 30 dates are settled). RV30 uses completed daily bars only. "
             "Probabilities are what options price, not real-world odds (see `warnings`); forecasts on consecutive days share "
-            "an outcome, so `n_expiries` is the sample size. A delivery price not yet published leaves the row open (`missing`)."
+            "an outcome and BTC / ETH of one expiry move together, so `n_expiry_dates` is the sample size (`n_expiries` "
+            "counts BTC and ETH apart: an upper bound). A delivery price not yet published leaves the row open (`missing`)."
         ),
     )
     async def forecast_log_status(

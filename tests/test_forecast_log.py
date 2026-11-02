@@ -106,6 +106,22 @@ def test_score_hand_computed():
     assert brier(0.25, 1) == pytest.approx(0.5625)
 
 
+def test_score_counts_btc_and_eth_of_one_expiry_as_one_date():
+    # review 2026-10-22-forecast-journal, remark 1: BTC and ETH settle at the same delivery and move together, so the
+    # honest sample size is the number of expiry dates, n_expiries (asset, expiry) only an upper bound
+    rows = [
+        {"asset": a, "kind": k, "expiry_ts": e, "prob": 0.6, "ref_prob": None, "outcome": 1}
+        for a in ("BTC", "ETH")
+        for k in ("above_spot", "in_pct_5")
+        for e in (100, 200)
+    ]
+    s = score(rows)
+    assert s["n"] == 8 and s["n_expiries"] == 4 and s["n_expiry_dates"] == 2
+    one = score([r for r in rows if r["expiry_ts"] == 100])
+    assert one["n_expiries"] == 2 and one["n_expiry_dates"] == 1
+    assert compare([dict(r, prob_rv=0.5) for r in rows])["n_dates"] == s["n_expiry_dates"]  # the unit of `compare`
+
+
 def test_calibration_and_weekly():
     wk1 = int(datetime(2026, 10, 30, 8, tzinfo=UTC).timestamp())  # Friday of ISO week 44
     wk2 = int(datetime(2026, 11, 6, 8, tzinfo=UTC).timestamp())
@@ -288,6 +304,7 @@ async def test_job_records_once_a_day_then_tool_settles(tmp_path):
         d = out["data"]
         assert out["ok"] and d["settled_this_call"] == 8 and d["n_open"] == 0 and d["n_settled"] == 8
         assert d["scores"]["all"]["n"] == 8 and d["scores"]["all"]["n_expiries"] == 2
+        assert d["scores"]["all"]["n_expiry_dates"] == 1  # BTC and ETH of one expiry: one date
         assert d["weekly"][0]["week"] == "2026-W44" and d["weekly"][0]["n"] == 8
         btc = {r["kind"]: r for r in d["settled"] if r["asset"] == "BTC"}
         assert btc["above_spot"]["outcome"] == 1  # 83 000 > the 82 750 index at issue

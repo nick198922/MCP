@@ -233,18 +233,19 @@ def model_prob(row: Mapping[str, Any], k: float = 1.0, model: str = MODEL_V1) ->
 
     ``'v1'``: forward = the snapshot's Deribit index ``spot`` (registered). ``'v2-g'``: first the forward moves to
     ``spot * (1 + g)`` with ``g`` = :func:`binance_gap` of this row (:func:`g_shifted_prob`), then ``k`` is applied at
-    that forward; None without ``binance_last``."""
+    that forward; None without ``binance_last`` or without a positive finite ``spot`` of the row itself (its g may come
+    from another row of the snapshot, so a missing ``spot`` here must not raise and kill the whole report)."""
     if model not in MODELS:
         raise ValueError(f"model {model!r}: expected one of {MODELS}")
     p = row.get("model_prob")
     if p is None:
         return None
     if model == MODEL_V2G:
-        g = binance_gap(row)
-        if g is None:
+        g, spot = binance_gap(row), _pos(row.get("spot"))
+        if g is None or spot is None:
             return None
         tau = (int(row["end_ts"]) - int(row["ts"])) / YEAR_S
-        kind, strike, iv, spot = str(row["kind"]), float(row["strike"]), row.get("model_iv"), float(row["spot"])
+        kind, strike, iv = str(row["kind"]), float(row["strike"]), row.get("model_iv")
         pg = g_shifted_prob(kind, row.get("direction"), float(p), iv, spot, strike, tau, g)
         return None if pg is None else vol_scaled_prob(kind, pg, iv, spot * (1.0 + g), strike, tau, k)
     # v1: the registered model, unchanged
@@ -402,8 +403,14 @@ def g_split(positions: Iterable[Mapping[str, Any]], rows: Iterable[Mapping[str, 
     ``rule.threshold`` (the edge held only thanks to pricing off the index instead of the Binance level), 'robust' when it
     still meets it, 'no_binance' when the snapshot has no ``binance_last`` (never read as g = 0), 'not_computed' for any
     other missing input. ``group`` = kind:direction:side, e.g. 'touch:down:yes' (YES on a dip), 'above:above:no',
-    'touch:up:no' (NO on a reach): the groups whose edge g > 0 shrinks."""
+    'touch:up:no' (NO on a reach): the groups whose edge g > 0 shrinks.
+
+    ``rows`` are normally already passed through :func:`with_snapshot_g`; raw rows (any row without ``snapshot_g``)
+    are passed through it here, so a threshold row is never 'no_binance' while its snapshot has g."""
     v2 = replace(rule, model=MODEL_V2G)
+    rows = list(rows)
+    if any("snapshot_g" not in r for r in rows):
+        rows = with_snapshot_g(rows)
     idx = {(str(r["market_id"]), int(r["ts"])): r for r in rows}
     out: list[dict[str, Any]] = []
     for p in positions:

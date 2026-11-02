@@ -30,6 +30,27 @@ def _no_dashboard_url(tmp_path, monkeypatch):
     """The server's real URL file (step 23) or a set $TRADEDESK_PANEL_URL must not change these tests."""
     monkeypatch.setattr(ab, "DASHBOARD_URL_PATH", tmp_path / "no_dashboard_url")
     monkeypatch.delenv(ab.PANEL_URL_ENV, raising=False)
+    monkeypatch.setattr(ab, "collector_health_line", lambda db_path=None: None)  # nor the server's collector DB
+
+
+def test_brief_shows_the_collector_health_line_under_the_stamp():
+    snap, asof = _snap()
+    line = "Колектори: частка знімків за 7 дн нижче 90 % або свіжа дірка — pm_gap 80 % (останній 02.11 05:00 UTC)."
+    for short in (True, False):
+        text = ab.build_brief(snap, asof + 300, short=short, health=line)
+        assert "• <i>дані</i> · Колектори: частка знімків" in text and text.index("<i>дані</i>") < text.index("BTC <b>")
+        assert "<i>дані</i>" not in ab.build_brief(snap, asof + 300, short=short)
+    assert "pm_gap 80 %" in ab.build_brief(snap, asof + 7 * 3600, short=True, health=line)  # old snapshot: line kept
+    assert "pm_gap 80 %" in ab.build_brief(None, asof, "missing", short=True, health=line)  # no snapshot: line kept
+    assert "&lt;b&gt;" in ab.build_brief(snap, asof + 300, short=True, health="<b>x</b>")  # escaped
+
+
+def test_collector_health_line_never_raises(monkeypatch, tmp_path):
+    import collector_health
+
+    monkeypatch.undo()  # the real function, not the autouse stub
+    monkeypatch.setattr(collector_health, "brief_line", lambda db: 1 / 0)
+    assert ab.collector_health_line(str(tmp_path / "x.sqlite")) is None
 
 
 def test_brief_on_the_real_snapshot():

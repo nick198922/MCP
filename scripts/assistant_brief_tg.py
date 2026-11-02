@@ -5,7 +5,7 @@
     python3 scripts/assistant_brief_tg.py --out DIR        # write DIR/brief.html (+ DIR/brief.png), send nothing
     python3 scripts/assistant_brief_tg.py --full --print   # the long text (every block), e.g. to compare
 
-Read-only and offline: the text is built from the same snapshot file as the dashboard's «Бриф» tab
+Read-only and offline: the text is built (apart from the collector-health line) from the same snapshot file as the dashboard's «Бриф» tab
 (``assistant_snapshot`` collector job; path and field names from scripts/dashboard.py), never from the network. Every
 string from the snapshot is untrusted and HTML-escaped for Telegram. The message is short (owner 22.10: a long text in
 Telegram is hard to read): BTC and ETH with the 24 h change, DVOL with its 1-year percentile, one «Режим циклу» line
@@ -19,7 +19,9 @@ one line with the state of the paper recommendation (section ``paper_rec``: «а
 profit, labelled «ризик-нейтральний, не порада»; omitted without data or without open positions), up to three
 «Потоки» lines for BTC (section ``flows``, the market_flow tool: the 24 h descriptive sentence, funding and
 liquidations, the Coinbase premium against its 30-day median, labelled «описово, не сигнал»), the next events in
-Kyiv time and one caveat line; the dashboard pages carry the rest. A missing or
+Kyiv time and one caveat line; the dashboard pages carry the rest. Under the stamp, a «дані» line names the collectors
+below 90 % of their expected snapshots over 7 days or with a fresh gap (scripts/collector_health.py, the collector DB
+read-only; no line when all are fine, ``--no-health`` skips it). A missing or
 unreadable snapshot gives an explained message, not an error; older than 30 min adds a warning; older than 6 h gives
 only the stamp and the warning (no prices, no countdowns). Event countdowns are counted from the send time, past events
 are dropped. The caveats are never cut by the length limit.
@@ -543,11 +545,18 @@ def cycle_change(snap: dict | None, now: float) -> str | None:
         return None
 
 
-def build_brief(snap: dict | None, now: float, err: str | None = None, short: bool = False) -> str:
+def _health(line: str | None) -> list[str]:
+    """The collector-health line (scripts/collector_health.brief_line: a series below 90 % of its expected snapshots
+    over 7 days or with a fresh gap), labelled «дані»; [] when every collector is fine."""
+    return [f"• <i>дані</i> · {_h(line)}"] if isinstance(line, str) and line.strip() else []
+
+
+def build_brief(snap: dict | None, now: float, err: str | None = None, short: bool = False, health: str | None = None) -> str:
     """The brief as Telegram HTML. Pure (no I/O, time passed in); never raises. `short` (what is sent): a few lines
     without block titles — BTC/ETH, DVOL, the 1-3 most important items, the risk-neutral range line, the paper
     recommendation, the next events, one caveat line; the long
-    version has every block and the three caveats."""
+    version has every block and the three caveats. `health`: the collector-health line (None = all fine), shown under
+    the stamp in every variant, also without a snapshot."""
     head = f"<b>Бриф асистента · {_h(db.kyiv(datetime.fromtimestamp(now, timezone.utc)))}{_tz()}</b>"  # noqa: UP017
     if short:
         tail = ["", f"<i>{_h(CAVEAT_SHORT)}</i>"]
@@ -558,9 +567,9 @@ def build_brief(snap: dict | None, now: float, err: str | None = None, short: bo
             "missing": "знімка асистента ще немає: завдання колектора <code>assistant_snapshot</code> вимкнене або не відпрацювало.",
             "corrupt": "файл знімка пошкоджений; наступний прогін колектора (кожні 10 хв) його перепише.",
         }.get(err or "", f"знімок не читається ({_h(err or 'невідома причина')}).")
-        return _fit([head, f"<b>Брифу сьогодні немає:</b> {why}"], tail)
+        return _fit([head, f"<b>Брифу сьогодні немає:</b> {why}"] + _health(health), tail)
     try:
-        out = [head] + _stamp(snap, now, short)
+        out = [head] + _stamp(snap, now, short) + _health(health)
         age = _age(snap, now)
         if age is not None and age > db.SNAPSHOT_OLD_S:  # yesterday's prices and countdowns would mislead
             return _fit(out, tail)
@@ -595,7 +604,7 @@ def build_brief(snap: dict | None, now: float, err: str | None = None, short: bo
             out.append("<i>Додатний funding — лонги платять шортам; до комісій і базису.</i>")
         return _fit(out, tail)
     except Exception as e:  # noqa: BLE001 - the brief always goes out
-        return _fit([head, _h(f"Знімок не вдалося прочитати ({type(e).__name__}).")], tail)
+        return _fit([head, _h(f"Знімок не вдалося прочитати ({type(e).__name__}).")] + _health(health), tail)
 
 
 def panel_base(path: Path | None = None, environ: dict[str, str] | None = None) -> str | None:
@@ -693,6 +702,17 @@ def chart_png(snap: dict | None) -> bytes | None:
         return None
 
 
+def collector_health_line(db_path: str | None = None) -> str | None:
+    """scripts/collector_health.brief_line on the collector DB (read-only, no network); None on any failure, so the
+    brief always goes out."""
+    try:
+        import collector_health  # noqa: PLC0415 - imports the tradedesk package; only the sending run needs it
+
+        return collector_health.brief_line(db_path or collector_health.DEFAULT_DB)
+    except Exception:  # noqa: BLE001 - the brief always goes out
+        return None
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--snapshot", type=Path, default=db.SNAPSHOT_PATH, help="snapshot JSON (default: the dashboard's)")
@@ -702,10 +722,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--no-chart", action="store_true", help="text only")
     ap.add_argument("--topic", default="alerts", help="forum topic (default: alerts)")
     ap.add_argument("--silent", action="store_true", help="deliver without a sound")
+    ap.add_argument("--db", help="collector SQLite DB for the collector-health line (read-only; default: the service's)")
+    ap.add_argument("--no-health", action="store_true", help="skip the collector-health line")
     a = ap.parse_args(argv)
     snap, err = db.load_snapshot(a.snapshot)
     buttons = dashboard_buttons()
-    text = build_brief(snap, time.time(), err, short=not a.full)
+    text = build_brief(snap, time.time(), err, short=not a.full, health=None if a.no_health else collector_health_line(a.db))
     png = None if a.no_chart else chart_png(snap)
     change = cycle_change(snap, time.time())
     if a.print_only or a.out:

@@ -71,8 +71,31 @@ before="$(usage_now)"
 set +e
 perl -e 'alarm shift; exec @ARGV' "${TRADEDESK_AUDIT_MAX_SECONDS:-10800}" "${TRADEDESK_CLAUDE_BIN:-claude}" -p "$PROMPT" \
   --permission-mode dontAsk --model "$MODEL" --effort "$EFFORT" --add-dir "$LOG_DIR" \
-  --allowedTools "${ALLOWED[@]}" --disallowedTools "${DENIED[@]}" | tee "$REPORT"
-rc=${PIPESTATUS[0]}
+  --allowedTools "${ALLOWED[@]}" --disallowedTools "${DENIED[@]}" >"$REPORT" &
+pid=$!
+# Cost cap (owner 2026-11-02): the audit may take at most CAP points of the weekly limit (usual cost about 5).
+# Checked every 5 minutes; past the cap the session is stopped and the owner is told.
+CAP="${TRADEDESK_AUDIT_MAX_WEEK_PCT:-10}"
+capped=""
+(
+  while sleep 300; do
+    kill -0 "$pid" 2>/dev/null || exit 0
+    now="$(usage_now)"
+    if awk -v a="$before" -v b="$now" -v cap="$CAP" 'BEGIN { split(a, x, " "); split(b, y, " ");
+         exit !(a != "" && b != "" && y[2] - x[2] >= cap) }'; then
+      echo "cost cap: weekly usage +${CAP}% reached, stopping the audit"
+      touch "$LOG_DIR/$STAMP.audit.capped"
+      kill "$pid"
+      exit 0
+    fi
+  done
+) &
+watcher=$!
+wait "$pid"
+rc=$?
+kill "$watcher" 2>/dev/null
+cat "$REPORT"
+[[ -e "$LOG_DIR/$STAMP.audit.capped" ]] && capped=1
 set -e
 echo "claude exit code $rc"
 after="$(usage_now)"
@@ -89,6 +112,10 @@ if [[ -n "$(git status --porcelain)" ]]; then
 fi
 git checkout --quiet --detach origin/main
 
+if [[ -n "$capped" ]]; then
+  notify "🔎✋ **Тижневий аудит зупинено на стелі ліміту** (+${CAP}% тижня${spent:+; $spent}). Звіт неповний, лог: $LOG_DIR/$STAMP.audit.log"
+  exit 6
+fi
 if ((rc != 0)); then
   notify "🔎❌ **Тижневий аудит не завершився** (код $rc). Лог: $LOG_DIR/$STAMP.audit.log"
   exit 5

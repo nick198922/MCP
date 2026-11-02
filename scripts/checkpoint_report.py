@@ -77,7 +77,7 @@ def load_carry(con: sqlite3.Connection, strategy: str) -> dict[str, Any]:
         for k in CARRY_KINDS:
             out["logs"][k] = [{**dict(r), "payload": _json(r["payload"]) or {}} for r in con.execute(q, (strategy, k))]
     if "cp_cycle" in names:
-        q = "SELECT strategy, cycle_ts, status, finished_ms, payload FROM cp_cycle WHERE strategy = ? ORDER BY cycle_ts"
+        q = "SELECT strategy, cycle_ts, status, reason, finished_ms, payload FROM cp_cycle WHERE strategy = ? ORDER BY cycle_ts"
         out["cycles"] = [{**dict(r), "payload": _json(r["payload"]) or {}} for r in con.execute(q, (strategy,))]
     return out
 

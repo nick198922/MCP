@@ -236,12 +236,14 @@ def demo_forward(spec: DemoSpec, trades: Sequence[Mapping[str, Any]], now_ms: in
 
 def fill_forward(spec: DemoSpec, trades: Sequence[Mapping[str, Any]], now_ms: int) -> dict[str, Any]:
     """Fill share of a limit setup over placements whose deadline (``rest_until``) has passed: «ні» when the 95 % Wilson
-    CI on >= 30 such placements does not contain the passport share."""
-    done = [
-        t
-        for t in trades
-        if t.get("status") in ("open", "closed", "missed") and (ru := _num(t.get("rest_until"))) is not None and ru <= now_ms
-    ]
+    CI on >= 30 such placements does not contain the passport share. A ``closing`` trade is filled; a ``pending`` one
+    past its deadline (not reconciled yet) stays out of the share and is counted in a note."""
+
+    def past(t: Mapping[str, Any]) -> bool:
+        return (ru := _num(t.get("rest_until"))) is not None and ru <= now_ms
+
+    done = [t for t in trades if t.get("status") in ("open", "closing", "closed", "missed") and past(t)]
+    stale = sum(1 for t in trades if t.get("status") == "pending" and past(t))
     filled = sum(1 for t in done if (o := _num(t.get("opened_ts"))) is not None and o <= now_ms)
     n = len(done)
     p = spec.fill_share or 0.0
@@ -258,6 +260,8 @@ def fill_forward(spec: DemoSpec, trades: Sequence[Mapping[str, Any]], now_ms: in
         row |= {"verdict": NO, "side": "нижче" if hi < p else "вище"}
         if hi < p:
             row["notes"].append("post-only лімітка заповнюється гірше за модель «пройшла крізь рівень»")
+    if stale:
+        row["notes"].append(f"pending з минулим строком (ще не звірені, поза часткою): {stale}")
     return row
 
 
@@ -329,7 +333,8 @@ def carry_forward(
     # (b) costs per executed leg side
     cr = cost_realism([x["payload"] for x in side_rows])
     ratio, short = cr.get("ratio"), cr.get("share_depth_short")
-    txt = f"сторін з книгою {cr.get('with_book', 0)} з {cr.get('sides', 0)}; фактична / модельна {_f(ratio, 2)} (≤ 1.5), без глибини {_pc(short)} (≤ 10 %)"
+    no_book = cr.get("sides", 0) - cr.get("with_book", 0)  # sides without actual_cost: in neither the ratio nor the depth share
+    txt = f"сторін з книгою {cr.get('with_book', 0)} з {cr.get('sides', 0)}; фактична / модельна {_f(ratio, 2)} (≤ 1.5), без глибини {_pc(short)} (≤ 10 %), без книги {no_book}"
     if cr.get("with_book", 0) < MIN_SIDES or ratio is None:
         crit.append(_crit("б", UNVERIFIABLE, txt + f"; мінімум {MIN_SIDES} сторін"))
     else:
@@ -456,6 +461,10 @@ def carry_forward(
     )
     if issues:
         txt += "; неповні за прапорцями (issue / detail): " + ", ".join(f"{k} {v}" for k, v in sorted(issues.items()))
+    # registration (d): every skip is journaled with its reason; descriptive, the verdict does not depend on it
+    skipped = [c for c in cyc if c.get("status") == "skipped"]
+    no_reason = sum(1 for c in skipped if not str(c.get("reason") or "").strip())
+    txt += f"; пропущених циклів {len(skipped)}, з них без причини в журналі {no_reason}"
     txt += f"; частка відкладених угод {_pc(share_def)} ({n_def} з {len(pos)})"
     if share_def is not None and share_def > DEFER_SHARE_LIMIT:
         txt += " — > 20 %: ознака проблеми надійності (реєстрація, п. 4; вердикт від неї не залежить)"

@@ -1,0 +1,3 @@
+- Пункт 8o structural-edges-depth: заборона входу carry A після анонсу делістингу на незалежному періоді 2022-01…2024-10-16 — ◯ (ворота не пройдено: подій, де заборона прибирає вхід, 1 < 10; P&L не рахувався).
+- Новий `scripts/verify_carry_a_entry_ban.py`, `placebo_ban_windows` в `analytics/carry_announcement.py`, тест причинності.
+- Звіт `docs/verification/2026-11-02-carry-a-entry-ban.md`, рев'ю критика B (approve після одного кола правок), оновлено базу знань.

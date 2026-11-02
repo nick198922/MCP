@@ -121,6 +121,32 @@ def placebo_windows(
     return out
 
 
+def placebo_ban_windows(
+    spans: Mapping[str, tuple[int, int]], leads_ms: Sequence[int], k: int, rng: random.Random, *, step_ms: int = 8 * H_MS
+) -> dict[str, list[tuple[int, int]]]:
+    """Information-free entry bans (placebo of item 8o): ``k`` symbols drawn without replacement from ``spans``
+    (``{symbol: (first_ms, last_ms)}`` of the symbol's data), each banned for one duration from a random permutation
+    of ``leads_ms`` (cycled if ``k`` exceeds it). The ban ``[u, u + L]`` starts at a random ``step_ms`` cycle from
+    ``first_ms`` such that it ends by ``last_ms``; a duration longer than the span bans the whole span. Use with
+    ``window_rule(...)[1]`` as ``entry_allowed`` only (no forced exit)."""
+    if not leads_ms or k <= 0 or not spans:
+        return {}
+    syms = sorted(spans)
+    rng.shuffle(syms)
+    leads = [int(x) for x in leads_ms]
+    rng.shuffle(leads)
+    out: dict[str, list[tuple[int, int]]] = {}
+    for i, sym in enumerate(syms[: min(k, len(syms))]):
+        lead = leads[i % len(leads)]
+        lo, hi = int(spans[sym][0]), int(spans[sym][1])
+        if lead >= hi - lo:
+            out[sym] = [(lo, hi)]
+            continue
+        u = lo + rng.randint(0, (hi - lo - lead) // step_ms) * step_ms
+        out[sym] = [(u, u + lead)]
+    return out
+
+
 def paired_event_diffs(
     a: Sequence[Mapping[str, Any]], b: Sequence[Mapping[str, Any]], keys: Iterable[tuple[str, int]]
 ) -> list[dict[str, Any]]:

@@ -9,6 +9,7 @@ from tradedesk.analytics.carry_announcement import (
     carry_symbol_ids,
     first_announcement,
     paired_event_diffs,
+    placebo_ban_windows,
     placebo_windows,
     window_rule,
 )
@@ -147,6 +148,59 @@ def test_window_rule_and_placebo_windows():
     assert all(v == [(8 * H8, 10 * H8)] for v in w.values())
     assert placebo_windows(trades, [2 * H8], 3, random.Random(1)) == w  # deterministic for a seed
     assert placebo_windows(trades, [20 * H8], 3, random.Random(1)) == {}  # lead longer than every trade
+
+
+def test_entry_ban_rule_is_causal_in_its_own_inputs():
+    """Item 8o, variant (v) = (iii) + entry ban only: nothing at or before ``cut`` changes when announcements,
+    prices and funding after ``cut`` change; an announcement after ``cut`` leaves the past equal to plain (iii)."""
+    mk = _delisted()
+    pe = {"DEL": perp_end_ms(mk["DEL"])}
+    kw = dict(perp_end=pe, close_on_vanish=True, n_cycles=2, **KW)
+    cut = T0 + 33 * H8
+    _, ok = announcement_rule({"FILL": [T0 + 10 * H8]})
+    a = simulate_carry_delisting(mk, entry_allowed=ok, **kw)
+    mk2 = _delisted()
+    for b in mk2["DEL"]["spot"] + mk2["DEL"]["perp"]:
+        if b["ts"] + H4 > cut:
+            b["close"] *= 3.0
+    for e in mk2["DEL"]["funding"]:
+        if e["ts_ms"] > cut:
+            e["rate"] = 0.004
+    _, ok2 = announcement_rule({"FILL": [T0 + 10 * H8], "DEL": [cut + H8]})  # DEL announced only after cut
+    b2 = simulate_carry_delisting(mk2, entry_allowed=ok2, **kw)
+    assert [x for x in a["equity"] if x[0] <= cut] == [x for x in b2["equity"] if x[0] <= cut]
+    assert _closed_before(a, cut) == _closed_before(b2, cut)
+    assert a["equity"] != b2["equity"]  # the changed future does matter after cut
+    # no forced exit: the DEL position opened before its (late) announcement is held by the frozen rules
+    assert all(t["reason"] != "announcement" for t in b2["trades"])
+    plain = simulate_carry_delisting(mk, **kw)
+    _, ok3 = announcement_rule({"DEL": [cut + 1]})
+    c = simulate_carry_delisting(mk, entry_allowed=ok3, **kw)
+    assert [x for x in c["equity"] if x[0] <= cut] == [x for x in plain["equity"] if x[0] <= cut]
+    # an announcement before the first entry removes the trade entirely (the ban "removes" the event)
+    _, ok4 = announcement_rule({"DEL": [T0]})
+    assert not [t for t in simulate_carry_delisting(mk, entry_allowed=ok4, **kw)["trades"] if t["symbol"] == "DEL"]
+
+
+def test_placebo_ban_windows_match_durations_and_fit():
+    spans = {f"S{i}": (0, 100 * H8) for i in range(6)}
+    spans["TINY"] = (0, 3 * H8)
+    leads = [10 * H8, 20 * H8, 50 * H8]
+    w = placebo_ban_windows(spans, leads, 3, random.Random(7))
+    assert len(w) == 3 and all(len(v) == 1 for v in w.values())
+    durs = sorted(v[0][1] - v[0][0] for v in w.values())
+    for s, ((lo, hi),) in w.items():
+        a, b = spans[s]
+        assert a <= lo <= hi <= b and (lo - a) % H8 == 0
+    if "TINY" not in w:
+        assert durs == sorted(leads)  # a permutation of the real durations
+    assert placebo_ban_windows(spans, leads, 3, random.Random(7)) == w  # deterministic for a seed
+    long = placebo_ban_windows({"TINY": (0, 3 * H8)}, [50 * H8], 1, random.Random(1))
+    assert long == {"TINY": [(0, 3 * H8)]}  # longer than the span: the whole span is banned
+    assert len(placebo_ban_windows(spans, leads, 99, random.Random(1))) == len(spans)  # k capped by the pool
+    assert placebo_ban_windows(spans, [], 3, random.Random(1)) == {}
+    _, ok = window_rule(long)
+    assert not ok("TINY", H8) and ok("TINY", 4 * H8) and ok("S0", H8)
 
 
 def test_paired_event_diffs_missing_counts_zero():

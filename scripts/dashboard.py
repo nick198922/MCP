@@ -78,6 +78,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 import agents_status as st  # noqa: E402
+import common_helpers as cmn  # noqa: E402
 import results_board as rb  # noqa: E402
 
 HOME = Path.home()
@@ -7369,12 +7370,9 @@ def load_journal(path: Path) -> tuple[dict | None, str | None]:
     """{'journal': rows | None, 'rec_paper': rows | None, 'trade_plan': rows | None, 'plan_shadow': int,
     'forecast_log': rows | None} (None = no such table; trade_plan without the demo trader's shadow plans, which are
     only counted), or (None, reason) with reason 'missing' | 'unreadable: …'. Read-only connection; never raises."""
-    try:
-        if not path.exists():
-            return None, "missing"
-        con = sqlite3.connect(f"file:{urllib.parse.quote(str(path))}?mode=ro", uri=True, timeout=5)
-    except (sqlite3.Error, OSError) as e:  # OSError: e.g. PermissionError from exists() on a closed directory
-        return None, f"unreadable: {type(e).__name__}"
+    con, why = cmn.open_ro(path)
+    if con is None:
+        return None, why
     try:
         con.row_factory = sqlite3.Row
         names = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
@@ -8808,12 +8806,9 @@ def load_pm_gap(path: Path) -> tuple[dict | None, str | None]:
     markets, 'n_snaps': {'v1', 'v2g'} snapshots since each paper test's T0 (only with a snapshot)}, or (None,
     'missing' | 'unreadable: …'). Read-only connection; works with and without the book_ts / surface_ts columns
     (SELECT *); never raises."""
-    try:
-        if not path.exists():
-            return None, "missing"
-        con = sqlite3.connect(f"file:{urllib.parse.quote(str(path))}?mode=ro", uri=True, timeout=5)
-    except (sqlite3.Error, OSError) as e:
-        return None, f"unreadable: {type(e).__name__}"
+    con, why = cmn.open_ro(path)
+    if con is None:
+        return None, why
     try:
         con.row_factory = sqlite3.Row
         names = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
@@ -9272,12 +9267,9 @@ def load_demo(path: Path) -> tuple[dict | None, str | None]:
     """{'trades': demo_trade rows | None, 'audit': exec_audit 'refused' / 'skipped' rows | None, 'option_legs':
     {status: count} of demo_option_leg | None} (None = no such table, an older store), or (None, reason) with reason
     'missing' | 'unreadable: …'. Read-only connection; never raises. Dry-run rows (kinds 'dry_*') are not read."""
-    try:
-        if not path.exists():
-            return None, "missing"
-        con = sqlite3.connect(f"file:{urllib.parse.quote(str(path))}?mode=ro", uri=True, timeout=5)
-    except (sqlite3.Error, OSError) as e:
-        return None, f"unreadable: {type(e).__name__}"
+    con, why = cmn.open_ro(path)
+    if con is None:
+        return None, why
     try:
         con.row_factory = sqlite3.Row
         names = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}

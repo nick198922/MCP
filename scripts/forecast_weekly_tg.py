@@ -35,6 +35,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 import assistant_brief_tg as ab  # noqa: E402
+import common_helpers as cmn  # noqa: E402
 import dashboard as db  # noqa: E402
 import tg_send  # noqa: E402
 
@@ -49,15 +50,12 @@ _h = ab._h  # Telegram HTML escaping of anything that comes from the data
 def load_forecasts(path: Path) -> tuple[list[dict] | None, str | None]:
     """(rows, None) from table forecast_log over a read-only connection, or (None, reason): 'missing' (no file),
     'no_table' (a store older than schema v20), 'unreadable: …'. Never raises."""
-    try:
-        if not path.exists():
-            return None, "missing"
-        con = sqlite3.connect(f"file:{urllib.parse.quote(str(path))}?mode=ro", uri=True, timeout=5)
-    except (sqlite3.Error, OSError) as e:
-        return None, f"unreadable: {type(e).__name__}"
+    con, why = cmn.open_ro(path)
+    if con is None:
+        return None, why
     try:
         con.row_factory = sqlite3.Row
-        if con.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'forecast_log'").fetchone() is None:
+        if not cmn.has_table(con, "forecast_log"):
             return None, "no_table"
         cols = {r[1] for r in con.execute("PRAGMA table_info(forecast_log)")}
         rv = "prob_rv" if "prob_rv" in cols else "NULL AS prob_rv"  # the RV30 model arrives with schema v23

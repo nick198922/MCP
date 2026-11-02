@@ -32,7 +32,6 @@ import sqlite3
 import sys
 import time
 import unicodedata
-import urllib.parse
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -40,6 +39,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 import assistant_brief_tg as ab  # noqa: E402
+import common_helpers as cmn  # noqa: E402
 import dashboard as db  # noqa: E402
 import rules_weekly_tg as rw  # noqa: E402
 import tg_send  # noqa: E402
@@ -66,15 +66,12 @@ def load_plans(path: Path) -> tuple[list[dict] | None, str | None]:
     columns only (verdict, status, outcome, r_result, resolved_ts; no thesis, symbol or tags text), newest first, at
     most dashboard.PLAN_MAX_ROWS; or (None, reason): 'missing' | 'no_table' (a store before schema v17) |
     'unreadable: …'. Read-only connection; never raises."""
-    try:
-        if not path.exists():
-            return None, "missing"
-        con = sqlite3.connect(f"file:{urllib.parse.quote(str(path))}?mode=ro", uri=True, timeout=5)
-    except (sqlite3.Error, OSError) as e:
-        return None, f"unreadable: {type(e).__name__}"
+    con, why = cmn.open_ro(path)
+    if con is None:
+        return None, why
     try:
         con.row_factory = sqlite3.Row
-        if con.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'trade_plan'").fetchone() is None:
+        if not cmn.has_table(con, "trade_plan"):
             return None, "no_table"
         shadow = f'%"{db.PLAN_SHADOW_TAG}"%'  # the same JSON-array match as the panel and Store.plan_list(exclude_tag=...)
         rows = [

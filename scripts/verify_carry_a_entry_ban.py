@@ -51,6 +51,15 @@ from tradedesk.analytics.carry_announcement import (  # noqa: E402
 )
 from tradedesk.analytics.carry_costs import CostModel, risk_summary, weekly_changes  # noqa: E402
 from tradedesk.analytics.carry_delisting import simulate_carry_delisting, vanish_events  # noqa: E402
+from tradedesk.analytics.carry_entry_pool import (  # noqa: E402
+    announcement_units,
+    cluster_bootstrap_mean,
+    control_symbols,
+    first_trade_in,
+    mde80,
+    top_contributor,
+    unit_delta,
+)
 from tradedesk.analytics.carry_modules import block_bootstrap, diff_curve, window_weekly  # noqa: E402
 from tradedesk.analytics.news_events import classify_delisting  # noqa: E402
 
@@ -427,9 +436,208 @@ async def stage_bybit(cache: Path) -> None:
     (cache / "bybit.json").write_text(json.dumps({"n_ann": len(rows), "kinds": dict(kinds), "perps": perps, "probe": res}, indent=1))
 
 
+# ---------------------------------------------------------------- stage: pool (item 8p)
+
+POOL_WINDOW_MS = 30 * 86_400_000
+POOL_HORIZON_MS = 180 * 86_400_000
+POOL_MATCH_MS = 72 * 3_600_000
+POOL_SHORT_MS = 150 * 86_400_000  # first walk horizon; rerun to the data end if the trade is still open there
+SEEN_8O = frozenset({"MDTUSDT", "1000BTTCUSDT", "BLZUSDT"})
+
+
+def one_trade(d: dict[str, Any], sym: str, lo: int, hi: int, model: CostModel, settle: str) -> dict[str, Any] | None:
+    """First trade the frozen A walk opens on ``sym`` alone (no slot limit) with ``lo <= open_ts <= hi``; data before
+    ``lo - 9 d`` is dropped (7 d lookback) and the walk is cut at ``lo + 150 d`` unless the trade is still open."""
+    x = d["full"][sym]
+    cut = lo - 9 * 86_400_000
+    m = {**x, "funding": [e for e in x["funding"] if int(e["ts_ms"]) >= cut], "perp": [b for b in x["perp"] if int(b["ts"]) >= cut],
+         "spot": [b for b in x["spot"] if int(b["ts"]) >= cut]}  # fmt: skip
+    if not m["funding"] or not m["perp"] or not m["spot"]:
+        return None
+    pe = {sym: d["pe"][sym]} if sym in d["pe"] else {}
+    ends = [min(d["end"], lo + POOL_SHORT_MS), d["end"]]
+    for k, end in enumerate(ends):
+        res = simulate_carry_delisting({sym: m}, perp_end=pe, settle=settle, close_on_vanish=True, n_cycles=dl.N_MAIN,
+                                       entry_allowed=lambda s, t: lo <= t <= hi, **an.kwargs(model, end))  # fmt: skip
+        tr = first_trade_in(res["trades"], lo, hi)
+        if tr is None or tr["reason"] != "end" or end == d["end"] or k == 1:
+            return None if tr is None else dict(tr)
+    return None
+
+
+def loose_hot(x: dict[str, Any], lo: int, hi: int) -> bool:
+    """Cheap pre-filter of control candidates: simple trailing 7 d funding APR >= 0.15 at some time in [lo, hi]
+    (the engine's own condition is 0.20; validated against the unfiltered walk in the sanity check)."""
+    f = [(int(e["ts_ms"]), float(e["rate"])) for e in x["funding"] if lo - 8 * 86_400_000 <= int(e["ts_ms"]) <= hi]
+    for t in range(lo, hi + 1, 8 * 3_600_000):
+        if sum(r for ts, r in f if t - 7 * 86_400_000 < ts <= t) * 365 / 7 >= 0.15:
+            return True
+    return False
+
+
+def pool_units(d: dict[str, Any]) -> list[dict[str, Any]]:
+    units = announcement_units(
+        d["index"], START, END, merge_ms=POOL_WINDOW_MS, window_ms=POOL_WINDOW_MS, perp_end=d["pe"], data_end_ms=d["end"]
+    )
+    for u in units:
+        u["perp"] = d["ids"][u["symbol"]]["perp"]
+    return units
+
+
+def pool_trades(d: dict[str, Any], units: list[dict[str, Any]], combos: list[tuple[str, str]], cache_ctrl: dict[Any, Any]) -> None:
+    """Fills ``u['trade'][combo]`` and ``u['controls'][combo]`` (list of control pnl) in place."""
+    syms = sorted(d["full"])
+    for i, u in enumerate(units):
+        u["trade"], u["controls"], u["ctrl_syms"] = {}, {}, {}
+        if not u["has_window"]:
+            continue
+        for mk, st in combos:
+            u["trade"][f"{mk}/{st}"] = one_trade(d, u["symbol"], u["pub"], u["win_end"], d["models"][mk], st)
+        t0 = next((t for t in u["trade"].values() if t is not None), None)
+        if t0 is None:
+            continue
+        tu = int(t0["open_ts"])
+        u["t_u"] = tu
+        cands = [
+            s
+            for s in control_symbols(d["index"], syms, u["symbol"], u["pub"], POOL_HORIZON_MS)
+            if loose_hot(d["full"][s], tu, tu + POOL_MATCH_MS)
+        ]
+        for mk, st in combos:
+            c = f"{mk}/{st}"
+            pn, ss = [], []
+            for s in cands:
+                key = (s, tu, c)
+                if key not in cache_ctrl:
+                    cache_ctrl[key] = one_trade(d, s, tu, tu + POOL_MATCH_MS, d["models"][mk], st)
+                tr = cache_ctrl[key]
+                if tr is not None:
+                    pn.append(tr["pnl"])
+                    ss.append(s)
+            u["controls"][c], u["ctrl_syms"][c] = pn, ss
+        log(f"pool unit {i + 1}/{len(units)} {u['perp']} pub {fmt(u['pub'])}: entry {fmt(tu)}, control candidates {len(cands)}, "
+            f"controls {len(u['controls'][f'{combos[0][0]}/{combos[0][1]}'])}; peak rss {rss_mb()} MB")  # fmt: skip
+
+
+def rss_mb() -> int:
+    import resource
+
+    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // 1024
+
+
+def stage_pool(cache: Path, phase: str, sample: int = 0) -> None:
+    d = load_all(cache, supplement=True)
+    units = pool_units(d)
+    if sample:
+        units = units[:sample]
+    n_win = sum(u["has_window"] for u in units)
+    combos = [("main", "perp_last"), ("main", "spot")] + ([("stress", "perp_last"), ("stress", "spot")] if phase == "run" else [])
+    ctrl: dict[Any, Any] = {}
+    pool_trades(d, units, combos, ctrl)
+    with_entry = [u for u in units if u.get("t_u") is not None]
+    gate = {"n_units": len(units), "n_with_window": n_win, "n_with_entry": len(with_entry), "gate_min": GATE_MIN, "sample": sample}
+    for st in SETTLES:
+        c = f"main/{st}"
+        cp = [p for u in with_entry for p in u["controls"].get(c, [])]
+        n = sum(1 for u in with_entry if u["controls"].get(c))
+        sd = statistics.stdev(cp) if len(cp) > 1 else None
+        gate[st] = {"n_units_with_control": n, "n_control_trades": len(cp), "sd_control": sd, "mde80": None if sd is None else mde80(sd, n)}
+    gate["passed"] = len(with_entry) >= GATE_MIN
+    print("\n== pool gate (item 8p; counts and control SD only, no unit P&L) ==")
+    print(f"units {len(units)}, with a window {n_win}, without a window (perp ended before the publication) {len(units) - n_win}, "
+          f"with an entry {len(with_entry)}; articles {len({u['cluster'] for u in with_entry})}")  # fmt: skip
+    for st in SETTLES:
+        g = gate[st]
+        print(
+            f"{st}: units with >=1 control {g['n_units_with_control']}, control trades {g['n_control_trades']}, sd_c {fmt_f(g['sd_control'])}, MDE80 {fmt_f(g['mde80'])} of slot notional"
+        )
+    print(
+        f"gate: {len(with_entry)} units with an entry {'>=' if gate['passed'] else '<'} {GATE_MIN} -> {'PASS' if gate['passed'] else 'FAIL (◯, no P&L)'}"
+    )
+    strip = [
+        {k: v for k, v in u.items() if k not in ("trade", "controls", "ctrl_syms")} | {"has_entry": u.get("t_u") is not None} for u in units
+    ]
+    (cache / f"pool_gate{'_sample' if sample else ''}.json").write_text(json.dumps({"gate": gate, "units": strip}, indent=1, default=str))
+    if phase != "run" or not gate["passed"]:
+        return
+    out: dict[str, Any] = {"gate": gate, "combos": {}}
+    for mk, st in combos:
+        c = f"{mk}/{st}"
+        rows = []
+        for u in with_entry:
+            tr, cp = u["trade"].get(c), u["controls"].get(c) or []
+            if tr is None:
+                continue
+            dlt = unit_delta(tr["pnl"], cp)
+            rows.append({"perp": u["perp"], "pub": u["pub"], "cluster": u["cluster"], "open": tr["open_ts"], "close": tr["close_ts"],
+                         "reason": tr["reason"], "perp_ended": tr.get("perp_ended"), "pnl": tr["pnl"], "n_ctrl": len(cp),
+                         "ctrl_mean": None if not cp else sum(cp) / len(cp), "delta": dlt,
+                         "ended_in_window": u["symbol"] in d["pe"] and d["pe"][u["symbol"]] <= u["pub"] + POOL_WINDOW_MS})  # fmt: skip
+        out["combos"][c] = pool_summary(rows)
+    (cache / "pool_results.json").write_text(json.dumps(out, indent=1, default=str))
+    pool_report(out)
+
+
+def fmt_f(x: float | None) -> str:
+    return "—" if x is None else f"{x:+.4f}"
+
+
+def pool_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    r = [x for x in rows if x["delta"] is not None]
+
+    def bs(sub: list[dict[str, Any]]) -> dict[str, Any]:
+        return cluster_bootstrap_mean([x["delta"] for x in sub], [x["cluster"] for x in sub], n_boot=N_BOOT, seed=PLACEBO_SEED)
+
+    vals = [x["delta"] for x in r]
+    top_u = top_contributor(vals, [x["perp"] for x in r])
+    top_a = top_contributor(vals, [x["cluster"] for x in r])
+    s: dict[str, Any] = {"rows": rows, "n_no_control": len(rows) - len(r), "all": bs(r),
+                         "unit_pnl_mean": statistics.fmean(x["pnl"] for x in r) if r else None,
+                         "ctrl_mean": statistics.fmean(x["ctrl_mean"] for x in r) if r else None,
+                         "share_neg": sum(x["delta"] < 0 for x in r) / len(r) if r else None,
+                         "top_unit": top_u, "no_top_unit": bs([x for x in r if x["perp"] != top_u]),
+                         "top_article": top_a, "no_top_article": bs([x for x in r if x["cluster"] != top_a]),
+                         "no_seen_8o": bs([x for x in r if x["perp"] not in SEEN_8O]),
+                         "ended_in_window": bs([x for x in r if x["ended_in_window"]]),
+                         "traded_on": bs([x for x in r if not x["ended_in_window"]])}  # fmt: skip
+    for y, lo, hi in YEARS:
+        s[str(y)] = bs([x for x in r if lo <= x["pub"] < (hi or END + 1)])
+    return s
+
+
+def pool_report(out: dict[str, Any]) -> None:
+    def line(b: dict[str, Any]) -> str:
+        if not b or b.get("mean") is None:
+            return "n 0"
+        return f"n {b['n']} (art {b['k']}) mean {pct(b['mean'])} CI [{pct(b['ci'][0])}; {pct(b['ci'][1])}] p(>=0) {b['p_ge0']:.3f}"
+
+    print("\n== pool: delta = unit pnl - mean control pnl, fraction of slot notional; CI cluster bootstrap by article ==")
+    for c, s in out["combos"].items():
+        print(f"\n-- {c}: units with control {s['all']['n']} (no control {s['n_no_control']}); unit pnl mean {pct(s['unit_pnl_mean'])}, "
+              f"control mean {pct(s['ctrl_mean'])}, share delta<0 {s['share_neg']:.2f}")  # fmt: skip
+        print(f"all: {line(s['all'])}")
+        print(f"without top unit {s['top_unit']}: {line(s['no_top_unit'])}")
+        print(f"without top article {fmt(s['top_article'])}: {line(s['no_top_article'])}")
+        print(f"without seen in 8o (MDT, 1000BTTC, BLZ): {line(s['no_seen_8o'])}")
+        print(f"perp ended within pub + 30 d: {line(s['ended_in_window'])}; traded on: {line(s['traded_on'])}")
+        for y, _, _ in YEARS:
+            print(f"{y}: {line(s[str(y)])}")
+    c0 = out["combos"].get("main/perp_last")
+    if c0:
+        sp = {(x["perp"], x["pub"]): x for x in out["combos"]["main/spot"]["rows"]}
+        print("\n| unit | pub | entry | close | reason | pnl perp_last | ctrl | n ctrl | delta perp_last | pnl spot | delta spot |")
+        for x in c0["rows"]:
+            y = sp.get((x["perp"], x["pub"])) or {}
+            print(f"| {x['perp']} | {fmt(x['pub'])} | {fmt(x['open'])} | {fmt(x['close'])} | {x['reason']} | {pct(x['pnl'])} | "
+                  f"{pct(x['ctrl_mean'])} | {x['n_ctrl']} | {pct(x['delta'])} | {pct(y.get('pnl'))} | {pct(y.get('delta'))} |")  # fmt: skip
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("stage", choices=["universe", "fetch", "bodies", "gate", "run", "report", "bybit"])
+    ap.add_argument("stage", choices=["universe", "fetch", "bodies", "gate", "run", "report", "bybit", "pool"])
+    ap.add_argument(
+        "--phase", choices=["gate", "run"], default="gate", help="pool (item 8p): 'gate' counts only, 'run' P&L if the gate passes"
+    )
     ap.add_argument("--cache-dir", default=str(DEFAULT_CACHE))
     ap.add_argument("--limit", type=int, default=0, help="fetch: at most this many files (timing sample)")
     ap.add_argument("--out", default="results.json")
@@ -454,6 +662,8 @@ def main() -> None:
         stage_run(cache, a.out, exclude=frozenset(s for s in a.exclude.split(",") if s), placebo=not a.no_placebo)
     elif a.stage == "report":
         report(json.loads((cache / a.out).read_text()))
+    elif a.stage == "pool":
+        stage_pool(cache, a.phase, a.limit)
     else:
         asyncio.run(stage_bybit(cache))
 

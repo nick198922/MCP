@@ -1455,6 +1455,45 @@ HELP_JS = """
 })();
 """
 
+# Auto-refresh that keeps the reader's place (standing improvements, item 15): a page built with `_refresh_head(s)` is
+# reloaded by this timer after `s` seconds; just before, it stores which <details> are open (keyed by id or summary
+# text plus its occurrence) and the scroll position in sessionStorage, and the reloaded page restores them once.
+# Without JS the <noscript> meta refresh in the head reloads the page as before (sections then fold back).
+REFRESH_MARK = "<meta name='td-refresh'"
+KEEP_OPEN_JS = """
+(function () {
+  var m = document.querySelector("meta[name='td-refresh']"); if (!m) return;
+  var s = parseInt(m.content, 10) || 60, k = 'td-keep:' + location.pathname + location.search;
+  function all() { return document.querySelectorAll('details'); }
+  function keys(ds) { var n = Object.create(null); return Array.prototype.map.call(ds, function (d) {
+    var sm = d.querySelector(':scope > summary'), b = d.id || (sm ? sm.textContent.trim() : '');
+    n[b] = (n[b] || 0) + 1; return b + '#' + n[b];
+  }); }
+  try {
+    var st = JSON.parse(sessionStorage.getItem(k) || 'null'); sessionStorage.removeItem(k);
+    if (st && st.open) {
+      if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
+      var ds = all();
+      keys(ds).forEach(function (x, i) { if (Object.prototype.hasOwnProperty.call(st.open, x)) ds[i].open = !!st.open[x]; });
+      scrollTo(0, +st.y || 0);
+    }
+  } catch (e) {}
+  setTimeout(function () {
+    try {
+      var o = {}, ds = all(); keys(ds).forEach(function (x, i) { o[x] = ds[i].open; });
+      sessionStorage.setItem(k, JSON.stringify({ open: o, y: scrollY }));
+    } catch (e) {}
+    location.reload();
+  }, s * 1000);
+})();
+"""
+
+
+def _refresh_head(seconds: int) -> str:
+    """Head tags for a page that refreshes itself every `seconds`: the period for KEEP_OPEN_JS (added by `with_help`)
+    and a <noscript> meta refresh as the no-JS fallback."""
+    return f"{REFRESH_MARK} content='{int(seconds)}'><noscript><meta http-equiv='refresh' content='{int(seconds)}'></noscript>"
+
 
 # key -> (low case, what to do; high case, what to do): for these keys the «i» note is an instruction — what it is,
 # then «low → do this», «high → do this» — instead of the «how to read» and «for a trade» lines (owner, 28.10: «що мені
@@ -1584,8 +1623,9 @@ def _h2(title: str, key: str = "", extra: str = "") -> str:
 
 
 def with_help(page: str) -> str:
-    """Add the tooltip script to a rendered assistant page."""
-    return page.replace("</body>", f"<script>{HELP_JS}</script></body>", 1)
+    """Add the tooltip script to a rendered assistant page (and, on a self-refreshing page, KEEP_OPEN_JS)."""
+    js = HELP_JS + (KEEP_OPEN_JS if REFRESH_MARK in page else "")
+    return page.replace("</body>", f"<script>{js}</script></body>", 1)
 
 
 def _flip(tone: str) -> str:
@@ -1762,7 +1802,7 @@ def render(s: dict) -> str:
     a, u, m = s["agents"], s.get("usage"), s["machine"]
     out = [
         f"<!doctype html><html lang='uk'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-        f"<meta http-equiv='refresh' content='{REFRESH_S}'><title>tradedesk — панель</title><style>{CSS}{HELP_CSS}</style></head><body>"
+        f"{_refresh_head(REFRESH_S)}<title>tradedesk — панель</title><style>{CSS}{HELP_CSS}</style></head><body>"
     ]
     svc = " ".join(f"<span class='{'ok' if x['state'] == 'active' else 'bad'}'>● {_e(x['label'])}</span>" for x in s["services"])
     out.append(
@@ -3000,7 +3040,7 @@ def render_brief(snap: dict | None, err: str | None, now: float, path: Path | No
     explained empty state."""
     head = (
         "<!doctype html><html lang='uk'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-        f"<meta http-equiv='refresh' content='{REFRESH_S}'><title>tradedesk — ринок</title><style>{CSS}{BRIEF_CSS}</style></head><body>"
+        f"{_refresh_head(REFRESH_S)}<title>tradedesk — ринок</title><style>{CSS}{BRIEF_CSS}</style></head><body>"
     )
     caveats = "<div class='caveat'><b>Застереження</b><ul>" + "".join(f"<li>{_e(c)}</li>" for c in BRIEF_CAVEATS) + "</ul></div>"
     try:
@@ -5578,7 +5618,7 @@ def render_radar(snap: dict | None, err: str | None, now: float, params: dict | 
     asset = (params or parse_radar_query(""))["asset"]
     head = (
         "<!doctype html><html lang='uk'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-        f"<meta http-equiv='refresh' content='{REFRESH_S}'><title>tradedesk — радар</title><style>{CSS}{BRIEF_CSS}{RADAR_CSS}</style></head><body>"
+        f"{_refresh_head(REFRESH_S)}<title>tradedesk — радар</title><style>{CSS}{BRIEF_CSS}{RADAR_CSS}</style></head><body>"
     )
     caveats = "<div class='caveat'><b>Застереження</b><ul>" + "".join(f"<li>{_e(c)}</li>" for c in RADAR_CAVEATS) + "</ul></div>"
     try:
@@ -5978,7 +6018,7 @@ def render_flows(snap: dict | None, err: str | None, now: float, params: dict | 
     name = f"flow_{asset.lower()}"
     head = (
         "<!doctype html><html lang='uk'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-        f"<meta http-equiv='refresh' content='{REFRESH_S}'><title>tradedesk — потоки</title><style>{CSS}{BRIEF_CSS}{RADAR_CSS}</style></head><body>"
+        f"{_refresh_head(REFRESH_S)}<title>tradedesk — потоки</title><style>{CSS}{BRIEF_CSS}{RADAR_CSS}</style></head><body>"
     )
     caveats = "<div class='caveat'><b>Застереження</b><ul>" + "".join(f"<li>{_e(c)}</li>" for c in FLOW_CAVEATS) + "</ul></div>"
     try:
@@ -8682,7 +8722,7 @@ def render_polymarket(data: dict | None, err: str | None, now: float, path: Path
     """The «Polymarket» tab. Never raises: no database, no table, an empty or a stale snapshot gives an explained state."""
     head = (
         "<!doctype html><html lang='uk'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-        f"<meta http-equiv='refresh' content='{5 * REFRESH_S}'><title>tradedesk — Polymarket</title>"
+        f"{_refresh_head(5 * REFRESH_S)}<title>tradedesk — Polymarket</title>"
         f"<style>{CSS}{BRIEF_CSS}{JOURNAL_CSS}{PM_CSS}</style></head><body>"
     )
     title = "<h1>Polymarket ↔ опціони</h1>"

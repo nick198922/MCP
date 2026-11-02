@@ -54,6 +54,17 @@ PARKED="$LOG_DIR/parked.state" # one line per branch "<branch> <not-before epoch
 SUMMARY="$LOG_DIR/$STAMP.summary.md"
 : >"$SUMMARY"
 dirty() { [[ -n "$(git -C "$WT" status --porcelain 2>/dev/null)" ]]; }
+# True when everything this work changed against main (commits on the work branch plus the working tree) is run notes
+# under docs/agents/runs/, and something did change.
+only_run_notes() {
+  local files
+  files="$( (git -C "$WT" diff --name-only origin/main...HEAD 2>/dev/null; git -C "$WT" status --porcelain --untracked-files=all 2>/dev/null | cut -c4-) | sort -u)"
+  [[ -n "$files" ]] || return 1
+  local f
+  while IFS= read -r f; do
+    [[ "$f" == docs/agents/runs/* ]] || return 1
+  done <<<"$files"
+}
 
 # Report one outcome: history line (with what the step cost), Telegram message, exit code.
 # Arguments after the text go to notify (--silent, --button "Label|url").
@@ -449,6 +460,19 @@ fi
 PROJECT_DIR="$(printf '%s' "$WT" | sed 's#[^A-Za-z0-9-]#-#g')"
 uv run --no-project python "$REPO/scripts/agents_transcript.py" --project="$PROJECT_DIR" --out "$LOG_DIR/$STAMP.transcript.md" || true
 
+# A run that handed nothing over and only wrote its run note did no step. Saving that note as work in progress made
+# every next run "continue" an empty branch until MAX_RUNS (2-3.11: four runs in a row at 88 % of the weekly budget).
+# Set such a note aside, drop a work branch that holds nothing else, and report the run as idle below.
+if [[ $DRY -eq 0 && -z "$DELIVERED" ]] && only_run_notes; then
+  echo "only a run note changed${WORK_BR:+ on $WORK_BR}: nothing to save, set aside"
+  git stash push -q --include-untracked -m "agents-idle-note-$STAMP" 2>/dev/null || true
+  git checkout --quiet --detach origin/main
+  if [[ -n "$WORK_BR" ]]; then
+    git push -q origin --delete "$WORK_BR" 2>/dev/null || true
+    rm -f "$WORK"
+    WORK_BR=""
+  fi
+fi
 if [[ $DRY -eq 1 ]]; then
   finish 0 "dry" "🧪 **Агенти: пробний прогін**
 $(head -c 3000 "$SUMMARY")" --silent

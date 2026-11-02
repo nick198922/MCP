@@ -26,6 +26,12 @@ _KEEP = (
     "total60dto30d",
     "total7DaysAgo",
     "total30DaysAgo",
+    # DefiLlama's own changes, in PERCENT rounded to 2 dp (not decimals): kept only to cross-check our recomputation
+    # (change_1d, change_7d, change_1m ~ our change_30d, change_7dover7d ~ our week_over_week).
+    "change_1d",
+    "change_7d",
+    "change_1m",
+    "change_7dover7d",
 )
 
 

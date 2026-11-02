@@ -130,6 +130,64 @@ async def test_chain_metrics_happy():
     assert {e["provider"] for e in env["evidence"]} == {"defillama"} and len(env["evidence"]) == 3
 
 
+# SYNTHETIC overview bodies (not a real DefiLlama response): round totals chosen so that every change differs, and
+# upstream-style change_* fields written by hand as DefiLlama formats them (percent, rounded to 2 dp). The real
+# 2026-10-17 fixture was saved without change_*. The field mapping and units were checked live on 2026-11-02 against
+# /overview/{dexs,fees}/{Solana,Ethereum}: all 16 fields matched our recomputation to DefiLlama's rounding.
+LLAMA_UP = {
+    "dexs": {
+        "chain": "Synthetic",
+        "total24h": 1100.0,
+        "total48hto24h": 1000.0,  # +10 %
+        "total7d": 7000.0,
+        "total14dto7d": 8000.0,  # -12.5 %
+        "total30d": 30000.0,
+        "total60dto30d": 31000.0,
+        "total7DaysAgo": 900.0,  # +22.2222 %
+        "total30DaysAgo": 2000.0,  # -45 %
+        "change_1d": 10.0,
+        "change_7d": 22.22,
+        "change_1m": -45.0,
+        "change_7dover7d": -12.5,
+    },
+    "fees": {
+        "chain": "Synthetic",
+        "total24h": 50.0,
+        "total48hto24h": 60.0,  # -16.6667 %
+        "total7d": 330.0,
+        "total14dto7d": 300.0,  # +10 %
+        "total30d": 1500.0,
+        "total60dto30d": 1400.0,
+        "total7DaysAgo": 45.0,  # +11.1111 %
+        "total30DaysAgo": 40.0,  # +25 %
+        "change_1d": -16.67,
+        "change_7d": 11.11,
+        "change_1m": 25.0,
+        "change_7dover7d": 10.0,
+    },
+}
+# DefiLlama change field (percent, 2 dp) -> our overview_summary field (decimal)
+UPSTREAM_MAP = {"change_1d": "change_1d", "change_7d": "change_7d", "change_1m": "change_30d", "change_7dover7d": "week_over_week"}
+
+
+async def test_overview_changes_match_defillama_upstream():
+    def handler(req):
+        kind = "dexs" if req.url.path.startswith("/overview/dexs/") else "fees"
+        return httpx.Response(200, json={**LLAMA_UP[kind], "protocols": [{"name": "dropped"}]})
+
+    rt = Runtime(Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0), transports={"defillama": httpx.MockTransport(handler)})
+    try:
+        bodies = {"dexs": (await rt.defillama.dex_overview("Solana")).data, "fees": (await rt.defillama.fees_overview("Solana")).data}
+    finally:
+        await rt.aclose()
+    for kind, body in bodies.items():
+        assert "protocols" not in body and all(body[k] == LLAMA_UP[kind][k] for k in UPSTREAM_MAP)
+        ours = overview_summary(body)
+        for up, mine in UPSTREAM_MAP.items():
+            # upstream is percent rounded to 0.01 pp -> decimal tolerance 0.5e-4 (+ float slack)
+            assert ours[mine] == pytest.approx(body[up] / 100, abs=6e-5), (kind, up)
+
+
 async def test_chain_metrics_partial_and_total_failure():
     def partial(req):
         if req.url.path.startswith("/overview/fees/"):

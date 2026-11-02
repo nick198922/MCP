@@ -762,7 +762,10 @@ def state() -> State:
 
 @pytest.fixture
 def rt(state: State) -> Runtime:
-    runtime = Runtime(Settings(http_retries=1, cache_scale=0.0), transports=make_transports(state), exchange_factory=FakeEx)
+    # http_retry_backoff=0: a retried fake failure costs no wall time (production waits 0.4 s, see Settings).
+    runtime = Runtime(
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0), transports=make_transports(state), exchange_factory=FakeEx
+    )
     runtime.now = lambda: NOW
     return runtime
 

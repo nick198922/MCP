@@ -67,7 +67,22 @@ def build_channels(settings: "Settings") -> list[Channel]:
         from ..providers.telegram import BASE_URL as TG_URL  # noqa: PLC0415
         from ..providers.telegram import Telegram  # noqa: PLC0415
 
-        http = Http("telegram", TG_URL, rate=1.0, burst=2, timeout=settings.http_timeout, retries=settings.http_retries)
+        # sendMessage is not idempotent: a retry after a read timeout or a 5xx can post the same alert twice (Telegram
+        # may have delivered it before the answer was lost). So retries cover only failures where the request surely
+        # did not reach Telegram: connect / DNS / TLS errors and HTTP 429 (flood control, honours retry_after).
+        # A lost alert is still recorded as failed in the `alerts` table; a duplicate would not be visible anywhere.
+        http = Http(
+            "telegram",
+            TG_URL,
+            rate=1.0,
+            burst=2,
+            timeout=settings.http_timeout,
+            retries=settings.http_retries,
+            backoff_base=settings.http_retry_backoff,
+            retry_unsent_only=True,
+            # Exact-string masking, so the token never reaches an error (and the `alerts` table) even outside `/bot<token>`.
+            secrets=(settings.telegram_bot_token,),
+        )
         channels.append(
             TelegramChannel(Telegram(http, settings.telegram_bot_token), settings.telegram_chat_id, settings.telegram_topic_alerts)
         )

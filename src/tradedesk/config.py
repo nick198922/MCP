@@ -20,6 +20,9 @@ def _float(name: str, default: float) -> float:
 class Settings:
     http_timeout: float = 10.0
     http_retries: int = 2
+    # Seconds before the first retry (Http doubles it per attempt; ccxt calls wait it times the attempt). Not read from
+    # the environment: the test Runtime sets 0 so retried failures cost no wall time.
+    http_retry_backoff: float = 0.4
     # Multiplies every cache TTL. 0 disables caching (useful in tests / debugging).
     cache_scale: float = 1.0
     # Transport used by `tradedesk-mcp` (stdio for local, streamable-http for a server).

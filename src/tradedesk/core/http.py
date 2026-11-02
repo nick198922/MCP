@@ -24,6 +24,9 @@ from .ratelimit import TokenBucket
 
 _SECRET_KEY = re.compile(r"(?i)(key|token|secret|signature|pass)")
 _RETRY_STATUS = {429, 500, 502, 503, 504}
+# Failures that happen before a single byte of the request leaves this machine (DNS / TCP / TLS, no free pooled
+# connection): the server surely never saw the request, so repeating it cannot duplicate a side effect.
+_UNSENT = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
 
 # For APIs that report failures inside an HTTP 200 body (GraphQL `errors`, GoPlus codes): a pure function of the decoded
 # body returning None when it is usable, or (reason, detail) when it is a failure. A failure is recorded in health once,
@@ -40,6 +43,18 @@ class _Absent:
 
     def __init__(self, detail: str) -> None:
         self.detail = detail
+
+
+def _retry_after(resp: httpx.Response) -> str | None:
+    """Seconds to wait from a 429: the Retry-After header, else Telegram's body field `parameters.retry_after`."""
+    header = resp.headers.get("retry-after")
+    if header:
+        return header
+    try:
+        value = resp.json().get("parameters", {}).get("retry_after")
+    except (ValueError, AttributeError):
+        return None
+    return str(value) if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _clean_args(params: dict[str, Any] | None) -> dict[str, Any]:
@@ -63,6 +78,7 @@ class Http:
         transport: httpx.AsyncBaseTransport | None = None,
         backoff_base: float = 0.4,
         secrets: tuple[str, ...] = (),
+        retry_unsent_only: bool = False,
     ) -> None:
         self.provider = provider
         # Exact strings (API keys sent in headers) scrubbed from every error detail, before health and ProviderError see it.
@@ -80,6 +96,10 @@ class Http:
         self._scale = cache_scale
         self._health = health
         self._backoff = backoff_base
+        # For non-idempotent calls (Telegram sendMessage): retry only when the server surely did not act on the request,
+        # i.e. a connection that never opened (_UNSENT) or an HTTP 429. A read timeout, a dropped connection or a 5xx
+        # after the body went out may mean it was already processed, so those fail at once instead of repeating it.
+        self._unsent_only = retry_unsent_only
         if health:
             health.register(provider)
 
@@ -121,8 +141,12 @@ class Http:
                 resp = await self._client.request(method, path, params=params, json=json)
             except httpx.TimeoutException as e:
                 last = ProviderError(self.provider, "network", f"timeout: {type(e).__name__}")
+                if self._unsent_only and not isinstance(e, _UNSENT):
+                    break
             except httpx.HTTPError as e:
                 last = ProviderError(self.provider, "network", f"{type(e).__name__}: {e}")
+                if self._unsent_only and not isinstance(e, _UNSENT):
+                    break
             else:
                 ms = (time.perf_counter() - t0) * 1000
                 code = resp.status_code
@@ -144,12 +168,15 @@ class Http:
                     raise self._fail("backend_error", f"HTTP {code}: {snippet}")
                 reason = "rate_limited" if code == 429 else "backend_error"
                 last = ProviderError(self.provider, reason, f"HTTP {code}: {snippet}")
-                retry_after = resp.headers.get("retry-after")
+                if self._unsent_only and code != 429:
+                    break  # a 5xx may come after the server already acted on the request
+                retry_after = _retry_after(resp)
                 if retry_after and retry_after.isdigit() and attempt < self._retries:
                     await asyncio.sleep(min(float(retry_after), 5.0))
                     continue
             if attempt < self._retries:
-                await asyncio.sleep(min(self._backoff * (2**attempt) + random.random() * 0.1, 5.0))
+                # Jitter scales with the base (0.1 s at the default 0.4), so backoff_base=0 means no wait at all.
+                await asyncio.sleep(min(self._backoff * (2**attempt) + random.random() * self._backoff / 4, 5.0))
         assert last is not None
         raise self._fail(last.reason, last.detail)
 

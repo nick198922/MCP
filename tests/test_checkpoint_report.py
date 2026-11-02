@@ -104,6 +104,20 @@ def test_s28_first_30_filled_waits_while_one_is_still_open():
     assert not any("за часом входу:" in x for x in main["notes"])  # the 31st trade does not stand in for the open one
 
 
+def test_fill_share_counts_closing_as_filled_and_notes_stale_pending():
+    s28 = next(s for s in cp.DEMO if s.setup == "S28")
+    filled = [_trade(i, "S28", 0.0, rest_until=V9) for i in range(10)]
+    closing = [dict(t, status="closing", closed_ts=None, r_multiple=None) for t in filled]
+    assert (f := cp.fill_forward(s28, closing, NOW))["n"] == 10 and f["metric"] == pytest.approx(1.0)
+    base = {"setup": "S28", "timeframe": "4h", "status": "pending", "signal_ts": V9}
+    stale = [base | {"link_id": f"p{i}", "rest_until": V9 + H} for i in range(3)]
+    fresh = [base | {"link_id": "q", "rest_until": NOW + DAY}]
+    f = cp.fill_forward(s28, filled + stale + fresh, NOW)
+    assert f["n"] == 10 and f["metric"] == pytest.approx(1.0)  # pending stays out of the share
+    assert any("pending з минулим строком" in x and x.endswith(": 3") for x in f["notes"])
+    assert not any("pending" in x for x in cp.fill_forward(s28, filled + fresh, NOW)["notes"])
+
+
 def test_fill_share_full_fill_is_above_the_passport():
     s28 = next(s for s in cp.DEMO if s.setup == "S28")
     first = [_trade(i, "S28", 0.0, rest_until=V9) for i in range(40)]
@@ -186,6 +200,33 @@ def test_carry_d_counts_flagged_cycles_as_incomplete_and_says_why():
     assert "funding_payment_missing / funding_history_incomplete 3" in d["text"] and "funding_payment_missing / gap 1" in d["text"]
     note = next(x for x in r["notes"] if "з повними даними" in x)
     assert "exploratory" in note and "біржа не опублікувала" not in note and "рішення кванта" not in note
+
+
+def test_carry_b_prints_sides_without_a_book_and_keeps_the_rule():
+    side = {"cycle_ts": T, "kind": "side", "trade_id": "P0"}
+    book = [side | {"payload": {"actual_cost": 0.002, "model_cost": 0.0015, "spread_bps": 3.0}} for _ in range(20)]
+    none = [side | {"payload": {"actual_cost": None, "model_cost": 0.0015}} for _ in range(5)]
+    logs = {"side": book + none, "mark": [], "close": [], "event": []}
+    b = next(c for c in cp.carry_forward("A", [_pos("X")], logs, _cycles(40), BENCH["A"]["bench"], NOW)["criteria"] if c["id"] == "б")
+    assert b["status"] == cp.PASS and "сторін з книгою 20 з 25" in b["text"] and "без глибини 0 %" in b["text"]
+    assert "без книги 5" in b["text"]
+    logs = {**logs, "side": book[:19] + none}  # the minimum stays on sides with a book: 19 -> ◯
+    b = next(c for c in cp.carry_forward("A", [_pos("X")], logs, _cycles(40), BENCH["A"]["bench"], NOW)["criteria"] if c["id"] == "б")
+    assert b["status"] == cp.UNVERIFIABLE and "без книги 5" in b["text"]
+
+
+def test_carry_d_counts_skipped_cycles_without_a_reason():
+    cyc = _cycles(42) + [  # skipped cycles stay in the denominator: 42 / 45 = 93 % -> not passed, as before
+        {"cycle_ts": T + (42 + k) * 8 * H, "status": "skipped", "reason": why, "payload": {}}
+        for k, why in enumerate(["missed: engine did not run in time", None, "  "])
+    ]
+    logs = {"mark": [], "side": [], "close": [], "event": []}
+    d = next(c for c in cp.carry_forward("A", [_pos("X")], logs, cyc, BENCH["A"]["bench"], NOW)["criteria"] if c["id"] == "д")
+    assert "пропущених циклів 3, з них без причини в журналі 2" in d["text"]
+    assert d["status"] == cp.FAIL and "циклів 45, вчасно (≤ 30 хв) і з повними даними 42 (93 %" in d["text"]
+    with_reasons = [dict(c, reason="missed") if c["status"] == "skipped" else c for c in cyc]
+    d2 = next(c for c in cp.carry_forward("A", [_pos("X")], logs, with_reasons, BENCH["A"]["bench"], NOW)["criteria"] if c["id"] == "д")
+    assert d2["status"] == d["status"] and "без причини в журналі 0" in d2["text"]  # the verdict does not depend on it
 
 
 def test_carry_v_ignores_the_deferred_share_and_d_warns_about_it():
@@ -383,6 +424,21 @@ def test_script_does_not_touch_the_condor_table_before_t0(tmp_path, monkeypatch)
     monkeypatch.setattr(cfc, "load_rows", lambda path, fridays, *, with_hold: calls.append((list(fridays), with_hold)) or [])
     inp = script.load_inputs(db, cp._ms(2026, 11, 20, 12))  # after T0, before part (a) may be decided
     assert inp["condor_t0"] == date(2026, 11, 6) and calls == [([date(2026, 11, 6), date(2026, 11, 13), date(2026, 11, 20)], False)]
+
+
+def test_script_loads_the_skip_reason_of_cycles(tmp_path):
+    db = _db(tmp_path)
+    con = sqlite3.connect(db)
+    for k, why in ((35, "missed: engine did not run in time"), (36, None)):
+        con.execute(
+            "INSERT INTO cp_cycle (strategy, cycle_ts, status, reason, payload) VALUES ('A', ?, 'skipped', ?, '{}')", (T + k * 8 * H, why)
+        )
+    con.commit()
+    con.close()
+    cycles = script.load_inputs(db, NOW)["carry"]["A"]["cycles"]
+    assert [c["reason"] for c in cycles if c["status"] == "skipped"] == ["missed: engine did not run in time", None]
+    text = cp.render(cp.build(script.load_inputs(db, NOW), NOW))
+    assert "пропущених циклів 2, з них без причини в журналі 1" in text
 
 
 def test_script_survives_a_missing_db(tmp_path):

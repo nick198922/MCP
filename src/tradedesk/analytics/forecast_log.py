@@ -18,7 +18,9 @@ has a natural uninformed value (0.5 for ``above_spot``, 2 N(1) - 1 = 0.6827 for 
 climatology (base rate of each event kind in the scored set, a hindsight reference); skill = 1 - BS / BS_ref;
 calibration in ten probability bins and the binned Murphy decomposition BS ~ reliability - resolution + uncertainty
 (exact only when the forecasts inside a bin are equal). Forecasts issued on consecutive days for one expiry share the
-outcome and are correlated: ``n_expiries`` counts the distinct (asset, expiry) outcomes, the honest sample size.
+outcome and are correlated: ``n_expiries`` counts the distinct (asset, expiry) outcomes, still an upper bound, since
+BTC and ETH settle at the same 08:00 delivery and move together; ``n_expiry_dates`` (distinct expiries, the unit of
+`compare`) is the honest sample size.
 
 Beside each risk-neutral probability the row keeps a PHYSICAL baseline, the "RV30 model": the log return to the
 delivery is normal with zero mean and the trailing 30-day zero-mean close-to-close realized vol (`vrp.realized_vol`,
@@ -212,6 +214,7 @@ def score(rows: Iterable[Mapping[str, Any]], n_bins: int = N_BINS) -> dict[str, 
     out: dict[str, Any] = {
         "n": n,
         "n_expiries": len({(x.get("asset"), x.get("expiry_ts")) for x in xs}),
+        "n_expiry_dates": len({x.get("expiry_ts") for x in xs}),
         "mean_prob": _mean(ps),
         "base_rate": obar,
         "brier": bs,

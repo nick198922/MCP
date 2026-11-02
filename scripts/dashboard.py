@@ -7074,6 +7074,7 @@ def fc_score(rows: list[dict], n_bins: int = FC_N_BINS) -> dict:
     out: dict = {
         "n": n,
         "n_expiries": len({(x.get("asset"), x.get("expiry_ts")) for x in xs}),
+        "n_expiry_dates": len({x.get("expiry_ts") for x in xs}),
         "mean_prob": _fc_mean(ps),
         "base_rate": obar,
         "brier": bs,

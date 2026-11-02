@@ -126,6 +126,160 @@ def test_demo_tab_happy_path_tiles_setups_refusals(tmp_path):
     assert "Закритих демо-угод для звірки: 14" in page
 
 
+FOLD = "<section class='wide fold'><details><summary>"
+
+
+def test_demo_tab_follows_the_panel_rules(tmp_path):
+    """docs/design/PANEL.md (standing improvements, item 16): «what now / what to do» first, open positions and broken
+    guard rules always open, the rest folded with a one-line summary, short «i», the caveats once at the bottom."""
+    page = db.render_demo(*db.load_demo(_filled(tmp_path, NOW)), NOW / 1000, vs_bt_on=False)
+    assert "Блок не вдалося показати" not in page
+    main = page.split("<main class='brief'>")[1].split("</main>")[0]
+    lead = main.split("<h2>")[0]
+    assert "<span class='chip calm'>збираємо вибірку</span>" in lead
+    assert "Відкрито 2, закрито 14, середній R усіх угод +0.25 R." in lead  # 13 S3 + 1 S16 with R
+    assert "<b>Що робити:</b> висновків не роби: найближчий до 30 угод поточної версії — S3 v3 (13 з 30)." in lead
+    # what needs attention is never folded and comes before the folds
+    first_fold = main.index(FOLD)
+    for title in ("Демо-угоди", "Відкриті позиції", "Порушені правила guard · 7 днів"):
+        assert main.index(f"<h2>{title}{ICON}") < first_fold, title
+    open_pos = main.split("<h2>Відкриті позиції")[1].split("<h2>")[0]
+    assert open_pos.count("<tr><td class='num'>") == 2  # the open S3 and the pending S14; closed / missed rows are not here
+    assert "<span class='badge long'>лонг</span>" in open_pos and "<span class='badge short'>шорт</span>" in open_pos
+    assert "чекає входу" in open_pos and "відкрита" in open_pos and "<td class='num'>95.00</td><td class='num'>110.00</td>" in open_pos
+    rules = main.split("<h2>Порушені правила guard")[1].split(FOLD)[0]
+    assert "<td>R:R після комісій нижче 1.5</td><td class='num'>2</td>" in rules  # refused only, last 7 days
+    assert "уже є позиція в цій монеті" in rules and "бал сигналу нижче 2" not in rules  # 'skipped' is not a broken rule
+    assert XSS not in rules and "&lt;img" in rules
+    # the rest: folded, each with its main number in the summary line
+    assert main.count(FOLD) == 5 and "<details open" not in page
+    for title, summary in (
+        ("R за сетапом", "поточні версії: найбільше угод з R — S3 v3, 13 з 30, середній R +0.37 R"),
+        ("Версії сетапів", f"{len(db.DEMO_EPOCHS)} версій правил, остання {db.DEMO_EPOCHS[-1][0]}"),
+        ("Останні демо-угоди", "угод 18 · остання закрита: "),
+        ("Відмови guard за причинами", "за весь час: відмов guard 4 · не відібрано 4 · найчастіше: бал сигналу нижче 2"),
+        ("Демо проти бектесту", "файла звірки ще немає"),
+    ):
+        head = main.split(f"<summary><h2>{title}{ICON}")[1].split("</summary>")[0]
+        assert f"<span class='fs'>{summary}" in head, (title, head[-200:])
+    # tiles carry a «what to do» line
+    for act in ("стоп і ціль на біржі: нічого не роби", "замало угод для висновку: чекай", "сетапи порівнюй за R, не доларами"):
+        assert f"<span class='act'>{act}</span>" in page, act
+    # every «i» on the tab is the short instruction: what it is, «low → do», «high → do»
+    n = page.count(ICON)
+    assert n >= 17 and page.count("<span class='do'><i>") == 2 * n and "Для угоди:" not in page
+    # the caveats once, after the content, with the option-legs note
+    assert page.count("<b>Застереження</b>") == 1 and page.index("</main>") < page.index("<b>Застереження</b>")
+    assert page.count("Не інвестиційна порада") == 1 and page.count("числа описові, не доказ переваги") == 1
+    assert page.index("</main>") < page.index("опціонні ноги демо-трейдера")
+
+
+V1 = db.DEMO_EPOCHS[0][1] + 60_000  # opened in v1 (every setup)
+V4, V7, V9 = (dict((e[0], e[1]) for e in db.DEMO_EPOCHS)[k] + 60_000 for k in ("v4", "v7", "v9"))  # S12's versions
+
+
+def _ct(setup: str, r: float, opened: int = T0) -> dict:
+    """A closed demo trade opened at ``opened`` (T0 = v3, the current version of S3 / S14 / S16 at NOW)."""
+    return {"setup": setup, "status": "closed", "opened_ts": opened, "closed_ts": opened + DAY, "r_multiple": r, "pnl_usd": 100.0 * r}
+
+
+def test_demo_lead_names_halts_and_setups_ready_for_a_verdict():
+    now_ms = NOW
+    halt = [{"ts": now_ms - 3_600_000, "kind": "refused", "payload": json.dumps({"violations": ["kill-switch is on"]})}]
+    old = [{"ts": now_ms - 2 * DAY, "kind": "refused", "payload": json.dumps({"violations": ["kill-switch is on"]})}]
+    trades = [{"setup": "S3", "status": "open"}]
+    lead = db.demo_lead(trades, halt, now_ms / 1000)
+    assert "<span class='chip risk'>guard зупиняв входи</span>" in lead
+    assert "Guard за 24 год зупиняв усі входи: kill-switch увімкнено" in lead
+    assert f"останній раз {db._demo_at(now_ms - 3_600_000)} за Києвом." in lead  # past tense, with the time: not «halted now»
+    assert "зупиняв входи" not in db.demo_lead(trades, old, now_ms / 1000)  # older than 24 h: not named
+    losing = [_ct("S16", -1.0 + 0.1 * (i % 3)) for i in range(30)]
+    lead = db.demo_lead(losing, [], now_ms / 1000)
+    assert "<span class='chip risk'>кандидат на вимкнення</span>" in lead
+    assert "S16 v3 (30): 30+ угод з R у поточній версії правил, 95 % ДІ середнього R нижче 0." in lead
+    winning = [{**t, "r_multiple": 1.0 + 0.1 * (i % 3)} for i, t in enumerate(losing)]
+    lead = db.demo_lead(winning, None, now_ms / 1000)
+    assert "<span class='chip opp'>кандидат на розгляд</span>" in lead and "реальні гроші" not in lead
+    assert "підтвердь на наступних угодах поточної версії: серед 9 сетапів один може вийти за 0 випадково" in lead
+    assert "на демо нічого не міняй" in lead and "100 угодах" not in lead  # the S3 review point only when S3 is named
+    s3 = db.demo_lead([{**t, "setup": "S3"} for t in winning], None, now_ms / 1000)
+    assert "S3 v3 (30): 30+ угод" in s3 and "S3 власник 31.10 вирішив переглядати на 100 угодах" in s3
+    xss = db.demo_lead([{**t, "setup": XSS} for t in winning], None, now_ms / 1000)
+    assert XSS not in xss and "&lt;img" in xss
+    # S3 past 30 trades in its current version with the CI around 0 is not «the nearest to 30»
+    flat = [_ct("S3", 1.0 if i % 2 else -1.0) for i in range(35)] + [_ct("S16", 0.5)] * 4
+    lead = db.demo_lead(flat, [], now_ms / 1000)
+    assert "<span class='chip calm'>переваги не видно</span>" in lead
+    assert "S3 v3 (35): 30+ угод з R у поточній версії правил, 95 % ДІ середнього R містить 0. S3 власник 31.10" in lead
+    assert "реальних грошей не додавай; з решти найближчий до 30 угод поточної версії — S16 v3 (4 з 30)." in lead
+    summ = db.demo_summaries(flat, [], now_ms / 1000, (None, "missing"))
+    assert summ["setups"].startswith("поточні версії: 30+ угод з R — 1 сетап(и); найбільше — S3 v3 (35)") and "з 30" not in summ["setups"]
+
+
+def test_demo_verdicts_count_only_the_current_version():
+    """Review 02.11, blocker 1: all versions of S3 together have 35 trades with a CI above 0, its current v3 only 10:
+    the lead must say «збираємо вибірку», not name a candidate; S12's «nearest to 30» is its v9 count, not v4 + v7 + v9."""
+    now_ms = NOW
+    trades = [_ct("S3", 1.0 + 0.1 * (i % 2), V1) for i in range(25)] + [_ct("S3", 1.0 + 0.1 * (i % 2)) for i in range(10)]
+    trades += [_ct("S12", -1.0, V4)] * 5 + [_ct("S12", -1.0, V7)] * 4 + [_ct("S12", 1.0, V9)] * 2
+    mixed = db.demo_setup_stats(trades)["S3"]
+    assert mixed["n"] == 35 and mixed["ci95"][0] > 0  # the premise: together they would pass
+    cur = db.demo_current_stats(trades, now_ms)
+    assert (cur["S3"]["version"], cur["S3"]["n"]) == ("v3", 10) and (cur["S12"]["version"], cur["S12"]["n"]) == ("v9", 2)
+    lead = db.demo_lead(trades, [], now_ms / 1000)
+    assert "<span class='chip calm'>збираємо вибірку</span>" in lead and "кандидат" not in lead and "30+" not in lead
+    assert "висновків не роби: найближчий до 30 угод поточної версії — S3 v3 (10 з 30)." in lead
+    summ = db.demo_summaries(trades, [], now_ms / 1000, (None, "missing"))
+    assert summ["setups"] == "поточні версії: найбільше угод з R — S3 v3, 10 з 30, середній R +1.05 R"
+    s12 = db.demo_lead([t for t in trades if t["setup"] == "S12"], [], now_ms / 1000)
+    assert "S12 v9 (2 з 30)" in s12 and "(11 з 30)" not in s12
+    # a trade's own version tag (schema 35) wins over its open time, as in «Версії сетапів»
+    tagged = [{**t, "version": "v1"} for t in trades if t["setup"] == "S3" and t["opened_ts"] == T0]
+    assert db.demo_current_stats(tagged, now_ms)["S3"]["n"] == 0
+
+
+def test_open_positions_show_the_break_even_stop_and_escape_the_symbol(tmp_path):
+    """Review 02.11, blocker 2: a stop moved to break-even (be_stop / be_ts) is what the table shows, with a label and
+    risk ≈ 0; the untrusted symbol of an open trade is escaped."""
+    p = _filled(tmp_path, NOW)
+    con = sqlite3.connect(p)
+    con.execute("UPDATE demo_trade SET be_stop = 100.31, be_ts = ? WHERE link_id = 'td-21'", (NOW - 60_000,))  # the open S3
+    con.execute("UPDATE demo_trade SET symbol = ? WHERE link_id = 'td-22'", (f"{XSS}/USDT:USDT",))  # the pending S14
+    con.commit()
+    con.close()
+    data, err = db.load_demo(p)
+    assert err is None and {t["be_stop"] for t in data["trades"]} == {None, 100.31}
+    html = db.block_demo_open(data["trades"], NOW / 1000)
+    rows = html.split("<tr><td class='num'>")[1:]
+    be_row = next(r for r in rows if "відкрита" in r)
+    assert "<td class='num'>100.31<span class='sub'>беззбиток</span></td>" in be_row and "95.00" not in be_row
+    assert "<td class='num'>110.00</td><td class='num'>≈ 0</td>" in be_row and ">100</td>" not in be_row
+    pending = next(r for r in rows if "чекає входу" in r)
+    assert "<td class='num'>95.00</td><td class='num'>110.00</td><td class='num'>100</td>" in pending  # no be_stop: as before
+    assert XSS not in html and "&lt;img" in html
+
+
+def test_vs_backtest_summary_line_from_the_file():
+    doc = _vs_bt_doc(NOW)
+    line = db.demo_summaries([], [], NOW / 1000, (doc, None))["vs_bt"]
+    assert line == "звірено 2 з 30 · збіг з бектестом 50 %"  # 1 match of 2 decided, below min_n
+    doc["summary"] = {"decided": 40, "min_n": 30, "match_share": 0.75}
+    assert db.demo_summaries([], [], NOW / 1000, (doc, None))["vs_bt"] == "звірено 40 угод · збіг з бектестом 75 %"
+
+
+def test_demo_tab_empty_store_keeps_the_layout(tmp_path):
+    page = db.render_demo(*db.load_demo(_store(tmp_path / "e.sqlite")), NOW / 1000)
+    assert "Блок не вдалося показати" not in page and page.endswith("</body></html>")
+    assert "<span class='chip calm'>чекаємо</span>" in page and "<b>Що робити:</b> нічого: демо-трейдер щогодини" in page
+    assert "Відкритих позицій на демо немає." in page and "За 7 днів guard не відхилив жодного сигналу." in page
+    assert page.count(FOLD) == 5 and "<span class='fs'>у поточних версіях закритих угод з R ще немає</span>" in page
+    assert "<span class='fs'>за весь час: відмов guard 0 · не відібрано 0</span>" in page
+    assert page.index("</main>") < page.index("<b>Застереження</b>")
+    old = db.render_demo(*db.load_demo(_store(tmp_path / "o.sqlite", upto=18)), NOW / 1000)
+    assert "Демо-угод ще немає." in old and old.count(FOLD) == 2  # no trade table: only the refusals and the reconciliation fold
+    assert "Відкриті позиції" not in old and old.count("Таблиці exec_audit у базі ще немає") == 2
+
+
 def test_demo_setup_stats_match_an_independent_t_interval():
     from tradedesk.analytics.smart_money import t975
 

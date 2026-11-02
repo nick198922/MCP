@@ -144,7 +144,7 @@ def test_render_has_all_sections_and_escapes():
     assert "«<script>»" not in page and "«&lt;script&gt;»" in page  # the only <script> is the tooltip one
     assert page.count("<script>") == 1 and "querySelectorAll('.info')" in page
     assert "http-equiv='refresh'" in page and 'class="bar"' in page
-    assert "href='/brief'" in page  # the «Бриф» tab
+    assert "href='/brief'" in page  # the «Ринок» tab
 
 
 def test_read_usage_prefers_the_agents_cache_and_throttles_own_calls(tmp_path, monkeypatch):
@@ -188,7 +188,7 @@ def test_delivered_pace_counts_recent_deliveries_only():
     assert db.delivered_pace(lines, now, days=7) == 1 / 7
 
 
-# ---------------------------------------------------------------- «Бриф» tab (assistant snapshot)
+# ---------------------------------------------------------------- «Ринок» tab (/brief, assistant snapshot)
 
 SNAP_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "assistant_snapshot_2026-10-20.json"
 
@@ -218,7 +218,7 @@ def test_brief_renders_the_real_snapshot():
         "Oct 2026 FOMC",
         "Hyperliquid",
         "беззбиток стреддлу до 23.10",
-        "aria-current=page>Бриф",
+        "aria-current=page>Ринок",
     ):
         assert text in page, text
     assert page.count("<svg") == 2 and "старший за 30 хв" not in page and "Блок не вдалося" not in page
@@ -268,6 +268,43 @@ def test_brief_lead_actions_and_folded_blocks():
     assert page.index("class='lead'") < page.index("<summary><h2>Головне сьогодні") < page.index("</main>")
     assert page.index("</main>") < page.index("<b>Застереження</b>") and page.count("перевірено 18.10") == 1
     assert db.brief_summaries({"sections": {}}) == {} and "звичайні правила." in db.brief_lead({"sections": {}})
+
+
+def test_market_tab_short_info_notes_and_less_text():
+    """docs/design/PANEL.md, the «Ринок» step (card standing-improvements, item 4): every «i» on the tab is the short
+    instruction (what it is, «low → do», «high → do»), the risk-neutral caveat is said once at the bottom, and the
+    blocks do not repeat the event advice of the lead line."""
+    snap, asof = _snap()
+    ev = json.loads(json.dumps(snap))
+    ev["sections"]["events"]["data"]["high_impact_within_48h"] = True
+    for s in (snap, ev):
+        page = db.render_brief(s, None, asof + 300)
+        n = page.count("<span class='info' tabindex='0' role='button'")
+        assert n >= 15 and page.count("<span class='do'><i>") == 2 * n, n  # each icon: exactly the two action lines
+        assert "Для угоди:" not in page and "class='rd'" not in page
+        assert page.count("ризик-нейтральні") == 1 and page.index("ризик-нейтральні") > page.index("</main>")
+        for gone in ("До події з високим впливом менше 48 год", "За 48 год до події", "Прогнози асистента", "лонги платять шортам"):
+            assert gone not in page, gone
+        assert "<h1>Ринок</h1>" in page and "<title>tradedesk — ринок</title>" in page
+    assert "<span class='chip risk'>подія</span>" in page and "<b>Що робити:</b> до релізу" in page  # the advice stays in the lead
+    assert set(db.ACT) <= set(db.HELP) and {"price", "key", "chart", "vol"} <= set(db.ACT)
+    assert "Для угоди:" in db._info("iv")  # the options tab's IV tile keeps its long note
+
+
+def test_nav_three_sections_then_the_rest_under_detailed():
+    """docs/design/PANEL.md: Ринок · Мої угоди · Система, every other tab in a «Детально» drop-down; URLs unchanged."""
+    main = db._nav("brief")
+    assert main.index(">Ринок<") < main.index(">Мої угоди<") < main.index(">Система<") < main.index("<details class='more'>")
+    assert "href='/brief' aria-current=page>Ринок" in main and "<summary>Детально</summary>" in main
+    for href in ("/", "/brief", "/journal", "/options", "/positions", "/radar", "/flows", "/demo", "/polymarket"):
+        assert main.count(f"href='{href}'") == 1, href  # every tab still reachable, once
+    assert main.count("aria-current") == 1 and "class='howto'" in main
+    radar = db._nav("radar")  # a tab under «Детально»: the closed drop-down names it and is marked current
+    assert "<details class='more cur'><summary>Детально · Радар</summary>" in radar
+    assert "href='/radar' aria-current=page>Радар" in radar and radar.count("aria-current") == 1 and "<details open" not in radar
+    project = db._nav("project")
+    assert "href='/' aria-current=page>Система" in project and "class='howto'" not in project
+    assert "<details class='more'>" in project
 
 
 def test_brief_missing_and_corrupt_snapshot(tmp_path, monkeypatch):
@@ -687,7 +724,7 @@ def test_journal_tab_renders_trades_sources_and_paper_recs(tmp_path):
     page = db.render_journal(data, None, float(T0 + 10 * 86400), path=p)
     # real closed trades: +10 −100 +30 +20 (airdrop and *-paper rows left out); 3 of 4 in profit; drawdown 100 after the loss
     for text in (
-        "aria-current=page>Журнал",
+        "aria-current=page>Мої угоди",
         "лише читання",
         "<b>Застереження</b>",
         "Угод (закритих)<span class='info'",
@@ -756,7 +793,7 @@ def test_journal_missing_db_tables_and_empty_states(tmp_path):
     data, err = db.load_journal(none)
     assert data is None and err == "missing" and not none.exists()  # read-only: nothing is created
     page = db.render_journal(data, err, float(T0), path=none)
-    assert "Бази ще немає" in page and "Не інвестиційна порада" in page and "aria-current=page>Журнал" in page
+    assert "Бази ще немає" in page and "Не інвестиційна порада" in page and "aria-current=page>Мої угоди" in page
     # an old store: journal without rec_paper (schema before v16)
     p = _journal_db(tmp_path / "old.sqlite", _sample_journal(), None, versions=range(1, 16))
     page = db.render_journal(*db.load_journal(p), float(T0))
@@ -1451,7 +1488,7 @@ def test_journal_tab_forecasts_empty_open_only_and_missing_table(tmp_path):
     con.commit()
     con.close()
     page = db.render_journal(*db.load_journal(tmp_path / "e.sqlite"), float(T0))
-    assert "Блок не вдалося показати" in page and "<b>x" not in page and "Мої угоди" in page
+    assert "Блок не вдалося показати" in page and "<b>x" not in page and "<h2>Мої угоди" in page
 
 
 # ---------------------------------------------------------------- «Polymarket» tab

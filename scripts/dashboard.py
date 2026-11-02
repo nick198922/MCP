@@ -9,7 +9,7 @@ and /proc. The page refreshes itself every minute; /status.json gives the same d
 127.0.0.1 only: the owner opens it through an SSH tunnel (scripts/dashboard-open.sh). No secret is ever put on the page:
 the plan usage is read with the agents' login, only percentages and reset times are kept.
 
-The «Бриф» tab (/brief) renders the assistant's morning brief from the snapshot JSON written by the collector job
+The «Ринок» tab (/brief, formerly «Бриф») renders the assistant's morning brief from the snapshot JSON written by the collector job
 ``assistant_snapshot`` (no network here: the collector does all fetching). Every string from that file is untrusted
 text and is escaped; a missing, stale or corrupt snapshot gives an empty state, never an error.
 
@@ -456,27 +456,49 @@ code{font:12px Menlo,Consolas,monospace}
 nav.tabs{display:flex;flex-wrap:wrap;gap:4px;padding:0 18px;border-bottom:1px solid var(--line);margin:0 0 12px}
 nav.tabs a{padding:6px 12px;color:var(--mut);text-decoration:none;font-weight:600;border-bottom:3px solid transparent}
 nav.tabs a[aria-current=page]{color:var(--fg);border-bottom-color:var(--acc)}
+nav.tabs details.more{position:relative;font-size:inherit;color:inherit;margin:0}
+nav.tabs .more>summary{list-style:none;cursor:pointer;padding:6px 12px;color:var(--mut);font-weight:600;border-bottom:3px solid transparent}
+nav.tabs .more>summary::-webkit-details-marker{display:none}
+nav.tabs .more>summary::after{content:' ▾'}nav.tabs .more[open]>summary::after{content:' ▴'}
+nav.tabs .more.cur>summary{color:var(--fg);border-bottom-color:var(--acc)}
+nav.tabs .more>div{position:absolute;z-index:60;right:0;top:100%;min-width:170px;display:flex;flex-direction:column;padding:4px;
+background:var(--card);border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,.18)}
+nav.tabs .more>div a{border-bottom:0;border-left:3px solid transparent}
+nav.tabs .more>div a[aria-current=page]{border-left-color:var(--acc)}
+@media (max-width:560px){nav.tabs a,nav.tabs .more>summary{padding:6px 8px}nav.tabs .more>div{position:static;box-shadow:none;margin-bottom:6px}}
 """
 
 
+# docs/design/PANEL.md: three sections first (Ринок · Мої угоди · Система), every other tab under «Детально». The
+# URLs stay as they were (Telegram buttons and bookmarks point at them).
+NAV_MAIN = (
+    ("/brief", "brief", "Ринок"),
+    ("/journal", "journal", "Мої угоди"),
+    ("/", "project", "Система"),
+)
+NAV_MORE = (
+    ("/options", "options", "Опціони"),
+    ("/positions", "positions", "Позиції"),
+    ("/radar", "radar", "Радар"),
+    ("/flows", "flows", "Потоки"),
+    ("/demo", "demo", "Демо"),
+    ("/polymarket", "polymarket", "Polymarket"),
+)
+
+
 def _nav(active: str) -> str:
-    tabs = (
-        ("/", "project", "Проєкт"),
-        ("/brief", "brief", "Бриф"),
-        ("/options", "options", "Опціони"),
-        ("/positions", "positions", "Позиції"),
-        ("/radar", "radar", "Радар"),
-        ("/flows", "flows", "Потоки"),
-        ("/journal", "journal", "Журнал"),
-        ("/demo", "demo", "Демо"),
-        ("/polymarket", "polymarket", "Polymarket"),
+    """The tab bar: the three main sections as links, the rest in a «Детально» drop-down (no JS: <details>). The
+    current page's link carries aria-current; when it sits under «Детально», the drop-down's label names it."""
+
+    def link(href: str, key: str, label: str) -> str:
+        return f"<a href='{href}'{' aria-current=page' if key == active else ''}>{label}</a>"
+
+    cur = next((label for _, key, label in NAV_MORE if key == active), "")
+    more = (
+        f"<details class='more{' cur' if cur else ''}'><summary>Детально{f' · {cur}' if cur else ''}</summary>"
+        f"<div>{''.join(link(*t) for t in NAV_MORE)}</div></details>"
     )
-    return (
-        "<nav class='tabs'>"
-        + "".join(f"<a href='{href}'{' aria-current=page' if key == active else ''}>{label}</a>" for href, key, label in tabs)
-        + "</nav>"
-        + ("" if active == "project" else HOWTO)
-    )
+    return "<nav class='tabs'>" + "".join(link(*t) for t in NAV_MAIN) + more + "</nav>" + ("" if active == "project" else HOWTO)
 
 
 def _e(x: object) -> str:
@@ -584,6 +606,12 @@ HELP: dict[str, tuple[str, str, str, str]] = {
         "Зведення: що зараз за цінами опціонів сприяє покупцю, а що продавцю.",
         "Зелений «+» — на користь, червоний «−» — проти, жовтий «!» — обережно. Оцінюється ціна волатильності й ризик, не напрям ціни.",
         "Це про те, дорого чи дешево зараз платити за опціон. Доведеної переваги жодна сторона не має (метод асистента відхилено 18.10).",
+    ),
+    "vol": (
+        "Волатильність",
+        "Чи дорогі зараз опціони: DVOL, реалізований рух, премія між ними, крива строків і скью.",
+        "DVOL нижчий за реалізовану або на низькому перцентилі — опціони дешеві; премія понад +10 вп — дорогі.",
+        "Це ціна опціонів, а не напрям ціни; як окремий сигнал входу перевірено 18.10 і відхилено.",
     ),
     "builder": (
         "Конструктор",
@@ -1309,7 +1337,7 @@ HELP: dict[str, tuple[str, str, str, str]] = {
 }
 
 HOWTO = (
-    "<div class='howto'><span><span class='info' aria-hidden='true'>i</span> наведи або торкнись — що це і як читати</span>"
+    "<div class='howto'><span><span class='info' aria-hidden='true'>i</span> наведи або торкнись — що це і що робити</span>"
     "<span><i class='sw good'></i>на користь угоди</span><span><i class='sw warn'></i>обережно</span>"
     "<span><i class='sw bad'></i>проти угоди</span>"
     "<span class='mut'>Підсвітка оцінює ціну й ризик, а не напрям ціни; доведеної переваги вона не означає.</span></div>"
@@ -1449,6 +1477,31 @@ ACT: dict[str, tuple[str, str, str, str]] = {
         "менший розмір або обмежений ризик; не відкривай за годину до релізу.",
         "Подій немає",
         "звичайний режим.",
+    ),
+    # the rest of the «Ринок» tab (owner, 28.10: short «i» on the whole tab)
+    "price": (
+        "За добу до ±3 %",
+        "звичайний день: рішення — за рівнями й діапазоном.",
+        "Різкий рух",
+        "не входь услід: спершу стоп і розмір за правилами.",
+    ),
+    "key": (
+        "Лише «спокій»",
+        "звичайні правила.",
+        "Є «ризик» або «подія»",
+        "розгорни й прочитай пункт; менший розмір або обмежений ризик.",
+    ),
+    "chart": (
+        "Ціль усередині зони ±1σ",
+        "рух звичний для ринку: опціон під нього дорожчий.",
+        "Ціль за зоною",
+        "ринок вважає рух малоймовірним: опціон дешевий, але й шанс малий.",
+    ),
+    "vol": (
+        "Опціони дешеві (низький перцентиль DVOL, премія ≤ 0)",
+        "купувати вигідніше; продаж дає мало премії.",
+        "Опціони дорогі (премія понад +10 вп)",
+        "купівля переплачує; продаж лише з обмеженим ризиком.",
     ),
 }
 
@@ -2398,10 +2451,8 @@ def key_items(snap: dict) -> list[tuple[str, str, str]]:
         if nxt:
             when = kyiv(_iso(nxt.get("ts_utc")))
             txt = f"{_clean(nxt.get('title'), 80)} — {when} за Києвом, {_in_hours(_num(nxt.get('hours_ahead')))}."
-            if ev.get("high_impact_within_48h") is True:
-                items.append(
-                    ("risk", "Подія", _e(txt + " До події з високим впливом менше 48 год: менший розмір або позиція з обмеженим ризиком."))
-                )
+            if ev.get("high_impact_within_48h") is True:  # what to do is in the lead line, not repeated here
+                items.append(("risk", "Подія", _e(txt)))
             else:
                 items.append(("ev", "Подія", _e(txt)))
         else:
@@ -2487,11 +2538,8 @@ def block_scenarios(snap: dict) -> str:
                 bold=here,
             )
         )
-    note = (
-        f"Ризик-нейтральні ймовірності з ланцюжка Deribit на {_e(_exp_label(snap, 'month'))} (IV на кожному страйку, нахил усмішки враховано), "
-        f"форвард {_e(_nf(F))} (жирним — його діапазон). Це ціна страхування в ринку, а не наш прогноз: реальні ймовірності "
-        "відрізняються на премію за ризик. Прогнози асистента з'являться окремо, з оцінкою точності (Brier)."
-    )
+    # the risk-neutral caveat is said once, at the bottom of the page (docs/design/PANEL.md, rule 5)
+    note = f"З ланцюжка Deribit на {_e(_exp_label(snap, 'month'))}, форвард {_e(_nf(F))} (жирним — його діапазон)."
     return f"<div class='hbars'>{''.join(rows)}</div><p class='note'>{note}</p>" + _section_notes(snap, "chain")
 
 
@@ -2557,7 +2605,7 @@ def block_vol(snap: dict) -> str:
         notes.append(
             f"Бектест на поточному рівні DVOL ({_clean(cell.get('dvol_percentile_365d'), 12)} перцентиля за рік): короткий 30-денний стреддл ATM "
             f"з щоденним дельта-хеджем у середньому {_pc(_num(cell['mean_straddle_pnl']) * 100, 2)} спота, у плюсі {_nf((_num(cell.get('share_positive')) or 0) * 100)} %, "
-            f"n = {_nf(cell.get('n_starts'))} перекривних стартів. Історія за DVOL, не за марками; не сигнал."
+            f"n = {_nf(cell.get('n_starts'))} перекривних стартів."
         )
     if notes:
         out.append(f"<p class='note'>{_e(' '.join(notes))}</p>")
@@ -2659,7 +2707,6 @@ def block_events(snap: dict) -> str:
     miss = [_clean((m or {}).get("field", "") if isinstance(m, dict) else m, 60) for m in _list(_section(snap, "events").get("missing"))]
     if miss:
         warns.append("Неповне джерело: " + ", ".join(miss))
-    body += "<p class='note'>За 48 год до події з високим впливом — менший розмір або позиція з обмеженим ризиком.</p>"
     body += "".join(f"<p class='note'>{_e(x)}</p>" for x in warns)
     return body + _section_notes(snap, "events")
 
@@ -2689,7 +2736,6 @@ def block_funding(snap: dict) -> str:
             gap = _nf(_num(ws["annualized_spread"]) * 100, 1)
             txt = f"Найбільша різниця: лонг {lv}, шорт {sv} — {gap} п. п. річних до комісій, базису й маржі."
             out.append(f"<p class='note'>{_e(txt)}</p>")
-    out.append("<p class='note'>Річних, у відсотках: додатний funding — лонги платять шортам.</p>")
     return "".join(out) + _section_notes(snap, "funding_btc", "funding_eth")
 
 
@@ -2827,17 +2873,18 @@ def _snapshot_stamp(snap: dict, now: float) -> str:
 
 
 def render_brief(snap: dict | None, err: str | None, now: float, path: Path | None = None) -> str:
-    """The «Бриф» tab. Never raises: a missing, stale or corrupt snapshot gives an explained empty state."""
+    """The «Ринок» tab (formerly «Бриф», still at /brief). Never raises: a missing, stale or corrupt snapshot gives an
+    explained empty state."""
     head = (
         "<!doctype html><html lang='uk'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-        f"<meta http-equiv='refresh' content='{REFRESH_S}'><title>tradedesk — бриф</title><style>{CSS}{BRIEF_CSS}</style></head><body>"
+        f"<meta http-equiv='refresh' content='{REFRESH_S}'><title>tradedesk — ринок</title><style>{CSS}{BRIEF_CSS}</style></head><body>"
     )
     caveats = "<div class='caveat'><b>Застереження</b><ul>" + "".join(f"<li>{_e(c)}</li>" for c in BRIEF_CAVEATS) + "</ul></div>"
     try:
         if snap is None:
             msg = _snapshot_problem(err, path)
-            return head + f"<header><h1>Бриф</h1><span class='bad'>{msg}</span></header>{_nav('brief')}{caveats}</body></html>"
-        out = [head, f"<header><h1>Бриф</h1>{_snapshot_stamp(snap, now)}"]
+            return head + f"<header><h1>Ринок</h1><span class='bad'>{msg}</span></header>{_nav('brief')}{caveats}</body></html>"
+        out = [head, f"<header><h1>Ринок</h1>{_snapshot_stamp(snap, now)}"]
         out.append(f"</header>{_nav('brief')}<main class='brief'>")
         # docs/design/PANEL.md: «what now / what to do» first, the tiles with their action lines, today's key points
         # open; the rest folded with a one-line summary; the caveats once at the end
@@ -2859,7 +2906,7 @@ def render_brief(snap: dict | None, err: str | None, now: float, path: Path | No
             (f"{scen} · з цін опціонів", "scenarios", "scenarios", block_scenarios),
             ("Події · час Київ", "events", "events", block_events),
             ("BTC за 120 днів і що закладають опціони", "chart", "chart", block_chart),
-            ("Волатильність", "vol", "iv", block_vol),
+            ("Волатильність", "vol", "vol", block_vol),
             ("Funding · річних", "funding", "funding", block_funding),
         )
         for title, sk, key, fn in folds:
@@ -2869,7 +2916,7 @@ def render_brief(snap: dict | None, err: str | None, now: float, path: Path | No
     except Exception as e:  # noqa: BLE001 - the page always renders
         return (
             head
-            + f"<header><h1>Бриф</h1><span class='bad'>Знімок не вдалося показати ({_e(type(e).__name__)}).</span></header>{_nav('brief')}{caveats}</body></html>"
+            + f"<header><h1>Ринок</h1><span class='bad'>Знімок не вдалося показати ({_e(type(e).__name__)}).</span></header>{_nav('brief')}{caveats}</body></html>"
         )
 
 
@@ -9638,7 +9685,7 @@ def main() -> None:
     sv.add_argument("--port", type=int, default=8090)
     on = sub.add_parser("once")
     on.add_argument("--out", type=Path, required=True)
-    on.add_argument("--brief", action="store_true", help="the «Бриф» tab from the assistant snapshot instead of the project page")
+    on.add_argument("--brief", action="store_true", help="the «Ринок» tab (/brief) from the assistant snapshot instead of the project page")
     on.add_argument("--options", action="store_true", help="the «Опціони» tab (default strategy and size) from the snapshot")
     on.add_argument("--radar", default="", metavar="ASSET", help="the «Радар» tab of BTC or ETH from the assistant snapshot")
     on.add_argument("--flows", default="", metavar="ASSET", help="the «Потоки» tab of BTC or ETH from the assistant snapshot")

@@ -444,7 +444,7 @@ async def test_paper_carry_status_without_store_returns_an_envelope():
 async def test_paper_carry_job_is_opt_in(tmp_path):
     from tradedesk.collector import build_default_scheduler
 
-    base = dict(http_retries=1, cache_scale=0.0, db_path=":memory:", collector_enabled=True)
+    base = dict(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=":memory:", collector_enabled=True)
     off = Runtime(Settings(**base), transports=make_transports({}), exchange_factory=LiveEx)
     on = Runtime(Settings(**base, paper_carry_enabled=True), transports=make_transports({}), exchange_factory=LiveEx)
     try:

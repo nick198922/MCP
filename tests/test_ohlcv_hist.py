@@ -53,6 +53,7 @@ async def test_insert_and_read_ohlcv_round_trip():
 async def _rt(state, tmp_path, **overrides) -> Runtime:
     settings = Settings(
         http_retries=1,
+        http_retry_backoff=0.0,
         cache_scale=0.0,
         db_path=str(tmp_path / "ohlcv.sqlite"),
         collect_ohlcv_hist_enabled=True,
@@ -93,6 +94,7 @@ async def test_collect_ohlcv_hist_backfill_requests_from_since(state, tmp_path):
     _SpyEx.since_seen = []
     settings = Settings(
         http_retries=1,
+        http_retry_backoff=0.0,
         cache_scale=0.0,
         db_path=str(tmp_path / "ohlcv.sqlite"),
         collect_ohlcv_hist_enabled=True,

@@ -1,0 +1,3 @@
+- Пункт 8 [standing-improvements](../ideas/IDEA-20261102-standing-improvements.md), дочистка після [mcp-reliability-2](2026-11-02-mcp-reliability-2.md): Telegram `sendMessage` без дублів і тест проводки `TRADEDESK_HTTP_RETRIES` уже були в `main` (коміт 85a9b49), тут не змінювались.
+- Тести: ще п'ять тестових `Runtime` із `http_retries=1` отримали `http_retry_backoff=0.0` і не чекають 0.4 с на ретрай (`tests/test_ohlcv_hist.py` ×2, `tests/test_collector.py` ×2, `tests/test_carry_paper_live.py`). Код сервера не змінено.
+- Відкрито: після деплою прочитати `system_health` → `collector[].last_failure` для ліквідацій Bybit / OKX (потрібен живий сервер).

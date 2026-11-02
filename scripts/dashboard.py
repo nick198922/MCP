@@ -7,7 +7,8 @@ Read-only and model-free: built from the same files as the Telegram status (scri
 on origin/main (scripts/results_board.py), the agents' run history and live transcript, the SQLite store (read-only)
 and /proc. The page refreshes itself every minute; /status.json gives the same data to scripts. The server listens on
 127.0.0.1 only: the owner opens it through an SSH tunnel (scripts/dashboard-open.sh). No secret is ever put on the page:
-the plan usage is read with the agents' login, only percentages and reset times are kept.
+the plan usage is read with the agents' login, only percentages and reset times are kept. The «Здоров'я колекторів»
+block (tab «Система») is scripts/collector_health.collect on the store (mode=ro), at most every 10 minutes.
 
 The «Ринок» tab (/brief, formerly «Бриф») renders the assistant's morning brief from the snapshot JSON written by the collector job
 ``assistant_snapshot`` (no network here: the collector does all fetching). Every string from that file is untrusted
@@ -388,6 +389,46 @@ def machine() -> dict:
     }
 
 
+HEALTH_EVERY_S = 600  # collector health reads 7 days of every collector table (about 1-2 s): at most every 10 minutes
+_health_cache: dict = {}
+
+
+def _health_module():
+    """scripts/collector_health.py (its specs and rules are the pure tradedesk.analytics.collector_health, not copied
+    here). The service runs the system python3 with -I, so the repo's src/ is appended to the path; both modules and
+    tradedesk.features are stdlib-only."""
+    src = str(HERE.parent / "src")
+    if src not in sys.path:
+        sys.path.append(src)
+    import collector_health  # noqa: PLC0415 - imported on first use: the page renders even when it cannot be
+
+    return collector_health
+
+
+def load_collector_health(db: Path, now: float, switches: dict[str, str] | None = None) -> dict:
+    """Health of every series of the collectors switched on in deploy/features.env over the last 7 days
+    (collector_health.collect: the DB opened with mode=ro, no network). {'rows': [...], 'error': None | reason,
+    'window_days': int, 'at': now}. Never raises: a missing DB or a failed import gives an empty list and the reason."""
+    try:
+        chs = _health_module()
+        sw = chs.load_switches() if switches is None else switches
+        rows = chs.collect(str(db), sw, int(now))
+        return {"rows": rows, "error": None, "window_days": chs.ch.WINDOW_DAYS, "at": now}
+    except (sqlite3.Error, OSError) as e:
+        return {"rows": [], "error": f"БД не відкрито ({type(e).__name__})", "window_days": 7, "at": now}
+    except Exception as e:  # noqa: BLE001 - the page always renders
+        return {"rows": [], "error": f"перевірка не вдалась ({type(e).__name__})", "window_days": 7, "at": now}
+
+
+def collector_health_cached(now: float) -> dict:
+    """load_collector_health on the service DB, recomputed at most every HEALTH_EVERY_S."""
+    if _health_cache and now - _health_cache["at"] < HEALTH_EVERY_S:
+        return _health_cache["val"]
+    val = load_collector_health(DATA_DIR / "tradedesk.sqlite", now)
+    _health_cache.update(at=now, val=val)
+    return val
+
+
 _last_fetch = [0.0]
 
 
@@ -432,6 +473,7 @@ def snapshot() -> dict:
         "services": services(),
         "machine": machine(),
         "tables": table_freshness(DATA_DIR / "tradedesk.sqlite", now),
+        "health": collector_health_cached(now),
     }
 
 
@@ -1213,6 +1255,12 @@ HELP: dict[str, tuple[str, str, str, str]] = {
         "Зелене — свіже, червоне — запис запізнюється (завдання стало або біржа недоступна), сіре — норми свіжості нема.",
         "Червоний рядок — інструменти на цих даних показують застарілу картину: не спирайся на них, поки не оновиться.",
     ),
+    "p_health": (
+        "Здоров'я колекторів",
+        "Яку частку знімків, що мали бути за 7 днів, кожен колектор справді записав, і де були дірки.",
+        "Нижче 90 % або свіжа дірка — колектор пропускає дані.",
+        "Форварди й перевірки стоять на цих даних: тиха дірка — це втрачені тижні.",
+    ),
     "p_changes": (
         "Останні зміни в main",
         "Останні коміти основної гілки: дата і короткий опис.",
@@ -1412,6 +1460,12 @@ HELP_JS = """
 # then «low → do this», «high → do this» — instead of the «how to read» and «for a trade» lines (owner, 28.10: «що мені
 # з ними робити»; docs/design/PANEL.md). Static text, never data.
 ACT: dict[str, tuple[str, str, str, str]] = {
+    "p_health": (
+        "Нижче 90 % або свіжа дірка",
+        "дані для форвардів губляться: напиши Claude, яка серія, щоб знайшов причину.",
+        "90–100 %",
+        "усе гаразд, нічого робити не треба.",
+    ),
     "dvol": (
         "Низький (до 30-го перцентиля)",
         "купувати опціони дешевше; продавати мало сенсу — премії мало.",
@@ -1636,6 +1690,74 @@ def _reset(iso: str | None) -> str:
         return iso
 
 
+# status of a series (tradedesk.analytics.collector_health.series_health) -> (css class, mark)
+HEALTH_MARK = {
+    "ok": ("ok", ""),
+    "low": ("bad", "нижче 90 %"),
+    "stale": ("warn", "свіжа дірка"),
+    "never": ("bad", "жодного запису"),
+    "error": ("bad", "не перевірено"),
+    "new": ("mut", "ще нічого не очікується"),
+}
+
+
+def block_collector_health(h: dict | None) -> str:
+    """«Здоров'я колекторів»: one summary line, then a table (open when a series needs attention) with each series'
+    share of the expected snapshots over 7 days, its gaps and its last snapshot. Numbers and rules come from
+    tradedesk.analytics.collector_health; every string is escaped."""
+    out = ["<section class='wide'>" + _h2("Здоров'я колекторів", "p_health")]
+    if h is None:
+        return "".join(out) + "<p class='mut'>Ще не перевірялось.</p></section>"
+    rows = list(h.get("rows") or [])
+    if h.get("error"):
+        return "".join(out) + f"<p class='bad'>Не перевірено: {_e(h['error'])}.</p></section>"
+    if not rows:
+        return "".join(out) + "<p class='mut'>У deploy/features.env не ввімкнено жодного колектора з перевіркою.</p></section>"
+    try:
+        ch = _health_module().ch
+    except Exception as e:  # noqa: BLE001 - the page always renders
+        return "".join(out) + f"<p class='bad'>Не перевірено: модуль не завантажено ({_e(type(e).__name__)}).</p></section>"
+    days = int(h.get("window_days") or ch.WINDOW_DAYS)
+    bad = ch.alarms(rows)
+    if bad:
+        out.append(
+            f"<p class='bad'><b>Потребують уваги: {len(bad)} з {len(rows)} серій</b> (нижче 90 % за {days} дн, свіжа дірка або без записів).</p>"
+        )
+    else:
+        out.append(
+            f"<p class='ok'><b>Усі серії в нормі ({len(rows)} з {len(rows)})</b>: ≥ 90 % очікуваних знімків за {days} дн, свіжих дір немає.</p>"
+        )
+    flagged = {id(r) for r in bad}
+    rows.sort(key=lambda r: id(r) not in flagged)  # stable: problems first, the rest in the collectors' order
+    out.append(
+        f"<details{' open' if bad else ''}><summary>Усі серії ({len(rows)})</summary>"
+        f"<table><tr><th>Серія</th><th>Знімків за {days} дн</th><th>Дірки</th><th>Останній знімок</th></tr>"
+    )
+    for r in rows:
+        st_ = str(r.get("status"))
+        cls, mark = HEALTH_MARK.get(st_, ("bad", st_))
+        p = int(r.get("period_s") or ch.HOUR)
+        name = _e(r.get("label")) + (f" <b class='{cls}'>· {_e(mark)}</b>" if mark else "")
+        if r.get("share") is not None:
+            share = f"<span class='{cls}'>{_e(ch._pct(r['share']))}</span> <span class='mut'>{r['present']}/{r['expected']}</span>"
+        elif st_ == "error":
+            share = f"<span class='mut'>{_e(r.get('error'))}</span>"
+        else:
+            share = "—"
+        gaps = "—"
+        if r.get("gaps"):
+            gaps = f"{r['gaps']}, найдовша {_e(ch.fmt_dur(r['longest_gap_s']))} з {_e(ch.fmt_ts(r.get('longest_gap_start'), p))}"
+        if r.get("trailing_gap_s"):
+            gaps += f"; <span class='{cls}'>зараз немає {_e(ch.fmt_dur(r['trailing_gap_s']))}</span>"
+        out.append(f"<tr><td>{name}</td><td>{share}</td><td>{gaps}</td><td>{_e(ch.fmt_ts(r.get('last_ts'), p))}</td></tr>")
+    out.append(
+        "</table></details><p class='mut'>Колектори, ввімкнені в <code>deploy/features.env</code>; серія — валюта, біржа або стратегія. "
+        "Свіжа дірка — ≥ 3 год без знімка (годинні й хвилинні) або пропущений день чи цикл carry. Ліквідації — потік: "
+        "спокійна година може бути порожньою, тож 97–99 % там норма. Перевірка раз на 10 хв.</p></section>"
+    )
+    return "".join(out)
+
+
 def render(s: dict) -> str:
     a, u, m = s["agents"], s.get("usage"), s["machine"]
     out = [
@@ -1809,6 +1931,7 @@ def render(s: dict) -> str:
             + "</td></tr>"
         )
     out.append("</table></section>")
+    out.append(block_collector_health(s.get("health")))
 
     # Commits and questions
     out.append(f"<section>{_h2('Останні зміни в main', 'p_changes')}<table>")

@@ -16,9 +16,10 @@ import argparse
 import sqlite3
 import sys
 import time
-import urllib.parse
 from pathlib import Path
 from typing import Any
+
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
 
 from tradedesk import features
 from tradedesk.analytics import collector_health as ch
@@ -32,7 +33,7 @@ def connect_ro(db: str) -> sqlite3.Connection:
     """A read-only connection; raises ``sqlite3.Error`` / ``FileNotFoundError`` when the DB is not there."""
     if not Path(db).exists():
         raise FileNotFoundError(db)
-    return sqlite3.connect(f"file:{urllib.parse.quote(str(Path(db)))}?mode=ro", uri=True, timeout=5)
+    return cmn.connect_ro(Path(db))
 
 
 def load_switches(path: Path = DEFAULT_FEATURES) -> dict[str, str]:

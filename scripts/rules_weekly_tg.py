@@ -26,7 +26,6 @@ import argparse
 import sqlite3
 import sys
 import time
-import urllib.parse
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -34,6 +33,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 import assistant_brief_tg as ab  # noqa: E402
+import common_helpers as cmn  # noqa: E402
 import dashboard as db  # noqa: E402
 import forecast_weekly_tg as fw  # noqa: E402
 import tg_send  # noqa: E402
@@ -52,15 +52,12 @@ journal_buttons = fw.journal_buttons  # the same «Журнал» button as the 
 def load_journal(path: Path) -> tuple[list[dict] | None, str | None]:
     """(rows, None) from table journal over a read-only connection (newest first, at most dashboard.JOURNAL_MAX_ROWS),
     or (None, reason): 'missing' (no file), 'no_table' (a store before schema v3), 'unreadable: …'. Never raises."""
-    try:
-        if not path.exists():
-            return None, "missing"
-        con = sqlite3.connect(f"file:{urllib.parse.quote(str(path))}?mode=ro", uri=True, timeout=5)
-    except (sqlite3.Error, OSError) as e:
-        return None, f"unreadable: {type(e).__name__}"
+    con, why = cmn.open_ro(path)
+    if con is None:
+        return None, why
     try:
         con.row_factory = sqlite3.Row
-        if con.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'journal'").fetchone() is None:
+        if not cmn.has_table(con, "journal"):
             return None, "no_table"
         rows = [
             dict(r)

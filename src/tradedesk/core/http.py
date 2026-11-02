@@ -31,6 +31,17 @@ _RETRY_STATUS = {429, 500, 502, 503, 504}
 BodyCheck = Callable[[Any], tuple[str, str] | None]
 
 
+class _Absent:
+    """A cached HTTP 404 (`data_unavailable`): the resource is not there, which is an answer like any other. Kept for
+    the call's own TTL so callers on a timer (snapshot every 10 min, ForexFactory's next week until it is published)
+    do not hit the host again and count a new failure each time. Other failures are never cached."""
+
+    __slots__ = ("detail",)
+
+    def __init__(self, detail: str) -> None:
+        self.detail = detail
+
+
 def _clean_args(params: dict[str, Any] | None) -> dict[str, Any]:
     return {k: v for k, v in (params or {}).items() if not _SECRET_KEY.search(str(k))}
 
@@ -155,9 +166,15 @@ class Http:
         check: BodyCheck | None = None,
     ) -> Fetched:
         key = (self.provider, method, path, tuple(sorted((params or {}).items())), jsonlib.dumps(json, sort_keys=True))
+        eff_ttl = ttl * self._scale
 
-        async def fetch() -> Fetched:
-            data, ms = await self._once(method, path, params, json)
+        async def fetch() -> Fetched | _Absent:
+            try:
+                data, ms = await self._once(method, path, params, json)
+            except ProviderError as e:
+                if e.reason == "data_unavailable" and eff_ttl > 0:
+                    return _Absent(e.detail)  # already recorded in health once by _once
+                raise
             bad = check(data) if check is not None else None
             if bad is not None:
                 raise self._fail(*bad)
@@ -171,10 +188,12 @@ class Http:
             )
             return Fetched(data, ev)
 
-        eff_ttl = ttl * self._scale
         if eff_ttl <= 0:
-            return await fetch()
-        fetched, from_cache = await self._cache.get_or_fetch(key, eff_ttl, fetch)
+            fetched, from_cache = await fetch(), False  # without a TTL fetch() re-raises a 404 instead of _Absent
+        else:
+            fetched, from_cache = await self._cache.get_or_fetch(key, eff_ttl, fetch)
+        if isinstance(fetched, _Absent):
+            raise ProviderError(self.provider, "data_unavailable", fetched.detail)
         if from_cache:
             return Fetched(fetched.data, fetched.evidence.model_copy(update={"cached": True}))
         return fetched

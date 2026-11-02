@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import replace
+
+from mcp import Client
 
 from conftest import NOW, FakeEx, make_transports
 from tradedesk.collector.scheduler import (
@@ -15,6 +18,7 @@ from tradedesk.collector.scheduler import (
 )
 from tradedesk.config import Settings
 from tradedesk.runtime import Runtime
+from tradedesk.server import build_server
 
 
 async def _rt_with_memory_store(state) -> Runtime:
@@ -75,6 +79,43 @@ async def test_scheduler_captures_failure(state):
         m = sched.jobs[0].metrics
         assert m.runs == 1 and m.failures == 1 and m.successes == 0
         assert m.last_error and "nope" in m.last_error
+    finally:
+        await sched.stop()
+        await rt.aclose()
+
+
+async def test_scheduler_keeps_last_failure_after_a_success(state, monkeypatch):
+    # Live 2026-11-02: liquidations:bybit and :okx showed failures=7 of 8 runs with last_error None, because the
+    # one success after them cleared the reason. last_failure keeps it.
+    rt = await _rt_with_memory_store(state)
+    outcomes = [RuntimeError("ConnectionClosedError: keepalive ping timeout"), 5]
+
+    async def flaky(_: Runtime) -> int:
+        out = outcomes.pop(0) if outcomes else 0
+        if isinstance(out, Exception):
+            raise out
+        return out
+
+    sched = Scheduler(rt, [PeriodicJob(name="flaky", period_seconds=0, fn=flaky)])
+    try:
+        await sched.start()
+        for _ in range(50):
+            if sched.jobs[0].metrics.successes > 0:
+                break
+            await asyncio.sleep(0.01)
+        m = sched.jobs[0].metrics
+        assert m.failures == 1 and m.successes >= 1
+        assert m.last_error is None  # the latest run succeeded
+        assert m.last_failure and "keepalive ping timeout" in m.last_failure and m.last_failure_ts is not None
+        # system_health is where the owner looks for the reason: both fields must reach collector[].
+        monkeypatch.setattr("tradedesk.collector.build_default_scheduler", lambda _rt: sched)
+        srv, _ = build_server(rt)
+        async with Client(srv) as c:
+            res = await c.call_tool("system_health", {})
+        data = res.structured_content or json.loads(res.content[0].text)
+        data = data.get("result", data)
+        (row,) = [j for j in data["data"]["collector"] if j["name"] == "flaky"]
+        assert "keepalive ping timeout" in row["last_failure"] and row["last_failure_ts"] == m.last_failure_ts
     finally:
         await sched.stop()
         await rt.aclose()

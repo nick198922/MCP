@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import time
 
 import httpx
@@ -151,6 +152,98 @@ async def test_http_body_check_counts_one_error_scrubs_and_never_caches():
     f = await http.get_json("/x", ttl=10, check=check)  # failures were not cached: the 4th call reaches the network
     assert f.data == {"v": 1} and seen["n"] == 4
     assert health.snapshot()["providers"]["test"]["status"] == "ok"
+
+
+async def test_http_404_is_cached_for_the_call_ttl_and_counted_once():
+    # Live 2026-11-02: ForexFactory's ff_calendar_nextweek.json answers 404 until it is published; every snapshot run
+    # re-fetched it (5 of 8 forexfactory calls failed in 45 min). A 404 is an answer: kept for the call's TTL.
+    seen = {"n": 0}
+
+    def handler(req):
+        seen["n"] += 1
+        return httpx.Response(404, text="not found")
+
+    http, health = make_http(handler)
+    for _ in range(3):
+        with pytest.raises(ProviderError) as ei:
+            await http.get_json("/next", ttl=10)
+        assert ei.value.reason == "data_unavailable"
+    h = health.snapshot()["providers"]["test"]
+    assert seen["n"] == 1 and (h["calls"], h["failures"]) == (1, 1)  # one request, one failure in health
+    http0, _ = make_http(handler, cache_scale=0.0)
+    for _ in range(2):
+        with pytest.raises(ProviderError):
+            await http0.get_json("/next", ttl=10)
+    assert seen["n"] == 3  # no TTL, no caching
+    http5, _ = make_http(lambda r: httpx.Response(500, text="down"), retries=0)
+    with pytest.raises(ProviderError):
+        await http5.get_json("/x", ttl=10)
+    assert http5._cache.peek(("test", "GET", "/x", (), "null")) == (False, None)  # server errors are never cached
+
+
+class _FlakyVenue:
+    """ccxt-like exchange whose fetch_ticker raises the queued errors first, then answers."""
+
+    def __init__(self, errors):
+        self.errors, self.calls = list(errors), 0
+
+    async def fetch_ticker(self, symbol):
+        self.calls += 1
+        if self.errors:
+            raise self.errors.pop(0)
+        return {"symbol": symbol, "last": 1.0}
+
+
+async def test_exchanges_retries_one_transient_network_error_only(caplog):
+    # Live 2026-11-02: ccxt:okx failed 2 of 23 calls with RequestTimeout ("okx GET .../funding-rate?..."); ccxt calls had
+    # no retry while every Http provider has two.
+    import ccxt
+
+    from tradedesk.providers.exchanges import Exchanges
+
+    venue = _FlakyVenue([ccxt.RequestTimeout("okx GET https://www.okx.com/api/v5/public/funding-rate")])
+    health = HealthRegistry()
+    ex = Exchanges(health, factory=lambda _id: venue, retry_backoff=0.0)
+    f = await ex.ticker("okx", "BTC/USDT:USDT")
+    h = health.snapshot()["providers"]["ccxt:okx"]
+    assert f.data["last"] == 1.0 and venue.calls == 2 and (h["status"], h["failures"]) == ("ok", 0)
+
+    venue = _FlakyVenue([ccxt.ExchangeNotAvailable("a"), ccxt.RequestTimeout("b")])
+    health = HealthRegistry()
+    ex = Exchanges(health, factory=lambda _id: venue, retry_backoff=0.0)
+    with pytest.raises(ProviderError) as ei:
+        await ex.ticker("okx", "BTC/USDT:USDT")
+    assert ei.value.reason == "network" and venue.calls == 2  # one retry, then give up
+    assert health.snapshot()["providers"]["ccxt:okx"]["failures"] == 1  # the final outcome only
+
+    for err in (ccxt.RateLimitExceeded("slow"), ccxt.DDoSProtection("slow"), ccxt.OnMaintenance("m"), ccxt.BadSymbol("x")):
+        venue = _FlakyVenue([err])
+        ex = Exchanges(HealthRegistry(), factory=lambda _id, v=venue: v, retry_backoff=0.0)
+        with pytest.raises(ProviderError):
+            await ex.ticker("okx", "BTC/USDT:USDT")
+        assert venue.calls == 1, type(err).__name__  # not transient: no retry
+
+    # ccxt maps HTTP 4xx and 5xx alike to ExchangeNotAvailable ("<id> <METHOD> <url> <code> <reason> <body>"):
+    # a 4xx (geo-block, WAF, bad parameter) is deterministic and is not repeated, a 5xx is.
+    url = "okx GET https://www.okx.com/api/v5/public/funding-rate?instId=BTC-USDT-SWAP"
+    for text, calls in ((f"{url} 403 Forbidden <html>", 1), (f"{url} 451  blocked", 1), (f"{url} 502 Bad Gateway ", 2)):
+        venue = _FlakyVenue([ccxt.ExchangeNotAvailable(text)])
+        ex = Exchanges(HealthRegistry(), factory=lambda _id, v=venue: v, retry_backoff=0.0)
+        with caplog.at_level(logging.INFO, logger="tradedesk.providers"):
+            caplog.clear()
+            try:
+                await ex.ticker("okx", "BTC/USDT:USDT")
+            except ProviderError:
+                pass
+        assert venue.calls == calls, text
+        retried = [r.getMessage() for r in caplog.records if "retry" in r.getMessage()]
+        assert retried == (["ccxt:okx fetch_ticker: retry 1 after ExchangeNotAvailable"] if calls == 2 else []), text
+
+    venue = _FlakyVenue([ccxt.RequestTimeout("t")])
+    ex = Exchanges(HealthRegistry(), factory=lambda _id: venue, retries=0)
+    with pytest.raises(ProviderError):
+        await ex.ticker("okx", "BTC/USDT:USDT")
+    assert venue.calls == 1  # TRADEDESK_HTTP_RETRIES=0 turns it off
 
 
 def test_health_degraded_then_down_then_recovers():

@@ -32,7 +32,11 @@ class JobMetrics:
     last_run_ts: float | None = None
     last_duration_ms: float | None = None
     last_rows_written: int | None = None
-    last_error: str | None = None
+    last_error: str | None = None  # the latest run's error; cleared by the next success
+    # The latest failure, kept across later successes: without it a job that fails 7 times and then succeeds once
+    # shows failures=7 and no reason (liquidations:bybit / :okx, 2026-11-02).
+    last_failure: str | None = None
+    last_failure_ts: float | None = None
 
 
 @dataclass
@@ -87,6 +91,7 @@ class Scheduler:
             except Exception as e:  # noqa: BLE001
                 job.metrics.failures += 1
                 job.metrics.last_error = f"{type(e).__name__}: {e}"
+                job.metrics.last_failure, job.metrics.last_failure_ts = job.metrics.last_error, time.time()
                 log.warning("collector job %s failed: %s", job.name, e)
             finally:
                 job.metrics.runs += 1

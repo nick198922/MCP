@@ -29,3 +29,26 @@
 
 ## Що потрібно до approve
 Пункти 1 і 2: два невеликі тести. Сам код змінювати не треба.
+
+## Повторне рев'ю
+
+Дата: 2026-11-02. Предмет: коміт `85a9b49` на `main` (`core/http.py`, `alerts/channels.py`, `runtime.py`, `tests/test_core.py` рядки 102–150, `tests/test_alerts.py`).
+
+**Вердикт: approve.** Обидва блокери закрито тестами, і мутаційна перевірка показує, що ці тести справді ловлять поломку.
+
+### Що перевірено самостійно
+- `make lint`: чисто. `tests/test_core.py` + `tests/test_alerts.py`: 47 passed.
+- Мутаційна перевірка скриптом поза репозиторієм (`~/.cache/tradedesk-agents/tmp/critic_mut2/mut_check.py`). Скрипт копіює `src/` і `tests/` у тимчасову теку й мутує копію `http.py`. Я перевірив, що імпорт іде саме з копії. Робоче дерево репозиторію лишилось чистим (`git status` порожній). Результати:
+  - baseline: 22 passed (цільові тести + `test_alerts.py`);
+  - M1, `_retry_after` читає лише заголовок: падають `[{}-3]` і `[{}-30]`;
+  - M2, прибрано стелю 5 с: падає `[{}-30]`;
+  - M3, у гілці `TimeoutException` прибрано `self._unsent_only and`: падає `[ReadTimeout]`;
+  - M4, те саме в гілці `HTTPError`: падають `[RemoteProtocolError]` і `[ReadError]`;
+  - M5, тіло має пріоритет над заголовком: падає `[Retry-After: 2]`.
+
+### Стан знахідок
+1. **Закрито.** `test_http_429_waits_retry_after_from_header_or_body` перевіряє три випадки: значення з тіла, стелю 5 с і пріоритет заголовка. Тест бере `backoff_base=0.0` і записує паузи, тож пауза, відмінна від нуля, можлива лише з `retry_after`.
+2. **Закрито.** `test_plain_http_still_retries_errors_after_the_request_was_sent` перевіряє `ReadTimeout`, `RemoteProtocolError` і `ReadError`. Так покрито обидві гілки `except` (`TimeoutException` і `HTTPError`), а в кожному випадку тест очікує 2 запити, успіх і health `ok`.
+3. **Прийнято як є** (низька). Стеля 5 с для 429 лишилась. Дублів вона не створює.
+4. **Закрито.** У `channels.py` передається `secrets=(settings.telegram_bot_token,)`, а `test_alerts.py:220` перевіряє `"abc" not in err`.
+5. Інфо, без змін.

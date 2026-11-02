@@ -73,6 +73,22 @@ class CoinGecko:
             raise ProviderError(self.name, "backend_error", "unexpected shape at /coins/markets")
         return f
 
+    async def coins_markets_ids(self, vs_currency: str, ids: list[str]) -> Fetched:
+        """``GET /coins/markets?ids=…`` for up to 250 named coins (same row shape as `coins_markets`). Unknown or delisted
+        ids are simply absent from the answer."""
+        params: dict[str, Any] = {
+            "vs_currency": vs_currency,
+            "ids": ",".join(ids[:250]),
+            "order": "market_cap_desc",
+            "per_page": 250,
+            "page": 1,
+            "sparkline": "false",
+        }
+        f = await self.http.get_json("/coins/markets", params=params, ttl=60, tool="coins/markets", args={"ids": len(ids)})
+        if not isinstance(f.data, list):
+            raise ProviderError(self.name, "backend_error", "unexpected shape at /coins/markets")
+        return f
+
     async def search_trending(self) -> Fetched:
         """``GET /search/trending`` (free tier): the trending coins list, ``{"coins": [{"item": {...}}, ...], "nfts": [...],
         "categories": [...]}``. Only the top-level shape is checked here (``coins`` must be a list); the items are parsed

@@ -298,8 +298,9 @@ async def _rt_with_coingecko_pages(state, pages: dict[int, object]) -> Runtime:
     transports = make_transports(state)
     transports["coingecko"] = httpx.MockTransport(cg)
     settings = Settings(
-        http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=":memory:", collector_enabled=True, collect_supply_pages=3
-    )
+        http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=":memory:", collector_enabled=True, collect_supply_pages=3,
+        collect_supply_extra_ids_path="/nonexistent",
+    )  # fmt: skip
     rt = Runtime(settings, transports=transports, exchange_factory=FakeEx)
     rt.coingecko.http._limiter = TokenBucket(1_000.0, 1_000)  # the keyless 0.5 req/s limit only slows the test (~8 s)
     rt.now = lambda: NOW
@@ -352,3 +353,94 @@ def test_supply_job_is_scheduled_with_the_collector(state):
     )
     assert "supply" in [j.name for j in build_default_scheduler(on).jobs]
     assert "supply" not in [j.name for j in build_default_scheduler(off).jobs]
+
+
+async def test_supply_job_adds_extra_ids_and_global_totals(state, tmp_path):
+    import httpx  # noqa: PLC0415
+
+    from tradedesk.collector.scheduler import _collect_supply  # noqa: PLC0415
+
+    ids_file = tmp_path / "ids.txt"
+    ids_file.write_text("# comment\ncoin-1\ncoin-50  # outside the top pages\ncoin-60\n\ncoin-50\n")
+    asked: list[str] = []
+
+    def cg(req: httpx.Request) -> httpx.Response:
+        path = req.url.path.split("/api/v3", 1)[-1]
+        if path == "/global":
+            data = {
+                "total_market_cap": {"usd": 2_500_000_000_000.0},
+                "total_volume": {"usd": 90_000_000_000.0},
+                "market_cap_percentage": {"btc": 57.5, "eth": 11.2},
+                "market_cap_change_percentage_24h_usd": -1.25,
+                "active_cryptocurrencies": 17_000,
+            }
+            return httpx.Response(200, json={"data": data})
+        if "ids" in req.url.params:
+            asked.append(req.url.params["ids"])
+            wanted = req.url.params["ids"].split(",")
+            return httpx.Response(200, json=[_coin(int(i.split("-")[1])) for i in wanted if i != "coin-60"])  # 60: delisted
+        page = int(req.url.params.get("page", "1"))
+        return httpx.Response(200, json=[_coin(1), _coin(2)] if page == 1 else [])
+
+    transports = make_transports(state)
+    transports["coingecko"] = httpx.MockTransport(cg)
+    settings = Settings(
+        http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=":memory:", collector_enabled=True,
+        collect_supply_pages=2, collect_supply_extra_ids_path=str(ids_file),
+    )  # fmt: skip
+    rt = Runtime(settings, transports=transports, exchange_factory=FakeEx)
+    rt.coingecko.http._limiter = TokenBucket(1_000.0, 1_000)
+    rt.now = lambda: NOW
+    await rt.store.init()
+    try:
+        assert await _collect_supply(rt) == 3 + 1  # coin-1, coin-2 from the pages, coin-50 extra; plus the global row
+        assert asked == ["coin-50,coin-60"]  # coin-1 is already in the pages; the duplicate line is read once
+        assert await rt.store.table_count("supply_snapshot") == 3
+        cur = await rt.store.conn.execute(
+            "SELECT day, total_market_cap, btc_dominance, eth_dominance, mcap_change_24h, active_cryptocurrencies FROM global_snapshot"
+        )
+        import pytest  # noqa: PLC0415
+
+        assert tuple(await cur.fetchone()) == pytest.approx(("2026-10-10", 2_500_000_000_000.0, 0.575, 0.112, -0.0125, 17_000))
+    finally:
+        await rt.aclose()
+
+
+async def test_supply_job_survives_extra_and_global_failures(state, tmp_path):
+    import httpx  # noqa: PLC0415
+
+    from tradedesk.collector.scheduler import _collect_supply  # noqa: PLC0415
+
+    ids_file = tmp_path / "ids.txt"
+    ids_file.write_text("coin-50\n")
+
+    def cg(req: httpx.Request) -> httpx.Response:
+        path = req.url.path.split("/api/v3", 1)[-1]
+        if path == "/global" or "ids" in req.url.params:
+            return httpx.Response(500, text="down")
+        page = int(req.url.params.get("page", "1"))
+        return httpx.Response(200, json=[_coin(1)] if page == 1 else [])
+
+    transports = make_transports(state)
+    transports["coingecko"] = httpx.MockTransport(cg)
+    settings = Settings(
+        http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=":memory:", collector_enabled=True,
+        collect_supply_pages=1, collect_supply_extra_ids_path=str(ids_file),
+    )  # fmt: skip
+    rt = Runtime(settings, transports=transports, exchange_factory=FakeEx)
+    rt.coingecko.http._limiter = TokenBucket(1_000.0, 1_000)
+    rt.now = lambda: NOW
+    await rt.store.init()
+    try:
+        assert await _collect_supply(rt) == 1  # the top page is still written
+        assert await rt.store.table_count("global_snapshot") == 0
+    finally:
+        await rt.aclose()
+
+
+def test_supply_extra_ids_file(tmp_path):
+    from tradedesk.collector.scheduler import _supply_extra_ids  # noqa: PLC0415
+
+    assert _supply_extra_ids(str(tmp_path / "missing.txt")) == []
+    shipped = _supply_extra_ids("")  # the repo's deploy/coingecko_extra_ids.txt
+    assert len(shipped) > 100 and all(" " not in i and "#" not in i for i in shipped)

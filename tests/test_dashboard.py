@@ -1660,7 +1660,7 @@ def test_pm_tab_renders_the_real_snapshot(tmp_path):
         "виплата $124",
         "нижче правила 5 власника",
         "R:R нижче 2 (правило 5 власника): 2 з 2.",
-        f"Близько (3–5 п.п.) — нижче порогу реєстрації, не сигнал: {len(ref_near)}",
+        f"боків {len(ref_near)} · нижче порогу реєстрації, не сигнал</span>",
         "ризик-нейтральні",
         "≈ 23.02.2027",
         "власні угоди на тих самих тонких ринках можуть зсунути книги",
@@ -1696,7 +1696,7 @@ def test_pm_tab_near_table_on_the_earlier_snapshot(tmp_path):
     page = db.render_polymarket(data, None, float(a + 600))
     assert (
         "Зараз жоден бік не проходить поріг 5 п.п." in page
-        and f"нижче порогу реєстрації, не сигнал: 2{db._info('pm_near')}</summary>" in page
+        and f"<h2>Близько (3–5 п.п.){db._info('pm_near')}</h2><span class='fs'>боків 2 · нижче порогу реєстрації, не сигнал</span>" in page
     )
     assert "Will Ethereum dip to $2,350 on October 21?" in page and "<b>YES</b>" in page
     assert page.count("нижче правила 5 власника") == 1  # only the expensive NO side is flagged
@@ -1718,7 +1718,7 @@ def test_pm_tab_with_the_sync_columns_stale_and_ended(tmp_path):
     stale = db.render_polymarket(data, None, float(PM_B + 2 * 3600 + 60))
     assert "старший за 2 год" in stale
     assert "<details class='near'><summary>Ціни застарілі (знімок старший за 2 год): це не сигнали · рядків 2</summary>" in stale
-    assert f"не сигнал · ціни застарілі: 0{db._info('pm_near')}</summary>" in stale
+    assert "боків 0 · нижче порогу реєстрації, не сигнал · ціни застарілі</span>" in stale
     # the horizon is also checked from NOW: 1.5 h before the end both passing sides are dropped and counted
     for now in (PM_END - 1.5 * 3600, PM_END - 2 * 3600 + 1, float(PM_END)):
         v = db.pm_gap_view(data, now)

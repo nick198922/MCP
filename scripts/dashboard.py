@@ -1053,6 +1053,12 @@ HELP: dict[str, tuple[str, str, str, str]] = {
         "2 — виграш удвічі більший за ставку; нижче 2 — дорогий бік: мала виплата на великий ризик.",
         "Правило 5 власника — R:R ≥ 2, рядки нижче підсвічено. Розмір під ризик $100 — у сусідній колонці.",
     ),
+    "pm_paper": (
+        "Відбір і паперовий тест",
+        "Скільки ринків пройшли відбір і скільки щогодинних знімків зібрали паперові тести; результатів тут немає.",
+        "Знімків помітно менше за очікувані — колектор пропускав години.",
+        "До вердикту CLV, P&L і Brier ніхто не дивиться (заборона підглядання з реєстрації).",
+    ),
     "position": (
         "Позиція",
         "Головні числа зібраної позиції, USD: премія, беззбиток, макс. прибуток і збиток на експірацію, ймовірність прибутку.",
@@ -1721,6 +1727,43 @@ ACT: dict[str, tuple[str, str, str, str]] = {
         "фільтр працює: нічого не роби.",
         "Пропущені дають більше R",
         "фільтр відсікає добрі угоди: обговори з Claude.",
+    ),
+    # the «Polymarket» tab (standing improvements, item 17)
+    "pm": (
+        "Порожньо або всі з R:R нижче 2",
+        "нічого не роби.",
+        "Є бік з R:R ≥ 2",
+        "за бажанням ручна угода до $100: спершу перевір книгу на polymarket.com.",
+    ),
+    "pm_near": (
+        "Порожньо",
+        "нічого не роби.",
+        "Є боки",
+        "лише спостерігай: до наступного знімка розрив зросте або зникне.",
+    ),
+    "pm_model": (
+        "Два читання близькі",
+        "бік мало залежить від вола: модель стабільна.",
+        "Читання помітно різняться",
+        "бік чутливий до вола: edge менш надійний.",
+    ),
+    "pm_edge": (
+        "5–6 п.п.",
+        "на межі порогу: аск міг уже зрушити, перевір книгу.",
+        "Понад 10 п.п.",
+        "підозріло багато: звір правила ринку й експірацію Deribit.",
+    ),
+    "pm_rr": (
+        "Нижче 2",
+        "пропусти: правило 5 власника.",
+        "2 і вище",
+        "розмір — у колонці «На ризик $100».",
+    ),
+    "pm_paper": (
+        "Знімків менше за очікувані",
+        "колектор пропускав години: напиши Claude.",
+        "Знімки йдуть щогодини",
+        "нічого: результат побачимо лише на вердикті.",
     ),
 }
 
@@ -8567,6 +8610,13 @@ PM_MIN_RR = 2.0  # the owner's rule 5
 PM_YEAR_S = 365 * 86_400
 PM_PAIRS = {"BTC": "BTC/USDT", "ETH": "ETH/USDT"}
 PM_IDEA_TAG = "idea:polymarket-vs-options-forward"
+# The paper tests' registered dates: stdlib copies of analytics.pm_gap_report T0_TS, T0_V2G_TS, MAIN_PERIOD_DAYS and
+# VERDICT_DAYS (a test compares them). Both tests are under the no-peeking rule until their verdicts (cards
+# polymarket-vs-options-forward and polymarket-v2g-forward, section 1): the tab shows counters and dates only, never
+# CLV, P&L or Brier, and it never reads pm_gap_outcome.
+PM_T0_V1 = 1792520435  # 2026-10-20 18:20:35 UTC
+PM_T0_V2G = 1793506831  # 2026-11-01 04:20:31 UTC
+PM_MAIN_DAYS, PM_VERDICT_DAYS = 112, 126
 PM_CAVEATS = (
     "Ймовірності з опціонів Deribit — ризик-нейтральні (ціна страхування в ринку), а не реальні. Бік показано, лише якщо "
     "розрив пережив обидва читання моделі: як зібрано і з IV × 0.92.",
@@ -8755,8 +8805,9 @@ def pm_gap_view(data: dict, now: float) -> dict:
 
 def load_pm_gap(path: Path) -> tuple[dict | None, str | None]:
     """{'ts': latest snapshot ts | None, 'rows': its rows | None (no table), 'text_rows': resolution texts of its
-    markets}, or (None, 'missing' | 'unreadable: …'). Read-only connection; works with and without the book_ts /
-    surface_ts columns (SELECT *); never raises."""
+    markets, 'n_snaps': {'v1', 'v2g'} snapshots since each paper test's T0 (only with a snapshot)}, or (None,
+    'missing' | 'unreadable: …'). Read-only connection; works with and without the book_ts / surface_ts columns
+    (SELECT *); never raises."""
     try:
         if not path.exists():
             return None, "missing"
@@ -8781,7 +8832,12 @@ def load_pm_gap(path: Path) -> tuple[dict | None, str | None]:
                 (ts,),
             )
         ]
-        return {"ts": int(ts), "rows": rows, "text_rows": text_rows}, None
+        # counters only (no-peeking rule): hourly snapshots collected since each paper test's T0
+        n_v1, n_v2g = con.execute(
+            "SELECT COUNT(DISTINCT ts), COUNT(DISTINCT CASE WHEN ts >= ? THEN ts END) FROM pm_gap_snapshot WHERE ts >= ?",
+            (PM_T0_V2G, PM_T0_V1),
+        ).fetchone()
+        return {"ts": int(ts), "rows": rows, "text_rows": text_rows, "n_snaps": {"v1": int(n_v1), "v2g": int(n_v2g)}}, None
     except (sqlite3.Error, OSError, TypeError, ValueError) as e:
         return None, f"unreadable: {type(e).__name__}"
     finally:
@@ -8844,6 +8900,103 @@ def block_pm_table(sides: list[dict], now: float) -> str:
     return "".join(out)
 
 
+def _pm_day(ts: float) -> str:
+    return kyiv(datetime.fromtimestamp(ts, timezone.utc), "%d.%m.%Y")  # noqa: UP017
+
+
+def pm_paper_counts(n_snaps: dict | None, now: float) -> list[dict]:
+    """Counters and dates of the two paper tests (v1, v2-g), nothing else (no-peeking rule): T0, the end of the
+    16-week entry period, the earliest verdict, the entry-period week now (0 before T0, None after the period), hourly
+    snapshots collected since T0 and how many the hourly collector should have made by now."""
+    v1_verdict = PM_T0_V1 + PM_VERDICT_DAYS * 86_400
+    out = []
+    for key, name, t0, verdict in (
+        ("v1", "v1", PM_T0_V1, v1_verdict),
+        ("v2g", "v2-g", PM_T0_V2G, max(PM_T0_V2G + PM_VERDICT_DAYS * 86_400, v1_verdict)),
+    ):
+        entry_end = t0 + PM_MAIN_DAYS * 86_400
+        week = 0 if now < t0 else int((now - t0) // (7 * 86_400)) + 1 if now < entry_end else None
+        n = (n_snaps or {}).get(key)
+        out.append(
+            {
+                "name": name,
+                "t0": t0,
+                "entry_end": entry_end,
+                "verdict": verdict,
+                "week": week,
+                "n": n if isinstance(n, int) else None,
+                "expected": 0 if now < t0 else int((now - t0) // 3600) + 1,
+            }
+        )
+    return out
+
+
+def _pm_week(c: dict) -> str:
+    w = c["week"]
+    return "ще не почався" if w == 0 else "вхід закрито, чекаємо розв'язання" if w is None else f"{w} з {PM_MAIN_DAYS // 7}"
+
+
+def block_pm_paper(counts: list[dict]) -> str:
+    """The paper tests' counters: dates and hourly snapshots since T0. No CLV, P&L or Brier (no-peeking rule)."""
+    out = [
+        "<div class='scroll'><table><tr><th>Тест</th><th>T0 (Київ)</th><th>Вхід у тест до</th><th>Тиждень</th>"
+        "<th>Знімків з T0 (очікувано)</th><th>Вердикт не раніше</th></tr>"
+    ]
+    for c in counts:
+        n = "—" if c["n"] is None else str(c["n"])
+        out.append(
+            f"<tr><td>{_e(c['name'])}</td><td class='num'>{_e(kyiv(datetime.fromtimestamp(c['t0'], timezone.utc)))}</td>"  # noqa: UP017
+            f"<td class='num'>{_e(_pm_day(c['entry_end']))}</td><td>{_e(_pm_week(c))}</td>"
+            f"<td class='num'>{n} (≈ {c['expected']})</td><td class='num'>{_e(_pm_day(c['verdict']))}</td></tr>"
+        )
+    out.append("</table></div>")
+    return "".join(out)
+
+
+def pm_paper_summary(v: dict, c: dict) -> str:
+    """The folded block's one line: how many markets passed the selection, the v1 test's week and its verdict date."""
+    n = "—" if c["n"] is None else c["n"]
+    return (
+        f"відбір пройшли {v['n_eligible']} з {v['n_rows']} ринків · паперовий тест {c['name']}: тиждень {_pm_week(c)}, "
+        f"знімків {n} · вердикт не раніше {_pm_day(c['verdict'])}"
+    )
+
+
+def pm_lead(v: dict, ts: int, now: float) -> str:
+    """The page's first lines (docs/design/PANEL.md): one sentence «what now», one «what to do». The first that
+    applies: the snapshot is older than 2 h; a side passes 5 pp with R:R >= 2; sides pass 5 pp, all below R:R 2;
+    nothing passes. Built from the latest snapshot's prices only, never from a paper-test result (no-peeking rule)."""
+    ok = [s for s in v["pass"] if s["rr"] >= PM_MIN_RR]
+    if now - ts > PM_STALE_S:
+        chip, label = "risk", "ціни застарілі"
+        what = f"Останній знімок {fmt_age(now - ts)}: колектор pm_gap, схоже, зупинився, ціни неактуальні."
+        do = "за цими цінами не входь; напиши Claude, щоб перевірив колектор pm_gap."
+    elif ok:
+        best = ok[0]  # v["pass"] is sorted by net edge, largest first
+        side = "YES" if best["side"] == "yes" else "NO"
+        chip, label = "opp", "є розрив"
+        what = (
+            f"Поріг 5 п.п. і R:R ≥ 2 проходять боків: {len(ok)}; найбільший edge {_pp(best['edge'])} — "
+            f"{_clean(best.get('asset') or '—', 8)} {side}, до кінця {_hours_left((best['end_ts'] - now) / 3600)}."
+        )
+        do = (
+            f"перевага ще не доведена (вердикт тесту не раніше {_pm_day(PM_T0_V1 + PM_VERDICT_DAYS * 86_400)}): якщо "
+            "береш — перевір книгу на polymarket.com, ризик до $100, запиши через journal_add (стовпець «Запис»)."
+        )
+    elif v["pass"]:
+        chip, label = "calm", "лише дорогі боки"
+        what = f"Поріг 5 п.п. проходять боків: {len(v['pass'])}, але в усіх R:R нижче 2."
+        do = "нічого: за правилом 5 власника R:R має бути ≥ 2."
+    else:
+        chip, label = "calm", "розривів немає"
+        what = f"Жоден бік не проходить поріг 5 п.п.; близько (3–5 п.п.): {len(v['near'])}."
+        do = "нічого: знімок оновлюється щогодини, паперовий тест збирає дані сам."
+    return (
+        f"<div class='lead'><span class='chip {chip}'>{_e(label)}</span>"
+        f"<p class='now'>{_e(what)}</p><p class='do'><b>Що робити:</b> {_e(do)}</p></div>"
+    )
+
+
 def render_polymarket(data: dict | None, err: str | None, now: float, path: Path | None = None) -> str:
     """The «Polymarket» tab. Never raises: no database, no table, an empty or a stale snapshot gives an explained state."""
     head = (
@@ -8871,13 +9024,13 @@ def render_polymarket(data: dict | None, err: str | None, now: float, path: Path
             return head + f"<header>{title}<span class='warn'>{_e(msg)}</span></header>{_nav('polymarket')}{caveats}</body></html>"
         ts = int(data["ts"])
         age = now - ts
-        cls = "bad" if age > PM_STALE_S else "mut"
-        stamp = f"<span class='{cls}'>Знімок {_e(kyiv(datetime.fromtimestamp(ts, timezone.utc)))} за Києвом · {_e(fmt_age(age))}"  # noqa: UP017
-        if age > PM_STALE_S:
-            stamp += " · старший за 2 год: колектор pm_gap, схоже, зупинився, ціни неактуальні"
-        stamp += "</span>"
+        stale = age > PM_STALE_S
+        cls = "bad" if stale else "mut"
+        stamp = f"<span class='{cls}'>Знімок {_e(kyiv(datetime.fromtimestamp(ts, timezone.utc)))} за Києвом · {_e(fmt_age(age))}</span>"  # noqa: UP017
         v = pm_gap_view(data, now)
-        out = [head, f"<header>{title}{stamp}</header>{_nav('polymarket')}{caveats}<main class='brief'>"]
+        # docs/design/PANEL.md: «what now / what to do» first, the passing sides always open, the rest folded with a
+        # one-line summary, the caveats once at the bottom
+        out = [head, f"<header>{title}{stamp}</header>{_nav('polymarket')}<main class='brief'>"]
         notes = [
             f"У знімку ринків: {v['n_rows']}; пройшли відбір реєстрації (модель ok, страйк у котируваннях Deribit, прийнятий "
             f"текст правил, 2 год – 14 дн до кінця): {v['n_eligible']}. Бік показано, якщо аск у [0.02; 0.98] і на аску "
@@ -8889,9 +9042,8 @@ def render_polymarket(data: dict | None, err: str | None, now: float, path: Path
             notes.append(f"Боків, чиї ринки зараз ближче ніж за 2 год до кінця (правило там уже не входить), не показано: {v['n_short']}.")
         if v["n_bad"]:
             notes.append(f"Рядків з несподіваним форматом пропущено: {v['n_bad']}.")
-        stale = age > PM_STALE_S
         n_low = sum(1 for s in v["pass"] if s["rr"] < PM_MIN_RR)
-        out.append(f"<section class='wide'>{_h2('Проходять поріг (≥ 5 п.п.)', 'pm', CHIP_HINT)}")
+        out.append(f"<section class='wide'>{pm_lead(v, ts, now)}{_h2('Проходять поріг (≥ 5 п.п.)', 'pm', CHIP_HINT)}")
         if v["pass"]:
             table = block_pm_table(v["pass"], now)
             if n_low:
@@ -8905,15 +9057,14 @@ def render_polymarket(data: dict | None, err: str | None, now: float, path: Path
             out.append(table)
         else:
             out.append(_empty("Зараз жоден бік не проходить поріг 5 п.п. з усіма фільтрами."))
-        out.append("".join(f"<p class='note'>{_e(x)}</p>" for x in notes))
         out.append("</section>")
         near = block_pm_table(v["near"], now) if v["near"] else _empty("Немає.")
         old = " · ціни застарілі" if stale else ""
-        out.append(
-            "<section class='wide'><details class='near'><summary>Близько (3–5 п.п.) — нижче порогу реєстрації, не сигнал"
-            f"{old}: {len(v['near'])}{_info('pm_near')}</summary>{near}</details></section>"
-        )
-        out.append("</main></body></html>")
+        out.append(_fold("Близько (3–5 п.п.)", "pm_near", _e(f"боків {len(v['near'])} · нижче порогу реєстрації, не сигнал{old}"), near))
+        counts = pm_paper_counts(data.get("n_snaps"), now)
+        body = "".join(f"<p class='note'>{_e(x)}</p>" for x in notes) + block_pm_paper(counts)
+        out.append(_fold("Відбір і паперовий тест", "pm_paper", _e(pm_paper_summary(v, counts[0])), body))
+        out.append(f"</main>{caveats}</body></html>")
         return "".join(out)
     except Exception as e:  # noqa: BLE001 - the page always renders
         return (

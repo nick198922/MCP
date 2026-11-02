@@ -197,6 +197,7 @@ async def test_evaluate_alerts_fires_and_writes(state, tmp_path):
     )
     settings = Settings(
         http_retries=1,
+        http_retry_backoff=0.0,
         cache_scale=0.0,
         db_path=":memory:",
         collector_enabled=True,
@@ -239,6 +240,7 @@ async def test_evaluate_alerts_fires_and_writes(state, tmp_path):
 async def test_retention_sweep_deletes_old_rows(state):
     settings = Settings(
         http_retries=1,
+        http_retry_backoff=0.0,
         cache_scale=0.0,
         db_path=":memory:",
         collector_enabled=True,

@@ -22,7 +22,7 @@ def _runtime(state: State, *, hl_down: bool = False) -> Runtime:
     tr = make_transports(state)
     if hl_down:
         tr["hyperliquid"] = httpx.MockTransport(lambda req: httpx.Response(500, text="down"))
-    rt = Runtime(Settings(http_retries=1, cache_scale=0.0, db_path=""), transports=tr, exchange_factory=FakeEx)
+    rt = Runtime(Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=""), transports=tr, exchange_factory=FakeEx)
     rt.now = lambda: NOW
     return rt
 

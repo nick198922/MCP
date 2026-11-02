@@ -14,6 +14,7 @@ from test_server import call
 from tradedesk.analytics.macro_calendar import build_macro_calendar, classify, clean_text
 from tradedesk.collector.assistant_paper import EVENT_KINDS
 from tradedesk.config import Settings
+from tradedesk.core.ratelimit import TokenBucket
 from tradedesk.runtime import Runtime
 from tradedesk.server import build_server
 
@@ -147,7 +148,8 @@ async def test_macro_calendar_tool(server):
 async def test_macro_calendar_provider_failure(state):
     tr = make_transports(state)
     tr["forexfactory"] = httpx.MockTransport(lambda req: httpx.Response(503, text="down"))
-    rt2 = Runtime(Settings(http_retries=1, cache_scale=0.0), transports=tr, exchange_factory=FakeEx)
+    rt2 = Runtime(Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0), transports=tr, exchange_factory=FakeEx)
+    rt2.forexfactory.http._limiter = TokenBucket(1_000.0, 1_000)  # 4 calls at the 0.5 req/s production limit wait ~4 s
     rt2.now = lambda: NOW
     srv, _ = build_server(rt2)
     env = await call(srv, "macro_calendar", horizon_days=30)  # must not raise
@@ -161,7 +163,7 @@ async def test_macro_calendar_provider_failure(state):
 async def test_macro_calendar_bad_shape_goes_to_missing(state):
     tr = make_transports(state)
     tr["forexfactory"] = httpx.MockTransport(lambda req: httpx.Response(200, json={"oops": 1}))
-    rt2 = Runtime(Settings(http_retries=1, cache_scale=0.0), transports=tr, exchange_factory=FakeEx)
+    rt2 = Runtime(Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0), transports=tr, exchange_factory=FakeEx)
     rt2.now = lambda: NOW
     srv, _ = build_server(rt2)
     env = await call(srv, "macro_calendar", horizon_days=7)
@@ -188,7 +190,7 @@ async def test_macro_calendar_next_week_not_published_is_still_ok(state):
             else httpx.Response(404, text="not found")
         )
     )
-    rt2 = Runtime(Settings(http_retries=1, cache_scale=0.0), transports=tr, exchange_factory=FakeEx)
+    rt2 = Runtime(Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0), transports=tr, exchange_factory=FakeEx)
     rt2.now = lambda: NOW
     srv, _ = build_server(rt2)
     env = await call(srv, "macro_calendar", horizon_days=1)

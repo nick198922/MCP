@@ -122,7 +122,11 @@ class _NoOhlcv(FakeEx):
 
 
 async def test_deribit_vrp_price_provider_failure(state):
-    rt = Runtime(Settings(http_retries=1, cache_scale=0.0, db_path=""), transports=make_transports(state), exchange_factory=_NoOhlcv)
+    rt = Runtime(
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=""),
+        transports=make_transports(state),
+        exchange_factory=_NoOhlcv,
+    )
     rt.now = lambda: NOW
     srv, _ = build_server(rt)
     try:

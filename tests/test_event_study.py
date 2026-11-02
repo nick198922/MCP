@@ -102,7 +102,7 @@ async def test_event_study_mcp_end_to_end(state, tmp_path):
     """Seed a few hundred rising BTC bars + three FOMC-like events, then run
     event_study('direction') with a 1h/2h window and expect hit_rate=1.0."""
     rt = Runtime(
-        Settings(http_retries=1, cache_scale=0.0, db_path=str(tmp_path / "es.sqlite")),
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=str(tmp_path / "es.sqlite")),
         transports=make_transports(state),
         exchange_factory=FakeEx,
     )
@@ -144,7 +144,7 @@ async def test_event_study_mcp_end_to_end(state, tmp_path):
 
 async def test_event_study_requires_ohlcv_hist(state, tmp_path):
     rt = Runtime(
-        Settings(http_retries=1, cache_scale=0.0, db_path=str(tmp_path / "es2.sqlite")),
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=str(tmp_path / "es2.sqlite")),
         transports=make_transports(state),
         exchange_factory=FakeEx,
     )

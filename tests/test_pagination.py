@@ -32,7 +32,11 @@ class _Capped(FakeEx):
 
 
 def _rt(state, factory) -> Runtime:
-    return Runtime(Settings(http_retries=1, cache_scale=0.0, db_path=""), transports=make_transports(state), exchange_factory=factory)
+    return Runtime(
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=""),
+        transports=make_transports(state),
+        exchange_factory=factory,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -184,7 +188,7 @@ async def test_hyperliquid_funding_range_walks_500_row_pages(state):
 
     tr = make_transports(state)
     tr["hyperliquid"] = httpx.MockTransport(hl)
-    rt = Runtime(Settings(http_retries=1, cache_scale=0.0, db_path=""), transports=tr, exchange_factory=FakeEx)
+    rt = Runtime(Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=""), transports=tr, exchange_factory=FakeEx)
     try:
         f = await rt.hyperliquid.funding_history_range("BTC", START, START + 1200 * hour)
         assert f.data["complete"] is True

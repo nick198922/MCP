@@ -265,7 +265,7 @@ def test_detect_sweeps_reports_overshoot():
 
 async def test_range_detect_live_source(state):
     rt = Runtime(
-        Settings(http_retries=1, cache_scale=0.0, db_path=""),
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=""),
         transports=make_transports(state),
         exchange_factory=FakeEx,
     )
@@ -294,7 +294,7 @@ async def test_range_detect_live_source(state):
 
 async def test_range_setup_live_mcp(state):
     rt = Runtime(
-        Settings(http_retries=1, cache_scale=0.0, db_path=""),
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=""),
         transports=make_transports(state),
         exchange_factory=FakeEx,
     )
@@ -336,7 +336,7 @@ class _OhlcvFailEx(FakeEx):
 
 def _scan_rt(state, factory=FakeEx):
     rt = Runtime(
-        Settings(http_retries=1, cache_scale=0.0, db_path=""),
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=""),
         transports=make_transports(state),
         exchange_factory=factory,
     )
@@ -432,7 +432,7 @@ async def test_range_setup_scan_empty_symbols(state):
 
 async def test_range_detect_store_source_missing(state, tmp_path):
     rt = Runtime(
-        Settings(http_retries=1, cache_scale=0.0, db_path=str(tmp_path / "r.sqlite")),
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=str(tmp_path / "r.sqlite")),
         transports=make_transports(state),
         exchange_factory=FakeEx,
     )

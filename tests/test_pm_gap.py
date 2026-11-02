@@ -203,7 +203,9 @@ def _transports(state, gamma_status: int = 200, clob_status: int = 200, events=N
 
 async def _rt(state, now: datetime = NOW, ex=FakeEx, **kw) -> Runtime:
     rt = Runtime(
-        Settings(http_retries=1, cache_scale=0.0, db_path=":memory:", collector_enabled=True, **kw.pop("settings", {})),
+        Settings(
+            http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=":memory:", collector_enabled=True, **kw.pop("settings", {})
+        ),
         transports=_transports(state, **kw),
         exchange_factory=ex,
     )
@@ -213,7 +215,10 @@ async def _rt(state, now: datetime = NOW, ex=FakeEx, **kw) -> Runtime:
 
 
 async def _call(rt: Runtime, **args) -> dict:
-    srv, _ = build_server(rt)
+    # One server per runtime, as in production (each connection still runs the lifespan); a build costs ~0.7 s.
+    srv = rt.__dict__.get("_test_server")
+    if srv is None:
+        srv = rt._test_server = build_server(rt)[0]  # type: ignore[attr-defined]
     async with Client(srv) as c:
         res = await c.call_tool("polymarket_options_gap", args)
     data = res.structured_content if res.structured_content is not None else json.loads(res.content[0].text)
@@ -794,6 +799,7 @@ async def test_scan_reads_the_surface_after_the_books(state):
 async def test_migration_24_adds_the_ts_index_and_the_planner_uses_it(tmp_path):
     path = tmp_path / "v23.sqlite"
     con = sqlite3.connect(path)
+    con.execute("PRAGMA synchronous=OFF")  # a throwaway file: no fsync per DDL statement
     for v in sorted(MIGRATIONS):
         if v <= 23:
             for stmt in MIGRATIONS[v]:
@@ -818,6 +824,7 @@ async def test_migration_24_adds_the_ts_index_and_the_planner_uses_it(tmp_path):
 async def test_migration_18_adds_columns_and_the_outcome_table_to_an_old_db(tmp_path):
     path = tmp_path / "v17.sqlite"
     con = sqlite3.connect(path)
+    con.execute("PRAGMA synchronous=OFF")  # a throwaway file: no fsync per DDL statement
     for v in sorted(MIGRATIONS):
         if v <= 17:
             for stmt in MIGRATIONS[v]:

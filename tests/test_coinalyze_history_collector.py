@@ -463,6 +463,7 @@ async def test_migration_from_26(tmp_path):
 
     path = tmp_path / "old.sqlite"
     con = sqlite3.connect(path)
+    con.execute("PRAGMA synchronous=OFF")  # a throwaway file: no fsync per DDL statement
     for v in sorted(MIGRATIONS):  # a real store at version 26: its tables, so later ALTERs have something to alter
         if v <= 26:
             for stmt in MIGRATIONS[v]:

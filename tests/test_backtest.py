@@ -97,7 +97,7 @@ async def _call(server, name, **args):
 
 async def test_strategy_backtest_momentum_runs(state):
     rt = Runtime(
-        Settings(http_retries=1, cache_scale=0.0, db_path=""),
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=""),
         transports=make_transports(state),
         exchange_factory=FakeEx,
     )
@@ -128,7 +128,7 @@ async def test_strategy_backtest_momentum_runs(state):
 
 async def test_strategy_backtest_momentum_bad_timeframe_is_reported_not_raised(state):
     rt = Runtime(
-        Settings(http_retries=1, cache_scale=0.0, db_path=""),
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=""),
         transports=make_transports(state),
         exchange_factory=FakeEx,
     )

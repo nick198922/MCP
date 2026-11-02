@@ -12,6 +12,7 @@ from mcp import Client
 from tradedesk.analytics import contract_risk as cr
 from tradedesk.config import Settings
 from tradedesk.core import errors as cr_errors
+from tradedesk.core.ratelimit import TokenBucket
 from tradedesk.runtime import Runtime
 from tradedesk.server import build_server
 
@@ -428,7 +429,7 @@ def make_server(goplus_handler=None, dex_handler=None, seen=None):
         "goplus": httpx.MockTransport(goplus_handler or default_goplus),
         "dexscreener": httpx.MockTransport(dex_handler or (lambda req: httpx.Response(200, json=DEX_PAIRS))),
     }
-    rt = Runtime(Settings(http_retries=1, cache_scale=0.0), transports=tr)
+    rt = Runtime(Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0), transports=tr)
     rt.now = lambda: NOW
     srv, _ = build_server(rt)
     return srv
@@ -510,6 +511,7 @@ async def test_goplus_error_codes_are_not_cached_and_hit_health():
 async def test_goplus_repeated_error_codes_mark_provider_down():
     limited = {"code": 4029, "message": "too many requests", "result": {}}
     rt = Runtime(Settings(http_retries=0), transports={"goplus": httpx.MockTransport(lambda req: httpx.Response(200, json=limited))})
+    rt.goplus.http._limiter = TokenBucket(1_000.0, 1_000)  # the 0.2 req/s production limit makes the third call wait 5 s
     try:
         for _ in range(3):
             with pytest.raises(cr_errors.ProviderError):

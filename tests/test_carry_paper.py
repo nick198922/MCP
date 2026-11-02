@@ -316,7 +316,7 @@ async def _call(server, name, **args):
 
 async def _rt(state, tmp_path) -> Runtime:
     rt = Runtime(
-        Settings(http_retries=1, cache_scale=0.0, db_path=str(tmp_path / "paper.sqlite")),
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=str(tmp_path / "paper.sqlite")),
         transports=make_transports(state),
         exchange_factory=FakeEx,
     )
@@ -421,7 +421,7 @@ async def test_open_refuses_price_gap_and_provider_failure(state, tmp_path):
             return out
 
     rt = Runtime(
-        Settings(http_retries=1, cache_scale=0.0, db_path=str(tmp_path / "gap.sqlite")),
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=str(tmp_path / "gap.sqlite")),
         transports=make_transports(state),
         exchange_factory=GapEx,
     )
@@ -438,7 +438,7 @@ async def test_open_refuses_price_gap_and_provider_failure(state, tmp_path):
         rt2_before = len(await rt.store.carry_paper_list())
 
         mism = Runtime(
-            Settings(http_retries=1, cache_scale=0.0, db_path=str(tmp_path / "mm.sqlite")),
+            Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=str(tmp_path / "mm.sqlite")),
             transports=make_transports(state),
             exchange_factory=type("MM", (GapEx,), {"fetch_tickers": _mismatch_tickers}),
         )
@@ -507,7 +507,11 @@ async def test_status_and_close_with_provider_failure(state, tmp_path):
 
 
 async def test_tools_without_store_report_config_miss(state):
-    rt = Runtime(Settings(http_retries=1, cache_scale=0.0, db_path=""), transports=make_transports(state), exchange_factory=FakeEx)
+    rt = Runtime(
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=""),
+        transports=make_transports(state),
+        exchange_factory=FakeEx,
+    )
     srv, _ = build_server(rt)
     for name, args in (
         ("carry_paper_open", dict(base="BTC", long_venue="binanceusdm", short_venue="bybit")),
@@ -547,7 +551,7 @@ class SpikeEx(FakeEx):
 async def _rt_with(state, tmp_path, factory) -> Runtime:
     SpikeEx.calls, SpikeEx.fail_second_bybit_page = [], False
     rt = Runtime(
-        Settings(http_retries=1, cache_scale=0.0, db_path=str(tmp_path / "spike.sqlite")),
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=str(tmp_path / "spike.sqlite")),
         transports=make_transports(state),
         exchange_factory=factory,
     )

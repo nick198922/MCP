@@ -21,7 +21,11 @@ async def _call(server, name, **args):
 
 
 async def test_iv_rank_reports_missing_without_history(state):
-    rt = Runtime(Settings(http_retries=1, cache_scale=0.0, db_path=":memory:"), transports=make_transports(state), exchange_factory=FakeEx)
+    rt = Runtime(
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=":memory:"),
+        transports=make_transports(state),
+        exchange_factory=FakeEx,
+    )
     rt.now = lambda: NOW
     assert rt.store is not None
     await rt.store.init()
@@ -35,7 +39,11 @@ async def test_iv_rank_reports_missing_without_history(state):
 
 
 async def test_iv_rank_computes_rank_and_percentile(state):
-    rt = Runtime(Settings(http_retries=1, cache_scale=0.0, db_path=":memory:"), transports=make_transports(state), exchange_factory=FakeEx)
+    rt = Runtime(
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=":memory:"),
+        transports=make_transports(state),
+        exchange_factory=FakeEx,
+    )
     rt.now = lambda: NOW
     assert rt.store is not None
     await rt.store.init()
@@ -65,7 +73,7 @@ async def test_iv_rank_computes_rank_and_percentile(state):
 
 async def test_funding_zscore_computes_stats(state):
     rt = Runtime(
-        Settings(http_retries=1, cache_scale=0.0, db_path=":memory:"),
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=":memory:"),
         transports=make_transports(state),
         exchange_factory=FakeEx,
     )
@@ -102,7 +110,7 @@ async def test_funding_zscore_computes_stats(state):
 
 async def test_skew_percentile_reads_rr25(state):
     rt = Runtime(
-        Settings(http_retries=1, cache_scale=0.0, db_path=":memory:"),
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=":memory:"),
         transports=make_transports(state),
         exchange_factory=FakeEx,
     )
@@ -144,7 +152,11 @@ async def test_skew_percentile_reads_rr25(state):
 
 
 async def test_iv_rank_without_store_reports_config_miss(state):
-    rt = Runtime(Settings(http_retries=1, cache_scale=0.0, db_path=""), transports=make_transports(state), exchange_factory=FakeEx)
+    rt = Runtime(
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=""),
+        transports=make_transports(state),
+        exchange_factory=FakeEx,
+    )
     rt.now = lambda: NOW
     assert rt.store is None
     srv, _ = build_server(rt)

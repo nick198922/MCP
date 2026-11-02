@@ -42,7 +42,7 @@ def _runtime(state: State, seen: list[str], *, fail: bool = False, meta_fail: bo
         return inner.handler(req)
 
     base["hyperliquid"] = httpx.MockTransport(hl)
-    rt = Runtime(Settings(http_retries=1, cache_scale=0.0, db_path=""), transports=base, exchange_factory=FakeEx)
+    rt = Runtime(Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=""), transports=base, exchange_factory=FakeEx)
     rt.now = lambda: NOW
     return rt
 

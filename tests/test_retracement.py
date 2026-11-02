@@ -61,7 +61,7 @@ async def _call(server, name, **args):
 
 async def test_fib_retracement_mcp_happy(state):
     rt = Runtime(
-        Settings(http_retries=1, cache_scale=0.0, db_path=""),
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=""),
         transports=make_transports(state),
         exchange_factory=FakeEx,
     )
@@ -82,7 +82,7 @@ async def test_fib_retracement_mcp_happy(state):
 
 async def test_fib_retracement_small_move_not_applicable(state):
     rt = Runtime(
-        Settings(http_retries=1, cache_scale=0.0, db_path=""),
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=""),
         transports=make_transports(state),
         exchange_factory=FakeEx,
     )

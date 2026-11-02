@@ -685,6 +685,7 @@ def _journal_db(path: Path, journal: list[tuple] | None, rec: list[tuple] | None
     from tradedesk.store.schema import MIGRATIONS
 
     con = sqlite3.connect(path)
+    con.execute("PRAGMA synchronous=OFF")  # a throwaway file: an fsync per DDL statement costs ~1 s per migrated store
     for v in sorted(MIGRATIONS):
         if versions is None or v in versions:
             for sql in MIGRATIONS[v]:
@@ -1511,6 +1512,7 @@ def _pm_db(path: Path, rows: list[dict], cols: list[str], extra_cols: tuple[str,
     from tradedesk.store.schema import MIGRATIONS
 
     con = sqlite3.connect(path)
+    con.execute("PRAGMA synchronous=OFF")  # a throwaway file: no fsync per DDL statement
     for v in sorted(MIGRATIONS):
         if upto is None or v <= upto:
             for sql in MIGRATIONS[v]:
@@ -2639,6 +2641,7 @@ def _rules_db(path: Path, rows: list[dict]) -> Path:
     from tradedesk.store.schema import MIGRATIONS
 
     con = sqlite3.connect(path)
+    con.execute("PRAGMA synchronous=OFF")  # a throwaway file: no fsync per DDL statement
     for v in sorted(MIGRATIONS):
         for sql in MIGRATIONS[v]:
             con.execute(sql)

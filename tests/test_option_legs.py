@@ -166,7 +166,7 @@ def _rt(tmp_path, opts: dict | None = None, **kw) -> tuple[Runtime, list]:
 
     tr = make_transports(State())
     tr["deribit"] = httpx.MockTransport(deribit)
-    rt = Runtime(Settings(http_retries=1, cache_scale=0.0, db_path=str(tmp_path / "x.sqlite"), **kw), transports=tr)
+    rt = Runtime(Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=str(tmp_path / "x.sqlite"), **kw), transports=tr)
     rt.now = lambda: NOW
     rt.deribit.http._limiter = TokenBucket(1_000.0, 1_000)
     rt.deribit.http._backoff = 0.0
@@ -343,7 +343,7 @@ def _live_rt(tmp_path, down: frozenset[str] = frozenset()) -> Runtime:
 
     tr = make_transports(State())
     tr["deribit"] = httpx.MockTransport(deribit)
-    rt = Runtime(Settings(http_retries=1, cache_scale=0.0, db_path=str(tmp_path / "x.sqlite")), transports=tr)
+    rt = Runtime(Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=str(tmp_path / "x.sqlite")), transports=tr)
     rt.deribit.http._limiter = TokenBucket(1_000.0, 1_000)
     rt.deribit.http._backoff = 0.0
     return rt

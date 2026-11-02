@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import functools
+
 import numpy as np
 import pytest
 
@@ -88,15 +90,23 @@ def test_too_few_bars_gives_nothing():
     assert ss.scan(_bars(40), "4h") == []
 
 
+@functools.cache
+def _live_s14(seed: int) -> tuple[Bars, tuple[tuple[int, ss.LiveSignal], ...]]:
+    """(bars, ((i, signal), ...)) of the live s14 on every prefix bars[: i + 1], i >= 90, of a 700-bar walk: the slow
+    part of the S14 tests below (~10 s a seed), computed once per seed and process."""
+    b = _bars(700, seed)
+    return b, tuple((i, s) for i in range(90, len(b)) for s in ss.s14(b.slice(0, i + 1), "4h"))
+
+
 @pytest.mark.parametrize("seed", [1, 2, 3, 4, 5, 6])
 def test_s14_live_equals_the_detector_on_more_seeds(seed):
     """One signal per impulse: the live scan keeps the detector's memory of used impulses (critic 21.10, finding 5)."""
-    b = _bars(700, seed)
+    b, live = _live_s14(seed)
     want = set()
     for side, bb in (("long", b), ("short", b.mirrored())):
         ind = indicators(bb, ss.S14_PARAMS)
         want |= {(side, s.idx) for s in find_signals(bb, ind, ss.S14_PARAMS, variant="sweep") if s.idx >= 150}
-    got = {(s.side, i) for i in range(150, len(b)) for s in ss.s14(b.slice(0, i + 1), "4h")}
+    got = {(s.side, i) for i, s in live if i >= 150}
     assert got == want
 
 
@@ -108,8 +118,8 @@ def _key(s: ss.LiveSignal) -> tuple:
 def test_s14_all_equals_the_live_s14_on_each_prefix(seed):
     """The passport's full-history S14 gives on bar k exactly what the live s14 gives on bars[: k + 1] (levels, comment
     and indicators included), from the first bar the live scan can see; both sides are covered."""
-    b = _bars(700, seed)
-    live = [s for i in range(90, len(b)) for s in ss.s14(b.slice(0, i + 1), "4h")]
+    b, pairs = _live_s14(seed)
+    live = [s for _, s in pairs]
     full = ss.s14_all(b, "4h")
     assert sorted(map(_key, full)) == sorted(map(_key, live))
     assert len(full) == len(set(map(_key, full))) and {s.side for s in full} == {"long", "short"}
@@ -135,12 +145,11 @@ def test_s14_all_is_causal_a_different_future_after_each_signal_bar_changes_noth
 
 
 def test_short_s14_comment_names_the_impulse_low():
-    b = _bars(700, 1)  # seed 1 has a short S14 whose target is the impulse extreme
-    for i in range(150, len(b)):
-        for s in ss.s14(b.slice(0, i + 1), "4h"):
-            if s.side == "short" and "імпульсу" in s.comment:
-                assert "лоу імпульсу" in s.comment and "хай імпульсу" not in s.comment
-                return
+    _, live = _live_s14(1)  # seed 1 has a short S14 whose target is the impulse extreme
+    for i, s in live:
+        if i >= 150 and s.side == "short" and "імпульсу" in s.comment:
+            assert "лоу імпульсу" in s.comment and "хай імпульсу" not in s.comment
+            return
     raise AssertionError("seed 1 should give a short S14 with the impulse target")
 
 

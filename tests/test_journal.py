@@ -76,7 +76,7 @@ async def _rt(state, tmp_path) -> Runtime:
     `async with Client(server)` blocks because the server lifespan runs
     ``rt.aclose()`` and the next client opens a brand-new empty database."""
     rt = Runtime(
-        Settings(http_retries=1, cache_scale=0.0, db_path=str(tmp_path / "journal.sqlite")),
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=str(tmp_path / "journal.sqlite")),
         transports=make_transports(state),
         exchange_factory=FakeEx,
     )

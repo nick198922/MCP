@@ -261,6 +261,7 @@ def _store(tmp_path: Path, refused: bool = False) -> Path:
 
     p = tmp_path / "t.sqlite"
     con = sqlite3.connect(p)
+    con.execute("PRAGMA synchronous=OFF")  # a throwaway file: an fsync per DDL statement costs ~1 s per migrated store
     for v in sorted(MIGRATIONS):
         for sql in MIGRATIONS[v]:
             con.execute(sql)

@@ -448,6 +448,11 @@ def make_transports(state: State) -> dict:
     return {
         "binance_spot": httpx.MockTransport(not_mocked),
         "coinbase": httpx.MockTransport(not_mocked),
+        # The collector's traders job (any runtime with collector_enabled and a lifespan) reads these two: without a mock
+        # tests/test_pm_gap.py downloaded the real Hyperliquid leaderboard, up to ~30 s a test (tests/test_traders.py
+        # puts its own transports here).
+        "hyperliquid:stats": httpx.MockTransport(not_mocked),
+        "polymarket:data": httpx.MockTransport(not_mocked),
         "forexfactory": httpx.MockTransport(forexfactory),
         "deribit": httpx.MockTransport(deribit),
         "hyperliquid": httpx.MockTransport(hyperliquid),

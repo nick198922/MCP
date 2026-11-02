@@ -17,12 +17,13 @@ from tradedesk.collector.scheduler import (
     _retention_sweep,
 )
 from tradedesk.config import Settings
+from tradedesk.core.ratelimit import TokenBucket
 from tradedesk.runtime import Runtime
 from tradedesk.server import build_server
 
 
 async def _rt_with_memory_store(state) -> Runtime:
-    settings = Settings(http_retries=1, cache_scale=0.0, db_path=":memory:", collector_enabled=True)
+    settings = Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=":memory:", collector_enabled=True)
     rt = Runtime(settings, transports=make_transports(state), exchange_factory=FakeEx)
     rt.now = lambda: NOW
     assert rt.store is not None
@@ -124,7 +125,9 @@ async def test_scheduler_keeps_last_failure_after_a_success(state, monkeypatch):
 async def test_build_default_scheduler_respects_flag(state):
     tr = make_transports(state)
     # Disabled by default.
-    rt_off = Runtime(Settings(http_retries=1, cache_scale=0.0, db_path=":memory:"), transports=tr, exchange_factory=FakeEx)
+    rt_off = Runtime(
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=":memory:"), transports=tr, exchange_factory=FakeEx
+    )
     assert rt_off.store is not None
     await rt_off.store.init()
     from tradedesk.collector import build_default_scheduler  # noqa: PLC0415
@@ -134,7 +137,9 @@ async def test_build_default_scheduler_respects_flag(state):
 
     # Enabled but no store path → still None.
     rt_no_db = Runtime(
-        Settings(http_retries=1, cache_scale=0.0, db_path="", collector_enabled=True), transports=tr, exchange_factory=FakeEx
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path="", collector_enabled=True),
+        transports=tr,
+        exchange_factory=FakeEx,
     )
     assert rt_no_db.store is None
     assert build_default_scheduler(rt_no_db) is None
@@ -290,8 +295,11 @@ async def _rt_with_coingecko_pages(state, pages: dict[int, object]) -> Runtime:
 
     transports = make_transports(state)
     transports["coingecko"] = httpx.MockTransport(cg)
-    settings = Settings(http_retries=1, cache_scale=0.0, db_path=":memory:", collector_enabled=True, collect_supply_pages=3)
+    settings = Settings(
+        http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=":memory:", collector_enabled=True, collect_supply_pages=3
+    )
     rt = Runtime(settings, transports=transports, exchange_factory=FakeEx)
+    rt.coingecko.http._limiter = TokenBucket(1_000.0, 1_000)  # the keyless 0.5 req/s limit only slows the test (~8 s)
     rt.now = lambda: NOW
     await rt.store.init()
     return rt

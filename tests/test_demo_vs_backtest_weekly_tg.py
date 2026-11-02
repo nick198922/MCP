@@ -164,6 +164,7 @@ def test_probe_and_collect(tmp_path, monkeypatch):
     assert dw.probe(missing) == "missing" and dw.collect(missing, "bybit", SEND_AT) == (None, "missing", []) and not missing.exists()
     old = tmp_path / "v18.sqlite"
     con = sqlite3.connect(old)
+    con.execute("PRAGMA synchronous=OFF")  # a throwaway file: no fsync per DDL statement
     for v in sorted(MIGRATIONS):
         if v <= 18:
             for sql in MIGRATIONS[v]:

@@ -63,7 +63,7 @@ def make_server(dex_handler=None, llama_handler=None):
         "dexscreener": httpx.MockTransport(dex_handler or default_dex),
         "defillama": httpx.MockTransport(llama_handler or default_llama),
     }
-    rt = Runtime(Settings(http_retries=1, cache_scale=0.0), transports=tr)
+    rt = Runtime(Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0), transports=tr)
     rt.now = lambda: NOW
     srv, _ = build_server(rt)
     return srv

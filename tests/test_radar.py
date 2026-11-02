@@ -218,7 +218,9 @@ def _rt(tmp_path, *, fail: set[str] = frozenset(), empty: bool = False, leak: bo
     tr = make_transports(State())
     tr["deribit_history"] = httpx.MockTransport(history)
     rt = Runtime(
-        Settings(http_retries=1, cache_scale=0.0, db_path=str(tmp_path / "radar.sqlite"), **kw), transports=tr, exchange_factory=FakeEx
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=str(tmp_path / "radar.sqlite"), **kw),
+        transports=tr,
+        exchange_factory=FakeEx,
     )
     rt.now = lambda: NOW
     rt.deribit_history.http._limiter = TokenBucket(1_000.0, 1_000)  # the 5 req/s production limit only slows the test

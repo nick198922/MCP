@@ -2040,7 +2040,7 @@ def test_radar_tab_renders_the_real_section():
         db._pc(v["price"]["change"] * 100),
         "<span class='chip ev'>гарячий тиждень</span> <b class='num'>30.10–06.11</b>: 42.1 %",  # the US midterms window
         "Не інвестиційна порада",
-        "H1 відхилено",
+        "відхилено (H1)",
         "5 хв тому",
     ):
         assert text in page, text
@@ -2060,7 +2060,7 @@ def test_radar_tab_renders_the_real_section():
     assert db._vp(v["iv_vs_rv"]["rv30"]) in page and db._dvp(v["iv_vs_rv"]["premium_rv30"]) in page
     assert f"<td class='r num'>{v['smile']['now']['10P'] * 100:.1f}</td>" in page
     hot = [w for w in v["forward_vol"]["windows"] if w["hot"]]
-    assert len(hot) == 1 and page.count("chip ev'>гарячий тиждень</span>") == 1
+    assert len(hot) == 1 and _between(page, "6 · Форвардна вола", "</section>").count("chip ev'>гарячий тиждень</span>") == 1
     assert [e["kind"] for e in hot[0]["events"]] == ["election"] and db._e(db._clean(hot[0]["events"][0]["title"], 60)) in page
     assert page.count("<svg") == 6  # year price, ATM term, IV Rank dial, year DVOL, smile, forward vol (skew history: 2 days)
     assert "Історії скью ще мало: 2 дн. в архіві поверхні" in page
@@ -2100,7 +2100,7 @@ def test_radar_tab_situation_and_deal_blocks_on_the_real_section():
     deal = _between(page, "Що це означає для угод", "</section>")
     call = db._b76(v["price"]["now"], v["price"]["now"], 30 / 365, v["atm"]["now"]["30"], True)
     for text in (
-        "<b>Опціони дешеві відносно року</b> (IV Rank 11 %), але це не сигнал купувати",
+        "<b>Опціони дешеві відносно року</b> (IV Rank 10.7 %), але це не сигнал купувати",
         "Куплена волатильність з хеджем у нас програвала (−1.18 % спота за угоду [−1.81; −0.48])",
         "опціони <b>не дешеві</b>: IV 30 днів 37.0 % проти реалізованої 31.6 % за 30 днів",
         "Ринок закладає підвищений рух на <b>30.10–06.11</b> (US midterm elections 2026 (election day))",
@@ -2108,11 +2108,12 @@ def test_radar_tab_situation_and_deal_blocks_on_the_real_section():
         "Правило макета, нами не перевірено.",
         f"коштує ≈ {db._usd(call)} за 1 BTC",
         f"тож $100 — це ≈ {db._nf(100 / call, 3)} BTC",
-        "H1) і відхилено",
-        "ризик-нейтральні",
-        "не порада",
     ):
         assert text in deal, text
+    # the page-wide caveat (rules not signals, H1 rejected, risk-neutral) is once at the bottom (docs/design/PANEL.md rule 5)
+    caveat = page[page.index("<b>Застереження</b>") :]
+    assert "відхилено (H1)" in caveat and "ризик-нейтральні" in caveat and "Не інвестиційна порада" in caveat
+    assert "H1" not in deal and "ризик-нейтральн" not in deal
     assert "Фронт дорожчий за місяць" not in deal  # BTC's front is upward-sloping on 18.10
     assert "пут-спред дешевший за голий пут" not in deal and "+1.43" not in deal  # review 22.10, p. 1-2
     eth = db.render_radar(snap, None, t + 300, db.parse_radar_query("asset=ETH"))
@@ -2134,12 +2135,12 @@ def test_radar_deal_quotes_h2_only_in_the_tested_percentile_regime():
         page = db.render_radar(snap, None, t + 300, db.parse_radar_query("asset=BTC"))
         pages[p] = _between(page, "Що це означає для угод", "</section>")
     hi = pages[0.85]
-    assert "(IV Rank 70 %, перцентиль DVOL 85 % за рік)" in hi and "«перцентиль DVOL ≥ 80 % за рік»" in hi
+    assert "(IV Rank 70.0 %, перцентиль DVOL 85 % за рік)" in hi and "«перцентиль DVOL ≥ 80 % за рік»" in hi
     assert "+1.43 % спота [−0.13; +3.45], але це описово (n = 16" in hi and "+0.09 % [−0.49; +0.88]" in hi
     for p, shown in ((0.75, "75 %"), (None, "—")):
         d = pages[p]
         assert "+1.43" not in d and "n = 16" not in d, p
-        assert "(IV Rank 70 %), але перевірений режим (перцентиль DVOL ≥ 80 % за рік) не настав" in d, p
+        assert "(IV Rank 70.0 %), але перевірений режим (перцентиль DVOL ≥ 80 % за рік) не настав" in d, p
         assert f"зараз перцентиль {shown}. Загалом продаж ATM-стреддлу" in d and "+0.09 % [−0.49; +0.88]" in d, p
 
 
@@ -2172,7 +2173,7 @@ def test_radar_tab_situation_and_deal_blocks_with_null_fields():
         a[k] = None
     page = db.render_radar(empty, None, t + 60)
     assert "Поточну ситуацію скласти нема з чого" in page and "Даних для висновків у секції радару немає" in page
-    assert db._e(db.RADAR_DEAL_NOTE) in page and "Блок не вдалося" not in page
+    assert "відхилено (H1)" in page and "Блок не вдалося" not in page
     # no radar section: neither block is drawn
     snap, asof = _snap()
     page = db.render_radar(snap, None, asof + 60)
@@ -2189,7 +2190,7 @@ def test_radar_tab_shows_each_blocks_own_week_dates():
     page = db.render_radar(snap, None, t + 60)
     assert "<b>18.10</b> 19:00 UTC проти <b>11.10</b>" in page and "(денний DVOL): <b>21.10</b> проти <b>14.10</b>" in page
     assert "DVOL 21.10: IV Rank" in page and "Тиждень тому (DVOL 14.10, пунктир)" in page
-    assert "Зараз · 18.10" in page and "Тиждень тому · 11.10" in page and "18.10, 19:00 UTC, індекс Deribit" in page
+    assert "Зараз · 18.10" in page and "Тиждень тому · 11.10" in page and "(18.10, 19:00 UTC), тиждень тому" in page
 
 
 def test_radar_tab_null_fields_show_their_reasons():
@@ -2336,8 +2337,8 @@ def test_radar_tab_escapes_hostile_strings_from_the_snapshot():
         assert raw not in page, raw
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in page and "&lt;img src=x" in page and "&lt;iframe" in page
     assert "&lt;b&gt;evil" in page
-    # the same title in «Поточна ситуація», «Що це означає для угод» and the chart's event notes, escaped each time
-    assert page.count("&lt;script&gt;alert(1)&lt;/script&gt;") == 3 and ">Вибори 03.11</text>" in page
+    # the same title in the lead, «Поточна ситуація», «Що це означає для угод» and the chart's event notes, escaped each time
+    assert page.count("&lt;script&gt;alert(1)&lt;/script&gt;") == 4 and ">Вибори 03.11</text>" in page
     hot["events"][0]["kind"] = "<x>"  # an unknown kind: the chart labels it with the (escaped) title
     page = db.render_radar(snap, None, t + 60)
     assert "&lt;script&gt;alert( 03.11</text>" in page and "<script" not in page  # cut to 14 characters

@@ -29,7 +29,6 @@ import asyncio
 import sqlite3
 import sys
 import time
-import urllib.parse
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -38,6 +37,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 import assistant_brief_tg as ab  # noqa: E402
+import common_helpers as cmn  # noqa: E402
 import dashboard as db  # noqa: E402
 import demo_vs_backtest as dv  # noqa: E402
 import forecast_weekly_tg as fw  # noqa: E402
@@ -60,14 +60,11 @@ journal_buttons = fw.journal_buttons
 def probe(path: Path) -> str | None:
     """None when table demo_trade can be read; else 'missing' (no file), 'no_table' (a store before schema v19) or
     'unreadable: …'. Read-only connection; never raises."""
+    con, why = cmn.open_ro(path)
+    if con is None:
+        return why
     try:
-        if not path.exists():
-            return "missing"
-        con = sqlite3.connect(f"file:{urllib.parse.quote(str(path))}?mode=ro", uri=True, timeout=5)
-    except (sqlite3.Error, OSError) as e:
-        return f"unreadable: {type(e).__name__}"
-    try:
-        if con.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'demo_trade'").fetchone() is None:
+        if not cmn.has_table(con, "demo_trade"):
             return "no_table"
         return None
     except (sqlite3.Error, OSError) as e:

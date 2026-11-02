@@ -30,11 +30,12 @@ import os
 import sqlite3
 import sys
 import time
-import urllib.parse
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
 
 from tradedesk.analytics import demo_shadow
 from tradedesk.analytics.course_s14_ema import Bars
@@ -78,7 +79,7 @@ def load_closed(db: str, since_ms: int, until_ms: int) -> tuple[list[dict[str, A
     if not path.exists():
         return [], f"no database at {db}"
     try:
-        con = sqlite3.connect(f"file:{urllib.parse.quote(str(path))}?mode=ro", uri=True, timeout=5)
+        con = cmn.connect_ro(path)
     except (sqlite3.Error, OSError) as e:
         return [], f"unreadable: {type(e).__name__}"
     try:
@@ -101,7 +102,7 @@ def load_not_executed(db: str) -> tuple[list[dict[str, Any]], list[dict[str, Any
     if not path.exists():
         return [], [], [], f"no database at {db}"
     try:
-        con = sqlite3.connect(f"file:{urllib.parse.quote(str(path))}?mode=ro", uri=True, timeout=5)
+        con = cmn.connect_ro(path)
     except (sqlite3.Error, OSError) as e:
         return [], [], [], f"unreadable: {type(e).__name__}"
     try:

@@ -18,13 +18,14 @@ import json
 import sqlite3
 import sys
 import time
-import urllib.parse
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
+
+import common_helpers as cmn  # noqa: E402
 
 from tradedesk.analytics.carry_rules import DECISION_DELAY_MS, carry_side_cost  # noqa: E402
 from tradedesk.analytics.checkpoint import build, condor_final_ms, render  # noqa: E402
@@ -40,7 +41,7 @@ def connect_ro(db: str) -> sqlite3.Connection:
     """A read-only connection; raises ``sqlite3.Error`` / ``FileNotFoundError`` when the DB is not there."""
     if not Path(db).exists():
         raise FileNotFoundError(db)
-    con = sqlite3.connect(f"file:{urllib.parse.quote(str(Path(db)))}?mode=ro", uri=True, timeout=5)
+    con = cmn.connect_ro(Path(db))
     con.row_factory = sqlite3.Row
     return con
 

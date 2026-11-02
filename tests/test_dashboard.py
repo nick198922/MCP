@@ -1857,6 +1857,31 @@ def test_page_wrappers_add_the_tooltip_script(monkeypatch):
     assert db.with_help("<body>x</body>") == f"<body>x<script>{db.HELP_JS}</script></body>"
 
 
+def test_self_refreshing_tabs_keep_open_sections_and_scroll(tmp_path, monkeypatch):
+    # standing improvements, item 15: a JS timer stores open <details> and scrollY in sessionStorage before the reload
+    # and restores them; a <noscript> meta refresh with the same period stays as the fallback
+    period = {"project": db.REFRESH_S, "brief": db.REFRESH_S, "polymarket": 5 * db.REFRESH_S}
+    period |= {f"{t} {a}": db.REFRESH_S for t in ("radar", "flows") for a in ("BTC", "ETH")}
+    pages = _all_tab_pages(tmp_path)
+    for name, raw in pages.items():
+        served = raw if name == "project" else db.with_help(raw)  # render() already wraps itself
+        if name in period:
+            s = period[name]
+            assert f"<meta name='td-refresh' content='{s}'><noscript><meta http-equiv='refresh' content='{s}'></noscript>" in raw, name
+            assert raw.count("http-equiv='refresh'") == 1, name  # no bare meta refresh outside <noscript>
+            assert served.count("<script>") == 1 and db.KEEP_OPEN_JS in served and db.HELP_JS in served, name
+        else:  # options, journal, demo, positions: no auto-refresh here, so no reload timer either
+            assert db.REFRESH_MARK not in raw and db.KEEP_OPEN_JS not in served, name
+    for part in ("sessionStorage", "querySelectorAll('details')", "scrollY", "scrollTo(", "location.reload()", "s * 1000"):
+        assert part in db.KEEP_OPEN_JS
+    # the served pages (wrappers) carry it too, also in their empty states
+    monkeypatch.setattr(db, "SNAPSHOT_PATH", SNAP_FIXTURE)
+    monkeypatch.setattr(db, "PM_DB", tmp_path / "none.sqlite")
+    for page in (db.brief_page(), db.radar_page(""), db.flows_page(""), db.polymarket_page(now=float(PM_B))):
+        assert db.KEEP_OPEN_JS in page and "<noscript><meta http-equiv='refresh'" in page and page.endswith("</body></html>")
+    assert db.KEEP_OPEN_JS not in db.options_page("")
+
+
 def _all_tab_pages(tmp_path) -> dict[str, str]:
     """Every tab rendered from real fixtures, including the empty states that have their own headings."""
     snap, asof = _snap()

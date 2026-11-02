@@ -3,6 +3,7 @@
 
 import json
 import math
+import re
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -273,6 +274,178 @@ def test_a_long_call_has_no_lower_breakeven_column():
     assert "беззбиток вище" in html and "беззбиток нижче" not in html
     strangle = db.block_live_be(db.live_groups(_calls_and_strangle(), NOW)[0][2])
     assert "беззбиток нижче" in strangle and "беззбиток вище" in strangle
+
+
+# ---------------------------------------------------------------- the tab laid out by docs/design/PANEL.md (item 19)
+
+ICON = "<span class='info' tabindex='0' role='button'"
+
+
+def _lead(page: str) -> str:
+    m = re.search(r"<div class='lead'>.*?</div>", page, re.S)
+    assert m, "no lead"
+    return m.group(0)
+
+
+def _main(page: str) -> str:
+    return page[page.index("<main") : page.index("</main>")]
+
+
+def _with_short(liq: str = "3400") -> dict:
+    """The 26.10 strangle plus a short ETH perp whose liquidation is 9.7 % above its mark."""
+    d = _payload()
+    d["positions"].append(
+        {"symbol": "ETHUSDT", "category": "linear", "side": "Sell", "size": "0.5", "avgPrice": "3000", "markPrice": "3100",
+         "liqPrice": liq, "leverage": "10", "curRealisedPnl": "-0.5", "openTime": 1793000000000}
+    )  # fmt: skip
+    return d
+
+
+def test_positions_tab_lead_open_table_folds_and_caveats_at_the_bottom():
+    page = db.with_help(db.render_positions(_calls_and_strangle(), None, NOW))
+    main = _main(page)
+    # rule 1: the lead first, before any heading: count, total P&L, the nearest bound; the advice
+    lead = _lead(main)
+    assert main.index("<div class='lead'>") < main.index("<h2>")
+    assert (
+        "Відкрито позицій: 3 (опціонних 3), P&amp;L −$596 (−42.0 % капіталу); найближча межа — експірація BTC 30.10 08:00 UTC "
+        "(через 3.5 дн)." in lead
+    )
+    # an open loss above one trade's risk budget: a fact against the owner's deposit ($10 000, rule 1), no new rule
+    assert "<span class='chip risk'>збиток понад $100</span>" in lead
+    assert (
+        "звір кожну позицію з планом виходу: відкритий збиток $596 — 6.0 % депозиту $10 000, більше за ризик на одну угоду "
+        "за правилом 1 ($100)." in lead
+    )
+    assert "нових угод не відкривай" not in page and "великий збиток" not in page
+    # rule 2: every tile has an action line; the risk per trade comes from the rules' deposit, as on «Опціони»
+    tiles = re.findall(r"<div class='tile[^']*'>.*?</div>", main, re.S)
+    assert len(tiles) == 4 and all("<span class='act'>" in t for t in tiles)
+    assert "<span class='act'>ризик на угоду $100 (правило 1)</span>" in main and "≈ $14" not in main
+    assert "реалізовано −$" in main and "Ризик на угоду — 1 % депозиту ($100, правило 1)" in page
+    # rule 6 / 8: the open positions always visible, one row each with the side label, before every fold
+    first_fold = main.index("<section class='wide fold'")
+    table = main[main.index("<h2>Відкриті позиції" + ICON) : first_fold]
+    assert table.count("<span class='badge long'>лонг</span>") == 3 and "<details" not in main[:first_fold]
+    assert "<th class='num'>Реалізовано</th>" in table and "Комісії" not in table
+    assert "$267 → $31" in table and "−89.82 %" in table and "0.10 BTC × 2 ноги" in table and "експірація 30.10 08:00 UTC" in table
+    # rule 4: each position's details folded, none open, the breakevens and theta in the one-line summary
+    assert "<details open" not in main and main.count("<section class='wide fold'") == 3
+    assert re.findall(r"<section class='wide fold' id='(.*?)'>", main) == [
+        "lp-BTC-1793347200-84000c",
+        "lp-BTC-1793347200-86000c",
+        "lp-BTC-1794556800-78000p-83000c",
+    ]
+    summaries = re.findall(r"<span class='fs'>(.*?)</span>", main)
+    assert len(summaries) == 3 and all(s.startswith("беззбиток зараз $") and "/добу · дельта" in s for s in summaries)
+    assert "$79.2k / $81.3k" in summaries[2]  # a strangle: both breakevens
+    for text in ("Беззбиток", "Греки", "P&amp;L від ціни", "Сценарії"):
+        assert main.index(text) > first_fold, text
+    # rule 3: every «i» on the tab is the short instruction form
+    n = page.count(ICON)
+    assert n >= 15 and page.count("<span class='do'><i>") == 2 * n and "Для угоди:" not in page
+    # rule 5: the caveats once, after the main content; the model is not repeated in the blocks
+    assert page.count("<b>Застереження</b>") == 1 and page.index("</main>") < page.index("<b>Застереження</b>")
+    assert page.count("ризик-нейтральн") == 1 and page.index("ризик-нейтральн") > page.index("</main>")
+    assert "Black-76, кожна нога" not in main and "Стоп-ордерів збирач не читає" in page[page.index("</main>") :]
+    # the 10-second refresh keeps the opened folds open (by section id); the fold ids do not depend on the clock
+    assert "section.fold[id] > details" in page and "open[d.parentNode.id]" in page
+    later = db.render_live_main(_calls_and_strangle(), None, NOW + 10)
+    assert re.findall(r"fold' id='(.*?)'", later) == re.findall(r"fold' id='(.*?)'", main)
+
+
+def test_positions_lead_cases():
+    def lead(data: dict, now: float = NOW, **kw) -> str:
+        return _lead(db.render_live_main(data, None, now, **kw))
+
+    calm = lead(_payload())
+    assert "<span class='chip calm'>нічого термінового</span>" in calm
+    assert "Відкрито позицій: 1 (опціонних 1), P&amp;L −$3 (−0.2 % капіталу)" in calm and "до експірації 13.11 08:00 UTC" in calm
+    # a macro event within 48 h joins «what now» (rule 6) and is the advice when nothing more urgent applies
+    ev = [{"ts": NOW + 20 * 3600, "label": "ФРС: рішення щодо ставки"}, {"ts": NOW + 72 * 3600, "label": "CPI США (інфляція)"}]
+    soon = lead(_payload(), events=ev)
+    assert "<span class='chip ev'>подія</span>" in soon and "Подія з високим впливом: ФРС: рішення щодо ставки через 20 год." in soon
+    assert "CPI" not in soon and "Подія" not in lead(_payload(), events=ev[1:])
+    # a liquidation within 15 % of the mark comes first, the event still shows
+    liq = lead(_with_short(), events=ev)
+    assert "<span class='chip risk'>ліквідація близько</span>" in liq and "ліквідація ETHUSDT 3 400.00 (9.7 % від марки)" in liq
+    assert "ETHUSDT: постав стоп на Bybit перед ліквідацією" in liq and "ФРС" in liq and "ф&#x27;ючерсних 1" in liq
+    assert "ліквідація близько" not in lead(_with_short("4000"))  # 29 % away
+    # under a day to the nearest expiry
+    t = EXP - 12 * 3600 - 300
+    late = lead(_payload(asof_utc=datetime.fromtimestamp(t - 5, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")), t)
+    assert "<span class='chip risk'>експірація &lt; доби</span>" in late and "(через 12 год)" in late
+    assert "виріши до 13.11 08:00 UTC: закрити BTC 78 000 PUT + 83 000 CALL чи дати експірувати" in late
+    # nothing open
+    empty = db.render_live_main(_payload(positions=[]), None, NOW)
+    assert "<span class='chip calm'>позицій немає</span>" in _lead(empty) and "Відкритих позицій на Bybit немає." in _lead(empty)
+    assert "Відкритих позицій немає." in empty and "wide fold" not in empty and "окремо кожна угода" not in empty
+    # stale data: whatever else applies, do not decide on these numbers
+    stale = lead(_with_short(), NOW + 600)
+    assert "<span class='chip risk'>дані застарілі</span>" in stale and "Дані 10 хв тому" in stale and "tradedesk-bybit-live" in stale
+
+
+def test_positions_open_table_futures_row_and_fold():
+    page = db.render_live_main(_with_short(), None, NOW)
+    row = re.search(r"<tr><td><b>ETHUSDT</b>.*?</tr>", page).group(0)
+    assert "<span class='badge short'>шорт</span>" in row and "3 000.00 → 3 100.00" in row and "−3.37 %" in row and "−$50" in row
+    assert "<td class='bad'>ліквідація 3 400.00<span class='sub'>9.7 % від марки</span>" in row and "11 год" in row
+    assert "<section class='wide fold' id='lp-linear'>" in page
+    assert "позицій 1 · найближча ліквідація ETHUSDT за 9.7 % від марки · плече до 10.0×" in page
+    no_liq = db.render_live_main(_with_short(""), None, NOW)
+    assert "ліквідації немає" in no_liq and "найближча ліквідація" not in no_liq
+
+
+def test_positions_past_expiry_awaits_settlement_without_advice():
+    """An option past its expiry that Bybit has not settled yet: no «decide by <a past time>», no «under a day»."""
+    t = EXP + 3600
+    data = _payload(asof_utc=datetime.fromtimestamp(t - 5, UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
+    main = db.render_live_main(data, None, t)
+    lead = _lead(main)
+    assert "<span class='chip ev'>експірація минула</span>" in lead and "виріши до" not in lead and "доби" not in lead
+    assert "Експірація минула, чекає розрахунку Bybit: BTC 78 000 PUT + 83 000 CALL (13.11 08:00 UTC)." in lead
+    assert "дочекайся розрахунку Bybit" in lead and "найближча межа" not in lead
+    assert "<td>експірація 13.11 08:00 UTC<span class='sub'>минула, чекає розрахунку Bybit</span>" in main
+    assert "<span class='act'>чекає розрахунку Bybit</span>" in main and "<span class='act'>вирішуй" not in main
+    # a live position beside it keeps its own advice
+    with_short = _with_short()
+    with_short["asof_utc"] = data["asof_utc"]
+    both = _lead(db.render_live_main(with_short, None, t))
+    assert "ліквідація близько" in both and "Експірація минула" in both
+
+
+def test_position_fold_ids_keep_fractional_strikes_apart():
+    def g(*strikes: float) -> dict:
+        return {"base": "SOL", "exp_ts": EXP, "legs": [{"strike": s, "kind": "call"} for s in strikes]}
+
+    ids = [db._live_fold_id(g(s)) for s in (152.5, 152.0, 152.25)]
+    assert ids == [f"lp-SOL-{int(EXP)}-152_5c", f"lp-SOL-{int(EXP)}-152c", f"lp-SOL-{int(EXP)}-152_25c"]
+    assert db._live_fold_id(g(150.0, 152.5)) == f"lp-SOL-{int(EXP)}-150c-152_5c"
+
+
+def test_positions_collector_failure_states(tmp_path):
+    bad = tmp_path / "live.json"
+    bad.write_text("{not json", encoding="utf-8")
+    cases = (
+        (db.load_live(tmp_path / "none.json"), "<span class='chip ev'>немає даних</span>", "Живих даних ще нема"),
+        (db.load_live(bad), "<span class='chip risk'>файл не прочитано</span>", "(JSONDecodeError)"),
+        ((_payload(status="error", positions=[]), None), "<span class='chip risk'>позицій не видно</span>", "Bybit не відповів"),
+        ((_payload(status="no_key"), None), "позицій не видно", "ключ Bybit лише для читання — напиши Claude"),
+        ((_payload(status="<b>odd</b>"), None), "позицій не видно", "Невідомий стан збирача"),
+    )
+    for (data, err), chip, text in cases:
+        page = db.render_positions(data, err, NOW)
+        main = _main(page)
+        assert chip in _lead(main) and text in main, text
+        assert main.index("<div class='lead'>") < main.index("<h2>Позиції" + ICON) and "wide fold" not in main
+        assert page.count("<b>Застереження</b>") == 1 and page.index("</main>") < page.index("<b>Застереження</b>")
+        assert "aria-current=page>Позиції" in page and page.endswith("</body></html>") and "<b>odd" not in page
+    # a partial failure of the collector stays visible above the folds
+    part = db.render_live_main(_payload(errors=["tickers ETH: timeout <x>"]), None, NOW)
+    assert part.index("Частина запитів до Bybit не вдалась: tickers ETH: timeout &lt;x&gt;") < part.index("wide fold")
+    # the collector stopped: the dot, the stamp and the lead all say so
+    old = db.render_live_main(_payload(), None, NOW + 3600)
+    assert "lp-dot stale" in old and "дані застарілі: збирач, схоже, зупинився" in old and "дані застарілі</span>" in _lead(old)
 
 
 def _events_snap() -> dict:

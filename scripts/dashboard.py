@@ -993,15 +993,13 @@ HELP: dict[str, tuple[str, str, str, str]] = {
     ),
     "flow_now": (
         "Що зараз у потоках",
-        "Речення інструмента market_flow за 24 і 4 години: ціна, OI у монетах, хто агресивніше купує чи продає на ф'ючерсах і "
-        "на споті, і квадрант «ціна × OI» з названими комбінаціями картки.",
+        "Речення інструмента market_flow за 24 і 4 години: ціна, OI, хто агресивніше купує чи продає, і квадрант «ціна × OI».",
         "«Ріст на нових позиціях» — ціна й OI вгору; «закриття лонгів» — ціна й OI вниз; «збалансовані» — CVD менше 1 % обсягу.",
         "Описово, не сигнал: поодинці ці метрики напрямок не передбачили; перевірку всіх разом ще не зроблено.",
     ),
     "flow_totals": (
         "Підсумки потоків",
-        "Суми й зміни за останні 4 год, 24 год і все вікно: ціна, OI, CVD споту й ф'ючерсів, ліквідації, funding, частка "
-        "лонгів, премія Coinbase.",
+        "Суми й зміни за 4 год, 24 год і все вікно: ціна, OI, CVD, ліквідації, funding, частка лонгів, премія Coinbase.",
         "Зміни — від закриття години перед вікном до останньої закритої години; CVD і ліквідації — суми за вікно, у $.",
         "Контекст для власного рішення: жодна з цих цифр окремо переваги в наших тестах не дала.",
     ),
@@ -2019,6 +2017,55 @@ ACT: dict[str, tuple[str, str, str, str]] = {
         "ризик на угоду — до $100 (правила 1 і 8).",
         "Рядки «правило макета, не перевірено»",
         "лише контекст: переваги не доведено.",
+    ),
+    # «Потоки» tab (standing improvements, item 22)
+    "flow_now": (
+        "Квадрант без комбінацій картки",
+        "звичайний ринок: нічого не робити.",
+        "Є комбінація картки",
+        "лише контекст: угода — під власну тезу.",
+    ),
+    "flow_totals": (
+        "Ціна й OI майже не змінились",
+        "ринок спокійний: нічого не робити.",
+        "Сильний рух ціни чи OI",
+        "рух уже стався: не входь услід.",
+    ),
+    "flow_price": (
+        "Ціна в боковику",
+        "дивись, хто набирає позиції: OI і CVD.",
+        "Різкий рух",
+        "не входь услід: глянь, чи несуть його ліквідації.",
+    ),
+    "flow_cvd": (
+        "Спот і ф'ючерси в один бік",
+        "рух підтримують обидва ринки: лише контекст.",
+        "Ф'ючерси купують, спот продає",
+        "рух на плечі: у лонгу — менший розмір.",
+    ),
+    "flow_oi": (
+        "OI падає",
+        "позиції закривають: плече виходить з ринку.",
+        "OI росте",
+        "плече накопичується: стоп обов'язковий.",
+    ),
+    "flow_funding": (
+        "Біля нуля чи мінус",
+        "плече не перекошене: нічого не робити.",
+        "Високий плюс",
+        "лонг дорого тримати: врахуй funding у P&L.",
+    ),
+    "flow_liq": (
+        "Ліквідацій мало",
+        "рух без примусових закриттів: нічого не робити.",
+        "Хвиля ліквідацій",
+        "не лови відскок: як сигнал він не підтвердився.",
+    ),
+    "flow_premium": (
+        "До медіани біля нуля",
+        "звичний попит у США: нічого не робити.",
+        "Далеко від нуля",
+        "лише контекст: напрямок премія не передбачила.",
     ),
 }
 
@@ -6885,7 +6932,8 @@ FLOW_CAVEATS = (
     "Описово, не сигнал. Поодинці ці метрики напрямок ціни в наших перевірках не передбачили: ✗ spot-vs-perp-flow-divergence, "
     "taker-imbalance-8h-continuation, oi-quadrant-squeeze-vs-newlong, liquidation-flush-overshoot, gex-taker-flow-range, "
     "us-demand-flows (премія Coinbase); ◯ (не доведено) funding-crowding-longshort, oi-confirmed-liquidation-flush, "
-    "perp-spot-premium-spike-convergence. Перевірку всіх метрик разом (крок 3 картки market-flow-reader) ще не зроблено.",
+    "perp-spot-premium-spike-convergence. Перевірку всіх метрик разом (крок 3 картки market-flow-reader) ще не зроблено. "
+    "«Що робити» угорі й рядки дій у (i) — правила макета, не перевірені й не сигнал.",
     "CVD — агресивні купівлі мінус продажі лише Binance (спот і USD-M), не весь ринок; USDT читається як USD.",
     "OI — сума Binance і Bybit у монетах на закриття години, у $ — монети × ціна ф'ючерса Binance. Funding — останній "
     "сплачений рейт, простий річний, середнє бірж. Ліквідації — Coinalyze, біржі їх занижують.",
@@ -7020,7 +7068,13 @@ def _flow_last(vals: list[float | None]) -> float | None:
     return next((v for v in reversed(vals) if v is not None), None)
 
 
-def block_f_now(d: dict, sec: dict) -> str:
+def _flow_patterns(d: dict, key: str) -> list[str]:
+    """The card's named combinations of one window ('24h' / '4h'), the tool's own text, cleaned (escaped by the caller)."""
+    q = _rd(_rd(d.get("quadrant")).get(key))
+    return [_clean(p, 120) for p in _list(q.get("patterns_ua")) if isinstance(p, str) and p.strip()]
+
+
+def block_f_now(d: dict) -> str:
     out = []
     for key, label in (("sentence_ua", "24 год"), ("sentence_4h_ua", "4 год")):
         text = d.get(key)
@@ -7029,13 +7083,10 @@ def block_f_now(d: dict, sec: dict) -> str:
     if not out:
         out.append(_empty("Речення немає: за 4 і 24 години бракує ціни чи OI."))
     for key in ("24h", "4h"):
-        q = _rd(_rd(d.get("quadrant")).get(key))
-        pats = [_clean(p, 120) for p in _list(q.get("patterns_ua")) if isinstance(p, str)]
+        pats = _flow_patterns(d, key)
         if pats:
-            out.append(
-                f"<p class='note'>Комбінація картки за {_e(key.replace('h', ' год'))}: {_e('; '.join(pats))} — описово, не сигнал.</p>"
-            )
-    return "".join(out) + _flow_missing(sec)
+            out.append(f"<p class='note'>Комбінація картки за {_e(key.replace('h', ' год'))}: {_e('; '.join(pats))}.</p>")
+    return "".join(out)
 
 
 def block_f_totals(d: dict) -> str:
@@ -7131,7 +7182,7 @@ def block_f_funding(rows: list[dict], asset: str) -> str:
 def block_f_liq(rows: list[dict], asset: str) -> str:
     ts, lg, sh = _col(rows, "ts"), _col(rows, "liq_long"), _col(rows, "liq_short")
     if all(v is None for v in (*lg, *sh)):
-        return _empty("Ліквідацій немає: Coinalyze не віддав дані (потрібен ключ COINALYZE_API_KEY) — див. «Що зараз».")
+        return _empty("Ліквідацій немає: Coinalyze не віддав дані (потрібен ключ COINALYZE_API_KEY) — причина над блоками.")
     svg = flow_chart_svg(ts, [], f"{asset}: ліквідації", _flow_axis_usd, bars=((lg, "var(--bad)", 1), (sh, "var(--ok)", -1)))
     tl, ts_ = sum(v for v in lg if v is not None), sum(v for v in sh if v is not None)
     return (
@@ -7185,61 +7236,191 @@ def _flow_window(d: dict) -> str:
     )
 
 
+# ---- docs/design/PANEL.md layout: the lead always visible, every block folded with a one-line summary
+
+FLOW_WAIT_DO = "дочекайся наступного знімка (кожні 10 хв); причина — нижче, якщо триває годину — напиши Claude."
+FLOW_CALM_DO = "нічого не робити за цими даними: це контекст до власної тези, напрямок вони не передбачають."
+FLOW_PATTERN_DO = "лише контекст: угода — під власну тезу, стоп і розмір за правилами."
+
+
+def flow_lead(d: dict, asset: str, event: tuple[str, float] | None) -> str:
+    """The tab's first lines (docs/design/PANEL.md rule 1), the section's own text only. «What now»: the tool's 24-hour
+    sentence (the 4-hour one without it); a high-impact event within 48 h joins it (rule 6, ``event``: opt_event_soon).
+    The chip: the event, else a named combination of the card in either window, else the 24-hour price × OI regime.
+    «What to do» — static mock-up rules (the caveat at the bottom of the page says so): nothing in these flows predicted
+    the price's direction in our checks, so the advice never takes a side."""
+    what = next((_clean(d.get(k), 400) for k in ("sentence_ua", "sentence_4h_ua") if isinstance(d.get(k), str) and d.get(k).strip()), "")
+    if not what:
+        return opt_lead_html(
+            "ev", "бракує даних", f"Речення про потоки {asset} немає: за 4 і 24 години бракує ціни чи OI.", FLOW_WAIT_DO, event
+        )
+    regime = _clean(_rd(_rd(d.get("quadrant")).get("24h")).get("regime_ua") or "", 60)
+    if event:
+        chip, label, do = "risk", "подія", OPT_EVENT_DO
+    elif _flow_patterns(d, "24h") or _flow_patterns(d, "4h"):
+        chip, label, do = "ev", "комбінація картки", FLOW_PATTERN_DO
+    else:
+        chip, label, do = "calm", regime or "потоки", FLOW_CALM_DO
+    return opt_lead_html(chip, label, what, do, event)
+
+
+def flow_summaries(d: dict, rows: list[dict]) -> dict[str, str]:
+    """One plain-text line per folded block (docs/design/PANEL.md rule 4): the 24-hour summary and the series' last
+    values, as the tool returned them; escaped by the caller. A block without its numbers gets no line."""
+    s24 = _rd(_rd(d.get("summary")).get("24h"))
+
+    def pct(v: object, nd: int = 2) -> str | None:
+        x = _num(v)
+        return None if x is None else _pc(x * 100, nd)
+
+    def bp(x: float | None) -> str:
+        return "—" if x is None else f"{x:+.1f} б.п.".replace("-", "−")
+
+    def now_() -> str:
+        q = _rd(d.get("quadrant"))
+        parts = [
+            f"{label}: {_clean(_rd(q.get(k)).get('regime_ua'), 60)}"
+            for k, label in (("24h", "24 год"), ("4h", "4 год"))
+            if _rd(q.get(k)).get("regime_ua")
+        ]
+        n = len(_flow_patterns(d, "24h")) + len(_flow_patterns(d, "4h"))
+        return " · ".join(parts) + (f" · комбінацій картки: {n}" if n else "")
+
+    def totals() -> str:
+        p, oi, pc = pct(s24.get("price_change")), pct(s24.get("oi_change")), _num(s24.get("perp_cvd"))
+        if p is None and oi is None and pc is None:
+            return ""
+        out = [f"ціна {p}" if p else "", f"OI {oi} (монети)" if oi else "", f"CVD ф'ючерси {flow_usd(pc)}" if pc is not None else ""]
+        return "24 год: " + " · ".join(x for x in out if x)
+
+    def price() -> str:
+        last, p = _flow_last(_col(rows, "price")), pct(s24.get("price_change"))
+        if last is None:
+            return ""
+        return _k(last) + (f" · {p} за 24 год" if p else "")
+
+    def cvd() -> str:
+        sp, pe = _num(s24.get("spot_cvd")), _num(s24.get("perp_cvd"))
+        if sp is None and pe is None:
+            return ""
+        return f"24 год: спот {flow_usd(sp)} · ф'ючерси {flow_usd(pe)}"
+
+    def oi() -> str:
+        last, ch = _flow_last(_col(rows, "oi_usd")), pct(s24.get("oi_change"))
+        if last is None:
+            return ""
+        return flow_usd(last, signed=False) + (f" · {ch} за 24 год (монети)" if ch else "")
+
+    def funding() -> str:
+        last, mean = _flow_last(_col(rows, "funding_annualized")), pct(s24.get("funding_annualized_mean"), 1)
+        if last is None:
+            return ""
+        return f"останній {_pc(last * 100, 1)} річних" + (f" · середнє 24 год {mean}" if mean else "")
+
+    def liq() -> str:
+        lg, sh = _num(s24.get("liq_long")), _num(s24.get("liq_short"))
+        if lg is None and sh is None:
+            return ""
+        return f"24 год: лонги {flow_usd(lg, signed=False)} · шорти {flow_usd(sh, signed=False)}"
+
+    def premium() -> str:
+        last, mean = _flow_last(_col(rows, "premium_adj", 1e4)), _num(s24.get("premium_adj_mean"))
+        if last is None:
+            return ""
+        return f"до медіани {bp(last)}" + (f" · середнє 24 год {bp(mean * 1e4)}" if mean is not None else "")
+
+    out: dict[str, str] = {}
+    for key, fn in (
+        ("flow_now", now_),
+        ("flow_totals", totals),
+        ("flow_price", price),
+        ("flow_cvd", cvd),
+        ("flow_oi", oi),
+        ("flow_funding", funding),
+        ("flow_liq", liq),
+        ("flow_premium", premium),
+    ):
+        try:
+            out[key] = fn() or "немає даних"
+        except Exception:  # noqa: BLE001 - a summary line must not take the page down
+            out[key] = ""
+    return out
+
+
 def render_flows(snap: dict | None, err: str | None, now: float, params: dict | None = None, path: Path | None = None) -> str:
-    """The «Потоки» tab. Never raises: no snapshot, no section or a failed one gives an explained state."""
+    """The «Потоки» tab, laid out by docs/design/PANEL.md: the lead («what now / what to do», a high-impact event within
+    48 h) always visible, failed sources right under it, every block folded with a one-line summary, the caveats (and
+    the tool's own notes) once at the bottom. Never raises: no snapshot, no section or a failed one gives an explained
+    state."""
     asset = (params or parse_flow_query(""))["asset"]
     name = f"flow_{asset.lower()}"
     head = (
         "<!doctype html><html lang='uk'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
         f"{_refresh_head(REFRESH_S)}<title>tradedesk — потоки</title><style>{CSS}{BRIEF_CSS}{RADAR_CSS}</style></head><body>"
     )
-    caveats = "<div class='caveat'><b>Застереження</b><ul>" + "".join(f"<li>{_e(c)}</li>" for c in FLOW_CAVEATS) + "</ul></div>"
+    items = "".join(f"<li>{_e(c)}</li>" for c in FLOW_CAVEATS)
+    tail = f"<div class='caveat'><b>Застереження</b><ul>{items}</ul></div></body></html>"
     try:
         if snap is None:
             msg = _snapshot_problem(err, path)
-            return head + f"<header><h1>Потоки</h1><span class='bad'>{msg}</span></header>{_nav('flows')}{caveats}</body></html>"
-        out = [head, f"<header><h1>Потоки</h1>{_snapshot_stamp(snap, now)}</header>{_nav('flows')}{caveats}"]
+            return head + f"<header><h1>Потоки</h1><span class='bad'>{msg}</span></header>{_nav('flows')}{tail}"
+        out = [head, f"<header><h1>Потоки</h1>{_snapshot_stamp(snap, now)}</header>{_nav('flows')}"]
+        try:
+            event = opt_event_soon(snap, now)  # rule 6: by the page's clock, as on «Ринок», «Опціони» and «Радар»
+        except Exception:  # noqa: BLE001 - an odd calendar must not take the page down
+            event = None
         sec = _section(snap, name)
         d = _data(snap, name)
         if d is None:
-            why = (
-                _section_notes(snap, name) + _flow_missing(sec)
-                if sec
-                else _empty(
-                    f"Секції «{SECTION_UA.get(name, name)}» у знімку ще немає: завдання assistant_snapshot ще не відпрацювало з новим кодом."
-                )
-            )
+            label = SECTION_UA.get(name, name)
+            if sec:
+                what = f"Даних потоків {asset} у знімку немає: секцію «{label}» зібрано зі збоєм."
+                notes = _section_notes(snap, name) + _flow_missing(sec)
+            else:
+                what = f"Секції «{label}» у знімку ще немає: завдання assistant_snapshot ще не відпрацювало з новим кодом."
+                notes = ""
+            lead = opt_lead_html("ev", "немає даних", what, FLOW_WAIT_DO, event)
             out.append(
-                f"<div class='rhead'>{_flow_switch(asset)}</div><main class='brief'><section class='wide'>{why}</section></main></body></html>"
+                f"<div class='rhead'>{_flow_switch(asset)}</div><main class='brief'><section class='wide'>{lead}{notes}</section></main>{tail}"
             )
             return "".join(out)
         rows = _flow_series(d)
         out.append(f"<div class='rhead'>{_flow_switch(asset)}{_flow_window(d)}</div><main class='brief'>")
-        stale = _section_notes(snap, name)
-        out.append(f"<section class='wide'>{_h2('Що зараз', 'flow_now')}{stale}{_guard(lambda x: block_f_now(x, sec), d)}</section>")
-        out.append(f"<section class='wide'>{_h2('Підсумки', 'flow_totals')}{_guard(block_f_totals, d)}</section>")
-        for title, key, fn in (
-            ("Ціна", "flow_price", block_f_price),
-            ("CVD спот і ф'ючерси", "flow_cvd", block_f_cvd),
-            ("Відкритий інтерес, $", "flow_oi", block_f_oi),
-            ("Funding · річних", "flow_funding", block_f_funding),
-            ("Ліквідації лонгів і шортів", "flow_liq", block_f_liq),
-            ("Премія Coinbase", "flow_premium", block_f_premium),
-        ):
-            out.append(f"<section>{_h2(title, key)}{_guard(lambda x, f=fn: f(x, asset), rows)}</section>")
+        # rules 1 and 6: the lead with the event first; failed or old sources right under it, always visible
+        notes = _section_notes(snap, name) + _flow_missing(sec)
+        out.append(f"<section class='wide'>{_guard(lambda x: flow_lead(x, asset, event), d)}{notes}</section>")
+        # rule 4: every block folded, its headline number in the summary line
+        try:
+            summ = flow_summaries(d, rows)
+        except Exception:  # noqa: BLE001 - a summary line must not take the page down
+            summ = {}
+        folds = (
+            ("Що зараз: 24 і 4 год", "flow_now", "now", block_f_now, d),
+            ("Підсумки", "flow_totals", "totals", block_f_totals, d),
+            ("Ціна", "flow_price", "price", lambda x: block_f_price(x, asset), rows),
+            ("CVD спот і ф'ючерси", "flow_cvd", "cvd", lambda x: block_f_cvd(x, asset), rows),
+            ("Відкритий інтерес, $", "flow_oi", "oi", lambda x: block_f_oi(x, asset), rows),
+            ("Funding · річних", "flow_funding", "funding", lambda x: block_f_funding(x, asset), rows),
+            ("Ліквідації лонгів і шортів", "flow_liq", "liq", lambda x: block_f_liq(x, asset), rows),
+            ("Премія Coinbase", "flow_premium", "premium", lambda x: block_f_premium(x, asset), rows),
+        )
+        for title, key, sid, fn, arg in folds:
+            out.append(_fold(title, key, _e(summ.get(key, "")), _guard(fn, arg), sid=f"f-{sid}"))
+        out.append("</main>")
+        # rule 5: the tool's own notes join the caveats at the bottom, folded
         warns = [_clean(w, 400) for w in _list(sec.get("warnings")) if isinstance(w, str)]
         if warns:
-            out.append(
-                "<section class='wide'><details><summary>Примітки інструмента market_flow (англ.)</summary><ul>"
+            items += (
+                f"<li><details><summary>Примітки інструмента market_flow (англ.): {len(warns)}</summary><ul>"
                 + "".join(f"<li>{_e(w)}</li>" for w in warns)
-                + "</ul></details></section>"
+                + "</ul></details></li>"
             )
-        out.append("</main></body></html>")
+        out.append(f"<div class='caveat'><b>Застереження</b><ul>{items}</ul></div></body></html>")
         return "".join(out)
     except Exception as e:  # noqa: BLE001 - the page always renders
         return (
             head
-            + f"<header><h1>Потоки</h1><span class='bad'>Знімок не вдалося показати ({_e(type(e).__name__)}).</span></header>{_nav('flows')}{caveats}</body></html>"
+            + f"<header><h1>Потоки</h1><span class='bad'>Знімок не вдалося показати ({_e(type(e).__name__)}).</span></header>{_nav('flows')}{tail}"
         )
 
 

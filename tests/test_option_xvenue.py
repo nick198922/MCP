@@ -258,7 +258,11 @@ def _rt(
 
     tr = make_transports(State())
     tr["deribit"] = httpx.MockTransport(deribit)
-    rt = Runtime(Settings(http_retries=1, cache_scale=0.0, db_path=str(tmp_path / "x.sqlite"), **kw), transports=tr, exchange_factory=Ex)
+    rt = Runtime(
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=str(tmp_path / "x.sqlite"), **kw),
+        transports=tr,
+        exchange_factory=Ex,
+    )
     rt.now = lambda: NOW
     rt.deribit.http._limiter = TokenBucket(1_000.0, 1_000)
     rt.deribit.http._backoff = 0.0
@@ -645,6 +649,7 @@ async def test_receive_time_is_unknown_for_a_cached_answer():
 async def test_migration_26_tags_old_rows_hourly_and_mode_is_stored(tmp_path):
     path = tmp_path / "v25.sqlite"
     con = sqlite3.connect(path)
+    con.execute("PRAGMA synchronous=OFF")  # a throwaway file: no fsync per DDL statement
     for v in sorted(MIGRATIONS):
         if v <= 25:
             for stmt in MIGRATIONS[v]:

@@ -247,7 +247,7 @@ def _rt(tmp_path, *, status: int = 200, delivery: float | None = 83_000.0, ex=Fa
         return resp
 
     tr["deribit"] = httpx.MockTransport(deribit)
-    s = Settings(http_retries=1, cache_scale=0.0, db_path=str(tmp_path / "fc.sqlite"), **kw)
+    s = Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=str(tmp_path / "fc.sqlite"), **kw)
     rt = Runtime(s, transports=tr, exchange_factory=ex)
     rt.now = lambda: DAY1
     return rt, state

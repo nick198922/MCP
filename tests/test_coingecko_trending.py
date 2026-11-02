@@ -19,6 +19,7 @@ from tradedesk.analytics.coingecko_trending import MAX_ROWS, hour_ts, snapshot_r
 from tradedesk.collector.coingecko_trending import collect_coingecko_trending
 from tradedesk.collector.scheduler import build_default_scheduler
 from tradedesk.config import Settings
+from tradedesk.core.ratelimit import TokenBucket
 from tradedesk.features import allowed
 from tradedesk.runtime import Runtime
 from tradedesk.store import SCHEMA_VERSION, Store
@@ -132,9 +133,10 @@ def _rt(tmp_path, *, opts: dict | None = None, **kw) -> tuple[Runtime, list]:
 
     tr = make_transports(State())
     tr["coingecko"] = httpx.MockTransport(cg)
-    rt = Runtime(Settings(http_retries=1, cache_scale=0.0, db_path=str(tmp_path / "x.sqlite"), **kw), transports=tr)
+    rt = Runtime(Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=str(tmp_path / "x.sqlite"), **kw), transports=tr)
     rt.now = lambda: NOW
     rt.coingecko.http._backoff = 0.0
+    rt.coingecko.http._limiter = TokenBucket(1_000.0, 1_000)  # a retry and a recovery call at 0.5 req/s wait ~2 s
     return rt, calls
 
 
@@ -228,6 +230,7 @@ def test_job_off_by_default_and_switch_allow_listed(tmp_path, monkeypatch):
 async def test_migration_34_adds_the_table_to_a_v33_store(tmp_path):
     path = tmp_path / "v33.sqlite"
     con = sqlite3.connect(path)
+    con.execute("PRAGMA synchronous=OFF")  # a throwaway file: no fsync per DDL statement
     for v in sorted(MIGRATIONS):
         if v <= 33:
             for stmt in MIGRATIONS[v]:

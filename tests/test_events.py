@@ -59,7 +59,7 @@ async def test_events_list_filters():
 
 async def _rt(state, tmp_path) -> Runtime:
     rt = Runtime(
-        Settings(http_retries=1, cache_scale=0.0, db_path=str(tmp_path / "events.sqlite")),
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=str(tmp_path / "events.sqlite")),
         transports=make_transports(state),
         exchange_factory=FakeEx,
     )

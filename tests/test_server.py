@@ -358,7 +358,11 @@ async def test_open_interest_fallback_via_mark(state):
         async def fetch_open_interest(self, symbol):
             return {"openInterestAmount": 1000.0, "openInterestValue": None}
 
-    rt2 = Runtime(Settings(http_retries=1, cache_scale=0.0), transports=make_transports(state), exchange_factory=FakeExNoOIValue)
+    rt2 = Runtime(
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0),
+        transports=make_transports(state),
+        exchange_factory=FakeExNoOIValue,
+    )
     rt2.now = lambda: NOW
     srv, _ = build_server(rt2)
     env = await call(srv, "perps_open_interest", base="BTC", exchanges=["binanceusdm"])
@@ -523,7 +527,7 @@ async def test_max_pain_and_gex_carry_pin_caveat(server, state):
     # provider failure: envelope still returned, no levels and so no caveat
     tr = make_transports(state)
     tr["deribit"] = httpx.MockTransport(lambda req: httpx.Response(503, text="down"))
-    rt2 = Runtime(Settings(http_retries=1, cache_scale=0.0), transports=tr, exchange_factory=FakeEx)
+    rt2 = Runtime(Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0), transports=tr, exchange_factory=FakeEx)
     rt2.now = lambda: NOW
     srv, _ = build_server(rt2)
     for name, args in (("deribit_max_pain", {"expiry": "30OCT26"}), ("deribit_gamma_exposure", {"currency": "BTC"})):
@@ -680,7 +684,7 @@ async def test_sentiment_fear_greed_provider_failure(state):
 
     tr = make_transports(state)
     tr["alternative_me"] = httpx.MockTransport(lambda req: httpx.Response(503, text="down"))
-    rt2 = Runtime(Settings(http_retries=1, cache_scale=0.0), transports=tr, exchange_factory=FakeEx)
+    rt2 = Runtime(Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0), transports=tr, exchange_factory=FakeEx)
     rt2.now = lambda: NOW
     srv, _ = build_server(rt2)
     env = await call(srv, "sentiment_fear_greed", days=30)
@@ -807,7 +811,7 @@ async def test_coingecko_provider_failure(state):
 
     tr = make_transports(state)
     tr["coingecko"] = httpx.MockTransport(lambda req: httpx.Response(503, text="down"))
-    rt2 = Runtime(Settings(http_retries=1, cache_scale=0.0), transports=tr, exchange_factory=FakeEx)
+    rt2 = Runtime(Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0), transports=tr, exchange_factory=FakeEx)
     rt2.now = lambda: NOW
     srv, _ = build_server(rt2)
     env = await call(srv, "coin_snapshot", coin_id="bitcoin")
@@ -854,7 +858,7 @@ async def test_polymarket_provider_failure(state):
 
     tr = make_transports(state)
     tr["polymarket:gamma"] = httpx.MockTransport(lambda req: httpx.Response(502, text="down"))
-    rt2 = Runtime(Settings(http_retries=1, cache_scale=0.0), transports=tr, exchange_factory=FakeEx)
+    rt2 = Runtime(Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0), transports=tr, exchange_factory=FakeEx)
     rt2.now = lambda: NOW
     srv, _ = build_server(rt2)
     env = await call(srv, "polymarket_search", query="x")

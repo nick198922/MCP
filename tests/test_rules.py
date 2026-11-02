@@ -142,7 +142,7 @@ async def _call(server, name, **args):
 
 async def _rt(state, tmp_path) -> Runtime:
     rt = Runtime(
-        Settings(http_retries=1, cache_scale=0.0, db_path=str(tmp_path / "rules.sqlite")),
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=str(tmp_path / "rules.sqlite")),
         transports=make_transports(state),
         exchange_factory=FakeEx,
     )

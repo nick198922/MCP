@@ -127,7 +127,7 @@ def _rt(tmp_path, *, opts: dict | None = None, **kw) -> tuple[Runtime, list]:
 
     tr = make_transports(State())
     tr["binance_futures"] = httpx.MockTransport(binance)
-    rt = Runtime(Settings(http_retries=1, cache_scale=0.0, db_path=str(tmp_path / "x.sqlite"), **kw), transports=tr)
+    rt = Runtime(Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=str(tmp_path / "x.sqlite"), **kw), transports=tr)
     rt.now = lambda: NOW
     rt.binance_futures.http._backoff = 0.0
     return rt, calls
@@ -242,6 +242,7 @@ def test_job_off_by_default_and_switch_allow_listed(tmp_path, monkeypatch):
 async def test_migration_29_adds_the_table_to_a_v28_store(tmp_path):
     path = tmp_path / "v28.sqlite"
     con = sqlite3.connect(path)
+    con.execute("PRAGMA synchronous=OFF")  # a throwaway file: no fsync per DDL statement
     for v in sorted(MIGRATIONS):
         if v <= 28:
             for stmt in MIGRATIONS[v]:

@@ -61,6 +61,7 @@ def _journal() -> list[dict]:
 def _store(path: Path, version: int, rows: list[dict] = ()) -> Path:
     """A SQLite file migrated to `version` with the real schema, holding `rows` in journal."""
     con = sqlite3.connect(path)
+    con.execute("PRAGMA synchronous=OFF")  # a throwaway file: an fsync per DDL statement costs ~1 s per migrated store
     for v in sorted(MIGRATIONS):
         if v <= version:
             for sql in MIGRATIONS[v]:

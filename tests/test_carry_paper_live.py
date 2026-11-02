@@ -63,7 +63,7 @@ class LiveEx(FakeEx):
 
 def _rt(factory, tmp_path) -> Runtime:
     rt = Runtime(
-        Settings(http_retries=1, cache_scale=0.0, db_path=str(tmp_path / "live.sqlite")),
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=str(tmp_path / "live.sqlite")),
         transports=make_transports({}),
         exchange_factory=factory,
     )
@@ -428,7 +428,11 @@ async def test_paper_carry_status_tool_happy_path(tmp_path):
 
 
 async def test_paper_carry_status_without_store_returns_an_envelope():
-    rt = Runtime(Settings(http_retries=1, cache_scale=0.0, db_path=""), transports=make_transports({}), exchange_factory=LiveEx)
+    rt = Runtime(
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=""),
+        transports=make_transports({}),
+        exchange_factory=LiveEx,
+    )
     srv, _ = build_server(rt)
     try:
         res = await _call(srv, "paper_carry_status")

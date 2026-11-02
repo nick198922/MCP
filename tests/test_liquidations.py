@@ -258,7 +258,7 @@ def ws_replay(monkeypatch):
 
 async def _job_rt(state, tmp_path) -> Runtime:
     rt = Runtime(
-        Settings(http_retries=1, cache_scale=0.0, db_path=str(tmp_path / "liq.sqlite")),
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=str(tmp_path / "liq.sqlite")),
         transports=make_transports(state),
         exchange_factory=InstrumentsEx,
     )
@@ -316,7 +316,7 @@ async def test_bybit_job_stores_flipped_sides(state, tmp_path, ws_replay):
 
 async def _rt(state, tmp_path) -> Runtime:
     rt = Runtime(
-        Settings(http_retries=1, cache_scale=0.0, db_path=str(tmp_path / "liq.sqlite")),
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=str(tmp_path / "liq.sqlite")),
         transports=make_transports(state),
         exchange_factory=FakeEx,
     )

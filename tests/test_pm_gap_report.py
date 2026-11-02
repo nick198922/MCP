@@ -426,6 +426,7 @@ def test_runner_reads_an_old_schema_db_without_migrating_it(tmp_path):
 
     db = tmp_path / "v17.sqlite"
     con = sqlite3.connect(db)
+    con.execute("PRAGMA synchronous=OFF")  # a throwaway file: no fsync per DDL statement
     for v in sorted(MIGRATIONS):
         if v <= 17:
             for stmt in MIGRATIONS[v]:

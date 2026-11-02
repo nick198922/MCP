@@ -18,6 +18,7 @@ from tradedesk.core.envelope import Builder
 from tradedesk.core.errors import ProviderError
 from tradedesk.core.health import HealthRegistry
 from tradedesk.core.http import Http
+from tradedesk.providers import thegraph as graph_mod
 from tradedesk.providers.thegraph import POLYMARKET_SUBGRAPH_ID, TheGraph, headers
 from tradedesk.runtime import Runtime
 
@@ -28,6 +29,13 @@ PAGES_Q = (
     "query($first: Int!, $lastId: String!) { positions(first: $first, orderBy: id, orderDirection: asc, "
     "where: {id_gt: $lastId}) { id amount } }"
 )
+
+
+@pytest.fixture(autouse=True)
+def _fast_bucket(monkeypatch):
+    """The 0.5 req/s production bucket (read when a Runtime is built) only makes these tests wait, ~14 s per run."""
+    monkeypatch.setattr(graph_mod, "RATE_PER_SECOND", 1_000.0)
+    monkeypatch.setattr(graph_mod, "BURST", 1_000)
 
 
 def make_rt(handler, *, key=SECRET, cache_scale=0.0, pnl=None, retries=0):

@@ -25,6 +25,7 @@ def _store(path: Path, upto: int | None = None) -> Path:
     from tradedesk.store.schema import MIGRATIONS
 
     con = sqlite3.connect(path)
+    con.execute("PRAGMA synchronous=OFF")  # a throwaway file: an fsync per DDL statement costs ~1 s per migrated store
     for v in sorted(MIGRATIONS):
         if upto is None or v <= upto:
             for sql in MIGRATIONS[v]:

@@ -12,6 +12,7 @@ import pytest
 from conftest import NOW, FakeEx, make_transports
 from tradedesk.collector.scheduler import _collect_trader_positions, _collect_traders, build_default_scheduler
 from tradedesk.config import Settings
+from tradedesk.core.ratelimit import TokenBucket
 from tradedesk.providers.hyperliquid import parse_leaderboard, parse_positions
 from tradedesk.runtime import Runtime
 
@@ -68,8 +69,12 @@ def _runtime(state, *, hl_fail=False, pm_fail=False, hl_positions=None, settings
     base["hyperliquid:stats"] = httpx.MockTransport(stats)
     base["hyperliquid"] = httpx.MockTransport(hl)
     base["polymarket:data"] = httpx.MockTransport(pm)
-    s = settings or Settings(http_retries=1, cache_scale=0.0, db_path=":memory:", collector_enabled=True, traders_top_n=5)
+    s = settings or Settings(
+        http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=":memory:", collector_enabled=True, traders_top_n=5
+    )
     rt = Runtime(s, transports=base, exchange_factory=FakeEx)
+    for h in (rt.hyperliquid.stats, rt.polymarket.data):  # their 1 and 3 req/s production limits only make the test wait
+        h._limiter = TokenBucket(1_000.0, 1_000)
     rt.now = lambda: NOW
     rt._calls = calls  # type: ignore[attr-defined]
     return rt

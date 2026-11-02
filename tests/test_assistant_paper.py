@@ -129,7 +129,11 @@ def _rt(tmp_path, delivery_price: float | None = 60_000.0, status: int = 200) ->
         return base(req)
 
     tr["deribit"] = httpx.MockTransport(deribit)
-    rt = Runtime(Settings(http_retries=1, cache_scale=0.0, db_path=str(tmp_path / "rec.sqlite")), transports=tr, exchange_factory=FakeEx)
+    rt = Runtime(
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=str(tmp_path / "rec.sqlite")),
+        transports=tr,
+        exchange_factory=FakeEx,
+    )
     rt.now = lambda: NOW
     return rt
 
@@ -259,7 +263,11 @@ async def test_provider_failure_never_raises(tmp_path):
 
 
 async def test_no_store_configured():
-    rt = Runtime(Settings(http_retries=1, cache_scale=0.0, db_path=""), transports=make_transports(State()), exchange_factory=FakeEx)
+    rt = Runtime(
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=""),
+        transports=make_transports(State()),
+        exchange_factory=FakeEx,
+    )
     srv, _ = build_server(rt)
     try:
         o = await _call(srv, "assistant_paper_open", structure="long_straddle")

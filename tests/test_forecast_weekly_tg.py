@@ -68,6 +68,7 @@ def _forecasts(n_weeks: int, *, rv: float | None = 0.40) -> list[dict]:
 def _store(path: Path, version: int, rows: list[dict] = ()) -> Path:
     """A SQLite file migrated to `version` with the real schema, holding `rows` in forecast_log."""
     con = sqlite3.connect(path)
+    con.execute("PRAGMA synchronous=OFF")  # a throwaway file: an fsync per DDL statement costs ~1 s per migrated store
     for v in sorted(MIGRATIONS):
         if v <= version:
             for sql in MIGRATIONS[v]:

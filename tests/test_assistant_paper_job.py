@@ -135,7 +135,9 @@ def _rt(tmp_path: Path, status: int = 200, **kw: Any) -> Runtime:
     state = State()
     state.deribit_status = status
     rt = Runtime(
-        Settings(http_retries=1, cache_scale=0.0, db_path=str(tmp_path / "p.sqlite"), assistant_paper_enabled=True, **kw),
+        Settings(
+            http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=str(tmp_path / "p.sqlite"), assistant_paper_enabled=True, **kw
+        ),
         transports=make_transports(state),
         exchange_factory=FakeEx,
     )

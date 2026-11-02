@@ -278,6 +278,7 @@ def test_job_off_by_default_and_switch_allow_listed(tmp_path, monkeypatch):
 async def test_migration_33_adds_the_table_to_a_v32_store(tmp_path):
     path = tmp_path / "v32.sqlite"
     con = sqlite3.connect(path)
+    con.execute("PRAGMA synchronous=OFF")  # a throwaway file: no fsync per DDL statement
     for v in sorted(MIGRATIONS):
         if v <= 32:
             for stmt in MIGRATIONS[v]:

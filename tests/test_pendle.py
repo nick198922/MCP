@@ -10,6 +10,7 @@ from mcp import Client
 
 from tradedesk.analytics.pendle import apy_to_pt_price, days_to_expiry, pt_price_to_apy, scan_fixed_yields, summarise_market
 from tradedesk.config import Settings
+from tradedesk.core.ratelimit import TokenBucket
 from tradedesk.runtime import Runtime
 from tradedesk.server import build_server
 
@@ -36,7 +37,10 @@ def make_server(handler=None):
         assert req.url.path == "/core/v1/markets/all"
         return httpx.Response(200, json=PENDLE)
 
-    rt = Runtime(Settings(http_retries=1, cache_scale=0.0), transports={"pendle": httpx.MockTransport(handler or default)})
+    rt = Runtime(
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0), transports={"pendle": httpx.MockTransport(handler or default)}
+    )
+    rt.pendle.http._limiter = TokenBucket(1_000.0, 1_000)  # the 2 req/s production limit only makes multi-call tests wait
     rt.now = lambda: NOW
     srv, _ = build_server(rt)
     return srv

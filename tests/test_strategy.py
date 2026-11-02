@@ -111,7 +111,7 @@ async def _call(server, name, **args):
 
 async def test_strategy_payoff_mcp_round_trip(state):
     rt = Runtime(
-        Settings(http_retries=1, cache_scale=0.0, db_path=""),
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=""),
         transports=make_transports(state),
         exchange_factory=FakeEx,
     )
@@ -182,7 +182,7 @@ async def test_strategy_straddle_mcp(state):
     from tradedesk.server import build_server  # noqa: PLC0415
 
     rt = Runtime(
-        Settings(http_retries=1, cache_scale=0.0, db_path=""),
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=""),
         transports=make_transports(state),
         exchange_factory=FakeEx,
     )
@@ -213,7 +213,7 @@ async def test_strategy_cash_and_carry_reports_basis(state):
     from tradedesk.server import build_server  # noqa: PLC0415
 
     rt = Runtime(
-        Settings(http_retries=1, cache_scale=0.0, db_path=""),
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=""),
         transports=make_transports(state),
         exchange_factory=FakeEx,
     )
@@ -279,7 +279,7 @@ async def test_strategy_scenario_matrix_mcp(state):
     from tradedesk.server import build_server  # noqa: PLC0415
 
     rt = Runtime(
-        Settings(http_retries=1, cache_scale=0.0, db_path=""),
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=""),
         transports=make_transports(state),
         exchange_factory=FakeEx,
     )
@@ -312,7 +312,7 @@ async def test_strategy_scenario_matrix_mcp(state):
 
 async def test_strategy_payoff_rejects_bad_leg(state):
     rt = Runtime(
-        Settings(http_retries=1, cache_scale=0.0, db_path=""),
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=""),
         transports=make_transports(state),
         exchange_factory=FakeEx,
     )

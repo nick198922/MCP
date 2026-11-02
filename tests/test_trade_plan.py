@@ -169,7 +169,7 @@ async def _call(server, name, **args):
 
 def _rt(tmp_path, **settings) -> Runtime:
     rt = Runtime(
-        Settings(http_retries=1, cache_scale=0.0, db_path=str(tmp_path / "plans.sqlite"), **settings),
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=str(tmp_path / "plans.sqlite"), **settings),
         transports=make_transports(State()),
         exchange_factory=FakeEx,
     )
@@ -318,7 +318,11 @@ async def test_provider_failure_keeps_plan_open(tmp_path):
 
 
 async def test_no_store_configured():
-    rt = Runtime(Settings(http_retries=1, cache_scale=0.0, db_path=""), transports=make_transports(State()), exchange_factory=FakeEx)
+    rt = Runtime(
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=""),
+        transports=make_transports(State()),
+        exchange_factory=FakeEx,
+    )
     srv, _ = build_server(rt)
     try:
         assert (await _call(srv, "plan_review"))["ok"] is False

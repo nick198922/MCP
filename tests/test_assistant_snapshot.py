@@ -30,6 +30,7 @@ from tradedesk.runtime import Runtime
 def _rt(state, tmp_path: Path, exchange_factory=FakeEx, transports: dict | None = None, **kw) -> Runtime:
     settings = Settings(
         http_retries=1,
+        http_retry_backoff=0.0,
         cache_scale=0.0,
         db_path=str(tmp_path / "t.sqlite"),
         assistant_snapshot_path=str(tmp_path / "out" / "snapshot.json"),
@@ -512,7 +513,11 @@ async def test_snapshot_radar_error_never_fails_the_job(state, tmp_path, monkeyp
 async def test_build_radar_without_store_and_calendar(state):
     from tradedesk.collector.assistant_snapshot import build_radar
 
-    rt = Runtime(Settings(http_retries=1, cache_scale=0.0, db_path=""), transports=make_transports(state), exchange_factory=FakeEx)
+    rt = Runtime(
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=""),
+        transports=make_transports(state),
+        exchange_factory=FakeEx,
+    )
     rt.now = lambda: NOW
     try:
         sec = await build_radar(rt, {}, NOW)  # no events section: the seed alone tags the windows

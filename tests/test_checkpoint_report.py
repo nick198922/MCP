@@ -1,0 +1,398 @@
+"""Checkpoint 2026-11-30 report: pure rules (analytics/checkpoint.py) and the read-only script on a small fixture DB."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import sqlite3
+import sys
+from datetime import date
+from pathlib import Path
+
+import pytest
+
+from tradedesk.analytics import checkpoint as cp
+from tradedesk.analytics.carry_rules import DECISION_DELAY_MS
+from tradedesk.store import Store
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+import checkpoint_report as script  # noqa: E402
+
+H = 3_600_000
+DAY = 86_400_000
+T = cp._ms(2026, 10, 18)  # a carry entry cycle
+NOW = cp._ms(2026, 11, 2, 12)
+V9 = cp._ms(2026, 10, 31, 10)  # after S12's v9 epoch
+BENCH = json.loads((Path(__file__).resolve().parent.parent / "docs/paper/bench.json").read_text(encoding="utf-8"))
+
+
+def _trade(i: int, setup: str, r: float, *, tf: str = "4h", opened: int | None = None, version: str | None = None, **kw):
+    o = opened if opened is not None else V9 + i * H
+    row = {"link_id": f"{setup}-{i}", "setup": setup, "timeframe": tf, "status": "closed", "signal_ts": o - 8 * H}
+    return row | {"opened_ts": o, "closed_ts": o + H, "r_multiple": r, "version": version} | kw
+
+
+def _row(rows, key):
+    return next(r for r in rows if r["key"] == key)
+
+
+# ------------------------------------------------------------------------------------------------------ demo
+
+
+def test_decision_band_takes_largest_n_prime_and_the_wider_end():
+    s28 = next(s for s in cp.DEMO if s.setup == "S28").bands
+    assert cp.decision_band(s28, 45)["n_ref"] == 30
+    b = cp.decision_band(s28, 120)
+    assert b["n_ref"] == 100 and b["decision"] == (-0.350, 0.091)  # rolling lower end, i.i.d. upper end
+    assert cp.decision_band(s28, 3)["n_ref"] == 30  # below every n: shown, verdict stays «рано»
+
+
+def test_demo_labels_early_consistent_and_no():
+    s3 = next(s for s in cp.DEMO if s.setup == "S3")
+    early = cp.demo_forward(s3, [_trade(i, "S3", 0.0) for i in range(29)], NOW)[0]
+    assert early["n"] == 29 and early["verdict"] == cp.EARLY
+    ok = cp.demo_forward(s3, [_trade(i, "S3", -0.1) for i in range(30)], NOW)[0]
+    assert ok["verdict"] == cp.OK and ok["band"]["n_ref"] == 30 and ok["metric"] == pytest.approx(-0.1)
+    no = cp.demo_forward(s3, [_trade(i, "S3", -0.8) for i in range(55)], NOW)[0]
+    assert (no["verdict"], no["side"], no["band"]["n_ref"]) == (cp.NO, "нижче", 50)
+    assert any("лише позначка" in x for x in no["notes"])  # S3 between 30 and 99: a flag, not a decision
+    edge = cp.demo_forward(s3, [_trade(i, "S3", -0.6) for i in range(30)], NOW)[0]  # inside rolling, below i.i.d.
+    assert edge["verdict"] == cp.OK and any("на межі" in x for x in edge["notes"])
+
+
+def test_demo_keeps_the_current_version_and_timeframe_only():
+    s12 = next(s for s in cp.DEMO if s.setup == "S12")
+    rows = [_trade(i, "S12", 0.1, version="v9") for i in range(3)] + [_trade(9, "S12", 5.0, version="v7")]
+    r = cp.demo_forward(s12, rows, NOW)[0]
+    assert r["n"] == 3 and any("інших версій" in x for x in r["notes"])
+    s17 = next(s for s in cp.DEMO if s.setup == "S17")
+    rows = [_trade(i, "S17", 0.2, tf="1d", rest_until=V9) for i in range(2)] + [_trade(5, "S17", 0.2, tf="4h", rest_until=V9)]
+    assert cp.demo_forward(s17, rows, NOW)[0]["n"] == 2
+    s3 = next(s for s in cp.DEMO if s.setup == "S3")  # S3: every version, the old break-even rule only described
+    old = [_trade(i, "S3", 0.0, opened=cp._ms(2026, 10, 21, 20)) for i in range(4)]
+    r = cp.demo_forward(s3, old + [_trade(i, "S3", 0.0) for i in range(5)], NOW)[0]
+    assert r["n"] == 9 and any("старим правилом беззбитку" in x and ": 4," in x for x in r["notes"])
+
+
+def test_s28_first_30_floor_and_fill_share():
+    s28 = next(s for s in cp.DEMO if s.setup == "S28")
+    first = [_trade(i, "S28", -0.5, rest_until=V9, opened=V9 + i * H) for i in range(30)]
+    later = [_trade(30 + i, "S28", 0.5, rest_until=V9, opened=V9 + (30 + i) * H) for i in range(4)]
+    rows = cp.demo_forward(s28, later + first, NOW)  # order of the input does not matter: by entry time
+    main, fill = rows
+    assert main["n"] == 34 and main["verdict"] == cp.OK  # whole sample: general rule, band n' 30
+    assert any("перших 30" in x and "-0.500" in x and "зняти S28" in x for x in main["notes"])
+    assert fill["key"] == "demo:S28:fill" and fill["n"] == 34 and fill["side"] == "вище"  # all filled: CI ≈ [0.90; 1] ∌ 61 %
+    missed = [
+        {"link_id": f"m{i}", "setup": "S28", "timeframe": "4h", "status": "missed", "signal_ts": V9, "rest_until": V9 + H}
+        for i in range(40)
+    ]
+    fill = cp.fill_forward(s28, missed[:20] + first[:10], NOW)
+    assert (fill["n"], fill["verdict"], fill["side"]) == (30, cp.NO, "нижче")  # 10 / 30, CI excludes 61 %
+    pending = [dict(m, rest_until=NOW + DAY) for m in missed]  # deadline not passed: not counted
+    assert cp.fill_forward(s28, pending, NOW)["n"] == 0
+
+
+def test_s28_first_30_filled_waits_while_one_is_still_open():
+    s28 = next(s for s in cp.DEMO if s.setup == "S28")
+    first = [_trade(i, "S28", -0.5, rest_until=V9, opened=V9 + i * H) for i in range(30)]
+    first[3] = dict(first[3], status="open", closed_ts=None, r_multiple=None)  # an early filled trade still open
+    later = [_trade(30 + i, "S28", 0.5, rest_until=V9, opened=V9 + (30 + i) * H) for i in range(4)]
+    main = cp.demo_forward(s28, first + later, NOW)[0]
+    assert main["n"] == 33  # whole sample: closed trades only
+    assert any("ще відкрито (або без R) 1" in x for x in main["notes"])
+    assert not any("за часом входу:" in x for x in main["notes"])  # the 31st trade does not stand in for the open one
+
+
+def test_fill_share_full_fill_is_above_the_passport():
+    s28 = next(s for s in cp.DEMO if s.setup == "S28")
+    first = [_trade(i, "S28", 0.0, rest_until=V9) for i in range(40)]
+    f = cp.fill_forward(s28, first, NOW)
+    assert (f["verdict"], f["side"]) == (cp.NO, "вище")
+
+
+# ------------------------------------------------------------------------------------------------------ carry
+
+
+def _pos(tid: str, *, opened: int = T, closed: int | None = None, funding: float = 0.002, runup: float = 0.1, reason="signal"):
+    state = {"entry_apr": 0.3, "spot_e": 1.0, "fees": 0.003, "funding": funding}
+    trade = None
+    if closed is not None:
+        trade = {"open_ts": opened, "close_ts": closed, "entry_apr": 0.3, "funding": funding, "pnl_usd": 5.0, "max_runup": runup}
+    return {
+        "trade_id": tid, "strategy": "A", "symbol": f"{tid}/USDT:USDT", "status": "closed" if closed else "open", "opened_ts": opened,
+        "closed_ts": closed, "slot_notional": 2000.0, "state": state, "trade": trade, "exit_reason": reason if closed else None,
+    }  # fmt: skip
+
+
+def _mark(tid: str, k: int, *, runup: float = 0.1, funding_usd: float = 1.0, opened: int = T):
+    p = {"pnl_usd": 1.0 * k, "spot": 1.0, "funding_usd": funding_usd, "max_runup": runup}
+    return {"cycle_ts": opened + k * 8 * H, "kind": "mark", "trade_id": tid, "payload": p}
+
+
+def _cycles(n: int, ok: bool = True):
+    return [{"cycle_ts": T + k * 8 * H, "status": "done", "payload": {"on_time": ok, "complete": True}} for k in range(n)]
+
+
+def test_carry_a_g_event_gives_no_and_other_criteria_wait():
+    pos = [_pos("X"), _pos("Y", closed=T + 10 * DAY)]
+    marks = [_mark("X", 1, runup=0.1), _mark("X", 2, runup=0.6)]  # < 0.25 -> >= 0.50 between two cycles
+    logs = {"mark": marks, "side": [], "close": [], "event": []}
+    r = cp.carry_forward("A", pos, logs, _cycles(40), BENCH["A"]["bench"], NOW)
+    crit = {c["id"]: c["status"] for c in r["criteria"]}
+    assert crit["г"] == cp.FAIL and crit["б"] == cp.UNVERIFIABLE and crit["д"] == cp.PASS and r["verdict"] == cp.NO
+    slow = [_mark("X", 1, runup=0.1), _mark("X", 2, runup=0.3), _mark("X", 3, runup=0.6)]  # crossing in two steps: no event
+    r = cp.carry_forward("A", pos, {**logs, "mark": slow}, _cycles(40), BENCH["A"]["bench"], NOW)
+    g = next(c for c in r["criteria"] if c["id"] == "г")
+    assert g["status"] == cp.UNVERIFIABLE and "подій" in g["text"] and r["verdict"] == cp.EARLY  # < 10 trades
+
+
+def test_carry_v_band_costs_and_b_exemption():
+    pos = [_pos(f"P{i}", closed=T + 10 * DAY) for i in range(10)]  # realized 0.002 / (10 / 365) = 7.3 %: inside [2.8; 28.1] %
+    sides = [
+        {"cycle_ts": T, "kind": "side", "trade_id": "P0", "payload": {"actual_cost": 0.002, "model_cost": 0.0015, "spread_bps": 3.0}}
+        for _ in range(20)
+    ]
+    logs = {"side": sides, "mark": [], "close": [], "event": []}
+    r = cp.carry_forward("A", pos, logs, _cycles(40), BENCH["A"]["bench"], NOW)
+    crit = {c["id"]: c["status"] for c in r["criteria"]}
+    assert crit["б"] == cp.PASS and crit["в"] == cp.PASS and crit["г"] == cp.PASS and r["verdict"] == cp.OK
+    deferred = [{"cycle_ts": T, "kind": "event", "trade_id": "P0", "payload": {"type": "funding_payment_missing"}}]
+    r = cp.carry_forward("A", pos, {**logs, "event": deferred}, _cycles(40), BENCH["A"]["bench"], NOW)
+    assert next(c for c in r["criteria"] if c["id"] == "в")["status"] == cp.UNVERIFIABLE  # 9 left
+    low = [_pos(f"P{i}", closed=T + 10 * DAY, funding=0.0) for i in range(10)]
+    r = cp.carry_forward("A", low, logs, _cycles(40), BENCH["A"]["bench"], NOW)
+    assert next(c for c in r["criteria"] if c["id"] == "в")["status"] == cp.FAIL and r["verdict"] == cp.NO
+    b = [dict(p, strategy="B", trade=dict(p["trade"], entry_spread=0.5)) for p in low]
+    r = cp.carry_forward("B", b, logs, _cycles(40), BENCH["B"]["bench"], NOW)
+    assert next(c for c in r["criteria"] if c["id"] == "в")["status"] == cp.FAIL and r["verdict"] != cp.NO  # exempt for B
+    late = cp.carry_forward("A", pos, logs, _cycles(40), BENCH["A"]["bench"], T + 5 * DAY)  # as of an earlier date
+    assert late["n"] == 10 and next(c for c in late["criteria"] if c["id"] == "в")["status"] == cp.UNVERIFIABLE
+
+
+def test_carry_d_counts_flagged_cycles_as_incomplete_and_says_why():
+    cyc = _cycles(40)
+    for c in cyc[:10]:  # on time, but the engine flagged a held funding gap
+        c["payload"] = {"on_time": True, "complete": False, "flags": [{"issue": "funding_gap_confirmed", "symbol": "M"}]}
+    for c in cyc[10:13]:  # our own fetch cut short: split from the other details
+        flag = {"issue": "funding_payment_missing", "detail": "funding_history_incomplete", "symbol": "M"}
+        c["payload"] = {"on_time": True, "complete": False, "flags": [flag]}
+    c = cyc[13]
+    c["payload"] = {"on_time": True, "complete": False, "flags": [{"issue": "funding_payment_missing", "detail": "gap", "symbol": "M"}]}
+    r = cp.carry_forward("A", [_pos("X")], {"mark": [], "side": [], "close": [], "event": []}, cyc, BENCH["A"]["bench"], NOW)
+    d = next(c for c in r["criteria"] if c["id"] == "д")
+    assert d["status"] == cp.FAIL and "з повними даними 26 (65 %" in d["text"] and "лише вчасно 40" in d["text"]
+    assert "funding_gap_confirmed 10" in d["text"]
+    assert "funding_payment_missing / funding_history_incomplete 3" in d["text"] and "funding_payment_missing / gap 1" in d["text"]
+    note = next(x for x in r["notes"] if "з повними даними" in x)
+    assert "exploratory" in note and "біржа не опублікувала" not in note and "рішення кванта" not in note
+
+
+def test_carry_v_ignores_the_deferred_share_and_d_warns_about_it():
+    # registration (4): (v) is ◯ only when < 10 trades are left; a deferred share above 20 % is a warning next to (d)
+    pos = [_pos(f"P{i}", closed=T + 10 * DAY) for i in range(13)]  # each 7.3 %: inside the bench band
+    deferred = [{"cycle_ts": T, "kind": "event", "trade_id": f"P{i}", "payload": {"type": "funding_payment_missing"}} for i in range(3)]
+    logs = {"side": [], "mark": [], "close": [], "event": deferred}
+    r = cp.carry_forward("A", pos, logs, _cycles(40), BENCH["A"]["bench"], NOW)
+    v = next(c for c in r["criteria"] if c["id"] == "в")
+    d = next(c for c in r["criteria"] if c["id"] == "д")
+    assert v["status"] == cp.PASS and "без відкладених) 10, у смузі бенчу 10" in v["text"]  # 3 of 13 deferred (23 %)
+    assert d["status"] == cp.PASS and "частка відкладених угод 23 % (3 з 13)" in d["text"] and "ознака проблеми надійності" in d["text"]
+    few = cp.carry_forward("A", pos[:12], logs, _cycles(40), BENCH["A"]["bench"], NOW)  # 9 left after the deferred: ◯
+    assert next(c for c in few["criteria"] if c["id"] == "в")["status"] == cp.UNVERIFIABLE
+
+
+def test_carry_g_counts_a_labelled_forced_close_proxy():
+    pos = [_pos("X", closed=T + 10 * DAY), _pos("Y"), _pos("Z", closed=T + 2 * DAY)]
+    cyc = _cycles(40)
+    cyc[5]["payload"] = {  # 40 h after entry: X is open
+        "on_time": True,
+        "complete": False,
+        "flags": [{"symbol": "X/USDT:USDT", "issue": "open_position_data_unavailable"}],
+    }
+    cyc[20]["payload"] = {  # Z closed by then: not counted for Z
+        "on_time": True,
+        "complete": False,
+        "flags": [{"symbol": "Z/USDT:USDT", "issue": "open_position_data_unavailable"}],
+    }
+    gap = [{"cycle_ts": T + 16 * H, "kind": "event", "trade_id": "Y", "payload": {"type": "funding_gap_confirmed", "symbol": "Y"}}]
+    logs = {"side": [], "mark": [], "close": [], "event": gap}
+    r = cp.carry_forward("A", pos, logs, cyc, BENCH["A"]["bench"], NOW)
+    g = next(c for c in r["criteria"] if c["id"] == "г")
+    assert "проксі примусового закриття: 2 угод" in g["text"] and "open_position_data_unavailable 1, funding_gap_confirmed 1" in g["text"]
+    b = [dict(p, strategy="B") for p in pos]
+    r = cp.carry_forward("B", b, logs, cyc, BENCH["B"]["bench"], NOW)
+    g = next(c for c in r["criteria"] if c["id"] == "г")
+    assert g["status"] == cp.UNVERIFIABLE and "не визначається" in g["text"] and "проксі примусового закриття: 2" in g["text"]
+
+
+def test_a_v2_independent_scan_agrees_with_the_shadow():
+    pays = [{"cycle_ts": T + k * 8 * H, "trade_id": "V", "payload": {"payment_ts": T + k * 8 * H}} for k in (1, 2, 3)]
+    marks = [_mark("V", k) for k in range(1, 12)]
+    r1, r2 = cp.a_v2_forward([_pos("V")], pays, marks, NOW, side_cost=0.002, decision_delay_ms=DECISION_DELAY_MS)
+    assert r1["counters"] == {"подій зникнення funding": 1, "пропусків": 0, "зайвих виходів": 0} and r1["verdict"] == cp.OK
+    assert r2["verdict"] == cp.EARLY and r2["counters"]["подій без остаточного Δ"] == 1  # A itself still open
+    assert cp.vanish_independent([T + 8 * H, T + 16 * H, T + 24 * H], T, NOW) == T + 40 * H
+    assert cp.vanish_independent([T + k * 8 * H for k in range(1, 100)], T, NOW) is None
+
+
+# ------------------------------------------------------------------------------------- embargo and condor
+
+PM_ALLOWED = {
+    "позицій", "тижнів входу (кластери)", "днів розв'язання", "з них уже минуло", "частки close / late / missing",
+    "частка missing на +24 год", "частка n/a на +24 год",
+}  # fmt: skip
+
+
+def test_polymarket_exposes_counters_only(monkeypatch):
+    secret = 0.987654321
+
+    def fake_v1(rows, outcomes, now_s, t0):
+        return {
+            "positions": {"n": 7, "entry_weeks": 2, "resolution_days": 5, "resolution_days_ended": 3, "edge_median": secret},
+            "sources": {"close_shares": {"close": 0.5, "late": 0.25, "missing": 0.25}, "h24_share_missing": 0.1},
+            "sd_per_position": {"h24": {"n": 7, "sd": secret}}, "results": {"mean": secret}, "mean_clv": secret,
+        }  # fmt: skip
+
+    def fake_v2(rows, outcomes, now_s, t0, *, v1_t0):
+        return {
+            "positions": {"n": 2, "entry_weeks": 1, "resolution_days": 1, "edge_median": secret},
+            "sources": {"h24_share_na": 0.5, "h24_share_missing": 0.0}, "power": {"sd_position": secret, "mde_now": secret},
+            "sd_per_position": {"h24": {"sd": secret}},
+        }  # fmt: skip
+
+    monkeypatch.setattr(cp, "weekly_descriptive", fake_v1)
+    monkeypatch.setattr(cp, "weekly_v2g", fake_v2)
+    rows = cp.polymarket_forward([{"ts": 1}], [], NOW)
+    assert [r["key"] for r in rows] == ["pm:v1", "pm:v2g"]
+    for r in rows:
+        assert r["embargo"] and r["verdict"] == cp.EARLY and r["metric"] is None and r["band"] is None
+        assert set(r["counters"]) <= PM_ALLOWED
+        assert "987" not in repr(r)
+    text = cp.render({"now_ms": NOW, "forwards": rows, "notes": []})
+    assert "987" not in text and "закрито" in text and "2027-02-23 18:20" in text and "2027-03-07 04:20" in text
+    # the verdict functions are not even imported by the report's module
+    assert not any(hasattr(cp, f) for f in ("final_metrics", "final_metrics_v2g", "final_metrics_v2g_own"))
+
+
+def test_condor_before_t0_reads_nothing_and_pnl_stays_closed():
+    a, b = cp.condor_forward(None, [{"role": "hold_lp", "mark": 123.0}], NOW)
+    assert a["verdict"] == b["verdict"] == cp.EARLY and b["embargo"] and a["metric"] is None
+    t0 = date(2026, 11, 6)
+    a, b = cp.condor_forward(t0, [], cp._ms(2026, 11, 30))
+    assert a["counters"] == {"п'ятниць з 8, що минули": 4, "валідних входів BTC": 0} and a["verdict"] == cp.EARLY
+    assert b["counters"] == {"п'ятниць з 52": 4} and b["metric"] is None and b["verdict"] == cp.EARLY
+    assert cp.condor_final_ms(t0) == cp._ms(2026, 12, 31, 10)  # last buy-back (Thu T0 + 7 w + 6 d, 10:00) is after 31.12 00:00
+    assert cp.condor_final_ms(date(2026, 10, 30)) == cp._ms(2026, 12, 31)  # an earlier T0: the 31.12 floor decides
+
+
+# ------------------------------------------------------------------------------------------------ the script
+
+
+def _db(tmp_path: Path) -> str:
+    db = str(tmp_path / "fixture.sqlite")
+
+    async def go() -> None:
+        st = Store(db)
+        await st.init()
+        await st.aclose()
+
+    asyncio.run(go())
+    con = sqlite3.connect(db)
+    demo_cols = "link_id, venue, symbol, side, setup, timeframe, signal_ts, entry, stop, target, qty, leverage, risk_usd, comment, status"
+    for i in range(31):
+        o = V9 + i * H
+        con.execute(
+            f"INSERT INTO demo_trade ({demo_cols}, opened_ts, closed_ts, r_multiple, version) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                f"s3-{i}",
+                "bybit-demo",
+                "X/USDT:USDT",
+                "long",
+                "S3",
+                "4h",
+                o - 8 * H,
+                1,
+                0.9,
+                1.2,
+                1,
+                5,
+                100,
+                "c",
+                "closed",
+                o,
+                o + H,
+                -0.05,
+                "v3",
+            ),
+        )
+    for p in (_pos("Y", closed=T + 10 * DAY),):
+        con.execute(
+            "INSERT INTO cp_position (trade_id, strategy, symbol, status, opened_ts, closed_ts, slot_notional, state, trade, exit_reason) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                p["trade_id"],
+                "A",
+                p["symbol"],
+                p["status"],
+                p["opened_ts"],
+                p["closed_ts"],
+                2000.0,
+                json.dumps(p["state"]),
+                json.dumps(p["trade"]),
+                "signal",
+            ),
+        )
+    for c in _cycles(35):
+        con.execute(
+            "INSERT INTO cp_cycle (strategy, cycle_ts, status, finished_ms, payload) VALUES ('A', ?, 'done', ?, ?)",
+            (c["cycle_ts"], c["cycle_ts"] + 60_000, json.dumps(c["payload"])),
+        )
+    con.commit()
+    con.close()
+    return db
+
+
+def test_script_reads_the_fixture_read_only_and_writes_out(tmp_path):
+    db = _db(tmp_path)
+    before = Path(db).read_bytes()
+    with pytest.raises(sqlite3.OperationalError):  # the loader's connection cannot write
+        script.connect_ro(db).execute("DELETE FROM demo_trade")
+    out = tmp_path / "rep" / "checkpoint.md"
+    assert script.main(["--db", db, "--date", "2026-11-02", "--out", str(out)]) == 0
+    text = out.read_text(encoding="utf-8")
+    assert Path(db).read_bytes() == before  # nothing written to the DB
+    assert "Демо S3 v3 (4h + 1d) | 31 | -0.050 |" in text and "узгоджується" in text
+    for name in ("Демо S40", "Папір carry A (cc-paper)", "Папір carry B (pp-paper)", "A v2", "Polymarket v1", "v2-g", "Кондор"):
+        assert name in text
+    assert "(д) пройдено" in text  # 35 cycles on time
+    assert "T0 ще не зафіксовано" in text  # 2026-11-02 is before the condor T0: its table is not read
+
+
+def test_script_does_not_touch_the_condor_table_before_t0(tmp_path, monkeypatch):
+    import condor_forward_costs as cfc
+
+    def boom(*a, **kw):
+        raise AssertionError("option_leg_snapshot read before T0")
+
+    monkeypatch.setattr(cfc, "detect_t0", boom)
+    monkeypatch.setattr(cfc, "load_rows", boom)
+    db = _db(tmp_path)
+    assert script.main(["--db", db, "--date", "2026-11-02"]) == 0
+    calls = []
+    monkeypatch.setattr(cfc, "detect_t0", lambda path, now: date(2026, 11, 6))
+    monkeypatch.setattr(cfc, "load_rows", lambda path, fridays, *, with_hold: calls.append((list(fridays), with_hold)) or [])
+    inp = script.load_inputs(db, cp._ms(2026, 11, 20, 12))  # after T0, before part (a) may be decided
+    assert inp["condor_t0"] == date(2026, 11, 6) and calls == [([date(2026, 11, 6), date(2026, 11, 13), date(2026, 11, 20)], False)]
+
+
+def test_script_survives_a_missing_db(tmp_path):
+    inp = script.load_inputs(str(tmp_path / "none.sqlite"), NOW)
+    assert any("не відкрито" in e for e in inp["errors"])
+    text = cp.render(cp.build(inp, NOW))
+    assert "Примітка: БД" in text and "Демо S3" in text
+
+
+def test_at_date_is_end_of_day_and_capped():
+    assert script.at_date("2026-11-01", NOW) == cp._ms(2026, 11, 2) - 1
+    assert script.at_date("2027-03-01", NOW) == NOW  # a future date cannot open an embargo
+    assert script.at_date(None, NOW) == NOW

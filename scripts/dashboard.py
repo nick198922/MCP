@@ -24,6 +24,11 @@ and size in the browser (localStorage), the opened folds (sessionStorage) and re
 docs/design/PANEL.md: a lead (the position, a high-impact event within 48 h, what to do), one line on the owner's open
 Bybit positions (the «Позиції» tab's live file), the form, chart, tiles and rules open, the rest folded.
 
+The «Позиції» tab (/positions) reads the live file of scripts/bybit_live.py (read-only) and refreshes its main part
+every 10 s. Layout by docs/design/PANEL.md: a lead (positions, total P&L, the nearest expiry / liquidation, a macro
+event within 48 h, what to do), tiles and the open positions as a trader's log always visible, each position's legs,
+breakevens, greeks, chart and scenarios folded (opened folds survive the refresh), the caveats once at the bottom.
+
 The «Радар» tab (/radar?asset=BTC|ETH) renders the snapshot's ``radar`` section (analytics.radar.radar_view): five
 «current situation» lines, price, ATM IV 7/30/90/180, IV Rank, IV vs RV, 25-delta skew, 30-day smile, a forward-vol
 chart with events and rule-based «what it means for trades» (hypotheses, not advice), each block with its own «week
@@ -751,9 +756,22 @@ HELP: dict[str, tuple[str, str, str, str]] = {
     ),
     "lp_sum": (
         "Позиції Bybit наживо",
-        "Твої відкриті позиції з Bybit (ключ лише для читання): збирач оновлює ціни кожні 10 с, позиції — кожні 30 с.",
+        "Твої відкриті позиції з Bybit (ключ лише для читання): ціни оновлюються кожні 10 с, позиції — кожні 30 с.",
         "Зелена крапка — дані свіжі; червона — збирач зупинився, числа застарілі.",
         "Сторінка лише показує: ордерів тут немає. Закривати й ставити стопи — на Bybit.",
+    ),
+    "lp_open": (
+        "Відкриті позиції",
+        "Одна позиція — один рядок: контракт зі стороною, вхід → марка, реалізоване, результат і найближча межа.",
+        "Реалізоване — realised P&L Bybit: комісії, у ф'ючерсів ще funding і закрита частина. Результат — разом із ним, "
+        "у % від сплаченої премії (опціони) чи вартості входу (ф'ючерси), USD дрібно під ним.",
+        "Межа — експірація опціону або ліквідація ф'ючерса; свої стопи перевір на Bybit.",
+    ),
+    "lp_detail": (
+        "Деталі позиції",
+        "Ноги, беззбиток за датами, греки, графік P&L і сценарії однієї позиції.",
+        "Розгорни, коли вирішуєш: тримати, закрити чи докупити.",
+        "Головне — беззбиток зараз і тета в рядку заголовка.",
     ),
     "lp_equity": (
         "Капітал",
@@ -763,7 +781,7 @@ HELP: dict[str, tuple[str, str, str, str]] = {
     ),
     "lp_pnl": (
         "P&L відкритих позицій",
-        "Сума за марками Bybit наживо плюс уже сплачені комісії за вхід (від'ємні).",
+        "Сума за марками Bybit наживо плюс реалізоване: комісії за вхід (від'ємні), у ф'ючерсів ще funding і закрита частина.",
         "Марка — розрахункова ціна біржі; закрити ринковим ордером вийде за bid (продаж) чи ask (купівля).",
         "Не рішення само по собі: дивись беззбиток і тету нижче — скільки ще часу й руху треба.",
     ),
@@ -793,7 +811,7 @@ HELP: dict[str, tuple[str, str, str, str]] = {
     ),
     "lp_greeks": (
         "Греки позиції",
-        "Дельта — як скільки монет на споті; гамма — як змінюється дельта на 1 % руху; вега — на 1 пункт IV; тета — за добу.",
+        "Як P&L позиції реагує на ціну (дельта, гамма), на IV (вега, на 1 пункт) і на час (тета, за добу).",
         "«Рух за добу» — денний рух ціни, за якого гамма окупає тету (для куплених опціонів), поруч із реальним середнім денним рухом за 7 і 30 днів.",
         "Якщо ринок рухається менше за цей поріг — куплені опціони втрачають, продані заробляють; і навпаки.",
     ),
@@ -1861,6 +1879,85 @@ ACT: dict[str, tuple[str, str, str, str]] = {
         "опціони дешевші за фактичний рух: сприяє покупцю.",
         "IV вища за RV30",
         "покупець переплачує за рух.",
+    ),
+    # «Позиції» tab (standing improvements, item 19)
+    "lp_sum": (
+        "Крапка зелена",
+        "числа свіжі: можна вирішувати.",
+        "Крапка червона",
+        "не вирішуй за цими числами: дивись на Bybit.",
+    ),
+    "lp_equity": (
+        "Ризик на угоду — 1 % депозиту ($100, правило 1)",
+        "розмір нової угоди рахуй від нього, а не від цього капіталу.",
+        "«Вільно» мало",
+        "нової маржі не додавай.",
+    ),
+    "lp_pnl": (
+        "Мінус",
+        "звір із планом: де ти виходиш?",
+        "Плюс",
+        "закриття — за bid/ask, а не за маркою.",
+    ),
+    "lp_theta": (
+        "Мінус (купив опціони)",
+        "щодня без руху втрачаєш стільки.",
+        "Плюс (продав)",
+        "заробляєш на часі, але бережись різкого руху.",
+    ),
+    "lp_dte": (
+        "Менше доби",
+        "вирішуй: закрити чи дати експірувати.",
+        "Кілька днів і більше",
+        "час є: дивись беззбиток.",
+    ),
+    "lp_open": (
+        "Межа далеко",
+        "тримай за планом.",
+        "Експірація < доби або ліквідація близько",
+        "вирішуй зараз, на Bybit.",
+    ),
+    "lp_detail": (
+        "Беззбиток близько до ціни",
+        "позиції треба малий рух.",
+        "Далеко",
+        "тримати, сподіваючись, дорого.",
+    ),
+    "lp_legs": (
+        "Bid/ask вузький",
+        "закриєш близько до марки.",
+        "Широкий",
+        "закриття коштує помітно більше: лімітний ордер.",
+    ),
+    "lp_be": (
+        "Ринок реально проходить стільки",
+        "тримати має сенс.",
+        "Не проходить за залишок часу",
+        "тримати дорого: закрити чи зменшити.",
+    ),
+    "lp_greeks": (
+        "Реальний рух більший за «рух за добу»",
+        "куплені опціони окупають тету.",
+        "Менший",
+        "куплені втрачають, продані заробляють.",
+    ),
+    "lp_chart": (
+        "Пунктир «зараз» вище нуля",
+        "закриття сьогодні — у плюс.",
+        "Нижче нуля",
+        "кружки — ціна, з якої вийдеш у нуль.",
+    ),
+    "lp_scen": (
+        "Біль у рядку, якого не витримаєш",
+        "зменш розмір.",
+        "Біль прийнятний",
+        "наперед виріши, на якому русі закриваєш.",
+    ),
+    "lp_linear": (
+        "Ліквідація далеко",
+        "стоп однаково має стояти на Bybit.",
+        "Близько",
+        "стоп перед нею або менший розмір.",
     ),
 }
 
@@ -4646,12 +4743,20 @@ LIVE_CAVEATS = (
     "Беззбиток враховує вже сплачену комісію за вхід (realised P&L позиції на Bybit) і таку саму оцінку комісії за "
     "вихід (не більше 7 % вартості опціону, на експірації — 12.5 %, як ліміт Bybit); спред bid/ask не враховано: закриття ринковим ордером коштує ще половину спреду.",
     "Ймовірностей тут немає навмисно: ризик-нейтральні ймовірності з IV — не прогноз.",
+    "Стоп-ордерів збирач не читає: «межа» — експірація опціону або ціна ліквідації ф'ючерса від Bybit; свої стопи перевір на Bybit.",
+    "Не інвестиційна порада: сторінка лише показує дані, ордерів тут немає; закривати й ставити стопи — на Bybit.",
 )
+LIVE_EVENT_S = 48 * 3600  # docs/design/PANEL.md rule 6: an event this close joins the lead
+LIVE_LIQ_NEAR = 0.15  # a linear position's liquidation this close to its mark (share) asks for action
+# The lead names an open loss larger than one trade's risk budget (rule 1: RULES_RISK_PCT of RULES_DEPOSIT, $100) as a
+# fact to check against the exit plan. Not a rule of its own: the owner's rules set no «large loss» threshold, and
+# rule 2's 3 % caps the open risk to the stops, not the unrealised loss.
 LIVE_CSS = """
 .lp-age{font-size:13px}.lp-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--ok);margin-right:6px;vertical-align:1px}
 .lp-dot.stale{background:var(--bad)}.lp-grp h3{margin:4px 0 8px;font-size:15px}
 table.lp td,table.lp th{white-space:nowrap}table.lp td.r,table.lp th.r{text-align:right}
 .lp-be b{font-size:15px}table.lp tr.lp-ev td{background:rgba(var(--warn-rgb),.12)}table.lp td.lp-flat,table.lp th.lp-flat{border-left:2px solid var(--line);padding-left:10px}.lp-sub{font-size:12px;color:var(--mut)}
+.fold .fb>section{border:0;border-top:1px solid var(--line);border-radius:0;background:none;padding:10px 0 0;margin-top:10px}
 """
 LIVE_JS = (
     """
@@ -4662,7 +4767,14 @@ LIVE_JS = (
     var q = new URLSearchParams(location.search); q.set('frag', '1');
     fetch(location.pathname + '?' + q.toString(), { credentials: 'same-origin', cache: 'no-store' })
       .then(function (r) { if (!r.ok) throw r.status; return r.text(); })
-      .then(function (t) { box.innerHTML = t; if (window.tdHelp) window.tdHelp(box); })
+      .then(function (t) {
+        // the folds the owner opened stay open across the refresh (by section id)
+        var open = {}, folds = function () { return box.querySelectorAll('section.fold[id] > details'); };
+        folds().forEach(function (d) { if (d.open) open[d.parentNode.id] = 1; });
+        box.innerHTML = t;
+        folds().forEach(function (d) { if (open[d.parentNode.id]) d.open = true; });
+        if (window.tdHelp) window.tdHelp(box);
+      })
       .catch(function () { var a = document.getElementById('lp-age'); if (a) a.classList.add('bad'); });
   }
   setInterval(tick, """
@@ -4733,7 +4845,8 @@ def live_groups(data: dict, now: float, join: bool = False) -> tuple[list[dict],
             linear.append(
                 {"symbol": _clean(sym, 30), "side": side, "size": size, "entry": entry, "mark": mark, "realised": realised,
                  "upnl": sign * size * (mark - entry) if mark is not None else _sn(p.get("unrealisedPnl")),
-                 "be": _sn(p.get("breakEvenPrice")), "liq": _sn(p.get("liqPrice")), "lev": _sn(p.get("leverage"))}
+                 "be": _sn(p.get("breakEvenPrice")), "liq": _sn(p.get("liqPrice")), "lev": _sn(p.get("leverage")),
+                 "open_ts": _ts(_sn(p.get("openTime"))) or _ts(_sn(p.get("createdTime")))}
             )  # fmt: skip
             continue
         c = option_contract(sym)
@@ -4993,7 +5106,7 @@ def block_live_greeks(g: dict) -> str:
     )
     return (
         f"<section>{_h2('Греки', 'lp_greeks')}<table class='greeks'>{body}</table>"
-        "<p class='note'>Black-76, кожна нога за своєю mark IV; для малих рухів. «Рух за добу» — √(2·|тета| / гамма), це рух, який закладає IV; реальний — середній денний рух за 7 і 30 повних днів (Bybit, перп). Реальний більший — купленим опціонам рух окупає тету, менший — ні.</p></section>"
+        "<p class='note'>Для малих рухів. «Рух за добу» — √(2·|тета| / гамма), це рух, який закладає IV; реальний — середній денний рух за 7 і 30 повних днів (Bybit, перп). Реальний більший — купленим опціонам рух окупає тету, менший — ні.</p></section>"
     )
 
 
@@ -5043,7 +5156,7 @@ def block_live_scen(g: dict) -> str:
     return (
         f"<section class='wide'>{_h2('Сценарії · P&L від входу, USD', 'lp_scen')}<div class='scroll'><table class='scen'>"
         f"<tr><th>{_e(g['base'])}</th>{head}</tr>{body}</table></div>"
-        "<p class='note'>P&amp;L від цін входу з комісіями за вхід і вихід; до експірації — Black-76 за поточними IV.</p></section>"
+        "<p class='note'>P&amp;L від цін входу з комісіями за вхід і вихід.</p></section>"
     )
 
 
@@ -5112,6 +5225,7 @@ def live_svg(g: dict) -> str:
 
 
 def block_live_linear(rows: list[dict]) -> str:
+    """The linear positions' details from Bybit (breakeven, liquidation, leverage): the body of their fold."""
     body = "".join(
         f"<tr><td>{_e(r['symbol'])}</td><td>{'лонг' if r['side'] == 'long' else 'шорт'}</td><td class='r num'>{_e(_nf(r['size'], 4))}</td>"
         f"<td class='r num'>{_e(_nf(r['entry'], 2))} → {_e(_nf(r['mark'], 2))}</td><td class='r num {_cls(round(r['upnl'] or 0, 2))}'>{_e(_usd(r['upnl'], True))}</td>"
@@ -5119,23 +5233,226 @@ def block_live_linear(rows: list[dict]) -> str:
         for r in rows
     )
     return (
-        f"<section class='wide'>{_h2('Ф’ючерси', 'lp_linear')}<div class='scroll'><table class='lp'>"
+        "<div class='scroll'><table class='lp'>"
         "<tr><th>Контракт</th><th>Сторона</th><th class='r'>Розмір</th><th class='r'>Вхід → марка</th><th class='r'>P&amp;L</th>"
         "<th class='r'>Беззбиток</th><th class='r'>Ліквідація</th><th class='r'>Плече</th></tr>" + body + "</table></div>"
-        "<p class='note'>Беззбиток і ліквідація — від Bybit (з комісіями й funding, які біржа вже врахувала).</p></section>"
+        "<p class='note'>Беззбиток і ліквідація — від Bybit (з комісіями й funding, які біржа вже врахувала).</p>"
     )
 
 
+LIVE_STATUS_DO = {
+    "no_key": "щоб бачити позиції, на сервері потрібен ключ Bybit лише для читання — напиши Claude.",
+    "key_not_read_only": "створи на Bybit ключ лише для читання й заміни ним цей: ключ із правом торгівлі збирач не використовує.",
+    "error": "зачекай хвилину; якщо не минає — позиції дивись на Bybit і напиши Claude, щоб перевірив збирач.",
+}
+
+
+def _liq_gap(r: dict) -> float | None:
+    """How far a linear position's liquidation price is from its mark, as a share of the mark; None without both."""
+    liq, mark = r.get("liq"), r.get("mark")
+    if not liq or not mark or liq <= 0 or mark <= 0:
+        return None
+    return abs(liq / mark - 1.0)
+
+
+def live_event_soon(events: list[dict] | None, now: float) -> tuple[str, float] | None:
+    """The nearest macro event of ``live_events`` within LIVE_EVENT_S after ``now``: (our label, hours ahead)."""
+    ahead = [e for e in events or [] if isinstance(e, dict) and _num(e.get("ts")) and 0 < e["ts"] - now <= LIVE_EVENT_S]
+    if not ahead:
+        return None
+    e = min(ahead, key=lambda x: x["ts"])
+    return str(e.get("label") or ""), (e["ts"] - now) / 3600.0
+
+
+def live_lead(
+    groups: list[dict],
+    linear: list[dict],
+    eq: float | None,
+    stale: bool,
+    age: float | None,
+    event: tuple[str, float] | None,
+    now: float,
+) -> str:
+    """The tab's first lines (docs/design/PANEL.md rule 1): «what now» — how many positions, the total P&L, the nearest
+    bound (an option's expiry, a future's liquidation: the collector does not read stop orders), plus a macro event
+    within 48 h (rule 6); «what to do» — the first that applies: stale data, nothing open, a liquidation within
+    LIVE_LIQ_NEAR of the mark, an expiry within a day, an open loss above one trade's risk budget (rule 1, from
+    RULES_DEPOSIT — a fact, no new rule), the event, an option past its expiry awaiting Bybit's settlement, else
+    nothing urgent."""
+    n = len(groups) + len(linear)
+    live = [g for g in groups if g["exp_ts"] > now]
+    gone = [g for g in groups if g["exp_ts"] <= now]  # past expiry, still in the file until Bybit settles it
+    g0 = min(live, key=lambda g: g["exp_ts"]) if live else None
+    near = min(((r, x) for r in linear if (x := _liq_gap(r)) is not None), key=lambda t: t[1], default=None)
+    pnl = sum(g["upnl"] + g["realised"] for g in groups) + sum((r["upnl"] or 0.0) + r["realised"] for r in linear)
+    budget = RULES_DEPOSIT * RULES_RISK_PCT / 100.0
+    if n == 0:
+        what = "Відкритих позицій на Bybit немає."
+    else:
+        kinds = [f"опціонних {len(groups)}"] * bool(groups) + [f"ф'ючерсних {len(linear)}"] * bool(linear)
+        share = f" ({_pc(pnl / eq * 100)} капіталу)" if eq else ""
+        bounds = []
+        if g0:
+            bounds.append(f"експірація {g0['base']} {_live_exp(g0['exp_ts'])} (через {_dte(g0['days'])})")
+        if near:
+            bounds.append(f"ліквідація {near[0]['symbol']} {_px(near[0]['liq'])} ({_nf(near[1] * 100, 1)} % від марки)")
+        what = f"Відкрито позицій: {n} ({', '.join(kinds)}), P&L {_usd(pnl, True)}{share}"
+        what += ("; найближча межа — " + ", ".join(bounds) if bounds else "") + "."
+        if gone:
+            names = ", ".join(f"{g['base']} {g['title']} ({_live_exp(g['exp_ts'])})" for g in gone)
+            what += f" Експірація минула, чекає розрахунку Bybit: {names}."
+    if stale:
+        chip, label = "risk", "дані застарілі"
+        what += f" Дані {fmt_age(age)}: збирач, схоже, зупинився." if age is not None else " Час даних невідомий."
+        do = "не вирішуй за цими числами: позиції дивись на Bybit; якщо триває — напиши Claude, щоб перевірив таймер tradedesk-bybit-live."
+    elif n == 0:
+        chip, label = "calm", "позицій немає"
+        do = "нічого; нову угоду спершу перевір на вкладці «Опціони» (правила 1 і 8)."
+    elif near and near[1] < LIVE_LIQ_NEAR:
+        chip, label = "risk", "ліквідація близько"
+        do = f"{near[0]['symbol']}: постав стоп на Bybit перед ліквідацією або зменш розмір."
+    elif g0 and g0["days"] < 1:
+        chip, label = "risk", "експірація < доби"
+        do = f"виріши до {_live_exp(g0['exp_ts'])}: закрити {g0['base']} {g0['title']} чи дати експірувати — тета й гамма зараз найбільші."
+    elif pnl < -budget:
+        chip, label = "risk", f"збиток понад {_usd(budget)}"
+        do = (
+            f"звір кожну позицію з планом виходу: відкритий збиток {_usd(-pnl)} — {_nf(-pnl / RULES_DEPOSIT * 100, 1)} % "
+            f"депозиту {_usd(RULES_DEPOSIT)}, більше за ризик на одну угоду за правилом 1 ({_usd(budget)})."
+        )
+    elif event:
+        chip, label = "ev", "подія"
+        do = "до релізу виріши, чи тримаєш позиції через подію: ціна стрибає, IV після релізу часто падає; стопи — на Bybit."
+    elif gone and not g0 and not linear:
+        chip, label = "ev", "експірація минула"
+        do = "рішення вже не потрібне: дочекайся розрахунку Bybit і звір результат там."
+    else:
+        chip, label = "calm", "нічого термінового"
+        do = (
+            f"тримай за планом; наступне рішення — до експірації {_live_exp(g0['exp_ts'])}."
+            if g0
+            else "тримай за планом; стоп має стояти на Bybit."
+        )
+    return opt_lead_html(chip, label, what, do, event)
+
+
+def _live_side_badge(sides: set[str]) -> str:
+    """Rule 8's side label: ЛОНГ / ШОРТ, or both for a mixed structure (a spread)."""
+    if len(sides) == 1 and next(iter(sides)) in SIDE_UA:
+        s = next(iter(sides))
+        return f"<span class='badge {s}'>{SIDE_UA[s]}</span>"
+    return "<span class='badge'>лонг + шорт</span>"
+
+
+def _live_held(opened: float | None, now: float) -> str:
+    return _e(_span(now - opened)) if opened is not None and now >= opened else "—"
+
+
+def block_live_open(groups: list[dict], linear: list[dict], now: float) -> str:
+    """The open positions as a trader's log (docs/design/PANEL.md rule 8): one row each, the contract with its side,
+    time held, entry → mark, fees, the result in % of the premium (options) or the entry notional (futures) with USD
+    under it, and the nearest bound. Always shown (rule 6)."""
+    if not groups and not linear:
+        return _empty("Відкритих позицій немає.")
+    out = [
+        "<div class='scroll'><table class='jt'><tr><th>Контракт</th><th class='num'>Тримаєш</th><th class='num'>Вхід → марка</th>"
+        "<th class='num'>Реалізовано</th><th class='num'>Результат</th><th>Межа</th></tr>"
+    ]
+    for g in groups:
+        sign = {"long": 1.0, "short": -1.0}
+        cost = sum(sign[leg["side"]] * leg["size"] * leg["entry_premium"] for leg in g["legs"])
+        value = sum(sign[leg["side"]] * leg["size"] * leg["mark"] for leg in g["legs"])
+        opened = [leg["open_ts"] for leg in g["legs"] if leg["open_ts"] is not None]
+        past = g["exp_ts"] <= now
+        soon = " class='bad'" if g["days"] < 1 and not past else ""
+        left = "минула, чекає розрахунку Bybit" if past else f"через {_dte(g['days'])}"
+        sizes, k = {leg["size"] for leg in g["legs"]}, len(g["legs"])
+        size = f"{_nf(next(iter(sizes)), 2)} {g['base']}" if len(sizes) == 1 else "різні розміри"
+        size += f" × {k} {'ноги' if k < 5 else 'ніг'}" if k > 1 else ""
+        out.append(
+            f"<tr><td><b>{_e(g['base'])}</b> {_e(g['title'])}{_live_side_badge({leg['side'] for leg in g['legs']})}"
+            f"<span class='sub'>{_e(size)}</span></td>"
+            f"<td class='num'>{_live_held(min(opened) if opened else None, now)}</td>"
+            f"<td class='num'>{_e(_usd(cost))} → {_e(_usd(value))}</td>"
+            f"<td class='num mut'>{_e(_usd(g['realised'], True))}</td>"
+            f"<td class='num'>{journal_result(g['upnl'] + g['realised'], abs(cost) or None)}</td>"
+            f"<td{soon}>експірація {_e(_live_exp(g['exp_ts']))}<span class='sub'>{_e(left)}</span></td></tr>"
+        )
+    for r in linear:
+        gap = _liq_gap(r)
+        if gap is None:
+            bound = "<td class='mut'>ліквідації немає</td>"
+        else:
+            cls = " class='bad'" if gap < LIVE_LIQ_NEAR else ""
+            bound = f"<td{cls}>ліквідація {_e(_px(r['liq']))}<span class='sub'>{_e(_nf(gap * 100, 1))} % від марки</span></td>"
+        net = None if r["upnl"] is None else r["upnl"] + r["realised"]
+        out.append(
+            f"<tr><td><b>{_e(r['symbol'])}</b>{_live_side_badge({r['side']})}<span class='sub'>{_e(_nf(r['size'], 4))}</span></td>"
+            f"<td class='num'>{_live_held(r.get('open_ts'), now)}</td>"
+            f"<td class='num'>{_e(_px(r['entry']))} → {_e(_px(r['mark']))}</td>"
+            f"<td class='num mut'>{_e(_usd(r['realised'], True))}</td>"
+            f"<td class='num'>{journal_result(net, r['size'] * r['entry'] or None)}</td>{bound}</tr>"
+        )
+    out.append("</table></div>")
+    return "".join(out)
+
+
+def live_detail_summary(g: dict) -> str:
+    """The one line of a position's fold (rule 4), plain text: the breakevens now, theta and delta."""
+    bes = live_breakevens(g, g["days"])
+    lo = [b for b in bes if b < g["F"]]
+    hi = [b for b in bes if b >= g["F"]]
+    be = " / ".join(_kd(b) for b in ([max(lo)] if lo else []) + ([min(hi)] if hi else [])) or "немає в межах −70…+150 %"
+    G = live_greeks(g)
+    return f"беззбиток зараз {be} · тета {_usd(G['theta'], True)}/добу · дельта {_sg(G['delta'], 3)} {g['base']}"
+
+
+def live_linear_summary(rows: list[dict]) -> str:
+    """The futures fold's one line, plain text: count, the nearest liquidation, the highest leverage."""
+    parts = [f"позицій {len(rows)}"]
+    gaps = [(r, x) for r in rows if (x := _liq_gap(r)) is not None]
+    if gaps:
+        r, x = min(gaps, key=lambda t: t[1])
+        parts.append(f"найближча ліквідація {r['symbol']} за {_nf(x * 100, 1)} % від марки")
+    levs = [r["lev"] for r in rows if r["lev"]]
+    if levs:
+        parts.append(f"плече до {_nf(max(levs), 1)}×")
+    return " · ".join(parts)
+
+
+def _live_fold_id(g: dict) -> str:
+    """A stable id of a position's fold (its legs), so an opened fold stays open across the 10-second refresh."""
+
+    def k(s: float) -> str:  # 152.5 -> "152_5", 84000.0 -> "84000": fractional strikes keep distinct ids
+        return f"{s:.8f}".rstrip("0").rstrip(".").replace(".", "_")
+
+    legs = "-".join(f"{k(leg['strike'])}{leg['kind'][0]}" for leg in sorted(g["legs"], key=lambda x: (x["strike"], x["kind"])))
+    return re.sub(r"[^A-Za-z0-9_-]", "", f"lp-{g['base']}-{int(g['exp_ts'])}-{legs}")
+
+
 def render_live_main(data: dict | None, err: str | None, now: float, join: bool = False, events: list[dict] | None = None) -> str:
-    """The live part of the tab (also served alone for the 10-second refresh). Never raises."""
+    """The live part of the tab (also served alone for the 10-second refresh), laid out by docs/design/PANEL.md: the
+    lead («what now / what to do»), the tiles and the open positions always visible; each position's details and the
+    futures' details folded with a one-line summary (the caveats are outside, at the bottom). Never raises."""
     try:
         if data is None:
-            why = (
-                "Живих даних ще нема: збирач (таймер tradedesk-bybit-live) пише їх щохвилини."
-                if err == "missing"
-                else f"Файл живих даних не прочитано ({_e(err)})."
-            )
-            return f"<section class='wide'>{_h2('Позиції', 'lp_sum')}{_empty(why)}</section>"
+            if err == "missing":
+                lead = opt_lead_html(
+                    "ev",
+                    "немає даних",
+                    "Живих даних ще нема: збирач (таймер tradedesk-bybit-live) пише їх щохвилини.",
+                    "якщо ключ Bybit на сервері вже є, а файл так і не з'явився, — напиши Claude, щоб перевірив таймер.",
+                    None,
+                )
+            else:
+                lead = opt_lead_html(
+                    "risk",
+                    "файл не прочитано",
+                    f"Файл живих даних не прочитано ({_clean(err, 40)}).",
+                    "позиції тим часом дивись на Bybit; напиши Claude, щоб перевірив файл збирача tradedesk-bybit-live.",
+                    None,
+                )
+            return f"<section class='wide'>{lead}{_h2('Позиції', 'lp_sum')}{_empty('Позицій не показано.')}</section>"
         asof = parse_utc(data.get("asof_utc"))
         age = now - asof.timestamp() if asof else None
         stale = age is None or age > LIVE_STALE_S
@@ -5147,7 +5464,14 @@ def render_live_main(data: dict | None, err: str | None, now: float, join: bool 
         )
         status = str(data.get("status") or "")
         if status != "ok":
-            return f"<section class='wide'>{_h2('Позиції', 'lp_sum')}{stamp}{_empty(LIVE_STATUS_UA.get(status, 'Невідомий стан збирача.'))}</section>"
+            lead = opt_lead_html(
+                "risk",
+                "позицій не видно",
+                LIVE_STATUS_UA.get(status, "Невідомий стан збирача."),
+                LIVE_STATUS_DO.get(status, "напиши Claude, щоб перевірив збирач tradedesk-bybit-live; позиції дивись на Bybit."),
+                None,
+            )
+            return f"<section class='wide'>{lead}{_h2('Позиції', 'lp_sum')}{stamp}</section>"
         groups, linear = live_groups(data, now, join)
         for g in groups:
             g["events"] = events or []
@@ -5156,47 +5480,69 @@ def render_live_main(data: dict | None, err: str | None, now: float, join: bool 
         real = sum(g["realised"] for g in groups) + sum(r["realised"] for r in linear)
         theta = sum(position_greeks(g["legs"], g["F"], g["days"] / 365.0, g["legs"][0]["iv"])["theta"] for g in groups)
         eq = _sn(w.get("totalEquity"))
+        net = upnl + real
+        theta_act = (
+            "без руху щодня мінус стільки" if theta < -0.5 else "заробляєш, поки ціна стоїть" if theta > 0.5 else "часу майже не платиш"
+        )
         tiles = [
-            _tile("Капітал", _e(_usd(eq)), _e(f"вільно {_usd(_sn(w.get('totalAvailableBalance')))}"), help="lp_equity"),
-            _tile("P&amp;L відкритих", f"<span class='{_cls(round(upnl + real))}'>{_e(_usd(upnl + real, True))}</span>",
-                  _e(f"марки {_usd(upnl, True)} · комісії {_usd(real, True)}" + (f" · {_pc((upnl + real) / eq * 100)} капіталу" if eq else "")), help="lp_pnl"),
-            _tile("Тета на добу", f"<span class='{_cls(theta)}'>{_e(_usd(theta, True))}</span>", "усі опціони, ціна й IV стоять", help="lp_theta"),
+            _tile("Капітал", _e(_usd(eq)), _e(f"вільно {_usd(_sn(w.get('totalAvailableBalance')))}"), help="lp_equity",
+                  act=f"ризик на угоду {_usd(RULES_DEPOSIT * RULES_RISK_PCT / 100.0)} (правило 1)"),
+            _tile("P&amp;L відкритих", f"<span class='{_cls(round(net))}'>{_e(_usd(net, True))}</span>",
+                  _e(f"марки {_usd(upnl, True)} · реалізовано {_usd(real, True)}" + (f" · {_pc(net / eq * 100)} капіталу" if eq else "")), help="lp_pnl",
+                  act="звір із планом виходу" if net < -0.5 else "закриття — за bid/ask, не за маркою"),
+            _tile("Тета на добу", f"<span class='{_cls(theta)}'>{_e(_usd(theta, True))}</span>", "усі опціони, ціна й IV стоять", help="lp_theta",
+                  act=theta_act),
         ]  # fmt: skip
-        if groups:
-            g0 = groups[0]
-            tiles.append(_tile("До експірації", _e(_dte(g0["days"])), _e(f"найближча {_live_exp(g0['exp_ts'])}"), help="lp_dte"))
+        live = [g for g in groups if g["exp_ts"] > now]
+        if live:
+            g0 = min(live, key=lambda g: g["exp_ts"])
+            dte_act = (
+                "вирішуй: закрити чи експірувати"
+                if g0["days"] < 1
+                else "тета найшвидша: не тримай без причини"
+                if g0["days"] < 3
+                else "час є: дивись беззбиток"
+            )
+            tiles.append(
+                _tile("До експірації", _e(_dte(g0["days"])), _e(f"найближча {_live_exp(g0['exp_ts'])}"), help="lp_dte", act=dte_act)
+            )
+        elif groups:  # every option is past its expiry and awaits Bybit's settlement
+            last = max(g["exp_ts"] for g in groups)
+            tiles.append(_tile("До експірації", "минула", _e(_live_exp(last)), help="lp_dte", act="чекає розрахунку Bybit"))
+        out = [
+            f"<section class='wide'>{live_lead(groups, linear, eq, stale, age, live_event_soon(events, now), now)}"
+            f"{_h2('Позиції', 'lp_sum')}{stamp}<div class='tiles'>{''.join(tiles)}</div></section>"
+        ]
+        # rule 6: the open positions always visible
         toggle = "<a href='/positions'>окремо кожна угода</a>" if join else "<a href='/positions?join=1'>зведено за експірацією</a>"
         mode = (
             "Ноги однієї експірації зведено в одну позицію"
             if join
             else "Кожна угода окремо; ноги, відкриті з різницею до 2 год (стренгл, спред), — одна позиція"
         )
-        out = [
-            f"<section class='wide'>{_h2('Позиції', 'lp_sum')}{stamp}<div class='tiles'>{''.join(tiles)}</div>"
-            f"<p class='note'>{_e(mode)} · показати {toggle}</p></section>"
-        ]
-        if not groups and not linear:
-            out.append(f"<section class='wide'>{_empty('Відкритих позицій немає.')}</section>")
-        for g in groups:
-            G = live_greeks(g)
-            net = g["upnl"] + g["realised"]
-            out.append(
-                f"<section class='wide lp-grp'><h3>{_e(g['base'])} {_e(g['title'])} · експірація {_e(_live_exp(g['exp_ts']))} · до неї {_e(_dte(g['days']))}"
-                f" · форвард {_e(_kd(g['F']))} · P&amp;L <span class='{_cls(round(net))}'>{_e(_usd(net, True))}</span>"
-                f" · тета {_e(_usd(G['theta'], True))}/добу</h3></section>"
-            )
-            for blk in (block_live_legs, block_live_be, block_live_greeks, live_svg, block_live_scen):
-                try:
-                    out.append(blk(g))
-                except Exception as e:  # noqa: BLE001 - one odd position must not take the page down
-                    out.append(f"<section class='wide'>{_empty(f'Блок не порахувався ({type(e).__name__}).')}</section>")
-        if linear:
-            out.append(block_live_linear(linear))
+        note = f"<p class='note'>{_e(mode)} · показати {toggle}</p>" if groups else ""
+        out.append(f"<section class='wide'>{_h2('Відкриті позиції', 'lp_open')}{block_live_open(groups, linear, now)}{note}</section>")
         errs = [_clean(x, 80) for x in _list(data.get("errors"))][:5]
         if errs:
             out.append(
                 f"<section class='wide'><p class='note warn'>Частина запитів до Bybit не вдалась: {_e('; '.join(errs))}</p></section>"
             )
+        # rule 4: each position's details folded, the headline numbers in the summary
+        for g in groups:
+            body = []
+            for blk in (block_live_legs, block_live_be, block_live_greeks, live_svg, block_live_scen):
+                try:
+                    body.append(blk(g))
+                except Exception as e:  # noqa: BLE001 - one odd position must not take the page down
+                    body.append(f"<section class='wide'>{_empty(f'Блок не порахувався ({type(e).__name__}).')}</section>")
+            try:
+                summary = _e(live_detail_summary(g))
+            except Exception as e:  # noqa: BLE001
+                summary = _e(f"підсумок не порахувався ({type(e).__name__})")
+            title = f"{g['base']} {g['title']} · експірація {_live_exp(g['exp_ts'])}"
+            out.append(_fold(title, "lp_detail", summary, "".join(body), sid=_live_fold_id(g)))
+        if linear:
+            out.append(_fold("Ф’ючерси — деталі", "lp_linear", _e(live_linear_summary(linear)), block_live_linear(linear), sid="lp-linear"))
         return "".join(out)
     except Exception as e:  # noqa: BLE001 - the page always renders
         return f"<section class='wide'>{_h2('Позиції', 'lp_sum')}{_empty(f'Дані не вдалося показати ({type(e).__name__}).')}</section>"
@@ -5205,7 +5551,7 @@ def render_live_main(data: dict | None, err: str | None, now: float, join: bool 
 def render_positions(data: dict | None, err: str | None, now: float, join: bool = False, events: list[dict] | None = None) -> str:
     head = (
         "<!doctype html><html lang='uk'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-        f"<title>tradedesk — позиції</title><style>{CSS}{BRIEF_CSS}{OPT_CSS}{LIVE_CSS}</style></head><body>"
+        f"<title>tradedesk — позиції</title><style>{CSS}{BRIEF_CSS}{OPT_CSS}{JOURNAL_CSS}{LIVE_CSS}</style></head><body>"
     )
     caveats = "<div class='caveat'><b>Застереження</b><ul>" + "".join(f"<li>{_e(c)}</li>" for c in LIVE_CAVEATS) + "</ul></div>"
     return (

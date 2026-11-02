@@ -336,6 +336,43 @@ class Store:
         await self.conn.commit()
         return len(payload)
 
+    async def insert_global_snapshot(self, day: str, ts: int, data: dict[str, Any]) -> int:
+        """CoinGecko ``/global`` ``data`` object for one UTC day; percentages are stored as decimal shares. Returns 1 when
+        a row was written, 0 when the object has no total market cap in USD."""
+
+        def num(v: Any) -> float | None:
+            return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+        def usd(key: str) -> float | None:
+            d = data.get(key)
+            return num(d.get("usd")) if isinstance(d, dict) else None
+
+        def pct(v: Any) -> float | None:
+            x = num(v)
+            return x / 100.0 if x is not None else None
+
+        mcap = usd("total_market_cap")
+        if mcap is None:
+            return 0
+        share = data.get("market_cap_percentage") if isinstance(data.get("market_cap_percentage"), dict) else {}
+        active = data.get("active_cryptocurrencies")
+        await self.conn.execute(
+            "INSERT OR REPLACE INTO global_snapshot (day, ts, total_market_cap, total_volume, btc_dominance, eth_dominance, "
+            "mcap_change_24h, active_cryptocurrencies) VALUES (?,?,?,?,?,?,?,?)",
+            (
+                day,
+                ts,
+                mcap,
+                usd("total_volume"),
+                pct(share.get("btc")),
+                pct(share.get("eth")),
+                pct(data.get("market_cap_change_percentage_24h_usd")),
+                int(active) if isinstance(active, int) and not isinstance(active, bool) else None,
+            ),
+        )
+        await self.conn.commit()
+        return 1
+
     PM_GAP_COLUMNS = (
         "market_id asset kind direction strike event_slug question end_ts window_start hours_to_end yes_bid yes_ask yes_bid_usd "
         "yes_ask_usd no_bid no_ask no_bid_usd no_ask_usd volume_usd fee_rate fee_exp rules rules_hash rules_standard path_high "

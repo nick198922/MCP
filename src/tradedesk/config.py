@@ -69,6 +69,8 @@ class Settings:
     collect_supply_enabled: bool = True
     collect_supply_seconds: int = 86_400
     collect_supply_pages: int = 4
+    # Extra CoinGecko ids added to the daily snapshot (perp coins outside the top pages); "" = deploy/coingecko_extra_ids.txt
+    collect_supply_extra_ids_path: str = ""
     # Strong traders' public accounts (Hyperliquid leaderboard + positions, Polymarket leaderboard + positions).
     collect_traders_enabled: bool = True
     collect_traders_seconds: int = 86_400  # leaderboards
@@ -204,6 +206,7 @@ class Settings:
             collect_supply_enabled=os.environ.get("TRADEDESK_COLLECT_SUPPLY_ENABLED", "1").lower() in ("1", "true", "yes"),
             collect_supply_seconds=int(_float("TRADEDESK_COLLECT_SUPPLY_SECONDS", 86_400)),
             collect_supply_pages=int(_float("TRADEDESK_COLLECT_SUPPLY_PAGES", 4)),
+            collect_supply_extra_ids_path=os.environ.get("TRADEDESK_COLLECT_SUPPLY_EXTRA_IDS_PATH", ""),
             collect_traders_enabled=os.environ.get("TRADEDESK_COLLECT_TRADERS_ENABLED", "1").lower() in ("1", "true", "yes"),
             collect_traders_seconds=int(_float("TRADEDESK_COLLECT_TRADERS_SECONDS", 86_400)),
             collect_traders_positions_seconds=int(_float("TRADEDESK_COLLECT_TRADERS_POSITIONS_SECONDS", 3_600)),

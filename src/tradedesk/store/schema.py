@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 36
+SCHEMA_VERSION = 37
 
 # Each migration is a list of SQL statements executed in a single transaction.
 # `PRAGMA user_version` is bumped by Store.init() inside the same explicit transaction,
@@ -934,6 +934,23 @@ MIGRATIONS: dict[int, list[str]] = {
             open_interest REAL, volume REAL,       -- base-coin units; volume over 24 h
             PRIMARY KEY (day, currency, role)
         ) WITHOUT ROWID
+        """,
+    ],
+    37: [
+        # Daily CoinGecko /global snapshot (collector/scheduler.py `_collect_supply`): total crypto market cap and BTC / ETH
+        # dominance as known that day. Their history is a paid endpoint; the DoubleTop pull (~/private/data/coingecko,
+        # `_global`) covers 2013-2026-11-02, this table continues it. One row per UTC day, a later snapshot replaces it.
+        """
+        CREATE TABLE IF NOT EXISTS global_snapshot (
+            day TEXT PRIMARY KEY,                  -- UTC date YYYY-MM-DD
+            ts INTEGER NOT NULL,                   -- unix seconds of the snapshot
+            total_market_cap REAL,                 -- USD
+            total_volume REAL,                     -- USD, 24 h
+            btc_dominance REAL,                    -- decimal share of total market cap (0.57 = 57 %)
+            eth_dominance REAL,                    -- decimal share
+            mcap_change_24h REAL,                  -- decimal (0.012 = +1.2 %)
+            active_cryptocurrencies INTEGER
+        )
         """,
     ],
 }

@@ -417,16 +417,19 @@ async def _collect_ohlcv_hist(rt: "Runtime") -> int:
 
 
 async def _collect_supply(rt: "Runtime") -> int:
-    """Daily point-in-time supply snapshot of the top coins by market cap into `supply_snapshot`.
+    """Daily point-in-time supply snapshot of the top coins by market cap into `supply_snapshot`, plus the extra ids
+    (perp coins outside the top pages, `_supply_extra_ids`) and the `/global` totals into `global_snapshot`.
 
     CoinGecko's history is corrected retroactively and its supply history is Enterprise-only, so research that needs
     supply as it was known on a day (unlocks, net issuance, buybacks) can only rely on snapshots taken at the time.
-    A failed later page keeps the pages already fetched; a failed first page fails the job.
+    A failed later page keeps the pages already fetched; a failed first page fails the job. The extra ids and the
+    global totals are best effort: a failure there is logged and the top pages are still written.
     """
     from ..core.errors import ProviderError  # noqa: PLC0415
 
     assert rt.store is not None
     now = rt.now()
+    day, ts = now.strftime("%Y-%m-%d"), int(now.timestamp())
     rows: list[dict[str, object]] = []
     for page in range(1, max(1, rt.settings.collect_supply_pages) + 1):
         try:
@@ -439,7 +442,40 @@ async def _collect_supply(rt: "Runtime") -> int:
         if not fetched.data:
             break
         rows.extend(fetched.data)
-    return await rt.store.insert_supply_snapshot(now.strftime("%Y-%m-%d"), int(now.timestamp()), rows)
+    seen = {r.get("id") for r in rows if isinstance(r, dict)}
+    extra = [i for i in _supply_extra_ids(rt.settings.collect_supply_extra_ids_path) if i not in seen]
+    for k in range(0, len(extra), 250):
+        try:
+            got = await rt.coingecko.coins_markets_ids("usd", extra[k : k + 250])
+        except ProviderError as e:
+            log.warning("supply snapshot: extra ids %d-%d failed: %s", k, k + 250, e)
+            continue
+        rows.extend(r for r in got.data if isinstance(r, dict) and r.get("id") not in seen)
+    written = await rt.store.insert_supply_snapshot(day, ts, rows)
+    try:
+        g = await rt.coingecko.global_market()
+        written += await rt.store.insert_global_snapshot(day, ts, g.data)
+    except ProviderError as e:
+        log.warning("supply snapshot: /global failed, totals not recorded today: %s", e)
+    return written
+
+
+def _supply_extra_ids(path: str) -> list[str]:
+    """CoinGecko ids from a text file (one per line, ``#`` comments); "" = the repo's deploy/coingecko_extra_ids.txt.
+    A missing or unreadable file gives no extra ids."""
+    from pathlib import Path  # noqa: PLC0415
+
+    p = Path(path) if path else Path(__file__).resolve().parents[3] / "deploy" / "coingecko_extra_ids.txt"
+    try:
+        text = p.read_text()
+    except OSError:
+        return []
+    out: list[str] = []
+    for line in text.splitlines():
+        i = line.split("#", 1)[0].strip()
+        if i and i not in out:
+            out.append(i)
+    return out
 
 
 def _num(v: object) -> float | None:

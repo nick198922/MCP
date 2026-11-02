@@ -56,7 +56,7 @@ The script re-runs lint and tests, creates the branch (or updates the CONTINUE b
 
 ## 4. Summary for the owner
 
-Write `docs/agents/runs/YYYY-MM-DD-<slug>.md` (the slug of your branch; on a CONTINUE run, update the run file of that work instead of adding another) in Ukrainian, at most 15 lines: which step and why, the result and verdicts, the critic's verdict, `owner` or `continue` and why, and any new questions. It becomes the pull request's description. Stage it with the rest. Print the same text as your final answer.
+Write `docs/agents/runs/YYYY-MM-DD-<slug>.md` (the slug of your branch; on a CONTINUE run, update the run file of that work instead of adding another) in Ukrainian, at most 15 short lines, structured, never a wall of text (owner, 2026-11-02): bold-labelled blocks with one fact per bullet (`•`): **Крок:** which step and why (one line); **Результат:** the result and verdicts with their key numbers; **Критик:** the critic's verdict; **Далі:** `owner` or `continue` and why, and any new questions. It becomes the pull request's description. Stage it with the rest. Print the same text as your final answer.
 
 ## Hard rules
 

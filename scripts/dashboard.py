@@ -20,7 +20,9 @@ any other listed expiry (section ``chains``: dailies, weeklies, monthlies, quart
 straddle, iron condor; P&L at expiry, breakevens, max profit/loss, risk-neutral probability of profit and the fit to the
 owner's risk budget and his rules 1 and 8 (analytics.rules_check); position greeks, a «through N days» line, a scenario table (incl. IV +5 points), a plain-language
 conclusion and an «is vol expensive» block (DVOL percentile, VRP backtest by level). Everything is computed here on a plain GET form; the inline script only remembers deposit, risk
-and size in the browser (localStorage) and resubmits on a change.
+and size in the browser (localStorage), the opened folds (sessionStorage) and resubmits on a change. Layout by
+docs/design/PANEL.md: a lead (the position, a high-impact event within 48 h, what to do), one line on the owner's open
+Bybit positions (the «Позиції» tab's live file), the form, chart, tiles and rules open, the rest folded.
 
 The «Радар» tab (/radar?asset=BTC|ETH) renders the snapshot's ``radar`` section (analytics.radar.radar_view): five
 «current situation» lines, price, ATM IV 7/30/90/180, IV Rank, IV vs RV, 25-delta skew, 30-day smile, a forward-vol
@@ -580,7 +582,7 @@ HELP: dict[str, tuple[str, str, str, str]] = {
     ),
     "iv": (
         "IV — закладена волатильність",
-        "Волатильність, яку «зашито» в ціну конкретного опціону. Чим вища IV, тим дорожчий опціон. ATM IV — на страйку біля поточної ціни.",
+        "Волатильність, закладена в ціну опціону (вища IV — дорожчий опціон); ATM IV — на страйку біля поточної ціни.",
         "Порівнюй з реалізованою (RV): IV вища за RV — опціони дорожчі за фактичний рух.",
         "Купуючи опціон, ти платиш за IV і заробляєш, якщо ціна рухатиметься сильніше, ніж закладено. Продаючи — навпаки.",
     ),
@@ -658,8 +660,7 @@ HELP: dict[str, tuple[str, str, str, str]] = {
     ),
     "builder": (
         "Конструктор",
-        "Збери опціонну позицію на будь-якій експірації BTC Deribit (денні, тижневі, місячні, квартальні — ті самі дати, що на Bybit): стратегія, страйки, "
-        "депозит, ризик і розмір.",
+        "Збери опціонну позицію BTC на будь-якій експірації Deribit (ті самі дати, що на Bybit): стратегія, страйки, розмір.",
         "Купівля стреддлу / стренглу — ставка на сильний рух у будь-який бік. Продаж — на спокій. Кондор — продаж із захистом.",
         "Нижче — графік P&L, «за і проти», греки, ризик і сценарії для цієї позиції. Поля «Теза» і «Ціль» з'являються, "
         "коли до експірації 1–3 доби (умовна зона правила 8, зазвичай на найближчій експірації): без них рядок 8а — "
@@ -697,7 +698,7 @@ HELP: dict[str, tuple[str, str, str, str]] = {
     ),
     "pop": (
         "Ймовірність прибутку",
-        "Шанс закінчити в плюсі на експірацію за цінами ринку (ризик-нейтрально, за ATM IV).",
+        "Шанс закінчити в плюсі на експірацію за цінами ринку (за ATM IV).",
         "У покупця опціонів зазвичай 20–40 %, зате виграш більший за ставку. У продавця 60–80 %, зате рідкі збитки великі.",
         "Сама по собі не каже, вигідна угода чи ні: за справедливими цінами очікуваний результат ≈ 0 мінус комісії.",
     ),
@@ -721,10 +722,8 @@ HELP: dict[str, tuple[str, str, str, str]] = {
     ),
     "rules_pre": (
         "Правила власника перед угодою",
-        "Твої правила 1 і 8 (затверджено 18.10, правило 8 уточнено 22.10) на цій структурі: макс. збиток ≤ 1 % депозиту, "
-        "премія ≤ 1 % депозиту; менше 24 год до експірації — не купувати ніколи; за 1–3 доби — лише коли виконано три "
-        "умови: записані теза й ціль, рух до беззбитку не більший за 1σ руху за реалізованою волою (RV30) до "
-        "експірації, IV не вище 1.2 × RV30; понад 3 доби — лише ліміт премії.",
+        "Твої правила 1 і 8 на цій структурі: збиток і премія ≤ 1 % депозиту, купівля — не пізніше ніж за добу до "
+        "експірації, за 1–3 доби — лише з трьома умовами (рядки 8а–8в).",
         "«Порушено» — угода суперечить правилу; «невідомо» — бракує даних (теза, RV30, IV); «не стосується» — "
         "наприклад, продаж: премію отримуєш, а не платиш. Ліміт — 1 % від депозиту у формі, а не поле «Ризик на угоду». "
         "Пороги 1σ і 1.2 — стартовий вибір, не доведена перевага.",
@@ -1764,6 +1763,103 @@ ACT: dict[str, tuple[str, str, str, str]] = {
         "колектор пропускав години: напиши Claude.",
         "Знімки йдуть щогодини",
         "нічого: результат побачимо лише на вердикті.",
+    ),
+    # the «Опціони» tab (standing improvements, item 18)
+    "builder": (
+        "Чекаєш сильного руху",
+        "купівля стреддлу чи стренглу.",
+        "Чекаєш спокою",
+        "продаж — лише кондором (із захистом).",
+    ),
+    "payoff": (
+        "Беззбиток у зоні ±1σ",
+        "рух звичний для ринку.",
+        "Беззбиток далеко за зоною",
+        "потрібен незвичний рух: менший розмір або не входь.",
+    ),
+    "position": (
+        "Плитки зелені",
+        "у межах ризику: можна розглядати.",
+        "Є червона",
+        "спершу виправ її: розмір або захист.",
+    ),
+    "premium": (
+        "Платиш до 1 % депозиту",
+        "в межах правила 8.",
+        "Платиш більше",
+        "зменш розмір або візьми спред.",
+    ),
+    "breakeven": (
+        "Близько до форварду",
+        "прибуток вимагає малого руху.",
+        "Далеко",
+        "шанс малий: менший розмір або інші страйки.",
+    ),
+    "maxprofit": (
+        "Невеликий",
+        "порівняй зі збитком: чи варто ризикувати.",
+        "«Необмежений»",
+        "сума — не причина входити: дивись шанс.",
+    ),
+    "maxloss": (
+        "У межах ризику",
+        "розмір можна лишити.",
+        "Більший або «необмежений»",
+        "зменш розмір або додай захисні опціони.",
+    ),
+    "pop": (
+        "Нижчий за твою оцінку шансу",
+        "ринок не бачить твого руху: опціон для тебе дешевий.",
+        "Вищий",
+        "переваги немає: не купуй під цей шанс.",
+    ),
+    "rules_pre": (
+        "Усе «виконано»",
+        "решту правил (стоп, денний стоп, R:R) — чеклістом.",
+        "Є «порушено»",
+        "переробити угоду або не входити.",
+    ),
+    "verdict": (
+        "Усе тебе влаштовує",
+        "переходь до правил і чекліста.",
+        "Щось не влаштовує",
+        "угоду не відкривай.",
+    ),
+    "proscons": (
+        "Переважають зелені",
+        "ціна й ризик зараз на твоєму боці.",
+        "Переважають червоні",
+        "угода дорога або ризикована: перероби або чекай.",
+    ),
+    "greeks": (
+        "Тета мінус (покупець)",
+        "час з'їдає: не тримай без причини.",
+        "Вега мінус (продавець)",
+        "ріст IV б'є: бережись подій.",
+    ),
+    "riskfit": (
+        "Вкладається",
+        "розмір можна лишити.",
+        "Більше за ризик",
+        "зменш розмір до показаного.",
+    ),
+    "volcost": (
+        "Вола дешева (низький перцентиль)",
+        "купувати дешевше; продаж дає мало премії.",
+        "Вола дорога",
+        "купівля переплачує; продаж — лише із захистом.",
+    ),
+    "optscen": (
+        "Біль у рядку, якого не витримаєш",
+        "менший розмір.",
+        "Біль прийнятний",
+        "наперед виріши, на якому русі закриваєш.",
+    ),
+    "iv": (
+        "IV нижча за RV30",
+        "опціони дешевші за фактичний рух: сприяє покупцю.",
+        "IV вища за RV30",
+        "покупець переплачує за рух.",
     ),
 }
 
@@ -3283,10 +3379,21 @@ OPT_SIZE = {"dep": (10000.0, 100.0, 1e8), "riskp": (1.0, 0.1, 100.0), "qty": (0.
 OPT_STRIKES = ("kput", "kcall", "kputw", "kcallw")
 OPT_THESIS_MAX = 200  # characters of the builder's thesis field (rule 8 (a))
 OPT_RANGE = 0.3  # chart: forward ±30 %
+# docs/design/PANEL.md rule 5: the page's caveats once, at the bottom (the blocks above do not repeat them)
 OPT_CAVEATS = (
-    "Ймовірність прибутку — ризик-нейтральна (лог-нормальна за ATM IV експірації): це ціна страхування в ринку, а не прогноз.",
-    "Премії — марки Deribit на час знімка, без спреду й комісій: реальна ціна входу гірша. P&L — лише на експірацію.",
-    "Премія волатильності (VRP) на марках опціонів ще перевіряється (картка vrp-real-marks): «дорога» чи «дешева» волатильність — не доведена перевага.",
+    "Ймовірність прибутку й шанси на сторінці — ризик-нейтральні (лог-нормальна модель за ATM IV на форварді експірації, "
+    "r = 0, T = дні/365, без нахилу усмішки): це ціна страхування в ринку, а не прогноз.",
+    "Премії — марки Deribit на час знімка (USD за 1 BTC контракту × розмір), без спреду й комісій: реальна ціна входу гірша. "
+    "Беззбиток і максимуми — точні на експірацію (внутрішня вартість мінус премія); греки, лінія «через N днів» і сценарії "
+    "до експірації — Black-76 на форварді, кожна нога за своєю IV з ланцюжка; вега — на 1 пункт волатильності, тета — за день, USD.",
+    "«Дорога» чи «дешева» волатильність — рівень ціни, а не сигнал: перцентиль DVOL і бектест VRP на індексі переваги не "
+    "доводять, перевірка на марках опціонів триває (картка vrp-real-marks). Метод рекомендацій асистента (вибір угоди за "
+    "режимом волатильності) перевірено 18.10 і відхилено (H1): −0.59 % спота за угоду, 95 % CI [−2.43; +1.51], n = 27, "
+    "переваги не показано, тож будь-яка рекомендація тут — лише гіпотеза.",
+    "Страйки — з ланцюжка знімка (Δ і IV Deribit); стреддл — на страйку, найближчому до форварду. Експірація за замовчуванням — "
+    "місячна (≥ 25 днів); найближча — та, до якої щонайменше 25 год (там трапляється зона правила 8 «1–3 доби»). Мінімальний "
+    "лот опціонів BTC: Deribit — 0.1 BTC; OKX і Bybit — 0.01 BTC (уточнимо перед першою угодою). Депозит, ризик і розмір "
+    "запам'ятовуються в цьому браузері.",
     "Не інвестиційна порада: сторінка лише рахує, нічого не торгує.",
 )
 OPT_CSS = """
@@ -3308,12 +3415,19 @@ OPT_JS = """
   var f = document.getElementById('opt-form'); if (!f) return;
   var KEY = 'td-size', keys = ['dep', 'riskp', 'qty'], m = {};
   try { m = JSON.parse(localStorage.getItem(KEY) || '{}') || {}; } catch (e) { m = {}; }
+  // the folded blocks the owner opened stay open across the form's resubmits (sessionStorage, by section id)
+  var OK = 'td-opt-open', folds = function () { return document.querySelectorAll('section.fold[id]'); };
+  try { var st = JSON.parse(sessionStorage.getItem(OK) || 'null') || {};
+    Array.prototype.forEach.call(folds(), function (s) { var d = s.querySelector('details'); if (d && st[s.id]) d.open = true; }); } catch (e) {}
+  var keep = function () { var o = {}; Array.prototype.forEach.call(folds(), function (s) { var d = s.querySelector('details'); o[s.id] = !!(d && d.open); });
+    try { sessionStorage.setItem(OK, JSON.stringify(o)); } catch (e) {} };
+  document.addEventListener('toggle', keep, true);
   var q = new URLSearchParams(location.search), changed = false;
   if (!keys.some(function (k) { return q.has(k); })) {
     keys.forEach(function (k) { var v = +m[k]; if (v > 0 && f.elements[k] && +f.elements[k].value !== v) { f.elements[k].value = v; changed = true; } });
   }
   if (changed) { f.submit(); return; }
-  var save = function () { var o = {}; keys.forEach(function (k) { o[k] = +f.elements[k].value; }); try { localStorage.setItem(KEY, JSON.stringify(o)); } catch (e) {} };
+  var save = function () { var o = {}; keep(); keys.forEach(function (k) { o[k] = +f.elements[k].value; }); try { localStorage.setItem(KEY, JSON.stringify(o)); } catch (e) {} };
   f.addEventListener('submit', save);
   f.addEventListener('change', function () { save(); f.submit(); });
   var h = f.elements['hzn'], hv = document.getElementById('hznv');
@@ -3838,7 +3952,10 @@ def position_pros_cons(
     return items
 
 
-def block_builder(ch: dict, snap: dict, p: dict, now: float | None = None) -> str:
+def block_builder(ch: dict, snap: dict, p: dict, now: float | None = None, live_line: str = "") -> str:
+    """The builder and its position, laid out by docs/design/PANEL.md: the lead («what now / what to do», a
+    high-impact event within 48 h, the owner's open Bybit positions in ``live_line``) first; the form, the chart, the
+    position tiles and the owner's rules always open; the rest folded with a one-line summary."""
     strat = p["strat"]
     strikes = default_strikes(ch, strat)
     if p["keep_strikes"]:
@@ -3899,15 +4016,13 @@ def block_builder(ch: dict, snap: dict, p: dict, now: float | None = None) -> st
             "<p class='note'>До експірації 1–3 доби: за правилом 8 купівля — лише з тезою й ціллю (поля вище), "
             "беззбитком у межах 1σ руху за RV30 і IV ≤ 1.2 × RV30 (рядки 8а–8в у блоці правил нижче).</p>"
         )
-    out.append(
-        "<p class='note'>Страйки — з ланцюжка знімка (Δ і IV Deribit); стреддл — на страйку, найближчому до форварду. "
-        "Експірація: місячна (≥ 25 днів) або найближча, до якої щонайменше 25 год (там трапляється зона правила 8 "
-        "«1–3 доби»). Депозит, ризик і розмір запам'ятовуються в цьому браузері. Мінімальний лот опціонів BTC: "
-        "Deribit — 0.1 BTC; OKX і Bybit — 0.01 BTC (уточнимо перед першою угодою).</p></section>"
-    )
+    out.append("</section>")  # how the strikes and expiries are chosen, the lots: in the caveats at the bottom
 
+    event = opt_event_soon(snap, now) if now is not None else None
     legs, err = option_legs(ch, strat, strikes, qty)
     if err:
+        lead = opt_lead_html("ev", "не зібрано", f"Позицію не зібрано: {err}", "обери інші страйки у формі.", event)
+        out.insert(0, f"<section class='wide'>{lead}{live_line}</section>")
         out.append(f"<section class='wide'>{_h2('Позиція', 'position')}{_empty(err)}</section>")
         return "".join(out)
     F, T, iv = ch["F"], ch["T"], ch["iv"]
@@ -3926,19 +4041,28 @@ def block_builder(ch: dict, snap: dict, p: dict, now: float | None = None) -> st
         f"<span><i style='background:var(--acc);opacity:.25;height:8px'></i>±1σ до експірації (ATM IV {_e(_nf(iv * 100, 1))})</span></div></section>"
     )
 
+    fit = risk_fit(ext["max_loss"], qty, dep, riskp)
     tiles = [
         _tile(
             "Отримуєш премію" if credit >= 0 else "Платиш премію",
             _e(_usd(abs(credit))),
             _e(f"за марками Deribit, {_nf(qty, 2)} BTC"),
             help="premium",
+            act="понад 1 % депозиту — менший розмір" if credit < 0 else "дивись макс. збиток, а не премію",
         ),
-        _tile("Беззбиток", _e(" / ".join(_kd(b) for b in shown_bes) or "—"), "на експірацію", help="breakeven"),
+        _tile(
+            "Беззбиток",
+            _e(" / ".join(_kd(b) for b in shown_bes) or "—"),
+            "на експірацію",
+            help="breakeven",
+            act="порівняй із зоною ±1σ на графіку",
+        ),
         _tile(
             "Макс. прибуток",
             _e("необмежений" if ext["max_profit"] is None else _usd(ext["max_profit"])),
             "на експірацію",
             help="maxprofit",
+            act="дивись шанс, а не лише суму",
         ),
     ]
     if ext["max_loss"] is None:
@@ -3952,32 +4076,58 @@ def block_builder(ch: dict, snap: dict, p: dict, now: float | None = None) -> st
                 help="maxloss",
                 tone="bad",
                 badge="без захисту",
+                act=opt_maxloss_act(fit),
             )
         )
     else:
-        fits = risk_fit(ext["max_loss"], qty, dep, riskp)["fits"]
         tiles.append(
             _tile(
                 "Макс. збиток",
                 _e(_usd(ext["max_loss"])),
                 "на експірацію",
                 help="maxloss",
-                tone="good" if fits else "bad",
-                badge="в межах ризику" if fits else "більше за твій ризик",
+                tone="good" if fit["fits"] else "bad",
+                badge="в межах ризику" if fit["fits"] else "більше за твій ризик",
+                act=opt_maxloss_act(fit),
             )
         )
-    tiles.append(_tile("Ймовірність прибутку", _e(f"{_nf(pop * 100)} %"), "ризик-нейтральна, за ATM IV", help="pop"))
-    out.append(f"<section>{_h2('Позиція', 'position')}<div class='tiles'>{''.join(tiles)}</div></section>")
-    G = position_greeks(legs, F, T, iv)
-    out.append(
-        f"<section>{_h2('За і проти цієї угоди', 'proscons')}"
-        + pros_cons_html(position_pros_cons(legs, F, T, iv, credit, shown_bes, G, ext, risk_fit(ext["max_loss"], qty, dep, riskp), snap))
-        + "</section>"
+    tiles.append(
+        _tile(
+            "Ймовірність прибутку", _e(f"{_nf(pop * 100)} %"), "за цінами ринку, ATM IV", help="pop", act="порівняй зі своєю оцінкою шансу"
+        )
     )
-    out.append(block_greeks(G))
+    out.append(f"<section>{_h2('Позиція', 'position')}<div class='tiles'>{''.join(tiles)}</div></section>")
+    # docs/design/PANEL.md rule 6: the owner's rules for this structure stay open (a broken one needs action)
+    cur = ((_data(snap, "vrp") or {}).get("current") or {}) if isinstance(snap, dict) else {}
+    cur = cur if isinstance(cur, dict) else {}
+    rv30, pct365 = _num(cur.get("rv_30d")), _num(cur.get("dvol_percentile_365d"))
+    out.append(block_rules_pre(legs, ch, dep, now, rv30, p.get("thesis"), p.get("target")))
+    G = position_greeks(legs, F, T, iv)
+    pros = position_pros_cons(legs, F, T, iv, credit, shown_bes, G, ext, fit, snap)
+    scen = scenario_rows(legs, ch, exp_s)
+    summ = opt_summaries(legs, F, credit, shown_bes, pop, pros, fit, G, scen, snap, ch, exp_s)
+    folds = (
+        ("Що це означає", "verdict", verdict_html(legs, F, credit, shown_bes, pop, G, ext, fit, exp_s, qty, pct365)),
+        ("За і проти цієї угоди", "proscons", pros_cons_html(pros)),
+        ("Чи вкладається в ризик", "riskfit", block_riskfit(fit, qty, dep, riskp)),
+        ("Греки позиції", "greeks", block_greeks(G)),
+        ("Сценарії · P&L позиції, USD", "optscen", block_opt_scenarios(scen, F)),
+        ("Чи дорога зараз волатильність", "volcost", block_vol_cost(snap, ch, exp_s)),
+    )
+    for title, key, body in folds:
+        out.append(_fold(title, key, _e(summ.get(key, "")), body, sid=f"o-{key}"))
+    exp = expiry_utc(ch.get("expiry"))
+    checks = rules_pre_trade(
+        legs, builder_now_ts(ch, now), exp.timestamp() if exp else None, dep, ch.get("F"), rv30, p.get("thesis"), p.get("target")
+    )
+    lead = opt_lead(p, opt_time_left(ch, now), exp_s, credit, ext, shown_bes, checks, event)
+    out.insert(0, f"<section class='wide'>{lead}{live_line}</section>")
+    return "".join(out)
 
-    fit = risk_fit(ext["max_loss"], qty, dep, riskp)
-    out.append(f"<section>{_h2('Чи вкладається в ризик', 'riskfit')}<div class='fit'>")
+
+def block_riskfit(fit: dict, qty: float, dep: float, riskp: float) -> str:
+    """«Чи вкладається в ризик»: the position's max loss against the form's risk per trade (body of a folded block)."""
+    out = ["<div class='fit'>"]
     out.append(f"<p>Ризик на угоду: <b class='num'>{_e(_usd(fit['budget']))}</b> ({_e(_nf(riskp, 1))} % від депозиту {_e(_usd(dep))}).</p>")
     if fit["unbounded"]:
         out.append(
@@ -4003,25 +4153,201 @@ def block_builder(ch: dict, snap: dict, p: dict, now: float | None = None) -> st
         else:
             per = fit["loss"] / qty * 0.01
             out.append(f"<p class='mut'>Навіть 0.01 BTC — це {_e(_usd(per))} збитку: більше за ризик.</p>")
-    out.append("</div></section>")
-    rv30 = _num(((_data(snap, "vrp") or {}).get("current") or {}).get("rv_30d")) if isinstance(snap, dict) else None
-    out.append(block_rules_pre(legs, ch, dep, now, rv30, p.get("thesis"), p.get("target")))
-    pct365 = _num(((_data(snap, "vrp") or {}).get("current") or {}).get("dvol_percentile_365d")) if isinstance(snap, dict) else None
-    out.append(
-        f"<section>{_h2('Що це означає', 'verdict')}"
-        + verdict_html(legs, F, credit, shown_bes, pop, G, ext, fit, exp_s, qty, pct365)
-        + "</section>"
-    )
-    out.append(block_vol_cost(snap, ch, exp_s))
-    out.append(block_opt_scenarios(scenario_rows(legs, ch, exp_s), F))
-    out.append(
-        "<section class='wide'><p class='note'>Ціни — марки Deribit, USD за 1 BTC контракту, помножені на розмір; P&amp;L на експірацію "
-        "= внутрішня вартість мінус премія. Беззбиток і максимуми — точні (ламана з вузлами на страйках). Ймовірність прибутку — "
-        "ризик-нейтральна, лог-нормальна з ATM IV на форварді експірації (r = 0, T = дні/365), без нахилу усмішки. "
-        "Греки, лінія «через N днів» і сценарії до експірації — Black-76 на форварді (r = 0), кожна нога за своєю IV з ланцюжка; "
-        "вега — на 1 пункт волатильності, тета — за день, USD. Комісії й спред не враховано.</p></section>"
-    )
+    out.append("</div>")
     return "".join(out)
+
+
+def opt_maxloss_act(fit: dict) -> str:
+    """The max-loss tile's action line (docs/design/PANEL.md rule 2)."""
+    if fit["unbounded"]:
+        return "додай захисні опціони або стоп"
+    if fit["fits"]:
+        return "розмір можна лишити"
+    q = fit["qmax"]
+    return f"зменш розмір до {_nf(q, 2)} BTC" if q is not None and q >= 0.01 else "навіть 0.01 BTC забагато: інша структура"
+
+
+OPT_EVENT_HOURS = 48.0  # docs/design/PANEL.md rule 6: a high-impact event this close is always shown
+OPT_EVENT_DO = "до релізу й кілька годин після — менший розмір або обмежений ризик."
+
+
+def opt_event_soon(snap: dict, now: float) -> tuple[str, float] | None:
+    """The nearest high-impact calendar event within OPT_EVENT_HOURS after ``now`` (title, hours ahead), else None.
+    Timed by ``now``, not by the snapshot's own 48 h flag, so an old snapshot neither hides nor repeats a past event."""
+    best: tuple[str, float] | None = None
+    for x in merge_same_day((_data(snap, "events") or {}).get("events")):
+        if not isinstance(x, dict) or x.get("impact") != "high":
+            continue
+        t = _iso(x.get("ts_utc"))
+        h = (t.timestamp() - now) / 3600.0 if t else None
+        if h is not None and 0.0 <= h <= OPT_EVENT_HOURS and (best is None or h < best[1]):
+            best = (_clean(x.get("title"), 80), h)
+    return best
+
+
+def opt_lead_html(chip: str, label: str, what: str, do: str, event: tuple[str, float] | None) -> str:
+    """The lead block; every text is plain and escaped here. A high-impact event within 48 h joins «what now»."""
+    if event:
+        what = f"{what} Подія з високим впливом: {event[0]} {_in_hours(event[1])}."
+    return (
+        f"<div class='lead'><span class='chip {chip}'>{_e(label)}</span>"
+        f"<p class='now'>{_e(what)}</p><p class='do'><b>Що робити:</b> {_e(do)}</p></div>"
+    )
+
+
+def opt_max_qty(checks: list[dict], qty: float) -> float | None:
+    """The largest size (0.01 BTC steps) at which every broken size limit of rules 1 and 8 (max loss, premium) fits;
+    both scale with the size. None when no such limit is broken or a number is missing."""
+    out: list[float] = []
+    for c in checks:
+        if c.get("key") in ("risk", "premium") and c.get("status") == "violated":
+            v, lim = _num(c.get("value")), _num(c.get("limit"))
+            if v is None or lim is None or v <= 0 or qty <= 0:
+                return None
+            out.append(math.floor(lim / (v / qty) * 100 + 1e-9) / 100)
+    return min(out) if out else None
+
+
+def opt_time_left(ch: dict, now: float | None) -> str:
+    """Time to the chain's expiry as of the page (the rules' clock), rounded as rule 8's row so the two never disagree."""
+    exp = expiry_utc(ch.get("expiry"))
+    if exp is None:
+        return f"до неї {_nf(ch['days'], 1)} дн"
+    h = (exp.timestamp() - builder_now_ts(ch, now)) / 3600.0
+    return "вже минула" if h <= 0 else f"до неї {_rule_time_left(h / 24.0, rules_buy_zone(h))}"
+
+
+def opt_lead(
+    p: dict,
+    left: str,
+    exp_s: str,
+    credit: float,
+    ext: dict,
+    bes: list[float],
+    checks: list[dict],
+    event: tuple[str, float] | None,
+) -> str:
+    """The page's first lines (docs/design/PANEL.md rule 1): «what now» — the built position in one sentence (``left``:
+    opt_time_left), plus a high-impact event within 48 h (rule 6); «what to do» — the first that applies: a broken rule
+    1 or 8 (what to change), the event, a rule that cannot be checked, else the rest of the checklist. ``checks``:
+    rules_pre_trade."""
+    qty = p["qty"]
+    pay = f"платиш {_usd(-credit)}" if credit < 0 else f"отримуєш {_usd(credit)}"
+    ml = ext["max_loss"]
+    loss = "необмежений" if ml is None else _usd(max(0.0, -ml))
+    be = " / ".join(_kd(b) for b in bes) or "немає"
+    what = f"{OPT_STRATEGIES.get(p['strat'], 'Позиція')} {_nf(qty, 2)} BTC на {exp_s} ({left}): {pay}, макс. збиток {loss}, беззбиток {be}."
+    bad = {c["key"]: c for c in checks if c.get("status") == "violated"}
+    if bad:
+        chip, label = "risk", "порушує правила"
+        size = sorted({c["rule"] for k, c in bad.items() if k in ("risk", "premium")})
+        if bad.get("days_to_expiry", {}).get("zone") == RULES_ZONE_BAN:
+            do = "не купуй: до експірації менше доби (правило 8) — обери дальшу експірацію."
+        elif "risk" in bad and bad["risk"].get("value") is None:
+            do = "збиток необмежений (правило 1): додай захисні опціони (залізний кондор) або стоп на біржі."
+        elif size:
+            name = f"правило {size[0]}" if len(size) == 1 else "правила " + " і ".join(str(r) for r in size)
+            q = opt_max_qty(checks, qty)
+            do = (
+                f"зменш розмір до {_nf(q, 2)} BTC — тоді вкладається в 1 % депозиту ({name})."
+                if q is not None and q >= 0.01
+                else f"навіть 0.01 BTC більше за 1 % депозиту ({name}): дешевша структура (спред, кондор) або інші страйки."
+            )
+        elif "thesis" in bad:
+            do = "до експірації 1–3 доби: впиши тезу й ціль у форму або обери експірацію, далі ніж за 3 доби (правило 8)."
+        else:
+            do = "до експірації 1–3 доби, умови правила 8 не виконано: дальша експірація або спред замість купленого опціону."
+    elif event:
+        chip, label, do = "risk", "подія", OPT_EVENT_DO
+    elif any(c.get("status") == "unknown" for c in checks):
+        chip, label = "ev", "бракує даних"
+        do = "перш ніж входити, з'ясуй рядки «невідомо» в правилах нижче."
+    else:
+        chip, label = "calm", "у межах правил 1 і 8"
+        do = "якщо береш — стоп, денний стоп і R:R перевір чеклістом, угоду запиши через journal_add."
+    return opt_lead_html(chip, label, what, do, event)
+
+
+def opt_live_line(live: tuple[dict | None, str | None] | None, now: float) -> str:
+    """docs/design/PANEL.md rule 6: the owner's open Bybit positions in one line with a link to «Позиції» (counts and
+    numbers only, no text from the file). '' without the live file (no Bybit key on this machine)."""
+    if live is None:
+        return ""
+    data, err = live
+    link = " Деталі — <a href='/positions'>вкладка «Позиції»</a>.</p>"
+    if data is None:
+        return "" if err == "missing" else f"<p class='note warn'>Позиції Bybit не прочитано ({_e(_clean(err, 40))}).{link}"
+    status = str(data.get("status") or "")
+    if status != "ok":
+        return f"<p class='note warn'>{_e(LIVE_STATUS_UA.get(status, 'Невідомий стан збирача позицій Bybit.'))}{link}"
+    groups, linear = live_groups(data, now)
+    if not groups and not linear:
+        text, cls = "Відкритих позицій на Bybit немає.", "note"
+    else:
+        parts = []
+        if groups:
+            pnl = sum(g["upnl"] + g["realised"] for g in groups)
+            g0 = min(groups, key=lambda g: g["exp_ts"])
+            parts.append(
+                f"опціонних {len(groups)} (P&L {_usd(pnl, True)}; найближча експірація {_live_exp(g0['exp_ts'])}, до неї {_dte(g0['days'])})"
+            )
+        if linear:
+            parts.append(f"ф'ючерсних {len(linear)}")
+        text, cls = "Відкрито на Bybit позицій: " + ", ".join(parts) + ".", "note warn"
+    asof = parse_utc(data.get("asof_utc"))
+    age = now - asof.timestamp() if asof else None
+    if age is None or age > LIVE_STALE_S:
+        text += f" Дані застарілі ({fmt_age(age)}): збирач, схоже, зупинився."
+    return f"<p class='{cls}'>{_e(text)}{link}"
+
+
+def opt_summaries(
+    legs: list[dict],
+    F: float,
+    credit: float,
+    bes: list[float],
+    pop: float,
+    pros: list[tuple[str, str]],
+    fit: dict,
+    G: dict[str, float],
+    scen: list[dict],
+    snap: dict,
+    ch: dict,
+    exp_s: str,
+) -> dict[str, str]:
+    """One plain-text line per folded block (docs/design/PANEL.md rule 4), escaped by the caller."""
+    out: dict[str, str] = {}
+    side = "купуєш" if credit < 0 else "продаєш"
+    if len(bes) == 2:
+        lo, hi = _kd(bes[0]), _kd(bes[1])
+        where = f"заробляєш між {lo} і {hi}" if payoff(legs, F) > 0 else f"заробляєш нижче {lo} або вище {hi}"
+    else:
+        where = f"шанс прибутку ≈ {_nf(pop * 100)} %"
+    out["verdict"] = f"{side} волатильність · {where} на {exp_s}"
+    n = {t: sum(1 for x, _ in pros if x == t) for t in ("good", "bad", "warn")}
+    out["proscons"] = f"за {n['good']} · проти {n['bad']} · обережно {n['warn']}"
+    if fit["unbounded"]:
+        out["riskfit"] = "збиток необмежений: правило ризику на угоду не виконується"
+    elif fit["fits"]:
+        out["riskfit"] = f"макс. збиток {_usd(fit['loss'])} — у межах ризику {_usd(fit['budget'])}"
+    else:
+        q = fit["qmax"]
+        more = f" · під ризик — до {_nf(q, 2)} BTC" if q is not None and q >= 0.01 else ""
+        out["riskfit"] = f"макс. збиток {_usd(fit['loss'])} — у {_nf(fit['ratio'], 1)} раза більше за ризик {_usd(fit['budget'])}{more}"
+    out["greeks"] = f"дельта {_sg(G['delta'], 3)} BTC · вега {_usd(G['vega'], True)} · тета {_usd(G['theta'], True)} за день"
+    vals = [x for r in scen for x in r["pnl"]]
+    if vals:
+        out["optscen"] = f"від {_usd(min(vals), True)} до {_usd(max(vals), True)} на русі BTC до ±{max(abs(m) for m in OPT_MOVES)} %"
+    cur = ((_data(snap, "vrp") or {}).get("current") or {}) if isinstance(snap, dict) else {}
+    cur = cur if isinstance(cur, dict) else {}
+    parts = [f"ATM IV {exp_s} {_nf(ch['iv'] * 100, 1)}"]
+    p365, spr = _num(cur.get("dvol_percentile_365d")), _num(cur.get("spread_vs_rv30"))
+    if p365 is not None:
+        parts.append(f"DVOL на {_nf(p365 * 100)}-му перцентилі за рік")
+    if spr is not None:
+        parts.append(f"DVOL − RV30 {_pc(spr * 100, 1).replace(' %', '')} вп")
+    out["volcost"] = " · ".join(parts)
+    return out
 
 
 def _sg(x: float, d: int) -> str:
@@ -4057,10 +4383,7 @@ def block_greeks(G: dict[str, float]) -> str:
         f"<tr><td>{_e(k)}</td><td class='r num {_cls(x)}' style='white-space:nowrap'>{_e(val)}</td><td class='mut'>{_e(s)}</td></tr>"
         for k, val, x, s in rows
     )
-    return (
-        f"<section>{_h2('Греки позиції', 'greeks')}<table class='greeks'>{body}</table>"
-        "<p class='note'>Black-76 на форварді, кожна нога за своєю IV; діють лише на малі рухи й поки решта не змінилась.</p></section>"
-    )
+    return f"<table class='greeks'>{body}</table><p class='note'>Діють лише на малі рухи й поки решта не змінилась.</p>"
 
 
 def _vol_level(p: float) -> str:
@@ -4102,11 +4425,9 @@ def verdict_html(
     if len(bes) == 2:
         lo, hi = b(_kd(bes[0])), b(_kd(bes[1]))
         where = f"між {lo} і {hi}" if inside else f"нижче {lo} або вище {hi}"
-        parts.append(
-            f"Заробляєш, якщо на експірацію {exp} BTC буде {where}; за цінами ринку (ризик-нейтрально) шанс ≈ {b(_nf(pop * 100) + ' %')}."
-        )
+        parts.append(f"Заробляєш, якщо на експірацію {exp} BTC буде {where}; за цінами ринку шанс ≈ {b(_nf(pop * 100) + ' %')}.")
     else:
-        parts.append(f"Ризик-нейтральний шанс прибутку на експірацію {exp} ≈ {b(_nf(pop * 100) + ' %')}.")
+        parts.append(f"Шанс прибутку на експірацію {exp} за цінами ринку ≈ {b(_nf(pop * 100) + ' %')}.")
     t, v = G["theta"], G["vega"]
     if t < 0:
         parts.append(f"Щодня час забирає ≈ {b(_usd(-t))}; +5 пунктів IV дали б ≈ {b(_usd(5 * v, True))}, −5 пунктів — стільки ж мінусом.")
@@ -4126,10 +4447,7 @@ def verdict_html(
         else:
             parts.append(f"Це більше за твій ризик на угоду ({_e(_usd(fit['budget']))}) навіть на 0.01 BTC.")
     if pct365 is not None:
-        parts.append(
-            f"DVOL зараз на {b(_nf(pct365 * 100) + '-му')} перцентилі за рік ({_e(_vol_level(pct365))}). Це рівень ціни, а не сигнал: "
-            "перевагу купівлі чи продажу волатильності не доведено (див. «Чи дорога зараз волатильність»)."
-        )
+        parts.append(f"DVOL зараз на {b(_nf(pct365 * 100) + '-му')} перцентилі за рік ({_e(_vol_level(pct365))}).")
     return f"<p class='fit'>{' '.join(parts)}</p>"
 
 
@@ -4140,7 +4458,8 @@ def block_vol_cost(snap: dict, ch: dict, exp_s: str) -> str:
     tiles = []
     rv30, spr = _num(cur.get("rv_30d")), _num(cur.get("spread_vs_rv30"))
     sub = f"реалізована 30 дн {_nf(rv30 * 100, 1)}" if rv30 is not None else "реалізованої в знімку немає"
-    tiles.append(_tile(f"ATM IV {_e(exp_s)}", _e(_nf(ch["iv"] * 100, 1)), _e(sub), help="iv"))
+    iv_act = "" if rv30 is None else "опціони дорожчі за фактичний рух" if ch["iv"] > rv30 else "опціони не дорожчі за фактичний рух"
+    tiles.append(_tile(f"ATM IV {_e(exp_s)}", _e(_nf(ch["iv"] * 100, 1)), _e(sub), help="iv", act=iv_act))
     p365, dvol = _num(cur.get("dvol_percentile_365d")), _num(cur.get("dvol"))
     if p365 is not None:
         tone = vol_lean(p365, None)[0][0]
@@ -4152,6 +4471,11 @@ def block_vol_cost(snap: dict, ch: dict, exp_s: str) -> str:
                 help="dvol",
                 tone=tone,
                 badge=lean_badge(tone),
+                act="купувати дешевше; продаж — мало премії"
+                if p365 < 0.3
+                else "купівля переплачує; продаж — із захистом"
+                if p365 >= 0.7
+                else "звичайна ціна волатильності",
             )
         )
     if spr is not None:
@@ -4164,9 +4488,10 @@ def block_vol_cost(snap: dict, ch: dict, exp_s: str) -> str:
                 help="vrp",
                 tone=tone,
                 badge=lean_badge(tone),
+                act="сприяє покупцю опціонів" if spr <= 0 else "покупець переплачує" if spr > 0.10 else "звична премія продавцю",
             )
         )
-    out = [f"<section>{_h2('Чи дорога зараз волатильність', 'volcost')}", f"<div class='tiles'>{''.join(tiles)}</div>"]
+    out = [f"<div class='tiles'>{''.join(tiles)}</div>"]
     if p365 is not None:
         out.append(f"<p class='fit'>Рівень DVOL — {_e(_vol_level(p365))}.</p>")
     cells = [x for x in _list(vrp.get("by_dvol_level")) if isinstance(x, dict) and _num(x.get("mean_straddle_pnl")) is not None]
@@ -4186,18 +4511,16 @@ def block_vol_cost(snap: dict, ch: dict, exp_s: str) -> str:
                 f"<td class='r num'>{_e(_nf(x.get('n_starts')))}</td></tr>"
             )
         out.append("</table></div>")
+    # what the table is; its limits and the rejected H1 are in the page's caveats at the bottom (PANEL.md rule 5)
     out.append(
-        "<p class='note'>Перцентиль показує, де DVOL зараз відносно останніх 365 днів: «дешево» не означає «вигідно купувати». "
-        "Таблиця — бектест VRP на індексі DVOL, не на марках опціонів (перевірка на марках триває, картка vrp-real-marks): продаж "
-        "30-денного стреддлу ATM із щоденним дельта-хеджем, % спота на угоду, перекривні старти (незалежних угод ≈ n/30, без CI, дослідницький результат: не читати як «продавай, коли вола дорога»). "
-        "Метод рекомендацій асистента (вибір угоди за режимом волатильності) перевірено 18.10 і відхилено (H1): −0.59 % спота за угоду, "
-        "95 % CI [−2.43; +1.51], n = 27, переваги не показано, тож будь-яка рекомендація тут — лише гіпотеза. "
-        "Ймовірності на сторінці — ризик-нейтральні: ціна страхування в ринку, а не прогноз.</p>"
+        "<p class='note'>Перцентиль — де DVOL зараз відносно останніх 365 днів. Таблиця — бектест VRP на індексі DVOL, не на "
+        "марках опціонів: продаж 30-денного стреддлу ATM із щоденним дельта-хеджем, % спота на угоду, перекривні старти "
+        "(незалежних угод ≈ n/30, без CI): дослідницький результат, не «продавай, коли вола дорога».</p>"
     )
     warns = [_clean(x, 1200) for x in _list(_section(snap, "vrp").get("warnings")) if isinstance(x, str)]
     if warns and vrp:
         out.append("<details><summary>Бектест VRP: результат і межі</summary>" + "".join(f"<p>{_e(x)}</p>" for x in warns) + "</details>")
-    out.append(_section_notes(snap, "vrp") + "</section>")
+    out.append(_section_notes(snap, "vrp"))
     return "".join(out)
 
 
@@ -4213,28 +4536,40 @@ def block_opt_scenarios(rows: list[dict], F: float) -> str:
         for r in rows
     )
     return (
-        f"<section class='wide'>{_h2('Сценарії · P&L позиції, USD', 'optscen')}"
         f"<div class='scroll'><table class='scen'><tr><th>BTC</th>{head}</tr>{body}</table></div>"
-        "<p class='note'>Рух — форварду експірації (≈ спота). До експірації — зміна вартості позиції від поточної за Black-76, "
-        "кожна нога за своєю IV; «IV +5 п.» — усі ноги на 5 пунктів одразу. На експірацію — точна виплата мінус премія за марками. "
-        "Комісії й спред не враховано.</p></section>"
+        "<p class='note'>Рух — форварду експірації (≈ спота). До експірації — зміна вартості позиції від поточної; "
+        "«IV +5 п.» — усі ноги на 5 пунктів одразу. На експірацію — точна виплата мінус премія за марками.</p>"
     )
 
 
-def render_options(snap: dict | None, err: str | None, now: float, params: dict | None = None, path: Path | None = None) -> str:
-    """The «Опціони» tab. Never raises: no snapshot or no chain gives an explained empty state."""
+def render_options(
+    snap: dict | None,
+    err: str | None,
+    now: float,
+    params: dict | None = None,
+    path: Path | None = None,
+    live: tuple[dict | None, str | None] | None = None,
+) -> str:
+    """The «Опціони» tab. Never raises: no snapshot or no chain gives an explained empty state. ``live``: load_live of
+    the owner's Bybit positions (one always-visible line); None leaves the line out. Layout: docs/design/PANEL.md."""
     p = params or parse_options_query("")
     head = (
         "<!doctype html><html lang='uk'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
         f"<title>tradedesk — опціони</title><style>{CSS}{BRIEF_CSS}{OPT_CSS}</style></head><body>"
     )
     caveats = "<div class='caveat'><b>Застереження</b><ul>" + "".join(f"<li>{_e(c)}</li>" for c in OPT_CAVEATS) + "</ul></div>"
-    tail = f"<script>{OPT_JS}</script></body></html>"
+    tail = f"{caveats}<script>{OPT_JS}</script></body></html>"
+    try:
+        live_line = opt_live_line(live, now)
+    except Exception as e:  # noqa: BLE001 - an odd live file must not take the page down
+        live_line = f"<p class='note warn'>Позиції Bybit не вдалося показати ({_e(type(e).__name__)}).</p>"
     try:
         if snap is None:
             msg = _snapshot_problem(err, path)
-            return head + f"<header><h1>Опціони</h1><span class='bad'>{msg}</span></header>{_nav('options')}{caveats}</body></html>"
-        out = [head, f"<header><h1>Опціони</h1>{_snapshot_stamp(snap, now)}</header>{_nav('options')}{caveats}<main class='brief'>"]
+            body = f"<main class='brief'><section class='wide'>{live_line}</section></main>" if live_line else ""
+            return head + f"<header><h1>Опціони</h1><span class='bad'>{msg}</span></header>{_nav('options')}{body}{caveats}</body></html>"
+        # docs/design/PANEL.md: the lead first, the caveats once at the bottom (in `tail`)
+        out = [head, f"<header><h1>Опціони</h1>{_snapshot_stamp(snap, now)}</header>{_nav('options')}<main class='brief'>"]
         want = p.get("exp", OPT_DEFAULT_EXP)
         # the chosen expiry's section first, then the month one (tried when the chosen chain is missing)
         secs = list(dict.fromkeys((_exp_section(want), _exp_section(OPT_DEFAULT_EXP))))
@@ -4242,18 +4577,25 @@ def render_options(snap: dict | None, err: str | None, now: float, params: dict 
         if ch is None and want != OPT_DEFAULT_EXP:  # e.g. a snapshot written before the nearer chain: the month one
             ch = option_chain(snap, OPT_DEFAULT_EXP)
         if ch is None:
+            event = opt_event_soon(snap, now)
+            soon = (
+                f"<p class='note warn'>{_e(f'Подія з високим впливом: {event[0]} {_in_hours(event[1])} — {OPT_EVENT_DO}')}</p>"
+                if event
+                else ""
+            )
             out.append(
                 f"<section class='wide'>{_h2('Конструктор', 'builder')}"
                 + _empty("Ланцюжка опціонів у знімку немає: конструктор порахувати нема з чого.")
                 + _section_notes(snap, *secs)
-                + "</section></main></body></html>"
+                + f"{soon}{live_line}</section></main>{caveats}</body></html>"
             )
             return "".join(out)
         try:
-            out.append(block_builder(ch, snap, p, now))
+            out.append(block_builder(ch, snap, p, now, live_line))
         except Exception as e:  # noqa: BLE001 - one odd chain must not take the page down
             out.append(
-                f"<section class='wide'>{_empty(f'Конструктор не вдалося показати: несподіваний формат даних ({type(e).__name__}).')}</section>"
+                f"<section class='wide'>{_empty(f'Конструктор не вдалося показати: несподіваний формат даних ({type(e).__name__}).')}"
+                f"{live_line}</section>"
             )
         notes = _section_notes(snap, *dict.fromkeys((_exp_section(ch["which"]), secs[0])))  # the shown and the chosen chain
         if notes:
@@ -4269,7 +4611,8 @@ def render_options(snap: dict | None, err: str | None, now: float, params: dict 
 
 def options_page(query: str = "", now: float | None = None) -> str:
     snap, err = load_snapshot(SNAPSHOT_PATH)
-    return with_help(render_options(snap, err, time.time() if now is None else now, parse_options_query(query), SNAPSHOT_PATH))
+    t = time.time() if now is None else now
+    return with_help(render_options(snap, err, t, parse_options_query(query), SNAPSHOT_PATH, load_live(LIVE_PATH)))
 
 
 # ---------------------------------------------------------------- «Позиції» tab: the owner's live Bybit positions

@@ -37,6 +37,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
+
 from tradedesk.analytics.carry import pearson
 from tradedesk.analytics.options import black76_greeks
 from tradedesk.analytics.put_skew import (
@@ -304,7 +306,7 @@ async def futures_check(cache: Path, plans: dict[int, dict[str, Any]], days: dic
                     [float(t["price"]), float(t["index_price"])] for t in f.data["trades"] if t.get("price") and t.get("index_price")
                 ]
             except ProviderError as e:
-                print(f"  {ymd(d)} {future_name(pl['expiry'])}: {e}", flush=True)
+                print(f"  {cmn.ymd_ms(d)} {future_name(pl['expiry'])}: {e}", flush=True)
                 got[str(d)] = []
             if i % 100 == 0:
                 print(f"  futures {i + 1}/{len(todo)}", flush=True)
@@ -425,10 +427,6 @@ def fmt(label: str, s: dict[str, Any], k: float = 100.0, unit: str = "") -> str:
     )
 
 
-def ymd(t: int) -> str:
-    return datetime.fromtimestamp(t / 1000, UTC).strftime("%Y-%m-%d")
-
-
 def per_vega(r: dict[str, Any]) -> float:
     """P&L in vol points: USD P&L divided by |entry vega| (USD per vol point)."""
     return r["pnl"] * r["spot"] / abs(r["vega"]) / 100.0 if r["vega"] else 0.0
@@ -479,8 +477,8 @@ def section(
     for lab, lo, hi in (("2021-2023", 0, SPLIT_MS), ("2024-2026", SPLIT_MS, 10**15)):
         L.append(fmt(f"{lab}, фаза 0", stats([t[key] for t in p0 if lo <= t["day"] < hi]), k))
         L.append(fmt(f"{lab}, усі дні", stats([t[key] for t in trades.values() if lo <= t["day"] < hi]), k))
-    for y in sorted({ymd(d)[:4] for d in trades}):
-        L.append(fmt(f"{y}, усі дні", stats([t[key] for d, t in trades.items() if ymd(d)[:4] == y]), k))
+    for y in sorted({cmn.ymd_ms(d)[:4] for d in trades}):
+        L.append(fmt(f"{y}, усі дні", stats([t[key] for d, t in trades.items() if cmn.ymd_ms(d)[:4] == y]), k))
     srt = sorted(vals0, reverse=True)
     no_top = stats(srt[3:]) if len(srt) > 4 else {"n": 0}
     L.append(fmt("фаза 0 без топ-3 угод", no_top, k))
@@ -494,8 +492,8 @@ def section(
         w = min(p0, key=lambda t: t[key])
         mult = w[key] / s0["mean"] if s0.get("mean") else float("nan")
         L.append(
-            f"Найгірша угода фази 0: {ymd(w['day'])} → {ymd(w['expiry'])}: {w[key] * k:+.2f} ({mult:+.1f}× середнього); "
-            f"найгірша серед усіх днів: {ymd(min(trades.values(), key=lambda t: t[key])['day'])} "
+            f"Найгірша угода фази 0: {cmn.ymd_ms(w['day'])} → {cmn.ymd_ms(w['expiry'])}: {w[key] * k:+.2f} ({mult:+.1f}× середнього); "
+            f"найгірша серед усіх днів: {cmn.ymd_ms(min(trades.values(), key=lambda t: t[key])['day'])} "
             f"{min(allv) * k:+.2f}."
         )
     L.append("\nСтрес-вікна (усі угоди, що тримались через дату; перекриваються):\n")
@@ -506,7 +504,7 @@ def section(
         ph = [t for t in p0 if t["day"] < hi and t["expiry"] > lo]
         L.append(
             f"| {lab} | {len(sel)} | {statistics.mean(t[key] for t in sel) * k:+.2f} | {min(t[key] for t in sel) * k:+.2f} | "
-            + (", ".join(f"{ymd(t['day'])}: {t[key] * k:+.2f}" for t in ph) or "—")
+            + (", ".join(f"{cmn.ymd_ms(t['day'])}: {t[key] * k:+.2f}" for t in ph) or "—")
             + " |"
             if sel
             else f"| {lab} | 0 | — | — | — |"
@@ -714,7 +712,7 @@ def main() -> None:
         share = len(ok) / len(all_days)
         by_y = []
         for y in range(2021, 2027):
-            ys = [d for d in all_days if ymd(d)[:4] == str(y)]
+            ys = [d for d in all_days if cmn.ymd_ms(d)[:4] == str(y)]
             by_y.append(f"{sum(1 for d in ys if d in set(ok)) / len(ys):.0%}" if ys else "—")
         L.append(f"| {tenor}, {dl:.2f} | {len(all_days)} | {len(ok)} | {share:.0%} | " + " | ".join(by_y) + " |")
         if (tenor, dl) == ("30d", 0.25):
@@ -779,7 +777,7 @@ def main() -> None:
         )
     dd = []
     for d, snap in days.items():
-        dp = delivery.get(ymd(d))
+        dp = delivery.get(cmn.ymd_ms(d))
         if dp:
             dd.append(abs(snap["spot"] / dp - 1))
     L.append(

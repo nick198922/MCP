@@ -28,6 +28,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
+
 from tradedesk.analytics.dated_basis import (
     DAY_MS,
     HOUR_MS,
@@ -65,10 +67,6 @@ REGIMES = {
         int(datetime(2025, 4, 1, tzinfo=UTC).timestamp() * 1000),
     ),
 }
-
-
-def ymd(t: int) -> str:
-    return datetime.fromtimestamp(t / 1000, UTC).strftime("%Y-%m-%d")
 
 
 def write_json(p: Path, obj: Any) -> None:
@@ -135,7 +133,7 @@ async def fetch_prints(rt: Any, cache: Path, inst: str, refs: list[int], sem: as
                     if t.get("price") and t.get("index_price")
                 ]
             except ProviderError as e:
-                print(f"  {inst} {ymd(ref)}: {e.reason} {e.detail}", flush=True)
+                print(f"  {inst} {cmn.ymd_ms(ref)}: {e.reason} {e.detail}", flush=True)
                 if e.reason == "data_unavailable":
                     got[str(ref)] = []
 
@@ -181,13 +179,13 @@ async def fetch_binance(rt: Any, cache: Path) -> None:
                 blob["fut"][key] = (await rt.exchanges.public_get("binance", "fapiPublicGetKlines", params)).data
             except ProviderError as ex:
                 blob["fut"][key] = []
-                print(f"  binance {sym} {ymd(t0)}: {ex.reason}", flush=True)
+                print(f"  binance {sym} {cmn.ymd_ms(t0)}: {ex.reason}", flush=True)
             ip = {"pair": "BTCUSDT", "interval": "1h", "startTime": t0 - 3 * HOUR_MS, "endTime": t0, "limit": 5}
             try:
                 blob["index"][str(t0)] = (await rt.exchanges.public_get("binance", "fapiPublicGetIndexPriceKlines", ip)).data
             except ProviderError as ex:
                 blob["index"][str(t0)] = []
-                print(f"  binance index {ymd(t0)}: {ex.reason}", flush=True)
+                print(f"  binance index {cmn.ymd_ms(t0)}: {ex.reason}", flush=True)
     write_json(p, blob)
     q = cache / "binance_funding_btcusdt.json"
     if not q.exists():
@@ -223,7 +221,7 @@ async def fetch_all(cache: Path, *, sample: bool) -> None:
             first = json.loads((cache / f"funding_{cur}_perp.json").read_text())[0][0]
             plan = plan_prints(cur, daily=(cur == "BTC"), first_funding_ms=int(first))
             total = sum(len(v) for v in plan.values())
-            print(f"{cur}: {len(plan)} instruments, {total} print windows (first funding {ymd(int(first))})", flush=True)
+            print(f"{cur}: {len(plan)} instruments, {total} print windows (first funding {cmn.ymd_ms(int(first))})", flush=True)
             done = 0
             for inst, refs in plan.items():
                 n = await fetch_prints(rt, cache, inst, refs, sem)
@@ -296,7 +294,7 @@ def build_records(dat: Data, horizon: int, *, log: bool = False, cost_mult: floa
             perp_ratio0=pr0["ratio"] if pr0 else None,
             perp_ratio_exit=pre["ratio"] if pre else None,
             index_exit=pre["index"] if pre else None,
-            delivery=dat.delivery.get(ymd(e)),
+            delivery=dat.delivery.get(cmn.ymd_ms(e)),
             log=log,
             cal_cost=0.00175 * cost_mult,
             cc_cost=0.00275 * cost_mult,
@@ -403,8 +401,8 @@ def report(cache: Path) -> str:
     first = dat.fs.first_ts() or 0
     L.append("# Датований базис проти реалізованого funding (Deribit BTC) — сирий вивід\n")
     L.append(
-        f"Funding BTC-PERPETUAL: {len(dat.raw_funding)} год, з {ymd(first)}; ETH-PERPETUAL: {len(eth.raw_funding)} год, "
-        f"з {ymd(eth.fs.first_ts() or 0)}. Delivery prices: BTC {len(dat.delivery)}, ETH {len(eth.delivery)}.\n"
+        f"Funding BTC-PERPETUAL: {len(dat.raw_funding)} год, з {cmn.ymd_ms(first)}; ETH-PERPETUAL: {len(eth.raw_funding)} год, "
+        f"з {cmn.ymd_ms(eth.fs.first_ts() or 0)}. Delivery prices: BTC {len(dat.delivery)}, ETH {len(eth.delivery)}.\n"
     )
     # --- sanity
     L.append("## Перевірки даних\n")
@@ -430,7 +428,7 @@ def report(cache: Path) -> str:
     L.append(
         f"- Пропуски в погодинному funding > 2 год: {len(gaps)}"
         + (
-            f"; найбільші: {', '.join(f'{ymd(a)}→{ymd(b)} ({(b - a) / HOUR_MS:.0f} год)' for a, b in sorted(gaps, key=lambda g: g[0] - g[1])[:5])}"
+            f"; найбільші: {', '.join(f'{cmn.ymd_ms(a)}→{cmn.ymd_ms(b)} ({(b - a) / HOUR_MS:.0f} год)' for a, b in sorted(gaps, key=lambda g: g[0] - g[1])[:5])}"
             if gaps
             else ""
         )
@@ -477,7 +475,7 @@ def report(cache: Path) -> str:
     L.append("|---|---|---|---|---|---|---|---|---|")
     for r in recs:
         L.append(
-            f"| {r['name']} | {ymd(r['t0'])} | {pp(r['basis'])} | {pp(r['basis_ann'])} | {pp(r['funding_ann'])} | {pp(r['d'])} | "
+            f"| {r['name']} | {cmn.ymd_ms(r['t0'])} | {pp(r['basis'])} | {pp(r['basis_ann'])} | {pp(r['funding_ann'])} | {pp(r['d'])} | "
             f"{pp(r['calendar_ann'])} | {pp(r['dated_cc_ann'])} | {pp(r['perp_cc_ann'])} |"
         )
     L.append("\n" + HDR)
@@ -568,8 +566,8 @@ def report(cache: Path) -> str:
     rr, ex = bin_by_h[PRIMARY]
     L.append(f"Binance 60д виключено: {len(ex)}" + (": " + "; ".join(ex) if ex else ""))
     # same-contract comparison Deribit vs Binance
-    db = {ymd(r["expiry"]): r for r in recs}
-    pairs = [(db[ymd(r["expiry"])], r) for r in rr if ymd(r["expiry"]) in db]
+    db = {cmn.ymd_ms(r["expiry"]): r for r in recs}
+    pairs = [(db[cmn.ymd_ms(r["expiry"])], r) for r in rr if cmn.ymd_ms(r["expiry"]) in db]
     if pairs:
         L.append(
             f"\nТі самі експірації, Deribit проти Binance (60д, n = {len(pairs)}): базис річн. {statistics.fmean(x['basis_ann'] for x, _ in pairs) * 100:+.2f} "
@@ -582,7 +580,7 @@ def report(cache: Path) -> str:
         )
         for x, y in pairs:
             L.append(
-                f"| {ymd(x['expiry'])} | {pp(x['basis_ann'])} | {pp(y['basis_ann'])} | {pp(x['funding_ann'])} | {pp(y['funding_ann'])} | {pp(x['d'])} | {pp(y['d'])} |"
+                f"| {cmn.ymd_ms(x['expiry'])} | {pp(x['basis_ann'])} | {pp(y['basis_ann'])} | {pp(x['funding_ann'])} | {pp(y['funding_ann'])} | {pp(x['d'])} | {pp(y['d'])} |"
             )
     # --- H3
     pts = h3_points(dat)

@@ -19,6 +19,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
+
 from tradedesk.analytics import demo_shadow
 from tradedesk.analytics.demo_vs_backtest import BE_SWITCH_MS
 from tradedesk.analytics.liquidation_flush import cluster_bootstrap_ci
@@ -32,12 +34,8 @@ PASSPORT_OOS_MEAN = -0.076
 MIN_GROUP = 10
 
 
-def _day(ms: int) -> str:
-    return datetime.fromtimestamp(ms / 1000, UTC).strftime("%Y-%m-%d")
-
-
 def stat(rows: list[dict[str, Any]], key: str) -> dict[str, Any]:
-    pairs = [(float(r[key]), _day(int(r["signal_ts"]))) for r in rows if r.get(key) is not None]
+    pairs = [(float(r[key]), cmn.ymd_ms(int(r["signal_ts"]))) for r in rows if r.get(key) is not None]
     if not pairs:
         return {"n": 0}
     v = [p[0] for p in pairs]
@@ -78,7 +76,7 @@ def main(argv: list[str] | None = None) -> int:
     p(
         f"закритих угод {len(rows)}; вердикти {dict(Counter(r['verdict'] for r in rows))}; r_demo відсутній у {sum(r.get('r_demo') is None for r in rows)}"
     )
-    p(f"сигнальні дні: {sorted(Counter(_day(int(r['signal_ts'])) for r in rows).items())}")
+    p(f"сигнальні дні: {sorted(Counter(cmn.ymd_ms(int(r['signal_ts'])) for r in rows).items())}")
     main_s = stat(rows, "r_demo")
     p("")
     p("## Основне (R на ризик угоди, не на капітал)")
@@ -128,7 +126,7 @@ def main(argv: list[str] | None = None) -> int:
     roe = [r for r in rows if r.get("be_rule") == "roe"]
     for r in roe:
         p(
-            f"  ROE {r['symbol']} {_day(int(r['signal_ts']))}: demo {r.get('r_demo')} fill_old {r.get('r_bt_fill')} fill_now {r.get('r_bt_fill_now')} plain {r.get('r_plain')} be_switch_inside {(r.get('extra') or {}).get('be_switch_inside')}"
+            f"  ROE {r['symbol']} {cmn.ymd_ms(int(r['signal_ts']))}: demo {r.get('r_demo')} fill_old {r.get('r_bt_fill')} fill_now {r.get('r_bt_fill_now')} plain {r.get('r_plain')} be_switch_inside {(r.get('extra') or {}).get('be_switch_inside')}"
         )
     now_rows = [
         dict(r, r_now=r["r_bt_fill_now"] if r.get("be_rule") == "roe" and r.get("r_bt_fill_now") is not None else r.get("r_demo"))
@@ -155,7 +153,7 @@ def main(argv: list[str] | None = None) -> int:
     for r in rows:
         if r["verdict"] != "match":
             p(
-                f"  {r['symbol']} {_day(int(r['signal_ts']))} {r['timeframe']} {r['side']}: {r['verdict']} {r.get('reasons')} demo {r.get('r_demo')} demo_bt {r.get('r_demo_bt')} bt [{r.get('r_bt')}; {r.get('r_bt_fast')}] fill [{r.get('r_bt_fill')}; {r.get('r_bt_fill_fast')}] edge {r.get('entry_edge_r')} exit {r.get('demo_exit')}/{r.get('bt_exit')}"
+                f"  {r['symbol']} {cmn.ymd_ms(int(r['signal_ts']))} {r['timeframe']} {r['side']}: {r['verdict']} {r.get('reasons')} demo {r.get('r_demo')} demo_bt {r.get('r_demo_bt')} bt [{r.get('r_bt')}; {r.get('r_bt_fast')}] fill [{r.get('r_bt_fill')}; {r.get('r_bt_fill_fast')}] edge {r.get('entry_edge_r')} exit {r.get('demo_exit')}/{r.get('bt_exit')}"
             )
     ne = doc.get("not_executed") or {}
     srows = [demo_shadow.ShadowRow(**x) for x in ne.get("rows", []) if x.get("setup") == a.setup]

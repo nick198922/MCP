@@ -36,6 +36,8 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
+
 from tradedesk.analytics.event_straddle import cost_frac, entry_quote, straddle_x, straddle_x_inverse
 from tradedesk.analytics.weekend_vol import (
     DAY_MS,
@@ -75,12 +77,8 @@ def ms(d: date | datetime) -> int:
     return int(d.timestamp() * 1000)
 
 
-def ymd(t: int) -> str:
-    return datetime.fromtimestamp(t / 1000, UTC).strftime("%Y-%m-%d")
-
-
 def year(t: int) -> str:
-    return ymd(t)[:4]
+    return cmn.ymd_ms(t)[:4]
 
 
 def tuesdays(first: date, last: date) -> list[int]:
@@ -223,7 +221,7 @@ def stage0(prices: dict[int, float], bars: list[list[float]], ev_weeks: set[int]
     first, last = int(bars[0][0]), int(bars[-1][0])
     exp_n = (last - first) // HOUR_MS + 1
     L.append(
-        f"- Свічки BTCUSDT 1h (Binance spot, архів): {len(bars)} шт., {ymd(first)} … {ymd(last)}; очікувано {exp_n}, пропущено {exp_n - len(bars)}."
+        f"- Свічки BTCUSDT 1h (Binance spot, архів): {len(bars)} шт., {cmn.ymd_ms(first)} … {cmn.ymd_ms(last)}; очікувано {exp_n}, пропущено {exp_n - len(bars)}."
     )
     opens = {int(b[0]) for b in bars}
     miss = Counter(year(t) for t in range(first, last + 1, HOUR_MS) if t not in opens)
@@ -323,7 +321,7 @@ def load_quotes(trades_dir: Path, cache: Path, weeks: list[int]) -> dict[int, di
         if blob.get("days") == days:
             return {int(k): v for k, v in blob["quotes"].items() if v}
     # entry at D 16:00 reads the cache file of D + 1 (window [D 09:00; D+1 09:00])
-    jobs = [(str(trades_dir / f"{ymd(d + DAY_MS)}.json.gz"), d) for d in days]
+    jobs = [(str(trades_dir / f"{cmn.ymd_ms(d + DAY_MS)}.json.gz"), d) for d in days]
     print(f"quotes: {len(jobs)} entry days", flush=True)
     t0 = time.perf_counter()
     out: dict[str, Any] = {}
@@ -622,8 +620,10 @@ def stage1(
 
     # ---- tail, MAE, drawdown
     L.append("\n## Хвіст (короткий стреддл вихідних, до витрат)\n")
-    L.append("Найгірші 5 вихідних: " + "; ".join(f"{ymd(w + 3 * DAY_MS)} {f2(xw[w])} %" for w in sorted(P, key=lambda w: xw[w])[:5]) + ".")
-    L.append("Найгірші 5 контролів: " + "; ".join(f"{ymd(w)} {f2(xc[w])} %" for w in sorted(P, key=lambda w: xc[w])[:5]) + ".")
+    L.append(
+        "Найгірші 5 вихідних: " + "; ".join(f"{cmn.ymd_ms(w + 3 * DAY_MS)} {f2(xw[w])} %" for w in sorted(P, key=lambda w: xw[w])[:5]) + "."
+    )
+    L.append("Найгірші 5 контролів: " + "; ".join(f"{cmn.ymd_ms(w)} {f2(xc[w])} %" for w in sorted(P, key=lambda w: xc[w])[:5]) + ".")
 
     def mae(d: int) -> float | None:
         q = quotes[d]

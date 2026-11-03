@@ -26,6 +26,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -61,19 +62,11 @@ def rss_mb() -> float:
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 
 
-def day(t_ms: int) -> str:
-    return datetime.fromtimestamp(t_ms / 1000, UTC).strftime("%Y-%m-%d")
-
-
 def wr(p: Path, obj: Any) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(".tmp")
     tmp.write_text(json.dumps(obj))
     tmp.replace(p)
-
-
-def rd(p: Path) -> Any:
-    return json.loads(p.read_text())
 
 
 # ---------------------------------------------------------------- fetch
@@ -99,7 +92,7 @@ async def fetch(cache: Path, now_ms: int) -> None:
         anchors = monday_anchors(START, now_ms - DAY_MS)
         miss = 0
         for i, t in enumerate(anchors):
-            d = day(t - DAY_MS)
+            d = cmn.ymd_ms(t - DAY_MS)
             for s in SYMS:
                 p = cache / "metrics" / s / f"{d}.json"
                 if p.exists():
@@ -137,7 +130,7 @@ def extract_usde(cache: Path) -> None:
     out = cache / "usde_daily.json"
     if out.exists():
         return
-    d = rd(cache / "raw" / "usde_146.json")
+    d = cmn.read_json(cache / "raw" / "usde_146.json")
     print(f"  usde keys: {sorted(d)[:20]}; name={str(d.get('name'))[:40]!r}", flush=True)
 
     def usd(x: dict[str, Any]) -> float | None:
@@ -163,8 +156,8 @@ def load_binance_funding(fc: Path, cache: Path, s: str) -> tuple[list[float], li
     rows: list[list[float]] = []
     for p in sorted((fc / "funding" / s).glob("*.json")):
         if p.stem >= "2023-12":
-            rows += rd(p)
-    for t, r in rd(cache / "binance_funding_oct" / f"{s}.json"):
+            rows += cmn.read_json(p)
+    for t, r in cmn.read_json(cache / "binance_funding_oct" / f"{s}.json"):
         if t >= OCT:
             rows.append([float(t), 8.0, r])
     rows.sort(key=lambda r: r[0])
@@ -182,25 +175,25 @@ def load_btc_daily(fc: Path, cache: Path) -> list[list[float]]:
     rows = []
     for p in sorted((fc / "k1d" / "BTCUSDT").glob("*.json")):
         if p.stem >= "2023-12":
-            rows += rd(p)
-    rows += [r for r in rd(cache / "btc_k1d_oct.json") if r[0] >= OCT]
+            rows += cmn.read_json(p)
+    rows += [r for r in cmn.read_json(cache / "btc_k1d_oct.json") if r[0] >= OCT]
     rows.sort(key=lambda r: r[0])
     return rows
 
 
 def build_panel(cache: Path, fc: Path, now_ms: int) -> dict[str, Any]:
-    u = rd(cache / "usde_daily.json")
+    u = cmn.read_json(cache / "usde_daily.json")
     ut = [float(t) * 1000 for t, _ in u["total"]]
     uv = [float(v) for _, v in u["total"]]
     fund = {s: load_binance_funding(fc, cache, s) for s in SYMS}
-    byb = {s: load_ccxt_funding(rd(cache / "bybit_funding" / f"{s}.json")["rows"]) for s in SYMS}
+    byb = {s: load_ccxt_funding(cmn.read_json(cache / "bybit_funding" / f"{s}.json")["rows"]) for s in SYMS}
     k = load_btc_daily(fc, cache)
     anchors = monday_anchors(START, now_ms - DAY_MS)
     oi: list[float | None] = []
     for t in anchors:
         tot, ok = 0.0, True
         for s in SYMS:
-            m = rd(cache / "metrics" / s / f"{day(t - DAY_MS)}.json")  # last 5-min snapshot of the Sunday before T
+            m = cmn.read_json(cache / "metrics" / s / f"{cmn.ymd_ms(t - DAY_MS)}.json")  # last 5-min snapshot of the Sunday before T
             if isinstance(m, dict) or not m:
                 ok = False
             else:
@@ -238,17 +231,17 @@ def stage0(cache: Path, fc: Path, now_ms: int) -> dict[str, Any]:
     common = sorted(set(tot) & set(chs))
     rel = [abs(chs[d] - tot[d]) / tot[d] for d in common if tot[d] > 1e6]
     days = sorted(tot)
-    gaps = [(day(days[i - 1] * 1000), day(days[i] * 1000)) for i in range(1, len(days)) if days[i] - days[i - 1] > 86400]
+    gaps = [(cmn.ymd_ms(days[i - 1] * 1000), cmn.ymd_ms(days[i] * 1000)) for i in range(1, len(days)) if days[i] - days[i - 1] > 86400]
     mx = max(tot.items(), key=lambda kv: kv[1])
     out["usde"] = {
-        "first": day(days[0] * 1000),
-        "last": day(days[-1] * 1000),
+        "first": cmn.ymd_ms(days[0] * 1000),
+        "last": cmn.ymd_ms(days[-1] * 1000),
         "n_days": len(days),
         "gaps": gaps[:10],
         "n_gaps": len(gaps),
         "chain_vs_total_max_rel": max(rel) if rel else None,
         "chain_vs_total_days_gt_1pct": sum(1 for v in rel if v > 0.01),
-        "peak": [day(mx[0] * 1000), mx[1]],
+        "peak": [cmn.ymd_ms(mx[0] * 1000), mx[1]],
         "last_value": tot[days[-1]],
     }
     print(f"USDe: {out['usde']}", flush=True)
@@ -256,17 +249,17 @@ def stage0(cache: Path, fc: Path, now_ms: int) -> dict[str, Any]:
         t, _, hrs = p["fund"][s]
         tb, _, hb = p["byb"][s]
         print(
-            f"funding {s}: binance n={len(t)} {day(int(t[0]))}..{day(int(t[-1]))} intervals={sorted(set(hrs))}; "
-            f"bybit n={len(tb)} {day(int(tb[0]))}..{day(int(tb[-1]))} complete={rd(cache / 'bybit_funding' / f'{s}.json')['complete']} "
+            f"funding {s}: binance n={len(t)} {cmn.ymd_ms(int(t[0]))}..{cmn.ymd_ms(int(t[-1]))} intervals={sorted(set(hrs))}; "
+            f"bybit n={len(tb)} {cmn.ymd_ms(int(tb[0]))}..{cmn.ymd_ms(int(tb[-1]))} complete={cmn.read_json(cache / 'bybit_funding' / f'{s}.json')['complete']} "
             f"min_gap_h={min(hb[1:]):.1f}",
             flush=True,
         )
     # OI units: value / coins vs BTC close of that day (from the metrics row itself)
     chk = []
     for x in w[::13]:
-        m = rd(cache / "metrics" / "BTCUSDT" / f"{day(x['t'] - DAY_MS)}.json")
+        m = cmn.read_json(cache / "metrics" / "BTCUSDT" / f"{cmn.ymd_ms(x['t'] - DAY_MS)}.json")
         if isinstance(m, list) and m:
-            chk.append((day(x["t"] - DAY_MS), round(m[-1][2] / m[-1][1]), round(m[-1][2] / 1e9, 2)))
+            chk.append((cmn.ymd_ms(x["t"] - DAY_MS), round(m[-1][2] / m[-1][1]), round(m[-1][2] / 1e9, 2)))
     print(f"BTC OI price implied (value/coins) and OI $bn, every 13th Sunday: {chk}", flush=True)
     n_oi_missing = sum(1 for x in w if x["oi"] is None)
     print(f"weeks {len(w)}; OI missing {n_oi_missing}; usde None {sum(1 for x in w if x['usde'] is None)}", flush=True)
@@ -281,8 +274,8 @@ def stage0(cache: Path, fc: Path, now_ms: int) -> dict[str, Any]:
     lvl_f = [x["f"] for x in w if x["f"] is not None and x["usde"]]
     out["h1"] = {
         "n": n,
-        "first": day(int(r["t"][0])),
-        "last": day(int(r["t"][-1])),
+        "first": cmn.ymd_ms(int(r["t"][0])),
+        "last": cmn.ymd_ms(int(r["t"][-1])),
         "adf": {"x": adf_tstat(r["x"]), "y": adf_tstat(r["y"]), "share_level": adf_tstat(lvl_share), "F_level": adf_tstat(lvl_f)},
         "ac1": {
             "x": lag1_autocorr(r["x"]),
@@ -312,7 +305,7 @@ def fmt(name: str, pc: Any) -> str:
 
 
 def stage1(cache: Path, fc: Path, now_ms: int) -> None:
-    s0 = rd(cache / "stage0.json")
+    s0 = cmn.read_json(cache / "stage0.json")
     if not s0["h1"]["gate_pass"]:
         print("stage0 gate failed: refusing to compute r (inconclusive)")
         return
@@ -329,15 +322,15 @@ def stage1(cache: Path, fc: Path, now_ms: int) -> None:
     for nm, sl in (("IS (first half)", slice(0, half)), ("OOS (second half)", slice(half, None))):
         rr = {k: v[sl] for k, v in r.items()}
         q = partial_corr_nw(rr["y"], rr["x"], ctrls(rr), lag=4)
-        parts[nm] = q.__dict__ | {"contrib": None, "span": [day(int(rr["t"][0])), day(int(rr["t"][-1]))]}
+        parts[nm] = q.__dict__ | {"contrib": None, "span": [cmn.ymd_ms(int(rr["t"][0])), cmn.ymd_ms(int(rr["t"][-1]))]}
         print(fmt(nm, q) + f" {parts[nm]['span']}")
     res["split"] = parts
     top = sorted(range(len(pc.contrib)), key=lambda i: -abs(pc.contrib[i]))[:3]
     keep = [i for i in range(len(r["y"])) if i not in top]
     rr = {k: [v[i] for i in keep] for k, v in r.items()}
     q = partial_corr_nw(rr["y"], rr["x"], ctrls(rr), lag=4)
-    print(fmt("without top-3 weeks", q) + f" dropped {[day(int(r['t'][i])) for i in top]}")
-    res["no_top3"] = q.__dict__ | {"contrib": None, "dropped": [day(int(r["t"][i])) for i in top]}
+    print(fmt("without top-3 weeks", q) + f" dropped {[cmn.ymd_ms(int(r['t'][i])) for i in top]}")
+    res["no_top3"] = q.__dict__ | {"contrib": None, "dropped": [cmn.ymd_ms(int(r["t"][i])) for i in top]}
     neg = pc.r < 0
     conf = pc.r <= -0.25 and pc.hi < 0 and parts["IS (first half)"]["r"] < 0 and parts["OOS (second half)"]["r"] < 0 and q.hi < 0
     rej = pc.r > -0.10 or pc.lo <= 0 <= pc.hi or (parts["IS (first half)"]["r"] < 0) != (parts["OOS (second half)"]["r"] < 0) or not neg
@@ -402,7 +395,7 @@ def stage1(cache: Path, fc: Path, now_ms: int) -> None:
         f"n={len(rows)} share range {min(share):.3f}..{max(share):.3f}; top-tercile mean net carry {np.mean([f for f, m in zip(fnext, top_m, strict=True) if m]):+.4f}, rest {np.mean([f for f, m in zip(fnext, top_m, strict=True) if not m]):+.4f} APR"
     )
     print(f"full-sample terciles: top - rest = {pt:+.4f} APR, block-bootstrap 95% [{lo:+.4f},{hi:+.4f}]")
-    t_rows = [day(w[i]["t"])[:4] for i in range(len(w) - 1) if w[i]["usde"] and w[i]["oi"] and w[i + 1]["f"] is not None]
+    t_rows = [cmn.ymd_ms(w[i]["t"])[:4] for i in range(len(w) - 1) if w[i]["usde"] and w[i]["oi"] and w[i + 1]["f"] is not None]
     by_year = {
         y: (sum(1 for yy, m in zip(t_rows, top_m, strict=True) if yy == y and m), sum(1 for yy in t_rows if yy == y))
         for y in sorted(set(t_rows))
@@ -427,7 +420,7 @@ def stage1(cache: Path, fc: Path, now_ms: int) -> None:
         hit = x["dd7"] <= -0.08
         base.append(hit)
         if x["usde"] / w[i - 2]["usde"] - 1 <= -0.10:
-            ev.append((day(x["t"]), round(x["usde"] / w[i - 2]["usde"] - 1, 3), round(x["dd7"], 3), hit))
+            ev.append((cmn.ymd_ms(x["t"]), round(x["usde"] / w[i - 2]["usde"] - 1, 3), round(x["dd7"], 3), hit))
     pb = float(np.mean(base))
     pe = float(np.mean([e[3] for e in ev])) if ev else math.nan
     print(f"base weeks n={len(base)} P(dd7<=-8%)={pb:.3f}; event weeks n={len(ev)} P={pe:.3f}; ratio={pe / pb if pb else math.nan:.2f}")

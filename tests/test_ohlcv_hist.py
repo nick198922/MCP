@@ -47,6 +47,20 @@ async def test_insert_and_read_ohlcv_round_trip():
     await s.aclose()
 
 
+async def test_ohlcv_range_newest_returns_latest_bars_ascending():
+    s = Store(":memory:")
+    await s.init()
+    t0 = 1_700_000_000_000
+    bars = [[t0 + i * 3_600_000, 100 + i, 101 + i, 99 + i, 100 + i, 1.0] for i in range(1000)]
+    await s.insert_ohlcv_batch("binanceusdm", "BTC/USDT:USDT", "1h", bars)
+    newest = await s.ohlcv_range(venue="binanceusdm", symbol="BTC/USDT:USDT", timeframe="1h", limit=100, newest=True)
+    assert [r["ts"] for r in newest] == [b[0] for b in bars[900:]]
+    # Default stays oldest-first (other callers rely on it).
+    oldest = await s.ohlcv_range(venue="binanceusdm", symbol="BTC/USDT:USDT", timeframe="1h", limit=100)
+    assert [r["ts"] for r in oldest] == [b[0] for b in bars[:100]]
+    await s.aclose()
+
+
 # ---------- collector ----------
 
 

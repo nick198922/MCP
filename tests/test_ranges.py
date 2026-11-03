@@ -430,6 +430,37 @@ async def test_range_setup_scan_empty_symbols(state):
         await rt.aclose()
 
 
+@pytest.mark.parametrize("tool", ["range_detect", "range_setup"])
+async def test_range_tools_store_source_use_latest_bars(state, tmp_path, monkeypatch, tool):
+    import tradedesk.tools.history as history
+
+    seen: list[list[dict]] = []
+    orig = history.classify_ranges
+
+    def spy(bars, **kw):
+        seen.append(list(bars))
+        return orig(bars, **kw)
+
+    monkeypatch.setattr(history, "classify_ranges", spy)
+    rt = Runtime(
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=str(tmp_path / "r.sqlite")),
+        transports=make_transports(state),
+        exchange_factory=FakeEx,
+    )
+    rt.now = lambda: NOW
+    await rt.store.init()
+    t0 = int(NOW.timestamp() * 1000) - 1000 * 3_600_000
+    bars = [[t0 + i * 3_600_000, 100.0, 101.0 + (i % 7), 99.0 - (i % 5), 100.0 + (i % 3), 1.0] for i in range(1000)]
+    await rt.store.insert_ohlcv_batch("binanceusdm", "BTC/USDT:USDT", "4h", bars)
+    srv, _ = build_server(rt)
+    try:
+        await _call(srv, tool, venue="binanceusdm", symbol="BTC/USDT:USDT", timeframe="4h", lookback_bars=100, source="store")
+        assert len(seen) == 1
+        assert [b["ts"] for b in seen[0]] == [b[0] for b in bars[900:]]
+    finally:
+        await rt.aclose()
+
+
 async def test_range_detect_store_source_missing(state, tmp_path):
     rt = Runtime(
         Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=str(tmp_path / "r.sqlite")),

@@ -116,12 +116,16 @@ boost_on() {
 
 # Branches waiting for the owner; the doctor's fixes (agent/*-fix-*) and the agents' work in progress do not count.
 work_branch() { cut -d' ' -f1 "$LOG_DIR/work.state" 2>/dev/null || true; }
-# Owner-priority cards on main that still need work (accepted, testing or proposed).
+# Owner-priority cards on main that still need work (accepted, testing or proposed). Cards with the line
+# «Темп: за графіком» (the standing improvements card, owner 03.11) do not lift the pace brake: they refill
+# themselves, so they would spend the owner's weekly reserve.
 owner_cards_open() {
-  local f
+  local f body
   git -C "$REPO" grep -l -e '^Пріоритет: власник' origin/main -- 'docs/ideas/IDEA-*.md' 2>/dev/null | sed 's#^origin/main:##' |
     while read -r f; do
-      git -C "$REPO" show "origin/main:$f" 2>/dev/null | grep -qE '^Статус: (accepted|testing|proposed)' && echo "$f"
+      body="$(git -C "$REPO" show "origin/main:$f" 2>/dev/null)"
+      grep -q '^Темп: за графіком' <<<"$body" && continue
+      grep -qE '^Статус: (accepted|testing|proposed)' <<<"$body" && echo "$f"
     done || true
 }
 # Unfinished work, not a handover: parked, or its last outcome in history.tsv set it aside (parked, continues, unfinished).

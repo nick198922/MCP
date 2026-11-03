@@ -330,14 +330,14 @@ fi
 if [[ -n "$WEEK" ]] && awk -v w="$WEEK" -v m="$OWNER_ONLY_AT" 'BEGIN { exit !(w >= m) }'; then
   PROMPT="$PROMPT
 
-BUDGET: the weekly plan usage is ${WEEK}% (>= ${OWNER_ONLY_AT}%). Take only step p or the CONTINUE work."
+BUDGET: the weekly plan usage is ${WEEK}% (>= ${OWNER_ONLY_AT}%). Take only step p, skipping cards with the line «Темп: за графіком», or the CONTINUE work."
 fi
 # Ahead of the weekly pace the loop runs a step only for the owner's priority cards (scripts/agents_loop.sh, owner
 # 27.10), and says so in TRADEDESK_AGENTS_OWNER_ONLY.
 if [[ -n "${TRADEDESK_AGENTS_OWNER_ONLY:-}" && "$PROMPT" != *"BUDGET:"* ]]; then
   PROMPT="$PROMPT
 
-BUDGET: the agents are ${TRADEDESK_AGENTS_OWNER_ONLY}; the owner lets them work on his priority cards anyway, up to the 97 % pause. Take only step p or the CONTINUE work."
+BUDGET: the agents are ${TRADEDESK_AGENTS_OWNER_ONLY}; the owner lets them work on his priority cards anyway, up to the 97 % pause. Take only step p, skipping cards with the line «Темп: за графіком», or the CONTINUE work."
 fi
 if [[ -n "$PARKED_NOTE" ]]; then
   PROMPT="$PROMPT

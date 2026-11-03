@@ -6654,8 +6654,9 @@ def radar_lead(a: dict, asset: str, event: tuple[str, float] | None) -> str:
 
 def radar_tiles(a: dict, asset: str) -> str:
     """The always-visible tiles, each with its action line (docs/design/PANEL.md rule 2), straight from radar_view:
-    price, IV Rank, IV − RV30, put skew. They replace the old layout's price (3) and skew (2) tiles (rule 7). '' when
-    none has a number."""
+    price, IV Rank, IV − RV30, put skew. They replace the old layout's price (3) and skew (2) tiles (rule 7). The IV
+    Rank tile's line defers to IV against RV30 the way radar_lead does (a low rank with IV − RV30 > RADAR_RICH_IV, a
+    high rank with IV − RV30 ≤ 0), so it never contradicts the IV − RV30 tile. '' when none has a number."""
     nd, _ = _surface_days(a)
     tiles = []
     p = _rd(a.get("price"))
@@ -6669,12 +6670,19 @@ def radar_tiles(a: dict, asset: str) -> str:
         tiles.append(_tile(f"Ціна {asset}", f"<span class='num'>{_e(_nf(pn))}</span>", sub, help="r_spot", act=act))
     rk = _rd(_rd(a.get("iv_rank")).get("now"))
     rn = _num(rk.get("rank"))
+    p30 = _num(_rd(a.get("iv_vs_rv")).get("premium_rv30"))
     if rn is not None:
-        act = "дешево, але це не сигнал" if rn < 0.2 else "дорого: продаж лише із захистом" if rn > 0.6 else "звичайна ціна опціонів"
+        # IV against RV30 overrides the rank, as in radar_lead: no «cheap» / «dear» next to an IV − RV30 tile that says
+        # the opposite (same thresholds as that tile: > RADAR_RICH_IV, ≤ 0)
+        if rn < 0.2 and p30 is not None and p30 > RADAR_RICH_IV:
+            act = "дешево за роком, дорого за рухом"
+        elif rn > 0.6 and p30 is not None and p30 <= 0:
+            act = "дорого за роком, не за рухом"
+        else:
+            act = "дешево, але це не сигнал" if rn < 0.2 else "дорого: продаж лише із захистом" if rn > 0.6 else "звичайна ціна опціонів"
         sub = f"перцентиль {_vp(rk.get('percentile'), 0)} · DVOL {_dd(rk.get('day'))}"
         tiles.append(_tile("IV Rank", f"<span class='num'>{_e(_nf(rn * 100, 1))} %</span>", _e(sub), help="r_rank", act=act))
     x = _rd(a.get("iv_vs_rv"))
-    p30 = _num(x.get("premium_rv30"))
     if p30 is not None:
         act = "покупець переплачує за рух" if p30 > RADAR_RICH_IV else "опціони не дорожчі за рух" if p30 <= 0 else "звична премія продавцю"
         sub = f"IV 30 дн {_vp(x.get('iv30'))} · RV30 {_vp(x.get('rv30'))}"

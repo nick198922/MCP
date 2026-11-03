@@ -17,49 +17,28 @@ OPTIONS = re.compile(r"option", re.I)
 
 # Parameters without a `description` in their JSON schema: 174 params in 55 tools on 2026-11-03 (see
 # docs/changes/2026-11-03-tool-metadata-guard.md); 105 in 48 after the strategy_* tools were described
-# (docs/changes/2026-11-03-param-descriptions.md). Technical debt, not a design choice: when you add
+# (docs/changes/2026-11-03-param-descriptions.md); 59 in 26 after the options/perps/market group
+# (docs/changes/2026-11-03-param-descriptions-2.md). Technical debt, not a design choice: when you add
 # `Field(description=...)` to one of them, drop it here (the stale-entry check below enforces it).
 PARAM_DESCRIPTION_ALLOWLIST: dict[str, set[str]] = {
-    "deribit_atm_term": {"min_days", "max_days"},
-    "deribit_expected_move": {"min_days", "max_days"},
-    "deribit_futures_curve": {"currency"},
-    "deribit_largest_trades": {"kind", "top_n"},
-    "deribit_oi_by_strike": {"width_pct", "top_n"},
-    "deribit_option_chain": {"width_pct", "min_oi"},
-    "deribit_skew_term": {"min_days", "max_days"},
-    "deribit_vol_surface": {"min_days", "max_days"},
     "event_study": {"before_minutes", "after_minutes"},
     "events_add": {"kind", "label", "impact"},
     "events_list": {"limit"},
     "funding_zscore": {"base", "lookback_days", "min_points"},
-    "hyperliquid_book": {"coin"},
-    "hyperliquid_candles": {"coin", "interval", "hours_back"},
-    "hyperliquid_funding_history": {"coin", "days_back"},
-    "hyperliquid_overview": {"sort_by", "top_n", "ascending"},
-    "hyperliquid_trades": {"coin", "top_n"},
     "iv_rank": {"currency", "lookback_days"},
     "journal_add": {"side", "size"},
     "journal_close": {"cancelled"},
     "journal_list": {"limit"},
     "journal_stats": {"limit"},
     "liquidations_summary": {"top_n"},
-    "market_markets": {"market_type", "active_only", "limit"},
-    "market_ohlcv": {"timeframe", "limit"},
-    "market_orderbook": {"depth"},
     "market_regime": {"lookback_bars"},
-    "market_trades": {"limit", "top_n"},
     "odds_devig": {"method"},
     "ohlcv_history": {"limit"},
     "option_calc": {"forward", "strike", "days", "iv", "kind"},
-    "perps_funding_compare": {"include_hyperliquid", "include_deribit"},
-    "perps_funding_history": {"include_hyperliquid", "days_back", "include_series"},
-    "perps_long_short_ratio": {"period", "limit", "include_series"},
-    "perps_oi_history": {"period", "limit", "include_series"},
     "polymarket_history": {"interval"},
     "polymarket_search": {"limit", "active_only"},
     "positions_add": {"kind", "side", "size"},
     "positions_list": {"limit"},
-    "prob_from_options": {"kind"},
     "range_detect": {"lookback_bars"},
     "range_setup": {"lookback_bars", "min_bars", "max_width_pct", "swing_lookback", "sweep_wick_ratio"},
     "range_setup_scan": {

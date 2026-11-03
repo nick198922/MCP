@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..analytics.options import Smile, build_chain, build_smile, group_by_expiry
 from ..analytics.pm_gap import classify_open_market, model_probability, path_extremes, pick_expiry, top_of_book, touch_state
-from ..analytics.pm_gap_report import binance_closes, gamma_outcome
+from ..analytics.pm_gap_report import binance_closes, gamma_closed_ts, gamma_outcome
 from ..core.envelope import Builder, Fetched
 from ..core.errors import ProviderError
 
@@ -35,6 +35,8 @@ PATH_BARS = 400  # 1h bars: a weekly window is 168, plus slack
 OUTCOME_DELAY_S = 3600  # ask Gamma for a result from 1 h after the end (UMA settlement usually takes a few hours)
 OUTCOME_GIVE_UP_S = 14 * 86_400  # stop asking 14 days after the end (the market then stays without a result)
 OUTCOME_BATCH = 120  # markets per run: about two days of ended markets
+GONE_LOOKBACK_S = 6 * 3600  # a market off the open list is asked about for 6 h (6 hourly runs: retries after a failed read)
+GONE_BATCH = 60  # early-close candidates per run (touch markets that left the list > 2 h early: 69 in two weeks to 03.11)
 
 
 async def _events(rt: "Runtime", b: Builder, now_ts: int, max_days: float, skipped: Counter) -> list[dict[str, Any]]:
@@ -246,12 +248,50 @@ async def scan_gaps(rt: "Runtime", b: Builder, *, max_days: float = 14.0) -> lis
     return rows
 
 
+def _gamma_fields(data: dict[str, Any]) -> dict[str, Any]:
+    """``pm_gap_outcome`` fields from a Gamma ``/markets/{id}`` answer: raw outcomePrices / outcomes (untrusted text),
+    the settled result (:func:`gamma_outcome`) and the close time (:func:`gamma_closed_ts`)."""
+    prices, labels = (v if isinstance(v, str) or v is None else json.dumps(v) for v in (data.get("outcomePrices"), data.get("outcomes")))
+    return {"outcome_prices": prices, "outcomes": labels, "outcome_yes": gamma_outcome(data), "closed_ts": gamma_closed_ts(data)}
+
+
+async def record_closures(rt: "Runtime", b: Builder, snap_ts: int) -> dict[str, int]:
+    """Record markets that left the open list before their end (owner's answer 1+3 to Q-20261103-1): touch markets close
+    as soon as the level is hit and then vanish from the Gamma listing, so without this their close leaves no trace.
+
+    Candidates (``Store.pm_gap_gone_pending``): markets listed in a snapshot within ``GONE_LOOKBACK_S`` before
+    ``snap_ts`` but not in the snapshot at ``snap_ts``, whose end is still ahead, without a ``gone_ts``. Each is read once
+    per run from Gamma ``/markets/{id}``. Closed: stored in ``pm_gap_outcome`` with ``gone_ts = snap_ts``, Gamma's
+    ``closedTime`` (``closed_ts``), the raw prices and, when already resolved, the result. Not closed (dropped for a
+    missing book, say): nothing stored. A failed read lands in ``b.missing`` and is retried next run while the market is
+    inside the look-back. Read-only. Returns counts ``checked`` / ``closed`` / ``open``.
+    """
+    assert rt.store is not None
+    todo = await rt.store.pm_gap_gone_pending(snap_ts, snap_ts - GONE_LOOKBACK_S, GONE_BATCH)
+    if len(todo) == GONE_BATCH:  # the oldest may leave the look-back unasked (gone_ts lost; closed_ts comes later anyway)
+        log.warning("pm_gap: %d early-close candidates, the batch is full; older ones may stay unchecked", GONE_BATCH)
+    closed = still_open = 0
+    for m in todo:
+        mid = str(m["market_id"])
+        data = await b.guard(f"closed:{mid}", "polymarket:gamma", rt.polymarket.market(mid))
+        if not isinstance(data, dict):
+            continue
+        if not data.get("closed"):
+            still_open += 1
+            continue
+        rec: dict[str, Any] = {k: m[k] for k in ("market_id", "asset", "kind", "strike", "end_ts")}
+        await rt.store.upsert_pm_gap_outcome({**rec, **_gamma_fields(data), "gone_ts": snap_ts}, snap_ts)
+        closed += 1
+    return {"checked": len(todo), "closed": closed, "open": still_open}
+
+
 async def resolve_outcomes(rt: "Runtime", b: Builder) -> dict[str, int]:
     """Fetch the settled result of snapshotted markets that have ended (registration section 7), once per market.
 
     For each market ended between ``OUTCOME_GIVE_UP_S`` and ``OUTCOME_DELAY_S`` ago without a stored result: Gamma
     ``/markets/{id}`` read by ``pm_gap_report.gamma_outcome`` (closed, outcomes ["Yes", "No"], UMA status resolved,
-    prices exactly 1/0; anything else = not yet, retried next run). Threshold markets also
+    prices exactly 1/0; anything else = not yet, retried next run) and its ``closedTime`` (``closed_ts``, from schema
+    38). Threshold markets also
     get the closes of the Binance <ASSET>/USDT 1m candles closing at and opening at the end, for the cross-check that
     the analysis does (``pm_gap_report.binance_check``). Failures land in ``b.missing`` and are retried next run.
     The queue takes markets with the fewest attempts first, then the latest end (``Store.pm_gap_outcome_pending``).
@@ -268,11 +308,8 @@ async def resolve_outcomes(rt: "Runtime", b: Builder) -> dict[str, int]:
         if y is None:
             data = await b.guard(f"outcome:{mid}", "polymarket:gamma", rt.polymarket.market(mid))
             if isinstance(data, dict):
-                rec["outcome_prices"], rec["outcomes"] = (
-                    v if isinstance(v, str) or v is None else json.dumps(v) for v in (data.get("outcomePrices"), data.get("outcomes"))
-                )
-                y = gamma_outcome(data)
-                rec["outcome_yes"] = y
+                rec.update(_gamma_fields(data))
+                y = rec["outcome_yes"]
                 settled += int(y is not None)
             pending += int(y is None)
         if y is not None and m["kind"] == "above" and (m["binance_close_end"] is None or m["binance_close_next"] is None):
@@ -288,12 +325,14 @@ async def resolve_outcomes(rt: "Runtime", b: Builder) -> dict[str, int]:
 
 
 async def collect_pm_gap(rt: "Runtime") -> int:
-    """Collector job: store one snapshot of ``scan_gaps``, then fetch the results of markets that have ended
-    (:func:`resolve_outcomes`). Returns the snapshot rows written.
+    """Collector job: store one snapshot of ``scan_gaps``, record markets that left the open list before their end
+    (:func:`record_closures`), then fetch the results of markets that have ended (:func:`resolve_outcomes`). Returns the
+    snapshot rows written.
 
     Fails (so the scheduler records it) only when nothing was found and a provider reported a problem; an empty
-    market list without errors (no open markets) is a normal zero. A failed result fetch never fails the snapshot: it
-    is logged and retried next run.
+    market list without errors (no open markets) is a normal zero. A failed result or close fetch never fails the
+    snapshot: it is logged and retried next run. The early-close check is skipped when the market listing was
+    incomplete (every unlisted market would look gone).
     """
     assert rt.store is not None
     b = Builder()
@@ -302,7 +341,19 @@ async def collect_pm_gap(rt: "Runtime") -> int:
         raise RuntimeError("pm_gap: no rows; " + "; ".join(f"{m.field}: {m.reason}" for m in b.missing[:4]))
     if b.missing:
         log.warning("pm_gap: partial snapshot, missing: %s", "; ".join(f"{m.field}: {m.reason}" for m in b.missing[:6]))
-    n = await rt.store.insert_pm_gap(int(rt.now().timestamp()), rows)
+    snap_ts = int(rt.now().timestamp())
+    n = await rt.store.insert_pm_gap(snap_ts, rows)
+    if any(m.field.startswith("events") for m in b.missing):
+        log.warning("pm_gap: market listing incomplete, early-close check skipped this run")
+    else:
+        cb = Builder()
+        try:
+            got = await record_closures(rt, cb, snap_ts)
+        except Exception as e:  # noqa: BLE001 - the snapshot is stored; candidates are asked again next run
+            log.warning("pm_gap: early-close check failed: %s: %s", type(e).__name__, e)
+        else:
+            if cb.missing:
+                log.warning("pm_gap: early closes %s, missing: %s", got, "; ".join(f"{m.field}: {m.reason}" for m in cb.missing[:6]))
     ob = Builder()
     try:
         got = await resolve_outcomes(rt, ob)

@@ -334,7 +334,10 @@ async def _evaluate_alerts(rt: "Runtime") -> int:
     # DB-backed DSL (Phase 3.1) rules — always consulted when the job runs.
     fired += await evaluate_dsl_rules(rt.store, now_ts=now_ts)
     if s.alerts_health_enabled:
-        fired += await _health_alerts(rt, now_ts)
+        try:
+            fired += await _health_alerts(rt, now_ts)
+        except Exception as e:  # noqa: BLE001 — a health-alert failure (e.g. the DB read) must not drop the other alerts
+            log.warning("provider-health alerts skipped this tick: %s", e)
     if not fired:
         return 0
     channels = build_channels(s)

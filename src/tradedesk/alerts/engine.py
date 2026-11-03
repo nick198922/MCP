@@ -11,6 +11,7 @@ in the scheduler job, not here, so the engine stays pure and easy to test.
 from __future__ import annotations
 
 import json
+import logging
 import operator
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +19,8 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from ..store import Store
+
+log = logging.getLogger(__name__)
 
 OPS = {
     ">": operator.gt,
@@ -61,11 +64,19 @@ class FiredAlert:
 
 
 def load_rules(path: str | Path, *, default_cooldown: int = 1800) -> list[Rule]:
+    """Rules from the JSON file. An id with the reserved ``health:`` prefix is skipped with a warning: provider-health
+    alerts restore their state from stored rows with that prefix, so a user rule there would corrupt it. (DSL rules
+    from the ``rules`` table always get ``db:<name>`` and cannot collide.)"""
+    from .health import RULE_PREFIX  # noqa: PLC0415 — health imports this module
+
     with open(path, encoding="utf-8") as f:
         doc = json.load(f)
     out: list[Rule] = []
     for row in doc.get("rules") or []:
         if not isinstance(row, dict):
+            continue
+        if str(row.get("id", "")).startswith(RULE_PREFIX):
+            log.warning("alert rule %r skipped: the id prefix %r is reserved for provider-health alerts", row.get("id"), RULE_PREFIX)
             continue
         try:
             out.append(

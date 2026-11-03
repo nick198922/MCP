@@ -33,6 +33,8 @@ from ._util import READ_ONLY, find_expiry, r
 
 CUR = Annotated[Literal["BTC", "ETH"], Field(description="Deribit inverse-option currency")]
 EXPIRY = Annotated[str, Field(description="Expiry as 26MAR27 or 2027-03-26 (08:00 UTC). Use deribit_vol_surface to list expiries.")]
+MIN_DAYS = Annotated[float, Field(ge=0, description="Skip expiries with fewer calendar days to expiry than this (inclusive bound).")]
+MAX_DAYS = Annotated[float, Field(gt=0, description="Skip expiries with more calendar days to expiry than this (inclusive bound).")]
 VRP_WARNING = (
     "Backtest 2021-03..2026-10 (docs/verification/2026-10-13-vrp.md): DVOL exceeded the next 30 days' realized vol "
     "on ~72 % (BTC) / ~65 % (ETH) of days; a daily delta-hedged short 30d ATM straddle earned roughly +1.3..2 % of "
@@ -100,8 +102,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
     )
     async def deribit_vol_surface(
         currency: CUR = "BTC",
-        min_days: Annotated[float, Field(ge=0)] = 0.5,
-        max_days: Annotated[float, Field(gt=0)] = 400,
+        min_days: MIN_DAYS = 0.5,
+        max_days: MAX_DAYS = 400,
         min_oi: Annotated[float, Field(ge=0, description="Drop strikes whose OTM-side OI is below this before building the smile.")] = 0.0,
         max_spread_pct: Annotated[
             float | None, Field(ge=0, description="Drop strikes with bid/ask spread above this percent of mid (native units).")
@@ -179,8 +181,18 @@ def register(server: MCPServer, rt: Runtime) -> None:
     async def deribit_option_chain(
         expiry: EXPIRY,
         currency: CUR = "BTC",
-        width_pct: Annotated[float, Field(gt=0, le=200)] = 20,
-        min_oi: Annotated[float, Field(ge=0)] = 0,
+        width_pct: Annotated[
+            float,
+            Field(
+                gt=0,
+                le=200,
+                description="Keep strikes with |ln(strike/forward)| within this many percent (20 = about ±20 % of the forward).",
+            ),
+        ] = 20,
+        min_oi: Annotated[
+            float,
+            Field(ge=0, description="Drop a call or put leg whose open interest (contracts, in BTC/ETH) is below this."),
+        ] = 0,
     ) -> dict[str, Any]:
         b = Builder()
         rows = await _chain(rt, b, currency)
@@ -313,8 +325,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
     async def deribit_expected_move(
         currency: CUR = "BTC",
         expiry: Annotated[str | None, Field(description="Limit to one expiry (e.g. 26MAR27); default all expiries")] = None,
-        min_days: Annotated[float, Field(ge=0)] = 0.5,
-        max_days: Annotated[float, Field(gt=0)] = 400,
+        min_days: MIN_DAYS = 0.5,
+        max_days: MAX_DAYS = 400,
     ) -> dict[str, Any]:
         b = Builder()
         rows = await _chain(rt, b, currency)
@@ -373,8 +385,15 @@ def register(server: MCPServer, rt: Runtime) -> None:
     async def deribit_oi_by_strike(
         currency: CUR = "BTC",
         expiry: Annotated[str | None, Field(description="Limit to one expiry (e.g. 26MAR27); default all expiries")] = None,
-        width_pct: Annotated[float, Field(gt=0, le=200)] = 25,
-        top_n: Annotated[int, Field(ge=1, le=50)] = 10,
+        width_pct: Annotated[
+            float,
+            Field(
+                gt=0,
+                le=200,
+                description="Keep strikes with |ln(strike/forward)| within this many percent (25 = about ±25 % of the forward).",
+            ),
+        ] = 25,
+        top_n: Annotated[int, Field(ge=1, le=50, description="Rows in each list: top overall, top call walls, top put walls.")] = 10,
     ) -> dict[str, Any]:
         b = Builder()
         rows = await _chain(rt, b, currency)
@@ -443,7 +462,13 @@ def register(server: MCPServer, rt: Runtime) -> None:
     async def prob_from_options(
         expiry: EXPIRY,
         level: Annotated[float, Field(gt=0, description="Price level in USD")],
-        kind: Literal["above", "below", "touch"] = "above",
+        kind: Annotated[
+            Literal["above", "below", "touch"],
+            Field(
+                description="'above'/'below': risk-neutral P(price above/below level AT expiry); 'touch': risk-neutral "
+                "P(price reaches level at any time before expiry). Market-implied odds, not a real-world forecast."
+            ),
+        ] = "above",
         currency: CUR = "BTC",
     ) -> dict[str, Any]:
         b = Builder()
@@ -672,8 +697,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
     )
     async def deribit_atm_term(
         currency: CUR = "BTC",
-        min_days: Annotated[float, Field(ge=0)] = 0.5,
-        max_days: Annotated[float, Field(gt=0)] = 400,
+        min_days: MIN_DAYS = 0.5,
+        max_days: MAX_DAYS = 400,
     ) -> dict[str, Any]:
         b = Builder()
         rows = await _chain(rt, b, currency)
@@ -723,8 +748,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
     async def deribit_skew_term(
         currency: CUR = "BTC",
         target_delta: Annotated[float, Field(gt=0, lt=0.5, description="Call-equivalent target delta for the wings.")] = 0.25,
-        min_days: Annotated[float, Field(ge=0)] = 0.5,
-        max_days: Annotated[float, Field(gt=0)] = 400,
+        min_days: MIN_DAYS = 0.5,
+        max_days: MAX_DAYS = 400,
     ) -> dict[str, Any]:
         b = Builder()
         rows = await _chain(rt, b, currency)
@@ -785,11 +810,18 @@ def register(server: MCPServer, rt: Runtime) -> None:
     )
     async def deribit_largest_trades(
         currency: CUR = "BTC",
-        kind: Literal["option", "future"] = "option",
+        kind: Annotated[
+            Literal["option", "future"],
+            Field(
+                description="Deribit instrument kind: 'option' (BTC/ETH options) or 'future' (Deribit futures, including the perpetual)."
+            ),
+        ] = "option",
         count: Annotated[int, Field(ge=1, le=1000, description="How many recent trades to pull from Deribit.")] = 200,
         only_blocks: Annotated[bool, Field(description="If true, keep only trades with a block_trade_id.")] = False,
         min_notional_usd: Annotated[float, Field(ge=0, description="Drop trades smaller than this USD notional.")] = 0.0,
-        top_n: Annotated[int, Field(ge=1, le=50)] = 10,
+        top_n: Annotated[
+            int, Field(ge=1, le=50, description="Largest trades by USD notional to return; the summary covers all kept trades.")
+        ] = 10,
     ) -> dict[str, Any]:
         b = Builder()
         trades = await b.guard("last_trades", "deribit", rt.deribit.last_trades_by_currency(currency, kind, count, False))

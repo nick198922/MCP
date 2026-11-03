@@ -41,8 +41,19 @@ CARRY_WARNING = (
     "3-5 %. Funding >= 50-100 % APR mean-reverts within days. Compare with a risk-free stablecoin or T-bill yield."
 )
 CCXT_VENUES = Annotated[list[str] | None, Field(description=f"ccxt perp exchange ids; default {list(PERP_EXCHANGES)}")]
+INCLUDE_HL = Annotated[bool, Field(description="Add Hyperliquid (1h funding) alongside the ccxt venues.")]
 
+HL_COIN = Annotated[
+    str,
+    Field(
+        description="Hyperliquid coin, e.g. BTC, ETH, kPEPE (matched case-insensitively against the HL universe), "
+        "or a builder-deployed perp as dex:NAME (e.g. xyz:SP500)."
+    ),
+]
 Period = Literal["5m", "15m", "30m", "1h", "4h", "1d"]
+PERIOD = Annotated[Period, Field(description="Bar size of each series point (5m/15m/30m/1h/4h/1d).")]
+SERIES_LIMIT = Annotated[int, Field(ge=1, le=500, description="Number of most recent points per venue (up to 500).")]
+INCLUDE_SERIES = Annotated[bool, Field(description="Also return each venue's raw series; false = latest value and stats only.")]
 _PERIOD_SECONDS = {"5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14400, "1d": 86400}
 _PERIOD_BINANCE = {"5m": "5m", "15m": "15m", "30m": "30m", "1h": "1h", "4h": "4h", "1d": "1d"}
 _PERIOD_BYBIT = {"5m": "5min", "15m": "15min", "30m": "30min", "1h": "1h", "4h": "4h", "1d": "1d"}
@@ -195,8 +206,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
     async def perps_funding_compare(
         base: BASE = "BTC",
         exchanges: CCXT_VENUES = None,
-        include_hyperliquid: bool = True,
-        include_deribit: bool = True,
+        include_hyperliquid: INCLUDE_HL = True,
+        include_deribit: Annotated[
+            bool, Field(description="Add the Deribit perpetual (8h funding); only for base BTC or ETH, ignored otherwise.")
+        ] = True,
     ) -> dict[str, Any]:
         b = Builder()
         base = base.upper()
@@ -289,9 +302,18 @@ def register(server: MCPServer, rt: Runtime) -> None:
     async def perps_funding_history(
         base: BASE = "BTC",
         exchanges: CCXT_VENUES = None,
-        include_hyperliquid: bool = True,
-        days_back: Annotated[float, Field(gt=0, le=180)] = 30.0,
-        include_series: bool = False,
+        include_hyperliquid: INCLUDE_HL = True,
+        days_back: Annotated[
+            float,
+            Field(
+                gt=0,
+                le=180,
+                description="History window in days back from now. Venues may keep less (OKX about 3 months); a warning flags short coverage.",
+            ),
+        ] = 30.0,
+        include_series: Annotated[
+            bool, Field(description="Also return each venue's raw rows [ts_ms, rate per interval as a decimal]; false = stats only.")
+        ] = False,
     ) -> dict[str, Any]:
         b = Builder()
         base = base.upper()
@@ -726,9 +748,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
     )
     async def perps_long_short_ratio(
         base: BASE = "BTC",
-        period: Period = "1h",
-        limit: Annotated[int, Field(ge=1, le=500)] = 48,
-        include_series: bool = False,
+        period: PERIOD = "1h",
+        limit: SERIES_LIMIT = 48,
+        include_series: INCLUDE_SERIES = False,
     ) -> dict[str, Any]:
         b = Builder()
         base = base.upper()
@@ -825,9 +847,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
     )
     async def perps_oi_history(
         base: BASE = "BTC",
-        period: Period = "1h",
-        limit: Annotated[int, Field(ge=1, le=500)] = 48,
-        include_series: bool = False,
+        period: PERIOD = "1h",
+        limit: SERIES_LIMIT = 48,
+        include_series: INCLUDE_SERIES = False,
     ) -> dict[str, Any]:
         b = Builder()
         base = base.upper()
@@ -954,9 +976,17 @@ def register(server: MCPServer, rt: Runtime) -> None:
         ),
     )
     async def hyperliquid_overview(
-        sort_by: Literal["open_interest_usd", "funding_annualized", "day_volume_usd", "change_24h_pct"] = "open_interest_usd",
-        top_n: Annotated[int, Field(ge=1, le=100)] = 20,
-        ascending: bool = False,
+        sort_by: Annotated[
+            Literal["open_interest_usd", "funding_annualized", "day_volume_usd", "change_24h_pct"],
+            Field(
+                description="Ranking metric: open interest in USD, simple annualised funding as a decimal (0.10 = 10 %), "
+                "24h volume in USD, or 24h price change in percent."
+            ),
+        ] = "open_interest_usd",
+        top_n: Annotated[int, Field(ge=1, le=100, description="Coins to return after the min_oi_usd filter.")] = 20,
+        ascending: Annotated[
+            bool, Field(description="Sort ascending (e.g. most negative funding first); default false = largest first.")
+        ] = False,
         min_oi_usd: Annotated[float, Field(ge=0, description="Filter out illiquid coins")] = 1_000_000,
     ) -> dict[str, Any]:
         b = Builder()
@@ -976,9 +1006,13 @@ def register(server: MCPServer, rt: Runtime) -> None:
         ),
     )
     async def hyperliquid_candles(
-        coin: str,
-        interval: str = "1h",
-        hours_back: Annotated[float, Field(gt=0, le=24 * 365)] = 24.0,
+        coin: HL_COIN,
+        interval: Annotated[
+            str, Field(description="Candle interval: 1m/3m/5m/15m/30m/1h/2h/4h/8h/12h/1d/3d/1w/1M (Hyperliquid format).")
+        ] = "1h",
+        hours_back: Annotated[
+            float, Field(gt=0, le=24 * 365, description="Lookback window in hours back from now (up to 8760 = one year).")
+        ] = 24.0,
     ) -> dict[str, Any]:
         b = Builder()
         try:
@@ -1030,7 +1064,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
         ),
     )
     async def hyperliquid_book(
-        coin: str,
+        coin: HL_COIN,
         notional_usd: Annotated[float | None, Field(gt=0, description="Order size in USD")] = None,
     ) -> dict[str, Any]:
         b = Builder()
@@ -1084,7 +1118,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "The endpoint returns up to ~500 recent fills; HL may return fewer when activity is low."
         ),
     )
-    async def hyperliquid_trades(coin: str, top_n: Annotated[int, Field(ge=1, le=50)] = 5) -> dict[str, Any]:
+    async def hyperliquid_trades(
+        coin: HL_COIN,
+        top_n: Annotated[int, Field(ge=1, le=50, description="Largest prints by USD notional to list in the summary.")] = 5,
+    ) -> dict[str, Any]:
         b = Builder()
         coin = await _hl_name(b, coin)
         raw = await b.guard("trades", "hyperliquid", rt.hyperliquid.recent_trades(coin))
@@ -1126,8 +1163,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
         ),
     )
     async def hyperliquid_funding_history(
-        coin: str,
-        days_back: Annotated[float, Field(gt=0, le=180)] = 30.0,
+        coin: HL_COIN,
+        days_back: Annotated[float, Field(gt=0, le=180, description="History window in days back from now (up to 180).")] = 30.0,
     ) -> dict[str, Any]:
         b = Builder()
         now_ms = int(rt.now().timestamp() * 1000)
@@ -1159,7 +1196,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "(absolute, %, annualised simple and log). Positive annualised basis = contango (cash-and-carry opportunity)."
         ),
     )
-    async def deribit_futures_curve(currency: Literal["BTC", "ETH"] = "BTC") -> dict[str, Any]:
+    async def deribit_futures_curve(
+        currency: Annotated[Literal["BTC", "ETH"], Field(description="Deribit futures currency (inverse BTC or ETH contracts).")] = "BTC",
+    ) -> dict[str, Any]:
         b = Builder()
         fut = await b.guard("futures", "deribit", rt.deribit.book_summary(currency, "future"))
         if fut is None:

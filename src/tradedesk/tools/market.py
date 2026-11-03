@@ -44,8 +44,11 @@ def register(server: MCPServer, rt: Runtime) -> None:
     async def market_ohlcv(
         exchange: EX,
         symbol: SYM,
-        timeframe: str = "1h",
-        limit: Annotated[int, Field(ge=2, le=1000)] = 200,
+        timeframe: Annotated[str, Field(description="Candle size as a ccxt timeframe: 1m, 5m, 15m, 1h, 4h, 1d, ...")] = "1h",
+        limit: Annotated[
+            int,
+            Field(ge=2, le=1000, description="Most recent candles to fetch in one request; a venue with a lower cap returns fewer."),
+        ] = 200,
     ) -> dict[str, Any]:
         b = Builder()
         try:
@@ -78,7 +81,14 @@ def register(server: MCPServer, rt: Runtime) -> None:
     async def market_orderbook(
         exchange: EX,
         symbol: SYM,
-        depth: Annotated[int, Field(ge=5, le=500)] = 100,
+        depth: Annotated[
+            int,
+            Field(
+                ge=5,
+                le=500,
+                description="Book levels per side to request; venues may return fewer. Impact estimates use only these levels.",
+            ),
+        ] = 100,
         notional_usd: Annotated[float | None, Field(gt=0, description="Order size in quote currency (USD/USDT)")] = None,
     ) -> dict[str, Any]:
         b = Builder()
@@ -165,9 +175,13 @@ def register(server: MCPServer, rt: Runtime) -> None:
     async def market_markets(
         exchange: EX,
         query: Annotated[str | None, Field(description="Substring match on symbol/id/base/quote (case-insensitive).")] = None,
-        market_type: MarketType = "any",
-        active_only: bool = True,
-        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+        market_type: Annotated[
+            MarketType, Field(description="ccxt market type: spot, swap (perpetual), future (dated), option, or any.")
+        ] = "any",
+        active_only: Annotated[bool, Field(description="Skip markets the venue flags as inactive (delisted or suspended).")] = True,
+        limit: Annotated[
+            int, Field(ge=1, le=1000, description="Max rows returned, sorted by symbol; a warning reports the full match count.")
+        ] = 100,
     ) -> dict[str, Any]:
         b = Builder()
         mk = await b.guard("markets", f"ccxt:{exchange}", rt.exchanges.markets(exchange))
@@ -224,8 +238,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
     async def market_trades(
         exchange: EX,
         symbol: SYM,
-        limit: Annotated[int, Field(ge=1, le=1000)] = 200,
-        top_n: Annotated[int, Field(ge=1, le=50)] = 5,
+        limit: Annotated[
+            int, Field(ge=1, le=1000, description="Recent trades to fetch in one request; a venue with a lower cap returns fewer.")
+        ] = 200,
+        top_n: Annotated[int, Field(ge=1, le=50, description="Largest prints by notional (price × amount, quote currency) to list.")] = 5,
     ) -> dict[str, Any]:
         b = Builder()
         trades = await b.guard("trades", f"ccxt:{exchange}", rt.exchanges.trades(exchange, symbol, limit))

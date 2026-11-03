@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import resource
 import statistics
 import sys
 from collections import Counter
@@ -28,6 +27,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
+import common_helpers as cmn  # noqa: E402
 import verify_listing_drift as ld  # noqa: E402  (events, market-age evidence)
 
 from tradedesk.analytics.listing_drift import (  # noqa: E402
@@ -55,14 +55,6 @@ from tradedesk.analytics.post_listing_midage import (  # noqa: E402
 D_FIRST = int(datetime(2022, 1, 1, tzinfo=UTC).timestamp()) // 86400
 D_LAST = int(datetime(2026, 6, 15, tzinfo=UTC).timestamp()) // 86400
 BTC = "BTCUSDT"
-
-
-def ymd(day: int) -> str:
-    return datetime.fromtimestamp(day * 86400, UTC).strftime("%Y-%m-%d")
-
-
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 
 
 def load_fc(fc: Path, sym: str) -> DailyBars:
@@ -97,7 +89,7 @@ def load_universe(fc: Path) -> tuple[dict[str, DailyBars], dict[str, int]]:
         bars[s] = b
         first[s] = b.first if fm >= "2021-10" else month_end_day(fm)
         if i % 200 == 0:
-            print(f"  loaded {i}/{len(syms)} symbols, peak RSS {rss_mb():.0f} MB", flush=True)
+            print(f"  loaded {i}/{len(syms)} symbols, peak RSS {cmn.rss_mb():.0f} MB", flush=True)
     return bars, first
 
 
@@ -136,7 +128,7 @@ def main() -> None:
     print(f"events from listing_drift cache (one per asset, t0 2022-01..2026-09-15): {len(events)}", flush=True)
     bars, first = load_universe(fc)
     last_day = max(b.last or 0 for b in bars.values())
-    print(f"universe: {len(bars)} eligible symbols with daily bars, last day {ymd(last_day)}, peak RSS {rss_mb():.0f} MB")
+    print(f"universe: {len(bars)} eligible symbols with daily bars, last day {cmn.ymd_day(last_day)}, peak RSS {cmn.rss_mb():.0f} MB")
 
     # consistency check: step 0 of new-perp-listing-drift (14 d, 1x, vs BTC, n 541, SD 42.9 pp)
     btc = bars[BTC]
@@ -197,9 +189,9 @@ def main() -> None:
         rows.append(
             {
                 "symbol": s,
-                "d0": ymd(d0),
-                "month": ymd(d0)[:7],
-                "year": int(ymd(d0)[:4]),
+                "d0": cmn.ymd_day(d0),
+                "month": cmn.ymd_day(d0)[:7],
+                "year": int(cmn.ymd_day(d0)[:4]),
                 "stratum": "new" if age["new"] else "old",
                 "market_age_days": age["age_days"],
                 "turnover_med": round(to),
@@ -212,7 +204,7 @@ def main() -> None:
         rel2.append(r2.rel)
         relb.append(r1.short_pnl + rbtc if rbtc is not None else float("nan"))
         raw.append(-r1.short_pnl)
-    print(f"funnel: {dict(funnel)}; peak RSS {rss_mb():.0f} MB")
+    print(f"funnel: {dict(funnel)}; peak RSS {cmn.rss_mb():.0f} MB")
     print(f"price-level rejections of other-venue age evidence (ticker collisions): {dict(rej)}")
 
     months = [r["month"] for r in rows]
@@ -261,7 +253,7 @@ def main() -> None:
             indent=1,
         )
     )
-    print(f"written {out}; peak RSS {rss_mb():.0f} MB")
+    print(f"written {out}; peak RSS {cmn.rss_mb():.0f} MB")
 
 
 if __name__ == "__main__":

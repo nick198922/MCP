@@ -17,7 +17,6 @@ import argparse
 import asyncio
 import json
 import math
-import resource
 import statistics
 import sys
 import time
@@ -27,6 +26,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
 import numpy as np
 
 from tradedesk.analytics import per_asset as pa
@@ -79,31 +79,12 @@ class Tee:
             st.flush()
 
 
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
-
-
-def rd(p: Path) -> Any:
-    return json.loads(p.read_text())
-
-
-def wr(p: Path, obj: Any) -> None:
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".tmp")
-    tmp.write_text(json.dumps(obj, separators=(",", ":")))
-    tmp.replace(p)
-
-
 def months(a: tuple[int, int], b: tuple[int, int]) -> list[tuple[int, int]]:
     out, (y, m) = [], a
     while (y, m) <= b:
         out.append((y, m))
         y, m = (y + 1, 1) if m == 12 else (y, m + 1)
     return out
-
-
-def ymd(day: int) -> str:
-    return datetime.fromtimestamp(day * 86400, tz=UTC).strftime("%Y-%m-%d")
 
 
 class Fetcher:
@@ -132,7 +113,7 @@ class Fetcher:
                             print(f"  error {path.name}: {e.reason}: {str(e.detail)[:160]}", flush=True)
                         return
                     await asyncio.sleep(5 * (k + 1))
-        await asyncio.to_thread(wr, path, data)
+        await asyncio.to_thread(cmn.write_json, path, data)
         self.done += 1
 
     async def many(self, label: str, jobs: list[tuple[Path, Callable[[], Awaitable[Any]]]]) -> None:
@@ -147,7 +128,7 @@ class Fetcher:
             if self.done and self.done % step == 0:
                 el = time.time() - t0
                 print(
-                    f"  [{label}] {self.done}/{len(todo)} {el:.0f}s eta {el / self.done * (len(todo) - self.done):.0f}s rss {rss_mb():.0f}MB",
+                    f"  [{label}] {self.done}/{len(todo)} {el:.0f}s eta {el / self.done * (len(todo) - self.done):.0f}s rss {cmn.rss_mb():.0f}MB",
                     flush=True,
                 )
 
@@ -246,7 +227,7 @@ async def stage_meta(cache: Path) -> None:
         cands = candidates(cache)
         print(f"candidates (eligible perp with same-symbol spot): {len(cands)}", flush=True)
         await fx.many("perp 2021-12", [kjob(rt, cache, "perp", s, (2021, 12)) for s in cands])
-        live = [s for s in cands if rd(kpath(cache, "perp", s, (2021, 12)))]
+        live = [s for s in cands if cmn.read_json(kpath(cache, "perp", s, (2021, 12)))]
         print(f"candidates with perp data in 2021-12: {len(live)}", flush=True)
         jobs = [kjob(rt, cache, k, s, ym) for s in live for ym in RANK_MONTHS for k in ("perp", "spot")]
         await fx.many("rank months 2021-07..12", jobs)
@@ -255,9 +236,9 @@ async def stage_meta(cache: Path) -> None:
 
 
 def candidates(cache: Path) -> list[str]:
-    syms = rd(cache / "um_symbols.json")
-    spot = set(rd(cache / "spot_symbols.json"))
-    info = rd(cache / "exchange_info.json")["info"]
+    syms = cmn.read_json(cache / "um_symbols.json")
+    spot = set(cmn.read_json(cache / "spot_symbols.json"))
+    info = cmn.read_json(cache / "exchange_info.json")["info"]
     out = []
     for s in syms:
         i = info.get(s) or {}
@@ -267,9 +248,9 @@ def candidates(cache: Path) -> list[str]:
 
 
 def stage_universe(cache: Path) -> None:
-    syms = rd(cache / "um_symbols.json")
-    info = rd(cache / "exchange_info.json")["info"]
-    spot = set(rd(cache / "spot_symbols.json"))
+    syms = cmn.read_json(cache / "um_symbols.json")
+    info = cmn.read_json(cache / "exchange_info.json")["info"]
+    spot = set(cmn.read_json(cache / "spot_symbols.json"))
     excl: Counter[str] = Counter()
     for s in syms:
         i = info.get(s) or {}
@@ -280,13 +261,13 @@ def stage_universe(cache: Path) -> None:
     cands = candidates(cache)
     rank = []
     for s in cands:
-        if not kpath(cache, "perp", s, (2021, 12)).exists() or not rd(kpath(cache, "perp", s, (2021, 12))):
+        if not kpath(cache, "perp", s, (2021, 12)).exists() or not cmn.read_json(kpath(cache, "perp", s, (2021, 12))):
             continue
         ok = True
         qv = 0.0
         for ym in RANK_MONTHS:
-            p = rd(kpath(cache, "perp", s, ym)) if kpath(cache, "perp", s, ym).exists() else None
-            sp = rd(kpath(cache, "spot", s, ym)) if kpath(cache, "spot", s, ym).exists() else None
+            p = cmn.read_json(kpath(cache, "perp", s, ym)) if kpath(cache, "perp", s, ym).exists() else None
+            sp = cmn.read_json(kpath(cache, "spot", s, ym)) if kpath(cache, "spot", s, ym).exists() else None
             if not p or not sp:
                 ok = False
                 break
@@ -294,7 +275,7 @@ def stage_universe(cache: Path) -> None:
         if ok:
             rank.append((qv, s))
     # survivorship context: eligible perps (any spot) with data in 2021-12 vs those with a same-symbol spot
-    hist22 = len([s for s in cands if kpath(cache, "perp", s, (2021, 12)).exists() and rd(kpath(cache, "perp", s, (2021, 12)))])
+    hist22 = len([s for s in cands if kpath(cache, "perp", s, (2021, 12)).exists() and cmn.read_json(kpath(cache, "perp", s, (2021, 12)))])
     no_spot_eligible = [
         s
         for s in syms
@@ -303,7 +284,7 @@ def stage_universe(cache: Path) -> None:
     rank.sort(reverse=True)
     order = [s for _, s in rank]
     uni = list(MAJORS) + [s for s in order if s not in MAJORS][: N_UNIVERSE - len(MAJORS)]
-    wr(cache / "universe.json", {"symbols": uni, "rank": [[s, q] for q, s in rank]})
+    cmn.write_json(cache / "universe.json", {"symbols": uni, "rank": [[s, q] for q, s in rank]})
     print(f"archive USDT-M symbols {len(syms)}; excluded {dict(excl)}")
     print(
         f"eligible perps without a same-symbol spot (all dates; e.g. 1000-prefixed): {len(no_spot_eligible)}: {no_spot_eligible[:12]} ..."
@@ -315,7 +296,7 @@ def stage_universe(cache: Path) -> None:
 
 
 async def stage_fetch(cache: Path) -> None:
-    uni = rd(cache / "universe.json")["symbols"]
+    uni = cmn.read_json(cache / "universe.json")["symbols"]
     _, rt = build_server()
     try:
         fx = Fetcher(cache, workers=10)
@@ -334,7 +315,7 @@ def load_market(cache: Path, kind: str, sym: str) -> dict[int, list[float]]:
     out: dict[int, list[float]] = {}
     for ym in months(FIRST_MONTH, LAST_MONTH):
         p = kpath(cache, kind, sym, ym)
-        rows = rd(p) if p.exists() else None
+        rows = cmn.read_json(p) if p.exists() else None
         for r in rows or []:
             out[int(r[0]) // DAY_MS] = r
     return out
@@ -344,14 +325,14 @@ def load_funding(cache: Path, sym: str) -> tuple[np.ndarray, np.ndarray]:
     rows: list[list[float]] = []
     for ym in months(FIRST_MONTH, LAST_MONTH):
         p = fpath(cache, sym, ym)
-        rows += (rd(p) if p.exists() else None) or []
+        rows += (cmn.read_json(p) if p.exists() else None) or []
     rows.sort(key=lambda r: r[0])
     return np.array([r[0] for r in rows], dtype=float), np.array([r[2] for r in rows], dtype=float)
 
 
 def build_panel(cache: Path) -> dict[str, Any]:
     """Per-symbol arrays on the day grid GRID0..GRID1 plus sanity counters."""
-    uni = rd(cache / "universe.json")["symbols"]
+    uni = cmn.read_json(cache / "universe.json")["symbols"]
     n = GRID1 - GRID0 + 1
     syms: dict[str, dict[str, np.ndarray]] = {}
     checks: dict[str, Any] = {}
@@ -395,7 +376,7 @@ def build_panel(cache: Path) -> dict[str, Any]:
             "bad_ts": bad_ts,
             "gaps_perp": gaps_perp,
             "gaps_spot": gaps_spot,
-            "last": ymd(GRID0 + last) if last >= 0 else None,
+            "last": cmn.ymd_day(GRID0 + last) if last >= 0 else None,
             "spot_vol_share": volshare,
             "funding_n": int(a["ft"].size),
             "mismatch_days": int(mism.sum()),
@@ -492,7 +473,7 @@ def stage0(cache: Path) -> dict[str, Any]:
     t0 = time.time()
     panel = build_panel(cache)
     ch = panel["checks"]
-    print(f"panel built in {time.time() - t0:.0f}s rss {rss_mb():.0f}MB; symbols kept {len(panel['syms'])}/{len(ch)}")
+    print(f"panel built in {time.time() - t0:.0f}s rss {cmn.rss_mb():.0f}MB; symbols kept {len(panel['syms'])}/{len(ch)}")
     print(
         f"{'symbol':<12} {'perp/spot':>9} {'badTs':>5} {'gapP':>5} {'gapS':>5} {'mism':>5} {'zeroV':>5} {'spot/perp vol':>13} {'fund':>5} last"
     )
@@ -525,7 +506,7 @@ def stage0(cache: Path) -> dict[str, Any]:
         "n_bot": n_bot,
         "event_days": len(days),
         "event_weeks": se["clusters"],
-        "first_day": ymd(first_used) if first_used else None,
+        "first_day": cmn.ymd_day(first_used) if first_used else None,
         "sd_y1": sd_y,
         "sd_y1_alts": sd_alt,
         "sd_y1_majors": sd_maj,
@@ -543,8 +524,8 @@ def stage0(cache: Path) -> dict[str, Any]:
     print(
         f"  per-tercile n: top {n_top}, bottom {n_bot}; MDE {mde * 100:.3f} pp vs gate {GATE_MDE * 100:.1f} pp -> {'PASS' if res['gate_pass'] else 'FAIL'}"
     )
-    wr(cache / "stage0.json", res)
-    print(f"rss {rss_mb():.0f}MB")
+    cmn.write_json(cache / "stage0.json", res)
+    print(f"rss {cmn.rss_mb():.0f}MB")
     return res
 
 
@@ -571,7 +552,7 @@ def fmt(r: dict[str, Any]) -> str:
 
 
 def full(cache: Path) -> None:
-    s0 = rd(cache / "stage0.json")
+    s0 = cmn.read_json(cache / "stage0.json")
     if not s0["gate_pass"]:
         print(f"stage 0 gate failed (MDE {s0['mde'] * 100:.3f} pp > {GATE_MDE * 100:.1f} pp): full test not run (pre-registered)")
         return
@@ -586,7 +567,7 @@ def full(cache: Path) -> None:
     used_days = sorted({int(d) for d, b in zip(days, lab, strict=True) if b >= 0})
     split = used_days[int(0.75 * len(used_days))]
     is_m, oos_m = days < split, days >= split
-    print(f"IS/OOS split at {ymd(split)} (first 75 % of event dates after burn-in)")
+    print(f"IS/OOS split at {cmn.ymd_day(split)} (first 75 % of event dates after burn-in)")
     print("\nH1 (primary): S_net = mean(g|top) + mean(g|bottom), h=1, base costs")
     h1 = ci(g, lab, evs, W)
     print(f"  full  {fmt(h1)}")
@@ -622,7 +603,7 @@ def full(cache: Path) -> None:
         m = np.isin(lb2, [0, 2])
         sims.append(float(y2[m & (lb2 == 2)].mean() - y2[m & (lb2 == 0)].mean()))
         if rep % 50 == 49:
-            print(f"  rep {rep + 1} rss {rss_mb():.0f}MB", flush=True)
+            print(f"  rep {rep + 1} rss {cmn.rss_mb():.0f}MB", flush=True)
     sims_a = np.array(sims)
     p_shuf = float((1 + (sims_a >= true_s).sum()) / (1 + sims_a.size))
     print(
@@ -672,8 +653,8 @@ def full(cache: Path) -> None:
     print(f"  h=3 (overlapping){fmt(ci(g3, lab, evs, W))}")
     sg = np.array([e["sg"] for e in evs])
     maj = np.array([e["s"] in MAJORS for e in evs])
-    yr = np.array([int(ymd(e["day"])[:4]) for e in evs])
-    ym_ = np.array([ymd(e["day"])[:7] for e in evs])
+    yr = np.array([int(cmn.ymd_day(e["day"])[:4]) for e in evs])
+    ym_ = np.array([cmn.ymd_day(e["day"])[:7] for e in evs])
     for nm, mk in (
         ("up days", sg > 0),
         ("down days", sg < 0),
@@ -763,10 +744,10 @@ def full(cache: Path) -> None:
         "placebo_shuffle_p": p_shuf,
         "placebo_shift": shift_res,
         "reg_top_minus_bottom": reg,
-        "split": ymd(split),
+        "split": cmn.ymd_day(split),
     }
-    wr(cache / "full.json", out)
-    print(f"\nrss {rss_mb():.0f}MB")
+    cmn.write_json(cache / "full.json", out)
+    print(f"\nrss {cmn.rss_mb():.0f}MB")
 
 
 def main() -> None:

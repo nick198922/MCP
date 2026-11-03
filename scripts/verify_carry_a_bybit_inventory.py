@@ -22,7 +22,6 @@ import asyncio
 import datetime as dt
 import json
 import random
-import resource
 import sys
 from collections import Counter
 from pathlib import Path
@@ -30,6 +29,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import common_helpers as cmn  # noqa: E402
 import verify_news_events as nev  # noqa: E402
 
 from tradedesk.analytics.carry_bybit_inventory import DAY_MS, active_days, has_bar_in, slot_estimate, unit_inventory  # noqa: E402
@@ -49,14 +49,6 @@ def fmt(t: int | None) -> str:
     return "-" if t is None else dt.datetime.fromtimestamp(t / 1000, dt.UTC).strftime("%Y-%m-%d %H:%M")
 
 
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
-
-
-def rd(p: Path) -> Any:
-    return json.loads(p.read_text())
-
-
 # ---------------------------------------------------------------- stage: units
 
 
@@ -72,7 +64,7 @@ def stage_units(cache: Path) -> None:
             if not p.exists():
                 kinds["needs_body_missing"] += 1
                 continue
-            b = rd(p)
+            b = cmn.read_json(p)
             kind, ticks = ("perp_delist", b["perps"]) if "Perpetual" in r["title"] else ("spot_delist", b["pairs"])
         kinds[kind] += 1
         for t in ticks:
@@ -118,7 +110,7 @@ class Api:
     async def get(self, name: str, path: str, params: dict[str, Any]) -> dict[str, Any] | None:
         p = self.dir / f"{name}.json"
         if p.exists():
-            return rd(p)
+            return cmn.read_json(p)
         try:
             r = await self.http.get_json(path, params=params)
             data = r.data if isinstance(r.data, dict) else {"retCode": -1}
@@ -170,7 +162,7 @@ class Api:
 
 
 async def stage_validate(cache: Path) -> None:
-    u = rd(cache / "units.json")["units"]
+    u = cmn.read_json(cache / "units.json")["units"]
     rng = random.Random(SEED)
     perp_units = [x for x in u if x["type"] in ("perp", "both")]
     spot_units = [x for x in u if x["type"] in ("spot", "both")]
@@ -213,7 +205,7 @@ async def stage_validate(cache: Path) -> None:
 
 
 async def stage_fetch(cache: Path, limit: int = 0) -> None:
-    units = rd(cache / "units.json")["units"]
+    units = cmn.read_json(cache / "units.json")["units"]
     if limit:
         units = random.Random(SEED + 1).sample(units, limit)
     api = Api(cache)
@@ -234,7 +226,7 @@ async def stage_fetch(cache: Path, limit: int = 0) -> None:
                 await api.funding(u["perp"], t_a)
             if i % 20 == 0 or i == len(units) - 1:
                 el = (dt.datetime.now(dt.UTC) - t0).total_seconds()
-                print(f"  {i + 1}/{len(units)} {u['base']} calls {api.calls} {el:.0f}s rss {rss_mb():.0f} MB", flush=True)
+                print(f"  {i + 1}/{len(units)} {u['base']} calls {api.calls} {el:.0f}s rss {cmn.rss_mb():.0f} MB", flush=True)
     finally:
         await api.aclose()
     if not limit:
@@ -246,8 +238,8 @@ async def stage_fetch(cache: Path, limit: int = 0) -> None:
 
 
 def stage_count(cache: Path) -> None:
-    units = rd(cache / "units_resolved.json")
-    val = rd(cache / "validate.json")
+    units = cmn.read_json(cache / "units_resolved.json")
+    val = cmn.read_json(cache / "validate.json")
     absent_ok = bool(val["spot_empty_means_absent"])
     raw = cache / "raw"
 
@@ -255,7 +247,7 @@ def stage_count(cache: Path) -> None:
         p = raw / f"k_{cat}_{sym}_{t_a}.json"
         if not p.exists():
             return None
-        r = rd(p)
+        r = cmn.read_json(p)
         return None if r["retCode"] not in (0, 10001) else [(int(x[0]), float(x[4]), float(x[5])) for x in r["list"]]
 
     def fu(sym: str, t_a: int) -> list[tuple[int, float]] | None:
@@ -264,7 +256,7 @@ def stage_count(cache: Path) -> None:
             p = raw / f"f_{sym}_{t_a}_{page}.json"
             if not p.exists():
                 break
-            r = rd(p)
+            r = cmn.read_json(p)
             if r["retCode"] != 0:
                 return None
             for x in r["list"]:
@@ -324,7 +316,7 @@ def stage_count(cache: Path) -> None:
     rc_empty: Counter[str] = Counter()
     for r in out:
         if r["spot"] == "unmeasured" and r.get("spot_rows") == 0:
-            j = rd(raw / f"k_spot_{r['base']}USDT_{r['t_a']}.json")
+            j = cmn.read_json(raw / f"k_spot_{r['base']}USDT_{r['t_a']}.json")
             rc_empty[f"{j['retCode']} {j['retMsg']!r}"] += 1
     no_perp: Counter[str] = Counter()
     for r in out:
@@ -333,7 +325,7 @@ def stage_count(cache: Path) -> None:
         probes = []
         for m in MULTIPLIERS:
             p = raw / f"k_linear_{(str(m) if m > 1 else '') + r['base']}USDT_{r['t_a']}.json"
-            probes.append(rd(p) if p.exists() else None)
+            probes.append(cmn.read_json(p) if p.exists() else None)
         if any(j is None for j in probes):
             no_perp["probe_missing"] += 1
         elif any(j["list"] for j in probes):
@@ -354,7 +346,7 @@ def stage_count(cache: Path) -> None:
     verdict = "next_item" if total["estimate"]["ban_events"] >= GATE_MIN else "inconclusive"
     (cache / "summary.json").write_text(json.dumps({"summaries": sums, "verdict": verdict, "spot_empty_means_absent": absent_ok}, indent=1))
     print(
-        f"gate: estimated ban events {total['estimate']['ban_events']:.2f} (U {total['entry_after_U']}) vs {GATE_MIN} -> {verdict}; peak rss {rss_mb():.0f} MB"
+        f"gate: estimated ban events {total['estimate']['ban_events']:.2f} (U {total['entry_after_U']}) vs {GATE_MIN} -> {verdict}; peak rss {cmn.rss_mb():.0f} MB"
     )
 
 

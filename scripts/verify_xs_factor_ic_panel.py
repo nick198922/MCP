@@ -31,6 +31,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import common_helpers as cmn  # noqa: E402
 import verify_funding_crowding as fc  # noqa: E402  (loader, metadata, sanity checks; scripts/ is not a package)
 
 from tradedesk.analytics.funding_crowding import (  # noqa: E402
@@ -77,10 +78,6 @@ IX = {c: i for i, c in enumerate(COLS)}
 
 def rss() -> str:
     return f"peak RSS {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.0f} MB"
-
-
-def ymd(day: int) -> str:
-    return datetime.fromtimestamp(day * 86400, UTC).strftime("%Y-%m-%d")
 
 
 # ---------------------------------------------------------------- panel
@@ -139,7 +136,7 @@ def stage_panel(data_dir: Path, out: Path) -> None:
             )
         weeks.append({"day": day, "rows": rows})
         if len(weeks) % 50 == 0:
-            print(f"  week {len(weeks)} {ymd(day)} N={len(rows)} ({time.time() - t0:.0f}s; {rss()})", flush=True)
+            print(f"  week {len(weeks)} {cmn.ymd_day(day)} N={len(rows)} ({time.time() - t0:.0f}s; {rss()})", flush=True)
     fc.wr(out / "panel.json", {"weeks": weeks, "reasons": dict(reasons), "cols": COLS})
     print(f"panel: {len(weeks)} weeks in {time.time() - t0:.0f}s; reasons {dict(reasons)}; {rss()}", flush=True)
     fc.sanity(data)
@@ -181,13 +178,13 @@ def stage0(data_dir: Path, out: Path) -> None:
     raw = fc.rd(out / "panel.json")
     info = fc.rd(data_dir / "exchange_info.json")["info"]
     ns = [len(w["rows"]) for w in raw["weeks"]]
-    print(f"rank Mondays {len(raw['weeks'])} ({ymd(FIRST)}..{ymd(LAST)}); weeks with N >= {MIN_N}: {len(weeks)}")
+    print(f"rank Mondays {len(raw['weeks'])} ({cmn.ymd_day(FIRST)}..{cmn.ymd_day(LAST)}); weeks with N >= {MIN_N}: {len(weeks)}")
     print(f"universe N per week: min {min(ns)}, median {statistics.median(ns)}, max {max(ns)}; exclusion reasons {raw['reasons']}")
     by_year: dict[str, Counter[str]] = {}
     trunc = 0
     big = 0
     for w in weeks:
-        y = ymd(w["day"])[:4]
+        y = cmn.ymd_day(w["day"])[:4]
         for r in w["rows"]:
             by_year.setdefault(y, Counter())[(info.get(r[0]) or {}).get("status") or "REMOVED"] += 1
             trunc += bool(r[IX["trunc"]])
@@ -246,7 +243,7 @@ def stage_full(data_dir: Path, out: Path, n_perm: int) -> None:
     n_oos = len(weeks) - (len(weeks) * 3) // 4
     is_mask = [i < len(weeks) - n_oos for i in range(len(weeks))]
     print(
-        f"weeks {len(weeks)}; IS {sum(is_mask)} ({ymd(days[0])}..{ymd(days[sum(is_mask) - 1])}); OOS {n_oos} ({ymd(days[sum(is_mask)])}..{ymd(days[-1])})"
+        f"weeks {len(weeks)}; IS {sum(is_mask)} ({cmn.ymd_day(days[0])}..{cmn.ymd_day(days[sum(is_mask) - 1])}); OOS {n_oos} ({cmn.ymd_day(days[sum(is_mask)])}..{cmn.ymd_day(days[-1])})"
     )
     passed = [s for s in SIGNALS if s0[s]["gate"]]
     for s in SIGNALS:
@@ -283,8 +280,8 @@ def stage_full(data_dir: Path, out: Path, n_perm: int) -> None:
         print(fmt("OOS (last 25 %)", oos))
         print(fmt("neutralised IS", [x for x, k in zip(neut[s], is_mask, strict=True) if k]))
         print(fmt("neutralised OOS", [x for x, k in zip(neut[s], is_mask, strict=True) if not k]))
-        for y in sorted({ymd(d)[:4] for d in days}):
-            print(fmt(f"year {y}", [x for x, d in zip(xs, days, strict=True) if ymd(d)[:4] == y]))
+        for y in sorted({cmn.ymd_day(d)[:4] for d in days}):
+            print(fmt(f"year {y}", [x for x, d in zip(xs, days, strict=True) if cmn.ymd_day(d)[:4] == y]))
         roll = rolling_means(xs, 52)
         print(
             f"    rolling 52w: min {min(roll):+.4f} max {max(roll):+.4f} share with the full-sample sign {sum(r * sg > 0 for r in roll) / len(roll):.0%}"

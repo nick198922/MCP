@@ -175,3 +175,71 @@ def test_scripts_use_the_shared_rss_mb(name):
     mod = __import__(name)
     assert not hasattr(mod, "rss_mb") and not hasattr(mod, "resource")
     assert mod.cmn.rss_mb is cmn.rss_mb
+
+
+def test_write_json_is_compact_atomic_and_makes_the_directory(tmp_path):
+    p = tmp_path / "a" / "b" / "x.json"
+    obj = {"k": [1, 2.5, None], "s": "é", "n": {"z": True}}
+    cmn.write_json(p, obj)
+    # byte for byte what the local 'wr' copies wrote: json.dumps with (",", ":") separators, ensure_ascii on
+    assert p.read_text() == '{"k":[1,2.5,null],"s":"\\u00e9","n":{"z":true}}'
+    assert sorted(f.name for f in p.parent.iterdir()) == ["x.json"]  # the x.tmp file was renamed over x.json
+    cmn.write_json(p, [3])  # overwrites
+    assert p.read_text() == "[3]"
+    assert cmn.read_json(p) == [3]
+
+
+def test_write_json_tmp_name_replaces_the_suffix(tmp_path, monkeypatch):
+    seen = []
+    real = Path.replace
+
+    def spy(self, target):
+        seen.append((self.name, Path(target).name))
+        return real(self, target)
+
+    monkeypatch.setattr(Path, "replace", spy)
+    cmn.write_json(tmp_path / "x.json", {})
+    assert seen == [("x.tmp", "x.json")]  # Path.with_suffix(".tmp"), as the copies did
+
+
+def test_read_json_roundtrip_and_errors(tmp_path):
+    p = tmp_path / "x.json"
+    obj = {"a": [1, {"b": "c"}], "f": 0.1}
+    cmn.write_json(p, obj)
+    assert cmn.read_json(p) == obj
+    with pytest.raises(FileNotFoundError):
+        cmn.read_json(tmp_path / "missing.json")
+    (tmp_path / "bad.json").write_text("{")
+    with pytest.raises(ValueError):
+        cmn.read_json(tmp_path / "bad.json")
+
+
+def test_ymd_day():
+    assert cmn.ymd_day(0) == "1970-01-01"
+    assert cmn.ymd_day(19723) == "2024-01-01"  # 1704067200 s / 86400
+    assert cmn.ymd_day(19782) == "2024-02-29"
+    assert cmn.ymd_day(-1) == "1969-12-31"
+
+
+SIXTH_ROUND = {  # item 37 of the standing-improvements card: local copies removed in favour of common_helpers
+    "verify_funding_settlement": ["rss_mb", "rd", "wr", "ymd"],
+    "verify_spot_perp_flow": ["rss_mb", "rd", "wr", "ymd"],
+    "verify_alt_downside_beta": ["rd", "wr", "ymd"],
+    "verify_market_makers_depth": ["rss_mb", "rd", "wr"],
+    "verify_hodler_step0": ["rss_mb", "rd", "wr"],
+    "verify_alt_basket_leverage": ["rss_mb", "rd", "ymd"],
+    "verify_post_listing_midage": ["rss_mb", "ymd"],
+    "verify_carry_a_bybit_inventory": ["rss_mb", "rd"],
+    "verify_hl_spot_perp_carry": ["rss_mb", "rd"],
+    "verify_xs_factor_ic_panel": ["ymd"],
+}
+
+
+@pytest.mark.parametrize("name", sorted(SIXTH_ROUND))
+def test_scripts_use_the_shared_json_and_day_helpers(name):
+    mod = __import__(name)
+    for local in SIXTH_ROUND[name]:
+        assert not hasattr(mod, local), local
+    if "rss_mb" in SIXTH_ROUND[name]:
+        assert not hasattr(mod, "resource")
+    assert mod.cmn is cmn

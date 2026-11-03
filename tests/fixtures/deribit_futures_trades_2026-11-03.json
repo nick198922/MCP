@@ -1,0 +1,70 @@
+{
+ "_source": "www.deribit.com/api/v2/public/get_last_trades_by_currency currency=BTC kind=future count=1000 include_old=false (4 trades picked: 2 dated futures, 2 largest perpetual). Inverse futures: amount is USD (= contracts * 10 USD for BTC); price is USD per BTC.",
+ "_fetched": "2026-11-03",
+ "jsonrpc": "2.0",
+ "result": {
+  "trades": [
+   {
+    "timestamp": 1793670343911,
+    "price": 78110.0,
+    "direction": "buy",
+    "index_price": 77078.91,
+    "instrument_name": "BTC-29JAN27",
+    "trade_seq": 2546,
+    "amount": 30.0,
+    "mark_price": 78118.61,
+    "tick_direction": 2,
+    "starbase_match_id": 243188866108895232,
+    "trade_id": "459703008",
+    "contracts": 3.0,
+    "starbase_timestamp": 1793670343911557011
+   },
+   {
+    "timestamp": 1793670330441,
+    "price": 77087.5,
+    "direction": "buy",
+    "index_price": 77051.92,
+    "instrument_name": "BTC-5NOV26",
+    "trade_seq": 2571,
+    "amount": 10.0,
+    "mark_price": 77080.37,
+    "tick_direction": 0,
+    "starbase_match_id": 243188809611620352,
+    "trade_id": "459702967",
+    "contracts": 1.0,
+    "starbase_timestamp": 1793670330441431532
+   },
+   {
+    "timestamp": 1793670305555,
+    "price": 77040.0,
+    "direction": "buy",
+    "index_price": 77013.18,
+    "instrument_name": "BTC-PERPETUAL",
+    "trade_seq": 312850247,
+    "amount": 50000.0,
+    "mark_price": 77033.7,
+    "tick_direction": 1,
+    "starbase_match_id": 243188705232171030,
+    "trade_id": "459702831",
+    "contracts": 5000.0,
+    "starbase_timestamp": 1793670305555311131
+   },
+   {
+    "timestamp": 1793670345223,
+    "price": 77108.5,
+    "direction": "sell",
+    "index_price": 77080.65,
+    "instrument_name": "BTC-PERPETUAL",
+    "trade_seq": 312850428,
+    "amount": 32510.0,
+    "mark_price": 77108.47,
+    "tick_direction": 3,
+    "starbase_match_id": 243188871611822090,
+    "trade_id": "459703020",
+    "contracts": 3251.0,
+    "starbase_timestamp": 1793670345223884303
+   }
+  ],
+  "has_more": true
+ }
+}

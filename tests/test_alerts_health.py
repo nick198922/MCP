@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+
 from conftest import NOW, FakeEx, make_transports
+from tradedesk.alerts.engine import load_rules
 from tradedesk.alerts.health import RULE_PREFIX, Watch, evaluate_health, state_from_alerts
 from tradedesk.collector.scheduler import _evaluate_alerts
 from tradedesk.config import Settings
@@ -100,6 +103,71 @@ def test_detail_is_flattened_and_short():
     _fail(h, "x", 2)
     _, fired = evaluate_health(_providers(h), {}, now_ts=T0)
     assert "\n" not in fired[0].message and len(fired[0].message) < 300
+
+
+def test_secret_in_detail_never_reaches_message():
+    h = HealthRegistry()
+    _fail(h, "x", 2)
+    h.error("x", "auth_error", "HTTP 401 GET https://api.example/v1?token=abc123&apiKey=k9 {'secret': 'zz77'}")
+    _, fired = evaluate_health(_providers(h), {}, now_ts=T0)
+    (a,) = fired
+    assert "auth_error" in a.message and "token=***" in a.message
+    for secret in ("abc123", "k9", "zz77"):
+        assert secret not in a.message and secret not in str(a.payload())
+
+
+def test_json_rule_with_reserved_health_prefix_is_skipped(tmp_path):
+    path = tmp_path / "rules.json"
+    rule = {"metric": {"kind": "funding", "venue": "binanceusdm", "base": "BTC"}, "when": {"op": ">", "value": 0.3}}
+    path.write_text(json.dumps({"rules": [{"id": "health:deribit", **rule}, {"id": "funding_hot", **rule}]}))
+    assert [r.id for r in load_rules(path)] == ["funding_hot"]
+
+
+async def test_health_failure_does_not_block_other_alerts(state, tmp_path):
+    # Review 2026-11-03, remark 1: a DB error while restoring the health state must not drop the tick's other alerts.
+    rules_path = tmp_path / "rules.json"
+    rules_path.write_text(
+        json.dumps(
+            {
+                "rules": [
+                    {
+                        "id": "funding_hot",
+                        "metric": {"kind": "funding", "venue": "binanceusdm", "base": "BTC"},
+                        "when": {"op": ">", "value": 0.30},
+                    }
+                ]
+            }
+        )
+    )
+    settings = Settings(
+        http_retries=1,
+        http_retry_backoff=0.0,
+        cache_scale=0.0,
+        db_path=":memory:",
+        collector_enabled=True,
+        alerts_enabled=True,
+        alerts_rules_path=str(rules_path),
+    )
+    rt = Runtime(settings, transports=make_transports(state), exchange_factory=FakeEx)
+    rt.now = lambda: NOW
+    assert rt.store is not None
+    await rt.store.init()
+
+    async def broken(_prefix: str) -> list:
+        raise RuntimeError("database is locked")
+
+    rt.store.last_alerts_with_prefix = broken  # type: ignore[method-assign]
+    try:
+        await rt.store.insert_funding(
+            ts=int(NOW.timestamp()),
+            rows=[{"venue": "binanceusdm", "base": "BTC", "rate_per_interval": 0.0003, "interval_hours": 8.0, "annualized": 0.32}],
+        )
+        _fail(rt.health, "deribit", 3)
+        assert await _evaluate_alerts(rt) == 1
+        assert [r["rule_id"] for r in await rt.store.recent_alerts()] == ["funding_hot"]
+        assert rt.health_watch is None  # nothing was announced, so the next tick retries the restore
+    finally:
+        await rt.aclose()
 
 
 def test_state_from_alerts():

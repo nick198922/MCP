@@ -38,9 +38,15 @@ def register(server: MCPServer, rt: Runtime) -> None:
         limit: Annotated[int, Field(ge=50, le=5000, description="How many bars to pull.")] = 500,
         lookback: Annotated[int, Field(ge=2, le=500, description="Lookback bars for the breakout.")] = 24,
         threshold_pct: Annotated[float, Field(gt=0, le=20, description="Breakout trigger (percent).")] = 2.0,
-        fee_bps: Annotated[float, Field(ge=0, le=100)] = 5.0,
-        slippage_bps: Annotated[float, Field(ge=0, le=100)] = 2.0,
-        include_curve: bool = False,
+        fee_bps: Annotated[
+            float,
+            Field(ge=0, le=100, description="Fee per position change, basis points of notional (5 = 0.05 %); a flip pays twice."),
+        ] = 5.0,
+        slippage_bps: Annotated[
+            float,
+            Field(ge=0, le=100, description="Slippage per position change, basis points of notional, on top of fee_bps."),
+        ] = 2.0,
+        include_curve: Annotated[bool, Field(description="Also return the equity curve (one value per bar; can be long).")] = False,
     ) -> dict[str, Any]:
         b = Builder()
         try:

@@ -21,7 +21,6 @@ from __future__ import annotations
 import argparse
 import bisect
 import hashlib
-import json
 import logging
 import statistics
 import time
@@ -31,6 +30,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
 
 from tradedesk.analytics.alt_downside_beta import (
     BTC,
@@ -81,21 +82,6 @@ NW_DAILY, NW_WEEKLY = 5, 4
 SEED = 7
 
 
-def ymd(day: int) -> str:
-    return datetime.fromtimestamp(day * 86400, UTC).strftime("%Y-%m-%d")
-
-
-def rd(p: Path) -> Any:
-    return json.loads(p.read_text())
-
-
-def wr(p: Path, obj: Any) -> None:
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".tmp")
-    tmp.write_text(json.dumps(obj, separators=(",", ":")))
-    tmp.replace(p)
-
-
 def pct(x: float, nd: int = 3) -> str:
     return f"{x * 100:+.{nd}f}%"
 
@@ -115,13 +101,13 @@ class Sym:
 
 
 def eligible(data_dir: Path) -> list[str]:
-    syms, info = rd(data_dir / "symbols.json"), rd(data_dir / "exchange_info.json")["info"]
+    syms, info = cmn.read_json(data_dir / "symbols.json"), cmn.read_json(data_dir / "exchange_info.json")["info"]
     return [s for s in syms if symbol_eligible(s, (info.get(s) or {}).get("contractType"), (info.get(s) or {}).get("underlyingType"))]
 
 
 def months_of(data_dir: Path, sym: str) -> list[str]:
     p = data_dir / "listing" / f"{sym}.json"
-    ms = rd(p) if p.exists() else None
+    ms = cmn.read_json(p) if p.exists() else None
     return [m for m in ms or [] if FIRST_MONTH <= m <= LAST_MONTH]
 
 
@@ -132,9 +118,9 @@ def load(data_dir: Path) -> dict[str, Sym]:
         fund: list[list[float]] = []
         for mo in months_of(data_dir, s):
             kp, fp = data_dir / "k1d" / s / f"{mo}.json", data_dir / "funding" / s / f"{mo}.json"
-            if kp.exists() and (k := rd(kp)):
+            if kp.exists() and (k := cmn.read_json(kp)):
                 rows.extend(k)
-            if fp.exists() and (f := rd(fp)):
+            if fp.exists() and (f := cmn.read_json(fp)):
                 fund.extend(f)
         if not rows:
             continue
@@ -299,15 +285,15 @@ def stage_prereg(cache: Path) -> None:
     sec = t[t.index("## Попередня реєстрація") : t.index("## Вердикт")]
     p = cache / "prereg.json"
     if p.exists():
-        old = rd(p)
+        old = cmn.read_json(p)
         print(f"prereg already stored at {old['written_utc']}: sha256 {old['sha256']}; current {hashlib.sha256(sec.encode()).hexdigest()}")
         return
-    wr(p, {"written_utc": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"), "sha256": hashlib.sha256(sec.encode()).hexdigest()})
-    print(rd(p))
+    cmn.write_json(p, {"written_utc": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"), "sha256": hashlib.sha256(sec.encode()).hexdigest()})
+    print(cmn.read_json(p))
 
 
 def sanity(p: Panel, data_dir: Path) -> None:
-    info = rd(data_dir / "exchange_info.json")["info"]
+    info = cmn.read_json(data_dir / "exchange_info.json")["info"]
     d = int(datetime(2024, 12, 31, tzinfo=UTC).timestamp()) // 86400
     print(f"check BTCUSDT perp close 2024-12-31 = {p.btc.close.get(d)} (listing-drift / token-unlock / funding-crowding: 93548.9)")
     # ticker collisions: several eligible symbols on one asset -> compare price levels on a common day
@@ -321,7 +307,7 @@ def sanity(p: Panel, data_dir: Path) -> None:
         if common:
             dd = max(common)
             lv = ", ".join(f"{s}={p.data[s].bars.close[dd]:.6g}" for s in ss)
-            lines.append(f"{a} @{ymd(dd)}: {lv}")
+            lines.append(f"{a} @{cmn.ymd_day(dd)}: {lv}")
         else:
             lines.append(f"{a}: {ss} never traded on the same day")
     print(f"assets with several symbols (one kept per week, larger turnover): {len(multi)}")
@@ -354,7 +340,7 @@ def sanity(p: Panel, data_dir: Path) -> None:
             if FIRST <= x <= LAST + 6 and x - 1 in cl:
                 q = cl[x] / cl[x - 1]
                 if q >= 3 or q <= 1 / 3:
-                    jumps.append(f"{s} {ymd(x)} x{q:.2f}")
+                    jumps.append(f"{s} {cmn.ymd_day(x)} x{q:.2f}")
     tot = sum(st.values())
     print(
         f"top-{N_MAIN} member-weeks by today's status: {dict(st)}; delisted share {(tot - st['TRADING']) / tot:.1%}; "
@@ -372,7 +358,7 @@ def sanity(p: Panel, data_dir: Path) -> None:
 def coverage(p: Panel) -> None:
     ns = [len(p.uni[t]) for t in p.weeks]
     print(
-        f"weeks {len(p.weeks)} ({ymd(p.weeks[0])} .. {ymd(p.weeks[-1])}); qualified universe (capped at {N_MAX}): min {min(ns)} median {statistics.median(ns)}"
+        f"weeks {len(p.weeks)} ({cmn.ymd_day(p.weeks[0])} .. {cmn.ymd_day(p.weeks[-1])}); qualified universe (capped at {N_MAX}): min {min(ns)} median {statistics.median(ns)}"
     )
     print(f"weeks with < {N_MAIN} qualified: {sum(n < N_MAIN for n in ns)}; with < 50: {sum(n < 50 for n in ns)}")
     no_leg = sum(sum(1 for s in members(p, t, N_MAIN) if s not in p.legs[t]) for t in p.weeks)
@@ -425,7 +411,7 @@ def stage0(data_dir: Path, cache: Path) -> None:
     g1, g2 = f.mde() <= GATE_H1, m2 <= GATE_H2
     print(f"GATE H1 MDE(delta) {f.mde():.4f} <= {GATE_H1}: {g1}")
     print(f"GATE H2 MDE {m2 * 100:.3f} pp/week <= {GATE_H2 * 100:.1f} pp: {g2}")
-    wr(
+    cmn.write_json(
         cache / "stage0.json",
         {"mde_h1": f.mde(), "mde_h2": m2, "gate_h1": g1, "gate_h2": g2, "n_days": len(days), "n_reg": len(net), "episodes": eps},
     )
@@ -476,7 +462,7 @@ def components(res: list[WeekResult]) -> str:
 
 
 def stage_full(data_dir: Path, cache: Path) -> None:
-    s0 = rd(cache / "stage0.json") if (cache / "stage0.json").exists() else None
+    s0 = cmn.read_json(cache / "stage0.json") if (cache / "stage0.json").exists() else None
     if not s0:
         print("stage0 not run: stop.")
         return
@@ -509,7 +495,7 @@ def stage_full(data_dir: Path, cache: Path) -> None:
         x_prev=[day_return(p.btc, days[i] - 1) or 0.0 for i in di],
     )
     top5 = set(sorted(range(len(xb)), key=lambda i: -abs(xb[i]))[:5])
-    print(f"    5 largest |r_btc| days: {[(ymd(days[i]), round(xb[i] * 100, 2)) for i in sorted(top5)]}")
+    print(f"    5 largest |r_btc| days: {[(cmn.ymd_day(days[i]), round(xb[i] * 100, 2)) for i in sorted(top5)]}")
     keep = [i for i in range(len(days)) if i not in top5]
     h1_report("without 5 largest |r_btc| days", [ya[i] for i in keep], [xb[i] for i in keep], NW_DAILY)
     nov = (int(datetime(2022, 11, 1, tzinfo=UTC).timestamp()) // 86400, int(datetime(2022, 12, 1, tzinfo=UTC).timestamp()) // 86400)
@@ -585,14 +571,16 @@ def stage_full(data_dir: Path, cache: Path) -> None:
     xs = [x for _, x in act]
     half = len(act) // 2
     for lab, sub in (("first half of regime weeks", act[:half]), ("second half of regime weeks", act[half:])):
-        print(f"  {lab} ({ymd(sub[0][0])}..{ymd(sub[-1][0])}): n={len(sub)} net {pct(statistics.fmean(x for _, x in sub))}/wk")
+        print(
+            f"  {lab} ({cmn.ymd_day(sub[0][0])}..{cmn.ymd_day(sub[-1][0])}): n={len(sub)} net {pct(statistics.fmean(x for _, x in sub))}/wk"
+        )
     srt = sorted(xs)
     print(
         f"  without the 5 best regime weeks: {pct(statistics.fmean(srt[:-5]))}/wk; without the 5 worst: {pct(statistics.fmean(srt[5:]))}/wk"
     )
     by_year: dict[str, list[float]] = {}
     for d, x in act:
-        by_year.setdefault(ymd(d)[:4], []).append(x)
+        by_year.setdefault(cmn.ymd_day(d)[:4], []).append(x)
     print("  by year: " + "; ".join(f"{y} n={len(v)} {pct(statistics.fmean(v))}" for y, v in sorted(by_year.items())))
     ep_ret = []
     cur: list[float] = []
@@ -618,7 +606,7 @@ def stage_full(data_dir: Path, cache: Path) -> None:
     print()
     print("=== TAILS AND LEG RISK (regime basket) ===")
     worst = min(act, key=lambda z: z[1])
-    print(f"  worst week {ymd(worst[0])} {pct(worst[1], 2)}; best week {pct(max(xs), 2)} (of alt-leg notional)")
+    print(f"  worst week {cmn.ymd_day(worst[0])} {pct(worst[1], 2)}; best week {pct(max(xs), 2)} (of alt-leg notional)")
     liq: Counter[str] = Counter()
     coin_weeks = 0
     ups = []
@@ -647,11 +635,11 @@ def stage_full(data_dir: Path, cache: Path) -> None:
         f"isolated liquidation (up >= 1/k - 2.5 %): " + ", ".join(f"{k} {v} ({v / coin_weeks:.2%})" for k, v in sorted(liq.items()))
     )
     print(
-        f"  worst single-coin day against the short leg: {worst_day[1]} {ymd(worst_day[2])} {worst_day[0]:+.1%} of that coin = {worst_day[0] / N_MAIN:+.2%} of alt-leg notional"
+        f"  worst single-coin day against the short leg: {worst_day[1]} {cmn.ymd_day(worst_day[2])} {worst_day[0]:+.1%} of that coin = {worst_day[0] / N_MAIN:+.2%} of alt-leg notional"
     )
     maes.sort()
     print(
-        f"  worst intra-week drawdown of the hedged basket at daily closes: {pct(maes[0][0], 2)} ({ymd(maes[0][1])}); p05 {pct(maes[int(0.05 * len(maes))][0], 2)}"
+        f"  worst intra-week drawdown of the hedged basket at daily closes: {pct(maes[0][0], 2)} ({cmn.ymd_day(maes[0][1])}); p05 {pct(maes[int(0.05 * len(maes))][0], 2)}"
     )
     held_gaps = sum(
         1

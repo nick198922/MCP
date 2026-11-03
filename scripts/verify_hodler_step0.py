@@ -26,13 +26,14 @@ import asyncio
 import json
 import math
 import re
-import resource
 import statistics
 import time
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
 
 from tradedesk.core.errors import ProviderError
 from tradedesk.core.http import Http
@@ -56,21 +57,6 @@ LIQ_MIN_USD = 1_250_000.0  # perp quote volume over [t_e - 6h; t_e)
 ICC = 0.05
 Z = 2.8
 SPLIT = int(datetime(2025, 10, 1, tzinfo=UTC).timestamp() * 1000)
-
-
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
-
-
-def rd(p: Path) -> Any:
-    return json.loads(p.read_text())
-
-
-def wr(p: Path, data: Any) -> None:
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, separators=(",", ":")))
-    tmp.replace(p)
 
 
 def ts(ms: float | None) -> str:
@@ -102,13 +88,13 @@ async def stage_ann(cache: Path) -> None:
                     except ProviderError as err:
                         print(f"  catalog {cat} page {page}: {err.reason}", flush=True)
                         break
-                    wr(p, [{"ms": int(a["releaseDate"]), "title": a["title"], "code": a["code"]} for a in arts])
-                arts = rd(p)
+                    cmn.write_json(p, [{"ms": int(a["releaseDate"]), "title": a["title"], "code": a["code"]} for a in arts])
+                arts = cmn.read_json(p)
                 if not arts or len(arts) < 50 or min(a["ms"] for a in arts) < ANN_FROM:
                     break
                 page += 1
-            n_h = sum("HODLer" in a["title"] for q in (cache / "ann").glob(f"binance_{cat}_*.json") for a in rd(q))
-            print(f"catalog {cat}: {page} pages, HODLer titles {n_h}, rss {rss_mb():.0f} MB", flush=True)
+            n_h = sum("HODLer" in a["title"] for q in (cache / "ann").glob(f"binance_{cat}_*.json") for a in cmn.read_json(q))
+            print(f"catalog {cat}: {page} pages, HODLer titles {n_h}, rss {cmn.rss_mb():.0f} MB", flush=True)
     finally:
         await bn.aclose()
 
@@ -119,7 +105,7 @@ def hodler_events(cache: Path) -> tuple[list[dict[str, Any]], list[str]]:
     other: list[str] = []
     for p in sorted((cache / "ann").glob("binance_*.json")):
         cat = int(p.name.split("_")[1])
-        for a in rd(p):
+        for a in cmn.read_json(p):
             t = a["title"]
             if "HODLer" not in t:
                 continue
@@ -178,8 +164,8 @@ async def stage_detail(cache: Path) -> None:
                 except ProviderError as err:
                     print(f"  {e['sym']} {e['code']}: {err.reason}", flush=True)
                     continue
-                wr(p, f.data)
-            text = flat_text((rd(p).get("data") or {}).get("body") or "")
+                cmn.write_json(p, f.data)
+            text = flat_text((cmn.read_json(p).get("data") or {}).get("body") or "")
             old = "old" if OLD_RE.search(text) else "-"
             new = "new" if NEW_RE.search(text) else "-"
             rows.append((ts(e["ann_ms"]), e["sym"], old, new))
@@ -193,7 +179,7 @@ async def stage_detail(cache: Path) -> None:
     news = [r[0] for r in rows if r[3] == "new"]
     print(f"bodies {len(rows)}/{len(events)}; old phrase {len(olds)} (last {olds[-1] if olds else '-'});", end=" ")
     print(f"new phrase {len(news)} (first {news[0] if news else '-'}); neither {sum(r[2] == r[3] == '-' for r in rows)}")
-    print(f"rss {rss_mb():.0f} MB")
+    print(f"rss {cmn.rss_mb():.0f} MB")
 
 
 # ---------------------------------------------------------------- fetch
@@ -254,7 +240,7 @@ async def perp_months(rt: Any, cache: Path, psym: str, months: list[str]) -> dic
             st[mo] = "ld"
             continue
         if own.exists():
-            st[mo] = "own" if rd(own) else "none"
+            st[mo] = "own" if cmn.read_json(own) else "none"
             continue
         y, m = map(int, mo.split("-"))
         try:
@@ -262,7 +248,7 @@ async def perp_months(rt: Any, cache: Path, psym: str, months: list[str]) -> dic
         except ProviderError as err:
             part = None
             st[mo] = f"err:{err.reason}"
-        wr(own, norm_rows(part) if part else [])
+        cmn.write_json(own, norm_rows(part) if part else [])
         st.setdefault(mo, "own" if part else "none")
     return st
 
@@ -288,8 +274,8 @@ async def stage_fetch(cache: Path, only: list[str] | None) -> None:
             sym = e["sym"]
             p = cache / "spot" / f"{sym}.json"
             if not p.exists():
-                wr(p, await spot_first(rt, sym, e["ann_ms"]))
-            sp = rd(p)
+                cmn.write_json(p, await spot_first(rt, sym, e["ann_ms"]))
+            sp = cmn.read_json(p)
             if sp["first"] is not None:
                 te = sp["first"] + ENTRY_LAG
                 for psym, _ in perp_symbol(sym):
@@ -297,7 +283,9 @@ async def stage_fetch(cache: Path, only: list[str] | None) -> None:
                         continue
                     await perp_months(rt, cache, psym, months_between(te - DAY, te + HOLD * (POST_K + 1) + DAY))
             if i % 10 == 0 or i == len(evs):
-                print(f"  [{i}/{len(evs)}] {sym} spot_first={ts(sp['first'])} {time.time() - t0:.0f}s rss {rss_mb():.0f} MB", flush=True)
+                print(
+                    f"  [{i}/{len(evs)}] {sym} spot_first={ts(sp['first'])} {time.time() - t0:.0f}s rss {cmn.rss_mb():.0f} MB", flush=True
+                )
     finally:
         await rt.aclose()
     print("fetch done", flush=True)
@@ -310,7 +298,7 @@ def load_bars(cache: Path, psym: str) -> dict[int, list[float]]:
     out: dict[int, list[float]] = {}
     for d in (LD / "k1h" / psym, cache / "k1h" / psym):
         for f in sorted(d.glob("*.json")) if d.exists() else []:
-            for r in rd(f) or []:
+            for r in cmn.read_json(f) or []:
                 out[int(r[0])] = [float(x) for x in r[:7]]
     return out
 
@@ -319,7 +307,7 @@ def load_btc() -> dict[int, float]:
     out: dict[int, float] = {}
     for f in sorted(BTC_DIR.glob("*.json")):
         if f.name >= "2024-11":
-            for r in rd(f):
+            for r in cmn.read_json(f):
                 out[int(r[0])] = float(r[1])
     return out
 
@@ -330,15 +318,15 @@ def sd(xs: list[float]) -> float:
 
 def stage_inventory(cache: Path) -> None:
     evs, other = hodler_events(cache)
-    ei = {s["symbol"]: s for s in rd(INV / "venues" / "binance_exchange_info.json")}
-    bybit = {r["symbol"]: int(r["launchTime"]) for r in rd(INV / "venues" / "bybit_linear.json") if r.get("launchTime")}
-    pm = {r["symbol"][:-4]: r for r in rd(INV / "inventory.json")}
+    ei = {s["symbol"]: s for s in cmn.read_json(INV / "venues" / "binance_exchange_info.json")}
+    bybit = {r["symbol"]: int(r["launchTime"]) for r in cmn.read_json(INV / "venues" / "bybit_linear.json") if r.get("launchTime")}
+    pm = {r["symbol"][:-4]: r for r in cmn.read_json(INV / "inventory.json")}
     btc = load_btc()
     rows: list[dict[str, Any]] = []
     resid: dict[int, list[float]] = {}
     for e in evs:
         sym = e["sym"]
-        sp = rd(cache / "spot" / f"{sym}.json") if (cache / "spot" / f"{sym}.json").exists() else {"first": None}
+        sp = cmn.read_json(cache / "spot" / f"{sym}.json") if (cache / "spot" / f"{sym}.json").exists() else {"first": None}
         r: dict[str, Any] = {"sym": sym, "ann": ts(e["ann_ms"]), "spot_first": ts(sp.get("first")), "reason": None}
         rows.append(r)
         first = sp.get("first")
@@ -406,7 +394,7 @@ def stage_inventory(cache: Path) -> None:
             s, x = te + HOLD * k, te + HOLD * (k + 1)
             if s in bars and x in bars and s in btc and x in btc and bars[s][1] > 0:
                 resid.setdefault(k, []).append((bars[x][1] / bars[s][1] - 1) - (btc[x] / btc[s] - 1))
-    wr(cache / "inventory.json", rows)
+    cmn.write_json(cache / "inventory.json", rows)
 
     reasons = Counter(r["reason"] for r in rows)
     print(f"HODLer intro titles -> tokens: {len(evs)}; other HODLer titles (not events): {len(other)}")
@@ -477,7 +465,7 @@ def stage_inventory(cache: Path) -> None:
     )
     need = math.ceil(deff * (Z * s_prim / 0.06) ** 2)
     print(f"n needed for MDE 6 pp at this SD/deff: {need}; at SD 14 pp: {math.ceil(deff * (Z * 0.14 / 0.06) ** 2)}")
-    print(f"rss {rss_mb():.0f} MB")
+    print(f"rss {cmn.rss_mb():.0f} MB")
 
 
 def main() -> None:

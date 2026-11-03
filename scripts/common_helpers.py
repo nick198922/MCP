@@ -3,15 +3,19 @@
 Read-only SQLite: a script that reads the live store opens it with ``mode=ro`` (no migration, no write) and the path
 URL-quoted, so a ``?``, ``#`` or ``%`` in the path cannot cut the file name short or drop the read-only flag.
 A verification script that works on a copy of the store makes it with ``backup_db`` (sqlite3 online backup).
-Long verification runs log their peak memory with ``rss_mb``.
+Long verification runs log their peak memory with ``rss_mb``; their per-file JSON caches go through ``read_json`` /
+``write_json``, and day numbers print as dates with ``ymd_day``.
 """
 
 from __future__ import annotations
 
+import json
 import resource
 import sqlite3
 import urllib.parse
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 
 def connect_ro(path: str | Path, timeout: float = 5) -> sqlite3.Connection:
@@ -54,3 +58,22 @@ def has_table(con: sqlite3.Connection, name: str) -> bool:
 def rss_mb() -> float:
     """Peak resident memory of this process so far, in MB (``ru_maxrss`` is in KiB on Linux)."""
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+
+
+def read_json(p: Path) -> Any:
+    """The JSON value stored in file ``p``; raises ``OSError`` / ``ValueError`` as ``read_text`` / ``json.loads`` do."""
+    return json.loads(p.read_text())
+
+
+def write_json(p: Path, obj: Any) -> None:
+    """Write ``obj`` to ``p`` as compact JSON (``,`` / ``:`` separators) atomically: ``p``'s directory is created if
+    needed, the text goes to ``p.with_suffix('.tmp')`` first and is then renamed over ``p``."""
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps(obj, separators=(",", ":")))
+    tmp.replace(p)
+
+
+def ymd_day(day: int) -> str:
+    """``YYYY-MM-DD`` (UTC) of day number ``day`` counted from the Unix epoch (day 0 = 1970-01-01)."""
+    return datetime.fromtimestamp(day * 86400, timezone.utc).strftime("%Y-%m-%d")  # noqa: UP017 - runs on the system python3

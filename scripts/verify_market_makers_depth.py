@@ -25,15 +25,14 @@ import argparse
 import asyncio
 import calendar
 import hashlib
-import json
 import logging
-import resource
 import time
 from collections import Counter, defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
 import numpy as np
 
 from tradedesk.analytics.liquidation_flush import (
@@ -84,21 +83,6 @@ def emit(line: str = "") -> None:
         OUT["fh"].flush()
 
 
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
-
-
-def rd(p: Path) -> Any:
-    return json.loads(p.read_text())
-
-
-def wr(p: Path, obj: Any) -> None:
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".tmp")
-    tmp.write_text(json.dumps(obj, separators=(",", ":")))
-    tmp.replace(p)
-
-
 def ms(s: str) -> int:
     return int(datetime.fromisoformat(s).replace(tzinfo=UTC).timestamp() * 1000)
 
@@ -141,14 +125,14 @@ def stage_prereg() -> None:
 
 
 def eligible_syms(data_dir: Path) -> list[str]:
-    syms = rd(data_dir / "symbols.json")
-    info = rd(data_dir / "exchange_info.json")["info"]
+    syms = cmn.read_json(data_dir / "symbols.json")
+    info = cmn.read_json(data_dir / "exchange_info.json")["info"]
     return [s for s in syms if symbol_eligible(s, (info.get(s) or {}).get("contractType"), (info.get(s) or {}).get("underlyingType"))]
 
 
 def listing(data_dir: Path, s: str) -> list[str]:
     p = data_dir / "listing" / f"{s}.json"
-    return (rd(p) if p.exists() else None) or []
+    return (cmn.read_json(p) if p.exists() else None) or []
 
 
 def load_daily(data_dir: Path, s: str) -> dict[str, tuple[float, float]]:
@@ -158,7 +142,7 @@ def load_daily(data_dir: Path, s: str) -> dict[str, tuple[float, float]]:
     if not d.exists():
         return out
     for p in sorted(d.glob("*.json")):
-        for r in rd(p) or []:
+        for r in cmn.read_json(p) or []:
             out[day_of(int(r[0]))] = (float(r[4]), float(r[6] if len(r) > 6 else r[5]))
     return out
 
@@ -185,8 +169,8 @@ def stage_universe(cache: Path, data_dir: Path) -> None:
             if len(mem) == TOP_N:
                 break
         uni[mo] = mem
-    wr(cache / "universe.json", uni)
-    info = rd(data_dir / "exchange_info.json")["info"]
+    cmn.write_json(cache / "universe.json", uni)
+    info = cmn.read_json(data_dir / "exchange_info.json")["info"]
     allm = sorted({s for v in uni.values() for s in v})
     st = Counter((info.get(s) or {}).get("status", "absent") for v in uni.values() for s in v)
     jobs = fetch_plan(uni)
@@ -217,7 +201,7 @@ async def fetch_depth(
 ) -> None:
     from tradedesk.server import build_server
 
-    uni = rd(cache / "universe.json")
+    uni = cmn.read_json(cache / "universe.json")
     plan = [(s, m) for i, (s, m) in enumerate(fetch_plan(uni)) if i % shard[1] == shard[0]]
     plan = [(s, m) for s, m in plan if not (cache / "depth" / s / f"{m}.json").exists()]
     lst = {s: set(listing(data_dir, s)) for s in {s for s, _ in plan}}
@@ -255,18 +239,18 @@ async def fetch_depth(
             res = await asyncio.gather(*[day(s, d) for d in days])
             if any(v == "ERR" for _, v in res):
                 continue  # transient: a rerun retries the month
-            wr(cache / "depth" / s / f"{m}.json", dict(res))
+            cmn.write_json(cache / "depth" / s / f"{m}.json", dict(res))
             done += 1
             if done % 20 == 0 or done == len(plan):
                 el = time.time() - t0
                 emit(
                     f"  {done}/{len(plan)} symbol-months, {stats['files']} files in {el:.0f}s "
                     f"({stats['files'] / max(el, 1e-9):.1f}/s), eta {el / done * (len(plan) - done) / 3600:.1f} h, "
-                    f"errors {dict(errors)}, rss {rss_mb():.0f} MB"
+                    f"errors {dict(errors)}, rss {cmn.rss_mb():.0f} MB"
                 )
     finally:
         await rt.aclose()
-    emit(f"done {done} symbol-months, {stats['files']} files in {time.time() - t0:.0f}s; errors {dict(errors)}; rss {rss_mb():.0f} MB")
+    emit(f"done {done} symbol-months, {stats['files']} files in {time.time() - t0:.0f}s; errors {dict(errors)}; rss {cmn.rss_mb():.0f} MB")
 
 
 # ---------------------------------------------------------------- panel
@@ -281,7 +265,7 @@ class Panel:
 
     def __init__(self, cache: Path, data_dir: Path, event_months: str | None = None) -> None:
         t0 = time.time()
-        self.uni: dict[str, list[str]] = rd(cache / "universe.json")
+        self.uni: dict[str, list[str]] = cmn.read_json(cache / "universe.json")
         self.syms = sorted({s for v in self.uni.values() for s in v})
         d0 = datetime(2022, 11, 1, tzinfo=UTC)
         n = (datetime(2026, 10, 1, tzinfo=UTC) - d0).days
@@ -305,7 +289,7 @@ class Panel:
             ddir = cache / "depth" / s
             for p in sorted(ddir.glob("*.json")) if ddir.exists() else []:
                 have[p.stem] += 1
-                for d, f in rd(p).items():
+                for d, f in cmn.read_json(p).items():
                     if d not in self.di:
                         continue
                     j = self.di[d]
@@ -348,7 +332,7 @@ class Panel:
                 o = forward_outcomes(self.close[si], self.qv[si], int(j), HORIZONS)
                 self.out[si, j] = [o["r1"], o["r3"], o["r7"], o["rv1"], o["rv3"], o["rv7"], o["vq7"] if "vq7" in o else np.nan]
         self.pool_ok = valid & np.all(np.isfinite(self.feat), axis=2) & np.all(np.isfinite(self.out[:, :, :6]), axis=2)
-        emit(f"panel {S} symbols x {N} days loaded in {time.time() - t0:.0f}s, rss {rss_mb():.0f} MB")
+        emit(f"panel {S} symbols x {N} days loaded in {time.time() - t0:.0f}s, rss {cmn.rss_mb():.0f} MB")
 
     def norm(self, metric: str, normalize: bool) -> np.ndarray:
         d = self.dep[metric]
@@ -476,7 +460,7 @@ def stage_count(cache: Path, data_dir: Path) -> None:
         # the realised clustered SE on events was 1.5x the iid one (event rows are more dispersed than
         # random days). Treat this MDE as a lower bound; the binding MDE is 2.49 x the clustered SE in `report`.
     emit(f"gate: n >= {MIN_EVENTS}: {'pass' if n >= MIN_EVENTS else 'FAIL -> fallback ratio ' + str(FALLBACK_RATIO)}")
-    emit(f"rss {rss_mb():.0f} MB")
+    emit(f"rss {cmn.rss_mb():.0f} MB")
 
 
 # ---------------------------------------------------------------- report
@@ -583,7 +567,7 @@ def stage_report(cache: Path, data_dir: Path, event_months: str | None = None) -
         if sel.sum():
             mm, cc, _ = mean_ci(d3[sel], [c for c, s in zip(cl, sel, strict=True) if s], n_boot=4000)
             emit(f"  {y}: n={int(sel.sum())} dr3 {pp(mm)} {ci_s(cc)}")
-    stat = rd(data_dir / "exchange_info.json")["info"]
+    stat = cmn.read_json(data_dir / "exchange_info.json")["info"]
     alive = np.array([(stat.get(P.syms[s]) or {}).get("status") == "TRADING" for s in R["sym"]])
     for lab, sel in (("trading today", alive), ("delisted/settling today", ~alive)):
         if sel.sum():
@@ -670,7 +654,7 @@ def sanity(P: Panel) -> None:
 def delist_descriptive(P: Panel, D: np.ndarray, data_dir: Path) -> None:
     emit("")
     emit("## descriptive: depth before delisting (last daily candle before 2026-09-20)")
-    info = rd(data_dir / "exchange_info.json")["info"]
+    info = cmn.read_json(data_dir / "exchange_info.json")["info"]
     ratios = []
     for si, s in enumerate(P.syms):
         if (info.get(s) or {}).get("status") == "TRADING":

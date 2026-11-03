@@ -23,13 +23,13 @@ from __future__ import annotations
 
 import argparse
 import json
-import resource
 import time
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
 import numpy as np
 
 from tradedesk.analytics.funding_spread import normalize_asset
@@ -59,33 +59,21 @@ LIB_BASKET = ("ETH", "SOL", "XRP", "DOGE", "ADA", "LINK", "AVAX", "DOT", "LTC", 
 BLOCK, N_BOOT, SEED = 8, 5000, 7
 
 
-def rd(p: Path) -> Any:
-    return json.loads(p.read_text())
-
-
-def ymd(day: int) -> str:
-    return datetime.fromtimestamp(day * 86400, UTC).strftime("%Y-%m-%d")
-
-
 def month_id(day: int) -> int:
     d = datetime.fromtimestamp(day * 86400, UTC)
     return d.year * 12 + d.month - 1
-
-
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 
 
 # ---------------------------------------------------------------- panel
 
 
 def stage_panel(cache: Path, out: Path) -> None:
-    syms_all, info = rd(cache / "symbols.json"), rd(cache / "exchange_info.json")["info"]
+    syms_all, info = cmn.read_json(cache / "symbols.json"), cmn.read_json(cache / "exchange_info.json")["info"]
     elig = [s for s in syms_all if symbol_eligible(s, (info.get(s) or {}).get("contractType"), (info.get(s) or {}).get("underlyingType"))]
     syms: list[str] = []
     for s in sorted(set(elig) | {BTC}):
         lp = cache / "listing" / f"{s}.json"
-        ms = rd(lp) if lp.exists() else None
+        ms = cmn.read_json(lp) if lp.exists() else None
         if any(FIRST_MONTH <= m <= LAST_MONTH for m in ms or []):
             syms.append(s)
     n_days = LAST_DAY - DAY0 + 1
@@ -96,24 +84,26 @@ def stage_panel(cache: Path, out: Path) -> None:
     for j, s in enumerate(syms):
         kd, fd = cache / "k1d" / s, cache / "funding" / s
         for kp in sorted(kd.glob("*.json")) if kd.exists() else []:
-            for r in rd(kp) or []:
+            for r in cmn.read_json(kp) or []:
                 d = int(r[0]) // DAY_MS - DAY0
                 if not 0 <= d < n_days or len(r) < 6 or r[5] <= 0 or min(r[1], r[3], r[4]) <= 0:
                     continue
                 o[d, j], h[d, j], lo[d, j], c[d, j] = r[1], r[2], r[3], r[4]
                 qv[d, j] = r[6] if len(r) > 6 else r[5] * r[4]
         for fp in sorted(fd.glob("*.json")) if fd.exists() else []:
-            for r in rd(fp) or []:
+            for r in cmn.read_json(fp) or []:
                 d = int(r[0]) // DAY_MS - DAY0
                 if 0 <= d < n_days:
                     fu[d, j] = (0.0 if np.isnan(fu[d, j]) else fu[d, j]) + float(r[2])
                     intervals[float(r[1])] += 1
         if (j + 1) % 100 == 0:
-            print(f"  loaded {j + 1}/{len(syms)} in {time.time() - t0:.0f}s, peak RSS {rss_mb():.0f} MB", flush=True)
+            print(f"  loaded {j + 1}/{len(syms)} in {time.time() - t0:.0f}s, peak RSS {cmn.rss_mb():.0f} MB", flush=True)
     out.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(out / "panel.npz", open=o, high=h, low=lo, close=c, qv=qv, fund=fu)
     (out / "symbols.json").write_text(json.dumps(syms))
-    print(f"panel: {len(syms)} symbols ({len(elig)} eligible in the archive list), {n_days} days {ymd(DAY0)} .. {ymd(LAST_DAY)}")
+    print(
+        f"panel: {len(syms)} symbols ({len(elig)} eligible in the archive list), {n_days} days {cmn.ymd_day(DAY0)} .. {cmn.ymd_day(LAST_DAY)}"
+    )
     print(f"funding settlements by interval (hours): {dict(sorted(intervals.items()))}")
     bj = syms.index(BTC)
     print(
@@ -133,12 +123,12 @@ def stage_panel(cache: Path, out: Path) -> None:
                 med = float(np.nanmedian(c[:, j])) / normalize_asset(s[:-4], "binance")[1]
                 lv.append(f"{s} {med:.4g}/coin")
             print(f"  collision {a}: " + ", ".join(lv))
-    print(f"peak RSS {rss_mb():.0f} MB")
+    print(f"peak RSS {cmn.rss_mb():.0f} MB")
 
 
 def load(out: Path) -> tuple[Panel, list[str]]:
     z = np.load(out / "panel.npz")
-    return Panel(z["open"], z["high"], z["low"], z["close"], z["qv"], z["fund"]), rd(out / "symbols.json")
+    return Panel(z["open"], z["high"], z["low"], z["close"], z["qv"], z["fund"]), cmn.read_json(out / "symbols.json")
 
 
 # ---------------------------------------------------------------- runs
@@ -182,7 +172,9 @@ def stage0(out: Path) -> None:
     res = {m: run_variant(p, uni, lev=3.0, mode=m) for m in ("intraday", "close")}
     sd = {m: float(np.std([r.ret for r in v], ddof=1)) for m, v in res.items()}
     mde_share = 2.8 * (0.35 * 0.65 / n_eff) ** 0.5
-    print(f"windows: {len(st)} starts {ymd(st[0] + DAY0)} .. {ymd(st[-1] + DAY0)} (weekly), length {WINDOW} d; span {span} d")
+    print(
+        f"windows: {len(st)} starts {cmn.ymd_day(st[0] + DAY0)} .. {cmn.ymd_day(st[-1] + DAY0)} (weekly), length {WINDOW} d; span {span} d"
+    )
     print(f"n_eff = {span} / {WINDOW} = {n_eff:.2f} independent windows; basket sizes at start: {dict(sizes)}")
     for m in res:
         print(
@@ -192,7 +184,7 @@ def stage0(out: Path) -> None:
     (out / "stage0.json").write_text(
         json.dumps({"n_windows": len(st), "span_days": span, "n_eff": n_eff, "sd_l3": sd, "mde_share_p35": mde_share})
     )
-    print(f"peak RSS {rss_mb():.0f} MB")
+    print(f"peak RSS {cmn.rss_mb():.0f} MB")
 
 
 def summary(res: list[WindowResult], months: list[int], *, block: int = BLOCK) -> dict[str, Any]:
@@ -265,7 +257,7 @@ def stage_full(out: Path) -> None:
     t0 = time.time()
     uni = Universe(p, syms)
     btc = Universe(p, syms, include={BTC}, k=1)
-    print(f"stage0: {rd(out / 'stage0.json')}")
+    print(f"stage0: {cmn.read_json(out / 'stage0.json')}")
     # sanity: who is in the basket over time
     members: Counter[str] = Counter()
     for d in sorted({s + REBAL * j for s in st for j in range(-(-WINDOW // REBAL))}):
@@ -274,8 +266,8 @@ def stage_full(out: Path) -> None:
         f"distinct basket members over all rebalance days: {len(members)}; most frequent: "
         + ", ".join(f"{s[:-4]} {n}" for s, n in members.most_common(30))
     )
-    print(f"basket at first start {ymd(st[0] + DAY0)}: {[syms[i][:-4] for i in uni(st[0])]}")
-    print(f"basket at last start {ymd(st[-1] + DAY0)}: {[syms[i][:-4] for i in uni(st[-1])]}")
+    print(f"basket at first start {cmn.ymd_day(st[0] + DAY0)}: {[syms[i][:-4] for i in uni(st[0])]}")
+    print(f"basket at last start {cmn.ymd_day(st[-1] + DAY0)}: {[syms[i][:-4] for i in uni(st[-1])]}")
 
     results: dict[str, list[WindowResult]] = {}
     summ: dict[str, dict[str, Any]] = {}
@@ -292,7 +284,7 @@ def stage_full(out: Path) -> None:
         results[key] = run_variant(p, btc, lev=3.0, mode=mode)
         summ[key] = summary(results[key], months)
         print(row(key, summ[key]), flush=True)
-    print(f"[{time.time() - t0:.0f}s, peak RSS {rss_mb():.0f} MB]")
+    print(f"[{time.time() - t0:.0f}s, peak RSS {cmn.rss_mb():.0f} MB]")
 
     main, low = "alt L3 intraday slip5bp", "alt L3 close slip5bp"
     print("\n== verdicts (registered: main = intraday; close = lower bound) ==")
@@ -326,7 +318,7 @@ def stage_full(out: Path) -> None:
         by: Counter[str] = Counter()
         tot: Counter[str] = Counter()
         for s, r in zip(st, results[key], strict=True):
-            y = ymd(s + DAY0)[:4]
+            y = cmn.ymd_day(s + DAY0)[:4]
             tot[y] += 1
             by[y] += r.liquidated
         days = [r.liq_day for r in results[key] if r.liquidated]
@@ -363,7 +355,7 @@ def stage_full(out: Path) -> None:
     lib = Universe(p, syms, include={a + "USDT" for a in LIB_BASKET}, k=len(LIB_BASKET))
     main_rets = [r.ret for r in results[main]]
     low_rets = [r.ret for r in results[low]]
-    print(f"rule basket at {ymd(VAULT_START)}: {[syms[i][:-4] for i in uni(vs)]}; LIB basket legs found: {len(lib(vs))}")
+    print(f"rule basket at {cmn.ymd_day(VAULT_START)}: {[syms[i][:-4] for i in uni(vs)]}; LIB basket legs found: {len(lib(vs))}")
     for lab, u in (("rule basket", uni), ("LIB basket", lib)):
         for reb, rl in ((vlen, "buy&hold"), (REBAL, "rebal 30d")):
             for mode in ("intraday", "close"):
@@ -376,14 +368,14 @@ def stage_full(out: Path) -> None:
 
     dump = {
         k: [
-            {"start": ymd(s + DAY0), "ret": r.ret, "dd": r.max_dd, "liq": r.liquidated, "liq_day": r.liq_day, "delist": r.n_delist}
+            {"start": cmn.ymd_day(s + DAY0), "ret": r.ret, "dd": r.max_dd, "liq": r.liquidated, "liq_day": r.liq_day, "delist": r.n_delist}
             for s, r in zip(st, v, strict=True)
         ]
         for k, v in results.items()
     }
     (out / "windows.json").write_text(json.dumps(dump))
     (out / "summary.json").write_text(json.dumps(summ, default=list))
-    print(f"\nwrote {out / 'windows.json'}; done in {time.time() - t0:.0f}s, peak RSS {rss_mb():.0f} MB")
+    print(f"\nwrote {out / 'windows.json'}; done in {time.time() - t0:.0f}s, peak RSS {cmn.rss_mb():.0f} MB")
 
 
 def stage_diag(out: Path) -> None:
@@ -411,10 +403,10 @@ def stage_diag(out: Path) -> None:
         neg = np.sort(f[ok])[:3]
         mo: Counter[str] = Counter()
         for d in days:
-            mo[ymd(int(d) + DAY0)[:7]] += float(f[d])
+            mo[cmn.ymd_day(int(d) + DAY0)[:7]] += float(f[d])
         worst = sorted(mo.items(), key=lambda kv: kv[1])[:3]
         print(
-            f"{s}: days {len(days)} {ymd(int(days[0]) + DAY0)}..{ymd(int(days[-1]) + DAY0)}; mean daily funding {np.mean(f[ok]) * 100:+.4f} %; "
+            f"{s}: days {len(days)} {cmn.ymd_day(int(days[0]) + DAY0)}..{cmn.ymd_day(int(days[-1]) + DAY0)}; mean daily funding {np.mean(f[ok]) * 100:+.4f} %; "
             f"3 lowest days {[round(x * 100, 2) for x in neg]} %; most negative months {[(m, round(v * 100, 1)) for m, v in worst]} %; "
             f"close min {np.nanmin(c):.4g} max {np.nanmax(c):.4g}"
         )
@@ -422,13 +414,17 @@ def stage_diag(out: Path) -> None:
     c = p.close[:, j]
     print(
         "MYX monthly last close: "
-        + ", ".join(f"{ymd(int(d) + DAY0)[:7]} {c[d]:.3g}" for d in np.flatnonzero(np.isfinite(c)) if ymd(int(d) + DAY0)[8:] in ("28",))
+        + ", ".join(
+            f"{cmn.ymd_day(int(d) + DAY0)[:7]} {c[d]:.3g}"
+            for d in np.flatnonzero(np.isfinite(c))
+            if cmn.ymd_day(int(d) + DAY0)[8:] in ("28",)
+        )
     )
     mf = [np.nanmean(p.fund[d - 30 : d, :][:, uni(d)].sum(axis=0)) for d in st]
     print(
         f"basket mean 30d funding sum before each start: median {np.median(mf) * 100:+.2f} %, by year "
         + ", ".join(
-            f"{y} {np.median([m for s, m in zip(st, mf, strict=True) if ymd(s + DAY0)[:4] == y]) * 100:+.2f}"
+            f"{y} {np.median([m for s, m in zip(st, mf, strict=True) if cmn.ymd_day(s + DAY0)[:4] == y]) * 100:+.2f}"
             for y in ("2021", "2022", "2023", "2024", "2025", "2026")
         )
     )
@@ -438,7 +434,7 @@ def stage_nonoverlap(out: Path) -> None:
     """Added after the first full run (CI method, not a threshold change): the block bootstrap degenerates to
     [100, 100] when every window is a hit, so also count hits on non-overlapping windows (every 35th weekly start,
     >= 243 days apart) for each of the 35 offsets, with exact Clopper-Pearson CIs."""
-    w = rd(out / "windows.json")
+    w = cmn.read_json(out / "windows.json")
     step = -(-WINDOW // 7)  # 35 weekly starts >= one window apart
     for key in (
         "alt L3 intraday slip5bp",
@@ -488,7 +484,7 @@ def stage_bh(out: Path) -> None:
     months = [month_id(s + DAY0) for s in st]
     t0 = time.time()
     uni = Universe(p, syms)
-    w = rd(out / "windows.json")
+    w = cmn.read_json(out / "windows.json")
     dump: dict[str, list[dict[str, Any]]] = {}
     res: dict[str, list[WindowResult]] = {}
     print("== exploratory: buy-and-hold (no rebalance inside the 243-day window), rule basket ==")
@@ -500,7 +496,7 @@ def stage_bh(out: Path) -> None:
             ]
             res[key] = rr
             dump[key] = [
-                {"start": ymd(s + DAY0), "ret": r.ret, "dd": r.max_dd, "liq": r.liquidated, "liq_day": r.liq_day}
+                {"start": cmn.ymd_day(s + DAY0), "ret": r.ret, "dd": r.max_dd, "liq": r.liquidated, "liq_day": r.liq_day}
                 for s, r in zip(st, rr, strict=True)
             ]
             n, a1, b1, a2, b2 = nonoverlap_hits(dump[key])
@@ -511,7 +507,7 @@ def stage_bh(out: Path) -> None:
                 + f" | non-overlap n={n}: H1 {a1}-{b1} (CP low of worst {lo1 * 100:.0f}), H2 {a2}-{b2} (CP high of worst {hi2 * 100:.0f})",
                 flush=True,
             )
-    print(f"[{time.time() - t0:.0f}s, peak RSS {rss_mb():.0f} MB]")
+    print(f"[{time.time() - t0:.0f}s, peak RSS {cmn.rss_mb():.0f} MB]")
 
     print("\n== percentile of the vault's +117 % / +145 % among the 222 windows (mid-rank) ==")
     print(f"{'variant':<22} {'rebal 30d':>14} {'buy&hold':>14}")
@@ -552,22 +548,22 @@ def stage_bh(out: Path) -> None:
         print("  bottom: " + ", ".join(f"{a} {v * 100:+.1f}" for a, v in ranked[-6:]))
         j = syms.index("MYXUSDT")
         with_myx = [(s, r) for s, r in zip(st, rr, strict=True) if j in r.contrib]
-        pos = [ymd(s + DAY0) + f" {r.ret * 100:+.0f}%" for s, r in with_myx if r.ret > 0]
+        pos = [cmn.ymd_day(s + DAY0) + f" {r.ret * 100:+.0f}%" for s, r in with_myx if r.ret > 0]
         print(
-            f"  MYX (first bar {ymd(int(np.flatnonzero(np.isfinite(p.close[:, j]))[0]) + DAY0)}): in {len(with_myx)} windows, "
+            f"  MYX (first bar {cmn.ymd_day(int(np.flatnonzero(np.isfinite(p.close[:, j]))[0]) + DAY0)}): in {len(with_myx)} windows, "
             f"liquidated {sum(r.liquidated for _, r in with_myx)}, positive {pos}"
         )
-    print(f"[{time.time() - t0:.0f}s, peak RSS {rss_mb():.0f} MB]")
+    print(f"[{time.time() - t0:.0f}s, peak RSS {cmn.rss_mb():.0f} MB]")
 
     print("\n== starts just before the vault's start (2026-02-17), L=3 intraday rebal 30d ==")
     for r in w["alt L3 intraday slip5bp"]:
         if r["start"] >= "2025-12-15":
             d = int(datetime.fromisoformat(r["start"]).replace(tzinfo=UTC).timestamp()) // 86400
-            when = ymd(d + r["liq_day"]) if r["liq"] else "-"
+            when = cmn.ymd_day(d + r["liq_day"]) if r["liq"] else "-"
             print(f"  start {r['start']}: ret {r['ret'] * 100:+.0f} %, liquidated {r['liq']} on {when}")
     print(f"vault window length: {LAST_DAY - VAULT_START + 1} days (registered window {WINDOW})")
     (out / "windows_bh.json").write_text(json.dumps(dump))
-    print(f"wrote {out / 'windows_bh.json'}; done in {time.time() - t0:.0f}s, peak RSS {rss_mb():.0f} MB")
+    print(f"wrote {out / 'windows_bh.json'}; done in {time.time() - t0:.0f}s, peak RSS {cmn.rss_mb():.0f} MB")
 
 
 def main() -> None:

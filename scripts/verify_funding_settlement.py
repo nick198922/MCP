@@ -26,7 +26,6 @@ import bisect
 import json
 import logging
 import math
-import resource
 import statistics
 import sys
 import time
@@ -36,6 +35,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
 import numpy as np
 
 from tradedesk.analytics.funding_settlement import (
@@ -93,25 +93,6 @@ class Tee:
             st.flush()
 
 
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
-
-
-def rd(p: Path) -> Any:
-    return json.loads(p.read_text())
-
-
-def wr(p: Path, obj: Any) -> None:
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".tmp")
-    tmp.write_text(json.dumps(obj, separators=(",", ":")))
-    tmp.replace(p)
-
-
-def ymd(day: int) -> str:
-    return datetime.fromtimestamp(day * 86400, UTC).strftime("%Y-%m-%d")
-
-
 def ts(ms: int) -> str:
     return datetime.fromtimestamp(ms / 1000, UTC).strftime("%Y-%m-%d %H:%M")
 
@@ -128,7 +109,7 @@ def load_funding(fc: Path, sym: str) -> list[tuple[int, float, float]]:
     d = fc / "funding" / sym
     out: dict[int, tuple[int, float, float]] = {}
     for p in sorted(d.glob("*.json")) if d.exists() else []:
-        for t, h, r in rd(p) or []:
+        for t, h, r in cmn.read_json(p) or []:
             m = int(t) // MIN_MS * MIN_MS
             out[m] = (m, float(h), float(r))
     return [out[k] for k in sorted(out)]
@@ -141,7 +122,7 @@ def load_daily(fc: Path, sym: str) -> tuple[dict[int, float], dict[int, float], 
     close: dict[int, float] = {}
     first = None
     for p in sorted(d.glob("*.json")) if d.exists() else []:
-        for r in rd(p) or []:
+        for r in cmn.read_json(p) or []:
             day = int(r[0]) // DAY_MS
             qv[day] = float(r[6])
             close[day] = float(r[4])
@@ -151,7 +132,7 @@ def load_daily(fc: Path, sym: str) -> tuple[dict[int, float], dict[int, float], 
 
 
 def universe(fc: Path) -> tuple[list[str], Counter[str]]:
-    info = rd(fc / "exchange_info.json")["info"]
+    info = cmn.read_json(fc / "exchange_info.json")["info"]
     syms = sorted(p.name for p in (fc / "funding").iterdir())
     ok, why = [], Counter()
     for s in syms:
@@ -200,7 +181,7 @@ def stage_count(fc: Path, cache: Path) -> None:
         f"candidate symbol-days (eligible, settled |F| >= {PRESCREEN * 100:.2f}%): {n_d} on {len(cand)} symbols; with previous days {len(need)}"
     )
     print(f"files to fetch (perp 1m + premium 1m): {2 * len(need)}")
-    wr(cache / "candidates.json", cand)
+    cmn.write_json(cache / "candidates.json", cand)
     # 1d coverage in the funding-crowding cache
     miss = 0
     for s, v in cand.items():
@@ -239,7 +220,7 @@ class Fetcher:
                             print(f"  error {path.name}: {e.reason}: {str(e.detail)[:200]}", flush=True)
                         return
                     await asyncio.sleep(5 * (k + 1))
-        await asyncio.to_thread(wr, path, data)
+        await asyncio.to_thread(cmn.write_json, path, data)
         self.done += 1
 
     async def many(self, label: str, jobs: list[tuple[Path, Callable[[], Awaitable[Any]]]]) -> None:
@@ -256,7 +237,7 @@ class Fetcher:
                 if self.done and self.done % step == 0:
                     el = time.time() - t0
                     print(
-                        f"  [{label}] {self.done}/{len(todo)} in {el:.0f}s, eta {el / self.done * (len(todo) - self.done):.0f}s, rss {rss_mb():.0f} MB",
+                        f"  [{label}] {self.done}/{len(todo)} in {el:.0f}s, eta {el / self.done * (len(todo) - self.done):.0f}s, rss {cmn.rss_mb():.0f} MB",
                         flush=True,
                     )
 
@@ -265,15 +246,15 @@ class Fetcher:
 
 
 def pk_path(cache: Path, sym: str, day: int) -> Path:
-    return cache / "pk1m" / sym / f"{ymd(day)}.json"
+    return cache / "pk1m" / sym / f"{cmn.ymd_day(day)}.json"
 
 
 def pi_path(cache: Path, sym: str, day: int) -> Path:
-    return cache / "pi1m" / sym / f"{ymd(day)}.json"
+    return cache / "pi1m" / sym / f"{cmn.ymd_day(day)}.json"
 
 
 async def stage_fetch(cache: Path, sample: int) -> None:
-    cand = rd(cache / "candidates.json")
+    cand = cmn.read_json(cache / "candidates.json")
     syms = sorted(cand)
     if sample:
         syms = syms[:: max(1, len(syms) // sample)][:sample]
@@ -286,11 +267,11 @@ async def stage_fetch(cache: Path, sample: int) -> None:
             for d in need:
 
                 async def gk(s: str = s, d: int = d) -> Any:
-                    rows = (await v.um_klines_daily(s, "1m", ymd(d))).data
+                    rows = (await v.um_klines_daily(s, "1m", cmn.ymd_day(d))).data
                     return [[int(r[0]), r[1], r[2], r[3], r[4], r[6]] for r in rows]
 
                 async def gp(s: str = s, d: int = d) -> Any:
-                    rows = (await v.um_premium_index_daily(s, "1m", ymd(d))).data
+                    rows = (await v.um_premium_index_daily(s, "1m", cmn.ymd_day(d))).data
                     return [[int(r[0]), r[4]] for r in rows]
 
                 jobs.append((pk_path(cache, s, d), gk))
@@ -311,14 +292,14 @@ def load_days(cache: Path, sym: str, days: list[int]) -> tuple[dict[int, tuple[f
     for d in days:
         pk = pk_path(cache, sym, d)
         if pk.exists():
-            rows = rd(pk)
+            rows = cmn.read_json(pk)
             if rows:
                 have_k.add(d)
                 for t, o, h, lo, c, q in rows:
                     bars[int(t)] = (o, h, lo, c, q)
         pp = pi_path(cache, sym, d)
         if pp.exists():
-            rows = rd(pp)
+            rows = cmn.read_json(pp)
             if rows:
                 have_p.add(d)
                 for t, c in rows:
@@ -327,7 +308,7 @@ def load_days(cache: Path, sym: str, days: list[int]) -> tuple[dict[int, tuple[f
 
 
 def stage_build(fc: Path, cache: Path) -> None:
-    cand = rd(cache / "candidates.json")
+    cand = cmn.read_json(cache / "candidates.json")
     out = (cache / "events.jsonl").open("w")
     why: Counter[str] = Counter()
     n_ev = 0
@@ -410,9 +391,9 @@ def stage_build(fc: Path, cache: Path) -> None:
                 n_ev += 1
             del bars, prem
         if (i + 1) % 25 == 0:
-            print(f"  build {i + 1}/{len(cand)} symbols, events {n_ev}, {time.time() - t0:.0f}s, rss {rss_mb():.0f} MB", flush=True)
+            print(f"  build {i + 1}/{len(cand)} symbols, events {n_ev}, {time.time() - t0:.0f}s, rss {cmn.rss_mb():.0f} MB", flush=True)
     out.close()
-    print(f"events written {n_ev}; skipped {dict(why)}; peak rss {rss_mb():.0f} MB")
+    print(f"events written {n_ev}; skipped {dict(why)}; peak rss {cmn.rss_mb():.0f} MB")
 
 
 def events(cache: Path) -> Iterator[dict[str, Any]]:
@@ -510,7 +491,7 @@ def load_eligible(cache: Path) -> tuple[list[dict[str, Any]], Counter[str]]:
 
 def stage0(fc: Path, cache: Path) -> None:
     rows, why = load_eligible(cache)
-    print(f"eligible settlements in events.jsonl {len(rows)}; excluded with |pred| >= 0.10%: {dict(why)}; rss {rss_mb():.0f} MB")
+    print(f"eligible settlements in events.jsonl {len(rows)}; excluded with |pred| >= 0.10%: {dict(why)}; rss {cmn.rss_mb():.0f} MB")
     # signal vs settled funding
     big = [e for e in rows if abs(e["pred"]) >= 0.001 or abs(e["F"]) >= 0.001]
     p = np.array([e["pred"] for e in big])
@@ -551,7 +532,7 @@ def stage0(fc: Path, cache: Path) -> None:
         days_ = {day(e) for e in cell}
         print(f"\n{lab}: n={len(cell)} days={len(days_)} symbols={len({e['s'] for e in cell})}")
         print(
-            f"  by year {dict(sorted(Counter(ymd(day(e))[:4] for e in cell).items()))}; by interval h {dict(sorted(Counter(e['h'] for e in cell).items()))}"
+            f"  by year {dict(sorted(Counter(cmn.ymd_day(day(e))[:4] for e in cell).items()))}; by interval h {dict(sorted(Counter(e['h'] for e in cell).items()))}"
         )
         print(f"  top symbols {Counter(e['s'] for e in cell).most_common(10)}")
         print(
@@ -575,7 +556,9 @@ def stage0(fc: Path, cache: Path) -> None:
         )
         print(f"  MDE (2.8 x CR1 SE by day) = {m * 100:.4f}pp; gate <= {GATE_MDE * 100:.2f}pp -> {'PASS' if m <= GATE_MDE else 'FAIL'}")
         if cell is mc:
-            wr(cache / "stage0.json", {"n": len(mc), "days": len(days_), "sd": sd, "sd_day": sd_day, "mde": m, "pass": m <= GATE_MDE})
+            cmn.write_json(
+                cache / "stage0.json", {"n": len(mc), "days": len(days_), "sd": sd, "sd_day": sd_day, "mde": m, "pass": m <= GATE_MDE}
+            )
     sanity(fc, rows)
 
 
@@ -611,7 +594,7 @@ def ci_line(label: str, xs: list[float], cl: list[Any], n_boot: int = 10_000) ->
 
 
 def full(fc: Path, cache: Path) -> None:
-    s0 = rd(cache / "stage0.json") if (cache / "stage0.json").exists() else None
+    s0 = cmn.read_json(cache / "stage0.json") if (cache / "stage0.json").exists() else None
     if not s0 or not s0["pass"]:
         print("stage-0 gate not passed: full test not run (registered rule)")
         return
@@ -778,7 +761,7 @@ def main() -> None:
         stage0(fc, cache)
     elif a.stage == "full":
         full(fc, cache)
-    print(f"stage {a.stage} finished in {time.time() - t0:.0f}s, peak rss {rss_mb():.0f} MB")
+    print(f"stage {a.stage} finished in {time.time() - t0:.0f}s, peak rss {cmn.rss_mb():.0f} MB")
 
 
 if __name__ == "__main__":

@@ -25,13 +25,14 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import resource
 import statistics
 import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
 
 from tradedesk.analytics import spot_perp_carry as spc
 from tradedesk.server import build_server
@@ -61,14 +62,6 @@ def ymd(ms: int | None) -> str:
 
 def pct(x: float | None, d: int = 1) -> str:
     return "—" if x is None or x != x else f"{x * 100:+.{d}f}%"
-
-
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
-
-
-def rd(p: Path) -> Any:
-    return json.loads(p.read_text())
 
 
 def wr(p: Path, obj: Any) -> None:
@@ -166,7 +159,7 @@ class Fetcher:
     async def cached(self, name: str, go: Any) -> Any:
         p = self.cache / name
         if p.exists():
-            return rd(p)
+            return cmn.read_json(p)
         t0 = time.monotonic()
         try:
             data = await go()
@@ -175,7 +168,7 @@ class Fetcher:
             return None
         wr(p, data)
         n = len(data["rows"]) if isinstance(data, dict) and "rows" in data else len(data) if isinstance(data, list) else 1
-        print(f"{name}: {n} rows, {time.monotonic() - t0:.1f}s, hl calls {self.calls}, rss {rss_mb():.0f} MB", flush=True)
+        print(f"{name}: {n} rows, {time.monotonic() - t0:.1f}s, hl calls {self.calls}, rss {cmn.rss_mb():.0f} MB", flush=True)
         return data
 
 
@@ -202,7 +195,7 @@ def levels(side: Any) -> list[tuple[float, float]]:
 
 
 async def books(fx: Fetcher, pairs: dict[str, dict[str, Any]], n: int, gap_s: float) -> None:
-    snaps = rd(fx.cache / "books.json") if (fx.cache / "books.json").exists() else []
+    snaps = cmn.read_json(fx.cache / "books.json") if (fx.cache / "books.json").exists() else []
     for k in range(n):
         snap: dict[str, Any] = {"ts": int(time.time() * 1000), "legs": {}}
         for asset, base in SPOT_BASE.items():
@@ -249,7 +242,7 @@ async def fetch(cache: Path, only: list[str], n_books: int) -> None:
             await books(fx, pairs, n_books, 15.0)
     finally:
         await rt.aclose()
-    print(f"fetch done: hl calls {fx.calls}, peak rss {rss_mb():.0f} MB", flush=True)
+    print(f"fetch done: hl calls {fx.calls}, peak rss {cmn.rss_mb():.0f} MB", flush=True)
 
 
 # ----------------------------------------------------------------------------- analysis
@@ -259,7 +252,7 @@ def load(cache: Path, venue: str, asset: str) -> dict[str, Any] | None:
     ps, pp, pf = (cache / f"{venue}_{k}_{asset}.json" for k in ("spot", "perp", "funding"))
     if not (ps.exists() and pp.exists() and pf.exists()):
         return None
-    spot, perp, fund = rd(ps), rd(pp), rd(pf)
+    spot, perp, fund = cmn.read_json(ps), cmn.read_json(pp), cmn.read_json(pf)
     if not spot or not perp or not fund or not fund.get("rows"):
         return None
     marks = spc.align_marks([(int(t) + H4, c) for t, c, _ in spot], [(int(t) + H4, c) for t, c, _ in perp])
@@ -279,7 +272,7 @@ def slippage(cache: Path) -> dict[str, dict[str, Any]]:
     if not p.exists():
         return {}
     out: dict[str, dict[str, Any]] = {}
-    snaps = rd(p)
+    snaps = cmn.read_json(p)
     keys = sorted({k for s in snaps for k in s["legs"]})
     for key in keys:
         row: dict[str, Any] = {"n": 0}
@@ -324,7 +317,7 @@ def gate(cache: Path) -> str:
     slip = slippage(cache)
     out = ["## Крок 0: покриття, ворота, Binance за те саме вікно", ""]
     out.append(f"Вікно основне: {ymd(START)} … {ymd(END)} (12 блоків по 365/12 дн.). Свічки 4h, funding HL щогодини, Binance 8h.")
-    meta = rd(cache / "hl_spotmeta.json") if (cache / "hl_spotmeta.json").exists() else {}
+    meta = cmn.read_json(cache / "hl_spotmeta.json") if (cache / "hl_spotmeta.json").exists() else {}
     pairs = spot_pairs(meta)
     out += ["", "| актив | спот-пара HL | 1-а спот-свічка | 1-а перп-свічка | спільна історія до кінця, міс | покриття 4h спот / перп у вікні | медіана |базис| | funding HL: 1-й запис, покриття 1h у вікні, повна | обіг спота у вікні, $/добу (медіана) |",
             "|---|---|---|---|---|---|---|---|---|"]  # fmt: skip
@@ -539,7 +532,7 @@ def report(cache: Path) -> str:
         out.append(
             f"\nТоп-чверть ({', '.join(top)}) у 2-й половині: {pct(statistics.fmean(second[a] for a in top))}; решта: {pct(statistics.fmean(second[a] for a in rest))}."
         )
-    out.append(f"\nПіковий RSS аналізу: {rss_mb():.0f} MB.")
+    out.append(f"\nПіковий RSS аналізу: {cmn.rss_mb():.0f} MB.")
     return "\n".join(out)
 
 
@@ -559,7 +552,7 @@ def main() -> None:
     text = gate(cache) if a.mode == "gate" else report(cache)
     if a.out:
         Path(a.out).expanduser().write_text(text + "\n")
-        print(f"wrote {a.out} ({len(text.splitlines())} lines), peak rss {rss_mb():.0f} MB")
+        print(f"wrote {a.out} ({len(text.splitlines())} lines), peak rss {cmn.rss_mb():.0f} MB")
     else:
         sys.stdout.write(text + "\n")
 

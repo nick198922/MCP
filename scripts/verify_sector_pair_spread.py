@@ -25,6 +25,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -65,10 +66,6 @@ def say(s: str = "") -> None:
 
 def rss() -> str:
     return f"rss {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.0f} MB"
-
-
-def ymd(day: int) -> str:
-    return datetime.fromtimestamp(day * 86400, UTC).strftime("%Y-%m-%d")
 
 
 def week(day: int) -> str:
@@ -231,7 +228,7 @@ def weeks_of(trs: list[dict[str, Any]]) -> list[str]:
 
 def sanity(g: dict[str, Any], forms: list[dict[str, Any]]) -> None:
     syms = [str(s) for s in g["syms"]]
-    say(f"grid: {len(syms)} symbols x {g['c'].shape[0]} days ({ymd(D0)}..{ymd(D_END - 1)}), {rss()}")
+    say(f"grid: {len(syms)} symbols x {g['c'].shape[0]} days ({cmn.ymd_day(D0)}..{cmn.ymd_day(D_END - 1)}), {rss()}")
     say("funding intervals (hours: settlements): " + ", ".join(f"{int(h)}h: {int(n)}" for h, n in g["intervals"]))
     j = syms.index("FTTUSDT") if "FTTUSDT" in syms else None
     if j is not None:
@@ -254,7 +251,7 @@ def describe_forms(forms: list[dict[str, Any]], g: dict[str, Any]) -> None:
     say("month       elig clusters multi  H1 H3a H3b")
     for fm in forms[:: max(1, len(forms) // 18)]:
         say(
-            f"{ymd(fm['F'] + D0)}  {fm['n_elig']:4d} {fm['n_clusters']:8d} {fm['n_multi']:5d} {len(fm['h1']):3d} {len(fm['h3a']):3d} {len(fm['h3b']):3d}"
+            f"{cmn.ymd_day(fm['F'] + D0)}  {fm['n_elig']:4d} {fm['n_clusters']:8d} {fm['n_multi']:5d} {len(fm['h1']):3d} {len(fm['h3a']):3d} {len(fm['h3b']):3d}"
         )
     tot = Counter(f"{syms[a]}/{syms[b]}" for fm in forms for a, b, *_ in fm["h1"])
     say(
@@ -304,7 +301,7 @@ def tails(trs: list[dict[str, Any]]) -> None:
     for i in np.argsort(-np.abs(v))[:6]:
         t = trs[i]["t"]
         say(
-            f"  {trs[i]['pair']:26s} {ymd(t.entry + D0)}..{ymd(t.exit + D0)} side {t.side:+d} {t.reason:6s} price {t.price:+.3f} funding {t.funding:+.4f}"
+            f"  {trs[i]['pair']:26s} {cmn.ymd_day(t.entry + D0)}..{cmn.ymd_day(t.exit + D0)} side {t.side:+d} {t.reason:6s} price {t.price:+.3f} funding {t.funding:+.4f}"
         )
 
 
@@ -449,10 +446,10 @@ def full(g: dict[str, Any], forms: list[dict[str, Any]]) -> None:
     keep = np.ones(len(v), bool)
     keep[order[:10]] = False
     say(stat_line("without top-10 trades", v[keep], [w for w, k in zip(wk, keep, strict=True) if k]))
-    say("top-10 trades: " + ", ".join(f"{trs[i]['pair']} {ymd(trs[i]['t'].entry + D0)} {v[i] * 100:+.1f}%" for i in order[:10]))
-    say("bottom-5 trades: " + ", ".join(f"{trs[i]['pair']} {ymd(trs[i]['t'].entry + D0)} {v[i] * 100:+.1f}%" for i in order[-5:]))
+    say("top-10 trades: " + ", ".join(f"{trs[i]['pair']} {cmn.ymd_day(trs[i]['t'].entry + D0)} {v[i] * 100:+.1f}%" for i in order[:10]))
+    say("bottom-5 trades: " + ", ".join(f"{trs[i]['pair']} {cmn.ymd_day(trs[i]['t'].entry + D0)} {v[i] * 100:+.1f}%" for i in order[-5:]))
     for y in range(2022, 2027):
-        sel = [i for i, r in enumerate(trs) if ymd(r["t"].entry + D0).startswith(str(y))]
+        sel = [i for i, r in enumerate(trs) if cmn.ymd_day(r["t"].entry + D0).startswith(str(y))]
         if sel:
             say(stat_line(f"  year {y}", v[sel], [wk[i] for i in sel]))
     say("== H3 controls and placebo ==")

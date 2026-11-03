@@ -29,6 +29,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TextIO
 
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -76,10 +77,6 @@ def rss() -> str:
     return f"peak RSS {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.0f} MB"
 
 
-def ymd(day: int) -> str:
-    return datetime.fromtimestamp(day * 86400, UTC).strftime("%Y-%m-%d")
-
-
 def month_day(mo: str) -> int:
     y, m = map(int, mo.split("-"))
     return int(datetime(y, m, 1, tzinfo=UTC).timestamp()) // 86400
@@ -119,7 +116,7 @@ def stage_features(data_dir: Path, panel_dir: Path, out: Path) -> None:
         lg = leg_week(BTC, btc, data[BTC].fslice((w["day"] - 2) * 86_400_000, (w["day"] + 9) * 86_400_000), w["day"])
         weeks.append({"day": w["day"], "f": f, "r_btc": lg.r if lg else None, "f_btc": lg.funding_long if lg else None})
         if (i + 1) % 50 == 0:
-            print(f"  week {i + 1} {ymd(w['day'])} ({time.time() - t0:.0f}s; {rss()})", flush=True)
+            print(f"  week {i + 1} {cmn.ymd_day(w['day'])} ({time.time() - t0:.0f}s; {rss()})", flush=True)
     fc.wr(out / "features.json", {"weeks": weeks, "cols": FEATURES})
     print(f"features: {len(weeks)} weeks, {n} symbol-weeks, missing {miss}; {time.time() - t0:.0f}s; {rss()}", flush=True)
     fc.sanity(data)
@@ -214,12 +211,14 @@ def stage0(panel_dir: Path, out: Path) -> None:
     n_is = sum(w["day"] < SPLIT for w in weeks)
     n_oos = len(weeks) - n_is
     print(
-        f"panel Mondays {len(raw)}; weeks with >= {MIN_N} rows with NEAR365: {len(weeks)} ({ymd(weeks[0]['day'])}..{ymd(weeks[-1]['day'])})"
+        f"panel Mondays {len(raw)}; weeks with >= {MIN_N} rows with NEAR365: {len(weeks)} ({cmn.ymd_day(weeks[0]['day'])}..{cmn.ymd_day(weeks[-1]['day'])})"
     )
     print(f"symbol-weeks with NEAR365: {len(rows)} of {sum(len(w['rows']) for w in raw)} panel rows (all weeks)")
     ns = [len(w["rows"]) for w in weeks]
     print(f"N per week: min {min(ns)} median {statistics.median(ns)} max {max(ns)}")
-    print(f"IS weeks (< {ymd(SPLIT)}): {n_is}; OOS: {n_oos} ({'binding' if n_oos >= MIN_OOS else 'descriptive only'}, threshold {MIN_OOS})")
+    print(
+        f"IS weeks (< {cmn.ymd_day(SPLIT)}): {n_is}; OOS: {n_oos} ({'binding' if n_oos >= MIN_OOS else 'descriptive only'}, threshold {MIN_OOS})"
+    )
     for k in FEATURES:
         v = sorted(x for x in col(rows, k) if x is not None)
         print(
@@ -234,7 +233,7 @@ def stage0(panel_dir: Path, out: Path) -> None:
     print()
     btc = [(w["day"], r[IX[S]]) for w in weeks for r in w["rows"] if r[0] == BTC]
     print(
-        f"  BTCUSDT in the H1 universe {len(btc)} weeks; NEAR365 on 2024-12-30: {[round(x, 4) for d, x in btc if ymd(d) == '2024-12-30']}"
+        f"  BTCUSDT in the H1 universe {len(btc)} weeks; NEAR365 on 2024-12-30: {[round(x, 4) for d, x in btc if cmn.ymd_day(d) == '2024-12-30']}"
     )
     print(f"  r_btc weekly: min {min(w['r_btc'] for w in weeks):+.3f} max {max(w['r_btc'] for w in weeks):+.3f}")
     print()
@@ -328,7 +327,9 @@ def stage_full(data_dir: Path, panel_dir: Path, out: Path, n_perm: int, n_shift:
     days = [w["day"] for w in weeks]
     is_mask = [d < SPLIT for d in days]
     n_oos = len(weeks) - sum(is_mask)
-    print(f"weeks {len(weeks)}; IS {sum(is_mask)} ({ymd(days[0])}..{ymd(SPLIT - 7)}); OOS {n_oos} ({ymd(SPLIT)}..{ymd(days[-1])})")
+    print(
+        f"weeks {len(weeks)}; IS {sum(is_mask)} ({cmn.ymd_day(days[0])}..{cmn.ymd_day(SPLIT - 7)}); OOS {n_oos} ({cmn.ymd_day(SPLIT)}..{cmn.ymd_day(days[-1])})"
+    )
     if not s0["H1 beta30"]["gate"]:
         print(f"stage-0 gate failed (MDE {s0['H1 beta30']['mde']:.4f}) -> inconclusive; means not computed")
         return
@@ -362,8 +363,8 @@ def stage_full(data_dir: Path, panel_dir: Path, out: Path, n_perm: int, n_shift:
     print()
     print("=== ROBUSTNESS (registered list; sign +) ===")
     print(fmt("raw IC (no controls)", series(weeks, S)))
-    for y in sorted({ymd(d)[:4] for d in days}):
-        print(fmt(f"H1 year {y}", [x for x, d in zip(h1, days, strict=True) if ymd(d)[:4] == y]))
+    for y in sorted({cmn.ymd_day(d)[:4] for d in days}):
+        print(fmt(f"H1 year {y}", [x for x, d in zip(h1, days, strict=True) if cmn.ymd_day(d)[:4] == y]))
     for lab, xs in (("H1", h1), ("H2", h2)):
         roll = rolling_means(xs, 52)
         print(f"    {lab} rolling 52w: min {min(roll):+.4f} max {max(roll):+.4f} share > 0 {sum(r > 0 for r in roll) / len(roll):.0%}")

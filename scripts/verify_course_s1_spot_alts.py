@@ -31,6 +31,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
 import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -106,10 +107,6 @@ def emit(line: str = "") -> None:
 
 def rss_mb() -> float:
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
-
-
-def day_str(day: int) -> str:
-    return datetime.fromtimestamp(day * 86400, tz=UTC).strftime("%Y-%m-%d")
 
 
 # ---------------------------------------------------------------- prereg
@@ -460,8 +457,8 @@ def collect(ctx: Ctx, outcomes: bool) -> tuple[list[dict[str, Any]], Counter[str
                     "var": var,
                     "h": h,
                     "ev": ev_id,
-                    "day": day_str(d),
-                    "month": day_str(d)[:7],
+                    "day": cmn.ymd_day(d),
+                    "month": cmn.ymd_day(d)[:7],
                     "oos": int(x.close_ms[t]) >= OOS_MS,
                     "bar_day": d,
                     "btc_up": ctx.btc_up.get(d),
@@ -563,7 +560,7 @@ def sanity(syms: dict[str, Sym], uni: dict[str, list[str]], data_dir: Path) -> N
     b = syms["BTCUSDT"]
     k = int(np.searchsorted(b.t, ms("2024-12-31T00:00")))
     emit(
-        f"- BTCUSDT перп: денне закриття 2024-12-31 = {b.c[k]:g} (еталон 93548.9); перший денний бар {day_str(int(b.day[0]))}; SMA200 з {day_str(int(b.day[np.flatnonzero(np.isfinite(b.s200))[0]]))}"
+        f"- BTCUSDT перп: денне закриття 2024-12-31 = {b.c[k]:g} (еталон 93548.9); перший денний бар {cmn.ymd_day(int(b.day[0]))}; SMA200 з {cmn.ymd_day(int(b.day[np.flatnonzero(np.isfinite(b.s200))[0]]))}"
     )
     n_seg = sum(int(x.seg.max()) + 1 for x in syms.values())
     emit(f"- символів з денними барами: {len(syms)}; сегментів: {n_seg} (розрив > 2 діб — новий сегмент)")
@@ -574,7 +571,7 @@ def sanity(syms: dict[str, Sym], uni: dict[str, list[str]], data_dir: Path) -> N
         r = x.c[1:] / x.c[:-1]
         same = x.seg[1:] == x.seg[:-1]
         for i in np.flatnonzero(same & ((r > 3) | (r < 1 / 3))):
-            jumps.append(f"{s} {day_str(int(x.day[i + 1]))} ×{r[i]:.2f}")
+            jumps.append(f"{s} {cmn.ymd_day(int(x.day[i + 1]))} ×{r[i]:.2f}")
     emit(f"- стрибки close/close[−1] > ×3 або < ×⅓ усередині сегмента ({len(jumps)}): {jumps[:40]}")
     allm = sorted({s for v in uni.values() for s in v})
     info = s14.rd(data_dir / "exchange_info.json")["info"]
@@ -660,7 +657,7 @@ def h3_data(syms: dict[str, Sym], uni: dict[str, list[str]]) -> dict[str, Any]:
 def h3_report(h3: dict[str, Any]) -> None:
     emit("\n## H3 (описова): альти відносно BTC, поки BTC у боковику після падіння")
     d, y, stt, ev = h3["days"], h3["y"], h3["state"], h3["ev"]
-    emit(f"- початки епізодів стану BTC (усі, з даними): {[day_str(x) for x in h3['onsets']]}")
+    emit(f"- початки епізодів стану BTC (усі, з даними): {[cmn.ymd_day(x) for x in h3['onsets']]}")
     emit(f"- днів з y: {d.size}; днів у стані: {int(stt.sum())}; подій з y: {int(ev.sum())}")
     for lab, m in (
         ("IS", d * DAY_MS + DAY_MS < OOS_MS),
@@ -687,7 +684,7 @@ def h3_report(h3: dict[str, Any]) -> None:
             f"E[y] усі доби {base:+.1%}; Δ3 {delta:+.1%} CI (зсув) {fmt_ci(ci)}, p (Δ3 < 0) {fp(p_lo)}; E[y | усі доби стану] {sm:+.1%} ({int(ss.sum())} діб)"
         )
         if lab == "IS" and pos.size:
-            emit(f"  - події IS: {[(day_str(int(d[k])), round(float(yy[k]), 3)) for k in pos]}")
+            emit(f"  - події IS: {[(cmn.ymd_day(int(d[k])), round(float(yy[k]), 3)) for k in pos]}")
     emit("- позначка за реєстрацією: див. звіт (◯, якщо подій < 10)")
 
 
@@ -717,14 +714,14 @@ def stage_count(s14_cache: Path, data_dir: Path, own: Path, limit: int | None) -
     )
     b = syms["BTCUSDT"]
     st = sideways_after_drop(b.c, b.seg)
-    on = [day_str(int(b.day[t])) for t in state_onsets(st) if START_MS <= int(b.close_ms[t]) <= DATA_END_MS - 30 * DAY_MS]
+    on = [cmn.ymd_day(int(b.day[t])) for t in state_onsets(st) if START_MS <= int(b.close_ms[t]) <= DATA_END_MS - 30 * DAY_MS]
     emit(f"- H3: початків епізодів стану BTC у періоді: {len(on)} — {on}; діб у стані {int(st.sum())}")
 
 
 def stage_report(s14_cache: Path, data_dir: Path, own: Path, limit: int | None) -> None:
     emit("# Крок 9 S1: спот-альти біля тижневої підтримки — результати")
     emit(
-        f"Дані: денні свічки перпів Binance USD-M (замінник споту), з делістнутими; всесвіт — топ-{TOP_N} альтів за обсягом щомісяця; входи {day_str(START_MS // DAY_MS)} … кінець даних − h; IS < {day_str(OOS_MS // DAY_MS)} ≤ OOS. Дохідність — на номінал без плеча (= на капітал), net після 0.07 % на сторону.\n"
+        f"Дані: денні свічки перпів Binance USD-M (замінник споту), з делістнутими; всесвіт — топ-{TOP_N} альтів за обсягом щомісяця; входи {cmn.ymd_day(START_MS // DAY_MS)} … кінець даних − h; IS < {cmn.ymd_day(OOS_MS // DAY_MS)} ≤ OOS. Дохідність — на номінал без плеча (= на капітал), net після 0.07 % на сторону.\n"
     )
     syms, uni = load_all(s14_cache, data_dir, own, limit)
     sanity(syms, uni, data_dir)

@@ -31,6 +31,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -76,10 +77,6 @@ def rss() -> str:
     return f"peak RSS {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.0f} MB"
 
 
-def ymd(day: int) -> str:
-    return datetime.fromtimestamp(day * 86400, UTC).strftime("%Y-%m-%d")
-
-
 def load_panel(p: Path) -> list[dict[str, Any]]:
     return fc.rd(p)["weeks"]
 
@@ -101,10 +98,10 @@ async def stage_fetch(panel: Path, cache: Path, sample: int | None) -> None:
         for s, d in need:
 
             async def go(s: str = s, d: int = d) -> Any:
-                rows = (await rt.binance_vision.um_metrics_ratios_daily(s, ymd(d))).data
+                rows = (await rt.binance_vision.um_metrics_ratios_daily(s, cmn.ymd_day(d))).data
                 return {"n_rows": len(rows), "snap": oi_value_snapshot(rows, d)}
 
-            jobs.append((cache / "snap" / s / f"{ymd(d)}.json", go))
+            jobs.append((cache / "snap" / s / f"{cmn.ymd_day(d)}.json", go))
         t0 = time.time()
         await fx.many("metrics", jobs)
         print(f"FETCH COMPLETE {len(jobs)} files in {time.time() - t0:.0f}s; {rss()}", flush=True)
@@ -116,7 +113,7 @@ async def stage_fetch(panel: Path, cache: Path, sample: int | None) -> None:
 
 
 def snap(cache: Path, sym: str, day: int) -> dict[str, Any] | None:
-    p = cache / "snap" / sym / f"{ymd(day)}.json"
+    p = cache / "snap" / sym / f"{cmn.ymd_day(day)}.json"
     return fc.rd(p) if p.exists() else {"missing": True}
 
 
@@ -260,7 +257,9 @@ def stage0(cache: Path) -> None:
     print(f"build exclusions / inclusions (symbol-weeks): {t['why']}")
     weeks = load_table(cache)
     allw = t["weeks"]
-    print(f"weeks in panel {len(allw)}; weeks with N >= {MIN_N}: {len(weeks)} ({ymd(weeks[0]['day'])} .. {ymd(weeks[-1]['day'])})")
+    print(
+        f"weeks in panel {len(allw)}; weeks with N >= {MIN_N}: {len(weeks)} ({cmn.ymd_day(weeks[0]['day'])} .. {cmn.ymd_day(weeks[-1]['day'])})"
+    )
     ns = [len(w["rows"]) for w in weeks]
     print(
         f"N per week: min {min(ns)}, median {statistics.median(ns)}, max {max(ns)}; symbol-weeks {sum(ns)}; symbols {len({r[0] for w in weeks for r in w['rows']})}"
@@ -397,7 +396,7 @@ def stage_full(cache: Path, n_perm: int) -> None:
         lines.append(s)
 
     days = [w["day"] for w in weeks]
-    say(f"weeks {len(weeks)} ({ymd(days[0])} .. {ymd(days[-1])}); symbol-weeks {sum(len(w['rows']) for w in weeks)}")
+    say(f"weeks {len(weeks)} ({cmn.ymd_day(days[0])} .. {cmn.ymd_day(days[-1])}); symbol-weeks {sum(len(w['rows']) for w in weeks)}")
     ic = {k: [rank_ic(signal(w, k), rres(w)) for w in weeks] for k in ("neu", "raw", "neu_beta")}
     say("\nH1 primary: weekly Spearman IC of neutralised L vs next-week beta-neutral return (block bootstrap CI, block 4)")
     s1 = summ(ic["neu"])
@@ -417,8 +416,8 @@ def stage_full(cache: Path, n_perm: int) -> None:
         for k in ("neu", "raw"):
             say(fmt(f"{lab} [{k}]", summ([x for x, f in zip(ic[k], mask, strict=True) if f])))
     say("  by calendar year [neu]:")
-    for y in sorted({ymd(d)[:4] for d in days}):
-        xs = [x for x, d in zip(ic["neu"], days, strict=True) if ymd(d)[:4] == y]
+    for y in sorted({cmn.ymd_day(d)[:4] for d in days}):
+        xs = [x for x, d in zip(ic["neu"], days, strict=True) if cmn.ymd_day(d)[:4] == y]
         say(f"    {y}: n {len(xs):>3}, mean IC {statistics.fmean(xs):+.4f}, SE {statistics.stdev(xs) / math.sqrt(len(xs)):.4f}")
 
     say("\nH2: IC in weeks where the median trailing funding of the top-L quintile is positive vs the rest")

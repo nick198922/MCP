@@ -65,10 +65,6 @@ def wr_bytes(p: Path, b: bytes) -> None:
     tmp.replace(p)
 
 
-def rd(p: Path) -> Any:
-    return json.loads(p.read_text())
-
-
 def rd_bytes(p: Path) -> bytes:
     return gzip.decompress(p.read_bytes())
 
@@ -134,7 +130,7 @@ async def cmc_date(src: Src, cache: Path, d: date) -> dict[str, Any] | None:
     """All coins of the CMC historical listing of day ``d`` (paginated by 5000), compacted per symbol."""
     cp = cache / f"cmc/compact2_{d.isoformat()}.json"
     if cp.exists():
-        return rd(cp)
+        return cmn.read_json(cp)
     comp: dict[str, list[dict[str, Any]]] = {}
     start = 1
     while True:
@@ -168,7 +164,7 @@ def cmc_by_id(comp: dict[str, list[dict[str, Any]]]) -> dict[int, dict[str, Any]
 def perp_tokens(exclude_tradfi: bool = True) -> dict[str, dict[str, Any]]:
     """token symbol -> {first listing day, venues, perp bases}. Binance COIN perps + Bybit linear USDT perps
     (Bybit stock/ETF/commodity/forex perps dropped unless ``exclude_tradfi`` is False)."""
-    u = rd(UNIVERSE)
+    u = cmn.read_json(UNIVERSE)
     out: dict[str, dict[str, Any]] = {}
 
     def add(base: str, ms: int, venue: str) -> None:
@@ -182,7 +178,7 @@ def perp_tokens(exclude_tradfi: bool = True) -> dict[str, dict[str, Any]]:
     meta_p = UNIVERSE.parent.parent / "free_supply_history/bybit_meta.json"
     tradfi = set()
     if exclude_tradfi and meta_p.exists():
-        tradfi = {b for b, v in rd(meta_p).items() if v.get("symbolType") in ("stock", "ETF", "commodity", "forex")}
+        tradfi = {b for b, v in cmn.read_json(meta_p).items() if v.get("symbolType") in ("stock", "ETF", "commodity", "forex")}
     for base, m in u["binance"].items():
         add(base, int(m.get("onboard") or 0), "binance")
     for base, m in u["bybit"].items():
@@ -272,7 +268,7 @@ async def fetch_tickers(cache: Path) -> dict[str, dict[str, float]]:
     """Current last prices of Binance/Bybit USDT perps (resolves ticker collisions to a CMC id)."""
     p = cache / "tickers.json"
     if p.exists():
-        return rd(p)
+        return cmn.read_json(p)
     from tradedesk.server import build_server  # noqa: PLC0415
 
     _, rt = build_server()
@@ -318,8 +314,8 @@ def multiplier(base: str) -> float:
 
 def resolve_ids(cache: Path, tokens: dict[str, dict[str, Any]], ref_day: date) -> dict[str, dict[str, Any]]:
     """token -> {cmc_id, how, n_candidates} on the reference CMC listing (price match, else largest market cap)."""
-    tick = rd(cache / "tickers.json")
-    comp = rd(cache / f"cmc/compact2_{ref_day.isoformat()}.json")
+    tick = cmn.read_json(cache / "tickers.json")
+    comp = cmn.read_json(cache / f"cmc/compact2_{ref_day.isoformat()}.json")
     out: dict[str, dict[str, Any]] = {}
     for sym, t in tokens.items():
         cands = comp.get(sym) or []
@@ -419,7 +415,7 @@ async def wayback(cache: Path) -> None:
     try:
         live = rd_bytes(cache / "web/cmc_hist_20210103.html.gz")
         lr = page_rows(live)
-        api = cmc_by_id(rd(cache / "cmc/compact2_2021-01-03.json"))
+        api = cmc_by_id(cmn.read_json(cache / "cmc/compact2_2021-01-03.json"))
         g = [rel_gap(_num(r["circ"]), _num(api.get(int(r["id"]), {}).get("circ"))) for r in lr]
         log(f"sanity: live page 2021-01-03 rows={len(lr)}; vs API {summarize_gaps(g)}")
         for d in quarter_sample_dates(FIRST_YEAR, LAST):
@@ -443,7 +439,7 @@ async def wayback(cache: Path) -> None:
             if not html:
                 continue
             rows = page_rows(html)
-            api = cmc_by_id(rd(cache / f"cmc/compact2_{d.isoformat()}.json"))
+            api = cmc_by_id(cmn.read_json(cache / f"cmc/compact2_{d.isoformat()}.json"))
             n0 = len(pairs)
             for r in rows:
                 today = api.get(int(r["id"]))
@@ -659,8 +655,8 @@ def report(cache: Path, exclude_tradfi: bool = True) -> None:
     ref_day = date(2026, 10, 22)
     ids = resolve_ids(cache, tokens, ref_day)
     res: dict[str, Any] = {"n_tokens": len(tokens)}
-    by_date = {d: cmc_by_id(rd(cache / f"cmc/compact2_{d.isoformat()}.json")) for d in sample}
-    sym_date = {d: rd(cache / f"cmc/compact2_{d.isoformat()}.json") for d in sample}
+    by_date = {d: cmc_by_id(cmn.read_json(cache / f"cmc/compact2_{d.isoformat()}.json")) for d in sample}
+    sym_date = {d: cmn.read_json(cache / f"cmc/compact2_{d.isoformat()}.json") for d in sample}
     rows = []
     for sym, t in tokens.items():
         win = [d for d in sample if d >= t["listed"]]
@@ -725,7 +721,7 @@ def report(cache: Path, exclude_tradfi: bool = True) -> None:
         p = cache / f"cmc/compact2_{day}.json"
         if not p.exists():
             continue
-        api = cmc_by_id(rd(p))
+        api = cmc_by_id(cmn.read_json(p))
         if not api:
             continue
         for sym, r in ids.items():
@@ -749,7 +745,7 @@ def report(cache: Path, exclude_tradfi: bool = True) -> None:
     # ---- C4: Wayback
     wp = cache / "wayback_pairs.json"
     if wp.exists():
-        pairs = rd(wp)
+        pairs = cmn.read_json(wp)
         print(f"\n== C4 point-in-time (Wayback capture vs today's API): {len({p['date'] for p in pairs})} dates")
         for f in ("circ", "total", "max"):
             s = summarize_gaps(rel_gap(p["today"], p["archived"]) for p in pairs if p["field"] == f)
@@ -767,7 +763,7 @@ def report(cache: Path, exclude_tradfi: bool = True) -> None:
         print("  worst circ revisions:", [(p["date"], p["symbol"], p["archived"], p["today"]) for p in worst])
     cp = cache / "cm_pit_pairs.json"
     if cp.exists():
-        pairs = rd(cp)
+        pairs = cmn.read_json(cp)
         s = summarize_gaps(rel_gap(p["today"], p["archived"]) for p in pairs)
         print(f"\n== C4 Coin Metrics SplyCur (old GitHub CSV vs today's API): {s} -> {pit_verdict(s)}")
         for a in sorted({p["asset"] for p in pairs}):

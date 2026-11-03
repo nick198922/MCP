@@ -23,6 +23,8 @@ import sys
 import time
 from pathlib import Path
 
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
+
 HERE = Path(__file__).resolve().parent
 DB_DEFAULT = "/var/lib/tradedesk-mcp/tradedesk.sqlite"
 STATE = Path(os.environ.get("TRADEDESK_DASHBOARD_STATE", Path.home() / ".local/state/tradedesk-dashboard"))
@@ -37,7 +39,7 @@ VENUES = ("bybit", "hyperliquid")
 def count_rows(db: str, venue: str) -> int | None:
     """Imported rows of one venue (tags contain the venue and 'import'); None when the database is not readable."""
     try:
-        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=10)
+        con = cmn.connect_ro(db, timeout=10)
         try:
             n = con.execute("SELECT count(*) FROM journal WHERE tags LIKE ? AND tags LIKE '%\"import\"%'", (f'%"{venue}"%',)).fetchone()[0]
         finally:

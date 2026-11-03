@@ -30,6 +30,9 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT / "scripts"))
+
+import common_helpers as cmn  # noqa: E402
 
 from tradedesk.analytics.smart_money import (  # noqa: E402
     EXCLUDED_CLASSES,
@@ -100,7 +103,7 @@ def open_db(db: str | None, cache: Path) -> sqlite3.Connection:
             tmp.rename(dst)
         src = dst
     emit(f"db: {src}")
-    return sqlite3.connect(f"file:{src}?mode=ro", uri=True)
+    return cmn.connect_ro(src)
 
 
 def snapshot(conn: sqlite3.Connection, day: str, venue: str = "hyperliquid") -> dict[str, dict[str, Any]]:

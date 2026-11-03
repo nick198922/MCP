@@ -27,6 +27,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
+
 from tradedesk.analytics import pm_modules as pm
 from tradedesk.analytics.pm_threshold import HOUR_S, YEAR_S, value_at
 
@@ -331,13 +333,7 @@ def _ols(y: list[float], X: list[list[float]]) -> list[float]:
 
 
 def copy_db(dst: Path) -> None:
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    a = sqlite3.connect(f"file:{DB_SRC}?mode=ro", uri=True)
-    b = sqlite3.connect(dst)
-    with b:
-        a.backup(b)
-    a.close()
-    b.close()
+    cmn.backup_db(DB_SRC, dst)
 
 
 def fee(p: float, rate: float, exp: float) -> float:
@@ -354,7 +350,7 @@ def best_edge(p: float, r: dict) -> float | None:
 
 
 def run_h8(db: Path, n_boot: int, res: dict[str, Any]) -> None:
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    con = cmn.connect_ro(db)
     con.row_factory = sqlite3.Row
     pairs: dict[tuple[int, str], dict[str, Any]] = {}
     for r in con.execute(

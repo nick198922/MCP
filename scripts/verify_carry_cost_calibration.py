@@ -34,6 +34,8 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import common_helpers as cmn  # noqa: E402
+
 from tradedesk.analytics.carry_costs import (  # noqa: E402
     OLD_MODEL,
     CostModel,
@@ -69,16 +71,6 @@ def pct(x: float | None, d: int = 3) -> str:
 
 
 # ---------- paper ----------
-
-
-def snapshot(src: str, dst: Path) -> None:
-    a = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
-    b = sqlite3.connect(dst)
-    try:
-        a.backup(b)
-    finally:
-        a.close()
-        b.close()
 
 
 def load_sides(con: sqlite3.Connection) -> tuple[list[dict[str, Any]], int]:
@@ -234,9 +226,9 @@ def build_models(cal: dict[str, Any], timing: dict[str, Any]) -> dict[str, CostM
 def run_paper(a: argparse.Namespace, cache: Path) -> None:
     db = cache / SNAPSHOT
     if a.snapshot_from:
-        snapshot(a.snapshot_from, db)
+        cmn.backup_db(a.snapshot_from, db)
         log(f"snapshot {a.snapshot_from} -> {db}")
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    con = cmn.connect_ro(db)
     sides, no_book = load_sides(con)
     as_of = max(x["cycle_ts"] for x in sides)
     log(f"sides with a book {len(sides)}, without {no_book}, last side {fmt(as_of)}")

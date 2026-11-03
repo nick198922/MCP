@@ -1,0 +1,21 @@
+# Рев'ю (режим C): scripts-dedup-2, пункт 33 постійної картки
+
+Дата: 2026-11-03. Вердикт: **approve**.
+
+Перевірив сам: `git diff` (13 файлів + новий файл змін), `make lint` (ruff check і format: чисто), `uv run pytest -q tests/test_common_helpers.py` (9 passed), а також суміжні `test_cycle_regime_eval`, `test_journal_refresh`, `test_journal_rules`, `test_cycle_regime_journal` (31 passed).
+
+## Перевірки
+
+1. **Заборонені файли не чіпані.** Зміни є лише в `scripts/` (9 скриптів + `common_helpers.py`), `tests/test_common_helpers.py` і документах. `git diff --stat` для `src`, `scripts/server/`, `condor_forward_costs.py`, `pm_gap_paper_report.py`, `paper_carry_report.py` порожній. `execution/`, колектори, `agents_*` не зачеплені. Файлів скриптів 10 з `common_helpers.py`, тобто в межах ліміту картки.
+2. **`backup_db` зберігає поведінку.** Раніше обидві копії (`snapshot`, `copy_db`) відкривали джерело як `file:{path}?mode=ro` і викликали `a.backup(b)`. Тепер джерело йде через `connect_ro` (те саме `mode=ro`, шлях лише екранований, `timeout=5` = стандартний для sqlite3), приймач `sqlite3.connect(dst)`. Відмінності від старих копій названо у змінах і вони безпечні: `mkdir` додано і в carry-скрипті; закриття з'єднань тепер і при помилці (раніше в `verify_pm_*` витікало); `with b:` прибрано, бо після `backup` відкритої транзакції немає. Вкладений `try/finally` закриває обидва з'єднання в будь-якому випадку, включно з падінням `sqlite3.connect(dst)`. Відсутнє джерело: `connect_ro` кидає `OperationalError` до створення `dst` (але `dst.parent` створюється першим, див. зауваження 1).
+3. **Заміна `mode=ro` на `connect_ro`.** У всіх 9 скриптах аргумент і `timeout` ті самі (`journal_refresh` явно `timeout=10`, решта дефолт 5, як і було). Для шляхів без `?`, `#`, `%`, пробілу URI ідентичний (`/` у `quote` безпечний). З такими символами тепер відкривається правильний файл. Закриття з'єднань у змінених місцях не міняли. `sqlite3` лишився імпортованим там, де використовується (`verify_pm_modules` для `sqlite3.Row`); у `journal_rules` і `verify_pm_h7_qlike` імпорт прибрано, ruff підтверджує, що не використовувався.
+4. **Імпорт `common_helpers`.** Скрипти запускаються як `python scripts/x.py`, каталог скрипта в `sys.path`; у `traders_report` і `verify_smart_money` додано явний `sys.path.insert(ROOT/"scripts")` (з `noqa: E402`), у `verify_carry_cost_calibration` він уже був. Тести, що імпортують `journal_refresh`, `journal_rules`, `cycle_regime_eval`, самі додають `scripts/` у шлях або проходять (31 passed). Модуль stdlib-only, тож системний python3 не зламається.
+5. **Тести адекватні.** Є тест шляху з пробілом і `?` у джерелі та копії, перевірка, що поруч нічого не створено (немає артефактів `mode=rwc`), створення батьківських тек, `str`-джерело, заміна наявної копії (не злиття), відсутнє джерело, закриття обох з'єднань при збої `backup` (через підміну `sqlite3.connect`). Якби `backup_db` відкривав джерело без екранування або не закривав з'єднання, тести б впали.
+6. **Документи.** Запис у `docs/changes/` є і чесно перелічує, що лишилось і чому (заморожені форварди, `bybit_import`, `dashboard.table_freshness`, `verify_demo_execution`, `has_table` в `cycle_regime_eval`). BACKLOG 6.4 оновлено, картка пункту 33 лишилась `[ ]`, що доречно до завершення конвеєра (координатор відмітить сам).
+
+## Зауваження (не блокують)
+
+1. **Низька.** Порядок у `backup_db`: `dst.parent.mkdir` виконується до відкриття джерела, тому при відсутньому джерелі порожня тека призначення все ж створюється. Тест `test_backup_db_missing_source_raises_and_creates_nothing` перевіряє лише відсутність файлу `copy.sqlite`, а не теки `out`; назва тесту трохи перебільшує. Фікс: або відкривати `connect_ro` до `mkdir`, або перейменувати тест. Стара поведінка `copy_db` у `verify_pm_*` була такою самою (mkdir першим).
+2. **Низька.** Для окремих скриптів (`journal_rules`, `traders_report` тощо) тестів на шлях зі спецсимволами немає; покриття лише через `connect_ro`/`backup_db` у `test_common_helpers`. Для механічної заміни цього достатньо. Заява у змінах «усі 9 скриптів імпортуються» і живий запуск `cycle_regime_eval` не відтворювалися мною (немає бази сервера в цьому клоні), але імпорти перевірив через lint і тести.
+
+Блокуючих проблем немає.

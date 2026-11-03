@@ -35,6 +35,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -95,10 +96,6 @@ KEYS = [f"e{e}_{h}" for e in ENTRIES for h in HORIZONS]
 
 def rss_mb() -> float:
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
-
-
-def day_str(t: int) -> str:
-    return datetime.fromtimestamp(t / 1000, tz=UTC).strftime("%Y-%m-%d")
 
 
 def to_grid(a: np.ndarray) -> dict[str, np.ndarray]:
@@ -287,7 +284,7 @@ class Data:
         self.kind = np.array([m["kind"] for m in self.moments])
         self.sign = np.array([m["sign"] for m in self.moments], dtype=float)
         self.ts = np.array([m["ts"] for m in self.moments], dtype=np.int64)
-        self.day = np.array([day_str(int(t)) for t in self.ts])
+        self.day = np.array([cmn.ymd_ms(int(t)) for t in self.ts])
         self.masks: list[dict[str, np.ndarray]] = []
         for u in range(len(UNIVERSES)):
             n = (self.syms[u] != "").sum(axis=1)

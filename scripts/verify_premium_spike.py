@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import logging
 import math
 import statistics
@@ -40,6 +39,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
 
 from tradedesk.analytics.listing_drift import cr1_se, design_effect, icc_anova, mde, symbol_eligible
 from tradedesk.analytics.premium_spike import (
@@ -86,17 +87,6 @@ class Tee:
     def flush(self) -> None:
         for st in self.streams:
             st.flush()
-
-
-def rd(p: Path) -> Any:
-    return json.loads(p.read_text())
-
-
-def wr(p: Path, obj: Any) -> None:
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".tmp")
-    tmp.write_text(json.dumps(obj, separators=(",", ":")))
-    tmp.replace(p)
 
 
 async def probe(save: bool) -> None:
@@ -194,7 +184,7 @@ class Fetcher:
                             print(f"  error {path.relative_to(self.cache)}: {e.reason}: {str(e.detail)[:200]}", flush=True)
                         return  # transient: leave uncached so a rerun retries
                     await asyncio.sleep(5 * (k + 1))
-        await asyncio.to_thread(wr, path, data)
+        await asyncio.to_thread(cmn.write_json, path, data)
         self.done += 1
 
     async def many(self, label: str, jobs: list[tuple[Path, Callable[[], Awaitable[Any]]]]) -> None:
@@ -266,7 +256,9 @@ async def stage_meta(cache: Path) -> None:
             "meta", [(cache / "um_symbols.json", um), (cache / "spot_symbols.json", spot), (cache / "exchange_info.json", ex_info)]
         )
         u = universe(cache)
-        print(f"archive USDT-M symbols {len(rd(cache / 'um_symbols.json'))}; spot symbols {len(rd(cache / 'spot_symbols.json'))}")
+        print(
+            f"archive USDT-M symbols {len(cmn.read_json(cache / 'um_symbols.json'))}; spot symbols {len(cmn.read_json(cache / 'spot_symbols.json'))}"
+        )
         print(f"eligible perps with a spot candidate: {len(u['pairs'])}; excluded: {dict(Counter(r for r in u['excluded'].values()))}")
         jobs = []
         for s in sorted(u["pairs"]):
@@ -282,9 +274,9 @@ async def stage_meta(cache: Path) -> None:
 
 def universe(cache: Path) -> dict[str, Any]:
     """Eligible perps -> spot candidates (same symbol first, then the normalised asset with its multiplier)."""
-    syms = rd(cache / "um_symbols.json")
-    spot = set(rd(cache / "spot_symbols.json"))
-    info = rd(cache / "exchange_info.json")["info"]
+    syms = cmn.read_json(cache / "um_symbols.json")
+    spot = set(cmn.read_json(cache / "spot_symbols.json"))
+    info = cmn.read_json(cache / "exchange_info.json")["info"]
     pairs: dict[str, list[list[Any]]] = {}
     excluded: dict[str, str] = {}
     for s in syms:
@@ -313,7 +305,7 @@ async def stage_pre1h(cache: Path) -> None:
         jobs = []
         for s in sorted(u["pairs"]):
             p = cache / "listing_pi" / f"{s}.json"
-            months = rd(p) if p.exists() else None
+            months = cmn.read_json(p) if p.exists() else None
             for mo in months or []:
                 if not (ym_str(FIRST_MONTH) <= mo <= ym_str(LAST_MONTH)):
                     continue
@@ -341,7 +333,7 @@ def candidate_days(cache: Path, side: int, theta: float) -> dict[str, list[int]]
             continue
         days: set[int] = set()
         for p in d.glob("*.json"):
-            for t, hi, lo in rd(p) or []:
+            for t, hi, lo in cmn.read_json(p) or []:
                 if START <= t < END and (hi if side > 0 else -lo) >= theta:
                     days.add(int(t) // DAY_MS)
         if days:
@@ -354,15 +346,11 @@ def stage_cand(cache: Path) -> None:
     for side, theta in ((1, 0.007), (1, 0.010), (1, 0.015), (-1, 0.010)):
         c = candidate_days(cache, side, theta)
         n = sum(len(v) for v in c.values())
-        by_year = Counter(ymd(d)[:4] for v in c.values() for d in v)
+        by_year = Counter(cmn.ymd_day(d)[:4] for v in c.values() for d in v)
         print(f"side {side:+d} theta {theta:.3f}: {n} candidate symbol-days on {len(c)} symbols; by year {dict(sorted(by_year.items()))}")
 
 
 # ---------------------------------------------------------------- 1m data
-
-
-def ymd(day: int) -> str:
-    return datetime.fromtimestamp(day * 86400, UTC).strftime("%Y-%m-%d")
 
 
 def ym_of_day(day: int) -> tuple[int, int]:
@@ -371,11 +359,11 @@ def ym_of_day(day: int) -> tuple[int, int]:
 
 
 def pi_path(cache: Path, sym: str, day: int) -> Path:
-    return cache / "pi1m" / sym / f"{ymd(day)}.json"
+    return cache / "pi1m" / sym / f"{cmn.ymd_day(day)}.json"
 
 
 def k1m_path(cache: Path, kind: str, sym: str, day: int) -> Path:
-    return cache / f"{kind}1m" / sym / f"{ymd(day)}.json"
+    return cache / f"{kind}1m" / sym / f"{cmn.ymd_day(day)}.json"
 
 
 def k1d_path(cache: Path, kind: str, sym: str, ym: tuple[int, int]) -> Path:
@@ -388,7 +376,7 @@ def fr_path(cache: Path, sym: str, ym: tuple[int, int]) -> Path:
 
 def pi_job(rt: Any, cache: Path, sym: str, day: int) -> tuple[Path, Callable[[], Awaitable[Any]]]:
     async def go() -> Any:
-        rows = (await rt.binance_vision.um_premium_index_daily(sym, "1m", ymd(day))).data
+        rows = (await rt.binance_vision.um_premium_index_daily(sym, "1m", cmn.ymd_day(day))).data
         return [[int(r[0]), r[4]] for r in rows]  # open, close
 
     return pi_path(cache, sym, day), go
@@ -398,7 +386,7 @@ def k1m_job(rt: Any, cache: Path, kind: str, sym: str, day: int) -> tuple[Path, 
     async def go() -> Any:
         v = rt.binance_vision
         f = v.um_klines_daily if kind == "p" else v.spot_klines_daily
-        rows = (await f(sym, "1m", ymd(day))).data
+        rows = (await f(sym, "1m", cmn.ymd_day(day))).data
         return [[int(r[0]), r[1], r[2], r[3], r[4], r[5]] for r in rows]
 
     return k1m_path(cache, kind, sym, day), go
@@ -425,7 +413,7 @@ def load_premium(cache: Path, sym: str) -> dict[int, float]:
     d = cache / "pi1m" / sym
     out: dict[int, float] = {}
     for p in sorted(d.glob("*.json")) if d.exists() else []:
-        for t, c in rd(p) or []:
+        for t, c in cmn.read_json(p) or []:
             out[int(t)] = float(c)
     return out
 
@@ -434,7 +422,7 @@ def load_1m(cache: Path, kind: str, sym: str) -> Bars:
     d = cache / f"{kind}1m" / sym
     rows: list[list[float]] = []
     for p in sorted(d.glob("*.json")) if d.exists() else []:
-        rows.extend(rd(p) or [])
+        rows.extend(cmn.read_json(p) or [])
     return Bars.from_rows(rows)
 
 
@@ -443,7 +431,7 @@ def load_1d(cache: Path, kind: str, sym: str) -> tuple[dict[int, float], dict[in
     d = cache / f"{kind}1d" / sym
     close, qv = {}, {}
     for p in sorted(d.glob("*.json")) if d.exists() else []:
-        for t, c, q in rd(p) or []:
+        for t, c, q in cmn.read_json(p) or []:
             close[int(t) // DAY_MS] = float(c)
             qv[int(t) // DAY_MS] = float(q)
     return close, qv
@@ -453,7 +441,7 @@ def load_funding(cache: Path, sym: str) -> list[list[float]]:
     d = cache / "funding" / sym
     out: list[list[float]] = []
     for p in sorted(d.glob("*.json")) if d.exists() else []:
-        out.extend(rd(p) or [])
+        out.extend(cmn.read_json(p) or [])
     return sorted(out, key=lambda r: r[0])
 
 
@@ -667,7 +655,7 @@ def stage0(cache: Path) -> None:
     evs = build_events(cache, MAIN)
     describe_events(evs, MAIN.name)
     rows = usable(evs)
-    by_year = Counter(ymd(e["day"])[:4] for e in rows)
+    by_year = Counter(cmn.ymd_day(e["day"])[:4] for e in rows)
     print(f"  main sample by year {dict(sorted(by_year.items()))}; symbols {len({e['symbol'] for e in rows})}")
     print(f"  top symbols {Counter(e['symbol'] for e in rows).most_common(12)}")
     print(
@@ -698,7 +686,7 @@ def stage0(cache: Path) -> None:
     )
     prem = sorted(e["trade"].prem_signal for e in rows)
     print(f"premium at signal: median {statistics.median(prem) * 100:.2f}%, p90 {prem[int(0.9 * n)] * 100:.2f}%, max {prem[-1] * 100:.2f}%")
-    wr(cache / "stage0.json", {"n": n, "symbol_days": len(sd_), "sd": sd, "icc": icc, "mde_icc": m1, "mde_cr": m2, "pass": ok})
+    cmn.write_json(cache / "stage0.json", {"n": n, "symbol_days": len(sd_), "sd": sd, "icc": icc, "mde_icc": m1, "mde_cr": m2, "pass": ok})
     for need in (0.25,):
         print(
             f"events needed for MDE <= {need:.2f}pp at this SD/clustering: ICC {n * (m1 * 100 / need) ** 2:.0f}, CR1 {n * (m2 * 100 / need) ** 2:.0f}"
@@ -730,7 +718,7 @@ def diag(cache: Path) -> None:
     evs = build_events(cache, MAIN)
     rows = usable(evs)
     days = Counter(e["day"] for e in rows)
-    print(f"days with most main events: {[(ymd(d), k) for d, k in days.most_common(12)]}")
+    print(f"days with most main events: {[(cmn.ymd_day(d), k) for d, k in days.most_common(12)]}")
     print(f"events on the top-10 days: {sum(k for _, k in days.most_common(10))} of {len(rows)}")
     by_h = Counter(datetime.fromtimestamp(e["signal"] / 1000, UTC).strftime("%Y-%m-%d %H:%M") for e in rows)
     print(f"signal minutes shared by >= 5 symbols: {[(t, k) for t, k in by_h.most_common() if k >= 5][:15]}")
@@ -750,7 +738,7 @@ def diag(cache: Path) -> None:
         f"share >= 1.0%: {sum(x >= 0.01 for x in raw) / len(raw):.3f}, share >= 0.5%: {sum(x >= 0.005 for x in raw) / len(raw):.3f} (n={len(raw)})"
     )
     for yr in ("2023", "2024", "2025", "2026"):
-        sub = [x for x in gap_sig if ymd(x[2]["day"])[:4] == yr]
+        sub = [x for x in gap_sig if cmn.ymd_day(x[2]["day"])[:4] == yr]
         if sub:
             print(
                 f"  {yr}: n={len(sub)} median traded basis {statistics.median(x[0] for x in sub) * 100:.3f}%, premium index {statistics.median(x[1] for x in sub) * 100:.3f}%"
@@ -800,7 +788,7 @@ def diag(cache: Path) -> None:
 
 def full(cache: Path) -> None:
     """Registered full test; runs only after the stage-0 gate passed."""
-    s0 = rd(cache / "stage0.json") if (cache / "stage0.json").exists() else None
+    s0 = cmn.read_json(cache / "stage0.json") if (cache / "stage0.json").exists() else None
     if not s0 or not s0["pass"]:
         print("stage-0 gate not passed: full test not run (registered rule)")
         return

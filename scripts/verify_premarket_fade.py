@@ -21,7 +21,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import importlib.util
-import json
 import math
 import resource
 import statistics
@@ -30,6 +29,8 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
 
 from tradedesk.analytics.premarket_fade import (
     DAY_MS,
@@ -69,17 +70,6 @@ def rss_mb() -> float:
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 
 
-def rd(p: Path) -> Any:
-    return json.loads(p.read_text())
-
-
-def wr(p: Path, data: Any) -> None:
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, separators=(",", ":")))
-    tmp.replace(p)
-
-
 def ts(ms: int | None) -> str:
     return "-" if ms is None else datetime.fromtimestamp(ms / 1000, tz=UTC).strftime("%Y-%m-%d %H:%M")
 
@@ -101,8 +91,8 @@ def load_script(name: str) -> Any:
 
 
 def events() -> list[dict[str, Any]]:
-    inv = [r for r in rd(INV / "inventory.json") if r.get("g1")]
-    ann = rd(INV / "ann_convert_times.json")
+    inv = [r for r in cmn.read_json(INV / "inventory.json") if r.get("g1")]
+    ann = cmn.read_json(INV / "ann_convert_times.json")
     out = []
     for r in inv:
         sym = r["symbol"]
@@ -168,11 +158,11 @@ async def stage_fetch(cache: Path, only: list[str]) -> None:
                 a = int(datetime(y, m, 1, tzinfo=UTC).timestamp() * 1000)
                 ny, nm = (y + 1, 1) if m == 12 else (y, m + 1)
                 b = min(int(datetime(ny, nm, 1, tzinfo=UTC).timestamp() * 1000), NOW_MS)
-                wr(p, await klines_1h(rt, "BTCUSDT", a, b - 1))
+                cmn.write_json(p, await klines_1h(rt, "BTCUSDT", a, b - 1))
             y, m = (y + 1, 1) if m == 12 else (y, m + 1)
         p = cache / "btc" / "funding.json"
         if not p.exists():
-            wr(p, await funding(rt, "BTCUSDT", BTC_FROM, NOW_MS))
+            cmn.write_json(p, await funding(rt, "BTCUSDT", BTC_FROM, NOW_MS))
         print(f"btc done {time.time() - t_start:.0f}s rss {rss_mb():.0f} MB", flush=True)
         evs = [e for e in events() if not only or e["symbol"] in only]
         for n, e in enumerate(evs, 1):
@@ -184,7 +174,7 @@ async def stage_fetch(cache: Path, only: list[str]) -> None:
             start = e["first"] - DAY_MS
             rec = {"symbol": e["symbol"], "bars": await klines_1h(rt, e["symbol"], start, end)}
             rec["funding"] = await funding(rt, e["symbol"], start, end)
-            wr(p, rec)
+            cmn.write_json(p, rec)
             print(
                 f"  [{n}/{len(evs)}] {e['symbol']} bars={len(rec['bars'])} fund={len(rec['funding'])} "
                 f"{time.time() - t_start:.0f}s rss {rss_mb():.0f} MB",
@@ -201,7 +191,7 @@ async def stage_fetch(cache: Path, only: list[str]) -> None:
 def placebo_events() -> list[dict[str, Any]]:
     ld = load_script("verify_listing_drift")
     inv = load_script("verify_premarket_inventory")
-    pm = {r["symbol"] for r in rd(INV / "inventory.json")}
+    pm = {r["symbol"] for r in cmn.read_json(INV / "inventory.json")}
     pm_assets = {s[:-4] for s in pm}
     raw, _ = ld.build_events(LD)
     hod = inv.flags_by_base(INV)["hodler"]
@@ -232,16 +222,16 @@ async def stage_placebo(cache: Path) -> None:
                 src = LD / "k1h" / sym / f"{ym}.json"
                 own = cache / "placebo_k1h" / sym / f"{ym}.json"
                 if src.exists():
-                    part = rd(src)
+                    part = cmn.read_json(src)
                 elif own.exists():
-                    part = rd(own)
+                    part = cmn.read_json(own)
                 else:
                     try:
                         part = (await rt.binance_vision.um_klines_monthly(sym, "1h", y, m)).data
                     except ProviderError as err:
                         part = None
                         print(f"    {sym} {ym}: {err.reason}", flush=True)
-                    wr(own, part)
+                    cmn.write_json(own, part)
                 rows.extend(part or [])
             rows = [[float(x) for x in r[:6]] for r in rows if t0 - DAY_MS <= r[0] <= t0 + WINDOW_AFTER]
             try:
@@ -249,7 +239,7 @@ async def stage_placebo(cache: Path) -> None:
                 ferr = None
             except ProviderError as err:
                 fund, ferr = [], err.reason
-            wr(p, {**e, "bars": rows, "funding": fund, "funding_error": ferr})
+            cmn.write_json(p, {**e, "bars": rows, "funding": fund, "funding_error": ferr})
             if n % 20 == 0 or n == len(evs):
                 print(
                     f"  [{n}/{len(evs)}] {sym} bars={len(rows)} fund={len(fund)} {time.time() - t_start:.0f}s rss {rss_mb():.0f} MB",
@@ -266,8 +256,8 @@ async def stage_placebo(cache: Path) -> None:
 def load_btc(cache: Path) -> tuple[dict[int, tuple[float, float, float, float]], list[tuple[int, float]]]:
     rows: list[list[float]] = []
     for p in sorted((cache / "btc").glob("1h_*.json")):
-        rows.extend(rd(p))
-    return bars_from_rows(rows), [(int(t), float(r)) for t, r in rd(cache / "btc" / "funding.json")]
+        rows.extend(cmn.read_json(p))
+    return bars_from_rows(rows), [(int(t), float(r)) for t, r in cmn.read_json(cache / "btc" / "funding.json")]
 
 
 def pct(x: float) -> str:
@@ -326,13 +316,13 @@ def stage_analyze(cache: Path) -> None:
         if not p.exists():
             print(f"missing {e['symbol']}")
             continue
-        rec = rd(p)
+        rec = cmn.read_json(p)
         main = event_row(e, rec, btc, fbtc, e["t_conv"])
         r = {**e, "main": main}
         r["alt_index"] = event_row(e, rec, btc, fbtc, e["index"]) if e["index"] else None
         r["alt_spot"] = event_row(e, rec, btc, fbtc, e["spot"]) if e["spot"] else None
         rows.append(r)
-    wr(cache / "results.json", rows)
+    cmn.write_json(cache / "results.json", rows)
 
     print("\nEVENTS (t_conv rule: announced > Binance spot open > index); returns in %, R7 net = beta 1, fees, funding")
     print(
@@ -436,7 +426,7 @@ def stage_analyze(cache: Path) -> None:
     nfe = 0
     if pp.exists():
         for p in sorted(pp.glob("*.json")):
-            rec = rd(p)
+            rec = cmn.read_json(p)
             nfe += rec.get("funding_error") is not None
             bars = bars_from_rows(rec["bars"])
             t_first = int(rec["t0"])  # first 1h bar with volume (new-perp-listing-drift event time)

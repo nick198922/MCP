@@ -30,6 +30,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
+
 from tradedesk.analytics.premarket_inventory import (
     conversion_time,
     days_after,
@@ -57,17 +59,6 @@ def rss_mb() -> float:
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 
 
-def rd(p: Path) -> Any:
-    return json.loads(p.read_text())
-
-
-def wr(p: Path, data: Any) -> None:
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, separators=(",", ":")))
-    tmp.replace(p)
-
-
 def ts(ms: int | None) -> str:
     return "-" if ms is None else datetime.fromtimestamp(ms / 1000, tz=UTC).strftime("%Y-%m-%d %H:%M")
 
@@ -88,8 +79,8 @@ async def stage_ann(cache: Path) -> None:
                         params={"type": 1, "catalogId": cat, "pageNo": page, "pageSize": 50},
                     )
                     arts = f.data["data"]["catalogs"][0]["articles"]
-                    wr(p, [{"ms": int(a["releaseDate"]), "title": a["title"], "code": a["code"]} for a in arts])
-                arts = rd(p)
+                    cmn.write_json(p, [{"ms": int(a["releaseDate"]), "title": a["title"], "code": a["code"]} for a in arts])
+                arts = cmn.read_json(p)
                 if not arts or len(arts) < 50 or min(a["ms"] for a in arts) < ANN_FROM:
                     break
                 page += 1
@@ -104,7 +95,7 @@ def ann_events(cache: Path) -> dict[str, dict[str, int]]:
     """Earliest release time per symbol for launch / convert titles (symbol + date only from untrusted text)."""
     out: dict[str, dict[str, int]] = {"launch": {}, "convert": {}, "spot_pm": {}}
     for p in sorted((cache / "ann").glob("binance_*.json")):
-        for a in rd(p):
+        for a in cmn.read_json(p):
             for key, rx in (("launch", LAUNCH_RE), ("convert", CONVERT_RE), ("spot_pm", SPOT_PM_RE)):
                 m = rx.search(a["title"])
                 if m:
@@ -124,7 +115,7 @@ async def stage_venues(cache: Path) -> None:
         if not p.exists():
             d = (await ex.public_get("binance", "fapiPublicGetExchangeInfo", {})).data
             keep = ("symbol", "pair", "contractType", "underlyingType", "underlyingSubType", "onboardDate", "deliveryDate", "status")
-            wr(p, [{k: s.get(k) for k in keep} for s in d["symbols"]])
+            cmn.write_json(p, [{k: s.get(k) for k in keep} for s in d["symbols"]])
         p = cache / "venues" / "bybit_linear.json"
         if not p.exists():
             rows: list[dict[str, Any]] = []
@@ -137,28 +128,28 @@ async def stage_venues(cache: Path) -> None:
                 cursor = r.get("nextPageCursor") or ""
                 if not cursor:
                     break
-            wr(p, rows)
+            cmn.write_json(p, rows)
         p = cache / "venues" / "okx_swap.json"
         if not p.exists():
             d = (await ex.public_get("okx", "publicGetPublicInstruments", {"instType": "SWAP"})).data["data"]
-            wr(p, [{k: i.get(k) for k in ("instId", "state", "listTime", "ruleType", "instFamily")} for i in d])
+            cmn.write_json(p, [{k: i.get(k) for k in ("instId", "state", "listTime", "ruleType", "instFamily")} for i in d])
         p = cache / "venues" / "okx_futures.json"
         if not p.exists():
             d = (await ex.public_get("okx", "publicGetPublicInstruments", {"instType": "FUTURES"})).data["data"]
-            wr(p, [{k: i.get(k) for k in ("instId", "state", "listTime", "ruleType", "instFamily", "alias")} for i in d])
+            cmn.write_json(p, [{k: i.get(k) for k in ("instId", "state", "listTime", "ruleType", "instFamily", "alias")} for i in d])
     finally:
         await rt.aclose()
-    bi = rd(cache / "venues" / "binance_exchange_info.json")
+    bi = cmn.read_json(cache / "venues" / "binance_exchange_info.json")
     sub: dict[str, int] = {}
     for s in bi:
         for t in s.get("underlyingSubType") or []:
             sub[t] = sub.get(t, 0) + 1
     print(f"binance USD-M symbols {len(bi)}; underlyingSubType tags: {dict(sorted(sub.items(), key=lambda kv: -kv[1]))}")
-    by = rd(cache / "venues" / "bybit_linear.json")
+    by = cmn.read_json(cache / "venues" / "bybit_linear.json")
     pre = [r for r in by if r.get("isPreListing")]
     print(f"bybit linear {len(by)}; isPreListing now: {len(pre)} {[r['symbol'] for r in pre]}")
     for name in ("okx_swap", "okx_futures"):
-        ok = rd(cache / "venues" / f"{name}.json")
+        ok = cmn.read_json(cache / "venues" / f"{name}.json")
         rules: dict[str, int] = {}
         for r in ok:
             rules[str(r.get("ruleType"))] = rules.get(str(r.get("ruleType")), 0) + 1
@@ -252,7 +243,7 @@ async def stage_fetch(cache: Path, only: list[str] | None) -> None:
             except ProviderError as e:
                 rec["spot_first"] = None
                 rec["spot_error"] = f"{e.reason}"[:60]
-            wr(p, rec)
+            cmn.write_json(p, rec)
             el = time.time() - t_start
             print(
                 f"  [{n}/{len(syms)}] {sym} 1d={len(rec.get('perp_1d', []))} idx1d={rec.get('index_1d_n')} "
@@ -276,13 +267,13 @@ async def stage_extra(cache: Path) -> None:
     _, rt = build_server()
     try:
         for p in sorted((cache / "sym2").glob("*.json")):
-            rec = rd(p)
+            rec = cmn.read_json(p)
             if "perp_first_1h" in rec or not rec.get("perp_1d"):
                 continue
             d0 = rec["perp_1d"][0][0]
             h = await klines(rt, "binance", "fapiPublicGetKlines", {"symbol": rec["symbol"], "interval": "1h"}, d0, d0 + DAY, HOUR)
             rec["perp_first_1h"] = int(h[0][0]) if h else None
-            wr(p, rec)
+            cmn.write_json(p, rec)
     finally:
         await rt.aclose()
     bn = Http("binance_cms", "https://www.binance.com", rate=0.5, burst=1, timeout=30, retries=2)
@@ -291,28 +282,28 @@ async def stage_extra(cache: Path) -> None:
     try:
         codes: dict[str, str] = {}
         for f in sorted((cache / "ann").glob("binance_*.json")):
-            for a in rd(f):
+            for a in cmn.read_json(f):
                 m = CONVERT_RE.search(a["title"])
                 if m:
                     codes[m.group(1).upper()] = a["code"]
         p = cache / "ann_convert_times.json"
-        got: dict[str, list[str]] = rd(p) if p.exists() else {}
+        got: dict[str, list[str]] = cmn.read_json(p) if p.exists() else {}
         for sym, code in sorted(codes.items()):
             if sym in got:
                 continue
             f = await bn.get_json("/bapi/composite/v1/public/cms/article/detail/query", params={"articleCode": code})
             body = json.dumps((f.data.get("data") or {}).get("body") or "")
             got[sym] = sorted({f"{d} {t}" for d, t in UTC_TS_RE.findall(body)})
-            wr(p, got)
+            cmn.write_json(p, got)
         print(f"announced conversion timestamps: {got}")
         # events without a convert title: timestamps near "convert"/"pre-market" in the spot-listing and launch bodies
         p2 = cache / "ann_list_conv_times.json"
-        got2: dict[str, list[str]] = rd(p2) if p2.exists() else {}
+        got2: dict[str, list[str]] = cmn.read_json(p2) if p2.exists() else {}
         for sym in symbols(cache):
             if sym in codes or sym in got2:
                 continue
             base, found = sym[:-4], set()
-            arts = [a for f in sorted((cache / "ann").glob("binance_48_*.json")) for a in rd(f)]
+            arts = [a for f in sorted((cache / "ann").glob("binance_48_*.json")) for a in cmn.read_json(f)]
             pick = [a for a in arts if f"({base})" in a["title"] and a["title"].startswith("Binance Will List")]
             pick += [a for a in arts if LAUNCH_RE.search(a["title"]) and LAUNCH_RE.search(a["title"]).group(1).upper() == sym]
             for a in pick:
@@ -323,7 +314,7 @@ async def stage_extra(cache: Path) -> None:
                     if "convert" in ctx:
                         found.add(f"{m.group(1)} {m.group(2)}")
             got2[sym] = sorted(found)
-            wr(p2, got2)
+            cmn.write_json(p2, got2)
         print(f"timestamps after 'convert' in listing / launch bodies: {got2}")
         for venue, http, path, mk in (
             ("bybit", by, "/v5/announcements/index", lambda pg: {"locale": "en-US", "type": "new_crypto", "limit": 20, "page": pg}),
@@ -341,8 +332,8 @@ async def stage_extra(cache: Path) -> None:
                     else:
                         det = f.data["data"][0]["details"] if f.data.get("data") else []
                         rows = [{"ms": int(a["pTime"]), "title": a["title"]} for a in det]
-                    wr(q, rows)
-                rows = rd(q)
+                    cmn.write_json(q, rows)
+                rows = cmn.read_json(q)
                 if not rows or min(r["ms"] for r in rows) < ANN_FROM:
                     break
             print(f"{venue} new-listing pages: {pg}", flush=True)
@@ -352,9 +343,9 @@ async def stage_extra(cache: Path) -> None:
     for venue in ("bybit", "okx"):
         hits = []
         for q in sorted((cache / "ann_other").glob(f"{venue}_*.json")):
-            hits += [(r["ms"], r["title"]) for r in rd(q) if re.search(r"pre-?market", r["title"], re.I) and r["ms"] >= ANN_FROM]
+            hits += [(r["ms"], r["title"]) for r in cmn.read_json(q) if re.search(r"pre-?market", r["title"], re.I) and r["ms"] >= ANN_FROM]
         hits = sorted(set(hits))
-        wr(cache / f"{venue}_premarket_titles.json", hits)
+        cmn.write_json(cache / f"{venue}_premarket_titles.json", hits)
         print(
             f"{venue}: {len(hits)} titles mention pre-market since {ts(ANN_FROM)}; first/last: "
             f"{ts(hits[0][0]) if hits else '-'} / {ts(hits[-1][0]) if hits else '-'}"
@@ -372,7 +363,7 @@ def flags_by_base(cache: Path) -> dict[str, dict[str, int]]:
     """Earliest Binance HODLer-airdrop / spot-listing title per base asset ("(BASE)" in the title; date only)."""
     out: dict[str, dict[str, int]] = {"hodler": {}, "spot_list": {}}
     for p in sorted((cache / "ann").glob("binance_48_*.json")):
-        for a in rd(p):
+        for a in cmn.read_json(p):
             t = a["title"]
             kind = "hodler" if "HODLer Airdrop" in t else "spot_list" if re.match(r"Binance Will List ", t) else None
             if kind:
@@ -382,11 +373,11 @@ def flags_by_base(cache: Path) -> dict[str, dict[str, int]]:
 
 
 def stage_inventory(cache: Path) -> None:
-    conv_ann: dict[str, list[str]] = rd(cache / "ann_convert_times.json") if (cache / "ann_convert_times.json").exists() else {}
+    conv_ann: dict[str, list[str]] = cmn.read_json(cache / "ann_convert_times.json") if (cache / "ann_convert_times.json").exists() else {}
     fl = flags_by_base(cache)
     rows: list[dict[str, Any]] = []
     for p in sorted((cache / "sym2").glob("*.json")):
-        r = rd(p)
+        r = cmn.read_json(p)
         sym, base = r["symbol"], r["symbol"][:-4]
         daily = [(int(t), float(v)) for t, v in r.get("perp_1d", [])]
         ann_ts = [int(datetime.strptime(s, "%Y-%m-%d %H:%M").replace(tzinfo=UTC).timestamp() * 1000) for s in conv_ann.get(sym, [])]
@@ -413,7 +404,7 @@ def stage_inventory(cache: Path) -> None:
             "hodler": h, "spot_list_ann": fl["spot_list"].get(base), "funding_gaps_h": r.get("funding_gaps_h"),
             "g1": g1, "g2": g2, "g3": g3,
         })  # fmt: skip
-    wr(cache / "inventory.json", rows)
+    cmn.write_json(cache / "inventory.json", rows)
     print(
         f"{'symbol':<12}{'first 1h':<17}{'conversion':<17}{'src':<9}{'annΔh':>6}{'spot 1st':<17}"
         f"{'pmD':>5}{'medVol$M':>9}{'aftD':>6}{'HODL':>5}{'dl':>3}  G1 G2 G3"
@@ -455,7 +446,7 @@ def stage_inventory(cache: Path) -> None:
         f"{[x['symbol'] for x in g1 if not x['g3_strict']]}"
     )
     print(f"usable n (G1 & G2 & G3 per event): {len(usable)}; with strict G3: {sum(1 for x in usable if x['g3_strict'])}")
-    bt = rd(cache / "bybit_premarket_titles.json") if (cache / "bybit_premarket_titles.json").exists() else []
+    bt = cmn.read_json(cache / "bybit_premarket_titles.json") if (cache / "bybit_premarket_titles.json").exists() else []
     conv_by = {s for _, t in bt if re.search(r"conver", t, re.I) for s in re.findall(r"\b([A-Z0-9]{2,}USDT)\b", t)}
     list_by = {s for _, t in bt if re.search(r"list", t, re.I) for s in re.findall(r"\b([A-Z0-9]{2,}USDT)\b", t)}
     bn = {x["symbol"] for x in rows}

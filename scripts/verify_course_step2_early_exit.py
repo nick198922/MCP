@@ -25,6 +25,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
 import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -74,10 +75,6 @@ def emit(line: str = "") -> None:
 
 def rss_mb() -> float:
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
-
-
-def day_of(t_ms: int) -> str:
-    return datetime.fromtimestamp(t_ms / 1000, tz=UTC).strftime("%Y-%m-%d")
 
 
 def week_of(day: str) -> str:
@@ -242,7 +239,7 @@ def run_set_a(
                 if res2 is None:
                     why["pg:no_path"] += 1
                     continue
-                d2 = day_of(int(te))
+                d2 = cmn.ymd_ms(int(te))
                 out.append({"set": set_name, "role": "pg", "sym": s, "day": d2, "oos": int(te) >= OOS_MS, **res2})
         del h1, paths, idx
         if (n + 1) % 20 == 0 or n + 1 == len(syms):
@@ -519,7 +516,7 @@ def stage_report(s14_cache: Path, data_dir: Path, ssh_cache: Path, cache: Path, 
         "R — частки ризику угоди (вхід − стоп); net — після 0.14 % за коло (ранній вихід і БУ — теж за ринком); дохід на ризик, не на капітал."
     )
     emit(
-        f"IS — вхід до {day_of(OOS_MS)}, OOS — з цієї дати. Плацебо PG — до {PG_PER_TRADE} випадкових входів з тією самою геометрією, сід {SEED}.\n"
+        f"IS — вхід до {cmn.ymd_ms(OOS_MS)}, OOS — з цієї дати. Плацебо PG — до {PG_PER_TRADE} випадкових входів з тією самою геометрією, сід {SEED}.\n"
     )
     uni = s1.members(s14_cache)
     trades = load_step1_trades(s14_cache / "trades.json")

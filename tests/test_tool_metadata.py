@@ -15,8 +15,9 @@ CYRILLIC = re.compile(r"[Ѐ-ӿ]")
 PROBABILITY = re.compile(r"probabilit", re.I)
 OPTIONS = re.compile(r"option", re.I)
 
-# Parameters without a `description` in their JSON schema as of 2026-11-03 (174 params in 55 tools; see
-# docs/changes/2026-11-03-tool-metadata-guard.md). Technical debt, not a design choice: when you add
+# Parameters without a `description` in their JSON schema: 174 params in 55 tools on 2026-11-03 (see
+# docs/changes/2026-11-03-tool-metadata-guard.md); 105 in 48 after the strategy_* tools were described
+# (docs/changes/2026-11-03-param-descriptions.md). Technical debt, not a design choice: when you add
 # `Field(description=...)` to one of them, drop it here (the stale-entry check below enforces it).
 PARAM_DESCRIPTION_ALLOWLIST: dict[str, set[str]] = {
     "deribit_atm_term": {"min_days", "max_days"},
@@ -74,71 +75,6 @@ PARAM_DESCRIPTION_ALLOWLIST: dict[str, set[str]] = {
     "rules_add": {"name", "cooldown_seconds", "enabled"},
     "rules_list": {"enabled_only"},
     "skew_percentile": {"currency", "delta_target", "lookback_days", "min_points"},
-    "strategy_backtest_momentum": {"fee_bps", "slippage_bps", "include_curve"},
-    "strategy_cash_and_carry": {"spot_price", "futures_price", "days", "size", "width_pct", "grid", "kind"},
-    "strategy_funding_carry": {"days", "size", "width_pct", "grid", "kind"},
-    "strategy_iron_condor": {
-        "long_put_strike",
-        "short_put_strike",
-        "short_call_strike",
-        "long_call_strike",
-        "long_put_premium",
-        "short_put_premium",
-        "short_call_premium",
-        "long_call_premium",
-        "spot",
-        "days",
-        "iv",
-        "size",
-        "forward",
-        "width_pct",
-        "grid",
-        "kind",
-    },
-    "strategy_risk_reversal": {
-        "call_strike",
-        "put_strike",
-        "call_premium",
-        "put_premium",
-        "spot",
-        "days",
-        "iv",
-        "direction",
-        "size",
-        "forward",
-        "width_pct",
-        "grid",
-        "kind",
-    },
-    "strategy_straddle": {
-        "strike",
-        "call_premium",
-        "put_premium",
-        "spot",
-        "days",
-        "iv",
-        "side",
-        "size",
-        "forward",
-        "width_pct",
-        "grid",
-        "kind",
-    },
-    "strategy_strangle": {
-        "call_strike",
-        "put_strike",
-        "call_premium",
-        "put_premium",
-        "spot",
-        "days",
-        "iv",
-        "side",
-        "size",
-        "forward",
-        "width_pct",
-        "grid",
-        "kind",
-    },
     "top_coins": {"vs_currency", "page"},
     "touch_probability": {"spot", "barrier", "days"},
 }

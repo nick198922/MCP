@@ -24,6 +24,39 @@ from ..core.envelope import Builder
 from ..runtime import Runtime
 from ._util import READ_ONLY, r
 
+# Shared parameter schemas of the template builders (schema text only; constraints match the old inline ones).
+_PREMIUM_UNITS = "USD per contract (Deribit quotes option prices in BTC/ETH: multiply by the index price first)."
+SPOT = Annotated[float, Field(gt=0, description="Underlying spot price (USD); anchors the payoff grid when `forward` is omitted.")]
+DAYS = Annotated[float, Field(gt=0, description="Calendar days to expiry (T = days/365); drives the greeks, MTM and PoP.")]
+IV = Annotated[
+    float,
+    Field(gt=0, description="Flat implied vol, decimal (0.45 = 45 %), for Black-76 greeks, MTM and the risk-neutral PoP."),
+]
+SIZE = Annotated[float, Field(gt=0, description="Contracts per leg (> 0); direction comes from side/direction, not the sign.")]
+FORWARD = Annotated[
+    float | None,
+    Field(gt=0, description="Forward of the expiry for Black-76 (r = 0), USD; defaults to spot when omitted."),
+]
+WIDTH_PCT = Annotated[
+    float,
+    Field(gt=0, le=2.0, description="Payoff-grid half-width as a DECIMAL fraction of the forward (0.3 = ±30 %), despite the name."),
+]
+GRID = Annotated[int, Field(ge=11, le=1001, description="Number of price points on the payoff grid.")]
+KIND = Annotated[
+    Literal["detailed", "summary"],
+    Field(description="'summary' = breakevens, max P/L, greeks, PoP; 'detailed' also returns the grid, prices and PnL curve."),
+]
+CALL_STRIKE = Annotated[float, Field(gt=0, description="Call strike, USD.")]
+PUT_STRIKE = Annotated[float, Field(gt=0, description="Put strike, USD.")]
+CALL_PREMIUM = Annotated[float, Field(ge=0, description=f"Call premium at entry, {_PREMIUM_UNITS}")]
+PUT_PREMIUM = Annotated[float, Field(ge=0, description=f"Put premium at entry, {_PREMIUM_UNITS}")]
+SIDE = Annotated[
+    Literal["long", "short"],
+    Field(
+        description="'long' buys both options (long volatility); 'short' sells both (loss grows past either breakeven, unbounded upside)."
+    ),
+]
+
 
 def _packed(
     legs: list[dict[str, Any]], *, spot: float, days: float, iv: float, forward: float | None, width_pct: float, grid: int, kind: str
@@ -117,18 +150,18 @@ def register(server: MCPServer, rt: Runtime) -> None:
         ),
     )
     async def strategy_straddle(
-        strike: Annotated[float, Field(gt=0)],
-        call_premium: Annotated[float, Field(ge=0)],
-        put_premium: Annotated[float, Field(ge=0)],
-        spot: Annotated[float, Field(gt=0)],
-        days: Annotated[float, Field(gt=0)],
-        iv: Annotated[float, Field(gt=0)],
-        side: Literal["long", "short"] = "long",
-        size: Annotated[float, Field(gt=0)] = 1.0,
-        forward: Annotated[float | None, Field(gt=0)] = None,
-        width_pct: Annotated[float, Field(gt=0, le=2.0)] = 0.3,
-        grid: Annotated[int, Field(ge=11, le=1001)] = 201,
-        kind: Literal["detailed", "summary"] = "summary",
+        strike: Annotated[float, Field(gt=0, description="Common strike of the call and the put, USD (usually ATM).")],
+        call_premium: CALL_PREMIUM,
+        put_premium: PUT_PREMIUM,
+        spot: SPOT,
+        days: DAYS,
+        iv: IV,
+        side: SIDE = "long",
+        size: SIZE = 1.0,
+        forward: FORWARD = None,
+        width_pct: WIDTH_PCT = 0.3,
+        grid: GRID = 201,
+        kind: KIND = "summary",
     ) -> dict[str, Any]:
         b = Builder()
         legs = build_straddle(strike=strike, call_premium=call_premium, put_premium=put_premium, side=side, size=size)
@@ -142,19 +175,19 @@ def register(server: MCPServer, rt: Runtime) -> None:
         ),
     )
     async def strategy_strangle(
-        call_strike: Annotated[float, Field(gt=0)],
-        put_strike: Annotated[float, Field(gt=0)],
-        call_premium: Annotated[float, Field(ge=0)],
-        put_premium: Annotated[float, Field(ge=0)],
-        spot: Annotated[float, Field(gt=0)],
-        days: Annotated[float, Field(gt=0)],
-        iv: Annotated[float, Field(gt=0)],
-        side: Literal["long", "short"] = "long",
-        size: Annotated[float, Field(gt=0)] = 1.0,
-        forward: Annotated[float | None, Field(gt=0)] = None,
-        width_pct: Annotated[float, Field(gt=0, le=2.0)] = 0.3,
-        grid: Annotated[int, Field(ge=11, le=1001)] = 201,
-        kind: Literal["detailed", "summary"] = "summary",
+        call_strike: Annotated[float, Field(gt=0, description="OTM call strike, USD; must be above put_strike.")],
+        put_strike: Annotated[float, Field(gt=0, description="OTM put strike, USD; must be below call_strike.")],
+        call_premium: CALL_PREMIUM,
+        put_premium: PUT_PREMIUM,
+        spot: SPOT,
+        days: DAYS,
+        iv: IV,
+        side: SIDE = "long",
+        size: SIZE = 1.0,
+        forward: FORWARD = None,
+        width_pct: WIDTH_PCT = 0.3,
+        grid: GRID = 201,
+        kind: KIND = "summary",
     ) -> dict[str, Any]:
         b = Builder()
         if put_strike >= call_strike:
@@ -180,19 +213,24 @@ def register(server: MCPServer, rt: Runtime) -> None:
         ),
     )
     async def strategy_risk_reversal(
-        call_strike: Annotated[float, Field(gt=0)],
-        put_strike: Annotated[float, Field(gt=0)],
-        call_premium: Annotated[float, Field(ge=0)],
-        put_premium: Annotated[float, Field(ge=0)],
-        spot: Annotated[float, Field(gt=0)],
-        days: Annotated[float, Field(gt=0)],
-        iv: Annotated[float, Field(gt=0)],
-        direction: Literal["bullish", "bearish"] = "bullish",
-        size: Annotated[float, Field(gt=0)] = 1.0,
-        forward: Annotated[float | None, Field(gt=0)] = None,
-        width_pct: Annotated[float, Field(gt=0, le=2.0)] = 0.3,
-        grid: Annotated[int, Field(ge=11, le=1001)] = 201,
-        kind: Literal["detailed", "summary"] = "summary",
+        call_strike: CALL_STRIKE,
+        put_strike: PUT_STRIKE,
+        call_premium: CALL_PREMIUM,
+        put_premium: PUT_PREMIUM,
+        spot: SPOT,
+        days: DAYS,
+        iv: IV,
+        direction: Annotated[
+            Literal["bullish", "bearish"],
+            Field(
+                description="'bullish' = long call + short put; 'bearish' = long put + short call (the short leg carries the tail risk)."
+            ),
+        ] = "bullish",
+        size: SIZE = 1.0,
+        forward: FORWARD = None,
+        width_pct: WIDTH_PCT = 0.3,
+        grid: GRID = 201,
+        kind: KIND = "summary",
     ) -> dict[str, Any]:
         b = Builder()
         legs = build_risk_reversal(
@@ -214,22 +252,22 @@ def register(server: MCPServer, rt: Runtime) -> None:
         ),
     )
     async def strategy_iron_condor(
-        long_put_strike: Annotated[float, Field(gt=0)],
-        short_put_strike: Annotated[float, Field(gt=0)],
-        short_call_strike: Annotated[float, Field(gt=0)],
-        long_call_strike: Annotated[float, Field(gt=0)],
-        long_put_premium: Annotated[float, Field(ge=0)],
-        short_put_premium: Annotated[float, Field(ge=0)],
-        short_call_premium: Annotated[float, Field(ge=0)],
-        long_call_premium: Annotated[float, Field(ge=0)],
-        spot: Annotated[float, Field(gt=0)],
-        days: Annotated[float, Field(gt=0)],
-        iv: Annotated[float, Field(gt=0)],
-        size: Annotated[float, Field(gt=0)] = 1.0,
-        forward: Annotated[float | None, Field(gt=0)] = None,
-        width_pct: Annotated[float, Field(gt=0, le=2.0)] = 0.3,
-        grid: Annotated[int, Field(ge=11, le=1001)] = 201,
-        kind: Literal["detailed", "summary"] = "summary",
+        long_put_strike: Annotated[float, Field(gt=0, description="Lowest strike: bought protective put wing, USD.")],
+        short_put_strike: Annotated[float, Field(gt=0, description="Sold put strike, USD; above long_put_strike.")],
+        short_call_strike: Annotated[float, Field(gt=0, description="Sold call strike, USD; above short_put_strike.")],
+        long_call_strike: Annotated[float, Field(gt=0, description="Highest strike: bought protective call wing, USD.")],
+        long_put_premium: Annotated[float, Field(ge=0, description=f"Premium paid for the long put, {_PREMIUM_UNITS}")],
+        short_put_premium: Annotated[float, Field(ge=0, description=f"Premium received for the short put, {_PREMIUM_UNITS}")],
+        short_call_premium: Annotated[float, Field(ge=0, description=f"Premium received for the short call, {_PREMIUM_UNITS}")],
+        long_call_premium: Annotated[float, Field(ge=0, description=f"Premium paid for the long call, {_PREMIUM_UNITS}")],
+        spot: SPOT,
+        days: DAYS,
+        iv: IV,
+        size: SIZE = 1.0,
+        forward: FORWARD = None,
+        width_pct: WIDTH_PCT = 0.3,
+        grid: GRID = 201,
+        kind: KIND = "summary",
     ) -> dict[str, Any]:
         b = Builder()
         try:
@@ -259,14 +297,22 @@ def register(server: MCPServer, rt: Runtime) -> None:
         ),
     )
     async def strategy_cash_and_carry(
-        spot_price: Annotated[float, Field(gt=0)],
-        futures_price: Annotated[float, Field(gt=0)],
-        days: Annotated[float, Field(gt=0)],
+        spot_price: Annotated[float, Field(gt=0, description="Spot price you buy at, USD; also the payoff-grid anchor.")],
+        futures_price: Annotated[
+            float,
+            Field(gt=0, description="Dated-future price you sell at, USD; the basis is futures_price − spot_price (not annualised)."),
+        ],
+        days: Annotated[
+            float,
+            Field(
+                gt=0, description="Calendar days to the future's expiry; used only for the PoP sanity check (fees, borrow not modelled)."
+            ),
+        ],
         iv: Annotated[float, Field(gt=0, description="Used only for the forward-grid width + PoP sanity.")],
-        size: Annotated[float, Field(gt=0)] = 1.0,
-        width_pct: Annotated[float, Field(gt=0, le=2.0)] = 0.3,
-        grid: Annotated[int, Field(ge=11, le=1001)] = 201,
-        kind: Literal["detailed", "summary"] = "summary",
+        size: Annotated[float, Field(gt=0, description="Units of the underlying on each leg (long spot, short future), > 0.")] = 1.0,
+        width_pct: WIDTH_PCT = 0.3,
+        grid: GRID = 201,
+        kind: KIND = "summary",
     ) -> dict[str, Any]:
         b = Builder()
         legs = build_cash_and_carry(spot_price=spot_price, futures_price=futures_price, size=size)
@@ -288,12 +334,15 @@ def register(server: MCPServer, rt: Runtime) -> None:
     async def strategy_funding_carry(
         long_mark: Annotated[float, Field(gt=0, description="Mark on the venue you're long.")],
         short_mark: Annotated[float, Field(gt=0, description="Mark on the venue you're short.")],
-        days: Annotated[float, Field(gt=0)],
+        days: Annotated[
+            float,
+            Field(gt=0, description="Holding horizon in calendar days; funding over it is NOT accrued here (PoP sanity only)."),
+        ],
         iv: Annotated[float, Field(gt=0, description="Used only for the forward-grid width + PoP sanity.")],
-        size: Annotated[float, Field(gt=0)] = 1.0,
-        width_pct: Annotated[float, Field(gt=0, le=2.0)] = 0.3,
-        grid: Annotated[int, Field(ge=11, le=1001)] = 201,
-        kind: Literal["detailed", "summary"] = "summary",
+        size: Annotated[float, Field(gt=0, description="Units of the underlying on each perp leg (long and short), > 0.")] = 1.0,
+        width_pct: WIDTH_PCT = 0.3,
+        grid: GRID = 201,
+        kind: KIND = "summary",
     ) -> dict[str, Any]:
         b = Builder()
         legs = build_funding_carry(long_mark=long_mark, short_mark=short_mark, size=size)

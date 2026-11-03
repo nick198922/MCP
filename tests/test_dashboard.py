@@ -264,7 +264,11 @@ def test_brief_lead_actions_and_folded_blocks():
     page = db.render_brief(snap, None, asof)
     for act in ("опціони дешеві: купувати вигідніше", "стоп — за межами цього діапазону", "перекосу натовпу нема", "звичайний розмір"):
         assert f"<span class='act'>{act}</span>" in page, act
-    assert page.count("<section class='wide fold'><details><summary>") == 7 and "<details open" not in page
+    import re
+
+    folds = re.findall(r"<section class='wide fold' id='(.*?)'><details><summary>", page)
+    assert folds == ["b-key", "b-conditions", "b-scenarios", "b-events", "b-chart", "b-vol", "b-funding"]
+    assert "<details open" not in page
     assert page.index("class='lead'") < page.index("<summary><h2>Головне сьогодні") < page.index("</main>")
     assert page.index("</main>") < page.index("<b>Застереження</b>") and page.count("перевірено 18.10") == 1
     assert db.brief_summaries({"sections": {}}) == {} and "звичайні правила." in db.brief_lead({"sections": {}})
@@ -1880,6 +1884,60 @@ def test_self_refreshing_tabs_keep_open_sections_and_scroll(tmp_path, monkeypatc
     for page in (db.brief_page(), db.radar_page(""), db.flows_page(""), db.polymarket_page(now=float(PM_B))):
         assert db.KEEP_OPEN_JS in page and "<noscript><meta http-equiv='refresh'" in page and page.endswith("</body></html>")
     assert db.KEEP_OPEN_JS not in db.options_page("")
+
+
+def _keep_open_keys(page: str) -> list[str]:
+    """KEEP_OPEN_JS's `keys()` in Python (no JS runtime here): every <details> keyed by its id, else the id of its
+    parent `section.fold`, else its summary's text, plus the occurrence of that key."""
+    import html
+    import re
+
+    out, n = [], {}
+    for m in re.finditer(r"<details([^>]*)>", page):
+        own = re.search(r"\bid='([^']*)'", m.group(1))
+        parent = re.search(r"<section class='[^']*\bfold\b[^']*' id='([^']+)'>\Z", page[: m.start()])
+        sm = re.match(r"<summary[^>]*>(.*?)</summary>", page[m.end() :], re.S)
+        text = html.unescape(re.sub(r"<[^>]+>", "", sm.group(1))).strip() if sm else ""
+        b = (own and own.group(1)) or (parent and parent.group(1)) or text
+        n[b] = n.get(b, 0) + 1
+        out.append(f"{b}#{n[b]}")
+    return out
+
+
+def test_keep_open_keys_folds_by_section_id_not_by_live_summary(tmp_path):
+    # standing improvements, item 31 (a): a fold's summary line carries live numbers, so keying it by its text
+    # closed every opened fold at the first auto-refresh after a new snapshot; folds are keyed by the section id now
+    import re
+
+    import test_dashboard_flows as tf
+
+    assert "p.classList.contains('fold') ? p.id" in db.KEEP_OPEN_JS
+    assert db.KEEP_OPEN_JS.index("d.id ||") < db.KEEP_OPEN_JS.index("p.id :") < db.KEEP_OPEN_JS.index("sm.textContent")
+    pages = _all_tab_pages(tmp_path)
+    for name in ("brief", "radar BTC", "radar ETH", "flows BTC", "flows ETH", "polymarket"):  # the self-refreshing ones
+        page = pages[name]
+        assert db.REFRESH_MARK in page and "<section class='wide fold'>" not in page, name  # no fold without an id
+        ids = re.findall(r"<section class='wide fold' id='([^']+)'><details>", page)
+        assert ids and len(ids) == len(set(ids)) == page.count("wide fold"), name
+        keys = _keep_open_keys(page)
+        assert all(f"{i}#1" in keys for i in ids), name
+    # the same tab after a new snapshot: other numbers in every summary line, the same keys
+    sec = tf.section()
+    moved = json.loads(json.dumps(sec))
+    s24 = moved["data"]["summary"]["24h"]
+    for k in ("price_change", "oi_change", "spot_cvd", "perp_cvd", "liq_long", "liq_short", "funding_annualized_mean"):
+        s24[k] = (s24[k] or 0) * 3 + 0.01
+    for row in moved["data"]["series"]:
+        for k in ("price", "oi_usd", "funding_annualized", "premium_adj"):
+            row[k] = (row[k] or 0) * 2 + 0.001
+    a = db.render_flows(tf.snap(flow_btc=sec), None, tf.NOW, db.parse_flow_query("asset=BTC"))
+    b = db.render_flows(tf.snap(flow_btc=moved), None, tf.NOW, db.parse_flow_query("asset=BTC"))
+    fs = re.compile(r"<span class='fs'>(.*?)</span>")
+    changed = [x != y for x, y in zip(fs.findall(a), fs.findall(b), strict=True)]
+    assert sum(changed) >= 6  # the summary text (the old key) moved ...
+    assert _keep_open_keys(a) == _keep_open_keys(b)  # ... the keys did not
+    folds = ("now", "totals", "price", "cvd", "oi", "funding", "liq", "premium")
+    assert [k for k in _keep_open_keys(a) if k.startswith("f-")] == [f"f-{x}#1" for x in folds]
 
 
 def _all_tab_pages(tmp_path) -> dict[str, str]:

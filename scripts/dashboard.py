@@ -1477,8 +1477,10 @@ HELP_JS = """
 """
 
 # Auto-refresh that keeps the reader's place (standing improvements, item 15): a page built with `_refresh_head(s)` is
-# reloaded by this timer after `s` seconds; just before, it stores which <details> are open (keyed by id or summary
-# text plus its occurrence) and the scroll position in sessionStorage, and the reloaded page restores them once.
+# reloaded by this timer after `s` seconds; just before, it stores which <details> are open (keyed by its id, else
+# the id of its `_fold` section, else its summary text; plus its occurrence) and the scroll position in
+# sessionStorage, and the reloaded page restores them once. A fold's summary line carries live numbers, so folds
+# are keyed by the section id (`_fold(..., sid=...)`): a new snapshot must not close what the owner opened.
 # Without JS the <noscript> meta refresh in the head reloads the page as before (sections then fold back).
 REFRESH_MARK = "<meta name='td-refresh'"
 KEEP_OPEN_JS = """
@@ -1487,7 +1489,8 @@ KEEP_OPEN_JS = """
   var s = parseInt(m.content, 10) || 60, k = 'td-keep:' + location.pathname + location.search;
   function all() { return document.querySelectorAll('details'); }
   function keys(ds) { var n = Object.create(null); return Array.prototype.map.call(ds, function (d) {
-    var sm = d.querySelector(':scope > summary'), b = d.id || (sm ? sm.textContent.trim() : '');
+    var sm = d.querySelector(':scope > summary'), p = d.parentElement;
+    var b = d.id || (p && p.id && p.classList.contains('fold') ? p.id : '') || (sm ? sm.textContent.trim() : '');
     n[b] = (n[b] || 0) + 1; return b + '#' + n[b];
   }); }
   try {
@@ -2041,7 +2044,7 @@ ACT: dict[str, tuple[str, str, str, str]] = {
         "Спот і ф'ючерси в один бік",
         "рух підтримують обидва ринки: лише контекст.",
         "Ф'ючерси купують, спот продає",
-        "рух на плечі: у лонгу — менший розмір.",
+        "рух на плечі: лише контекст (розбіжність як сигнал не підтвердилась).",
     ),
     "flow_oi": (
         "OI падає",
@@ -3544,7 +3547,7 @@ def render_brief(snap: dict | None, err: str | None, now: float, path: Path | No
             ("Funding · річних", "funding", "funding", block_funding),
         )
         for title, sk, key, fn in folds:
-            out.append(_fold(title, key, _e(summ.get(sk, "")), _guard(fn, snap)))
+            out.append(_fold(title, key, _e(summ.get(sk, "")), _guard(fn, snap), sid=f"b-{key}"))
         out.append(f"</main>{caveats}</body></html>")
         return "".join(out)
     except Exception as e:  # noqa: BLE001 - the page always renders
@@ -7238,9 +7241,18 @@ def _flow_window(d: dict) -> str:
 
 # ---- docs/design/PANEL.md layout: the lead always visible, every block folded with a one-line summary
 
-FLOW_WAIT_DO = "дочекайся наступного знімка (кожні 10 хв); причина — нижче, якщо триває годину — напиши Claude."
+FLOW_WAIT_DO = "дочекайся наступного знімка (кожні 10 хв); якщо триває годину — напиши Claude."
+FLOW_WAIT_BELOW_DO = "дочекайся наступного знімка (кожні 10 хв); причина — нижче, якщо триває годину — напиши Claude."
 FLOW_CALM_DO = "нічого не робити за цими даними: це контекст до власної тези, напрямок вони не передбачають."
 FLOW_PATTERN_DO = "лише контекст: угода — під власну тезу, стоп і розмір за правилами."
+
+
+def flow_wait_do(event: tuple[str, float] | None, below: bool) -> str:
+    """«What to do» of a lead without the tool's sentence: a high-impact event within 48 h wins (rule 6, as in the
+    lead with data); else wait for the next snapshot, pointing below only when the failed sources are shown there."""
+    if event:
+        return OPT_EVENT_DO
+    return FLOW_WAIT_BELOW_DO if below else FLOW_WAIT_DO
 
 
 def flow_lead(d: dict, asset: str, event: tuple[str, float] | None) -> str:
@@ -7252,7 +7264,11 @@ def flow_lead(d: dict, asset: str, event: tuple[str, float] | None) -> str:
     what = next((_clean(d.get(k), 400) for k in ("sentence_ua", "sentence_4h_ua") if isinstance(d.get(k), str) and d.get(k).strip()), "")
     if not what:
         return opt_lead_html(
-            "ev", "бракує даних", f"Речення про потоки {asset} немає: за 4 і 24 години бракує ціни чи OI.", FLOW_WAIT_DO, event
+            "ev",
+            "бракує даних",
+            f"Речення про потоки {asset} немає: за 4 і 24 години бракує ціни чи OI.",
+            flow_wait_do(event, below=False),  # the reason is this sentence; the section itself is fine
+            event,
         )
     regime = _clean(_rd(_rd(d.get("quadrant")).get("24h")).get("regime_ua") or "", 60)
     if event:
@@ -7266,7 +7282,8 @@ def flow_lead(d: dict, asset: str, event: tuple[str, float] | None) -> str:
 
 def flow_summaries(d: dict, rows: list[dict]) -> dict[str, str]:
     """One plain-text line per folded block (docs/design/PANEL.md rule 4): the 24-hour summary and the series' last
-    values, as the tool returned them; escaped by the caller. A block without its numbers gets no line."""
+    values, as the tool returned them; escaped by the caller. A block without its numbers gets «немає даних», one whose
+    line failed to build gets ''."""
     s24 = _rd(_rd(d.get("summary")).get("24h"))
 
     def pct(v: object, nd: int = 2) -> str | None:
@@ -7379,7 +7396,7 @@ def render_flows(snap: dict | None, err: str | None, now: float, params: dict | 
             else:
                 what = f"Секції «{label}» у знімку ще немає: завдання assistant_snapshot ще не відпрацювало з новим кодом."
                 notes = ""
-            lead = opt_lead_html("ev", "немає даних", what, FLOW_WAIT_DO, event)
+            lead = opt_lead_html("ev", "немає даних", what, flow_wait_do(event, below=bool(notes)), event)
             out.append(
                 f"<div class='rhead'>{_flow_switch(asset)}</div><main class='brief'><section class='wide'>{lead}{notes}</section></main>{tail}"
             )
@@ -10239,10 +10256,11 @@ def render_polymarket(data: dict | None, err: str | None, now: float, path: Path
         out.append("</section>")
         near = block_pm_table(v["near"], now) if v["near"] else _empty("Немає.")
         old = " · ціни застарілі" if stale else ""
-        out.append(_fold("Близько (3–5 п.п.)", "pm_near", _e(f"боків {len(v['near'])} · нижче порогу реєстрації, не сигнал{old}"), near))
+        near_line = _e(f"боків {len(v['near'])} · нижче порогу реєстрації, не сигнал{old}")
+        out.append(_fold("Близько (3–5 п.п.)", "pm_near", near_line, near, sid="pm-near"))
         counts = pm_paper_counts(data.get("n_snaps"), now)
         body = "".join(f"<p class='note'>{_e(x)}</p>" for x in notes) + block_pm_paper(counts)
-        out.append(_fold("Відбір і паперовий тест", "pm_paper", _e(pm_paper_summary(v, counts[0])), body))
+        out.append(_fold("Відбір і паперовий тест", "pm_paper", _e(pm_paper_summary(v, counts[0])), body, sid="pm-paper"))
         out.append(f"</main>{caveats}</body></html>")
         return "".join(out)
     except Exception as e:  # noqa: BLE001 - the page always renders

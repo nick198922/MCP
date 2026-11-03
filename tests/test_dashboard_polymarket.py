@@ -36,8 +36,8 @@ def test_pm_tab_lead_folds_short_notes_and_caveats_at_the_bottom(tmp_path):
     assert "Поріг 5 п.п. проходять боків: 2, але в усіх R:R нижче 2." in lead.group(0)
     assert "<b>Що робити:</b> нічого: за правилом 5 власника R:R має бути ≥ 2." in lead.group(0)
     # the passing sides stay open; the near table and the selection / paper test are folded with a summary line
-    assert "<details" not in main[: main.index("<section class='wide fold'>")]
-    assert main.count("<section class='wide fold'>") == 2 and "<details open" not in main
+    assert "<details" not in main[: main.index("<section class='wide fold'")]
+    assert re.findall(r"<section class='wide fold' id='(.*?)'>", main) == ["pm-near", "pm-paper"] and "<details open" not in main
     assert "<span class='fs'>боків 0 · нижче порогу реєстрації, не сигнал</span>" in main
     summary = re.search(r"<span class='fs'>відбір пройшли (\d+) з (\d+) ринків · ([^<]*)</span>", main)
     assert summary and 0 < int(summary.group(1)) < int(summary.group(2))
@@ -141,4 +141,4 @@ def test_pm_tab_empty_states(tmp_path):
     ):
         page = db.render_polymarket(data, err, float(PM_B))
         assert text in page and "aria-current=page>Polymarket" in page and page.endswith("</body></html>")
-        assert page.count("<b>Застереження</b>") == 1 and "class='lead'" not in page and "<section class='wide fold'>" not in page
+        assert page.count("<b>Застереження</b>") == 1 and "class='lead'" not in page and "wide fold" not in page

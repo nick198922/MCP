@@ -19,7 +19,6 @@ import argparse
 import importlib.util
 import json
 import math
-import resource
 import sqlite3
 import statistics
 import sys
@@ -44,10 +43,6 @@ MIN_WEEKS = 20
 SEED = 20261101
 PLACEBO_DAYS = (1, 2, 3, 4, 5, 6)
 MDE5, NEFF5, N5 = 2.341e-4, 11278, 17103  # item 5 (EWMA model, 12 h horizon): MDE at n_eff, n markets
-
-
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
 
 
 def week_of(ts: int) -> str:
@@ -263,7 +258,7 @@ def stage0(db: Path, out: Path, covered_only: bool = True) -> dict[str, Any]:
         "markets": per,
     }
     out.write_text(json.dumps(res, indent=1, default=str))
-    print(f"stage0 {time.perf_counter() - t:.0f}s peak rss {rss_mb():.0f} MB -> {out}", flush=True)
+    print(f"stage0 {time.perf_counter() - t:.0f}s peak rss {cmn.rss_mb():.0f} MB -> {out}", flush=True)
     return res
 
 
@@ -345,7 +340,7 @@ def stage_full(db: Path, gate_file: Path, out: Path, n_boot: int) -> None:
         print(f"  cochran {pm.cochran_q([r['mean'] for r in ok], [r['se'] for r in ok])}", flush=True)
     res.update(halves=halves, per_asset=per_a)
     out.write_text(json.dumps(res, indent=1, default=str))
-    print(f"full done, peak rss {rss_mb():.0f} MB -> {out}", flush=True)
+    print(f"full done, peak rss {cmn.rss_mb():.0f} MB -> {out}", flush=True)
 
 
 def main() -> None:

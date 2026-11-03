@@ -16,7 +16,6 @@ import argparse
 import importlib.util
 import json
 import math
-import resource
 import sqlite3
 import statistics
 import sys
@@ -49,10 +48,6 @@ def _load_threshold_script():  # noqa: ANN202
     sys.modules["verify_pm_threshold"] = mod
     spec.loader.exec_module(mod)  # type: ignore[union-attr]
     return mod
-
-
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
 
 
 def week_of(ts: int) -> str:
@@ -174,7 +169,7 @@ def run_h7(ev: dict, spot: dict, n_boot: int, res: dict[str, Any]) -> None:
                     (wk, a, t0, pm.brier(pb, y) - pm.brier(pp, y), pm.log_loss(pb, y) - pm.log_loss(pp, y), weekend, abs(pp - pb))
                 )
         if i % 300 == 0:
-            print(f"  h7 events {i}/{len(ev)} {time.perf_counter() - t:.0f}s rss={rss_mb():.0f}MB", flush=True)
+            print(f"  h7 events {i}/{len(ev)} {time.perf_counter() - t:.0f}s rss={cmn.rss_mb():.0f}MB", flush=True)
     main = units["main"]
     out: dict[str, Any] = {}
     out["brier"] = boot_units([(u[0], u[3]) for u in main], n_boot)
@@ -193,7 +188,10 @@ def run_h7(ev: dict, spot: dict, n_boot: int, res: dict[str, Any]) -> None:
     per_asset = _per_asset(main, 3, n_boot)
     out["per_asset"] = per_asset
     res["h7"] = out
-    print(f"H7 done: {out['n_markets']} markets, {out['n_events']} events, {time.perf_counter() - t:.0f}s rss={rss_mb():.0f}MB", flush=True)
+    print(
+        f"H7 done: {out['n_markets']} markets, {out['n_events']} events, {time.perf_counter() - t:.0f}s rss={cmn.rss_mb():.0f}MB",
+        flush=True,
+    )
 
 
 def _pct(xs: list[float], q: float) -> float:
@@ -572,7 +570,7 @@ def main() -> None:
         vt = _load_threshold_script()
         ev, spot = build_events(vt)
         print(
-            f"events: {len(ev)} (asset, t0) with q and S0; markets={sum(len(e['mk']) for e in ev.values())}; {time.perf_counter() - t:.0f}s rss={rss_mb():.0f}MB",
+            f"events: {len(ev)} (asset, t0) with q and S0; markets={sum(len(e['mk']) for e in ev.values())}; {time.perf_counter() - t:.0f}s rss={cmn.rss_mb():.0f}MB",
             flush=True,
         )
         if a.module in ("h11", "all"):
@@ -586,7 +584,7 @@ def main() -> None:
         run_h8(db, a.n_boot, res)
     (out / f"result_{a.module}.json").write_text(json.dumps(res, indent=1, default=str))
     print_report(res)
-    print(f"\ndone {time.perf_counter() - t:.0f}s peak rss={rss_mb():.0f}MB -> {out}/result_{a.module}.json", flush=True)
+    print(f"\ndone {time.perf_counter() - t:.0f}s peak rss={cmn.rss_mb():.0f}MB -> {out}/result_{a.module}.json", flush=True)
 
 
 if __name__ == "__main__":

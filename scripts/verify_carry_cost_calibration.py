@@ -23,7 +23,6 @@ import argparse
 import gc
 import json
 import math
-import resource
 import sqlite3
 import statistics
 import sys
@@ -54,12 +53,8 @@ CAPITAL = {"A": 1.5, "B": 1.0}
 N_BOOT = 10_000
 
 
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
-
-
 def log(msg: str) -> None:
-    print(f"[{time.strftime('%H:%M:%S')}] {msg} (peak RSS {rss_mb():.0f} MB)", flush=True)
+    print(f"[{time.strftime('%H:%M:%S')}] {msg} (peak RSS {cmn.rss_mb():.0f} MB)", flush=True)
 
 
 def fmt(ms: int | None) -> str:

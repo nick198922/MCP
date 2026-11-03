@@ -3,10 +3,12 @@
 Read-only SQLite: a script that reads the live store opens it with ``mode=ro`` (no migration, no write) and the path
 URL-quoted, so a ``?``, ``#`` or ``%`` in the path cannot cut the file name short or drop the read-only flag.
 A verification script that works on a copy of the store makes it with ``backup_db`` (sqlite3 online backup).
+Long verification runs log their peak memory with ``rss_mb``.
 """
 
 from __future__ import annotations
 
+import resource
 import sqlite3
 import urllib.parse
 from pathlib import Path
@@ -47,3 +49,8 @@ def backup_db(src: str | Path, dst: Path) -> None:
 def has_table(con: sqlite3.Connection, name: str) -> bool:
     """True when table ``name`` exists in the store; raises ``sqlite3.Error`` as any query does."""
     return con.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)).fetchone() is not None
+
+
+def rss_mb() -> float:
+    """Peak resident memory of this process so far, in MB (``ru_maxrss`` is in KiB on Linux)."""
+    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024

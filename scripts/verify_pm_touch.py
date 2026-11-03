@@ -24,13 +24,14 @@ import json
 import math
 import random
 import re
-import resource
 import statistics
 import time
 from collections import Counter, defaultdict
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
+
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
 
 from tradedesk.analytics.pm_threshold import bootstrap_mean, day_baskets, last_trade_before, mde, quote_at, realized_vol, value_at
 from tradedesk.analytics.pm_touch import (
@@ -61,12 +62,8 @@ CENTER = (0.35, 0.65)
 STRANGLE = (0.07, 0.14)
 
 
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
-
-
 def log(msg: str) -> None:
-    print(f"{datetime.now(UTC).strftime('%H:%M:%S')} rss={rss_mb():.0f}MB {msg}", flush=True)
+    print(f"{datetime.now(UTC).strftime('%H:%M:%S')} rss={cmn.rss_mb():.0f}MB {msg}", flush=True)
 
 
 def _write(p: Path, obj: Any) -> None:

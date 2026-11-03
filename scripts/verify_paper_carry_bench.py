@@ -26,7 +26,6 @@ import argparse
 import asyncio
 import gc
 import json
-import resource
 import statistics
 import subprocess
 import sys
@@ -34,6 +33,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+import common_helpers as cmn
 import verify_carry_alts as alts
 import verify_carry_perp_perp as pp
 from verify_funding_carry import fetch_funding
@@ -72,12 +72,8 @@ class Tee:
         self.out.flush()
 
 
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
-
-
 def log(msg: str) -> None:
-    print(f"[{time.strftime('%H:%M:%S')}] {msg} (peak RSS {rss_mb():.0f} MB)", flush=True)
+    print(f"[{time.strftime('%H:%M:%S')}] {msg} (peak RSS {cmn.rss_mb():.0f} MB)", flush=True)
 
 
 def fmt(ms: int) -> str:

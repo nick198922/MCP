@@ -36,6 +36,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
+
 from tradedesk.analytics.dated_basis import FundingSeries
 from tradedesk.analytics.funding_spread import (
     DAY_MS,
@@ -83,10 +85,6 @@ def ymd(ms: int | None) -> str:
 
 def fname(*parts: str) -> str:
     return "_".join(p.replace("/", "-").replace(":", "_") for p in parts) + ".json"
-
-
-def rd(p: Path) -> Any:
-    return json.loads(p.read_text())
 
 
 def wr(p: Path, obj: Any) -> None:
@@ -224,7 +222,7 @@ class Fetcher:
     async def cached(self, name: str, go: Any) -> Any:
         p = self.cache / name
         if p.exists():
-            return rd(p)
+            return cmn.read_json(p)
         data = await go()
         wr(p, data)
         return data
@@ -279,7 +277,7 @@ def price_checks(cache: Path, pr: dict[str, Any], uni: dict[str, Any]) -> dict[s
         a, b = cache / fname("hl", coin, "1d"), cache / fname("bin", base, "1d")
         if not (a.exists() and b.exists()):
             continue
-        da, db = {x["ts"]: x["close"] for x in rd(a)}, {x["ts"]: x["close"] for x in rd(b)}
+        da, db = {x["ts"]: x["close"] for x in cmn.read_json(a)}, {x["ts"]: x["close"] for x in cmn.read_json(b)}
         r = price_ratio(da, db, pr["hl"][coin][1], pr["bn"][base][1])
         if r is None:
             no_data.append(coin)
@@ -291,7 +289,7 @@ def price_checks(cache: Path, pr: dict[str, Any], uni: dict[str, Any]) -> dict[s
         a, b = cache / fname("bin", base, "1d"), cache / fname("byb", bbase, "1d")
         if not (a.exists() and b.exists()):
             continue
-        da, db = {x["ts"]: x["close"] for x in rd(a)}, {x["ts"]: x["close"] for x in rd(b)}
+        da, db = {x["ts"]: x["close"] for x in cmn.read_json(a)}, {x["ts"]: x["close"] for x in cmn.read_json(b)}
         r = price_ratio(da, db, pr["bn"][base][1], pr["by"][bbase][1])
         if r is not None and abs(r - 1.0) <= 0.02:
             ok_bb[base] = bbase
@@ -312,7 +310,11 @@ def ever_liquid(da: list[dict[str, Any]], db: list[dict[str, Any]]) -> bool:
 
 
 def liquid_pairs(cache: Path, good: dict[str, str]) -> dict[str, str]:
-    return {c: b for c, b in good.items() if ever_liquid(rd(cache / fname("hl", c, "1d")), rd(cache / fname("bin", b, "1d")))}
+    return {
+        c: b
+        for c, b in good.items()
+        if ever_liquid(cmn.read_json(cache / fname("hl", c, "1d")), cmn.read_json(cache / fname("bin", b, "1d")))
+    }
 
 
 async def fetch(cache: Path, sample: int) -> None:
@@ -415,8 +417,8 @@ async def fetch(cache: Path, sample: int) -> None:
 async def fetch_1h(cache: Path) -> None:
     """1h bars on both legs for coins with primary trades inside HL's 1h depth (stop-check sensitivity)."""
     p = cache / "trades_primary.json"
-    trades = rd(p)
-    uni = rd(cache / "universe.json")
+    trades = cmn.read_json(p)
+    uni = cmn.read_json(cache / "universe.json")
     first_1h = END - 200 * DAY_MS
     coins = sorted({t["coin"] for t in trades if t["open_ts"] >= first_1h})
     _, rt = build_server()
@@ -459,7 +461,7 @@ class Pair:
 
 def load_pairs(cache: Path) -> tuple[dict[str, Pair], dict[str, Pair], dict[str, Any]]:
     """HL<->Binance pairs and Bybit<->Binance control pairs (A = HL / Bybit, B = Binance)."""
-    uni = rd(cache / "universe.json")
+    uni = cmn.read_json(cache / "universe.json")
     pr = pairings(uni)
     pc = price_checks(cache, pr, uni)
     liquid = liquid_pairs(cache, pc["hl_bin"])
@@ -480,9 +482,9 @@ def load_pairs(cache: Path) -> tuple[dict[str, Pair], dict[str, Pair], dict[str,
         if not all(p.exists() for p in paths.values()):
             info["missing"].append(coin)
             continue
-        fh, fb = rd(paths[f"hl|{coin}|funding"]), rd(paths[f"bin|{base}|funding"])
-        bh, bb = rd(paths[f"hl|{coin}|4h"]), rd(paths[f"bin|{base}|4hv2"])
-        dh, dbn = rd(cache / fname("hl", coin, "1d")), rd(cache / fname("bin", base, "1d"))
+        fh, fb = cmn.read_json(paths[f"hl|{coin}|funding"]), cmn.read_json(paths[f"bin|{base}|funding"])
+        bh, bb = cmn.read_json(paths[f"hl|{coin}|4h"]), cmn.read_json(paths[f"bin|{base}|4hv2"])
+        dh, dbn = cmn.read_json(cache / fname("hl", coin, "1d")), cmn.read_json(cache / fname("bin", base, "1d"))
         info["depth"][coin] = {
             "hl_first": fh["rows"][0][0] if fh["rows"] else None,
             "hl_complete": fh["complete"],
@@ -500,9 +502,11 @@ def load_pairs(cache: Path) -> tuple[dict[str, Pair], dict[str, Pair], dict[str,
         if bbase:
             py, pyd = cache / fname("byb", bbase, "funding"), cache / fname("byb", bbase, "4h")
             if py.exists() and pyd.exists():
-                fy, by_ = rd(py), rd(pyd)
+                fy, by_ = cmn.read_json(py), cmn.read_json(pyd)
                 if fy["rows"] and by_:
-                    ctrl[coin] = Pair(coin, base, Leg(fseries(fy), by_, H4), hlb[coin].b, rd(cache / fname("byb", bbase, "1d")), dbn, False)
+                    ctrl[coin] = Pair(
+                        coin, base, Leg(fseries(fy), by_, H4), hlb[coin].b, cmn.read_json(cache / fname("byb", bbase, "1d")), dbn, False
+                    )
                     info["depth"][coin]["byb_complete"] = fy["complete"]
     return hlb, ctrl, info
 
@@ -731,7 +735,7 @@ def report(cache: Path, gate_only: bool) -> str:
     for c, p in hlb.items():
         a1, b1 = cache / fname("hl", c, "1h"), cache / fname("bin", p.base, "1h")
         if a1.exists() and b1.exists():
-            oneh.append((c, p, rd(a1), rd(b1)))
+            oneh.append((c, p, cmn.read_json(a1), cmn.read_json(b1)))
     if oneh:
         first_1h = END - 200 * DAY_MS
         t4 = [t for t in prim if t["open_ts"] >= first_1h and t["coin"] in {c for c, *_ in oneh}]

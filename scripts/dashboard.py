@@ -8576,20 +8576,19 @@ def load_journal(path: Path) -> tuple[dict | None, str | None]:
         return None, why
     try:
         con.row_factory = sqlite3.Row
-        names = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         out: dict = {"journal": None, "rec_paper": None, "trade_plan": None, "plan_shadow": 0, "forecast_log": None}
-        if "journal" in names:
+        if cmn.has_table(con, "journal"):
             out["journal"] = [
                 dict(r)
                 for r in con.execute(
                     "SELECT * FROM journal ORDER BY COALESCE(closed_ts, opened_ts) DESC, id DESC LIMIT ?", (JOURNAL_MAX_ROWS,)
                 )
             ]
-        if "rec_paper" in names:
+        if cmn.has_table(con, "rec_paper"):
             out["rec_paper"] = [
                 dict(r) for r in con.execute("SELECT * FROM rec_paper ORDER BY opened_ts DESC, id DESC LIMIT ?", (REC_MAX_ROWS,))
             ]
-        if "trade_plan" in names:
+        if cmn.has_table(con, "trade_plan"):
             shadow = f'%"{PLAN_SHADOW_TAG}"%'  # the same JSON-array match as Store.plan_list(exclude_tag=...)
             out["trade_plan"] = [
                 dict(r)
@@ -8600,7 +8599,7 @@ def load_journal(path: Path) -> tuple[dict | None, str | None]:
                 )
             ]
             out["plan_shadow"] = int(con.execute("SELECT COUNT(*) FROM trade_plan WHERE tags LIKE ?", (shadow,)).fetchone()[0])
-        if "forecast_log" in names:
+        if cmn.has_table(con, "forecast_log"):
             # prob_rv (the RV30 model) arrives with schema v23; an older store reads it as NULL
             cols = {r[1] for r in con.execute("PRAGMA table_info(forecast_log)")}
             rv = "prob_rv" if "prob_rv" in cols else "NULL AS prob_rv"
@@ -10012,8 +10011,7 @@ def load_pm_gap(path: Path) -> tuple[dict | None, str | None]:
         return None, why
     try:
         con.row_factory = sqlite3.Row
-        names = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
-        if "pm_gap_snapshot" not in names:
+        if not cmn.has_table(con, "pm_gap_snapshot"):
             return {"ts": None, "rows": None, "text_rows": []}, None
         ts = con.execute("SELECT MAX(ts) FROM pm_gap_snapshot").fetchone()[0]
         if ts is None:
@@ -10474,9 +10472,8 @@ def load_demo(path: Path) -> tuple[dict | None, str | None]:
         return None, why
     try:
         con.row_factory = sqlite3.Row
-        names = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         out: dict = {"trades": None, "audit": None, "option_legs": None}
-        if "demo_trade" in names:
+        if cmn.has_table(con, "demo_trade"):
             out["trades"] = [
                 dict(r)
                 for r in con.execute(
@@ -10486,7 +10483,7 @@ def load_demo(path: Path) -> tuple[dict | None, str | None]:
                     (DEMO_MAX_ROWS,),
                 )
             ]
-        if "exec_audit" in names:
+        if cmn.has_table(con, "exec_audit"):
             out["audit"] = [
                 dict(r)
                 for r in con.execute(
@@ -10495,7 +10492,7 @@ def load_demo(path: Path) -> tuple[dict | None, str | None]:
                     (DEMO_AUDIT_MAX_ROWS,),
                 )
             ]
-        if "demo_option_leg" in names:
+        if cmn.has_table(con, "demo_option_leg"):
             out["option_legs"] = {str(r[0]): int(r[1]) for r in con.execute("SELECT status, COUNT(*) FROM demo_option_leg GROUP BY status")}
         return out, None
     except (sqlite3.Error, OSError) as e:

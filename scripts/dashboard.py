@@ -200,7 +200,7 @@ def table_freshness(db: Path, now: float) -> list[dict]:
         return []
     out = []
     try:
-        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
+        con = cmn.connect_ro(db)
     except sqlite3.Error:
         return []
     try:

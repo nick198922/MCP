@@ -28,7 +28,7 @@ def load(db: str, base: str) -> list[dict[str, Any]]:
     """Journal rows of ``base`` (date, state, close, version), oldest first; [] when the table does not exist yet."""
     con = cmn.connect_ro(db)
     try:
-        if not con.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'cycle_regime_log'").fetchone():
+        if not cmn.has_table(con, "cycle_regime_log"):
             return []
         cur = con.execute("SELECT date, state, close, version FROM cycle_regime_log WHERE base = ? ORDER BY date", (base,))
         return [dict(zip(("date", "state", "close", "version"), r, strict=True)) for r in cur]

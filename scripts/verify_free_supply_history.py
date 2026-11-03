@@ -23,12 +23,13 @@ import gzip
 import json
 import re
 import resource
-import sqlite3
 import sys
 import time
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
+
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
 
 from tradedesk.analytics.supply_history import (
     coverage_fraction,
@@ -42,7 +43,7 @@ from tradedesk.analytics.supply_history import (
 from tradedesk.core.http import Http
 
 UNIVERSE = Path.home() / ".cache/tradedesk-agents/token_unlock/universe.json"
-DB = "file:/var/lib/tradedesk-mcp/tradedesk.sqlite?mode=ro"
+DB = "/var/lib/tradedesk-mcp/tradedesk.sqlite"  # opened read-only through common_helpers.connect_ro
 FIRST_YEAR, LAST = 2021, date(2026, 10, 18)
 UA = {"User-Agent": "tradedesk-research/0.1 (personal research; low rate)"}
 
@@ -197,7 +198,7 @@ def perp_tokens(exclude_tradfi: bool = True) -> dict[str, dict[str, Any]]:
 
 def our_snapshots() -> dict[str, dict[str, list[dict[str, Any]]]]:
     """day -> symbol -> rows of our CoinGecko supply_snapshot (read-only)."""
-    con = sqlite3.connect(DB, uri=True)
+    con = cmn.connect_ro(DB)
     out: dict[str, dict[str, list[dict[str, Any]]]] = {}
     q = "SELECT day, coin_id, symbol, price, market_cap, circulating_supply, total_supply, max_supply FROM supply_snapshot"
     for day, cid, sym, price, mcap, circ, total, mx in con.execute(q):

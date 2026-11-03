@@ -32,6 +32,8 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+import common_helpers as cmn  # noqa: E402  # scripts/common_helpers.py (the script's directory is on sys.path)
+
 DB_DEFAULT = "/var/lib/tradedesk-mcp/tradedesk.sqlite"
 DAY_MS = 86_400_000
 WINDOW_MS = 7 * DAY_MS  # Bybit: endTime - startTime <= 7 days
@@ -426,11 +428,9 @@ def _levkey(k: str) -> float:
 
 def stats(db_path: str, venue: str | None = "bybit") -> str:
     """Report over imported closed trades of one venue (None = all venues); rows tagged "airdrop" are left out."""
-    import sqlite3  # noqa: PLC0415
-
     venue, _, extra = (venue or "").partition(":")  # "bybit:option" = Bybit rows tagged "option"
     venue = venue or None
-    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    con = cmn.connect_ro(db_path)
     rows = con.execute(
         "SELECT closed_ts, symbol, side, pnl, note, opened_ts FROM journal WHERE tags LIKE ? AND tags LIKE ? AND tags NOT LIKE '%\"airdrop\"%' AND status='closed'",
         (f'%"{venue}"%' if venue else '%"import"%', f'%"{extra}"%' if extra else "%"),
@@ -684,9 +684,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         syms = [x.strip().upper() for x in a.symbols.split(",") if x.strip()]
         if a.symbols == "journal":
-            import sqlite3  # noqa: PLC0415
-
-            con = sqlite3.connect(f"file:{a.db}?mode=ro", uri=True)
+            con = cmn.connect_ro(a.db)
             syms = sorted({r[0] for r in con.execute("SELECT DISTINCT symbol FROM journal WHERE tags LIKE '%\"bybit\"%'")} | set(MAJORS))
             con.close()
         ms = lambda d: int(datetime.strptime(d, "%Y-%m-%d").replace(tzinfo=UTC).timestamp() * 1000)  # noqa: E731

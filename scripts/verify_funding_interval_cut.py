@@ -18,13 +18,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import resource
 import statistics
 import sys
 import time
 from collections import Counter, defaultdict
-from datetime import UTC, datetime
 from pathlib import Path
+
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
 
 from tradedesk.analytics.funding_interval_cut import (
     DAY_MS,
@@ -68,14 +68,6 @@ PRE_ENTRY_FIELDS = frozenset(
         "week_any",
     }
 )
-
-
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
-
-
-def ymd(ms: int) -> str:
-    return datetime.fromtimestamp(ms / 1000, tz=UTC).strftime("%Y-%m-%d")
 
 
 def load_months(d: Path) -> list[list[float]]:
@@ -143,8 +135,8 @@ def step0(args: argparse.Namespace) -> None:
                 }
             )
         if (k + 1) % 100 == 0:
-            print(f"  funding {k + 1}/{len(syms)} symbols, {n_rows} rows, {len(events)} kept, rss {rss_mb():.0f} MB", flush=True)
-    print(f"funding: {len(syms)} symbols, {n_rows} rows in {time.time() - t0:.0f}s; rss {rss_mb():.0f} MB")
+            print(f"  funding {k + 1}/{len(syms)} symbols, {n_rows} rows, {len(events)} kept, rss {cmn.rss_mb():.0f} MB", flush=True)
+    print(f"funding: {len(syms)} symbols, {n_rows} rows in {time.time() - t0:.0f}s; rss {cmn.rss_mb():.0f} MB")
     print(f"confirmed changes (raw): {dict(raw_count)}; cut transitions {dict(sorted(trans.items()))}")
     print(f"cut known on: {dict(lag_rows)} (next row = label ahead of the settlement schedule)")
     kept_n = Counter(e["group"] for e in events)
@@ -154,7 +146,7 @@ def step0(args: argparse.Namespace) -> None:
     if ar:
         q = [ar[int(p * (len(ar) - 1))] for p in (0.1, 0.25, 0.5, 0.75, 0.9)]
         print("  |trigger rate| of deduped cuts p10/25/50/75/90: " + " ".join(f"{x:.4%}" for x in q))
-    by_year = Counter((ymd(e["t_known"])[:4], e["group"]) for e in events)
+    by_year = Counter((cmn.ymd_ms(e["t_known"])[:4], e["group"]) for e in events)
     print("  by year: " + "; ".join(f"{y} {g}={n}" for (y, g), n in sorted(by_year.items())))
 
     # daily closes: one symbol at a time; keep only the days needed (event days D-3 .. D+3) per symbol
@@ -170,7 +162,7 @@ def step0(args: argparse.Namespace) -> None:
         first_day[s] = int(kl[0][0])
         closes[s] = {int(r[0]): float(r[4]) for r in kl if int(r[0]) in want}
         if (k + 1) % 200 == 0:
-            print(f"  k1d {k + 1}/{len(syms)}, rss {rss_mb():.0f} MB", flush=True)
+            print(f"  k1d {k + 1}/{len(syms)}, rss {cmn.rss_mb():.0f} MB", flush=True)
 
     def rets(s: str, d: int) -> tuple[float, float, float] | None:
         c = closes.get(s)
@@ -195,7 +187,7 @@ def step0(args: argparse.Namespace) -> None:
                 if r is not None:
                     pools[d].append(Candidate(s, r[0], r[1], r[2]))
     print(
-        f"control pools built for {len(need_days)} days; median pool {statistics.median(len(p) for p in pools.values()) if pools else 0}; rss {rss_mb():.0f} MB"
+        f"control pools built for {len(need_days)} days; median pool {statistics.median(len(p) for p in pools.values()) if pools else 0}; rss {cmn.rss_mb():.0f} MB"
     )
 
     drop: Counter = Counter()
@@ -234,7 +226,7 @@ def step0(args: argparse.Namespace) -> None:
     cov = Counter()
     for e in events:
         if e["group"] == "H1" and "d72" in e:
-            cov[(k1h / e["sym"] / f"{ymd(e['t_known'])[:7]}.json").exists()] += 1
+            cov[(k1h / e["sym"] / f"{cmn.ymd_ms(e['t_known'])[:7]}.json").exists()] += 1
     print(f"H1 events with a 1h kline month in {k1h}: {cov.get(True, 0)} of {sum(cov.values())}")
 
     out = {"gate_pp": GATE_PP, "cost": COST, "groups": {}}
@@ -294,7 +286,7 @@ def step0(args: argparse.Namespace) -> None:
         ex = sorted(sub, key=lambda e: abs(e["d72"]), reverse=True)[:5]
         print(
             "  info: 5 largest |d| events (sym, date, rate; values withheld): "
-            + ", ".join(f"{e['sym']} {ymd(e['t_known'])} {e['rate']:+.4f}" for e in ex)
+            + ", ".join(f"{e['sym']} {cmn.ymd_ms(e['t_known'])} {e['rate']:+.4f}" for e in ex)
         )
         # exploratory gate sensitivity (designs not registered; MDE only, no means): does any design pass?
         allp = [e for e in events if e["group"] == "H1" and "trade72" in e]
@@ -346,7 +338,7 @@ def step0(args: argparse.Namespace) -> None:
     )
     if ftt:
         print(f"sanity FTTUSDT 2022-11: {len(ftt)} settlements, min rate {min(r[2] for r in ftt):.4f} (expected 126, -0.0250)")
-    print(f"done in {time.time() - t0:.0f}s, peak rss {rss_mb():.0f} MB")
+    print(f"done in {time.time() - t0:.0f}s, peak rss {cmn.rss_mb():.0f} MB")
 
     if args.out:
         o = Path(args.out).expanduser()

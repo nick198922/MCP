@@ -12,13 +12,14 @@ from __future__ import annotations
 
 import argparse
 import json
-import resource
 import statistics
 import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -60,14 +61,6 @@ VARIANTS: tuple[tuple[str, str, bool, bool], ...] = (
 NAMED = ("2022-06-13", "2022-11-08", "2024-08-05", "2025-10-10")
 
 
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
-
-
-def ymd(t: int) -> str:
-    return datetime.fromtimestamp(t / 1000, UTC).strftime("%Y-%m-%d")
-
-
 def ci_s(ci: tuple[float, float] | None) -> str:
     return f"[{ci[0] * PCT:+.2f}; {ci[1] * PCT:+.2f}]" if ci else "—"
 
@@ -86,13 +79,13 @@ def checks(D: dict[str, Any], pct: dict[int, float], base: dict[int, dict[str, A
     nw = newey_west_mean(vals, 1)
     L.append(
         f"- Відтворення базової комірки (7d, base): n = {len(vals)}, середнє {nw['mean'] * PCT:+.3f} % {ci_s(nw['ci95'])}, "
-        f"найгірший {min(vals) * PCT:+.2f} % ({ymd(min(base, key=lambda d: base[d]['pnl']))}); у звіті 2026-10-15: n = 300, +0.10 % [−0.20; +0.40], −10.65 % (2021-05-07)."
+        f"найгірший {min(vals) * PCT:+.2f} % ({cmn.ymd_ms(min(base, key=lambda d: base[d]['pnl']))}); у звіті 2026-10-15: n = 300, +0.10 % [−0.20; +0.40], −10.65 % (2021-05-07)."
     )
     have = [d for d in base if d in pct]
     is_, oos = [d for d in have if d < SPLIT], [d for d in have if d >= SPLIT]
     L.append(
-        f"- DVOL-свічок {len(D['dvol'])} ({ymd(min(t for t, _ in D['dvol']))} … {ymd(max(t for t, _ in D['dvol']))}); тижнів угод з P_t: {len(have)} "
-        f"(перший {ymd(min(have))}); IS {len(is_)}, OOS {len(oos)}."
+        f"- DVOL-свічок {len(D['dvol'])} ({cmn.ymd_ms(min(t for t, _ in D['dvol']))} … {cmn.ymd_ms(max(t for t, _ in D['dvol']))}); тижнів угод з P_t: {len(have)} "
+        f"(перший {cmn.ymd_ms(min(have))}); IS {len(is_)}, OOS {len(oos)}."
     )
     L.append(
         f"- Частка тижнів з P_t ≥ {THRESHOLD}: IS {sum(pct[d] >= THRESHOLD for d in is_) / len(is_):.0%} ({sum(pct[d] >= THRESHOLD for d in is_)}), "
@@ -102,10 +95,10 @@ def checks(D: dict[str, Any], pct: dict[int, float], base: dict[int, dict[str, A
     d0 = min(oos)
     stamp = {(int(t) // DAY_MS) * DAY_MS: v for t, v in D["dvol"]}
     L.append(
-        f"- Приклад входу {ymd(d0)} 09:00: використано свічку {ymd(d0 - DAY_MS)} (закриття о 00:00 {ymd(d0)}), DVOL {stamp.get(d0 - DAY_MS, float('nan')):.2f}, P_t = {pct[d0]:.3f}."
+        f"- Приклад входу {cmn.ymd_ms(d0)} 09:00: використано свічку {cmn.ymd_ms(d0 - DAY_MS)} (закриття о 00:00 {cmn.ymd_ms(d0)}), DVOL {stamp.get(d0 - DAY_MS, float('nan')):.2f}, P_t = {pct[d0]:.3f}."
     )
     gaps = sorted(stamp)
-    big = [(ymd(a), ymd(b)) for a, b in zip(gaps, gaps[1:], strict=False) if b - a > DAY_MS]
+    big = [(cmn.ymd_ms(a), cmn.ymd_ms(b)) for a, b in zip(gaps, gaps[1:], strict=False) if b - a > DAY_MS]
     L.append(f"- Пропуски денних свічок DVOL: {len(big)} {big[:5]}.")
 
 
@@ -138,7 +131,7 @@ def full(D: dict[str, Any], pct: dict[int, float], base: dict[int, dict[str, Any
     for name, ck, fund, hedge in VARIANTS[1:]:
         tr = vws.build(D, "7d", ck, fund=fund, hedge=hedge)
         blocks.append(variant_block(name, tr, pct))
-        print(f"  variant {name}: {len(tr)} trades, {time.perf_counter() - t0:.0f}s, peak RSS {rss_mb():.0f} MB", flush=True)
+        print(f"  variant {name}: {len(tr)} trades, {time.perf_counter() - t0:.0f}s, peak RSS {cmn.rss_mb():.0f} MB", flush=True)
     B = blocks[0]
     rows, is_, oos = B["rows"], B["is"], B["oos"]
     g_oos = [r["gain"] for r in oos]
@@ -197,7 +190,7 @@ def full(D: dict[str, Any], pct: dict[int, float], base: dict[int, dict[str, Any
     top5 = sorted(oos, key=lambda r: r["gain"], reverse=True)[:5]
     L.append(
         "- 5 найбільших внесків у приріст OOS: "
-        + ", ".join(f"{ymd(r['day'])} {r['gain'] * PCT:+.2f} (P {r['pct']:.2f})" for r in top5)
+        + ", ".join(f"{cmn.ymd_ms(r['day'])} {r['gain'] * PCT:+.2f} (P {r['pct']:.2f})" for r in top5)
         + "."
     )
 
@@ -218,7 +211,7 @@ def full(D: dict[str, Any], pct: dict[int, float], base: dict[int, dict[str, Any
             if lab == "усі" and book.startswith("фільтр"):
                 gate_f = g
             L.append(
-                f"| {book} | {lab} | {len(v)} | {nw['mean'] * PCT:+.3f} | {ci_s(nw['ci95'])} | {min(v) * PCT:+.2f} ({ymd(worst_d)}) | {cvar(v) * PCT:+.2f} | {mtm * PCT:+.2f} | "
+                f"| {book} | {lab} | {len(v)} | {nw['mean'] * PCT:+.3f} | {ci_s(nw['ci95'])} | {min(v) * PCT:+.2f} ({cmn.ymd_ms(worst_d)}) | {cvar(v) * PCT:+.2f} | {mtm * PCT:+.2f} | "
                 f"{'спрацював' if g['strict'] else 'ні'} | {'спрацював' if g['mechanical'] else 'ні'} |"
             )
     cal_f = [r["filtered"] for r in rows]
@@ -231,7 +224,7 @@ def full(D: dict[str, Any], pct: dict[int, float], base: dict[int, dict[str, Any
     L.append(
         "\n5 найгірших тижнів фільтрованої (усі): "
         + ", ".join(
-            f"{ymd(r['day'])} {r['pnl'] * PCT:+.2f} (P {r['pct']:.2f})"
+            f"{cmn.ymd_ms(r['day'])} {r['pnl'] * PCT:+.2f} (P {r['pct']:.2f})"
             for r in sorted((r for r in rows if r["selected"]), key=lambda r: r["pnl"])[:5]
         )
         + "."
@@ -239,7 +232,7 @@ def full(D: dict[str, Any], pct: dict[int, float], base: dict[int, dict[str, Any
     L.append(
         "Найгірші тижні бази, відсіяні фільтром: "
         + ", ".join(
-            f"{ymd(r['day'])} {r['pnl'] * PCT:+.2f} (P {r['pct']:.2f})"
+            f"{cmn.ymd_ms(r['day'])} {r['pnl'] * PCT:+.2f} (P {r['pct']:.2f})"
             for r in sorted((r for r in rows if not r["selected"]), key=lambda r: r["pnl"])[:5]
         )
         + "."
@@ -279,7 +272,7 @@ def full(D: dict[str, Any], pct: dict[int, float], base: dict[int, dict[str, Any
     L.append("| Рік | n | продано | база | приріст | NW 95 % CI | фільтр / угоду |\n|---|---|---|---|---|---|---|")
     means, ses = [], []
     for y in range(2021, 2027):
-        yr = [r for r in rows if ymd(r["day"])[:4] == str(y)]
+        yr = [r for r in rows if cmn.ymd_ms(r["day"])[:4] == str(y)]
         if not yr:
             continue
         g = [r["gain"] for r in yr]
@@ -304,7 +297,7 @@ def full(D: dict[str, Any], pct: dict[int, float], base: dict[int, dict[str, Any
             f"- {a}: "
             + (
                 ", ".join(
-                    f"вхід {ymd(r['day'])} P {r['pct']:.2f}, P&L {r['pnl'] * PCT:+.2f}, {'продано' if r['selected'] else 'пропущено'}"
+                    f"вхід {cmn.ymd_ms(r['day'])} P {r['pct']:.2f}, P&L {r['pnl'] * PCT:+.2f}, {'продано' if r['selected'] else 'пропущено'}"
                     for r in hit
                 )
                 or "—"
@@ -336,7 +329,7 @@ def full(D: dict[str, Any], pct: dict[int, float], base: dict[int, dict[str, Any
     else:
         verdict = "≈"
     L.append(f"- **Вердикт за реєстрацією: {verdict}**.")
-    print(f"full done in {time.perf_counter() - t0:.0f}s, peak RSS {rss_mb():.0f} MB", flush=True)
+    print(f"full done in {time.perf_counter() - t0:.0f}s, peak RSS {cmn.rss_mb():.0f} MB", flush=True)
 
 
 def main() -> None:
@@ -349,12 +342,12 @@ def main() -> None:
     cache = Path(a.cache_dir).expanduser()
     cache.mkdir(parents=True, exist_ok=True)
     D = vws.load(Path(a.src_dir).expanduser())
-    print(f"loaded, peak RSS {rss_mb():.0f} MB", flush=True)
+    print(f"loaded, peak RSS {cmn.rss_mb():.0f} MB", flush=True)
     pct = entry_percentiles(D["dvol"], window_days=365, min_obs=180)
     base = vws.build(D, "7d", "base")
-    print(f"base built: {len(base)} trades, peak RSS {rss_mb():.0f} MB", flush=True)
+    print(f"base built: {len(base)} trades, peak RSS {cmn.rss_mb():.0f} MB", flush=True)
     (cache / "weeks_base.json").write_text(
-        json.dumps([{"day": ymd(d), "pnl": t["pnl"], "pct": pct.get(d)} for d, t in sorted(base.items())])
+        json.dumps([{"day": cmn.ymd_ms(d), "pnl": t["pnl"], "pct": pct.get(d)} for d, t in sorted(base.items())])
     )
     L = [f"# 8e: тижневий ATM-стреддл при P(DVOL) ≥ 0.4 — сирий вивід `--stage {a.stage}`\n"]
     checks(D, pct, base, L)

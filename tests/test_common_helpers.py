@@ -221,6 +221,27 @@ def test_ymd_day():
     assert cmn.ymd_day(-1) == "1969-12-31"
 
 
+def test_ymd_ms():
+    assert cmn.ymd_ms(0) == "1970-01-01"
+    assert cmn.ymd_ms(1_704_067_200_000) == "2024-01-01"
+    assert cmn.ymd_ms(1_704_067_199_999) == "2023-12-31"  # the last millisecond of a day stays in that day
+    assert cmn.ymd_ms(1_709_193_600_000) == "2024-02-29"  # a Deribit expiry, 08:00 UTC
+    assert cmn.ymd_ms(1_709_193_600_000.0) == "2024-02-29"  # float milliseconds, as some callers pass
+    assert cmn.ymd_ms(-1) == "1969-12-31"
+
+
+def test_ymd_ms_matches_the_removed_copies():
+    # the local 'ymd' copies were datetime.fromtimestamp(t / 1000, UTC).strftime("%Y-%m-%d"), with or without tz=
+    from datetime import UTC, datetime
+
+    for t in (0, 1, 86_399_999, 86_400_000, 1_609_459_200_000, 1_704_067_199_999, 1_760_000_000_123, 1_790_000_000_000.5):
+        assert (
+            cmn.ymd_ms(t)
+            == datetime.fromtimestamp(t / 1000, UTC).strftime("%Y-%m-%d")
+            == datetime.fromtimestamp(t / 1000, tz=UTC).strftime("%Y-%m-%d")
+        )
+
+
 SIXTH_ROUND = {  # item 37 of the standing-improvements card: local copies removed in favour of common_helpers
     "verify_funding_settlement": ["rss_mb", "rd", "wr", "ymd"],
     "verify_spot_perp_flow": ["rss_mb", "rd", "wr", "ymd"],
@@ -241,5 +262,29 @@ def test_scripts_use_the_shared_json_and_day_helpers(name):
     for local in SIXTH_ROUND[name]:
         assert not hasattr(mod, local), local
     if "rss_mb" in SIXTH_ROUND[name]:
+        assert not hasattr(mod, "resource")
+    assert mod.cmn is cmn
+
+
+SEVENTH_ROUND = {  # item 38 of the standing-improvements card: 'ymd' here took epoch milliseconds -> cmn.ymd_ms
+    "verify_perp_launch_existing": ["rss_mb", "ymd", "rd", "wr"],
+    "verify_funding_interval_cut": ["rss_mb", "ymd"],
+    "verify_coinm_funding": ["rss_mb", "ymd"],
+    "verify_dvol_filtered_straddle": ["rss_mb", "ymd"],
+    "verify_assistant_recs": ["rss_mb", "ymd"],
+    "verify_daily_iv_har": ["rss_mb", "ymd"],
+    "verify_vrp_real_marks": ["rss_mb", "ymd"],
+    "verify_strangle_sell_far": ["rss_mb", "ymd"],
+    "verify_event_straddle": ["ymd"],
+    "verify_weekly_straddle": ["ymd"],
+}
+
+
+@pytest.mark.parametrize("name", sorted(SEVENTH_ROUND))
+def test_scripts_use_the_shared_ymd_ms(name):
+    mod = __import__(name)
+    for local in SEVENTH_ROUND[name]:
+        assert not hasattr(mod, local), local
+    if "rss_mb" in SEVENTH_ROUND[name]:
         assert not hasattr(mod, "resource")
     assert mod.cmn is cmn

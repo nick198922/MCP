@@ -20,13 +20,13 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import resource
 import statistics
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
 from verify_put_skew import STRESS, _ms, load_snapshots
 
 from tradedesk.analytics.carry import pearson
@@ -78,16 +78,8 @@ RUIN = -0.20
 MDE_CAP_SECONDARY = 0.02
 
 
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
-
-
-def ymd(t: int) -> str:
-    return datetime.fromtimestamp(t / 1000, UTC).strftime("%Y-%m-%d")
-
-
 def log(msg: str, t0: float) -> None:
-    print(f"[{time.perf_counter() - t0:6.0f}s, rss {rss_mb():.0f} MB] {msg}", flush=True)
+    print(f"[{time.perf_counter() - t0:6.0f}s, rss {cmn.rss_mb():.0f} MB] {msg}", flush=True)
 
 
 # ----------------------------------------------------------------------------- data
@@ -109,7 +101,7 @@ def make_plans(days: dict[int, dict[str, Any]], rule: tuple[str, tuple[int, int]
         if d < ENTRY_START_MS:
             continue
         p = plan_straddle(snap, dte_band=rule[1], expiry_rule=rule[0])
-        if p is None or not p["covered"] or p["expiry"] > LAST_EXPIRY_MS or ymd(p["expiry"]) not in delivery:
+        if p is None or not p["covered"] or p["expiry"] > LAST_EXPIRY_MS or cmn.ymd_ms(p["expiry"]) not in delivery:
             continue
         out[d] = p
     return out
@@ -162,7 +154,7 @@ def run_variant(
             straddle_legs(p["k"], iv),
             path,
             p["expiry"],
-            inp["delivery"][ymd(p["expiry"])],
+            inp["delivery"][cmn.ymd_ms(p["expiry"])],
             funding=inp["fidx"] if funding else (),
             option_fee=0.0 if zero_fees else FEES["option_fee"],
             delivery_fee=0.0 if zero_fees else FEES["delivery_fee"],
@@ -236,7 +228,7 @@ def stage0(L: list[str], days: dict[int, dict[str, Any]], inp: dict[str, Any], t
         ok = [d for d in base if d in plans]
         by_y = []
         for y in range(2021, 2027):
-            ys = [d for d in base if ymd(d)[:4] == str(y)]
+            ys = [d for d in base if cmn.ymd_ms(d)[:4] == str(y)]
             by_y.append(f"{sum(1 for d in ys if d in plans) / len(ys):.0%}" if ys else "—")
         dte = [plans[d]["dte"] for d in ok]
         ages = sorted(plans[d]["mark_age_h"] for d in ok if plans[d]["mark_age_h"] is not None)
@@ -302,7 +294,7 @@ def full(L: list[str], days: dict[int, dict[str, Any]], inp: dict[str, Any], s0:
         f"{statistics.mean(y for _, y in pairs) * 100:.1f}%, різниця {statistics.mean(y - x for x, y in pairs) * 100:+.2f} вп, "
         f"кореляція {pearson(pairs):.3f}, n = {len(pairs)}."
     )
-    dd = [abs(days[d]["spot"] / inp["delivery"][ymd(d)] - 1) for d in plans if ymd(d) in inp["delivery"]]
+    dd = [abs(days[d]["spot"] / inp["delivery"][cmn.ymd_ms(d)] - 1) for d in plans if cmn.ymd_ms(d) in inp["delivery"]]
     L.append(
         f"- Спот входу (index 09:00) проти delivery 08:00 того ж дня: середнє |відхилення| {statistics.mean(dd) * 100:.2f}%, n = {len(dd)}."
     )
@@ -312,7 +304,7 @@ def full(L: list[str], days: dict[int, dict[str, Any]], inp: dict[str, Any], s0:
         if d < ENTRY_START_MS:
             continue
         p = plan_entry(snap, target_days=30, dte_band=(21, 56), expiry_rule="calendar_monthly")
-        if p and p["covered"] and p["expiry"] <= LAST_EXPIRY_MS and ymd(p["expiry"]) in inp["delivery"]:
+        if p and p["covered"] and p["expiry"] <= LAST_EXPIRY_MS and cmn.ymd_ms(p["expiry"]) in inp["delivery"]:
             x = snap["expiries"][p["expiry"]]
             ps_plans[d] = dict(p, k=p["ka"], ratio=x["ratio"], mark_iv=x["strikes"][p["ka"]]["mark_iv"])
     ps = run_variant(days, ps_plans, inp)
@@ -330,7 +322,7 @@ def full(L: list[str], days: dict[int, dict[str, Any]], inp: dict[str, Any], s0:
     L.append(
         f"- Відтворення VRP-звіту 2026-10-13 (DVOL-модель, закриття Binance з годинних свічок): фаза 0 {sv['mean'] * 100:+.2f}% "
         f"[{sv['ci95'][0] * 100:+.2f}; {sv['ci95'][1] * 100:+.2f}] (t-CI), n = {sv['n']}; опубліковано +1.96 [+0.79; +3.13], n = 67. "
-        f"Днів у рядах: {len(rows)} ({ymd(int(rows[0]['day']) * DAY_MS)} … {ymd(int(rows[-1]['day']) * DAY_MS)})."
+        f"Днів у рядах: {len(rows)} ({cmn.ymd_ms(int(rows[0]['day']) * DAY_MS)} … {cmn.ymd_ms(int(rows[-1]['day']) * DAY_MS)})."
     )
     log("consistency checks done", t0)
 
@@ -370,8 +362,8 @@ def full(L: list[str], days: dict[int, dict[str, Any]], inp: dict[str, Any], s0:
     L.append(all_days_ci(prim))
     L.append("\nПо роках (усі дні старту, перекриваються):\n")
     L.append(HDR)
-    for y in sorted({ymd(d)[:4] for d in prim}):
-        L.append(row(y, [t for d, t in sorted(prim.items()) if ymd(d)[:4] == y], block=30))
+    for y in sorted({cmn.ymd_ms(d)[:4] for d in prim}):
+        L.append(row(y, [t for d, t in sorted(prim.items()) if cmn.ymd_ms(d)[:4] == y], block=30))
     comp = {k: statistics.mean(t[k] for t in p0) for k in ("premium", "payoff", "hedge_pnl", "funding_pnl", "costs")}
     L.append(
         "\nСкладові фази 0, % спота: "
@@ -392,12 +384,12 @@ def full(L: list[str], days: dict[int, dict[str, Any]], inp: dict[str, Any], s0:
     wa = min(prim.values(), key=lambda t: t["pnl"])
     wm = min(prim.values(), key=lambda t: t["mtm_min"])
     L.append(
-        f"- Найгірша угода фази 0: {ymd(w0['day'])} → {ymd(w0['expiry'])}: {w0['pnl'] * 100:+.2f}% (рух {w0['move'] * 100:+.1f}%, IV {w0['mark_iv'] * 100:.0f}%)."
+        f"- Найгірша угода фази 0: {cmn.ymd_ms(w0['day'])} → {cmn.ymd_ms(w0['expiry'])}: {w0['pnl'] * 100:+.2f}% (рух {w0['move'] * 100:+.1f}%, IV {w0['mark_iv'] * 100:.0f}%)."
     )
     L.append(
-        f"- Найгірша угода серед усіх днів старту: {ymd(wa['day'])} → {ymd(wa['expiry'])}: {wa['pnl'] * 100:+.2f}% (поріг руїни {RUIN * 100:.0f}%)."
+        f"- Найгірша угода серед усіх днів старту: {cmn.ymd_ms(wa['day'])} → {cmn.ymd_ms(wa['expiry'])}: {wa['pnl'] * 100:+.2f}% (поріг руїни {RUIN * 100:.0f}%)."
     )
-    L.append(f"- Найгірший внутрішній MTM (усі дні старту): {ymd(wm['day'])}: {wm['mtm_min'] * 100:+.2f}% спота.")
+    L.append(f"- Найгірший внутрішній MTM (усі дні старту): {cmn.ymd_ms(wm['day'])}: {wm['mtm_min'] * 100:+.2f}% спота.")
     L.append(
         f"- Хвіст усіх днів старту: 1-й перцентиль {allv[int(0.01 * len(allv))] * 100:+.2f}%, 5-й {allv[int(0.05 * len(allv))] * 100:+.2f}%; "
         f"найгірша угода фази 0 = {abs(w0['pnl'] / b1['mean']) if b1['mean'] else float('nan'):.1f}× середнього за модулем."
@@ -411,13 +403,15 @@ def full(L: list[str], days: dict[int, dict[str, Any]], inp: dict[str, Any], s0:
         if sel:
             L.append(
                 f"| {lab} | {len(sel)} | {statistics.mean(t['pnl'] for t in sel) * 100:+.2f} | {min(t['pnl'] for t in sel) * 100:+.2f} | "
-                + (", ".join(f"{ymd(t['day'])}: {t['pnl'] * 100:+.2f}" for t in ph) or "—")
+                + (", ".join(f"{cmn.ymd_ms(t['day'])}: {t['pnl'] * 100:+.2f}" for t in ph) or "—")
                 + " |"
             )
     worst5 = sorted(prim.values(), key=lambda t: t["pnl"])[:5]
     L.append(
         "\nНайгірші старти: "
-        + "; ".join(f"{ymd(t['day'])}: {t['pnl'] * 100:+.1f}% (рух {t['move'] * 100:+.0f}%, IV {t['mark_iv'] * 100:.0f}%)" for t in worst5)
+        + "; ".join(
+            f"{cmn.ymd_ms(t['day'])}: {t['pnl'] * 100:+.1f}% (рух {t['move'] * 100:+.0f}%, IV {t['mark_iv'] * 100:.0f}%)" for t in worst5
+        )
         + "."
     )
 
@@ -437,8 +431,8 @@ def full(L: list[str], days: dict[int, dict[str, Any]], inp: dict[str, Any], s0:
     ws = min(sig.values(), key=lambda t: t["pnl"])
     wsm = min(sig.values(), key=lambda t: t["mtm_min"])
     L.append(
-        f"Ризик руїни у квінтилі: найгірша угода (усі дні) {ymd(ws['day'])}: {ws['pnl'] * 100:+.2f}%; найгірша фази 0 "
-        f"{min(v2) * 100:+.2f}%; найгірший MTM {ymd(wsm['day'])}: {wsm['mtm_min'] * 100:+.2f}%."
+        f"Ризик руїни у квінтилі: найгірша угода (усі дні) {cmn.ymd_ms(ws['day'])}: {ws['pnl'] * 100:+.2f}%; найгірша фази 0 "
+        f"{min(v2) * 100:+.2f}%; найгірший MTM {cmn.ymd_ms(wsm['day'])}: {wsm['mtm_min'] * 100:+.2f}%."
     )
     L.append("\nСтійкість (розвідувально):\n")
     L.append(HDR)
@@ -584,7 +578,7 @@ def main() -> None:
     L = ["# VRP на реальних марках Deribit BTC: сирий вивід `scripts/verify_vrp_real_marks.py`\n"]
     L.append(
         f"Дані: {len(days)} днів поверхонь (кеш put-skew v2, {meta['trades']} угод), delivery {len(inp['delivery'])}, funding-годин "
-        f"{len(inp['funding'])}, DVOL-днів {len(inp['dvol'])}. Вхід 09:00 UTC, з {ymd(ENTRY_START_MS)}, експірації до {ymd(LAST_EXPIRY_MS)}.\n"
+        f"{len(inp['funding'])}, DVOL-днів {len(inp['dvol'])}. Вхід 09:00 UTC, з {cmn.ymd_ms(ENTRY_START_MS)}, експірації до {cmn.ymd_ms(LAST_EXPIRY_MS)}.\n"
     )
     s0 = stage0(L, days, inp, t0)
     if not a.stage0:
@@ -593,7 +587,7 @@ def main() -> None:
     print(report)
     if a.out:
         Path(a.out).expanduser().write_text(report + "\n")
-    print(f"\npeak RSS {rss_mb():.0f} MB, {time.perf_counter() - t0:.0f}s", flush=True)
+    print(f"\npeak RSS {cmn.rss_mb():.0f} MB, {time.perf_counter() - t0:.0f}s", flush=True)
 
 
 if __name__ == "__main__":

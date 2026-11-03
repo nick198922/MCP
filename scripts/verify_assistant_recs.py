@@ -28,13 +28,13 @@ import argparse
 import asyncio
 import json
 import math
-import resource
 import statistics
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
 from verify_lectures import fetch_history
 from verify_put_skew import load_snapshots
 
@@ -101,16 +101,8 @@ NAMES = {
 }
 
 
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
-
-
 def log(msg: str, t0: float) -> None:
-    print(f"[{time.perf_counter() - t0:6.0f}s, rss {rss_mb():.0f} MB] {msg}", flush=True)
-
-
-def ymd(t: int) -> str:
-    return datetime.fromtimestamp(t / 1000, UTC).strftime("%Y-%m-%d")
+    print(f"[{time.perf_counter() - t0:6.0f}s, rss {cmn.rss_mb():.0f} MB] {msg}", flush=True)
 
 
 def pc(x: float | None, nd: int = 2) -> str:
@@ -163,7 +155,7 @@ def load_closes(cache: Path, kdir: Path, t0: float) -> tuple[list[int], list[flo
     for i in range(1, len(days)):
         if days[i] - days[i - 1] != DAY_MS:
             start = i
-    info["gaps_dropped_before"] = ymd(days[start]) if start else None
+    info["gaps_dropped_before"] = cmn.ymd_ms(days[start]) if start else None
     days = days[start:]
     return days, [src[d] for d in days], info
 
@@ -233,7 +225,7 @@ def part_a(L: list[str], days: list[int], cl: list[float], dvol_day: dict[int, f
     }
     L.append("## Частина A. Твердження 18.10: сьогоднішні ціни, прогін через минулі вікна\n")
     L.append(
-        f"Дані: Binance BTC/USDT 1d, {ymd(days[0])} … {ymd(days[-1])} ({n} днів). Сьогоднішні структури — знімок макета "
+        f"Дані: Binance BTC/USDT 1d, {cmn.ymd_ms(days[0])} … {cmn.ymd_ms(days[-1])} ({n} днів). Сьогоднішні структури — знімок макета "
         f"{D['asof_utc']}, експірація {D['chain']['expiry']}, F = {D['chain']['F']:.0f}, премії — марки Deribit у % від F. "
         f"Вікно {H_TODAY} д (ФРС-стреддл — {st['fomc_straddle'][2]} д). Комісії {FEE_LEG * 100:.2f} % на ногу в кожен бік; хедж {HEDGE_FEE * 100:.2f} % обороту. "
         f"RV30 зараз {D['vol']['rv_30d'] * 100:.1f} %, DVOL {DVOL_TODAY * 100:.1f} % (смуга DVOL ±{DVOL_BAND * 100:.1f} вп).\n"
@@ -291,7 +283,7 @@ def part_a(L: list[str], days: list[int], cl: list[float], dvol_day: dict[int, f
     for x in u["indep"]:
         rvw = rv_at(cl, x + H_TODAY, H_TODAY)
         L.append(
-            f"| {ymd(days[x])} | {rv[x] * 100:.1f} % | {pc(cl[x + H_TODAY] / cl[x] - 1, 1)} % | {rvw * 100:.0f} % | "
+            f"| {cmn.ymd_ms(days[x])} | {rv[x] * 100:.1f} % | {pc(cl[x + H_TODAY] / cl[x] - 1, 1)} % | {rvw * 100:.0f} % | "
             f"{pc(u['by_start'][x], 1)} | {pc(hd['by_start'].get(x), 1)} |"
         )
     # A0 on the card's own independence rule (added after seeing that the greedy chain gives n = 30, card n = 18):
@@ -385,7 +377,7 @@ def run_method(
 
 
 def realize(days_s: dict[int, dict[str, Any]], s: dict[str, Any], inp: dict[str, Any], *, hedge: bool) -> dict[str, Any] | None:
-    dp = inp["delivery"].get(ymd(s["expiry"]))
+    dp = inp["delivery"].get(cmn.ymd_ms(s["expiry"]))
     if dp is None:
         return None
     path = hedge_path(days_s, s["entry"]["day"], s["expiry"], [k for k, _, _, _ in s["absl"]])
@@ -428,7 +420,7 @@ def part_b(
             "pick_noci": recommend(meth, require_ci=False),
         }
         if j % 200 == 0:
-            log(f"method {j}/{len(entries)} days ({ymd(d)})", t0)
+            log(f"method {j}/{len(entries)} days ({cmn.ymd_ms(d)})", t0)
     log(f"method done on {len(recs)} days", t0)
     ch = chain(recs, ENTRY_START, max(recs))
     # variants on the chain only
@@ -488,7 +480,7 @@ def stage0_report(L: list[str], B: dict[str, Any]) -> dict[str, Any]:
     recs, ch = B["recs"], B["chain"]
     L.append("\n## Стадія 0 (без P&L): покриття, рішення методу, потужність\n")
     L.append(
-        f"Днів з поверхнею і ATM на ≈40 д (з {ymd(ENTRY_START)}): {len(recs)}; неперекривних рішень (ланцюг до експірації): {len(ch)}.\n"
+        f"Днів з поверхнею і ATM на ≈40 д (з {cmn.ymd_ms(ENTRY_START)}): {len(recs)}; неперекривних рішень (ланцюг до експірації): {len(ch)}.\n"
     )
     L.append("| Структура | днів покрито | рішень ланцюга покрито |\n|---|---|---|")
     for nm in ALL:
@@ -609,7 +601,7 @@ def full_report(L: list[str], B: dict[str, Any], s0: dict[str, Any], t0: float) 
         hh = r["real_h"].get(p) if p else None
         mvv = (r["real_u"].get("long_straddle") or {}).get("move")
         L.append(
-            f"| {ymd(d)} | {ymd(r['expiry'])} | {r['rv30'] * 100:.0f} % | {('%.0f %%' % (r['dvol'] * 100)) if r['dvol'] else '—'} | {NAMES.get(p, '—') if p else '—'} | "
+            f"| {cmn.ymd_ms(d)} | {cmn.ymd_ms(r['expiry'])} | {r['rv30'] * 100:.0f} % | {('%.0f %%' % (r['dvol'] * 100)) if r['dvol'] else '—'} | {NAMES.get(p, '—') if p else '—'} | "
             f"{pc(m['mean'], 1) if m else '—'} | {('[' + pc(m['ci_lo'], 1) + '; ' + pc(m['ci_hi'], 1) + ']') if m else '—'} | "
             f"{pc(u['pnl'], 1) if u else '—'} | {pc(hh['pnl'], 1) if hh else '—'} | {pc(mvv, 1) if mvv is not None else '—'} |"
         )
@@ -659,7 +651,7 @@ def full_report(L: list[str], B: dict[str, Any], s0: dict[str, Any], t0: float) 
     for nm in ("long_straddle", "long_strangle25", "short_straddle", "short_strangle25"):
         L.append(bline(f"{NAMES[nm]}, без хеджу", [recs[d]["real_u"][nm]["pnl"] for d in calm_days if nm in recs[d]["real_u"]])[0])
         L.append(bline(f"{NAMES[nm]}, з хеджем", [recs[d]["real_h"][nm]["pnl"] for d in calm_days if recs[d]["real_h"].get(nm)])[0])
-    L.append(f"Дні: {', '.join(ymd(d) for d in calm_days)}.")
+    L.append(f"Дні: {', '.join(cmn.ymd_ms(d) for d in calm_days)}.")
     # ---- H3: informativeness of the method's expectation
     L.append("\n### H3: чи несе очікування методу інформацію (усі дні, Спірмен очікування проти реалізованого P&L)\n")
     per_day = []
@@ -744,16 +736,16 @@ def main() -> None:
     cache.mkdir(parents=True, exist_ok=True)
     ps = Path(a.put_skew_cache).expanduser()
     days, cl, info = load_closes(cache, Path(a.klines_dir).expanduser(), t0)
-    log(f"closes: {len(cl)} days from {ymd(days[0])} ({info})", t0)
+    log(f"closes: {len(cl)} days from {cmn.ymd_ms(days[0])} ({info})", t0)
     dvol = [(int(t), float(v)) for t, v in json.loads((ps / "dvol_BTC.json").read_text())]
     dvol_day = {(t // DAY_MS) * DAY_MS: v for t, v in dvol}  # candle stamped day d, known at the close of day d
     D = load_today(Path(a.prototype))
     L = ["# Метод рекомендацій асистента: сирий вивід `scripts/verify_assistant_recs.py`\n"]
-    L.append(f"Ціни закриття: {info}. DVOL BTC: {len(dvol)} днів ({ymd(dvol[0][0])} … {ymd(dvol[-1][0])}).\n")
+    L.append(f"Ціни закриття: {info}. DVOL BTC: {len(dvol)} днів ({cmn.ymd_ms(dvol[0][0])} … {cmn.ymd_ms(dvol[-1][0])}).\n")
     # sanity: known numbers
     rv_now = rv_at(cl, len(cl) - 1)
     L.append(
-        f"Перевірка узгодженості: RV30 на останнє закриття ({ymd(days[-1])}) = {rv_now * 100:.1f} % (макет 18.10: {D['vol']['rv_30d'] * 100:.1f} %); "
+        f"Перевірка узгодженості: RV30 на останнє закриття ({cmn.ymd_ms(days[-1])}) = {rv_now * 100:.1f} % (макет 18.10: {D['vol']['rv_30d'] * 100:.1f} %); "
         f"останнє закриття {cl[-1]:.0f} (макет: спот {D['spot']:.0f}).\n"
     )
     st = today_structures(D)
@@ -795,7 +787,7 @@ def main() -> None:
     print(report)
     if a.out:
         Path(a.out).expanduser().write_text(report + "\n")
-    print(f"\npeak RSS {rss_mb():.0f} MB, {time.perf_counter() - t0:.0f}s", flush=True)
+    print(f"\npeak RSS {cmn.rss_mb():.0f} MB, {time.perf_counter() - t0:.0f}s", flush=True)
 
 
 if __name__ == "__main__":

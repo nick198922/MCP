@@ -24,6 +24,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import verify_put_skew as vps  # noqa: E402  (scripts/ is not a package)
@@ -82,10 +84,6 @@ NAMED = (
 )
 
 
-def ymd(t: int) -> str:
-    return datetime.fromtimestamp(t / 1000, UTC).strftime("%Y-%m-%d")
-
-
 def ms(s: str) -> int:
     return int(datetime.strptime(s, "%Y-%m-%d").replace(tzinfo=UTC).timestamp() * 1000)
 
@@ -140,7 +138,7 @@ def plan_week(D: dict[str, Any], d: int, tenor: str) -> tuple[dict[str, Any] | N
         return None, "немає страйків зі свіжою маркою"
     if not p["covered"]:
         return p, "ATM-страйк не в call-Δ [0.40; 0.60]"
-    if ymd(e) not in D["delivery"]:
+    if cmn.ymd_ms(e) not in D["delivery"]:
         return p, "немає delivery price"
     return p, ""
 
@@ -163,7 +161,7 @@ def make_trade(
         p["day"],
         e,
         legs,
-        D["delivery"][ymd(e)],
+        D["delivery"][cmn.ymd_ms(e)],
         funding=D["fidx"] if fund else (),
         option_fee=cost["option_fee"],
         delivery_fee=cost["delivery_fee"],
@@ -218,7 +216,7 @@ def coverage_block(D: dict[str, Any], L: list[str]) -> float:
         sok = set(ok)
         by_y = []
         for y in range(2021, 2027):
-            ys = [d for d in fr if ymd(d)[:4] == str(y)]
+            ys = [d for d in fr if cmn.ymd_ms(d)[:4] == str(y)]
             by_y.append(f"{sum(1 for d in ys if d in sok) / len(ys):.0%}")
         share = len(ok) / len(fr)
         if tenor == "7d":
@@ -244,7 +242,7 @@ def checks(D: dict[str, Any], L: list[str]) -> None:
         f"funding-годин {len(D['funding'])}; DVOL-днів {len(D['dvol'])}. Мережа не використовувалась."
     )
     fr = fridays(FIRST, LAST)
-    dd = [abs(days[d]["spot"] / D["delivery"][ymd(d)] - 1) for d in fr if d in days and ymd(d) in D["delivery"]]
+    dd = [abs(days[d]["spot"] / D["delivery"][cmn.ymd_ms(d)] - 1) for d in fr if d in days and cmn.ymd_ms(d) in D["delivery"]]
     L.append(
         f"- Spot входу (index, 15 хв до 09:00) проти delivery price 08:00 того ж дня: медіана |відхилення| {statistics.median(dd) * PCT:.2f} %, p95 {pctl(dd, 0.95) * PCT:.2f} %, n = {len(dd)}."
     )
@@ -266,7 +264,9 @@ def checks(D: dict[str, Any], L: list[str]) -> None:
     )
     gaps = [d for d in range(FIRST, LAST + 7 * DAY_MS, DAY_MS) if d not in days]
     L.append(
-        f"- Днів без поверхні у 2021-01-01…2026-10-08: {len(gaps)}" + (f" ({', '.join(ymd(g) for g in gaps[:10])})" if gaps else "") + "."
+        f"- Днів без поверхні у 2021-01-01…2026-10-08: {len(gaps)}"
+        + (f" ({', '.join(cmn.ymd_ms(g) for g in gaps[:10])})" if gaps else "")
+        + "."
     )
     # reproduce put-skew-v2 numbers with its own code path (known numbers: 30d straddle phase 0 +0.06 %, n = 66; 10d +0.39 %, n = 144)
     for tenor, (tgt, band, rule), known in (
@@ -280,7 +280,7 @@ def checks(D: dict[str, Any], L: list[str]) -> None:
             p = plan_entry(snap, target_days=tgt, dte_band=band, target_delta=0.25, delta_band=(0.20, 0.30), expiry_rule=rule)
             if p is None or not p["covered"] or p["expiry"] > LAST_EXPIRY_MS:
                 continue
-            dp = D["delivery"].get(ymd(p["expiry"]))
+            dp = D["delivery"].get(cmn.ymd_ms(p["expiry"]))
             if dp is None:
                 continue
             books = vps.make_books(snap, p, vps.COSTS["base"])
@@ -365,7 +365,7 @@ def full(D: dict[str, Any], G: dict[str, Any], L: list[str]) -> None:
         + "; ".join(
             f"{y} {statistics.mean(v) * PCT:+.2f} (n={len(v)})"
             for y in range(2021, 2027)
-            if (v := [prim[d]["pnl"] for d in keys if ymd(d)[:4] == str(y)])
+            if (v := [prim[d]["pnl"] for d in keys if cmn.ymd_ms(d)[:4] == str(y)])
         )
         + "."
     )
@@ -502,7 +502,7 @@ def full(D: dict[str, Any], G: dict[str, Any], L: list[str]) -> None:
     for d in sorted(keys, key=lambda x: prim[x]["pnl"])[:10]:
         t = prim[d]
         L.append(
-            f"| {ymd(d)} | {t['move'] * PCT:+.1f} % | {t['pnl'] * PCT:+.2f} | {t['pnl_btc_at_expiry'] * PCT:+.2f} | {t['min_mtm'] * PCT:+.2f} | {t['pnl'] / t['im'] * PCT:+.1f} % |"
+            f"| {cmn.ymd_ms(d)} | {t['move'] * PCT:+.1f} % | {t['pnl'] * PCT:+.2f} | {t['pnl_btc_at_expiry'] * PCT:+.2f} | {t['min_mtm'] * PCT:+.2f} | {t['pnl'] / t['im'] * PCT:+.1f} % |"
         )
     L.append("\nНазвані стрес-дати (усі тижні, що перетинають добу дати; п'ятниця дає два тижні):\n")
     L.append("| Дата | тиждень входу | рух | P&L USD-лін. | у BTC | мін. MTM | на IM |\n|---|---|---|---|---|---|---|")
@@ -515,7 +515,7 @@ def full(D: dict[str, Any], G: dict[str, Any], L: list[str]) -> None:
         for h in hit:
             t = prim[h]
             L.append(
-                f"| {a} | {ymd(h)} | {t['move'] * PCT:+.1f} % | {t['pnl'] * PCT:+.2f} | {t['pnl_btc_at_expiry'] * PCT:+.2f} | {t['min_mtm'] * PCT:+.2f} | {t['pnl'] / t['im'] * PCT:+.1f} % |"
+                f"| {a} | {cmn.ymd_ms(h)} | {t['move'] * PCT:+.1f} % | {t['pnl'] * PCT:+.2f} | {t['pnl_btc_at_expiry'] * PCT:+.2f} | {t['min_mtm'] * PCT:+.2f} | {t['pnl'] / t['im'] * PCT:+.1f} % |"
             )
     btc = [prim[d]["pnl_btc_at_expiry"] for d in keys]
     im = [prim[d]["im"] for d in keys]

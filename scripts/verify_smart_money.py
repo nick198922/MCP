@@ -17,7 +17,6 @@ import asyncio
 import gzip
 import json
 import math
-import resource
 import shutil
 import sqlite3
 import statistics
@@ -75,10 +74,6 @@ def emit(line: str = "") -> None:
     if OUT["fh"] is not None:
         OUT["fh"].write(line + "\n")
         OUT["fh"].flush()
-
-
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 
 
 def f4(x: float | None, pct: bool = False) -> str:
@@ -174,7 +169,7 @@ async def fetch(conn: sqlite3.Connection, cache: Path, limit: int | None) -> Non
                 done += 1
             if (i + 1) % 100 == 0 or i + 1 == len(accounts):
                 el = time.time() - t0
-                emit(f"[accounts {i + 1}/{len(accounts)}] new files {done}, failed {dict(failed)}, {el:.0f}s, rss {rss_mb():.0f} MB")
+                emit(f"[accounts {i + 1}/{len(accounts)}] new files {done}, failed {dict(failed)}, {el:.0f}s, rss {cmn.rss_mb():.0f} MB")
         start = E0 - (N_MONTHS + 1) * 30 * DAY_MS
         for i, a in enumerate(tracked):
             path = cache / "fills" / f"{a}.json"
@@ -225,7 +220,7 @@ async def fetch(conn: sqlite3.Connection, cache: Path, limit: int | None) -> Non
                     json.dumps({"start": start, "capped": capped, "coverage_start": start, "coverage_end": end, "fills": fills})
                 )
             if (i + 1) % 20 == 0 or i + 1 == len(tracked):
-                emit(f"[fills {i + 1}/{len(tracked)}] failed {dict(failed)}, {time.time() - t0:.0f}s, rss {rss_mb():.0f} MB")
+                emit(f"[fills {i + 1}/{len(tracked)}] failed {dict(failed)}, {time.time() - t0:.0f}s, rss {cmn.rss_mb():.0f} MB")
     finally:
         await rt.aclose()
     emit(f"fetch done in {time.time() - t0:.0f}s, failed {dict(failed)}")
@@ -370,7 +365,7 @@ async def align_live(n: int = 60, seed: int = 20261017) -> None:
             if r.get("pnl_all") and abs(r["pnl_all"]) >= 50_000:
                 rel_a.append(abs(a[-1][1] - r["pnl_all"]) / abs(r["pnl_all"]))
         emit(f"## Розвідувальна перевірка узгодженості з живим лідербордом ({datetime.now(UTC):%Y-%m-%d %H:%M} UTC, seed {seed})")
-        emit(f"leaderboard rows {len(lb)}, sample fetched over {time.time() - t0:.0f}s, rss {rss_mb():.0f} MB")
+        emit(f"leaderboard rows {len(lb)}, sample fetched over {time.time() - t0:.0f}s, rss {cmn.rss_mb():.0f} MB")
         _dist("місяць", rel_m)
         _dist("тиждень (|pnl_week| ≥ $50k)", rel_w)
         _dist("увесь час (|pnl_all| ≥ $50k)", rel_a)
@@ -638,7 +633,7 @@ def report(conn: sqlite3.Connection, cache: Path) -> None:
     have = sum(1 for a in snap if (cache / "portfolio" / f"{a}.json").exists())
     emit(f"# Smart money, стадія 0 — сирий вивід ({datetime.now(UTC):%Y-%m-%d %H:%M} UTC)")
     emit()
-    emit(f"Знімок HL {SNAP_DAY}: {len(snap)} акаунтів, portfolio у кеші: {have}. rss {rss_mb():.0f} MB")
+    emit(f"Знімок HL {SNAP_DAY}: {len(snap)} акаунтів, portfolio у кеші: {have}. rss {cmn.rss_mb():.0f} MB")
     emit()
     sanity(conn, snap, cache)
     section_classes(snap, cls, cache)
@@ -685,7 +680,7 @@ def report(conn: sqlite3.Connection, cache: Path) -> None:
     power_line("H1w D", dw["sd"], DW_TARGET, 7, pct=True, n_sd=dw["n"])
     emit()
     section_h2_h3(conn, snap, cls)
-    emit(f"peak rss {rss_mb():.0f} MB")
+    emit(f"peak rss {cmn.rss_mb():.0f} MB")
 
 
 def main() -> None:

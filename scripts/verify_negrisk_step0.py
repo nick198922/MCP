@@ -17,13 +17,14 @@ import argparse
 import asyncio
 import hashlib
 import json
-import resource
 import statistics
 import time
 from collections import Counter, defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
 
 from tradedesk.analytics.negrisk import (
     FEE_LOWER,
@@ -59,12 +60,8 @@ VARIANTS = [
 ]
 
 
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
-
-
 def log(msg: str) -> None:
-    print(f"{datetime.now(UTC).strftime('%H:%M:%S')} rss={rss_mb():.0f}MB {msg}", flush=True)
+    print(f"{datetime.now(UTC).strftime('%H:%M:%S')} rss={cmn.rss_mb():.0f}MB {msg}", flush=True)
 
 
 def _append(p: Path, obj: Any) -> None:

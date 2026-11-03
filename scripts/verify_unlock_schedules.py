@@ -26,23 +26,20 @@ import gzip
 import html
 import json
 import re
-import resource
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
 
 from tradedesk.core.http import Http
 
 UA = {"User-Agent": "tradedesk-research/0.1 (personal research; low rate)"}
 
 
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
-
-
 def log(msg: str) -> None:
-    print(f"[{datetime.now(UTC):%H:%M:%S} rss={rss_mb():.0f}MB] {msg}", flush=True)
+    print(f"[{datetime.now(UTC):%H:%M:%S} rss={cmn.rss_mb():.0f}MB] {msg}", flush=True)
 
 
 def wr_bytes(p: Path, b: bytes) -> None:

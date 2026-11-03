@@ -143,3 +143,35 @@ def test_has_table(tmp_path):
         assert cmn.has_table(con, "journal' OR '1'='1") is False  # a parameter, not SQL
     finally:
         con.close()
+
+
+def test_rss_mb_is_peak_rss_in_mb(monkeypatch):
+    seen = []
+
+    class Usage:
+        ru_maxrss = 1537  # KiB on Linux
+
+    def fake(who):
+        seen.append(who)
+        return Usage()
+
+    monkeypatch.setattr(cmn.resource, "getrusage", fake)
+    v = cmn.rss_mb()
+    assert isinstance(v, float) and v == 1537 / 1024.0  # same value the '/ 1024.0' copies gave
+    assert f"{v:.0f}" == "2"
+    assert seen == [cmn.resource.RUSAGE_SELF]
+
+
+def test_rss_mb_real_process():
+    assert cmn.rss_mb() > 0
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["verify_negrisk_step0", "verify_pm_touch", "verify_unlock_schedules", "verify_free_supply_history"],
+)
+def test_scripts_use_the_shared_rss_mb(name):
+    # item 36 of the standing-improvements card: the local copies are gone, the script logs through common_helpers
+    mod = __import__(name)
+    assert not hasattr(mod, "rss_mb") and not hasattr(mod, "resource")
+    assert mod.cmn.rss_mb is cmn.rss_mb

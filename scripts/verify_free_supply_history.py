@@ -22,7 +22,6 @@ import asyncio
 import gzip
 import json
 import re
-import resource
 import sys
 import time
 from datetime import UTC, date, datetime, timedelta
@@ -48,12 +47,8 @@ FIRST_YEAR, LAST = 2021, date(2026, 10, 18)
 UA = {"User-Agent": "tradedesk-research/0.1 (personal research; low rate)"}
 
 
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
-
-
 def log(msg: str) -> None:
-    print(f"[{datetime.now(UTC):%H:%M:%S} rss={rss_mb():.0f}MB] {msg}", flush=True)
+    print(f"[{datetime.now(UTC):%H:%M:%S} rss={cmn.rss_mb():.0f}MB] {msg}", flush=True)
 
 
 def wr(p: Path, obj: Any) -> None:

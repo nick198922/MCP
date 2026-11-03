@@ -20,7 +20,6 @@ import argparse
 import asyncio
 import importlib.util
 import json
-import resource
 import statistics
 import sys
 import time
@@ -29,6 +28,8 @@ from collections import Counter, defaultdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
 
 from tradedesk.analytics import pm_modules as pm
 from tradedesk.analytics.pm_threshold import HOUR_S, quote_at, value_at
@@ -54,10 +55,6 @@ def _load_vt():  # noqa: ANN202
 
 
 vt = _load_vt()
-
-
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
 
 
 def week_of(ts: int) -> str:
@@ -123,13 +120,13 @@ async def stage_fetch(cache: Path, limit: int) -> None:
             el = time.perf_counter() - t_start
             print(f"  sample: 40 in {el:.1f}s -> estimate {el / 40 * len(todo) / 60:.1f} min", flush=True)
         if done % 200 == 0:
-            print(f"  quotes {done}/{len(todo)} {time.perf_counter() - t_start:.0f}s rss {rss_mb():.0f} MB", flush=True)
+            print(f"  quotes {done}/{len(todo)} {time.perf_counter() - t_start:.0f}s rss {cmn.rss_mb():.0f} MB", flush=True)
 
     try:
         await asyncio.gather(*(one(m) for m in todo))
     finally:
         await rt.aclose()
-    print(f"fetch done {done} in {time.perf_counter() - t_start:.0f}s rss {rss_mb():.0f} MB", flush=True)
+    print(f"fetch done {done} in {time.perf_counter() - t_start:.0f}s rss {cmn.rss_mb():.0f} MB", flush=True)
 
 
 async def stage_spot(cache: Path) -> None:
@@ -264,7 +261,7 @@ def stage0(cache: Path, out: Path) -> dict[str, Any]:
             why["sigma ratio outside [1/3, 3]"] += 1
         else:
             why["pass F"] += 1
-    print(f"new markets {n_mk}; events with >= 1 cached quote {len(evs)}; rss {rss_mb():.0f} MB", flush=True)
+    print(f"new markets {n_mk}; events with >= 1 cached quote {len(evs)}; rss {cmn.rss_mb():.0f} MB", flush=True)
     for k, v in why.most_common():
         print(f"  {k}: {v}", flush=True)
     per = Counter(e["asset"] for e in evs if e["F"])
@@ -349,7 +346,7 @@ def main() -> None:
         stage0(cache, cache / "stage0.json")
     else:
         stage_full(cache, cache / "full.json", a.n_boot)
-    print(f"[{a.stage}] {time.perf_counter() - t:.0f}s peak rss {rss_mb():.0f} MB", flush=True)
+    print(f"[{a.stage}] {time.perf_counter() - t:.0f}s peak rss {cmn.rss_mb():.0f} MB", flush=True)
 
 
 if __name__ == "__main__":

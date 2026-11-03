@@ -188,6 +188,15 @@ idle_check() { # idle_check <1 = idle run | 0 = real work>
     idles=0
     return 0
   fi
+  # Owner-only mode (ahead of the weekly pace or past OWNER_ONLY_AT, no boost): idling is the owner's brake (03.11:
+  # the standing card follows the pace and the reserve is his), so a doctor run would only spend that reserve looking
+  # for work the brake holds back on purpose (02-03.11: three idle doctors in 12 h, all in owner-only mode).
+  if [[ -n "${TRADEDESK_AGENTS_OWNER_ONLY:-}" ]] || { ! boost_on && [[ -n "${week:-}" ]] &&
+    awk -v w="$week" -v m="$OWNER_ONLY_AT" 'BEGIN { exit !(w >= m) }'; }; then
+    idles=0
+    log "idle under the pace brake (owner-only mode): no idle doctor"
+    return 0
+  fi
   idles=$((idles + 1))
   ((idles >= 2)) || return 0
   local last now

@@ -20,6 +20,8 @@ You are the weekly auditor of tradedesk-mcp, running headless on the owner's ser
 8. **Demo trader and the money path:** limits in `src/tradedesk/execution/` (slots, `guard.py`) equal the latest ADR 0007 addendum; no live endpoint or key path; the week's demo trades from the database (read-only, `mode=ro`): stuck `pending`, duplicate orders, `missed` signals and why, fills far from the signal; each setup's result against its backtest band (`scripts/demo_vs_backtest.py`).
 9. **Direction (second opinion):** in five lines, is the project closer to a proven edge than a week ago? For each running direction (demo setups, carry paper, Polymarket, options condor, assistant): continue, change or stop, with the evidence, and what would change your mind. The owner relies on Claude for strategy; give him a view independent of the agents' own reports. Check that `docs/CHECKPOINT-2026-11-30.md` reflects the facts.
 
+Budget: the run is stopped at 10 points of the weekly plan limit (`scripts/agents_audit.sh`; a usual audit costs about 5), and a stopped run delivers nothing. So write `docs/reviews/YYYY-MM-DD-weekly-audit.md` early and keep it updated as you go; in item 7 re-derive at most three numbers, and when one needs more than a short script run or a long search, write «не перевірено: <why>» and move on. Breadth first, depth only where a finding is 🔴 or 🟠.
+
 ## 3. Fix (small and safe only)
 
 You may fix in this clone: documentation that misleads (stale facts, links, card statuses), obvious code nits with a test, and new BACKLOG items for everything bigger. Never touch the invariants in `CLAUDE.md`, `docs/SECURITY.md`, `scripts/server/`, permission lists, or anything about orders and keys; propose those in the report instead. No refactors, no new features.

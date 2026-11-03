@@ -38,8 +38,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
     )
     async def journal_add(
         symbol: Annotated[str, Field(description="Ticker / symbol as you track it, e.g. 'BTC/USDT:USDT'.")],
-        side: Literal["long", "short"],
-        size: Annotated[float, Field(gt=0)],
+        side: Annotated[Literal["long", "short"], Field(description="Trade direction; sets the sign of PnL on close.")],
+        size: Annotated[
+            float, Field(gt=0, description="Position size in native units (contracts / coins), not USD; PnL = size * price move.")
+        ],
         entry: Annotated[float, Field(gt=0, description="Entry price in quote currency.")],
         stop: Annotated[float | None, Field(gt=0, description="Stop price; without it r_multiple on close is None.")] = None,
         target: Annotated[float | None, Field(gt=0, description="Target price.")] = None,
@@ -68,7 +70,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
         status: Annotated[Literal["open", "closed", "cancelled"] | None, Field(description="Optional status filter.")] = None,
         symbol: Annotated[str | None, Field(description="Optional symbol filter.")] = None,
         tag: Annotated[str | None, Field(description="Optional single-tag filter.")] = None,
-        limit: Annotated[int, Field(ge=1, le=500)] = 100,
+        limit: Annotated[int, Field(ge=1, le=500, description="Maximum number of trades to return, latest opened first (1-500).")] = 100,
     ) -> dict[str, Any]:
         b = Builder()
         if not _store_guard(b, rt):
@@ -90,7 +92,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
         id: Annotated[int, Field(ge=1, description="Trade id from journal_add.")],
         exit: Annotated[float | None, Field(gt=0, description="Exit price. Required unless cancelled=true.")] = None,
         closed_ts: Annotated[int | None, Field(description="Close timestamp (unix seconds). Defaults to now.")] = None,
-        cancelled: bool = False,
+        cancelled: Annotated[
+            bool, Field(description="Mark the trade as cancelled (never filled): no exit, PnL or R; `exit` is ignored.")
+        ] = False,
         note: Annotated[str | None, Field(description="Post-mortem note.")] = None,
     ) -> dict[str, Any]:
         b = Builder()
@@ -146,7 +150,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
     async def journal_stats(
         symbol: Annotated[str | None, Field(description="Optional symbol filter.")] = None,
         tag: Annotated[str | None, Field(description="Optional tag filter.")] = None,
-        limit: Annotated[int, Field(ge=1, le=5000)] = 500,
+        limit: Annotated[int, Field(ge=1, le=5000, description="Use at most this many closed trades, latest opened first (1-5000).")] = 500,
     ) -> dict[str, Any]:
         b = Builder()
         if not _store_guard(b, rt):

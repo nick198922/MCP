@@ -33,7 +33,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
         window_minutes: Annotated[int, Field(ge=1, le=1440, description="Trailing window in minutes.")] = 60,
         venue: Annotated[str | None, Field(description="Optional venue filter (e.g. 'binanceusdm').")] = None,
         symbol: Annotated[str | None, Field(description="Optional symbol filter, exact match (e.g. 'BTCUSDT').")] = None,
-        top_n: Annotated[int, Field(ge=1, le=50)] = 10,
+        top_n: Annotated[
+            int,
+            Field(ge=1, le=50, description="Largest single liquidations to list by USD notional; per-symbol rows are capped at 2x this."),
+        ] = 10,
     ) -> dict[str, Any]:
         b = Builder()
         if rt.store is None:

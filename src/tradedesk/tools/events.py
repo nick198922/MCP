@@ -43,9 +43,20 @@ def register(server: MCPServer, rt: Runtime) -> None:
         ),
     )
     async def events_add(
-        kind: Annotated[str, Field(min_length=1, max_length=40)],
-        label: Annotated[str, Field(min_length=1, max_length=200)],
-        impact: Literal["low", "medium", "high"] = "medium",
+        kind: Annotated[
+            str,
+            Field(
+                min_length=1,
+                max_length=40,
+                description="Free-form event kind, e.g. 'fomc', 'cpi', 'nfp'; event_study filters on it, so reuse existing kinds.",
+            ),
+        ],
+        label: Annotated[
+            str, Field(min_length=1, max_length=200, description="Human-readable label, e.g. 'FOMC rate decision'. Part of the dedup key.")
+        ],
+        impact: Annotated[
+            Literal["low", "medium", "high"], Field(description="Your expected market impact; a subjective tag used only for filtering.")
+        ] = "medium",
         ts_ms: Annotated[int | None, Field(description="Unix milliseconds (UTC). Use this OR date+time_utc.")] = None,
         date: Annotated[str | None, Field(description="ISO date 'YYYY-MM-DD' (UTC).")] = None,
         time_utc: Annotated[str | None, Field(description="'HH:MM' UTC. Defaults to 13:30.")] = None,
@@ -83,7 +94,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
         impact: Annotated[Literal["low", "medium", "high"] | None, Field(description="Filter by impact.")] = None,
         since_date: Annotated[str | None, Field(description="'YYYY-MM-DD' (UTC) lower bound.")] = None,
         until_date: Annotated[str | None, Field(description="'YYYY-MM-DD' (UTC) upper bound.")] = None,
-        limit: Annotated[int, Field(ge=1, le=5000)] = 500,
+        limit: Annotated[int, Field(ge=1, le=5000, description="Maximum number of events to return (1-5000).")] = 500,
     ) -> dict[str, Any]:
         b = Builder()
         if not _store_guard(b, rt):
@@ -162,8 +173,12 @@ def register(server: MCPServer, rt: Runtime) -> None:
         timeframe: Annotated[str, Field(description="Timeframe stored in ohlcv_hist.")] = "1h",
         event_kind: Annotated[str, Field(description="Event kind in the local events table (e.g. 'fomc', 'cpi', 'nfp').")] = "fomc",
         measure: Annotated[str, Field(description=f"One of: {', '.join(MEASURES)}.")] = "direction",
-        before_minutes: Annotated[float, Field(ge=0, le=10_080)] = 60,
-        after_minutes: Annotated[float, Field(gt=0, le=10_080)] = 240,
+        before_minutes: Annotated[
+            float, Field(ge=0, le=10_080, description="Window start, minutes before each event (0-10080, i.e. up to 7 days).")
+        ] = 60,
+        after_minutes: Annotated[
+            float, Field(gt=0, le=10_080, description="Window end, minutes after each event (up to 10080, i.e. 7 days).")
+        ] = 240,
         since_date: Annotated[str | None, Field(description="UTC 'YYYY-MM-DD' lower bound on event dates.")] = None,
         until_date: Annotated[str | None, Field(description="UTC 'YYYY-MM-DD' upper bound.")] = None,
         impact: Annotated[Literal["low", "medium", "high"] | None, Field(description="Optional impact filter.")] = None,

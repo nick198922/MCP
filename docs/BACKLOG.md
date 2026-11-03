@@ -179,7 +179,7 @@
 
 ## Ідеї без пріоритету
 - `deribit_largest_trades` з `kind="future"`: `notional_usd = amount * price` (`tools/options.py` ≈845), а за документацією Deribit `amount` для perpetual / inverse futures уже в USD → номінал завищено у ≈ціну BTC разів. Потрібен реальний зразок futures-угод (власник: curl), виправлення й тест; [рев'ю](reviews/2026-11-03-param-descriptions-2.md).
-- `range_detect` / `range_setup` / `market_regime` з `source="store"` беруть **найстаріші** бари: `ohlcv_range(since_ts=0, limit=2N)` сортує за `ts` зростанням, потім `rows[-N:]` (`tools/history.py`). Якщо в `ohlcv_hist` більше 2N барів, аналізується давнє вікно, а не останнє. Виправлення (брати останні N) і тест; [зміни](changes/2026-11-03-param-descriptions-3.md).
+- ~~`range_detect` / `range_setup` / `market_regime` з `source="store"` беруть **найстаріші** бари: `ohlcv_range(since_ts=0, limit=2N)` сортує за `ts` зростанням, потім `rows[-N:]` (`tools/history.py`). Якщо в `ohlcv_hist` більше 2N барів, аналізується давнє вікно, а не останнє. Виправлення (брати останні N) і тест; [зміни](changes/2026-11-03-param-descriptions-3.md).~~ Зроблено 03.11: `ohlcv_range(newest=True)`, тест 1000 барів / N=100; [зміни](changes/2026-11-03-store-source-latest-bars.md).
 - MCP-ресурси (`resource://`) для статичних довідників (специфікації контрактів, календар).
 - MCP-промпти: `morning_briefing`, `pre_trade_checklist`, `post_mortem` (базовий `token_deep_analysis` ✅).
 - Експорт у Google Sheets/CSV.

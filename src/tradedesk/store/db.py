@@ -1610,19 +1610,25 @@ class Store:
         since_ts: int = 0,
         until_ts: int | None = None,
         limit: int | None = None,
+        newest: bool = False,
     ) -> list[dict[str, Any]]:
+        """Bars in ascending `ts` order. With `newest=True`, `limit` keeps the latest bars instead of the oldest."""
         where = ["venue = ?", "symbol = ?", "timeframe = ?", "ts >= ?"]
         params: list[Any] = [venue, symbol, timeframe, since_ts]
         if until_ts is not None:
             where.append("ts <= ?")
             params.append(until_ts)
-        sql = "SELECT ts, open, high, low, close, volume FROM ohlcv_hist WHERE " + " AND ".join(where) + " ORDER BY ts"
+        order = "DESC" if newest else "ASC"
+        sql = "SELECT ts, open, high, low, close, volume FROM ohlcv_hist WHERE " + " AND ".join(where) + f" ORDER BY ts {order}"
         if limit is not None:
             sql += " LIMIT ?"
             params.append(int(limit))
         cur = await self.conn.execute(sql, params)
         rows = await cur.fetchall()
-        return [dict(r) for r in rows]
+        out = [dict(r) for r in rows]
+        if newest:
+            out.reverse()
+        return out
 
     async def ohlcv_last_ts(self, venue: str, symbol: str, timeframe: str) -> int | None:
         cur = await self.conn.execute(

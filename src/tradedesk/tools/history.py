@@ -37,7 +37,10 @@ RANGE_LOOKBACK = Annotated[
     Field(
         ge=20,
         le=10_000,
-        description="Bars to analyse. Live: the latest N from one ccxt request (venues cap a request, often at 1000-1500 bars).",
+        description=(
+            "Bars to analyse, the latest N. Live: one ccxt request (venues cap a request, often at 1000-1500 bars); "
+            "store: the newest N rows of ohlcv_hist."
+        ),
     ),
 ]
 RANGE_MIN_BARS = Annotated[
@@ -373,7 +376,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
             except Exception as e:  # noqa: BLE001
                 b.miss("store", "tradedesk", "backend_error", f"{type(e).__name__}: {e}")
                 return b.build(None, ok=False)
-            rows = await rt.store.ohlcv_range(venue=venue, symbol=symbol, timeframe=timeframe, since_ts=0, limit=lookback_bars * 2)
+            rows = await rt.store.ohlcv_range(venue=venue, symbol=symbol, timeframe=timeframe, since_ts=0, limit=lookback_bars, newest=True)
             bars = rows[-lookback_bars:] if rows else []
         if len(bars) < min_bars:
             b.miss("bars", "tradedesk", "data_unavailable", f"only {len(bars)} bars; need >= {min_bars}")
@@ -490,7 +493,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 b.miss("store", "tradedesk", "config", "db_path is empty; set TRADEDESK_DB_PATH to use source='store'")
                 return b.build(None, ok=False)
             await rt.store.init()
-            rows = await rt.store.ohlcv_range(venue=venue, symbol=symbol, timeframe=timeframe, since_ts=0, limit=lookback_bars * 2)
+            rows = await rt.store.ohlcv_range(venue=venue, symbol=symbol, timeframe=timeframe, since_ts=0, limit=lookback_bars, newest=True)
             bars = rows[-lookback_bars:] if rows else []
         if len(bars) < min_bars:
             b.miss("bars", "tradedesk", "data_unavailable", f"only {len(bars)} bars; need >= {min_bars}")
@@ -786,7 +789,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
             Field(
                 ge=3,
                 le=10_000,
-                description="Bars in the regime window (3-10000). Live: the latest N from one ccxt request (venues cap it).",
+                description=(
+                    "Bars in the regime window (3-10000), the latest N. Live: one ccxt request (venues cap it); "
+                    "store: the newest N rows of ohlcv_hist."
+                ),
             ),
         ] = 100,
         trend_threshold: Annotated[float, Field(ge=0, le=10, description="trend_strength cutoff for up/down vs chop.")] = 0.5,
@@ -811,13 +817,14 @@ def register(server: MCPServer, rt: Runtime) -> None:
             except Exception as e:  # noqa: BLE001
                 b.miss("store", "tradedesk", "backend_error", f"{type(e).__name__}: {e}")
                 return b.build(None, ok=False)
-            # Pull a little more than we need so OLS has enough rows after dropping bad entries.
+            # Latest `lookback_bars` bars, ascending by ts.
             rows = await rt.store.ohlcv_range(
                 venue=venue,
                 symbol=symbol,
                 timeframe=timeframe,
                 since_ts=0,
-                limit=lookback_bars * 2,
+                limit=lookback_bars,
+                newest=True,
             )
             bars = rows[-lookback_bars:] if rows else []
 

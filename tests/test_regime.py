@@ -103,6 +103,34 @@ async def test_market_regime_from_store(state, tmp_path):
         await rt.aclose()
 
 
+async def test_market_regime_store_uses_latest_bars(state, tmp_path):
+    rt = await _rt(state, tmp_path)
+    # 1000 hourly bars: 900 falling, then the latest 100 rising. N=100 must see only the rise.
+    start_ms = int(NOW.timestamp() * 1000) - 1000 * 3_600_000
+    closes = [100 * (0.995**i) for i in range(900)]
+    closes += [closes[-1] * (1.01 ** (i + 1)) for i in range(100)]
+    bars = [[start_ms + i * 3_600_000, c, c * 1.001, c * 0.999, c, 1.0] for i, c in enumerate(closes)]
+    await rt.store.insert_ohlcv_batch("binanceusdm", "BTC/USDT:USDT", "1h", bars)
+    srv, _ = build_server(rt)
+    try:
+        env = await _call(
+            srv,
+            "market_regime",
+            venue="binanceusdm",
+            symbol="BTC/USDT:USDT",
+            timeframe="1h",
+            lookback_bars=100,
+            source="store",
+        )
+        d = env["data"]
+        assert d["count"] == 100
+        assert d["first_ts"] == bars[900][0]
+        assert d["last_ts"] == bars[999][0]
+        assert d["regime"] == "up"
+    finally:
+        await rt.aclose()
+
+
 async def test_market_regime_missing_store_bars(state, tmp_path):
     rt = await _rt(state, tmp_path)
     srv, _ = build_server(rt)

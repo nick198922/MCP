@@ -4,7 +4,7 @@ Read-only SQLite: a script that reads the live store opens it with ``mode=ro`` (
 URL-quoted, so a ``?``, ``#`` or ``%`` in the path cannot cut the file name short or drop the read-only flag.
 A verification script that works on a copy of the store makes it with ``backup_db`` (sqlite3 online backup).
 Long verification runs log their peak memory with ``rss_mb``; their per-file JSON caches go through ``read_json`` /
-``write_json``, and day numbers print as dates with ``ymd_day``.
+``write_json``, and day numbers / epoch milliseconds print as dates with ``ymd_day`` / ``ymd_ms``.
 """
 
 from __future__ import annotations
@@ -77,3 +77,8 @@ def write_json(p: Path, obj: Any) -> None:
 def ymd_day(day: int) -> str:
     """``YYYY-MM-DD`` (UTC) of day number ``day`` counted from the Unix epoch (day 0 = 1970-01-01)."""
     return datetime.fromtimestamp(day * 86400, timezone.utc).strftime("%Y-%m-%d")  # noqa: UP017 - runs on the system python3
+
+
+def ymd_ms(ms: float) -> str:
+    """``YYYY-MM-DD`` (UTC) of the epoch time ``ms`` in milliseconds (a fractional day is cut, not rounded)."""
+    return datetime.fromtimestamp(ms / 1000, timezone.utc).strftime("%Y-%m-%d")  # noqa: UP017 - runs on the system python3

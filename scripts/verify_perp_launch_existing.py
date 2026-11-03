@@ -29,17 +29,17 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import logging
 import random
 import re
-import resource
 import statistics
 import time
 from collections import Counter, defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
 
 from tradedesk.analytics.news_events import STABLES, cluster_sd, mde_clusters, perp_base, perp_symbols
 from tradedesk.analytics.perp_launch import (
@@ -71,27 +71,8 @@ GATE_N = 120
 GATE_MDE = 0.03
 
 
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
-
-
-def ymd(ms: int) -> str:
-    return datetime.fromtimestamp(ms / 1000, UTC).strftime("%Y-%m-%d")
-
-
 def ymdhm(ms: int) -> str:
     return datetime.fromtimestamp(ms / 1000, UTC).strftime("%Y-%m-%d %H:%M")
-
-
-def rd(p: Path) -> Any:
-    return json.loads(p.read_text())
-
-
-def wr(p: Path, obj: Any) -> None:
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".tmp")
-    tmp.write_text(json.dumps(obj, separators=(",", ":")))
-    tmp.replace(p)
 
 
 class Out:
@@ -121,10 +102,10 @@ async def stage_ann(cache: Path, out: Out, refresh: int = 0) -> None:
                     "/bapi/composite/v1/public/cms/article/list/query",
                     params={"type": 1, "catalogId": 48, "pageNo": page, "pageSize": 50},
                 )
-                wr(p, f.data["data"]["catalogs"][0]["articles"])
-            arts = rd(p)
+                cmn.write_json(p, f.data["data"]["catalogs"][0]["articles"])
+            arts = cmn.read_json(p)
             newest = max((int(a["releaseDate"]) for a in arts), default=0)
-            out(f"  refresh page {page}: {len(arts)} articles, newest {ymd(newest) if newest else '-'}")
+            out(f"  refresh page {page}: {len(arts)} articles, newest {cmn.ymd_ms(newest) if newest else '-'}")
         page = 1
         while True:
             p = cache / "ann" / f"binance_48_{page:03d}.json"
@@ -133,10 +114,10 @@ async def stage_ann(cache: Path, out: Out, refresh: int = 0) -> None:
                     "/bapi/composite/v1/public/cms/article/list/query",
                     params={"type": 1, "catalogId": 48, "pageNo": page, "pageSize": 50},
                 )
-                wr(p, f.data["data"]["catalogs"][0]["articles"])
-            arts = rd(p)
+                cmn.write_json(p, f.data["data"]["catalogs"][0]["articles"])
+            arts = cmn.read_json(p)
             oldest = min((int(a["releaseDate"]) for a in arts), default=0)
-            out(f"  page {page}: {len(arts)} articles, oldest {ymd(oldest) if oldest else '-'} rss={rss_mb():.0f}MB")
+            out(f"  page {page}: {len(arts)} articles, oldest {cmn.ymd_ms(oldest) if oldest else '-'} rss={cmn.rss_mb():.0f}MB")
             if not arts or len(arts) < 50 or oldest < START - 30 * DAY_MS:
                 break
             page += 1
@@ -147,7 +128,7 @@ async def stage_ann(cache: Path, out: Out, refresh: int = 0) -> None:
 def load_titles(cache: Path) -> list[dict[str, Any]]:
     seen: dict[str, dict[str, Any]] = {}
     for p in sorted((cache / "ann").glob("binance_48_*.json")):
-        for a in rd(p):
+        for a in cmn.read_json(p):
             seen[a["code"]] = {"code": a["code"], "ms": int(a["releaseDate"]), "title": a["title"]}
     return sorted(seen.values(), key=lambda r: r["ms"])
 
@@ -181,9 +162,9 @@ async def stage_bodies(cache: Path, out: Out) -> None:
                     await asyncio.sleep(60)
                 continue
             body = (f.data.get("data") or {}).get("body") or ""
-            wr(p, {"text": body_text(body)[:12000]})
+            cmn.write_json(p, {"text": body_text(body)[:12000]})
             if i % 25 == 0:
-                out(f"  bodies {i + 1}/{len(need)} {time.time() - t0:.0f}s rss={rss_mb():.0f}MB")
+                out(f"  bodies {i + 1}/{len(need)} {time.time() - t0:.0f}s rss={cmn.rss_mb():.0f}MB")
         out(f"bodies done in {time.time() - t0:.0f}s")
     finally:
         await bn.aclose()
@@ -200,7 +181,7 @@ def build_launches(cache: Path) -> tuple[list[dict[str, Any]], Counter[str]]:
         if r["kind"] not in ("launch", "multiple"):
             continue
         p = cache / "bodies" / f"{r['code']}.json"
-        text = rd(p)["text"] if p.exists() else ""
+        text = cmn.read_json(p)["text"] if p.exists() else ""
         if r["kind"] == "multiple":
             r = {**r, "syms": [s for s in perp_symbols(text) if s.endswith("USDT")]}
         lt = launch_times(text, r["syms"], r["ms"]) if text else dict.fromkeys(r["syms"])
@@ -225,16 +206,16 @@ def build_launches(cache: Path) -> tuple[list[dict[str, Any]], Counter[str]]:
 
 def stage_parse(cache: Path, out: Out) -> None:
     rows, kinds = build_launches(cache)
-    out(f"catalog-48 'Binance Futures Will Launch' titles {ymd(START)}..{ymd(END)}: {dict(kinds)}")
+    out(f"catalog-48 'Binance Futures Will Launch' titles {cmn.ymd_ms(START)}..{cmn.ymd_ms(END)}: {dict(kinds)}")
     for r in launch_titles(cache):
         if r["kind"] in ("other_futures", "multiple", "usdc"):
-            out(f"    [{r['kind']}] {ymd(r['ms'])} {r['title'][:120]}")
+            out(f"    [{r['kind']}] {cmn.ymd_ms(r['ms'])} {r['title'][:120]}")
     out(f"USDT perp launches (symbol rows): {len(rows)}; announcements: {len({r['code'] for r in rows})}")
     no_body = sum(1 for r in rows if not (cache / "bodies" / f"{r['code']}.json").exists())
     out(f"  without body: {no_body}; L parsed: {sum(r['L'] is not None for r in rows)}")
     stab = [r for r in rows if r["token"] in STABLES]
     out(f"  stablecoin / wrapped tokens: {[r['symbol'] for r in stab]}")
-    by_year = Counter(ymd(r["ann"])[:4] for r in rows)
+    by_year = Counter(cmn.ymd_ms(r["ann"])[:4] for r in rows)
     out(f"  by year: {dict(sorted(by_year.items()))}")
     leads = sorted((r["L"] - r["ann"]) / HOUR_MS for r in rows if r["L"] is not None)
     if leads:
@@ -254,7 +235,7 @@ def stage_parse(cache: Path, out: Out) -> None:
     sample = rng.sample(multi, min(8, len(multi))) + rng.sample(single, min(20 - min(8, len(multi)), len(single)))
     chk = []
     for r in sorted(sample, key=lambda r: r["ann"]):
-        text = rd(cache / "bodies" / f"{r['code']}.json")["text"] if (cache / "bodies" / f"{r['code']}.json").exists() else ""
+        text = cmn.read_json(cache / "bodies" / f"{r['code']}.json")["text"] if (cache / "bodies" / f"{r['code']}.json").exists() else ""
         i = text.find(r["symbol"])
         chk.append(
             {
@@ -265,12 +246,12 @@ def stage_parse(cache: Path, out: Out) -> None:
                 "snippet": text[max(0, i - 80) : i + 260] if i >= 0 else text[:300],
             }
         )
-    wr(cache / "parser_check.json", chk)
+    cmn.write_json(cache / "parser_check.json", chk)
     for c in chk:
         out(f"    check {c['symbol']:<16} ann {c['ann']}  L {c['L']}  syms in ann {c['n_syms']}")
     out(f"  Pre-IPO / equity wording in body (excluded later as TradFi): {[r['symbol'] for r in rows if r['tradfi_body']]}")
     out(f"  parser check sample: {len(chk)} rows -> {cache / 'parser_check.json'}")
-    wr(cache / "launches.json", rows)
+    cmn.write_json(cache / "launches.json", rows)
 
 
 # ================================================================== venues
@@ -289,7 +270,7 @@ class Venues:
 
     async def cached(self, p: Path, go: Any) -> Any:
         if await asyncio.to_thread(p.exists):
-            return rd(p)
+            return cmn.read_json(p)
         async with self.sem:
             try:
                 data = await go()
@@ -299,7 +280,7 @@ class Venues:
                 else:
                     print(f"  error {p.name}: {e.reason} {str(e.detail)[:120]}", flush=True)
                     return "ERR"
-            wr(p, data)
+            cmn.write_json(p, data)
             return data
 
     async def bybit_kline(self, sym: str, interval: str, a: int, z: int, limit: int = 1000) -> list | None:
@@ -337,15 +318,15 @@ class Venues:
                 cursor = res.get("nextPageCursor") or ""
                 if not cursor:
                     break
-            wr(p, rows)
-        return {x["symbol"]: x["launch"] for x in rd(p)}
+            cmn.write_json(p, rows)
+        return {x["symbol"]: x["launch"] for x in cmn.read_json(p)}
 
     async def hl_meta(self) -> dict[str, bool]:
         p = self.cache / "hl_meta.json"
         if not p.exists():
             f = await self.rt.hyperliquid._info({"type": "meta"}, ttl=0)
-            wr(p, [{"name": u["name"], "delisted": bool(u.get("isDelisted"))} for u in f.data["universe"]])
-        return {x["name"]: x["delisted"] for x in rd(p)}
+            cmn.write_json(p, [{"name": u["name"], "delisted": bool(u.get("isDelisted"))} for u in f.data["universe"]])
+        return {x["name"]: x["delisted"] for x in cmn.read_json(p)}
 
     async def hl_first(self, coin: str) -> int | None:
         p = self.cache / "hl_first" / f"{coin}.json"
@@ -374,7 +355,7 @@ async def stage_venues(cache: Path, out: Out, sample: int) -> None:
     _, rt = build_server()
     v = Venues(cache, rt)
     try:
-        rows = rd(cache / "launches.json")
+        rows = cmn.read_json(cache / "launches.json")
         if sample:
             rows = rows[:: max(1, len(rows) // sample)][:sample]
         inst = await v.instruments()
@@ -382,17 +363,17 @@ async def stage_venues(cache: Path, out: Out, sample: int) -> None:
         p = cache / "um_exchange_info.json"
         # forward: a symbol announced after step 0 that today's cached exchangeInfo lacks -> fetch it again (only then,
         # so a step-0 rerun keeps the snapshot it used)
-        fresh = p.exists() and any(r["ann"] >= STEP0_END and r["symbol"] not in rd(p) for r in rows)
+        fresh = p.exists() and any(r["ann"] >= STEP0_END and r["symbol"] not in cmn.read_json(p) for r in rows)
         if not p.exists() or fresh:
             ei = (await rt.binance_futures.exchange_info()).data
-            wr(
+            cmn.write_json(
                 p,
                 {
                     s["symbol"]: {"u": s.get("underlyingType"), "onboard": s.get("onboardDate"), "ct": s.get("contractType")}
                     for s in ei["symbols"]
                 },
             )
-        um = rd(p)
+        um = cmn.read_json(p)
         out(f"bybit current linear instruments {len(inst)}; HL universe {len(hl)} ({sum(hl.values())} delisted); UM exchangeInfo {len(um)}")
         t0 = time.time()
         res: list[dict[str, Any]] = []
@@ -439,16 +420,16 @@ async def stage_venues(cache: Path, out: Out, sample: int) -> None:
             await asyncio.gather(*[one(r) for r in rows[i : i + 20]])
             el = time.time() - t0
             done = min(i + 20, len(rows))
-            out(f"  venues {done}/{len(rows)} {el:.0f}s (eta {el / done * (len(rows) - done):.0f}s) rss={rss_mb():.0f}MB")
+            out(f"  venues {done}/{len(rows)} {el:.0f}s (eta {el / done * (len(rows) - done):.0f}s) rss={cmn.rss_mb():.0f}MB")
         res.sort(key=lambda x: (x["ann"], x["symbol"]))
-        wr(cache / ("venues.json" if not sample else "venues_sample.json"), res)
+        cmn.write_json(cache / ("venues.json" if not sample else "venues_sample.json"), res)
     finally:
         await v.aclose()
         await rt.aclose()
 
 
 def classify_rows(cache: Path) -> list[dict[str, Any]]:
-    rows = rd(cache / "venues.json")
+    rows = cmn.read_json(cache / "venues.json")
     for r in rows:
         ann = r["ann"]
         onb = r.get("um_onboard")
@@ -480,7 +461,7 @@ def month_bounds(ms: int, shift: int = 0) -> tuple[int, int]:
 
 
 async def bybit_month_1h(v: Venues, sym: str, a: int, z: int) -> list | None:
-    p = v.cache / "px" / "bybit" / sym / "1h" / f"{ymd(a)[:7]}.json"
+    p = v.cache / "px" / "bybit" / sym / "1h" / f"{cmn.ymd_ms(a)[:7]}.json"
 
     async def go() -> list | None:
         rows: list = []
@@ -501,7 +482,7 @@ async def stage_placebo(cache: Path, out: Out) -> None:
     try:
         rows = [r for r in classify_rows(cache) if r["usable"] and r["by_ok"]]
         anns_by_tok: dict[str, list[int]] = defaultdict(list)
-        for r in rd(cache / "venues.json"):
+        for r in cmn.read_json(cache / "venues.json"):
             anns_by_tok[r["token"]].append(r["ann"])
         out(f"eligible events with a Bybit perp >= 14 d: {len(rows)}")
         t0 = time.time()
@@ -535,18 +516,20 @@ async def stage_placebo(cache: Path, out: Out) -> None:
             # "announcement -> L" pump with a different asset (MOODENG). Only the ratio is kept.
             ratio = None
             lday = r["L"] // DAY_MS * DAY_MS
-            pq = cache / "px" / "binance_um_1h" / r["symbol"] / f"{ymd(lday)}.json"
+            pq = cache / "px" / "binance_um_1h" / r["symbol"] / f"{cmn.ymd_ms(lday)}.json"
 
             async def go_um(sym: str = r["symbol"], d: int = lday) -> list | None:
-                return [[int(x[0]), float(x[1])] for x in (await rt.binance_vision.um_klines_daily(sym, "1h", ymd(d))).data] or None
+                return [[int(x[0]), float(x[1])] for x in (await rt.binance_vision.um_klines_daily(sym, "1h", cmn.ymd_ms(d))).data] or None
 
             um1 = await v.cached(pq, go_um)
             if um1 and um1 != "ERR":
                 ratio = collision_ratio(alt, um1, r["L"], bybit_mult=perp_base(r["bybit_sym"])[1], binance_mult=r["mult"])
-            res.append({"symbol": r["symbol"], "ann": r["ann"], "month": ymd(r["ann"])[:7], "hours": hrs, "vals": vals, "ratio": ratio})
+            res.append(
+                {"symbol": r["symbol"], "ann": r["ann"], "month": cmn.ymd_ms(r["ann"])[:7], "hours": hrs, "vals": vals, "ratio": ratio}
+            )
             if i % 20 == 0:
-                out(f"  placebo {i + 1}/{len(rows)} {time.time() - t0:.0f}s rss={rss_mb():.0f}MB")
-        wr(cache / "placebo.json", res)
+                out(f"  placebo {i + 1}/{len(rows)} {time.time() - t0:.0f}s rss={cmn.rss_mb():.0f}MB")
+        cmn.write_json(cache / "placebo.json", res)
         out(f"placebo done {time.time() - t0:.0f}s")
     finally:
         await v.aclose()
@@ -571,7 +554,7 @@ def stage0(cache: Path, out: Out) -> None:
     out(f"  base universe (crypto, L parsed): {len(base)}")
 
     def yr(r: dict[str, Any]) -> str:
-        return ymd(r["ann"])[:4]
+        return cmn.ymd_ms(r["ann"])[:4]
 
     years = sorted({yr(r) for r in base})
     hdr = "| рік | база | Bybit ≥14д | лише HL ≥14д | Bybit або HL ≥14д | Bybit <14д | Bybit-перп є, але не в поточних (делістнуто) | без перпа Bybit/HL | спот Binance до анонсу |"
@@ -623,7 +606,7 @@ def stage0(cache: Path, out: Out) -> None:
     if not pp.exists():
         out("placebo.json missing: run the placebo stage")
         return
-    pl = rd(pp)
+    pl = cmn.read_json(pp)
     rat = [e["ratio"] for e in pl if e.get("ratio")]
     col = sorted(e["symbol"] for e in pl if e.get("ratio") and not 0.5 <= e["ratio"] <= 2.0)
     if rat:
@@ -710,7 +693,7 @@ def main() -> None:
         asyncio.run(stage_placebo(cache, out))
     else:
         stage0(cache, out)
-    out(f"[{a.stage}] done in {time.time() - t:.0f}s, peak rss {rss_mb():.0f}MB")
+    out(f"[{a.stage}] done in {time.time() - t:.0f}s, peak rss {cmn.rss_mb():.0f}MB")
     if a.out:
         a.out.parent.mkdir(parents=True, exist_ok=True)
         a.out.write_text("\n".join(out.lines) + "\n")

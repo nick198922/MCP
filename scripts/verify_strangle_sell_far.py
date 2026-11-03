@@ -15,13 +15,14 @@ import argparse
 import csv
 import hashlib
 import json
-import resource
 import statistics
 import sys
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
@@ -46,10 +47,6 @@ CARD = ROOT / "docs" / "ideas" / "IDEA-20261028-long-strangle-sell-far-strike.md
 EVENTS = ROOT / "docs" / "verification" / "2026-10-15-us-macro-events.csv"
 SRC = Path.home() / ".cache" / "tradedesk-agents" / "put_skew"
 H2_FIELDS = ("R", "R_mod", "R_stk", "R_net", "R_pct", "dR", "dR_stk", "iv_b", "iv_s", "iv_mod", "m_s")
-
-
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 
 
 def prereg_hash() -> str:
@@ -77,10 +74,6 @@ def load_days(path: Path) -> list[dict[str, Any]]:
 
 def load_delivery(path: Path) -> dict[str, float]:
     return {r["date"]: float(r["delivery_price"]) for r in json.loads(path.read_text())}
-
-
-def ymd(ms: int) -> str:
-    return datetime.fromtimestamp(ms / 1000, UTC).strftime("%Y-%m-%d")
 
 
 def fomc_ms() -> list[int]:
@@ -149,7 +142,7 @@ def stage0(days: list[dict[str, Any]], eps: list[dict[str, Any]], p: Params) -> 
     )
     by_year: dict[str, list[int]] = {}
     for e in reach:
-        y = ymd(e["D"])[:4]
+        y = cmn.ymd_ms(e["D"])[:4]
         c = by_year.setdefault(y, [0, 0])
         c[0] += 1
         c[1] += e["status"] == "ok"
@@ -208,7 +201,7 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"prereg sha256[:16] = {prereg_hash()}", flush=True)
     days = load_days(Path(a.snap))
-    print(f"days {len(days)} {ymd(days[0]['day'])}..{ymd(days[-1]['day'])} rss {rss_mb():.0f} MB", flush=True)
+    print(f"days {len(days)} {cmn.ymd_ms(days[0]['day'])}..{cmn.ymd_ms(days[-1]['day'])} rss {cmn.rss_mb():.0f} MB", flush=True)
     p = Params()
     eps = episodes(days, p)
     cov = stage0(days, eps, p)
@@ -257,9 +250,9 @@ def main() -> None:
         years: dict[str, list[float]] = {}
         dyears: dict[str, list[float]] = {}
         for r in rows:
-            years.setdefault(ymd(r["key"][0])[:4], []).append(r["R"])
+            years.setdefault(cmn.ymd_ms(r["key"][0])[:4], []).append(r["R"])
             if r["dR"] is not None:
-                dyears.setdefault(ymd(r["key"][0])[:4], []).append(r["dR"])
+                dyears.setdefault(cmn.ymd_ms(r["key"][0])[:4], []).append(r["dR"])
         yr = {
             y: (len(v), round(statistics.fmean(v), 3), round(statistics.fmean(dyears.get(y, [0.0])), 3)) for y, v in sorted(years.items())
         }
@@ -311,7 +304,7 @@ def main() -> None:
     by_day = {d["day"]: d for d in days}
 
     def s_exp_of(exp: int) -> float | None:
-        return deliv.get(ymd(exp))
+        return deliv.get(cmn.ymd_ms(exp))
 
     h1: dict[str, Any] = {}
     spots = [d["spot"] for d in days]
@@ -370,7 +363,7 @@ def main() -> None:
         print(f"   short-control {res['short_minus_control']}", flush=True)
     result["h1"] = h1
     (out_dir / "result.json").write_text(json.dumps(result, indent=1, ensure_ascii=False, default=str))
-    print(f"done rss {rss_mb():.0f} MB -> {out_dir / 'result.json'}", flush=True)
+    print(f"done rss {cmn.rss_mb():.0f} MB -> {out_dir / 'result.json'}", flush=True)
 
 
 if __name__ == "__main__":

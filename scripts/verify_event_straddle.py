@@ -32,6 +32,8 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
+
 from tradedesk.analytics.carry import pearson
 from tradedesk.analytics.event_straddle import (
     DAY_MS,
@@ -65,10 +67,6 @@ def ms(d: datetime | date) -> int:
     if not isinstance(d, datetime):
         d = datetime(d.year, d.month, d.day, tzinfo=UTC)
     return int(d.timestamp() * 1000)
-
-
-def ymd(t: int) -> str:
-    return datetime.fromtimestamp(t / 1000, UTC).strftime("%Y-%m-%d")
 
 
 START_MS, END_MS, SPLIT_MS = ms(START), ms(END), ms(SPLIT)
@@ -198,7 +196,7 @@ def main() -> None:
     st = Counter(r["status"] for r in ev_rows)
     L.append(
         f"Таблиця подій: {len(ev_rows)} рядків ({', '.join(f'{k} {v}' for k, v in sorted(st.items()))}); "
-        f"в основній вибірці {len(events)} днів подій у [{ymd(START_MS)}; {ymd(END_MS)}] "
+        f"в основній вибірці {len(events)} днів подій у [{cmn.ymd_ms(START_MS)}; {cmn.ymd_ms(END_MS)}] "
         f"({', '.join(f'{k} {v}' for k, v in sorted(Counter(events.values()).items()))}). "
         f"Заблоковано для контролів (±1 доба від будь-якої дати CSV, крім cancelled, і seed): {len(blocked)} днів.\n"
     )
@@ -221,7 +219,7 @@ def main() -> None:
         ok = [d for d in ds if d in valid]
         by = []
         for y in years:
-            ys = [d for d in ds if ymd(d)[:4] == str(y)]
+            ys = [d for d in ds if cmn.ymd_ms(d)[:4] == str(y)]
             by.append(f"{sum(1 for d in ys if d in valid)}/{len(ys)}" if ys else "—")
         share = len(ok) / len(ds) if ds else 0.0
         L.append(f"| {label} | {len(ds)} | {len(ok)} | {share:.1%} | " + " | ".join(by) + " |")
@@ -347,7 +345,7 @@ def main() -> None:
         halves[lab] = cluster_bootstrap(rr)
         L.append(row(lab, rr))
     for y in years:
-        L.append(row(str(y), [(r["wk"], r["dx"]) for r in rec if ymd(r["day"])[:4] == str(y)]))
+        L.append(row(str(y), [(r["wk"], r["dx"]) for r in rec if cmn.ymd_ms(r["day"])[:4] == str(y)]))
     types = {k: statistics.mean(r["dx"] for r in rec if r["kind"] == k) for k in ("fomc", "cpi", "nfp") if any(r["kind"] == k for r in rec)}
     h3_same = len({math.copysign(1, v) for v in types.values()}) == 1
     h4_same = halves["2021–2023"]["mean"] * halves["2024–2026"]["mean"] > 0
@@ -364,8 +362,8 @@ def main() -> None:
     top_dir = drop_top(allr, 3, direction=sign)
     L.append(row(f"без топ-3 внесків у напрямку середнього ({'+' if sign > 0 else '−'})", top_dir))
     L.append(row("без топ-3 за |ΔX|", drop_top(allr, 3)))
-    L.append(row("без 2022", [(r["wk"], r["dx"]) for r in rec if ymd(r["day"])[:4] != "2022"]))
-    L.append(row("без 2026 (дати 2026 — розклад)", [(r["wk"], r["dx"]) for r in rec if ymd(r["day"])[:4] != "2026"]))
+    L.append(row("без 2022", [(r["wk"], r["dx"]) for r in rec if cmn.ymd_ms(r["day"])[:4] != "2022"]))
+    L.append(row("без 2026 (дати 2026 — розклад)", [(r["wk"], r["dx"]) for r in rec if cmn.ymd_ms(r["day"])[:4] != "2026"]))
     L.append(row("лише події з 4 контролями", [(r["wk"], r["dx"]) for r in rec if len(r["ctrls"]) == 4]))
     xt = {d: straddle_x(quotes[d], delivery[d + DAY_MS], premium_key="premium_trade") for d in valid}
     L.append(row("IV угод замість mark IV", [(r["wk"], xt[r["day"]] - statistics.median(xt[c] for c in r["ctrls"])) for r in rec]))
@@ -385,7 +383,7 @@ def main() -> None:
     by_year_hs: dict[tuple[str, int], float] = {}
     for side, key in ((1, "hs_sell"), (-1, "hs_buy")):
         for y in years:
-            v = [quotes[d][key] for d in valid if ymd(d)[:4] == str(y) and quotes[d].get(key) is not None]
+            v = [quotes[d][key] for d in valid if cmn.ymd_ms(d)[:4] == str(y) and quotes[d].get(key) is not None]
             if v:
                 by_year_hs[(str(y), side)] = statistics.median(v)
 
@@ -393,7 +391,9 @@ def main() -> None:
         q = quotes[d]
         st_ = delivery[d + DAY_MS]
         x = straddle_x(q, st_, premium_key=premium_key)
-        return direction * x - cost_frac(q, st_, model=model, direction=direction, fallback_hs=by_year_hs.get((ymd(d)[:4], direction)))
+        return direction * x - cost_frac(
+            q, st_, model=model, direction=direction, fallback_hs=by_year_hs.get((cmn.ymd_ms(d)[:4], direction))
+        )
 
     L.append(HDR)
     h2 = {}
@@ -411,7 +411,7 @@ def main() -> None:
                 delivery[r["day"] + DAY_MS],
                 model=m,
                 direction=sign,
-                fallback_hs=by_year_hs.get((ymd(r["day"])[:4], sign)),
+                fallback_hs=by_year_hs.get((cmn.ymd_ms(r["day"])[:4], sign)),
             )
             for r in rec
         )
@@ -439,13 +439,13 @@ def main() -> None:
     worst = sorted(rec, key=lambda r: r["x"])[:5]
     L.append(
         "Найгірші 5 подій для продавця (X): "
-        + "; ".join(f"{ymd(r['day'])} {r['kind']} {f2(r['x'])} % (ΔX {f2(r['dx'])})" for r in worst)
+        + "; ".join(f"{cmn.ymd_ms(r['day'])} {r['kind']} {f2(r['x'])} % (ΔX {f2(r['dx'])})" for r in worst)
         + "."
     )
     best = sorted(rec, key=lambda r: -r["dx"])[:5]
-    L.append("Найбільші 5 ΔX: " + "; ".join(f"{ymd(r['day'])} {r['kind']} {f2(r['dx'])}" for r in best) + ".")
+    L.append("Найбільші 5 ΔX: " + "; ".join(f"{cmn.ymd_ms(r['day'])} {r['kind']} {f2(r['dx'])}" for r in best) + ".")
     lowest = sorted(rec, key=lambda r: r["dx"])[:5]
-    L.append("Найменші 5 ΔX: " + "; ".join(f"{ymd(r['day'])} {r['kind']} {f2(r['dx'])}" for r in lowest) + ".")
+    L.append("Найменші 5 ΔX: " + "; ".join(f"{cmn.ymd_ms(r['day'])} {r['kind']} {f2(r['dx'])}" for r in lowest) + ".")
 
     def mae_of(d: int) -> float | None:
         x = extra.get(d + DAY_MS)
@@ -509,7 +509,7 @@ def main() -> None:
     L.append("| D | тип | X | X_контр | ΔX | контрольні дні |\n|---|---|---|---|---|---|")
     for r in rec:
         L.append(
-            f"| {ymd(r['day'])} | {r['kind']} | {f2(r['x'])} | {f2(r['xc'])} | {f2(r['dx'])} | {', '.join(ymd(c)[5:] for c in r['ctrls'])} |"
+            f"| {cmn.ymd_ms(r['day'])} | {r['kind']} | {f2(r['x'])} | {f2(r['xc'])} | {f2(r['dx'])} | {', '.join(cmn.ymd_ms(c)[5:] for c in r['ctrls'])} |"
         )
     return finish(L, a.out)
 

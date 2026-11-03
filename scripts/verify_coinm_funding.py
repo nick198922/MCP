@@ -17,7 +17,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import resource
 import statistics
 import time
 from collections import Counter, defaultdict
@@ -25,6 +24,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
 import numpy as np
 
 from tradedesk.analytics.coinm_funding import (
@@ -66,14 +66,6 @@ PAST = (
     "VET ICX NEO QTUM ONT IOTA KSM COMP MKR SUSHI CRV RUNE GRT CHZ ENJ BAT ZIL WAVES OMG HBAR FLOW ONE KAVA INJ TIA SEI"
 ).split()
 BIG = {"BTC", "ETH"}
-
-
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
-
-
-def ymd(t: int) -> str:
-    return datetime.fromtimestamp(t / 1000, tz=UTC).strftime("%Y-%m-%d")
 
 
 def write_json(p: Path, obj: Any) -> None:
@@ -165,8 +157,8 @@ async def fetch(args: argparse.Namespace) -> None:
             nm = await fetch_mark(rt, cache, "dapi", a, first)
             nu = await fetch_mark(rt, cache, "fapi", a, first)
             print(
-                f"  [{i + 1}/{len(assets)}] {a}: dapi {nd} fapi {nf} mark {nm}/{nu} from {ymd(first)}; "
-                f"{time.perf_counter() - t0:.0f}s rss {rss_mb():.0f} MB",
+                f"  [{i + 1}/{len(assets)}] {a}: dapi {nd} fapi {nf} mark {nm}/{nu} from {cmn.ymd_ms(first)}; "
+                f"{time.perf_counter() - t0:.0f}s rss {cmn.rss_mb():.0f} MB",
                 flush=True,
             )
     finally:
@@ -249,7 +241,7 @@ def load_all(cache: Path) -> tuple[list[str], dict[str, list[Any]], dict[str, li
 def step0(args: argparse.Namespace) -> None:
     cache: Path = args.cache_dir.expanduser()
     assets, wk, al, meta = load_all(cache)
-    print(f"assets with both venues: {len(assets)}; rss {rss_mb():.0f} MB")
+    print(f"assets with both venues: {len(assets)}; rss {cmn.rss_mb():.0f} MB")
     print(
         f"{'asset':<7}{'from':<11}{'to':<11}{'n_c':>6}{'n_u':>6}{'drop_c':>7}{'drop_u':>7}{'algn':>6}{'wk':>5}{'wk3y':>5}{'px c/u':>8}{'anc_c':>7}{'anc_u':>7}  intervals_u(h)"
     )
@@ -268,10 +260,10 @@ def step0(args: argparse.Namespace) -> None:
         anc_u = np.mean([abs(fu - ANCHOR) < 1e-9 for _, _, fu in al[a]]) if al[a] else float("nan")
         m = meta[a]
         print(
-            f"{a:<7}{ymd(c[0][0]):<11}{ymd(c[-1][0]):<11}{m['n_c']:>6}{m['n_u']:>6}{m['drop_c']:>7}{m['drop_u']:>7}{m['aligned']:>6}"
+            f"{a:<7}{cmn.ymd_ms(c[0][0]):<11}{cmn.ymd_ms(c[-1][0]):<11}{m['n_c']:>6}{m['n_u']:>6}{m['drop_c']:>7}{m['drop_u']:>7}{m['aligned']:>6}"
             f"{len(wk[a]):>5}{n3:>5}{ratio:>8.4f}{anc_c:>7.2f}{anc_u:>7.2f}  {dict(iu.most_common(3))} c:{dict(ic.most_common(2))}"
         )
-    print(f"\nbasket (>= 52 weeks in main window {ymd(MAIN[0])}..{ymd(MAIN[1])}): {len(basket)} assets: {sorted(basket)}")
+    print(f"\nbasket (>= 52 weeks in main window {cmn.ymd_ms(MAIN[0])}..{cmn.ymd_ms(MAIN[1])}): {len(basket)} assets: {sorted(basket)}")
     write_json(cache / "basket.json", sorted(basket))
     print("\nPOWER (no means): SD of weekly d, block-bootstrap SE and MDE, annualised pp on notional")
     for win_name, win in (("main 3y", MAIN), ("hold-out", HOLD), ("last year", LAST_YEAR)):
@@ -293,7 +285,7 @@ def step0(args: argparse.Namespace) -> None:
             print(
                 f"scout replication {a}: last 499 raw settlements COIN-M - USDT-M = {pp(ann(np.mean([r for _, r in c]) - np.mean([r for _, r in u])))} pp/yr (scout: BTC +1.14 ETH +1.12 SOL +2.66 XRP +3.68)"
             )
-    print(f"rss {rss_mb():.0f} MB")
+    print(f"rss {cmn.rss_mb():.0f} MB")
 
 
 # ----------------------------------------------------------------------------- step 1
@@ -404,7 +396,7 @@ def step1(args: argparse.Namespace) -> None:
         n_boot=5000,
     )
     print(
-        f"  persistence (IS {ymd(MAIN[0])}..{ymd(TRAIN_END)}, OOS hold-out, pp/yr): top {per['top']}; IS top {pp(per['top_is_mean'])} rest {pp(per['rest_is_mean'])}; "
+        f"  persistence (IS {cmn.ymd_ms(MAIN[0])}..{cmn.ymd_ms(TRAIN_END)}, OOS hold-out, pp/yr): top {per['top']}; IS top {pp(per['top_is_mean'])} rest {pp(per['rest_is_mean'])}; "
         f"OOS top {pp(per['top_oos_mean'])} vs rest {pp(per['rest_oos_mean'])}; diff {pp(per['diff'])} CI {[pp(x) for x in per['diff_ci']] if per['diff_ci'] else None}; "
         f"p {per['diff_p']}; Spearman IS-OOS {per['rho']:.2f} (n {per['rho_n']})"
     )
@@ -414,7 +406,7 @@ def step1(args: argparse.Namespace) -> None:
     print(boot_line(f"basket w/o top2 {top2}", xb))
     topq = sorted((a for a in contrib if a in basket), key=lambda a: -contrib[a])[: max(1, len(basket) // 4)]
     print(boot_line("basket w/o top quarter", [v for _, v in combine(wk, basket - set(topq), MAIN)]) + f"  dropped {topq}")
-    print(f"rss {rss_mb():.0f} MB")
+    print(f"rss {cmn.rss_mb():.0f} MB")
 
 
 # ----------------------------------------------------------------------------- step 2
@@ -533,7 +525,7 @@ def step2(args: argparse.Namespace) -> None:
         if t["symbol"].endswith("_PERP"):
             face = 100 if t["symbol"].startswith("BTCUSD_") else 10
             print(f"  {t['symbol']:<16} {float(t['volume']) * face / 1e6:>9.1f} M USD")
-    print(f"rss {rss_mb():.0f} MB")
+    print(f"rss {cmn.rss_mb():.0f} MB")
 
 
 # ----------------------------------------------------------------------------- artefact check: funding from premium
@@ -580,7 +572,7 @@ def premium_check(args: argparse.Namespace) -> None:
     cache: Path = args.cache_dir.expanduser()
     asyncio.run(fetch_premium(cache))
     w = np.arange(1, 9, dtype=float)
-    print(f"premium reconstruction {ymd(PREM_WIN[0])}..{ymd(PREM_WIN[1])} (hourly closes, weights 1..8), per 8 h in bp")
+    print(f"premium reconstruction {cmn.ymd_ms(PREM_WIN[0])}..{cmn.ymd_ms(PREM_WIN[1])} (hourly closes, weights 1..8), per 8 h in bp")
     print(
         f"{'asset':<6}{'venue':<6}{'n':>6}{'mean P':>8}{'mean f':>8}{'mean f^':>8}{'MAE':>7}{'corr':>7}{'at anchor':>10}{'f^ anchor':>10}{'P<-4bp':>8}"
     )

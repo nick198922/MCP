@@ -18,7 +18,6 @@ import gzip
 import json
 import math
 import os
-import resource
 import statistics
 import time
 from collections import Counter
@@ -26,6 +25,8 @@ from concurrent.futures import ProcessPoolExecutor
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
+
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
 
 from tradedesk.analytics.event_straddle import DAY_MS, iso_week
 from tradedesk.analytics.iv_har import (
@@ -55,17 +56,9 @@ def ms(d: datetime | date) -> int:
     return int(d.timestamp() * 1000)
 
 
-def ymd(t: int) -> str:
-    return datetime.fromtimestamp(t / 1000, UTC).strftime("%Y-%m-%d")
-
-
 def say(s: str = "") -> None:
     print(s, flush=True)
     OUT.append(s)
-
-
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 
 
 START_MS, END_MS, SPLIT_MS = ms(START), ms(END), ms(SPLIT)
@@ -94,7 +87,7 @@ def load_iv(trades_dir: Path, quotes: dict[int, dict[str, Any]], cache: Path) ->
     cp = cache / f"ivprints_{VERSION}.json"
     jobs = []
     for d, q in sorted(quotes.items()):
-        p = trades_dir / f"{ymd(d)}.json.gz"
+        p = trades_dir / f"{cmn.ymd_ms(d)}.json.gz"
         if q.get("covered") and p.exists():
             jobs.append((str(p), q))
     if cp.exists():
@@ -108,7 +101,7 @@ def load_iv(trades_dir: Path, quotes: dict[int, dict[str, Any]], cache: Path) ->
         for i, (d, s) in enumerate(ex.map(_iv_day, jobs, chunksize=8)):
             out[str(d)] = s
             if i % 250 == 0 or i == len(jobs) - 1:
-                print(f"  {i + 1}/{len(jobs)} in {time.perf_counter() - t0:.0f}s, peak RSS {rss_mb():.0f} MB", flush=True)
+                print(f"  {i + 1}/{len(jobs)} in {time.perf_counter() - t0:.0f}s, peak RSS {cmn.rss_mb():.0f} MB", flush=True)
     cp.write_text(json.dumps({"n_jobs": len(jobs), "iv": out}))
     return {int(k): v for k, v in out.items()}
 
@@ -126,7 +119,7 @@ def build_rows(a: argparse.Namespace) -> tuple[list[dict[str, Any]], Counter[str
     closes = load_closes(Path(a.k5m_dir).expanduser())
     last_bar = max(closes)
     say(
-        f"5m bars: {len(closes)}, {datetime.fromtimestamp(min(closes), UTC):%Y-%m-%d} .. {datetime.fromtimestamp(last_bar, UTC):%Y-%m-%d %H:%M}; peak RSS {rss_mb():.0f} MB"
+        f"5m bars: {len(closes)}, {datetime.fromtimestamp(min(closes), UTC):%Y-%m-%d} .. {datetime.fromtimestamp(last_bar, UTC):%Y-%m-%d %H:%M}; peak RSS {cmn.rss_mb():.0f} MB"
     )
     rows, why = [], Counter()
     for d in range(START_MS, END_MS + 1, DAY_MS):
@@ -220,7 +213,7 @@ def stage_gate(a: argparse.Namespace) -> None:
     )
     say("Причини непокриття: " + (", ".join(f"{k} {v}" for k, v in why.most_common()) or "немає") + ".")
     say(
-        f"Перший / останній день: {ymd(rows[0]['day'])} / {ymd(rows[-1]['day'])}. Принтів IV на день: медіана {statistics.median(x['n_iv'] for x in rows):.0f}, частка днів з 1 принтом {sum(x['n_iv'] == 1 for x in rows) / len(rows):.1%}."
+        f"Перший / останній день: {cmn.ymd_ms(rows[0]['day'])} / {cmn.ymd_ms(rows[-1]['day'])}. Принтів IV на день: медіана {statistics.median(x['n_iv'] for x in rows):.0f}, частка днів з 1 принтом {sum(x['n_iv'] == 1 for x in rows) / len(rows):.1%}."
     )
 
     # ---- sanity
@@ -248,7 +241,7 @@ def stage_gate(a: argparse.Namespace) -> None:
         "\n| Рік | n | IV (основна), середнє | RV-вол цілі (річн.), середнє | √RV_d (річн.), середнє | IV/RV-вол, медіана |\n|---|---|---|---|---|---|"
     )
     for y in range(2021, 2027):
-        ys = [x for x in tv if ymd(x["day"])[:4] == str(y)]
+        ys = [x for x in tv if cmn.ymd_ms(x["day"])[:4] == str(y)]
         if ys:
             rvv = [annualize(x["tgt"], WINDOW_H) for x in ys]
             say(
@@ -328,7 +321,7 @@ def stage_gate(a: argparse.Namespace) -> None:
     gate = {"passed": passed, "fragile": fragile, "is": res["IS"], "oos": res["OOS"], "har": fit}
     cache = Path(a.cache_dir).expanduser()
     (cache / "gate.json").write_text(json.dumps(gate, indent=1))
-    say(f"\npeak RSS {rss_mb():.0f} MB")
+    say(f"\npeak RSS {cmn.rss_mb():.0f} MB")
     Path(a.out).expanduser().write_text("\n".join(OUT) + "\n")
 
 

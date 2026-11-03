@@ -183,6 +183,45 @@ def test_flows_lead_cases():
     assert f"<p class='now'>{db._e(four['data']['sentence_4h_ua'])}</p>" in _lead(_page(snap(flow_btc=four)))
 
 
+def test_flow_cvd_info_takes_no_side_on_the_rejected_divergence():
+    # standing improvements, item 31 (b): spot vs perp divergence is ✗ in our checks, so its (i) line is context only
+    low, low_do, high, high_do = db.ACT["flow_cvd"]
+    assert high == "Ф'ючерси купують, спот продає"
+    assert high_do == "рух на плечі: лише контекст (розбіжність як сигнал не підтвердилась)."
+    page = _page(snap(flow_btc=section()))
+    assert db._info("flow_cvd") in page and db._e(high_do) in db._info("flow_cvd")
+    assert "менший розмір" not in db._info("flow_cvd") and "у лонгу" not in page
+
+
+def test_flows_lead_without_a_sentence_or_section():
+    # standing improvements, item 31 (c): without the tool's sentence the advice does not point «below» at a reason
+    # that is not there, and a high-impact event within 48 h gives the event advice, as the lead with data does
+    sec = section()
+    bare = json.loads(json.dumps(sec))
+    bare["data"]["sentence_ua"] = bare["data"]["sentence_4h_ua"] = None
+    events = {"ok": True, "data": {"events": [{"title": "Oct 2026 FOMC", "impact": "high", "ts_utc": "2026-10-28T18:00:00Z"}]}}
+    do = re.compile(r"<b>Що робити:</b> (.*?)</p>")
+
+    lead = _lead(_page(snap(flow_btc=bare)))
+    assert "<span class='chip ev'>бракує даних</span>" in lead and do.search(lead).group(1) == db._e(db.FLOW_WAIT_DO)
+    assert "причина — нижче" not in lead
+    lead = _lead(_page(snap(flow_btc=bare, events=events)))
+    assert "<span class='chip ev'>бракує даних</span>" in lead and "Подія з високим впливом: Oct 2026 FOMC" in lead
+    assert do.search(lead).group(1) == db._e(db.OPT_EVENT_DO)
+
+    dead = section(("binance_spot", "binance_futures", "bybit", "coinbase", "coinalyze", "funding"))
+    lead = _lead(_page(snap(flow_btc=dead)))  # failed section: its missing sources are shown right under the lead
+    assert do.search(lead).group(1) == db._e(db.FLOW_WAIT_BELOW_DO) and "причина — нижче" in lead
+    lead = _lead(_page(snap(flow_btc=dead, events=events)))
+    assert do.search(lead).group(1) == db._e(db.OPT_EVENT_DO)
+    old = _page(snap(radar={"ok": True, "data": {}}))  # no section at all: the reason is in «what now», nothing below
+    assert do.search(_lead(old)).group(1) == db._e(db.FLOW_WAIT_DO) and "причина — нижче" not in old
+    lead = _lead(_page(snap(radar={"ok": True, "data": {}}, events=events)))
+    assert do.search(lead).group(1) == db._e(db.OPT_EVENT_DO) and "Секції «потоки BTC (вкладка)»" in lead
+    # the docstring now says what the summaries do with a block without numbers
+    assert db.flow_summaries({}, [])["flow_cvd"] == "немає даних"
+
+
 def test_flows_tab_shows_failed_sources_and_never_raises():
     sec = section(("coinalyze", "coinbase"))  # liquidations and premium down, the rest is returned
     assert sec["ok"] and {m["field"] for m in sec["missing"]} >= {"liquidations:binance", "liquidations:bybit", "premium:coinbase"}

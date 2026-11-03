@@ -293,7 +293,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
         annotations=READ_ONLY,
         description=(
             "Detect horizontal ranges on OHLCV plus the two short-lived events the DoubleTop "
-            "'Рейнджі' lecture names: SWEEPS (candles whose wick pokes past a prior swing "
+            "'Ranges' lecture names: SWEEPS (candles whose wick pokes past a prior swing "
             "level and closes back on the original side — a liquidity grab) and DEVIATIONS "
             "(closes beyond the range boundary that are pulled back within `max_deviation_bars`). "
             "Pulls bars from ohlcv_hist (default) or live ccxt (`source='live'`). "
@@ -410,7 +410,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
         annotations=READ_ONLY,
         description=(
             "Translate the latest sweep inside the latest range into a tradable setup "
-            "(entry / stop / tp1 / tp2 / RR). Follows DoubleTop «Торговля SFP» rules: "
+            "(entry / stop / tp1 / tp2 / RR). Follows DoubleTop 'SFP trading' lecture rules: "
             "stop = swept_level ± (stop_mult × overshoot_pct), where overshoot is how far the "
             "wick poked past the level, and never closer than the wick extreme ± "
             "stop_min_offset_pct; tp1 = range midpoint, tp2 = opposite boundary; `tradable` "
@@ -637,7 +637,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
     @server.tool(
         annotations=READ_ONLY,
         description=(
-            "Scan multiple symbols on one venue for tradable SFP setups (DoubleTop «Торговля SFP»). "
+            "Scan multiple symbols on one venue for tradable SFP setups (DoubleTop 'SFP trading' lecture). "
             "For each symbol: fetch OHLCV via ccxt → detect ranges + sweeps → classify "
             "accumulation / distribution / ambiguous → generate entry/stop/tp1/tp2/RR via the "
             "same `range_setup` mechanic. Returns `setups` (filtered + sorted by rr1 desc), "

@@ -62,7 +62,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
     @server.tool(
         annotations=READ_ONLY,
         description=(
-            "Probability that price touches `barrier` at any time within `days`, for a given IV (continuous monitoring, driftless, constant vol). "
+            "Probability that price touches `barrier` at any time within `days`, for a given IV (continuous monitoring, driftless, constant vol: a risk-neutral model value with r=0, not a forecast). "
             "Returns the closed-form value and a Monte Carlo cross-check. For options-implied odds on BTC/ETH use prob_from_options instead."
         ),
     )

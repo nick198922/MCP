@@ -175,6 +175,7 @@
 - [ ] 6.3 Підписані релізи, Dependabot, SBOM.
 - [ ] 6.4 Дублікати хелперів у `scripts/`. ✅ 02.11 (пункт 18 standing-improvements, [зміни](changes/2026-11-02-scripts-dedup.md)): відкриття БД лише для читання (`connect_ro`, `open_ro`, `has_table`) винесено в `scripts/common_helpers.py`, поведінка та сама. Лишилось (перелік у змінах): відкриття `mode=ro` без екранування шляху, копії `sqlite3` backup, форматери `_usd` / `_pct` (тексти різні), копії в `verify_*.py`.
 - [x] ~~6.5 Тести «збій провайдера → конверт» (інваріант 5).~~ ✅ 02.11 (пункт 21 standing-improvements, [зміни](changes/2026-11-02-provider-failure-tests.md)): 8 інструментів закрито в `tests/test_provider_failures.py`, порушень інваріанта 1 немає. ✅ 03.11 (пункт 23, [зміни](changes/2026-11-03-provider-failure-tests-2.md)): решту 13 закрито (6 опціонних Deribit, 3 ринкові ccxt, 4 міжбіржові `perps_*`), порушень теж немає.
+- [ ] 6.6 Описи параметрів інструментів (інваріант 5). 03.11 (пункт 25 standing-improvements, [зміни](changes/2026-11-03-tool-metadata-guard.md)): тест-охоронець `tests/test_tool_metadata.py`; 174 параметри в 55 інструментах ще без `Field(description=…)` — у `PARAM_DESCRIPTION_ALLOWLIST`, закривати групами (почати зі `strategy_*`) і викреслювати з allowlist.
 
 ## Ідеї без пріоритету
 - MCP-ресурси (`resource://`) для статичних довідників (специфікації контрактів, календар).

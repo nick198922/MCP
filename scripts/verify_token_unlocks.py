@@ -31,6 +31,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
+
 from tradedesk.analytics.funding_spread import cluster_bootstrap_diff, normalize_asset
 from tradedesk.analytics.holders_revenue import (
     LegResult,
@@ -75,10 +77,6 @@ def day_of(dt: datetime) -> int:
 
 def ymd(day: int | None) -> str:
     return "—" if day is None else datetime.fromtimestamp(day * DAY_S, UTC).strftime("%Y-%m-%d")
-
-
-def rd(p: Path) -> Any:
-    return json.loads(p.read_text())
 
 
 def wr(p: Path, obj: Any) -> None:
@@ -128,7 +126,7 @@ class Fetcher:
     async def cached(self, name: str, go: Any) -> Any:
         p = self.cache / name
         if p.exists():
-            return rd(p)
+            return cmn.read_json(p)
         data = await go()
         wr(p, data)
         return data
@@ -314,7 +312,7 @@ def load_sections(cache: Path, slug: str) -> list[Section]:
     p = cache / f"emissions/{slug}.json"
     if not p.exists():
         return []
-    em = rd(p)
+    em = cmn.read_json(p)
     return [] if "error" in em else parse_sections(em)
 
 
@@ -349,7 +347,7 @@ async def stage0(cache: Path, sample: int) -> None:
         st = {"schedules": len(slugs), "error": 0, "no_sections": 0, "no_symbol": 0, "no_perp": 0, "with_perp": 0}
         tokens: dict[str, Any] = {}
         for slug in slugs:
-            em = rd(cache / f"emissions/{slug}.json")
+            em = cmn.read_json(cache / f"emissions/{slug}.json")
             if "error" in em:
                 st["error"] += 1
                 continue
@@ -479,14 +477,14 @@ def schedule_kind(em: dict[str, Any]) -> dict[str, Any]:
 
 def audit(cache: Path) -> None:
     """Per token with main events: schedule kind flags, schedule-implied circulating today vs DefiLlama index."""
-    tokens = rd(cache / "tokens.json")
-    meta = rd(cache / "schedules_meta.json")
-    ev = [e for e in rd(cache / "events_stage0.json") if e["variant"] == "main"]
+    tokens = cmn.read_json(cache / "tokens.json")
+    meta = cmn.read_json(cache / "schedules_meta.json")
+    ev = [e for e in cmn.read_json(cache / "events_stage0.json") if e["variant"] == "main"]
     by_tok = count_by(e["slug"] for e in ev)
     today = day_of(LAST_CLOSE)
     rows = []
     for slug, n in sorted(by_tok.items(), key=lambda kv: -kv[1]):
-        em = rd(cache / f"emissions/{slug}.json")
+        em = cmn.read_json(cache / f"emissions/{slug}.json")
         k = schedule_kind(em)
         secs = parse_sections(em)
         circ = circulating(secs, today)
@@ -523,7 +521,7 @@ async def adapter_snapshots(cache: Path) -> None:
         "github", "https://api.github.com", rate=0.5, burst=1, timeout=60, retries=1, headers={"Accept": "application/vnd.github+json"}
     )
     out_p = cache / "adapter_snapshots.json"
-    snaps: dict[str, Any] = rd(out_p) if out_p.exists() else {}
+    snaps: dict[str, Any] = cmn.read_json(out_p) if out_p.exists() else {}
     try:
         for dt in SNAPSHOTS:
             key = f"{dt:%Y-%m-%d}"
@@ -550,9 +548,9 @@ async def adapter_snapshots(cache: Path) -> None:
 
 def adapter_first_seen(cache: Path) -> dict[str, str | None]:
     """slug -> first quarterly snapshot whose tree has ``protocols/<slug>.ts`` (or a ``protocols/<slug>/`` folder)."""
-    snaps = rd(cache / "adapter_snapshots.json")
+    snaps = cmn.read_json(cache / "adapter_snapshots.json")
     out: dict[str, str | None] = {}
-    for slug in rd(cache / "tokens.json"):
+    for slug in cmn.read_json(cache / "tokens.json"):
         first = None
         for key in sorted(snaps):
             fs = snaps[key]["files"]
@@ -649,9 +647,9 @@ async def fetch_prices(cache: Path, sample: int) -> None:
     fx = Fetcher(rt, cache)
     t0 = time.perf_counter()
     try:
-        uni = rd(cache / "universe.json")
-        tokens = rd(cache / "tokens.json")
-        removed = rd(cache / "removed_perps.json")
+        uni = cmn.read_json(cache / "universe.json")
+        tokens = cmn.read_json(cache / "tokens.json")
+        removed = cmn.read_json(cache / "removed_perps.json")
         jobs: list[tuple[str, str]] = [(BIN, "BTC")]
         for t in tokens.values():
             jobs.extend(legs_of(t, removed))
@@ -665,7 +663,7 @@ async def fetch_prices(cache: Path, sample: int) -> None:
             hp = HOLDERS_CACHE / bars_name(v, n)
             if not p.exists() and v in (BIN, BYB) and hp.exists():
                 # same fetcher, same LAST_CLOSE, earlier BARS_START (2020-06): reuse the holders-revenue download
-                wr(p, rd(hp))
+                wr(p, cmn.read_json(hp))
                 reused += 1
             elif v == HL:
                 await fx.cached(bars_name(v, n), lambda n=n: hl_daily(fx, n))
@@ -738,7 +736,7 @@ async def fetch_funding(cache: Path, needed: dict[tuple[str, str], tuple[int, in
     """Funding history per leg over [first needed entry - 1; last needed exit + 1] (days)."""
     _, rt = build_server()
     fx = Fetcher(rt, cache)
-    uni = rd(cache / "universe.json")
+    uni = cmn.read_json(cache / "universe.json")
     pace = Pacer(300.0)
     t0 = time.perf_counter()
     items = sorted(needed.items())
@@ -748,11 +746,11 @@ async def fetch_funding(cache: Path, needed: dict[tuple[str, str], tuple[int, in
             name = f"funding/{v}_{n}.json"
             p, hp = cache / name, HOLDERS_CACHE / name
             if not p.exists() and hp.exists() and v in (BIN, BYB):
-                h = rd(hp)
+                h = cmn.read_json(hp)
                 rows = h["rows"]
                 if h.get("complete") and rows and rows[0][0] * 1000 <= start + 3 * DAY_S * 1000:
                     wr(p, {"rows": rows, "complete": True, "from": start, "reused": True})
-            if p.exists() and rd(p).get("from", 0) <= start:
+            if p.exists() and cmn.read_json(p).get("from", 0) <= start:
                 continue
 
             async def go(v: str = v, n: str = n, start: int = start, end: int = end) -> dict[str, Any]:
@@ -864,12 +862,12 @@ class Leg:
 class Data:
     def __init__(self, cache: Path) -> None:
         self.cache = cache
-        self.tokens = rd(cache / "tokens.json")
-        self.removed = rd(cache / "removed_perps.json")
-        self.btc = Bars(rd(cache / bars_name(BIN, "BTC")))
-        self.coins = {f.stem: rd(f) for f in sorted((cache / "coins").glob("*.json"))}
+        self.tokens = cmn.read_json(cache / "tokens.json")
+        self.removed = cmn.read_json(cache / "removed_perps.json")
+        self.btc = Bars(cmn.read_json(cache / bars_name(BIN, "BTC")))
+        self.coins = {f.stem: cmn.read_json(f) for f in sorted((cache / "coins").glob("*.json"))}
         cg = cache / "coingecko_markets.json"
-        self.cg = rd(cg)["coins"] if cg.exists() else {}
+        self.cg = cmn.read_json(cg)["coins"] if cg.exists() else {}
         self.kind: dict[str, dict[str, Any]] = {}
         self.secs: dict[str, list[Section]] = {}
         self.legs: dict[str, list[Leg]] = {}
@@ -879,7 +877,7 @@ class Data:
             p = cache / f"emissions/{slug}.json"
             if not p.exists():
                 continue
-            em = rd(p)
+            em = cmn.read_json(p)
             if "error" in em:
                 continue
             self.kind[slug] = schedule_kind(em)
@@ -889,7 +887,7 @@ class Data:
                 bp = cache / bars_name(v, n)
                 if not bp.exists():
                     continue
-                bars = Bars(rd(bp))
+                bars = Bars(cmn.read_json(bp))
                 mult = normalize_asset(n, HL if v == HL else BIN)[1]
                 ratios = []
                 for stem, cs in self.coins.items():
@@ -923,7 +921,7 @@ class Data:
     def fund(self, v: str, n: str) -> list[tuple[int, float]] | None:
         if (v, n) not in self.funding:
             p = self.cache / f"funding/{v}_{n}.json"
-            self.funding[(v, n)] = [(int(a), float(b)) for a, b in rd(p)["rows"]] if p.exists() else None
+            self.funding[(v, n)] = [(int(a), float(b)) for a, b in cmn.read_json(p)["rows"]] if p.exists() else None
         return self.funding[(v, n)]
 
     def circ(self, slug: str, day: int, *, all_sections: bool = False) -> float:

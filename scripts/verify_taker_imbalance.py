@@ -30,6 +30,7 @@ from typing import Any
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import common_helpers as cmn  # noqa: E402  (scripts/common_helpers.py)
 import verify_liquidation_flush as vlf  # noqa: E402  (per-file JSON Fetcher)
 
 from tradedesk.analytics import taker_imbalance as ta  # noqa: E402
@@ -50,10 +51,6 @@ STABLE = {"USDCUSDT", "BUSDUSDT", "TUSDUSDT", "FDUSDUSDT", "USDPUSDT", "EURUSDT"
 
 def rss() -> str:
     return f"peak RSS {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.0f} MB"
-
-
-def rd(p: Path) -> Any:
-    return json.loads(p.read_text())
 
 
 def days(a: str, b: str) -> list[str]:
@@ -86,7 +83,7 @@ def stage_universe(cache: Path) -> None:
         tot = 0.0
         for m in months("2022-01", "2023-12"):
             p = K1D / s / f"{m}.json"
-            rows = rd(p) if p.exists() else None
+            rows = cmn.read_json(p) if p.exists() else None
             tot += sum(r[6] for r in rows or [])
         vol[s] = tot
     ranked = sorted(vol, key=lambda s: -vol[s])
@@ -212,7 +209,7 @@ def load_metrics(cache: Path, s: str) -> tuple[np.ndarray, np.ndarray, Counter[s
     """(obs_ms, ratio) sorted, plus per-quarter counts of finite rows and of days with a file."""
     ct, rr, fin, nday = [], [], Counter(), Counter()
     for p in sorted((cache / "metrics" / s).glob("*.json")):
-        v = rd(p)
+        v = cmn.read_json(p)
         q = f"{p.stem[:4]}Q{(int(p.stem[5:7]) - 1) // 3 + 1}"
         if not v:
             continue
@@ -233,7 +230,7 @@ def load_k5m(cache: Path, s: str) -> dict[str, np.ndarray]:
     n = int((T1 + 2 * WIN_MS - GRID0) // ta.M5_MS) + 1
     g = {k: np.full(n, np.nan) for k in ("o", "h", "l", "c", "qv")}
     for p in sorted((cache / "k5m" / s).glob("*.json")):
-        rows = rd(p)
+        rows = cmn.read_json(p)
         if not rows:
             continue
         a = np.asarray(rows, dtype=float)
@@ -247,7 +244,7 @@ def load_k5m(cache: Path, s: str) -> dict[str, np.ndarray]:
 def load_funding(s: str) -> tuple[np.ndarray, np.ndarray]:
     rows: list[list[float]] = []
     for p in sorted((FUND / s).glob("*.json")) if (FUND / s).is_dir() else []:
-        rows += rd(p) or []
+        rows += cmn.read_json(p) or []
     a = np.asarray(sorted(rows), dtype=float).reshape(-1, 3)
     return a[:, 0].astype(np.int64), a[:, 2]
 
@@ -662,7 +659,7 @@ def main() -> None:
     if a.stage == "universe":
         stage_universe(cache)
         return
-    uni = rd(cache / "universe.json")["universe"][: a.coins]
+    uni = cmn.read_json(cache / "universe.json")["universe"][: a.coins]
     if a.coins:
         globals()["MIN_N"] = max(3, a.coins - 1)
     if a.stage == "fetch":

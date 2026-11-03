@@ -32,6 +32,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
+
 from tradedesk.analytics.funding_spread import cluster_bootstrap_diff, normalize_asset
 from tradedesk.analytics.holders_revenue import (
     DAY_S,
@@ -71,10 +73,6 @@ def day_of(dt: datetime) -> int:
 
 def ymd(day: int | None) -> str:
     return "—" if day is None else datetime.fromtimestamp(day * DAY_S, UTC).strftime("%Y-%m-%d")
-
-
-def rd(p: Path) -> Any:
-    return json.loads(p.read_text())
 
 
 def wr(p: Path, obj: Any) -> None:
@@ -124,7 +122,7 @@ class Fetcher:
     async def cached(self, name: str, go: Any) -> Any:
         p = self.cache / name
         if p.exists():
-            return rd(p)
+            return cmn.read_json(p)
         data = await go()
         wr(p, data)
         return data
@@ -345,7 +343,7 @@ def token_series(cache: Path, snap: str, t: dict[str, Any]) -> tuple[dict[int, f
         if not f.exists():
             errs.append(f"{p['slug']}: not fetched")
             continue
-        d = rd(f)
+        d = cmn.read_json(f)
         if d.get("error"):
             errs.append(f"{p['slug']}: {d['error'][:80]}")
         parts.append(to_daily(d.get("chart") or []))
@@ -426,7 +424,7 @@ def compare_snapshots(cache: Path, a: str, b: str) -> None:
         g = da / f.name
         if not g.exists():
             continue
-        sa, sb = to_daily(rd(g).get("chart") or []), to_daily(rd(f).get("chart") or [])
+        sa, sb = to_daily(cmn.read_json(g).get("chart") or []), to_daily(cmn.read_json(f).get("chart") or [])
         common = [d for d in sa.keys() & sb.keys() if d < day_of(LAST_CLOSE) - 2]
         diff = [d for d in common if abs(sa[d] - sb[d]) > max(100.0, 0.01 * abs(sa[d]))]
         total += len(common)
@@ -438,8 +436,8 @@ def compare_snapshots(cache: Path, a: str, b: str) -> None:
         print("  " + p)
     ea, eb = cache / f"events_main_{a}.json", cache / f"events_main_{b}.json"
     if ea.exists() and eb.exists():
-        ka = {(e["token"], e["signal"]) for e in rd(ea)}
-        kb = {(e["token"], e["signal"]) for e in rd(eb)}
+        ka = {(e["token"], e["signal"]) for e in cmn.read_json(ea)}
+        kb = {(e["token"], e["signal"]) for e in cmn.read_json(eb)}
         print(f"main events: {len(ka)} vs {len(kb)}; only in {a}: {sorted(ka - kb)}; only in {b}: {sorted(kb - ka)}")
 
 
@@ -530,8 +528,8 @@ async def fetch_prices(cache: Path, sample: int) -> None:
     fx = Fetcher(rt, cache)
     t0 = time.perf_counter()
     try:
-        uni = rd(cache / "universe.json")
-        tab = rd(cache / "token_table_a.json")
+        uni = cmn.read_json(cache / "universe.json")
+        tab = cmn.read_json(cache / "token_table_a.json")
         jobs: list[tuple[str, str]] = [(BIN, "BTC")]
         for t in tab["tokens"].values():
             for v, names in perps_of(t).items():
@@ -579,7 +577,7 @@ async def fetch_funding(cache: Path, needed: list[tuple[str, str]]) -> None:
     """Full funding history for the (venue, name) legs the analysis used."""
     _, rt = build_server()
     fx = Fetcher(rt, cache)
-    uni = rd(cache / "universe.json")
+    uni = cmn.read_json(cache / "universe.json")
     pace = Pacer(300.0)
     t0 = time.perf_counter()
     end = (day_of(LAST_CLOSE) + 1) * DAY_S * 1000
@@ -589,7 +587,7 @@ async def fetch_funding(cache: Path, needed: list[tuple[str, str]]) -> None:
             async def go(v: str = v, n: str = n) -> dict[str, Any]:
                 out: dict[int, float] = {}
                 complete = False
-                bars = rd(cache / bars_name(v, n))
+                bars = cmn.read_json(cache / bars_name(v, n))
                 # start at the first daily bar of the leg: walking empty pre-listing windows costs hundreds of requests
                 start = max(int(BARS_START.timestamp() * 1000), (int(bars[0][0]) - 1) * DAY_S * 1000) if bars else end
                 if v == HL:
@@ -667,10 +665,10 @@ class Bars:
 class Data:
     def __init__(self, cache: Path, snap: str = "a") -> None:
         self.cache = cache
-        self.uni = rd(cache / "universe.json")
-        self.tab = rd(cache / f"token_table_{snap}.json")
-        self.btc = Bars(rd(cache / bars_name(BIN, "BTC")))
-        self.coins = {f.stem: rd(f) for f in sorted((cache / "coins_v2").glob("*.json"))}
+        self.uni = cmn.read_json(cache / "universe.json")
+        self.tab = cmn.read_json(cache / f"token_table_{snap}.json")
+        self.btc = Bars(cmn.read_json(cache / bars_name(BIN, "BTC")))
+        self.coins = {f.stem: cmn.read_json(f) for f in sorted((cache / "coins_v2").glob("*.json"))}
         self.legs: dict[str, list[tuple[str, str, int, Bars]]] = {}
         self.checks: list[str] = []
         self.revenue: dict[str, dict[int, float]] = {}
@@ -683,7 +681,7 @@ class Data:
                     p = cache / bars_name(v, n)
                     if not p.exists():
                         continue
-                    bars = Bars(rd(p))
+                    bars = Bars(cmn.read_json(p))
                     mult = normalize_asset(n, v)[1]
                     ratios = []
                     for stem, cs in self.coins.items():
@@ -715,7 +713,7 @@ class Data:
     def fund(self, v: str, n: str) -> list[tuple[int, float]] | None:
         if (v, n) not in self.funding:
             p = self.cache / f"funding/{v}_{n}.json"
-            self.funding[(v, n)] = [(int(a), float(b)) for a, b in rd(p)["rows"]] if p.exists() else None
+            self.funding[(v, n)] = [(int(a), float(b)) for a, b in cmn.read_json(p)["rows"]] if p.exists() else None
         return self.funding[(v, n)]
 
 
@@ -1051,14 +1049,14 @@ async def adapter_ages(cache: Path) -> None:
     """Date of the oldest commit touching each event token's DefiLlama adapter path (GitHub API, unauthenticated,
     60 requests / hour). A lower bound for when the series could have existed in real time: renames are not
     followed and a ``HoldersRevenue`` field may have been added after the file was created."""
-    tab = rd(cache / "token_table_a.json")
-    evs = rd(cache / "events_main_a.json")
+    tab = cmn.read_json(cache / "token_table_a.json")
+    evs = cmn.read_json(cache / "events_main_a.json")
     keys = sorted({e["token"] for e in evs})
     gh = Http(
         "github", "https://api.github.com", rate=0.5, burst=1, timeout=30, retries=1, headers={"Accept": "application/vnd.github+json"}
     )
     out_p = cache / "adapter_ages.json"
-    ages: dict[str, Any] = rd(out_p) if out_p.exists() else {}
+    ages: dict[str, Any] = cmn.read_json(out_p) if out_p.exists() else {}
     try:
         for key in keys:
             for p in tab["tokens"][key]["protocols"]:

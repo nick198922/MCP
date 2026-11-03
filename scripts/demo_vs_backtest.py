@@ -216,10 +216,6 @@ async def add_turnover(trades: list[dict[str, Any]], rows: list[Replay], fetch_d
     return out
 
 
-def _d(ms: int) -> str:
-    return datetime.fromtimestamp(ms / 1000, UTC).strftime("%Y-%m-%d")
-
-
 def _r(x: float | None) -> str:
     return "—" if x is None else f"{x:+.2f}"
 
@@ -272,7 +268,7 @@ def render(
     turnover group when given)."""
     first = min((x.closed_ts for x in rows if x.closed_ts is not None), default=until_ms)
     lines = [
-        f"# Демо проти бектесту, наростаючим підсумком {_d(first)} — {_d(until_ms)}",
+        f"# Демо проти бектесту, наростаючим підсумком {cmn.ymd_ms(first)} — {cmn.ymd_ms(until_ms)}",
         "",
         f"Від першої демо-угоди: {_counts(total)}",
         f"**Висновок:** {total['conclusion']}.",
@@ -308,7 +304,7 @@ def render(
             "день ще не закрився або запит не вдався."
         )
     week_rows = [x for x in rows if x.closed_ts is not None and x.closed_ts >= week_ms]
-    lines += ["", f"## Закриті {_d(week_ms)} — {_d(until_ms)}", "", f"За період: {_counts(week)}"]
+    lines += ["", f"## Закриті {cmn.ymd_ms(week_ms)} — {cmn.ymd_ms(until_ms)}", "", f"За період: {_counts(week)}"]
     if week_rows:
         lines += [
             "",
@@ -322,7 +318,7 @@ def render(
             bt = "—" if x.r_bt is None else f"{_r(x.r_bt)} {_band(x.r_bt, x.r_bt_fast)}"
             why = ", ".join(REASON_UA.get(k, k) for k in x.reasons) or (x.note if x.verdict != "match" else "")
             lines.append(
-                f"| {x.symbol.split(':')[0]} {_d(x.signal_ts)} | {x.setup} {x.timeframe} | {'лонг' if x.side == 'long' else 'шорт'} | "
+                f"| {x.symbol.split(':')[0]} {cmn.ymd_ms(x.signal_ts)} | {x.setup} {x.timeframe} | {'лонг' if x.side == 'long' else 'шорт'} | "
                 f"{VERDICT_UA.get(x.verdict, x.verdict)} | {why} | {ed} | {sd} | {_r(x.r_demo)} ({_r(x.r_demo_bt)}) | {bt} | "
                 f"{_band(x.r_bt_fill, x.r_bt_fill_fast)} | {x.demo_exit or '—'} / {x.bt_exit or '—'} |"
             )

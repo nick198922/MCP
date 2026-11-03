@@ -87,10 +87,6 @@ def ms(s: str) -> int:
     return int(datetime.fromisoformat(s).replace(tzinfo=UTC).timestamp() * 1000)
 
 
-def day_of(t_ms: int) -> str:
-    return datetime.fromtimestamp(t_ms / 1000, tz=UTC).strftime("%Y-%m-%d")
-
-
 def months(first: str, last: str) -> list[str]:
     y, m = int(first[:4]), int(first[5:])
     out = []
@@ -143,7 +139,7 @@ def load_daily(data_dir: Path, s: str) -> dict[str, tuple[float, float]]:
         return out
     for p in sorted(d.glob("*.json")):
         for r in cmn.read_json(p) or []:
-            out[day_of(int(r[0]))] = (float(r[4]), float(r[6] if len(r) > 6 else r[5]))
+            out[cmn.ymd_ms(int(r[0]))] = (float(r[4]), float(r[6] if len(r) > 6 else r[5]))
     return out
 
 
@@ -269,7 +265,7 @@ class Panel:
         self.syms = sorted({s for v in self.uni.values() for s in v})
         d0 = datetime(2022, 11, 1, tzinfo=UTC)
         n = (datetime(2026, 10, 1, tzinfo=UTC) - d0).days
-        self.days = [day_of(int(d0.timestamp() * 1000) + i * DAY_MS) for i in range(n)]
+        self.days = [cmn.ymd_ms(int(d0.timestamp() * 1000) + i * DAY_MS) for i in range(n)]
         self.di = {d: i for i, d in enumerate(self.days)}
         S, N = len(self.syms), n
         self.close = np.full((S, N), np.nan)

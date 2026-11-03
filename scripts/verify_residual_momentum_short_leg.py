@@ -28,6 +28,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -77,10 +78,6 @@ CTRL = ("fund", "mqv", "IVOL30", "MAX30")
 
 def rss() -> str:
     return f"peak RSS {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.0f} MB"
-
-
-def ymd(day: int) -> str:
-    return datetime.fromtimestamp(day * 86400, UTC).strftime("%Y-%m-%d")
 
 
 # ---------------------------------------------------------------- build
@@ -148,7 +145,7 @@ def stage_build(panel: Path, data_dir: Path, cache: Path) -> None:
             why["ok"] += 1
         weeks.append({"day": day, "btc": bl, "btc7": btc7, "rows": rows})
         if (i + 1) % 50 == 0:
-            print(f"  week {i + 1} {ymd(day)} N={len(rows)} ({time.time() - t0:.0f}s; {rss()})", flush=True)
+            print(f"  week {i + 1} {cmn.ymd_day(day)} N={len(rows)} ({time.time() - t0:.0f}s; {rss()})", flush=True)
     fc.wr(cache / "table.json", {"weeks": weeks, "why": dict(why), "cols": COLS})
     print(f"BUILD DONE {len(weeks)} weeks, {why['ok']} symbol-weeks; {dict(why)}; {time.time() - t0:.0f}s; {rss()}", flush=True)
     fc.sanity(data)
@@ -292,7 +289,7 @@ def stage0(cache: Path) -> None:
     days = [w["day"] for w in weeks]
     ns = [len(w["rows"]) for w in weeks]
     print(
-        f"weeks with N >= {MIN_N}: {len(weeks)} of {len(t['weeks'])} ({ymd(days[0])} .. {ymd(days[-1])}); IS {sum(d < OOS_DAY for d in days)}, OOS {sum(d >= OOS_DAY for d in days)}"
+        f"weeks with N >= {MIN_N}: {len(weeks)} of {len(t['weeks'])} ({cmn.ymd_day(days[0])} .. {cmn.ymd_day(days[-1])}); IS {sum(d < OOS_DAY for d in days)}, OOS {sum(d >= OOS_DAY for d in days)}"
     )
     print(
         f"N per week: min {min(ns)}, median {statistics.median(ns)}, max {max(ns)}; symbol-weeks {sum(ns)}; symbols {len({r[0] for w in weeks for r in w['rows']})}"
@@ -380,7 +377,7 @@ def stage_full(cache: Path, n_perm: int) -> None:
     days = [w["day"] for w in weeks]
     is_m = [d < OOS_DAY for d in days]
     say(
-        f"weeks {len(weeks)} ({ymd(days[0])} .. {ymd(days[-1])}); IS {sum(is_m)} / OOS {len(weeks) - sum(is_m)}; symbol-weeks {sum(len(w['rows']) for w in weeks)}"
+        f"weeks {len(weeks)} ({cmn.ymd_day(days[0])} .. {cmn.ymd_day(days[-1])}); IS {sum(is_m)} / OOS {len(weeks) - sum(is_m)}; symbol-weeks {sum(len(w['rows']) for w in weeks)}"
     )
 
     # ---- H1
@@ -420,8 +417,8 @@ def stage_full(cache: Path, n_perm: int) -> None:
         f"  shuffle placebo (raw IC, within-week, {n_perm}x): SD {sh.std():.4f}; p(|perm| >= |obs|) {(1 + int(np.sum(np.abs(sh) >= abs(mraw)))) / (1 + n_perm):.4f}"
     )
     say("  by year (IC_neu):")
-    for y in sorted({ymd(d)[:4] for d in days}):
-        xs = [x for x, d in zip(ics, days, strict=True) if ymd(d)[:4] == y]
+    for y in sorted({cmn.ymd_day(d)[:4] for d in days}):
+        xs = [x for x, d in zip(ics, days, strict=True) if cmn.ymd_day(d)[:4] == y]
         say(f"    {y}: n {len(xs):>3} mean {statistics.fmean(xs):+.4f} SE {statistics.stdev(xs) / math.sqrt(len(xs)):.4f}")
     up = [w["btc7"] is not None and w["btc7"] > 0 for w in weeks]
     say(fmt("BTC trailing 7d up: IC_neu", summ([x for x, f in zip(ics, up, strict=True) if f])))
@@ -456,8 +453,8 @@ def stage_full(cache: Path, n_perm: int) -> None:
     say(fmt("NET short book (bootstrap CI, block 4)", n_, 100, " pp"))
     half = len(bdays) // 2
     h1n, h2n = summ(bk["net"][:half]), summ(bk["net"][half:])
-    say(fmt(f"net first half (.. {ymd(bdays[half - 1])})", h1n, 100, " pp"))
-    say(fmt(f"net second half ({ymd(bdays[half])} ..)", h2n, 100, " pp"))
+    say(fmt(f"net first half (.. {cmn.ymd_day(bdays[half - 1])})", h1n, 100, " pp"))
+    say(fmt(f"net second half ({cmn.ymd_day(bdays[half])} ..)", h2n, 100, " pp"))
     nt = summ(without_top(bk["net"], 10, +1))
     say(fmt("net without the 10 best weeks", nt, 100, " pp"))
     bis = [d < OOS_DAY for d in bdays]
@@ -468,9 +465,9 @@ def stage_full(cache: Path, n_perm: int) -> None:
         say(fmt(f"stress: tier costs (fee 5 bp + slip by turnover) x{mult:.0f} slip, net", summ(tb["net"]), 100, " pp"))
     say(f"  worst book week {min(bk['net']) * 100:+.2f} pp; best {max(bk['net']) * 100:+.2f} pp")
     say("  by year (book net / gross):")
-    for y in sorted({ymd(d)[:4] for d in bdays}):
-        xs = [x for x, d in zip(bk["net"], bdays, strict=True) if ymd(d)[:4] == y]
-        gs = [x for x, d in zip(bk["price"], bdays, strict=True) if ymd(d)[:4] == y]
+    for y in sorted({cmn.ymd_day(d)[:4] for d in bdays}):
+        xs = [x for x, d in zip(bk["net"], bdays, strict=True) if cmn.ymd_day(d)[:4] == y]
+        gs = [x for x, d in zip(bk["price"], bdays, strict=True) if cmn.ymd_day(d)[:4] == y]
         say(f"    {y}: n {len(xs):>3} net {statistics.fmean(xs) * 100:+.3f} pp gross {statistics.fmean(gs) * 100:+.3f} pp")
     wk = {w["day"]: w for w in weeks}
     bup = [wk[d]["btc7"] is not None and wk[d]["btc7"] > 0 for d in bdays]

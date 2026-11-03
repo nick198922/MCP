@@ -29,6 +29,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TextIO
 
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -89,10 +90,6 @@ def rss() -> str:
     return f"peak RSS {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.0f} MB"
 
 
-def ymd(day: int) -> str:
-    return datetime.fromtimestamp(day * 86400, UTC).strftime("%Y-%m-%d")
-
-
 # ---------------------------------------------------------------- features
 
 
@@ -116,12 +113,12 @@ def stage_features(data_dir: Path, panel_dir: Path, out: Path) -> None:
                 miss[k] += fa[k] is None
         weeks.append({"day": w["day"], "f": f})
         if (i + 1) % 50 == 0:
-            print(f"  week {i + 1} {ymd(w['day'])} ({time.time() - t0:.0f}s; {rss()})", flush=True)
+            print(f"  week {i + 1} {cmn.ymd_day(w['day'])} ({time.time() - t0:.0f}s; {rss()})", flush=True)
     # units check: the panel's 30-day median turnover vs exp(DV30) (mean) for BTC
     btc = [(w["day"], r[IX["mqv"]]) for w in panel["weeks"] for r in w["rows"] if r[0] == "BTCUSDT"]
     d0, mq = btc[len(btc) // 2]
     dv = next(x["f"]["BTCUSDT"][2] for x in weeks if x["day"] == d0)
-    print(f"units: BTCUSDT {ymd(d0)} median qv 30d {mq / 1e9:.2f} bn USD, mean qv 30d exp(DV30) {math.exp(dv) / 1e9:.2f} bn USD")
+    print(f"units: BTCUSDT {cmn.ymd_day(d0)} median qv 30d {mq / 1e9:.2f} bn USD, mean qv 30d exp(DV30) {math.exp(dv) / 1e9:.2f} bn USD")
     raw_short = 0
     for s in list(data)[:: max(1, len(data) // 25)]:
         mos = fc.months_of(data_dir, s)
@@ -197,8 +194,10 @@ def top_by_volume(weeks: list[dict[str, Any]], k: int = 100) -> list[dict[str, A
 def stage0(panel_dir: Path, out: Path) -> None:
     weeks = load(panel_dir, out)
     rows = [r for w in weeks for r in w["rows"]]
-    print(f"weeks with N >= {MIN_N}: {len(weeks)} ({ymd(weeks[0]['day'])}..{ymd(weeks[-1]['day'])}); symbol-weeks {len(rows)}")
-    print(f"IS weeks (< {ymd(SPLIT)}): {sum(w['day'] < SPLIT for w in weeks)}; OOS: {sum(w['day'] >= SPLIT for w in weeks)}")
+    print(
+        f"weeks with N >= {MIN_N}: {len(weeks)} ({cmn.ymd_day(weeks[0]['day'])}..{cmn.ymd_day(weeks[-1]['day'])}); symbol-weeks {len(rows)}"
+    )
+    print(f"IS weeks (< {cmn.ymd_day(SPLIT)}): {sum(w['day'] < SPLIT for w in weeks)}; OOS: {sum(w['day'] >= SPLIT for w in weeks)}")
     for s in FEAT:
         v = sorted(x for x in col(rows, s) if x is not None)
         print(
@@ -293,7 +292,7 @@ def stage_full(data_dir: Path, panel_dir: Path, out: Path, n_perm: int, n_shift:
     days = [w["day"] for w in weeks]
     is_mask = [d < SPLIT for d in days]
     print(
-        f"weeks {len(weeks)}; IS {sum(is_mask)} ({ymd(days[0])}..{ymd(SPLIT - 7)}); OOS {len(weeks) - sum(is_mask)} ({ymd(SPLIT)}..{ymd(days[-1])})"
+        f"weeks {len(weeks)}; IS {sum(is_mask)} ({cmn.ymd_day(days[0])}..{cmn.ymd_day(SPLIT - 7)}); OOS {len(weeks) - sum(is_mask)} ({cmn.ymd_day(SPLIT)}..{cmn.ymd_day(days[-1])})"
     )
     print()
     print("=== CONSISTENCY with 2026-10-18-xs-factor-ic-panel (same rows) ===")
@@ -338,9 +337,9 @@ def stage_full(data_dir: Path, panel_dir: Path, out: Path, n_perm: int, n_shift:
     print(fmt("raw IC (no controls)", series(weeks, s)))
     print(fmt("partial on funding 7d + log turnover (old panel's neutral)", series(weeks, s, ctrl=("fund", "mqv"))))
     print(fmt("partial on beta + IVOL30 + MAX30 + log turnover", series(weeks, s, ctrl=(*H2_CTRL, "mqv"))))
-    for y in sorted({ymd(d)[:4] for d in days}):
-        print(fmt(f"H1 year {y}", [x for x, d in zip(h1, days, strict=True) if ymd(d)[:4] == y]))
-        print(fmt(f"H2 year {y}", [x for x, d in zip(h2, days, strict=True) if ymd(d)[:4] == y]))
+    for y in sorted({cmn.ymd_day(d)[:4] for d in days}):
+        print(fmt(f"H1 year {y}", [x for x, d in zip(h1, days, strict=True) if cmn.ymd_day(d)[:4] == y]))
+        print(fmt(f"H2 year {y}", [x for x, d in zip(h2, days, strict=True) if cmn.ymd_day(d)[:4] == y]))
     for lab, xs in (("H1", h1), ("H2", h2)):
         roll = rolling_means(xs, 52)
         print(

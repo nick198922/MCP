@@ -28,6 +28,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -65,10 +66,6 @@ def rss() -> str:
     return f"peak RSS {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.0f} MB"
 
 
-def ymd(day: int) -> str:
-    return datetime.fromtimestamp(day * 86400, UTC).strftime("%Y-%m-%d")
-
-
 def load_panel(p: Path) -> list[dict[str, Any]]:
     return fc.rd(p)["weeks"]
 
@@ -98,11 +95,11 @@ async def stage_fetch(panel: Path, cache: Path, sample: int | None, warm: int) -
         for s, d in need:
 
             async def go(s: str = s, d: int = d) -> Any:
-                rows = (await rt.binance_vision.um_metrics_ratios_daily(s, ymd(d))).data
+                rows = (await rt.binance_vision.um_metrics_ratios_daily(s, cmn.ymd_day(d))).data
                 snap = day_snapshot(rows, d)
                 return {"n_rows": len(rows), "snap": snap}
 
-            jobs.append((cache / "snap" / s / f"{ymd(d)}.json", go))
+            jobs.append((cache / "snap" / s / f"{cmn.ymd_day(d)}.json", go))
         t0 = time.time()
         await fx.many("metrics", jobs)
         print(f"FETCH COMPLETE {len(jobs)} files in {time.time() - t0:.0f}s; {rss()}", flush=True)
@@ -120,15 +117,15 @@ async def stage_consistency(cache: Path) -> None:
         print(f"API rows {len(amap)}: {datetime.fromtimestamp(min(amap) / 1000, UTC)} .. {datetime.fromtimestamp(max(amap) / 1000, UTC)}")
         for d in days[:-1]:
             try:
-                rows = (await rt.binance_vision.um_metrics_ratios_daily("BTCUSDT", ymd(d))).data
+                rows = (await rt.binance_vision.um_metrics_ratios_daily("BTCUSDT", cmn.ymd_day(d))).data
             except Exception as e:  # noqa: BLE001  (archive file of the last day may not exist yet)
-                print(f"  {ymd(d)}: archive unavailable ({e})")
+                print(f"  {cmn.ymd_day(d)}: archive unavailable ({e})")
                 continue
             for lag in (0, 5):
                 diffs = [abs(r[5] - amap[int(r[0]) + lag * 60_000]) for r in rows if int(r[0]) + lag * 60_000 in amap]
                 exact = sum(x < 1e-6 for x in diffs)
                 print(
-                    f"  {ymd(d)} archive create_time + {lag} min vs API timestamp: matched {len(diffs)}, equal {exact}, max |diff| {max(diffs) if diffs else float('nan'):.6f}"
+                    f"  {cmn.ymd_day(d)} archive create_time + {lag} min vs API timestamp: matched {len(diffs)}, equal {exact}, max |diff| {max(diffs) if diffs else float('nan'):.6f}"
                 )
     finally:
         await rt.aclose()
@@ -252,14 +249,14 @@ def stage0(panel: Path, cache: Path, out_dir: Path) -> dict[str, Any]:
     ns = [len(w["rows"]) for w in xs]
     panel_rows = sum(len(w["rows"]) for w in weeks)
     print(
-        f"panel weeks {len(weeks)}, symbol-weeks {panel_rows}; with D: weeks (N >= {MIN_N}) {len(xs)} ({ymd(xs[0]['day'])}..{ymd(xs[-1]['day'])}), coin-weeks {sum(ns)} ({sum(ns) / panel_rows:.1%} of panel)"
+        f"panel weeks {len(weeks)}, symbol-weeks {panel_rows}; with D: weeks (N >= {MIN_N}) {len(xs)} ({cmn.ymd_day(xs[0]['day'])}..{cmn.ymd_day(xs[-1]['day'])}), coin-weeks {sum(ns)} ({sum(ns) / panel_rows:.1%} of panel)"
     )
     print(
         f"N per week: min {min(ns)}, median {statistics.median(ns)}, max {max(ns)}; coins total {len(per_coin)}, with >= 104 weeks of D: {len(long_coins)}"
     )
     print(f"weeks IS (< 2024) {sum(w['day'] < OOS_DAY for w in xs)}, OOS {sum(w['day'] >= OOS_DAY for w in xs)}")
-    for y in sorted({ymd(w["day"])[:4] for w in xs}):
-        sub = [len(w["rows"]) for w in xs if ymd(w["day"])[:4] == y]
+    for y in sorted({cmn.ymd_day(w["day"])[:4] for w in xs}):
+        sub = [len(w["rows"]) for w in xs if cmn.ymd_day(w["day"])[:4] == y]
         print(f"  {y}: weeks {len(sub)}, median N {statistics.median(sub)}")
     # signal levels (no returns)
     allv = sorted(v for s in sig["D"].values() for v in s.values())
@@ -318,8 +315,8 @@ def stage_full(panel: Path, cache: Path, data_dir: Path, out_dir: Path, n_perm: 
     isv = clean([x for x, d in zip(ic7, days, strict=True) if d < OOS_DAY])
     oov = clean([x for x, d in zip(ic7, days, strict=True) if d >= OOS_DAY])
     lines += [summary("IC7 IS 2022-2023", isv), summary("IC7 OOS 2024+", oov)]
-    for y in sorted({ymd(d)[:4] for d in days}):
-        lines.append(summary(f"IC7 {y}", [x for x, d in zip(ic7, days, strict=True) if ymd(d)[:4] == y]))
+    for y in sorted({cmn.ymd_day(d)[:4] for d in days}):
+        lines.append(summary(f"IC7 {y}", [x for x, d in zip(ic7, days, strict=True) if cmn.ymd_day(d)[:4] == y]))
     lines.append(summary("IC3 OOS 2024+", [x for x, d in zip(ic3, days, strict=True) if d >= OOS_DAY]))
     part = ic_series(xs, ctrl=CONTROLS)
     lines.append(summary("IC7 partial (beta,R7,fund,IVOL30,MAX30,lnQV)", part))

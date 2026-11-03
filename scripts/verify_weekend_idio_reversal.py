@@ -32,6 +32,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -95,16 +96,12 @@ def rss() -> str:
     return f"peak RSS {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.0f} MB"
 
 
-def ymd(day: int) -> str:
-    return datetime.fromtimestamp(day * 86400, UTC).strftime("%Y-%m-%d")
-
-
 def saturdays() -> list[int]:
     return list(range(FIRST_SAT, LAST_SAT + 1, 7))
 
 
 def month_of(day: int) -> str:
-    return ymd(day)[:7]
+    return cmn.ymd_day(day)[:7]
 
 
 # ---------------------------------------------------------------- universe (daily cache only)
@@ -174,12 +171,12 @@ def stage_universe(data_dir: Path, out: Path) -> None:
             }
         )
         if len(weeks) % 50 == 0:
-            print(f"  week {len(weeks)} {ymd(sat)} N={len(rows)} ({time.time() - t0:.0f}s; {rss()})", flush=True)
+            print(f"  week {len(weeks)} {cmn.ymd_day(sat)} N={len(rows)} ({time.time() - t0:.0f}s; {rss()})", flush=True)
     fc.wr(out / "universe.json", {"weeks": weeks, "reasons": dict(reasons)})
     ns = [len(w["rows"]) for w in weeks]
     need = needed_months(weeks)
     print(
-        f"universe: {len(weeks)} Saturdays {ymd(FIRST_SAT)}..{ymd(LAST_SAT)}; N min {min(ns)} median {statistics.median(ns)} "
+        f"universe: {len(weeks)} Saturdays {cmn.ymd_day(FIRST_SAT)}..{cmn.ymd_day(LAST_SAT)}; N min {min(ns)} median {statistics.median(ns)} "
         f"max {max(ns)}; symbols {len(need)}; symbol-months to fetch {sum(len(v) for v in need.values())}; reasons {dict(reasons)}; {rss()}",
         flush=True,
     )
@@ -355,7 +352,7 @@ def stage0(data_dir: Path, out: Path) -> None:
     nu = [w["n_uni"] for w in allw]
     nc = [len(w["rows"]) for w in allw]
     print(
-        f"\nSaturdays {len(allw)} ({ymd(FIRST_SAT)}..{ymd(LAST_SAT)}); daily universe N median {statistics.median(nu)} min {min(nu)} max {max(nu)}"
+        f"\nSaturdays {len(allw)} ({cmn.ymd_day(FIRST_SAT)}..{cmn.ymd_day(LAST_SAT)}); daily universe N median {statistics.median(nu)} min {min(nu)} max {max(nu)}"
     )
     print(
         f"1h-covered N per weekend: median {statistics.median(nc)} min {min(nc)} max {max(nc)}; weekends with N >= 40: "
@@ -457,7 +454,7 @@ def stage_full(data_dir: Path, out: Path, n_perm: int) -> None:
     assert all(x is not None for x in ic)
     ics: list[float] = [float(x) for x in ic]  # type: ignore[arg-type]
     is_m = [m < OOS_MON for m in mons]
-    print(f"weekends {len(weeks)} ({ymd(mons[0])}..{ymd(mons[-1])}); IS {sum(is_m)} OOS {len(is_m) - sum(is_m)}; {rss()}")
+    print(f"weekends {len(weeks)} ({cmn.ymd_day(mons[0])}..{cmn.ymd_day(mons[-1])}); IS {sum(is_m)} OOS {len(is_m) - sum(is_m)}; {rss()}")
     print("\nH1 (registered): mean weekly rank IC(W, T); NW lag 2")
     print(fmt("all weekends", ics))
     iso = [x for x, k in zip(ics, is_m, strict=True) if k]
@@ -668,7 +665,7 @@ def stage_full(data_dir: Path, out: Path, n_perm: int) -> None:
         )
     yrs: dict[str, list[float]] = {}
     for x, mo in zip(ics, mons, strict=True):
-        yrs.setdefault(ymd(mo)[:4], []).append(x)
+        yrs.setdefault(cmn.ymd_day(mo)[:4], []).append(x)
     print("\nby year: " + "; ".join(f"{y} {statistics.fmean(v):+.4f} (n {len(v)})" for y, v in sorted(yrs.items())))
     fc.wr(out / "full.json", {"ic": ics, "mons": mons, "h1": h1, "h2": [h2a, h2b], "h3": h3})
     print(f"done; {rss()}")

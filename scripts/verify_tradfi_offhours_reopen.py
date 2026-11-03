@@ -28,6 +28,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
 import numpy as np
 
 from tradedesk.analytics.tradfi_offhours import (
@@ -57,10 +58,6 @@ TODAY = date(2026, 10, 24)
 
 def rss_mb() -> float:
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
-
-
-def read_json(p: Path) -> Any:
-    return json.loads(p.read_text())
 
 
 class Fetcher:
@@ -141,13 +138,13 @@ async def stage_meta(cache: Path) -> None:
             if not p.exists():
                 f = await v.list_dir(prefix, max_pages=200)
                 p.write_text(json.dumps(_dirs(f.data)))
-                print(f"listed {prefix}: {len(read_json(p))} symbols", flush=True)
+                print(f"listed {prefix}: {len(cmn.read_json(p))} symbols", flush=True)
     finally:
         await rt.aclose()
-    d = read_json(cache / "exchange_info_tradfi.json")
+    d = cmn.read_json(cache / "exchange_info_tradfi.json")
     print("contract/underlying types (all binanceusdm):", d["contract_types"])
-    mon, day = set(read_json(cache / "archive_monthly_klines.json")), set(read_json(cache / "archive_daily_klines.json"))
-    pm, pd = set(read_json(cache / "archive_monthly_premium.json")), set(read_json(cache / "archive_daily_premium.json"))
+    mon, day = set(cmn.read_json(cache / "archive_monthly_klines.json")), set(cmn.read_json(cache / "archive_daily_klines.json"))
+    pm, pd = set(cmn.read_json(cache / "archive_monthly_premium.json")), set(cmn.read_json(cache / "archive_daily_premium.json"))
     print(f"{'symbol':<14}{'contract':<20}{'underlying':<12}{'subtype':<22}{'onboard':<12}{'mK':>3}{'dK':>3}{'mP':>3}{'dP':>3}")
     for s, i in sorted(d["info"].items(), key=lambda kv: kv[1].get("onboardDate") or 0):
         ob = datetime.fromtimestamp((i.get("onboardDate") or 0) / 1000, tz=UTC).strftime("%Y-%m-%d")
@@ -169,7 +166,7 @@ PREMIUM_MONTHS = ((2026, 8), (2026, 9))
 
 def universe(cache: Path) -> dict[str, dict[str, Any]]:
     """US equities/ETFs and commodities (USDT-quoted TradFi perps); other sessions (HK/KR/CN, FX, pre-IPO) excluded."""
-    info = read_json(cache / "exchange_info_tradfi.json")["info"]
+    info = cmn.read_json(cache / "exchange_info_tradfi.json")["info"]
     return {
         s: i
         for s, i in info.items()
@@ -249,7 +246,7 @@ def load_symbol(cache: Path, sym: str) -> np.ndarray:
     """All cached 1m rows of one symbol as an array [ts, open, high, low, close, qvol] (sorted, de-duplicated)."""
     rows: list[list[float]] = []
     for p in sorted((cache / "k1m" / sym).glob("*.json")):
-        d = read_json(p)
+        d = cmn.read_json(p)
         if d:
             rows += d
     if not rows:
@@ -264,7 +261,7 @@ def load_premium_slope(cache: Path, sym: str, a: np.ndarray) -> dict[str, Any]:
     """Premium-index slope by window (pure computation in ``analytics.tradfi_offhours.premium_slope``)."""
     rows: list[list[float]] = []
     for p in sorted((cache / "premium1m" / sym).glob("*.json")):
-        rows += read_json(p) or []
+        rows += cmn.read_json(p) or []
     if not rows:
         return {}
     pr = np.asarray(rows, dtype=float)

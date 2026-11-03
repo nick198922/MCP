@@ -163,6 +163,12 @@ class Settings:
     alerts_rules_path: str = ""
     alerts_seconds: int = 60
     alerts_default_cooldown: int = 1800  # 30 min
+    # Provider-health transition alerts (alerts/health.py), checked by the alerts job: a provider is announced bad after
+    # `_min_failures` consecutive failed calls and good again after one success; at most one message per provider per
+    # `_cooldown` seconds. On by default whenever the alerts job runs.
+    alerts_health_enabled: bool = True
+    alerts_health_min_failures: int = 3
+    alerts_health_cooldown: int = 900  # 15 min
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
     telegram_topic_alerts: int | None = None  # forum topic (message_thread_id) for market alerts
@@ -259,6 +265,9 @@ class Settings:
             alerts_rules_path=os.environ.get("TRADEDESK_ALERTS_RULES_PATH", ""),
             alerts_seconds=int(_float("TRADEDESK_ALERTS_SECONDS", 60)),
             alerts_default_cooldown=int(_float("TRADEDESK_ALERTS_DEFAULT_COOLDOWN", 1800)),
+            alerts_health_enabled=os.environ.get("TRADEDESK_ALERTS_HEALTH_ENABLED", "1").lower() in ("1", "true", "yes"),
+            alerts_health_min_failures=int(_float("TRADEDESK_ALERTS_HEALTH_MIN_FAILURES", 3)),
+            alerts_health_cooldown=int(_float("TRADEDESK_ALERTS_HEALTH_COOLDOWN", 900)),
             telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN") or None,
             telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID") or None,
             telegram_topic_alerts=int(os.environ["TELEGRAM_TOPIC_ALERTS"])

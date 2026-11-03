@@ -299,6 +299,25 @@ async def _collect_liquidations_okx(rt: "Runtime") -> int:
     )
 
 
+async def _health_alerts(rt: "Runtime", now_ts: int) -> list:
+    """Provider-health transitions since the last tick (alerts/health.py). The announced states live on the runtime;
+    after a restart they are loaded from the stored alerts, so a provider still down is not announced again."""
+    from ..alerts.health import RULE_PREFIX, evaluate_health, state_from_alerts  # noqa: PLC0415
+
+    assert rt.store is not None
+    s = rt.settings
+    if rt.health_watch is None:
+        rt.health_watch = state_from_alerts(await rt.store.last_alerts_with_prefix(RULE_PREFIX))
+    rt.health_watch, fired = evaluate_health(
+        rt.health.snapshot()["providers"],
+        rt.health_watch,
+        now_ts=now_ts,
+        min_failures=s.alerts_health_min_failures,
+        quiet_seconds=s.alerts_health_cooldown,
+    )
+    return fired
+
+
 async def _evaluate_alerts(rt: "Runtime") -> int:
     """Load rules, evaluate against the store, deliver via channels, record outcome."""
     from ..alerts import build_channels, evaluate_rules, load_rules  # noqa: PLC0415
@@ -314,6 +333,8 @@ async def _evaluate_alerts(rt: "Runtime") -> int:
         fired += await evaluate_rules(rules, rt.store, now_ts=now_ts)
     # DB-backed DSL (Phase 3.1) rules — always consulted when the job runs.
     fired += await evaluate_dsl_rules(rt.store, now_ts=now_ts)
+    if s.alerts_health_enabled:
+        fired += await _health_alerts(rt, now_ts)
     if not fired:
         return 0
     channels = build_channels(s)

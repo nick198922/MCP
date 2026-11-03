@@ -820,6 +820,23 @@ class Store:
         row = await cur.fetchone()
         return int(row[0]) if row and row[0] is not None else None
 
+    async def last_alerts_with_prefix(self, prefix: str) -> list[dict[str, Any]]:
+        """The newest stored row (rule_id, ts, payload) of every rule whose id starts with ``prefix``."""
+        cur = await self.conn.execute(
+            "SELECT rule_id, ts, payload FROM alerts WHERE id IN "
+            "(SELECT MAX(id) FROM alerts WHERE substr(rule_id, 1, ?) = ? GROUP BY rule_id)",
+            (len(prefix), prefix),
+        )
+        out = []
+        for r in await cur.fetchall():
+            d = dict(r)
+            try:
+                d["payload"] = json.loads(d["payload"])
+            except (TypeError, ValueError):
+                d["payload"] = None
+            out.append(d)
+        return out
+
     async def journal_insert(
         self,
         *,

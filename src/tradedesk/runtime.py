@@ -63,6 +63,9 @@ class Runtime:
         s = self.settings
         self.now: Callable[[], datetime] = utcnow  # overridable clock (tests, replay)
         self.health = HealthRegistry()
+        # Last announced provider-health states (alerts/health.py); None until the alerts job loads them from the store.
+        # Kept here, not in the job, because the scheduler is rebuilt on every MCP lifespan while health is not.
+        self.health_watch: dict[str, Any] | None = None
         self.cache = TTLCache()
         tr = transports or {}
 

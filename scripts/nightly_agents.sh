@@ -382,6 +382,8 @@ ALLOWED=(
   # Read-only status with --git-dir plus --work-tree of the clone (pager off or quotepath off).
   "Bash(git -c core.pager=cat --git-dir=/home/tradedesk/tradedesk-agents/.git --work-tree=/home/tradedesk/tradedesk-agents status:*)"
   "Bash(git -c core.quotepath=off --git-dir=/home/tradedesk/tradedesk-agents/.git --work-tree=/home/tradedesk/tradedesk-agents status:*)"
+  "Bash(git -c core.pager=cat --git-dir=/home/tradedesk/tradedesk-agents/.git --work-tree=/home/tradedesk/tradedesk-agents diff:*)"
+  "Bash(/usr/bin/python3 --version:*)"
 )
 # The claude.ai DOUBLETOP connector (the owner's account; access is temporary): read-only data tools for parity checks
 # and real response samples (docs/AGENTS.md, «MCP DOUBLETOP»). Never a runtime dependency. Its generic fetch and

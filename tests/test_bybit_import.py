@@ -50,6 +50,21 @@ def test_store_skips_duplicates_and_stats_report(tmp_path):
     assert "Закритих позицій: **3**" in rep and "+190.00 USD" in rep and "ETHUSDT" in rep and "short: 1 угод" in rep
 
 
+def test_stats_without_losing_trades_does_not_divide_by_zero(tmp_path):
+    db = str(tmp_path / "j.sqlite")
+    asyncio.run(bi.store([bi.to_trade(x) for x in (LONG, SHORT)], db))
+    rep = bi.stats(db)
+    assert "Закритих позицій: **2**" in rep and "Збиткових угод немає: частка збитків н/д." in rep
+    assert "10 найбільших збитків" not in rep and "Найдовша серія збиткових угод поспіль: 0." in rep
+
+
+def test_stats_on_an_empty_journal(tmp_path):
+    db = str(tmp_path / "j.sqlite")
+    assert asyncio.run(bi.store([], db)) == (0, 0)
+    assert bi.stats(db) == "У журналі немає імпортованих угод з Bybit."
+    assert bi.stats(db, venue=None) == "У журналі немає імпортованих угод."
+
+
 def test_env_file_is_parsed_without_exposing_values(tmp_path):
     p = tmp_path / "b.env"
     p.write_text("# note\nBYBIT_API_KEY=abc\nBYBIT_API_SECRET=def\n")

@@ -518,8 +518,14 @@ def stats(db_path: str, venue: str | None = "bybit") -> str:
         "",
         "## Найбільші збитки",
         "",
-        f"- 10 найбільших збитків: {sum(p for _, _, p in worst):+,.2f} USD — {sum(p for _, _, p in worst) / sum(losses) * 100:.0f} % усіх збитків.",
-        *[f"- {d} {sym}: {p:+,.2f}" for d, sym, p in worst],
+        *(
+            [
+                f"- 10 найбільших збитків: {sum(p for _, _, p in worst):+,.2f} USD — {sum(p for _, _, p in worst) / sum(losses) * 100:.0f} % усіх збитків.",
+                *[f"- {d} {sym}: {p:+,.2f}" for d, sym, p in worst],
+            ]
+            if losses
+            else ["- Збиткових угод немає: частка збитків н/д."]
+        ),
         "",
         *duration_lines(rows),
         "## Поведінка",

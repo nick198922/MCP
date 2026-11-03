@@ -32,6 +32,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 
+from .pm_calibration import iso_ts
 from .pm_gap_paper import (
     G_STATUSES,
     HORIZON_TOL_S,
@@ -108,6 +109,15 @@ def gamma_outcome(market: Mapping[str, Any]) -> int | None:
     if uma is not None and str(uma).lower() != "resolved":
         return None
     return outcome_yes(market.get("outcomePrices"))
+
+
+def gamma_closed_ts(market: Mapping[str, Any]) -> int | None:
+    """Unix seconds of a closed Gamma market's ``closedTime`` ("2025-10-14 10:03:13+00"); None while the market is not
+    ``closed`` or the field is absent / unparsable. A touch market closes as soon as its level is hit, so this can be
+    days before ``endDate``; a threshold market closes after its end, once the result is posted."""
+    if not market.get("closed"):
+        return None
+    return iso_ts(market.get("closedTime"))
 
 
 def binance_closes(bars: Iterable[Sequence[Any]], end_ts: int) -> tuple[float | None, float | None]:
@@ -204,6 +214,12 @@ def _by_market(rows: Iterable[Mapping[str, Any]]) -> dict[str, list[Mapping[str,
 
 
 MISSING_REASONS = ("collector_gap", "market_absent", "no_mid")
+# Weekly explanation of the already printed 'missing' points from the Gamma close time the collector records from
+# schema 38 (``pm_gap_outcome.closed_ts``, forward only; owner's answer 1+3 to Q-20261103-1): 'missing' points (+24 h;
+# closing line) of a market that closed before the point's window ended. Deliberately NOT the number of positions with a
+# close time or of those closed before their end: a touch market closes early exactly when its level is hit, so with
+# ``by_asset_kind_side`` that would give the sign of P&L before the verdict (review 2026-11-04, item 1).
+EARLY_CLOSE_KEYS = ("h24_missing", "close_missing")
 
 
 def horizon_missing_reasons(
@@ -241,7 +257,10 @@ def weekly_descriptive(
     rule: EntryRule | None = None,
 ) -> dict[str, Any]:
     """Everything the weekly report may show (registration section 1), and nothing else: no mean of any CLV, no CI,
-    no P&L, no Brier. SDs are of positions whose value is already known."""
+    no P&L, no Brier. SDs are of positions whose value is already known. ``sources.early_close`` only explains the
+    'missing' points by the Gamma close time in ``outcome_rows`` (``closed_ts``, when the column is present), see
+    :data:`EARLY_CLOSE_KEYS`. Results (``results``, ``positions.with_settled_result``) count only markets whose end has
+    passed: a touch market can be resolved days before its end, exactly when its level is hit."""
     rule = rule or EntryRule()
     start, end = main_period(t0)
     acc = accepted_rule_hashes(rows)
@@ -273,6 +292,8 @@ def weekly_descriptive(
     v24: list[float] = []
     v6: list[float] = []
     vclose: list[float] = []
+    closed_at = {str(o["market_id"]): int(o["closed_ts"]) for o in outcome_rows if o.get("closed_ts") is not None}
+    early = dict.fromkeys(EARLY_CLOSE_KEYS, 0)
     for p in positions:
         mk = by_mkt.get(p["market_id"], [])
         c24, s24 = _horizon_status(p, mk, PRIMARY_H, now_ts)
@@ -284,11 +305,16 @@ def weekly_descriptive(
         v24 += [c24] if c24 is not None else []
         v6 += [c6] if c6 is not None else []
         vclose += [cc] if cc is not None else []
+        mkt_closed = closed_at.get(str(p["market_id"]))
+        if mkt_closed is not None:  # only 'missing' points, already counted above, are split: no value, side or result
+            early["h24_missing"] += int(s24 == "missing" and mkt_closed <= int(p["ts"]) + PRIMARY_H * HOUR_S + HORIZON_TOL_S)
+            early["close_missing"] += int(sc == "missing" and mkt_closed <= int(p["end_ts"]) - HOUR_S)
 
-    _, settled = settled_outcomes(outcome_rows)
-    pos_markets = {p["market_id"] for p in positions}
-    settled_pos = sum(1 for o in outcome_rows if o.get("outcome_yes") is not None and str(o["market_id"]) in pos_markets)
+    # an early (touch) result must not show before the market's end: only rows whose end has passed are counted
+    ended_out = [o for o in outcome_rows if o.get("end_ts") is not None and int(o["end_ts"]) <= now_ts]
+    _, settled = settled_outcomes(ended_out)
     ended_pos = {p["market_id"] for p in positions if int(p["end_ts"]) <= now_ts}
+    settled_pos = sum(1 for o in ended_out if o.get("outcome_yes") is not None and str(o["market_id"]) in ended_pos)
     defined24 = src24["ok"] + src24["missing"]
     closed = src_close["close"] + src_close["late"] + src_close["missing"]
     return {
@@ -331,6 +357,7 @@ def weekly_descriptive(
             "h6": dict(sorted(src6.items())),
             "close": dict(sorted(src_close.items())),
             "close_shares": {k: _share(src_close[k], closed) for k in ("close", "late", "missing")},
+            "early_close": early,
         },
         "sd_per_position": {
             "h24": {"n": len(v24), "sd": _sd(v24)},
@@ -362,6 +389,16 @@ def _missing_line(m: Mapping[str, int]) -> str:
         f"  - причини missing +24 год: у вікні ±1 год немає жодного знімка колектора {m['collector_gap']}; знімки є, "
         f"а ринку в них немає {m['market_absent']}; ринок є, але без mid {m['no_mid']}"
     )
+
+
+def _early_close_lines(e: Mapping[str, int] | None) -> list[str]:
+    """The explanation of 'missing' by the Gamma close time, only once some 'missing' point has one."""
+    if not e or not (e.get("h24_missing") or e.get("close_missing")):
+        return []
+    return [
+        f"  - пояснення missing (закриття ринку за Gamma; колектор записує з 04.11, лише вперед): серед missing +24 год "
+        f"ринок закрито до точки {e['h24_missing']}; серед missing до закриття — до вікна закриття {e['close_missing']}"
+    ]
 
 
 NO_MEAN_NOTE = (
@@ -401,6 +438,7 @@ def render_weekly(d: Mapping[str, Any]) -> str:
         f"- +6 год: {_kv(src['h6'])}",
         f"- до закриття: {_kv(src['close'])}; частки close / late / missing: "
         f"{_p(src['close_shares']['close'])} / {_p(src['close_shares']['late'])} / {_p(src['close_shares']['missing'])}",
+        *_early_close_lines(src.get("early_close")),
         "",
         "**SD на позицію** (розкид, без середнього)",
         f"- +24 год: {_pp(sd['h24']['sd'])} (n {sd['h24']['n']}); +6 год: {_pp(sd['h6']['sd'])} (n {sd['h6']['n']}); "

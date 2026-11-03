@@ -652,10 +652,14 @@ class Store:
         return [dict(r) for r in await cur.fetchall()]
 
     async def upsert_pm_gap_outcome(self, row: dict[str, Any], now_ts: int) -> None:
-        """Record one fetch attempt. A settled outcome or a Binance close, once stored, is never overwritten by NULL."""
+        """Record one fetch attempt. A settled outcome, a Binance close, the Gamma close time (``closed_ts``) or the
+        moment the market was found gone early (``gone_ts``), once stored, is never overwritten. An early-close record
+        (``collector.pm_gap.record_closures``) is an attempt too: it adds 1 to ``attempts``, so after its end such a
+        market, if still unresolved, sits slightly behind untried ones in :meth:`pm_gap_outcome_pending`."""
         await self.conn.execute(
             "INSERT INTO pm_gap_outcome (market_id, asset, kind, strike, end_ts, outcome_yes, outcome_prices, outcomes,"
-            " binance_close_end, binance_close_next, attempts, checked_ts, resolved_ts) VALUES (?,?,?,?,?,?,?,?,?,?,1,?,?)"
+            " binance_close_end, binance_close_next, attempts, checked_ts, resolved_ts, closed_ts, gone_ts)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,1,?,?,?,?)"
             " ON CONFLICT(market_id) DO UPDATE SET"
             " outcome_yes = COALESCE(outcome_yes, excluded.outcome_yes),"
             " outcome_prices = COALESCE(excluded.outcome_prices, outcome_prices),"
@@ -663,14 +667,31 @@ class Store:
             " binance_close_end = COALESCE(binance_close_end, excluded.binance_close_end),"
             " binance_close_next = COALESCE(binance_close_next, excluded.binance_close_next),"
             " attempts = attempts + 1, checked_ts = excluded.checked_ts,"
-            " resolved_ts = COALESCE(resolved_ts, excluded.resolved_ts)",
+            " resolved_ts = COALESCE(resolved_ts, excluded.resolved_ts),"
+            " closed_ts = COALESCE(closed_ts, excluded.closed_ts),"
+            " gone_ts = COALESCE(gone_ts, excluded.gone_ts)",
             (
                 row["market_id"], row["asset"], row["kind"], row["strike"], row["end_ts"], row.get("outcome_yes"),
                 row.get("outcome_prices"), row.get("outcomes"), row.get("binance_close_end"), row.get("binance_close_next"), now_ts,
-                now_ts if row.get("outcome_yes") is not None else None,
+                now_ts if row.get("outcome_yes") is not None else None, row.get("closed_ts"), row.get("gone_ts"),
             ),
         )  # fmt: skip
         await self.conn.commit()
+
+    async def pm_gap_gone_pending(self, snap_ts: int, seen_after: int, limit: int) -> list[dict[str, Any]]:
+        """Markets last listed in a snapshot in [``seen_after``, ``snap_ts``) (so absent from the snapshot at ``snap_ts``)
+        whose end is still after ``snap_ts`` and that have no ``gone_ts`` yet: candidates for an early close. Latest
+        seen first. ``last_seen_ts`` is the last snapshot that listed the market."""
+        cur = await self.conn.execute(
+            "SELECT s.market_id, s.asset, s.kind, s.strike, s.end_ts, s.last_seen_ts"
+            " FROM (SELECT market_id, MAX(asset) AS asset, MAX(kind) AS kind, MAX(strike) AS strike, MAX(end_ts) AS end_ts,"
+            "       MAX(ts) AS last_seen_ts FROM pm_gap_snapshot WHERE ts >= ? GROUP BY market_id) s"
+            " LEFT JOIN pm_gap_outcome o ON o.market_id = s.market_id"
+            " WHERE s.last_seen_ts < ? AND s.end_ts > ? AND o.gone_ts IS NULL"
+            " ORDER BY s.last_seen_ts DESC, s.market_id LIMIT ?",
+            (seen_after, snap_ts, snap_ts, limit),
+        )
+        return [dict(r) for r in await cur.fetchall()]
 
     async def insert_trader_snapshot(self, day: str, ts: int, venue: str, rows: list[dict[str, Any]]) -> int:
         """Leaderboard rows of one venue for one UTC day; idempotent per (day, venue, account). ``rank_month`` is

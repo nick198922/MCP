@@ -76,13 +76,14 @@ Claude (Desktop / Code / claude.ai)
 
 ## Сховище: схема SQLite
 
-Джерело правди — `src/tradedesk/store/schema.py` (`SCHEMA_VERSION`, словник `MIGRATIONS`; блок міграції і `user_version` в одній транзакції). Зараз версія **37**. Останні міграції:
+Джерело правди — `src/tradedesk/store/schema.py` (`SCHEMA_VERSION`, словник `MIGRATIONS`; блок міграції і `user_version` в одній транзакції). Зараз версія **38**. Останні міграції:
 
 | Версія | Що додано | Хто пише | Поля й примітки |
 |---|---|---|---|
 | 35 | стовпець `demo_trade.version` (`TEXT`) | демо-трейдер під час входу | тег версії правил сетапу з `analytics/setup_versions.EPOCHS` (напр. `v8`); `NULL` — угода до цього стовпця, версію тоді беруть за часом відкриття |
 | 36 | таблиця `option_leg_snapshot`, ключ `(day, currency, role)`, `WITHOUT ROWID` | колектор `option_legs` (`collector/option_legs.py`, `TRADEDESK_COLLECT_OPTION_LEGS_ENABLED`) | добові котирування ніг тижневого кондора Deribit, BTC і ETH, від 09:00 UTC, найближча п'ятнична експірація 08:00; 10 ролей на день (`atm_p`, `atm_c`, `sp25`, `sc25`, `sp10`, `sc10`, `lp`, `lc`, `lp15`, `lc15`) і сб–чт до 10 рядків `hold_<role>` (інструменти останнього п'ятничного входу); `bid` / `ask` / `mark` у монеті на 1 монету базового активу, IV і `dist` — десяткові дроби, `delta` — Black-76 на `forward`, r = 0; перший знімок дня зберігається; не чиститься. Картка structural-edges-depth, пункт 8d |
 | 37 | таблиця `global_snapshot`, ключ `day` | щоденна задача пропозиції (`_collect_supply` у `collector/scheduler.py`, разом із `supply_snapshot`) | добовий знімок CoinGecko `/global`: `total_market_cap`, `total_volume` (USD, 24 год), `btc_dominance`, `eth_dominance`, `mcap_change_24h` (десяткові дроби), `active_cryptocurrencies`; один рядок на день UTC, пізніший знімок замінює; продовжує історію `_global` з DoubleTop (`~/private/data/coingecko`, 2013 – 02.11.2026). Збій `/global` лише логується, `supply_snapshot` пишеться |
+| 38 | стовпці `pm_gap_outcome.closed_ts`, `pm_gap_outcome.gone_ts` (`INTEGER`, unix с) | колектор `pm_gap` (`record_closures` і `resolve_outcomes` у `collector/pm_gap.py`) | `closed_ts` — `closedTime` Gamma (перший записаний); `gone_ts` — запуск колектора, який знайшов ринок поза списком відкритих до його `end_ts`, а Gamma сказала `closed` (touch-ринки закриваються, щойно рівень досягнуто); не закритий ринок не пишеться; лише вперед, старі рядки `NULL`. Відповідь власника «1+3» на Q-20261103-1 |
 
 ## Як додати провайдера
 

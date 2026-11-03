@@ -94,7 +94,15 @@ def market_rows(mid: str, asset: str = "BTC") -> list[dict[str, Any]]:
 
 ROWS = market_rows("m1") + market_rows("m2") + market_rows("m3", "ETH") + market_rows("m4", "ETH")
 OUTCOMES = [
-    {"market_id": m, "kind": "above", "strike": 70_000.0, "outcome_yes": 1, "binance_close_end": 71_000.0, "binance_close_next": 71_005.0}
+    {
+        "market_id": m,
+        "kind": "above",
+        "strike": 70_000.0,
+        "end_ts": END,
+        "outcome_yes": 1,
+        "binance_close_end": 71_000.0,
+        "binance_close_next": 71_005.0,
+    }
     for m in ("m1", "m2", "m3", "m4")
 ]
 FORBIDDEN_KEYS = {"mean", "lo", "hi", "ci", "pnl", "brier", "diff", "se", "won", "verdict", "ret_capital"}
@@ -649,6 +657,90 @@ def test_missing_reasons_at_plus_24h():
     # the same counts in the v2-g block
     e = weekly_v2g([_with_g(r) for r in mixed], [], END + 2 * H, T0)
     assert e["sources"]["h24_missing_reasons"] == {"collector_gap": 0, "market_absent": 1, "no_mid": 1}  # v2-g: m1, m2 only
+
+
+def test_early_close_only_explains_the_missing_points():
+    """Q-20261103-1 (owner 1+3): the Gamma close time (pm_gap_outcome.closed_ts, schema 38) only splits the 'missing'
+    points already printed; no count of closed or early-closed positions (review 2026-11-04). m1 closed before its +24 h
+    point and dropped out there; m2 closed after the end (a normal close) and has no mid at +24 h; m3 closed before the
+    closing window and has no row in it."""
+    window = range(T0 + 23 * H, T0 + 25 * H + 1)
+    quotes = dict.fromkeys(("yes_bid", "yes_ask", "no_bid", "no_ask"))
+    rows = [r for r in ROWS if not (r["market_id"] == "m1" and r["ts"] in window)]
+    rows = [dict(r, **quotes) if r["market_id"] == "m2" and r["ts"] in window else r for r in rows]
+    rows = [r for r in rows if not (r["market_id"] == "m3" and r["ts"] >= END - 6 * H)]
+    now = END + 2 * H
+    closed = {"m1": T0 + 20 * H, "m2": END + 2 * H, "m3": END - 7 * H}
+    outs = [dict(o, closed_ts=closed.get(o["market_id"])) for o in OUTCOMES]
+    d = weekly_descriptive(rows, outs, now, T0)
+    assert d["sources"]["h24"] == {"missing": 2, "ok": 2} and d["sources"]["close"]["missing"] == 1
+    assert d["sources"]["early_close"] == {"h24_missing": 1, "close_missing": 1}
+    assert not (_keys(d) & FORBIDDEN_KEYS)
+    text = render_weekly(d)
+    assert "пояснення missing" in text and "ринок закрито до точки 1" in text and "до вікна закриття 1" in text
+    assert "записано для" not in text and "раніше за кінець" not in text
+    for hidden in HIDDEN:
+        assert hidden not in text, hidden
+    # rows read before schema 38 (no closed_ts key) or never closed: zero counts and no line
+    for o in (OUTCOMES, [dict(o, closed_ts=None) for o in OUTCOMES]):
+        e = weekly_descriptive(rows, o, now, T0)
+        assert e["sources"]["early_close"] == dict.fromkeys(report.EARLY_CLOSE_KEYS, 0)
+        assert "пояснення missing" not in render_weekly(e)
+
+
+def _short_market(mid: str, end: int) -> list[dict[str, Any]]:
+    """A BTC market ending ``end`` (< 26 h after T0: its +24 h point is 'n/a')."""
+    return [row(t, mid, end_ts=end, hours_to_end=(end - t) / H) for t in range(T0, end - H + 1, H)]
+
+
+def test_an_early_close_of_an_ok_or_na_position_changes_no_weekly_number():
+    """Review 2026-11-04, item 1: a touch market closes early exactly when its level is hit, so the close time of a
+    position that is not 'missing' (here m1: 'ok' at +24 h; m5: 'n/a') must not move any weekly number or line."""
+    end5 = T0 + 20 * H
+    rows = ROWS + _short_market("m5", end5)
+    now = END + 2 * H
+    o5 = dict(OUTCOMES[0], market_id="m5", end_ts=end5)
+    base = [*OUTCOMES, o5]
+    closed = {"m1": T0 + 30 * H, "m5": T0 + 10 * H}  # both before their end
+    early = [dict(o, closed_ts=closed.get(o["market_id"])) for o in base]
+    d0, d1 = weekly_descriptive(rows, base, now, T0), weekly_descriptive(rows, early, now, T0)
+    assert d1["sources"]["h24"] == {"n/a": 1, "ok": 4} and d1["sources"]["close"] == {"close": 5}  # the case is real
+    assert d1 == d0 and render_weekly(d1) == render_weekly(d0)
+
+
+def test_weekly_results_count_only_markets_whose_end_has_passed():
+    """Review 2026-11-04, item 2: a result recorded before the market's end (a touch market resolved when its level is
+    hit) is not counted in ``with_settled_result`` / ``results`` until the end has passed."""
+    end5 = T0 + 20 * H
+    rows = ROWS + _short_market("m5", end5)
+    now = T0 + 30 * H  # m5 has ended, m1..m4 (END) have not
+    o5 = dict(OUTCOMES[0], market_id="m5", end_ts=end5)
+    settled = [*OUTCOMES, o5]  # every row already has outcome_yes = 1
+    unsettled = [*(dict(o, outcome_yes=None) for o in OUTCOMES), o5]
+    d = weekly_descriptive(rows, settled, now, T0)
+    assert d["positions"]["n"] == 5 and d["positions"]["ended"] == 1
+    assert d["positions"]["with_settled_result"] == 1 and d["results"]["settled"] == 1
+    assert d == weekly_descriptive(rows, unsettled, now, T0)
+    # once the end has passed they count
+    assert weekly_descriptive(rows, settled, END + 2 * H, T0)["positions"]["with_settled_result"] == 5
+
+
+def test_gamma_closed_ts_on_real_touch_markets():
+    """Real Gamma answers (tests/fixtures/polymarket_touch_closed_markets_2026-11-04.json, week 2025-10-13..19): a
+    touch market closes when its level is hit, days before its end; another closed after the end."""
+    import json
+
+    from tradedesk.analytics.pm_calibration import iso_ts
+
+    m = json.loads((Path(__file__).parent / "fixtures" / "polymarket_touch_closed_markets_2026-11-04.json").read_text())["markets"]
+    early, late = m["632870"], m["632885"]
+    end = iso_ts(early["endDate"])
+    assert report.gamma_closed_ts(early) == 1760436193 < end  # 2025-10-14 10:03:13 UTC, end 2025-10-20 04:00 UTC
+    assert gamma_outcome(early) == 1
+    assert report.gamma_closed_ts(late) == 1760940441 > end and gamma_outcome(late) == 0  # 2025-10-20 06:07:21 UTC
+    assert report.gamma_closed_ts({**early, "closed": False}) is None  # an open market has no close time
+    assert report.gamma_closed_ts({**early, "closedTime": "garbage"}) is None
+    assert report.gamma_closed_ts({k: v for k, v in early.items() if k != "closedTime"}) is None
 
 
 def test_v1_verdict_cuts_every_v2g_row_to_entries_before_t0_v2g():

@@ -39,11 +39,13 @@ def register(server: MCPServer, rt: Runtime) -> None:
         ),
     )
     async def rules_add(
-        name: Annotated[str, Field(min_length=1, max_length=120)],
+        name: Annotated[str, Field(min_length=1, max_length=120, description="Unique rule name (1-120 chars), used in alerts.")],
         expr: Annotated[str, Field(min_length=1, description='e.g. funding("binanceusdm","BTC") > 0.30')],
         message: Annotated[str | None, Field(description="Message with {value} / {value_pct} placeholders.")] = None,
-        cooldown_seconds: Annotated[int, Field(ge=60, le=86_400)] = 1800,
-        enabled: bool = True,
+        cooldown_seconds: Annotated[
+            int, Field(ge=60, le=86_400, description="Minimum seconds between two fires of this rule (60 s to 1 day).")
+        ] = 1800,
+        enabled: Annotated[bool, Field(description="Store the rule as active; false keeps it saved but silent.")] = True,
     ) -> dict[str, Any]:
         b = Builder()
         if not _store_guard(b, rt):
@@ -68,7 +70,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
         annotations=READ_ONLY,
         description="List DSL rules in the local store, optionally filtered to enabled ones.",
     )
-    async def rules_list(enabled_only: bool = False) -> dict[str, Any]:
+    async def rules_list(
+        enabled_only: Annotated[bool, Field(description="Return only enabled rules; false lists all.")] = False,
+    ) -> dict[str, Any]:
         b = Builder()
         if not _store_guard(b, rt):
             return b.build(None, ok=False)

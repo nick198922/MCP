@@ -25,8 +25,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
     )
     async def polymarket_search(
         query: Annotated[str | None, Field(description="Free-text search (e.g. 'bitcoin').")] = None,
-        limit: Annotated[int, Field(ge=1, le=100)] = 20,
-        active_only: bool = True,
+        limit: Annotated[
+            int, Field(ge=1, le=100, description="Maximum markets to return (1-100); with a query, may be fewer after filtering.")
+        ] = 20,
+        active_only: Annotated[bool, Field(description="Keep only markets flagged active (currently tradable).")] = True,
         include_closed: Annotated[bool, Field(description="Also return markets that already resolved.")] = False,
     ) -> dict[str, Any]:
         b = Builder()
@@ -85,7 +87,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
     )
     async def polymarket_history(
         token_id: Annotated[str, Field(description="clobTokenId of the outcome (from polymarket_market).")],
-        interval: Literal["1h", "6h", "1d", "1w", "1m", "max"] = "1d",
+        interval: Annotated[
+            Literal["1h", "6h", "1d", "1w", "1m", "max"],
+            Field(description="Trailing window ending now: 1 hour, 6 hours, 1 day, 1 week, 1 month, or the full history."),
+        ] = "1d",
         fidelity: Annotated[int | None, Field(ge=1, le=1440, description="Sampling period in minutes.")] = None,
     ) -> dict[str, Any]:
         b = Builder()

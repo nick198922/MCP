@@ -27,6 +27,33 @@ SFP_EDGE_WARNING = (
     "not signals. See docs/verification/."
 )
 
+# Shared parameter types: schema text only, the bounds are the ones each tool had before.
+LOOKBACK_DAYS = Annotated[int, Field(ge=1, le=365, description="Trailing window in days ending now (1-365).")]
+MIN_POINTS = Annotated[
+    int, Field(ge=2, le=10000, description="Minimum stored points in the window; fewer gives ok=false instead of noisy stats.")
+]
+RANGE_LOOKBACK = Annotated[
+    int,
+    Field(
+        ge=20,
+        le=10_000,
+        description="Bars to analyse. Live: the latest N from one ccxt request (venues cap a request, often at 1000-1500 bars).",
+    ),
+]
+RANGE_MIN_BARS = Annotated[
+    int, Field(ge=5, le=1000, description="Minimum consecutive bars for a range; fewer bars in total gives ok=false.")
+]
+RANGE_MAX_WIDTH = Annotated[float, Field(gt=0, le=50, description="Max range width (high - low) / mid, in percent (15 = 15 %).")]
+SWING_LOOKBACK = Annotated[int, Field(ge=1, le=50, description="Swing pivot: high/low must be the extreme of N bars on each side.")]
+SWEEP_WICK_RATIO = Annotated[
+    float, Field(ge=0.0, le=1.0, description="Min piercing wick as a fraction of the candle's high-low range (0.5 = half).")
+]
+STOP_MULT = Annotated[float, Field(ge=0.0, le=10, description="Stop offset multiplier over the sweep's overshoot %.")]
+STOP_MIN_OFFSET = Annotated[
+    float, Field(ge=0.0, le=5, description="Minimum stop distance beyond the wick extreme, in percent (0.1 = 0.1 %).")
+]
+MIN_RR = Annotated[float, Field(ge=1, le=20, description="Min rr1 (reward to tp1 / risk to stop) to flag the setup as tradable.")]
+
 
 def _summary(values: list[float], latest: float) -> dict[str, Any]:
     """Shared stats block for history-rank style tools."""
@@ -65,9 +92,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
         ),
     )
     async def iv_rank(
-        currency: Literal["BTC", "ETH"] = "BTC",
+        currency: Annotated[Literal["BTC", "ETH"], Field(description="Deribit option currency.")] = "BTC",
         expiry: Annotated[str, Field(description="ISO-8601 UTC expiry as stored by the collector, e.g. '2026-11-27T08:00:00+00:00'.")] = "",
-        lookback_days: Annotated[int, Field(ge=1, le=365)] = 30,
+        lookback_days: LOOKBACK_DAYS = 30,
         min_points: Annotated[int, Field(ge=2, le=10000, description="Minimum number of stored points required.")] = 10,
     ) -> dict[str, Any]:
         b = Builder()
@@ -132,9 +159,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
     )
     async def funding_zscore(
         venue: Annotated[str, Field(description="Venue id as stored by the collector (e.g. 'binanceusdm', 'bybit', 'hyperliquid').")],
-        base: Literal["BTC", "ETH"] = "BTC",
-        lookback_days: Annotated[int, Field(ge=1, le=365)] = 30,
-        min_points: Annotated[int, Field(ge=2, le=10000)] = 10,
+        base: Annotated[Literal["BTC", "ETH"], Field(description="Base asset of the perp as stored by the funding collector.")] = "BTC",
+        lookback_days: LOOKBACK_DAYS = 30,
+        min_points: MIN_POINTS = 10,
     ) -> dict[str, Any]:
         b = Builder()
         if rt.store is None:
@@ -187,11 +214,14 @@ def register(server: MCPServer, rt: Runtime) -> None:
         ),
     )
     async def skew_percentile(
-        currency: Literal["BTC", "ETH"] = "BTC",
+        currency: Annotated[Literal["BTC", "ETH"], Field(description="Deribit option currency.")] = "BTC",
         expiry: Annotated[str, Field(description="ISO-8601 UTC expiry as stored by the collector.")] = "",
-        delta_target: Literal["25", "10"] = "25",
-        lookback_days: Annotated[int, Field(ge=1, le=365)] = 30,
-        min_points: Annotated[int, Field(ge=2, le=10000)] = 10,
+        delta_target: Annotated[
+            Literal["25", "10"],
+            Field(description="Wing delta: '25' = 25-delta risk reversal (rr25), '10' = 10-delta (rr10); RR in decimal IV."),
+        ] = "25",
+        lookback_days: LOOKBACK_DAYS = 30,
+        min_points: MIN_POINTS = 10,
     ) -> dict[str, Any]:
         b = Builder()
         if rt.store is None:
@@ -250,7 +280,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
         timeframe: Annotated[str, Field(description="OHLCV timeframe as stored, e.g. '1h'.")] = "1h",
         since_ts_ms: Annotated[int | None, Field(description="Unix ms lower bound (inclusive).")] = None,
         until_ts_ms: Annotated[int | None, Field(description="Unix ms upper bound (inclusive).")] = None,
-        limit: Annotated[int | None, Field(ge=1, le=50_000)] = None,
+        limit: Annotated[
+            int | None, Field(ge=1, le=50_000, description="Max bars, counted from the OLDEST in the window; omit for all.")
+        ] = None,
     ) -> dict[str, Any]:
         b = Builder()
         if rt.store is None:
@@ -307,7 +339,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
         venue: Annotated[str, Field(description="ccxt venue id, e.g. 'binanceusdm'.")],
         symbol: Annotated[str, Field(description="ccxt symbol, e.g. 'BTC/USDT:USDT'.")],
         timeframe: Annotated[str, Field(description="OHLCV timeframe, e.g. '1h'.")] = "1h",
-        lookback_bars: Annotated[int, Field(ge=20, le=10_000)] = 500,
+        lookback_bars: RANGE_LOOKBACK = 500,
         min_bars: Annotated[int, Field(ge=5, le=1000, description="Minimum bars in a range.")] = 20,
         max_width_pct: Annotated[float, Field(gt=0, le=50, description="Max (high - low) / mid, in percent.")] = 10.0,
         swing_lookback: Annotated[int, Field(ge=1, le=50, description="Pivot look-around for swing points.")] = 3,
@@ -425,14 +457,14 @@ def register(server: MCPServer, rt: Runtime) -> None:
         venue: Annotated[str, Field(description="ccxt venue id.")],
         symbol: Annotated[str, Field(description="ccxt symbol.")],
         timeframe: Annotated[str, Field(description="Range timeframe (4h / 12h recommended by lecture).")] = "4h",
-        lookback_bars: Annotated[int, Field(ge=20, le=10_000)] = 300,
-        min_bars: Annotated[int, Field(ge=5, le=1000)] = 20,
-        max_width_pct: Annotated[float, Field(gt=0, le=50)] = 15.0,
-        swing_lookback: Annotated[int, Field(ge=1, le=50)] = 3,
-        sweep_wick_ratio: Annotated[float, Field(ge=0.0, le=1.0)] = 0.5,
-        stop_mult: Annotated[float, Field(ge=0.0, le=10, description="Stop offset multiplier over the sweep's overshoot %.")] = 2.0,
-        stop_min_offset_pct: Annotated[float, Field(ge=0.0, le=5, description="Minimum stop offset in percent.")] = 0.1,
-        min_rr: Annotated[float, Field(ge=1, le=20, description="Min rr1 to flag the setup as tradable.")] = 2.0,
+        lookback_bars: RANGE_LOOKBACK = 300,
+        min_bars: RANGE_MIN_BARS = 20,
+        max_width_pct: RANGE_MAX_WIDTH = 15.0,
+        swing_lookback: SWING_LOOKBACK = 3,
+        sweep_wick_ratio: SWEEP_WICK_RATIO = 0.5,
+        stop_mult: STOP_MULT = 2.0,
+        stop_min_offset_pct: STOP_MIN_OFFSET = 0.1,
+        min_rr: MIN_RR = 2.0,
         use_tight_stop: Annotated[bool, Field(description="After 2-3 confirmed sweeps: stop right at the swept level.")] = False,
         source: Annotated[Literal["store", "live"], Field(description="Where bars come from.")] = "live",
     ) -> dict[str, Any]:
@@ -656,14 +688,14 @@ def register(server: MCPServer, rt: Runtime) -> None:
         venue: Annotated[str, Field(description="ccxt venue id (binanceusdm, bybit, okx, hyperliquid, …).")],
         symbols: Annotated[list[str], Field(description="ccxt symbols to scan (same venue). Max 50 per call.", max_length=50)],
         timeframe: Annotated[str, Field(description="Range timeframe. DoubleTop recommends 4h / 12h.")] = "4h",
-        lookback_bars: Annotated[int, Field(ge=20, le=10_000)] = 300,
-        min_bars: Annotated[int, Field(ge=5, le=1000)] = 20,
-        max_width_pct: Annotated[float, Field(gt=0, le=50)] = 15.0,
-        swing_lookback: Annotated[int, Field(ge=1, le=50)] = 3,
-        sweep_wick_ratio: Annotated[float, Field(ge=0.0, le=1.0)] = 0.5,
-        stop_mult: Annotated[float, Field(ge=0.0, le=10)] = 2.0,
-        stop_min_offset_pct: Annotated[float, Field(ge=0.0, le=5)] = 0.1,
-        min_rr: Annotated[float, Field(ge=1, le=20)] = 2.0,
+        lookback_bars: RANGE_LOOKBACK = 300,
+        min_bars: RANGE_MIN_BARS = 20,
+        max_width_pct: RANGE_MAX_WIDTH = 15.0,
+        swing_lookback: SWING_LOOKBACK = 3,
+        sweep_wick_ratio: SWEEP_WICK_RATIO = 0.5,
+        stop_mult: STOP_MULT = 2.0,
+        stop_min_offset_pct: STOP_MIN_OFFSET = 0.1,
+        min_rr: MIN_RR = 2.0,
         only_tradable: Annotated[bool, Field(description="Keep only setups with rr1 ≥ min_rr.")] = True,
         exclude_ambiguous: Annotated[bool, Field(description="Drop ranges whose classification is ambiguous.")] = False,
         max_sweep_age_bars: Annotated[
@@ -749,7 +781,14 @@ def register(server: MCPServer, rt: Runtime) -> None:
         venue: Annotated[str, Field(description="ccxt venue id, e.g. 'binanceusdm'.")],
         symbol: Annotated[str, Field(description="ccxt symbol, e.g. 'BTC/USDT:USDT'.")],
         timeframe: Annotated[str, Field(description="OHLCV timeframe, e.g. '1h'.")] = "1h",
-        lookback_bars: Annotated[int, Field(ge=3, le=10_000)] = 100,
+        lookback_bars: Annotated[
+            int,
+            Field(
+                ge=3,
+                le=10_000,
+                description="Bars in the regime window (3-10000). Live: the latest N from one ccxt request (venues cap it).",
+            ),
+        ] = 100,
         trend_threshold: Annotated[float, Field(ge=0, le=10, description="trend_strength cutoff for up/down vs chop.")] = 0.5,
         source: Annotated[Literal["store", "live"], Field(description="Where bars come from.")] = "store",
     ) -> dict[str, Any]:

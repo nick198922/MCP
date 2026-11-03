@@ -115,8 +115,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
     )
     async def top_coins(
         limit: Annotated[int, Field(ge=1, le=250, description="Rows to return (max 250 per page).")] = 20,
-        vs_currency: str = "usd",
-        page: Annotated[int, Field(ge=1, le=20)] = 1,
+        vs_currency: Annotated[
+            str, Field(description="Quote currency for price, market cap and volume, CoinGecko code (e.g. 'usd', 'eur', 'btc').")
+        ] = "usd",
+        page: Annotated[int, Field(ge=1, le=20, description="Page number (1-20); page 2 with limit=100 gives ranks 101-200.")] = 1,
     ) -> dict[str, Any]:
         b = Builder()
         rows = await b.guard("markets", "coingecko", rt.coingecko.coins_markets(vs_currency, limit, page))

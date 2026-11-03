@@ -50,9 +50,12 @@ def register(server: MCPServer, rt: Runtime) -> None:
     )
     async def positions_add(
         instrument: Annotated[str, Field(description="e.g. BTC-30OCT26-82000-C or BTC/USDT:USDT.")],
-        kind: Literal["option", "future", "perp", "spot"],
-        side: Literal["long", "short"],
-        size: Annotated[float, Field(gt=0)],
+        kind: Annotated[Literal["option", "future", "perp", "spot"], Field(description="Instrument type of the position.")],
+        side: Annotated[Literal["long", "short"], Field(description="Direction; sets the sign applied to size and greeks.")],
+        size: Annotated[
+            float,
+            Field(gt=0, description="Number of contracts / coins, always > 0 (sign comes from side); greeks are multiplied by it."),
+        ],
         entry: Annotated[float | None, Field(gt=0, description="Entry price in quote currency.")] = None,
         mark: Annotated[float | None, Field(gt=0, description="Latest mark (USD per contract/coin).")] = None,
         delta: Annotated[float | None, Field(description="Per-contract delta.")] = None,
@@ -96,7 +99,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
         status: Annotated[Literal["open", "closed"] | None, Field(description="Optional status filter.")] = None,
         instrument: Annotated[str | None, Field(description="Optional exact instrument filter.")] = None,
         tag: Annotated[str | None, Field(description="Optional single-tag filter.")] = None,
-        limit: Annotated[int, Field(ge=1, le=1000)] = 200,
+        limit: Annotated[int, Field(ge=1, le=1000, description="Maximum number of positions to return, newest first (1-1000).")] = 200,
     ) -> dict[str, Any]:
         b = Builder()
         if not _store_guard(b, rt):

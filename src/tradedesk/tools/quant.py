@@ -25,7 +25,13 @@ def register(server: MCPServer, rt: Runtime) -> None:
     )
     async def odds_devig(
         odds: Annotated[list[float], Field(min_length=2, description="Decimal odds, each > 1")],
-        method: Literal["proportional", "power"] = "proportional",
+        method: Annotated[
+            Literal["proportional", "power"],
+            Field(
+                description="De-vig method: 'proportional' divides each implied probability by the overround; "
+                "'power' solves sum(p_i^k) = 1 and takes more margin off long shots."
+            ),
+        ] = "proportional",
     ) -> dict[str, Any]:
         b = Builder()
         try:
@@ -45,11 +51,13 @@ def register(server: MCPServer, rt: Runtime) -> None:
         ),
     )
     async def option_calc(
-        forward: Annotated[float, Field(gt=0)],
-        strike: Annotated[float, Field(gt=0)],
-        days: Annotated[float, Field(gt=0)],
-        iv: Annotated[float, Field(gt=0, lt=5)],
-        kind: Literal["call", "put"] = "call",
+        forward: Annotated[
+            float, Field(gt=0, description="Forward (futures) price of the underlying for this expiry, USD; not spot (r = 0).")
+        ],
+        strike: Annotated[float, Field(gt=0, description="Strike price, USD.")],
+        days: Annotated[float, Field(gt=0, description="Calendar days to expiry; may be fractional. T = days / 365.")],
+        iv: Annotated[float, Field(gt=0, lt=5, description="Annualised implied volatility as a decimal (0.60 = 60 %), below 5.")],
+        kind: Annotated[Literal["call", "put"], Field(description="Option type.")] = "call",
     ) -> dict[str, Any]:
         b = Builder()
         T, is_call = days / 365.0, kind == "call"
@@ -67,9 +75,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
         ),
     )
     async def touch_probability(
-        spot: Annotated[float, Field(gt=0)],
-        barrier: Annotated[float, Field(gt=0)],
-        days: Annotated[float, Field(gt=0)],
+        spot: Annotated[float, Field(gt=0, description="Current price of the underlying, USD (treated as the forward, r = 0).")],
+        barrier: Annotated[float, Field(gt=0, description="Price level to touch, USD; above or below spot (direction is inferred).")],
+        days: Annotated[float, Field(gt=0, description="Calendar days in the window; may be fractional. T = days / 365.")],
         iv: Annotated[float, Field(gt=0, lt=5, description="Annualised vol as decimal")],
     ) -> dict[str, Any]:
         b = Builder()

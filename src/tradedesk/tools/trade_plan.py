@@ -314,7 +314,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "BTC / ETH signals traded both as futures and as a long option (premium = the stop): n pairs with both legs "
             "closed, mean R of each leg (futures R = P&L / risk at the stop, option R = P&L / premium + fee), mean of "
             "option R - futures R with a 95 % t CI, and how often the option outlived a futures stop-out and closed at "
-            "the target; under 30 pairs marked 'замало даних'. Buying options loses the variance risk premium on average: "
+            "the target; under 30 pairs the verdict says too little data (verdict text is Ukrainian). Buying options loses the variance risk premium on average: "
             "this is a live paired test, not a claimed edge. Paper scoring on candle highs / lows: not a fill guarantee, a forward "
             "record of the assistant's judgment, not proven edge."
         ),

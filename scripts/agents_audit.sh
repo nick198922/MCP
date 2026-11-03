@@ -54,7 +54,7 @@ PROMPT="$(cat .claude/audit.md)
 Today: $(date +%F). Agents' logs (read them, do not change them): $LOG_DIR. The agents' clone: $(dirname "$REPO")/tradedesk-agents. This server user: $(whoami), without sudo."
 
 ALLOWED=(
-  Read Write Edit Glob Grep
+  Read Write Edit Glob Grep WebSearch WebFetch
   "Bash(uv run:*)" "Bash(uv sync:*)" "Bash(make:*)"
   "Bash(git status:*)" "Bash(git diff:*)" "Bash(git log:*)" "Bash(git show:*)" "Bash(git branch:*)"
   "Bash(git fetch:*)" "Bash(git rev-parse:*)" "Bash(git ls-tree:*)" "Bash(git ls-files:*)" "Bash(git grep:*)" "Bash(git add:*)"
@@ -73,9 +73,10 @@ perl -e 'alarm shift; exec @ARGV' "${TRADEDESK_AUDIT_MAX_SECONDS:-10800}" "${TRA
   --permission-mode dontAsk --model "$MODEL" --effort "$EFFORT" --add-dir "$LOG_DIR" \
   --allowedTools "${ALLOWED[@]}" --disallowedTools "${DENIED[@]}" >"$REPORT" &
 pid=$!
-# Cost cap (owner 2026-11-02): the audit may take at most CAP points of the weekly limit (usual cost about 5).
+# Cost cap (owner 2026-11-02): the audit may take at most CAP points of the weekly limit (usual cost about 5, plus
+# 2-3 for the setup review since 2026-11-03).
 # Checked every 5 minutes; past the cap the session is stopped and the owner is told.
-CAP="${TRADEDESK_AUDIT_MAX_WEEK_PCT:-10}"
+CAP="${TRADEDESK_AUDIT_MAX_WEEK_PCT:-12}"
 capped=""
 (
   while sleep 300; do

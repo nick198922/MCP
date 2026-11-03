@@ -8,14 +8,15 @@ daily stop assumes the skipped trades would not have been replaced by others."""
 from __future__ import annotations
 
 import argparse
-import sqlite3
 import sys
 from collections import defaultdict
 from datetime import UTC, datetime
 
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
+
 
 def load(db: str) -> list[tuple[int, int, str, str, float]]:
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    con = cmn.connect_ro(db)
     rows = con.execute(
         "SELECT opened_ts, closed_ts, symbol, side, pnl FROM journal WHERE tags LIKE '%\"import\"%' AND tags NOT LIKE '%\"airdrop\"%' AND status='closed' ORDER BY closed_ts"
     ).fetchall()
@@ -67,7 +68,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--db", default="/var/lib/tradedesk-mcp/tradedesk.sqlite")
     a = ap.parse_args(argv)
-    con = sqlite3.connect(f"file:{a.db}?mode=ro", uri=True)
+    con = cmn.connect_ro(a.db)
     worst = con.execute(
         "SELECT closed_ts, symbol, side, size, entry, exit, pnl FROM journal WHERE tags LIKE '%\"import\"%' AND tags NOT LIKE '%\"airdrop\"%' "
         "AND tags NOT LIKE '%\"option\"%' AND status='closed' ORDER BY pnl LIMIT 10"

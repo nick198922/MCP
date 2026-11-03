@@ -30,6 +30,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
+
 from tradedesk.analytics import pm_h7_iv as h7
 from tradedesk.analytics import pm_modules as pm
 from tradedesk.analytics.pm_threshold import HOUR_S
@@ -63,13 +65,7 @@ def _load(name: str):  # noqa: ANN202
 
 
 def copy_db(dst: Path) -> None:
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    a = sqlite3.connect(f"file:{DB_SRC}?mode=ro", uri=True)
-    b = sqlite3.connect(dst)
-    with b:
-        a.backup(b)
-    a.close()
-    b.close()
+    cmn.backup_db(DB_SRC, dst)
 
 
 def is_profile() -> dict[tuple[int, bool], float]:
@@ -146,7 +142,7 @@ def probs(prof: dict, r: tuple, shift_h: int = 0) -> float | None:
 def stage0(db: Path, out: Path, covered_only: bool = True) -> dict[str, Any]:
     t = time.perf_counter()
     prof = is_profile()
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    con = cmn.connect_ro(db)
     span = con.execute("SELECT min(ts), max(ts), count(*) FROM pm_gap_snapshot").fetchone()
     oc = con.execute(
         "SELECT count(*), sum(outcome_yes IS NOT NULL), sum(outcome_yes IS NULL AND end_ts < ?) FROM pm_gap_outcome WHERE end_ts >= ?",
@@ -288,7 +284,7 @@ def stage_full(db: Path, gate_file: Path, out: Path, n_boot: int) -> None:
     if not gate_file.exists() or not json.loads(gate_file.read_text())["gate"]["pass"]:
         raise SystemExit("stage-0 gate not passed (or not run): the registered test is not computed (item 8k waits)")
     prof = is_profile()
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    con = cmn.connect_ro(db)
     mk: list[dict[str, Any]] = []
     for mid, rows, y in market_rows(con, with_outcome=True):
         rows = [r for r in rows if r[13] == 1]

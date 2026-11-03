@@ -17,6 +17,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
+
 from tradedesk.analytics.cycle_regime_journal import evaluate_journal, render_ua
 
 DEFAULT_DB = "/var/lib/tradedesk-mcp/tradedesk.sqlite"
@@ -24,7 +26,7 @@ DEFAULT_DB = "/var/lib/tradedesk-mcp/tradedesk.sqlite"
 
 def load(db: str, base: str) -> list[dict[str, Any]]:
     """Journal rows of ``base`` (date, state, close, version), oldest first; [] when the table does not exist yet."""
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
+    con = cmn.connect_ro(db)
     try:
         if not con.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'cycle_regime_log'").fetchone():
             return []

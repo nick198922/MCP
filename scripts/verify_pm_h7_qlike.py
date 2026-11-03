@@ -22,7 +22,6 @@ import importlib.util
 import json
 import math
 import resource
-import sqlite3
 import statistics
 import sys
 import time
@@ -30,6 +29,8 @@ from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
 
 from tradedesk.analytics import pm_h7_qlike as hq
 from tradedesk.analytics import pm_modules as pm
@@ -72,7 +73,7 @@ def parse_expiry(s: str) -> int:
 def load_rows(db: Path, prof: dict) -> tuple[list[dict[str, Any]], dict[str, int], int]:
     """Registered rows with their target window H and the item-8k multiplier s on H (forecasts only)."""
     cutoff = int(db.stat().st_mtime) - HOUR_S
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    con = cmn.connect_ro(db)
     q = (
         "SELECT ts, market_id, asset, kind, end_ts, model_iv, model_expiry, expiry_gap_hours FROM pm_gap_snapshot "
         "WHERE model_note = 'ok' AND model_covered = 1 AND asset IN ('BTC', 'ETH') AND model_iv > 0 "

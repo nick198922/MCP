@@ -2,6 +2,7 @@
 
 Read-only SQLite: a script that reads the live store opens it with ``mode=ro`` (no migration, no write) and the path
 URL-quoted, so a ``?``, ``#`` or ``%`` in the path cannot cut the file name short or drop the read-only flag.
+A verification script that works on a copy of the store makes it with ``backup_db`` (sqlite3 online backup).
 """
 
 from __future__ import annotations
@@ -25,6 +26,22 @@ def open_ro(path: Path) -> tuple[sqlite3.Connection | None, str | None]:
         return connect_ro(path), None
     except (sqlite3.Error, OSError) as e:
         return None, f"unreadable: {type(e).__name__}"
+
+
+def backup_db(src: str | Path, dst: Path) -> None:
+    """Copy the store at ``src`` into ``dst`` with ``sqlite3`` online backup (consistent while the collector writes):
+    ``src`` opened read-only through ``connect_ro``, ``dst``'s directory created if needed, an existing ``dst``
+    overwritten. Raises ``sqlite3.Error`` (e.g. ``src`` missing) and closes both connections either way."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    a = connect_ro(src)
+    try:
+        b = sqlite3.connect(dst)
+        try:
+            a.backup(b)
+        finally:
+            b.close()
+    finally:
+        a.close()
 
 
 def has_table(con: sqlite3.Connection, name: str) -> bool:

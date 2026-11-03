@@ -32,6 +32,12 @@ def _page(snap: dict, t: float, asset: str = "BTC") -> str:
     return db.render_radar(snap, None, t, db.parse_radar_query(f"asset={asset}"))
 
 
+def _tile_acts(page: str) -> tuple[str, str]:
+    """The action lines of the IV Rank and IV − RV30 tiles (the 2nd and 3rd tile)."""
+    acts = re.findall(r"<span class='act'>(.*?)</span>", _main(page))
+    return acts[1], acts[2]
+
+
 def test_radar_tab_lead_tiles_folds_and_caveats_at_the_bottom():
     snap, t = tdb._radar_snap()
     page = _page(snap, t + 300)
@@ -53,7 +59,7 @@ def test_radar_tab_lead_tiles_folds_and_caveats_at_the_bottom():
     acts = re.findall(r"<span class='act'>(.*?)</span>", main)
     assert acts == [
         "звичайний тиждень: дивись IV і скью",
-        "дешево, але це не сигнал",
+        "дешево за роком, дорого за рухом",  # IV Rank 10.7 % but IV − RV30 +5.4 вп: the tile agrees with its neighbour
         "покупець переплачує за рух",
         "захист дорожчає: пут-спред, не пут",
     ]
@@ -109,24 +115,38 @@ def test_radar_lead_cases():
     assert "IV вища за фактичний рух на +5.4 вп" in lead and "опціони дешеві" not in lead and "chip opp" not in lead
     tiles = _main(_page(snap, t + 300))
     assert "<span class='act'>покупець переплачує за рух</span>" in tiles
+    # the IV Rank tile follows the lead (review 02.11, p. 5): no «cheap» next to «покупець переплачує за рух»
+    assert _tile_acts(_page(snap, t + 300)) == ("дешево за роком, дорого за рухом", "покупець переплачує за рух")
+    a["iv_vs_rv"]["premium_rv30"] = db.RADAR_RICH_IV  # the boundary: not above RADAR_RICH_IV, the IV Rank rule stands
+    assert _tile_acts(_page(snap, t + 300)) == ("дешево, але це не сигнал", "звична премія продавцю")
+    assert "<span class='chip opp'>опціони дешеві</span>" in _lead(_page(snap, t + 300))
     a["iv_vs_rv"]["premium_rv30"] = 0.01  # IV barely above RV30: the IV Rank rule stands
     lead = _lead(_page(snap, t + 300))
     assert "<span class='chip opp'>опціони дешеві</span>" in lead and "лише під власну тезу й спредом" in lead
+    assert _tile_acts(_page(snap, t + 300)) == ("дешево, але це не сигнал", "звична премія продавцю")
     a["iv_rank"]["now"]["rank"] = 0.7
     lead = _lead(_page(snap, t + 300))
     assert "<span class='chip risk'>опціони дорогі</span>" in lead and "IV Rank 70.0 % (біля верху року)" in lead
+    assert _tile_acts(_page(snap, t + 300)) == ("дорого: продаж лише із захистом", "звична премія продавцю")
     a["iv_vs_rv"]["premium_rv30"] = -0.02  # high IV Rank but IV ≤ RV30: not «dear», as the IV − RV30 tile says
     page = _page(snap, t + 300)
     lead = _lead(page)
     assert "<span class='chip calm'>дорого за роком, не за рухом</span>" in lead and "опціони дорогі" not in lead
     assert "IV не вища за фактичний рух (−2.0 вп)" in lead
     assert "<span class='act'>опціони не дорожчі за рух</span>" in _main(page)
+    assert _tile_acts(page) == ("дорого за роком, не за рухом", "опціони не дорожчі за рух")
     a["iv_vs_rv"]["premium_rv30"] = 0.0  # the boundary: IV equal to RV30 is «не дорожчі за рух» on the tile too
-    assert "дорого за роком, не за рухом" in _lead(_page(snap, t + 300))
+    page = _page(snap, t + 300)
+    assert "дорого за роком, не за рухом" in _lead(page)
+    assert _tile_acts(page) == ("дорого за роком, не за рухом", "опціони не дорожчі за рух")
     a["iv_vs_rv"]["premium_rv30"] = None  # no IV − RV30: the IV Rank rule alone
-    assert "<span class='chip risk'>опціони дорогі</span>" in _lead(_page(snap, t + 300))
+    page = _page(snap, t + 300)
+    assert "<span class='chip risk'>опціони дорогі</span>" in _lead(page)
+    acts = re.findall(r"<span class='act'>(.*?)</span>", _main(page))
+    assert "дорого: продаж лише із захистом" in acts and len(acts) == 3  # no IV − RV30 tile, the rank's own line
     a["iv_rank"]["now"]["rank"] = 0.1
     assert "<span class='chip opp'>опціони дешеві</span>" in _lead(_page(snap, t + 300))
+    assert "<span class='act'>дешево, але це не сигнал</span>" in _main(_page(snap, t + 300))
     a["iv_rank"]["now"]["rank"] = 0.4
     lead = _lead(_page(snap, t + 300))
     assert "<span class='chip calm'>спокій</span>" in lead and "нічого термінового" in lead and "(посередині року)" in lead

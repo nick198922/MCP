@@ -44,9 +44,10 @@ class Deribit:
     async def last_trades_by_currency(self, currency: str, kind: str, count: int, include_old: bool) -> Fetched:
         """Recent trades across all instruments of a kind. `block_trade_id` is set for block prints.
 
-        Each trade carries `instrument_name`, `direction` (buy|sell, taker side), `amount` (contracts
-        or underlying units depending on instrument), `price` (native: BTC for inverse options,
-        USD for linear futures), `mark_price`, `index_price`, `iv`, `timestamp`.
+        Each trade carries `instrument_name`, `direction` (buy|sell, taker side), `amount` (coin for
+        options; USD for BTC/ETH inverse futures and perpetuals, = `contracts` * 10 USD for BTC, * 1
+        USD for ETH), `price` (coin for options, USD per coin for futures), `mark_price`,
+        `index_price`, `iv`, `timestamp`.
         """
         f = await self._public(
             "get_last_trades_by_currency",

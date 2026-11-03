@@ -801,8 +801,11 @@ def register(server: MCPServer, rt: Runtime) -> None:
         description=(
             "Recent largest trades for Deribit BTC/ETH options or futures via "
             "/public/get_last_trades_by_currency. Each row includes direction (taker side), amount, "
-            "native price, IV (for options), notional USD = amount * price * index_price for inverse "
-            "options (close enough for sizing), and whether it is a block print (block_trade_id set). "
+            "native price, IV (for options), USD notional and whether it is a block print "
+            "(block_trade_id set). Units: for options amount is in coin (BTC/ETH) and price in coin, "
+            "notional_usd = amount * price * index_price (close enough for sizing); for futures and "
+            "the perpetual (inverse contracts) amount is already USD and price is USD per coin, so "
+            "notional_usd = amount. "
             "Returns top_n largest trades by notional USD plus a summary (counts, block share, "
             "buy/sell notional, taker imbalance). Flow is INFORMATIVE: block prints may be hedged, "
             "big taker buys do not imply directional conviction."
@@ -842,9 +845,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
             direction = str(t.get("direction") or "").lower()
             if direction not in ("buy", "sell"):
                 continue
-            # Deribit option prices are quoted in native (BTC/ETH): USD notional ~= amount * price * index.
-            # For dated futures price is USD; use amount * price directly.
-            notional_usd = amount * price * index if kind == "option" else amount * price
+            # Options: amount in coin, price in coin (BTC/ETH) -> USD notional ~= amount * price * index.
+            # BTC/ETH futures and perpetuals are inverse: amount is already USD (contracts * 10 USD for
+            # BTC, * 1 USD for ETH; checked live 2026-11-03), so the notional is amount itself.
+            notional_usd = amount * price * index if kind == "option" else amount
             block_id = t.get("block_trade_id")
             is_block = bool(block_id)
             if only_blocks and not is_block:

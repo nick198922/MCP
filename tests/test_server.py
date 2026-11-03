@@ -903,6 +903,25 @@ async def test_deribit_largest_trades(server):
     assert all(t["is_block"] for t in env_blk["data"]["top_trades"])
 
 
+async def test_deribit_largest_trades_future_amount_is_usd(server):
+    # Real inverse-futures trades (fixture 2026-11-03): amount is USD, so notional_usd == amount, not amount * price.
+    env = await call(server, "deribit_largest_trades", currency="BTC", kind="future", count=50, top_n=5)
+    assert env["ok"] is True
+    d = env["data"]
+    assert d["kind"] == "future"
+    s = d["summary"]
+    assert s["fetched"] == 4 and s["kept"] == 4
+    assert s["buy_notional_usd"] == 50_040 and s["sell_notional_usd"] == 32_510
+    assert s["taker_imbalance"] == pytest.approx((50_040 - 32_510) / 82_550, abs=1e-4)
+    top = d["top_trades"]
+    assert [t["instrument"] for t in top[:2]] == ["BTC-PERPETUAL", "BTC-PERPETUAL"]
+    assert all(t["notional_usd"] == t["amount"] for t in top)
+    assert top[0]["notional_usd"] == 50_000  # 5000 contracts * 10 USD; amount * price would be ~3.9e9
+
+    env_min = await call(server, "deribit_largest_trades", currency="BTC", kind="future", min_notional_usd=1_000)
+    assert env_min["data"]["summary"]["kept"] == 2
+
+
 async def test_deribit_skew_term(server):
     env = await call(server, "deribit_skew_term", currency="BTC", target_delta=0.25, min_days=0, max_days=400)
     d = env["data"]

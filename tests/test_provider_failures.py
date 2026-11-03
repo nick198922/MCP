@@ -52,6 +52,7 @@ def _assert_failed(env: dict, provider: str) -> None:
         ("deribit_futures_curve", {"currency": "BTC"}),
         ("deribit_dvol", {"currency": "BTC", "hours_back": 24}),
         ("deribit_largest_trades", {"currency": "BTC", "kind": "option", "count": 50}),
+        ("deribit_largest_trades", {"currency": "BTC", "kind": "future", "count": 50}),
         # The option-book path (_chain), as in deribit_vol_surface.
         ("deribit_option_chain", {"expiry": "27NOV26", "currency": "BTC"}),
         ("prob_from_options", {"expiry": "27NOV26", "level": 90000, "kind": "above", "currency": "BTC"}),

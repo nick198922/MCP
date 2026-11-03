@@ -126,6 +126,10 @@ def make_transports(state: State) -> dict:
         if req.url.path.endswith("get_book_summary_by_currency"):
             return httpx.Response(200, json={"jsonrpc": "2.0", "result": option_book() if kind == "option" else FUTURES})
         if req.url.path.endswith("get_last_trades_by_currency"):
+            if kind == "future":
+                # real inverse-futures trades (amount in USD), fetched 2026-11-03
+                with open(Path(__file__).parent / "fixtures" / "deribit_futures_trades_2026-11-03.json") as f:
+                    return httpx.Response(200, json=json.load(f))
             trades = []
             for i in range(10):
                 is_block = i < 2  # first two are block prints

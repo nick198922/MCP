@@ -16,10 +16,11 @@ import resource
 import sqlite3
 import sys
 import time
-import urllib.parse
 from collections import Counter
 from pathlib import Path
 from typing import Any
+
+import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
 
 from tradedesk.analytics import demo_execution as de
 
@@ -29,7 +30,7 @@ MAX_ROWS = 100_000
 
 def load_signals(db: str) -> list[dict[str, Any]]:
     """exec_audit rows of kind ``signal`` (payload parsed) over a read-only connection, for the selection check."""
-    con = sqlite3.connect(f"file:{urllib.parse.quote(db)}?mode=ro", uri=True, timeout=5)
+    con = cmn.connect_ro(db)
     try:
         out = []
         for ts, lid, setup, payload in con.execute(
@@ -47,7 +48,7 @@ def load_signals(db: str) -> list[dict[str, Any]]:
 
 def load(db: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """(demo_trade rows, exec_audit rows of the entry life cycle) over a read-only connection."""
-    con = sqlite3.connect(f"file:{urllib.parse.quote(db)}?mode=ro", uri=True, timeout=5)
+    con = cmn.connect_ro(db)
     try:
         con.row_factory = sqlite3.Row
         trades = [dict(r) for r in con.execute("SELECT * FROM demo_trade ORDER BY signal_ts LIMIT ?", (MAX_ROWS,))]

@@ -377,8 +377,11 @@ def register(server: MCPServer, rt: Runtime) -> None:
     @server.tool(
         annotations=READ_ONLY,
         description=(
-            "Open-interest walls on Deribit BTC/ETH options: per-strike call/put OI (in contracts, underlying units) and USD notional at the forward, "
-            "sorted largest-first. Returns top strikes overall and separately the biggest call walls (potential resistance) and put walls (potential support). "
+            "Open-interest walls on Deribit BTC/ETH options: per-strike call/put OI (in contracts, underlying units) and USD notional "
+            "(each option's OI times its own expiry's forward), sorted largest-first. Returns top strikes overall and separately the biggest "
+            "call walls (potential resistance) and put walls (potential support). Without `expiry` all expiries are summed per strike, and the "
+            "band (`width_pct`), `distance_pct` and the returned `forward` use one reference forward (the first option in Deribit's book "
+            "summary, whose expiry is not guaranteed to be the nearest); pass `expiry` for exact distances. "
             "Walls are a positioning snapshot, not a forecast; big OI can be dealer-hedged or vice versa."
         ),
     )
@@ -412,6 +415,11 @@ def register(server: MCPServer, rt: Runtime) -> None:
         if F is None:
             b.miss("forward", "tradedesk", "data_unavailable", "no priced options for this scope")
             return b.build(None, ok=False)
+        if not expiry and len(by) > 1:
+            b.warn(
+                "all expiries summed: notional_usd uses each option's own forward, but the strike band, distance_pct and "
+                "`forward` use one reference forward; pass `expiry` for exact distances"
+            )
         banded = [x for x in scope if abs(math.log(x.strike / F)) <= width_pct / 100]
         agg = oi_by_strike(banded)
         if not agg:

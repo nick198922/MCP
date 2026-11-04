@@ -65,7 +65,10 @@ def _percentile_rank(values: list[float], x: float) -> float | None:
 
 
 def detect_interval_hours(entries: list[dict[str, Any]], fallback: float = 8.0) -> float:
-    """Median spacing between entries, in hours, floored to the nearest sensible funding cadence."""
+    """Median positive spacing between entry timestamps, in hours, returned as is (not rounded to a cadence).
+
+    Returns ``fallback`` when there are fewer than two distinct stamps or the median spacing is under 15 minutes.
+    """
     ts = sorted(int(e["ts_ms"]) for e in entries if e.get("ts_ms") is not None)
     if len(ts) < 2:
         return fallback

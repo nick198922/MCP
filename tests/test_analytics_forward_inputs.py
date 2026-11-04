@@ -178,6 +178,17 @@ def test_oi_by_strike_aggregates_calls_puts_and_ratios():
     }
 
 
+def test_oi_by_strike_notional_uses_each_rows_own_forward():
+    # item 73 / BACKLOG 6.12: rows of two expiries at one strike, forwards 100 and 110.
+    # notional = 10 x 100 + 5 x 110 + 15 x 100 = 1000 + 550 + 1500 = 3050 (not 30 x first forward 100 = 3000),
+    # and the result does not depend on which expiry comes first.
+    rows = [_row(100, True, 10, F=100.0), _row(100, True, 5, F=110.0), _row(100, False, 15, F=100.0)]
+    for order in (rows, rows[::-1]):
+        (k100,) = oi_by_strike(order)
+        assert k100["total_oi"] == 30.0
+        assert k100["notional_usd"] == pytest.approx(3050.0)
+
+
 def test_oi_by_strike_empty_and_all_zero():
     assert oi_by_strike([]) == []
     assert oi_by_strike([_row(100, True, 0), _row(100, False, 0)]) == []
@@ -205,6 +216,13 @@ def test_detect_interval_hours_median_resists_one_gap_and_ignores_order_and_dupl
 def test_detect_interval_hours_skips_missing_stamps_and_casts_strings():
     entries = [{"ts_ms": None}, {"rate": 0.1}, {"ts_ms": str(0)}, {"ts_ms": str(4 * H_MS)}, {"ts_ms": 8 * H_MS}]
     assert detect_interval_hours(entries) == pytest.approx(4.0)
+
+
+def test_detect_interval_hours_returns_raw_median_not_rounded():
+    # item 73 / BACKLOG 6.12: the docstring now says the median is returned as is. Rounding to {1, 2, 4, 8} h was
+    # rejected because carry_snapshot / summarise_funding_history feed forward numbers through this value.
+    assert detect_interval_hours(_ts(0, 7.5, 15, 22.5)) == pytest.approx(7.5)
+    assert detect_interval_hours(_ts(0, 3, 6, 9)) == pytest.approx(3.0)
 
 
 def test_detect_interval_hours_fallbacks():

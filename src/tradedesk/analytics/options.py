@@ -415,16 +415,21 @@ def atm_straddle(rows: list[OptionRow]) -> dict[str, Any] | None:
 
 
 def oi_by_strike(rows: Iterable[OptionRow]) -> list[dict[str, Any]]:
-    """Per-strike OI aggregated across the given rows (call vs put, totals, p/c ratio, USD notional at the forward)."""
+    """Per-strike OI aggregated across the given rows (call vs put, totals, p/c ratio, USD notional).
+
+    ``notional_usd`` sums each row's OI times that row's own forward, so rows of several expiries at one strike are
+    each valued at their own expiry's forward.
+    """
     agg: dict[float, dict[str, float]] = {}
     for r in rows:
         if r.open_interest <= 0:
             continue
-        slot = agg.setdefault(r.strike, {"call_oi": 0.0, "put_oi": 0.0, "forward": r.forward})
+        slot = agg.setdefault(r.strike, {"call_oi": 0.0, "put_oi": 0.0, "notional": 0.0})
         if r.is_call:
             slot["call_oi"] += r.open_interest
         else:
             slot["put_oi"] += r.open_interest
+        slot["notional"] += r.open_interest * r.forward
     out: list[dict[str, Any]] = []
     for k, v in sorted(agg.items()):
         total = v["call_oi"] + v["put_oi"]
@@ -434,7 +439,7 @@ def oi_by_strike(rows: Iterable[OptionRow]) -> list[dict[str, Any]]:
                 "call_oi": v["call_oi"],
                 "put_oi": v["put_oi"],
                 "total_oi": total,
-                "notional_usd": total * v["forward"],
+                "notional_usd": v["notional"],
                 "pc_ratio": (v["put_oi"] / v["call_oi"]) if v["call_oi"] > 0 else None,
                 "net_oi": v["call_oi"] - v["put_oi"],
             }

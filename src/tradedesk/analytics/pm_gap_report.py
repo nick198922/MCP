@@ -27,7 +27,7 @@ import math
 import statistics
 from bisect import bisect_left
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
@@ -465,7 +465,8 @@ def final_metrics(
     Primary: CLV +24 h per position (cluster = ISO week of the entry, ET). Secondary: P&L and the closing CLV (cluster =
     resolution week), Brier D = model (k = 1) - Polymarket per resolved market over the main period's eligible snapshots
     (cluster = resolution week); k = 0.92 alongside. Stress and robustness (sections 6 and 12) under ``robustness``:
-    descriptive, they never change the verdict (see :func:`_robustness`).
+    descriptive, they never change the verdict (see :func:`_robustness`). ``primary_early_payout``: the primary in a
+    second, descriptive variant with the payout 1 / 0 for positions resolved by +24 h (:func:`primary_early_payout`).
 
     A pure function cannot know the real time: the gate is held by the runner (scripts/pm_gap_paper_report.py), which
     calls this only with the wall clock and the registered :data:`T0_TS`, never with values from the command line."""
@@ -502,6 +503,7 @@ def final_metrics(
         "positions": len(pm),
         "excluded_markets": sorted(excluded),
         "primary_clv_24h": primary,
+        "primary_early_payout": primary_early_payout(pm, outcome_rows),
         "clv_6h": summ("clv_6h", "week_entry"),
         "clv_close": summ("clv", "week_res"),
         "pnl": pnl,
@@ -509,6 +511,48 @@ def final_metrics(
         "verdict": v,
         "reason": reason,
         "robustness": _robustness(ctx, rule, pm, start, end),
+    }
+
+
+def primary_early_payout(pm: Sequence[Mapping[str, Any]], outcome_rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+    """The primary CLV +24 h in its second, DESCRIPTIVE variant "adjusted after partial resolution" (item 47 of
+    IDEA-20261102-standing-improvements; owner's answer 1+3 to Q-20261103-1). Only called from the gated
+    :func:`final_metrics`; the registered primary and the decision stay the first variant (``primary_clv_24h``).
+
+    A position whose market was resolved by its +24 h point (Gamma ``closed_ts`` <= entry + 24 h, schema 38, and a
+    settled result, i.e. ``pnl`` is known) takes the payout 1 / 0 minus the entry cost as its +24 h value, whether or
+    not a snapshot exists there; every other position keeps its first-variant value, and a 'missing' one stays missing.
+    Positions with 'n/a' (entered < 26 h before the end) stay out of both. Counts: ``sources`` (first variant, missing
+    flagged), ``defined`` (ok + missing), ``early_resolved`` and its share of ``defined``, ``early_resolved_missing``
+    (of those, without a +24 h snapshot), ``missing_left`` (missing in the second variant too) and, of them,
+    ``missing_without_close_ts`` (no close time recorded: the collector writes it forward only, from 2026-11-04)."""
+    closed_at = {str(o["market_id"]): int(o["closed_ts"]) for o in outcome_rows if o.get("closed_ts") is not None}
+    src: Counter = Counter(str(m["src_24h"]) for m in pm)
+    xs: list[tuple[float, Mapping[str, Any]]] = []
+    early = early_missing = missing_left = no_close = 0
+    for m in pm:
+        if m["src_24h"] not in ("ok", "missing"):
+            continue
+        closed = closed_at.get(str(m["market_id"]))
+        if m["pnl"] is not None and closed is not None and closed <= int(m["ts"]) + PRIMARY_H * HOUR_S:
+            early += 1
+            early_missing += int(m["src_24h"] == "missing")
+            xs.append((float(m["pnl"]), m))
+        elif m["clv_24h"] is not None:
+            xs.append((float(m["clv_24h"]), m))
+        else:
+            missing_left += 1
+            no_close += int(closed is None)
+    defined = src["ok"] + src["missing"]
+    return {
+        "sources": dict(sorted(src.items())),
+        "defined": defined,
+        "early_resolved": early,
+        "early_resolved_share": _share(early, defined),
+        "early_resolved_missing": early_missing,
+        "missing_left": missing_left,
+        "missing_without_close_ts": no_close,
+        "clv_24h": cluster_mean_ci([v for v, _ in xs], [m["week_entry"] for _, m in xs], [m["day"] for _, m in xs]),
     }
 
 
@@ -594,6 +638,7 @@ def render_verdict(f: Mapping[str, Any]) -> str:
         f"**Вердикт: {f['verdict']}** ({f['reason']})",
         "",
         row("CLV +24 год (основна, кластер — тиждень входу)", f["primary_clv_24h"]),
+        *_early_payout_lines(f["primary_early_payout"], row),
         row("CLV +6 год", f["clv_6h"]),
         row("CLV до закриття (кластер — тиждень розв'язання)", f["clv_close"]),
         row("P&L на акцію", f["pnl"]),
@@ -603,6 +648,26 @@ def render_verdict(f: Mapping[str, Any]) -> str:
         *render_robustness(f["robustness"]),
     ]
     return "\n".join(lines) + "\n"
+
+
+EARLY_PAYOUT_LABEL = "поправка після часткового розкриття"
+
+
+def _early_payout_lines(e: Mapping[str, Any], row: Callable[[str, Mapping[str, Any]], str]) -> list[str]:
+    """Lines of :func:`primary_early_payout` under the primary row: its 'missing' flagged, then the second variant."""
+    return [
+        f"  - точки +24 год основної метрики: {_kv(e['sources'])}; missing ({e['sources'].get('missing', 0)}) у середнє "
+        "не входять, n/a — вхід менш ніж за 26 год до кінця",
+        row(
+            f"CLV +24 год, {EARLY_PAYOUT_LABEL} (виплата 1 / 0 мінус ціна входу як значення +24 год для позицій, "
+            "розв'язаних до точки +24 год; описово, вердикт за ним не виноситься)",
+            e["clv_24h"],
+        ),
+        f"  - розв'язано до точки +24 год: {e['early_resolved']} з {e['defined']} визначених "
+        f"({_p(e['early_resolved_share'])}), з них без знімка +24 год {e['early_resolved_missing']}; лишились missing "
+        f"{e['missing_left']}, з них без записаного часу закриття (колектор пише його з 04.11, лише вперед) "
+        f"{e['missing_without_close_ts']}",
+    ]
 
 
 VARIANT_NAMES = {

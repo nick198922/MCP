@@ -304,18 +304,23 @@ def test_verdict_stress_delayed_survivors_and_thin_books():
 EARLY_KEYS = ("primary_early_payout", "clv_close_early_payout")  # the descriptive second variants of the verdict
 
 
-def test_verdict_primary_in_both_variants_early_payout_is_descriptive():
-    """Item 47 (standing improvements): the primary CLV +24 h as registered (missing flagged) and, descriptively, with
-    the payout 1 / 0 for positions resolved by +24 h (Gamma closed_ts, schema 38). Synthetic: m1 snapshot, closed after
-    its end; m2 no snapshot, resolved NO before +24 h; m3 no snapshot, unresolved, no close time; m4 snapshot, resolved
-    YES exactly at +24 h; m5 no snapshot, closed only after +24 h."""
+def _early_h24_case() -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """(rows, outcomes without closed_ts, the same with closed_ts) of the item 47 test: m1 snapshot, closed after its
+    end; m2 no snapshot, resolved NO before +24 h; m3 no snapshot, unresolved, no close time; m4 snapshot, resolved YES
+    exactly at +24 h; m5 no snapshot, closed only after +24 h."""
     window = range(T0 + 23 * H, T0 + 25 * H + 1)
     rows = ROWS + market_rows("m5")
     rows = [r for r in rows if not (r["market_id"] in ("m2", "m3", "m5") and r["ts"] in window)]
     no = {"outcome_yes": 0, "binance_close_end": 69_000.0, "binance_close_next": 69_000.0}
     base = [OUTCOMES[0], dict(OUTCOMES[1], **no), dict(OUTCOMES[2], outcome_yes=None), OUTCOMES[3], dict(OUTCOMES[0], market_id="m5")]
     closed = {"m1": END + 2 * H, "m2": T0 + 20 * H, "m4": T0 + 24 * H, "m5": T0 + 30 * H}
-    outs = [dict(o, closed_ts=closed.get(o["market_id"])) for o in base]
+    return rows, base, [dict(o, closed_ts=closed.get(o["market_id"])) for o in base]
+
+
+def test_verdict_primary_in_both_variants_early_payout_is_descriptive():
+    """Item 47 (standing improvements): the primary CLV +24 h as registered (missing flagged) and, descriptively, with
+    the payout 1 / 0 for positions resolved by +24 h (Gamma closed_ts, schema 38). Synthetic: see :func:`_early_h24_case`."""
+    rows, base, outs = _early_h24_case()
     f = final_metrics(rows, outs, verdict_ts(T0), T0)
     e = f["primary_early_payout"]
     assert e["sources"] == {"missing": 3, "ok": 2} and e["defined"] == 5
@@ -499,6 +504,29 @@ async def test_verdict_runs_only_on_the_wall_clock_and_the_registered_t0(tmp_pat
     monkeypatch.setattr(script.time, "time", lambda: float(verdict_ts(T0) - 1))  # one second early
     code, text = script.build_verdict(str(db))
     assert code == 2 and "refused" in text and "Вердикт" not in text
+
+
+async def test_runner_carries_the_gamma_close_time_from_the_db_to_both_reports(tmp_path, monkeypatch):
+    """Review 2026-11-04 (pm-gap-verdict-both-variants, item 3): closed_ts must travel Store (schema 38) -> load() ->
+    report. Other tests give it to the pure functions in memory only, so a column lost or mistyped on the way would print
+    zero counts in the weekly 'missing' explanation and in the verdict's second variants without failing anything."""
+    rows, _, outs = _early_h24_case()
+    db = tmp_path / "db.sqlite"
+    await _db(db, rows, outs)
+    loaded = {o["market_id"]: o["closed_ts"] for o in script.load(str(db))[1]}
+    assert loaded == {o["market_id"]: o["closed_ts"] for o in outs} and all(type(v) is int for v in loaded.values() if v)
+    # weekly: of the 'missing' +24 h points (m2, m3, m5) only m2 closed before its point
+    code, text = script.build_weekly(str(db), END + 2 * H, None)
+    assert code == 0 and "серед missing +24 год ринок закрито до точки 1; серед missing до закриття — до вікна закриття 0" in text
+    for hidden in HIDDEN:
+        assert hidden not in text, hidden
+    # verdict: the DB path gives the same v1 text as the in-memory rows with the close times
+    now = verdict_ts(T0) + 60
+    monkeypatch.setattr(script.time, "time", lambda: float(now))
+    monkeypatch.setattr(script, "T0_TS", T0)
+    code, text = script.build_verdict(str(db))
+    assert code == 0 and render_verdict(final_metrics(rows, outs, now, T0)) in text
+    assert "розв'язано до точки +24 год: 2 з 5 визначених (40.0 %), з них без знімка +24 год 1; лишились missing 2" in text
 
 
 def test_runner_reads_an_old_schema_db_without_migrating_it(tmp_path):

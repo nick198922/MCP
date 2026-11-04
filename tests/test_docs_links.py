@@ -24,13 +24,7 @@ LOCAL_ONLY = (
 
 # Broken links allowed to stay, as (source file, link target) relative to the repo root.
 # Add an entry only with a comment why the link cannot be fixed; a stale entry fails the test.
-ALLOWLIST: set[tuple[str, str]] = {
-    # Formula "E[net](сигнали) − E[net](P_reg)" in the registration section, not a link to a file. CommonMark
-    # still renders it as a link; escaping the brackets edits card text, so it waits for a separate small
-    # change (docs/BACKLOG.md, Phase 6, item 6.8).
-    ("docs/ideas/IDEA-20261016-course-setups-crypto.md", "сигнали"),
-    ("docs/ideas/IDEA-20261016-course-setups-crypto.md", "P_reg"),
-}
+ALLOWLIST: set[tuple[str, str]] = set()
 
 FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 INLINE_CODE = re.compile(r"(`+)(?:(?!\1).)+?\1")

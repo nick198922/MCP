@@ -192,6 +192,8 @@ async def test_alerts_job_announces_once_survives_restart_and_recovers(state):
     try:
         rt.health.ok("deribit", 20.0)
         _fail(rt.health, "deribit", 3)
+        assert await _evaluate_alerts(rt) == 0  # failing, but not yet for the confirmation window (10 min)
+        clock[0] += 600
         assert await _evaluate_alerts(rt) == 1
         recent = await rt.store.recent_alerts()
         assert [r["rule_id"] for r in recent] == ["health:deribit"] and recent[0]["channel"] == "log"
@@ -233,3 +235,83 @@ async def test_alerts_job_health_switch_off(state):
         assert await rt.store.recent_alerts() == []
     finally:
         await rt.aclose()
+
+
+def test_digest_one_message_for_a_network_blip_and_no_short_recoveries():
+    from tradedesk.alerts.health import digest
+
+    h = HealthRegistry()
+    names = ["deribit", "bybit", "binance_spot", "binance_futures", "hyperliquid"]
+    for n in names:
+        h.ok(n, 10.0)
+        _fail(h, n, 3)
+    state, fired = evaluate_health(_providers(h), {}, now_ts=T0)
+    d = digest(fired)
+    assert d is not None and d.rule_id == "health:digest"
+    assert "недоступні (5)" in d.message and "мережі сервера" in d.message and all(n in d.message for n in names)
+    assert state_from_alerts([{"rule_id": d.rule_id, "ts": d.ts, "payload": d.payload()}]) == {}  # never read as state
+
+    for n in names[:4]:
+        h.ok(n, 10.0)
+    _, short = evaluate_health(_providers(h), state, now_ts=T0 + 3600 + 60)  # quiet period over, down ≈ 1 h
+    assert digest(short) is not None and "Знову працюють" in digest(short).message
+    assert digest(short, recovery_min_down=7200) is None  # a shorter outage than the threshold: logged only
+
+
+async def test_alerts_job_sends_one_telegram_message_for_many_providers(state, monkeypatch):
+    import tradedesk.alerts as alerts_pkg
+    from tradedesk.alerts.channels import LogChannel
+
+    sent: list[str] = []
+
+    class FakeTg:
+        name = "telegram"
+
+        async def send(self, alert):
+            sent.append(alert.message)
+            return True, None
+
+    monkeypatch.setattr(alerts_pkg, "build_channels", lambda s: [LogChannel(), FakeTg()])
+    settings = Settings(
+        http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=":memory:", collector_enabled=True, alerts_enabled=True
+    )
+    rt = Runtime(settings, transports=make_transports(state), exchange_factory=FakeEx)
+    clock = [NOW.timestamp()]
+    rt.now = lambda: NOW.fromtimestamp(clock[0], NOW.tzinfo)
+    assert rt.store is not None
+    await rt.store.init()
+    try:
+        for n in ("deribit", "bybit", "coinbase"):
+            rt.health.ok(n, 20.0)
+            _fail(rt.health, n, 3)
+        assert await _evaluate_alerts(rt) == 0
+        clock[0] += 600
+        assert await _evaluate_alerts(rt) == 3
+        assert len(sent) == 1 and "недоступні (3)" in sent[0]
+        rows = await rt.store.recent_alerts()
+        assert sorted(r["channel"] for r in rows) == ["log"] * 3 + ["telegram"] * 3
+
+        for n in ("deribit", "bybit", "coinbase"):
+            rt.health.ok(n, 20.0)
+        clock[0] += 3600 + 60
+        assert await _evaluate_alerts(rt) == 3
+        assert len(sent) == 2 and "Знову працюють" in sent[1]
+    finally:
+        await rt.aclose()
+
+
+def test_a_blip_shorter_than_the_confirmation_window_sends_nothing():
+    h = HealthRegistry()
+    h.ok("bybit", 10.0)
+    _fail(h, "bybit", 5)
+    state, fired = evaluate_health(_providers(h), {}, now_ts=T0, confirm_seconds=600)
+    assert fired == [] and state["bybit"] == Watch(bad=False, ts=None, pending=T0)
+    state, fired = evaluate_health(_providers(h), state, now_ts=T0 + 300, confirm_seconds=600)
+    assert fired == []  # still inside the window
+    h.ok("bybit", 10.0)  # back before 10 min: no "down", so no "works again" either
+    state, fired = evaluate_health(_providers(h), state, now_ts=T0 + 420, confirm_seconds=600)
+    assert fired == [] and state["bybit"] == Watch(bad=False, ts=None)
+    _fail(h, "bybit", 3)
+    state, _ = evaluate_health(_providers(h), state, now_ts=T0 + 500, confirm_seconds=600)
+    state, fired = evaluate_health(_providers(h), state, now_ts=T0 + 1100, confirm_seconds=600)
+    assert [a.metric["bad"] for a in fired] == [True]

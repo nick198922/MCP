@@ -314,6 +314,7 @@ async def _health_alerts(rt: "Runtime", now_ts: int) -> list:
         now_ts=now_ts,
         min_failures=s.alerts_health_min_failures,
         quiet_seconds=s.alerts_health_cooldown,
+        confirm_seconds=s.alerts_health_confirm,
     )
     return fired
 
@@ -333,15 +334,45 @@ async def _evaluate_alerts(rt: "Runtime") -> int:
         fired += await evaluate_rules(rules, rt.store, now_ts=now_ts)
     # DB-backed DSL (Phase 3.1) rules — always consulted when the job runs.
     fired += await evaluate_dsl_rules(rt.store, now_ts=now_ts)
+    health: list = []
     if s.alerts_health_enabled:
         try:
-            fired += await _health_alerts(rt, now_ts)
+            health = await _health_alerts(rt, now_ts)
         except Exception as e:  # noqa: BLE001 — a health-alert failure (e.g. the DB read) must not drop the other alerts
             log.warning("provider-health alerts skipped this tick: %s", e)
-    if not fired:
+    if not fired and not health:
         return 0
     channels = build_channels(s)
     delivered_rows = 0
+    # Provider health: one row per provider in every channel's log, but the non-log channels get one digest per tick
+    # (alerts/health.py, digest): a network blip used to send one Telegram message per provider, down and up.
+    from ..alerts.health import digest  # noqa: PLC0415
+
+    summary = digest(health) if health else None
+    sent: dict[str, tuple[bool, str | None]] = {}
+    for ch in channels:
+        if ch.name != "log" and summary is not None:
+            sent[ch.name] = await ch.send(summary)
+    for alert in health:
+        delivered_any = False
+        for ch in channels:
+            if ch.name == "log":
+                ok, err = await ch.send(alert)
+            elif ch.name in sent:
+                ok, err = sent[ch.name]
+            else:
+                continue  # left out of the digest (a short outage's recovery): logged only
+            await rt.store.insert_alert(
+                rule_id=alert.rule_id,
+                ts=alert.ts,
+                payload=alert.payload() | {"channel": ch.name},
+                channel=ch.name,
+                delivered=ok,
+                delivery_error=err,
+            )
+            delivered_any = delivered_any or ok
+        if delivered_any:
+            delivered_rows += 1
     for alert in fired:
         delivered_any = False
         last_err: str | None = None

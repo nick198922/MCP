@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import logging
 
 from conftest import NOW, FakeEx, make_transports
+from tradedesk.alerts import engine
 from tradedesk.alerts.engine import load_rules
 from tradedesk.alerts.health import RULE_PREFIX, Watch, evaluate_health, state_from_alerts
 from tradedesk.collector.scheduler import _evaluate_alerts
@@ -121,6 +123,21 @@ def test_json_rule_with_reserved_health_prefix_is_skipped(tmp_path):
     rule = {"metric": {"kind": "funding", "venue": "binanceusdm", "base": "BTC"}, "when": {"op": ">", "value": 0.3}}
     path.write_text(json.dumps({"rules": [{"id": "health:deribit", **rule}, {"id": "funding_hot", **rule}]}))
     assert [r.id for r in load_rules(path)] == ["funding_hot"]
+
+
+def test_reserved_health_prefix_warning_logged_once_per_id(tmp_path, monkeypatch, caplog):
+    # load_rules runs on every collector tick: the reserved-id warning must not repeat, the rule must stay skipped.
+    monkeypatch.setattr(engine, "_WARNED_RESERVED_IDS", set())
+    path = tmp_path / "rules.json"
+    rule = {"metric": {"kind": "funding", "venue": "binanceusdm", "base": "BTC"}, "when": {"op": ">", "value": 0.3}}
+    path.write_text(json.dumps({"rules": [{"id": "health:deribit", **rule}, {"id": "funding_hot", **rule}]}))
+    with caplog.at_level(logging.WARNING, logger=engine.__name__):
+        first = load_rules(path)
+        second = load_rules(path)
+    assert [r.id for r in first] == ["funding_hot"]
+    assert [r.id for r in second] == ["funding_hot"]
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING and "health:deribit" in r.getMessage()]
+    assert len(warnings) == 1
 
 
 async def test_health_failure_does_not_block_other_alerts(state, tmp_path):

@@ -133,6 +133,28 @@ async def test_tool_surface(server):
     assert EXPECTED_TOOLS <= names
 
 
+async def test_tool_registration_memo_equals_a_fresh_registration(rt, monkeypatch):
+    """conftest memoizes the SDK's per-tool registration across builds (test speed); the listed tools must be exactly
+    what the SDK itself registers: names, descriptions, input/output schemas, annotations."""
+    from mcp.server.mcpserver.tools.base import Tool
+
+    import conftest
+    from tradedesk.server import build_server
+
+    build_server(rt)
+    memo, _ = build_server(rt)  # the second build is served from the memo
+    assert conftest._TOOL_MEMO
+    monkeypatch.setattr(Tool, "from_function", conftest.ORIGINAL_FROM_FUNCTION)
+    fresh, _ = build_server(rt)
+
+    async def listed(srv) -> list[dict]:
+        async with Client(srv) as c:
+            return sorted((t.model_dump(mode="json") for t in (await c.list_tools()).tools), key=lambda t: t["name"])
+
+    got, want = await listed(memo), await listed(fresh)
+    assert len(want) >= len(EXPECTED_TOOLS) and got == want
+
+
 async def test_token_deep_analysis_prompt(server):
     async with Client(server) as c:
         names = {p.name for p in (await c.list_prompts()).prompts}

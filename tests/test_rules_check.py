@@ -51,7 +51,17 @@ def test_option_expiry_and_base_asset_from_real_symbols():
     for sym, base in (
         ("SOLUSDT", "SOL"),
         ("SOL/USDT:USDT", "SOL"),
-        ("1000PEPEUSDT", "1000PEPE"),
+        ("1000PEPEUSDT", "PEPE"),  # Bybit / Binance multiplier
+        ("kPEPE", "PEPE"),  # Hyperliquid writes the same 1000 PEPE with a lower-case k
+        ("PEPE", "PEPE"),
+        ("PEPE2USDT", "PEPE2"),  # another token: not merged with PEPE
+        ("KAVAUSDT", "KAVA"),  # an upper-case K is part of the ticker
+        ("KPEPE", "KPEPE"),  # ...so an upper-cased HL name is left alone rather than guessed
+        ("1INCHUSDT", "1INCH"),  # a real ticker starting with a digit
+        ("1MBABYDOGEUSDT", "BABYDOGE"),
+        ("SHIB1000USDT", "SHIB"),
+        ("PUMPFUNUSDT", "PUMP"),  # Bybit's name of pump.fun's PUMP (Hyperliquid: PUMP)
+        ("PUMP", "PUMP"),
         ("HYPE", "HYPE"),
         ("ETHUSDC", "ETH"),
         ("BTCUSD", "BTC"),
@@ -272,6 +282,25 @@ def test_a_trade_opened_at_now_still_sees_the_open_alt_longs():
     c = _by_id(rc.trade_checks(rows, now_ts=now))
     assert (c[5]["alt_longs"], c[5]["rules"][2]) == (4, rc.VIOLATED)
     assert c[4]["alt_longs"] == 4 and c[4]["rules"][2] == rc.VIOLATED  # AVAX, opened while SOL, DOGE, XRP were open
+
+
+def test_one_asset_under_venue_names_is_one_alt_long():
+    # PEPE long on Hyperliquid (kPEPE) and on Bybit (1000PEPE), PUMP on both (PUMP / PUMPFUN): two alts, not four;
+    # a long in PEPE2, another token, is a third. A real opening time on the Bybit-shaped rows (journal_add style).
+    rows = [
+        _t(1, "kPEPE", "long", D, D + 10 * H, 1.0),
+        _t(2, "1000PEPEUSDT", "long", D + 1 * H, D + 10 * H, 1.0, BYBIT),
+        _t(3, "PUMP", "long", D + 2 * H, D + 10 * H, 1.0),
+        _t(4, "PUMPFUNUSDT", "long", D + 3 * H, D + 10 * H, 1.0, BYBIT),
+        _t(5, "PEPE2USDT", "long", D + 4 * H, D + 10 * H, 1.0, BYBIT),
+        _t(6, "WIFUSDT", "long", D + 5 * H, D + 10 * H, 1.0, BYBIT),  # the 4th distinct alt
+    ]
+    c = _by_id(rc.trade_checks(rows, now_ts=D + 20 * H))
+    assert {i: c[i]["alt_longs"] for i in c} == {1: 1, 2: 1, 3: 2, 4: 2, 5: 3, 6: 4}
+    assert [i for i in c if c[i]["rules"][2] == rc.VIOLATED] == [6]
+    # the same trades under one name each give the same counts
+    same = [dict(r, symbol=s) for r, s in zip(rows, ("PEPE", "PEPE", "PUMP", "PUMP", "PEPE2", "WIF"), strict=True)]
+    assert [x["alt_longs"] for x in rc.trade_checks(same, now_ts=D + 20 * H)] == [1, 1, 2, 2, 3, 4]
 
 
 def _hip3_rows():

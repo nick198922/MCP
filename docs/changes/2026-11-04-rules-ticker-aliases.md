@@ -1,0 +1,9 @@
+# 2026-11-04 — аліаси тікерів у правилах власника
+
+Постійна картка `IDEA-20261102-standing-improvements`, п. 64; джерело — рев'ю [2026-10-22-owner-rules-check](../reviews/2026-10-22-owner-rules-check.md), п. 3.
+
+- **Де правила порівнюють символи:** лише правило 2 («≤ 3 лонги в альтах»). `analytics/rules_check._alt_long_counts` рахує різні базові активи з `base_asset`, тож лонг PEPE на Hyperliquid (`kPEPE`) і на Bybit (`1000PEPEUSDT`) рахувався як два різні альти, `PUMP` / `PUMPFUN` теж. Правила «не торгувати X» у коді немає.
+- **Що змінено:** `rules_check.base_asset` прибирає множники контрактів наявною `analytics/funding_spread.normalize_asset` (HL `kPEPE`, CEX `1000PEPE`, `1MBABYDOGE`, `10000SATS`, `SHIB1000` → `PEPE`, `BABYDOGE`, `SATS`, `SHIB`) і перейменовує за невеликою мапою `ASSET_ALIASES` (`PUMPFUN → PUMP`). HL-префікс `k` визнається лише в нижньому регістрі, як у самому HL: `KAVA`, `KSM` і вже переписане великими `KPEPE` лишаються як є. Різні токени не зливаються (`PEPE2` ≠ `PEPE`, `1INCH` лишається `1INCH`).
+- Копію в дашборді (`scripts/dashboard.py`, `rules_base_asset`, без імпорту `tradedesk`) змінено так само; у примітці до тижневої таблиці (`RULES_WEEK_NOTE`) для правила 2 дописано, що той самий актив під іменами різних бірж — один альт. Застереження про це обмеження раніше там не було.
+- **Тести:** `tests/test_rules_check.py` — таблиця символів (kPEPE, 1000PEPE, PEPE2, KAVA, KPEPE, 1INCH, 1MBABYDOGE, SHIB1000, PUMPFUN) і `test_one_asset_under_venue_names_is_one_alt_long` (kPEPE + 1000PEPE + PUMP + PUMPFUN + PEPE2 дають 3 альти, четвертий — WIF, ті самі угоди під єдиними іменами рахуються так само); `tests/test_dashboard.py` — збіг копії з `rules_check` на цих символах.
+- Пороги, семантика правил і `execution/` не змінено. На живому журналі тижнева кількість порушень правила 2 може трохи зменшитись там, де той самий альт був відкритий на двох біржах.

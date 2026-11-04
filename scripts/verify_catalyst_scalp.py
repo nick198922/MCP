@@ -15,9 +15,10 @@ import argparse
 import csv
 import json
 import math
-import resource
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+
+from common_helpers import rss_mb
 
 from tradedesk.analytics.catalyst_scalp import (
     DirectionEvent,
@@ -52,10 +53,6 @@ OUT: list[str] = []
 def say(s: str = "") -> None:
     print(s, flush=True)
     OUT.append(s)
-
-
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 
 
 def load_bars(src: Path) -> dict[int, tuple[float, float]]:

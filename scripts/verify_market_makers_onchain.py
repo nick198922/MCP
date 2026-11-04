@@ -17,12 +17,13 @@ import argparse
 import asyncio
 import hashlib
 import json
-import resource
 import sys
 import time
 from datetime import UTC
 from pathlib import Path
 from typing import Any
+
+from common_helpers import rss_mb
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -71,10 +72,6 @@ MM_NAMES = [
     "market maker",
     "market-maker",
 ]
-
-
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 
 
 def keys() -> dict[str, str]:

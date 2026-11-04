@@ -22,13 +22,13 @@ import hashlib
 import json
 import math
 import os
-import resource
 import time
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+from common_helpers import rss_mb
 
 from tradedesk.analytics.alt_downside_beta import ols_hac
 from tradedesk.analytics.gex_flow import (
@@ -62,10 +62,6 @@ IV_AGE_SENS_H = 6
 BLOCK_BTC = 100.0
 HAC_LAG = 5
 MIN_TRADES = 2000
-
-
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 
 
 def day_ms(d: date) -> int:

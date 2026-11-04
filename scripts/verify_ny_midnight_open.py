@@ -21,7 +21,6 @@ import argparse
 import hashlib
 import json
 import math
-import resource
 import statistics
 import sys
 import time
@@ -31,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from common_helpers import rss_mb
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
@@ -80,10 +80,6 @@ def emit(line: str = "") -> None:
     if OUT["fh"] is not None:
         OUT["fh"].write(line + "\n")
         OUT["fh"].flush()
-
-
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 
 
 def fmt_ci(ci: tuple[float, float] | None, f: str = "+.4f") -> str:

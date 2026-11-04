@@ -21,7 +21,6 @@ import asyncio
 import hashlib
 import json
 import math
-import resource
 import time
 from collections import Counter
 from collections.abc import Callable, Sequence
@@ -30,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from common_helpers import rss_mb
 
 from tradedesk.analytics.macro_regimes import parse_fed_changes, parse_nasdaq_historical
 from tradedesk.analytics.macro_release import (
@@ -86,10 +86,6 @@ L: list[str] = []
 def emit(s: str = "") -> None:
     L.append(s)
     print(s, flush=True)
-
-
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 
 
 def _write(p: Path, data: bytes | str) -> None:

@@ -20,7 +20,6 @@ import asyncio
 import datetime as dt
 import gc
 import json
-import resource
 import statistics
 import sys
 import time
@@ -31,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import verify_carry_alts as alts  # noqa: E402
 import verify_paper_carry_bench as pcb  # noqa: E402
+from common_helpers import rss_mb  # noqa: E402
 
 from tradedesk.analytics.carry import simulate_carry_portfolio  # noqa: E402
 from tradedesk.analytics.carry_costs import CostModel, risk_summary  # noqa: E402
@@ -57,10 +57,6 @@ N_SENS = (1, 3)
 SPLIT_MS = int(dt.datetime(2025, 3, 1, tzinfo=dt.UTC).timestamp() * 1000)
 OCT_TAIL_MS = int(dt.datetime(2026, 9, 30, 16, tzinfo=dt.UTC).timestamp() * 1000)
 N_BOOT = 10_000
-
-
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 
 
 def log(msg: str) -> None:

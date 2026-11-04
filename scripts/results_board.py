@@ -3,7 +3,7 @@
     uv run python scripts/results_board.py [--ideas docs/ideas] [--out docs/RESULTS.md]
 
 Each card's «Статус:» line gives the status and the short verdict; the first report under docs/verification/ the card
-links is shown next to it. Groups: candidates (confirmed / built), in work (accepted / testing / proposed),
+links is shown next to it. Groups: candidates (confirmed / built), benchmarks (confirmed, marked «не для розробника»), in work (accepted / testing / proposed),
 inconclusive, rejected. Run it whenever a card's status changes and stage the result with the card.
 """
 
@@ -16,6 +16,7 @@ from pathlib import Path
 
 GROUPS = [
     ("✅ Підтверджено або побудовано", ("confirmed", "built")),
+    ("📏 Еталон (не стратегія)", ("benchmark",)),  # board-only status, see board_status()
     ("🔄 У роботі", ("testing", "accepted", "proposed")),
     ("🔭 Форвард (на історії не перевірити)", ("forward",)),
     ("◯ Без вердикту", ("inconclusive",)),
@@ -42,6 +43,13 @@ TITLE_RE = re.compile(r"^#\s*IDEA-\d{8}-[a-z0-9-]+:\s*(.+)$", re.M)
 REPORT_RE = re.compile(r"(?:\.\./)?(?:docs/)?verification/([0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9-]+)\.md")
 CHECK_RE = re.compile(r"^[ \t]*[-*][ \t]+\[([ xX])\]", re.M)
 FINAL = ("confirmed", "built", "inconclusive", "rejected")
+# A `confirmed` card whose status line carries this marker is a benchmark (a measured reference), not an edge.
+BENCHMARK_MARKER = "не для розробника"
+
+
+def board_status(card: dict) -> str:
+    """The status the board groups a card by: ``benchmark`` for a marked `confirmed` card, else the card's own status."""
+    return "benchmark" if card.get("benchmark") else card["status"]
 
 
 def checklists(text: str, only: str | None = None) -> list[tuple[str, int, int]]:
@@ -81,6 +89,7 @@ def parse_card(text: str, name: str) -> dict:
         "title": (t.group(1).strip() if t else name)[:110],
         "status": status,
         "verdict": verdict,
+        "benchmark": status == "confirmed" and BENCHMARK_MARKER in rest,  # full line: the marker may sit past the cut
         "owner": bool(re.search(r"^Пріоритет:\s*власник", text, re.M)),
         "order": int(order.group(1)) if order else None,
         "report": rep.group(1) if rep else "",
@@ -90,7 +99,7 @@ def parse_card(text: str, name: str) -> dict:
 
 
 def render(cards: list[dict], today: date) -> str:
-    counts = {g: sum(c["status"] in sts for c in cards) for g, sts in GROUPS}
+    counts = {g: sum(board_status(c) in sts for c in cards) for g, sts in GROUPS}
     out = [
         "# Дошка результатів",
         "",
@@ -100,7 +109,7 @@ def render(cards: list[dict], today: date) -> str:
         "",
     ]
     for group, statuses in GROUPS:
-        rows = [c for c in cards if c["status"] in statuses]
+        rows = [c for c in cards if board_status(c) in statuses]
         if not rows:
             continue
         if statuses[0] == "testing":
@@ -119,7 +128,10 @@ def render(cards: list[dict], today: date) -> str:
     out.append("")
     out.append("Перші три — кандидати на форвард-папір (картки `forward-paper-carry`, `vrp-real-marks`).")
     out.append("")
-    out.append("👤 — пріоритет власника, #N — порядок у черзі. Підтвердженим вважається лише `confirmed` після рев'ю критика.")
+    out.append(
+        "👤 — пріоритет власника, #N — порядок у черзі. Підтвердженим вважається лише `confirmed` після рев'ю критика. "
+        "📏 Еталон — `confirmed` з позначкою «не для розробника» у статусі: виміряний орієнтир, а не знайдена перевага."
+    )
     return "\n".join(out) + "\n"
 
 

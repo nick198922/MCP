@@ -1,0 +1,1 @@
+- Режим ринку (SMA200, cycle_regime) як дозвіл сторони для сетапів демо: реєстрація, `analytics/regime_side.py`, `scripts/verify_regime_side.py`, звіт і рев'ю критика. Вердикт ◯ (MDE₈₀ ≈ 0.2R), для демо ✗.

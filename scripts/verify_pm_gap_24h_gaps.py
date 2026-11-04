@@ -6,7 +6,9 @@ position (:func:`settled_counts` refuses to print if the two sets intersect). It
 (``pm_gap_report._horizon_status``: 'n/a' when the market ends < 26 h after entry, 'pending', 'ok' or 'missing' when no
 row of the market with a side mid lies within +-1 h of entry + 24 h; ``_close_status`` for the closing line) and only
 reads the status label; the value is discarded on the spot. Output is aggregate counters only: no line names the week,
-asset or hours of an individual missing position (the per-week line has positions and 'n/a' only).
+asset or hours of an individual missing position (the per-week line has positions and 'n/a' only). With fewer than
+``SMALL_N`` values an aggregate range prints coarse buckets instead of min-max (:func:`agg_range`, standing item 49):
+on n = 3 the exact bounds are two positions' own values.
 
 Usage: uv run python scripts/verify_pm_gap_24h_gaps.py [--db PATH] [--now UNIX ...]
 """
@@ -14,6 +16,7 @@ Usage: uv run python scripts/verify_pm_gap_24h_gaps.py [--db PATH] [--now UNIX .
 from __future__ import annotations
 
 import argparse
+import math
 import statistics
 import sys
 import time
@@ -40,6 +43,24 @@ from tradedesk.analytics.pm_gap_report import T0_TS, T0_V2G_TS, _close_status, _
 
 REPORT_NOW = int(datetime(2026, 11, 1, 18, 10, tzinfo=UTC).timestamp())  # 'Станом на' of pm_gap_REPORT.md
 WIDER_H = (1, 2, 3, 6)  # descriptive only: the registered tolerance is 1 h
+SMALL_N = 5  # below this an aggregate range prints coarse buckets, not min-max
+HOUR_BUCKETS = ((24.0, "<24 h"), (48.0, "24-48 h"), (math.inf, ">=48 h"))
+COUNT_BUCKETS = ((1.0, "0"), (3.0, "1-2"), (math.inf, ">=3"))
+RANGE_BUCKETS = {"collector moments in +-1 h of +24 h": COUNT_BUCKETS}  # every other range key is in hours
+
+
+def _bucket(x: float, buckets: tuple[tuple[float, str], ...]) -> str:
+    return next(label for upper, label in buckets if x < upper)
+
+
+def agg_range(key: str, values: list[float]) -> str:
+    """``key min-max`` (one decimal) when ``len(values) >= SMALL_N``; otherwise only the coarse buckets of min and max
+    ('all >=48 h', '<24 h .. 24-48 h'), so a small n never prints a position's exact value."""
+    if len(values) >= SMALL_N:
+        return f"{key} {min(values):.1f}-{max(values):.1f}"
+    b = RANGE_BUCKETS.get(key, HOUR_BUCKETS)
+    lo, hi = _bucket(min(values), b), _bucket(max(values), b)
+    return f"{key} (n<{SMALL_N}) " + (f"all {lo}" if lo == hi else f"{lo} .. {hi}")
 
 
 def load(db: str) -> list[dict[str, Any]]:
@@ -222,7 +243,7 @@ def diagnose(rows: list[dict[str, Any]], now_ts: int, t0: int, db: str) -> list[
         f"+24 h status: {dict(sorted(status.items()))}; missing share of defined {status['missing']}/{defined}"
         + (f" = {status['missing'] / defined:.1%}" if defined else ""),
         f"+24 h missing causes: {dict(sorted(cause.items()))}; by kind: {dict(sorted(kinds.items()))}",
-        "+24 h missing, aggregate ranges (min-max): " + "; ".join(f"{k} {min(v):.1f}-{max(v):.1f}" for k, v in rng.items() if v),
+        "+24 h missing, aggregate ranges (min-max): " + "; ".join(agg_range(k, v) for k, v in rng.items() if v),
         "+24 h missing recoverable with a wider tolerance (descriptive, nearest row with mid): "
         + ", ".join(f"+-{w} h {wider[w]}" for w in WIDER_H),
         "per entry week (positions / n/a only): " + "; ".join(f"{w}: {c['positions']} / {c['n/a']}" for w, c in sorted(week.items())),

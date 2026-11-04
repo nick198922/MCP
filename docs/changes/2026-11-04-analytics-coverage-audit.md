@@ -1,0 +1,75 @@
+# 2026-11-04 — аудит покриття `analytics/`: публічні функції без тесту
+
+Пункт 67 [IDEA-20261102-standing-improvements](../ideas/IDEA-20261102-standing-improvements.md).
+
+- **Метод:** текстовий пошук, як `Grep` за `\bім'я\b` у `tests/**/*.py`, для кожної функції верхнього рівня без `_` у `src/tradedesk/analytics/*.py` (без підпакета `sieve_specs/`). Скрипт у репозиторій не додавали. «Згадана» = ім'я трапляється в будь-якому тесті, тому функція з поширеним ім'ям (`day_of`, `close_at`) може вважатися покритою через однойменну функцію іншого модуля. Непряме покриття (виклик через іншу функцію) аудит не рахує.
+- **Підсумок:** 1993 публічні функції, без жодної згадки в `tests/` було **134**, після цієї зміни лишилось **126**.
+- **Покрито 8** (новий `tests/test_analytics_forward_reports.py`, 14 тестів, еталони пораховано вручну в коментарях): `carry_rules.carry_mark`, `carry_trade`, `carry_step`, `spread_mark`, `spread_trade`, `spread_step` (облік паперових рушіїв carry A / B: funding, базис, витрати, стоп, ранжування й вибір слотів), `carry_report.closed_stats` (тижневий звіт carry), `collector_health.alarms` (які серії потрапляють у бриф). Помилок у функціях тести не виявили, код не змінено.
+- **Чому саме ці:** вони рахують числа форвардів carry A / B і їхнього тижневого звіту. Досі їх перевіряли лише непрямо: тести рушія і хеш виходу бектесту (`test_carry_paper_engine.py`). Хеш ловить будь-яку зміну, але не показує, чи правильна сама арифметика. У `checkpoint` прогалин немає (усі 12 функцій згадано в тестах). Три функції `pm_gap_report` відкладено, бо їх уже перевіряють непрямо: `horizon_missing_reasons` і `close_early_payout` дають точні значення через `weekly_descriptive` / `final_metrics`, а `render_robustness` виконується всередині `render_verdict`.
+- **Лишилось 126 (у [BACKLOG 6.9](../BACKLOG.md)):**
+  - `alt_downside_beta`: beta_of
+  - `calendar`: filter_macro
+  - `carry`: carry_observers, spread_observers
+  - `carry_bybit_inventory`: last_active_day, has_bar_in, max_apr
+  - `carry_delisting`: last_perp_close, last_spot_close, settle_price
+  - `carry_modules`: rank_score, apply_capital
+  - `carry_rules`: carry_open, carry_basis, carry_pnl_now, carry_exit_due, carry_rank, spread_side_cost, spread_open, spread_price_pnl, spread_pnl_now, spread_stop_hit, spread_exit_due, spread_rank (усі, крім `carry_pnl_now`, `spread_pnl_now` і `spread_side_cost`, тепер виконуються всередині нових тестів `*_step` / `*_trade`, але за іменем не згадані)
+  - `coinm_funding`: round_hour
+  - `collector_health`: fmt_dur, fmt_ts
+  - `condor_forward`: report_keys
+  - `course_s14_ema`: trend_ok, stop_target
+  - `dated_basis`: last_friday
+  - `demo_execution`: model_fee_usd, day_of
+  - `demo_rr_threshold`: day_key
+  - `derivatives`: detect_interval_hours
+  - `dex`: is_canonical, parse_pair
+  - `event_straddle`: next_expiry_atm_iv, day_of
+  - `flow_model`: lag_diff, standardize, predict_linear, r2_oos, accuracy
+  - `flow_snapshot`: fnum, merge_depth
+  - `fresh_confounders`: dummies, nested_dummies
+  - `funding_crowding`: target_weights, basket_components, mde_nw, ols_beta
+  - `funding_settlement`: scale_factor
+  - `holders_revenue`: simple_return
+  - `instruments`: parse_expiry_token
+  - `liquidation_flush`: month_start, cluster_bootstrap_means
+  - `liquidations_agg`: parse_ts
+  - `listing_drift`: day_of
+  - `mark_stop`: stop_level_at_exit
+  - `market_flow`: venue_latest
+  - `markup`: ema_levels, fib_leg
+  - `news_events`: perp_symbols
+  - `ny_midnight_open`: ny_days
+  - `option_replay`: strike_by_delta, atm_strike
+  - `options`: npdf, wing_quality, gex_by_strike, atm_straddle, oi_by_strike
+  - `pendle`: parse_expiry
+  - `pm_calibration`: json_list
+  - `pm_dislocation`: cluster_count
+  - `pm_gap_paper`: g_shifted_prob, entry_cost, win_probs, value_after
+  - `pm_gap_report`: horizon_missing_reasons, close_early_payout, render_robustness
+  - `pm_longdated`: cluster_counts
+  - `pm_modules`: tau_of_hours
+  - `pm_touch`: et_midnight, et_time, et_date, question_direction, title_direction
+  - `polymarket`: devig_multi, normalise_market
+  - `pre_event_vol`: day_of, date_of
+  - `premarket_fade`: bars_from_rows, close_at
+  - `put_skew`: wing_put_prints
+  - `radar`: ref_ms, smile_at, pick_rows
+  - `rec_method`: regime_label, regime_confirmed
+  - `rec_paper`: leg_price, delivery_fees
+  - `regime_side`: side_sign
+  - `s12_modules`: touch_hours, first_touch_hour
+  - `s16_modules`: window_high
+  - `s28_modules`: close_at
+  - `s3_modules`: runner_rule
+  - `s40_modules`: close_at
+  - `sentiment`: summarise_fear_greed
+  - `session_stop_hunt`: last_fractal_low, target_for
+  - `setup_signals`: range_setups
+  - `sfp_backtest`: summarise_signals
+  - `smart_money`: nw_mde, signed_notional
+  - `strangle_manage`: tau_years
+  - `strategy`: build_funding_carry
+  - `strategy_sieve`: symbol_seed, funding_r, entry_outcome
+  - `trader_persistence`: top_index
+  - `usde_funding`: ols_residuals
+  - `xs_factors`: two_sided_p, oriented_signal

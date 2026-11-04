@@ -6,7 +6,8 @@ Stages (run in order; every stage reads the cache of the previous one):
   fetch       4h perp and spot klines of the hot candidates from Binance Vision (rt.binance_vision), one JSON file
               per month under --cache-dir/vision/ (404 -> null)
   run         (i) bench as is, (ii) full universe under the frozen A rules with delisting accounting, (iii) the same
-              plus "close on N missing cycles"; cost models 'main' and 'stress' of item 2 -> results.json
+              plus "close on N missing cycles"; cost models 'main' and 'stress' of item 2 -> results.json;
+              every trade is tagged ``funding_gap`` (``mark_funding_gaps``) and gap events are counted apart
 
 Network only in the first two stages and only through rt.binance_vision; no keys, no orders. Returns on capital
 (A: capital = 1.5 x notional). Pre-registration: the card, section "Пункт 8b".
@@ -29,6 +30,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import verify_carry_alts as alts  # noqa: E402
+import verify_paper_carry_bench as pcb  # noqa: E402
 
 from tradedesk.analytics.carry import simulate_carry_portfolio  # noqa: E402
 from tradedesk.analytics.carry_costs import CostModel, risk_summary  # noqa: E402
@@ -293,6 +295,19 @@ def load_candidates(
     return mk, not_measured, meta
 
 
+def mark_funding_gaps(markets: dict[str, dict[str, Any]], trades: list[dict[str, Any]], perp_end: dict[str, int]) -> int:
+    """Tag each trade with ``funding_gap``: a payment missing inside its holding window, by the paper bench rule
+    (``verify_paper_carry_bench.funding_gap`` with its 12 h floor). The window ends at the perp's end when that comes
+    first: funding stopping at a delisting is the event itself, not a hole. Returns the number of tagged trades
+    (item 63 of IDEA-20261102-standing-improvements: ``complete=true`` caches can still have holes)."""
+    n = 0
+    for t in trades:
+        hi = min(t["close_ts"], perp_end.get(t["symbol"], t["close_ts"]))
+        t["funding_gap"] = pcb.funding_gap(markets[t["symbol"]]["funding"], t["open_ts"], hi, pcb.GAP_FLOOR_MS)
+        n += t["funding_gap"]
+    return n
+
+
 def stats_row(res: dict[str, Any], years: float) -> dict[str, Any]:
     rk = risk_summary(res["equity"], years, CAPITAL, n_boot=N_BOOT)
     return {**rk, "n_trades": len(res["trades"])}
@@ -357,6 +372,7 @@ def stage_run(cache: Path, *, tol_h: float = 8.0, exclude: frozenset[str] = froz
             row["n_perp_ended"] = sum(1 for t in r["trades"] if t.get("perp_ended"))
             row["n_rule_closes"] = len(r.get("rule_closes", []))
             row["n_candidate_trades"] = sum(1 for t in r["trades"] if t["symbol"] in cand)
+            row["n_funding_gap_trades"] = mark_funding_gaps(full, r["trades"], pe)
             if "rule_closes" in r:
                 # false trigger: the perp has data again later (it did not end for good)
                 row["n_false_triggers"] = sum(1 for x in r["rule_closes"] if x["symbol"] not in pe or x["t"] < pe[x["symbol"]])
@@ -390,7 +406,16 @@ def stage_run(cache: Path, *, tol_h: float = 8.0, exclude: frozenset[str] = froz
                 "close_iii": m_i["close_ts"] if m_i else None, "pnl_iii": m_i["pnl"] if m_i else None,
                 "reason_iii": m_i.get("reason") if m_i else None, "interval_change": nm.get("interval_change_30d"),
                 "naked_cycles_ii": (t["close_ts"] - pe[t["symbol"]]) // H8 if t["symbol"] in pe else None,
+                "gap_ii": t["funding_gap"], "gap_iii": m_i["funding_gap"] if m_i else None,
             }  # fmt: skip
+        # the A v2 band rests on these events: gap events are counted apart (item 63 of standing-improvements)
+        ev_d = [(k, e["pnl_iii"] - e["pnl_ii"]) for k, e in mo["events"].items() if e["pnl_iii"] is not None]
+        clean = [d for k, d in ev_d if not (mo["events"][k]["gap_ii"] or mo["events"][k]["gap_iii"])]
+        mo["events_funding_gap"] = {
+            "with_gap": [k for k, e in mo["events"].items() if e["gap_ii"] or e["gap_iii"]],
+            "n_events": len(ev_d), "mean_delta_all": statistics.fmean(d for _, d in ev_d) if ev_d else None,
+            "n_clean": len(clean), "mean_delta_clean": statistics.fmean(clean) if clean else None,
+        }  # fmt: skip
         mo["n_trades_ii"] = len(runs["ii"]["trades"])
         mo["share_trades_with_event_ii"] = len(ended) / max(len(runs["ii"]["trades"]), 1)
         out["models"][mname] = mo
@@ -423,6 +448,15 @@ def report(out: dict[str, Any]) -> None:
                 f"| {k} | {pct(d['apr_on_capital'], 2)} | [{pct(d['ci'][0], 2)}; {pct(d['ci'][1], 2)}] | {pct(d['is']['apr_on_capital'], 2)} ({d['is']['weeks']} wk) | {pct(d['oos']['apr_on_capital'], 2)} ({d['oos']['weeks']} wk) |"
             )
         print(f"share of (ii) trades with the event: {mo['share_trades_with_event_ii']:.3f} of {mo['n_trades_ii']}")
+        if (eg := mo.get("events_funding_gap")) is not None:
+            print(
+                "trades with a funding gap in the holding window (bench rule, 12 h floor): "
+                + ", ".join(f"{k} {r.get('n_funding_gap_trades')}" for k, r in mo["variants"].items())
+            )
+            print(
+                f"events with a funding gap: {len(eg['with_gap'])} {eg['with_gap'] or ''}; mean Δ (iii n2) − (ii) "
+                f"all {eg['n_events']}: {pct(eg['mean_delta_all'], 2)}, without gap events {eg['n_clean']}: {pct(eg['mean_delta_clean'], 2)}"
+            )
         print(
             "| symbol | open | perp end | close (ii) | naked 8h cycles | P&L (ii) | basis (ii) | close (iii n2) | P&L (iii) | saving | interval change 30d |"
         )

@@ -109,7 +109,7 @@ def test_backup_db_missing_source_raises_and_creates_nothing(tmp_path):
     with pytest.raises(sqlite3.OperationalError):
         cmn.backup_db(tmp_path / "no ne?.sqlite", tmp_path / "out" / "copy.sqlite")
     assert not (tmp_path / "no ne?.sqlite").exists()
-    assert not (tmp_path / "out" / "copy.sqlite").exists()
+    assert not (tmp_path / "out").exists()  # not even the destination directory
 
 
 def test_backup_db_closes_both_connections_on_failure(tmp_path, monkeypatch):

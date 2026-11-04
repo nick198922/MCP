@@ -37,10 +37,11 @@ def open_ro(path: Path) -> tuple[sqlite3.Connection | None, str | None]:
 def backup_db(src: str | Path, dst: Path) -> None:
     """Copy the store at ``src`` into ``dst`` with ``sqlite3`` online backup (consistent while the collector writes):
     ``src`` opened read-only through ``connect_ro``, ``dst``'s directory created if needed, an existing ``dst``
-    overwritten. Raises ``sqlite3.Error`` (e.g. ``src`` missing) and closes both connections either way."""
-    dst.parent.mkdir(parents=True, exist_ok=True)
+    overwritten. Raises ``sqlite3.Error`` (e.g. ``src`` missing, then nothing is created) and closes both connections
+    either way."""
     a = connect_ro(src)
     try:
+        dst.parent.mkdir(parents=True, exist_ok=True)
         b = sqlite3.connect(dst)
         try:
             a.backup(b)

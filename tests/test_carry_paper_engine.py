@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -37,12 +38,13 @@ class FixtureFeed:
         return {"bids": [[99.9, 50.0], [99.0, 500.0]], "asks": [[100.1, 50.0], [101.0, 500.0]], "timestamp": None}
 
 
-def _grid(first_funding_ts: int, last_funding_ts: int) -> list[int]:
+def _grid(first_funding_ts: int, last_funding_ts: int) -> range:
+    # A lazy range, not a list: callers pass an open end (10**15) and index the first few cycles only.
     start = (first_funding_ts + LB) // H8 * H8 + H8 + DECISION_DELAY_MS
-    return list(range(start, last_funding_ts + 1, H8))
+    return range(start, last_funding_ts + 1, H8)
 
 
-async def _drive(store: Store, feed: FixtureFeed, params: CarryParams, times: list[int]) -> None:
+async def _drive(store: Store, feed: FixtureFeed, params: CarryParams, times: Sequence[int]) -> None:
     for t in times:
         out = await run_cycle(store, feed, params, t - DECISION_DELAY_MS, clock=lambda t=t: t)
         assert out["status"] == "done", out

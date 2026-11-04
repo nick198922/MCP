@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+import inspect
 import json
 import math
 from datetime import UTC, datetime
@@ -10,11 +12,51 @@ from pathlib import Path
 import ccxt
 import httpx
 import pytest
+from mcp.server.mcpserver.tools.base import Tool
 
 from tradedesk.analytics.options import black76_price
 from tradedesk.config import Settings
 from tradedesk.runtime import Runtime
 from tradedesk.server import build_server
+
+# --- Test-only memo of the MCP SDK's per-tool registration ------------------------------------------------------------
+# build_server() registers ~110 tools; for each the SDK builds a pydantic argument model and its JSON schema
+# (Tool.from_function), ~0.6 s per build and hundreds of builds per run. Every build defines the same tool functions
+# again (new closures over a new Runtime), so the result depends only on the function's signature and the decorator
+# arguments: computed once per process, then copied with the new function. Production never goes through this.
+# tests/test_server.py::test_tool_registration_memo_equals_a_fresh_registration checks it against the SDK's own result.
+ORIGINAL_FROM_FUNCTION = Tool.from_function
+_TOOL_MEMO: dict[tuple, Tool] = {}
+
+
+def _memo_from_function(
+    fn, name=None, title=None, description=None, context_kwarg=None, annotations=None, icons=None, meta=None, structured_output=None
+):
+    raw = inspect.unwrap(fn)
+    key = (
+        raw.__module__,
+        raw.__qualname__,
+        raw.__code__,
+        repr(inspect.signature(fn)),
+        repr(getattr(fn, "__annotations__", None)),
+        name,
+        title,
+        description,
+        context_kwarg,
+        repr(annotations),
+        repr(icons),
+        repr(meta),
+        structured_output,
+    )
+    hit = _TOOL_MEMO.get(key)
+    if hit is None:
+        hit = _TOOL_MEMO[key] = ORIGINAL_FROM_FUNCTION(
+            fn, name, title, description, context_kwarg, annotations, icons, meta, structured_output
+        )
+    return hit.model_copy(update={"fn": fn, "parameters": copy.deepcopy(hit.parameters)})
+
+
+Tool.from_function = _memo_from_function  # type: ignore[method-assign]
 
 UTC = UTC
 NOW = datetime(2026, 10, 10, 13, 7, tzinfo=UTC)

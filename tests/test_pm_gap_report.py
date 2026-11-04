@@ -301,6 +301,9 @@ def test_verdict_stress_delayed_survivors_and_thin_books():
     assert "перестановка міток активу всередині тижня входу" in text and "без 3 тижнів" in text
 
 
+EARLY_KEYS = ("primary_early_payout", "clv_close_early_payout")  # the descriptive second variants of the verdict
+
+
 def test_verdict_primary_in_both_variants_early_payout_is_descriptive():
     """Item 47 (standing improvements): the primary CLV +24 h as registered (missing flagged) and, descriptively, with
     the payout 1 / 0 for positions resolved by +24 h (Gamma closed_ts, schema 38). Synthetic: m1 snapshot, closed after
@@ -323,7 +326,7 @@ def test_verdict_primary_in_both_variants_early_payout_is_descriptive():
     assert e["clv_24h"]["n"] == 3 and e["clv_24h"]["mean"] == pytest.approx((CLV + (0 - 0.4329) + PNL) / 3)
     # descriptive only: without close times every other field (the verdict included) is identical
     g = final_metrics(rows, base, verdict_ts(T0), T0)
-    assert {k: v for k, v in f.items() if k != "primary_early_payout"} == {k: v for k, v in g.items() if k != "primary_early_payout"}
+    assert {k: v for k, v in f.items() if k not in EARLY_KEYS} == {k: v for k, v in g.items() if k not in EARLY_KEYS}
     eg = g["primary_early_payout"]
     assert (eg["early_resolved"], eg["missing_left"], eg["missing_without_close_ts"]) == (0, 3, 3)
     assert eg["clv_24h"] == g["primary_clv_24h"]  # nothing resolved early: the two variants coincide
@@ -332,6 +335,42 @@ def test_verdict_primary_in_both_variants_early_payout_is_descriptive():
     assert f"CLV +24 год, {report.EARLY_PAYOUT_LABEL}" in text and "описово, вердикт за ним не виноситься" in text
     assert "розв'язано до точки +24 год: 2 з 5 визначених (40.0 %), з них без знімка +24 год 1; лишились missing 2" in text
     assert text.index("основна, кластер") < text.index(report.EARLY_PAYOUT_LABEL) < text.index("CLV +6 год")
+
+
+def test_verdict_close_clv_in_both_variants_early_payout_is_descriptive():
+    """Item 48 (standing improvements): the closing CLV as registered (missing flagged) and, descriptively, with the
+    payout 1 / 0 as the closing value of positions resolved by end - 1 h (Gamma closed_ts, schema 38). Closing window
+    [end - 2 h, end - 1 h], 'late' from end - 6 h. Synthetic: m1 only a 'late' snapshot, closed after its end; m2 no
+    closing snapshot, resolved NO long before; m3 no closing snapshot, unresolved, no close time; m4 'close' snapshot,
+    resolved YES exactly at end - 1 h; m5 no closing snapshot, closed only after end - 1 h."""
+    late, closing = range(END - 6 * H, END - H + 1), range(END - 2 * H, END - H + 1)
+    rows = ROWS + market_rows("m5")
+    rows = [r for r in rows if not (r["market_id"] in ("m2", "m3", "m5") and r["ts"] in late)]
+    rows = [r for r in rows if not (r["market_id"] == "m1" and r["ts"] in closing)]
+    no = {"outcome_yes": 0, "binance_close_end": 69_000.0, "binance_close_next": 69_000.0}
+    base = [OUTCOMES[0], dict(OUTCOMES[1], **no), dict(OUTCOMES[2], outcome_yes=None), OUTCOMES[3], dict(OUTCOMES[0], market_id="m5")]
+    closed = {"m1": END + 2 * H, "m2": T0 + 20 * H, "m4": END - H, "m5": END - H + 60}
+    outs = [dict(o, closed_ts=closed.get(o["market_id"])) for o in base]
+    f = final_metrics(rows, outs, verdict_ts(T0), T0)
+    e = f["clv_close_early_payout"]
+    assert e["sources"] == {"close": 1, "late": 1, "missing": 3} and e["defined"] == 5
+    assert (e["early_resolved"], e["early_resolved_missing"], e["missing_left"], e["missing_without_close_ts"]) == (2, 1, 2, 1)
+    assert e["early_resolved_share"] == pytest.approx(0.4)
+    # first variant: m1 ('late'), m4 ('close') at their snapshots; second: m1 as is, m2 paid 0, m4 paid 1 (snapshot replaced)
+    assert f["clv_close"]["n"] == 2 and f["clv_close"]["mean"] == pytest.approx(CLV)
+    assert e["clv_close"]["n"] == 3 and e["clv_close"]["mean"] == pytest.approx((CLV + (0 - 0.4329) + PNL) / 3)
+    assert e["clv_close"]["n_clusters"] == f["clv_close"]["n_clusters"] == 1  # cluster = resolution week, as clv_close
+    # descriptive only: without close times every other field (the verdict included) is identical
+    g = final_metrics(rows, base, verdict_ts(T0), T0)
+    assert {k: v for k, v in f.items() if k not in EARLY_KEYS} == {k: v for k, v in g.items() if k not in EARLY_KEYS}
+    eg = g["clv_close_early_payout"]
+    assert (eg["early_resolved"], eg["missing_left"], eg["missing_without_close_ts"]) == (0, 3, 3)
+    assert eg["clv_close"] == g["clv_close"]  # nothing resolved early: the two variants coincide
+    text = render_verdict(f)
+    assert "точки закриття: close 1, late 1, missing 3; missing (3) у середнє не входять" in text
+    assert f"CLV до закриття, {report.EARLY_PAYOUT_LABEL}" in text
+    assert "розв'язано до кінця вікна закриття: 2 з 5 позицій (40.0 %), з них без точки закриття 1; лишились missing 2" in text
+    assert text.index("CLV до закриття (кластер") < text.index(f"CLV до закриття, {report.EARLY_PAYOUT_LABEL}") < text.index("P&L на акцію")
 
 
 # ----------------------------------------------------------------------------- variant v2-g beside v1
@@ -456,6 +495,7 @@ async def test_verdict_runs_only_on_the_wall_clock_and_the_registered_t0(tmp_pat
     assert code == 0 and "Вердикт: inconclusive" in text
     assert text.index("Вердикт: inconclusive") < text.index("Варіант v2-g")
     assert report.EARLY_PAYOUT_LABEL in text and "розв'язано до точки +24 год: 0 з 4 визначених" in text
+    assert f"CLV до закриття, {report.EARLY_PAYOUT_LABEL}" in text and "розв'язано до кінця вікна закриття: 0 з 4 позицій" in text
     monkeypatch.setattr(script.time, "time", lambda: float(verdict_ts(T0) - 1))  # one second early
     code, text = script.build_verdict(str(db))
     assert code == 2 and "refused" in text and "Вердикт" not in text

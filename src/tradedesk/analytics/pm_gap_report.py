@@ -466,7 +466,8 @@ def final_metrics(
     resolution week), Brier D = model (k = 1) - Polymarket per resolved market over the main period's eligible snapshots
     (cluster = resolution week); k = 0.92 alongside. Stress and robustness (sections 6 and 12) under ``robustness``:
     descriptive, they never change the verdict (see :func:`_robustness`). ``primary_early_payout``: the primary in a
-    second, descriptive variant with the payout 1 / 0 for positions resolved by +24 h (:func:`primary_early_payout`).
+    second, descriptive variant with the payout 1 / 0 for positions resolved by +24 h (:func:`primary_early_payout`);
+    ``clv_close_early_payout``: the same for the closing CLV, resolved by end - 1 h (:func:`close_early_payout`).
 
     A pure function cannot know the real time: the gate is held by the runner (scripts/pm_gap_paper_report.py), which
     calls this only with the wall clock and the registered :data:`T0_TS`, never with values from the command line."""
@@ -506,6 +507,7 @@ def final_metrics(
         "primary_early_payout": primary_early_payout(pm, outcome_rows),
         "clv_6h": summ("clv_6h", "week_entry"),
         "clv_close": summ("clv", "week_res"),
+        "clv_close_early_payout": close_early_payout(pm, outcome_rows),
         "pnl": pnl,
         "brier_diff": brier,
         "verdict": v,
@@ -553,6 +555,46 @@ def primary_early_payout(pm: Sequence[Mapping[str, Any]], outcome_rows: Iterable
         "missing_left": missing_left,
         "missing_without_close_ts": no_close,
         "clv_24h": cluster_mean_ci([v for v, _ in xs], [m["week_entry"] for _, m in xs], [m["day"] for _, m in xs]),
+    }
+
+
+def close_early_payout(pm: Sequence[Mapping[str, Any]], outcome_rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+    """The secondary closing CLV in its second, DESCRIPTIVE variant "adjusted after partial resolution" (item 48 of
+    IDEA-20261102-standing-improvements; the same treatment as :func:`primary_early_payout`). Only called from the gated
+    :func:`final_metrics`; the registered closing CLV (``clv_close``) stays the first variant and the decision is unchanged.
+
+    A position whose market was resolved by the end of its closing window (Gamma ``closed_ts`` <= end - 1 h, schema 38,
+    the same point as the weekly ``early_close.close_missing``, and a settled result, i.e. ``pnl`` is known) takes the
+    payout 1 / 0 minus the entry cost as its closing value, whatever its closing source ('close', 'late' or 'missing');
+    every other position keeps its first-variant value, and a 'missing' one stays missing. Cluster = resolution week, as
+    ``clv_close``. Counts: ``sources`` (first variant: close / late / missing), ``defined`` (all of them),
+    ``early_resolved`` and its share of ``defined``, ``early_resolved_missing`` (of those, without a closing point),
+    ``missing_left`` and, of them, ``missing_without_close_ts`` (the collector writes the close time forward only)."""
+    closed_at = {str(o["market_id"]): int(o["closed_ts"]) for o in outcome_rows if o.get("closed_ts") is not None}
+    src: Counter = Counter(str(m["close_src"]) for m in pm)
+    xs: list[tuple[float, Mapping[str, Any]]] = []
+    early = early_missing = missing_left = no_close = 0
+    for m in pm:
+        closed = closed_at.get(str(m["market_id"]))
+        if m["pnl"] is not None and closed is not None and closed <= int(m["end_ts"]) - HOUR_S:
+            early += 1
+            early_missing += int(m["close_src"] == "missing")
+            xs.append((float(m["pnl"]), m))
+        elif m["clv"] is not None:
+            xs.append((float(m["clv"]), m))
+        else:
+            missing_left += 1
+            no_close += int(closed is None)
+    defined = sum(src.values())
+    return {
+        "sources": dict(sorted(src.items())),
+        "defined": defined,
+        "early_resolved": early,
+        "early_resolved_share": _share(early, defined),
+        "early_resolved_missing": early_missing,
+        "missing_left": missing_left,
+        "missing_without_close_ts": no_close,
+        "clv_close": cluster_mean_ci([v for v, _ in xs], [m["week_res"] for _, m in xs], [m["day"] for _, m in xs]),
     }
 
 
@@ -641,6 +683,7 @@ def render_verdict(f: Mapping[str, Any]) -> str:
         *_early_payout_lines(f["primary_early_payout"], row),
         row("CLV +6 год", f["clv_6h"]),
         row("CLV до закриття (кластер — тиждень розв'язання)", f["clv_close"]),
+        *_close_early_payout_lines(f["clv_close_early_payout"], row),
         row("P&L на акцію", f["pnl"]),
         row("Brier D, k = 1 (модель − Polymarket; > 0 — Polymarket точніший)", f["brier_diff"]["1.0"]),
         row(f"Brier D, k = {VOL_HAIRCUT_K}", f["brier_diff"][str(VOL_HAIRCUT_K)]),
@@ -665,6 +708,22 @@ def _early_payout_lines(e: Mapping[str, Any], row: Callable[[str, Mapping[str, A
         ),
         f"  - розв'язано до точки +24 год: {e['early_resolved']} з {e['defined']} визначених "
         f"({_p(e['early_resolved_share'])}), з них без знімка +24 год {e['early_resolved_missing']}; лишились missing "
+        f"{e['missing_left']}, з них без записаного часу закриття (колектор пише його з 04.11, лише вперед) "
+        f"{e['missing_without_close_ts']}",
+    ]
+
+
+def _close_early_payout_lines(e: Mapping[str, Any], row: Callable[[str, Mapping[str, Any]], str]) -> list[str]:
+    """Lines of :func:`close_early_payout` under the closing-CLV row: its 'missing' flagged, then the second variant."""
+    return [
+        f"  - точки закриття: {_kv(e['sources'])}; missing ({e['sources'].get('missing', 0)}) у середнє не входять",
+        row(
+            f"CLV до закриття, {EARLY_PAYOUT_LABEL} (виплата 1 / 0 мінус ціна входу як значення закриття для позицій, "
+            "розв'язаних до кінця вікна закриття, кінець ринку − 1 год; описово, вердикт за ним не виноситься)",
+            e["clv_close"],
+        ),
+        f"  - розв'язано до кінця вікна закриття: {e['early_resolved']} з {e['defined']} позицій "
+        f"({_p(e['early_resolved_share'])}), з них без точки закриття {e['early_resolved_missing']}; лишились missing "
         f"{e['missing_left']}, з них без записаного часу закриття (колектор пише його з 04.11, лише вперед) "
         f"{e['missing_without_close_ts']}",
     ]

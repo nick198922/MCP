@@ -69,6 +69,15 @@ only_run_notes() {
 # Report one outcome: history line (with what the step cost), Telegram message, exit code.
 # Arguments after the text go to notify (--silent, --button "Label|url").
 COST=""
+AUTO_DELIVERY=""
+routine() {
+  [[ "${TRADEDESK_AGENTS_LOUD:-}" == 1 ]] && return 1
+  case "$1" in
+    idle | continues | parked | unfinished) return 0 ;;
+    delivered) [[ -n "$AUTO_DELIVERY" ]] ;;
+    *) return 1 ;;
+  esac
+}
 finish() {
   local code="$1" status="$2" text="$3" last rest
   shift 3
@@ -83,7 +92,11 @@ $rest}"
   fi
   echo "== $(date) done: $status"
   # A repeated "nothing to do" or failure is reported once; the loop tells the owner when failures pile up.
-  if [[ "$status" != "$last" || ("$status" != "idle" && "$status" != "error") ]]; then
+  # Routine outcomes (owner 2026-11-04: «дуже багато нотифок що вже все працює») go only into history.tsv and the
+  # 2-hourly status (scripts/agents_status.py lists the delivered steps); TRADEDESK_AGENTS_LOUD=1 sends them again.
+  if routine "$status"; then
+    echo "routine outcome, not sent to Telegram"
+  elif [[ "$status" != "$last" || ("$status" != "idle" && "$status" != "error") ]]; then
     notify "$text" "$@"
   fi
   exit "$code"
@@ -281,6 +294,7 @@ handover() {
   verdict="$(git diff --name-only "origin/main...$br" | python3 "$REPO/scripts/automerge.py" --classify 2>/dev/null || echo "owner: ?")"
   if [[ "$status" == delivered && "$verdict" == auto ]]; then
     ready="--ready"
+    AUTO_DELIVERY=1
     how="🤖 Зіллється сам, щойно на GitHub пройдуть тести."
   elif [[ "$status" == delivered && "$verdict" == claude:* ]]; then
     ready="--ready"

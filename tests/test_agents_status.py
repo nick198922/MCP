@@ -45,6 +45,18 @@ def test_history_counts_since():
     assert st.history_counts(lines, "2026-10-14_110000") == Counter({"idle": 1, "delivered": 1})
 
 
+def test_delivered_steps_are_listed_in_the_status_instead_of_one_message_each():
+    lines = [
+        "2026-10-14_100000\tdelivered\t✅ **Агенти здали крок:** `agent/old`",
+        "2026-10-14_120000\tidle\t💤 нічого",
+        "2026-10-14_130000\tdelivered\t✅ **Агенти здали крок:** `agent/2026-10-14-new`",
+    ]
+    done = st.history_delivered(lines, "2026-10-14_110000")
+    assert done == ["agent/2026-10-14-new"]
+    text, _ = st.render({"now": datetime(2026, 10, 14, 14, 0), "counts_24h": Counter({"delivered": 2}), "delivered_2h": done})
+    assert "✅ Здано за 2 год: <code>2026-10-14-new</code>" in text
+
+
 def test_last_agent_call_and_whether_it_finished():
     use = {"type": "tool_use", "name": "Agent", "id": "a1", "input": {"subagent_type": "quant", "description": "Test card"}}
     lines = [json.dumps({"timestamp": "2026-10-14T10:54:00Z", "message": {"content": [use]}})]

@@ -124,6 +124,18 @@ def history_counts(lines: list[str], since_stamp: str) -> Counter:
     return c
 
 
+def history_delivered(lines: list[str], since_stamp: str) -> list[str]:
+    """Branches delivered since the stamp, oldest first (the `branch` in backticks of the outcome line)."""
+    out = []
+    for line in lines:
+        parts = line.split("\t")
+        if len(parts) >= 3 and parts[0] >= since_stamp and parts[1] == "delivered":
+            m = re.search(r"`([^`]+)`", parts[2])
+            if m:
+                out.append(m.group(1))
+    return out
+
+
 def last_agent_call(jsonl_lines: list[str]) -> tuple[str, str, str, bool] | None:
     """(role, description, time HH:MM, finished) of the coordinator's latest subagent call."""
     calls: dict[str, tuple[str, str, str]] = {}
@@ -178,6 +190,10 @@ def render(d: dict) -> tuple[str, list[tuple[str, str]]]:
     if sum(c24.values()):
         fmt = " · ".join(f"{OUTCOME_ICON[k]} {c24[k]}" for k in OUTCOME_ICON if c24.get(k))
         out.append(f"За добу: {fmt}" + (f" (за 2 год: {sum(c2.values())})" if c2 else ""))
+    done = d.get("delivered_2h") or []
+    if done:
+        shown = ", ".join(f"<code>{esc(b.removeprefix('agent/'))}</code>" for b in done[-8:])
+        out.append(f"✅ Здано за 2 год: {shown}" + (f" і ще {len(done) - 8}" if len(done) > 8 else ""))
     out.append("")
 
     usage = d.get("usage")
@@ -392,6 +408,7 @@ def collect(repo: Path, worktree: Path, log_dir: Path) -> dict:
         "agents_line": agents_line,
         "activity": activity,
         "counts_2h": history_counts(hist, stamp(2 * 3600)),
+        "delivered_2h": history_delivered(hist, stamp(2 * 3600)),
         "counts_24h": history_counts(hist, stamp(86400)),
         "usage": usage(),
         "cards": collect_cards(repo, branches),

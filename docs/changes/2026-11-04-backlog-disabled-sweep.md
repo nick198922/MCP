@@ -1,0 +1,5 @@
+- Пункт 62 [standing-improvements](../ideas/IDEA-20261102-standing-improvements.md): слова «**Вимкнене**» у `docs/BACKLOG.md` (перші зрізи трьох колекторів) звірено з `deploy/features.env` і `docs/changes/`. Лише документи, без коду.
+- `option_xvenue`: у `features.env` є `TRADEDESK_COLLECT_OPTION_XVENUE_ENABLED=1` → дописано «увімкнено 23.10» з посиланням на [зміни](2026-10-23-option-xvenue-registration2.md).
+- `tradfi_spread`: є `TRADEDESK_COLLECT_TRADFI_SPREAD_ENABLED=1` → дописано «увімкнено 24.10» (коміт `e15361f`, [рев'ю](../reviews/2026-10-24-tradfi-spread-collector.md)); окремого файлу змін на ввімкнення немає.
+- `hl_oi_cap`: є `TRADEDESK_COLLECT_HL_OI_CAP_ENABLED=1` → дописано «увімкнено 01.11» з посиланням на [зміни](2026-11-01-hl-oi-cap-enable.md).
+- Справді вимкнених серед них немає. Жоден пункт не закрито (лишаються форвард `option_xvenue`, ранній кіл `tradfi_spread`, крок 1 `hl_oi_cap`), тож у `history/BACKLOG-done.md` нічого не перенесено.

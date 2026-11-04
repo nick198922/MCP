@@ -288,3 +288,39 @@ def test_scripts_use_the_shared_ymd_ms(name):
     if "rss_mb" in SEVENTH_ROUND[name]:
         assert not hasattr(mod, "resource")
     assert mod.cmn is cmn
+
+
+RSS_MB_IMPORTED = [  # item 75 of the standing-improvements card: 'from common_helpers import rss_mb' replaced the copy
+    "verify_btc_shock_alt_lag",
+    "verify_carry_a_delisting",  # dl.rss_mb in verify_carry_a_entry_filter
+    "verify_catalyst_scalp",
+    "verify_course_s14_ema",
+    "verify_course_s1_spot_alts",
+    "verify_course_step2_early_exit",
+    "verify_course_step3_s18",
+    "verify_course_step4_fvg_ob",
+    "verify_course_step5_s17",
+    "verify_course_step6_s13",
+    "verify_course_step7_basics",  # s7.rss_mb in verify_deviation_weekly_trend
+    "verify_course_step8_macro_drift",
+    "verify_demo_context_filters",
+    "verify_demo_stop_management",  # dsm.rss_mb in verify_short_setups / verify_trail_no_target
+    "verify_expiry_pin_mirror",
+    "verify_gex_taker_flow",
+    "verify_macro_b1b",
+    "verify_macro_regimes",
+    "verify_macro_release",
+    "verify_macro_slow",
+    "verify_mark_stop",
+    "verify_market_makers_onchain",  # base.rss_mb in verify_market_makers_b2
+    "verify_news_events",  # v0.rss_mb in verify_news_events_0b / 0c / 0d, verify_market_makers_news
+    "verify_ny_midnight_open",
+    "verify_oi_liquidation_flush",
+]
+
+
+@pytest.mark.parametrize("name", RSS_MB_IMPORTED)
+def test_scripts_import_the_shared_rss_mb(name):
+    mod = __import__(name)
+    assert mod.rss_mb is cmn.rss_mb  # the name stays a module attribute for the scripts that read it from here
+    assert not hasattr(mod, "resource")

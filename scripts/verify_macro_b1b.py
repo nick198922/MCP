@@ -19,7 +19,6 @@ import asyncio
 import hashlib
 import json
 import math
-import resource
 import statistics
 import time
 from collections import Counter
@@ -29,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from common_helpers import rss_mb
 
 from tradedesk.analytics.macro_crossasset import (
     UUP_EXDIV_LOG,
@@ -86,10 +86,6 @@ L: list[str] = []
 def emit(s: str = "") -> None:
     L.append(s)
     print(s, flush=True)
-
-
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 
 
 def _write(p: Path, data: str) -> None:

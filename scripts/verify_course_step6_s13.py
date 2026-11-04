@@ -18,7 +18,6 @@ import argparse
 import asyncio
 import hashlib
 import json
-import resource
 import sys
 import time
 from datetime import UTC, date, datetime
@@ -26,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from common_helpers import rss_mb
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
@@ -70,10 +70,6 @@ def emit(line: str = "") -> None:
     if OUT["fh"] is not None:
         OUT["fh"].write(line + "\n")
         OUT["fh"].flush()
-
-
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 
 
 def dnum(s: str) -> int:

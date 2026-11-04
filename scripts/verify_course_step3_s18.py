@@ -18,7 +18,6 @@ import argparse
 import hashlib
 import json
 import math
-import resource
 import statistics
 import sys
 import time
@@ -33,6 +32,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import verify_course_s14_ema as s1  # noqa: E402  (step-1 loaders, universe, period)
+from common_helpers import rss_mb  # noqa: E402
 
 from tradedesk.analytics.course_s14_ema import matched_baseline  # noqa: E402
 from tradedesk.analytics.course_s18_trend import (  # noqa: E402
@@ -70,10 +70,6 @@ def emit(line: str = "") -> None:
     if OUT["fh"] is not None:
         OUT["fh"].write(line + "\n")
         OUT["fh"].flush()
-
-
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 
 
 day_of = s1.day_of

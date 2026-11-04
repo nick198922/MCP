@@ -32,7 +32,6 @@ import hashlib
 import json
 import logging
 import re
-import resource
 import statistics
 import time
 from collections import Counter, defaultdict
@@ -43,6 +42,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from common_helpers import rss_mb
 
 from tradedesk.analytics.news_events import (
     DAY_MS,
@@ -115,10 +115,6 @@ CURATED = [  # owner's examples (library entry): descriptive only, excluded from
         note="Blast L2 shutting down",
     ),
 ]
-
-
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 
 
 def ymd(ms: int) -> str:

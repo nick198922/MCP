@@ -20,7 +20,6 @@ import asyncio
 import hashlib
 import json
 import logging
-import resource
 import statistics
 import sys
 import time
@@ -30,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from common_helpers import rss_mb
 
 from tradedesk.analytics.course_s14_ema import (
     DAY_MS,
@@ -93,10 +93,6 @@ def emit(line: str = "") -> None:
     if OUT["fh"] is not None:
         OUT["fh"].write(line + "\n")
         OUT["fh"].flush()
-
-
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 
 
 def rd(p: Path) -> Any:

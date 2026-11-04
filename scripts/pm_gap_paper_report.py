@@ -20,8 +20,9 @@ skew and read-time shares); the mean of the main metric, its CI, the P&L and the
 (thresholds 3 / 8 pp, k separately, depth >= $500, entry +1 cent, next-snapshot entry, period halves, BTC vs ETH with a
 within-week permutation, by kind, resolution-day clusters, closing CLV from 'close' only). ``--verdict`` also prints the
 main metric in a second, descriptive variant "поправка після часткового розкриття" (payout 1 / 0 as the +24 h value of
-positions resolved by then, from ``pm_gap_outcome.closed_ts``, schema 38) with the share of such positions; the decision
-stays on the registered first variant. Both modes append the labelled
+positions resolved by then, from ``pm_gap_outcome.closed_ts``, schema 38) with the share of such positions, and the same
+for the closing CLV (payout as the closing value of positions resolved by end - 1 h); the decision stays on the
+registered first variants. Both modes append the labelled
 variant v2-g (forward x (1 + g), g = binance_last / spot - 1 of the same snapshot; IDEA-20261031-structural-edges-depth
 item 8a) as separate rows under the same limits: weekly = counts, entry edge, SD and the v1 positions whose edge held only
 thanks to the g shift; CLV, P&L and Brier of v2-g only in ``--verdict``. v1 and its verdict are unchanged.

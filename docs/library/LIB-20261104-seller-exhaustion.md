@@ -1,6 +1,6 @@
 # LIB-20261104-seller-exhaustion: Seller Exhaustion Constant BTC на мінімумах ведмежого ринку
 
-Статус: new
+Статус: triaged
 <!-- new → triaged → used | archived (див. README) -->
 Додано: 2026-11-04 · Джерело: Telegram «Crypto Headlines» (переказ Darkfost; графік Bitview Studio, next.bitview.space), переслав власник із проханням «Треба дослідити такий індикатор» · Тип: пост
 Теми: ончейн, режим ринку, дно циклу, волатильність, пропозиція в прибутку
@@ -51,3 +51,4 @@
 
 ## Що з цього взяли
 <!-- заповнюють агенти й Claude: картки IDEA-…, PR, інструменти, вердикти -->
+- 04.11, Claude з чату: H3 → пункт «виснаження продавців BTC забороняє шорти» в [IDEA-20261030-demo-setups-depth](../ideas/IDEA-20261030-demo-setups-depth.md) (власник: «Давай роботи»); дані Bitview — `~/private/data/bitview/`. Постійний провайдер Bitview — лише якщо пункт дасть ✓ або після 30.11.

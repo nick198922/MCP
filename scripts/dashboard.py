@@ -1284,6 +1284,12 @@ HELP: dict[str, tuple[str, str, str, str]] = {
         "Поки питання відкрите, пов'язана робота може стояти.",
         "На угоди не впливає напряму; відповідь прискорює картки, від яких залежать нові інструменти.",
     ),
+    "p_waiting": (
+        "Чекають тебе",
+        "PR, які без тебе не зіллються, і відкриті питання агентів (docs/QUESTIONS.md).",
+        "0 — тебе ніхто не чекає; більше — частина роботи агентів стоїть.",
+        "На угоди не впливає напряму.",
+    ),
     # «Демо» tab (demo trader on the Bybit Demo Trading account, play money)
     "demo": (
         "Демо-угоди",
@@ -1529,6 +1535,43 @@ ACT: dict[str, tuple[str, str, str, str]] = {
         "90–100 %",
         "усе гаразд, нічого робити не треба.",
     ),
+    # the «Система» tab (standing improvements, item 65)
+    "p_progress": (
+        "Відсоток росте",
+        "нічого: агенти працюють самі.",
+        "Стоїть кілька днів",
+        "глянь «Кроки агентів» і ліміт; напиши Claude.",
+    ),
+    "p_agents": (
+        "Працюють або чекають роботи",
+        "нічого робити не треба.",
+        "Є «чекають твого перегляду»",
+        "переглянь PR: без тебе не зіллються.",
+    ),
+    "p_limit": (
+        f"До {OWNER_ONLY_AT:.0f} %",
+        "агенти працюють повністю: нічого не роби.",
+        f"Від {OWNER_ONLY_AT:.0f} % (від {MAX_USAGE:.0f} % пауза)",
+        "агенти лише на твоїх картках; великі сесії відклади до скидання.",
+    ),
+    "p_queue": ("Ідея в черзі", "не торгуй за нею: чекай вердикту.", "Твоїх карток мало", "додай ідею: напиши Claude або в docs/library."),
+    "p_results": (
+        "Підтверджено або форвард",
+        "можна вживати; розмір — за правилом ризику.",
+        "Відхилено або без вердикту",
+        "за цією ідеєю не торгуй.",
+    ),
+    "p_steps": ("Зелені рядки", "нічого робити не треба.", "Кілька червоних поспіль", "напиши Claude: хай гляне логи."),
+    "p_server": (
+        "Смужки до 70 %",
+        "нічого робити не треба.",
+        "Від 90 % або старий бекап",
+        "напиши Claude: звільнити диск чи полагодити бекап.",
+    ),
+    "p_collector": ("Зелене або сіре", "нічого робити не треба.", "Червоний рядок", "не спирайся на ці дані; напиши Claude, яка таблиця."),
+    "p_changes": ("Нові коміти", "нічого: сервер підтягує main сам.", "Щось у панелі змінилось", "причину шукай тут."),
+    "p_questions": ("Питань немає", "нічого робити не треба.", "Є відкриті", "відповідай Claude: робота за ними стоїть."),
+    "p_waiting": ("0", "нічого робити не треба.", "1 і більше", "переглянь PR і відповідай на питання."),
     "dvol": (
         "Низький (до 30-го перцентиля)",
         "купувати опціони дешевше; продавати мало сенсу — премії мало.",
@@ -2272,43 +2315,171 @@ def block_collector_health(h: dict | None) -> str:
     return "".join(out)
 
 
+# The «Система» tab (docs/design/PANEL.md, standing improvements item 65): the caveats once, at the bottom
+SYSTEM_CAVEATS = (
+    "Сторінка — про роботу системи, а не про ринок: на угоди вона прямо не впливає; нове в панелі й MCP з'являється "
+    "лише після злиття в main.",
+    "Прогрес: кожен крок важить однаково, а нові задачі збільшують загальну кількість, тож відсоток може й падати; дні до "
+    "кінця — грубо, за темпом 7 днів, без пауз через ліміт, кроків, що ще з'являться, і 4-тижневих паперових вікон.",
+    f"Ліміт Claude спільний із твоїми сесіями: від {OWNER_ONLY_AT:.0f} % агенти беруть лише твої картки, від {MAX_USAGE:.0f} % — пауза.",
+    "Вердикт перевірки — про минуле на наших даних: за відхиленою ідеєю не торгувати, а підтверджена не скасовує правила ризику.",
+)
+SERVER_WARN_PCT, SERVER_BAD_PCT = 70.0, 90.0  # the memory and disk bars turn yellow / red here (_bar)
+
+
+def system_status(s: dict) -> dict:
+    """What on the «Система» tab may need the owner: services down, collector tables past their freshness norm,
+    collector-health series flagged, PRs waiting for review, open questions, Claude usage, disk and memory."""
+    tables = s.get("tables") or []
+    h = s.get("health") or {}
+    health_bad = 0
+    if h.get("rows") and not h.get("error"):
+        try:
+            health_bad = len(_health_module().ch.alarms(list(h["rows"])))
+        except Exception:  # noqa: BLE001 - the block below says «не перевірено» itself
+            health_bad = 0
+    u = s.get("usage") or {}
+    m = s.get("machine") or {}
+
+    def pct(used: str, total: str) -> float | None:
+        t = _num(m.get(total))
+        v = _num(m.get(used))
+        return 100.0 * v / t if t and v is not None else None
+
+    return {
+        "down": [str(x.get("label")) for x in s.get("services") or [] if x.get("state") != "active"],
+        "stale": [str(t.get("label")) for t in tables if t.get("ok") is False],
+        "checked": sum(1 for t in tables if t.get("ok") is not None),
+        "health_bad": health_bad,
+        "waiting": len((s.get("agents") or {}).get("awaiting_review") or []),
+        "questions": len(s.get("questions") or []),
+        "week": _num((u.get("seven_day") or {}).get("pct")),
+        "five": _num((u.get("five_hour") or {}).get("pct")),
+        "week_reset": (u.get("seven_day") or {}).get("resets_at"),
+        "disk": pct("disk_used", "disk_total"),
+        "mem": pct("mem_used", "mem_total"),
+        "backup_age_s": _num(m.get("backup_age_s")),
+    }
+
+
+def system_lead(st_: dict) -> str:
+    """The page's first lines (docs/design/PANEL.md): one sentence «what now», one «what to do». The first that
+    applies: a service is down; collector data lags; PRs or questions wait for the owner; Claude usage is past a
+    threshold; else all is well."""
+    reset = _reset(st_["week_reset"])
+    week = st_["week"]
+    if st_["down"]:
+        chip, label = "risk", "служба стоїть"
+        what = f"Не працює: {', '.join(st_['down'])}."
+        do = "напиши Claude (ssh-сесія tradedesk), щоб знайшов причину; перезапуск — з-під nick."
+    elif st_["stale"] or st_["health_bad"]:
+        chip, label = "risk", "дані відстають"
+        parts = []
+        if st_["stale"]:
+            parts.append(f"останній запис старший за норму: {', '.join(st_['stale'])}")
+        if st_["health_bad"]:
+            parts.append(f"серій із дірами за 7 днів: {st_['health_bad']}")
+        what = "Колектор відстає — " + "; ".join(parts) + "."
+        do = "напиши Claude, яка таблиця чи серія, і не спирайся на ці дані, поки не оновляться."
+    elif st_["waiting"] or st_["questions"]:
+        chip, label = "ev", "чекають тебе"
+        what = f"Чекають твого перегляду PR: {st_['waiting']}; відкритих питань агентів: {st_['questions']}."
+        do = "переглянь PR і відповідай на питання: від цього залежить робота агентів."
+    elif week is not None and week >= MAX_USAGE:
+        chip, label = "ev", "агенти на паузі"
+        what = f"Ліміт тижня {week:.0f} %: агенти стоять до скидання ({reset})."
+        do = "нічого: після скидання вони продовжать самі."
+    elif week is not None and week >= OWNER_ONLY_AT:
+        chip, label = "calm", "лише твої картки"
+        what = f"Ліміт тижня {week:.0f} %: агенти беруть лише твої картки."
+        do = f"нічого; великі задачі в своїх сесіях відклади до скидання ({reset})."
+    else:
+        chip, label = "calm", "усе працює"
+        what = "Служби працюють, дані колектора свіжі, тебе ніхто не чекає."
+        do = "нічого робити не треба."
+    return (
+        f"<div class='lead'><span class='chip {chip}'>{_e(label)}</span>"
+        f"<p class='now'>{_e(what)}</p><p class='do'><b>Що робити:</b> {_e(do)}</p></div>"
+    )
+
+
+def block_system_tiles(st_: dict) -> str:
+    """Four tiles, each with its «what to do» line: who waits for the owner, Claude usage, collector freshness, server."""
+    n_wait = st_["waiting"] + st_["questions"]
+    week, five = st_["week"], st_["five"]
+    if week is None:
+        w_tone, w_act = "", "не прочитано: глянь пізніше"
+    elif week >= MAX_USAGE:
+        w_tone, w_act = "bad", "агенти на паузі до скидання"
+    elif week >= OWNER_ONLY_AT:
+        w_tone, w_act = "warn", "агенти лише на твоїх картках"
+    else:
+        w_tone, w_act = "", "нічого: агенти працюють повністю"
+    n_stale = len(st_["stale"])
+    fresh = st_["checked"] - n_stale
+    lag = n_stale or st_["health_bad"]
+    data_s = f"таблиць свіжі · серій з дірами {st_['health_bad']}" if st_["health_bad"] else "таблиць свіжі за нормою"
+    disk, mem = st_["disk"], st_["mem"]
+    worst = max((x for x in (disk, mem) if x is not None), default=None)
+    if worst is None:
+        s_tone, s_act = "", "не прочитано"
+    elif worst >= SERVER_BAD_PCT:
+        s_tone, s_act = "bad", "напиши Claude: звільнити місце"
+    elif worst >= SERVER_WARN_PCT:
+        s_tone, s_act = "warn", "стеж: місця стає мало"
+    else:
+        s_tone, s_act = "", "нічого робити не треба"
+    tiles = [
+        _tile(
+            "Чекають тебе",
+            _nf(n_wait),
+            f"PR {st_['waiting']} · питань {st_['questions']}",
+            help="p_waiting",
+            tone="warn" if n_wait else "",
+            act="переглянь PR, відповідай на питання" if n_wait else "нічого робити не треба",
+        ),
+        _tile(
+            "Ліміт тижня",
+            "—" if week is None else f"{week:.0f} %",
+            _e(f"5 год: {'—' if five is None else f'{five:.0f} %'} · скидання {_reset(st_['week_reset'])}"),
+            help="p_limit",
+            tone=w_tone,
+            act=w_act,
+        ),
+        _tile(
+            "Дані колектора",
+            f"{fresh} / {st_['checked']}" if st_["checked"] else "—",
+            data_s if st_["checked"] else "таблиць ще немає",
+            help="p_collector",
+            tone="bad" if lag else "",
+            act="напиши Claude, що відстає" if lag else "нічого робити не треба",
+        ),
+        _tile(
+            "Диск сервера",
+            "—" if disk is None else f"{disk:.0f} %",
+            _e(f"пам'ять {'—' if mem is None else f'{mem:.0f} %'} · бекап {fmt_age(st_['backup_age_s'])}"),
+            help="p_server",
+            tone=s_tone,
+            act=s_act,
+        ),
+    ]
+    return f"<div class='tiles'>{''.join(tiles)}</div>"
+
+
 def render(s: dict) -> str:
     a, u, m = s["agents"], s.get("usage"), s["machine"]
+    st_ = system_status(s)
     out = [
         f"<!doctype html><html lang='uk'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-        f"{_refresh_head(REFRESH_S)}<title>tradedesk — панель</title><style>{CSS}{HELP_CSS}</style></head><body>"
+        f"{_refresh_head(REFRESH_S)}<title>tradedesk — панель</title><style>{CSS}{BRIEF_CSS}</style></head><body>"
     ]
     svc = " ".join(f"<span class='{'ok' if x['state'] == 'active' else 'bad'}'>● {_e(x['label'])}</span>" for x in s["services"])
     out.append(
         f"<header><h1>tradedesk</h1><span class='mut'>оновлено {_when(s['generated_at'])} · сторінка сама оновлюється щохвилини</span><span>{svc}</span></header>{_nav('project')}<main>"
     )
-
-    # Project progress
-    pr = s.get("progress")
-    if pr:
-        out.append(f"<section class='wide'>{_h2('Прогрес проєкту', 'p_progress')}")
-        out.append(
-            f"<p><b style='font-size:17px'>{pr['pct']:.0f} %</b> — зроблено {pr['done']} з {pr['total']} кроків до готового продукту "
-            "<span class='mut'>(кожен крок важить однаково; коли додаються нові задачі, загальна кількість росте)</span></p>"
-        )
-        out.append(f'<div class="bar" style="height:14px"><i style="width:{min(100, pr["pct"]):.0f}%"></i></div>')
-        out.append("<table><tr><th>Етап</th><th>Зроблено</th><th style='width:45%'>Прогрес</th></tr>")
-        for g in pr["groups"]:
-            pct = 100.0 * g["done"] / g["total"] if g["total"] else 0.0
-            out.append(
-                f"<tr><td>{_e(g['label'])}</td><td>{g['done']} / {g['total']}</td>"
-                f'<td><div class="bar"><i style="width:{pct:.0f}%"></i></div></td></tr>'
-            )
-        out.append("</table>")
-        if pr["eta_days"] is not None:
-            out.append(
-                f"<p class='mut'>Карткам власника лишилось {pr['cards_left']} кроків; за темпом останніх 7 днів "
-                f"({pr['pace']:.1f} здачі на день) — ≈ {pr['eta_days']:.0f} дн. роботи агентів. Грубо: без пауз через ліміт, "
-                "кроків, що ще з'являться, і 4-тижневих паперових вікон.</p>"
-            )
-        out.append(
-            "<p class='mut'>Кроки карток — розділ «Прогрес» у кожній картці; етапи продукту — <code>docs/PROGRESS.md</code>.</p></section>"
-        )
+    # docs/design/PANEL.md: «what now / what to do» and the tiles first, then what may need the owner (agents and PRs,
+    # questions, collector health) always open; the rest folded with a one-line summary; the caveats once, at the bottom
+    out.append(f"<section class='wide'>{_guard(system_lead, st_)}{_guard(block_system_tiles, st_)}</section>")
 
     # Agents now
     out.append(f"<section>{_h2('Агенти зараз', 'p_agents')}")
@@ -2339,32 +2510,63 @@ def render(s: dict) -> str:
     if a["progress"]:
         out.append("<pre>" + _e("\n".join(a["progress"])) + "</pre>")
     out.append("</section>")
+    if s["questions"]:  # PANEL.md rule 6: what waits for the owner stays open
+        out.append(
+            f"<section>{_h2('Питання агентів до тебе', 'p_questions')}<ul>"
+            + "".join(f"<li>{_e(q)}</li>" for q in s["questions"])
+            + "</ul></section>"
+        )
+    out.append(block_collector_health(s.get("health")))
 
     # Usage
-    out.append(f"<section>{_h2('Ліміт Claude', 'p_limit')}")
+    b = []
     if u:
         for k, label in (("five_hour", "5 годин"), ("seven_day", "тиждень")):
             pct = u[k]["pct"]
-            out.append(
+            b.append(
                 f"<div>{label}: <b>{'—' if pct is None else f'{pct:.0f} %'}</b> <span class='mut'>· скидання {_e(_reset(u[k]['resets_at']))}</span></div>"
             )
-            out.append(_bar(pct, OWNER_ONLY_AT, MAX_USAGE))
+            b.append(_bar(pct, OWNER_ONLY_AT, MAX_USAGE))
         t = u["trend"]
         if t["rate_per_day"] is not None:
-            out.append(f"<p>Темп тижня ≈ <b>{t['rate_per_day']:+.1f} п. п./добу</b>.")
+            b.append(f"<p>Темп тижня ≈ <b>{t['rate_per_day']:+.1f} п. п./добу</b>.")
             if t["eta_owner_only"]:
-                out.append(f" {t['owner_only_at']:.0f} % (далі лише твої картки) ≈ <b>{_when(t['eta_owner_only'])}</b>;")
+                b.append(f" {t['owner_only_at']:.0f} % (далі лише твої картки) ≈ <b>{_when(t['eta_owner_only'])}</b>;")
             if t["eta"]:
-                out.append(f" пауза агентів ({t['limit']:.0f} %) ≈ <b>{_when(t['eta'])}</b>.")
-            out.append("</p>")
+                b.append(f" пауза агентів ({t['limit']:.0f} %) ≈ <b>{_when(t['eta'])}</b>.")
+            b.append("</p>")
         else:
-            out.append("<p class='mut'>Темп — коли наберуться заміри (кілька годин).</p>")
-        out.append(
-            f"<p class='mut'>Від {OWNER_ONLY_AT:.0f} % агенти беруть лише картки власника, від {MAX_USAGE:.0f} % — пауза. Ліміт спільний із твоїми сесіями.</p>"
-        )
+            b.append("<p class='mut'>Темп — коли наберуться заміри (кілька годин).</p>")
+        rate = t["rate_per_day"]
+        week, five = ("—" if v is None else f"{v:.0f} %" for v in (st_["week"], st_["five"]))
+        lim_s = f"тиждень {week} · 5 год {five}" + ("" if rate is None else f" · темп {rate:+.1f} п. п./добу")
     else:
-        out.append("<p class='mut'>Не вдалося прочитати.</p>")
-    out.append("</section>")
+        b.append("<p class='mut'>Не вдалося прочитати.</p>")
+        lim_s = "не вдалося прочитати"
+    out.append(_fold("Ліміт Claude", "p_limit", _e(lim_s), "".join(b), sid="p-limit"))
+
+    # Project progress
+    pr = s.get("progress")
+    if pr:
+        b = [f'<div class="bar" style="height:14px"><i style="width:{min(100, pr["pct"]):.0f}%"></i></div>']
+        b.append("<table><tr><th>Етап</th><th>Зроблено</th><th style='width:45%'>Прогрес</th></tr>")
+        for g in pr["groups"]:
+            pct = 100.0 * g["done"] / g["total"] if g["total"] else 0.0
+            b.append(
+                f"<tr><td>{_e(g['label'])}</td><td>{g['done']} / {g['total']}</td>"
+                f'<td><div class="bar"><i style="width:{pct:.0f}%"></i></div></td></tr>'
+            )
+        b.append("</table>")
+        eta = ""
+        if pr["eta_days"] is not None:
+            eta = f" · ≈ {pr['eta_days']:.0f} дн. роботи агентів"
+            b.append(
+                f"<p class='mut'>Карткам власника лишилось {pr['cards_left']} кроків; за темпом останніх 7 днів "
+                f"({pr['pace']:.1f} здачі на день) — ≈ {pr['eta_days']:.0f} дн. роботи агентів.</p>"
+            )
+        b.append("<p class='mut'>Кроки карток — розділ «Прогрес» у кожній картці; етапи продукту — <code>docs/PROGRESS.md</code>.</p>")
+        summ = f"{pr['pct']:.0f} % · зроблено {pr['done']} з {pr['total']} кроків{eta}"
+        out.append(_fold("Прогрес проєкту", "p_progress", _e(summ), "".join(b), sid="p-progress"))
 
     # Queue
     cards = s["cards"]
@@ -2373,18 +2575,21 @@ def render(s: dict) -> str:
         key=lambda x: (x["order"] if x["order"] is not None else 99, x["name"]),
     )
     other = [x for x in cards if not x["owner"] and x["status"] in ("accepted", "testing", "proposed")]
-    out.append(f"<section>{_h2('Черга', 'p_queue')}<table><tr><th>#</th><th>Картка</th><th>Статус</th><th>Кроки</th></tr>")
+    b = ["<table><tr><th>#</th><th>Картка</th><th>Статус</th><th>Кроки</th></tr>"]
     for x in owner:
         d, t = rb.card_progress(x)
-        out.append(
+        b.append(
             f"<tr><td>{x['order'] if x['order'] is not None else '👤'}</td><td>{_e(x['title'])}<br><span class='mut'>{_e(x['name'][14:])}</span></td><td>{_e(x['status'])}</td>"
             f'<td style="min-width:90px">{d} / {t}<div class="bar"><i style="width:{100.0 * d / t if t else 0:.0f}%"></i></div></td></tr>'
         )
     for x in other:
-        out.append(
+        b.append(
             f"<tr><td class='mut'>·</td><td>{_e(x['title'])}<br><span class='mut'>{_e(x['name'][14:])}</span></td><td>{_e(x['status'])}</td><td></td></tr>"
         )
-    out.append("</table></section>")
+    b.append("</table>")
+    nxt = f" · далі: {owner[0]['title'][:60]}" if owner else ""
+    summ = f"твоїх карток {len(owner)} · від агентів {len(other)}{nxt}"
+    out.append(_fold("Черга", "p_queue", _e(summ), "".join(b), sid="p-queue"))
 
     # Results
     groups = [
@@ -2393,39 +2598,62 @@ def render(s: dict) -> str:
         ("без вердикту", ("inconclusive",), "mut"),
         ("відхилено", ("rejected",), "bad"),
     ]
-    out.append(f"<section>{_h2('Результати перевірок', 'p_results')}<div class='kpi'>")
-    for label, sts, cls in groups:
-        out.append(f"<div><b class='{cls}'>{sum(x['status'] in sts for x in cards)}</b> {label}</div>")
-    out.append("</div><table style='margin-top:8px'><tr><th>Картка</th><th>Вердикт</th></tr>")
+    counts = [(label, sum(x["status"] in sts for x in cards), cls) for label, sts, cls in groups]
+    b = ["<div class='kpi'>"]
+    for label, n, cls in counts:
+        b.append(f"<div><b class='{cls}'>{n}</b> {label}</div>")
+    b.append("</div><table style='margin-top:8px'><tr><th>Картка</th><th>Вердикт</th></tr>")
     done = sorted(
         [x for x in cards if x["status"] in ("confirmed", "built", "inconclusive", "rejected")], key=lambda x: x["name"], reverse=True
     )
     for x in done[:12]:
         cls = {"rejected": "bad", "inconclusive": "mut"}.get(x["status"], "ok")
-        out.append(
+        b.append(
             f"<tr><td>{_e(x['title'][:70])}</td><td class='{cls}'>{_e(x['status'])}<span class='mut'> {_e(x['verdict'][:110])}</span></td></tr>"
         )
-    out.append("</table><p class='mut'>Повністю — <code>docs/RESULTS.md</code>.</p></section>")
+    b.append("</table><p class='mut'>Повністю — <code>docs/RESULTS.md</code>.</p>")
+    summ = " · ".join(f"{label} {n}" for label, n, _ in counts)
+    out.append(_fold("Результати перевірок", "p_results", _e(summ), "".join(b), sid="p-results"))
 
     # History
-    out.append(
-        f"<section class='wide'>{_h2('Кроки агентів', 'p_steps')}<table><tr><th>Коли</th><th>Результат</th><th>Що</th><th>Час і ліміт</th></tr>"
-    )
+    b = ["<table><tr><th>Коли</th><th>Результат</th><th>Що</th><th>Час і ліміт</th></tr>"]
     for h in a["history"]:
         cls = {"delivered": "ok", "error": "bad", "stuck": "bad"}.get(h["status"], "mut")
-        out.append(
+        b.append(
             f"<tr><td>{_e(h['when'])}</td><td class='{cls}'>{_e(STATUS_UA.get(h['status'], h['status']))}</td><td>{_e(h['text'])}</td><td class='mut'>{_e(h['cost'])}</td></tr>"
         )
-    out.append("</table></section>")
+    b.append("</table>")
+    hs = a["history"]
+    summ = f"останній {hs[0]['when']} — {STATUS_UA.get(hs[0]['status'], hs[0]['status'])}" if hs else "кроків ще немає"
+    out.append(_fold("Кроки агентів", "p_steps", _e(summ), "".join(b), sid="p-steps"))
+
+    # Collector
+    b = ["<table><tr><th>Дані</th><th>Останній запис</th><th>Рядків</th></tr>"]
+    for t in s["tables"]:
+        cls = "mut" if t["ok"] is None else ("ok" if t["ok"] else "bad")
+        b.append(
+            f"<tr><td>{_e(t['label'])}</td><td class='{cls}'>{_e(fmt_age(t['age_s']))}</td><td>{t['rows']:,}".replace(",", " ")
+            + "</td></tr>"
+        )
+    b.append("</table>")
+    summ = f"свіжі {st_['checked'] - len(st_['stale'])} з {st_['checked']} таблиць" + (
+        f" · відстає: {', '.join(st_['stale'])}" if st_["stale"] else ""
+    )
+    out.append(_fold("Колектор даних", "p_collector", _e(summ), "".join(b), sid="p-collector"))
 
     # Server
     gb = 1024**3
-    out.append(f"<section>{_h2('Сервер', 'p_server')}")
+    b = []
     if m["mem_total"]:
         mp = m["mem_used"] / m["mem_total"] * 100
-        out.append(f"<div>Пам'ять: <b>{m['mem_used'] / gb:.1f}</b> з {m['mem_total'] / gb:.0f} ГБ</div>{_bar(mp, 70, 90)}")
-    dp = m["disk_used"] / m["disk_total"] * 100
-    out.append(f"<div>Диск: <b>{m['disk_used'] / gb:.0f}</b> з {m['disk_total'] / gb:.0f} ГБ</div>{_bar(dp, 70, 90)}")
+        b.append(
+            f"<div>Пам'ять: <b>{m['mem_used'] / gb:.1f}</b> з {m['mem_total'] / gb:.0f} ГБ</div>{_bar(mp, SERVER_WARN_PCT, SERVER_BAD_PCT)}"
+        )
+    if m["disk_total"]:
+        dp = m["disk_used"] / m["disk_total"] * 100
+        b.append(
+            f"<div>Диск: <b>{m['disk_used'] / gb:.0f}</b> з {m['disk_total'] / gb:.0f} ГБ</div>{_bar(dp, SERVER_WARN_PCT, SERVER_BAD_PCT)}"
+        )
     extra = []
     if m["load"]:
         extra.append("load " + " / ".join(m["load"]))
@@ -2434,32 +2662,18 @@ def render(s: dict) -> str:
     if m["db_bytes"]:
         extra.append(f"база {m['db_bytes'] / 1024**2:.0f} МБ")
     extra.append(f"бекап {fmt_age(m['backup_age_s'])}")
-    out.append(f"<p class='mut'>{_e(' · '.join(extra))}</p></section>")
+    b.append(f"<p class='mut'>{_e(' · '.join(extra))}</p>")
+    disk, mem = ("—" if v is None else f"{v:.0f} %" for v in (st_["disk"], st_["mem"]))
+    summ = f"диск {disk} · пам'ять {mem} · бекап {fmt_age(m['backup_age_s'])}"
+    out.append(_fold("Сервер", "p_server", _e(summ), "".join(b), sid="p-server"))
 
-    # Collector
-    out.append(f"<section>{_h2('Колектор даних', 'p_collector')}<table><tr><th>Дані</th><th>Останній запис</th><th>Рядків</th></tr>")
-    for t in s["tables"]:
-        cls = "mut" if t["ok"] is None else ("ok" if t["ok"] else "bad")
-        out.append(
-            f"<tr><td>{_e(t['label'])}</td><td class='{cls}'>{_e(fmt_age(t['age_s']))}</td><td>{t['rows']:,}".replace(",", " ")
-            + "</td></tr>"
-        )
-    out.append("</table></section>")
-    out.append(block_collector_health(s.get("health")))
-
-    # Commits and questions
-    out.append(f"<section>{_h2('Останні зміни в main', 'p_changes')}<table>")
-    for row in s["commits"]:
-        if len(row) == 3:
-            out.append(f"<tr><td class='mut'>{_e(row[1])}</td><td>{_e(row[2][:110])}</td></tr>")
-    out.append("</table></section>")
-    if s["questions"]:
-        out.append(
-            f"<section>{_h2('Питання агентів до тебе', 'p_questions')}<ul>"
-            + "".join(f"<li>{_e(q)}</li>" for q in s["questions"])
-            + "</ul></section>"
-        )
-    out.append("</main></body></html>")
+    # Commits
+    rows = [row for row in s["commits"] if len(row) == 3]
+    b = ["<table>"] + [f"<tr><td class='mut'>{_e(row[1])}</td><td>{_e(row[2][:110])}</td></tr>" for row in rows] + ["</table>"]
+    summ = f"останній {rows[0][1]} — {rows[0][2][:70]}" if rows else "комітів не прочитано"
+    out.append(_fold("Останні зміни в main", "p_changes", _e(summ), "".join(b), sid="p-changes"))
+    caveats = "<div class='caveat'><b>Застереження</b><ul>" + "".join(f"<li>{_e(c)}</li>" for c in SYSTEM_CAVEATS) + "</ul></div>"
+    out.append(f"</main>{caveats}</body></html>")
     return with_help("".join(out))
 
 

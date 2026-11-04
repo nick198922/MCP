@@ -147,6 +147,77 @@ def test_render_has_all_sections_and_escapes():
     assert "href='/brief'" in page  # the «Ринок» tab
 
 
+def test_system_tab_follows_panel_rules():
+    # standing improvements, item 65: docs/design/PANEL.md rules 1-7 on the «Система» tab
+    import re
+
+    page = db.render(_project_snap())
+    main = page[page.index("<main>") : page.index("</main>")]
+    # 1. «what now» and «what to do» first
+    assert main.index("class='lead'") < main.index("<div class='tiles'>") < main.index("Агенти зараз")
+    assert "<span class='chip ev'>чекають тебе</span>" in main and "Чекають твого перегляду PR: 1; відкритих питань агентів: 1." in main
+    # 2. every tile has an action line of at most 8 words
+    tiles = re.findall(r"<div class='tile[^']*'>.*?</div>", main)
+    assert len(tiles) == 4
+    acts = [re.search(r"<span class='act'>(.*?)</span>", t) for t in tiles]
+    assert all(acts) and all(len(x.group(1).split()) <= 8 for x in acts)
+    assert "<span class='v'>85 %</span>" in main and "агенти лише на твоїх картках" in main  # 85 % ≥ OWNER_ONLY_AT
+    assert "<span class='v'>2</span><span class='s '>PR 1 · питань 1</span>" in main
+    # 3. every «i» on the tab is an instruction (low → do, high → do), not the long «for a trade» form
+    assert "Для угоди:" not in page and page.count("<span class='do'>") >= 2 * page.count("<span class='info'")
+    # 4. the secondary blocks are folded, each with its one-line summary and a stable id for the auto-refresh
+    folds = re.findall(r"<section class='wide fold' id='(p-\w+)'><details><summary>.*?<span class='fs'>(.*?)</span>", main)
+    assert dict(folds) == {
+        "p-limit": "тиждень 85 % · 5 год 66 % · темп +18.6 п. п./добу",
+        "p-progress": "33 % · зроблено 30 з 90 кроків · ≈ 5 дн. роботи агентів",
+        "p-queue": "твоїх карток 1 · від агентів 0 · далі: паперовий carry",
+        "p-results": "підтверджено 0 · форвард 0 · без вердикту 0 · відхилено 1",
+        "p-steps": "останній 17.10 08:31 — здано",
+        "p-collector": "свіжі 1 з 1 таблиць",
+        "p-server": "диск 11 % · пам&#x27;ять 8 % · бекап 1 год тому",
+        "p-changes": "останній 17.10 12:00 — Owner&#x27;s decisions",
+    }
+    assert "<details open>" not in main
+    # 6. what waits for the owner stays open, above the folds
+    assert main.index("Питання агентів до тебе") < main.index("class='wide fold'") and "Q-1: ключ?" in main
+    # 5. the caveats once, at the bottom, and no longer inside the blocks
+    assert page.count("<b>Застереження</b>") == 1 and page.index("</main>") < page.index("<b>Застереження</b>")
+    for text in ("кожен крок важить однаково", "Ліміт спільний", "спільний із твоїми сесіями"):
+        assert text not in main, text
+    assert "Ліміт Claude спільний із твоїми сесіями: від 80 % агенти беруть лише твої картки, від 97 % — пауза." in page
+
+
+def test_system_lead_and_tiles_name_the_first_thing_that_needs_the_owner():
+    def lead(**changes) -> str:
+        s = _project_snap() | changes
+        return db.system_lead(db.system_status(s))
+
+    def agents(**kw) -> dict:
+        return _project_snap()["agents"] | kw
+
+    calm = {"agents": agents(awaiting_review=[]), "questions": []}
+    low = {"five_hour": {"pct": 10.0, "resets_at": None}, "seven_day": {"pct": 40.0, "resets_at": None}, "trend": {"rate_per_day": None}}
+    assert "<span class='chip calm'>усе працює</span>" in lead(**calm, usage=low) and "нічого робити не треба" in lead(**calm, usage=low)
+    assert "лише твої картки" in lead(**calm)  # the fixture's week is 85 %
+    full = low | {"seven_day": {"pct": 98.0, "resets_at": None}}
+    assert "агенти на паузі" in lead(**calm, usage=full) and "98 %" in lead(**calm, usage=full)
+    # data lagging beats waiting PRs, a stopped service beats both
+    stale = [{"label": "funding", "table": "funding_hist", "rows": 1, "age_s": 9 * 3600.0, "ok": False}]
+    assert "дані відстають" in lead(tables=stale) and "старший за норму: funding" in lead(tables=stale)
+    flagged = {"rows": [{"status": "low"}, {"status": "ok"}], "error": None, "window_days": 7}
+    assert "серій із дірами за 7 днів: 1" in lead(health=flagged)
+    down = [{"label": "MCP", "unit": "tradedesk-mcp", "state": "failed"}]
+    assert "служба стоїть" in lead(services=down, tables=stale) and "Не працює: MCP." in lead(services=down, tables=stale)
+    # the tiles: no usage read, a lagging table, a full disk
+    s = _project_snap() | {"usage": None, "tables": stale}
+    s["machine"] = s["machine"] | {"disk_used": 180 * 1024**3}
+    tiles = db.block_system_tiles(db.system_status(s))
+    assert "не прочитано: глянь пізніше" in tiles and "<span class='v'>0 / 1</span>" in tiles
+    assert "напиши Claude, що відстає" in tiles and "напиши Claude: звільнити місце" in tiles and "class='tile t-bad'" in tiles
+    page = db.render(s)  # no usage: the fold says so, the page still renders
+    assert "<span class='fs'>не вдалося прочитати</span>" in page and "Блок не вдалося показати" not in page
+
+
 def test_read_usage_prefers_the_agents_cache_and_throttles_own_calls(tmp_path, monkeypatch):
     import json as _json
     import time as _time
@@ -1914,7 +1985,7 @@ def test_keep_open_keys_folds_by_section_id_not_by_live_summary(tmp_path):
     assert "p.classList.contains('fold') ? p.id" in db.KEEP_OPEN_JS
     assert db.KEEP_OPEN_JS.index("d.id ||") < db.KEEP_OPEN_JS.index("p.id :") < db.KEEP_OPEN_JS.index("sm.textContent")
     pages = _all_tab_pages(tmp_path)
-    for name in ("brief", "radar BTC", "radar ETH", "flows BTC", "flows ETH", "polymarket"):  # the self-refreshing ones
+    for name in ("project", "brief", "radar BTC", "radar ETH", "flows BTC", "flows ETH", "polymarket"):  # the self-refreshing ones
         page = pages[name]
         assert db.REFRESH_MARK in page and "<section class='wide fold'>" not in page, name  # no fold without an id
         ids = re.findall(r"<section class='wide fold' id='([^']+)'><details>", page)

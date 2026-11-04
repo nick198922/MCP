@@ -290,6 +290,23 @@ def test_position_metrics_clv_and_pnl():
     assert horizon_clv(pos, mk[:1], 24) == (None, "missing")  # defined, but no snapshot near +24 h
 
 
+def test_position_metrics_pnl_and_clv_carry_the_same_fee_bearing_cost():
+    """Review 2026-11-04 (pm-gap-close-clv-both-variants, item 2): the verdict's descriptive second variants put ``pnl``
+    (payout - entry cost) in place of ``clv_24h`` / ``clv`` (mid - entry cost) for early-resolved positions, so both
+    must carry the same cost, taker fee included. Every other fixture has fee 0, where a fee in only one would not show."""
+    t = END - 48 * H
+    fee = {"fee_rate": 0.07, "fee_exp": 1.0}
+    mk = [row(t, **fee), row(t + 24 * H, yes_bid=0.58, yes_ask=0.60, **fee), row(END - 90 * 60, yes_bid=0.90, yes_ask=0.92, **fee)]
+    (pos,) = open_positions(mk[:1], EntryRule(), ACC)
+    cost = 0.50 + 0.07 * 0.50 * 0.50  # ask + fee upper bound at the ask
+    assert pos["cost"] == pytest.approx(cost)
+    for outcome in (1, 0):
+        m = position_metrics(pos, mk, outcome)
+        assert (m["pnl"], m["clv_24h"], m["clv"]) == (pytest.approx(outcome - cost), pytest.approx(0.59 - cost), pytest.approx(0.91 - cost))
+        # the entry cancels: what the second variant swaps in differs from the first by payout - mid only
+        assert m["pnl"] - m["clv_24h"] == pytest.approx(outcome - 0.59) and m["pnl"] - m["clv"] == pytest.approx(outcome - 0.91)
+
+
 def test_brier_by_market_analytic():
     rows = [row(END - 48 * H), row(END - 24 * H), row(END - 24 * H, market_id="m2", model_note="pre_window")]
     (b,) = brier_by_market(rows, {"m1": 1, "m2": 0}, EntryRule(), ACC)

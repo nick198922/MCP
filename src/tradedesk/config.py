@@ -169,6 +169,7 @@ class Settings:
     alerts_health_enabled: bool = True
     alerts_health_min_failures: int = 3
     alerts_health_cooldown: int = 900  # 15 min
+    alerts_health_confirm: int = 600  # a failure is announced only if it lasts 10 min (server network blips)
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
     telegram_topic_alerts: int | None = None  # forum topic (message_thread_id) for market alerts
@@ -268,6 +269,7 @@ class Settings:
             alerts_health_enabled=os.environ.get("TRADEDESK_ALERTS_HEALTH_ENABLED", "1").lower() in ("1", "true", "yes"),
             alerts_health_min_failures=int(_float("TRADEDESK_ALERTS_HEALTH_MIN_FAILURES", 3)),
             alerts_health_cooldown=int(_float("TRADEDESK_ALERTS_HEALTH_COOLDOWN", 900)),
+            alerts_health_confirm=int(_float("TRADEDESK_ALERTS_HEALTH_CONFIRM", 600)),
             telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN") or None,
             telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID") or None,
             telegram_topic_alerts=int(os.environ["TELEGRAM_TOPIC_ALERTS"])

@@ -6,8 +6,9 @@ profile (BTC 1h 2020-01 .. 2025-02) and, for the power replay, the BTC 1h cache 
 
 Stages:
     stage0  power gate from forecasts only plus a historical replay for the weekly SD; no test-period bars are loaded
-    full    the registered test; refuses unless the stage-0 gate in <out-dir>/stage0.json passed; fetches Binance 1h
-            spot BTC/ETH through the runtime providers (cached per day under <out-dir>/klines/)
+    full    the registered test; refuses unless the stage-0 gate in <out-dir>/stage0.json passed on this same DB copy
+            (equal cutoff and row count, checked before any bar is fetched); fetches Binance 1h spot BTC/ETH
+            through the runtime providers (cached per day under <out-dir>/klines/)
 
 Usage:
     uv run python scripts/verify_pm_h7_qlike.py --stage stage0 [--refresh-db] [--out FILE]
@@ -238,6 +239,7 @@ def stage0(db: Path, out: Path) -> dict[str, Any]:
         "q_star": qstar,
         "level_grid": lvl,
         "replay": rp,
+        "cutoff": cutoff,
         "gate": {"pass": ok, "target": target, "sd_week": rp["sd_week"], "mde": mde, "weeks_needed": need, "eta": f"{eta:%Y-%m-%d}"},
         "seconds": round(time.perf_counter() - t0, 1),
         "peak_rss_mb": round(rss_mb()),
@@ -291,11 +293,26 @@ def fmt(r: dict[str, Any], k: float = 1e3) -> str:
     return f"{r['mean'] * k:+.3f} [{r['lo'] * k:+.3f}; {r['hi'] * k:+.3f}] p={r['p']:.3f} n={r['n']} blocks={r['n_blocks']}"
 
 
+def stale_gate(gate: dict[str, Any], rows: int, cutoff: int) -> str | None:
+    """Why a passed stage-0 gate does not cover the rows the full test would score (None when it does): the gate
+    must come from the same DB copy, i.e. the same cutoff and row count. A gate file without a cutoff (written
+    before 2026-11-04) is stale too."""
+    if gate.get("cutoff") != cutoff:
+        return f"gate cutoff {gate.get('cutoff')} != DB copy cutoff {cutoff}"
+    if gate.get("rows") != rows:
+        return f"gate rows {gate.get('rows')} != DB copy rows {rows}"
+    return None
+
+
 def stage_full(db: Path, gate_file: Path, out: Path, n_boot: int) -> None:
-    if not gate_file.exists() or not json.loads(gate_file.read_text())["gate"]["pass"]:
+    gate = json.loads(gate_file.read_text()) if gate_file.exists() else None
+    if not gate or not gate["gate"]["pass"]:
         raise SystemExit("stage-0 gate not passed (or not run): the registered test is not computed (item 8l waits)")
     prof = VH.is_profile()
-    rows, drop, _ = load_rows(db, prof)
+    rows, drop, cutoff = load_rows(db, prof)
+    why = stale_gate(gate, len(rows), cutoff)
+    if why:  # checked before any test-period bar is fetched
+        raise SystemExit(f"stage-0 gate is stale ({why}): rerun --stage stage0 on this DB copy (default --out) first")
     lo, hi = min(r["h0"] for r in rows), max(r["h1"] for r in rows)
     rets = {a: asyncio.run(fetch_returns(gate_file.parent, f"{a}/USDT", lo, hi)) for a in ("BTC", "ETH")}
     ys = [hq.realized_var(rets[r["asset"]], r["h0"], r["h1"]) for r in rows]

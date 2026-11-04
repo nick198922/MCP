@@ -236,6 +236,28 @@ idle_wait() { # idle_wait <seconds>
   done
 }
 
+# GitHub outages (2026-11-04: a GitHub incident, then port 22 timing out, made every step fail with exit 128 and the
+# owner got an error each time). While GitHub cannot be reached no step starts and the doctor is not called: the owner
+# gets one message when it goes down and one when it is back.
+GH_DOWN=0
+GH_WAIT="${TRADEDESK_AGENTS_GITHUB_WAIT_SECONDS:-300}"
+github_up() { timeout 60 git -C "$REPO" ls-remote -q origin HEAD >/dev/null 2>&1; }
+github_down() { # github_down <what failed>
+  log "GitHub unreachable ($1); next check in ${GH_WAIT}s"
+  loop_state "GitHub недоступний, наступна перевірка о $(at "$GH_WAIT")"
+  if ((GH_DOWN == 0)); then
+    GH_DOWN=1
+    notify "🌐 **GitHub недоступний** ($1): агенти чекають і перевіряють кожні $((GH_WAIT / 60)) хв. Робота не втрачається; коли він повернеться, напишу." --silent
+  fi
+  sleep "$GH_WAIT"
+}
+github_back() {
+  ((GH_DOWN == 1)) || return 0
+  GH_DOWN=0
+  log "GitHub reachable again"
+  notify "🌐 **GitHub знову доступний**, агенти продовжують." --silent
+}
+
 # After a failure: wait longer the more failures there were in a row, and tell the owner once when they pile up.
 fails=0
 after_failure() {
@@ -314,7 +336,14 @@ while true; do
     continue
   fi
   daily_check
-  git -C "$REPO" fetch -q --no-write-fetch-head origin || log "fetch failed"
+  if ! git -C "$REPO" fetch -q --no-write-fetch-head origin; then
+    log "fetch failed"
+    if ! github_up; then
+      github_down "fetch"
+      continue
+    fi
+  fi
+  github_back
   leftovers=0
   [[ -n "$(git -C "$WT" status --porcelain 2>/dev/null)" || -n "$(work_branch)" ]] && leftovers=1
   open="$(open_branches)"
@@ -408,6 +437,10 @@ while true; do
       ;;
     *)
       log "step script failed (exit $rc)"
+      if ! github_up; then
+        github_down "крок, код $rc"
+        continue
+      fi
       ((fails == 0)) && notify "❌ **Скрипт кроку агентів упав** (код $rc). Викликаю лікаря. Лог: $last_log"
       doctor "scripts/nightly_agents.sh itself failed with exit code $rc. Run log: $last_log" "script exit $rc"
       after_failure

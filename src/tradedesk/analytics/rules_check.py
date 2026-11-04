@@ -8,7 +8,10 @@ Rules covered:
 
 * 1 — risk per trade <= 1 % of the deposit. Option structure: the exact max loss at expiry (unbounded = violated:
   it needs a stop on the exchange or protective wings). Journal: size x |entry - stop| of a trade with a recorded
-  stop, the premium paid for a bought option; venue imports carry no stop, so their linear rows are ``unknown``.
+  stop, the premium paid for a bought option; venue imports carry no stop, so their linear rows are ``unknown``. A
+  stop not on the loss side of the entry (a long needs stop < entry, a short stop > entry; a break-even stop at the
+  entry included) is ``unknown`` too: a mistyped stop, or one moved since the opening (the journal keeps no stop
+  moves), so the risk at the opening cannot be told (``wrong_side`` names it).
 * 2 — at most 3 alt longs open at once (alt = any base asset but BTC and ETH, options left out); opening a 4th
   distinct alt long violates it. Needs a real opening time (opened_ts < closed_ts, or still open): Bybit linear
   imports have none (opened_ts = closed_ts) and are ``unknown``. Hyperliquid HIP-3 symbols ('dex:ASSET', e.g.
@@ -21,7 +24,9 @@ Rules covered:
   day violates it. A row without an opening time stands in with its close time: such a flag is approximate (the
   trade may have been opened long before the stop), counted in ``approx`` and kept apart from exact violations in
   the weekly totals. The "48 h pause after a big-loss day" half has no threshold in the rule: not checked.
-* 5 — target >= 2 x the stop distance (R:R >= 2): rows with both stop and target, else ``unknown``.
+* 5 — target >= 2 x the stop distance (R:R >= 2): rows with both stop and target, else ``unknown``. The direction
+  is checked first: a long needs stop < entry < target, a short target < entry < stop; a stop or target on the
+  wrong side (or at the entry) is ``unknown``, not an R:R (``wrong_side`` names it).
 * 8 — options (owner, 22.10, Q-20261022-1): premium paid <= 1 % of the deposit per trade, and by the time from the
   purchase to the delivery (Deribit/Bybit 08:00 UTC, the date in the symbol) three zones: under 24 h — never buy
   (``violated``); 24-72 h (both ends included) — only when all three checks hold: (a) a recorded thesis (direction,
@@ -165,6 +170,27 @@ def thesis_check(thesis: object, target: object) -> tuple[str, str]:
         return OK, "thesis and target recorded"
     miss = [w for w, ok in (("thesis", has_thesis), ("target", has_target)) if not ok]
     return VIOLATED, "no " + " and no ".join(miss)
+
+
+def wrong_side(side: object, entry: object, stop: object, target: object) -> str | None:
+    """Rules 1 and 5 on a linear trade: a stop or target not on its side of the entry, as a detail; None when every
+    given price is on its side, or the side ('long' | 'short') or entry is unknown. A long needs stop < entry < target,
+    a short target < entry < stop (as analytics.trade_command's stop_wrong_side / target_wrong_side). A stop at the
+    entry (break-even) gets a detail of its own: it says nothing about the risk at the opening."""
+    sign = 1.0 if side == "long" else -1.0 if side == "short" else None
+    e, s, t = _num(entry), _num(stop), _num(target)
+    if sign is None or e is None:
+        return None
+    out = []
+    if s is not None and sign * (e - s) <= 0:
+        out.append(
+            "stop at the entry (break-even): the risk at the opening is not recorded"
+            if s == e
+            else f"stop {'above' if sign > 0 else 'below'} the entry of a {side}"
+        )
+    if t is not None and sign * (t - e) <= 0:
+        out.append("target at the entry" if t == e else f"target {'below' if sign > 0 else 'above'} the entry of a {side}")
+    return "; ".join(out) or None
 
 
 def owner_thesis(thesis: object, tags: Sequence[str]) -> object:
@@ -421,7 +447,8 @@ def trade_checks(
     """Each open or closed journal row (pass the owner's real trades: no airdrop, no *-paper rows) with the status of
     rules 1, 2, 4, 5 and 8: {id, week, opened_ts, pnl, rules: {n: status}, approx: rule 4 judged on the close time,
     alt_longs: distinct alt longs open right after this one opened (rule 2, or None), buy_zone, buy_conditions,
-    late_buy, big_premium}. For a bought option: ``buy_zone`` is the rule 8 zone of the opening (None without a real
+    late_buy, big_premium, wrong_side: a stop or target not on its side of the entry (see wrong_side; rules 1 and 5
+    are then ``unknown``), else None}. For a bought option: ``buy_zone`` is the rule 8 zone of the opening (None without a real
     opening time or expiry), ``buy_conditions`` the three checks in the 1-3 day zone ({thesis, breakeven_move,
     iv_vs_rv}: statuses; the journal has no spot or IV at the opening, so the last two are ``unknown``), ``late_buy``
     True when the timing broke the rule (under 24 h, or 1-3 days with a check failed), None when it cannot tell.
@@ -438,7 +465,8 @@ def trade_checks(
         r: dict[int, str] = {}
         long_opt = x["option"] and x["side"] == "long"
         premium = x["size"] * x["entry"] if long_opt and x["size"] is not None and x["entry"] is not None else None
-        # rule 1: a bought option risks its premium; anything else needs a recorded stop
+        side_why = None if x["option"] else wrong_side(x["side"], x["entry"], x["stop"], x["target"])
+        # rule 1: a bought option risks its premium; anything else needs a recorded stop on the loss side
         risk = _risk(x)
         r[1] = UNKNOWN if risk is None else OK if risk <= risk_cap * (1 + _EPS) else VIOLATED
         # rule 2
@@ -451,10 +479,10 @@ def trade_checks(
         # rule 4
         stop = stops.get(utc_day(x["opened"]))
         r[4] = VIOLATED if stop is not None and x["opened"] > stop["ts"] else OK
-        # rule 5
+        # rule 5: a stop or target on the wrong side of the entry gives no R:R
         if x["option"]:
             r[5] = NA
-        elif None in (x["stop"], x["target"], x["entry"]) or x["entry"] == x["stop"]:
+        elif None in (x["stop"], x["target"], x["entry"]) or x["entry"] == x["stop"] or side_why is not None:
             r[5] = UNKNOWN
         else:
             r[5] = OK if abs(x["target"] - x["entry"]) / abs(x["entry"] - x["stop"]) >= min_rr - _EPS else VIOLATED
@@ -486,6 +514,7 @@ def trade_checks(
                 "buy_conditions": conds,
                 "late_buy": late,
                 "big_premium": big,
+                "wrong_side": side_why,
             }
         )
     return out
@@ -493,10 +522,13 @@ def trade_checks(
 
 def _risk(x: Mapping[str, Any]) -> float | None:
     """Rule 1 risk (USD) of a normalized row: the premium of a bought option, size x |entry - stop| of anything else
-    with a recorded stop; None when the row cannot tell (no stop, a sold option)."""
+    with a recorded stop on the loss side; None when the row cannot tell (no stop, a stop at or past the entry, a sold
+    option)."""
     if x["option"] and x["side"] == "long":
         return x["size"] * x["entry"] if x["size"] is not None and x["entry"] is not None else None
     if x["option"] or None in (x["stop"], x["size"], x["entry"]):
+        return None
+    if wrong_side(x["side"], x["entry"], x["stop"], None) is not None:
         return None
     return x["size"] * abs(x["entry"] - x["stop"])
 
@@ -506,7 +538,7 @@ def open_risk(
 ) -> dict[str, Any]:
     """Rule 2, first half: the total risk of the trades open now (status 'open'; pass the owner's real trades) <=
     open_risk_pct % of the deposit. {status, total: USD over the open trades whose rule 1 risk is known, limit,
-    n_open, n_unknown: open trades without a stop (or a sold option)}. ``violated`` once the known part alone is over
+    n_open, n_unknown: open trades without a stop on the loss side (or a sold option)}. ``violated`` once the known part alone is over
     the limit, else ``unknown`` while any open risk is unknown, else ``ok``; ``na`` with nothing open. The risk is to
     the recorded stop: a stop moved since, slippage or a gap are not seen."""
     xs = [x for x in _normalize(rows) if x["closed"] is None]

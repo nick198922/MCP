@@ -1,0 +1,3 @@
+- Реєстрація модуля «режим ринку задає дозволену сторону» (картка `demo-setups-depth`): варіанти SMA200 і cycle_regime, Холм на 2, IS/OOS, плацебо P1/P2, пороги вердикту.
+- Чисті функції `analytics/regime_side.py`, `scripts/verify_regime_side.py` (`--stage stage0 | report`), тести `tests/test_regime_side.py`.
+- Стадія 0: 68 123 угоди 2021+, MDE₈₀ ≈ 0.19–0.21R (цікавий ефект 0.05R недосяжний); ефект фільтра не рахувався.

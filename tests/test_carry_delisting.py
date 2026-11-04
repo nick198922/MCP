@@ -178,6 +178,36 @@ def test_rule_is_causal_in_its_own_inputs():
     assert [x for x in pa["equity"] if x[0] <= cut] == [x for x in pb["equity"] if x[0] <= cut]
 
 
+def test_runner_flags_a_funding_hole_mid_window_but_not_the_delisting():
+    """Item 63 (standing improvements): the 8b runner tags trades whose funding has a hole inside the holding window
+    (the A v2 band rests on its events); the funding stop at a delisting is the event, not a hole."""
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    import verify_carry_a_delisting as d
+    import verify_paper_carry_bench as pcb
+
+    mk, _ = _delisted()
+    hole = _market([0.001] * (N_BARS // 2), [80.0] * N_BARS)
+    hole["funding"] = hole["funding"][:40] + hole["funding"][43:]  # three payments missing ~day 13, mid-window
+    mk["HOLE"] = hole
+    pe = {"DEL": perp_end_ms(mk["DEL"])}
+    res = simulate_carry_delisting(mk, perp_end=pe, **KW)
+    by = {t["symbol"]: t for t in res["trades"]}
+    assert set(by) == {"DEL", "HOLE"}
+    assert by["HOLE"]["open_ts"] < T0 + 40 * H8 < T0 + 43 * H8 < by["HOLE"]["close_ts"]
+    assert d.mark_funding_gaps(mk, res["trades"], pe) == 1
+    assert by["HOLE"]["funding_gap"] is True
+    assert by["DEL"]["perp_ended"] and by["DEL"]["funding_gap"] is False
+    # without clipping the window at the perp's end the delisting itself would read as a hole
+    assert pcb.funding_gap(mk["DEL"]["funding"], by["DEL"]["open_ts"], by["DEL"]["close_ts"], pcb.GAP_FLOOR_MS) is True
+    # the same history without the hole: nothing tagged
+    mk["HOLE"] = _market([0.001] * (N_BARS // 2), [80.0] * N_BARS)
+    res2 = simulate_carry_delisting(mk, perp_end=pe, **KW)
+    assert d.mark_funding_gaps(mk, res2["trades"], pe) == 0
+
+
 def test_vanish_events_and_interval_change():
     mk, _ = _delisted()
     end = T0 + (N_BARS // 2) * H8

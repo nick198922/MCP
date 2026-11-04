@@ -12,7 +12,8 @@ Rules covered:
 * 2 — at most 3 alt longs open at once (alt = any base asset but BTC and ETH, options left out); opening a 4th
   distinct alt long violates it. Needs a real opening time (opened_ts < closed_ts, or still open): Bybit linear
   imports have none (opened_ts = closed_ts) and are ``unknown``. Hyperliquid HIP-3 symbols ('dex:ASSET', e.g.
-  'xyz:TSLA': stocks, gold) are not crypto alts the rule is about: ``unknown`` and left out of the count. The
+  'xyz:TSLA': stocks, gold) are not crypto alts the rule is about: ``unknown`` and left out of the count. One
+  asset under different venue names is one alt (base_asset: 'kPEPE' = '1000PEPEUSDT' = 'PEPE', 'PUMPFUN' = 'PUMP'). The
   "total open risk <= 3 %" half (open_risk, on the trades open now) sums rule 1's risk and needs stops.
 * 4 — day stop: after 2 losing trades in a row or a day's realized P&L <= -2 % of the deposit, no new trade that
   day. UTC day and closing order as in scripts/journal_rules.py that produced the rule's effect, but "in a row" is
@@ -48,6 +49,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
+from .funding_spread import normalize_asset
 from .strategy import payoff_curve, payoff_extremes
 
 OK, VIOLATED, UNKNOWN, NA = "ok", "violated", "unknown", "na"
@@ -73,6 +75,8 @@ _EPS = 1e-9
 _MONTHS = {m: i for i, m in enumerate(("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"), 1)}
 _OPTION_RE = re.compile(r"([A-Z0-9]+)-(\d{1,2})([A-Z]{3})(\d{2})-\d+(?:[.d]\d+)?-[CP](?:-[A-Z]+)?")
 _QUOTES = ("USDT", "USDC", "BUSD", "USD", "PERP")
+# One asset, another ticker on some venue (after the multiplier is dropped): Bybit lists pump.fun's PUMP as PUMPFUN.
+ASSET_ALIASES = {"PUMPFUN": "PUMP"}
 
 
 def _num(x: object) -> float | None:
@@ -101,15 +105,23 @@ def is_hip3(symbol: object) -> bool:
 
 
 def base_asset(symbol: object) -> str:
-    """Base asset of a perp / spot symbol: 'SOLUSDT', 'SOL/USDT:USDT', 'SOL-PERP', 'SOL' -> 'SOL'; the asset after
-    the dex of a HIP-3 symbol: 'xyz:TSLA' -> 'TSLA'."""
-    s = str(symbol or "").upper().strip()
-    s = s.split(":")[-1] if is_hip3(s) else s.split("/")[0].split(":")[0]
-    s = s.split("-")[0] if "-" in s else s
+    """Underlying asset of a perp / spot symbol: 'SOLUSDT', 'SOL/USDT:USDT', 'SOL-PERP', 'SOL' -> 'SOL'; the asset
+    after the dex of a HIP-3 symbol: 'xyz:TSLA' -> 'TSLA'. One asset under venue-specific names gets one name:
+    contract multipliers are dropped (Hyperliquid 'kPEPE', CEX '1000PEPEUSDT', '1MBABYDOGE', 'SHIB1000' -> 'PEPE',
+    'BABYDOGE', 'SHIB'; analytics.funding_spread.normalize_asset) and ASSET_ALIASES renames ('PUMPFUN' -> 'PUMP').
+    The Hyperliquid 'k' needs its lower case: an upper-case 'KPEPE' stays as is (KAVA, KSM are real tickers)."""
+    raw = str(symbol or "").strip()
+    raw = raw.split(":")[-1] if is_hip3(raw) else raw.split("/")[0].split(":")[0]
+    raw = raw.split("-")[0] if "-" in raw else raw
+    s = raw.upper()
     for q in _QUOTES:
         if s.endswith(q) and len(s) > len(q):
-            return s[: -len(q)]
-    return s
+            raw, s = raw[: -len(q)], s[: -len(q)]
+            break
+    asset, mult = normalize_asset(raw, "hyperliquid")  # only a lower-case 'k' prefix: 'kPEPE' -> PEPE
+    if mult == 1:
+        asset = normalize_asset(s, "cex")[0]  # numeric multipliers: '1000PEPE', '1MBABYDOGE', 'SHIB1000'
+    return ASSET_ALIASES.get(asset, asset)
 
 
 def _tags(raw: object) -> list[str]:

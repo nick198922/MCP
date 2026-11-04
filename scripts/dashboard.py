@@ -7479,6 +7479,10 @@ RULES_WEEKS = 12  # newest ISO weeks in the journal table
 RULES_MIN_CHECKED = 30  # «За правилами»: under this many checked trades the share is descriptive only
 RULES_OPTION_RE = re.compile(r"([A-Z0-9]+)-(\d{1,2})([A-Z]{3})(\d{2})-\d+(?:[.d]\d+)?-[CP](?:-[A-Z]+)?")
 RULES_QUOTES = ("USDT", "USDC", "BUSD", "USD", "PERP")
+RULES_ASSET_ALIASES = {"PUMPFUN": "PUMP"}  # copy of analytics.rules_check.ASSET_ALIASES
+RULES_MULT_PREFIX = re.compile(r"^(1000000|10000|1000|1M)([A-Z][A-Z0-9]*)$")  # copies of analytics.funding_spread's
+RULES_MULT_SUFFIX = re.compile(r"^([A-Z][A-Z0-9]*?)(1000)$")
+RULES_HL_K = re.compile(r"^k([A-Z][A-Z0-9]*)$")
 RULE_STATUS_UA = {
     "ok": ("виконано", "opp"),
     "violated": ("порушено", "risk"),
@@ -7496,7 +7500,8 @@ RULES_WEEK_NOTE = (
     "Правила власника, затверджені 18.10 (база знань «Торгова стратегія»). Тиждень — ISO-тиждень відкриття угоди (UTC), "
     "нові зверху; у клітинці «порушено з перевірених», «невідомо» — правило стосується угоди, але даних не вистачає. "
     "1 і 5 потребують стопу (і цілі): в імпорті з бірж їх немає, тож там лише куплені опціони (ризик = премія). "
-    "2 — відкриття 4-го різного альта (усе, крім BTC і ETH, без опціонів) при трьох уже відкритих; рядки Bybit без часу "
+    "2 — відкриття 4-го різного альта (усе, крім BTC і ETH, без опціонів) при трьох уже відкритих; той самий актив під "
+    "іменами різних бірж — один альт (kPEPE = 1000PEPE = PEPE, PUMPFUN = PUMP); рядки Bybit без часу "
     "відкриття — «невідомо», як і символи HIP-3 Hyperliquid (xyz:TSLA — акції, золото, не крипто-альти). "
     "4 — угода, відкрита того ж дня UTC після 2 збиткових поспіль або −2 % депозиту за день (порядок закриття); "
     "рядки без часу відкриття (здебільшого Bybit) оцінено за часом закриття — це «наближено», вони рахуються окремо "
@@ -7527,13 +7532,25 @@ def rules_is_hip3(symbol: object) -> bool:
 
 
 def rules_base_asset(symbol: object) -> str:
-    s = str(symbol or "").upper().strip()
-    s = s.split(":")[-1] if rules_is_hip3(s) else s.split("/")[0].split(":")[0]
-    s = s.split("-")[0] if "-" in s else s
+    """Copy of analytics.rules_check.base_asset: one asset under venue names gets one name ('kPEPE', '1000PEPEUSDT'
+    -> 'PEPE'; 'PUMPFUN' -> 'PUMP'); multipliers as analytics.funding_spread.normalize_asset."""
+    raw = str(symbol or "").strip()
+    raw = raw.split(":")[-1] if rules_is_hip3(raw) else raw.split("/")[0].split(":")[0]
+    raw = raw.split("-")[0] if "-" in raw else raw
+    s = raw.upper()
     for q in RULES_QUOTES:
         if s.endswith(q) and len(s) > len(q):
-            return s[: -len(q)]
-    return s
+            raw, s = raw[: -len(q)], s[: -len(q)]
+            break
+    if (m := RULES_HL_K.match(raw)) is not None:  # Hyperliquid's lower-case 'k' = 1000 coins
+        asset = m.group(1)
+    elif (m := RULES_MULT_PREFIX.match(s)) is not None:
+        asset = m.group(2)
+    elif (m := RULES_MULT_SUFFIX.match(s)) is not None:
+        asset = m.group(1)
+    else:
+        asset = s
+    return RULES_ASSET_ALIASES.get(asset, asset)
 
 
 def _rules_day(ts: float) -> str:

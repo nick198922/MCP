@@ -583,8 +583,11 @@ async def test_oi_by_strike_walls(server):
     # strikes nearest the forward dominate in the synthetic fixture (OI=20 for |logm|<0.15, 3 otherwise)
     atm_near = [w for w in d["top_overall"] if abs(w["distance_pct"]) < 15]
     assert atm_near, "expected close-to-forward strikes among the top walls"
+    # all expiries summed: the single reference forward for band/distance is disclosed
+    assert any("all expiries summed" in w for w in env["warnings"])
     one = await call(server, "deribit_oi_by_strike", currency="BTC", expiry="30OCT26")
     assert one["data"]["expiry"] == "30OCT26" and one["data"]["forward"] > 0
+    assert not any("all expiries summed" in w for w in one["warnings"])
 
 
 async def test_market_tools(server):

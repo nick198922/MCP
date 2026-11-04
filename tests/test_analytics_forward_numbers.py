@@ -17,7 +17,7 @@ from tradedesk.analytics.carry_delisting import settle_price
 from tradedesk.analytics.carry_modules import apply_capital, rank_score
 from tradedesk.analytics.carry_rules import carry_open, carry_pnl_now, carry_rank, spread_open, spread_pnl_now, spread_rank
 from tradedesk.analytics.pm_gap_paper import YEAR_S, EntryRule, entry_cost, value_after, win_probs
-from tradedesk.analytics.polymarket import devig_multi
+from tradedesk.analytics.polymarket import devig_multi, normalise_market
 
 H_MS = 3_600_000
 STEP = 8 * H_MS
@@ -254,6 +254,42 @@ def test_devig_multi_normalises_to_one():
     assert devig_multi([0.0, 1.0]) == [0.0, 1.0]  # already a distribution
 
 
-@pytest.mark.parametrize("prices", [[], [0.0, 0.0], [-0.1, 0.05]])
+@pytest.mark.parametrize("prices", [[], [0.0, 0.0], [-0.1, 0.05], [None, None]])
 def test_devig_multi_none_for_non_positive_sum(prices):
     assert devig_multi(prices) is None
+
+
+def test_devig_multi_keeps_none_in_place():
+    # 0.5 + 0.5 = 1.0 over the numeric entries; the None stays at index 1 (used to raise TypeError)
+    assert devig_multi([0.5, None, 0.5]) == [0.5, None, 0.5]
+
+
+# ------------------------------------------------------------------------------------ polymarket.normalise_market
+
+
+def test_normalise_market_non_numeric_price_keeps_index():
+    # BACKLOG 6.11: "abc" used to shift the devigged prices onto the wrong outcomes.
+    # Numeric sum 0.4 + 0.6 = 1.0 -> A 0.4, C 0.6; B has no price and no devigged price.
+    m = normalise_market({"outcomes": '["A", "B", "C"]', "outcomePrices": '["0.4", "abc", "0.6"]', "clobTokenIds": '["1", "2", "3"]'})
+    rows = {o["name"]: o for o in m["outcomes"]}
+    assert rows["A"]["price"] == pytest.approx(0.4)
+    assert rows["A"]["price_devigged"] == pytest.approx(0.4)
+    assert rows["B"]["price"] is None
+    assert rows["B"]["price_devigged"] is None
+    assert rows["C"]["price"] == pytest.approx(0.6)
+    assert rows["C"]["price_devigged"] == pytest.approx(0.6)
+    assert [o["token_id"] for o in m["outcomes"]] == ["1", "2", "3"]
+
+
+def test_normalise_market_all_numeric_unchanged():
+    # 0.55 + 0.50 = 1.05 -> 0.523810 / 0.476190, same as before the fix
+    m = normalise_market({"outcomes": '["Yes", "No"]', "outcomePrices": '["0.55", "0.50"]'})
+    devig = [o["price_devigged"] for o in m["outcomes"]]
+    assert devig == pytest.approx([0.55 / 1.05, 0.50 / 1.05])
+    assert [o["price"] for o in m["outcomes"]] == pytest.approx([0.55, 0.50])
+    assert [o["token_id"] for o in m["outcomes"]] == [None, None]
+
+
+def test_normalise_market_no_numeric_prices():
+    m = normalise_market({"outcomes": '["Yes", "No"]', "outcomePrices": '["x", null]'})
+    assert [o["price_devigged"] for o in m["outcomes"]] == [None, None]

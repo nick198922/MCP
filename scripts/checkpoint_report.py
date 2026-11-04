@@ -8,6 +8,8 @@ DB through read-only connections (``mode=ro``: no migration, no write), no netwo
 changes or cancels an order and nothing under ``execution/`` is imported. The rules live in the pure
 ``tradedesk.analytics.checkpoint``. Forwards under a no-peeking embargo (Polymarket v1 / v2-g, the condor P&L) show
 counters only, and the condor's ``option_leg_snapshot`` is not read before its registered T0 (2026-11-06 10:00 UTC).
+The paper engine ``assistant_paper`` (no band in CHECKPOINT) shows counters and its job's last daily decision only:
+``rec_paper`` is read without its P&L columns, and the state file ``<DB dir>/assistant/paper_state.json`` read-only.
 The text (Ukrainian) is printed and, with ``--out``, written to a file.
 """
 
@@ -83,6 +85,24 @@ def load_carry(con: sqlite3.Connection, strategy: str) -> dict[str, Any]:
     return out
 
 
+def load_rec_paper(con: sqlite3.Connection) -> list[dict[str, Any]]:
+    """The assistant_paper rows without any P&L column: the report shows counters only."""
+    if "rec_paper" not in _tables(con):
+        return []
+    q = "SELECT id, opened_ts, expiry_ts, status, source, trigger FROM rec_paper ORDER BY opened_ts, id"
+    return [dict(r) for r in con.execute(q)]
+
+
+def load_paper_state(db: str) -> dict[str, Any] | None:
+    """The assistant_paper job's state file next to the DB (``collector.assistant_paper.state_path``), only the keys the
+    report shows; None when it is absent or unreadable."""
+    try:
+        d = json.loads((Path(db).resolve().parent / "assistant" / "paper_state.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return {k: d.get(k) for k in ("date", "asof_utc", "state", "action")} if isinstance(d, dict) else None
+
+
 def load_inputs(db: str, now_ms: int) -> dict[str, Any]:
     """Everything ``checkpoint.build`` needs; a part that cannot be read is empty and named in ``errors`` (never raises)."""
     inp: dict[str, Any] = {
@@ -95,15 +115,21 @@ def load_inputs(db: str, now_ms: int) -> dict[str, Any]:
         inp["bench"] = {s: bench[s]["bench"] for s in ("A", "B")}
     except (OSError, ValueError, KeyError) as e:
         inp["errors"].append(f"бенч carry не прочитано ({type(e).__name__}): критерій (в) — ◯")
+    inp["paper_state"] = load_paper_state(db)
     try:
         con = connect_ro(db)
     except (sqlite3.Error, OSError) as e:
         inp["errors"].append(f"БД {db} не відкрито ({type(e).__name__})")
         return inp
     try:
-        for what, fn in (("demo_trade", lambda: load_demo(con)), ("carry", lambda: {s: load_carry(con, s) for s in ("A", "B")})):
+        loaders = (
+            ("demo_trade", "demo_trades", lambda: load_demo(con)),
+            ("carry", "carry", lambda: {s: load_carry(con, s) for s in ("A", "B")}),
+            ("rec_paper", "rec_paper", lambda: load_rec_paper(con)),
+        )
+        for what, key, fn in loaders:
             try:
-                inp["demo_trades" if what == "demo_trade" else "carry"] = fn()
+                inp[key] = fn()
             except sqlite3.Error as e:
                 inp["errors"].append(f"{what}: запит не вдався ({type(e).__name__})")
     finally:

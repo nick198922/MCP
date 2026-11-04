@@ -327,6 +327,50 @@ def test_condor_before_t0_reads_nothing_and_pnl_stays_closed():
     assert cp.condor_final_ms(date(2026, 10, 30)) == cp._ms(2026, 12, 31)  # an earlier T0: the 31.12 floor decides
 
 
+# ------------------------------------------------------------------------------------------- assistant_paper
+
+
+def _rec(opened: int, expiry: int, *, source: str = "method", trigger: str | None = "chain", status: str = "open"):
+    return {"opened_ts": opened // 1000, "expiry_ts": expiry // 1000, "status": status, "source": source, "trigger": trigger}
+
+
+REC = [
+    _rec(cp._ms(2026, 10, 20, 9), cp._ms(2026, 10, 23, 8), status="settled"),
+    _rec(cp._ms(2026, 10, 25, 9), cp._ms(2026, 10, 30, 8)),  # 49 h after the previous expiry: one gap; expired, not settled
+    _rec(cp._ms(2026, 10, 30, 9), cp._ms(2026, 12, 25, 8), trigger="regime"),  # 1 h after: no gap; standing
+    _rec(cp._ms(2026, 10, 21, 9), cp._ms(2026, 10, 24, 8), source="manual", trigger=None),
+    _rec(cp._ms(2026, 11, 3, 9), cp._ms(2026, 12, 25, 8)),  # after NOW: not counted
+]
+
+
+def test_assistant_paper_counters_and_state():
+    st = {"date": "2026-11-02", "asof_utc": "2026-11-02T09:05:00Z", "state": "actual", "action": "hold"}
+    r = cp.assistant_paper_forward(REC, st, NOW)
+    assert (r["n"], r["verdict"], r["metric"], r["band"]) == (3, cp.COUNTS_ONLY, None, None)
+    c = r["counters"]
+    assert c["з них ланцюг (chain, порівнянні з H1) / за тригером (regime, event)"] == "2 / 1"
+    assert c["ручних (manual, поза форвардом)"] == 1 and c["чинних (до експірації)"] == 1
+    assert c["експірованих / з них ще не розраховано"] == "2 / 1"
+    assert c["перша / остання угода методу"] == "2026-10-20 / 2026-10-30"
+    assert c["проміжків без чинної угоди методу > 1 доби"] == "1 (разом 2.0 дн.)"
+    assert c["останнє денне рішення (файл стану)"] == "2026-11-02, actual / hold, 3 год тому"
+    assert any("assistant_paper_status" in x and "не закриває" in x for x in r["notes"])
+    assert not any("стоїть" in x for x in r["notes"])
+    old = cp.assistant_paper_forward(REC, st | {"asof_utc": "2026-10-30T09:00:00Z"}, NOW)
+    assert any("старше 36 год" in x for x in old["notes"])
+    later = cp.assistant_paper_forward(REC, st, cp._ms(2026, 11, 1))  # the state file is newer than the report's date
+    assert "останнє денне рішення (файл стану)" not in later["counters"] and any("новіший" in x for x in later["notes"])
+    assert cp._uncovered([(0, 10), (30, 40)], 0, 50) == [20, 10]  # between the spans and after the last one
+
+
+def test_assistant_paper_empty_store_and_no_state_file():
+    r = cp.assistant_paper_forward([], None, NOW)
+    assert r["n"] == 0 and r["counters"]["угод методу"] == 0 and r["verdict"] == cp.COUNTS_ONLY
+    assert "перша / остання угода методу" not in r["counters"]
+    assert any("файлу стану завдання немає" in x for x in r["notes"])
+    assert cp.assistant_paper_forward([], {"asof_utc": "not a date"}, NOW)["counters"].get("останнє денне рішення (файл стану)") is None
+
+
 # ------------------------------------------------------------------------------------------------ the script
 
 
@@ -439,6 +483,36 @@ def test_script_loads_the_skip_reason_of_cycles(tmp_path):
     assert [c["reason"] for c in cycles if c["status"] == "skipped"] == ["missed: engine did not run in time", None]
     text = cp.render(cp.build(script.load_inputs(db, NOW), NOW))
     assert "пропущених циклів 2, з них без причини в журналі 1" in text
+
+
+def test_script_shows_assistant_paper_counters_without_pnl(tmp_path):
+    db = _db(tmp_path)
+    empty = cp.render(cp.build(script.load_inputs(db, NOW), NOW))  # the table exists, no rows, no state file
+    assert "Папір assistant_paper" in empty and "- угод методу: 0" in empty and "файлу стану завдання немає" in empty
+    con = sqlite3.connect(db)
+    cols = (
+        "opened_ts, currency, structure, expiry_ts, spot, forward, t_years, legs, premium_per_btc, entry_fees_per_btc, "
+        "max_loss_per_btc, risk_basis, size_btc, deposit_usd, risk_pct, risk_usd, within_risk, status, source, trigger, pnl_usd"
+    )
+    for r in REC:
+        con.execute(
+            f"INSERT INTO rec_paper ({cols}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (r["opened_ts"], "BTC", "long_straddle", r["expiry_ts"], 1, 1, 0.1, "[]", 1, 0, 1, "max_loss", 0.1, 1e4, 1, 100, 1)
+            + (r["status"], r["source"], r["trigger"], 12345.678),
+        )
+    con.commit()
+    con.close()
+    state = {"date": "2026-11-02", "asof_utc": "2026-11-02T09:05:00Z", "state": "changed", "action": "hold", "rv30": 0.4321}
+    (tmp_path / "assistant").mkdir()
+    (tmp_path / "assistant" / "paper_state.json").write_text(json.dumps(state), encoding="utf-8")
+    before = Path(db).read_bytes()
+    inp = script.load_inputs(db, NOW)
+    assert all("pnl_usd" not in r for r in inp["rec_paper"]) and inp["paper_state"]["state"] == "changed"
+    text = cp.render(cp.build(inp, NOW))
+    assert Path(db).read_bytes() == before
+    assert "| Папір assistant_paper (опціонні рекомендації методу) | 3 | — | — | лише лічильники |" in text
+    assert "- угод методу: 3" in text and "2026-11-02, changed / hold, 3 год тому" in text
+    assert "12345" not in text and "0.4321" not in text  # no P&L, nothing beyond the whitelisted state keys
 
 
 def test_script_survives_a_missing_db(tmp_path):

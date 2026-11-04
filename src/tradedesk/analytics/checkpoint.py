@@ -10,7 +10,8 @@ passport is itself ``inconclusive`` around 0R or below.
 Embargoed forwards expose counters only: Polymarket v1 (verdict not before 2027-02-23 18:20 UTC) and v2-g (2027-03-07
 04:20 UTC) copy a fixed whitelist of counts out of ``pm_gap_report.weekly_descriptive`` / ``weekly_v2g`` (no mean, CI,
 SD, edge, P&L or Brier; no verdict function is ever called), and the condor P&L (part (b), T0 + 52 weeks) is not read at
-all. Condor part (a) shows only the count of valid Fridays until its registered decision moment.
+all. Condor part (a) shows only the count of valid Fridays until its registered decision moment. The paper engine
+``assistant_paper`` has no band in CHECKPOINT: counters and the job's state only (no P&L), labelled «лише лічильники».
 
 What this module does not compute (the label says so in its notes): carry criteria (a) (re-run of the backtest code),
 (e) and (ye) (universe and capacity checks) and B's liquidation part of (g) (1m mark prices, network); the demo's
@@ -26,6 +27,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
+from .assistant import PAPER_MAX_AGE_HOURS
 from .carry_bench import band_check, realized_funding_apr
 from .carry_report import cost_realism
 from .carry_v2 import a_v2_shadow
@@ -39,7 +41,8 @@ DAY_MS = 86_400_000
 H8_MS = 8 * 3_600_000
 EARLY, OK, NO = "рано", "узгоджується", "ні"
 OUTSIDE = "поза скриптом"  # the registered one-time verdict is another script's job
-LABELS = (EARLY, OK, NO, OUTSIDE)
+COUNTS_ONLY = "лише лічильники"  # no band in CHECKPOINT: the forward is shown by its counters and state only
+LABELS = (EARLY, OK, NO, OUTSIDE, COUNTS_ONLY)
 
 
 def _num(x: object) -> float | None:
@@ -721,13 +724,91 @@ def condor_forward(t0: date | None, rows: Sequence[Mapping[str, Any]], now_ms: i
     return [a, b]
 
 
+# ------------------------------------------------------------------------------------------------ assistant_paper
+
+ASSISTANT_NAME = "Папір assistant_paper (опціонні рекомендації методу)"
+GAP_MIN_S = 86_400  # an uncovered stretch longer than a day = at least one daily decision without a standing trade
+
+
+def _uncovered(spans: Sequence[tuple[int, int]], start: int, end: int) -> list[int]:
+    """Lengths (s) of the stretches of [start, end] covered by no span [opened, expiry)."""
+    out, cur = [], start
+    for o, e in sorted(spans):
+        if o > cur:
+            out.append(min(o, end) - cur)
+        cur = max(cur, e)
+        if cur >= end:
+            return out
+    return [*out, end - cur]
+
+
+def assistant_paper_forward(rows: Sequence[Mapping[str, Any]], state: Mapping[str, Any] | None, now_ms: int) -> dict[str, Any]:
+    """The collector job ``assistant_paper`` (``rec_paper`` rows, ``state`` = its parsed state file or None): counters
+    and state only, no P&L. ``rows`` need ``opened_ts``, ``expiry_ts`` (unix s), ``status``, ``source``, ``trigger``.
+    CHECKPOINT registers no band for it, so there is no verdict either."""
+    now_s = now_ms // 1000
+    mine = [r for r in rows if (o := _num(r.get("opened_ts"))) is not None and o <= now_s and _num(r.get("expiry_ts")) is not None]
+    meth = [r for r in mine if r.get("source") == "method"]
+    chain = sum(1 for r in meth if r.get("trigger") in (None, "chain"))
+    expired = [r for r in meth if int(r["expiry_ts"]) <= now_s]
+    unsettled = sum(1 for r in expired if r.get("status") != "settled")
+    c: dict[str, Any] = {
+        "угод методу": len(meth),
+        "з них ланцюг (chain, порівнянні з H1) / за тригером (regime, event)": f"{chain} / {len(meth) - chain}",
+        "ручних (manual, поза форвардом)": len(mine) - len(meth),
+        "чинних (до експірації)": len(meth) - len(expired),
+        "експірованих / з них ще не розраховано": f"{len(expired)} / {unsettled}",
+    }
+    row = _row("assistant:paper", "assistant", ASSISTANT_NAME, n=len(meth), verdict=COUNTS_ONLY, counters=c)
+    row["metric_name"] = "лише лічильники й стан"
+    notes: list[str] = row["notes"]
+    if meth:
+        first, last = min(int(r["opened_ts"]) for r in meth), max(int(r["opened_ts"]) for r in meth)
+        c["перша / остання угода методу"] = f"{_ymd_s(first)} / {_ymd_s(last)}"
+        gaps = [g for g in _uncovered([(int(r["opened_ts"]), int(r["expiry_ts"])) for r in meth], first, now_s) if g > GAP_MIN_S]
+        c["проміжків без чинної угоди методу > 1 доби"] = f"{len(gaps)} (разом {sum(gaps) / 86_400:.1f} дн.)"
+    if unsettled:
+        notes.append("експіровані угоди розраховує лише виклик assistant_paper_status (завдання їх не закриває)")
+    asof = _asof_utc(state)
+    if asof is None:
+        notes.append("файлу стану завдання немає або він нечитабельний: денних рішень не видно (завдання вимкнене або не запускалось)")
+    elif asof > now_ms:
+        notes.append("файл стану новіший за дату звіту: його рішення не показано")
+    else:
+        st = state or {}
+        age = (now_ms - asof) / 3_600_000
+        c["останнє денне рішення (файл стану)"] = f"{_ymd_s(asof // 1000)}, {st.get('state')} / {st.get('action')}, {age:.0f} год тому"
+        if age > PAPER_MAX_AGE_HOURS:
+            notes.append(f"останнє рішення старше {PAPER_MAX_AGE_HOURS:.0f} год: завдання, схоже, стоїть")
+    notes.append(
+        "смуги в CHECKPOINT немає, вердикту теж; метод не показав переваги (H1, звіт 18.10), тож це гіпотеза. "
+        "P&L тут не друкується (лише assistant_paper_status). Проміжок без угоди буває й законним: метод того дня нічого не обрав"
+    )
+    return row
+
+
+def _ymd_s(ts: int) -> str:
+    return datetime.fromtimestamp(ts, UTC).strftime("%Y-%m-%d")
+
+
+def _asof_utc(state: Mapping[str, Any] | None) -> int | None:
+    """The state file's ``asof_utc`` in UTC ms, or None when absent or unreadable."""
+    if not isinstance(state, Mapping) or not isinstance(state.get("asof_utc"), str):
+        return None
+    try:
+        return int(datetime.strptime(state["asof_utc"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC).timestamp() * 1000)
+    except ValueError:
+        return None
+
+
 # ---------------------------------------------------------------------------------------------------- the report
 
 
 def build(inputs: Mapping[str, Any], now_ms: int) -> dict[str, Any]:
     """Every forward at ``now_ms``. ``inputs``: ``demo_trades`` (demo_trade rows), ``carry`` {strategy: {positions,
     logs, cycles}}, ``bench`` {strategy: bench}, ``side_cost_a``, ``decision_delay_ms``, ``pm_rows``, ``pm_outcomes``,
-    ``condor_t0`` (date or None), ``condor_rows``, ``errors`` (strings from the loader)."""
+    ``condor_t0`` (date or None), ``condor_rows``, ``rec_paper`` (rec_paper rows, no P&L columns needed),
+    ``paper_state`` (the assistant_paper state file, parsed, or None), ``errors`` (strings from the loader)."""
     out: list[dict[str, Any]] = []
     trades = inputs.get("demo_trades") or []
     for spec in DEMO:
@@ -752,6 +833,7 @@ def build(inputs: Mapping[str, Any], now_ms: int) -> dict[str, Any]:
     )  # fmt: skip
     out += polymarket_forward(inputs.get("pm_rows") or [], inputs.get("pm_outcomes") or [], now_ms)
     out += condor_forward(inputs.get("condor_t0"), inputs.get("condor_rows") or [], now_ms)
+    out.append(assistant_paper_forward(inputs.get("rec_paper") or [], inputs.get("paper_state"), now_ms))
     demo_no = [r for r in out if r["group"] == "demo" and not r["key"].endswith(":fill") and r["verdict"] == NO]
     notes = list(inputs.get("errors") or [])
     for side in ("нижче", "вище"):

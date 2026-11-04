@@ -2559,6 +2559,10 @@ def test_rules_copies_match_the_analytics_reference():
         assert db.rules_buy_zone(h) == rc.buy_zone(h)
     for th, tg in (("a", 1.0), ("", 1.0), ("a", None), (None, None), ("a", 0.0)):
         assert db.rules_thesis_check(th, tg) == rc.thesis_check(th, tg)
+    for side in ("long", "short", None):
+        for stop in (None, 95.0, 100.0, 105.0):
+            for tg in (None, 90.0, 100.0, 110.0):
+                assert db.rules_wrong_side(side, 100.0, stop, tg) == rc.wrong_side(side, 100.0, stop, tg), (side, stop, tg)
     assert db.RULES_IMPORT_THESIS_PLACEHOLDER == rc.IMPORT_THESIS_PLACEHOLDER
     for th in ("імпорт з Bybit: теза не записана", "CPI: up", "", None, 5):
         for tags in (["bybit", "import", "option"], ["option"], []):
@@ -2583,7 +2587,7 @@ def test_rules_copies_match_the_analytics_reference():
         {**imp, "id": 504, "thesis": "CPI: up past 112k"},  # the owner's thesis written later on an import
     ]
     for dep in (10_000.0, 5_000.0):
-        for rs in (rows, rows + hip3, rows + rule8):
+        for rs in (rows, rows + hip3, rows + rule8, rows + trc._wrong_side_rows()):
             _same(db.rules_trade_checks(rs, now, dep), rc.trade_checks(rs, now_ts=now, deposit_usd=dep))
             _same(db.rules_weekly(rs, now, dep), rc.weekly_violations(rs, now_ts=now, deposit_usd=dep))
             _same(db.rules_day_stops(rs, dep), rc.day_stops(rs, deposit_usd=dep))

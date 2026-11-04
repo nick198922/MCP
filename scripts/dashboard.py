@@ -7722,6 +7722,8 @@ RULES_WEEK_NOTE = (
     "Правила власника, затверджені 18.10 (база знань «Торгова стратегія»). Тиждень — ISO-тиждень відкриття угоди (UTC), "
     "нові зверху; у клітинці «порушено з перевірених», «невідомо» — правило стосується угоди, але даних не вистачає. "
     "1 і 5 потребують стопу (і цілі): в імпорті з бірж їх немає, тож там лише куплені опціони (ризик = премія). "
+    "Стоп або ціль не з того боку від входу (у лонга стоп нижче, ціль вище; у шорта навпаки), зокрема стоп у беззбитку, "
+    "— «невідомо»: це помилка введення або стоп, пересунутий після відкриття. "
     "2 — відкриття 4-го різного альта (усе, крім BTC і ETH, без опціонів) при трьох уже відкритих; той самий актив під "
     "іменами різних бірж — один альт (kPEPE = 1000PEPE = PEPE, PUMPFUN = PUMP); рядки Bybit без часу "
     "відкриття — «невідомо», як і символи HIP-3 Hyperliquid (xyz:TSLA — акції, золото, не крипто-альти). "
@@ -7806,6 +7808,25 @@ def rules_thesis_check(thesis: object, target: object) -> tuple[str, str]:
         return "ok", "thesis and target recorded"
     miss = [w for w, ok in (("thesis", has_thesis), ("target", has_target)) if not ok]
     return "violated", "no " + " and no ".join(miss)
+
+
+def rules_wrong_side(side: object, entry: object, stop: object, target: object) -> str | None:
+    """Copy of analytics.rules_check.wrong_side: a stop or target not on its side of the entry (a long needs
+    stop < entry < target, a short target < entry < stop), as a detail; None when all is on its side or unknown."""
+    sign = 1.0 if side == "long" else -1.0 if side == "short" else None
+    e, s, t = _num(entry), _num(stop), _num(target)
+    if sign is None or e is None:
+        return None
+    out = []
+    if s is not None and sign * (e - s) <= 0:
+        out.append(
+            "stop at the entry (break-even): the risk at the opening is not recorded"
+            if s == e
+            else f"stop {'above' if sign > 0 else 'below'} the entry of a {side}"
+        )
+    if t is not None and sign * (t - e) <= 0:
+        out.append("target at the entry" if t == e else f"target {'below' if sign > 0 else 'above'} the entry of a {side}")
+    return "; ".join(out) or None
 
 
 def rules_owner_thesis(thesis: object, tags: list[str]) -> object:
@@ -8045,9 +8066,10 @@ def rules_trade_checks(rows: list[dict], now_ts: float, dep: float = RULES_DEPOS
         r: dict[int, str] = {}
         long_opt = x["option"] and x["side"] == "long"
         premium = x["size"] * x["entry"] if long_opt and x["size"] is not None and x["entry"] is not None else None
+        side_why = None if x["option"] else rules_wrong_side(x["side"], x["entry"], x["stop"], x["target"])
         if long_opt:
             r[1] = "unknown" if premium is None else "ok" if premium <= risk_cap * (1 + 1e-9) else "violated"
-        elif x["option"] or None in (x["stop"], x["size"], x["entry"]):
+        elif x["option"] or None in (x["stop"], x["size"], x["entry"]) or rules_wrong_side(x["side"], x["entry"], x["stop"], None):
             r[1] = "unknown"
         else:
             r[1] = "ok" if x["size"] * abs(x["entry"] - x["stop"]) <= risk_cap * (1 + 1e-9) else "violated"
@@ -8061,7 +8083,7 @@ def rules_trade_checks(rows: list[dict], now_ts: float, dep: float = RULES_DEPOS
         r[4] = "violated" if stop is not None and x["opened"] > stop["ts"] else "ok"
         if x["option"]:
             r[5] = "na"
-        elif None in (x["stop"], x["target"], x["entry"]) or x["entry"] == x["stop"]:
+        elif None in (x["stop"], x["target"], x["entry"]) or x["entry"] == x["stop"] or side_why is not None:
             r[5] = "unknown"
         else:
             r[5] = "ok" if abs(x["target"] - x["entry"]) / abs(x["entry"] - x["stop"]) >= RULES_MIN_RR - 1e-9 else "violated"
@@ -8092,6 +8114,7 @@ def rules_trade_checks(rows: list[dict], now_ts: float, dep: float = RULES_DEPOS
                 "buy_conditions": conds,
                 "late_buy": late,
                 "big_premium": big,
+                "wrong_side": side_why,
             }
         )
     return out

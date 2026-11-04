@@ -406,6 +406,59 @@ def test_stop_and_target_from_journal_add():
     assert (c[4]["rules"][1], c[4]["rules"][5]) == (rc.UNKNOWN, rc.UNKNOWN)  # an import: no stop
 
 
+def _wrong_side_rows():
+    # journal_add rows, entry 100, size 10: a long needs stop < entry < target, a short target < entry < stop
+    def t(i, side, stop, target):
+        return _t(i, "BTCUSDT", side, D + i * H, D + i * H + 1800, 5.0, "[]", size=10.0, entry=100.0, stop=stop, target=target)
+
+    return [
+        t(1, "long", 95.0, 110.0),  # risk $50, R:R 2
+        t(2, "long", 95.0, 90.0),  # target below the entry: |90 - 100| / |100 - 95| = 2 would pass by abs()
+        t(3, "long", 105.0, 110.0),  # stop above the entry: "risk" $50 and R:R 2 by abs()
+        t(4, "short", 105.0, 90.0),  # risk $50, R:R 2
+        t(5, "short", 95.0, 110.0),  # both on the wrong side
+        t(6, "long", 100.0, 110.0),  # break-even stop: risk 0 by abs(), R:R undefined
+        t(7, "short", 105.0, 100.0),  # target at the entry: R:R 0
+    ]
+
+
+def test_rules_1_and_5_check_the_side_of_stop_and_target():
+    c = _by_id(rc.trade_checks(_wrong_side_rows(), now_ts=D + 10 * H))
+    got = {i: (c[i]["rules"][1], c[i]["rules"][5], c[i]["wrong_side"]) for i in c}
+    assert got == {
+        1: (rc.OK, rc.OK, None),
+        2: (rc.OK, rc.UNKNOWN, "target below the entry of a long"),  # the stop is fine: rule 1 still holds
+        3: (rc.UNKNOWN, rc.UNKNOWN, "stop above the entry of a long"),
+        4: (rc.OK, rc.OK, None),
+        5: (rc.UNKNOWN, rc.UNKNOWN, "stop below the entry of a short; target above the entry of a short"),
+        6: (rc.UNKNOWN, rc.UNKNOWN, "stop at the entry (break-even): the risk at the opening is not recorded"),
+        7: (rc.OK, rc.UNKNOWN, "target at the entry"),
+    }
+    # wrong-side rows are not compliant: only the two correct trades count as ok
+    s = rc.compliance_summary(_wrong_side_rows(), now_ts=D + 10 * H)
+    assert (s["n_ok"], s["n_violated"], s["n_unknown"]) == (2, 0, 5)
+    (w,) = rc.weekly_violations(_wrong_side_rows(), now_ts=D + 10 * H)
+    assert w["rules"][5] == {"status": rc.OK, "violated": 0, "checked": 2, "unknown": 5}
+    assert w["rules"][1] == {"status": rc.OK, "violated": 0, "checked": 4, "unknown": 3}
+    # a correct row still gets its R:R judged: a short's target 95 is 1x the stop distance
+    (bad,) = rc.trade_checks(
+        [_t(1, "BTCUSDT", "short", D, D + H, 1.0, "[]", size=10.0, entry=100.0, stop=105.0, target=95.0)], now_ts=D + 2 * H
+    )
+    assert (bad["rules"][5], bad["wrong_side"]) == (rc.VIOLATED, None)
+
+
+def test_wrong_side_helper_edges():
+    assert rc.wrong_side("long", 100.0, 99.99, 100.01) is None and rc.wrong_side("short", 100.0, 100.01, 99.99) is None
+    assert rc.wrong_side("long", 100.0, None, None) is None and rc.wrong_side("long", None, 105.0, 90.0) is None
+    assert rc.wrong_side(None, 100.0, 105.0, 90.0) is None  # no direction: nothing to judge
+    assert rc.wrong_side("short", 100.0, 100.0, None) == "stop at the entry (break-even): the risk at the opening is not recorded"
+    assert rc.wrong_side("long", 100.0, None, 99.0) == "target below the entry of a long"
+    # options: stop / target are on the underlying, entry is the premium; rule 5 does not apply, rule 1 is the premium
+    opt = _t(1, "BTC-17OCT25-110000-C", "long", D, D + H, 1.0, '["option"]', size=0.1, entry=500.0, stop=100000.0, target=120000.0)
+    (c,) = rc.trade_checks([opt], now_ts=D + 2 * H)
+    assert (c["rules"][1], c["rules"][5], c["wrong_side"]) == (rc.OK, rc.NA, None)
+
+
 def test_open_risk_sums_rule_1_risk_of_the_open_trades():
     btc = _t(1, "BTCUSDT", "long", D, None, None, "[]", size=0.05, entry=84000.0, stop=82000.0, status="open")  # $100
     opt = _t(2, "BTC-17OCT25-110000-C", "long", D, None, None, '["option"]', size=0.1, entry=800.0, status="open")  # $80
@@ -422,6 +475,10 @@ def test_open_risk_sums_rule_1_risk_of_the_open_trades():
     edge = _t(6, "ETHUSDT", "short", D, None, None, "[]", size=1.0, entry=4000.0, stop=4120.0, status="open")  # $120
     assert rc.open_risk([btc, opt, edge]) == {"status": rc.OK, "total": pytest.approx(300.0), "limit": 300.0, "n_open": 3, "n_unknown": 0}
     assert rc.open_risk([done])["status"] == rc.NA and rc.open_risk([btc], deposit_usd=2_000.0)["status"] == rc.VIOLATED
+    # a stop at or past the entry is no measure of the risk: unknown, not $0 or the distance into profit
+    for stop in (84000.0, 86000.0):
+        r = rc.open_risk([btc, {**btc, "id": 7, "stop": stop}])
+        assert (r["status"], r["total"], r["n_unknown"]) == (rc.UNKNOWN, pytest.approx(100.0), 1)
 
 
 def test_weekly_violations_newest_first_with_counts():

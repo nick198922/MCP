@@ -218,6 +218,28 @@ def test_system_lead_and_tiles_name_the_first_thing_that_needs_the_owner():
     assert "<span class='fs'>не вдалося прочитати</span>" in page and "Блок не вдалося показати" not in page
 
 
+def test_system_lead_says_the_limit_is_unknown_when_usage_was_not_read():
+    # standing improvements, item 66 (b): no usage read must not read as the green «усе працює»
+    s = _project_snap() | {"agents": _project_snap()["agents"] | {"awaiting_review": []}, "questions": [], "usage": None}
+    lead = db.system_lead(db.system_status(s))
+    assert "<span class='chip ev'>ліміт невідомий</span>" in lead and "ліміт Claude не прочитано" in lead
+    assert "усе працює" not in lead and "chip calm" not in lead
+    assert "ліміт невідомий" in db.render(s)
+
+
+@pytest.mark.parametrize("machine", [{}, None, {"mem_total": "x", "disk_total": 0, "load": None}])
+def test_server_fold_survives_an_empty_machine(machine):
+    # standing improvements, item 66 (a): the «Сервер» fold used m["mem_total"] directly and fell on an empty machine
+    s = _project_snap() | {"machine": machine}
+    page = db.render(s)
+    fold = page[page.index("id='p-server'") :]
+    fold = fold[: fold.index("</section>")]
+    assert "<p class='empty'>даних немає</p>" in fold and "диск — · пам&#x27;ять — · бекап —" in fold
+    assert "Блок не вдалося показати" not in page
+    del s["machine"]
+    assert "даних немає" in db.render(s)
+
+
 def test_read_usage_prefers_the_agents_cache_and_throttles_own_calls(tmp_path, monkeypatch):
     import json as _json
     import time as _time

@@ -2365,7 +2365,7 @@ def system_status(s: dict) -> dict:
 def system_lead(st_: dict) -> str:
     """The page's first lines (docs/design/PANEL.md): one sentence «what now», one «what to do». The first that
     applies: a service is down; collector data lags; PRs or questions wait for the owner; Claude usage is past a
-    threshold; else all is well."""
+    threshold; the usage could not be read; else all is well."""
     reset = _reset(st_["week_reset"])
     week = st_["week"]
     if st_["down"]:
@@ -2393,6 +2393,10 @@ def system_lead(st_: dict) -> str:
         chip, label = "calm", "лише твої картки"
         what = f"Ліміт тижня {week:.0f} %: агенти беруть лише твої картки."
         do = f"нічого; великі задачі в своїх сесіях відклади до скидання ({reset})."
+    elif week is None:  # not read: whether the agents are paused is unknown, so not the green «all is well»
+        chip, label = "ev", "ліміт невідомий"
+        what = "Служби працюють і тебе ніхто не чекає, але ліміт Claude не прочитано: чи агенти на паузі, невідомо."
+        do = "глянь пізніше; якщо не з'явиться за годину — напиши Claude."
     else:
         chip, label = "calm", "усе працює"
         what = "Служби працюють, дані колектора свіжі, тебе ніхто не чекає."
@@ -2467,7 +2471,7 @@ def block_system_tiles(st_: dict) -> str:
 
 
 def render(s: dict) -> str:
-    a, u, m = s["agents"], s.get("usage"), s["machine"]
+    a, u, m = s["agents"], s.get("usage"), s.get("machine") or {}
     st_ = system_status(s)
     out = [
         f"<!doctype html><html lang='uk'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
@@ -2642,29 +2646,33 @@ def render(s: dict) -> str:
     out.append(_fold("Колектор даних", "p_collector", _e(summ), "".join(b), sid="p-collector"))
 
     # Server
+    # every machine key may be missing or junk (snapshot() fills them, but the tab must not fall over if it does not)
     gb = 1024**3
     b = []
-    if m["mem_total"]:
-        mp = m["mem_used"] / m["mem_total"] * 100
-        b.append(
-            f"<div>Пам'ять: <b>{m['mem_used'] / gb:.1f}</b> з {m['mem_total'] / gb:.0f} ГБ</div>{_bar(mp, SERVER_WARN_PCT, SERVER_BAD_PCT)}"
-        )
-    if m["disk_total"]:
-        dp = m["disk_used"] / m["disk_total"] * 100
-        b.append(
-            f"<div>Диск: <b>{m['disk_used'] / gb:.0f}</b> з {m['disk_total'] / gb:.0f} ГБ</div>{_bar(dp, SERVER_WARN_PCT, SERVER_BAD_PCT)}"
-        )
+    mem_used, mem_total = _num(m.get("mem_used")), _num(m.get("mem_total"))
+    disk_used, disk_total = _num(m.get("disk_used")), _num(m.get("disk_total"))
+    if mem_total and mem_used is not None:
+        mp = mem_used / mem_total * 100
+        b.append(f"<div>Пам'ять: <b>{mem_used / gb:.1f}</b> з {mem_total / gb:.0f} ГБ</div>{_bar(mp, SERVER_WARN_PCT, SERVER_BAD_PCT)}")
+    if disk_total and disk_used is not None:
+        dp = disk_used / disk_total * 100
+        b.append(f"<div>Диск: <b>{disk_used / gb:.0f}</b> з {disk_total / gb:.0f} ГБ</div>{_bar(dp, SERVER_WARN_PCT, SERVER_BAD_PCT)}")
     extra = []
-    if m["load"]:
-        extra.append("load " + " / ".join(m["load"]))
-    if m["uptime_s"]:
-        extra.append(f"сервер працює {fmt_age(m['uptime_s']).replace(' тому', '')}")
-    if m["db_bytes"]:
-        extra.append(f"база {m['db_bytes'] / 1024**2:.0f} МБ")
-    extra.append(f"бекап {fmt_age(m['backup_age_s'])}")
-    b.append(f"<p class='mut'>{_e(' · '.join(extra))}</p>")
+    load = m.get("load")
+    if isinstance(load, (list, tuple)) and load:
+        extra.append("load " + " / ".join(str(x) for x in load))
+    uptime_s, db_bytes = _num(m.get("uptime_s")), _num(m.get("db_bytes"))
+    if uptime_s:
+        extra.append(f"сервер працює {fmt_age(uptime_s).replace(' тому', '')}")
+    if db_bytes:
+        extra.append(f"база {db_bytes / 1024**2:.0f} МБ")
+    if b or extra or st_["backup_age_s"] is not None:
+        extra.append(f"бекап {fmt_age(st_['backup_age_s'])}")
+        b.append(f"<p class='mut'>{_e(' · '.join(extra))}</p>")
+    else:
+        b.append("<p class='empty'>даних немає</p>")
     disk, mem = ("—" if v is None else f"{v:.0f} %" for v in (st_["disk"], st_["mem"]))
-    summ = f"диск {disk} · пам'ять {mem} · бекап {fmt_age(m['backup_age_s'])}"
+    summ = f"диск {disk} · пам'ять {mem} · бекап {fmt_age(st_['backup_age_s'])}"
     out.append(_fold("Сервер", "p_server", _e(summ), "".join(b), sid="p-server"))
 
     # Commits

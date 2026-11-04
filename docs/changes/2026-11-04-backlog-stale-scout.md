@@ -1,0 +1,2 @@
+- Закрито застарілий пункт BACKLOG про картки зі скаута для `LIB-20261026-f1ntech-strangle` і `qivty-channel`: обидва матеріали вже `triaged`.
+- Постійна картка: пункт 56 ([рев'ю](../reviews/2026-11-04-backlog-stale-scout.md)).

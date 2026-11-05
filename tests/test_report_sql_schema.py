@@ -11,8 +11,10 @@ production migrations (``Store.init``) and:
   ``sqlite_master ... name = 'x'``) must exist too;
 * every f-string query must be listed in :data:`DYNAMIC` with the test that verifies it at run time (a new one fails
   until it is listed);
-* ``SELECT *`` reads are listed in :data:`SKIP`: their table is compiled, but the columns are read later as dict keys
-  by the pure analytics, not in SQL, so they are not checked here (shown as skipped with the reason).
+* ``SELECT *`` reads are listed in :data:`STAR_READERS` with the code that reads their rows later as dict keys (item 97):
+  every literal key of ``row["col"]`` / ``row.get("col")`` there (found by walking the AST) must be a column of the
+  table. What the walk cannot reach (the engine's JSON inside cp_position) is in :data:`STAR_UNVERIFIED`, shown as
+  skipped with the reason. The bindings are listed by hand: rows passed on under a name not listed are not seen.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ import asyncio
 import re
 import sqlite3
 import sys
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -54,12 +57,57 @@ DYNAMIC: dict[tuple[str, str], str] = {
     ): "test_condor_loaders",
 }
 
-# (script, table) of every ``SELECT *`` read -> why its columns are not verified here.
-SKIP: dict[tuple[str, str], str] = {
-    ("checkpoint_report", "demo_trade"): "SELECT *: columns read as dict keys by analytics.checkpoint.build, not in SQL",
-    ("checkpoint_report", "cp_position"): "SELECT *: columns (and the state / trade JSON) read by analytics.checkpoint.build",
-    ("pm_gap_paper_report", "pm_gap_outcome"): "SELECT *: outcome columns read as dict keys by analytics.pm_gap_report",
-    ("condor_forward_costs", "option_leg_snapshot"): "SELECT *: leg columns read as dict keys by analytics.condor_forward",
+
+@dataclass(frozen=True)
+class Reader:
+    """Where the rows of a ``SELECT *`` are read by key (item 97). ``func``: dotted name of the function in ``path``
+    (None = the whole module). ``names``: variables holding one row; ``maps``: variables holding ``{role: row}``
+    (``legs[k]["col"]``). ``sources`` None: every read on ``names`` in the scope; else only inside a ``for`` loop or a
+    comprehension whose target is one of ``names`` and whose iterable mentions one of ``sources`` (the name is reused
+    for other dicts elsewhere in the function)."""
+
+    path: str
+    func: str | None
+    names: frozenset[str]
+    maps: frozenset[str] = frozenset()
+    sources: frozenset[str] | None = None
+
+
+def _r(path: str, func: str | None, names: str, maps: str = "", sources: str | None = None) -> Reader:
+    return Reader(path, func, frozenset(names.split()), frozenset(maps.split()), None if sources is None else frozenset(sources.split()))
+
+
+CP = "src/tradedesk/analytics/checkpoint.py"
+# (script, table) of every ``SELECT *`` read -> the code that reads its rows by key (``row["col"]``, ``row.get("col")``).
+STAR_READERS: dict[tuple[str, str], tuple[Reader, ...]] = {
+    ("checkpoint_report", "demo_trade"): (
+        _r(CP, "_versioned", "row"),
+        _r(CP, "_closed_r", "r"),
+        _r(CP, "demo_forward", "t"),
+        _r(CP, "fill_forward", "t"),  # with its inner past(t)
+    ),
+    ("checkpoint_report", "cp_position"): (
+        _r("scripts/checkpoint_report.py", "load_carry", "d"),
+        _r(CP, "_asof", "p q"),
+        _r(CP, "carry_forward", "p", sources="pos marked"),  # p is also a cycle payload there
+        _r(CP, "a_v2_forward", "p", sources="pos"),
+        _r("src/tradedesk/analytics/carry_v2.py", "a_v2_shadow", "pos"),
+    ),
+    ("pm_gap_paper_report", "pm_gap_outcome"): (
+        _r("src/tradedesk/analytics/pm_gap_report.py", None, "o", sources="outcome_rows ended_out"),
+    ),
+    ("condor_forward_costs", "option_leg_snapshot"): (
+        _r("src/tradedesk/analytics/condor_forward.py", None, "r row", maps="legs entry"),
+        _r(CP, "condor_forward", "r", sources="rows"),  # r is also an output row there
+    ),
+}
+
+# What the AST walk cannot reach: shown as skipped with the reason.
+STAR_UNVERIFIED: dict[tuple[str, str], str] = {
+    ("checkpoint_report", "cp_position"): (
+        "keys inside the JSON columns state / trade (spot_e, fees, pnl_usd, open_ts, close_ts, funding, entry_apr, "
+        "entry_spread) are written by the carry paper engine, not by the schema"
+    ),
 }
 
 
@@ -143,13 +191,104 @@ def test_every_dynamic_query_is_listed():
 
 def test_every_select_star_is_listed():
     found = {(s, t) for s, _, sql in PLAIN for t in STAR.findall(sql)} | {(s, t) for s, key in FOUND_DYNAMIC for t in STAR.findall(key)}
-    assert found == set(SKIP), "SELECT * added or removed: list it in SKIP with the reason"
+    assert found == set(STAR_READERS), "SELECT * added or removed: list it in STAR_READERS with the code reading its rows"
 
 
-@pytest.mark.parametrize(("script", "table"), sorted(SKIP), ids=[f"{s}:{t}" for s, t in sorted(SKIP)])
+def _scope(path: str, func: str | None) -> ast.AST:
+    node: ast.AST = ast.parse((ROOT / path).read_text(encoding="utf-8"))
+    for part in func.split(".") if func else ():
+        hits = [n for n in ast.iter_child_nodes(node) if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef) and n.name == part]
+        assert hits, f"{path}: no function {func} (renamed? update STAR_READERS)"
+        node = hits[0]
+    return node
+
+
+def _key_read(node: ast.AST, names: frozenset[str], maps: frozenset[str]) -> str | None:
+    """The column of ``row["col"]`` / ``row.get("col")`` (``row`` in ``names``, or ``m[...]`` with ``m`` in ``maps``)."""
+    if isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Load):
+        base, key = node.value, node.slice
+    elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "get" and node.args:
+        base, key = node.func.value, node.args[0]
+    else:
+        return None
+    if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
+        return None
+    if isinstance(base, ast.Name) and base.id in names:
+        return key.value
+    if isinstance(base, ast.Subscript) and isinstance(base.value, ast.Name) and base.value.id in maps:
+        return key.value
+    return None
+
+
+COMPREHENSIONS = (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)
+
+
+def _row_scopes(scope: ast.AST, rd: Reader) -> list[ast.AST]:
+    """Subtrees where ``rd.names`` hold a row: the whole scope, or the loops / comprehensions over ``rd.sources``."""
+    if rd.sources is None:
+        return [scope]
+
+    def binds(target: ast.AST, it: ast.AST) -> bool:
+        over = {n.id for n in ast.walk(it) if isinstance(n, ast.Name)}
+        return isinstance(target, ast.Name) and target.id in rd.names and bool(over & rd.sources)
+
+    out: list[ast.AST] = []
+    for n in ast.walk(scope):
+        if isinstance(n, ast.For) and binds(n.target, n.iter):
+            out += n.body
+        elif isinstance(n, COMPREHENSIONS) and any(binds(g.target, g.iter) for g in n.generators):
+            out.append(n)
+    return out
+
+
+def star_keys(rd: Reader) -> dict[str, int]:
+    """Column -> first line where ``rd`` reads it."""
+    found: dict[str, int] = {}
+    for sub in _row_scopes(_scope(rd.path, rd.func), rd):
+        for n in ast.walk(sub):
+            if (k := _key_read(n, rd.names, rd.maps)) is not None:
+                found.setdefault(k, n.lineno)
+    return found
+
+
+def test_star_key_scanner_on_a_sample():
+    """The walk sees reads on names, ``.get``, maps of rows, loops over a source only, and ignores stores and non-literals."""
+    src = (
+        "def f(rows, other):\n"
+        "    for r in rows:\n"
+        "        a = r['x'] or r.get('y') or legs[k]['z'] or legs[k].get('w')\n"
+        "    for r in other:\n"
+        "        b = r['not_a_row']\n"
+        "    out = [r['c'] for r in sorted(rows)]\n"
+        "    r['stored'] = 1\n"
+        "    return r[key], r.get(key)\n"
+    )
+    tree = ast.parse(src)
+    rd = _r("x.py", None, "r", maps="legs", sources="rows")
+    keys = {k for s in _row_scopes(tree, rd) for n in ast.walk(s) if (k := _key_read(n, rd.names, rd.maps))}
+    assert keys == {"x", "y", "z", "w", "c"}
+    whole = _r("x.py", None, "r")
+    assert {k for n in ast.walk(tree) if (k := _key_read(n, whole.names, whole.maps))} == {"x", "y", "not_a_row", "c"}
+
+
+@pytest.mark.parametrize(("script", "table"), sorted(STAR_READERS), ids=[f"{s}:{t}" for s, t in sorted(STAR_READERS)])
 def test_select_star_columns(con, script, table):
+    """Every key the report code reads from a ``SELECT *`` row is a column of the migrated table: a renamed or dropped
+    column would read as None (``.get``) or raise ``KeyError`` in the checkpoint report."""
     assert table in _tables(con)
-    pytest.skip(f"scripts/{script}.py {table}: {SKIP[(script, table)]}")
+    cols = _columns(con, table)
+    bad = []
+    for rd in STAR_READERS[(script, table)]:
+        keys = star_keys(rd)
+        assert keys, f"{rd.path}:{rd.func}: no key read on {sorted(rd.names | rd.maps)} (renamed? update STAR_READERS)"
+        bad += [f"{rd.path}:{line} {table}.{k}" for k, line in sorted(keys.items()) if k not in cols]
+    assert not bad, f"keys read from scripts/{script}.py SELECT * {table} that are not columns: {bad}"
+
+
+@pytest.mark.parametrize(("script", "table"), sorted(STAR_UNVERIFIED), ids=[f"{s}:{t}" for s, t in sorted(STAR_UNVERIFIED)])
+def test_select_star_unverified(script, table):
+    assert (script, table) in STAR_READERS
+    pytest.skip(f"scripts/{script}.py {table}: {STAR_UNVERIFIED[(script, table)]}")
 
 
 def test_collector_health_specs(db, con):

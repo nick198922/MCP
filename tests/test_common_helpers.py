@@ -316,6 +316,22 @@ RSS_MB_IMPORTED = [  # item 75 of the standing-improvements card: 'from common_h
     "verify_news_events",  # v0.rss_mb in verify_news_events_0b / 0c / 0d, verify_market_makers_news
     "verify_ny_midnight_open",
     "verify_oi_liquidation_flush",
+    # item 87, second batch
+    "verify_per_asset_recheck",
+    "verify_pm_dislocation_reversion",
+    "verify_pm_favorites",
+    "verify_pm_longdated_tail_no",
+    "verify_pre_event_vol",
+    "verify_premarket_fade",
+    "verify_premarket_inventory",
+    "verify_regime_side",  # vrs.rss_mb in verify_seller_exhaustion
+    "verify_risk_overlay",
+    "verify_session_stop_hunt",  # 'from verify_session_stop_hunt import rss_mb' in verify_session_stop_hunt_fx
+    "verify_setup_passport",  # vsp.rss_mb in the verify_s*_modules scripts (also inside Pool workers)
+    "verify_smart_money_polymarket_h1",
+    "verify_smt_divergence",
+    "verify_tradfi_offhours_reopen",
+    "verify_usde_funding",
 ]
 
 

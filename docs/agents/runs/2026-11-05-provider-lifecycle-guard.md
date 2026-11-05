@@ -5,6 +5,6 @@
 • Порушень 0, `src/` не змінено; новий провайдер без запису в `CALLS` валить тест.
 • `make lint` чистий, `make test`: 4771 passed, 3 skipped.
 
-**Критик:** C (sonnet): approve, [рев'ю](../reviews/2026-11-05-provider-lifecycle-guard.md); дрібниці: `Runtime.store` не покрито, клієнти глибше одного рівня атрибутів не знайдуться.
+**Критик:** C (sonnet): approve, [рев'ю](../../reviews/2026-11-05-provider-lifecycle-guard.md); дрібниці: `Runtime.store` не покрито, клієнти глибше одного рівня атрибутів не знайдуться.
 
 **Далі:** `owner`. Питань немає; пункт 8a чекає сервера.

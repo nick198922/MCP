@@ -74,6 +74,16 @@ def main() -> None:
     missing = [n for n in CACHE_FILES if not (a.src_dir / n).is_file()]
     if missing:
         sys.exit(f"put_skew cache {a.src_dir}: {', '.join(missing)} missing")
+    # load_snapshots also rebuilds (and overwrites) snapshots_v2.json when its n_files differs from the trades24
+    # file count: with trades24 gone that is an empty rebuild over the saved surfaces. Refuse a stale cache instead.
+    n_saved = json.loads((a.src_dir / CACHE_FILES[0]).read_text()).get("n_files")
+    raw = a.src_dir / vom.vps.SCHEMES["v2"]["dir"]  # the same file count as load_snapshots
+    n_now = sum(1 for p in raw.glob("*.json*") if not p.name.endswith(".part"))
+    if n_saved != n_now:
+        sys.exit(
+            f"put_skew cache {a.src_dir}: snapshots_v2.json is stale (n_files {n_saved}, {raw.name} has {n_now}); "
+            "rebuild it with verify_put_skew.py"
+        )
     D = vom.load(a.src_dir)
     L = ["## Stage 0: SD per week (no means), MDE = 2.8 SD / sqrt(n) (alpha 0.05, power 80 %), % of spot per 1 BTC notional", ""]
     L.append(

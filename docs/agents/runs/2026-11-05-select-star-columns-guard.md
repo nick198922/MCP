@@ -6,6 +6,6 @@
 • Обмеження: місця читання рядків перелічено вручну; JSON-колонки `cp_position` — SKIP.
 • `make lint` і `make test` (4644 passed, 3 skipped) — мої прогони.
 
-**Критик:** C — approve ([рев'ю](../reviews/2026-11-05-select-star-columns-guard.md)), блокерів немає.
+**Критик:** C — approve ([рев'ю](../../reviews/2026-11-05-select-star-columns-guard.md)), блокерів немає.
 
 **Далі:** owner. Питань немає.

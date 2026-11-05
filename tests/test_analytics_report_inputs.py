@@ -172,15 +172,16 @@ def _blk(pos: int, clv: dict, pnl: dict | None = None) -> dict:
 
 def _robust(**extra) -> dict:
     a = _ci(12, 10, 0.0123, -0.004, 0.0301)
+    b = _ci(4, 3, -0.02, -0.05, 0.01)  # a P&L that differs from CLV, so a swapped or dropped tail is visible
     return {
         "variants": {
             "threshold_0.03": _blk(20, a),
-            "next_snapshot": {**_blk(9, a), "dropped": 3, "share_dropped": 0.25},
+            "next_snapshot": {**_blk(9, a, b), "dropped": 3, "share_dropped": 0.25},
             "custom_variant": _blk(1, _ci(1, 1, 0.5)),
         },
-        "halves": {"first": _blk(6, a), "second": _blk(6, a), "split_ts": T},
+        "halves": {"first": _blk(6, a), "second": _blk(6, a, b), "split_ts": T},
         "by_asset": {"BTC": _blk(7, a), "ETH": _blk(5, a)},
-        "by_kind": {"above": _blk(8, a), "touch": _blk(4, a)},
+        "by_kind": {"above": _blk(8, a), "touch": _blk(4, a, b)},
         "asset_permutation": {"diff": 0.015, "n_a": 7, "n_b": 5, "p": None, "n_perm": 10_000},
         "cluster_day": {"clv_close": a, "pnl": a, "brier_k1": _ci(0, 0, None)},
         "clv_close_only_close": a,
@@ -190,6 +191,7 @@ def _robust(**extra) -> dict:
 
 A_CI = "n 12, кластерів 10; середнє 1.23 п. п., 95 % CI [-0.40 п. п.; 3.01 п. п.]"
 NONE_CI = "n 0, кластерів 0; середнє n/a, 95 % CI [n/a; n/a]"
+B_CI = "n 4, кластерів 3; середнє -2.00 п. п., 95 % CI [-5.00 п. п.; 1.00 п. п.]"
 
 
 def test_render_robustness_lines_labels_and_numbers():
@@ -199,13 +201,17 @@ def test_render_robustness_lines_labels_and_numbers():
     assert lines[0].startswith("**Стрес і стійкість**")
     assert lines[1] == f"- {VARIANT_NAMES['threshold_0.03']}: позицій 20; CLV +24 год: {A_CI}; P&L: {NONE_CI}"
     assert lines[1].startswith("- поріг 3 п. п.: позицій 20;")
-    # next_snapshot carries the dropped count and share; an unknown variant key is printed as is
-    assert lines[2].startswith(f"- {VARIANT_NAMES['next_snapshot']}: позицій 9 (випало 3, 25.0 %); CLV +24 год: ")
-    assert lines[3].startswith("- custom_variant: позицій 1; CLV +24 год: n 1, кластерів 1; середнє 50.00 п. п.,")
-    assert lines[4].startswith("- перша половина періоду (вхід): позицій 6;")
-    assert lines[5].startswith("- друга половина періоду (вхід): позицій 6;")
-    assert lines[6].startswith("- BTC: позицій 7;") and lines[7].startswith("- ETH: позицій 5;")
-    assert lines[8].startswith("- пороговий: позицій 8;") and lines[9].startswith("- дотик: позицій 4;")
+    # next_snapshot carries the dropped count and share; an unknown variant key is printed as is. Rows 2-9 are compared
+    # whole, so the CLV / P&L tail of each block is pinned too (b differs from a in three of them).
+    assert lines[2] == f"- {VARIANT_NAMES['next_snapshot']}: позицій 9 (випало 3, 25.0 %); CLV +24 год: {A_CI}; P&L: {B_CI}"
+    one = "n 1, кластерів 1; середнє 50.00 п. п., 95 % CI [n/a; n/a]"
+    assert lines[3] == f"- custom_variant: позицій 1; CLV +24 год: {one}; P&L: {NONE_CI}"
+    assert lines[4] == f"- перша половина періоду (вхід): позицій 6; CLV +24 год: {A_CI}; P&L: {NONE_CI}"
+    assert lines[5] == f"- друга половина періоду (вхід): позицій 6; CLV +24 год: {A_CI}; P&L: {B_CI}"
+    assert lines[6] == f"- BTC: позицій 7; CLV +24 год: {A_CI}; P&L: {NONE_CI}"
+    assert lines[7] == f"- ETH: позицій 5; CLV +24 год: {A_CI}; P&L: {NONE_CI}"
+    assert lines[8] == f"- пороговий: позицій 8; CLV +24 год: {A_CI}; P&L: {NONE_CI}"
+    assert lines[9] == f"- дотик: позицій 4; CLV +24 год: {A_CI}; P&L: {B_CI}"
     assert lines[10] == (
         "- BTC − ETH, CLV +24 год: різниця 1.50 п. п. (n 7 / 5); перестановка міток активу всередині тижня входу: "
         "p = n/a (10000 перестановок)"
@@ -256,6 +262,9 @@ def test_report_keys_lets_the_whitelist_guard_see_a_deep_thursday_mark():
         (0, "1 хв"),  # a gap is never shown as 0 minutes
         (29, "1 хв"),
         (45 * MINUTE, "45 хв"),
+        (59 * MINUTE + 29, "59 хв"),
+        (59 * MINUTE + 30, "1 год"),  # rounds to 60 minutes: shown as an hour, never as '60 хв'
+        (HOUR - 1, "1 год"),
         (HOUR, "1 год"),  # from one hour on: whole hours
         (6 * HOUR, "6 год"),
         (47 * HOUR, "47 год"),

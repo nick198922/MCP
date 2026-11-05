@@ -21,6 +21,7 @@ from typing import Any
 from unittest.mock import patch
 
 import httpx
+import pytest
 
 from conftest import NOW, FakeEx, hl_payload
 from tradedesk.config import Settings
@@ -208,3 +209,21 @@ async def test_every_provider_survives_runtime_aclose():
     if "exchanges" not in KNOWN:
         assert len(made) == SESSIONS, "Exchanges must build a fresh ccxt instance after each aclose()"
         assert all(ex.closed for ex in made), "Runtime.aclose() must close every ccxt instance"
+
+
+async def test_store_survives_runtime_aclose(tmp_path):
+    # The store is not a provider, but the same lifespan closes it: server.lifespan calls store.init() at the start of
+    # every connection and Runtime.aclose() at the end. Each session must write again, and see what earlier ones wrote.
+    rt = Runtime(Settings(http_retries=0, cache_scale=0.0, db_path=str(tmp_path / "lifecycle.sqlite")))
+    assert rt.store is not None
+    for session in range(SESSIONS):
+        await rt.store.init()  # as server.lifespan does
+        row = {"venue": "binanceusdm", "base": "BTC", "rate_per_interval": 0.0001, "interval_hours": 8.0, "annualized": 0.1095}
+        assert await rt.store.insert_funding(1_791_590_400 + 3600 * session, [row]) == 1
+        assert await rt.store.table_count("funding_hist") == session + 1  # earlier sessions' rows are still there
+        old = rt.store.conn
+        await rt.aclose()
+        with pytest.raises(ValueError):  # aiosqlite: "no active connection", the connection was really closed
+            await old.execute("SELECT 1")
+        with pytest.raises(RuntimeError):  # and the store knows it: no silent use of a closed connection
+            await rt.store.table_count("funding_hist")

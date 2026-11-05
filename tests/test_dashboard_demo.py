@@ -126,7 +126,7 @@ def test_demo_tab_happy_path_tiles_setups_refusals(tmp_path):
     assert "Закритих демо-угод для звірки: 14" in page
 
 
-FOLD = "<section class='wide fold'><details><summary>"
+FOLD = "<section class='wide fold' id='fold-"  # the demo folds carry the default, title-derived id (item 85)
 
 
 def test_demo_tab_follows_the_panel_rules(tmp_path):

@@ -2049,6 +2049,35 @@ def test_keep_open_keys_folds_by_section_id_not_by_live_summary(tmp_path):
     assert [k for k in _keep_open_keys(a) if k.startswith("f-")] == [f"f-{x}#1" for x in folds]
 
 
+def test_every_fold_on_every_tab_has_a_stable_unique_id(tmp_path):
+    # standing improvements, item 85: a fold without an id was restored by its summary line, which carries live
+    # numbers, so a refresh closed it; every fold now has an id (`sid`, else derived from its title)
+    import re
+
+    pages = _all_tab_pages(tmp_path)
+    (tmp_path / "again").mkdir()
+    again = _all_tab_pages(tmp_path / "again")  # a second render: the same ids
+    assert db._fold_id("Крива в R і тижневий розбір") == "fold-крива-в-r-і-тижневий-розбір"
+    assert db._fold_id("Демо проти бектесту") == "fold-демо-проти-бектесту" and db._fold_id("—") == "fold-x"
+    assert "id='p-x'" in db._fold("T", "", "", "", sid="p-x") and "id='fold-t'" in db._fold("T", "", "", "")
+    n = 0
+    for name, page in pages.items():
+        assert "<section class='wide fold'>" not in page, name
+        ids = re.findall(r"<section class='wide fold' id='([^']+)'><details>", page)
+        assert len(ids) == page.count("wide fold") == len(set(ids)), name
+        assert all(re.fullmatch(r"[\w-]+", i) for i in ids), name  # nothing to escape in the attribute
+        assert ids == re.findall(r"<section class='wide fold' id='([^']+)'><details>", again[name]), name
+        assert all(f"{i}#1" in _keep_open_keys(page) for i in ids), name  # the keep-open key is the id, not the summary
+        n += len(ids)
+    assert n > 40
+    for name in ("journal", "demo"):  # the folds that used to have no id
+        assert "id='fold-" in pages[name], name
+    # the state-saving script is on every self-refreshing tab, keyed by the section id
+    for name in ("project", "brief", "radar BTC", "flows BTC", "polymarket"):
+        served = pages[name] if name == "project" else db.with_help(pages[name])
+        assert db.KEEP_OPEN_JS in served and "sessionStorage" in served and "p.classList.contains('fold') ? p.id" in served, name
+
+
 def _all_tab_pages(tmp_path) -> dict[str, str]:
     """Every tab rendered from real fixtures, including the empty states that have their own headings."""
     snap, asof = _snap()

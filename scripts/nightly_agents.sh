@@ -268,9 +268,13 @@ save_work() {
       echo "left out (over 2 MB): $f"
     fi
   done < <(git diff --cached --name-only)
+  # A save that fails lint or tests would only fail CI on GitHub, and every failed run e-mails the owner (2026-11-05:
+  # «Знову помилки на пошту приходять»). Such saves skip CI; the delivered step's own commit runs it as usual.
+  local skip=""
+  [[ "$SAVE_CHECKS" == *FAIL* ]] && skip=" [skip ci]"
   if ! git diff --cached --quiet; then
     git commit -q -F - <<EOF || { SAVE_FAILED="git commit"; return 1; }
-Agents' work in progress, run $RUNS ($SAVE_CHECKS)
+Agents' work in progress, run $RUNS ($SAVE_CHECKS)$skip
 
 Saved by the launcher at $STAMP: the run ended without handing the step
 over, and the next run continues from here. Not a final result.

@@ -120,15 +120,31 @@ def stablecoin_total(chart: list[Any], now_ts: float | None = None) -> dict[str,
     return tvl_summary(rows, now_ts)
 
 
+# Known stablecoins -> (DefiLlama id, CoinGecko id). Matched by identity, never by the free-text symbol, so a
+# look-alike token listed with the symbol "USDT" cannot stand in for Tether.
+STABLECOIN_IDS = {
+    "USDT": ("1", "tether"),
+    "USDC": ("2", "usd-coin"),
+}
+
+
 def stablecoin_asset(assets: list[Any], symbol: str) -> dict[str, Any] | None:
     """One USD-pegged stablecoin from `/stablecoins` rows: circulating USD and changes vs DefiLlama's own snapshots
-    1, 7 and 30 days ago (`circulatingPrevDay/Week/Month`). When several assets share the symbol, the largest wins."""
-    sym = symbol.upper()
+    1, 7 and 30 days ago (`circulatingPrevDay/Week/Month`).
+
+    The asset is found by DefiLlama `id` or `gecko_id` (STABLECOIN_IDS), not by symbol; a symbol outside
+    STABLECOIN_IDS, or no row with the real id, gives None.
+    """
+    sym = symbol.strip().upper()
+    ids = STABLECOIN_IDS.get(sym)
+    if ids is None:
+        return None
+    llama_id, gecko_id = ids
     cands = [
         a
         for a in assets
         if isinstance(a, dict)
-        and str(a.get("symbol") or "").strip().upper() == sym
+        and (str(a.get("id")) == llama_id or a.get("gecko_id") == gecko_id)
         and a.get("pegType") == "peggedUSD"
         and _peg_usd(a.get("circulating")) is not None
     ]

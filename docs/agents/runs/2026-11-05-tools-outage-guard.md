@@ -6,6 +6,6 @@
 • Побічна знахідка: `plan_add` падає на `expires_ts` у мілісекундах (BACKLOG 6.18, не виправлено).
 • `src/` не змінено. `make lint` чисто, `make test`: 4758 passed, 3 skipped.
 
-**Критик:** C (sonnet), approve, 3 зауваження не блокують ([рев'ю](../reviews/2026-11-05-tools-provider-outage-guard.md)).
+**Критик:** C (sonnet), approve, 3 зауваження не блокують ([рев'ю](../../reviews/2026-11-05-tools-provider-outage-guard.md)).
 
 **Далі:** `owner`. Питань немає.

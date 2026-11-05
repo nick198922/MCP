@@ -150,6 +150,57 @@ def test_every_switched_on_job_is_checked_or_says_why_not():
     assert sorted(SPEC["coinalyze_history"].groups) == sorted(venue_symbols(switches["TRADEDESK_COLLECT_COINALYZE_HISTORY_VENUES"])[0])
 
 
+# Collector jobs without a Spec, and why (item 96 of the standing card; docs/BACKLOG.md 6.13). These jobs are not in
+# the brief's health line. A new collector job needs a Spec in analytics/collector_health.SPECS or a reason here.
+EXEMPT: dict[str, str] = {
+    "retention": "maintenance sweep: deletes rows older than the retention windows, stores no snapshot",
+    "alerts": "event-driven: writes an alert row only when a rule or a provider-health transition fires, no cadence",
+    "assistant_snapshot": "writes a JSON file (assistant/snapshot.json), not a table; the dashboard's brief tab shows a "
+    "missing or stale file as an empty state",
+    "ohlcv_hist": "off (no line in features.env; its markets come from the service env), so no fixed series; a bar "
+    "backfill that refills holes from the last stored bar. Switched on in features.env, it fails "
+    "test_every_switched_on_job_is_checked_or_says_why_not until it gets a Spec",
+}
+NOT_A_JOB = {"TRADEDESK_ALERTS_HEALTH_ENABLED": "sub-switch of the alerts job (provider-health alerts), registers no job"}
+
+
+def _jobs(monkeypatch, env: dict[str, str]) -> set[str]:
+    """Names of the jobs build_default_scheduler registers under ``env`` ('liquidations:bybit' -> 'liquidations')."""
+    from types import SimpleNamespace
+
+    from tradedesk.collector.scheduler import build_default_scheduler
+    from tradedesk.config import Settings
+
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    sched = build_default_scheduler(SimpleNamespace(settings=Settings.from_env(), store=object()))
+    return set() if sched is None else {j.name.split(":")[0] for j in sched.jobs}
+
+
+def test_every_collector_job_has_a_spec_or_an_exemption(monkeypatch):
+    import re
+
+    src = ROOT / "src" / "tradedesk"
+    switches = sorted(set(re.findall(r'"(TRADEDESK_[A-Z0-9_]+_ENABLED)"', (src / "config.py").read_text(encoding="utf-8"))))
+    registered = set(re.findall(r'PeriodicJob\(\s*name=f?"([a-z_]+)', (src / "collector" / "scheduler.py").read_text(encoding="utf-8")))
+    on = dict.fromkeys(switches, "1") | {
+        "TRADEDESK_COLLECT_OHLCV_HIST_MARKETS": "binanceusdm:BTC/USDT:USDT:1h",  # the job needs a market to register
+        "TRADEDESK_COLLECT_LIQUIDATIONS_VENUES": "binance,bybit,okx",
+    }
+    jobs = _jobs(monkeypatch, on)
+    assert jobs == registered  # with every switch on, every registration in scheduler.py is reached
+    controls = {sw: jobs - _jobs(monkeypatch, on | {sw: "0"}) for sw in switches}  # jobs each switch turns off
+    owner = {j: min((sw for sw in switches if j in controls[sw]), key=lambda sw: len(controls[sw])) for j in jobs}
+    flag = {s.name: s.flag for s in ch.SPECS}
+    gaps = sorted(j for j in jobs if j not in flag and owner[j] not in ch.NOT_CHECKED and j not in EXEMPT)
+    assert gaps == [], "a collector job needs a Spec in analytics/collector_health.SPECS or an EXEMPT reason here"
+    assert set(flag) <= jobs and {j: owner[j] for j in flag} == flag  # each Spec names a real job and its own switch
+    assert set(EXEMPT) <= jobs - set(flag)  # no stale exemption
+    assert set(ch.NOT_CHECKED) <= {owner[j] for j in jobs}
+    assert [sw for sw in switches if not controls[sw] and sw not in NOT_A_JOB] == []  # a switch without a job is named
+    assert set(NOT_A_JOB) <= set(switches)
+
+
 def test_render_lists_every_series():
     stamps = _hourly(NOW - 8 * D, NOW - H, {NOW - 2 * D})
     r = ch.series_health(SPEC["pm_gap"], "", stamps, stamps[0], stamps[-1], NOW)

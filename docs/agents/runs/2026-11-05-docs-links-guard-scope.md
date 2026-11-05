@@ -5,6 +5,6 @@
 • Додано один assert: `CHECKPOINT-2026-11-30.md` і всі `docs/ideas/IDEA-*.md` лишаються в скані.
 • `make lint` чисто, `make test`: 4753 passed, 3 skipped.
 
-**Критик:** C — approve ([рев'ю](../reviews/2026-11-05-docs-links-guard.md)).
+**Критик:** C — approve ([рев'ю](../../reviews/2026-11-05-docs-links-guard.md)).
 
 **Далі:** `owner`. Пункт вузький; корисних нових пунктів для картки без нового напряму лишається мало.

@@ -923,3 +923,27 @@ async def test_runner_v2g_verdict_gate_and_database_checks(tmp_path, monkeypatch
     monkeypatch.setattr(script.time, "time", lambda: float(GATE_OWN + 60))
     code, text = script.build_verdict_v2g(str(db))
     assert code == 2 and "not the registered T0" in text
+
+
+async def test_runner_verdicts_default_to_their_own_files_not_the_weekly_report(tmp_path, monkeypatch):
+    """Review 2026-11-01 (pm-v2g-verdict-report, item 3): without --out both verdicts wrote pm_gap_REPORT.md, which the
+    Sunday timer rewrites a few days later. Each verdict now defaults to its own file beside the weekly one."""
+    db = tmp_path / "db.sqlite"
+    await _db(db, ROWS_OWN, OUTCOMES_OWN)
+    weekly = tmp_path / "paper" / "pm_gap_REPORT.md"
+    monkeypatch.setenv(script.ENV_OUT, str(weekly))
+    assert script.main(["--db", str(db), "--now", str(END + 2 * H)]) == 0
+    weekly_text = weekly.read_text(encoding="utf-8")
+    monkeypatch.setattr(script, "T0_TS", T0)
+    monkeypatch.setattr(script, "T0_V2G_TS", T0V)
+    monkeypatch.setattr(script.time, "time", lambda: float(GATE_OWN + 60))
+    assert script.main(["--db", str(db), "--verdict"]) == 0
+    assert script.main(["--db", str(db), "--verdict-v2g"]) == 0
+    assert weekly.read_text(encoding="utf-8") == weekly_text  # the weekly report is untouched
+    v1 = (weekly.parent / script.VERDICT_NAME).read_text(encoding="utf-8")
+    v2g = (weekly.parent / script.VERDICT_V2G_NAME).read_text(encoding="utf-8")
+    assert "Вердикт: " in v1 and "Вердикт v2-g: " in v2g and v1 != v2g
+    # an explicit --out still wins
+    out = tmp_path / "elsewhere.md"
+    assert script.main(["--db", str(db), "--out", str(out), "--verdict-v2g"]) == 0
+    assert out.read_text(encoding="utf-8") == v2g

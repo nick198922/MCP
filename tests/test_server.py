@@ -602,6 +602,21 @@ async def test_oi_by_strike_no_reference_forward_warning_when_forwards_equal(ser
     assert not any("all expiries summed" in w for w in env["warnings"])
 
 
+@pytest.mark.parametrize(
+    ("rel_gap", "warned"),
+    [(1e-9, False), (1e-4, True), (0.018, True)],  # float noise / 1 bp apart / fixture-sized term structure
+)
+async def test_oi_by_strike_reference_forward_warning_uses_tolerance(server, monkeypatch, rel_gap, warned):
+    # the caveat fires only when forwards really differ, not on float noise across expiries
+    import conftest  # noqa: PLC0415
+
+    mults = [1.006, 1.006 * (1 + rel_gap), 1.006]
+    monkeypatch.setattr(conftest, "EXPIRIES", [(exp, m) for (exp, _), m in zip(conftest.EXPIRIES, mults, strict=True)])
+    env = await call(server, "deribit_oi_by_strike", currency="BTC", width_pct=15, top_n=5)
+    assert env["ok"] is True and env["data"]["expiry"] == "all"
+    assert any("all expiries summed" in w for w in env["warnings"]) is warned
+
+
 async def test_market_tools(server):
     t = await call(server, "market_ticker", exchange="binanceusdm", symbol="BTC/USDT:USDT")
     assert t["data"]["last"] == 82750.0 and t["data"]["spread_bps"] == pytest.approx(0.1208, abs=0.01)

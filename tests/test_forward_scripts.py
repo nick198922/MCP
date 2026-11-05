@@ -1,17 +1,20 @@
-"""Scripts behind forward reports and snapshots (items 68 and 76 of IDEA-20261102-standing-improvements), on fixtures
-only: ``traders_report.py`` (weekly smart-money board from a gzipped backup, opened read-only), ``paper_carry_once.py``
-(one carry A / B cycle into a throwaway SQLite file), ``paper_ladder_snapshot.py`` (Bybit risk-limit ladder, paginated)
-and ``paper_bench_manifest.py`` (sha256 manifest of the carry benchmark cache). No network: the live feed, the clock and
-the exchange call are replaced."""
+"""Scripts behind forward reports and snapshots (items 68, 76 and 81 of IDEA-20261102-standing-improvements), on
+fixtures only: ``traders_report.py`` (weekly smart-money board from a gzipped backup, opened read-only),
+``paper_carry_once.py`` (one carry A / B cycle into a throwaway SQLite file), ``paper_ladder_snapshot.py`` (Bybit
+risk-limit ladder, paginated), ``paper_bench_manifest.py`` (sha256 manifest of the carry benchmark cache) and
+``stage0_condor_forward.py`` (stage-0 SD report of the condor forward 8j, on a synthetic put_skew cache). No network:
+the live feed, the clock and the exchange call are replaced."""
 
 from __future__ import annotations
 
 import gzip
 import hashlib
 import json
+import math
 import os
 import shutil
 import sqlite3
+import statistics
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -30,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import paper_bench_manifest as pbm  # noqa: E402
 import paper_carry_once as poc  # noqa: E402
 import paper_ladder_snapshot as pls  # noqa: E402
+import stage0_condor_forward as s0  # noqa: E402
 import traders_report as tr  # noqa: E402
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -389,3 +393,134 @@ def test_paper_bench_manifest_empty_cache(tmp_path, monkeypatch, capsys):
     )
     assert res.returncode == 1 and "cache is empty" in res.stderr and res.stdout == ""
     assert not (tmp_path / "x.sha256").exists()
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# stage0_condor_forward.py
+
+DAY_MS, HOUR_MS = 86_400_000, 3_600_000
+IS_FRIDAYS = ("2023-11-03", "2023-11-10", "2023-11-17", "2023-11-24")  # before vom.OOS (2024-01-01)
+OOS_FRIDAYS = ("2024-01-05", "2024-01-12", "2024-01-19", "2024-01-26", "2024-02-02")
+# delivery / entry spot - 1: inside the condor, between the strikes and through either wing, so the weekly P&L varies
+MOVES = (0.01, -0.12, 0.03, 0.14, -0.02, 0.0, -0.09, 0.05, 0.11)
+# DVOL candle of the day before each entry (known at entry): far below / above the trailing year -> percentile ~0 / ~1
+# (size 0.5 / 1.5), 0.55 inside the base range 0.30-0.70 -> percentile ~0.6 (size 1.0); both samples mix the sizes.
+DVOL_AT_ENTRY = (0.05, 2.0, 0.55, 2.0, 0.05, 0.55, 2.0, 0.05, 2.0)
+H1_ROWS = [f"H1 {m} band {b:.1%}" for m in ("side", "mark") for b in (0.015, 0.03, 0.05)]
+STAGE0_HDR = (
+    "| series | n hist | SD | MDE 16 | MDE 26 | MDE 52 | a priori | power 16 / 26 / 52 | weeks for MDE <= a priori "
+    "| ref. alpha 0.025: power 52 / weeks |"
+)
+
+
+def _ms(day: str) -> int:
+    return int(datetime.fromisoformat(day).replace(tzinfo=UTC).timestamp() * 1000)
+
+
+def _surface(day: int, spot: float) -> tuple[int, dict[str, Any]]:
+    """One serialized `put_skew.build_day` surface (the snapshots_v2.json form: expiries and strikes as [key, value]
+    pairs) with only the next-Friday 08:00 expiry: a smile on a 500 USD grid from 0.70 to 1.30 of spot."""
+    t_ms, expiry = day + 9 * HOUR_MS, day + 7 * DAY_MS + 8 * HOUR_MS
+    fwd = spot * 1.0002
+    strikes = []
+    for k in range(int(0.70 * spot / 500), int(1.30 * spot / 500) + 1):
+        x = math.log(500.0 * k / fwd)
+        iv = 0.50 - 0.3 * x + 1.5 * x * x  # put skew plus smile, decimals
+        row = {"mark_iv": iv, "mark_age_h": 0.5, "n": 4, "n_put": 2, "sell_iv": iv - 0.01, "buy_iv": iv + 0.01}
+        strikes.append([500.0 * k, row])
+    exp = {"ratio": 1.0002, "F": fwd, "T": (expiry - t_ms) / (365 * DAY_MS), "n_prints": 200, "strikes": strikes}
+    return expiry, {"day": day, "t_ms": t_ms, "spot": spot, "expiries": [[expiry, exp]]}
+
+
+def _put_skew_cache(root: Path) -> Path:
+    """A tiny put-skew-v2 cache for `verify_option_modules.load`: snapshots_v2.json (9 Friday surfaces), the delivery
+    prices of their expiries and a daily DVOL series from 2022-10-01. No trades24/ folder: its file count (0) matches
+    ``n_files``, so `verify_put_skew.load_snapshots` takes the saved surfaces and never rebuilds them from trades."""
+    root.mkdir()
+    days, delivery = {}, []
+    dvol = {}
+    t = _ms("2022-10-01")
+    while t <= _ms("2024-02-02"):
+        dvol[t] = 0.30 + ((t // DAY_MS) * 37 % 100) / 250.0  # 0.30-0.70, no trend
+        t += DAY_MS
+    for i, (day, move, dv) in enumerate(zip(IS_FRIDAYS + OOS_FRIDAYS, MOVES, DVOL_AT_ENTRY, strict=True)):
+        d, spot = _ms(day), 30_000.0 + 2_500.0 * i
+        expiry, snap = _surface(d, spot)
+        days[str(d)] = snap
+        delivery.append({"date": datetime.fromtimestamp(expiry / 1000, UTC).strftime("%Y-%m-%d"), "delivery_price": spot * (1 + move)})
+        dvol[d - DAY_MS] = dv
+    days[str(_ms("2023-11-04"))] = None  # an empty day of the real cache: skipped by the loader
+    meta = {"pages": 0, "collisions": 0, "trades": 0, "empty_days": [_ms("2023-11-04")]}
+    (root / "snapshots_v2.json").write_text(json.dumps({"n_files": 0, "days": days, "meta": meta}))
+    (root / "delivery_btc_usd.json").write_text(json.dumps(delivery))
+    (root / "dvol_BTC.json").write_text(json.dumps(sorted(dvol.items())))
+    return root
+
+
+def _cells(line: str) -> list[str]:
+    return [c.strip() for c in line.strip().strip("|").split("|")]
+
+
+def test_stage0_condor_forward_report_on_synthetic_cache(tmp_path, monkeypatch, capsys):
+    src = _put_skew_cache(tmp_path / "put_skew")
+    out = tmp_path / "condor_forward" / "stage0.md"
+    monkeypatch.setattr(sys, "argv", ["stage0_condor_forward.py", "--src-dir", str(src), "--out", str(out)])
+    s0.main()
+
+    rep = out.read_text(encoding="utf-8")
+    printed = capsys.readouterr().out
+    assert "loaded 9 surfaces, 9 delivery" in printed and rep in printed
+    lines = rep.splitlines()
+    assert lines[0].startswith("## Stage 0: SD per week (no means), MDE = 2.8 SD / sqrt(n)")
+    assert STAGE0_HDR in lines and lines.count("|---|---|---|---|---|---|---|---|---|---|") == 1
+    rows = [ln for ln in lines if ln.startswith(("| H1 ", "| H4 "))]
+    # 6 H1 series (2 cost models x 3 leg bands), then 4 H4 variants x 3 samples; n = 9 weeks, 5 of them OOS.
+    assert [_cells(r)[0].split(" (ac1")[0] for r in rows[:6]] == H1_ROWS
+    assert len(rows) == 6 + 12
+    for r in rows:
+        c = _cells(r)
+        assert len(c) == 10, r
+        n, sd = int(c[1]), float(c[2])
+        assert n == (5 if c[0].startswith("H4") and "OOS" in c[0] else 9), r
+        assert sd > 0, r
+        for h, cell in zip((16, 26, 52), c[3:6], strict=True):  # MDE = 2.8 SD / sqrt(h), both rounded to 0.01
+            assert abs(float(cell) - 2.8 * sd / math.sqrt(h)) <= 0.011, r
+        assert c[6] == ("0.10" if c[0].startswith("H1") else "0.13")
+        assert all(0.0 <= float(p) <= 1.0 for p in c[7].split(" / ")), r
+        assert int(c[8]) >= 1 and int(c[9].split(" / ")[1]) >= int(c[8]), r  # alpha 0.025 needs more weeks
+    # Cost prior from the saved live Deribit answer (repo fixture), both currencies, the four H1 legs.
+    assert "## Cost prior: live answer 2026-11-01T06:08:39.034811+00:00 (expiry 2026-11-06)" in rep
+    for cur in ("BTC", "ETH"):
+        assert [_cells(ln)[1] for ln in lines if ln.startswith(f"| {cur} | ") and "condor" not in ln] == ["lp", "sp10", "sc10", "lc"]
+    assert lines[-1].startswith("peak RSS ")
+    # Stage 0 prints SDs only: no weekly P&L, mean of it, credit or delivery, and no Thursday buy-back (hold_*) leg,
+    # whose quotes ~23 h before expiry nearly fix the week's P&L (8j registration).
+    low = rep.lower()
+    for word in ("hold_", "pnl", "p&l", "credit", "delivery", "premium", "| mean"):
+        assert word not in low, word
+    # The SD column is the SD of the weekly H1 series itself; its (signed) mean is not printed anywhere.
+    capsys.readouterr()
+    w = s0.pnl_weeks(s0.vom.load(src), "side", 0.015)
+    v = [w[d] for d in sorted(w)]
+    assert len(v) == 9 and len(set(v)) == 9
+    assert _cells(rows[0])[2] == f"{100 * statistics.stdev(v):.2f}"
+    assert f"{100 * statistics.mean(v):+.2f}" not in rep and f"{100 * statistics.mean(v):+.3f}" not in rep
+
+
+def test_stage0_condor_forward_empty_cache_fails_without_report(tmp_path):
+    # Known defect (BACKLOG 6.14): an empty or missing put_skew cache ends in a FileNotFoundError traceback, not a
+    # one-line message, and an empty cache dir gets an empty snapshots_v2.json written into it by
+    # `verify_put_skew.load_snapshots`. Pinned here so that a fix updates this test; what must hold either way: a
+    # non-zero exit, nothing on stdout, the missing file named, no report written.
+    script = Path(s0.__file__)
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    out = tmp_path / "stage0.md"
+    for src, missing in ((empty, "delivery_btc_usd.json"), (tmp_path / "no-such-cache", "snapshots_v2.json")):
+        res = subprocess.run([sys.executable, str(script), "--src-dir", str(src), "--out", str(out)], capture_output=True, text=True)
+        assert res.returncode == 1 and res.stdout == "", res.stderr
+        assert f"FileNotFoundError: [Errno 2] No such file or directory: '{src / missing}'" in res.stderr
+        assert "Traceback (most recent call last)" in res.stderr  # the defect; a fix flips this line
+        assert not out.exists()
+    assert sorted(p.name for p in empty.iterdir()) == ["snapshots_v2.json"]  # the side effect on the empty cache
+    assert json.loads((empty / "snapshots_v2.json").read_text())["days"] == {}

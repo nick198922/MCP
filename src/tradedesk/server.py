@@ -7,6 +7,7 @@ TRADEDESK_TRANSPORT=streamable-http TRADEDESK_PORT=8000 tradedesk-mcp    # alway
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -15,6 +16,7 @@ from mcp.server.mcpserver import MCPServer
 
 from . import __version__, features
 from .http_auth import BearerAuthMiddleware, parse_tokens
+from .logfmt import JsonFormatter
 from .runtime import Runtime
 from .tools import register_all
 
@@ -55,8 +57,18 @@ def build_server(rt: Runtime | None = None) -> tuple[MCPServer, Runtime]:
     return server, rt
 
 
+def json_logs() -> bool:
+    return os.environ.get("TRADEDESK_LOG_FORMAT", "").strip().lower() == "json"
+
+
 def configure_logging() -> None:
-    logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    # stderr only: in stdio mode stdout carries the MCP protocol.
+    if json_logs():
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(JsonFormatter())
+        logging.basicConfig(level=logging.INFO, handlers=[handler])
+    else:
+        logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     # httpx logs every request URL at INFO; the Telegram URL carries the bot token, so keep it out of the journal.
     for name in ("httpx", "httpcore"):
         logging.getLogger(name).setLevel(logging.WARNING)
@@ -82,7 +94,10 @@ def main(argv: list[str] | None = None) -> None:
         logging.getLogger("tradedesk.auth").warning(
             "streamable-http running WITHOUT auth; bind to 127.0.0.1 or set TRADEDESK_HTTP_BEARER_TOKEN"
         )
-    uvicorn.run(app, host=s.host, port=s.port, log_level="info")
+    if json_logs():  # no uvicorn handlers: its records propagate to the root JSON handler, so every line is JSON
+        uvicorn.run(app, host=s.host, port=s.port, log_level="info", log_config=None)
+    else:
+        uvicorn.run(app, host=s.host, port=s.port, log_level="info")
 
 
 if __name__ == "__main__":

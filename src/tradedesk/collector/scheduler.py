@@ -92,7 +92,7 @@ class Scheduler:
                 job.metrics.failures += 1
                 job.metrics.last_error = f"{type(e).__name__}: {e}"
                 job.metrics.last_failure, job.metrics.last_failure_ts = job.metrics.last_error, time.time()
-                log.warning("collector job %s failed: %s", job.name, e)
+                log.warning("collector job %s failed: %s", job.name, e, extra={"job": job.name, "error": job.metrics.last_error})
             finally:
                 job.metrics.runs += 1
                 job.metrics.last_duration_ms = (time.perf_counter() - start) * 1000.0

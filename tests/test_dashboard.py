@@ -227,6 +227,22 @@ def test_system_lead_says_the_limit_is_unknown_when_usage_was_not_read():
     assert "ліміт невідомий" in db.render(s)
 
 
+@pytest.mark.parametrize("tables", [[], [{"label": "x", "table": "x", "rows": 0, "age_s": None, "ok": None}]])
+def test_system_lead_does_not_call_unchecked_collector_data_fresh(tables):
+    # deferred review nits 03-05.11 (panel-system-nits, finding 1): with the limit read and nothing waiting, an
+    # unreadable DB (table_freshness gives []) or no table with a norm must not read as «дані колектора свіжі»
+    low = {"five_hour": {"pct": 10.0, "resets_at": None}, "seven_day": {"pct": 40.0, "resets_at": None}, "trend": {"rate_per_day": None}}
+    s = _project_snap() | {"agents": _project_snap()["agents"] | {"awaiting_review": []}, "questions": [], "usage": low}
+    s["tables"] = tables
+    lead = db.system_lead(db.system_status(s))
+    assert "<span class='chip ev'>дані не перевірено</span>" in lead and "свіжість колектора невідома" in lead
+    assert "усе працює" not in lead and "chip calm" not in lead and "свіжі" not in lead.replace("свіжість", "")
+    assert "дані не перевірено" in db.render(s)
+    # one checked fresh table is enough for the green lead
+    s["tables"] = [{"label": "x", "table": "x", "rows": 1, "age_s": 60.0, "ok": True}]
+    assert "<span class='chip calm'>усе працює</span>" in db.system_lead(db.system_status(s))
+
+
 @pytest.mark.parametrize("machine", [{}, None, {"mem_total": "x", "disk_total": 0, "load": None}])
 def test_server_fold_survives_an_empty_machine(machine):
     # standing improvements, item 66 (a): the «Сервер» fold used m["mem_total"] directly and fell on an empty machine

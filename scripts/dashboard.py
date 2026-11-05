@@ -2365,7 +2365,7 @@ def system_status(s: dict) -> dict:
 def system_lead(st_: dict) -> str:
     """The page's first lines (docs/design/PANEL.md): one sentence «what now», one «what to do». The first that
     applies: a service is down; collector data lags; PRs or questions wait for the owner; Claude usage is past a
-    threshold; the usage could not be read; else all is well."""
+    threshold; the usage could not be read; no collector table could be checked; else all is well."""
     reset = _reset(st_["week_reset"])
     week = st_["week"]
     if st_["down"]:
@@ -2396,6 +2396,10 @@ def system_lead(st_: dict) -> str:
     elif week is None:  # not read: whether the agents are paused is unknown, so not the green «all is well»
         chip, label = "ev", "ліміт невідомий"
         what = "Служби працюють і тебе ніхто не чекає, але ліміт Claude не прочитано: чи агенти на паузі, невідомо."
+        do = "глянь пізніше; якщо не з'явиться за годину — напиши Claude."
+    elif not st_["checked"]:  # no table read (DB missing or unreadable): freshness is unknown, not «свіжі»
+        chip, label = "ev", "дані не перевірено"
+        what = "Служби працюють і тебе ніхто не чекає, але частину даних не прочитано: свіжість колектора невідома."
         do = "глянь пізніше; якщо не з'явиться за годину — напиши Claude."
     else:
         chip, label = "calm", "усе працює"

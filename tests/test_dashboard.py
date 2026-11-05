@@ -376,7 +376,7 @@ def test_brief_lead_actions_and_folded_blocks():
     import re
 
     folds = re.findall(r"<section class='wide fold' id='(.*?)'><details><summary>", page)
-    assert folds == ["b-key", "b-conditions", "b-scenarios", "b-events", "b-chart", "b-vol", "b-funding"]
+    assert folds == ["b-key", "b-conditions", "b-scenarios", "b-events", "b-chart", "b-vol", "b-funding", "b-stables"]
     assert "<details open" not in page
     assert page.index("class='lead'") < page.index("<summary><h2>Головне сьогодні") < page.index("</main>")
     assert page.index("</main>") < page.index("<b>Застереження</b>") and page.count("перевірено 18.10") == 1

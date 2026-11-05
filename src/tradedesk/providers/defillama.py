@@ -29,6 +29,7 @@ _ASSET_KEEP = (
     "id",
     "name",
     "symbol",
+    "gecko_id",  # with `id`, identifies USDT / USDC (the symbol alone can be copied by a look-alike)
     "pegType",
     "pegMechanism",
     "price",

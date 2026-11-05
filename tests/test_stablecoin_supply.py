@@ -9,6 +9,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from mcp import Client
 
 from test_server import call
 from tradedesk.analytics.chain_metrics import stablecoin_asset, stablecoin_total
@@ -48,7 +49,7 @@ async def test_stablecoin_supply_happy():
     assert tot["change_30d"] == pytest.approx(299.46 / 291.96 - 1, abs=1e-6)
     assert tot["age_days"] == pytest.approx(0.5) and tot["stale"] is False
     usdt, usdc = d["usdt"], d["usdc"]
-    assert usdt["defillama_id"] == "1" and usdt["usd"] == pytest.approx(183.5e9)  # the larger asset, not the "usdt " look-alike
+    assert usdt["defillama_id"] == "1" and usdt["usd"] == pytest.approx(183.5e9)  # matched by id, not the "usdt " look-alike
     assert usdt["change_1d"] == pytest.approx(183.5 / 183.2 - 1, abs=1e-6)
     assert usdt["change_7d"] == pytest.approx(183.5 / 182.0 - 1, abs=1e-6)
     assert usdt["change_30d"] == pytest.approx(183.5 / 178.0 - 1, abs=1e-6)
@@ -117,7 +118,59 @@ def test_stablecoin_helpers_edge_cases():
     assert stablecoin_total([]) is None
     assets = FIX["stablecoins"]["peggedAssets"]
     assert stablecoin_asset(assets, "EURC") is None  # not USD-pegged
-    assert stablecoin_asset(assets, "NEWUSD") is None  # no circulating supply
+    assert stablecoin_asset(assets, "NEWUSD") is None  # not a known stablecoin id
     only_fake = [a for a in assets if a["id"] == "999"]
-    fake = stablecoin_asset(only_fake, "usdt")
-    assert fake["defillama_id"] == "999" and fake["change_30d"] is None  # empty month-ago snapshot
+    assert stablecoin_asset(only_fake, "usdt") is None  # symbol "usdt " alone does not make it Tether
+
+
+def test_stablecoin_asset_matches_by_id_not_symbol():
+    assets = FIX["stablecoins"]["peggedAssets"]
+    # a look-alike bigger than the real Tether still loses: only id "1" / gecko_id "tether" count
+    inflated = [dict(a, circulating={"peggedUSD": 9e12}) if a["id"] == "999" else a for a in assets]
+    assert stablecoin_asset(inflated, "USDT")["defillama_id"] == "1"
+    # gecko_id alone is enough (id renumbered upstream), and a real USDC is never picked for USDT
+    renumbered = [dict(a, id="5000") if a["id"] == "2" else a for a in assets]
+    usdc = stablecoin_asset(renumbered, "usdc")
+    assert usdc["defillama_id"] == "5000" and usdc["usd"] == pytest.approx(76e9)
+    assert stablecoin_asset([a for a in assets if a["id"] == "2"], "USDT") is None
+
+
+async def test_stablecoin_supply_lookalike_only_goes_to_missing():
+    def fake_usdt(req):
+        if req.url.path == "/stablecoins":
+            rows = [a for a in FIX["stablecoins"]["peggedAssets"] if a["id"] != "1"]  # real Tether absent
+            return httpx.Response(200, json={"peggedAssets": rows})
+        return default_handler(req)
+
+    env = await call(make_server(fake_usdt), "stablecoin_supply")
+    assert env["ok"] is True and env["data"]["usdt"] is None and env["data"]["usdc"]["defillama_id"] == "2"
+    assert [(m["field"], m["reason"]) for m in env["missing"]] == [("usdt", "data_unavailable")]
+
+
+async def test_stablecoin_supply_survives_runtime_aclose():
+    seen = []
+
+    def counting(req):
+        seen.append(req.url.path)
+        return default_handler(req)
+
+    async def tool(c):
+        res = await c.call_tool("stablecoin_supply", {})
+        return res.structured_content or json.loads(res.content[0].text)
+
+    rt = Runtime(Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0), transports={SRC: httpx.MockTransport(counting)})
+    rt.now = lambda: NOW
+    srv, _ = build_server(rt)
+    try:
+        # one MCP session (its lifespan would close the runtime on exit, so the checks run inside it)
+        async with Client(srv) as c:
+            assert (await tool(c))["ok"] is True
+            client = rt.defillama.stablecoins._client_obj
+            assert client is not None and not client.is_closed
+            await rt.aclose()  # what each MCP session's lifespan does on exit
+            assert client.is_closed and rt.defillama.stablecoins._client_obj is None
+            env = await tool(c)  # a fresh client is created lazily: real requests again, not a closed-client error
+        assert env["ok"] is True and env["missing"] == [] and env["data"]["usdt"]["defillama_id"] == "1"
+        assert len(seen) == 4 and client.is_closed
+    finally:
+        await rt.aclose()

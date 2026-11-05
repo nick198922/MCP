@@ -347,3 +347,34 @@ def test_scripts_import_the_shared_rss_mb(name):
     mod = __import__(name)
     assert mod.rss_mb is cmn.rss_mb  # the name stays a module attribute for the scripts that read it from here
     assert not hasattr(mod, "resource")
+
+
+RSS_LABEL = {  # item 123: local 'rss() -> str' labels now format cmn.rss_mb() instead of reading ru_maxrss themselves
+    "verify_carry_modules": "",
+    "verify_market_flow_reader": "peak RSS ",
+    "verify_oi_turnover_short": "peak RSS ",
+    "verify_pump_fade": "rss ",
+    "verify_residual_momentum_short_leg": "peak RSS ",
+    "verify_sector_pair_spread": "rss ",
+    "verify_taker_imbalance": "peak RSS ",
+    "verify_toptrader_divergence": "peak RSS ",
+    "verify_weekend_idio_reversal": "peak RSS ",
+    "verify_xs_anchor_nearness": "peak RSS ",
+    "verify_xs_factor_ic_panel": "peak RSS ",
+    "verify_xs_volume_liquidity_factors": "peak RSS ",
+}
+
+
+@pytest.mark.parametrize("name", sorted(RSS_LABEL))
+def test_script_rss_labels_use_the_shared_rss_mb(name, monkeypatch):
+    mod = __import__(name)
+    assert mod.cmn is cmn and not hasattr(mod, "resource")
+    for kib in (1, 511, 512, 1537, 2_097_663, 52_428_800):
+
+        class Usage:
+            ru_maxrss = kib
+
+        monkeypatch.setattr(cmn.resource, "getrusage", lambda who, u=Usage: u())
+        # the removed body: f"<prefix>{resource.getrusage(RUSAGE_SELF).ru_maxrss / 1024:.0f} MB"
+        assert mod.rss() == f"{RSS_LABEL[name]}{kib / 1024:.0f} MB"
+    assert mod.rss() == f"{RSS_LABEL[name]}51200 MB"

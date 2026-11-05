@@ -12,7 +12,6 @@ from __future__ import annotations
 import argparse
 import bisect
 import json
-import resource
 import sys
 import time
 from datetime import UTC, datetime
@@ -20,6 +19,8 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import common_helpers as cmn  # noqa: E402  (scripts/common_helpers.py)
 
 from tradedesk.analytics.carry import YEAR_MS  # noqa: E402
 from tradedesk.analytics.carry_costs import CostModel, max_drawdown  # noqa: E402
@@ -51,7 +52,7 @@ T_START = time.time()
 
 
 def rss() -> str:
-    return f"{resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.0f} MB"
+    return f"{cmn.rss_mb():.0f} MB"
 
 
 def log(msg: str) -> None:

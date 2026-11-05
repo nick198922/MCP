@@ -23,7 +23,6 @@ import asyncio
 import logging
 import math
 import random
-import resource
 import statistics
 import sys
 import time
@@ -93,7 +92,7 @@ IX = {c: i for i, c in enumerate(COLS)}
 
 
 def rss() -> str:
-    return f"peak RSS {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.0f} MB"
+    return f"peak RSS {cmn.rss_mb():.0f} MB"
 
 
 def saturdays() -> list[int]:

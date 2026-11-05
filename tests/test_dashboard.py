@@ -1983,7 +1983,9 @@ def test_self_refreshing_tabs_keep_open_sections_and_scroll(tmp_path, monkeypatc
             assert f"<meta name='td-refresh' content='{s}'><noscript><meta http-equiv='refresh' content='{s}'></noscript>" in raw, name
             assert raw.count("http-equiv='refresh'") == 1, name  # no bare meta refresh outside <noscript>
             assert served.count("<script>") == 1 and db.KEEP_OPEN_JS in served and db.HELP_JS in served, name
-        else:  # options, journal, demo, positions: no auto-refresh here, so no reload timer either
+        elif name.startswith("journal"):  # no reload timer, but the «Оновити угоди» form keeps the folds (item 89)
+            assert db.REFRESH_MARK not in raw and db.KEEP_MARK in raw and db.KEEP_OPEN_JS in served, name
+        else:  # options, demo, positions: no auto-refresh here, so no reload timer either
             assert db.REFRESH_MARK not in raw and db.KEEP_OPEN_JS not in served, name
     for part in ("sessionStorage", "querySelectorAll('details')", "scrollY", "scrollTo(", "location.reload()", "s * 1000"):
         assert part in db.KEEP_OPEN_JS
@@ -2076,6 +2078,54 @@ def test_every_fold_on_every_tab_has_a_stable_unique_id(tmp_path):
     for name in ("project", "brief", "radar BTC", "flows BTC", "polymarket"):
         served = pages[name] if name == "project" else db.with_help(pages[name])
         assert db.KEEP_OPEN_JS in served and "sessionStorage" in served and "p.classList.contains('fold') ? p.id" in served, name
+
+
+def test_journal_refresh_pages_keep_open_folds(tmp_path, monkeypatch):
+    # standing improvements, item 89: the page the «Оновити угоди» POST redirects to (GET /journal) reloaded itself by
+    # a bare location.replace every 4 s while the run lasted, so the journal's folds closed; it now uses KEEP_OPEN_JS
+    import re
+
+    p = _journal_db(tmp_path / "j.sqlite", _sample_journal(), _sample_rec())
+    now = float(T0 + 10 * 86400)
+    status = tmp_path / "refresh.json"
+    monkeypatch.setattr(db, "JOURNAL_DB", p)
+    monkeypatch.setattr(db, "LIVE_PATH", tmp_path / "no-live.json")
+    monkeypatch.setattr(db, "REFRESH_STATUS", status)
+    served = {}
+    for state, st in (
+        ("idle", None),
+        ("running", {"state": "running", "started": now - 5, "venues": {"bybit": {"ok": True}}}),
+        ("done", {"state": "done", "started": now - 60, "finished": now - 30, "venues": {"bybit": {"ok": True, "added": 2}}}),
+    ):
+        if st is not None:
+            status.write_text(json.dumps(st), encoding="utf-8")
+        served[state] = db.journal_page("", now=now)
+    s = db.REFRESH_POLL_S
+    for state, page in served.items():
+        # one script (tooltips + KEEP_OPEN_JS) on every state, and the form saves the folds before its POST
+        assert page.count("<script>") == 1 and db.KEEP_OPEN_JS in page and db.HELP_JS in page, state
+        assert "<form method='post' action='/journal/refresh' class='jr' data-keep='/journal'>" in page, state
+        assert "location.replace" not in page and page.endswith("</body></html>"), state
+    # only the running page reloads itself (JS timer + <noscript> fallback); the others restore, never reload
+    assert f"<meta name='td-refresh' content='{s}'><noscript><meta http-equiv='refresh' content='{s}'></noscript>" in served["running"]
+    assert db.REFRESH_MARK not in served["idle"] and db.REFRESH_MARK not in served["done"]
+    # the same stable fold ids in every state, and they are the keys the script restores by
+    ids = {k: re.findall(r"<section class='wide fold' id='([^']+)'><details>", v) for k, v in served.items()}
+    assert ids["idle"] and ids["idle"] == ids["running"] == ids["done"]
+    assert all(i.startswith("fold-") for i in ids["running"])
+    assert all(f"{i}#1" in _keep_open_keys(served["running"]) for i in ids["running"])
+    # the script: restore first, then the submit hook (keyed by data-keep), and the timer only with the meta
+    js = db.KEEP_OPEN_JS
+    assert js.index("st.open") < js.index("addEventListener('submit'") < js.index("if (!m) return") < js.index("setTimeout(")
+    assert "getAttribute('data-keep')" in js and "save('td-keep:' + t)" in js and "save(k); location.reload()" in js
+    # «Демо» has no refresh button and is not reloaded by it: nothing to keep there
+    import test_dashboard_demo as td
+
+    monkeypatch.setattr(db, "DEMO_DB", td._filled(tmp_path, td.NOW))
+    monkeypatch.setattr(db, "DEMO_VS_BT_FLAG", tmp_path / "no-flag")
+    monkeypatch.setattr(db, "DEMO_VS_BT_JSON", tmp_path / "no-vs-bt.json")
+    demo = db.demo_page(now=td.NOW / 1000)
+    assert "id='fold-" in demo and db.KEEP_MARK not in demo and "/journal/refresh" not in demo
 
 
 def _all_tab_pages(tmp_path) -> dict[str, str]:

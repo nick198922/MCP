@@ -115,6 +115,12 @@ def test_markdown_files_are_found():
     files = {f.relative_to(ROOT).as_posix() for f in markdown_files()}
     assert {"README.md", "docs/HANDOFF.md", "docs/BACKLOG.md"} <= files
     assert not any(_local_only(f) for f in files)
+    # Item 107: the docs the owner follows at the 30.11 review (registrations, reviews, changes, verification
+    # reports) must stay scanned; a rename of the checkpoint file or a LOCAL_ONLY entry over docs/ideas would
+    # otherwise drop them from the guard silently.
+    assert "docs/CHECKPOINT-2026-11-30.md" in files
+    cards = {f for f in files if f.startswith("docs/ideas/IDEA-")}
+    assert len(cards) > 100 and cards == {p.relative_to(ROOT).as_posix() for p in (DOCS / "ideas").glob("IDEA-*.md")}
 
 
 def test_relative_links_point_to_existing_files():

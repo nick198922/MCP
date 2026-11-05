@@ -86,28 +86,33 @@ def _scenario(strategy: str) -> tuple[dict[str, Any], CarryParams, range]:
 _FULL_RUNS: dict[str, Path] = {}  # strategy -> snapshot file of the engine's run of _scenario on the full source
 
 
+async def full_run_snapshot(strategy: str, tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Snapshot file (``VACUUM INTO``) of the engine's run of ``_scenario(strategy)`` on the full source (``FixtureFeed``,
+    an in-memory store). The run (~5 s, 307 cycles) is made once per strategy and process; callers must copy the file
+    before writing to it (test_paper_carry_report reads the same scenario-A run)."""
+    if strategy not in _FULL_RUNS:
+        mk, params, times = _scenario(strategy)
+        path = tmp_path_factory.mktemp(f"carry-full-{strategy}") / "full.db"
+        s = Store(":memory:")
+        await s.init()
+        try:
+            await _drive(s, FixtureFeed(mk, strategy), params, times)
+            await s.conn.execute("VACUUM INTO ?", (str(path),))
+        finally:
+            await s.aclose()
+        _FULL_RUNS[strategy] = path
+    return _FULL_RUNS[strategy]
+
+
 @pytest.fixture
 async def full_run(tmp_path, tmp_path_factory):
-    """``await full_run("A" | "B")`` opens a private copy of the engine's run of ``_scenario`` on the full source
-    (``FixtureFeed``, an in-memory store as before). The run (~5 s, 307 cycles) is made once per strategy and process
-    and kept as a snapshot file (``VACUUM INTO``); every test gets its own copy, so the four tests that read it stay
-    independent of each other and of their order."""
+    """``await full_run("A" | "B")`` opens a private copy of ``full_run_snapshot(strategy)``; every test gets its own
+    copy, so the tests that read it stay independent of each other and of their order."""
     opened: list[Store] = []
 
     async def open_copy(strategy: str) -> Store:
-        if strategy not in _FULL_RUNS:
-            mk, params, times = _scenario(strategy)
-            path = tmp_path_factory.mktemp(f"carry-full-{strategy}") / "full.db"
-            s = Store(":memory:")
-            await s.init()
-            try:
-                await _drive(s, FixtureFeed(mk, strategy), params, times)
-                await s.conn.execute("VACUUM INTO ?", (str(path),))
-            finally:
-                await s.aclose()
-            _FULL_RUNS[strategy] = path
         dst = tmp_path / f"full-{strategy}-{len(opened)}.db"
-        shutil.copyfile(_FULL_RUNS[strategy], dst)
+        shutil.copyfile(await full_run_snapshot(strategy, tmp_path_factory), dst)
         s = Store(dst)
         await s.init()
         opened.append(s)

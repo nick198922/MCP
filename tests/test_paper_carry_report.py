@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import shutil
 import sys
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
-from carry_synth import H8, markets_a
-from test_carry_paper_engine import SLOTS, FixtureFeed, _drive, _grid
+from carry_synth import H8
+from test_carry_paper_engine import SLOTS, _scenario, full_run_snapshot
 from tradedesk.collector.carry_paper_engine import PARAMS_A
 from tradedesk.store import Store
 from tradedesk.tools.paper_carry import book_view
@@ -17,15 +18,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import paper_carry_report as rep  # noqa: E402
 
 
-async def test_report_renders_from_a_db_copy(tmp_path):
+async def test_report_renders_from_a_db_copy(tmp_path, tmp_path_factory):
+    # The engine's scenario-A run over the whole segment, shared with test_carry_paper_engine (made once per process).
+    _, params, times = _scenario("A")
+    assert params == replace(PARAMS_A, slots=SLOTS, entry_apr=0.10)  # the report is read from this scenario's run
     db = str(tmp_path / "copy.sqlite")
-    store = Store(db)
-    await store.init()
-    mk = markets_a(days=110)
-    params = replace(PARAMS_A, slots=SLOTS, entry_apr=0.10)
-    times = _grid(min(d["funding"][0]["ts_ms"] for d in mk.values()), max(e["ts_ms"] for d in mk.values() for e in d["funding"]))
-    await _drive(store, FixtureFeed(mk, "A"), params, times)
-    await store.aclose()
+    shutil.copyfile(await full_run_snapshot("A", tmp_path_factory), db)
 
     text = await rep.build_report(db, times[-1] + H8)
     assert "## A: cash-and-carry" in text and "## B: perp-perp" in text

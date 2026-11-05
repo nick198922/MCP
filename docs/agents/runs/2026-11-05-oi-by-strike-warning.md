@@ -5,6 +5,6 @@
 • Числа `notional_usd`, смуг, `distance_pct` не змінились; тест на 1e-9 / 1e-4 / 1.8 %.
 • `make lint` чисто, `make test`: 4756 passed, 3 skipped.
 
-**Критик:** C (sonnet) — approve, [рев'ю](../reviews/2026-11-05-oi-by-strike-warning.md).
+**Критик:** C (sonnet) — approve, [рев'ю](../../reviews/2026-11-05-oi-by-strike-warning.md).
 
 **Далі:** `owner`. Відкритий лише 8a (чекає сервера). Гілка `agent/2026-11-04-library-seller-exhaustion-card` чекає власника.

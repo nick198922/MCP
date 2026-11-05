@@ -876,7 +876,19 @@ async def test_polymarket_market_with_books(server):
     assert yes["book"]["mid"] == 0.62 and yes["book"]["spread"] == pytest.approx(0.004)
 
 
-async def test_polymarket_partial_prices_warn(server, state):
+async def test_polymarket_all_prices_no_partial_warning(server):
+    # every outcome has a numeric price: de-vigged prices are a full distribution, no warning
+    for name, args in (("polymarket_market", {"market_id": "516700"}), ("polymarket_search", {"query": "btc"})):
+        env = await call(server, name, **args)
+        assert not any("no numeric price" in w for w in env["warnings"])
+
+
+@pytest.mark.parametrize(
+    "prices",
+    ['["0.30","abc","0.30"]', '["0.30",null,"0.30"]', '["0.30","0.30"]'],
+    ids=["non_numeric", "json_null", "short_price_list"],
+)
+async def test_polymarket_missing_price_warns(state, prices):
     import httpx
 
     from conftest import NOW, FakeEx, make_transports
@@ -884,17 +896,13 @@ async def test_polymarket_partial_prices_warn(server, state):
     from tradedesk.runtime import Runtime
     from tradedesk.server import build_server
 
-    # all prices numeric: no warning
-    for name, args in (("polymarket_market", {"market_id": "516700"}), ("polymarket_search", {"query": "btc"})):
-        env = await call(server, name, **args)
-        assert not any("no numeric price" in w for w in env["warnings"])
-
+    # one outcome has price None: the others are rescaled over the priced ones only
     partial = {
         "id": "777",
         "slug": "will-x",
         "question": "Will X?",
         "outcomes": '["A","B","C"]',
-        "outcomePrices": '["0.30","abc","0.30"]',
+        "outcomePrices": prices,
         "clobTokenIds": '["TOK_A","TOK_B","TOK_C"]',
         "active": True,
         "closed": False,
@@ -914,7 +922,10 @@ async def test_polymarket_partial_prices_warn(server, state):
     srv, _ = build_server(rt2)
     env = await call(srv, "polymarket_market", market_id="777")
     outs = env["data"]["market"]["outcomes"]
-    assert [o["price_devigged"] for o in outs] == [0.5, None, 0.5]
+    assert len(outs) == 3
+    missing = [o for o in outs if o["price"] is None]
+    assert len(missing) == 1 and missing[0]["price_devigged"] is None
+    assert [o["price_devigged"] for o in outs if o["price"] is not None] == pytest.approx([0.5, 0.5])
     assert any("no numeric price" in w for w in env["warnings"])
     env = await call(srv, "polymarket_search", query="x")
     assert env["data"]["count"] == 1

@@ -1492,7 +1492,10 @@ HELP_JS = """
 # reloaded by this timer after `s` seconds; just before, it stores which <details> are open (keyed by its id, else
 # the id of its `_fold` section, else its summary text; plus its occurrence) and the scroll position in
 # sessionStorage, and the reloaded page restores them once. A fold's summary line carries live numbers, so folds
-# are keyed by the section id (`_fold(..., sid=...)`): a new snapshot must not close what the owner opened.
+# are keyed by the section id (`_fold(..., sid=...)`): a new snapshot must not close what the owner opened; a
+# <details> outside a fold whose summary carries a live number has its own id (item 114). The «i» note the owner
+# tapped open (it has the focus) is stored by its aria-label (static HELP text) and reopened by focusing it. The tab
+# itself is the URL: `location.reload()` keeps the path and the query, and the stored state is keyed by both.
 # Without JS the <noscript> meta refresh in the head reloads the page as before (sections then fold back).
 # A page with a POST form marked `KEEP_MARK` (the «Оновити угоди» button, item 89) gets the script too, without the
 # timer: on submit it stores the same state under the page the POST redirects to (the attribute's value), and the
@@ -1508,10 +1511,17 @@ KEEP_OPEN_JS = """
     var b = d.id || (p && p.id && p.classList.contains('fold') ? p.id : '') || (sm ? sm.textContent.trim() : '');
     n[b] = (n[b] || 0) + 1; return b + '#' + n[b];
   }); }
+  function tips() { var n = Object.create(null); return Array.prototype.map.call(document.querySelectorAll('.info'), function (i) {
+    var b = i.getAttribute('aria-label') || ''; n[b] = (n[b] || 0) + 1; return b + '#' + n[b];
+  }); }
   function save(key) {
     try {
       var o = {}, ds = all(); keys(ds).forEach(function (x, i) { o[x] = ds[i].open; });
-      sessionStorage.setItem(key, JSON.stringify({ open: o, y: scrollY }));
+      var a = document.activeElement, tip = '';
+      if (a && a.classList && a.classList.contains('info') && a.classList.contains('open')) {
+        tip = tips()[Array.prototype.indexOf.call(document.querySelectorAll('.info'), a)] || '';
+      }
+      sessionStorage.setItem(key, JSON.stringify({ open: o, y: scrollY, tip: tip }));
     } catch (e) {}
   }
   try {
@@ -1521,6 +1531,8 @@ KEEP_OPEN_JS = """
       var ds = all();
       keys(ds).forEach(function (x, i) { if (Object.prototype.hasOwnProperty.call(st.open, x)) ds[i].open = !!st.open[x]; });
       scrollTo(0, +st.y || 0);
+      var ti = st.tip ? tips().indexOf(st.tip) : -1;
+      if (ti >= 0) document.querySelectorAll('.info')[ti].focus({ preventScroll: true });
     }
   } catch (e) {}
   addEventListener('submit', function (e) {
@@ -2308,7 +2320,7 @@ def block_collector_health(h: dict | None) -> str:
     flagged = {id(r) for r in bad}
     rows.sort(key=lambda r: id(r) not in flagged)  # stable: problems first, the rest in the collectors' order
     out.append(
-        f"<details{' open' if bad else ''}><summary>Усі серії ({len(rows)})</summary>"
+        f"<details id='p-series'{' open' if bad else ''}><summary>Усі серії ({len(rows)})</summary>"
         f"<table><tr><th>Серія</th><th>Знімків за {days} дн</th><th>Дірки</th><th>Останній знімок</th></tr>"
     )
     for r in rows:
@@ -7745,7 +7757,7 @@ def render_flows(snap: dict | None, err: str | None, now: float, params: dict | 
         warns = [_clean(w, 400) for w in _list(sec.get("warnings")) if isinstance(w, str)]
         if warns:
             items += (
-                f"<li><details><summary>Примітки інструмента market_flow (англ.): {len(warns)}</summary><ul>"
+                f"<li><details id='flow-notes'><summary>Примітки інструмента market_flow (англ.): {len(warns)}</summary><ul>"
                 + "".join(f"<li>{_e(w)}</li>" for w in warns)
                 + "</ul></details></li>"
             )
@@ -10611,7 +10623,7 @@ def render_polymarket(data: dict | None, err: str | None, now: float, path: Path
                 table += f"<p class='note warn'>{_e(low)}</p>"
             if stale:  # old prices: kept for reference, never presented as entries
                 table = (
-                    f"<details class='near'><summary>Ціни застарілі (знімок старший за 2 год): це не сигнали · рядків "
+                    f"<details class='near' id='pm-stale'><summary>Ціни застарілі (знімок старший за 2 год): це не сигнали · рядків "
                     f"{len(v['pass'])}</summary>{table}</details>"
                 )
             out.append(table)

@@ -1830,7 +1830,9 @@ def test_pm_tab_with_the_sync_columns_stale_and_ended(tmp_path):
     # a snapshot older than 2 h: the rows stay, collapsed and labelled as stale, not as signals
     stale = db.render_polymarket(data, None, float(PM_B + 2 * 3600 + 60))
     assert "старший за 2 год" in stale
-    assert "<details class='near'><summary>Ціни застарілі (знімок старший за 2 год): це не сигнали · рядків 2</summary>" in stale
+    assert (
+        "<details class='near' id='pm-stale'><summary>Ціни застарілі (знімок старший за 2 год): це не сигнали · рядків 2</summary>" in stale
+    )
     assert "боків 0 · нижче порогу реєстрації, не сигнал · ціни застарілі</span>" in stale
     # the horizon is also checked from NOW: 1.5 h before the end both passing sides are dropped and counted
     for now in (PM_END - 1.5 * 3600, PM_END - 2 * 3600 + 1, float(PM_END)):
@@ -2126,6 +2128,62 @@ def test_journal_refresh_pages_keep_open_folds(tmp_path, monkeypatch):
     monkeypatch.setattr(db, "DEMO_VS_BT_JSON", tmp_path / "no-vs-bt.json")
     demo = db.demo_page(now=td.NOW / 1000)
     assert "id='fold-" in demo and db.KEEP_MARK not in demo and "/journal/refresh" not in demo
+
+
+def test_auto_refresh_keeps_live_counted_sections_tapped_note_and_tab(tmp_path):
+    # standing improvements, item 114: a <details> outside a fold was keyed by its summary text, and three of them carry
+    # a live count («Усі серії (N)», «Примітки … : N», «Ціни застарілі … рядків N»), so a new snapshot closed them at
+    # the next minute's reload; they have stable ids now. The «i» note tapped open and the tab survive the reload too.
+    import html
+    import re
+
+    import test_dashboard_flows as tf
+    import test_dashboard_health as th
+
+    pages = {k: v for k, v in _all_tab_pages(tmp_path).items() if db.REFRESH_MARK in v}
+    assert set(pages) == {"project", "brief", "radar BTC", "radar ETH", "flows BTC", "flows ETH", "polymarket"}
+    for name, h in (("project ok", th._pm_db(tmp_path / "ok.sqlite")), ("project bad", th._pm_db(tmp_path / "gap.sqlite", range(30, 50)))):
+        pages[name] = th._page(db.load_collector_health(h, th.NOW, th.PM))
+    cols, rows = _pm_rows()
+    data = db.load_pm_gap(_pm_db(tmp_path / "pm-stale.sqlite", rows, cols))
+    pages["polymarket stale"] = db.render_polymarket(*data, float(PM_B + 2 * 3600 + 60))
+    for name, ids in (
+        ("project ok", ["p-series"]),
+        ("project bad", ["p-series"]),
+        ("flows BTC", ["flow-notes"]),
+        ("polymarket stale", ["pm-stale"]),
+    ):
+        assert all(f"{i}#1" in _keep_open_keys(pages[name]) for i in ids), name
+    # every <details> still keyed by its summary text says no number there: only static labels («Детально · Радар»)
+    for name, page in pages.items():
+        own = set(re.findall(r"<details[^>]*\bid='([^']+)'", page)) | set(re.findall(r"<section class='wide fold' id='([^']+)'>", page))
+        texts = [k for k in _keep_open_keys(page) if k.rsplit("#", 1)[0] not in own]
+        assert texts and not [k for k in texts if re.search(r"\d", k.rsplit("#", 1)[0])], (name, texts)
+    # the same tab after a new snapshot (other numbers, fewer notes): the same keys and the same «i» labels
+    sec = tf.section()
+    moved = json.loads(json.dumps(sec))
+    moved["warnings"] = moved["warnings"][:2]
+    moved["data"]["summary"]["24h"]["price_change"] = 0.123
+    a = db.render_flows(tf.snap(flow_btc=sec), None, tf.NOW, db.parse_flow_query("asset=BTC"))
+    b = db.render_flows(tf.snap(flow_btc=moved), None, tf.NOW, db.parse_flow_query("asset=BTC"))
+    assert f"(англ.): {len(sec['warnings'])}<" in a and "(англ.): 2<" in b and len(sec["warnings"]) != 2
+    assert _keep_open_keys(a) == _keep_open_keys(b)
+    label = re.compile(r"<span class='info' tabindex='0' role='button' aria-label='([^']*)'>")
+    assert label.findall(a) and label.findall(a) == label.findall(b)
+    titles = {html.escape(f"Пояснення: {h[0]}", quote=True) for h in db.HELP.values()}
+    for page in pages.values():  # the note's key is its static HELP title, never data
+        assert set(label.findall(page)) <= titles
+    js = db.KEEP_OPEN_JS
+    for part in ("getAttribute('aria-label')", "document.activeElement", "contains('open')", "tip: tip", "focus({ preventScroll: true })"):
+        assert part in js, part
+    assert js.index("scrollTo(0") < js.index("preventScroll")  # the note reopens where the reader was, not scrolled to
+    # the tab is the URL: the reload keeps path and query, and the stored state is keyed by both
+    assert "'td-keep:' + location.pathname + location.search" in js and "location.reload()" in js
+    assert "location.href" not in js and "location.replace" not in js and "location.assign" not in js
+    for name, cur in (("brief", "<a href='/brief' aria-current=page>"), ("project", "<a href='/' aria-current=page>")):
+        assert cur in pages[name], name
+    for name, cur in (("radar BTC", "Радар"), ("flows ETH", "Потоки"), ("polymarket", "Polymarket")):
+        assert f"<details class='more cur'><summary>Детально · {cur}</summary>" in pages[name], name
 
 
 def _all_tab_pages(tmp_path) -> dict[str, str]:

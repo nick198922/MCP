@@ -260,6 +260,50 @@ def test_open_positions_show_the_break_even_stop_and_escape_the_symbol(tmp_path)
     assert XSS not in html and "&lt;img" in html
 
 
+def test_open_trade_with_untrusted_symbol_and_setup_is_escaped(tmp_path):
+    """Review panel-demo-tab 02.11, item 7: the XSS row of the fixture is closed; here an OPEN trade carries the
+    untrusted symbol and setup (tags, both quote kinds): the always-open table and the whole page escape them."""
+    p = _filled(tmp_path, NOW)
+    con = sqlite3.connect(p)
+    sym, setup = '<script>"x"</script>\'/USDT:USDT', '<b a="1">\''
+    con.execute("UPDATE demo_trade SET symbol = ?, setup = ? WHERE link_id = 'td-21'", (sym, setup))  # the open S3
+    con.commit()
+    con.close()
+    data, err = db.load_demo(p)
+    assert err is None and any(t["status"] == "open" and t["symbol"] == sym for t in data["trades"])
+    html = db.block_demo_open(data["trades"], NOW / 1000)
+    row = next(r for r in html.split("<tr><td class='num'>")[1:] if "відкрита" in r)
+    assert "<b>&lt;script&gt;&quot;x&quot;&lt;/script&gt;&#x27;/US</b>" in row  # cut to 24 characters, then escaped
+    assert "<td>&lt;b a=&quot;1&quot;&gt;&#x27; 4h</td>" in row
+    page = db.render_demo(data, err, NOW / 1000)
+    for raw in ("<script>", "</script>", '<b a="1">', '"x"'):
+        assert raw not in html and raw not in page, raw
+    assert "Блок не вдалося показати" not in page
+
+
+def test_vs_backtest_block_with_enough_reconciled_trades():
+    """Review panel-demo-tab 02.11, item 7: the summary of a file past ``min_n`` (decided 40 of 30, match share 75 %)
+    as scripts/demo_vs_backtest.py writes it: the tiles drop «замало для висновку» and the fold line says so too."""
+    from tradedesk.analytics import demo_vs_backtest as dvb
+
+    rows = [dvb.Replay(f"m{i}", "S/USDT:USDT", "S3", "4h", "long", 0, 0, "match") for i in range(30)]
+    rows += [dvb.Replay(f"x{i}", "S/USDT:USDT", "S3", "4h", "long", 0, 0, "mismatch", ("entry",)) for i in range(10)]
+    rows += [dvb.Replay("p", "S/USDT:USDT", "S16", "4h", "long", 0, 0, "pending")]
+    doc = _vs_bt_doc(NOW)
+    doc["summary"] = dvb.summary(rows)
+    s = doc["summary"]
+    assert (s["decided"], s["min_n"], s["enough"]) == (40, 30, True) and s["match_share"] == pytest.approx(0.75)
+    html = db.block_demo_vs_bt([], True, doc, None, NOW / 1000)
+    tiles = html.split("<div class='tiles'>")[1].split("</div><p>")[0]
+    assert "<span class='v'>40</span>" in tiles and "із закритих 41 · не вирішено 1" in tiles
+    assert "<span class='sig" not in tiles and "t-warn" not in tiles  # no «замало для висновку (40 з 30)» badge
+    assert "<span class='v'>75 %</span>" in tiles and "збіг 30 · немає сигналу 0 · розбіжність 10" in tiles
+    assert "Висновок: збіг із бектестом 75% угод (30 з 40)." in html
+    page = db.render_demo({"trades": [], "audit": []}, None, NOW / 1000, vs_bt_on=True, vs_bt=(doc, None))
+    head = page.split(f"<summary><h2>Демо проти бектесту{ICON}")[1].split("</summary>")[0]
+    assert "<span class='fs'>звірено 40 угод · збіг з бектестом 75 %" in head and "Блок не вдалося показати" not in page
+
+
 def test_vs_backtest_summary_line_from_the_file():
     doc = _vs_bt_doc(NOW)
     line = db.demo_summaries([], [], NOW / 1000, (doc, None))["vs_bt"]

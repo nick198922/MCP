@@ -42,6 +42,7 @@ EXPECTED_TOOLS = {
     "dex_pairs",
     "contract_risk",
     "chain_metrics",
+    "stablecoin_supply",
     "pendle_expiry_calendar",
     "pendle_fixed_yields",
     "pendle_market",

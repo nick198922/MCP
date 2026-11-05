@@ -111,7 +111,11 @@ class Runtime:
             health=self.health,
             ttl=goplus_mod.TTL_SECONDS * s.cache_scale,
         )
-        self.defillama = DefiLlama(http("defillama", llama_mod.BASE_URL, rate=4, burst=8))
+        self.defillama = DefiLlama(
+            http("defillama", llama_mod.BASE_URL, rate=4, burst=8),
+            # Stablecoin supply (stablecoin_supply): daily data, two requests per call and cached for 10 min.
+            stablecoins=http("defillama:stablecoins", llama_mod.STABLECOINS_URL, rate=1, burst=2),
+        )
         self.pendle = Pendle(http("pendle", pendle_mod.BASE_URL, rate=2, burst=4))
         self.coinalyze = Coinalyze(
             Http(
@@ -202,7 +206,7 @@ class Runtime:
         await self.forexfactory.http.aclose()
         await self.dexscreener.http.aclose()
         await self.goplus.http.aclose()
-        await self.defillama.http.aclose()
+        await self.defillama.aclose()
         await self.pendle.http.aclose()
         await self.coinalyze.http.aclose()
         await self.polymarket.aclose()

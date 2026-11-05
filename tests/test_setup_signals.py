@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import functools
+import itertools
 
 import numpy as np
 import pytest
@@ -38,46 +38,55 @@ def _full_history_events(b: Bars) -> set[tuple[str, str, int]]:
     return out
 
 
-@pytest.fixture(scope="module")
-def live():
-    """(bars, [(i, signal)]) of the live scan on every prefix; computed once for the module (the slow part)."""
+def _prefix_scan(b: Bars, lo: int, hi: int, detector) -> list[tuple[int, ss.LiveSignal]]:
+    """[(i, signal)] of a live detector on every prefix bars[: i + 1], lo <= i < hi. Each call runs over the whole
+    prefix, so the cost grows with i; the tests below split the bars into parts of about equal work, each part its own
+    test that runs the scan once (a module fixture shared by several tests ran once per xdist worker, up to twice)."""
+    return [(i, s) for i in range(lo, hi) for s in detector(b.slice(0, i + 1), "4h")]
+
+
+def _range_key(s: ss.LiveSignal) -> tuple:
+    return (s.setup, s.side, s.signal_ts, s.entry, s.stop, s.target, s.comment)
+
+
+# Live scan on bars 150..999 of _bars(): ~27 s in one piece, ~7 s a part (the cost of bar i is ~i).
+LIVE_PARTS = ((150, 520), (520, 715), (715, 870), (870, 1000))
+
+
+@pytest.mark.parametrize(("lo", "hi"), LIVE_PARTS)
+def test_live_scan_on_each_prefix_equals_the_full_history_detector(lo, hi):
+    """On every prefix bars[: i + 1], lo <= i < hi: the live scan gives exactly the full-history detectors' signals of
+    bar i; every signal has sane levels and comment; the passport's full-history S3 / S16 form (``range_all``) gives
+    the same S3 / S16 signals, levels and comment included."""
     b = _bars()
-    return b, [(i, s) for i in range(150, len(b)) for s in ss.scan(b.slice(0, i + 1), "4h")]
-
-
-def test_live_scan_on_each_prefix_equals_the_full_history_detector(live):
-    b, sigs = live
-    want = _full_history_events(b)
+    sigs = _prefix_scan(b, lo, hi, ss.scan)
     got = set()
     for i, s in sigs:
         assert s.signal_ts == int(b.t[i])
         got.add((s.setup, s.side, i))
-    want = {w for w in want if w[2] >= 150}
-    assert got == want
-    assert {w[0] for w in got} == {"S14", "S16", "S3"} and {w[1] for w in got} == {"long", "short"}  # the sample covers all
-
-
-def test_levels_and_comment_of_every_signal(live):
-    b, sigs = live
-    seen = 0
-    for i, s in sigs:
-        seen += 1
+    assert got == {w for w in _full_history_events(b) if lo <= w[2] < hi}
+    for i, s in sigs:  # levels and comment of every signal
         sign = 1 if s.side == "long" else -1
         assert s.entry == pytest.approx(float(b.c[i]))
         assert sign * (s.entry - s.stop) > 0 and sign * (s.target - s.entry) > 0, s
         assert s.setup in s.comment and "Вхід" in s.comment and "стоп" in s.comment and "ATR14" in s.comment
         assert s.indicators["atr14"] > 0
-    assert seen > 10
+    want = {_range_key(s) for _, s in sigs if s.setup in ("S3", "S16")}
+    assert {_range_key(s) for s in ss.range_all(b, "4h", lo=lo) if s.signal_ts <= int(b.t[hi - 1])} == want
 
 
-def test_range_all_equals_the_live_range_scan_on_each_prefix(live):
-    """The passport's full-history S3 / S16 form gives on bar k exactly what the live scan gives on bars[: k + 1]."""
-    b, sigs = live
-    want = {(s.setup, s.side, s.signal_ts, s.entry, s.stop, s.target, s.comment) for _, s in sigs if s.setup in ("S3", "S16")}
-    got = {(s.setup, s.side, s.signal_ts, s.entry, s.stop, s.target, s.comment) for s in ss.range_all(b, "4h", lo=150)}
-    assert got == want and {w[0] for w in got} == {"S3", "S16"}
+def test_live_scan_sample_covers_every_setup_and_side():
+    """The parts above together check bars 150..999 with no gap, and that sample has every setup on both sides (with
+    the per-part equality, the live scan has them too); bars after 600 do not change the earlier range_all signals."""
+    assert LIVE_PARTS[0][0] == 150 and LIVE_PARTS[-1][1] == len(_bars())
+    assert all(x[1] == y[0] for x, y in itertools.pairwise(LIVE_PARTS))
+    b = _bars()
+    want = {w for w in _full_history_events(b) if w[2] >= 150}
+    assert {w[0] for w in want} == {"S14", "S16", "S3"} and {w[1] for w in want} == {"long", "short"} and len(want) > 10
+    full = {_range_key(s) for s in ss.range_all(b, "4h", lo=150)}
+    assert {w[0] for w in full} == {"S3", "S16"}
     head = ss.range_all(b.slice(0, 600), "4h", lo=150)  # bars after 600 do not change the earlier signals
-    assert {(s.setup, s.side, s.signal_ts) for s in head} == {w[:3] for w in got if w[2] <= int(b.t[599])}
+    assert {(s.setup, s.side, s.signal_ts) for s in head} == {w[:3] for w in full if w[2] <= int(b.t[599])}
 
 
 def test_closed_bars_drops_the_forming_bar():
@@ -90,38 +99,46 @@ def test_too_few_bars_gives_nothing():
     assert ss.scan(_bars(40), "4h") == []
 
 
-@functools.cache
-def _live_s14(seed: int) -> tuple[Bars, tuple[tuple[int, ss.LiveSignal], ...]]:
-    """(bars, ((i, signal), ...)) of the live s14 on every prefix bars[: i + 1], i >= 90, of a 700-bar walk: the slow
-    part of the S14 tests below (~10 s a seed), computed once per seed and process."""
-    b = _bars(700, seed)
-    return b, tuple((i, s) for i in range(90, len(b)) for s in ss.s14(b.slice(0, i + 1), "4h"))
-
-
-@pytest.mark.parametrize("seed", [1, 2, 3, 4, 5, 6])
-def test_s14_live_equals_the_detector_on_more_seeds(seed):
-    """One signal per impulse: the live scan keeps the detector's memory of used impulses (critic 21.10, finding 5)."""
-    b, live = _live_s14(seed)
-    want = set()
-    for side, bb in (("long", b), ("short", b.mirrored())):
-        ind = indicators(bb, ss.S14_PARAMS)
-        want |= {(side, s.idx) for s in find_signals(bb, ind, ss.S14_PARAMS, variant="sweep") if s.idx >= 150}
-    got = {(s.side, i) for i, s in live if i >= 150}
-    assert got == want
-
-
 def _key(s: ss.LiveSignal) -> tuple:
     return (s.setup, s.side, s.timeframe, s.signal_ts, s.entry, s.stop, s.target, s.comment, tuple(sorted(s.indicators.items())))
 
 
+# Live s14 on bars 90..699 of a 700-bar walk: ~9 s a seed in one piece, two parts of about equal work (cost of bar i ~i).
+# One test per (seed, part) checks both equalities below, so the slow scan runs once per seed and part, never once per
+# test and xdist worker. Seeds 1-6 came from the detector test, 3 / 5 / 10 (S14 on both sides) from the s14_all test.
+S14_SEEDS = (1, 2, 3, 4, 5, 6, 10)
+S14_PARTS = ((90, 500), (500, 700))
+
+
+@pytest.mark.parametrize(("lo", "hi"), S14_PARTS)
+@pytest.mark.parametrize("seed", S14_SEEDS)
+def test_s14_live_equals_the_detector_and_s14_all_on_each_prefix(seed, lo, hi):
+    """On every prefix bars[: i + 1], lo <= i < hi, the live s14 gives (1) from bar 150 exactly the detector's signals
+    of bar i: one signal per impulse, the live scan keeps the detector's memory of used impulses (critic 21.10, finding
+    5); (2) exactly what the passport's full-history ``s14_all`` gives on bar i (levels, comment and indicators
+    included), from the first bar the live scan can see."""
+    b = _bars(700, seed)
+    live = _prefix_scan(b, lo, hi, ss.s14)
+    want = set()
+    for side, bb in (("long", b), ("short", b.mirrored())):
+        ind = indicators(bb, ss.S14_PARAMS)
+        want |= {(side, s.idx) for s in find_signals(bb, ind, ss.S14_PARAMS, variant="sweep") if s.idx >= 150 and lo <= s.idx < hi}
+    assert {(s.side, i) for i, s in live if i >= 150} == want
+    full = [s for s in ss.s14_all(b, "4h") if int(b.t[lo]) <= s.signal_ts <= int(b.t[hi - 1])]
+    assert sorted(map(_key, full)) == sorted(_key(s) for _, s in live)
+
+
+def test_s14_parts_cover_every_prefix():
+    assert S14_PARTS[0][0] <= ss.S14_PARAMS.warmup and S14_PARTS[-1][1] == 700  # s14 gives nothing before warmup + 1
+    assert all(x[1] == y[0] for x, y in itertools.pairwise(S14_PARTS))
+
+
 @pytest.mark.parametrize("seed", [3, 5, 10])  # seeds with S14 signals on both sides (S14 is rare: 0..6 in 700 bars)
-def test_s14_all_equals_the_live_s14_on_each_prefix(seed):
-    """The passport's full-history S14 gives on bar k exactly what the live s14 gives on bars[: k + 1] (levels, comment
-    and indicators included), from the first bar the live scan can see; both sides are covered."""
-    b, pairs = _live_s14(seed)
-    live = [s for _, s in pairs]
+def test_s14_all_has_both_sides_no_duplicate_and_lo_keeps_the_used_impulse_memory(seed):
+    """The full-history S14 (equal to the live s14 on each prefix: the test above) covers both sides, has no
+    duplicate, starts at the first bar the live scan can see, and ``lo`` keeps the used-impulse memory."""
+    b = _bars(700, seed)
     full = ss.s14_all(b, "4h")
-    assert sorted(map(_key, full)) == sorted(map(_key, live))
     assert len(full) == len(set(map(_key, full))) and {s.side for s in full} == {"long", "short"}
     assert all(s.setup == "S14" and s.signal_ts >= int(b.t[ss.S14_PARAMS.warmup + 1]) for s in full)
     k = 400  # lo keeps the bars >= lo and the earlier bars still feed the used-impulse memory
@@ -145,9 +162,10 @@ def test_s14_all_is_causal_a_different_future_after_each_signal_bar_changes_noth
 
 
 def test_short_s14_comment_names_the_impulse_low():
-    _, live = _live_s14(1)  # seed 1 has a short S14 whose target is the impulse extreme
-    for i, s in live:
-        if i >= 150 and s.side == "short" and "імпульсу" in s.comment:
+    # seed 1 has a short S14 whose target is the impulse extreme; s14_all gives the live s14's comments (test above)
+    b = _bars(700, 1)
+    for s in ss.s14_all(b, "4h", lo=150):
+        if s.side == "short" and "імпульсу" in s.comment:
             assert "лоу імпульсу" in s.comment and "хай імпульсу" not in s.comment
             return
     raise AssertionError("seed 1 should give a short S14 with the impulse target")

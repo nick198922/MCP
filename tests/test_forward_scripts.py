@@ -514,11 +514,28 @@ def test_stage0_condor_forward_report_on_synthetic_cache(tmp_path, monkeypatch, 
     assert f"{100 * statistics.mean(v):+.2f}" not in rep and f"{100 * statistics.mean(v):+.3f}" not in rep
 
 
-def test_stage0_condor_forward_empty_cache_fails_without_report(tmp_path):
+def _stage0_refuses(src: Path, out: Path, msg: str, monkeypatch, capsys, *, as_process: bool) -> None:
+    """``stage0_condor_forward.py --src-dir src --out out`` stops with ``msg`` before `vom.load`: nothing on stdout, no
+    report. In-process ``sys.exit(msg)`` is enough for that (CPython prints a str exit code plus a newline to stderr and
+    exits with 1); ``as_process`` also runs the script as a real process (~4 s: it imports the whole server), so each
+    test still pins the real exit code and the exact stderr, with no traceback, once."""
+    monkeypatch.setattr(sys, "argv", ["stage0_condor_forward.py", "--src-dir", str(src), "--out", str(out)])
+    with pytest.raises(SystemExit) as exc:
+        s0.main()
+    assert exc.value.code == msg
+    assert capsys.readouterr().out == ""
+    if as_process:
+        cmd = [sys.executable, str(Path(s0.__file__)), "--src-dir", str(src), "--out", str(out)]
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        assert res.returncode == 1 and res.stdout == "", res.stderr
+        assert res.stderr == msg + "\n"
+    assert not out.exists() and not out.parent.exists()
+
+
+def test_stage0_condor_forward_empty_cache_fails_without_report(tmp_path, monkeypatch, capsys):
     # BACKLOG 6.14: an empty, missing or incomplete put_skew cache ends with exit code 1 and a one-line message naming
     # the missing files, checked before `vom.load`: no traceback, nothing on stdout, no report, and the cache (read
     # only for this script) gets nothing written into it (`load_snapshots` used to write an empty snapshots_v2.json).
-    script = Path(s0.__file__)
     empty = tmp_path / "empty"
     empty.mkdir()
     partial = _put_skew_cache(tmp_path / "partial")
@@ -526,11 +543,8 @@ def test_stage0_condor_forward_empty_cache_fails_without_report(tmp_path):
     before = {p.name: p.read_bytes() for p in partial.iterdir()}
     out = tmp_path / "out" / "stage0.md"
     all3 = "snapshots_v2.json, delivery_btc_usd.json, dvol_BTC.json"
-    for src, missing in ((empty, all3), (tmp_path / "no-such-cache", all3), (partial, "dvol_BTC.json")):
-        res = subprocess.run([sys.executable, str(script), "--src-dir", str(src), "--out", str(out)], capture_output=True, text=True)
-        assert res.returncode == 1 and res.stdout == "", res.stderr
-        assert res.stderr == f"put_skew cache {src}: {missing} missing\n"
-        assert not out.exists() and not out.parent.exists()
+    for n, (src, missing) in enumerate(((empty, all3), (tmp_path / "no-such-cache", all3), (partial, "dvol_BTC.json"))):
+        _stage0_refuses(src, out, f"put_skew cache {src}: {missing} missing", monkeypatch, capsys, as_process=n == 0)
     assert list(empty.iterdir()) == []
     assert not (tmp_path / "no-such-cache").exists()
     assert {p.name: p.read_bytes() for p in partial.iterdir()} == before
@@ -540,12 +554,11 @@ def _tree(root: Path) -> dict[str, bytes]:
     return {str(p.relative_to(root)): p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
 
 
-def test_stage0_condor_forward_stale_snapshots_are_refused_not_rebuilt(tmp_path):
+def test_stage0_condor_forward_stale_snapshots_are_refused_not_rebuilt(tmp_path, monkeypatch, capsys):
     # Review 2026-11-05-stage0-condor-empty-cache: `load_snapshots` rebuilds and overwrites snapshots_v2.json when its
     # n_files differs from the trades24 file count. With trades24 gone (n_files 2112 on the server, 0 files here)
     # that rebuild is empty and wipes the saved surfaces; with a new raw file it silently changes the stage-0 input.
     # Both now end with exit code 1 and a one-line message before `vom.load`, and the cache stays byte-identical.
-    script = Path(s0.__file__)
     gone = _put_skew_cache(tmp_path / "gone")
     snap = json.loads((gone / "snapshots_v2.json").read_text())
     (gone / "snapshots_v2.json").write_text(json.dumps({**snap, "n_files": 3}))
@@ -556,10 +569,6 @@ def test_stage0_condor_forward_stale_snapshots_are_refused_not_rebuilt(tmp_path)
     out = tmp_path / "out" / "stage0.md"
     for src, saved, now in ((gone, 3, 0), (grown, 0, 1)):
         before = _tree(src)
-        res = subprocess.run([sys.executable, str(script), "--src-dir", str(src), "--out", str(out)], capture_output=True, text=True)
-        assert res.returncode == 1 and res.stdout == "", res.stderr
-        assert res.stderr == (
-            f"put_skew cache {src}: snapshots_v2.json is stale (n_files {saved}, trades24 has {now}); rebuild it with verify_put_skew.py\n"
-        )
-        assert not out.exists() and not out.parent.exists()
+        msg = f"put_skew cache {src}: snapshots_v2.json is stale (n_files {saved}, trades24 has {now}); rebuild it with verify_put_skew.py"
+        _stage0_refuses(src, out, msg, monkeypatch, capsys, as_process=src is gone)
         assert _tree(src) == before

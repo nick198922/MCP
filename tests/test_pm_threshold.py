@@ -241,6 +241,28 @@ async def test_events_all_walks_keyset_cursor_to_the_end():
     await pm.aclose()
 
 
+async def test_trades_v1_410_is_a_clear_provider_error_without_retry():
+    calls: list[str] = []
+
+    def h(req: httpx.Request) -> httpx.Response:
+        calls.append(req.url.path)
+        return httpx.Response(410, json={"error": "gone"})
+
+    t = httpx.MockTransport(h)
+    # retries=3 and no backoff: a retried 410 would show as several requests
+    data = Http("polymarket:data", "https://data.test", transport=t, retries=3, backoff_base=0)
+    pm = Polymarket(
+        gamma=Http("polymarket:gamma", "https://gamma.test", transport=t, retries=0),
+        clob=Http("polymarket:clob", "https://clob.test", transport=t, retries=0),
+        data=data,
+    )
+    with pytest.raises(ProviderError) as ei:
+        await pm.trades("0xabc")
+    assert "removed 2026-11-02" in ei.value.detail and "/v2/trades" in ei.value.detail and "6.13" in ei.value.detail
+    assert calls == ["/trades"]
+    await pm.aclose()
+
+
 async def test_events_all_marks_incomplete_when_page_limit_hit():
     pm = _pm(lambda req: httpx.Response(200, json={"events": [EVENTS[0]], "next_cursor": "again"}))
     f = await pm.events_all({"series_id": "45"}, max_pages=3)

@@ -46,6 +46,9 @@ VRP_WARNING = (
     "IV, so the straddle here is priced at DVOL minus `entry_cost_vol`. Daily closes only: intraday gamma, margin, "
     "early hedging slippage and Deribit's 08:00 UTC settlement are not modelled."
 )
+# Forwards closer than this (relative) count as one forward: far below distance_pct's 0.01-point rounding,
+# so float noise in Deribit's underlying_price does not trigger the reference-forward caveat.
+FORWARD_REL_TOL = 1e-6
 
 
 def _in_bucket(p: float | None, lo: float, hi: float) -> bool:
@@ -416,7 +419,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
             b.miss("forward", "tradedesk", "data_unavailable", "no priced options for this scope")
             return b.build(None, ok=False)
         # warn only when the summed expiries really have different forwards (one shared forward = exact distances)
-        if not expiry and len({x.forward for x in rows}) > 1:
+        fwds = [x.forward for x in rows]
+        if not expiry and not math.isclose(min(fwds), max(fwds), rel_tol=FORWARD_REL_TOL):
             b.warn(
                 "all expiries summed: notional_usd uses each option's own forward, but the strike band, distance_pct and "
                 "`forward` use one reference forward; pass `expiry` for exact distances"

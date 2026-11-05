@@ -8,12 +8,14 @@ Which collectors: the read-only jobs switched on in ``deploy/features.env`` plus
 cadences live in the pure ``tradedesk.analytics.collector_health``). Reads the collector DB through a read-only connection (``mode=ro``: no
 migration, no write), no network, no keys; nothing under ``execution/`` is imported. Prints a text report (Ukrainian);
 ``--out`` also writes it to a file. The morning brief (scripts/assistant_brief_tg.py) calls :func:`brief_line` and adds
-its line only when a series is below 90 % or has a fresh gap.
+its line only when a series is below 90 % or has a fresh gap, or when the assistant snapshot file (a JSON file, not a
+table: :func:`snapshot_check`) is missing or older than twice its job's cadence.
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import sqlite3
 import sys
 import time
@@ -28,6 +30,9 @@ from tradedesk.analytics import collector_health as ch
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DB = "/var/lib/tradedesk-mcp/tradedesk.sqlite"
 DEFAULT_FEATURES = ROOT / "deploy" / "features.env"
+# Same rule as SNAPSHOT_PATH in scripts/dashboard.py (not imported: that module is the whole dashboard).
+_DATA_DIR = Path(os.environ.get("TRADEDESK_DATA_DIR", "/var/lib/tradedesk-mcp"))
+SNAPSHOT_PATH = Path(os.environ.get("TRADEDESK_ASSISTANT_SNAPSHOT_PATH") or _DATA_DIR / "assistant" / "snapshot.json")
 
 
 def connect_ro(db: str) -> sqlite3.Connection:
@@ -72,16 +77,41 @@ def collect(db: str, switches: dict[str, str], now: int, days: int = ch.WINDOW_D
         con.close()
 
 
-def brief_line(db: str = DEFAULT_DB, features_path: Path = DEFAULT_FEATURES, now: int | None = None) -> str | None:
-    """The morning brief's line (plain text), or None when every series is fine. Never raises: an unreadable DB gives a
-    line saying the check did not run."""
+def snapshot_check(path: Path, switches: dict[str, str], now: int) -> str | None:
+    """The assistant snapshot's line (ch.snapshot_line on the file's ``asof_utc``, read only), or None when the file is
+    fresh or features.env switches the job off. Raises nothing for a missing, unreadable or corrupt file."""
+    cadence = ch.snapshot_cadence(switches)
+    if cadence is None:
+        return None
     try:
-        results = collect(db, load_switches(features_path), int(time.time()) if now is None else now)
+        snap = cmn.read_json(path)
+    except FileNotFoundError:
+        return ch.snapshot_line(None, now, cadence, exists=False)
+    except (OSError, ValueError):
+        snap = None  # unreadable or corrupt: its time cannot be read
+    return ch.snapshot_line(snap.get("asof_utc") if isinstance(snap, dict) else None, now, cadence)
+
+
+def brief_line(
+    db: str = DEFAULT_DB, features_path: Path = DEFAULT_FEATURES, now: int | None = None, snapshot: Path | None = None
+) -> str | None:
+    """The morning brief's line (plain text), or None when every series and the assistant snapshot file
+    (``snapshot``, default :data:`SNAPSHOT_PATH`) are fine. Never raises: an unreadable DB gives a line saying the check
+    did not run."""
+    now = int(time.time()) if now is None else now
+    switches: dict[str, str] = {}
+    try:
+        switches = load_switches(features_path)
+        line = ch.brief_line(collect(db, switches, now))
     except (sqlite3.Error, OSError) as e:
-        return f"Здоров'я колекторів не перевірено: БД не відкрито ({type(e).__name__})."
+        line = f"Здоров'я колекторів не перевірено: БД не відкрито ({type(e).__name__})."
     except Exception as e:  # noqa: BLE001 - the brief always goes out
-        return f"Здоров'я колекторів не перевірено ({type(e).__name__})."
-    return ch.brief_line(results)
+        line = f"Здоров'я колекторів не перевірено ({type(e).__name__})."
+    try:
+        snap = snapshot_check(SNAPSHOT_PATH if snapshot is None else snapshot, switches, now)
+    except Exception as e:  # noqa: BLE001 - the brief always goes out
+        snap = f"Вік знімка асистента не перевірено ({type(e).__name__})."
+    return " ".join(x for x in (line, snap) if x) or None
 
 
 def main(argv: list[str] | None = None) -> int:

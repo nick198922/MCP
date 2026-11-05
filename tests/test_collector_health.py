@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 import sys
 from datetime import UTC, datetime
@@ -21,6 +22,21 @@ import collector_health as script  # noqa: E402
 H, D = ch.HOUR, ch.DAY
 NOW = int(datetime(2026, 11, 2, 6, 0, tzinfo=UTC).timestamp())  # the brief's hour (08:00 Kyiv)
 SPEC = {s.name: s for s in ch.SPECS}
+
+
+def _iso(ts: int) -> str:
+    return datetime.fromtimestamp(ts, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _snapshot(path: Path, asof: int) -> Path:
+    path.write_text(json.dumps({"schema": 1, "asof_utc": _iso(asof), "sections": {}}), encoding="utf-8")
+    return path
+
+
+@pytest.fixture(autouse=True)
+def _fresh_assistant_snapshot(tmp_path, monkeypatch):
+    """brief_line reads the server's snapshot file by default: point it at a fresh one, so only the DB decides."""
+    monkeypatch.setattr(script, "SNAPSHOT_PATH", _snapshot(tmp_path / "snapshot.json", NOW - 60))
 
 
 def _hourly(first: int, last: int, skip: set[int] = frozenset()) -> list[int]:
@@ -137,7 +153,8 @@ def test_every_switched_on_job_is_checked_or_says_why_not():
     assert not rejected
     on = {k for k, v in switches.items() if k.endswith("_ENABLED") and v == "1"}
     flags = {s.flag for s in ch.SPECS}
-    assert on - flags - set(ch.NOT_CHECKED) == set(), "a new job in features.env needs a Spec or a NOT_CHECKED reason"
+    checked = flags | set(ch.NOT_CHECKED) | {ch.SNAPSHOT_FLAG}  # the snapshot file is checked by its age
+    assert on - checked == set(), "a new job in features.env needs a Spec or a NOT_CHECKED reason"
     assert {s.name for s in ch.enabled_specs(switches)} == {s.name for s in ch.SPECS if s.flag in on or s.default_on}
     from tradedesk.providers.exchanges import PERP_EXCHANGES
 
@@ -155,8 +172,8 @@ def test_every_switched_on_job_is_checked_or_says_why_not():
 EXEMPT: dict[str, str] = {
     "retention": "maintenance sweep: deletes rows older than the retention windows, stores no snapshot",
     "alerts": "event-driven: writes an alert row only when a rule or a provider-health transition fires, no cadence",
-    "assistant_snapshot": "writes a JSON file (assistant/snapshot.json), not a table; the dashboard's brief tab shows a "
-    "missing or stale file as an empty state",
+    "assistant_snapshot": "writes a JSON file (assistant/snapshot.json), not a table, so no Spec; now checked by the "
+    "age of its asof_utc (analytics/collector_health.snapshot_line, scripts/collector_health.snapshot_check)",
     "ohlcv_hist": "off (no line in features.env; its markets come from the service env), so no fixed series; a bar "
     "backfill that refills holes from the last stored bar. Switched on in features.env, it fails "
     "test_every_switched_on_job_is_checked_or_says_why_not until it gets a Spec",
@@ -327,3 +344,67 @@ def _features(tmp_path: Path) -> Path:
     p = tmp_path / "f.env"
     p.write_text("TRADEDESK_PM_GAP_ENABLED=1\n", encoding="utf-8")
     return p
+
+
+# ------------------------------------------------------------------------------------------------ assistant snapshot
+
+
+def test_snapshot_line_fresh_stale_missing_and_unreadable():
+    cad = ch.SNAPSHOT_DEFAULT_S  # 600 s: stale after 20 min
+    assert ch.snapshot_line(_iso(NOW - 20 * 60), NOW, cad) is None  # exactly 2 cadences: still fresh
+    assert ch.snapshot_line(_iso(NOW + 30), NOW, cad) is None  # a stamp slightly ahead of the clock
+    stale = ch.snapshot_line(_iso(NOW - 3 * H), NOW, cad)
+    assert stale == "Знімок асистента застарів: останній 02.11 03:00 UTC, 3 год тому (оновлюється кожні 10 хв)."
+    assert ch.snapshot_line(_iso(NOW - 20 * 60 - 1), NOW, cad).startswith("Знімок асистента застарів")
+    assert ch.snapshot_line(_iso(NOW - 50 * 60), NOW, 1800) is None  # a slower cadence moves the threshold
+    assert ch.snapshot_line(None, NOW, cad, exists=False) == "Знімок асистента: файлу немає."
+    for bad in (None, "", "02.11.2026", 123):
+        assert ch.snapshot_line(bad, NOW, cad) == "Знімок асистента: час знімка не прочитано."
+
+
+def test_snapshot_cadence_follows_features_env():
+    assert ch.snapshot_cadence({}) == 600  # config.Settings.assistant_snapshot_seconds
+    assert ch.snapshot_cadence({ch.SNAPSHOT_FLAG: "1", ch.SNAPSHOT_SECONDS_FLAG: "900"}) == 900
+    assert ch.snapshot_cadence({ch.SNAPSHOT_SECONDS_FLAG: "x"}) == 600
+    assert ch.snapshot_cadence({ch.SNAPSHOT_FLAG: "0"}) is None
+
+
+def test_scheduler_runs_the_snapshot_at_the_cadence_the_check_assumes(monkeypatch):
+    from types import SimpleNamespace
+
+    from tradedesk.collector.scheduler import build_default_scheduler
+    from tradedesk.config import Settings
+
+    monkeypatch.setenv("TRADEDESK_COLLECTOR_ENABLED", "1")
+    monkeypatch.setenv(ch.SNAPSHOT_FLAG, "1")
+    monkeypatch.delenv(ch.SNAPSHOT_SECONDS_FLAG, raising=False)
+    sched = build_default_scheduler(SimpleNamespace(settings=Settings.from_env(), store=object()))
+    assert [j.period_seconds for j in sched.jobs if j.name == "assistant_snapshot"] == [ch.SNAPSHOT_DEFAULT_S]
+
+
+def test_snapshot_check_reads_the_file(tmp_path):
+    fresh = _snapshot(tmp_path / "a.json", NOW - 5 * 60)
+    assert script.snapshot_check(fresh, {}, NOW) is None
+    stale = _snapshot(tmp_path / "b.json", NOW - 2 * H)
+    assert script.snapshot_check(stale, {}, NOW).startswith("Знімок асистента застарів: останній 02.11 04:00 UTC")
+    assert script.snapshot_check(stale, {ch.SNAPSHOT_FLAG: "0"}, NOW) is None  # switched off in features.env
+    assert script.snapshot_check(tmp_path / "none.json", {}, NOW) == "Знімок асистента: файлу немає."
+    corrupt = tmp_path / "c.json"
+    corrupt.write_text("{not json", encoding="utf-8")
+    assert script.snapshot_check(corrupt, {}, NOW) == "Знімок асистента: час знімка не прочитано."
+    assert script.snapshot_check(tmp_path, {}, NOW) == "Знімок асистента: час знімка не прочитано."  # a directory
+
+
+def test_brief_line_adds_the_snapshot_only_when_missing_or_stale(tmp_path):
+    db = _fresh_db(tmp_path)
+    quiet = tmp_path / "quiet.env"
+    quiet.write_text("\n".join(f"{s.flag}=0" for s in ch.SPECS if s.default_on) + "\n", encoding="utf-8")  # no series
+    assert script.brief_line(db, quiet, NOW) is None  # the fixture's fresh snapshot
+    stale = _snapshot(tmp_path / "old.json", NOW - H)
+    assert script.brief_line(db, quiet, NOW, stale).startswith("Знімок асистента застарів: останній 02.11 05:00 UTC")
+    missing = tmp_path / "gone.json"
+    assert script.brief_line(db, quiet, NOW, missing) == "Знімок асистента: файлу немає."
+    line = script.brief_line(db, _features(tmp_path), NOW, missing)  # a DB alarm and the snapshot: one line, DB first
+    assert line.startswith("Колектори:") and line.endswith(". Знімок асистента: файлу немає.")
+    line = script.brief_line(str(tmp_path / "none.sqlite"), quiet, NOW, missing)  # the snapshot is checked without a DB
+    assert line == "Здоров'я колекторів не перевірено: БД не відкрито (FileNotFoundError). Знімок асистента: файлу немає."

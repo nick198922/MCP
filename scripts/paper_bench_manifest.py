@@ -5,13 +5,15 @@
 
 Writes `sha256sum`-compatible lines (`<hex>  <relative path>`) for every *.json in the cache, sorted, so a later
 re-download can be compared file by file (`cd <cache> && sha256sum -c <manifest>`). Logs are skipped. Read-only on the
-cache; no network.
+cache; no network. A cache with no *.json (empty, missing, or logs only) exits with code 1 and a message on stderr and
+does not write (or overwrite) the manifest: `sha256sum -c` rejects a manifest without checksum lines, empty file included.
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import sys
 from pathlib import Path
 
 
@@ -29,6 +31,8 @@ def main() -> None:
     ap.add_argument("--out", type=Path, default=Path("docs/paper/bench-data.sha256"))
     a = ap.parse_args()
     files = sorted(p for p in a.cache_dir.rglob("*.json") if p.is_file())
+    if not files:
+        sys.exit(f"cache is empty: no *.json files under {a.cache_dir}; manifest not written ({a.out})")
     total = 0
     lines = []
     for p in files:

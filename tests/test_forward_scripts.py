@@ -361,11 +361,31 @@ def test_paper_bench_manifest_order_is_deterministic(tmp_path, monkeypatch):
 
 
 def test_paper_bench_manifest_empty_cache(tmp_path, monkeypatch, capsys):
+    # `sha256sum -c` rejects a manifest with no checksum lines (an empty file too), so an empty cache is an error:
+    # exit code 1, a message on stderr, and no manifest written or overwritten.
     cache = _bench_cache(tmp_path / "cache", ["fetch.log"])  # only logs: nothing to list
     out = tmp_path / "bench-data.sha256"
-    assert _run_manifest(cache, out, monkeypatch) == [""]
-    assert out.read_text(encoding="utf-8") == "\n"  # one empty line, not an empty file
-    assert f"0 files, 0.0 MB -> {out}" in capsys.readouterr().out
-    if shutil.which("sha256sum"):  # known gap (BACKLOG 6.10): coreutils rejects a manifest with no checksum lines
-        res = _sha256sum_check(out, cache)
-        assert res.returncode == 1 and "no properly formatted" in res.stderr
+    monkeypatch.setattr(sys, "argv", ["paper_bench_manifest.py", "--cache-dir", str(cache), "--out", str(out)])
+    with pytest.raises(SystemExit) as exc:
+        pbm.main()
+    assert exc.value.code != 0 and "cache is empty" in str(exc.value.code)
+    assert not out.exists()
+
+    out.write_text("previous manifest\n", encoding="utf-8")  # an earlier good manifest is left untouched
+    missing = tmp_path / "no-such-cache"  # a missing cache dir is the same error
+    monkeypatch.setattr(sys, "argv", ["paper_bench_manifest.py", "--cache-dir", str(missing), "--out", str(out)])
+    with pytest.raises(SystemExit) as exc:
+        pbm.main()
+    assert exc.value.code != 0 and str(missing) in str(exc.value.code)
+    assert out.read_text(encoding="utf-8") == "previous manifest\n"
+    assert capsys.readouterr().out == ""  # no "0 files" summary
+
+    # As a real process: the message goes to stderr with exit code 1.
+    script = Path(pbm.__file__)
+    res = subprocess.run(
+        [sys.executable, str(script), "--cache-dir", str(cache), "--out", str(tmp_path / "x.sha256")],
+        capture_output=True,
+        text=True,
+    )
+    assert res.returncode == 1 and "cache is empty" in res.stderr and res.stdout == ""
+    assert not (tmp_path / "x.sha256").exists()

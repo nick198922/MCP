@@ -112,7 +112,10 @@ def test_every_switched_on_job_is_checked_or_says_why_not():
     on = {k for k, v in switches.items() if k.endswith("_ENABLED") and v == "1"}
     flags = {s.flag for s in ch.SPECS}
     assert on - flags - set(ch.NOT_CHECKED) == set(), "a new job in features.env needs a Spec or a NOT_CHECKED reason"
-    assert {s.flag for s in ch.enabled_specs(switches)} == on & flags
+    assert {s.name for s in ch.enabled_specs(switches)} == {s.name for s in ch.SPECS if s.flag in on or s.default_on}
+    from tradedesk.providers.exchanges import PERP_EXCHANGES
+
+    assert sorted(SPEC["funding"].groups) == sorted((*PERP_EXCHANGES, "hyperliquid", "deribit"))  # _collect_funding
     venues = {"binance": "binanceusdm"}  # ccxt id the liquidation rows carry
     liq = [venues.get(v, v) for v in switches["TRADEDESK_COLLECT_LIQUIDATIONS_VENUES"].split(",")]
     assert sorted(SPEC["liquidations"].groups) == sorted(liq)
@@ -170,6 +173,7 @@ def test_script_on_a_fixture_db(tmp_path):
     con.commit()
     con.close()
     switches = {"TRADEDESK_PM_GAP_ENABLED": "1", "TRADEDESK_PAPER_CARRY_ENABLED": "1", "TRADEDESK_COLLECT_LIQUIDATIONS_ENABLED": "1"}
+    switches |= {s.flag: "0" for s in ch.SPECS if s.default_on}  # the default jobs have their own test below
     res = {r["label"]: r for r in script.collect(db, switches, NOW)}
     assert set(res) == {"pm_gap", "paper_carry:A", "paper_carry:B", "liquidations:binanceusdm", "liquidations:bybit", "liquidations:okx"}
     assert res["pm_gap"]["status"] == "low" and (res["pm_gap"]["present"], res["pm_gap"]["expected"]) == (138, 168)
@@ -184,6 +188,51 @@ def test_script_on_a_fixture_db(tmp_path):
     out = tmp_path / "r" / "health.txt"
     assert script.main(["--db", db, "--features", str(features_file), "--out", str(out)]) == 0
     assert "pm_gap" in out.read_text(encoding="utf-8")
+
+
+def test_default_jobs_count_without_a_switch():
+    defaults = {"atm_term", "basis", "funding", "supply", "traders", "trader_positions"}
+    assert {s.name for s in ch.enabled_specs({})} == defaults  # nothing in features.env: only the default jobs
+    off = {"TRADEDESK_COLLECT_TRADERS_ENABLED": "0", "TRADEDESK_PM_GAP_ENABLED": "1"}
+    assert {s.name for s in ch.enabled_specs(off)} == defaults - {"traders", "trader_positions"} | {"pm_gap"}
+    assert {s.name for s in ch.enabled_specs({"TRADEDESK_COLLECT_SUPPLY_ENABLED": "1"})} == defaults
+
+
+def test_traders_gap_in_one_venue_is_visible_and_empty_db(tmp_path):
+    db = _fresh_db(tmp_path)
+    only_traders = {"TRADEDESK_COLLECTOR_ENABLED": "0", "TRADEDESK_COLLECT_SUPPLY_ENABLED": "0"}  # traders: no switch
+    empty = {r["label"]: r["status"] for r in script.collect(db, only_traders, NOW)}
+    labels = {"traders:hyperliquid", "traders:polymarket", "traders:polymarket_crypto"}
+    labels |= {"trader_positions:hyperliquid", "trader_positions:polymarket"}
+    assert empty == dict.fromkeys(labels, "never")
+    con = sqlite3.connect(db)
+    today = NOW - NOW % D
+    snap = "INSERT INTO trader_snapshot (day, venue, account, ts) VALUES (?,?,?,?)"
+    for k in range(1, 9):  # 25.10 .. 01.11; Polymarket (overall) silent from 30.10, as after its v1 shutdown
+        day = today - k * D
+        iso = datetime.fromtimestamp(day, UTC).strftime("%Y-%m-%d")
+        for venue in ("hyperliquid", "polymarket", "polymarket_crypto"):
+            if venue != "polymarket" or k > 3:
+                con.executemany(snap, [(iso, venue, f"0x{i}", day + 4800) for i in range(3)])
+    pos = "INSERT INTO trader_positions (ts, venue, account, market, side) VALUES (?,?,?,?,?)"
+    for ts in _hourly(NOW - 8 * D, NOW - H):
+        con.execute(pos, (ts, "hyperliquid", "0xa", "BTC", "long"))
+    for ts in _hourly(NOW - 8 * D, NOW - 3 * D - H):  # Polymarket positions stop 72 h ago
+        con.execute(pos, (ts, "polymarket", "0xb", "123", "Yes"))
+    con.commit()
+    con.close()
+    res = {r["label"]: r for r in script.collect(db, only_traders, NOW)}
+    assert set(res) == labels
+    assert res["traders:hyperliquid"]["status"] == "ok" and res["traders:polymarket_crypto"]["status"] == "ok"
+    assert (res["traders:hyperliquid"]["present"], res["traders:hyperliquid"]["expected"]) == (6, 6)  # 27.10 .. 01.11
+    pm = res["traders:polymarket"]
+    assert (pm["status"], pm["present"], pm["expected"], pm["trailing_gap_s"]) == ("low", 3, 6, 3 * D)
+    assert res["trader_positions:hyperliquid"]["status"] == "ok"
+    pp = res["trader_positions:polymarket"]
+    assert (pp["status"], pp["present"], pp["expected"], pp["trailing_gap_s"]) == ("low", 96, 168, 72 * H)
+    line = ch.brief_line(res.values())
+    assert "traders:polymarket 50 % (немає 3.0 дн поспіль; останній 29.10)" in line
+    assert "trader_positions:polymarket 57 %" in line and "hyperliquid" not in line
 
 
 def test_script_unreadable_db_or_table(tmp_path):

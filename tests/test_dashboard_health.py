@@ -16,7 +16,8 @@ import test_dashboard as tdb  # noqa: E402
 
 HOUR = 3600
 NOW = int(datetime(2026, 11, 2, 8, 30, tzinfo=UTC).timestamp())
-PM = {"TRADEDESK_PM_GAP_ENABLED": "1"}
+# pm_gap alone: the jobs the collector runs by default count unless switched off
+PM = {"TRADEDESK_PM_GAP_ENABLED": "1"} | {s.flag: "0" for s in ch.SPECS if s.default_on}
 ICON = "<span class='info' tabindex='0' role='button'"
 
 

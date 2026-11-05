@@ -414,7 +414,7 @@ def _health_module():
 
 
 def load_collector_health(db: Path, now: float, switches: dict[str, str] | None = None) -> dict:
-    """Health of every series of the collectors switched on in deploy/features.env over the last 7 days
+    """Health of every series of the collectors switched on in deploy/features.env or on by default over the last 7 days
     (collector_health.collect: the DB opened with mode=ro, no network). {'rows': [...], 'error': None | reason,
     'window_days': int, 'at': now}. Never raises: a missing DB or a failed import gives an empty list and the reason."""
     try:

@@ -36,6 +36,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import verify_news_events as v0  # noqa: E402  (stage-0 pipeline: fetchers, measure, collision check)
+from common_helpers import rss_mb  # noqa: E402
 
 from tradedesk.analytics.news_events import (  # noqa: E402
     CLOSURE_PARTIAL,
@@ -72,10 +73,6 @@ THRESH = 0.10
 RESOLVE_FILE = "closures_resolve.json"
 LISTED_FILE = "closures_listed_now.json"
 MEASURED_FILE = "closures_measured.json"
-
-
-def rss_mb() -> float:
-    return v0.rss_mb()
 
 
 def closures() -> list[Closure]:

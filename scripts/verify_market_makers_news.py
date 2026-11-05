@@ -37,6 +37,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import verify_news_events as v0  # noqa: E402  (stage-0 pipeline: fetchers, measure, collision check)
+from common_helpers import rss_mb  # noqa: E402
 
 from tradedesk.analytics.news_events import (  # noqa: E402
     DAY_MS,
@@ -81,10 +82,6 @@ PRE_CRASH = 0.20  # robustness: |move in the 24 h before t0| >= 20 % (the news c
 Y25 = int(datetime(2025, 1, 1, tzinfo=UTC).timestamp() * 1000)
 RESOLVE_FILE = "mm_resolve.json"
 MEASURED_FILE = "mm_measured.json"
-
-
-def rss_mb() -> float:
-    return v0.rss_mb()
 
 
 def news() -> list[MmNews]:

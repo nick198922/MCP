@@ -22,7 +22,6 @@ import asyncio
 import importlib.util
 import json
 import math
-import resource
 import statistics
 import sys
 import time
@@ -32,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
+from common_helpers import rss_mb
 
 from tradedesk.analytics import pm_h7_qlike as hq
 from tradedesk.analytics import pm_modules as pm
@@ -48,10 +48,6 @@ PLACEBO_DAYS = (1, 2, 3, 4, 5, 6)
 C_GRID = (0.8, 1.0, 1.25)
 WEEK_S = 7 * DAY_S
 TRAIL_H = 168
-
-
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
 
 
 def _load(name: str):  # noqa: ANN202

@@ -332,6 +332,13 @@ RSS_MB_IMPORTED = [  # item 75 of the standing-improvements card: 'from common_h
     "verify_smt_divergence",
     "verify_tradfi_offhours_reopen",
     "verify_usde_funding",
+    # item 91: '/ 1024.0' copies (same float as '/ 1024') and 'return v0.rss_mb()' wrappers (v0.rss_mb is the helper)
+    "verify_option_modules",
+    "verify_pm_h7_qlike",
+    "verify_news_events_0b",
+    "verify_news_events_0c",
+    "verify_news_events_0d",
+    "verify_market_makers_news",
 ]
 
 

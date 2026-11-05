@@ -29,8 +29,9 @@ The cadences are read from the collectors and the schema (each spec's ``note`` s
   quiet hour) have no cadence and are listed in :data:`NOT_CHECKED`.
 
 Alarm (:func:`brief_line`): a series below :data:`THRESHOLD` of its expected buckets, a trailing gap (its latest
-buckets missing for at least :data:`STALE_S`, or its latest daily / 8 h bucket), a series with no row at all, or a
-series that could not be read.
+buckets missing for at least :data:`STALE_S`, or its latest daily / 8 h bucket, and no snapshot stored after them),
+a series with no row at all, or a series that could not be read. A series that has written again in a bucket not due
+yet is not "missing now": its run counts as an ordinary gap.
 """
 
 from __future__ import annotations
@@ -209,7 +210,8 @@ def series_health(
     and latest stamp ever (None = no row at all). Keys: ``label``, ``status`` ('ok' | 'low' | 'stale' | 'never' |
     'new'), ``share`` (present / expected; None when nothing is expected yet), ``expected``, ``present``, ``gaps``
     (runs of missing buckets), ``longest_gap_s``, ``longest_gap_start``, ``trailing_gap_s`` (the missing run that
-    reaches the last expected bucket, 0 = none), ``since`` (first bucket checked), ``first_ts``, ``last_ts``."""
+    reaches the last expected bucket, 0 = none or when ``last_ts`` already lies in a later bucket that is not due yet,
+    i.e. the series has recovered), ``since`` (first bucket checked), ``first_ts``, ``last_ts``."""
     label = f"{spec.name}:{group}" if group else spec.name
     p = spec.period_s
     out: dict[str, Any] = {
@@ -240,6 +242,10 @@ def series_health(
     present = len(exp) - sum(n for _, n in runs)
     longest = max(runs, key=lambda r: r[1]) if runs else None
     trailing = runs[-1][1] * p if runs and prev_missing else 0
+    if trailing and last_ts is not None and (int(last_ts) // p) * p > exp[-1]:
+        # A snapshot already sits in a later bucket that is not due yet: the series is back, so the run is a closed
+        # gap (still in ``gaps`` / ``longest_gap_s``), not "missing now" (05.11: Polymarket traders after the v2 fix).
+        trailing = 0
     share = present / len(exp)
     stale = trailing >= (p if p >= 8 * HOUR else STALE_S)
     status = "low" if share < THRESHOLD else ("stale" if stale else "ok")

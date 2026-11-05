@@ -18,7 +18,6 @@ import argparse
 import hashlib
 import json
 import math
-import resource
 import statistics
 import sys
 import time
@@ -30,6 +29,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import common_helpers as cmn  # noqa: E402  (scripts/common_helpers.py)
 import verify_funding_crowding as fc  # noqa: E402  (cache loaders: eligible / load_all / SymData)
 
 from tradedesk.analytics.funding_crowding import LegWeek, leg_week, liquidated  # noqa: E402
@@ -77,7 +77,7 @@ def month(d: int) -> str:
 
 
 def rss() -> str:
-    return f"rss {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.0f} MB"
+    return f"rss {cmn.rss_mb():.0f} MB"
 
 
 def reg_hash() -> str:

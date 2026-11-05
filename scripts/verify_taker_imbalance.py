@@ -19,7 +19,6 @@ import hashlib
 import json
 import logging
 import os
-import resource
 import sys
 import time
 from collections import Counter
@@ -50,7 +49,7 @@ STABLE = {"USDCUSDT", "BUSDUSDT", "TUSDUSDT", "FDUSDUSDT", "USDPUSDT", "EURUSDT"
 
 
 def rss() -> str:
-    return f"peak RSS {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.0f} MB"
+    return f"peak RSS {cmn.rss_mb():.0f} MB"
 
 
 def days(a: str, b: str) -> list[str]:

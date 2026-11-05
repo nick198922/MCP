@@ -18,7 +18,6 @@ import argparse
 import asyncio
 import json
 import logging
-import resource
 import sys
 import time
 from datetime import UTC, datetime, timedelta
@@ -28,6 +27,7 @@ from typing import Any
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import common_helpers as cmn  # noqa: E402  (scripts/common_helpers.py)
 import verify_liquidation_flush as vlf  # noqa: E402  (per-file JSON Fetcher)
 
 from tradedesk.analytics import flow_model as fm  # noqa: E402
@@ -55,7 +55,7 @@ LAST_T = T_END - 1
 
 
 def rss() -> str:
-    return f"peak RSS {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.0f} MB"
+    return f"peak RSS {cmn.rss_mb():.0f} MB"
 
 
 def rd(p: Path) -> Any:

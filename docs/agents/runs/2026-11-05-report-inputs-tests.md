@@ -6,7 +6,7 @@
 • Повторний підрахунок: 105 функцій без тестів (а не 107), тепер 97.
 • Дрібниця без виправлення: `fmt_dur` пише «60 хв» замість «1 год» для 3570–3599 с (косметика).
 
-**Критик:** C — approve ([рев'ю](../reviews/2026-11-05-report-inputs-tests.md)); зауваження не блокують (`render_robustness` частково через `startswith`).
+**Критик:** C — approve ([рев'ю](../../reviews/2026-11-05-report-inputs-tests.md)); зауваження не блокують (`render_robustness` частково через `startswith`).
 
 **Перевірка:** `make lint` чисто; `make test` — 4664 passed, 3 skipped.
 

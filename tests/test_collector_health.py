@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import gzip
 import json
+import shutil
 import sqlite3
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -37,6 +40,12 @@ def _snapshot(path: Path, asof: int) -> Path:
 def _fresh_assistant_snapshot(tmp_path, monkeypatch):
     """brief_line reads the server's snapshot file by default: point it at a fresh one, so only the DB decides."""
     monkeypatch.setattr(script, "SNAPSHOT_PATH", _snapshot(tmp_path / "snapshot.json", NOW - 60))
+    monkeypatch.setattr(script, "disk_usage", lambda _p: _usage(100 * ch.GIB, 60 * ch.GIB))  # not the runner's disk
+
+
+def _usage(total: int, free: int) -> SimpleNamespace:
+    """A fake shutil.disk_usage result."""
+    return SimpleNamespace(total=total, used=total - free, free=free)
 
 
 def _hourly(first: int, last: int, skip: set[int] = frozenset()) -> list[int]:
@@ -183,8 +192,6 @@ NOT_A_JOB = {"TRADEDESK_ALERTS_HEALTH_ENABLED": "sub-switch of the alerts job (p
 
 def _jobs(monkeypatch, env: dict[str, str]) -> set[str]:
     """Names of the jobs build_default_scheduler registers under ``env`` ('liquidations:bybit' -> 'liquidations')."""
-    from types import SimpleNamespace
-
     from tradedesk.collector.scheduler import build_default_scheduler
     from tradedesk.config import Settings
 
@@ -370,8 +377,6 @@ def test_snapshot_cadence_follows_features_env():
 
 
 def test_scheduler_runs_the_snapshot_at_the_cadence_the_check_assumes(monkeypatch):
-    from types import SimpleNamespace
-
     from tradedesk.collector.scheduler import build_default_scheduler
     from tradedesk.config import Settings
 
@@ -408,3 +413,107 @@ def test_brief_line_adds_the_snapshot_only_when_missing_or_stale(tmp_path):
     assert line.startswith("Колектори:") and line.endswith(". Знімок асистента: файлу немає.")
     line = script.brief_line(str(tmp_path / "none.sqlite"), quiet, NOW, missing)  # the snapshot is checked without a DB
     assert line == "Здоров'я колекторів не перевірено: БД не відкрито (FileNotFoundError). Знімок асистента: файлу немає."
+
+
+# ------------------------------------------------------------------------------------------------ DB size and disk
+
+G = ch.GIB
+
+
+def test_disk_normal_is_quiet():
+    h = ch.disk_health(2 * G, 60 * G, 100 * G, 50 * ch.MIB)  # 60 % free, 1229 days of runway
+    assert h["reasons"] == [] and ch.disk_line(h) is None
+    assert h["share"] == pytest.approx(0.6) and h["days_left"] == pytest.approx(60 * 1024 / 50)
+    assert ch.describe_disk(h) == "вільно 60.0 ГБ з 100.0 ГБ (60 %), база 2.0 ГБ, +50 МБ/добу, місце закінчиться за ~1229 дн"
+    shrinking = ch.disk_health(2 * G, 60 * G, 100 * G, -10 * ch.MIB)  # after a prune: no projection
+    assert shrinking["days_left"] is None and "−10 МБ/добу" in ch.describe_disk(shrinking)
+    assert ch.disk_health(2 * G, 60 * G, 100 * G, None)["reasons"] == []  # growth unknown: size and space only
+
+
+def test_disk_low_space_by_share_and_by_bytes():
+    both = ch.disk_health(20 * G, 4 * G, 200 * G, None)  # 2 % and under 5 GB
+    assert both["reasons"] == ["share", "bytes"]
+    line = ch.disk_line(both)
+    assert line.startswith("Диск БД: вільно менше 15 %; вільно менше 5.0 ГБ — вільно 4.0 ГБ з 200.0 ГБ (2 %)")
+    assert line.endswith("(2 %), база 20.0 ГБ, приріст невідомий.")
+    assert ch.disk_health(1 * G, 10 * G, 100 * G, None)["reasons"] == ["share"]  # 10 GB is plenty, 10 % is not
+    assert ch.disk_health(1 * G, 4 * G, 10 * G, None)["reasons"] == ["bytes"]  # 40 % of a small volume
+    assert ch.disk_health(1 * G, 15 * G, 100 * G, None)["reasons"] == []  # exactly 15 %: not below
+
+
+def test_disk_fast_growth_names_the_runway():
+    h = ch.disk_health(30 * G, 50 * G, 100 * G, 1 * G)  # 50 % free but 1 GB a day: full in 50 days
+    assert h["reasons"] == ["days"] and h["days_left"] == pytest.approx(50)
+    assert ch.disk_line(h) == (
+        "Диск БД: при цьому темпі диск закінчиться менш ніж за 60 дн — вільно 50.0 ГБ з 100.0 ГБ (50 %), база 30.0 ГБ, "
+        "+1.0 ГБ/добу, місце закінчиться за ~50 дн."
+    )
+    assert ch.disk_health(30 * G, 60 * G, 100 * G, 1 * G)["reasons"] == []  # exactly 60 days: not below
+
+
+def test_growth_per_day_uses_the_oldest_and_newest_point_in_the_window():
+    pts = [(NOW - 9 * D, 0), (NOW - 6 * D, 1_000), (NOW - 3 * D, 5_000), (NOW, 4_000)]  # 9 days ago: outside
+    assert ch.growth_per_day(pts, NOW) == pytest.approx(500)  # (4000 - 1000) / 6 days
+    assert ch.growth_per_day([(NOW - H, 1), (NOW, 2)], NOW) is None  # under a day apart
+    assert ch.growth_per_day([(NOW, 2)], NOW) is None and ch.growth_per_day([], NOW) is None
+    assert ch.growth_per_day([(NOW - 2 * D, 1), (NOW + D, 9)], NOW) is None  # a point after now is not used
+
+
+def _backup(folder: Path, ts: int, size: int) -> Path:
+    """A gzip backup named as deploy/backup-sqlite.sh names it, holding ``size`` bytes."""
+    folder.mkdir(exist_ok=True)
+    p = folder / f"tradedesk-{datetime.fromtimestamp(ts, UTC).strftime('%Y-%m-%dT%H%M%SZ')}.sqlite.gz"
+    p.write_bytes(gzip.compress(b"\0" * size))
+    return p
+
+
+def test_disk_check_reads_size_space_and_growth_from_backups(tmp_path, monkeypatch):
+    db = tmp_path / "tradedesk.sqlite"
+    db.write_bytes(b"\0" * 7_000)
+    backups = tmp_path / "backups"
+    _backup(backups, NOW - 8 * D, 100)  # outside the 7 days
+    _backup(backups, NOW - 6 * D, 1_000)
+    _backup(backups, NOW - 2 * D, 5_000)
+    (backups / "tradedesk-latest.sqlite.gz").write_bytes(b"x")  # not a dated backup: ignored
+    assert sorted(b for _, b in script.backup_sizes(backups)) == [100, 1_000, 5_000]
+    h = script.disk_check(str(db), NOW)
+    assert (h["db_bytes"], h["free"], h["total"]) == (7_000, 60 * G, 100 * G)
+    assert h["growth"] == pytest.approx(1_000) and h["reasons"] == []  # (7000 - 1000) / 6 days
+    monkeypatch.setattr(script, "disk_usage", lambda _p: _usage(100 * G, 3 * G))  # nearly full
+    quiet = tmp_path / "quiet.env"
+    quiet.write_text("\n".join(f"{s.flag}=0" for s in ch.SPECS if s.default_on) + "\n", encoding="utf-8")
+    line = script.brief_line(_fresh_db(tmp_path), quiet, NOW, tmp_path / "gone.json")  # disk between DB and snapshot
+    assert line.startswith("Диск БД: вільно менше 15 %; вільно менше 5.0 ГБ — вільно 3.0 ГБ з 100.0 ГБ (3 %)")
+    assert line.endswith(". Знімок асистента: файлу немає.")
+    out = tmp_path / "r.txt"
+    assert script.main(["--db", str(db), "--features", str(quiet), "--out", str(out)]) == 0
+    text = out.read_text(encoding="utf-8")  # the report always has the disk (main runs on the wall clock: no growth pin)
+    assert "\n✗ Диск БД: вільно 3.0 ГБ з 100.0 ГБ (3 %), база 7 КБ, " in text
+
+
+def test_gzip_trailer_size_wraps_above_4_gib(tmp_path):
+    p = _backup(tmp_path / "b", NOW, 10)
+    assert script.gz_size(p) == 10
+    assert script.gz_size(p, ref=2**32 + 500) == 2**32 + 10  # a 4 GiB+ DB: lifted to the nearest multiple
+    assert script.gz_size(p, ref=20) == 10
+
+
+def test_disk_check_without_the_db_file(tmp_path, monkeypatch):
+    missing = str(tmp_path / "none.sqlite")
+    h = script.disk_check(missing, NOW)
+    assert h["db_bytes"] is None and h["growth"] is None and h["reasons"] == []
+    assert "файлу БД немає, приріст невідомий" in ch.describe_disk(h)
+    _backup(tmp_path / "backups", NOW - 5 * D, 1_000)
+    _backup(tmp_path / "backups", NOW - D, 9_192)
+    assert script.disk_check(missing, NOW)["growth"] == pytest.approx(2_048)  # backups alone still give the growth
+    assert script.brief_line(missing, tmp_path / "f.env", NOW) == (
+        "Здоров'я колекторів не перевірено: БД не відкрито (FileNotFoundError)."  # no extra disk line: space is fine
+    )
+    monkeypatch.setattr(script, "disk_usage", lambda _p: _usage(100 * G, 2 * G))
+    assert script.brief_line(missing, tmp_path / "f.env", NOW) == (
+        "Здоров'я колекторів не перевірено: БД не відкрито (FileNotFoundError). Диск БД: вільно менше 15 %; вільно "
+        "менше 5.0 ГБ — вільно 2.0 ГБ з 100.0 ГБ (2 %), файлу БД немає, +2 КБ/добу, місце закінчиться за ~1048576 дн."
+    )
+    monkeypatch.setattr(script, "disk_usage", shutil.disk_usage)  # the real call on a directory that is not there
+    gone = str(tmp_path / "no-such-dir" / "tradedesk.sqlite")
+    assert script.brief_line(gone, tmp_path / "f.env", NOW).endswith(" Місце на диску БД не перевірено (FileNotFoundError).")

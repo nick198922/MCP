@@ -35,6 +35,9 @@ yet is not "missing now": its run counts as an ordinary gap.
 
 ``assistant_snapshot`` writes a JSON file, not a table, so it has no :class:`Spec`: :func:`snapshot_line` checks the
 file's own ``asof_utc`` against twice the job's cadence (item 101 of the standing card).
+
+The DB file's size, the free space of its volume and the DB's growth over 7 days are checked by :func:`disk_health`
+(item 129): named when less than 15 % or 5 GB is free or the volume would fill within 60 days at the current growth.
 """
 
 from __future__ import annotations
@@ -358,6 +361,84 @@ def snapshot_line(asof_utc: Any, now: int, cadence_s: int, exists: bool = True) 
     if age <= SNAPSHOT_STALE_FACTOR * cadence_s:
         return None
     return f"Знімок асистента застарів: останній {fmt_ts(ts)}, {fmt_dur(age)} тому (оновлюється кожні {fmt_dur(cadence_s)})."
+
+
+# DB size and free disk (item 129 of the standing card). The collectors write 24/7 and the retention sweep
+# (collector/scheduler._retention_sweep) trims only seven tables, several of them never (0 days); a full volume stops
+# every write silently. The loader passes the DB file's size, the free / total bytes of its volume and, when it can, a
+# few (ts, bytes) points of the DB's size (the daily gzip backups record their uncompressed size); growth is the slope
+# between the oldest and the newest point of the last GROWTH_WINDOW_DAYS. The projection divides the free bytes by the
+# DB's growth only: backups and other files on the volume grow too, so the real runway is somewhat shorter.
+GIB = 1024**3
+MIB = 1024**2
+DISK_MIN_FREE_SHARE = 0.15  # free share of the DB's volume below which the brief names the disk
+DISK_MIN_FREE_BYTES = 5 * GIB  # free bytes below which the brief names the disk
+DISK_MIN_DAYS_LEFT = 60  # days to a full volume at the current DB growth below which the brief names the disk
+GROWTH_WINDOW_DAYS = 7
+
+
+def growth_per_day(points: Iterable[tuple[int, int]], now: int, window_days: int = GROWTH_WINDOW_DAYS) -> float | None:
+    """DB growth, bytes per day (negative after a prune or VACUUM): the slope between the oldest and the newest
+    ``(ts, bytes)`` point in ``[now - window_days, now]``. None with fewer than two such points or when they lie less
+    than a day apart."""
+    pts = sorted((int(t), int(b)) for t, b in points if now - window_days * DAY <= t <= now)
+    if len(pts) < 2 or pts[-1][0] - pts[0][0] < DAY:
+        return None
+    (t0, b0), (t1, b1) = pts[0], pts[-1]
+    return (b1 - b0) / ((t1 - t0) / DAY)
+
+
+def disk_health(db_bytes: int | None, free: int, total: int, growth: float | None) -> dict[str, Any]:
+    """The DB's disk check. ``db_bytes``: size of the DB file (None = no file); ``free`` / ``total``: bytes of its
+    volume; ``growth``: bytes per day (:func:`growth_per_day`, None = unknown). Keys: the inputs, ``share`` (free /
+    total), ``days_left`` (free / growth while the DB grows, else None) and ``reasons`` (the thresholds crossed:
+    'share', 'bytes', 'days'; empty = fine)."""
+    share = free / total if total > 0 else None
+    days_left = free / growth if growth is not None and growth > 0 else None
+    reasons = []
+    if share is not None and share < DISK_MIN_FREE_SHARE:
+        reasons.append("share")
+    if free < DISK_MIN_FREE_BYTES:
+        reasons.append("bytes")
+    if days_left is not None and days_left < DISK_MIN_DAYS_LEFT:
+        reasons.append("days")
+    return {
+        "db_bytes": db_bytes, "free": free, "total": total, "growth": growth, "share": share, "days_left": days_left,
+        "reasons": reasons,
+    }  # fmt: skip
+
+
+def fmt_bytes(n: float) -> str:
+    """Ukrainian size: '12 КБ', '820 МБ', '12.4 ГБ' (binary units)."""
+    if abs(n) >= GIB:
+        return f"{n / GIB:.1f} ГБ"
+    return f"{n / MIB:.0f} МБ" if abs(n) >= MIB else f"{n / 1024:.0f} КБ"
+
+
+def describe_disk(h: Mapping[str, Any]) -> str:
+    """The disk check in one Ukrainian sentence (for the report and the brief)."""
+    parts = [f"вільно {fmt_bytes(h['free'])} з {fmt_bytes(h['total'])}" + (f" ({_pct(h['share'])})" if h["share"] is not None else "")]
+    parts.append(f"база {fmt_bytes(h['db_bytes'])}" if h["db_bytes"] is not None else "файлу БД немає")
+    g = h["growth"]
+    if g is None:
+        parts.append("приріст невідомий")
+    else:
+        parts.append(f"{'+' if g >= 0 else '−'}{fmt_bytes(abs(g))}/добу")
+    if h["days_left"] is not None:
+        parts.append(f"місце закінчиться за ~{h['days_left']:.0f} дн")
+    return ", ".join(parts)
+
+
+def disk_line(h: Mapping[str, Any]) -> str | None:
+    """The brief's line on the DB's disk (plain text, Ukrainian), or None when no threshold is crossed."""
+    why = {
+        "share": f"вільно менше {_pct(DISK_MIN_FREE_SHARE)}",
+        "bytes": f"вільно менше {fmt_bytes(DISK_MIN_FREE_BYTES)}",
+        "days": f"при цьому темпі диск закінчиться менш ніж за {DISK_MIN_DAYS_LEFT} дн",
+    }
+    if not h["reasons"]:
+        return None
+    return f"Диск БД: {'; '.join(why[r] for r in h['reasons'])} — {describe_disk(h)}."
 
 
 def render(results: Iterable[Mapping[str, Any]], now: int, window_days: int = WINDOW_DAYS) -> str:

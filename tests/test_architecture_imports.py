@@ -11,6 +11,7 @@ matches anything fails too, so the list only shrinks.
 """
 
 import ast
+import functools
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -60,12 +61,13 @@ def _package(rel: str) -> list[str]:
     return parts[:-1]  # for `pkg/__init__.py` this is `pkg`, for `pkg/mod.py` it is `pkg` too
 
 
-def imported_modules(tree: ast.AST, rel: str) -> list[tuple[int, str]]:
-    """(line, dotted module) for every import anywhere in the file, incl. function-level ones; relative imports are
-    resolved against `rel`, and `from X import y` also yields `X.y` (catches `from tradedesk import execution`)."""
+def imported_modules(nodes: list[ast.AST], rel: str) -> list[tuple[int, str]]:
+    """(line, dotted module) for every import anywhere in the file (`nodes` = all of its `ast.walk`), incl.
+    function-level ones; relative imports are resolved against `rel`, and `from X import y` also yields `X.y` (catches
+    `from tradedesk import execution`)."""
     out = []
     pkg = _package(rel)
-    for node in ast.walk(tree):
+    for node in nodes:
         if isinstance(node, ast.Import):
             out += [(node.lineno, a.name) for a in node.names]
         elif isinstance(node, ast.ImportFrom):
@@ -88,10 +90,11 @@ def _dotted(node: ast.AST) -> str | None:
     return None
 
 
-def impure_calls(tree: ast.AST) -> list[tuple[int, str]]:
-    """(line, callee) for `open(`, `time.time(`, `datetime.now(`, `datetime.utcnow(` (any `*.datetime.now` alias too)."""
+def impure_calls(nodes: list[ast.AST]) -> list[tuple[int, str]]:
+    """(line, callee) for `open(`, `time.time(`, `datetime.now(`, `datetime.utcnow(` (any `*.datetime.now` alias too);
+    `nodes` = all of the file's `ast.walk`."""
     out = []
-    for node in ast.walk(tree):
+    for node in nodes:
         if not isinstance(node, ast.Call):
             continue
         name = _dotted(node.func)
@@ -104,14 +107,14 @@ def impure_calls(tree: ast.AST) -> list[tuple[int, str]]:
 
 def violations(rel: str, source: str) -> list[tuple[str, str, str, int]]:
     """(rule, rel, module or call, line) for one source file; `rel` is its path relative to src/."""
-    tree = ast.parse(source, filename=rel)
-    imports = imported_modules(tree, rel)
+    nodes = list(ast.walk(ast.parse(source, filename=rel)))  # walked once, read by both checks
+    imports = imported_modules(nodes, rel)
     out = []
     if rel.startswith("tradedesk/analytics/"):
         for line, mod in imports:
             if _matches(mod, ANALYTICS_FORBIDDEN_IMPORTS):
                 out.append(("analytics-import", rel, mod, line))
-        out += [("analytics-call", rel, name, line) for line, name in impure_calls(tree)]
+        out += [("analytics-call", rel, name, line) for line, name in impure_calls(nodes)]
     for lib, owners in NETWORK_IMPORT_OWNERS.items():
         if rel in owners or rel.startswith("tradedesk/analytics/"):  # analytics: already reported as analytics-import
             continue
@@ -131,12 +134,14 @@ def violations(rel: str, source: str) -> list[tuple[str, str, str, int]]:
     )
 
 
-def all_violations() -> list[tuple[str, str, str, int]]:
+@functools.cache
+def all_violations() -> tuple[tuple[str, str, str, int], ...]:
+    """One scan of src/ per process (~4 s), shared by the two tests below; src/ does not change during a run."""
     out = []
     for path in sorted(PKG.rglob("*.py")):
         rel = path.relative_to(SRC).as_posix()
         out += violations(rel, path.read_text(encoding="utf-8"))
-    return out
+    return tuple(out)
 
 
 def test_import_boundaries_hold():

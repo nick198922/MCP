@@ -22,13 +22,14 @@ import json
 import logging
 import os
 import random
-import resource
 import statistics
 import time
 from collections import Counter, defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from common_helpers import rss_mb
 
 from tradedesk.analytics.pm_calibration import HOUR_S, mde
 from tradedesk.analytics.pm_longdated import (
@@ -60,10 +61,6 @@ PRESCREEN = (0.01, 0.40)  # /prices-history band that triggers a /trades request
 Q_MAX_AGE = 6 * HOUR_S  # prices-history point age at t0 (fidelity 60 min)
 KEEP_S = DAY_S  # cache points in [t0 - 1 d, t0] per horizon
 G1_MIN, G2_MIN, G3_MAX = 3000, 0.70, 0.02
-
-
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 
 
 def _write(p: Path, obj: Any) -> None:

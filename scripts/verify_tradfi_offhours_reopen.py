@@ -19,7 +19,6 @@ import contextlib
 import io
 import json
 import math
-import resource
 import sys
 import time
 from collections import Counter
@@ -30,6 +29,7 @@ from typing import Any
 
 import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
 import numpy as np
+from common_helpers import rss_mb
 
 from tradedesk.analytics.tradfi_offhours import (
     MIN_MS,
@@ -54,10 +54,6 @@ from tradedesk.server import build_server
 
 UM = "data/futures/um"
 TODAY = date(2026, 10, 24)
-
-
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 
 
 class Fetcher:

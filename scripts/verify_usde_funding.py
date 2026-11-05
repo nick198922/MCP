@@ -20,7 +20,6 @@ import asyncio
 import json
 import logging
 import math
-import resource
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -28,6 +27,7 @@ from typing import Any
 
 import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
 import numpy as np
+from common_helpers import rss_mb
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -56,10 +56,6 @@ OCT = int(datetime(2026, 10, 1, tzinfo=UTC).timestamp() * 1000)
 USDE_LAG_MS = 2 * DAY_MS  # registered: DefiLlama stamp <= T - 2 d
 MDE_GATE = 0.25
 COST_APR = 0.003
-
-
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 
 
 def wr(p: Path, obj: Any) -> None:

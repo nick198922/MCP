@@ -16,7 +16,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import resource
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -29,6 +28,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import verify_s12_modules as m12s  # noqa: E402
 import verify_setup_passport as vsp  # noqa: E402
+from common_helpers import rss_mb  # noqa: E402
 
 from tradedesk.analytics import cycle_regime as cr  # noqa: E402
 from tradedesk.analytics import regime_side as rs  # noqa: E402
@@ -53,10 +53,6 @@ def emit(line: str = "") -> None:
     if OUT["fh"] is not None:
         OUT["fh"].write(line + "\n")
         OUT["fh"].flush()
-
-
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 
 
 # ---------------------------------------------------------------- data

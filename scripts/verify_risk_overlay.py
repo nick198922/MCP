@@ -22,7 +22,6 @@ import asyncio
 import hashlib
 import json
 import math
-import resource
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -31,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from common_helpers import rss_mb
 
 from tradedesk.analytics.listing_drift import symbol_eligible
 from tradedesk.analytics.per_asset import persistence
@@ -76,10 +76,6 @@ L: list[str] = []
 def emit(s: str = "") -> None:
     L.append(s)
     print(s, flush=True)
-
-
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 
 
 def d2ms(d: date) -> int:

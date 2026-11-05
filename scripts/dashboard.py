@@ -9296,12 +9296,19 @@ def block_journal_open(real: list[dict], live: dict | None, now: float) -> str:
     return "".join(out)
 
 
+def _fold_id(title: str) -> str:
+    """The default section id of a fold, from its title (titles carry no live numbers, so the id is stable across
+    refreshes): word characters lowercased, the rest collapsed to «-». Only word characters, so it is safe in an
+    attribute."""
+    return "fold-" + (re.sub(r"\W+", "-", title.lower()).strip("-") or "x")
+
+
 def _fold(title: str, key: str, summary: str, body: str, extra: str = "", sid: str = "") -> str:
     """A collapsed section: the heading and a one-line summary stay visible, the body opens on a tap. `summary` and
-    `body` are trusted HTML."""
-    ident = f" id='{sid}'" if sid else ""
+    `body` are trusted HTML. The section always has an id (`sid`, else `_fold_id(title)`), so the keep-open scripts
+    restore an opened fold by it rather than by its summary line, which carries live numbers (item 85)."""
     return (
-        f"<section class='wide fold'{ident}><details><summary>{_h2(title, key, extra)}<span class='fs'>{summary}</span></summary>"
+        f"<section class='wide fold' id='{sid or _fold_id(title)}'><details><summary>{_h2(title, key, extra)}<span class='fs'>{summary}</span></summary>"
         f"<div class='fb'>{body}</div></details></section>"
     )
 

@@ -499,6 +499,8 @@ def make_transports(state: State) -> dict:
         # puts its own transports here).
         "hyperliquid:stats": httpx.MockTransport(not_mocked),
         "polymarket:data": httpx.MockTransport(not_mocked),
+        # the assistant snapshot's `stablecoins` section (tests/test_stablecoin_supply.py serves the real shape)
+        "defillama:stablecoins": httpx.MockTransport(not_mocked),
         "forexfactory": httpx.MockTransport(forexfactory),
         "deribit": httpx.MockTransport(deribit),
         "hyperliquid": httpx.MockTransport(hyperliquid),

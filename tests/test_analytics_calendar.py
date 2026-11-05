@@ -42,6 +42,16 @@ def test_classify_expiry(exp, kind):
     assert classify_expiry(exp, NOW) == kind
 
 
+def test_classify_expiry_ignores_the_distance_to_expiry():
+    """The docstring's contract (analytics-direct-tests review, item 2): the class is by date and hour only, so a
+    non-Friday expiry a year away is still «daily» and `now` changes nothing."""
+    far = datetime(2027, 11, 4, 8, tzinfo=UTC)  # a Thursday, a year after NOW
+    assert classify_expiry(far, NOW) == "daily"
+    for now in (NOW, datetime(2020, 1, 1, tzinfo=UTC), datetime(2030, 1, 1, tzinfo=UTC)):
+        assert classify_expiry(datetime(2026, 12, 25, 8, tzinfo=UTC), now) == "quarterly"
+        assert classify_expiry(far, now) == "daily"
+
+
 def test_funding_schedule_mixed_venues():
     now = datetime(2026, 11, 5, 3, 30, tzinfo=UTC)
     out = funding_schedule(now, 10)  # window ends 13:30

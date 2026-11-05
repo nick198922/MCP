@@ -8798,7 +8798,8 @@ FC_CAVEAT = (
     "Це ймовірності, які закладають опціони Deribit (усмішка експірації ≈ 7 днів), а не реальні шанси і не порада. "
     "Премія за волатильність сама по собі має робити діапазони влучними частіше, ніж оцінено: журнал це перевіряє "
     "(гіпотеза, перевагу не показано). Прогнози різних днів на одну експірацію мають спільний результат і корельовані: "
-    "розмір вибірки — кількість експірацій (n_expiries), а не прогнозів; мала n — висновку немає. Кліматологія — частота "
+    "розмір вибірки — кількість дат експірації (n_expiry_dates: BTC і ETH однієї дати рухаються разом), а не прогнозів; "
+    "n_expiries (актив × експірація) — лише верхня межа; мала n — висновку немає. Кліматологія — частота "
     "подій у цій самій вибірці, відома лише заднім числом."
 )
 
@@ -9848,7 +9849,7 @@ def block_forecasts(rows: list[dict] | None) -> str:
         _tile(
             "Експірацій",
             _nf(s["n_expiries"]),
-            "розмір вибірки: актив × експірація, результат спільний",
+            f"актив × експірація, верхня межа вибірки · дат експірації {_nf(s['n_expiry_dates'])} — розмір вибірки",
             help="fc_expiries",
             tone="warn" if small else "",
             badge="замало для висновку" if small else "",
@@ -11035,17 +11036,34 @@ def demo_version_stats(trades: list[dict], now_ms: float, epochs: tuple = DEMO_E
     }
 
 
-def demo_refusals(audit: list[dict], now_ms: float) -> list[dict]:
+def demo_known_rule(v: object) -> bool:
+    """True when a guard / selection message matches a known rule (_DEMO_REASONS). The exception text of a failed
+    entry (network, «no quote for …»), which demo_trader also writes as 'refused', does not."""
+    s = "" if v is None else _clean(v, 200)
+    return bool(s) and any(rx.search(s) for rx, _ in _DEMO_REASONS)
+
+
+def _demo_msgs(a: dict) -> list | None:
+    """The 'violations' list of an exec_audit row's payload (untrusted), or None when it is unreadable / absent."""
+    try:
+        p = json.loads(a.get("payload") or "{}")
+    except (TypeError, ValueError):
+        return None
+    vs = p.get("violations") if isinstance(p, dict) else None
+    return vs if isinstance(vs, list) else None
+
+
+def demo_refusals(audit: list[dict], now_ms: float, rules_only: bool = False) -> list[dict]:
     """exec_audit 'refused' / 'skipped' rows grouped by reason: {'reason', 'refused', 'skipped', 'week', 'last_ts'},
-    most frequent first. A row counts once per reason even when its message list repeats it."""
+    most frequent first. A row counts once per reason even when its message list repeats it. ``rules_only`` keeps only
+    the messages of known rules (demo_known_rule): entry errors and rows without a reason are left out."""
     groups: dict[str, dict] = {}
     for a in audit:
-        try:
-            p = json.loads(a.get("payload") or "{}")
-        except (TypeError, ValueError):
-            p = {}
-        vs = p.get("violations") if isinstance(p, dict) else None
-        labels = {demo_reason(v) for v in vs} if isinstance(vs, list) and vs else {"причину не записано"}
+        vs = _demo_msgs(a)
+        if rules_only:
+            labels = {demo_reason(v) for v in vs or () if demo_known_rule(v)}
+        else:
+            labels = {demo_reason(v) for v in vs} if vs else {"причину не записано"}
         ts = _num(a.get("ts")) or 0.0
         kind = "refused" if a.get("kind") == "refused" else "skipped"
         for lab in labels:
@@ -11223,8 +11241,11 @@ def block_demo_open(trades: list[dict], now: float) -> str:
         else:
             stop_s = _e(_px(t.get("stop")))
             risk_s = _e(_nf(risk)) if risk is not None else "—"
+        # opened_ts is the order placement (then the fill); without it the signal bar's time, which is not an opening
+        sig = _demo_at(t.get("signal_ts")) if _ts(t.get("signal_ts")) is not None else ""
+        at = _demo_at(t.get("opened_ts")) if opened is not None else f"сигнал {sig}" if sig else "—"
         out.append(
-            f"<tr><td class='num'>{_e(_demo_at(t.get('opened_ts') or t.get('signal_ts')))}</td>"
+            f"<tr><td class='num'>{_e(at)}</td>"
             f"<td>{journal_instrument(sym, None)}</td>"
             f"<td>{_e(_clean(t.get('setup'), 12))} {_e(_clean(t.get('timeframe'), 6))}</td>"
             f"<td>{_e(DEMO_STATUS_UA.get(status, _clean(status, 20)))}</td>"
@@ -11237,13 +11258,24 @@ def block_demo_open(trades: list[dict], now: float) -> str:
 
 
 def block_demo_violations(audit: list[dict] | None, now: float) -> str:
-    """Guard refusals of the last 7 days by the rule they broke (exec_audit 'refused'); always shown, short."""
+    """Guard refusals of the last 7 days by the rule they broke (exec_audit 'refused'); always shown, short. Refusals
+    with no known rule (an entry error, no reason written) are not a broken rule: only their count is named."""
     if audit is None:
         return _demo_no_table("exec_audit")
     now_ms = now * 1000
-    groups = demo_refusals(_demo_refused_since(audit, now_ms - DEMO_WEEK_MS), now_ms)
-    if not groups:
+    week = _demo_refused_since(audit, now_ms - DEMO_WEEK_MS)
+    groups = demo_refusals(week, now_ms, rules_only=True)
+    n_err = sum(1 for a in week if not any(demo_known_rule(v) for v in _demo_msgs(a) or ()))
+    err = (
+        f"<p class='note'>Не правило, а помилка входу або причину не записано: {n_err} відмов(и) за 7 днів; "
+        "у таблиці їх немає, причини — у «Відмови guard за причинами».</p>"
+        if n_err
+        else ""
+    )
+    if not week:
         return _empty("За 7 днів guard не відхилив жодного сигналу.")
+    if not groups:
+        return _empty("За 7 днів guard не відхилив жодного сигналу за правилом.") + err
     rows = ["<div class='scroll'><table><tr><th>Правило</th><th class='num'>Разів</th><th>Останній раз (Київ)</th></tr>"]
     for g in groups[:DEMO_VIOLATIONS_SHOWN]:
         cls = " class='bad'" if g["reason"] in DEMO_HALT_REASONS else ""
@@ -11251,7 +11283,7 @@ def block_demo_violations(audit: list[dict] | None, now: float) -> str:
     rows.append("</table></div>")
     if len(groups) > DEMO_VIOLATIONS_SHOWN:
         rows.append(f"<p class='note'>Ще правил: {len(groups) - DEMO_VIOLATIONS_SHOWN}; усі — у «Відмови guard за причинами».</p>")
-    return "".join(rows)
+    return "".join(rows) + err
 
 
 def demo_option_legs_note(legs: object) -> str:

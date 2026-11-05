@@ -2,7 +2,8 @@
 
 All changes are decimals (0.10 = +10 %). Daily DEX volume and fees are single-day figures and noisy: the 7d/30d
 change compares the latest 24h with the one day 7/30 days ago, so `week_over_week` (sum of the last 7 days vs the
-7 days before) is given as the steadier reading.
+7 days before) is given as the steadier reading. Stablecoin supply (`stablecoin_total`, `stablecoin_asset`) comes from
+the separate stablecoins.llama.fi payloads.
 """
 
 from __future__ import annotations
@@ -92,6 +93,59 @@ def tvl_summary(rows: list[Any], now_ts: float | None = None) -> dict[str, Any] 
         out["age_days"] = round(age / DAY, 2)
         out["stale"] = age > STALE_AFTER
     return out
+
+
+def _peg_usd(x: Any) -> float | None:
+    """`{"peggedUSD": n}` -> n (USD-pegged supply in USD), else None."""
+    return _f(x.get("peggedUSD")) if isinstance(x, dict) else None
+
+
+def stablecoin_total(chart: list[Any], now_ts: float | None = None) -> dict[str, Any] | None:
+    """`/stablecoincharts/all` rows -> latest total supply (USD, all peg types summed) and 7d/30d change.
+
+    `date` arrives as a string of unix seconds; rows without a numeric date or any numeric USD value are skipped.
+    Same gap and staleness rules as `tvl_summary`.
+    """
+    rows = []
+    for r in chart:
+        if not isinstance(r, dict) or not isinstance(r.get("totalCirculatingUSD"), dict):
+            continue
+        try:
+            ts = int(float(r.get("date")))  # type: ignore[arg-type]
+        except (TypeError, ValueError, OverflowError):
+            continue
+        vals = [v for v in (_f(x) for x in r["totalCirculatingUSD"].values()) if v is not None]
+        if vals:
+            rows.append({"date": ts, "tvl": sum(vals)})
+    return tvl_summary(rows, now_ts)
+
+
+def stablecoin_asset(assets: list[Any], symbol: str) -> dict[str, Any] | None:
+    """One USD-pegged stablecoin from `/stablecoins` rows: circulating USD and changes vs DefiLlama's own snapshots
+    1, 7 and 30 days ago (`circulatingPrevDay/Week/Month`). When several assets share the symbol, the largest wins."""
+    sym = symbol.upper()
+    cands = [
+        a
+        for a in assets
+        if isinstance(a, dict)
+        and str(a.get("symbol") or "").strip().upper() == sym
+        and a.get("pegType") == "peggedUSD"
+        and _peg_usd(a.get("circulating")) is not None
+    ]
+    if not cands:
+        return None
+    a = max(cands, key=lambda x: _peg_usd(x["circulating"]) or 0.0)
+    cur = _peg_usd(a["circulating"])
+    price = _f(a.get("price"))
+    return {
+        "symbol": sym,
+        "defillama_id": str(a.get("id")),
+        "usd": round(cur, 2) if cur is not None else None,
+        "price": None if price is None else round(price, 6),
+        "change_1d": _ratio(cur, _peg_usd(a.get("circulatingPrevDay"))),
+        "change_7d": _ratio(cur, _peg_usd(a.get("circulatingPrevWeek"))),
+        "change_30d": _ratio(cur, _peg_usd(a.get("circulatingPrevMonth"))),
+    }
 
 
 def overview_summary(body: dict[str, Any]) -> dict[str, Any] | None:

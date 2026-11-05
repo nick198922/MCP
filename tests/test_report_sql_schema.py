@@ -321,5 +321,5 @@ def test_checkpoint_loaders(db):
     """``load_inputs`` turns a failed query into an ``errors`` line: none on the real schema, every part read."""
     inp = cr.load_inputs(str(db), int(NOW.timestamp() * 1000))
     assert not [e for e in inp["errors"] if "запит" in e or "БД" in e], inp["errors"]
-    assert inp["demo_trades"] == [] and inp["rec_paper"] == [] and inp["pm_rows"] == []
+    assert inp["demo_trades"] == [] and inp["rec_paper"] == [] and inp["pm_rows"] == [] and inp["plans"] == []
     assert set(inp["carry"]) == {"A", "B"} and inp["condor_t0"] is None

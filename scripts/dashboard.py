@@ -1488,17 +1488,26 @@ HELP_JS = """
 # sessionStorage, and the reloaded page restores them once. A fold's summary line carries live numbers, so folds
 # are keyed by the section id (`_fold(..., sid=...)`): a new snapshot must not close what the owner opened.
 # Without JS the <noscript> meta refresh in the head reloads the page as before (sections then fold back).
+# A page with a POST form marked `KEEP_MARK` (the «Оновити угоди» button, item 89) gets the script too, without the
+# timer: on submit it stores the same state under the page the POST redirects to (the attribute's value), and the
+# redirected page, and every reload while the run lasts, restore it.
 REFRESH_MARK = "<meta name='td-refresh'"
+KEEP_MARK = " data-keep='"
 KEEP_OPEN_JS = """
 (function () {
-  var m = document.querySelector("meta[name='td-refresh']"); if (!m) return;
-  var s = parseInt(m.content, 10) || 60, k = 'td-keep:' + location.pathname + location.search;
+  var m = document.querySelector("meta[name='td-refresh']"), k = 'td-keep:' + location.pathname + location.search;
   function all() { return document.querySelectorAll('details'); }
   function keys(ds) { var n = Object.create(null); return Array.prototype.map.call(ds, function (d) {
     var sm = d.querySelector(':scope > summary'), p = d.parentElement;
     var b = d.id || (p && p.id && p.classList.contains('fold') ? p.id : '') || (sm ? sm.textContent.trim() : '');
     n[b] = (n[b] || 0) + 1; return b + '#' + n[b];
   }); }
+  function save(key) {
+    try {
+      var o = {}, ds = all(); keys(ds).forEach(function (x, i) { o[x] = ds[i].open; });
+      sessionStorage.setItem(key, JSON.stringify({ open: o, y: scrollY }));
+    } catch (e) {}
+  }
   try {
     var st = JSON.parse(sessionStorage.getItem(k) || 'null'); sessionStorage.removeItem(k);
     if (st && st.open) {
@@ -1508,13 +1517,12 @@ KEEP_OPEN_JS = """
       scrollTo(0, +st.y || 0);
     }
   } catch (e) {}
-  setTimeout(function () {
-    try {
-      var o = {}, ds = all(); keys(ds).forEach(function (x, i) { o[x] = ds[i].open; });
-      sessionStorage.setItem(k, JSON.stringify({ open: o, y: scrollY }));
-    } catch (e) {}
-    location.reload();
-  }, s * 1000);
+  addEventListener('submit', function (e) {
+    var t = e.target && e.target.getAttribute && e.target.getAttribute('data-keep'); if (t) save('td-keep:' + t);
+  });
+  if (!m) return;
+  var s = parseInt(m.content, 10) || 60;
+  setTimeout(function () { save(k); location.reload(); }, s * 1000);
 })();
 """
 
@@ -2140,8 +2148,9 @@ def _h2(title: str, key: str = "", extra: str = "") -> str:
 
 
 def with_help(page: str) -> str:
-    """Add the tooltip script to a rendered assistant page (and, on a self-refreshing page, KEEP_OPEN_JS)."""
-    js = HELP_JS + (KEEP_OPEN_JS if REFRESH_MARK in page else "")
+    """Add the tooltip script to a rendered assistant page (and, on a self-refreshing page or one with a
+    state-keeping POST form, KEEP_OPEN_JS)."""
+    js = HELP_JS + (KEEP_OPEN_JS if REFRESH_MARK in page or KEEP_MARK in page else "")
     return page.replace("</body>", f"<script>{js}</script></body>", 1)
 
 
@@ -9860,12 +9869,12 @@ def render_journal(
     caveats once at the end."""
     p = params or {"page": 1}
     try:
-        bar = block_journal_refresh(refresh or {}, now)
+        bar, polling = block_journal_refresh(refresh or {}, now), refresh_running(refresh or {}, now)
     except Exception:  # noqa: BLE001 - an odd status file must not take the page down
-        bar = block_journal_refresh({}, now)
+        bar, polling = block_journal_refresh({}, now), False
     head = (
         "<!doctype html><html lang='uk'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-        f"<title>tradedesk — журнал</title><style>{CSS}{BRIEF_CSS}{JOURNAL_CSS}</style></head><body>"
+        f"{_refresh_head(REFRESH_POLL_S) if polling else ''}<title>tradedesk — журнал</title><style>{CSS}{BRIEF_CSS}{JOURNAL_CSS}</style></head><body>"
     )
     caveats = "<div class='caveat'><b>Застереження</b><ul>" + "".join(f"<li>{_e(c)}</li>" for c in JOURNAL_CAVEATS) + "</ul></div>"
     where = f" <code>{_e(path)}</code>" if path else ""
@@ -9988,10 +9997,12 @@ def journal_page(query: str = "", now: float | None = None) -> str:
 
 # The «Оновити угоди» button: POST /journal/refresh starts scripts/journal_refresh.py (Bybit + Hyperliquid imports,
 # read-only, duplicates skipped) in the background with the project's uv; the page shows its status file and reloads
-# itself while it runs. One run at a time (the script's lock) and not more often than once a minute.
+# itself every REFRESH_POLL_S while it runs (`_refresh_head`, so KEEP_OPEN_JS keeps the opened folds and the scroll;
+# the form's KEEP_MARK saves them before the POST). One run at a time (the script's lock), not more than once a minute.
 REFRESH_STATUS = STATE / "journal-refresh.json"
 REFRESH_STALE_S = 20 * 60  # a 'running' status older than this is a crashed run: a new one may start
 REFRESH_MIN_GAP_S = 60
+REFRESH_POLL_S = 4
 UV = HOME / ".local" / "bin" / "uv"
 VENUE_UA = {"bybit": "Bybit", "hyperliquid": "Hyperliquid"}
 
@@ -10037,7 +10048,7 @@ def block_journal_refresh(st: dict, now: float) -> str:
     """The refresh button and the last run's result (our own status file: venue names, counts, short reasons)."""
     running = refresh_running(st, now)
     btn = (
-        "<form method='post' action='/journal/refresh' class='jr'>"
+        f"<form method='post' action='/journal/refresh' class='jr'{KEEP_MARK}/journal'>"  # the POST redirects to /journal
         f"<button type='submit'{' disabled' if running else ''}>{'⏳ Оновлюю…' if running else '🔄 Оновити угоди'}</button>"
     )
     if running:
@@ -10045,7 +10056,7 @@ def block_journal_refresh(st: dict, now: float) -> str:
         done = [f"{VENUE_UA.get(k, k)} ✓" for k, v in (st.get("venues") or {}).items() if isinstance(v, dict) and v.get("ok")]
         if done:
             msg += " · " + ", ".join(done)
-        line = f"<span class='mut'>{_e(msg)}</span><script>setTimeout(function () {{ location.replace('/journal'); }}, 4000);</script>"
+        line = f"<span class='mut'>{_e(msg)}</span>"  # the reload: `_refresh_head` in render_journal
     elif st.get("state") in ("done", "error"):
         parts = []
         for k in ("bybit", "hyperliquid"):

@@ -10,7 +10,8 @@ Read-only and offline: the text is built (apart from the collector-health line) 
 string from the snapshot is untrusted and HTML-escaped for Telegram. The message is short (owner 22.10: a long text in
 Telegram is hard to read): BTC and ETH with the 24 h change, DVOL with its 1-year percentile, one «Режим циклу» line
 for BTC (section ``cycle``, the cycle_regime tool, labelled «контекст, не сигнал»; when yesterday's state differs from
-the day before, a separate short message follows the brief: `cycle_change`), the 1-3 most important
+the day before, a separate short message follows the brief: `cycle_change`), one stablecoin-supply line (section
+``stablecoins``, the stablecoin_supply tool: total with its 7 / 30-day change, «описово, не сигнал»), the 1-3 most important
 items of the day, one line with BTC's risk-neutral probabilities to the month expiry (inside ±1σ and in the «Бриф»
 tab's two tail ranges, labelled «ризик-нейтральна»; it replaces the ±1σ item; omitted without ``chain`` / ``em_month``),
 one line with the state of the paper recommendation (section ``paper_rec``: «актуальна / змінилась /
@@ -504,6 +505,29 @@ def _cycle(snap: dict, now: float) -> list[str]:
         return []
 
 
+def _stablecoins(snap: dict, now: float) -> list[str]:
+    """One descriptive liquidity line under the market lines (section ``stablecoins``: stablecoin_supply, DefiLlama):
+    total stablecoin supply with its 7 / 30-day change, labelled «описово, не сигнал» (no backtest here ties supply to
+    prices or funding); the date of the point is added when the series is stale. [] without data; never raises."""
+    try:
+        tot = (db._data(snap, "stablecoins") or {}).get("total")
+        usd = db._num(tot.get("usd")) if isinstance(tot, dict) else None
+        if usd is None or usd <= 0:
+            return []
+        parts = [
+            f"{label} {db._pc(db._num(tot.get(k)) * 100, 1)}"
+            for label, k in (("7 дн", "change_7d"), ("30 дн", "change_30d"))
+            if db._num(tot.get(k)) is not None
+        ]
+        txt = f"Стейблкоїни {_musd(usd)}" + (f" ({', '.join(parts)})" if parts else "")
+        ts = db._num(tot.get("as_of_ts"))
+        if tot.get("stale") is True and ts is not None:
+            txt += f", дані на {datetime.fromtimestamp(ts, timezone.utc):%d.%m}"  # noqa: UP017
+        return [_h(f"{txt} · описово, не сигнал")]
+    except Exception:  # noqa: BLE001 - an odd section only drops this line
+        return []
+
+
 CYCLE_STATE_UA = {"bottom": "дно", "accumulation": "накопичення", "overheat": "перегрів", "growth": "ріст", "decline": "падіння"}
 CYCLE_CHANGE_NOTE = "Контекст, не сигнал: стани зафіксовано в картці до даних і ще не перевірені на історії."
 
@@ -576,7 +600,7 @@ def build_brief(snap: dict | None, now: float, err: str | None = None, short: bo
         if short:
             # the range and paper recommendation lines sit with the day's items (no blank before them)
             blocks = (
-                ("", lambda s, n: _market_short(s, n) + _cycle(s, n)),
+                ("", lambda s, n: _market_short(s, n) + _cycle(s, n) + _stablecoins(s, n)),
                 ("", _day_short),
                 ("", lambda s, n: _flows(s, n, short=True)),
                 ("", _my_options),
@@ -584,7 +608,7 @@ def build_brief(snap: dict | None, now: float, err: str | None = None, short: bo
             )
         else:
             blocks = (
-                ("Ринок", lambda s, n: _market(s, n) + _cycle(s, n)),
+                ("Ринок", lambda s, n: _market(s, n) + _cycle(s, n) + _stablecoins(s, n)),
                 ("Головне сьогодні", lambda s, n: _key(s, n) + _paper(s, n)),
                 ("Потоки BTC · описово, не сигнал", _flows),
                 ("Мої опціони Bybit", _my_options),

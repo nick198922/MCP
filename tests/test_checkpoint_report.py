@@ -523,9 +523,7 @@ def test_script_survives_a_missing_db(tmp_path):
 
 
 # Every table a forward block of the report reads. A DB of an older schema may lack one, a fresh one has it empty.
-FORWARD_TABLES = (
-    "demo_trade", "cp_position", "cp_log", "cp_cycle", "rec_paper", "pm_gap_snapshot", "pm_gap_outcome", "option_leg_snapshot",
-)  # fmt: skip
+FORWARD_TABLES = script.FORWARD_TABLES
 BLOCKS = (
     "Демо S3", "Демо S40", "Папір carry A (cc-paper)", "Папір carry B (pp-paper)", "A v2", "Polymarket v1", "v2-g", "Кондор",
     "Папір assistant_paper",
@@ -552,10 +550,24 @@ def test_script_survives_a_missing_or_empty_forward_table(tmp_path, monkeypatch,
         demo = "| 0 |" if table == "demo_trade" else "| 31 | -0.050 |"
         assert f"Демо S3 v3 (4h + 1d) {demo}" in text  # the dropped / emptied block shows no data, the others keep theirs
         assert ("(д) пройдено" in text) == (table != "cp_cycle")
-        missing_snapshots = table == "option_leg_snapshot" and how == "drop" and wall_ms == AFTER_T0
-        assert ("Примітка: option_leg_snapshot: запит не вдався" in text) == missing_snapshots  # named, not a traceback
+        # an absent table is named as absent (not as a failed query, not silently as zero rows); an empty one is not
+        missing = [ln for ln in text.splitlines() if "таблиці немає в БД" in ln]
+        assert missing == ([f"Примітка: {table}: таблиці немає в БД (старіша схема чи інша БД), блок без даних"] if how == "drop" else [])
+        assert "запит не вдався" not in text  # after T0 the condor loader is not even called without its table
         assert "T0 ще не зафіксовано" in text
     assert Path(db).read_bytes() == before  # read-only (mode=ro): nothing written
+
+
+def test_script_without_the_schema_names_failed_queries_not_absent_tables(tmp_path):
+    db = tmp_path / "garbage.sqlite"
+    db.write_bytes(b"not a sqlite database" * 100)  # opens read-only, but no query (not even sqlite_master) succeeds
+    inp = script.load_inputs(str(db), AFTER_T0)
+    assert not any("таблиці немає" in e for e in inp["errors"])  # unknown schema: no claim that a table is absent
+    assert any(e.startswith("demo_trade: запит не вдався") for e in inp["errors"])
+    assert any(e.startswith("option_leg_snapshot: запит не вдався") for e in inp["errors"])  # the condor branch still tries
+    text = cp.render(cp.build(inp, AFTER_T0))
+    for name in BLOCKS:
+        assert name in text
 
 
 def test_at_date_is_end_of_day_and_capped():

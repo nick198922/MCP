@@ -37,6 +37,11 @@ from tradedesk.collector.carry_paper_engine import PARAMS_A  # noqa: E402
 DEFAULT_DB = "/var/lib/tradedesk-mcp/tradedesk.sqlite"
 BENCH = ROOT / "docs" / "paper" / "bench.json"
 CARRY_KINDS = ("side", "funding", "mark", "close", "event")
+# Every table a forward block reads. The migrations create them all, so an absent one means an older schema or another
+# DB file: the report names it instead of showing the block as if it merely had no rows yet.
+FORWARD_TABLES = (
+    "demo_trade", "cp_position", "cp_log", "cp_cycle", "rec_paper", "pm_gap_snapshot", "pm_gap_outcome", "option_leg_snapshot",
+)  # fmt: skip
 
 
 def connect_ro(db: str) -> sqlite3.Connection:
@@ -121,6 +126,12 @@ def load_inputs(db: str, now_ms: int) -> dict[str, Any]:
     except (sqlite3.Error, OSError) as e:
         inp["errors"].append(f"БД {db} не відкрито ({type(e).__name__})")
         return inp
+    names: set[str] | None = None  # None: the schema could not be listed, the loaders below name the failure
+    try:
+        names = _tables(con)
+        inp["errors"] += [f"{t}: таблиці немає в БД (старіша схема чи інша БД), блок без даних" for t in FORWARD_TABLES if t not in names]
+    except sqlite3.Error:
+        pass
     try:
         loaders = (
             ("demo_trade", "demo_trades", lambda: load_demo(con)),
@@ -142,7 +153,8 @@ def load_inputs(db: str, now_ms: int) -> dict[str, Any]:
         inp["errors"].append(f"pm_gap: запит не вдався ({type(e).__name__})")
     cut = datetime(EARLIEST_T0.year, EARLIEST_T0.month, EARLIEST_T0.day, ENTRY_CUTOFF_HOUR_UTC, tzinfo=UTC)
     now = datetime.fromtimestamp(now_ms / 1000, UTC)
-    if now >= cut:  # the registration forbids reading the condor snapshots before T0
+    # The registration forbids reading the condor snapshots before T0; without the table there is nothing to read (named above).
+    if now >= cut and (names is None or "option_leg_snapshot" in names):
         try:
             import condor_forward_costs as cfc  # noqa: PLC0415 - its read-only T0 detection and loader
 

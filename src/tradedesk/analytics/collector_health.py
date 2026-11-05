@@ -272,8 +272,9 @@ def alarms(results: Iterable[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
 
 def fmt_dur(seconds: float) -> str:
     """Ukrainian duration: '45 хв', '6 год', '2.5 дн'."""
-    if seconds < HOUR:
-        return f"{max(1, round(seconds / MINUTE))} хв"
+    minutes = max(1, round(seconds / MINUTE))
+    if minutes < 60:  # 3570-3599 s round to 60 minutes: shown as '1 год', not '60 хв'
+        return f"{minutes} хв"
     if seconds < 2 * DAY:
         return f"{seconds / HOUR:.0f} год"
     return f"{seconds / DAY:.1f} дн"

@@ -522,6 +522,42 @@ def test_script_survives_a_missing_db(tmp_path):
     assert "Примітка: БД" in text and "Демо S3" in text
 
 
+# Every table a forward block of the report reads. A DB of an older schema may lack one, a fresh one has it empty.
+FORWARD_TABLES = (
+    "demo_trade", "cp_position", "cp_log", "cp_cycle", "rec_paper", "pm_gap_snapshot", "pm_gap_outcome", "option_leg_snapshot",
+)  # fmt: skip
+BLOCKS = (
+    "Демо S3", "Демо S40", "Папір carry A (cc-paper)", "Папір carry B (pp-paper)", "A v2", "Polymarket v1", "v2-g", "Кондор",
+    "Папір assistant_paper",
+)  # fmt: skip
+AFTER_T0 = cp._ms(2026, 11, 20, 12)  # the condor branch reads option_leg_snapshot only after its T0
+
+
+@pytest.mark.parametrize("how", ["drop", "empty"])
+@pytest.mark.parametrize("table", FORWARD_TABLES)
+def test_script_survives_a_missing_or_empty_forward_table(tmp_path, monkeypatch, capsys, table, how):
+    db = _db(tmp_path)
+    con = sqlite3.connect(db)
+    assert script._tables(con) >= set(FORWARD_TABLES)  # the migrations create them all: the guard covers real tables
+    con.execute(f"DROP TABLE {table}" if how == "drop" else f"DELETE FROM {table}")
+    con.commit()
+    con.close()
+    before = Path(db).read_bytes()
+    for argv, wall_ms in ((["--date", "2026-11-02"], NOW), ([], AFTER_T0)):
+        monkeypatch.setattr(script, "time", type("Clock", (), {"time": staticmethod(lambda w=wall_ms: w / 1000)}))
+        assert script.main(["--db", db, *argv]) == 0
+        text = capsys.readouterr().out
+        for name in BLOCKS:  # every other block is still printed
+            assert name in text
+        demo = "| 0 |" if table == "demo_trade" else "| 31 | -0.050 |"
+        assert f"Демо S3 v3 (4h + 1d) {demo}" in text  # the dropped / emptied block shows no data, the others keep theirs
+        assert ("(д) пройдено" in text) == (table != "cp_cycle")
+        missing_snapshots = table == "option_leg_snapshot" and how == "drop" and wall_ms == AFTER_T0
+        assert ("Примітка: option_leg_snapshot: запит не вдався" in text) == missing_snapshots  # named, not a traceback
+        assert "T0 ще не зафіксовано" in text
+    assert Path(db).read_bytes() == before  # read-only (mode=ro): nothing written
+
+
 def test_at_date_is_end_of_day_and_capped():
     assert script.at_date("2026-11-01", NOW) == cp._ms(2026, 11, 2) - 1
     assert script.at_date("2027-03-01", NOW) == NOW  # a future date cannot open an embargo

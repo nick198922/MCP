@@ -41,7 +41,13 @@ SHADOW_TAG = "src:demo-shadow"  # execution/demo_trader.py: one plan per setup s
 
 
 def _iso(ts: int | None) -> str | None:
-    return None if ts is None else datetime.fromtimestamp(ts, UTC).isoformat(timespec="seconds")
+    """ISO-8601 UTC of unix seconds; the raw number as a string when it is out of the datetime range (e.g. ms passed)."""
+    if ts is None:
+        return None
+    try:
+        return datetime.fromtimestamp(ts, UTC).isoformat(timespec="seconds")
+    except (ValueError, OverflowError, OSError):
+        return str(ts)
 
 
 def _view(p: dict[str, Any]) -> dict[str, Any]:

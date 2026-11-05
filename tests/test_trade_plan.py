@@ -262,6 +262,33 @@ async def test_plan_add_validation(tmp_path):
         await rt.aclose()
 
 
+async def test_plan_add_expires_in_ms_is_an_error_envelope(tmp_path):
+    # BACKLOG 6.18: a horizon in milliseconds used to raise `ValueError: year ... out of range` from `_iso`
+    rt = _rt(tmp_path)
+    srv, _ = build_server(rt)
+    base = dict(exchange="binance", symbol="BTC/USDT:USDT", instrument="perp", side="long", entry_type="market", verdict="enter")
+    try:
+        for bad in (_ts(24) * 1000, 1_800_000_000_000, 10**30):
+            out = await _call(srv, "plan_add", **base, entry=100.0, stop=98.0, target=105.0, expires_ts=bad)
+            assert out["ok"] is False and out["missing"][0]["reason"] == "invalid_input", bad
+            assert f"got {bad})" in out["missing"][0]["detail"]
+        await rt.store.init()
+        assert await rt.store.plan_list() == []
+        good = await _call(srv, "plan_add", **base, entry=100.0, stop=98.0, target=105.0, expires_ts=_ts(24))
+        assert good["ok"] is True and good["data"]["expires"] == datetime.fromtimestamp(_ts(24), UTC).isoformat(timespec="seconds")
+    finally:
+        await rt.aclose()
+
+
+def test_iso_falls_back_to_the_raw_number():
+    from tradedesk.tools.trade_plan import _iso
+
+    assert _iso(None) is None
+    assert _iso(1_800_000_000) == "2027-01-15T08:00:00+00:00"
+    for bad in (1_800_000_000_000, 10**30, -(10**30)):
+        assert _iso(bad) == str(bad)
+
+
 async def test_option_plan_scored_by_rec_paper_or_underlying(tmp_path):
     rt = _rt(tmp_path)
     srv, _ = build_server(rt)

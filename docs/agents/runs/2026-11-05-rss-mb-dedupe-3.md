@@ -6,6 +6,6 @@
 • Тест `tests/test_common_helpers.py` охоплює ще 6 модулів.
 • `make lint` чистий, `make test`: 4632 passed, 6 skipped.
 
-**Критик:** C, approve ([рев'ю](../reviews/2026-11-05-rss-mb-dedupe-3.md)); зауваження, що не блокує: аліас `rss_mb = s7.rss_mb` у `verify_deviation_weekly_trend.py` — не копія.
+**Критик:** C, approve ([рев'ю](../../reviews/2026-11-05-rss-mb-dedupe-3.md)); зауваження, що не блокує: аліас `rss_mb = s7.rss_mb` у `verify_deviation_weekly_trend.py` — не копія.
 
 **Далі:** `owner`; нових питань немає. Інші картки: відкриті пункти чекають часу, даних або власника.

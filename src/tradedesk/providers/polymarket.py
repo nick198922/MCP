@@ -5,6 +5,8 @@ Two hosts:
   outcomePrices (JSON string), clobTokenIds (JSON string), volume, liquidity, endDate.
 * CLOB  `https://clob.polymarket.com` — per-outcome order book and historical prices;
   each outcome is addressed by its `clobTokenId`.
+Plus the data-api `https://data-api.polymarket.com` (trades, leaderboard, wallet positions): leaderboard and positions
+use v2 (`/v2/...`, cursor pages); v1 routes answer HTTP 410 since 2026-11-02, `trades` is still on v1 (research scripts).
 
 Yes-outcome price ≈ implied probability. For multi-outcome markets the sum across
 outcomes may exceed 1; `analytics.polymarket.devig_multi` normalises back to 1.
@@ -142,37 +144,43 @@ class Polymarket:
             raise ProviderError(self.name, "backend_error", "unexpected shape at /trades")
         return f
 
-    async def leaderboard(
-        self, *, period: str = "MONTH", order_by: str = "PNL", category: str = "OVERALL", limit: int = 50, offset: int = 0
-    ) -> Fetched:
-        """data-api `/v1/leaderboard`: rows with `rank`, `proxyWallet`, `userName`, `pnl`, `vol` (USD) for the period
-        (DAY / WEEK / MONTH / ALL) and category (OVERALL, CRYPTO, POLITICS, …). Pages of up to 50 via `offset`."""
+    async def _v2_page(self, path: str, params: dict[str, Any], *, ttl: float, tool: str) -> Fetched:
+        """One page of a data-api v2 route: the envelope ``{"data": [...], "pagination": {"next_cursor": …}}`` becomes
+        ``{"rows": [...], "next_cursor": str | None}``. v2 pages only by cursor (it answers HTTP 400 to ``offset``)."""
         if self.data is None:
             raise ProviderError(self.name, "config", "data-api client not configured")
-        params: dict[str, Any] = {"category": category, "timePeriod": period, "orderBy": order_by, "limit": limit, "offset": offset}
-        f = await self.data.get_json("/v1/leaderboard", params=params, ttl=600, tool="leaderboard", args=params)
-        if not isinstance(f.data, list):
-            raise ProviderError(self.name, "backend_error", "unexpected shape at /v1/leaderboard")
-        return f
+        f = await self.data.get_json(path, params=params, ttl=ttl, tool=tool, args=params)
+        body = f.data
+        # The envelope is required: a dict without it (`{}`, an HTTP-200 `{"error": …}`) read as an empty page would
+        # make the positions job log every stored position of the wallet as closed.
+        if not (isinstance(body, dict) and "data" in body and isinstance(body.get("pagination"), dict)):
+            raise ProviderError(self.name, "backend_error", f"unexpected shape at {path}")
+        rows = body["data"]
+        if rows is not None and not isinstance(rows, list):
+            raise ProviderError(self.name, "backend_error", f"unexpected shape at {path}")
+        cursor = body["pagination"].get("next_cursor")  # a documented miss is `data: null` or [] with pagination
+        return Fetched({"rows": rows or [], "next_cursor": str(cursor) if cursor else None}, f.evidence)
 
-    async def positions(self, user: str, *, limit: int = 500, size_threshold: float = 1.0) -> Fetched:
-        """data-api `/positions` of one wallet, open ones only (`redeemable=false`; otherwise resolved markets fill the
-        limit and hide them), largest current value first: `conditionId`, `asset`, `outcome`, `size` (shares),
-        `avgPrice`, `currentValue`, `cashPnl`, `curPrice`, `title`, …"""
-        if self.data is None:
-            raise ProviderError(self.name, "config", "data-api client not configured")
-        params: dict[str, Any] = {
-            "user": user,
-            "limit": limit,
-            "sizeThreshold": size_threshold,
-            "redeemable": "false",
-            "sortBy": "CURRENT",
-            "sortDirection": "DESC",
-        }
-        f = await self.data.get_json("/positions", params=params, ttl=60, tool="positions", args=params)
-        if not isinstance(f.data, list):
-            raise ProviderError(self.name, "backend_error", "unexpected shape at /positions")
-        return f
+    async def leaderboard(
+        self, *, period: str = "MONTH", order_by: str = "PNL", category: str = "OVERALL", limit: int = 50, cursor: str | None = None
+    ) -> Fetched:
+        """data-api `/v2/leaderboard`, one page: ``{"rows": [...], "next_cursor": …}``; rows carry `rank`, `user_id`
+        (proxy wallet, the same address v1 called `proxyWallet`), `user_name`, `pnl`, `volume` (USD) for the period
+        (DAY / WEEK / MONTH / ALL) and category (OVERALL, CRYPTO, POLITICS, …). Pass ``next_cursor`` back for the next
+        page; it is None after the last one (a short page does not end the walk). v1 answers HTTP 410 since 2026-11-02."""
+        params: dict[str, Any] = {"category": category.lower(), "time_period": period.lower(), "sort_by": order_by, "limit": limit}
+        if cursor:
+            params["cursor"] = cursor
+        return await self._v2_page("/v2/leaderboard", params, ttl=600, tool="leaderboard")
+
+    async def positions(self, user: str, *, limit: int = 100, min_value_usd: float = 100.0) -> Fetched:
+        """data-api `/v2/positions` of one wallet, first page only: up to ``limit`` open positions worth at least
+        ``min_value_usd`` at mark (``filter_type=CASH``; this also drops resolved losers worth 0), largest current value
+        first. Data: list of rows with `token_id` (v1 `asset`), `condition_id`, `outcome`, `current_size` (shares),
+        `avg_price`, `current_value`, `unrealized_pnl` (v1 `cashPnl`), `status`, `redeemable`, `title`, …"""
+        params: dict[str, Any] = {"user": user, "limit": limit, "filter_type": "CASH", "filter_amount": min_value_usd}
+        f = await self._v2_page("/v2/positions", params, ttl=60, tool="positions")
+        return Fetched(f.data["rows"], f.evidence)
 
     async def search(self, query: str | None, limit: int, active: bool, closed: bool) -> Fetched:
         """With `query`: Gamma `/public-search?q=` (returns events, each with a markets list).

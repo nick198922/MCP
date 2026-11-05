@@ -74,15 +74,26 @@ def test_gex_by_strike_sums_rows_of_one_strike():
     assert two[100.0] == pytest.approx(one[100.0], rel=1e-12)
 
 
-def test_gex_by_strike_skips_rows_without_iv_time_or_oi():
-    rows = [
-        _row(90, True, 5, iv=None),  # no IV
-        _row(95, True, 5, iv=0.0),  # zero IV
-        _row(100, True, 5, T=0.0),  # expired
-        _row(105, True, 0),  # no open interest
-        _row(110, False, -3),  # negative OI (bad data)
-    ]
-    assert gex_by_strike(rows) == {}
+@pytest.mark.parametrize(
+    "bad",
+    [
+        _row(90, True, 5, iv=None),
+        _row(95, True, 5, iv=0.0),
+        _row(100, True, 5, T=0.0),
+        _row(105, True, 0),
+        _row(110, False, -3),
+    ],
+    ids=["no_iv", "zero_iv", "expired", "zero_oi", "negative_oi"],
+)
+def test_gex_by_strike_skips_rows_without_iv_time_or_oi(bad):
+    # one case per skip condition, so a failure names the broken one; the bad row next to a valid one
+    # must neither add its strike nor change the valid strike's number
+    good = _row(120, True, 5)
+    assert gex_by_strike([bad]) == {}
+    assert gex_by_strike([bad, good]) == gex_by_strike([good])
+
+
+def test_gex_by_strike_empty_chain():
     assert gex_by_strike([]) == {}
 
 

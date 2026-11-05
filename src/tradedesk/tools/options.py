@@ -415,7 +415,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
         if F is None:
             b.miss("forward", "tradedesk", "data_unavailable", "no priced options for this scope")
             return b.build(None, ok=False)
-        if not expiry and len(by) > 1:
+        # warn only when the summed expiries really have different forwards (one shared forward = exact distances)
+        if not expiry and len({x.forward for x in rows}) > 1:
             b.warn(
                 "all expiries summed: notional_usd uses each option's own forward, but the strike band, distance_pct and "
                 "`forward` use one reference forward; pass `expiry` for exact distances"

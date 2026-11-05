@@ -590,6 +590,17 @@ async def test_oi_by_strike_walls(server):
     assert not any("all expiries summed" in w for w in one["warnings"])
 
 
+async def test_oi_by_strike_no_reference_forward_warning_when_forwards_equal(server, monkeypatch):
+    # several expiries but one shared forward: the band and distance_pct are exact, so no warning
+    import conftest  # noqa: PLC0415
+
+    monkeypatch.setattr(conftest, "EXPIRIES", [(exp, 1.006) for exp, _ in conftest.EXPIRIES])
+    env = await call(server, "deribit_oi_by_strike", currency="BTC", width_pct=15, top_n=5)
+    assert env["ok"] is True and env["data"]["expiry"] == "all"
+    assert env["data"]["forward"] == pytest.approx(conftest.SPOT * 1.006)
+    assert not any("all expiries summed" in w for w in env["warnings"])
+
+
 async def test_market_tools(server):
     t = await call(server, "market_ticker", exchange="binanceusdm", symbol="BTC/USDT:USDT")
     assert t["data"]["last"] == 82750.0 and t["data"]["spread_bps"] == pytest.approx(0.1208, abs=0.01)
@@ -863,6 +874,51 @@ async def test_polymarket_market_with_books(server):
     yes = next(o for o in m["outcomes"] if o["name"] == "Yes")
     assert yes["book"]["best_bid"] == 0.618 and yes["book"]["best_ask"] == 0.622
     assert yes["book"]["mid"] == 0.62 and yes["book"]["spread"] == pytest.approx(0.004)
+
+
+async def test_polymarket_partial_prices_warn(server, state):
+    import httpx
+
+    from conftest import NOW, FakeEx, make_transports
+    from tradedesk.config import Settings
+    from tradedesk.runtime import Runtime
+    from tradedesk.server import build_server
+
+    # all prices numeric: no warning
+    for name, args in (("polymarket_market", {"market_id": "516700"}), ("polymarket_search", {"query": "btc"})):
+        env = await call(server, name, **args)
+        assert not any("no numeric price" in w for w in env["warnings"])
+
+    partial = {
+        "id": "777",
+        "slug": "will-x",
+        "question": "Will X?",
+        "outcomes": '["A","B","C"]',
+        "outcomePrices": '["0.30","abc","0.30"]',
+        "clobTokenIds": '["TOK_A","TOK_B","TOK_C"]',
+        "active": True,
+        "closed": False,
+    }
+
+    def gamma(req: httpx.Request) -> httpx.Response:
+        if req.url.path == "/public-search":
+            return httpx.Response(200, json={"events": [{"id": "E1", "markets": [partial]}], "pagination": {}})
+        if req.url.path == "/markets/777":
+            return httpx.Response(200, json=partial)
+        return httpx.Response(404, text="not mocked")
+
+    tr = make_transports(state)
+    tr["polymarket:gamma"] = httpx.MockTransport(gamma)
+    rt2 = Runtime(Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0), transports=tr, exchange_factory=FakeEx)
+    rt2.now = lambda: NOW
+    srv, _ = build_server(rt2)
+    env = await call(srv, "polymarket_market", market_id="777")
+    outs = env["data"]["market"]["outcomes"]
+    assert [o["price_devigged"] for o in outs] == [0.5, None, 0.5]
+    assert any("no numeric price" in w for w in env["warnings"])
+    env = await call(srv, "polymarket_search", query="x")
+    assert env["data"]["count"] == 1
+    assert any("no numeric price" in w and "777" in w for w in env["warnings"])
 
 
 async def test_polymarket_history(server):

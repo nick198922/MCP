@@ -85,6 +85,32 @@ def test_daily_series_count_a_day_only_once_it_is_due():
     assert ch.series_health(cyc, "BTC", days[1:], days[-1], days[1], today + H - 1)["status"] == "ok"  # not due yet
 
 
+def test_a_series_that_wrote_again_has_a_closed_gap_not_a_trailing_one():
+    # Live 05.11 08:00 UTC: Polymarket leaderboards missed 03.11 and 04.11, the v2 fix wrote 05.11 (not due yet), and the
+    # brief still said "немає 2.0 дн поспіль". The run is a closed gap once a later snapshot exists.
+    traders = SPEC["traders"]  # daily, due by the end of the day
+    today = NOW - NOW % D
+    now = today + 8 * H
+    days = [today - k * D + 4800 for k in (8, 7, 6, 5, 4, 3)]
+    stopped = ch.series_health(traders, "polymarket", days, days[0], days[-1], now)
+    assert (stopped["status"], stopped["present"], stopped["expected"], stopped["trailing_gap_s"]) == ("low", 4, 6, 2 * D)
+    assert "немає 2.0 дн поспіль" in ch.describe(stopped)  # still silent: named as missing now
+    back = [*days, today + 4800]
+    r = ch.series_health(traders, "polymarket", back, back[0], back[-1], now)
+    assert (r["status"], r["present"], r["expected"], r["trailing_gap_s"]) == ("low", 4, 6, 0)  # the share is still low
+    assert (r["gaps"], r["longest_gap_s"], r["longest_gap_start"]) == (1, 2 * D, today - 2 * D)
+    assert ch.describe(r) == "traders:polymarket 66 % (дір 1, найдовша 2.0 дн; останній 02.11)"
+    carry = SPEC["paper_carry"]  # 8 h cycles: the 00:00 cycle failed, the 08:00 one is done (due only from 10:00)
+    cycles = list(range(today - 7 * D, today, 8 * H))
+    assert ch.series_health(carry, "B", cycles, cycles[0], cycles[-1], today + 9 * H)["status"] == "stale"
+    later = [*cycles, today + 8 * H + 900]
+    r = ch.series_health(carry, "B", later, later[0], later[-1], today + 9 * H)
+    assert (r["status"], r["trailing_gap_s"], r["gaps"]) == ("ok", 0, 1)
+    hourly = _hourly(NOW - 8 * D, NOW - 4 * H)  # the last 3 due hours missing, but the current hour has a row
+    r = ch.series_health(SPEC["hl_oi_cap"], "", [*hourly, NOW + 420], hourly[0], NOW + 420, NOW + 600)
+    assert (r["status"], r["trailing_gap_s"], r["gaps"], r["longest_gap_s"]) == ("ok", 0, 1, 3 * H)
+
+
 def test_paper_carry_cycles_every_8_hours():
     spec = SPEC["paper_carry"]
     exp = ch.expected_buckets(spec, NOW - 7 * D, NOW)

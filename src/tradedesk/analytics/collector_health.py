@@ -32,6 +32,9 @@ Alarm (:func:`brief_line`): a series below :data:`THRESHOLD` of its expected buc
 buckets missing for at least :data:`STALE_S`, or its latest daily / 8 h bucket, and no snapshot stored after them),
 a series with no row at all, or a series that could not be read. A series that has written again in a bucket not due
 yet is not "missing now": its run counts as an ordinary gap.
+
+``assistant_snapshot`` writes a JSON file, not a table, so it has no :class:`Spec`: :func:`snapshot_line` checks the
+file's own ``asof_utc`` against twice the job's cadence (item 101 of the standing card).
 """
 
 from __future__ import annotations
@@ -315,6 +318,45 @@ def brief_line(results: Iterable[Mapping[str, Any]], window_days: int = WINDOW_D
     named = "; ".join(describe(r) for r in bad[:MAX_BRIEF_ITEMS])
     more = f"; і ще {len(bad) - MAX_BRIEF_ITEMS}" if len(bad) > MAX_BRIEF_ITEMS else ""
     return f"Колектори: частка знімків за {window_days} дн нижче {_pct(THRESHOLD)} або свіжа дірка — {named}{more}."
+
+
+# Assistant snapshot (collector/assistant_snapshot.py): one JSON file rewritten every TRADEDESK_ASSISTANT_SNAPSHOT_SECONDS
+# (config.Settings.assistant_snapshot_seconds = 600, scheduler job "assistant_snapshot"). It is switched on in the
+# service env (scripts/server/19-assistant-snapshot.sh), which is not read here, so it is checked unless features.env
+# switches it off. A run whose network sections all fail keeps the previous file, so its ``asof_utc`` ages.
+SNAPSHOT_FLAG = "TRADEDESK_ASSISTANT_SNAPSHOT_ENABLED"
+SNAPSHOT_SECONDS_FLAG = "TRADEDESK_ASSISTANT_SNAPSHOT_SECONDS"
+SNAPSHOT_DEFAULT_S = 600
+SNAPSHOT_STALE_FACTOR = 2  # older than this many cadences = stale
+
+
+def snapshot_cadence(switches: Mapping[str, str]) -> int | None:
+    """The snapshot job's cadence, seconds, from parsed features.env (default :data:`SNAPSHOT_DEFAULT_S`); None when
+    features.env switches the job off (any value other than 1 / true / yes / on)."""
+    v = switches.get(SNAPSHOT_FLAG)
+    if v is not None and str(v).strip().lower() not in ("1", "true", "yes", "on"):
+        return None
+    try:
+        s = int(float(switches.get(SNAPSHOT_SECONDS_FLAG, SNAPSHOT_DEFAULT_S)))
+    except (TypeError, ValueError):
+        return SNAPSHOT_DEFAULT_S
+    return s if s > 0 else SNAPSHOT_DEFAULT_S
+
+
+def snapshot_line(asof_utc: Any, now: int, cadence_s: int, exists: bool = True) -> str | None:
+    """The brief's line on the assistant snapshot file (plain text, Ukrainian), or None when it is fresh: its
+    ``asof_utc`` ('%Y-%m-%dT%H:%M:%SZ') at most ``SNAPSHOT_STALE_FACTOR * cadence_s`` seconds before ``now`` (a stamp
+    in the future counts as fresh). ``exists=False``: the file is not there; an unreadable stamp is named as such."""
+    if not exists:
+        return "Знімок асистента: файлу немає."
+    try:
+        ts = int(datetime.strptime(str(asof_utc), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC).timestamp())
+    except ValueError:
+        return "Знімок асистента: час знімка не прочитано."
+    age = now - ts
+    if age <= SNAPSHOT_STALE_FACTOR * cadence_s:
+        return None
+    return f"Знімок асистента застарів: останній {fmt_ts(ts)}, {fmt_dur(age)} тому (оновлюється кожні {fmt_dur(cadence_s)})."
 
 
 def render(results: Iterable[Mapping[str, Any]], now: int, window_days: int = WINDOW_DAYS) -> str:

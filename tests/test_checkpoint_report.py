@@ -515,6 +515,93 @@ def test_script_shows_assistant_paper_counters_without_pnl(tmp_path):
     assert "12345" not in text and "0.4321" not in text  # no P&L, nothing beyond the whitelisted state keys
 
 
+CARD = "# IDEA-x\n\nСтатус: {}\n\n## Форвард\n- **Теги:** `idea:{}`, `setup:S45`; шаблон `idea:<slug>`.\n"
+
+
+def test_forward_cards_take_the_first_status_line_and_every_idea_tag():
+    texts = {
+        "IDEA-20261028-hl-oi-cap-state-forward.md": CARD.format("forward (2026-10-28, критик)", "hl-oi-cap"),
+        "IDEA-20261101-done.md": CARD.format("rejected", "done") + "\nСтатус: forward\n",  # a later status line is history
+        "IDEA-20261015-touch.md": CARD.format("forward — було inconclusive", "touch"),
+        "notes.md": CARD.format("forward", "notes"),  # not a card file
+    }
+    cards = cp.forward_cards(texts)
+    assert [c["slug"] for c in cards] == ["hl-oi-cap-state-forward", "touch"]
+    assert cards[0]["tags"] == {"idea:hl-oi-cap-state-forward", "idea:hl-oi-cap"}  # the registered short tag and the slug
+    assert cards[1]["tags"] == {"idea:touch"}
+
+
+def _plan(i: int, tags, *, verdict="enter", status="open", created=NOW // 1000 - 3600, resolved=None, **kw):
+    return {"id": i, "created_ts": created, "resolved_ts": resolved, "verdict": verdict, "status": status, "tags": tags} | kw
+
+
+def test_idea_plans_counters_per_card_without_r():
+    cards = [{"slug": "a-card", "tags": frozenset({"idea:a-card", "idea:a"})}, {"slug": "b-card", "tags": frozenset({"idea:b-card"})}]
+    now_s = NOW // 1000
+    plans = [
+        _plan(1, ["idea:a"], status="resolved", resolved=now_s - 60, r_result=7.777),
+        _plan(2, ["idea:a-card", "idea:b-card"], verdict="wait"),  # two cards: once in the total
+        _plan(3, ["idea:a"], status="resolved", resolved=now_s + 60),  # resolved after the report moment: not «оцінено»
+        _plan(4, ["idea:a"], created=now_s + 60),  # created after the report moment: not counted
+        _plan(5, ["idea:typo"]),  # an idea tag of no forward card
+        _plan(6, ["src:demo-shadow"]),
+    ]
+    r = cp.idea_plans_forward(cards, plans, NOW)
+    assert (r["key"], r["n"], r["verdict"], r["metric"], r["band"]) == ("ideas:plans", 3, cp.COUNTS_ONLY, None, None)
+    assert r["counters"] == {
+        "a-card": "планів 3, «входити» 2, оцінено 1",
+        "b-card": "планів 1, «входити» 0, оцінено 0",
+        "планів з тегом idea: без картки forward": 1,
+    }
+    assert any("≈ 30 планів «входити»" in x and "2 — не набрано" in x for x in r["notes"])
+    text = cp.render({"now_ms": NOW, "forwards": [r], "notes": []})
+    assert "| Картки forward: плани за тегами idea: | 3 | — | — | лише лічильники |" in text and "7.777" not in text
+    empty = cp.idea_plans_forward(cards, [], NOW)
+    assert empty["n"] == 0 and empty["counters"]["b-card"] == "планів 0, «входити» 0, оцінено 0"  # named even without plans
+    assert any("не знайдено" in x for x in cp.idea_plans_forward([], plans, NOW)["notes"])
+
+
+def test_script_lists_every_forward_card_of_the_repo(tmp_path):
+    """Every card with ``Статус: forward`` in docs/ideas gets a line, with the tag it registered (if shorter)."""
+    cards = {c["slug"]: c["tags"] for c in script.load_idea_cards()}
+    on_disk = [
+        p.name
+        for p in script.IDEAS.glob("IDEA-*.md")
+        if p.read_text(encoding="utf-8").split("Статус:", 1)[-1].lstrip().startswith("forward")
+    ]
+    assert len(cards) == len(on_disk) >= 20
+    assert "idea:hl-oi-cap" in cards["hl-oi-cap-state-forward"] and "idea:hl-liq-magnet" in cards["hl-whale-liquidation-magnet"]
+    db = _db(tmp_path)
+    con = sqlite3.connect(db)
+    cols = "created_ts, exchange, symbol, instrument, side, entry_type, entry, stop, target, expires_ts, verdict, tags, status, r_result"
+    con.execute(
+        f"INSERT INTO trade_plan ({cols}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            NOW // 1000 - 3600,
+            "bybit",
+            "X/USDT:USDT",
+            "perp",
+            "short",
+            "market",
+            1,
+            1.1,
+            0.9,
+            NOW // 1000,
+            "enter",
+            '["idea:hl-oi-cap"]',
+            "resolved",
+            9.876,
+        ),
+    )
+    con.commit()
+    con.close()
+    inp = script.load_inputs(db, NOW)
+    assert inp["plans"] and all("r_result" not in p for p in inp["plans"])
+    text = cp.render(cp.build(inp, NOW))
+    assert "- hl-oi-cap-state-forward: планів 1, «входити» 1, оцінено 0" in text  # resolved_ts not set: not «оцінено»
+    assert "- pm-weather-forecast-vs-price: планів 0" in text and "9.876" not in text
+
+
 def test_script_survives_a_missing_db(tmp_path):
     inp = script.load_inputs(str(tmp_path / "none.sqlite"), NOW)
     assert any("не відкрито" in e for e in inp["errors"])
@@ -526,7 +613,7 @@ def test_script_survives_a_missing_db(tmp_path):
 FORWARD_TABLES = script.FORWARD_TABLES
 BLOCKS = (
     "Демо S3", "Демо S40", "Папір carry A (cc-paper)", "Папір carry B (pp-paper)", "A v2", "Polymarket v1", "v2-g", "Кондор",
-    "Папір assistant_paper",
+    "Папір assistant_paper", "Картки forward",
 )  # fmt: skip
 AFTER_T0 = cp._ms(2026, 11, 20, 12)  # the condor branch reads option_leg_snapshot only after its T0
 

@@ -10,6 +10,8 @@ changes or cancels an order and nothing under ``execution/`` is imported. The ru
 counters only, and the condor's ``option_leg_snapshot`` is not read before its registered T0 (2026-11-06 10:00 UTC).
 The paper engine ``assistant_paper`` (no band in CHECKPOINT) shows counters and its job's last daily decision only:
 ``rec_paper`` is read without its P&L columns, and the state file ``<DB dir>/assistant/paper_state.json`` read-only.
+The idea cards with ``Статус: forward`` (``docs/ideas/``) are listed with the count of their ``idea:`` plans in
+``trade_plan``, read without the R / outcome / price columns.
 The text (Ukrainian) is printed and, with ``--out``, written to a file.
 """
 
@@ -30,17 +32,19 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import common_helpers as cmn  # noqa: E402
 
 from tradedesk.analytics.carry_rules import DECISION_DELAY_MS, carry_side_cost  # noqa: E402
-from tradedesk.analytics.checkpoint import build, condor_final_ms, render  # noqa: E402
+from tradedesk.analytics.checkpoint import build, condor_final_ms, forward_cards, render  # noqa: E402
 from tradedesk.analytics.condor_forward import EARLIEST_T0, ENTRY_CUTOFF_HOUR_UTC, cost_fridays  # noqa: E402
 from tradedesk.collector.carry_paper_engine import PARAMS_A  # noqa: E402
 
 DEFAULT_DB = "/var/lib/tradedesk-mcp/tradedesk.sqlite"
 BENCH = ROOT / "docs" / "paper" / "bench.json"
+IDEAS = ROOT / "docs" / "ideas"
 CARRY_KINDS = ("side", "funding", "mark", "close", "event")
 # Every table a forward block reads. The migrations create them all, so an absent one means an older schema or another
 # DB file: the report names it instead of showing the block as if it merely had no rows yet.
 FORWARD_TABLES = (
     "demo_trade", "cp_position", "cp_log", "cp_cycle", "rec_paper", "pm_gap_snapshot", "pm_gap_outcome", "option_leg_snapshot",
+    "trade_plan",
 )  # fmt: skip
 
 
@@ -98,6 +102,25 @@ def load_rec_paper(con: sqlite3.Connection) -> list[dict[str, Any]]:
     return [dict(r) for r in con.execute(q)]
 
 
+def load_plans(con: sqlite3.Connection) -> list[dict[str, Any]]:
+    """The trade plans tagged ``idea:…`` without any R, outcome or price column: the report shows counters only."""
+    if "trade_plan" not in _tables(con):
+        return []
+    q = "SELECT id, created_ts, resolved_ts, verdict, status, tags FROM trade_plan WHERE tags LIKE '%idea:%' ORDER BY id"
+    return [{**dict(r), "tags": _json(r["tags"]) or []} for r in con.execute(q)]
+
+
+def load_idea_cards(ideas: Path = IDEAS) -> list[dict[str, Any]]:
+    """The idea cards with status ``forward`` and their ``idea:`` tags; [] when the directory cannot be read."""
+    texts = {}
+    for p in sorted(ideas.glob("IDEA-*.md")):
+        try:
+            texts[p.name] = p.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+    return forward_cards(texts)
+
+
 def load_paper_state(db: str) -> dict[str, Any] | None:
     """The assistant_paper job's state file next to the DB (``collector.assistant_paper.state_path``), only the keys the
     report shows; None when it is absent or unreadable."""
@@ -121,6 +144,7 @@ def load_inputs(db: str, now_ms: int) -> dict[str, Any]:
     except (OSError, ValueError, KeyError) as e:
         inp["errors"].append(f"бенч carry не прочитано ({type(e).__name__}): критерій (в) — ◯")
     inp["paper_state"] = load_paper_state(db)
+    inp["idea_cards"] = load_idea_cards()
     try:
         con = connect_ro(db)
     except (sqlite3.Error, OSError) as e:
@@ -137,6 +161,7 @@ def load_inputs(db: str, now_ms: int) -> dict[str, Any]:
             ("demo_trade", "demo_trades", lambda: load_demo(con)),
             ("carry", "carry", lambda: {s: load_carry(con, s) for s in ("A", "B")}),
             ("rec_paper", "rec_paper", lambda: load_rec_paper(con)),
+            ("trade_plan", "plans", lambda: load_plans(con)),
         )
         for what, key, fn in loaders:
             try:

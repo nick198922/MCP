@@ -12,6 +12,7 @@ Embargoed forwards expose counters only: Polymarket v1 (verdict not before 2027-
 SD, edge, P&L or Brier; no verdict function is ever called), and the condor P&L (part (b), T0 + 52 weeks) is not read at
 all. Condor part (a) shows only the count of valid Fridays until its registered decision moment. The paper engine
 ``assistant_paper`` has no band in CHECKPOINT: counters and the job's state only (no P&L), labelled «лише лічильники».
+So are the idea cards with status ``forward``, judged by plans tagged ``idea:<slug>``: plan counts per card, no R.
 
 What this module does not compute (the label says so in its notes): carry criteria (a) (re-run of the backtest code),
 (e) and (ye) (universe and capacity checks) and B's liquidation part of (g) (1m mark prices, network); the demo's
@@ -21,6 +22,7 @@ secondary metric ``r_demo_bt`` and the clustered CI (``scripts/demo_vs_backtest.
 from __future__ import annotations
 
 import math
+import re
 import statistics
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -801,6 +803,69 @@ def _asof_utc(state: Mapping[str, Any] | None) -> int | None:
         return None
 
 
+# ------------------------------------------------------------------------------------- forward cards (idea: tags)
+
+IDEAS_NAME = "Картки forward: плани за тегами idea:"
+IDEAS_FIRST_READ = 30  # docs/HANDOFF.md, «Режим „план угоди“»: the first reading of plan results after ≈ 30 «enter» plans
+_STATUS = re.compile(r"^Статус:\s*([a-z_-]+)", re.MULTILINE)
+_IDEA_TAG = re.compile(r"`(idea:[a-z0-9][a-z0-9-]*)`")
+_CARD_FILE = re.compile(r"^IDEA-\d{8}-(.+)\.md$")
+
+
+def forward_cards(texts: Mapping[str, str]) -> list[dict[str, Any]]:
+    """The idea cards whose first status line is ``Статус: forward`` (``texts``: file name -> card text), sorted by
+    slug, each with its tag set: ``idea:<slug>`` (the file name without ``IDEA-YYYYMMDD-``, HANDOFF «Вердикт критика
+    forward») plus every literal `idea:…` tag the card names (some cards register a shorter one)."""
+    out = []
+    for fname, text in texts.items():
+        m, st = _CARD_FILE.match(fname), _STATUS.search(text)
+        if m is None or st is None or st.group(1) != "forward":
+            continue
+        out.append({"slug": m.group(1), "tags": frozenset({f"idea:{m.group(1)}", *_IDEA_TAG.findall(text)})})
+    return sorted(out, key=lambda c: c["slug"])
+
+
+def _tags(x: Any) -> set[str]:
+    return {t for t in x if isinstance(t, str)} if isinstance(x, (list, tuple, set, frozenset)) else set()
+
+
+def idea_plans_forward(cards: Sequence[Mapping[str, Any]], plans: Sequence[Mapping[str, Any]], now_ms: int) -> dict[str, Any]:
+    """The cards with status ``forward`` are judged by plans tagged ``idea:<slug>`` (``trade_plan``): counters only, one
+    line per card, so the report names every such card even with no plan. ``plans`` need ``created_ts``,
+    ``resolved_ts`` (unix s), ``verdict``, ``status`` and ``tags`` (parsed list); no R / outcome is read."""
+    now_s = now_ms // 1000
+    mine = [(p, _tags(p.get("tags"))) for p in plans if (c := _num(p.get("created_ts"))) is not None and c <= now_s]
+    known = frozenset().union(*(c["tags"] for c in cards)) if cards else frozenset()
+    counters: dict[str, Any] = {}
+    for card in cards:
+        hit = [p for p, t in mine if t & card["tags"]]
+        enter = sum(1 for p in hit if p.get("verdict") == "enter")
+        done = sum(1 for p in hit if p.get("status") == "resolved" and (r := _num(p.get("resolved_ts"))) is not None and r <= now_s)
+        counters[card["slug"]] = f"планів {len(hit)}, «входити» {enter}, оцінено {done}"
+    other = sum(1 for _, t in mine if any(x.startswith("idea:") for x in t - known) and not t & known)
+    if other:
+        counters["планів з тегом idea: без картки forward"] = other
+    hit_any = [p for p, t in mine if t & known]  # a plan tagged for two cards counts once here
+    enter_all = sum(1 for p in hit_any if p.get("verdict") == "enter")
+    row = _row("ideas:plans", "ideas", IDEAS_NAME, n=len(hit_any), verdict=COUNTS_ONLY, counters=counters)
+    row["metric_name"] = f"лише лічильники, карток {len(cards)}"
+    notes: list[str] = row["notes"]
+    if not cards:
+        notes.append("карток зі статусом forward не знайдено (каталог docs/ideas не прочитано?)")
+    got = "набрано" if enter_all >= IDEAS_FIRST_READ else "не набрано"
+    notes.append(
+        f"мінімум для першого читання результатів планів: ≈ {IDEAS_FIRST_READ} планів «входити» (HANDOFF, режим «план угоди»); "
+        f"за тегами карток forward {enter_all} — {got}"
+    )
+    notes.append(
+        "картки форвард-паперу carry і Polymarket мають і власні рядки вище; тут лише їхні плани. "
+        "Дата вердикту й мінімум n кожної картки — у її розділі «Форвард» (правила різні, тут не дублюються). R планів тут "
+        "не читається (лише plan_review). Власні журнали колекторів карток (знімки HL, CoinGecko, option_xvenue тощо) "
+        "звіт не рахує: події в них визначає крок аналітика картки"
+    )
+    return row
+
+
 # ---------------------------------------------------------------------------------------------------- the report
 
 
@@ -808,7 +873,8 @@ def build(inputs: Mapping[str, Any], now_ms: int) -> dict[str, Any]:
     """Every forward at ``now_ms``. ``inputs``: ``demo_trades`` (demo_trade rows), ``carry`` {strategy: {positions,
     logs, cycles}}, ``bench`` {strategy: bench}, ``side_cost_a``, ``decision_delay_ms``, ``pm_rows``, ``pm_outcomes``,
     ``condor_t0`` (date or None), ``condor_rows``, ``rec_paper`` (rec_paper rows, no P&L columns needed),
-    ``paper_state`` (the assistant_paper state file, parsed, or None), ``errors`` (strings from the loader)."""
+    ``paper_state`` (the assistant_paper state file, parsed, or None), ``idea_cards`` (``forward_cards`` output),
+    ``plans`` (trade_plan rows without R / outcome, ``tags`` parsed), ``errors`` (strings from the loader)."""
     out: list[dict[str, Any]] = []
     trades = inputs.get("demo_trades") or []
     for spec in DEMO:
@@ -834,6 +900,7 @@ def build(inputs: Mapping[str, Any], now_ms: int) -> dict[str, Any]:
     out += polymarket_forward(inputs.get("pm_rows") or [], inputs.get("pm_outcomes") or [], now_ms)
     out += condor_forward(inputs.get("condor_t0"), inputs.get("condor_rows") or [], now_ms)
     out.append(assistant_paper_forward(inputs.get("rec_paper") or [], inputs.get("paper_state"), now_ms))
+    out.append(idea_plans_forward(inputs.get("idea_cards") or [], inputs.get("plans") or [], now_ms))
     demo_no = [r for r in out if r["group"] == "demo" and not r["key"].endswith(":fill") and r["verdict"] == NO]
     notes = list(inputs.get("errors") or [])
     for side in ("нижче", "вище"):

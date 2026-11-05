@@ -508,19 +508,22 @@ def test_stage0_condor_forward_report_on_synthetic_cache(tmp_path, monkeypatch, 
 
 
 def test_stage0_condor_forward_empty_cache_fails_without_report(tmp_path):
-    # Known defect (BACKLOG 6.14): an empty or missing put_skew cache ends in a FileNotFoundError traceback, not a
-    # one-line message, and an empty cache dir gets an empty snapshots_v2.json written into it by
-    # `verify_put_skew.load_snapshots`. Pinned here so that a fix updates this test; what must hold either way: a
-    # non-zero exit, nothing on stdout, the missing file named, no report written.
+    # BACKLOG 6.14: an empty, missing or incomplete put_skew cache ends with exit code 1 and a one-line message naming
+    # the missing files, checked before `vom.load`: no traceback, nothing on stdout, no report, and the cache (read
+    # only for this script) gets nothing written into it (`load_snapshots` used to write an empty snapshots_v2.json).
     script = Path(s0.__file__)
     empty = tmp_path / "empty"
     empty.mkdir()
-    out = tmp_path / "stage0.md"
-    for src, missing in ((empty, "delivery_btc_usd.json"), (tmp_path / "no-such-cache", "snapshots_v2.json")):
+    partial = _put_skew_cache(tmp_path / "partial")
+    (partial / "dvol_BTC.json").unlink()
+    before = {p.name: p.read_bytes() for p in partial.iterdir()}
+    out = tmp_path / "out" / "stage0.md"
+    all3 = "snapshots_v2.json, delivery_btc_usd.json, dvol_BTC.json"
+    for src, missing in ((empty, all3), (tmp_path / "no-such-cache", all3), (partial, "dvol_BTC.json")):
         res = subprocess.run([sys.executable, str(script), "--src-dir", str(src), "--out", str(out)], capture_output=True, text=True)
         assert res.returncode == 1 and res.stdout == "", res.stderr
-        assert f"FileNotFoundError: [Errno 2] No such file or directory: '{src / missing}'" in res.stderr
-        assert "Traceback (most recent call last)" in res.stderr  # the defect; a fix flips this line
-        assert not out.exists()
-    assert sorted(p.name for p in empty.iterdir()) == ["snapshots_v2.json"]  # the side effect on the empty cache
-    assert json.loads((empty / "snapshots_v2.json").read_text())["days"] == {}
+        assert res.stderr == f"put_skew cache {src}: {missing} missing\n"
+        assert not out.exists() and not out.parent.exists()
+    assert list(empty.iterdir()) == []
+    assert not (tmp_path / "no-such-cache").exists()
+    assert {p.name: p.read_bytes() for p in partial.iterdir()} == before

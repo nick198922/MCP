@@ -150,7 +150,8 @@ def test_demo_tab_follows_the_panel_rules(tmp_path):
     rules = main.split("<h2>Порушені правила guard")[1].split(FOLD)[0]
     assert "<td>R:R після комісій нижче 1.5</td><td class='num'>2</td>" in rules  # refused only, last 7 days
     assert "уже є позиція в цій монеті" in rules and "бал сигналу нижче 2" not in rules  # 'skipped' is not a broken rule
-    assert XSS not in rules and "&lt;img" in rules
+    # the XSS row is an unknown message (an entry error, not a rule): only counted, its text is not in this block
+    assert XSS not in rules and "&lt;img" not in rules and "помилка входу або причину не записано: 1 відмов(и)" in rules
     # the rest: folded, each with its main number in the summary line
     assert main.count(FOLD) == 5 and "<details open" not in page
     for title, summary in (
@@ -320,6 +321,49 @@ def test_demo_refusals_group_by_rule_and_count_the_week():
     assert g["стоп далі 10% від входу"]["refused"] == 1
     assert g["причину не записано"]["skipped"] == 1 and g["причину не записано"]["week"] == 0
     assert db.demo_refusals(rows, now)[0]["reason"] == "бал сигналу нижче 2"  # the most frequent first
+
+
+def _ref(ts: int, violations) -> dict:
+    payload = json.dumps({"violations": violations}) if violations is not None else "not json"
+    return {"ts": ts, "kind": "refused", "payload": payload}
+
+
+def test_broken_rules_table_leaves_entry_errors_out():
+    """Review panel-demo-tab 02.11, item 5: demo_trader writes a failed entry's exception as 'refused' too; it is not a
+    guard rule, so the always-open «Порушені правила guard · 7 днів» names only its count. The full fold keeps it."""
+    audit = [
+        _ref(NOW - DAY, ["reward/risk 1.20 after fees < 1.5"]),
+        _ref(NOW - 2 * DAY, ["no quote for SOL/USDT:USDT"]),  # demo_trader._enter, an exception text
+        _ref(NOW - 2 * DAY, ["ConnectionError: timeout 10.0 s"]),
+        _ref(NOW - 3 * DAY, ["15 open positions = max", "no quote for X/USDT:USDT"]),  # a rule and an error: the rule
+        _ref(NOW - 3 * DAY, None),  # no reason written
+        _ref(NOW - 8 * DAY, ["no quote for OLD/USDT:USDT"]),  # older than 7 days
+    ]
+    assert db.demo_known_rule("15 open positions = max") and not db.demo_known_rule("no quote for SOL/USDT:USDT")
+    rules = {g["reason"]: g["refused"] for g in db.demo_refusals(audit, NOW, rules_only=True)}
+    assert rules == {"R:R після комісій нижче 1.5": 1, "максимум відкритих позицій": 1}
+    every = {g["reason"] for g in db.demo_refusals(audit, NOW)}  # the fold «Відмови guard за причинами»: as before
+    assert "no quote for <символ>" in every and "причину не записано" in every
+    html = db.block_demo_violations(audit, NOW / 1000)
+    assert "<td>R:R після комісій нижче 1.5</td><td class='num'>1</td>" in html and "максимум відкритих позицій" in html
+    assert "no quote" not in html and "ConnectionError" not in html and "причину не записано</td>" not in html
+    assert "помилка входу або причину не записано: 3 відмов(и) за 7 днів" in html  # 2 errors + 1 without a reason
+    only_err = db.block_demo_violations(audit[1:3], NOW / 1000)
+    assert "не відхилив жодного сигналу за правилом" in only_err and ": 2 відмов(и)" in only_err
+    assert "<table>" not in only_err and "не відхилив жодного сигналу." in db.block_demo_violations([], NOW / 1000)
+
+
+def test_open_positions_mark_the_signal_time_when_there_is_no_opening_time():
+    """Review panel-demo-tab 02.11, item 8: «Відкрито (Київ)» is opened_ts (the order placement, then the fill); a row
+    without it would show the signal bar's time, now marked «сигнал», or «—» with neither."""
+    base = {"status": "pending", "symbol": "SOL/USDT:USDT", "side": "long", "setup": "S3", "timeframe": "4h", "entry": 1.0}
+    placed = {**base, "signal_ts": NOW - 5 * 3_600_000, "opened_ts": NOW - 3_600_000}
+    no_open = {**base, "signal_ts": NOW - 4 * 3_600_000, "opened_ts": None}
+    neither = {**base, "signal_ts": None, "opened_ts": None}
+    rows = db.block_demo_open([placed, no_open, neither], NOW / 1000).split("<tr><td class='num'>")[1:]
+    assert rows[0].startswith(f"{db._demo_at(NOW - 3_600_000)}</td>") and "сигнал" not in rows[0]
+    assert rows[1].startswith(f"сигнал {db._demo_at(NOW - 4 * 3_600_000)}</td>")
+    assert rows[2].startswith("—</td>")
 
 
 @pytest.mark.parametrize(

@@ -16,12 +16,14 @@ def _last_friday(year: int, month: int) -> int:
 
 
 def classify_expiry(exp: datetime, now: datetime) -> str:
-    """Classify a Deribit-style expiry (always 08:00 UTC) relative to `now`.
+    """Classify a Deribit-style expiry (always 08:00 UTC) by its calendar date and hour alone.
 
-    - quarterly: last Friday of {Mar, Jun, Sep, Dec}
-    - monthly:   last Friday of any other month
+    - quarterly: last Friday of {Mar, Jun, Sep, Dec} at 08:00 UTC
+    - monthly:   last Friday of any other month at 08:00 UTC
     - weekly:    other Fridays at 08:00 UTC
-    - daily:     any non-Friday or non-08:00 expiry within ~2 days
+    - daily:     everything else (any non-Friday, or any expiry not at 08:00 UTC), however far away
+
+    `now` is accepted for the callers' signature but not used: the class does not depend on the distance to expiry.
     """
     if exp.hour == 8 and exp.weekday() == 4:
         if exp.day == _last_friday(exp.year, exp.month):

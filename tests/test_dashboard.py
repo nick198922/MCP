@@ -1493,11 +1493,15 @@ def test_journal_tab_shows_forecast_brier_calibration_and_weeks(tmp_path):
     assert err is None and len(data["forecast_log"]) == 40
     page = db.render_journal(data, None, float(FC_E2 + 86400), path=p)
     ref = af.score([x for x in data["forecast_log"] if x["status"] == "settled"])
-    assert ref["n"] == 32 and ref["n_expiries"] == 4
+    assert ref["n"] == 32 and ref["n_expiries"] == 4 and ref["n_expiry_dates"] == 2
+    # the sample size is named by the field forecast_log_status returns (deferred-review-nits 02.11, item 2)
+    assert "(n_expiries)" not in page
     for text in (
         f"<h2>Журнал прогнозів{db._info('fc')}",
         "Ризик-нейтральні ймовірності, не прогноз асистента.",
-        "розмір вибірки — кількість експірацій (n_expiries)",
+        "розмір вибірки — кількість дат експірації (n_expiry_dates",
+        "n_expiries (актив × експірація) — лише верхня межа",
+        "верхня межа вибірки · дат експірації 2 — розмір вибірки",
         f"Прогнозів розраховано{db._info('fc_n')}</span><span class='v'>32</span>",
         "відкритих 8",
         f"Експірацій{db._info('fc_expiries')}</span><span class='v'>4</span>",

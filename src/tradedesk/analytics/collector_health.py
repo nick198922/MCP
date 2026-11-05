@@ -2,7 +2,9 @@
 passed in).
 
 Docs: docs/ideas/IDEA-20261102-standing-improvements.md, item 5. The forwards rest on these tables, so a silent gap is
-lost weeks. For every read-only job switched on in ``deploy/features.env`` a :class:`Spec` says which table it writes,
+lost weeks. For every read-only job switched on in ``deploy/features.env``, and for the jobs the collector runs by
+default without a line there (``default_on``: ``atm_term``, ``basis``, ``funding``, ``supply``, ``traders``,
+``trader_positions``; counted unless features.env sets their switch off), a :class:`Spec` says which table it writes,
 how its rows map to a time ``stamp`` (unix seconds) and the cadence it promises: one snapshot per UTC-aligned bucket of
 ``period_s`` seconds, due ``due_s`` seconds after the bucket's start. A series (the job, or one of its ``groups``: a
 currency, a venue, a strategy) is checked from the later of the window start and its first stored stamp, so a job
@@ -18,6 +20,11 @@ The cadences are read from the collectors and the schema (each spec's ``note`` s
 * ``option_xvenue`` reads the nearest daily expiry 2-20 h away, which exists only from 12:00 to 06:00 UTC: hours 06-11
   UTC are not expected. Only ``mode = 'hourly'`` rows count (minute rows are triggered, not scheduled).
 * ``paper_carry``: a cycle (00/08/16 UTC) counts only with status ``done``; ``skipped`` (missed) and ``failed`` are gaps.
+* ``trader_positions`` is a change log (store ``record_trader_positions``): an hour counts when at least one watched
+  position changed. With ~200 Hyperliquid and ~200 Polymarket accounts watched that is every hour (167 of 168 hours for
+  Hyperliquid on 29.10-05.11), but an hour without any change would read as a gap.
+* ``traders`` and ``supply`` run every ``collect_*_seconds`` from the service start (not aligned to the day) and key
+  their rows by the UTC day of the run; a day is due by its end.
 * ``assistant_paper`` (a paper trade only on a trigger) and ``plan_resolve`` (scores existing plans, writes nothing in a
   quiet hour) have no cadence and are listed in :data:`NOT_CHECKED`.
 
@@ -50,7 +57,7 @@ class Spec:
     (scripts/collector_health.py) puts into a SELECT; nothing here runs them."""
 
     name: str  # job name as in collector/scheduler.py
-    flag: str  # deploy/features.env switch that turns it on
+    flag: str  # environment switch of the job (config.Settings), as it would be set in deploy/features.env
     table: str
     ts_sql: str  # expression giving the row's stamp, unix seconds
     period_s: int  # one snapshot expected per UTC-aligned bucket of this length
@@ -60,6 +67,7 @@ class Spec:
     where: str = "1 = 1"
     hours_utc: frozenset[int] | None = None  # buckets expected only when their start hour (UTC) is in this set
     note: str = ""
+    default_on: bool = False  # the collector runs it unless ``flag`` is set off (no line in features.env needed)
 
 
 SPECS: tuple[Spec, ...] = (
@@ -124,6 +132,37 @@ SPECS: tuple[Spec, ...] = (
         "hl_oi_cap", "TRADEDESK_COLLECT_HL_OI_CAP_ENABLED", "hl_oi_cap_snapshot", "ts", HOUR, HOUR,
         note="one snapshot per UTC hour (ts = its start), job ticks every 10 min",
     ),
+    # On by default with the collector (collector/scheduler.build_default_scheduler; no line in features.env).
+    Spec(
+        "atm_term", "TRADEDESK_COLLECTOR_ENABLED", "atm_term", "ts", HOUR, HOUR,
+        group_col="currency", groups=("BTC", "ETH"), default_on=True,
+        note="job every 300 s (collect_atm_term_seconds), ts = run time; a UTC hour counts with >= 1 snapshot",
+    ),
+    Spec(
+        "basis", "TRADEDESK_COLLECTOR_ENABLED", "basis_hist", "ts", HOUR, HOUR,
+        group_col="currency", groups=("BTC", "ETH"), default_on=True,
+        note="job every 300 s (collect_basis_seconds), ts = run time; a UTC hour counts with >= 1 snapshot",
+    ),
+    Spec(
+        "funding", "TRADEDESK_COLLECTOR_ENABLED", "funding_hist", "ts", HOUR, HOUR,
+        group_col="venue", groups=("binanceusdm", "bybit", "okx", "hyperliquid", "deribit"), default_on=True,
+        note="job every 3600 s from the service start (not hour-aligned, like pm_gap); a venue that fails is skipped silently",
+    ),
+    Spec(
+        "supply", "TRADEDESK_COLLECT_SUPPLY_ENABLED", "supply_snapshot", _DAY_TS.format("day"), DAY, DAY, default_on=True,
+        note="CoinGecko snapshot keyed by the UTC day of the run, job every 86400 s from the service start",
+    ),
+    Spec(
+        "traders", "TRADEDESK_COLLECT_TRADERS_ENABLED", "trader_snapshot", _DAY_TS.format("day"), DAY, DAY,
+        group_col="venue", groups=("hyperliquid", "polymarket", "polymarket_crypto"), default_on=True,
+        note="leaderboards keyed by the UTC day of the run (collect_traders_seconds from the service start); one venue "
+        "failing only logs a warning",
+    ),
+    Spec(
+        "trader_positions", "TRADEDESK_COLLECT_TRADERS_ENABLED", "trader_positions", "ts", HOUR, HOUR,
+        group_col="venue", groups=("hyperliquid", "polymarket"), default_on=True,
+        note="hourly change log; an hour counts with >= 1 changed position; both Polymarket boards stored as 'polymarket'",
+    ),
 )  # fmt: skip
 
 NOT_CHECKED: dict[str, str] = {
@@ -133,9 +172,15 @@ NOT_CHECKED: dict[str, str] = {
 
 
 def enabled_specs(switches: Mapping[str, str], specs: Iterable[Spec] = SPECS) -> list[Spec]:
-    """The specs whose switch is on (``1`` / ``true`` / ``yes`` / ``on``) in ``switches`` (parsed features.env)."""
-    on = {k for k, v in switches.items() if str(v).strip().lower() in ("1", "true", "yes", "on")}
-    return [s for s in specs if s.flag in on]
+    """The specs whose switch is on (``1`` / ``true`` / ``yes`` / ``on``) in ``switches`` (parsed features.env). A
+    ``default_on`` spec counts when its switch is absent; set to anything else there, it is off (as config.Settings
+    reads it). The owner's /etc/tradedesk-mcp.env is not read here."""
+
+    def on(s: Spec) -> bool:
+        v = switches.get(s.flag)
+        return s.default_on if v is None else str(v).strip().lower() in ("1", "true", "yes", "on")
+
+    return [s for s in specs if on(s)]
 
 
 def expected_buckets(spec: Spec, start: int, now: int) -> list[int]:

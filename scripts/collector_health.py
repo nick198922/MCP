@@ -3,8 +3,9 @@ and its last snapshot (item 5 of docs/ideas/IDEA-20261102-standing-improvements.
 
     uv run python scripts/collector_health.py [--db PATH] [--features PATH] [--days 7] [--out FILE]
 
-Which collectors: the read-only jobs switched on in ``deploy/features.env`` (the specs and their cadences live in the
-pure ``tradedesk.analytics.collector_health``). Reads the collector DB through a read-only connection (``mode=ro``: no
+Which collectors: the read-only jobs switched on in ``deploy/features.env`` plus the ones the collector runs by default
+(atm_term, basis, funding, supply, traders, trader_positions) unless features.env switches them off (the specs and their
+cadences live in the pure ``tradedesk.analytics.collector_health``). Reads the collector DB through a read-only connection (``mode=ro``: no
 migration, no write), no network, no keys; nothing under ``execution/`` is imported. Prints a text report (Ukrainian);
 ``--out`` also writes it to a file. The morning brief (scripts/assistant_brief_tg.py) calls :func:`brief_line` and adds
 its line only when a series is below 90 % or has a fresh gap.

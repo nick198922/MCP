@@ -1,14 +1,18 @@
-"""Scripts behind forward reports and snapshots (item 68 of IDEA-20261102-standing-improvements), on fixtures only:
-``traders_report.py`` (weekly smart-money board from a gzipped backup, opened read-only), ``paper_carry_once.py`` (one
-carry A / B cycle into a throwaway SQLite file) and ``paper_ladder_snapshot.py`` (Bybit risk-limit ladder, paginated).
-No network: the live feed, the clock and the exchange call are replaced."""
+"""Scripts behind forward reports and snapshots (items 68 and 76 of IDEA-20261102-standing-improvements), on fixtures
+only: ``traders_report.py`` (weekly smart-money board from a gzipped backup, opened read-only), ``paper_carry_once.py``
+(one carry A / B cycle into a throwaway SQLite file), ``paper_ladder_snapshot.py`` (Bybit risk-limit ladder, paginated)
+and ``paper_bench_manifest.py`` (sha256 manifest of the carry benchmark cache). No network: the live feed, the clock and
+the exchange call are replaced."""
 
 from __future__ import annotations
 
 import gzip
+import hashlib
 import json
+import os
 import shutil
 import sqlite3
+import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,6 +27,7 @@ from tradedesk.store import Store
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
+import paper_bench_manifest as pbm  # noqa: E402
 import paper_carry_once as poc  # noqa: E402
 import paper_ladder_snapshot as pls  # noqa: E402
 import traders_report as tr  # noqa: E402
@@ -283,3 +288,84 @@ def test_paper_ladder_main_writes_summary_and_raw(tmp_path, monkeypatch, capsys)
     raw_got = json.loads(raw.read_text())
     assert [t["limit_usd"] for t in raw_got["symbols"]["TINYUSDT"]] == [1_000.0, 50_000.0]
     assert "symbols 2; $2000 leg fits at 2x: 1" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# paper_bench_manifest.py
+
+SHA256_ABC = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"  # FIPS 180-2 test vector for b"abc"
+SHA256_EMPTY = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+
+def _run_manifest(cache: Path, out: Path, monkeypatch) -> list[str]:
+    monkeypatch.setattr(sys, "argv", ["paper_bench_manifest.py", "--cache-dir", str(cache), "--out", str(out)])
+    pbm.main()
+    text = out.read_text(encoding="utf-8")
+    assert text.endswith("\n")
+    return text.splitlines()
+
+
+def _bench_cache(root: Path, names: list[str]) -> Path:
+    """A cache like paper_carry_bench: nested venue / kind folders of *.json, plus logs the manifest must skip."""
+    for name in names:
+        p = root / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"abc" if p.name == "abc.json" else name.encode())
+    return root
+
+
+def _sha256sum_check(manifest: Path, cache: Path) -> subprocess.CompletedProcess[str]:
+    """`cd <cache> && sha256sum -c <manifest>`, as the script's docstring says; C locale for stable messages."""
+    env = {**os.environ, "LC_ALL": "C"}
+    return subprocess.run(["sha256sum", "-c", "--strict", str(manifest)], cwd=cache, env=env, capture_output=True, text=True)
+
+
+def test_paper_bench_manifest_lines_pass_sha256sum_check(tmp_path, monkeypatch, capsys):
+    big = b"x" * ((1 << 20) + 7)  # over one 1 MiB read chunk
+    cache = _bench_cache(tmp_path / "cache", ["abc.json", "binance/funding/BTCUSDT.json", "fetch.log", "notes.txt"])
+    (cache / "empty.json").write_bytes(b"")
+    (cache / "bybit").mkdir()
+    (cache / "bybit" / "big.json").write_bytes(big)
+    (cache / "dir.json").mkdir()  # a directory matching *.json is not a file and is skipped
+    out = tmp_path / "bench-data.sha256"  # outside the cache: the manifest never lists itself
+    lines = _run_manifest(cache, out, monkeypatch)
+
+    parsed = [ln.split("  ", 1) for ln in lines]  # `sha256sum` text mode: "<64 hex>  <path>"
+    assert all(len(h) == 64 and set(h) <= set("0123456789abcdef") for h, _ in parsed)
+    rels = [rel for _, rel in parsed]
+    assert rels == ["abc.json", "binance/funding/BTCUSDT.json", "bybit/big.json", "empty.json"]
+    assert not any(rel.startswith("/") or str(tmp_path) in rel for rel in rels)  # relative to the cache dir
+    got = {rel: h for h, rel in parsed}
+    assert got["abc.json"] == SHA256_ABC and got["empty.json"] == SHA256_EMPTY
+    assert got["bybit/big.json"] == hashlib.sha256(big).hexdigest() == pbm.sha256_file(cache / "bybit" / "big.json")
+    for h, rel in parsed:  # every line re-verifies from the cache, as `cd <cache> && sha256sum -c` would
+        assert hashlib.sha256((cache / rel).read_bytes()).hexdigest() == h
+    total_mb = (3 + len(b"binance/funding/BTCUSDT.json") + len(big)) / 1e6
+    assert f"4 files, {total_mb:.1f} MB -> {out}" in capsys.readouterr().out
+    if shutil.which("sha256sum"):  # coreutils itself, when present (Linux CI and the server)
+        res = _sha256sum_check(out, cache)
+        assert res.returncode == 0, res.stdout + res.stderr
+        (cache / "abc.json").write_bytes(b"abd")  # a changed file is caught
+        res = _sha256sum_check(out, cache)
+        assert res.returncode == 1 and "abc.json: FAILED" in res.stdout
+
+
+def test_paper_bench_manifest_order_is_deterministic(tmp_path, monkeypatch):
+    names = ["okx/z.json", "binance/b.json", "abc.json", "binance/a.json", "bybit/funding/ETH.json", "a.json"]
+    one = _run_manifest(_bench_cache(tmp_path / "c1", names), tmp_path / "one.sha256", monkeypatch)
+    _run_manifest(_bench_cache(tmp_path / "c2", list(reversed(names))), tmp_path / "two.sha256", monkeypatch)
+    # Same content, files created in the opposite order (and in another cache dir) -> byte-identical manifest.
+    assert (tmp_path / "one.sha256").read_bytes() == (tmp_path / "two.sha256").read_bytes()
+    rels = [ln.split("  ", 1)[1] for ln in one]
+    assert rels == ["a.json", "abc.json", "binance/a.json", "binance/b.json", "bybit/funding/ETH.json", "okx/z.json"]
+
+
+def test_paper_bench_manifest_empty_cache(tmp_path, monkeypatch, capsys):
+    cache = _bench_cache(tmp_path / "cache", ["fetch.log"])  # only logs: nothing to list
+    out = tmp_path / "bench-data.sha256"
+    assert _run_manifest(cache, out, monkeypatch) == [""]
+    assert out.read_text(encoding="utf-8") == "\n"  # one empty line, not an empty file
+    assert f"0 files, 0.0 MB -> {out}" in capsys.readouterr().out
+    if shutil.which("sha256sum"):  # known gap (BACKLOG 6.10): coreutils rejects a manifest with no checksum lines
+        res = _sha256sum_check(out, cache)
+        assert res.returncode == 1 and "no properly formatted" in res.stderr

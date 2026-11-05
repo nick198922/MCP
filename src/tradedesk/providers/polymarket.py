@@ -139,7 +139,14 @@ class Polymarket:
             params["start"] = int(start)
         if end is not None:
             params["end"] = int(end)
-        f = await self.data.get_json("/trades", params=params, ttl=300, tool="trades", args=params)
+        try:
+            f = await self.data.get_json("/trades", params=params, ttl=300, tool="trades", args=params)
+        except ProviderError as e:
+            if e.detail.startswith("HTTP 410"):  # 410 is not in Http's retry set: exactly one request was made
+                raise ProviderError(
+                    self.name, "backend_error", "data-api v1 /trades removed 2026-11-02; migrate to /v2/trades, see BACKLOG 6.13"
+                ) from e
+            raise
         if not isinstance(f.data, list):
             raise ProviderError(self.name, "backend_error", "unexpected shape at /trades")
         return f

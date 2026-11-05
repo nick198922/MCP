@@ -8,4 +8,6 @@
 
 **Критик:** C (sonnet), approve, 3 зауваження не блокують ([рев'ю](../../reviews/2026-11-05-tools-provider-outage-guard.md)).
 
+• Повторна перевірка (запуск 4): `make lint` чисто, `make test`: 4758 passed, 3 skipped.
+
 **Далі:** `owner`. Питань немає.

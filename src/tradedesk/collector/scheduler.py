@@ -541,20 +541,24 @@ def _num(v: object) -> float | None:
 
 
 async def _pm_leaderboard(rt: "Runtime", category: str, pages: int) -> list[dict[str, object]]:
-    """Polymarket leaderboard rows for one category, merged by wallet over the DAY / WEEK / MONTH / ALL rankings."""
+    """Polymarket leaderboard rows for one category, merged by wallet over the DAY / WEEK / MONTH / ALL rankings
+    (data-api v2: up to ``pages`` cursor pages of 50 per ranking; `user_id` is the proxy wallet v1 called
+    `proxyWallet`, so accounts continue the rows written before the v1 shutdown of 2026-11-02)."""
     merged: dict[str, dict[str, object]] = {}
     for period, key in (("MONTH", "pnl_month"), ("WEEK", "pnl_week"), ("DAY", "pnl_day"), ("ALL", "pnl_all")):
-        for page in range(max(1, pages)):
-            rows = (await rt.polymarket.leaderboard(period=period, category=category, limit=50, offset=page * 50)).data
-            for r in rows:
-                wallet = str(r.get("proxyWallet") or "").lower() if isinstance(r, dict) else ""
+        cursor: str | None = None
+        for _ in range(max(1, pages)):
+            page = (await rt.polymarket.leaderboard(period=period, category=category, limit=50, cursor=cursor)).data
+            for r in page["rows"]:
+                wallet = str(r.get("user_id") or "").lower() if isinstance(r, dict) else ""
                 if not wallet:
                     continue
-                m = merged.setdefault(wallet, {"account": wallet, "name": r.get("userName") or None})
+                m = merged.setdefault(wallet, {"account": wallet, "name": r.get("user_name") or None})
                 m[key] = _num(r.get("pnl"))
                 if period == "MONTH":
-                    m["vlm_month"] = _num(r.get("vol"))
-            if len(rows) < 50:
+                    m["vlm_month"] = _num(r.get("volume"))
+            cursor = page["next_cursor"]
+            if not cursor:  # v2: a short page does not end the walk, only a missing cursor does
                 break
     return list(merged.values())
 
@@ -614,23 +618,27 @@ async def _collect_trader_positions(rt: "Runtime") -> int:
     for account in pm_accounts:
         tried += 1
         try:
-            raw = (await rt.polymarket.positions(account, limit=100)).data  # the 100 largest open positions
+            raw = (await rt.polymarket.positions(account, limit=100, min_value_usd=100.0)).data  # the 100 largest open
         except ProviderError as e:
             failed += 1
             log.debug("positions polymarket %s: %s", account, e)
             continue
-        positions = [
+        positions = [  # data-api v2 fields; `market` is the outcome token id, as v1's `asset` was
             {
-                "market": str(r.get("asset")),
+                "market": str(r.get("token_id")),
                 "side": str(r.get("outcome") or ""),
-                "size": _num(r.get("size")),
-                "entry_px": _num(r.get("avgPrice")),
-                "value_usd": _num(r.get("currentValue")),
-                "upnl": _num(r.get("cashPnl")),
+                "size": _num(r.get("current_size")),
+                "entry_px": _num(r.get("avg_price")),
+                "value_usd": _num(r.get("current_value")),
+                "upnl": _num(r.get("unrealized_pnl")),
                 "title": r.get("title"),
             }
             for r in raw
-            if isinstance(r, dict) and r.get("asset") and not r.get("redeemable") and (_num(r.get("currentValue")) or 0) >= 100
+            if isinstance(r, dict)
+            and r.get("token_id")
+            and not r.get("redeemable")
+            and str(r.get("status") or "OPEN") == "OPEN"
+            and (_num(r.get("current_value")) or 0) >= 100
         ]
         written += await rt.store.record_trader_positions(ts, "polymarket", account, positions)
     if tried and failed == tried:

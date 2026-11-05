@@ -652,6 +652,12 @@ HELP: dict[str, tuple[str, str, str, str]] = {
         "Додатний — лонги платять шортам (натовп у лонгах), від'ємний — навпаки. Дуже високий — перегрів.",
         "Тримати лонг перпа при високому funding дорого. Заробіток на різниці funding ми перевіряли: малий і слабшає.",
     ),
+    "stables": (
+        "Стейблкоїни",
+        "Скільки всього стейблкоїнів в обігу (DefiLlama) і як змінилось за 7 і 30 днів: грубо, скільки грошей у крипті.",
+        "Росте — гроші заходять у крипту, падає — виходять; це опис стану, а не прогноз.",
+        "Описово, не сигнал: зв'язок із ціною чи funding ми не перевіряли, на вхід і розмір не впливає.",
+    ),
     "conditions": (
         "Купувати чи продавати опціони",
         "Зведення: що зараз за цінами опціонів сприяє покупцю, а що продавцю.",
@@ -1670,6 +1676,12 @@ ACT: dict[str, tuple[str, str, str, str]] = {
         "купувати вигідніше; продаж дає мало премії.",
         "Опціони дорогі (премія понад +10 вп)",
         "купівля переплачує; продаж лише з обмеженим ризиком.",
+    ),
+    "stables": (
+        "Росте за 7 / 30 днів",
+        "гроші заходять у крипту; правила й розмір ті самі.",
+        "Падає",
+        "гроші виходять; правила й розмір ті самі.",
     ),
     # the «Демо» tab (standing improvements, item 16)
     "demo": (
@@ -3612,6 +3624,62 @@ def block_funding(snap: dict) -> str:
     return "".join(out) + _section_notes(snap, "funding_btc", "funding_eth")
 
 
+def _stables_total(snap: dict) -> dict | None:
+    """stablecoin_supply's `total` from the snapshot's ``stablecoins`` section when it has a positive sum, else None."""
+    tot = (_data(snap, "stablecoins") or {}).get("total")
+    usd = _num(tot.get("usd")) if isinstance(tot, dict) else None
+    return tot if usd is not None and usd > 0 else None
+
+
+def _stables_day(tot: dict) -> str:
+    """The day of the series' last point (`as_of_ts`, UTC seconds) as dd.mm Kyiv, '' when absent or odd."""
+    ts = _num(tot.get("as_of_ts"))
+    try:
+        return kyiv(datetime.fromtimestamp(ts, timezone.utc), "%d.%m") if ts is not None else ""  # noqa: UP017
+    except (OverflowError, OSError, ValueError):
+        return ""
+
+
+def stables_summary(snap: dict) -> str:
+    """The stablecoin fold's one line, the brief's fields as they are (nothing recomputed): the total and its 7 / 30-day
+    change, the day of the point when the series is stale: «299.46 млрд $ · 7 дн +0.6 % · 30 дн +2.6 %». '' without
+    data; never raises."""
+    try:
+        tot = _stables_total(snap)
+        if tot is None:
+            return ""
+        parts = [flow_usd(tot.get("usd"), signed=False)]
+        parts += [
+            f"{label} {_pc(_num(tot.get(k)) * 100, 1)}"
+            for label, k in (("7 дн", "change_7d"), ("30 дн", "change_30d"))
+            if _num(tot.get(k)) is not None
+        ]
+        day = _stables_day(tot) if tot.get("stale") is True else ""
+        return " · ".join(parts + ([f"дані на {day}"] if day else []))
+    except Exception:  # noqa: BLE001 - an odd section only drops this line
+        return ""
+
+
+def block_stables(snap: dict) -> str:
+    """Stablecoin supply (section ``stablecoins``): the total, its 7 / 30-day change and the day of the point; descriptive
+    context only. A missing or failed section gives a «no data» line with the reason (`_guard` catches the odd)."""
+    tot = _stables_total(snap)
+    if tot is None:
+        return _empty("Даних про стейблкоїни в знімку немає.") + _section_notes(snap, "stablecoins")
+    rows = [("Усього в обігу", flow_usd(tot.get("usd"), signed=False))]
+    rows += [
+        (label, _pc(_num(tot.get(k)) * 100, 1))
+        for label, k in (("За 7 днів", "change_7d"), ("За 30 днів", "change_30d"))
+        if _num(tot.get(k)) is not None
+    ]
+    day = _stables_day(tot)
+    if day:
+        rows.append(("Дані на", day + (" · ряд застарів" if tot.get("stale") is True else "")))
+    # «описово, не сигнал» stands once, in the fold's summary line (docs/design/PANEL.md, rule 5)
+    body = "<table>" + "".join(f"<tr><td>{_e(k)}</td><td class='num'>{_e(v)}</td></tr>" for k, v in rows) + "</table>"
+    return body + _section_notes(snap, "stablecoins")
+
+
 def brief_lead(snap: dict) -> str:
     """The page's first lines (docs/design/PANEL.md): one sentence «what now», one «what to do». The first that applies:
     a high-impact event within 48 h, expensive volatility (DVOL ≥ 80th percentile), an extreme of fear / greed, calm."""
@@ -3702,6 +3770,9 @@ def brief_summaries(snap: dict) -> dict[str, str]:
             fparts.append(f"{base} {_pc(min(vs) * 100, 0).replace(' %', '')}…{_pc(max(vs) * 100, 0)}")
     if fparts:
         out["funding"] = " · ".join(fparts) + " річних"
+    st = stables_summary(snap)
+    if st:
+        out["stables"] = f"{st} · описово, не сигнал"
     return out
 
 
@@ -3773,6 +3844,7 @@ def render_brief(snap: dict | None, err: str | None, now: float, path: Path | No
             summ["key"] = key_summary(key_items(snap))
         except Exception:  # noqa: BLE001
             pass
+        summ.setdefault("stables", "даних немає")  # a missing or failed section says so in the folded heading
         folds = (
             ("Головне сьогодні", "key", "key", block_key),
             ("Купувати чи продавати опціони зараз", "conditions", "conditions", block_conditions),
@@ -3781,6 +3853,7 @@ def render_brief(snap: dict | None, err: str | None, now: float, path: Path | No
             ("BTC за 120 днів і що закладають опціони", "chart", "chart", block_chart),
             ("Волатильність", "vol", "vol", block_vol),
             ("Funding · річних", "funding", "funding", block_funding),
+            ("Стейблкоїни · ліквідність", "stables", "stables", block_stables),
         )
         for title, sk, key, fn in folds:
             out.append(_fold(title, key, _e(summ.get(sk, "")), _guard(fn, snap), sid=f"b-{key}"))

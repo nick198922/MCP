@@ -11,7 +11,7 @@ the caveat.
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from importlib import resources
 from typing import Annotated, Any, Literal
 
@@ -23,6 +23,15 @@ from ..analytics.event_study import event_study as _event_study
 from ..core.envelope import Builder
 from ..runtime import Runtime
 from ._util import READ_ONLY, r
+
+
+def _ts_ok(ts: int) -> bool:
+    """True when unix seconds `ts` fit a datetime (a ts_ms sent in microseconds, or 10**18, does not)."""
+    try:
+        datetime.fromtimestamp(ts, UTC)
+    except (ValueError, OverflowError, OSError):
+        return False
+    return True
 
 
 def _store_guard(b: Builder, rt: Runtime) -> bool:
@@ -68,6 +77,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
         await rt.store.init()
         if ts_ms is not None:
             ts = int(ts_ms) // 1000
+            if not _ts_ok(ts):
+                b.miss("ts_ms", "tradedesk", "invalid_input", f"ts_ms={ts_ms} is outside the datetime range (unix milliseconds expected)")
+                return b.build(None, ok=False)
         elif date:
             tt = (time_utc or "13:30").strip()
             try:
@@ -206,6 +218,11 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 return b.build(None, ok=False)
 
         events = await rt.store.events_list(kind=event_kind, impact=impact, since_ts=since_ts, until_ts=until_ts, limit=5000)
+        bad = [e for e in events if not _ts_ok(int(e["ts"]))]
+        if bad:
+            # Rows stored before events_add validated ts_ms (or by another writer): they would break the bar query and the ISO dates.
+            b.warn(f"skipped {len(bad)} stored event(s) with a timestamp outside the datetime range, ids {[e['id'] for e in bad][:10]}")
+            events = [e for e in events if _ts_ok(int(e["ts"]))]
         if not events:
             b.miss("events", "store", "data_unavailable", f"no stored events for kind={event_kind!r} in the window")
             return b.build(None, ok=False)

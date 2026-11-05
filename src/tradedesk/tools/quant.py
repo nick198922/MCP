@@ -82,14 +82,16 @@ def register(server: MCPServer, rt: Runtime) -> None:
     ) -> dict[str, Any]:
         b = Builder()
         T = days / 365.0
-        return b.build(
-            {
+        try:
+            data = {
                 "analytic": r(probability.prob_touch(spot, barrier, iv, T), 4),
                 "monte_carlo": r(probability.mc_touch(spot, barrier, iv, T), 4),
                 "one_sigma_move_pct": r(iv * T**0.5 * 100, 2),
-            },
-            ok=True,
-        )
+            }
+        except (OverflowError, ValueError) as e:  # an absurd `days` (e.g. 1e12) overflows exp() in the MC barrier shift
+            b.miss("touch", "tradedesk", "invalid_input", f"days={days} with iv={iv} is outside the model's numeric range: {e}")
+            return b.build(None, ok=False)
+        return b.build(data, ok=True)
 
     @server.tool(
         annotations=READ_ONLY,

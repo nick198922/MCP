@@ -394,6 +394,13 @@ def test_paper_bench_manifest_empty_cache(tmp_path, monkeypatch, capsys):
     assert res.returncode == 1 and "cache is empty" in res.stderr and res.stdout == ""
     assert not (tmp_path / "x.sha256").exists()
 
+    # The reason above, checked on coreutils itself: an empty manifest fails `sha256sum -c --strict`. Only the exit
+    # code is pinned, since the message ("no properly formatted checksum lines found") differs between versions.
+    if shutil.which("sha256sum"):
+        empty = tmp_path / "empty.sha256"
+        empty.write_text("", encoding="utf-8")
+        assert _sha256sum_check(empty, cache).returncode == 1
+
 
 # ---------------------------------------------------------------------------------------------------------------------
 # stage0_condor_forward.py

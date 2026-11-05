@@ -24,6 +24,9 @@ from ..core.envelope import Builder
 from ..runtime import Runtime
 from ._util import READ_ONLY, r
 
+# 2000-01-01T00:00:00Z in unix milliseconds: an events_add ts_ms below it is almost certainly unix seconds.
+MIN_TS_MS = 946_684_800_000
+
 
 def _ts_ok(ts: int) -> bool:
     """True when unix seconds `ts` fit a datetime (a ts_ms sent in microseconds, or 10**18, does not)."""
@@ -46,7 +49,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
         annotations=READ_ONLY,
         description=(
             "Add a macro / scheduled event to the local calendar. Pass either `ts_ms` (unix "
-            "milliseconds, UTC) or `date` + `time_utc` (ISO 'YYYY-MM-DD' and 'HH:MM'). `kind` is "
+            "milliseconds, UTC; a value before 2000-01-01, i.e. < 946684800000, is taken for unix "
+            "seconds and rejected as invalid_input) or `date` + `time_utc` (ISO 'YYYY-MM-DD' and 'HH:MM'). `kind` is "
             "free-form (fomc / cpi / nfp / halving / listing / …). Idempotent: duplicates with "
             "the same (ts, kind, label) are ignored."
         ),
@@ -66,7 +70,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
         impact: Annotated[
             Literal["low", "medium", "high"], Field(description="Your expected market impact; a subjective tag used only for filtering.")
         ] = "medium",
-        ts_ms: Annotated[int | None, Field(description="Unix milliseconds (UTC). Use this OR date+time_utc.")] = None,
+        ts_ms: Annotated[
+            int | None,
+            Field(description="Unix milliseconds UTC (not seconds; values before 2000-01-01 are rejected). Use this OR date+time_utc."),
+        ] = None,
         date: Annotated[str | None, Field(description="ISO date 'YYYY-MM-DD' (UTC).")] = None,
         time_utc: Annotated[str | None, Field(description="'HH:MM' UTC. Defaults to 13:30.")] = None,
         meta: Annotated[dict[str, Any] | None, Field(description="Arbitrary JSON extras.")] = None,
@@ -79,6 +86,11 @@ def register(server: MCPServer, rt: Runtime) -> None:
             ts = int(ts_ms) // 1000
             if not _ts_ok(ts):
                 b.miss("ts_ms", "tradedesk", "invalid_input", f"ts_ms={ts_ms} is outside the datetime range (unix milliseconds expected)")
+                return b.build(None, ok=False)
+            if ts_ms < MIN_TS_MS:
+                b.miss(
+                    "ts_ms", "tradedesk", "invalid_input", f"ts_ms={ts_ms} is before 2000-01-01: ts_ms must be milliseconds (got seconds?)"
+                )
                 return b.build(None, ok=False)
         elif date:
             tt = (time_utc or "13:30").strip()

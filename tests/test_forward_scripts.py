@@ -527,3 +527,32 @@ def test_stage0_condor_forward_empty_cache_fails_without_report(tmp_path):
     assert list(empty.iterdir()) == []
     assert not (tmp_path / "no-such-cache").exists()
     assert {p.name: p.read_bytes() for p in partial.iterdir()} == before
+
+
+def _tree(root: Path) -> dict[str, bytes]:
+    return {str(p.relative_to(root)): p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
+
+
+def test_stage0_condor_forward_stale_snapshots_are_refused_not_rebuilt(tmp_path):
+    # Review 2026-11-05-stage0-condor-empty-cache: `load_snapshots` rebuilds and overwrites snapshots_v2.json when its
+    # n_files differs from the trades24 file count. With trades24 gone (n_files 2112 on the server, 0 files here)
+    # that rebuild is empty and wipes the saved surfaces; with a new raw file it silently changes the stage-0 input.
+    # Both now end with exit code 1 and a one-line message before `vom.load`, and the cache stays byte-identical.
+    script = Path(s0.__file__)
+    gone = _put_skew_cache(tmp_path / "gone")
+    snap = json.loads((gone / "snapshots_v2.json").read_text())
+    (gone / "snapshots_v2.json").write_text(json.dumps({**snap, "n_files": 3}))
+    grown = _put_skew_cache(tmp_path / "grown")
+    (grown / "trades24").mkdir()
+    (grown / "trades24" / "2024-02-09.json.gz").write_bytes(b"")
+    (grown / "trades24" / "2024-02-16.json.gz.part").write_bytes(b"")  # partial downloads are not counted
+    out = tmp_path / "out" / "stage0.md"
+    for src, saved, now in ((gone, 3, 0), (grown, 0, 1)):
+        before = _tree(src)
+        res = subprocess.run([sys.executable, str(script), "--src-dir", str(src), "--out", str(out)], capture_output=True, text=True)
+        assert res.returncode == 1 and res.stdout == "", res.stderr
+        assert res.stderr == (
+            f"put_skew cache {src}: snapshots_v2.json is stale (n_files {saved}, trades24 has {now}); rebuild it with verify_put_skew.py\n"
+        )
+        assert not out.exists() and not out.parent.exists()
+        assert _tree(src) == before

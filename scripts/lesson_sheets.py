@@ -7,7 +7,10 @@ import json
 import sys
 from pathlib import Path
 
-from PIL import Image, ImageDraw
+try:
+    from PIL import Image, ImageDraw
+except ImportError:
+    sys.exit("lesson_sheets.py needs pillow: uv run --no-project --with pillow python -I scripts/lesson_sheets.py ...")
 
 CELL_W, CELL_H = 960, 600
 

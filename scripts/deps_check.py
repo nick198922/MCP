@@ -10,7 +10,8 @@ recursively) the script collects top-level imported module names, drops the stan
 - ``imported, not declared``: neither ``[project].dependencies`` nor any extra names the distribution. It may still
   work today through a transitive dependency, but a clean ``make install`` is not guaranteed to provide it;
 - ``imported only conditionally``: every import of the module sits in ``try: ... except ImportError`` (or
-  ``if TYPE_CHECKING:``), so the code runs without it (information only);
+  ``if TYPE_CHECKING:``, or for that module ``if find_spec("x"):``), so the code runs without it or stops with its own
+  message, e.g. the ``uv run --no-project --with ...`` command of a media script (information only);
 - ``src imports declared only in extras``: the package needs a dev-only distribution at runtime;
 - ``declared, not imported``: a ``[project].dependencies`` entry that no file in src/ or scripts/ imports. Extras are
   not checked here: they are tools (pytest, ruff) used from the command line or from tests/.
@@ -86,7 +87,7 @@ def dist_of(module: str) -> str:
 class Use:
     file: str
     line: int
-    conditional: bool  # inside try/except ImportError or `if TYPE_CHECKING:`
+    conditional: bool  # inside try/except ImportError, `if TYPE_CHECKING:` or `if find_spec("<this module>"):`
 
 
 def _catches_import_error(node: ast.Try) -> bool:
@@ -105,39 +106,57 @@ def _is_type_checking(test: ast.expr) -> bool:
     return (isinstance(test, ast.Name) and test.id == "TYPE_CHECKING") or (isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING")
 
 
+def _find_spec_module(test: ast.expr) -> str | None:
+    """Top-level module of ``find_spec("x")`` / ``importlib.util.find_spec("x") is not None`` used as an ``if`` test."""
+    if isinstance(test, ast.Compare) and len(test.ops) == 1 and isinstance(test.ops[0], ast.IsNot):
+        right = test.comparators[0]
+        if isinstance(right, ast.Constant) and right.value is None:
+            test = test.left
+    if not (isinstance(test, ast.Call) and test.args):
+        return None
+    f = test.func
+    name = f.id if isinstance(f, ast.Name) else f.attr if isinstance(f, ast.Attribute) else None
+    arg = test.args[0]
+    if name == "find_spec" and isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+        return arg.value.split(".", 1)[0] or None
+    return None
+
+
 def imports_of(source: str, file: str = "<src>") -> dict[str, list[Use]]:
     """{top-level module: uses} of absolute imports in one Python source. Raises SyntaxError. Pure."""
     out: dict[str, list[Use]] = {}
 
-    def add(module: str, line: int, conditional: bool) -> None:
+    def add(module: str, line: int, conditional: bool, spec: frozenset[str]) -> None:
         top = module.split(".", 1)[0]
         if top:
-            out.setdefault(top, []).append(Use(file, line, conditional))
+            out.setdefault(top, []).append(Use(file, line, conditional or top in spec))
 
-    def visit(node: ast.AST, conditional: bool) -> None:
+    def visit(node: ast.AST, conditional: bool, spec: frozenset[str] = frozenset()) -> None:
+        # spec: modules whose presence an enclosing `if find_spec("x"):` has checked
         if isinstance(node, ast.Import):
             for a in node.names:
-                add(a.name, node.lineno, conditional)
+                add(a.name, node.lineno, conditional, spec)
             return
         if isinstance(node, ast.ImportFrom):
             if node.level == 0 and node.module:
-                add(node.module, node.lineno, conditional)
+                add(node.module, node.lineno, conditional, spec)
             return
         if isinstance(node, ast.Try | ast.TryStar):
             guarded = conditional or _catches_import_error(node)
             for child in node.body:
-                visit(child, guarded)
+                visit(child, guarded, spec)
             for child in [*node.handlers, *node.orelse, *node.finalbody]:
-                visit(child, conditional)
+                visit(child, conditional, spec)
             return
-        if isinstance(node, ast.If) and _is_type_checking(node.test):
+        if isinstance(node, ast.If) and (_is_type_checking(node.test) or _find_spec_module(node.test)):
+            checked = _find_spec_module(node.test)
             for child in node.body:
-                visit(child, True)
+                visit(child, conditional or not checked, spec | {checked} if checked else spec)
             for child in node.orelse:
-                visit(child, conditional)
+                visit(child, conditional, spec)
             return
         for child in ast.iter_child_nodes(node):
-            visit(child, conditional)
+            visit(child, conditional, spec)
 
     visit(ast.parse(source, filename=file), False)
     return out

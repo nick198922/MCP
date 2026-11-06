@@ -1,7 +1,10 @@
 """scripts/deps_check.py (item 156 of docs/ideas/IDEA-20261102-standing-improvements.md): imports vs pyproject dependencies."""
 
+import importlib
 import sys
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -142,3 +145,66 @@ def test_main_on_repository(tmp_path):
     out = tmp_path / "deps.md"
     assert dc.main(["--root", str(ROOT), "--out", str(out)]) == 0  # src/tradedesk declares everything it imports
     assert out.read_text(encoding="utf-8").startswith("# deps_check:")
+
+
+FIND_SPEC = """
+import importlib.util
+from importlib.util import find_spec
+
+if importlib.util.find_spec("mlx_whisper"):
+    import mlx_whisper
+    import other_pkg
+else:
+    import faster_whisper
+if find_spec("av.codec") is not None:
+    from av import open
+if importlib.util.find_spec(name):
+    import dynamic_pkg
+"""
+
+
+def test_find_spec_guard_is_conditional_for_its_module_only():
+    found = dc.imports_of(FIND_SPEC, "f.py")
+    assert found["mlx_whisper"][0].conditional
+    assert found["av"][0].conditional  # `is not None`, dotted name -> top module
+    assert not found["other_pkg"][0].conditional  # the guard checked another module
+    assert not found["faster_whisper"][0].conditional  # else branch
+    assert not found["dynamic_pkg"][0].conditional  # not a literal module name
+
+
+def test_repository_scripts_import_nothing_undeclared_unconditionally():
+    """BACKLOG 6.38: media scripts stop with their `uv run --no-project --with ...` command instead of an ImportError."""
+    declared = dc.declared_from_pyproject((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    sources, local = dc.load_scope(ROOT / "scripts")
+    s = dc.check_scope(sources, declared, local)
+    assert s.undeclared == []
+    media = {"bs4", "faster_whisper", "imageio_ffmpeg", "mlx_whisper", "PIL", "youtube_transcript_api", "matplotlib"}
+    assert media <= set(s.conditional_undeclared)
+
+
+@pytest.mark.parametrize(
+    ("script", "missing", "call", "needs"),
+    [
+        ("tg_export", "bs4", lambda m, p: m.parse(p), "beautifulsoup4"),
+        ("tg_videos", "imageio_ffmpeg", lambda m, p: m.duration(p / "v.mp4"), "imageio-ffmpeg"),
+        ("yt_asr", "imageio_ffmpeg", lambda m, p: m.decode(p / "a.m4a"), "imageio-ffmpeg"),
+        ("yt_frames", "PIL", lambda m, p: m.differences([p / "f.jpg"], 6.0), "pillow"),
+        ("yt_frames", "imageio_ffmpeg", lambda m, p: m.extract_at(p / "v.mp4", p, [1.0]), "imageio-ffmpeg"),
+        ("yt_transcript", "youtube_transcript_api", lambda m, p: m.fetch("dQw4w9WgXcQ"), "youtube-transcript-api"),
+    ],
+)
+def test_media_script_without_its_package_exits_with_run_command(script, missing, call, needs, monkeypatch, tmp_path):
+    monkeypatch.setitem(sys.modules, missing, None)  # import -> ImportError
+    mod = importlib.import_module(script)
+    with pytest.raises(SystemExit) as e:
+        call(mod, tmp_path)
+    msg = str(e.value.code)
+    assert needs in msg and "uv run --no-project --with" in msg
+
+
+def test_lesson_sheets_without_pillow_exits_with_run_command(monkeypatch):
+    monkeypatch.setitem(sys.modules, "PIL", None)
+    monkeypatch.delitem(sys.modules, "lesson_sheets", raising=False)
+    with pytest.raises(SystemExit) as e:
+        importlib.import_module("lesson_sheets")
+    assert "uv run --no-project --with pillow" in str(e.value.code)

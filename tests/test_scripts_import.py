@@ -278,6 +278,8 @@ for name in sys.argv[1:]:
         importlib.import_module(name)
     except BaseException as e:  # SystemExit included: a guarded script must not exit on import
         missing = e.name if isinstance(e, ModuleNotFoundError) else None
+        if isinstance(e, SystemExit) and str(e).startswith(name + ".py needs "):
+            missing = "<guarded>"  # the script's own "install the extra package" exit
         failed[name] = [missing, f"{type(e).__name__}: {e}"]
 print(json.dumps(failed))
 """
@@ -301,5 +303,7 @@ def test_guarded_scripts_import_without_side_effects(tmp_path):
     )
     assert res.returncode == 0, res.stderr[-4000:]
     failed = json.loads(res.stdout.strip().splitlines()[-1])
-    broken = {k: msg for k, (missing, msg) in failed.items() if not (missing and missing == EXTRA_DEPS.get(k))}
+    broken = {
+        k: msg for k, (missing, msg) in failed.items() if not (k in EXTRA_DEPS and missing and missing in (EXTRA_DEPS[k], "<guarded>"))
+    }
     assert broken == {}

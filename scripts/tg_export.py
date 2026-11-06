@@ -90,7 +90,10 @@ def media_of(body, present: set[str]) -> list[dict]:
 
 
 def parse(export: Path) -> list[dict]:
-    from bs4 import BeautifulSoup  # noqa: PLC0415
+    try:
+        from bs4 import BeautifulSoup  # noqa: PLC0415
+    except ImportError:
+        sys.exit("tg_export.py needs beautifulsoup4: uv run --no-project --with beautifulsoup4 python -I scripts/tg_export.py ...")
 
     posts: list[dict] = []
     present = present_files(export)

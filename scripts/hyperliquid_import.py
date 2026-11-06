@@ -137,16 +137,20 @@ def mark_airdrop(db_path: str, before: str) -> int:
     cut = int(datetime.strptime(before, "%Y-%m-%d").replace(tzinfo=UTC).timestamp())
     con = sqlite3.connect(db_path)
     n = 0
-    for tid, tags in con.execute("SELECT id, tags FROM journal WHERE tags LIKE '%\"hyperliquid\"%' AND closed_ts < ?", (cut,)).fetchall():
-        t = json.loads(tags or "[]")
-        if "airdrop" not in t:
-            con.execute(
-                "UPDATE journal SET tags = ?, thesis = ? WHERE id = ?",
-                (json.dumps([*t, "airdrop"]), "фарм дропу Hyperliquid (не торгівля)", tid),
-            )
-            n += 1
-    con.commit()
-    con.close()
+    try:
+        with con:  # one transaction: commits all tags, or rolls every one back if an UPDATE fails
+            for tid, tags in con.execute(
+                "SELECT id, tags FROM journal WHERE tags LIKE '%\"hyperliquid\"%' AND closed_ts < ?", (cut,)
+            ).fetchall():
+                t = json.loads(tags or "[]")
+                if "airdrop" not in t:
+                    con.execute(
+                        "UPDATE journal SET tags = ?, thesis = ? WHERE id = ?",
+                        (json.dumps([*t, "airdrop"]), "фарм дропу Hyperliquid (не торгівля)", tid),
+                    )
+                    n += 1
+    finally:
+        con.close()
     return n
 
 

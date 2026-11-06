@@ -257,6 +257,7 @@ save_work() {
     return 1
   fi
   SAVE_CHECKS="lint and tests pass"
+  python3 "$REPO/scripts/fix_run_links.py" || true
   make lint >"$LOG_DIR/$STAMP.save-lint.log" 2>&1 || SAVE_CHECKS="LINT FAILS"
   make test >"$LOG_DIR/$STAMP.save-test.log" 2>&1 || SAVE_CHECKS="$SAVE_CHECKS; TESTS FAIL"
   git switch -q -C "$br" || { SAVE_FAILED="git switch"; return 1; }

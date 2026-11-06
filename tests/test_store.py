@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import re
+import unicodedata
 from pathlib import Path
 
 import pytest
@@ -224,6 +225,18 @@ async def test_cancelled_write_is_rolled_back_even_if_its_statement_was_still_qu
 _TX_METHODS = frozenset({"_migrate", "_write"})  # the only places that may commit() / rollback()
 _DML = re.compile(r"\s*(?:WITH\b.*?\b)?(INSERT|UPDATE|DELETE|REPLACE)\b", re.I | re.S)
 _EXECUTE = frozenset({"execute", "executemany", "executescript"})
+# Source without any of these identifiers has no problem to report, so it is not parsed (most of scripts/). Python
+# NFKC-normalises identifiers (a full-width `commit` is `commit`), so source with a character whose NFKC form has ASCII
+# letters, digits or `_` is always parsed; Cyrillic text, emoji and dashes do not count.
+_CALLS_CHECKED = re.compile(r"\b(?:commit|rollback|execute|executemany|executescript)\b")
+
+
+def _cannot_have_problems(source: str) -> bool:
+    if _CALLS_CHECKED.search(source):
+        return False
+    return not any(
+        not c.isascii() and any(n.isascii() and (n.isalnum() or n == "_") for n in unicodedata.normalize("NFKC", c)) for c in set(source)
+    )
 
 
 def _is_write_block(node: ast.AST) -> bool:
@@ -246,6 +259,8 @@ def write_discipline_problems(source: str) -> list[str]:
     that holds such a literal. Reads (SELECT) before the write block are fine. Only top-level functions and class
     methods are scanned (nested functions as part of their outer one). Not caught: DML built entirely from names in a
     function with no DML literal, statements at module level."""
+    if _cannot_have_problems(source):
+        return []  # every problem is a call of one of the names in _CALLS_CHECKED
     tree = ast.parse(source)
     funcs = [n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
     for cls in (n for n in tree.body if isinstance(n, ast.ClassDef)):
@@ -254,10 +269,16 @@ def write_discipline_problems(source: str) -> list[str]:
     for fn in funcs:
         if fn.name in _TX_METHODS:
             continue
-        calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)]
+        calls, blocks, writes = [], [], False  # one walk over the function (walks are most of the scan time)
+        for n in ast.walk(fn):
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute):
+                calls.append(n)
+            elif isinstance(n, ast.Constant):
+                writes = writes or (isinstance(n.value, str) and bool(_DML.match(n.value)))
+            elif _is_write_block(n):
+                blocks.append(n)
         problems += [f"{fn.name}:{c.lineno} {c.func.attr}()" for c in calls if c.func.attr in ("commit", "rollback")]
-        writes = any(isinstance(n, ast.Constant) and isinstance(n.value, str) and _DML.match(n.value) for n in ast.walk(fn))
-        inside = {id(c) for blk in ast.walk(fn) if _is_write_block(blk) for c in ast.walk(blk)}
+        inside = {id(c) for blk in blocks for c in ast.walk(blk)}
         for c in calls:
             if c.func.attr not in _EXECUTE or id(c) in inside or not c.args:
                 continue
@@ -292,6 +313,13 @@ def test_write_discipline_checker_on_fixtures():
         "put:3 execute() outside _write()",
         "upd:8 execute() outside _write()",
     ]
+    # The text pre-filter skips nothing the checker would flag: it knows every checked name, and full-width
+    # identifiers (NFKC -> `commit`) are parsed although its regex does not see them.
+    assert all(_CALLS_CHECKED.fullmatch(name) for name in _EXECUTE | {"commit", "rollback"})
+    fullwidth = "class S:\n    async def put(self):\n        await self.conn.\uff43\uff4f\uff4d\uff4d\uff49\uff54()\n"
+    assert not _CALLS_CHECKED.search(fullwidth) and write_discipline_problems(fullwidth) == ["put:3 commit()"]
+    assert write_discipline_problems("async def f(st):\n    await st.conn.fetchall()\n") == []
+    assert _cannot_have_problems("x = 1  # Київ — 🙂\n") and not _cannot_have_problems("x = 1  # ｃ\n")
 
 
 # Scripts that write outside <store>._write(): "file" (whole file) or "file:function" -> (problems found, reason).

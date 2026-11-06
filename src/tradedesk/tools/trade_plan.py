@@ -16,7 +16,7 @@ from mcp.server.mcpserver import MCPServer
 from pydantic import Field
 
 from ..analytics.demo_option_pairs import paired_report
-from ..analytics.trade_plan import TAKER_FEE, geometry, resolve_plan, summarize_plans, validate_levels
+from ..analytics.trade_plan import TAKER_FEE, geometry, resolve_plan, summarize_plans, usable_expires, validate_levels
 from ..core.envelope import Builder
 from ..runtime import Runtime
 from ._util import READ_ONLY, STORE_ERRORS, r, store_failed, store_ready
@@ -160,10 +160,14 @@ async def review_open(rt: Runtime, b: Builder) -> list[int]:
                 if n:
                     resolved.append(p["id"])
             continue  # a linked option plan is settled with its paper trade (assistant_paper_status), never on candles
+        if usable_expires(p["expires_ts"]) is None:
+            # a warning, not `missing`: the collector job raises on `missing`, which would fail it every hour for one bad row
+            b.warn(f"plan {p['id']} skipped: stored expires_ts is not a number")
+            continue
         markets[(p["exchange"], p["symbol"])].append(p)
     for (exchange, symbol), plans in markets.items():
         since_ms = min(int(p["created_ts"]) for p in plans) * 1000
-        until_ms = min(now_ts, max(int(p["expires_ts"]) for p in plans)) * 1000
+        until_ms = min(now_ts, max(usable_expires(p["expires_ts"]) or 0 for p in plans)) * 1000
         got = await _candles(rt, b, exchange, symbol, since_ms, until_ms)
         if got is None:
             continue  # in `missing`; the plans stay open
@@ -352,7 +356,11 @@ def register(server: MCPServer, rt: Runtime) -> None:
             now_ts = int(rt.now().timestamp())
             open_now = await rt.store.plan_list(status="open", exclude_tag=SHADOW_TAG, limit=5000)
             open_shadow = await rt.store.plan_list(status="open", tag=SHADOW_TAG, limit=100_000)
-            stale = [p["id"] for p in open_now if p["expires_ts"] + STALE_S < now_ts and p["rec_paper_id"] is None]
+            stale = [
+                p["id"]
+                for p in open_now
+                if (e := usable_expires(p["expires_ts"])) is not None and e + STALE_S < now_ts and p["rec_paper_id"] is None
+            ]
             if stale:
                 b.warn(f"plans {stale} are past their horizon by more than a day and still open: candles missing for their market")
             done = await rt.store.plan_list(status="resolved", exclude_tag=SHADOW_TAG, limit=5000)

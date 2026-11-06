@@ -38,6 +38,7 @@ from .condor_forward import EARLIEST_T0, ENTRY_CUTOFF_HOUR_UTC, condor_cost, cos
 from .pm_gap_report import T0_TS, T0_V2G_TS, verdict_ts, verdict_ts_v2g, weekly_descriptive, weekly_v2g
 from .setup_signals import TF_MS
 from .setup_versions import EPOCHS, applies, version_of
+from .stuck_demo import stuck_trades
 
 DAY_MS = 86_400_000
 H8_MS = 8 * 3_600_000
@@ -907,6 +908,13 @@ def build(inputs: Mapping[str, Any], now_ms: int) -> dict[str, Any]:
         k = sum(1 for r in demo_no if r["side"] == side)
         if k >= 3:
             notes.append(f"«ні» {side} смуги дають {k} сетапів демо: ознака системної причини (виконання, витрати)")
+    stuck = stuck_trades(trades, now_ms)
+    if stuck:
+        notes.append(
+            f"завислі демо-угоди (open довше за строк утримання + 1 доба): {len(stuck)} — "
+            + ", ".join(f"{t['setup']} {t['symbol']}" for t in stuck)
+            + "; вони не входять у закриті вибірки, тож n демо неповне, доки їх не закрито"
+        )
     return {"now_ms": now_ms, "forwards": out, "notes": notes}
 
 

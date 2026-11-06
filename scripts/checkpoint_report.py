@@ -12,6 +12,8 @@ The paper engine ``assistant_paper`` (no band in CHECKPOINT) shows counters and 
 ``rec_paper`` is read without its P&L columns, and the state file ``<DB dir>/assistant/paper_state.json`` read-only.
 The idea cards with ``Статус: forward`` (``docs/ideas/``) are listed with the count of their ``idea:`` plans in
 ``trade_plan``, read without the R / outcome / price columns.
+Demo trades still ``open`` more than a day past their hold get a closing note with their count
+(``tradedesk.analytics.stuck_demo``, item 133): they are missing from the closed samples.
 The text (Ukrainian) is printed and, with ``--out``, written to a file.
 """
 

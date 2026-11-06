@@ -18,7 +18,7 @@ from ..analytics.ranges import classify_ranges, generate_setup
 from ..analytics.regime import classify_regime
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, STORE_ERRORS, r, store_failed, store_ready
+from ._util import READ_ONLY, STORE_ERRORS, parsed_rows, r, store_failed, store_ready
 
 SFP_EDGE_WARNING = (
     "Unverified edge: walk-forward backtests (2022-10..2026-10, up to 50 Binance crypto perps, 4h/12h "
@@ -585,18 +585,17 @@ def register(server: MCPServer, rt: Runtime) -> None:
         if raw is None:
             out["reason"] = "fetch_failed"
             return out
-        bars = [
-            {
+        bars = parsed_rows(
+            [x for x in (raw or []) if isinstance(x, (list, tuple)) and len(x) >= 5],
+            lambda x: {
                 "ts": int(x[0]),
                 "open": float(x[1]),
                 "high": float(x[2]),
                 "low": float(x[3]),
                 "close": float(x[4]),
-                "volume": float(x[5]) if len(x) >= 6 else 0.0,
-            }
-            for x in (raw or [])
-            if isinstance(x, (list, tuple)) and len(x) >= 5
-        ]
+                "volume": float(x[5] or 0.0) if len(x) >= 6 else 0.0,  # ccxt may send None volume, as chart_markup
+            },
+        )
         if len(bars) < min_bars:
             out["reason"] = f"insufficient_bars: {len(bars)} < {min_bars}"
             return out

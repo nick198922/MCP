@@ -30,21 +30,25 @@ def _f(x: Any) -> float | None:
 
 
 def _normalise_bars(bars: list[Any]) -> list[dict[str, float]]:
-    """Accept ccxt-style [[ts_ms, o, h, l, c, v], …] or dict rows."""
+    """Accept ccxt-style [[ts_ms, o, h, l, c, v], …] or dict rows. A bar with a field that is not a number (None from
+    ccxt, a string) is dropped; signals and the backtest both normalise through here, so they stay aligned."""
     rows: list[dict[str, float]] = []
     for b in bars:
-        if isinstance(b, (list, tuple)) and len(b) >= 5:
-            rows.append({"ts": int(b[0]), "open": float(b[1]), "high": float(b[2]), "low": float(b[3]), "close": float(b[4])})
-        elif isinstance(b, dict) and "close" in b:
-            rows.append(
-                {
-                    "ts": int(b.get("ts") or b.get("timestamp") or 0),
-                    "open": float(b.get("open") or b["close"]),
-                    "high": float(b.get("high") or b["close"]),
-                    "low": float(b.get("low") or b["close"]),
-                    "close": float(b["close"]),
-                }
-            )
+        try:
+            if isinstance(b, (list, tuple)) and len(b) >= 5:
+                rows.append({"ts": int(b[0]), "open": float(b[1]), "high": float(b[2]), "low": float(b[3]), "close": float(b[4])})
+            elif isinstance(b, dict) and "close" in b:
+                rows.append(
+                    {
+                        "ts": int(b.get("ts") or b.get("timestamp") or 0),
+                        "open": float(b.get("open") or b["close"]),
+                        "high": float(b.get("high") or b["close"]),
+                        "low": float(b.get("low") or b["close"]),
+                        "close": float(b["close"]),
+                    }
+                )
+        except (TypeError, ValueError, OverflowError):
+            continue
     return rows
 
 

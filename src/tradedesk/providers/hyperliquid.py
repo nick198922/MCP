@@ -25,6 +25,15 @@ def _f(x: Any) -> float | None:
         return None
 
 
+def _ms(x: Any) -> int | None:
+    if x is None or isinstance(x, bool):  # int(True) == 1 would be a 1970 timestamp
+        return None
+    try:
+        return int(x)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 def parse_asset_contexts(raw: Any, include_delisted: bool = False) -> list[dict[str, Any]]:
     """metaAndAssetCtxs -> flat per-coin rows. Delisted perps are dropped unless ``include_delisted`` (then their rows
     carry ``delisted: True``; the others ``delisted: False``)."""
@@ -211,12 +220,13 @@ class Hyperliquid:
     async def funding_history_range(self, coin: str, start_ms: int, end_ms: int, *, max_pages: int = 40) -> Fetched:
         """Hourly funding from ``start_ms`` to ``end_ms``; the API returns at most 500 rows per call, so walk forward.
 
-        Returns ``{"rows": [...], "complete": bool}``; ``complete`` is False when ``max_pages`` was hit or a
-        later page failed (rows so far are kept). A failure on the first page raises.
+        Returns ``{"rows": [...], "complete": bool}``; ``complete`` is False when ``max_pages`` was hit, a later
+        page failed, or rows with a malformed ``time`` were dropped (rows so far are kept; the drop count is in
+        ``evidence.args["dropped_rows"]``). A failure on the first page raises.
         """
         coin = await self.resolve_coin(coin)
         rows: dict[int, dict[str, Any]] = {}
-        start, pages, latency, cached, complete = start_ms, 0, 0, True, True
+        start, pages, latency, cached, complete, dropped = start_ms, 0, 0, True, True, 0
         while start < end_ms:
             if pages >= max_pages:
                 complete = False
@@ -231,19 +241,28 @@ class Hyperliquid:
             pages += 1
             latency += f.evidence.latency_ms or 0
             cached = cached and f.evidence.cached
-            batch = [x for x in (f.data or []) if isinstance(x, dict) and x.get("time") is not None]
-            for x in batch:
-                rows[int(x["time"])] = x
-            if len(batch) < 500:
+            # a row whose time is not an integer (null, a string, a list, a bool) is dropped and the result marked
+            # incomplete; whether to page on is decided by the raw page size, so a dropped row never ends the walk early
+            page = [x for x in (f.data or []) if isinstance(x, dict)]
+            batch = [(t, x) for x in page if (t := _ms(x.get("time"))) is not None]
+            dropped += len(page) - len(batch)
+            for t, x in batch:
+                rows[t] = x
+            if len(page) < 500:
                 break
-            nxt = max(int(x["time"]) for x in batch) + 1
+            if not batch:  # a full page without one valid time: nowhere to resume from
+                complete = False
+                break
+            nxt = max(t for t, _ in batch) + 1
             if nxt <= start:
                 break
             start = nxt
+        if dropped:
+            complete = False
         ev = Evidence(
             provider="hyperliquid",
             tool="info/fundingHistory",
-            args={"coin": coin, "start_ms": start_ms, "end_ms": end_ms, "pages": pages},
+            args={"coin": coin, "start_ms": start_ms, "end_ms": end_ms, "pages": pages, "dropped_rows": dropped},
             latency_ms=latency,
             cached=cached and pages > 0,
         )

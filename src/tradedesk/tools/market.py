@@ -10,7 +10,7 @@ from ..analytics.orderbook import book_stats, walk_book
 from ..analytics.trades import summarise as summarise_trades
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, r, timeframe_seconds
+from ._util import READ_ONLY, json_num, r, timeframe_seconds
 
 EX = Annotated[str, Field(description="ccxt exchange id: binance, binanceusdm (USDT perps), bybit, okx, kraken, coinbase ...")]
 SYM = Annotated[str, Field(description="ccxt unified symbol. Spot 'BTC/USDT'; linear perp 'BTC/USDT:USDT'")]
@@ -101,7 +101,15 @@ def register(server: MCPServer, rt: Runtime) -> None:
         if not isinstance(ob, dict):
             b.miss("orderbook", f"ccxt:{exchange}", "data_unavailable", f"unexpected response type {type(ob).__name__}")
             return b.build(None, ok=False)
-        bids, asks = ob.get("bids", []), ob.get("asks", [])
+        # a level whose price or size is not a number (ccxt leaves None for a field the venue omitted) is dropped
+        bids, asks = (
+            [
+                lv
+                for lv in ob.get(side) or []
+                if isinstance(lv, (list, tuple)) and len(lv) >= 2 and None not in (json_num(lv[0]), json_num(lv[1]))
+            ]
+            for side in ("bids", "asks")
+        )
         stats = book_stats(bids, asks)
         data: dict[str, Any] = {
             "symbol": symbol,

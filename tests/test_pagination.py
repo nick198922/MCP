@@ -196,3 +196,51 @@ async def test_hyperliquid_funding_range_walks_500_row_pages(state):
         assert f.evidence.args["pages"] == 3
     finally:
         await rt.aclose()
+
+
+async def test_hyperliquid_funding_range_malformed_time_does_not_truncate(state):
+    # one row with a non-integer time on the first full page must not end the walk at 499 rows with complete=True
+    hour = 3_600_000
+    total = [{"coin": "BTC", "fundingRate": "0.00001", "premium": "0", "time": START + i * hour} for i in range(1200)]
+    bad = dict(total[10], time="abc")
+    flag = dict(total[20], time=True)  # a bool is not a timestamp either
+
+    def hl(req: httpx.Request) -> httpx.Response:
+        body = json.loads(req.content)
+        if body["type"] != "fundingHistory":
+            return httpx.Response(200, json=[])
+        start, end = body["startTime"], body.get("endTime", 10**15)
+        page = [r for r in total if start <= r["time"] <= end][:500]
+        return httpx.Response(200, json=[bad if r is total[10] else flag if r is total[20] else r for r in page])
+
+    tr = make_transports(state)
+    tr["hyperliquid"] = httpx.MockTransport(hl)
+    rt = Runtime(Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=""), transports=tr, exchange_factory=FakeEx)
+    try:
+        f = await rt.hyperliquid.funding_history_range("BTC", START, START + 1200 * hour)
+        times = [x["time"] for x in f.data["rows"]]
+        assert len(times) == 1198 and times[-1] == START + 1199 * hour
+        assert all(isinstance(t, int) and not isinstance(t, bool) for t in times)
+        assert f.data["complete"] is False
+        assert f.evidence.args["dropped_rows"] == 2
+        assert f.evidence.args["pages"] == 3
+    finally:
+        await rt.aclose()
+
+
+async def test_hyperliquid_funding_range_full_page_without_valid_time_is_incomplete(state):
+    def hl(req: httpx.Request) -> httpx.Response:
+        body = json.loads(req.content)
+        if body["type"] != "fundingHistory":
+            return httpx.Response(200, json=[])
+        return httpx.Response(200, json=[{"coin": "BTC", "fundingRate": "0.00001", "time": "abc"}] * 500)
+
+    tr = make_transports(state)
+    tr["hyperliquid"] = httpx.MockTransport(hl)
+    rt = Runtime(Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=""), transports=tr, exchange_factory=FakeEx)
+    try:
+        f = await rt.hyperliquid.funding_history_range("BTC", START, START + 1200 * 3_600_000)
+        assert f.data == {"rows": [], "complete": False}
+        assert f.evidence.args["pages"] == 1
+    finally:
+        await rt.aclose()

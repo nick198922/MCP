@@ -12,7 +12,7 @@ from typing import Annotated, Any
 from mcp.server.mcpserver import MCPServer
 from pydantic import Field
 
-from ..analytics.backtest import run_backtest, signals_momentum
+from ..analytics.backtest import _normalise_bars, run_backtest, signals_momentum
 from ..core.envelope import Builder
 from ..runtime import Runtime
 from ._util import READ_ONLY, r, timeframe_seconds
@@ -58,6 +58,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
         if not bars or len(bars) < max(lookback + 5, 50):
             b.miss("ohlcv", f"ccxt:{exchange}", "data_unavailable", f"only {0 if not bars else len(bars)} bars available")
             return b.build(None, ok=False)
+        dropped = len(bars) - len(_normalise_bars(bars))
+        if dropped:  # a dropped inner bar merges its two neighbours into one return
+            b.warn(f"{dropped} malformed bars (non-numeric fields) dropped; returns across those gaps span two bars")
         positions = signals_momentum(bars, lookback=lookback, threshold_pct=threshold_pct)
         bars_per_year = (365 * 24 * 3600) / tf_sec
         res = run_backtest(

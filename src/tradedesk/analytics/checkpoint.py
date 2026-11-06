@@ -35,6 +35,7 @@ from .carry_report import cost_realism
 from .carry_v2 import a_v2_shadow
 from .catalyst_scalp import wilson_ci
 from .condor_forward import EARLIEST_T0, ENTRY_CUTOFF_HOUR_UTC, condor_cost, cost_fridays, cost_report, friday_entry
+from .demo_pnl_check import pnl_mismatches
 from .pm_gap_report import T0_TS, T0_V2G_TS, verdict_ts, verdict_ts_v2g, weekly_descriptive, weekly_v2g
 from .setup_signals import TF_MS
 from .setup_versions import EPOCHS, applies, version_of
@@ -914,6 +915,13 @@ def build(inputs: Mapping[str, Any], now_ms: int) -> dict[str, Any]:
             f"завислі демо-угоди (open довше за строк утримання + 1 доба): {len(stuck)} — "
             + ", ".join(f"{t['setup']} {t['symbol']}" for t in stuck)
             + "; вони не входять у закриті вибірки, тож n демо неповне, доки їх не закрито"
+        )
+    bad_pnl = pnl_mismatches(trades)
+    if bad_pnl:
+        notes.append(
+            f"Угоди з розбіжним P&L: {len(bad_pnl)} — "
+            + ", ".join(f"{t['setup']} {t['symbol']} ({t['recorded']:+.2f} проти {t['expected']:+.2f} USD)" for t in bad_pnl)
+            + "; P&L у БД не збігається з (вихід − вхід)·qty − комісії, схоже на часткове закриття: ціну й причину виходу перевірити"
         )
     return {"now_ms": now_ms, "forwards": out, "notes": notes}
 

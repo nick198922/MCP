@@ -14,6 +14,8 @@ The idea cards with ``Статус: forward`` (``docs/ideas/``) are listed with 
 ``trade_plan``, read without the R / outcome / price columns.
 Demo trades still ``open`` more than a day past their hold get a closing note with their count
 (``tradedesk.analytics.stuck_demo``, item 133): they are missing from the closed samples.
+Closed demo trades whose recorded P&L disagrees with ``(exit - entry) * qty`` minus fees get a note «Угоди з розбіжним
+P&L: N» (``tradedesk.analytics.demo_pnl_check``, item 140; only when N > 0): their exit price and reason are suspect.
 The text (Ukrainian) is printed and, with ``--out``, written to a file.
 """
 

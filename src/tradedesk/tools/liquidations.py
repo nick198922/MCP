@@ -9,7 +9,7 @@ from pydantic import Field
 
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, r
+from ._util import READ_ONLY, STORE_ERRORS, r, store_failed, store_ready
 
 
 def register(server: MCPServer, rt: Runtime) -> None:
@@ -39,17 +39,14 @@ def register(server: MCPServer, rt: Runtime) -> None:
         ] = 10,
     ) -> dict[str, Any]:
         b = Builder()
-        if rt.store is None:
-            b.miss("store", "tradedesk", "config", "db_path is empty; set TRADEDESK_DB_PATH to enable liquidations")
-            return b.build(None, ok=False)
-        try:
-            await rt.store.init()
-        except Exception as e:  # noqa: BLE001
-            b.miss("store", "tradedesk", "backend_error", f"{type(e).__name__}: {e}")
+        if not await store_ready(b, rt, "liquidations"):
             return b.build(None, ok=False)
         now_ts = int(rt.now().timestamp())
         since_ts = now_ts - window_minutes * 60
-        rows = await rt.store.liquidations_in_window(since_ts=since_ts, until_ts=now_ts, venue=venue, symbol=symbol)
+        try:
+            rows = await rt.store.liquidations_in_window(since_ts=since_ts, until_ts=now_ts, venue=venue, symbol=symbol)
+        except STORE_ERRORS as e:
+            return store_failed(b, e)
         if not rows:
             return b.build(
                 {

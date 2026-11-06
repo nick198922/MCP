@@ -9,7 +9,7 @@ a real MCP client while the store is
   - `unreachable`: `db_path` under a regular file, so `Store.init()` raises (the server starts on a good store, then
     the tools see one that cannot be opened; in production the lifespan opens the store first, so the closest real
     case is an sqlite error at query time: locked file, disk I/O, full disk).
-A separate test covers that query-time case for the tools that wrap their queries (`QUERY_GUARDED`).
+A separate test covers that query-time case for every store tool (`QUERY_GUARDED`, which must equal the scan).
 A tool must return the envelope (`ok` true or false), never an error result.
 """
 
@@ -40,8 +40,10 @@ MODES = ("none", "empty", "missing_dir", "unreachable")
 # `tools._util.store_ready`, docs/changes/2026-11-06-store-init-guard.md).
 KNOWN_RAISERS: dict[str, set[str]] = {mode: set() for mode in MODES}
 
-# Tools whose store queries are wrapped in `except STORE_ERRORS` (journal, events, rules, positions, plans, paper books).
+# Tools whose store queries are wrapped in `except STORE_ERRORS` (journal, events, rules, positions, plans, paper books,
+# history, liquidations, system_health): all of STORE_TOOLS, see test_store_tool_discovery.
 QUERY_GUARDED = {
+    "alerts_recent",
     "assistant_paper_open",
     "assistant_paper_status",
     "carry_paper_close",
@@ -52,10 +54,15 @@ QUERY_GUARDED = {
     "events_list",
     "events_seed_load",
     "forecast_log_status",
+    "funding_zscore",
+    "iv_rank",
     "journal_add",
     "journal_close",
     "journal_list",
     "journal_stats",
+    "liquidations_summary",
+    "market_regime",
+    "ohlcv_history",
     "paper_carry_status",
     "plan_add",
     "plan_link",
@@ -65,17 +72,25 @@ QUERY_GUARDED = {
     "positions_close",
     "positions_list",
     "positions_risk",
+    "range_detect",
+    "range_setup",
     "rules_add",
     "rules_disable",
     "rules_list",
     "rules_presets_load",
     "rules_test",
+    "skew_percentile",
+    "system_health",
 }
 
 # Guarded tools that do not report `missing: store` on a query error with the test ARGS: four return before their first
-# store query (providers fail first in the two `*_open`, `events_add` has no time, `rules_test` has no expression);
+# store query (providers fail first in the two `*_open`, `events_add` has no time, `rules_test` has no expression),
+# `range_setup` reads live bars by default (its source='store' path has its own test below);
 # `paper_carry_status` catches the error per book and reports it as `paper_carry:<book>`.
-NO_QUERY_WITH_ARGS = {"assistant_paper_open", "carry_paper_open", "events_add", "rules_test", "paper_carry_status"}
+NO_QUERY_WITH_ARGS = {"assistant_paper_open", "carry_paper_open", "events_add", "rules_test", "paper_carry_status", "range_setup"}
+
+# Guarded tools that still have other data when the store fails, so they report `missing: store` with ok=true.
+PARTIAL_ON_STORE_ERROR = {"system_health"}
 
 
 def _touches_store(node: ast.AST) -> bool:
@@ -227,7 +242,9 @@ async def test_store_query_error_goes_to_missing(tmp_path):
     assert not no_envelope, f"tools without an envelope: {no_envelope}"
     failed = {n for n, env in envelopes.items() if ("store", "backend_error") in {(m["field"], m["reason"]) for m in env["missing"]}}
     assert failed == QUERY_GUARDED - NO_QUERY_WITH_ARGS
-    assert all(envelopes[n]["ok"] is False for n in failed)
+    assert all(envelopes[n]["ok"] is False for n in failed - PARTIAL_ON_STORE_ERROR)
+    health = envelopes["system_health"]
+    assert health["ok"] is True and health["data"]["store"]["status"] == "error" and health["data"]["health"] is not None
     assert {m["field"] for m in envelopes["paper_carry_status"]["missing"]} >= {"paper_carry:A", "paper_carry:B"}
     detail = next(m["detail"] for m in envelopes["journal_list"]["missing"] if m["field"] == "store")
     assert detail == "OperationalError: disk I/O error"
@@ -251,4 +268,25 @@ def test_store_tool_discovery():
     assert {"journal_add", "journal_list", "rules_add", "positions_list", "plan_add", "liquidations_summary"} <= STORE_TOOLS
     assert len(STORE_TOOLS) >= 35
     assert set().union(*KNOWN_RAISERS.values()) <= STORE_TOOLS
-    assert QUERY_GUARDED <= STORE_TOOLS
+    assert QUERY_GUARDED == STORE_TOOLS, f"store tools without a query-error check: {sorted(STORE_TOOLS - QUERY_GUARDED)}"
+
+
+@pytest.mark.parametrize("mode", ["query_error", "unreachable"])
+async def test_range_setup_store_source_never_raises(tmp_path, mode):
+    """range_setup with source='store' (its default is live, so the scan above never reaches the store)."""
+    rt = await _runtime(tmp_path, "empty")
+    srv, _ = build_server(rt)
+    async with Client(srv) as c:
+        if mode == "unreachable":
+            blocker = tmp_path / "a_file"
+            blocker.write_text("not a directory")
+            await rt.store.aclose()
+            rt.store = Store(blocker / "store.sqlite")
+        else:
+            rt.store = _QueryFailingStore(rt.store)
+        res = await c.call_tool("range_setup", {**ARGS["range_setup"], "source": "store"})
+    assert not res.is_error, res.content[0].text[:300] if res.content else ""
+    data = res.structured_content
+    data = data.get("result", data)
+    assert data["ok"] is False
+    assert ("store", "backend_error") in {(m["field"], m["reason"]) for m in data["missing"]}

@@ -10,7 +10,7 @@ from .. import __version__
 from ..core.envelope import Builder
 from ..providers.exchanges import PERP_EXCHANGES
 from ..runtime import Runtime
-from ._util import READ_ONLY
+from ._util import READ_ONLY, STORE_ERRORS
 
 
 def register(server: MCPServer, rt: Runtime) -> None:
@@ -47,6 +47,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 }
             except RuntimeError:
                 store_info = {"path": rt.store.path, "status": "not_initialised"}
+            except STORE_ERRORS as e:  # locked, unreadable or vanished file: report it, keep the rest of the health report
+                b.miss("store", "tradedesk", "backend_error", f"{type(e).__name__}: {e}")
+                store_info = {"path": rt.store.path, "status": "error"}
         collector_info: list[dict[str, Any]] | None = None
         if rt.scheduler is not None:
             collector_info = [

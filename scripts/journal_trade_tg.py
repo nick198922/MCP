@@ -13,7 +13,7 @@ refused rather than created. The rules come from analytics.rules_check with its 
 $10 000), as on the panel: trade_checks on the new row among the owner's real trades of the journal (no airdrop, no
 *-paper rows: dashboard.journal_kind), read back through the same Store right after the insert, and open_risk on the
 open ones. Rules 1, 5 and 8 depend on the new row only; rule 2 (total open risk <= 3 %, at most 3 alt longs) and rule
-4 (day stop) on the journal, so they are 'unknown' when it cannot be read. Nothing here places, changes or cancels an
+4 (day stop, and the 48 h pause after a big-loss day) on the journal, so they are 'unknown' when it cannot be read. Nothing here places, changes or cancels an
 order or touches a limit: it only writes one journal row. Never raises: any failure is a short message.
 """
 
@@ -135,17 +135,44 @@ def _rule2_line(check: dict[str, Any], risk: dict[str, Any] | None) -> str:
     return f"{head}: {STATUS_UA[status]} — {_h('; '.join(parts))}."
 
 
+def pause_why(pause: dict[str, Any] | None) -> str | None:
+    """Rule 4's 48 h pause after a big-loss day (rules_check.in_pause) in words; None outside a pause."""
+    if pause is None:
+        return None
+    day = datetime.strptime(pause["day"], "%Y-%m-%d").strftime("%d.%m")
+    end = datetime.fromtimestamp(pause["end"], UTC).strftime("%d.%m %H:%M")
+    return (
+        f"{fmt(rc.PAUSE_HOURS)} год перерви після дня з великим збитком ({day}: −${fmt(round(-pause['pnl'], 2))}, "
+        f"поріг −{fmt(rc.BIG_LOSS_PCT)} % депозиту): нових угод до {end} UTC не відкривати"
+    )
+
+
+def rule4_why(opened: float, status: str, stops: dict[str, dict[str, Any]], pause: dict[str, Any] | None) -> str:
+    """Rule 4 in words for a trade opened at ``opened``: the day stop of that UTC day and the 48 h pause."""
+    if status != rc.VIOLATED:
+        return (
+            f"сьогодні (UTC) за закритими угодами журналу не спрацював ({rc.DAY_LOSING_STREAK} збиткові поспіль або "
+            f"−{fmt(rc.DAY_LOSS_PCT)} %); {fmt(rc.PAUSE_HOURS)} год перерви після дня з великим збитком немає"
+        )
+    parts = []
+    s = stops.get(rc.utc_day(opened))
+    if s is not None and opened > s["ts"]:
+        at = datetime.fromtimestamp(s["ts"], UTC).strftime("%H:%M")
+        parts.append(
+            f"сьогодні спрацював о {at} UTC ({STOP_REASON_UA.get(s['reason'], s['reason'])}): нових угод до кінця дня UTC не відкривати"
+        )
+    p = pause_why(pause)
+    if p is not None:
+        parts.append(p)
+    return "; ".join(parts)
+
+
 def _rule4_line(check: dict[str, Any], stops: dict[str, dict[str, Any]] | None) -> str:
     head = "Правило 4 · денний стоп"
     if stops is None:
         return f"{head}: {STATUS_UA[rc.UNKNOWN]} — {NO_JOURNAL}."
     status = check["rules"][4]
-    if status == rc.VIOLATED:
-        s = stops[rc.utc_day(check["opened_ts"])]
-        at = datetime.fromtimestamp(s["ts"], UTC).strftime("%H:%M")
-        why = f"сьогодні спрацював о {at} UTC ({STOP_REASON_UA.get(s['reason'], s['reason'])}): нових угод до кінця дня UTC не відкривати"
-    else:
-        why = f"сьогодні (UTC) за закритими угодами журналу не спрацював ({rc.DAY_LOSING_STREAK} збиткові поспіль або −{fmt(rc.DAY_LOSS_PCT)} %)"
+    why = rule4_why(check["opened_ts"], status, stops, check.get("pause"))
     return f"{head}: {STATUS_UA[status]} — {_h(why)}."
 
 

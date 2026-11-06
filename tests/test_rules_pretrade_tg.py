@@ -110,6 +110,23 @@ def test_rules_2_and_4_come_from_the_journal():
     assert statuses(rp.build_reply(check, NOW, paper))["2"] == "✓ виконано"
 
 
+def test_rule_4_48h_pause_after_a_big_loss_day():
+    # Fri 23.10 (UTC) closed −$120 − $90 = −$210 <= −2 %: the pause runs 24.10 00:00 – 26.10 00:00 UTC, so a check on
+    # Sunday 25.10 10:00 breaks rule 4 although today has no closed trade; the day stop of 23.10 is not today's
+    big = [
+        _row(20, "SOL", "long", NOW - 40 * H, NOW - 39 * H, -120.0),
+        _row(21, "ADA", "long", NOW - 38 * H, NOW - 37 * H, -90.0),
+    ]
+    check = rp.parse_check_command("/check BTC long 84000 stop 82000 target 90000 size 0.05", NOW)["check"]
+    out = rp.build_reply(check, NOW, big)
+    assert statuses(out)["4"] == "✗ порушено" and "✗ порушено: 4" in out.split("\n")[0]
+    assert "48 год перерви після дня з великим збитком (23.10: −$210, поріг −2 % депозиту): нових угод до 26.10 00:00 UTC" in out
+    assert "сьогодні спрацював" not in out
+    # $10 less of a loss is no big-loss day: rule 4 holds
+    small = [big[0], {**big[1], "pnl": -79.0}]
+    assert statuses(rp.build_reply(check, NOW, small))["4"] == "✓ виконано"
+
+
 def test_an_unreadable_journal_makes_rules_2_and_4_unknown(tmp_path):
     out = rp.handle("/check SOL long 180 stop 170 target 200 risk 90", tmp_path / "missing.sqlite", NOW)
     assert statuses(out)["2"] == statuses(out)["4"] == "? невідомо" and out.count("журнал не прочитано") == 2

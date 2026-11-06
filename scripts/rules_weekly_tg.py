@@ -88,6 +88,12 @@ def _rules_part(w: dict) -> str:
     return "Найчастіше: " + ", ".join(f"{RULE_NAMES.get(n, n)} — {v}" for v, n in top) + "." if top else ""
 
 
+def _pause_part(w: dict) -> str:
+    """Rule 4's 48 h pause after a big-loss day (closed P&L <= -2 %, an assumed threshold): trades opened inside it."""
+    n = w.get("paused") or 0
+    return f"Відкрито в {db._nf(rc.PAUSE_HOURS)} год перерви після дня з великим збитком: {n}." if n else ""
+
+
 def _approx_part(w: dict) -> str:
     n = w["n_violating_approx"]
     if not n:
@@ -110,7 +116,7 @@ def _week_lines(label: str, span: str, w: dict | None) -> list[str]:
         if k
         else "точних порушень немає."
     )
-    more = " ".join(x for x in (_rules_part(w), _approx_part(w)) if x)
+    more = " ".join(x for x in (_rules_part(w), _pause_part(w), _approx_part(w)) if x)
     return [_h(head)] + ([_h(more)] if more else [])
 
 

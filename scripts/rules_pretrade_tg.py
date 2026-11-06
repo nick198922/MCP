@@ -33,7 +33,6 @@ import argparse
 import math
 import sys
 import time
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -41,7 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import dashboard as db  # noqa: E402
 import rules_weekly_tg as rw  # noqa: E402
-from journal_trade_tg import SIDE_UA, STATUS_UA, STOP_REASON_UA, _h, fmt, usd  # noqa: E402
+from journal_trade_tg import SIDE_UA, STATUS_UA, _h, fmt, rule4_why, usd  # noqa: E402
 
 from tradedesk.analytics import rules_check as rc  # noqa: E402
 from tradedesk.analytics.check_command import CHECK_ID, MAX_THESIS, as_journal_row, parse_check_command  # noqa: E402
@@ -260,17 +259,12 @@ def _rule2(c: dict[str, Any], risk: dict[str, Any] | None, st: str) -> str:
     return f"{head}: {STATUS_UA[st]} — {_h('; '.join(parts))}."
 
 
-def _rule4(stops: dict[str, dict[str, Any]] | None, st: str, now: float) -> str:
+def _rule4(stops: dict[str, dict[str, Any]] | None, st: str, now: float, pause: dict[str, Any] | None = None) -> str:
+    """Rule 4 as the /trade answer words it (journal_trade_tg.rule4_why): the day stop and the 48 h pause."""
     head = "Правило 4 · денний стоп"
     if stops is None:
         return f"{head}: {STATUS_UA[st]} — {NO_JOURNAL}."
-    if st == rc.VIOLATED:
-        s = stops[rc.utc_day(now)]
-        at = datetime.fromtimestamp(s["ts"], UTC).strftime("%H:%M")
-        why = f"сьогодні спрацював о {at} UTC ({STOP_REASON_UA.get(s['reason'], s['reason'])}): до кінця дня UTC нових угод не відкривати"
-    else:
-        why = "сьогодні (UTC) за закритими угодами журналу не спрацював"
-    return f"{head}: {STATUS_UA[st]} — {_h(why)}."
+    return f"{head}: {STATUS_UA[st]} — {_h(rule4_why(now, st, stops, pause))}."
 
 
 def _rule5(check: dict[str, Any], st: str) -> str:
@@ -388,7 +382,7 @@ def build_reply(check: dict[str, Any], now: float, journal: list[dict[str, Any]]
         _what_line(check, now),
         _rule1(check, st[1]),
         _rule2(c, ev["risk"], st[2]),
-        _rule4(ev["stops"], st[4], now),
+        _rule4(ev["stops"], st[4], now, c["pause"]),
         _rule5(check, st[5]),
         _rule8(check, c, st[8], ev["conditions"], market),
         f"<i>{_h(DISCLAIMER)}</i>",

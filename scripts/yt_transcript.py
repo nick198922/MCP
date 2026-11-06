@@ -99,13 +99,16 @@ def oembed(url: str) -> dict:
 
 
 def fetch(vid: str) -> tuple[str, bool, list[tuple[float, str]]]:
-    """(language code, auto-generated?, [(start seconds, text)]). Raises the library's errors."""
-    from youtube_transcript_api import NoTranscriptFound, YouTubeTranscriptApi
+    """(language code, auto-generated?, [(start seconds, text)]). Raises the library's errors; exits with the run
+    command when the library is not installed."""
+    try:
+        from youtube_transcript_api import NoTranscriptFound, YouTubeTranscriptApi
+        from youtube_transcript_api.proxies import GenericProxyConfig
+    except ImportError:
+        sys.exit("run it with: uv run --no-project --with 'youtube-transcript-api>=1.2,<2' python scripts/yt_transcript.py URL")
 
     proxy = os.environ.get("TRADEDESK_YT_PROXY")
     if proxy:
-        from youtube_transcript_api.proxies import GenericProxyConfig
-
         api = YouTubeTranscriptApi(proxy_config=GenericProxyConfig(http_url=proxy, https_url=proxy))
     else:
         api = YouTubeTranscriptApi()
@@ -143,11 +146,6 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     try:
         language, generated, snippets = fetch(vid)
-    except ImportError:
-        print(
-            "run it with: uv run --no-project --with 'youtube-transcript-api>=1.2,<2' python scripts/yt_transcript.py URL", file=sys.stderr
-        )
-        return 1
     except Exception as e:  # noqa: BLE001 - the library raises many kinds; the name and first line say enough
         name = type(e).__name__
         first = (str(e).strip().splitlines() or [""])[0][:300]

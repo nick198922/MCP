@@ -30,6 +30,10 @@ ID_RE = re.compile(r"(?:v=|youtu\.be/|/shorts/|/live/|/embed/|/v/)([A-Za-z0-9_-]
 TIME_RE = re.compile(r"^(?:(\d+):)?(\d+)(?::(\d+))?$")
 PARA_RE = re.compile(r"^\[(\d+):(\d{2})(?::(\d{2}))?\]\s*(.*)$")
 SHEET_COLS, SHEET_ROWS, THUMB_W = 3, 4, 426
+NEED = (
+    "yt_frames.py needs imageio-ffmpeg and pillow: uv run --no-project --with 'yt-dlp[default]' --with imageio-ffmpeg "
+    "--with pillow python -I scripts/yt_frames.py ..."
+)
 
 
 def stamp(seconds: float) -> str:
@@ -157,7 +161,10 @@ def download(url: str, tmp: Path) -> tuple[Path, str]:
 
 
 def extract(video: Path, tmp: Path, every: float) -> list[tuple[float, Path]]:
-    import imageio_ffmpeg  # noqa: PLC0415
+    try:
+        import imageio_ffmpeg  # noqa: PLC0415
+    except ImportError:
+        sys.exit(NEED)
 
     raw = tmp / "raw"
     raw.mkdir()
@@ -181,7 +188,10 @@ def extract(video: Path, tmp: Path, every: float) -> list[tuple[float, Path]]:
 
 def extract_at(video: Path, tmp: Path, times: list[float]) -> list[tuple[float, Path]]:
     """One frame at each of ``times`` (fast seek), at most 1280 px wide; times past the end give no frame."""
-    import imageio_ffmpeg  # noqa: PLC0415
+    try:
+        import imageio_ffmpeg  # noqa: PLC0415
+    except ImportError:
+        sys.exit(NEED)
 
     exe = imageio_ffmpeg.get_ffmpeg_exe()
     raw = tmp / "at"
@@ -199,7 +209,10 @@ def extract_at(video: Path, tmp: Path, times: list[float]) -> list[tuple[float, 
 
 def differences(paths: list[Path], threshold: float) -> list[float]:
     """Each frame's mean absolute difference (0-255, on a 64x36 grey thumbnail) from the last frame that would be kept."""
-    from PIL import Image, ImageChops, ImageStat  # noqa: PLC0415
+    try:
+        from PIL import Image, ImageChops, ImageStat  # noqa: PLC0415
+    except ImportError:
+        sys.exit(NEED)
 
     def thumb(p: Path):
         with Image.open(p) as im:
@@ -217,7 +230,10 @@ def differences(paths: list[Path], threshold: float) -> list[float]:
 
 
 def contact_sheets(frames: list[tuple[float, Path]], out_dir: Path) -> list[str]:
-    from PIL import Image, ImageDraw  # noqa: PLC0415
+    try:
+        from PIL import Image, ImageDraw  # noqa: PLC0415
+    except ImportError:
+        sys.exit(NEED)
 
     names = []
     per = SHEET_COLS * SHEET_ROWS

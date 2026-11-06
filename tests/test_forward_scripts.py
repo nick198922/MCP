@@ -44,6 +44,7 @@ T2 = T1 + 3 * 86_400  # first run with a 'closed' row (schema v12 deltas)
 T3 = T1 + 6 * 86_400  # last run
 A1, A2, A3, SYS = "0x" + "a1" * 20, "0x" + "a2" * 20, "0x" + "a3" * 20, "0x" + "ff" * 20
 W1 = "0x" + "b1" * 20
+LOST = "0x" + "c1" * 20
 EVIL = "Will X | win? [link](http://evil) <b>`x`</b>"
 
 
@@ -63,6 +64,8 @@ async def _make_traders_db(path: Path, with_positions: bool = True) -> None:
         _hl_snap("2026-11-01", A3, value=1e6, pnl_week=1_000, pnl_month=300_000, roi=15.0),
         _hl_snap("2026-11-01", SYS, value=2e9, pnl_week=1e6, pnl_month=5e6, name="HLP"),
         *[_hl_snap("2026-11-01", f"0x{k:040x}", value=1e6, pnl_week=0, pnl_month=1_000.0 * k) for k in range(1, 4)],
+        # kept by the collector after falling below $500k (survivorship); the board must not count or rank it
+        _hl_snap("2026-11-01", LOST, value=100_000, pnl_week=0, pnl_month=2e6, name="Lost"),
         ("2026-11-01", "polymarket", W1, T3, "whale", None, 10.0, 20.0, 3_000.0, 9_000.0, None, None, 50_000.0, 1),
     ]
     conn.executemany(
@@ -121,6 +124,7 @@ async def test_traders_report_renders_board_from_gzipped_backup(tmp_path, monkey
     top = [ln for ln in rep.splitlines() if ln.startswith("| 1 | ")]
     assert top[0].startswith(f"| 1 | {tr.short(A1)} | Alpha | напрямний | $1.00 млн |") and top[0].endswith("| 1/2 |")
     assert tr.short(SYS) not in rep  # system account is not ranked
+    assert tr.short(LOST) not in rep  # below $500k: stored for survivorship, not on the board
     assert "| +1500.0 % ⚠ |" in rep  # ROI > 1000 %: leaderboard artefact flag
     # Changes: BTC increased (3 coins at the 100k mark), SOL opened, ETH closed through a v12 'closed' delta row.
     assert "| BTC | збільшено | long | 5 → 8 | $300 тис. | $800 тис. |" in rep

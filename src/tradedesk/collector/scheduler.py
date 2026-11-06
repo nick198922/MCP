@@ -563,10 +563,19 @@ async def _pm_leaderboard(rt: "Runtime", category: str, pages: int) -> list[dict
     return list(merged.values())
 
 
+# An account that drops below `traders_min_account_usd` stays in the Hyperliquid snapshot this many days after it was
+# last stored above it: without them a forward "does past PnL persist" test sees only survivors (smart-money report
+# 2026-10-17, "Що далі" item 2).
+TRADERS_KEEP_DAYS = 60
+
+
 async def _collect_traders(rt: "Runtime") -> int:
     """Daily snapshot of strong traders' public results into `trader_snapshot`: every Hyperliquid account worth at
-    least `traders_min_account_usd`, and the Polymarket leaderboards (overall and crypto). One venue failing does not
-    stop the others; the job fails only if nothing was written."""
+    least `traders_min_account_usd`, plus those worth that much on any stored day of the last `TRADERS_KEEP_DAYS`
+    (so the forward test of PnL persistence keeps the accounts that lost money), and the Polymarket leaderboards
+    (overall and crypto). One venue failing does not stop the others; the job fails only if nothing was written."""
+    from datetime import timedelta  # noqa: PLC0415
+
     from ..core.errors import ProviderError  # noqa: PLC0415
     from ..providers.hyperliquid import parse_leaderboard  # noqa: PLC0415
 
@@ -575,8 +584,10 @@ async def _collect_traders(rt: "Runtime") -> int:
     now = rt.now()
     day, ts = now.strftime("%Y-%m-%d"), int(now.timestamp())
     written, errors = 0, []
+    since = (now - timedelta(days=TRADERS_KEEP_DAYS)).strftime("%Y-%m-%d")
+    keep = await rt.store.trader_accounts_since("hyperliquid", since, s.traders_min_account_usd)
     try:
-        rows = parse_leaderboard((await rt.hyperliquid.leaderboard()).data, s.traders_min_account_usd)
+        rows = parse_leaderboard((await rt.hyperliquid.leaderboard()).data, s.traders_min_account_usd, keep)
         written += await rt.store.insert_trader_snapshot(day, ts, "hyperliquid", rows)
     except ProviderError as e:
         errors.append(f"hyperliquid: {e}")

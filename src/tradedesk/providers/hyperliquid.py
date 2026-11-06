@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Collection
 from typing import Any
 
 from ..core.envelope import Evidence, Fetched
@@ -69,9 +70,10 @@ def parse_oi_cap(raw: Any) -> list[str]:
 WINDOWS = {"day": "day", "week": "week", "month": "month", "allTime": "all"}
 
 
-def parse_leaderboard(raw: Any, min_account_usd: float = 0.0) -> list[dict[str, Any]]:
-    """Accounts from the stats leaderboard with ``account_value >= min_account_usd``: ``account``, ``name``,
-    ``account_value`` and ``pnl_<day|week|month|all>``, ``roi_<…>``, ``vlm_<…>`` (USD; ROI as a decimal). Bad rows are skipped."""
+def parse_leaderboard(raw: Any, min_account_usd: float = 0.0, keep: Collection[str] = ()) -> list[dict[str, Any]]:
+    """Accounts from the stats leaderboard with ``account_value >= min_account_usd``, plus the lower-case addresses in
+    ``keep`` whatever their value (accounts that recently left the universe): ``account``, ``name``, ``account_value``
+    and ``pnl_<day|week|month|all>``, ``roi_<…>``, ``vlm_<…>`` (USD; ROI as a decimal). Bad rows are skipped."""
     rows = raw.get("leaderboardRows") if isinstance(raw, dict) else raw
     if not isinstance(rows, list):
         raise ProviderError("hyperliquid", "backend_error", "unexpected leaderboard shape")
@@ -80,9 +82,10 @@ def parse_leaderboard(raw: Any, min_account_usd: float = 0.0) -> list[dict[str, 
         if not isinstance(r, dict) or not r.get("ethAddress"):
             continue
         value = _f(r.get("accountValue"))
-        if value is None or value < min_account_usd:
+        account = str(r["ethAddress"]).lower()
+        if value is None or (value < min_account_usd and account not in keep):
             continue
-        row: dict[str, Any] = {"account": str(r["ethAddress"]).lower(), "name": r.get("displayName"), "account_value": value}
+        row: dict[str, Any] = {"account": account, "name": r.get("displayName"), "account_value": value}
         perf = r.get("windowPerformances") or []
         for item in perf:
             if isinstance(item, (list, tuple)) and len(item) == 2 and item[0] in WINDOWS and isinstance(item[1], dict):

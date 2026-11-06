@@ -727,6 +727,14 @@ class Store:
         await self.conn.commit()
         return len(payload)
 
+    async def trader_accounts_since(self, venue: str, since_day: str, min_account_usd: float) -> set[str]:
+        """Accounts of ``venue`` stored worth at least ``min_account_usd`` on some day >= ``since_day`` (YYYY-MM-DD)."""
+        cur = await self.conn.execute(
+            "SELECT DISTINCT account FROM trader_snapshot WHERE venue = ? AND day >= ? AND account_value >= ?",
+            (venue, since_day, min_account_usd),
+        )
+        return {r[0] for r in await cur.fetchall()}
+
     async def tracked_traders(self, venue: str, top_n: int, min_account_usd: float = 0.0) -> list[str]:
         """Accounts to watch from the latest snapshot of ``venue``: the top ``top_n`` by month PnL and the top ``top_n``
         by all-time PnL (Hyperliquid: among accounts worth at least ``min_account_usd``)."""

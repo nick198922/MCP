@@ -37,6 +37,38 @@ def test_parse_leaderboard_filters_and_reads_windows():
     assert len(parse_leaderboard(HL_BOARD)) == 3
 
 
+def test_parse_leaderboard_keeps_listed_small_accounts():
+    small = "0x" + "0" * 39 + "3"
+    rows = parse_leaderboard(HL_BOARD, 500_000, keep={small})
+    assert [r["account"] for r in rows][-1] == small and len(rows) == 3
+    assert rows[-1]["account_value"] == pytest.approx(0.000008)
+
+
+@pytest.mark.parametrize(
+    ("seed_day", "seed_value", "kept"),
+    [
+        ("2026-08-11", 600_000.0, True),  # NOW - 60 days: still inside the window
+        ("2026-08-10", 600_000.0, False),  # NOW - 61 days: dropped
+        ("2026-10-09", 100_000.0, False),  # stored recently but already below the floor: no endless chaining
+    ],
+)
+async def test_hyperliquid_snapshot_keeps_accounts_that_left_the_universe(state, seed_day, seed_value, kept):
+    """Survivorship (smart-money report 2026-10-17): an account worth >= $500k on a stored day of the last 60 days is
+    still written after its value fell (the fixture's third account holds $0.000008); older or never-qualified ones are not."""
+    small = "0x" + "0" * 39 + "3"
+    rt = _runtime(state, pm_fail=True)
+    try:
+        await rt.store.init()
+        await rt.store.insert_trader_snapshot(seed_day, 0, "hyperliquid", [{"account": small, "account_value": seed_value}])
+        assert await _collect_traders(rt) == (3 if kept else 2)
+        cur = await rt.store.conn.execute("SELECT account_value FROM trader_snapshot WHERE day = '2026-10-10' AND account = ?", (small,))
+        got = await cur.fetchone()
+        assert (got is not None) is kept
+        assert small not in await rt.store.tracked_traders("hyperliquid", 5, rt.settings.traders_min_account_usd)  # not watched
+    finally:
+        await rt.aclose()
+
+
 def test_parse_positions_sides_and_units():
     pos = parse_positions(HL_STATE)
     assert [(p["market"], p["side"]) for p in pos] == [("BTC", "long"), ("ETH", "short")]

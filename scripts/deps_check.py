@@ -65,6 +65,10 @@ IMPORT_TO_DIST = {
 
 _NAME = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
 _IMPORT_ERRORS = {"ImportError", "ModuleNotFoundError", "Exception", "BaseException"}
+# Statement-list fields: Module/def/class/for/while/if/with bodies, try handlers/else/finally, match cases (whose
+# match_case.body holds statements again). Visited nodes are always statements, handlers or match cases, so every
+# such field is a list.
+_BLOCKS = frozenset({"body", "orelse", "finalbody", "handlers", "cases"})
 
 
 def normalize(name: str) -> str:
@@ -155,8 +159,12 @@ def imports_of(source: str, file: str = "<src>") -> dict[str, list[Use]]:
             for child in node.orelse:
                 visit(child, conditional, spec)
             return
-        for child in ast.iter_child_nodes(node):
-            visit(child, conditional, spec)
+        # Imports are statements, and statements only live in these list fields (expressions, lambdas included, hold
+        # none), so expressions are not walked. Field order is kept, so uses come in the same order as a full walk.
+        for name in node._fields:
+            if name in _BLOCKS:
+                for child in getattr(node, name):
+                    visit(child, conditional, spec)
 
     visit(ast.parse(source, filename=file), False)
     return out

@@ -172,6 +172,100 @@ def test_find_spec_guard_is_conditional_for_its_module_only():
     assert not found["dynamic_pkg"][0].conditional  # not a literal module name
 
 
+NESTED = """
+import contextlib
+
+def f():
+    import in_def
+
+async def g():
+    import in_async_def
+    async with ctx():
+        import in_async_with
+    async for _ in it():
+        import in_async_for
+
+class C:
+    import in_class
+    def m(self):
+        try:
+            import in_method_try
+        except ImportError:
+            pass
+
+try:
+    pass
+except ValueError:
+    import in_handler
+else:
+    import in_try_else
+finally:
+    import in_finally
+
+try:
+    pass
+except* OSError:
+    import in_try_star_handler
+
+if x:
+    import in_if
+elif y:
+    import in_elif
+else:
+    import in_if_else
+
+with contextlib.suppress(Exception):
+    import in_with
+
+for _ in range(1):
+    import in_for
+else:
+    import in_for_else
+
+while False:
+    import in_while
+else:
+    import in_while_else
+
+match x:
+    case 1:
+        import in_case
+    case _:
+        if find_spec("in_case_spec"):
+            import in_case_spec
+"""
+
+
+def test_imports_nested_in_statements_are_found():
+    """Item 192: only statement bodies are walked; every place an import statement can sit is still covered."""
+    found = dc.imports_of(NESTED, "n.py")
+    expected = {
+        "in_def",
+        "in_async_def",
+        "in_async_with",
+        "in_async_for",
+        "in_class",
+        "in_method_try",
+        "in_handler",
+        "in_try_else",
+        "in_finally",
+        "in_try_star_handler",
+        "in_if",
+        "in_elif",
+        "in_if_else",
+        "in_with",
+        "in_for",
+        "in_for_else",
+        "in_while",
+        "in_while_else",
+        "in_case",
+        "in_case_spec",
+    }
+    assert set(found) == expected | {"contextlib"}
+    assert {m for m in expected if found[m][0].conditional} == {"in_method_try", "in_case_spec"}
+    assert found["in_case"][0] == dc.Use("n.py", 58, False)
+
+
 def test_repository_scripts_import_nothing_undeclared_unconditionally():
     """BACKLOG 6.38: media scripts stop with their `uv run --no-project --with ...` command instead of an ImportError."""
     declared = dc.declared_from_pyproject((ROOT / "pyproject.toml").read_text(encoding="utf-8"))

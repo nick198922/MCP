@@ -230,3 +230,47 @@ async def test_store_survives_runtime_aclose(tmp_path):
             await old.execute("SELECT 1")
         with pytest.raises(RuntimeError):  # and the store knows it: no silent use of a closed connection
             await rt.store.table_count("funding_hist")
+
+
+FUNDING_ROW = {"venue": "binanceusdm", "base": "BTC", "rate_per_interval": 0.0001, "interval_hours": 8.0, "annualized": 0.1095}
+
+
+async def test_runtime_without_store_closes_twice():
+    # db_path="" means no store (Runtime builds Store only for a non-empty path); aclose() must not trip over None.
+    rt = Runtime(Settings(http_retries=0, cache_scale=0.0, db_path=""))
+    assert rt.store is None
+    await rt.aclose()
+    await rt.aclose()
+
+
+async def test_store_aclose_is_idempotent(tmp_path):
+    rt = Runtime(Settings(http_retries=0, cache_scale=0.0, db_path=str(tmp_path / "twice.sqlite")))
+    assert rt.store is not None
+    await rt.aclose()  # a lifespan that failed before store.init(): nothing open, still no error
+    await rt.store.init()
+    await rt.aclose()
+    await rt.aclose()  # second close of an already closed store
+    with pytest.raises(RuntimeError):  # Store.conn refuses once closed
+        _ = rt.store.conn
+
+
+async def test_new_runtime_reopens_same_db_file(tmp_path):
+    # A restart builds a fresh Runtime on the same file: the closed store must leave it usable (no lock, migrations done).
+    path = str(tmp_path / "reopen.sqlite")
+    first = Runtime(Settings(http_retries=0, cache_scale=0.0, db_path=path))
+    assert first.store is not None
+    await first.store.init()
+    assert await first.store.insert_funding(1_791_590_400, [FUNDING_ROW]) == 1
+    version = await first.store.version()
+    await first.aclose()
+
+    second = Runtime(Settings(http_retries=0, cache_scale=0.0, db_path=path))
+    assert second.store is not None
+    await second.store.init()
+    try:
+        assert await second.store.version() == version > 0
+        assert await second.store.table_count("funding_hist") == 1  # the first runtime's row survived the close
+        assert await second.store.insert_funding(1_791_594_000, [FUNDING_ROW]) == 1  # and the file takes writes
+        assert await second.store.table_count("funding_hist") == 2
+    finally:
+        await second.aclose()

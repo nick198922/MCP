@@ -36,7 +36,7 @@ import time
 from collections import Counter
 from dataclasses import asdict
 from datetime import UTC, datetime
-from multiprocessing import Pool
+from multiprocessing import get_context
 from pathlib import Path
 from typing import Any
 
@@ -276,7 +276,10 @@ def run_all(
     if a.workers <= 1:
         consume(map(run_symbol, jobs))  # in-process (tests, debugging)
     else:
-        with Pool(a.workers) as pool:
+        # forkserver, not fork: the caller may be multi-threaded (a pytest-xdist worker), where fork() is deprecated
+        # (Python 3.12+) and may deadlock. Workers re-import this module, so run_symbol and its plain-tuple jobs must
+        # stay module-level and picklable; results do not depend on the start method (symbol_seed, sorted rows).
+        with get_context("forkserver").Pool(a.workers) as pool:
             consume(pool.imap_unordered(run_symbol, jobs))
     rows.sort(key=lambda r: (r["t_ms"], r["sym"]))
     return {"rows": rows, "signals": n_sig, "checked": n_checked, "bad": bad, "n_bad": n_bad}

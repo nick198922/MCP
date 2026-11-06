@@ -190,7 +190,11 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "local store. Measures: 'direction' (1 if close_after ≥ close_t0; hit_rate = share "
             "of ups), 'close_vs_t0' (signed return), 'max_up' (max intra-window up excursion ≥ 0),"
             " 'max_dd' (max intra-window drawdown ≤ 0), 'volatility' (window-level realised "
-            "stdev of log-returns). Reports n_sample and small_sample_flag=true when n<20. "
+            "stdev of log-returns). Units: close_vs_t0, max_up and max_dd are decimal returns relative to "
+            "close(t0) (0.01 = 1 %); 'volatility' is a decimal, the per-bar stdev of log-returns times "
+            "sqrt(bars in the window), NOT annualised; 'direction' values are 0/1 and hit_rate is a "
+            "fraction 0-1. mean/median/p25/p75/min/max are in the measure's own unit. "
+            "Reports n_sample and small_sample_flag=true when n<20. "
             "Hit rates and medians are DESCRIPTIVE statistics on a finite sample — they are not "
             "forecasts; always eyeball n_sample and the regime window before trading on them."
         ),

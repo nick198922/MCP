@@ -71,7 +71,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
         annotations=READ_ONLY,
         description=(
             "Probability that price touches `barrier` at any time within `days`, for a given IV (continuous monitoring, driftless, constant vol: a risk-neutral model value with r=0, not a forecast). "
-            "Returns the closed-form value and a Monte Carlo cross-check. For options-implied odds on BTC/ETH use prob_from_options instead."
+            "Returns the closed-form value and a Monte Carlo cross-check. For options-implied odds on BTC/ETH use prob_from_options instead. "
+            "Units: `iv` is an annualised decimal (0.60 = 60 %); T = days / 365; analytic and monte_carlo are probabilities as "
+            "fractions 0-1 (0.25 = 25 %); one_sigma_move_pct = iv × sqrt(T) × 100, in percent."
         ),
     )
     async def touch_probability(

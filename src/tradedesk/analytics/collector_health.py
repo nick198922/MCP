@@ -441,8 +441,9 @@ def disk_line(h: Mapping[str, Any]) -> str | None:
     return f"Диск БД: {'; '.join(why[r] for r in h['reasons'])} — {describe_disk(h)}."
 
 
-def render(results: Iterable[Mapping[str, Any]], now: int, window_days: int = WINDOW_DAYS) -> str:
-    """Full text report (Ukrainian), one line per series."""
+def render(results: Iterable[Mapping[str, Any]], now: int, window_days: int = WINDOW_DAYS, extra: Iterable[str | None] = ()) -> str:
+    """Full text report (Ukrainian), one line per series. ``extra``: the brief's lines of the checks outside the series
+    (the disk: :func:`disk_line`; None = fine), added to the closing «У брифі: …» line after the series' line."""
     rows = list(results)
     out = [f"Здоров'я колекторів на {fmt_ts(now)} · вікно {window_days} дн · поріг {_pct(THRESHOLD)}", ""]
     for r in rows:
@@ -461,6 +462,6 @@ def render(results: Iterable[Mapping[str, Any]], now: int, window_days: int = WI
         if r.get("trailing_gap_s"):
             line += f", зараз немає {fmt_dur(r['trailing_gap_s'])}"
         out.append(line + f"; останній {fmt_ts(r.get('last_ts'), p)}")
-    line = brief_line(rows, window_days)
+    line = " ".join(x for x in (brief_line(rows, window_days), *extra) if x)
     out += ["", f"У брифі: {line}" if line else "У брифі: нічого (усі серії в нормі)."]
     return "\n".join(out) + "\n"

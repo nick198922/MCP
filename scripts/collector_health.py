@@ -134,11 +134,18 @@ def backup_sizes(backups: Path, ref: int | None = None) -> list[tuple[int, int]]
 def disk_check(db: str, now: int, backups: Path | None = None) -> dict[str, Any]:
     """ch.disk_health of the DB file (its size, may be absent), the free space of its volume (``disk_usage`` on the
     DB's directory, read only) and its growth over 7 days from the backups (``backups``, default ``backups/`` next to
-    the DB) plus the live size. Raises ``OSError`` when the DB's directory is not there."""
+    the DB) plus the live size. Without the DB file the newest backup's trailer size is the 2**32 lift's ``ref``: the
+    backups' sizes then agree with each other (so the growth holds) though their level is known only modulo 2**32.
+    Raises ``OSError`` when the DB's directory is not there."""
     p = Path(db)
     db_bytes = p.stat().st_size if p.is_file() else None
     usage = disk_usage(p.parent)
-    points = backup_sizes(p.parent / "backups" if backups is None else backups, db_bytes)
+    folder = p.parent / "backups" if backups is None else backups
+    ref = db_bytes
+    if ref is None:
+        raw = backup_sizes(folder)  # trailer sizes as stored (mod 2**32)
+        ref = max(raw)[1] if raw else None  # the newest backup's
+    points = backup_sizes(folder, ref)
     if db_bytes is not None:
         points.append((now, db_bytes))
     return ch.disk_health(db_bytes, usage.free, usage.total, ch.growth_per_day(points, now))
@@ -204,12 +211,14 @@ def main(argv: list[str] | None = None) -> int:
     except (sqlite3.Error, OSError) as e:
         print(f"БД {a.db} не відкрито ({type(e).__name__})", file=sys.stderr)
         return 1
-    text = ch.render(results, now, a.days)
     try:
         h = disk_check(a.db, now)
-        text += f"{'✗' if h['reasons'] else '✓'} Диск БД: {ch.describe_disk(h)}.\n"
+        disk_row = f"{'✗' if h['reasons'] else '✓'} Диск БД: {ch.describe_disk(h)}.\n"
+        disk_brief = ch.disk_line(h)
     except OSError as e:
-        text += f"✗ Диск БД не перевірено ({type(e).__name__}).\n"
+        disk_row = f"✗ Диск БД не перевірено ({type(e).__name__}).\n"
+        disk_brief = f"Місце на диску БД не перевірено ({type(e).__name__})."  # as brief_line says it
+    text = ch.render(results, now, a.days, extra=[disk_brief]) + disk_row
     try:
         stuck = stuck_demo_check(a.db, now)
         text += f"✗ {sd.brief_line(stuck)}\n" if stuck else "✓ Завислі демо-угоди: 0.\n"

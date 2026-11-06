@@ -135,15 +135,17 @@ def _quiet_features(tmp_path: Path) -> Path:
     return p
 
 
-def test_script_names_stuck_trades_read_only(tmp_path):
+def test_script_names_stuck_trades_read_only(tmp_path, monkeypatch):
     db = _db(tmp_path, [_row("NEAR", age_ms=10 * D), _row("HYPE", "S16", age_ms=9 * D), _row("NEW", age_ms=D)])
     before = Path(db).read_bytes()
     assert [t["id"] for t in script.stuck_demo_check(db, NOW)] == ["NEAR", "HYPE"]
     line = script.brief_line(db, _quiet_features(tmp_path), NOW)
     assert line.startswith("Завислі демо-угоди: 2 (S3 NEAR/USDT:USDT 240 год (строк 168 год); S16 HYPE/USDT:USDT 216 год")
     out = tmp_path / "r.txt"
+    # main reads the wall clock; on the real one NEW (1 d old at NOW) would turn stuck from 2026-11-13 06:00 UTC
+    monkeypatch.setattr(script, "time", SimpleNamespace(time=lambda: float(NOW)))
     assert script.main(["--db", db, "--features", str(_quiet_features(tmp_path)), "--out", str(out)]) == 0
-    assert "\n✗ Завислі демо-угоди: 2 (" in out.read_text(encoding="utf-8")  # main runs on the wall clock: ages grow
+    assert "\n✗ Завислі демо-угоди: 2 (" in out.read_text(encoding="utf-8")
     assert Path(db).read_bytes() == before  # nothing written
 
 

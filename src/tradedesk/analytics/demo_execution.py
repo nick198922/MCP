@@ -213,7 +213,9 @@ def decision_edges(
     ``edge_r = dir * (signal.entry - proposal.entry) / |signal.entry - signal.stop|`` (+ = the decision price is better).
 
     ``group``: ``taken`` (the link has a ``demo_trade`` row), ``refused_rr`` (not taken and the proposal's reward/risk
-    < ``rr_min``), ``refused_other``. First row per link only; ``skip_setups`` (S12 enters at the gap middle by design)
+    < ``rr_min``), ``refused_other``. ``refused_rr`` is wider than the guard's «reward/risk after fees < 1.5» refusal
+    in ``demo_shadow``: it also holds signals dropped earlier by the score or limits whose plan R:R is below
+    ``rr_min``. First row per link only; ``skip_setups`` (S12 enters at the gap middle by design)
     and rows without the numbers are dropped. ``signal_ts`` is the audit time (the day cluster of ``summarise``)."""
     out: list[dict[str, Any]] = []
     seen: set[str] = set()

@@ -124,9 +124,9 @@ def assemble(parts: list[dict[str, Any]], signs: dict[str, dict[int, int]]) -> d
     X["month"] = month_of(X["t_in"])
     X["week"] = X["t_in"] // sp.WEEK_MS
     X["year"] = X["month"] // 12 - (X["month"] % 12 == 0)
-    X["day"] = (X["t_in"] // rs.DAY_MS) * rs.DAY_MS - rs.DAY_MS
+    X["day"] = (X["t_in"] // rs.DAY_MS) * rs.DAY_MS - rs.DAY_MS  # day keys for placebo_shift (same day as sign_before)
     for v, s in signs.items():
-        X[v] = np.array([s.get(int(d), 0) for d in X["day"]], dtype=np.int64)
+        X[v] = np.array([rs.sign_before(int(t), s) for t in X["t_in"]], dtype=np.int64)
     return X
 
 
@@ -358,8 +358,7 @@ def stage_report(a: argparse.Namespace) -> None:
             if T is None:
                 continue
             sg = signs[v]
-            day = (T["t_in"] // rs.DAY_MS) * rs.DAY_MS - rs.DAY_MS
-            rg = np.array([sg.get(int(d), 0) for d in day], dtype=np.int64)
+            rg = np.array([rs.sign_before(int(t), sg) for t in T["t_in"]], dtype=np.int64)
             k_, d_ = rs.split(T["side"].astype(str), rg)
             Vf = vsp.chain(T, p["_cand"] & ~d_, p["_cap"])
             if p["_filled"] is not None:

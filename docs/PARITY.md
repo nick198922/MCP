@@ -49,8 +49,8 @@ DOUBLETOP: **74 інструменти** (66 від 17 бекендів + 8 вл
 
 | DOUBLETOP | Рішення |
 |---|---|
-| defillama (7) | 🔜 `chain_metrics` (TVL, DEX-обсяг, fees мережі); 🟡 `stablecoin_supply` (05.11: `stablecoins.llama.fi`, сума всіх стейблкоїнів і USDT / USDC у USD зі змінами 7д / 30д, десяткові частки; описовий, не сигнал; тест на синтетичному зразку документованої форми, форму й поля звірено живцем 05.11); потоки стейблкоїнів по мережах і пули — Фаза 5 |
-| dexscreener (2) | 🔜 `dex_pairs` ([IDEA-20261017-doubletop-to-ours](ideas/IDEA-20261017-doubletop-to-ours.md)) |
+| defillama (7) | ✅ `chain_metrics` (TVL, DEX-обсяг, fees мережі); 🟡 `stablecoin_supply` (05.11: `stablecoins.llama.fi`, сума всіх стейблкоїнів і USDT / USDC у USD зі змінами 7д / 30д, десяткові частки; описовий, не сигнал; тест на синтетичному зразку документованої форми, форму й поля звірено живцем 05.11); потоки стейблкоїнів по мережах і пули — Фаза 5 |
+| dexscreener (2) | ✅ `dex_pairs` ([IDEA-20261017-doubletop-to-ours](ideas/IDEA-20261017-doubletop-to-ours.md)) |
 | etherscan (8) | 🔜 Etherscan V2 (безкоштовний ключ). `getTokenInfo` і `tokenTopHolders` — лише платний Pro |
 | helius (5) | 🔜 безкоштовний тариф із ключем |
 | mempool (5) | 🔜 публічний API mempool.space |

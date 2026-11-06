@@ -43,7 +43,7 @@ claude mcp add tradedesk -- uv run --directory /ABSOLUTE/PATH/TO/tradedesk-mcp t
 
 - `token_deep_analysis(project)` — глибокий 10-секційний інвест-аналіз крипто-проекту / токена (російською): продукт, залучений капітал, партнерства, токеноміка, розлоки, revenue, value accrual, roadmap, нарратив, тех. аналіз → bull/base/bear + оцінки 1–10 на 3 горизонтах. Промт автоматично підказує моделі, які інструменти tradedesk-mcp використати для частини «графік + позиціювання». Файл: `src/tradedesk/prompts/token_deep_analysis.md` — редагуйте, перезапуск сервера не потрібен (перечитується на кожен виклик).
 
-## Інструменти (108)
+## Інструменти (109)
 
 | Група | Інструмент | Що дає |
 |---|---|---|
@@ -84,8 +84,6 @@ claude mcp add tradedesk -- uv run --directory /ABSOLUTE/PATH/TO/tradedesk-mcp t
 | Календар | `calendar_expiries` | експірації Deribit (daily/weekly/monthly/quarterly), найближчі funding-моменти, макро-події (FOMC/CPI/NFP) |
 | Календар | `macro_calendar` | макрокалендар з високим впливом: ForexFactory (цей і наступний тиждень; USD: FOMC, CPI, Core PCE, NFP, PPI, GDP, Retail Sales, ISM, Jobless Claims + рішення ECB/BoJ/BoE), час UTC і Київ, прогноз і попереднє (фактичного значення нема), далі сід FOMC/CPI/NFP; прапор події в найближчі 48 год |
 | Події (Фаза 1) | `events_add`, `events_list`, `events_seed_load`, `event_study` | локальна база макро-подій (FOMC/CPI/NFP); seed 2024-2026 запаковано у wheel; windowed-study поверх `ohlcv_hist` (hit rate, p25/50/75) |
-
-MCP-промпти: `token_deep_analysis`, `fomc_playbook`, `pre_trade_checklist` (план угоди: безпека контракту `contract_risk` для он-чейн токенів, контекст, розмір від рахунку й ризику, вердикт, запис у журнал), `journal_review` (щомісячний розбір журналу за тегами), `morning_briefing` (шаблони з підказками, які `tradedesk-mcp` інструменти викликати).
 | Prediction markets | `polymarket_search`, `polymarket_market`, `polymarket_history` | Polymarket Gamma+CLOB: пошук, карта ринку з order-book мідами, історія цін yes/no |
 | Макро/ринок | `coin_snapshot`, `global_market`, `top_coins` | CoinGecko: ціна/mcap/FDV/supply/ATH, глобальна домінація BTC/ETH/alts, топ-N монет |
 | Історія (Фаза 2) | `iv_rank`, `funding_zscore`, `skew_percentile`, `alerts_recent`, `ohlcv_history`, `market_regime`, `range_detect`, `range_setup`, `range_setup_scan` | ATM-IV rank, funding z-score, 25Δ/10Δ RR percentile, журнал алертів, OHLCV, up/down/chop, рейнджі + sweeps + deviations + accumulation/distribution, SFP-сетап (entry/stop/TP/RR), сканер SFP-сетапів по списку тикерів |
@@ -103,6 +101,8 @@ MCP-промпти: `token_deep_analysis`, `fomc_playbook`, `pre_trade_checklist
 | Правила (Фаза 3) | `rules_add`, `rules_list`, `rules_test`, `rules_disable`, `rules_presets_load` | DSL правил alert'ів (безпечний AST + metric funcs); 8 готових пресетів у wheel; зберігає й читається alerts job'ом |
 | Стратегії (Фаза 3) | `strategy_payoff`, `strategy_straddle`, `strategy_strangle`, `strategy_risk_reversal`, `strategy_iron_condor`, `strategy_cash_and_carry`, `strategy_funding_carry`, `strategy_scenario_matrix` | многоногий payoff + шаблони + multi-horizon MTM-grid (τ-aware Black-76): P&L крива, breakevens, max profit/loss, δ/γ/vega/θ, MTM, risk-neutral PoP, scenario matrix |
 | Бектест (Фаза 3) | `strategy_backtest_momentum` | walk-forward momentum breakout на ccxt OHLCV; fee+slippage у bps; equity, trades, Sharpe/Sortino/maxDD/win-rate |
+
+MCP-промпти: `token_deep_analysis`, `fomc_playbook`, `pre_trade_checklist` (план угоди: безпека контракту `contract_risk` для он-чейн токенів, контекст, розмір від рахунку й ризику, вердикт, запис у журнал), `journal_review` (щомісячний розбір журналу за тегами), `morning_briefing` (шаблони з підказками, які `tradedesk-mcp` інструменти викликати).
 
 Усі відповіді мають однаковий конверт `{ok, data, evidence, missing, warnings, as_of}`: кожне число має джерело й час, а збій одного провайдера не валить виклик. Деталі в [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 

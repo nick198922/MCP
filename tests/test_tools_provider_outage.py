@@ -25,6 +25,7 @@ from mcp import Client
 
 from conftest import NOW
 from tradedesk.config import Settings
+from tradedesk.core.ratelimit import TokenBucket
 from tradedesk.runtime import Runtime
 from tradedesk.server import build_server
 
@@ -133,11 +134,13 @@ def failing_runtime(mode: str, db_path: str, calls: list[str]) -> Runtime:
 
     # A dummy Coinalyze key (never a real one): without a key the tools answer `missing: config` before any request.
     settings = Settings(http_retries=0, http_retry_backoff=0.0, cache_scale=0.0, db_path=db_path, coinalyze_api_key="outage-test")
-    rt = Runtime(
-        settings,
-        transports=_AllTransports(httpx.MockTransport(handler)),
-        exchange_factory=lambda ex_id: DownExchange(ex_id, mode, calls),
-    )
+    # Production rate limits (GoPlus 0.2 req/s, ...) would only make the failing fake calls wait in real time.
+    with patch("tradedesk.core.http.TokenBucket", lambda rate, burst: TokenBucket(1_000.0, 1_000)):
+        rt = Runtime(
+            settings,
+            transports=_AllTransports(httpx.MockTransport(handler)),
+            exchange_factory=lambda ex_id: DownExchange(ex_id, mode, calls),
+        )
     rt.now = lambda: NOW
     return rt
 

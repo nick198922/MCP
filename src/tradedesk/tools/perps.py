@@ -218,6 +218,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
 
         async def ccxt_row(ex: str) -> dict[str, Any] | None:
             fr = await b.guard(f"funding:{ex}", f"ccxt:{ex}", rt.exchanges.funding_rate(ex, symbol))
+            if fr is not None and not isinstance(fr, dict):
+                b.miss(f"funding:{ex}", f"ccxt:{ex}", "data_unavailable", f"unexpected response type {type(fr).__name__}")
+                return None
             if fr is None or fr.get("fundingRate") is None:
                 return None
             hours = parse_interval_hours(fr.get("interval"))
@@ -1272,6 +1275,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
         async def ccxt_row(ex: str) -> dict[str, Any] | None:
             fr = await b.guard(f"basis:{ex}", f"ccxt:{ex}", rt.exchanges.funding_rate(ex, symbol))
             if fr is None:
+                return None
+            if not isinstance(fr, dict):
+                b.miss(f"basis:{ex}", f"ccxt:{ex}", "data_unavailable", f"unexpected response type {type(fr).__name__}")
                 return None
             pct, bps = _premium(fr.get("markPrice"), fr.get("indexPrice"))
             if pct is None:

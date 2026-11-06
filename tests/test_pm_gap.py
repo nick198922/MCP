@@ -9,6 +9,7 @@ import sqlite3
 from collections import Counter
 from datetime import UTC, date, datetime
 from pathlib import Path
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -38,6 +39,7 @@ from tradedesk.collector.pm_gap import collect_pm_gap, resolve_outcomes, scan_ga
 from tradedesk.collector.scheduler import build_default_scheduler
 from tradedesk.config import Settings
 from tradedesk.core.envelope import Builder
+from tradedesk.core.ratelimit import TokenBucket
 from tradedesk.runtime import Runtime
 from tradedesk.server import build_server
 from tradedesk.store import SCHEMA_VERSION, Store
@@ -202,13 +204,12 @@ def _transports(state, gamma_status: int = 200, clob_status: int = 200, events=N
 
 
 async def _rt(state, now: datetime = NOW, ex=FakeEx, **kw) -> Runtime:
-    rt = Runtime(
-        Settings(
-            http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=":memory:", collector_enabled=True, **kw.pop("settings", {})
-        ),
-        transports=_transports(state, **kw),
-        exchange_factory=ex,
+    settings = Settings(
+        http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=":memory:", collector_enabled=True, **kw.pop("settings", {})
     )
+    # Production rate limits (Polymarket 5 req/s, Deribit 8 req/s) only paced the fake books in real time: up to ~3 s a test.
+    with patch("tradedesk.core.http.TokenBucket", lambda rate, burst: TokenBucket(1_000.0, 1_000)):
+        rt = Runtime(settings, transports=_transports(state, **kw), exchange_factory=ex)
     rt.now = lambda: now
     await rt.store.init()
     return rt

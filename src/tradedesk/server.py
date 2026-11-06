@@ -6,6 +6,7 @@ TRADEDESK_TRANSPORT=streamable-http TRADEDESK_PORT=8000 tradedesk-mcp    # alway
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import os
 import sys
@@ -74,6 +75,22 @@ def configure_logging() -> None:
         logging.getLogger(name).setLevel(logging.WARNING)
 
 
+def is_loopback(host: str) -> bool:
+    """True only for an address reachable from this machine alone (127.0.0.0/8, ::1, localhost).
+
+    0.0.0.0 / :: (all interfaces), LAN addresses, names other than localhost and an empty string are not loopback."""
+    h = host.strip().lower().removeprefix("[").removesuffix("]")
+    if h in ("localhost", "localhost."):
+        return True
+    try:
+        ip = ipaddress.ip_address(h)
+    except ValueError:
+        return False
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped  # same answer on every Python (3.13 changed is_loopback for mapped addresses)
+    return ip.is_loopback
+
+
 def main(argv: list[str] | None = None) -> None:
     configure_logging()
     features.load()
@@ -93,6 +110,13 @@ def main(argv: list[str] | None = None) -> None:
     else:
         logging.getLogger("tradedesk.auth").warning(
             "streamable-http running WITHOUT auth; bind to 127.0.0.1 or set TRADEDESK_HTTP_BEARER_TOKEN"
+        )
+    if not is_loopback(s.host):  # warn, do not refuse: the owner may bind on purpose behind a proxy
+        logging.getLogger("tradedesk.auth").warning(
+            "streamable-http binds to non-loopback host %r: the MCP server is reachable from the network "
+            "(auth %s); the default is 127.0.0.1",
+            s.host,
+            "enabled" if tokens else "DISABLED",
         )
     if json_logs():  # no uvicorn handlers: its records propagate to the root JSON handler, so every line is JSON
         uvicorn.run(app, host=s.host, port=s.port, log_level="info", log_config=None)

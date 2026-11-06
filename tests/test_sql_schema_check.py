@@ -64,7 +64,44 @@ def test_check_classifies_ok_missing_table_column_and_skips_dynamic():
     text = sc.render(rep)
     assert "## missing table (1):" in text and "no such table: journl" in text
     assert "## missing column (1):" in text and "no such column: symbl" in text
-    assert "demo.py:12 [f-string]" in text
+    assert "demo.py:12 [f-string: parameter col]" in text
+
+
+EXPANDABLE = """
+TABLES = [("journal", "opened_ts"), ("journl", "ts")]
+COLS = "id symbol pnl"
+BAD_COLS = ("id", "symbl")
+
+
+def read(con, arbitrary, status):
+    for table, col in TABLES:
+        con.execute(f"SELECT max({col}), max(rowid) FROM {table}")
+    for t in ("journal", "journal"):
+        con.execute(f"SELECT count(*) FROM {t}")
+    sel = [c for c in COLS.split() if c]
+    con.execute(f"SELECT {', '.join(sel)} FROM journal ORDER BY id")
+    rv = "pnl" if status else "NULL AS pnl"
+    con.execute(f"SELECT id, {rv} FROM journal")
+    con.execute(f"SELECT {', '.join(BAD_COLS)} FROM journal")
+    con.execute("SELECT * FROM journal" + (" WHERE id = ?" if status else "") + " ORDER BY id")
+    con.execute(f"SELECT * FROM {arbitrary}")
+"""
+
+
+def test_constant_fragments_are_expanded_and_checked():
+    qs = sc.extract_queries(EXPANDABLE, "x.py")
+    assert sum(1 for q in qs if q.expanded) == 2 + 1 + 1 + 2 + 1 + 2  # table loop, repeated t (deduped), join, rv, bad join, concat
+    assert [(q.line, q.why) for q in qs if q.dynamic] == [(18, "parameter arbitrary")]
+    assert sorted(q.sql for q in qs if q.line == 9) == [
+        "SELECT max(opened_ts), max(rowid) FROM journal",
+        "SELECT max(ts), max(rowid) FROM journl",
+    ]  # the tuple target keeps table and column correlated
+    rep = sc.check({"x.py": EXPANDABLE}, MIGRATIONS)
+    bad = {(f.query.line, f.kind) for f in rep.findings if f.kind != "ok"}
+    assert bad == {(9, "missing table"), (16, "missing column")}  # a typo in a constant fragment is found
+    assert rep.failed
+    assert len(rep.expanded_sites) == 6 and [q.line for q in rep.dynamic] == [18]
+    assert "6 expanded from constants" in sc.render(rep)
 
 
 def test_clean_source_does_not_fail():

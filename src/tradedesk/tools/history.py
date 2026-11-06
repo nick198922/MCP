@@ -18,7 +18,7 @@ from ..analytics.ranges import classify_ranges, generate_setup
 from ..analytics.regime import classify_regime
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, r
+from ._util import READ_ONLY, STORE_ERRORS, r, store_failed, store_ready
 
 SFP_EDGE_WARNING = (
     "Unverified edge: walk-forward backtests (2022-10..2026-10, up to 50 Binance crypto perps, 4h/12h "
@@ -101,19 +101,16 @@ def register(server: MCPServer, rt: Runtime) -> None:
         min_points: Annotated[int, Field(ge=2, le=10000, description="Minimum number of stored points required.")] = 10,
     ) -> dict[str, Any]:
         b = Builder()
-        if rt.store is None:
-            b.miss("store", "tradedesk", "config", "db_path is empty; set TRADEDESK_DB_PATH to enable history")
-            return b.build(None, ok=False)
-        try:
-            await rt.store.init()
-        except Exception as e:  # noqa: BLE001
-            b.miss("store", "tradedesk", "backend_error", f"{type(e).__name__}: {e}")
+        if not await store_ready(b, rt, "history"):
             return b.build(None, ok=False)
 
         now = rt.now()
         until_ts = int(now.timestamp())
         since_ts = until_ts - lookback_days * 86_400
-        series = await rt.store.atm_term_series(currency, expiry, since_ts, until_ts)
+        try:
+            series = await rt.store.atm_term_series(currency, expiry, since_ts, until_ts)
+        except STORE_ERRORS as e:
+            return store_failed(b, e)
         if len(series) < min_points:
             b.miss(
                 "atm_term",
@@ -167,18 +164,15 @@ def register(server: MCPServer, rt: Runtime) -> None:
         min_points: MIN_POINTS = 10,
     ) -> dict[str, Any]:
         b = Builder()
-        if rt.store is None:
-            b.miss("store", "tradedesk", "config", "db_path is empty; set TRADEDESK_DB_PATH to enable history")
-            return b.build(None, ok=False)
-        try:
-            await rt.store.init()
-        except Exception as e:  # noqa: BLE001
-            b.miss("store", "tradedesk", "backend_error", f"{type(e).__name__}: {e}")
+        if not await store_ready(b, rt, "history"):
             return b.build(None, ok=False)
         now = rt.now()
         until_ts = int(now.timestamp())
         since_ts = until_ts - lookback_days * 86_400
-        series = await rt.store.funding_series(venue, base, since_ts, until_ts)
+        try:
+            series = await rt.store.funding_series(venue, base, since_ts, until_ts)
+        except STORE_ERRORS as e:
+            return store_failed(b, e)
         if len(series) < min_points:
             b.miss(
                 "funding_hist",
@@ -227,18 +221,15 @@ def register(server: MCPServer, rt: Runtime) -> None:
         min_points: MIN_POINTS = 10,
     ) -> dict[str, Any]:
         b = Builder()
-        if rt.store is None:
-            b.miss("store", "tradedesk", "config", "db_path is empty; set TRADEDESK_DB_PATH to enable history")
-            return b.build(None, ok=False)
-        try:
-            await rt.store.init()
-        except Exception as e:  # noqa: BLE001
-            b.miss("store", "tradedesk", "backend_error", f"{type(e).__name__}: {e}")
+        if not await store_ready(b, rt, "history"):
             return b.build(None, ok=False)
         now = rt.now()
         until_ts = int(now.timestamp())
         since_ts = until_ts - lookback_days * 86_400
-        series = await rt.store.atm_term_series(currency, expiry, since_ts, until_ts)
+        try:
+            series = await rt.store.atm_term_series(currency, expiry, since_ts, until_ts)
+        except STORE_ERRORS as e:
+            return store_failed(b, e)
         if len(series) < min_points:
             b.miss(
                 "atm_term",
@@ -288,22 +279,19 @@ def register(server: MCPServer, rt: Runtime) -> None:
         ] = None,
     ) -> dict[str, Any]:
         b = Builder()
-        if rt.store is None:
-            b.miss("store", "tradedesk", "config", "db_path is empty; set TRADEDESK_DB_PATH to enable history")
+        if not await store_ready(b, rt, "history"):
             return b.build(None, ok=False)
         try:
-            await rt.store.init()
-        except Exception as e:  # noqa: BLE001
-            b.miss("store", "tradedesk", "backend_error", f"{type(e).__name__}: {e}")
-            return b.build(None, ok=False)
-        rows = await rt.store.ohlcv_range(
-            venue=venue,
-            symbol=symbol,
-            timeframe=timeframe,
-            since_ts=since_ts_ms or 0,
-            until_ts=until_ts_ms,
-            limit=limit,
-        )
+            rows = await rt.store.ohlcv_range(
+                venue=venue,
+                symbol=symbol,
+                timeframe=timeframe,
+                since_ts=since_ts_ms or 0,
+                until_ts=until_ts_ms,
+                limit=limit,
+            )
+        except STORE_ERRORS as e:
+            return store_failed(b, e)
         if not rows:
             b.miss(
                 "ohlcv_hist",
@@ -368,15 +356,14 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 if isinstance(x, (list, tuple)) and len(x) >= 5
             ]
         else:
-            if rt.store is None:
-                b.miss("store", "tradedesk", "config", "db_path is empty; set TRADEDESK_DB_PATH to use source='store'")
+            if not await store_ready(b, rt, "source='store'"):
                 return b.build(None, ok=False)
             try:
-                await rt.store.init()
-            except Exception as e:  # noqa: BLE001
-                b.miss("store", "tradedesk", "backend_error", f"{type(e).__name__}: {e}")
-                return b.build(None, ok=False)
-            rows = await rt.store.ohlcv_range(venue=venue, symbol=symbol, timeframe=timeframe, since_ts=0, limit=lookback_bars, newest=True)
+                rows = await rt.store.ohlcv_range(
+                    venue=venue, symbol=symbol, timeframe=timeframe, since_ts=0, limit=lookback_bars, newest=True
+                )
+            except STORE_ERRORS as e:
+                return store_failed(b, e)
             bars = rows[-lookback_bars:] if rows else []
         if len(bars) < min_bars:
             b.miss("bars", "tradedesk", "data_unavailable", f"only {len(bars)} bars; need >= {min_bars}")
@@ -489,11 +476,14 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 if isinstance(x, (list, tuple)) and len(x) >= 5
             ]
         else:
-            if rt.store is None:
-                b.miss("store", "tradedesk", "config", "db_path is empty; set TRADEDESK_DB_PATH to use source='store'")
+            if not await store_ready(b, rt, "source='store'"):
                 return b.build(None, ok=False)
-            await rt.store.init()
-            rows = await rt.store.ohlcv_range(venue=venue, symbol=symbol, timeframe=timeframe, since_ts=0, limit=lookback_bars, newest=True)
+            try:
+                rows = await rt.store.ohlcv_range(
+                    venue=venue, symbol=symbol, timeframe=timeframe, since_ts=0, limit=lookback_bars, newest=True
+                )
+            except STORE_ERRORS as e:
+                return store_failed(b, e)
             bars = rows[-lookback_bars:] if rows else []
         if len(bars) < min_bars:
             b.miss("bars", "tradedesk", "data_unavailable", f"only {len(bars)} bars; need >= {min_bars}")
@@ -809,23 +799,20 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 if isinstance(x, (list, tuple)) and len(x) >= 5
             ]
         else:
-            if rt.store is None:
-                b.miss("store", "tradedesk", "config", "db_path is empty; set TRADEDESK_DB_PATH to use source='store'")
-                return b.build(None, ok=False)
-            try:
-                await rt.store.init()
-            except Exception as e:  # noqa: BLE001
-                b.miss("store", "tradedesk", "backend_error", f"{type(e).__name__}: {e}")
+            if not await store_ready(b, rt, "source='store'"):
                 return b.build(None, ok=False)
             # Latest `lookback_bars` bars, ascending by ts.
-            rows = await rt.store.ohlcv_range(
-                venue=venue,
-                symbol=symbol,
-                timeframe=timeframe,
-                since_ts=0,
-                limit=lookback_bars,
-                newest=True,
-            )
+            try:
+                rows = await rt.store.ohlcv_range(
+                    venue=venue,
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    since_ts=0,
+                    limit=lookback_bars,
+                    newest=True,
+                )
+            except STORE_ERRORS as e:
+                return store_failed(b, e)
             bars = rows[-lookback_bars:] if rows else []
 
         if len(bars) < 3:
@@ -873,13 +860,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
         limit: Annotated[int, Field(ge=1, le=500, description="Max rows to return.")] = 50,
     ) -> dict[str, Any]:
         b = Builder()
-        if rt.store is None:
-            b.miss("store", "tradedesk", "config", "db_path is empty; set TRADEDESK_DB_PATH to enable history")
+        if not await store_ready(b, rt, "history"):
             return b.build(None, ok=False)
         try:
-            await rt.store.init()
-        except Exception as e:  # noqa: BLE001
-            b.miss("store", "tradedesk", "backend_error", f"{type(e).__name__}: {e}")
-            return b.build(None, ok=False)
-        rows = await rt.store.recent_alerts(limit=limit)
+            rows = await rt.store.recent_alerts(limit=limit)
+        except STORE_ERRORS as e:
+            return store_failed(b, e)
         return b.build({"count": len(rows), "alerts": rows})

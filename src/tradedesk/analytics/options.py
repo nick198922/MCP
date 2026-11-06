@@ -102,28 +102,36 @@ class OptionRow:
         return True
 
 
+def json_num(x: Any) -> float | int | None:
+    """A JSON number as it came; anything else (null, a string, a list, a bool) None, as if the field were absent.
+    For venues that send numbers as numbers (Deribit); venues that send numeric strings parse with `parsed_rows`
+    (tools/_util, which re-exports this function)."""
+    return x if isinstance(x, (int, float)) and not isinstance(x, bool) else None
+
+
 def build_chain(summaries: Iterable[dict[str, Any]], now: datetime) -> list[OptionRow]:
-    """Normalise Deribit `get_book_summary_by_currency(kind=option)` rows and add greeks."""
+    """Normalise Deribit `get_book_summary_by_currency(kind=option)` rows and add greeks. A numeric field of the wrong
+    type is treated like an absent one (the row is skipped without a forward, priced without greeks without an IV)."""
     rows: list[OptionRow] = []
     for s in summaries:
         parsed = parse_option_name(s.get("instrument_name", ""))
         if parsed is None:
             continue
-        fwd = s.get("underlying_price")
+        fwd = json_num(s.get("underlying_price"))
         if not fwd:
             continue
-        index = s.get("estimated_delivery_price")
-        mark_iv = s.get("mark_iv")
+        index = json_num(s.get("estimated_delivery_price"))
+        mark_iv = json_num(s.get("mark_iv"))
         iv = mark_iv / 100.0 if mark_iv and mark_iv > 0 else None
         T = year_fraction(parsed.expiry, now)
-        mark = s.get("mark_price")
+        mark = json_num(s.get("mark_price"))
         inverse = s.get("quote_currency") == s.get("base_currency")
         mark_usd = (mark * (index or fwd) if inverse else mark) if mark is not None else None
         bid = s.get("bid_price")
         ask = s.get("ask_price")
         spread_pct: float | None = None
         if isinstance(bid, (int, float)) and isinstance(ask, (int, float)) and bid > 0 and ask > 0 and ask >= bid:
-            mid = s.get("mid_price") or (bid + ask) / 2.0
+            mid = json_num(s.get("mid_price")) or (bid + ask) / 2.0
             if mid > 0:
                 spread_pct = (ask - bid) / mid * 100.0
         row = OptionRow(
@@ -137,8 +145,8 @@ def build_chain(summaries: Iterable[dict[str, Any]], now: datetime) -> list[Opti
             T=T,
             mark_price_native=mark,
             mark_price_usd=mark_usd,
-            open_interest=float(s.get("open_interest") or 0.0),
-            volume=float(s.get("volume") or 0.0),
+            open_interest=float(json_num(s.get("open_interest")) or 0.0),
+            volume=float(json_num(s.get("volume")) or 0.0),
             bid_price_native=float(bid) if isinstance(bid, (int, float)) and bid > 0 else None,
             ask_price_native=float(ask) if isinstance(ask, (int, float)) and ask > 0 else None,
             spread_pct=spread_pct,

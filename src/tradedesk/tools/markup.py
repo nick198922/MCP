@@ -12,7 +12,7 @@ from pydantic import Field
 from ..analytics import markup as mk
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, timeframe_seconds
+from ._util import READ_ONLY, parsed_rows, timeframe_seconds
 
 FX_PAIR = re.compile(r"^([A-Z]{3})/?([A-Z]{3})$")
 
@@ -31,11 +31,13 @@ def px(x: float | None) -> float | None:
 
 
 def _bars(rows: list[list[Any]] | None) -> list[dict[str, Any]]:
-    return [
-        {"ts": int(x[0]), "open": float(x[1]), "high": float(x[2]), "low": float(x[3]), "close": float(x[4]), "volume": float(x[5] or 0.0)}
-        for x in rows or []
-        if x[4] is not None
-    ]
+    return parsed_rows(  # a bar with close=None (or any other field of the wrong type) is dropped
+        rows,
+        lambda x: {
+            "ts": int(x[0]), "open": float(x[1]), "high": float(x[2]), "low": float(x[3]), "close": float(x[4]),
+            "volume": float(x[5] or 0.0),
+        },
+    )  # fmt: skip
 
 
 def _swing(s: dict[str, Any]) -> dict[str, Any]:

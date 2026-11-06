@@ -17,7 +17,7 @@ from ..analytics.trades import summarise as summarise_trades
 from ..core.envelope import Builder
 from ..providers.exchanges import PERP_EXCHANGES
 from ..runtime import Runtime
-from ._util import READ_ONLY, r, timeframe_seconds
+from ._util import READ_ONLY, json_num, parsed_rows, r, timeframe_seconds
 
 BASE = Annotated[str, Field(description="Base asset, e.g. BTC, ETH, SOL")]
 SPREAD_WARNING = (
@@ -265,7 +265,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 return None
             fut = await b.guard("funding:deribit", "deribit", rt.deribit.book_summary(base, "future"))
             perp = next((x for x in fut or [] if x.get("instrument_name", "").endswith("PERPETUAL")), None)
-            if not perp or perp.get("funding_8h") is None:
+            if not perp or json_num(perp.get("funding_8h")) is None:
                 return None
             rate = float(perp["funding_8h"])
             return {
@@ -362,12 +362,11 @@ def register(server: MCPServer, rt: Runtime) -> None:
             if not got:
                 return None
             if not got["complete"]:
-                b.warn("hyperliquid funding history incomplete (page limit or a later page failed); window truncated")
-            entries = [
-                {"ts_ms": int(x["time"]), "rate": float(x["fundingRate"])}
-                for x in got["rows"]
-                if x.get("fundingRate") is not None and x.get("time")
-            ]
+                b.warn("hyperliquid funding history incomplete (page limit, a later page failed, or rows with a malformed time dropped)")
+            entries = parsed_rows(
+                [x for x in got["rows"] if x.get("fundingRate") is not None and x.get("time")],
+                lambda x: {"ts_ms": int(x["time"]), "rate": float(x["fundingRate"])},
+            )
             if not entries:
                 return None
             _warn_short_coverage(b, "hyperliquid", entries, since_ms)
@@ -697,8 +696,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
                         f"ccxt:{pair['short_venue']}",
                         rt.exchanges.ohlcv(pair["short_venue"], sym, "4h", 42),
                     )
-            ok_bars = [x for x in (bars or []) if isinstance(x, (list, tuple)) and len(x) >= 5]
-            range_7d = max(float(x[2]) for x in ok_bars) / min(float(x[3]) for x in ok_bars) - 1.0 if ok_bars else None
+            ok_bars = parsed_rows(
+                [x for x in (bars or []) if isinstance(x, (list, tuple)) and len(x) >= 5], lambda x: (float(x[2]), float(x[3]))
+            )
+            range_7d = max(h for h, _ in ok_bars) / min(lo for _, lo in ok_bars) - 1.0 if ok_bars else None
             flags = list(pair["flags"])
             if range_7d is not None and range_7d >= 1 / 3:
                 flags.append("volatile")
@@ -776,16 +777,15 @@ def register(server: MCPServer, rt: Runtime) -> None:
             )
             if not raw:
                 return None
-            series = [
-                {
+            series = parsed_rows(
+                [x for x in raw if x.get("longAccount") is not None and x.get("shortAccount") is not None],
+                lambda x: {
                     "ts_ms": int(x["timestamp"]),
                     "long": float(x["longAccount"]),
                     "short": float(x["shortAccount"]),
                     "ratio": float(x["longShortRatio"]),
-                }
-                for x in raw
-                if x.get("longAccount") is not None and x.get("shortAccount") is not None
-            ]
+                },
+            )
             series.sort(key=lambda s: s["ts_ms"])
             if not series:
                 return None
@@ -804,16 +804,15 @@ def register(server: MCPServer, rt: Runtime) -> None:
             raw = await b.guard("ls_ratio:bybit", "bybit", rt.bybit.long_short_account_ratio(symbol, _PERIOD_BYBIT[period], limit))
             if not raw:
                 return None
-            series = [
-                {
+            series = parsed_rows(
+                [x for x in raw if x.get("buyRatio") is not None and x.get("sellRatio") is not None],
+                lambda x: {
                     "ts_ms": int(x["timestamp"]),
                     "long": float(x["buyRatio"]),
                     "short": float(x["sellRatio"]),
                     "ratio": float(x["buyRatio"]) / float(x["sellRatio"]) if float(x["sellRatio"]) else None,
-                }
-                for x in raw
-                if x.get("buyRatio") is not None and x.get("sellRatio") is not None
-            ]
+                },
+            )
             series.sort(key=lambda s: s["ts_ms"])
             series = [x for x in series if x["ratio"] is not None]
             if not series:
@@ -876,11 +875,14 @@ def register(server: MCPServer, rt: Runtime) -> None:
             )
             if not raw:
                 return None
-            series = [
-                {"ts_ms": int(x["timestamp"]), "oi_base": float(x["sumOpenInterest"]), "oi_usd": float(x["sumOpenInterestValue"])}
-                for x in raw
-                if x.get("sumOpenInterest") is not None
-            ]
+            series = parsed_rows(
+                [x for x in raw if x.get("sumOpenInterest") is not None],
+                lambda x: {
+                    "ts_ms": int(x["timestamp"]),
+                    "oi_base": float(x["sumOpenInterest"]),
+                    "oi_usd": float(x["sumOpenInterestValue"]),
+                },
+            )
             series.sort(key=lambda s: s["ts_ms"])
             if not series:
                 return None
@@ -896,11 +898,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
             raw = await b.guard("oi_hist:bybit", "bybit", rt.bybit.open_interest(symbol, _PERIOD_BYBIT[period], limit))
             if not raw:
                 return None
-            series = [
-                {"ts_ms": int(x["timestamp"]), "oi_base": float(x["openInterest"]), "oi_usd": None}
-                for x in raw
-                if x.get("openInterest") is not None
-            ]
+            series = parsed_rows(
+                [x for x in raw if x.get("openInterest") is not None],
+                lambda x: {"ts_ms": int(x["timestamp"]), "oi_base": float(x["openInterest"]), "oi_usd": None},
+            )
             series.sort(key=lambda s: s["ts_ms"])
             if not series:
                 return None
@@ -1152,11 +1153,12 @@ def register(server: MCPServer, rt: Runtime) -> None:
             try:
                 price = float(t["px"])
                 amount = float(t["sz"])
+                ts = int(t.get("time") or 0)
             except (KeyError, TypeError, ValueError):
                 continue
             normalised.append(
                 {
-                    "timestamp": int(t.get("time") or 0),
+                    "timestamp": ts,
                     "side": "buy" if side_code == "B" else "sell",
                     "price": price,
                     "amount": amount,
@@ -1191,7 +1193,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 b.miss("funding_history", "hyperliquid", "data_unavailable", "empty result")
             return b.build(None, ok=False)
         if not got["complete"]:
-            b.warn("funding history incomplete (page limit or a later page failed); window truncated")
+            b.warn("funding history incomplete (page limit, a later page failed, or rows with a malformed time dropped)")
         entries: list[dict[str, Any]] = []
         for e in got["rows"]:
             try:
@@ -1225,17 +1227,18 @@ def register(server: MCPServer, rt: Runtime) -> None:
         perp: dict[str, Any] | None = None
         for f in fut:
             parsed = parse_future_name(f.get("instrument_name", ""))
-            idx, mark = f.get("estimated_delivery_price"), f.get("mark_price")
+            idx, mark = json_num(f.get("estimated_delivery_price")), json_num(f.get("mark_price"))
             if not parsed or not idx or not mark:
                 continue
             if parsed[1] is None:
+                funding_8h = json_num(f.get("funding_8h"))
                 perp = {
                     "instrument": f["instrument_name"],
                     "mark": mark,
                     "index": idx,
                     "basis_pct": r((mark / idx - 1) * 100, 4),
-                    "funding_8h": f.get("funding_8h"),
-                    "funding_annualized": r(annualize_funding(f["funding_8h"], 8.0), 5) if f.get("funding_8h") is not None else None,
+                    "funding_8h": funding_8h,
+                    "funding_annualized": r(annualize_funding(funding_8h, 8.0), 5) if funding_8h is not None else None,
                     "open_interest_usd": f.get("open_interest"),
                 }
                 continue
@@ -1335,14 +1338,14 @@ def register(server: MCPServer, rt: Runtime) -> None:
             now = rt.now()
             for f in fut:
                 parsed = parse_future_name(f.get("instrument_name", ""))
-                idx, mark = f.get("estimated_delivery_price"), f.get("mark_price")
+                idx, mark = json_num(f.get("estimated_delivery_price")), json_num(f.get("mark_price"))
                 if not parsed or not idx or not mark:
                     continue
                 if parsed[1] is None:
                     pct, bps = _premium(mark, idx)
                     if pct is None:
                         continue
-                    rate = f.get("funding_8h")
+                    rate = json_num(f.get("funding_8h"))
                     perp_row = {
                         "venue": "deribit",
                         "mark": mark,

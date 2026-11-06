@@ -29,7 +29,7 @@ from ..analytics.options import (
 from ..analytics.vrp import align_daily, vrp_summary
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, find_expiry, r
+from ._util import READ_ONLY, find_expiry, parsed_rows, r
 
 CUR = Annotated[Literal["BTC", "ETH"], Field(description="Deribit inverse-option currency")]
 EXPIRY = Annotated[str, Field(description="Expiry as 26MAR27 or 2027-03-26 (08:00 UTC). Use deribit_vol_surface to list expiries.")]
@@ -546,7 +546,12 @@ def register(server: MCPServer, rt: Runtime) -> None:
             if data is not None:
                 b.miss("dvol", "deribit", "data_unavailable", "empty series")
             return b.build(None, ok=False)
-        series = [{"ts": int(x[0]), "open": float(x[1]), "high": float(x[2]), "low": float(x[3]), "close": float(x[4])} for x in rows]
+        series = parsed_rows(
+            rows, lambda x: {"ts": int(x[0]), "open": float(x[1]), "high": float(x[2]), "low": float(x[3]), "close": float(x[4])}
+        )
+        if not series:
+            b.miss("dvol", "deribit", "data_unavailable", "no well-formed rows in the series")
+            return b.build(None, ok=False)
         series.sort(key=lambda s: s["ts"])
         closes = [s["close"] for s in series]
         n = len(closes)
@@ -612,16 +617,18 @@ def register(server: MCPServer, rt: Runtime) -> None:
             page = await b.guard("dvol", "deribit", rt.deribit.volatility_index_data(currency, start_ms, end, 86400))
             if not page:
                 break
-            for x in page.get("data") or []:
-                iv[int(x[0])] = float(x[4]) / 100.0
+            iv.update(parsed_rows(page.get("data"), lambda x: (int(x[0]), float(x[4]) / 100.0)))
             cont = page.get("continuation")
-            if not cont or int(cont) <= start_ms or int(cont) >= end:
+            nxt = parsed_rows([cont] if cont and not isinstance(cont, bool) else [], int)
+            if cont and not nxt:  # a wrong-type continuation ends the paging; the IV series may be cut short
+                b.warn("DVOL paging stopped on a malformed continuation; the IV series may not cover the whole window")
+            if not nxt or not nxt[0] or nxt[0] <= start_ms or nxt[0] >= end:
                 break
-            end = int(cont)
+            end = nxt[0]
         bars = await b.guard(
             f"ohlcv:{price_venue}", f"ccxt:{price_venue}", rt.exchanges.ohlcv(price_venue, f"{currency}/USDT", "1d", history_days)
         )
-        prices = [(int(x[0]), float(x[4])) for x in (bars or []) if isinstance(x, (list, tuple)) and len(x) >= 5]
+        prices = parsed_rows([x for x in (bars or []) if isinstance(x, (list, tuple)) and len(x) >= 5], lambda x: (int(x[0]), float(x[4])))
         if not iv or not prices:
             if not iv and not any(m.field == "dvol" for m in b.missing):
                 b.miss("dvol", "deribit", "data_unavailable", "empty DVOL series")
@@ -851,6 +858,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 amount = float(t.get("amount") or 0)
                 price = float(t.get("price") or 0)
                 index = float(t.get("index_price") or 0)
+                ts = int(t["timestamp"]) if t.get("timestamp") is not None else None
             except (TypeError, ValueError):
                 continue
             if amount <= 0 or price <= 0:
@@ -870,7 +878,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 continue
             rows.append(
                 {
-                    "ts": int(t["timestamp"]) if t.get("timestamp") is not None else None,
+                    "ts": ts,
                     "instrument": t.get("instrument_name"),
                     "direction": direction,
                     "amount": amount,

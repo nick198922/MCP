@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from mcp.types import ToolAnnotations
 
 from ..analytics.instruments import expiry_token, parse_user_expiry
+from ..analytics.options import json_num as json_num  # re-exported: one rule for "a JSON number" in tools and analytics
 from ..core.envelope import Builder
 
 if TYPE_CHECKING:
@@ -17,6 +19,8 @@ READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotent
 
 # What a query on the local SQLite store raises when the file is locked, unreadable, on a full disk or gone.
 STORE_ERRORS = (sqlite3.Error, OSError)
+
+T = TypeVar("T")
 
 
 async def store_ready(b: Builder, rt: Runtime, feature: str) -> bool:
@@ -37,6 +41,20 @@ def store_failed(b: Builder, e: BaseException) -> dict[str, Any]:
     """Envelope for a store query that raised one of STORE_ERRORS: `missing: store` (backend_error), ok=false."""
     b.miss("store", "tradedesk", "backend_error", f"{type(e).__name__}: {e}")
     return b.build(None, ok=False)
+
+
+def parsed_rows(rows: Any, parse: Callable[[Any], T]) -> list[T]:
+    """`parse` applied to every row of a venue answer. A row it cannot parse (a field that is null, a string or a list
+    where a number belongs, or an infinity: TypeError / ValueError / KeyError / IndexError / OverflowError) is dropped,
+    as rows with an absent field already are, so a wrong-type field never escapes the tool (invariant 1). Well-formed
+    rows parse exactly as before."""
+    out: list[T] = []
+    for row in rows or []:
+        try:
+            out.append(parse(row))
+        except (TypeError, ValueError, KeyError, IndexError, OverflowError):
+            continue
+    return out
 
 
 def r(x: float | None, nd: int = 4) -> float | None:

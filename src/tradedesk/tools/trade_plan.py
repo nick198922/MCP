@@ -49,6 +49,20 @@ def _iso(ts: int | None) -> str | None:
         return str(ts)
 
 
+def _expires_view(ts: Any) -> dict[str, Any]:
+    """``expires`` of a stored plan as ISO-8601 UTC. A stored value that is not usable unix seconds (text, a number in
+    ms or out of the datetime range, NaN) gives ``expires=None`` plus ``expires_raw``, the raw value as text (cut to
+    64 chars). Never raises; plan_add's validation keeps such values out, this only guards rows written elsewhere."""
+    if ts is None:
+        return {"expires": None}
+    if isinstance(ts, (int, float)) and not isinstance(ts, bool):
+        try:
+            return {"expires": datetime.fromtimestamp(ts, UTC).isoformat(timespec="seconds")}
+        except (ValueError, OverflowError, OSError):
+            pass
+    return {"expires": None, "expires_raw": str(ts)[:64]}
+
+
 def _view(p: dict[str, Any]) -> dict[str, Any]:
     g = geometry(float(p["entry"]), float(p["stop"]), float(p["target"]))
     out = {
@@ -64,7 +78,7 @@ def _view(p: dict[str, Any]) -> dict[str, Any]:
         "target": p["target"],
         "rr": r(g["rr"], 2),
         "risk_pct": r(g["risk_pct"], 5),
-        "expires": _iso(p["expires_ts"]),
+        **_expires_view(p["expires_ts"]),
         "verdict": p["verdict"],
         "thesis": p["thesis"],
         "rules": p["rules"],

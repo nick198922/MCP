@@ -280,6 +280,39 @@ async def test_plan_add_expires_in_ms_is_an_error_envelope(tmp_path):
         await rt.aclose()
 
 
+async def test_plan_view_shows_a_stored_raw_expires_safely(tmp_path):
+    # review 2026-11-05-plan-add-ms-expires p. 4: a row written outside plan_add may hold text or ms in expires_ts
+    rt = _rt(tmp_path)
+    srv, _ = build_server(rt)
+    base = dict(exchange="binance", symbol="BTC/USDT:USDT", instrument="perp", side="long", entry_type="market", verdict="enter")
+    try:
+        for _ in range(3):
+            out = await _call(srv, "plan_add", **base, entry=100.0, stop=98.0, target=105.0, expires_ts=_ts(24))
+            assert out["ok"] is True, out
+        await rt.store.init()
+        for pid, raw in ((1, "next friday"), (2, 1_800_000_000_000)):
+            await rt.store.conn.execute("UPDATE trade_plan SET expires_ts = ? WHERE id = ?", (raw, pid))
+        await rt.store.conn.commit()
+        lst = await _call(srv, "plan_list")
+        assert lst["ok"] is True and lst["data"]["count"] == 3, lst
+        by = {p["id"]: p for p in lst["data"]["plans"]}
+        assert by[1]["expires"] is None and by[1]["expires_raw"] == "next friday"
+        assert by[2]["expires"] is None and by[2]["expires_raw"] == "1800000000000"
+        assert by[3]["expires"] == datetime.fromtimestamp(_ts(24), UTC).isoformat(timespec="seconds") and "expires_raw" not in by[3]
+    finally:
+        await rt.aclose()
+
+
+def test_expires_view_never_raises():
+    from tradedesk.tools.trade_plan import _expires_view
+
+    assert _expires_view(None) == {"expires": None}
+    assert _expires_view(1_800_000_000) == {"expires": "2027-01-15T08:00:00+00:00"}
+    assert _expires_view(1.8e9) == {"expires": "2027-01-15T08:00:00+00:00"}
+    for bad, raw in ((math.nan, "nan"), (1e300, "1e+300"), (True, "True"), (b"\x00", "b'\\x00'"), ("x" * 100, "x" * 64)):
+        assert _expires_view(bad) == {"expires": None, "expires_raw": raw}, bad
+
+
 def test_iso_falls_back_to_the_raw_number():
     from tradedesk.tools.trade_plan import _iso
 

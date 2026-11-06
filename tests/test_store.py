@@ -331,9 +331,10 @@ _SCRIPT_WRITES_ALLOWED: dict[str, tuple[int, str]] = {
         "commits, or rolls back on any error",
     ),
     "hyperliquid_import.py:mark_airdrop": (
-        2,
-        "not the Store: a synchronous sqlite3 connection in a one-off owner command (mark-airdrop); an error ends the "
-        "process, and closing the connection discards the open transaction",
+        1,
+        "not the Store: a synchronous sqlite3 connection in a one-off owner command (mark-airdrop); the UPDATE runs "
+        "inside `with con:`, which commits, or rolls back on any error, and `finally` closes the connection "
+        "(test_mark_airdrop_rolls_back_and_closes_on_error)",
     ),
     "bybit_import.py:store_options": (
         1,

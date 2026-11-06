@@ -179,6 +179,44 @@ def test_airdrop_trades_are_left_out_of_stats(tmp_path):
     assert "Закритих позицій: **1**" in bi.stats(db, venue=None)
 
 
+def test_mark_airdrop_rolls_back_and_closes_on_error(tmp_path, monkeypatch):
+    import sqlite3
+
+    import hyperliquid_import as hl
+    import pytest
+
+    db = str(tmp_path / "j.sqlite")
+    rows = [dict(bi.to_trade(LONG), venue="hyperliquid", category="perp", ts=1700000000000 + i, oid=f"a{i}") for i in range(3)]
+    asyncio.run(bi.store(rows, db))
+    raw = sqlite3.connect(db)
+    ids = [r[0] for r in raw.execute("SELECT id FROM journal ORDER BY id")]
+    before = raw.execute("SELECT id, tags, thesis FROM journal ORDER BY id").fetchall()
+    raw.execute(f"CREATE TRIGGER fail_second BEFORE UPDATE ON journal WHEN OLD.id = {ids[1]} BEGIN SELECT RAISE(ABORT, 'boom'); END")
+    raw.commit()
+    raw.close()
+
+    opened = []
+    real_connect = sqlite3.connect
+    monkeypatch.setattr(sqlite3, "connect", lambda *a, **k: opened.append(real_connect(*a, **k)) or opened[-1])
+    with pytest.raises(sqlite3.IntegrityError, match="boom"):
+        hl.mark_airdrop(db, "2025-04-18")
+    monkeypatch.undo()
+
+    assert len(opened) == 1
+    with pytest.raises(sqlite3.ProgrammingError):  # the connection is closed
+        opened[0].execute("SELECT 1")
+    check = sqlite3.connect(db, timeout=0)  # no lock left: a writer gets in at once
+    try:
+        assert check.execute("SELECT id, tags, thesis FROM journal ORDER BY id").fetchall() == before  # the first UPDATE is undone
+        check.execute("BEGIN IMMEDIATE")
+        check.rollback()
+        check.execute("DROP TRIGGER fail_second")
+        check.commit()
+    finally:
+        check.close()
+    assert hl.mark_airdrop(db, "2025-04-18") == 3 and hl.mark_airdrop(db, "2025-04-18") == 0
+
+
 def test_option_trips_close_by_trade_and_at_expiry():
     F = [
         {

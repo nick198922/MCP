@@ -83,6 +83,31 @@ def test_short_straddle_costs_and_gap():
     assert short_straddle_hedged(rows, 0, days=30) is None
 
 
+def test_short_straddle_inlined_delta_matches_black76_greeks_exactly():
+    from tradedesk.analytics.options import black76_greeks, black76_price
+
+    def reference(rows, start, days=30, entry_cost_vol=0.02, option_fee=0.0003, hedge_fee=0.0005):
+        end = start + days
+        s0, k = rows[start]["close"], rows[start]["close"]
+        sv = max(rows[start]["iv"] - entry_cost_vol, 1e-4)
+        pnl = black76_price(s0, k, days / 365.0, sv, True) + black76_price(s0, k, days / 365.0, sv, False) - 2 * option_fee * s0
+        position = hedge_pnl = costs = 0.0
+        for d in range(start, end):
+            s, t = rows[d]["close"], (end - d) / 365.0
+            target = black76_greeks(s, k, t, rows[d]["iv"], True)["delta"] + black76_greeks(s, k, t, rows[d]["iv"], False)["delta"]
+            costs += hedge_fee * abs(target - position) * s
+            position = target
+            hedge_pnl += position * (rows[d + 1]["close"] - s)
+        costs += hedge_fee * abs(position) * rows[end]["close"]
+        return (pnl - abs(rows[end]["close"] - k) + hedge_pnl - costs) / s0
+
+    closes = _zigzag(80, 0.03, s0=60000.0)
+    rows = [{"day": i, "iv": 0.3 + 0.2 * math.sin(i / 7), "close": c} for i, c in enumerate(closes)]
+    rows[40]["iv"] = 0.0  # the zero-vol branch of black76_greeks
+    for i in range(0, 50, 3):
+        assert short_straddle_hedged(rows, i, days=30, entry_cost_vol=0.02)["pnl"] == reference(rows, i)
+
+
 def test_stats_and_percentile():
     s = stats([0.02, -0.01, 0.03, -0.04], periods_per_year=12)
     assert s["n"] == 4

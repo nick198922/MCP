@@ -171,10 +171,6 @@ def placebo_days(day: str, event_days: Sequence[str], rng_sample: list[int], lo:
     return out
 
 
-def finite(xs: Iterable[float]) -> list[float]:
-    return [x for x in xs if math.isfinite(x)]
-
-
 def cluster_boot(
     values: Sequence[float], clusters: Sequence[object], *, n_boot: int = 10_000, seed: int = 20261027
 ) -> tuple[float, float, float, float]:

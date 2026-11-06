@@ -14,7 +14,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from datetime import date, timedelta
 from typing import Any
 
-from .funding_crowding import newey_west_se, spearman
+from .funding_crowding import spearman
 
 # Pre-registered class thresholds (docs/ideas/IDEA-20261015-smart-money-persistence.md, "Попередня реєстрація").
 SYSTEM_MIN_VALUE = 1e9
@@ -252,11 +252,6 @@ def periods_needed(sd: float, effect: float, k: float = Z80) -> int:
 def ic_null_sd(n_names: int) -> float:
     """SD of a cross-sectional rank IC over ``n_names`` under the null (no common shocks): 1/sqrt(n - 1)."""
     return 1.0 / math.sqrt(n_names - 1) if n_names > 1 else float("inf")
-
-
-def nw_mde(values: Sequence[float], lag: int, k: float = Z80) -> float:
-    """MDE of a mean of a serially correlated series (Newey-West SE)."""
-    return k * newey_west_se(values, lag)
 
 
 # ---------------------------------------------------------------------------------------------------------------------

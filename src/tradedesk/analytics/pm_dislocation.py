@@ -221,10 +221,6 @@ def reversion(sign: int, p_entry: float, p_exit: float) -> float:
     return -float(sign) * (float(p_exit) - float(p_entry))
 
 
-def cluster_count(keys: Iterable[Any]) -> int:
-    return len(set(keys))
-
-
 def mde_clustered(sd_value: float, cluster_sizes: Sequence[int], k: float = 2.8) -> dict[str, float]:
     """MDE of a mean of equally weighted observations with clusters treated as fully correlated inside (worst case).
 

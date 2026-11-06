@@ -857,10 +857,14 @@ def test_s17_equals_the_backtest_events(tf, hrs, seed):
         assert s.indicators["rest_until_ms"] == bt.close_time(k) + 90 * D1_MS and s.indicators["impulse_move"] >= 0.10
 
 
+def _s17_walk() -> Bars:
+    return _s17_backtest_rows(_h1_walk(4 * 700, 4), 4)[0]
+
+
 def test_s17_never_looks_ahead():
-    """The signals up to bar t are the same when the bars after t are removed or replaced by a different future, and
-    the live scan on every prefix finds exactly the full-history signals."""
-    b, _ = _s17_backtest_rows(_h1_walk(4 * 700, 4), 4)
+    """The signals up to bar t are the same when the bars after t are removed or replaced by a different future (the
+    live scan on every prefix: the parts below)."""
+    b = _s17_walk()
     full = ss.s17_all(b, "4h")
     assert len(full) > 3
     rng = np.random.default_rng(11)
@@ -871,12 +875,35 @@ def test_s17_never_looks_ahead():
             want = [x for x in full if x.signal_ts <= upto]
             assert ss.s17_all(b.slice(0, cut + 1), "4h") == want, cut
             assert [x for x in ss.s17_all(_other_future(b, cut, rng), "4h") if x.signal_ts <= upto] == want, cut
-    live = []
-    for i in range(100, len(b)):
-        got = ss.scan(b.slice(0, i + 1), "4h", ("S17",))
-        assert all(x.setup == "S17" and x.signal_ts == int(b.t[i]) for x in got)
-        live += got
-    assert live == [x for x in full if x.signal_ts >= int(b.t[100])] and live
+
+
+# Live S17 on bars 100..699 of _s17_walk(): ~6.4 s in one piece, three parts of about equal work (cost of bar i ~i).
+S17_PARTS = ((100, 420), (420, 595), (595, 700))
+
+
+def _scan_only(setup: str):
+    return lambda bars, tf: ss.scan(bars, tf, (setup,))
+
+
+@pytest.mark.parametrize(("lo", "hi"), S17_PARTS)
+def test_s17_live_scan_on_each_prefix_equals_the_full_history_signals(lo, hi):
+    """On every prefix bars[: i + 1], lo <= i < hi, the live scan gives exactly the full-history S17 signals of bar i,
+    in order."""
+    b = _s17_walk()
+    full = ss.s17_all(b, "4h")
+    live = _prefix_scan(b, lo, hi, _scan_only("S17"))
+    assert all(s.setup == "S17" and s.signal_ts == int(b.t[i]) for i, s in live)
+    assert [s for _, s in live] == [x for x in full if int(b.t[lo]) <= x.signal_ts <= int(b.t[hi - 1])]
+
+
+def test_s17_parts_cover_every_prefix():
+    """The parts check bars 100..699 with no gap; the full-history signals there are in time order and not empty, so
+    the parts together equal the one-piece live scan."""
+    b = _s17_walk()
+    assert S17_PARTS[0][0] == 100 and S17_PARTS[-1][1] == len(b)
+    assert all(x[1] == y[0] for x, y in itertools.pairwise(S17_PARTS))
+    seen = [x.signal_ts for x in ss.s17_all(b, "4h") if x.signal_ts >= int(b.t[100])]
+    assert seen and seen == sorted(seen)
 
 
 # ---------------------------------------------------------------- S23 (SFP retest, a QM proxy without BOS; negative)
@@ -967,7 +994,7 @@ def test_s23_equals_the_walk_forward_backtest(seed):
 
 def test_s23_never_looks_ahead():
     """The signal on bar t is the same when the bars after t are removed (the live scan on bars 0..t) or replaced by a
-    different future, and the live scan on every prefix finds exactly the full-history signals."""
+    different future (the live scan on every prefix: the next test; the two were one test of ~6 s)."""
     b = _sfp_bars(650, 2)
     full = ss.s23_all(b, "4h")
     assert len(full) > 10
@@ -979,12 +1006,14 @@ def test_s23_never_looks_ahead():
             want = [x for x in full if upto - 5 * H4 <= x.signal_ts <= upto]
             assert ss.s23_all(b.slice(0, cut + 1), "4h", lo=cut - 5) == want, cut
             assert [x for x in ss.s23_all(_other_future(b, cut, rng), "4h", lo=cut - 5) if x.signal_ts <= upto] == want, cut
-    live = []
-    for i in range(299, len(b)):
-        got = ss.scan(b.slice(0, i + 1), "4h", ("S23",))
-        assert all(x.setup == "S23" and x.signal_ts == int(b.t[i]) for x in got)
-        live += got
-    assert live == full
+
+
+def test_s23_live_scan_on_each_prefix_equals_the_full_history_signals():
+    """The live scan on every prefix bars[: i + 1], 299 <= i < 650, finds exactly the full-history S23 signals."""
+    b = _sfp_bars(650, 2)
+    live = _prefix_scan(b, 299, len(b), _scan_only("S23"))
+    assert all(s.setup == "S23" and s.signal_ts == int(b.t[i]) for i, s in live)
+    assert [s for _, s in live] == ss.s23_all(b, "4h")
 
 
 def test_s17_s23_are_opt_in_only():

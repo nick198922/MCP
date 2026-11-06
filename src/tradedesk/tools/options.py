@@ -469,7 +469,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
         description=(
             "Risk-neutral probability implied by Deribit options for a price `level` at an expiry. kind='above'/'below': P(price beyond level AT "
             "expiry) from the smile slope (Breeden-Litzenberger, skew-adjusted). kind='touch': P(price touches level at ANY time before expiry), "
-            "using the IV at that strike. These are market-implied (risk-neutral) odds, not real-world forecasts; options only cover quoted strikes."
+            "using the IV at that strike. These are market-implied (risk-neutral) odds, not real-world forecasts; options only cover quoted strikes. "
+            "Units: probability is a fraction 0-1 (0.25 = 25 %); level, forward and one_sigma_range are in USD; iv_at_level and "
+            "atm_iv are annualised decimals (0.45 = 45 %); days are calendar days to the 08:00 UTC expiry, T = days / 365; "
+            "one_sigma_range = forward × exp(±atm_iv × sqrt(T))."
         ),
     )
     async def prob_from_options(

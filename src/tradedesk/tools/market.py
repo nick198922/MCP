@@ -41,7 +41,12 @@ def register(server: MCPServer, rt: Runtime) -> None:
         annotations=READ_ONLY,
         description=(
             "OHLCV candles (oldest first, columns: ts_ms, open, high, low, close, volume) plus summary: "
-            "period return and annualised close-to-close realised volatility. timeframe like 1m,5m,1h,4h,1d."
+            "period return and annualised close-to-close realised volatility. timeframe like 1m,5m,1h,4h,1d. "
+            "Units: ts_ms is Unix epoch milliseconds (UTC); prices (and first_close/last_close) are in the symbol's quote "
+            "currency; volume is passed through as the venue reports it via ccxt (not converted to USD). "
+            "summary.return_pct is in percent (first to last close; 1.5 = 1.5 %); summary.realized_vol_annualized is a "
+            "decimal (0.45 = 45 %): stdev of close-to-close log-returns scaled by sqrt(365 days / candle size), "
+            "present only with at least 10 closes."
         ),
     )
     async def market_ohlcv(

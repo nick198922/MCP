@@ -26,7 +26,10 @@ def test_normal_tool_has_no_findings():
     # the non-idempotent read-only variant (carry_paper_open) passes too
     assert tda.check_tool(_tool(annotations={**READ_ONLY, "idempotentHint": False})) == []
     gex = _tool(name="deribit_gamma_exposure", description="Dealer gamma by strike, USD. Heuristic: assumes dealers are short.")
-    prob = _tool(name="prob_from_options", description="Risk neutral probability of finishing above a level.")
+    prob = _tool(
+        name="prob_from_options",
+        description="Risk neutral probability of finishing above a level, a fraction 0-1; level in USD; IV decimal; T = days / 365.",
+    )
     assert tda.check_tool(gex) == [] and tda.check_tool(prob) == []
 
 
@@ -51,7 +54,8 @@ def test_missing_read_only_annotation():
 
 
 def test_missing_risk_neutral_or_heuristic_caveat():
-    plain = "Probability of finishing above a level, decimal; exposure in USD."
+    # unit-complete for every name (item 185 requires these words in prob_from_options / touch_probability)
+    plain = "Probability of finishing above a level, a fraction 0-1; IV decimal; T = days / 365; move in percent; exposure in USD."
     for name in ("prob_from_options", "touch_probability", "deribit_gex", "deribit_gamma_exposure", "implied_move", "risk_neutral_density"):
         assert _checks(_tool(name=name, description=plain)) == [("missing_caveat", "no 'risk-neutral' or 'heuristic' in the description")]
     # names without a token are not checked for the caveat
@@ -111,6 +115,33 @@ def test_unit_words_in_parameters():
     assert _checks(_tool(params={"iv": {"type": "number"}})) == [("param_no_description", "iv")]
 
 
+def test_required_units_for_tools_without_a_unit_token():
+    """Item 185: explicit tool -> unit-word map for names the token rule cannot see."""
+    full = {
+        "market_ohlcv": "ts_ms in epoch milliseconds; prices in quote currency; return_pct in percent; vol a decimal.",
+        "hyperliquid_candles": "ts_ms in epoch milliseconds; prices in USDC; return_pct in percent; vol a decimal.",
+        "event_study": "Returns are decimals; volatility is NOT annualised; hit_rate is a fraction 0-1.",
+        "prob_from_options": "Risk-neutral. Probability a fraction 0-1; level in USD; IV decimal; T = days/365.",
+        "touch_probability": "Risk-neutral. IV decimal; T = days / 365; probabilities as fractions 0-1; move in percent.",
+    }
+    assert set(full) == set(tda.REQUIRED_UNITS)
+    for name, desc in full.items():
+        assert tda.check_tool(_tool(name=name, description=desc)) == [], name
+    # each required word is checked on its own: drop one, get exactly that finding
+    assert _checks(_tool(name="market_ohlcv", description=full["market_ohlcv"].replace("percent", "pct"))) == [
+        ("missing_unit", "required unit 'percent' not named")
+    ]
+    assert _checks(_tool(name="event_study", description="Returns are decimals; volatility over the window; hit_rate share.")) == [
+        ("missing_unit", "required unit 'not annualised' not named"),
+        ("missing_unit", "required unit 'fraction 0-1' not named"),
+    ]
+    # "fraction of past points" is not "fraction 0-1"; USDT is not USD
+    found = _checks(_tool(name="prob_from_options", description="Risk-neutral; fraction of paths; level in USDT; decimal; days/365."))
+    assert found == [("missing_unit", "required unit 'fraction 0-1' not named"), ("missing_unit", "required unit 'USD' not named")]
+    # a tool outside the map is not held to it
+    assert _checks(_tool(name="market_ticker", description="Last price.")) == []
+
+
 def test_audit_render_and_main(tmp_path, monkeypatch):
     tools = [_tool(name="z_tool"), _tool(name="prob_x", description="Мова"), _tool(name="a_tool", params={"x": {}})]
     r = tda.audit(tools)
@@ -134,7 +165,7 @@ def test_audit_render_and_main(tmp_path, monkeypatch):
 
 def test_registered_tools_load_and_pass():
     """The real registry through build_server(): every tool listed, no findings (06.11: 109 tools, 0 findings;
-    item 183: 23 tools unit-checked, 7 missing_unit fixed in the descriptions)."""
+    item 183: 23 tools unit-checked, 7 missing_unit fixed in the descriptions; item 185: 5 tools in REQUIRED_UNITS)."""
     from test_server import EXPECTED_TOOLS
 
     tools = tda.load_tools()

@@ -1018,7 +1018,12 @@ def register(server: MCPServer, rt: Runtime) -> None:
         annotations=READ_ONLY,
         description=(
             "Hyperliquid OHLCV candles for one coin plus period return and annualised close-to-close realised volatility. "
-            "`interval` is HL-shaped: 1m/3m/5m/15m/30m/1h/2h/4h/8h/12h/1d/3d/1w/1M. `hours_back` sets the lookback window."
+            "`interval` is HL-shaped: 1m/3m/5m/15m/30m/1h/2h/4h/8h/12h/1d/3d/1w/1M. `hours_back` sets the lookback window. "
+            "Units: ts_ms is Unix epoch milliseconds (UTC); prices (and first_close/last_close) are as Hyperliquid quotes the "
+            "coin (USDC for standard perps); volume is Hyperliquid's `v` field passed through (not converted to USD). "
+            "summary.return_pct is in percent (first to last close; 1.5 = 1.5 %); summary.realized_vol_annualized is a "
+            "decimal (0.45 = 45 %): stdev of close-to-close log-returns scaled by sqrt(365 days / candle size), "
+            "present only with at least 10 closes."
         ),
     )
     async def hyperliquid_candles(

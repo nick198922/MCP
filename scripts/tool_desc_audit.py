@@ -18,7 +18,9 @@ no store, no network. Checks per tool:
   matched as whole snake_case segments, so ``vol`` does not match ``volume``. Any segment of the tool name is
   checked against the tool description; the last segment of a parameter name (the quantity noun:
   ``entry_cost_vol``, ``call_premium``, not ``funding_hours_ahead``) against that parameter's own description.
-  The check only sees that a unit is named, not that it is the right one.
+  The check only sees that a unit is named, not that it is the right one. Item 185: tools in ``REQUIRED_UNITS``
+  (names without a unit token: ``market_ohlcv``, ``hyperliquid_candles``, ``event_study``, ``prob_from_options``,
+  ``touch_probability``) must name every unit word listed for them.
 
     uv run python scripts/tool_desc_audit.py [--out ~/.cache/tradedesk-agents/tmp/tool_desc_audit.md]
 
@@ -71,6 +73,22 @@ UNIT_WORDS = {
     "premium": _UNITS["premium"],
 }
 
+# Item 185: tools whose names carry no unit token but whose outputs have units. Explicit map
+# tool -> (label, pattern) pairs; every pattern must appear in the tool description (case-insensitive).
+# Units as the tool code computes them (06.11): return_pct x100, realised vol and IV as decimals, T = days / 365.
+_U_PERCENT = ("percent", r"\bpercent\b")
+_U_DECIMAL = ("decimal", r"\bdecimals?\b")
+_U_FRACTION = ("fraction 0-1", r"\bfractions? 0-1\b")
+_U_EPOCH_MS = ("epoch milliseconds", r"epoch milliseconds")
+_U_YEAR = ("T = days / 365", r"days\s*/\s*365")
+REQUIRED_UNITS: dict[str, tuple[tuple[str, str], ...]] = {
+    "market_ohlcv": (_U_EPOCH_MS, ("quote currency", r"quote currency"), _U_PERCENT, _U_DECIMAL),
+    "hyperliquid_candles": (_U_EPOCH_MS, ("USDC", r"\bUSDC\b"), _U_PERCENT, _U_DECIMAL),
+    "event_study": (_U_DECIMAL, ("not annualised", r"not annuali[sz]ed"), _U_FRACTION),
+    "prob_from_options": (_U_FRACTION, ("USD", r"\bUSD\b"), _U_DECIMAL, _U_YEAR),
+    "touch_probability": (_U_FRACTION, _U_DECIMAL, _U_PERCENT, _U_YEAR),
+}
+
 
 def _segments(name: str) -> list[str]:
     return [s for s in name.lower().split("_") if s]
@@ -87,6 +105,9 @@ def _unit_findings(name: str, desc: str, props: dict[str, Any]) -> list[Finding]
         pdesc = (props[pname] or {}).get("description") or ""
         if tok in UNIT_WORDS and pdesc.strip() and not re.search(UNIT_WORDS[tok], pdesc, re.IGNORECASE):
             out.append(Finding(name, "missing_unit", f"param {pname!r}: description names no unit"))
+    for label, pat in REQUIRED_UNITS.get(name, ()):
+        if not re.search(pat, desc, re.IGNORECASE):
+            out.append(Finding(name, "missing_unit", f"required unit {label!r} not named"))
     return out
 
 

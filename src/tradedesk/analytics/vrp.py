@@ -12,9 +12,10 @@ import math
 from typing import Any
 
 from .carry import pearson
-from .options import black76_greeks, black76_price
+from .options import black76_price
 
 DAY_MS = 86_400_000
+_SQRT2 = math.sqrt(2.0)  # the same constant options.ncdf divides by
 
 
 def realized_vol(closes: list[float]) -> float | None:
@@ -96,13 +97,21 @@ def short_straddle_hedged(
     position = 0.0
     hedge_pnl = 0.0
     costs = 0.0
+    log, sqrt, erfc = math.log, math.sqrt, math.erfc
     for d in range(start, end):
         s = rows[d]["close"]
         if hedge:
             t = (end - d) / 365.0
-            g_c = black76_greeks(s, k, t, rows[d]["iv"], True)
-            g_p = black76_greeks(s, k, t, rows[d]["iv"], False)
-            target = g_c["delta"] + g_p["delta"]  # short straddle delta is -target, so hold +target underlying
+            sigma = rows[d]["iv"]
+            # Straddle delta = call delta + put delta of black76_greeks, inlined with the same operations in the
+            # same order (bit-identical): c = N(d1), call = c, put = c - 1. Only delta is needed here, and this
+            # loop runs ~60k times per vrp_summary over 1000 days.
+            if t <= 0 or sigma <= 0:
+                target = 0.0
+            else:
+                v = sigma * sqrt(t)
+                c = 0.5 * erfc(-((log(s / k) + 0.5 * v * v) / v) / _SQRT2)
+                target = c + (c - 1.0)  # short straddle delta is -target, so hold +target underlying
             costs += hedge_fee * abs(target - position) * s
             position = target
         hedge_pnl += position * (rows[d + 1]["close"] - s)

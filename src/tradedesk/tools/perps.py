@@ -307,6 +307,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "For each venue returns: count, interval (auto-detected from the median timestamp spacing), latest rate per interval and annualised, "
             "mean/stdev/min/max of the rate, 7d and 30d means, carry APR (= sum of actual payments over the covered span, annualised; robust to interval changes), z-score and percentile of the latest "
             "value vs the whole window, polarity flips. Plus a cross-venue summary (highest/lowest carry, biggest absolute z). "
+            "Rates are decimals per funding interval (0.0001 = 0.01 %); annualised values and carry APR are simple decimals "
+            "(0.10 = 10 %/year). "
             "Set `include_series=true` to also receive each venue's raw [ts_ms, rate] rows."
         ),
     )
@@ -1206,7 +1208,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
         annotations=READ_ONLY,
         description=(
             "Deribit futures term structure for BTC or ETH: the perpetual plus every dated future with basis vs the spot index "
-            "(absolute, %, annualised simple and log). Positive annualised basis = contango (cash-and-carry opportunity)."
+            "(absolute, %, annualised simple and log). Units differ by field: basis_pct is in percent (0.5 = 0.5 %); "
+            "annualized_simple, annualized_log and funding_annualized are decimals (0.10 = 10 %). "
+            "Positive annualised basis = contango (cash-and-carry opportunity)."
         ),
     )
     async def deribit_futures_curve(

@@ -308,7 +308,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 gt=0, description="Calendar days to the future's expiry; used only for the PoP sanity check (fees, borrow not modelled)."
             ),
         ],
-        iv: Annotated[float, Field(gt=0, description="Used only for the forward-grid width + PoP sanity.")],
+        iv: Annotated[
+            float, Field(gt=0, description="Flat implied vol, decimal (0.45 = 45 %); used only for the forward-grid width + PoP sanity.")
+        ],
         size: Annotated[float, Field(gt=0, description="Units of the underlying on each leg (long spot, short future), > 0.")] = 1.0,
         width_pct: WIDTH_PCT = 0.3,
         grid: GRID = 201,
@@ -328,7 +330,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "Funding carry: long perp on the cheap venue + short perp on the expensive venue. "
             "Payoff shown here is only the mark spread convergence — the real driver is the "
             "funding differential, which this tool does NOT compound (pair with funding_zscore "
-            "and perps_basis_compare to size that leg)."
+            "and perps_basis_compare to size that leg; both report annualised funding as a decimal, 0.10 = 10 %)."
         ),
     )
     async def strategy_funding_carry(
@@ -338,7 +340,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
             float,
             Field(gt=0, description="Holding horizon in calendar days; funding over it is NOT accrued here (PoP sanity only)."),
         ],
-        iv: Annotated[float, Field(gt=0, description="Used only for the forward-grid width + PoP sanity.")],
+        iv: Annotated[
+            float, Field(gt=0, description="Flat implied vol, decimal (0.45 = 45 %); used only for the forward-grid width + PoP sanity.")
+        ],
         size: Annotated[float, Field(gt=0, description="Units of the underlying on each perp leg (long and short), > 0.")] = 1.0,
         width_pct: WIDTH_PCT = 0.3,
         grid: GRID = 201,
@@ -383,7 +387,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
             Field(description="List of {days, iv}. Omit to use [day/3, day/2, day] from `days`."),
         ] = None,
         days: Annotated[float, Field(gt=0, description="Longest horizon in days when `horizons` is omitted.")] = 30.0,
-        iv: Annotated[float, Field(gt=0, description="Default IV for the derived horizon schedule.")] = 0.5,
+        iv: Annotated[float, Field(gt=0, description="Default IV for the derived horizon schedule, decimal (0.50 = 50 %).")] = 0.5,
         forward: Annotated[float | None, Field(gt=0, description="Forward used for greeks; defaults to spot.")] = None,
         price_grid_pct: Annotated[
             list[float] | None,

@@ -88,7 +88,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
         annotations=READ_ONLY,
         description=(
             "Historical IV rank and percentile for a Deribit expiry, computed over the local SQLite "
-            "history collected by the ATM-term job. IV rank = (latest - min) / (max - min), 0..1. "
+            "history collected by the ATM-term job. ATM IVs (latest atm_iv, min_iv, max_iv) are decimals "
+            "(0.45 = 45 %). IV rank = (latest - min) / (max - min), 0..1. "
             "Percentile = fraction of past points strictly below latest, plus half the ties. Both are "
             "informative only — the lookback window matters more than tiny differences. Needs the "
             "collector enabled and some stored history (otherwise ok=false)."

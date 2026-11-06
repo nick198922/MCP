@@ -13,6 +13,12 @@ no store, no network. Checks per tool:
   (``READ_ONLY`` and its non-idempotent variant both pass).
 - ``missing_caveat``: the tool name contains one of ``CAVEAT_TOKENS`` (probability / GEX tools) and the description
   has neither ``risk-neutral`` nor ``heuristic`` (case-insensitive; ``risk neutral`` also counts).
+- ``missing_unit`` (item 183): a unit-sensitive quantity without its unit word (``UNIT_WORDS``; units per
+  ``docs/ARCHITECTURE.md``: IV, funding, basis as decimals, vega per vol point, theta per day, USD). Tokens are
+  matched as whole snake_case segments, so ``vol`` does not match ``volume``. Any segment of the tool name is
+  checked against the tool description; the last segment of a parameter name (the quantity noun:
+  ``entry_cost_vol``, ``call_premium``, not ``funding_hours_ahead``) against that parameter's own description.
+  The check only sees that a unit is named, not that it is the right one.
 
     uv run python scripts/tool_desc_audit.py [--out ~/.cache/tradedesk-agents/tmp/tool_desc_audit.md]
 
@@ -33,6 +39,55 @@ from typing import Any
 CAVEAT_TOKENS = ("prob", "gex", "gamma_exposure", "implied", "risk_neutral")
 _CAVEAT = re.compile(r"risk[- ]neutral|heuristic", re.IGNORECASE)
 _CYRILLIC = re.compile(r"[Ѐ-ӿ]")
+
+# Item 183: token (a snake_case segment) -> unit words, one of which the description must contain (case-insensitive).
+# Tokens from the card; "volatility", "greeks" and "gamma" added: the GEX tool is deribit_gamma_exposure (no "gex"),
+# and positions_add takes a `gamma` parameter.
+# Word-bounded: "percentile" is not "percent"; "fraction of past points" (a percentile definition) is not a unit.
+_DECIMAL = r"\bdecimals?\b|\bfractions?\b(?! of)|\bpercent\b|\bbps\b"
+_VOL_POINT = r"vol[- ]?points?"
+_PER_DAY = r"per (?:calendar )?day"
+_UNITS = {
+    "vol": rf"{_DECIMAL}|{_VOL_POINT}",
+    "rate": _DECIMAL,
+    "vega": _VOL_POINT,
+    "theta": _PER_DAY,
+    "greek": rf"\bUSD\b|{_PER_DAY}|{_VOL_POINT}",
+    "gamma": r"\bUSD\b|coin per \$",
+    "premium": rf"\bUSD\b|{_DECIMAL}|\b(?:BTC|ETH|coin)\b",
+}
+UNIT_WORDS = {
+    "iv": _UNITS["vol"],
+    "vol": _UNITS["vol"],
+    "volatility": _UNITS["vol"],
+    "funding": _UNITS["rate"],
+    "basis": _UNITS["rate"],
+    "vega": _UNITS["vega"],
+    "theta": _UNITS["theta"],
+    "greek": _UNITS["greek"],
+    "greeks": _UNITS["greek"],
+    "gex": _UNITS["gamma"],
+    "gamma": _UNITS["gamma"],
+    "premium": _UNITS["premium"],
+}
+
+
+def _segments(name: str) -> list[str]:
+    return [s for s in name.lower().split("_") if s]
+
+
+def _unit_findings(name: str, desc: str, props: dict[str, Any]) -> list[Finding]:
+    out: list[Finding] = []
+    for tok in sorted(set(_segments(name)) & UNIT_WORDS.keys()):
+        if not re.search(UNIT_WORDS[tok], desc, re.IGNORECASE):
+            out.append(Finding(name, "missing_unit", f"name token {tok!r}: description names no unit"))
+    for pname in sorted(props):
+        segs = _segments(pname)
+        tok = segs[-1] if segs else ""
+        pdesc = (props[pname] or {}).get("description") or ""
+        if tok in UNIT_WORDS and pdesc.strip() and not re.search(UNIT_WORDS[tok], pdesc, re.IGNORECASE):
+            out.append(Finding(name, "missing_unit", f"param {pname!r}: description names no unit"))
+    return out
 
 
 @dataclass(frozen=True)
@@ -69,6 +124,7 @@ def check_tool(tool: dict[str, Any]) -> list[Finding]:
         out.append(Finding(name, "not_read_only", f"readOnlyHint={ann.get('readOnlyHint')}, destructiveHint={ann.get('destructiveHint')}"))
     if any(t in name.lower() for t in CAVEAT_TOKENS) and not _CAVEAT.search(desc):
         out.append(Finding(name, "missing_caveat", "no 'risk-neutral' or 'heuristic' in the description"))
+    out.extend(_unit_findings(name, desc, props))
     return out
 
 

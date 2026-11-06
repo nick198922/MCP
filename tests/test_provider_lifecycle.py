@@ -27,6 +27,7 @@ from conftest import NOW, FakeEx, hl_payload
 from tradedesk.config import Settings
 from tradedesk.core.envelope import Fetched
 from tradedesk.core.http import Http
+from tradedesk.core.ratelimit import TokenBucket
 from tradedesk.providers.exchanges import Exchanges
 from tradedesk.providers.thegraph import POLYMARKET_SUBGRAPH_ID
 from tradedesk.runtime import Runtime
@@ -168,7 +169,9 @@ async def test_every_provider_survives_runtime_aclose():
     settings = Settings(
         http_retries=0, http_retry_backoff=0.0, cache_scale=0.0, coinalyze_api_key="lifecycle-test", graph_api_key="lifecycle-test"
     )
-    rt = Runtime(settings, transports=_Routes(hits), exchange_factory=lambda ex_id: ClosableEx(ex_id, made))
+    # The GoPlus limit (0.2 req/s, burst 2) made the third session wait 5 s; the test checks clients, not pacing.
+    with patch("tradedesk.core.http.TokenBucket", lambda rate, burst: TokenBucket(1_000.0, 1_000)):
+        rt = Runtime(settings, transports=_Routes(hits), exchange_factory=lambda ex_id: ClosableEx(ex_id, made))
     rt.now = lambda: NOW
     provs = providers(rt)
     assert set(provs) == set(CALLS), "every provider in Runtime needs a lifecycle call in CALLS (and nothing else)"

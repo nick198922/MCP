@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 import ccxt
 import httpx
@@ -25,6 +26,7 @@ from tradedesk.collector.assistant_snapshot import build_paper_rec as mod_build_
 from tradedesk.collector.assistant_snapshot import collect_assistant_snapshot, snapshot_path, write_atomic
 from tradedesk.collector.scheduler import build_default_scheduler
 from tradedesk.config import Settings
+from tradedesk.core.ratelimit import TokenBucket
 from tradedesk.runtime import Runtime
 
 
@@ -37,7 +39,10 @@ def _rt(state, tmp_path: Path, exchange_factory=FakeEx, transports: dict | None 
         assistant_snapshot_path=str(tmp_path / "out" / "snapshot.json"),
         **kw,
     )
-    rt = Runtime(settings, transports=transports or make_transports(state), exchange_factory=exchange_factory)
+    # Production rate limits (ForexFactory 0.5 req/s, DefiLlama stablecoins 1 req/s, Deribit 8 req/s) only paced the fake
+    # transports in real time: a second snapshot in one test waited up to ~3 s for tokens.
+    with patch("tradedesk.core.http.TokenBucket", lambda rate, burst: TokenBucket(1_000.0, 1_000)):
+        rt = Runtime(settings, transports=transports or make_transports(state), exchange_factory=exchange_factory)
     rt.now = lambda: NOW
     return rt
 

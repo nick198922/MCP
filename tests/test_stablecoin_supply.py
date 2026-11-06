@@ -6,6 +6,7 @@ The fixture is not a real capture (see its `_note`); numbers are round so every 
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -14,6 +15,7 @@ from mcp import Client
 from test_server import call
 from tradedesk.analytics.chain_metrics import stablecoin_asset, stablecoin_total
 from tradedesk.config import Settings
+from tradedesk.core.ratelimit import TokenBucket
 from tradedesk.runtime import Runtime
 from tradedesk.server import build_server
 
@@ -31,8 +33,14 @@ def default_handler(req: httpx.Request) -> httpx.Response:
     return httpx.Response(404, text="not mocked")
 
 
+def _runtime(handler) -> Runtime:
+    # The production limit (1 req/s, burst 2) made a retried pair or a second session wait ~2 s per test.
+    with patch("tradedesk.core.http.TokenBucket", lambda rate, burst: TokenBucket(1_000.0, 1_000)):
+        return Runtime(Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0), transports={SRC: httpx.MockTransport(handler)})
+
+
 def make_server(handler=default_handler):
-    rt = Runtime(Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0), transports={SRC: httpx.MockTransport(handler)})
+    rt = _runtime(handler)
     rt.now = lambda: NOW
     srv, _ = build_server(rt)
     return srv
@@ -158,7 +166,7 @@ async def test_stablecoin_supply_survives_runtime_aclose():
         res = await c.call_tool("stablecoin_supply", {})
         return res.structured_content or json.loads(res.content[0].text)
 
-    rt = Runtime(Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0), transports={SRC: httpx.MockTransport(counting)})
+    rt = _runtime(counting)
     rt.now = lambda: NOW
     srv, _ = build_server(rt)
     try:

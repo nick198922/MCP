@@ -27,6 +27,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
         t = await b.guard("ticker", f"ccxt:{exchange}", rt.exchanges.ticker(exchange, symbol))
         if t is None:
             return b.build(None, ok=False)
+        if not isinstance(t, dict):
+            b.miss("ticker", f"ccxt:{exchange}", "data_unavailable", f"unexpected response type {type(t).__name__}")
+            return b.build(None, ok=False)
         data = {
             k: t.get(k) for k in ("symbol", "last", "bid", "ask", "high", "low", "baseVolume", "quoteVolume", "percentage", "timestamp")
         }
@@ -94,6 +97,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
         b = Builder()
         ob = await b.guard("orderbook", f"ccxt:{exchange}", rt.exchanges.order_book(exchange, symbol, depth))
         if ob is None:
+            return b.build(None, ok=False)
+        if not isinstance(ob, dict):
+            b.miss("orderbook", f"ccxt:{exchange}", "data_unavailable", f"unexpected response type {type(ob).__name__}")
             return b.build(None, ok=False)
         bids, asks = ob.get("bids", []), ob.get("asks", [])
         stats = book_stats(bids, asks)

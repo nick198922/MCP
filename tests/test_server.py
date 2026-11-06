@@ -221,8 +221,11 @@ async def test_funding_compare_normalises_intervals_and_degrades(server):
     assert by["deribit"]["annualized"] == pytest.approx(0.1095)
     assert "okx" not in by
     assert any(m["provider"] == "ccxt:okx" and m["reason"] == "rate_limited" for m in env["missing"])
+    assert "partial: okx unavailable, see missing; the cross-venue comparison is incomplete" in env["warnings"]
     assert env["data"]["widest_spread"]["short_venue"] in by
     assert {e["provider"] for e in env["evidence"]} >= {"ccxt:binanceusdm", "hyperliquid", "deribit"}
+    full = await call(server, "perps_funding_compare", base="BTC", exchanges=["binanceusdm", "bybit"])
+    assert full["missing"] == [] and not any(w.startswith("partial:") for w in full["warnings"])
 
 
 async def test_funding_history_cross_venue(server):
@@ -235,6 +238,7 @@ async def test_funding_history_cross_venue(server):
     # okx is set to raise rate_limited in the fake transport -> ends up in missing
     assert "okx" not in by
     assert any("okx" in m["provider"] for m in env["missing"])
+    assert any(w.startswith("partial: okx unavailable") for w in env["warnings"])
     # highest_carry: Binance has larger base rate (0.0001) than Bybit (0.00008)
     cross = env["data"]["cross_venue"]
     assert cross["highest_carry"]["venue"] == "binanceusdm"

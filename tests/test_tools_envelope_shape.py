@@ -13,7 +13,7 @@ tests/test_tools_never_raise.py. For every answer with ok=true it checks:
 - a tool that answers ok=true with no provider call at all (calculators, the local store) is listed in NO_NETWORK.
 Answers with ok=false on these fakes (no fake for the provider, an empty store) are not checked here; they are counted
 and named in the assertion message when too many tools fall out.
-KNOWN: violations found and not fixed yet (each one also in docs/BACKLOG.md 6.47); a stale entry fails the test.
+KNOWN: violations found and not fixed yet (each one also in docs/BACKLOG.md); a stale entry fails the test.
 """
 
 from __future__ import annotations
@@ -82,14 +82,9 @@ NO_NETWORK: set[str] = {
     "system_health",
 }
 
-# Violations found and not fixed yet (also in docs/BACKLOG.md 6.47). Format: {"tool": "what is wrong"}.
-_OKX_PARTIAL = "ok=true, one venue (okx) in `missing`, no warning: decide whether `missing` alone is enough for a partial answer"
-KNOWN: dict[str, str] = {
-    "perps_basis_compare": _OKX_PARTIAL,
-    "perps_funding_compare": _OKX_PARTIAL,
-    "perps_funding_history": _OKX_PARTIAL,
-    "perps_open_interest": _OKX_PARTIAL,
-}
+# Violations found and not fixed yet (each also in docs/BACKLOG.md). Format: {"tool": "what is wrong"}.
+# The four perps_* partial answers (BACKLOG 6.47) were fixed on 2026-11-06 (item 174).
+KNOWN: dict[str, str] = {}
 
 
 def _not_mocked(req: httpx.Request) -> httpx.Response:

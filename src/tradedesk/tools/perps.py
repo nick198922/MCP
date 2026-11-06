@@ -92,6 +92,13 @@ def _warn_short_coverage(b: Builder, venue: str, entries: list[dict[str, Any]], 
         b.warn(f"{venue} funding history starts {_iso(first)[:10]}, later than requested (venue retention or listing date)")
 
 
+def _warn_partial(b: Builder) -> None:
+    """Call only when some venue returned data: name the providers that are only in `missing` (a partial comparison)."""
+    names = list(dict.fromkeys(m.provider.removeprefix("ccxt:") for m in b.missing))
+    if names:
+        b.warn(f"partial: {', '.join(names)} unavailable, see missing; the cross-venue comparison is incomplete")
+
+
 def _row_from_stats(stats: dict[str, Any]) -> dict[str, Any]:
     """Project summarise_funding_history output into the per-venue row shape used by perps_funding_history."""
     return {
@@ -290,6 +297,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 "note": "short the high-funding venue, long the low one, delta-neutral; ignores fees, basis and margin cost",
             },
         }
+        _warn_partial(b)
         return b.build(data)
 
     @server.tool(
@@ -389,6 +397,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
             v = max(abs_z, key=lambda x: abs(x["z_score_latest"]))
             cross["biggest_abs_z"] = {"venue": v["venue"], "z_score_latest": r(v["z_score_latest"], 3)}
 
+        _warn_partial(b)
         return b.build({"base": base, "days_requested": days_back, "venues": rows, "cross_venue": cross})
 
     async def _current_funding(b: Builder, venue: str, markets: dict[str, Any] | None = None) -> dict[str, dict[str, Any]]:
@@ -969,6 +978,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
             if x["oi_usd"] is None:
                 b.warn(f"{x['venue']}: USD open interest not reported by the exchange")
         rows.sort(key=lambda x: x["oi_usd"] or 0, reverse=True)
+        _warn_partial(b)
         return b.build({"base": base, "total_oi_usd": total, "venues": rows})
 
     @server.tool(
@@ -1364,6 +1374,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
         perps.sort(key=lambda x: x["premium_bps"], reverse=True)
         hi, lo = perps[0], perps[-1]
         nearest = dated[0] if dated else None
+        _warn_partial(b)
         return b.build(
             {
                 "base": base,

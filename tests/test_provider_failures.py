@@ -146,6 +146,9 @@ async def test_perps_open_interest_partial_failure(state):
     failed = {m["provider"] for m in env["missing"]}
     assert {"hyperliquid", "deribit", "ccxt:okx"} <= failed  # FakeEx okx has no fetchOpenInterest
     assert env["data"]["total_oi_usd"] == pytest.approx(sum(v["oi_usd"] for v in env["data"]["venues"]))
+    partial = [w for w in env["warnings"] if w.startswith("partial:")]
+    assert len(partial) == 1 and all(v in partial[0] for v in ("okx", "hyperliquid", "deribit"))
+    assert "ccxt:" not in partial[0]
 
 
 async def test_perps_open_interest_all_down_returns_envelope(state):
@@ -164,6 +167,7 @@ async def test_perps_basis_compare_partial_failure(state):
     failed = {m["provider"]: m["reason"] for m in env["missing"]}
     assert failed["hyperliquid"] == failed["deribit"] == "backend_error"
     assert failed["ccxt:okx"] == "rate_limited"  # FakeEx okx answers 429
+    assert any(w.startswith("partial: ") and "okx" in w and "deribit" in w for w in env["warnings"])
 
 
 async def test_perps_basis_compare_all_down_returns_envelope(state):

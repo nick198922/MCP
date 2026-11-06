@@ -49,10 +49,13 @@ def _stats(values: list[float]) -> dict[str, float | None]:
         return {"mean": None, "stdev": None, "min": None, "max": None}
     n = len(values)
     mean = sum(values) / n
+    lo, hi = min(values), max(values)
     if n < 2:
-        return {"mean": mean, "stdev": None, "min": min(values), "max": max(values)}
+        return {"mean": mean, "stdev": None, "min": lo, "max": hi}
+    if lo == hi:  # constant series: exact 0, not the ~1e-20 rounding residue of a mean that misses the value by an ulp
+        return {"mean": mean, "stdev": 0.0, "min": lo, "max": hi}
     var = sum((v - mean) ** 2 for v in values) / (n - 1)
-    return {"mean": mean, "stdev": math.sqrt(var), "min": min(values), "max": max(values)}
+    return {"mean": mean, "stdev": math.sqrt(var), "min": lo, "max": hi}
 
 
 def _percentile_rank(values: list[float], x: float) -> float | None:
@@ -114,7 +117,9 @@ def summarise_funding_history(
         cutoff = anchor_ms - int(days * 86_400_000)
         return [r["rate"] for r in rows if r["ts_ms"] >= cutoff]
 
-    flips = sum(1 for a, b in zip(rates, rates[1:], strict=False) if a == 0 or (a > 0) != (b > 0) and b != 0)
+    # sign changes among non-zero rates: a zero rate has no sign, so +, 0, + is no flip and +, 0, - is one
+    signs = [x > 0 for x in rates if x != 0]
+    flips = sum(1 for a, b in zip(signs, signs[1:], strict=False) if a != b)
     mean_rate = stats_all["mean"]
     # Carry = actual payments over the covered span (one interval before the first payment to the last), so a
     # venue switching 8h -> 1h mid-window does not scale hourly rates by the 8h count or vice versa.

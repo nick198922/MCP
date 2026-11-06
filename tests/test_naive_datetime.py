@@ -12,6 +12,8 @@ Not flagged: calls that pass a time zone (`datetime.now(UTC)`, `fromtimestamp(ts
 from __future__ import annotations
 
 import ast
+import re
+import unicodedata
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -59,16 +61,43 @@ def _is_naive(kind: str, method: str, call: ast.Call) -> bool:
     return False
 
 
+# A hit needs the identifier `date` or `datetime` (class, module or the `from datetime import` an alias comes from) and
+# one of the method names below; source without both is not parsed (parsing and walking ~9 MB is the scan's cost).
+# Python NFKC-normalises identifiers (a full-width `now` is `now`), so source with a character whose NFKC form has
+# ASCII letters, digits or `_` is always parsed; Cyrillic text, emoji and dashes do not count.
+_HAS_CLASS = re.compile(r"\b(?:date|datetime)\b")
+_HAS_METHOD = re.compile(r"\b(?:now|utcnow|utcfromtimestamp|fromtimestamp|today)\b")
+
+
+def _may_spell_ascii_names(source: str) -> bool:
+    return any(
+        not c.isascii() and any(n.isascii() and (n.isalnum() or n == "_") for n in unicodedata.normalize("NFKC", c)) for c in set(source)
+    )
+
+
+def _cannot_hit(source: str) -> bool:
+    if _HAS_CLASS.search(source) and _HAS_METHOD.search(source):
+        return False
+    return not _may_spell_ascii_names(source)
+
+
 def naive_time_calls(source: str) -> list[str]:
     """`"<line>: <class>.<method>()"` for every naive-time call in `source`, in line order; [] if none."""
+    if _cannot_hit(source):
+        return []
     tree = ast.parse(source)
-    modules, dt_classes, date_classes = _aliases(tree)
-    out = []
+    imports, calls = [], []  # one walk over the tree (it is most of the scan time), aliases resolved afterwards
     for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-            kind = _receiver(node.func.value, modules, dt_classes, date_classes)
-            if kind and _is_naive(kind, node.func.attr, node):
-                out.append((node.lineno, f"{node.lineno}: {kind}.{node.func.attr}()"))
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            imports.append(node)
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            calls.append(node)
+    modules, dt_classes, date_classes = _aliases(ast.Module(body=imports, type_ignores=[]))
+    out = []
+    for node in calls:
+        kind = _receiver(node.func.value, modules, dt_classes, date_classes)
+        if kind and _is_naive(kind, node.func.attr, node):
+            out.append((node.lineno, f"{node.lineno}: {kind}.{node.func.attr}()"))
     return [s for _, s in sorted(out)]
 
 
@@ -175,6 +204,11 @@ def test_detector_on_fixture():
     first_bad = _FIXTURE.splitlines().index("bad_now = datetime.now()") + 1
     assert int(hits[0].split(":", 1)[0]) == first_bad
     assert naive_time_calls("from datetime import UTC, datetime\nx = datetime.now(UTC)\n") == []
+    # The text pre-filter: full-width `today` (NFKC -> `today`) is not matched by its regex, yet the call is found.
+    fullwidth = "from datetime import date\nd = date.ｔｏｄａｙ()\n"
+    assert not _HAS_METHOD.search(fullwidth) and naive_time_calls(fullwidth) == ["2: date.today()"]
+    assert _cannot_hit("import os\nx = os.now()\n") and not _cannot_hit("import datetime as d\nx = d.datetime.now()\n")
+    assert _cannot_hit("import os\nx = os.now()  # Київ — 🙂\n")  # non-ASCII that cannot spell an identifier
 
 
 def test_allowed_file_and_counts(tmp_path):

@@ -14,6 +14,7 @@ from mcp import Client
 README = Path(__file__).resolve().parents[1] / "README.md"
 TOOLS_SECTION = re.compile(r"^## Інструменти\b.*?(?=^## )", re.M | re.S)
 BACKTICKED = re.compile(r"`([a-z0-9_]+)`")
+CELL_SEP = re.compile(r"(?<!\\)\|")  # GFM: an escaped `\|` is text inside a cell, not a column boundary
 
 # Tools allowed to be missing from the README table. Zero gaps on 2026-11-04 (108 tools, all in the table),
 # so empty on purpose: add a README row for a new tool instead of an entry here (a stale entry fails the test).
@@ -22,7 +23,7 @@ README_ALLOWLIST: set[str] = set()
 
 def table_names(section: str) -> set[str]:
     """Backticked names in the 'Інструмент' column only: a tool named in another row's description does not count."""
-    rows = [line.split("|") for line in section.splitlines() if line.startswith("|")]
+    rows = [CELL_SEP.split(line) for line in section.splitlines() if line.startswith("|")]
     assert rows and "Інструмент" in [c.strip() for c in rows[0]], "the README tools table lost its 'Інструмент' column"
     col = [c.strip() for c in rows[0]].index("Інструмент")
     return {name for cells in rows[1:] if len(cells) > col for name in BACKTICKED.findall(cells[col])}
@@ -39,6 +40,16 @@ def test_a_name_in_another_rows_description_does_not_count():
         "| Група | Інструмент | Що дає |\n|---|---|---|\n"
         "| Ринок | `market_ticker` | котирування; див. також `market_flow` |\n"
         "| | `perps_basis` | спред |z| і `x` |\n"
+    )
+    assert table_names(section) == {"market_ticker", "perps_basis"}
+
+
+def test_an_escaped_pipe_does_not_shift_the_tool_column():
+    # review 2026-11-04-review-nits-0304, p. 2: a `\|` in a cell before 'Інструмент' must not move the column
+    section = (
+        "| Група | Інструмент | Що дає |\n|---|---|---|\n"
+        "| Ринок \\| перпи | `market_ticker` | котирування |\n"
+        "| | `perps_basis` | спред a \\| b, див. `market_flow` |\n"
     )
     assert table_names(section) == {"market_ticker", "perps_basis"}
 

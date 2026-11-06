@@ -1,0 +1,5 @@
+### 2026-11-06: мертві функції `analytics/` (пункт 170, BACKLOG 6.33)
+- Видалено 6 публічних функцій `analytics/`, на які не було жодного посилання: `alt_downside_beta.beta_of`, `mm_twohop.finite`, `pm_dislocation.cluster_count`, `pm_longdated.cluster_counts`, `sfp_backtest.summarise_signals`, `smart_money.nw_mde`. Перед видаленням перевірено `Grep` по `src/`, `scripts/`, `tests/`: виклики, рядки, `getattr`, `__all__`; знайдено лише самі визначення. Власних тестів у функцій не було.
+- Прибрано 3 імпорти, які після цього стали зайвими: `ols_beta` в `alt_downside_beta.py`, `newey_west_se` у `smart_money.py`, `defaultdict` у `pm_longdated.py`. Ці назви через змінені модулі ніхто не імпортує.
+- `scripts/unused_funcs.py`: 2171 функція (було 2177), без посилань поза власним файлом 42 (було 48), без жодного посилання 0 (було 6).
+- Перевірка: `make lint` чистий; тести змінених модулів і `test_unused_funcs.py` (10 файлів): 233 passed. Інструменти, форварди, реєстрації, `execution/` і колектори не змінювались.

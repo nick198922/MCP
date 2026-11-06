@@ -14,7 +14,6 @@ Design conditions of the critic's triage (binding):
 
 from __future__ import annotations
 
-from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from typing import Any
 
@@ -159,14 +158,6 @@ def design_effect(cluster_sizes: Sequence[int], rho: float) -> float:
 def mde_from_se(se: float, k: float = 2.8) -> float:
     """Minimum detectable effect (alpha 5 % two-sided, power 80 %) from a standard error."""
     return k * se
-
-
-def cluster_counts(rows: Iterable[tuple[str, str]]) -> dict[str, int]:
-    """Distinct units per cluster from (cluster, unit) pairs."""
-    acc: dict[str, set[str]] = defaultdict(set)
-    for c, u in rows:
-        acc[c].add(u)
-    return {c: len(v) for c, v in sorted(acc.items())}
 
 
 # ----------------------------------------------------------------------------- step 1 helpers

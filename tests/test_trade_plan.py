@@ -303,6 +303,42 @@ async def test_plan_view_shows_a_stored_raw_expires_safely(tmp_path):
         await rt.aclose()
 
 
+async def test_review_skips_a_stored_raw_expires_and_processes_the_rest(tmp_path):
+    rt = _rt(tmp_path)
+    srv, _ = build_server(rt)
+    base = dict(
+        exchange="binance", symbol="BTC/USDT:USDT", instrument="perp", side="long", entry_type="market",
+        entry=80100.0, stop=79000.0, target=80500.0, verdict="enter", expires_ts=_ts(24),
+    )  # fmt: skip
+    try:
+        for _ in range(2):
+            assert (await _call(srv, "plan_add", **base))["ok"] is True
+        await rt.store.init()
+        await rt.store.conn.execute("UPDATE trade_plan SET expires_ts = ? WHERE id = 1", ("next friday",))
+        await rt.store.conn.commit()
+        rt.now = lambda: NOW
+        rv = await _call(srv, "plan_review")
+        assert rv["ok"] is True, rv
+        assert rv["data"]["resolved_now"] == [2]  # the normal plan is scored as before
+        assert [p["id"] for p in rv["data"]["open"]] == [1] and rv["data"]["open"][0]["expires_raw"] == "next friday"
+        assert any("plan 1 skipped" in w for w in rv["warnings"]), rv["warnings"]
+        by = {p["id"]: p for p in rv["data"]["recent_resolved"]}
+        assert by[2]["outcome"] == "target" and by[2]["r_result"] == pytest.approx((400 - FEE * 160600) / 1100, abs=1e-3)
+        assert await collect_plan_resolve(rt) == 0  # the collector job survives it too
+    finally:
+        await rt.aclose()
+
+
+def test_resolve_plan_leaves_a_raw_expires_open():
+    plan = dict(side="long", entry_type="market", entry=100.0, stop=98.0, target=105.0, created_ts=0, expires_ts="next friday")
+    rows = [(3_600_000, 100.0, 106.0, 99.0, 105.0, 1.0)]
+    for bad in ("next friday", None, math.nan, True, b"x"):
+        res = resolve_plan({**plan, "expires_ts": bad}, rows, tf_ms=3_600_000, now_ts=10_000_000)
+        assert res["status"] == "open" and res["invalid"] == "expires_ts" and res["fill"] is None, bad
+    ok = resolve_plan({**plan, "expires_ts": 10_000_000}, rows, tf_ms=3_600_000, now_ts=10_000_000)
+    assert ok["status"] == "resolved" and ok["outcome"] == "target" and "invalid" not in ok
+
+
 def test_expires_view_never_raises():
     from tradedesk.tools.trade_plan import _expires_view
 

@@ -1449,10 +1449,16 @@ class Store:
         enabled: bool,
         created_ts: int,
     ) -> int:
-        cur = await self.conn.execute(
-            "INSERT INTO rules (name, enabled, expr, message, cooldown_seconds, created_ts) VALUES (?,?,?,?,?,?)",
-            (name, 1 if enabled else 0, expr, message, int(cooldown_seconds), int(created_ts)),
-        )
+        try:
+            cur = await self.conn.execute(
+                "INSERT INTO rules (name, enabled, expr, message, cooldown_seconds, created_ts) VALUES (?,?,?,?,?,?)",
+                (name, 1 if enabled else 0, expr, message, int(cooldown_seconds), int(created_ts)),
+            )
+        except sqlite3.IntegrityError:
+            # A failed INSERT (duplicate name) leaves the implicit transaction open and the write lock held,
+            # which would block the collector's writes; close it before re-raising.
+            await self.conn.rollback()
+            raise
         await self.conn.commit()
         return int(cur.lastrowid or 0)
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 
 import pytest
 from mcp import Client
@@ -196,6 +197,50 @@ async def test_rules_add_list_test_disable(state, tmp_path):
         assert deleted["data"]["deleted"] is True
     finally:
         await rt.aclose()
+
+
+async def test_rules_add_duplicate_name_is_invalid_input(state, tmp_path):
+    """A taken name is the user's error (`invalid_input` on `name`), not a store failure, and leaves no open write."""
+    rt = await _rt(state, tmp_path)
+    srv, _ = build_server(rt)
+    try:
+        async with Client(srv) as c:  # one session: the lifespan closes the store when it ends
+
+            async def add() -> dict:  # `_call` cannot pass the tool's `name` argument
+                raw = await c.call_tool("rules_add", {"name": "dup", "expr": "1 > 0"})
+                data = raw.structured_content or json.loads(raw.content[0].text)
+                return data.get("result", data)
+
+            first = await add()
+            assert first["ok"] is True
+            second = await add()
+            assert rt.store.conn.in_transaction is False
+        assert second["ok"] is False and second["data"] is None
+        assert [(m["field"], m["reason"]) for m in second["missing"]] == [("name", "invalid_input")]
+        assert f"id={first['data']['id']}" in second["missing"][0]["detail"]
+        assert [r["name"] for r in (await _call(srv, "rules_list"))["data"]["rules"]] == ["dup"]
+    finally:
+        await rt.aclose()
+
+
+async def test_rule_insert_duplicate_rolls_back(tmp_path):
+    """A racing duplicate still reaches the UNIQUE constraint: the store re-raises and releases the write lock."""
+    s = Store(tmp_path / "dup.sqlite")
+    await s.init()
+    try:
+        row = {"name": "dup", "expr": "1 > 0", "message": None, "cooldown_seconds": 600, "enabled": True, "created_ts": 1}
+        await s.rule_insert(**row)
+        with pytest.raises(sqlite3.IntegrityError):
+            await s.rule_insert(**row)
+        assert s.conn.in_transaction is False
+        other = sqlite3.connect(tmp_path / "dup.sqlite", timeout=0.1)  # a second writer, like the collector
+        try:
+            other.execute("INSERT INTO rules (name, enabled, expr, cooldown_seconds, created_ts) VALUES ('x', 1, '1', 60, 1)")
+            other.commit()
+        finally:
+            other.close()
+    finally:
+        await s.aclose()
 
 
 async def test_rules_presets_load_installs_bundled(state, tmp_path):

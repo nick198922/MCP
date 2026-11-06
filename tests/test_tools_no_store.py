@@ -9,6 +9,7 @@ a real MCP client while the store is
   - `unreachable`: `db_path` under a regular file, so `Store.init()` raises (the server starts on a good store, then
     the tools see one that cannot be opened; in production the lifespan opens the store first, so the closest real
     case is an sqlite error at query time: locked file, disk I/O, full disk).
+A separate test covers that query-time case for the tools that wrap their queries (`QUERY_GUARDED`).
 A tool must return the envelope (`ok` true or false), never an error result.
 """
 
@@ -16,6 +17,7 @@ from __future__ import annotations
 
 import ast
 import json
+import sqlite3
 from pathlib import Path
 
 import ccxt
@@ -34,10 +36,12 @@ from tradedesk.store import Store
 TOOLS_DIR = Path(__file__).resolve().parents[1] / "src" / "tradedesk" / "tools"
 MODES = ("none", "empty", "missing_dir", "unreachable")
 
-# Tools that still raise in a store mode; each is listed in docs/changes/2026-11-06-tools-no-store.md and BACKLOG.
-# `unreachable`: these call `await rt.store.init()` outside a try (the history/liquidations tools already catch it).
+# Tools that still raise in a store mode (none now; the 28 of docs/changes/2026-11-06-tools-no-store.md were fixed by
+# `tools._util.store_ready`, docs/changes/2026-11-06-store-init-guard.md).
 KNOWN_RAISERS: dict[str, set[str]] = {mode: set() for mode in MODES}
-KNOWN_RAISERS["unreachable"] = {
+
+# Tools whose store queries are wrapped in `except STORE_ERRORS` (journal, events, rules, positions, plans, paper books).
+QUERY_GUARDED = {
     "assistant_paper_open",
     "assistant_paper_status",
     "carry_paper_close",
@@ -67,6 +71,11 @@ KNOWN_RAISERS["unreachable"] = {
     "rules_presets_load",
     "rules_test",
 }
+
+# Guarded tools that do not report `missing: store` on a query error with the test ARGS: four return before their first
+# store query (providers fail first in the two `*_open`, `events_add` has no time, `rules_test` has no expression);
+# `paper_carry_status` catches the error per book and reports it as `paper_carry:<book>`.
+NO_QUERY_WITH_ARGS = {"assistant_paper_open", "carry_paper_open", "events_add", "rules_test", "paper_carry_status"}
 
 
 def _touches_store(node: ast.AST) -> bool:
@@ -136,12 +145,38 @@ async def _runtime(tmp_path, mode: str) -> Runtime:
     return rt
 
 
-async def _call_store_tools(tmp_path, mode: str) -> tuple[int, dict[str, str], dict[str, str]]:
-    """Call each store tool once; returns (called, raised {name: error}, no_envelope {name: payload})."""
-    rt = await _runtime(tmp_path, mode)
+class _QueryFailingStore:
+    """Opens like the real store, then every store method fails the way a locked or broken database file does."""
+
+    def __init__(self, inner: Store) -> None:
+        self._inner = inner
+
+    async def init(self) -> None:
+        await self._inner.init()
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+    def __getattr__(self, name: str):
+        attr = getattr(self._inner, name)
+        if not callable(attr):
+            return attr
+
+        async def fail(*args, **kwargs):
+            raise sqlite3.OperationalError("disk I/O error")
+
+        return fail
+
+
+async def _call_store_tools(
+    tmp_path, mode: str, names: set[str] | None = None
+) -> tuple[int, dict[str, str], dict[str, str], dict[str, dict]]:
+    """Call each store tool once; returns (called, raised {name: error}, no_envelope {name: payload}, envelopes)."""
+    rt = await _runtime(tmp_path, "empty" if mode == "query_error" else mode)
     srv, _ = build_server(rt)
     raised: dict[str, str] = {}
     no_envelope: dict[str, str] = {}
+    envelopes: dict[str, dict] = {}
     called = 0
     async with Client(srv) as c:
         if mode == "unreachable":
@@ -149,8 +184,10 @@ async def _call_store_tools(tmp_path, mode: str) -> tuple[int, dict[str, str], d
             blocker.write_text("not a directory")
             await rt.store.aclose()
             rt.store = Store(blocker / "store.sqlite")  # init() cannot create the parent: it is a file
+        elif mode == "query_error":
+            rt.store = _QueryFailingStore(rt.store)
         tools = {t.name: t for t in (await c.list_tools()).tools}
-        for name in sorted(STORE_TOOLS):
+        for name in sorted(STORE_TOOLS if names is None else names):
             if name in SKIP:
                 continue
             required = set(tools[name].input_schema.get("required", []))
@@ -169,15 +206,31 @@ async def _call_store_tools(tmp_path, mode: str) -> tuple[int, dict[str, str], d
                 data = data["result"]
             if not isinstance(data, dict) or not isinstance(data.get("ok"), bool):
                 no_envelope[name] = str(data)[:200]
-    return called, raised, no_envelope
+            else:
+                envelopes[name] = data
+    return called, raised, no_envelope, envelopes
 
 
 @pytest.mark.parametrize("mode", MODES)
 async def test_no_store_tool_raises(tmp_path, mode):
-    called, raised, no_envelope = await _call_store_tools(tmp_path, mode)
+    called, raised, no_envelope, _ = await _call_store_tools(tmp_path, mode)
     assert called == len(STORE_TOOLS - set(SKIP))
     assert set(raised) == KNOWN_RAISERS[mode], f"tools that raised: {raised}"
     assert not no_envelope, f"tools without an envelope: {no_envelope}"
+
+
+async def test_store_query_error_goes_to_missing(tmp_path):
+    """An sqlite error at query time (the real case: the lifespan has opened the store) is `missing`, not an error."""
+    called, raised, no_envelope, envelopes = await _call_store_tools(tmp_path, "query_error", QUERY_GUARDED)
+    assert called == len(QUERY_GUARDED)
+    assert not raised, f"tools that raised: {raised}"
+    assert not no_envelope, f"tools without an envelope: {no_envelope}"
+    failed = {n for n, env in envelopes.items() if ("store", "backend_error") in {(m["field"], m["reason"]) for m in env["missing"]}}
+    assert failed == QUERY_GUARDED - NO_QUERY_WITH_ARGS
+    assert all(envelopes[n]["ok"] is False for n in failed)
+    assert {m["field"] for m in envelopes["paper_carry_status"]["missing"]} >= {"paper_carry:A", "paper_carry:B"}
+    detail = next(m["detail"] for m in envelopes["journal_list"]["missing"] if m["field"] == "store")
+    assert detail == "OperationalError: disk I/O error"
 
 
 async def test_store_off_is_reported_in_missing(tmp_path):
@@ -198,3 +251,4 @@ def test_store_tool_discovery():
     assert {"journal_add", "journal_list", "rules_add", "positions_list", "plan_add", "liquidations_summary"} <= STORE_TOOLS
     assert len(STORE_TOOLS) >= 35
     assert set().union(*KNOWN_RAISERS.values()) <= STORE_TOOLS
+    assert QUERY_GUARDED <= STORE_TOOLS

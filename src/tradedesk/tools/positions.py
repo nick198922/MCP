@@ -15,15 +15,7 @@ from pydantic import Field
 from ..analytics.portfolio import aggregate_greeks, scenario_pnl
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, r
-
-
-def _store_guard(b: Builder, rt: Runtime) -> bool:
-    if rt.store is None:
-        b.miss("store", "tradedesk", "config", "db_path is empty; set TRADEDESK_DB_PATH to enable positions")
-        return False
-    return True
-
+from ._util import READ_ONLY, STORE_ERRORS, r, store_failed, store_ready
 
 DEFAULT_SCENARIOS: list[dict[str, float]] = [
     {"d_spot_pct": -0.10, "d_vol_points": 0.0},
@@ -67,26 +59,28 @@ def register(server: MCPServer, rt: Runtime) -> None:
         opened_ts: Annotated[int | None, Field(description="Open timestamp (unix seconds). Default: now.")] = None,
     ) -> dict[str, Any]:
         b = Builder()
-        if not _store_guard(b, rt):
+        if not await store_ready(b, rt, "positions"):
             return b.build(None, ok=False)
-        await rt.store.init()
-        ts = int(opened_ts) if opened_ts is not None else int(rt.now().timestamp())
-        pid = await rt.store.position_insert(
-            opened_ts=ts,
-            instrument=instrument,
-            kind=kind,
-            side=side,
-            size=size,
-            entry=entry,
-            mark=mark,
-            delta=delta,
-            gamma=gamma,
-            vega=vega,
-            theta=theta,
-            tags=tags,
-            note=note,
-        )
-        return b.build({"id": pid, "instrument": instrument, "side": side, "size": size, "kind": kind})
+        try:
+            ts = int(opened_ts) if opened_ts is not None else int(rt.now().timestamp())
+            pid = await rt.store.position_insert(
+                opened_ts=ts,
+                instrument=instrument,
+                kind=kind,
+                side=side,
+                size=size,
+                entry=entry,
+                mark=mark,
+                delta=delta,
+                gamma=gamma,
+                vega=vega,
+                theta=theta,
+                tags=tags,
+                note=note,
+            )
+            return b.build({"id": pid, "instrument": instrument, "side": side, "size": size, "kind": kind})
+        except STORE_ERRORS as e:
+            return store_failed(b, e)
 
     @server.tool(
         annotations=READ_ONLY,
@@ -102,11 +96,13 @@ def register(server: MCPServer, rt: Runtime) -> None:
         limit: Annotated[int, Field(ge=1, le=1000, description="Maximum number of positions to return, newest first (1-1000).")] = 200,
     ) -> dict[str, Any]:
         b = Builder()
-        if not _store_guard(b, rt):
+        if not await store_ready(b, rt, "positions"):
             return b.build(None, ok=False)
-        await rt.store.init()
-        rows = await rt.store.positions_list(status=status, instrument=instrument, tag=tag, limit=limit)
-        return b.build({"count": len(rows), "positions": rows})
+        try:
+            rows = await rt.store.positions_list(status=status, instrument=instrument, tag=tag, limit=limit)
+            return b.build({"count": len(rows), "positions": rows})
+        except STORE_ERRORS as e:
+            return store_failed(b, e)
 
     @server.tool(
         annotations=READ_ONLY,  # writes to local store only
@@ -122,19 +118,21 @@ def register(server: MCPServer, rt: Runtime) -> None:
         note: Annotated[str | None, Field(description="Optional close note.")] = None,
     ) -> dict[str, Any]:
         b = Builder()
-        if not _store_guard(b, rt):
+        if not await store_ready(b, rt, "positions"):
             return b.build(None, ok=False)
-        await rt.store.init()
-        pos = await rt.store.position_get(id)
-        if pos is None:
-            b.miss("position", "store", "data_unavailable", f"position id={id} not found")
-            return b.build(None, ok=False)
-        if pos["status"] != "open":
-            b.miss("position", "store", "data_unavailable", f"position id={id} is already {pos['status']}")
-            return b.build(None, ok=False)
-        ts = int(closed_ts) if closed_ts is not None else int(rt.now().timestamp())
-        await rt.store.position_update_close(id, closed_ts=ts, note=note)
-        return b.build(await rt.store.position_get(id))
+        try:
+            pos = await rt.store.position_get(id)
+            if pos is None:
+                b.miss("position", "store", "data_unavailable", f"position id={id} not found")
+                return b.build(None, ok=False)
+            if pos["status"] != "open":
+                b.miss("position", "store", "data_unavailable", f"position id={id} is already {pos['status']}")
+                return b.build(None, ok=False)
+            ts = int(closed_ts) if closed_ts is not None else int(rt.now().timestamp())
+            await rt.store.position_update_close(id, closed_ts=ts, note=note)
+            return b.build(await rt.store.position_get(id))
+        except STORE_ERRORS as e:
+            return store_failed(b, e)
 
     @server.tool(
         annotations=READ_ONLY,
@@ -157,49 +155,51 @@ def register(server: MCPServer, rt: Runtime) -> None:
         days: Annotated[float, Field(ge=0, description="Scenario time (days) if a scenario does not supply its own.")] = 0.0,
     ) -> dict[str, Any]:
         b = Builder()
-        if not _store_guard(b, rt):
+        if not await store_ready(b, rt, "positions"):
             return b.build(None, ok=False)
-        await rt.store.init()
-        rows = await rt.store.positions_list(status="open", instrument=instrument_filter, tag=tag, limit=1000)
-        agg = aggregate_greeks(rows)
-        totals = agg["totals"]
-        if totals["count"] == 0:
-            b.miss("positions", "store", "data_unavailable", "no open positions matched the filter")
-            return b.build(None, ok=False)
-        scen_list = scenarios or DEFAULT_SCENARIOS
-        scen_out: list[dict[str, Any]] = []
-        for s in scen_list:
-            d_spot_pct = float(s.get("d_spot_pct", 0.0))
-            d_vol_points = float(s.get("d_vol_points", 0.0))
-            scen_days = float(s.get("days", days))
-            res = scenario_pnl(
-                rows,
-                d_spot_pct=d_spot_pct,
-                d_vol_points=d_vol_points,
-                reference_spot=reference_spot,
-                days=scen_days,
-            )
-            scen_out.append(
+        try:
+            rows = await rt.store.positions_list(status="open", instrument=instrument_filter, tag=tag, limit=1000)
+            agg = aggregate_greeks(rows)
+            totals = agg["totals"]
+            if totals["count"] == 0:
+                b.miss("positions", "store", "data_unavailable", "no open positions matched the filter")
+                return b.build(None, ok=False)
+            scen_list = scenarios or DEFAULT_SCENARIOS
+            scen_out: list[dict[str, Any]] = []
+            for s in scen_list:
+                d_spot_pct = float(s.get("d_spot_pct", 0.0))
+                d_vol_points = float(s.get("d_vol_points", 0.0))
+                scen_days = float(s.get("days", days))
+                res = scenario_pnl(
+                    rows,
+                    d_spot_pct=d_spot_pct,
+                    d_vol_points=d_vol_points,
+                    reference_spot=reference_spot,
+                    days=scen_days,
+                )
+                scen_out.append(
+                    {
+                        "d_spot_pct": d_spot_pct,
+                        "d_vol_points": d_vol_points,
+                        "days": scen_days,
+                        "pnl_usd": r(res["total_pnl"], 2),
+                    }
+                )
+            return b.build(
                 {
-                    "d_spot_pct": d_spot_pct,
-                    "d_vol_points": d_vol_points,
-                    "days": scen_days,
-                    "pnl_usd": r(res["total_pnl"], 2),
+                    "filters": {"instrument": instrument_filter, "tag": tag},
+                    "net_greeks": {
+                        "count": totals["count"],
+                        "delta": r(totals["delta"], 6),
+                        "gamma": r(totals["gamma"], 8),
+                        "vega": r(totals["vega"], 4),
+                        "theta": r(totals["theta"], 4),
+                        "notional_usd": r(totals["notional_usd"], 2),
+                    },
+                    "per_instrument": {k: {gk: r(gv, 6) for gk, gv in v.items()} for k, v in agg["per_instrument"].items()},
+                    "scenarios": scen_out,
+                    "reference_spot": reference_spot,
                 }
             )
-        return b.build(
-            {
-                "filters": {"instrument": instrument_filter, "tag": tag},
-                "net_greeks": {
-                    "count": totals["count"],
-                    "delta": r(totals["delta"], 6),
-                    "gamma": r(totals["gamma"], 8),
-                    "vega": r(totals["vega"], 4),
-                    "theta": r(totals["theta"], 4),
-                    "notional_usd": r(totals["notional_usd"], 2),
-                },
-                "per_instrument": {k: {gk: r(gv, 6) for gk, gv in v.items()} for k, v in agg["per_instrument"].items()},
-                "scenarios": scen_out,
-                "reference_spot": reference_spot,
-            }
-        )
+        except STORE_ERRORS as e:
+            return store_failed(b, e)

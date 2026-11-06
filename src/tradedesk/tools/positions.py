@@ -51,7 +51,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
         entry: Annotated[float | None, Field(gt=0, description="Entry price in quote currency.")] = None,
         mark: Annotated[float | None, Field(gt=0, description="Latest mark (USD per contract/coin).")] = None,
         delta: Annotated[float | None, Field(description="Per-contract delta.")] = None,
-        gamma: Annotated[float | None, Field(description="Per-contract gamma.")] = None,
+        gamma: Annotated[float | None, Field(description="Per-contract gamma (coin per $^2, Deribit convention).")] = None,
         vega: Annotated[float | None, Field(description="Per-contract vega (USD per 1 vol-point).")] = None,
         theta: Annotated[float | None, Field(description="Per-contract theta (USD per day).")] = None,
         tags: Annotated[list[str] | None, Field(description="Free-form tags for filtering.")] = None,

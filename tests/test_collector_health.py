@@ -517,3 +517,53 @@ def test_disk_check_without_the_db_file(tmp_path, monkeypatch):
     monkeypatch.setattr(script, "disk_usage", shutil.disk_usage)  # the real call on a directory that is not there
     gone = str(tmp_path / "no-such-dir" / "tradedesk.sqlite")
     assert script.brief_line(gone, tmp_path / "f.env", NOW).endswith(" Місце на диску БД не перевірено (FileNotFoundError).")
+
+
+def _trailer_only(folder: Path, ts: int, size: int) -> None:
+    """A backup file whose gzip trailer records ``size`` (mod 2**32): gz_size reads only the last 4 bytes."""
+    folder.mkdir(exist_ok=True)
+    name = f"tradedesk-{datetime.fromtimestamp(ts, UTC).strftime('%Y-%m-%dT%H%M%SZ')}.sqlite.gz"
+    (folder / name).write_bytes(b"\x1f\x8b" + b"\0" * 14 + (size % 2**32).to_bytes(4, "little"))
+
+
+def test_disk_check_without_the_db_file_lifts_backups_past_4_gib(tmp_path):
+    missing = str(tmp_path / "none.sqlite")
+    _trailer_only(tmp_path / "backups", NOW - 5 * D, 2**32 - 1_000)  # just under 4 GiB
+    _trailer_only(tmp_path / "backups", NOW - D, 2**32 + 3_096)  # past 4 GiB: the trailer wrapped to 3096
+    h = script.disk_check(missing, NOW)  # the newest backup is the ref: the older one comes down by 2**32 with it
+    assert h["db_bytes"] is None and h["growth"] == pytest.approx(1_024)  # (4096 bytes) / 4 days, not -1 GiB a day
+    _trailer_only(tmp_path / "backups", NOW - 3 * D, 2**32 + 1_000)  # all past 4 GiB from here: still the true slope
+    assert script.disk_check(missing, NOW)["growth"] == pytest.approx(1_024)
+
+
+def test_report_summary_names_the_disk_when_it_enters_the_brief(tmp_path, monkeypatch):
+    db = _fresh_db(tmp_path)
+    quiet = tmp_path / "quiet.env"  # no series: only the disk can enter the brief
+    quiet.write_text("\n".join(f"{s.flag}=0" for s in ch.SPECS if s.default_on) + "\n", encoding="utf-8")
+    out = tmp_path / "r.txt"
+    assert script.main(["--db", db, "--features", str(quiet), "--out", str(out)]) == 0
+    text = out.read_text(encoding="utf-8")  # 60 % free: fine
+    assert "\nУ брифі: нічого (усі серії в нормі).\n✓ Диск БД: вільно 60.0 ГБ з 100.0 ГБ (60 %)" in text
+    monkeypatch.setattr(script, "disk_usage", lambda _p: _usage(100 * G, 3 * G))  # nearly full
+    assert script.main(["--db", db, "--features", str(quiet), "--out", str(out)]) == 0
+    text = out.read_text(encoding="utf-8")
+    assert "нічого" not in text and "\nУ брифі: Диск БД: вільно менше 15 %; вільно менше 5.0 ГБ — вільно 3.0 ГБ" in text
+    assert "\n✗ Диск БД: вільно 3.0 ГБ з 100.0 ГБ (3 %)" in text
+
+    def unreadable(p: Path) -> None:  # the DB opens but its volume cannot be read
+        raise FileNotFoundError(str(p))
+
+    monkeypatch.setattr(script, "disk_usage", unreadable)
+    assert script.main(["--db", db, "--features", str(quiet), "--out", str(out)]) == 0
+    text = out.read_text(encoding="utf-8")
+    assert "\nУ брифі: Місце на диску БД не перевірено (FileNotFoundError).\n✗ Диск БД не перевірено (FileNotFoundError)." in text
+
+
+def test_render_adds_the_extra_brief_lines():
+    stamps = _hourly(NOW - 8 * D, NOW - H)
+    ok = ch.series_health(SPEC["pm_gap"], "", stamps, stamps[0], stamps[-1], NOW)
+    assert ch.render([ok], NOW, extra=[None]).endswith("\nУ брифі: нічого (усі серії в нормі).\n")
+    assert ch.render([ok], NOW, extra=["Диск БД: x."]).endswith("\nУ брифі: Диск БД: x.\n")
+    bad = ch.error_health(SPEC["flow_snapshot"], "", "x")
+    text = ch.render([bad], NOW, extra=["Диск БД: x."])
+    assert "\nУ брифі: Колектори:" in text and text.endswith(" Диск БД: x.\n")

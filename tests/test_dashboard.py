@@ -2744,16 +2744,19 @@ def test_rules_copies_match_the_analytics_reference():
         {**imp, "id": 504, "thesis": "CPI: up past 112k"},  # the owner's thesis written later on an import
     ]
     for dep in (10_000.0, 5_000.0):
-        for rs in (rows, rows + hip3, rows + rule8, rows + trc._wrong_side_rows()):
+        for rs in (rows, rows + hip3, rows + rule8, rows + trc._wrong_side_rows(), trc._pause_rows()):
             _same(db.rules_trade_checks(rs, now, dep), rc.trade_checks(rs, now_ts=now, deposit_usd=dep))
             _same(db.rules_weekly(rs, now, dep), rc.weekly_violations(rs, now_ts=now, deposit_usd=dep))
             _same(db.rules_day_stops(rs, dep), rc.day_stops(rs, deposit_usd=dep))
+            _same(db.rules_pauses(rs, dep), rc.pauses(rs, deposit_usd=dep))
             _same(db.rules_compliance(rs, now, dep), rc.compliance_summary(rs, now_ts=now, deposit_usd=dep))
     at_now, rs = trc._at_now_rows()  # an alt long opened at now_ts itself
     _same(db.rules_trade_checks(rs, at_now), rc.trade_checks(rs, now_ts=at_now))
     _same(db.rules_compliance(rs, at_now), rc.compliance_summary(rs, now_ts=at_now))
     _same(db.rules_compliance([], now), rc.compliance_summary([], now_ts=now))
     assert db.RULES_MIN_CHECKED == rc.MIN_CHECKED
+    assert (db.RULES_BIG_LOSS_PCT, db.RULES_PAUSE_HOURS) == (rc.BIG_LOSS_PCT, rc.PAUSE_HOURS)
+    assert any(c["pause"] for c in db.rules_trade_checks(trc._pause_rows(), now))  # the pause rows do reach a pause
     assert len(db.rules_weekly(rows, now)) == 3 and db.rules_weekly([], now) == []
     assert db.rules_is_hip3("xyz:TSLA") and not db.rules_is_hip3("SOL/USDT:USDT")
     for sym in (
@@ -3023,6 +3026,8 @@ def test_journal_tab_shows_weekly_rule_violations(tmp_path):
                  "<td class='num'>4<br><span class='mut'>+ наближено 1</span></td>",
                  "<td class='num bad'>−$607<br><span class='mut'>наближені +$3</span></td>"):  # fmt: skip
         assert text in w42, text
+    # 17.10 closes about −$1 800: a big-loss day, its 48 h pause holds no trade
+    assert "днів ≤ −2 % 1 · у 48 год перерви 0" in w42 and "48 год перерви" not in _between(block, "2025-W41", "</tr>")
     w41 = _between(block, "2025-W41", "</tr>")
     # 10.10 in closing order: +30, −50, +15, −20 (the 1.8-day option buy), −50 at 09:00 = 2 losses in a row: the day
     # stops at 09:00, so SOL short (−30, opened 09:30) and DOGE (+40) broke rule 4, Bybit XRP (−20) only on its close

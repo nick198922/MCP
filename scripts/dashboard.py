@@ -7786,6 +7786,8 @@ RULES_RISK_PCT = 1.0  # rule 1, % of the deposit
 RULES_MAX_ALT_LONGS = 3  # rule 2
 RULES_DAY_LOSS_PCT = 2.0  # rule 4, % of the deposit
 RULES_STREAK = 2  # rule 4: losing trades in a row
+RULES_BIG_LOSS_PCT = RULES_DAY_LOSS_PCT  # rule 4, 48 h pause: a UTC day's realized P&L <= -this % (assumed threshold)
+RULES_PAUSE_HOURS = 48.0  # rule 4: no new trade this many hours from the end of a big-loss day
 RULES_MIN_RR = 2.0  # rule 5
 RULES_PREMIUM_PCT = 1.0  # rule 8, % of the deposit
 RULES_BUY_BAN_HOURS = 24.0  # rule 8: under this many hours to expiry never buy
@@ -7826,13 +7828,15 @@ RULES_WEEK_NOTE = (
     "2 — відкриття 4-го різного альта (усе, крім BTC і ETH, без опціонів) при трьох уже відкритих; той самий актив під "
     "іменами різних бірж — один альт (kPEPE = 1000PEPE = PEPE, PUMPFUN = PUMP); рядки Bybit без часу "
     "відкриття — «невідомо», як і символи HIP-3 Hyperliquid (xyz:TSLA — акції, золото, не крипто-альти). "
-    "4 — угода, відкрита того ж дня UTC після 2 збиткових поспіль або −2 % депозиту за день (порядок закриття); "
+    "4 — угода, відкрита того ж дня UTC після 2 збиткових поспіль або −2 % депозиту за день (порядок закриття), "
+    "або в 48 год перерви після дня з великим збитком: порогу в правилі немає, тож це день UTC із закритим P&L ≤ −2 % "
+    "депозиту, а перерва — від 00:00 UTC наступного дня до +48 год (припущення до рішення власника); "
     "рядки без часу відкриття (здебільшого Bybit) оцінено за часом закриття — це «наближено», вони рахуються окремо "
     "від точних порушень і не входять у «Порушили» та «P&L цих угод». "
     "8 — куплений опціон: премія > 1 % депозиту; менше 24 год до експірації (08:00 UTC) — порушено завжди; за 1–3 доби — "
     "лише з тезою й ціллю, беззбитком у межах 1σ руху за реалізованою волою і IV ≤ 1.2 × RV: в імпорті з бірж тези й цілі "
     "немає, тож такі купівлі — «порушено», а спота й IV на час відкриття журнал не має (ці дві умови — «невідомо»). "
-    "Депозит — сьогоднішні $10 000 для всіх тижнів. 3, 6, 7 і «48 год перерви» з журналу не перевіряються. "
+    "Депозит — сьогоднішні $10 000 для всіх тижнів. 3, 6 і 7 з журналу не перевіряються. "
     "Минуле не гарантує майбутнього."
 )
 
@@ -8130,6 +8134,26 @@ def rules_day_stops(rows: list[dict], dep: float = RULES_DEPOSIT) -> dict[str, d
     return _rules_day_stops(_rules_normalize(rows), dep * RULES_DAY_LOSS_PCT / 100.0)
 
 
+def _rules_pauses(xs: list[dict], big_loss: float, pause_s: float = RULES_PAUSE_HOURS * 3600.0) -> dict[str, dict]:
+    closed = sorted((x for x in xs if x["closed"] is not None and x["pnl"] is not None), key=lambda x: (x["closed"], x["i"]))
+    days: dict[str, list[float]] = {}  # day -> [realized P&L, start of the next UTC day]
+    for x in closed:
+        d = days.setdefault(_rules_day(x["closed"]), [0.0, (math.floor(x["closed"] / 86400.0) + 1) * 86400.0])
+        d[0] += x["pnl"]
+    return {day: {"pnl": p, "start": s, "end": s + pause_s} for day, (p, s) in sorted(days.items()) if p <= -big_loss + 1e-9}
+
+
+def rules_pauses(rows: list[dict], dep: float = RULES_DEPOSIT) -> dict[str, dict]:
+    """Copy of analytics.rules_check.pauses: {UTC day: {pnl, start, end}} of the big-loss days and their 48 h pause."""
+    return _rules_pauses(_rules_normalize(rows), dep * RULES_BIG_LOSS_PCT / 100.0)
+
+
+def _rules_in_pause(ps: dict[str, dict], ts: float) -> dict | None:
+    """Copy of analytics.rules_check.in_pause: the pause holding ts (start <= ts < end), the one ending last."""
+    hit = [{"day": day, **p} for day, p in ps.items() if p["start"] <= ts < p["end"]]
+    return max(hit, key=lambda p: (p["end"], p["day"])) if hit else None
+
+
 def _rules_alt_counts(xs: list[dict], now_ts: float) -> dict[int, tuple[int, bool]]:
     alts = sorted(
         (
@@ -8159,6 +8183,7 @@ def rules_trade_checks(rows: list[dict], now_ts: float, dep: float = RULES_DEPOS
     xs = _rules_normalize(rows)
     risk_cap, prem_cap = dep * RULES_RISK_PCT / 100.0, dep * RULES_PREMIUM_PCT / 100.0
     stops = _rules_day_stops(xs, dep * RULES_DAY_LOSS_PCT / 100.0)
+    pz = _rules_pauses(xs, dep * RULES_BIG_LOSS_PCT / 100.0)
     alt_n = _rules_alt_counts(xs, now_ts)
     out = []
     for x in xs:
@@ -8179,7 +8204,8 @@ def rules_trade_checks(rows: list[dict], now_ts: float, dep: float = RULES_DEPOS
         else:
             r[2] = "violated" if alt_n[x["i"]][1] else "ok"
         stop = stops.get(_rules_day(x["opened"]))
-        r[4] = "violated" if stop is not None and x["opened"] > stop["ts"] else "ok"
+        pause = _rules_in_pause(pz, x["opened"])
+        r[4] = "violated" if (stop is not None and x["opened"] > stop["ts"]) or pause is not None else "ok"
         if x["option"]:
             r[5] = "na"
         elif None in (x["stop"], x["target"], x["entry"]) or x["entry"] == x["stop"] or side_why is not None:
@@ -8214,6 +8240,7 @@ def rules_trade_checks(rows: list[dict], now_ts: float, dep: float = RULES_DEPOS
                 "late_buy": late,
                 "big_premium": big,
                 "wrong_side": side_why,
+                "pause": pause,
             }
         )
     return out
@@ -8223,11 +8250,14 @@ def rules_weekly(rows: list[dict], now_ts: float, dep: float = RULES_DEPOSIT) ->
     """Copy of analytics.rules_check.weekly_violations: violations by ISO week of the opening (UTC), newest first."""
     checks = rules_trade_checks(rows, now_ts, dep)
     stops = rules_day_stops(rows, dep)
+    big_weeks = [_rules_week(p["start"] - 86400.0) for p in rules_pauses(rows, dep).values()]  # the big-loss day's week
     weeks: dict[str, list[dict]] = {}
     for c in checks:
         weeks.setdefault(c["week"], []).append(c)
     for s in stops.values():
         weeks.setdefault(_rules_week(s["ts"]), [])
+    for wk in big_weeks:
+        weeks.setdefault(wk, [])
     out = []
     for wk in sorted(weeks, reverse=True):
         cs = weeks[wk]
@@ -8247,6 +8277,8 @@ def rules_weekly(rows: list[dict], now_ts: float, dep: float = RULES_DEPOSIT) ->
                 "n_trades": len(cs),
                 "rules": rules,
                 "days_stopped": sum(1 for s in stops.values() if _rules_week(s["ts"]) == wk),
+                "big_loss_days": big_weeks.count(wk),
+                "paused": sum(1 for c in cs if c["pause"] is not None and not c["approx"]),
                 "approx": sum(1 for c in cs if c["approx"]),
                 "max_alt_longs": max(alts) if alts else None,
                 "late_buys": sum(1 for c in cs if c["late_buy"]),
@@ -8451,6 +8483,8 @@ def _rule_cell(w: dict, n: int) -> str:
     if n == 4:
         if w.get("days_stopped"):
             extra.append(f"стоп-днів {w['days_stopped']}")
+        if w.get("big_loss_days") or w.get("paused"):
+            extra.append(f"днів ≤ −2 % {w.get('big_loss_days') or 0} · у 48 год перерви {w.get('paused') or 0}")
         if w.get("approx"):
             extra.append(f"+ наближено {w['approx']} (за часом закриття)")
     if n == 8 and (w.get("late_buys") or w.get("big_premiums")):

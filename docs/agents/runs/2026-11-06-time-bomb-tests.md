@@ -7,6 +7,6 @@
 • Для продукту: у `collector_health.main` немає параметра `--now` (список у змінах).
 • `make lint` і `make test` у мене: 5167 passed, 3 skipped.
 
-**Критик:** C (sonnet) — approve, [рев'ю](../reviews/2026-11-06-time-bomb-tests.md).
+**Критик:** C (sonnet) — approve, [рев'ю](../../reviews/2026-11-06-time-bomb-tests.md).
 
 **Далі:** owner. Нових питань немає.

@@ -10,6 +10,7 @@ import logging
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 import ccxt
 import httpx
@@ -20,6 +21,7 @@ from tradedesk.analytics import flow_snapshot as fs
 from tradedesk.collector.flow_snapshot import collect_flow_snapshot
 from tradedesk.collector.scheduler import build_default_scheduler
 from tradedesk.config import Settings
+from tradedesk.core.ratelimit import TokenBucket
 from tradedesk.features import allowed
 from tradedesk.runtime import Runtime
 from tradedesk.store import SCHEMA_VERSION, Store
@@ -211,9 +213,11 @@ def _rt(tmp_path, *, http_down: set[str] | None = None, **kw) -> tuple[Runtime, 
 
     tr = make_transports(State())
     tr.update(binance_futures=httpx.MockTransport(binance_futures), bybit=httpx.MockTransport(bybit), hyperliquid=httpx.MockTransport(hl))
-    rt = Runtime(
-        Settings(http_retries=0, cache_scale=0.0, db_path=str(tmp_path / "x.sqlite"), **kw), transports=tr, exchange_factory=FlowEx
-    )
+    # Production rate limits (Binance / Bybit / Hyperliquid) would only make the fake calls wait in real time.
+    with patch("tradedesk.core.http.TokenBucket", lambda rate, burst: TokenBucket(1_000.0, 1_000)):
+        rt = Runtime(
+            Settings(http_retries=0, cache_scale=0.0, db_path=str(tmp_path / "x.sqlite"), **kw), transports=tr, exchange_factory=FlowEx
+        )
     rt.now = lambda: NOW
     return rt, calls
 

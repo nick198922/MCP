@@ -1,4 +1,4 @@
-"""Code in src/tradedesk and scripts/ runs on the oldest Python that pyproject.toml declares.
+"""Code in src/tradedesk, scripts/ and tests/ runs on the oldest Python that pyproject.toml declares.
 
 Item 158 of docs/ideas/IDEA-20261102-standing-improvements.md. The server or a laptop may run a newer
 Python than `requires-python`, and then 3.12+ syntax or stdlib names work there and break a clean
@@ -25,7 +25,14 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-FILES = sorted((ROOT / "src" / "tradedesk").rglob("*.py")) + sorted((ROOT / "scripts").rglob("*.py"))
+TESTS = ROOT / "tests"
+FILES = (
+    sorted((ROOT / "src" / "tradedesk").rglob("*.py"))
+    + sorted((ROOT / "scripts").rglob("*.py"))
+    # tests/ too (item 178): a 3.12+ test fails to import on a clean 3.11 and hides real failures.
+    # tests/fixtures/ holds recorded data, not code we run.
+    + sorted(p for p in TESTS.rglob("*.py") if not p.is_relative_to(TESTS / "fixtures"))
+)
 
 
 def _min_python() -> tuple[int, int]:
@@ -112,7 +119,8 @@ NEWER_KWARGS: list[tuple[str, str, tuple[int, int], str]] = [
     ("itertools.batched", "strict", (3, 13), "sig:itertools.batched"),
 ]
 
-# (path relative to the repository, finding key) -> why it stays. Empty: the 06.11 scan found nothing.
+# (path relative to the repository, finding key) -> why it stays. Empty: the 06.11 scans (src/ + scripts/,
+# item 158; tests/, item 178) found nothing.
 ALLOWED: dict[tuple[str, str], str] = {}
 
 _MISSING = object()
@@ -387,6 +395,9 @@ def test_scope_is_the_whole_tree():
     assert len(FILES) > 500
     assert ROOT / "src" / "tradedesk" / "server.py" in FILES
     assert ROOT / "scripts" / "research" / "vault_sizing.py" in FILES
+    assert Path(__file__).resolve() in FILES
+    assert ROOT / "tests" / "conftest.py" in FILES
+    assert not [p for p in FILES if p.is_relative_to(TESTS / "fixtures")]
 
 
 def test_word_prefilter_keeps_every_fixture_hit(tmp_path):

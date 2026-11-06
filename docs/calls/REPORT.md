@@ -1,6 +1,6 @@
 # Трекер закликів: звіт
 
-Звіт на 2026-11-05 (`scripts/calls_check.py`; денні свічки перпів, лише завершені дні UTC). Заклики: [`calls.csv`](calls.csv); правила оцінки: [`src/tradedesk/analytics/calls.py`](../../src/tradedesk/analytics/calls.py).
+Звіт на 2026-11-06 (`scripts/calls_check.py`; денні свічки перпів, лише завершені дні UTC). Заклики: [`calls.csv`](calls.csv); правила оцінки: [`src/tradedesk/analytics/calls.py`](../../src/tradedesk/analytics/calls.py).
 
 Як читати:
 - «Результат» — дохідність угоди від входу в зоні до цілі, стопу або останнього закриття, у напрямку заклику.
@@ -10,83 +10,85 @@
 
 | Джерело | Закликів | З даними | Дійшло до зони | Ціль | Стоп | Сер. результат | Сер. «одразу» |
 |---|---|---|---|---|---|---|---|
-| LIB-20261014-ai-narrative | 6 | 6 | 3 | 0 | 0 | -1.3 % | -11.3 % |
-| LIB-20261014-rwa-narrative | 9 | 9 | 6 | 0 | 0 | +1.9 % | -23.7 % |
-| LIB-20261015-doubletop-stream | 6 | 6 | 4 | 0 | 0 | -1.8 % | -9.7 % |
-| LIB-20261015-market-review | 12 | 12 | 7 | 0 | 0 | +5.2 % | -9.5 % |
+| LIB-20261014-ai-narrative | 6 | 6 | 5 | 0 | 0 | -7.0 % | -22.0 % |
+| LIB-20261014-rwa-narrative | 9 | 9 | 6 | 0 | 0 | -7.9 % | -31.2 % |
+| LIB-20261015-doubletop-stream | 6 | 6 | 4 | 0 | 0 | -8.2 % | -15.0 % |
+| LIB-20261015-market-review | 12 | 12 | 8 | 0 | 0 | -1.9 % | -16.6 % |
 | LIB-20261015-spot-entries | 2 | 2 | 0 | 0 | 0 | — | — |
-| LIB-20261016-local-review | 1 | 1 | 1 | 0 | 1 | -4.1 % | +0.0 % |
-| LIB-20261017-goodmood-market-review | 1 | 1 | 1 | 0 | 0 | +0.5 % | +0.0 % |
-| LIB-20261024-nonquant-channel | 5 | 5 | 4 | 0 | 0 | +21.5 % | +17.2 % |
-| LIB-20261026-f1ntech-strangle | 8 | 8 | 7 | 0 | 0 | +1.1 % | -4.1 % |
-| LIB-20261026-qivty-channel | 4 | 4 | 3 | 0 | 1 | +1.7 % | -3.6 % |
-| LIB-20261028-qivty-digest | 1 | 1 | 1 | 0 | 0 | -0.3 % | -1.0 % |
-| LIB-20261101-qivty-digest | 2 | 2 | 1 | 0 | 0 | +0.2 % | -0.5 % |
+| LIB-20261016-local-review | 1 | 1 | 1 | 0 | 1 | -4.1 % | -7.6 % |
+| LIB-20261017-goodmood-market-review | 1 | 1 | 1 | 0 | 0 | -7.2 % | -7.6 % |
+| LIB-20261024-nonquant-channel | 5 | 5 | 4 | 0 | 0 | +18.4 % | +14.1 % |
+| LIB-20261026-f1ntech-strangle | 8 | 8 | 7 | 0 | 1 | -5.2 % | -10.5 % |
+| LIB-20261026-qivty-channel | 4 | 4 | 3 | 0 | 1 | -0.2 % | -7.3 % |
+| LIB-20261028-qivty-digest | 1 | 1 | 1 | 0 | 0 | -5.8 % | -6.5 % |
+| LIB-20261101-qivty-digest | 2 | 2 | 1 | 0 | 0 | -6.5 % | -7.1 % |
 | LIB-20261102-qivty-digest | 1 | 1 | 0 | 0 | 0 | — | — |
-| LIB-20261103-qivty-digest | 1 | 1 | 1 | 0 | 0 | +5.1 % | +4.8 % |
-| LIB-20261104-qivty-digest | 1 | 1 | 0 | 0 | 0 | — | — |
+| LIB-20261103-qivty-digest | 1 | 1 | 1 | 0 | 0 | +4.0 % | +3.7 % |
+| LIB-20261104-qivty-digest | 1 | 1 | 1 | 0 | 0 | -5.6 % | -6.7 % |
+| LIB-20261105-qivty-digest | 1 | 1 | 0 | 0 | 0 | — | — |
 
 ## Заклики
 
 | id | Дата | Актив | Сторона | Зона | Ціль / стоп | Статус | Дійшло (днів) | Вхід | Результат | Макс. рух | Макс. просадка | «Одразу» | Дані |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| AI-VVV | 2026-10-14 | VVV | long | 20 | 40 / — | чекає зону | — | — | — | — | — | -7.4 % | binanceusdm:VVV/USDT:USDT |
-| AI-VIRTUAL | 2026-10-14 | VIRTUAL | long | 0.6–0.65 | — / — | у позиції | 2026-10-15 (1) | 0.65 | -8.1 % | +8.6 % | -16.9 % | -11.4 % | binanceusdm:VIRTUAL/USDT:USDT |
-| AI-GRASS-1 | 2026-10-14 | GRASS | long | 0.58–0.6 | — / — | у позиції | 2026-10-15 (1) | 0.6 | -4.3 % | +28.6 % | -11.3 % | -7.7 % | binanceusdm:GRASS/USDT:USDT |
-| AI-GRASS-2 | 2026-10-14 | GRASS | long | 0.4 | — / — | чекає зону | — | — | — | — | — | -7.7 % | binanceusdm:GRASS/USDT:USDT |
-| AI-NIL | 2026-10-14 | NIL | long | 0.06 | 0.3 / — | чекає зону | — | — | — | — | — | -29.1 % | binanceusdm:NIL/USDT:USDT |
-| AI-CHIP | 2026-10-14 | CHIP | long | 0.04 | — / — | у позиції | 2026-10-18 (4) | 0.04 | +8.4 % | +43.8 % | -4.1 % | -14.9 % | binanceusdm:CHIP/USDT:USDT |
-| RWA-ONDO-1 | 2026-10-05 | ONDO | long | 0.4 | — / — | у позиції | 2026-10-24 (19) | 0.4 | +2.1 % | +8.9 % | -10.0 % | -18.2 % | binanceusdm:ONDO/USDT:USDT |
-| RWA-ONDO-2 | 2026-10-05 | ONDO | long | 0.34–0.35 | — / — | чекає зону | — | — | — | — | — | -18.2 % | binanceusdm:ONDO/USDT:USDT |
-| RWA-AAVE | 2026-10-05 | AAVE | long | 120 | — / — | у позиції | 2026-10-29 (24) | 120 | +9.8 % | +17.5 % | -4.2 % | -28.4 % | binanceusdm:AAVE/USDT:USDT |
-| RWA-UNI | 2026-10-05 | UNI | long | 6.2–6.7 | — / — | у позиції | 2026-10-24 (19) | 6.7 | +13.8 % | +16.7 % | -6.7 % | -16.0 % | binanceusdm:UNI/USDT:USDT |
-| RWA-ENA-1 | 2026-10-05 | ENA | long | 0.2 | — / — | у позиції | 2026-10-08 (3) | 0.2 | -9.5 % | +23.7 % | -17.2 % | -27.4 % | binanceusdm:ENA/USDT:USDT |
-| RWA-ENA-2 | 2026-10-05 | ENA | long | 0.15 | — / — | чекає зону | — | — | — | — | — | -27.4 % | binanceusdm:ENA/USDT:USDT |
-| RWA-SYRUP | 2026-10-05 | SYRUP | long | 0.2 | — / — | у позиції | 2026-10-15 (10) | 0.2 | -20.6 % | +7.8 % | -30.4 % | -36.5 % | binanceusdm:SYRUP/USDT:USDT |
-| RWA-RAY | 2026-10-05 | RAY | long | 1.2 | — / — | чекає зону | — | — | — | — | — | -22.3 % | binanceusdm:RAYSOL/USDT:USDT |
-| RWA-ZRO | 2026-10-05 | ZRO | long | 1.5–1.577 | — / — | у позиції | 2026-10-29 (24) | 1.577 | +15.6 % | +23.5 % | -10.2 % | -15.8 % | binanceusdm:ZRO/USDT:USDT |
-| MR-BTC-LONG | 2026-10-15 | BTC | long | 80 000–82 000 | 85 400 / — | у позиції | 2026-10-16 (1) | 82 000 | -1.9 % | +3.5 % | -7.7 % | -2.1 % | binanceusdm:BTC/USDT:USDT |
-| MR-BTC-SHORT | 2026-10-15 | BTC | short | 85 400–85 600 | — / — | чекає зону | — | — | — | — | — | +2.1 % | binanceusdm:BTC/USDT:USDT |
-| MR-BTC-GLOBAL | 2026-10-15 | BTC | long | 75 000–76 000 | — / — | у позиції | 2026-11-04 (20) | 76 000 | +5.9 % | — | -0.4 % | -2.1 % | binanceusdm:BTC/USDT:USDT |
-| MR-HYPE | 2026-10-15 | HYPE | long | 75 | — / — | у позиції | 2026-10-24 (9) | 75 | +11.7 % | +29.6 % | -0.8 % | +2.5 % | binanceusdm:HYPE/USDT:USDT |
-| MR-PUMP-1 | 2026-10-15 | PUMP | long | 0.0037–0.0038 | — / — | у позиції | 2026-10-30 (15) | 0.0038 | +11.7 % | +20.1 % | -1.2 % | -6.4 % | binanceusdm:PUMP/USDT:USDT |
-| MR-PUMP-2 | 2026-10-15 | PUMP | long | 0.0032 | — / — | чекає зону | — | — | — | — | — | -6.4 % | binanceusdm:PUMP/USDT:USDT |
-| MR-ZRO-1 | 2026-10-15 | ZRO | long | 1.5 | 2.5 / — | у позиції | 2026-10-30 (15) | 1.5 | +21.6 % | +29.8 % | -5.6 % | -12.5 % | binanceusdm:ZRO/USDT:USDT |
-| MR-ZRO-2 | 2026-10-15 | ZRO | long | 1.3 | 2.5 / — | чекає зону | — | — | — | — | — | -12.5 % | binanceusdm:ZRO/USDT:USDT |
-| MR-AERO | 2026-10-15 | AERO | long | 0.75–0.77 | — / — | у позиції | 2026-10-18 (3) | 0.77 | -17.7 % | +16.1 % | -23.3 % | -32.4 % | binanceusdm:AERO/USDT:USDT |
-| MR-ENA | 2026-10-15 | ENA | long | 0.146–0.158 | — / 0.14 | чекає зону | — | — | — | — | — | -11.7 % | binanceusdm:ENA/USDT:USDT |
-| SPOT-NEAR | 2026-10-15 | NEAR | long | 3–3.16 | — / — | чекає зону | — | — | — | — | — | -23.8 % | binanceusdm:NEAR/USDT:USDT |
-| SPOT-VIRTUAL | 2026-10-15 | VIRTUAL | long | 0.5 | — / — | чекає зону | — | — | — | — | — | -12.2 % | binanceusdm:VIRTUAL/USDT:USDT |
-| DT-BTC-LAST | 2026-10-15 | BTC | long | 69 000–71 000 | — / 68 000 | чекає зону | — | — | — | — | — | -2.1 % | binanceusdm:BTC/USDT:USDT |
-| DT-LIT | 2026-10-15 | LIT | long | 2.9–3.1 | — / — | у позиції | 2026-10-16 (1) | 3.026 | +9.5 % | +31.7 % | -14.5 % | +9.5 % | binanceusdm:LIT/USDT:USDT |
-| DT-ASTER | 2026-10-15 | ASTER | long | 0.6 | — / — | чекає зону | — | — | — | — | — | +0.1 % | binanceusdm:ASTER/USDT:USDT |
-| DT-ETH | 2026-10-15 | ETH | long | 2 357–2 370 | 2 540 / — | у позиції | 2026-10-17 (2) | 2 370 | +2.3 % | +6.6 % | -8.3 % | -0.7 % | binanceusdm:ETH/USDT:USDT |
-| DT-AERO | 2026-10-15 | AERO | long | 0.8–0.85 | 1 / — | у позиції | 2026-10-17 (2) | 0.85 | -25.5 % | +5.2 % | -30.5 % | -32.4 % | binanceusdm:AERO/USDT:USDT |
-| DT-CASHCAT | 2026-10-15 | CASHCAT | long | 0.1 | 1 / — | у позиції | 2026-10-17 (2) | 0.1 | +6.4 % | +23.9 % | -14.1 % | -15.2 % | bybit:CASHCAT/USDT:USDT |
-| MR-VVV-1 | 2026-10-15 | VVV | long | 19.6–20.5 | — / — | у позиції | 2026-11-03 (19) | 20.5 | +5.0 % | +20.4 % | -0.2 % | -13.3 % | binanceusdm:VVV/USDT:USDT |
-| MR-VVV-2 | 2026-10-15 | VVV | long | 15.5–16.6 | — / — | чекає зону | — | — | — | — | — | -13.3 % | binanceusdm:VVV/USDT:USDT |
-| ETH-LOC | 2026-10-16 | ETH | long | 2 420–2 460 | 2 807 / 2 322 | стоп ✗ | 2026-10-17 (1) | 2 422 | -4.1 % | +4.3 % | -10.3 % | +0.0 % | binanceusdm:ETH/USDT:USDT |
-| GM-ETH-DEV | 2026-10-16 | ETH | long | 2 355–2 411 | 2 550 / — | у позиції | 2026-10-17 (1) | 2 411 | +0.5 % | +4.8 % | -9.9 % | +0.0 % | binanceusdm:ETH/USDT:USDT |
+| AI-VVV | 2026-10-14 | VVV | long | 20 | 40 / — | у позиції | 2026-11-05 (22) | 20 | +4.9 % | — | -0.4 % | -9.7 % | binanceusdm:VVV/USDT:USDT |
+| AI-VIRTUAL | 2026-10-14 | VIRTUAL | long | 0.6–0.65 | — / — | у позиції | 2026-10-15 (1) | 0.65 | -13.9 % | +8.6 % | -16.9 % | -17.0 % | binanceusdm:VIRTUAL/USDT:USDT |
+| AI-GRASS-1 | 2026-10-14 | GRASS | long | 0.58–0.6 | — / — | у позиції | 2026-10-15 (1) | 0.6 | -18.4 % | +28.6 % | -19.9 % | -21.4 % | binanceusdm:GRASS/USDT:USDT |
+| AI-GRASS-2 | 2026-10-14 | GRASS | long | 0.4 | — / — | чекає зону | — | — | — | — | — | -21.4 % | binanceusdm:GRASS/USDT:USDT |
+| AI-NIL | 2026-10-14 | NIL | long | 0.06 | 0.3 / — | у позиції | 2026-11-05 (22) | 0.06 | +0.7 % | — | -2.0 % | -33.9 % | binanceusdm:NIL/USDT:USDT |
+| AI-CHIP | 2026-10-14 | CHIP | long | 0.04 | — / — | у позиції | 2026-10-18 (4) | 0.04 | -8.2 % | +43.8 % | -10.1 % | -27.9 % | binanceusdm:CHIP/USDT:USDT |
+| RWA-ONDO-1 | 2026-10-05 | ONDO | long | 0.4 | — / — | у позиції | 2026-10-24 (19) | 0.4 | -8.5 % | +8.9 % | -10.1 % | -26.7 % | binanceusdm:ONDO/USDT:USDT |
+| RWA-ONDO-2 | 2026-10-05 | ONDO | long | 0.34–0.35 | — / — | чекає зону | — | — | — | — | — | -26.7 % | binanceusdm:ONDO/USDT:USDT |
+| RWA-AAVE | 2026-10-05 | AAVE | long | 120 | — / — | у позиції | 2026-10-29 (24) | 120 | +7.4 % | +17.5 % | -4.2 % | -30.0 % | binanceusdm:AAVE/USDT:USDT |
+| RWA-UNI | 2026-10-05 | UNI | long | 6.2–6.7 | — / — | у позиції | 2026-10-24 (19) | 6.7 | +1.7 % | +16.7 % | -6.7 % | -25.0 % | binanceusdm:UNI/USDT:USDT |
+| RWA-ENA-1 | 2026-10-05 | ENA | long | 0.2 | — / — | у позиції | 2026-10-08 (3) | 0.2 | -19.9 % | +23.7 % | -22.2 % | -35.7 % | binanceusdm:ENA/USDT:USDT |
+| RWA-ENA-2 | 2026-10-05 | ENA | long | 0.15 | — / — | чекає зону | — | — | — | — | — | -35.7 % | binanceusdm:ENA/USDT:USDT |
+| RWA-SYRUP | 2026-10-05 | SYRUP | long | 0.2 | — / — | у позиції | 2026-10-15 (10) | 0.2 | -29.3 % | +7.8 % | -30.7 % | -43.4 % | binanceusdm:SYRUP/USDT:USDT |
+| RWA-RAY | 2026-10-05 | RAY | long | 1.2 | — / — | чекає зону | — | — | — | — | — | -24.6 % | binanceusdm:RAYSOL/USDT:USDT |
+| RWA-ZRO | 2026-10-05 | ZRO | long | 1.5–1.577 | — / — | у позиції | 2026-10-29 (24) | 1.577 | +1.0 % | +23.5 % | -10.2 % | -26.5 % | binanceusdm:ZRO/USDT:USDT |
+| MR-BTC-LONG | 2026-10-15 | BTC | long | 80 000–82 000 | 85 400 / — | у позиції | 2026-10-16 (1) | 82 000 | -7.3 % | +3.5 % | -8.3 % | -7.5 % | binanceusdm:BTC/USDT:USDT |
+| MR-BTC-SHORT | 2026-10-15 | BTC | short | 85 400–85 600 | — / — | чекає зону | — | — | — | — | — | +7.5 % | binanceusdm:BTC/USDT:USDT |
+| MR-BTC-GLOBAL | 2026-10-15 | BTC | long | 75 000–76 000 | — / — | у позиції | 2026-11-04 (20) | 76 000 | +0.1 % | +6.4 % | -1.1 % | -7.5 % | binanceusdm:BTC/USDT:USDT |
+| MR-HYPE | 2026-10-15 | HYPE | long | 75 | — / — | у позиції | 2026-10-24 (9) | 75 | +2.2 % | +29.6 % | -0.8 % | -6.2 % | binanceusdm:HYPE/USDT:USDT |
+| MR-PUMP-1 | 2026-10-15 | PUMP | long | 0.0037–0.0038 | — / — | у позиції | 2026-10-30 (15) | 0.0038 | +1.7 % | +20.1 % | -1.2 % | -14.9 % | binanceusdm:PUMP/USDT:USDT |
+| MR-PUMP-2 | 2026-10-15 | PUMP | long | 0.0032 | — / — | чекає зону | — | — | — | — | — | -14.9 % | binanceusdm:PUMP/USDT:USDT |
+| MR-ZRO-1 | 2026-10-15 | ZRO | long | 1.5 | 2.5 / — | у позиції | 2026-10-30 (15) | 1.5 | +6.2 % | +29.8 % | -5.6 % | -23.6 % | binanceusdm:ZRO/USDT:USDT |
+| MR-ZRO-2 | 2026-10-15 | ZRO | long | 1.3 | 2.5 / — | чекає зону | — | — | — | — | — | -23.6 % | binanceusdm:ZRO/USDT:USDT |
+| MR-AERO | 2026-10-15 | AERO | long | 0.75–0.77 | — / — | у позиції | 2026-10-18 (3) | 0.77 | -22.2 % | +16.1 % | -24.2 % | -36.1 % | binanceusdm:AERO/USDT:USDT |
+| MR-ENA | 2026-10-15 | ENA | long | 0.146–0.158 | — / 0.14 | у позиції | 2026-11-05 (21) | 0.158 | +1.4 % | — | -1.6 % | -21.8 % | binanceusdm:ENA/USDT:USDT |
+| SPOT-NEAR | 2026-10-15 | NEAR | long | 3–3.16 | — / — | чекає зону | — | — | — | — | — | -30.4 % | binanceusdm:NEAR/USDT:USDT |
+| SPOT-VIRTUAL | 2026-10-15 | VIRTUAL | long | 0.5 | — / — | чекає зону | — | — | — | — | — | -17.7 % | binanceusdm:VIRTUAL/USDT:USDT |
+| DT-BTC-LAST | 2026-10-15 | BTC | long | 69 000–71 000 | — / 68 000 | чекає зону | — | — | — | — | — | -7.5 % | binanceusdm:BTC/USDT:USDT |
+| DT-LIT | 2026-10-15 | LIT | long | 2.9–3.1 | — / — | у позиції | 2026-10-16 (1) | 3.026 | +13.5 % | +31.7 % | -14.5 % | +13.5 % | binanceusdm:LIT/USDT:USDT |
+| DT-ASTER | 2026-10-15 | ASTER | long | 0.6 | — / — | чекає зону | — | — | — | — | — | -2.5 % | binanceusdm:ASTER/USDT:USDT |
+| DT-ETH | 2026-10-15 | ETH | long | 2 357–2 370 | 2 540 / — | у позиції | 2026-10-17 (2) | 2 370 | -5.6 % | +6.6 % | -8.3 % | -8.3 % | binanceusdm:ETH/USDT:USDT |
+| DT-AERO | 2026-10-15 | AERO | long | 0.8–0.85 | 1 / — | у позиції | 2026-10-17 (2) | 0.85 | -29.5 % | +5.2 % | -31.4 % | -36.1 % | binanceusdm:AERO/USDT:USDT |
+| DT-CASHCAT | 2026-10-15 | CASHCAT | long | 0.1 | 1 / — | у позиції | 2026-10-17 (2) | 0.1 | -11.0 % | +23.9 % | -14.1 % | -29.1 % | bybit:CASHCAT/USDT:USDT |
+| MR-VVV-1 | 2026-10-15 | VVV | long | 19.6–20.5 | — / — | у позиції | 2026-11-03 (19) | 20.5 | +2.4 % | +20.4 % | -2.8 % | -15.4 % | binanceusdm:VVV/USDT:USDT |
+| MR-VVV-2 | 2026-10-15 | VVV | long | 15.5–16.6 | — / — | чекає зону | — | — | — | — | — | -15.4 % | binanceusdm:VVV/USDT:USDT |
+| ETH-LOC | 2026-10-16 | ETH | long | 2 420–2 460 | 2 807 / 2 322 | стоп ✗ | 2026-10-17 (1) | 2 422 | -4.1 % | +4.3 % | -10.3 % | -7.6 % | binanceusdm:ETH/USDT:USDT |
+| GM-ETH-DEV | 2026-10-16 | ETH | long | 2 355–2 411 | 2 550 / — | у позиції | 2026-10-17 (1) | 2 411 | -7.2 % | +4.8 % | -9.9 % | -7.6 % | binanceusdm:ETH/USDT:USDT |
 | NQ-BTC-0702 | 2026-07-02 | BTC | long | 61 560 | 66 000 / — | закрито за часом | 2026-07-03 (1) | 61 540 | +3.7 % | +6.6 % | -0.5 % | +3.7 % | binanceusdm:BTC/USDT:USDT |
 | NQ-HYPE-0723 | 2026-07-23 | HYPE | long | 50–52 | — / — | закрито за часом | 2026-07-31 (8) | 52 | +55.1 % | +88.6 % | -1.7 % | +40.3 % | binanceusdm:HYPE/USDT:USDT |
-| NQ-BTC-0824 | 2026-08-24 | BTC | long | 72 000–74 000 | — / — | чекає зону | — | — | — | — | — | +1.9 % | binanceusdm:BTC/USDT:USDT |
-| NQ-BTC-0902 | 2026-09-02 | BTC | long | 75 500 | — / — | у позиції | 2026-09-15 (13) | 75 500 | +6.6 % | +15.7 % | -0.8 % | +4.1 % | binanceusdm:BTC/USDT:USDT |
-| NQ-AERO-0915 | 2026-09-15 | AERO | long | 0.5254 | 1 / — | у позиції | 2026-09-16 (1) | 0.5252 | +20.6 % | +89.0 % | -1.6 % | +20.6 % | binanceusdm:AERO/USDT:USDT |
-| F1-BTC-77 | 2026-10-26 | BTC | long | 74 500–77 000 | 88 000 / — | у позиції | 2026-10-30 (4) | 77 000 | +4.5 % | +5.4 % | -1.7 % | +0.4 % | binanceusdm:BTC/USDT:USDT |
-| F1-SOL-1026 | 2026-10-26 | SOL | long | 90–100 | 145 / — | у позиції | 2026-10-27 (1) | 100 | -4.4 % | +3.9 % | -10.2 % | -5.3 % | binanceusdm:SOL/USDT:USDT |
-| F1-ZEC-1026 | 2026-10-26 | ZEC | long | 1 400–1 500 | 2 000 / 800 | у позиції | 2026-10-27 (1) | 1 233 | +5.2 % | +13.4 % | -9.1 % | +5.2 % | binanceusdm:ZEC/USDT:USDT |
-| F1-ETH-1026 | 2026-10-26 | ETH | long | 2 200 | — / — | у позиції | 2026-10-30 (4) | 2 200 | +10.2 % | +11.4 % | -1.2 % | +4.3 % | binanceusdm:ETH/USDT:USDT |
-| F1-HYPE-1026 | 2026-10-26 | HYPE | long | 72–75 | — / — | чекає зону | — | — | — | — | — | +7.0 % | binanceusdm:HYPE/USDT:USDT |
-| F1-NEAR-1026 | 2026-10-26 | NEAR | long | 3.5–3.8 | — / — | у позиції | 2026-11-03 (8) | 3.8 | +5.5 % | +12.5 % | -2.8 % | -11.1 % | binanceusdm:NEAR/USDT:USDT |
-| F1-JUP-1026 | 2026-10-26 | JUP | long | 0.25–0.26 | — / — | у позиції | 2026-10-29 (3) | 0.26 | +0.0 % | +2.2 % | -9.1 % | -6.4 % | binanceusdm:JUP/USDT:USDT |
-| F1-WLD-1026 | 2026-10-26 | WLD | long | 0.4–0.43 | — / 0.35 | у позиції | 2026-10-27 (1) | 0.43 | -12.9 % | +5.7 % | -16.3 % | -15.7 % | binanceusdm:WLD/USDT:USDT |
-| QG-BTC-1013 | 2026-10-13 | BTC | long | 80 000–80 400 | 85 400 / 79 000 | стоп ✗ | 2026-10-15 (2) | 80 400 | -1.7 % | +5.6 % | -5.9 % | -3.2 % | binanceusdm:BTC/USDT:USDT |
-| QG-SPX-1007 | 2026-10-07 | SP500 | long | 7 524 | 8 000 / — | у позиції | 2026-11-03 (27) | 7 524 | +2.2 % | +2.5 % | -0.8 % | -1.4 % | hyperliquid:xyz:SP500 |
-| QG-XAU-1022 | 2026-10-22 | XAU | short | 4 453 | 3 700 / 4 736 | чекає зону | — | — | — | — | — | -1.0 % | binanceusdm:XAU/USDT:USDT |
-| QG-XAG-1014 | 2026-10-14 | XAG | long | 50 | — / — | у позиції | 2026-10-30 (16) | 50 | +4.7 % | +5.1 % | -2.5 % | -6.2 % | binanceusdm:XAG/USDT:USDT |
-| QG-BTC200K-1028 | 2026-10-28 | BTC | long | 80 600–80 700 | 201 280 / — | у позиції | 2026-10-29 (1) | 80 700 | -0.3 % | +0.6 % | -6.2 % | -1.0 % | binanceusdm:BTC/USDT:USDT |
-| QG-NQ-1101 | 2026-11-01 | NQ | long | 28 353 | — / — | у позиції | 2026-11-02 (1) | 28 353 | +0.2 % | +1.7 % | -3.0 % | -0.5 % | hyperliquid:xyz:XYZ100 |
-| QG-BTC66K-1101 | 2026-11-01 | BTC | long | 65 500–67 260 | — / — | чекає зону | — | — | — | — | — | +2.7 % | binanceusdm:BTC/USDT:USDT |
-| QG-XAU-1102 | 2026-11-02 | XAU | long | 3 662–3 700 | — / — | чекає зону | — | — | — | — | — | +2.9 % | binanceusdm:XAU/USDT:USDT |
-| QG-XAG-1103 | 2026-11-03 | XAG | long | 48.62–49.81 | — / — | у позиції | 2026-11-04 (1) | 49.81 | +5.1 % | — | -1.5 % | +4.8 % | binanceusdm:XAG/USDT:USDT |
-| QG-NQ-1104 | 2026-11-04 | NQ | long | 28 087 | — / — | чекає зону | — | — | — | — | — | — | — |
+| NQ-BTC-0824 | 2026-08-24 | BTC | long | 72 000–74 000 | — / — | чекає зону | — | — | — | — | — | -3.7 % | binanceusdm:BTC/USDT:USDT |
+| NQ-BTC-0902 | 2026-09-02 | BTC | long | 75 500 | — / — | у позиції | 2026-09-15 (13) | 75 500 | +0.7 % | +15.7 % | -0.8 % | -1.6 % | binanceusdm:BTC/USDT:USDT |
+| NQ-AERO-0915 | 2026-09-15 | AERO | long | 0.5254 | 1 / — | у позиції | 2026-09-16 (1) | 0.5252 | +14.0 % | +89.0 % | -1.6 % | +14.0 % | binanceusdm:AERO/USDT:USDT |
+| F1-BTC-77 | 2026-10-26 | BTC | long | 74 500–77 000 | 88 000 / — | у позиції | 2026-10-30 (4) | 77 000 | -1.2 % | +5.4 % | -2.4 % | -5.1 % | binanceusdm:BTC/USDT:USDT |
+| F1-SOL-1026 | 2026-10-26 | SOL | long | 90–100 | 145 / — | у позиції | 2026-10-27 (1) | 100 | -10.7 % | +3.9 % | -11.8 % | -11.5 % | binanceusdm:SOL/USDT:USDT |
+| F1-ZEC-1026 | 2026-10-26 | ZEC | long | 1 400–1 500 | 2 000 / 800 | у позиції | 2026-10-27 (1) | 1 233 | +3.9 % | +13.4 % | -9.1 % | +3.9 % | binanceusdm:ZEC/USDT:USDT |
+| F1-ETH-1026 | 2026-10-26 | ETH | long | 2 200 | — / — | у позиції | 2026-10-30 (4) | 2 200 | +1.7 % | +11.4 % | -1.2 % | -3.7 % | binanceusdm:ETH/USDT:USDT |
+| F1-HYPE-1026 | 2026-10-26 | HYPE | long | 72–75 | — / — | чекає зону | — | — | — | — | — | -2.1 % | binanceusdm:HYPE/USDT:USDT |
+| F1-NEAR-1026 | 2026-10-26 | NEAR | long | 3.5–3.8 | — / — | у позиції | 2026-11-03 (8) | 3.8 | -3.7 % | +12.5 % | -4.6 % | -18.8 % | binanceusdm:NEAR/USDT:USDT |
+| F1-JUP-1026 | 2026-10-26 | JUP | long | 0.25–0.26 | — / — | у позиції | 2026-10-29 (3) | 0.26 | -7.8 % | +2.4 % | -10.5 % | -13.8 % | binanceusdm:JUP/USDT:USDT |
+| F1-WLD-1026 | 2026-10-26 | WLD | long | 0.4–0.43 | — / 0.35 | стоп ✗ | 2026-10-27 (1) | 0.43 | -18.6 % | +5.7 % | -23.4 % | -24.9 % | binanceusdm:WLD/USDT:USDT |
+| QG-BTC-1013 | 2026-10-13 | BTC | long | 80 000–80 400 | 85 400 / 79 000 | стоп ✗ | 2026-10-15 (2) | 80 400 | -1.7 % | +5.6 % | -6.5 % | -8.5 % | binanceusdm:BTC/USDT:USDT |
+| QG-SPX-1007 | 2026-10-07 | SP500 | long | 7 524 | 8 000 / — | у позиції | 2026-11-03 (27) | 7 524 | -2.6 % | +2.5 % | -2.9 % | -6.0 % | hyperliquid:xyz:SP500 |
+| QG-XAU-1022 | 2026-10-22 | XAU | short | 4 453 | 3 700 / 4 736 | чекає зону | — | — | — | — | — | -1.5 % | binanceusdm:XAU/USDT:USDT |
+| QG-XAG-1014 | 2026-10-14 | XAG | long | 50 | — / — | у позиції | 2026-10-30 (16) | 50 | +3.6 % | +7.1 % | -2.5 % | -7.2 % | binanceusdm:XAG/USDT:USDT |
+| QG-BTC200K-1028 | 2026-10-28 | BTC | long | 80 600–80 700 | 201 280 / — | у позиції | 2026-10-29 (1) | 80 700 | -5.8 % | +0.6 % | -6.9 % | -6.5 % | binanceusdm:BTC/USDT:USDT |
+| QG-NQ-1101 | 2026-11-01 | NQ | long | 28 353 | — / — | у позиції | 2026-11-02 (1) | 28 353 | -6.5 % | +1.7 % | -7.4 % | -7.1 % | hyperliquid:xyz:XYZ100 |
+| QG-BTC66K-1101 | 2026-11-01 | BTC | long | 65 500–67 260 | — / — | чекає зону | — | — | — | — | — | -2.9 % | binanceusdm:BTC/USDT:USDT |
+| QG-XAU-1102 | 2026-11-02 | XAU | long | 3 662–3 700 | — / — | чекає зону | — | — | — | — | — | +3.5 % | binanceusdm:XAU/USDT:USDT |
+| QG-XAG-1103 | 2026-11-03 | XAG | long | 48.62–49.81 | — / — | у позиції | 2026-11-04 (1) | 49.81 | +4.0 % | +7.5 % | -1.5 % | +3.7 % | binanceusdm:XAG/USDT:USDT |
+| QG-NQ-1104 | 2026-11-04 | NQ | long | 28 087 | — / — | у позиції | 2026-11-05 (1) | 28 087 | -5.6 % | — | -6.5 % | -6.7 % | hyperliquid:xyz:XYZ100 |
+| QG-BTC77K-1105 | 2026-11-05 | BTC | long | 76 500–77 500 | — / 75 000 | чекає зону | — | — | — | — | — | — | — |

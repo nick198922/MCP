@@ -22,7 +22,7 @@ from ..analytics.event_study import MEASURES
 from ..analytics.event_study import event_study as _event_study
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, r
+from ._util import READ_ONLY, STORE_ERRORS, r, store_failed, store_ready
 
 # 2000-01-01T00:00:00Z in unix milliseconds: an events_add ts_ms below it is almost certainly unix seconds.
 MIN_TS_MS = 946_684_800_000
@@ -33,13 +33,6 @@ def _ts_ok(ts: int) -> bool:
     try:
         datetime.fromtimestamp(ts, UTC)
     except (ValueError, OverflowError, OSError):
-        return False
-    return True
-
-
-def _store_guard(b: Builder, rt: Runtime) -> bool:
-    if rt.store is None:
-        b.miss("store", "tradedesk", "config", "db_path is empty; set TRADEDESK_DB_PATH to enable events")
         return False
     return True
 
@@ -79,32 +72,39 @@ def register(server: MCPServer, rt: Runtime) -> None:
         meta: Annotated[dict[str, Any] | None, Field(description="Arbitrary JSON extras.")] = None,
     ) -> dict[str, Any]:
         b = Builder()
-        if not _store_guard(b, rt):
+        if not await store_ready(b, rt, "events"):
             return b.build(None, ok=False)
-        await rt.store.init()
-        if ts_ms is not None:
-            ts = int(ts_ms) // 1000
-            if not _ts_ok(ts):
-                b.miss("ts_ms", "tradedesk", "invalid_input", f"ts_ms={ts_ms} is outside the datetime range (unix milliseconds expected)")
+        try:
+            if ts_ms is not None:
+                ts = int(ts_ms) // 1000
+                if not _ts_ok(ts):
+                    b.miss(
+                        "ts_ms", "tradedesk", "invalid_input", f"ts_ms={ts_ms} is outside the datetime range (unix milliseconds expected)"
+                    )
+                    return b.build(None, ok=False)
+                if ts_ms < MIN_TS_MS:
+                    b.miss(
+                        "ts_ms",
+                        "tradedesk",
+                        "invalid_input",
+                        f"ts_ms={ts_ms} is before 2000-01-01: ts_ms must be milliseconds (got seconds?)",
+                    )
+                    return b.build(None, ok=False)
+            elif date:
+                tt = (time_utc or "13:30").strip()
+                try:
+                    dt = datetime.strptime(f"{date} {tt}", "%Y-%m-%d %H:%M")
+                except ValueError:
+                    b.miss("date", "tradedesk", "data_unavailable", "could not parse date+time_utc")
+                    return b.build(None, ok=False)
+                ts = int(dt.replace(tzinfo=rt.now().tzinfo).timestamp())
+            else:
+                b.miss("ts", "tradedesk", "data_unavailable", "provide ts_ms OR date (+time_utc)")
                 return b.build(None, ok=False)
-            if ts_ms < MIN_TS_MS:
-                b.miss(
-                    "ts_ms", "tradedesk", "invalid_input", f"ts_ms={ts_ms} is before 2000-01-01: ts_ms must be milliseconds (got seconds?)"
-                )
-                return b.build(None, ok=False)
-        elif date:
-            tt = (time_utc or "13:30").strip()
-            try:
-                dt = datetime.strptime(f"{date} {tt}", "%Y-%m-%d %H:%M")
-            except ValueError:
-                b.miss("date", "tradedesk", "data_unavailable", "could not parse date+time_utc")
-                return b.build(None, ok=False)
-            ts = int(dt.replace(tzinfo=rt.now().tzinfo).timestamp())
-        else:
-            b.miss("ts", "tradedesk", "data_unavailable", "provide ts_ms OR date (+time_utc)")
-            return b.build(None, ok=False)
-        row_id = await rt.store.event_insert(ts=ts, kind=kind, label=label, impact=impact, meta=meta)
-        return b.build({"id": row_id, "inserted": row_id > 0, "ts": ts, "kind": kind, "label": label})
+            row_id = await rt.store.event_insert(ts=ts, kind=kind, label=label, impact=impact, meta=meta)
+            return b.build({"id": row_id, "inserted": row_id > 0, "ts": ts, "kind": kind, "label": label})
+        except STORE_ERRORS as e:
+            return store_failed(b, e)
 
     @server.tool(
         annotations=READ_ONLY,
@@ -121,24 +121,26 @@ def register(server: MCPServer, rt: Runtime) -> None:
         limit: Annotated[int, Field(ge=1, le=5000, description="Maximum number of events to return (1-5000).")] = 500,
     ) -> dict[str, Any]:
         b = Builder()
-        if not _store_guard(b, rt):
+        if not await store_ready(b, rt, "events"):
             return b.build(None, ok=False)
-        await rt.store.init()
-        since_ts = until_ts = None
-        if since_date:
-            try:
-                since_ts = int(datetime.strptime(since_date, "%Y-%m-%d").replace(tzinfo=rt.now().tzinfo).timestamp())
-            except ValueError:
-                b.miss("since_date", "tradedesk", "data_unavailable", "invalid date")
-                return b.build(None, ok=False)
-        if until_date:
-            try:
-                until_ts = int(datetime.strptime(until_date + " 23:59", "%Y-%m-%d %H:%M").replace(tzinfo=rt.now().tzinfo).timestamp())
-            except ValueError:
-                b.miss("until_date", "tradedesk", "data_unavailable", "invalid date")
-                return b.build(None, ok=False)
-        rows = await rt.store.events_list(kind=kind, impact=impact, since_ts=since_ts, until_ts=until_ts, limit=limit)
-        return b.build({"count": len(rows), "events": rows})
+        try:
+            since_ts = until_ts = None
+            if since_date:
+                try:
+                    since_ts = int(datetime.strptime(since_date, "%Y-%m-%d").replace(tzinfo=rt.now().tzinfo).timestamp())
+                except ValueError:
+                    b.miss("since_date", "tradedesk", "data_unavailable", "invalid date")
+                    return b.build(None, ok=False)
+            if until_date:
+                try:
+                    until_ts = int(datetime.strptime(until_date + " 23:59", "%Y-%m-%d %H:%M").replace(tzinfo=rt.now().tzinfo).timestamp())
+                except ValueError:
+                    b.miss("until_date", "tradedesk", "data_unavailable", "invalid date")
+                    return b.build(None, ok=False)
+            rows = await rt.store.events_list(kind=kind, impact=impact, since_ts=since_ts, until_ts=until_ts, limit=limit)
+            return b.build({"count": len(rows), "events": rows})
+        except STORE_ERRORS as e:
+            return store_failed(b, e)
 
     @server.tool(
         annotations=READ_ONLY,
@@ -151,30 +153,32 @@ def register(server: MCPServer, rt: Runtime) -> None:
     )
     async def events_seed_load() -> dict[str, Any]:
         b = Builder()
-        if not _store_guard(b, rt):
+        if not await store_ready(b, rt, "events"):
             return b.build(None, ok=False)
-        await rt.store.init()
         try:
-            with resources.files("tradedesk.data").joinpath("events_seed.json").open("r", encoding="utf-8") as f:
-                seed = json.load(f)
-        except (FileNotFoundError, ValueError, OSError) as e:
-            b.miss("seed", "tradedesk", "data_unavailable", f"{type(e).__name__}: {e}")
-            return b.build(None, ok=False)
-        rows = seed.get("events") or []
-        before = await rt.store.event_count()
-        inserted = await rt.store.events_insert_many(rows)
-        total = await rt.store.event_count()
-        b.warn("2026 Fed dates in the seed are projected; verify against the official calendar")
-        return b.build(
-            {
-                "candidates": len(rows),
-                "inserted": inserted,
-                "already_present": len(rows) - inserted,
-                "events_before": before,
-                "events_after": total,
-                "meta": seed.get("_meta"),
-            }
-        )
+            try:
+                with resources.files("tradedesk.data").joinpath("events_seed.json").open("r", encoding="utf-8") as f:
+                    seed = json.load(f)
+            except (FileNotFoundError, ValueError, OSError) as e:
+                b.miss("seed", "tradedesk", "data_unavailable", f"{type(e).__name__}: {e}")
+                return b.build(None, ok=False)
+            rows = seed.get("events") or []
+            before = await rt.store.event_count()
+            inserted = await rt.store.events_insert_many(rows)
+            total = await rt.store.event_count()
+            b.warn("2026 Fed dates in the seed are projected; verify against the official calendar")
+            return b.build(
+                {
+                    "candidates": len(rows),
+                    "inserted": inserted,
+                    "already_present": len(rows) - inserted,
+                    "events_before": before,
+                    "events_after": total,
+                    "meta": seed.get("_meta"),
+                }
+            )
+        except STORE_ERRORS as e:
+            return store_failed(b, e)
 
     @server.tool(
         annotations=READ_ONLY,
@@ -208,78 +212,80 @@ def register(server: MCPServer, rt: Runtime) -> None:
         impact: Annotated[Literal["low", "medium", "high"] | None, Field(description="Optional impact filter.")] = None,
     ) -> dict[str, Any]:
         b = Builder()
-        if not _store_guard(b, rt):
+        if not await store_ready(b, rt, "events"):
             return b.build(None, ok=False)
-        await rt.store.init()
-        if measure not in MEASURES:
-            b.miss("measure", "tradedesk", "data_unavailable", f"measure must be one of {MEASURES}")
-            return b.build(None, ok=False)
-
-        since_ts = until_ts = None
-        if since_date:
-            try:
-                since_ts = int(datetime.strptime(since_date, "%Y-%m-%d").replace(tzinfo=rt.now().tzinfo).timestamp())
-            except ValueError:
-                b.miss("since_date", "tradedesk", "data_unavailable", "invalid date")
-                return b.build(None, ok=False)
-        if until_date:
-            try:
-                until_ts = int(datetime.strptime(until_date + " 23:59", "%Y-%m-%d %H:%M").replace(tzinfo=rt.now().tzinfo).timestamp())
-            except ValueError:
-                b.miss("until_date", "tradedesk", "data_unavailable", "invalid date")
+        try:
+            if measure not in MEASURES:
+                b.miss("measure", "tradedesk", "data_unavailable", f"measure must be one of {MEASURES}")
                 return b.build(None, ok=False)
 
-        events = await rt.store.events_list(kind=event_kind, impact=impact, since_ts=since_ts, until_ts=until_ts, limit=5000)
-        bad = [e for e in events if not _ts_ok(int(e["ts"]))]
-        if bad:
-            # Rows stored before events_add validated ts_ms (or by another writer): they would break the bar query and the ISO dates.
-            b.warn(f"skipped {len(bad)} stored event(s) with a timestamp outside the datetime range, ids {[e['id'] for e in bad][:10]}")
-            events = [e for e in events if _ts_ok(int(e["ts"]))]
-        if not events:
-            b.miss("events", "store", "data_unavailable", f"no stored events for kind={event_kind!r} in the window")
-            return b.build(None, ok=False)
+            since_ts = until_ts = None
+            if since_date:
+                try:
+                    since_ts = int(datetime.strptime(since_date, "%Y-%m-%d").replace(tzinfo=rt.now().tzinfo).timestamp())
+                except ValueError:
+                    b.miss("since_date", "tradedesk", "data_unavailable", "invalid date")
+                    return b.build(None, ok=False)
+            if until_date:
+                try:
+                    until_ts = int(datetime.strptime(until_date + " 23:59", "%Y-%m-%d %H:%M").replace(tzinfo=rt.now().tzinfo).timestamp())
+                except ValueError:
+                    b.miss("until_date", "tradedesk", "data_unavailable", "invalid date")
+                    return b.build(None, ok=False)
 
-        # Pull a single OHLCV span covering every event with margin.
-        margin_ms = int(max(before_minutes, after_minutes) * 60_000 * 2)
-        ev_ts_ms = [int(e["ts"]) * 1000 for e in events]
-        bars_lo = min(ev_ts_ms) - margin_ms
-        bars_hi = max(ev_ts_ms) + margin_ms
-        bars = await rt.store.ohlcv_range(venue=venue, symbol=symbol, timeframe=timeframe, since_ts=bars_lo, until_ts=bars_hi)
-        if len(bars) < 5:
-            b.miss(
-                "ohlcv_hist",
-                "store",
-                "data_unavailable",
-                f"only {len(bars)} bars stored for {venue} {symbol} {timeframe} in the event window — enable the ohlcv_hist collector and let it backfill",
+            events = await rt.store.events_list(kind=event_kind, impact=impact, since_ts=since_ts, until_ts=until_ts, limit=5000)
+            bad = [e for e in events if not _ts_ok(int(e["ts"]))]
+            if bad:
+                # Rows stored before events_add validated ts_ms (or by another writer): they would break the bar query and the ISO dates.
+                b.warn(f"skipped {len(bad)} stored event(s) with a timestamp outside the datetime range, ids {[e['id'] for e in bad][:10]}")
+                events = [e for e in events if _ts_ok(int(e["ts"]))]
+            if not events:
+                b.miss("events", "store", "data_unavailable", f"no stored events for kind={event_kind!r} in the window")
+                return b.build(None, ok=False)
+
+            # Pull a single OHLCV span covering every event with margin.
+            margin_ms = int(max(before_minutes, after_minutes) * 60_000 * 2)
+            ev_ts_ms = [int(e["ts"]) * 1000 for e in events]
+            bars_lo = min(ev_ts_ms) - margin_ms
+            bars_hi = max(ev_ts_ms) + margin_ms
+            bars = await rt.store.ohlcv_range(venue=venue, symbol=symbol, timeframe=timeframe, since_ts=bars_lo, until_ts=bars_hi)
+            if len(bars) < 5:
+                b.miss(
+                    "ohlcv_hist",
+                    "store",
+                    "data_unavailable",
+                    f"only {len(bars)} bars stored for {venue} {symbol} {timeframe} in the event window — enable the ohlcv_hist collector and let it backfill",
+                )
+                return b.build(None, ok=False)
+
+            res = _event_study(bars, ev_ts_ms, before_minutes=before_minutes, after_minutes=after_minutes, measure=measure)
+            stats = res["stats"]
+            if stats["small_sample_flag"]:
+                b.warn(f"small sample: n_sample={stats['n_sample']}; stats are noisy")
+
+            # Round where sensible, keep hit_rate / returns in decimal form.
+            rounded_stats = {k: (r(v, 6) if isinstance(v, float) else v) for k, v in stats.items()}
+            return b.build(
+                {
+                    "venue": venue,
+                    "symbol": symbol,
+                    "timeframe": timeframe,
+                    "event_kind": event_kind,
+                    "measure": measure,
+                    "before_minutes": before_minutes,
+                    "after_minutes": after_minutes,
+                    "stats": rounded_stats,
+                    "n_events_requested": res["n_events_requested"],
+                    "n_events_evaluated": res["n_events_evaluated"],
+                    "per_event": [
+                        {
+                            "ts_ms": pe["ts_ms"],
+                            "iso": datetime.fromtimestamp(pe["ts_ms"] / 1000, tz=rt.now().tzinfo).isoformat(),
+                            "value": r(pe["value"], 6) if pe["value"] is not None else None,
+                        }
+                        for pe in res["per_event"]
+                    ],
+                }
             )
-            return b.build(None, ok=False)
-
-        res = _event_study(bars, ev_ts_ms, before_minutes=before_minutes, after_minutes=after_minutes, measure=measure)
-        stats = res["stats"]
-        if stats["small_sample_flag"]:
-            b.warn(f"small sample: n_sample={stats['n_sample']}; stats are noisy")
-
-        # Round where sensible, keep hit_rate / returns in decimal form.
-        rounded_stats = {k: (r(v, 6) if isinstance(v, float) else v) for k, v in stats.items()}
-        return b.build(
-            {
-                "venue": venue,
-                "symbol": symbol,
-                "timeframe": timeframe,
-                "event_kind": event_kind,
-                "measure": measure,
-                "before_minutes": before_minutes,
-                "after_minutes": after_minutes,
-                "stats": rounded_stats,
-                "n_events_requested": res["n_events_requested"],
-                "n_events_evaluated": res["n_events_evaluated"],
-                "per_event": [
-                    {
-                        "ts_ms": pe["ts_ms"],
-                        "iso": datetime.fromtimestamp(pe["ts_ms"] / 1000, tz=rt.now().tzinfo).isoformat(),
-                        "value": r(pe["value"], 6) if pe["value"] is not None else None,
-                    }
-                    for pe in res["per_event"]
-                ],
-            }
-        )
+        except STORE_ERRORS as e:
+            return store_failed(b, e)

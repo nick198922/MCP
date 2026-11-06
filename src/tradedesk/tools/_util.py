@@ -1,14 +1,42 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from mcp.types import ToolAnnotations
 
 from ..analytics.instruments import expiry_token, parse_user_expiry
+from ..core.envelope import Builder
+
+if TYPE_CHECKING:
+    from ..runtime import Runtime
 
 # All Phase 0-1 tools only read public market data.
 READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True)
+
+# What a query on the local SQLite store raises when the file is locked, unreadable, on a full disk or gone.
+STORE_ERRORS = (sqlite3.Error, OSError)
+
+
+async def store_ready(b: Builder, rt: Runtime, feature: str) -> bool:
+    """True when the local store is usable. Otherwise records `missing: store` and returns False (invariant 1):
+    reason `config` when it is switched off (empty db_path), `backend_error` when `Store.init()` raised."""
+    if rt.store is None:
+        b.miss("store", "tradedesk", "config", f"db_path is empty; set TRADEDESK_DB_PATH to enable {feature}")
+        return False
+    try:
+        await rt.store.init()
+    except Exception as e:  # noqa: BLE001 - an unusable store is reported in `missing`, never raised
+        b.miss("store", "tradedesk", "backend_error", f"{type(e).__name__}: {e}")
+        return False
+    return True
+
+
+def store_failed(b: Builder, e: BaseException) -> dict[str, Any]:
+    """Envelope for a store query that raised one of STORE_ERRORS: `missing: store` (backend_error), ok=false."""
+    b.miss("store", "tradedesk", "backend_error", f"{type(e).__name__}: {e}")
+    return b.build(None, ok=False)
 
 
 def r(x: float | None, nd: int = 4) -> float | None:

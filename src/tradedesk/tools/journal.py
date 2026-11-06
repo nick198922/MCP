@@ -16,14 +16,7 @@ from ..analytics.journal import outcome_of, r_multiple, summary
 from ..analytics.journal import pnl as pnl_fn
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, r
-
-
-def _store_guard(b: Builder, rt: Runtime) -> bool:
-    if rt.store is None:
-        b.miss("store", "tradedesk", "config", "db_path is empty; set TRADEDESK_DB_PATH to enable the journal")
-        return False
-    return True
+from ._util import READ_ONLY, STORE_ERRORS, r, store_failed, store_ready
 
 
 def register(server: MCPServer, rt: Runtime) -> None:
@@ -50,14 +43,16 @@ def register(server: MCPServer, rt: Runtime) -> None:
         opened_ts: Annotated[int | None, Field(description="Open timestamp (unix seconds). Defaults to now.")] = None,
     ) -> dict[str, Any]:
         b = Builder()
-        if not _store_guard(b, rt):
+        if not await store_ready(b, rt, "the journal"):
             return b.build(None, ok=False)
-        await rt.store.init()
-        ts = int(opened_ts) if opened_ts is not None else int(rt.now().timestamp())
-        trade_id = await rt.store.journal_insert(
-            opened_ts=ts, symbol=symbol, side=side, size=size, entry=entry, stop=stop, target=target, thesis=thesis, tags=tags
-        )
-        return b.build({"id": trade_id, "opened_ts": ts, "symbol": symbol, "side": side, "size": size, "entry": entry})
+        try:
+            ts = int(opened_ts) if opened_ts is not None else int(rt.now().timestamp())
+            trade_id = await rt.store.journal_insert(
+                opened_ts=ts, symbol=symbol, side=side, size=size, entry=entry, stop=stop, target=target, thesis=thesis, tags=tags
+            )
+            return b.build({"id": trade_id, "opened_ts": ts, "symbol": symbol, "side": side, "size": size, "entry": entry})
+        except STORE_ERRORS as e:
+            return store_failed(b, e)
 
     @server.tool(
         annotations=READ_ONLY,
@@ -73,11 +68,13 @@ def register(server: MCPServer, rt: Runtime) -> None:
         limit: Annotated[int, Field(ge=1, le=500, description="Maximum number of trades to return, latest opened first (1-500).")] = 100,
     ) -> dict[str, Any]:
         b = Builder()
-        if not _store_guard(b, rt):
+        if not await store_ready(b, rt, "the journal"):
             return b.build(None, ok=False)
-        await rt.store.init()
-        rows = await rt.store.journal_list(status=status, symbol=symbol, tag=tag, limit=limit)
-        return b.build({"count": len(rows), "trades": rows})
+        try:
+            rows = await rt.store.journal_list(status=status, symbol=symbol, tag=tag, limit=limit)
+            return b.build({"count": len(rows), "trades": rows})
+        except STORE_ERRORS as e:
+            return store_failed(b, e)
 
     @server.tool(
         annotations=READ_ONLY,  # writes locally only
@@ -98,46 +95,48 @@ def register(server: MCPServer, rt: Runtime) -> None:
         note: Annotated[str | None, Field(description="Post-mortem note.")] = None,
     ) -> dict[str, Any]:
         b = Builder()
-        if not _store_guard(b, rt):
+        if not await store_ready(b, rt, "the journal"):
             return b.build(None, ok=False)
-        await rt.store.init()
-        trade = await rt.store.journal_get(id)
-        if trade is None:
-            b.miss("journal", "store", "data_unavailable", f"trade id={id} not found")
-            return b.build(None, ok=False)
-        if trade["status"] != "open":
-            b.miss("journal", "store", "data_unavailable", f"trade id={id} is already {trade['status']}")
-            return b.build(None, ok=False)
-
-        ts = int(closed_ts) if closed_ts is not None else int(rt.now().timestamp())
-        if cancelled:
-            await rt.store.journal_update_close(
-                id,
-                closed_ts=ts,
-                status="cancelled",
-                exit_=None,
-                outcome="cancelled",
-                pnl=None,
-                r_multiple=None,
-                note=note,
-            )
-        else:
-            if exit is None:
-                b.miss("exit", "tradedesk", "data_unavailable", "exit price is required unless cancelled=true")
+        try:
+            trade = await rt.store.journal_get(id)
+            if trade is None:
+                b.miss("journal", "store", "data_unavailable", f"trade id={id} not found")
                 return b.build(None, ok=False)
-            p = pnl_fn(trade["side"], float(trade["size"]), float(trade["entry"]), float(exit))
-            r_val = r_multiple(trade["side"], float(trade["entry"]), trade.get("stop"), float(exit))
-            await rt.store.journal_update_close(
-                id,
-                closed_ts=ts,
-                status="closed",
-                exit_=float(exit),
-                outcome=outcome_of(p),
-                pnl=p,
-                r_multiple=r_val,
-                note=note,
-            )
-        return b.build(await rt.store.journal_get(id))
+            if trade["status"] != "open":
+                b.miss("journal", "store", "data_unavailable", f"trade id={id} is already {trade['status']}")
+                return b.build(None, ok=False)
+
+            ts = int(closed_ts) if closed_ts is not None else int(rt.now().timestamp())
+            if cancelled:
+                await rt.store.journal_update_close(
+                    id,
+                    closed_ts=ts,
+                    status="cancelled",
+                    exit_=None,
+                    outcome="cancelled",
+                    pnl=None,
+                    r_multiple=None,
+                    note=note,
+                )
+            else:
+                if exit is None:
+                    b.miss("exit", "tradedesk", "data_unavailable", "exit price is required unless cancelled=true")
+                    return b.build(None, ok=False)
+                p = pnl_fn(trade["side"], float(trade["size"]), float(trade["entry"]), float(exit))
+                r_val = r_multiple(trade["side"], float(trade["entry"]), trade.get("stop"), float(exit))
+                await rt.store.journal_update_close(
+                    id,
+                    closed_ts=ts,
+                    status="closed",
+                    exit_=float(exit),
+                    outcome=outcome_of(p),
+                    pnl=p,
+                    r_multiple=r_val,
+                    note=note,
+                )
+            return b.build(await rt.store.journal_get(id))
+        except STORE_ERRORS as e:
+            return store_failed(b, e)
 
     @server.tool(
         annotations=READ_ONLY,
@@ -153,14 +152,16 @@ def register(server: MCPServer, rt: Runtime) -> None:
         limit: Annotated[int, Field(ge=1, le=5000, description="Use at most this many closed trades, latest opened first (1-5000).")] = 500,
     ) -> dict[str, Any]:
         b = Builder()
-        if not _store_guard(b, rt):
+        if not await store_ready(b, rt, "the journal"):
             return b.build(None, ok=False)
-        await rt.store.init()
-        rows = await rt.store.journal_list(status="closed", symbol=symbol, tag=tag, limit=limit)
-        s = summary(rows)
-        # Round USD / R to friendly precision for the envelope.
-        rounded = {
-            k: (r(v, 2) if isinstance(v, float) and k.endswith(("_pnl", "pnl")) else r(v, 4) if isinstance(v, float) else v)
-            for k, v in s.items()
-        }
-        return b.build({"filters": {"symbol": symbol, "tag": tag}, **rounded})
+        try:
+            rows = await rt.store.journal_list(status="closed", symbol=symbol, tag=tag, limit=limit)
+            s = summary(rows)
+            # Round USD / R to friendly precision for the envelope.
+            rounded = {
+                k: (r(v, 2) if isinstance(v, float) and k.endswith(("_pnl", "pnl")) else r(v, 4) if isinstance(v, float) else v)
+                for k, v in s.items()
+            }
+            return b.build({"filters": {"symbol": symbol, "tag": tag}, **rounded})
+        except STORE_ERRORS as e:
+            return store_failed(b, e)

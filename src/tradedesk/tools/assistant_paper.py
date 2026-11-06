@@ -20,8 +20,7 @@ from ..analytics.options import OptionRow, black76_greeks, build_chain, group_by
 from ..analytics.rec_paper import open_paper, settle_paper, summarize
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, find_expiry, r
-from .journal import _store_guard
+from ._util import READ_ONLY, STORE_ERRORS, find_expiry, r, store_failed, store_ready
 
 PAPER_WARNING = (
     "HYPOTHESIS, paper trade in the local store only: no order is sent. The recommendation method was tested on 2026-10-18 "
@@ -275,33 +274,35 @@ def register(server: MCPServer, rt: Runtime) -> None:
     ) -> dict[str, Any]:
         b = Builder()
         b.warn(PAPER_WARNING)
-        if not _store_guard(b, rt):
+        if not await store_ready(b, rt, "the journal"):
             return b.build(None, ok=False)
-        lot = lot_btc if lot_btc is not None else DEFAULT_LOT[currency]
-        if size_btc is not None and abs(size_btc / lot - round(size_btc / lot)) > 1e-6:
-            b.miss("size_btc", "tradedesk", "invalid_input", f"size_btc {size_btc:g} is not a multiple of the lot {lot:g}")
-            return b.build(None, ok=False)
-        await rt.store.init()
-        ctx = await prepare_chain(rt, b, currency, expiry)
-        if ctx is None:
-            return b.build(None, ok=False)
-        out = await book_paper(
-            rt,
-            b,
-            ctx,
-            structure=structure,
-            currency=currency,
-            deposit_usd=deposit_usd,
-            risk_pct=risk_pct,
-            size_btc=size_btc,
-            lot=lot,
-            source=source,
-            method_mean_pct=method_mean_pct,
-            method_q05_pct=method_q05_pct,
-            regime=regime,
-            note=note,
-        )
-        return b.build(out, ok=False) if out is None else b.build(out)
+        try:
+            lot = lot_btc if lot_btc is not None else DEFAULT_LOT[currency]
+            if size_btc is not None and abs(size_btc / lot - round(size_btc / lot)) > 1e-6:
+                b.miss("size_btc", "tradedesk", "invalid_input", f"size_btc {size_btc:g} is not a multiple of the lot {lot:g}")
+                return b.build(None, ok=False)
+            ctx = await prepare_chain(rt, b, currency, expiry)
+            if ctx is None:
+                return b.build(None, ok=False)
+            out = await book_paper(
+                rt,
+                b,
+                ctx,
+                structure=structure,
+                currency=currency,
+                deposit_usd=deposit_usd,
+                risk_pct=risk_pct,
+                size_btc=size_btc,
+                lot=lot,
+                source=source,
+                method_mean_pct=method_mean_pct,
+                method_q05_pct=method_q05_pct,
+                regime=regime,
+                note=note,
+            )
+            return b.build(out, ok=False) if out is None else b.build(out)
+        except STORE_ERRORS as e:
+            return store_failed(b, e)
 
     @server.tool(
         annotations=READ_ONLY,  # settling writes to the LOCAL store only — no orders
@@ -324,60 +325,68 @@ def register(server: MCPServer, rt: Runtime) -> None:
     ) -> dict[str, Any]:
         b = Builder()
         b.warn(PAPER_WARNING)
-        if not _store_guard(b, rt):
+        if not await store_ready(b, rt, "the journal"):
             return b.build(None, ok=False)
-        await rt.store.init()
-        now = rt.now()
-        now_ts = int(now.timestamp())
-        open_rows = await rt.store.rec_paper_list(status="open", limit=5000)
-        due = [x for x in open_rows if x["expiry_ts"] <= now_ts]
-        if due:
-            deliveries: dict[str, dict[str, float]] = {}
-            for cur in sorted({x["currency"] for x in due}):
-                got = await b.guard(f"delivery_prices:{cur}", "deribit", rt.deribit.delivery_prices(f"{cur.lower()}_usd", count=1000))
-                if got is not None:
-                    deliveries[cur] = {}
-                    for d in got.get("data") or []:
-                        try:
-                            if d.get("delivery_price"):
-                                deliveries[cur][str(d.get("date"))] = float(d["delivery_price"])
-                        except (TypeError, ValueError, AttributeError):
-                            b.miss(f"delivery_prices:{cur}", "deribit", "parse_error", f"bad delivery row {str(d)[:80]}")
-            for t in due:
-                day = datetime.fromtimestamp(t["expiry_ts"], UTC).date().isoformat()
-                dp = deliveries.get(t["currency"], {}).get(day)
-                if dp is None:
-                    if t["currency"] in deliveries:
-                        b.miss(f"rec_paper:{t['id']}", "deribit", "data_unavailable", f"no delivery price for {day} published yet")
-                    continue
-                res = settle_paper(t, dp)
-                await rt.store.rec_paper_settle(
-                    t["id"],
-                    settled_ts=t["expiry_ts"],
-                    delivery_price=dp,
-                    pnl_usd=res["pnl_usd"],
-                    pnl_pct_spot=res["pnl_pct_spot"],
-                    r_worst_case=res["r_worst_case"],
-                    r_study=res["r_study"],
-                )
-        open_now = await rt.store.rec_paper_list(status="open", limit=5000)
-        settled = await rt.store.rec_paper_list(status="settled", limit=5000)
-        summary: dict[str, Any] = {}
-        meth = [x for x in settled if x["source"] == "method"]
-        groups = {
-            # 'method' = the chain trades (first / after expiry), the ones comparable with the H1 walk-forward;
-            # 'method_triggered' = extra trades opened on a regime change or an event (overlap the chain, correlated)
-            "method": [x for x in meth if x.get("trigger") in (None, "chain")],
-            "method_triggered": [x for x in meth if x.get("trigger") not in (None, "chain")],
-            "manual": [x for x in settled if x["source"] == "manual"],
-        }
-        for src, rows_ in groups.items():
-            s = summarize(rows_)
-            for k, nd in (("win_share", 3), ("mean_pnl_pct_spot", 5), ("mean_r_worst_case", 3), ("mean_r_study", 3), ("sum_pnl_usd", 2)):
-                if k in s:
-                    s[k] = r(s[k], nd)
-            summary[src] = s
-        data: dict[str, Any] = {"label": "hypothesis", "open": [_view(x) for x in open_now], "summary_settled": summary}
-        if include_settled:
-            data["settled"] = [_view(x) for x in settled[:200]]
-        return b.build(data)
+        try:
+            now = rt.now()
+            now_ts = int(now.timestamp())
+            open_rows = await rt.store.rec_paper_list(status="open", limit=5000)
+            due = [x for x in open_rows if x["expiry_ts"] <= now_ts]
+            if due:
+                deliveries: dict[str, dict[str, float]] = {}
+                for cur in sorted({x["currency"] for x in due}):
+                    got = await b.guard(f"delivery_prices:{cur}", "deribit", rt.deribit.delivery_prices(f"{cur.lower()}_usd", count=1000))
+                    if got is not None:
+                        deliveries[cur] = {}
+                        for d in got.get("data") or []:
+                            try:
+                                if d.get("delivery_price"):
+                                    deliveries[cur][str(d.get("date"))] = float(d["delivery_price"])
+                            except (TypeError, ValueError, AttributeError):
+                                b.miss(f"delivery_prices:{cur}", "deribit", "parse_error", f"bad delivery row {str(d)[:80]}")
+                for t in due:
+                    day = datetime.fromtimestamp(t["expiry_ts"], UTC).date().isoformat()
+                    dp = deliveries.get(t["currency"], {}).get(day)
+                    if dp is None:
+                        if t["currency"] in deliveries:
+                            b.miss(f"rec_paper:{t['id']}", "deribit", "data_unavailable", f"no delivery price for {day} published yet")
+                        continue
+                    res = settle_paper(t, dp)
+                    await rt.store.rec_paper_settle(
+                        t["id"],
+                        settled_ts=t["expiry_ts"],
+                        delivery_price=dp,
+                        pnl_usd=res["pnl_usd"],
+                        pnl_pct_spot=res["pnl_pct_spot"],
+                        r_worst_case=res["r_worst_case"],
+                        r_study=res["r_study"],
+                    )
+            open_now = await rt.store.rec_paper_list(status="open", limit=5000)
+            settled = await rt.store.rec_paper_list(status="settled", limit=5000)
+            summary: dict[str, Any] = {}
+            meth = [x for x in settled if x["source"] == "method"]
+            groups = {
+                # 'method' = the chain trades (first / after expiry), the ones comparable with the H1 walk-forward;
+                # 'method_triggered' = extra trades opened on a regime change or an event (overlap the chain, correlated)
+                "method": [x for x in meth if x.get("trigger") in (None, "chain")],
+                "method_triggered": [x for x in meth if x.get("trigger") not in (None, "chain")],
+                "manual": [x for x in settled if x["source"] == "manual"],
+            }
+            for src, rows_ in groups.items():
+                s = summarize(rows_)
+                for k, nd in (
+                    ("win_share", 3),
+                    ("mean_pnl_pct_spot", 5),
+                    ("mean_r_worst_case", 3),
+                    ("mean_r_study", 3),
+                    ("sum_pnl_usd", 2),
+                ):
+                    if k in s:
+                        s[k] = r(s[k], nd)
+                summary[src] = s
+            data: dict[str, Any] = {"label": "hypothesis", "open": [_view(x) for x in open_now], "summary_settled": summary}
+            if include_settled:
+                data["settled"] = [_view(x) for x in settled[:200]]
+            return b.build(data)
+        except STORE_ERRORS as e:
+            return store_failed(b, e)

@@ -1506,7 +1506,7 @@ def test_journal_tab_shows_forecast_brier_calibration_and_weeks(tmp_path):
         "відкритих 8",
         f"Експірацій{db._info('fc_expiries')}</span><span class='v'>4</span>",
         "замало для висновку",
-        "Замало експірацій: n_expiries = 4 (потрібно ≥ 30)",
+        "Замало дат експірації: n_expiry_dates = 2 (потрібно ≥ 30; актив × експірація — 4)",
         f"<span class='v'>{ref['brier']:.3f}</span>",
         f"Brier {ref['brier_on_ref']:.3f} проти {ref['brier_ref']:.3f} · 16 прогнозів",
         f"Brier {ref['brier']:.3f} проти {ref['brier_climatology']:.3f}",

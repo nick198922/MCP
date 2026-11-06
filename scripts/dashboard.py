@@ -892,7 +892,7 @@ HELP: dict[str, tuple[str, str, str, str]] = {
     "fc_expiries": (
         "Експірацій — розмір вибірки",
         "Скільки різних пар «актив × експірація» вже розраховано.",
-        "Прогнози різних днів на одну експірацію мають спільний результат, тож вибірка — не більше за це число (BTC і ETH одного дня сильно корельовані, ефективно менше). Менше 30 — висновку немає.",
+        "Прогнози різних днів на одну експірацію мають спільний результат, тож вибірка — не більше за це число (BTC і ETH одного дня сильно корельовані, ефективно менше). Розмір вибірки — дати експірації: менше 30 дат — висновку немає.",
         "Поки експірацій мало, жодна цифра цього блоку не підстава для угоди.",
     ),
     "fc_brier": (
@@ -906,7 +906,7 @@ HELP: dict[str, tuple[str, str, str, str]] = {
         "Навичка = 1 − Brier прогнозів / Brier наївної ймовірності: 50 % для «вище спота» і 68.27 % для ±1σ (нормальний "
         "розподіл). Лише ці дві події: для ±5 % і ±10 % природного еталона немає.",
         "Вище 0 — опціони точніші за наївну оцінку, нижче 0 — гірші.",
-        "Навичка вище 0 на ≥ 30 експіраціях може вказувати, що ринок оцінює діапазони краще за наївну оцінку (перевірки значущості немає); це не перевага для угоди.",
+        "Навичка вище 0 на ≥ 30 датах експірації може вказувати, що ринок оцінює діапазони краще за наївну оцінку (перевірки значущості немає); це не перевага для угоди.",
     ),
     "fc_clim": (
         "Проти кліматології",
@@ -8792,7 +8792,7 @@ def plan_stats(rows: list[dict]) -> dict:
 FC_MAX_ROWS = 20000  # 8 forecasts a day ≈ 2 900 a year
 FC_N_BINS = 10  # analytics.forecast_log.N_BINS
 FC_WEEKS = 12  # newest ISO weeks in the weekly table (as forecast_log_status's default)
-FC_MIN_EXPIRIES = 30  # below this many settled (asset, expiry) outcomes the block says: no conclusion
+FC_MIN_EXPIRIES = 30  # analytics.forecast_log.MIN_EXPIRIES: below this many settled expiry DATES the block says: no conclusion
 # analytics.forecast_log.T975: Student t 0.975 quantiles for 1..30 degrees of freedom (above: 1.96)
 FC_T975 = (
     12.706,
@@ -9864,7 +9864,8 @@ def _fc_weekly_block(rows: list[dict]) -> str:
 
 def block_forecasts(rows: list[dict] | None) -> str:
     """Weekly Brier and calibration of the risk-neutral range forecasts (table forecast_log), as forecast_log_status
-    scores them. Small n_expiries is said out loud: the numbers are descriptive."""
+    scores them. A small n_expiry_dates (the sample size, as forecast_log_status's `enough`) is said out loud: the numbers
+    are descriptive."""
     if rows is None:
         return _empty("Таблиці forecast_log у базі ще немає (з'являється зі схемою v20, коли MCP-сервер або колектор відкриють базу).")
     if not rows:
@@ -9877,7 +9878,7 @@ def block_forecasts(rows: list[dict] | None) -> str:
             f"Розрахованих прогнозів ще немає (відкритих: {n_open}); перша оцінка — після delivery експірації "
             f"{_day(nxt)} (08:00 UTC), коли колектор її розрахує."
         )
-    small = s["n_expiries"] < FC_MIN_EXPIRIES
+    small = s["n_expiry_dates"] < FC_MIN_EXPIRIES  # BTC and ETH of one date move together: dates, not (asset, expiry)
     tiles = [
         _tile("Прогнозів розраховано", _nf(s["n"]), f"відкритих {n_open} · 4 події × BTC і ETH щодня", help="fc_n"),
         _tile(
@@ -9924,8 +9925,8 @@ def block_forecasts(rows: list[dict] | None) -> str:
     out = [f"<div class='tiles'>{''.join(tiles)}</div>"]
     if small:
         out.append(
-            f"<p class='note warn'>Замало експірацій: n_expiries = {s['n_expiries']} (потрібно ≥ {FC_MIN_EXPIRIES}). "
-            "Цифри описові, висновку немає.</p>"
+            f"<p class='note warn'>Замало дат експірації: n_expiry_dates = {s['n_expiry_dates']} (потрібно ≥ {FC_MIN_EXPIRIES}; "
+            f"актив × експірація — {s['n_expiries']}). Цифри описові, висновку немає.</p>"
         )
     out.append(f"<h3 style='font-size:14px;margin:12px 0 4px'>Калібрування, 10 кошиків{_info('fc_calib')}</h3>")
     out.append(_fc_calibration_block(s))

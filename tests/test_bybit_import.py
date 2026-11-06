@@ -322,3 +322,17 @@ def test_a_trade_the_owner_closed_by_hand_keeps_his_numbers(tmp_path):
     assert asyncio.run(bi.store_options(bi.option_trips(fills, []), db)) == (0, 0, 1)
     r = _rows(db)[C30]
     assert r[5] == 100.0 and r[7].startswith(f"bybit:option:{C30}:") and r[7].endswith("закрив сам") and len(_rows(db)) == 1
+
+
+def test_a_failed_note_update_is_rolled_back_before_the_store_closes(tmp_path, refused_journal_update):
+    import sqlite3
+
+    import pytest
+
+    db = str(tmp_path / "j.sqlite")
+    assert asyncio.run(bi.store_options([], db)) == (0, 0, 0)  # creates the journal
+    seen = refused_journal_update(db)
+    trips = bi.option_trips([_fill(C30, "Buy", "0.25", "1069", 1791477003361)], [], include_open=True)
+    with pytest.raises(sqlite3.IntegrityError):  # the open trip's row is inserted, then its note UPDATE is refused
+        asyncio.run(bi.store_options(trips, db))
+    assert seen == {"in_transaction": False, "other_write": "ok"}

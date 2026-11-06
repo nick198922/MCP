@@ -222,7 +222,7 @@ async def test_cancelled_write_is_rolled_back_even_if_its_statement_was_still_qu
 # --- every write goes through Store._write() (source scan of store/db.py) ---------------------------
 
 _TX_METHODS = frozenset({"_migrate", "_write"})  # the only places that may commit() / rollback()
-_DML = re.compile(r"\s*(INSERT|UPDATE|DELETE|REPLACE)\b")
+_DML = re.compile(r"\s*(?:WITH\b.*?\b)?(INSERT|UPDATE|DELETE|REPLACE)\b", re.I | re.S)
 _EXECUTE = frozenset({"execute", "executemany", "executescript"})
 
 
@@ -230,9 +230,7 @@ def _is_write_block(node: ast.AST) -> bool:
     return isinstance(node, ast.AsyncWith) and any(
         isinstance(i.context_expr, ast.Call)
         and isinstance(i.context_expr.func, ast.Attribute)
-        and i.context_expr.func.attr == "_write"
-        and isinstance(i.context_expr.func.value, ast.Name)
-        and i.context_expr.func.value.id == "self"
+        and i.context_expr.func.attr == "_write"  # self._write() in the store, store._write() / st._write() in scripts
         for i in node.items
     )
 
@@ -242,10 +240,12 @@ def _sql_text(node: ast.AST) -> str:
 
 
 def write_discipline_problems(source: str) -> list[str]:
-    """Problems in a store module's source; pure. (1) ``commit()`` / ``rollback()`` outside ``_migrate`` / ``_write``;
-    (2) an ``execute*`` call outside ``async with self._write()`` whose SQL starts with INSERT/UPDATE/DELETE/REPLACE,
-    or whose SQL is a bare name (``sql``) in a method that holds such a literal. Reads (SELECT) before the write block
-    are fine. Not caught: DML built entirely from names in a method with no DML literal, raw statements elsewhere."""
+    """Problems in a store module's or script's source; pure. (1) ``commit()`` / ``rollback()`` outside ``_migrate`` /
+    ``_write``; (2) an ``execute*`` call outside ``async with <store>._write()`` whose SQL starts with
+    INSERT/UPDATE/DELETE/REPLACE (any case, also after ``WITH``), or whose SQL is a bare name (``sql``) in a function
+    that holds such a literal. Reads (SELECT) before the write block are fine. Only top-level functions and class
+    methods are scanned (nested functions as part of their outer one). Not caught: DML built entirely from names in a
+    function with no DML literal, statements at module level."""
     tree = ast.parse(source)
     funcs = [n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
     for cls in (n for n in tree.body if isinstance(n, ast.ClassDef)):
@@ -281,12 +281,38 @@ def test_write_discipline_checker_on_fixtures():
         "    async def put(self):\n        await self.conn.execute('INSERT INTO t VALUES (1)')\n        await self.conn.commit()\n"
         "    async def upd(self):\n        sql = 'UPDATE t SET x = 1'\n        async with self._tx_lock:\n"
         "            await self.conn.execute(sql)\n"
+        "async def script(st):\n        await st.conn.execute('delete from t')\n"
+        "        await st.conn.execute('WITH x AS (SELECT 1) insert into t SELECT * FROM x')\n"
+        "        async with st._write() as conn:\n            await conn.execute('update t set x = 2')\n"
     )
     assert write_discipline_problems(bad) == [
+        "script:10 execute() outside _write()",
+        "script:11 execute() outside _write()",
         "put:4 commit()",
         "put:3 execute() outside _write()",
         "upd:8 execute() outside _write()",
     ]
+
+
+# Scripts that write outside <store>._write(): "file" (whole file) or "file:function" -> (problems found, reason).
+# The count is exact, so a new raw write in one of these places still fails the test.
+_SCRIPT_WRITES_ALLOWED: dict[str, tuple[int, str]] = {
+    "copy_vaults.py": (
+        8,
+        "not the Store: its own paper-book SQLite file; load() and step() run inside `with con:` in run(), which "
+        "commits, or rolls back on any error",
+    ),
+    "hyperliquid_import.py:mark_airdrop": (
+        2,
+        "not the Store: a synchronous sqlite3 connection in a one-off owner command (mark-airdrop); an error ends the "
+        "process, and closing the connection discards the open transaction",
+    ),
+    "bybit_import.py:store_options": (
+        1,
+        "the nested one() helper only runs SELECTs (its SQL arrives as a name); every write there goes through the "
+        "nested write() helper, i.e. st._write(), or a Store method",
+    ),
+}
 
 
 def test_every_store_write_goes_through_write_block():
@@ -295,6 +321,18 @@ def test_every_store_write_goes_through_write_block():
     source = Path(db.__file__).read_text(encoding="utf-8")
     assert "async def _write(" in source
     assert write_discipline_problems(source) == []
+
+    scripts = Path(__file__).resolve().parents[1] / "scripts"
+    found: dict[str, list[str]] = {}
+    for path in sorted(scripts.rglob("*.py")):
+        name = path.relative_to(scripts).as_posix()
+        for p in write_discipline_problems(path.read_text(encoding="utf-8")):
+            fn = p.split(":", 1)[0]
+            key = f"{name}:{fn}" if f"{name}:{fn}" in _SCRIPT_WRITES_ALLOWED else name
+            found.setdefault(key, []).append(p)
+    unexplained = {k: v for k, v in found.items() if k not in _SCRIPT_WRITES_ALLOWED}
+    assert unexplained == {}, "raw writes in scripts/: use a Store method or `async with store._write()`"
+    assert {k: len(v) for k, v in found.items()} == {k: n for k, (n, _) in _SCRIPT_WRITES_ALLOWED.items()}
 
 
 async def test_concurrent_inits_on_one_file_apply_each_migration_once(tmp_path):

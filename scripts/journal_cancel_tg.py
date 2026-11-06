@@ -98,8 +98,8 @@ async def cancel_trade(db_path: Path, cancel: dict[str, Any], now: float, progre
             "r_multiple": None,
             "note": cancel["note"],
         }
-        cur = await store.conn.execute(CANCEL_SQL, (cancelled["closed_ts"], cancelled["note"], cancel["id"]))
-        await store.conn.commit()
+        async with store._write() as conn:  # commit, or roll back on any error (no transaction left open)
+            cur = await conn.execute(CANCEL_SQL, (cancelled["closed_ts"], cancelled["note"], cancel["id"]))
         if not cur.rowcount:  # closed or cancelled (or removed) by another process since journal_get
             again = await store.journal_get(cancel["id"])
             return {"error": "not_open", "status": again["status"]} if again else {"error": "not_found"}

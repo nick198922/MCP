@@ -141,6 +141,15 @@ def test_a_failure_after_the_write_does_not_claim_the_trade_is_open(journal_db, 
     assert "Спробуйте ще раз" not in out
 
 
+def test_a_failed_write_is_rolled_back_before_the_store_closes(journal_db, refused_journal_update):
+    tid = add(journal_db, symbol="BTC", side="long", size=0.1, entry=84000.0)
+    seen = refused_journal_update(journal_db)
+    out = jx.handle(f"/cancel {tid}", journal_db, NOW)
+    assert out.startswith("❌ Угоду не скасовано: збій бази (IntegrityError)")
+    assert seen == {"in_transaction": False, "other_write": "ok"}
+    assert row(journal_db, tid)["status"] == "open"
+
+
 def test_a_failed_reply_still_says_the_trade_is_cancelled(journal_db, monkeypatch):
     tid = add(journal_db, symbol="BTC", side="long", size=0.1, entry=84000.0)
 

@@ -553,6 +553,10 @@ async def store_options(trips: list[dict[str, Any]], db_path: str) -> tuple[int,
         cur = await st.conn.execute(sql, args)
         return await cur.fetchone()
 
+    async def write(sql: str, args: tuple) -> None:
+        async with st._write() as conn:  # commit, or roll back on any error (no transaction left open)
+            await conn.execute(sql, args)
+
     try:
         for t in sorted(trips, key=lambda z: z.get("open_ts") or 0):
             mark = f"bybit:option:{t['oid']}"
@@ -572,27 +576,24 @@ async def store_options(trips: list[dict[str, Any]], db_path: str) -> tuple[int,
                 if row is not None:
                     skipped += 1
                 elif manual is not None:
-                    await st.conn.execute(
+                    await write(
                         "UPDATE journal SET note = ? WHERE id = ?", (f"{mark}; {fees}" + (f"; {manual[2]}" if manual[2] else ""), manual[0])
                     )
-                    await st.conn.commit()
                     skipped += 1
                 else:
                     tid = await st.journal_insert(
                         opened_ts=t["open_ts"] // 1000, symbol=t["symbol"], side=t["side"], size=t["size"], entry=t["entry"],
                         tags=["bybit", "import", "option"], thesis=f"імпорт з {VENUES['bybit']}: теза не записана",
                     )  # fmt: skip
-                    await st.conn.execute("UPDATE journal SET note = ? WHERE id = ?", (f"{mark}; {fees}", tid))
-                    await st.conn.commit()
+                    await write("UPDATE journal SET note = ? WHERE id = ?", (f"{mark}; {fees}", tid))
                     added += 1
                 continue
             target = row if row is not None else manual
             if target is not None and target[1] != "open":
                 if row is None:  # the owner closed it by hand: keep his numbers, only attach the mark
-                    await st.conn.execute(
+                    await write(
                         "UPDATE journal SET note = ? WHERE id = ?", (f"{mark}" + (f"; {target[2]}" if target[2] else ""), target[0])
                     )
-                    await st.conn.commit()
                 skipped += 1
                 continue
             note = f"{mark}; {fees}"
@@ -607,7 +608,9 @@ async def store_options(trips: list[dict[str, Any]], db_path: str) -> tuple[int,
                 own = target[2] or ""
                 note = f"{mark}; {fees}" + ("" if own.startswith(mark) else f"; {own}" if own else "")
                 if row is not None:  # our own open row: the final size and entry come from the whole trip
-                    await st.conn.execute("UPDATE journal SET size = ?, entry = ? WHERE id = ?", (t["size"], t["entry"], tid))
+                    # committed on its own: if the close below fails, the row stays open with these numbers and the
+                    # next import (same mark) writes them again and closes it
+                    await write("UPDATE journal SET size = ?, entry = ? WHERE id = ?", (t["size"], t["entry"], tid))
                 closed += 1
             await st.journal_update_close(
                 tid, closed_ts=t["ts"] // 1000, status="closed", exit_=t["exit"], outcome=outcome_of(t["pnl"]),

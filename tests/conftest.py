@@ -827,3 +827,39 @@ def rt(state: State) -> Runtime:
 def server(rt: Runtime):
     srv, _ = build_server(rt)
     return srv
+
+
+@pytest.fixture
+def refused_journal_update(monkeypatch):
+    """For scripts that write the journal through a Store: ``arm(path)`` adds a trigger that aborts every UPDATE of
+    journal (sqlite3.IntegrityError inside the script's write) and returns a dict filled when the store closes: whether
+    a transaction was still open and whether another connection (the collector) could write at that moment."""
+    import sqlite3
+
+    from tradedesk.store.db import Store
+
+    def arm(path) -> dict[str, object]:
+        con = sqlite3.connect(path)
+        con.execute("CREATE TRIGGER refuse_update BEFORE UPDATE ON journal BEGIN SELECT RAISE(ABORT, 'refused'); END")
+        con.commit()
+        con.close()
+        seen: dict[str, object] = {}
+        real_close = Store.aclose
+
+        async def check_then_close(self):
+            seen["in_transaction"] = self.conn.in_transaction
+            other = sqlite3.connect(path, timeout=0.1)  # without the rollback: "database is locked"
+            try:
+                other.execute("INSERT INTO events (ts, kind, label) VALUES (1, 'cpi', 'other writer')")
+                other.commit()
+                seen["other_write"] = "ok"
+            except sqlite3.Error as e:
+                seen["other_write"] = str(e)
+            finally:
+                other.close()
+            await real_close(self)
+
+        monkeypatch.setattr(Store, "aclose", check_then_close)
+        return seen
+
+    return arm

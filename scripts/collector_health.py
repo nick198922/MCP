@@ -10,8 +10,10 @@ migration, no write), no network, no keys; nothing under ``execution/`` is impor
 ``--out`` also writes it to a file. The morning brief (scripts/assistant_brief_tg.py) calls :func:`brief_line` and adds
 its line only when a series is below 90 % or has a fresh gap, when the DB's volume has less than 15 % or 5 GB free or
 would fill within 60 days at the DB's growth over 7 days (:func:`disk_check`: file size, ``shutil.disk_usage`` and the
-uncompressed sizes recorded in the daily backups' gzip trailers, all read only), or when the assistant snapshot file
-(a JSON file, not a table: :func:`snapshot_check`) is missing or older than twice its job's cadence.
+uncompressed sizes recorded in the daily backups' gzip trailers, all read only), when a ``demo_trade`` row is still
+``open`` more than a day past its hold (:func:`stuck_demo_check`, item 133: «Завислі демо-угоди: N»), or when the
+assistant snapshot file (a JSON file, not a table: :func:`snapshot_check`) is missing or older than twice its job's
+cadence.
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ import common_helpers as cmn  # scripts/common_helpers.py (the script's director
 
 from tradedesk import features
 from tradedesk.analytics import collector_health as ch
+from tradedesk.analytics import stuck_demo as sd
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DB = "/var/lib/tradedesk-mcp/tradedesk.sqlite"
@@ -141,12 +144,27 @@ def disk_check(db: str, now: int, backups: Path | None = None) -> dict[str, Any]
     return ch.disk_health(db_bytes, usage.free, usage.total, ch.growth_per_day(points, now))
 
 
+def stuck_demo_check(db: str, now: int) -> list[dict[str, Any]]:
+    """sd.stuck_trades of the ``open`` demo_trade rows (read-only connection, ``now`` in unix seconds); [] without the
+    table. Raises ``sqlite3.Error`` / ``FileNotFoundError`` when the DB cannot be read."""
+    con = connect_ro(db)
+    try:
+        if not cmn.has_table(con, "demo_trade"):
+            return []
+        q = "SELECT link_id, setup, symbol, timeframe, status, signal_ts, opened_ts FROM demo_trade WHERE status = 'open'"
+        cols = ("link_id", "setup", "symbol", "timeframe", "status", "signal_ts", "opened_ts")
+        rows = [dict(zip(cols, r, strict=True)) for r in con.execute(q)]
+    finally:
+        con.close()
+    return sd.stuck_trades(rows, now * 1000)
+
+
 def brief_line(
     db: str = DEFAULT_DB, features_path: Path = DEFAULT_FEATURES, now: int | None = None, snapshot: Path | None = None
 ) -> str | None:
-    """The morning brief's line (plain text), or None when every series, the DB's disk (:func:`disk_check`) and the
-    assistant snapshot file (``snapshot``, default :data:`SNAPSHOT_PATH`) are fine. Never raises: an unreadable DB
-    gives a line saying the check did not run."""
+    """The morning brief's line (plain text), or None when every series, the DB's disk (:func:`disk_check`), the open
+    demo trades (:func:`stuck_demo_check`) and the assistant snapshot file (``snapshot``, default
+    :data:`SNAPSHOT_PATH`) are fine. Never raises: an unreadable DB gives a line saying the check did not run."""
     now = int(time.time()) if now is None else now
     switches: dict[str, str] = {}
     try:
@@ -161,10 +179,16 @@ def brief_line(
     except Exception as e:  # noqa: BLE001 - the brief always goes out
         disk = f"Місце на диску БД не перевірено ({type(e).__name__})."
     try:
+        stuck = sd.brief_line(stuck_demo_check(db, now))
+    except FileNotFoundError:
+        stuck = None  # no DB file: the collectors' line above already says so
+    except Exception as e:  # noqa: BLE001 - the brief always goes out
+        stuck = f"Завислі демо-угоди не перевірено ({type(e).__name__})."
+    try:
         snap = snapshot_check(SNAPSHOT_PATH if snapshot is None else snapshot, switches, now)
     except Exception as e:  # noqa: BLE001 - the brief always goes out
         snap = f"Вік знімка асистента не перевірено ({type(e).__name__})."
-    return " ".join(x for x in (line, disk, snap) if x) or None
+    return " ".join(x for x in (line, disk, stuck, snap) if x) or None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -186,6 +210,11 @@ def main(argv: list[str] | None = None) -> int:
         text += f"{'✗' if h['reasons'] else '✓'} Диск БД: {ch.describe_disk(h)}.\n"
     except OSError as e:
         text += f"✗ Диск БД не перевірено ({type(e).__name__}).\n"
+    try:
+        stuck = stuck_demo_check(a.db, now)
+        text += f"✗ {sd.brief_line(stuck)}\n" if stuck else "✓ Завислі демо-угоди: 0.\n"
+    except (sqlite3.Error, OSError) as e:
+        text += f"✗ Завислі демо-угоди не перевірено ({type(e).__name__}).\n"
     print(text, end="")
     if a.out:
         out = Path(a.out)

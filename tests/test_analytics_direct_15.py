@@ -5,7 +5,8 @@ functions without a direct test: ``dex.num``, ``option_xvenue.num``, ``expiry_pi
 ``option_replay.atm_strike``, ``options.npdf``, ``pm_gap_report.primary_early_payout``, ``hull_suite_flip.wma`` and
 ``smart_money.mark_price``. Every expected value below is an analytic reference (the standard normal density, the
 linearly weighted mean written out term by term) or worked out by hand in the comments; no output of the code under test
-is reused as an expected value. Edge cases pin the behaviour the code has today (src/ is not changed here).
+is reused as an expected value. Edge cases pin the behaviour the code has today (src/ was not changed by item 252; the
+OverflowError of ``dex.num`` was fixed later, by item 260).
 """
 
 from __future__ import annotations
@@ -44,11 +45,14 @@ def test_dex_num_parses_numbers_and_numeric_strings():
 def test_dex_num_rejects_non_finite_and_bad_types():
     for bad in (None, True, False, "", "abc", "NaN", "inf", "-inf", "1e400", float("nan"), float("inf"), [], {}, [1]):
         assert dex.num(bad) is None, bad
-    # An integer too large for a float is not caught: float() raises OverflowError, not ValueError / TypeError.
-    # JSON numbers with an exponent ("1e400") arrive as float inf and are handled; only a 300+ digit integer literal
-    # would reach this branch.
-    with pytest.raises(OverflowError):
-        dex.num(10**400)
+
+
+def test_dex_num_takes_an_integer_too_large_for_a_float_as_none():
+    # Review 2026-11-07-analytics-direct-tests-15: json.loads turns a 400-digit literal into a Python int and float()
+    # raises OverflowError on it (a JSON "1e400" arrives as float inf and was handled already); num now catches it
+    # like option_xvenue.num instead of raising out of the tool (card item 260).
+    assert dex.num(10**400) is None and dex.num(-(10**400)) is None
+    assert dex.num(10**300) == 1e300 and dex.num(-(10**300)) == -1e300  # still representable: kept, sign too
 
 
 def test_option_xvenue_num_keeps_only_strictly_positive_finite():

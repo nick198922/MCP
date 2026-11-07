@@ -47,6 +47,7 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 markers = [
     "slow: long-running test (minutes); excluded from `make test`, run with `make test-slow` or `pytest -m slow`",
+    "allow_network(reason): test may connect to non-loopback addresses (tests/conftest.py blocks them otherwise); give the reason",
 ]
 
 [tool.ruff]

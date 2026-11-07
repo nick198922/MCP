@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import copy
 import inspect
+import ipaddress
 import json
 import math
+import socket
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -70,6 +72,75 @@ def _memo_from_function(
 
 
 Tool.from_function = _memo_from_function  # type: ignore[method-assign]
+
+
+# --- No real network in tests (item 238 of docs/ideas/IDEA-20261102-standing-improvements.md) -------------------------
+# `make test` must not need the network: a test that silently reaches a venue turns red at random in the cloud (proxy 403)
+# or offline, and on the server sends live requests from the nightly pipeline. Every test runs with socket.socket.connect
+# (and connect_ex) refusing non-loopback AF_INET/AF_INET6 addresses; asyncio's create_connection / open_connection and
+# anyio (httpx) go through sock.connect, so they are refused too (tests/test_no_real_network.py checks it). The refusal
+# is an OSError, so code under test sees "no network"; since Http may turn that into `missing` and the test could still
+# pass, the attempt is also recorded and the test fails at teardown. Opt out with @pytest.mark.allow_network(reason=...).
+# Not covered: DNS lookups (getaddrinfo), sockets opened by session/module fixtures before the test's own fixtures, and
+# subprocesses.
+REAL_CONNECT = socket.socket.connect
+REAL_CONNECT_EX = socket.socket.connect_ex
+
+
+class RealNetworkBlocked(OSError):
+    """A test tried to connect to a non-loopback address (see the no_real_network fixture)."""
+
+
+def is_loopback(address: object) -> bool:
+    """True for addresses a test may connect to: 127.0.0.0/8, ::1 (also IPv4-mapped) and 'localhost'. Anything that is
+    not a (host, port, ...) tuple (an AF_UNIX path) is local as well. Any other host name is not: connect() would
+    resolve it."""
+    if not isinstance(address, tuple) or not address:
+        return True
+    host = address[0]
+    if isinstance(host, bytes):
+        host = host.decode(errors="replace")
+    if not isinstance(host, str):
+        return False
+    if host.lower() == "localhost":
+        return True
+    try:
+        ip = ipaddress.ip_address(host.split("%", 1)[0])  # drop an IPv6 zone id
+    except ValueError:
+        return False
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return ip.is_loopback
+
+
+@pytest.fixture(autouse=True)
+def no_real_network(request, monkeypatch):
+    """Yields the list of refused addresses (a test of the guard itself may clear it); a non-empty list fails the test."""
+    attempts: list[str] = []
+    marker = request.node.get_closest_marker("allow_network")
+    if marker is not None:
+        yield attempts
+        return
+
+    def guard(real):
+        def connect(sock, address):
+            if sock.family in (socket.AF_INET, socket.AF_INET6) and not is_loopback(address):
+                attempts.append(repr(address))
+                raise RealNetworkBlocked(f"real network in a test: connect to {address!r} refused (tests/conftest.py)")
+            return real(sock, address)
+
+        return connect
+
+    monkeypatch.setattr(socket.socket, "connect", guard(REAL_CONNECT))
+    monkeypatch.setattr(socket.socket, "connect_ex", guard(REAL_CONNECT_EX))
+    yield attempts
+    if attempts:
+        pytest.fail(
+            f"test tried the real network ({len(attempts)} connect(s), first {attempts[0]}): mock the transport "
+            "(httpx.MockTransport, FakeEx) or mark it @pytest.mark.allow_network(reason=...)",
+            pytrace=False,
+        )
+
 
 UTC = UTC
 NOW = datetime(2026, 10, 10, 13, 7, tzinfo=UTC)

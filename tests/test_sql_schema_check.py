@@ -1,4 +1,4 @@
-"""scripts/sql_schema_check.py (items 157, 175, 200, 215 of docs/ideas/IDEA-20261102-standing-improvements.md): SELECT and
+"""scripts/sql_schema_check.py (items 157, 175, 200, 215, 223 of docs/ideas/IDEA-20261102-standing-improvements.md): SELECT and
 write literals vs schema."""
 
 import sys
@@ -251,6 +251,71 @@ def test_write_queries_are_checked():
     head = sc.render(rep).splitlines()[1]
     assert head.startswith("write queries (INSERT / UPDATE / DELETE): 15 literals (12 static,")
     assert "3 dynamic); checked 12: ok 5, problems 7 (INSERT 7, UPDATE 3, DELETE 2)" in head
+
+
+WRITE_DYNAMIC = """
+class Store:
+    COLUMNS = "symbol opened_ts".split()
+    BAD_COLUMNS = ("symbol pnll").split()
+    _COLS = tuple("symbol pnl".split())
+    MUTABLE = ("symbol",)
+
+    def insert(self, con):
+        cols = self.COLUMNS
+        marks = ",".join("?" * (len(cols) + 1))
+        con.executemany(f"INSERT OR REPLACE INTO journal (id, {', '.join(cols)}) VALUES ({marks})", [])
+        bad = self.BAD_COLUMNS
+        con.execute(f"INSERT INTO journal ({', '.join(bad)}) VALUES ({','.join('?' * len(bad))})")
+
+    def grow(self, con):
+        cols = "symbol opened_ts".split()
+        cols += ["pnl"]
+        con.execute(f"INSERT INTO journal ({', '.join(cols)}, id) VALUES ({', '.join('?' * len(cols))}, 1)")
+
+    def star(self, con):
+        cols = [*self._COLS, "opened_ts"]
+        sets = ", ".join(f"{c} = excluded.{c}" for c in (*cols, "id"))
+        con.execute(f"INSERT INTO journal ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))}) ON CONFLICT(id) DO UPDATE SET {sets}")
+
+    def short(self, con):
+        cols = self.COLUMNS
+        con.execute(f"INSERT INTO journal (id, {', '.join(cols)}) VALUES ({','.join('?' * len(cols))})")
+
+    def dynamic(self, con, row):
+        cols = [c for c in row if c.isidentifier()]
+        con.execute(f"INSERT INTO journal ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})")
+        self.MUTABLE = ("pnl",)
+        con.execute(f"UPDATE journal SET {', '.join(self.MUTABLE)} = 1")
+        cols2 = ["symbol"]
+        cols2 *= 2
+        con.execute(f"INSERT INTO journal ({', '.join(cols2)}) VALUES (?)")
+"""
+
+
+def test_dynamic_writes_from_class_constants_and_grown_lists_are_expanded():
+    qs = sc.extract_queries(WRITE_DYNAMIC, "store.py")
+    expanded = {q.line: q.sql for q in qs if q.expanded}
+    assert expanded == {
+        11: "INSERT OR REPLACE INTO journal (id, symbol, opened_ts) VALUES (?,?,?)",  # self.CONST, '?' * (len(cols) + 1)
+        13: "INSERT INTO journal (symbol, pnll) VALUES (?,?)",
+        18: "INSERT INTO journal (symbol, opened_ts, pnl, id) VALUES (?, ?, ?, 1)",  # cols += [...]
+        23: "INSERT INTO journal (symbol, pnl, opened_ts) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET "
+        "symbol = excluded.symbol, pnl = excluded.pnl, opened_ts = excluded.opened_ts, id = excluded.id",  # [*self.CONST, ...]
+        27: "INSERT INTO journal (id, symbol, opened_ts) VALUES (?,?)",  # one value short: the count is exact
+    }
+    assert [(q.line, q.why) for q in qs if q.dynamic] == [
+        (31, "parameter row"),
+        (33, "self.MUTABLE"),  # also assigned on the instance: not a constant
+        (36, "cols2 is changed in place"),
+    ]
+    rep = sc.check({"store.py": WRITE_DYNAMIC}, MIGRATIONS)
+    kinds = _by_line(rep)
+    assert {ln for ln, k in kinds.items() if k == "ok"} == {11, 18, 23}
+    assert kinds[13] == "missing column" and "has no column named pnll" in next(f.detail for f in rep.findings if f.query.line == 13)
+    assert kinds[27] == "other error"  # 3 columns, 2 values
+    assert rep.failed
+    head = sc.render(rep).splitlines()[1]
+    assert "(0 static, 5 expanded from constants into 5 variants, 3 dynamic); checked 5: ok 3, problems 2" in head
 
 
 def test_write_target_parses_verb_and_table():

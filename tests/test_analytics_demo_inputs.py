@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from tradedesk.analytics.checkpoint import _versioned
 from tradedesk.analytics.setup_versions import EPOCHS, Epoch, applies, version_of, version_stats
 
 H = 3_600_000  # one hour, ms
@@ -117,3 +118,21 @@ def test_changed_inside_counts_only_later_epochs_of_the_setup():
     ]
     inside = {(r["setup"], r["version"]): r["changed_inside"] for r in version_stats(rows, now_ms=NOW)["rows"]}
     assert inside == {("S28", "v8"): 0, ("S1", "v3"): 0, ("S12", "v4"): 1}
+
+
+@pytest.mark.parametrize("setup", ["S12", " S12 ", "S12\n"])
+@pytest.mark.parametrize("version", [None, "v9", "v7"])
+def test_checkpoint_tag_matches_version_stats(setup, version):
+    # card item 228: checkpoint._versioned must strip the setup name as version_stats does, so one trade gets one
+    # version tag in both; a padded " S12 " opened after v9 is S12 under v9 (or under its own valid S12 tag)
+    row = {"status": "closed", "setup": setup, "version": version, "opened_ts": V9 + H, "closed_ts": V9 + 2 * H}
+    row["r_multiple"], row["pnl_usd"] = 1.0, 5.0
+    (stats_row,) = version_stats([row], now_ms=NOW)["rows"]
+    assert stats_row["setup"] == "S12"
+    assert _versioned(row, NOW) == stats_row["version"] == (version or "v9")
+
+
+@pytest.mark.parametrize(("setup", "tag"), [("S28", "v8"), ("S1", "v3"), (None, "v3"), ("", "v3")])
+def test_checkpoint_tag_unchanged_for_clean_names(setup, tag):
+    # clean names, no setup and an empty one keep their tags (an hour after v9, no own version column)
+    assert _versioned({"setup": setup, "opened_ts": V9 + H}, NOW) == tag

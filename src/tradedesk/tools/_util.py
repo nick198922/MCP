@@ -43,6 +43,22 @@ def store_failed(b: Builder, e: BaseException) -> dict[str, Any]:
     return b.build(None, ok=False)
 
 
+def warn_incomplete_range(b: Builder, field: str, got: dict[str, Any]) -> None:
+    """Warnings for a ``{"rows", "complete"[, "truncated", "dropped_rows"]}`` range result. ``dropped_rows > 0`` (ccxt
+    funding: rows that are not a dict or whose timestamp is missing or not an integer) gets its own warning with the
+    count. The paging warning is kept when ``truncated`` is set, or when ``complete`` is False and no drop explains it
+    (providers without ``truncated`` mean "paging stopped early" by ``complete=False``). Complete results: no warning."""
+    raw = got.get("dropped_rows")
+    dropped = raw if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0 else 0
+    if dropped:
+        b.warn(
+            f"{field}: {dropped} malformed rows dropped (not an object, or the timestamp missing or not an integer); "
+            "the series may have holes."
+        )
+    if got.get("truncated") is True or (not got.get("complete", True) and not dropped):
+        b.warn(f"{field}: history incomplete (paging stopped early); the earliest part of the window may be missing.")
+
+
 def parsed_rows(rows: Any, parse: Callable[[Any], T]) -> list[T]:
     """`parse` applied to every row of a venue answer. A row it cannot parse (a field that is null, a string or a list
     where a number belongs, or an infinity: TypeError / ValueError / KeyError / IndexError / OverflowError) is dropped,

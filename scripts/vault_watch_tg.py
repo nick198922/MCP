@@ -1,7 +1,7 @@
 """Forward watch of three Hyperliquid vaults (the owner's decision of 2026-10-24) to Telegram, once a month.
 
-    python3 scripts/vault_watch_tg.py            # send to the group's agents topic
-    python3 scripts/vault_watch_tg.py --print    # print the Telegram HTML, send nothing
+    uv run python scripts/vault_watch_tg.py            # send to the group's agents topic
+    uv run python scripts/vault_watch_tg.py --print    # print the Telegram HTML, send nothing
 
 The top vaults report (docs/verification/2026-10-23-top-vaults-profile.md) found no proven edge; Growi HF (the
 smoothest curve) and Delta_01 / Jade Lotus Capital (the highest alpha t, fading) are watched forward from

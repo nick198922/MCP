@@ -1,0 +1,4 @@
+- Лишки рев'ю «не блокує» до пункту 235 ([рев'ю](../reviews/2026-11-07-scripts-network-violations.md), пункт 237 [standing-improvements](../ideas/IDEA-20261102-standing-improvements.md)).
+- `scripts/research/vault_profile.py`: `_post` передає в `Http.post_json` `args={"type": ...}`, тож `Evidence.args` більше не містить адреси користувача чи волта (як у `hyperliquid_import.py`). Дані й помилки не змінилися. Новий тест у `tests/test_scripts_http.py` перевіряє, що адреси в `Evidence.args` немає.
+- `scripts/vault_watch_tg.py`: у docstring запуск через `uv run python` (скрипту потрібен venv).
+- `scripts/hyperliquid_import.py`: рядки docstring перенесено до ≤ 100 символів; поведінка та сама. Перший рядок (опис у `--help`) тепер коротше речення, а «fills are public by address» перенесено в тіло.

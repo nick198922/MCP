@@ -19,7 +19,7 @@ from ..analytics.options import build_chain, build_smile, group_by_expiry
 from ..analytics.radar import trailing_rv
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, STORE_ERRORS, store_failed, store_ready
+from ._util import READ_ONLY, STORE_ERRORS, finite_float, store_failed, store_ready
 
 ASSETS = ("BTC", "ETH")
 RV_VENUE = "binance"  # spot daily closes of the RV30 model, as the radar's RV30
@@ -153,10 +153,12 @@ async def settle_due(rt: Runtime, b: Builder) -> int:
         prices: dict[str, float] = {}
         feed = got.get("data") if isinstance(got, dict) else None
         for d in feed or []:
+            # a NaN / inf / non-numeric / 300+-digit delivery price would score the forecast on a non-number for good
+            # (or raise): such a row is reported and the forecast stays open
             try:
                 if d.get("delivery_price"):
-                    prices[str(d.get("date"))] = float(d["delivery_price"])
-            except (TypeError, ValueError, AttributeError):
+                    prices[str(d.get("date"))] = finite_float(d["delivery_price"])
+            except (TypeError, ValueError, AttributeError, OverflowError):
                 b.miss(f"delivery_prices:{asset}", "deribit", "parse_error", f"bad delivery row {str(d)[:80]}")
         missing_days: set[str] = set()
         for x in (x for x in due if x["asset"] == asset):

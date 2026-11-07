@@ -19,7 +19,7 @@ from ..analytics.demo_option_pairs import paired_report
 from ..analytics.trade_plan import TAKER_FEE, geometry, resolve_plan, summarize_plans, usable_expires, validate_levels
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, STORE_ERRORS, r, store_failed, store_ready
+from ._util import READ_ONLY, STORE_ERRORS, finite_float, r, store_failed, store_ready
 
 PLAN_WARNING = (
     "Paper scoring of the assistant's plans on candle highs / lows (local store only, no orders): a forward record of the "
@@ -101,6 +101,17 @@ def _view(p: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _open_ms(x: Any) -> int | None:
+    """A candle's open time as int ms; None when it is None, text, a bool, NaN, inf or a 300+-digit integer (int() of
+    such a value raised out of plan_review and the plan_resolve job)."""
+    if x is None or isinstance(x, bool):
+        return None
+    try:
+        return int(finite_float(x))
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 async def _candles(rt: Runtime, b: Builder, exchange: str, symbol: str, since_ms: int, until_ms: int) -> tuple[str, int, list[Any]] | None:
     """Candles of one market from ``since_ms`` to ``until_ms``: 1h first, then 4h, then 1d when a timeframe gives nothing.
 
@@ -121,9 +132,16 @@ async def _candles(rt: Runtime, b: Builder, exchange: str, symbol: str, since_ms
                 if ok:
                     b.warn(f"{exchange} {symbol} {tf}: a later candle page failed; plans past it wait for the next review")
                 break
-            good = [x for x in got if isinstance(x, (list, tuple)) and len(x) >= 5 and x[0] is not None] if isinstance(got, list) else []
+            shaped = [x for x in got if isinstance(x, (list, tuple)) and len(x) >= 5] if isinstance(got, list) else []
+            stamped = [(ts, x) for x in shaped if (ts := _open_ms(x[0])) is not None]
+            if len(stamped) < len(shaped):
+                b.warn(
+                    f"ccxt:{exchange} {symbol} {tf}: {len(shaped) - len(stamped)} candle(s) with an open time that is not a "
+                    "finite number dropped"
+                )
+            good = [x for _, x in stamped]
             rows += good
-            last = max((int(x[0]) for x in good), default=None)
+            last = max((ts for ts, _ in stamped), default=None)
             nxt = last + tf_ms if last is not None and last + tf_ms <= until else until + 1
             if nxt > until_ms or nxt <= cursor:
                 break

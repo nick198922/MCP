@@ -20,7 +20,7 @@ from ..analytics.options import OptionRow, black76_greeks, build_chain, group_by
 from ..analytics.rec_paper import open_paper, settle_paper, summarize
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, STORE_ERRORS, find_expiry, r, store_failed, store_ready
+from ._util import READ_ONLY, STORE_ERRORS, find_expiry, finite_float, r, store_failed, store_ready
 
 PAPER_WARNING = (
     "HYPOTHESIS, paper trade in the local store only: no order is sent. The recommendation method was tested on 2026-10-18 "
@@ -339,10 +339,12 @@ def register(server: MCPServer, rt: Runtime) -> None:
                     if got is not None:
                         deliveries[cur] = {}
                         for d in got.get("data") or []:
+                            # a NaN / inf / non-numeric / 300+-digit delivery price would settle the trade for good on
+                            # a non-number (or raise): such a row is reported and the trade stays open
                             try:
                                 if d.get("delivery_price"):
-                                    deliveries[cur][str(d.get("date"))] = float(d["delivery_price"])
-                            except (TypeError, ValueError, AttributeError):
+                                    deliveries[cur][str(d.get("date"))] = finite_float(d["delivery_price"])
+                            except (TypeError, ValueError, AttributeError, OverflowError):
                                 b.miss(f"delivery_prices:{cur}", "deribit", "parse_error", f"bad delivery row {str(d)[:80]}")
                 for t in due:
                     day = datetime.fromtimestamp(t["expiry_ts"], UTC).date().isoformat()

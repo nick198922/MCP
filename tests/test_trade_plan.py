@@ -413,6 +413,57 @@ async def test_provider_failure_keeps_plan_open(tmp_path):
         await rt.aclose()
 
 
+class _BadCandleEx(FakeEx):
+    """1h candles with rows whose open time or close is not a finite number mixed in."""
+
+    async def fetch_ohlcv(self, symbol, timeframe="1h", limit=100, since=None, params=None):
+        rows = await super().fetch_ohlcv(symbol, timeframe, limit, since, params)
+        if timeframe != "1h" or not rows:
+            return rows
+        t, p = rows[0][0], rows[0][1]
+        bad = [["abc", p, p, p, p, 1.0], [float("nan"), p, p, p, p, 1.0], [float("inf"), p, p, p, p, 1.0], [10**400, p, p, p, p, 1.0]]
+        return [*bad, [t + 1800_000, p, p * 2, p, float("nan"), 1.0], [t + 2700_000, p, 10**400, p, p, 1.0], *rows]
+
+
+def test_bars_drop_non_finite_prices():
+    from tradedesk.analytics.trade_plan import _bars
+
+    good = bar(1, 100, 101, 99, 100)
+    rows = [
+        bar(0, 100, 101, 99, float("nan")),
+        bar(2, 100, float("inf"), 99, 100),
+        [T0 * 1000, 100, 10**400, 99, 100],
+        [10**400, 1, 1, 1, 1],
+    ]
+    assert _bars([*rows, good]) == [tuple(good[:5])]
+
+
+async def test_review_drops_candles_with_a_non_finite_field(tmp_path):
+    # int() of a text / NaN / inf open time used to raise out of plan_review (and the plan_resolve job)
+    rt = Runtime(
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=str(tmp_path / "bad.sqlite")),
+        transports=make_transports(State()),
+        exchange_factory=_BadCandleEx,
+    )
+    rt.now = lambda: CREATED
+    srv, _ = build_server(rt)
+    try:
+        a = await _call(
+            srv, "plan_add", exchange="binance", symbol="BTC/USDT:USDT", instrument="perp", side="long", entry_type="market",
+            entry=80100.0, stop=79000.0, target=80500.0, expires_ts=_ts(24), verdict="enter",
+        )  # fmt: skip
+        assert a["ok"] is True, a
+        rt.now = lambda: NOW
+        rv = await _call(srv, "plan_review")
+        assert rv["ok"] is True, rv
+        assert rv["data"]["resolved_now"] == [1]  # the same result as on clean candles (test_plan_add_review_roundtrip)
+        (p,) = rv["data"]["recent_resolved"]
+        assert p["outcome"] == "target" and p["exit"] == 80500.0 and p["timeframe"] == "1h"
+        assert any("ccxt:binance BTC/USDT:USDT 1h: 4 candle(s) with an open time that is not a finite number" in w for w in rv["warnings"])
+    finally:
+        await rt.aclose()
+
+
 async def test_no_store_configured():
     rt = Runtime(
         Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=""),

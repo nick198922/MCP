@@ -104,7 +104,7 @@ def outcome_yes(outcome_prices: Any) -> int | None:
         return None
     try:
         a, b = float(v[0]), float(v[1])
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):  # OverflowError: float() of a 300+-digit JSON integer
         return None
     if a == 1.0 and b == 0.0:
         return 1

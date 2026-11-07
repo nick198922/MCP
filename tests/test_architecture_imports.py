@@ -6,8 +6,8 @@
     `runtime.py` import `httpx`, only `providers/exchanges.py` imports `ccxt`.
 (c) `tools/` (the read-only MCP surface) never import `tradedesk.execution`.
 (d) `tools/` and `providers/` never read the wall clock (`time.time(`, `time.time_ns(`, `datetime.now(`,
-    `datetime.utcnow(`, `date.today(`, aliases included): time comes from `rt.now`, so tests with a swapped clock do
-    not depend on the real date.
+    `datetime.utcnow(`, `datetime.today(`, `date.today(`, aliases included): time comes from `rt.now`, so tests with a
+    swapped clock do not depend on the real date.
 
 Existing violations live in ALLOWED with the reason; a new one fails the test, and an ALLOWED entry that no longer
 matches anything fails too, so the list only shrinks.
@@ -110,12 +110,12 @@ def _import_aliases(nodes: list[ast.AST]) -> dict[str, str]:
     return out
 
 
-CLOCK_TAILS = (["datetime", "now"], ["datetime", "utcnow"], ["date", "today"])
+CLOCK_TAILS = (["datetime", "now"], ["datetime", "utcnow"], ["datetime", "today"], ["date", "today"])
 
 
 def clock_calls(nodes: list[ast.AST]) -> list[tuple[int, str]]:
     """(line, callee as written) for wall-clock reads: `time.time(`, `time.time_ns(`, `datetime.now(`,
-    `datetime.utcnow(`, `date.today(`, aliases included (any `*.datetime.now`, `*.date.today`,
+    `datetime.utcnow(`, `datetime.today(`, `date.today(`, aliases included (any `*.datetime.now`, `*.date.today`,
     `import time as t; t.time()`, `from time import time; time()`). Monotonic and perf counters are not clock reads.
     `nodes` = all of the file's `ast.walk`."""
     aliases = _import_aliases(nodes)
@@ -320,6 +320,48 @@ from datetime import date
 def f(rt, s):
     now = rt.now()
     return rt.now().date(), now.date(), date.fromisoformat(s), time.monotonic_ns()
+"""
+    assert violations("tradedesk/tools/ok.py", clean) == []
+    assert violations("tradedesk/providers/ok.py", clean) == []
+
+
+# `datetime.today()` is the naive local server time: it bypasses `rt.now` like `datetime.now()` (item 231).
+# Two sources, because `import datetime` and `from datetime import datetime` bind the same name.
+CLOCK_DT_TODAY_BAD = {
+    """
+import datetime
+import datetime as dt
+
+def f():
+    return datetime.datetime.today(), dt.datetime.today()
+""": {"datetime.datetime.today", "dt.datetime.today"},
+    """
+from datetime import datetime
+from datetime import datetime as D
+
+def f():
+    return datetime.today(), D.today()
+""": {"datetime.today", "D.today"},
+}
+
+
+def test_clock_guard_flags_datetime_today():
+    for src, calls in CLOCK_DT_TODAY_BAD.items():
+        for rel in ("tradedesk/tools/bad.py", "tradedesk/providers/bad.py"):
+            got = {(rule, call) for rule, _, call, _ in violations(rel, src)}
+            assert got == {("clock-call", c) for c in calls}, rel
+        assert violations("tradedesk/core/bad.py", src) == []
+        assert violations("tradedesk/execution/bad.py", src) == []
+
+
+def test_clock_guard_accepts_rt_now_instead_of_datetime_today():
+    clean = """
+import datetime as dt
+from datetime import UTC, datetime
+
+def f(rt, s):
+    now = rt.now()
+    return rt.now(), now.replace(hour=0), datetime.fromisoformat(s), dt.datetime.combine(now.date(), dt.time(), UTC)
 """
     assert violations("tradedesk/tools/ok.py", clean) == []
     assert violations("tradedesk/providers/ok.py", clean) == []

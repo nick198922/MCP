@@ -146,6 +146,7 @@ async def current_funding(rt: Runtime, b: Builder, venue: str, markets: dict[str
         if not meta:
             b.warn(f"{venue}: funding intervals unavailable; 8h shown (interval_source=assumed) where the venue omits it")
     out: dict[str, dict[str, Any]] = {}
+    dropped: list[str] = []
     for sym, x in bulk.items():
         if not sym.endswith("/USDT:USDT") or (x or {}).get("fundingRate") is None:
             continue
@@ -157,11 +158,14 @@ async def current_funding(rt: Runtime, b: Builder, venue: str, markets: dict[str
         source = "venue" if raw_interval else ("default" if meta else "assumed")
         info = ((markets or {}).get(sym) or {}).get("info") or {}
         cap = (m.get("info") or {}).get("adjustedFundingRateCap") or info.get("upperFundingRate")
-        # ccxt hands out numbers: a rate that is not one skips the symbol like a missing rate; a mark, next-funding time
-        # or cap that is not one (the cap is the venue's numeric string) is shown as absent
-        if json_num(x["fundingRate"]) is None:
+        # A rate that is not a finite number (a non-numeric value, NaN, +-inf) drops the symbol and is named in a warning
+        # below; a mark, next-funding time or cap that is not a number (the cap is the venue's numeric string) is shown
+        # as absent
+        try:
+            rate = finite_float(x["fundingRate"])
+        except (TypeError, ValueError):
+            dropped.append(sym)
             continue
-        rate = float(x["fundingRate"])
         caps = parsed_rows([cap] if cap not in (None, "") else [], float)
         out[sym] = {
             "rate": rate,
@@ -172,7 +176,24 @@ async def current_funding(rt: Runtime, b: Builder, venue: str, markets: dict[str
             "mark": float(x["markPrice"]) if json_num(x.get("markPrice")) else None,
             "cap": caps[0] if caps else None,
         }
+    _warn_dropped_current(b, venue, dropped)
     return out
+
+
+def _warn_dropped_current(b: Builder, venue: str, symbols: list[str]) -> None:
+    """Name the symbols whose current funding rate was not a finite number and so were left out."""
+    if symbols:
+        names = ", ".join(symbols[:10]) + (f" and {len(symbols) - 10} more" if len(symbols) > 10 else "")
+        b.warn(f"{venue}: current funding rate not a finite number for {len(symbols)} symbols, left out: {names}")
+
+
+def _finite_rate(b: Builder, label: str, x: Any) -> float | None:
+    """`x` as a finite float; otherwise None and a warning naming `label` (venue and symbol) as left out."""
+    try:
+        return finite_float(x)
+    except (TypeError, ValueError):
+        b.warn(f"{label}: current funding rate not a finite number; this venue is left out of the comparison")
+        return None
 
 
 def hl_symbol(coin: str) -> str:
@@ -190,8 +211,14 @@ async def hl_current_funding(rt: Runtime, b: Builder) -> tuple[dict[str, dict[st
     rows = await b.guard("asset_contexts:hyperliquid", "hyperliquid", rt.hyperliquid.asset_contexts())
     out: dict[str, dict[str, Any]] = {}
     names: dict[str, str] = {}
+    dropped: list[str] = []
     for x in rows or []:
         if x.get("funding_1h") is None:
+            continue
+        try:  # the provider parses HL's numeric strings, so "NaN" / "Infinity" arrive here as floats
+            finite_float(x["funding_1h"])
+        except (TypeError, ValueError):
+            dropped.append(str(x.get("coin")))
             continue
         key = hl_symbol(x["coin"])
         if key in names:  # two HL names for one instrument: ambiguous, drop both
@@ -208,6 +235,7 @@ async def hl_current_funding(rt: Runtime, b: Builder) -> tuple[dict[str, dict[st
             "mark": x["mark_px"],
             "cap": HL_FUNDING_CAP,
         }
+    _warn_dropped_current(b, "hyperliquid", dropped)
     return out, {k: v for k, v in names.items() if v}
 
 
@@ -249,10 +277,12 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 return None
             if fr is None or fr.get("fundingRate") is None:
                 return None
+            rate = _finite_rate(b, f"{ex} {symbol}", fr["fundingRate"])
+            if rate is None:
+                return None
             hours = parse_interval_hours(fr.get("interval"))
             if not fr.get("interval"):
                 b.warn(f"{ex}: funding interval not reported, assumed 8h")
-            rate = float(fr["fundingRate"])
             return {
                 "venue": ex,
                 "rate_per_interval": rate,
@@ -270,6 +300,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 if ctx is not None:
                     b.miss("funding:hyperliquid", "hyperliquid", "data_unavailable", f"{base} not listed")
                 return None
+            if _finite_rate(b, f"hyperliquid {base}", row["funding_1h"]) is None:
+                return None
             return {
                 "venue": "hyperliquid",
                 "rate_per_interval": row["funding_1h"],
@@ -286,7 +318,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
             perp = next((x for x in fut or [] if x.get("instrument_name", "").endswith("PERPETUAL")), None)
             if not perp or json_num(perp.get("funding_8h")) is None:
                 return None
-            rate = float(perp["funding_8h"])
+            rate = _finite_rate(b, f"deribit {perp['instrument_name']}", perp["funding_8h"])
+            if rate is None:
+                return None
             return {
                 "venue": "deribit",
                 "rate_per_interval": rate,

@@ -59,6 +59,13 @@ def test_option_xvenue_num_keeps_only_strictly_positive_finite():
     assert option_xvenue.num(5e-324) == 5e-324  # the smallest positive float is still > 0
 
 
+def test_option_xvenue_num_takes_an_integer_too_large_for_a_float_as_none():
+    # Review 2026-11-07-analytics-direct-tests-15: json.loads turns a 400-digit literal into a Python int and float()
+    # raises OverflowError on it; num catches it like a malformed value instead of raising out of the tool.
+    assert option_xvenue.num(10**400) is None and option_xvenue.num(-(10**400)) is None
+    assert option_xvenue.num(10**300) == 1e300  # still representable: kept
+
+
 # --- expiry_pin.distance --------------------------------------------------------------------------------------------
 
 

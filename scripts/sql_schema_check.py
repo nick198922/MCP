@@ -19,9 +19,11 @@ Categories:
 - ``other error``: any other preparation error (syntax, unknown function, a string that only looks like SQL), information;
 - ``expanded``: an f-string or ``+`` chain whose fragments are all constants (module constants, constants imported
   from another scanned module, loop variables over a constant list/tuple, conditional expressions, ``", ".join(COLS)``,
-  ``COLS.split()``, comprehensions, a ``where`` list filled by ``.append`` (all conditions at once), ``"?" * len(xs)``,
-  a one-``return`` helper called with constants) is expanded into every variant and each variant is checked like a
-  static query (a ``missing`` finding names the variant's line);
+  ``COLS.split()``, comprehensions, a ``where`` list filled by ``.append`` (all conditions at once), a class constant
+  read as ``self.COLS`` (``tuple(...)``, ``[*self.COLS, "x"]``), a column list grown by ``cols += [...]``,
+  ``"?" * len(xs)`` (as many ``?`` as ``len(cols) + k`` when that count is constant, so an ``INSERT`` gets one value
+  per column; once otherwise), a one-``return`` helper called with constants) is expanded into every variant and each
+  variant is checked like a static query (a ``missing`` finding names the variant's line);
 - ``skipped (dynamic)``: the text is built at run time from something arbitrary (parameter, attribute of an object,
   other call result, ``%``, ``.format``, ``{name}``/``%s`` placeholders) and is not checked; listed with the reason and
   the first unresolved expression;
@@ -113,7 +115,8 @@ class _Unresolved(Exception):
 
 
 MAX_VARIANTS = 64
-_MAX_DEPTH = 8
+_MAX_DEPTH = 12
+_MAX_COUNT = 999  # SQLite's default limit of host parameters in one statement
 
 
 def _str_value(v: object) -> str | None:
@@ -149,10 +152,12 @@ class _Resolver:
     (``from m import NAME``, ``m.NAME``), loop variables over a constant list/tuple (also a module-level one; tuple
     targets stay correlated), ``sep.join(seq)`` and ``text.split()`` of constant sequences, comprehensions over a
     constant sequence (the ``if`` filter is ignored: a superset), a list filled by ``.append(...)`` in the function
-    (all appended items at once: a superset, e.g. every ``WHERE`` condition joined), a run of placeholders
-    ``"?" * len(xs)`` (one repetition: the same shape for any n >= 1), a call of a module function or ``self.``
-    method whose body is a single ``return`` with constant arguments. Anything else raises ``_Unresolved`` with the
-    offending expression."""
+    (all appended items at once: a superset, e.g. every ``WHERE`` condition joined), a list grown by ``name += [...]``
+    outside loops (every extension at once), ``self.NAME`` / ``cls.NAME`` bound once in the class body and never
+    assigned on the instance, ``tuple(seq)`` / ``list(seq)`` and ``*seq`` inside a list or tuple, a run of placeholders
+    ``"?" * n`` (n repetitions when n is constants, ``+`` and ``len(<constant sequence>)``; one otherwise: the same
+    shape for any n >= 1), a call of a module function or ``self.`` method whose body is a single ``return`` with
+    constant arguments. Anything else raises ``_Unresolved`` with the offending expression."""
 
     def __init__(
         self,
@@ -223,14 +228,57 @@ class _Resolver:
             return self._other(mod)._global(attr, depth + 1)
         raise _Unresolved(f"name {name}")
 
-    def _values(self, node: ast.expr, scope: Scope) -> list[tuple[_Resolver, ast.expr, Scope]] | None:
-        """Where a name (or ``module.NAME``) is bound: (resolver of its module, expression, its scope); None when
-        ``node`` is neither."""
+    def _values(self, node: ast.expr, scope: Scope, extended: bool = False) -> list[tuple[_Resolver, ast.expr, Scope]] | None:
+        """Where a name (or ``module.NAME``, or ``self.NAME`` of a class constant) is bound: (resolver of its module,
+        expression, its scope); None when ``node`` is neither. ``extended``: a local name grown by ``+=`` is allowed
+        (the caller adds the extensions)."""
         if isinstance(node, ast.Name):
-            return self._lookup(node.id, scope)
+            return self._lookup(node.id, scope, extended)
         if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and (mod := self._module_of(node.value.id)):
             return self._other(mod)._global(node.attr)
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id in {"self", "cls"}:
+            value = self._class_constant(node)
+            return None if value is None else [(self, value, None)]
         return None
+
+    def _class_constant(self, node: ast.Attribute) -> ast.expr | None:
+        """The class-body value of ``self.NAME`` / ``cls.NAME`` in the class around ``node``; None when the class has no
+        such assignment or the name is also assigned on the instance or the class (``self.NAME = ...``)."""
+        cls: ast.AST = node
+        while cls in self.parent and not isinstance(cls, ast.ClassDef):
+            cls = self.parent[cls]
+        if not isinstance(cls, ast.ClassDef):
+            return None
+        for n in ast.walk(cls):
+            if (
+                isinstance(n, ast.Attribute)
+                and isinstance(n.ctx, ast.Store | ast.Del)
+                and n.attr == node.attr
+                and isinstance(n.value, ast.Name)
+                and n.value.id in {"self", "cls"}
+            ):
+                return None
+        found = [
+            s.value
+            for s in cls.body
+            if (isinstance(s, ast.Assign) and len(s.targets) == 1 and isinstance(s.targets[0], ast.Name) and s.targets[0].id == node.attr)
+            or (isinstance(s, ast.AnnAssign) and isinstance(s.target, ast.Name) and s.target.id == node.attr and s.value is not None)
+        ]
+        return found[0] if len(found) == 1 else None
+
+    def _extensions(self, name: str, scope: ast.FunctionDef | ast.AsyncFunctionDef, depth: int) -> list[str]:
+        """The items ``name += [...]`` adds to a list in ``scope`` (every one at once, in source order)."""
+        out: list[str] = []
+        for n in sorted((n for n in ast.walk(scope) if isinstance(n, ast.AugAssign)), key=lambda n: (n.lineno, n.col_offset)):
+            if not (isinstance(n.target, ast.Name) and n.target.id == name):
+                continue
+            if not isinstance(n.op, ast.Add):
+                raise _Unresolved(f"{name} is changed in place")
+            bindings = self._bindings(n, scope)
+            if len(bindings) != 1:
+                raise _Unresolved(f"{name} is extended in a loop")
+            out += self.sequence(n.value, bindings[0], scope, depth + 1)
+        return out
 
     def _appended(self, name: str, scope: ast.FunctionDef | ast.AsyncFunctionDef, depth: int) -> list[str]:
         """Every value ``name.append(...)`` adds to a list in ``scope`` (under the loops around each call)."""
@@ -305,7 +353,7 @@ class _Resolver:
             child = up
         return out
 
-    def _lookup(self, name: str, scope: Scope) -> list[tuple[_Resolver, ast.expr, Scope]]:
+    def _lookup(self, name: str, scope: Scope, extended: bool = False) -> list[tuple[_Resolver, ast.expr, Scope]]:
         if scope is not None:
             a = scope.args
             params = {x.arg for x in [*a.posonlyargs, *a.args, *a.kwonlyargs]} | {x.arg for x in (a.vararg, a.kwarg) if x}
@@ -313,7 +361,7 @@ class _Resolver:
                 raise _Unresolved(f"parameter {name}")
             found: list[tuple[_Resolver, ast.expr, Scope]] = []
             for n in ast.walk(scope):
-                if isinstance(n, ast.AugAssign) and isinstance(n.target, ast.Name) and n.target.id == name:
+                if isinstance(n, ast.AugAssign) and isinstance(n.target, ast.Name) and n.target.id == name and not extended:
                     raise _Unresolved(f"{name} is extended in place")
                 if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == name for t in n.targets):
                     found.append((self, n.value, scope))
@@ -345,7 +393,7 @@ class _Resolver:
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
             return self._product([self.strings(node.left, binding, scope, depth + 1), self.strings(node.right, binding, scope, depth + 1)])
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
-            run = self._placeholder_run(node)
+            run = self._placeholders(node, binding, scope, depth)
             if run is not None:
                 return [run]
         if isinstance(node, ast.IfExp):
@@ -379,12 +427,34 @@ class _Resolver:
             return self.strings(ret, bound, func, depth + 1)
         raise _Unresolved(ast.unparse(node))
 
-    @staticmethod
-    def _placeholder_run(node: ast.BinOp) -> str | None:
-        """``"?" * n`` (either side): the text repeated once when it holds only ``?``, commas and spaces."""
-        for side in (node.left, node.right):
+    def _placeholders(
+        self, node: ast.BinOp, binding: dict[str, str | None], scope: ast.FunctionDef | ast.AsyncFunctionDef | None, depth: int
+    ) -> str | None:
+        """``"?" * n`` (either side), a text of only ``?``, commas and spaces: repeated n times when n is a constant count
+        (``len(seq)`` of a constant sequence, integers, ``+``), so an ``INSERT`` gets as many values as columns; once
+        otherwise (``len(param)``: the same shape for any n >= 1)."""
+        for side, other in ((node.left, node.right), (node.right, node.left)):
             if isinstance(side, ast.Constant) and isinstance(side.value, str) and side.value and set(side.value) <= _PLACEHOLDER_RUN:
-                return side.value
+                n = self._count(other, binding, scope, depth + 1)
+                return side.value * (n if n is not None and 1 <= n <= _MAX_COUNT else 1)
+        return None
+
+    def _count(
+        self, node: ast.expr, binding: dict[str, str | None], scope: ast.FunctionDef | ast.AsyncFunctionDef | None, depth: int
+    ) -> int | None:
+        """The value of an integer expression made of constants, ``+`` and ``len(<constant sequence>)``; None otherwise."""
+        if isinstance(node, ast.Constant) and type(node.value) is int:
+            return node.value
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            a, b = self._count(node.left, binding, scope, depth), self._count(node.right, binding, scope, depth)
+            return None if a is None or b is None else a + b
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "len" and len(node.args) == 1:
+            if node.keywords:
+                return None
+            try:
+                return len(self.sequence(node.args[0], binding, scope, depth + 1))
+            except _Unresolved:
+                return None
         return None
 
     @staticmethod
@@ -405,24 +475,36 @@ class _Resolver:
         if isinstance(node, ast.List | ast.Tuple | ast.Set):
             out = []
             for e in node.elts:
+                if isinstance(e, ast.Starred):  # `[*COLS, "x"]`
+                    out += self.sequence(e.value, binding, scope, depth + 1)
+                    continue
                 alts = self.strings(e, binding, scope, depth + 1)
                 if len(alts) != 1:
                     raise _Unresolved("element with several values")
                 out.append(alts[0])
             return out
-        vals = self._values(node, scope)
+        vals = self._values(node, scope, extended=True)
         if vals is not None:
             if len(vals) != 1:
                 raise _Unresolved(f"{ast.unparse(node)} is assigned several times")
             r, value, sc = vals[0]
             items = r.sequence(value, binding if r is self else {}, sc, depth + 1)
             if r is self and sc is not None and isinstance(node, ast.Name):
+                items += self._extensions(node.id, sc, depth)
                 items += self._appended(node.id, sc, depth)
             return items
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
-            run = self._placeholder_run(node)
+            run = self._placeholders(node, binding, scope, depth)
             if run is not None:
-                return list(run)  # `",".join("?" * n)`: the characters of one repetition
+                return list(run)  # `",".join("?" * n)`: the characters of n repetitions (of one when n is unknown)
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in {"tuple", "list"}
+            and len(node.args) == 1
+            and not node.keywords
+        ):
+            return self.sequence(node.args[0], binding, scope, depth + 1)
         if isinstance(node, ast.ListComp | ast.GeneratorExp) and len(node.generators) == 1:
             gen = node.generators[0]
             if isinstance(gen.target, ast.Name):  # the `if` filter is ignored: a superset

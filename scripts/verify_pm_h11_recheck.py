@@ -18,10 +18,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import importlib.util
 import json
 import statistics
-import sys
 import time
 from bisect import bisect_left, bisect_right
 from collections import Counter, defaultdict
@@ -30,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
+import verify_pm_threshold as vt  # stage functions, ASSETS (item 5)
 
 from tradedesk.analytics import pm_modules as pm
 from tradedesk.analytics.pm_threshold import HOUR_S, quote_at, value_at
@@ -43,18 +42,6 @@ OFF_H = 12
 # pre-registered power gate (item 8f): reference SE of the same filter in item 5 (q in [0.05, 0.95], sigma ratio <= 3)
 SE_REF, N_REF, TARGET, MIN_WEEKS = 0.0264, 737, 0.06, 20
 LO, HI, MIN_N, RATIO = 0.05, 0.95, 2, 3.0
-
-
-def _load_vt():  # noqa: ANN202
-    p = Path(__file__).with_name("verify_pm_threshold.py")
-    spec = importlib.util.spec_from_file_location("verify_pm_threshold", p)
-    mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
-    sys.modules["verify_pm_threshold"] = mod
-    spec.loader.exec_module(mod)  # type: ignore[union-attr]
-    return mod
-
-
-vt = _load_vt()
 
 
 def week_of(ts: int) -> str:

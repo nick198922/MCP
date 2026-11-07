@@ -12,7 +12,7 @@ from typing import Annotated, Any
 from mcp.server.mcpserver import MCPServer
 from pydantic import Field
 
-from ..analytics.backtest import _normalise_bars, run_backtest, signals_momentum
+from ..analytics.backtest import normalise_bars, run_backtest, signals_momentum
 from ..core.envelope import Builder
 from ..runtime import Runtime
 from ._util import READ_ONLY, r, timeframe_seconds
@@ -55,12 +55,13 @@ def register(server: MCPServer, rt: Runtime) -> None:
             b.miss("timeframe", "tradedesk", "config", str(e))
             return b.build(None, ok=False)
         bars = await b.guard(f"ohlcv:{exchange}", f"ccxt:{exchange}", rt.exchanges.ohlcv(exchange, symbol, timeframe, limit))
-        if not bars or len(bars) < max(lookback + 5, 50):
-            b.miss("ohlcv", f"ccxt:{exchange}", "data_unavailable", f"only {0 if not bars else len(bars)} bars available")
-            return b.build(None, ok=False)
-        dropped = len(bars) - len(_normalise_bars(bars))
+        usable = len(normalise_bars(bars)) if bars else 0
+        dropped = len(bars) - usable if bars else 0
         if dropped:  # a dropped inner bar merges its two neighbours into one return
             b.warn(f"{dropped} malformed bars (non-numeric fields) dropped; returns across those gaps span two bars")
+        if usable < max(lookback + 5, 50):  # the minimum counts the bars left after the malformed ones are dropped
+            b.miss("ohlcv", f"ccxt:{exchange}", "data_unavailable", f"only {usable} usable bars available")
+            return b.build(None, ok=False)
         positions = signals_momentum(bars, lookback=lookback, threshold_pct=threshold_pct)
         bars_per_year = (365 * 24 * 3600) / tf_sec
         res = run_backtest(
@@ -88,7 +89,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "exchange": exchange,
             "symbol": symbol,
             "timeframe": timeframe,
-            "bars_used": len(bars),
+            "bars_used": usable,
             "params": {
                 "lookback": lookback,
                 "threshold_pct": threshold_pct,

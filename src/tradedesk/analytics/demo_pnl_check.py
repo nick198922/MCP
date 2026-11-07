@@ -31,19 +31,31 @@ def _num(x: object) -> float | None:
     return float(x)
 
 
+def _entry(row: Mapping[str, Any]) -> float | None:
+    """The average fill or, without one, the planned entry price."""
+    fill = _num(row.get("fill"))
+    return fill if fill is not None else _num(row.get("entry"))
+
+
 def expected_pnl(row: Mapping[str, Any]) -> float | None:
     """``sign · (exit − entry) · qty − fees_usd`` (USD) of one closed row; None when a needed field is missing."""
     sign = SIGN.get(row.get("side"))  # type: ignore[arg-type]
-    entry = _num(row.get("fill"))
-    entry = entry if entry is not None else _num(row.get("entry"))
-    exit_, qty = _num(row.get("exit")), _num(row.get("qty"))
+    entry, exit_, qty = _entry(row), _num(row.get("exit")), _num(row.get("qty"))
     if sign is None or entry is None or exit_ is None or qty is None:
         return None
     return sign * (exit_ - entry) * qty - (_num(row.get("fees_usd")) or 0.0)
 
 
-def _checkable(row: Mapping[str, Any]) -> bool:
-    return row.get("status") == "closed" and _num(row.get("pnl_usd")) is not None and expected_pnl(row) is not None
+def _checked(row: Mapping[str, Any]) -> tuple[float, float, float] | None:
+    """``(recorded, expected, notional)`` in USD of a ``closed`` row the check can judge; None for any other row.
+    The one place that decides which rows are checked: :func:`pnl_mismatches` and :func:`unchecked` both use it."""
+    if row.get("status") != "closed":
+        return None
+    recorded, expected = _num(row.get("pnl_usd")), expected_pnl(row)
+    entry, qty = _entry(row), _num(row.get("qty"))
+    if recorded is None or expected is None or entry is None or qty is None:  # expected set implies entry and qty set
+        return None
+    return recorded, expected, abs(entry * qty)
 
 
 def pnl_mismatches(rows: Iterable[Mapping[str, Any]], tol_frac: float = TOL_FRAC, tol_usd: float = TOL_USD) -> list[dict[str, Any]]:
@@ -52,12 +64,10 @@ def pnl_mismatches(rows: Iterable[Mapping[str, Any]], tol_frac: float = TOL_FRAC
     ``gap`` (recorded − expected, USD), ``tol`` (USD)."""
     out: list[dict[str, Any]] = []
     for r in rows:
-        if not _checkable(r):
+        checked = _checked(r)
+        if checked is None:
             continue
-        recorded, expected = _num(r.get("pnl_usd")), expected_pnl(r)
-        entry = _num(r.get("fill"))
-        entry = entry if entry is not None else _num(r.get("entry"))
-        notional = abs(entry * _num(r.get("qty")))  # type: ignore[operator]  # _checkable guarantees both are numbers
+        recorded, expected, notional = checked
         tol = max(tol_frac * notional, tol_usd)
         gap = recorded - expected
         if abs(gap) > tol:
@@ -72,4 +82,4 @@ def pnl_mismatches(rows: Iterable[Mapping[str, Any]], tol_frac: float = TOL_FRAC
 
 def unchecked(rows: Iterable[Mapping[str, Any]]) -> int:
     """How many ``closed`` rows lack a field the check needs (P&L, exit, qty, an entry price, a known side)."""
-    return sum(1 for r in rows if r.get("status") == "closed" and not _checkable(r))
+    return sum(1 for r in rows if r.get("status") == "closed" and _checked(r) is None)

@@ -92,6 +92,20 @@ def _warn_short_coverage(b: Builder, venue: str, entries: list[dict[str, Any]], 
         b.warn(f"{venue} funding history starts {_iso(first)[:10]}, later than requested (venue retention or listing date)")
 
 
+def _funding_entries(b: Builder, label: str, rows: Any, ts_key: str) -> list[dict[str, Any]]:
+    """[{ts_ms, rate}] of the funding-history rows that carry a rate and a timestamp. A row whose rate or timestamp is
+    not a finite number (a non-numeric string, NaN, +-inf) is dropped, and the drop is named in a warning with `label`
+    (venue and symbol), so a hole in the series is visible. Rows without a rate or timestamp are skipped silently."""
+    kept = [x for x in rows or [] if isinstance(x, dict) and x.get("fundingRate") is not None and x.get(ts_key)]
+    entries = parsed_rows(kept, lambda x: {"ts_ms": int(x[ts_key]), "rate": finite_float(x["fundingRate"])})
+    if len(entries) < len(kept):
+        b.warn(
+            f"{label}: {len(kept) - len(entries)} funding rows dropped (rate or timestamp not a finite number); "
+            "the stats use the remaining rows"
+        )
+    return entries
+
+
 def _warn_partial(b: Builder) -> None:
     """Call only when some venue returned data: name the providers that are only in `missing` (a partial comparison)."""
     names = list(dict.fromkeys(m.provider.removeprefix("ccxt:") for m in b.missing))
@@ -351,10 +365,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
                     f"{ex} funding history incomplete (page limit, a later page failed, or rows with a malformed timestamp "
                     "dropped); the series may have holes"
                 )
-            entries = parsed_rows(
-                [x for x in got["rows"] if x.get("fundingRate") is not None and x.get("timestamp")],
-                lambda x: {"ts_ms": int(x["timestamp"]), "rate": finite_float(x["fundingRate"])},
-            )
+            entries = _funding_entries(b, f"{ex} {symbol}", got["rows"], "timestamp")
             if not entries:
                 return None
             _warn_short_coverage(b, ex, entries, since_ms)
@@ -370,10 +381,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 return None
             if not got["complete"]:
                 b.warn("hyperliquid funding history incomplete (page limit, a later page failed, or rows with a malformed time dropped)")
-            entries = parsed_rows(
-                [x for x in got["rows"] if x.get("fundingRate") is not None and x.get("time")],
-                lambda x: {"ts_ms": int(x["time"]), "rate": finite_float(x["fundingRate"])},
-            )
+            entries = _funding_entries(b, f"hyperliquid {hl_base}", got["rows"], "time")
             if not entries:
                 return None
             _warn_short_coverage(b, "hyperliquid", entries, since_ms)
@@ -513,10 +521,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
                     f"{venue} {sym}: funding history incomplete (page limit, a later page failed, or rows with a malformed timestamp "
                     "dropped); its trailing APR may be wrong, so it is flagged incomplete_history and left out of above_entry_with_spot"
                 )
-            entries = parsed_rows(
-                [x for x in (got["rows"] if got else []) if x.get("fundingRate") is not None and x.get("timestamp")],
-                lambda x: {"ts_ms": int(x["timestamp"]), "rate": finite_float(x["fundingRate"])},
-            )
+            entries = _funding_entries(b, f"{venue} {sym}", got["rows"] if got else [], "timestamp")
             cur = current.get(sym)
             if not entries and not cur:
                 return None
@@ -657,19 +662,13 @@ def register(server: MCPServer, rt: Runtime) -> None:
                     got = await b.guard(
                         f"funding_history:{v}:{sym}", "hyperliquid", rt.hyperliquid.funding_history_range(coin, since_ms, now_ms)
                     )
-                entries = parsed_rows(
-                    [x for x in (got["rows"] if got else []) if x.get("fundingRate") is not None and x.get("time")],
-                    lambda x: {"ts_ms": int(x["time"]), "rate": finite_float(x["fundingRate"])},
-                )
+                entries = _funding_entries(b, f"{v} {sym}", got["rows"] if got else [], "time")
             else:
                 async with sem:
                     got = await b.guard(
                         f"funding_history:{v}:{sym}", f"ccxt:{v}", rt.exchanges.funding_rate_history_range(v, sym, since_ms, now_ms)
                     )
-                entries = parsed_rows(
-                    [x for x in (got["rows"] if got else []) if x.get("fundingRate") is not None and x.get("timestamp")],
-                    lambda x: {"ts_ms": int(x["timestamp"]), "rate": finite_float(x["fundingRate"])},
-                )
+                entries = _funding_entries(b, f"{v} {sym}", got["rows"] if got else [], "timestamp")
             if not entries and cur is None:
                 return None
             incomplete = bool(got) and got.get("complete") is False
@@ -1226,8 +1225,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
             return b.build(None, ok=False)
         if not got["complete"]:
             b.warn("funding history incomplete (page limit, a later page failed, or rows with a malformed time dropped)")
-        # a row whose time or rate is missing, not a number or not finite (NaN / inf) is dropped
-        entries = parsed_rows(got["rows"], lambda e: {"ts_ms": int(e["time"]), "rate": finite_float(e["fundingRate"])})
+        # a row whose time or rate is missing is skipped; one whose time or rate is not a finite number is dropped with a warning
+        entries = _funding_entries(b, f"hyperliquid {coin}", got["rows"], "time")
         if not entries:
             b.miss("funding_history", "hyperliquid", "data_unavailable", "no parsable entries")
             return b.build(None, ok=False)

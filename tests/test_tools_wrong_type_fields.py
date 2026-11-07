@@ -27,10 +27,13 @@ does a failure whose key does not match the entry's pattern.
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 import math
 import re
+import shutil
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
@@ -101,12 +104,15 @@ def is_cached(field: str) -> bool:
     return is_key(field) or bool(CCXT_MARKETS.match(field))
 
 
-def numeric_fields(tree: Any, prefix: str = "") -> list[tuple[str, list]]:
+def numeric_fields(tree: Any, prefix: str = "", only: str | None = None) -> list[tuple[str, list]]:
     """(field name, concrete path) of every numeric leaf and every cache-key string (is_key), in document order; the
-    name folds list indices to [*]."""
+    name folds list indices to [*]. `only`: just the leaves named so; a node's name is a prefix of every name below it,
+    so a subtree whose name is not a prefix of `only` is skipped (the same result, without walking a whole body)."""
     out: list[tuple[str, list]] = []
 
     def walk(node: Any, name: str, path: list) -> None:
+        if only is not None and not only.startswith(name):
+            return
         if isinstance(node, dict):
             for k, v in node.items():
                 walk(v, f"{name}.{k}", [*path, k])
@@ -124,7 +130,7 @@ def numeric_fields(tree: Any, prefix: str = "") -> list[tuple[str, list]]:
 def break_field(tree: Any, prefix: str, field: str, value: Any, where: str = "first") -> bool:
     """Set one leaf named `field` to `value` (a fresh copy): the first, the second or the last one in document order.
     True when the tree had it (`second` needs two)."""
-    paths = [path for name, path in numeric_fields(tree, prefix) if name == field]
+    paths = [path for name, path in numeric_fields(tree, prefix, only=field) if name == field]
     if len(paths) <= max(WHERE[where], 0):
         return False
     node = tree
@@ -160,7 +166,8 @@ class Mutator:
         self.target: tuple[str, Any, str] | None = None  # (field, value, where)
         self.hits = 0
 
-    def apply(self, tree: Any, prefix: str) -> Any:
+    def apply(self, tree: Any, prefix: str, fresh: bool = False) -> Any:
+        """`fresh`: the tree is this call's own object (a body just parsed), so it is broken in place, not copied."""
         if self.seen is not None:
             counts: dict[str, int] = {}
             for name, _ in numeric_fields(tree, prefix):
@@ -170,7 +177,7 @@ class Mutator:
         if self.target is not None:
             field, value, where = self.target
             if field.startswith(prefix + ".") or field.startswith(prefix + "["):
-                tree = copy.deepcopy(tree)
+                tree = tree if fresh else copy.deepcopy(tree)
                 self.hits += break_field(tree, prefix, field, value, where)
         return tree
 
@@ -190,7 +197,7 @@ class _MutatingTransport(httpx.AsyncBaseTransport):
             except ValueError:
                 pass
             else:
-                tree = self._m.apply(tree, f"http:{request.url.host}{request.url.path}")
+                tree = self._m.apply(tree, f"http:{request.url.host}{request.url.path}", fresh=True)
                 body = json.dumps(tree).encode()
         return httpx.Response(resp.status_code, headers=headers, content=body)
 
@@ -234,6 +241,31 @@ def _runtime(tmp_path, mutator: Mutator, cache_scale: float = 0.0, db: str = "wr
     return rt
 
 
+@pytest.fixture(scope="module")
+def seeded_db(tmp_path_factory) -> Path:
+    """The store _seed_store builds, migrated and seeded once per module (worker): a new file's migrations cost ~0.14 s
+    and the cold test needs up to 13 runtimes per tool. Each runtime starts from its own copy of this file."""
+    directory = tmp_path_factory.mktemp("seeded")
+
+    async def make() -> None:
+        rt = _runtime(directory, Mutator(), db="seeded")
+        await _seed_store(rt)
+        await rt.store.aclose()
+
+    asyncio.run(make())
+    path = directory / "seeded.sqlite"
+    assert not path.with_name(path.name + "-wal").exists(), "the WAL was not checkpointed into the file on close"
+    return path
+
+
+async def _seeded_runtime(tmp_path, mutator: Mutator, seeded: Path, cache_scale: float = 0.0, db: str = "wrong_type") -> Runtime:
+    """_runtime on a fresh copy of the seeded store (the same rows _seed_store inserts, the same schema)."""
+    shutil.copyfile(seeded, tmp_path / f"{db}.sqlite")
+    rt = _runtime(tmp_path, mutator, cache_scale=cache_scale, db=db)
+    await rt.store.init()
+    return rt
+
+
 def _failure(res) -> str | None:
     """None when the answer is the envelope; otherwise what is wrong with it."""
     if res.is_error:
@@ -244,11 +276,10 @@ def _failure(res) -> str | None:
     return None
 
 
-async def run_tool(tmp_path, name: str) -> dict[str, Any]:
+async def run_tool(tmp_path, name: str, seeded: Path) -> dict[str, Any]:
     """The clean call plus every picked mutation of one tool; returns the counts and the failures by mutation."""
     m = Mutator()
-    rt = _runtime(tmp_path, m)
-    await _seed_store(rt)
+    rt = await _seeded_runtime(tmp_path, m, seeded)
     srv, _ = build_server(rt)
     report: dict[str, Any] = {"mutations": 0, "hits": 0, "failures": {}}
     async with Client(srv) as c:
@@ -271,10 +302,10 @@ async def run_tool(tmp_path, name: str) -> dict[str, Any]:
     return report
 
 
-async def _cold_calls(tmp_path, name: str, m: Mutator, db: str, calls: int) -> list[str]:
-    """A fresh runtime with the TTL caches on and an empty store, `calls` calls of the tool; the failures."""
-    rt = _runtime(tmp_path, m, cache_scale=1.0, db=db)
-    await _seed_store(rt)
+async def _cold_calls(tmp_path, name: str, m: Mutator, db: str, calls: int, seeded: Path) -> list[str]:
+    """A fresh runtime with the TTL caches on and a fresh copy of the seeded store, `calls` calls of the tool; the
+    failures."""
+    rt = await _seeded_runtime(tmp_path, m, seeded, cache_scale=1.0, db=db)
     srv, _ = build_server(rt)
     out = []
     async with Client(srv) as c:
@@ -284,17 +315,17 @@ async def _cold_calls(tmp_path, name: str, m: Mutator, db: str, calls: int) -> l
     return out
 
 
-async def run_tool_cold(tmp_path, name: str) -> dict[str, Any]:
+async def run_tool_cold(tmp_path, name: str, seeded: Path) -> dict[str, Any]:
     """The cached fields one cold call reads, then per picked mutation a fresh runtime whose caches fill with it."""
     m = Mutator()
     m.seen = {}
     report: dict[str, Any] = {"mutations": 0, "hits": 0, "failures": {}}
-    if errs := await _cold_calls(tmp_path, name, m, "cold_clean", 1):
+    if errs := await _cold_calls(tmp_path, name, m, "cold_clean", 1, seeded):
         report["failures"]["clean"] = errs[0]
     triples, m.seen = mutations(m.seen, keep=is_cached, cap=MAX_COLD), None
     for i, (field, kind, where) in enumerate(triples):
         m.target, m.hits = (field, KINDS[kind], where), 0
-        errs = await _cold_calls(tmp_path, name, m, f"cold_{i}", 2)  # the second call answers from the filled cache
+        errs = await _cold_calls(tmp_path, name, m, f"cold_{i}", 2, seeded)  # the second call answers from the filled cache
         report["mutations"] += 1
         report["hits"] += bool(m.hits)
         if errs:
@@ -303,8 +334,8 @@ async def run_tool_cold(tmp_path, name: str) -> dict[str, Any]:
 
 
 @pytest.mark.parametrize("name", sorted(EXPECTED_TOOLS - set(SKIP)))
-async def test_no_tool_raises_on_a_wrong_type_field(tmp_path, name):
-    report = await run_tool(tmp_path, name)
+async def test_no_tool_raises_on_a_wrong_type_field(tmp_path, name, seeded_db):
+    report = await run_tool(tmp_path, name, seeded_db)
     assert report["hits"] == report["mutations"], "a picked field was not found again: the fakes are not deterministic"
     assert (report["mutations"] == 0) == (name in NO_NETWORK or name in NO_FIELDS), f"update NO_FIELDS: {report['mutations']} mutations"
     if name in KNOWN:
@@ -315,8 +346,8 @@ async def test_no_tool_raises_on_a_wrong_type_field(tmp_path, name):
 
 
 @pytest.mark.parametrize("name", sorted(EXPECTED_TOOLS - set(SKIP) - NO_NETWORK))
-async def test_no_tool_raises_on_a_bad_value_in_a_cold_cache(tmp_path, name):
-    report = await run_tool_cold(tmp_path, name)
+async def test_no_tool_raises_on_a_bad_value_in_a_cold_cache(tmp_path, name, seeded_db):
+    report = await run_tool_cold(tmp_path, name, seeded_db)
     assert report["hits"] == report["mutations"], "a picked field was not found again: the fakes are not deterministic"
     if name in KNOWN_COLD:
         assert report["failures"], f"{name} is fixed: remove it from KNOWN_COLD and BACKLOG 6.41"
@@ -325,9 +356,10 @@ async def test_no_tool_raises_on_a_bad_value_in_a_cold_cache(tmp_path, name):
         assert report["failures"] == {}, f"{name}: fix it (type check / Builder.guard) or list it in KNOWN_COLD"
 
 
-async def test_the_cold_check_reaches_both_caches(tmp_path):
+async def test_the_cold_check_reaches_both_caches(tmp_path, seeded_db):
     """Self-check: the coin map and ccxt markets are both broken by the cold test, so a green run covers them."""
-    hl, ccxt_ = await run_tool_cold(tmp_path, "hyperliquid_trades"), await run_tool_cold(tmp_path, "market_markets")
+    hl = await run_tool_cold(tmp_path, "hyperliquid_trades", seeded_db)
+    ccxt_ = await run_tool_cold(tmp_path, "market_markets", seeded_db)
     assert hl["mutations"] >= 2 and ccxt_["mutations"] >= 2
 
 
@@ -362,6 +394,8 @@ def test_numeric_fields_and_break_field():
         t = copy.deepcopy(tree)
         assert break_field(t, "x", "x.result[*].p", [], where)
         assert [r["p"] for r in t["result"]] == [[] if j == i % 3 else r["p"] for j, r in enumerate(tree["result"])]
+    for name in {*names, "x.nope", "x.result", "x.result[*]"}:  # `only` gives exactly the unfiltered leaves of that name
+        assert numeric_fields(tree, "x", only=name) == [(n, p) for n, p in numeric_fields(tree, "x") if n == name]
     assert not break_field(tree, "x", "x.nope", None)
     assert not break_field({"bar": [1]}, "x", "x.bar[0]", None, "second")
     universe = {"universe": [{"name": "BTC", "szDecimals": 3}]}

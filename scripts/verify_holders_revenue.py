@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any
 
 import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
+import verify_paper_carry_bench as pcb  # funding_gap: the paper bench rule for a hole in a holding window
 
 from tradedesk.analytics.funding_spread import cluster_bootstrap_diff, normalize_asset
 from tradedesk.analytics.holders_revenue import (
@@ -673,6 +674,8 @@ class Data:
         self.checks: list[str] = []
         self.revenue: dict[str, dict[int, float]] = {}
         self.funding: dict[tuple[str, str], list[tuple[int, float]] | None] = {}
+        self.funding_ms: dict[tuple[str, str], list[dict[str, int]]] = {}
+        self.gaps: dict[tuple[str, str, int, int], bool] = {}
         for key, t in sorted(self.tab["tokens"].items()):
             ck = coin_key(t)
             ok = []
@@ -716,6 +719,26 @@ class Data:
             self.funding[(v, n)] = [(int(a), float(b)) for a, b in cmn.read_json(p)["rows"]] if p.exists() else None
         return self.funding[(v, n)]
 
+    def funding_gap(self, v: str, n: str, lo_s: int, hi_s: int, *, perp_ended: bool = False) -> bool:
+        """True when the leg's cached funding misses a payment inside (lo_s, hi_s] (unix seconds, the window
+        ``funding_sum`` sums over), by the paper bench rule (``verify_paper_carry_bench.funding_gap``, 12 h floor).
+
+        Item 208 of IDEA-20261102-standing-improvements: ``complete=true`` caches can still have holes. A missing file
+        is not a hole here (it is ``funding_missing``); an empty one is. When the perp ended inside the window
+        (``perp_ended``), the window stops at its last payment: funding stopping at a delisting is not a hole. The
+        observation keeps its funding sum as is (nothing is filled in); it is only tagged."""
+        rows = self.fund(v, n)
+        if rows is None:
+            return False
+        if perp_ended and rows:
+            hi_s = min(hi_s, rows[-1][0])
+        key = (v, n, lo_s, hi_s)
+        if key not in self.gaps:
+            if (v, n) not in self.funding_ms:
+                self.funding_ms[(v, n)] = [{"ts_ms": t * 1000} for t, _ in rows]
+            self.gaps[key] = pcb.funding_gap(self.funding_ms[(v, n)], lo_s * 1000, hi_s * 1000, pcb.GAP_FLOOR_MS)
+        return self.gaps[key]
+
 
 @dataclass
 class Obs:
@@ -730,6 +753,7 @@ class Obs:
     truncated: bool
     funding_missing: bool
     mae: float | None
+    perp_ended: bool = False  # the perp's last bar is the (early) exit: the funding window stops at its last payment
 
 
 def observe(data: Data, key: str, entry: int, horizon: int, *, need_funding: set[tuple[str, str]] | None = None) -> Obs | None:
@@ -755,12 +779,22 @@ def observe(data: Data, key: str, entry: int, horizon: int, *, need_funding: set
     v_pri = sum(bars.vol.get(d, 0.0) for d in range(entry - 59, entry - 29))
     volchg = math.log(v_cur / v_pri) if v_cur > 0 and v_pri > 0 and entry - 59 >= (bars.first or entry) else None
     mae = max_adverse_short(bars.high, bars.close[entry], entry, exit_)
-    return Obs(key, entry, exit_, v, n, LegResult(b, ar, f, SIDE_COST[v]), r30, volchg, exit_ < entry + horizon, fr is None, mae)
+    ended = exit_ < entry + horizon and exit_ == bars.last
+    return Obs(key, entry, exit_, v, n, LegResult(b, ar, f, SIDE_COST[v]), r30, volchg, exit_ < entry + horizon, fr is None, mae, ended)
+
+
+def leg_gap(data: Data, o: Obs) -> bool:
+    """Funding hole inside the observation's window (asked only for the legs a row uses: the pool is large)."""
+    return data.funding_gap(o.venue, o.name, (o.entry + 1) * DAY_S, (o.exit + 1) * DAY_S, perp_ended=o.perp_ended)
 
 
 def btc_fund(data: Data, entry: int, exit_: int) -> float:
     fr = data.fund(BIN, "BTC")
     return funding_sum(fr, (entry + 1) * DAY_S, (exit_ + 1) * DAY_S) if fr else 0.0
+
+
+def btc_gap(data: Data, entry: int, exit_: int) -> bool:
+    return data.funding_gap(BIN, "BTC", (entry + 1) * DAY_S, (exit_ + 1) * DAY_S)
 
 
 def events_for(data: Data, rule: DropRule) -> dict[str, list[RevenueEvent]]:
@@ -792,6 +826,7 @@ class Row:
     cost: float
     net_nh: float  # short the token outright, no hedge
     dbeta: float  # beta_event - mean beta of the controls
+    funding_gap: bool = False  # funding hole in the window of a leg ``net`` uses: event token, a control, BTC
 
 
 def evaluate(
@@ -847,10 +882,11 @@ def evaluate(
         cost = gross - net + o.leg.funding - statistics.fmean(pool[c].leg.funding for c in ctrl) - dbeta * bf
         r_btc = simple_return(data.btc.close, entry, o.exit) or 0.0
         net_nh = -(o.leg.ar + o.leg.beta * r_btc) - 2 * o.leg.side_cost * cost_mult + o.leg.funding
+        fgap = leg_gap(data, o) or any(leg_gap(data, pool[c]) for c in ctrl) or btc_gap(data, entry, o.exit)
         rows.append(
             Row(
                 key, entry, ev.signal_day if ev else entry - 1, ev.ratio if ev else float("nan"), ev.prior if ev else float("nan"),
-                gross, net, g_nc, n_nc, net2, ctrl, o, cost, net_nh, dbeta,
+                gross, net, g_nc, n_nc, net2, ctrl, o, cost, net_nh, dbeta, fgap,
             )
         )  # fmt: skip
     return rows
@@ -931,6 +967,12 @@ def report(cache: Path) -> None:
     )
     print("H1  net, momentum control : " + fmt(summarize(rows, "net")))
     print("    gross, momentum control: " + fmt(summarize(rows, "gross")))
+    n_gap = sum(r.funding_gap for r in rows)
+    print(
+        f"    funding gap inside the window (paper bench rule, 12 h floor; tagged, not filled): {n_gap} of {len(rows)} events "
+        f"(event leg {sum(leg_gap(data, r.obs) for r in rows)}, BTC {sum(btc_gap(data, r.entry, r.obs.exit) for r in rows)}, "
+        f"rest a control leg)" + (f"; net without them: {fmt(summarize([r for r in rows if not r.funding_gap]))}" if n_gap else "")
+    )
     print("    net, control-2 (ret30 + volume change ranks): " + fmt(summarize(rows, "net2")))
     print("    net, no control (short vs beta BTC): " + fmt(summarize(rows, "net_nc")))
     print("    gross, no control: " + fmt(summarize(rows, "gross_nc")))
@@ -942,6 +984,7 @@ def report(cache: Path) -> None:
     pd = placebo_dates(data, evs)
     prow = evaluate(data, evs, dates=pd)
     print("\nplacebo (same tokens, non-overlapping dates): " + fmt(summarize(prow, "net")))
+    print(f"   placebo rows with a funding gap: {sum(r.funding_gap for r in prow)} of {len(prow)}")
     print("placebo, no control (diagnostic, not pre-registered): " + fmt(summarize(prow, "net_nc")))
     ids = {k: i for i, k in enumerate(sorted({r.token for r in rows + prow}))}
     diff = cluster_bootstrap_diff([r.net for r in rows], [ids[r.token] for r in rows], [r.net for r in prow], [ids[r.token] for r in prow])
@@ -1007,15 +1050,27 @@ def report(cache: Path) -> None:
             f"  {ymd(r.signal)} {r.token:<30} {r.obs.venue}:{r.obs.name:<10} ratio {r.ratio:.2f} prior {r.prior:>12,.0f} "
             f"net {r.net * 100:+6.1f}pp AR_e {r.obs.leg.ar * 100:+6.1f} ret30 {r.obs.ret30 * 100:+6.1f} controls {','.join(c.split('|')[0] for c in r.controls)}"
         )
-    print("\n## All events\n")
+    print("\n## All events (T truncated exit, G funding gap in the window)\n")
     for r in rows:
         print(
             f"  {ymd(r.signal)} {r.token.split('|')[0]:<9} {r.obs.venue[:3]} ratio {r.ratio:.2f} beta {r.obs.leg.beta:+.2f} AR {r.obs.leg.ar * 100:+6.1f} "
             f"ret30 {r.obs.ret30 * 100:+6.1f} gross {r.gross * 100:+6.1f} net {r.net * 100:+6.1f} nc {r.net_nc * 100:+6.1f}{' T' if r.obs.truncated else ''}"
+            f"{' G' if r.funding_gap else ''}"
         )
     wr(
         cache / "rows_main.json",
-        [{"token": r.token, "signal": r.signal, "entry": r.entry, "net": r.net, "gross": r.gross, "net_nc": r.net_nc} for r in rows],
+        [
+            {
+                "token": r.token,
+                "signal": r.signal,
+                "entry": r.entry,
+                "net": r.net,
+                "gross": r.gross,
+                "net_nc": r.net_nc,
+                "funding_gap": r.funding_gap,
+            }
+            for r in rows
+        ],
     )
 
 

@@ -66,7 +66,7 @@ from ..analytics.course_s14_ema import Bars
 from ..analytics.setup_signals import TF_MS, LiveSignal, Score, closed_bars, scan, score
 from ..analytics.setup_versions import version_of
 from ..store import Store
-from .bybit_demo import CROSS, BybitDemo, OptionInstrument, is_refusal, load_keys
+from .bybit_demo import CLOSED_PNL_WINDOW_MS, CROSS, BybitDemo, OptionInstrument, is_refusal, load_keys
 from .guard import (
     BE_PATH,
     DEFAULT,
@@ -159,6 +159,9 @@ def hold_ms(setup: str | None, timeframe: str | None) -> int:
 
 MIN_SCORE = 2
 UNKNOWN_GRACE_MS = 10 * 60_000  # an 'unknown' order the venue still does not know after this is rejected
+FILL_LAG_MS = 20 * 60_000  # a fill may precede opened_ts (the cycle that saw it) by about a cycle
+ORPHAN_MS = 86_400_000  # no position and no close on the venue for this long after the fill -> 'orphaned' + alert
+CLOSED_PNL_MAX_WINDOWS = 60  # how far back the close is looked for, in Bybit's 7-day windows (about 14 months)
 SHADOW_EXCHANGE = "bybit"  # ccxt id the collector resolves the shadow plans on
 HOUR_MS = 3_600_000
 BTC = "BTC/USDT:USDT"
@@ -511,8 +514,10 @@ async def _sync_trade(ctx: Ctx, t: dict[str, Any], positions: dict[str, Any]) ->
         return
     m = await ctx.client.market(sym)
     opened = t["opened_ts"] or ctx.now
-    rows = [r for r in await ctx.client.closed_pnl(m.market_id, opened - 60_000, ctx.now) if int(r.get("updatedTime") or 0) >= opened]
+    rows = [r for r in await _closed_rows(ctx, m.market_id, opened - FILL_LAG_MS) if _closes_this(t, r, opened)]
     if not rows:
+        if ctx.now - opened > ORPHAN_MS:
+            await _orphan(ctx, t)
         return  # the venue has not reported the close yet
     pnl = sum(float(r.get("closedPnl") or 0) for r in rows)
     fee_rows = [r for r in rows if r.get("openFee") is not None or r.get("closeFee") is not None]
@@ -564,6 +569,46 @@ async def _sync_trade(ctx: Ctx, t: dict[str, Any], positions: dict[str, Any]) ->
             f"(вхід {_fmt(t['fill'] or t['entry'])}, вихід {_fmt(exit_px)}"
             + (f"; комісії {fees:.2f} USD" if fees is not None else "")
             + ")"
+        ),
+    )
+
+
+async def _closed_rows(ctx: Ctx, market_id: str, start_ms: int) -> list[dict[str, Any]]:
+    """Closed-pnl rows from start to now, read in Bybit's 7-day windows: a close older than the latest window is still
+    found (03.11: NEAR and HYPE stayed 'open' for 10 days in the book)."""
+    out: list[dict[str, Any]] = []
+    lo = max(start_ms, ctx.now - CLOSED_PNL_MAX_WINDOWS * CLOSED_PNL_WINDOW_MS)
+    while lo < ctx.now:
+        hi = min(lo + CLOSED_PNL_WINDOW_MS, ctx.now)
+        out += await ctx.client.closed_pnl(market_id, lo, hi)
+        lo = hi
+    return out
+
+
+def _closes_this(t: dict[str, Any], r: dict[str, Any], opened: int) -> bool:
+    """A close after the cycle that saw the fill is this trade's; one in the lag before it only if its entry price is the
+    trade's fill (a stop hit before the next cycle; not the close of an earlier trade in the same symbol)."""
+    ts = int(r.get("updatedTime") or 0)
+    if ts >= opened:
+        return True
+    if ts < opened - FILL_LAG_MS:
+        return False
+    entry, fill = float(r.get("avgEntryPrice") or 0), float(t["fill"] or t["entry"] or 0)
+    return entry > 0 and fill > 0 and abs(entry / fill - 1) < 0.002
+
+
+async def _orphan(ctx: Ctx, t: dict[str, Any]) -> None:
+    """'open' in the book, but the venue has neither the position nor its close: set it aside and tell the owner, so it
+    does not hold the symbol and the reconciliation forever."""
+    lid, sym = t["link_id"], t["symbol"]
+    await ctx.store.demo_trade_update(lid, status="orphaned")
+    days = (ctx.now - (t["opened_ts"] or ctx.now)) / 86_400_000
+    await ctx.audit("orphaned", link_id=lid, symbol=sym, setup=t["setup"], payload={"days": round(days, 1)})
+    await ctx.safe(
+        "notify",
+        lambda: ctx.notify(
+            f"⚠️ Демо: {t['setup']} {_side_ua(t['side'])} {sym.split(':')[0]} ({t['timeframe']}) у базі «відкрита», але "
+            f"позиції на біржі немає, а закриття не знайдено за {days:.0f} діб — позначено orphaned, перевірте вручну"
         ),
     )
 

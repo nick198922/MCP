@@ -390,6 +390,52 @@ async def test_close_reads_a_7_day_window_and_closes_journal_with_r(world):
     assert any("✅ Демо: закрито S14" in m and "+2.00R" in m and "комісії 2.10 USD" in m for m in w.msgs)
 
 
+async def test_close_older_than_the_latest_7_day_window_is_still_found(world):
+    w = world
+    await w.enter()
+    t = (await w.store.demo_trade_list())[0]
+    w.venue.pos.clear()
+    w.venue.pnl_rows = [{"closedPnl": str(-t["risk_usd"]), "avgExitPrice": str(t["stop"]), "updatedTime": str(t["opened_ts"] + D1)}]
+    w.signals["4h"] = []
+    await w.run(t["opened_ts"] + 12 * D1)  # the close is 11 days old: only the windows before the latest hold it
+    t = (await w.store.demo_trade_list())[0]
+    assert t["status"] == "closed" and t["exit_reason"] == "stop"
+    assert all(hi - lo <= 7 * D1 for lo, hi in w.venue.windows)
+
+
+async def test_stop_hit_before_the_cycle_that_saw_the_fill_is_matched_by_entry_price(world):
+    w = world
+    await w.enter()
+    t = (await w.store.demo_trade_list())[0]
+    w.venue.pos.clear()
+    before = str(t["opened_ts"] - 5 * 60_000)
+    w.venue.pnl_rows = [{"closedPnl": "50", "avgEntryPrice": str(t["fill"] * 1.05), "avgExitPrice": "1", "updatedTime": before}]
+    w.signals["4h"] = []
+    await w.run(w.now + 3_600_000)
+    assert (await w.store.demo_trade_list())[0]["status"] == "open"  # an earlier trade's close in the symbol: not ours
+    w.venue.pnl_rows.append(
+        {"closedPnl": str(-t["risk_usd"]), "avgEntryPrice": str(t["fill"]), "avgExitPrice": str(t["stop"]), "updatedTime": before}
+    )
+    await w.run(w.now + 2 * 3_600_000)
+    t = (await w.store.demo_trade_list())[0]
+    assert t["status"] == "closed" and t["exit_reason"] == "stop" and t["pnl_usd"] == pytest.approx(-t["risk_usd"])
+
+
+async def test_open_trade_without_position_or_close_is_orphaned_once_with_an_alert(world):
+    w = world
+    await w.enter()
+    t = (await w.store.demo_trade_list())[0]
+    w.venue.pos.clear()
+    w.signals["4h"] = []
+    await w.run(t["opened_ts"] + 3_600_000)
+    assert (await w.store.demo_trade_list())[0]["status"] == "open"  # the close may still be on its way
+    await w.run(t["opened_ts"] + 2 * D1)
+    assert (await w.store.demo_trade_list())[0]["status"] == "orphaned"
+    assert sum("orphaned" in m for m in w.msgs) == 1
+    await w.run(t["opened_ts"] + 3 * D1)
+    assert sum("orphaned" in m for m in w.msgs) == 1
+
+
 async def test_stop_close_cancels_the_target_limit_left_on_the_book(world):
     w = world
     await w.enter()

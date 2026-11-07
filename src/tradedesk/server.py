@@ -20,6 +20,7 @@ from .http_auth import BearerAuthMiddleware, parse_tokens
 from .logfmt import JsonFormatter
 from .runtime import Runtime
 from .tools import register_all
+from .tools._util import STORE_ERRORS
 
 INSTRUCTIONS = """\
 Personal trading desk for crypto derivatives, options and quant tooling. Read-only market data.
@@ -40,9 +41,17 @@ def build_server(rt: Runtime | None = None) -> tuple[MCPServer, Runtime]:
     async def lifespan(_: MCPServer) -> AsyncIterator[None]:
         from .collector import build_default_scheduler  # noqa: PLC0415
 
+        store_ok = True
         if rt.store is not None:
-            await rt.store.init()
-        rt.scheduler = build_default_scheduler(rt)
+            try:
+                await rt.store.init()
+            except STORE_ERRORS as e:  # a broken or locked DB file must not cost the session its market tools
+                store_ok = False
+                logging.getLogger("tradedesk.store").error(
+                    "store init failed, collector not started; store tools will report missing: store (%s: %s)", type(e).__name__, e
+                )
+        # Every collector job writes to the store (build_default_scheduler returns None without one): none on a failed init.
+        rt.scheduler = build_default_scheduler(rt) if store_ok else None
         if rt.scheduler is not None:
             await rt.scheduler.start()
             logging.getLogger("tradedesk.collector").info("collector started with %d jobs", len(rt.scheduler.jobs))

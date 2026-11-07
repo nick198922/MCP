@@ -1,12 +1,13 @@
 """Import-boundary guard for CLAUDE.md invariants 2 and 3 (AST only, no network, nothing imported from src/).
 
 (a) `analytics/` stays pure: no I/O libraries, no imports of providers/tools/store/execution, no calls to `open(`,
-    `time.time(`, `datetime.now(`, `datetime.utcnow(` (time is passed in as a parameter).
+    or any wall-clock read listed in (d) (time is passed in as a parameter).
 (b) Network goes through `core.http.Http` and `Exchanges._call`: in `src/tradedesk/` only `core/http.py` and
     `runtime.py` import `httpx`, only `providers/exchanges.py` imports `ccxt`.
 (c) `tools/` (the read-only MCP surface) never import `tradedesk.execution`.
-(d) `tools/` and `providers/` never read the wall clock (`time.time(`, `datetime.now(`, `datetime.utcnow(`, aliases
-    included): time comes from `rt.now`, so tests with a swapped clock do not depend on the real date.
+(d) `tools/` and `providers/` never read the wall clock (`time.time(`, `time.time_ns(`, `datetime.now(`,
+    `datetime.utcnow(`, `date.today(`, aliases included): time comes from `rt.now`, so tests with a swapped clock do
+    not depend on the real date.
 
 Existing violations live in ALLOWED with the reason; a new one fails the test, and an ALLOWED entry that no longer
 matches anything fails too, so the list only shrinks.
@@ -109,10 +110,14 @@ def _import_aliases(nodes: list[ast.AST]) -> dict[str, str]:
     return out
 
 
+CLOCK_TAILS = (["datetime", "now"], ["datetime", "utcnow"], ["date", "today"])
+
+
 def clock_calls(nodes: list[ast.AST]) -> list[tuple[int, str]]:
-    """(line, callee as written) for wall-clock reads: `time.time(`, `datetime.now(`, `datetime.utcnow(`, aliases
-    included (any `*.datetime.now`, `import time as t; t.time()`, `from time import time; time()`). Monotonic and
-    perf counters are not clock reads. `nodes` = all of the file's `ast.walk`."""
+    """(line, callee as written) for wall-clock reads: `time.time(`, `time.time_ns(`, `datetime.now(`,
+    `datetime.utcnow(`, `date.today(`, aliases included (any `*.datetime.now`, `*.date.today`,
+    `import time as t; t.time()`, `from time import time; time()`). Monotonic and perf counters are not clock reads.
+    `nodes` = all of the file's `ast.walk`."""
     aliases = _import_aliases(nodes)
     out = []
     for node in nodes:
@@ -123,7 +128,7 @@ def clock_calls(nodes: list[ast.AST]) -> list[tuple[int, str]]:
             continue
         head, _, rest = name.partition(".")
         real = ".".join(filter(None, (aliases.get(head, head), rest)))
-        if real == "time.time" or real.split(".")[-2:] in (["datetime", "now"], ["datetime", "utcnow"]):
+        if real in ("time.time", "time.time_ns") or real.split(".")[-2:] in CLOCK_TAILS:
             out.append((node.lineno, name))
     return out
 
@@ -283,3 +288,38 @@ def f(rt, ms):
     assert violations("tradedesk/providers/ok.py", clean) == []
     # open( is an analytics-only rule: tools/providers may read files (e.g. fixtures, store paths).
     assert violations("tradedesk/tools/files.py", "def f(p):\n    return open(p)\n") == []
+
+
+CLOCK_TODAY_BAD = """
+import time
+import datetime
+import datetime as dt
+from datetime import date
+from datetime import date as Day
+from time import time_ns as ns
+
+def f():
+    return date.today(), time.time_ns(), datetime.date.today(), dt.date.today(), Day.today(), ns()
+"""
+CLOCK_TODAY_BAD_CALLS = {"date.today", "time.time_ns", "datetime.date.today", "dt.date.today", "Day.today", "ns"}
+
+
+def test_clock_guard_flags_today_and_time_ns():
+    for rel in ("tradedesk/tools/bad.py", "tradedesk/providers/bad.py"):
+        got = {(rule, call) for rule, _, call, _ in violations(rel, CLOCK_TODAY_BAD)}
+        assert got == {("clock-call", c) for c in CLOCK_TODAY_BAD_CALLS}, rel
+    assert violations("tradedesk/core/bad.py", CLOCK_TODAY_BAD) == []
+    assert violations("tradedesk/execution/bad.py", CLOCK_TODAY_BAD) == []
+
+
+def test_clock_guard_accepts_rt_now_date():
+    clean = """
+import time
+from datetime import date
+
+def f(rt, s):
+    now = rt.now()
+    return rt.now().date(), now.date(), date.fromisoformat(s), time.monotonic_ns()
+"""
+    assert violations("tradedesk/tools/ok.py", clean) == []
+    assert violations("tradedesk/providers/ok.py", clean) == []

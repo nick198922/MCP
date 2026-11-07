@@ -204,3 +204,47 @@ def test_report_on_the_review_date_is_whole(tmp_path, monkeypatch, capsys, date,
     assert "завислі демо-угоди (open довше за строк утримання + 1 доба): 1 — S40" in text
     # the count form agrees with the number (item 243: it used to print «1 угод»)
     assert "проксі примусового закриття: 1 угода за" in text and "1 угод " not in text
+
+
+def test_report_on_23_november_shows_immature_forwards_as_early(tmp_path, monkeypatch, capsys):
+    """Item 244: the same seed on --date 2026-11-23, a week before the review: nothing has matured, nothing is a verdict."""
+    db = _seed(tmp_path)
+    before = Path(db).read_bytes()
+    text = _run(tmp_path, monkeypatch, capsys, db, "2026-11-23", cp._ms(2026, 11, 25))
+    assert Path(db).read_bytes() == before  # read-only
+    assert "стан форвардів на 2026-11-23 23:59 UTC" in text
+    assert "Traceback" not in text and not re.search(r"\bnan\b", text, re.IGNORECASE) and "None" not in text
+    assert "запит не вдався" not in text and "таблиці немає" not in text and "не відкрито" not in text
+    lines = text.splitlines()
+    rows = [ln for ln in lines if ln.startswith("| ") and not ln.startswith(("| Форвард", "|---"))]
+    now = script.at_date("2026-11-23", cp._ms(2026, 11, 25))
+    report = cp.build(script.load_inputs(db, now), now)
+    assert len(rows) == len(report["forwards"]) >= 20
+    table = {}
+    for ln in rows:
+        cells = [c.strip() for c in ln.strip("|").split("|")]
+        assert len(cells) == 5 and all(cells), ln
+        assert re.fullmatch(r"\d+|—", cells[1]), ln
+        table[cells[0]] = cells
+    verdicts = {c[4] for c in table.values()}
+    assert verdicts <= {cp.EARLY, cp.OK, "лише лічильники"}, verdicts  # never «ні» on a handful of trades
+    demo = [c for name, c in table.items() if name.startswith("Демо")]
+    assert len(demo) == 11 and all(c[4] == cp.EARLY for c in demo)  # every demo setup is below n' 30
+    for name in ("Папір carry A (cc-paper)", "Папір carry B (pp-paper)", "Кондор: P&L H4 (б)"):
+        assert table[name][4] == cp.EARLY, name
+    assert text.count("- рано: ") >= len(demo)  # each immature demo row says how far it is from the threshold
+    assert text.count("з 30 закритих угод") + text.count("з 30 розміщень, чий строк минув") == len(demo)
+    # every forward is explained below the table, every card of the repository is named
+    detail = lines.index("## Подробиці")
+    headers = [i for i, ln in enumerate(lines) if i > detail and ln.startswith("**")]
+    for i in headers:
+        assert lines[i + 1].startswith("- "), lines[i]
+    assert {lines[i][2:].split("**", 1)[0] for i in headers} == {r["name"] for r in report["forwards"]}
+    cards = script.load_idea_cards()
+    assert cards and all(f"- {c['slug']}: планів" in text for c in cards)
+    # date-dependent branches: the plan of 25.11, the state file of 29.11 are still in the future; Fridays 06, 13 and 20.11 have passed
+    assert "- hl-oi-cap-state-forward: планів 0, «входити» 0, оцінено 0" in text
+    assert "файл стану новіший за дату звіту: його рішення не показано" in text
+    assert "- п'ятниць з 8, що минули: 3" in text and "- валідних входів BTC: 2" in text
+    assert "рано: рішення після 2026-12-31 10:00 UTC" in text
+    assert "12345" not in text  # no P&L of assistant_paper

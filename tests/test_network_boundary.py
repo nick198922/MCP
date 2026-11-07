@@ -20,7 +20,10 @@ network use through a third-party library that is not in `NETWORK_MODULES`, Pyth
 """
 
 import ast
+import re
 from pathlib import Path
+
+from test_naive_datetime import _may_spell_ascii_names
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src" / "tradedesk"
@@ -122,11 +125,19 @@ def _matches(name: str, banned: str) -> bool:
     return name == banned or name.startswith(banned + ".")
 
 
+# An import of a banned module spells the first part of its name; source without any of them is not parsed (~70 % of
+# the files, most of the scan time). Python NFKC-normalises identifiers (a full-width `httpx` imports httpx), so source
+# with a character that NFKC turns into ASCII letters, digits or `_` is always parsed (as in test_naive_datetime).
+_MAY_IMPORT = re.compile("|".join(sorted({m.split(".")[0] for m in (*NETWORK_MODULES, CCXT)})))
+
+
 def network_imports(source: str) -> list[tuple[int, str]]:
     """(line, banned module) for every network or ccxt import in ``source``; pure, no I/O.
 
     Relative imports (``from ..core.http import Http``) are never network imports.
     """
+    if not _MAY_IMPORT.search(source) and not _may_spell_ascii_names(source):
+        return []
     banned = (*NETWORK_MODULES, CCXT)
     found: list[tuple[int, str]] = []
     for node in ast.walk(ast.parse(source)):
@@ -207,6 +218,14 @@ def test_harmless_imports_are_not_found():
         "import socketserver\n"
     )
     assert network_imports(src) == []
+
+
+def test_text_prefilter_keeps_every_import():
+    # skipped without parsing: no banned name in the text (Cyrillic and emoji cannot spell one)
+    assert not _MAY_IMPORT.search("import os  # Київ 🙂\n") and network_imports("import os  # Київ 🙂\n") == []
+    # a full-width name is NFKC-normalised by Python into the real module, so such source is still parsed
+    fullwidth = "import ｈｔｔｐｘ\nfrom ｕｒｌｌｉｂ import request\n"
+    assert not _MAY_IMPORT.search(fullwidth) and network_imports(fullwidth) == [(1, "httpx"), (2, "urllib.request")]
 
 
 def test_ccxt_only_in_exchanges():

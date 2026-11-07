@@ -26,12 +26,14 @@ but not by the client that reaches the network (one used fake marks the whole fi
 
 import ast
 import asyncio
+import re
 import socket
 from pathlib import Path
 
 import pytest
 
 from conftest import REAL_CONNECT, RealNetworkBlocked, is_loopback
+from test_naive_datetime import _may_spell_ascii_names
 
 TESTS = Path(__file__).resolve().parent
 
@@ -131,8 +133,16 @@ def _direct_use(call: ast.Call, name: str) -> str | None:
     return None
 
 
+# Every risk needs an import of LIBS, which spells the library's name; source without any is not parsed (~70 % of the
+# test modules). Python NFKC-normalises identifiers (a full-width `httpx` imports httpx), so source with a character
+# that NFKC turns into ASCII letters, digits or `_` is always parsed (as in test_naive_datetime).
+_MAY_IMPORT = re.compile("|".join(LIBS))
+
+
 def find_network_risks(source: str) -> list[str]:
     """Pure: reasons why the test module in `source` may reach the real network (empty list: none found)."""
+    if not _MAY_IMPORT.search(source) and not _may_spell_ascii_names(source):
+        return []
     tree = ast.parse(source)
     aliases = _aliases(tree)
     if not aliases:
@@ -220,6 +230,18 @@ def test_clean_module_has_no_risks():
     assert find_network_risks(CLEAN) == []
     assert find_network_risks("import json\n\ndef test_x():\n    assert json.dumps(1) == '1'\n") == []
     assert find_network_risks(FAKED_CCXT) == []
+
+
+def test_text_prefilter_keeps_every_risk():
+    # skipped without parsing: no library name in the text (Cyrillic and emoji cannot spell one)
+    assert not _MAY_IMPORT.search("import os  # Київ 🙂\n") and find_network_risks("import os  # Київ 🙂\n") == []
+    # a full-width name is NFKC-normalised by Python into the real library, so such source is still parsed
+    fullwidth = "import ｈｔｔｐｘ\n\nｈｔｔｐｘ.get('https://api.example.com')\n"
+    assert not _MAY_IMPORT.search(fullwidth)
+    assert find_network_risks(fullwidth) == [
+        "line 3: httpx.get() is a real request",
+        "imports httpx with no MockTransport / Fake* / transport= in the file",
+    ]
 
 
 def test_client_without_transport_and_direct_request_are_found():

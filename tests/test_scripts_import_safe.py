@@ -141,9 +141,11 @@ def _call_is_safe(call: ast.Call, mod: Module, others: dict[str, Module]) -> boo
     return _name_is_safe(_dotted(call.func), mod, others)
 
 
-def module_info(source: str, siblings: frozenset[str] = frozenset()) -> Module:
-    """Names one script binds that are safe to call (``siblings``: stems of the other scripts); pure, no I/O."""
-    tree = ast.parse(source)
+def module_info(source: str | ast.Module, siblings: frozenset[str] = frozenset()) -> Module:
+    """Names one script binds that are safe to call (``siblings``: stems of the other scripts); pure, no I/O.
+
+    ``source``: the text, or its already parsed tree (``scan`` parses each file once, not once per folder)."""
+    tree = ast.parse(source) if isinstance(source, str) else source
     mod = Module()
     for node in tree.body:
         if isinstance(node, ast.ClassDef):
@@ -243,10 +245,25 @@ def import_side_effects(source: str, others: dict[str, Module] | None = None) ->
     ``others``: `module_info` of the sibling scripts by stem, to resolve `s1.ms(...)`-style calls.
     """
     others = others or {}
-    mod = module_info(source, frozenset(others))
+    tree = ast.parse(source)
+    return _side_effects(tree, module_info(tree, frozenset(others)), others)
+
+
+def _side_effects(tree: ast.Module, mod: Module, others: dict[str, Module]) -> list[str]:
     out: list[tuple[int, str]] = []
-    _check(ast.parse(source).body, mod, others, out)
+    _check(tree.body, mod, others, out)
     return [f"{line}: {what}" for line, what in sorted(out)]
+
+
+def _imported_names(tree: ast.Module) -> frozenset[str]:
+    """The module names module_info tests against ``siblings``: top-level `import x` and absolute `from x import`."""
+    names: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            names |= {a.name for a in node.names}
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            names.add(node.module)
+    return frozenset(names)
 
 
 def scan(root: Path = SCRIPTS) -> tuple[int, dict[str, list[str]]]:
@@ -259,14 +276,31 @@ def scan(root: Path = SCRIPTS) -> tuple[int, dict[str, list[str]]]:
     for p in sorted(root.rglob("*.py")):
         by_dir.setdefault(p.parent, {})[p.stem] = p.read_text(encoding="utf-8")
     top = by_dir.get(root, {})
+    stems = {folder: frozenset({**top, **sources}) for folder, sources in by_dir.items()}
+    # module_info of every script as each folder sees it (a top-level script is visible from every folder, unless a
+    # script of that folder has its stem). Each file is parsed once here and once for its own check below; parsing
+    # it again per folder was ~70 % of the scan time. Trees are not kept: all of them take ~340 MiB per worker.
+    # module_info reads `siblings` only to test the names of the top-level `import x` / `from x import`, so folders
+    # whose stems agree on those names share one result.
+    infos: dict[Path, dict[str, Module]] = {folder: {} for folder in by_dir}
+    for home, sources in by_dir.items():
+        for stem, src in sources.items():
+            tree = ast.parse(src)
+            imported = _imported_names(tree)
+            shared: dict[frozenset[str], Module] = {}
+            for folder in by_dir:
+                if folder == home or (home == root and stem not in by_dir[folder]):
+                    key = imported & stems[folder]
+                    if key not in shared:
+                        shared[key] = module_info(tree, stems[folder])
+                    infos[folder][stem] = shared[key]
     n, found = 0, {}
     for folder, sources in by_dir.items():
-        visible = {**top, **sources}
-        stems = frozenset(visible)
-        others = {stem: module_info(src, stems) for stem, src in visible.items()}
+        others = infos[folder]
         for stem in (s for s in sources if not s.startswith("_")):
             n += 1
-            hits = import_side_effects(sources[stem], others)
+            # = import_side_effects(sources[stem], others): others[stem] is module_info(sources[stem], stems[folder])
+            hits = _side_effects(ast.parse(sources[stem]), others[stem], others)
             if hits:
                 found[(folder.relative_to(root) / f"{stem}.py").as_posix()] = hits
     return n, found

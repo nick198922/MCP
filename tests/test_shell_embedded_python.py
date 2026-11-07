@@ -16,9 +16,13 @@ Matches on comment lines are skipped. Every block must `compile()`; an import of
 `websockets`, `ccxt` or `urllib.request` (`ast`, nested imports included) is a finding, and the files with one are
 listed in `ALLOWED` with a reason; the list must match the scan exactly.
 
-Not caught: Python fed by a pipe (`... | python3 -`) or from a variable holding the interpreter (`"$PY" -c`), `-c`
-bodies built from several concatenated quoted parts, Python inside heredocs written to files (`cat >x <<EOF`),
-network reached through `socket`, `http.client` or a `tradedesk` provider, and anything that fails only at run time.
+Coverage is partial. Not caught (test_uncovered_forms_are_not_extracted pins the first four):
+- Python fed by a pipe without a heredoc: `... | python3 -`;
+- an interpreter held in a variable: `"$PY" -c '...'`, `$PYTHON - <<EOF`;
+- Python inside a heredoc written to a file and run later: `cat >x.py <<EOF ... EOF`;
+- `-c` bodies built from several concatenated quoted parts (`-c 'a'"$X"'b'`): only the first part is read;
+- network reached through `socket`, `http.client`, a `tradedesk` provider or `__import__` / `importlib`;
+- anything that fails only at run time (missing modules, wrong names, shell expansions that are not Python).
 """
 
 from __future__ import annotations
@@ -312,6 +316,24 @@ def test_nested_double_quotes_are_unescaped_twice():
     assert check_text(text) == (1, [], [])
 
 
+def test_bare_dash_heredoc_with_unquoted_tag_is_extracted():
+    text = 'set -e\npython3 - <<EOF\nimport json\nprint(json.dumps({"home": "$HOME"}))\nEOF\necho done\n'
+    (block,) = extract_blocks(text)
+    assert (block.line, block.kind) == (2, "heredoc")
+    assert block.code == 'import json\nprint(json.dumps({"home": "_SH_"}))\n'
+    assert check_text(text) == (1, [], [])
+    assert check_text(text.replace("import json", "import json, httpx"))[2] == ["line 2: imports httpx"]
+
+
+def test_uncovered_forms_are_not_extracted():
+    # Known gaps listed in the module docstring; if the extractor learns one, move it out of that list.
+    assert extract_blocks("curl -s u | python3 -\n") == []
+    assert extract_blocks("\"$PY\" -c 'import httpx'\n$PYTHON - <<EOF\nimport httpx\nEOF\n") == []
+    assert extract_blocks("cat >/tmp/x.py <<EOF\nimport httpx\nEOF\n") == []
+    (block,) = extract_blocks("python3 -c 'import json'\"$X\"'; import httpx'\n")
+    assert block.code == "import json"
+
+
 def test_syntax_error_and_unterminated_blocks_are_errors():
     (error,) = check_text("python3 -c 'print(1'\n")[1]
     assert error.startswith("line 1: syntax error in python -c block: ")
@@ -362,9 +384,18 @@ def test_scan_reads_sh_files_in_subdirectories(tmp_path):
 # --- the repository --------------------------------------------------------------------------------------------------------
 
 
+# Scan of 07.11: lower bounds equal to the counts then, so an extractor that silently finds fewer blocks fails here.
+# Lower them only together with the removal of a `.sh` file or of a Python block from one.
+MIN_FILES, MIN_WITH_PYTHON, MIN_BLOCKS = 101, 17, 19
+
+
 def test_shell_embedded_python_compiles_and_network_is_allowed():
     s = scan()
-    assert s.files > 90 and s.blocks > 15, f"scanned {s.files} files, {s.blocks} blocks: are SHELL_DIRS right?"
+    assert s.files >= MIN_FILES and s.with_python >= MIN_WITH_PYTHON and s.blocks >= MIN_BLOCKS, (
+        f"scanned {s.files} .sh files, {s.with_python} with Python, {s.blocks} blocks; expected at least "
+        f"{MIN_FILES} / {MIN_WITH_PYTHON} / {MIN_BLOCKS} (07.11). Fewer: the extractor or SHELL_DIRS broke, or a "
+        "script / block was removed on purpose (then lower the MIN_* numbers in the same change)"
+    )
     assert not s.errors, f"Python in .sh that does not compile: {s.errors}"
     unexpected, stale = check(s.network, ALLOWED)
     assert not unexpected, f"Python in .sh with network imports (go through core.http.Http or add to ALLOWED): {unexpected}"

@@ -93,6 +93,44 @@ def test_status_set_matches_results_board_groups():
     assert board == STATUSES
 
 
+# Item 246 of IDEA-20261102-standing-improvements: the coordinator, the developer and the docs refer to the card's
+# items by number («пункт 233»), so two items under «## Прогрес» with one number make every reference ambiguous.
+STANDING = IDEAS / "IDEA-20261102-standing-improvements.md"
+ITEM_RE = re.compile(r"- \[.\] (\d+[a-z]?)\.")
+
+
+def duplicate_item_numbers(text: str) -> dict[str, list[int]]:
+    """Item number -> line numbers, for each number used by more than one item in the «## Прогрес» section."""
+    seen: dict[str, list[int]] = {}
+    inside = False
+    for i, s in enumerate(text.splitlines(), 1):
+        if s.startswith("## "):
+            inside = s.strip() == "## Прогрес"
+            continue
+        m = ITEM_RE.match(s) if inside else None
+        if m:
+            seen.setdefault(m.group(1), []).append(i)
+    return {n: lines for n, lines in seen.items() if len(lines) > 1}
+
+
+def test_standing_card_item_numbers_are_unique():
+    text = STANDING.read_text(encoding="utf-8")
+    assert ITEM_RE.search(text), "no numbered items found in the standing card"
+    dup = duplicate_item_numbers(text)
+    assert not dup, f"give the later item a free number or a suffix (e.g. 233b), and fix references to it: {dup}"
+
+
+def test_duplicate_item_numbers_reads_only_the_progress_section():
+    text = (
+        "# Card\n\n## Навіщо\n- [x] 1. outside, ignored\n"
+        "## Прогрес\n- [x] 1. first\n- [ ] 2. open\n- [x] 1. again\n- [x] 1b. suffix is its own number\n"
+        "  - [x] 2. nested, not an item\n- [ ] 8a. open\n"
+        "## Попередня реєстрація\n- [x] 2. later section, ignored\n"
+    )
+    assert duplicate_item_numbers(text) == {"1": [6, 8]}
+    assert duplicate_item_numbers(text.replace("- [x] 1. again", "- [x] 3. again")) == {}
+
+
 def test_guard_catches_broken_metadata():
     good = "# IDEA-20261105-x: X\n\nСтатус: testing, призупинено\nПріоритет: власник (шортові сетапи)\nПорядок: 3\n"
     assert card_problems("IDEA-20261105-x.md", good) == []

@@ -460,7 +460,7 @@ async def _db(path: Path, all_rows: list[dict[str, Any]] | None = None, outcomes
         await s.aclose()
 
 
-async def test_runner_writes_the_weekly_report_and_refuses_the_early_verdict(tmp_path, capsys):
+async def test_runner_writes_the_weekly_report_and_refuses_the_early_verdict(tmp_path, monkeypatch, capsys):
     db = tmp_path / "db.sqlite"
     await _db(db)
     digest = hashlib.sha256(db.read_bytes()).hexdigest()
@@ -472,10 +472,13 @@ async def test_runner_writes_the_weekly_report_and_refuses_the_early_verdict(tmp
     assert "Варіант v2-g" in text and "позицій v2-g 0" in text and "без binance_last 4" in text
     for hidden in HIDDEN:
         assert hidden not in text, hidden
-    # --verdict today (wall clock before the registered T0 + 126 days): refused, nothing written
+    # --verdict a day before the registered T0 + 126 days: refused by the time gate, nothing written. The wall clock is
+    # pinned: on the real one the gate opens on 2027-02-23 and the run would be refused for another reason (the
+    # fixture's first snapshot is not the registered T0), so the test would pass without checking the gate.
+    monkeypatch.setattr(script.time, "time", lambda: float(verdict_ts(T0_TS) - DAY_S))
     out2 = tmp_path / "verdict.md"
     assert script.main(["--db", str(db), "--out", str(out2), "--verdict"]) == 2
-    assert not out2.exists() and "refused" in capsys.readouterr().err
+    assert not out2.exists() and "not before T0 + 126 days" in capsys.readouterr().err
     assert hashlib.sha256(db.read_bytes()).hexdigest() == digest  # the DB was only read
 
 
@@ -897,9 +900,12 @@ async def test_runner_v2g_verdict_gate_and_database_checks(tmp_path, monkeypatch
     db = tmp_path / "db.sqlite"
     await _db(db, ROWS_OWN, OUTCOMES_OWN)
     out = tmp_path / "v2g.md"
-    # today: refused, nothing written; flags that could move the gate are refused; one verdict mode per run
+    # a day before the registered gate: refused by the time gate, nothing written (the wall clock is pinned: on the real
+    # one the gate opens on 2027-03-07 and the run would be refused only for the fixture's first snapshot); flags that
+    # could move the gate are refused; one verdict mode per run
+    monkeypatch.setattr(script.time, "time", lambda: float(verdict_ts_v2g(T0_V2G_TS, T0_TS) - DAY_S))
     assert script.main(["--db", str(db), "--out", str(out), "--verdict-v2g"]) == 2
-    assert "refused" in capsys.readouterr().err and not out.exists()
+    assert "not before max(T0 v2-g + 126 days" in capsys.readouterr().err and not out.exists()
     for flags in (["--now", str(GATE_OWN)], ["--t0", "1"], ["--verdict"]):
         assert script.main(["--db", str(db), "--out", str(out), "--verdict-v2g", *flags]) == 2
         assert "refused" in capsys.readouterr().err and not out.exists()

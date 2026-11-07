@@ -260,11 +260,21 @@ def test_carry_g_counts_a_labelled_forced_close_proxy():
     logs = {"side": [], "mark": [], "close": [], "event": gap}
     r = cp.carry_forward("A", pos, logs, cyc, BENCH["A"]["bench"], NOW)
     g = next(c for c in r["criteria"] if c["id"] == "г")
-    assert "проксі примусового закриття: 2 угод" in g["text"] and "open_position_data_unavailable 1, funding_gap_confirmed 1" in g["text"]
+    assert "проксі примусового закриття: 2 угоди за" in g["text"]
+    assert "open_position_data_unavailable 1, funding_gap_confirmed 1" in g["text"]
     b = [dict(p, strategy="B") for p in pos]
     r = cp.carry_forward("B", b, logs, cyc, BENCH["B"]["bench"], NOW)
     g = next(c for c in r["criteria"] if c["id"] == "г")
-    assert g["status"] == cp.UNVERIFIABLE and "не визначається" in g["text"] and "проксі примусового закриття: 2" in g["text"]
+    assert g["status"] == cp.UNVERIFIABLE and "не визначається" in g["text"] and "проксі примусового закриття: 2 угоди за" in g["text"]
+
+
+@pytest.mark.parametrize(
+    ("n", "text"),
+    [(0, "0 угод"), (1, "1 угода"), (2, "2 угоди"), (4, "4 угоди"), (5, "5 угод"), (11, "11 угод"), (12, "12 угод")]
+    + [(14, "14 угод"), (20, "20 угод"), (21, "21 угода"), (22, "22 угоди"), (24, "24 угоди"), (111, "111 угод"), (101, "101 угода")],
+)
+def test_ua_trades_agrees_the_count_form(n, text):
+    assert cp.ua_trades(n) == text
 
 
 def test_a_v2_independent_scan_agrees_with_the_shadow():

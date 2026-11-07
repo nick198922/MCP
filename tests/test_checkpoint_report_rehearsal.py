@@ -202,3 +202,5 @@ def test_report_on_the_review_date_is_whole(tmp_path, monkeypatch, capsys, date,
     assert text.count("| закрито |") == 3  # Polymarket v1, v2-g, condor P&L
     assert "12345" not in text  # no P&L of assistant_paper
     assert "завислі демо-угоди (open довше за строк утримання + 1 доба): 1 — S40" in text
+    # the count form agrees with the number (item 243: it used to print «1 угод»)
+    assert "проксі примусового закриття: 1 угода за" in text and "1 угод " not in text

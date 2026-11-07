@@ -57,7 +57,8 @@ KNOWN_VIOLATIONS: dict[str, tuple[frozenset[str], str]] = {
 }
 
 _TG = "Telegram Bot API (owner's group), not market data; stdlib-only so it runs as plain python3 from units"
-# path relative to scripts/ -> (modules it may import, reason). Scan of 07.11: 233 files, 17 with network imports.
+# path relative to scripts/ -> (modules it may import, reason). Scan of 07.11: 233 files, 17 with network imports
+# (14 after item 235 moved three scripts onto Http).
 ALLOWED_SCRIPTS: dict[str, tuple[frozenset[str], str]] = {
     "tg_send.py": (frozenset({"urllib.request"}), _TG + "; token from agents.env, never logged"),
     "tg_bridge.py": (frozenset({"urllib.request"}), _TG + "; long-poll loop of the owner's chat topic"),
@@ -112,23 +113,9 @@ ALLOWED_SCRIPTS: dict[str, tuple[frozenset[str], str]] = {
     ),
 }
 
-# Scripts that read public market data past Http without such a reason; listed, not rewritten (BACKLOG 6.45).
-KNOWN_SCRIPT_VIOLATIONS: dict[str, tuple[frozenset[str], str]] = {
-    "hyperliquid_import.py": (
-        frozenset({"httpx"}),
-        "public Hyperliquid info (userFillsByTime) with its own httpx.Client; rt.hl / Http would give limits, retries and Evidence",
-    ),
-    "copy_vaults.py": (
-        frozenset({"urllib.request"}),
-        "paper vault copy every 2 minutes: public Bybit v5/market prices and funding through urlopen in _get "
-        "(Hyperliquid via research/vault_profile._post); the report rests on data without Evidence",
-    ),
-    "research/vault_profile.py": (
-        frozenset({"urllib.request"}),
-        "research profile of a Hyperliquid vault (docs/verification report) through urlopen on the public info "
-        "endpoint, own retry loop, no Evidence",
-    ),
-}
+# Scripts that read public market data past Http without such a reason (BACKLOG 6.45). Empty since item 235 (07.11):
+# hyperliquid_import.py, copy_vaults.py and research/vault_profile.py now go through Http (tests/test_scripts_http.py).
+KNOWN_SCRIPT_VIOLATIONS: dict[str, tuple[frozenset[str], str]] = {}
 
 
 def _matches(name: str, banned: str) -> bool:

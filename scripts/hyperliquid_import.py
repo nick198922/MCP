@@ -3,7 +3,7 @@
     uv run python scripts/hyperliquid_import.py import 0xADDRESS [--db PATH]
     uv run python scripts/hyperliquid_import.py stats [--db PATH] [--out REPORT.md]
 
-Fills come from the public info endpoint (`userFillsByTime`, 2 000 per page; Hyperliquid keeps the 10 000 most recent
+Fills come from the public info endpoint through `core.http.Http` (`userFillsByTime`, 2 000 per page; Hyperliquid keeps the 10 000 most recent
 fills). They are grouped per coin into round trips: a trip starts when the position leaves zero and ends when it is
 flat again (a flip closes one trip and opens the next). P&L = Hyperliquid's closedPnl minus fees; funding is not included.
 Spot fills are skipped. The address is not stored in git; the report stays on the server.
@@ -18,25 +18,29 @@ import time
 from pathlib import Path
 from typing import Any
 
-import httpx
-
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import bybit_import as bi  # noqa: E402
 
-URL = "https://api.hyperliquid.xyz/info"
+from tradedesk.core.http import Http  # noqa: E402
+
 DB_DEFAULT = bi.DB_DEFAULT
 
 
-def fetch_fills(address: str, start_ms: int = 0) -> list[dict[str, Any]]:
+def info_http() -> Http:
+    """Public Hyperliquid info endpoint through core.http.Http (invariant 2): ~3 pages/s (the old 0.3 s pause), retries
+    on 429 / 5xx / network; any other HTTP error raises ProviderError at once, like raise_for_status did."""
+    return Http("hyperliquid_info", "https://api.hyperliquid.xyz", rate=3.0, burst=1, timeout=30, retries=2)
+
+
+async def _fetch_pages(http: Http, address: str, start_ms: int, now: int) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
-    t, now = start_ms, int(time.time() * 1000)
-    with httpx.Client(timeout=30) as c:
+    t = start_ms
+    try:
         while t < now:
-            r = c.post(URL, json={"type": "userFillsByTime", "user": address, "startTime": t, "endTime": now, "aggregateByTime": True})
-            r.raise_for_status()
-            page = r.json() or []
+            body = {"type": "userFillsByTime", "user": address, "startTime": t, "endTime": now, "aggregateByTime": True}
+            page = (await http.post_json("/info", json=body, tool="info:userFillsByTime", args={"startTime": t})).data or []
             if not page:
                 break
             out += page
@@ -44,7 +48,13 @@ def fetch_fills(address: str, start_ms: int = 0) -> list[dict[str, Any]]:
             if len(page) < 2000 or last + 1 <= t:
                 break
             t = last + 1
-            time.sleep(0.3)
+    finally:
+        await http.aclose()
+    return out
+
+
+def fetch_fills(address: str, start_ms: int = 0, http: Http | None = None) -> list[dict[str, Any]]:
+    out = asyncio.run(_fetch_pages(http or info_http(), address, start_ms, int(time.time() * 1000)))
     seen, uniq = set(), []
     for f in sorted(out, key=lambda f: (int(f["time"]), str(f.get("tid")))):
         k = (f.get("tid"), f.get("time"), f.get("oid"))

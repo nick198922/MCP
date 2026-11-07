@@ -38,7 +38,7 @@ from .condor_forward import EARLIEST_T0, ENTRY_CUTOFF_HOUR_UTC, condor_cost, cos
 from .demo_pnl_check import pnl_mismatches
 from .pm_gap_report import T0_TS, T0_V2G_TS, verdict_ts, verdict_ts_v2g, weekly_descriptive, weekly_v2g
 from .setup_signals import TF_MS
-from .setup_versions import EPOCHS, applies, version_of
+from .setup_versions import EPOCHS, _setup, applies, version_of
 from .stuck_demo import stuck_trades
 
 DAY_MS = 86_400_000
@@ -147,8 +147,9 @@ def decision_band(bands: Mapping[int, Band], n: int) -> dict[str, Any]:
 
 def _versioned(row: Mapping[str, Any], now_ms: int) -> str | None:
     """The trade's version tag: its own ``version`` column when it names an epoch of its setup, else the epoch at its
-    fill (an unfilled placement: at its signal bar's close, the earliest moment it could have been placed)."""
-    setup = row.get("setup")
+    fill (an unfilled placement: at its signal bar's close, the earliest moment it could have been placed). The setup
+    name is stripped as in ``version_stats`` so both give one trade the same tag."""
+    setup = _setup(row.get("setup"))
     tag = row.get("version")
     if isinstance(tag, str) and any(e.tag == tag and applies(e, setup) for e in EPOCHS):
         return tag

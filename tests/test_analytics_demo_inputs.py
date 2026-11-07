@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from tradedesk.analytics.checkpoint import _versioned
+from tradedesk.analytics.checkpoint import DEMO, _versioned, demo_forward
 from tradedesk.analytics.setup_versions import EPOCHS, Epoch, applies, version_of, version_stats
 
 H = 3_600_000  # one hour, ms
@@ -136,3 +136,16 @@ def test_checkpoint_tag_matches_version_stats(setup, version):
 def test_checkpoint_tag_unchanged_for_clean_names(setup, tag):
     # clean names, no setup and an empty one keep their tags (an hour after v9, no own version column)
     assert _versioned({"setup": setup, "opened_ts": V9 + H}, NOW) == tag
+
+
+def test_demo_forward_counts_a_padded_setup_name():
+    # card item 229: demo_forward picks the trades of its setup by the stripped name, as _versioned and version_stats
+    # do; a padded " S12 " closed under v9 is an S12 trade, while S1 / S120 / None stay outside
+    (spec,) = (s for s in DEMO if s.setup == "S12")
+    base = {"status": "closed", "opened_ts": V9 + H, "closed_ts": V9 + 2 * H}
+    names = ["S12", " S12 ", "S12\n", "S1", "S120", None]
+    trades = [dict(base, setup=name, link_id=str(i), r_multiple=0.5 + i) for i, name in enumerate(names)]
+    row = demo_forward(spec, trades, NOW)[0]
+    assert row["key"] == "demo:S12"
+    assert row["n"] == 3
+    assert row["metric"] == pytest.approx((0.5 + 1.5 + 2.5) / 3)

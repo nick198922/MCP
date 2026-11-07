@@ -187,7 +187,7 @@ def _closed_r(rows: Sequence[Mapping[str, Any]], now_ms: int) -> list[Mapping[st
 def demo_forward(spec: DemoSpec, trades: Sequence[Mapping[str, Any]], now_ms: int) -> list[dict[str, Any]]:
     """Rows of one demo setup: mean demo R (``r_multiple``: venue P&L with fees / risk from the fill) of the closed
     trades of its current version against the band of the largest n' <= n; for a limit setup also the fill share."""
-    mine = [t for t in trades if t.get("setup") == spec.setup and (spec.timeframe is None or t.get("timeframe") == spec.timeframe)]
+    mine = [t for t in trades if _setup(t.get("setup")) == spec.setup and (spec.timeframe is None or t.get("timeframe") == spec.timeframe)]
     ver = {id(t): _versioned(t, now_ms) for t in mine}
     cur = [t for t in mine if spec.versions is None or ver[id(t)] in spec.versions]
     closed = _closed_r(cur, now_ms)

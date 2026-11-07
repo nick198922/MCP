@@ -178,6 +178,37 @@ def test_scripts_audit_on_a_tmp_tree_lists_both_directions_and_writes_no_values(
     assert env_audit.main(["--root", str(tmp_path)]) == 0
 
 
+def test_names_in_backticks_skips_prose_and_prefix_patterns():
+    text = "| `TRADEDESK_A_DIR` | x |\nprose TRADEDESK_PROSE and `TRADEDESK_FAMILY_*`, ``TRADEDESK_B`` and `x TRADEDESK_C y`\n"
+    assert env_audit.names_in_backticks(text) == {"TRADEDESK_A_DIR", "TRADEDESK_B", "TRADEDESK_C"}
+
+
+def test_scripts_audit_counts_env_scripts_doc_backticked_names_as_documented(tmp_path):
+    _write(tmp_path, "src/tradedesk/config.py", "")
+    _write(
+        tmp_path,
+        "scripts/watch.py",
+        'import os\nos.environ.get("TRADEDESK_DESCRIBED_DIR")\nos.environ.get("TRADEDESK_PROSE_ONLY")\n'
+        'os.environ.get("TRADEDESK_UNDESCRIBED")\n',
+    )
+    _write(
+        tmp_path,
+        "docs/ENV-SCRIPTS.md",
+        "| `TRADEDESK_DESCRIBED_DIR` | `scripts/watch.py` | `~/x` | state dir |\nTRADEDESK_PROSE_ONLY in prose\n",
+    )
+
+    py, setters, shell, docs = env_audit.collect_scripts(tmp_path)
+    assert "docs/ENV-SCRIPTS.md" in docs
+    s = env_audit.audit_scripts(py, setters, shell, docs, code_read=set())
+    assert s.undocumented == {
+        "TRADEDESK_PROSE_ONLY": ["scripts/watch.py"],
+        "TRADEDESK_UNDESCRIBED": ["scripts/watch.py"],
+    }
+    # the reference counts for the scripts section only, not for the server code
+    _write(tmp_path, "src/tradedesk/config.py", 'import os\nos.environ.get("TRADEDESK_DESCRIBED_DIR")\n')
+    assert env_audit.audit(*env_audit.collect(tmp_path)).undocumented == ["TRADEDESK_DESCRIBED_DIR"]
+
+
 def test_audit_all_fine_returns_zero(tmp_path, capsys):
     _write(tmp_path, "src/tradedesk/config.py", 'import os\nos.environ.get("TRADEDESK_OK_ENABLED")\n')
     _write(tmp_path, "deploy/env.example", "#TRADEDESK_OK_ENABLED=1\n")

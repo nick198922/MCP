@@ -1,6 +1,6 @@
 # Змінні оточення скриптів
 
-Довідник назв `TRADEDESK_*`, які читають лише Python-скрипти в `scripts/` і яких немає в `deploy/env.example`, юнітах чи інших документах (розділ «read by a script, set nowhere, documented nowhere» звіту `uv run python scripts/env_audit.py --scripts`, прогін 07.11.2026). Змінні сервера MCP описано в `deploy/env.example`.
+Довідник назв `TRADEDESK_*`, які читають лише скрипти в `scripts/` (Python — перша таблиця, shell — [друга](#shell-скрипти)) і яких немає в `deploy/env.example`, юнітах чи інших документах (розділ «read by a script, set nowhere, documented nowhere» звіту `uv run python scripts/env_audit.py --scripts`, прогін 07.11.2026). Змінні сервера MCP описано в `deploy/env.example`.
 
 Усі 21 назва мають значення за замовчуванням у коді, тож на сервері скрипти працюють без них: жоден юніт у `deploy/user-units/` їх не задає. Задавати їх варто лише для нестандартних шляхів, тестів чи ручного запуску. Значення нижче взято лише з коду; значень оточення й вмісту файлів тут немає. `~` — домашня тека користувача, від якого запущено скрипт (`Path.home()`).
 
@@ -30,7 +30,38 @@
 
 Призначення без «не з'ясовано»: для всіх 21 назви воно видно з коду або docstring скрипта.
 
-## Що не охоплено
+## Shell-скрипти
 
-- 20 назв, які читають лише shell-скрипти агентів (`agents_loop.sh`, `agents_doctor.sh`, `agents_audit.sh`, `scripts/mac/` тощо: `AGENTS_*_WAIT_SECONDS`, `DOCTOR_*`, `AUDIT_*`, `STATUS_*` …), сюди не входять: `env_audit.py --scripts` читає лише Python (AST). Див. [зміни 06.11](changes/2026-11-06-env-audit-scripts.md).
-- `env_audit.py` не враховує цей файл як документ, тож його звіт і далі показує ці 21 назву.
+Назви, які читають лише shell-скрипти (`$NAME` / `${NAME:-…}`), не сервер і не Python-скрипти, і які ніде не задано й не описано (прогін 07.11.2026: таких 31, задано в юніті чи скрипті або описано в документах 11, лишилось 20). Значення за замовчуванням — із `${NAME:-…}` у коді; жоден юніт їх не задає. Секунди — с, відсотки — пункти тижневого використання плану Claude. «Поруч із клоном» — тека з такою назвою поряд із клоном, з якого запущено скрипт (`$(dirname "$REPO")`).
+
+| Назва | Хто читає | За замовчуванням | Призначення |
+|---|---|---|---|
+| `TRADEDESK_AGENTS_FAIL_MAX_WAIT_SECONDS` | `scripts/agents_loop.sh` | `14400` | Найдовша пауза після збоїв поспіль, с: пауза подвоюється від `TRADEDESK_AGENTS_GAP_SECONDS` до цієї межі |
+| `TRADEDESK_AGENTS_GAP_SECONDS` | `scripts/agents_loop.sh` | `300` | Пауза між кроками конвеєра й перша пауза після збою, с |
+| `TRADEDESK_AGENTS_GITHUB_WAIT_SECONDS` | `scripts/agents_loop.sh` | `300` | Інтервал повторної перевірки, поки GitHub недоступний, с |
+| `TRADEDESK_AGENTS_IDLE_WAIT_SECONDS` | `scripts/agents_loop.sh` | `1800` | Очікування, коли роботи немає, с (або до злиття гілки агентів, якщо раніше) |
+| `TRADEDESK_AGENTS_LOUD` | `scripts/nightly_agents.sh` | не задано | `1`: рутинні результати кроку (`idle`, `continues`, `parked`, `unfinished`) знову йдуть у Telegram, а не лише в `history.tsv` і статус |
+| `TRADEDESK_AGENTS_OWNER_PACE_CAP` | `scripts/agents_loop.sh` | `85` | Тижневий %, від якого навіть картки власника чекають на рівномірний графік витрат |
+| `TRADEDESK_AGENTS_REPORT_HOUR` | `scripts/agents_loop.sh` | `9` | Година (`date +%H` сервера), від якої раз на добу запускається щоденна перевірка лікаря |
+| `TRADEDESK_AGENTS_REVIEW_WAIT_SECONDS` | `scripts/agents_loop.sh` | `1800` | Очікування, коли `TRADEDESK_AGENTS_MAX_OPEN` гілок агентів чекають на перегляд власника, с |
+| `TRADEDESK_AUDIT_CLONE` | `scripts/agents_audit.sh` | `tradedesk-audit` поруч із клоном | Окремий клон тижневого аудиту |
+| `TRADEDESK_AUDIT_MAX_SECONDS` | `scripts/agents_audit.sh` | `10800` | Найдовша сесія тижневого аудиту, с |
+| `TRADEDESK_AUDIT_MAX_WEEK_PCT` | `scripts/agents_audit.sh` | `12` | Скільки пунктів тижневого ліміту може витратити аудит; перевірка кожні 5 хв, понад межу сесію зупинено |
+| `TRADEDESK_DASHBOARD_PORT` | `scripts/dashboard-open.sh` | `8090` | Локальний порт SSH-тунелю з Mac до дашборда (на сервері дашборд завжди на `127.0.0.1:8090`) |
+| `TRADEDESK_DOCTOR_CLONE` | `scripts/agents_doctor.sh` | `tradedesk-doctor` поруч із клоном | Окремий клон лікаря |
+| `TRADEDESK_DOCTOR_DAILY_MODEL` | `scripts/agents_doctor.sh` | `sonnet` | Модель Claude для щоденної перевірки лікаря (на збої — `TRADEDESK_DOCTOR_MODEL`, `opus`) |
+| `TRADEDESK_DOCTOR_MAX_PER_DAY` | `scripts/agents_loop.sh` | `4` | Скільки запусків лікаря на збої за добу (щоденна перевірка не рахується) |
+| `TRADEDESK_DOCTOR_MAX_SECONDS` | `scripts/agents_doctor.sh` | `3600` | Найдовша сесія лікаря, с |
+| `TRADEDESK_IDLE_DOCTOR_GAP_SECONDS` | `scripts/agents_loop.sh` | `10800` | Лікар у режимі простою (після двох порожніх кроків поспіль) — не частіше, ніж раз на стільки секунд |
+| `TRADEDESK_SERVER` | `scripts/dashboard-open.sh`, 5 скриптів `scripts/mac/*.sh`, 49 скриптів `scripts/server/*.sh` | `169.58.169.184` | Адреса сервера для `ssh tradedesk@…`, коли скрипт запускають з Mac |
+| `TRADEDESK_STATUS_EVERY_SECONDS` | `scripts/agents_loop.sh` | `7200` | Період тихого статусу проєкту в Telegram (`scripts/agents_status.py`), с |
+| `TRADEDESK_STATUS_QUIET` | `scripts/agents_loop.sh` | `23-8` | Тихі години без статусу, «від-до» за годинником сервера |
+
+Призначення без «не з'ясовано»: для всіх 20 назв воно видно з коду або коментарів скрипта.
+
+Назви з першої таблиці, які читають і shell-скрипти: `TRADEDESK_AGENTS_OWNER_ONLY_AT` (`agents_loop.sh`, `nightly_agents.sh`, той самий `80`), `TRADEDESK_AGENTS_NO_NOTIFY` (`agents_notify.sh`), `TRADEDESK_AGENTS_CACHE_DIR` (`nightly_agents.sh`, той самий шлях), `TRADEDESK_CLAUDE_BIN` (`nightly_agents.sh`, `agents_doctor.sh`, `agents_audit.sh`: за замовчуванням `claude` з `PATH`, а не `~/.local/bin/claude`).
+
+## Як це перевіряє аудит
+
+- `env_audit.py --scripts` вважає назву описаною, якщо вона стоїть у цьому файлі у зворотних лапках (звичайний текст не рахується); тож розділ «read by a script, set nowhere, documented nowhere» для 21 назви першої таблиці порожній. Для назв сервера (`src/tradedesk/`) цей файл не рахується: їхній документ — `deploy/env.example`.
+- Назви, які читають лише shell-скрипти, аудит у своєму звіті не перелічує (правило читання — AST Python), тож таблицю «Shell-скрипти» звірено вручну функціями самого `env_audit.py` (`names_shell_read`, `names_set`). Див. [зміни 06.11](changes/2026-11-06-env-audit-scripts.md).

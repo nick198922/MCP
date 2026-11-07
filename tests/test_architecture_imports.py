@@ -5,6 +5,8 @@
 (b) Network goes through `core.http.Http` and `Exchanges._call`: in `src/tradedesk/` only `core/http.py` and
     `runtime.py` import `httpx`, only `providers/exchanges.py` imports `ccxt`.
 (c) `tools/` (the read-only MCP surface) never import `tradedesk.execution`.
+(d) `tools/` and `providers/` never read the wall clock (`time.time(`, `datetime.now(`, `datetime.utcnow(`, aliases
+    included): time comes from `rt.now`, so tests with a swapped clock do not depend on the real date.
 
 Existing violations live in ALLOWED with the reason; a new one fails the test, and an ALLOWED entry that no longer
 matches anything fails too, so the list only shrinks.
@@ -38,6 +40,9 @@ NETWORK_IMPORT_OWNERS = {
     "ccxt": {"tradedesk/providers/exchanges.py"},
 }
 TOOLS_FORBIDDEN_IMPORTS = ("tradedesk.execution",)
+# Wall-clock reads here bypass the swappable `rt.now` clock (CLAUDE.md invariant 3, docs/BACKLOG.md 6.26). `core/`,
+# collectors and execution/ keep their own clocks and are deliberately not scanned.
+CLOCK_GUARDED = ("tradedesk/tools/", "tradedesk/providers/")
 
 # (rule, file relative to src/, offending module or call) -> why it is accepted for now. See docs/BACKLOG.md 6.20.
 ALLOWED: dict[tuple[str, str, str], str] = {
@@ -90,9 +95,25 @@ def _dotted(node: ast.AST) -> str | None:
     return None
 
 
-def impure_calls(nodes: list[ast.AST]) -> list[tuple[int, str]]:
-    """(line, callee) for `open(`, `time.time(`, `datetime.now(`, `datetime.utcnow(` (any `*.datetime.now` alias too);
-    `nodes` = all of the file's `ast.walk`."""
+def _import_aliases(nodes: list[ast.AST]) -> dict[str, str]:
+    """Local name -> imported dotted name (`import time as t` -> t: time, `from time import time` -> time: time.time,
+    `from datetime import datetime as D` -> D: datetime.datetime), so aliased clock calls resolve to the real callee."""
+    out = {}
+    for node in nodes:
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                if a.asname:
+                    out[a.asname] = a.name
+        elif isinstance(node, ast.ImportFrom) and not node.level and node.module:
+            out.update({a.asname or a.name: f"{node.module}.{a.name}" for a in node.names if a.name != "*"})
+    return out
+
+
+def clock_calls(nodes: list[ast.AST]) -> list[tuple[int, str]]:
+    """(line, callee as written) for wall-clock reads: `time.time(`, `datetime.now(`, `datetime.utcnow(`, aliases
+    included (any `*.datetime.now`, `import time as t; t.time()`, `from time import time; time()`). Monotonic and
+    perf counters are not clock reads. `nodes` = all of the file's `ast.walk`."""
+    aliases = _import_aliases(nodes)
     out = []
     for node in nodes:
         if not isinstance(node, ast.Call):
@@ -100,9 +121,17 @@ def impure_calls(nodes: list[ast.AST]) -> list[tuple[int, str]]:
         name = _dotted(node.func)
         if name is None:
             continue
-        if name in ("open", "time.time") or name.split(".")[-2:] in (["datetime", "now"], ["datetime", "utcnow"]):
+        head, _, rest = name.partition(".")
+        real = ".".join(filter(None, (aliases.get(head, head), rest)))
+        if real == "time.time" or real.split(".")[-2:] in (["datetime", "now"], ["datetime", "utcnow"]):
             out.append((node.lineno, name))
     return out
+
+
+def impure_calls(nodes: list[ast.AST]) -> list[tuple[int, str]]:
+    """(line, callee) for `open(` plus every `clock_calls` hit; `nodes` = all of the file's `ast.walk`."""
+    opens = [(n.lineno, "open") for n in nodes if isinstance(n, ast.Call) and _dotted(n.func) == "open"]
+    return opens + clock_calls(nodes)
 
 
 def violations(rel: str, source: str) -> list[tuple[str, str, str, int]]:
@@ -115,6 +144,8 @@ def violations(rel: str, source: str) -> list[tuple[str, str, str, int]]:
             if _matches(mod, ANALYTICS_FORBIDDEN_IMPORTS):
                 out.append(("analytics-import", rel, mod, line))
         out += [("analytics-call", rel, name, line) for line, name in impure_calls(nodes)]
+    if rel.startswith(CLOCK_GUARDED):
+        out += [("clock-call", rel, name, line) for line, name in clock_calls(nodes)]
     for lib, owners in NETWORK_IMPORT_OWNERS.items():
         if rel in owners or rel.startswith("tradedesk/analytics/"):  # analytics: already reported as analytics-import
             continue
@@ -212,3 +243,43 @@ def test_checker_accepts_clean_and_owner_sources():
     assert violations("tradedesk/providers/exchanges.py", "import ccxt\nimport ccxt.async_support\n") == []
     # Docstrings and comments that mention open(...) are text, not calls.
     assert violations("tradedesk/analytics/doc.py", '"""open(t1) / open(t0) - 1"""\n# time.time()\n') == []
+
+
+CLOCK_BAD = """
+import time
+import time as t
+from time import time as wall
+from datetime import UTC, datetime
+from datetime import datetime as D
+import datetime as dt
+
+def f():
+    return time.time(), datetime.now(UTC), dt.datetime.utcnow(), t.time(), wall(), D.now()
+"""
+CLOCK_BAD_CALLS = {"time.time", "datetime.now", "dt.datetime.utcnow", "t.time", "wall", "D.now"}
+
+
+def test_clock_guard_flags_tools_and_providers():
+    for rel in ("tradedesk/tools/bad.py", "tradedesk/providers/bad.py"):
+        got = {(rule, call) for rule, _, call, _ in violations(rel, CLOCK_BAD)}
+        assert got == {("clock-call", c) for c in CLOCK_BAD_CALLS}, rel
+    # analytics/ keeps its own rule name for the same calls; core/ and execution/ are not scanned for clocks.
+    assert {c for r, _, c, _ in violations("tradedesk/analytics/bad.py", CLOCK_BAD) if r == "analytics-call"} == CLOCK_BAD_CALLS
+    assert violations("tradedesk/core/bad.py", CLOCK_BAD) == []
+    assert violations("tradedesk/execution/bad.py", CLOCK_BAD) == []
+
+
+def test_clock_guard_accepts_rt_now_and_monotonic():
+    clean = """
+import time
+from datetime import UTC, datetime
+
+def f(rt, ms):
+    t0 = time.monotonic()
+    now = rt.now()
+    return now.timestamp(), datetime.fromtimestamp(ms / 1000, UTC), time.perf_counter() - t0, open
+"""
+    assert violations("tradedesk/tools/ok.py", clean) == []
+    assert violations("tradedesk/providers/ok.py", clean) == []
+    # open( is an analytics-only rule: tools/providers may read files (e.g. fixtures, store paths).
+    assert violations("tradedesk/tools/files.py", "def f(p):\n    return open(p)\n") == []

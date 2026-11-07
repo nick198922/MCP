@@ -8,8 +8,11 @@ no network) and checks the statements that run at import time.
 It complements tests/test_scripts_import.py (item 120), which imports the guarded scripts with sockets disabled and
 so sees only what fails; this one also sees work that succeeds quietly (a cache read, a print, a computed table).
 
-Safe at module level: imports, `def` / `class`, docstrings, `pass`, `if TYPE_CHECKING:` / `try:` blocks under the
-same rules, anything under `if __name__ == "__main__":`, and expressions whose calls are all safe:
+Safe at module level: imports, docstrings, `pass`, `if TYPE_CHECKING:` / `try:` blocks under the same rules, anything
+under `if __name__ == "__main__":`, `def` / `class` statements whose import-time parts are safe (item 241: decorators,
+in `SAFE_DECORATORS`, `@x.setter`-style or a safe callable, with safe calls in their arguments; default argument values;
+class bases and keywords; the statements of a class body, its methods included, under the same rules as the module),
+and expressions whose calls are all safe:
 - `SAFE_CALLS` / `SAFE_METHODS`: pure constructors such as `Path(__file__).resolve()`, `re.compile`, `datetime(...)`,
   `sys.path.insert`, `argparse.ArgumentParser` and `add_argument` (but not `parse_args`);
 - a class defined in the same module, or a function of the same module whose body calls only safe things;
@@ -19,9 +22,10 @@ same rules, anything under `if __name__ == "__main__":`, and expressions whose c
 So `main()` and `asyncio.run(...)` may appear only under the guard; a module-level loop or `with` is a finding too.
 
 Exceptions are in `ALLOWED` (file -> number of findings, reason); the count must match the scan, so a new finding in an
-allowed file or a stale entry fails. Not checked: decorators, default argument values, class bodies, a class built at
-import whose `__init__` / `__post_init__` does I/O, `.replace(...)` on a `Path` (treated as the pure `str`/`datetime`
-method), `tradedesk.analytics` code itself, and Python in `.sh` heredocs.
+allowed file or a stale entry fails. Not checked: annotations evaluated at `def` time (scripts without
+`from __future__ import annotations`), defaults of a module-level `lambda`, a class built at import whose `__init__` /
+`__post_init__` does I/O, `.replace(...)` on a `Path` (treated as the pure `str`/`datetime` method),
+`tradedesk.analytics` code itself, and Python in `.sh` heredocs.
 """
 
 from __future__ import annotations
@@ -43,7 +47,7 @@ SAFE_CALLS = frozenset(
         *("datetime.fromisoformat", "date.fromisoformat", "datetime.strptime", "NormalDist", "statistics.NormalDist"),
         *("namedtuple", "collections.namedtuple", "defaultdict", "TypeVar", "field", "dataclasses.field", "Decimal"),
         *("np.datetime64", "sys.path.insert", "sys.path.append", "os.environ.get", "os.getenv"),
-        *("argparse.ArgumentParser",),
+        *("argparse.ArgumentParser", "threading.Lock", "threading.RLock"),
     }
 )
 # Method names that are pure on whatever they are called on (Path, str, dict, datetime, an ArgumentParser).
@@ -55,6 +59,18 @@ SAFE_METHODS = frozenset(
         *("add_parser", "set_defaults"),
     }
 )
+# Decorators that only wrap or annotate the object they are applied to (no I/O, no registry with side effects).
+SAFE_DECORATORS = frozenset(
+    {
+        *("dataclass", "dataclasses.dataclass", "property", "staticmethod", "classmethod", "abstractmethod"),
+        *("abc.abstractmethod", "functools.cache", "functools.lru_cache", "functools.cached_property", "cache"),
+        *("lru_cache", "cached_property", "functools.wraps", "wraps", "functools.total_ordering", "total_ordering"),
+        *("contextlib.contextmanager", "contextmanager", "contextlib.asynccontextmanager", "asynccontextmanager"),
+        *("typing.overload", "overload", "unique", "enum.unique"),
+    }
+)
+# `@x.setter`-style decorators of a property defined above
+_PROPERTY_METHODS = frozenset({"setter", "getter", "deleter"})
 _LOOPS = (ast.For, ast.AsyncFor, ast.While, ast.With, ast.AsyncWith, ast.Match)
 _DEFS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
 
@@ -168,7 +184,10 @@ def _check(body: list[ast.stmt], mod: Module, others: dict[str, Module], out: li
         out.extend((c.lineno, f"call {_dotted(c.func)}()") for c in _calls(node) if not _call_is_safe(c, mod, others))
 
     for st in body:
-        if isinstance(st, (ast.Import, ast.ImportFrom, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Pass)):
+        if isinstance(st, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            _check_def(st, mod, others, out)
+            continue
+        if isinstance(st, (ast.Import, ast.ImportFrom, ast.Pass)):
             continue
         if _is_main_guard(st):
             continue
@@ -183,6 +202,39 @@ def _check(body: list[ast.stmt], mod: Module, others: dict[str, Module], out: li
             out.append((st.lineno, f"{type(st).__name__.lower()} at module level"))
         else:
             out.append((st.lineno, f"{type(st).__name__} at module level"))
+
+
+def _check_def(
+    st: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef,
+    mod: Module,
+    others: dict[str, Module],
+    out: list[tuple[int, str]],
+) -> None:
+    """What a `def` / `class` statement runs at import: decorators, default values, bases and keywords, class body."""
+
+    def calls(node: ast.AST) -> None:
+        out.extend((c.lineno, f"call {_dotted(c.func)}()") for c in _calls(node) if not _call_is_safe(c, mod, others))
+
+    for d in st.decorator_list:
+        # `@deco` and `@deco(...)` both call `deco` on the object; the arguments of `@deco(...)` are evaluated first
+        target = d.func if isinstance(d, ast.Call) else d
+        name = _dotted(target)
+        applied = (
+            name in SAFE_DECORATORS
+            or (isinstance(target, ast.Attribute) and target.attr in _PROPERTY_METHODS)
+            or _name_is_safe(name, mod, others)
+        )
+        if not applied:
+            out.append((d.lineno, f"decorator @{name}"))
+        for part in [d.func, *d.args, *(k.value for k in d.keywords)] if isinstance(d, ast.Call) else [d]:
+            calls(part)
+    if isinstance(st, ast.ClassDef):
+        for e in [*st.bases, *(k.value for k in st.keywords)]:
+            calls(e)
+        _check(st.body, mod, others, out)  # a class body runs at import (methods in it: decorators and defaults)
+    else:
+        for e in [*st.args.defaults, *(d for d in st.args.kw_defaults if d is not None)]:
+            calls(e)
 
 
 def import_side_effects(source: str, others: dict[str, Module] | None = None) -> list[str]:
@@ -234,7 +286,8 @@ def unexplained(found: dict[str, list[str]], allowed: dict[str, tuple[int, str]]
 # path relative to scripts/ -> (number of findings, why running that at import is acceptable). Scan of 07.11: 224 files,
 # 7 with findings; verify_demo_trend_veto and explore_us_open_calls were put under the guard, verify_pm_h11_recheck
 # and verify_pm_h7_qlike now import their sibling with a plain `import` (item 226), these 3 remain. Subdirectories
-# (item 230, 07.11): 8 files in research/ and server/, no findings.
+# (item 230, 07.11): 8 files in research/ and server/, no findings. Decorators, defaults and class bodies (item 241,
+# 07.11): 232 files, one new finding, `threading.Lock()` in a class body of dashboard.py, pure: added to SAFE_CALLS.
 ALLOWED: dict[str, tuple[int, str]] = {
     "lesson_sheets.py": (
         1,
@@ -351,6 +404,84 @@ def test_guard_present_and_variants():
     assert import_side_effects("if __name__ == 'x':\n    main()\n") == ["2: call main()"]
     # a class from another (non-analytics) module is not assumed pure
     assert import_side_effects("from tradedesk.core.http import Http\nH = Http()\n") == ["2: call Http()"]
+
+
+def test_decorators_are_checked():
+    clean = (
+        "import contextlib, functools\nfrom dataclasses import dataclass\n\n\n"
+        "def deco(f):\n    return f\n\n\n"
+        "@dataclass(frozen=True)\nclass A:\n    x: int = 1\n\n"
+        "    @property\n    def y(self):\n        return 1\n\n"
+        "    @y.setter\n    def y(self, v):\n        pass\n\n"
+        "    @staticmethod\n    def s():\n        pass\n\n\n"
+        "@functools.lru_cache(maxsize=int('8'))\n@contextlib.contextmanager\n@deco\ndef f():\n    yield\n"
+    )
+    assert import_side_effects(clean) == []
+    bad = (
+        "import app, functools, requests\nREG = []\n\n\n"
+        "def reg(f):\n    REG.append(f)\n    return f\n\n\n"  # registers: not a pure decorator
+        "@app.route('/')\ndef a():\n    pass\n\n\n"
+        "@functools.lru_cache(maxsize=requests.get('u').json())\ndef b():\n    pass\n\n\n"
+        "@reg\nclass C:\n    pass\n\n\n"
+        "@app.make().route\ndef d():\n    pass\n"
+    )
+    assert import_side_effects(bad) == [
+        "10: decorator @app.route",
+        "15: call requests.get()",
+        "15: call requests.get().json()",
+        "20: decorator @reg",
+        "25: call app.make()",
+        "25: decorator @app.make().route",
+    ]
+
+
+def test_class_bodies_bases_and_keywords_are_checked():
+    clean = (
+        "import threading\nfrom dataclasses import dataclass, field\nfrom typing import NamedTuple\n\n\n"
+        "class Var(NamedTuple):\n    '''Doc.'''\n    name: str\n    n: int = 3\n\n\n"
+        "@dataclass\nclass S:\n    rows: list = field(default_factory=list)\n    lock = threading.Lock()\n"
+        "    if True:\n        LIMIT = int('5')\n\n"
+        "    class Inner:\n        pass\n"
+    )
+    assert import_side_effects(clean) == []
+    bad = (
+        "import json\n\n\n"
+        "class Cfg(make_base()):\n"
+        "    data = json.load(open('x'))\n"
+        "    for i in range(3):\n        pass\n\n"
+        "    class Inner(metaclass=meta()):\n        print('x')\n\n"
+        "    def method(self):\n        return json.load(open('y'))\n"  # a method body runs only when called
+    )
+    assert import_side_effects(bad) == [
+        "4: call make_base()",
+        "5: call json.load()",
+        "5: call open()",
+        "6: for at module level",
+        "9: call meta()",
+        "10: call print()",
+    ]
+
+
+def test_default_argument_values_are_checked():
+    clean = (
+        "import os\nfrom pathlib import Path\n\n\n"
+        "def f(x=3, *, out=Path('a') / 'b', key=os.environ.get('A'), z=None):\n"
+        "    def inner(y=fetch()):\n        return y\n"  # a nested default runs only when `f` runs
+        "    return inner\n"
+    )
+    assert import_side_effects(clean) == []
+    bad = (
+        "import time\n\n\n"
+        "def f(x=time.time(), *, w=load()):\n    pass\n\n\n"
+        "async def g(a=fetch()):\n    pass\n\n\n"
+        "class K:\n    def m(self, now=time.time()):\n        pass\n"
+    )
+    assert import_side_effects(bad) == [
+        "4: call load()",
+        "4: call time.time()",
+        "8: call fetch()",
+        "13: call time.time()",
+    ]
 
 
 def test_sibling_script_helpers_are_resolved():

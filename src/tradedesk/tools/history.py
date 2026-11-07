@@ -782,12 +782,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
         bars: list[dict[str, Any]] = []
         if source == "live":
             fetched = await b.guard(f"ohlcv:{venue}", f"ccxt:{venue}", rt.exchanges.ohlcv(venue, symbol, timeframe, lookback_bars))
-            raw = fetched or []
-            bars = [
-                {"ts": int(x[0]), "open": float(x[1]), "high": float(x[2]), "low": float(x[3]), "close": float(x[4])}
-                for x in raw
-                if isinstance(x, (list, tuple)) and len(x) >= 5
-            ]
+            bars = _live_bars(fetched)  # a row with a non-numeric timestamp or price is dropped, not raised
+            dropped = sum(1 for x in (fetched or []) if isinstance(x, (list, tuple)) and len(x) >= 5) - len(bars)
+            if dropped:
+                b.warn(f"{dropped} malformed bars (non-numeric timestamp or price) dropped; the regime window has fewer bars")
         else:
             if not await store_ready(b, rt, "source='store'"):
                 return b.build(None, ok=False)

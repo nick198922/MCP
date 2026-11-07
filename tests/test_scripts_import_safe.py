@@ -221,8 +221,8 @@ def unexplained(found: dict[str, list[str]], allowed: dict[str, tuple[int, str]]
 
 
 # file name in scripts/ -> (number of findings, why running that at import is acceptable). Scan of 07.11: 224 files,
-# 7 with findings; verify_demo_trend_veto and explore_us_open_calls were put under the guard, these 5 remain.
-_SIBLING = "loads a sibling script with importlib (exec_module) to reuse its helpers; that script is scanned here too"
+# 7 with findings; verify_demo_trend_veto and explore_us_open_calls were put under the guard, verify_pm_h11_recheck
+# and verify_pm_h7_qlike now import their sibling with a plain `import` (item 226), these 3 remain.
 ALLOWED: dict[str, tuple[int, str]] = {
     "lesson_sheets.py": (
         1,
@@ -231,8 +231,6 @@ ALLOWED: dict[str, tuple[int, str]] = {
     ),
     "verify_carry_modules.py": (1, "T_START = time.time(): reads the clock for elapsed seconds in its log lines; no I/O"),
     "verify_course_step5_s17.py": (1, "a for loop that builds the VARIANTS table of Var NamedTuples; pure, no I/O"),
-    "verify_pm_h11_recheck.py": (1, _SIBLING + " (verify_pm_threshold)"),
-    "verify_pm_h7_qlike.py": (1, _SIBLING + " (verify_pm_h7_iv); tests/test_verify_pm_h7_qlike.py imports it"),
 }
 
 

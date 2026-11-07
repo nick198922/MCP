@@ -71,6 +71,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 b.miss("ohlcv", f"ccxt:{exchange}", "data_unavailable", "empty result")
             return b.build(None, ok=False)
         closes = [c[4] for c in rows if json_num(c[4])]  # a close that is not a number is skipped like a missing one
+        if not closes:
+            b.miss("ohlcv", f"ccxt:{exchange}", "data_unavailable", "no numeric close")
+            return b.build(None, ok=False)
         summary: dict[str, Any] = {"candles": len(rows), "first_close": closes[0], "last_close": closes[-1]}
         summary["return_pct"] = r((closes[-1] / closes[0] - 1) * 100, 3)
         if len(closes) >= 10:

@@ -69,6 +69,26 @@ async def test_hyperliquid_snapshot_keeps_accounts_that_left_the_universe(state,
         await rt.aclose()
 
 
+async def test_tracked_traders_skips_a_kept_account_below_the_floor_even_with_the_top_pnl(state):
+    """Review 2026-11-06-traders-survivorship, remark 3: a kept account with the highest month and all-time PnL of the
+    latest day but a value below the floor is not watched; with the floor at 0 the same row heads both rankings, so the
+    floor (not the PnL) is what keeps it out."""
+    small = "0x" + "0" * 39 + "3"
+    rt = _runtime(state, pm_fail=True)
+    try:
+        await rt.store.init()
+        await rt.store.insert_trader_snapshot("2026-08-11", 0, "hyperliquid", [{"account": small, "account_value": 600_000.0}])
+        assert await _collect_traders(rt) == 3  # written on 2026-10-10 as a kept account
+        top = {"account": small, "account_value": 100_000.0, "pnl_month": 1e12, "pnl_all": 1e12}
+        await rt.store.insert_trader_snapshot("2026-10-10", 0, "hyperliquid", [top])
+        floor = rt.settings.traders_min_account_usd
+        watched = await rt.store.tracked_traders("hyperliquid", 5, floor)
+        assert small not in watched and len(watched) == 2  # the two accounts above the floor
+        assert (await rt.store.tracked_traders("hyperliquid", 1, 0.0)) == [small]
+    finally:
+        await rt.aclose()
+
+
 def test_parse_positions_sides_and_units():
     pos = parse_positions(HL_STATE)
     assert [(p["market"], p["side"]) for p in pos] == [("BTC", "long"), ("ETH", "short")]

@@ -268,7 +268,10 @@ MIGRATIONS: dict[int, list[str]] = {
             pnl_day REAL, pnl_week REAL, pnl_month REAL, pnl_all REAL,   -- USD
             roi_month REAL, roi_all REAL,          -- decimal (Hyperliquid only)
             vlm_month REAL,                        -- USD traded in the month window
-            rank_month INTEGER,                    -- rank by pnl_month among the stored accounts of that venue and day
+            rank_month INTEGER,                    -- rank by pnl_month among the stored accounts of that venue and day;
+                                                   -- since 2026-11-06 (Hyperliquid) the day also holds accounts kept by
+                                                   -- TRADERS_KEEP_DAYS below the floor, so filter account_value >= 500k
+                                                   -- for the universe and do not compare ranks or COUNT(*) across that date
             PRIMARY KEY (day, venue, account)
         )
         """,

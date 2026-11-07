@@ -1,4 +1,4 @@
-# 2026-11-07 · Охоронець годинника: `datetime.today()` (пункт 231)
+# 2026-11-07 · Охоронець годинника: `datetime.today()` (пункт 231b)
 
 Пункт 231 [постійної картки](../ideas/IDEA-20261102-standing-improvements.md), закриває лишок [пункту 224](2026-11-07-clock-guard-today.md); інваріант 3 `CLAUDE.md` (час — через `rt.now`). Змінено лише `tests/test_architecture_imports.py`; `src/`, `core/`, `execution/`, колектори й реєстрації не чіпано.
 

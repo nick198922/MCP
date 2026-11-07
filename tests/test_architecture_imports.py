@@ -325,7 +325,7 @@ def f(rt, s):
     assert violations("tradedesk/providers/ok.py", clean) == []
 
 
-# `datetime.today()` is the naive local server time: it bypasses `rt.now` like `datetime.now()` (item 231).
+# `datetime.today()` is the naive local server time: it bypasses `rt.now` like `datetime.now()` (item 231b).
 # Two sources, because `import datetime` and `from datetime import datetime` bind the same name.
 CLOCK_DT_TODAY_BAD = {
     """

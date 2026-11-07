@@ -1,15 +1,20 @@
-"""Check the SELECT queries written as string literals in scripts/*.py and src/tradedesk/ against the SQLite schema.
+"""Check the SQL queries (SELECT and writes) written as string literals in scripts/*.py and src/tradedesk/ against the schema.
 
 Read-only, stdlib only (``ast`` + ``re`` + ``sqlite3``). The schema is built in an in-memory database from the project's
 own migrations: ``MIGRATIONS`` of src/tradedesk/store/schema.py is read with ``ast.literal_eval`` (nothing is imported)
 and its statements are applied in version order, as ``Store.init()`` does. Queries are collected from the sources with
 ``ast`` (no code is executed): a string constant counts as a query when it starts with ``SELECT`` or ``WITH ... AS (``
-(any case) and has a ``FROM``. Each static query is prepared with ``EXPLAIN`` against the empty schema, so SQLite itself
-resolves tables, aliases, joins and subqueries; missing bindings (``?``, ``:name``) are expected and count as success.
+(any case) and has a ``FROM``, or when it is a write: ``INSERT [OR ...] INTO``, ``REPLACE INTO``, ``UPDATE [OR ...] t
+SET``, ``DELETE FROM``. Each static query is prepared with ``EXPLAIN`` against the empty in-memory schema (prepared,
+never run), so SQLite itself resolves tables, aliases, joins and subqueries, and for writes the target table, the
+``INSERT`` column list, the ``SELECT`` part of ``INSERT ... SELECT``, ``SET`` columns, ``WHERE`` columns (any, not only
+simple ones), ``ON CONFLICT`` targets and ``RETURNING``; missing bindings (``?``, ``:name``) are expected and count as
+success.
 
 Categories:
 
-- ``missing table`` / ``missing column``: SQLite answers ``no such table`` / ``no such column`` (exit code 1);
+- ``missing table`` / ``missing column``: SQLite answers ``no such table`` / ``no such column`` / ``table t has no
+  column named c`` (``INSERT``) (exit code 1);
 - ``other database``: a schema-qualified table (``labels.addresses``) of a remote engine such as Dune, information;
 - ``other error``: any other preparation error (syntax, unknown function, a string that only looks like SQL), information;
 - ``expanded``: an f-string or ``+`` chain whose fragments are all constants (module constants, constants imported
@@ -26,8 +31,9 @@ A file whose own literals hold ``CREATE TABLE`` (a script with its own database 
 against the migrated schema plus those tables.
 
 Limits: only literals are seen (a query assembled from constants elsewhere is either skipped or not found); a reader
-of another database file that does not create its tables shows up as ``missing table``; ``INSERT ... SELECT`` and DDL are not
-checked; columns added by the code at run time (not by a migration) are not known.
+of another database file that does not create its tables shows up as ``missing table``; DDL is not checked; a
+write that starts with ``WITH`` is checked only when its CTE has a ``FROM``; columns added by the code at run time (not
+by a migration) are not known.
 
     uv run python scripts/sql_schema_check.py [--root .] [--out ~/.cache/tradedesk-agents/tmp/sql_schema_check.md]
 """
@@ -52,11 +58,40 @@ _FROM = re.compile(r"\bFROM\b", re.IGNORECASE)
 _CREATE_TABLE = re.compile(r"^\s*CREATE\s+(TEMP\s+|TEMPORARY\s+)?TABLE\b", re.IGNORECASE | re.MULTILINE)
 _QUALIFIED = re.compile(r"no such table: (?!main\.|temp\.)\w+\.\w+")
 _PLACEHOLDER = re.compile(r"\{[A-Za-z_]\w*(\.\w+)*\}|\{\}|\{\d+\}|%[sdr]|%\([A-Za-z_]\w*\)")
+_WRITE_START = re.compile(
+    r"^\s*(INSERT\s+(OR\s+\w+\s+)?INTO\b|REPLACE\s+INTO\b|DELETE\s+FROM\b|UPDATE\s+(OR\s+\w+\s+)?\S+\s+SET\b)", re.IGNORECASE
+)
+_WRITE_TARGET = re.compile(
+    r"^\s*(?P<verb>INSERT|REPLACE|UPDATE|DELETE)(\s+OR\s+\w+)?\s+((INTO|FROM)\s+)?(?P<table>\"[^\"]+\"|`[^`]+`|\[[^\]]+\]|[\w.]+)",
+    re.IGNORECASE,
+)
 
 
 def looks_like_select(text: str) -> bool:
     """True when a string reads as a SELECT (or WITH ... AS ( ... ) query with a FROM. Pure."""
     return bool(_SQL_START.match(text) and _FROM.search(text))
+
+
+def looks_like_write(text: str) -> bool:
+    """True when a string reads as ``INSERT [OR ...] INTO``, ``REPLACE INTO``, ``UPDATE [OR ...] t SET`` or
+    ``DELETE FROM``. Pure."""
+    return bool(_WRITE_START.match(text))
+
+
+def looks_like_sql(text: str) -> bool:
+    return looks_like_select(text) or looks_like_write(text)
+
+
+def write_target(sql: str) -> tuple[str, str] | None:
+    """(verb, table) of a write query (``REPLACE`` counts as ``INSERT``; quotes removed), None for anything else. Pure."""
+    m = _WRITE_TARGET.match(sql) if looks_like_write(sql) else None
+    if m is None:
+        return None
+    verb = m["verb"].upper()
+    table = m["table"]
+    if table[0] in '"`[':
+        table = table[1:-1]
+    return ("INSERT" if verb == "REPLACE" else verb), table
 
 
 @dataclass(frozen=True)
@@ -442,7 +477,8 @@ class _Resolver:
 
 
 def extract_queries(source: str, file: str = "<src>", modules: Mapping[str, str] | None = None) -> list[Query]:
-    """SELECT queries written as string literals in one Python source: static, expanded from constants, or dynamic.
+    """SQL queries (SELECT and writes) written as string literals in one Python source: static, expanded from
+    constants, or dynamic.
 
     A query built from constant fragments only (f-string or ``+`` over module constants, loop variables of a constant
     list, conditional expressions) comes back as one ``Query(expanded=True)`` per variant. ``modules`` = {module
@@ -459,7 +495,7 @@ def extract_queries(source: str, file: str = "<src>", modules: Mapping[str, str]
         reason: str | None
         if isinstance(node, ast.JoinedStr):
             text = _fstring_text(node)
-            if not looks_like_select(text):
+            if not looks_like_sql(text):
                 continue
             reason = "f-string"
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
@@ -467,7 +503,7 @@ def extract_queries(source: str, file: str = "<src>", modules: Mapping[str, str]
             if isinstance(up, ast.JoinedStr | ast.Expr):  # a piece of an f-string (seen above) or a docstring
                 continue
             text = node.value
-            if not looks_like_select(text):
+            if not looks_like_sql(text):
                 continue
             reason = None
             if isinstance(up, ast.BinOp) and isinstance(up.op, ast.Add | ast.Mod):
@@ -552,7 +588,7 @@ def check_query(conn: sqlite3.Connection, sql: str) -> tuple[str, str]:
             return "other database", msg
         if msg.startswith("no such table"):
             return "missing table", msg
-        if msg.startswith("no such column"):
+        if msg.startswith("no such column") or " has no column named " in msg:  # the latter: an INSERT column list
             return "missing column", msg
         return "other error", msg
     return "ok", ""
@@ -625,14 +661,27 @@ def _one_line(sql: str, width: int = 110) -> str:
     return s if len(s) <= width else s[: width - 1] + "…"
 
 
+def _literals(findings: list[Finding], dynamic: list[Query]) -> str:
+    variants = sum(1 for f in findings if f.query.expanded)
+    expanded = len({(f.query.file, f.query.line) for f in findings if f.query.expanded})
+    static = len(findings) - variants
+    return (
+        f"{static + expanded + len(dynamic)} literals ({static} static, {expanded} expanded from constants "
+        f"into {variants} variants, {len(dynamic)} dynamic)"
+    )
+
+
 def render(rep: Report) -> str:
-    variants = sum(1 for f in rep.findings if f.query.expanded)
-    expanded = len(rep.expanded_sites)
-    static = len(rep.findings) - variants
+    writes = [f for f in rep.findings if looks_like_write(f.query.sql)]
+    reads = [f for f in rep.findings if not looks_like_write(f.query.sql)]
+    w_dyn = [q for q in rep.dynamic if looks_like_write(q.sql)]
+    r_dyn = [q for q in rep.dynamic if not looks_like_write(q.sql)]
+    verbs = {v: sum(1 for f in writes if (t := write_target(f.query.sql)) and t[0] == v) for v in ("INSERT", "UPDATE", "DELETE")}
+    w_ok = sum(1 for f in writes if f.kind == "ok")
     lines = [
-        f"# sql_schema_check: {rep.tables} tables in the migrated schema, {rep.files} files, "
-        f"{static + expanded + len(rep.dynamic)} SELECT literals ({static} static, {expanded} expanded from constants "
-        f"into {variants} variants, {len(rep.dynamic)} dynamic)",
+        f"# sql_schema_check: {rep.tables} tables in the migrated schema, {rep.files} files, SELECT {_literals(reads, r_dyn)}",
+        f"write queries (INSERT / UPDATE / DELETE): {_literals(writes, w_dyn)}; checked {len(writes)}: ok {w_ok}, "
+        f"problems {len(writes) - w_ok} ({', '.join(f'{v} {n}' for v, n in verbs.items())})",
         "",
         f"ok: {len(rep.of('ok'))}",
     ]

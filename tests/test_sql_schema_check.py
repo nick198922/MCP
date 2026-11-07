@@ -1,5 +1,5 @@
-"""scripts/sql_schema_check.py (items 157, 175, 200 of docs/ideas/IDEA-20261102-standing-improvements.md): SELECT literals
-vs schema."""
+"""scripts/sql_schema_check.py (items 157, 175, 200, 215 of docs/ideas/IDEA-20261102-standing-improvements.md): SELECT and
+write literals vs schema."""
 
 import sys
 from pathlib import Path
@@ -202,6 +202,64 @@ def test_truly_dynamic_stays_skipped_with_reason():
         (14, "helper() is more than one return"),
         (15, "'x' * len(extra)"),  # only `?`, commas and spaces count as a placeholder run
     ]
+
+
+WRITES = """
+def write(con, table, rows):
+    con.execute("INSERT INTO journal (id, symbol, opened_ts) VALUES (?, ?, ?)")
+    con.execute("insert or replace into journal(id, pnl) values (?, ?)")
+    con.execute("INSERT INTO jornal (id) VALUES (?)")
+    con.execute("INSERT INTO journal (id, symbl) VALUES (?, ?)")
+    con.execute("UPDATE journal SET pnl = ? WHERE id = ?")
+    con.execute("UPDATE OR IGNORE journal SET pnll = ? WHERE id = ?")
+    con.execute("UPDATE journal SET pnl = 0 WHERE symbl = ?")
+    con.execute("DELETE FROM journal WHERE opened_ts < ?")
+    con.execute("DELETE FROM journl WHERE id = ?")
+    con.execute("INSERT INTO journal (symbol, opened_ts) SELECT symbol, max(opened_ts) FROM journal GROUP BY symbol")
+    con.execute("INSERT INTO journal (id, symbol) SELECT id, symbl FROM journal")
+    con.execute(f"INSERT INTO {table} (id) VALUES (?)")
+    con.execute("DELETE FROM " + table)
+    con.execute("UPDATE journal SET %s WHERE id = ?" % rows)
+    note = "update the journal and set the date, then insert it into the file"
+    con.execute("INSERT INTO journal (id, symbol) VALUES (?)")
+    return note
+"""
+
+
+def test_write_queries_are_checked():
+    qs = sc.extract_queries(WRITES, "w.py")
+    assert [q.line for q in qs if q.dynamic is None] == [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 18]  # prose not taken
+    assert [(q.line, q.dynamic, q.why) for q in qs if q.dynamic] == [
+        (14, "f-string", "parameter table"),
+        (15, "concatenated", "parameter table"),
+        (16, "%-formatted", ""),
+    ]
+    rep = sc.check({"w.py": WRITES}, MIGRATIONS)
+    kinds = _by_line(rep)
+    assert {ln for ln, k in kinds.items() if k == "ok"} == {3, 4, 7, 10, 12}  # INSERT ... SELECT included
+    assert {ln: k for ln, k in kinds.items() if k != "ok"} == {
+        5: "missing table",
+        6: "missing column",  # INSERT column list
+        8: "missing column",  # UPDATE SET
+        9: "missing column",  # UPDATE WHERE
+        11: "missing table",  # DELETE FROM
+        13: "missing column",  # the SELECT part of INSERT ... SELECT
+        18: "other error",  # 2 columns, 1 value: reported, not a schema failure
+    }
+    assert "has no column named symbl" in next(f.detail for f in rep.findings if f.query.line == 6)
+    assert rep.failed
+    head = sc.render(rep).splitlines()[1]
+    assert head.startswith("write queries (INSERT / UPDATE / DELETE): 15 literals (12 static,")
+    assert "3 dynamic); checked 12: ok 5, problems 7 (INSERT 7, UPDATE 3, DELETE 2)" in head
+
+
+def test_write_target_parses_verb_and_table():
+    assert sc.write_target("INSERT OR IGNORE INTO journal (id) VALUES (?)") == ("INSERT", "journal")
+    assert sc.write_target('REPLACE INTO "journal" (id) VALUES (?)') == ("INSERT", "journal")
+    assert sc.write_target("  update or replace journal set pnl = 1") == ("UPDATE", "journal")
+    assert sc.write_target("DELETE FROM main.journal WHERE id = ?") == ("DELETE", "main.journal")
+    assert sc.write_target("SELECT id FROM journal") is None
+    assert sc.write_target("update the journal and set the date") is None
 
 
 def test_clean_source_does_not_fail():

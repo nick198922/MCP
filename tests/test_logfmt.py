@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import io
 import json
 import logging
@@ -11,6 +10,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from conftest import wait_until
 from tradedesk.collector.scheduler import PeriodicJob, Scheduler
 from tradedesk.logfmt import JsonFormatter
 from tradedesk.server import configure_logging
@@ -118,10 +118,7 @@ async def test_scheduler_failure_passes_job_and_error(caplog):
     with caplog.at_level(logging.WARNING, logger="tradedesk.collector"):
         await sched.start()
         try:
-            for _ in range(50):
-                if sched.jobs[0].metrics.runs > 0:
-                    break
-                await asyncio.sleep(0.02)
+            await wait_until(lambda: sched.jobs[0].metrics.runs > 0)
         finally:
             await sched.stop()
     recs = [r for r in caplog.records if r.getMessage() == "collector job boom failed: nope"]

@@ -108,12 +108,15 @@ async def _rv30(rt: Runtime, b: Builder, asset: str) -> float | None:
     bars = await rb.guard(f"rv30:{asset}", f"ccxt:{RV_VENUE}", rt.exchanges.ohlcv(RV_VENUE, f"{asset}/USDT", "1d", RV_DAYS + 3))
     today_ms = int(rt.now().timestamp()) // 86400 * 86_400_000
     closes = []
+    bad = 0
     for x in bars or []:
-        try:
+        try:  # a time or close that is NaN / inf / a 300+-digit integer (OverflowError) drops the bar, counted below
             if int(x[0]) < today_ms:
-                closes.append((int(x[0]), float(x[4])))
-        except (TypeError, ValueError, IndexError):
-            continue
+                closes.append((int(x[0]), finite_float(x[4])))
+        except (TypeError, ValueError, IndexError, OverflowError):
+            bad += 1
+    if bad:
+        b.warn(f"rv30:{asset}: ccxt:{RV_VENUE} {asset}/USDT 1d: {bad} bar(s) with a time or close that is not a finite number dropped")
     rv, why = (
         trailing_rv(closes, rt.now(), RV_DAYS)
         if closes

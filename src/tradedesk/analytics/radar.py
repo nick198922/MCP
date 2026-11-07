@@ -178,7 +178,10 @@ def _day_ms(iso: str) -> int:
 def _num(x: Any) -> float | None:
     if isinstance(x, bool) or not isinstance(x, (int, float)):
         return None
-    v = float(x)
+    try:
+        v = float(x)
+    except OverflowError:  # a 300+-digit JSON integer
+        return None
     return v if math.isfinite(v) else None
 
 
@@ -303,7 +306,12 @@ def _events(events: list[dict[str, Any]]) -> list[tuple[int, dict[str, Any]]]:
     return uniq
 
 
-def forward_vols(expiries: list[Any], events: list[dict[str, Any]], now_ms: int | None = None) -> dict[str, Any]:
+def forward_vols(
+    expiries: list[Any],
+    events: list[dict[str, Any]],
+    now_ms: int | None = None,
+    miss: Callable[[str, str], None] | None = None,
+) -> dict[str, Any]:
     """Forward vol between neighbouring expiries of an archive row, tagged with the calendar events inside each window.
 
     ``expiries``: the row's [[expiry unix s, days, forward, ATM IV], ...]. Forward variance between expiries 0 and 1 is
@@ -311,13 +319,20 @@ def forward_vols(expiries: list[Any], events: list[dict[str, Any]], now_ms: int 
     ``reason``. An event belongs to the window (expiry 0, expiry 1] by its UTC time. Windows ending at or before
     ``now_ms`` (an archive row up to two days old) are dropped. ``hot``: the window is at least `HOT_MIN_DAYS` long,
     ends within `HOT_HORIZON_DAYS` and its forward vol is >= the median of such windows + `HOT_MARGIN` (the
-    prototype's rule). Decimal vols; days from the row's 19:00 UTC reference.
+    prototype's rule). Decimal vols; days from the row's 19:00 UTC reference. An expiry whose time or days is absent,
+    not a number, NaN / inf or a 300+-digit integer is dropped and counted through ``miss("forward_vol", reason)``.
     """
     pts = []
+    bad = 0
     for e in expiries:
         try:
-            exp_s, days, iv = int(e[0]), float(e[1]), _num(e[3])
-        except (TypeError, ValueError, IndexError):
+            # int(float()): a 300+-digit expiry raises here instead of in the timestamp formatting below
+            exp_s, days, iv = int(float(e[0])), float(e[1]), _num(e[3])
+        except (TypeError, ValueError, IndexError, OverflowError):  # OverflowError: int(inf), float() of a 300+-digit int
+            bad += 1
+            continue
+        if not math.isfinite(days):
+            bad += 1
             continue
         if iv is not None and iv > 0 and days > 0:
             pts.append((days, exp_s, iv))
@@ -348,6 +363,8 @@ def forward_vols(expiries: list[Any], events: list[dict[str, Any]], now_ms: int 
         med = s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
         for w in weekly:
             w["hot"] = w["fwd"] >= med + HOT_MARGIN
+    if bad and miss is not None:
+        miss("forward_vol", f"{bad} expiry row(s) of the radar archive with a time or days that is not a finite number dropped")
     return {"windows": windows, "median_weekly": med}
 
 
@@ -507,7 +524,7 @@ def radar_view(
     out["skew"] = {"now": s_now, "week": s_week, "change": _sub(s_now, s_week, ("put_skew_25", "rr_25"))}
     out["smile"] = {"now": now_row["smile"] if now_row else None, "week": week_row["smile"] if week_row else None}
 
-    out["forward_vol"] = forward_vols(now_row["expiries"], events, now_ms) if now_row else {"windows": [], "median_weekly": None}
+    out["forward_vol"] = forward_vols(now_row["expiries"], events, now_ms, miss) if now_row else {"windows": [], "median_weekly": None}
     if now_row and not out["forward_vol"]["windows"]:
         miss("forward_vol", "fewer than two expiries with an ATM IV, or every window has ended")
     out["year"] = year_series(rows, dvol, closes, now, miss)

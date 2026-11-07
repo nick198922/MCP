@@ -12,12 +12,14 @@ Categories:
 - ``missing table`` / ``missing column``: SQLite answers ``no such table`` / ``no such column`` (exit code 1);
 - ``other database``: a schema-qualified table (``labels.addresses``) of a remote engine such as Dune, information;
 - ``other error``: any other preparation error (syntax, unknown function, a string that only looks like SQL), information;
-- ``expanded``: an f-string or ``+`` chain whose fragments are all constants (module constants, loop variables over a
-  constant list/tuple, conditional expressions, ``", ".join(COLS)``, ``COLS.split()``) is expanded into every variant
-  and each variant is checked like a static query (a ``missing`` finding names the variant's line);
-- ``skipped (dynamic)``: the text is built at run time from something arbitrary (parameter, attribute, call result, list
-  built in a loop, ``%``, ``.format``, ``{name}``/``%s`` placeholders) and is not checked; listed with the reason and the
-  first unresolved expression;
+- ``expanded``: an f-string or ``+`` chain whose fragments are all constants (module constants, constants imported
+  from another scanned module, loop variables over a constant list/tuple, conditional expressions, ``", ".join(COLS)``,
+  ``COLS.split()``, comprehensions, a ``where`` list filled by ``.append`` (all conditions at once), ``"?" * len(xs)``,
+  a one-``return`` helper called with constants) is expanded into every variant and each variant is checked like a
+  static query (a ``missing`` finding names the variant's line);
+- ``skipped (dynamic)``: the text is built at run time from something arbitrary (parameter, attribute of an object,
+  other call result, ``%``, ``.format``, ``{name}``/``%s`` placeholders) and is not checked; listed with the reason and
+  the first unresolved expression;
 - ``skipped (multiple statements)``: a script for ``executescript``, not checked.
 
 A file whose own literals hold ``CREATE TABLE`` (a script with its own database file, scripts/copy_vaults.py) is checked
@@ -38,8 +40,9 @@ import re
 import sqlite3
 import sys
 import warnings
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 SCHEMA_FILE = "src/tradedesk/store/schema.py"
 SCOPES = {"scripts": ("scripts", "*.py"), "src": ("src/tradedesk", "**/*.py")}
@@ -82,23 +85,68 @@ def _str_value(v: object) -> str | None:
     return v if isinstance(v, str) else str(v) if isinstance(v, int | float) and not isinstance(v, bool) else None
 
 
+_MUTATORS = {"extend", "insert", "remove", "pop", "clear", "sort", "reverse"}
+_PLACEHOLDER_RUN = set("?, ")
+Scope = ast.FunctionDef | ast.AsyncFunctionDef | None
+
+
+def module_name(path: str) -> str | None:
+    """Import name of a scanned source: ``scripts/x.py`` -> ``x``, ``src/tradedesk/a/b.py`` -> ``tradedesk.a.b``. Pure."""
+    p = PurePosixPath(path)
+    if p.suffix != ".py":
+        return None
+    parts = list(p.with_suffix("").parts)
+    if parts[:1] == ["scripts"] and len(parts) == 2:
+        return parts[1]
+    if parts[:2] == ["src", "tradedesk"]:
+        mod = parts[1:]
+        if mod[-1] == "__init__":
+            mod.pop()
+        return ".".join(mod)
+    return None
+
+
 class _Resolver:
     """Expands an expression built only from constants into the list of strings it can take. Pure, executes nothing.
 
     Understood: string constants, ``+``, f-strings, conditional expressions (both branches), names bound to such
-    expressions (module level or in the enclosing function), loop variables over a constant list/tuple (also a
-    module-level one; tuple targets stay correlated), ``sep.join(seq)`` and ``text.split()`` of constant sequences,
-    comprehensions over a constant sequence (the ``if`` filter is ignored: a superset). Anything else raises
-    ``_Unresolved`` with the offending expression."""
+    expressions (module level or in the enclosing function), constants imported from another scanned module
+    (``from m import NAME``, ``m.NAME``), loop variables over a constant list/tuple (also a module-level one; tuple
+    targets stay correlated), ``sep.join(seq)`` and ``text.split()`` of constant sequences, comprehensions over a
+    constant sequence (the ``if`` filter is ignored: a superset), a list filled by ``.append(...)`` in the function
+    (all appended items at once: a superset, e.g. every ``WHERE`` condition joined), a run of placeholders
+    ``"?" * len(xs)`` (one repetition: the same shape for any n >= 1), a call of a module function or ``self.``
+    method whose body is a single ``return`` with constant arguments. Anything else raises ``_Unresolved`` with the
+    offending expression."""
 
-    def __init__(self, tree: ast.Module, parent: dict[ast.AST, ast.AST]):
+    def __init__(
+        self,
+        tree: ast.Module,
+        parent: dict[ast.AST, ast.AST],
+        modules: Mapping[str, str] | None = None,
+        cache: dict[str, _Resolver | None] | None = None,
+    ):
         self.parent = parent
+        self.modules = modules or {}  # {module name: source} of the other scanned files
+        self.cache = {} if cache is None else cache
         self.module: dict[str, ast.expr] = {}
+        self.functions: dict[str, ast.FunctionDef] = {}
+        self.imported: dict[str, tuple[str, str]] = {}  # local name -> (module, name) of `from module import name`
+        self.aliases: dict[str, str] = {}  # local name -> module of `import module [as name]`
         for node in tree.body:
             if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
                 self.module[node.targets[0].id] = node.value
             elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.value is not None:
                 self.module[node.target.id] = node.value
+            elif isinstance(node, ast.FunctionDef):
+                self.functions[node.name] = node
+            elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+                for a in node.names:
+                    self.imported[a.asname or a.name] = (node.module, a.name)
+            elif isinstance(node, ast.Import):
+                for a in node.names:
+                    if a.asname or "." not in a.name:
+                        self.aliases[a.asname or a.name] = a.name
 
     def _func(self, node: ast.AST) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
         while node in self.parent:
@@ -106,6 +154,108 @@ class _Resolver:
             if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
                 return node
         return None
+
+    def _other(self, name: str) -> _Resolver:
+        """The resolver of another scanned module (parsed once per run of ``extract_queries``)."""
+        if name not in self.cache:
+            src = self.modules.get(name)
+            try:
+                self.cache[name] = None if src is None else _Resolver(ast.parse(src), {}, self.modules, self.cache)
+            except SyntaxError:
+                self.cache[name] = None
+        r = self.cache[name]
+        if r is None:
+            raise _Unresolved(f"module {name} not scanned")
+        return r
+
+    def _module_of(self, name: str) -> str | None:
+        """The scanned module a local name stands for (``import m as x`` / ``from pkg import m``), else None."""
+        if name in self.aliases:
+            return self.aliases[name]
+        if name in self.imported:
+            full = ".".join(self.imported[name])
+            if full in self.modules:
+                return full
+        return None
+
+    def _global(self, name: str, depth: int = 0) -> list[tuple[_Resolver, ast.expr, Scope]]:
+        if depth > _MAX_DEPTH:
+            raise _Unresolved("too deep")
+        if name in self.module:
+            return [(self, self.module[name], None)]
+        if name in self.imported and self._module_of(name) is None:
+            mod, attr = self.imported[name]
+            return self._other(mod)._global(attr, depth + 1)
+        raise _Unresolved(f"name {name}")
+
+    def _values(self, node: ast.expr, scope: Scope) -> list[tuple[_Resolver, ast.expr, Scope]] | None:
+        """Where a name (or ``module.NAME``) is bound: (resolver of its module, expression, its scope); None when
+        ``node`` is neither."""
+        if isinstance(node, ast.Name):
+            return self._lookup(node.id, scope)
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and (mod := self._module_of(node.value.id)):
+            return self._other(mod)._global(node.attr)
+        return None
+
+    def _appended(self, name: str, scope: ast.FunctionDef | ast.AsyncFunctionDef, depth: int) -> list[str]:
+        """Every value ``name.append(...)`` adds to a list in ``scope`` (under the loops around each call)."""
+        out: list[str] = []
+        for n in ast.walk(scope):
+            if isinstance(n, ast.Subscript) and isinstance(n.ctx, ast.Store) and isinstance(n.value, ast.Name) and n.value.id == name:
+                raise _Unresolved(f"{name}[...] is assigned")
+            if not (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and isinstance(n.func.value, ast.Name)):
+                continue
+            if n.func.value.id != name:
+                continue
+            if n.func.attr in _MUTATORS:
+                raise _Unresolved(f"{name}.{n.func.attr}()")
+            if n.func.attr != "append":
+                continue
+            if len(n.args) != 1 or n.keywords:
+                raise _Unresolved(ast.unparse(n))
+            for b in self._bindings(n, scope):
+                out += [s for s in self.strings(n.args[0], b, scope, depth + 1) if s not in out]
+        return out
+
+    def _helper(self, call: ast.Call) -> tuple[ast.FunctionDef, list[str], ast.expr] | None:
+        """(function, parameters bound by the call, returned expression) of a call of a module function or of a
+        ``self.`` method defined in the class around the call; None when the callee is neither."""
+        f = call.func
+        func: ast.FunctionDef | None = None
+        drop = 0
+        if isinstance(f, ast.Name) and f.id in self.functions:
+            func = self.functions[f.id]
+        elif isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) and f.value.id in {"self", "cls"}:
+            node: ast.AST = call
+            while node in self.parent and not isinstance(node, ast.ClassDef):
+                node = self.parent[node]
+            if isinstance(node, ast.ClassDef):
+                func = next((n for n in node.body if isinstance(n, ast.FunctionDef) and n.name == f.attr), None)
+            if func is not None:
+                static = any(isinstance(d, ast.Name) and d.id == "staticmethod" for d in func.decorator_list)
+                drop = 0 if static else 1
+        if func is None:
+            return None
+        body = [s for s in func.body if not (isinstance(s, ast.Expr) and isinstance(s.value, ast.Constant))]
+        a = func.args
+        if len(body) != 1 or not isinstance(body[0], ast.Return) or body[0].value is None:
+            raise _Unresolved(f"{ast.unparse(f)}() is more than one return")
+        if a.posonlyargs or a.vararg or a.kwarg or a.kwonlyargs or a.defaults or call.keywords:
+            raise _Unresolved(f"{ast.unparse(f)}() arguments")
+        params = [x.arg for x in a.args][drop:]
+        if len(params) != len(call.args):
+            raise _Unresolved(f"{ast.unparse(f)}() arguments")
+        return func, params, body[0].value
+
+    def _bindings(self, node: ast.AST, scope: Scope) -> list[dict[str, str | None]]:
+        """Every combination of the constant loop variables around ``node``."""
+        bindings: list[dict[str, str | None]] = [{}]
+        for target, it in self._loops(node):
+            rows = self.rows(target, it, scope)
+            bindings = [{**b, **r} for b in bindings for r in rows]
+            if len(bindings) > MAX_VARIANTS * 4:
+                raise _Unresolved("too many loop combinations")
+        return bindings
 
     def _loops(self, node: ast.AST) -> list[tuple[ast.expr, ast.expr]]:
         """(target, iterable) of every for-loop / comprehension whose body holds ``node``."""
@@ -120,23 +270,23 @@ class _Resolver:
             child = up
         return out
 
-    def _lookup(self, name: str, scope: ast.FunctionDef | ast.AsyncFunctionDef | None) -> list[ast.expr]:
+    def _lookup(self, name: str, scope: Scope) -> list[tuple[_Resolver, ast.expr, Scope]]:
         if scope is not None:
             a = scope.args
             params = {x.arg for x in [*a.posonlyargs, *a.args, *a.kwonlyargs]} | {x.arg for x in (a.vararg, a.kwarg) if x}
             if name in params:
                 raise _Unresolved(f"parameter {name}")
-            found = []
+            found: list[tuple[_Resolver, ast.expr, Scope]] = []
             for n in ast.walk(scope):
                 if isinstance(n, ast.AugAssign) and isinstance(n.target, ast.Name) and n.target.id == name:
                     raise _Unresolved(f"{name} is extended in place")
                 if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == name for t in n.targets):
-                    found.append(n.value)
+                    found.append((self, n.value, scope))
+                elif isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name) and n.target.id == name and n.value:
+                    found.append((self, n.value, scope))
             if found:
                 return found
-        if name in self.module:
-            return [self.module[name]]
-        raise _Unresolved(f"name {name}")
+        return self._global(name)
 
     def strings(
         self, node: ast.expr, binding: dict[str, str | None], scope: ast.FunctionDef | ast.AsyncFunctionDef | None, depth: int = 0
@@ -159,15 +309,20 @@ class _Resolver:
             return self._product(parts)
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
             return self._product([self.strings(node.left, binding, scope, depth + 1), self.strings(node.right, binding, scope, depth + 1)])
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
+            run = self._placeholder_run(node)
+            if run is not None:
+                return [run]
         if isinstance(node, ast.IfExp):
             return self.strings(node.body, binding, scope, depth + 1) + self.strings(node.orelse, binding, scope, depth + 1)
-        if isinstance(node, ast.Name):
-            if node.id in binding:
-                v = binding[node.id]
-                if v is None:
-                    raise _Unresolved(f"loop value {node.id}")
-                return [v]
-            return [s for value in self._lookup(node.id, scope) for s in self.strings(value, binding, scope, depth + 1)]
+        if isinstance(node, ast.Name) and node.id in binding:
+            v = binding[node.id]
+            if v is None:
+                raise _Unresolved(f"loop value {node.id}")
+            return [v]
+        vals = self._values(node, scope)
+        if vals is not None:
+            return [s for r, value, sc in vals for s in r.strings(value, binding if r is self else {}, sc, depth + 1)]
         if (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
@@ -178,7 +333,24 @@ class _Resolver:
             seps = self.strings(node.func.value, binding, scope, depth + 1)
             items = self.sequence(node.args[0], binding, scope, depth + 1)
             return [sep.join(items) for sep in seps]
+        if isinstance(node, ast.Call) and (helper := self._helper(node)) is not None:
+            func, params, ret = helper
+            bound: dict[str, str | None] = {}
+            for p, arg in zip(params, node.args, strict=True):
+                alts = self.strings(arg, binding, scope, depth + 1)
+                if len(alts) != 1:
+                    raise _Unresolved("argument with several values")
+                bound[p] = alts[0]
+            return self.strings(ret, bound, func, depth + 1)
         raise _Unresolved(ast.unparse(node))
+
+    @staticmethod
+    def _placeholder_run(node: ast.BinOp) -> str | None:
+        """``"?" * n`` (either side): the text repeated once when it holds only ``?``, commas and spaces."""
+        for side in (node.left, node.right):
+            if isinstance(side, ast.Constant) and isinstance(side.value, str) and side.value and set(side.value) <= _PLACEHOLDER_RUN:
+                return side.value
+        return None
 
     @staticmethod
     def _product(parts: list[list[str]]) -> list[str]:
@@ -203,15 +375,29 @@ class _Resolver:
                     raise _Unresolved("element with several values")
                 out.append(alts[0])
             return out
-        if isinstance(node, ast.Name):
-            vals = self._lookup(node.id, scope)
+        vals = self._values(node, scope)
+        if vals is not None:
             if len(vals) != 1:
-                raise _Unresolved(f"{node.id} is assigned several times")
-            return self.sequence(vals[0], binding, scope, depth + 1)
+                raise _Unresolved(f"{ast.unparse(node)} is assigned several times")
+            r, value, sc = vals[0]
+            items = r.sequence(value, binding if r is self else {}, sc, depth + 1)
+            if r is self and sc is not None and isinstance(node, ast.Name):
+                items += self._appended(node.id, sc, depth)
+            return items
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
+            run = self._placeholder_run(node)
+            if run is not None:
+                return list(run)  # `",".join("?" * n)`: the characters of one repetition
         if isinstance(node, ast.ListComp | ast.GeneratorExp) and len(node.generators) == 1:
             gen = node.generators[0]
-            if isinstance(gen.target, ast.Name) and isinstance(node.elt, ast.Name) and node.elt.id == gen.target.id:
-                return self.sequence(gen.iter, binding, scope, depth + 1)  # the `if` filter is ignored: a superset
+            if isinstance(gen.target, ast.Name):  # the `if` filter is ignored: a superset
+                out = []
+                for item in self.sequence(gen.iter, binding, scope, depth + 1):
+                    alts = self.strings(node.elt, {**binding, gen.target.id: item}, scope, depth + 1)
+                    if len(alts) != 1:
+                        raise _Unresolved("element with several values")
+                    out.append(alts[0])
+                return out
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "split" and not node.args:
             texts = self.strings(node.func.value, binding, scope, depth + 1)
             if len(texts) == 1:
@@ -221,11 +407,11 @@ class _Resolver:
     def rows(self, target: ast.expr, it: ast.expr, scope: ast.FunctionDef | ast.AsyncFunctionDef | None) -> list[dict[str, str | None]]:
         """The bindings a loop gives its target names over a constant iterable (tuple targets stay correlated)."""
         seq = it
-        if isinstance(seq, ast.Name):
-            vals = self._lookup(seq.id, scope)
+        vals = self._values(seq, scope)
+        if vals is not None:
             if len(vals) != 1:
-                raise _Unresolved(f"{seq.id} is assigned several times")
-            seq = vals[0]
+                raise _Unresolved(f"{ast.unparse(it)} is assigned several times")
+            seq = vals[0][1]
         if not isinstance(seq, ast.List | ast.Tuple):
             raise _Unresolved(f"loop over {ast.unparse(it)}")
         if isinstance(target, ast.Name):
@@ -245,14 +431,8 @@ class _Resolver:
     def variants(self, top: ast.expr) -> list[str]:
         """Every SQL text ``top`` can take given the constants around it. Raises ``_Unresolved``."""
         scope = self._func(top)
-        bindings: list[dict[str, str | None]] = [{}]
-        for target, it in self._loops(top):
-            rows = self.rows(target, it, scope)
-            bindings = [{**b, **r} for b in bindings for r in rows]
-            if len(bindings) > MAX_VARIANTS * 4:
-                raise _Unresolved("too many loop combinations")
         out: list[str] = []
-        for b in bindings:
+        for b in self._bindings(top, scope):
             for s in self.strings(top, b, scope):
                 if s not in out:
                     out.append(s)
@@ -261,17 +441,18 @@ class _Resolver:
         return out
 
 
-def extract_queries(source: str, file: str = "<src>") -> list[Query]:
+def extract_queries(source: str, file: str = "<src>", modules: Mapping[str, str] | None = None) -> list[Query]:
     """SELECT queries written as string literals in one Python source: static, expanded from constants, or dynamic.
 
     A query built from constant fragments only (f-string or ``+`` over module constants, loop variables of a constant
-    list, conditional expressions) comes back as one ``Query(expanded=True)`` per variant. Raises SyntaxError. Pure."""
+    list, conditional expressions) comes back as one ``Query(expanded=True)`` per variant. ``modules`` = {module
+    name: source} of the other scanned files, for constants imported from them. Raises SyntaxError. Pure."""
     tree = ast.parse(source, filename=file)
     parent: dict[ast.AST, ast.AST] = {}
     for node in ast.walk(tree):
         for child in ast.iter_child_nodes(node):
             parent[child] = node
-    resolver = _Resolver(tree, parent)
+    resolver = _Resolver(tree, parent, modules)
     out: list[Query] = []
     seen: set[int] = set()
     for node in ast.walk(tree):
@@ -404,9 +585,10 @@ def check(sources: dict[str, str], migrations: dict[int, list[str]]) -> Report:
     try:
         rep = Report(files=len(sources))
         rep.tables = conn.execute("SELECT count(*) FROM sqlite_master WHERE type = 'table'").fetchone()[0]
+        modules = {name: text for p, text in sources.items() if (name := module_name(p))}
         for path in sorted(sources):
             try:
-                queries = extract_queries(sources[path], path)
+                queries = extract_queries(sources[path], path, modules)
             except SyntaxError:
                 rep.unparsable.append(path)
                 continue

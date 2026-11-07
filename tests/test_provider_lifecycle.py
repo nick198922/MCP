@@ -14,6 +14,9 @@ fails the test, so a fixed provider leaves the list.
 from __future__ import annotations
 
 import io
+import json
+import logging
+import random
 import zipfile
 from collections import Counter
 from collections.abc import Awaitable, Callable
@@ -22,8 +25,9 @@ from unittest.mock import patch
 
 import httpx
 import pytest
+from mcp import Client
 
-from conftest import NOW, FakeEx, hl_payload
+from conftest import NOW, FakeEx, State, hl_payload, make_transports
 from tradedesk.config import Settings
 from tradedesk.core.envelope import Fetched
 from tradedesk.core.http import Http
@@ -31,6 +35,7 @@ from tradedesk.core.ratelimit import TokenBucket
 from tradedesk.providers.exchanges import Exchanges
 from tradedesk.providers.thegraph import POLYMARKET_SUBGRAPH_ID
 from tradedesk.runtime import Runtime
+from tradedesk.server import build_server
 
 SESSIONS = 3  # first connection + two reconnects, each ending with rt.aclose()
 ADDR = "0x" + "1" * 40
@@ -274,3 +279,49 @@ async def test_new_runtime_reopens_same_db_file(tmp_path):
         assert await second.store.table_count("funding_hist") == 2
     finally:
         await second.aclose()
+
+
+def _lifespan_runtime(db_path: str) -> Runtime:
+    # Collector on, so the lifespan would start the scheduler on a healthy store; fake transports, no real network.
+    settings = Settings(http_retries=0, http_retry_backoff=0.0, cache_scale=0.0, db_path=db_path, collector_enabled=True)
+    rt = Runtime(settings, transports=make_transports(State()), exchange_factory=FakeEx)
+    rt.now = lambda: NOW
+    return rt
+
+
+def _payload(res) -> dict:
+    assert not res.is_error, res.content[0].text[:300] if res.content else ""
+    data = res.structured_content
+    if data is None:
+        data = json.loads(res.content[0].text)
+    return data["result"] if set(data) == {"result"} else data
+
+
+async def test_lifespan_survives_corrupt_store(tmp_path, caplog):
+    # Item 222: a DB file that is not SQLite at all made `store.init()` raise in the lifespan, so the connection failed
+    # and the session had no tools. Now the lifespan logs it, starts no collector and the market tools still answer.
+    path = tmp_path / "corrupt.sqlite"
+    path.write_bytes(random.Random(222).randbytes(64 * 1024))
+    rt = _lifespan_runtime(str(path))
+    srv, _ = build_server(rt)
+    with caplog.at_level(logging.ERROR, logger="tradedesk.store"):
+        async with Client(srv) as c:
+            assert rt.scheduler is None  # every collector job writes to the store
+            ticker = _payload(await c.call_tool("market_ticker", {"exchange": "binanceusdm", "symbol": "BTC/USDT:USDT"}))
+            journal = _payload(await c.call_tool("journal_list", {}))
+    assert ticker["ok"] is True and ticker["data"]["last"] == 82750.0
+    assert journal["ok"] is False
+    assert [m for m in journal["missing"] if m["field"] == "store" and "file is not a database" in m["detail"]]
+    assert any("store init failed" in r.getMessage() and "DatabaseError" in r.getMessage() for r in caplog.records)
+    with pytest.raises(RuntimeError):  # finally still ran rt.aclose(); the store was never left half-open
+        _ = rt.store.conn
+
+
+async def test_lifespan_healthy_store_starts_collector(tmp_path):
+    rt = _lifespan_runtime(str(tmp_path / "healthy.sqlite"))
+    srv, _ = build_server(rt)
+    async with Client(srv) as c:
+        assert rt.scheduler is not None and rt.scheduler.jobs  # as before item 222
+        journal = _payload(await c.call_tool("journal_list", {}))
+    assert journal["ok"] is True and journal["data"]["count"] == 0
+    assert not [m for m in journal["missing"] if m["field"] == "store"]

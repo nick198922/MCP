@@ -138,6 +138,19 @@ def _reload_from(open_positions: list[dict[str, Any]]) -> dict[str, int]:
     return out
 
 
+def _flag_incomplete(got: dict[str, Any], sym: str, venue: str, flags: list[dict[str, Any]]) -> None:
+    """Flag an incomplete history result. ``funding_history_incomplete``: our request was cut short (page limit, a failed
+    page) and a re-read may fix it, so the engine holds the position without counting R2 cycles. ``funding_rows_dropped``:
+    the walk finished but the venue sent rows without a usable timestamp; a re-read returns the same rows, so the engine
+    counts R2 cycles as for any missing payment. Either way the caller records no coverage for the window."""
+    if got["complete"]:
+        return
+    if got.get("truncated", True):
+        flags.append({"symbol": sym, "venue": venue, "issue": "funding_history_incomplete"})
+    else:
+        flags.append({"symbol": sym, "venue": venue, "issue": "funding_rows_dropped", "dropped_rows": int(got.get("dropped_rows") or 0)})
+
+
 class LiveFeed:
     def __init__(self, rt: Runtime, *, workers: int = 4, pacer: Pacer | None = None) -> None:
         self.rt = rt
@@ -174,8 +187,7 @@ class LiveFeed:
                 flags.append({"symbol": sym, "venue": venue, "issue": "funding_history_unavailable"})
                 return None
             entries = funding_entries(got["rows"])
-            if not got["complete"]:
-                flags.append({"symbol": sym, "venue": venue, "issue": "funding_history_incomplete"})
+            _flag_incomplete(got, sym, venue, flags)
             await store.cp_funding_put(venue, sym, [(e["ts_ms"], e["rate"]) for e in entries], covered_from=None, covered_to=None)
             rows = await store.cp_funding_rows(venue, sym, since, until)
             return [{"ts_ms": ts, "rate": r} for ts, r in rows] or None
@@ -192,8 +204,7 @@ class LiveFeed:
             flags.append({"symbol": sym, "venue": venue, "issue": "funding_history_unavailable"})
             return None
         entries = funding_entries(got["rows"])
-        if not got["complete"]:
-            flags.append({"symbol": sym, "venue": venue, "issue": "funding_history_incomplete"})
+        _flag_incomplete(got, sym, venue, flags)
         if store is None:
             return entries or None
         await store.cp_funding_put(

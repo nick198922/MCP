@@ -347,7 +347,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
             if not got:
                 return None
             if not got["complete"]:
-                b.warn(f"{ex} funding history incomplete (page limit or a later page failed); window truncated")
+                b.warn(
+                    f"{ex} funding history incomplete (page limit, a later page failed, or rows with a malformed timestamp "
+                    "dropped); the series may have holes"
+                )
             entries = parsed_rows(
                 [x for x in got["rows"] if x.get("fundingRate") is not None and x.get("timestamp")],
                 lambda x: {"ts_ms": int(x["timestamp"]), "rate": float(x["fundingRate"])},
@@ -502,7 +505,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
                     f"funding_history:{sym}", f"ccxt:{venue}", rt.exchanges.funding_rate_history_range(venue, sym, since_ms, now_ms)
                 )
             if got and not got["complete"]:
-                b.warn(f"{sym}: funding history incomplete (page limit or a later page failed)")
+                b.warn(f"{sym}: funding history incomplete (page limit, a later page failed, or rows with a malformed timestamp dropped)")
             entries = parsed_rows(
                 [x for x in (got["rows"] if got else []) if x.get("fundingRate") is not None and x.get("timestamp")],
                 lambda x: {"ts_ms": int(x["timestamp"]), "rate": float(x["fundingRate"])},

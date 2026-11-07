@@ -52,11 +52,12 @@ def pnl_mismatches(rows: Iterable[Mapping[str, Any]], tol_frac: float = TOL_FRAC
     ``gap`` (recorded − expected, USD), ``tol`` (USD)."""
     out: list[dict[str, Any]] = []
     for r in rows:
-        recorded, expected = _num(r.get("pnl_usd")), expected_pnl(r)
-        if r.get("status") != "closed" or recorded is None or expected is None:
+        if not _checkable(r):
             continue
+        recorded, expected = _num(r.get("pnl_usd")), expected_pnl(r)
         entry = _num(r.get("fill"))
-        notional = abs((entry if entry is not None else float(r["entry"])) * float(r["qty"]))
+        entry = entry if entry is not None else _num(r.get("entry"))
+        notional = abs(entry * _num(r.get("qty")))  # type: ignore[operator]  # _checkable guarantees both are numbers
         tol = max(tol_frac * notional, tol_usd)
         gap = recorded - expected
         if abs(gap) > tol:

@@ -88,7 +88,10 @@ async def _leg_data(rt: Runtime, b: Builder, venue: str, sym: str, opened_ms: in
     if hist is None or bars is None or px is None:
         return None
     if not hist["complete"]:
-        b.warn(f"{venue} {sym}: funding history incomplete (page limit or a later page failed); funding P&L may be understated")
+        b.warn(
+            f"{venue} {sym}: funding history incomplete (page limit, a later page failed, or rows with a malformed timestamp "
+            "dropped); funding P&L may be understated"
+        )
     entries = funding_entries(hist["rows"])
     if not entries:
         return None
@@ -283,7 +286,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
                     )
                     return None
                 if hist and not hist["complete"]:
-                    b.warn(f"{v} {sym}: funding history incomplete (page limit or a later page failed)")
+                    b.warn(
+                        f"{v} {sym}: funding history incomplete (page limit, a later page failed, or rows with a malformed timestamp dropped)"
+                    )
                 return {
                     "entries": entries,
                     "price": px,

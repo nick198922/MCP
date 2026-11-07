@@ -450,7 +450,8 @@ def carry_forward(
     )
     on_time = sum(1 for c in cyc if c.get("status") == "done" and (c.get("payload") or {}).get("on_time"))
     # incomplete cycles by issue / detail of their flags (the engine's `complete` = no flags); `funding_history_incomplete`
-    # is our own fetch cut short (page limit, 429 / 418), kept apart from the other details
+    # is our own fetch cut short (page limit, 429 / 418), kept apart from the other details; `funding_rows_dropped` is the
+    # venue's rows without a usable timestamp (a data defect, not our fetch)
     issues: dict[str, int] = {}
     for c in cyc:
         p = c.get("payload") or {}
@@ -494,7 +495,8 @@ def carry_forward(
         if any(c["id"] == "д" for c in fails) and cyc and on_time / len(cyc) >= CYCLE_PASS:
             row["notes"].append(
                 "(д) не пройдено лише за «з повними даними» реєстрації: вчасно ≥ 95 %, а неповні цикли — це прапорці рушія "
-                "(розбивка за issue / detail вище; funding_history_incomplete — наш запит обрізано лімітом сторінок або 429 / 418). "
+                "(розбивка за issue / detail вище; funding_history_incomplete — наш запит обрізано лімітом сторінок або 429 / 418; "
+                "funding_rows_dropped — майданчик віддав рядки без придатного часу). "
                 "Правило записано 17.10 до старту рушія; інше прочитання тепер — лише позначений exploratory-варіант "
                 "(CHECKPOINT, вступ до розділу)"
             )

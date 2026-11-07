@@ -39,6 +39,11 @@ def _ts(x: Any) -> int | None:
         return None
 
 
+def _range_data(rows: list[dict[str, Any]], walked: bool, dropped: int) -> dict[str, Any]:
+    """``funding_rate_history_range`` result: ``walked`` False = our walk was cut short (page limit, a failed page)."""
+    return {"rows": rows, "complete": walked and not dropped, "truncated": not walked, "dropped_rows": dropped}
+
+
 def map_ccxt_error(exc: BaseException) -> tuple[str, str]:
     if isinstance(exc, (ccxt.RateLimitExceeded, ccxt.DDoSProtection)):
         return "rate_limited", str(exc)
@@ -259,13 +264,17 @@ class Exchanges:
         from the symbol's *current* interval, so a short page does not mean the history ended: walk forward
         from the newest row seen. An empty window (before a listing) is skipped by ``page`` hours, the
         smallest window a page can cover at a 1h interval, so no rows are jumped over. Returns
-        ``{"rows": [...], "complete": bool}``; ``complete`` is False when ``max_pages`` was hit or a later
-        page failed (rows fetched so far are kept). A failure on the first page raises. A row whose ``timestamp`` is not
-        an integer is skipped like one without a timestamp (``complete`` is not lowered for it).
+        ``{"rows": [...], "complete": bool, "truncated": bool, "dropped_rows": int}``. ``truncated`` is True when
+        ``max_pages`` was hit or a later page failed (our request was cut short; rows fetched so far are kept).
+        ``dropped_rows`` counts rows dropped because they are not a dict or their ``timestamp`` is missing or not an
+        integer (a defect in the venue's data, a re-read does not fix it); it counts sightings in the responses, not
+        unique rows: the row's time is unknown, so one repeated on overlapping pages is counted twice. ``complete`` is
+        False when either is set. The drop count is also in ``evidence.args["dropped_rows"]``. A failure on the first
+        page raises.
         """
         page = FUNDING_PAGE.get(ex_id.lower(), 500)
         rows: dict[int, dict[str, Any]] = {}
-        since, pages, latency, cached, complete = since_ms, 0, 0, True, True
+        since, pages, latency, cached, complete, dropped = since_ms, 0, 0, True, True, 0
         if ex_id.lower() == "bybit":
             # Bybit returns the *newest* ``page`` rows of [startTime, endTime]; without an explicit endTime ccxt sizes the
             # window from the current interval and silently drops older rows (holes). Walk backward from endTime.
@@ -284,10 +293,15 @@ class Exchanges:
                 pages += 1
                 latency += f.evidence.latency_ms or 0
                 cached = cached and f.evidence.cached
-                batch = [(t, x) for x in (f.data or []) if (t := _ts(x.get("timestamp"))) is not None and since_ms <= t <= end]
+                data = f.data or []
+                # a non-dict row or one whose timestamp is not an integer (null, "abc", a list, a bool) is dropped and
+                # counted; rows outside [since_ms, end] are valid, just not ours, and are not counted
+                timed = [(t, x) for x in data if isinstance(x, dict) and (t := _ts(x.get("timestamp"))) is not None]
+                dropped += len(data) - len(timed)
+                batch = [(t, x) for t, x in timed if since_ms <= t <= end]
                 for t, x in batch:
                     rows[t] = x
-                if len(f.data or []) < page:
+                if len(data) < page:
                     break  # a short page means the window is exhausted
                 # A full page must hold the newest rows up to ``end``: nothing in the window, or rows far below ``end``
                 # (oldest-first order, ignored endTime), means the walk cannot be trusted.
@@ -298,11 +312,11 @@ class Exchanges:
             ev = Evidence(
                 provider="ccxt:bybit",
                 tool="fetch_funding_rate_history",
-                args={"symbol": symbol, "since_ms": since_ms, "until_ms": until_ms, "pages": pages},
+                args={"symbol": symbol, "since_ms": since_ms, "until_ms": until_ms, "pages": pages, "dropped_rows": dropped},
                 latency_ms=latency,
                 cached=cached and pages > 0,
             )
-            return Fetched({"rows": [rows[k] for k in sorted(rows)], "complete": complete}, ev)
+            return Fetched(_range_data([rows[k] for k in sorted(rows)], complete, dropped), ev)
         while since < until_ms:
             if pages >= max_pages:
                 complete = False
@@ -317,7 +331,9 @@ class Exchanges:
             pages += 1
             latency += f.evidence.latency_ms or 0
             cached = cached and f.evidence.cached
-            batch = [(t, x) for x in (f.data or []) if (t := _ts(x.get("timestamp"))) is not None]
+            data = f.data or []
+            batch = [(t, x) for x in data if isinstance(x, dict) and (t := _ts(x.get("timestamp"))) is not None]
+            dropped += len(data) - len(batch)  # non-dict rows and rows with a missing / non-integer timestamp
             if not batch:
                 since += page * 3_600_000
                 continue
@@ -327,16 +343,18 @@ class Exchanges:
             if nxt <= since:
                 break
             since = nxt
-            if trust_short_page and len(batch) < page:
-                break  # venues that fill a page from ``since`` (Binance): a short page is the end, saves the empty trailing request
+            if trust_short_page and len(data) < page:
+                # venues that fill a page from ``since`` (Binance): a short page is the end, saves the empty trailing
+                # request; judged by the raw page size, so a dropped row never ends the walk early
+                break
         ev = Evidence(
             provider=f"ccxt:{ex_id.lower()}",
             tool="fetch_funding_rate_history",
-            args={"symbol": symbol, "since_ms": since_ms, "until_ms": until_ms, "pages": pages},
+            args={"symbol": symbol, "since_ms": since_ms, "until_ms": until_ms, "pages": pages, "dropped_rows": dropped},
             latency_ms=latency,
             cached=cached and pages > 0,
         )
-        return Fetched({"rows": [rows[k] for k in sorted(rows) if k <= until_ms], "complete": complete}, ev)
+        return Fetched(_range_data([rows[k] for k in sorted(rows) if k <= until_ms], complete, dropped), ev)
 
     async def open_interest(self, ex_id: str, symbol: str) -> Fetched:
         async def go(ex: Any) -> Any:

@@ -29,7 +29,7 @@ def _f(x: Any) -> float | None:
         return None
 
 
-def _normalise_bars(bars: list[Any]) -> list[dict[str, float]]:
+def normalise_bars(bars: list[Any]) -> list[dict[str, float]]:
     """Accept ccxt-style [[ts_ms, o, h, l, c, v], …] or dict rows. A bar with a field that is not a number (None from
     ccxt, a string) is dropped; signals and the backtest both normalise through here, so they stay aligned."""
     rows: list[dict[str, float]] = []
@@ -59,7 +59,7 @@ def signals_momentum(bars: list[Any], lookback: int = 20, threshold_pct: float =
     short when the opposite inequality holds, flat otherwise. Returns one
     position per bar aligned with ``bars`` (first ``lookback`` entries = 0).
     """
-    rows = _normalise_bars(bars)
+    rows = normalise_bars(bars)
     out = [0] * len(rows)
     thr = threshold_pct / 100.0
     for i in range(lookback, len(rows)):
@@ -133,7 +133,7 @@ def run_backtest(
     final bar never trades (no next-bar open to fill against) — we simply mark
     the previous position's close-to-close return.
     """
-    rows = _normalise_bars(bars)
+    rows = normalise_bars(bars)
     if len(positions) != len(rows):
         raise ValueError(f"positions length {len(positions)} != bars length {len(rows)}")
     cost_per_turn = (fee_bps + slippage_bps) / 10_000.0

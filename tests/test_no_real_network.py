@@ -7,16 +7,21 @@ guards:
 
 1. Static: `find_network_risks(source)` parses a test module with the stdlib `ast` and reports
    (a) direct requests / clients with no fake transport: `httpx.get(...)`, `httpx.AsyncClient()` without
-   `transport=`, any `requests.*` / `aiohttp.ClientSession` / `websockets.connect` call, a real ccxt
-   exchange such as `ccxt.bybit()`; (b) an import of one of those libraries in a file with no fake at
-   all (no `MockTransport`, no `Fake*` / `*Mock*` name, no `transport=` / `transports=` /
-   `exchange_factory=` argument). Every `tests/**/*.py` (not `tests/fixtures/`) is scanned; a file
-   with a reason is listed in `ALLOWED`, and the list must match the scan exactly.
+   `transport=` or with `transport=None`, `httpx.AsyncClient(**kw)` without an explicit `transport=`,
+   any `requests.*` / `aiohttp.ClientSession` / `websockets.connect` call, a real ccxt exchange such
+   as `ccxt.bybit()`; (b) an import of one of those libraries in a file where no fake is used: no call
+   or argument that is a `MockTransport` / `Fake*` / `*Mock*` name (`FakeEx()`, `f(FakeEx)`), and no
+   non-None `transport=` / `transports=` / `exchange_factory=` argument. A fake that is only
+   imported, defined, used as a base class or named in a string does not count. Every
+   `tests/**/*.py` (not `tests/fixtures/`) is scanned; a file with a reason is listed in `ALLOWED`,
+   and the list must match the scan exactly.
 2. Runtime: the autouse `no_real_network` fixture in tests/conftest.py refuses connects to
    non-loopback addresses in every test (opt-out: `@pytest.mark.allow_network(reason=...)`).
 
 Not caught statically: a client built through a helper in `src/` (the runtime guard catches its
-connect), `__import__` / `importlib` with a computed name, `**kwargs` that might carry a transport.
+connect), `__import__` / `importlib` with a computed name, a `None` transport through a variable
+(`transport=t` with `t = None`: only a literal `None` is seen), a fake used somewhere in the file
+but not by the client that reaches the network (one used fake marks the whole file as faked).
 """
 
 import ast
@@ -37,7 +42,13 @@ FAKE_KEYWORDS = frozenset({"transport", "transports", "exchange_factory"})
 
 # path relative to tests/ -> reason. Scan of 07.11 (docs/changes/2026-11-07-no-real-network.md): 2 flagged, both
 # handler-only files whose MockTransports are built in another test module; no direct client or request anywhere.
+# Tightened scan of 07.11 (docs/changes/2026-11-07-no-real-network-tighten.md): +1, a fake used only as a base class;
+# no transport=None, no **kwargs client.
 ALLOWED: dict[str, str] = {
+    "test_demo_option_leg.py": (
+        "ccxt only for error classes (ccxt.InvalidOrder / NetworkError / RequestTimeout) set on the venue; the venue is "
+        "OptionVenue(FakeVenue), a subclass of test_demo_trader.FakeVenue, so the fake is a base class, not a call"
+    ),
     "test_dashboard_flows.py": (
         "httpx only for a 503 handler (httpx.Response) and ccxt only for ccxt.NetworkError in DownEx; the transports "
         "and FlowEx come from test_market_flow._flow_rt (httpx.MockTransport per handler)"
@@ -72,15 +83,42 @@ def _dotted(node: ast.AST, aliases: dict[str, str]) -> str | None:
     return ".".join([aliases[node.id], *reversed(parts)])
 
 
+def _is_none(node: ast.AST) -> bool:
+    return isinstance(node, ast.Constant) and node.value is None
+
+
+def _ident(node: ast.AST) -> str | None:
+    return node.id if isinstance(node, ast.Name) else node.attr if isinstance(node, ast.Attribute) else None
+
+
+def _is_fake(node: ast.AST) -> bool:
+    ident = _ident(node)
+    return bool(ident) and (ident == "MockTransport" or ident.startswith("Fake") or "Mock" in ident)
+
+
+def _uses_fake(call: ast.Call) -> bool:
+    """This call builds a fake (`FakeEx()`, `httpx.MockTransport(h)`), passes one (`f(FakeEx)`, `x=MagicMock`) or
+    passes a non-None `transport=` / `transports=` / `exchange_factory=`."""
+    if _is_fake(call.func):
+        return True
+    if any(_is_fake(a.value if isinstance(a, ast.Starred) else a) for a in call.args):
+        return True
+    return any(_is_fake(k.value) or (k.arg in FAKE_KEYWORDS and not _is_none(k.value)) for k in call.keywords)
+
+
 def _direct_use(call: ast.Call, name: str) -> str | None:
     """Why this call to `name` (a resolved dotted path) reaches the network, or None."""
     lib, _, rest = name.partition(".")
     last = name.rsplit(".", 1)[-1]
-    keywords = {k.arg for k in call.keywords}
+    keywords = {k.arg: k.value for k in call.keywords}
     if lib == "httpx":
         if rest in HTTPX_REQUESTS:
             return f"{name}() is a real request"
-        if rest in HTTPX_CLIENTS and "transport" not in keywords and None not in keywords:
+        if rest in HTTPX_CLIENTS:
+            if "transport" in keywords:
+                return f"{name}() with transport=None" if _is_none(keywords["transport"]) else None
+            if None in keywords:
+                return f"{name}(**kwargs) without an explicit transport="
             return f"{name}() without transport="
     elif lib == "requests" and rest and rest.split(".")[0] not in ("exceptions", "adapters", "structures"):
         return f"{name}() goes past any transport mock"
@@ -107,13 +145,7 @@ def find_network_risks(source: str) -> list[str]:
             why = _direct_use(node, name) if name else None
             if why:
                 found.append(f"line {node.lineno}: {why}")
-            if any(k.arg in FAKE_KEYWORDS for k in node.keywords):
-                faked = True
-        ident = node.id if isinstance(node, ast.Name) else node.attr if isinstance(node, ast.Attribute) else None
-        if ident is None and isinstance(node, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
-            ident = node.name
-        if ident and (ident == "MockTransport" or ident.startswith("Fake") or "Mock" in ident):
-            faked = True
+            faked = faked or _uses_fake(node)
     if not faked:
         libs = sorted({v.split(".")[0] for v in aliases.values()})
         found.append(f"imports {', '.join(libs)} with no MockTransport / Fake* / transport= in the file")
@@ -178,6 +210,9 @@ import ccxt
 class FakeEx:
     async def fetch_ticker(self, symbol):
         raise ccxt.NetworkError("down")
+
+def test_down():
+    ex = FakeEx()
 """
 
 
@@ -211,6 +246,77 @@ def test_other_libraries_are_found():
         "line 5: websockets.connect() opens a real WebSocket",
         "line 6: aiohttp.ClientSession() is a real client",
     ]
+
+
+FAKED_HEADER = "import httpx\n\ndef handler(req):\n    return httpx.Response(200)\n\nT = httpx.MockTransport(handler)\n"
+
+
+def test_transport_none_is_no_transport():
+    # norm: a real fake transport, also passed through `transports=` to a helper
+    assert find_network_risks(FAKED_HEADER + "httpx.AsyncClient(transport=T)\n") == []
+    assert find_network_risks("import httpx\nfrom h import make\nmake(transports={'x': T})\n") == []
+    # bypass: transport=None is a real client; transports=None / exchange_factory=None do not make the file faked
+    assert find_network_risks(FAKED_HEADER + "httpx.AsyncClient(transport=None)\n") == ["line 7: httpx.AsyncClient() with transport=None"]
+    assert find_network_risks("import ccxt\nfrom h import make\nmake(transports=None, exchange_factory=None)\n") == [
+        "imports ccxt with no MockTransport / Fake* / transport= in the file"
+    ]
+    # allowed: a listed file with this finding is not a failure
+    found = {"test_x.py": find_network_risks(FAKED_HEADER + "httpx.Client(transport=None)\n")}
+    assert found == {"test_x.py": ["line 7: httpx.Client() with transport=None"]}
+    assert check(found, {"test_x.py": "reason"}) == ({}, [])
+
+
+def test_kwargs_client_needs_an_explicit_transport():
+    # norm: **kwargs next to an explicit transport
+    assert find_network_risks(FAKED_HEADER + "kw = {}\nhttpx.AsyncClient(transport=T, **kw)\n") == []
+    # bypass: **kwargs alone may carry no transport
+    assert find_network_risks(FAKED_HEADER + "kw = {}\nhttpx.AsyncClient(**kw)\n") == [
+        "line 8: httpx.AsyncClient(**kwargs) without an explicit transport="
+    ]
+    assert find_network_risks(FAKED_HEADER + "httpx.Client(timeout=5, **{'transport': None})\n") == [
+        "line 7: httpx.Client(**kwargs) without an explicit transport="
+    ]
+    # allowed
+    found = {"test_kw.py": find_network_risks(FAKED_HEADER + "httpx.AsyncClient(**{})\n")}
+    assert check(found, {"test_kw.py": "kwargs always hold a MockTransport"}) == ({}, [])
+
+
+UNUSED_FAKES = '''
+import ccxt
+from unittest.mock import MagicMock
+from helpers import FakeVenue
+
+class FakeEx:
+    """FakeEx is defined but never built."""
+
+class LiveVenue(FakeVenue):
+    pass
+
+def test_live():
+    ex = ccxt.bybit({"enableRateLimit": True}) if False else LiveVenue
+    assert "MockTransport" not in str(ex)
+'''
+
+
+def test_fake_counts_only_when_called_or_passed():
+    # norm: a fake built by a call, or passed as an argument
+    assert find_network_risks("import ccxt\nclass FakeEx:\n    pass\nex = FakeEx()\n") == []
+    assert (
+        find_network_risks("import ccxt\nfrom h import FakeEx\ndef test_x(monkeypatch):\n    monkeypatch.setattr(ccxt, 'bybit', FakeEx)\n")
+        == []
+    )
+    assert find_network_risks("import httpx\nfrom unittest import mock\nc = mock.MagicMock()\n") == []
+    assert find_network_risks("import httpx\nfrom h import run\nrun(rt=FakeRt)\n") == []
+    # bypass: imported, defined, a base class or a string only
+    risks = find_network_risks(UNUSED_FAKES)
+    assert risks == [
+        "line 13: ccxt.bybit() builds a real ccxt exchange",
+        "imports ccxt with no MockTransport / Fake* / transport= in the file",
+    ]
+    no_call = "import ccxt\nfrom h import FakeVenue\nclass V(FakeVenue):\n    pass\nE = ccxt.NetworkError\n"
+    assert find_network_risks(no_call) == ["imports ccxt with no MockTransport / Fake* / transport= in the file"]
+    # allowed: the subclass case is how test_demo_option_leg.py is listed
+    assert check({"test_demo_option_leg.py": find_network_risks(no_call)}, ALLOWED)[0] == {}
 
 
 def test_allowed_file_is_not_a_failure_and_a_stale_entry_is():

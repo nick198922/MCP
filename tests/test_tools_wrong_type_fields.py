@@ -21,7 +21,8 @@ caches on (cache_scale=1) per mutation, breaks a cached field from the very firs
 `load_markets` (kept 1 h) and the coin names of Hyperliquid's metaAndAssetCtxs universe, the source of the coin map
 (kept 10 min; a name gets `null` or [] only, "abc" is a valid name).
 The answer must be the envelope (`ok` true or false), never an error result.
-KNOWN: violations found and not fixed yet (each also in docs/BACKLOG.md 6.41); a stale entry fails the test.
+KNOWN: violations found and not fixed yet (each also in docs/BACKLOG.md 6.41); a stale entry fails the test, and so
+does a failure whose key does not match the entry's pattern.
 """
 
 from __future__ import annotations
@@ -59,10 +60,16 @@ WHERE = {"first": 0, "second": 1, "last": -1}
 CCXT_MARKETS = re.compile(r"^ccxt:[^.]+\.load_markets[.\[]")
 HL_COIN_NAMES = re.compile(r"^http:api\.hyperliquid\.xyz/info(\[\*\])?\.universe\[\*\]\.name$")
 
-# Tools that still raise on a wrong-type field: {"tool": "which field and what escapes"}; each is in BACKLOG 6.41.
-_FUNDING_ENTRIES = "ccxt fundingRate 'abc' / [] -> float() in collector/market_data.funding_entries (collectors untouched in item 197)"
-KNOWN: dict[str, str] = {"carry_paper_open": _FUNDING_ENTRIES, "carry_paper_status": _FUNDING_ENTRIES}
+# Tools that still raise on a wrong-type field: {"tool": regex}; each is in BACKLOG 6.41. Every failure key of the tool
+# ("<field> -> <kind> @<where>") must fully match the regex, so a second, unrelated violation is not hidden by the entry.
+KNOWN: dict[str, str] = {}
 KNOWN_COLD: dict[str, str] = {}
+
+
+def known_failures_match(failures: dict[str, str], pattern: str) -> bool:
+    """True when there is at least one failure and every failure key fully matches the KNOWN pattern."""
+    return bool(failures) and all(re.fullmatch(pattern, k) for k in failures)
+
 
 # Tools that read no numeric field on the recording call, so nothing is mutated (the test fails if one starts to):
 # the calculators and store tools of NO_NETWORK, plus these two.
@@ -302,6 +309,7 @@ async def test_no_tool_raises_on_a_wrong_type_field(tmp_path, name):
     assert (report["mutations"] == 0) == (name in NO_NETWORK or name in NO_FIELDS), f"update NO_FIELDS: {report['mutations']} mutations"
     if name in KNOWN:
         assert report["failures"], f"{name} is fixed: remove it from KNOWN and BACKLOG 6.41"
+        assert known_failures_match(report["failures"], KNOWN[name]), f"{name}: a failure outside KNOWN: {report['failures']}"
     else:
         assert report["failures"] == {}, f"{name}: fix it (type check / Builder.guard) or list it in KNOWN"
 
@@ -312,6 +320,7 @@ async def test_no_tool_raises_on_a_bad_value_in_a_cold_cache(tmp_path, name):
     assert report["hits"] == report["mutations"], "a picked field was not found again: the fakes are not deterministic"
     if name in KNOWN_COLD:
         assert report["failures"], f"{name} is fixed: remove it from KNOWN_COLD and BACKLOG 6.41"
+        assert known_failures_match(report["failures"], KNOWN_COLD[name]), f"{name}: a failure outside KNOWN_COLD"
     else:
         assert report["failures"] == {}, f"{name}: fix it (type check / Builder.guard) or list it in KNOWN_COLD"
 
@@ -390,6 +399,45 @@ def test_mutations_are_capped_and_spread():
     assert len(set(picked)) == len({f for f, _, _ in picked}) == MAX_MUTATIONS  # 40 fields, one triple each
     assert [w for _, _, w in mutations({"a": 1})] == ["first"] * 3 and len(mutations({"a": 2})) == 6
     assert {k for _, k, _ in mutations({"http:api.hyperliquid.xyz/info[*].universe[*].name": 1})} == set(KEY_KINDS)
+
+
+def test_known_failures_must_all_match_the_pattern():
+    pattern = r"ccxt:[^.]+\.fetch_funding_rate_history\[\*\]\.fundingRate -> \w+ @\w+"
+    one = {"ccxt:bybit.fetch_funding_rate_history[*].fundingRate -> abc @last": "raised: ValueError"}
+    assert known_failures_match(one, pattern)
+    assert not known_failures_match({}, pattern)  # fixed: the entry is stale
+    other = {**one, "ccxt:bybit.fetch_ticker.last -> abc @first": "raised: TypeError"}
+    assert not known_failures_match(other, pattern)  # an unrelated violation is not hidden by the entry
+
+
+class _NoCloseEx(FakeEx):
+    """OHLCV rows whose close is never a usable number."""
+
+    async def fetch_ohlcv(self, symbol, timeframe="1h", limit=100, since=None, params=None):
+        rows = await super().fetch_ohlcv(symbol, timeframe, limit, since, params)
+        return [[*x[:4], bad, *x[5:]] for x, bad in zip(rows, [None, "abc", [], 0] * len(rows), strict=False)]
+
+
+async def test_market_ohlcv_without_a_numeric_close_is_not_ok(tmp_path):
+    def rt_with(factory) -> Runtime:
+        rt = Runtime(
+            Settings(http_retries=0, http_retry_backoff=0.0, cache_scale=0.0, db_path=str(tmp_path / f"{factory.__name__}.sqlite")),
+            transports=make_transports(State()),
+            exchange_factory=factory,
+        )
+        rt.now = lambda: NOW
+        return rt
+
+    args = {"exchange": "binanceusdm", "symbol": "BTC/USDT:USDT", "timeframe": "1h", "limit": 20}
+    async with Client(build_server(rt_with(_NoCloseEx))[0]) as c:
+        res = await c.call_tool("market_ohlcv", args)
+    assert _failure(res) is None
+    env = as_envelope(res)
+    assert env["ok"] is False and env["data"] is None
+    assert [(m["field"], m["reason"], m["detail"]) for m in env["missing"]] == [("ohlcv", "data_unavailable", "no numeric close")]
+    async with Client(build_server(rt_with(FakeEx))[0]) as c:  # the happy path keeps its summary
+        good = as_envelope(await c.call_tool("market_ohlcv", args))
+    assert good["ok"] is True and good["data"]["summary"]["candles"] == 20 and good["data"]["summary"]["first_close"] > 0
 
 
 def test_lists_name_registered_tools_only():

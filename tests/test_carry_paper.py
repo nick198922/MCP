@@ -10,6 +10,7 @@ from mcp import Client
 
 from conftest import NOW, FakeEx, make_transports
 from tradedesk.analytics.carry import DAY_MS, _Leg, bar_gaps, pair_paper_mark, paper_summary, simulate_perp_spread_portfolio
+from tradedesk.collector.market_data import funding_entries
 from tradedesk.config import Settings
 from tradedesk.runtime import Runtime
 from tradedesk.server import build_server
@@ -461,6 +462,59 @@ async def _mismatch_tickers(self, symbols=None):
         for v in out.values():
             v["last"] = v["last"] * 3
     return out
+
+
+def test_funding_entries_drop_only_rows_with_a_wrong_type_field():
+    rows = [
+        {"timestamp": 1000, "fundingRate": 0.0001},
+        {"timestamp": 2000, "fundingRate": "abc"},
+        {"timestamp": 3000, "fundingRate": []},
+        {"timestamp": 4000, "fundingRate": None},
+        {"timestamp": None, "fundingRate": 0.1},
+        {"timestamp": [], "fundingRate": 0.1},
+        {"timestamp": "5000", "fundingRate": "-0.0002"},  # numeric strings parse as before
+    ]
+    assert funding_entries(rows) == [{"ts_ms": 1000, "rate": 0.0001}, {"ts_ms": 5000, "rate": -0.0002}]
+    assert funding_entries([]) == []
+
+
+class _BadRateEx(FakeEx):
+    """Bybit's two latest funding rows carry a rate that is not a number."""
+
+    async def fetch_funding_rate_history(self, symbol, since=None, limit=500, params=None):
+        rows = await super().fetch_funding_rate_history(symbol, since, limit, params)
+        if self.id == "bybit":
+            rows = [dict(x) for x in rows]
+            for x, bad in zip(rows[-2:], ("abc", []), strict=False):
+                x["fundingRate"] = bad
+        return rows
+
+
+async def test_open_and_status_skip_a_wrong_type_funding_rate(state, tmp_path):
+    rt = Runtime(
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=str(tmp_path / "bad_rate.sqlite")),
+        transports=make_transports(state),
+        exchange_factory=_BadRateEx,
+    )
+    rt.now = lambda: NOW
+    await rt.store.init()
+    srv, _ = build_server(rt)
+    try:
+        open_at = NOW - timedelta(days=3)
+        rt.now = lambda: open_at
+        o = await _call(srv, "carry_paper_open", base="BTC", long_venue="binanceusdm", short_venue="bybit")
+        assert o["ok"] is True, o
+        rt.now = lambda: NOW
+        s = await _call(srv, "carry_paper_status")
+        assert s["ok"] is True, s
+        (tr,) = s["data"]["open"]
+        end, step = 1791637200000, H8
+        open_ms = int(open_at.timestamp()) * 1000
+        idx = [i for i in range(90) if open_ms < end - (89 - i) * step <= int(NOW.timestamp() * 1000)]
+        assert 88 in idx and 89 in idx
+        assert tr["mark"]["n_funding_payments"] == 2 * len(idx) - 2  # the two bad bybit rows are dropped, nothing else
+    finally:
+        await rt.store.aclose()
 
 
 async def test_open_provider_failure_writes_nothing(state, tmp_path):

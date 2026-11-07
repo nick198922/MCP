@@ -1,0 +1,8 @@
+# Інваріант 1: `funding_entries` і `market_ohlcv` на зіпсованих полях (пункт 198)
+
+- `collector/market_data.funding_entries`: ряди розбираються через `parsed_rows` (той самий фільтр і та сама лямбда). Ряд, у якому `fundingRate` чи `timestamp` не число (`"abc"`, `[]`), відкидається, а не кидає `ValueError`. Тому `carry_paper_open` / `carry_paper_status` (і живий фід паперового carry) більше не падають. На нормальних рядках результат той самий, числові рядки (`"-0.0002"`) розбираються, як і раніше.
+- `market_ohlcv`: якщо жодне закриття не число, інструмент повертає `ok=false` і `missing: ohlcv / data_unavailable / no numeric close` замість `IndexError` на `closes[0]` (рев'ю 197, знахідка 3).
+- `tests/test_tools_wrong_type_fields.py`: `KNOWN` порожній. Запис у `KNOWN` / `KNOWN_COLD` тепер — регулярний вираз, і кожен ключ збою має йому повністю відповідати (`known_failures_match`). Так запис не ховає друге, не пов'язане порушення (рев'ю 197, знахідка 2).
+- Нові тести: `funding_entries` на зіпсованих рядках; `carry_paper_open` + `carry_paper_status`, коли два рядки Bybit зіпсовані (`ok=true`, виплат рівно на 2 менше); `market_ohlcv` без числового закриття і щасливий шлях; `known_failures_match`.
+- Наживо 07.11 через `build_server()` (тимчасова БД паперу): `market_ohlcv` binanceusdm BTC 1h — `ok=true`, `missing` порожній (50 свічок, закриття ~76 тис.); `carry_paper_open` BTC binanceusdm/bybit і `carry_paper_status` — `ok=true`, `missing` порожній.
+- Перевірка: `make lint`; `tests/test_tools_wrong_type_fields.py` + `tests/test_carry_paper.py` — 212 passed; `test_collector*`, `test_coinalyze_history_collector`, `test_carry_paper_engine`, `test_server`, `test_provider_failures` — 209 passed.

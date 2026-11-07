@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import sqlite3
 from collections.abc import Callable
 from datetime import datetime
@@ -71,6 +72,16 @@ def parsed_rows(rows: Any, parse: Callable[[Any], T]) -> list[T]:
         except (TypeError, ValueError, KeyError, IndexError, OverflowError):
             continue
     return out
+
+
+def finite_float(x: Any) -> float:
+    """`float(x)` that raises ValueError for NaN and +-inf as well (JSON `NaN` / `Infinity` arrive as floats, and
+    float() accepts the strings "nan" / "Infinity"), so `parsed_rows` drops such a row like any malformed one instead
+    of letting one non-finite funding rate poison a mean or a sum of payments."""
+    v = float(x)
+    if not math.isfinite(v):
+        raise ValueError(f"non-finite number: {x!r}")
+    return v
 
 
 def r(x: float | None, nd: int = 4) -> float | None:

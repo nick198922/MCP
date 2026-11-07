@@ -10,7 +10,7 @@ from typing import Any
 
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ..tools._util import parsed_rows
+from ..tools._util import finite_float, parsed_rows
 
 BAR_MS = 4 * 3_600_000
 BAR_PAGE = 100  # OKX caps candles per request at 100; paginate rather than rely on a bigger page
@@ -50,8 +50,9 @@ async def bars_4h(rt: Runtime, b: Builder, venue: str, sym: str, since_ms: int, 
 
 def funding_entries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """ccxt funding-history rows -> ``[{ts_ms, rate}]`` (rate as a decimal per interval); rows without a rate are dropped,
-    and so are rows whose rate or timestamp is not a number (a string like "abc", a list), instead of raising."""
+    and so are rows whose rate or timestamp is not a number (a string like "abc", a list) or not finite (NaN, inf),
+    instead of raising or poisoning the sum of payments; the paper-carry engine sees such a payment as missing."""
     return parsed_rows(
         [x for x in rows if x.get("fundingRate") is not None and x.get("timestamp")],
-        lambda x: {"ts_ms": int(x["timestamp"]), "rate": float(x["fundingRate"])},
+        lambda x: {"ts_ms": int(x["timestamp"]), "rate": finite_float(x["fundingRate"])},
     )

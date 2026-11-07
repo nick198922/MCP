@@ -121,7 +121,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 continue
             try:
                 series.append({"t": int(item["t"]), "p": float(item["p"])})
-            except (KeyError, TypeError, ValueError):
+            except (KeyError, TypeError, ValueError, OverflowError):  # OverflowError: int() of a JSON Infinity
                 continue
         if not series:
             b.miss("history", "polymarket:clob", "data_unavailable", "no parseable points")

@@ -17,7 +17,7 @@ from ..analytics.trades import summarise as summarise_trades
 from ..core.envelope import Builder
 from ..providers.exchanges import PERP_EXCHANGES
 from ..runtime import Runtime
-from ._util import READ_ONLY, json_num, parsed_rows, r, timeframe_seconds
+from ._util import READ_ONLY, finite_float, json_num, parsed_rows, r, timeframe_seconds
 
 BASE = Annotated[str, Field(description="Base asset, e.g. BTC, ETH, SOL")]
 SPREAD_WARNING = (
@@ -353,7 +353,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 )
             entries = parsed_rows(
                 [x for x in got["rows"] if x.get("fundingRate") is not None and x.get("timestamp")],
-                lambda x: {"ts_ms": int(x["timestamp"]), "rate": float(x["fundingRate"])},
+                lambda x: {"ts_ms": int(x["timestamp"]), "rate": finite_float(x["fundingRate"])},
             )
             if not entries:
                 return None
@@ -372,7 +372,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 b.warn("hyperliquid funding history incomplete (page limit, a later page failed, or rows with a malformed time dropped)")
             entries = parsed_rows(
                 [x for x in got["rows"] if x.get("fundingRate") is not None and x.get("time")],
-                lambda x: {"ts_ms": int(x["time"]), "rate": float(x["fundingRate"])},
+                lambda x: {"ts_ms": int(x["time"]), "rate": finite_float(x["fundingRate"])},
             )
             if not entries:
                 return None
@@ -515,7 +515,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 )
             entries = parsed_rows(
                 [x for x in (got["rows"] if got else []) if x.get("fundingRate") is not None and x.get("timestamp")],
-                lambda x: {"ts_ms": int(x["timestamp"]), "rate": float(x["fundingRate"])},
+                lambda x: {"ts_ms": int(x["timestamp"]), "rate": finite_float(x["fundingRate"])},
             )
             cur = current.get(sym)
             if not entries and not cur:
@@ -659,7 +659,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
                     )
                 entries = parsed_rows(
                     [x for x in (got["rows"] if got else []) if x.get("fundingRate") is not None and x.get("time")],
-                    lambda x: {"ts_ms": int(x["time"]), "rate": float(x["fundingRate"])},
+                    lambda x: {"ts_ms": int(x["time"]), "rate": finite_float(x["fundingRate"])},
                 )
             else:
                 async with sem:
@@ -668,7 +668,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
                     )
                 entries = parsed_rows(
                     [x for x in (got["rows"] if got else []) if x.get("fundingRate") is not None and x.get("timestamp")],
-                    lambda x: {"ts_ms": int(x["timestamp"]), "rate": float(x["fundingRate"])},
+                    lambda x: {"ts_ms": int(x["timestamp"]), "rate": finite_float(x["fundingRate"])},
                 )
             if not entries and cur is None:
                 return None
@@ -1080,7 +1080,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
         for c in raw:
             try:
                 rows.append([int(c["t"]), float(c["o"]), float(c["h"]), float(c["l"]), float(c["c"]), float(c["v"])])
-            except (KeyError, TypeError, ValueError):
+            except (KeyError, TypeError, ValueError, OverflowError):  # OverflowError: int() of a JSON Infinity
                 continue
         if not rows:
             b.miss("candles", "hyperliquid", "data_unavailable", "no parsable candles")
@@ -1186,7 +1186,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 price = float(t["px"])
                 amount = float(t["sz"])
                 ts = int(t.get("time") or 0)
-            except (KeyError, TypeError, ValueError):
+            except (KeyError, TypeError, ValueError, OverflowError):  # OverflowError: int() of a JSON Infinity
                 continue
             normalised.append(
                 {
@@ -1226,12 +1226,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
             return b.build(None, ok=False)
         if not got["complete"]:
             b.warn("funding history incomplete (page limit, a later page failed, or rows with a malformed time dropped)")
-        entries: list[dict[str, Any]] = []
-        for e in got["rows"]:
-            try:
-                entries.append({"ts_ms": int(e["time"]), "rate": float(e["fundingRate"])})
-            except (KeyError, TypeError, ValueError):
-                continue
+        # a row whose time or rate is missing, not a number or not finite (NaN / inf) is dropped
+        entries = parsed_rows(got["rows"], lambda e: {"ts_ms": int(e["time"]), "rate": finite_float(e["fundingRate"])})
         if not entries:
             b.miss("funding_history", "hyperliquid", "data_unavailable", "no parsable entries")
             return b.build(None, ok=False)

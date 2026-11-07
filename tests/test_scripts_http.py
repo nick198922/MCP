@@ -44,6 +44,27 @@ def test_vault_profile_post_sends_the_body_and_survives_repeated_calls():
     assert seen == [("POST", "/info", body)] * 2
 
 
+def test_vault_profile_post_keeps_the_address_out_of_evidence_args():
+    fetched = []
+
+    class SpyHttp(Http):
+        async def post_json(self, path, **kw):
+            f = await super().post_json(path, **kw)
+            fetched.append(f)
+            return f
+
+    def handler(req):
+        return httpx.Response(200, json={"name": "v"})
+
+    h = SpyHttp("t", "https://api.hyperliquid.xyz", rate=1000.0, retries=0, transport=httpx.MockTransport(handler))
+    addr = "0x1234567890abcdef1234567890abcdef12345678"
+    vp._post({"type": "vaultDetails", "vaultAddress": addr}, h)
+    vp._post({"type": "clearinghouseState", "user": addr}, h)
+    assert [f.evidence.args for f in fetched] == [{"type": "vaultDetails"}, {"type": "clearinghouseState"}]
+    assert all(addr not in json.dumps(f.evidence.args) for f in fetched)
+    assert [f.evidence.tool for f in fetched] == ["info:vaultDetails", "info:clearinghouseState"]
+
+
 def test_vault_profile_post_retries_5xx_then_raises_runtime_error():
     calls = []
 

@@ -76,8 +76,10 @@ def run_sync(http: Http, request: Callable[[Http], Awaitable[Any]]) -> Any:
 
 
 def _post(body: dict[str, Any], http: Http | None = None) -> Any:
+    # Evidence carries the request type only: the default args would copy the body, i.e. the user / vault address.
+    kind = body.get("type")
     try:
-        return run_sync(http or HL_INFO, lambda h: h.post_json("/info", json=body, tool=f"info:{body.get('type')}"))
+        return run_sync(http or HL_INFO, lambda h: h.post_json("/info", json=body, tool=f"info:{kind}", args={"type": kind}))
     except ProviderError as exc:
         raise RuntimeError(f"Hyperliquid info {body.get('type')} failed: {exc}") from exc
 

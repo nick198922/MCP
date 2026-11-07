@@ -1,12 +1,13 @@
-"""Import the owner's Hyperliquid perp trades into the trade journal. Read-only, no key: fills are public by address.
+"""Import the owner's Hyperliquid perp trades into the trade journal (read-only, no key).
 
     uv run python scripts/hyperliquid_import.py import 0xADDRESS [--db PATH]
     uv run python scripts/hyperliquid_import.py stats [--db PATH] [--out REPORT.md]
 
-Fills come from the public info endpoint through `core.http.Http` (`userFillsByTime`, 2 000 per page; Hyperliquid keeps the 10 000 most recent
-fills). They are grouped per coin into round trips: a trip starts when the position leaves zero and ends when it is
-flat again (a flip closes one trip and opens the next). P&L = Hyperliquid's closedPnl minus fees; funding is not included.
-Spot fills are skipped. The address is not stored in git; the report stays on the server.
+Fills are public by address. They come from the public info endpoint through `core.http.Http`
+(`userFillsByTime`, 2 000 per page; Hyperliquid keeps the 10 000 most recent fills). They are grouped
+per coin into round trips: a trip starts when the position leaves zero and ends when it is flat again
+(a flip closes one trip and opens the next). P&L = Hyperliquid's closedPnl minus fees; funding is not
+included. Spot fills are skipped. The address is not stored in git; the report stays on the server.
 """
 
 from __future__ import annotations
@@ -29,8 +30,9 @@ DB_DEFAULT = bi.DB_DEFAULT
 
 
 def info_http() -> Http:
-    """Public Hyperliquid info endpoint through core.http.Http (invariant 2): ~3 pages/s (the old 0.3 s pause), retries
-    on 429 / 5xx / network; any other HTTP error raises ProviderError at once, like raise_for_status did."""
+    """Public Hyperliquid info endpoint through core.http.Http (invariant 2): ~3 pages/s (the old
+    0.3 s pause), retries on 429 / 5xx / network; any other HTTP error raises ProviderError at once,
+    like raise_for_status did."""
     return Http("hyperliquid_info", "https://api.hyperliquid.xyz", rate=3.0, burst=1, timeout=30, retries=2)
 
 
@@ -139,7 +141,8 @@ def round_trips(fills: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def mark_airdrop(db_path: str, before: str) -> int:
-    """Owner 2026-10-18: older Hyperliquid positions were held to farm the airdrop, not traded; keep them, tag them."""
+    """Owner 2026-10-18: older Hyperliquid positions were held to farm the airdrop, not traded;
+    keep them, tag them."""
     import json  # noqa: PLC0415
     import sqlite3  # noqa: PLC0415
     from datetime import UTC, datetime  # noqa: PLC0415

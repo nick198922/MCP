@@ -2,8 +2,9 @@
 
 Item 221 of docs/ideas/IDEA-20261102-standing-improvements.md. A script that fetches data, writes a file, reads a key
 or runs its whole study when it is merely imported breaks every test that imports it (tests import many scripts for
-their pure helpers) and runs that work inside `pytest`. This test parses every `scripts/*.py` except `_*.py` helpers
-with the stdlib `ast` (the scripts are not imported; no network) and checks the statements that run at import time.
+their pure helpers) and runs that work inside `pytest`. This test parses every `scripts/**/*.py` (subdirectories such
+as `scripts/research/` included, item 230) except `_*.py` helpers with the stdlib `ast` (the scripts are not imported;
+no network) and checks the statements that run at import time.
 It complements tests/test_scripts_import.py (item 120), which imports the guarded scripts with sockets disabled and
 so sees only what fails; this one also sees work that succeeds quietly (a cache read, a print, a computed table).
 
@@ -13,13 +14,14 @@ same rules, anything under `if __name__ == "__main__":`, and expressions whose c
   `sys.path.insert`, `argparse.ArgumentParser` and `add_argument` (but not `parse_args`);
 - a class defined in the same module, or a function of the same module whose body calls only safe things;
 - a name or module imported from `tradedesk.analytics` (pure by invariant 3 of CLAUDE.md);
-- a safe function of a sibling script imported as a module (`s1.ms(...)`, `vsp.s1.ms(...)`) or by name.
+- a safe function of a sibling script imported as a module (`s1.ms(...)`, `vsp.s1.ms(...)`) or by name; a script in
+  a subdirectory sees the scripts of its own directory first, then those of `scripts/`.
 So `main()` and `asyncio.run(...)` may appear only under the guard; a module-level loop or `with` is a finding too.
 
 Exceptions are in `ALLOWED` (file -> number of findings, reason); the count must match the scan, so a new finding in an
 allowed file or a stale entry fails. Not checked: decorators, default argument values, class bodies, a class built at
 import whose `__init__` / `__post_init__` does I/O, `.replace(...)` on a `Path` (treated as the pure `str`/`datetime`
-method), `tradedesk.analytics` code itself, and code in `scripts/**/` subdirectories and `.sh` heredocs.
+method), `tradedesk.analytics` code itself, and Python in `.sh` heredocs.
 """
 
 from __future__ import annotations
@@ -196,17 +198,26 @@ def import_side_effects(source: str, others: dict[str, Module] | None = None) ->
 
 
 def scan(root: Path = SCRIPTS) -> tuple[int, dict[str, list[str]]]:
-    """(files scanned, {file name: findings}) over ``root/*.py`` except ``_*.py`` (helpers are only resolved)."""
-    sources = {p.stem: p.read_text(encoding="utf-8") for p in sorted(root.glob("*.py"))}
-    stems = frozenset(sources)
-    others = {stem: module_info(src, stems) for stem, src in sources.items()}
-    found = {}
-    scanned = [s for s in sources if not s.startswith("_")]
-    for stem in scanned:
-        hits = import_side_effects(sources[stem], others)
-        if hits:
-            found[f"{stem}.py"] = hits
-    return len(scanned), found
+    """(files scanned, {path relative to ``root``: findings}) over ``root/**/*.py`` except ``_*.py``.
+
+    ``_*.py`` helpers are only resolved. A script in a subdirectory resolves siblings in its own directory first, then
+    in ``root`` (subdirectory scripts put their own directory or `scripts/` on ``sys.path``).
+    """
+    by_dir: dict[Path, dict[str, str]] = {}
+    for p in sorted(root.rglob("*.py")):
+        by_dir.setdefault(p.parent, {})[p.stem] = p.read_text(encoding="utf-8")
+    top = by_dir.get(root, {})
+    n, found = 0, {}
+    for folder, sources in by_dir.items():
+        visible = {**top, **sources}
+        stems = frozenset(visible)
+        others = {stem: module_info(src, stems) for stem, src in visible.items()}
+        for stem in (s for s in sources if not s.startswith("_")):
+            n += 1
+            hits = import_side_effects(sources[stem], others)
+            if hits:
+                found[(folder.relative_to(root) / f"{stem}.py").as_posix()] = hits
+    return n, found
 
 
 def unexplained(found: dict[str, list[str]], allowed: dict[str, tuple[int, str]]) -> list[str]:
@@ -220,9 +231,10 @@ def unexplained(found: dict[str, list[str]], allowed: dict[str, tuple[int, str]]
     return problems
 
 
-# file name in scripts/ -> (number of findings, why running that at import is acceptable). Scan of 07.11: 224 files,
+# path relative to scripts/ -> (number of findings, why running that at import is acceptable). Scan of 07.11: 224 files,
 # 7 with findings; verify_demo_trend_veto and explore_us_open_calls were put under the guard, verify_pm_h11_recheck
-# and verify_pm_h7_qlike now import their sibling with a plain `import` (item 226), these 3 remain.
+# and verify_pm_h7_qlike now import their sibling with a plain `import` (item 226), these 3 remain. Subdirectories
+# (item 230, 07.11): 8 files in research/ and server/, no findings.
 ALLOWED: dict[str, tuple[int, str]] = {
     "lesson_sheets.py": (
         1,
@@ -365,12 +377,36 @@ def test_allowed_counts_and_scan(tmp_path):
     assert unexplained({}, allowed) == ["bad.py: 0 findings, ALLOWED says 1"]
 
 
+def test_scan_covers_subdirectories(tmp_path):
+    top = "def ms(y):\n    return y\n\n\ndef load():\n    return open('x').read()\n"
+    (tmp_path / "top.py").write_text(top, encoding="utf-8")
+    (tmp_path / "near.py").write_text("def day(s):\n    return open(s).read()\n", encoding="utf-8")
+    sub = tmp_path / "research"
+    (sub / "deeper").mkdir(parents=True)
+    (sub / "near.py").write_text("def day(s):\n    return s\n", encoding="utf-8")  # shadows the unsafe top-level one
+    uses = "import top\nfrom near import day\nA = top.ms(1)\nB = day('x')\nC = top.load()\n"
+    (sub / "uses.py").write_text(uses, encoding="utf-8")
+    bad = "import asyncio\n\n\nasync def main():\n    pass\n\n\nasyncio.run(main())\n"
+    (sub / "bad.py").write_text(bad, encoding="utf-8")
+    (sub / "_helper.py").write_text("main()\n", encoding="utf-8")  # helpers are not scanned in subdirectories either
+    (sub / "deeper" / "x.py").write_text("print('hi')\n", encoding="utf-8")
+    n, found = scan(tmp_path)
+    assert n == 6
+    assert found == {
+        "research/bad.py": ["8: call asyncio.run()", "8: call main()"],
+        "research/uses.py": ["5: call top.load()"],
+        "research/deeper/x.py": ["1: call print()"],
+    }
+
+
 # --- the repository ------------------------------------------------------------------------------
 
 
 def test_scripts_import_without_side_effects():
     n, found = scan()
     assert n > 200, f"scanned only {n} files: is SCRIPTS right?"
+    n_top = sum(1 for p in SCRIPTS.glob("*.py") if not p.name.startswith("_"))
+    assert n > n_top, "scripts/**/ subdirectories (research/, server/) are not scanned"
     problems = unexplained(found, ALLOWED)
     assert problems == [], "move module-level work under `if __name__ == '__main__':` or add a reason to ALLOWED"
 

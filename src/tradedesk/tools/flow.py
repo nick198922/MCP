@@ -17,7 +17,7 @@ from ..analytics import market_flow as mf
 from ..analytics.liquidations_agg import exchange_symbol
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY
+from ._util import READ_ONLY, warn_incomplete_range
 
 H = mf.HOUR_MS
 CCXT_ID = {"binance": "binanceusdm", "bybit": "bybit"}
@@ -65,11 +65,10 @@ def _iso(ms: int) -> str:
 
 
 def _rows_of(b: Builder, field: str, got: Any) -> list[Any] | None:
-    """Rows of a ``{"rows", "complete"}`` range result, with a warning when it is incomplete."""
+    """Rows of a ``{"rows", "complete"}`` range result, with warnings when it is incomplete (`warn_incomplete_range`)."""
     if not isinstance(got, dict):
         return None
-    if not got.get("complete", True):
-        b.warn(f"{field}: history incomplete (paging stopped early); the earliest part of the window may be missing.")
+    warn_incomplete_range(b, field, got)
     return got.get("rows") or []
 
 

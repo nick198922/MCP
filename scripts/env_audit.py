@@ -20,7 +20,8 @@ in ``deploy/user-units/*`` or in a unit written by ``scripts/server/*.sh``, ``ex
 ``scripts/server/*.sh`` and ``scripts/*.sh`` (``agents_loop.sh`` exports names to the Python scripts it starts), and
 env-file lines those scripts write. Comment lines are skipped. ``EnvironmentFile=`` points outside the repository
 (``/etc``, ``~/.config``) and is not opened. The section prints: read by a script but neither set anywhere nor written
-in a doc source (``deploy/user-units/README.md`` and ``docs/AGENTS.md`` added to the list above); set by a unit or
+in a doc source (``deploy/user-units/README.md``, ``docs/AGENTS.md`` and ``docs/ENV-SCRIPTS.md`` added to the list
+above; in ``docs/ENV-SCRIPTS.md`` only names inside backticks count, plain prose does not); set by a unit or
 shell file but read by nobody (server code, the Python scripts, ``$NAME`` / ``${NAME...}`` in any ``*.sh`` under
 ``scripts/`` or ``deploy/``). Either list not empty also makes the exit code 1.
 
@@ -41,7 +42,8 @@ TEMPLATE = "deploy/env.example"
 DOC_SOURCES = (TEMPLATE, "deploy/features.env", ".env.example", "README.md", "deploy/README.md", "docs/ARCHITECTURE.md")
 SCRIPTS_DIR = "scripts"
 UNITS_DIR = "deploy/user-units"
-SCRIPT_DOC_SOURCES = (*DOC_SOURCES, f"{UNITS_DIR}/README.md", "docs/AGENTS.md")
+ENV_SCRIPTS_DOC = "docs/ENV-SCRIPTS.md"  # reference of script variables: backticked names only
+SCRIPT_DOC_SOURCES = (*DOC_SOURCES, f"{UNITS_DIR}/README.md", "docs/AGENTS.md", ENV_SCRIPTS_DOC)
 
 _NAME = r"TRADEDESK_[A-Z0-9_]*[A-Z0-9]"
 _FULL_NAME = re.compile(rf"^{_NAME}$")
@@ -53,6 +55,8 @@ _TEXT_NAME = re.compile(rf"(?<![A-Za-z0-9_]){_NAME}(?![A-Za-z0-9_*{{])")
 _SET_NAME = re.compile(rf"(?:^|(?<=[\s'\"=;])|(?<=\\n))({_NAME})=(?!=)")
 # A shell expansion: $NAME or ${NAME...}.
 _SHELL_READ = re.compile(rf"\$\{{?({_NAME})(?![A-Za-z0-9_])")
+# A Markdown code span on one line: `...` or ``...`` (closed by a backtick run of the same length).
+_CODE_SPAN = re.compile(r"(?<!`)(`+)(?!`)([^\n]+?)(?<!`)\1(?!`)")
 
 
 def _name_const(node: ast.AST | None) -> str | None:
@@ -87,6 +91,15 @@ def names_read(source: str) -> set[str]:
 def names_written(text: str) -> set[str]:
     """Whole ``TRADEDESK_*`` names written in a document or an env file (prefix patterns left out). Pure."""
     return set(_TEXT_NAME.findall(text))
+
+
+def names_in_backticks(text: str) -> set[str]:
+    """Whole ``TRADEDESK_*`` names inside Markdown code spans (`` `NAME` ``); a name in plain prose is left out. Pure."""
+    return {n for _, span in _CODE_SPAN.findall(text) for n in names_written(span)}
+
+
+def _doc_names(path: str, text: str) -> set[str]:
+    return names_in_backticks(text) if path == ENV_SCRIPTS_DOC else names_written(text)
 
 
 def _code_lines(text: str) -> list[str]:
@@ -129,7 +142,7 @@ def audit_scripts(
     py_read = _where(py, names_read)
     read = {n: f for n, f in sorted(py_read.items()) if n not in code_read}
     set_by = dict(sorted(_where(setters, names_set).items()))
-    documented = set().union(*(names_written(t) for t in docs.values())) if docs else set()
+    documented = set().union(*(_doc_names(p, t) for p, t in docs.items())) if docs else set()
     readers = code_read | py_read.keys() | set().union(*(names_shell_read(t) for t in shell.values()))
     return ScriptsAudit(
         read=read,

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import inspect
 import json
 import math
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -18,6 +20,17 @@ from tradedesk.analytics.options import black76_price
 from tradedesk.config import Settings
 from tradedesk.runtime import Runtime
 from tradedesk.server import build_server
+
+
+async def wait_until(pred: Callable[[], bool]) -> None:
+    """Yield to the event loop until ``pred()`` holds, with no fixed sleep: a scheduler job started by the test runs
+    as soon as the test yields, so polling with ``asyncio.sleep(0.05)`` only waited out the poll step. A job that
+    never gets there fails the test after 5 s of wall clock (TimeoutError here, not a later assert)."""
+    async with asyncio.timeout(5.0):
+        # No Event to await: Scheduler exposes none and src/ stays unchanged; sleep(0) only yields one loop step.
+        while not pred():  # noqa: ASYNC110
+            await asyncio.sleep(0)
+
 
 # --- Test-only memo of the MCP SDK's per-tool registration ------------------------------------------------------------
 # build_server() registers ~110 tools; for each the SDK builds a pydantic argument model and its JSON schema

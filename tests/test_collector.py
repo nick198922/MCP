@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import asyncio
 import json
 from dataclasses import replace
 
 from mcp import Client
 
-from conftest import NOW, FakeEx, make_transports
+from conftest import NOW, FakeEx, make_transports, wait_until
 from tradedesk.collector.scheduler import (
     PeriodicJob,
     Scheduler,
@@ -51,10 +50,7 @@ async def test_scheduler_runs_once_and_stops(state):
     try:
         await sched.start()
         # Wait for the first iteration to complete.
-        for _ in range(50):
-            if sched.jobs[0].metrics.runs > 0:
-                break
-            await asyncio.sleep(0.05)
+        await wait_until(lambda: sched.jobs[0].metrics.runs > 0)
         assert sched.jobs[0].metrics.runs == 1
         assert sched.jobs[0].metrics.successes == 1
         assert sched.jobs[0].metrics.failures == 0
@@ -73,10 +69,7 @@ async def test_scheduler_captures_failure(state):
     sched = Scheduler(rt, [PeriodicJob(name="boom", period_seconds=60, fn=boom)])
     try:
         await sched.start()
-        for _ in range(50):
-            if sched.jobs[0].metrics.runs > 0:
-                break
-            await asyncio.sleep(0.05)
+        await wait_until(lambda: sched.jobs[0].metrics.runs > 0)
         m = sched.jobs[0].metrics
         assert m.runs == 1 and m.failures == 1 and m.successes == 0
         assert m.last_error and "nope" in m.last_error
@@ -100,10 +93,7 @@ async def test_scheduler_keeps_last_failure_after_a_success(state, monkeypatch):
     sched = Scheduler(rt, [PeriodicJob(name="flaky", period_seconds=0, fn=flaky)])
     try:
         await sched.start()
-        for _ in range(50):
-            if sched.jobs[0].metrics.successes > 0:
-                break
-            await asyncio.sleep(0.01)
+        await wait_until(lambda: sched.jobs[0].metrics.successes > 0)
         m = sched.jobs[0].metrics
         assert m.failures == 1 and m.successes >= 1
         assert m.last_error is None  # the latest run succeeded

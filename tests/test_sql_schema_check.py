@@ -1,4 +1,5 @@
-"""scripts/sql_schema_check.py (item 157 of docs/ideas/IDEA-20261102-standing-improvements.md): SELECT literals vs schema."""
+"""scripts/sql_schema_check.py (items 157, 175, 200 of docs/ideas/IDEA-20261102-standing-improvements.md): SELECT literals
+vs schema."""
 
 import sys
 from pathlib import Path
@@ -102,6 +103,105 @@ def test_constant_fragments_are_expanded_and_checked():
     assert rep.failed
     assert len(rep.expanded_sites) == 6 and [q.line for q in rep.dynamic] == [18]
     assert "6 expanded from constants" in sc.render(rep)
+
+
+CONSTS = """
+TABLE = "journal"
+COLS = ("id", "symbol", "pnl")
+TAG = "src:demo"
+BAD = "symbl"
+"""
+
+IMPORTING = """
+from consts import COLS, TABLE
+import consts as cm
+
+
+def read(con, days):
+    con.execute(f"SELECT {', '.join(COLS)} FROM {TABLE} WHERE symbol LIKE '%{cm.TAG}%'")
+    con.execute(f"SELECT {cm.BAD} FROM {TABLE}")
+    con.execute(f"SELECT id FROM journal WHERE opened_ts IN ({','.join('?' * len(days))})")
+"""
+
+
+def test_fstring_from_constants_of_another_module():
+    sources = {"scripts/consts.py": CONSTS, "scripts/reader.py": IMPORTING}
+    qs = sc.extract_queries(IMPORTING, "scripts/reader.py", {"consts": CONSTS})
+    assert [(q.line, q.sql) for q in qs] == [
+        (7, "SELECT id, symbol, pnl FROM journal WHERE symbol LIKE '%src:demo%'"),
+        (8, "SELECT symbl FROM journal"),
+        (9, "SELECT id FROM journal WHERE opened_ts IN (?)"),  # a run of placeholders: one repetition
+    ]
+    assert all(q.expanded for q in qs)
+    rep = sc.check(sources, MIGRATIONS)
+    assert {(f.query.line, f.kind) for f in rep.findings if f.kind != "ok"} == {(8, "missing column")}
+    assert sc.module_name("scripts/consts.py") == "consts"
+    assert sc.module_name("src/tradedesk/store/db.py") == "tradedesk.store.db"
+    assert sc.module_name("src/tradedesk/store/__init__.py") == "tradedesk.store"
+    without = sc.extract_queries(IMPORTING, "scripts/reader.py")  # the other module is not scanned
+    assert {q.why for q in without if q.dynamic} == {"module consts not scanned"}
+
+
+CONCAT = """
+class Store:
+    @staticmethod
+    def _gaps(col):
+        \"\"\"How many parts are missing.\"\"\"
+        return f"(length({col}) - length(replace({col}, ',', '')))"
+
+    def rows(self, con, status, symbol, tag):
+        where: list[str] = []
+        for col, v in (("symbol", symbol), ("pnl", status)):
+            if v:
+                where.append(f"{col} = ?")
+        if tag:
+            where.append("symbl LIKE ?")
+        sql = "SELECT * FROM journal" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY id LIMIT ?"
+        con.execute(sql)
+        con.execute("SELECT id FROM journal WHERE " + self._gaps("symbol") + " = 0")
+"""
+
+
+def test_concatenation_with_appended_where_and_helper_call():
+    qs = sc.extract_queries(CONCAT, "s.py")
+    assert sorted(q.sql for q in qs if q.line == 15) == [
+        "SELECT * FROM journal ORDER BY id LIMIT ?",
+        "SELECT * FROM journal WHERE symbl LIKE ? AND symbol = ? AND pnl = ? ORDER BY id LIMIT ?",
+    ]  # every appended condition at once: a superset, so each column is checked
+    assert [q.sql for q in qs if q.line == 17] == ["SELECT id FROM journal WHERE (length(symbol) - length(replace(symbol, ',', ''))) = 0"]
+    rep = sc.check({"s.py": CONCAT}, MIGRATIONS)
+    assert {(f.query.line, f.kind) for f in rep.findings if f.kind != "ok"} == {(15, "missing column")}
+    assert not rep.dynamic
+
+
+TRULY_DYNAMIC = """
+def helper(col):
+    if col:
+        return col
+    return "id"
+
+
+def read(con, spec, table, extra):
+    con.execute(f"SELECT {spec.ts_sql} FROM {spec.table}")
+    con.execute(f"SELECT COUNT(*) FROM {table}")
+    where = ["id = ?"]
+    where.extend(extra)
+    con.execute("SELECT * FROM journal WHERE " + " AND ".join(where))
+    con.execute("SELECT pnl FROM " + helper("journal"))
+    con.execute(f"SELECT id FROM journal WHERE symbol IN ({','.join('x' * len(extra))})")
+"""
+
+
+def test_truly_dynamic_stays_skipped_with_reason():
+    rep = sc.check({"d.py": TRULY_DYNAMIC}, MIGRATIONS)
+    assert not rep.findings
+    assert [(q.line, q.why) for q in rep.dynamic] == [
+        (9, "spec.ts_sql"),  # attribute of an object
+        (10, "parameter table"),
+        (13, "where.extend()"),  # a list extended by arbitrary items
+        (14, "helper() is more than one return"),
+        (15, "'x' * len(extra)"),  # only `?`, commas and spaces count as a placeholder run
+    ]
 
 
 def test_clean_source_does_not_fail():

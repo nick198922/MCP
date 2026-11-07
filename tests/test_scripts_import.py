@@ -35,11 +35,9 @@ SCRIPTS = ROOT / "scripts"
 HELPER_MODULES = {"common_helpers", "_upbit_0c_helpers"}
 
 # Scripts that do their work at module level (no ``__main__`` guard): importing them would run the analysis, so they
-# get the static check only. Reason per entry.
-RUNS_AT_MODULE_LEVEL = {
-    "verify_demo_trend_veto": "one-off bootstrap over cached demo trades; reads the cache and prints at import",
-    "explore_us_open_calls": "one-off exploration of saved calls; loops over JSON files and prints at import",
-}
+# get the static check only. Reason per entry. Empty since item 221 put the last two (verify_demo_trend_veto,
+# explore_us_open_calls) under the guard; tests/test_scripts_import_safe.py keeps module-level work out.
+RUNS_AT_MODULE_LEVEL: dict[str, str] = {}
 
 # Scripts that are run with an extra package outside the project's dependencies (``uv run --with ...``): their import
 # may fail only with ModuleNotFoundError for exactly that top-level module.

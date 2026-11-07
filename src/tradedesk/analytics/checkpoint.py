@@ -56,6 +56,18 @@ def _num(x: object) -> float | None:
     return v if math.isfinite(v) else None
 
 
+def ua_trades(n: int) -> str:
+    """«N угода / угоди / угод»: the Ukrainian count form of «угода» (1, 21 → угода; 2-4, 22-24 → угоди; 0, 5-20 → угод)."""
+    n10, n100 = abs(n) % 10, abs(n) % 100
+    if n10 == 1 and n100 != 11:
+        word = "угода"
+    elif 2 <= n10 <= 4 and not 12 <= n100 <= 14:
+        word = "угоди"
+    else:
+        word = "угод"
+    return f"{n} {word}"
+
+
 def _ms(y: int, mo: int, d: int, h: int = 0, mi: int = 0) -> int:
     return int(datetime(y, mo, d, h, mi, tzinfo=UTC).timestamp() * 1000)
 
@@ -412,7 +424,7 @@ def carry_forward(
         if int(x["cycle_ts"]) <= now_ms and (x.get("payload") or {}).get("type") == "funding_gap_confirmed"
     } & {str(p["trade_id"]) for p in pos}
     proxy = (
-        f"проксі примусового закриття: {len(vanished | gap)} угод за прапорцями рушія (open_position_data_unavailable "
+        f"проксі примусового закриття: {ua_trades(len(vanished | gap))} за прапорцями рушія (open_position_data_unavailable "
         f"{len(vanished)}, funding_gap_confirmed {len(gap)}); підтвердження делістингу — окремо"
     )
     marked = [p for p in pos if marks.get(str(p["trade_id"])) or p["status"] == "closed"]

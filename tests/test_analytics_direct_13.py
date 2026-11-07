@@ -265,6 +265,24 @@ def test_perp_symbols_on_real_announcement_titles() -> None:
     assert classify_delisting("binance", t) == ("perp_delist", perp_symbols(t))
 
 
+def test_perp_symbols_one_character_bases() -> None:
+    # real titles (Bybit delisting catalog 2025-10, Binance launch catalog 2025-10-08) that used to give []
+    assert perp_symbols("Delisting of JUSDT Perpetual Contract") == ["JUSDT"]
+    assert classify_delisting("bybit", "Delisting of KUSDT Perpetual Contract") == ("perp_delist", ["KUSDT"])
+    assert perp_symbols("Binance Futures Will Launch USDⓈ-Margined 4USDT Perpetual Contract (2025-10-08)") == ["4USDT"]
+    t = "Binance Futures Will Delist USDⓈ-M WUSDT, TUSDT and BTCUSDT Perpetual Contracts"
+    assert perp_symbols(t) == ["WUSDT", "TUSDT", "BTCUSDT"]
+    assert classify_delisting("binance", t) == ("perp_delist", ["WUSDT", "TUSDT", "BTCUSDT"])
+    assert [perp_base(s) for s in perp_symbols(t)] == [("W", 1), ("T", 1), ("BTC", 1)]
+    # all-digit bases stay symbols: 42USDT is a real Binance perp (a delisting in the news-events cache), so an
+    # amount glued to the quote (10USDT) cannot be told apart and is returned too; an amount with a space is not
+    assert perp_symbols("Delisting of 42USDT Perpetual Contract") == ["42USDT"]
+    assert perp_symbols("10USDT") == ["10USDT"]
+    assert perp_symbols("Deposit 10 USDT, win 100 USDT") == []
+    # still whole words only: no bare quote, no split inside a longer word, no lower case
+    assert perp_symbols("USDT USDT-M wusdt xWUSDT WUSDTX W/USDT") == []
+
+
 # ------------------------------------------------------------------ premarket_fade.bars_from_rows
 
 

@@ -419,6 +419,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "(sum of actual payments over real time, robust to 8h/4h/1h interval changes), share of positive payments, "
             "status vs `entry_apr` / `exit_apr` (above_entry / between / below_exit), `breakeven_days` = days the "
             "trailing APR must persist to pay `roundtrip_fee`, and whether a spot market exists on `spot_venue`. "
+            "`incomplete_history` = the symbol's funding history fetch was cut short or dropped malformed rows, so its "
+            "trailing APR and status may be wrong: such symbols stay in `rows` and `summary.above_entry` but are left out "
+            "of `summary.above_entry_with_spot`, listed in `summary.incomplete_history` and named in `warnings`. "
             "Without `bases` the venue's `candidates` perps with the highest current funding are scanned, by default "
             "only crypto perps (TradFi perps skipped) that also have a spot market. "
             "All rates and APRs are decimals (0.10 = 10 %), on position notional; capital needed is higher "
@@ -504,8 +507,12 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 got = await b.guard(
                     f"funding_history:{sym}", f"ccxt:{venue}", rt.exchanges.funding_rate_history_range(venue, sym, since_ms, now_ms)
                 )
-            if got and not got["complete"]:
-                b.warn(f"{sym}: funding history incomplete (page limit, a later page failed, or rows with a malformed timestamp dropped)")
+            incomplete = bool(got) and got.get("complete") is False
+            if incomplete:
+                b.warn(
+                    f"{venue} {sym}: funding history incomplete (page limit, a later page failed, or rows with a malformed timestamp "
+                    "dropped); its trailing APR may be wrong, so it is flagged incomplete_history and left out of above_entry_with_spot"
+                )
             entries = parsed_rows(
                 [x for x in (got["rows"] if got else []) if x.get("fundingRate") is not None and x.get("timestamp")],
                 lambda x: {"ts_ms": int(x["timestamp"]), "rate": float(x["fundingRate"])},
@@ -530,6 +537,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 "status": snap.get("status"),
                 "breakeven_days": r(snap.get("breakeven_days"), 1),
                 "coverage_days": r(snap.get("coverage_days"), 1),
+                "incomplete_history": incomplete,
                 "spot_available": (f"{base}/USDT" in spot) if spot is not None else None,
                 "tradfi": (sym in tradfi) if tradfi is not None else None,
             }
@@ -548,7 +556,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 "summary": {
                     "scanned": len(rows),
                     "above_entry": above,
-                    "above_entry_with_spot": [x["base"] for x in rows if x["status"] == "above_entry" and x["spot_available"]],
+                    "above_entry_with_spot": [
+                        x["base"] for x in rows if x["status"] == "above_entry" and x["spot_available"] and not x["incomplete_history"]
+                    ],
+                    "incomplete_history": [x["base"] for x in rows if x["incomplete_history"]],
                     "median_trailing_apr": r(trailing[len(trailing) // 2], 4) if trailing else None,
                 },
                 "rows": rows,

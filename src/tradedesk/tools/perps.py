@@ -565,9 +565,11 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "`slippage` per leg, entry and exit) and the days of trailing spread needed to pay it; the mark-price gap "
             "between venues (null when a venue's bulk funding has no mark price, e.g. OKX); the 7-day high/low range of the short venue's perp; and flags: price_mismatch (likely different "
             "tokens under one ticker), price_gap, current_spread_reversed, funding_at_cap, short_history, "
-            "interval_mismatch, volatile (7d range >= 33 %). `hyperliquid` is optional (hourly funding, taker fee 0.045 %, cap 4 %/h; "
+            "interval_mismatch, volatile (7d range >= 33 %), incomplete_history (a paired leg's funding history fetch was "
+            "cut short or dropped malformed rows, so its trailing APR may be wrong; `warnings` name the venue and symbol). "
+            "`hyperliquid` is optional (hourly funding, taker fee 0.045 %, cap 4 %/h; "
             "kPEPE-style names are matched to 1000PEPE-style CEX tickers by multiplier, other naming differences stay unmatched; "
-            "the HL<->Binance 7d carry backtest was unprofitable after costs, so treat it as monitoring, not a signal). `tradable_now` = above entry with no price or reversal flag. "
+            "the HL<->Binance 7d carry backtest was unprofitable after costs, so treat it as monitoring, not a signal). `tradable_now` = above entry with no price, reversal or incomplete_history flag. "
             "Without `bases`, the `candidates` crypto perps listed on at least two venues with the widest current spread "
             "are scanned. Rates and APRs are decimals on notional. See `warnings` before acting."
         ),
@@ -659,14 +661,24 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 )
             if not entries and cur is None:
                 return None
+            incomplete = bool(got) and got.get("complete") is False
+            if incomplete:
+                b.warn(
+                    f"{v} {sym}: funding history incomplete (page limit, a later page failed, or rows with a malformed timestamp "
+                    "dropped); trailing APRs and short_history rest on a partial series, so a pair with this leg is "
+                    "flagged incomplete_history and not tradable_now"
+                )
             cur = cur or {}
-            return v, {
+            out: dict[str, Any] = {
                 "entries": entries,
                 "rate": cur.get("rate"),
                 "interval_hours": cur.get("interval_hours"),
                 "mark": cur.get("mark"),
                 "cap": cur.get("cap"),
             }
+            if incomplete:
+                out["incomplete"] = True
+            return v, out
 
         async def row(sym: str) -> dict[str, Any] | None:
             legs = dict(x for x in await asyncio.gather(*[leg(v, sym) for v in vs]) if x)

@@ -33,8 +33,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
         data = {
             k: t.get(k) for k in ("symbol", "last", "bid", "ask", "high", "low", "baseVolume", "quoteVolume", "percentage", "timestamp")
         }
-        if t.get("bid") and t.get("ask"):
-            data["spread_bps"] = r((t["ask"] - t["bid"]) / ((t["ask"] + t["bid"]) / 2) * 1e4, 3)
+        bid, ask = json_num(t.get("bid")), json_num(t.get("ask"))  # ccxt hands out numbers: anything else is absent
+        if bid and ask:
+            data["spread_bps"] = r((ask - bid) / ((ask + bid) / 2) * 1e4, 3)
         return b.build(data)
 
     @server.tool(
@@ -69,7 +70,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
             if rows is not None:
                 b.miss("ohlcv", f"ccxt:{exchange}", "data_unavailable", "empty result")
             return b.build(None, ok=False)
-        closes = [c[4] for c in rows if c[4]]
+        closes = [c[4] for c in rows if json_num(c[4])]  # a close that is not a number is skipped like a missing one
         summary: dict[str, Any] = {"candles": len(rows), "first_close": closes[0], "last_close": closes[-1]}
         summary["return_pct"] = r((closes[-1] / closes[0] - 1) * 100, 3)
         if len(closes) >= 10:
@@ -157,6 +158,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
             if not isinstance(t, dict):
                 continue
             bid, ask = t.get("bid"), t.get("ask")
+            nbid, nask = json_num(bid), json_num(ask)  # ccxt hands out numbers: anything else gives no spread
             row = {
                 "symbol": sym,
                 "last": t.get("last"),
@@ -169,10 +171,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 "percentage": t.get("percentage"),
                 "timestamp": t.get("timestamp"),
             }
-            if bid and ask:
-                row["spread_bps"] = r((ask - bid) / ((ask + bid) / 2) * 1e4, 3)
+            if nbid and nask:
+                row["spread_bps"] = r((nask - nbid) / ((nask + nbid) / 2) * 1e4, 3)
             rows.append(row)
-        rows.sort(key=lambda x: x.get("quoteVolume") or 0.0, reverse=True)
+        rows.sort(key=lambda x: json_num(x.get("quoteVolume")) or 0.0, reverse=True)
         with_pct = [x for x in rows if isinstance(x.get("percentage"), (int, float))]
         top_movers = sorted(with_pct, key=lambda x: abs(x["percentage"]), reverse=True)[:3]
         data = {

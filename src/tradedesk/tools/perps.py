@@ -143,15 +143,20 @@ async def current_funding(rt: Runtime, b: Builder, venue: str, markets: dict[str
         source = "venue" if raw_interval else ("default" if meta else "assumed")
         info = ((markets or {}).get(sym) or {}).get("info") or {}
         cap = (m.get("info") or {}).get("adjustedFundingRateCap") or info.get("upperFundingRate")
+        # ccxt hands out numbers: a rate that is not one skips the symbol like a missing rate; a mark, next-funding time
+        # or cap that is not one (the cap is the venue's numeric string) is shown as absent
+        if json_num(x["fundingRate"]) is None:
+            continue
         rate = float(x["fundingRate"])
+        caps = parsed_rows([cap] if cap not in (None, "") else [], float)
         out[sym] = {
             "rate": rate,
             "interval_hours": hours,
             "interval_source": source,
             "apr": annualize_funding(rate, hours),
-            "next_funding_ts": x.get("nextFundingTimestamp"),
-            "mark": float(x["markPrice"]) if x.get("markPrice") else None,
-            "cap": float(cap) if cap not in (None, "") else None,
+            "next_funding_ts": json_num(x.get("nextFundingTimestamp")),
+            "mark": float(x["markPrice"]) if json_num(x.get("markPrice")) else None,
+            "cap": caps[0] if caps else None,
         }
     return out
 
@@ -343,11 +348,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 return None
             if not got["complete"]:
                 b.warn(f"{ex} funding history incomplete (page limit or a later page failed); window truncated")
-            entries = [
-                {"ts_ms": int(x["timestamp"]), "rate": float(x["fundingRate"])}
-                for x in got["rows"]
-                if x.get("fundingRate") is not None and x.get("timestamp")
-            ]
+            entries = parsed_rows(
+                [x for x in got["rows"] if x.get("fundingRate") is not None and x.get("timestamp")],
+                lambda x: {"ts_ms": int(x["timestamp"]), "rate": float(x["fundingRate"])},
+            )
             if not entries:
                 return None
             _warn_short_coverage(b, ex, entries, since_ms)
@@ -499,11 +503,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 )
             if got and not got["complete"]:
                 b.warn(f"{sym}: funding history incomplete (page limit or a later page failed)")
-            entries = [
-                {"ts_ms": int(x["timestamp"]), "rate": float(x["fundingRate"])}
-                for x in (got["rows"] if got else [])
-                if x.get("fundingRate") is not None and x.get("timestamp")
-            ]
+            entries = parsed_rows(
+                [x for x in (got["rows"] if got else []) if x.get("fundingRate") is not None and x.get("timestamp")],
+                lambda x: {"ts_ms": int(x["timestamp"]), "rate": float(x["fundingRate"])},
+            )
             cur = current.get(sym)
             if not entries and not cur:
                 return None
@@ -638,21 +641,19 @@ def register(server: MCPServer, rt: Runtime) -> None:
                     got = await b.guard(
                         f"funding_history:{v}:{sym}", "hyperliquid", rt.hyperliquid.funding_history_range(coin, since_ms, now_ms)
                     )
-                entries = [
-                    {"ts_ms": int(x["time"]), "rate": float(x["fundingRate"])}
-                    for x in (got["rows"] if got else [])
-                    if x.get("fundingRate") is not None and x.get("time")
-                ]
+                entries = parsed_rows(
+                    [x for x in (got["rows"] if got else []) if x.get("fundingRate") is not None and x.get("time")],
+                    lambda x: {"ts_ms": int(x["time"]), "rate": float(x["fundingRate"])},
+                )
             else:
                 async with sem:
                     got = await b.guard(
                         f"funding_history:{v}:{sym}", f"ccxt:{v}", rt.exchanges.funding_rate_history_range(v, sym, since_ms, now_ms)
                     )
-                entries = [
-                    {"ts_ms": int(x["timestamp"]), "rate": float(x["fundingRate"])}
-                    for x in (got["rows"] if got else [])
-                    if x.get("fundingRate") is not None and x.get("timestamp")
-                ]
+                entries = parsed_rows(
+                    [x for x in (got["rows"] if got else []) if x.get("fundingRate") is not None and x.get("timestamp")],
+                    lambda x: {"ts_ms": int(x["timestamp"]), "rate": float(x["fundingRate"])},
+                )
             if not entries and cur is None:
                 return None
             cur = cur or {}
@@ -950,11 +951,11 @@ def register(server: MCPServer, rt: Runtime) -> None:
             oi = await b.guard(f"oi:{ex}", f"ccxt:{ex}", rt.exchanges.open_interest(ex, symbol))
             if oi is None:
                 return None
-            oi_base = oi.get("openInterestAmount")
-            oi_usd = oi.get("openInterestValue")
+            oi_base = json_num(oi.get("openInterestAmount"))  # ccxt hands out numbers: anything else is not reported
+            oi_usd = json_num(oi.get("openInterestValue"))
             if oi_usd is None and oi_base:
                 tkr = await b.guard(f"oi_mark:{ex}", f"ccxt:{ex}", rt.exchanges.ticker(ex, symbol))
-                mark = (tkr or {}).get("last")
+                mark = json_num((tkr or {}).get("last"))
                 if mark:
                     oi_usd = oi_base * mark
                     b.warn(f"{ex}: oi_usd estimated as amount * last price (openInterestValue not reported)")
@@ -970,7 +971,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 return None
             fut = await b.guard("oi:deribit", "deribit", rt.deribit.book_summary(base, "future"))
             perp = next((x for x in fut or [] if x.get("instrument_name", "").endswith("PERPETUAL")), None)
-            return None if not perp else {"venue": "deribit", "oi_base": None, "oi_usd": perp.get("open_interest")}
+            return None if not perp else {"venue": "deribit", "oi_base": None, "oi_usd": json_num(perp.get("open_interest"))}
 
         rows = [x for x in await asyncio.gather(*[ccxt_oi(e.lower()) for e in (exchanges or PERP_EXCHANGES)], hl(), dbt()) if x]
         if not rows:

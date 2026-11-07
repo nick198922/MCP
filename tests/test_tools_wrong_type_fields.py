@@ -7,11 +7,20 @@ field is `null`, the string "abc" or an empty list. For every registered tool:
    (carry_paper_close closes its pair); a second clean call records the numeric fields (numbers and numeric strings)
    of every JSON body and every ccxt result the tool reads. A field is named by its source (host + path, or ccxt
    exchange + method) and its path in the tree, with list indices folded to `[*]` (only short lists of scalars, i.e.
-   rows like an OHLCV bar or a [price, size] level, keep their index); fields cached in-process are not mutated;
-2. up to MAX_MUTATIONS (field, kind) pairs are picked deterministically from the sorted product, evenly spread;
-3. for each pair the tool is called again with that field broken in the first place it occurs in every body.
-The answer must be the envelope (`ok` true or false), never an error result. ccxt results get only `null` (ccxt already
-turns a venue's strings into numbers or None, so "abc" and [] cannot come out of it).
+   rows like an OHLCV bar or a [price, size] level, keep their index);
+2. up to MAX_MUTATIONS (field, kind, where) triples are picked deterministically from the sorted product, evenly
+   spread; `where` is the occurrence of the field that is broken in every body: the first, the second (when a body
+   has two) or the last (when it has three or more), so a bad row in the middle or at the end of an array is tried too;
+3. for each triple the tool is called again with that occurrence broken.
+ccxt results get the same three kinds as JSON bodies (ccxt normally hands out numbers or None, but a venue field it
+passes through, or a parser change, can put a string or a list there).
+Cold caches (item 197): a value cached in-process is read again and again, and the warm calls above never break it
+before the cache is filled. test_no_tool_raises_on_a_bad_value_in_a_cold_cache builds a fresh runtime with the TTL
+caches on (cache_scale=1) per mutation, breaks a cached field from the very first call, and calls the tool twice
+(the first fills the cache with the bad value, the second answers from it). Cached fields: the numeric fields of ccxt
+`load_markets` (kept 1 h) and the coin names of Hyperliquid's metaAndAssetCtxs universe, the source of the coin map
+(kept 10 min; a name gets `null` or [] only, "abc" is a valid name).
+The answer must be the envelope (`ok` true or false), never an error result.
 KNOWN: violations found and not fixed yet (each also in docs/BACKLOG.md 6.41); a stale entry fails the test.
 """
 
@@ -20,6 +29,7 @@ from __future__ import annotations
 import copy
 import json
 import math
+import re
 from typing import Any
 from unittest.mock import patch
 
@@ -38,13 +48,21 @@ from tradedesk.runtime import Runtime
 from tradedesk.server import build_server
 from tradedesk.tools._util import parsed_rows
 
-MAX_MUTATIONS = 30
+MAX_MUTATIONS = 40
+MAX_COLD = 12  # cold-cache mutations per tool: each builds its own runtime
 SHORT_ROW = 8  # a list of scalars up to this length is a row (OHLCV bar, [price, size] level): its indices name fields
 KINDS: dict[str, Any] = {"null": None, "abc": "abc", "empty_list": []}
-CCXT_KINDS = ("null",)
+KEY_KINDS = ("null", "empty_list")  # for a string field a cache is keyed by ("abc" is a valid string there)
+WHERE = {"first": 0, "second": 1, "last": -1}
+
+# Sources cached in-process, which only the cold-cache test breaks before the cache is filled.
+CCXT_MARKETS = re.compile(r"^ccxt:[^.]+\.load_markets[.\[]")
+HL_COIN_NAMES = re.compile(r"^http:api\.hyperliquid\.xyz/info(\[\*\])?\.universe\[\*\]\.name$")
 
 # Tools that still raise on a wrong-type field: {"tool": "which field and what escapes"}; each is in BACKLOG 6.41.
-KNOWN: dict[str, str] = {}
+_FUNDING_ENTRIES = "ccxt fundingRate 'abc' / [] -> float() in collector/market_data.funding_entries (collectors untouched in item 197)"
+KNOWN: dict[str, str] = {"carry_paper_open": _FUNDING_ENTRIES, "carry_paper_status": _FUNDING_ENTRIES}
+KNOWN_COLD: dict[str, str] = {}
 
 # Tools that read no numeric field on the recording call, so nothing is mutated (the test fails if one starts to):
 # the calculators and store tools of NO_NETWORK, plus these two.
@@ -67,8 +85,18 @@ def _is_numeric(value: Any) -> bool:
     return False
 
 
+def is_key(field: str) -> bool:
+    """A string field an in-process cache is built from (mutated with KEY_KINDS)."""
+    return bool(HL_COIN_NAMES.match(field))
+
+
+def is_cached(field: str) -> bool:
+    return is_key(field) or bool(CCXT_MARKETS.match(field))
+
+
 def numeric_fields(tree: Any, prefix: str = "") -> list[tuple[str, list]]:
-    """(field name, concrete path) of every numeric leaf, in document order; the name folds list indices to [*]."""
+    """(field name, concrete path) of every numeric leaf and every cache-key string (is_key), in document order; the
+    name folds list indices to [*]."""
     out: list[tuple[str, list]] = []
 
     def walk(node: Any, name: str, path: list) -> None:
@@ -79,50 +107,64 @@ def numeric_fields(tree: Any, prefix: str = "") -> list[tuple[str, list]]:
             row = len(node) <= SHORT_ROW and not any(isinstance(x, dict | list) for x in node)
             for i, v in enumerate(node):
                 walk(v, f"{name}[{i if row else '*'}]", [*path, i])
-        elif _is_numeric(node):
+        elif _is_numeric(node) or (isinstance(node, str) and is_key(name)):
             out.append((name, path))
 
     walk(tree, prefix, [])
     return out
 
 
-def break_field(tree: Any, prefix: str, field: str, value: Any) -> bool:
-    """Set the first leaf named `field` to `value` (a fresh copy); True when the tree had one."""
-    for name, path in numeric_fields(tree, prefix):
-        if name == field:
-            node = tree
-            for step in path[:-1]:
-                node = node[step]
-            node[path[-1]] = copy.copy(value)
-            return True
-    return False
+def break_field(tree: Any, prefix: str, field: str, value: Any, where: str = "first") -> bool:
+    """Set one leaf named `field` to `value` (a fresh copy): the first, the second or the last one in document order.
+    True when the tree had it (`second` needs two)."""
+    paths = [path for name, path in numeric_fields(tree, prefix) if name == field]
+    if len(paths) <= max(WHERE[where], 0):
+        return False
+    node = tree
+    path = paths[WHERE[where]]
+    for step in path[:-1]:
+        node = node[step]
+    node[path[-1]] = copy.copy(value)
+    return True
 
 
-def pick(fields: dict[str, tuple[str, ...]]) -> list[tuple[str, str]]:
-    """Up to MAX_MUTATIONS (field, kind) pairs, evenly spread over the sorted product (deterministic)."""
-    pairs = [(f, k) for f in sorted(fields) for k in fields[f]]
-    if len(pairs) <= MAX_MUTATIONS:
-        return pairs
-    return [pairs[i * len(pairs) // MAX_MUTATIONS] for i in range(MAX_MUTATIONS)]
+def mutations(fields: dict[str, int], keep=lambda f: True, cap: int = MAX_MUTATIONS) -> list[tuple[str, str, str]]:
+    """(field, kind, where) triples of the fields `keep` accepts, all of them or `cap` picked deterministically; `fields`
+    maps a name to the most occurrences seen in one body. `second` is offered from two occurrences, `last` from three
+    (with two it is the second). When capped, the field is picked evenly over the sorted product and its (kind, where)
+    rotates with the pick index, so an even stride cannot land on one kind only."""
+    combos: dict[str, list[tuple[str, str]]] = {}
+    for f in sorted(x for x in fields if keep(x)):
+        n = fields[f]
+        wheres = ["first", *(["second"] if n >= 2 else []), *(["last"] if n >= 3 else [])]
+        combos[f] = [(k, w) for k in (KEY_KINDS if is_key(f) else KINDS) for w in wheres]
+    flat = [f for f in combos for _ in combos[f]]
+    if len(flat) <= cap:
+        return [(f, k, w) for f in combos for k, w in combos[f]]
+    # picks that land in one field have consecutive indices, at most len(combos[f]) of them: no duplicates
+    return [(f, *combos[f][i % len(combos[f])]) for i in range(cap) for f in [flat[i * len(flat) // cap]]]
 
 
 class Mutator:
     """Shared by the transports and the ccxt wrappers: records fields on the clean call, breaks one on the next ones."""
 
     def __init__(self) -> None:
-        self.seen: dict[str, tuple[str, ...]] | None = None
-        self.target: tuple[str, Any] | None = None
+        self.seen: dict[str, int] | None = None  # field name -> most occurrences in one body
+        self.target: tuple[str, Any, str] | None = None  # (field, value, where)
         self.hits = 0
 
-    def apply(self, tree: Any, prefix: str, kinds: tuple[str, ...]) -> Any:
+    def apply(self, tree: Any, prefix: str) -> Any:
         if self.seen is not None:
+            counts: dict[str, int] = {}
             for name, _ in numeric_fields(tree, prefix):
-                self.seen.setdefault(name, kinds)
+                counts[name] = counts.get(name, 0) + 1
+            for name, n in counts.items():
+                self.seen[name] = max(self.seen.get(name, 0), n)
         if self.target is not None:
-            field, value = self.target
+            field, value, where = self.target
             if field.startswith(prefix + ".") or field.startswith(prefix + "["):
                 tree = copy.deepcopy(tree)
-                self.hits += break_field(tree, prefix, field, value)
+                self.hits += break_field(tree, prefix, field, value, where)
         return tree
 
 
@@ -141,7 +183,7 @@ class _MutatingTransport(httpx.AsyncBaseTransport):
             except ValueError:
                 pass
             else:
-                tree = self._m.apply(tree, f"http:{request.url.host}{request.url.path}", tuple(KINDS))
+                tree = self._m.apply(tree, f"http:{request.url.host}{request.url.path}")
                 body = json.dumps(tree).encode()
         return httpx.Response(resp.status_code, headers=headers, content=body)
 
@@ -161,12 +203,12 @@ class _MutatingEx:
             return attr
 
         async def mutated(*a, **k):
-            return self._m.apply(await attr(*a, **k), f"ccxt:{self.id}.{name}", CCXT_KINDS)
+            return self._m.apply(await attr(*a, **k), f"ccxt:{self.id}.{name}")
 
         return mutated
 
 
-def _runtime(tmp_path, mutator: Mutator) -> Runtime:
+def _runtime(tmp_path, mutator: Mutator, cache_scale: float = 0.0, db: str = "wrong_type") -> Runtime:
     fakes = _extra_fakes(make_transports(State()))
     # ~30 calls per tool against the fakes: the production buckets (GoPlus 0.2/s, CoinGecko 0.5/s) would cost minutes.
     with patch("tradedesk.core.http.TokenBucket", lambda rate, burst: TokenBucket(1_000.0, 1_000)):
@@ -174,8 +216,8 @@ def _runtime(tmp_path, mutator: Mutator) -> Runtime:
             Settings(
                 http_retries=0,
                 http_retry_backoff=0.0,
-                cache_scale=0.0,
-                db_path=str(tmp_path / "wrong_type.sqlite"),
+                cache_scale=cache_scale,
+                db_path=str(tmp_path / f"{db}.sqlite"),
                 coinalyze_api_key=COINALYZE_TEST_KEY,
             ),
             transports=_Transports({name: _MutatingTransport(t, mutator) for name, t in fakes.items()}),
@@ -210,15 +252,46 @@ async def run_tool(tmp_path, name: str) -> dict[str, Any]:
             res = await c.call_tool(name, ARGS.get(name, {}))
             if (err := _failure(res)) is not None:
                 report["failures"]["clean"] = err
-        pairs = pick(m.seen)
+        triples = mutations(m.seen, keep=lambda f: not is_key(f))
         m.seen = None
-        for field, kind in pairs:
-            m.target, m.hits = (field, KINDS[kind]), 0
+        for field, kind, where in triples:
+            m.target, m.hits = (field, KINDS[kind], where), 0
             res = await c.call_tool(name, ARGS.get(name, {}))
             report["mutations"] += 1
             report["hits"] += bool(m.hits)
             if (err := _failure(res)) is not None:
-                report["failures"][f"{field} -> {kind}"] = err
+                report["failures"][f"{field} -> {kind} @{where}"] = err
+    return report
+
+
+async def _cold_calls(tmp_path, name: str, m: Mutator, db: str, calls: int) -> list[str]:
+    """A fresh runtime with the TTL caches on and an empty store, `calls` calls of the tool; the failures."""
+    rt = _runtime(tmp_path, m, cache_scale=1.0, db=db)
+    await _seed_store(rt)
+    srv, _ = build_server(rt)
+    out = []
+    async with Client(srv) as c:
+        for _ in range(calls):
+            if (err := _failure(await c.call_tool(name, ARGS.get(name, {})))) is not None:
+                out.append(err)
+    return out
+
+
+async def run_tool_cold(tmp_path, name: str) -> dict[str, Any]:
+    """The cached fields one cold call reads, then per picked mutation a fresh runtime whose caches fill with it."""
+    m = Mutator()
+    m.seen = {}
+    report: dict[str, Any] = {"mutations": 0, "hits": 0, "failures": {}}
+    if errs := await _cold_calls(tmp_path, name, m, "cold_clean", 1):
+        report["failures"]["clean"] = errs[0]
+    triples, m.seen = mutations(m.seen, keep=is_cached, cap=MAX_COLD), None
+    for i, (field, kind, where) in enumerate(triples):
+        m.target, m.hits = (field, KINDS[kind], where), 0
+        errs = await _cold_calls(tmp_path, name, m, f"cold_{i}", 2)  # the second call answers from the filled cache
+        report["mutations"] += 1
+        report["hits"] += bool(m.hits)
+        if errs:
+            report["failures"][f"{field} -> {kind} @{where}"] = errs[0]
     return report
 
 
@@ -233,6 +306,22 @@ async def test_no_tool_raises_on_a_wrong_type_field(tmp_path, name):
         assert report["failures"] == {}, f"{name}: fix it (type check / Builder.guard) or list it in KNOWN"
 
 
+@pytest.mark.parametrize("name", sorted(EXPECTED_TOOLS - set(SKIP) - NO_NETWORK))
+async def test_no_tool_raises_on_a_bad_value_in_a_cold_cache(tmp_path, name):
+    report = await run_tool_cold(tmp_path, name)
+    assert report["hits"] == report["mutations"], "a picked field was not found again: the fakes are not deterministic"
+    if name in KNOWN_COLD:
+        assert report["failures"], f"{name} is fixed: remove it from KNOWN_COLD and BACKLOG 6.41"
+    else:
+        assert report["failures"] == {}, f"{name}: fix it (type check / Builder.guard) or list it in KNOWN_COLD"
+
+
+async def test_the_cold_check_reaches_both_caches(tmp_path):
+    """Self-check: the coin map and ccxt markets are both broken by the cold test, so a green run covers them."""
+    hl, ccxt_ = await run_tool_cold(tmp_path, "hyperliquid_trades"), await run_tool_cold(tmp_path, "market_markets")
+    assert hl["mutations"] >= 2 and ccxt_["mutations"] >= 2
+
+
 async def test_the_check_catches_a_tool_that_trusts_the_schema(tmp_path):
     """Self-check: a tool that does float() on a venue field without a guard is reported, so a green run means something."""
     m = Mutator()
@@ -242,23 +331,37 @@ async def test_the_check_catches_a_tool_that_trusts_the_schema(tmp_path):
     @srv.tool(name="zz_schema_trusting_probe")
     async def zz_schema_trusting_probe() -> dict:
         fetched = await rt.deribit.book_summary("BTC", "future")
-        return {"ok": True, "mark": float(fetched.data[0]["mark_price"])}  # no type check
+        return {"ok": True, "mark": float(fetched.data[-1]["mark_price"])}  # no type check, last row only
 
     async with Client(srv) as c:
         m.seen = {}
         assert _failure(await c.call_tool("zz_schema_trusting_probe", {})) is None
         fields, m.seen = m.seen, None
         assert fields, "the probe read no numeric field"
-        m.target = (next(f for f in sorted(fields) if f.endswith("result[*].mark_price")), KINDS["abc"])
+        field = next(f for f in sorted(fields) if f.endswith("result[*].mark_price"))
+        m.target = (field, KINDS["abc"], "first")
+        assert _failure(await c.call_tool("zz_schema_trusting_probe", {})) is None  # the first row is not read
+        m.target = (field, KINDS["abc"], "last")
         assert (_failure(await c.call_tool("zz_schema_trusting_probe", {})) or "").startswith("raised")
 
 
 def test_numeric_fields_and_break_field():
-    tree = {"result": [{"p": "1.5", "s": "BTC"}, {"p": 2}], "bar": [1, 2.0, "3"], "flag": True, "inf": "inf"}
+    tree = {"result": [{"p": "1.5", "s": "BTC"}, {"p": 2}, {"p": 3}], "bar": [1, 2.0, "3"], "flag": True, "inf": "inf"}
     names = [n for n, _ in numeric_fields(tree, "x")]
-    assert names == ["x.result[*].p", "x.result[*].p", "x.bar[0]", "x.bar[1]", "x.bar[2]"]
-    assert break_field(tree, "x", "x.result[*].p", None) and tree["result"] == [{"p": None, "s": "BTC"}, {"p": 2}]
+    assert names == ["x.result[*].p"] * 3 + ["x.bar[0]", "x.bar[1]", "x.bar[2]"]
+    for where, i in WHERE.items():  # every mutation breaks a fresh body
+        t = copy.deepcopy(tree)
+        assert break_field(t, "x", "x.result[*].p", [], where)
+        assert [r["p"] for r in t["result"]] == [[] if j == i % 3 else r["p"] for j, r in enumerate(tree["result"])]
     assert not break_field(tree, "x", "x.nope", None)
+    assert not break_field({"bar": [1]}, "x", "x.bar[0]", None, "second")
+    universe = {"universe": [{"name": "BTC", "szDecimals": 3}]}
+    assert [n for n, _ in numeric_fields([universe, []], "http:api.hyperliquid.xyz/info")] == [
+        "http:api.hyperliquid.xyz/info[*].universe[*].name",  # a string, recorded only because the coin map is built from it
+        "http:api.hyperliquid.xyz/info[*].universe[*].szDecimals",
+    ]
+    assert is_cached("http:api.hyperliquid.xyz/info[*].universe[*].name") and is_key("http:api.hyperliquid.xyz/info[*].universe[*].name")
+    assert is_cached("ccxt:bybit.load_markets.BTC/USDT:USDT.contractSize") and not is_cached("ccxt:bybit.fetch_ticker.last")
 
 
 def test_parsed_rows_drops_only_the_broken_rows():
@@ -279,13 +382,16 @@ def test_build_chain_treats_a_wrong_type_field_like_an_absent_one():
     assert build_chain([{**row, "underlying_price": "abc"}], NOW) == []
 
 
-def test_pick_is_capped_and_spread():
-    fields = {f"f{i:02d}": tuple(KINDS) for i in range(40)}
-    picked = pick(fields)
-    assert len(picked) == MAX_MUTATIONS and picked == pick(fields)
-    assert len({f for f, _ in picked}) == MAX_MUTATIONS and {k for _, k in picked} == set(KINDS)
+def test_mutations_are_capped_and_spread():
+    fields = {f"f{i:02d}": 3 for i in range(40)}
+    picked = mutations(fields)
+    assert len(picked) == MAX_MUTATIONS and picked == mutations(fields)
+    assert {k for _, k, _ in picked} == set(KINDS) and {w for _, _, w in picked} == set(WHERE)
+    assert len(set(picked)) == len({f for f, _, _ in picked}) == MAX_MUTATIONS  # 40 fields, one triple each
+    assert [w for _, _, w in mutations({"a": 1})] == ["first"] * 3 and len(mutations({"a": 2})) == 6
+    assert {k for _, k, _ in mutations({"http:api.hyperliquid.xyz/info[*].universe[*].name": 1})} == set(KEY_KINDS)
 
 
 def test_lists_name_registered_tools_only():
-    assert set(KNOWN) <= EXPECTED_TOOLS and set(NO_FIELDS) <= EXPECTED_TOOLS
+    assert set(KNOWN) <= EXPECTED_TOOLS and set(NO_FIELDS) <= EXPECTED_TOOLS and set(KNOWN_COLD) <= EXPECTED_TOOLS
     assert NO_NETWORK.isdisjoint(NO_FIELDS)

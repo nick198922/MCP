@@ -28,6 +28,17 @@ _HTTP_4XX = re.compile(r" 4\d\d ")  # an HTTP 4xx status inside a ccxt error tex
 log = logging.getLogger("tradedesk.providers")
 
 
+def _ts(x: Any) -> int | None:
+    """A row's ``timestamp`` as integer ms; anything that is not one (None, a bool, "abc", a list) None, so the row is
+    skipped like a row without a timestamp."""
+    if x is None or isinstance(x, bool):  # int(True) == 1 would be a 1970 timestamp
+        return None
+    try:
+        return int(x)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 def map_ccxt_error(exc: BaseException) -> tuple[str, str]:
     if isinstance(exc, (ccxt.RateLimitExceeded, ccxt.DDoSProtection)):
         return "rate_limited", str(exc)
@@ -249,7 +260,8 @@ class Exchanges:
         from the newest row seen. An empty window (before a listing) is skipped by ``page`` hours, the
         smallest window a page can cover at a 1h interval, so no rows are jumped over. Returns
         ``{"rows": [...], "complete": bool}``; ``complete`` is False when ``max_pages`` was hit or a later
-        page failed (rows fetched so far are kept). A failure on the first page raises.
+        page failed (rows fetched so far are kept). A failure on the first page raises. A row whose ``timestamp`` is not
+        an integer is skipped like one without a timestamp (``complete`` is not lowered for it).
         """
         page = FUNDING_PAGE.get(ex_id.lower(), 500)
         rows: dict[int, dict[str, Any]] = {}
@@ -272,17 +284,17 @@ class Exchanges:
                 pages += 1
                 latency += f.evidence.latency_ms or 0
                 cached = cached and f.evidence.cached
-                batch = [x for x in (f.data or []) if x.get("timestamp") is not None and since_ms <= int(x["timestamp"]) <= end]
-                for x in batch:
-                    rows[int(x["timestamp"])] = x
+                batch = [(t, x) for x in (f.data or []) if (t := _ts(x.get("timestamp"))) is not None and since_ms <= t <= end]
+                for t, x in batch:
+                    rows[t] = x
                 if len(f.data or []) < page:
                     break  # a short page means the window is exhausted
                 # A full page must hold the newest rows up to ``end``: nothing in the window, or rows far below ``end``
                 # (oldest-first order, ignored endTime), means the walk cannot be trusted.
-                if not batch or max(int(x["timestamp"]) for x in batch) < end - BYBIT_NEWEST_SLACK_MS:
+                if not batch or max(t for t, _ in batch) < end - BYBIT_NEWEST_SLACK_MS:
                     complete = False
                     break
-                end = min(int(x["timestamp"]) for x in batch) - 1
+                end = min(t for t, _ in batch) - 1
             ev = Evidence(
                 provider="ccxt:bybit",
                 tool="fetch_funding_rate_history",
@@ -305,13 +317,13 @@ class Exchanges:
             pages += 1
             latency += f.evidence.latency_ms or 0
             cached = cached and f.evidence.cached
-            batch = [x for x in (f.data or []) if x.get("timestamp") is not None]
+            batch = [(t, x) for x in (f.data or []) if (t := _ts(x.get("timestamp"))) is not None]
             if not batch:
                 since += page * 3_600_000
                 continue
-            for x in batch:
-                rows[int(x["timestamp"])] = x
-            nxt = max(int(x["timestamp"]) for x in batch) + 1
+            for t, x in batch:
+                rows[t] = x
+            nxt = max(t for t, _ in batch) + 1
             if nxt <= since:
                 break
             since = nxt

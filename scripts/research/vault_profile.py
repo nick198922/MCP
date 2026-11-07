@@ -1,8 +1,8 @@
 """Profile a Hyperliquid vault (or any account) from public data: equity, follower flows, positions, episodes.
 
 Research tool (not an MCP tool): reverse-engineers what a vault leader actually does, so a setup can be judged
-before anyone copies it. All network calls go to the public ``https://api.hyperliquid.xyz/info`` endpoint,
-read-only, no keys. Everything the API returns is untrusted data (vault names and descriptions are free text).
+before anyone copies it. All network calls go to the public ``https://api.hyperliquid.xyz/info`` endpoint
+through ``core.http.Http`` (``HL_INFO``), read-only, no keys. Everything the API returns is untrusted data (vault names and descriptions are free text).
 
 Sources and their limits:
 * ``vaultDetails.portfolio.allTime`` — official account value and cumulative PnL (PnL excludes deposits and
@@ -23,6 +23,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import bisect
 import json
 import math
@@ -30,8 +31,8 @@ import statistics
 import sys
 import tempfile
 import time
-import urllib.request
 from collections import Counter, defaultdict
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -39,7 +40,14 @@ from typing import Any
 
 import numpy as np
 
-API = "https://api.hyperliquid.xyz/info"
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+
+from tradedesk.core.errors import ProviderError  # noqa: E402
+from tradedesk.core.http import Http  # noqa: E402
+
+# Invariant 2: the public info endpoint through core.http.Http (limiter, retries on 429 / 5xx / network, error
+# classification and scrubbing). 2 requests/s, 4 retries with backoff up to 5 s (the old loop made 5 attempts).
+HL_INFO = Http("hyperliquid_info", "https://api.hyperliquid.xyz", rate=2.0, burst=1, timeout=60, retries=4, backoff_base=2.0)
 DAY_MS = 86_400_000
 HOUR_MS = 3_600_000
 # Equal-weight "broad alts" factor; fixed list, chosen before looking at the vault, all listed on Hyperliquid.
@@ -50,17 +58,28 @@ SIZE_CHANGE = 0.15  # a day-to-day change in |position| above 15 % counts as an 
 # ----------------------------------------------------------------------------------------------- fetching (I/O)
 
 
-def _post(body: dict[str, Any]) -> Any:
-    last: Exception | None = None
-    for attempt in range(5):
+def run_sync(http: Http, request: Callable[[Http], Awaitable[Any]]) -> Any:
+    """Run one ``Http`` request from synchronous code and return its ``Fetched.data``.
+
+    Each call gets a fresh event loop (``asyncio.run``) and closes the httpx client before that loop ends: an
+    ``httpx.AsyncClient`` must not outlive the loop it was opened on. ``Http`` re-creates the client on the next call,
+    and its rate limiter keeps its state across calls. Not for use inside a running event loop.
+    """
+
+    async def call() -> Any:
         try:
-            req = urllib.request.Request(API, json.dumps(body).encode(), {"Content-Type": "application/json"})
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                return json.load(resp)
-        except Exception as exc:  # noqa: BLE001 - retry any transport error, re-raise after the last attempt
-            last = exc
-            time.sleep(2 + 3 * attempt)
-    raise RuntimeError(f"Hyperliquid info {body.get('type')} failed: {last}")
+            return (await request(http)).data
+        finally:
+            await http.aclose()
+
+    return asyncio.run(call())
+
+
+def _post(body: dict[str, Any], http: Http | None = None) -> Any:
+    try:
+        return run_sync(http or HL_INFO, lambda h: h.post_json("/info", json=body, tool=f"info:{body.get('type')}"))
+    except ProviderError as exc:
+        raise RuntimeError(f"Hyperliquid info {body.get('type')} failed: {exc}") from exc
 
 
 def _paged(body: dict[str, Any], start: int) -> list[dict[str, Any]]:

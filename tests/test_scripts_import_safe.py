@@ -242,6 +242,8 @@ ALLOWED: dict[str, tuple[int, str]] = {
         "asserted by tests/test_deps_check.py",
     ),
     "verify_carry_modules.py": (1, "T_START = time.time(): reads the clock for elapsed seconds in its log lines; no I/O"),
+    "copy_vaults.py": (1, "BYBIT = Http(...): constructing the client does no I/O (httpx client is created lazily)"),
+    "research/vault_profile.py": (1, "HL_INFO = Http(...): constructing the client does no I/O (httpx client is created lazily)"),
     "verify_course_step5_s17.py": (1, "a for loop that builds the VARIANTS table of Var NamedTuples; pure, no I/O"),
 }
 

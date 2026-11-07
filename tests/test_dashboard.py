@@ -1211,9 +1211,9 @@ def test_journal_r_curve_and_weekly_review(tmp_path):
         "<td class='num ok'>+$250</td><td class='num ok'>+$83</td><td class='num'>+0.67 R <span class='mut'>за 3 з 3</span>",
         "SOLUSDT <span class='ok'>+$200</span>",
         "Тижнів із 30 і більше угодами: 0 з 2",
-        "не порада",
     ):
         assert text in block, text
+    assert "не порада" not in block  # said once, in the page's caveat at the bottom (PANEL.md rule 5, item 262)
     assert block.count("<circle") == 5 and "+3.00 R</text>" in block
     for out in ("HYPE", "CARRY", "DEMOBOT", "AUTOBOT", "ADAUSDT", "+$900"):
         assert out not in block, out
@@ -2268,6 +2268,52 @@ def test_every_heading_and_tile_on_every_tab_has_a_help_note(tmp_path):
         assert title and what and read and trade, key
 
 
+# docs/design/PANEL.md rule 3: «i» notes still in the long «what / how to read / for a trade» form, or whose «what it
+# is» line is longer than RULE3_WHAT_MAX characters (standing improvements, item 262; the rest is BACKLOG 6.54).
+# Shrink this set as the notes are rewritten; a new note must not join it.
+RULE3_WHAT_MAX = 120
+RULE3_TODO = frozenset(
+    {
+        "demo_not_executed", "demo_open_pos", "demo_recent", "demo_refused", "demo_skipped", "demo_vs_bt", "drawdown",
+        "fc", "fc_brier", "fc_calib", "fc_clim", "fc_expiries", "fc_n", "fc_ref", "fc_rv", "fc_weekly", "j_expectancy",
+        "j_open", "j_pnl", "j_rcurve", "j_table", "j_trades", "j_winrate", "plan_exits", "plan_n", "plan_win", "plans",
+        "r", "rec", "rec_n", "rec_pct", "rec_pnl", "rec_r_worst", "rec_win", "rules_pre", "sources",
+    }
+)  # fmt: skip
+
+
+def test_info_notes_are_at_most_four_short_lines():
+    """Item 262 (docs/design/PANEL.md rule 3): an «i» note is the title, one «what it is» line, «low → do» and
+    «high → do»: four short lines, no bare definition."""
+    import html
+    import re
+
+    long_ = {k for k, h in db.HELP.items() if k not in db.ACT or len(h[1]) > RULE3_WHAT_MAX}
+    assert long_ == RULE3_TODO, ("new long notes", sorted(long_ - RULE3_TODO), "fixed, drop from RULE3_TODO", sorted(RULE3_TODO - long_))
+    for key in set(db.HELP) - RULE3_TODO:
+        tip = db._info(key).split("role='tooltip'>", 1)[1]
+        lines = re.findall(r"<b>(.*?)</b>", tip) + re.findall(r"<span[^>]*>(.*?)</span>", tip)  # no nested spans
+        lines = [html.unescape(re.sub(r"<[^>]+>", "", x)) for x in lines]
+        assert len(lines) == 4 and "Для угоди:" not in tip, (key, lines)
+        assert all(0 < len(x) <= RULE3_WHAT_MAX for x in lines), (key, [len(x) for x in lines])
+    # the four longest notes of «Мої угоди» before item 262 are short instructions now
+    for key in ("j_rules", "rules_week", "j_review", "j_weeks"):
+        assert "<span class='do'><i>" in db._info(key) and "порада" not in db._info(key), key
+
+
+def test_journal_page_says_not_advice_once_at_the_bottom(tmp_path):
+    """Item 262 (docs/design/PANEL.md rule 5): «не порада» was in the rules tile, the R-curve block and the forecast
+    note as well as in the page's caveat; now only the caveat at the bottom says it."""
+    import re
+
+    pages = _all_tab_pages(tmp_path)
+    tips = re.compile(r"<span class='tip' role='tooltip'>.*?</span></span>", re.S)
+    for name in ("journal", "journal empty"):
+        body = tips.sub("", pages[name])
+        hits = [m.start() for m in re.finditer(r"(?i)не (інвестиційна )?порад", body)]
+        assert len(hits) == 1 and hits[0] > body.index("<b>Застереження</b>"), (name, len(hits))
+
+
 def test_options_pros_and_cons_for_buyer_and_seller():
     snap, asof = _snap()
     page = db.render_options(snap, None, asof + 300, db.parse_options_query(""))
@@ -3076,11 +3122,11 @@ def test_journal_tile_share_of_trades_by_the_rules(tmp_path):
         "1 з 10 перевірених без жодного порушення · порушили 9",
         "невідомо 11 (бракує стопу, цілі чи часу відкриття — не «за правилами», поза часткою)",
         "лише наближене правило 4: 2 (поза часткою)",
-        "усього 23 угод. Статистика дотримання правил, не порада. Угода без стопу стає перевіреною лише через "
-        "порушення, тож частка занижена",
+        "усього 23 угод. Угода без стопу стає перевіреною лише через порушення, тож частка занижена",
         "<span class='sig warn'>замало для висновку</span>",
     ):
         assert text in tile, text
+    assert "порада" not in tile.replace(db._info("j_rules"), "")  # the caveat is at the page's bottom (item 262)
     assert "class='tile t-warn'" in page
     # 30 checked trades: no «too few» badge (30 journal_add trades with a stop and a 2R target, a day apart)
     kw = {"size": 0.01, "entry": 80000.0, "stop": 79000.0, "target": 82000.0}

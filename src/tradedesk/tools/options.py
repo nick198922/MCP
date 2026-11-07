@@ -862,7 +862,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 price = float(t.get("price") or 0)
                 index = float(t.get("index_price") or 0)
                 ts = int(t["timestamp"]) if t.get("timestamp") is not None else None
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):  # OverflowError: int() of a JSON Infinity
                 continue
             if amount <= 0 or price <= 0:
                 continue

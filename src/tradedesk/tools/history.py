@@ -58,6 +58,28 @@ STOP_MIN_OFFSET = Annotated[
 MIN_RR = Annotated[float, Field(ge=1, le=20, description="Min rr1 (reward to tp1 / risk to stop) to flag the setup as tradable.")]
 
 
+def _live_bars(raw: Any) -> list[dict[str, Any]]:
+    """ccxt OHLCV rows -> bar dicts. A None volume (ccxt hands it out for some venues) counts as 0, as in chart_markup; a
+    row with a non-numeric timestamp or price is dropped (parsed_rows) instead of raising out of the tool."""
+    return parsed_rows(
+        [x for x in (raw or []) if isinstance(x, (list, tuple)) and len(x) >= 5],
+        lambda x: {
+            "ts": int(x[0]),
+            "open": float(x[1]),
+            "high": float(x[2]),
+            "low": float(x[3]),
+            "close": float(x[4]),
+            "volume": float(x[5] or 0.0) if len(x) >= 6 else 0.0,
+        },
+    )
+
+
+def _warn_dropped_bars(b: Builder, raw: Any, bars: list[dict[str, Any]]) -> None:
+    dropped = sum(1 for x in (raw or []) if isinstance(x, (list, tuple)) and len(x) >= 5) - len(bars)
+    if dropped:  # a dropped bar joins its neighbours: a range or a sweep across that gap is built on one bar fewer
+        b.warn(f"{dropped} malformed bars (non-numeric timestamp or price) dropped; ranges and sweeps skip them")
+
+
 def _summary(values: list[float], latest: float) -> dict[str, Any]:
     """Shared stats block for history-rank style tools."""
     n = len(values)
@@ -343,19 +365,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
         bars: list[dict[str, Any]] = []
         if source == "live":
             fetched = await b.guard(f"ohlcv:{venue}", f"ccxt:{venue}", rt.exchanges.ohlcv(venue, symbol, timeframe, lookback_bars))
-            raw = fetched or []
-            bars = [
-                {
-                    "ts": int(x[0]),
-                    "open": float(x[1]),
-                    "high": float(x[2]),
-                    "low": float(x[3]),
-                    "close": float(x[4]),
-                    "volume": float(x[5]) if len(x) >= 6 else 0.0,
-                }
-                for x in raw
-                if isinstance(x, (list, tuple)) and len(x) >= 5
-            ]
+            bars = _live_bars(fetched)
+            _warn_dropped_bars(b, fetched, bars)
         else:
             if not await store_ready(b, rt, "source='store'"):
                 return b.build(None, ok=False)
@@ -463,19 +474,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
         b.warn(SFP_EDGE_WARNING)
         if source == "live":
             fetched = await b.guard(f"ohlcv:{venue}", f"ccxt:{venue}", rt.exchanges.ohlcv(venue, symbol, timeframe, lookback_bars))
-            raw = fetched or []
-            bars = [
-                {
-                    "ts": int(x[0]),
-                    "open": float(x[1]),
-                    "high": float(x[2]),
-                    "low": float(x[3]),
-                    "close": float(x[4]),
-                    "volume": float(x[5]) if len(x) >= 6 else 0.0,
-                }
-                for x in raw
-                if isinstance(x, (list, tuple)) and len(x) >= 5
-            ]
+            bars = _live_bars(fetched)
+            _warn_dropped_bars(b, fetched, bars)
         else:
             if not await store_ready(b, rt, "source='store'"):
                 return b.build(None, ok=False)
@@ -585,17 +585,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
         if raw is None:
             out["reason"] = "fetch_failed"
             return out
-        bars = parsed_rows(
-            [x for x in (raw or []) if isinstance(x, (list, tuple)) and len(x) >= 5],
-            lambda x: {
-                "ts": int(x[0]),
-                "open": float(x[1]),
-                "high": float(x[2]),
-                "low": float(x[3]),
-                "close": float(x[4]),
-                "volume": float(x[5] or 0.0) if len(x) >= 6 else 0.0,  # ccxt may send None volume, as chart_markup
-            },
-        )
+        bars = _live_bars(raw)
         if len(bars) < min_bars:
             out["reason"] = f"insufficient_bars: {len(bars)} < {min_bars}"
             return out

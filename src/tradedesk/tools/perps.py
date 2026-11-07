@@ -191,8 +191,22 @@ def _finite_rate(b: Builder, label: str, x: Any) -> float | None:
     """`x` as a finite float; otherwise None and a warning naming `label` (venue and symbol) as left out."""
     try:
         return finite_float(x)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):  # OverflowError: float() of a 300+-digit JSON integer
         b.warn(f"{label}: current funding rate not a finite number; this venue is left out of the comparison")
+        return None
+
+
+def _finite_price(b: Builder, label: str, name: str, x: Any) -> float | None:
+    """A mark / index price as a finite float. An absent one is None quietly; a NaN / inf / non-numeric one (or a
+    bool) is None with a warning naming `label` (venue and symbol). The venue's funding row is kept either way."""
+    if x is None:
+        return None
+    try:
+        if isinstance(x, bool):
+            raise TypeError("bool is not a price")
+        return finite_float(x)
+    except (TypeError, ValueError, OverflowError):  # OverflowError: float() of a 300+-digit JSON integer
+        b.warn(f"{label}: {name} price not a finite number; shown as null")
         return None
 
 
@@ -254,7 +268,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
         description=(
             "Compare perpetual funding across venues (Binance USDT-M, Bybit, OKX via ccxt; Hyperliquid; Deribit for BTC/ETH). "
             "Each row has the rate per funding interval, the interval length, and the ANNUALISED rate (simple, fraction: 0.10 = 10 %), "
-            "so venues with 1h/4h/8h intervals are comparable. Also reports the widest spread = cross-venue funding carry."
+            "so venues with 1h/4h/8h intervals are comparable. Also reports the widest spread = cross-venue funding carry. "
+            "`mark` / `index` are the venue's prices in its quote currency (USDT or USD), null when it omits them or sends a non-finite value (warned)."
         ),
     )
     async def perps_funding_compare(
@@ -277,7 +292,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 return None
             if fr is None or fr.get("fundingRate") is None:
                 return None
-            rate = _finite_rate(b, f"{ex} {symbol}", fr["fundingRate"])
+            label = f"{ex} {symbol}"
+            rate = _finite_rate(b, label, fr["fundingRate"])
             if rate is None:
                 return None
             hours = parse_interval_hours(fr.get("interval"))
@@ -289,8 +305,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 "interval_hours": hours,
                 "annualized": r(annualize_funding(rate, hours), 5),
                 "next_funding_utc": _iso(fr.get("nextFundingTimestamp") or fr.get("fundingTimestamp")),
-                "mark": fr.get("markPrice"),
-                "index": fr.get("indexPrice"),
+                "mark": _finite_price(b, label, "mark", fr.get("markPrice")),
+                "index": _finite_price(b, label, "index", fr.get("indexPrice")),
             }
 
         async def hl_row() -> dict[str, Any] | None:
@@ -300,15 +316,16 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 if ctx is not None:
                     b.miss("funding:hyperliquid", "hyperliquid", "data_unavailable", f"{base} not listed")
                 return None
-            if _finite_rate(b, f"hyperliquid {base}", row["funding_1h"]) is None:
+            label = f"hyperliquid {base}"
+            if _finite_rate(b, label, row["funding_1h"]) is None:
                 return None
             return {
                 "venue": "hyperliquid",
                 "rate_per_interval": row["funding_1h"],
                 "interval_hours": 1.0,
                 "annualized": r(row["funding_annualized"], 5),
-                "mark": row["mark_px"],
-                "index": row["oracle_px"],
+                "mark": _finite_price(b, label, "mark", row["mark_px"]),
+                "index": _finite_price(b, label, "index", row["oracle_px"]),
             }
 
         async def deribit_row() -> dict[str, Any] | None:
@@ -318,7 +335,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
             perp = next((x for x in fut or [] if x.get("instrument_name", "").endswith("PERPETUAL")), None)
             if not perp or json_num(perp.get("funding_8h")) is None:
                 return None
-            rate = _finite_rate(b, f"deribit {perp['instrument_name']}", perp["funding_8h"])
+            label = f"deribit {perp['instrument_name']}"
+            rate = _finite_rate(b, label, perp["funding_8h"])
             if rate is None:
                 return None
             return {
@@ -326,8 +344,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 "rate_per_interval": rate,
                 "interval_hours": 8.0,
                 "annualized": r(annualize_funding(rate, 8.0), 5),
-                "mark": perp.get("mark_price"),
-                "index": perp.get("estimated_delivery_price"),
+                "mark": _finite_price(b, label, "mark", perp.get("mark_price")),
+                "index": _finite_price(b, label, "index", perp.get("estimated_delivery_price")),
             }
 
         jobs = [ccxt_row(e) for e in venues]

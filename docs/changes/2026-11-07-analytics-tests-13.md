@@ -1,0 +1,13 @@
+# 2026-11-07 — тести ще для 12 функцій `analytics/` (коло 10)
+
+Пункт 209 [IDEA-20261102-standing-improvements](../ideas/IDEA-20261102-standing-improvements.md), [BACKLOG 6.9](../BACKLOG.md).
+
+- **Перелік:** той самий розбір AST, що в пунктах 196–207 (верхньорівневі публічні функції `analytics/` разом із `sieve_specs/`, ім'я як слово в `tests/*.py`). До кола 14 із 2173, після — **2 із 2173**: лишились лише `dex.is_canonical` і `dex.parse_pair` (інструмент on-chain, у форварди й звіти не йдуть). Взято 12, а не 10: п'ять копій ADX однакові за формулою й перевіряються одним еталоном.
+- **Покрито 12** (новий `tests/test_analytics_direct_13.py`, 15 тестів):
+  - ADX / DMI Вайлдера в сито-специфікаціях: `adx_di_cross.dmi`, `holy_grail_pullback.dmi`, `stochastic_pop.dmi`, `freqtrade_adx_sma_cross.adx_wilder`, `hlhb_rsi_ema_adx.adx_wilder` — ручний приклад із n = 2 (+DI, −DI, ADX порахано на папері), сталий тренд (+DI = 40, ADX = 100, дзеркало міняє DI місцями), реальні денні клини BTC Binance (545 днів: перший DI = прямі суми з сирих рядків, усі п'ять копій збігаються, після дірки сегмент починається заново);
+  - `kst_signal_cross.sma_valid` і `tsi_zero_cross.ema_valid`: ручні числа (вікно з NaN, пропуск NaN, скидання на початку сегмента), `sma_valid` на реальних закриттях дорівнює звичайному ковзному середньому;
+  - живий скан демо `setup_signals.range_setups`: синтетичні S3 long / short і S16 з ручним ATR Вайлдера — вхід, стоп (екстремум ± 0.5 ATR), ціль (середина / протилежна межа); менше 50 барів — нічого, хоча детектор сигнал бачить;
+  - `news_events.perp_symbols` на реальних заголовках Binance / Bybit; `premarket_fade.bars_from_rows` на реальних 1h-клінах Binance разом з `entry_point`; `ny_midnight_open.ny_days` (29.02, перехід на літній час); `xs_factors.oriented_signal` (знак rank IC перевертається).
+- **Помилок, що змінюють числа звітів, не знайдено; `src/` не змінено.** Два зауваження без правки (у BACKLOG 6.9):
+  - `perp_symbols` вимагає щонайменше 2 символи перед `USDT`, тож однолітерні тикери Binance USD-M (`WUSDT`, `TUSDT`) не знаходяться: `perp_symbols("... WUSDT and TUSDT Perpetual Contracts") == []`. Делістинг такого перпа в `verify_news_events.py` / `verify_perp_launch_existing.py` випав би з вибірки. Чи були такі події в закритих звітах, не перевіряли; правка змінила б вибірку, тому без рішення не робили, і тест цю поведінку не закріплює.
+  - Копії ADX розходяться лише на сегменті, що починається з ≥ 2n − 1 повністю пласких барів (TR = 0): `dmi` (і `hlhb.adx_wilder`) лишають ADX `NaN` до кінця сегмента, `freqtrade.adx_wilder` рахує DX = 0 і дає числа. На реальних даних (545 днів BTC) копії збігаються; тест цю різницю не закріплює.

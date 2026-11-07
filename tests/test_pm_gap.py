@@ -428,6 +428,38 @@ async def test_scan_reads_markets_books_and_options(state):
         await rt.aclose()
 
 
+def test_non_finite_gamma_and_bar_fields_never_raise():
+    ev = _events()
+    m1, m3 = ev[0]["markets"][0], ev[2]["markets"][0]
+    for bad in ("abc", "NaN", "Infinity", 10**400):
+        assert classify_open_market(ev[2], {**m3, "feeSchedule": {"rate": bad, "exponent": 1}}, NOW_TS, 30)["status"] == "fee"
+        assert classify_open_market(ev[2], {**m3, "feeSchedule": {"rate": 0.07, "exponent": bad}}, NOW_TS, 30)["status"] == "fee"
+        assert classify_open_market(ev[0], {**m1, "volumeNum": bad}, NOW_TS, 30)["volume_usd"] == 0.0
+    # fees off: an unusable schedule is not read
+    assert classify_open_market(ev[0], {**m1, "feeSchedule": {"rate": "abc"}}, NOW_TS, 30)["status"] == "ok"
+    assert classify_open_market(ev[0], {**m1, "outcomePrices": json.dumps([10**400, 0])}, NOW_TS, 30)["status"] == "ok"
+    rows = [[10**400, 1, 2, 1, 1], [float("nan"), 1, 2, 1, 1], *_bars(START_TOUCH, NOW_IN_TS)]
+    assert path_extremes(rows, START_TOUCH) == path_extremes(_bars(START_TOUCH, NOW_IN_TS), START_TOUCH)
+    book = {"bids": [{"price": 10**400, "size": "5"}, {"price": "0.4", "size": "5"}], "asks": [{"price": "0.6", "size": 10**400}]}
+    tob = top_of_book(book)
+    assert tob["bid"] == 0.4 and tob["ask"] is None
+
+
+async def test_scan_leaves_out_a_market_with_an_unusable_fee_and_says_so(state):
+    # Gamma sending a non-numeric fee rate used to raise ValueError out of scan_gaps (and the pm_gap job)
+    ev = _events()
+    ev[2]["markets"][0]["feeSchedule"] = {"rate": "abc", "exponent": 1}
+    ev[0]["markets"][0]["volumeNum"] = 10**400
+    rt = await _rt(state, events=ev)
+    try:
+        b = Builder()
+        rows = {r["market_id"]: r for r in await scan_gaps(rt, b, max_days=30)}
+        assert "m3" not in rows and "m1" in rows
+        assert "markets left out" in b.warnings[-1] and "fee=1" in b.warnings[-1]
+    finally:
+        await rt.aclose()
+
+
 async def test_scan_touch_markets_inside_the_window_use_the_binance_path(state):
     ex = path_ex(_bars(START_TOUCH, NOW_IN_TS))
     rt = await _rt(state, now=NOW_IN, ex=ex)

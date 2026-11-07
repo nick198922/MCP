@@ -464,6 +464,45 @@ async def _mismatch_tickers(self, symbols=None):
     return out
 
 
+class _BadLastEx(FakeEx):
+    """Bybit's ticker `last` is `bad` while it is set (None: the normal fake ticker)."""
+
+    bad: object = None
+
+    async def fetch_tickers(self, symbols=None):
+        out = await super().fetch_tickers(symbols)
+        if self.id == "bybit" and _BadLastEx.bad is not None:
+            for v in out.values():
+                v["last"] = _BadLastEx.bad
+        return out
+
+
+@pytest.mark.parametrize("bad", ["Infinity", float("nan"), "abc", 10**400])
+async def test_non_finite_last_price_never_marks_the_pair(state, tmp_path, bad):
+    # an "Infinity" last used to mark the pair at an infinite price, a 300+-digit one raised out of the tool
+    rt = Runtime(
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=str(tmp_path / "bad_last.sqlite")),
+        transports=make_transports(state),
+        exchange_factory=_BadLastEx,
+    )
+    rt.now = lambda: NOW
+    await rt.store.init()
+    srv, _ = build_server(rt)
+    try:
+        _BadLastEx.bad = bad
+        o = await _call(srv, "carry_paper_open", base="BTC", long_venue="binanceusdm", short_venue="bybit")
+        assert o["ok"] is True, o  # the entry falls back to the mark price of the funding feed
+        assert o["data"]["short_entry"] == pytest.approx(82760.0 * 1.0001)
+        assert any("bybit BTC/USDT:USDT: last price in the ticker is not a finite number" in w for w in o["warnings"])
+        s = await _call(srv, "carry_paper_status")
+        (tr,) = s["data"]["open"]
+        assert "mark" not in tr and any(m["field"] == "carry_paper:1" for m in s["missing"])
+        assert any("bybit BTC/USDT:USDT: last price" in w for w in s["warnings"])
+    finally:
+        _BadLastEx.bad = None
+        await rt.store.aclose()
+
+
 def test_funding_entries_drop_only_rows_with_a_wrong_type_field():
     rows = [
         {"timestamp": 1000, "fundingRate": 0.0001},

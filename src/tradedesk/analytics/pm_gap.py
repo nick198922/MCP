@@ -49,6 +49,17 @@ TICKER = {"bitcoin": "BTC", "ethereum": "ETH"}
 # ----------------------------------------------------------------------------- market discovery
 
 
+def _finite(x: Any) -> float | None:
+    """A Gamma number as a finite float; None for text, a bool, NaN, inf or a 300+-digit integer (OverflowError)."""
+    if isinstance(x, bool):
+        return None
+    try:
+        v = float(x)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return v if math.isfinite(v) else None
+
+
 def classify_open_market(event: dict[str, Any], market: dict[str, Any], now_ts: int, max_days: float = 14.0) -> dict[str, Any]:
     """Validate one Gamma market of an open BTC/ETH price event; ``status`` is ``ok`` or the first failed check.
 
@@ -56,7 +67,8 @@ def classify_open_market(event: dict[str, Any], market: dict[str, Any], now_ts: 
     ``asset`` (not BTC/ETH), ``closed`` (resolved, closed or not active), ``tokens`` (not exactly Yes/No), ``strike``,
     ``direction`` (touch: question says neither "reach" nor "dip to"), ``end`` (no end date), ``end_mismatch`` (threshold:
     endDate is not 12:00 ET of the date; touch: not 00:00 ET after the last day of the window), ``slug_date`` (the date in the
-    event slug or in the question is another day than endDate), ``window`` (already ended or further than ``max_days``).
+    event slug or in the question is another day than endDate), ``window`` (already ended or further than ``max_days``),
+    ``fee`` (fees enabled but the fee rate or exponent is not a finite number). A volume that is not a finite number is 0.
     The time checks mirror ``pm_threshold.classify_market`` and ``pm_touch.classify_touch_market``: the model's horizon and
     the Deribit expiry depend on ``end_ts``, so an unusual endDate must not pass silently. On ``ok`` the dict carries asset
     ("BTC"/"ETH"), kind ("above" | "touch"), direction ("above" | "up" | "down"), strike, end_ts, window_start (touch: start
@@ -129,10 +141,12 @@ def classify_open_market(event: dict[str, Any], market: dict[str, Any], now_ts: 
         return {**out, "status": "window"}
     sched = market.get("feeSchedule") if isinstance(market.get("feeSchedule"), dict) else {}
     fees = bool(market.get("feesEnabled"))
-    try:
-        volume = float(market.get("volumeNum") or market.get("volume") or 0.0)
-    except (TypeError, ValueError):
-        volume = 0.0
+    volume = _finite(market.get("volumeNum") or market.get("volume") or 0.0)
+    volume = 0.0 if volume is None else volume
+    fee_rate = _finite(sched.get("rate") or 0.0) if fees else 0.0
+    fee_exp = _finite(sched.get("exponent") or 1.0) if fees else 1.0
+    if fee_rate is None or fee_exp is None:  # a fee we cannot price: a net gap would be invented, so the market is left out
+        return {**out, "status": "fee"}
     return {
         **out,
         "status": "ok",
@@ -145,8 +159,8 @@ def classify_open_market(event: dict[str, Any], market: dict[str, Any], now_ts: 
         "window_start": window_start,
         "yes_token": str(toks[0]),
         "no_token": str(toks[1]),
-        "fee_rate": float(sched.get("rate") or 0.0) if fees else 0.0,
-        "fee_exp": float(sched.get("exponent") or 1.0) if fees else 1.0,
+        "fee_rate": fee_rate,
+        "fee_exp": fee_exp,
         "volume_usd": volume,
         "rules": description[:MAX_RULES_CHARS],
         "rules_hash": hashlib.sha256(description.encode("utf-8")).hexdigest()[:16],
@@ -212,9 +226,9 @@ def path_extremes(bars: Sequence[Sequence[float]], start_ts: int, max_lead_s: in
     for r in bars:
         try:
             t, h, low, c = float(r[0]) / 1000.0, float(r[2]), float(r[3]), float(r[4])
-        except (IndexError, TypeError, ValueError):
+        except (IndexError, TypeError, ValueError, OverflowError):  # OverflowError: a 300+-digit JSON integer
             continue
-        if t < start_ts or not all(map(math.isfinite, (h, low, c))):
+        if not all(map(math.isfinite, (t, h, low, c))) or t < start_ts:
             continue
         first_open = t if first_open is None else min(first_open, t)
         hi = h if hi is None else max(hi, h)
@@ -252,7 +266,7 @@ def top_of_book(book: dict[str, Any]) -> dict[str, float | None]:
         for r in rows if isinstance(rows, list) else []:
             try:
                 p, s = float(r["price"]), float(r["size"])
-            except (KeyError, TypeError, ValueError):
+            except (KeyError, TypeError, ValueError, OverflowError):  # OverflowError: a 300+-digit JSON integer
                 continue
             if 0.0 < p < 1.0 and s > 0 and math.isfinite(p) and math.isfinite(s):
                 out.append((p, s))

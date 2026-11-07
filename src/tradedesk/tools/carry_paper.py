@@ -23,7 +23,7 @@ from ..analytics.journal import pnl as pnl_fn
 from ..collector.market_data import BAR_MS, bars_4h, funding_entries, parse_bar
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, STORE_ERRORS, r, store_failed, store_ready
+from ._util import READ_ONLY, STORE_ERRORS, finite_float, r, store_failed, store_ready
 from .perps import TAKER_FEES, current_funding
 
 # carry_paper_open writes a new row on every call (a retry after a timeout records a second pair), so it is not idempotent.
@@ -57,8 +57,14 @@ def _iso(ts: int | None) -> str | None:
 async def _last_price(rt: Runtime, b: Builder, venue: str, sym: str, fallback: float | None = None) -> float | None:
     got = await b.guard(f"ticker:{venue}:{sym}", f"ccxt:{venue}", rt.exchanges.tickers(venue, [sym]))
     try:
-        px = float(((got or {}).get(sym) or {}).get("last") or 0.0)
-    except (TypeError, ValueError):
+        raw = ((got or {}).get(sym) or {}).get("last")
+    except AttributeError:  # a ticker that is not a mapping
+        raw = None
+    try:
+        # an "Infinity" last would mark the pair at an infinite price; a 300+-digit one would raise (OverflowError)
+        px = finite_float(raw) if raw is not None and not isinstance(raw, bool) else 0.0
+    except (TypeError, ValueError, OverflowError):
+        b.warn(f"{venue} {sym}: last price in the ticker is not a finite number; not used")
         px = 0.0
     if px > 0:
         return px

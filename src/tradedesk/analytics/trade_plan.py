@@ -23,6 +23,7 @@ Conventions (all paper, on candle highs / lows, no fill guarantee):
 
 from __future__ import annotations
 
+import math
 import statistics
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
@@ -67,14 +68,15 @@ def r_multiple(side: str, entry: float, stop: float, fill: float, exit_: float, 
 
 
 def _bars(rows: Iterable[Sequence[Any]]) -> list[tuple[int, float, float, float, float]]:
-    """ccxt rows [ts_ms, o, h, l, c, ...] -> sorted unique (ts_ms, o, h, l, c); malformed rows are dropped."""
+    """ccxt rows [ts_ms, o, h, l, c, ...] -> sorted unique (ts_ms, o, h, l, c); malformed rows are dropped (a field that
+    is None, text, NaN, inf or a 300+-digit integer: a NaN close would otherwise pass the checks and score R as NaN)."""
     out: dict[int, tuple[int, float, float, float, float]] = {}
     for x in rows:
         try:
-            ts, o, h, lo, c = int(x[0]), float(x[1]), float(x[2]), float(x[3]), float(x[4])
-        except (TypeError, ValueError, IndexError):
+            ts, o, h, lo, c = int(float(x[0])), float(x[1]), float(x[2]), float(x[3]), float(x[4])
+        except (TypeError, ValueError, IndexError, OverflowError):
             continue
-        if min(o, h, lo, c) > 0 and h >= lo:
+        if all(map(math.isfinite, (o, h, lo, c))) and min(o, h, lo, c) > 0 and h >= lo:
             out[ts] = (ts, o, h, lo, c)
     return [out[k] for k in sorted(out)]
 

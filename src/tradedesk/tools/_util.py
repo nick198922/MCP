@@ -84,6 +84,59 @@ def finite_float(x: Any) -> float:
     return v
 
 
+def first_nonfinite(x: Any, path: str = "") -> str | None:
+    """Path of the first NaN / +-inf number in `x` (walks dicts and lists; a bool or a string is not a number), else None.
+
+    The schema of a float parameter lets NaN and +-inf through (the strings "inf" / "nan" / "1e400" coerce to them, and
+    so does the JSON number 1e400), so calculator tools check their arguments and their result with this before
+    answering: a non-finite number in the result would show up as NaN / Infinity in the text and as null in the
+    structured content (invariant 1: an answer, never a silent garbage number)."""
+    if isinstance(x, float):
+        return None if math.isfinite(x) else (path or "value")
+    if isinstance(x, int) and not isinstance(x, bool):
+        try:
+            return None if math.isfinite(float(x)) else (path or "value")
+        except OverflowError:  # an int beyond the float range (e.g. 10**400 inside a leg dict)
+            return path or "value"
+    if isinstance(x, dict):
+        items = x.items()
+    elif isinstance(x, list | tuple):
+        items = enumerate(x)
+    else:
+        return None
+    for k, v in items:
+        if isinstance(v, str):
+            try:
+                if not math.isfinite(float(v)):
+                    return f"{path}.{k}" if path else str(k)
+            except (ValueError, OverflowError):
+                pass
+            continue
+        bad = first_nonfinite(v, f"{path}.{k}" if path else str(k))
+        if bad is not None:
+            return bad
+    return None
+
+
+def reject_nonfinite(b: Builder, **named: Any) -> dict[str, Any] | None:
+    """ok=false envelope (`missing: input`, reason invalid_input) when an argument holds NaN / +-inf / an int beyond the
+    float range, else None. Strings inside lists and dicts count when float() reads them as non-finite ("inf")."""
+    bad = first_nonfinite(named)
+    if bad is None:
+        return None
+    b.miss("input", "tradedesk", "invalid_input", f"{bad} is not a finite number (NaN, inf or beyond the float range)")
+    return b.build(None, ok=False)
+
+
+def reject_nonfinite_result(b: Builder, data: Any) -> dict[str, Any] | None:
+    """ok=false envelope when the computed result holds NaN / +-inf (finite but extreme inputs that overflow), else None."""
+    bad = first_nonfinite(data)
+    if bad is None:
+        return None
+    b.miss("result", "tradedesk", "invalid_input", f"{bad} came out NaN or inf: the inputs are outside the model's numeric range")
+    return b.build(None, ok=False)
+
+
 def r(x: float | None, nd: int = 4) -> float | None:
     return None if x is None else round(float(x), nd)
 

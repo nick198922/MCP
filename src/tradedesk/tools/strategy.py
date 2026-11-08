@@ -22,7 +22,7 @@ from ..analytics.strategy import (
 )
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, r
+from ._util import READ_ONLY, r, reject_nonfinite, reject_nonfinite_result
 
 # Shared parameter schemas of the template builders (schema text only; constraints match the old inline ones).
 _PREMIUM_UNITS = "USD per contract (Deribit quotes option prices in BTC/ETH: multiply by the index price first)."
@@ -84,6 +84,33 @@ def _packed(
     return out
 
 
+# Extreme but finite inputs can still break the maths: log(F / K) of an underflowed ratio, an int beyond the float range.
+_NUMERIC_ERRORS = (ValueError, ZeroDivisionError, OverflowError)
+
+
+def _answer(
+    b: Builder,
+    legs: list[dict[str, Any]],
+    *,
+    spot: float,
+    days: float,
+    iv: float,
+    forward: float | None,
+    width_pct: float,
+    grid: int,
+    kind: str,
+) -> dict[str, Any]:
+    """Template answer: `_packed`, or ok=false (`invalid_input`) when an input or the result is NaN / inf."""
+    if (bad := reject_nonfinite(b, legs=legs, spot=spot, days=days, iv=iv, forward=forward)) is not None:
+        return bad
+    try:
+        data = _packed(legs, spot=spot, days=days, iv=iv, forward=forward, width_pct=width_pct, grid=grid, kind=kind)
+    except _NUMERIC_ERRORS as e:
+        b.miss("strategy", "tradedesk", "invalid_input", f"inputs are outside the model's numeric range: {type(e).__name__}: {e}")
+        return b.build(None, ok=False)
+    return reject_nonfinite_result(b, data) or b.build(data)
+
+
 def register(server: MCPServer, rt: Runtime) -> None:
     @server.tool(
         annotations=READ_ONLY,
@@ -113,10 +140,12 @@ def register(server: MCPServer, rt: Runtime) -> None:
         kind: Annotated[Literal["detailed", "summary"], Field(description="'summary' omits the full curve.")] = "detailed",
     ) -> dict[str, Any]:
         b = Builder()
+        if (bad := reject_nonfinite(b, legs=legs, spot=spot, days=days, iv=iv, forward=forward)) is not None:
+            return bad
         F = float(forward) if forward is not None else float(spot)
         try:
             res = summarise(list(legs), forward=F, days=float(days), iv=float(iv), width_pct=float(width_pct), grid=int(grid))
-        except (KeyError, TypeError, ValueError) as e:
+        except (KeyError, TypeError, *_NUMERIC_ERRORS) as e:
             b.miss("legs", "tradedesk", "data_unavailable", f"bad leg definition: {type(e).__name__}: {e}")
             return b.build(None, ok=False)
 
@@ -137,7 +166,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
             data["grid"] = res["grid"]
             data["prices"] = [r(x, 2) for x in res["prices"]]
             data["pnl"] = [r(x, 2) for x in res["pnl"]]
-        return b.build(data)
+        return reject_nonfinite_result(b, data) or b.build(data)
 
     # -------- template builders --------
 
@@ -165,7 +194,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
     ) -> dict[str, Any]:
         b = Builder()
         legs = build_straddle(strike=strike, call_premium=call_premium, put_premium=put_premium, side=side, size=size)
-        return b.build(_packed(legs, spot=spot, days=days, iv=iv, forward=forward, width_pct=width_pct, grid=grid, kind=kind))
+        return _answer(b, legs, spot=spot, days=days, iv=iv, forward=forward, width_pct=width_pct, grid=grid, kind=kind)
 
     @server.tool(
         annotations=READ_ONLY,
@@ -201,7 +230,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
             side=side,
             size=size,
         )
-        return b.build(_packed(legs, spot=spot, days=days, iv=iv, forward=forward, width_pct=width_pct, grid=grid, kind=kind))
+        return _answer(b, legs, spot=spot, days=days, iv=iv, forward=forward, width_pct=width_pct, grid=grid, kind=kind)
 
     @server.tool(
         annotations=READ_ONLY,
@@ -241,7 +270,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
             direction=direction,
             size=size,
         )
-        return b.build(_packed(legs, spot=spot, days=days, iv=iv, forward=forward, width_pct=width_pct, grid=grid, kind=kind))
+        return _answer(b, legs, spot=spot, days=days, iv=iv, forward=forward, width_pct=width_pct, grid=grid, kind=kind)
 
     @server.tool(
         annotations=READ_ONLY,
@@ -285,7 +314,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
         except ValueError as e:
             b.miss("strikes", "tradedesk", "data_unavailable", str(e))
             return b.build(None, ok=False)
-        return b.build(_packed(legs, spot=spot, days=days, iv=iv, forward=forward, width_pct=width_pct, grid=grid, kind=kind))
+        return _answer(b, legs, spot=spot, days=days, iv=iv, forward=forward, width_pct=width_pct, grid=grid, kind=kind)
 
     @server.tool(
         annotations=READ_ONLY,
@@ -395,6 +424,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
         ] = None,
     ) -> dict[str, Any]:
         b = Builder()
+        named = {"legs": legs, "spot": spot, "horizons": horizons, "days": days, "iv": iv, "forward": forward}
+        if (bad := reject_nonfinite(b, **named, price_grid_pct=price_grid_pct)) is not None:
+            return bad
         F = float(forward) if forward is not None else float(spot)
         if horizons is None:
             horizons = [
@@ -406,7 +438,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
         prices = [float(spot) * (1.0 + p / 100.0) for p in pcts]
         try:
             matrix = scenario_matrix(list(legs), initial_forward=F, horizons=list(horizons), prices=prices)
-        except (KeyError, TypeError, ValueError) as e:
+        except (KeyError, TypeError, *_NUMERIC_ERRORS) as e:
             b.miss("legs", "tradedesk", "data_unavailable", f"bad input: {type(e).__name__}: {e}")
             return b.build(None, ok=False)
 
@@ -421,13 +453,12 @@ def register(server: MCPServer, rt: Runtime) -> None:
             }
             for row in matrix
         ]
-        return b.build(
-            {
-                "spot": spot,
-                "forward": F,
-                "n_horizons": len(rows),
-                "price_grid_pct": pcts,
-                "matrix": rows,
-                "measure": "mark-to-market (USD, Black-76, flat IV per horizon)",
-            }
-        )
+        data = {
+            "spot": spot,
+            "forward": F,
+            "n_horizons": len(rows),
+            "price_grid_pct": pcts,
+            "matrix": rows,
+            "measure": "mark-to-market (USD, Black-76, flat IV per horizon)",
+        }
+        return reject_nonfinite_result(b, data) or b.build(data)

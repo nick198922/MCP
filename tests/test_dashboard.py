@@ -401,7 +401,7 @@ def test_market_tab_short_info_notes_and_less_text():
         assert "<h1>Ринок</h1>" in page and "<title>tradedesk — ринок</title>" in page
     assert "<span class='chip risk'>подія</span>" in page and "<b>Що робити:</b> до релізу" in page  # the advice stays in the lead
     assert set(db.ACT) <= set(db.HELP) and {"price", "key", "chart", "vol"} <= set(db.ACT)
-    assert "Для угоди:" in db._info("sources")  # keys without ACT (here the trade sources) keep the long note
+    assert set(db.ACT) == set(db.HELP)  # item 278: every note is the short instruction now
 
 
 def test_nav_three_sections_then_the_rest_under_detailed():
@@ -1932,12 +1932,14 @@ def test_help_keys_used_by_the_pages_all_exist():
         assert title and what and read and trade
 
 
-def test_info_icon_is_escaped_static_text_and_unknown_key_is_empty():
+def test_info_icon_is_escaped_static_text_and_unknown_key_is_empty(monkeypatch):
     html_ = db._info("dvol")
     assert html_.startswith("<span class='info' tabindex='0' role='button'")
     # an ACT key: what it is, then «low → do», «high → do» (owner, 28.10) instead of the read / trade lines
     assert "DVOL" in html_ and "<i>Низький (до 30-го перцентиля)</i> → купувати опціони дешевше" in html_ and "Для угоди:" not in html_
-    assert "Для угоди:" in db._info("sources")  # keys without ACT keep the long form
+    # a key without ACT (none left since item 278) keeps the long form, escaped
+    monkeypatch.setitem(db.HELP, "x_no_act", ("T", "what", "read <b>", "trade"))
+    assert "Для угоди: trade" in db._info("x_no_act") and "read &lt;b&gt;" in db._info("x_no_act")
     assert set(db.ACT) <= set(db.HELP) and all(all(x) for x in db.ACT.values())
     assert db._info("no-such-key") == ""
     tile = db._tile("K", "1", "s", help="iv", tone="good", badge="a<b")
@@ -2269,14 +2271,15 @@ def test_every_heading_and_tile_on_every_tab_has_a_help_note(tmp_path):
 
 
 # docs/design/PANEL.md rule 3: «i» notes still in the long «what / how to read / for a trade» form, or whose «what it
-# is» line is longer than RULE3_WHAT_MAX characters (standing improvements, item 262; the rest is BACKLOG 6.54).
-# Shrink this set as the notes are rewritten; a new note must not join it.
+# is» line is longer than RULE3_WHAT_MAX characters (standing improvements, item 262). Empty since item 278 (BACKLOG
+# 6.54 closed): a new note must not join it.
 RULE3_WHAT_MAX = 120
-RULE3_TODO = frozenset(
-    {
-        "plans", "r", "rec_r_worst", "rec_win", "rules_pre", "sources",
-    }
-)  # fmt: skip
+RULE3_TODO: frozenset[str] = frozenset()
+
+
+def test_rule3_todo_is_empty():
+    """Item 278: every «i» note of the panel follows docs/design/PANEL.md rule 3; nothing is left to rewrite."""
+    assert RULE3_TODO == frozenset()
 
 
 def test_info_notes_are_at_most_four_short_lines():
@@ -2435,6 +2438,42 @@ def test_journal_open_table_and_plan_notes_are_instructions_with_thresholds_from
     for key in ("plan_n", "plan_win", "plan_exits"):
         assert db._info(key) in page, key
     assert f"потрібно ≥ {db.PLAN_MIN_N}" in page and "Замало планів" not in db._info("plan_n")
+
+
+def test_last_journal_notes_are_instructions_with_thresholds_from_the_code():
+    """Item 278 (docs/design/PANEL.md rules 3 and 5): «За джерелом», R, the paper «Середній R (від найгіршого)» and
+    «У плюсі», the plans block and «Проти 0» say what to do when low or high; 30 trades is JR_SMALL_SAMPLE, 30 plans
+    with R is PLAN_MIN_N, 95 % is plan_stats' t-interval, 0 is the edge of _signed_cls; the paper win share has no
+    threshold in the code. The «what it is» line of rules_pre fits RULE3_WHAT_MAX and names rule 1 / 8 constants."""
+    from tradedesk.analytics import journal
+
+    assert db.JR_SMALL_SAMPLE == journal.SMALL_SAMPLE == db.PLAN_MIN_N == 30
+    for key in ("sources", "r", "rec_r_worst", "rec_win", "plans", "rules_pre"):
+        note = db._info(key)
+        assert note.count("<span class='do'><i>") == 2 and "Для угоди:" not in note, key
+        assert "ризик-нейтральн" not in note and "порада" not in note and "відхилено" not in note, key  # rule 5
+        assert len(db.HELP[key][1]) <= RULE3_WHAT_MAX, key
+    assert f"<i>До {db.JR_SMALL_SAMPLE} закритих угод у джерела</i>" in db._info("sources")
+    assert f"<i>Від {db.JR_SMALL_SAMPLE}, а «Середнє» нижче 0 (червоне)</i>" in db._info("sources")
+    assert f"до {db.JR_SMALL_SAMPLE} угод з R" in db._info("r")
+    assert f"до {db.PLAN_MIN_N} планів з R" in db._info("plans") and "<i>95 % ДІ вище 0</i>" in db._info("plans")
+    assert "<i>Нижче 0 (−1 — втрачено весь ризик)</i>" in db._info("rec_r_worst")
+    assert not any(ch.isdigit() for ch in "".join(db.ACT["rec_win"]))  # no threshold in the code, so none here
+    # rules_pre: 1 % is rule 1 and rule 8's premium, «< 1 добу» / «1–3» are rule 8's 24 h / 72 h
+    assert db.RULES_RISK_PCT == db.RULES_PREMIUM_PCT == 1.0
+    assert db.RULES_BUY_BAN_HOURS == 24 and db.RULES_BUY_COND_HOURS == 72
+    assert "≤ 1 % депозиту" in db.HELP["rules_pre"][1] and "за 1–3 — з 8а–8в" in db.HELP["rules_pre"][1]
+    # the red edge of «Середнє» in the sources table is _signed_cls (exactly below 0)
+    groups = {"bybit": [{"status": "closed", "pnl": -5.0, "closed_ts": 1.0, "outcome": "loss"}]}
+    assert "class='num bad'" in db.block_journal_sources(groups)
+    # the tiles and the folds carry these notes
+    rows = [{"source": "method", "status": "settled", "pnl_usd": -5.0, "pnl_pct_spot": -0.01, "r_worst_case": -0.5}]
+    page = db.block_rec_paper(rows)
+    for key in ("rec_win", "rec_r_worst", "r"):
+        assert db._info(key) in page, key
+    plans = db.block_trade_plans([{"verdict": "enter", "status": "resolved", "outcome": "stop", "r_result": -1.0}])
+    assert db._info("plans") in plans and db._info("r") in plans
+    assert db._info("sources") in db._fold("За джерелом", "sources", "", "")
 
 
 def test_journal_page_says_not_advice_once_at_the_bottom(tmp_path):

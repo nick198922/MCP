@@ -9,7 +9,7 @@ from pydantic import Field
 
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, STORE_ERRORS, r, store_failed, store_ready
+from ._util import READ_ONLY, STORE_ERRORS, r, store_failed, store_num, store_ready
 
 
 def register(server: MCPServer, rt: Runtime) -> None:
@@ -47,6 +47,16 @@ def register(server: MCPServer, rt: Runtime) -> None:
             rows = await rt.store.liquidations_in_window(since_ts=since_ts, until_ts=now_ts, venue=venue, symbol=symbol)
         except STORE_ERRORS as e:
             return store_failed(b, e)
+        # A qty / price / notional that is not a finite number (another writer: a string, a blob, inf) would raise in the
+        # sums or rounding below (invariant 1): such a row is skipped with a warning, and a window of only such rows is
+        # ok=false rather than "no liquidations".
+        stored = len(rows)
+        rows = [row for row in rows if all(store_num(row.get(k)) is not None for k in ("qty", "price", "notional_usd"))]
+        if len(rows) < stored:
+            b.warn(f"{stored - len(rows)} stored liquidation rows with a non-numeric or non-finite qty, price or notional skipped")
+            if not rows:
+                b.miss("liquidations", "store", "data_unavailable", f"all {stored} stored rows in the window are malformed")
+                return b.build(None, ok=False)
         if not rows:
             return b.build(
                 {

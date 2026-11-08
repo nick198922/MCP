@@ -18,7 +18,7 @@ from ..analytics.ranges import classify_ranges, generate_setup
 from ..analytics.regime import classify_regime
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, STORE_ERRORS, parsed_rows, r, store_failed, store_ready
+from ._util import READ_ONLY, STORE_ERRORS, parsed_rows, r, store_failed, store_num, store_ready
 
 SFP_EDGE_WARNING = (
     "Unverified edge: walk-forward backtests (2022-10..2026-10, up to 50 Binance crypto perps, 4h/12h "
@@ -78,6 +78,17 @@ def _warn_dropped_bars(b: Builder, raw: Any, bars: list[dict[str, Any]]) -> None
     dropped = sum(1 for x in (raw or []) if isinstance(x, (list, tuple)) and len(x) >= 5) - len(bars)
     if dropped:  # a dropped bar joins its neighbours: a range or a sweep across that gap is built on one bar fewer
         b.warn(f"{dropped} malformed bars (non-numeric timestamp or price) dropped; ranges and sweeps skip them")
+
+
+def _stored_points(b: Builder, series: list[dict[str, Any]], key: str) -> list[tuple[int, float]]:
+    """(ts, value) for the rows whose `key` is a finite number. NULL (a wing the collector could not fit) is skipped
+    silently as before; a string, a blob or inf (another writer) is skipped with a warning instead of raising in the
+    stats (invariant 1). `ts` is taken from the same row, so `latest_ts` matches the latest value."""
+    points = [(row["ts"], v) for row in series if (v := store_num(row.get(key))) is not None]
+    corrupt = sum(1 for row in series if row.get(key) is not None) - len(points)
+    if corrupt:
+        b.warn(f"{corrupt} stored rows with a non-numeric or non-finite {key} skipped")
+    return points
 
 
 def _summary(values: list[float], latest: float) -> dict[str, Any]:
@@ -204,12 +215,13 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 f"only {len(series)} points stored for {venue} {base} in last {lookback_days}d; need >= {min_points}",
             )
             return b.build(None, ok=False)
-        rates = [row["annualized"] for row in series if row.get("annualized") is not None]
+        points = _stored_points(b, series, "annualized")
+        rates = [v for _, v in points]
         if len(rates) < min_points:
             b.miss("funding_hist", "store", "data_unavailable", "stored rows missing annualized")
             return b.build(None, ok=False)
         stats = _summary(rates, latest=rates[-1])
-        latest_ts = series[-1]["ts"]
+        latest_ts = points[-1][0]
         latest_dt = datetime.fromtimestamp(latest_ts, tz=now.tzinfo).isoformat()
         return b.build(
             {
@@ -262,12 +274,13 @@ def register(server: MCPServer, rt: Runtime) -> None:
             )
             return b.build(None, ok=False)
         key = "rr25" if delta_target == "25" else "rr10"
-        rrs = [row[key] for row in series if row.get(key) is not None]
+        points = _stored_points(b, series, key)
+        rrs = [v for _, v in points]
         if len(rrs) < min_points:
             b.miss("atm_term", "store", "data_unavailable", f"stored rows missing {key}")
             return b.build(None, ok=False)
         stats = _summary(rrs, latest=rrs[-1])
-        latest_ts = series[-1]["ts"]
+        latest_ts = points[-1][0]
         latest_dt = datetime.fromtimestamp(latest_ts, tz=now.tzinfo).isoformat()
         return b.build(
             {

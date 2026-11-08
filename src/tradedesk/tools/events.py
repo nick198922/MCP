@@ -22,7 +22,7 @@ from ..analytics.event_study import MEASURES
 from ..analytics.event_study import event_study as _event_study
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, STORE_ERRORS, r, store_failed, store_ready
+from ._util import READ_ONLY, STORE_ERRORS, r, store_failed, store_num, store_ready
 
 # 2000-01-01T00:00:00Z in unix milliseconds: an events_add ts_ms below it is almost certainly unix seconds.
 MIN_TS_MS = 946_684_800_000
@@ -35,6 +35,18 @@ def _ts_ok(ts: int) -> bool:
     except (ValueError, OverflowError, OSError):
         return False
     return True
+
+
+def _event_ts(e: dict[str, Any]) -> int | None:
+    """Unix seconds of a stored event (a REAL cell truncated, as int() did before), or None when the cell is not a finite
+    number (a string, a blob or inf from another writer) or falls outside the datetime range."""
+    v = store_num(e.get("ts"))
+    return int(v) if v is not None and _ts_ok(int(v)) else None
+
+
+def _bar_ok(x: dict[str, Any]) -> bool:
+    """True when a stored bar has a numeric timestamp and finite open / high / low / close."""
+    return all(store_num(x.get(k)) is not None for k in ("ts", "open", "high", "low", "close"))
 
 
 def register(server: MCPServer, rt: Runtime) -> None:
@@ -238,11 +250,14 @@ def register(server: MCPServer, rt: Runtime) -> None:
                     return b.build(None, ok=False)
 
             events = await rt.store.events_list(kind=event_kind, impact=impact, since_ts=since_ts, until_ts=until_ts, limit=5000)
-            bad = [e for e in events if not _ts_ok(int(e["ts"]))]
+            bad = [e for e in events if _event_ts(e) is None]
             if bad:
                 # Rows stored before events_add validated ts_ms (or by another writer): they would break the bar query and the ISO dates.
-                b.warn(f"skipped {len(bad)} stored event(s) with a timestamp outside the datetime range, ids {[e['id'] for e in bad][:10]}")
-                events = [e for e in events if _ts_ok(int(e["ts"]))]
+                b.warn(
+                    f"skipped {len(bad)} stored event(s) with a non-integer timestamp or one outside the datetime range, "
+                    f"ids {[e['id'] for e in bad][:10]}"
+                )
+                events = [e for e in events if _event_ts(e) is not None]
             if not events:
                 b.miss("events", "store", "data_unavailable", f"no stored events for kind={event_kind!r} in the window")
                 return b.build(None, ok=False)
@@ -252,7 +267,12 @@ def register(server: MCPServer, rt: Runtime) -> None:
             ev_ts_ms = [int(e["ts"]) * 1000 for e in events]
             bars_lo = min(ev_ts_ms) - margin_ms
             bars_hi = max(ev_ts_ms) + margin_ms
-            bars = await rt.store.ohlcv_range(venue=venue, symbol=symbol, timeframe=timeframe, since_ts=bars_lo, until_ts=bars_hi)
+            stored = await rt.store.ohlcv_range(venue=venue, symbol=symbol, timeframe=timeframe, since_ts=bars_lo, until_ts=bars_hi)
+            # A bar whose timestamp is not an integer or whose price is not a finite number (another writer) would raise in
+            # the window search or the measure (invariant 1): it is skipped, the window spans its neighbours.
+            bars = [x for x in stored if _bar_ok(x)]
+            if len(bars) < len(stored):
+                b.warn(f"{len(stored) - len(bars)} stored bars with a non-integer timestamp or a non-numeric / non-finite price skipped")
             if len(bars) < 5:
                 b.miss(
                     "ohlcv_hist",

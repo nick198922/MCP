@@ -206,8 +206,12 @@ class LiveFeed:
                 # after the ``since`` of the writing read was read", not "every row was read".
                 start = max(min(st["last_ts"], st["covered_to"]) + 1, since)
                 got = await self._fetch_range(b, venue, sym, start, until)
-                # Cap the re-reads as engine R2 does: a hole behind stored later rows (``last_ts > covered_to``) still
-                # sent without a timestamp after GAP_CONFIRM_CYCLES funding steps is confirmed. The venue will not fix
+                # Cap the re-reads like engine R2, one cycle later: a hole behind stored later rows (``last_ts >
+                # covered_to``) still sent without a timestamp when the coverage is more than GAP_CONFIRM_CYCLES funding
+                # steps old is confirmed, so a non-held symbol has 3 ``funding_rows_dropped`` cycles plus the confirming
+                # one (R2: ``gaps >= 3``, 3 cycles). The age is that of ``covered_to``, not of the hole: coverage already
+                # stale for another reason (truncated reads under 429 / 418) confirms a fresh hole on its first complete
+                # read; a held position's payment is still caught by R2 through ``reload_from``. The venue will not fix
                 # it, and a ``funding_rows_dropped`` flag on every cycle while the hole stays in the window (up to the
                 # lookback + 1 day) would mark all those cycles incomplete. The read itself still starts at the
                 # coverage end, so every row with a time is read; only a read whose sole defect is dropped rows is

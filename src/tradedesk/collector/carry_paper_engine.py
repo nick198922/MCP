@@ -408,8 +408,10 @@ async def run_cycle(
             issue = _funding_issue(params, open_pos[s], objs[s], data.current.get(s) or {}, t, cycle_ts)
             gaps = int(open_pos[s].get("gap_cycles") or 0)
             if s in incomplete:
-                # Our own fetch was incomplete (page limit, 429/418): hold without counting towards the confirmation, or
-                # a rate-limited feed would settle the position and lose published payments for good.
+                # Our own fetch was cut short (page limit, a failed page such as 429/418): hold without counting towards
+                # the confirmation, or a rate-limited feed would settle the position and lose published payments for good.
+                # Rows the venue sent without a usable timestamp are flagged ``funding_rows_dropped`` instead and are not
+                # in this set: a re-read returns the same rows, so those cycles count towards GAP_CONFIRM_CYCLES.
                 aside[s] = open_pos.pop(s)
                 held.append({"symbol": s, "issue": "funding_payment_missing", "detail": "funding_history_incomplete", "gap_cycles": gaps})
                 continue

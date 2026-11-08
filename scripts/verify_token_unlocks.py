@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any
 
 import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
+import verify_paper_carry_bench as pcb  # funding_gap: the paper bench rule for a hole in a holding window
 
 from tradedesk.analytics.funding_spread import cluster_bootstrap_diff, normalize_asset
 from tradedesk.analytics.holders_revenue import (
@@ -873,6 +874,8 @@ class Data:
         self.legs: dict[str, list[Leg]] = {}
         self.checks: list[str] = []
         self.funding: dict[tuple[str, str], list[tuple[int, float]] | None] = {}
+        self.funding_ms: dict[tuple[str, str], list[dict[str, int]]] = {}
+        self.gaps: dict[tuple[str, str, int, int], bool] = {}
         for slug, t in sorted(self.tokens.items()):
             p = cache / f"emissions/{slug}.json"
             if not p.exists():
@@ -923,6 +926,26 @@ class Data:
             p = self.cache / f"funding/{v}_{n}.json"
             self.funding[(v, n)] = [(int(a), float(b)) for a, b in cmn.read_json(p)["rows"]] if p.exists() else None
         return self.funding[(v, n)]
+
+    def funding_gap(self, v: str, n: str, lo_s: int, hi_s: int, *, perp_ended: bool = False) -> bool:
+        """True when the leg's cached funding misses a payment inside (lo_s, hi_s] (unix seconds, the window
+        ``funding_sum`` sums over), by the paper bench rule (``verify_paper_carry_bench.funding_gap``, 12 h floor).
+
+        Item 208 of IDEA-20261102-standing-improvements: ``complete=true`` caches can still have holes. A missing file
+        is not a hole here (it is ``funding_missing``); an empty one is. When the perp ended inside the window
+        (``perp_ended``), the window stops at its last payment: funding stopping at a delisting is not a hole. The
+        trade keeps its funding sum as is (nothing is filled in); it is only tagged."""
+        rows = self.fund(v, n)
+        if rows is None:
+            return False
+        if perp_ended and rows:
+            hi_s = min(hi_s, rows[-1][0])
+        key = (v, n, lo_s, hi_s)
+        if key not in self.gaps:
+            if (v, n) not in self.funding_ms:
+                self.funding_ms[(v, n)] = [{"ts_ms": t * 1000} for t, _ in rows]
+            self.gaps[key] = pcb.funding_gap(self.funding_ms[(v, n)], lo_s * 1000, hi_s * 1000, pcb.GAP_FLOOR_MS)
+        return self.gaps[key]
 
     def circ(self, slug: str, day: int, *, all_sections: bool = False) -> float:
         return circulating(self.secs[slug], day, exclude=() if all_sections else (NONCIRCULATING,))
@@ -977,6 +1000,7 @@ class Trade:
     funding_missing: bool
     frac: float = float("nan")
     vol: float | None = None
+    funding_gap: bool = False  # a payment missing inside the window, token or BTC leg (Data.funding_gap)
 
 
 def trade(data: Data, slug: str, t: int, entry: int, exit_: int, *, cost_mult: float = 1.0, need: dict | None = None) -> Trade | None:
@@ -1003,6 +1027,9 @@ def trade(data: Data, slug: str, t: int, entry: int, exit_: int, *, cost_mult: f
     f_tok = funding_sum(fr, (entry + 1) * DAY_S, (ex + 1) * DAY_S) if fr is not None else 0.0
     fb = data.fund(BIN, "BTC")
     f_btc = funding_sum(fb, (entry + 1) * DAY_S, (ex + 1) * DAY_S) if fb else 0.0
+    lo_s, hi_s = (entry + 1) * DAY_S, (ex + 1) * DAY_S
+    gap = data.funding_gap(leg.venue, leg.name, lo_s, hi_s, perp_ended=ex < exit_ and ex == b.last)
+    gap = data.funding_gap(BIN, "BTC", lo_s, hi_s) or gap
     vol = b.median_usd_vol(entry)
     side = (TAKER[leg.venue] + slippage_for_volume(vol)) * cost_mult
     gross, net = short_vs_btc_net(LegResult(be, ar, f_tok, side), btc_funding=f_btc, btc_side_cost=BTC_SIDE * cost_mult)
@@ -1037,6 +1064,7 @@ def trade(data: Data, slug: str, t: int, entry: int, exit_: int, *, cost_mult: f
         ex < exit_,
         fr is None,
         vol=vol,
+        funding_gap=gap,
     )
 
 
@@ -1258,6 +1286,11 @@ def report(cache: Path) -> None:
     s_main = S(rows)
     print("H1 net : " + fmt(s_main))
     print("   gross: " + fmt(S(rows, "gross")))
+    n_gap = sum(r.funding_gap for r in rows)
+    print(
+        f"   funding gap inside the window (token or BTC leg, paper bench rule, 12 h floor; tagged, not filled): {n_gap} of {len(rows)}"
+        + (f"; net without them: {fmt(S([r for r in rows if not r.funding_gap]))}" if n_gap else "")
+    )
     print(
         f"   mean round-trip cost {statistics.fmean(2 * r.side + abs(r.beta) * 2 * BTC_SIDE for r in rows) * 100:.2f}pp; "
         f"token funding received by the short: mean {statistics.fmean(r.f_tok for r in rows) * 100:+.3f}pp, "
@@ -1266,6 +1299,7 @@ def report(cache: Path) -> None:
     prow = placebo(data, evs)
     s_pl = S(prow)
     print("\nplacebo (same tokens, windows clear of any >= 0.5 % unlock): " + fmt(s_pl))
+    print(f"   placebo windows with a funding gap: {sum(r.funding_gap for r in prow)} of {len(prow)}")
     ids = {k: i for i, k in enumerate(sorted({r.slug for r in rows + prow}))}
     diff = cluster_bootstrap_diff([r.net for r in rows], [ids[r.slug] for r in rows], [r.net for r in prow], [ids[r.slug] for r in prow])
     if diff["diff"] is not None:
@@ -1340,13 +1374,17 @@ def report(cache: Path) -> None:
             f"  {ymd(r.t)} {data.tokens[r.slug]['symbol']:<8} {r.leg.venue}:{r.leg.name:<10} frac {r.frac:6.3f} beta {r.beta:+.2f} "
             f"r_tok {r.r_tok * 100:+6.1f} r_btc {r.r_btc * 100:+6.1f} f_tok {r.f_tok * 100:+.2f} net {r.net * 100:+6.1f}pp mae {(r.mae or 0) * 100:5.1f}"
         )
-    print("\n## All main events\n")
+    print("\n## All main events (T truncated exit, F? funding file missing, G funding gap in the window)\n")
     for r in rows:
         print(
             f"  {ymd(r.t)} {data.tokens[r.slug]['symbol']:<8} {r.leg.venue[:3]} frac {r.frac:6.3f} beta {r.beta:+.2f} AR {r.ar * 100:+6.1f} "
             f"f {r.f_tok * 100:+.2f} net {r.net * 100:+6.1f}{' T' if r.truncated else ''}{' F?' if r.funding_missing else ''}"
+            f"{' G' if r.funding_gap else ''}"
         )
-    wr(cache / "rows_main.json", [{"slug": r.slug, "T": r.t, "net": r.net, "gross": r.gross, "frac": r.frac} for r in rows])
+    wr(
+        cache / "rows_main.json",
+        [{"slug": r.slug, "T": r.t, "net": r.net, "gross": r.gross, "frac": r.frac, "funding_gap": r.funding_gap} for r in rows],
+    )
 
 
 def peek(cache: Path, slug: str, start: str, end: str) -> None:

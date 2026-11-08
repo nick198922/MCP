@@ -19,7 +19,6 @@ import asyncio
 import json
 import logging
 import math
-import resource
 import statistics
 import sys
 import time
@@ -32,6 +31,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import verify_liquidation_flush as vlf  # noqa: E402  (shared fetch stages and caches of the rejected card)
+from common_helpers import rss_mb  # noqa: E402
 
 from tradedesk.analytics.liquidation_flush import (  # noqa: E402
     DAY_MS,
@@ -77,10 +77,6 @@ KLINE_CACHE = Path("~/.cache/tradedesk-agents/liquidation_flush").expanduser()
 vlf.START = START
 vlf.END = END
 vlf.DERIVED = "oi1"  # new derived files (universe / events) for the longer period; kline files are shared
-
-
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 
 
 def half_year(ms: int) -> str:

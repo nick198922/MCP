@@ -17,13 +17,13 @@ import argparse
 import gzip
 import json
 import math
-import resource
 import time
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+from common_helpers import rss_mb
 
 from tradedesk.analytics.expiry_pin import (
     attach_placebo,
@@ -57,10 +57,6 @@ BLOCK_BTC = 100.0
 N_BOOT = 10_000
 N_BOOT_SENS = 2_000
 SEED = 20261025
-
-
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 
 
 def t0_of(d: date) -> int:

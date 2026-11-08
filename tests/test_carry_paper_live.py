@@ -231,6 +231,44 @@ async def test_held_symbol_window_is_reloaded_and_a_persistent_gap_is_confirmed(
         await rt.aclose()
 
 
+async def test_payment_with_a_null_timestamp_is_confirmed_as_a_gap_not_held_forever(tmp_path):
+    # The venue keeps sending the payment, but ccxt could not parse its time: the provider drops it (complete=false,
+    # truncated=false). Re-reading does not fix a venue data defect, so R2 must count the cycles and settle the position.
+    hole = CYCLE + H8 + 3
+
+    class Ex(LiveEx):
+        history_calls: list = []
+
+        async def fetch_funding_rate_history(self, symbol, since=None, limit=500, params=None):
+            rows = await super().fetch_funding_rate_history(symbol, since, limit, params)
+            return [dict(r, timestamp=None) if r["timestamp"] == hole else r for r in rows]
+
+    rt = _rt(Ex, tmp_path)
+    assert rt.store is not None
+    await rt.store.init()
+    try:
+        feed = LiveFeed(rt, workers=2, pacer=Pacer(10**6))
+        assert (await run_cycle(rt.store, feed, PARAMS_A, CYCLE, clock=lambda: CYCLE + DECISION_DELAY_MS))["status"] == "done"
+        for n in (1, 2, 3):
+            cyc_ts = CYCLE + n * H8
+            Ex.cycle = cyc_ts
+            assert (await run_cycle(rt.store, feed, PARAMS_A, cyc_ts, clock=lambda c=cyc_ts: c + DECISION_DELAY_MS))["status"] == "done"
+            flags = (await rt.store.cp_cycle_get("A", cyc_ts))["payload"]["flags"]
+            wif = [f for f in flags if f.get("symbol") == "WIF/USDT:USDT" and f.get("venue") == "binanceusdm"]
+            assert [f["issue"] for f in wif] == ["funding_rows_dropped"] and wif[0]["dropped_rows"] >= 1
+            assert not [f for f in flags if f.get("issue") == "funding_history_incomplete"]
+            (pos,) = await rt.store.cp_positions("A", "open")
+            if n < 3:
+                assert pos["state"]["gap_cycles"] == n  # counted, not frozen
+            st = await rt.store.cp_funding_state("binanceusdm", "WIF/USDT:USDT")
+            assert st["covered_to"] < hole  # no coverage is recorded over the window with the dropped row
+        events = [e["payload"] for e in await rt.store.cp_logs("A", "event") if e["payload"]["type"] == "funding_gap_confirmed"]
+        assert [e["symbol"] for e in events] == ["WIF/USDT:USDT"] and events[0]["missing_payments"] == 1
+        assert "gap_cycles" not in pos["state"] and pos["state"]["last"] == CYCLE + 3 * H8 + DECISION_DELAY_MS
+    finally:
+        await rt.aclose()
+
+
 async def test_late_published_payment_behind_a_stored_later_one_is_reloaded_and_settled(tmp_path):
     hole = CYCLE + H8 + 3  # hidden on cycles 1 and 2 (a later payment is stored meanwhile), published on cycle 3
 

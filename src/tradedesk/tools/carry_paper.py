@@ -23,8 +23,7 @@ from ..analytics.journal import pnl as pnl_fn
 from ..collector.market_data import BAR_MS, bars_4h, funding_entries, parse_bar
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, r
-from .journal import _store_guard
+from ._util import READ_ONLY, STORE_ERRORS, finite_float, r, store_failed, store_ready
 from .perps import TAKER_FEES, current_funding
 
 # carry_paper_open writes a new row on every call (a retry after a timeout records a second pair), so it is not idempotent.
@@ -58,8 +57,14 @@ def _iso(ts: int | None) -> str | None:
 async def _last_price(rt: Runtime, b: Builder, venue: str, sym: str, fallback: float | None = None) -> float | None:
     got = await b.guard(f"ticker:{venue}:{sym}", f"ccxt:{venue}", rt.exchanges.tickers(venue, [sym]))
     try:
-        px = float(((got or {}).get(sym) or {}).get("last") or 0.0)
-    except (TypeError, ValueError):
+        raw = ((got or {}).get(sym) or {}).get("last")
+    except AttributeError:  # a ticker that is not a mapping
+        raw = None
+    try:
+        # an "Infinity" last would mark the pair at an infinite price; a 300+-digit one would raise (OverflowError)
+        px = finite_float(raw) if raw is not None and not isinstance(raw, bool) else 0.0
+    except (TypeError, ValueError, OverflowError):
+        b.warn(f"{venue} {sym}: last price in the ticker is not a finite number; not used")
         px = 0.0
     if px > 0:
         return px
@@ -89,7 +94,10 @@ async def _leg_data(rt: Runtime, b: Builder, venue: str, sym: str, opened_ms: in
     if hist is None or bars is None or px is None:
         return None
     if not hist["complete"]:
-        b.warn(f"{venue} {sym}: funding history incomplete (page limit or a later page failed); funding P&L may be understated")
+        b.warn(
+            f"{venue} {sym}: funding history incomplete (page limit, a later page failed, or rows with a malformed timestamp "
+            "dropped); funding P&L may be understated"
+        )
     entries = funding_entries(hist["rows"])
     if not entries:
         return None
@@ -256,140 +264,149 @@ def register(server: MCPServer, rt: Runtime) -> None:
     ) -> dict[str, Any]:
         b = Builder()
         b.warn(PAPER_WARNING)
-        if not _store_guard(b, rt):
+        if not await store_ready(b, rt, "the journal"):
             return b.build(None, ok=False)
-        if long_venue == short_venue:
-            b.miss("venues", "tradedesk", "config", "long_venue and short_venue must differ")
-            return b.build(None, ok=False)
-        await rt.store.init()
-        base_u, sym = base.strip().upper(), _symbol(base)
-        now = rt.now()
-        now_ms = int(now.timestamp() * 1000)
-        since_ms = now_ms - int(max(30.0, lookback_days) * 86_400_000)
+        try:
+            if long_venue == short_venue:
+                b.miss("venues", "tradedesk", "config", "long_venue and short_venue must differ")
+                return b.build(None, ok=False)
+            base_u, sym = base.strip().upper(), _symbol(base)
+            now = rt.now()
+            now_ms = int(now.timestamp() * 1000)
+            since_ms = now_ms - int(max(30.0, lookback_days) * 86_400_000)
 
-        async def leg(v: str) -> dict[str, Any] | None:
-            mk = await b.guard(f"perp_markets:{v}", f"ccxt:{v}", rt.exchanges.markets(v)) or {}
-            cur = (await current_funding(rt, b, v, mk)).get(sym)
-            hist = await b.guard(
-                f"funding_history:{v}:{sym}", f"ccxt:{v}", rt.exchanges.funding_rate_history_range(v, sym, since_ms, now_ms)
-            )
-            px = await _last_price(rt, b, v, sym, fallback=(cur or {}).get("mark"))
-            entries = funding_entries(hist["rows"]) if hist else []
-            if cur is None or not entries or px is None:
-                b.miss(
-                    f"carry_paper_leg:{v}",
-                    "tradedesk",
-                    "data_unavailable",
-                    f"{sym} on {v}: current funding, funding history or price missing",
+            async def leg(v: str) -> dict[str, Any] | None:
+                mk = await b.guard(f"perp_markets:{v}", f"ccxt:{v}", rt.exchanges.markets(v)) or {}
+                cur = (await current_funding(rt, b, v, mk)).get(sym)
+                hist = await b.guard(
+                    f"funding_history:{v}:{sym}", f"ccxt:{v}", rt.exchanges.funding_rate_history_range(v, sym, since_ms, now_ms)
                 )
-                return None
-            if hist and not hist["complete"]:
-                b.warn(f"{v} {sym}: funding history incomplete (page limit or a later page failed)")
-            return {
-                "entries": entries,
-                "price": px,
-                "rate": cur["rate"],
-                "interval_hours": cur["interval_hours"],
-                "mark": cur["mark"],
-                "cap": cur["cap"],
-            }
+                px = await _last_price(rt, b, v, sym, fallback=(cur or {}).get("mark"))
+                entries = funding_entries(hist["rows"]) if hist else []
+                if cur is None or not entries or px is None:
+                    b.miss(
+                        f"carry_paper_leg:{v}",
+                        "tradedesk",
+                        "data_unavailable",
+                        f"{sym} on {v}: current funding, funding history or price missing",
+                    )
+                    return None
+                if hist and not hist["complete"]:
+                    b.warn(
+                        f"{v} {sym}: funding history incomplete (page limit, a later page failed, or rows with a malformed timestamp dropped)"
+                    )
+                return {
+                    "entries": entries,
+                    "price": px,
+                    "rate": cur["rate"],
+                    "interval_hours": cur["interval_hours"],
+                    "mark": cur["mark"],
+                    "cap": cur["cap"],
+                }
 
-        lg, sg = await asyncio.gather(leg(long_venue), leg(short_venue))
-        if lg is None or sg is None:
-            return b.build(None, ok=False)
-        snap = spread_snapshot(
-            {long_venue: lg, short_venue: sg},
-            now_ms=now_ms,
-            lookback_days=lookback_days,
-            entry_apr=0.10,
-            exit_apr=exit_apr,
-            fees=TAKER_FEES,
-            slippage=slippage,
-            max_entry_gap=max_entry_gap,
-            mismatch_gap=MISMATCH_GAP,
-        )
-        pair = snap["pair"]
-        if pair is None:
-            b.miss("spread", "tradedesk", "data_unavailable", "not enough funding history on both venues to compute the trailing spread")
-            return b.build(None, ok=False)
-        gap = sg["price"] / lg["price"] - 1.0
-        if abs(gap) > MISMATCH_GAP or "price_mismatch" in pair["flags"]:
-            b.miss(
-                "price_mismatch", "tradedesk", "refused", f"{base_u}: legs differ by {gap:.1%}; likely different tokens under one ticker"
+            lg, sg = await asyncio.gather(leg(long_venue), leg(short_venue))
+            if lg is None or sg is None:
+                return b.build(None, ok=False)
+            snap = spread_snapshot(
+                {long_venue: lg, short_venue: sg},
+                now_ms=now_ms,
+                lookback_days=lookback_days,
+                entry_apr=0.10,
+                exit_apr=exit_apr,
+                fees=TAKER_FEES,
+                slippage=slippage,
+                max_entry_gap=max_entry_gap,
+                mismatch_gap=MISMATCH_GAP,
             )
-            return b.build(None, ok=False)
-        if abs(gap) > max_entry_gap or "price_gap" in pair["flags"]:
-            b.miss("price_gap", "tradedesk", "refused", f"{base_u}: legs differ by {gap:.2%} > max_entry_gap {max_entry_gap:.2%}")
-            return b.build(None, ok=False)
+            pair = snap["pair"]
+            if pair is None:
+                b.miss(
+                    "spread", "tradedesk", "data_unavailable", "not enough funding history on both venues to compute the trailing spread"
+                )
+                return b.build(None, ok=False)
+            gap = sg["price"] / lg["price"] - 1.0
+            if abs(gap) > MISMATCH_GAP or "price_mismatch" in pair["flags"]:
+                b.miss(
+                    "price_mismatch",
+                    "tradedesk",
+                    "refused",
+                    f"{base_u}: legs differ by {gap:.1%}; likely different tokens under one ticker",
+                )
+                return b.build(None, ok=False)
+            if abs(gap) > max_entry_gap or "price_gap" in pair["flags"]:
+                b.miss("price_gap", "tradedesk", "refused", f"{base_u}: legs differ by {gap:.2%} > max_entry_gap {max_entry_gap:.2%}")
+                return b.build(None, ok=False)
 
-        v = snap["venues"]
-        trailing = v[short_venue]["trailing_apr"] - v[long_venue]["trailing_apr"]
-        cs, cl = v[short_venue]["current_apr"], v[long_venue]["current_apr"]
-        current = cs - cl if cs is not None and cl is not None else None
-        same_dir = pair["short_venue"] == short_venue and pair["long_venue"] == long_venue
-        flags = [f for f in pair["flags"] if f != "current_spread_reversed"]
-        if current is not None and current < 0:
-            flags.append("current_spread_reversed")
-        tradable = same_dir and pair["tradable_now"]
-        if not same_dir:
-            flags.append("opposite_to_scan_direction")
-            b.warn(
-                f"requested long {long_venue} / short {short_venue} is opposite to the scan direction "
-                f"(long {pair['long_venue']} / short {pair['short_venue']}); trailing spread in the held direction is {trailing:+.1%}"
+            v = snap["venues"]
+            trailing = v[short_venue]["trailing_apr"] - v[long_venue]["trailing_apr"]
+            cs, cl = v[short_venue]["current_apr"], v[long_venue]["current_apr"]
+            current = cs - cl if cs is not None and cl is not None else None
+            same_dir = pair["short_venue"] == short_venue and pair["long_venue"] == long_venue
+            flags = [f for f in pair["flags"] if f != "current_spread_reversed"]
+            if current is not None and current < 0:
+                flags.append("current_spread_reversed")
+            tradable = same_dir and pair["tradable_now"]
+            if not same_dir:
+                flags.append("opposite_to_scan_direction")
+                b.warn(
+                    f"requested long {long_venue} / short {short_venue} is opposite to the scan direction "
+                    f"(long {pair['long_venue']} / short {pair['short_venue']}); trailing spread in the held direction is {trailing:+.1%}"
+                )
+            if not tradable:
+                b.warn(f"{base_u} is not tradable_now (status {pair['status']}, flags {flags or 'none'}); recorded anyway")
+            dupes = [
+                x["id"]
+                for x in await rt.store.carry_paper_list(status="open")
+                if x["base"] == base_u and x["long_venue"] == long_venue and x["short_venue"] == short_venue
+            ]
+            if dupes:
+                b.warn(f"open paper pair(s) {dupes} already exist for {base_u} long {long_venue} / short {short_venue}; recording another")
+            trade_id = await rt.store.carry_paper_insert(
+                opened_ts=int(now.timestamp()),
+                base=base_u,
+                symbol=sym,
+                long_venue=long_venue,
+                short_venue=short_venue,
+                qty=notional_usd / lg["price"],
+                notional_usd=notional_usd,
+                long_entry=lg["price"],
+                short_entry=sg["price"],
+                entry_trailing_spread_apr=trailing,
+                entry_current_spread_apr=current,
+                entry_flags=flags,
+                entry_tradable=tradable,
+                leverage=leverage,
+                stop_move=1.0 / leverage,
+                lookback_days=lookback_days,
+                exit_apr=exit_apr,
+                slippage=slippage,
+                note=note,
+                tags=tags,
             )
-        if not tradable:
-            b.warn(f"{base_u} is not tradable_now (status {pair['status']}, flags {flags or 'none'}); recorded anyway")
-        dupes = [
-            x["id"]
-            for x in await rt.store.carry_paper_list(status="open")
-            if x["base"] == base_u and x["long_venue"] == long_venue and x["short_venue"] == short_venue
-        ]
-        if dupes:
-            b.warn(f"open paper pair(s) {dupes} already exist for {base_u} long {long_venue} / short {short_venue}; recording another")
-        trade_id = await rt.store.carry_paper_insert(
-            opened_ts=int(now.timestamp()),
-            base=base_u,
-            symbol=sym,
-            long_venue=long_venue,
-            short_venue=short_venue,
-            qty=notional_usd / lg["price"],
-            notional_usd=notional_usd,
-            long_entry=lg["price"],
-            short_entry=sg["price"],
-            entry_trailing_spread_apr=trailing,
-            entry_current_spread_apr=current,
-            entry_flags=flags,
-            entry_tradable=tradable,
-            leverage=leverage,
-            stop_move=1.0 / leverage,
-            lookback_days=lookback_days,
-            exit_apr=exit_apr,
-            slippage=slippage,
-            note=note,
-            tags=tags,
-        )
-        return b.build(
-            {
-                "id": trade_id,
-                "base": base_u,
-                "symbol": sym,
-                "long_venue": long_venue,
-                "short_venue": short_venue,
-                "notional_usd": notional_usd,
-                "qty": r(notional_usd / lg["price"], 8),
-                "long_entry": lg["price"],
-                "short_entry": sg["price"],
-                "price_gap": r(gap, 5),
-                "trailing_spread_apr": r(trailing, 4),
-                "current_spread_apr": r(current, 4),
-                "tradable_now": tradable,
-                "flags": flags,
-                "leverage": leverage,
-                "stop_move": r(1.0 / leverage, 4),
-                "exit_apr": exit_apr,
-                "roundtrip_cost": r(pair["roundtrip_cost"], 5),
-            }
-        )
+            return b.build(
+                {
+                    "id": trade_id,
+                    "base": base_u,
+                    "symbol": sym,
+                    "long_venue": long_venue,
+                    "short_venue": short_venue,
+                    "notional_usd": notional_usd,
+                    "qty": r(notional_usd / lg["price"], 8),
+                    "long_entry": lg["price"],
+                    "short_entry": sg["price"],
+                    "price_gap": r(gap, 5),
+                    "trailing_spread_apr": r(trailing, 4),
+                    "current_spread_apr": r(current, 4),
+                    "tradable_now": tradable,
+                    "flags": flags,
+                    "leverage": leverage,
+                    "stop_move": r(1.0 / leverage, 4),
+                    "exit_apr": exit_apr,
+                    "roundtrip_cost": r(pair["roundtrip_cost"], 5),
+                }
+            )
+        except STORE_ERRORS as e:
+            return store_failed(b, e)
 
     @server.tool(
         annotations=READ_ONLY,
@@ -416,45 +433,47 @@ def register(server: MCPServer, rt: Runtime) -> None:
     ) -> dict[str, Any]:
         b = Builder()
         b.warn(PAPER_WARNING)
-        if not _store_guard(b, rt):
+        if not await store_ready(b, rt, "the journal"):
             return b.build(None, ok=False)
-        await rt.store.init()
-        now_ms = int(rt.now().timestamp() * 1000)
-        if id is not None:
-            one = await rt.store.carry_paper_get(id)
-            if one is None:
-                b.miss("carry_paper", "store", "data_unavailable", f"paper pair id={id} not found")
-                return b.build(None, ok=False)
-            rows = [one]
-        else:
-            rows = await rt.store.carry_paper_list(status="open")
-        open_rows = [x for x in rows if x["status"] == "open"]
-        sem = asyncio.Semaphore(3)
+        try:
+            now_ms = int(rt.now().timestamp() * 1000)
+            if id is not None:
+                one = await rt.store.carry_paper_get(id)
+                if one is None:
+                    b.miss("carry_paper", "store", "data_unavailable", f"paper pair id={id} not found")
+                    return b.build(None, ok=False)
+                rows = [one]
+            else:
+                rows = await rt.store.carry_paper_list(status="open")
+            open_rows = [x for x in rows if x["status"] == "open"]
+            sem = asyncio.Semaphore(3)
 
-        async def one_mark(t: dict[str, Any]) -> dict[str, Any]:
-            async with sem:
-                m = await mark_trade(rt, b, t, now_ms)
-            return _view(t, m)
+            async def one_mark(t: dict[str, Any]) -> dict[str, Any]:
+                async with sem:
+                    m = await mark_trade(rt, b, t, now_ms)
+                return _view(t, m)
 
-        views = list(await asyncio.gather(*[one_mark(t) for t in open_rows]))
-        closed_all = await rt.store.carry_paper_list(status="closed", limit=5000)
-        data: dict[str, Any] = {"open": views, "summary_closed": paper_summary(closed_all)}
-        if id is not None and rows[0]["status"] != "open":
-            data["trade"] = _closed_view(rows[0])
-        if include_closed and id is None:
-            data["closed"] = [_closed_view(t) for t in closed_all[:200]]
-        for s in (data["summary_closed"], data["summary_closed"]["entry_tradable"]):
-            for k in ("mean_return", "median_return", "share_losing", "share_stopped"):
-                if k in s:
-                    s[k] = r(s[k], 5)
-            for k in ("mean_held_days",):
-                if k in s:
-                    s[k] = r(s[k], 2)
-            for k in ("sum_funding_usd", "sum_price_usd", "sum_costs_usd", "sum_pnl_usd"):
-                if k in s:
-                    s[k] = r(s[k], 2)
-        ok = not open_rows or any("mark" in v for v in views) or (include_closed and bool(closed_all))
-        return b.build(data, ok=ok)
+            views = list(await asyncio.gather(*[one_mark(t) for t in open_rows]))
+            closed_all = await rt.store.carry_paper_list(status="closed", limit=5000)
+            data: dict[str, Any] = {"open": views, "summary_closed": paper_summary(closed_all)}
+            if id is not None and rows[0]["status"] != "open":
+                data["trade"] = _closed_view(rows[0])
+            if include_closed and id is None:
+                data["closed"] = [_closed_view(t) for t in closed_all[:200]]
+            for s in (data["summary_closed"], data["summary_closed"]["entry_tradable"]):
+                for k in ("mean_return", "median_return", "share_losing", "share_stopped"):
+                    if k in s:
+                        s[k] = r(s[k], 5)
+                for k in ("mean_held_days",):
+                    if k in s:
+                        s[k] = r(s[k], 2)
+                for k in ("sum_funding_usd", "sum_price_usd", "sum_costs_usd", "sum_pnl_usd"):
+                    if k in s:
+                        s[k] = r(s[k], 2)
+            ok = not open_rows or any("mark" in v for v in views) or (include_closed and bool(closed_all))
+            return b.build(data, ok=ok)
+        except STORE_ERRORS as e:
+            return store_failed(b, e)
 
     @server.tool(
         annotations=READ_ONLY,  # carry_paper_close writes to the LOCAL store only — no orders
@@ -480,81 +499,83 @@ def register(server: MCPServer, rt: Runtime) -> None:
     ) -> dict[str, Any]:
         b = Builder()
         b.warn(PAPER_WARNING)
-        if not _store_guard(b, rt):
+        if not await store_ready(b, rt, "the journal"):
             return b.build(None, ok=False)
-        await rt.store.init()
-        t = await rt.store.carry_paper_get(id)
-        if t is None:
-            b.miss("carry_paper", "store", "data_unavailable", f"paper pair id={id} not found")
-            return b.build(None, ok=False)
-        if t["status"] != "open":
-            b.miss("carry_paper", "store", "data_unavailable", f"paper pair id={id} is already {t['status']}")
-            return b.build(None, ok=False)
-        now = rt.now()
-        ts = int(now.timestamp())
-        already = ("carry_paper", "store", "data_unavailable", f"paper pair id={id} was closed by another call; nothing written")
-        if cancelled:
-            if not await rt.store.carry_paper_close(id, status="cancelled", closed_ts=ts, exit_reason=reason, note=note):
+        try:
+            t = await rt.store.carry_paper_get(id)
+            if t is None:
+                b.miss("carry_paper", "store", "data_unavailable", f"paper pair id={id} not found")
+                return b.build(None, ok=False)
+            if t["status"] != "open":
+                b.miss("carry_paper", "store", "data_unavailable", f"paper pair id={id} is already {t['status']}")
+                return b.build(None, ok=False)
+            now = rt.now()
+            ts = int(now.timestamp())
+            already = ("carry_paper", "store", "data_unavailable", f"paper pair id={id} was closed by another call; nothing written")
+            if cancelled:
+                if not await rt.store.carry_paper_close(id, status="cancelled", closed_ts=ts, exit_reason=reason, note=note):
+                    b.miss(*already)
+                    return b.build(None, ok=False)
+                return b.build(_closed_view(await rt.store.carry_paper_get(id)))
+            m = await mark_trade(rt, b, t, ts * 1000)
+            if m is None:
+                return b.build(None, ok=False)
+            # `stopped` and the penalty come from the data, never from `reason`; the result is frozen at the stop bar.
+            stopped = bool(m["stopped"])
+            if reason == "stop" and not stopped:
+                b.warn(f"reason='stop' but no stop is found in the data for pair {id}: recorded as not stopped, no stop penalty")
+            if stopped and reason != "stop":
+                b.warn(f"pair {id} hit its stop at {_iso(m['stop_ts_ms'] // 1000)}: recorded as stopped (frozen there, penalty charged)")
+            if m["stop_check"] != "complete":
+                b.warn(f"pair {id}: bar coverage is {m['stop_check']}; a stop may have been missed")
+            close_ts = m["stop_ts_ms"] // 1000 if stopped else ts
+            ret, pnl_usd = m["return_on_notional"], m["pnl_usd"]
+            symbol = f"PP:{t['base']}:{t['long_venue']}/{t['short_venue']}"
+            thesis = (
+                f"Paper perp-perp carry {t['base']}: long {t['long_venue']} {m['long_x']:.6g} (entry {t['long_entry']:.6g}) / short "
+                f"{t['short_venue']} {m['short_x']:.6g} (entry {t['short_entry']:.6g}); notional {t['notional_usd']:g} USD, "
+                f"funding {m['funding_pnl']:+.2f}, price {m['price_pnl']:+.2f}, costs {-m['costs']:+.2f} USD"
+                f"{', stopped' if stopped else ''}; carry_paper id {id}. Journal entry 1.0 / exit 1 + return encodes the return on notional."
+            )
+            # pp-paper-rule: opened under the backtest's entry rule (the comparable subset); pp-paper-offrule: outside it
+            rule_tag = "pp-paper-rule" if t.get("entry_tradable") else "pp-paper-offrule"
+            j_tags = ["pp-paper", rule_tag, *[x for x in (t.get("tags") or []) if x not in JOURNAL_TAGS]]
+            j_pnl = pnl_fn("long", float(t["notional_usd"]), 1.0, 1.0 + ret)
+            won = await rt.store.carry_paper_close(
+                id,
+                status="closed",
+                closed_ts=close_ts,
+                stop_ts=close_ts if stopped else None,
+                exit_reason=reason,
+                long_exit=m["long_x"],
+                short_exit=m["short_x"],
+                funding_pnl=m["funding_pnl"],
+                price_pnl=m["price_pnl"],
+                costs=m["costs"],
+                pnl_usd=pnl_usd,
+                return_on_notional=ret,
+                max_up=m["max_up"],
+                max_down=m["max_down"],
+                stopped=stopped,
+                journal={
+                    "opened_ts": int(t["opened_ts"]),
+                    "symbol": symbol,
+                    "side": "long",
+                    "size": float(t["notional_usd"]),
+                    "entry": 1.0,
+                    "exit": 1.0 + ret,
+                    "thesis": thesis,
+                    "tags": j_tags,
+                    "outcome": outcome_of(j_pnl),
+                    "pnl": j_pnl,
+                },
+                note=note,
+            )
+            if not won:
                 b.miss(*already)
                 return b.build(None, ok=False)
-            return b.build(_closed_view(await rt.store.carry_paper_get(id)))
-        m = await mark_trade(rt, b, t, ts * 1000)
-        if m is None:
-            return b.build(None, ok=False)
-        # `stopped` and the penalty come from the data, never from `reason`; the result is frozen at the stop bar.
-        stopped = bool(m["stopped"])
-        if reason == "stop" and not stopped:
-            b.warn(f"reason='stop' but no stop is found in the data for pair {id}: recorded as not stopped, no stop penalty")
-        if stopped and reason != "stop":
-            b.warn(f"pair {id} hit its stop at {_iso(m['stop_ts_ms'] // 1000)}: recorded as stopped (frozen there, penalty charged)")
-        if m["stop_check"] != "complete":
-            b.warn(f"pair {id}: bar coverage is {m['stop_check']}; a stop may have been missed")
-        close_ts = m["stop_ts_ms"] // 1000 if stopped else ts
-        ret, pnl_usd = m["return_on_notional"], m["pnl_usd"]
-        symbol = f"PP:{t['base']}:{t['long_venue']}/{t['short_venue']}"
-        thesis = (
-            f"Paper perp-perp carry {t['base']}: long {t['long_venue']} {m['long_x']:.6g} (entry {t['long_entry']:.6g}) / short "
-            f"{t['short_venue']} {m['short_x']:.6g} (entry {t['short_entry']:.6g}); notional {t['notional_usd']:g} USD, "
-            f"funding {m['funding_pnl']:+.2f}, price {m['price_pnl']:+.2f}, costs {-m['costs']:+.2f} USD"
-            f"{', stopped' if stopped else ''}; carry_paper id {id}. Journal entry 1.0 / exit 1 + return encodes the return on notional."
-        )
-        # pp-paper-rule: opened under the backtest's entry rule (the comparable subset); pp-paper-offrule: outside it
-        rule_tag = "pp-paper-rule" if t.get("entry_tradable") else "pp-paper-offrule"
-        j_tags = ["pp-paper", rule_tag, *[x for x in (t.get("tags") or []) if x not in JOURNAL_TAGS]]
-        j_pnl = pnl_fn("long", float(t["notional_usd"]), 1.0, 1.0 + ret)
-        won = await rt.store.carry_paper_close(
-            id,
-            status="closed",
-            closed_ts=close_ts,
-            stop_ts=close_ts if stopped else None,
-            exit_reason=reason,
-            long_exit=m["long_x"],
-            short_exit=m["short_x"],
-            funding_pnl=m["funding_pnl"],
-            price_pnl=m["price_pnl"],
-            costs=m["costs"],
-            pnl_usd=pnl_usd,
-            return_on_notional=ret,
-            max_up=m["max_up"],
-            max_down=m["max_down"],
-            stopped=stopped,
-            journal={
-                "opened_ts": int(t["opened_ts"]),
-                "symbol": symbol,
-                "side": "long",
-                "size": float(t["notional_usd"]),
-                "entry": 1.0,
-                "exit": 1.0 + ret,
-                "thesis": thesis,
-                "tags": j_tags,
-                "outcome": outcome_of(j_pnl),
-                "pnl": j_pnl,
-            },
-            note=note,
-        )
-        if not won:
-            b.miss(*already)
-            return b.build(None, ok=False)
-        out = _closed_view(await rt.store.carry_paper_get(id))
-        out["exit_signal_at_close"] = m["exit_signal"]
-        return b.build(out)
+            out = _closed_view(await rt.store.carry_paper_get(id))
+            out["exit_signal_at_close"] = m["exit_signal"]
+            return b.build(out)
+        except STORE_ERRORS as e:
+            return store_failed(b, e)

@@ -18,7 +18,6 @@ import asyncio
 import hashlib
 import json
 import math
-import resource
 import shutil
 import statistics
 import time
@@ -29,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from common_helpers import rss_mb
 
 from tradedesk.analytics.macro_regimes import (
     HOUR_MS,
@@ -85,10 +85,6 @@ L: list[str] = []
 def emit(s: str = "") -> None:
     L.append(s)
     print(s, flush=True)
-
-
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 
 
 # ----------------------------------------------------------------------------- prereg

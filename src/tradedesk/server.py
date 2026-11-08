@@ -6,7 +6,9 @@ TRADEDESK_TRANSPORT=streamable-http TRADEDESK_PORT=8000 tradedesk-mcp    # alway
 
 from __future__ import annotations
 
+import ipaddress
 import logging
+import os
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -15,8 +17,10 @@ from mcp.server.mcpserver import MCPServer
 
 from . import __version__, features
 from .http_auth import BearerAuthMiddleware, parse_tokens
+from .logfmt import JsonFormatter
 from .runtime import Runtime
 from .tools import register_all
+from .tools._util import STORE_ERRORS
 
 INSTRUCTIONS = """\
 Personal trading desk for crypto derivatives, options and quant tooling. Read-only market data.
@@ -37,9 +41,17 @@ def build_server(rt: Runtime | None = None) -> tuple[MCPServer, Runtime]:
     async def lifespan(_: MCPServer) -> AsyncIterator[None]:
         from .collector import build_default_scheduler  # noqa: PLC0415
 
+        store_ok = True
         if rt.store is not None:
-            await rt.store.init()
-        rt.scheduler = build_default_scheduler(rt)
+            try:
+                await rt.store.init()
+            except STORE_ERRORS as e:  # a broken or locked DB file must not cost the session its market tools
+                store_ok = False
+                logging.getLogger("tradedesk.store").error(
+                    "store init failed, collector not started; store tools will report missing: store (%s: %s)", type(e).__name__, e
+                )
+        # Every collector job writes to the store (build_default_scheduler returns None without one): none on a failed init.
+        rt.scheduler = build_default_scheduler(rt) if store_ok else None
         if rt.scheduler is not None:
             await rt.scheduler.start()
             logging.getLogger("tradedesk.collector").info("collector started with %d jobs", len(rt.scheduler.jobs))
@@ -55,11 +67,37 @@ def build_server(rt: Runtime | None = None) -> tuple[MCPServer, Runtime]:
     return server, rt
 
 
+def json_logs() -> bool:
+    return os.environ.get("TRADEDESK_LOG_FORMAT", "").strip().lower() == "json"
+
+
 def configure_logging() -> None:
-    logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    # stderr only: in stdio mode stdout carries the MCP protocol.
+    if json_logs():
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(JsonFormatter())
+        logging.basicConfig(level=logging.INFO, handlers=[handler])
+    else:
+        logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     # httpx logs every request URL at INFO; the Telegram URL carries the bot token, so keep it out of the journal.
     for name in ("httpx", "httpcore"):
         logging.getLogger(name).setLevel(logging.WARNING)
+
+
+def is_loopback(host: str) -> bool:
+    """True only for an address reachable from this machine alone (127.0.0.0/8, ::1, localhost).
+
+    0.0.0.0 / :: (all interfaces), LAN addresses, names other than localhost and an empty string are not loopback."""
+    h = host.strip().lower().removeprefix("[").removesuffix("]")
+    if h in ("localhost", "localhost."):
+        return True
+    try:
+        ip = ipaddress.ip_address(h)
+    except ValueError:
+        return False
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped  # same answer on every Python (3.13 changed is_loopback for mapped addresses)
+    return ip.is_loopback
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -82,7 +120,17 @@ def main(argv: list[str] | None = None) -> None:
         logging.getLogger("tradedesk.auth").warning(
             "streamable-http running WITHOUT auth; bind to 127.0.0.1 or set TRADEDESK_HTTP_BEARER_TOKEN"
         )
-    uvicorn.run(app, host=s.host, port=s.port, log_level="info")
+    if not is_loopback(s.host):  # warn, do not refuse: the owner may bind on purpose behind a proxy
+        logging.getLogger("tradedesk.auth").warning(
+            "streamable-http binds to non-loopback host %r: the MCP server is reachable from the network "
+            "(auth %s); the default is 127.0.0.1",
+            s.host,
+            "enabled" if tokens else "DISABLED",
+        )
+    if json_logs():  # no uvicorn handlers: its records propagate to the root JSON handler, so every line is JSON
+        uvicorn.run(app, host=s.host, port=s.port, log_level="info", log_config=None)
+    else:
+        uvicorn.run(app, host=s.host, port=s.port, log_level="info")
 
 
 if __name__ == "__main__":

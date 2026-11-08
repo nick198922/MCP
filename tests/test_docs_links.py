@@ -8,8 +8,9 @@ Moving a card or report to docs/history/ silently breaks links to it: this test 
 
 import os
 import re
+import sys
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 
 ROOT = Path(__file__).resolve().parents[1]
 DOCS = ROOT / "docs"
@@ -115,6 +116,12 @@ def test_markdown_files_are_found():
     files = {f.relative_to(ROOT).as_posix() for f in markdown_files()}
     assert {"README.md", "docs/HANDOFF.md", "docs/BACKLOG.md"} <= files
     assert not any(_local_only(f) for f in files)
+    # Item 107: the docs the owner follows at the 30.11 review (registrations, reviews, changes, verification
+    # reports) must stay scanned; a rename of the checkpoint file or a LOCAL_ONLY entry over docs/ideas would
+    # otherwise drop them from the guard silently.
+    assert "docs/CHECKPOINT-2026-11-30.md" in files
+    cards = {f for f in files if f.startswith("docs/ideas/IDEA-")}
+    assert len(cards) > 100 and cards == {p.relative_to(ROOT).as_posix() for p in (DOCS / "ideas").glob("IDEA-*.md")}
 
 
 def test_relative_links_point_to_existing_files():
@@ -126,3 +133,73 @@ def test_relative_links_point_to_existing_files():
     )
     stale = sorted(ALLOWLIST - broken)
     assert stale == [], f"these ALLOWLIST entries are no longer broken, remove them: {stale}"
+
+
+# --- scripts/docs_links.py (item 128): the same scan as a report, plus #anchor checks ---------------------------------
+
+sys.path.insert(0, str(ROOT / "scripts"))
+
+import docs_links  # noqa: E402
+
+
+def test_github_slug_and_heading_anchors():
+    assert docs_links.github_slug("Що з'ясовано 02 – 05.11: виконання") == "що-зясовано-02--0511-виконання"
+    assert docs_links.github_slug("  Hello, World! v2_x  ") == "hello-world-v2_x"
+    text = (
+        "# Title `code` [link](x.md)\n"
+        "## Розділ 1\n"
+        "## Розділ 1\n"
+        "Setext heading\n"
+        "==============\n"
+        '<a id="Custom-Id"></a>\n'
+        "```\n# not a heading\n```\n"
+    )
+    assert docs_links.heading_anchors(text) == {"title-code-link", "розділ-1", "розділ-1-1", "setext-heading", "Custom-Id"}
+
+
+def test_extract_links_skips_code_and_keeps_line_numbers():
+    text = 'a [x](one.md) `[y](code.md)`\n```\n[z](fenced.md)\n```\n![img](<p q.png> "t") [w](two.md#h)\n'
+    assert docs_links.extract_links(text) == [(1, "one.md"), (5, "p q.png"), (5, "two.md#h")]
+
+
+def test_check_tree_reports_broken_file_and_anchor_and_skips_urls_and_courses(tmp_path, capsys):
+    (tmp_path / "docs" / "ideas").mkdir(parents=True)
+    (tmp_path / "docs" / "library" / "courses").mkdir(parents=True)
+    (tmp_path / "docs" / "library" / "courses" / "secret.md").write_text("[gone](nowhere.md)\n")  # not scanned
+    (tmp_path / "docs" / "ideas" / "card.md").write_text("# Card\n## Попередня реєстрація\ntext\n")
+    (tmp_path / "README.md").write_text("[ok](docs/ideas/card.md#card)\n")
+    (tmp_path / "docs" / "HANDOFF.md").write_text(
+        "# Handoff\n"
+        f"[ok](ideas/card.md#попередня-реєстрація) [ok-encoded](ideas/card.md#{quote('попередня-реєстрація')})\n"
+        "[missing file](ideas/no-such-card.md)\n"
+        "[bad anchor](ideas/card.md#no-such-section)\n"
+        "[self ok](#handoff) [self bad](#nope)\n"
+        "[url](https://example.com/x.md) [mail](mailto:a@b.c) [proto](//host/x.md)\n"
+        "[course](library/courses/lesson-1.md) [course dir](library/courses)\n"
+        "[outside](../../etc/passwd)\n"
+        "`[in code](ideas/gone.md)`\n"
+    )
+    broken, n = docs_links.check_tree(tmp_path)
+    assert n == 3  # README.md, docs/HANDOFF.md, docs/ideas/card.md; docs/library/courses is skipped
+    assert [(b.source, b.line, b.kind, b.target) for b in broken] == [
+        ("docs/HANDOFF.md", 3, "file", "ideas/no-such-card.md"),
+        ("docs/HANDOFF.md", 4, "anchor", "ideas/card.md#no-such-section"),
+        ("docs/HANDOFF.md", 5, "anchor", "#nope"),
+        ("docs/HANDOFF.md", 8, "outside", "../../etc/passwd"),
+    ]
+
+    out = tmp_path / "report" / "links.txt"
+    assert docs_links.main(["--root", str(tmp_path), "--out", str(out)]) == 1
+    printed = capsys.readouterr().out
+    assert printed == out.read_text(encoding="utf-8")
+    assert "docs/HANDOFF.md:4: broken anchor ideas/card.md#no-such-section" in printed
+    assert printed.endswith("4 broken link(s) in 1 file(s); 3 file(s) checked\n")
+
+
+def test_check_tree_clean_repo_exits_zero(tmp_path, capsys):
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "a.md").write_text("# A\n[b](b.md#b) [png](img.png)\n")
+    (tmp_path / "docs" / "b.md").write_text("# B\n")
+    (tmp_path / "docs" / "img.png").write_bytes(b"")
+    assert docs_links.main(["--root", str(tmp_path)]) == 0
+    assert capsys.readouterr().out == "0 broken link(s) in 0 file(s); 2 file(s) checked\n"

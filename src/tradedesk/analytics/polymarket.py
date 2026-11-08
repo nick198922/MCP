@@ -27,16 +27,18 @@ def _maybe_json_list(x: Any) -> list[Any] | None:
     return None
 
 
-def devig_multi(prices: list[float]) -> list[float] | None:
+def devig_multi(prices: list[float | None]) -> list[float | None] | None:
     """Normalise outcome prices to sum = 1 (removes vig / handles rounding).
 
     Returns None when the sum is non-positive. Yes/No binary markets usually sum
     to ~1.00 already; multi-outcome prediction markets can sum to 1.02–1.05.
+    `None` entries (unknown prices) are left out of the sum and stay `None` at the
+    same index, so the output lines up with the input position by position.
     """
     s = sum(p for p in prices if p is not None)
     if s <= 0:
         return None
-    return [p / s for p in prices]
+    return [p / s if p is not None else None for p in prices]
 
 
 def normalise_market(raw: dict[str, Any]) -> dict[str, Any]:
@@ -51,7 +53,11 @@ def normalise_market(raw: dict[str, Any]) -> dict[str, Any]:
     prices_raw = _maybe_json_list(raw.get("outcomePrices"))
     tokens = _maybe_json_list(raw.get("clobTokenIds"))
     prices = [_f(p) for p in prices_raw] if prices_raw else None
-    devig = devig_multi([p for p in prices if p is not None]) if prices else None
+    # Devig over the numeric prices only, keeping the original positions: an outcome
+    # whose price is non-numeric gets price_devigged=None, and the others are scaled
+    # by the sum of the numeric prices (with a price missing, that sum is not a full
+    # book, so the devigged numbers are a best effort, not a distribution of all outcomes).
+    devig = devig_multi(prices) if prices else None
     n = max(len(outcomes or []), len(prices or []), len(tokens or []))
     rows: list[dict[str, Any]] = []
     for i in range(n):

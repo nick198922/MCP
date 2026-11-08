@@ -19,12 +19,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import importlib.util
+import importlib
 import json
 import math
-import resource
 import statistics
-import sys
 import time
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
@@ -32,6 +30,8 @@ from pathlib import Path
 from typing import Any
 
 import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
+import verify_pm_h7_iv as VH  # copy_db, is_profile, week_of, weekend_window (item 8k)
+from common_helpers import rss_mb
 
 from tradedesk.analytics import pm_h7_qlike as hq
 from tradedesk.analytics import pm_modules as pm
@@ -50,20 +50,9 @@ WEEK_S = 7 * DAY_S
 TRAIL_H = 168
 
 
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
-
-
 def _load(name: str):  # noqa: ANN202
-    p = Path(__file__).with_name(f"{name}.py")
-    spec = importlib.util.spec_from_file_location(name, p)
-    mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
-    sys.modules[name] = mod
-    spec.loader.exec_module(mod)  # type: ignore[union-attr]
-    return mod
-
-
-VH = _load("verify_pm_h7_iv")  # copy_db, is_profile, week_of, weekend_window (item 8k)
+    """A sibling script by a regular import, deferred to the call (tests replace this to stub verify_pm_modules)."""
+    return importlib.import_module(name)
 
 
 def parse_expiry(s: str) -> int:

@@ -104,7 +104,7 @@ def outcome_yes(outcome_prices: Any) -> int | None:
         return None
     try:
         a, b = float(v[0]), float(v[1])
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):  # OverflowError: float() of a 300+-digit JSON integer
         return None
     if a == 1.0 and b == 0.0:
         return 1
@@ -173,13 +173,16 @@ def quote_at(points: Iterable[dict[str, Any]], t0: int, *, lag: int = 60, max_ag
 
     ``lag`` guards against a point labelled by the start of its bucket (1-minute fidelity); points after ``t0 - lag``
     are ignored, so the result cannot change when later data changes. None when no point is younger than ``max_age``.
+    A point whose time or price is absent, not a number, NaN / inf or a 300+-digit integer is skipped.
     """
     best: tuple[float, int] | None = None
     cut = t0 - lag
     for pt in points:
         try:
             t, p = int(pt["t"]), float(pt["p"])
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, OverflowError):  # OverflowError: int(inf), float() of a 300+-digit int
+            continue
+        if not math.isfinite(p):  # a NaN / inf price is dropped like a malformed point
             continue
         if t <= cut and (best is None or t >= best[1]):
             best = (p, t)
@@ -189,12 +192,15 @@ def quote_at(points: Iterable[dict[str, Any]], t0: int, *, lag: int = 60, max_ag
 
 
 def last_trade_before(trades: Iterable[dict[str, Any]], t0: int, yes_token: str) -> dict[str, Any] | None:
-    """Last trade print (either outcome token) with ``timestamp <= t0``, as YES-equivalent and NO-equivalent prices."""
+    """Last trade print (either outcome token) with ``timestamp <= t0``, as YES-equivalent and NO-equivalent prices.
+    A print whose time or price is absent, not a number, NaN / inf or a 300+-digit integer is skipped."""
     best: dict[str, Any] | None = None
     for tr in trades:
         try:
             ts, px = int(tr["timestamp"]), float(tr["price"])
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, OverflowError):  # OverflowError: int(inf), float() of a 300+-digit int
+            continue
+        if not math.isfinite(px):  # a NaN / inf price is dropped like a malformed print
             continue
         if ts > t0 or (best is not None and ts < best["t"]):
             continue

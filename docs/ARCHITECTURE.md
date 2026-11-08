@@ -112,6 +112,8 @@ Mac засинає, тому для автономної роботи потрі
 
 Фонові задачі виконуються в тому самому процесі (asyncio): збирач знімків, WebSocket-збирач ліквідацій, рушій алертів. Алерти йдуть у Telegram-бот (потрібен токен бота).
 
+Логи йдуть лише в stderr (у stdio-режимі stdout зайнятий протоколом MCP). За замовчуванням — текстовий рядок `час рівень логер: повідомлення`. `TRADEDESK_LOG_FORMAT=json` (у `/etc/tradedesk-mcp.env`, бо `deploy/features.env` такої назви не приймає) перемикає на один JSON-об'єкт на рядок (`src/tradedesk/logfmt.py`): `ts` (UTC ISO), `level`, `logger`, `msg`, для збою завдання колектора ще `job` і `error`, для винятку — `exc` (traceback рядком); не-ASCII без екранування. Інші поля `extra` і змінні оточення в рядок не потрапляють, текст проходить той самий `redact`, що й `system_health`. У режимі HTTP логи uvicorn теж ідуть у JSON. Читати: `journalctl -u tradedesk-mcp -o cat | jq -R 'fromjson? | select(.job)'`.
+
 ## Ухвалені й відкриті рішення
 
 - Хостинг — **вирішено:** сервер Contabo, служби systemd, доступ лише по SSH; HTTP-режим слухає `127.0.0.1` (`docs/AGENTS.md` → «Запуск»).

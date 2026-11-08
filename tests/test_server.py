@@ -42,6 +42,7 @@ EXPECTED_TOOLS = {
     "dex_pairs",
     "contract_risk",
     "chain_metrics",
+    "stablecoin_supply",
     "pendle_expiry_calendar",
     "pendle_fixed_yields",
     "pendle_market",
@@ -130,7 +131,11 @@ async def call(server, name, **args):
 async def test_tool_surface(server):
     async with Client(server) as c:
         names = {t.name for t in (await c.list_tools()).tools}
-    assert EXPECTED_TOOLS <= names
+    # Two-way: a registered tool missing from EXPECTED_TOOLS would also escape the docs coverage test (README/PARITY).
+    assert names == EXPECTED_TOOLS, (
+        f"registered but not in EXPECTED_TOOLS: {sorted(names - EXPECTED_TOOLS)}; "
+        f"in EXPECTED_TOOLS but not registered: {sorted(EXPECTED_TOOLS - names)}"
+    )
 
 
 async def test_tool_registration_memo_equals_a_fresh_registration(rt, monkeypatch):
@@ -220,8 +225,11 @@ async def test_funding_compare_normalises_intervals_and_degrades(server):
     assert by["deribit"]["annualized"] == pytest.approx(0.1095)
     assert "okx" not in by
     assert any(m["provider"] == "ccxt:okx" and m["reason"] == "rate_limited" for m in env["missing"])
+    assert "partial: okx unavailable, see missing; the cross-venue comparison is incomplete" in env["warnings"]
     assert env["data"]["widest_spread"]["short_venue"] in by
     assert {e["provider"] for e in env["evidence"]} >= {"ccxt:binanceusdm", "hyperliquid", "deribit"}
+    full = await call(server, "perps_funding_compare", base="BTC", exchanges=["binanceusdm", "bybit"])
+    assert full["missing"] == [] and not any(w.startswith("partial:") for w in full["warnings"])
 
 
 async def test_funding_history_cross_venue(server):
@@ -234,6 +242,7 @@ async def test_funding_history_cross_venue(server):
     # okx is set to raise rate_limited in the fake transport -> ends up in missing
     assert "okx" not in by
     assert any("okx" in m["provider"] for m in env["missing"])
+    assert any(w.startswith("partial: okx unavailable") for w in env["warnings"])
     # highest_carry: Binance has larger base rate (0.0001) than Bybit (0.00008)
     cross = env["data"]["cross_venue"]
     assert cross["highest_carry"]["venue"] == "binanceusdm"
@@ -583,8 +592,37 @@ async def test_oi_by_strike_walls(server):
     # strikes nearest the forward dominate in the synthetic fixture (OI=20 for |logm|<0.15, 3 otherwise)
     atm_near = [w for w in d["top_overall"] if abs(w["distance_pct"]) < 15]
     assert atm_near, "expected close-to-forward strikes among the top walls"
+    # all expiries summed: the single reference forward for band/distance is disclosed
+    assert any("all expiries summed" in w for w in env["warnings"])
     one = await call(server, "deribit_oi_by_strike", currency="BTC", expiry="30OCT26")
     assert one["data"]["expiry"] == "30OCT26" and one["data"]["forward"] > 0
+    assert not any("all expiries summed" in w for w in one["warnings"])
+
+
+async def test_oi_by_strike_no_reference_forward_warning_when_forwards_equal(server, monkeypatch):
+    # several expiries but one shared forward: the band and distance_pct are exact, so no warning
+    import conftest  # noqa: PLC0415
+
+    monkeypatch.setattr(conftest, "EXPIRIES", [(exp, 1.006) for exp, _ in conftest.EXPIRIES])
+    env = await call(server, "deribit_oi_by_strike", currency="BTC", width_pct=15, top_n=5)
+    assert env["ok"] is True and env["data"]["expiry"] == "all"
+    assert env["data"]["forward"] == pytest.approx(conftest.SPOT * 1.006)
+    assert not any("all expiries summed" in w for w in env["warnings"])
+
+
+@pytest.mark.parametrize(
+    ("rel_gap", "warned"),
+    [(1e-9, False), (1e-4, True), (0.018, True)],  # float noise / 1 bp apart / fixture-sized term structure
+)
+async def test_oi_by_strike_reference_forward_warning_uses_tolerance(server, monkeypatch, rel_gap, warned):
+    # the caveat fires only when forwards really differ, not on float noise across expiries
+    import conftest  # noqa: PLC0415
+
+    mults = [1.006, 1.006 * (1 + rel_gap), 1.006]
+    monkeypatch.setattr(conftest, "EXPIRIES", [(exp, m) for (exp, _), m in zip(conftest.EXPIRIES, mults, strict=True)])
+    env = await call(server, "deribit_oi_by_strike", currency="BTC", width_pct=15, top_n=5)
+    assert env["ok"] is True and env["data"]["expiry"] == "all"
+    assert any("all expiries summed" in w for w in env["warnings"]) is warned
 
 
 async def test_market_tools(server):
@@ -860,6 +898,62 @@ async def test_polymarket_market_with_books(server):
     yes = next(o for o in m["outcomes"] if o["name"] == "Yes")
     assert yes["book"]["best_bid"] == 0.618 and yes["book"]["best_ask"] == 0.622
     assert yes["book"]["mid"] == 0.62 and yes["book"]["spread"] == pytest.approx(0.004)
+
+
+async def test_polymarket_all_prices_no_partial_warning(server):
+    # every outcome has a numeric price: de-vigged prices are a full distribution, no warning
+    for name, args in (("polymarket_market", {"market_id": "516700"}), ("polymarket_search", {"query": "btc"})):
+        env = await call(server, name, **args)
+        assert not any("no numeric price" in w for w in env["warnings"])
+
+
+@pytest.mark.parametrize(
+    "prices",
+    ['["0.30","abc","0.30"]', '["0.30",null,"0.30"]', '["0.30","0.30"]'],
+    ids=["non_numeric", "json_null", "short_price_list"],
+)
+async def test_polymarket_missing_price_warns(state, prices):
+    import httpx
+
+    from conftest import NOW, FakeEx, make_transports
+    from tradedesk.config import Settings
+    from tradedesk.runtime import Runtime
+    from tradedesk.server import build_server
+
+    # one outcome has price None: the others are rescaled over the priced ones only
+    partial = {
+        "id": "777",
+        "slug": "will-x",
+        "question": "Will X?",
+        "outcomes": '["A","B","C"]',
+        "outcomePrices": prices,
+        "clobTokenIds": '["TOK_A","TOK_B","TOK_C"]',
+        "active": True,
+        "closed": False,
+    }
+
+    def gamma(req: httpx.Request) -> httpx.Response:
+        if req.url.path == "/public-search":
+            return httpx.Response(200, json={"events": [{"id": "E1", "markets": [partial]}], "pagination": {}})
+        if req.url.path == "/markets/777":
+            return httpx.Response(200, json=partial)
+        return httpx.Response(404, text="not mocked")
+
+    tr = make_transports(state)
+    tr["polymarket:gamma"] = httpx.MockTransport(gamma)
+    rt2 = Runtime(Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0), transports=tr, exchange_factory=FakeEx)
+    rt2.now = lambda: NOW
+    srv, _ = build_server(rt2)
+    env = await call(srv, "polymarket_market", market_id="777")
+    outs = env["data"]["market"]["outcomes"]
+    assert len(outs) == 3
+    missing = [o for o in outs if o["price"] is None]
+    assert len(missing) == 1 and missing[0]["price_devigged"] is None
+    assert [o["price_devigged"] for o in outs if o["price"] is not None] == pytest.approx([0.5, 0.5])
+    assert any("no numeric price" in w for w in env["warnings"])
+    env = await call(srv, "polymarket_search", query="x")
+    assert env["data"]["count"] == 1
+    assert any("no numeric price" in w and "777" in w for w in env["warnings"])
 
 
 async def test_polymarket_history(server):

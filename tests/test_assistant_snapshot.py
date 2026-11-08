@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 import ccxt
 import httpx
@@ -10,6 +11,7 @@ import pytest
 
 from conftest import NOW, FakeEx, make_transports
 from test_cycle_regime import FX, serve_daily
+from test_stablecoin_supply import default_handler as stablecoins_handler
 from tradedesk.analytics.assistant import (
     NEAR_MIN_DAYS,
     PAPER_MAX_AGE_HOURS,
@@ -24,6 +26,7 @@ from tradedesk.collector.assistant_snapshot import build_paper_rec as mod_build_
 from tradedesk.collector.assistant_snapshot import collect_assistant_snapshot, snapshot_path, write_atomic
 from tradedesk.collector.scheduler import build_default_scheduler
 from tradedesk.config import Settings
+from tradedesk.core.ratelimit import TokenBucket
 from tradedesk.runtime import Runtime
 
 
@@ -36,7 +39,10 @@ def _rt(state, tmp_path: Path, exchange_factory=FakeEx, transports: dict | None 
         assistant_snapshot_path=str(tmp_path / "out" / "snapshot.json"),
         **kw,
     )
-    rt = Runtime(settings, transports=transports or make_transports(state), exchange_factory=exchange_factory)
+    # Production rate limits (ForexFactory 0.5 req/s, DefiLlama stablecoins 1 req/s, Deribit 8 req/s) only paced the fake
+    # transports in real time: a second snapshot in one test waited up to ~3 s for tokens.
+    with patch("tradedesk.core.http.TokenBucket", lambda rate, burst: TokenBucket(1_000.0, 1_000)):
+        rt = Runtime(settings, transports=transports or make_transports(state), exchange_factory=exchange_factory)
     rt.now = lambda: NOW
     return rt
 
@@ -180,6 +186,7 @@ def _with_daily_binance(state) -> dict:
     for name in ("binance_spot", "binance_futures"):
         inner = tr[name].handler
         tr[name] = httpx.MockTransport(lambda req, inner=inner: serve_daily(req, shift) or inner(req))
+    tr["defillama:stablecoins"] = httpx.MockTransport(stablecoins_handler)  # the brief's stablecoin line
     return tr
 
 
@@ -197,7 +204,7 @@ async def test_snapshot_happy_path(state, tmp_path):
     assert snap["expiries"] == {"week": None, "month": "27NOV26", "near": "30OCT26"}
     for name in (
         "tickers", "ohlc", "fng", "dvol", "vrp", "term", "skew",
-        "funding_btc", "funding_eth", "events", "em_month", "chain", "chain_near", "cycle",
+        "funding_btc", "funding_eth", "events", "em_month", "chain", "chain_near", "cycle", "stablecoins",
     ):  # fmt: skip
         assert snap["sections"][name]["ok"], name
         assert snap["sections"][name]["asof_utc"] == "2026-10-10T13:07:00Z"
@@ -212,6 +219,10 @@ async def test_snapshot_happy_path(state, tmp_path):
     assert cycle["data"]["state"] == "growth"  # 28.10's prices, but funding ≥ 8 %/yr: not accumulation
     assert cycle["data"]["line_ua"].startswith("Режим циклу: ріст (") and "найближче" not in cycle["data"]["line_ua"]
     assert snap["stale"] == []
+    # stablecoin_supply for the brief's liquidity line (the synthetic DefiLlama sample of 05.11)
+    stables = snap["sections"]["stablecoins"]
+    assert stables["missing"] == [] and stables["data"]["total"]["usd"] == pytest.approx(299.46e9)
+    assert any("not a signal" in w for w in stables["warnings"])
     # market_flow for the brief: summaries only (no series); the fake venues here give it funding, the rest is missing
     flows = snap["sections"]["flows"]
     assert flows["ok"] and "series" not in flows["data"] and flows["data"]["base"] == "BTC"
@@ -318,6 +329,23 @@ async def test_snapshot_provider_failure_lands_in_missing(state, tmp_path):
     assert "chains" in snap["missing"] and snap["sections"]["chains"]["missing"][0]["reason"] == "data_unavailable"
     assert snap["sections"]["tickers"]["ok"] and snap["sections"]["fng"]["ok"]
     assert ok >= 1
+
+
+async def test_snapshot_stablecoins_failure_lands_in_missing(state, tmp_path):
+    tr = _with_daily_binance(state)
+    tr["defillama:stablecoins"] = httpx.MockTransport(lambda req: httpx.Response(503, text="down"))
+    rt = _rt(state, tmp_path, transports=tr)
+    try:
+        await collect_assistant_snapshot(rt)
+    finally:
+        await rt.aclose()
+    snap = json.loads((tmp_path / "out" / "snapshot.json").read_text())  # the file is still written
+    sec = snap["sections"]["stablecoins"]
+    assert not sec["ok"] and sec["data"] is None and "stablecoins" in snap["missing"]
+    assert {m["field"] for m in sec["missing"]} == {"total", "usdt_usdc"}
+    assert all(m["provider"] == "defillama:stablecoins" and m["reason"] == "backend_error" for m in sec["missing"])
+    # every other network section is unaffected (paper_rec / my_options: no local files in this test)
+    assert set(snap["missing"]) == {"em_week", "stablecoins", "paper_rec", "my_options"}
 
 
 async def test_failed_section_carries_previous_good_one_as_stale(state, tmp_path):

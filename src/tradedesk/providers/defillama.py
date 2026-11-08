@@ -4,6 +4,14 @@
 * `/overview/dexs/{chain}` and `/overview/fees/{chain}` -> object with `total24h`, `total7d`, `total30d`, ...
   Chain names are case-sensitive upstream ("Solana", "Ethereum", "BSC"). The overview bodies carry hundreds of
   KB of protocol breakdowns that we do not use; only the scalar totals are kept (and chart payloads are not requested).
+
+Stablecoins live on a separate host, `https://stablecoins.llama.fi` (public, no key):
+
+* `/stablecoins?includePrices=true` -> `{"peggedAssets": [{"id", "name", "symbol", "pegType", "pegMechanism", "price",
+  "circulating": {"peggedUSD": n}, "circulatingPrevDay": {...}, "circulatingPrevWeek": {...},
+  "circulatingPrevMonth": {...}, "chainCirculating": {...}, "chains": [...]}, ...]}`. Per-chain breakdowns are dropped.
+* `/stablecoincharts/all` -> `[{"date": "unix seconds as a string", "totalCirculating": {peg: n},
+  "totalCirculatingUSD": {peg: usd}, ...}, ...]` (daily). Only `date` and `totalCirculatingUSD` are kept.
 """
 
 from __future__ import annotations
@@ -15,6 +23,21 @@ from ..core.errors import ProviderError
 from ..core.http import Http
 
 BASE_URL = "https://api.llama.fi"
+STABLECOINS_URL = "https://stablecoins.llama.fi"
+
+_ASSET_KEEP = (
+    "id",
+    "name",
+    "symbol",
+    "gecko_id",  # with `id`, identifies USDT / USDC (the symbol alone can be copied by a look-alike)
+    "pegType",
+    "pegMechanism",
+    "price",
+    "circulating",
+    "circulatingPrevDay",
+    "circulatingPrevWeek",
+    "circulatingPrevMonth",
+)
 
 _KEEP = (
     "chain",
@@ -38,8 +61,36 @@ _KEEP = (
 class DefiLlama:
     name = "defillama"
 
-    def __init__(self, http: Http) -> None:
+    def __init__(self, http: Http, stablecoins: Http | None = None) -> None:
         self.http = http
+        self.stablecoins = stablecoins  # stablecoins.llama.fi host
+
+    async def aclose(self) -> None:
+        await self.http.aclose()
+        if self.stablecoins is not None:
+            await self.stablecoins.aclose()
+
+    def _stables(self) -> Http:
+        if self.stablecoins is None:
+            raise ProviderError(self.name, "config", "stablecoins client not configured")
+        return self.stablecoins
+
+    async def stablecoin_assets(self) -> Fetched:
+        """Current circulating supply per stablecoin with DefiLlama's own day / week / month-ago snapshots."""
+        f = await self._stables().get_json("/stablecoins", params={"includePrices": "true"}, ttl=600, tool="stablecoins", args={})
+        rows = f.data.get("peggedAssets") if isinstance(f.data, dict) else None
+        if not isinstance(rows, list):
+            raise ProviderError(f.evidence.provider, "backend_error", "unexpected response shape at stablecoins")
+        slim = [{k: r.get(k) for k in _ASSET_KEEP} for r in rows if isinstance(r, dict)]
+        return Fetched(slim, f.evidence)
+
+    async def stablecoin_chart_all(self) -> Fetched:
+        """Daily total stablecoin supply across all stablecoins (USD value per peg type)."""
+        f = await self._stables().get_json("/stablecoincharts/all", ttl=600, tool="stablecoincharts/all", args={})
+        if not isinstance(f.data, list):
+            raise ProviderError(f.evidence.provider, "backend_error", "unexpected response shape at stablecoincharts/all")
+        slim = [{"date": r.get("date"), "totalCirculatingUSD": r.get("totalCirculatingUSD")} for r in f.data if isinstance(r, dict)]
+        return Fetched(slim, f.evidence)
 
     async def chain_tvl(self, chain: str) -> Fetched:
         f = await self.http.get_json(f"/v2/historicalChainTvl/{chain}", ttl=300, tool="historicalChainTvl", args={"chain": chain})

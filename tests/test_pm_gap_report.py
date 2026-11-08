@@ -304,18 +304,23 @@ def test_verdict_stress_delayed_survivors_and_thin_books():
 EARLY_KEYS = ("primary_early_payout", "clv_close_early_payout")  # the descriptive second variants of the verdict
 
 
-def test_verdict_primary_in_both_variants_early_payout_is_descriptive():
-    """Item 47 (standing improvements): the primary CLV +24 h as registered (missing flagged) and, descriptively, with
-    the payout 1 / 0 for positions resolved by +24 h (Gamma closed_ts, schema 38). Synthetic: m1 snapshot, closed after
-    its end; m2 no snapshot, resolved NO before +24 h; m3 no snapshot, unresolved, no close time; m4 snapshot, resolved
-    YES exactly at +24 h; m5 no snapshot, closed only after +24 h."""
+def _early_h24_case() -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """(rows, outcomes without closed_ts, the same with closed_ts) of the item 47 test: m1 snapshot, closed after its
+    end; m2 no snapshot, resolved NO before +24 h; m3 no snapshot, unresolved, no close time; m4 snapshot, resolved YES
+    exactly at +24 h; m5 no snapshot, closed only after +24 h."""
     window = range(T0 + 23 * H, T0 + 25 * H + 1)
     rows = ROWS + market_rows("m5")
     rows = [r for r in rows if not (r["market_id"] in ("m2", "m3", "m5") and r["ts"] in window)]
     no = {"outcome_yes": 0, "binance_close_end": 69_000.0, "binance_close_next": 69_000.0}
     base = [OUTCOMES[0], dict(OUTCOMES[1], **no), dict(OUTCOMES[2], outcome_yes=None), OUTCOMES[3], dict(OUTCOMES[0], market_id="m5")]
     closed = {"m1": END + 2 * H, "m2": T0 + 20 * H, "m4": T0 + 24 * H, "m5": T0 + 30 * H}
-    outs = [dict(o, closed_ts=closed.get(o["market_id"])) for o in base]
+    return rows, base, [dict(o, closed_ts=closed.get(o["market_id"])) for o in base]
+
+
+def test_verdict_primary_in_both_variants_early_payout_is_descriptive():
+    """Item 47 (standing improvements): the primary CLV +24 h as registered (missing flagged) and, descriptively, with
+    the payout 1 / 0 for positions resolved by +24 h (Gamma closed_ts, schema 38). Synthetic: see :func:`_early_h24_case`."""
+    rows, base, outs = _early_h24_case()
     f = final_metrics(rows, outs, verdict_ts(T0), T0)
     e = f["primary_early_payout"]
     assert e["sources"] == {"missing": 3, "ok": 2} and e["defined"] == 5
@@ -455,7 +460,7 @@ async def _db(path: Path, all_rows: list[dict[str, Any]] | None = None, outcomes
         await s.aclose()
 
 
-async def test_runner_writes_the_weekly_report_and_refuses_the_early_verdict(tmp_path, capsys):
+async def test_runner_writes_the_weekly_report_and_refuses_the_early_verdict(tmp_path, monkeypatch, capsys):
     db = tmp_path / "db.sqlite"
     await _db(db)
     digest = hashlib.sha256(db.read_bytes()).hexdigest()
@@ -467,10 +472,13 @@ async def test_runner_writes_the_weekly_report_and_refuses_the_early_verdict(tmp
     assert "Варіант v2-g" in text and "позицій v2-g 0" in text and "без binance_last 4" in text
     for hidden in HIDDEN:
         assert hidden not in text, hidden
-    # --verdict today (wall clock before the registered T0 + 126 days): refused, nothing written
+    # --verdict a day before the registered T0 + 126 days: refused by the time gate, nothing written. The wall clock is
+    # pinned: on the real one the gate opens on 2027-02-23 and the run would be refused for another reason (the
+    # fixture's first snapshot is not the registered T0), so the test would pass without checking the gate.
+    monkeypatch.setattr(script.time, "time", lambda: float(verdict_ts(T0_TS) - DAY_S))
     out2 = tmp_path / "verdict.md"
     assert script.main(["--db", str(db), "--out", str(out2), "--verdict"]) == 2
-    assert not out2.exists() and "refused" in capsys.readouterr().err
+    assert not out2.exists() and "not before T0 + 126 days" in capsys.readouterr().err
     assert hashlib.sha256(db.read_bytes()).hexdigest() == digest  # the DB was only read
 
 
@@ -499,6 +507,29 @@ async def test_verdict_runs_only_on_the_wall_clock_and_the_registered_t0(tmp_pat
     monkeypatch.setattr(script.time, "time", lambda: float(verdict_ts(T0) - 1))  # one second early
     code, text = script.build_verdict(str(db))
     assert code == 2 and "refused" in text and "Вердикт" not in text
+
+
+async def test_runner_carries_the_gamma_close_time_from_the_db_to_both_reports(tmp_path, monkeypatch):
+    """Review 2026-11-04 (pm-gap-verdict-both-variants, item 3): closed_ts must travel Store (schema 38) -> load() ->
+    report. Other tests give it to the pure functions in memory only, so a column lost or mistyped on the way would print
+    zero counts in the weekly 'missing' explanation and in the verdict's second variants without failing anything."""
+    rows, _, outs = _early_h24_case()
+    db = tmp_path / "db.sqlite"
+    await _db(db, rows, outs)
+    loaded = {o["market_id"]: o["closed_ts"] for o in script.load(str(db))[1]}
+    assert loaded == {o["market_id"]: o["closed_ts"] for o in outs} and all(type(v) is int for v in loaded.values() if v)
+    # weekly: of the 'missing' +24 h points (m2, m3, m5) only m2 closed before its point
+    code, text = script.build_weekly(str(db), END + 2 * H, None)
+    assert code == 0 and "серед missing +24 год ринок закрито до точки 1; серед missing до закриття — до вікна закриття 0" in text
+    for hidden in HIDDEN:
+        assert hidden not in text, hidden
+    # verdict: the DB path gives the same v1 text as the in-memory rows with the close times
+    now = verdict_ts(T0) + 60
+    monkeypatch.setattr(script.time, "time", lambda: float(now))
+    monkeypatch.setattr(script, "T0_TS", T0)
+    code, text = script.build_verdict(str(db))
+    assert code == 0 and render_verdict(final_metrics(rows, outs, now, T0)) in text
+    assert "розв'язано до точки +24 год: 2 з 5 визначених (40.0 %), з них без знімка +24 год 1; лишились missing 2" in text
 
 
 def test_runner_reads_an_old_schema_db_without_migrating_it(tmp_path):
@@ -869,9 +900,12 @@ async def test_runner_v2g_verdict_gate_and_database_checks(tmp_path, monkeypatch
     db = tmp_path / "db.sqlite"
     await _db(db, ROWS_OWN, OUTCOMES_OWN)
     out = tmp_path / "v2g.md"
-    # today: refused, nothing written; flags that could move the gate are refused; one verdict mode per run
+    # a day before the registered gate: refused by the time gate, nothing written (the wall clock is pinned: on the real
+    # one the gate opens on 2027-03-07 and the run would be refused only for the fixture's first snapshot); flags that
+    # could move the gate are refused; one verdict mode per run
+    monkeypatch.setattr(script.time, "time", lambda: float(verdict_ts_v2g(T0_V2G_TS, T0_TS) - DAY_S))
     assert script.main(["--db", str(db), "--out", str(out), "--verdict-v2g"]) == 2
-    assert "refused" in capsys.readouterr().err and not out.exists()
+    assert "not before max(T0 v2-g + 126 days" in capsys.readouterr().err and not out.exists()
     for flags in (["--now", str(GATE_OWN)], ["--t0", "1"], ["--verdict"]):
         assert script.main(["--db", str(db), "--out", str(out), "--verdict-v2g", *flags]) == 2
         assert "refused" in capsys.readouterr().err and not out.exists()
@@ -895,3 +929,27 @@ async def test_runner_v2g_verdict_gate_and_database_checks(tmp_path, monkeypatch
     monkeypatch.setattr(script.time, "time", lambda: float(GATE_OWN + 60))
     code, text = script.build_verdict_v2g(str(db))
     assert code == 2 and "not the registered T0" in text
+
+
+async def test_runner_verdicts_default_to_their_own_files_not_the_weekly_report(tmp_path, monkeypatch):
+    """Review 2026-11-01 (pm-v2g-verdict-report, item 3): without --out both verdicts wrote pm_gap_REPORT.md, which the
+    Sunday timer rewrites a few days later. Each verdict now defaults to its own file beside the weekly one."""
+    db = tmp_path / "db.sqlite"
+    await _db(db, ROWS_OWN, OUTCOMES_OWN)
+    weekly = tmp_path / "paper" / "pm_gap_REPORT.md"
+    monkeypatch.setenv(script.ENV_OUT, str(weekly))
+    assert script.main(["--db", str(db), "--now", str(END + 2 * H)]) == 0
+    weekly_text = weekly.read_text(encoding="utf-8")
+    monkeypatch.setattr(script, "T0_TS", T0)
+    monkeypatch.setattr(script, "T0_V2G_TS", T0V)
+    monkeypatch.setattr(script.time, "time", lambda: float(GATE_OWN + 60))
+    assert script.main(["--db", str(db), "--verdict"]) == 0
+    assert script.main(["--db", str(db), "--verdict-v2g"]) == 0
+    assert weekly.read_text(encoding="utf-8") == weekly_text  # the weekly report is untouched
+    v1 = (weekly.parent / script.VERDICT_NAME).read_text(encoding="utf-8")
+    v2g = (weekly.parent / script.VERDICT_V2G_NAME).read_text(encoding="utf-8")
+    assert "Вердикт: " in v1 and "Вердикт v2-g: " in v2g and v1 != v2g
+    # an explicit --out still wins
+    out = tmp_path / "elsewhere.md"
+    assert script.main(["--db", str(db), "--out", str(out), "--verdict-v2g"]) == 0
+    assert out.read_text(encoding="utf-8") == v2g

@@ -13,7 +13,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import resource
 import statistics
 import sys
 import time
@@ -23,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from common_helpers import rss_mb
 
 from tradedesk.analytics.liquidation_flush import cluster_bootstrap_ci, without_top_days
 from tradedesk.analytics.session_stop_hunt import (
@@ -58,10 +58,6 @@ def emit(line: str = "") -> None:
     if OUT["fh"] is not None:
         OUT["fh"].write(line + "\n")
         OUT["fh"].flush()
-
-
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 
 
 def months() -> list[tuple[int, int]]:

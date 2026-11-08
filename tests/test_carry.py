@@ -313,6 +313,24 @@ def test_spread_snapshot_flags():
     assert "price_mismatch" in spread_snapshot(legs, now_ms=now)["pair"]["flags"]
 
 
+def test_spread_snapshot_incomplete_history_blocks_tradable():
+    from tradedesk.analytics.carry import spread_snapshot
+
+    now = 40 * DAY_MS
+    legs = {
+        "binanceusdm": {"entries": _hist(0.0001), "rate": 0.0001, "interval_hours": 8, "mark": 100.0},
+        "bybit": {"entries": _hist(0.0006), "rate": 0.0006, "interval_hours": 8, "mark": 100.1},
+        "okx": {"entries": _hist(0.0003), "rate": 0.0003, "interval_hours": 8, "mark": 100.0, "incomplete": True},
+    }
+    # the partial leg is not in the pair (bybit short, binanceusdm long): no flag, still tradable
+    p = spread_snapshot(legs, now_ms=now)["pair"]
+    assert p["flags"] == [] and p["tradable_now"] is True
+    legs["bybit"]["incomplete"] = True
+    p = spread_snapshot(legs, now_ms=now)["pair"]
+    assert p["status"] == "above_entry"
+    assert p["flags"] == ["incomplete_history"] and p["tradable_now"] is False
+
+
 def test_spread_snapshot_needs_two_venues():
     from tradedesk.analytics.carry import spread_snapshot
 

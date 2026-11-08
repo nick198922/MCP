@@ -15,7 +15,6 @@ import asyncio
 import dataclasses
 import hashlib
 import json
-import resource
 import sys
 from pathlib import Path
 from typing import Any
@@ -24,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
+from common_helpers import rss_mb  # noqa: E402
 from thegraph_sample import read_key  # noqa: E402
 
 from tradedesk.config import Settings  # noqa: E402
@@ -35,10 +35,6 @@ CACHE = Path.home() / ".cache" / "tradedesk-agents" / "smart-money-pm-h1"
 MAIN = graph_mod.POLYMARKET_SUBGRAPH_ID
 NETWORK = "DZz4kDTdmzWLWsV373w2bSmoar3umKKH9y82SUKr5qmp"  # The Graph Network (Arbitrum) subgraph: subgraph metadata
 TYPE_REF = "kind name ofType { kind name ofType { kind name ofType { kind name } } }"
-
-
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 
 
 class Client:

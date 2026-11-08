@@ -1,0 +1,3 @@
+- Правила алертів (пункт 69 [standing-improvements](../ideas/IDEA-20261102-standing-improvements.md)): `load_rules` у `src/tradedesk/alerts/engine.py` більше не пише в лог попередження про правило з зарезервованим префіксом `health:` на кожному такті колектора, а лише **один раз на id за життя процесу** (множина `_WARNED_RESERVED_IDS` на рівні модуля).
+- Фільтрація не змінилась: таке правило й далі пропускається при кожному завантаженні, решта правил читається як раніше.
+- Тест `test_reserved_health_prefix_warning_logged_once_per_id` (`tests/test_alerts_health.py`): два виклики `load_rules` з тим самим поганим id дають рівно одне попередження, і правило пропущене обидва рази.

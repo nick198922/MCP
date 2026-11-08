@@ -20,7 +20,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .funding_crowding import Bars, Candidate, Pick, WeekResult, median_turnover, ols_beta
+from .funding_crowding import Bars, Candidate, Pick, WeekResult, median_turnover
 
 # ---------------------------------------------------------------- point-in-time universe
 
@@ -339,8 +339,3 @@ def circular_shift_test(xs: Sequence[float], flags: Sequence[bool]) -> tuple[flo
             stats.append(d)
     p = (1 + sum(s >= obs for s in stats)) / (1 + len(stats))
     return obs, p, stats
-
-
-def beta_of(ys: Sequence[float], xs: Sequence[float]) -> float:
-    """Plain OLS slope (re-export for scripts)."""
-    return ols_beta(ys, xs)

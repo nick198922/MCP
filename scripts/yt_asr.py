@@ -26,6 +26,10 @@ from pathlib import Path
 MODEL = "mlx-community/whisper-large-v3-turbo"
 CPU_MODEL = "large-v3-turbo"
 RATE = 16_000
+NEED = (
+    "yt_asr.py needs imageio-ffmpeg and a recogniser (mlx-whisper on Apple Silicon, else faster-whisper): uv run --no-project "
+    "--with 'yt-dlp[default]' --with imageio-ffmpeg --with faster-whisper python -I scripts/yt_asr.py ... (see its docstring)"
+)
 
 
 def _sibling(name: str):
@@ -61,7 +65,10 @@ def download_audio(url: str, vid: str, cache: Path | None, tmp: Path) -> Path:
 
 def decode(audio: Path):
     """16 kHz mono float32 samples via the ffmpeg binary of imageio-ffmpeg (no system ffmpeg needed)."""
-    import imageio_ffmpeg  # noqa: PLC0415
+    try:
+        import imageio_ffmpeg  # noqa: PLC0415
+    except ImportError:
+        sys.exit(NEED)
     import numpy as np  # noqa: PLC0415
 
     cmd = [imageio_ffmpeg.get_ffmpeg_exe(), "-loglevel", "error", "-i", str(audio), "-f", "s16le", "-ac", "1", "-ar", str(RATE), "-"]
@@ -75,7 +82,10 @@ def recognise(audio: Path, language: str | None) -> dict:
         import mlx_whisper  # noqa: PLC0415
 
         return mlx_whisper.transcribe(decode(audio), path_or_hf_repo=MODEL, language=language, verbose=None)
-    from faster_whisper import WhisperModel  # noqa: PLC0415
+    try:
+        from faster_whisper import WhisperModel  # noqa: PLC0415
+    except ImportError:
+        sys.exit(NEED)
 
     model = WhisperModel(CPU_MODEL, device="cpu", compute_type="int8")
     segments, info = model.transcribe(decode(audio), language=language, vad_filter=True)

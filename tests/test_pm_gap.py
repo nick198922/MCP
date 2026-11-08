@@ -9,6 +9,7 @@ import sqlite3
 from collections import Counter
 from datetime import UTC, date, datetime
 from pathlib import Path
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -38,6 +39,7 @@ from tradedesk.collector.pm_gap import collect_pm_gap, resolve_outcomes, scan_ga
 from tradedesk.collector.scheduler import build_default_scheduler
 from tradedesk.config import Settings
 from tradedesk.core.envelope import Builder
+from tradedesk.core.ratelimit import TokenBucket
 from tradedesk.runtime import Runtime
 from tradedesk.server import build_server
 from tradedesk.store import SCHEMA_VERSION, Store
@@ -202,13 +204,12 @@ def _transports(state, gamma_status: int = 200, clob_status: int = 200, events=N
 
 
 async def _rt(state, now: datetime = NOW, ex=FakeEx, **kw) -> Runtime:
-    rt = Runtime(
-        Settings(
-            http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=":memory:", collector_enabled=True, **kw.pop("settings", {})
-        ),
-        transports=_transports(state, **kw),
-        exchange_factory=ex,
+    settings = Settings(
+        http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=":memory:", collector_enabled=True, **kw.pop("settings", {})
     )
+    # Production rate limits (Polymarket 5 req/s, Deribit 8 req/s) only paced the fake books in real time: up to ~3 s a test.
+    with patch("tradedesk.core.http.TokenBucket", lambda rate, burst: TokenBucket(1_000.0, 1_000)):
+        rt = Runtime(settings, transports=_transports(state, **kw), exchange_factory=ex)
     rt.now = lambda: now
     await rt.store.init()
     return rt
@@ -423,6 +424,38 @@ async def test_scan_reads_markets_books_and_options(state):
         for mid in ("m2", "m2b", "m2c", "m2d", "m2w", "m2e"):
             assert rows[mid]["model_prob"] is None and rows[mid]["model_note"] == "pre_window"
             assert rows[mid]["window_start"] == START_TOUCH and rows[mid]["path_high"] is None
+    finally:
+        await rt.aclose()
+
+
+def test_non_finite_gamma_and_bar_fields_never_raise():
+    ev = _events()
+    m1, m3 = ev[0]["markets"][0], ev[2]["markets"][0]
+    for bad in ("abc", "NaN", "Infinity", 10**400):
+        assert classify_open_market(ev[2], {**m3, "feeSchedule": {"rate": bad, "exponent": 1}}, NOW_TS, 30)["status"] == "fee"
+        assert classify_open_market(ev[2], {**m3, "feeSchedule": {"rate": 0.07, "exponent": bad}}, NOW_TS, 30)["status"] == "fee"
+        assert classify_open_market(ev[0], {**m1, "volumeNum": bad}, NOW_TS, 30)["volume_usd"] == 0.0
+    # fees off: an unusable schedule is not read
+    assert classify_open_market(ev[0], {**m1, "feeSchedule": {"rate": "abc"}}, NOW_TS, 30)["status"] == "ok"
+    assert classify_open_market(ev[0], {**m1, "outcomePrices": json.dumps([10**400, 0])}, NOW_TS, 30)["status"] == "ok"
+    rows = [[10**400, 1, 2, 1, 1], [float("nan"), 1, 2, 1, 1], *_bars(START_TOUCH, NOW_IN_TS)]
+    assert path_extremes(rows, START_TOUCH) == path_extremes(_bars(START_TOUCH, NOW_IN_TS), START_TOUCH)
+    book = {"bids": [{"price": 10**400, "size": "5"}, {"price": "0.4", "size": "5"}], "asks": [{"price": "0.6", "size": 10**400}]}
+    tob = top_of_book(book)
+    assert tob["bid"] == 0.4 and tob["ask"] is None
+
+
+async def test_scan_leaves_out_a_market_with_an_unusable_fee_and_says_so(state):
+    # Gamma sending a non-numeric fee rate used to raise ValueError out of scan_gaps (and the pm_gap job)
+    ev = _events()
+    ev[2]["markets"][0]["feeSchedule"] = {"rate": "abc", "exponent": 1}
+    ev[0]["markets"][0]["volumeNum"] = 10**400
+    rt = await _rt(state, events=ev)
+    try:
+        b = Builder()
+        rows = {r["market_id"]: r for r in await scan_gaps(rt, b, max_days=30)}
+        assert "m3" not in rows and "m1" in rows
+        assert "markets left out" in b.warnings[-1] and "fee=1" in b.warnings[-1]
     finally:
         await rt.aclose()
 

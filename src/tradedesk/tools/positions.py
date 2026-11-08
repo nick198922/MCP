@@ -15,15 +15,21 @@ from pydantic import Field
 from ..analytics.portfolio import aggregate_greeks, scenario_pnl
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, r
+from ._util import (
+    READ_ONLY,
+    STORE_ERRORS,
+    drop_corrupt_rows,
+    finite_json,
+    r,
+    reject_bad_ts,
+    reject_nonfinite,
+    reject_nonfinite_result,
+    store_failed,
+    store_ready,
+)
 
-
-def _store_guard(b: Builder, rt: Runtime) -> bool:
-    if rt.store is None:
-        b.miss("store", "tradedesk", "config", "db_path is empty; set TRADEDESK_DB_PATH to enable positions")
-        return False
-    return True
-
+# Numeric columns of a stored position; another writer can leave a string, a blob or inf in any of them.
+POSITION_NUMS = ("opened_ts", "closed_ts", "size", "entry", "mark", "delta", "gamma", "vega", "theta")
 
 DEFAULT_SCENARIOS: list[dict[str, float]] = [
     {"d_spot_pct": -0.10, "d_vol_points": 0.0},
@@ -59,7 +65,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
         entry: Annotated[float | None, Field(gt=0, description="Entry price in quote currency.")] = None,
         mark: Annotated[float | None, Field(gt=0, description="Latest mark (USD per contract/coin).")] = None,
         delta: Annotated[float | None, Field(description="Per-contract delta.")] = None,
-        gamma: Annotated[float | None, Field(description="Per-contract gamma.")] = None,
+        gamma: Annotated[float | None, Field(description="Per-contract gamma (coin per $^2, Deribit convention).")] = None,
         vega: Annotated[float | None, Field(description="Per-contract vega (USD per 1 vol-point).")] = None,
         theta: Annotated[float | None, Field(description="Per-contract theta (USD per day).")] = None,
         tags: Annotated[list[str] | None, Field(description="Free-form tags for filtering.")] = None,
@@ -67,26 +73,33 @@ def register(server: MCPServer, rt: Runtime) -> None:
         opened_ts: Annotated[int | None, Field(description="Open timestamp (unix seconds). Default: now.")] = None,
     ) -> dict[str, Any]:
         b = Builder()
-        if not _store_guard(b, rt):
+        # "inf" / "1e400" pass the float schema and were stored as inf (Infinity in every later read); opened_ts = 10**20
+        # overflowed the SQLite INTEGER binding and raised out of the tool.
+        nums = {"size": size, "entry": entry, "mark": mark, "delta": delta, "gamma": gamma, "vega": vega, "theta": theta}
+        if (bad := reject_nonfinite(b, **nums) or reject_bad_ts(b, "opened_ts", opened_ts)) is not None:
+            return bad
+        if not await store_ready(b, rt, "positions"):
             return b.build(None, ok=False)
-        await rt.store.init()
-        ts = int(opened_ts) if opened_ts is not None else int(rt.now().timestamp())
-        pid = await rt.store.position_insert(
-            opened_ts=ts,
-            instrument=instrument,
-            kind=kind,
-            side=side,
-            size=size,
-            entry=entry,
-            mark=mark,
-            delta=delta,
-            gamma=gamma,
-            vega=vega,
-            theta=theta,
-            tags=tags,
-            note=note,
-        )
-        return b.build({"id": pid, "instrument": instrument, "side": side, "size": size, "kind": kind})
+        try:
+            ts = int(opened_ts) if opened_ts is not None else int(rt.now().timestamp())
+            pid = await rt.store.position_insert(
+                opened_ts=ts,
+                instrument=instrument,
+                kind=kind,
+                side=side,
+                size=size,
+                entry=entry,
+                mark=mark,
+                delta=delta,
+                gamma=gamma,
+                vega=vega,
+                theta=theta,
+                tags=tags,
+                note=note,
+            )
+            return b.build({"id": pid, "instrument": instrument, "side": side, "size": size, "kind": kind})
+        except STORE_ERRORS as e:
+            return store_failed(b, e)
 
     @server.tool(
         annotations=READ_ONLY,
@@ -102,11 +115,14 @@ def register(server: MCPServer, rt: Runtime) -> None:
         limit: Annotated[int, Field(ge=1, le=1000, description="Maximum number of positions to return, newest first (1-1000).")] = 200,
     ) -> dict[str, Any]:
         b = Builder()
-        if not _store_guard(b, rt):
+        if not await store_ready(b, rt, "positions"):
             return b.build(None, ok=False)
-        await rt.store.init()
-        rows = await rt.store.positions_list(status=status, instrument=instrument, tag=tag, limit=limit)
-        return b.build({"count": len(rows), "positions": rows})
+        try:
+            rows = await rt.store.positions_list(status=status, instrument=instrument, tag=tag, limit=limit)
+            rows = drop_corrupt_rows(b, rows, "position", POSITION_NUMS, required=("size",))
+            return b.build({"count": len(rows), "positions": rows})
+        except STORE_ERRORS as e:
+            return store_failed(b, e)
 
     @server.tool(
         annotations=READ_ONLY,  # writes to local store only
@@ -122,19 +138,35 @@ def register(server: MCPServer, rt: Runtime) -> None:
         note: Annotated[str | None, Field(description="Optional close note.")] = None,
     ) -> dict[str, Any]:
         b = Builder()
-        if not _store_guard(b, rt):
+        if (bad := reject_bad_ts(b, "closed_ts", closed_ts)) is not None:  # 10**20 raised OverflowError out of the update
+            return bad
+        if not await store_ready(b, rt, "positions"):
             return b.build(None, ok=False)
-        await rt.store.init()
-        pos = await rt.store.position_get(id)
-        if pos is None:
-            b.miss("position", "store", "data_unavailable", f"position id={id} not found")
-            return b.build(None, ok=False)
-        if pos["status"] != "open":
-            b.miss("position", "store", "data_unavailable", f"position id={id} is already {pos['status']}")
-            return b.build(None, ok=False)
-        ts = int(closed_ts) if closed_ts is not None else int(rt.now().timestamp())
-        await rt.store.position_update_close(id, closed_ts=ts, note=note)
-        return b.build(await rt.store.position_get(id))
+        try:
+            pos = await rt.store.position_get(id)
+            if pos is None:
+                b.miss("position", "store", "data_unavailable", f"position id={id} not found")
+                return b.build(None, ok=False)
+            if pos["status"] != "open":
+                b.miss("position", "store", "data_unavailable", f"position id={id} is already {pos['status']}")
+                return b.build(None, ok=False)
+            ts = int(closed_ts) if closed_ts is not None else int(rt.now().timestamp())
+            await rt.store.position_update_close(id, closed_ts=ts, note=note)
+            row = await rt.store.position_get(id)
+            # Closing computes nothing from the stored numbers, so a corrupt position is still closed (it would otherwise
+            # stay open for good); but a blob cell failed the reply after the close was written, and inf came back as
+            # Infinity: the stored row is then left out of the reply.
+            if row is not None and not (
+                finite_json(row) and drop_corrupt_rows(Builder(), [row], "position", POSITION_NUMS, required=("size",))
+            ):
+                b.warn(
+                    f"position id={id} was closed, but its stored row is malformed (a blob, or a non-numeric / non-finite "
+                    f"{', '.join(POSITION_NUMS)}), so it is not returned"
+                )
+                return b.build({"id": id, "status": "closed", "closed_ts": ts})
+            return b.build(row)
+        except STORE_ERRORS as e:
+            return store_failed(b, e)
 
     @server.tool(
         annotations=READ_ONLY,
@@ -157,39 +189,47 @@ def register(server: MCPServer, rt: Runtime) -> None:
         days: Annotated[float, Field(ge=0, description="Scenario time (days) if a scenario does not supply its own.")] = 0.0,
     ) -> dict[str, Any]:
         b = Builder()
-        if not _store_guard(b, rt):
+        # The float schema lets "inf" / 1e400 through; such a scenario or days gave NaN / Infinity PnL.
+        if (bad := reject_nonfinite(b, reference_spot=reference_spot, scenarios=scenarios, days=days)) is not None:
+            return bad
+        if not await store_ready(b, rt, "positions"):
             return b.build(None, ok=False)
-        await rt.store.init()
-        rows = await rt.store.positions_list(status="open", instrument=instrument_filter, tag=tag, limit=1000)
-        agg = aggregate_greeks(rows)
-        totals = agg["totals"]
-        if totals["count"] == 0:
-            b.miss("positions", "store", "data_unavailable", "no open positions matched the filter")
-            return b.build(None, ok=False)
-        scen_list = scenarios or DEFAULT_SCENARIOS
-        scen_out: list[dict[str, Any]] = []
-        for s in scen_list:
-            d_spot_pct = float(s.get("d_spot_pct", 0.0))
-            d_vol_points = float(s.get("d_vol_points", 0.0))
-            scen_days = float(s.get("days", days))
-            res = scenario_pnl(
-                rows,
-                d_spot_pct=d_spot_pct,
-                d_vol_points=d_vol_points,
-                reference_spot=reference_spot,
-                days=scen_days,
-            )
-            scen_out.append(
-                {
-                    "d_spot_pct": d_spot_pct,
-                    "d_vol_points": d_vol_points,
-                    "days": scen_days,
-                    "pnl_usd": r(res["total_pnl"], 2),
-                }
-            )
-        return b.build(
-            {
-                "filters": {"instrument": instrument_filter, "tag": tag},
+        try:
+            rows = await rt.store.positions_list(status="open", instrument=instrument_filter, tag=tag, limit=1000)
+            # A string / blob greek used to count as 0 silently and inf gave Infinity / NaN totals: such a position is
+            # left out with a warning instead.
+            stored = len(rows)
+            rows = drop_corrupt_rows(b, rows, "open position", POSITION_NUMS, required=("size",))
+            agg = aggregate_greeks(rows)
+            totals = agg["totals"]
+            if totals["count"] == 0:
+                why = (
+                    "no open positions matched the filter" if stored == len(rows) else f"all {stored} matching open positions are malformed"
+                )
+                b.miss("positions", "store", "data_unavailable", why)
+                return b.build(None, ok=False)
+            scen_list = scenarios or DEFAULT_SCENARIOS
+            scen_out: list[dict[str, Any]] = []
+            for s in scen_list:
+                d_spot_pct = float(s.get("d_spot_pct", 0.0))
+                d_vol_points = float(s.get("d_vol_points", 0.0))
+                scen_days = float(s.get("days", days))
+                res = scenario_pnl(
+                    rows,
+                    d_spot_pct=d_spot_pct,
+                    d_vol_points=d_vol_points,
+                    reference_spot=reference_spot,
+                    days=scen_days,
+                )
+                scen_out.append(
+                    {
+                        "d_spot_pct": d_spot_pct,
+                        "d_vol_points": d_vol_points,
+                        "days": scen_days,
+                        "pnl_usd": r(res["total_pnl"], 2),
+                    }
+                )
+            nums = {
                 "net_greeks": {
                     "count": totals["count"],
                     "delta": r(totals["delta"], 6),
@@ -200,6 +240,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 },
                 "per_instrument": {k: {gk: r(gv, 6) for gk, gv in v.items()} for k, v in agg["per_instrument"].items()},
                 "scenarios": scen_out,
-                "reference_spot": reference_spot,
             }
-        )
+            # Finite but extreme stored greeks or scenario inputs can still overflow a sum or a product.
+            if (bad := reject_nonfinite_result(b, nums)) is not None:
+                return bad
+            return b.build({"filters": {"instrument": instrument_filter, "tag": tag}, **nums, "reference_spot": reference_spot})
+        except STORE_ERRORS as e:
+            return store_failed(b, e)

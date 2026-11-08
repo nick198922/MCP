@@ -1,8 +1,8 @@
 """Paper copy of two Hyperliquid vaults at Bybit prices (the owner's choice «А», 2026-10-24).
 
-    python3 scripts/copy_vaults.py run              # every 2 minutes (user timer): follow, trade, mark, funding
-    python3 scripts/copy_vaults.py report [--tg]    # the copy against the vault since the start; --tg sends it
-    python3 scripts/copy_vaults.py status           # the books now (no network, no writes)
+    uv run python scripts/copy_vaults.py run              # every 2 minutes (user timer): follow, trade, mark, funding
+    uv run python scripts/copy_vaults.py report [--tg]    # the copy against the vault since the start; --tg sends it
+    uv run python scripts/copy_vaults.py status           # the books now (no network, no writes)
 
 Question: can a follower earn what Delta_01 and Jade Lotus Capital earn (docs/verification/2026-10-23-top-vaults-
 profile.md; card IDEA-20261015-smart-money-persistence, «Волти»)? Each vault gets a $10 000 book that mirrors its
@@ -17,7 +17,8 @@ sizes alike, so they cancel out in the target.
 Paper only, no orders and no keys (nothing here can trade): the demo account cannot hold it, because Bybit nets one
 position per symbol and the copy's BTC / ETH would mix with the course setups' trades there. Margin and liquidation
 are not modelled (the vaults hold 1.7-2.2x gross). Vault data is untrusted: sizes are parsed as numbers, names never
-reach Telegram. A failed API call skips the run (logged), never half-trades a book. Kept in DB (SQLite, own file).
+reach Telegram. All network goes through ``core.http.Http`` (Bybit here, Hyperliquid in vault_profile._post), so the
+venv is needed. A failed API call skips the run (logged), never half-trades a book. Kept in DB (SQLite, own file).
 Scheduled by deploy/user-units/tradedesk-copy-vaults-*; silent without FLAG.
 """
 
@@ -25,12 +26,9 @@ from __future__ import annotations
 
 import argparse
 import html
-import json
 import sqlite3
 import sys
 import time
-import urllib.parse
-import urllib.request
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -43,6 +41,8 @@ sys.path.insert(0, str(HERE / "research"))
 import vault_profile as vp  # noqa: E402
 import vault_watch_tg as vw  # noqa: E402
 
+from tradedesk.core.http import Http  # noqa: E402  (src/ is on sys.path through vault_profile)
+
 VAULTS = {
     "Delta_01": "0x3005fade4c0df5e1cd187d7062da359416f0eb8e",
     "Jade Lotus Capital": "0xbc5bf88fd012612ba92c5bd96e183955801b7fdc",
@@ -51,7 +51,8 @@ BOOK_USD = 10_000.0
 BAND_USD = 25.0
 BAND_FRAC = 0.02
 TAKER_FEE = 0.00055  # Bybit USDT perpetual taker, per side (= execution.guard.TAKER_FEE; tested)
-BYBIT = "https://api.bybit.com/v5/market"
+# Invariant 2: public Bybit v5/market through core.http.Http (limiter, 2 retries on 429 / 5xx / network, scrubbed errors).
+BYBIT = Http("bybit_market", "https://api.bybit.com", rate=5.0, burst=5, timeout=30, retries=2)
 STATE_DIR = Path("/var/lib/tradedesk-mcp/assistant")
 DB = STATE_DIR / "copy_vaults.sqlite"
 FLAG = STATE_DIR / "copy-vaults.on"
@@ -121,12 +122,11 @@ def funding_due(rows: list[dict], since_ms: int) -> list[tuple[int, float]]:
 # --- I/O ---------------------------------------------------------------------------------------------------------
 
 
-def _get(path: str, **params: Any) -> dict:
-    url = f"{BYBIT}/{path}?{urllib.parse.urlencode(params)}"
-    with urllib.request.urlopen(url, timeout=30) as resp:
-        data = json.load(resp)
-    if data.get("retCode") != 0:
-        raise RuntimeError(f"Bybit {path}: {data.get('retMsg')}")
+def _get(path: str, http: Http | None = None, **params: Any) -> dict:
+    """``result`` of a public Bybit v5/market GET; a transport failure (ProviderError) or a retCode other than 0 raises."""
+    data = vp.run_sync(http or BYBIT, lambda h: h.get_json(f"/v5/market/{path}", params=params, tool=f"market/{path}"))
+    if not isinstance(data, dict) or data.get("retCode") != 0:
+        raise RuntimeError(f"Bybit {path}: {data.get('retMsg') if isinstance(data, dict) else 'not a JSON object'}")
     return data["result"]
 
 

@@ -105,7 +105,7 @@ def test_journal_page_shows_button_and_status():
     page = db.render_journal(data, None, now, {"page": 1}, None, {})
     assert "action='/journal/refresh'" in page and "Оновити угоди" in page
     run = db.render_journal(data, None, now, {"page": 1}, None, {"state": "running", "started": now - 5, "venues": {"bybit": {"ok": True}}})
-    assert "disabled" in run and "location.replace('/journal')" in run and "Bybit ✓" in run
+    assert "disabled" in run and db.REFRESH_MARK in run and "Bybit ✓" in run  # reloads itself (KEEP_OPEN_JS, item 89)
     done = {
         "state": "error",
         "started": now - 60,

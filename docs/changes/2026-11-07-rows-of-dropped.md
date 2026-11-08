@@ -1,0 +1,9 @@
+# `_rows_of` у `cycle` / `flow`: відкинуті рядки — окремим попередженням (пункт 213)
+
+- Новий хелпер `warn_incomplete_range` у `src/tradedesk/tools/_util.py`; його викликають обидва `_rows_of` (`tools/cycle.py` для `cycle_regime`, `tools/flow.py` для `market_flow`).
+- Якщо в результаті діапазону `dropped_rows > 0` (ccxt-фандинг після пункту 206: рядок не `dict` або `timestamp` відсутній чи не ціле число), з'являється попередження англійською з полем і числом: `funding:bybit: 2 malformed rows dropped (...); the series may have holes.`
+- «history incomplete (paging stopped early)» лишається, коли `truncated=true` або коли `complete=false` і відкидання цього не пояснює. Свічки, OI Bybit і Coinbase не мають ключа `truncated`, тож для них поведінка та сама, що й раніше. Якщо стоять і `truncated`, і `dropped_rows`, будуть обидва попередження.
+- `dropped_rows` не того типу (`bool`, рядок, `None`, від'ємне, дробове) ігнорується. Рядки й числа не змінюються: змінено лише текст `warnings`.
+- Тести `tests/test_rows_of_dropped.py` (21) на обох хелперах: повні дані — без попередження; `complete=false` без `dropped_rows` — як раніше; `dropped_rows=2` — одне попередження з «2» і без «paging»; `truncated` + `dropped_rows` — два; поле не того типу ігнорується. Плюс `market_flow` через MCP-клієнт: Bybit-фандинг з `dropped_rows=2` дає попередження `funding:bybit: 2 …` без «paging», а `venues_latest` і `summary` збігаються з чистим прогоном.
+- Перевірка: `make lint`; `test_rows_of_dropped`, `test_market_flow`, `test_cycle_regime`, `test_cycle_regime_eval`, `test_cycle_regime_journal`, `test_flow_snapshot`, `test_tools_wrong_type_fields`, `test_tools_envelope_shape` — 283 passed.
+- Наживо не перевірялось: зміна торкається лише тексту попереджень, а на реальних даних 07.11 `dropped_rows=0` (пункт 206).

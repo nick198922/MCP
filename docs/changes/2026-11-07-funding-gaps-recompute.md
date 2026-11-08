@@ -1,0 +1,4 @@
+- Перерахунок двох старих вердиктів на кешах funding без дір ([звіт](../verification/2026-11-07-funding-gaps-recompute.md), [рев'ю](../reviews/2026-11-07-funding-gaps-recompute.md)).
+- Carry Binance ↔ Bybit, результат B: −8.7 % APR підтверджено (CI −23.1 … +6.8 %); без стопу +2.9 % [−15.0; +20.6].
+- HL ↔ Binance: H1 без змін (−0.32 %), контроль Bybit −0.43 %, HL − контроль +0.12 п.п.; `rejected` лишається.
+- Закриті вердикти не переписано, лише errata; `src/` і `execution/` не змінено.

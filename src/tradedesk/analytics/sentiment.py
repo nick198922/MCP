@@ -21,13 +21,14 @@ def _zone(value: int) -> str:
 
 
 def _norm(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Parse string fields and sort oldest-first."""
+    """Parse string fields and sort oldest-first. A reading whose value or time is absent, not a number, NaN / inf or
+    (time) a 300+-digit integer is dropped, as is a value outside 0..100."""
     out: list[dict[str, Any]] = []
     for r in rows:
         try:
             v = int(r["value"])
-            ts = int(r["timestamp"])
-        except (KeyError, TypeError, ValueError):
+            ts = int(float(r["timestamp"]))  # float() first: a 300+-digit time raises OverflowError instead of passing
+        except (KeyError, TypeError, ValueError, OverflowError):  # OverflowError: int(inf), float() of a 300+-digit int
             continue
         if not 0 <= v <= 100:
             continue

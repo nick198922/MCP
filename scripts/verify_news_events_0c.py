@@ -57,6 +57,7 @@ from _upbit_0c_helpers import (  # noqa: E402  (vendored: the Upbit analytics we
     upbit_body_tickers,
     upbit_time_ms,
 )
+from common_helpers import rss_mb  # noqa: E402
 
 from tradedesk.analytics.news_events import (  # noqa: E402
     DAY_MS,
@@ -126,10 +127,6 @@ COLL_LAGS = (DAY_MS, 3 * DAY_MS)  # post-review collision check: Upbit KRW-X / K
 
 def tagged(cache: Path, stem: str, ext: str) -> Path:
     return cache / f"{stem}_{TAG}.{ext}"
-
-
-def rss_mb() -> float:
-    return v0.rss_mb()
 
 
 rd, wr, out, fmt, ymd, ymdhm = v0.rd, v0.wr, v0.out, v0.fmt, v0.ymd, v0.ymdhm

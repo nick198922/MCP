@@ -11,8 +11,9 @@ Read-only and offline: the rows come from the ``forecast_log`` table (schema v20
 so the message and the panel never disagree. Short (owner, 22.10): a title, four lines, one caveat sentence.
 
 The probabilities are RISK-NEUTRAL (the Deribit smile), not the assistant's forecast and not advice; the sample size is
-the number of settled (asset, expiry) outcomes, and below analytics.forecast_log.MIN_EXPIRIES the text says there is no
-conclusion. The RV30 comparison is descriptive until that many expiry dates. A missing database, a store older than
+the number of settled expiry dates (BTC and ETH of one date move together; the (asset, expiry) count is only an upper
+bound), and below analytics.forecast_log.MIN_EXPIRIES dates the text says there is no conclusion, as does the RV30
+comparison. A missing database, a store older than
 schema v20, an empty table or only open forecasts give a short explanation, never an error. Any text from the data is
 HTML-escaped. The «Журнал» button opens /journal under the dashboard URL that scripts/assistant_brief_tg.py resolves
 ($TRADEDESK_PANEL_URL or the file of scripts/server/23-tailscale.sh); with no usable URL the text goes out without it.
@@ -91,10 +92,12 @@ def _date(ts: object) -> str:
 
 
 def _sample_line(s: dict, n_open: int) -> str:
-    n_exp = s["n_expiries"]
-    head = f"Розраховано прогнозів: {s['n']}, експірацій (актив × дата): {n_exp}" + (f", відкритих: {n_open}" if n_open else "")
-    if n_exp < fl.MIN_EXPIRIES:
-        return _h(f"{head}: замало для висновку (потрібно ≥ {fl.MIN_EXPIRIES} експірацій), числа нижче — лише опис.")
+    n_dates = s["n_expiry_dates"]  # the sample size: BTC and ETH of one date move together (as forecast_log_status)
+    head = f"Розраховано прогнозів: {s['n']}, експірацій (актив × дата): {s['n_expiries']}, дат експірації: {n_dates}" + (
+        f", відкритих: {n_open}" if n_open else ""
+    )
+    if n_dates < fl.MIN_EXPIRIES:
+        return _h(f"{head}: замало для висновку (потрібно ≥ {fl.MIN_EXPIRIES} дат експірації), числа нижче — лише опис.")
     return _h(f"{head}: числа нижче — опис, перевагу вони не доводять.")
 
 

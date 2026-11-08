@@ -16,7 +16,8 @@ import test_dashboard as tdb  # noqa: E402
 
 HOUR = 3600
 NOW = int(datetime(2026, 11, 2, 8, 30, tzinfo=UTC).timestamp())
-PM = {"TRADEDESK_PM_GAP_ENABLED": "1"}
+# pm_gap alone: the jobs the collector runs by default count unless switched off
+PM = {"TRADEDESK_PM_GAP_ENABLED": "1"} | {s.flag: "0" for s in ch.SPECS if s.default_on}
 ICON = "<span class='info' tabindex='0' role='button'"
 
 
@@ -48,7 +49,7 @@ def test_all_snapshots_present_is_ok_and_folded(tmp_path):
     r = h["rows"][0]
     assert (r["present"], r["expected"], r["gaps"]) == (167, 167, 0)  # 26.10 09:00 .. 02.11 07:00 UTC, both included
     sec = _section(_page(h))
-    assert ICON in sec and "Усі серії в нормі (1 з 1)" in sec and "<details><summary>" in sec  # nothing to see: folded
+    assert ICON in sec and "Усі серії в нормі (1 з 1)" in sec and "<details id='p-series'><summary>" in sec  # nothing to see: folded
     assert "<td>pm_gap</td>" in sec and "100 %" in sec and "167/167" in sec and "02.11 07:01 UTC" in sec
 
 
@@ -57,7 +58,7 @@ def test_a_hole_below_90_percent_is_flagged_and_open(tmp_path):
     r = h["rows"][0]
     assert r["status"] == "low" and (r["present"], r["gaps"], r["longest_gap_s"]) == (147, 1, 20 * HOUR)
     sec = _section(_page(h))
-    assert "Потребують уваги: 1 з 1 серій" in sec and "<details open>" in sec
+    assert "Потребують уваги: 1 з 1 серій" in sec and "<details id='p-series' open>" in sec
     assert "pm_gap <b class='bad'>· нижче 90 %</b>" in sec and "<span class='bad'>88 %</span>" in sec  # 147/167
     assert "147/167" in sec
     assert "1, найдовша 20 год з 31.10 06:00 UTC" in sec
@@ -67,7 +68,7 @@ def test_a_fresh_gap_is_marked_even_above_90_percent(tmp_path):
     h = db.load_collector_health(_pm_db(tmp_path / "stale.sqlite", range(0, 4)), NOW, PM)
     assert h["rows"][0]["status"] == "stale"
     sec = _section(_page(h))
-    assert "· свіжа дірка" in sec and "зараз немає 4 год" in sec and "<details open>" in sec
+    assert "· свіжа дірка" in sec and "зараз немає 4 год" in sec and "<details id='p-series' open>" in sec
 
 
 def test_empty_db_missing_table_and_missing_file(tmp_path):

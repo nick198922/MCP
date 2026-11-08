@@ -288,3 +288,93 @@ def test_scripts_use_the_shared_ymd_ms(name):
     if "rss_mb" in SEVENTH_ROUND[name]:
         assert not hasattr(mod, "resource")
     assert mod.cmn is cmn
+
+
+RSS_MB_IMPORTED = [  # item 75 of the standing-improvements card: 'from common_helpers import rss_mb' replaced the copy
+    "verify_btc_shock_alt_lag",
+    "verify_carry_a_delisting",  # dl.rss_mb in verify_carry_a_entry_filter
+    "verify_catalyst_scalp",
+    "verify_course_s14_ema",
+    "verify_course_s1_spot_alts",
+    "verify_course_step2_early_exit",
+    "verify_course_step3_s18",
+    "verify_course_step4_fvg_ob",
+    "verify_course_step5_s17",
+    "verify_course_step6_s13",
+    "verify_course_step7_basics",  # s7.rss_mb in verify_deviation_weekly_trend
+    "verify_course_step8_macro_drift",
+    "verify_demo_context_filters",
+    "verify_demo_stop_management",  # dsm.rss_mb in verify_short_setups / verify_trail_no_target
+    "verify_expiry_pin_mirror",
+    "verify_gex_taker_flow",
+    "verify_macro_b1b",
+    "verify_macro_regimes",
+    "verify_macro_release",
+    "verify_macro_slow",
+    "verify_mark_stop",
+    "verify_market_makers_onchain",  # base.rss_mb in verify_market_makers_b2
+    "verify_news_events",  # v0.rss_mb in verify_news_events_0b / 0c / 0d, verify_market_makers_news
+    "verify_ny_midnight_open",
+    "verify_oi_liquidation_flush",
+    # item 87, second batch
+    "verify_per_asset_recheck",
+    "verify_pm_dislocation_reversion",
+    "verify_pm_favorites",
+    "verify_pm_longdated_tail_no",
+    "verify_pre_event_vol",
+    "verify_premarket_fade",
+    "verify_premarket_inventory",
+    "verify_regime_side",  # vrs.rss_mb in verify_seller_exhaustion
+    "verify_risk_overlay",
+    "verify_session_stop_hunt",  # 'from verify_session_stop_hunt import rss_mb' in verify_session_stop_hunt_fx
+    "verify_setup_passport",  # vsp.rss_mb in the verify_s*_modules scripts (also inside Pool workers)
+    "verify_smart_money_polymarket_h1",
+    "verify_smt_divergence",
+    "verify_tradfi_offhours_reopen",
+    "verify_usde_funding",
+    # item 91: '/ 1024.0' copies (same float as '/ 1024') and 'return v0.rss_mb()' wrappers (v0.rss_mb is the helper)
+    "verify_option_modules",
+    "verify_pm_h7_qlike",
+    "verify_news_events_0b",
+    "verify_news_events_0c",
+    "verify_news_events_0d",
+    "verify_market_makers_news",
+]
+
+
+@pytest.mark.parametrize("name", RSS_MB_IMPORTED)
+def test_scripts_import_the_shared_rss_mb(name):
+    mod = __import__(name)
+    assert mod.rss_mb is cmn.rss_mb  # the name stays a module attribute for the scripts that read it from here
+    assert not hasattr(mod, "resource")
+
+
+RSS_LABEL = {  # item 123: local 'rss() -> str' labels now format cmn.rss_mb() instead of reading ru_maxrss themselves
+    "verify_carry_modules": "",
+    "verify_market_flow_reader": "peak RSS ",
+    "verify_oi_turnover_short": "peak RSS ",
+    "verify_pump_fade": "rss ",
+    "verify_residual_momentum_short_leg": "peak RSS ",
+    "verify_sector_pair_spread": "rss ",
+    "verify_taker_imbalance": "peak RSS ",
+    "verify_toptrader_divergence": "peak RSS ",
+    "verify_weekend_idio_reversal": "peak RSS ",
+    "verify_xs_anchor_nearness": "peak RSS ",
+    "verify_xs_factor_ic_panel": "peak RSS ",
+    "verify_xs_volume_liquidity_factors": "peak RSS ",
+}
+
+
+@pytest.mark.parametrize("name", sorted(RSS_LABEL))
+def test_script_rss_labels_use_the_shared_rss_mb(name, monkeypatch):
+    mod = __import__(name)
+    assert mod.cmn is cmn and not hasattr(mod, "resource")
+    for kib in (1, 511, 512, 1537, 2_097_663, 52_428_800):
+
+        class Usage:
+            ru_maxrss = kib
+
+        monkeypatch.setattr(cmn.resource, "getrusage", lambda who, u=Usage: u())
+        # the removed body: f"<prefix>{resource.getrusage(RUSAGE_SELF).ru_maxrss / 1024:.0f} MB"
+        assert mod.rss() == f"{RSS_LABEL[name]}{kib / 1024:.0f} MB"
+    assert mod.rss() == f"{RSS_LABEL[name]}51200 MB"

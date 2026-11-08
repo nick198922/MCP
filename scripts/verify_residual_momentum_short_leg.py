@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import argparse
 import math
-import resource
 import statistics
 import sys
 import time
@@ -77,7 +76,7 @@ CTRL = ("fund", "mqv", "IVOL30", "MAX30")
 
 
 def rss() -> str:
-    return f"peak RSS {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.0f} MB"
+    return f"peak RSS {cmn.rss_mb():.0f} MB"
 
 
 # ---------------------------------------------------------------- build

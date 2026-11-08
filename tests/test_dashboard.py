@@ -147,6 +147,115 @@ def test_render_has_all_sections_and_escapes():
     assert "href='/brief'" in page  # the «Ринок» tab
 
 
+def test_system_tab_follows_panel_rules():
+    # standing improvements, item 65: docs/design/PANEL.md rules 1-7 on the «Система» tab
+    import re
+
+    page = db.render(_project_snap())
+    main = page[page.index("<main>") : page.index("</main>")]
+    # 1. «what now» and «what to do» first
+    assert main.index("class='lead'") < main.index("<div class='tiles'>") < main.index("Агенти зараз")
+    assert "<span class='chip ev'>чекають тебе</span>" in main and "Чекають твого перегляду PR: 1; відкритих питань агентів: 1." in main
+    # 2. every tile has an action line of at most 8 words
+    tiles = re.findall(r"<div class='tile[^']*'>.*?</div>", main)
+    assert len(tiles) == 4
+    acts = [re.search(r"<span class='act'>(.*?)</span>", t) for t in tiles]
+    assert all(acts) and all(len(x.group(1).split()) <= 8 for x in acts)
+    assert "<span class='v'>85 %</span>" in main and "агенти лише на твоїх картках" in main  # 85 % ≥ OWNER_ONLY_AT
+    assert "<span class='v'>2</span><span class='s '>PR 1 · питань 1</span>" in main
+    # 3. every «i» on the tab is an instruction (low → do, high → do), not the long «for a trade» form
+    assert "Для угоди:" not in page and page.count("<span class='do'>") >= 2 * page.count("<span class='info'")
+    # 4. the secondary blocks are folded, each with its one-line summary and a stable id for the auto-refresh
+    folds = re.findall(r"<section class='wide fold' id='(p-\w+)'><details><summary>.*?<span class='fs'>(.*?)</span>", main)
+    assert dict(folds) == {
+        "p-limit": "тиждень 85 % · 5 год 66 % · темп +18.6 п. п./добу",
+        "p-progress": "33 % · зроблено 30 з 90 кроків · ≈ 5 дн. роботи агентів",
+        "p-queue": "твоїх карток 1 · від агентів 0 · далі: паперовий carry",
+        "p-results": "підтверджено 0 · форвард 0 · без вердикту 0 · відхилено 1",
+        "p-steps": "останній 17.10 08:31 — здано",
+        "p-collector": "свіжі 1 з 1 таблиць",
+        "p-server": "диск 11 % · пам&#x27;ять 8 % · бекап 1 год тому",
+        "p-changes": "останній 17.10 12:00 — Owner&#x27;s decisions",
+    }
+    assert "<details open>" not in main
+    # 6. what waits for the owner stays open, above the folds
+    assert main.index("Питання агентів до тебе") < main.index("class='wide fold'") and "Q-1: ключ?" in main
+    # 5. the caveats once, at the bottom, and no longer inside the blocks
+    assert page.count("<b>Застереження</b>") == 1 and page.index("</main>") < page.index("<b>Застереження</b>")
+    for text in ("кожен крок важить однаково", "Ліміт спільний", "спільний із твоїми сесіями"):
+        assert text not in main, text
+    assert "Ліміт Claude спільний із твоїми сесіями: від 80 % агенти беруть лише твої картки, від 97 % — пауза." in page
+
+
+def test_system_lead_and_tiles_name_the_first_thing_that_needs_the_owner():
+    def lead(**changes) -> str:
+        s = _project_snap() | changes
+        return db.system_lead(db.system_status(s))
+
+    def agents(**kw) -> dict:
+        return _project_snap()["agents"] | kw
+
+    calm = {"agents": agents(awaiting_review=[]), "questions": []}
+    low = {"five_hour": {"pct": 10.0, "resets_at": None}, "seven_day": {"pct": 40.0, "resets_at": None}, "trend": {"rate_per_day": None}}
+    assert "<span class='chip calm'>усе працює</span>" in lead(**calm, usage=low) and "нічого робити не треба" in lead(**calm, usage=low)
+    assert "лише твої картки" in lead(**calm)  # the fixture's week is 85 %
+    full = low | {"seven_day": {"pct": 98.0, "resets_at": None}}
+    assert "агенти на паузі" in lead(**calm, usage=full) and "98 %" in lead(**calm, usage=full)
+    # data lagging beats waiting PRs, a stopped service beats both
+    stale = [{"label": "funding", "table": "funding_hist", "rows": 1, "age_s": 9 * 3600.0, "ok": False}]
+    assert "дані відстають" in lead(tables=stale) and "старший за норму: funding" in lead(tables=stale)
+    flagged = {"rows": [{"status": "low"}, {"status": "ok"}], "error": None, "window_days": 7}
+    assert "серій із дірами за 7 днів: 1" in lead(health=flagged)
+    down = [{"label": "MCP", "unit": "tradedesk-mcp", "state": "failed"}]
+    assert "служба стоїть" in lead(services=down, tables=stale) and "Не працює: MCP." in lead(services=down, tables=stale)
+    # the tiles: no usage read, a lagging table, a full disk
+    s = _project_snap() | {"usage": None, "tables": stale}
+    s["machine"] = s["machine"] | {"disk_used": 180 * 1024**3}
+    tiles = db.block_system_tiles(db.system_status(s))
+    assert "не прочитано: глянь пізніше" in tiles and "<span class='v'>0 / 1</span>" in tiles
+    assert "напиши Claude, що відстає" in tiles and "напиши Claude: звільнити місце" in tiles and "class='tile t-bad'" in tiles
+    page = db.render(s)  # no usage: the fold says so, the page still renders
+    assert "<span class='fs'>не вдалося прочитати</span>" in page and "Блок не вдалося показати" not in page
+
+
+def test_system_lead_says_the_limit_is_unknown_when_usage_was_not_read():
+    # standing improvements, item 66 (b): no usage read must not read as the green «усе працює»
+    s = _project_snap() | {"agents": _project_snap()["agents"] | {"awaiting_review": []}, "questions": [], "usage": None}
+    lead = db.system_lead(db.system_status(s))
+    assert "<span class='chip ev'>ліміт невідомий</span>" in lead and "ліміт Claude не прочитано" in lead
+    assert "усе працює" not in lead and "chip calm" not in lead
+    assert "ліміт невідомий" in db.render(s)
+
+
+@pytest.mark.parametrize("tables", [[], [{"label": "x", "table": "x", "rows": 0, "age_s": None, "ok": None}]])
+def test_system_lead_does_not_call_unchecked_collector_data_fresh(tables):
+    # deferred review nits 03-05.11 (panel-system-nits, finding 1): with the limit read and nothing waiting, an
+    # unreadable DB (table_freshness gives []) or no table with a norm must not read as «дані колектора свіжі»
+    low = {"five_hour": {"pct": 10.0, "resets_at": None}, "seven_day": {"pct": 40.0, "resets_at": None}, "trend": {"rate_per_day": None}}
+    s = _project_snap() | {"agents": _project_snap()["agents"] | {"awaiting_review": []}, "questions": [], "usage": low}
+    s["tables"] = tables
+    lead = db.system_lead(db.system_status(s))
+    assert "<span class='chip ev'>дані не перевірено</span>" in lead and "свіжість колектора невідома" in lead
+    assert "усе працює" not in lead and "chip calm" not in lead and "свіжі" not in lead.replace("свіжість", "")
+    assert "дані не перевірено" in db.render(s)
+    # one checked fresh table is enough for the green lead
+    s["tables"] = [{"label": "x", "table": "x", "rows": 1, "age_s": 60.0, "ok": True}]
+    assert "<span class='chip calm'>усе працює</span>" in db.system_lead(db.system_status(s))
+
+
+@pytest.mark.parametrize("machine", [{}, None, {"mem_total": "x", "disk_total": 0, "load": None}])
+def test_server_fold_survives_an_empty_machine(machine):
+    # standing improvements, item 66 (a): the «Сервер» fold used m["mem_total"] directly and fell on an empty machine
+    s = _project_snap() | {"machine": machine}
+    page = db.render(s)
+    fold = page[page.index("id='p-server'") :]
+    fold = fold[: fold.index("</section>")]
+    assert "<p class='empty'>даних немає</p>" in fold and "диск — · пам&#x27;ять — · бекап —" in fold
+    assert "Блок не вдалося показати" not in page
+    del s["machine"]
+    assert "даних немає" in db.render(s)
+
+
 def test_read_usage_prefers_the_agents_cache_and_throttles_own_calls(tmp_path, monkeypatch):
     import json as _json
     import time as _time
@@ -267,7 +376,7 @@ def test_brief_lead_actions_and_folded_blocks():
     import re
 
     folds = re.findall(r"<section class='wide fold' id='(.*?)'><details><summary>", page)
-    assert folds == ["b-key", "b-conditions", "b-scenarios", "b-events", "b-chart", "b-vol", "b-funding"]
+    assert folds == ["b-key", "b-conditions", "b-scenarios", "b-events", "b-chart", "b-vol", "b-funding", "b-stables"]
     assert "<details open" not in page
     assert page.index("class='lead'") < page.index("<summary><h2>Головне сьогодні") < page.index("</main>")
     assert page.index("</main>") < page.index("<b>Застереження</b>") and page.count("перевірено 18.10") == 1
@@ -292,7 +401,7 @@ def test_market_tab_short_info_notes_and_less_text():
         assert "<h1>Ринок</h1>" in page and "<title>tradedesk — ринок</title>" in page
     assert "<span class='chip risk'>подія</span>" in page and "<b>Що робити:</b> до релізу" in page  # the advice stays in the lead
     assert set(db.ACT) <= set(db.HELP) and {"price", "key", "chart", "vol"} <= set(db.ACT)
-    assert "Для угоди:" in db._info("fc_brier")  # keys without ACT (here the forecasts' Brier) keep the long note
+    assert set(db.ACT) == set(db.HELP)  # item 278: every note is the short instruction now
 
 
 def test_nav_three_sections_then_the_rest_under_detailed():
@@ -1102,9 +1211,9 @@ def test_journal_r_curve_and_weekly_review(tmp_path):
         "<td class='num ok'>+$250</td><td class='num ok'>+$83</td><td class='num'>+0.67 R <span class='mut'>за 3 з 3</span>",
         "SOLUSDT <span class='ok'>+$200</span>",
         "Тижнів із 30 і більше угодами: 0 з 2",
-        "не порада",
     ):
         assert text in block, text
+    assert "не порада" not in block  # said once, in the page's caveat at the bottom (PANEL.md rule 5, item 262)
     assert block.count("<circle") == 5 and "+3.00 R</text>" in block
     for out in ("HYPE", "CARRY", "DEMOBOT", "AUTOBOT", "ADAUSDT", "+$900"):
         assert out not in block, out
@@ -1384,16 +1493,20 @@ def test_journal_tab_shows_forecast_brier_calibration_and_weeks(tmp_path):
     assert err is None and len(data["forecast_log"]) == 40
     page = db.render_journal(data, None, float(FC_E2 + 86400), path=p)
     ref = af.score([x for x in data["forecast_log"] if x["status"] == "settled"])
-    assert ref["n"] == 32 and ref["n_expiries"] == 4
+    assert ref["n"] == 32 and ref["n_expiries"] == 4 and ref["n_expiry_dates"] == 2
+    # the sample size is named by the field forecast_log_status returns (deferred-review-nits 02.11, item 2)
+    assert "(n_expiries)" not in page
     for text in (
         f"<h2>Журнал прогнозів{db._info('fc')}",
         "Ризик-нейтральні ймовірності, не прогноз асистента.",
-        "розмір вибірки — кількість експірацій (n_expiries)",
+        "розмір вибірки — кількість дат експірації (n_expiry_dates",
+        "n_expiries (актив × експірація) — лише верхня межа",
+        "верхня межа вибірки · дат експірації 2 — розмір вибірки",
         f"Прогнозів розраховано{db._info('fc_n')}</span><span class='v'>32</span>",
         "відкритих 8",
         f"Експірацій{db._info('fc_expiries')}</span><span class='v'>4</span>",
         "замало для висновку",
-        "Замало експірацій: n_expiries = 4 (потрібно ≥ 30)",
+        "Замало дат експірації: n_expiry_dates = 2 (потрібно ≥ 30; актив × експірація — 4)",
         f"<span class='v'>{ref['brier']:.3f}</span>",
         f"Brier {ref['brier_on_ref']:.3f} проти {ref['brier_ref']:.3f} · 16 прогнозів",
         f"Brier {ref['brier']:.3f} проти {ref['brier_climatology']:.3f}",
@@ -1721,7 +1834,9 @@ def test_pm_tab_with_the_sync_columns_stale_and_ended(tmp_path):
     # a snapshot older than 2 h: the rows stay, collapsed and labelled as stale, not as signals
     stale = db.render_polymarket(data, None, float(PM_B + 2 * 3600 + 60))
     assert "старший за 2 год" in stale
-    assert "<details class='near'><summary>Ціни застарілі (знімок старший за 2 год): це не сигнали · рядків 2</summary>" in stale
+    assert (
+        "<details class='near' id='pm-stale'><summary>Ціни застарілі (знімок старший за 2 год): це не сигнали · рядків 2</summary>" in stale
+    )
     assert "боків 0 · нижче порогу реєстрації, не сигнал · ціни застарілі</span>" in stale
     # the horizon is also checked from NOW: 1.5 h before the end both passing sides are dropped and counted
     for now in (PM_END - 1.5 * 3600, PM_END - 2 * 3600 + 1, float(PM_END)):
@@ -1817,12 +1932,14 @@ def test_help_keys_used_by_the_pages_all_exist():
         assert title and what and read and trade
 
 
-def test_info_icon_is_escaped_static_text_and_unknown_key_is_empty():
+def test_info_icon_is_escaped_static_text_and_unknown_key_is_empty(monkeypatch):
     html_ = db._info("dvol")
     assert html_.startswith("<span class='info' tabindex='0' role='button'")
     # an ACT key: what it is, then «low → do», «high → do» (owner, 28.10) instead of the read / trade lines
     assert "DVOL" in html_ and "<i>Низький (до 30-го перцентиля)</i> → купувати опціони дешевше" in html_ and "Для угоди:" not in html_
-    assert "Для угоди:" in db._info("fc_brier")  # keys without ACT keep the long form
+    # a key without ACT (none left since item 278) keeps the long form, escaped
+    monkeypatch.setitem(db.HELP, "x_no_act", ("T", "what", "read <b>", "trade"))
+    assert "Для угоди: trade" in db._info("x_no_act") and "read &lt;b&gt;" in db._info("x_no_act")
     assert set(db.ACT) <= set(db.HELP) and all(all(x) for x in db.ACT.values())
     assert db._info("no-such-key") == ""
     tile = db._tile("K", "1", "s", help="iv", tone="good", badge="a<b")
@@ -1874,7 +1991,9 @@ def test_self_refreshing_tabs_keep_open_sections_and_scroll(tmp_path, monkeypatc
             assert f"<meta name='td-refresh' content='{s}'><noscript><meta http-equiv='refresh' content='{s}'></noscript>" in raw, name
             assert raw.count("http-equiv='refresh'") == 1, name  # no bare meta refresh outside <noscript>
             assert served.count("<script>") == 1 and db.KEEP_OPEN_JS in served and db.HELP_JS in served, name
-        else:  # options, journal, demo, positions: no auto-refresh here, so no reload timer either
+        elif name.startswith("journal"):  # no reload timer, but the «Оновити угоди» form keeps the folds (item 89)
+            assert db.REFRESH_MARK not in raw and db.KEEP_MARK in raw and db.KEEP_OPEN_JS in served, name
+        else:  # options, demo, positions: no auto-refresh here, so no reload timer either
             assert db.REFRESH_MARK not in raw and db.KEEP_OPEN_JS not in served, name
     for part in ("sessionStorage", "querySelectorAll('details')", "scrollY", "scrollTo(", "location.reload()", "s * 1000"):
         assert part in db.KEEP_OPEN_JS
@@ -1914,7 +2033,7 @@ def test_keep_open_keys_folds_by_section_id_not_by_live_summary(tmp_path):
     assert "p.classList.contains('fold') ? p.id" in db.KEEP_OPEN_JS
     assert db.KEEP_OPEN_JS.index("d.id ||") < db.KEEP_OPEN_JS.index("p.id :") < db.KEEP_OPEN_JS.index("sm.textContent")
     pages = _all_tab_pages(tmp_path)
-    for name in ("brief", "radar BTC", "radar ETH", "flows BTC", "flows ETH", "polymarket"):  # the self-refreshing ones
+    for name in ("project", "brief", "radar BTC", "radar ETH", "flows BTC", "flows ETH", "polymarket"):  # the self-refreshing ones
         page = pages[name]
         assert db.REFRESH_MARK in page and "<section class='wide fold'>" not in page, name  # no fold without an id
         ids = re.findall(r"<section class='wide fold' id='([^']+)'><details>", page)
@@ -1938,6 +2057,139 @@ def test_keep_open_keys_folds_by_section_id_not_by_live_summary(tmp_path):
     assert _keep_open_keys(a) == _keep_open_keys(b)  # ... the keys did not
     folds = ("now", "totals", "price", "cvd", "oi", "funding", "liq", "premium")
     assert [k for k in _keep_open_keys(a) if k.startswith("f-")] == [f"f-{x}#1" for x in folds]
+
+
+def test_every_fold_on_every_tab_has_a_stable_unique_id(tmp_path):
+    # standing improvements, item 85: a fold without an id was restored by its summary line, which carries live
+    # numbers, so a refresh closed it; every fold now has an id (`sid`, else derived from its title)
+    import re
+
+    pages = _all_tab_pages(tmp_path)
+    (tmp_path / "again").mkdir()
+    again = _all_tab_pages(tmp_path / "again")  # a second render: the same ids
+    assert db._fold_id("Крива в R і тижневий розбір") == "fold-крива-в-r-і-тижневий-розбір"
+    assert db._fold_id("Демо проти бектесту") == "fold-демо-проти-бектесту" and db._fold_id("—") == "fold-x"
+    assert "id='p-x'" in db._fold("T", "", "", "", sid="p-x") and "id='fold-t'" in db._fold("T", "", "", "")
+    n = 0
+    for name, page in pages.items():
+        assert "<section class='wide fold'>" not in page, name
+        ids = re.findall(r"<section class='wide fold' id='([^']+)'><details>", page)
+        assert len(ids) == page.count("wide fold") == len(set(ids)), name
+        assert all(re.fullmatch(r"[\w-]+", i) for i in ids), name  # nothing to escape in the attribute
+        assert ids == re.findall(r"<section class='wide fold' id='([^']+)'><details>", again[name]), name
+        assert all(f"{i}#1" in _keep_open_keys(page) for i in ids), name  # the keep-open key is the id, not the summary
+        n += len(ids)
+    assert n > 40
+    for name in ("journal", "demo"):  # the folds that used to have no id
+        assert "id='fold-" in pages[name], name
+    # the state-saving script is on every self-refreshing tab, keyed by the section id
+    for name in ("project", "brief", "radar BTC", "flows BTC", "polymarket"):
+        served = pages[name] if name == "project" else db.with_help(pages[name])
+        assert db.KEEP_OPEN_JS in served and "sessionStorage" in served and "p.classList.contains('fold') ? p.id" in served, name
+
+
+def test_journal_refresh_pages_keep_open_folds(tmp_path, monkeypatch):
+    # standing improvements, item 89: the page the «Оновити угоди» POST redirects to (GET /journal) reloaded itself by
+    # a bare location.replace every 4 s while the run lasted, so the journal's folds closed; it now uses KEEP_OPEN_JS
+    import re
+
+    p = _journal_db(tmp_path / "j.sqlite", _sample_journal(), _sample_rec())
+    now = float(T0 + 10 * 86400)
+    status = tmp_path / "refresh.json"
+    monkeypatch.setattr(db, "JOURNAL_DB", p)
+    monkeypatch.setattr(db, "LIVE_PATH", tmp_path / "no-live.json")
+    monkeypatch.setattr(db, "REFRESH_STATUS", status)
+    served = {}
+    for state, st in (
+        ("idle", None),
+        ("running", {"state": "running", "started": now - 5, "venues": {"bybit": {"ok": True}}}),
+        ("done", {"state": "done", "started": now - 60, "finished": now - 30, "venues": {"bybit": {"ok": True, "added": 2}}}),
+    ):
+        if st is not None:
+            status.write_text(json.dumps(st), encoding="utf-8")
+        served[state] = db.journal_page("", now=now)
+    s = db.REFRESH_POLL_S
+    for state, page in served.items():
+        # one script (tooltips + KEEP_OPEN_JS) on every state, and the form saves the folds before its POST
+        assert page.count("<script>") == 1 and db.KEEP_OPEN_JS in page and db.HELP_JS in page, state
+        assert "<form method='post' action='/journal/refresh' class='jr' data-keep='/journal'>" in page, state
+        assert "location.replace" not in page and page.endswith("</body></html>"), state
+    # only the running page reloads itself (JS timer + <noscript> fallback); the others restore, never reload
+    assert f"<meta name='td-refresh' content='{s}'><noscript><meta http-equiv='refresh' content='{s}'></noscript>" in served["running"]
+    assert db.REFRESH_MARK not in served["idle"] and db.REFRESH_MARK not in served["done"]
+    # the same stable fold ids in every state, and they are the keys the script restores by
+    ids = {k: re.findall(r"<section class='wide fold' id='([^']+)'><details>", v) for k, v in served.items()}
+    assert ids["idle"] and ids["idle"] == ids["running"] == ids["done"]
+    assert all(i.startswith("fold-") for i in ids["running"])
+    assert all(f"{i}#1" in _keep_open_keys(served["running"]) for i in ids["running"])
+    # the script: restore first, then the submit hook (keyed by data-keep), and the timer only with the meta
+    js = db.KEEP_OPEN_JS
+    assert js.index("st.open") < js.index("addEventListener('submit'") < js.index("if (!m) return") < js.index("setTimeout(")
+    assert "getAttribute('data-keep')" in js and "save('td-keep:' + t)" in js and "save(k); location.reload()" in js
+    # «Демо» has no refresh button and is not reloaded by it: nothing to keep there
+    import test_dashboard_demo as td
+
+    monkeypatch.setattr(db, "DEMO_DB", td._filled(tmp_path, td.NOW))
+    monkeypatch.setattr(db, "DEMO_VS_BT_FLAG", tmp_path / "no-flag")
+    monkeypatch.setattr(db, "DEMO_VS_BT_JSON", tmp_path / "no-vs-bt.json")
+    demo = db.demo_page(now=td.NOW / 1000)
+    assert "id='fold-" in demo and db.KEEP_MARK not in demo and "/journal/refresh" not in demo
+
+
+def test_auto_refresh_keeps_live_counted_sections_tapped_note_and_tab(tmp_path):
+    # standing improvements, item 114: a <details> outside a fold was keyed by its summary text, and three of them carry
+    # a live count («Усі серії (N)», «Примітки … : N», «Ціни застарілі … рядків N»), so a new snapshot closed them at
+    # the next minute's reload; they have stable ids now. The «i» note tapped open and the tab survive the reload too.
+    import html
+    import re
+
+    import test_dashboard_flows as tf
+    import test_dashboard_health as th
+
+    pages = {k: v for k, v in _all_tab_pages(tmp_path).items() if db.REFRESH_MARK in v}
+    assert set(pages) == {"project", "brief", "radar BTC", "radar ETH", "flows BTC", "flows ETH", "polymarket"}
+    for name, h in (("project ok", th._pm_db(tmp_path / "ok.sqlite")), ("project bad", th._pm_db(tmp_path / "gap.sqlite", range(30, 50)))):
+        pages[name] = th._page(db.load_collector_health(h, th.NOW, th.PM))
+    cols, rows = _pm_rows()
+    data = db.load_pm_gap(_pm_db(tmp_path / "pm-stale.sqlite", rows, cols))
+    pages["polymarket stale"] = db.render_polymarket(*data, float(PM_B + 2 * 3600 + 60))
+    for name, ids in (
+        ("project ok", ["p-series"]),
+        ("project bad", ["p-series"]),
+        ("flows BTC", ["flow-notes"]),
+        ("polymarket stale", ["pm-stale"]),
+    ):
+        assert all(f"{i}#1" in _keep_open_keys(pages[name]) for i in ids), name
+    # every <details> still keyed by its summary text says no number there: only static labels («Детально · Радар»)
+    for name, page in pages.items():
+        own = set(re.findall(r"<details[^>]*\bid='([^']+)'", page)) | set(re.findall(r"<section class='wide fold' id='([^']+)'>", page))
+        texts = [k for k in _keep_open_keys(page) if k.rsplit("#", 1)[0] not in own]
+        assert texts and not [k for k in texts if re.search(r"\d", k.rsplit("#", 1)[0])], (name, texts)
+    # the same tab after a new snapshot (other numbers, fewer notes): the same keys and the same «i» labels
+    sec = tf.section()
+    moved = json.loads(json.dumps(sec))
+    moved["warnings"] = moved["warnings"][:2]
+    moved["data"]["summary"]["24h"]["price_change"] = 0.123
+    a = db.render_flows(tf.snap(flow_btc=sec), None, tf.NOW, db.parse_flow_query("asset=BTC"))
+    b = db.render_flows(tf.snap(flow_btc=moved), None, tf.NOW, db.parse_flow_query("asset=BTC"))
+    assert f"(англ.): {len(sec['warnings'])}<" in a and "(англ.): 2<" in b and len(sec["warnings"]) != 2
+    assert _keep_open_keys(a) == _keep_open_keys(b)
+    label = re.compile(r"<span class='info' tabindex='0' role='button' aria-label='([^']*)'>")
+    assert label.findall(a) and label.findall(a) == label.findall(b)
+    titles = {html.escape(f"Пояснення: {h[0]}", quote=True) for h in db.HELP.values()}
+    for page in pages.values():  # the note's key is its static HELP title, never data
+        assert set(label.findall(page)) <= titles
+    js = db.KEEP_OPEN_JS
+    for part in ("getAttribute('aria-label')", "document.activeElement", "contains('open')", "tip: tip", "focus({ preventScroll: true })"):
+        assert part in js, part
+    assert js.index("scrollTo(0") < js.index("preventScroll")  # the note reopens where the reader was, not scrolled to
+    # the tab is the URL: the reload keeps path and query, and the stored state is keyed by both
+    assert "'td-keep:' + location.pathname + location.search" in js and "location.reload()" in js
+    assert "location.href" not in js and "location.replace" not in js and "location.assign" not in js
+    for name, cur in (("brief", "<a href='/brief' aria-current=page>"), ("project", "<a href='/' aria-current=page>")):
+        assert cur in pages[name], name
+    for name, cur in (("radar BTC", "Радар"), ("flows ETH", "Потоки"), ("polymarket", "Polymarket")):
+        assert f"<details class='more cur'><summary>Детально · {cur}</summary>" in pages[name], name
 
 
 def _all_tab_pages(tmp_path) -> dict[str, str]:
@@ -2016,6 +2268,225 @@ def test_every_heading_and_tile_on_every_tab_has_a_help_note(tmp_path):
     # every note is static text from HELP: what it is, how to read it, what it means for a trade
     for key, (title, what, read, trade) in db.HELP.items():
         assert title and what and read and trade, key
+
+
+# docs/design/PANEL.md rule 3: «i» notes still in the long «what / how to read / for a trade» form, or whose «what it
+# is» line is longer than RULE3_WHAT_MAX characters (standing improvements, item 262). Empty since item 278 (BACKLOG
+# 6.54 closed): a new note must not join it.
+RULE3_WHAT_MAX = 120
+RULE3_TODO: frozenset[str] = frozenset()
+
+
+def test_rule3_todo_is_empty():
+    """Item 278: every «i» note of the panel follows docs/design/PANEL.md rule 3; nothing is left to rewrite."""
+    assert RULE3_TODO == frozenset()
+
+
+def test_info_notes_are_at_most_four_short_lines():
+    """Item 262 (docs/design/PANEL.md rule 3): an «i» note is the title, one «what it is» line, «low → do» and
+    «high → do»: four short lines, no bare definition."""
+    import html
+    import re
+
+    long_ = {k for k, h in db.HELP.items() if k not in db.ACT or len(h[1]) > RULE3_WHAT_MAX}
+    assert long_ == RULE3_TODO, ("new long notes", sorted(long_ - RULE3_TODO), "fixed, drop from RULE3_TODO", sorted(RULE3_TODO - long_))
+    for key in set(db.HELP) - RULE3_TODO:
+        tip = db._info(key).split("role='tooltip'>", 1)[1]
+        lines = re.findall(r"<b>(.*?)</b>", tip) + re.findall(r"<span[^>]*>(.*?)</span>", tip)  # no nested spans
+        lines = [html.unescape(re.sub(r"<[^>]+>", "", x)) for x in lines]
+        assert len(lines) == 4 and "Для угоди:" not in tip, (key, lines)
+        assert all(0 < len(x) <= RULE3_WHAT_MAX for x in lines), (key, [len(x) for x in lines])
+    # the four longest notes of «Мої угоди» before item 262 are short instructions now
+    for key in ("j_rules", "rules_week", "j_review", "j_weeks"):
+        assert "<span class='do'><i>" in db._info(key) and "порада" not in db._info(key), key
+
+
+def test_forecast_info_notes_are_instructions_with_thresholds_from_the_code():
+    """Item 264 (docs/design/PANEL.md rules 3 and 5): the five forecast-journal notes say what to do when low or high;
+    the 30-date threshold is FC_MIN_EXPIRIES (analytics.forecast_log.MIN_EXPIRIES), Brier 0.25 = always 50 %."""
+    from tradedesk.analytics import forecast_log
+
+    assert db.FC_MIN_EXPIRIES == forecast_log.MIN_EXPIRIES == 30
+    for key in ("fc", "fc_n", "fc_brier", "fc_clim", "fc_calib"):
+        note = db._info(key)
+        assert note.count("<span class='do'><i>") == 2 and "Для угоди:" not in note, key
+        assert "ризик-нейтральн" not in note and "порада" not in note, key  # rule 5: FC_CAVEAT says it at the bottom
+    for key in ("fc", "fc_n", "fc_brier", "fc_clim"):
+        assert f"{db.FC_MIN_EXPIRIES} дат" in db._info(key), key
+    assert "<i>Нижче 0.25</i>" in db._info("fc_brier") and "<i>0.25 і вище</i>" in db._info("fc_brier")
+
+
+def test_rest_of_forecast_and_drawdown_notes_are_instructions_with_thresholds_from_the_code():
+    """Item 266 (docs/design/PANEL.md rules 3 and 5): the other four forecast notes and the journal drawdown tile say
+    what to do when low or high; 30 dates is FC_MIN_EXPIRIES (the «замало для висновку» badge and the RV30 «enough»),
+    30 trades is JR_SMALL_SAMPLE (analytics.journal.SMALL_SAMPLE), 0.25 is Brier of «always 50 %»."""
+    from tradedesk.analytics import forecast_log, journal
+
+    assert db.FC_MIN_EXPIRIES == forecast_log.MIN_EXPIRIES == 30
+    assert db.JR_SMALL_SAMPLE == journal.SMALL_SAMPLE == 30
+    for key in ("fc_expiries", "fc_ref", "fc_rv", "fc_weekly", "drawdown"):
+        note = db._info(key)
+        assert note.count("<span class='do'><i>") == 2 and "Для угоди:" not in note, key
+        assert "ризик-нейтральн" not in note and "порада" not in note, key  # rule 5: the caveats say it at the bottom
+    for key in ("fc_expiries", "fc_ref", "fc_rv"):
+        assert f"{db.FC_MIN_EXPIRIES} дат" in db._info(key), key
+    assert f"<i>Менше {db.FC_MIN_EXPIRIES} дат експірації</i>" in db._info("fc_expiries")
+    assert "<i>Нижче 0</i>" in db._info("fc_ref") and "<i>Вище 0</i>" in db._info("fc_ref")
+    assert "95 % ДІ містить 0" in db._info("fc_rv")  # the tile's CI, forecast_log t(0.975) over expiry dates
+    assert "0.25" in db._info("fc_weekly")
+    assert f"до {db.JR_SMALL_SAMPLE} закритих угод" in db._info("drawdown")
+
+
+def test_journal_stats_and_r_curve_notes_are_instructions_with_thresholds_from_the_code():
+    """Item 269 (docs/design/PANEL.md rules 3 and 5): the «Статистика» tiles and the R curve of «Мої угоди» say what to
+    do when low or high; 30 trades is JR_SMALL_SAMPLE (analytics.journal.SMALL_SAMPLE, the R curve's «замало для
+    висновку» chip), 0 is the red edge of «Середнє на угоду»."""
+    from tradedesk.analytics import journal
+
+    assert db.JR_SMALL_SAMPLE == journal.SMALL_SAMPLE == 30
+    keys = ("j_trades", "j_winrate", "j_pnl", "j_expectancy", "j_rcurve")
+    for key in keys:
+        note = db._info(key)
+        assert note.count("<span class='do'><i>") == 2 and "Для угоди:" not in note, key
+        assert "ризик-нейтральн" not in note and "порада" not in note, key  # rule 5: the caveats say it at the bottom
+    assert f"<i>Менше {db.JR_SMALL_SAMPLE} закритих угод</i>" in db._info("j_trades")
+    for key in ("j_pnl", "j_expectancy"):
+        assert f"до {db.JR_SMALL_SAMPLE} закритих угод" in db._info(key), key
+    assert f"до {db.JR_SMALL_SAMPLE} угод з R" in db._info("j_rcurve")
+    assert "<i>Нижче 0 (червоний край)</i>" in db._info("j_expectancy") and "<i>Вище 0</i>" in db._info("j_expectancy")
+    # the red edge of the tile is exactly «below 0»
+    tiles = db.block_journal_tiles([{"status": "closed", "pnl": -5.0, "closed_ts": 1.0, "outcome": "loss"}], 0, 2.0)
+    assert "система поки в мінусі" in tiles
+
+
+def test_demo_review_notes_are_instructions_with_thresholds_from_the_code():
+    """Item 273 (docs/design/PANEL.md rules 3 and 5): the demo notes behind the 30.11 review say what to do when low or
+    high; 30 is DEMO_MIN_N = analytics.demo_vs_backtest.MIN_TRADES, also the per-group min_n of analytics.demo_shadow
+    (the «замало для висновку» of the reconciliation and of the shadow plans); guard refusals and skips have no number."""
+    import inspect
+
+    from tradedesk.analytics import demo_shadow, demo_vs_backtest
+
+    assert db.DEMO_MIN_N == demo_vs_backtest.MIN_TRADES == 30
+    assert inspect.signature(demo_shadow.summary).parameters["min_n"].default == db.DEMO_MIN_N
+    keys = ("demo_vs_bt", "demo_not_executed", "demo_refused", "demo_skipped", "demo_recent")
+    for key in keys:
+        note = db._info(key)
+        assert note.count("<span class='do'><i>") == 2 and "Для угоди:" not in note, key
+        assert "ризик-нейтральн" not in note and "порада" not in note and "рекомендац" not in note, key  # rule 5
+        assert len(db.HELP[key][1]) <= RULE3_WHAT_MAX, key
+    for key in ("demo_vs_bt", "demo_not_executed", "demo_skipped", "demo_recent"):
+        assert f"{db.DEMO_MIN_N} " in db._info(key), key
+    assert f"<i>Збігів мало (від {db.DEMO_MIN_N} звірених)</i>" in db._info("demo_vs_bt")
+    assert f"до {db.DEMO_MIN_N} звірених угод" in db._info("demo_vs_bt")
+    assert f"від {db.DEMO_MIN_N} планів з R у групі" in db._info("demo_not_executed")
+    assert "<i>Мало</i>" in db._info("demo_refused") and "<i>Багато</i>" in db._info("demo_refused")
+    assert not any(ch.isdigit() for ch in "".join(db.ACT["demo_refused"]))  # no threshold in the code, so none here
+    # the «Відмов guard» / «Не відібрано» tiles carry these notes
+    tiles = db.block_demo_refusals([{"kind": "refused", "reason": "x"}, {"kind": "skipped", "reason": "y"}], 2.0)
+    assert db._info("demo_refused") in tiles and db._info("demo_skipped") in tiles
+
+
+def test_paper_rec_and_demo_open_notes_are_instructions_with_thresholds_from_the_code():
+    """Item 275 (docs/design/PANEL.md rules 3 and 5): the paper-recommendation notes and the open demo positions say
+    what to do when low or high; 0 is the red / green edge of _signed_cls, 27 trades and −0.59 % are the H1 test of
+    REC_CAVEAT; rec_paper has no minimum sample in the code, so «Мало розрахованих» has no number."""
+    keys = ("demo_open_pos", "rec", "rec_n", "rec_pct", "rec_pnl")
+    for key in keys:
+        note = db._info(key)
+        assert note.count("<span class='do'><i>") == 2 and "Для угоди:" not in note, key
+        assert "ризик-нейтральн" not in note and "порада" not in note and "відхилено" not in note, key  # rule 5
+        assert len(db.HELP[key][1]) <= RULE3_WHAT_MAX, key
+    # the H1 numbers quoted in the notes are the ones of the block's caveat (the verification report of 18.10)
+    assert "−0.59 %" in db.REC_CAVEAT and "n = 27" in db.REC_CAVEAT
+    assert "<i>Більше 27 (стільки в тесті H1)</i>" in db._info("rec_n") and "−0.59 %" in db._info("rec_n")
+    assert not any(ch.isdigit() for ch in db.ACT["rec_n"][0] + db.ACT["rec_n"][1])  # no sample threshold in the code
+    assert "<i>Нижче 0 (червоне)</i>" in db._info("rec_pct") and "<i>Вище 0 (зелене)</i>" in db._info("rec_pct")
+    # the red / green edge of the «Середнє, % спота» and «P&L разом» tiles is exactly 0
+    assert db._signed_cls(-0.01) == "bad" and db._signed_cls(0.01) == "ok" and db._signed_cls(0.0) == ""
+    # the tiles of the block carry these notes
+    rows = [{"source": "method", "status": "settled", "pnl_usd": -5.0, "pnl_pct_spot": -0.01, "r_worst_case": -0.5}]
+    page = db.block_rec_paper(rows)
+    for key in ("rec_n", "rec_pct", "rec_pnl"):
+        assert db._info(key) in page, key
+
+
+def test_journal_open_table_and_plan_notes_are_instructions_with_thresholds_from_the_code():
+    """Item 277 (docs/design/PANEL.md rules 3 and 5): «Відкриті зараз», «Угоди» and the plan tiles say what to do when
+    low or high; $100 is rule 1 (RULES_DEPOSIT x RULES_RISK_PCT %), 30 closed trades is JR_SMALL_SAMPLE, 30 plans with
+    R is PLAN_MIN_N (the «Замало планів» note); the win share and the exits have no threshold in the code."""
+    from tradedesk.analytics import journal
+
+    assert db.RULES_DEPOSIT * db.RULES_RISK_PCT / 100 == 100
+    assert db.JR_SMALL_SAMPLE == journal.SMALL_SAMPLE == 30
+    assert db.PLAN_MIN_N == 30
+    keys = ("j_open", "j_table", "plan_exits", "plan_n", "plan_win")
+    for key in keys:
+        note = db._info(key)
+        assert note.count("<span class='do'><i>") == 2 and "Для угоди:" not in note, key
+        assert "ризик-нейтральн" not in note and "порада" not in note and "відхилено" not in note, key  # rule 5
+        assert len(db.HELP[key][1]) <= RULE3_WHAT_MAX, key
+    assert "≤ $100 (правило 1)" in db._info("j_open")
+    assert f"<i>До {db.JR_SMALL_SAMPLE} закритих угод</i>" in db._info("j_table")
+    assert f"<i>Менше {db.PLAN_MIN_N} планів з R</i>" in db._info("plan_n")
+    assert f"<i>Від {db.PLAN_MIN_N} планів з R</i>" in db._info("plan_n")
+    for key in ("plan_win", "plan_exits"):  # no threshold in the code, so none here (the 0 of R is the tile's edge)
+        assert not any(ch.isdigit() for ch in "".join(db.ACT[key]).replace("вище 0", "").replace("нижче 0", "")), key
+    # the plan tiles carry these notes, and «Замало планів» names the same 30
+    rows = [{"verdict": "enter", "status": "resolved", "outcome": "stop", "r_result": -1.0}]
+    page = db.block_trade_plans(rows)
+    for key in ("plan_n", "plan_win", "plan_exits"):
+        assert db._info(key) in page, key
+    assert f"потрібно ≥ {db.PLAN_MIN_N}" in page and "Замало планів" not in db._info("plan_n")
+
+
+def test_last_journal_notes_are_instructions_with_thresholds_from_the_code():
+    """Item 278 (docs/design/PANEL.md rules 3 and 5): «За джерелом», R, the paper «Середній R (від найгіршого)» and
+    «У плюсі», the plans block and «Проти 0» say what to do when low or high; 30 trades is JR_SMALL_SAMPLE, 30 plans
+    with R is PLAN_MIN_N, 95 % is plan_stats' t-interval, 0 is the edge of _signed_cls; the paper win share has no
+    threshold in the code. The «what it is» line of rules_pre fits RULE3_WHAT_MAX and names rule 1 / 8 constants."""
+    from tradedesk.analytics import journal
+
+    assert db.JR_SMALL_SAMPLE == journal.SMALL_SAMPLE == db.PLAN_MIN_N == 30
+    for key in ("sources", "r", "rec_r_worst", "rec_win", "plans", "rules_pre"):
+        note = db._info(key)
+        assert note.count("<span class='do'><i>") == 2 and "Для угоди:" not in note, key
+        assert "ризик-нейтральн" not in note and "порада" not in note and "відхилено" not in note, key  # rule 5
+        assert len(db.HELP[key][1]) <= RULE3_WHAT_MAX, key
+    assert f"<i>До {db.JR_SMALL_SAMPLE} закритих угод у джерела</i>" in db._info("sources")
+    assert f"<i>Від {db.JR_SMALL_SAMPLE}, а «Середнє» нижче 0 (червоне)</i>" in db._info("sources")
+    assert f"до {db.JR_SMALL_SAMPLE} угод з R" in db._info("r")
+    assert f"до {db.PLAN_MIN_N} планів з R" in db._info("plans") and "<i>95 % ДІ вище 0</i>" in db._info("plans")
+    assert "<i>Нижче 0 (−1 — втрачено весь ризик)</i>" in db._info("rec_r_worst")
+    assert not any(ch.isdigit() for ch in "".join(db.ACT["rec_win"]))  # no threshold in the code, so none here
+    # rules_pre: 1 % is rule 1 and rule 8's premium, «< 1 добу» / «1–3» are rule 8's 24 h / 72 h
+    assert db.RULES_RISK_PCT == db.RULES_PREMIUM_PCT == 1.0
+    assert db.RULES_BUY_BAN_HOURS == 24 and db.RULES_BUY_COND_HOURS == 72
+    assert "≤ 1 % депозиту" in db.HELP["rules_pre"][1] and "за 1–3 — з 8а–8в" in db.HELP["rules_pre"][1]
+    # the red edge of «Середнє» in the sources table is _signed_cls (exactly below 0)
+    groups = {"bybit": [{"status": "closed", "pnl": -5.0, "closed_ts": 1.0, "outcome": "loss"}]}
+    assert "class='num bad'" in db.block_journal_sources(groups)
+    # the tiles and the folds carry these notes
+    rows = [{"source": "method", "status": "settled", "pnl_usd": -5.0, "pnl_pct_spot": -0.01, "r_worst_case": -0.5}]
+    page = db.block_rec_paper(rows)
+    for key in ("rec_win", "rec_r_worst", "r"):
+        assert db._info(key) in page, key
+    plans = db.block_trade_plans([{"verdict": "enter", "status": "resolved", "outcome": "stop", "r_result": -1.0}])
+    assert db._info("plans") in plans and db._info("r") in plans
+    assert db._info("sources") in db._fold("За джерелом", "sources", "", "")
+
+
+def test_journal_page_says_not_advice_once_at_the_bottom(tmp_path):
+    """Item 262 (docs/design/PANEL.md rule 5): «не порада» was in the rules tile, the R-curve block and the forecast
+    note as well as in the page's caveat; now only the caveat at the bottom says it."""
+    import re
+
+    pages = _all_tab_pages(tmp_path)
+    tips = re.compile(r"<span class='tip' role='tooltip'>.*?</span></span>", re.S)
+    for name in ("journal", "journal empty"):
+        body = tips.sub("", pages[name])
+        hits = [m.start() for m in re.finditer(r"(?i)не (інвестиційна )?порад", body)]
+        assert len(hits) == 1 and hits[0] > body.index("<b>Застереження</b>"), (name, len(hits))
 
 
 def test_options_pros_and_cons_for_buyer_and_seller():
@@ -2466,6 +2937,10 @@ def test_rules_copies_match_the_analytics_reference():
         assert db.rules_buy_zone(h) == rc.buy_zone(h)
     for th, tg in (("a", 1.0), ("", 1.0), ("a", None), (None, None), ("a", 0.0)):
         assert db.rules_thesis_check(th, tg) == rc.thesis_check(th, tg)
+    for side in ("long", "short", None):
+        for stop in (None, 95.0, 100.0, 105.0):
+            for tg in (None, 90.0, 100.0, 110.0):
+                assert db.rules_wrong_side(side, 100.0, stop, tg) == rc.wrong_side(side, 100.0, stop, tg), (side, stop, tg)
     assert db.RULES_IMPORT_THESIS_PLACEHOLDER == rc.IMPORT_THESIS_PLACEHOLDER
     for th in ("імпорт з Bybit: теза не записана", "CPI: up", "", None, 5):
         for tags in (["bybit", "import", "option"], ["option"], []):
@@ -2490,16 +2965,19 @@ def test_rules_copies_match_the_analytics_reference():
         {**imp, "id": 504, "thesis": "CPI: up past 112k"},  # the owner's thesis written later on an import
     ]
     for dep in (10_000.0, 5_000.0):
-        for rs in (rows, rows + hip3, rows + rule8):
+        for rs in (rows, rows + hip3, rows + rule8, rows + trc._wrong_side_rows(), trc._pause_rows()):
             _same(db.rules_trade_checks(rs, now, dep), rc.trade_checks(rs, now_ts=now, deposit_usd=dep))
             _same(db.rules_weekly(rs, now, dep), rc.weekly_violations(rs, now_ts=now, deposit_usd=dep))
             _same(db.rules_day_stops(rs, dep), rc.day_stops(rs, deposit_usd=dep))
+            _same(db.rules_pauses(rs, dep), rc.pauses(rs, deposit_usd=dep))
             _same(db.rules_compliance(rs, now, dep), rc.compliance_summary(rs, now_ts=now, deposit_usd=dep))
     at_now, rs = trc._at_now_rows()  # an alt long opened at now_ts itself
     _same(db.rules_trade_checks(rs, at_now), rc.trade_checks(rs, now_ts=at_now))
     _same(db.rules_compliance(rs, at_now), rc.compliance_summary(rs, now_ts=at_now))
     _same(db.rules_compliance([], now), rc.compliance_summary([], now_ts=now))
     assert db.RULES_MIN_CHECKED == rc.MIN_CHECKED
+    assert (db.RULES_BIG_LOSS_PCT, db.RULES_PAUSE_HOURS) == (rc.BIG_LOSS_PCT, rc.PAUSE_HOURS)
+    assert any(c["pause"] for c in db.rules_trade_checks(trc._pause_rows(), now))  # the pause rows do reach a pause
     assert len(db.rules_weekly(rows, now)) == 3 and db.rules_weekly([], now) == []
     assert db.rules_is_hip3("xyz:TSLA") and not db.rules_is_hip3("SOL/USDT:USDT")
     for sym in (
@@ -2508,6 +2986,15 @@ def test_rules_copies_match_the_analytics_reference():
         "BTC-31FEB26-1-C",
         "SOL/USDT:USDT",
         "1000PEPEUSDT",
+        "kPEPE",
+        "KPEPE",
+        "PEPE2USDT",
+        "KAVAUSDT",
+        "1INCHUSDT",
+        "1MBABYDOGEUSDT",
+        "10000SATSUSDT",
+        "SHIB1000USDT",
+        "PUMPFUNUSDT",
         "SOL-PERP",
         "HYPE",
         "xyz:TSLA",
@@ -2760,6 +3247,8 @@ def test_journal_tab_shows_weekly_rule_violations(tmp_path):
                  "<td class='num'>4<br><span class='mut'>+ наближено 1</span></td>",
                  "<td class='num bad'>−$607<br><span class='mut'>наближені +$3</span></td>"):  # fmt: skip
         assert text in w42, text
+    # 17.10 closes about −$1 800: a big-loss day, its 48 h pause holds no trade
+    assert "днів ≤ −2 % 1 · у 48 год перерви 0" in w42 and "48 год перерви" not in _between(block, "2025-W41", "</tr>")
     w41 = _between(block, "2025-W41", "</tr>")
     # 10.10 in closing order: +30, −50, +15, −20 (the 1.8-day option buy), −50 at 09:00 = 2 losses in a row: the day
     # stops at 09:00, so SOL short (−30, opened 09:30) and DOGE (+40) broke rule 4, Bybit XRP (−20) only on its close
@@ -2808,11 +3297,11 @@ def test_journal_tile_share_of_trades_by_the_rules(tmp_path):
         "1 з 10 перевірених без жодного порушення · порушили 9",
         "невідомо 11 (бракує стопу, цілі чи часу відкриття — не «за правилами», поза часткою)",
         "лише наближене правило 4: 2 (поза часткою)",
-        "усього 23 угод. Статистика дотримання правил, не порада. Угода без стопу стає перевіреною лише через "
-        "порушення, тож частка занижена",
+        "усього 23 угод. Угода без стопу стає перевіреною лише через порушення, тож частка занижена",
         "<span class='sig warn'>замало для висновку</span>",
     ):
         assert text in tile, text
+    assert "порада" not in tile.replace(db._info("j_rules"), "")  # the caveat is at the page's bottom (item 262)
     assert "class='tile t-warn'" in page
     # 30 checked trades: no «too few» badge (30 journal_add trades with a stop and a 2R target, a day apart)
     kw = {"size": 0.01, "entry": 80000.0, "stop": 79000.0, "target": 82000.0}

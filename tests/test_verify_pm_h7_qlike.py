@@ -4,11 +4,13 @@ and the full stage refuses a stage-0 gate computed on another DB copy before it 
 from __future__ import annotations
 
 import json
+import math
 import os
 import sqlite3
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -22,18 +24,23 @@ MTIME = int(datetime(2026, 11, 4, tzinfo=UTC).timestamp())  # the copy's mtime: 
 DAY0 = int(datetime(2026, 10, 21, tzinfo=UTC).timestamp())  # a Wednesday in W43, after T_START
 
 
-def _db(path: Path) -> Path:
-    con = sqlite3.connect(path)
+def _snapshot(con: sqlite3.Connection) -> None:
     con.execute(
         "CREATE TABLE pm_gap_snapshot (ts INTEGER, market_id TEXT, asset TEXT, kind TEXT, end_ts INTEGER, model_iv REAL, "
         "model_expiry TEXT, expiry_gap_hours REAL, model_note TEXT, model_covered INTEGER)"
     )
-    con.execute("CREATE TABLE pm_gap_outcome (market_id TEXT, outcome_yes INTEGER)")  # present, as in a real copy
-    con.execute("INSERT INTO pm_gap_outcome VALUES ('m1', 1)")
     for mid, asset, d, h in (("m1", "BTC", 0, 9), ("m2", "ETH", 1, 11)):  # m1's window holds the heavy hour 10, m2's not
         ts, end = DAY0 + d * 86400 + h * HOUR + 1200, DAY0 + d * 86400 + 16 * HOUR
         expiry = datetime.fromtimestamp(end + 16 * HOUR, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         con.execute("INSERT INTO pm_gap_snapshot VALUES (?, ?, ?, 'above', ?, 0.5, ?, 16.0, 'ok', 1)", (ts, mid, asset, end, expiry))
+    con.commit()
+
+
+def _db(path: Path) -> Path:
+    con = sqlite3.connect(path)
+    _snapshot(con)
+    con.execute("CREATE TABLE pm_gap_outcome (market_id TEXT, outcome_yes INTEGER)")  # present, as in a real copy
+    con.execute("INSERT INTO pm_gap_outcome VALUES ('m1', 1)")
     con.commit()
     con.close()
     os.utime(path, (MTIME, MTIME))
@@ -75,6 +82,70 @@ def test_load_rows_reads_only_the_snapshot_table(tmp_path, denied):
     assert cutoff == MTIME - HOUR
     assert [(r["mid"], r["asset"]) for r in rows] == [("m1", "BTC"), ("m2", "ETH")]
     assert drop == {}
+
+
+def test_load_rows_works_on_an_in_memory_db_without_the_outcome_table(tmp_path, monkeypatch):
+    """Review 2026-11-01 finding 6 (a): no pm_gap_outcome table at all, so any read of it fails with 'no such table'.
+    Stricter than the authorizer guard above: SQLite reports no SQLITE_READ for a JOIN ... USING key, so a filtering
+    join on the outcome table slips past `denied` but not past a missing table."""
+    mem = sqlite3.connect(":memory:")
+    _snapshot(mem)
+    assert [t for (t,) in mem.execute("SELECT name FROM sqlite_master WHERE type = 'table'")] == ["pm_gap_snapshot"]
+    copy = tmp_path / "copy.sqlite"  # load_rows takes the cutoff from the copy's mtime; the data come from `mem`
+    copy.touch()
+    os.utime(copy, (MTIME, MTIME))
+    opened: list[str] = []
+
+    def connect(path, timeout=5):
+        opened.append(str(path))
+        return mem
+
+    monkeypatch.setattr(M.cmn, "connect_ro", connect)
+    rows, drop, cutoff = M.load_rows(copy, PROF)
+    assert opened == [str(copy)]
+    assert cutoff == MTIME - HOUR
+    assert [(r["mid"], r["asset"]) for r in rows] == [("m1", "BTC"), ("m2", "ETH")]
+    assert drop == {}
+    probe = sqlite3.connect(":memory:")  # the trap is real: the same schema refuses a read of the outcome table
+    _snapshot(probe)
+    with pytest.raises(sqlite3.OperationalError, match="no such table: pm_gap_outcome"):
+        probe.execute("SELECT outcome_yes FROM pm_gap_outcome").fetchall()
+    probe.close()
+
+
+def _replay_module(poison: float, calls: list[tuple[int, int]]) -> SimpleNamespace:
+    """A stand-in for scripts/verify_pm_modules: bar_returns ignores its bounds and also returns bars at and after
+    REPLAY_HI (valued `poison`), so only replay's own windowing keeps them out."""
+
+    def bar_returns(closes, lo, hi):
+        calls.append((lo, hi))
+        out = []
+        for i in range((M.REPLAY_HI + 60 * 86400 - M.REPLAY_LO) // HOUR):
+            t = M.REPLAY_LO + i * HOUR
+            out.append((t, poison if t >= M.REPLAY_HI else 0.001 * (1 + i * 7919 % 13)))
+        return out
+
+    return SimpleNamespace(load_btc_long=lambda: [], bar_returns=bar_returns)
+
+
+def test_replay_never_uses_bars_at_or_after_replay_hi(tmp_path, denied, monkeypatch):
+    """Review 2026-11-01 finding 6 (b): poisoning every bar key >= REPLAY_HI with NaN or a huge value changes nothing."""
+    assert M.REPLAY_HI <= M.T_START  # the replay cache ends before the test period starts
+    rows, _, _ = M.load_rows(_db(tmp_path / "c.sqlite"), PROF)
+    s2, _ = M.hq.renormalize([r["s"] for r in rows], M.hq.market_weights([r["mid"] for r in rows]))
+    out = {}
+    for label, poison in (("plain", 0.002), ("huge", 10.0), ("nan", float("nan"))):
+        calls: list[tuple[int, int]] = []
+        monkeypatch.setattr(M, "_load", lambda name, p=poison, c=calls: _replay_module(p, c))
+        out[label] = M.replay(rows, s2)
+        assert calls == [(M.REPLAY_LO, M.REPLAY_HI)]
+    clean = out["plain"]
+    assert clean["rows_scored"] > 0 and math.isfinite(clean["sd_week"]) and math.isfinite(clean["mean_week"])
+    k_lo = clean["weeks_back"][0]
+    assert max(r["h1"] for r in rows) - k_lo * M.WEEK_S <= M.REPLAY_HI  # the nearest shift ends inside the cache
+    assert max(r["h1"] for r in rows) - (k_lo - 1) * M.WEEK_S > M.REPLAY_HI  # and is the nearest one: the edge is tested
+    assert out["huge"] == clean
+    assert out["nan"] == clean
 
 
 def test_stale_gate() -> None:

@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import resource
 import sys
 import time
 from collections import Counter
@@ -36,6 +35,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import verify_course_s14_ema as s1  # noqa: E402  (step-1 loaders, universe, period)
 import verify_course_step3_s18 as s3  # noqa: E402  (membership intervals)
+from common_helpers import rss_mb  # noqa: E402
 
 from tradedesk.analytics import markup  # noqa: E402
 from tradedesk.analytics.course_basics import (  # noqa: E402
@@ -118,10 +118,6 @@ def emit(line: str = "") -> None:
     if OUT["fh"] is not None:
         OUT["fh"].write(line + "\n")
         OUT["fh"].flush()
-
-
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 
 
 def stage_prereg() -> None:

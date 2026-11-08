@@ -19,25 +19,6 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from tradedesk.analytics.demo_context_filters import cluster_boot_group_sums  # noqa: E402
 
-C = Path.home() / ".cache/tradedesk-agents"
-F = json.loads((C / "demo_context_filters/features.json").read_text())
-R = {}
-for p in sorted((C / "demo_stop_management/trades").glob("*.json")):
-    for r in json.loads(p.read_text())["rows"]:
-        R[(r["sym"], r["setup"], r["tf"], r["side"], r["entry_ms"])] = r["B_r"]
-T = {
-    k: np.asarray([x[k] for x in F])
-    for k in ("sym", "setup", "tf", "side", "day", "oos", "rr", "stop_pct", "coin_trend", "btc_trend", "score")
-}
-T["r"] = np.asarray([R[(x["sym"], x["setup"], x["tf"], x["side"], x["entry_ms"])] for x in F])
-want = np.where(T["side"] == "long", 1, -1)
-alt = ~np.isin(T["sym"], ["BTCUSDT", "ETHUSDT"])
-coin_ok = T["coin_trend"] == want
-btc_ok = (T["btc_trend"] == want) & (T["sym"] != "BTCUSDT")
-trend_pts = coin_ok.astype(int) + btc_ok.astype(int)
-E = (T["score"] >= 2) & (T["rr"] >= 1.5) & (T["stop_pct"] <= 0.10)
-score1 = trend_pts + (T["rr"] >= 2)
-
 
 def boot(mask_drop, base, label):
     for part, sel in (("IS", ~T["oos"]), ("OOS", T["oos"])):
@@ -58,12 +39,38 @@ def boot(mask_drop, base, label):
             )
 
 
-print(
-    "E (live-eligible):", int(E.sum()), "of", len(F), "| by setup:", {s: int((E & (T["setup"] == s)).sum()) for s in np.unique(T["setup"])}
-)
-boot(trend_pts == 0, E, "H1")
-boot(alt & (T["btc_trend"] == -want), E, "H2")
-boot(score1 < 2, E, "H3")
-print("\nS3 only:")
-boot(trend_pts == 0, E & (T["setup"] == "S3"), "H1s3")
-boot(alt & (T["btc_trend"] == -want), E & (T["setup"] == "S3"), "H2s3")
+# The study runs only as a script (item 221: importing it must not read the cache or print).
+if __name__ == "__main__":
+    C = Path.home() / ".cache/tradedesk-agents"
+    F = json.loads((C / "demo_context_filters/features.json").read_text())
+    R = {}
+    for p in sorted((C / "demo_stop_management/trades").glob("*.json")):
+        for r in json.loads(p.read_text())["rows"]:
+            R[(r["sym"], r["setup"], r["tf"], r["side"], r["entry_ms"])] = r["B_r"]
+    T = {
+        k: np.asarray([x[k] for x in F])
+        for k in ("sym", "setup", "tf", "side", "day", "oos", "rr", "stop_pct", "coin_trend", "btc_trend", "score")
+    }
+    T["r"] = np.asarray([R[(x["sym"], x["setup"], x["tf"], x["side"], x["entry_ms"])] for x in F])
+    want = np.where(T["side"] == "long", 1, -1)
+    alt = ~np.isin(T["sym"], ["BTCUSDT", "ETHUSDT"])
+    coin_ok = T["coin_trend"] == want
+    btc_ok = (T["btc_trend"] == want) & (T["sym"] != "BTCUSDT")
+    trend_pts = coin_ok.astype(int) + btc_ok.astype(int)
+    E = (T["score"] >= 2) & (T["rr"] >= 1.5) & (T["stop_pct"] <= 0.10)
+    score1 = trend_pts + (T["rr"] >= 2)
+
+    print(
+        "E (live-eligible):",
+        int(E.sum()),
+        "of",
+        len(F),
+        "| by setup:",
+        {s: int((E & (T["setup"] == s)).sum()) for s in np.unique(T["setup"])},
+    )
+    boot(trend_pts == 0, E, "H1")
+    boot(alt & (T["btc_trend"] == -want), E, "H2")
+    boot(score1 < 2, E, "H3")
+    print("\nS3 only:")
+    boot(trend_pts == 0, E & (T["setup"] == "S3"), "H1s3")
+    boot(alt & (T["btc_trend"] == -want), E & (T["setup"] == "S3"), "H2s3")

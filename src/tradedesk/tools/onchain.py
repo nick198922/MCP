@@ -8,7 +8,7 @@ from mcp.server.mcpserver import MCPServer
 from pydantic import Field
 
 from ..analytics import contract_risk as cr
-from ..analytics.chain_metrics import overview_summary, resolve_chain, tvl_summary
+from ..analytics.chain_metrics import overview_summary, resolve_chain, stablecoin_asset, stablecoin_total, tvl_summary
 from ..analytics.dex import summarise_pairs, valid_addresses
 from ..core.envelope import Builder
 from ..runtime import Runtime
@@ -174,4 +174,47 @@ def register(server: MCPServer, rt: Runtime) -> None:
         if all(data[k] is None for k in ("tvl", "dex_volume_24h", "fees_24h")):
             return b.build(None, ok=False)
         b.warn("Daily volume and fees are single-day figures; prefer week_over_week for trend. DefiLlama coverage varies by chain.")
+        return b.build(data)
+
+    @server.tool(
+        annotations=READ_ONLY,
+        description=(
+            "Stablecoin supply from DefiLlama (stablecoins.llama.fi) as descriptive liquidity context, not a trading "
+            "signal. `total.usd` is the USD value of every stablecoin DefiLlama tracks (all peg types summed, daily "
+            "series), with change_7d / change_30d against the daily point 7 / 30 days earlier, plus age_days and "
+            "stale (latest point older than 2 days). `usdt` and `usdc` give circulating supply in USD (tokens counted "
+            "at the $1 peg; `price` is DefiLlama's market price) with change_1d / change_7d / change_30d against "
+            "DefiLlama's own snapshots 1, 7 and 30 days ago. Changes are decimals (0.01 = +1 %). Caveats: supply is "
+            "tokens issued, not tokens on exchanges or deployed as margin; issuer mints and redemptions move it in "
+            "lumps; DefiLlama coverage can be revised; the total (last daily point) and USDT / USDC (current) are not "
+            "on the same timestamp. No backtest here links supply changes to prices or funding (the related USDe "
+            "supply vs next-week funding test was rejected)."
+        ),
+    )
+    async def stablecoin_supply() -> dict[str, Any]:
+        b = Builder()
+        src = "defillama:stablecoins"
+        chart, assets = await asyncio.gather(
+            b.guard("total", src, rt.defillama.stablecoin_chart_all()),
+            b.guard("usdt_usdc", src, rt.defillama.stablecoin_assets()),
+        )
+        data: dict[str, Any] = {"total": None, "usdt": None, "usdc": None}
+        if chart is not None:
+            data["total"] = stablecoin_total(chart, rt.now().timestamp())
+            if data["total"] is None:
+                b.miss("total", src, "data_unavailable", "no usable points in stablecoincharts/all")
+            elif data["total"]["stale"]:
+                b.warn(f"Total supply series is stale: latest point is {data['total']['age_days']} days old.")
+        if assets is not None:
+            for key in ("usdt", "usdc"):
+                data[key] = stablecoin_asset(assets, key.upper())
+                if data[key] is None:
+                    b.miss(key, src, "data_unavailable", f"{key.upper()} not found among DefiLlama stablecoins")
+        if all(v is None for v in data.values()):
+            return b.build(None, ok=False)
+        b.warn(
+            "Descriptive liquidity context, not a signal: no backtest in this project ties stablecoin supply changes to "
+            "returns or funding (USDe supply growth vs next-week BTC/ETH funding: rejected, r -0.11, 95 % CI "
+            "[-0.27, +0.04], n 143 weeks). Supply counts tokens issued, not exchange balances."
+        )
         return b.build(data)

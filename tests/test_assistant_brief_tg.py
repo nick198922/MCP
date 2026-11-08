@@ -786,6 +786,60 @@ def test_brief_cycle_line_absent_or_odd():
     assert "<script>" not in ab.build_brief(snap, asof + 300, short=True)
 
 
+def _stables_section(**total) -> dict:
+    """A `stablecoins` section in stablecoin_supply's shape (the synthetic DefiLlama sample of 05.11,
+    tests/test_stablecoin_supply.py: 299.46e9 now, 297.71e9 7 days and 291.96e9 30 days earlier)."""
+    tot = {"usd": 299.46e9, "as_of_ts": 1793836800, "change_7d": 299.46 / 297.71 - 1, "change_30d": 299.46 / 291.96 - 1}
+    tot |= {"age_days": 0.5, "stale": False} | total
+    return {"ok": True, "data": {"total": tot, "usdt": None, "usdc": None}, "missing": [], "warnings": []}
+
+
+STABLES_LINE = "Стейблкоїни 299.46 млрд $ (7 дн +0.6 %, 30 дн +2.6 %) · описово, не сигнал"
+
+
+def test_brief_stablecoin_line_long_and_short():
+    snap, asof = _snap()
+    snap["sections"]["cycle"] = _cycle_section(CYCLE_LINE)
+    snap["sections"]["stablecoins"] = _stables_section()
+    for short in (False, True):
+        lines = ab.build_brief(snap, asof + 300, short=short).split("\n")
+        i = lines.index(STABLES_LINE)  # one line, right under the cycle line
+        assert lines[i - 1] == ab._h(CYCLE_LINE + " · контекст, не сигнал"), short
+        assert sum("Стейблкоїни" in x for x in lines) == 1, short
+    assert len(ab.build_brief(snap, asof + 300, short=True)) < tg_send.TEXT_LIMIT
+    # a stale series names the day of its point; a missing change is left out, not shown as a dash
+    snap["sections"]["stablecoins"] = _stables_section(stale=True, age_days=3.5, change_30d=None)
+    assert ab._stablecoins(snap, asof) == ["Стейблкоїни 299.46 млрд $ (7 дн +0.6 %), дані на 05.11 · описово, не сигнал"]
+
+
+def test_brief_stablecoin_line_on_provider_failure_or_odd_data():
+    snap, asof = _snap()
+    assert "Стейблкоїни" not in ab.build_brief(snap, asof + 300)  # the 20.10 snapshot has no stablecoins section
+    # stablecoin_supply failed: the section lands in the snapshot's `missing`, the brief names it and goes on
+    snap["sections"]["stablecoins"] = {
+        "ok": False,
+        "data": None,
+        "missing": [{"field": "total", "provider": "defillama:stablecoins", "reason": "backend_error", "detail": "HTTP 503"}],
+        "warnings": [],
+    }
+    snap["missing"] = [*snap.get("missing", []), "stablecoins"]
+    for short in (False, True):
+        text = ab.build_brief(snap, asof + 300, short=short)
+        assert "Без даних:" in text and "стейблкоїни" in text and "Стейблкоїни" not in text, short
+        assert "BTC <b>82 791</b>" in text and "Не інвестиційна порада" in text, short
+    for odd in (
+        {"ok": True, "data": {"total": None, "usdt": {"usd": 1.0}}},
+        {"ok": True, "data": {"total": "x"}},
+        _stables_section(usd="<b>"),
+        _stables_section(usd=0.0),
+        _stables_section(change_7d="a", stale="yes"),
+    ):
+        snap["sections"]["stablecoins"] = odd
+        assert isinstance(ab._stablecoins(snap, asof), list) and "Не інвестиційна порада" in ab.build_brief(snap, asof + 300)
+    snap["sections"]["stablecoins"] = _stables_section(change_7d="a", stale="yes")
+    assert ab._stablecoins(snap, asof) == ["Стейблкоїни 299.46 млрд $ (30 дн +2.6 %) · описово, не сигнал"]
+
+
 def _with_history(snap: dict, now: float, states: list) -> None:
     """A `cycle` section whose history ends yesterday (UTC of `now`) with `states`, oldest first."""
     last = (datetime.fromtimestamp(now, timezone.utc) - timedelta(days=1)).date()  # noqa: UP017

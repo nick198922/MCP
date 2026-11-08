@@ -94,6 +94,24 @@ async def test_events_add_requires_timestamp_source(state, tmp_path):
         await rt.aclose()
 
 
+async def test_events_add_rejects_ts_ms_in_seconds(state, tmp_path):
+    rt = await _rt(state, tmp_path)
+    srv, _ = build_server(rt)
+    try:
+        secs = int(NOW.timestamp())  # unix seconds passed where milliseconds are expected -> January 1970
+        for bad in (secs, 0, 946_684_799_999):
+            env = await _call(srv, "events_add", kind="fomc", label="seconds", ts_ms=bad)
+            assert env["ok"] is False and env["missing"][0]["reason"] == "invalid_input"
+            assert "ts_ms must be milliseconds (got seconds?)" in env["missing"][0]["detail"]
+        assert (await _call(srv, "events_list", kind="fomc"))["data"]["count"] == 0
+        for i, good in enumerate((secs * 1000, 946_684_800_000)):
+            env = await _call(srv, "events_add", kind="fomc", label=f"ms {i}", ts_ms=good)
+            assert env["ok"] is True and env["data"]["inserted"] is True and env["data"]["ts"] == good // 1000
+        assert (await _call(srv, "events_list", kind="fomc"))["data"]["count"] == 2
+    finally:
+        await rt.aclose()
+
+
 async def test_events_seed_load_installs_bundled_dataset(state, tmp_path):
     rt = await _rt(state, tmp_path)
     srv, _ = build_server(rt)

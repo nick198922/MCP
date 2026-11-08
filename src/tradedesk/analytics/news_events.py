@@ -68,8 +68,10 @@ def perp_base(symbol: str) -> tuple[str, int]:
 
 
 def perp_symbols(text: str) -> list[str]:
-    """USDT-margined perp symbols mentioned in a text (``XYZUSDT``), in order, without duplicates."""
-    return list(dict.fromkeys(re.findall(r"\b([0-9A-Z]{2,25}USDT)\b", text)))
+    """USDT-margined perp symbols mentioned in a text (``XYZUSDT``, one-character ``WUSDT`` / ``4USDT``), in order,
+    without duplicates. All-digit bases are kept: ``4USDT`` and ``42USDT`` are real Binance perps, so an amount
+    written without a space (``10USDT``) is also returned; the announcement catalogs have none (checked 07.11)."""
+    return list(dict.fromkeys(re.findall(r"\b([0-9A-Z]{1,25}USDT)\b", text)))
 
 
 _IGNORE = re.compile(

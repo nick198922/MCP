@@ -1,0 +1,1 @@
+- Картка smart-money-persistence: пункт «Polymarket data-api v1 → v2» закрито (код уже в `main`, коміт ee66c619); записано дірку в знімках трейдерів Polymarket 02.11 22:20 … 05.11.

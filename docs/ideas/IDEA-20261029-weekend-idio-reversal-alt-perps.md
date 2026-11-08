@@ -1,7 +1,7 @@
 # IDEA-20261029-weekend-idio-reversal-alt-perps: ідіосинкратичний рух альта за вихідні (тонка ліквідність) відкочується в понеділок - шорт альтів, що виросли за вихідні
 
 Статус: inconclusive (2026-10-29, квант: ворота потужності кроку 0 не пройдено — MDE_Holm3 тижневої IC 0.029 > 0.025, доходи не рахувались; `docs/verification/2026-10-29-weekend-idio-reversal-alt-perps.md`)
-Пріоритет: шортові сетапи (власник, 2026-10-24)
+Пріоритет: власник (шортові сетапи, 2026-10-24)
 <!-- proposed → accepted | rejected → testing → confirmed | rejected | inconclusive → built -->
 
 ## Прогрес

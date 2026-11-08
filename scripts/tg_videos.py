@@ -27,6 +27,10 @@ from pathlib import Path
 
 VIDEO_EXT = {".mp4", ".mov", ".m4v", ".mkv", ".webm"}
 DURATION_RE = re.compile(r"Duration: (\d+):(\d{2}):(\d{2}(?:\.\d+)?)")
+NEED = (
+    "tg_videos.py needs faster-whisper, imageio-ffmpeg, numpy and pillow: nice uv run --no-project --with faster-whisper "
+    "--with imageio-ffmpeg --with numpy --with pillow python -I scripts/tg_videos.py ..."
+)
 
 
 def _sibling(name: str):
@@ -54,7 +58,10 @@ def parse_duration(ffmpeg_stderr: str) -> float | None:
 
 
 def duration(video: Path) -> float | None:
-    import imageio_ffmpeg  # noqa: PLC0415
+    try:
+        import imageio_ffmpeg  # noqa: PLC0415
+    except ImportError:
+        sys.exit(NEED)
 
     res = subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-hide_banner", "-i", str(video)], capture_output=True, text=True)
     return parse_duration(res.stderr)
@@ -70,7 +77,10 @@ def recogniser(threads: int, language: str | None):
 
     if importlib.util.find_spec("mlx_whisper"):
         return lambda video: keep(asr.recognise(video, language))
-    from faster_whisper import WhisperModel  # noqa: PLC0415
+    try:
+        from faster_whisper import WhisperModel  # noqa: PLC0415
+    except ImportError:
+        sys.exit(NEED)
 
     model = WhisperModel(asr.CPU_MODEL, device="cpu", compute_type="int8", cpu_threads=threads)
 

@@ -11,6 +11,17 @@ from ..core.envelope import Builder
 from ..runtime import Runtime
 from ._util import READ_ONLY, r
 
+PARTIAL_DEVIG = (
+    "some outcomes have no numeric price: price_devigged of the other outcomes is rescaled over the priced outcomes "
+    "only, so it is not a probability distribution over the whole market"
+)
+
+
+def _partial_devig(m: dict[str, Any]) -> bool:
+    """True when an outcome lacks a price while others were de-vigged over the remaining ones."""
+    outs = m.get("outcomes") or []
+    return any(o.get("price") is None for o in outs) and any(o.get("price_devigged") is not None for o in outs)
+
 
 def register(server: MCPServer, rt: Runtime) -> None:
     @server.tool(
@@ -36,6 +47,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
         if rows is None:
             return b.build(None, ok=False)
         out = [normalise_market(m) for m in rows if isinstance(m, dict)]
+        partial = [m.get("id") for m in out if _partial_devig(m)]
+        if partial:
+            b.warn(f"{PARTIAL_DEVIG} (market ids: {', '.join(str(i) for i in partial)})")
         return b.build({"query": query, "count": len(out), "markets": out})
 
     @server.tool(
@@ -55,6 +69,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
         if raw is None:
             return b.build(None, ok=False)
         m = normalise_market(raw)
+        if _partial_devig(m):
+            b.warn(PARTIAL_DEVIG)
 
         async def fetch_book(token: str) -> tuple[str, dict[str, Any] | None]:
             book = await b.guard(f"book:{token[:8]}", "polymarket:clob", rt.polymarket.book(token))
@@ -105,7 +121,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 continue
             try:
                 series.append({"t": int(item["t"]), "p": float(item["p"])})
-            except (KeyError, TypeError, ValueError):
+            except (KeyError, TypeError, ValueError, OverflowError):  # OverflowError: int() of a JSON Infinity
                 continue
         if not series:
             b.miss("history", "polymarket:clob", "data_unavailable", "no parseable points")

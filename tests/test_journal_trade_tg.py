@@ -195,6 +195,28 @@ def test_rules_2_4_5_broken_by_the_journal_and_the_new_row(journal_db):
     assert len(rows(journal_db)) == 8
 
 
+def test_rule_4_48h_pause_after_a_big_loss_day(journal_db):
+    # 22.10 (UTC) closed −$250 <= −2 % of $10 000: no new trade from 23.10 00:00 to 25.10 00:00 UTC; today no day stop
+    seed(journal_db, {"symbol": "SOLUSDT", "opened": NOW - 30 * H, "closed": NOW - 26 * H, "pnl": -250.0})
+    out = jt.handle("/trade BTC long 84000 size 0.05 stop 82000 target 90000", journal_db, NOW)
+    assert (
+        "Правило 4 · денний стоп: ✗ порушено — 48 год перерви після дня з великим збитком (22.10: −$250, поріг −2 % "
+        "депозиту): нових угод до 25.10 00:00 UTC не відкривати." in out
+    )
+    assert "сьогодні спрацював" not in out
+
+
+def test_rule_4_48h_pause_ends_exactly_48h_after_the_day(journal_db):
+    # the big loss closed on 21.10: its pause ran 22.10 00:00 – 24.10 00:00 UTC; on 23.10 it still holds, a trade at
+    # 24.10 00:00 exactly is past it
+    seed(journal_db, {"symbol": "SOLUSDT", "opened": NOW - 40 * H, "closed": NOW - 36 * H, "pnl": -200.0})
+    assert "Правило 4 · денний стоп: ✗ порушено — 48 год перерви" in jt.handle("/trade BTC long 84000 size 0.01", journal_db, NOW)
+    edge = datetime(2026, 10, 24, tzinfo=UTC).timestamp()
+    out = jt.handle("/trade BTC long 84000 size 0.01", journal_db, edge)
+    assert "Правило 4 · денний стоп: ✓ виконано — сьогодні (UTC) за закритими угодами журналу не спрацював" in out
+    assert "48 год перерви після дня з великим збитком немає" in out
+
+
 def test_open_risk_over_three_percent_breaks_rule_2_for_a_major(journal_db):
     seed(journal_db, {"symbol": "ETHUSDT", "side": "short", "opened": NOW - H, "size": 1.0, "entry": 4000.0, "stop": 4250.0})
     out = jt.handle("/trade BTC long 84000 size 0.05 stop 82000", journal_db, NOW)

@@ -12,8 +12,7 @@ from ..analytics.carry_report import closed_stats, cost_realism
 from ..collector.carry_paper_engine import ON_TIME_MS, PARAMS
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, r
-from .journal import _store_guard
+from ._util import READ_ONLY, r, store_ready
 
 PAPER_CARRY_WARNING = (
     "Forward PAPER books, local bookkeeping only: no order is sent. Positions are opened and closed by the collector engine "
@@ -161,10 +160,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
     ) -> dict[str, Any]:
         b = Builder()
         b.warn(PAPER_CARRY_WARNING)
-        if not _store_guard(b, rt):
+        if not await store_ready(b, rt, "the journal"):
             return b.build(None, ok=False)
         assert rt.store is not None
-        await rt.store.init()
         now_ms = int(rt.now().timestamp() * 1000)
         out: dict[str, Any] = {}
         for key in ("A", "B") if strategy == "both" else (strategy,):

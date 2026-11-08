@@ -69,6 +69,15 @@ only_run_notes() {
 # Report one outcome: history line (with what the step cost), Telegram message, exit code.
 # Arguments after the text go to notify (--silent, --button "Label|url").
 COST=""
+AUTO_DELIVERY=""
+routine() {
+  [[ "${TRADEDESK_AGENTS_LOUD:-}" == 1 ]] && return 1
+  case "$1" in
+    idle | continues | parked | unfinished) return 0 ;;
+    delivered) [[ -n "$AUTO_DELIVERY" ]] ;;
+    *) return 1 ;;
+  esac
+}
 finish() {
   local code="$1" status="$2" text="$3" last rest
   shift 3
@@ -83,7 +92,11 @@ $rest}"
   fi
   echo "== $(date) done: $status"
   # A repeated "nothing to do" or failure is reported once; the loop tells the owner when failures pile up.
-  if [[ "$status" != "$last" || ("$status" != "idle" && "$status" != "error") ]]; then
+  # Routine outcomes (owner 2026-11-04: «дуже багато нотифок що вже все працює») go only into history.tsv and the
+  # 2-hourly status (scripts/agents_status.py lists the delivered steps); TRADEDESK_AGENTS_LOUD=1 sends them again.
+  if routine "$status"; then
+    echo "routine outcome, not sent to Telegram"
+  elif [[ "$status" != "$last" || ("$status" != "idle" && "$status" != "error") ]]; then
     notify "$text" "$@"
   fi
   exit "$code"
@@ -244,6 +257,7 @@ save_work() {
     return 1
   fi
   SAVE_CHECKS="lint and tests pass"
+  python3 "$REPO/scripts/fix_run_links.py" || true
   make lint >"$LOG_DIR/$STAMP.save-lint.log" 2>&1 || SAVE_CHECKS="LINT FAILS"
   make test >"$LOG_DIR/$STAMP.save-test.log" 2>&1 || SAVE_CHECKS="$SAVE_CHECKS; TESTS FAIL"
   git switch -q -C "$br" || { SAVE_FAILED="git switch"; return 1; }
@@ -255,9 +269,13 @@ save_work() {
       echo "left out (over 2 MB): $f"
     fi
   done < <(git diff --cached --name-only)
+  # A save that fails lint or tests would only fail CI on GitHub, and every failed run e-mails the owner (2026-11-05:
+  # «Знову помилки на пошту приходять»). Such saves skip CI; the delivered step's own commit runs it as usual.
+  local skip=""
+  [[ "$SAVE_CHECKS" == *FAIL* ]] && skip=" [skip ci]"
   if ! git diff --cached --quiet; then
     git commit -q -F - <<EOF || { SAVE_FAILED="git commit"; return 1; }
-Agents' work in progress, run $RUNS ($SAVE_CHECKS)
+Agents' work in progress, run $RUNS ($SAVE_CHECKS)$skip
 
 Saved by the launcher at $STAMP: the run ended without handing the step
 over, and the next run continues from here. Not a final result.
@@ -281,6 +299,7 @@ handover() {
   verdict="$(git diff --name-only "origin/main...$br" | python3 "$REPO/scripts/automerge.py" --classify 2>/dev/null || echo "owner: ?")"
   if [[ "$status" == delivered && "$verdict" == auto ]]; then
     ready="--ready"
+    AUTO_DELIVERY=1
     how="🤖 Зіллється сам, щойно на GitHub пройдуть тести."
   elif [[ "$status" == delivered && "$verdict" == claude:* ]]; then
     ready="--ready"
@@ -371,6 +390,7 @@ ALLOWED=(
   "Bash(git -C /home/tradedesk/tradedesk-agents ls-files:*)"
   "Bash(git -c core.pager=cat status:*)" "Bash(git -c core.pager=cat log:*)" "Bash(git -c core.quotepath=off status:*)"
   "Bash(git hash-object:*)" "Bash(git check-ignore:*)"
+  "Bash(git -c core.quotepath=off ls-files:*)" "Bash(uv python list:*)"
   "Bash(git -C /home/tradedesk/tradedesk-agents -c core.pager=cat diff:*)"
   # Read-only: show/ls-files with the pager off, grep in the clone, status via --git-dir of the clone.
   "Bash(git -c core.pager=cat show:*)" "Bash(git -c core.pager=cat ls-files:*)"

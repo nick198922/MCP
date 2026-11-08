@@ -17,7 +17,7 @@ from ..analytics.trades import summarise as summarise_trades
 from ..core.envelope import Builder
 from ..providers.exchanges import PERP_EXCHANGES
 from ..runtime import Runtime
-from ._util import READ_ONLY, r, timeframe_seconds
+from ._util import READ_ONLY, finite_float, json_num, parsed_rows, r, timeframe_seconds
 
 BASE = Annotated[str, Field(description="Base asset, e.g. BTC, ETH, SOL")]
 SPREAD_WARNING = (
@@ -92,6 +92,27 @@ def _warn_short_coverage(b: Builder, venue: str, entries: list[dict[str, Any]], 
         b.warn(f"{venue} funding history starts {_iso(first)[:10]}, later than requested (venue retention or listing date)")
 
 
+def _funding_entries(b: Builder, label: str, rows: Any, ts_key: str) -> list[dict[str, Any]]:
+    """[{ts_ms, rate}] of the funding-history rows that carry a rate and a timestamp. A row whose rate or timestamp is
+    not a finite number (a non-numeric string, NaN, +-inf) is dropped, and the drop is named in a warning with `label`
+    (venue and symbol), so a hole in the series is visible. Rows without a rate or timestamp are skipped silently."""
+    kept = [x for x in rows or [] if isinstance(x, dict) and x.get("fundingRate") is not None and x.get(ts_key)]
+    entries = parsed_rows(kept, lambda x: {"ts_ms": int(x[ts_key]), "rate": finite_float(x["fundingRate"])})
+    if len(entries) < len(kept):
+        b.warn(
+            f"{label}: {len(kept) - len(entries)} funding rows dropped (rate or timestamp not a finite number); "
+            "the stats use the remaining rows"
+        )
+    return entries
+
+
+def _warn_partial(b: Builder) -> None:
+    """Call only when some venue returned data: name the providers that are only in `missing` (a partial comparison)."""
+    names = list(dict.fromkeys(m.provider.removeprefix("ccxt:") for m in b.missing))
+    if names:
+        b.warn(f"partial: {', '.join(names)} unavailable, see missing; the cross-venue comparison is incomplete")
+
+
 def _row_from_stats(stats: dict[str, Any]) -> dict[str, Any]:
     """Project summarise_funding_history output into the per-venue row shape used by perps_funding_history."""
     return {
@@ -125,6 +146,8 @@ async def current_funding(rt: Runtime, b: Builder, venue: str, markets: dict[str
         if not meta:
             b.warn(f"{venue}: funding intervals unavailable; 8h shown (interval_source=assumed) where the venue omits it")
     out: dict[str, dict[str, Any]] = {}
+    dropped: list[str] = []
+    bad_marks: list[str] = []
     for sym, x in bulk.items():
         if not sym.endswith("/USDT:USDT") or (x or {}).get("fundingRate") is None:
             continue
@@ -136,17 +159,64 @@ async def current_funding(rt: Runtime, b: Builder, venue: str, markets: dict[str
         source = "venue" if raw_interval else ("default" if meta else "assumed")
         info = ((markets or {}).get(sym) or {}).get("info") or {}
         cap = (m.get("info") or {}).get("adjustedFundingRateCap") or info.get("upperFundingRate")
-        rate = float(x["fundingRate"])
+        # A rate that is not a finite number (a non-numeric value, NaN, +-inf) drops the symbol and is named in a warning
+        # below; a mark, next-funding time or cap that is not a number (the cap is the venue's numeric string) is shown
+        # as absent; a mark that is a JSON number but NaN / inf / a 300+-digit integer is shown as absent and named in a
+        # warning (it is the carry entry's fallback price)
+        try:
+            rate = finite_float(x["fundingRate"])
+        except (TypeError, ValueError, OverflowError):  # OverflowError: float() of a 300+-digit JSON integer
+            dropped.append(sym)
+            continue
+        mark: float | None = None
+        if json_num(x.get("markPrice")):
+            try:
+                mark = finite_float(x["markPrice"])
+            except (ValueError, OverflowError):
+                bad_marks.append(sym)
+        caps = parsed_rows([cap] if cap not in (None, "") else [], float)
         out[sym] = {
             "rate": rate,
             "interval_hours": hours,
             "interval_source": source,
             "apr": annualize_funding(rate, hours),
-            "next_funding_ts": x.get("nextFundingTimestamp"),
-            "mark": float(x["markPrice"]) if x.get("markPrice") else None,
-            "cap": float(cap) if cap not in (None, "") else None,
+            "next_funding_ts": json_num(x.get("nextFundingTimestamp")),
+            "mark": mark,
+            "cap": caps[0] if caps else None,
         }
+    _warn_dropped_current(b, venue, dropped)
+    _warn_dropped_current(b, venue, bad_marks, what="mark price", fate="shown as null")
     return out
+
+
+def _warn_dropped_current(b: Builder, venue: str, symbols: list[str], what: str = "current funding rate", fate: str = "left out") -> None:
+    """Name the symbols whose current funding rate (or `what`) was not a finite number and so were left out (`fate`)."""
+    if symbols:
+        names = ", ".join(symbols[:10]) + (f" and {len(symbols) - 10} more" if len(symbols) > 10 else "")
+        b.warn(f"{venue}: {what} not a finite number for {len(symbols)} symbols, {fate}: {names}")
+
+
+def _finite_rate(b: Builder, label: str, x: Any) -> float | None:
+    """`x` as a finite float; otherwise None and a warning naming `label` (venue and symbol) as left out."""
+    try:
+        return finite_float(x)
+    except (TypeError, ValueError, OverflowError):  # OverflowError: float() of a 300+-digit JSON integer
+        b.warn(f"{label}: current funding rate not a finite number; this venue is left out of the comparison")
+        return None
+
+
+def _finite_price(b: Builder, label: str, name: str, x: Any) -> float | None:
+    """A mark / index price as a finite float. An absent one is None quietly; a NaN / inf / non-numeric one (or a
+    bool) is None with a warning naming `label` (venue and symbol). The venue's funding row is kept either way."""
+    if x is None:
+        return None
+    try:
+        if isinstance(x, bool):
+            raise TypeError("bool is not a price")
+        return finite_float(x)
+    except (TypeError, ValueError, OverflowError):  # OverflowError: float() of a 300+-digit JSON integer
+        b.warn(f"{label}: {name} price not a finite number; shown as null")
+        return None
 
 
 def hl_symbol(coin: str) -> str:
@@ -164,8 +234,14 @@ async def hl_current_funding(rt: Runtime, b: Builder) -> tuple[dict[str, dict[st
     rows = await b.guard("asset_contexts:hyperliquid", "hyperliquid", rt.hyperliquid.asset_contexts())
     out: dict[str, dict[str, Any]] = {}
     names: dict[str, str] = {}
+    dropped: list[str] = []
     for x in rows or []:
         if x.get("funding_1h") is None:
+            continue
+        try:  # the provider parses HL's numeric strings, so "NaN" / "Infinity" arrive here as floats
+            finite_float(x["funding_1h"])
+        except (TypeError, ValueError):
+            dropped.append(str(x.get("coin")))
             continue
         key = hl_symbol(x["coin"])
         if key in names:  # two HL names for one instrument: ambiguous, drop both
@@ -182,6 +258,7 @@ async def hl_current_funding(rt: Runtime, b: Builder) -> tuple[dict[str, dict[st
             "mark": x["mark_px"],
             "cap": HL_FUNDING_CAP,
         }
+    _warn_dropped_current(b, "hyperliquid", dropped)
     return out, {k: v for k, v in names.items() if v}
 
 
@@ -200,7 +277,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
         description=(
             "Compare perpetual funding across venues (Binance USDT-M, Bybit, OKX via ccxt; Hyperliquid; Deribit for BTC/ETH). "
             "Each row has the rate per funding interval, the interval length, and the ANNUALISED rate (simple, fraction: 0.10 = 10 %), "
-            "so venues with 1h/4h/8h intervals are comparable. Also reports the widest spread = cross-venue funding carry."
+            "so venues with 1h/4h/8h intervals are comparable. Also reports the widest spread = cross-venue funding carry. "
+            "`mark` / `index` are the venue's prices in its quote currency (USDT or USD), null when it omits them or sends a non-finite value (warned)."
         ),
     )
     async def perps_funding_compare(
@@ -218,20 +296,26 @@ def register(server: MCPServer, rt: Runtime) -> None:
 
         async def ccxt_row(ex: str) -> dict[str, Any] | None:
             fr = await b.guard(f"funding:{ex}", f"ccxt:{ex}", rt.exchanges.funding_rate(ex, symbol))
+            if fr is not None and not isinstance(fr, dict):
+                b.miss(f"funding:{ex}", f"ccxt:{ex}", "data_unavailable", f"unexpected response type {type(fr).__name__}")
+                return None
             if fr is None or fr.get("fundingRate") is None:
+                return None
+            label = f"{ex} {symbol}"
+            rate = _finite_rate(b, label, fr["fundingRate"])
+            if rate is None:
                 return None
             hours = parse_interval_hours(fr.get("interval"))
             if not fr.get("interval"):
                 b.warn(f"{ex}: funding interval not reported, assumed 8h")
-            rate = float(fr["fundingRate"])
             return {
                 "venue": ex,
                 "rate_per_interval": rate,
                 "interval_hours": hours,
                 "annualized": r(annualize_funding(rate, hours), 5),
                 "next_funding_utc": _iso(fr.get("nextFundingTimestamp") or fr.get("fundingTimestamp")),
-                "mark": fr.get("markPrice"),
-                "index": fr.get("indexPrice"),
+                "mark": _finite_price(b, label, "mark", fr.get("markPrice")),
+                "index": _finite_price(b, label, "index", fr.get("indexPrice")),
             }
 
         async def hl_row() -> dict[str, Any] | None:
@@ -241,13 +325,16 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 if ctx is not None:
                     b.miss("funding:hyperliquid", "hyperliquid", "data_unavailable", f"{base} not listed")
                 return None
+            label = f"hyperliquid {base}"
+            if _finite_rate(b, label, row["funding_1h"]) is None:
+                return None
             return {
                 "venue": "hyperliquid",
                 "rate_per_interval": row["funding_1h"],
                 "interval_hours": 1.0,
                 "annualized": r(row["funding_annualized"], 5),
-                "mark": row["mark_px"],
-                "index": row["oracle_px"],
+                "mark": _finite_price(b, label, "mark", row["mark_px"]),
+                "index": _finite_price(b, label, "index", row["oracle_px"]),
             }
 
         async def deribit_row() -> dict[str, Any] | None:
@@ -255,16 +342,19 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 return None
             fut = await b.guard("funding:deribit", "deribit", rt.deribit.book_summary(base, "future"))
             perp = next((x for x in fut or [] if x.get("instrument_name", "").endswith("PERPETUAL")), None)
-            if not perp or perp.get("funding_8h") is None:
+            if not perp or json_num(perp.get("funding_8h")) is None:
                 return None
-            rate = float(perp["funding_8h"])
+            label = f"deribit {perp['instrument_name']}"
+            rate = _finite_rate(b, label, perp["funding_8h"])
+            if rate is None:
+                return None
             return {
                 "venue": "deribit",
                 "rate_per_interval": rate,
                 "interval_hours": 8.0,
                 "annualized": r(annualize_funding(rate, 8.0), 5),
-                "mark": perp.get("mark_price"),
-                "index": perp.get("estimated_delivery_price"),
+                "mark": _finite_price(b, label, "mark", perp.get("mark_price")),
+                "index": _finite_price(b, label, "index", perp.get("estimated_delivery_price")),
             }
 
         jobs = [ccxt_row(e) for e in venues]
@@ -287,6 +377,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 "note": "short the high-funding venue, long the low one, delta-neutral; ignores fees, basis and margin cost",
             },
         }
+        _warn_partial(b)
         return b.build(data)
 
     @server.tool(
@@ -296,6 +387,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "For each venue returns: count, interval (auto-detected from the median timestamp spacing), latest rate per interval and annualised, "
             "mean/stdev/min/max of the rate, 7d and 30d means, carry APR (= sum of actual payments over the covered span, annualised; robust to interval changes), z-score and percentile of the latest "
             "value vs the whole window, polarity flips. Plus a cross-venue summary (highest/lowest carry, biggest absolute z). "
+            "Rates are decimals per funding interval (0.0001 = 0.01 %); annualised values and carry APR are simple decimals "
+            "(0.10 = 10 %/year). "
             "Set `include_series=true` to also receive each venue's raw [ts_ms, rate] rows."
         ),
     )
@@ -329,12 +422,11 @@ def register(server: MCPServer, rt: Runtime) -> None:
             if not got:
                 return None
             if not got["complete"]:
-                b.warn(f"{ex} funding history incomplete (page limit or a later page failed); window truncated")
-            entries = [
-                {"ts_ms": int(x["timestamp"]), "rate": float(x["fundingRate"])}
-                for x in got["rows"]
-                if x.get("fundingRate") is not None and x.get("timestamp")
-            ]
+                b.warn(
+                    f"{ex} funding history incomplete (page limit, a later page failed, or rows with a malformed timestamp "
+                    "dropped); the series may have holes"
+                )
+            entries = _funding_entries(b, f"{ex} {symbol}", got["rows"], "timestamp")
             if not entries:
                 return None
             _warn_short_coverage(b, ex, entries, since_ms)
@@ -349,12 +441,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
             if not got:
                 return None
             if not got["complete"]:
-                b.warn("hyperliquid funding history incomplete (page limit or a later page failed); window truncated")
-            entries = [
-                {"ts_ms": int(x["time"]), "rate": float(x["fundingRate"])}
-                for x in got["rows"]
-                if x.get("fundingRate") is not None and x.get("time")
-            ]
+                b.warn("hyperliquid funding history incomplete (page limit, a later page failed, or rows with a malformed time dropped)")
+            entries = _funding_entries(b, f"hyperliquid {hl_base}", got["rows"], "time")
             if not entries:
                 return None
             _warn_short_coverage(b, "hyperliquid", entries, since_ms)
@@ -386,6 +474,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
             v = max(abs_z, key=lambda x: abs(x["z_score_latest"]))
             cross["biggest_abs_z"] = {"venue": v["venue"], "z_score_latest": r(v["z_score_latest"], 3)}
 
+        _warn_partial(b)
         return b.build({"base": base, "days_requested": days_back, "venues": rows, "cross_venue": cross})
 
     async def _current_funding(b: Builder, venue: str, markets: dict[str, Any] | None = None) -> dict[str, dict[str, Any]]:
@@ -399,6 +488,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "(sum of actual payments over real time, robust to 8h/4h/1h interval changes), share of positive payments, "
             "status vs `entry_apr` / `exit_apr` (above_entry / between / below_exit), `breakeven_days` = days the "
             "trailing APR must persist to pay `roundtrip_fee`, and whether a spot market exists on `spot_venue`. "
+            "`incomplete_history` = the symbol's funding history fetch was cut short or dropped malformed rows, so its "
+            "trailing APR and status may be wrong: such symbols stay in `rows` and `summary.above_entry` but are left out "
+            "of `summary.above_entry_with_spot`, listed in `summary.incomplete_history` and named in `warnings`. "
             "Without `bases` the venue's `candidates` perps with the highest current funding are scanned, by default "
             "only crypto perps (TradFi perps skipped) that also have a spot market. "
             "All rates and APRs are decimals (0.10 = 10 %), on position notional; capital needed is higher "
@@ -484,13 +576,13 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 got = await b.guard(
                     f"funding_history:{sym}", f"ccxt:{venue}", rt.exchanges.funding_rate_history_range(venue, sym, since_ms, now_ms)
                 )
-            if got and not got["complete"]:
-                b.warn(f"{sym}: funding history incomplete (page limit or a later page failed)")
-            entries = [
-                {"ts_ms": int(x["timestamp"]), "rate": float(x["fundingRate"])}
-                for x in (got["rows"] if got else [])
-                if x.get("fundingRate") is not None and x.get("timestamp")
-            ]
+            incomplete = bool(got) and got.get("complete") is False
+            if incomplete:
+                b.warn(
+                    f"{venue} {sym}: funding history incomplete (page limit, a later page failed, or rows with a malformed timestamp "
+                    "dropped); its trailing APR may be wrong, so it is flagged incomplete_history and left out of above_entry_with_spot"
+                )
+            entries = _funding_entries(b, f"{venue} {sym}", got["rows"] if got else [], "timestamp")
             cur = current.get(sym)
             if not entries and not cur:
                 return None
@@ -511,6 +603,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 "status": snap.get("status"),
                 "breakeven_days": r(snap.get("breakeven_days"), 1),
                 "coverage_days": r(snap.get("coverage_days"), 1),
+                "incomplete_history": incomplete,
                 "spot_available": (f"{base}/USDT" in spot) if spot is not None else None,
                 "tradfi": (sym in tradfi) if tradfi is not None else None,
             }
@@ -529,7 +622,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 "summary": {
                     "scanned": len(rows),
                     "above_entry": above,
-                    "above_entry_with_spot": [x["base"] for x in rows if x["status"] == "above_entry" and x["spot_available"]],
+                    "above_entry_with_spot": [
+                        x["base"] for x in rows if x["status"] == "above_entry" and x["spot_available"] and not x["incomplete_history"]
+                    ],
+                    "incomplete_history": [x["base"] for x in rows if x["incomplete_history"]],
                     "median_trailing_apr": r(trailing[len(trailing) // 2], 4) if trailing else None,
                 },
                 "rows": rows,
@@ -546,9 +642,11 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "`slippage` per leg, entry and exit) and the days of trailing spread needed to pay it; the mark-price gap "
             "between venues (null when a venue's bulk funding has no mark price, e.g. OKX); the 7-day high/low range of the short venue's perp; and flags: price_mismatch (likely different "
             "tokens under one ticker), price_gap, current_spread_reversed, funding_at_cap, short_history, "
-            "interval_mismatch, volatile (7d range >= 33 %). `hyperliquid` is optional (hourly funding, taker fee 0.045 %, cap 4 %/h; "
+            "interval_mismatch, volatile (7d range >= 33 %), incomplete_history (a paired leg's funding history fetch was "
+            "cut short or dropped malformed rows, so its trailing APR may be wrong; `warnings` name the venue and symbol). "
+            "`hyperliquid` is optional (hourly funding, taker fee 0.045 %, cap 4 %/h; "
             "kPEPE-style names are matched to 1000PEPE-style CEX tickers by multiplier, other naming differences stay unmatched; "
-            "the HL<->Binance 7d carry backtest was unprofitable after costs, so treat it as monitoring, not a signal). `tradable_now` = above entry with no price or reversal flag. "
+            "the HL<->Binance 7d carry backtest was unprofitable after costs, so treat it as monitoring, not a signal). `tradable_now` = above entry with no price, reversal or incomplete_history flag. "
             "Without `bases`, the `candidates` crypto perps listed on at least two venues with the widest current spread "
             "are scanned. Rates and APRs are decimals on notional. See `warnings` before acting."
         ),
@@ -625,31 +723,33 @@ def register(server: MCPServer, rt: Runtime) -> None:
                     got = await b.guard(
                         f"funding_history:{v}:{sym}", "hyperliquid", rt.hyperliquid.funding_history_range(coin, since_ms, now_ms)
                     )
-                entries = [
-                    {"ts_ms": int(x["time"]), "rate": float(x["fundingRate"])}
-                    for x in (got["rows"] if got else [])
-                    if x.get("fundingRate") is not None and x.get("time")
-                ]
+                entries = _funding_entries(b, f"{v} {sym}", got["rows"] if got else [], "time")
             else:
                 async with sem:
                     got = await b.guard(
                         f"funding_history:{v}:{sym}", f"ccxt:{v}", rt.exchanges.funding_rate_history_range(v, sym, since_ms, now_ms)
                     )
-                entries = [
-                    {"ts_ms": int(x["timestamp"]), "rate": float(x["fundingRate"])}
-                    for x in (got["rows"] if got else [])
-                    if x.get("fundingRate") is not None and x.get("timestamp")
-                ]
+                entries = _funding_entries(b, f"{v} {sym}", got["rows"] if got else [], "timestamp")
             if not entries and cur is None:
                 return None
+            incomplete = bool(got) and got.get("complete") is False
+            if incomplete:
+                b.warn(
+                    f"{v} {sym}: funding history incomplete (page limit, a later page failed, or rows with a malformed timestamp "
+                    "dropped); trailing APRs and short_history rest on a partial series, so a pair with this leg is "
+                    "flagged incomplete_history and not tradable_now"
+                )
             cur = cur or {}
-            return v, {
+            out: dict[str, Any] = {
                 "entries": entries,
                 "rate": cur.get("rate"),
                 "interval_hours": cur.get("interval_hours"),
                 "mark": cur.get("mark"),
                 "cap": cur.get("cap"),
             }
+            if incomplete:
+                out["incomplete"] = True
+            return v, out
 
         async def row(sym: str) -> dict[str, Any] | None:
             legs = dict(x for x in await asyncio.gather(*[leg(v, sym) for v in vs]) if x)
@@ -683,8 +783,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
                         f"ccxt:{pair['short_venue']}",
                         rt.exchanges.ohlcv(pair["short_venue"], sym, "4h", 42),
                     )
-            ok_bars = [x for x in (bars or []) if isinstance(x, (list, tuple)) and len(x) >= 5]
-            range_7d = max(float(x[2]) for x in ok_bars) / min(float(x[3]) for x in ok_bars) - 1.0 if ok_bars else None
+            ok_bars = parsed_rows(
+                [x for x in (bars or []) if isinstance(x, (list, tuple)) and len(x) >= 5], lambda x: (float(x[2]), float(x[3]))
+            )
+            range_7d = max(h for h, _ in ok_bars) / min(lo for _, lo in ok_bars) - 1.0 if ok_bars else None
             flags = list(pair["flags"])
             if range_7d is not None and range_7d >= 1 / 3:
                 flags.append("volatile")
@@ -762,16 +864,15 @@ def register(server: MCPServer, rt: Runtime) -> None:
             )
             if not raw:
                 return None
-            series = [
-                {
+            series = parsed_rows(
+                [x for x in raw if x.get("longAccount") is not None and x.get("shortAccount") is not None],
+                lambda x: {
                     "ts_ms": int(x["timestamp"]),
                     "long": float(x["longAccount"]),
                     "short": float(x["shortAccount"]),
                     "ratio": float(x["longShortRatio"]),
-                }
-                for x in raw
-                if x.get("longAccount") is not None and x.get("shortAccount") is not None
-            ]
+                },
+            )
             series.sort(key=lambda s: s["ts_ms"])
             if not series:
                 return None
@@ -790,16 +891,15 @@ def register(server: MCPServer, rt: Runtime) -> None:
             raw = await b.guard("ls_ratio:bybit", "bybit", rt.bybit.long_short_account_ratio(symbol, _PERIOD_BYBIT[period], limit))
             if not raw:
                 return None
-            series = [
-                {
+            series = parsed_rows(
+                [x for x in raw if x.get("buyRatio") is not None and x.get("sellRatio") is not None],
+                lambda x: {
                     "ts_ms": int(x["timestamp"]),
                     "long": float(x["buyRatio"]),
                     "short": float(x["sellRatio"]),
                     "ratio": float(x["buyRatio"]) / float(x["sellRatio"]) if float(x["sellRatio"]) else None,
-                }
-                for x in raw
-                if x.get("buyRatio") is not None and x.get("sellRatio") is not None
-            ]
+                },
+            )
             series.sort(key=lambda s: s["ts_ms"])
             series = [x for x in series if x["ratio"] is not None]
             if not series:
@@ -862,11 +962,14 @@ def register(server: MCPServer, rt: Runtime) -> None:
             )
             if not raw:
                 return None
-            series = [
-                {"ts_ms": int(x["timestamp"]), "oi_base": float(x["sumOpenInterest"]), "oi_usd": float(x["sumOpenInterestValue"])}
-                for x in raw
-                if x.get("sumOpenInterest") is not None
-            ]
+            series = parsed_rows(
+                [x for x in raw if x.get("sumOpenInterest") is not None],
+                lambda x: {
+                    "ts_ms": int(x["timestamp"]),
+                    "oi_base": float(x["sumOpenInterest"]),
+                    "oi_usd": float(x["sumOpenInterestValue"]),
+                },
+            )
             series.sort(key=lambda s: s["ts_ms"])
             if not series:
                 return None
@@ -882,11 +985,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
             raw = await b.guard("oi_hist:bybit", "bybit", rt.bybit.open_interest(symbol, _PERIOD_BYBIT[period], limit))
             if not raw:
                 return None
-            series = [
-                {"ts_ms": int(x["timestamp"]), "oi_base": float(x["openInterest"]), "oi_usd": None}
-                for x in raw
-                if x.get("openInterest") is not None
-            ]
+            series = parsed_rows(
+                [x for x in raw if x.get("openInterest") is not None],
+                lambda x: {"ts_ms": int(x["timestamp"]), "oi_base": float(x["openInterest"]), "oi_usd": None},
+            )
             series.sort(key=lambda s: s["ts_ms"])
             if not series:
                 return None
@@ -935,11 +1037,11 @@ def register(server: MCPServer, rt: Runtime) -> None:
             oi = await b.guard(f"oi:{ex}", f"ccxt:{ex}", rt.exchanges.open_interest(ex, symbol))
             if oi is None:
                 return None
-            oi_base = oi.get("openInterestAmount")
-            oi_usd = oi.get("openInterestValue")
+            oi_base = json_num(oi.get("openInterestAmount"))  # ccxt hands out numbers: anything else is not reported
+            oi_usd = json_num(oi.get("openInterestValue"))
             if oi_usd is None and oi_base:
                 tkr = await b.guard(f"oi_mark:{ex}", f"ccxt:{ex}", rt.exchanges.ticker(ex, symbol))
-                mark = (tkr or {}).get("last")
+                mark = json_num((tkr or {}).get("last"))
                 if mark:
                     oi_usd = oi_base * mark
                     b.warn(f"{ex}: oi_usd estimated as amount * last price (openInterestValue not reported)")
@@ -955,7 +1057,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 return None
             fut = await b.guard("oi:deribit", "deribit", rt.deribit.book_summary(base, "future"))
             perp = next((x for x in fut or [] if x.get("instrument_name", "").endswith("PERPETUAL")), None)
-            return None if not perp else {"venue": "deribit", "oi_base": None, "oi_usd": perp.get("open_interest")}
+            return None if not perp else {"venue": "deribit", "oi_base": None, "oi_usd": json_num(perp.get("open_interest"))}
 
         rows = [x for x in await asyncio.gather(*[ccxt_oi(e.lower()) for e in (exchanges or PERP_EXCHANGES)], hl(), dbt()) if x]
         if not rows:
@@ -966,6 +1068,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
             if x["oi_usd"] is None:
                 b.warn(f"{x['venue']}: USD open interest not reported by the exchange")
         rows.sort(key=lambda x: x["oi_usd"] or 0, reverse=True)
+        _warn_partial(b)
         return b.build({"base": base, "total_oi_usd": total, "venues": rows})
 
     @server.tool(
@@ -1002,7 +1105,12 @@ def register(server: MCPServer, rt: Runtime) -> None:
         annotations=READ_ONLY,
         description=(
             "Hyperliquid OHLCV candles for one coin plus period return and annualised close-to-close realised volatility. "
-            "`interval` is HL-shaped: 1m/3m/5m/15m/30m/1h/2h/4h/8h/12h/1d/3d/1w/1M. `hours_back` sets the lookback window."
+            "`interval` is HL-shaped: 1m/3m/5m/15m/30m/1h/2h/4h/8h/12h/1d/3d/1w/1M. `hours_back` sets the lookback window. "
+            "Units: ts_ms is Unix epoch milliseconds (UTC); prices (and first_close/last_close) are as Hyperliquid quotes the "
+            "coin (USDC for standard perps); volume is Hyperliquid's `v` field passed through (not converted to USD). "
+            "summary.return_pct is in percent (first to last close; 1.5 = 1.5 %); summary.realized_vol_annualized is a "
+            "decimal (0.45 = 45 %): stdev of close-to-close log-returns scaled by sqrt(365 days / candle size), "
+            "present only with at least 10 closes."
         ),
     )
     async def hyperliquid_candles(
@@ -1032,7 +1140,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
         for c in raw:
             try:
                 rows.append([int(c["t"]), float(c["o"]), float(c["h"]), float(c["l"]), float(c["c"]), float(c["v"])])
-            except (KeyError, TypeError, ValueError):
+            except (KeyError, TypeError, ValueError, OverflowError):  # OverflowError: int() of a JSON Infinity
                 continue
         if not rows:
             b.miss("candles", "hyperliquid", "data_unavailable", "no parsable candles")
@@ -1080,16 +1188,21 @@ def register(server: MCPServer, rt: Runtime) -> None:
             b.miss("book", "hyperliquid", "backend_error", "unexpected book shape")
             return b.build(None, ok=False)
 
-        def levels(xs: list[dict[str, Any]]) -> list[list[float]]:
+        def levels(xs: Any, side: str) -> list[list[float]]:
+            """[px, sz, n] per level; a level with a field that is absent, not a number, NaN / inf or a 300+-digit
+            integer (OverflowError) is dropped and counted in a warning naming the side."""
             out: list[list[float]] = []
-            for lv in xs:
+            bad = 0
+            for lv in xs if isinstance(xs, list) else []:
                 try:
-                    out.append([float(lv["px"]), float(lv["sz"]), float(lv.get("n") or 0)])
-                except (KeyError, TypeError, ValueError):
-                    continue
+                    out.append([finite_float(lv["px"]), finite_float(lv["sz"]), finite_float(lv.get("n") or 0)])
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    bad += 1
+            if bad:
+                b.warn(f"hyperliquid {coin} book: {bad} {side} level(s) with a price, size or count that is not a finite number dropped")
             return out
 
-        bids, asks = levels(bids_raw), levels(asks_raw)
+        bids, asks = levels(bids_raw, "bid"), levels(asks_raw, "ask")
         if not bids or not asks:
             b.miss("book", "hyperliquid", "data_unavailable", "no quotable levels")
             return b.build(None, ok=False)
@@ -1137,11 +1250,12 @@ def register(server: MCPServer, rt: Runtime) -> None:
             try:
                 price = float(t["px"])
                 amount = float(t["sz"])
-            except (KeyError, TypeError, ValueError):
+                ts = int(t.get("time") or 0)
+            except (KeyError, TypeError, ValueError, OverflowError):  # OverflowError: int() of a JSON Infinity
                 continue
             normalised.append(
                 {
-                    "timestamp": int(t.get("time") or 0),
+                    "timestamp": ts,
                     "side": "buy" if side_code == "B" else "sell",
                     "price": price,
                     "amount": amount,
@@ -1176,13 +1290,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 b.miss("funding_history", "hyperliquid", "data_unavailable", "empty result")
             return b.build(None, ok=False)
         if not got["complete"]:
-            b.warn("funding history incomplete (page limit or a later page failed); window truncated")
-        entries: list[dict[str, Any]] = []
-        for e in got["rows"]:
-            try:
-                entries.append({"ts_ms": int(e["time"]), "rate": float(e["fundingRate"])})
-            except (KeyError, TypeError, ValueError):
-                continue
+            b.warn("funding history incomplete (page limit, a later page failed, or rows with a malformed time dropped)")
+        # a row whose time or rate is missing is skipped; one whose time or rate is not a finite number is dropped with a warning
+        entries = _funding_entries(b, f"hyperliquid {coin}", got["rows"], "time")
         if not entries:
             b.miss("funding_history", "hyperliquid", "data_unavailable", "no parsable entries")
             return b.build(None, ok=False)
@@ -1193,7 +1303,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
         annotations=READ_ONLY,
         description=(
             "Deribit futures term structure for BTC or ETH: the perpetual plus every dated future with basis vs the spot index "
-            "(absolute, %, annualised simple and log). Positive annualised basis = contango (cash-and-carry opportunity)."
+            "(absolute, %, annualised simple and log). Units differ by field: basis_pct is in percent (0.5 = 0.5 %); "
+            "annualized_simple, annualized_log and funding_annualized are decimals (0.10 = 10 %). "
+            "Positive annualised basis = contango (cash-and-carry opportunity)."
         ),
     )
     async def deribit_futures_curve(
@@ -1208,17 +1320,18 @@ def register(server: MCPServer, rt: Runtime) -> None:
         perp: dict[str, Any] | None = None
         for f in fut:
             parsed = parse_future_name(f.get("instrument_name", ""))
-            idx, mark = f.get("estimated_delivery_price"), f.get("mark_price")
+            idx, mark = json_num(f.get("estimated_delivery_price")), json_num(f.get("mark_price"))
             if not parsed or not idx or not mark:
                 continue
             if parsed[1] is None:
+                funding_8h = json_num(f.get("funding_8h"))
                 perp = {
                     "instrument": f["instrument_name"],
                     "mark": mark,
                     "index": idx,
                     "basis_pct": r((mark / idx - 1) * 100, 4),
-                    "funding_8h": f.get("funding_8h"),
-                    "funding_annualized": r(annualize_funding(f["funding_8h"], 8.0), 5) if f.get("funding_8h") is not None else None,
+                    "funding_8h": funding_8h,
+                    "funding_annualized": r(annualize_funding(funding_8h, 8.0), 5) if funding_8h is not None else None,
                     "open_interest_usd": f.get("open_interest"),
                 }
                 continue
@@ -1273,6 +1386,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
             fr = await b.guard(f"basis:{ex}", f"ccxt:{ex}", rt.exchanges.funding_rate(ex, symbol))
             if fr is None:
                 return None
+            if not isinstance(fr, dict):
+                b.miss(f"basis:{ex}", f"ccxt:{ex}", "data_unavailable", f"unexpected response type {type(fr).__name__}")
+                return None
             pct, bps = _premium(fr.get("markPrice"), fr.get("indexPrice"))
             if pct is None:
                 return None
@@ -1315,14 +1431,14 @@ def register(server: MCPServer, rt: Runtime) -> None:
             now = rt.now()
             for f in fut:
                 parsed = parse_future_name(f.get("instrument_name", ""))
-                idx, mark = f.get("estimated_delivery_price"), f.get("mark_price")
+                idx, mark = json_num(f.get("estimated_delivery_price")), json_num(f.get("mark_price"))
                 if not parsed or not idx or not mark:
                     continue
                 if parsed[1] is None:
                     pct, bps = _premium(mark, idx)
                     if pct is None:
                         continue
-                    rate = f.get("funding_8h")
+                    rate = json_num(f.get("funding_8h"))
                     perp_row = {
                         "venue": "deribit",
                         "mark": mark,
@@ -1358,6 +1474,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
         perps.sort(key=lambda x: x["premium_bps"], reverse=True)
         hi, lo = perps[0], perps[-1]
         nearest = dated[0] if dated else None
+        _warn_partial(b)
         return b.build(
             {
                 "base": base,

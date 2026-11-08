@@ -123,12 +123,13 @@ def gamma_closed_ts(market: Mapping[str, Any]) -> int | None:
 def binance_closes(bars: Iterable[Sequence[Any]], end_ts: int) -> tuple[float | None, float | None]:
     """Closes of the Binance 1m candles ``[open_ms, o, h, l, c, v]`` that close at ``end_ts`` (open = end - 60 s) and
     that open at ``end_ts``. The texts name either "the 1 minute candle ... 12:00" (2025) or "the 1 minute candle ...
-    closing at 12:00" (since 2026-10-07), so both are kept for the cross-check. None where the bar is absent."""
+    closing at 12:00" (since 2026-10-07), so both are kept for the cross-check. None where the bar is absent. A bar
+    whose open time or close is not a number, NaN / inf or a 300+-digit integer is skipped."""
     at_end = nxt = None
     for b in bars:
         try:
             t, c = int(float(b[0]) // 1000), float(b[4])
-        except (IndexError, TypeError, ValueError):
+        except (IndexError, TypeError, ValueError, OverflowError):  # OverflowError: int(inf), float() of a 300+-digit int
             continue
         if not math.isfinite(c):
             continue

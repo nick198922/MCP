@@ -1,12 +1,13 @@
-"""Import the owner's Hyperliquid perp trades into the trade journal. Read-only, no key: fills are public by address.
+"""Import the owner's Hyperliquid perp trades into the trade journal (read-only, no key).
 
     uv run python scripts/hyperliquid_import.py import 0xADDRESS [--db PATH]
     uv run python scripts/hyperliquid_import.py stats [--db PATH] [--out REPORT.md]
 
-Fills come from the public info endpoint (`userFillsByTime`, 2 000 per page; Hyperliquid keeps the 10 000 most recent
-fills). They are grouped per coin into round trips: a trip starts when the position leaves zero and ends when it is
-flat again (a flip closes one trip and opens the next). P&L = Hyperliquid's closedPnl minus fees; funding is not included.
-Spot fills are skipped. The address is not stored in git; the report stays on the server.
+Fills are public by address. They come from the public info endpoint through `core.http.Http`
+(`userFillsByTime`, 2 000 per page; Hyperliquid keeps the 10 000 most recent fills). They are grouped
+per coin into round trips: a trip starts when the position leaves zero and ends when it is flat again
+(a flip closes one trip and opens the next). P&L = Hyperliquid's closedPnl minus fees; funding is not
+included. Spot fills are skipped. The address is not stored in git; the report stays on the server.
 """
 
 from __future__ import annotations
@@ -18,25 +19,30 @@ import time
 from pathlib import Path
 from typing import Any
 
-import httpx
-
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import bybit_import as bi  # noqa: E402
 
-URL = "https://api.hyperliquid.xyz/info"
+from tradedesk.core.http import Http  # noqa: E402
+
 DB_DEFAULT = bi.DB_DEFAULT
 
 
-def fetch_fills(address: str, start_ms: int = 0) -> list[dict[str, Any]]:
+def info_http() -> Http:
+    """Public Hyperliquid info endpoint through core.http.Http (invariant 2): ~3 pages/s (the old
+    0.3 s pause), retries on 429 / 5xx / network; any other HTTP error raises ProviderError at once,
+    like raise_for_status did."""
+    return Http("hyperliquid_info", "https://api.hyperliquid.xyz", rate=3.0, burst=1, timeout=30, retries=2)
+
+
+async def _fetch_pages(http: Http, address: str, start_ms: int, now: int) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
-    t, now = start_ms, int(time.time() * 1000)
-    with httpx.Client(timeout=30) as c:
+    t = start_ms
+    try:
         while t < now:
-            r = c.post(URL, json={"type": "userFillsByTime", "user": address, "startTime": t, "endTime": now, "aggregateByTime": True})
-            r.raise_for_status()
-            page = r.json() or []
+            body = {"type": "userFillsByTime", "user": address, "startTime": t, "endTime": now, "aggregateByTime": True}
+            page = (await http.post_json("/info", json=body, tool="info:userFillsByTime", args={"startTime": t})).data or []
             if not page:
                 break
             out += page
@@ -44,7 +50,13 @@ def fetch_fills(address: str, start_ms: int = 0) -> list[dict[str, Any]]:
             if len(page) < 2000 or last + 1 <= t:
                 break
             t = last + 1
-            time.sleep(0.3)
+    finally:
+        await http.aclose()
+    return out
+
+
+def fetch_fills(address: str, start_ms: int = 0, http: Http | None = None) -> list[dict[str, Any]]:
+    out = asyncio.run(_fetch_pages(http or info_http(), address, start_ms, int(time.time() * 1000)))
     seen, uniq = set(), []
     for f in sorted(out, key=lambda f: (int(f["time"]), str(f.get("tid")))):
         k = (f.get("tid"), f.get("time"), f.get("oid"))
@@ -129,7 +141,8 @@ def round_trips(fills: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def mark_airdrop(db_path: str, before: str) -> int:
-    """Owner 2026-10-18: older Hyperliquid positions were held to farm the airdrop, not traded; keep them, tag them."""
+    """Owner 2026-10-18: older Hyperliquid positions were held to farm the airdrop, not traded;
+    keep them, tag them."""
     import json  # noqa: PLC0415
     import sqlite3  # noqa: PLC0415
     from datetime import UTC, datetime  # noqa: PLC0415
@@ -137,16 +150,20 @@ def mark_airdrop(db_path: str, before: str) -> int:
     cut = int(datetime.strptime(before, "%Y-%m-%d").replace(tzinfo=UTC).timestamp())
     con = sqlite3.connect(db_path)
     n = 0
-    for tid, tags in con.execute("SELECT id, tags FROM journal WHERE tags LIKE '%\"hyperliquid\"%' AND closed_ts < ?", (cut,)).fetchall():
-        t = json.loads(tags or "[]")
-        if "airdrop" not in t:
-            con.execute(
-                "UPDATE journal SET tags = ?, thesis = ? WHERE id = ?",
-                (json.dumps([*t, "airdrop"]), "фарм дропу Hyperliquid (не торгівля)", tid),
-            )
-            n += 1
-    con.commit()
-    con.close()
+    try:
+        with con:  # one transaction: commits all tags, or rolls every one back if an UPDATE fails
+            for tid, tags in con.execute(
+                "SELECT id, tags FROM journal WHERE tags LIKE '%\"hyperliquid\"%' AND closed_ts < ?", (cut,)
+            ).fetchall():
+                t = json.loads(tags or "[]")
+                if "airdrop" not in t:
+                    con.execute(
+                        "UPDATE journal SET tags = ?, thesis = ? WHERE id = ?",
+                        (json.dumps([*t, "airdrop"]), "фарм дропу Hyperliquid (не торгівля)", tid),
+                    )
+                    n += 1
+    finally:
+        con.close()
     return n
 
 

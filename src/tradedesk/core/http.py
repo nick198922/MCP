@@ -61,6 +61,19 @@ def _clean_args(params: dict[str, Any] | None) -> dict[str, Any]:
     return {k: v for k, v in (params or {}).items() if not _SECRET_KEY.search(str(k))}
 
 
+def _header_secrets(headers: dict[str, str] | None) -> tuple[str, ...]:
+    """Credentials this client sends in its own headers (`api_key`, `x-cg-demo-api-key`, `Authorization: Bearer <k>`),
+    so a venue echoing one back in an error body is scrubbed even when the provider passed no `secrets=`. Only the last
+    word of the value (the token after a scheme); shorter than 6 chars is skipped, it would garble ordinary text."""
+    out = []
+    for name, value in (headers or {}).items():
+        if _SECRET_KEY.search(name) or name.lower() == "authorization":
+            token = str(value).rsplit(" ", 1)[-1]
+            if len(token) >= 6:
+                out.append(token)
+    return tuple(out)
+
+
 class Http:
     def __init__(
         self,
@@ -82,7 +95,7 @@ class Http:
     ) -> None:
         self.provider = provider
         # Exact strings (API keys sent in headers) scrubbed from every error detail, before health and ProviderError see it.
-        self._secrets = tuple(s for s in secrets if s)
+        self._secrets = tuple(s for s in (*secrets, *_header_secrets(headers)) if s)
         self._client_args: dict[str, Any] = {
             "base_url": base_url,
             "timeout": timeout,

@@ -9,7 +9,7 @@ from pydantic import Field
 
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, r
+from ._util import READ_ONLY, STORE_ERRORS, first_nonfinite, r, store_failed, store_num, store_ready
 
 
 def register(server: MCPServer, rt: Runtime) -> None:
@@ -39,17 +39,33 @@ def register(server: MCPServer, rt: Runtime) -> None:
         ] = 10,
     ) -> dict[str, Any]:
         b = Builder()
-        if rt.store is None:
-            b.miss("store", "tradedesk", "config", "db_path is empty; set TRADEDESK_DB_PATH to enable liquidations")
-            return b.build(None, ok=False)
-        try:
-            await rt.store.init()
-        except Exception as e:  # noqa: BLE001
-            b.miss("store", "tradedesk", "backend_error", f"{type(e).__name__}: {e}")
+        if not await store_ready(b, rt, "liquidations"):
             return b.build(None, ok=False)
         now_ts = int(rt.now().timestamp())
         since_ts = now_ts - window_minutes * 60
-        rows = await rt.store.liquidations_in_window(since_ts=since_ts, until_ts=now_ts, venue=venue, symbol=symbol)
+        try:
+            rows = await rt.store.liquidations_in_window(since_ts=since_ts, until_ts=now_ts, venue=venue, symbol=symbol)
+        except STORE_ERRORS as e:
+            return store_failed(b, e)
+        # A qty / price / notional that is not a finite number (another writer: a string, a blob, inf) would raise in the
+        # sums or rounding below (invariant 1): such a row is skipped with a warning, and a window of only such rows is
+        # ok=false rather than "no liquidations".
+        # A blob cell (venue / symbol / side) went out as is: an invalid UTF-8 one failed the whole reply, so it is skipped too.
+        stored = len(rows)
+        rows = [
+            row
+            for row in rows
+            if all(store_num(row.get(k)) is not None for k in ("qty", "price", "notional_usd"))
+            and not any(isinstance(v, (bytes, bytearray, memoryview)) for v in row.values())
+        ]
+        if len(rows) < stored:
+            b.warn(
+                f"{stored - len(rows)} stored liquidation rows with a non-numeric or non-finite qty, price or notional, "
+                "or a blob cell, skipped"
+            )
+            if not rows:
+                b.miss("liquidations", "store", "data_unavailable", f"all {stored} stored rows in the window are malformed")
+                return b.build(None, ok=False)
         if not rows:
             return b.build(
                 {
@@ -86,37 +102,42 @@ def register(server: MCPServer, rt: Runtime) -> None:
         if any(row.get("venue") == "okx" for row in rows):
             b.warn("OKX's liquidation channel is not the total of its liquidations (OKX docs): its figures are a lower bound")
 
-        return b.build(
-            {
-                "window_minutes": window_minutes,
-                "venue": venue,
-                "symbol": symbol,
-                "count": len(rows),
-                "total_notional_usd": r(total, 0),
-                "buy_notional_usd": r(buys, 0),
-                "sell_notional_usd": r(sells, 0),
-                "imbalance": r(imbalance, 4) if imbalance is not None else None,
-                "per_symbol": [
-                    {
-                        "symbol": s["symbol"],
-                        "count": s["count"],
-                        "total_usd": r(s["total_usd"], 0),
-                        "buy_usd": r(s["buy_usd"], 0),
-                        "sell_usd": r(s["sell_usd"], 0),
-                    }
-                    for s in per_symbol[: top_n * 2]
-                ],
-                "top": [
-                    {
-                        "ts": t["ts"],
-                        "venue": t["venue"],
-                        "symbol": t["symbol"],
-                        "side": t["side"],
-                        "qty": r(t["qty"], 6),
-                        "price": r(t["price"], 6),
-                        "notional_usd": r(t["notional_usd"], 0),
-                    }
-                    for t in top
-                ],
-            }
-        )
+        data = {
+            "window_minutes": window_minutes,
+            "venue": venue,
+            "symbol": symbol,
+            "count": len(rows),
+            "total_notional_usd": r(total, 0),
+            "buy_notional_usd": r(buys, 0),
+            "sell_notional_usd": r(sells, 0),
+            "imbalance": r(imbalance, 4) if imbalance is not None else None,
+            "per_symbol": [
+                {
+                    "symbol": s["symbol"],
+                    "count": s["count"],
+                    "total_usd": r(s["total_usd"], 0),
+                    "buy_usd": r(s["buy_usd"], 0),
+                    "sell_usd": r(s["sell_usd"], 0),
+                }
+                for s in per_symbol[: top_n * 2]
+            ],
+            "top": [
+                {
+                    "ts": t["ts"],
+                    "venue": t["venue"],
+                    "symbol": t["symbol"],
+                    "side": t["side"],
+                    "qty": r(t["qty"], 6),
+                    "price": r(t["price"], 6),
+                    "notional_usd": r(t["notional_usd"], 0),
+                }
+                for t in top
+            ],
+        }
+        # Finite notionals near the float limit (another writer, e.g. 1e308) sum to inf: ok=false instead of Infinity / NaN.
+        # Only the sums are checked: first_nonfinite reads a string such as a symbol "INF" as a number.
+        sums = [total, buys, sells, *(s[k] for s in per_symbol for k in ("total_usd", "buy_usd", "sell_usd"))]
+        if first_nonfinite(sums) is not None:
+            b.miss("liquidations", "store", "data_unavailable", "stored notionals are too large to sum (overflow to inf / NaN)")
+            return b.build(None, ok=False)
+        return b.build(data)

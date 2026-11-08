@@ -103,7 +103,8 @@ def test_summary_on_a_real_shaped_store(tmp_path):
     assert lines[0].startswith("<b>Журнал прогнозів за тиждень · ") and lines[-1] == f"<i>{fw._h(fw.CAVEAT)}</i>"
     s, c, wk = fl.score(got), fl.compare(got), fl.weekly(got)
     assert s["n"] == 48 and s["n_expiries"] == 6 and c["n_dates"] == 3 and len(wk) == 3
-    assert "Розраховано прогнозів: 48, експірацій (актив × дата): 6, відкритих: 16: замало для висновку" in lines[1]
+    assert "Розраховано прогнозів: 48, експірацій (актив × дата): 6, дат експірації: 3, відкритих: 16: замало для висновку" in lines[1]
+    assert "потрібно ≥ 30 дат експірації" in lines[1]
     assert f"Brier опціонів {s['brier']:.3f}" in lines[2]
     assert f"{s['brier_on_ref']:.3f} проти {s['brier_ref']:.3f}" in lines[2]
     assert f"{s['brier']:.3f} проти {s['brier_climatology']:.3f}" in lines[2]
@@ -132,6 +133,23 @@ def test_enough_expiries_drops_the_no_conclusion_note():
     want = "точніші опціони" if hi < 0 else "точніша RV30" if lo > 0 else "різниця в межах шуму (ДІ перетинає нуль)"
     assert want in text
     assert len(_lines(text)) <= 8
+
+
+@pytest.mark.parametrize(("n_weeks", "small"), [(16, True), (29, True), (30, False)])
+def test_no_conclusion_threshold_counts_expiry_dates_not_asset_expiries(n_weeks, small):
+    """The sample size is the number of expiry dates (forecast_log_status's `enough`): 16 dates are 32 (asset, expiry)
+    outcomes, above 30, yet still too few. The Telegram line and the panel block agree."""
+    rows = _forecasts(n_weeks)
+    s = fl.score(rows)
+    assert s["n_expiry_dates"] == n_weeks and s["n_expiries"] == 2 * n_weeks
+    assert db.fc_score(rows)["n_expiry_dates"] == n_weeks
+    line = _lines(fw.build_summary(rows, SEND_AT + n_weeks * 7 * 86400))[1]
+    assert f"дат експірації: {n_weeks}" in line
+    assert ("замало для висновку" in line) is small, line
+    panel = db.block_forecasts(rows)
+    note = f"Замало дат експірації: n_expiry_dates = {n_weeks} (потрібно ≥ 30; актив × експірація — {2 * n_weeks})"
+    assert (note in panel) is small
+    assert "Замало експірацій: n_expiries" not in panel
 
 
 @pytest.mark.parametrize(

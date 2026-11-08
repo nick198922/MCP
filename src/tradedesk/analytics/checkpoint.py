@@ -10,7 +10,9 @@ passport is itself ``inconclusive`` around 0R or below.
 Embargoed forwards expose counters only: Polymarket v1 (verdict not before 2027-02-23 18:20 UTC) and v2-g (2027-03-07
 04:20 UTC) copy a fixed whitelist of counts out of ``pm_gap_report.weekly_descriptive`` / ``weekly_v2g`` (no mean, CI,
 SD, edge, P&L or Brier; no verdict function is ever called), and the condor P&L (part (b), T0 + 52 weeks) is not read at
-all. Condor part (a) shows only the count of valid Fridays until its registered decision moment.
+all. Condor part (a) shows only the count of valid Fridays until its registered decision moment. The paper engine
+``assistant_paper`` has no band in CHECKPOINT: counters and the job's state only (no P&L), labelled «лише лічильники».
+So are the idea cards with status ``forward``, judged by plans tagged ``idea:<slug>``: plan counts per card, no R.
 
 What this module does not compute (the label says so in its notes): carry criteria (a) (re-run of the backtest code),
 (e) and (ye) (universe and capacity checks) and B's liquidation part of (g) (1m mark prices, network); the demo's
@@ -20,26 +22,31 @@ secondary metric ``r_demo_bt`` and the clustered CI (``scripts/demo_vs_backtest.
 from __future__ import annotations
 
 import math
+import re
 import statistics
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
+from .assistant import PAPER_MAX_AGE_HOURS
 from .carry_bench import band_check, realized_funding_apr
 from .carry_report import cost_realism
 from .carry_v2 import a_v2_shadow
 from .catalyst_scalp import wilson_ci
 from .condor_forward import EARLIEST_T0, ENTRY_CUTOFF_HOUR_UTC, condor_cost, cost_fridays, cost_report, friday_entry
+from .demo_pnl_check import pnl_mismatches
 from .pm_gap_report import T0_TS, T0_V2G_TS, verdict_ts, verdict_ts_v2g, weekly_descriptive, weekly_v2g
 from .setup_signals import TF_MS
-from .setup_versions import EPOCHS, applies, version_of
+from .setup_versions import EPOCHS, _setup, applies, version_of
+from .stuck_demo import stuck_trades
 
 DAY_MS = 86_400_000
 H8_MS = 8 * 3_600_000
 EARLY, OK, NO = "рано", "узгоджується", "ні"
 OUTSIDE = "поза скриптом"  # the registered one-time verdict is another script's job
-LABELS = (EARLY, OK, NO, OUTSIDE)
+COUNTS_ONLY = "лише лічильники"  # no band in CHECKPOINT: the forward is shown by its counters and state only
+LABELS = (EARLY, OK, NO, OUTSIDE, COUNTS_ONLY)
 
 
 def _num(x: object) -> float | None:
@@ -47,6 +54,18 @@ def _num(x: object) -> float | None:
         return None
     v = float(x)
     return v if math.isfinite(v) else None
+
+
+def ua_trades(n: int) -> str:
+    """«N угода / угоди / угод»: the Ukrainian count form of «угода» (1, 21 → угода; 2-4, 22-24 → угоди; 0, 5-20 → угод)."""
+    n10, n100 = abs(n) % 10, abs(n) % 100
+    if n10 == 1 and n100 != 11:
+        word = "угода"
+    elif 2 <= n10 <= 4 and not 12 <= n100 <= 14:
+        word = "угоди"
+    else:
+        word = "угод"
+    return f"{n} {word}"
 
 
 def _ms(y: int, mo: int, d: int, h: int = 0, mi: int = 0) -> int:
@@ -140,8 +159,9 @@ def decision_band(bands: Mapping[int, Band], n: int) -> dict[str, Any]:
 
 def _versioned(row: Mapping[str, Any], now_ms: int) -> str | None:
     """The trade's version tag: its own ``version`` column when it names an epoch of its setup, else the epoch at its
-    fill (an unfilled placement: at its signal bar's close, the earliest moment it could have been placed)."""
-    setup = row.get("setup")
+    fill (an unfilled placement: at its signal bar's close, the earliest moment it could have been placed). The setup
+    name is stripped as in ``version_stats`` so both give one trade the same tag."""
+    setup = _setup(row.get("setup"))
     tag = row.get("version")
     if isinstance(tag, str) and any(e.tag == tag and applies(e, setup) for e in EPOCHS):
         return tag
@@ -179,7 +199,7 @@ def _closed_r(rows: Sequence[Mapping[str, Any]], now_ms: int) -> list[Mapping[st
 def demo_forward(spec: DemoSpec, trades: Sequence[Mapping[str, Any]], now_ms: int) -> list[dict[str, Any]]:
     """Rows of one demo setup: mean demo R (``r_multiple``: venue P&L with fees / risk from the fill) of the closed
     trades of its current version against the band of the largest n' <= n; for a limit setup also the fill share."""
-    mine = [t for t in trades if t.get("setup") == spec.setup and (spec.timeframe is None or t.get("timeframe") == spec.timeframe)]
+    mine = [t for t in trades if _setup(t.get("setup")) == spec.setup and (spec.timeframe is None or t.get("timeframe") == spec.timeframe)]
     ver = {id(t): _versioned(t, now_ms) for t in mine}
     cur = [t for t in mine if spec.versions is None or ver[id(t)] in spec.versions]
     closed = _closed_r(cur, now_ms)
@@ -404,7 +424,7 @@ def carry_forward(
         if int(x["cycle_ts"]) <= now_ms and (x.get("payload") or {}).get("type") == "funding_gap_confirmed"
     } & {str(p["trade_id"]) for p in pos}
     proxy = (
-        f"проксі примусового закриття: {len(vanished | gap)} угод за прапорцями рушія (open_position_data_unavailable "
+        f"проксі примусового закриття: {ua_trades(len(vanished | gap))} за прапорцями рушія (open_position_data_unavailable "
         f"{len(vanished)}, funding_gap_confirmed {len(gap)}); підтвердження делістингу — окремо"
     )
     marked = [p for p in pos if marks.get(str(p["trade_id"])) or p["status"] == "closed"]
@@ -443,7 +463,9 @@ def carry_forward(
     )
     on_time = sum(1 for c in cyc if c.get("status") == "done" and (c.get("payload") or {}).get("on_time"))
     # incomplete cycles by issue / detail of their flags (the engine's `complete` = no flags); `funding_history_incomplete`
-    # is our own fetch cut short (page limit, 429 / 418), kept apart from the other details
+    # is our own fetch cut short (page limit, 429 / 418), kept apart from the other details; `funding_rows_dropped` is the
+    # venue's rows without a usable timestamp (a data defect, not our fetch); `funding_rows_gap_confirmed` is such a hole
+    # confirmed unfillable by the feed (that cycle is incomplete too, later ones carry no flag for it)
     issues: dict[str, int] = {}
     for c in cyc:
         p = c.get("payload") or {}
@@ -487,7 +509,9 @@ def carry_forward(
         if any(c["id"] == "д" for c in fails) and cyc and on_time / len(cyc) >= CYCLE_PASS:
             row["notes"].append(
                 "(д) не пройдено лише за «з повними даними» реєстрації: вчасно ≥ 95 %, а неповні цикли — це прапорці рушія "
-                "(розбивка за issue / detail вище; funding_history_incomplete — наш запит обрізано лімітом сторінок або 429 / 418). "
+                "(розбивка за issue / detail вище; funding_history_incomplete — наш запит обрізано лімітом сторінок або 429 / 418; "
+                "funding_rows_dropped — майданчик віддав рядки без придатного часу; funding_rows_gap_confirmed — така дірка "
+                "не зникла за кілька циклів, її визнано непоправною, цей цикл теж неповний, далі прапорця немає). "
                 "Правило записано 17.10 до старту рушія; інше прочитання тепер — лише позначений exploratory-варіант "
                 "(CHECKPOINT, вступ до розділу)"
             )
@@ -721,13 +745,155 @@ def condor_forward(t0: date | None, rows: Sequence[Mapping[str, Any]], now_ms: i
     return [a, b]
 
 
+# ------------------------------------------------------------------------------------------------ assistant_paper
+
+ASSISTANT_NAME = "Папір assistant_paper (опціонні рекомендації методу)"
+GAP_MIN_S = 86_400  # an uncovered stretch longer than a day = at least one daily decision without a standing trade
+
+
+def _uncovered(spans: Sequence[tuple[int, int]], start: int, end: int) -> list[int]:
+    """Lengths (s) of the stretches of [start, end] covered by no span [opened, expiry)."""
+    out, cur = [], start
+    for o, e in sorted(spans):
+        if o > cur:
+            out.append(min(o, end) - cur)
+        cur = max(cur, e)
+        if cur >= end:
+            return out
+    return [*out, end - cur]
+
+
+def assistant_paper_forward(rows: Sequence[Mapping[str, Any]], state: Mapping[str, Any] | None, now_ms: int) -> dict[str, Any]:
+    """The collector job ``assistant_paper`` (``rec_paper`` rows, ``state`` = its parsed state file or None): counters
+    and state only, no P&L. ``rows`` need ``opened_ts``, ``expiry_ts`` (unix s), ``status``, ``source``, ``trigger``.
+    CHECKPOINT registers no band for it, so there is no verdict either."""
+    now_s = now_ms // 1000
+    mine = [r for r in rows if (o := _num(r.get("opened_ts"))) is not None and o <= now_s and _num(r.get("expiry_ts")) is not None]
+    meth = [r for r in mine if r.get("source") == "method"]
+    chain = sum(1 for r in meth if r.get("trigger") in (None, "chain"))
+    expired = [r for r in meth if int(r["expiry_ts"]) <= now_s]
+    unsettled = sum(1 for r in expired if r.get("status") != "settled")
+    c: dict[str, Any] = {
+        "угод методу": len(meth),
+        "з них ланцюг (chain, порівнянні з H1) / за тригером (regime, event)": f"{chain} / {len(meth) - chain}",
+        "ручних (manual, поза форвардом)": len(mine) - len(meth),
+        "чинних (до експірації)": len(meth) - len(expired),
+        "експірованих / з них ще не розраховано": f"{len(expired)} / {unsettled}",
+    }
+    row = _row("assistant:paper", "assistant", ASSISTANT_NAME, n=len(meth), verdict=COUNTS_ONLY, counters=c)
+    row["metric_name"] = "лише лічильники й стан"
+    notes: list[str] = row["notes"]
+    if meth:
+        first, last = min(int(r["opened_ts"]) for r in meth), max(int(r["opened_ts"]) for r in meth)
+        c["перша / остання угода методу"] = f"{_ymd_s(first)} / {_ymd_s(last)}"
+        gaps = [g for g in _uncovered([(int(r["opened_ts"]), int(r["expiry_ts"])) for r in meth], first, now_s) if g > GAP_MIN_S]
+        c["проміжків без чинної угоди методу > 1 доби"] = f"{len(gaps)} (разом {sum(gaps) / 86_400:.1f} дн.)"
+    if unsettled:
+        notes.append("експіровані угоди розраховує лише виклик assistant_paper_status (завдання їх не закриває)")
+    asof = _asof_utc(state)
+    if asof is None:
+        notes.append("файлу стану завдання немає або він нечитабельний: денних рішень не видно (завдання вимкнене або не запускалось)")
+    elif asof > now_ms:
+        notes.append("файл стану новіший за дату звіту: його рішення не показано")
+    else:
+        st = state or {}
+        age = (now_ms - asof) / 3_600_000
+        c["останнє денне рішення (файл стану)"] = f"{_ymd_s(asof // 1000)}, {st.get('state')} / {st.get('action')}, {age:.0f} год тому"
+        if age > PAPER_MAX_AGE_HOURS:
+            notes.append(f"останнє рішення старше {PAPER_MAX_AGE_HOURS:.0f} год: завдання, схоже, стоїть")
+    notes.append(
+        "смуги в CHECKPOINT немає, вердикту теж; метод не показав переваги (H1, звіт 18.10), тож це гіпотеза. "
+        "P&L тут не друкується (лише assistant_paper_status). Проміжок без угоди буває й законним: метод того дня нічого не обрав"
+    )
+    return row
+
+
+def _ymd_s(ts: int) -> str:
+    return datetime.fromtimestamp(ts, UTC).strftime("%Y-%m-%d")
+
+
+def _asof_utc(state: Mapping[str, Any] | None) -> int | None:
+    """The state file's ``asof_utc`` in UTC ms, or None when absent or unreadable."""
+    if not isinstance(state, Mapping) or not isinstance(state.get("asof_utc"), str):
+        return None
+    try:
+        return int(datetime.strptime(state["asof_utc"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC).timestamp() * 1000)
+    except ValueError:
+        return None
+
+
+# ------------------------------------------------------------------------------------- forward cards (idea: tags)
+
+IDEAS_NAME = "Картки forward: плани за тегами idea:"
+IDEAS_FIRST_READ = 30  # docs/HANDOFF.md, «Режим „план угоди“»: the first reading of plan results after ≈ 30 «enter» plans
+_STATUS = re.compile(r"^Статус:\s*([a-z_-]+)", re.MULTILINE)
+_IDEA_TAG = re.compile(r"`(idea:[a-z0-9][a-z0-9-]*)`")
+_CARD_FILE = re.compile(r"^IDEA-\d{8}-(.+)\.md$")
+
+
+def forward_cards(texts: Mapping[str, str]) -> list[dict[str, Any]]:
+    """The idea cards whose first status line is ``Статус: forward`` (``texts``: file name -> card text), sorted by
+    slug, each with its tag set: ``idea:<slug>`` (the file name without ``IDEA-YYYYMMDD-``, HANDOFF «Вердикт критика
+    forward») plus every literal `idea:…` tag the card names (some cards register a shorter one)."""
+    out = []
+    for fname, text in texts.items():
+        m, st = _CARD_FILE.match(fname), _STATUS.search(text)
+        if m is None or st is None or st.group(1) != "forward":
+            continue
+        out.append({"slug": m.group(1), "tags": frozenset({f"idea:{m.group(1)}", *_IDEA_TAG.findall(text)})})
+    return sorted(out, key=lambda c: c["slug"])
+
+
+def _tags(x: Any) -> set[str]:
+    return {t for t in x if isinstance(t, str)} if isinstance(x, (list, tuple, set, frozenset)) else set()
+
+
+def idea_plans_forward(cards: Sequence[Mapping[str, Any]], plans: Sequence[Mapping[str, Any]], now_ms: int) -> dict[str, Any]:
+    """The cards with status ``forward`` are judged by plans tagged ``idea:<slug>`` (``trade_plan``): counters only, one
+    line per card, so the report names every such card even with no plan. ``plans`` need ``created_ts``,
+    ``resolved_ts`` (unix s), ``verdict``, ``status`` and ``tags`` (parsed list); no R / outcome is read."""
+    now_s = now_ms // 1000
+    mine = [(p, _tags(p.get("tags"))) for p in plans if (c := _num(p.get("created_ts"))) is not None and c <= now_s]
+    known = frozenset().union(*(c["tags"] for c in cards)) if cards else frozenset()
+    counters: dict[str, Any] = {}
+    for card in cards:
+        hit = [p for p, t in mine if t & card["tags"]]
+        enter = sum(1 for p in hit if p.get("verdict") == "enter")
+        done = sum(1 for p in hit if p.get("status") == "resolved" and (r := _num(p.get("resolved_ts"))) is not None and r <= now_s)
+        counters[card["slug"]] = f"планів {len(hit)}, «входити» {enter}, оцінено {done}"
+    other = sum(1 for _, t in mine if any(x.startswith("idea:") for x in t - known) and not t & known)
+    if other:
+        counters["планів з тегом idea: без картки forward"] = other
+    hit_any = [p for p, t in mine if t & known]  # a plan tagged for two cards counts once here
+    enter_all = sum(1 for p in hit_any if p.get("verdict") == "enter")
+    row = _row("ideas:plans", "ideas", IDEAS_NAME, n=len(hit_any), verdict=COUNTS_ONLY, counters=counters)
+    row["metric_name"] = f"лише лічильники, карток {len(cards)}"
+    notes: list[str] = row["notes"]
+    if not cards:
+        notes.append("карток зі статусом forward не знайдено (каталог docs/ideas не прочитано?)")
+    got = "набрано" if enter_all >= IDEAS_FIRST_READ else "не набрано"
+    notes.append(
+        f"мінімум для першого читання результатів планів: ≈ {IDEAS_FIRST_READ} планів «входити» (HANDOFF, режим «план угоди»); "
+        f"за тегами карток forward {enter_all} — {got}"
+    )
+    notes.append(
+        "картки форвард-паперу carry і Polymarket мають і власні рядки вище; тут лише їхні плани. "
+        "Дата вердикту й мінімум n кожної картки — у її розділі «Форвард» (правила різні, тут не дублюються). R планів тут "
+        "не читається (лише plan_review). Власні журнали колекторів карток (знімки HL, CoinGecko, option_xvenue тощо) "
+        "звіт не рахує: події в них визначає крок аналітика картки"
+    )
+    return row
+
+
 # ---------------------------------------------------------------------------------------------------- the report
 
 
 def build(inputs: Mapping[str, Any], now_ms: int) -> dict[str, Any]:
     """Every forward at ``now_ms``. ``inputs``: ``demo_trades`` (demo_trade rows), ``carry`` {strategy: {positions,
     logs, cycles}}, ``bench`` {strategy: bench}, ``side_cost_a``, ``decision_delay_ms``, ``pm_rows``, ``pm_outcomes``,
-    ``condor_t0`` (date or None), ``condor_rows``, ``errors`` (strings from the loader)."""
+    ``condor_t0`` (date or None), ``condor_rows``, ``rec_paper`` (rec_paper rows, no P&L columns needed),
+    ``paper_state`` (the assistant_paper state file, parsed, or None), ``idea_cards`` (``forward_cards`` output),
+    ``plans`` (trade_plan rows without R / outcome, ``tags`` parsed), ``errors`` (strings from the loader)."""
     out: list[dict[str, Any]] = []
     trades = inputs.get("demo_trades") or []
     for spec in DEMO:
@@ -752,12 +918,28 @@ def build(inputs: Mapping[str, Any], now_ms: int) -> dict[str, Any]:
     )  # fmt: skip
     out += polymarket_forward(inputs.get("pm_rows") or [], inputs.get("pm_outcomes") or [], now_ms)
     out += condor_forward(inputs.get("condor_t0"), inputs.get("condor_rows") or [], now_ms)
+    out.append(assistant_paper_forward(inputs.get("rec_paper") or [], inputs.get("paper_state"), now_ms))
+    out.append(idea_plans_forward(inputs.get("idea_cards") or [], inputs.get("plans") or [], now_ms))
     demo_no = [r for r in out if r["group"] == "demo" and not r["key"].endswith(":fill") and r["verdict"] == NO]
     notes = list(inputs.get("errors") or [])
     for side in ("нижче", "вище"):
         k = sum(1 for r in demo_no if r["side"] == side)
         if k >= 3:
             notes.append(f"«ні» {side} смуги дають {k} сетапів демо: ознака системної причини (виконання, витрати)")
+    stuck = stuck_trades(trades, now_ms)
+    if stuck:
+        notes.append(
+            f"завислі демо-угоди (open довше за строк утримання + 1 доба): {len(stuck)} — "
+            + ", ".join(f"{t['setup']} {t['symbol']}" for t in stuck)
+            + "; вони не входять у закриті вибірки, тож n демо неповне, доки їх не закрито"
+        )
+    bad_pnl = pnl_mismatches(trades)
+    if bad_pnl:
+        notes.append(
+            f"Угоди з розбіжним P&L: {len(bad_pnl)} — "
+            + ", ".join(f"{t['setup']} {t['symbol']} ({t['recorded']:+.2f} проти {t['expected']:+.2f} USD)" for t in bad_pnl)
+            + "; P&L у БД не збігається з (вихід − вхід)·qty − комісії, схоже на часткове закриття: ціну й причину виходу перевірити"
+        )
     return {"now_ms": now_ms, "forwards": out, "notes": notes}
 
 

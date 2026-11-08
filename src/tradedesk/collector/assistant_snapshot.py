@@ -26,6 +26,9 @@ The ``flows`` section is `market_flow` for BTC (1h, 2 days, summaries only) for 
 The ``cycle`` section is `cycle_regime` for BTC (today's state and the states of the last 30 days) for the brief's
 «Режим циклу» line and its separate state-change message.
 
+The ``stablecoins`` section is `stablecoin_supply` (DefiLlama) for the brief's one descriptive liquidity line (total
+supply with its 7 / 30-day change); context only, it feeds no decision.
+
 The ``chains`` section holds the option chain of every expiry of the ATM term structure (``{"by_expiry": {token:
 chain}}``, the same shape as ``chain``) for the options builder's expiry list; the strike window widens with time to expiry.
 """
@@ -359,6 +362,8 @@ async def build_snapshot(rt: "Runtime") -> dict[str, Any]:
             # the brief's «Режим циклу» line and state-change message (IDEA-20261028-btc-cycle-regime-gauge): today's
             # state and 30 days of states (yesterday vs the day before, and how often it changed)
             "cycle": ("cycle_regime", {"base": "BTC", "history_days": CYCLE_HISTORY_DAYS}),
+            # the brief's one descriptive liquidity line (total stablecoin supply, 7 / 30 d change); not a signal
+            "stablecoins": ("stablecoin_supply", {}),
         }
         names = list(plan)
         results = await asyncio.gather(*(_call(c, *plan[n]) for n in names))

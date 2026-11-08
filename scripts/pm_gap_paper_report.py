@@ -18,12 +18,17 @@ shows only what registration section 1 allows (counts, resolution days and weeks
 skew and read-time shares); the mean of the main metric, its CI, the P&L and the Brier comparison exist only in
 ``--verdict`` mode, together with the descriptive stress and robustness checks of registration sections 6 and 12
 (thresholds 3 / 8 pp, k separately, depth >= $500, entry +1 cent, next-snapshot entry, period halves, BTC vs ETH with a
-within-week permutation, by kind, resolution-day clusters, closing CLV from 'close' only). Both modes append the labelled
+within-week permutation, by kind, resolution-day clusters, closing CLV from 'close' only). ``--verdict`` also prints the
+main metric in a second, descriptive variant "поправка після часткового розкриття" (payout 1 / 0 as the +24 h value of
+positions resolved by then, from ``pm_gap_outcome.closed_ts``, schema 38) with the share of such positions, and the same
+for the closing CLV (payout as the closing value of positions resolved by end - 1 h); the decision stays on the
+registered first variants. Both modes append the labelled
 variant v2-g (forward x (1 + g), g = binance_last / spot - 1 of the same snapshot; IDEA-20261031-structural-edges-depth
 item 8a) as separate rows under the same limits: weekly = counts, entry edge, SD and the v1 positions whose edge held only
 thanks to the g shift; CLV, P&L and Brier of v2-g only in ``--verdict``. v1 and its verdict are unchanged.
 Weekly T0 = the first snapshot unless ``--t0`` is given. Output: ``--out``, else $TRADEDESK_PM_GAP_REPORT,
-else /var/lib/tradedesk-mcp/paper/pm_gap_REPORT.md (outside git). ``--telegram`` sends the text to the group's ``agents``
+else /var/lib/tradedesk-mcp/paper/pm_gap_REPORT.md (outside git). Without ``--out`` the verdicts go to their own files
+next to it (``pm_gap_VERDICT.md``, ``pm_gap_VERDICT_v2g.md``), so the Sunday timer cannot overwrite them. ``--telegram`` sends the text to the group's ``agents``
 topic through scripts/tg_send.py. Paper positions only: nothing here trades.
 """
 
@@ -60,6 +65,9 @@ from tradedesk.analytics.pm_gap_report import (  # noqa: E402
 DEFAULT_DB = "/var/lib/tradedesk-mcp/tradedesk.sqlite"
 DEFAULT_OUT = "/var/lib/tradedesk-mcp/paper/pm_gap_REPORT.md"
 ENV_OUT = "TRADEDESK_PM_GAP_REPORT"
+# One-time verdicts default to these names in the weekly report's directory (the weekly timer rewrites its own file).
+VERDICT_NAME = "pm_gap_VERDICT.md"
+VERDICT_V2G_NAME = "pm_gap_VERDICT_v2g.md"
 # Only the columns the rules and metrics read (the table grows by ~5 000 rows a day; the full rows would waste memory).
 COLS = (
     "ts market_id asset kind direction strike end_ts yes_bid yes_ask yes_ask_usd no_bid no_ask no_ask_usd fee_rate fee_exp "
@@ -148,7 +156,11 @@ def build_verdict_v2g(db: str) -> tuple[int, str]:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--db", default=DEFAULT_DB, help="collector SQLite DB (opened read-only)")
-    ap.add_argument("--out", default="", help=f"output Markdown (default ${ENV_OUT} or {DEFAULT_OUT})")
+    ap.add_argument(
+        "--out",
+        default="",
+        help=f"output Markdown (default ${ENV_OUT} or {DEFAULT_OUT}; verdicts: {VERDICT_NAME} / {VERDICT_V2G_NAME} beside it)",
+    )
     ap.add_argument("--t0", type=int, default=0, help="weekly mode only: T0 in unix seconds (default: the first snapshot)")
     ap.add_argument("--now", type=int, default=0, help="weekly mode only: report time in unix seconds (default: now)")
     ap.add_argument("--verdict", action="store_true", help="the one-time verdict; refused before T0 + 126 days")
@@ -175,7 +187,9 @@ def main(argv: list[str] | None = None) -> int:
     if code:
         print(text, end="", file=sys.stderr)
         return code
-    out = Path(a.out or os.environ.get(ENV_OUT) or DEFAULT_OUT)
+    weekly_out = Path(os.environ.get(ENV_OUT) or DEFAULT_OUT)
+    name = VERDICT_NAME if a.verdict else VERDICT_V2G_NAME if a.verdict_v2g else weekly_out.name
+    out = Path(a.out) if a.out else weekly_out.with_name(name)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(text, encoding="utf-8")
     print(f"wrote {out} ({len(text)} bytes)")

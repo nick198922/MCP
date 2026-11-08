@@ -182,7 +182,9 @@ class FakeBybit:
         return {"result": {"list": TICKERS["list"] + [{"symbol": "BTC-27NOV26-99000-C-USDT", "markIv": "0.4"}]}}
 
 
-def test_collect_happy_path_only_reads():
+def test_collect_happy_path_only_reads(monkeypatch):
+    # The fixture's clock, not the real one: after the 27NOV26 expiry a real `asof_utc` left theta None and the test failed.
+    monkeypatch.setattr(bop, "_now", lambda: ASOF_S)
     ex = FakeBybit(positions={"BTC": [_pos(CALL, "Buy", "0.1", "3000", "57.3"), _pos(PUT_FAR, "Sell", "0", "900", "1")]})
     out = bop.collect(ex)
     assert out["status"] == "ok" and out["errors"] == [] and {n for n, _ in ex.calls} <= ALLOWED
@@ -191,7 +193,8 @@ def test_collect_happy_path_only_reads():
     assert set(out["positions"][0]) == set(bop.POSITION_FIELDS)
     assert list(out["tickers"]) == [CALL] and set(out["tickers"][CALL]) == set(bop.TICKER_FIELDS)  # only held symbols
     assert ("publicGetV5MarketTickers", {"category": "option", "baseCoin": "BTC"}) in ex.calls
-    data, _ = my_options_view(out, datetime.now(UTC))
+    assert out["asof_utc"] == ASOF_S
+    data, _ = my_options_view(out, ASOF)
     assert data["n_positions"] == 1 and data["positions"][0]["theta_usd_day"] < 0
 
 

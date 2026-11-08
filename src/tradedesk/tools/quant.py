@@ -11,7 +11,7 @@ from ..analytics.options import black76_greeks, black76_price
 from ..analytics.retracement import summarise_retracement
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, r
+from ._util import READ_ONLY, r, reject_nonfinite, reject_nonfinite_result
 
 
 def register(server: MCPServer, rt: Runtime) -> None:
@@ -34,14 +34,18 @@ def register(server: MCPServer, rt: Runtime) -> None:
         ] = "proportional",
     ) -> dict[str, Any]:
         b = Builder()
+        if (bad := reject_nonfinite(b, odds=odds)) is not None:
+            return bad
         try:
             data = odds_mod.devig(odds, method)
         except ValueError as e:
             b.miss("odds", "tradedesk", "config", str(e))
             return b.build(None, ok=False)
-        return b.build(
-            {k: ([r(x, 6) for x in v] if isinstance(v, list) else (r(v, 6) if isinstance(v, float) else v)) for k, v in data.items()}
-        )
+        except (ZeroDivisionError, OverflowError) as e:  # power de-vig can underflow a huge long shot's p**k to 0
+            b.miss("odds", "tradedesk", "invalid_input", f"odds are outside the de-vig's numeric range: {type(e).__name__}: {e}")
+            return b.build(None, ok=False)
+        out = {k: ([r(x, 6) for x in v] if isinstance(v, list) else (r(v, 6) if isinstance(v, float) else v)) for k, v in data.items()}
+        return reject_nonfinite_result(b, out) or b.build(out)
 
     @server.tool(
         annotations=READ_ONLY,
@@ -60,18 +64,25 @@ def register(server: MCPServer, rt: Runtime) -> None:
         kind: Annotated[Literal["call", "put"], Field(description="Option type.")] = "call",
     ) -> dict[str, Any]:
         b = Builder()
+        if (bad := reject_nonfinite(b, forward=forward, strike=strike, days=days, iv=iv)) is not None:
+            return bad
         T, is_call = days / 365.0, kind == "call"
-        g = black76_greeks(forward, strike, T, iv, is_call)
-        price = black76_price(forward, strike, T, iv, is_call)
-        return b.build(
-            {"price_usd": r(price, 4), "price_in_underlying": r(price / forward, 6), **{k: r(v, 6) for k, v in g.items()}}, ok=True
-        )
+        try:
+            g = black76_greeks(forward, strike, T, iv, is_call)
+            price = black76_price(forward, strike, T, iv, is_call)
+            data = {"price_usd": r(price, 4), "price_in_underlying": r(price / forward, 6), **{k: r(v, 6) for k, v in g.items()}}
+        except (ValueError, ZeroDivisionError, OverflowError) as e:  # F / K under- or overflows for extreme finite inputs
+            b.miss("option", "tradedesk", "invalid_input", f"inputs are outside the model's numeric range: {type(e).__name__}: {e}")
+            return b.build(None, ok=False)
+        return reject_nonfinite_result(b, data) or b.build(data, ok=True)
 
     @server.tool(
         annotations=READ_ONLY,
         description=(
             "Probability that price touches `barrier` at any time within `days`, for a given IV (continuous monitoring, driftless, constant vol: a risk-neutral model value with r=0, not a forecast). "
-            "Returns the closed-form value and a Monte Carlo cross-check. For options-implied odds on BTC/ETH use prob_from_options instead."
+            "Returns the closed-form value and a Monte Carlo cross-check. For options-implied odds on BTC/ETH use prob_from_options instead. "
+            "Units: `iv` is an annualised decimal (0.60 = 60 %); T = days / 365; analytic and monte_carlo are probabilities as "
+            "fractions 0-1 (0.25 = 25 %); one_sigma_move_pct = iv × sqrt(T) × 100, in percent."
         ),
     )
     async def touch_probability(
@@ -81,15 +92,20 @@ def register(server: MCPServer, rt: Runtime) -> None:
         iv: Annotated[float, Field(gt=0, lt=5, description="Annualised vol as decimal")],
     ) -> dict[str, Any]:
         b = Builder()
+        if (bad := reject_nonfinite(b, spot=spot, barrier=barrier, days=days, iv=iv)) is not None:
+            return bad
         T = days / 365.0
-        return b.build(
-            {
+        try:
+            data = {
                 "analytic": r(probability.prob_touch(spot, barrier, iv, T), 4),
                 "monte_carlo": r(probability.mc_touch(spot, barrier, iv, T), 4),
                 "one_sigma_move_pct": r(iv * T**0.5 * 100, 2),
-            },
-            ok=True,
-        )
+            }
+        # An absurd `days` (e.g. 1e12) overflows exp() in the MC barrier shift; a tiny `iv` (1e-300) divides by sigma^2 = 0.
+        except (OverflowError, ValueError, ZeroDivisionError) as e:
+            b.miss("touch", "tradedesk", "invalid_input", f"days={days} with iv={iv} is outside the model's numeric range: {e}")
+            return b.build(None, ok=False)
+        return reject_nonfinite_result(b, data) or b.build(data, ok=True)
 
     @server.tool(
         annotations=READ_ONLY,
@@ -111,6 +127,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
         min_drop_pct: Annotated[float, Field(ge=0, le=100, description="Noise-filter threshold on |P0 - L| / P0, in percent.")] = 2.0,
     ) -> dict[str, Any]:
         b = Builder()
+        if (bad := reject_nonfinite(b, p0=p0, l_point=l_point, levels=levels, min_drop_pct=min_drop_pct)) is not None:
+            return bad
         s = summarise_retracement(p0, l_point, levels=levels, min_drop_pct=min_drop_pct)
         if not s.get("applicable"):
             # Still return the full block so the caller can inspect why.
@@ -135,15 +153,14 @@ def register(server: MCPServer, rt: Runtime) -> None:
             }
             for lv in s["ladder"]
         ]
-        return b.build(
-            {
-                "p0": p0,
-                "l": l_point,
-                "diff_abs": r(s["diff_abs"], 6),
-                "diff_pct": r(s["diff_pct"], 4),
-                "direction": s["direction"],
-                "applicable": True,
-                "min_drop_pct": s["min_drop_pct"],
-                "ladder": ladder,
-            }
-        )
+        data = {
+            "p0": p0,
+            "l": l_point,
+            "diff_abs": r(s["diff_abs"], 6),
+            "diff_pct": r(s["diff_pct"], 4),
+            "direction": s["direction"],
+            "applicable": True,
+            "min_drop_pct": s["min_drop_pct"],
+            "ladder": ladder,
+        }
+        return reject_nonfinite_result(b, data) or b.build(data)

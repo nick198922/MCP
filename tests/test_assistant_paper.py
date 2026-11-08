@@ -236,6 +236,21 @@ async def test_delivery_not_published_stays_open(tmp_path):
         await rt.aclose()
 
 
+@pytest.mark.parametrize("bad", ["NaN", "Infinity", "abc", 10**400])
+async def test_non_finite_delivery_price_keeps_the_trade_open(tmp_path, bad):
+    # a NaN / inf delivery price used to settle the trade for good on a non-number, a 300+-digit one raised out of the tool
+    rt = _rt(tmp_path, delivery_price=bad)
+    srv, _ = build_server(rt)
+    try:
+        await _call(srv, "assistant_paper_open", structure="long_straddle", deposit_usd=1e6)
+        rt.now = lambda: datetime(2026, 11, 27, 9, tzinfo=UTC)
+        s = await _call(srv, "assistant_paper_status", include_settled=True)
+        assert len(s["data"]["open"]) == 1 and s["data"]["settled"] == []
+        assert any(m["field"] == "delivery_prices:BTC" and m["reason"] == "parse_error" for m in s["missing"])
+    finally:
+        await rt.aclose()
+
+
 async def test_provider_failure_never_raises(tmp_path):
     rt = _rt(tmp_path, status=500)
     srv, _ = build_server(rt)

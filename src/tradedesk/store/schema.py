@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 37
+SCHEMA_VERSION = 38
 
 # Each migration is a list of SQL statements executed in a single transaction.
 # `PRAGMA user_version` is bumped by Store.init() inside the same explicit transaction,
@@ -268,7 +268,10 @@ MIGRATIONS: dict[int, list[str]] = {
             pnl_day REAL, pnl_week REAL, pnl_month REAL, pnl_all REAL,   -- USD
             roi_month REAL, roi_all REAL,          -- decimal (Hyperliquid only)
             vlm_month REAL,                        -- USD traded in the month window
-            rank_month INTEGER,                    -- rank by pnl_month among the stored accounts of that venue and day
+            rank_month INTEGER,                    -- rank by pnl_month among the stored accounts of that venue and day;
+                                                   -- since 2026-11-06 (Hyperliquid) the day also holds accounts kept by
+                                                   -- TRADERS_KEEP_DAYS below the floor, so filter account_value >= 500k
+                                                   -- for the universe and do not compare ranks or COUNT(*) across that date
             PRIMARY KEY (day, venue, account)
         )
         """,
@@ -952,5 +955,13 @@ MIGRATIONS: dict[int, list[str]] = {
             active_cryptocurrencies INTEGER
         )
         """,
+    ],
+    38: [
+        # Polymarket pm_gap close record (owner's answer 1+3 to Q-20261103-1; docs/verification/2026-11-03-pm-gap-24h-gaps.md):
+        # touch markets close as soon as the level is hit and drop off the open list without a trace. Forward only: rows
+        # written before this migration keep NULL. Read-only Gamma data (collector/pm_gap.py), independent of `journal`.
+        "ALTER TABLE pm_gap_outcome ADD COLUMN closed_ts INTEGER",  # unix s: Gamma closedTime (first one stored); NULL = not seen closed
+        # unix s: the collector run that found the market off the open list BEFORE its end_ts and Gamma said closed
+        "ALTER TABLE pm_gap_outcome ADD COLUMN gone_ts INTEGER",
     ],
 }

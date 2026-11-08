@@ -197,6 +197,15 @@ def test_a_failed_reply_still_says_the_trade_is_closed(journal_db, monkeypatch):
     assert row(journal_db, tid)["status"] == "closed"
 
 
+def test_a_failed_write_is_rolled_back_before_the_store_closes(journal_db, refused_journal_update):
+    tid = add(journal_db, symbol="BTC", side="long", size=0.1, entry=84000.0)
+    seen = refused_journal_update(journal_db)
+    out = jc.handle(f"/close {tid} 86000", journal_db, NOW)
+    assert out.startswith("❌ Угоду не закрито: збій бази (IntegrityError)")
+    assert seen == {"in_transaction": False, "other_write": "ok"}
+    assert row(journal_db, tid)["status"] == "open"
+
+
 def test_unknown_id_and_already_closed_change_nothing(journal_db):
     assert jc.handle("/close 99 86000", journal_db, NOW) == "❌ Угоду не закрито: угоди #99 у журналі немає."
     tid = add(journal_db, symbol="BTC", side="long", size=0.1, entry=84000.0)

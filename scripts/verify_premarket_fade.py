@@ -22,7 +22,6 @@ import argparse
 import asyncio
 import importlib.util
 import math
-import resource
 import statistics
 import sys
 import time
@@ -31,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
+from common_helpers import rss_mb
 
 from tradedesk.analytics.premarket_fade import (
     DAY_MS,
@@ -64,10 +64,6 @@ PLACEBO_TO = int(datetime(2026, 9, 16, tzinfo=UTC).timestamp() * 1000)
 BTC_FROM = int(datetime(2025, 3, 1, tzinfo=UTC).timestamp() * 1000)
 NOW_MS = int(datetime(2026, 10, 29, tzinfo=UTC).timestamp() * 1000)
 SLIP_STRESS = 0.0015
-
-
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 
 
 def ts(ms: int | None) -> str:

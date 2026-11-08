@@ -29,6 +29,7 @@ from tradedesk.analytics.put_skew import dvol_known_at_entry, trailing_percentil
 REPO = Path(__file__).resolve().parent.parent
 FIX = REPO / "tests" / "fixtures" / "deribit_option_legs_2026-11-01.json"
 HORIZONS = (16, 26, 52)
+CACHE_FILES = ("snapshots_v2.json", "delivery_btc_usd.json", "dvol_BTC.json")  # what vom.load reads from --src-dir
 PRIOR = {"H1": 0.0010, "H4": 0.0013}  # a priori effects, fractions of spot per week (see the registration)
 # The registered test: H4 is the only primary hypothesis at two-sided alpha = 0.05 (H1 descriptive, outside Holm), so
 # the power / MDE columns use alpha = 0.05. The last column is a reference at alpha = 0.025 (what Holm m = 2 would give).
@@ -68,6 +69,21 @@ def main() -> None:
     ap.add_argument("--src-dir", type=Path, default=Path.home() / ".cache" / "tradedesk-agents" / "put_skew")
     ap.add_argument("--out", type=Path, default=Path.home() / ".cache" / "tradedesk-agents" / "condor_forward" / "stage0.md")
     a = ap.parse_args()
+    # The cache is read only here: check it before vom.load, whose load_snapshots would write an empty
+    # snapshots_v2.json into an empty cache dir and then fail on the next file with a traceback.
+    missing = [n for n in CACHE_FILES if not (a.src_dir / n).is_file()]
+    if missing:
+        sys.exit(f"put_skew cache {a.src_dir}: {', '.join(missing)} missing")
+    # load_snapshots also rebuilds (and overwrites) snapshots_v2.json when its n_files differs from the trades24
+    # file count: with trades24 gone that is an empty rebuild over the saved surfaces. Refuse a stale cache instead.
+    n_saved = json.loads((a.src_dir / CACHE_FILES[0]).read_text()).get("n_files")
+    raw = a.src_dir / vom.vps.SCHEMES["v2"]["dir"]  # the same file count as load_snapshots
+    n_now = sum(1 for p in raw.glob("*.json*") if not p.name.endswith(".part"))
+    if n_saved != n_now:
+        sys.exit(
+            f"put_skew cache {a.src_dir}: snapshots_v2.json is stale (n_files {n_saved}, {raw.name} has {n_now}); "
+            "rebuild it with verify_put_skew.py"
+        )
     D = vom.load(a.src_dir)
     L = ["## Stage 0: SD per week (no means), MDE = 2.8 SD / sqrt(n) (alpha 0.05, power 80 %), % of spot per 1 BTC notional", ""]
     L.append(

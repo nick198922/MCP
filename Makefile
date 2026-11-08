@@ -4,8 +4,11 @@ install:
 	uv sync --extra dev
 
 # Tests marked `slow` are skipped here; CI runs plain pytest (all tests), `make test-slow` runs only them.
+# --dist worksteal: an idle worker takes queued tests from a busy one. With the default `load` the heavy tail of one
+# file (tests/test_setup_signals.py, ~135 s of tests) stayed queued on one worker while the other five sat idle.
+# Not in pyproject addopts: `pytest -p no:xdist` would then fail on the unknown --dist option.
 test:
-	uv run --extra dev pytest -q -n auto -m "not slow"
+	uv run --extra dev pytest -q -n auto --dist worksteal -m "not slow"
 
 test-slow:
 	uv run --extra dev pytest -q -m slow

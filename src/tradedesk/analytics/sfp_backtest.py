@@ -248,16 +248,6 @@ def summarise_r(rs: list[float], outcomes: list[str]) -> dict[str, Any]:
     }
 
 
-def summarise_signals(signals: list[dict[str, Any]], variant: str = "m2_2x", *, net: bool = True) -> dict[str, Any]:
-    rows = [s["variants"][variant] for s in signals if variant in s["variants"]]
-    key = "r_net" if net else "r"
-    out = summarise_r([v[key] for v in rows], [v["outcome"] for v in rows])
-    if rows:
-        out["avg_rr1"] = sum(v["rr1"] for v in rows) / len(rows)
-        out["breakeven_win_rate"] = sum(1 / (1 + v["rr1"]) for v in rows) / len(rows)
-    return out
-
-
 def range_time_share(bars: list[dict[str, Any]], *, min_bars: int = 20, max_width_pct: float = 10.0) -> float:
     """Share of bars covered by a detected range (the "70 % of the time" claim)."""
     if not bars:

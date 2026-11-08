@@ -262,6 +262,102 @@ async def test_plan_add_validation(tmp_path):
         await rt.aclose()
 
 
+async def test_plan_add_expires_in_ms_is_an_error_envelope(tmp_path):
+    # BACKLOG 6.18: a horizon in milliseconds used to raise `ValueError: year ... out of range` from `_iso`
+    rt = _rt(tmp_path)
+    srv, _ = build_server(rt)
+    base = dict(exchange="binance", symbol="BTC/USDT:USDT", instrument="perp", side="long", entry_type="market", verdict="enter")
+    try:
+        for bad in (_ts(24) * 1000, 1_800_000_000_000, 10**30):
+            out = await _call(srv, "plan_add", **base, entry=100.0, stop=98.0, target=105.0, expires_ts=bad)
+            assert out["ok"] is False and out["missing"][0]["reason"] == "invalid_input", bad
+            assert f"got {bad})" in out["missing"][0]["detail"]
+        await rt.store.init()
+        assert await rt.store.plan_list() == []
+        good = await _call(srv, "plan_add", **base, entry=100.0, stop=98.0, target=105.0, expires_ts=_ts(24))
+        assert good["ok"] is True and good["data"]["expires"] == datetime.fromtimestamp(_ts(24), UTC).isoformat(timespec="seconds")
+    finally:
+        await rt.aclose()
+
+
+async def test_plan_view_shows_a_stored_raw_expires_safely(tmp_path):
+    # review 2026-11-05-plan-add-ms-expires p. 4: a row written outside plan_add may hold text or ms in expires_ts
+    rt = _rt(tmp_path)
+    srv, _ = build_server(rt)
+    base = dict(exchange="binance", symbol="BTC/USDT:USDT", instrument="perp", side="long", entry_type="market", verdict="enter")
+    try:
+        for _ in range(3):
+            out = await _call(srv, "plan_add", **base, entry=100.0, stop=98.0, target=105.0, expires_ts=_ts(24))
+            assert out["ok"] is True, out
+        await rt.store.init()
+        for pid, raw in ((1, "next friday"), (2, 1_800_000_000_000)):
+            await rt.store.conn.execute("UPDATE trade_plan SET expires_ts = ? WHERE id = ?", (raw, pid))
+        await rt.store.conn.commit()
+        lst = await _call(srv, "plan_list")
+        assert lst["ok"] is True and lst["data"]["count"] == 3, lst
+        by = {p["id"]: p for p in lst["data"]["plans"]}
+        assert by[1]["expires"] is None and by[1]["expires_raw"] == "next friday"
+        assert by[2]["expires"] is None and by[2]["expires_raw"] == "1800000000000"
+        assert by[3]["expires"] == datetime.fromtimestamp(_ts(24), UTC).isoformat(timespec="seconds") and "expires_raw" not in by[3]
+    finally:
+        await rt.aclose()
+
+
+async def test_review_skips_a_stored_raw_expires_and_processes_the_rest(tmp_path):
+    rt = _rt(tmp_path)
+    srv, _ = build_server(rt)
+    base = dict(
+        exchange="binance", symbol="BTC/USDT:USDT", instrument="perp", side="long", entry_type="market",
+        entry=80100.0, stop=79000.0, target=80500.0, verdict="enter", expires_ts=_ts(24),
+    )  # fmt: skip
+    try:
+        for _ in range(2):
+            assert (await _call(srv, "plan_add", **base))["ok"] is True
+        await rt.store.init()
+        await rt.store.conn.execute("UPDATE trade_plan SET expires_ts = ? WHERE id = 1", ("next friday",))
+        await rt.store.conn.commit()
+        rt.now = lambda: NOW
+        rv = await _call(srv, "plan_review")
+        assert rv["ok"] is True, rv
+        assert rv["data"]["resolved_now"] == [2]  # the normal plan is scored as before
+        assert [p["id"] for p in rv["data"]["open"]] == [1] and rv["data"]["open"][0]["expires_raw"] == "next friday"
+        assert any("plan 1 skipped" in w for w in rv["warnings"]), rv["warnings"]
+        by = {p["id"]: p for p in rv["data"]["recent_resolved"]}
+        assert by[2]["outcome"] == "target" and by[2]["r_result"] == pytest.approx((400 - FEE * 160600) / 1100, abs=1e-3)
+        assert await collect_plan_resolve(rt) == 0  # the collector job survives it too
+    finally:
+        await rt.aclose()
+
+
+def test_resolve_plan_leaves_a_raw_expires_open():
+    plan = dict(side="long", entry_type="market", entry=100.0, stop=98.0, target=105.0, created_ts=0, expires_ts="next friday")
+    rows = [(3_600_000, 100.0, 106.0, 99.0, 105.0, 1.0)]
+    for bad in ("next friday", None, math.nan, True, b"x"):
+        res = resolve_plan({**plan, "expires_ts": bad}, rows, tf_ms=3_600_000, now_ts=10_000_000)
+        assert res["status"] == "open" and res["invalid"] == "expires_ts" and res["fill"] is None, bad
+    ok = resolve_plan({**plan, "expires_ts": 10_000_000}, rows, tf_ms=3_600_000, now_ts=10_000_000)
+    assert ok["status"] == "resolved" and ok["outcome"] == "target" and "invalid" not in ok
+
+
+def test_expires_view_never_raises():
+    from tradedesk.tools.trade_plan import _expires_view
+
+    assert _expires_view(None) == {"expires": None}
+    assert _expires_view(1_800_000_000) == {"expires": "2027-01-15T08:00:00+00:00"}
+    assert _expires_view(1.8e9) == {"expires": "2027-01-15T08:00:00+00:00"}
+    for bad, raw in ((math.nan, "nan"), (1e300, "1e+300"), (True, "True"), (b"\x00", "b'\\x00'"), ("x" * 100, "x" * 64)):
+        assert _expires_view(bad) == {"expires": None, "expires_raw": raw}, bad
+
+
+def test_iso_falls_back_to_the_raw_number():
+    from tradedesk.tools.trade_plan import _iso
+
+    assert _iso(None) is None
+    assert _iso(1_800_000_000) == "2027-01-15T08:00:00+00:00"
+    for bad in (1_800_000_000_000, 10**30, -(10**30)):
+        assert _iso(bad) == str(bad)
+
+
 async def test_option_plan_scored_by_rec_paper_or_underlying(tmp_path):
     rt = _rt(tmp_path)
     srv, _ = build_server(rt)
@@ -313,6 +409,57 @@ async def test_provider_failure_keeps_plan_open(tmp_path):
             await collect_plan_resolve(rt)
         await rt.store.init()
         assert (await rt.store.plan_get(a["data"]["id"]))["status"] == "open"
+    finally:
+        await rt.aclose()
+
+
+class _BadCandleEx(FakeEx):
+    """1h candles with rows whose open time or close is not a finite number mixed in."""
+
+    async def fetch_ohlcv(self, symbol, timeframe="1h", limit=100, since=None, params=None):
+        rows = await super().fetch_ohlcv(symbol, timeframe, limit, since, params)
+        if timeframe != "1h" or not rows:
+            return rows
+        t, p = rows[0][0], rows[0][1]
+        bad = [["abc", p, p, p, p, 1.0], [float("nan"), p, p, p, p, 1.0], [float("inf"), p, p, p, p, 1.0], [10**400, p, p, p, p, 1.0]]
+        return [*bad, [t + 1800_000, p, p * 2, p, float("nan"), 1.0], [t + 2700_000, p, 10**400, p, p, 1.0], *rows]
+
+
+def test_bars_drop_non_finite_prices():
+    from tradedesk.analytics.trade_plan import _bars
+
+    good = bar(1, 100, 101, 99, 100)
+    rows = [
+        bar(0, 100, 101, 99, float("nan")),
+        bar(2, 100, float("inf"), 99, 100),
+        [T0 * 1000, 100, 10**400, 99, 100],
+        [10**400, 1, 1, 1, 1],
+    ]
+    assert _bars([*rows, good]) == [tuple(good[:5])]
+
+
+async def test_review_drops_candles_with_a_non_finite_field(tmp_path):
+    # int() of a text / NaN / inf open time used to raise out of plan_review (and the plan_resolve job)
+    rt = Runtime(
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=str(tmp_path / "bad.sqlite")),
+        transports=make_transports(State()),
+        exchange_factory=_BadCandleEx,
+    )
+    rt.now = lambda: CREATED
+    srv, _ = build_server(rt)
+    try:
+        a = await _call(
+            srv, "plan_add", exchange="binance", symbol="BTC/USDT:USDT", instrument="perp", side="long", entry_type="market",
+            entry=80100.0, stop=79000.0, target=80500.0, expires_ts=_ts(24), verdict="enter",
+        )  # fmt: skip
+        assert a["ok"] is True, a
+        rt.now = lambda: NOW
+        rv = await _call(srv, "plan_review")
+        assert rv["ok"] is True, rv
+        assert rv["data"]["resolved_now"] == [1]  # the same result as on clean candles (test_plan_add_review_roundtrip)
+        (p,) = rv["data"]["recent_resolved"]
+        assert p["outcome"] == "target" and p["exit"] == 80500.0 and p["timeframe"] == "1h"
+        assert any("ccxt:binance BTC/USDT:USDT 1h: 4 candle(s) with an open time that is not a finite number" in w for w in rv["warnings"])
     finally:
         await rt.aclose()
 

@@ -19,7 +19,6 @@ import asyncio
 import json
 import logging
 import math
-import resource
 import statistics
 import sys
 import time
@@ -63,7 +62,7 @@ WARM = 26  # Sundays of history kept before a panel week (covers the 26-week sen
 
 
 def rss() -> str:
-    return f"peak RSS {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.0f} MB"
+    return f"peak RSS {cmn.rss_mb():.0f} MB"
 
 
 def load_panel(p: Path) -> list[dict[str, Any]]:

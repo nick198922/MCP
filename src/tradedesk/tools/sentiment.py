@@ -34,4 +34,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
         if summary.get("count", 0) == 0:
             b.miss("fng", "alternative_me", "data_unavailable", "no parseable readings")
             return b.build(None, ok=False)
+        dropped = len(rows) - summary["count"]
+        if dropped:
+            b.warn(
+                f"alternative_me: {dropped} fear & greed reading(s) with a value or time that is not a finite number"
+                " (or a value outside 0..100) dropped"
+            )
         return b.build({"days_requested": days, **summary})

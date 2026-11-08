@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import bisect
+import math
 import re
+import shutil
+from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -37,12 +41,13 @@ class FixtureFeed:
         return {"bids": [[99.9, 50.0], [99.0, 500.0]], "asks": [[100.1, 50.0], [101.0, 500.0]], "timestamp": None}
 
 
-def _grid(first_funding_ts: int, last_funding_ts: int) -> list[int]:
+def _grid(first_funding_ts: int, last_funding_ts: int) -> range:
+    # A lazy range, not a list: callers pass an open end (10**15) and index the first few cycles only.
     start = (first_funding_ts + LB) // H8 * H8 + H8 + DECISION_DELAY_MS
-    return list(range(start, last_funding_ts + 1, H8))
+    return range(start, last_funding_ts + 1, H8)
 
 
-async def _drive(store: Store, feed: FixtureFeed, params: CarryParams, times: list[int]) -> None:
+async def _drive(store: Store, feed: FixtureFeed, params: CarryParams, times: Sequence[int]) -> None:
     for t in times:
         out = await run_cycle(store, feed, params, t - DECISION_DELAY_MS, clock=lambda t=t: t)
         assert out["status"] == "done", out
@@ -64,14 +69,64 @@ async def store():
     await s.aclose()
 
 
-async def test_engine_a_equals_backtest(store):
-    mk = markets_a(days=110)
-    params = replace(PARAMS_A, slots=SLOTS, entry_apr=0.10)
+def _scenario(strategy: str) -> tuple[dict[str, Any], CarryParams, range]:
+    """Markets, params and decision times of the runs over the whole segment (backtest equivalence, no look-ahead)."""
+    if strategy == "A":
+        mk = markets_a(days=110)
+        params = replace(PARAMS_A, slots=SLOTS, entry_apr=0.10)
+        f = [e["ts_ms"] for d in mk.values() for e in d["funding"]]
+        return mk, params, _grid(min(d["funding"][0]["ts_ms"] for d in mk.values()), max(f))
+    mk = markets_b(days=110)
+    params = replace(PARAMS_B, slots=SLOTS, entry_apr=0.10, stop_move=0.2)
+    firsts = [max(d["a"]["funding"][0]["ts_ms"], d["b"]["funding"][0]["ts_ms"]) for d in mk.values()]
+    end = max(min(d["a"]["funding"][-1]["ts_ms"], d["b"]["funding"][-1]["ts_ms"]) for d in mk.values())
+    return mk, params, _grid(min(firsts), end)
+
+
+_FULL_RUNS: dict[str, Path] = {}  # strategy -> snapshot file of the engine's run of _scenario on the full source
+
+
+async def full_run_snapshot(strategy: str, tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Snapshot file (``VACUUM INTO``) of the engine's run of ``_scenario(strategy)`` on the full source (``FixtureFeed``,
+    an in-memory store). The run (~5 s, 307 cycles) is made once per strategy and process; callers must copy the file
+    before writing to it (test_paper_carry_report reads the same scenario-A run)."""
+    if strategy not in _FULL_RUNS:
+        mk, params, times = _scenario(strategy)
+        path = tmp_path_factory.mktemp(f"carry-full-{strategy}") / "full.db"
+        s = Store(":memory:")
+        await s.init()
+        try:
+            await _drive(s, FixtureFeed(mk, strategy), params, times)
+            await s.conn.execute("VACUUM INTO ?", (str(path),))
+        finally:
+            await s.aclose()
+        _FULL_RUNS[strategy] = path
+    return _FULL_RUNS[strategy]
+
+
+@pytest.fixture
+async def full_run(tmp_path, tmp_path_factory):
+    """``await full_run("A" | "B")`` opens a private copy of ``full_run_snapshot(strategy)``; every test gets its own
+    copy, so the tests that read it stay independent of each other and of their order."""
+    opened: list[Store] = []
+
+    async def open_copy(strategy: str) -> Store:
+        dst = tmp_path / f"full-{strategy}-{len(opened)}.db"
+        shutil.copyfile(await full_run_snapshot(strategy, tmp_path_factory), dst)
+        s = Store(dst)
+        await s.init()
+        opened.append(s)
+        return s
+
+    yield open_copy
+    for s in opened:
+        await s.aclose()
+
+
+async def test_engine_a_equals_backtest(full_run):
+    mk, params, _ = _scenario("A")
     bt = simulate_carry_portfolio(mk, slots=SLOTS, entry_apr=0.10)
-    f = [e["ts_ms"] for d in mk.values() for e in d["funding"]]
-    times = _grid(min(d["funding"][0]["ts_ms"] for d in mk.values()), max(f))
-    feed = FixtureFeed(mk, "A")
-    await _drive(store, feed, params, times)
+    store = await full_run("A")
 
     closed = [r["trade"] for r in await store.cp_positions("A", "closed")]
     bt_closed = [t for t in bt["trades"] if not t["open_at_end"]]
@@ -89,14 +144,11 @@ async def test_engine_a_equals_backtest(store):
     )
 
 
-async def test_engine_b_equals_backtest_with_stops(store):
-    mk = markets_b(days=110)
-    params = replace(PARAMS_B, slots=SLOTS, entry_apr=0.10, stop_move=0.2)
+async def test_engine_b_equals_backtest_with_stops(full_run):
+    mk, params, _ = _scenario("B")
+    assert (params.slots, params.entry_apr, params.max_entry_gap, params.stop_move) == (SLOTS, 0.10, 0.02, 0.2)  # = the backtest's
     bt = simulate_perp_spread_portfolio(mk, slots=SLOTS, entry_apr=0.10, max_entry_gap=0.02, stop_move=0.2)
-    firsts = [max(d["a"]["funding"][0]["ts_ms"], d["b"]["funding"][0]["ts_ms"]) for d in mk.values()]
-    end = max(min(d["a"]["funding"][-1]["ts_ms"], d["b"]["funding"][-1]["ts_ms"]) for d in mk.values())
-    feed = FixtureFeed(mk, "B")
-    await _drive(store, feed, params, _grid(min(firsts), end))
+    store = await full_run("B")
 
     closed = [r["trade"] for r in await store.cp_positions("B", "closed")]
     bt_closed = [t for t in bt["trades"] if not t["open_at_end"]]
@@ -112,12 +164,10 @@ async def test_engine_b_equals_backtest_with_stops(store):
     assert len(closed) == len(bt_closed)
 
 
-async def test_records_funding_sides_marks_and_journal(store):
-    mk = markets_a(days=110)
-    params = replace(PARAMS_A, slots=SLOTS, entry_apr=0.10)
+async def test_records_funding_sides_marks_and_journal(full_run):
+    mk, params, _ = _scenario("A")
     f = [e["ts_ms"] for d in mk.values() for e in d["funding"]]
-    feed = FixtureFeed(mk, "A")
-    await _drive(store, feed, params, _grid(min(d["funding"][0]["ts_ms"] for d in mk.values()), max(f)))
+    store = await full_run("A")
 
     closed = await store.cp_positions("A", "closed")
     assert closed
@@ -294,14 +344,30 @@ def _known_at(series: list[dict[str, Any]], t: int, bar_ms: int) -> list[dict[st
 class TruncatedFeed(FixtureFeed):
     """Serves only what was knowable at the decision time: the source cut to data <= t on every series."""
 
+    def __init__(self, markets: dict[str, Any], strategy: str) -> None:
+        super().__init__(markets, strategy)
+        self._known_times: dict[tuple[int, int], list[int]] = {}
+
+    def _cut(self, series: list[dict[str, Any]], t: int, bar_ms: int) -> list[dict[str, Any]]:
+        """``_known_at`` by bisection. An entry is known from min(ts_ms, ts + bar_ms) on; the source series never change
+        and those times are in order (checked once per series), so the known entries are a prefix: the same list as
+        the filter, without rescanning every series on each of the ~300 cycles."""
+        key = (id(series), bar_ms)
+        known = self._known_times.get(key)
+        if known is None:
+            known = [min(e.get("ts_ms", math.inf), e["ts"] + bar_ms if "ts" in e else math.inf) for e in series]
+            assert all(x < math.inf for x in known) and known == sorted(known)
+            self._known_times[key] = known
+        return series[: bisect.bisect_right(known, t)]
+
     async def load(self, params: CarryParams, decision_ts: int, open_positions: list[dict[str, Any]]) -> FeedData:
         data = await super().load(params, decision_ts, open_positions)
         t, bm = decision_ts, params.bar_ms
         if self.strategy == "A":
-            data.markets = {s: {k: _known_at(v, t, bm) for k, v in d.items()} for s, d in data.markets.items()}
+            data.markets = {s: {k: self._cut(v, t, bm) for k, v in d.items()} for s, d in data.markets.items()}
         else:
             data.markets = {
-                s: {leg: {k: _known_at(v, t, bm) for k, v in d[leg].items()} for leg in ("a", "b")} for s, d in data.markets.items()
+                s: {leg: {k: self._cut(v, t, bm) for k, v in d[leg].items()} for leg in ("a", "b")} for s, d in data.markets.items()
             }
         return data
 
@@ -318,30 +384,31 @@ async def _snapshot(store: Store, strategy: str) -> dict[str, Any]:
     }
 
 
+def test_truncated_feed_cut_equals_the_known_at_filter():
+    # The bisection in TruncatedFeed is only a faster _known_at: same entries on every series, at times on and between
+    # the stamps (a funding stamp, a bar close, one ms either side).
+    for strategy, mk, bm in (("A", markets_a(days=20), PARAMS_A.bar_ms), ("B", markets_b(days=20), PARAMS_B.bar_ms)):
+        feed = TruncatedFeed(mk, strategy)
+        series = [v for d in mk.values() for v in (d.values() if strategy == "A" else [*d["a"].values(), *d["b"].values()])]
+        for v in series:
+            stamps = [e.get("ts_ms", e.get("ts", 0) + bm) for e in v]
+            for t in {v0 + dt for v0 in stamps[:5] + stamps[-5:] for dt in (-1, 0, 1)} | {0, stamps[len(v) // 2]}:
+                assert feed._cut(v, t, bm) == _known_at(v, t, bm), t
+
+
 @pytest.mark.parametrize("strategy", ["A", "B"])
-async def test_no_lookahead_truncated_source_gives_the_same_cycles(strategy):
+async def test_no_lookahead_truncated_source_gives_the_same_cycles(strategy, full_run):
     # The engine run on a source cut to data <= decision time must record exactly what it records on the full source:
     # same cycles (ranking, candidates, decisions, flags), positions, funding, marks and closes.
-    if strategy == "A":
-        mk = markets_a(days=110)
-        params = replace(PARAMS_A, slots=SLOTS, entry_apr=0.10)
-        times = _grid(min(d["funding"][0]["ts_ms"] for d in mk.values()), max(e["ts_ms"] for d in mk.values() for e in d["funding"]))
-    else:
-        mk = markets_b(days=110)
-        params = replace(PARAMS_B, slots=SLOTS, entry_apr=0.10, stop_move=0.2)
-        firsts = [max(d["a"]["funding"][0]["ts_ms"], d["b"]["funding"][0]["ts_ms"]) for d in mk.values()]
-        end = max(min(d["a"]["funding"][-1]["ts_ms"], d["b"]["funding"][-1]["ts_ms"]) for d in mk.values())
-        times = _grid(min(firsts), end)
-    snaps = []
-    for feed in (FixtureFeed(mk, strategy), TruncatedFeed(mk, strategy)):
-        s = Store(":memory:")
-        await s.init()
-        try:
-            await _drive(s, feed, params, times)
-            snaps.append(await _snapshot(s, strategy))
-        finally:
-            await s.aclose()
-    full, cut = snaps
+    mk, params, times = _scenario(strategy)
+    full = await _snapshot(await full_run(strategy), strategy)
+    s = Store(":memory:")
+    await s.init()
+    try:
+        await _drive(s, TruncatedFeed(mk, strategy), params, times)
+        cut = await _snapshot(s, strategy)
+    finally:
+        await s.aclose()
     assert any(p[1] == "closed" for p in full["positions"])  # the segment is not vacuous
     if strategy == "B":
         assert any(p[3] and p[3]["stopped"] for p in full["positions"])  # stops read bar extremes: covered too

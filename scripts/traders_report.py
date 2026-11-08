@@ -169,6 +169,8 @@ def render(conn: sqlite3.Connection, source: str, days: int, now: datetime) -> s
 
     # ---------------- Hyperliquid
     day, snap, weeks = snapshots(conn, "hyperliquid")
+    # the collector also keeps accounts that fell below $500k in the last 60 days (survivorship); the board shows only >= $500k
+    snap = {a: r for a, r in snap.items() if (r["account_value"] or 0) >= MIN_VALUE}
     hl = positions_log(conn, "hyperliquid")
     s_base, s_last = replay_positions(hl, delta, base_ts), replay_positions(hl, delta, last_ts)
     cls = {}

@@ -8,19 +8,30 @@ Rules covered:
 
 * 1 — risk per trade <= 1 % of the deposit. Option structure: the exact max loss at expiry (unbounded = violated:
   it needs a stop on the exchange or protective wings). Journal: size x |entry - stop| of a trade with a recorded
-  stop, the premium paid for a bought option; venue imports carry no stop, so their linear rows are ``unknown``.
+  stop, the premium paid for a bought option; venue imports carry no stop, so their linear rows are ``unknown``. A
+  stop not on the loss side of the entry (a long needs stop < entry, a short stop > entry; a break-even stop at the
+  entry included) is ``unknown`` too: a mistyped stop, or one moved since the opening (the journal keeps no stop
+  moves), so the risk at the opening cannot be told (``wrong_side`` names it).
 * 2 — at most 3 alt longs open at once (alt = any base asset but BTC and ETH, options left out); opening a 4th
   distinct alt long violates it. Needs a real opening time (opened_ts < closed_ts, or still open): Bybit linear
   imports have none (opened_ts = closed_ts) and are ``unknown``. Hyperliquid HIP-3 symbols ('dex:ASSET', e.g.
-  'xyz:TSLA': stocks, gold) are not crypto alts the rule is about: ``unknown`` and left out of the count. The
+  'xyz:TSLA': stocks, gold) are not crypto alts the rule is about: ``unknown`` and left out of the count. One
+  asset under different venue names is one alt (base_asset: 'kPEPE' = '1000PEPEUSDT' = 'PEPE', 'PUMPFUN' = 'PUMP'). The
   "total open risk <= 3 %" half (open_risk, on the trades open now) sums rule 1's risk and needs stops.
 * 4 — day stop: after 2 losing trades in a row or a day's realized P&L <= -2 % of the deposit, no new trade that
   day. UTC day and closing order as in scripts/journal_rules.py that produced the rule's effect, but "in a row" is
   stricter than that script, which stopped the day after any 2 losses. A trade opened after the stop moment of its
   day violates it. A row without an opening time stands in with its close time: such a flag is approximate (the
   trade may have been opened long before the stop), counted in ``approx`` and kept apart from exact violations in
-  the weekly totals. The "48 h pause after a big-loss day" half has no threshold in the rule: not checked.
-* 5 — target >= 2 x the stop distance (R:R >= 2): rows with both stop and target, else ``unknown``.
+  the weekly totals. The "48 h pause after a big-loss day" half (pauses): the rule gives no threshold for a big
+  loss, so the only loss threshold of rule 4 stands in, taken literally: a UTC day whose realized P&L (all trades
+  closed that day, whatever the day stop) is <= -2 % of the deposit is a big-loss day, and "after the day" starts the
+  pause at the end of that day, 00:00 UTC next day, for 48 h: [start, start + 48 h), so a trade opened exactly 48 h
+  after the start is outside it. A trade opened inside a pause violates rule 4 (approximate without a real opening
+  time, as the day stop). An assumption until the owner sets a threshold of his own (big_loss_pct, pause_hours).
+* 5 — target >= 2 x the stop distance (R:R >= 2): rows with both stop and target, else ``unknown``. The direction
+  is checked first: a long needs stop < entry < target, a short target < entry < stop; a stop or target on the
+  wrong side (or at the entry) is ``unknown``, not an R:R (``wrong_side`` names it).
 * 8 — options (owner, 22.10, Q-20261022-1): premium paid <= 1 % of the deposit per trade, and by the time from the
   purchase to the delivery (Deribit/Bybit 08:00 UTC, the date in the symbol) three zones: under 24 h — never buy
   (``violated``); 24-72 h (both ends included) — only when all three checks hold: (a) a recorded thesis (direction,
@@ -48,6 +59,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
+from .funding_spread import normalize_asset
 from .strategy import payoff_curve, payoff_extremes
 
 OK, VIOLATED, UNKNOWN, NA = "ok", "violated", "unknown", "na"
@@ -57,6 +69,8 @@ MAX_ALT_LONGS = 3  # rule 2
 OPEN_RISK_PCT = 3.0  # rule 2, total risk of the open trades, % of the deposit
 DAY_LOSS_PCT = 2.0  # rule 4, % of the deposit
 DAY_LOSING_STREAK = 2  # rule 4
+BIG_LOSS_PCT = DAY_LOSS_PCT  # rule 4, 48 h pause: a UTC day's realized P&L <= -this % of the deposit (assumed threshold)
+PAUSE_HOURS = 48.0  # rule 4: no new trade this many hours from the end of a big-loss day
 MIN_RR = 2.0  # rule 5
 PREMIUM_PCT = 1.0  # rule 8, % of the deposit
 BUY_BAN_HOURS = 24.0  # rule 8: buying with less than this many hours to expiry violates it, whatever the reasons
@@ -73,6 +87,8 @@ _EPS = 1e-9
 _MONTHS = {m: i for i, m in enumerate(("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"), 1)}
 _OPTION_RE = re.compile(r"([A-Z0-9]+)-(\d{1,2})([A-Z]{3})(\d{2})-\d+(?:[.d]\d+)?-[CP](?:-[A-Z]+)?")
 _QUOTES = ("USDT", "USDC", "BUSD", "USD", "PERP")
+# One asset, another ticker on some venue (after the multiplier is dropped): Bybit lists pump.fun's PUMP as PUMPFUN.
+ASSET_ALIASES = {"PUMPFUN": "PUMP"}
 
 
 def _num(x: object) -> float | None:
@@ -101,15 +117,23 @@ def is_hip3(symbol: object) -> bool:
 
 
 def base_asset(symbol: object) -> str:
-    """Base asset of a perp / spot symbol: 'SOLUSDT', 'SOL/USDT:USDT', 'SOL-PERP', 'SOL' -> 'SOL'; the asset after
-    the dex of a HIP-3 symbol: 'xyz:TSLA' -> 'TSLA'."""
-    s = str(symbol or "").upper().strip()
-    s = s.split(":")[-1] if is_hip3(s) else s.split("/")[0].split(":")[0]
-    s = s.split("-")[0] if "-" in s else s
+    """Underlying asset of a perp / spot symbol: 'SOLUSDT', 'SOL/USDT:USDT', 'SOL-PERP', 'SOL' -> 'SOL'; the asset
+    after the dex of a HIP-3 symbol: 'xyz:TSLA' -> 'TSLA'. One asset under venue-specific names gets one name:
+    contract multipliers are dropped (Hyperliquid 'kPEPE', CEX '1000PEPEUSDT', '1MBABYDOGE', 'SHIB1000' -> 'PEPE',
+    'BABYDOGE', 'SHIB'; analytics.funding_spread.normalize_asset) and ASSET_ALIASES renames ('PUMPFUN' -> 'PUMP').
+    The Hyperliquid 'k' needs its lower case: an upper-case 'KPEPE' stays as is (KAVA, KSM are real tickers)."""
+    raw = str(symbol or "").strip()
+    raw = raw.split(":")[-1] if is_hip3(raw) else raw.split("/")[0].split(":")[0]
+    raw = raw.split("-")[0] if "-" in raw else raw
+    s = raw.upper()
     for q in _QUOTES:
         if s.endswith(q) and len(s) > len(q):
-            return s[: -len(q)]
-    return s
+            raw, s = raw[: -len(q)], s[: -len(q)]
+            break
+    asset, mult = normalize_asset(raw, "hyperliquid")  # only a lower-case 'k' prefix: 'kPEPE' -> PEPE
+    if mult == 1:
+        asset = normalize_asset(s, "cex")[0]  # numeric multipliers: '1000PEPE', '1MBABYDOGE', 'SHIB1000'
+    return ASSET_ALIASES.get(asset, asset)
 
 
 def _tags(raw: object) -> list[str]:
@@ -153,6 +177,27 @@ def thesis_check(thesis: object, target: object) -> tuple[str, str]:
         return OK, "thesis and target recorded"
     miss = [w for w, ok in (("thesis", has_thesis), ("target", has_target)) if not ok]
     return VIOLATED, "no " + " and no ".join(miss)
+
+
+def wrong_side(side: object, entry: object, stop: object, target: object) -> str | None:
+    """Rules 1 and 5 on a linear trade: a stop or target not on its side of the entry, as a detail; None when every
+    given price is on its side, or the side ('long' | 'short') or entry is unknown. A long needs stop < entry < target,
+    a short target < entry < stop (as analytics.trade_command's stop_wrong_side / target_wrong_side). A stop at the
+    entry (break-even) gets a detail of its own: it says nothing about the risk at the opening."""
+    sign = 1.0 if side == "long" else -1.0 if side == "short" else None
+    e, s, t = _num(entry), _num(stop), _num(target)
+    if sign is None or e is None:
+        return None
+    out = []
+    if s is not None and sign * (e - s) <= 0:
+        out.append(
+            "stop at the entry (break-even): the risk at the opening is not recorded"
+            if s == e
+            else f"stop {'above' if sign > 0 else 'below'} the entry of a {side}"
+        )
+    if t is not None and sign * (t - e) <= 0:
+        out.append("target at the entry" if t == e else f"target {'below' if sign > 0 else 'above'} the entry of a {side}")
+    return "; ".join(out) or None
 
 
 def owner_thesis(thesis: object, tags: Sequence[str]) -> object:
@@ -392,6 +437,36 @@ def _day_stops(xs: list[dict[str, Any]], day_loss: float, streak: int) -> dict[s
     return stops
 
 
+def pauses(
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    deposit_usd: float = DEPOSIT_USD,
+    big_loss_pct: float = BIG_LOSS_PCT,
+    pause_hours: float = PAUSE_HOURS,
+) -> dict[str, dict[str, Any]]:
+    """Rule 4, the 48 h pause: {UTC day: {pnl, start, end}} for the big-loss days, those whose realized P&L (the sum
+    over every trade closed that day, USD) is <= -big_loss_pct % of the deposit; the pause runs from the end of the day
+    (``start``, 00:00 UTC next day, unix s) to ``end`` = start + pause_hours, end excluded. The threshold is an
+    assumption (the rule names none): rule 4's own -2 % by default."""
+    return _pauses(_normalize(rows), deposit_usd * big_loss_pct / 100.0, pause_hours * 3600.0)
+
+
+def _pauses(xs: list[dict[str, Any]], big_loss: float, pause_s: float) -> dict[str, dict[str, Any]]:
+    closed = sorted((x for x in xs if x["closed"] is not None and x["pnl"] is not None), key=lambda x: (x["closed"], x["i"]))
+    days: dict[str, list[float]] = {}  # day -> [realized P&L, start of the next UTC day]
+    for x in closed:
+        d = days.setdefault(utc_day(x["closed"]), [0.0, (math.floor(x["closed"] / DAY_S) + 1) * DAY_S])
+        d[0] += x["pnl"]
+    return {day: {"pnl": p, "start": s, "end": s + pause_s} for day, (p, s) in sorted(days.items()) if p <= -big_loss + _EPS}
+
+
+def in_pause(ps: Mapping[str, Mapping[str, Any]], ts: float) -> dict[str, Any] | None:
+    """The pause of ``pauses`` holding ``ts`` (start <= ts < end) as {day, pnl, start, end}; of overlapping ones (big
+    losses on days in a row) the one that ends last; None outside every pause."""
+    hit = [{"day": day, **p} for day, p in ps.items() if p["start"] <= ts < p["end"]]
+    return max(hit, key=lambda p: (p["end"], p["day"])) if hit else None
+
+
 def trade_checks(
     rows: Iterable[Mapping[str, Any]],
     *,
@@ -405,11 +480,16 @@ def trade_checks(
     premium_pct: float = PREMIUM_PCT,
     ban_hours: float = BUY_BAN_HOURS,
     cond_hours: float = BUY_COND_HOURS,
+    big_loss_pct: float = BIG_LOSS_PCT,
+    pause_hours: float = PAUSE_HOURS,
 ) -> list[dict[str, Any]]:
     """Each open or closed journal row (pass the owner's real trades: no airdrop, no *-paper rows) with the status of
     rules 1, 2, 4, 5 and 8: {id, week, opened_ts, pnl, rules: {n: status}, approx: rule 4 judged on the close time,
     alt_longs: distinct alt longs open right after this one opened (rule 2, or None), buy_zone, buy_conditions,
-    late_buy, big_premium}. For a bought option: ``buy_zone`` is the rule 8 zone of the opening (None without a real
+    late_buy, big_premium, wrong_side: a stop or target not on its side of the entry (see wrong_side; rules 1 and 5
+    are then ``unknown``), else None, pause: the 48 h pause the opening fell in (in_pause: {day, pnl, start, end}),
+    else None}. Rule 4 is violated by an opening after the day stop of its day or inside a pause.
+    For a bought option: ``buy_zone`` is the rule 8 zone of the opening (None without a real
     opening time or expiry), ``buy_conditions`` the three checks in the 1-3 day zone ({thesis, breakeven_move,
     iv_vs_rv}: statuses; the journal has no spot or IV at the opening, so the last two are ``unknown``), ``late_buy``
     True when the timing broke the rule (under 24 h, or 1-3 days with a check failed), None when it cannot tell.
@@ -420,13 +500,15 @@ def trade_checks(
     risk_cap = deposit_usd * risk_pct / 100.0
     prem_cap = deposit_usd * premium_pct / 100.0
     stops = _day_stops(xs, deposit_usd * day_loss_pct / 100.0, streak)
+    pz = _pauses(xs, deposit_usd * big_loss_pct / 100.0, pause_hours * 3600.0)
     alt_n = _alt_long_counts(xs, now_ts)
     out = []
     for x in xs:
         r: dict[int, str] = {}
         long_opt = x["option"] and x["side"] == "long"
         premium = x["size"] * x["entry"] if long_opt and x["size"] is not None and x["entry"] is not None else None
-        # rule 1: a bought option risks its premium; anything else needs a recorded stop
+        side_why = None if x["option"] else wrong_side(x["side"], x["entry"], x["stop"], x["target"])
+        # rule 1: a bought option risks its premium; anything else needs a recorded stop on the loss side
         risk = _risk(x)
         r[1] = UNKNOWN if risk is None else OK if risk <= risk_cap * (1 + _EPS) else VIOLATED
         # rule 2
@@ -436,13 +518,14 @@ def trade_checks(
             r[2] = UNKNOWN
         else:
             r[2] = VIOLATED if alt_n[x["i"]][1] else OK
-        # rule 4
+        # rule 4: after the day stop of the opening's day, or inside a 48 h pause after a big-loss day
         stop = stops.get(utc_day(x["opened"]))
-        r[4] = VIOLATED if stop is not None and x["opened"] > stop["ts"] else OK
-        # rule 5
+        pause = in_pause(pz, x["opened"])
+        r[4] = VIOLATED if (stop is not None and x["opened"] > stop["ts"]) or pause is not None else OK
+        # rule 5: a stop or target on the wrong side of the entry gives no R:R
         if x["option"]:
             r[5] = NA
-        elif None in (x["stop"], x["target"], x["entry"]) or x["entry"] == x["stop"]:
+        elif None in (x["stop"], x["target"], x["entry"]) or x["entry"] == x["stop"] or side_why is not None:
             r[5] = UNKNOWN
         else:
             r[5] = OK if abs(x["target"] - x["entry"]) / abs(x["entry"] - x["stop"]) >= min_rr - _EPS else VIOLATED
@@ -474,6 +557,8 @@ def trade_checks(
                 "buy_conditions": conds,
                 "late_buy": late,
                 "big_premium": big,
+                "wrong_side": side_why,
+                "pause": pause,
             }
         )
     return out
@@ -481,10 +566,13 @@ def trade_checks(
 
 def _risk(x: Mapping[str, Any]) -> float | None:
     """Rule 1 risk (USD) of a normalized row: the premium of a bought option, size x |entry - stop| of anything else
-    with a recorded stop; None when the row cannot tell (no stop, a sold option)."""
+    with a recorded stop on the loss side; None when the row cannot tell (no stop, a stop at or past the entry, a sold
+    option)."""
     if x["option"] and x["side"] == "long":
         return x["size"] * x["entry"] if x["size"] is not None and x["entry"] is not None else None
     if x["option"] or None in (x["stop"], x["size"], x["entry"]):
+        return None
+    if wrong_side(x["side"], x["entry"], x["stop"], None) is not None:
         return None
     return x["size"] * abs(x["entry"] - x["stop"])
 
@@ -494,7 +582,7 @@ def open_risk(
 ) -> dict[str, Any]:
     """Rule 2, first half: the total risk of the trades open now (status 'open'; pass the owner's real trades) <=
     open_risk_pct % of the deposit. {status, total: USD over the open trades whose rule 1 risk is known, limit,
-    n_open, n_unknown: open trades without a stop (or a sold option)}. ``violated`` once the known part alone is over
+    n_open, n_unknown: open trades without a stop on the loss side (or a sold option)}. ``violated`` once the known part alone is over
     the limit, else ``unknown`` while any open risk is unknown, else ``ok``; ``na`` with nothing open. The risk is to
     the recorded stop: a stop moved since, slippage or a gap are not seen."""
     xs = [x for x in _normalize(rows) if x["closed"] is None]
@@ -540,9 +628,11 @@ def _alt_long_counts(xs: list[dict[str, Any]], now_ts: float, cap: int = MAX_ALT
 
 def weekly_violations(rows: Iterable[Mapping[str, Any]], *, now_ts: float, **params: Any) -> list[dict[str, Any]]:
     """Rule violations by ISO week of the opening (UTC), newest first: {week, n_trades, rules: {n: {status, violated,
-    checked, unknown}}, days_stopped, approx, max_alt_longs, late_buys, buys_under_24h, buys_cond_failed,
-    big_premiums, n_violating, pnl_violating, n_violating_approx, pnl_violating_approx}. Rule 8: ``late_buys`` =
-    ``buys_under_24h`` (never buy) + ``buys_cond_failed`` (1-3 days with a check failed).
+    checked, unknown}}, days_stopped, big_loss_days, paused, approx, max_alt_longs, late_buys, buys_under_24h,
+    buys_cond_failed, big_premiums, n_violating, pnl_violating, n_violating_approx, pnl_violating_approx}. Rule 8:
+    ``late_buys`` = ``buys_under_24h`` (never buy) + ``buys_cond_failed`` (1-3 days with a check failed). Rule 4:
+    ``big_loss_days`` = big-loss days of the week (pauses, by the week of the day itself), ``paused`` = trades with a
+    real opening time opened inside a 48 h pause (those without one are in ``approx``).
     ``checked`` = trades the rule applies to with enough data, ``unknown`` = applies but the data cannot tell.
     Exact and approximate are kept apart: rule 4's ``violated`` / ``checked`` leave out the flags judged on the close
     time (``approx`` counts those); ``n_violating`` / ``pnl_violating`` are the trades with at least one exact
@@ -555,11 +645,17 @@ def weekly_violations(rows: Iterable[Mapping[str, Any]], *, now_ts: float, **par
     stops = day_stops(
         rows, deposit_usd=dep, day_loss_pct=params.get("day_loss_pct", DAY_LOSS_PCT), streak=params.get("streak", DAY_LOSING_STREAK)
     )
+    pz = pauses(
+        rows, deposit_usd=dep, big_loss_pct=params.get("big_loss_pct", BIG_LOSS_PCT), pause_hours=params.get("pause_hours", PAUSE_HOURS)
+    )
+    big_weeks = [iso_week(p["start"] - DAY_S) for p in pz.values()]  # the week of the big-loss day itself
     weeks: dict[str, list[dict[str, Any]]] = {}
     for c in checks:
         weeks.setdefault(c["week"], []).append(c)
     for s in stops.values():  # a stop hit by a trade opened the week before still shows in its own week
         weeks.setdefault(iso_week(s["ts"]), [])
+    for wk in big_weeks:
+        weeks.setdefault(wk, [])
     out = []
     for wk in sorted(weeks, reverse=True):
         cs = weeks[wk]
@@ -579,6 +675,8 @@ def weekly_violations(rows: Iterable[Mapping[str, Any]], *, now_ts: float, **par
                 "n_trades": len(cs),
                 "rules": rules,
                 "days_stopped": sum(1 for s in stops.values() if iso_week(s["ts"]) == wk),
+                "big_loss_days": big_weeks.count(wk),
+                "paused": sum(1 for c in cs if c["pause"] is not None and not c["approx"]),
                 "approx": sum(1 for c in cs if c["approx"]),
                 "max_alt_longs": max(alts) if alts else None,
                 "late_buys": sum(1 for c in cs if c["late_buy"]),

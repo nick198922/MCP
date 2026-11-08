@@ -1,0 +1,12 @@
+- Інвентар публічних функцій `src/tradedesk/analytics/` без посилань поза власним файлом (пункт 148 [standing-improvements](../ideas/IDEA-20261102-standing-improvements.md)): новий `scripts/unused_funcs.py` (лише читає, stdlib `ast`, `--out FILE`; розбір — чисті функції). Кандидати — функції верхнього рівня модуля без `_` на початку (методи й вкладені не рахуються). Посилання шукаються в усіх `*.py` у `src/`, `scripts/`, `tests/`: ім'я (`f`), атрибут (`mod.f`) або `from m import f as g`. Рядки не рахуються, тож запис у `__all__` — не використання (такі функції позначено). Код повернення завжди 0. Тест: `tests/test_unused_funcs.py`.
+- Правило свідомо грубе: збіг лише за назвою, без модуля (виклик чужої `f` «використовує» всі `f`), тож список невикористаних — нижня межа; `getattr(m, "f")` не видно.
+- Прогін 06.11: 927 файлів, публічних функцій в `analytics/` 2177. **Без жодного посилання поза власним файлом — 48**, з них **6 без посилання навіть у власному файлі** (перевірено `grep`, трапляються лише в рядку `def`):
+  - `alt_downside_beta.py:344` `beta_of`
+  - `mm_twohop.py:174` `finite`
+  - `pm_dislocation.py:224` `cluster_count`
+  - `pm_longdated.py:164` `cluster_counts`
+  - `sfp_backtest.py:251` `summarise_signals`
+  - `smart_money.py:257` `nw_mde`
+- Решта 42 з 48 викликаються всередині свого файлу, тобто це помічники, публічні лише за назвою: 11 у `sieve_specs/*` (`smma`, `tema`, `stoch` тощо), `dated_basis.last_friday`, `radar.smile_at`, `option_replay.strike_by_delta` / `atm_strike`, `rec_method.regime_label` / `regime_confirmed`, `strategy_sieve.funding_r` / `entry_outcome` та інші. Повний список — у виводі скрипта.
+- Ще 271 функцію викликають лише тести (у `src/` і `scripts/` посилань нема), напр. увесь `odds.py` (`devig_power` тощо), `checkpoint.*_forward`, `setup_signals.s12` … `s40`. Це не обов'язково мертвий код: частину кличуть інші функції того самого файлу.
+- Код у `src/` не видалено й не змінено; чи прибирати 6 функцій без посилань, вирішує окремий пункт.

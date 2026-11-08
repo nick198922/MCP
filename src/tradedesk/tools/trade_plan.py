@@ -8,6 +8,7 @@ Local bookkeeping only: nothing is sent to any venue. A plan is written by `plan
 
 from __future__ import annotations
 
+import math
 from collections import defaultdict
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
@@ -16,11 +17,10 @@ from mcp.server.mcpserver import MCPServer
 from pydantic import Field
 
 from ..analytics.demo_option_pairs import paired_report
-from ..analytics.trade_plan import TAKER_FEE, geometry, resolve_plan, summarize_plans, validate_levels
+from ..analytics.trade_plan import TAKER_FEE, geometry, resolve_plan, summarize_plans, usable_expires, validate_levels
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, r
-from .journal import _store_guard
+from ._util import READ_ONLY, STORE_ERRORS, drop_corrupt_rows, finite_float, r, store_failed, store_ready
 
 PLAN_WARNING = (
     "Paper scoring of the assistant's plans on candle highs / lows (local store only, no orders): a forward record of the "
@@ -38,10 +38,32 @@ RULE_KEYS = {str(i) for i in range(1, 9)}  # the owner's 8 rules (docs/knowledge
 STALE_S = 86400
 
 SHADOW_TAG = "src:demo-shadow"  # execution/demo_trader.py: one plan per setup signal, not the assistant's judgment
+# Numeric columns `_view` reads (expires_ts has its own guard, `_expires_view`).
+PLAN_NUMS = ("created_ts", "entry", "stop", "target", "filled_ts", "fill", "resolved_ts", "exit", "r_result")
 
 
 def _iso(ts: int | None) -> str | None:
-    return None if ts is None else datetime.fromtimestamp(ts, UTC).isoformat(timespec="seconds")
+    """ISO-8601 UTC of unix seconds; the raw number as a string when it is out of the datetime range (e.g. ms passed)."""
+    if ts is None:
+        return None
+    try:
+        return datetime.fromtimestamp(ts, UTC).isoformat(timespec="seconds")
+    except (ValueError, OverflowError, OSError):
+        return str(ts)
+
+
+def _expires_view(ts: Any) -> dict[str, Any]:
+    """``expires`` of a stored plan as ISO-8601 UTC. A stored value that is not usable unix seconds (text, a number in
+    ms or out of the datetime range, NaN) gives ``expires=None`` plus ``expires_raw``, the raw value as text (cut to
+    64 chars). Never raises; plan_add's validation keeps such values out, this only guards rows written elsewhere."""
+    if ts is None:
+        return {"expires": None}
+    if isinstance(ts, (int, float)) and not isinstance(ts, bool):
+        try:
+            return {"expires": datetime.fromtimestamp(ts, UTC).isoformat(timespec="seconds")}
+        except (ValueError, OverflowError, OSError):
+            pass
+    return {"expires": None, "expires_raw": str(ts)[:64]}
 
 
 def _view(p: dict[str, Any]) -> dict[str, Any]:
@@ -59,7 +81,7 @@ def _view(p: dict[str, Any]) -> dict[str, Any]:
         "target": p["target"],
         "rr": r(g["rr"], 2),
         "risk_pct": r(g["risk_pct"], 5),
-        "expires": _iso(p["expires_ts"]),
+        **_expires_view(p["expires_ts"]),
         "verdict": p["verdict"],
         "thesis": p["thesis"],
         "rules": p["rules"],
@@ -82,6 +104,38 @@ def _view(p: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _listable(b: Builder, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """`_view` of the stored plans that another writer did not corrupt. A string / blob / inf in a level, a timestamp or
+    the result (TypeError / ValueError in `_view`, or an invalid UTF-8 blob failing the reply), entry 0 or entry = stop
+    (ZeroDivisionError in `geometry`), or a reward:risk that overflows: the plan is skipped with a warning naming its id
+    (invariant 1). plan_add validates its levels, so its own rows always pass."""
+    views: list[dict[str, Any]] = []
+    bad: list[Any] = []
+    for p in drop_corrupt_rows(b, rows, "plan", PLAN_NUMS, required=("created_ts", "entry", "stop", "target")):
+        if p["entry"] <= 0 or p["entry"] == p["stop"]:
+            bad.append(p["id"])
+            continue
+        v = _view(p)
+        if v["rr"] is None or v["risk_pct"] is None or not math.isfinite(v["rr"]) or not math.isfinite(v["risk_pct"]):
+            bad.append(p["id"])
+            continue
+        views.append(v)
+    if bad:
+        b.warn(f"{len(bad)} stored plan rows skipped: entry <= 0, entry equal to stop, or a reward:risk out of range; id {bad[:10]}")
+    return views
+
+
+def _open_ms(x: Any) -> int | None:
+    """A candle's open time as int ms; None when it is None, text, a bool, NaN, inf or a 300+-digit integer (int() of
+    such a value raised out of plan_review and the plan_resolve job)."""
+    if x is None or isinstance(x, bool):
+        return None
+    try:
+        return int(finite_float(x))
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 async def _candles(rt: Runtime, b: Builder, exchange: str, symbol: str, since_ms: int, until_ms: int) -> tuple[str, int, list[Any]] | None:
     """Candles of one market from ``since_ms`` to ``until_ms``: 1h first, then 4h, then 1d when a timeframe gives nothing.
 
@@ -102,9 +156,16 @@ async def _candles(rt: Runtime, b: Builder, exchange: str, symbol: str, since_ms
                 if ok:
                     b.warn(f"{exchange} {symbol} {tf}: a later candle page failed; plans past it wait for the next review")
                 break
-            good = [x for x in got if isinstance(x, (list, tuple)) and len(x) >= 5 and x[0] is not None] if isinstance(got, list) else []
+            shaped = [x for x in got if isinstance(x, (list, tuple)) and len(x) >= 5] if isinstance(got, list) else []
+            stamped = [(ts, x) for x in shaped if (ts := _open_ms(x[0])) is not None]
+            if len(stamped) < len(shaped):
+                b.warn(
+                    f"ccxt:{exchange} {symbol} {tf}: {len(shaped) - len(stamped)} candle(s) with an open time that is not a "
+                    "finite number dropped"
+                )
+            good = [x for _, x in stamped]
             rows += good
-            last = max((int(x[0]) for x in good), default=None)
+            last = max((ts for ts, _ in stamped), default=None)
             nxt = last + tf_ms if last is not None and last + tf_ms <= until else until + 1
             if nxt > until_ms or nxt <= cursor:
                 break
@@ -141,10 +202,14 @@ async def review_open(rt: Runtime, b: Builder) -> list[int]:
                 if n:
                     resolved.append(p["id"])
             continue  # a linked option plan is settled with its paper trade (assistant_paper_status), never on candles
+        if usable_expires(p["expires_ts"]) is None:
+            # a warning, not `missing`: the collector job raises on `missing`, which would fail it every hour for one bad row
+            b.warn(f"plan {p['id']} skipped: stored expires_ts is not a number")
+            continue
         markets[(p["exchange"], p["symbol"])].append(p)
     for (exchange, symbol), plans in markets.items():
         since_ms = min(int(p["created_ts"]) for p in plans) * 1000
-        until_ms = min(now_ts, max(int(p["expires_ts"]) for p in plans)) * 1000
+        until_ms = min(now_ts, max(usable_expires(p["expires_ts"]) or 0 for p in plans)) * 1000
         got = await _candles(rt, b, exchange, symbol, since_ms, until_ms)
         if got is None:
             continue  # in `missing`; the plans stay open
@@ -217,61 +282,63 @@ def register(server: MCPServer, rt: Runtime) -> None:
     ) -> dict[str, Any]:
         b = Builder()
         b.warn(PLAN_WARNING)
-        if not _store_guard(b, rt):
+        if not await store_ready(b, rt, "the journal"):
             return b.build(None, ok=False)
-        now_ts = int(rt.now().timestamp())
-        err = validate_levels(side, entry, stop, target)
-        if err is None and not now_ts + MIN_HORIZON_S <= expires_ts <= now_ts + MAX_HORIZON_S:
-            err = f"expires_ts must be 2 h to 180 days ahead (now {_iso(now_ts)}, got {_iso(expires_ts) if expires_ts > 0 else expires_ts})"
-        if err is None and rules and not set(rules) <= RULE_KEYS:
-            err = f"rules keys must be '1'..'8', got {sorted(set(rules) - RULE_KEYS)}"
-        if err is None and rec_paper_id is not None and instrument != "option":
-            err = "rec_paper_id links option plans only (instrument='option')"
-        if err is not None:
-            b.miss("plan", "tradedesk", "invalid_input", err)
-            return b.build(None, ok=False)
-        await rt.store.init()
-        if rec_paper_id is not None and await rt.store.rec_paper_get(rec_paper_id) is None:
-            b.miss("rec_paper_id", "tradedesk", "invalid_input", f"rec_paper #{rec_paper_id} not found")
-            return b.build(None, ok=False)
-        clean_tags = [t.strip() for t in tags or [] if t and t.strip()]
-        plan_id = await rt.store.plan_insert(
-            created_ts=now_ts,
-            exchange=exchange.lower(),
-            symbol=symbol,
-            instrument=instrument,
-            side=side,
-            entry_type=entry_type,
-            entry=entry,
-            stop=stop,
-            target=target,
-            expires_ts=expires_ts,
-            verdict=verdict,
-            thesis=thesis,
-            rules=rules or {},
-            tags=clean_tags,
-            rec_paper_id=rec_paper_id,
-        )
-        g = geometry(entry, stop, target)
-        if g["rr"] < 2:
-            b.warn(f"reward:risk {g['rr']:.2f} < 2 (owner's rule 5)")
-        failed = sorted(k for k, v in (rules or {}).items() if v == "fail")
-        if verdict == "enter" and failed:
-            b.warn(f"verdict 'enter' with failed rules {failed}")
-        if instrument == "option" and rec_paper_id is None:
-            b.warn("option plan without rec_paper_id: it will be scored on the underlying's stop / target, not on the option's P&L")
-        return b.build(
-            {
-                "id": plan_id,
-                "created": _iso(now_ts),
-                "expires": _iso(expires_ts),
-                "verdict": verdict,
-                "rr": r(g["rr"], 3),
-                "risk_pct": r(g["risk_pct"], 5),
-                "reward_pct": r(g["reward_pct"], 5),
-                "fee_r_round_trip": r(g["fee_r_round_trip"], 4),
-            }
-        )
+        try:
+            now_ts = int(rt.now().timestamp())
+            err = validate_levels(side, entry, stop, target)
+            if err is None and not now_ts + MIN_HORIZON_S <= expires_ts <= now_ts + MAX_HORIZON_S:
+                err = f"expires_ts must be 2 h to 180 days ahead (now {_iso(now_ts)}, got {_iso(expires_ts) if expires_ts > 0 else expires_ts})"
+            if err is None and rules and not set(rules) <= RULE_KEYS:
+                err = f"rules keys must be '1'..'8', got {sorted(set(rules) - RULE_KEYS)}"
+            if err is None and rec_paper_id is not None and instrument != "option":
+                err = "rec_paper_id links option plans only (instrument='option')"
+            if err is not None:
+                b.miss("plan", "tradedesk", "invalid_input", err)
+                return b.build(None, ok=False)
+            if rec_paper_id is not None and await rt.store.rec_paper_get(rec_paper_id) is None:
+                b.miss("rec_paper_id", "tradedesk", "invalid_input", f"rec_paper #{rec_paper_id} not found")
+                return b.build(None, ok=False)
+            clean_tags = [t.strip() for t in tags or [] if t and t.strip()]
+            plan_id = await rt.store.plan_insert(
+                created_ts=now_ts,
+                exchange=exchange.lower(),
+                symbol=symbol,
+                instrument=instrument,
+                side=side,
+                entry_type=entry_type,
+                entry=entry,
+                stop=stop,
+                target=target,
+                expires_ts=expires_ts,
+                verdict=verdict,
+                thesis=thesis,
+                rules=rules or {},
+                tags=clean_tags,
+                rec_paper_id=rec_paper_id,
+            )
+            g = geometry(entry, stop, target)
+            if g["rr"] < 2:
+                b.warn(f"reward:risk {g['rr']:.2f} < 2 (owner's rule 5)")
+            failed = sorted(k for k, v in (rules or {}).items() if v == "fail")
+            if verdict == "enter" and failed:
+                b.warn(f"verdict 'enter' with failed rules {failed}")
+            if instrument == "option" and rec_paper_id is None:
+                b.warn("option plan without rec_paper_id: it will be scored on the underlying's stop / target, not on the option's P&L")
+            return b.build(
+                {
+                    "id": plan_id,
+                    "created": _iso(now_ts),
+                    "expires": _iso(expires_ts),
+                    "verdict": verdict,
+                    "rr": r(g["rr"], 3),
+                    "risk_pct": r(g["risk_pct"], 5),
+                    "reward_pct": r(g["reward_pct"], 5),
+                    "fee_r_round_trip": r(g["fee_r_round_trip"], 4),
+                }
+            )
+        except STORE_ERRORS as e:
+            return store_failed(b, e)
 
     @server.tool(
         annotations=READ_ONLY,
@@ -289,11 +356,14 @@ def register(server: MCPServer, rt: Runtime) -> None:
         limit: Annotated[int, Field(ge=1, le=500, description="Max rows.")] = 100,
     ) -> dict[str, Any]:
         b = Builder()
-        if not _store_guard(b, rt):
+        if not await store_ready(b, rt, "the journal"):
             return b.build(None, ok=False)
-        await rt.store.init()
-        rows = await rt.store.plan_list(status=status, verdict=verdict, tag=tag, symbol=symbol, limit=limit)
-        return b.build({"count": len(rows), "plans": [_view(p) for p in rows]})
+        try:
+            rows = await rt.store.plan_list(status=status, verdict=verdict, tag=tag, symbol=symbol, limit=limit)
+            plans = _listable(b, rows)
+            return b.build({"count": len(plans), "plans": plans})
+        except STORE_ERRORS as e:
+            return store_failed(b, e)
 
     @server.tool(
         annotations=READ_ONLY,  # resolving writes to the LOCAL store only — no orders
@@ -322,46 +392,52 @@ def register(server: MCPServer, rt: Runtime) -> None:
     async def plan_review() -> dict[str, Any]:
         b = Builder()
         b.warn(PLAN_WARNING)
-        if not _store_guard(b, rt):
+        if not await store_ready(b, rt, "the journal"):
             return b.build(None, ok=False)
-        await rt.store.init()
-        resolved_now = await review_open(rt, b)
-        now_ts = int(rt.now().timestamp())
-        open_now = await rt.store.plan_list(status="open", exclude_tag=SHADOW_TAG, limit=5000)
-        open_shadow = await rt.store.plan_list(status="open", tag=SHADOW_TAG, limit=100_000)
-        stale = [p["id"] for p in open_now if p["expires_ts"] + STALE_S < now_ts and p["rec_paper_id"] is None]
-        if stale:
-            b.warn(f"plans {stale} are past their horizon by more than a day and still open: candles missing for their market")
-        done = await rt.store.plan_list(status="resolved", exclude_tag=SHADOW_TAG, limit=5000)
-        shadow = await rt.store.plan_list(status="resolved", tag=SHADOW_TAG, limit=100_000)
-        summary = summarize_plans(done)
-        shadow_summary = summarize_plans(shadow)
+        try:
+            resolved_now = await review_open(rt, b)
+            now_ts = int(rt.now().timestamp())
+            open_now = await rt.store.plan_list(status="open", exclude_tag=SHADOW_TAG, limit=5000)
+            open_shadow = await rt.store.plan_list(status="open", tag=SHADOW_TAG, limit=100_000)
+            stale = [
+                p["id"]
+                for p in open_now
+                if (e := usable_expires(p["expires_ts"])) is not None and e + STALE_S < now_ts and p["rec_paper_id"] is None
+            ]
+            if stale:
+                b.warn(f"plans {stale} are past their horizon by more than a day and still open: candles missing for their market")
+            done = await rt.store.plan_list(status="resolved", exclude_tag=SHADOW_TAG, limit=5000)
+            shadow = await rt.store.plan_list(status="resolved", tag=SHADOW_TAG, limit=100_000)
+            summary = summarize_plans(done)
+            shadow_summary = summarize_plans(shadow)
 
-        def rnd(s: dict[str, Any]) -> dict[str, Any]:
-            out = dict(s)
-            for k in ("hit_rate", "win_rate", "mean_r", "median_r"):
-                out[k] = r(out[k], 3)
-            out["ci95_mean_r"] = [r(x, 3) for x in out["ci95_mean_r"]] if out["ci95_mean_r"] else None
-            return out
+            def rnd(s: dict[str, Any]) -> dict[str, Any]:
+                out = dict(s)
+                for k in ("hit_rate", "win_rate", "mean_r", "median_r"):
+                    out[k] = r(out[k], 3)
+                out["ci95_mean_r"] = [r(x, 3) for x in out["ci95_mean_r"]] if out["ci95_mean_r"] else None
+                return out
 
-        data = {
-            "resolved_now": resolved_now,
-            "open": [_view(p) for p in open_now],
-            "summary": {
-                "by_verdict": {v: rnd(s) for v, s in summary["by_verdict"].items()},
-                "by_tag": {t: {v: rnd(s) for v, s in g.items()} for t, g in summary["by_tag"].items()},
-            },
-            "recent_resolved": [_view(p) for p in done[:50]],
-            "demo_shadow": {
-                "open": len(open_shadow),
-                "by_verdict": {v: rnd(s) for v, s in shadow_summary["by_verdict"].items()},
-                "by_tag": {t: {v: rnd(s) for v, s in g.items()} for t, g in shadow_summary["by_tag"].items()},
-            },
-            "demo_option_pairs": paired_report(
-                await rt.store.demo_trade_list(limit=100_000), await rt.store.demo_option_list(limit=100_000)
-            ),
-        }
-        return b.build(data)
+            data = {
+                "resolved_now": resolved_now,
+                "open": [_view(p) for p in open_now],
+                "summary": {
+                    "by_verdict": {v: rnd(s) for v, s in summary["by_verdict"].items()},
+                    "by_tag": {t: {v: rnd(s) for v, s in g.items()} for t, g in summary["by_tag"].items()},
+                },
+                "recent_resolved": [_view(p) for p in done[:50]],
+                "demo_shadow": {
+                    "open": len(open_shadow),
+                    "by_verdict": {v: rnd(s) for v, s in shadow_summary["by_verdict"].items()},
+                    "by_tag": {t: {v: rnd(s) for v, s in g.items()} for t, g in shadow_summary["by_tag"].items()},
+                },
+                "demo_option_pairs": paired_report(
+                    await rt.store.demo_trade_list(limit=100_000), await rt.store.demo_option_list(limit=100_000)
+                ),
+            }
+            return b.build(data)
+        except STORE_ERRORS as e:
+            return store_failed(b, e)
 
     @server.tool(
         annotations=READ_ONLY,  # writes locally only
@@ -375,12 +451,14 @@ def register(server: MCPServer, rt: Runtime) -> None:
         journal_id: Annotated[int, Field(ge=1, description="Trade id from journal_add.")],
     ) -> dict[str, Any]:
         b = Builder()
-        if not _store_guard(b, rt):
+        if not await store_ready(b, rt, "the journal"):
             return b.build(None, ok=False)
-        await rt.store.init()
-        if await rt.store.plan_get(id) is None or await rt.store.journal_get(journal_id) is None:
-            b.miss("plan_link", "tradedesk", "invalid_input", f"plan #{id} or journal trade #{journal_id} not found")
-            return b.build(None, ok=False)
-        await rt.store.plan_link_journal(id, journal_id)
-        row = await rt.store.plan_get(id)
-        return b.build(_view(row) if row else None)
+        try:
+            if await rt.store.plan_get(id) is None or await rt.store.journal_get(journal_id) is None:
+                b.miss("plan_link", "tradedesk", "invalid_input", f"plan #{id} or journal trade #{journal_id} not found")
+                return b.build(None, ok=False)
+            await rt.store.plan_link_journal(id, journal_id)
+            row = await rt.store.plan_get(id)
+            return b.build(_view(row) if row else None)
+        except STORE_ERRORS as e:
+            return store_failed(b, e)

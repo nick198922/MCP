@@ -10,7 +10,7 @@ from ..analytics.orderbook import book_stats, walk_book
 from ..analytics.trades import summarise as summarise_trades
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, r, timeframe_seconds
+from ._util import READ_ONLY, json_num, r, timeframe_seconds
 
 EX = Annotated[str, Field(description="ccxt exchange id: binance, binanceusdm (USDT perps), bybit, okx, kraken, coinbase ...")]
 SYM = Annotated[str, Field(description="ccxt unified symbol. Spot 'BTC/USDT'; linear perp 'BTC/USDT:USDT'")]
@@ -27,18 +27,27 @@ def register(server: MCPServer, rt: Runtime) -> None:
         t = await b.guard("ticker", f"ccxt:{exchange}", rt.exchanges.ticker(exchange, symbol))
         if t is None:
             return b.build(None, ok=False)
+        if not isinstance(t, dict):
+            b.miss("ticker", f"ccxt:{exchange}", "data_unavailable", f"unexpected response type {type(t).__name__}")
+            return b.build(None, ok=False)
         data = {
             k: t.get(k) for k in ("symbol", "last", "bid", "ask", "high", "low", "baseVolume", "quoteVolume", "percentage", "timestamp")
         }
-        if t.get("bid") and t.get("ask"):
-            data["spread_bps"] = r((t["ask"] - t["bid"]) / ((t["ask"] + t["bid"]) / 2) * 1e4, 3)
+        bid, ask = json_num(t.get("bid")), json_num(t.get("ask"))  # ccxt hands out numbers: anything else is absent
+        if bid and ask:
+            data["spread_bps"] = r((ask - bid) / ((ask + bid) / 2) * 1e4, 3)
         return b.build(data)
 
     @server.tool(
         annotations=READ_ONLY,
         description=(
             "OHLCV candles (oldest first, columns: ts_ms, open, high, low, close, volume) plus summary: "
-            "period return and annualised close-to-close realised volatility. timeframe like 1m,5m,1h,4h,1d."
+            "period return and annualised close-to-close realised volatility. timeframe like 1m,5m,1h,4h,1d. "
+            "Units: ts_ms is Unix epoch milliseconds (UTC); prices (and first_close/last_close) are in the symbol's quote "
+            "currency; volume is passed through as the venue reports it via ccxt (not converted to USD). "
+            "summary.return_pct is in percent (first to last close; 1.5 = 1.5 %); summary.realized_vol_annualized is a "
+            "decimal (0.45 = 45 %): stdev of close-to-close log-returns scaled by sqrt(365 days / candle size), "
+            "present only with at least 10 closes."
         ),
     )
     async def market_ohlcv(
@@ -61,7 +70,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
             if rows is not None:
                 b.miss("ohlcv", f"ccxt:{exchange}", "data_unavailable", "empty result")
             return b.build(None, ok=False)
-        closes = [c[4] for c in rows if c[4]]
+        closes = [c[4] for c in rows if json_num(c[4])]  # a close that is not a number is skipped like a missing one
+        if not closes:
+            b.miss("ohlcv", f"ccxt:{exchange}", "data_unavailable", "no numeric close")
+            return b.build(None, ok=False)
         summary: dict[str, Any] = {"candles": len(rows), "first_close": closes[0], "last_close": closes[-1]}
         summary["return_pct"] = r((closes[-1] / closes[0] - 1) * 100, 3)
         if len(closes) >= 10:
@@ -95,7 +107,18 @@ def register(server: MCPServer, rt: Runtime) -> None:
         ob = await b.guard("orderbook", f"ccxt:{exchange}", rt.exchanges.order_book(exchange, symbol, depth))
         if ob is None:
             return b.build(None, ok=False)
-        bids, asks = ob.get("bids", []), ob.get("asks", [])
+        if not isinstance(ob, dict):
+            b.miss("orderbook", f"ccxt:{exchange}", "data_unavailable", f"unexpected response type {type(ob).__name__}")
+            return b.build(None, ok=False)
+        # a level whose price or size is not a number (ccxt leaves None for a field the venue omitted) is dropped
+        bids, asks = (
+            [
+                lv
+                for lv in ob.get(side) or []
+                if isinstance(lv, (list, tuple)) and len(lv) >= 2 and None not in (json_num(lv[0]), json_num(lv[1]))
+            ]
+            for side in ("bids", "asks")
+        )
         stats = book_stats(bids, asks)
         data: dict[str, Any] = {
             "symbol": symbol,
@@ -138,6 +161,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
             if not isinstance(t, dict):
                 continue
             bid, ask = t.get("bid"), t.get("ask")
+            nbid, nask = json_num(bid), json_num(ask)  # ccxt hands out numbers: anything else gives no spread
             row = {
                 "symbol": sym,
                 "last": t.get("last"),
@@ -150,10 +174,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 "percentage": t.get("percentage"),
                 "timestamp": t.get("timestamp"),
             }
-            if bid and ask:
-                row["spread_bps"] = r((ask - bid) / ((ask + bid) / 2) * 1e4, 3)
+            if nbid and nask:
+                row["spread_bps"] = r((nask - nbid) / ((nask + nbid) / 2) * 1e4, 3)
             rows.append(row)
-        rows.sort(key=lambda x: x.get("quoteVolume") or 0.0, reverse=True)
+        rows.sort(key=lambda x: json_num(x.get("quoteVolume")) or 0.0, reverse=True)
         with_pct = [x for x in rows if isinstance(x.get("percentage"), (int, float))]
         top_movers = sorted(with_pct, key=lambda x: abs(x["percentage"]), reverse=True)[:3]
         data = {

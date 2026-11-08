@@ -94,7 +94,15 @@ def market_rows(mid: str, asset: str = "BTC") -> list[dict[str, Any]]:
 
 ROWS = market_rows("m1") + market_rows("m2") + market_rows("m3", "ETH") + market_rows("m4", "ETH")
 OUTCOMES = [
-    {"market_id": m, "kind": "above", "strike": 70_000.0, "outcome_yes": 1, "binance_close_end": 71_000.0, "binance_close_next": 71_005.0}
+    {
+        "market_id": m,
+        "kind": "above",
+        "strike": 70_000.0,
+        "end_ts": END,
+        "outcome_yes": 1,
+        "binance_close_end": 71_000.0,
+        "binance_close_next": 71_005.0,
+    }
     for m in ("m1", "m2", "m3", "m4")
 ]
 FORBIDDEN_KEYS = {"mean", "lo", "hi", "ci", "pnl", "brier", "diff", "se", "won", "verdict", "ret_capital"}
@@ -293,6 +301,83 @@ def test_verdict_stress_delayed_survivors_and_thin_books():
     assert "перестановка міток активу всередині тижня входу" in text and "без 3 тижнів" in text
 
 
+EARLY_KEYS = ("primary_early_payout", "clv_close_early_payout")  # the descriptive second variants of the verdict
+
+
+def _early_h24_case() -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """(rows, outcomes without closed_ts, the same with closed_ts) of the item 47 test: m1 snapshot, closed after its
+    end; m2 no snapshot, resolved NO before +24 h; m3 no snapshot, unresolved, no close time; m4 snapshot, resolved YES
+    exactly at +24 h; m5 no snapshot, closed only after +24 h."""
+    window = range(T0 + 23 * H, T0 + 25 * H + 1)
+    rows = ROWS + market_rows("m5")
+    rows = [r for r in rows if not (r["market_id"] in ("m2", "m3", "m5") and r["ts"] in window)]
+    no = {"outcome_yes": 0, "binance_close_end": 69_000.0, "binance_close_next": 69_000.0}
+    base = [OUTCOMES[0], dict(OUTCOMES[1], **no), dict(OUTCOMES[2], outcome_yes=None), OUTCOMES[3], dict(OUTCOMES[0], market_id="m5")]
+    closed = {"m1": END + 2 * H, "m2": T0 + 20 * H, "m4": T0 + 24 * H, "m5": T0 + 30 * H}
+    return rows, base, [dict(o, closed_ts=closed.get(o["market_id"])) for o in base]
+
+
+def test_verdict_primary_in_both_variants_early_payout_is_descriptive():
+    """Item 47 (standing improvements): the primary CLV +24 h as registered (missing flagged) and, descriptively, with
+    the payout 1 / 0 for positions resolved by +24 h (Gamma closed_ts, schema 38). Synthetic: see :func:`_early_h24_case`."""
+    rows, base, outs = _early_h24_case()
+    f = final_metrics(rows, outs, verdict_ts(T0), T0)
+    e = f["primary_early_payout"]
+    assert e["sources"] == {"missing": 3, "ok": 2} and e["defined"] == 5
+    assert (e["early_resolved"], e["early_resolved_missing"], e["missing_left"], e["missing_without_close_ts"]) == (2, 1, 2, 1)
+    assert e["early_resolved_share"] == pytest.approx(0.4)
+    # first variant: m1, m4 at their snapshots; second: m1 as is, m2 paid 0, m4 paid 1 (snapshot replaced)
+    assert f["primary_clv_24h"]["n"] == 2 and f["primary_clv_24h"]["mean"] == pytest.approx(CLV)
+    assert e["clv_24h"]["n"] == 3 and e["clv_24h"]["mean"] == pytest.approx((CLV + (0 - 0.4329) + PNL) / 3)
+    # descriptive only: without close times every other field (the verdict included) is identical
+    g = final_metrics(rows, base, verdict_ts(T0), T0)
+    assert {k: v for k, v in f.items() if k not in EARLY_KEYS} == {k: v for k, v in g.items() if k not in EARLY_KEYS}
+    eg = g["primary_early_payout"]
+    assert (eg["early_resolved"], eg["missing_left"], eg["missing_without_close_ts"]) == (0, 3, 3)
+    assert eg["clv_24h"] == g["primary_clv_24h"]  # nothing resolved early: the two variants coincide
+    text = render_verdict(f)
+    assert "точки +24 год основної метрики: missing 3, ok 2; missing (3) у середнє не входять" in text
+    assert f"CLV +24 год, {report.EARLY_PAYOUT_LABEL}" in text and "описово, вердикт за ним не виноситься" in text
+    assert "розв'язано до точки +24 год: 2 з 5 визначених (40.0 %), з них без знімка +24 год 1; лишились missing 2" in text
+    assert text.index("основна, кластер") < text.index(report.EARLY_PAYOUT_LABEL) < text.index("CLV +6 год")
+
+
+def test_verdict_close_clv_in_both_variants_early_payout_is_descriptive():
+    """Item 48 (standing improvements): the closing CLV as registered (missing flagged) and, descriptively, with the
+    payout 1 / 0 as the closing value of positions resolved by end - 1 h (Gamma closed_ts, schema 38). Closing window
+    [end - 2 h, end - 1 h], 'late' from end - 6 h. Synthetic: m1 only a 'late' snapshot, closed after its end; m2 no
+    closing snapshot, resolved NO long before; m3 no closing snapshot, unresolved, no close time; m4 'close' snapshot,
+    resolved YES exactly at end - 1 h; m5 no closing snapshot, closed only after end - 1 h."""
+    late, closing = range(END - 6 * H, END - H + 1), range(END - 2 * H, END - H + 1)
+    rows = ROWS + market_rows("m5")
+    rows = [r for r in rows if not (r["market_id"] in ("m2", "m3", "m5") and r["ts"] in late)]
+    rows = [r for r in rows if not (r["market_id"] == "m1" and r["ts"] in closing)]
+    no = {"outcome_yes": 0, "binance_close_end": 69_000.0, "binance_close_next": 69_000.0}
+    base = [OUTCOMES[0], dict(OUTCOMES[1], **no), dict(OUTCOMES[2], outcome_yes=None), OUTCOMES[3], dict(OUTCOMES[0], market_id="m5")]
+    closed = {"m1": END + 2 * H, "m2": T0 + 20 * H, "m4": END - H, "m5": END - H + 60}
+    outs = [dict(o, closed_ts=closed.get(o["market_id"])) for o in base]
+    f = final_metrics(rows, outs, verdict_ts(T0), T0)
+    e = f["clv_close_early_payout"]
+    assert e["sources"] == {"close": 1, "late": 1, "missing": 3} and e["defined"] == 5
+    assert (e["early_resolved"], e["early_resolved_missing"], e["missing_left"], e["missing_without_close_ts"]) == (2, 1, 2, 1)
+    assert e["early_resolved_share"] == pytest.approx(0.4)
+    # first variant: m1 ('late'), m4 ('close') at their snapshots; second: m1 as is, m2 paid 0, m4 paid 1 (snapshot replaced)
+    assert f["clv_close"]["n"] == 2 and f["clv_close"]["mean"] == pytest.approx(CLV)
+    assert e["clv_close"]["n"] == 3 and e["clv_close"]["mean"] == pytest.approx((CLV + (0 - 0.4329) + PNL) / 3)
+    assert e["clv_close"]["n_clusters"] == f["clv_close"]["n_clusters"] == 1  # cluster = resolution week, as clv_close
+    # descriptive only: without close times every other field (the verdict included) is identical
+    g = final_metrics(rows, base, verdict_ts(T0), T0)
+    assert {k: v for k, v in f.items() if k not in EARLY_KEYS} == {k: v for k, v in g.items() if k not in EARLY_KEYS}
+    eg = g["clv_close_early_payout"]
+    assert (eg["early_resolved"], eg["missing_left"], eg["missing_without_close_ts"]) == (0, 3, 3)
+    assert eg["clv_close"] == g["clv_close"]  # nothing resolved early: the two variants coincide
+    text = render_verdict(f)
+    assert "точки закриття: close 1, late 1, missing 3; missing (3) у середнє не входять" in text
+    assert f"CLV до закриття, {report.EARLY_PAYOUT_LABEL}" in text
+    assert "розв'язано до кінця вікна закриття: 2 з 5 позицій (40.0 %), з них без точки закриття 1; лишились missing 2" in text
+    assert text.index("CLV до закриття (кластер") < text.index(f"CLV до закриття, {report.EARLY_PAYOUT_LABEL}") < text.index("P&L на акцію")
+
+
 # ----------------------------------------------------------------------------- variant v2-g beside v1
 
 G_UP = 0.0014  # Binance 0.14 % above the index (the H8 measurement)
@@ -375,7 +460,7 @@ async def _db(path: Path, all_rows: list[dict[str, Any]] | None = None, outcomes
         await s.aclose()
 
 
-async def test_runner_writes_the_weekly_report_and_refuses_the_early_verdict(tmp_path, capsys):
+async def test_runner_writes_the_weekly_report_and_refuses_the_early_verdict(tmp_path, monkeypatch, capsys):
     db = tmp_path / "db.sqlite"
     await _db(db)
     digest = hashlib.sha256(db.read_bytes()).hexdigest()
@@ -387,10 +472,13 @@ async def test_runner_writes_the_weekly_report_and_refuses_the_early_verdict(tmp
     assert "Варіант v2-g" in text and "позицій v2-g 0" in text and "без binance_last 4" in text
     for hidden in HIDDEN:
         assert hidden not in text, hidden
-    # --verdict today (wall clock before the registered T0 + 126 days): refused, nothing written
+    # --verdict a day before the registered T0 + 126 days: refused by the time gate, nothing written. The wall clock is
+    # pinned: on the real one the gate opens on 2027-02-23 and the run would be refused for another reason (the
+    # fixture's first snapshot is not the registered T0), so the test would pass without checking the gate.
+    monkeypatch.setattr(script.time, "time", lambda: float(verdict_ts(T0_TS) - DAY_S))
     out2 = tmp_path / "verdict.md"
     assert script.main(["--db", str(db), "--out", str(out2), "--verdict"]) == 2
-    assert not out2.exists() and "refused" in capsys.readouterr().err
+    assert not out2.exists() and "not before T0 + 126 days" in capsys.readouterr().err
     assert hashlib.sha256(db.read_bytes()).hexdigest() == digest  # the DB was only read
 
 
@@ -414,9 +502,34 @@ async def test_verdict_runs_only_on_the_wall_clock_and_the_registered_t0(tmp_pat
     code, text = script.build_verdict(str(db))
     assert code == 0 and "Вердикт: inconclusive" in text
     assert text.index("Вердикт: inconclusive") < text.index("Варіант v2-g")
+    assert report.EARLY_PAYOUT_LABEL in text and "розв'язано до точки +24 год: 0 з 4 визначених" in text
+    assert f"CLV до закриття, {report.EARLY_PAYOUT_LABEL}" in text and "розв'язано до кінця вікна закриття: 0 з 4 позицій" in text
     monkeypatch.setattr(script.time, "time", lambda: float(verdict_ts(T0) - 1))  # one second early
     code, text = script.build_verdict(str(db))
     assert code == 2 and "refused" in text and "Вердикт" not in text
+
+
+async def test_runner_carries_the_gamma_close_time_from_the_db_to_both_reports(tmp_path, monkeypatch):
+    """Review 2026-11-04 (pm-gap-verdict-both-variants, item 3): closed_ts must travel Store (schema 38) -> load() ->
+    report. Other tests give it to the pure functions in memory only, so a column lost or mistyped on the way would print
+    zero counts in the weekly 'missing' explanation and in the verdict's second variants without failing anything."""
+    rows, _, outs = _early_h24_case()
+    db = tmp_path / "db.sqlite"
+    await _db(db, rows, outs)
+    loaded = {o["market_id"]: o["closed_ts"] for o in script.load(str(db))[1]}
+    assert loaded == {o["market_id"]: o["closed_ts"] for o in outs} and all(type(v) is int for v in loaded.values() if v)
+    # weekly: of the 'missing' +24 h points (m2, m3, m5) only m2 closed before its point
+    code, text = script.build_weekly(str(db), END + 2 * H, None)
+    assert code == 0 and "серед missing +24 год ринок закрито до точки 1; серед missing до закриття — до вікна закриття 0" in text
+    for hidden in HIDDEN:
+        assert hidden not in text, hidden
+    # verdict: the DB path gives the same v1 text as the in-memory rows with the close times
+    now = verdict_ts(T0) + 60
+    monkeypatch.setattr(script.time, "time", lambda: float(now))
+    monkeypatch.setattr(script, "T0_TS", T0)
+    code, text = script.build_verdict(str(db))
+    assert code == 0 and render_verdict(final_metrics(rows, outs, now, T0)) in text
+    assert "розв'язано до точки +24 год: 2 з 5 визначених (40.0 %), з них без знімка +24 год 1; лишились missing 2" in text
 
 
 def test_runner_reads_an_old_schema_db_without_migrating_it(tmp_path):
@@ -651,6 +764,90 @@ def test_missing_reasons_at_plus_24h():
     assert e["sources"]["h24_missing_reasons"] == {"collector_gap": 0, "market_absent": 1, "no_mid": 1}  # v2-g: m1, m2 only
 
 
+def test_early_close_only_explains_the_missing_points():
+    """Q-20261103-1 (owner 1+3): the Gamma close time (pm_gap_outcome.closed_ts, schema 38) only splits the 'missing'
+    points already printed; no count of closed or early-closed positions (review 2026-11-04). m1 closed before its +24 h
+    point and dropped out there; m2 closed after the end (a normal close) and has no mid at +24 h; m3 closed before the
+    closing window and has no row in it."""
+    window = range(T0 + 23 * H, T0 + 25 * H + 1)
+    quotes = dict.fromkeys(("yes_bid", "yes_ask", "no_bid", "no_ask"))
+    rows = [r for r in ROWS if not (r["market_id"] == "m1" and r["ts"] in window)]
+    rows = [dict(r, **quotes) if r["market_id"] == "m2" and r["ts"] in window else r for r in rows]
+    rows = [r for r in rows if not (r["market_id"] == "m3" and r["ts"] >= END - 6 * H)]
+    now = END + 2 * H
+    closed = {"m1": T0 + 20 * H, "m2": END + 2 * H, "m3": END - 7 * H}
+    outs = [dict(o, closed_ts=closed.get(o["market_id"])) for o in OUTCOMES]
+    d = weekly_descriptive(rows, outs, now, T0)
+    assert d["sources"]["h24"] == {"missing": 2, "ok": 2} and d["sources"]["close"]["missing"] == 1
+    assert d["sources"]["early_close"] == {"h24_missing": 1, "close_missing": 1}
+    assert not (_keys(d) & FORBIDDEN_KEYS)
+    text = render_weekly(d)
+    assert "пояснення missing" in text and "ринок закрито до точки 1" in text and "до вікна закриття 1" in text
+    assert "записано для" not in text and "раніше за кінець" not in text
+    for hidden in HIDDEN:
+        assert hidden not in text, hidden
+    # rows read before schema 38 (no closed_ts key) or never closed: zero counts and no line
+    for o in (OUTCOMES, [dict(o, closed_ts=None) for o in OUTCOMES]):
+        e = weekly_descriptive(rows, o, now, T0)
+        assert e["sources"]["early_close"] == dict.fromkeys(report.EARLY_CLOSE_KEYS, 0)
+        assert "пояснення missing" not in render_weekly(e)
+
+
+def _short_market(mid: str, end: int) -> list[dict[str, Any]]:
+    """A BTC market ending ``end`` (< 26 h after T0: its +24 h point is 'n/a')."""
+    return [row(t, mid, end_ts=end, hours_to_end=(end - t) / H) for t in range(T0, end - H + 1, H)]
+
+
+def test_an_early_close_of_an_ok_or_na_position_changes_no_weekly_number():
+    """Review 2026-11-04, item 1: a touch market closes early exactly when its level is hit, so the close time of a
+    position that is not 'missing' (here m1: 'ok' at +24 h; m5: 'n/a') must not move any weekly number or line."""
+    end5 = T0 + 20 * H
+    rows = ROWS + _short_market("m5", end5)
+    now = END + 2 * H
+    o5 = dict(OUTCOMES[0], market_id="m5", end_ts=end5)
+    base = [*OUTCOMES, o5]
+    closed = {"m1": T0 + 30 * H, "m5": T0 + 10 * H}  # both before their end
+    early = [dict(o, closed_ts=closed.get(o["market_id"])) for o in base]
+    d0, d1 = weekly_descriptive(rows, base, now, T0), weekly_descriptive(rows, early, now, T0)
+    assert d1["sources"]["h24"] == {"n/a": 1, "ok": 4} and d1["sources"]["close"] == {"close": 5}  # the case is real
+    assert d1 == d0 and render_weekly(d1) == render_weekly(d0)
+
+
+def test_weekly_results_count_only_markets_whose_end_has_passed():
+    """Review 2026-11-04, item 2: a result recorded before the market's end (a touch market resolved when its level is
+    hit) is not counted in ``with_settled_result`` / ``results`` until the end has passed."""
+    end5 = T0 + 20 * H
+    rows = ROWS + _short_market("m5", end5)
+    now = T0 + 30 * H  # m5 has ended, m1..m4 (END) have not
+    o5 = dict(OUTCOMES[0], market_id="m5", end_ts=end5)
+    settled = [*OUTCOMES, o5]  # every row already has outcome_yes = 1
+    unsettled = [*(dict(o, outcome_yes=None) for o in OUTCOMES), o5]
+    d = weekly_descriptive(rows, settled, now, T0)
+    assert d["positions"]["n"] == 5 and d["positions"]["ended"] == 1
+    assert d["positions"]["with_settled_result"] == 1 and d["results"]["settled"] == 1
+    assert d == weekly_descriptive(rows, unsettled, now, T0)
+    # once the end has passed they count
+    assert weekly_descriptive(rows, settled, END + 2 * H, T0)["positions"]["with_settled_result"] == 5
+
+
+def test_gamma_closed_ts_on_real_touch_markets():
+    """Real Gamma answers (tests/fixtures/polymarket_touch_closed_markets_2026-11-04.json, week 2025-10-13..19): a
+    touch market closes when its level is hit, days before its end; another closed after the end."""
+    import json
+
+    from tradedesk.analytics.pm_calibration import iso_ts
+
+    m = json.loads((Path(__file__).parent / "fixtures" / "polymarket_touch_closed_markets_2026-11-04.json").read_text())["markets"]
+    early, late = m["632870"], m["632885"]
+    end = iso_ts(early["endDate"])
+    assert report.gamma_closed_ts(early) == 1760436193 < end  # 2025-10-14 10:03:13 UTC, end 2025-10-20 04:00 UTC
+    assert gamma_outcome(early) == 1
+    assert report.gamma_closed_ts(late) == 1760940441 > end and gamma_outcome(late) == 0  # 2025-10-20 06:07:21 UTC
+    assert report.gamma_closed_ts({**early, "closed": False}) is None  # an open market has no close time
+    assert report.gamma_closed_ts({**early, "closedTime": "garbage"}) is None
+    assert report.gamma_closed_ts({k: v for k, v in early.items() if k != "closedTime"}) is None
+
+
 def test_v1_verdict_cuts_every_v2g_row_to_entries_before_t0_v2g():
     # v2-g-only entries at / after T0V (the ETH bump): v1 does not see them, v2-g does
     bumped = _bump_eth(ROWS_G)
@@ -703,9 +900,12 @@ async def test_runner_v2g_verdict_gate_and_database_checks(tmp_path, monkeypatch
     db = tmp_path / "db.sqlite"
     await _db(db, ROWS_OWN, OUTCOMES_OWN)
     out = tmp_path / "v2g.md"
-    # today: refused, nothing written; flags that could move the gate are refused; one verdict mode per run
+    # a day before the registered gate: refused by the time gate, nothing written (the wall clock is pinned: on the real
+    # one the gate opens on 2027-03-07 and the run would be refused only for the fixture's first snapshot); flags that
+    # could move the gate are refused; one verdict mode per run
+    monkeypatch.setattr(script.time, "time", lambda: float(verdict_ts_v2g(T0_V2G_TS, T0_TS) - DAY_S))
     assert script.main(["--db", str(db), "--out", str(out), "--verdict-v2g"]) == 2
-    assert "refused" in capsys.readouterr().err and not out.exists()
+    assert "not before max(T0 v2-g + 126 days" in capsys.readouterr().err and not out.exists()
     for flags in (["--now", str(GATE_OWN)], ["--t0", "1"], ["--verdict"]):
         assert script.main(["--db", str(db), "--out", str(out), "--verdict-v2g", *flags]) == 2
         assert "refused" in capsys.readouterr().err and not out.exists()
@@ -729,3 +929,27 @@ async def test_runner_v2g_verdict_gate_and_database_checks(tmp_path, monkeypatch
     monkeypatch.setattr(script.time, "time", lambda: float(GATE_OWN + 60))
     code, text = script.build_verdict_v2g(str(db))
     assert code == 2 and "not the registered T0" in text
+
+
+async def test_runner_verdicts_default_to_their_own_files_not_the_weekly_report(tmp_path, monkeypatch):
+    """Review 2026-11-01 (pm-v2g-verdict-report, item 3): without --out both verdicts wrote pm_gap_REPORT.md, which the
+    Sunday timer rewrites a few days later. Each verdict now defaults to its own file beside the weekly one."""
+    db = tmp_path / "db.sqlite"
+    await _db(db, ROWS_OWN, OUTCOMES_OWN)
+    weekly = tmp_path / "paper" / "pm_gap_REPORT.md"
+    monkeypatch.setenv(script.ENV_OUT, str(weekly))
+    assert script.main(["--db", str(db), "--now", str(END + 2 * H)]) == 0
+    weekly_text = weekly.read_text(encoding="utf-8")
+    monkeypatch.setattr(script, "T0_TS", T0)
+    monkeypatch.setattr(script, "T0_V2G_TS", T0V)
+    monkeypatch.setattr(script.time, "time", lambda: float(GATE_OWN + 60))
+    assert script.main(["--db", str(db), "--verdict"]) == 0
+    assert script.main(["--db", str(db), "--verdict-v2g"]) == 0
+    assert weekly.read_text(encoding="utf-8") == weekly_text  # the weekly report is untouched
+    v1 = (weekly.parent / script.VERDICT_NAME).read_text(encoding="utf-8")
+    v2g = (weekly.parent / script.VERDICT_V2G_NAME).read_text(encoding="utf-8")
+    assert "Вердикт: " in v1 and "Вердикт v2-g: " in v2g and v1 != v2g
+    # an explicit --out still wins
+    out = tmp_path / "elsewhere.md"
+    assert script.main(["--db", str(db), "--out", str(out), "--verdict-v2g"]) == 0
+    assert out.read_text(encoding="utf-8") == v2g

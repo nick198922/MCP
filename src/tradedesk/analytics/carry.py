@@ -581,13 +581,15 @@ def spread_snapshot(
 ) -> dict[str, Any]:
     """Best cross-venue funding pair for one base: short where trailing funding is highest, long where lowest.
 
-    ``legs[venue] = {"entries": [{ts_ms, rate}], "rate", "interval_hours", "mark", "cap"}`` (current fields
-    optional). Spreads are trailing realized APRs (sums of actual payments). ``roundtrip_cost`` is both legs'
+    ``legs[venue] = {"entries": [{ts_ms, rate}], "rate", "interval_hours", "mark", "cap", "incomplete"}`` (current
+    fields and ``incomplete`` optional; ``incomplete`` True means the fetched funding history is known to be partial).
+    Spreads are trailing realized APRs (sums of actual payments). ``roundtrip_cost`` is both legs'
     taker fees plus ``slippage`` per leg, paid on entry and exit. Flags:
     ``price_mismatch`` (marks differ by more than ``mismatch_gap``: likely different instruments under one
     ticker), ``price_gap`` (more than ``max_entry_gap``), ``current_spread_reversed`` (current funding now favours
     the other direction), ``funding_at_cap`` (a leg's current rate within 5 % of its cap), ``short_history``,
-    ``interval_mismatch``. ``tradable_now`` = above entry and none of the price/reversal flags.
+    ``interval_mismatch``, ``incomplete_history`` (a paired leg's history is partial). ``tradable_now`` = above
+    entry and none of the price/reversal/incomplete-history flags.
     """
     fees = fees or {}
     venues: dict[str, dict[str, Any]] = {}
@@ -627,13 +629,15 @@ def spread_snapshot(
         flags.append("short_history")
     if s["interval_hours"] and lg["interval_hours"] and s["interval_hours"] != lg["interval_hours"]:
         flags.append("interval_mismatch")
+    if legs[short_v].get("incomplete") or legs[long_v].get("incomplete"):
+        flags.append("incomplete_history")
     if spread >= entry_apr:
         status = "above_entry"
     elif spread <= exit_apr:
         status = "below_exit"
     else:
         status = "between"
-    blocking = {"price_mismatch", "price_gap", "current_spread_reversed"}
+    blocking = {"price_mismatch", "price_gap", "current_spread_reversed", "incomplete_history"}
     return {
         "venues": venues,
         "pair": {

@@ -36,12 +36,38 @@ def test_render_groups_and_orders_owner_cards_first():
     assert "liquidation-flush-overshoot](ideas/" in text and "(verification/2026-10-14-liquidation-flush.md)" in text
 
 
+def test_marked_confirmed_card_goes_to_benchmark_group_not_candidates():
+    plain = rb.parse_card("# IDEA-20261020-p: P\n\nСтатус: confirmed — перевага після витрат\n", "IDEA-20261020-p")
+    # The marker sits past the 230-char verdict cut, as on the real alt-basket card.
+    long_line = "Статус: confirmed — частоти " + "x " * 150 + "(еталон, не для розробника)\n"
+    bench = rb.parse_card("# IDEA-20261023-b: B\n\n" + long_line, "IDEA-20261023-b")
+    assert not plain["benchmark"] and bench["benchmark"] and "не для розробника" not in bench["verdict"]
+    assert bench["status"] == "confirmed" and rb.card_progress(bench) == (1, 1)
+    other = rb.parse_card("# IDEA-20261020-r: R\n\nСтатус: rejected — не для розробника\n", "IDEA-20261020-r")
+    assert not other["benchmark"]
+    text = rb.render([plain, bench, other], date(2026, 11, 4))
+    names = [g for g, _ in rb.GROUPS]
+    assert names.index("📏 Еталон (не стратегія)") == names.index("✅ Підтверджено або побудовано") + 1
+    ok = text[text.index("## ✅ Підтверджено") : text.index("## 📏 Еталон")]
+    bm = text[text.index("## 📏 Еталон") : text.index("## ✗ Відхилено")]
+    assert "IDEA-20261020-p" in ok and "IDEA-20261023-b" not in ok
+    assert "IDEA-20261023-b" in bm and "IDEA-20261020-p" not in bm
+    assert "✅ Підтверджено або побудовано: **1**" in text and "📏 Еталон (не стратегія): **1**" in text
+    assert "📏 Еталон — `confirmed` з позначкою «не для розробника»" in text
+
+
 def test_repo_cards_all_parse():
     root = Path(__file__).resolve().parent.parent / "docs/ideas"
     cards = [rb.parse_card(p.read_text(encoding="utf-8"), p.stem) for p in root.glob("IDEA-*.md")]
     assert cards and all(
         c["status"] in {"proposed", "accepted", "forward", "testing", "confirmed", "rejected", "inconclusive", "built"} for c in cards
     )
+
+
+def test_repo_alt_basket_benchmark_card_is_a_benchmark():
+    p = Path(__file__).resolve().parent.parent / "docs/ideas/IDEA-20261023-alt-basket-leverage-benchmark.md"
+    c = rb.parse_card(p.read_text(encoding="utf-8"), p.stem)
+    assert c["status"] == "confirmed" and c["benchmark"] and rb.board_status(c) == "benchmark"
 
 
 def test_progress_checklist_and_fallback_by_status():

@@ -19,8 +19,7 @@ from ..analytics.options import build_chain, build_smile, group_by_expiry
 from ..analytics.radar import trailing_rv
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY
-from .journal import _store_guard
+from ._util import READ_ONLY, STORE_ERRORS, finite_float, store_failed, store_ready
 
 ASSETS = ("BTC", "ETH")
 RV_VENUE = "binance"  # spot daily closes of the RV30 model, as the radar's RV30
@@ -109,12 +108,15 @@ async def _rv30(rt: Runtime, b: Builder, asset: str) -> float | None:
     bars = await rb.guard(f"rv30:{asset}", f"ccxt:{RV_VENUE}", rt.exchanges.ohlcv(RV_VENUE, f"{asset}/USDT", "1d", RV_DAYS + 3))
     today_ms = int(rt.now().timestamp()) // 86400 * 86_400_000
     closes = []
+    bad = 0
     for x in bars or []:
-        try:
+        try:  # a time or close that is NaN / inf / a 300+-digit integer (OverflowError) drops the bar, counted below
             if int(x[0]) < today_ms:
-                closes.append((int(x[0]), float(x[4])))
-        except (TypeError, ValueError, IndexError):
-            continue
+                closes.append((int(x[0]), finite_float(x[4])))
+        except (TypeError, ValueError, IndexError, OverflowError):
+            bad += 1
+    if bad:
+        b.warn(f"rv30:{asset}: ccxt:{RV_VENUE} {asset}/USDT 1d: {bad} bar(s) with a time or close that is not a finite number dropped")
     rv, why = (
         trailing_rv(closes, rt.now(), RV_DAYS)
         if closes
@@ -154,10 +156,12 @@ async def settle_due(rt: Runtime, b: Builder) -> int:
         prices: dict[str, float] = {}
         feed = got.get("data") if isinstance(got, dict) else None
         for d in feed or []:
+            # a NaN / inf / non-numeric / 300+-digit delivery price would score the forecast on a non-number for good
+            # (or raise): such a row is reported and the forecast stays open
             try:
                 if d.get("delivery_price"):
-                    prices[str(d.get("date"))] = float(d["delivery_price"])
-            except (TypeError, ValueError, AttributeError):
+                    prices[str(d.get("date"))] = finite_float(d["delivery_price"])
+            except (TypeError, ValueError, AttributeError, OverflowError):
                 b.miss(f"delivery_prices:{asset}", "deribit", "parse_error", f"bad delivery row {str(d)[:80]}")
         missing_days: set[str] = set()
         for x in (x for x in due if x["asset"] == asset):
@@ -207,34 +211,36 @@ def register(server: MCPServer, rt: Runtime) -> None:
     ) -> dict[str, Any]:
         b = Builder()
         b.warn(FORECAST_WARNING)
-        if not _store_guard(b, rt):
+        if not await store_ready(b, rt, "the journal"):
             return b.build(None, ok=False)
-        await rt.store.init()
-        settled_now = await settle_due(rt, b)
-        rows = await rt.store.forecast_list(asset=asset, limit=100_000)
-        settled = [x for x in rows if x["status"] == "settled"]
-        rv = as_model(settled, "rv30")
-        latest: dict[str, list[dict[str, Any]]] = {}
-        order = {k: i for i, k in enumerate(KINDS)}
-        for a in sorted({x["asset"] for x in rows}):
-            mine = [x for x in rows if x["asset"] == a]
-            day = max(x["day"] for x in mine)
-            latest[a] = [_view(x) for x in sorted((x for x in mine if x["day"] == day), key=lambda x: order.get(x["kind"], 99))]
-        if not rows:
-            b.warn("the forecast log is empty: enable the collector job `forecast_log` (TRADEDESK_PAPER_FORECAST_LOG_ENABLED=1)")
-        data: dict[str, Any] = {
-            "label": "risk_neutral",
-            "settled_this_call": settled_now,
-            "n_open": sum(1 for x in rows if x["status"] == "open"),
-            "n_settled": len(settled),
-            "latest": latest,
-            "scores": _rounded({"all": score(settled), "by_kind": {k: score([x for x in settled if x["kind"] == k]) for k in KINDS}}),
-            "scores_rv30": _rounded({"all": score(rv), "by_kind": {k: score([x for x in rv if x["kind"] == k]) for k in KINDS}}),
-            "comparison": _rounded(
-                {"all": compare(settled), "by_kind": {k: compare([x for x in settled if x["kind"] == k]) for k in KINDS}}, 5
-            ),
-            "weekly": _rounded(weekly(settled)[-weeks:]),
-        }
-        if include_settled:
-            data["settled"] = [_view(x) for x in settled[:200]]
-        return b.build(data)
+        try:
+            settled_now = await settle_due(rt, b)
+            rows = await rt.store.forecast_list(asset=asset, limit=100_000)
+            settled = [x for x in rows if x["status"] == "settled"]
+            rv = as_model(settled, "rv30")
+            latest: dict[str, list[dict[str, Any]]] = {}
+            order = {k: i for i, k in enumerate(KINDS)}
+            for a in sorted({x["asset"] for x in rows}):
+                mine = [x for x in rows if x["asset"] == a]
+                day = max(x["day"] for x in mine)
+                latest[a] = [_view(x) for x in sorted((x for x in mine if x["day"] == day), key=lambda x: order.get(x["kind"], 99))]
+            if not rows:
+                b.warn("the forecast log is empty: enable the collector job `forecast_log` (TRADEDESK_PAPER_FORECAST_LOG_ENABLED=1)")
+            data: dict[str, Any] = {
+                "label": "risk_neutral",
+                "settled_this_call": settled_now,
+                "n_open": sum(1 for x in rows if x["status"] == "open"),
+                "n_settled": len(settled),
+                "latest": latest,
+                "scores": _rounded({"all": score(settled), "by_kind": {k: score([x for x in settled if x["kind"] == k]) for k in KINDS}}),
+                "scores_rv30": _rounded({"all": score(rv), "by_kind": {k: score([x for x in rv if x["kind"] == k]) for k in KINDS}}),
+                "comparison": _rounded(
+                    {"all": compare(settled), "by_kind": {k: compare([x for x in settled if x["kind"] == k]) for k in KINDS}}, 5
+                ),
+                "weekly": _rounded(weekly(settled)[-weeks:]),
+            }
+            if include_settled:
+                data["settled"] = [_view(x) for x in settled[:200]]
+            return b.build(data)
+        except STORE_ERRORS as e:
+            return store_failed(b, e)

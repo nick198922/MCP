@@ -345,6 +345,21 @@ async def test_tool_delivery_not_published_yet(tmp_path):
         await rt.aclose()
 
 
+@pytest.mark.parametrize("bad", ["NaN", "-Infinity", "abc", 10**400])
+async def test_tool_non_finite_delivery_price_keeps_rows_open(tmp_path, bad):
+    # a NaN / inf delivery price used to score every forecast as a miss for good, a 300+-digit one raised out of the tool
+    rt, _ = _rt(tmp_path, delivery=bad)
+    try:
+        assert await collect_forecast_log(rt) == 8
+        rt.now = lambda: datetime(2026, 10, 31, 12, tzinfo=UTC)
+        srv, _ = build_server(rt)
+        out = await _call(srv, "forecast_log_status")
+        assert out["ok"] and out["data"]["n_open"] == 8 and out["data"]["settled_this_call"] == 0
+        assert {"delivery_prices:BTC", "delivery_prices:ETH"} <= {m["field"] for m in out["missing"] if m["reason"] == "parse_error"}
+    finally:
+        await rt.aclose()
+
+
 async def test_job_raises_when_the_book_fails(tmp_path):
     rt, _ = _rt(tmp_path, status=500)
     try:

@@ -9,6 +9,7 @@ import sqlite3
 from collections import Counter
 from datetime import UTC, date, datetime
 from pathlib import Path
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -38,6 +39,7 @@ from tradedesk.collector.pm_gap import collect_pm_gap, resolve_outcomes, scan_ga
 from tradedesk.collector.scheduler import build_default_scheduler
 from tradedesk.config import Settings
 from tradedesk.core.envelope import Builder
+from tradedesk.core.ratelimit import TokenBucket
 from tradedesk.runtime import Runtime
 from tradedesk.server import build_server
 from tradedesk.store import SCHEMA_VERSION, Store
@@ -202,13 +204,12 @@ def _transports(state, gamma_status: int = 200, clob_status: int = 200, events=N
 
 
 async def _rt(state, now: datetime = NOW, ex=FakeEx, **kw) -> Runtime:
-    rt = Runtime(
-        Settings(
-            http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=":memory:", collector_enabled=True, **kw.pop("settings", {})
-        ),
-        transports=_transports(state, **kw),
-        exchange_factory=ex,
+    settings = Settings(
+        http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=":memory:", collector_enabled=True, **kw.pop("settings", {})
     )
+    # Production rate limits (Polymarket 5 req/s, Deribit 8 req/s) only paced the fake books in real time: up to ~3 s a test.
+    with patch("tradedesk.core.http.TokenBucket", lambda rate, burst: TokenBucket(1_000.0, 1_000)):
+        rt = Runtime(settings, transports=_transports(state, **kw), exchange_factory=ex)
     rt.now = lambda: now
     await rt.store.init()
     return rt
@@ -423,6 +424,38 @@ async def test_scan_reads_markets_books_and_options(state):
         for mid in ("m2", "m2b", "m2c", "m2d", "m2w", "m2e"):
             assert rows[mid]["model_prob"] is None and rows[mid]["model_note"] == "pre_window"
             assert rows[mid]["window_start"] == START_TOUCH and rows[mid]["path_high"] is None
+    finally:
+        await rt.aclose()
+
+
+def test_non_finite_gamma_and_bar_fields_never_raise():
+    ev = _events()
+    m1, m3 = ev[0]["markets"][0], ev[2]["markets"][0]
+    for bad in ("abc", "NaN", "Infinity", 10**400):
+        assert classify_open_market(ev[2], {**m3, "feeSchedule": {"rate": bad, "exponent": 1}}, NOW_TS, 30)["status"] == "fee"
+        assert classify_open_market(ev[2], {**m3, "feeSchedule": {"rate": 0.07, "exponent": bad}}, NOW_TS, 30)["status"] == "fee"
+        assert classify_open_market(ev[0], {**m1, "volumeNum": bad}, NOW_TS, 30)["volume_usd"] == 0.0
+    # fees off: an unusable schedule is not read
+    assert classify_open_market(ev[0], {**m1, "feeSchedule": {"rate": "abc"}}, NOW_TS, 30)["status"] == "ok"
+    assert classify_open_market(ev[0], {**m1, "outcomePrices": json.dumps([10**400, 0])}, NOW_TS, 30)["status"] == "ok"
+    rows = [[10**400, 1, 2, 1, 1], [float("nan"), 1, 2, 1, 1], *_bars(START_TOUCH, NOW_IN_TS)]
+    assert path_extremes(rows, START_TOUCH) == path_extremes(_bars(START_TOUCH, NOW_IN_TS), START_TOUCH)
+    book = {"bids": [{"price": 10**400, "size": "5"}, {"price": "0.4", "size": "5"}], "asks": [{"price": "0.6", "size": 10**400}]}
+    tob = top_of_book(book)
+    assert tob["bid"] == 0.4 and tob["ask"] is None
+
+
+async def test_scan_leaves_out_a_market_with_an_unusable_fee_and_says_so(state):
+    # Gamma sending a non-numeric fee rate used to raise ValueError out of scan_gaps (and the pm_gap job)
+    ev = _events()
+    ev[2]["markets"][0]["feeSchedule"] = {"rate": "abc", "exponent": 1}
+    ev[0]["markets"][0]["volumeNum"] = 10**400
+    rt = await _rt(state, events=ev)
+    try:
+        b = Builder()
+        rows = {r["market_id"]: r for r in await scan_gaps(rt, b, max_days=30)}
+        assert "m3" not in rows and "m1" in rows
+        assert "markets left out" in b.warnings[-1] and "fee=1" in b.warnings[-1]
     finally:
         await rt.aclose()
 
@@ -984,6 +1017,164 @@ async def test_outcome_queue_puts_untried_and_recent_markets_before_stuck_ones(s
         ]
     finally:
         await rt.aclose()
+
+
+# ----------------------------------------------------------------------------- early closes (Q-20261103-1, schema 38)
+
+# Real Gamma /markets/{id} answers of 2026-11-03: a weekly touch market closed when its level was hit (632870) and one
+# closed after its end (632885).
+REAL_TOUCH = json.loads((FIXTURES / "polymarket_touch_closed_markets_2026-11-04.json").read_text())["markets"]
+
+
+def _gamma_listing(events: list[dict], markets: dict, calls: Counter, down: set[str] | None = None):
+    """Gamma answering the event listing with ``events`` and /markets/{id} from ``markets`` (502 for ids in ``down``)."""
+
+    def gamma(req: httpx.Request) -> httpx.Response:
+        if req.url.path == "/events/keyset":
+            return httpx.Response(200, json={"events": events, "next_cursor": None})
+        mid = req.url.path.rsplit("/", 1)[-1]
+        calls[mid] += 1
+        if down and mid in down:
+            return httpx.Response(502, text="down")
+        return httpx.Response(200, json=markets[mid])
+
+    return gamma
+
+
+def _wide(monkeypatch) -> None:
+    import tradedesk.collector.pm_gap as mod
+
+    real = mod.scan_gaps
+
+    async def wide(rt_, b, *, max_days=14.0):
+        return await real(rt_, b, max_days=30.0)
+
+    monkeypatch.setattr(mod, "scan_gaps", wide)
+
+
+def _drop(events: list[dict], *mids: str) -> None:
+    for ev in events:
+        ev["markets"] = [m for m in ev["markets"] if m["id"] not in mids]
+
+
+async def test_job_records_the_close_of_a_market_that_left_the_list_early(state, monkeypatch):
+    """m2b vanishes from the listing (Gamma: closed, the real early-closed touch answer); m2e vanishes too but Gamma
+    says it is open (e.g. no book): nothing stored for it, asked again next run; a recorded market is not asked again."""
+    _wide(monkeypatch)
+    events, calls = _events(), Counter()
+    markets = {
+        "m2b": {**REAL_TOUCH["632870"], "id": "m2b"},
+        "m2e": {**_events()[1]["markets"][5]},  # the open market as Gamma lists it
+    }
+    rt = await _rt(state, gamma=_gamma_listing(events, markets, calls))
+    try:
+        assert await collect_pm_gap(rt) == 8
+        assert calls == Counter() and await rt.store.table_count("pm_gap_outcome") == 0  # nothing left the list
+        _drop(events, "m2b", "m2e")
+        t1 = NOW_TS + 3600
+        rt.now = lambda: datetime.fromtimestamp(t1, UTC)
+        assert await collect_pm_gap(rt) == 6
+        assert calls == Counter({"m2b": 1, "m2e": 1})
+        cur = await rt.store.conn.execute("SELECT * FROM pm_gap_outcome")
+        out = {r["market_id"]: dict(r) for r in await cur.fetchall()}
+        assert set(out) == {"m2b"}
+        o = out["m2b"]
+        assert (o["gone_ts"], o["closed_ts"], o["outcome_yes"]) == (t1, 1760436193, 1)  # closedTime 2025-10-14 10:03:13 UTC
+        assert o["outcome_prices"] == REAL_TOUCH["632870"]["outcomePrices"] and o["kind"] == "touch" and o["end_ts"] == END_TOUCH
+        rt.now = lambda: datetime.fromtimestamp(t1 + 3600, UTC)
+        assert await collect_pm_gap(rt) == 6
+        assert calls == Counter({"m2b": 1, "m2e": 2})  # the open one is asked again, the recorded one is not
+        # after the 6 h look-back the open one is no longer asked
+        rt.now = lambda: datetime.fromtimestamp(NOW_TS + 8 * 3600, UTC)
+        assert await collect_pm_gap(rt) == 6
+        assert calls["m2e"] == 2
+    finally:
+        await rt.aclose()
+
+
+async def test_early_close_check_survives_gamma_failures_and_skips_incomplete_listings(state, monkeypatch):
+    from tradedesk.collector.pm_gap import record_closures
+
+    _wide(monkeypatch)
+    events, calls, down = _events(), Counter(), {"m2b"}
+    listing = _gamma_listing(events, {"m2b": {**REAL_TOUCH["632870"], "id": "m2b"}}, calls, down=down)
+    touch_tag_down = {"on": False}
+
+    def gamma(req: httpx.Request) -> httpx.Response:
+        if touch_tag_down["on"] and req.url.params.get("tag_slug") == "hit-price":
+            return httpx.Response(502, text="down")
+        return listing(req)
+
+    rt = await _rt(state, gamma=gamma)
+    try:
+        assert await collect_pm_gap(rt) == 8
+        _drop(events, "m2b")
+        t1 = NOW_TS + 3600
+        rt.now = lambda: datetime.fromtimestamp(t1, UTC)
+        assert await collect_pm_gap(rt) == 7  # Gamma /markets down: the job does not fail
+        assert calls["m2b"] >= 1 and await rt.store.table_count("pm_gap_outcome") == 0  # asked (with the Http retry)
+        b = Builder()
+        assert await record_closures(rt, b, t1) == {"checked": 1, "closed": 0, "open": 0}
+        assert [m.field for m in b.missing] == ["closed:m2b"]  # the failure is reported in missing, not raised
+        # Gamma back: the next run inside the look-back records it
+        down.clear()
+        rt.now = lambda: datetime.fromtimestamp(t1 + 3600, UTC)
+        assert await collect_pm_gap(rt) == 7
+        cur = await rt.store.conn.execute("SELECT gone_ts, closed_ts FROM pm_gap_outcome WHERE market_id = 'm2b'")
+        assert tuple(await cur.fetchone()) == (t1 + 3600, 1760436193)
+        # an incomplete listing (one tag down): every unlisted market would look gone, so nothing is asked
+        before = sum(calls.values())
+        touch_tag_down["on"] = True
+        rt.now = lambda: datetime.fromtimestamp(t1 + 7200, UTC)
+        _drop(events, "m2c")  # left the list during the partial run: still not asked
+        assert await collect_pm_gap(rt) == 6  # (the fake lists every event under the other tag too)
+        assert sum(calls.values()) == before
+    finally:
+        await rt.aclose()
+
+
+async def test_outcome_fetch_stores_the_gamma_close_time(state):
+    gamma = _gamma_listing([], REAL_GAMMA, Counter())
+    rt = await _rt(state, now=datetime.fromtimestamp(END_FEB23 + 3 * 3600, UTC), ex=minute_ex({}, []), gamma=gamma)
+    try:
+        await rt.store.insert_pm_gap(END_FEB23 - 4 * 3600, [_snap("1385959", "above", 64_000.0, END_FEB23)])
+        await resolve_outcomes(rt, Builder())
+        cur = await rt.store.conn.execute("SELECT closed_ts, gone_ts FROM pm_gap_outcome WHERE market_id = '1385959'")
+        # closedTime "2026-02-23 19:22:50+00"; a market that reached its end is not 'gone early'
+        assert tuple(await cur.fetchone()) == (int(datetime(2026, 2, 23, 19, 22, 50, tzinfo=UTC).timestamp()), None)
+    finally:
+        await rt.aclose()
+
+
+async def test_migration_38_adds_close_columns_and_keeps_them_once_stored(tmp_path):
+    path = tmp_path / "v37.sqlite"
+    con = sqlite3.connect(path)
+    con.execute("PRAGMA synchronous=OFF")
+    for v in sorted(MIGRATIONS):
+        if v <= 37:
+            for stmt in MIGRATIONS[v]:
+                con.execute(stmt)
+    con.execute("PRAGMA user_version = 37")
+    con.execute(
+        "INSERT INTO pm_gap_outcome (market_id, asset, kind, strike, end_ts, outcome_yes, attempts, checked_ts)"
+        " VALUES ('old', 'BTC', 'touch', 1, 7300, 1, 1, 7400)"
+    )
+    con.commit()
+    con.close()
+    s = Store(path)
+    await s.init()
+    try:
+        assert await s.version() == SCHEMA_VERSION >= 38
+        cur = await s.conn.execute("SELECT outcome_yes, closed_ts, gone_ts FROM pm_gap_outcome WHERE market_id = 'old'")
+        assert tuple(await cur.fetchone()) == (1, None, None)  # forward only: history keeps NULL
+        rec = {"market_id": "new", "asset": "BTC", "kind": "touch", "strike": 1.0, "end_ts": 9000}
+        await s.upsert_pm_gap_outcome({**rec, "closed_ts": 100, "gone_ts": 200}, 200)
+        await s.upsert_pm_gap_outcome({**rec, "closed_ts": 999, "gone_ts": 999}, 300)  # a later read never rewrites them
+        await s.upsert_pm_gap_outcome(rec, 400)
+        cur = await s.conn.execute("SELECT closed_ts, gone_ts, attempts FROM pm_gap_outcome WHERE market_id = 'new'")
+        assert tuple(await cur.fetchone()) == (100, 200, 3)
+    finally:
+        await s.aclose()
 
 
 async def test_a_failed_outcome_fetch_never_fails_the_snapshot(state, monkeypatch):

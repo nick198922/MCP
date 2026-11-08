@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import argparse
 import math
-import resource
 import sys
 import time
 import warnings
@@ -65,7 +64,7 @@ def say(s: str = "") -> None:
 
 
 def rss() -> str:
-    return f"rss {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.0f} MB"
+    return f"rss {cmn.rss_mb():.0f} MB"
 
 
 def week(day: int) -> str:

@@ -29,7 +29,7 @@ from ..analytics.options import (
 from ..analytics.vrp import align_daily, vrp_summary
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, find_expiry, r
+from ._util import READ_ONLY, find_expiry, parsed_rows, r
 
 CUR = Annotated[Literal["BTC", "ETH"], Field(description="Deribit inverse-option currency")]
 EXPIRY = Annotated[str, Field(description="Expiry as 26MAR27 or 2027-03-26 (08:00 UTC). Use deribit_vol_surface to list expiries.")]
@@ -46,6 +46,9 @@ VRP_WARNING = (
     "IV, so the straddle here is priced at DVOL minus `entry_cost_vol`. Daily closes only: intraday gamma, margin, "
     "early hedging slippage and Deribit's 08:00 UTC settlement are not modelled."
 )
+# Forwards closer than this (relative) count as one forward: far below distance_pct's 0.01-point rounding,
+# so float noise in Deribit's underlying_price does not trigger the reference-forward caveat.
+FORWARD_REL_TOL = 1e-6
 
 
 def _in_bucket(p: float | None, lo: float, hi: float) -> bool:
@@ -377,8 +380,11 @@ def register(server: MCPServer, rt: Runtime) -> None:
     @server.tool(
         annotations=READ_ONLY,
         description=(
-            "Open-interest walls on Deribit BTC/ETH options: per-strike call/put OI (in contracts, underlying units) and USD notional at the forward, "
-            "sorted largest-first. Returns top strikes overall and separately the biggest call walls (potential resistance) and put walls (potential support). "
+            "Open-interest walls on Deribit BTC/ETH options: per-strike call/put OI (in contracts, underlying units) and USD notional "
+            "(each option's OI times its own expiry's forward), sorted largest-first. Returns top strikes overall and separately the biggest "
+            "call walls (potential resistance) and put walls (potential support). Without `expiry` all expiries are summed per strike, and the "
+            "band (`width_pct`), `distance_pct` and the returned `forward` use one reference forward (the first option in Deribit's book "
+            "summary, whose expiry is not guaranteed to be the nearest); pass `expiry` for exact distances. "
             "Walls are a positioning snapshot, not a forecast; big OI can be dealer-hedged or vice versa."
         ),
     )
@@ -412,6 +418,13 @@ def register(server: MCPServer, rt: Runtime) -> None:
         if F is None:
             b.miss("forward", "tradedesk", "data_unavailable", "no priced options for this scope")
             return b.build(None, ok=False)
+        # warn only when the summed expiries really have different forwards (one shared forward = exact distances)
+        fwds = [x.forward for x in rows]
+        if not expiry and not math.isclose(min(fwds), max(fwds), rel_tol=FORWARD_REL_TOL):
+            b.warn(
+                "all expiries summed: notional_usd uses each option's own forward, but the strike band, distance_pct and "
+                "`forward` use one reference forward; pass `expiry` for exact distances"
+            )
         banded = [x for x in scope if abs(math.log(x.strike / F)) <= width_pct / 100]
         agg = oi_by_strike(banded)
         if not agg:
@@ -456,7 +469,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
         description=(
             "Risk-neutral probability implied by Deribit options for a price `level` at an expiry. kind='above'/'below': P(price beyond level AT "
             "expiry) from the smile slope (Breeden-Litzenberger, skew-adjusted). kind='touch': P(price touches level at ANY time before expiry), "
-            "using the IV at that strike. These are market-implied (risk-neutral) odds, not real-world forecasts; options only cover quoted strikes."
+            "using the IV at that strike. These are market-implied (risk-neutral) odds, not real-world forecasts; options only cover quoted strikes. "
+            "Units: probability is a fraction 0-1 (0.25 = 25 %); level, forward and one_sigma_range are in USD; iv_at_level and "
+            "atm_iv are annualised decimals (0.45 = 45 %); days are calendar days to the 08:00 UTC expiry, T = days / 365; "
+            "one_sigma_range = forward × exp(±atm_iv × sqrt(T))."
         ),
     )
     async def prob_from_options(
@@ -533,7 +549,12 @@ def register(server: MCPServer, rt: Runtime) -> None:
             if data is not None:
                 b.miss("dvol", "deribit", "data_unavailable", "empty series")
             return b.build(None, ok=False)
-        series = [{"ts": int(x[0]), "open": float(x[1]), "high": float(x[2]), "low": float(x[3]), "close": float(x[4])} for x in rows]
+        series = parsed_rows(
+            rows, lambda x: {"ts": int(x[0]), "open": float(x[1]), "high": float(x[2]), "low": float(x[3]), "close": float(x[4])}
+        )
+        if not series:
+            b.miss("dvol", "deribit", "data_unavailable", "no well-formed rows in the series")
+            return b.build(None, ok=False)
         series.sort(key=lambda s: s["ts"])
         closes = [s["close"] for s in series]
         n = len(closes)
@@ -599,16 +620,18 @@ def register(server: MCPServer, rt: Runtime) -> None:
             page = await b.guard("dvol", "deribit", rt.deribit.volatility_index_data(currency, start_ms, end, 86400))
             if not page:
                 break
-            for x in page.get("data") or []:
-                iv[int(x[0])] = float(x[4]) / 100.0
+            iv.update(parsed_rows(page.get("data"), lambda x: (int(x[0]), float(x[4]) / 100.0)))
             cont = page.get("continuation")
-            if not cont or int(cont) <= start_ms or int(cont) >= end:
+            nxt = parsed_rows([cont] if cont and not isinstance(cont, bool) else [], int)
+            if cont and not nxt:  # a wrong-type continuation ends the paging; the IV series may be cut short
+                b.warn("DVOL paging stopped on a malformed continuation; the IV series may not cover the whole window")
+            if not nxt or not nxt[0] or nxt[0] <= start_ms or nxt[0] >= end:
                 break
-            end = int(cont)
+            end = nxt[0]
         bars = await b.guard(
             f"ohlcv:{price_venue}", f"ccxt:{price_venue}", rt.exchanges.ohlcv(price_venue, f"{currency}/USDT", "1d", history_days)
         )
-        prices = [(int(x[0]), float(x[4])) for x in (bars or []) if isinstance(x, (list, tuple)) and len(x) >= 5]
+        prices = parsed_rows([x for x in (bars or []) if isinstance(x, (list, tuple)) and len(x) >= 5], lambda x: (int(x[0]), float(x[4])))
         if not iv or not prices:
             if not iv and not any(m.field == "dvol" for m in b.missing):
                 b.miss("dvol", "deribit", "data_unavailable", "empty DVOL series")
@@ -838,7 +861,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 amount = float(t.get("amount") or 0)
                 price = float(t.get("price") or 0)
                 index = float(t.get("index_price") or 0)
-            except (TypeError, ValueError):
+                ts = int(t["timestamp"]) if t.get("timestamp") is not None else None
+            except (TypeError, ValueError, OverflowError):  # OverflowError: int() of a JSON Infinity
                 continue
             if amount <= 0 or price <= 0:
                 continue
@@ -857,7 +881,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 continue
             rows.append(
                 {
-                    "ts": int(t["timestamp"]) if t.get("timestamp") is not None else None,
+                    "ts": ts,
                     "instrument": t.get("instrument_name"),
                     "direction": direction,
                     "amount": amount,

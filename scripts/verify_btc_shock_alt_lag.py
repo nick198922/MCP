@@ -27,7 +27,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import resource
 import sys
 import time
 from collections import Counter, defaultdict
@@ -37,6 +36,7 @@ from typing import Any
 
 import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
 import numpy as np
+from common_helpers import rss_mb
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import verify_liquidation_flush as vlf  # noqa: E402  (shared kline cache helpers of the liquidation-flush study)
@@ -92,10 +92,6 @@ CTRL_OFFSETS = (-14 * DAY_MS, -7 * DAY_MS, 7 * DAY_MS, 14 * DAY_MS)
 SHIFT_OFFSETS = (-DAY_MS, DAY_MS)
 CTRL_MAX_ABS_R15 = 0.006
 KEYS = [f"e{e}_{h}" for e in ENTRIES for h in HORIZONS]
-
-
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 
 
 def to_grid(a: np.ndarray) -> dict[str, np.ndarray]:

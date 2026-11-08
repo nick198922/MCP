@@ -30,6 +30,9 @@ OPS = {
     "==": operator.eq,
 }
 
+# Reserved ``health:`` rule ids already warned about in this process (see load_rules).
+_WARNED_RESERVED_IDS: set[str] = set()
+
 
 @dataclass(frozen=True)
 class Rule:
@@ -75,8 +78,12 @@ def load_rules(path: str | Path, *, default_cooldown: int = 1800) -> list[Rule]:
     for row in doc.get("rules") or []:
         if not isinstance(row, dict):
             continue
-        if str(row.get("id", "")).startswith(RULE_PREFIX):
-            log.warning("alert rule %r skipped: the id prefix %r is reserved for provider-health alerts", row.get("id"), RULE_PREFIX)
+        rule_id = str(row.get("id", ""))
+        if rule_id.startswith(RULE_PREFIX):
+            # load_rules runs on every collector tick: warn once per id per process, keep skipping every time.
+            if rule_id not in _WARNED_RESERVED_IDS:
+                _WARNED_RESERVED_IDS.add(rule_id)
+                log.warning("alert rule %r skipped: the id prefix %r is reserved for provider-health alerts", row.get("id"), RULE_PREFIX)
             continue
         try:
             out.append(

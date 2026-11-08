@@ -35,6 +35,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import verify_news_events as v0  # noqa: E402  (stage-0 pipeline: fetchers, measure, collision check)
+from common_helpers import rss_mb  # noqa: E402
 
 from tradedesk.analytics.news_events import (  # noqa: E402
     DAY_MS,
@@ -77,10 +78,6 @@ BIG_USD = 20e6
 Y25 = int(datetime(2025, 1, 1, tzinfo=UTC).timestamp() * 1000)
 RESOLVE_FILE = "hacks_resolve.json"
 MEASURED_FILE = "hacks_measured.json"
-
-
-def rss_mb() -> float:
-    return v0.rss_mb()
 
 
 def hacks() -> list[Hack]:

@@ -25,7 +25,7 @@ Among cards that pass, prefer the one with the highest expected value for the ow
 ## Mode B: research review
 
 Check, and say which items you verified yourself:
-1. Pre-registration exists and was committed before the results (`git log` order).
+1. Pre-registration exists and was committed before the results: `git log --follow -p <card>` on the branch shows the registration in an earlier commit than the report and the run output (since 2026-11-03 the quant commits it in a run of its own). Registration and results in one commit, or a registration edited after the run without a stated reason, is a blocker.
 2. No lookahead: decisions use data up to t only, and a test enforces it.
 3. Universe bias: survivorship, selection by current volume, TradFi contamination, ticker collisions across venues.
 4. Data integrity: units, funding intervals, gaps, pagination truncation, cache staleness.

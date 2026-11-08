@@ -4,7 +4,8 @@
 #  - weekly pace: the agents spend the week evenly, (100 - TRADEDESK_AGENTS_OWNER_RESERVE) % over 7 days from the
 #    reset (about 1/7 a day), the rest kept for the owner's sessions; ahead of that schedule they sleep until it
 #    catches up, unless an owner-priority card is open: then they take only those cards (owner 27.10: «хай беруть
-#    пріоритетні задачі не дивлячись на ліміти, до 97 %»; the agents had idled 40 h on the pace brake)
+#    пріоритетні задачі не дивлячись на ліміти, до 97 %»; the agents had idled 40 h on the pace brake), but only below
+#    OWNER_PACE_CAP of the week (owner 03.11, weekly audit: the owner's reserve kept ending at 5 %)
 #    Both pace brakes (this one and OWNER_ONLY_AT) are off while the owner's boost runs: scripts/agents_boost.sh writes
 #    an end time (epoch seconds) into $LOG_DIR/boost-until; the MAX_USAGE brake stays, so the plan is never driven
 #    into its hard limit
@@ -29,6 +30,7 @@ LOG_DIR="${TRADEDESK_AGENTS_LOG_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/trade
 . "$REPO/scripts/agents_usage.sh"
 MAX_USAGE="${TRADEDESK_AGENTS_MAX_USAGE:-97}"
 OWNER_ONLY_AT="${TRADEDESK_AGENTS_OWNER_ONLY_AT:-80}" # weekly %: from here only the owner's cards (Пріоритет: власник)
+OWNER_PACE_CAP="${TRADEDESK_AGENTS_OWNER_PACE_CAP:-85}" # weekly %: past this even the owner's cards wait for the schedule (owner 03.11)
 WAIT_BUDGET=3600
 RESERVE="${TRADEDESK_AGENTS_OWNER_RESERVE:-15}" # weekly % never planned for the agents
 PACE_SLACK="${TRADEDESK_AGENTS_PACE_SLACK:-3}"  # weekly % the agents may run ahead of the even schedule
@@ -234,6 +236,28 @@ idle_wait() { # idle_wait <seconds>
   done
 }
 
+# GitHub outages (2026-11-04: a GitHub incident, then port 22 timing out, made every step fail with exit 128 and the
+# owner got an error each time). While GitHub cannot be reached no step starts and the doctor is not called: the owner
+# gets one message when it goes down and one when it is back.
+GH_DOWN=0
+GH_WAIT="${TRADEDESK_AGENTS_GITHUB_WAIT_SECONDS:-300}"
+github_up() { timeout 60 git -C "$REPO" ls-remote -q origin HEAD >/dev/null 2>&1; }
+github_down() { # github_down <what failed>
+  log "GitHub unreachable ($1); next check in ${GH_WAIT}s"
+  loop_state "GitHub недоступний, наступна перевірка о $(at "$GH_WAIT")"
+  if ((GH_DOWN == 0)); then
+    GH_DOWN=1
+    notify "🌐 **GitHub недоступний** ($1): агенти чекають і перевіряють кожні $((GH_WAIT / 60)) хв. Робота не втрачається; коли він повернеться, напишу." --silent
+  fi
+  sleep "$GH_WAIT"
+}
+github_back() {
+  ((GH_DOWN == 1)) || return 0
+  GH_DOWN=0
+  log "GitHub reachable again"
+  notify "🌐 **GitHub знову доступний**, агенти продовжують." --silent
+}
+
 # After a failure: wait longer the more failures there were in a row, and tell the owner once when they pile up.
 fails=0
 after_failure() {
@@ -312,7 +336,14 @@ while true; do
     continue
   fi
   daily_check
-  git -C "$REPO" fetch -q --no-write-fetch-head origin || log "fetch failed"
+  if ! git -C "$REPO" fetch -q --no-write-fetch-head origin; then
+    log "fetch failed"
+    if ! github_up; then
+      github_down "fetch"
+      continue
+    fi
+  fi
+  github_back
   leftovers=0
   [[ -n "$(git -C "$WT" status --porcelain 2>/dev/null)" || -n "$(work_branch)" ]] && leftovers=1
   open="$(open_branches)"
@@ -341,7 +372,9 @@ while true; do
   p=""
   boost_on || p="$(pace_wait "$(usage_json)")"
   export TRADEDESK_AGENTS_OWNER_ONLY=""
-  if [[ -n "$p" && -n "$(owner_cards_open)" ]]; then
+  week_now="$(usage_now | awk '{print $2}')"
+  if [[ -n "$p" && -n "$(owner_cards_open)" ]] &&
+    ! awk -v w="${week_now:-0}" -v m="$OWNER_PACE_CAP" 'BEGIN { exit !(w >= m) }'; then
     log "ahead of the weekly schedule (${p#* }), owner-priority cards open: taking only those"
     TRADEDESK_AGENTS_OWNER_ONLY="ahead of the weekly schedule (${p#* })"
     p=""
@@ -404,6 +437,10 @@ while true; do
       ;;
     *)
       log "step script failed (exit $rc)"
+      if ! github_up; then
+        github_down "крок, код $rc"
+        continue
+      fi
       ((fails == 0)) && notify "❌ **Скрипт кроку агентів упав** (код $rc). Викликаю лікаря. Лог: $last_log"
       doctor "scripts/nightly_agents.sh itself failed with exit code $rc. Run log: $last_log" "script exit $rc"
       after_failure

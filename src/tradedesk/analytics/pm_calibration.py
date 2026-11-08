@@ -98,13 +98,16 @@ def json_list(x: Any) -> list[Any] | None:
 
 
 def resolved_outcome(outcome_prices: Any, tol: float = 1e-3) -> int | None:
-    """1 if the first outcome paid 1, 0 if the second did, None for 50/50, unresolved or malformed."""
+    """1 if the first outcome paid 1, 0 if the second did, None for 50/50, unresolved or malformed (NaN / inf or a
+    300+-digit integer included: an infinite price is not a payout of 1)."""
     v = json_list(outcome_prices)
     if not v or len(v) != 2:
         return None
     try:
         a, b = float(v[0]), float(v[1])
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):  # OverflowError: float() of a 300+-digit JSON integer
+        return None
+    if not (math.isfinite(a) and math.isfinite(b)):
         return None
     if a >= 1 - tol and b <= tol:
         return 1
@@ -335,25 +338,43 @@ def cluster_bootstrap_ci(rows: Iterable[tuple[str, str, float]], *, n_boot: int 
 
 
 def _yes_prints(trades: Iterable[dict[str, Any]], yes_token: str) -> list[tuple[int, float]]:
+    """(time, YES-equivalent price) of the prints, sorted; a print whose time or price is absent, not a number,
+    NaN / inf or a 300+-digit integer is skipped."""
     out = []
     for x in trades:
         try:
             t, px = int(x["timestamp"]), float(x["price"])
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, OverflowError):  # OverflowError: int(inf), float() of a 300+-digit int
+            continue
+        if not math.isfinite(px):
             continue
         out.append((t, px if str(x.get("asset")) == yes_token else 1.0 - px))
     return sorted(out)
+
+
+def _history_points(points: Iterable[Any]) -> list[tuple[int, float]]:
+    """(t, p) of the ``/prices-history`` points in their order; a point that is not a dict, or whose time or price is
+    absent, not a number, NaN / inf or a 300+-digit integer is skipped (as `_yes_prints` skips such a print)."""
+    out = []
+    for pt in points:
+        try:
+            t, p = int(pt["t"]), float(pt["p"])
+        except (KeyError, TypeError, ValueError, OverflowError):  # OverflowError: int(inf), float(10**400)
+            continue
+        if math.isfinite(p):
+            out.append((t, p))
+    return out
 
 
 def lag_profile(
     points: Sequence[dict[str, Any]], trades: Iterable[dict[str, Any]], yes_token: str, ks: Sequence[int]
 ) -> dict[int, list[float]]:
     """Timestamp check of ``/prices-history``: for each shift k (s), |p - last YES-equivalent print with ts <= t + k|
-    over points (t, p) that have such a print. A series stamped late (lookahead) fits best at k > 0."""
+    over points (t, p) that have such a print. A series stamped late (lookahead) fits best at k > 0. Malformed points
+    are skipped (`_history_points`)."""
     tr = _yes_prints(trades, yes_token)
     out: dict[int, list[float]] = {k: [] for k in ks}
-    for pt in points:
-        t, p = int(pt["t"]), float(pt["p"])
+    for t, p in _history_points(points):
         for k in ks:
             last = None
             for ts, px in tr:
@@ -380,14 +401,15 @@ def jump_proximity(
 ) -> dict[str, list[bool]]:
     """Around each trade-price jump >= ``min_jump`` (consecutive YES-equivalent prints), whether a point in the window
     [tj + a, tj + b) relative to the jump print is closer to the new price than to the old one. Points before a jump
-    that are mostly closer to the new price would indicate lookahead in the point timestamps."""
+    that are mostly closer to the new price would indicate lookahead in the point timestamps. Malformed points are
+    skipped (`_history_points`)."""
     tr = _yes_prints(trades, yes_token)
+    pts = _history_points(points)
     out: dict[str, list[bool]] = {name: [] for name, _, _ in windows}
     for (_, old), (tj, new) in zip(tr, tr[1:], strict=False):
         if abs(new - old) < min_jump:
             continue
-        for pt in points:
-            t, p = int(pt["t"]), float(pt["p"])
+        for t, p in pts:
             for name, a, b in windows:
                 if tj + a <= t < tj + b:
                     out[name].append(abs(p - new) < abs(p - old))

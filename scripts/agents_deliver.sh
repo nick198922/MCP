@@ -55,6 +55,10 @@ $(git diff --name-only)"
     return 1
   fi
   local checks
+  # Run-file links one directory short (`../reviews/…` from docs/agents/runs/) are repaired before the checks.
+  local fixed
+  fixed="$(python3 "$REPO/scripts/fix_run_links.py" || true)"
+  [[ -z "$fixed" ]] || while IFS= read -r f; do git add -- "$f"; done <<<"$fixed"
   checks="$(make lint 2>&1 && make test 2>&1)"
   local ok=$?
   echo "$checks"

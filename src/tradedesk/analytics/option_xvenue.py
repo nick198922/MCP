@@ -47,12 +47,13 @@ MODES = ("hourly", "minute")  # option_xvenue_snapshot.mode
 
 
 def num(v: Any) -> float | None:
-    """A strictly positive finite float, else None (venues send 0 / "0" / "" for an empty side)."""
+    """A strictly positive finite float, else None (venues send 0 / "0" / "" for an empty side). An integer too large
+    for a float (a 300+ digit JSON literal parses to a Python int, float() raises OverflowError) is None as well."""
     if v is None or isinstance(v, bool):
         return None
     try:
         x = float(v)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     return x if x > 0 and x != float("inf") else None
 

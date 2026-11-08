@@ -24,7 +24,6 @@ import gc
 import hashlib
 import json
 import math
-import resource
 import sys
 import time
 from dataclasses import dataclass
@@ -40,6 +39,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import verify_course_step4_fvg_ob as s4  # noqa: E402  (variant ids)
 import verify_course_step5_s17 as s5  # noqa: E402  (variant ids)
 import verify_deviation_weekly_trend as dv  # noqa: E402  (group / variant codes)
+from common_helpers import rss_mb  # noqa: E402
 
 from tradedesk.analytics.liquidation_flush import cluster_bootstrap_ci, holm  # noqa: E402
 from tradedesk.analytics.per_asset import (  # noqa: E402
@@ -70,10 +70,6 @@ def emit(line: str = "") -> None:
     if OUT["fh"] is not None:
         OUT["fh"].write(line + "\n")
         OUT["fh"].flush()
-
-
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 
 
 @dataclass

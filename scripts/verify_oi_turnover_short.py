@@ -22,7 +22,6 @@ import argparse
 import asyncio
 import logging
 import math
-import resource
 import statistics
 import sys
 import time
@@ -74,7 +73,7 @@ BASE_FUND = 0.0001 * 3 * 365  # 0.01 % per 8 h, annualised (Binance interest com
 
 
 def rss() -> str:
-    return f"peak RSS {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.0f} MB"
+    return f"peak RSS {cmn.rss_mb():.0f} MB"
 
 
 def load_panel(p: Path) -> list[dict[str, Any]]:

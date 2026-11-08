@@ -120,12 +120,13 @@ def clean_text(x: Any, n: int = 40) -> str:
 
 
 def num(x: Any) -> float | None:
-    """DexScreener sends some numbers as strings; return a finite float or None."""
+    """DexScreener sends some numbers as strings; return a finite float or None. An integer too large for a float (a
+    300+ digit JSON literal parses to a Python int, float() raises OverflowError) is None as well."""
     if isinstance(x, bool) or x is None:
         return None
     try:
         v = float(x)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     return v if v == v and v not in (float("inf"), float("-inf")) else None
 

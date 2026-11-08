@@ -2,7 +2,9 @@
 passed in).
 
 Docs: docs/ideas/IDEA-20261102-standing-improvements.md, item 5. The forwards rest on these tables, so a silent gap is
-lost weeks. For every read-only job switched on in ``deploy/features.env`` a :class:`Spec` says which table it writes,
+lost weeks. For every read-only job switched on in ``deploy/features.env``, and for the jobs the collector runs by
+default without a line there (``default_on``: ``atm_term``, ``basis``, ``funding``, ``supply``, ``traders``,
+``trader_positions``; counted unless features.env sets their switch off), a :class:`Spec` says which table it writes,
 how its rows map to a time ``stamp`` (unix seconds) and the cadence it promises: one snapshot per UTC-aligned bucket of
 ``period_s`` seconds, due ``due_s`` seconds after the bucket's start. A series (the job, or one of its ``groups``: a
 currency, a venue, a strategy) is checked from the later of the window start and its first stored stamp, so a job
@@ -18,12 +20,24 @@ The cadences are read from the collectors and the schema (each spec's ``note`` s
 * ``option_xvenue`` reads the nearest daily expiry 2-20 h away, which exists only from 12:00 to 06:00 UTC: hours 06-11
   UTC are not expected. Only ``mode = 'hourly'`` rows count (minute rows are triggered, not scheduled).
 * ``paper_carry``: a cycle (00/08/16 UTC) counts only with status ``done``; ``skipped`` (missed) and ``failed`` are gaps.
+* ``trader_positions`` is a change log (store ``record_trader_positions``): an hour counts when at least one watched
+  position changed. With ~200 Hyperliquid and ~200 Polymarket accounts watched that is every hour (167 of 168 hours for
+  Hyperliquid on 29.10-05.11), but an hour without any change would read as a gap.
+* ``traders`` and ``supply`` run every ``collect_*_seconds`` from the service start (not aligned to the day) and key
+  their rows by the UTC day of the run; a day is due by its end.
 * ``assistant_paper`` (a paper trade only on a trigger) and ``plan_resolve`` (scores existing plans, writes nothing in a
   quiet hour) have no cadence and are listed in :data:`NOT_CHECKED`.
 
 Alarm (:func:`brief_line`): a series below :data:`THRESHOLD` of its expected buckets, a trailing gap (its latest
-buckets missing for at least :data:`STALE_S`, or its latest daily / 8 h bucket), a series with no row at all, or a
-series that could not be read.
+buckets missing for at least :data:`STALE_S`, or its latest daily / 8 h bucket, and no snapshot stored after them),
+a series with no row at all, or a series that could not be read. A series that has written again in a bucket not due
+yet is not "missing now": its run counts as an ordinary gap.
+
+``assistant_snapshot`` writes a JSON file, not a table, so it has no :class:`Spec`: :func:`snapshot_line` checks the
+file's own ``asof_utc`` against twice the job's cadence (item 101 of the standing card).
+
+The DB file's size, the free space of its volume and the DB's growth over 7 days are checked by :func:`disk_health`
+(item 129): named when less than 15 % or 5 GB is free or the volume would fill within 60 days at the current growth.
 """
 
 from __future__ import annotations
@@ -50,7 +64,7 @@ class Spec:
     (scripts/collector_health.py) puts into a SELECT; nothing here runs them."""
 
     name: str  # job name as in collector/scheduler.py
-    flag: str  # deploy/features.env switch that turns it on
+    flag: str  # environment switch of the job (config.Settings), as it would be set in deploy/features.env
     table: str
     ts_sql: str  # expression giving the row's stamp, unix seconds
     period_s: int  # one snapshot expected per UTC-aligned bucket of this length
@@ -60,6 +74,7 @@ class Spec:
     where: str = "1 = 1"
     hours_utc: frozenset[int] | None = None  # buckets expected only when their start hour (UTC) is in this set
     note: str = ""
+    default_on: bool = False  # the collector runs it unless ``flag`` is set off (no line in features.env needed)
 
 
 SPECS: tuple[Spec, ...] = (
@@ -124,6 +139,37 @@ SPECS: tuple[Spec, ...] = (
         "hl_oi_cap", "TRADEDESK_COLLECT_HL_OI_CAP_ENABLED", "hl_oi_cap_snapshot", "ts", HOUR, HOUR,
         note="one snapshot per UTC hour (ts = its start), job ticks every 10 min",
     ),
+    # On by default with the collector (collector/scheduler.build_default_scheduler; no line in features.env).
+    Spec(
+        "atm_term", "TRADEDESK_COLLECTOR_ENABLED", "atm_term", "ts", HOUR, HOUR,
+        group_col="currency", groups=("BTC", "ETH"), default_on=True,
+        note="job every 300 s (collect_atm_term_seconds), ts = run time; a UTC hour counts with >= 1 snapshot",
+    ),
+    Spec(
+        "basis", "TRADEDESK_COLLECTOR_ENABLED", "basis_hist", "ts", HOUR, HOUR,
+        group_col="currency", groups=("BTC", "ETH"), default_on=True,
+        note="job every 300 s (collect_basis_seconds), ts = run time; a UTC hour counts with >= 1 snapshot",
+    ),
+    Spec(
+        "funding", "TRADEDESK_COLLECTOR_ENABLED", "funding_hist", "ts", HOUR, HOUR,
+        group_col="venue", groups=("binanceusdm", "bybit", "okx", "hyperliquid", "deribit"), default_on=True,
+        note="job every 3600 s from the service start (not hour-aligned, like pm_gap); a venue that fails is skipped silently",
+    ),
+    Spec(
+        "supply", "TRADEDESK_COLLECT_SUPPLY_ENABLED", "supply_snapshot", _DAY_TS.format("day"), DAY, DAY, default_on=True,
+        note="CoinGecko snapshot keyed by the UTC day of the run, job every 86400 s from the service start",
+    ),
+    Spec(
+        "traders", "TRADEDESK_COLLECT_TRADERS_ENABLED", "trader_snapshot", _DAY_TS.format("day"), DAY, DAY,
+        group_col="venue", groups=("hyperliquid", "polymarket", "polymarket_crypto"), default_on=True,
+        note="leaderboards keyed by the UTC day of the run (collect_traders_seconds from the service start); one venue "
+        "failing only logs a warning",
+    ),
+    Spec(
+        "trader_positions", "TRADEDESK_COLLECT_TRADERS_ENABLED", "trader_positions", "ts", HOUR, HOUR,
+        group_col="venue", groups=("hyperliquid", "polymarket"), default_on=True,
+        note="hourly change log; an hour counts with >= 1 changed position; both Polymarket boards stored as 'polymarket'",
+    ),
 )  # fmt: skip
 
 NOT_CHECKED: dict[str, str] = {
@@ -133,9 +179,15 @@ NOT_CHECKED: dict[str, str] = {
 
 
 def enabled_specs(switches: Mapping[str, str], specs: Iterable[Spec] = SPECS) -> list[Spec]:
-    """The specs whose switch is on (``1`` / ``true`` / ``yes`` / ``on``) in ``switches`` (parsed features.env)."""
-    on = {k for k, v in switches.items() if str(v).strip().lower() in ("1", "true", "yes", "on")}
-    return [s for s in specs if s.flag in on]
+    """The specs whose switch is on (``1`` / ``true`` / ``yes`` / ``on``) in ``switches`` (parsed features.env). A
+    ``default_on`` spec counts when its switch is absent; set to anything else there, it is off (as config.Settings
+    reads it). The owner's /etc/tradedesk-mcp.env is not read here."""
+
+    def on(s: Spec) -> bool:
+        v = switches.get(s.flag)
+        return s.default_on if v is None else str(v).strip().lower() in ("1", "true", "yes", "on")
+
+    return [s for s in specs if on(s)]
 
 
 def expected_buckets(spec: Spec, start: int, now: int) -> list[int]:
@@ -164,7 +216,8 @@ def series_health(
     and latest stamp ever (None = no row at all). Keys: ``label``, ``status`` ('ok' | 'low' | 'stale' | 'never' |
     'new'), ``share`` (present / expected; None when nothing is expected yet), ``expected``, ``present``, ``gaps``
     (runs of missing buckets), ``longest_gap_s``, ``longest_gap_start``, ``trailing_gap_s`` (the missing run that
-    reaches the last expected bucket, 0 = none), ``since`` (first bucket checked), ``first_ts``, ``last_ts``."""
+    reaches the last expected bucket, 0 = none or when ``last_ts`` already lies in a later bucket that is not due yet,
+    i.e. the series has recovered), ``since`` (first bucket checked), ``first_ts``, ``last_ts``."""
     label = f"{spec.name}:{group}" if group else spec.name
     p = spec.period_s
     out: dict[str, Any] = {
@@ -195,6 +248,10 @@ def series_health(
     present = len(exp) - sum(n for _, n in runs)
     longest = max(runs, key=lambda r: r[1]) if runs else None
     trailing = runs[-1][1] * p if runs and prev_missing else 0
+    if trailing and last_ts is not None and (int(last_ts) // p) * p > exp[-1]:
+        # A snapshot already sits in a later bucket that is not due yet: the series is back, so the run is a closed
+        # gap (still in ``gaps`` / ``longest_gap_s``), not "missing now" (05.11: Polymarket traders after the v2 fix).
+        trailing = 0
     share = present / len(exp)
     stale = trailing >= (p if p >= 8 * HOUR else STALE_S)
     status = "low" if share < THRESHOLD else ("stale" if stale else "ok")
@@ -218,8 +275,9 @@ def alarms(results: Iterable[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
 
 def fmt_dur(seconds: float) -> str:
     """Ukrainian duration: '45 хв', '6 год', '2.5 дн'."""
-    if seconds < HOUR:
-        return f"{max(1, round(seconds / MINUTE))} хв"
+    minutes = max(1, round(seconds / MINUTE))
+    if minutes < 60:  # 3570-3599 s round to 60 minutes: shown as '1 год', not '60 хв'
+        return f"{minutes} хв"
     if seconds < 2 * DAY:
         return f"{seconds / HOUR:.0f} год"
     return f"{seconds / DAY:.1f} дн"
@@ -266,8 +324,126 @@ def brief_line(results: Iterable[Mapping[str, Any]], window_days: int = WINDOW_D
     return f"Колектори: частка знімків за {window_days} дн нижче {_pct(THRESHOLD)} або свіжа дірка — {named}{more}."
 
 
-def render(results: Iterable[Mapping[str, Any]], now: int, window_days: int = WINDOW_DAYS) -> str:
-    """Full text report (Ukrainian), one line per series."""
+# Assistant snapshot (collector/assistant_snapshot.py): one JSON file rewritten every TRADEDESK_ASSISTANT_SNAPSHOT_SECONDS
+# (config.Settings.assistant_snapshot_seconds = 600, scheduler job "assistant_snapshot"). It is switched on in the
+# service env (scripts/server/19-assistant-snapshot.sh), which is not read here, so it is checked unless features.env
+# switches it off. A run whose network sections all fail keeps the previous file, so its ``asof_utc`` ages.
+SNAPSHOT_FLAG = "TRADEDESK_ASSISTANT_SNAPSHOT_ENABLED"
+SNAPSHOT_SECONDS_FLAG = "TRADEDESK_ASSISTANT_SNAPSHOT_SECONDS"
+SNAPSHOT_DEFAULT_S = 600
+SNAPSHOT_STALE_FACTOR = 2  # older than this many cadences = stale
+
+
+def snapshot_cadence(switches: Mapping[str, str]) -> int | None:
+    """The snapshot job's cadence, seconds, from parsed features.env (default :data:`SNAPSHOT_DEFAULT_S`); None when
+    features.env switches the job off (any value other than 1 / true / yes / on)."""
+    v = switches.get(SNAPSHOT_FLAG)
+    if v is not None and str(v).strip().lower() not in ("1", "true", "yes", "on"):
+        return None
+    try:
+        s = int(float(switches.get(SNAPSHOT_SECONDS_FLAG, SNAPSHOT_DEFAULT_S)))
+    except (TypeError, ValueError):
+        return SNAPSHOT_DEFAULT_S
+    return s if s > 0 else SNAPSHOT_DEFAULT_S
+
+
+def snapshot_line(asof_utc: Any, now: int, cadence_s: int, exists: bool = True) -> str | None:
+    """The brief's line on the assistant snapshot file (plain text, Ukrainian), or None when it is fresh: its
+    ``asof_utc`` ('%Y-%m-%dT%H:%M:%SZ') at most ``SNAPSHOT_STALE_FACTOR * cadence_s`` seconds before ``now`` (a stamp
+    in the future counts as fresh). ``exists=False``: the file is not there; an unreadable stamp is named as such."""
+    if not exists:
+        return "Знімок асистента: файлу немає."
+    try:
+        ts = int(datetime.strptime(str(asof_utc), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC).timestamp())
+    except ValueError:
+        return "Знімок асистента: час знімка не прочитано."
+    age = now - ts
+    if age <= SNAPSHOT_STALE_FACTOR * cadence_s:
+        return None
+    return f"Знімок асистента застарів: останній {fmt_ts(ts)}, {fmt_dur(age)} тому (оновлюється кожні {fmt_dur(cadence_s)})."
+
+
+# DB size and free disk (item 129 of the standing card). The collectors write 24/7 and the retention sweep
+# (collector/scheduler._retention_sweep) trims only seven tables, several of them never (0 days); a full volume stops
+# every write silently. The loader passes the DB file's size, the free / total bytes of its volume and, when it can, a
+# few (ts, bytes) points of the DB's size (the daily gzip backups record their uncompressed size); growth is the slope
+# between the oldest and the newest point of the last GROWTH_WINDOW_DAYS. The projection divides the free bytes by the
+# DB's growth only: backups and other files on the volume grow too, so the real runway is somewhat shorter.
+GIB = 1024**3
+MIB = 1024**2
+DISK_MIN_FREE_SHARE = 0.15  # free share of the DB's volume below which the brief names the disk
+DISK_MIN_FREE_BYTES = 5 * GIB  # free bytes below which the brief names the disk
+DISK_MIN_DAYS_LEFT = 60  # days to a full volume at the current DB growth below which the brief names the disk
+GROWTH_WINDOW_DAYS = 7
+
+
+def growth_per_day(points: Iterable[tuple[int, int]], now: int, window_days: int = GROWTH_WINDOW_DAYS) -> float | None:
+    """DB growth, bytes per day (negative after a prune or VACUUM): the slope between the oldest and the newest
+    ``(ts, bytes)`` point in ``[now - window_days, now]``. None with fewer than two such points or when they lie less
+    than a day apart."""
+    pts = sorted((int(t), int(b)) for t, b in points if now - window_days * DAY <= t <= now)
+    if len(pts) < 2 or pts[-1][0] - pts[0][0] < DAY:
+        return None
+    (t0, b0), (t1, b1) = pts[0], pts[-1]
+    return (b1 - b0) / ((t1 - t0) / DAY)
+
+
+def disk_health(db_bytes: int | None, free: int, total: int, growth: float | None) -> dict[str, Any]:
+    """The DB's disk check. ``db_bytes``: size of the DB file (None = no file); ``free`` / ``total``: bytes of its
+    volume; ``growth``: bytes per day (:func:`growth_per_day`, None = unknown). Keys: the inputs, ``share`` (free /
+    total), ``days_left`` (free / growth while the DB grows, else None) and ``reasons`` (the thresholds crossed:
+    'share', 'bytes', 'days'; empty = fine)."""
+    share = free / total if total > 0 else None
+    days_left = free / growth if growth is not None and growth > 0 else None
+    reasons = []
+    if share is not None and share < DISK_MIN_FREE_SHARE:
+        reasons.append("share")
+    if free < DISK_MIN_FREE_BYTES:
+        reasons.append("bytes")
+    if days_left is not None and days_left < DISK_MIN_DAYS_LEFT:
+        reasons.append("days")
+    return {
+        "db_bytes": db_bytes, "free": free, "total": total, "growth": growth, "share": share, "days_left": days_left,
+        "reasons": reasons,
+    }  # fmt: skip
+
+
+def fmt_bytes(n: float) -> str:
+    """Ukrainian size: '12 КБ', '820 МБ', '12.4 ГБ' (binary units)."""
+    if abs(n) >= GIB:
+        return f"{n / GIB:.1f} ГБ"
+    return f"{n / MIB:.0f} МБ" if abs(n) >= MIB else f"{n / 1024:.0f} КБ"
+
+
+def describe_disk(h: Mapping[str, Any]) -> str:
+    """The disk check in one Ukrainian sentence (for the report and the brief)."""
+    parts = [f"вільно {fmt_bytes(h['free'])} з {fmt_bytes(h['total'])}" + (f" ({_pct(h['share'])})" if h["share"] is not None else "")]
+    parts.append(f"база {fmt_bytes(h['db_bytes'])}" if h["db_bytes"] is not None else "файлу БД немає")
+    g = h["growth"]
+    if g is None:
+        parts.append("приріст невідомий")
+    else:
+        parts.append(f"{'+' if g >= 0 else '−'}{fmt_bytes(abs(g))}/добу")
+    if h["days_left"] is not None:
+        parts.append(f"місце закінчиться за ~{h['days_left']:.0f} дн")
+    return ", ".join(parts)
+
+
+def disk_line(h: Mapping[str, Any]) -> str | None:
+    """The brief's line on the DB's disk (plain text, Ukrainian), or None when no threshold is crossed."""
+    why = {
+        "share": f"вільно менше {_pct(DISK_MIN_FREE_SHARE)}",
+        "bytes": f"вільно менше {fmt_bytes(DISK_MIN_FREE_BYTES)}",
+        "days": f"при цьому темпі диск закінчиться менш ніж за {DISK_MIN_DAYS_LEFT} дн",
+    }
+    if not h["reasons"]:
+        return None
+    return f"Диск БД: {'; '.join(why[r] for r in h['reasons'])} — {describe_disk(h)}."
+
+
+def render(results: Iterable[Mapping[str, Any]], now: int, window_days: int = WINDOW_DAYS, extra: Iterable[str | None] = ()) -> str:
+    """Full text report (Ukrainian), one line per series. ``extra``: the brief's lines of the checks outside the series
+    (the disk: :func:`disk_line`; None = fine), added to the closing «У брифі: …» line after the series' line."""
     rows = list(results)
     out = [f"Здоров'я колекторів на {fmt_ts(now)} · вікно {window_days} дн · поріг {_pct(THRESHOLD)}", ""]
     for r in rows:
@@ -286,6 +462,6 @@ def render(results: Iterable[Mapping[str, Any]], now: int, window_days: int = WI
         if r.get("trailing_gap_s"):
             line += f", зараз немає {fmt_dur(r['trailing_gap_s'])}"
         out.append(line + f"; останній {fmt_ts(r.get('last_ts'), p)}")
-    line = brief_line(rows, window_days)
+    line = " ".join(x for x in (brief_line(rows, window_days), *extra) if x)
     out += ["", f"У брифі: {line}" if line else "У брифі: нічого (усі серії в нормі)."]
     return "\n".join(out) + "\n"

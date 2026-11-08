@@ -260,11 +260,21 @@ def test_carry_g_counts_a_labelled_forced_close_proxy():
     logs = {"side": [], "mark": [], "close": [], "event": gap}
     r = cp.carry_forward("A", pos, logs, cyc, BENCH["A"]["bench"], NOW)
     g = next(c for c in r["criteria"] if c["id"] == "г")
-    assert "проксі примусового закриття: 2 угод" in g["text"] and "open_position_data_unavailable 1, funding_gap_confirmed 1" in g["text"]
+    assert "проксі примусового закриття: 2 угоди за" in g["text"]
+    assert "open_position_data_unavailable 1, funding_gap_confirmed 1" in g["text"]
     b = [dict(p, strategy="B") for p in pos]
     r = cp.carry_forward("B", b, logs, cyc, BENCH["B"]["bench"], NOW)
     g = next(c for c in r["criteria"] if c["id"] == "г")
-    assert g["status"] == cp.UNVERIFIABLE and "не визначається" in g["text"] and "проксі примусового закриття: 2" in g["text"]
+    assert g["status"] == cp.UNVERIFIABLE and "не визначається" in g["text"] and "проксі примусового закриття: 2 угоди за" in g["text"]
+
+
+@pytest.mark.parametrize(
+    ("n", "text"),
+    [(0, "0 угод"), (1, "1 угода"), (2, "2 угоди"), (4, "4 угоди"), (5, "5 угод"), (11, "11 угод"), (12, "12 угод")]
+    + [(14, "14 угод"), (20, "20 угод"), (21, "21 угода"), (22, "22 угоди"), (24, "24 угоди"), (111, "111 угод"), (101, "101 угода")],
+)
+def test_ua_trades_agrees_the_count_form(n, text):
+    assert cp.ua_trades(n) == text
 
 
 def test_a_v2_independent_scan_agrees_with_the_shadow():
@@ -325,6 +335,50 @@ def test_condor_before_t0_reads_nothing_and_pnl_stays_closed():
     assert b["counters"] == {"п'ятниць з 52": 4} and b["metric"] is None and b["verdict"] == cp.EARLY
     assert cp.condor_final_ms(t0) == cp._ms(2026, 12, 31, 10)  # last buy-back (Thu T0 + 7 w + 6 d, 10:00) is after 31.12 00:00
     assert cp.condor_final_ms(date(2026, 10, 30)) == cp._ms(2026, 12, 31)  # an earlier T0: the 31.12 floor decides
+
+
+# ------------------------------------------------------------------------------------------- assistant_paper
+
+
+def _rec(opened: int, expiry: int, *, source: str = "method", trigger: str | None = "chain", status: str = "open"):
+    return {"opened_ts": opened // 1000, "expiry_ts": expiry // 1000, "status": status, "source": source, "trigger": trigger}
+
+
+REC = [
+    _rec(cp._ms(2026, 10, 20, 9), cp._ms(2026, 10, 23, 8), status="settled"),
+    _rec(cp._ms(2026, 10, 25, 9), cp._ms(2026, 10, 30, 8)),  # 49 h after the previous expiry: one gap; expired, not settled
+    _rec(cp._ms(2026, 10, 30, 9), cp._ms(2026, 12, 25, 8), trigger="regime"),  # 1 h after: no gap; standing
+    _rec(cp._ms(2026, 10, 21, 9), cp._ms(2026, 10, 24, 8), source="manual", trigger=None),
+    _rec(cp._ms(2026, 11, 3, 9), cp._ms(2026, 12, 25, 8)),  # after NOW: not counted
+]
+
+
+def test_assistant_paper_counters_and_state():
+    st = {"date": "2026-11-02", "asof_utc": "2026-11-02T09:05:00Z", "state": "actual", "action": "hold"}
+    r = cp.assistant_paper_forward(REC, st, NOW)
+    assert (r["n"], r["verdict"], r["metric"], r["band"]) == (3, cp.COUNTS_ONLY, None, None)
+    c = r["counters"]
+    assert c["з них ланцюг (chain, порівнянні з H1) / за тригером (regime, event)"] == "2 / 1"
+    assert c["ручних (manual, поза форвардом)"] == 1 and c["чинних (до експірації)"] == 1
+    assert c["експірованих / з них ще не розраховано"] == "2 / 1"
+    assert c["перша / остання угода методу"] == "2026-10-20 / 2026-10-30"
+    assert c["проміжків без чинної угоди методу > 1 доби"] == "1 (разом 2.0 дн.)"
+    assert c["останнє денне рішення (файл стану)"] == "2026-11-02, actual / hold, 3 год тому"
+    assert any("assistant_paper_status" in x and "не закриває" in x for x in r["notes"])
+    assert not any("стоїть" in x for x in r["notes"])
+    old = cp.assistant_paper_forward(REC, st | {"asof_utc": "2026-10-30T09:00:00Z"}, NOW)
+    assert any("старше 36 год" in x for x in old["notes"])
+    later = cp.assistant_paper_forward(REC, st, cp._ms(2026, 11, 1))  # the state file is newer than the report's date
+    assert "останнє денне рішення (файл стану)" not in later["counters"] and any("новіший" in x for x in later["notes"])
+    assert cp._uncovered([(0, 10), (30, 40)], 0, 50) == [20, 10]  # between the spans and after the last one
+
+
+def test_assistant_paper_empty_store_and_no_state_file():
+    r = cp.assistant_paper_forward([], None, NOW)
+    assert r["n"] == 0 and r["counters"]["угод методу"] == 0 and r["verdict"] == cp.COUNTS_ONLY
+    assert "перша / остання угода методу" not in r["counters"]
+    assert any("файлу стану завдання немає" in x for x in r["notes"])
+    assert cp.assistant_paper_forward([], {"asof_utc": "not a date"}, NOW)["counters"].get("останнє денне рішення (файл стану)") is None
 
 
 # ------------------------------------------------------------------------------------------------ the script
@@ -441,11 +495,176 @@ def test_script_loads_the_skip_reason_of_cycles(tmp_path):
     assert "пропущених циклів 2, з них без причини в журналі 1" in text
 
 
+def test_script_shows_assistant_paper_counters_without_pnl(tmp_path):
+    db = _db(tmp_path)
+    empty = cp.render(cp.build(script.load_inputs(db, NOW), NOW))  # the table exists, no rows, no state file
+    assert "Папір assistant_paper" in empty and "- угод методу: 0" in empty and "файлу стану завдання немає" in empty
+    con = sqlite3.connect(db)
+    cols = (
+        "opened_ts, currency, structure, expiry_ts, spot, forward, t_years, legs, premium_per_btc, entry_fees_per_btc, "
+        "max_loss_per_btc, risk_basis, size_btc, deposit_usd, risk_pct, risk_usd, within_risk, status, source, trigger, pnl_usd"
+    )
+    for r in REC:
+        con.execute(
+            f"INSERT INTO rec_paper ({cols}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (r["opened_ts"], "BTC", "long_straddle", r["expiry_ts"], 1, 1, 0.1, "[]", 1, 0, 1, "max_loss", 0.1, 1e4, 1, 100, 1)
+            + (r["status"], r["source"], r["trigger"], 12345.678),
+        )
+    con.commit()
+    con.close()
+    state = {"date": "2026-11-02", "asof_utc": "2026-11-02T09:05:00Z", "state": "changed", "action": "hold", "rv30": 0.4321}
+    (tmp_path / "assistant").mkdir()
+    (tmp_path / "assistant" / "paper_state.json").write_text(json.dumps(state), encoding="utf-8")
+    before = Path(db).read_bytes()
+    inp = script.load_inputs(db, NOW)
+    assert all("pnl_usd" not in r for r in inp["rec_paper"]) and inp["paper_state"]["state"] == "changed"
+    text = cp.render(cp.build(inp, NOW))
+    assert Path(db).read_bytes() == before
+    assert "| Папір assistant_paper (опціонні рекомендації методу) | 3 | — | — | лише лічильники |" in text
+    assert "- угод методу: 3" in text and "2026-11-02, changed / hold, 3 год тому" in text
+    assert "12345" not in text and "0.4321" not in text  # no P&L, nothing beyond the whitelisted state keys
+
+
+CARD = "# IDEA-x\n\nСтатус: {}\n\n## Форвард\n- **Теги:** `idea:{}`, `setup:S45`; шаблон `idea:<slug>`.\n"
+
+
+def test_forward_cards_take_the_first_status_line_and_every_idea_tag():
+    texts = {
+        "IDEA-20261028-hl-oi-cap-state-forward.md": CARD.format("forward (2026-10-28, критик)", "hl-oi-cap"),
+        "IDEA-20261101-done.md": CARD.format("rejected", "done") + "\nСтатус: forward\n",  # a later status line is history
+        "IDEA-20261015-touch.md": CARD.format("forward — було inconclusive", "touch"),
+        "notes.md": CARD.format("forward", "notes"),  # not a card file
+    }
+    cards = cp.forward_cards(texts)
+    assert [c["slug"] for c in cards] == ["hl-oi-cap-state-forward", "touch"]
+    assert cards[0]["tags"] == {"idea:hl-oi-cap-state-forward", "idea:hl-oi-cap"}  # the registered short tag and the slug
+    assert cards[1]["tags"] == {"idea:touch"}
+
+
+def _plan(i: int, tags, *, verdict="enter", status="open", created=NOW // 1000 - 3600, resolved=None, **kw):
+    return {"id": i, "created_ts": created, "resolved_ts": resolved, "verdict": verdict, "status": status, "tags": tags} | kw
+
+
+def test_idea_plans_counters_per_card_without_r():
+    cards = [{"slug": "a-card", "tags": frozenset({"idea:a-card", "idea:a"})}, {"slug": "b-card", "tags": frozenset({"idea:b-card"})}]
+    now_s = NOW // 1000
+    plans = [
+        _plan(1, ["idea:a"], status="resolved", resolved=now_s - 60, r_result=7.777),
+        _plan(2, ["idea:a-card", "idea:b-card"], verdict="wait"),  # two cards: once in the total
+        _plan(3, ["idea:a"], status="resolved", resolved=now_s + 60),  # resolved after the report moment: not «оцінено»
+        _plan(4, ["idea:a"], created=now_s + 60),  # created after the report moment: not counted
+        _plan(5, ["idea:typo"]),  # an idea tag of no forward card
+        _plan(6, ["src:demo-shadow"]),
+    ]
+    r = cp.idea_plans_forward(cards, plans, NOW)
+    assert (r["key"], r["n"], r["verdict"], r["metric"], r["band"]) == ("ideas:plans", 3, cp.COUNTS_ONLY, None, None)
+    assert r["counters"] == {
+        "a-card": "планів 3, «входити» 2, оцінено 1",
+        "b-card": "планів 1, «входити» 0, оцінено 0",
+        "планів з тегом idea: без картки forward": 1,
+    }
+    assert any("≈ 30 планів «входити»" in x and "2 — не набрано" in x for x in r["notes"])
+    text = cp.render({"now_ms": NOW, "forwards": [r], "notes": []})
+    assert "| Картки forward: плани за тегами idea: | 3 | — | — | лише лічильники |" in text and "7.777" not in text
+    empty = cp.idea_plans_forward(cards, [], NOW)
+    assert empty["n"] == 0 and empty["counters"]["b-card"] == "планів 0, «входити» 0, оцінено 0"  # named even without plans
+    assert any("не знайдено" in x for x in cp.idea_plans_forward([], plans, NOW)["notes"])
+
+
+def test_script_lists_every_forward_card_of_the_repo(tmp_path):
+    """Every card with ``Статус: forward`` in docs/ideas gets a line, with the tag it registered (if shorter)."""
+    cards = {c["slug"]: c["tags"] for c in script.load_idea_cards()}
+    on_disk = [
+        p.name
+        for p in script.IDEAS.glob("IDEA-*.md")
+        if p.read_text(encoding="utf-8").split("Статус:", 1)[-1].lstrip().startswith("forward")
+    ]
+    assert len(cards) == len(on_disk) >= 20
+    assert "idea:hl-oi-cap" in cards["hl-oi-cap-state-forward"] and "idea:hl-liq-magnet" in cards["hl-whale-liquidation-magnet"]
+    db = _db(tmp_path)
+    con = sqlite3.connect(db)
+    cols = "created_ts, exchange, symbol, instrument, side, entry_type, entry, stop, target, expires_ts, verdict, tags, status, r_result"
+    con.execute(
+        f"INSERT INTO trade_plan ({cols}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            NOW // 1000 - 3600,
+            "bybit",
+            "X/USDT:USDT",
+            "perp",
+            "short",
+            "market",
+            1,
+            1.1,
+            0.9,
+            NOW // 1000,
+            "enter",
+            '["idea:hl-oi-cap"]',
+            "resolved",
+            9.876,
+        ),
+    )
+    con.commit()
+    con.close()
+    inp = script.load_inputs(db, NOW)
+    assert inp["plans"] and all("r_result" not in p for p in inp["plans"])
+    text = cp.render(cp.build(inp, NOW))
+    assert "- hl-oi-cap-state-forward: планів 1, «входити» 1, оцінено 0" in text  # resolved_ts not set: not «оцінено»
+    assert "- pm-weather-forecast-vs-price: планів 0" in text and "9.876" not in text
+
+
 def test_script_survives_a_missing_db(tmp_path):
     inp = script.load_inputs(str(tmp_path / "none.sqlite"), NOW)
     assert any("не відкрито" in e for e in inp["errors"])
     text = cp.render(cp.build(inp, NOW))
     assert "Примітка: БД" in text and "Демо S3" in text
+
+
+# Every table a forward block of the report reads. A DB of an older schema may lack one, a fresh one has it empty.
+FORWARD_TABLES = script.FORWARD_TABLES
+BLOCKS = (
+    "Демо S3", "Демо S40", "Папір carry A (cc-paper)", "Папір carry B (pp-paper)", "A v2", "Polymarket v1", "v2-g", "Кондор",
+    "Папір assistant_paper", "Картки forward",
+)  # fmt: skip
+AFTER_T0 = cp._ms(2026, 11, 20, 12)  # the condor branch reads option_leg_snapshot only after its T0
+
+
+@pytest.mark.parametrize("how", ["drop", "empty"])
+@pytest.mark.parametrize("table", FORWARD_TABLES)
+def test_script_survives_a_missing_or_empty_forward_table(tmp_path, monkeypatch, capsys, table, how):
+    db = _db(tmp_path)
+    con = sqlite3.connect(db)
+    assert script._tables(con) >= set(FORWARD_TABLES)  # the migrations create them all: the guard covers real tables
+    con.execute(f"DROP TABLE {table}" if how == "drop" else f"DELETE FROM {table}")
+    con.commit()
+    con.close()
+    before = Path(db).read_bytes()
+    for argv, wall_ms in ((["--date", "2026-11-02"], NOW), ([], AFTER_T0)):
+        monkeypatch.setattr(script, "time", type("Clock", (), {"time": staticmethod(lambda w=wall_ms: w / 1000)}))
+        assert script.main(["--db", db, *argv]) == 0
+        text = capsys.readouterr().out
+        for name in BLOCKS:  # every other block is still printed
+            assert name in text
+        demo = "| 0 |" if table == "demo_trade" else "| 31 | -0.050 |"
+        assert f"Демо S3 v3 (4h + 1d) {demo}" in text  # the dropped / emptied block shows no data, the others keep theirs
+        assert ("(д) пройдено" in text) == (table != "cp_cycle")
+        # an absent table is named as absent (not as a failed query, not silently as zero rows); an empty one is not
+        missing = [ln for ln in text.splitlines() if "таблиці немає в БД" in ln]
+        assert missing == ([f"Примітка: {table}: таблиці немає в БД (старіша схема чи інша БД), блок без даних"] if how == "drop" else [])
+        assert "запит не вдався" not in text  # after T0 the condor loader is not even called without its table
+        assert "T0 ще не зафіксовано" in text
+    assert Path(db).read_bytes() == before  # read-only (mode=ro): nothing written
+
+
+def test_script_without_the_schema_names_failed_queries_not_absent_tables(tmp_path):
+    db = tmp_path / "garbage.sqlite"
+    db.write_bytes(b"not a sqlite database" * 100)  # opens read-only, but no query (not even sqlite_master) succeeds
+    inp = script.load_inputs(str(db), AFTER_T0)
+    assert not any("таблиці немає" in e for e in inp["errors"])  # unknown schema: no claim that a table is absent
+    assert any(e.startswith("demo_trade: запит не вдався") for e in inp["errors"])
+    assert any(e.startswith("option_leg_snapshot: запит не вдався") for e in inp["errors"])  # the condor branch still tries
+    text = cp.render(cp.build(inp, AFTER_T0))
+    for name in BLOCKS:
+        assert name in text
 
 
 def test_at_date_is_end_of_day_and_capped():

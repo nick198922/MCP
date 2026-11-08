@@ -51,7 +51,17 @@ def test_option_expiry_and_base_asset_from_real_symbols():
     for sym, base in (
         ("SOLUSDT", "SOL"),
         ("SOL/USDT:USDT", "SOL"),
-        ("1000PEPEUSDT", "1000PEPE"),
+        ("1000PEPEUSDT", "PEPE"),  # Bybit / Binance multiplier
+        ("kPEPE", "PEPE"),  # Hyperliquid writes the same 1000 PEPE with a lower-case k
+        ("PEPE", "PEPE"),
+        ("PEPE2USDT", "PEPE2"),  # another token: not merged with PEPE
+        ("KAVAUSDT", "KAVA"),  # an upper-case K is part of the ticker
+        ("KPEPE", "KPEPE"),  # ...so an upper-cased HL name is left alone rather than guessed
+        ("1INCHUSDT", "1INCH"),  # a real ticker starting with a digit
+        ("1MBABYDOGEUSDT", "BABYDOGE"),
+        ("SHIB1000USDT", "SHIB"),
+        ("PUMPFUNUSDT", "PUMP"),  # Bybit's name of pump.fun's PUMP (Hyperliquid: PUMP)
+        ("PUMP", "PUMP"),
         ("HYPE", "HYPE"),
         ("ETHUSDC", "ETH"),
         ("BTCUSD", "BTC"),
@@ -232,6 +242,95 @@ def test_day_stop_on_the_day_loss_and_its_boundary():
     assert rc.day_stops(both)["2025-10-10"] == {"ts": D + 4 * H, "reason": "both"}
 
 
+S = D + 86400  # 00:00 UTC on Sat 11.10: the end of the big-loss day 10.10 in _pause_rows, the 48 h pause starts here
+
+
+def _pause_rows():
+    return [
+        _t(1, "SOLUSDT", "long", D + 1 * H, D + 2 * H, -120.0, BINANCE),
+        _t(2, "ETHUSDT", "short", D + 3 * H, D + 4 * H, 50.0, BINANCE),
+        _t(3, "BTCUSDT", "long", D + 5 * H, D + 6 * H, -130.0, BINANCE),  # the day closes −$200: −2 % exactly is big
+        _t(4, "SOLUSDT", "long", S - 1, S + H, 5.0, BINANCE),  # 23:59:59 on the big-loss day: the day stop's, not the pause's
+        _t(5, "ADAUSDT", "long", S, S + H, 1.0, BINANCE),  # the first second of the pause
+        _t(6, "ADAUSDT", "long", S + 48 * H - 1, S + 48 * H, 1.0, BINANCE),  # its last second
+        _t(7, "ADAUSDT", "long", S + 48 * H, S + 49 * H, 1.0, BINANCE),  # exactly 48 h after the start: outside
+        _t(8, "XRPUSDT", "long", S + 5 * H, S + 5 * H, 2.0, BYBIT),  # Bybit, no opening time: judged on its close
+    ]
+
+
+def test_48h_pause_after_a_big_loss_day_and_its_boundaries():
+    ps = rc.pauses(_pause_rows())
+    assert ps == {"2025-10-10": {"pnl": pytest.approx(-200.0), "start": S, "end": S + 48 * H}}
+    c = _by_id(rc.trade_checks(_pause_rows(), now_ts=S + 60 * H))
+    assert {i: c[i]["rules"][4] for i in c} == {
+        1: rc.OK,
+        2: rc.OK,
+        3: rc.OK,
+        4: rc.VIOLATED,  # after the day stop at 06:00 (−$200), no pause yet
+        5: rc.VIOLATED,
+        6: rc.VIOLATED,
+        7: rc.OK,
+        8: rc.VIOLATED,
+    }
+    assert c[4]["pause"] is None and c[7]["pause"] is None
+    assert c[5]["pause"] == c[6]["pause"] == {"day": "2025-10-10", "pnl": pytest.approx(-200.0), "start": S, "end": S + 48 * H}
+    assert (c[5]["approx"], c[8]["approx"]) == (False, True)  # an import's pause flag is approximate, as the day stop's
+    # one cent short of −2 % is no big loss: no pause, and the same trades keep rule 4
+    small = [{**r, "pnl": -129.99} if r["id"] == 3 else r for r in _pause_rows()]
+    assert rc.pauses(small) == {}
+    assert [x["rules"][4] for x in rc.trade_checks(small, now_ts=S + 60 * H) if x["id"] in (5, 6, 8)] == [rc.OK] * 3
+    # the thresholds pass through: a 24 h pause ends before trade 6; a 1 % threshold on a $20 000 deposit is $200 too
+    c = _by_id(rc.trade_checks(_pause_rows(), now_ts=S + 60 * H, pause_hours=24.0))
+    assert (c[5]["rules"][4], c[6]["rules"][4]) == (rc.VIOLATED, rc.OK)
+    assert rc.pauses(_pause_rows(), deposit_usd=20_000.0, big_loss_pct=1.0)["2025-10-10"]["end"] == S + 48 * H
+    assert rc.pauses(_pause_rows(), deposit_usd=20_000.0) == {}
+
+
+def test_48h_pause_without_trades_or_losses():
+    assert rc.pauses([]) == {} and rc.trade_checks([], now_ts=S) == [] and rc.weekly_violations([], now_ts=S) == []
+    # only open trades: nothing realized, no pause
+    opened = [_t(1, "SOL", "long", D, None, None, status="open"), _t(2, "ADA", "long", S + H, None, None, status="open")]
+    assert rc.pauses(opened) == {} and all(x["pause"] is None for x in rc.trade_checks(opened, now_ts=S + 2 * H))
+    # a big-loss day with no trade after it breaks nothing
+    (w,) = rc.weekly_violations(_pause_rows()[:3], now_ts=S + 60 * H)
+    assert (w["big_loss_days"], w["paused"], w["rules"][4]["violated"]) == (1, 0, 0)
+
+
+def test_big_loss_day_counts_every_close_of_the_day_and_pauses_overlap():
+    # the day stop (2 losses in a row) comes at 02:00, but a trade opened before it closes at 20:00 for −$185: the
+    # day's realized P&L, −$205, makes it a big-loss day even though the stop came first
+    rows = [
+        _t(1, "SOL", "long", D, D + 1 * H, -10.0),
+        _t(2, "SOL", "long", D + 0.5 * H, D + 2 * H, -10.0),
+        _t(3, "DOGE", "long", D + 0.2 * H, D + 20 * H, -185.0),
+    ]
+    assert rc.day_stops(rows)["2025-10-10"] == {"ts": D + 2 * H, "reason": "streak"}
+    assert rc.pauses(rows)["2025-10-10"]["pnl"] == pytest.approx(-205.0)
+    # big losses on 10.10 and 11.10: the pauses overlap on 12.10, and the one that ends last is named
+    rows.append(_t(4, "ADA", "long", S + 2 * H, S + 3 * H, -300.0))  # opened in the first pause, a big loss itself
+    ps = rc.pauses(rows)
+    assert list(ps) == ["2025-10-10", "2025-10-11"]
+    assert rc.in_pause(ps, S + 36 * H)["day"] == "2025-10-11" and rc.in_pause(ps, S + 36 * H)["end"] == S + 72 * H
+    assert rc.in_pause(ps, S + 12 * H)["day"] == "2025-10-10" and rc.in_pause(ps, S + 72 * H) is None
+    assert rc.in_pause(ps, S - 1) is None
+
+
+def test_weekly_counts_of_the_48h_pause():
+    w = {x["week"]: x for x in rc.weekly_violations(_pause_rows(), now_ts=S + 60 * H)}
+    # W41 (10-12.10): the big-loss day; trades 5 and 6 opened in the pause, the Bybit row 8 only on its close time;
+    # trade 4 broke the day stop. W42: trade 7, opened as the pause ended
+    assert (w["2025-W41"]["big_loss_days"], w["2025-W41"]["paused"], w["2025-W41"]["approx"]) == (1, 2, 1)
+    assert w["2025-W41"]["rules"][4] == {"status": rc.VIOLATED, "violated": 3, "checked": 6, "unknown": 0}
+    assert (w["2025-W42"]["big_loss_days"], w["2025-W42"]["paused"], w["2025-W42"]["rules"][4]["status"]) == (0, 0, rc.OK)
+    # a big-loss day without a day stop (a 1 % threshold) still shows in its own week, as a stop day does
+    sun = datetime(2025, 10, 12, 20, tzinfo=UTC).timestamp()
+    w = rc.weekly_violations([_t(1, "SOL", "long", sun, sun + 6 * H, -150.0)], now_ts=sun + 86400, big_loss_pct=1.0)
+    assert [(x["week"], x["n_trades"], x["days_stopped"], x["big_loss_days"]) for x in w] == [("2025-W42", 0, 0, 1), ("2025-W41", 1, 0, 0)]
+    # a trade in the pause is not "by the rules"
+    s = rc.compliance_summary(_pause_rows(), now_ts=S + 60 * H)
+    assert (s["n_violated"], s["n_approx"]) == (3, 1)
+
+
 def _alt_rows():
     return [
         _t(1, "SOL", "long", D, D + 10 * H, -300.0),
@@ -272,6 +371,25 @@ def test_a_trade_opened_at_now_still_sees_the_open_alt_longs():
     c = _by_id(rc.trade_checks(rows, now_ts=now))
     assert (c[5]["alt_longs"], c[5]["rules"][2]) == (4, rc.VIOLATED)
     assert c[4]["alt_longs"] == 4 and c[4]["rules"][2] == rc.VIOLATED  # AVAX, opened while SOL, DOGE, XRP were open
+
+
+def test_one_asset_under_venue_names_is_one_alt_long():
+    # PEPE long on Hyperliquid (kPEPE) and on Bybit (1000PEPE), PUMP on both (PUMP / PUMPFUN): two alts, not four;
+    # a long in PEPE2, another token, is a third. A real opening time on the Bybit-shaped rows (journal_add style).
+    rows = [
+        _t(1, "kPEPE", "long", D, D + 10 * H, 1.0),
+        _t(2, "1000PEPEUSDT", "long", D + 1 * H, D + 10 * H, 1.0, BYBIT),
+        _t(3, "PUMP", "long", D + 2 * H, D + 10 * H, 1.0),
+        _t(4, "PUMPFUNUSDT", "long", D + 3 * H, D + 10 * H, 1.0, BYBIT),
+        _t(5, "PEPE2USDT", "long", D + 4 * H, D + 10 * H, 1.0, BYBIT),
+        _t(6, "WIFUSDT", "long", D + 5 * H, D + 10 * H, 1.0, BYBIT),  # the 4th distinct alt
+    ]
+    c = _by_id(rc.trade_checks(rows, now_ts=D + 20 * H))
+    assert {i: c[i]["alt_longs"] for i in c} == {1: 1, 2: 1, 3: 2, 4: 2, 5: 3, 6: 4}
+    assert [i for i in c if c[i]["rules"][2] == rc.VIOLATED] == [6]
+    # the same trades under one name each give the same counts
+    same = [dict(r, symbol=s) for r, s in zip(rows, ("PEPE", "PEPE", "PUMP", "PUMP", "PEPE2", "WIF"), strict=True)]
+    assert [x["alt_longs"] for x in rc.trade_checks(same, now_ts=D + 20 * H)] == [1, 1, 2, 2, 3, 4]
 
 
 def _hip3_rows():
@@ -377,6 +495,59 @@ def test_stop_and_target_from_journal_add():
     assert (c[4]["rules"][1], c[4]["rules"][5]) == (rc.UNKNOWN, rc.UNKNOWN)  # an import: no stop
 
 
+def _wrong_side_rows():
+    # journal_add rows, entry 100, size 10: a long needs stop < entry < target, a short target < entry < stop
+    def t(i, side, stop, target):
+        return _t(i, "BTCUSDT", side, D + i * H, D + i * H + 1800, 5.0, "[]", size=10.0, entry=100.0, stop=stop, target=target)
+
+    return [
+        t(1, "long", 95.0, 110.0),  # risk $50, R:R 2
+        t(2, "long", 95.0, 90.0),  # target below the entry: |90 - 100| / |100 - 95| = 2 would pass by abs()
+        t(3, "long", 105.0, 110.0),  # stop above the entry: "risk" $50 and R:R 2 by abs()
+        t(4, "short", 105.0, 90.0),  # risk $50, R:R 2
+        t(5, "short", 95.0, 110.0),  # both on the wrong side
+        t(6, "long", 100.0, 110.0),  # break-even stop: risk 0 by abs(), R:R undefined
+        t(7, "short", 105.0, 100.0),  # target at the entry: R:R 0
+    ]
+
+
+def test_rules_1_and_5_check_the_side_of_stop_and_target():
+    c = _by_id(rc.trade_checks(_wrong_side_rows(), now_ts=D + 10 * H))
+    got = {i: (c[i]["rules"][1], c[i]["rules"][5], c[i]["wrong_side"]) for i in c}
+    assert got == {
+        1: (rc.OK, rc.OK, None),
+        2: (rc.OK, rc.UNKNOWN, "target below the entry of a long"),  # the stop is fine: rule 1 still holds
+        3: (rc.UNKNOWN, rc.UNKNOWN, "stop above the entry of a long"),
+        4: (rc.OK, rc.OK, None),
+        5: (rc.UNKNOWN, rc.UNKNOWN, "stop below the entry of a short; target above the entry of a short"),
+        6: (rc.UNKNOWN, rc.UNKNOWN, "stop at the entry (break-even): the risk at the opening is not recorded"),
+        7: (rc.OK, rc.UNKNOWN, "target at the entry"),
+    }
+    # wrong-side rows are not compliant: only the two correct trades count as ok
+    s = rc.compliance_summary(_wrong_side_rows(), now_ts=D + 10 * H)
+    assert (s["n_ok"], s["n_violated"], s["n_unknown"]) == (2, 0, 5)
+    (w,) = rc.weekly_violations(_wrong_side_rows(), now_ts=D + 10 * H)
+    assert w["rules"][5] == {"status": rc.OK, "violated": 0, "checked": 2, "unknown": 5}
+    assert w["rules"][1] == {"status": rc.OK, "violated": 0, "checked": 4, "unknown": 3}
+    # a correct row still gets its R:R judged: a short's target 95 is 1x the stop distance
+    (bad,) = rc.trade_checks(
+        [_t(1, "BTCUSDT", "short", D, D + H, 1.0, "[]", size=10.0, entry=100.0, stop=105.0, target=95.0)], now_ts=D + 2 * H
+    )
+    assert (bad["rules"][5], bad["wrong_side"]) == (rc.VIOLATED, None)
+
+
+def test_wrong_side_helper_edges():
+    assert rc.wrong_side("long", 100.0, 99.99, 100.01) is None and rc.wrong_side("short", 100.0, 100.01, 99.99) is None
+    assert rc.wrong_side("long", 100.0, None, None) is None and rc.wrong_side("long", None, 105.0, 90.0) is None
+    assert rc.wrong_side(None, 100.0, 105.0, 90.0) is None  # no direction: nothing to judge
+    assert rc.wrong_side("short", 100.0, 100.0, None) == "stop at the entry (break-even): the risk at the opening is not recorded"
+    assert rc.wrong_side("long", 100.0, None, 99.0) == "target below the entry of a long"
+    # options: stop / target are on the underlying, entry is the premium; rule 5 does not apply, rule 1 is the premium
+    opt = _t(1, "BTC-17OCT25-110000-C", "long", D, D + H, 1.0, '["option"]', size=0.1, entry=500.0, stop=100000.0, target=120000.0)
+    (c,) = rc.trade_checks([opt], now_ts=D + 2 * H)
+    assert (c["rules"][1], c["rules"][5], c["wrong_side"]) == (rc.OK, rc.NA, None)
+
+
 def test_open_risk_sums_rule_1_risk_of_the_open_trades():
     btc = _t(1, "BTCUSDT", "long", D, None, None, "[]", size=0.05, entry=84000.0, stop=82000.0, status="open")  # $100
     opt = _t(2, "BTC-17OCT25-110000-C", "long", D, None, None, '["option"]', size=0.1, entry=800.0, status="open")  # $80
@@ -393,6 +564,10 @@ def test_open_risk_sums_rule_1_risk_of_the_open_trades():
     edge = _t(6, "ETHUSDT", "short", D, None, None, "[]", size=1.0, entry=4000.0, stop=4120.0, status="open")  # $120
     assert rc.open_risk([btc, opt, edge]) == {"status": rc.OK, "total": pytest.approx(300.0), "limit": 300.0, "n_open": 3, "n_unknown": 0}
     assert rc.open_risk([done])["status"] == rc.NA and rc.open_risk([btc], deposit_usd=2_000.0)["status"] == rc.VIOLATED
+    # a stop at or past the entry is no measure of the risk: unknown, not $0 or the distance into profit
+    for stop in (84000.0, 86000.0):
+        r = rc.open_risk([btc, {**btc, "id": 7, "stop": stop}])
+        assert (r["status"], r["total"], r["n_unknown"]) == (rc.UNKNOWN, pytest.approx(100.0), 1)
 
 
 def test_weekly_violations_newest_first_with_counts():

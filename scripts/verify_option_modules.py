@@ -14,7 +14,6 @@ import argparse
 import csv
 import json
 import math
-import resource
 import statistics
 import sys
 import time
@@ -26,6 +25,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import verify_put_skew as vps  # noqa: E402  (scripts/ is not a package)
+from common_helpers import rss_mb  # noqa: E402
 
 from tradedesk.analytics.option_condor import (  # noqa: E402
     LEGS,
@@ -82,10 +82,6 @@ MODELS = {
 
 def ymd(t: int) -> str:
     return datetime.fromtimestamp(t / 1000, UTC).strftime("%Y-%m-%d")
-
-
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
 
 
 def pc(x: float | None, k: float = PCT) -> str:

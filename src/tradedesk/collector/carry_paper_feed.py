@@ -22,12 +22,12 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from ..analytics.carry import DAY_MS, _Leg, _Market
-from ..analytics.carry_rules import DECISION_DELAY_MS
+from ..analytics.carry_rules import DECISION_DELAY_MS, FUNDING_STEP_MS
 from ..core.envelope import Builder
 from ..core.errors import ProviderError
 from ..runtime import Runtime
 from ..tools.perps import current_funding
-from .carry_paper_engine import BYBIT, PERP_VENUE, SPOT_VENUE, CarryParams, FeedData
+from .carry_paper_engine import BYBIT, GAP_CONFIRM_CYCLES, PERP_VENUE, SPOT_VENUE, CarryParams, FeedData
 from .market_data import bars_4h, funding_entries
 
 STABLES = {"USDC", "FDUSD", "TUSD", "USDP", "DAI", "BUSD", "USDE", "PYUSD", "USD1", "RLUSD", "EUR", "XUSD", "BFUSD"}
@@ -138,6 +138,19 @@ def _reload_from(open_positions: list[dict[str, Any]]) -> dict[str, int]:
     return out
 
 
+def _flag_incomplete(got: dict[str, Any], sym: str, venue: str, flags: list[dict[str, Any]]) -> None:
+    """Flag an incomplete history result. ``funding_history_incomplete``: our request was cut short (page limit, a failed
+    page) and a re-read may fix it, so the engine holds the position without counting R2 cycles. ``funding_rows_dropped``:
+    the walk finished but the venue sent rows without a usable timestamp; a re-read returns the same rows, so the engine
+    counts R2 cycles as for any missing payment. Either way the caller records no coverage for the window."""
+    if got["complete"]:
+        return
+    if got.get("truncated", True):
+        flags.append({"symbol": sym, "venue": venue, "issue": "funding_history_incomplete"})
+    else:
+        flags.append({"symbol": sym, "venue": venue, "issue": "funding_rows_dropped", "dropped_rows": int(got.get("dropped_rows") or 0)})
+
+
 class LiveFeed:
     def __init__(self, rt: Runtime, *, workers: int = 4, pacer: Pacer | None = None) -> None:
         self.rt = rt
@@ -174,8 +187,7 @@ class LiveFeed:
                 flags.append({"symbol": sym, "venue": venue, "issue": "funding_history_unavailable"})
                 return None
             entries = funding_entries(got["rows"])
-            if not got["complete"]:
-                flags.append({"symbol": sym, "venue": venue, "issue": "funding_history_incomplete"})
+            _flag_incomplete(got, sym, venue, flags)
             await store.cp_funding_put(venue, sym, [(e["ts_ms"], e["rate"]) for e in entries], covered_from=None, covered_to=None)
             rows = await store.cp_funding_rows(venue, sym, since, until)
             return [{"ts_ms": ts, "rate": r} for ts, r in rows] or None
@@ -183,7 +195,46 @@ class LiveFeed:
             if st["covered_to"] >= until and st["last_ts"] >= until - DECISION_DELAY_MS - 60_000:
                 got: dict[str, Any] | None = {"rows": [], "complete": True}  # the scheduled payment is already stored
             else:
-                got = await self._fetch_range(b, venue, sym, st["last_ts"] + 1, until)  # incremental
+                # Incremental, from the end of the coverage rather than after the newest stored row: an incomplete read
+                # (a row dropped for a missing timestamp) stores the later rows but records no coverage, so starting at
+                # ``last_ts + 1`` would skip the hole and the next complete read would record coverage over it. Clamped
+                # to ``since``: a hole older than the window is not read again, and the clamped read records coverage
+                # over it. ``since`` moves forward per strategy and symbol only: A and B share the binanceusdm history
+                # with different ``since`` (held: open - 1h, else t - lookback - 1d), so the clamped read of one can
+                # cover a hole still inside the other's window; and a symbol back in the universe after more than the
+                # window gets coverage over the span it missed. ``covered_from..covered_to`` thus means "every row at or
+                # after the ``since`` of the writing read was read", not "every row was read".
+                start = max(min(st["last_ts"], st["covered_to"]) + 1, since)
+                got = await self._fetch_range(b, venue, sym, start, until)
+                # Cap the re-reads like engine R2, one cycle later: a hole behind stored later rows (``last_ts >
+                # covered_to``) still sent without a timestamp when the coverage is more than GAP_CONFIRM_CYCLES funding
+                # steps old is confirmed, so a non-held symbol has 3 ``funding_rows_dropped`` cycles plus the confirming
+                # one (R2: ``gaps >= 3``, 3 cycles). The age is that of ``covered_to``, not of the hole: coverage already
+                # stale for another reason (truncated reads under 429 / 418) confirms a fresh hole on its first complete
+                # read; a held position's payment is still caught by R2 through ``reload_from``. The venue will not fix
+                # it, and a ``funding_rows_dropped`` flag on every cycle while the hole stays in the window (up to the
+                # lookback + 1 day) would mark all those cycles incomplete. The read itself still starts at the
+                # coverage end, so every row with a time is read; only a read whose sole defect is dropped rows is
+                # confirmed (a truncated read is our own failure: Bybit walks backward and keeps the newest rows, so the
+                # older span is unread). It records coverage and one ``funding_rows_gap_confirmed`` flag instead of
+                # ``funding_rows_dropped``; a newer dropped row in the same read is confirmed with it.
+                if (
+                    got is not None
+                    and not got["complete"]
+                    and not got.get("truncated", True)
+                    and st["last_ts"] > st["covered_to"]
+                    and until - st["covered_to"] > GAP_CONFIRM_CYCLES * FUNDING_STEP_MS
+                ):
+                    flags.append(
+                        {
+                            "symbol": sym,
+                            "venue": venue,
+                            "issue": "funding_rows_gap_confirmed",
+                            "covered_to": st["covered_to"],
+                            "dropped_rows": int(got.get("dropped_rows") or 0),
+                        }
+                    )
+                    got = {**got, "complete": True}
             cov_from = st["covered_from"]
         else:
             got = await self._fetch_range(b, venue, sym, since, until)
@@ -192,8 +243,7 @@ class LiveFeed:
             flags.append({"symbol": sym, "venue": venue, "issue": "funding_history_unavailable"})
             return None
         entries = funding_entries(got["rows"])
-        if not got["complete"]:
-            flags.append({"symbol": sym, "venue": venue, "issue": "funding_history_incomplete"})
+        _flag_incomplete(got, sym, venue, flags)
         if store is None:
             return entries or None
         await store.cp_funding_put(

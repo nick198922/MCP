@@ -62,6 +62,10 @@ def compile_expr(src: str) -> CompiledExpr:
         tree = ast.parse(src, mode="eval")
     except SyntaxError as e:
         raise DslError(f"syntax error: {e.msg}") from None
+    except ValueError as e:  # Python 3.11: a null byte in the source
+        raise DslError(f"syntax error: {e}") from None
+    except (RecursionError, MemoryError):  # a long flat chain such as 1 + 1 + ... (100k terms) overflows the parser's stack
+        raise DslError("expression too long or too deeply nested") from None
 
     for node in ast.walk(tree):
         if isinstance(

@@ -92,7 +92,7 @@ class Scheduler:
                 job.metrics.failures += 1
                 job.metrics.last_error = f"{type(e).__name__}: {e}"
                 job.metrics.last_failure, job.metrics.last_failure_ts = job.metrics.last_error, time.time()
-                log.warning("collector job %s failed: %s", job.name, e)
+                log.warning("collector job %s failed: %s", job.name, e, extra={"job": job.name, "error": job.metrics.last_error})
             finally:
                 job.metrics.runs += 1
                 job.metrics.last_duration_ms = (time.perf_counter() - start) * 1000.0
@@ -314,6 +314,7 @@ async def _health_alerts(rt: "Runtime", now_ts: int) -> list:
         now_ts=now_ts,
         min_failures=s.alerts_health_min_failures,
         quiet_seconds=s.alerts_health_cooldown,
+        confirm_seconds=s.alerts_health_confirm,
     )
     return fired
 
@@ -333,15 +334,45 @@ async def _evaluate_alerts(rt: "Runtime") -> int:
         fired += await evaluate_rules(rules, rt.store, now_ts=now_ts)
     # DB-backed DSL (Phase 3.1) rules — always consulted when the job runs.
     fired += await evaluate_dsl_rules(rt.store, now_ts=now_ts)
+    health: list = []
     if s.alerts_health_enabled:
         try:
-            fired += await _health_alerts(rt, now_ts)
+            health = await _health_alerts(rt, now_ts)
         except Exception as e:  # noqa: BLE001 — a health-alert failure (e.g. the DB read) must not drop the other alerts
             log.warning("provider-health alerts skipped this tick: %s", e)
-    if not fired:
+    if not fired and not health:
         return 0
     channels = build_channels(s)
     delivered_rows = 0
+    # Provider health: one row per provider in every channel's log, but the non-log channels get one digest per tick
+    # (alerts/health.py, digest): a network blip used to send one Telegram message per provider, down and up.
+    from ..alerts.health import digest  # noqa: PLC0415
+
+    summary = digest(health) if health else None
+    sent: dict[str, tuple[bool, str | None]] = {}
+    for ch in channels:
+        if ch.name != "log" and summary is not None:
+            sent[ch.name] = await ch.send(summary)
+    for alert in health:
+        delivered_any = False
+        for ch in channels:
+            if ch.name == "log":
+                ok, err = await ch.send(alert)
+            elif ch.name in sent:
+                ok, err = sent[ch.name]
+            else:
+                continue  # left out of the digest (a short outage's recovery): logged only
+            await rt.store.insert_alert(
+                rule_id=alert.rule_id,
+                ts=alert.ts,
+                payload=alert.payload() | {"channel": ch.name},
+                channel=ch.name,
+                delivered=ok,
+                delivery_error=err,
+            )
+            delivered_any = delivered_any or ok
+        if delivered_any:
+            delivered_rows += 1
     for alert in fired:
         delivered_any = False
         last_err: str | None = None
@@ -510,28 +541,41 @@ def _num(v: object) -> float | None:
 
 
 async def _pm_leaderboard(rt: "Runtime", category: str, pages: int) -> list[dict[str, object]]:
-    """Polymarket leaderboard rows for one category, merged by wallet over the DAY / WEEK / MONTH / ALL rankings."""
+    """Polymarket leaderboard rows for one category, merged by wallet over the DAY / WEEK / MONTH / ALL rankings
+    (data-api v2: up to ``pages`` cursor pages of 50 per ranking; `user_id` is the proxy wallet v1 called
+    `proxyWallet`, so accounts continue the rows written before the v1 shutdown of 2026-11-02)."""
     merged: dict[str, dict[str, object]] = {}
     for period, key in (("MONTH", "pnl_month"), ("WEEK", "pnl_week"), ("DAY", "pnl_day"), ("ALL", "pnl_all")):
-        for page in range(max(1, pages)):
-            rows = (await rt.polymarket.leaderboard(period=period, category=category, limit=50, offset=page * 50)).data
-            for r in rows:
-                wallet = str(r.get("proxyWallet") or "").lower() if isinstance(r, dict) else ""
+        cursor: str | None = None
+        for _ in range(max(1, pages)):
+            page = (await rt.polymarket.leaderboard(period=period, category=category, limit=50, cursor=cursor)).data
+            for r in page["rows"]:
+                wallet = str(r.get("user_id") or "").lower() if isinstance(r, dict) else ""
                 if not wallet:
                     continue
-                m = merged.setdefault(wallet, {"account": wallet, "name": r.get("userName") or None})
+                m = merged.setdefault(wallet, {"account": wallet, "name": r.get("user_name") or None})
                 m[key] = _num(r.get("pnl"))
                 if period == "MONTH":
-                    m["vlm_month"] = _num(r.get("vol"))
-            if len(rows) < 50:
+                    m["vlm_month"] = _num(r.get("volume"))
+            cursor = page["next_cursor"]
+            if not cursor:  # v2: a short page does not end the walk, only a missing cursor does
                 break
     return list(merged.values())
 
 
+# An account that drops below `traders_min_account_usd` stays in the Hyperliquid snapshot this many days after it was
+# last stored above it: without them a forward "does past PnL persist" test sees only survivors (smart-money report
+# 2026-10-17, "Що далі" item 2).
+TRADERS_KEEP_DAYS = 60
+
+
 async def _collect_traders(rt: "Runtime") -> int:
     """Daily snapshot of strong traders' public results into `trader_snapshot`: every Hyperliquid account worth at
-    least `traders_min_account_usd`, and the Polymarket leaderboards (overall and crypto). One venue failing does not
-    stop the others; the job fails only if nothing was written."""
+    least `traders_min_account_usd`, plus those worth that much on any stored day of the last `TRADERS_KEEP_DAYS`
+    (so the forward test of PnL persistence keeps the accounts that lost money), and the Polymarket leaderboards
+    (overall and crypto). One venue failing does not stop the others; the job fails only if nothing was written."""
+    from datetime import timedelta  # noqa: PLC0415
+
     from ..core.errors import ProviderError  # noqa: PLC0415
     from ..providers.hyperliquid import parse_leaderboard  # noqa: PLC0415
 
@@ -540,8 +584,10 @@ async def _collect_traders(rt: "Runtime") -> int:
     now = rt.now()
     day, ts = now.strftime("%Y-%m-%d"), int(now.timestamp())
     written, errors = 0, []
+    since = (now - timedelta(days=TRADERS_KEEP_DAYS)).strftime("%Y-%m-%d")
+    keep = await rt.store.trader_accounts_since("hyperliquid", since, s.traders_min_account_usd)
     try:
-        rows = parse_leaderboard((await rt.hyperliquid.leaderboard()).data, s.traders_min_account_usd)
+        rows = parse_leaderboard((await rt.hyperliquid.leaderboard()).data, s.traders_min_account_usd, keep)
         written += await rt.store.insert_trader_snapshot(day, ts, "hyperliquid", rows)
     except ProviderError as e:
         errors.append(f"hyperliquid: {e}")
@@ -583,23 +629,27 @@ async def _collect_trader_positions(rt: "Runtime") -> int:
     for account in pm_accounts:
         tried += 1
         try:
-            raw = (await rt.polymarket.positions(account, limit=100)).data  # the 100 largest open positions
+            raw = (await rt.polymarket.positions(account, limit=100, min_value_usd=100.0)).data  # the 100 largest open
         except ProviderError as e:
             failed += 1
             log.debug("positions polymarket %s: %s", account, e)
             continue
-        positions = [
+        positions = [  # data-api v2 fields; `market` is the outcome token id, as v1's `asset` was
             {
-                "market": str(r.get("asset")),
+                "market": str(r.get("token_id")),
                 "side": str(r.get("outcome") or ""),
-                "size": _num(r.get("size")),
-                "entry_px": _num(r.get("avgPrice")),
-                "value_usd": _num(r.get("currentValue")),
-                "upnl": _num(r.get("cashPnl")),
+                "size": _num(r.get("current_size")),
+                "entry_px": _num(r.get("avg_price")),
+                "value_usd": _num(r.get("current_value")),
+                "upnl": _num(r.get("unrealized_pnl")),
                 "title": r.get("title"),
             }
             for r in raw
-            if isinstance(r, dict) and r.get("asset") and not r.get("redeemable") and (_num(r.get("currentValue")) or 0) >= 100
+            if isinstance(r, dict)
+            and r.get("token_id")
+            and not r.get("redeemable")
+            and str(r.get("status") or "OPEN") == "OPEN"
+            and (_num(r.get("current_value")) or 0) >= 100
         ]
         written += await rt.store.record_trader_positions(ts, "polymarket", account, positions)
     if tried and failed == tried:

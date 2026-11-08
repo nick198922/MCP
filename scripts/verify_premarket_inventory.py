@@ -24,13 +24,13 @@ import argparse
 import asyncio
 import json
 import re
-import resource
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
+from common_helpers import rss_mb
 
 from tradedesk.analytics.premarket_inventory import (
     conversion_time,
@@ -53,10 +53,6 @@ CATALOGS = {48: "new_listing", 49: "latest_news", 161: "delisting"}
 LAUNCH_RE = re.compile(r"Launch USD.{1,3}-Margined ([A-Z0-9]+USDT) Perpetual Contract Pre-Market", re.I)
 CONVERT_RE = re.compile(r"Convert USD.{1,3}-Margined ([A-Z0-9]+USDT) Perpetual Contract Pre-Market", re.I)
 SPOT_PM_RE = re.compile(r"Binance Will End the .*\(([A-Z0-9]+)\) Pre-Market", re.I)
-
-
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 
 
 def ts(ms: int | None) -> str:

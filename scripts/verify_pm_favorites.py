@@ -21,7 +21,6 @@ import json
 import logging
 import math
 import random
-import resource
 import statistics
 import sys
 import time
@@ -31,6 +30,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from common_helpers import rss_mb  # noqa: E402
 from verify_pm_yes_calibration import DEFAULT_CACHE as YES_CACHE  # noqa: E402
 from verify_pm_yes_calibration import (  # noqa: E402
     _needs_fetch,
@@ -73,10 +73,6 @@ SAMPLE_FRAC = 0.245
 SLIM_KEYS = (
     "market_id event_id condition_id yes_token no_token outcome T anchor start closed category neg_risk volume fee_rate fee_exp year"
 ).split()
-
-
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 
 
 def log(msg: str) -> None:

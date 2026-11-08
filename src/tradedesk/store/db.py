@@ -7,8 +7,10 @@ connection, so a single ``Store`` instance can be shared across async tasks.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import sqlite3
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
@@ -206,6 +208,28 @@ class Store:
         row = await cur.fetchone()
         return int(row[0]) if row else 0
 
+    @contextlib.asynccontextmanager
+    async def _write(self) -> AsyncIterator[aiosqlite.Connection]:
+        """One write on the shared connection: commit when the block ends, roll back and re-raise on any error.
+
+        Python sqlite3 opens a transaction implicitly before INSERT/UPDATE/DELETE; a statement that fails (a UNIQUE or
+        foreign key violation, disk I/O) would otherwise leave it open with the database write lock held, and other
+        writers (the collector process) would get "database is locked" until something else commits. The block runs
+        under ``_tx_lock`` so no other task's write lands inside this transaction: the commit never publishes someone
+        else's half-built rows and the rollback never undoes them.
+
+        The rollback is unconditional: when the task is cancelled while its statement still waits in aiosqlite's queue,
+        ``in_transaction`` is not yet set, but the statement runs later and opens a transaction. A queued ``rollback()``
+        runs after it and undoes it; with no open transaction it is a no-op."""
+        conn = self.conn
+        async with self._tx_lock or asyncio.Lock():
+            try:
+                yield conn
+                await conn.commit()
+            except BaseException:
+                await conn.rollback()
+                raise
+
     # ---------- writes ----------
 
     async def insert_atm_term(self, ts: int, currency: str, rows: list[dict[str, Any]]) -> int:
@@ -227,12 +251,12 @@ class Store:
             )
             for r in rows
         ]
-        await self.conn.executemany(
-            "INSERT OR REPLACE INTO atm_term (ts, currency, expiry, days, forward, atm_iv, rr25, fly25, rr10, fly10)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?)",
-            payload,
-        )
-        await self.conn.commit()
+        async with self._write():
+            await self.conn.executemany(
+                "INSERT OR REPLACE INTO atm_term (ts, currency, expiry, days, forward, atm_iv, rr25, fly25, rr10, fly10)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?)",
+                payload,
+            )
         return len(payload)
 
     async def insert_funding(self, ts: int, rows: list[dict[str, Any]]) -> int:
@@ -241,30 +265,30 @@ class Store:
         payload = [
             (ts, r["venue"], r["base"], float(r["rate_per_interval"]), float(r["interval_hours"]), float(r["annualized"])) for r in rows
         ]
-        await self.conn.executemany(
-            "INSERT OR REPLACE INTO funding_hist (ts, venue, base, rate_per_interval, interval_hours, annualized) VALUES (?,?,?,?,?,?)",
-            payload,
-        )
-        await self.conn.commit()
+        async with self._write():
+            await self.conn.executemany(
+                "INSERT OR REPLACE INTO funding_hist (ts, venue, base, rate_per_interval, interval_hours, annualized) VALUES (?,?,?,?,?,?)",
+                payload,
+            )
         return len(payload)
 
     async def insert_basis(self, ts: int, currency: str, rows: list[dict[str, Any]]) -> int:
         if not rows:
             return 0
         payload = [(ts, currency, r["expiry"], float(r["days"]), float(r["basis_pct"]), r.get("annualized_simple")) for r in rows]
-        await self.conn.executemany(
-            "INSERT OR REPLACE INTO basis_hist (ts, currency, expiry, days, basis_pct, annualized_simple) VALUES (?,?,?,?,?,?)",
-            payload,
-        )
-        await self.conn.commit()
+        async with self._write():
+            await self.conn.executemany(
+                "INSERT OR REPLACE INTO basis_hist (ts, currency, expiry, days, basis_pct, annualized_simple) VALUES (?,?,?,?,?,?)",
+                payload,
+            )
         return len(payload)
 
     async def insert_snapshot(self, ts: int, kind: str, payload: dict[str, Any]) -> int:
-        cur = await self.conn.execute(
-            "INSERT INTO snapshots (ts, kind, payload) VALUES (?,?,?)",
-            (ts, kind, json.dumps(payload, separators=(",", ":"))),
-        )
-        await self.conn.commit()
+        async with self._write():
+            cur = await self.conn.execute(
+                "INSERT INTO snapshots (ts, kind, payload) VALUES (?,?,?)",
+                (ts, kind, json.dumps(payload, separators=(",", ":"))),
+            )
         return int(cur.lastrowid or 0)
 
     # ---------- reads ----------
@@ -328,12 +352,12 @@ class Store:
             )
         if not payload:
             return 0
-        await self.conn.executemany(
-            "INSERT OR REPLACE INTO supply_snapshot (day, coin_id, ts, symbol, name, market_cap_rank, price, market_cap, fdv, "
-            "volume_24h, circulating_supply, total_supply, max_supply, last_updated) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            payload,
-        )
-        await self.conn.commit()
+        async with self._write():
+            await self.conn.executemany(
+                "INSERT OR REPLACE INTO supply_snapshot (day, coin_id, ts, symbol, name, market_cap_rank, price, market_cap, fdv, "
+                "volume_24h, circulating_supply, total_supply, max_supply, last_updated) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                payload,
+            )
         return len(payload)
 
     async def insert_global_snapshot(self, day: str, ts: int, data: dict[str, Any]) -> int:
@@ -356,21 +380,21 @@ class Store:
             return 0
         share = data.get("market_cap_percentage") if isinstance(data.get("market_cap_percentage"), dict) else {}
         active = data.get("active_cryptocurrencies")
-        await self.conn.execute(
-            "INSERT OR REPLACE INTO global_snapshot (day, ts, total_market_cap, total_volume, btc_dominance, eth_dominance, "
-            "mcap_change_24h, active_cryptocurrencies) VALUES (?,?,?,?,?,?,?,?)",
-            (
-                day,
-                ts,
-                mcap,
-                usd("total_volume"),
-                pct(share.get("btc")),
-                pct(share.get("eth")),
-                pct(data.get("market_cap_change_percentage_24h_usd")),
-                int(active) if isinstance(active, int) and not isinstance(active, bool) else None,
-            ),
-        )
-        await self.conn.commit()
+        async with self._write():
+            await self.conn.execute(
+                "INSERT OR REPLACE INTO global_snapshot (day, ts, total_market_cap, total_volume, btc_dominance, eth_dominance, "
+                "mcap_change_24h, active_cryptocurrencies) VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    day,
+                    ts,
+                    mcap,
+                    usd("total_volume"),
+                    pct(share.get("btc")),
+                    pct(share.get("eth")),
+                    pct(data.get("market_cap_change_percentage_24h_usd")),
+                    int(active) if isinstance(active, int) and not isinstance(active, bool) else None,
+                ),
+            )
         return 1
 
     PM_GAP_COLUMNS = (
@@ -400,8 +424,8 @@ class Store:
         rows = [{**r, "rules": None} if r.get("rules_hash") is not None and prev[r["market_id"]] == r["rules_hash"] else r for r in rows]
         payload = [(ts, *(r.get(c) for c in cols)) for r in rows]
         marks = ",".join("?" * (len(cols) + 1))
-        await self.conn.executemany(f"INSERT OR REPLACE INTO pm_gap_snapshot (ts, {', '.join(cols)}) VALUES ({marks})", payload)
-        await self.conn.commit()
+        async with self._write():
+            await self.conn.executemany(f"INSERT OR REPLACE INTO pm_gap_snapshot (ts, {', '.join(cols)}) VALUES ({marks})", payload)
         return len(payload)
 
     OPTION_XVENUE_COLUMNS = (
@@ -423,10 +447,10 @@ class Store:
         if not payload:
             return 0
         marks = ",".join("?" * (len(cols) + 2))
-        await self.conn.executemany(
-            f"INSERT OR REPLACE INTO option_xvenue_snapshot (ts, mode, {', '.join(cols)}) VALUES ({marks})", payload
-        )
-        await self.conn.commit()
+        async with self._write():
+            await self.conn.executemany(
+                f"INSERT OR REPLACE INTO option_xvenue_snapshot (ts, mode, {', '.join(cols)}) VALUES ({marks})", payload
+            )
         return len(payload)
 
     async def option_xvenue_rows(self, since_ts: int = 0) -> list[dict[str, Any]]:
@@ -443,8 +467,8 @@ class Store:
         if not payload:
             return 0
         marks = ",".join("?" * (len(cols) + 2))
-        await self.conn.executemany(f"INSERT OR REPLACE INTO tradfi_spread (ts, symbol, {', '.join(cols)}) VALUES ({marks})", payload)
-        await self.conn.commit()
+        async with self._write():
+            await self.conn.executemany(f"INSERT OR REPLACE INTO tradfi_spread (ts, symbol, {', '.join(cols)}) VALUES ({marks})", payload)
         return len(payload)
 
     async def tradfi_spread_rows(self, since_ts: int = 0, symbol: str | None = None) -> list[dict[str, Any]]:
@@ -465,12 +489,12 @@ class Store:
         payload = [(ts, r["coin"], *(r.get(c) for c in cols), fetched_ts) for r in rows if r.get("coin") and r.get("at_cap") is not None]
         if not payload:
             return 0
-        before = self.conn.total_changes
         marks = ",".join("?" * (len(cols) + 3))
-        await self.conn.executemany(
-            f"INSERT OR IGNORE INTO hl_oi_cap_snapshot (ts, coin, {', '.join(cols)}, fetched_ts) VALUES ({marks})", payload
-        )
-        await self.conn.commit()
+        async with self._write():
+            before = self.conn.total_changes
+            await self.conn.executemany(
+                f"INSERT OR IGNORE INTO hl_oi_cap_snapshot (ts, coin, {', '.join(cols)}, fetched_ts) VALUES ({marks})", payload
+            )
         return self.conn.total_changes - before
 
     async def hl_oi_cap_has_hour(self, ts: int) -> bool:
@@ -498,12 +522,12 @@ class Store:
         payload = [(day, r["currency"], r["role"], *(r.get(c) for c in cols)) for r in rows if r.get("currency") and r.get("role")]
         if not payload:
             return 0
-        before = self.conn.total_changes
         marks = ",".join("?" * (len(cols) + 3))
-        await self.conn.executemany(
-            f"INSERT OR IGNORE INTO option_leg_snapshot (day, currency, role, {', '.join(cols)}) VALUES ({marks})", payload
-        )
-        await self.conn.commit()
+        async with self._write():
+            before = self.conn.total_changes
+            await self.conn.executemany(
+                f"INSERT OR IGNORE INTO option_leg_snapshot (day, currency, role, {', '.join(cols)}) VALUES ({marks})", payload
+            )
         return self.conn.total_changes - before
 
     async def option_legs_has_day(self, day: str, currency: str) -> bool:
@@ -530,12 +554,12 @@ class Store:
         payload = [(ts, r["rank"], *(r.get(c) for c in cols), fetched_ts) for r in rows if r.get("rank") and r.get("coin_id")]
         if not payload:
             return 0
-        before = self.conn.total_changes
         marks = ",".join("?" * (len(cols) + 3))
-        await self.conn.executemany(
-            f"INSERT OR IGNORE INTO coingecko_trending (ts, rank, {', '.join(cols)}, fetched_ts) VALUES ({marks})", payload
-        )
-        await self.conn.commit()
+        async with self._write():
+            before = self.conn.total_changes
+            await self.conn.executemany(
+                f"INSERT OR IGNORE INTO coingecko_trending (ts, rank, {', '.join(cols)}, fetched_ts) VALUES ({marks})", payload
+            )
         return self.conn.total_changes - before
 
     async def coingecko_trending_has_hour(self, ts: int) -> bool:
@@ -577,16 +601,16 @@ class Store:
         ]
         if not payload:
             return 0
-        before = self.conn.total_changes
         marks = ",".join("?" * (len(cols) + 5))
         sets = ", ".join(f"{c} = excluded.{c}" for c in (*cols, "fetched_ts"))
-        await self.conn.executemany(
-            f"INSERT INTO flow_snapshot (ts, base, venue, market, {', '.join(cols)}, fetched_ts) VALUES ({marks})"
-            f" ON CONFLICT(ts, base, venue, market) DO UPDATE SET {sets}"
-            f" WHERE {self._flow_gaps_sql('excluded.missing')} < {self._flow_gaps_sql('flow_snapshot.missing')}",
-            payload,
-        )
-        await self.conn.commit()
+        async with self._write():
+            before = self.conn.total_changes
+            await self.conn.executemany(
+                f"INSERT INTO flow_snapshot (ts, base, venue, market, {', '.join(cols)}, fetched_ts) VALUES ({marks})"
+                f" ON CONFLICT(ts, base, venue, market) DO UPDATE SET {sets}"
+                f" WHERE {self._flow_gaps_sql('excluded.missing')} < {self._flow_gaps_sql('flow_snapshot.missing')}",
+                payload,
+            )
         return self.conn.total_changes - before
 
     async def flow_snapshot_keys(self, ts: int) -> set[tuple[str, str, str]]:
@@ -617,10 +641,10 @@ class Store:
         if not payload:
             return 0
         marks = ",".join("?" * (len(cols) + 4))
-        await self.conn.executemany(
-            f"INSERT OR REPLACE INTO coinalyze_history (symbol, metric, ts, {', '.join(cols)}, fetched_ts) VALUES ({marks})", payload
-        )
-        await self.conn.commit()
+        async with self._write():
+            await self.conn.executemany(
+                f"INSERT OR REPLACE INTO coinalyze_history (symbol, metric, ts, {', '.join(cols)}, fetched_ts) VALUES ({marks})", payload
+            )
         return len(payload)
 
     async def coinalyze_history_last_ts(self, symbol: str, metric: str) -> int | None:
@@ -652,25 +676,46 @@ class Store:
         return [dict(r) for r in await cur.fetchall()]
 
     async def upsert_pm_gap_outcome(self, row: dict[str, Any], now_ts: int) -> None:
-        """Record one fetch attempt. A settled outcome or a Binance close, once stored, is never overwritten by NULL."""
-        await self.conn.execute(
-            "INSERT INTO pm_gap_outcome (market_id, asset, kind, strike, end_ts, outcome_yes, outcome_prices, outcomes,"
-            " binance_close_end, binance_close_next, attempts, checked_ts, resolved_ts) VALUES (?,?,?,?,?,?,?,?,?,?,1,?,?)"
-            " ON CONFLICT(market_id) DO UPDATE SET"
-            " outcome_yes = COALESCE(outcome_yes, excluded.outcome_yes),"
-            " outcome_prices = COALESCE(excluded.outcome_prices, outcome_prices),"
-            " outcomes = COALESCE(excluded.outcomes, outcomes),"
-            " binance_close_end = COALESCE(binance_close_end, excluded.binance_close_end),"
-            " binance_close_next = COALESCE(binance_close_next, excluded.binance_close_next),"
-            " attempts = attempts + 1, checked_ts = excluded.checked_ts,"
-            " resolved_ts = COALESCE(resolved_ts, excluded.resolved_ts)",
-            (
-                row["market_id"], row["asset"], row["kind"], row["strike"], row["end_ts"], row.get("outcome_yes"),
-                row.get("outcome_prices"), row.get("outcomes"), row.get("binance_close_end"), row.get("binance_close_next"), now_ts,
-                now_ts if row.get("outcome_yes") is not None else None,
-            ),
-        )  # fmt: skip
-        await self.conn.commit()
+        """Record one fetch attempt. A settled outcome, a Binance close, the Gamma close time (``closed_ts``) or the
+        moment the market was found gone early (``gone_ts``), once stored, is never overwritten. An early-close record
+        (``collector.pm_gap.record_closures``) is an attempt too: it adds 1 to ``attempts``, so after its end such a
+        market, if still unresolved, sits slightly behind untried ones in :meth:`pm_gap_outcome_pending`."""
+        async with self._write():
+            await self.conn.execute(
+                "INSERT INTO pm_gap_outcome (market_id, asset, kind, strike, end_ts, outcome_yes, outcome_prices, outcomes,"
+                " binance_close_end, binance_close_next, attempts, checked_ts, resolved_ts, closed_ts, gone_ts)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,1,?,?,?,?)"
+                " ON CONFLICT(market_id) DO UPDATE SET"
+                " outcome_yes = COALESCE(outcome_yes, excluded.outcome_yes),"
+                " outcome_prices = COALESCE(excluded.outcome_prices, outcome_prices),"
+                " outcomes = COALESCE(excluded.outcomes, outcomes),"
+                " binance_close_end = COALESCE(binance_close_end, excluded.binance_close_end),"
+                " binance_close_next = COALESCE(binance_close_next, excluded.binance_close_next),"
+                " attempts = attempts + 1, checked_ts = excluded.checked_ts,"
+                " resolved_ts = COALESCE(resolved_ts, excluded.resolved_ts),"
+                " closed_ts = COALESCE(closed_ts, excluded.closed_ts),"
+                " gone_ts = COALESCE(gone_ts, excluded.gone_ts)",
+                (
+                    row["market_id"], row["asset"], row["kind"], row["strike"], row["end_ts"], row.get("outcome_yes"),
+                    row.get("outcome_prices"), row.get("outcomes"), row.get("binance_close_end"), row.get("binance_close_next"),
+                    now_ts, now_ts if row.get("outcome_yes") is not None else None, row.get("closed_ts"), row.get("gone_ts"),
+                ),
+            )  # fmt: skip
+
+    async def pm_gap_gone_pending(self, snap_ts: int, seen_after: int, limit: int) -> list[dict[str, Any]]:
+        """Markets last listed in a snapshot in [``seen_after``, ``snap_ts``) (so absent from the snapshot at ``snap_ts``)
+        whose end is still after ``snap_ts`` and that have no ``gone_ts`` yet: candidates for an early close. Latest
+        seen first. ``last_seen_ts`` is the last snapshot that listed the market."""
+        cur = await self.conn.execute(
+            "SELECT s.market_id, s.asset, s.kind, s.strike, s.end_ts, s.last_seen_ts"
+            " FROM (SELECT market_id, MAX(asset) AS asset, MAX(kind) AS kind, MAX(strike) AS strike, MAX(end_ts) AS end_ts,"
+            "       MAX(ts) AS last_seen_ts FROM pm_gap_snapshot WHERE ts >= ? GROUP BY market_id) s"
+            " LEFT JOIN pm_gap_outcome o ON o.market_id = s.market_id"
+            " WHERE s.last_seen_ts < ? AND s.end_ts > ? AND o.gone_ts IS NULL"
+            " ORDER BY s.last_seen_ts DESC, s.market_id LIMIT ?",
+            (seen_after, snap_ts, snap_ts, limit),
+        )
+        return [dict(r) for r in await cur.fetchall()]
 
     async def insert_trader_snapshot(self, day: str, ts: int, venue: str, rows: list[dict[str, Any]]) -> int:
         """Leaderboard rows of one venue for one UTC day; idempotent per (day, venue, account). ``rank_month`` is
@@ -698,13 +743,21 @@ class Store:
         ]
         if not payload:
             return 0
-        await self.conn.executemany(
-            "INSERT OR REPLACE INTO trader_snapshot (day, venue, account, ts, name, account_value, pnl_day, pnl_week, pnl_month, "
-            "pnl_all, roi_month, roi_all, vlm_month, rank_month) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            payload,
-        )
-        await self.conn.commit()
+        async with self._write():
+            await self.conn.executemany(
+                "INSERT OR REPLACE INTO trader_snapshot (day, venue, account, ts, name, account_value, pnl_day, pnl_week, pnl_month, "
+                "pnl_all, roi_month, roi_all, vlm_month, rank_month) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                payload,
+            )
         return len(payload)
+
+    async def trader_accounts_since(self, venue: str, since_day: str, min_account_usd: float) -> set[str]:
+        """Accounts of ``venue`` stored worth at least ``min_account_usd`` on some day >= ``since_day`` (YYYY-MM-DD)."""
+        cur = await self.conn.execute(
+            "SELECT DISTINCT account FROM trader_snapshot WHERE venue = ? AND day >= ? AND account_value >= ?",
+            (venue, since_day, min_account_usd),
+        )
+        return {r[0] for r in await cur.fetchall()}
 
     async def tracked_traders(self, venue: str, top_n: int, min_account_usd: float = 0.0) -> list[str]:
         """Accounts to watch from the latest snapshot of ``venue``: the top ``top_n`` by month PnL and the top ``top_n``
@@ -748,33 +801,33 @@ class Store:
         digest = "|".join(sorted(f"{m}:{key(p)}" for m, p in now.items())) or "flat"
         if prev_row and prev_row[0] == digest and not rows:
             return 0
-        if rows:
-            await self.conn.executemany(
-                "INSERT OR REPLACE INTO trader_positions (ts, venue, account, market, side, size, entry_px, value_usd, upnl, "
-                "leverage, liq_px, title) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                [
-                    (
-                        ts,
-                        venue,
-                        account,
-                        str(p["market"]),
-                        str(p["side"]),
-                        p.get("size"),
-                        p.get("entry_px"),
-                        p.get("value_usd"),
-                        p.get("upnl"),
-                        p.get("leverage"),
-                        p.get("liq_px"),
-                        p.get("title"),
-                    )
-                    for p in rows
-                ],
+        async with self._write():
+            if rows:
+                await self.conn.executemany(
+                    "INSERT OR REPLACE INTO trader_positions (ts, venue, account, market, side, size, entry_px, value_usd, upnl, "
+                    "leverage, liq_px, title) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    [
+                        (
+                            ts,
+                            venue,
+                            account,
+                            str(p["market"]),
+                            str(p["side"]),
+                            p.get("size"),
+                            p.get("entry_px"),
+                            p.get("value_usd"),
+                            p.get("upnl"),
+                            p.get("leverage"),
+                            p.get("liq_px"),
+                            p.get("title"),
+                        )
+                        for p in rows
+                    ],
+                )
+            await self.conn.execute(
+                "INSERT OR REPLACE INTO trader_position_state (venue, account, digest, ts, positions_json) VALUES (?,?,?,?,?)",
+                (venue, account, digest, ts, json.dumps(list(now.values()), separators=(",", ":"))),
             )
-        await self.conn.execute(
-            "INSERT OR REPLACE INTO trader_position_state (venue, account, digest, ts, positions_json) VALUES (?,?,?,?,?)",
-            (venue, account, digest, ts, json.dumps(list(now.values()), separators=(",", ":"))),
-        )
-        await self.conn.commit()
         return len(rows)
 
     async def prune(self, table: str, cutoff_ts: int) -> int:
@@ -792,8 +845,8 @@ class Store:
             "tradfi_spread",
         }:
             raise ValueError(f"unknown table {table!r}")
-        cur = await self.conn.execute(f"DELETE FROM {table} WHERE ts < ?", (cutoff_ts,))
-        await self.conn.commit()
+        async with self._write():
+            cur = await self.conn.execute(f"DELETE FROM {table} WHERE ts < ?", (cutoff_ts,))
         return cur.rowcount or 0
 
     # ---------- alerts ----------
@@ -808,11 +861,11 @@ class Store:
         delivered: bool,
         delivery_error: str | None = None,
     ) -> int:
-        cur = await self.conn.execute(
-            "INSERT INTO alerts (rule_id, ts, payload, channel, delivered, delivery_error) VALUES (?,?,?,?,?,?)",
-            (rule_id, ts, json.dumps(payload, separators=(",", ":")), channel, 1 if delivered else 0, delivery_error),
-        )
-        await self.conn.commit()
+        async with self._write():
+            cur = await self.conn.execute(
+                "INSERT INTO alerts (rule_id, ts, payload, channel, delivered, delivery_error) VALUES (?,?,?,?,?,?)",
+                (rule_id, ts, json.dumps(payload, separators=(",", ":")), channel, 1 if delivered else 0, delivery_error),
+            )
         return int(cur.lastrowid or 0)
 
     async def last_alert_ts(self, rule_id: str) -> int | None:
@@ -850,12 +903,12 @@ class Store:
         thesis: str | None = None,
         tags: list[str] | None = None,
     ) -> int:
-        cur = await self.conn.execute(
-            "INSERT INTO journal (opened_ts, symbol, side, size, entry, stop, target, thesis, tags, status) "
-            "VALUES (?,?,?,?,?,?,?,?,?, 'open')",
-            (opened_ts, symbol, side, float(size), float(entry), stop, target, thesis, json.dumps(tags or [])),
-        )
-        await self.conn.commit()
+        async with self._write():
+            cur = await self.conn.execute(
+                "INSERT INTO journal (opened_ts, symbol, side, size, entry, stop, target, thesis, tags, status) "
+                "VALUES (?,?,?,?,?,?,?,?,?, 'open')",
+                (opened_ts, symbol, side, float(size), float(entry), stop, target, thesis, json.dumps(tags or [])),
+            )
         return int(cur.lastrowid or 0)
 
     async def journal_update_close(
@@ -870,11 +923,11 @@ class Store:
         r_multiple: float | None,
         note: str | None,
     ) -> int:
-        cur = await self.conn.execute(
-            "UPDATE journal SET closed_ts = ?, status = ?, exit = ?, outcome = ?, pnl = ?, r_multiple = ?, note = ? WHERE id = ?",
-            (closed_ts, status, exit_, outcome, pnl, r_multiple, note, trade_id),
-        )
-        await self.conn.commit()
+        async with self._write():
+            cur = await self.conn.execute(
+                "UPDATE journal SET closed_ts = ?, status = ?, exit = ?, outcome = ?, pnl = ?, r_multiple = ?, note = ? WHERE id = ?",
+                (closed_ts, status, exit_, outcome, pnl, r_multiple, note, trade_id),
+            )
         return cur.rowcount or 0
 
     async def journal_get(self, trade_id: int) -> dict[str, Any] | None:
@@ -925,10 +978,10 @@ class Store:
         cols += ["entry_flags", "entry_tradable", "tags"]
         tradable = f.get("entry_tradable")
         vals += [json.dumps(f.get("entry_flags") or []), None if tradable is None else int(bool(tradable)), json.dumps(f.get("tags") or [])]
-        cur = await self.conn.execute(
-            f"INSERT INTO carry_paper ({', '.join(cols)}, status) VALUES ({', '.join('?' * len(cols))}, 'open')", vals
-        )
-        await self.conn.commit()
+        async with self._write():
+            cur = await self.conn.execute(
+                f"INSERT INTO carry_paper ({', '.join(cols)}, status) VALUES ({', '.join('?' * len(cols))}, 'open')", vals
+            )
         return int(cur.lastrowid or 0)
 
     async def carry_paper_get(self, trade_id: int) -> dict[str, Any] | None:
@@ -966,42 +1019,34 @@ class Store:
         write its mirror row in the same transaction. Returns 1 when this call closed the pair, 0 when it was no
         longer open (nothing is written).
 
-        The claim itself is atomic, so a pair is never closed twice. The ``_tx_lock`` serialises this call only against
-        other callers of that lock (concurrent closes, ``cp_cycle_commit``, ``cp_funding_put``); it does NOT
-        isolate writes that skip the lock on the shared connection (e.g. ``journal_add``, collector inserts). Such a
-        write landing between the UPDATE and the commit can commit this transaction half-way, and the rollback on the
-        error path can undo that other write if it was not yet committed."""
-        lock = self._tx_lock or asyncio.Lock()
-        async with lock:
-            try:
-                cur = await self.conn.execute(
-                    "UPDATE carry_paper SET status = ?, closed_ts = ?, stop_ts = ?, exit_reason = ?, long_exit = ?, short_exit = ?,"
-                    " funding_pnl = ?, price_pnl = ?, costs = ?, pnl_usd = ?, return_on_notional = ?, max_up = ?, max_down = ?,"
-                    " stopped = ?, note = COALESCE(?, note) WHERE id = ? AND status = 'open'",
+        The claim itself is atomic, so a pair is never closed twice. :meth:`_write` serialises this call against every
+        other write method of this store, so no other task's write lands between the UPDATE and the commit, and any
+        error or cancellation rolls the whole transaction back. Raw statements on ``conn`` that skip the lock are not
+        isolated."""
+        async with self._write() as conn:
+            cur = await conn.execute(
+                "UPDATE carry_paper SET status = ?, closed_ts = ?, stop_ts = ?, exit_reason = ?, long_exit = ?, short_exit = ?,"
+                " funding_pnl = ?, price_pnl = ?, costs = ?, pnl_usd = ?, return_on_notional = ?, max_up = ?, max_down = ?,"
+                " stopped = ?, note = COALESCE(?, note) WHERE id = ? AND status = 'open'",
+                (
+                    status, closed_ts, stop_ts, exit_reason, long_exit, short_exit, funding_pnl, price_pnl, costs, pnl_usd,
+                    return_on_notional, max_up, max_down, 1 if stopped else 0, note, trade_id,
+                ),
+            )  # fmt: skip
+            if not cur.rowcount:
+                return 0  # no row matched: the commit in _write() has nothing to publish
+            if journal is not None:
+                j = await conn.execute(
+                    "INSERT INTO journal (opened_ts, closed_ts, symbol, side, size, entry, thesis, tags, status, exit, outcome,"
+                    " pnl, r_multiple, note) VALUES (?,?,?,?,?,?,?,?, 'closed', ?,?,?, NULL, ?)",
                     (
-                        status, closed_ts, stop_ts, exit_reason, long_exit, short_exit, funding_pnl, price_pnl, costs, pnl_usd,
-                        return_on_notional, max_up, max_down, 1 if stopped else 0, note, trade_id,
+                        journal["opened_ts"], closed_ts, journal["symbol"], journal["side"], journal["size"], journal["entry"],
+                        journal["thesis"], json.dumps(journal["tags"]), journal["exit"], journal["outcome"], journal["pnl"],
+                        note,
                     ),
                 )  # fmt: skip
-                if not cur.rowcount:
-                    await self.conn.rollback()
-                    return 0
-                if journal is not None:
-                    j = await self.conn.execute(
-                        "INSERT INTO journal (opened_ts, closed_ts, symbol, side, size, entry, thesis, tags, status, exit, outcome,"
-                        " pnl, r_multiple, note) VALUES (?,?,?,?,?,?,?,?, 'closed', ?,?,?, NULL, ?)",
-                        (
-                            journal["opened_ts"], closed_ts, journal["symbol"], journal["side"], journal["size"], journal["entry"],
-                            journal["thesis"], json.dumps(journal["tags"]), journal["exit"], journal["outcome"], journal["pnl"],
-                            note,
-                        ),
-                    )  # fmt: skip
-                    await self.conn.execute("UPDATE carry_paper SET journal_id = ? WHERE id = ?", (j.lastrowid, trade_id))
-                await self.conn.commit()
-                return 1
-            except Exception:
-                await self.conn.rollback()
-                raise
+                await conn.execute("UPDATE carry_paper SET journal_id = ? WHERE id = ?", (j.lastrowid, trade_id))
+            return 1
 
     # ---------- rec_paper (paper trades of the assistant's option recommendations, bookkeeping only) ----------
 
@@ -1013,10 +1058,10 @@ class Store:
         vals = [f.get(c) for c in cols]
         cols += ["legs", "within_risk", "label", "source"]
         vals += [json.dumps(f["legs"]), int(bool(f["within_risk"])), f.get("label") or "hypothesis", f.get("source") or "manual"]
-        cur = await self.conn.execute(
-            f"INSERT INTO rec_paper ({', '.join(cols)}, status) VALUES ({', '.join('?' * len(cols))}, 'open')", vals
-        )
-        await self.conn.commit()
+        async with self._write():
+            cur = await self.conn.execute(
+                f"INSERT INTO rec_paper ({', '.join(cols)}, status) VALUES ({', '.join('?' * len(cols))}, 'open')", vals
+            )
         return int(cur.lastrowid or 0)
 
     async def rec_paper_list(self, *, status: str | None = None, limit: int = 500) -> list[dict[str, Any]]:
@@ -1048,12 +1093,12 @@ class Store:
         r_study: float | None,
     ) -> int:
         """Settle an open paper trade with one conditional UPDATE; 1 when this call settled it, 0 when it was not open."""
-        cur = await self.conn.execute(
-            "UPDATE rec_paper SET status = 'settled', settled_ts = ?, delivery_price = ?, pnl_usd = ?, pnl_pct_spot = ?,"
-            " r_worst_case = ?, r_study = ? WHERE id = ? AND status = 'open'",
-            (settled_ts, delivery_price, pnl_usd, pnl_pct_spot, r_worst_case, r_study, trade_id),
-        )
-        await self.conn.commit()
+        async with self._write():
+            cur = await self.conn.execute(
+                "UPDATE rec_paper SET status = 'settled', settled_ts = ?, delivery_price = ?, pnl_usd = ?, pnl_pct_spot = ?,"
+                " r_worst_case = ?, r_study = ? WHERE id = ? AND status = 'open'",
+                (settled_ts, delivery_price, pnl_usd, pnl_pct_spot, r_worst_case, r_study, trade_id),
+            )
         return int(cur.rowcount or 0)
 
     # ---------- forecast_log (the assistant's daily risk-neutral range forecasts, scored at delivery) ----------
@@ -1065,10 +1110,10 @@ class Store:
         cols = [*self._FORECAST_COLS, "covered"]
         sql = f"INSERT OR IGNORE INTO forecast_log ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})"
         n = 0
-        for row in rows:
-            cur = await self.conn.execute(sql, [*(row.get(c) for c in self._FORECAST_COLS), int(bool(row.get("covered")))])
-            n += int(cur.rowcount or 0)
-        await self.conn.commit()
+        async with self._write():
+            for row in rows:
+                cur = await self.conn.execute(sql, [*(row.get(c) for c in self._FORECAST_COLS), int(bool(row.get("covered")))])
+                n += int(cur.rowcount or 0)
         return n
 
     async def forecast_has_day(self, day: str, asset: str) -> bool:
@@ -1095,12 +1140,12 @@ class Store:
         self, row_id: int, *, settled_ts: int, delivery_price: float, outcome: int, brier: float, brier_rv: float | None = None
     ) -> int:
         """Settle an open forecast with one conditional UPDATE; 1 when this call settled it, 0 when it was not open."""
-        cur = await self.conn.execute(
-            "UPDATE forecast_log SET status = 'settled', settled_ts = ?, delivery_price = ?, outcome = ?, brier = ?, brier_rv = ?"
-            " WHERE id = ? AND status = 'open'",
-            (settled_ts, delivery_price, outcome, brier, brier_rv, row_id),
-        )
-        await self.conn.commit()
+        async with self._write():
+            cur = await self.conn.execute(
+                "UPDATE forecast_log SET status = 'settled', settled_ts = ?, delivery_price = ?, outcome = ?, brier = ?, brier_rv = ?"
+                " WHERE id = ? AND status = 'open'",
+                (settled_ts, delivery_price, outcome, brier, brier_rv, row_id),
+            )
         return int(cur.rowcount or 0)
 
     # ---------- radar_surface (daily Deribit surface at 19:00 UTC for the assistant's radar) ----------
@@ -1125,12 +1170,12 @@ class Store:
             row["method"],
             int(row["created_ts"]),
         )
-        cur = await self.conn.execute(
-            "INSERT OR IGNORE INTO radar_surface (day, asset, ts, spot, atm_7d, atm_30d, atm_90d, atm_180d, put_skew_25, rr_25,"
-            " smile, expiries, n_prints, method, created_ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            vals,
-        )
-        await self.conn.commit()
+        async with self._write():
+            cur = await self.conn.execute(
+                "INSERT OR IGNORE INTO radar_surface (day, asset, ts, spot, atm_7d, atm_30d, atm_90d, atm_180d, put_skew_25, rr_25,"
+                " smile, expiries, n_prints, method, created_ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                vals,
+            )
         return int(cur.rowcount or 0)
 
     async def radar_days(self, asset: str, *, since: str = "") -> set[str]:
@@ -1160,11 +1205,11 @@ class Store:
     async def cycle_regime_log_insert(self, row: dict[str, Any]) -> int:
         """Insert one `analytics.cycle_regime_journal.log_row`; a stored (date, base) is never replaced. Returns 0/1."""
         cols = self.CYCLE_REGIME_LOG_COLUMNS
-        cur = await self.conn.execute(
-            f"INSERT OR IGNORE INTO cycle_regime_log ({', '.join(cols)}) VALUES ({','.join('?' * len(cols))})",
-            [row.get(c) for c in cols],
-        )
-        await self.conn.commit()
+        async with self._write():
+            cur = await self.conn.execute(
+                f"INSERT OR IGNORE INTO cycle_regime_log ({', '.join(cols)}) VALUES ({','.join('?' * len(cols))})",
+                [row.get(c) for c in cols],
+            )
         return int(cur.rowcount or 0)
 
     async def cycle_regime_log_dates(self, base: str, *, since: str = "") -> set[str]:
@@ -1184,10 +1229,10 @@ class Store:
         vals = [f.get(c) for c in cols]
         cols += ["rules", "tags"]
         vals += [json.dumps(f.get("rules") or {}), json.dumps(f.get("tags") or [])]
-        cur = await self.conn.execute(
-            f"INSERT INTO trade_plan ({', '.join(cols)}, status) VALUES ({', '.join('?' * len(cols))}, 'open')", vals
-        )
-        await self.conn.commit()
+        async with self._write():
+            cur = await self.conn.execute(
+                f"INSERT INTO trade_plan ({', '.join(cols)}, status) VALUES ({', '.join('?' * len(cols))}, 'open')", vals
+            )
         return int(cur.lastrowid or 0)
 
     async def plan_get(self, plan_id: int) -> dict[str, Any] | None:
@@ -1223,11 +1268,11 @@ class Store:
 
     async def plan_set_fill(self, plan_id: int, *, filled_ts: int, fill: float, timeframe: str) -> int:
         """Record the paper fill of a plan that is still open."""
-        cur = await self.conn.execute(
-            "UPDATE trade_plan SET filled_ts = ?, fill = ?, timeframe = ? WHERE id = ? AND status = 'open'",
-            (filled_ts, fill, timeframe, plan_id),
-        )
-        await self.conn.commit()
+        async with self._write():
+            cur = await self.conn.execute(
+                "UPDATE trade_plan SET filled_ts = ?, fill = ?, timeframe = ? WHERE id = ? AND status = 'open'",
+                (filled_ts, fill, timeframe, plan_id),
+            )
         return int(cur.rowcount or 0)
 
     async def plan_resolve(
@@ -1244,17 +1289,17 @@ class Store:
         note: str | None,
     ) -> int:
         """Resolve an open plan with one conditional UPDATE; 1 when this call resolved it, 0 when it was not open."""
-        cur = await self.conn.execute(
-            "UPDATE trade_plan SET status = 'resolved', outcome = ?, resolved_ts = ?, filled_ts = ?, fill = ?, exit = ?,"
-            " r_result = ?, timeframe = ?, resolve_note = ? WHERE id = ? AND status = 'open'",
-            (outcome, resolved_ts, filled_ts, fill, exit_, r_result, timeframe, note, plan_id),
-        )
-        await self.conn.commit()
+        async with self._write():
+            cur = await self.conn.execute(
+                "UPDATE trade_plan SET status = 'resolved', outcome = ?, resolved_ts = ?, filled_ts = ?, fill = ?, exit = ?,"
+                " r_result = ?, timeframe = ?, resolve_note = ? WHERE id = ? AND status = 'open'",
+                (outcome, resolved_ts, filled_ts, fill, exit_, r_result, timeframe, note, plan_id),
+            )
         return int(cur.rowcount or 0)
 
     async def plan_link_journal(self, plan_id: int, journal_id: int) -> int:
-        cur = await self.conn.execute("UPDATE trade_plan SET journal_id = ? WHERE id = ?", (journal_id, plan_id))
-        await self.conn.commit()
+        async with self._write():
+            cur = await self.conn.execute("UPDATE trade_plan SET journal_id = ? WHERE id = ?", (journal_id, plan_id))
         return int(cur.rowcount or 0)
 
     # ---------- cp_*: forward paper engine for the carry strategies (bookkeeping only, no orders) ----------
@@ -1309,64 +1354,58 @@ class Store:
         """Append log rows outside a cycle commit (e.g. a failed attempt)."""
         if not logs:
             return 0
-        await self.conn.executemany(
-            "INSERT INTO cp_log (strategy, cycle_ts, kind, trade_id, payload) VALUES (?,?,?,?,?)",
-            [(x["strategy"], x["cycle_ts"], x["kind"], x.get("trade_id"), json.dumps(x["payload"])) for x in logs],
-        )
-        await self.conn.commit()
+        async with self._write():
+            await self.conn.executemany(
+                "INSERT INTO cp_log (strategy, cycle_ts, kind, trade_id, payload) VALUES (?,?,?,?,?)",
+                [(x["strategy"], x["cycle_ts"], x["kind"], x.get("trade_id"), json.dumps(x["payload"])) for x in logs],
+            )
         return len(logs)
 
     async def cp_cycle_commit(self, cycle: dict[str, Any], positions: list[dict[str, Any]], logs: list[dict[str, Any]]) -> bool:
         """Write one engine cycle in a single transaction: the cycle row, position upserts (a closed position may
-        carry a ``journal`` mirror row), and log rows. Returns False, writing nothing, when the cycle already exists."""
-        lock = self._tx_lock or asyncio.Lock()
-        async with lock:
-            try:
-                cur = await self.conn.execute(
-                    "INSERT OR IGNORE INTO cp_cycle (strategy, cycle_ts, status, reason, started_ms, finished_ms, git_sha, params_hash, payload)"
-                    " VALUES (?,?,?,?,?,?,?,?,?)",
-                    (
-                        cycle["strategy"], cycle["cycle_ts"], cycle["status"], cycle.get("reason"), cycle.get("started_ms"),
-                        cycle.get("finished_ms"), cycle.get("git_sha"), cycle.get("params_hash"), json.dumps(cycle.get("payload") or {}),
-                    ),
-                )  # fmt: skip
-                if not cur.rowcount:
-                    await self.conn.rollback()
-                    return False
-                for p in positions:
-                    journal_id = None
-                    j = p.get("journal")
-                    if j is not None:
-                        jc = await self.conn.execute(
-                            "INSERT INTO journal (opened_ts, closed_ts, symbol, side, size, entry, thesis, tags, status, exit, outcome,"
-                            " pnl, r_multiple, note) VALUES (?,?,?,?,?,?,?,?, 'closed', ?,?,?, NULL, NULL)",
-                            (
-                                j["opened_ts"], j["closed_ts"], j["symbol"], j["side"], j["size"], j["entry"], j["thesis"],
-                                json.dumps(j["tags"]), j["exit"], j["outcome"], j["pnl"],
-                            ),
-                        )  # fmt: skip
-                        journal_id = jc.lastrowid
-                    await self.conn.execute(
-                        "INSERT INTO cp_position (trade_id, strategy, symbol, status, opened_ts, closed_ts, slot_notional, state, trade,"
-                        " exit_reason, journal_id) VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(trade_id) DO UPDATE SET status = excluded.status,"
-                        " closed_ts = excluded.closed_ts, state = excluded.state, trade = excluded.trade, exit_reason = excluded.exit_reason,"
-                        " journal_id = COALESCE(excluded.journal_id, journal_id)",
+        carry a ``journal`` mirror row), and log rows. Returns False, writing nothing, when the cycle already exists.
+        Runs in :meth:`_write`: any error or cancellation rolls the whole cycle back."""
+        async with self._write() as conn:
+            cur = await conn.execute(
+                "INSERT OR IGNORE INTO cp_cycle (strategy, cycle_ts, status, reason, started_ms, finished_ms, git_sha, params_hash, payload)"
+                " VALUES (?,?,?,?,?,?,?,?,?)",
+                (
+                    cycle["strategy"], cycle["cycle_ts"], cycle["status"], cycle.get("reason"), cycle.get("started_ms"),
+                    cycle.get("finished_ms"), cycle.get("git_sha"), cycle.get("params_hash"), json.dumps(cycle.get("payload") or {}),
+                ),
+            )  # fmt: skip
+            if not cur.rowcount:
+                return False  # the cycle exists: nothing was inserted, the commit in _write() publishes nothing
+            for p in positions:
+                journal_id = None
+                j = p.get("journal")
+                if j is not None:
+                    jc = await conn.execute(
+                        "INSERT INTO journal (opened_ts, closed_ts, symbol, side, size, entry, thesis, tags, status, exit, outcome,"
+                        " pnl, r_multiple, note) VALUES (?,?,?,?,?,?,?,?, 'closed', ?,?,?, NULL, NULL)",
                         (
-                            p["trade_id"], p["strategy"], p["symbol"], p["status"], p["opened_ts"], p.get("closed_ts"), p["slot_notional"],
-                            json.dumps(p["state"]), json.dumps(p["trade"]) if p.get("trade") is not None else None, p.get("exit_reason"),
-                            journal_id,
+                            j["opened_ts"], j["closed_ts"], j["symbol"], j["side"], j["size"], j["entry"], j["thesis"],
+                            json.dumps(j["tags"]), j["exit"], j["outcome"], j["pnl"],
                         ),
                     )  # fmt: skip
-                if logs:
-                    await self.conn.executemany(
-                        "INSERT INTO cp_log (strategy, cycle_ts, kind, trade_id, payload) VALUES (?,?,?,?,?)",
-                        [(x["strategy"], x["cycle_ts"], x["kind"], x.get("trade_id"), json.dumps(x["payload"])) for x in logs],
-                    )
-                await self.conn.commit()
-                return True
-            except Exception:
-                await self.conn.rollback()
-                raise
+                    journal_id = jc.lastrowid
+                await conn.execute(
+                    "INSERT INTO cp_position (trade_id, strategy, symbol, status, opened_ts, closed_ts, slot_notional, state, trade,"
+                    " exit_reason, journal_id) VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(trade_id) DO UPDATE SET status = excluded.status,"
+                    " closed_ts = excluded.closed_ts, state = excluded.state, trade = excluded.trade, exit_reason = excluded.exit_reason,"
+                    " journal_id = COALESCE(excluded.journal_id, journal_id)",
+                    (
+                        p["trade_id"], p["strategy"], p["symbol"], p["status"], p["opened_ts"], p.get("closed_ts"), p["slot_notional"],
+                        json.dumps(p["state"]), json.dumps(p["trade"]) if p.get("trade") is not None else None, p.get("exit_reason"),
+                        journal_id,
+                    ),
+                )  # fmt: skip
+            if logs:
+                await conn.executemany(
+                    "INSERT INTO cp_log (strategy, cycle_ts, kind, trade_id, payload) VALUES (?,?,?,?,?)",
+                    [(x["strategy"], x["cycle_ts"], x["kind"], x.get("trade_id"), json.dumps(x["payload"])) for x in logs],
+                )
+            return True
 
     async def cp_funding_state(self, venue: str, symbol: str) -> dict[str, int] | None:
         """Cached funding history of one symbol: ``covered_from`` / ``covered_to`` and the newest stored payment ``last_ts``."""
@@ -1393,7 +1432,7 @@ class Store:
         self, venue: str, symbol: str, rows: list[tuple[int, float]], *, covered_from: int | None, covered_to: int | None
     ) -> None:
         """Store payments (idempotent). ``covered_*`` None leaves the coverage unchanged (an incomplete fetch)."""
-        async with self._tx_lock or asyncio.Lock():  # do not commit another task's half-built transaction
+        async with self._write():  # under _tx_lock: do not commit another task's half-built transaction
             if rows:
                 await self.conn.executemany(
                     "INSERT OR REPLACE INTO cp_funding (venue, symbol, ts, rate) VALUES (?,?,?,?)",
@@ -1406,7 +1445,6 @@ class Store:
                     " covered_to = MAX(covered_to, excluded.covered_to)",
                     (venue, symbol, covered_from, covered_to),
                 )
-            await self.conn.commit()
 
     # ---------- rules (DSL) ----------
 
@@ -1420,11 +1458,11 @@ class Store:
         enabled: bool,
         created_ts: int,
     ) -> int:
-        cur = await self.conn.execute(
-            "INSERT INTO rules (name, enabled, expr, message, cooldown_seconds, created_ts) VALUES (?,?,?,?,?,?)",
-            (name, 1 if enabled else 0, expr, message, int(cooldown_seconds), int(created_ts)),
-        )
-        await self.conn.commit()
+        async with self._write():  # a duplicate name raises IntegrityError and is rolled back
+            cur = await self.conn.execute(
+                "INSERT INTO rules (name, enabled, expr, message, cooldown_seconds, created_ts) VALUES (?,?,?,?,?,?)",
+                (name, 1 if enabled else 0, expr, message, int(cooldown_seconds), int(created_ts)),
+            )
         return int(cur.lastrowid or 0)
 
     async def rule_get(self, rule_id: int) -> dict[str, Any] | None:
@@ -1437,16 +1475,16 @@ class Store:
         return d
 
     async def rule_set_enabled(self, rule_id: int, enabled: bool, *, ts: int) -> int:
-        cur = await self.conn.execute(
-            "UPDATE rules SET enabled = ?, disabled_ts = ? WHERE id = ?",
-            (1 if enabled else 0, (None if enabled else ts), rule_id),
-        )
-        await self.conn.commit()
+        async with self._write():
+            cur = await self.conn.execute(
+                "UPDATE rules SET enabled = ?, disabled_ts = ? WHERE id = ?",
+                (1 if enabled else 0, (None if enabled else ts), rule_id),
+            )
         return cur.rowcount or 0
 
     async def rule_delete(self, rule_id: int) -> int:
-        cur = await self.conn.execute("DELETE FROM rules WHERE id = ?", (rule_id,))
-        await self.conn.commit()
+        async with self._write():
+            cur = await self.conn.execute("DELETE FROM rules WHERE id = ?", (rule_id,))
         return cur.rowcount or 0
 
     async def rules_list(self, *, enabled_only: bool = False) -> list[dict[str, Any]]:
@@ -1479,11 +1517,11 @@ class Store:
         (ts, kind, label) constraint drops repeats silently; returns the row's
         id if inserted, else 0."""
         verb = "INSERT OR IGNORE" if ignore_duplicate else "INSERT"
-        cur = await self.conn.execute(
-            f"{verb} INTO events (ts, kind, label, impact, meta) VALUES (?,?,?,?,?)",
-            (int(ts), kind, label, impact, json.dumps(meta) if meta else None),
-        )
-        await self.conn.commit()
+        async with self._write():
+            cur = await self.conn.execute(
+                f"{verb} INTO events (ts, kind, label, impact, meta) VALUES (?,?,?,?,?)",
+                (int(ts), kind, label, impact, json.dumps(meta) if meta else None),
+            )
         # `lastrowid` sticks around across INSERT OR IGNORE no-ops, so gate on rowcount.
         return int(cur.lastrowid or 0) if (cur.rowcount or 0) > 0 else 0
 
@@ -1492,7 +1530,6 @@ class Store:
         new rows (SQLite's ``total_changes`` delta)."""
         if not rows:
             return 0
-        before = self.conn.total_changes
         payload = []
         for r in rows:
             try:
@@ -1507,11 +1544,12 @@ class Store:
                 )
             except (KeyError, TypeError, ValueError):
                 continue
-        await self.conn.executemany(
-            "INSERT OR IGNORE INTO events (ts, kind, label, impact, meta) VALUES (?,?,?,?,?)",
-            payload,
-        )
-        await self.conn.commit()
+        async with self._write():
+            before = self.conn.total_changes
+            await self.conn.executemany(
+                "INSERT OR IGNORE INTO events (ts, kind, label, impact, meta) VALUES (?,?,?,?,?)",
+                payload,
+            )
         return self.conn.total_changes - before
 
     async def events_list(
@@ -1594,11 +1632,11 @@ class Store:
                 )
         if not payload:
             return 0
-        await self.conn.executemany(
-            "INSERT OR REPLACE INTO ohlcv_hist (venue, symbol, timeframe, ts, open, high, low, close, volume) VALUES (?,?,?,?,?,?,?,?,?)",
-            payload,
-        )
-        await self.conn.commit()
+        async with self._write():
+            await self.conn.executemany(
+                "INSERT OR REPLACE INTO ohlcv_hist (venue, symbol, timeframe, ts, open, high, low, close, volume) VALUES (?,?,?,?,?,?,?,?,?)",
+                payload,
+            )
         return len(payload)
 
     async def ohlcv_range(
@@ -1655,11 +1693,11 @@ class Store:
             )
             for r in rows
         ]
-        await self.conn.executemany(
-            "INSERT INTO liquidations (ts, venue, symbol, side, qty, price, notional_usd) VALUES (?,?,?,?,?,?,?)",
-            payload,
-        )
-        await self.conn.commit()
+        async with self._write():
+            await self.conn.executemany(
+                "INSERT INTO liquidations (ts, venue, symbol, side, qty, price, notional_usd) VALUES (?,?,?,?,?,?,?)",
+                payload,
+            )
         return len(payload)
 
     async def liquidations_in_window(
@@ -1705,29 +1743,29 @@ class Store:
         external_id: str | None = None,
         note: str | None = None,
     ) -> int:
-        cur = await self.conn.execute(
-            "INSERT INTO positions (opened_ts, source, venue, external_id, instrument, kind, side, size, entry, mark,"
-            " delta, gamma, vega, theta, tags, status, note) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'open', ?)",
-            (
-                opened_ts,
-                source,
-                venue,
-                external_id,
-                instrument,
-                kind,
-                side,
-                float(size),
-                entry,
-                mark,
-                delta,
-                gamma,
-                vega,
-                theta,
-                json.dumps(tags or []),
-                note,
-            ),
-        )
-        await self.conn.commit()
+        async with self._write():
+            cur = await self.conn.execute(
+                "INSERT INTO positions (opened_ts, source, venue, external_id, instrument, kind, side, size, entry, mark,"
+                " delta, gamma, vega, theta, tags, status, note) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'open', ?)",
+                (
+                    opened_ts,
+                    source,
+                    venue,
+                    external_id,
+                    instrument,
+                    kind,
+                    side,
+                    float(size),
+                    entry,
+                    mark,
+                    delta,
+                    gamma,
+                    vega,
+                    theta,
+                    json.dumps(tags or []),
+                    note,
+                ),
+            )
         return int(cur.lastrowid or 0)
 
     async def position_get(self, position_id: int) -> dict[str, Any] | None:
@@ -1736,11 +1774,11 @@ class Store:
         return _parse_position_row(dict(row)) if row else None
 
     async def position_update_close(self, position_id: int, closed_ts: int, note: str | None = None) -> int:
-        cur = await self.conn.execute(
-            "UPDATE positions SET status = 'closed', closed_ts = ?, note = COALESCE(?, note) WHERE id = ?",
-            (closed_ts, note, position_id),
-        )
-        await self.conn.commit()
+        async with self._write():
+            cur = await self.conn.execute(
+                "UPDATE positions SET status = 'closed', closed_ts = ?, note = COALESCE(?, note) WHERE id = ?",
+                (closed_ts, note, position_id),
+            )
         return cur.rowcount or 0
 
     async def positions_list(
@@ -1802,11 +1840,11 @@ class Store:
         payload: dict[str, Any] | None = None,
     ) -> int:
         """Append one row to the append-only audit log (triggers refuse UPDATE and DELETE)."""
-        cur = await self.conn.execute(
-            "INSERT INTO exec_audit (ts, venue, kind, link_id, symbol, setup, payload) VALUES (?,?,?,?,?,?,?)",
-            (ts, venue, kind, link_id, symbol, setup, json.dumps(payload or {}, default=str)),
-        )
-        await self.conn.commit()
+        async with self._write():
+            cur = await self.conn.execute(
+                "INSERT INTO exec_audit (ts, venue, kind, link_id, symbol, setup, payload) VALUES (?,?,?,?,?,?,?)",
+                (ts, venue, kind, link_id, symbol, setup, json.dumps(payload or {}, default=str)),
+            )
         return int(cur.lastrowid or 0)
 
     async def exec_audit_list(self, since_ts: int = 0, kinds: tuple[str, ...] = (), limit: int = 500) -> list[dict[str, Any]]:
@@ -1819,8 +1857,10 @@ class Store:
 
     async def demo_trade_insert(self, row: dict[str, Any]) -> None:
         cols = [c for c in row if c.isidentifier()]
-        await self.conn.execute(f"INSERT INTO demo_trade ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})", [row[c] for c in cols])
-        await self.conn.commit()
+        async with self._write():
+            await self.conn.execute(
+                f"INSERT INTO demo_trade ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})", [row[c] for c in cols]
+            )
 
     async def demo_trade_update(self, link_id: str, **fields: Any) -> int:
         if not fields:
@@ -1829,8 +1869,8 @@ class Store:
         if bad:
             raise ValueError(f"demo_trade: not updatable {sorted(bad)}")
         sets = ", ".join(f"{k} = ?" for k in fields)
-        cur = await self.conn.execute(f"UPDATE demo_trade SET {sets} WHERE link_id = ?", [*fields.values(), link_id])
-        await self.conn.commit()
+        async with self._write():
+            cur = await self.conn.execute(f"UPDATE demo_trade SET {sets} WHERE link_id = ?", [*fields.values(), link_id])
         return cur.rowcount or 0
 
     async def demo_trade_list(self, statuses: tuple[str, ...] = (), limit: int = 500) -> list[dict[str, Any]]:
@@ -1845,10 +1885,10 @@ class Store:
 
     async def demo_option_insert(self, row: dict[str, Any]) -> None:
         cols = [c for c in row if c.isidentifier()]
-        await self.conn.execute(
-            f"INSERT INTO demo_option_leg ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})", [row[c] for c in cols]
-        )
-        await self.conn.commit()
+        async with self._write():
+            await self.conn.execute(
+                f"INSERT INTO demo_option_leg ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})", [row[c] for c in cols]
+            )
 
     async def demo_option_update(self, link_id: str, **fields: Any) -> int:
         if not fields:
@@ -1857,8 +1897,8 @@ class Store:
         if bad:
             raise ValueError(f"demo_option_leg: not updatable {sorted(bad)}")
         sets = ", ".join(f"{k} = ?" for k in fields)
-        cur = await self.conn.execute(f"UPDATE demo_option_leg SET {sets} WHERE link_id = ?", [*fields.values(), link_id])
-        await self.conn.commit()
+        async with self._write():
+            cur = await self.conn.execute(f"UPDATE demo_option_leg SET {sets} WHERE link_id = ?", [*fields.values(), link_id])
         return cur.rowcount or 0
 
     async def demo_option_list(self, statuses: tuple[str, ...] = (), limit: int = 500) -> list[dict[str, Any]]:

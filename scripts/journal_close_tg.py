@@ -161,11 +161,11 @@ async def close_trade(db_path: Path, close: dict[str, Any], exit_raw: str, now: 
             "r_multiple": r_val,
             "note": stored_note(close["fees"], close["note"]),
         }
-        cur = await store.conn.execute(
-            CLOSE_SQL,
-            (closed["closed_ts"], exit_, closed["outcome"], net, r_val, closed["note"], close["id"]),
-        )
-        await store.conn.commit()
+        async with store._write() as conn:  # commit, or roll back on any error (no transaction left open)
+            cur = await conn.execute(
+                CLOSE_SQL,
+                (closed["closed_ts"], exit_, closed["outcome"], net, r_val, closed["note"], close["id"]),
+            )
         if not cur.rowcount:  # closed (or removed) by another process since journal_get
             again = await store.journal_get(close["id"])
             return {"error": "not_open", "status": again["status"]} if again else {"error": "not_found"}

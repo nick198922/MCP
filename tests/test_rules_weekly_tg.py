@@ -90,16 +90,17 @@ def test_summary_on_a_real_shaped_journal(tmp_path):
         "Найчастіше: 4 · денний стоп — 3, 2 · ≤ 3 лонги в альтах — 2. Ще 2 — лише наближене правило 4 (без часу відкриття, "
         "оцінено за часом закриття), P&amp;L −$17: у «точно порушили» не входять."
     )
-    # W43: the open 0DTE option bought 7 h before the 08:00 UTC delivery breaks rule 8; no P&L yet
+    # W43: the open 0DTE option bought 7 h before the 08:00 UTC delivery breaks rule 8; no P&L yet. It was bought at
+    # 01:00 UTC on 20.10, inside the 48 h pause after Sunday 19.10 (the alt longs closed about −$1 800): rule 4 too
     assert lines[3] == "Цей тиждень 2025-W43 (з 20.10): перевірено угод 1, точно порушили хоч одне правило 1."
-    assert lines[4] == "Найчастіше: 8 · опціони — 1."
+    assert lines[4] == "Найчастіше: 4 · денний стоп — 1, 8 · опціони — 1. Відкрито в 48 год перерви після дня з великим збитком: 1."
     # the numbers are analytics.rules_check's and the dashboard's copy on the same real trades (no paper, no airdrop)
     real = rw.real_trades(got)
     assert len(real) == 17 and {r["id"] for r in got} - {r["id"] for r in real} == {901, 902}
     ref = {w["week"]: w for w in rc.weekly_violations(real, now_ts=SEND_AT)}
     mine = {w["week"]: w for w in db.rules_weekly(real, SEND_AT)}
     for wk in ("2025-W42", "2025-W43"):
-        for k in ("n_trades", "n_violating", "n_violating_approx"):
+        for k in ("n_trades", "n_violating", "n_violating_approx", "big_loss_days", "paused"):
             assert ref[wk][k] == mine[wk][k]
     assert ref["2025-W42"]["pnl_violating"] == pytest.approx(-558.0) and ref["2025-W42"]["pnl_violating_approx"] == pytest.approx(-17.0)
     for part in ("Не порада", "нічого не торгує", "$10 000"):

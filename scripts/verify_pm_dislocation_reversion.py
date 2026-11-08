@@ -24,13 +24,14 @@ import json
 import logging
 import os
 import random
-import resource
 import statistics
 import time
 from collections import Counter, defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from common_helpers import rss_mb
 
 from tradedesk.analytics.pm_dislocation import (
     DAY_S,
@@ -64,10 +65,6 @@ TRADES_LIMIT = 500
 TRADES_OFFSET_CAP = 10_000
 G1_MIN, G2_MIN, G3_MAX = 1000, 0.80, 0.008
 SD_ASSUMED = 0.06
-
-
-def rss_mb() -> float:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 
 
 def _write(p: Path, obj: Any) -> None:

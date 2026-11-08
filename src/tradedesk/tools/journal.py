@@ -7,6 +7,7 @@ options you'd convert outside). R-multiple needs an entry + stop.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
 from mcp.server.mcpserver import MCPServer
@@ -16,7 +17,29 @@ from ..analytics.journal import outcome_of, r_multiple, summary
 from ..analytics.journal import pnl as pnl_fn
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, STORE_ERRORS, drop_corrupt_rows, r, store_failed, store_ready
+from ._util import (
+    READ_ONLY,
+    STORE_ERRORS,
+    drop_corrupt_rows,
+    r,
+    reject_nonfinite,
+    reject_nonfinite_result,
+    store_failed,
+    store_ready,
+)
+
+
+def _bad_ts(b: Builder, field: str, ts: int | None) -> dict[str, Any] | None:
+    """ok=false envelope when unix seconds `ts` fit no datetime (10**20 also overflowed the SQLite INTEGER binding and
+    raised out of the tool; a millisecond value broke the weekly review), else None."""
+    if ts is None:
+        return None
+    try:
+        datetime.fromtimestamp(ts, UTC)
+    except (ValueError, OverflowError, OSError):
+        b.miss(field, "tradedesk", "invalid_input", f"{field}={ts} is outside the datetime range (unix seconds expected)")
+        return b.build(None, ok=False)
+    return None
 
 
 def register(server: MCPServer, rt: Runtime) -> None:
@@ -43,6 +66,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
         opened_ts: Annotated[int | None, Field(description="Open timestamp (unix seconds). Defaults to now.")] = None,
     ) -> dict[str, Any]:
         b = Builder()
+        # "inf" / "1e400" pass the gt=0 schema and were stored as inf (Infinity in the reply and in every later read).
+        bad = reject_nonfinite(b, size=size, entry=entry, stop=stop, target=target) or _bad_ts(b, "opened_ts", opened_ts)
+        if bad is not None:
+            return bad
         if not await store_ready(b, rt, "the journal"):
             return b.build(None, ok=False)
         try:
@@ -95,6 +122,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
         note: Annotated[str | None, Field(description="Post-mortem note.")] = None,
     ) -> dict[str, Any]:
         b = Builder()
+        bad = (None if cancelled else reject_nonfinite(b, exit=exit)) or _bad_ts(b, "closed_ts", closed_ts)
+        if bad is not None:
+            return bad
         if not await store_ready(b, rt, "the journal"):
             return b.build(None, ok=False)
         try:
@@ -104,6 +134,11 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 return b.build(None, ok=False)
             if trade["status"] != "open":
                 b.miss("journal", "store", "data_unavailable", f"trade id={id} is already {trade['status']}")
+                return b.build(None, ok=False)
+            # A string / blob / inf in size, entry or stop (another writer) raised in float() or the PnL, and a blob in any
+            # cell failed the reply after the close was already written: such a trade is left untouched.
+            if not drop_corrupt_rows(b, [trade], "trade", ("size", "entry", "stop"), required=("size", "entry")):
+                b.miss("journal", "store", "data_unavailable", f"trade id={id} is malformed; it was not closed")
                 return b.build(None, ok=False)
 
             ts = int(closed_ts) if closed_ts is not None else int(rt.now().timestamp())
@@ -124,6 +159,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
                     return b.build(None, ok=False)
                 p = pnl_fn(trade["side"], float(trade["size"]), float(trade["entry"]), float(exit))
                 r_val = r_multiple(trade["side"], float(trade["entry"]), trade.get("stop"), float(exit))
+                # Finite but extreme prices / sizes (1e308) overflow the PnL: not written, so journal_stats is not poisoned.
+                bad = reject_nonfinite_result(b, {"pnl": p, "r_multiple": r_val})
+                if bad is not None:
+                    return bad
                 await rt.store.journal_update_close(
                     id,
                     closed_ts=ts,
@@ -169,6 +208,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 k: (r(v, 2) if isinstance(v, float) and k.endswith(("_pnl", "pnl")) else r(v, 4) if isinstance(v, float) else v)
                 for k, v in s.items()
             }
+            # Finite stored values near the float limit (1e308) overflow the sums: ok=false instead of Infinity / NaN.
+            bad = reject_nonfinite_result(b, rounded)
+            if bad is not None:
+                return bad
             return b.build({"filters": {"symbol": symbol, "tag": tag}, **rounded})
         except STORE_ERRORS as e:
             return store_failed(b, e)

@@ -760,8 +760,10 @@ def test_s3_known_result_in_sample():
     without funding. The sieve trades S3 alone (no slot shared with S14 / S16), so the number differs within that
     error; funding only makes it worse."""
     sieve = _runner()
-    # all cores: the result does not depend on the worker count (per-symbol seeds, rows sorted after the pool)
-    a = argparse.Namespace(s1_cache=S1_CACHE, data_dir=DATA_DIR, workers=os.cpu_count() or 4)
+    # cores this process may run on (cgroup / taskset aware), capped at 8; the result does not depend on the worker
+    # count (per-symbol seeds, rows sorted after the pool). sched_getaffinity is missing on macOS / Windows.
+    cores = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else (os.cpu_count() or 4)
+    a = argparse.Namespace(s1_cache=S1_CACHE, data_dir=DATA_DIR, workers=max(1, min(cores, 8)))
     syms = sorted({x for v in sieve.s1.members(S1_CACHE).values() for x in v})
     res = sieve.run_all(syms, "s3_range_sweep", dict(sieve_specs.load("s3_range_sweep").PARAMS), "B", a, include_hidden=False)
     rows = res["rows"]

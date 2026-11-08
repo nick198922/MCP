@@ -98,13 +98,16 @@ def json_list(x: Any) -> list[Any] | None:
 
 
 def resolved_outcome(outcome_prices: Any, tol: float = 1e-3) -> int | None:
-    """1 if the first outcome paid 1, 0 if the second did, None for 50/50, unresolved or malformed."""
+    """1 if the first outcome paid 1, 0 if the second did, None for 50/50, unresolved or malformed (NaN / inf or a
+    300+-digit integer included: an infinite price is not a payout of 1)."""
     v = json_list(outcome_prices)
     if not v or len(v) != 2:
         return None
     try:
         a, b = float(v[0]), float(v[1])
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):  # OverflowError: float() of a 300+-digit JSON integer
+        return None
+    if not (math.isfinite(a) and math.isfinite(b)):
         return None
     if a >= 1 - tol and b <= tol:
         return 1
@@ -335,11 +338,15 @@ def cluster_bootstrap_ci(rows: Iterable[tuple[str, str, float]], *, n_boot: int 
 
 
 def _yes_prints(trades: Iterable[dict[str, Any]], yes_token: str) -> list[tuple[int, float]]:
+    """(time, YES-equivalent price) of the prints, sorted; a print whose time or price is absent, not a number,
+    NaN / inf or a 300+-digit integer is skipped."""
     out = []
     for x in trades:
         try:
             t, px = int(x["timestamp"]), float(x["price"])
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, OverflowError):  # OverflowError: int(inf), float() of a 300+-digit int
+            continue
+        if not math.isfinite(px):
             continue
         out.append((t, px if str(x.get("asset")) == yes_token else 1.0 - px))
     return sorted(out)

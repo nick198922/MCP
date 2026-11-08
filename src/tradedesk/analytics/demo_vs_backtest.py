@@ -467,7 +467,8 @@ def bybit_linear_id(symbol: str) -> str | None:
 def day_turnover(klines: Sequence[Sequence[Any]], day_ms: int, now_ms: int) -> float | None:
     """Quote turnover (index 6 of a Bybit v5 kline row ``[start, o, h, l, c, volume, turnover]``, strings as sent) of
     the daily candle opening at ``day_ms``; None when the day has not closed by ``now_ms`` (a partial day understates),
-    the candle is absent, or its turnover is not a finite number >= 0."""
+    the candle is absent, or its turnover is not a finite number >= 0. A row whose start or turnover is an infinite or
+    300+-digit number is skipped like a malformed one."""
     if day_ms + DAY_MS > now_ms:
         return None
     for k in klines:
@@ -475,7 +476,7 @@ def day_turnover(klines: Sequence[Sequence[Any]], day_ms: int, now_ms: int) -> f
             if int(k[0]) != day_ms:
                 continue
             v = float(k[6])
-        except (TypeError, ValueError, IndexError):
+        except (TypeError, ValueError, IndexError, OverflowError):  # OverflowError: int(inf), float() of a 300+-digit int
             continue
         return v if math.isfinite(v) and v >= 0 else None
     return None

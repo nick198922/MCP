@@ -7,7 +7,6 @@ options you'd convert outside). R-multiple needs an entry + stop.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
 from mcp.server.mcpserver import MCPServer
@@ -21,25 +20,17 @@ from ._util import (
     READ_ONLY,
     STORE_ERRORS,
     drop_corrupt_rows,
+    finite_json,
     r,
     reject_nonfinite,
     reject_nonfinite_result,
     store_failed,
     store_ready,
 )
+from ._util import reject_bad_ts as _bad_ts
 
-
-def _bad_ts(b: Builder, field: str, ts: int | None) -> dict[str, Any] | None:
-    """ok=false envelope when unix seconds `ts` fit no datetime (10**20 also overflowed the SQLite INTEGER binding and
-    raised out of the tool; a millisecond value broke the weekly review), else None."""
-    if ts is None:
-        return None
-    try:
-        datetime.fromtimestamp(ts, UTC)
-    except (ValueError, OverflowError, OSError):
-        b.miss(field, "tradedesk", "invalid_input", f"{field}={ts} is outside the datetime range (unix seconds expected)")
-        return b.build(None, ok=False)
-    return None
+# Numeric columns of a stored trade; another writer can leave a string, a blob or inf in any of them.
+JOURNAL_NUMS = ("opened_ts", "closed_ts", "size", "entry", "stop", "target", "exit", "pnl", "r_multiple")
 
 
 def register(server: MCPServer, rt: Runtime) -> None:
@@ -99,6 +90,17 @@ def register(server: MCPServer, rt: Runtime) -> None:
             return b.build(None, ok=False)
         try:
             rows = await rt.store.journal_list(status=status, symbol=symbol, tag=tag, limit=limit)
+            # An invalid UTF-8 blob in any cell failed the whole reply, and inf / NaN (a numeric cell, or `tags` text such
+            # as "[NaN]") came back as Infinity / NaN: such a trade is skipped with a warning (another writer).
+            stored = len(rows)
+            rows = drop_corrupt_rows(b, rows, "trade", JOURNAL_NUMS, required=("size", "entry"))
+            nonfinite = [t.get("id") for t in rows if not finite_json(t)]
+            if nonfinite:
+                b.warn(f"{len(nonfinite)} stored trade rows skipped: NaN / Infinity in tags; id {nonfinite[:10]}")
+                rows = [t for t in rows if finite_json(t)]
+            if stored and not rows:  # all malformed must not read as "no trades"
+                b.miss("journal", "store", "data_unavailable", f"all {stored} matching stored trades are malformed")
+                return b.build({"count": 0, "trades": []}, ok=False)
             return b.build({"count": len(rows), "trades": rows})
         except STORE_ERRORS as e:
             return store_failed(b, e)

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 import math
 import sqlite3
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from mcp.types import ToolAnnotations
@@ -55,6 +56,28 @@ def store_num(x: Any) -> float | None:
     except OverflowError:
         return None
     return v if math.isfinite(v) else None
+
+
+def finite_json(x: Any) -> bool:
+    """True when `x` serialises to strict JSON: no NaN / +-inf float and no blob anywhere (a string "inf" is just text)."""
+    try:
+        json.dumps(x, allow_nan=False)
+    except (ValueError, TypeError):
+        return False
+    return True
+
+
+def reject_bad_ts(b: Builder, field: str, ts: int | None) -> dict[str, Any] | None:
+    """ok=false envelope when unix seconds `ts` fit no datetime (10**20 also overflows the SQLite INTEGER binding and
+    raised out of the tool; a millisecond value is beyond the year 9999), else None."""
+    if ts is None:
+        return None
+    try:
+        datetime.fromtimestamp(ts, UTC)
+    except (ValueError, OverflowError, OSError):
+        b.miss(field, "tradedesk", "invalid_input", f"{field}={ts} is outside the datetime range (unix seconds expected)")
+        return b.build(None, ok=False)
+    return None
 
 
 def drop_corrupt_rows(

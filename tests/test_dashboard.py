@@ -2275,7 +2275,7 @@ RULE3_WHAT_MAX = 120
 RULE3_TODO = frozenset(
     {
         "demo_not_executed", "demo_open_pos", "demo_recent", "demo_refused", "demo_skipped", "demo_vs_bt",
-        "j_expectancy", "j_open", "j_pnl", "j_rcurve", "j_table", "j_trades", "j_winrate", "plan_exits", "plan_n", "plan_win", "plans",
+        "j_open", "j_table", "plan_exits", "plan_n", "plan_win", "plans",
         "r", "rec", "rec_n", "rec_pct", "rec_pnl", "rec_r_worst", "rec_win", "rules_pre", "sources",
     }
 )  # fmt: skip
@@ -2334,6 +2334,28 @@ def test_rest_of_forecast_and_drawdown_notes_are_instructions_with_thresholds_fr
     assert "95 % ДІ містить 0" in db._info("fc_rv")  # the tile's CI, forecast_log t(0.975) over expiry dates
     assert "0.25" in db._info("fc_weekly")
     assert f"до {db.JR_SMALL_SAMPLE} закритих угод" in db._info("drawdown")
+
+
+def test_journal_stats_and_r_curve_notes_are_instructions_with_thresholds_from_the_code():
+    """Item 269 (docs/design/PANEL.md rules 3 and 5): the «Статистика» tiles and the R curve of «Мої угоди» say what to
+    do when low or high; 30 trades is JR_SMALL_SAMPLE (analytics.journal.SMALL_SAMPLE, the R curve's «замало для
+    висновку» chip), 0 is the red edge of «Середнє на угоду»."""
+    from tradedesk.analytics import journal
+
+    assert db.JR_SMALL_SAMPLE == journal.SMALL_SAMPLE == 30
+    keys = ("j_trades", "j_winrate", "j_pnl", "j_expectancy", "j_rcurve")
+    for key in keys:
+        note = db._info(key)
+        assert note.count("<span class='do'><i>") == 2 and "Для угоди:" not in note, key
+        assert "ризик-нейтральн" not in note and "порада" not in note, key  # rule 5: the caveats say it at the bottom
+    assert f"<i>Менше {db.JR_SMALL_SAMPLE} закритих угод</i>" in db._info("j_trades")
+    for key in ("j_pnl", "j_expectancy"):
+        assert f"до {db.JR_SMALL_SAMPLE} закритих угод" in db._info(key), key
+    assert f"до {db.JR_SMALL_SAMPLE} угод з R" in db._info("j_rcurve")
+    assert "<i>Нижче 0 (червоний край)</i>" in db._info("j_expectancy") and "<i>Вище 0</i>" in db._info("j_expectancy")
+    # the red edge of the tile is exactly «below 0»
+    tiles = db.block_journal_tiles([{"status": "closed", "pnl": -5.0, "closed_ts": 1.0, "outcome": "loss"}], 0, 2.0)
+    assert "система поки в мінусі" in tiles
 
 
 def test_journal_page_says_not_advice_once_at_the_bottom(tmp_path):

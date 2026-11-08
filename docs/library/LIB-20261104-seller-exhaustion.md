@@ -52,3 +52,6 @@
 ## Що з цього взяли
 <!-- заповнюють агенти й Claude: картки IDEA-…, PR, інструменти, вердикти -->
 - 04.11, Claude з чату: H3 → пункт «виснаження продавців BTC забороняє шорти» в [IDEA-20261030-demo-setups-depth](../ideas/IDEA-20261030-demo-setups-depth.md) (власник: «Давай роботи»); дані Bitview — `~/private/data/bitview/`. Постійний провайдер Bitview — лише якщо пункт дасть ✓ або після 30.11.
+- Картка [IDEA-20261104-seller-exhaustion-regime](../ideas/IDEA-20261104-seller-exhaustion-regime.md): H1-H3 як компонент режиму (`cycle_regime`) і фільтр сторони; H3 поєднано з пунктом «режим ринку задає сторону» у IDEA-20261030-demo-setups-depth. Очікуваний вердикт `inconclusive` (3-4 цикли), тож передбачено форвардний журнал.
+- База знань: [regime-indicators](../knowledge/regime-indicators.md) (рядок про «пропозицію у збитку» оновлено).
+- Закликів із ціною входу в матеріалі нема, `docs/calls/calls.csv` не змінено.

@@ -436,6 +436,30 @@ async def test_open_trade_without_position_or_close_is_orphaned_once_with_an_ale
     assert sum("orphaned" in m for m in w.msgs) == 1
 
 
+@pytest.mark.parametrize("failing_window", [0, 1])
+async def test_closed_pnl_failure_never_orphans_a_trade(world, monkeypatch, failing_window):
+    """An orphan frees the coin and the risk in the guard's books, so a failed read must not look like «no close»."""
+    w = world
+    await w.enter()
+    t = (await w.store.demo_trade_list())[0]
+    w.venue.pos.clear()
+    w.signals["4h"] = []
+    calls = []
+    real = w.venue.closed_pnl
+
+    async def flaky(market_id, start_ms, end_ms):
+        calls.append(start_ms)
+        if len(calls) - 1 == failing_window:
+            raise RuntimeError("closed-pnl read failed")
+        return await real(market_id, start_ms, end_ms)
+
+    monkeypatch.setattr(w.venue, "closed_pnl", flaky)
+    await w.run(t["opened_ts"] + 10 * D1)  # over a day old and more than one 7-day window to read
+    assert len(calls) == failing_window + 1  # the read stopped at the failure
+    assert (await w.store.demo_trade_list())[0]["status"] == "open"
+    assert not any("orphaned" in m for m in w.msgs)
+
+
 async def test_stop_close_cancels_the_target_limit_left_on_the_book(world):
     w = world
     await w.enter()

@@ -352,15 +352,29 @@ def _yes_prints(trades: Iterable[dict[str, Any]], yes_token: str) -> list[tuple[
     return sorted(out)
 
 
+def _history_points(points: Iterable[Any]) -> list[tuple[int, float]]:
+    """(t, p) of the ``/prices-history`` points in their order; a point that is not a dict, or whose time or price is
+    absent, not a number, NaN / inf or a 300+-digit integer is skipped (as `_yes_prints` skips such a print)."""
+    out = []
+    for pt in points:
+        try:
+            t, p = int(pt["t"]), float(pt["p"])
+        except (KeyError, TypeError, ValueError, OverflowError):  # OverflowError: int(inf), float(10**400)
+            continue
+        if math.isfinite(p):
+            out.append((t, p))
+    return out
+
+
 def lag_profile(
     points: Sequence[dict[str, Any]], trades: Iterable[dict[str, Any]], yes_token: str, ks: Sequence[int]
 ) -> dict[int, list[float]]:
     """Timestamp check of ``/prices-history``: for each shift k (s), |p - last YES-equivalent print with ts <= t + k|
-    over points (t, p) that have such a print. A series stamped late (lookahead) fits best at k > 0."""
+    over points (t, p) that have such a print. A series stamped late (lookahead) fits best at k > 0. Malformed points
+    are skipped (`_history_points`)."""
     tr = _yes_prints(trades, yes_token)
     out: dict[int, list[float]] = {k: [] for k in ks}
-    for pt in points:
-        t, p = int(pt["t"]), float(pt["p"])
+    for t, p in _history_points(points):
         for k in ks:
             last = None
             for ts, px in tr:
@@ -387,14 +401,15 @@ def jump_proximity(
 ) -> dict[str, list[bool]]:
     """Around each trade-price jump >= ``min_jump`` (consecutive YES-equivalent prints), whether a point in the window
     [tj + a, tj + b) relative to the jump print is closer to the new price than to the old one. Points before a jump
-    that are mostly closer to the new price would indicate lookahead in the point timestamps."""
+    that are mostly closer to the new price would indicate lookahead in the point timestamps. Malformed points are
+    skipped (`_history_points`)."""
     tr = _yes_prints(trades, yes_token)
+    pts = _history_points(points)
     out: dict[str, list[bool]] = {name: [] for name, _, _ in windows}
     for (_, old), (tj, new) in zip(tr, tr[1:], strict=False):
         if abs(new - old) < min_jump:
             continue
-        for pt in points:
-            t, p = int(pt["t"]), float(pt["p"])
+        for t, p in pts:
             for name, a, b in windows:
                 if tj + a <= t < tj + b:
                     out[name].append(abs(p - new) < abs(p - old))

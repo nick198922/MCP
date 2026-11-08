@@ -2274,8 +2274,7 @@ def test_every_heading_and_tile_on_every_tab_has_a_help_note(tmp_path):
 RULE3_WHAT_MAX = 120
 RULE3_TODO = frozenset(
     {
-        "demo_not_executed", "demo_open_pos", "demo_recent", "demo_refused", "demo_skipped", "demo_vs_bt",
-        "j_open", "j_table", "plan_exits", "plan_n", "plan_win", "plans",
+        "demo_open_pos", "j_open", "j_table", "plan_exits", "plan_n", "plan_win", "plans",
         "r", "rec", "rec_n", "rec_pct", "rec_pnl", "rec_r_worst", "rec_win", "rules_pre", "sources",
     }
 )  # fmt: skip
@@ -2356,6 +2355,34 @@ def test_journal_stats_and_r_curve_notes_are_instructions_with_thresholds_from_t
     # the red edge of the tile is exactly «below 0»
     tiles = db.block_journal_tiles([{"status": "closed", "pnl": -5.0, "closed_ts": 1.0, "outcome": "loss"}], 0, 2.0)
     assert "система поки в мінусі" in tiles
+
+
+def test_demo_review_notes_are_instructions_with_thresholds_from_the_code():
+    """Item 273 (docs/design/PANEL.md rules 3 and 5): the demo notes behind the 30.11 review say what to do when low or
+    high; 30 is DEMO_MIN_N = analytics.demo_vs_backtest.MIN_TRADES, also the per-group min_n of analytics.demo_shadow
+    (the «замало для висновку» of the reconciliation and of the shadow plans); guard refusals and skips have no number."""
+    import inspect
+
+    from tradedesk.analytics import demo_shadow, demo_vs_backtest
+
+    assert db.DEMO_MIN_N == demo_vs_backtest.MIN_TRADES == 30
+    assert inspect.signature(demo_shadow.summary).parameters["min_n"].default == db.DEMO_MIN_N
+    keys = ("demo_vs_bt", "demo_not_executed", "demo_refused", "demo_skipped", "demo_recent")
+    for key in keys:
+        note = db._info(key)
+        assert note.count("<span class='do'><i>") == 2 and "Для угоди:" not in note, key
+        assert "ризик-нейтральн" not in note and "порада" not in note and "рекомендац" not in note, key  # rule 5
+        assert len(db.HELP[key][1]) <= RULE3_WHAT_MAX, key
+    for key in ("demo_vs_bt", "demo_not_executed", "demo_skipped", "demo_recent"):
+        assert f"{db.DEMO_MIN_N} " in db._info(key), key
+    assert f"<i>Збігів мало (від {db.DEMO_MIN_N} звірених)</i>" in db._info("demo_vs_bt")
+    assert f"до {db.DEMO_MIN_N} звірених угод" in db._info("demo_vs_bt")
+    assert f"від {db.DEMO_MIN_N} планів з R у групі" in db._info("demo_not_executed")
+    assert "<i>Мало</i>" in db._info("demo_refused") and "<i>Багато</i>" in db._info("demo_refused")
+    assert not any(ch.isdigit() for ch in "".join(db.ACT["demo_refused"]))  # no threshold in the code, so none here
+    # the «Відмов guard» / «Не відібрано» tiles carry these notes
+    tiles = db.block_demo_refusals([{"kind": "refused", "reason": "x"}, {"kind": "skipped", "reason": "y"}], 2.0)
+    assert db._info("demo_refused") in tiles and db._info("demo_skipped") in tiles
 
 
 def test_journal_page_says_not_advice_once_at_the_bottom(tmp_path):

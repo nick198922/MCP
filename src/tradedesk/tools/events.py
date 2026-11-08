@@ -23,6 +23,7 @@ from ..analytics.event_study import event_study as _event_study
 from ..core.envelope import Builder
 from ..runtime import Runtime
 from ._util import READ_ONLY, STORE_ERRORS, drop_corrupt_rows, r, store_failed, store_num, store_ready
+from ._util import finite_json as _finite_json
 
 # 2000-01-01T00:00:00Z in unix milliseconds: an events_add ts_ms below it is almost certainly unix seconds.
 MIN_TS_MS = 946_684_800_000
@@ -47,15 +48,6 @@ def _event_ts(e: dict[str, Any]) -> int | None:
 def _bar_ok(x: dict[str, Any]) -> bool:
     """True when a stored bar has a numeric timestamp and finite open / high / low / close."""
     return all(store_num(x.get(k)) is not None for k in ("ts", "open", "high", "low", "close"))
-
-
-def _finite_json(x: Any) -> bool:
-    """True when `x` serialises to strict JSON: no NaN / +-inf float anywhere (a string "inf" is just text)."""
-    try:
-        json.dumps(x, allow_nan=False)
-    except (ValueError, TypeError):
-        return False
-    return True
 
 
 def _seed_row_ok(x: Any) -> bool:

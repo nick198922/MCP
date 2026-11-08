@@ -15,7 +15,18 @@ from pydantic import Field
 from ..analytics.portfolio import aggregate_greeks, scenario_pnl
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, STORE_ERRORS, drop_corrupt_rows, r, reject_nonfinite, reject_nonfinite_result, store_failed, store_ready
+from ._util import (
+    READ_ONLY,
+    STORE_ERRORS,
+    drop_corrupt_rows,
+    finite_json,
+    r,
+    reject_bad_ts,
+    reject_nonfinite,
+    reject_nonfinite_result,
+    store_failed,
+    store_ready,
+)
 
 # Numeric columns of a stored position; another writer can leave a string, a blob or inf in any of them.
 POSITION_NUMS = ("opened_ts", "closed_ts", "size", "entry", "mark", "delta", "gamma", "vega", "theta")
@@ -62,6 +73,11 @@ def register(server: MCPServer, rt: Runtime) -> None:
         opened_ts: Annotated[int | None, Field(description="Open timestamp (unix seconds). Default: now.")] = None,
     ) -> dict[str, Any]:
         b = Builder()
+        # "inf" / "1e400" pass the float schema and were stored as inf (Infinity in every later read); opened_ts = 10**20
+        # overflowed the SQLite INTEGER binding and raised out of the tool.
+        nums = {"size": size, "entry": entry, "mark": mark, "delta": delta, "gamma": gamma, "vega": vega, "theta": theta}
+        if (bad := reject_nonfinite(b, **nums) or reject_bad_ts(b, "opened_ts", opened_ts)) is not None:
+            return bad
         if not await store_ready(b, rt, "positions"):
             return b.build(None, ok=False)
         try:
@@ -122,6 +138,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
         note: Annotated[str | None, Field(description="Optional close note.")] = None,
     ) -> dict[str, Any]:
         b = Builder()
+        if (bad := reject_bad_ts(b, "closed_ts", closed_ts)) is not None:  # 10**20 raised OverflowError out of the update
+            return bad
         if not await store_ready(b, rt, "positions"):
             return b.build(None, ok=False)
         try:
@@ -134,7 +152,19 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 return b.build(None, ok=False)
             ts = int(closed_ts) if closed_ts is not None else int(rt.now().timestamp())
             await rt.store.position_update_close(id, closed_ts=ts, note=note)
-            return b.build(await rt.store.position_get(id))
+            row = await rt.store.position_get(id)
+            # Closing computes nothing from the stored numbers, so a corrupt position is still closed (it would otherwise
+            # stay open for good); but a blob cell failed the reply after the close was written, and inf came back as
+            # Infinity: the stored row is then left out of the reply.
+            if row is not None and not (
+                finite_json(row) and drop_corrupt_rows(Builder(), [row], "position", POSITION_NUMS, required=("size",))
+            ):
+                b.warn(
+                    f"position id={id} was closed, but its stored row is malformed (a blob, or a non-numeric / non-finite "
+                    f"{', '.join(POSITION_NUMS)}), so it is not returned"
+                )
+                return b.build({"id": id, "status": "closed", "closed_ts": ts})
+            return b.build(row)
         except STORE_ERRORS as e:
             return store_failed(b, e)
 

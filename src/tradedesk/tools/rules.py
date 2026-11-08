@@ -18,7 +18,23 @@ from ..core.envelope import Builder
 from ..rules import METRICS, DslError, compile_expr, evaluate
 from ..rules.metrics import MetricContext, build_metrics
 from ..runtime import Runtime
-from ._util import READ_ONLY, STORE_ERRORS, store_failed, store_ready
+from ._util import READ_ONLY, STORE_ERRORS, drop_corrupt_rows, finite_json, store_failed, store_ready
+
+# Numeric columns of a stored rule (`enabled` is turned into a bool by the store); another writer can leave a string, a
+# blob or inf in any of them.
+RULE_NUMS = ("cooldown_seconds", "created_ts", "disabled_ts")
+
+
+def _preset_ok(x: Any) -> bool:
+    """True when a seed preset is an object with a non-empty text `name`, a text `message` (or none), a boolean `enabled`
+    (or none) and an integer `cooldown_seconds` within rules_add's 60 s to 1 day (or none). A cooldown of "abc" / inf
+    raised out of int(), 1e308 overflowed the SQLite INTEGER binding; `expr` is checked by compile_expr (-> `failed`)."""
+    if not isinstance(x, dict) or not isinstance(x.get("name"), str) or not x["name"].strip():
+        return False
+    cd = x.get("cooldown_seconds", 1800)
+    if not isinstance(cd, int) or isinstance(cd, bool) or not 60 <= cd <= 86_400:
+        return False
+    return isinstance(x.get("message"), str | None) and isinstance(x.get("enabled", True), bool)
 
 
 def register(server: MCPServer, rt: Runtime) -> None:
@@ -77,6 +93,13 @@ def register(server: MCPServer, rt: Runtime) -> None:
             return b.build(None, ok=False)
         try:
             rows = await rt.store.rules_list(enabled_only=enabled_only)
+            # An invalid UTF-8 blob in name / expr / message failed the whole reply, and inf in a numeric cell came back as
+            # Infinity: such a rule is skipped with a warning (another writer); an all-malformed store is not "no rules".
+            stored = len(rows)
+            rows = drop_corrupt_rows(b, rows, "rule", RULE_NUMS, required=("cooldown_seconds", "created_ts"))
+            if stored and not rows:
+                b.miss("rules", "store", "data_unavailable", f"all {stored} matching stored rules are malformed")
+                return b.build({"count": 0, "rules": []}, ok=False)
             return b.build({"count": len(rows), "rules": rows})
         except STORE_ERRORS as e:
             return store_failed(b, e)
@@ -137,7 +160,13 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 return b.build({"id": id, "deleted": True})
             now_ts = int(rt.now().timestamp())
             await rt.store.rule_set_enabled(id, enabled=enable, ts=now_ts)
-            return b.build(await rt.store.rule_get(id))
+            row = await rt.store.rule_get(id)
+            # The switch reads no stored value, so a corrupt rule is still switched; but a blob cell failed the reply after
+            # the write, and inf came back as Infinity: the stored row is then left out of the reply.
+            if row is not None and not drop_corrupt_rows(Builder(), [row], "rule", RULE_NUMS, required=("cooldown_seconds", "created_ts")):
+                b.warn(f"rule id={id} was {'enabled' if enable else 'disabled'}, but its stored row is malformed, so it is not returned")
+                return b.build({"id": id, "enabled": enable})
+            return b.build(row)
         except STORE_ERRORS as e:
             return store_failed(b, e)
 
@@ -169,9 +198,26 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 b.miss("presets", "tradedesk", "data_unavailable", f"{type(e).__name__}: {e}")
                 return b.build(None, ok=False)
 
-            presets = seed.get("presets") or []
+            # A seed that is not {"presets": [...]} raised AttributeError / TypeError; presets that cannot be stored are skipped.
+            presets = seed.get("presets") if isinstance(seed, dict) else None
+            if not isinstance(presets, list) or not presets:
+                b.miss("presets", "tradedesk", "data_unavailable", "the seed is not an object with a non-empty `presets` list")
+                return b.build(None, ok=False)
+            usable = [row for row in presets if _preset_ok(row)]
+            if len(usable) < len(presets):
+                b.warn(
+                    f"{len(presets) - len(usable)} seed presets skipped: not an object with a text name / message, a boolean "
+                    "enabled and an integer cooldown_seconds in 60-86400"
+                )
+            if not usable:
+                b.miss("presets", "tradedesk", "data_unavailable", f"all {len(presets)} seed presets are malformed")
+                return b.build(None, ok=False)
+            meta = seed.get("_meta")
+            if not finite_json(meta):  # NaN / Infinity in the seed's _meta came back as such in the reply
+                b.warn("the seed's _meta holds NaN or Infinity; it is not returned")
+                meta = None
             selected: list[dict[str, Any]] = []
-            for row in presets:
+            for row in usable:
                 if only and row.get("name") not in only:
                     continue
                 selected.append(row)
@@ -209,7 +255,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
                     "inserted": inserted,
                     "already_present": skipped,
                     "failed": failed,
-                    "meta": seed.get("_meta"),
+                    "meta": meta,
                 }
             )
         except STORE_ERRORS as e:

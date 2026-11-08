@@ -18,7 +18,7 @@ from ..analytics.ranges import classify_ranges, generate_setup
 from ..analytics.regime import classify_regime
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, STORE_ERRORS, drop_corrupt_rows, parsed_rows, r, store_failed, store_num, store_ready
+from ._util import READ_ONLY, STORE_ERRORS, drop_corrupt_rows, first_nonfinite, parsed_rows, r, store_failed, store_num, store_ready
 
 SFP_EDGE_WARNING = (
     "Unverified edge: walk-forward backtests (2022-10..2026-10, up to 50 Binance crypto perps, 4h/12h "
@@ -116,6 +116,23 @@ def _summary(values: list[float], latest: float) -> dict[str, Any]:
         "percentile": r(pct, 4),
         "rank": r(rank, 4) if rank is not None else None,
     }
+
+
+def _summary_or_miss(b: Builder, values: list[float], table: str) -> dict[str, Any] | None:
+    """`_summary` of `values`, or None with `missing` when finite stored values near the float limit (another writer,
+    e.g. 1e308) overflow it: `(v - mean) ** 2` raised OverflowError out of the tool, sums gave Infinity / NaN in the
+    reply (invariant 1)."""
+    try:
+        stats = _summary(values, latest=values[-1])
+    except OverflowError:
+        stats = None
+    if stats is None or first_nonfinite(stats) is not None:
+        b.miss(table, "store", "data_unavailable", "stored values are too large for the stats (overflow to inf / NaN)")
+        return None
+    return stats
+
+
+SQLITE_INT_MAX = 2**63 - 1  # a bound beyond SQLite INTEGER made the query raise OverflowError out of ohlcv_history
 
 
 def register(server: MCPServer, rt: Runtime) -> None:
@@ -223,7 +240,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
         if len(rates) < min_points:
             b.miss("funding_hist", "store", "data_unavailable", "stored rows missing annualized")
             return b.build(None, ok=False)
-        stats = _summary(rates, latest=rates[-1])
+        stats = _summary_or_miss(b, rates, "funding_hist")
+        if stats is None:
+            return b.build(None, ok=False)
         latest_ts = points[-1][0]
         latest_dt = datetime.fromtimestamp(latest_ts, tz=now.tzinfo).isoformat()
         return b.build(
@@ -282,7 +301,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
         if len(rrs) < min_points:
             b.miss("atm_term", "store", "data_unavailable", f"stored rows missing {key}")
             return b.build(None, ok=False)
-        stats = _summary(rrs, latest=rrs[-1])
+        stats = _summary_or_miss(b, rrs, "atm_term")
+        if stats is None:
+            return b.build(None, ok=False)
         latest_ts = points[-1][0]
         latest_dt = datetime.fromtimestamp(latest_ts, tz=now.tzinfo).isoformat()
         return b.build(
@@ -319,6 +340,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
     ) -> dict[str, Any]:
         b = Builder()
         if not await store_ready(b, rt, "history"):
+            return b.build(None, ok=False)
+        if any(t is not None and abs(t) > SQLITE_INT_MAX for t in (since_ts_ms, until_ts_ms)):
+            b.miss("input", "tradedesk", "invalid_input", "since_ts_ms / until_ts_ms must fit a signed 64-bit integer (unix ms)")
             return b.build(None, ok=False)
         try:
             rows = await rt.store.ohlcv_range(
@@ -878,5 +902,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
             return store_failed(b, e)
         # An alert whose ts is not a finite number, or with a blob cell (an invalid UTF-8 blob failed the whole reply), is
         # skipped with a warning.
+        stored = len(rows)
         rows = drop_corrupt_rows(b, rows, "alert", ("ts",), required=("ts",))
+        if stored and not rows:  # all malformed must not read as "no alerts fired" (empty history stays ok=true)
+            b.miss("alerts", "store", "data_unavailable", f"all {stored} stored alert rows are malformed")
+            return b.build({"count": 0, "alerts": []}, ok=False)
         return b.build({"count": len(rows), "alerts": rows})

@@ -1,0 +1,8 @@
+# 2026-11-08 — тести «збій / зіпсовані дані → відповідь, не виняток», частина 5 (пункт 287)
+
+Інваріанти 1 і 5 `CLAUDE.md`, BACKLOG 6.53.
+
+- Новий `tests/test_tool_failure_extra_5.py` (66 тестів) для `events_add`, `events_list`, `events_seed_load`, `journal_add`, `journal_close`, `journal_stats`: збій запиту чи запису до сховища, рядок / blob / inf у збережених рядках, 1e308, "inf" / "1e400", час 10**20, мегабайт тексту, зіпсований seed.
+- **Знайдено баги в усіх шести:** `journal_add` кидав `OverflowError` на `opened_ts` = 10**20 і зберігав `size` / `entry` / `stop` = "inf". `journal_close` кидав `ValueError` / `TypeError` на рядку в `size` / `stop`, ламав відповідь на blob уже після того, як записав закриття, зберігав PnL / R, що переповнились до inf, і кидав на `closed_ts` = 10**20. `journal_stats` віддавав Infinity на сумах 1e308. `events_list` ламав відповідь на blob з невалідним UTF-8 і віддавав NaN / Infinity з `meta`; `events_add` таку `meta` зберігав. `events_seed_load` кидав на seed не у формі `{"events": [...]}` і на рядку з `ts` 1e308 / Infinity, а сміттєві рядки рахував як «вже є».
+- Тепер: `ok=false` з `invalid_input` / `data_unavailable` у `missing`; зіпсована угода не закривається і лишається `open`; зіпсовані події й рядки seed пропускаються з попередженням, а якщо зіпсовано все, відповідь `ok=false`. Час у журналі поза діапазоном datetime (зокрема мілісекунди замість секунд) відхиляється. На коректних даних відповіді не змінились; `execution/` не чіпали.
+- Без окремого тесту лишається 19 інструментів. Відкрите: `journal_list` на blob з невалідним UTF-8 не перевіряли.

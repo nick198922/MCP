@@ -22,7 +22,7 @@ from ..analytics.event_study import MEASURES
 from ..analytics.event_study import event_study as _event_study
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, STORE_ERRORS, r, store_failed, store_num, store_ready
+from ._util import READ_ONLY, STORE_ERRORS, drop_corrupt_rows, r, store_failed, store_num, store_ready
 
 # 2000-01-01T00:00:00Z in unix milliseconds: an events_add ts_ms below it is almost certainly unix seconds.
 MIN_TS_MS = 946_684_800_000
@@ -47,6 +47,23 @@ def _event_ts(e: dict[str, Any]) -> int | None:
 def _bar_ok(x: dict[str, Any]) -> bool:
     """True when a stored bar has a numeric timestamp and finite open / high / low / close."""
     return all(store_num(x.get(k)) is not None for k in ("ts", "open", "high", "low", "close"))
+
+
+def _finite_json(x: Any) -> bool:
+    """True when `x` serialises to strict JSON: no NaN / +-inf float anywhere (a string "inf" is just text)."""
+    try:
+        json.dumps(x, allow_nan=False)
+    except (ValueError, TypeError):
+        return False
+    return True
+
+
+def _seed_row_ok(x: Any) -> bool:
+    """True when a seed row is an object with a finite in-range `ts` (unix seconds), text `kind` / `label` and a strict
+    JSON `meta`. A ts of 1e308 / Infinity raised OverflowError out of the insert; other junk counted as already present."""
+    if not isinstance(x, dict) or _event_ts(x) is None or not _finite_json(x.get("meta")):
+        return False
+    return all(isinstance(x.get(k), str) and x.get(k) for k in ("kind", "label"))
 
 
 def register(server: MCPServer, rt: Runtime) -> None:
@@ -113,6 +130,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
             else:
                 b.miss("ts", "tradedesk", "data_unavailable", "provide ts_ms OR date (+time_utc)")
                 return b.build(None, ok=False)
+            if not _finite_json(meta):  # stored as NaN / Infinity, it came back non-finite in every events_list
+                b.miss("meta", "tradedesk", "invalid_input", "meta holds NaN or inf (only finite JSON numbers are stored)")
+                return b.build(None, ok=False)
             row_id = await rt.store.event_insert(ts=ts, kind=kind, label=label, impact=impact, meta=meta)
             return b.build({"id": row_id, "inserted": row_id > 0, "ts": ts, "kind": kind, "label": label})
         except STORE_ERRORS as e:
@@ -150,6 +170,17 @@ def register(server: MCPServer, rt: Runtime) -> None:
                     b.miss("until_date", "tradedesk", "data_unavailable", "invalid date")
                     return b.build(None, ok=False)
             rows = await rt.store.events_list(kind=kind, impact=impact, since_ts=since_ts, until_ts=until_ts, limit=limit)
+            # A blob cell (an invalid UTF-8 one failed the whole reply), a non-numeric ts or a NaN / Infinity meta from
+            # another writer: the row is skipped with a warning; an all-malformed window is not "no events".
+            stored = len(rows)
+            rows = drop_corrupt_rows(b, rows, "event", ("ts",), required=("ts",))
+            nonfinite = [e.get("id") for e in rows if not _finite_json(e.get("meta"))]
+            if nonfinite:
+                b.warn(f"{len(nonfinite)} stored event rows skipped: NaN / Infinity in meta; id {nonfinite[:10]}")
+                rows = [e for e in rows if _finite_json(e.get("meta"))]
+            if stored and not rows:
+                b.miss("events", "store", "data_unavailable", f"all {stored} matching stored events are malformed")
+                return b.build({"count": 0, "events": []}, ok=False)
             return b.build({"count": len(rows), "events": rows})
         except STORE_ERRORS as e:
             return store_failed(b, e)
@@ -174,7 +205,17 @@ def register(server: MCPServer, rt: Runtime) -> None:
             except (FileNotFoundError, ValueError, OSError) as e:
                 b.miss("seed", "tradedesk", "data_unavailable", f"{type(e).__name__}: {e}")
                 return b.build(None, ok=False)
-            rows = seed.get("events") or []
+            # A seed that is not {"events": [...]} raised AttributeError / TypeError; rows that cannot be stored are skipped.
+            raw = seed.get("events") if isinstance(seed, dict) else None
+            if not isinstance(raw, list) or not raw:
+                b.miss("seed", "tradedesk", "data_unavailable", "the seed is not an object with a non-empty `events` list")
+                return b.build(None, ok=False)
+            rows = [x for x in raw if _seed_row_ok(x)]
+            if len(rows) < len(raw):
+                b.warn(f"{len(raw) - len(rows)} seed rows skipped: not an object with an in-range ts, text kind / label, strict JSON meta")
+            if not rows:
+                b.miss("seed", "tradedesk", "data_unavailable", f"all {len(raw)} seed rows are malformed")
+                return b.build(None, ok=False)
             before = await rt.store.event_count()
             inserted = await rt.store.events_insert_many(rows)
             total = await rt.store.event_count()

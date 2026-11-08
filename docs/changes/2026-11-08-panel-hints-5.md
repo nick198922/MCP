@@ -1,0 +1,2 @@
+- Панель: підказки (i) `demo_open_pos`, `rec`, `rec_n`, `rec_pct`, `rec_pnl` переписано за правилом 3 (що це / мало → / багато →), пороги лише з коду й `REC_CAVEAT` (пункт 275).
+- Тест `test_paper_rec_and_demo_open_notes_are_instructions_with_thresholds_from_the_code`; у `RULE3_TODO` лишилось 11.

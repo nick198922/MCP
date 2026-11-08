@@ -109,17 +109,29 @@ def ema(x: np.ndarray, n: int, pos: np.ndarray) -> np.ndarray:
 
 def atr(b: Bars, n: int, pos: np.ndarray) -> np.ndarray:
     """Wilder ATR; the first bar of a segment has no true range, the seed is the mean of the next ``n`` ranges."""
-    out = np.full(len(b), np.nan)
-    prev = np.nan
+    # Speed only, the same result bit for bit: true ranges are computed vectorised (elementwise float64 = the same IEEE
+    # operations; the two ``where`` steps are builtin max(x, y, z): keep the first, replace only on a strict ">", so
+    # NaN and -0.0 behave as before; pc of bar 0 is c[-1] as before), and the Wilder loop runs on Python floats,
+    # because element access on numpy arrays dominated the run time.
+    h, lo, c = np.asarray(b.h, dtype=float), np.asarray(b.low, dtype=float), np.asarray(b.c, dtype=float)
+    pc = np.roll(c, 1)
+    with np.errstate(all="ignore"):  # Python float arithmetic never warned here either
+        tr_a = h - lo
+        for x in (np.abs(h - pc), np.abs(lo - pc)):
+            tr_a = np.where(x > tr_a, x, tr_a)
+    trs = tr_a.tolist()
+    ps = np.asarray(pos).tolist()
+    nan = float("nan")
+    out = [nan] * len(b)
+    prev = nan
     acc = 0.0
     for i in range(len(b)):
-        p = pos[i]
+        p = ps[i]
         if p == 0:
             acc = 0.0
-            prev = np.nan
+            prev = nan
             continue
-        pc = b.c[i - 1]
-        tr = max(b.h[i] - b.low[i], abs(b.h[i] - pc), abs(b.low[i] - pc))
+        tr = trs[i]
         if p <= n:
             acc += tr
             if p == n:
@@ -128,7 +140,7 @@ def atr(b: Bars, n: int, pos: np.ndarray) -> np.ndarray:
             continue
         prev = (prev * (n - 1) + tr) / n
         out[i] = prev
-    return out
+    return np.array(out, dtype=float)
 
 
 @dataclass(frozen=True)

@@ -404,33 +404,41 @@ def range_events(
         return _range_events_registered(b, pos, atr, w, width_atr, kmin, kmax)
     n = len(b)
     cands: list[tuple[int, int, int, RangeEvent | None]] = []  # (r, 0 dev | 1 sweep, s, event or None if close >= mid)
-    for s in range(w, n):
-        if pos[s] < w:
-            continue
-        a = float(atr[s - 1])
-        if not (np.isfinite(a) and a > 0):
-            continue
-        lr = float(b.low[s - w : s].min())
-        tr = float(b.h[s - w : s].max())
-        if tr - lr > width_atr * a:
-            continue
+    if n <= w:
+        return []
+    # Speed only, the same numbers bit for bit. Vectorised: the range low/high lr/tr of bars s - w .. s - 1 for every
+    # s >= w (min/max select a value, so they equal the per-bar slices) and the skip tests of the per-bar loop (inside
+    # a segment's first w bars, no ATR at s - 1, range wider than width_atr * ATR, neither a sweep nor a close below
+    # the range; elementwise float64 = the same IEEE operations as on Python floats). The loop then runs only on the
+    # remaining bars, on Python floats.
+    lo_a, hi_a, c_a = np.asarray(b.low, dtype=float), np.asarray(b.h, dtype=float), np.asarray(b.c, dtype=float)
+    pos_a = np.asarray(pos)
+    lr_all = np.lib.stride_tricks.sliding_window_view(lo_a, w)[: n - w].min(axis=1)
+    tr_all = np.lib.stride_tricks.sliding_window_view(hi_a, w)[: n - w].max(axis=1)
+    a_all = np.asarray(atr, dtype=float)[w - 1 : n - 1]
+    lo_s, c_s = lo_a[w:], c_a[w:]
+    with np.errstate(all="ignore"):  # Python float arithmetic never warned here either
+        keep = (pos_a[w:n] >= w) & np.isfinite(a_all) & (a_all > 0) & ~(tr_all - lr_all > width_atr * a_all)
+        keep &= ((lo_s < lr_all) & (c_s >= lr_all)) | (c_s < lr_all)
+    lows, closes, ps = lo_a.tolist(), c_a.tolist(), pos_a.tolist()
+    lrs, trs = lr_all.tolist(), tr_all.tolist()
+    for s in (np.flatnonzero(keep) + w).tolist():
+        lr, tr = lrs[s - w], trs[s - w]
         mid = (tr + lr) / 2
-        if b.low[s] < lr and b.c[s] >= lr:
-            if b.c[s] < mid:
-                cands.append((s, 1, s, RangeEvent("sweep", s, s, lr, tr, mid, float(b.low[s]))))
-            continue
-        if not b.c[s] < lr:
+        if lows[s] < lr and closes[s] >= lr:
+            if closes[s] < mid:
+                cands.append((s, 1, s, RangeEvent("sweep", s, s, lr, tr, mid, lows[s])))
             continue
         k = 1
         r = -1
-        while s + k < n and k <= kmax and pos[s + k] == pos[s] + k:
-            if b.c[s + k] >= lr:
+        while s + k < n and k <= kmax and ps[s + k] == ps[s] + k:
+            if closes[s + k] >= lr:
                 r = s + k
                 break
             k += 1
         if r < 0 or k < kmin:
             continue
-        ev = RangeEvent("dev", s, r, lr, tr, mid, float(b.low[s : r + 1].min())) if b.c[r] < mid else None
+        ev = RangeEvent("dev", s, r, lr, tr, mid, float(lo_a[s : r + 1].min())) if closes[r] < mid else None
         cands.append((r, 0, s, ev))
     cands.sort(key=lambda x: (x[0], x[1], x[2]))
     out: list[RangeEvent] = []

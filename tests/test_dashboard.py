@@ -2274,8 +2274,7 @@ def test_every_heading_and_tile_on_every_tab_has_a_help_note(tmp_path):
 RULE3_WHAT_MAX = 120
 RULE3_TODO = frozenset(
     {
-        "j_open", "j_table", "plan_exits", "plan_n", "plan_win", "plans",
-        "r", "rec_r_worst", "rec_win", "rules_pre", "sources",
+        "plans", "r", "rec_r_worst", "rec_win", "rules_pre", "sources",
     }
 )  # fmt: skip
 
@@ -2407,6 +2406,35 @@ def test_paper_rec_and_demo_open_notes_are_instructions_with_thresholds_from_the
     page = db.block_rec_paper(rows)
     for key in ("rec_n", "rec_pct", "rec_pnl"):
         assert db._info(key) in page, key
+
+
+def test_journal_open_table_and_plan_notes_are_instructions_with_thresholds_from_the_code():
+    """Item 277 (docs/design/PANEL.md rules 3 and 5): «Відкриті зараз», «Угоди» and the plan tiles say what to do when
+    low or high; $100 is rule 1 (RULES_DEPOSIT x RULES_RISK_PCT %), 30 closed trades is JR_SMALL_SAMPLE, 30 plans with
+    R is PLAN_MIN_N (the «Замало планів» note); the win share and the exits have no threshold in the code."""
+    from tradedesk.analytics import journal
+
+    assert db.RULES_DEPOSIT * db.RULES_RISK_PCT / 100 == 100
+    assert db.JR_SMALL_SAMPLE == journal.SMALL_SAMPLE == 30
+    assert db.PLAN_MIN_N == 30
+    keys = ("j_open", "j_table", "plan_exits", "plan_n", "plan_win")
+    for key in keys:
+        note = db._info(key)
+        assert note.count("<span class='do'><i>") == 2 and "Для угоди:" not in note, key
+        assert "ризик-нейтральн" not in note and "порада" not in note and "відхилено" not in note, key  # rule 5
+        assert len(db.HELP[key][1]) <= RULE3_WHAT_MAX, key
+    assert "≤ $100 (правило 1)" in db._info("j_open")
+    assert f"<i>До {db.JR_SMALL_SAMPLE} закритих угод</i>" in db._info("j_table")
+    assert f"<i>Менше {db.PLAN_MIN_N} планів з R</i>" in db._info("plan_n")
+    assert f"<i>Від {db.PLAN_MIN_N} планів з R</i>" in db._info("plan_n")
+    for key in ("plan_win", "plan_exits"):  # no threshold in the code, so none here (the 0 of R is the tile's edge)
+        assert not any(ch.isdigit() for ch in "".join(db.ACT[key]).replace("вище 0", "").replace("нижче 0", "")), key
+    # the plan tiles carry these notes, and «Замало планів» names the same 30
+    rows = [{"verdict": "enter", "status": "resolved", "outcome": "stop", "r_result": -1.0}]
+    page = db.block_trade_plans(rows)
+    for key in ("plan_n", "plan_win", "plan_exits"):
+        assert db._info(key) in page, key
+    assert f"потрібно ≥ {db.PLAN_MIN_N}" in page and "Замало планів" not in db._info("plan_n")
 
 
 def test_journal_page_says_not_advice_once_at_the_bottom(tmp_path):

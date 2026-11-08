@@ -401,7 +401,7 @@ def test_market_tab_short_info_notes_and_less_text():
         assert "<h1>Ринок</h1>" in page and "<title>tradedesk — ринок</title>" in page
     assert "<span class='chip risk'>подія</span>" in page and "<b>Що робити:</b> до релізу" in page  # the advice stays in the lead
     assert set(db.ACT) <= set(db.HELP) and {"price", "key", "chart", "vol"} <= set(db.ACT)
-    assert "Для угоди:" in db._info("fc_brier")  # keys without ACT (here the forecasts' Brier) keep the long note
+    assert "Для угоди:" in db._info("fc_ref")  # keys without ACT (here the forecasts' fixed reference) keep the long note
 
 
 def test_nav_three_sections_then_the_rest_under_detailed():
@@ -1937,7 +1937,7 @@ def test_info_icon_is_escaped_static_text_and_unknown_key_is_empty():
     assert html_.startswith("<span class='info' tabindex='0' role='button'")
     # an ACT key: what it is, then «low → do», «high → do» (owner, 28.10) instead of the read / trade lines
     assert "DVOL" in html_ and "<i>Низький (до 30-го перцентиля)</i> → купувати опціони дешевше" in html_ and "Для угоди:" not in html_
-    assert "Для угоди:" in db._info("fc_brier")  # keys without ACT keep the long form
+    assert "Для угоди:" in db._info("fc_ref")  # keys without ACT keep the long form
     assert set(db.ACT) <= set(db.HELP) and all(all(x) for x in db.ACT.values())
     assert db._info("no-such-key") == ""
     tile = db._tile("K", "1", "s", help="iv", tone="good", badge="a<b")
@@ -2275,8 +2275,7 @@ RULE3_WHAT_MAX = 120
 RULE3_TODO = frozenset(
     {
         "demo_not_executed", "demo_open_pos", "demo_recent", "demo_refused", "demo_skipped", "demo_vs_bt", "drawdown",
-        "fc", "fc_brier", "fc_calib", "fc_clim", "fc_expiries", "fc_n", "fc_ref", "fc_rv", "fc_weekly", "j_expectancy",
-        "j_open", "j_pnl", "j_rcurve", "j_table", "j_trades", "j_winrate", "plan_exits", "plan_n", "plan_win", "plans",
+        "fc_expiries", "fc_ref", "fc_rv", "fc_weekly", "j_expectancy", "j_open", "j_pnl", "j_rcurve", "j_table", "j_trades", "j_winrate", "plan_exits", "plan_n", "plan_win", "plans",
         "r", "rec", "rec_n", "rec_pct", "rec_pnl", "rec_r_worst", "rec_win", "rules_pre", "sources",
     }
 )  # fmt: skip
@@ -2299,6 +2298,21 @@ def test_info_notes_are_at_most_four_short_lines():
     # the four longest notes of «Мої угоди» before item 262 are short instructions now
     for key in ("j_rules", "rules_week", "j_review", "j_weeks"):
         assert "<span class='do'><i>" in db._info(key) and "порада" not in db._info(key), key
+
+
+def test_forecast_info_notes_are_instructions_with_thresholds_from_the_code():
+    """Item 264 (docs/design/PANEL.md rules 3 and 5): the five forecast-journal notes say what to do when low or high;
+    the 30-date threshold is FC_MIN_EXPIRIES (analytics.forecast_log.MIN_EXPIRIES), Brier 0.25 = always 50 %."""
+    from tradedesk.analytics import forecast_log
+
+    assert db.FC_MIN_EXPIRIES == forecast_log.MIN_EXPIRIES == 30
+    for key in ("fc", "fc_n", "fc_brier", "fc_clim", "fc_calib"):
+        note = db._info(key)
+        assert note.count("<span class='do'><i>") == 2 and "Для угоди:" not in note, key
+        assert "ризик-нейтральн" not in note and "порада" not in note, key  # rule 5: FC_CAVEAT says it at the bottom
+    for key in ("fc", "fc_n", "fc_clim"):
+        assert f"{db.FC_MIN_EXPIRIES} дат" in db._info(key), key
+    assert "<i>Нижче 0.25</i>" in db._info("fc_brier") and "<i>0.25 і вище</i>" in db._info("fc_brier")
 
 
 def test_journal_page_says_not_advice_once_at_the_bottom(tmp_path):

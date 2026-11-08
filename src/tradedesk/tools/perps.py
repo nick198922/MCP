@@ -147,6 +147,7 @@ async def current_funding(rt: Runtime, b: Builder, venue: str, markets: dict[str
             b.warn(f"{venue}: funding intervals unavailable; 8h shown (interval_source=assumed) where the venue omits it")
     out: dict[str, dict[str, Any]] = {}
     dropped: list[str] = []
+    bad_marks: list[str] = []
     for sym, x in bulk.items():
         if not sym.endswith("/USDT:USDT") or (x or {}).get("fundingRate") is None:
             continue
@@ -160,12 +161,19 @@ async def current_funding(rt: Runtime, b: Builder, venue: str, markets: dict[str
         cap = (m.get("info") or {}).get("adjustedFundingRateCap") or info.get("upperFundingRate")
         # A rate that is not a finite number (a non-numeric value, NaN, +-inf) drops the symbol and is named in a warning
         # below; a mark, next-funding time or cap that is not a number (the cap is the venue's numeric string) is shown
-        # as absent
+        # as absent; a mark that is a JSON number but NaN / inf / a 300+-digit integer is shown as absent and named in a
+        # warning (it is the carry entry's fallback price)
         try:
             rate = finite_float(x["fundingRate"])
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):  # OverflowError: float() of a 300+-digit JSON integer
             dropped.append(sym)
             continue
+        mark: float | None = None
+        if json_num(x.get("markPrice")):
+            try:
+                mark = finite_float(x["markPrice"])
+            except (ValueError, OverflowError):
+                bad_marks.append(sym)
         caps = parsed_rows([cap] if cap not in (None, "") else [], float)
         out[sym] = {
             "rate": rate,
@@ -173,18 +181,19 @@ async def current_funding(rt: Runtime, b: Builder, venue: str, markets: dict[str
             "interval_source": source,
             "apr": annualize_funding(rate, hours),
             "next_funding_ts": json_num(x.get("nextFundingTimestamp")),
-            "mark": float(x["markPrice"]) if json_num(x.get("markPrice")) else None,
+            "mark": mark,
             "cap": caps[0] if caps else None,
         }
     _warn_dropped_current(b, venue, dropped)
+    _warn_dropped_current(b, venue, bad_marks, what="mark price", fate="shown as null")
     return out
 
 
-def _warn_dropped_current(b: Builder, venue: str, symbols: list[str]) -> None:
-    """Name the symbols whose current funding rate was not a finite number and so were left out."""
+def _warn_dropped_current(b: Builder, venue: str, symbols: list[str], what: str = "current funding rate", fate: str = "left out") -> None:
+    """Name the symbols whose current funding rate (or `what`) was not a finite number and so were left out (`fate`)."""
     if symbols:
         names = ", ".join(symbols[:10]) + (f" and {len(symbols) - 10} more" if len(symbols) > 10 else "")
-        b.warn(f"{venue}: current funding rate not a finite number for {len(symbols)} symbols, left out: {names}")
+        b.warn(f"{venue}: {what} not a finite number for {len(symbols)} symbols, {fate}: {names}")
 
 
 def _finite_rate(b: Builder, label: str, x: Any) -> float | None:
@@ -1179,16 +1188,21 @@ def register(server: MCPServer, rt: Runtime) -> None:
             b.miss("book", "hyperliquid", "backend_error", "unexpected book shape")
             return b.build(None, ok=False)
 
-        def levels(xs: list[dict[str, Any]]) -> list[list[float]]:
+        def levels(xs: Any, side: str) -> list[list[float]]:
+            """[px, sz, n] per level; a level with a field that is absent, not a number, NaN / inf or a 300+-digit
+            integer (OverflowError) is dropped and counted in a warning naming the side."""
             out: list[list[float]] = []
-            for lv in xs:
+            bad = 0
+            for lv in xs if isinstance(xs, list) else []:
                 try:
-                    out.append([float(lv["px"]), float(lv["sz"]), float(lv.get("n") or 0)])
-                except (KeyError, TypeError, ValueError):
-                    continue
+                    out.append([finite_float(lv["px"]), finite_float(lv["sz"]), finite_float(lv.get("n") or 0)])
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    bad += 1
+            if bad:
+                b.warn(f"hyperliquid {coin} book: {bad} {side} level(s) with a price, size or count that is not a finite number dropped")
             return out
 
-        bids, asks = levels(bids_raw), levels(asks_raw)
+        bids, asks = levels(bids_raw, "bid"), levels(asks_raw, "ask")
         if not bids or not asks:
             b.miss("book", "hyperliquid", "data_unavailable", "no quotable levels")
             return b.build(None, ok=False)

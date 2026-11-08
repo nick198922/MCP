@@ -44,6 +44,19 @@ def store_failed(b: Builder, e: BaseException) -> dict[str, Any]:
     return b.build(None, ok=False)
 
 
+def store_num(x: Any) -> float | None:
+    """A finite number read from the store as a float, else None. SQLite keeps whatever another writer put in a REAL
+    column (a string, a blob, inf), so tools that sum or compare stored values skip such a cell instead of raising
+    (invariant 1)."""
+    if not isinstance(x, (int, float)) or isinstance(x, bool):
+        return None
+    try:
+        v = float(x)
+    except OverflowError:
+        return None
+    return v if math.isfinite(v) else None
+
+
 def warn_incomplete_range(b: Builder, field: str, got: dict[str, Any]) -> None:
     """Warnings for a ``{"rows", "complete"[, "truncated", "dropped_rows"]}`` range result. ``dropped_rows > 0`` (ccxt
     funding: rows that are not a dict or whose timestamp is missing or not an integer) gets its own warning with the

@@ -2274,8 +2274,8 @@ def test_every_heading_and_tile_on_every_tab_has_a_help_note(tmp_path):
 RULE3_WHAT_MAX = 120
 RULE3_TODO = frozenset(
     {
-        "demo_open_pos", "j_open", "j_table", "plan_exits", "plan_n", "plan_win", "plans",
-        "r", "rec", "rec_n", "rec_pct", "rec_pnl", "rec_r_worst", "rec_win", "rules_pre", "sources",
+        "j_open", "j_table", "plan_exits", "plan_n", "plan_win", "plans",
+        "r", "rec_r_worst", "rec_win", "rules_pre", "sources",
     }
 )  # fmt: skip
 
@@ -2383,6 +2383,30 @@ def test_demo_review_notes_are_instructions_with_thresholds_from_the_code():
     # the «Відмов guard» / «Не відібрано» tiles carry these notes
     tiles = db.block_demo_refusals([{"kind": "refused", "reason": "x"}, {"kind": "skipped", "reason": "y"}], 2.0)
     assert db._info("demo_refused") in tiles and db._info("demo_skipped") in tiles
+
+
+def test_paper_rec_and_demo_open_notes_are_instructions_with_thresholds_from_the_code():
+    """Item 275 (docs/design/PANEL.md rules 3 and 5): the paper-recommendation notes and the open demo positions say
+    what to do when low or high; 0 is the red / green edge of _signed_cls, 27 trades and −0.59 % are the H1 test of
+    REC_CAVEAT; rec_paper has no minimum sample in the code, so «Мало розрахованих» has no number."""
+    keys = ("demo_open_pos", "rec", "rec_n", "rec_pct", "rec_pnl")
+    for key in keys:
+        note = db._info(key)
+        assert note.count("<span class='do'><i>") == 2 and "Для угоди:" not in note, key
+        assert "ризик-нейтральн" not in note and "порада" not in note and "відхилено" not in note, key  # rule 5
+        assert len(db.HELP[key][1]) <= RULE3_WHAT_MAX, key
+    # the H1 numbers quoted in the notes are the ones of the block's caveat (the verification report of 18.10)
+    assert "−0.59 %" in db.REC_CAVEAT and "n = 27" in db.REC_CAVEAT
+    assert "<i>Більше 27 (стільки в тесті H1)</i>" in db._info("rec_n") and "−0.59 %" in db._info("rec_n")
+    assert not any(ch.isdigit() for ch in db.ACT["rec_n"][0] + db.ACT["rec_n"][1])  # no sample threshold in the code
+    assert "<i>Нижче 0 (червоне)</i>" in db._info("rec_pct") and "<i>Вище 0 (зелене)</i>" in db._info("rec_pct")
+    # the red / green edge of the «Середнє, % спота» and «P&L разом» tiles is exactly 0
+    assert db._signed_cls(-0.01) == "bad" and db._signed_cls(0.01) == "ok" and db._signed_cls(0.0) == ""
+    # the tiles of the block carry these notes
+    rows = [{"source": "method", "status": "settled", "pnl_usd": -5.0, "pnl_pct_spot": -0.01, "r_worst_case": -0.5}]
+    page = db.block_rec_paper(rows)
+    for key in ("rec_n", "rec_pct", "rec_pnl"):
+        assert db._info(key) in page, key
 
 
 def test_journal_page_says_not_advice_once_at_the_bottom(tmp_path):

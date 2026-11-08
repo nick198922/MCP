@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 import statistics
+from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import date, timedelta
 from typing import Any
@@ -86,9 +87,32 @@ def classify_account(account_value: float | None, vlm_month: float | None, posit
 # Histories and windows
 
 
-def parse_portfolio(raw: Any) -> dict[str, dict[str, Any]]:
-    """Hyperliquid info ``portfolio`` -> {window: {'pnl': [(ms, usd)], 'value': [(ms, usd)], 'vlm': usd}}, points sorted."""
+def finite_num(x: Any) -> float | None:
+    """``float(x)`` when it is a finite number, else None: absent, not a number, NaN / ±inf (also the strings "nan" /
+    "Infinity") or an integer beyond the float range (``float(10**400)`` raises OverflowError)."""
+    try:
+        v = float(x)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return v if math.isfinite(v) else None
+
+
+def dropped_note(source: str, dropped: Sequence[str]) -> str | None:
+    """One warning line naming the fields of the points dropped from ``source`` (e.g. ``"portfolio 0xabc"``), or None."""
+    if not dropped:
+        return None
+    by_field = ", ".join(f"{f} ×{n}" for f, n in sorted(Counter(dropped).items()))
+    return f"{source}: {len(dropped)} point(s) with a field that is not a finite number dropped ({by_field})"
+
+
+def parse_portfolio(raw: Any, dropped: list[str] | None = None) -> dict[str, dict[str, Any]]:
+    """Hyperliquid info ``portfolio`` -> {window: {'pnl': [(ms, usd)], 'value': [(ms, usd)], 'vlm': usd}}, points sorted.
+
+    A point whose time or value is absent, not a number, NaN / ±inf or a 300+-digit integer is skipped; a present
+    ``vlm`` that is not a finite number reads as 0 (an absent one too, silently, as before). Each one is appended to ``dropped`` (when given) as ``"<window>.<key>.time"`` / ``".value"`` (or
+    ``"<window>.<key>"`` for a point that is not a [time, value] pair; ``"<window>.vlm"``)."""
     out: dict[str, dict[str, Any]] = {}
+    bad = dropped if dropped is not None else []
     if not isinstance(raw, list):
         return out
     for item in raw:
@@ -96,20 +120,23 @@ def parse_portfolio(raw: Any) -> dict[str, dict[str, Any]]:
             continue
         name, body = item
 
-        def pts(key: str, body: dict[str, Any] = body) -> list[tuple[int, float]]:
+        def pts(key: str, body: dict[str, Any] = body, name: Any = name) -> list[tuple[int, float]]:
             rows = []
             for p in body.get(key) or []:
-                try:
-                    rows.append((int(p[0]), float(p[1])))
-                except (TypeError, ValueError, IndexError):
+                if not (isinstance(p, (list, tuple)) and len(p) >= 2):
+                    bad.append(f"{name}.{key}")
                     continue
+                t, v = finite_num(p[0]), finite_num(p[1])
+                if t is None or v is None:
+                    bad.append(f"{name}.{key}.{'time' if t is None else 'value'}")
+                    continue
+                rows.append((int(t), v))
             return sorted(rows)
 
-        try:
-            vlm = float(body.get("vlm") or 0.0)
-        except (TypeError, ValueError):
-            vlm = 0.0
-        out[str(name)] = {"pnl": pts("pnlHistory"), "value": pts("accountValueHistory"), "vlm": vlm}
+        vlm = finite_num(body.get("vlm") or 0.0)  # absent / empty reads as 0, as before
+        if vlm is None:
+            bad.append(f"{name}.vlm")
+        out[str(name)] = {"pnl": pts("pnlHistory"), "value": pts("accountValueHistory"), "vlm": vlm or 0.0}
     return out
 
 
@@ -181,18 +208,31 @@ def window_edges(end: int, length: int, count: int) -> list[int]:
 
 
 def realized_pnl_windows(
-    fills: Iterable[Mapping[str, Any]], edges: Sequence[int], coverage_start: int, coverage_end: int | None = None
+    fills: Iterable[Mapping[str, Any]],
+    edges: Sequence[int],
+    coverage_start: int,
+    coverage_end: int | None = None,
+    dropped: list[str] | None = None,
 ) -> list[float | None]:
     """Realized PnL ``Σ(closedPnl − fee)`` (USD) of Hyperliquid fills in each window [edges[i], edges[i+1]); None for a
     window starting before ``coverage_start`` or ending after ``coverage_end`` (the span the fill history is complete
-    over; ``coverage_end=None`` means complete up to now, e.g. not truncated)."""
+    over; ``coverage_end=None`` means complete up to now, e.g. not truncated).
+
+    A fill that is not a mapping, or whose ``time`` is absent / not a finite number / a 300+-digit integer, or whose
+    present ``closedPnl`` / ``fee`` is not a finite number (NaN / ±inf / 300+ digits / text), is skipped and its field
+    appended to ``dropped`` (when given): ``"fill"``, ``"time"``, ``"closedPnl"``, ``"fee"``. An absent or empty
+    ``closedPnl`` / ``fee`` counts as 0, as before."""
     sums = [0.0] * (len(edges) - 1)
+    bad = dropped if dropped is not None else []
     for f in fills:
-        try:
-            t = int(f["time"])
-            v = float(f.get("closedPnl") or 0.0) - float(f.get("fee") or 0.0)
-        except (KeyError, TypeError, ValueError):
+        if not isinstance(f, Mapping):
+            bad.append("fill")
             continue
+        tf, pnl, fee = finite_num(f.get("time")), finite_num(f.get("closedPnl") or 0.0), finite_num(f.get("fee") or 0.0)
+        if tf is None or pnl is None or fee is None:
+            bad.append("time" if tf is None else "closedPnl" if pnl is None else "fee")
+            continue
+        t, v = int(tf), pnl - fee
         for i in range(len(sums)):
             if edges[i] <= t < edges[i + 1]:
                 sums[i] += v

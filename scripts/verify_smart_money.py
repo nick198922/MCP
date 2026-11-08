@@ -37,6 +37,8 @@ from tradedesk.analytics.smart_money import (  # noqa: E402
     EXCLUDED_CLASSES,
     classify_account,
     detect_delta_start,
+    dropped_note,
+    finite_num,
     ic_null_sd,
     interp,
     mde,
@@ -164,7 +166,10 @@ async def fetch(conn: sqlite3.Connection, cache: Path, limit: int | None) -> Non
                         emit(f"  {sub} {a}: {e}")
                     continue
                 if sub == "portfolio":
-                    data = {k: v for k, v in parse_portfolio(data).items() if k in ("allTime", "month", "week")}
+                    bad: list[str] = []
+                    data = {k: v for k, v in parse_portfolio(data, bad).items() if k in ("allTime", "month", "week")}
+                    if note := dropped_note(f"portfolio {a}", bad):
+                        emit(f"  warning: {note}")
                 path.write_text(json.dumps(data, separators=(",", ":")))
                 done += 1
             if (i + 1) % 100 == 0 or i + 1 == len(accounts):
@@ -212,10 +217,15 @@ async def fetch(conn: sqlite3.Connection, cache: Path, limit: int | None) -> Non
                     )
                 if len(page) < FILLS_PAGE or new == 0:
                     break
-                since = int(page[-1]["time"])
+                last_t = finite_num(page[-1].get("time")) if isinstance(page[-1], dict) else None
+                if last_t is None:  # cannot page on from a corrupt time: drop the account rather than guess
+                    emit(f"  warning: fills {a}: the last fill of a page has no finite time, history not saved")
+                    ok = False
+                    break
+                since = int(last_t)
             if ok:
                 capped = len(fills) >= FILLS_CAP
-                end = int(fills[-1]["time"]) if capped and fills else None
+                end = last_fill_time(fills) if capped else None
                 path.write_text(
                     json.dumps({"start": start, "capped": capped, "coverage_start": start, "coverage_end": end, "fills": fills})
                 )
@@ -237,6 +247,15 @@ def load_json(path: Path) -> Any:
         return None
 
 
+def last_fill_time(fills: list[Any]) -> int | None:
+    """Time (ms) of the last fill whose ``time`` is a finite number; None if there is none."""
+    for f in reversed(fills):
+        t = finite_num(f.get("time")) if isinstance(f, dict) else None
+        if t is not None:
+            return int(t)
+    return None
+
+
 def classes(snap: dict[str, dict[str, Any]], cache: Path) -> dict[str, str]:
     out = {}
     for a, row in snap.items():
@@ -247,9 +266,12 @@ def classes(snap: dict[str, dict[str, Any]], cache: Path) -> dict[str, str]:
             for ap in st.get("assetPositions") or []:
                 p = ap.get("position") if isinstance(ap, dict) else None
                 if isinstance(p, dict):
-                    szi = float(p.get("szi") or 0.0)
+                    szi, val = finite_num(p.get("szi") or 0.0), finite_num(p.get("positionValue") or 0.0)
+                    if szi is None or val is None:
+                        emit(f"  warning: state {a}: position {'szi' if szi is None else 'positionValue'} is not a finite number, dropped")
+                        continue
                     if szi:
-                        positions.append({"side": "long" if szi > 0 else "short", "value_usd": float(p.get("positionValue") or 0.0)})
+                        positions.append({"side": "long" if szi > 0 else "short", "value_usd": val})
         out[a] = classify_account(row["account_value"], row["vlm_month"], positions)
     return out
 
@@ -271,8 +293,9 @@ def section_classes(snap: dict[str, dict[str, Any]], cls: dict[str, str], cache:
         for a in accs:
             st = load_json(cache / "state" / f"{a}.json")
             if isinstance(st, dict) and snap[a]["account_value"]:
-                g = float((st.get("marginSummary") or {}).get("totalNtlPos") or 0.0)
-                levs.append(g / snap[a]["account_value"])
+                g = finite_num((st.get("marginSummary") or {}).get("totalNtlPos") or 0.0)
+                if g is not None:  # a total that is not a finite number is left out of the median
+                    levs.append(g / snap[a]["account_value"])
         emit(
             f"| {c} | {len(accs)} | {len(accs) / len(snap) * 100:.1f} % | {av / 1e6:,.0f} | {to:.1f} "
             f"| {statistics.median(levs) if levs else float('nan'):.2f} |"
@@ -353,16 +376,21 @@ async def align_live(n: int = 60, seed: int = 20261017) -> None:
         rel_m, rel_w, rel_a = [], [], []
         for r in sample:
             await pacer.spend(20)
+            bad: list[str] = []
             try:
-                pf = parse_portfolio((await rt.hyperliquid._info({"type": "portfolio", "user": r["account"]}, ttl=0)).data)
+                pf = parse_portfolio((await rt.hyperliquid._info({"type": "portfolio", "user": r["account"]}, ttl=0)).data, bad)
             except ProviderError as e:
                 emit(f"  portfolio {r['account']}: {e}")
                 continue
-            m, w, a = pf["month"]["pnl"], pf["week"]["pnl"], pf["allTime"]["pnl"]
+            if note := dropped_note(f"portfolio {r['account']}", bad):
+                emit(f"  warning: {note}")
+            m, w, a = ((pf.get(k) or {}).get("pnl") or [] for k in ("month", "week", "allTime"))
+            if not m:  # every month point dropped (or the window is absent): nothing to compare
+                continue
             rel_m.append(abs((m[-1][1] - m[0][1]) - r["pnl_month"]) / abs(r["pnl_month"]))
-            if r.get("pnl_week") and abs(r["pnl_week"]) >= 50_000:
+            if w and r.get("pnl_week") and abs(r["pnl_week"]) >= 50_000:
                 rel_w.append(abs((w[-1][1] - w[0][1]) - r["pnl_week"]) / abs(r["pnl_week"]))
-            if r.get("pnl_all") and abs(r["pnl_all"]) >= 50_000:
+            if a and r.get("pnl_all") and abs(r["pnl_all"]) >= 50_000:
                 rel_a.append(abs(a[-1][1] - r["pnl_all"]) / abs(r["pnl_all"]))
         emit(f"## Розвідувальна перевірка узгодженості з живим лідербордом ({datetime.now(UTC):%Y-%m-%d %H:%M} UTC, seed {seed})")
         emit(f"leaderboard rows {len(lb)}, sample fetched over {time.time() - t0:.0f}s, rss {cmn.rss_mb():.0f} MB")
@@ -463,7 +491,7 @@ def retro_fills(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     edges = window_edges(E0, 30 * DAY_MS, N_MONTHS + 1)
     per: list[tuple[list[float], list[float]]] = [([], []) for _ in range(N_MONTHS)]
-    stats = {"tracked": len(tracked), "files": 0, "capped": 0, "no_fills": 0, "end_days_ago": []}
+    stats: dict[str, Any] = {"tracked": len(tracked), "files": 0, "capped": 0, "no_fills": 0, "end_days_ago": [], "warnings": []}
     for a in tracked:
         fz = load_json(cache / "fills" / f"{a}.json")
         if not fz:
@@ -477,12 +505,18 @@ def retro_fills(
         cov_start = fz["start"]
         cov_end = fz.get("coverage_end")
         if fz["capped"] and fz["fills"] and cov_end is None:
-            cov_end = int(fz["fills"][-1]["time"])
+            cov_end = last_fill_time(fz["fills"])
+            if cov_end is None:  # a capped history with no readable end is not "complete up to now"
+                stats["warnings"].append(f"fills {a}: capped history without a fill of finite time, account skipped")
+                continue
         if cov_end is not None:
             stats["end_days_ago"].append((E0 - cov_end) / DAY_MS)
         if cls.get(a) in EXCLUDED_CLASSES:
             continue
-        wins = realized_pnl_windows(fz["fills"], edges, cov_start, cov_end)
+        bad: list[str] = []
+        wins = realized_pnl_windows(fz["fills"], edges, cov_start, cov_end, bad)
+        if note := dropped_note(f"fills {a}", bad):
+            stats["warnings"].append(note)
         pf = load_json(cache / "portfolio" / f"{a}.json")
         val = pf["allTime"]["value"] if pf and "allTime" in pf else []
         for j in range(N_MONTHS):
@@ -669,6 +703,8 @@ def report(conn: sqlite3.Connection, cache: Path) -> None:
         f"медіана {statistics.median(ed) if ed else float('nan'):.0f}, мін {ed[0] if ed else float('nan'):.0f}, макс {ed[-1] if ed else float('nan'):.0f}. "
         "Вікна після кінця покриття відкинуто (coverage_end). Акаунти відібрано за PnL того самого місяця."
     )
+    for w in fs["warnings"]:
+        emit(f"- warning: {w}")
     print_periods("", fr)
     emit("## 6. Потужність H1 / H1w (sd між періодами з ретроспективи; survivorship може його занижувати)")
     emit()

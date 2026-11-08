@@ -8,6 +8,7 @@ Local bookkeeping only: nothing is sent to any venue. A plan is written by `plan
 
 from __future__ import annotations
 
+import math
 from collections import defaultdict
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
@@ -19,7 +20,7 @@ from ..analytics.demo_option_pairs import paired_report
 from ..analytics.trade_plan import TAKER_FEE, geometry, resolve_plan, summarize_plans, usable_expires, validate_levels
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, STORE_ERRORS, finite_float, r, store_failed, store_ready
+from ._util import READ_ONLY, STORE_ERRORS, drop_corrupt_rows, finite_float, r, store_failed, store_ready
 
 PLAN_WARNING = (
     "Paper scoring of the assistant's plans on candle highs / lows (local store only, no orders): a forward record of the "
@@ -37,6 +38,8 @@ RULE_KEYS = {str(i) for i in range(1, 9)}  # the owner's 8 rules (docs/knowledge
 STALE_S = 86400
 
 SHADOW_TAG = "src:demo-shadow"  # execution/demo_trader.py: one plan per setup signal, not the assistant's judgment
+# Numeric columns `_view` reads (expires_ts has its own guard, `_expires_view`).
+PLAN_NUMS = ("created_ts", "entry", "stop", "target", "filled_ts", "fill", "resolved_ts", "exit", "r_result")
 
 
 def _iso(ts: int | None) -> str | None:
@@ -99,6 +102,27 @@ def _view(p: dict[str, Any]) -> dict[str, Any]:
             note=p["resolve_note"],
         )
     return out
+
+
+def _listable(b: Builder, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """`_view` of the stored plans that another writer did not corrupt. A string / blob / inf in a level, a timestamp or
+    the result (TypeError / ValueError in `_view`, or an invalid UTF-8 blob failing the reply), entry 0 or entry = stop
+    (ZeroDivisionError in `geometry`), or a reward:risk that overflows: the plan is skipped with a warning naming its id
+    (invariant 1). plan_add validates its levels, so its own rows always pass."""
+    views: list[dict[str, Any]] = []
+    bad: list[Any] = []
+    for p in drop_corrupt_rows(b, rows, "plan", PLAN_NUMS, required=("created_ts", "entry", "stop", "target")):
+        if p["entry"] <= 0 or p["entry"] == p["stop"]:
+            bad.append(p["id"])
+            continue
+        v = _view(p)
+        if v["rr"] is None or v["risk_pct"] is None or not math.isfinite(v["rr"]) or not math.isfinite(v["risk_pct"]):
+            bad.append(p["id"])
+            continue
+        views.append(v)
+    if bad:
+        b.warn(f"{len(bad)} stored plan rows skipped: entry <= 0, entry equal to stop, or a reward:risk out of range; id {bad[:10]}")
+    return views
 
 
 def _open_ms(x: Any) -> int | None:
@@ -336,7 +360,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
             return b.build(None, ok=False)
         try:
             rows = await rt.store.plan_list(status=status, verdict=verdict, tag=tag, symbol=symbol, limit=limit)
-            return b.build({"count": len(rows), "plans": [_view(p) for p in rows]})
+            plans = _listable(b, rows)
+            return b.build({"count": len(plans), "plans": plans})
         except STORE_ERRORS as e:
             return store_failed(b, e)
 

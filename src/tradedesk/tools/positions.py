@@ -15,7 +15,10 @@ from pydantic import Field
 from ..analytics.portfolio import aggregate_greeks, scenario_pnl
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, STORE_ERRORS, r, store_failed, store_ready
+from ._util import READ_ONLY, STORE_ERRORS, drop_corrupt_rows, r, reject_nonfinite, reject_nonfinite_result, store_failed, store_ready
+
+# Numeric columns of a stored position; another writer can leave a string, a blob or inf in any of them.
+POSITION_NUMS = ("opened_ts", "closed_ts", "size", "entry", "mark", "delta", "gamma", "vega", "theta")
 
 DEFAULT_SCENARIOS: list[dict[str, float]] = [
     {"d_spot_pct": -0.10, "d_vol_points": 0.0},
@@ -100,6 +103,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
             return b.build(None, ok=False)
         try:
             rows = await rt.store.positions_list(status=status, instrument=instrument, tag=tag, limit=limit)
+            rows = drop_corrupt_rows(b, rows, "position", POSITION_NUMS, required=("size",))
             return b.build({"count": len(rows), "positions": rows})
         except STORE_ERRORS as e:
             return store_failed(b, e)
@@ -155,14 +159,24 @@ def register(server: MCPServer, rt: Runtime) -> None:
         days: Annotated[float, Field(ge=0, description="Scenario time (days) if a scenario does not supply its own.")] = 0.0,
     ) -> dict[str, Any]:
         b = Builder()
+        # The float schema lets "inf" / 1e400 through; such a scenario or days gave NaN / Infinity PnL.
+        if (bad := reject_nonfinite(b, reference_spot=reference_spot, scenarios=scenarios, days=days)) is not None:
+            return bad
         if not await store_ready(b, rt, "positions"):
             return b.build(None, ok=False)
         try:
             rows = await rt.store.positions_list(status="open", instrument=instrument_filter, tag=tag, limit=1000)
+            # A string / blob greek used to count as 0 silently and inf gave Infinity / NaN totals: such a position is
+            # left out with a warning instead.
+            stored = len(rows)
+            rows = drop_corrupt_rows(b, rows, "open position", POSITION_NUMS, required=("size",))
             agg = aggregate_greeks(rows)
             totals = agg["totals"]
             if totals["count"] == 0:
-                b.miss("positions", "store", "data_unavailable", "no open positions matched the filter")
+                why = (
+                    "no open positions matched the filter" if stored == len(rows) else f"all {stored} matching open positions are malformed"
+                )
+                b.miss("positions", "store", "data_unavailable", why)
                 return b.build(None, ok=False)
             scen_list = scenarios or DEFAULT_SCENARIOS
             scen_out: list[dict[str, Any]] = []
@@ -185,21 +199,21 @@ def register(server: MCPServer, rt: Runtime) -> None:
                         "pnl_usd": r(res["total_pnl"], 2),
                     }
                 )
-            return b.build(
-                {
-                    "filters": {"instrument": instrument_filter, "tag": tag},
-                    "net_greeks": {
-                        "count": totals["count"],
-                        "delta": r(totals["delta"], 6),
-                        "gamma": r(totals["gamma"], 8),
-                        "vega": r(totals["vega"], 4),
-                        "theta": r(totals["theta"], 4),
-                        "notional_usd": r(totals["notional_usd"], 2),
-                    },
-                    "per_instrument": {k: {gk: r(gv, 6) for gk, gv in v.items()} for k, v in agg["per_instrument"].items()},
-                    "scenarios": scen_out,
-                    "reference_spot": reference_spot,
-                }
-            )
+            nums = {
+                "net_greeks": {
+                    "count": totals["count"],
+                    "delta": r(totals["delta"], 6),
+                    "gamma": r(totals["gamma"], 8),
+                    "vega": r(totals["vega"], 4),
+                    "theta": r(totals["theta"], 4),
+                    "notional_usd": r(totals["notional_usd"], 2),
+                },
+                "per_instrument": {k: {gk: r(gv, 6) for gk, gv in v.items()} for k, v in agg["per_instrument"].items()},
+                "scenarios": scen_out,
+            }
+            # Finite but extreme stored greeks or scenario inputs can still overflow a sum or a product.
+            if (bad := reject_nonfinite_result(b, nums)) is not None:
+                return bad
+            return b.build({"filters": {"instrument": instrument_filter, "tag": tag}, **nums, "reference_spot": reference_spot})
         except STORE_ERRORS as e:
             return store_failed(b, e)

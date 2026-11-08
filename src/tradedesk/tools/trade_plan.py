@@ -20,7 +20,7 @@ from ..analytics.demo_option_pairs import paired_report
 from ..analytics.trade_plan import TAKER_FEE, geometry, resolve_plan, summarize_plans, usable_expires, validate_levels
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, STORE_ERRORS, drop_corrupt_rows, finite_float, r, store_failed, store_ready
+from ._util import READ_ONLY, STORE_ERRORS, drop_corrupt_rows, finite_float, finite_json, r, store_failed, store_ready
 
 PLAN_WARNING = (
     "Paper scoring of the assistant's plans on candle highs / lows (local store only, no orders): a forward record of the "
@@ -36,6 +36,7 @@ MIN_HORIZON_S = 2 * 3600  # guarantees one complete 1h candle inside the window
 MAX_HORIZON_S = 180 * 86400
 RULE_KEYS = {str(i) for i in range(1, 9)}  # the owner's 8 rules (docs/knowledge/trading-strategy.md)
 STALE_S = 86400
+SQLITE_INT_MAX = 2**63 - 1
 
 SHADOW_TAG = "src:demo-shadow"  # execution/demo_trader.py: one plan per setup signal, not the assistant's judgment
 # Numeric columns `_view` reads (expires_ts has its own guard, `_expires_view`).
@@ -107,8 +108,9 @@ def _view(p: dict[str, Any]) -> dict[str, Any]:
 def _listable(b: Builder, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """`_view` of the stored plans that another writer did not corrupt. A string / blob / inf in a level, a timestamp or
     the result (TypeError / ValueError in `_view`, or an invalid UTF-8 blob failing the reply), entry 0 or entry = stop
-    (ZeroDivisionError in `geometry`), or a reward:risk that overflows: the plan is skipped with a warning naming its id
-    (invariant 1). plan_add validates its levels, so its own rows always pass."""
+    (ZeroDivisionError in `geometry`), a reward:risk that overflows, or NaN / Infinity in the JSON of `tags` / `rules`:
+    the plan is skipped with a warning naming its id (invariant 1). plan_add validates its levels, so its own rows
+    always pass."""
     views: list[dict[str, Any]] = []
     bad: list[Any] = []
     for p in drop_corrupt_rows(b, rows, "plan", PLAN_NUMS, required=("created_ts", "entry", "stop", "target")):
@@ -116,12 +118,15 @@ def _listable(b: Builder, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             bad.append(p["id"])
             continue
         v = _view(p)
-        if v["rr"] is None or v["risk_pct"] is None or not math.isfinite(v["rr"]) or not math.isfinite(v["risk_pct"]):
+        if v["rr"] is None or v["risk_pct"] is None or not math.isfinite(v["rr"]) or not math.isfinite(v["risk_pct"]) or not finite_json(v):
             bad.append(p["id"])
             continue
         views.append(v)
     if bad:
-        b.warn(f"{len(bad)} stored plan rows skipped: entry <= 0, entry equal to stop, or a reward:risk out of range; id {bad[:10]}")
+        b.warn(
+            f"{len(bad)} stored plan rows skipped: entry <= 0, entry equal to stop, a reward:risk out of range, or NaN / "
+            f"Infinity in tags / rules; id {bad[:10]}"
+        )
     return views
 
 
@@ -454,11 +459,23 @@ def register(server: MCPServer, rt: Runtime) -> None:
         if not await store_ready(b, rt, "the journal"):
             return b.build(None, ok=False)
         try:
-            if await rt.store.plan_get(id) is None or await rt.store.journal_get(journal_id) is None:
+            # An id beyond SQLite INTEGER (10**20) raised OverflowError out of the lookup; no such row can exist.
+            if (
+                id > SQLITE_INT_MAX
+                or journal_id > SQLITE_INT_MAX
+                or await rt.store.plan_get(id) is None
+                or await rt.store.journal_get(journal_id) is None
+            ):
                 b.miss("plan_link", "tradedesk", "invalid_input", f"plan #{id} or journal trade #{journal_id} not found")
                 return b.build(None, ok=False)
             await rt.store.plan_link_journal(id, journal_id)
             row = await rt.store.plan_get(id)
-            return b.build(_view(row) if row else None)
+            views = _listable(Builder(), [row]) if row else []
+            if row is not None and not views:
+                # The link reads no stored level, so it is written; but a corrupt row raised in `_view` (or failed the reply)
+                # after the write, and inf / NaN came back as Infinity / NaN: the row is then left out of the reply.
+                b.warn(f"plan #{id} was linked to journal trade #{journal_id}, but its stored row is malformed, so it is not returned")
+                return b.build({"id": id, "journal_id": journal_id})
+            return b.build(views[0] if views else None)
         except STORE_ERRORS as e:
             return store_failed(b, e)

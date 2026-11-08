@@ -16,7 +16,7 @@ from ..analytics.journal import outcome_of, r_multiple, summary
 from ..analytics.journal import pnl as pnl_fn
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, STORE_ERRORS, r, store_failed, store_ready
+from ._util import READ_ONLY, STORE_ERRORS, drop_corrupt_rows, r, store_failed, store_ready
 
 
 def register(server: MCPServer, rt: Runtime) -> None:
@@ -156,6 +156,13 @@ def register(server: MCPServer, rt: Runtime) -> None:
             return b.build(None, ok=False)
         try:
             rows = await rt.store.journal_list(status="closed", symbol=symbol, tag=tag, limit=limit)
+            # A string / blob in pnl or r_multiple raised ValueError in summary(), inf gave Infinity stats: such a trade is
+            # skipped with a warning (another writer, or a pnl that overflowed at close).
+            stored = len(rows)
+            rows = drop_corrupt_rows(b, rows, "closed trade", ("pnl", "r_multiple"))
+            if stored and not rows:  # all malformed must not read as "no closed trades"
+                b.miss("journal", "store", "data_unavailable", f"all {stored} matching closed trades are malformed")
+                return b.build(None, ok=False)
             s = summary(rows)
             # Round USD / R to friendly precision for the envelope.
             rounded = {

@@ -18,7 +18,7 @@ from ..analytics.ranges import classify_ranges, generate_setup
 from ..analytics.regime import classify_regime
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, STORE_ERRORS, parsed_rows, r, store_failed, store_num, store_ready
+from ._util import READ_ONLY, STORE_ERRORS, drop_corrupt_rows, parsed_rows, r, store_failed, store_num, store_ready
 
 SFP_EDGE_WARNING = (
     "Unverified edge: walk-forward backtests (2022-10..2026-10, up to 50 Binance crypto perps, 4h/12h "
@@ -55,6 +55,8 @@ STOP_MULT = Annotated[float, Field(ge=0.0, le=10, description="Stop offset multi
 STOP_MIN_OFFSET = Annotated[
     float, Field(ge=0.0, le=5, description="Minimum stop distance beyond the wick extreme, in percent (0.1 = 0.1 %).")
 ]
+OHLCV_COLS = ("ts", "open", "high", "low", "close", "volume")  # ohlcv_hist columns ohlcv_history hands out
+
 MIN_RR = Annotated[float, Field(ge=1, le=20, description="Min rr1 (reward to tp1 / risk to stop) to flag the setup as tradable.")]
 
 
@@ -154,7 +156,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
             )
             return b.build(None, ok=False)
 
-        ivs = [row["atm_iv"] for row in series if row.get("atm_iv") is not None]
+        points = _stored_points(b, series, "atm_iv")  # a string / blob / inf cell raised TypeError in min / max before
+        ivs = [v for _, v in points]
         if len(ivs) < min_points:
             b.miss("atm_term", "store", "data_unavailable", "stored rows missing atm_iv")
             return b.build(None, ok=False)
@@ -165,7 +168,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
         below = sum(1 for v in ivs if v < latest)
         ties = sum(1 for v in ivs if v == latest)
         pct = (below + 0.5 * ties) / len(ivs)
-        latest_ts = series[-1]["ts"]
+        latest_ts = points[-1][0]
         latest_dt = datetime.fromtimestamp(latest_ts, tz=now.tzinfo).isoformat()
         return b.build(
             {
@@ -328,12 +331,18 @@ def register(server: MCPServer, rt: Runtime) -> None:
             )
         except STORE_ERRORS as e:
             return store_failed(b, e)
+        stored = len(rows)
+        # A bar another writer left with a string / blob / inf cell was handed out as is (and an invalid UTF-8 blob failed
+        # the whole reply): it is skipped with a warning, as event_study does.
+        rows = drop_corrupt_rows(b, rows, "bar", OHLCV_COLS, required=OHLCV_COLS[:5], key="ts")
         if not rows:
             b.miss(
                 "ohlcv_hist",
                 "store",
                 "data_unavailable",
-                "no bars stored for this (venue, symbol, timeframe) in the requested window",
+                f"all {stored} stored bars in the window are malformed"
+                if stored
+                else "no bars stored for this (venue, symbol, timeframe) in the requested window",
             )
             return b.build({"venue": venue, "symbol": symbol, "timeframe": timeframe, "count": 0, "bars": []}, ok=False)
         return b.build(
@@ -867,4 +876,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
             rows = await rt.store.recent_alerts(limit=limit)
         except STORE_ERRORS as e:
             return store_failed(b, e)
+        # An alert whose ts is not a finite number, or with a blob cell (an invalid UTF-8 blob failed the whole reply), is
+        # skipped with a warning.
+        rows = drop_corrupt_rows(b, rows, "alert", ("ts",), required=("ts",))
         return b.build({"count": len(rows), "alerts": rows})

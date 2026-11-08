@@ -2,7 +2,8 @@
 inside the stored coverage. The incremental fetch in ``collector/carry_paper_feed.LiveFeed._history`` used to start at
 ``last_ts + 1``: once a later row was stored, the window with the dropped row was skipped and the next complete read
 recorded coverage over it. It now starts at the end of the coverage, so the hole is re-read (and flagged) on the next
-cycles; as engine R2 does, after GAP_CONFIRM_CYCLES funding steps the hole is confirmed once and coverage resumes."""
+cycles; like engine R2 but one cycle later (coverage older than GAP_CONFIRM_CYCLES funding steps: 3 flagged cycles plus
+the confirming one, R2 has 3 in all) the hole is confirmed once and coverage resumes."""
 
 from __future__ import annotations
 
@@ -61,6 +62,44 @@ async def test_dropped_row_of_a_non_held_symbol_is_not_papered_over_and_is_confi
                 assert mine == [], (n, flags)  # confirmed once, then no more flags
                 assert btc and min(btc) > hole and st["covered_to"] == cyc_ts + DECISION_DELAY_MS
         assert flagged == GAP_CONFIRM_CYCLES + 1  # bounded, not every cycle while the hole stays in the 8-day window
+    finally:
+        await rt.aclose()
+
+
+async def test_dropped_row_of_a_held_symbol_stops_flagging_after_r2_confirms_it(tmp_path):
+    # Review 2026-11-08 (carry-coverage-gap-fix), point 4(a): R2 re-reads the held symbol on cycles 2-3 (no coverage
+    # written) and confirms the gap on cycle 3; the feed then confirms the hole on cycle 4 and the flag stops.
+    hole, wif = CYCLE + H8 + 3, "WIF/USDT:USDT"  # WIF is opened on the first cycle (hot rate) and stays held
+
+    class Ex(LiveEx):
+        history_calls: list = []
+
+        async def fetch_funding_rate_history(self, symbol, since=None, limit=500, params=None):
+            rows = await super().fetch_funding_rate_history(symbol, since, limit, params)
+            return [dict(r, timestamp=None) if r["timestamp"] == hole else r for r in rows]
+
+    rt = _rt(Ex, tmp_path)
+    assert rt.store is not None
+    await rt.store.init()
+    try:
+        feed = LiveFeed(rt, workers=2, pacer=Pacer(10**6))
+        assert (await run_cycle(rt.store, feed, PARAMS_A, CYCLE, clock=lambda: CYCLE + DECISION_DELAY_MS))["status"] == "done"
+        seen = []
+        for n in range(1, GAP_CONFIRM_CYCLES + 3):
+            cyc_ts = CYCLE + n * H8
+            Ex.cycle = cyc_ts
+            assert (await run_cycle(rt.store, feed, PARAMS_A, cyc_ts, clock=lambda c=cyc_ts: c + DECISION_DELAY_MS))["status"] == "done"
+            assert [p["state"]["symbol"] for p in await rt.store.cp_positions("A", "open")] == [wif]
+            flags = (await rt.store.cp_cycle_get("A", cyc_ts))["payload"]["flags"]
+            seen.append(sorted(f["issue"] for f in flags if f.get("symbol") == wif))
+        assert seen == [
+            ["funding_payment_missing", "funding_rows_dropped"],
+            ["funding_payment_missing", "funding_rows_dropped"],
+            ["funding_gap_confirmed", "funding_rows_dropped"],
+            ["funding_rows_gap_confirmed"],  # 4 incomplete cycles in all, not the whole holding time + 8 days
+            [],
+        ]
+        assert (await rt.store.cp_funding_state("binanceusdm", wif))["covered_to"] == CYCLE + 5 * H8 + DECISION_DELAY_MS
     finally:
         await rt.aclose()
 

@@ -2310,7 +2310,7 @@ def test_forecast_info_notes_are_instructions_with_thresholds_from_the_code():
         note = db._info(key)
         assert note.count("<span class='do'><i>") == 2 and "Для угоди:" not in note, key
         assert "ризик-нейтральн" not in note and "порада" not in note, key  # rule 5: FC_CAVEAT says it at the bottom
-    for key in ("fc", "fc_n", "fc_clim"):
+    for key in ("fc", "fc_n", "fc_brier", "fc_clim"):
         assert f"{db.FC_MIN_EXPIRIES} дат" in db._info(key), key
     assert "<i>Нижче 0.25</i>" in db._info("fc_brier") and "<i>0.25 і вище</i>" in db._info("fc_brier")
 

@@ -131,7 +131,11 @@ async def call(server, name, **args):
 async def test_tool_surface(server):
     async with Client(server) as c:
         names = {t.name for t in (await c.list_tools()).tools}
-    assert EXPECTED_TOOLS <= names
+    # Two-way: a registered tool missing from EXPECTED_TOOLS would also escape the docs coverage test (README/PARITY).
+    assert names == EXPECTED_TOOLS, (
+        f"registered but not in EXPECTED_TOOLS: {sorted(names - EXPECTED_TOOLS)}; "
+        f"in EXPECTED_TOOLS but not registered: {sorted(EXPECTED_TOOLS - names)}"
+    )
 
 
 async def test_tool_registration_memo_equals_a_fresh_registration(rt, monkeypatch):

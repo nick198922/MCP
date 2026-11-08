@@ -401,7 +401,7 @@ def test_market_tab_short_info_notes_and_less_text():
         assert "<h1>Ринок</h1>" in page and "<title>tradedesk — ринок</title>" in page
     assert "<span class='chip risk'>подія</span>" in page and "<b>Що робити:</b> до релізу" in page  # the advice stays in the lead
     assert set(db.ACT) <= set(db.HELP) and {"price", "key", "chart", "vol"} <= set(db.ACT)
-    assert "Для угоди:" in db._info("fc_ref")  # keys without ACT (here the forecasts' fixed reference) keep the long note
+    assert "Для угоди:" in db._info("sources")  # keys without ACT (here the trade sources) keep the long note
 
 
 def test_nav_three_sections_then_the_rest_under_detailed():
@@ -1937,7 +1937,7 @@ def test_info_icon_is_escaped_static_text_and_unknown_key_is_empty():
     assert html_.startswith("<span class='info' tabindex='0' role='button'")
     # an ACT key: what it is, then «low → do», «high → do» (owner, 28.10) instead of the read / trade lines
     assert "DVOL" in html_ and "<i>Низький (до 30-го перцентиля)</i> → купувати опціони дешевше" in html_ and "Для угоди:" not in html_
-    assert "Для угоди:" in db._info("fc_ref")  # keys without ACT keep the long form
+    assert "Для угоди:" in db._info("sources")  # keys without ACT keep the long form
     assert set(db.ACT) <= set(db.HELP) and all(all(x) for x in db.ACT.values())
     assert db._info("no-such-key") == ""
     tile = db._tile("K", "1", "s", help="iv", tone="good", badge="a<b")
@@ -2274,8 +2274,8 @@ def test_every_heading_and_tile_on_every_tab_has_a_help_note(tmp_path):
 RULE3_WHAT_MAX = 120
 RULE3_TODO = frozenset(
     {
-        "demo_not_executed", "demo_open_pos", "demo_recent", "demo_refused", "demo_skipped", "demo_vs_bt", "drawdown",
-        "fc_expiries", "fc_ref", "fc_rv", "fc_weekly", "j_expectancy", "j_open", "j_pnl", "j_rcurve", "j_table", "j_trades", "j_winrate", "plan_exits", "plan_n", "plan_win", "plans",
+        "demo_not_executed", "demo_open_pos", "demo_recent", "demo_refused", "demo_skipped", "demo_vs_bt",
+        "j_expectancy", "j_open", "j_pnl", "j_rcurve", "j_table", "j_trades", "j_winrate", "plan_exits", "plan_n", "plan_win", "plans",
         "r", "rec", "rec_n", "rec_pct", "rec_pnl", "rec_r_worst", "rec_win", "rules_pre", "sources",
     }
 )  # fmt: skip
@@ -2313,6 +2313,27 @@ def test_forecast_info_notes_are_instructions_with_thresholds_from_the_code():
     for key in ("fc", "fc_n", "fc_clim"):
         assert f"{db.FC_MIN_EXPIRIES} дат" in db._info(key), key
     assert "<i>Нижче 0.25</i>" in db._info("fc_brier") and "<i>0.25 і вище</i>" in db._info("fc_brier")
+
+
+def test_rest_of_forecast_and_drawdown_notes_are_instructions_with_thresholds_from_the_code():
+    """Item 266 (docs/design/PANEL.md rules 3 and 5): the other four forecast notes and the journal drawdown tile say
+    what to do when low or high; 30 dates is FC_MIN_EXPIRIES (the «замало для висновку» badge and the RV30 «enough»),
+    30 trades is JR_SMALL_SAMPLE (analytics.journal.SMALL_SAMPLE), 0.25 is Brier of «always 50 %»."""
+    from tradedesk.analytics import forecast_log, journal
+
+    assert db.FC_MIN_EXPIRIES == forecast_log.MIN_EXPIRIES == 30
+    assert db.JR_SMALL_SAMPLE == journal.SMALL_SAMPLE == 30
+    for key in ("fc_expiries", "fc_ref", "fc_rv", "fc_weekly", "drawdown"):
+        note = db._info(key)
+        assert note.count("<span class='do'><i>") == 2 and "Для угоди:" not in note, key
+        assert "ризик-нейтральн" not in note and "порада" not in note, key  # rule 5: the caveats say it at the bottom
+    for key in ("fc_expiries", "fc_ref", "fc_rv"):
+        assert f"{db.FC_MIN_EXPIRIES} дат" in db._info(key), key
+    assert f"<i>Менше {db.FC_MIN_EXPIRIES} дат експірації</i>" in db._info("fc_expiries")
+    assert "<i>Нижче 0</i>" in db._info("fc_ref") and "<i>Вище 0</i>" in db._info("fc_ref")
+    assert "95 % ДІ містить 0" in db._info("fc_rv")  # the tile's CI, forecast_log t(0.975) over expiry dates
+    assert "0.25" in db._info("fc_weekly")
+    assert f"до {db.JR_SMALL_SAMPLE} закритих угод" in db._info("drawdown")
 
 
 def test_journal_page_says_not_advice_once_at_the_bottom(tmp_path):

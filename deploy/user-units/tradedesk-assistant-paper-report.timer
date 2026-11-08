@@ -1,0 +1,9 @@
+[Unit]
+Description=tradedesk-assistant-paper-report (Sun 20:15 Europe/Kyiv)
+
+[Timer]
+OnCalendar=Sun *-*-* 20:15:00 Europe/Kyiv
+Persistent=true
+
+[Install]
+WantedBy=timers.target

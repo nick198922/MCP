@@ -5,6 +5,7 @@ summariser so the user sees payoff / greeks / PoP in one call."""
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Annotated, Any, Literal
 
 from mcp.server.mcpserver import MCPServer
@@ -99,12 +100,16 @@ def _answer(
     width_pct: float,
     grid: int,
     kind: str,
+    extra: Callable[[], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Template answer: `_packed`, or ok=false (`invalid_input`) when an input or the result is NaN / inf."""
+    """Template answer: `_packed` (plus the `extra` fields), or ok=false (`invalid_input`) when an input or the result
+    is NaN / inf."""
     if (bad := reject_nonfinite(b, legs=legs, spot=spot, days=days, iv=iv, forward=forward)) is not None:
         return bad
     try:
         data = _packed(legs, spot=spot, days=days, iv=iv, forward=forward, width_pct=width_pct, grid=grid, kind=kind)
+        if extra is not None:
+            data.update(extra())
     except _NUMERIC_ERRORS as e:
         b.miss("strategy", "tradedesk", "invalid_input", f"inputs are outside the model's numeric range: {type(e).__name__}: {e}")
         return b.build(None, ok=False)
@@ -347,11 +352,13 @@ def register(server: MCPServer, rt: Runtime) -> None:
     ) -> dict[str, Any]:
         b = Builder()
         legs = build_cash_and_carry(spot_price=spot_price, futures_price=futures_price, size=size)
-        data = _packed(legs, spot=spot_price, days=days, iv=iv, forward=spot_price, width_pct=width_pct, grid=grid, kind=kind)
-        # Record the basis explicitly for context.
-        data["basis_abs"] = r(futures_price - spot_price, 4)
-        data["basis_pct"] = r((futures_price / spot_price - 1.0) * 100, 4)
-        return b.build(data)
+
+        def basis() -> dict[str, Any]:  # the basis, explicitly for context
+            return {"basis_abs": r(futures_price - spot_price, 4), "basis_pct": r((futures_price / spot_price - 1.0) * 100, 4)}
+
+        return _answer(
+            b, legs, spot=spot_price, days=days, iv=iv, forward=spot_price, width_pct=width_pct, grid=grid, kind=kind, extra=basis
+        )
 
     @server.tool(
         annotations=READ_ONLY,
@@ -379,19 +386,12 @@ def register(server: MCPServer, rt: Runtime) -> None:
     ) -> dict[str, Any]:
         b = Builder()
         legs = build_funding_carry(long_mark=long_mark, short_mark=short_mark, size=size)
-        data = _packed(
-            legs,
-            spot=0.5 * (long_mark + short_mark),
-            days=days,
-            iv=iv,
-            forward=0.5 * (long_mark + short_mark),
-            width_pct=width_pct,
-            grid=grid,
-            kind=kind,
-        )
-        data["spread_abs"] = r(short_mark - long_mark, 4)
-        data["spread_bps"] = r((short_mark / long_mark - 1.0) * 10_000, 2)
-        return b.build(data)
+
+        def spread() -> dict[str, Any]:
+            return {"spread_abs": r(short_mark - long_mark, 4), "spread_bps": r((short_mark / long_mark - 1.0) * 10_000, 2)}
+
+        mid = 0.5 * (long_mark + short_mark)  # overflows to inf for marks near the float maximum: `_answer` rejects it
+        return _answer(b, legs, spot=mid, days=days, iv=iv, forward=mid, width_pct=width_pct, grid=grid, kind=kind, extra=spread)
 
     @server.tool(
         annotations=READ_ONLY,
@@ -413,7 +413,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
         spot: Annotated[float, Field(gt=0, description="Underlying spot used as the price-grid anchor.")],
         horizons: Annotated[
             list[dict[str, float]] | None,
-            Field(description="List of {days, iv}. Omit to use [day/3, day/2, day] from `days`."),
+            Field(
+                description="List of {days, iv}: days from now (>= 0; 0 = the expiry row, negative is rejected), iv decimal. "
+                "Omit to use [day/3, day/2, day] from `days`."
+            ),
         ] = None,
         days: Annotated[float, Field(gt=0, description="Longest horizon in days when `horizons` is omitted.")] = 30.0,
         iv: Annotated[float, Field(gt=0, description="Default IV for the derived horizon schedule, decimal (0.50 = 50 %).")] = 0.5,
@@ -427,6 +430,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
         named = {"legs": legs, "spot": spot, "horizons": horizons, "days": days, "iv": iv, "forward": forward}
         if (bad := reject_nonfinite(b, **named, price_grid_pct=price_grid_pct)) is not None:
             return bad
+        # A negative horizon is in the past: the pricer would clamp it to 1e-9 days and show expiry values under it.
+        if neg := [i for i, h in enumerate(horizons or []) if isinstance(h.get("days"), int | float) and h["days"] < 0]:
+            b.miss("input", "tradedesk", "invalid_input", f"horizons.{neg[0]}.days is negative ({horizons[neg[0]]['days']}): must be >= 0")
+            return b.build(None, ok=False)
         F = float(forward) if forward is not None else float(spot)
         if horizons is None:
             horizons = [

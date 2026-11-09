@@ -2,7 +2,7 @@
 
 import subprocess
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -113,6 +113,40 @@ def test_red_ci_of_a_ready_pr_is_rerun_once_then_told():
     calls.clear()
     msgs, _ = pw.watch(fake([pr(ready=True)], {"abc": RED}, calls=calls), "o/r", state, NOW)
     assert len(msgs) == 1 and "після перезапуску" in msgs[0][0] and not any(m == "POST" for m, _ in calls)
+
+
+def _with_jobs(call, failed_step):
+    def wrapped(method, path, body):
+        if path.endswith("/jobs"):
+            return 200, {"jobs": [{"steps": [{"name": failed_step, "conclusion": "failure"}]}]}
+        return call(method, path, body)
+
+    return wrapped
+
+
+def _posts(calls):
+    return [p for m, p in calls if m == "POST"]
+
+
+def test_a_failed_ci_setup_is_rerun_again_later_but_a_failed_test_is_not():
+    later = NOW + timedelta(hours=3)
+    for step, expected in (("Run astral-sh/setup-uv@v5", 1), ("Run uv run pytest -q -n auto", 0)):
+        calls = []
+        _, state = pw.watch(fake([pr(ready=True)], {"abc": RED}), "o/r", {}, NOW)
+        state["1"]["rerun_at"] = NOW.isoformat()
+        call = _with_jobs(fake([pr(ready=True)], {"abc": RED}, calls=calls), step)
+        pw.watch(call, "o/r", state, NOW + timedelta(minutes=15))  # too soon
+        assert _posts(calls) == []
+        calls.clear()
+        state["1"]["rerun"] = True
+        pw.watch(call, "o/r", state, later)
+        assert len(_posts(calls)) == expected
+
+
+def test_reruns_of_a_failed_setup_stop_at_the_limit():
+    told = {"rerun": True, "reruns": pw.RERUN_MAX, "rerun_at": NOW.isoformat()}
+    assert not pw.rerun_due(told, NOW + timedelta(days=2))
+    assert pw.rerun_due({"rerun": True}, NOW)
 
 
 def test_fresh_green_and_foreign_prs_are_quiet():

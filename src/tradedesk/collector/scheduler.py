@@ -12,7 +12,8 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from functools import partial
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # avoid import cycle
     from ..runtime import Runtime
@@ -37,6 +38,9 @@ class JobMetrics:
     # shows failures=7 and no reason (liquidations:bybit / :okx, 2026-11-02).
     last_failure: str | None = None
     last_failure_ts: float | None = None
+    # WebSocket jobs only (liquidations:*): connection counters that survive reconnects inside a run
+    # (providers.liquidations.StreamStats); None for the other jobs.
+    stream: Any | None = None
 
 
 @dataclass
@@ -86,8 +90,16 @@ class Scheduler:
                 job.metrics.successes += 1
                 job.metrics.last_rows_written = written
                 job.metrics.last_error = None
-            except asyncio.CancelledError:
-                raise
+            except asyncio.CancelledError as e:
+                task = asyncio.current_task()
+                if self._stop.is_set() or (task is not None and task.cancelling()):
+                    raise
+                # A CancelledError from inside the job, not a cancel of this task: ending the loop here would stop the
+                # job for good with no trace, so record it as a failed run and keep going.
+                job.metrics.failures += 1
+                job.metrics.last_error = f"CancelledError: {e}" if str(e) else "CancelledError"
+                job.metrics.last_failure, job.metrics.last_failure_ts = job.metrics.last_error, time.time()
+                log.warning("collector job %s failed: %s", job.name, job.metrics.last_error, extra={"job": job.name})
             except Exception as e:  # noqa: BLE001
                 job.metrics.failures += 1
                 job.metrics.last_error = f"{type(e).__name__}: {e}"
@@ -258,15 +270,17 @@ async def _consume_liquidation_stream(rt: "Runtime", stream) -> int:
     return written
 
 
-async def _collect_liquidations_binance(rt: "Runtime") -> int:
-    """Open the Binance !forceOrder@arr stream for a bounded window."""
+async def _collect_liquidations_binance(rt: "Runtime", stats: Any = None) -> int:
+    """Open the Binance !forceOrder@arr stream for a bounded window (reconnecting inside it; ``stats``: StreamStats)."""
     from ..providers.liquidations import binance_liquidation_stream  # noqa: PLC0415
 
     s = rt.settings
-    return await _consume_liquidation_stream(rt, binance_liquidation_stream(max_seconds=float(s.collect_liquidations_window_seconds)))
+    return await _consume_liquidation_stream(
+        rt, binance_liquidation_stream(max_seconds=float(s.collect_liquidations_window_seconds), stats=stats)
+    )
 
 
-async def _collect_liquidations_bybit(rt: "Runtime") -> int:
+async def _collect_liquidations_bybit(rt: "Runtime", stats: Any = None) -> int:
     """Subscribe to Bybit v5 ``allLiquidation.<symbol>`` for the configured symbols."""
     from ..providers.liquidations import bybit_liquidation_stream  # noqa: PLC0415
 
@@ -275,11 +289,11 @@ async def _collect_liquidations_bybit(rt: "Runtime") -> int:
     if not symbols:
         return 0
     return await _consume_liquidation_stream(
-        rt, bybit_liquidation_stream(symbols, max_seconds=float(s.collect_liquidations_window_seconds))
+        rt, bybit_liquidation_stream(symbols, max_seconds=float(s.collect_liquidations_window_seconds), stats=stats)
     )
 
 
-async def _collect_liquidations_okx(rt: "Runtime") -> int:
+async def _collect_liquidations_okx(rt: "Runtime", stats: Any = None) -> int:
     """Subscribe to OKX v5 ``liquidation-orders`` for one instType.
 
     OKX sizes are contracts, so the instType's contract values are read first (``public/instruments``, cached 1 h);
@@ -295,7 +309,7 @@ async def _collect_liquidations_okx(rt: "Runtime") -> int:
     if not specs:
         raise ProviderError("ccxt:okx", "data_unavailable", f"no contract values for instType {inst_type}")
     return await _consume_liquidation_stream(
-        rt, okx_liquidation_stream(specs, inst_type, max_seconds=float(s.collect_liquidations_window_seconds))
+        rt, okx_liquidation_stream(specs, inst_type, max_seconds=float(s.collect_liquidations_window_seconds), stats=stats)
     )
 
 
@@ -791,6 +805,8 @@ def build_default_scheduler(rt: "Runtime") -> Scheduler | None:
             )
         )
     if s.collect_liquidations_enabled:
+        from ..providers.liquidations import StreamStats  # noqa: PLC0415
+
         venues = {v.strip().lower() for v in s.collect_liquidations_venues.split(",") if v.strip()}
         fns = {
             "binance": _collect_liquidations_binance,
@@ -800,11 +816,13 @@ def build_default_scheduler(rt: "Runtime") -> Scheduler | None:
         for venue in ("binance", "bybit", "okx"):
             if venue not in venues:
                 continue
-            jobs.append(
-                PeriodicJob(
-                    name=f"liquidations:{venue}",
-                    period_seconds=s.collect_liquidations_restart_seconds,
-                    fn=fns[venue],
-                )
+            # One per job: the reconnect backoff and counters carry over between runs.
+            stats = StreamStats(clock=lambda: rt.now().timestamp())
+            job = PeriodicJob(
+                name=f"liquidations:{venue}",
+                period_seconds=s.collect_liquidations_restart_seconds,
+                fn=partial(fns[venue], stats=stats),
             )
+            job.metrics.stream = stats
+            jobs.append(job)
     return Scheduler(rt, jobs)

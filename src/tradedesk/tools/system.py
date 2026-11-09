@@ -65,6 +65,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
                     "last_error": m.last_error,
                     "last_failure": m.last_failure,
                     "last_failure_ts": m.last_failure_ts,
+                    # WebSocket jobs: connects / reconnects / failures inside runs, last_message_ts vs last_row_ts.
+                    "stream": m.stream.as_dict() if m.stream is not None else None,
                 }
                 for m in rt.scheduler.metrics()
             ]

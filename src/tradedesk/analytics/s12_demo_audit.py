@@ -68,14 +68,20 @@ PASSPORT_OF = {"v4": "v4", "v9": "v4", "v7": "v7"}  # v9 = back to the v4 entry 
 
 
 def traded_version(row: Mapping[str, Any], *, now_ms: int) -> tuple[str, str]:
-    """(version, source) of an S12 demo trade: source 'column', 'rest_until' or 'open_time' ('none' when unknown)."""
+    """(version, source) of an S12 demo trade: source 'column', 'rest_until' or 'open_time' ('none' when unknown).
+
+    An untagged trade without a resting limit opened inside the v7 epoch ran the v4 entry: v7 starts when the change was
+    rebased, before it was deployed, and every v7 entry sets ``rest_until`` (``setup_versions``), so it maps to v4.
+    """
     tag = row.get("version")
     if tag:
         return str(tag), "column"
     if row.get("rest_until") is not None:
         return "v7", "rest_until"
     ep = version_of(row.get("setup") or "S12", row.get("opened_ts"), now_ms=now_ms)
-    return (ep.tag, "open_time") if ep is not None else ("unknown", "none")
+    if ep is None:
+        return "unknown", "none"
+    return ("v4" if ep.tag == "v7" else ep.tag), "open_time"
 
 
 def band_verdict(mean: float, p: Passport) -> str:

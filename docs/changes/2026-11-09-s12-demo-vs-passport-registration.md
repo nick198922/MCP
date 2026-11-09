@@ -1,2 +1,3 @@
-- Реєстрація звірки S12 демо з паспортом (пункти 6 і 9 картки demo-setups-depth): рядки v9 / v4+v9 / v4 / v7 / усі, смуги n = 30, розбір по угодах.
-- Код: `analytics/s12_demo_audit.py`, `scripts/verify_s12_demo_vs_passport.py`, 8 тестів. Повний прогін — наступним кроком, після коміту реєстрації.
+- Звірка S12 демо з паспортом (пп. 6 і 9 картки demo-setups-depth): звіт `docs/verification/2026-11-09-s12-demo-vs-passport.md`, вердикт по v4+v9 (n 31) — inconclusive, v9 окремо (n 26) без вердикту.
+- Додано `analytics/s12_demo_audit.py`, `scripts/verify_s12_demo_vs_passport.py`, тести; `traded_version` віддає v4 для угод без тегу й без лімітки.
+- Питання власнику Q-20261109-1 (тримати S12 v9 на демо) і дві знахідки для `execution/`: BEAM поза 168-год. лімітом, помилка часткового закриття в журналі.

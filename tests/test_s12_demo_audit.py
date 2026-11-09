@@ -34,6 +34,14 @@ def test_traded_version_sources() -> None:
     assert m.traded_version({"setup": "S12", "opened_ts": None}, now_ms=NOW) == ("unknown", "none")
 
 
+def test_traded_version_untagged_without_resting_limit_in_v7_epoch_is_v4() -> None:
+    # opened 28.10, inside the v7 epoch (27.10 18:00 .. 31.10 09:30), but no resting limit: v7 not yet deployed -> v4 entry
+    row = {"setup": "S12", "version": None, "rest_until": None, "opened_ts": _ms(10, 28, 19)}
+    assert m.traded_version(row, now_ms=NOW) == ("v4", "open_time")
+    # the same trade with a resting limit is v7
+    assert m.traded_version({**row, "rest_until": _ms(11, 1)}, now_ms=NOW) == ("v7", "rest_until")
+
+
 def test_passport_map_and_bands() -> None:
     assert m.PASSPORT_OF["v9"] == m.PASSPORT_OF["v4"] == "v4"
     p = m.PASSPORTS["v4"]

@@ -181,7 +181,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
 
         latest = ivs[-1]
         lo, hi = min(ivs), max(ivs)
-        rank = (latest - lo) / (hi - lo) if hi > lo else None
+        # Halves: the same ratio for ordinary values, but stored +-1e308 (another writer) no longer overflow the
+        # differences to inf (inf / inf gave NaN, x / inf a false 0; item 296).
+        rank = (latest / 2 - lo / 2) / (hi / 2 - lo / 2) if hi > lo else None
         below = sum(1 for v in ivs if v < latest)
         ties = sum(1 for v in ivs if v == latest)
         pct = (below + 0.5 * ties) / len(ivs)

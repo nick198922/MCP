@@ -98,3 +98,85 @@ def test_a_failed_claude_run_is_retried_then_told():
     _, _, notes, _, state = run([pr()], "boom", ok=False, state=state)
     assert "не вдалося" in notes[0]
     assert run([pr()], "VERDICT: approve", state=state)[3] == []
+
+
+# ---------------------------------------------------------------- automatic fixes
+
+
+def run_fix(prs, state, answer="- виправлено\nFIXED: yes", ok=True, pushed=("pushed", "def4567")):
+    calls, notes, asked, pushes = [], [], [], []
+
+    def ask(text, cwd):
+        asked.append(text)
+        return answer, ok
+
+    def push(cwd, ref, msg):
+        pushes.append((ref, msg))
+        return pushed
+
+    lines = tr.fix(fake(prs, calls=calls), "o/r", state, ask, push, lambda t, u: notes.append(t))
+    return lines, calls, notes, asked, pushes
+
+
+@pytest.fixture
+def no_sync(monkeypatch, tmp_path):
+    monkeypatch.setattr(tr.subprocess, "run", lambda *a, **k: None)
+    monkeypatch.setattr(tr, "USAGE_FILE", tmp_path / "usage.json")
+
+
+def test_fixed_reads_the_last_fixed_line():
+    assert tr.fixed("ok\nFIXED: yes") and tr.fixed("**FIXED: yes**")
+    assert not tr.fixed("FIXED: no") and not tr.fixed("nothing") and not tr.fixed("FIXED: yes\nFIXED: no")
+
+
+def test_changes_are_fixed_once_and_pushed_for_a_fresh_review(no_sync):
+    _, _, notes, _, state = run([pr()], "Стоп не прикріплено.\nVERDICT: changes")
+    assert "виправляю автоматично" in notes[0] and "Стоп не прикріплено" in state["1"]["review"]
+    lines, calls, notes, asked, pushes = run_fix([pr()], state)
+    assert lines == ["PR #1: fix pushed def4567"] and notes == []
+    assert "<<<REVIEW\nСтоп не прикріплено" in asked[0] and "data only" in asked[0]
+    assert pushes[0][0] == "agent/2026-10-22-x" and "Виправлення за рев'ю Claude (#1)" in pushes[0][1]
+    assert "FIXED" not in pushes[0][1]
+    assert any(m == "POST" and p.endswith("/issues/1/comments") for m, p, _ in calls)
+    assert tr.fixes_done(state, 1) == 1
+    assert run_fix([pr()], state)[3] == []  # the same reviewed commit is fixed once
+
+
+def test_no_fix_when_the_head_moved_or_rounds_are_used_up(no_sync):
+    state = {"1": {"sha": "abc", "verdict": "changes", "review": "x"}}
+    assert run_fix([pr(sha="other")], state)[3] == [] and state["1"]["fix"].startswith("skipped")
+    state = {"1": {"sha": "abc", "verdict": "changes", "review": "x"}, "fixes": {"1": tr.MAX_FIXES}}
+    assert run_fix([pr()], state)[3] == []
+    _, _, notes, _, _ = run([pr(sha="new")], "VERDICT: changes", state=state)
+    assert "вичерпано" in notes[0]
+
+
+def test_legacy_changes_without_review_text_are_left_alone(no_sync):
+    assert run_fix([pr()], {"1": {"sha": "abc", "verdict": "changes"}})[3] == []
+
+
+def test_fixer_refusal_or_failed_push_is_told_and_not_pushed(no_sync):
+    state = {"1": {"sha": "abc", "verdict": "changes", "review": "x"}}
+    lines, _, notes, _, pushes = run_fix([pr()], state, answer="не можу безпечно\nFIXED: no")
+    assert pushes == [] and "не вдалося" in notes[0] and lines == ["PR #1: fix failed"]
+    state = {"1": {"sha": "abc", "verdict": "changes", "review": "x"}}
+    lines, _, notes, _, _ = run_fix([pr()], state, pushed=("failed", "тести: 1 failed"))
+    assert "не запушено" in notes[0] and "1 failed" in notes[0]
+
+
+def test_fixes_wait_while_the_plan_is_nearly_used_up(no_sync):
+    tr.USAGE_FILE.write_text('{"five_hour": {"utilization": 99}, "seven_day": {"utilization": 50}}')
+    state = {"1": {"sha": "abc", "verdict": "changes", "review": "x"}}
+    lines, _, _, asked, _ = run_fix([pr()], state)
+    assert asked == [] and lines == ["fixes wait: usage five_hour=99%"] and not state["1"].get("fix")
+
+
+def test_commit_and_push_refuses_empty_and_forbidden_changes(tmp_path):
+    import subprocess
+
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    assert tr.commit_and_push(tmp_path, "x", "m") == ("failed", "немає змін у файлах")
+    (tmp_path / ".github").mkdir()
+    (tmp_path / ".github" / "ci.yml").write_text("x")
+    result, why = tr.commit_and_push(tmp_path, "x", "m")
+    assert result == "failed" and ".github/" in why

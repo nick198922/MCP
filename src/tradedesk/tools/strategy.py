@@ -18,6 +18,7 @@ from ..analytics.strategy import (
     build_risk_reversal,
     build_straddle,
     build_strangle,
+    leg_problem,
     scenario_matrix,
     summarise,
 )
@@ -133,7 +134,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
             list[dict[str, Any]],
             Field(
                 min_length=1,
-                description="List of leg dicts: {kind, side, size, strike?, entry_premium?, entry?}.",
+                description="List of leg dicts: {kind, side, size, strike?, entry_premium?, entry?}. A leg with another kind or "
+                "side, size <= 0, an option strike <= 0 or a negative premium is rejected (invalid_input).",
             ),
         ],
         spot: Annotated[float, Field(gt=0, description="Underlying spot used to anchor the payoff grid.")],
@@ -147,6 +149,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
         b = Builder()
         if (bad := reject_nonfinite(b, legs=legs, spot=spot, days=days, iv=iv, forward=forward)) is not None:
             return bad
+        if (problem := leg_problem(legs)) is not None:
+            b.miss("legs", "tradedesk", "invalid_input", problem)
+            return b.build(None, ok=False)
         F = float(forward) if forward is not None else float(spot)
         try:
             res = summarise(list(legs), forward=F, days=float(days), iv=float(iv), width_pct=float(width_pct), grid=int(grid))
@@ -408,14 +413,17 @@ def register(server: MCPServer, rt: Runtime) -> None:
     async def strategy_scenario_matrix(
         legs: Annotated[
             list[dict[str, Any]],
-            Field(min_length=1, description="Leg dicts: {kind, side, size, strike?, entry_premium?, entry?}."),
+            Field(
+                min_length=1,
+                description="Leg dicts: {kind, side, size, strike?, entry_premium?, entry?}; checked as in strategy_payoff.",
+            ),
         ],
         spot: Annotated[float, Field(gt=0, description="Underlying spot used as the price-grid anchor.")],
         horizons: Annotated[
             list[dict[str, float]] | None,
             Field(
-                description="List of {days, iv}: days from now (>= 0; 0 = the expiry row, negative is rejected), iv decimal. "
-                "Omit to use [day/3, day/2, day] from `days`."
+                description="List of {days, iv}: days from now (>= 0; 0 = the expiry row, negative is rejected), iv decimal "
+                "(>= 0; 0 = intrinsic value). Omit to use [day/3, day/2, day] from `days`; an empty list is rejected."
             ),
         ] = None,
         days: Annotated[float, Field(gt=0, description="Longest horizon in days when `horizons` is omitted.")] = 30.0,
@@ -430,9 +438,18 @@ def register(server: MCPServer, rt: Runtime) -> None:
         named = {"legs": legs, "spot": spot, "horizons": horizons, "days": days, "iv": iv, "forward": forward}
         if (bad := reject_nonfinite(b, **named, price_grid_pct=price_grid_pct)) is not None:
             return bad
+        if (problem := leg_problem(legs)) is not None:
+            b.miss("legs", "tradedesk", "invalid_input", problem)
+            return b.build(None, ok=False)
+        if horizons == []:  # an empty matrix is not an answer; omitting `horizons` gives the default schedule
+            b.miss("input", "tradedesk", "invalid_input", "horizons is empty: omit it for the default schedule or give {days, iv}")
+            return b.build(None, ok=False)
         # A negative horizon is in the past: the pricer would clamp it to 1e-9 days and show expiry values under it.
-        if neg := [i for i, h in enumerate(horizons or []) if isinstance(h.get("days"), int | float) and h["days"] < 0]:
-            b.miss("input", "tradedesk", "invalid_input", f"horizons.{neg[0]}.days is negative ({horizons[neg[0]]['days']}): must be >= 0")
+        # A negative iv would be priced as zero vol (intrinsic value) without a word.
+        neg = [(i, k) for i, h in enumerate(horizons or []) for k in ("days", "iv") if isinstance(h.get(k), int | float) and h[k] < 0]
+        if neg:
+            i, k = neg[0]
+            b.miss("input", "tradedesk", "invalid_input", f"horizons.{i}.{k} is negative ({horizons[i][k]}): must be >= 0")
             return b.build(None, ok=False)
         F = float(forward) if forward is not None else float(spot)
         if horizons is None:

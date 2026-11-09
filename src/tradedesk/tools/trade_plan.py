@@ -20,7 +20,17 @@ from ..analytics.demo_option_pairs import paired_report
 from ..analytics.trade_plan import TAKER_FEE, geometry, resolve_plan, summarize_plans, usable_expires, validate_levels
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, STORE_ERRORS, drop_corrupt_rows, finite_float, finite_json, r, store_failed, store_ready
+from ._util import (
+    READ_ONLY,
+    STORE_ERRORS,
+    drop_corrupt_rows,
+    finite_float,
+    finite_json,
+    r,
+    reject_bad_id,
+    store_failed,
+    store_ready,
+)
 
 PLAN_WARNING = (
     "Paper scoring of the assistant's plans on candle highs / lows (local store only, no orders): a forward record of the "
@@ -287,6 +297,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
     ) -> dict[str, Any]:
         b = Builder()
         b.warn(PLAN_WARNING)
+        if (bad := reject_bad_id(b, rec_paper_id=rec_paper_id)) is not None:  # 10**20 raised OverflowError out of the lookup
+            return bad
         if not await store_ready(b, rt, "the journal"):
             return b.build(None, ok=False)
         try:

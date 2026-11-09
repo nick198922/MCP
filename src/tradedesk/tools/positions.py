@@ -21,6 +21,7 @@ from ._util import (
     drop_corrupt_rows,
     finite_json,
     r,
+    reject_bad_id,
     reject_bad_ts,
     reject_nonfinite,
     reject_nonfinite_result,
@@ -138,7 +139,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
         note: Annotated[str | None, Field(description="Optional close note.")] = None,
     ) -> dict[str, Any]:
         b = Builder()
-        if (bad := reject_bad_ts(b, "closed_ts", closed_ts)) is not None:  # 10**20 raised OverflowError out of the update
+        # 10**20 as closed_ts or id raised OverflowError out of the update / lookup.
+        if (bad := reject_bad_id(b, id=id) or reject_bad_ts(b, "closed_ts", closed_ts)) is not None:
             return bad
         if not await store_ready(b, rt, "positions"):
             return b.build(None, ok=False)

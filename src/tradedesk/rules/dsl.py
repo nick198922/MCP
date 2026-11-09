@@ -2,7 +2,8 @@
 
 Allowed grammar: literals (int, float, str, bool, None), identifier lookups,
 comparisons, boolean operators (``and`` / ``or`` / ``not``), unary ``-``,
-simple arithmetic (``+ - * / // % **``), and calls to a *whitelisted* set of
+simple arithmetic (``+ - * / // % **``; ``**`` takes an exponent of at most
++-1000 and no integer result may exceed 4096 bits), and calls to a *whitelisted* set of
 functions. No attribute access, no subscripts, no comprehensions, no
 assignments. Suitable for user-authored alert rules.
 
@@ -28,6 +29,28 @@ class DslError(Exception):
     """Raised for anything the DSL does not allow or cannot execute."""
 
 
+# `**` bounds: `9 ** 9 ** 9` computed an integer of hundreds of millions of digits and blocked the event loop. 10 ** 1000
+# (3322 bits) still evaluates; an integer beyond MAX_INT_BITS is far outside the float range any metric is compared with.
+MAX_POW_EXPONENT = 1000
+MAX_INT_BITS = 4096
+_NOT_CONST = object()
+
+
+def _pow(base: Any, exp: Any) -> Any:
+    """``base ** exp`` with the size checked BEFORE computing: |exp| > MAX_POW_EXPONENT, or an integer result that is
+    sure to be longer than MAX_INT_BITS, raises DslError; so does a complex result (a negative base to a fractional
+    power)."""
+    if isinstance(exp, int | float) and abs(exp) > MAX_POW_EXPONENT:
+        raise DslError(f"exponent {exp!r} is beyond the allowed +-{MAX_POW_EXPONENT}")
+    # |base| >= 2 ** (bit_length - 1), so the result has at least (bit_length - 1) * exp + 1 bits.
+    if isinstance(base, int) and isinstance(exp, int) and exp > 0 and (abs(base).bit_length() - 1) * exp >= MAX_INT_BITS:
+        raise DslError(f"integer result beyond {MAX_INT_BITS} bits")
+    result = operator.pow(base, exp)
+    if isinstance(result, complex):
+        raise DslError("** gave a complex number (negative base to a fractional power)")
+    return result
+
+
 _CMP = {
     ast.Eq: operator.eq,
     ast.NotEq: operator.ne,
@@ -44,8 +67,41 @@ _BIN = {
     ast.Div: operator.truediv,
     ast.FloorDiv: operator.floordiv,
     ast.Mod: operator.mod,
-    ast.Pow: operator.pow,
+    ast.Pow: _pow,
 }
+
+
+def _binop(op: ast.operator, left: Any, right: Any) -> Any:
+    """One arithmetic step; an integer result longer than MAX_INT_BITS raises DslError, so every operand of the next
+    step stays small (a product of two such integers is at most twice as long)."""
+    result = _BIN[type(op)](left, right)
+    if isinstance(result, int) and result.bit_length() > MAX_INT_BITS:
+        raise DslError(f"integer result beyond {MAX_INT_BITS} bits")
+    return result
+
+
+def _fold(node: ast.AST) -> Any:
+    """Value of a subtree of numeric literals, unary +/- and arithmetic, else _NOT_CONST; one pass over every node.
+    Raises DslError where the evaluator would (an oversized `**` or integer); any other error of a literal subtree
+    (1 / 0, a float overflow) is left to evaluation, as before."""
+    if isinstance(node, ast.Constant):
+        return node.value if isinstance(node.value, int | float) else _NOT_CONST
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub | ast.UAdd):
+        v = _fold(node.operand)
+        return v if v is _NOT_CONST or isinstance(node.op, ast.UAdd) else -v
+    if isinstance(node, ast.BinOp) and type(node.op) in _BIN:
+        left, right = _fold(node.left), _fold(node.right)
+        if left is _NOT_CONST or right is _NOT_CONST:
+            return _NOT_CONST
+        try:
+            return _binop(node.op, left, right)
+        except DslError:
+            raise
+        except Exception:  # noqa: BLE001 - ZeroDivisionError, OverflowError: reported by the evaluation
+            return _NOT_CONST
+    for child in ast.iter_child_nodes(node):
+        _fold(child)
+    return _NOT_CONST
 
 
 @dataclass(frozen=True)
@@ -96,6 +152,12 @@ def compile_expr(src: str) -> CompiledExpr:
             raise DslError(f"disallowed name: {node.id!r}")
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id.startswith("_"):
             raise DslError(f"disallowed call: {node.func.id!r}")
+    # A literal `9 ** 9 ** 9` is refused here, so rules_add answers with an expression error instead of storing a rule
+    # that can never evaluate (the evaluator refuses it too, for operands that come from metrics).
+    try:
+        _fold(tree.body)
+    except RecursionError:  # deeper than the Python stack: the evaluator reports it, as before
+        pass
     return CompiledExpr(source=src, tree=tree)
 
 
@@ -130,7 +192,10 @@ async def _eval(node: ast.AST, names: dict[str, Any], calls: dict[str, Callable[
     if isinstance(node, ast.BinOp):
         left = await _eval(node.left, names, calls)
         right = await _eval(node.right, names, calls)
-        return _BIN[type(node.op)](left, right)
+        try:
+            return _binop(node.op, left, right)
+        except OverflowError as e:  # a big int mixed with a float (2**4000 + 0.5), or a float ** beyond the float range
+            raise DslError(f"arithmetic overflow: {e}") from None
     if isinstance(node, ast.Compare):
         left = await _eval(node.left, names, calls)
         for op_node, comparator in zip(node.ops, node.comparators, strict=False):

@@ -22,6 +22,7 @@ from ._util import (
     drop_corrupt_rows,
     finite_json,
     r,
+    reject_bad_id,
     reject_nonfinite,
     reject_nonfinite_result,
     store_failed,
@@ -124,7 +125,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
         note: Annotated[str | None, Field(description="Post-mortem note.")] = None,
     ) -> dict[str, Any]:
         b = Builder()
-        bad = (None if cancelled else reject_nonfinite(b, exit=exit)) or _bad_ts(b, "closed_ts", closed_ts)
+        # An id of 10**20 raised OverflowError out of the lookup.
+        bad = reject_bad_id(b, id=id) or (None if cancelled else reject_nonfinite(b, exit=exit)) or _bad_ts(b, "closed_ts", closed_ts)
         if bad is not None:
             return bad
         if not await store_ready(b, rt, "the journal"):

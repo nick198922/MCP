@@ -40,7 +40,10 @@ Binance average fill, Bybit bankruptcy price, OKX "liquidation mark price"
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator, Mapping
+import logging
+import random
+from collections.abc import AsyncIterator, Callable, Mapping
+from dataclasses import dataclass, field, fields
 from typing import Any
 
 # USD-M market streams moved under /market/ (checked 2026-10-17): the old /ws/ path still accepts the connection but
@@ -228,61 +231,233 @@ def parse_okx_liquidation(event: dict[str, Any], specs: Mapping[str, tuple[float
     return rows
 
 
-async def _ws_consume(url: str, subscribe: dict[str, Any] | None, parser, *, max_seconds: float) -> AsyncIterator[dict[str, Any]]:
-    """Shared WS consumer with a bounded run window.
+# Connection settings. websockets' protocol keepalive pings every 20 s; the pong may take 30 s (default 20) because a
+# long collector job can hold the event loop and a late pong is not a dead link (keepalive timeouts, 2026-11-07).
+OPEN_TIMEOUT = 10.0
+PING_INTERVAL = 20.0
+PING_TIMEOUT = 30.0
+CLOSE_TIMEOUT = 5.0
+# Application heartbeat after this many seconds without a message. OKX drops a connection that has pushed nothing for
+# 30 s and wants the text "ping" (docs v5 "Overview / Connect"); Bybit asks for {"op":"ping"} every 20 s (docs v5
+# "Connect / How to send the heartbeat packet"). Binance pings us itself.
+HEARTBEAT_SECONDS = 20.0
+# Reconnect backoff: base x 2^(n-1) for the n-th failure in a row, capped, times a jitter in [0.5, 1). The count
+# resets once a connection has stayed up STABLE_SECONDS or until the end of the run window without failing.
+BACKOFF_BASE = 1.0
+BACKOFF_CAP = 60.0
+STABLE_SECONDS = 60.0
 
-    ``parser`` receives each decoded message; it may return a single row or
-    a list of rows (or None / empty for messages that aren't events).
+log = logging.getLogger("tradedesk.collector")
+
+
+class StreamError(Exception):
+    """The venue answered on the stream with an error (rejected subscription, bad op)."""
+
+
+@dataclass
+class StreamStats:
+    """Per-stream counters kept across runs of a collector job; ``system_health`` shows them in ``collector[].stream``.
+
+    ``failures`` counts every failed connection (handshake timeout, keepalive timeout, reset, venue error message);
+    ``reconnects`` the connections opened after such a failure. ``last_message_ts`` (any frame, heartbeat replies
+    included) against ``last_row_ts`` (last liquidation) separates a quiet market from a dead link. Timestamps are
+    epoch seconds from ``clock`` (the collector passes ``rt.now``; providers do not read the wall clock), None without.
+    """
+
+    clock: Callable[[], float] | None = field(default=None, repr=False, compare=False)
+    connected: bool = False
+    connects: int = 0
+    reconnects: int = 0
+    failures: int = 0
+    consecutive_failures: int = 0
+    last_failure: str | None = None
+    last_failure_ts: float | None = None
+    last_connect_ts: float | None = None
+    last_message_ts: float | None = None
+    last_row_ts: float | None = None
+
+    def stamp(self) -> float | None:
+        return self.clock() if self.clock is not None else None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {f.name: getattr(self, f.name) for f in fields(self) if f.name != "clock"}
+
+
+def backoff_delay(failures: int, u: float, *, base: float = BACKOFF_BASE, cap: float = BACKOFF_CAP) -> float:
+    """Seconds to wait before the next attempt after ``failures`` failures in a row (0 -> no wait).
+
+    ``min(cap, base * 2**(failures - 1)) * (0.5 + u / 2)`` with ``u`` uniform in [0, 1): exponential with jitter, so
+    the three streams (and a restarted server) do not reconnect in lockstep.
+    """
+    if failures <= 0:
+        return 0.0
+    return min(cap, base * 2.0 ** min(failures - 1, 30)) * (0.5 + 0.5 * u)
+
+
+ERROR_TEXT_MAX = 200  # venue text is untrusted: bounded before it reaches logs and system_health
+
+
+def _clip(text: str, limit: int = ERROR_TEXT_MAX) -> str:
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _bybit_error(event: Any) -> str | None:
+    if isinstance(event, dict) and event.get("success") is False:
+        return _clip(f"bybit {event.get('op')}: {event.get('ret_msg')}")
+    return None
+
+
+def _okx_error(event: Any) -> str | None:
+    if isinstance(event, dict) and event.get("event") == "error":
+        return _clip(f"okx error {event.get('code')}: {event.get('msg')}")
+    return None
+
+
+async def _ws_consume(
+    url: str,
+    subscribe: dict[str, Any] | None,
+    parser,
+    *,
+    max_seconds: float,
+    stats: StreamStats | None = None,
+    heartbeat: str | None = None,
+    error_of: Callable[[Any], str | None] | None = None,
+    connect: Callable[..., Any] | None = None,
+    backoff_base: float = BACKOFF_BASE,
+    backoff_cap: float = BACKOFF_CAP,
+    stable_seconds: float = STABLE_SECONDS,
+    heartbeat_seconds: float = HEARTBEAT_SECONDS,
+) -> AsyncIterator[dict[str, Any]]:
+    """Shared WS consumer for a bounded run window that survives disconnects.
+
+    ``parser`` receives each decoded message; it may return a single row or a list of rows (or None / empty for
+    messages that aren't events). A dropped connection, a failed handshake or an error message (``error_of``) is
+    counted in ``stats`` and logged; the consumer waits ``backoff_delay`` and reconnects (and resubscribes) until the
+    window ends. The wait is capped at half the window, so every run makes at least one attempt. The run raises the
+    last error only when no connection opened in the whole window, so the scheduler still counts a venue that is
+    down as a failed run. Any other exception (a parser bug) is not a dropped link and propagates.
+    ``heartbeat`` is sent after ``heartbeat_seconds`` without a message.
     """
     import asyncio  # noqa: PLC0415
 
     import websockets  # noqa: PLC0415
+    from websockets.exceptions import WebSocketException  # noqa: PLC0415
 
-    deadline = asyncio.get_event_loop().time() + max_seconds
-    async with websockets.connect(url, open_timeout=10, close_timeout=5) as ws:
-        if subscribe is not None:
-            await ws.send(json.dumps(subscribe))
-        while True:
-            remaining = deadline - asyncio.get_event_loop().time()
-            if remaining <= 0:
-                return
-            try:
-                raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
-            except TimeoutError:
-                return
-            try:
-                event = json.loads(raw)
-            except (TypeError, ValueError):
-                continue
-            parsed = parser(event)
-            if parsed is None:
-                continue
-            if isinstance(parsed, dict):
-                yield parsed
-            else:
-                for row in parsed:
-                    yield row
+    if connect is None:
+        connect = websockets.connect
+    # Only network, protocol and venue errors mean a dropped link; a parser bug still fails the run.
+    stream_errors = (OSError, TimeoutError, WebSocketException, StreamError)
+    st = stats if stats is not None else StreamStats()
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + max_seconds
+    cap = min(backoff_cap, max_seconds / 2)
+    opened = False
+    last_exc: Exception | None = None
+    while True:
+        delay = backoff_delay(st.consecutive_failures, random.random(), base=backoff_base, cap=cap)
+        if loop.time() + delay >= deadline and (opened or last_exc is not None):
+            break
+        if delay > 0:
+            await asyncio.sleep(delay)
+        opened_at: float | None = None
+        try:
+            async with connect(
+                url, open_timeout=OPEN_TIMEOUT, ping_interval=PING_INTERVAL, ping_timeout=PING_TIMEOUT, close_timeout=CLOSE_TIMEOUT
+            ) as ws:
+                opened, opened_at = True, loop.time()
+                st.connected, st.connects, st.last_connect_ts = True, st.connects + 1, st.stamp()
+                if st.consecutive_failures:
+                    st.reconnects += 1
+                if subscribe is not None:
+                    await ws.send(json.dumps(subscribe))
+                while True:
+                    now = loop.time()
+                    if st.consecutive_failures and now - opened_at >= stable_seconds:
+                        st.consecutive_failures = 0
+                    remaining = deadline - now
+                    if remaining <= 0:
+                        # Up until the end of the window without a failure counts as stable too: with the default
+                        # 60 s window a connection never lives stable_seconds inside one run (2026-11-09 review).
+                        st.consecutive_failures = 0
+                        return
+                    wait = remaining if heartbeat is None else min(remaining, heartbeat_seconds)
+                    try:
+                        raw = await asyncio.wait_for(ws.recv(), timeout=wait)
+                    except TimeoutError:
+                        if heartbeat is not None and deadline - loop.time() > 0:
+                            await ws.send(heartbeat)
+                        continue
+                    st.last_message_ts = st.stamp()
+                    try:
+                        event = json.loads(raw)
+                    except (TypeError, ValueError):
+                        continue  # OKX answers "ping" with a plain "pong"
+                    err = error_of(event) if error_of is not None else None
+                    if err is not None:
+                        raise StreamError(err)
+                    parsed = parser(event)
+                    if not parsed:
+                        continue
+                    for row in [parsed] if isinstance(parsed, dict) else parsed:
+                        st.last_row_ts = st.last_message_ts
+                        yield row
+        except stream_errors as e:  # network / protocol / venue error: count it, back off, reconnect
+            last_exc = e
+            if opened_at is not None and loop.time() - opened_at >= stable_seconds:
+                st.consecutive_failures = 0  # it had been stable: start the backoff over
+            st.failures += 1
+            st.consecutive_failures += 1
+            st.last_failure, st.last_failure_ts = f"{type(e).__name__}: {e}", st.stamp()
+            log.warning(
+                "liquidation stream %s failed (%d in a row): %s",
+                url,
+                st.consecutive_failures,
+                st.last_failure,
+                extra={"stream": url, "error": st.last_failure},
+            )
+        finally:
+            st.connected = False
+    if not opened and last_exc is not None:
+        raise last_exc
 
 
-async def binance_liquidation_stream(*, max_seconds: float = 60.0) -> AsyncIterator[dict[str, Any]]:
+async def binance_liquidation_stream(*, max_seconds: float = 60.0, stats: StreamStats | None = None) -> AsyncIterator[dict[str, Any]]:
     """Async-iterate parsed liquidation rows from Binance for at most max_seconds."""
-    async for row in _ws_consume(BINANCE_WS_URL, None, parse_binance_force_order, max_seconds=max_seconds):
+    async for row in _ws_consume(BINANCE_WS_URL, None, parse_binance_force_order, max_seconds=max_seconds, stats=stats):
         yield row
 
 
-async def bybit_liquidation_stream(symbols: list[str], *, max_seconds: float = 60.0) -> AsyncIterator[dict[str, Any]]:
+async def bybit_liquidation_stream(
+    symbols: list[str], *, max_seconds: float = 60.0, stats: StreamStats | None = None
+) -> AsyncIterator[dict[str, Any]]:
     """Async-iterate parsed liquidation rows from Bybit. Requires an explicit
     list of symbols (Bybit v5 has no "all symbols" channel)."""
     sub = {"op": "subscribe", "args": [f"allLiquidation.{s}" for s in symbols]}
-    async for row in _ws_consume(BYBIT_WS_URL, sub, parse_bybit_liquidation, max_seconds=max_seconds):
+    async for row in _ws_consume(
+        BYBIT_WS_URL,
+        sub,
+        parse_bybit_liquidation,
+        max_seconds=max_seconds,
+        stats=stats,
+        heartbeat=json.dumps({"op": "ping"}),
+        error_of=_bybit_error,
+    ):
         yield row
 
 
 async def okx_liquidation_stream(
-    specs: Mapping[str, tuple[float, bool]], inst_type: str = "SWAP", *, max_seconds: float = 60.0
+    specs: Mapping[str, tuple[float, bool]], inst_type: str = "SWAP", *, max_seconds: float = 60.0, stats: StreamStats | None = None
 ) -> AsyncIterator[dict[str, Any]]:
     """Async-iterate parsed liquidation rows from OKX for one contract instType (SWAP / FUTURES). ``specs`` comes
     from ``okx_contract_specs`` on the same instType; liquidations of instruments not in it are dropped."""
     sub = {"op": "subscribe", "args": [{"channel": "liquidation-orders", "instType": inst_type}]}
-    async for row in _ws_consume(OKX_WS_URL, sub, lambda ev: parse_okx_liquidation(ev, specs), max_seconds=max_seconds):
+    async for row in _ws_consume(
+        OKX_WS_URL,
+        sub,
+        lambda ev: parse_okx_liquidation(ev, specs),
+        max_seconds=max_seconds,
+        stats=stats,
+        heartbeat="ping",
+        error_of=_okx_error,
+    ):
         yield row

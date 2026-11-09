@@ -1,5 +1,5 @@
 #!/bin/bash
-# The weekly audit: a Claude session (.claude/audit.md) on a stronger model (default Fable 5.1, effort xhigh) that
+# The weekly audit: a Claude session (.claude/audit.md) on a stronger model (default Fable 5.2, effort xhigh) that
 # reviews the whole project (architecture, code health, docs, the agents pipeline), fixes small safe things and
 # delivers its report as an agent/YYYY-MM-DD-audit-* branch and pull request, then reports to Telegram. Works in its
 # own clone, so it does not disturb the agents. Run by the user timer deploy/user-units/tradedesk-audit-weekly.timer
@@ -11,7 +11,7 @@ export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 CLONE="${TRADEDESK_AUDIT_CLONE:-$(dirname "$REPO")/tradedesk-audit}"
 LOG_DIR="${TRADEDESK_AGENTS_LOG_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/tradedesk-agents}"
-MODEL="${TRADEDESK_AUDIT_MODEL:-claude-fable-5-1}"
+MODEL="${TRADEDESK_AUDIT_MODEL:-claude-fable-5-2}"
 EFFORT="${TRADEDESK_AUDIT_EFFORT:-xhigh}"
 . "$REPO/scripts/agents_notify.sh"
 . "$REPO/scripts/agents_deliver.sh"

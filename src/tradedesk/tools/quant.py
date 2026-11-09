@@ -131,20 +131,19 @@ def register(server: MCPServer, rt: Runtime) -> None:
             return bad
         s = summarise_retracement(p0, l_point, levels=levels, min_drop_pct=min_drop_pct)
         if not s.get("applicable"):
-            # Still return the full block so the caller can inspect why.
-            return b.build(
-                {
-                    "p0": p0,
-                    "l": l_point,
-                    "diff_abs": r(s.get("diff_abs", 0.0), 6),
-                    "diff_pct": r(s.get("diff_pct", 0.0), 4),
-                    "direction": s.get("direction"),
-                    "applicable": False,
-                    "reason": s.get("reason") or f"|move| < {min_drop_pct}% noise floor",
-                    "ladder": [{"level": lv["level"], "price": r(lv["price"], 6)} for lv in s.get("ladder", [])],
-                },
-                ok=True,
-            )
+            # Still return the full block so the caller can inspect why. A huge custom level times a huge move overflows
+            # the ladder to inf here too (it came back as Infinity with ok=true): checked like the applicable branch.
+            na = {
+                "p0": p0,
+                "l": l_point,
+                "diff_abs": r(s.get("diff_abs", 0.0), 6),
+                "diff_pct": r(s.get("diff_pct", 0.0), 4),
+                "direction": s.get("direction"),
+                "applicable": False,
+                "reason": s.get("reason") or f"|move| < {min_drop_pct}% noise floor",
+                "ladder": [{"level": lv["level"], "price": r(lv["price"], 6)} for lv in s.get("ladder", [])],
+            }
+            return reject_nonfinite_result(b, na) or b.build(na, ok=True)
         ladder = [
             {
                 "level": lv["level"],

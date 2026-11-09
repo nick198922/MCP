@@ -18,7 +18,7 @@ from ..core.envelope import Builder
 from ..rules import METRICS, DslError, compile_expr, evaluate
 from ..rules.metrics import MetricContext, build_metrics
 from ..runtime import Runtime
-from ._util import READ_ONLY, STORE_ERRORS, drop_corrupt_rows, finite_json, store_failed, store_ready
+from ._util import READ_ONLY, STORE_ERRORS, drop_corrupt_rows, finite_json, first_nonfinite, store_failed, store_ready
 
 # Numeric columns of a stored rule (`enabled` is turned into a bool by the store); another writer can leave a string, a
 # blob or inf in any of them.
@@ -109,7 +109,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
         description=(
             "Test a DSL expression WITHOUT storing it. Pass `expr` to evaluate now; omit it to "
             "get the list of available metric functions. Returns the evaluated value and parse "
-            "diagnostics; useful for drafting rules."
+            "diagnostics; useful for drafting rules. An expression that fails to evaluate, or whose value is NaN / inf "
+            "(e.g. an overflow or a non-finite stored metric), answers ok=false with the reason in `missing`."
         ),
     )
     async def rules_test(
@@ -131,9 +132,16 @@ def register(server: MCPServer, rt: Runtime) -> None:
             calls = build_metrics(ctx)
             try:
                 result = await evaluate(compiled, {"names": {}, "calls": calls})
+            except STORE_ERRORS:
+                raise  # a failing store query is `missing: store` (below), not an evaluation error
             except Exception as e:  # noqa: BLE001
                 b.miss("eval", "tradedesk", "data_unavailable", f"{type(e).__name__}: {e}")
-                return b.build({"expr": expr, "parsed": True, "evaluated": False})
+                return b.build({"expr": expr, "parsed": True, "evaluated": False}, ok=False)
+            if first_nonfinite(result) is not None:
+                # An inf / 1e400 literal, an overflow (1e308 * 10) or a non-finite stored value came back as Infinity /
+                # NaN with ok=true; a 400-digit int is beyond what a JSON reader parses as a number.
+                b.miss("value", "tradedesk", "data_unavailable", "the expression evaluated to NaN, inf or a number beyond the float range")
+                return b.build({"expr": expr, "parsed": True, "evaluated": True, "value": None, "truthy": bool(result)}, ok=False)
             return b.build({"expr": expr, "parsed": True, "evaluated": True, "value": result, "truthy": bool(result)})
         except STORE_ERRORS as e:
             return store_failed(b, e)

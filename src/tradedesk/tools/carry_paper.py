@@ -23,7 +23,7 @@ from ..analytics.journal import pnl as pnl_fn
 from ..collector.market_data import BAR_MS, bars_4h, funding_entries, parse_bar
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, STORE_ERRORS, finite_float, r, store_failed, store_ready
+from ._util import READ_ONLY, STORE_ERRORS, finite_float, r, reject_bad_id, store_failed, store_ready
 from .perps import TAKER_FEES, current_funding
 
 # carry_paper_open writes a new row on every call (a retry after a timeout records a second pair), so it is not idempotent.
@@ -433,6 +433,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
     ) -> dict[str, Any]:
         b = Builder()
         b.warn(PAPER_WARNING)
+        if (bad := reject_bad_id(b, id=id)) is not None:  # 10**20 raised OverflowError out of the lookup
+            return bad
         if not await store_ready(b, rt, "the journal"):
             return b.build(None, ok=False)
         try:
@@ -499,6 +501,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
     ) -> dict[str, Any]:
         b = Builder()
         b.warn(PAPER_WARNING)
+        if (bad := reject_bad_id(b, id=id)) is not None:  # 10**20 raised OverflowError out of the lookup
+            return bad
         if not await store_ready(b, rt, "the journal"):
             return b.build(None, ok=False)
         try:

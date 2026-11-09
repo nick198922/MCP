@@ -190,6 +190,8 @@ async def evaluate_dsl_rules(store: "Store", *, now_ts: int) -> list[FiredAlert]
             value_f = 1.0 if isinstance(result, bool) else float(result)
         except (TypeError, ValueError):
             value_f = 1.0
+        except OverflowError:  # an integer beyond the float range (e.g. 9 ** 999) raised out of the alerts job
+            continue
         msg = row.get("message") or ""
         try:
             msg = msg.format(value=value_f, value_pct=value_f * 100)

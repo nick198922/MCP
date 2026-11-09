@@ -160,7 +160,7 @@ def hold_ms(setup: str | None, timeframe: str | None) -> int:
 MIN_SCORE = 2
 UNKNOWN_GRACE_MS = 10 * 60_000  # an 'unknown' order the venue still does not know after this is rejected
 FILL_LAG_MS = 20 * 60_000  # a fill may precede opened_ts (the cycle that saw it) by about a cycle
-ORPHAN_MS = 86_400_000  # no position and no close on the venue for this long after the fill -> 'orphaned' + alert
+ORPHAN_MS = 86_400_000  # no position and no close for this long since the position went missing -> 'orphaned' + alert
 CLOSED_PNL_MAX_WINDOWS = 60  # how far back the close is looked for, in Bybit's 7-day windows (about 14 months)
 SHADOW_EXCHANGE = "bybit"  # ccxt id the collector resolves the shadow plans on
 HOUR_MS = 3_600_000
@@ -507,6 +507,8 @@ async def _sync_trade(ctx: Ctx, t: dict[str, Any], positions: dict[str, Any]) ->
     sym, lid = t["symbol"], t["link_id"]
     pos = positions.get(sym)
     if pos:
+        if t.get("gone_ts"):
+            await ctx.store.demo_trade_update(lid, gone_ts=None)  # it was a gap in the venue's reads, not a ghost
         if pos.get("entryPrice") and float(pos["entryPrice"]) != t["fill"]:
             await ctx.store.demo_trade_update(lid, fill=float(pos["entryPrice"]))  # the venue's average is the truth
         if ctx.now - (t["opened_ts"] or ctx.now) > hold_ms(t["setup"], t["timeframe"]) and not t["exit_ts"]:
@@ -516,9 +518,13 @@ async def _sync_trade(ctx: Ctx, t: dict[str, Any], positions: dict[str, Any]) ->
     opened = t["opened_ts"] or ctx.now
     rows = [r for r in await _closed_rows(ctx, m.market_id, opened - FILL_LAG_MS) if _closes_this(t, r, opened)]
     if not rows:
-        # Final and it frees the coin and the risk in the guard's books, so one empty read is not enough: read once more
-        # (a failure goes up to ``ctx.safe`` and the trade stays open).
-        if ctx.now - opened > ORPHAN_MS and not (await ctx.client.positions()).get(sym):
+        # The day counts from the first cycle that saw neither the position nor its close: a trade held for days whose
+        # close is late must still be booked as closed with its P&L. Orphaning is final and frees the coin and the risk in
+        # the guard's books, so one empty read is not enough: read once more (a failure goes up to ``ctx.safe``).
+        gone = t.get("gone_ts")
+        if not gone:
+            await ctx.store.demo_trade_update(lid, gone_ts=ctx.now)
+        elif ctx.now - gone > ORPHAN_MS and not (await ctx.client.positions()).get(sym):
             await _orphan(ctx, t)
         return  # the venue has not reported the close yet
     pnl = sum(float(r.get("closedPnl") or 0) for r in rows)
@@ -604,7 +610,7 @@ async def _orphan(ctx: Ctx, t: dict[str, Any]) -> None:
     does not hold the symbol and the reconciliation forever."""
     lid, sym = t["link_id"], t["symbol"]
     await ctx.store.demo_trade_update(lid, status="orphaned")
-    days = (ctx.now - (t["opened_ts"] or ctx.now)) / 86_400_000
+    days = (ctx.now - (t.get("gone_ts") or t["opened_ts"] or ctx.now)) / 86_400_000
     await ctx.audit("orphaned", link_id=lid, symbol=sym, setup=t["setup"], payload={"days": round(days, 1)})
     for left in (t["tp_link"], t["exit_order"]):  # nobody will cancel these later, and they could cut the next trade
         if left:

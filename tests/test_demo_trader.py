@@ -443,9 +443,48 @@ async def test_orphan_cancels_the_orders_left_on_the_book(world):
     assert t["tp_link"]
     w.venue.pos.clear()
     w.signals["4h"] = []
+    await w.run(t["opened_ts"] + 3_600_000)
     await w.run(t["opened_ts"] + 2 * D1)
     assert (await w.store.demo_trade_list())[0]["status"] == "orphaned"
     assert ("cancel", BTC, t["tp_link"]) in w.venue.orders
+
+
+async def test_day_before_orphan_counts_from_the_position_going_missing_not_the_fill(world):
+    """PR #643 review: a trade held for days whose close the venue reports late is closed with its loss, not orphaned."""
+    w = world
+    await w.enter()
+    t = (await w.store.demo_trade_list())[0]
+    w.signals["4h"] = []
+    await w.run(t["opened_ts"] + 3 * D1)  # held for three days, the position is there
+    assert (await w.store.demo_trade_list())[0]["gone_ts"] is None
+    w.venue.pos.clear()
+    gone = t["opened_ts"] + 3 * D1 + 3_600_000
+    await w.run(gone)
+    t = (await w.store.demo_trade_list())[0]
+    assert t["status"] == "open" and t["gone_ts"] == gone  # the close may still be on its way
+    w.venue.pnl_rows = [{"closedPnl": str(-t["risk_usd"]), "avgExitPrice": str(t["stop"]), "updatedTime": str(gone)}]
+    await w.run(gone + 2 * 3_600_000)
+    t = (await w.store.demo_trade_list())[0]
+    assert t["status"] == "closed" and t["pnl_usd"] == pytest.approx(-t["risk_usd"]) and t["exit_reason"] == "stop"
+    assert not any("orphaned" in m for m in w.msgs)
+
+
+async def test_position_back_after_a_gap_restarts_the_orphan_clock(world):
+    w = world
+    await w.enter()
+    t = (await w.store.demo_trade_list())[0]
+    held = dict(w.venue.pos)
+    w.signals["4h"] = []
+    w.venue.pos.clear()
+    await w.run(t["opened_ts"] + 3_600_000)
+    assert (await w.store.demo_trade_list())[0]["gone_ts"]
+    w.venue.pos.update(held)
+    await w.run(t["opened_ts"] + 2 * 3_600_000)
+    assert (await w.store.demo_trade_list())[0]["gone_ts"] is None
+    w.venue.pos.clear()
+    await w.run(t["opened_ts"] + 2 * D1)  # a day after the fill, but the position went missing just now
+    t = (await w.store.demo_trade_list())[0]
+    assert t["status"] == "open" and t["gone_ts"] == t["opened_ts"] + 2 * D1
 
 
 @pytest.mark.parametrize("second_read", ["position_is_back", "fails"])
@@ -468,6 +507,7 @@ async def test_one_empty_position_read_never_orphans_a_trade(world, monkeypatch,
             raise ccxt.NetworkError("timeout")
         return held
 
+    await w.run(t["opened_ts"] + 3_600_000)  # the first cycle without the position starts the clock
     monkeypatch.setattr(w.venue, "positions", flaky)
     await w.run(t["opened_ts"] + 2 * D1)
     assert len(reads) >= 2
@@ -483,6 +523,7 @@ async def test_closed_pnl_failure_never_orphans_a_trade(world, monkeypatch, fail
     t = (await w.store.demo_trade_list())[0]
     w.venue.pos.clear()
     w.signals["4h"] = []
+    await w.run(t["opened_ts"] + 3_600_000)  # the first cycle without the position starts the clock
     calls = []
     real = w.venue.closed_pnl
 

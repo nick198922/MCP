@@ -80,6 +80,22 @@ def reject_bad_ts(b: Builder, field: str, ts: int | None) -> dict[str, Any] | No
     return None
 
 
+SQLITE_INT_MIN = -(2**63)
+SQLITE_INT_MAX = 2**63 - 1
+
+
+def reject_bad_id(b: Builder, **ids: int | None) -> dict[str, Any] | None:
+    """ok=false envelope (`invalid_input`) when a row id is outside SQLite INTEGER (-2**63 .. 2**63 - 1), else None.
+    10**20 and -10**20 raised OverflowError out of the store lookup; no such row can exist. The value is not echoed
+    (str() of a 5000-digit int raises)."""
+    for field, v in ids.items():
+        if v is not None and not (SQLITE_INT_MIN <= v <= SQLITE_INT_MAX):
+            msg = f"{field} is beyond the SQLite INTEGER range (-2**63 .. 2**63 - 1); no such row exists"
+            b.miss(field, "tradedesk", "invalid_input", msg)
+            return b.build(None, ok=False)
+    return None
+
+
 def drop_corrupt_rows(
     b: Builder,
     rows: list[dict[str, Any]],

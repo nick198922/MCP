@@ -18,7 +18,16 @@ from ..core.envelope import Builder
 from ..rules import METRICS, DslError, compile_expr, evaluate
 from ..rules.metrics import MetricContext, build_metrics
 from ..runtime import Runtime
-from ._util import READ_ONLY, STORE_ERRORS, drop_corrupt_rows, finite_json, first_nonfinite, store_failed, store_ready
+from ._util import (
+    READ_ONLY,
+    STORE_ERRORS,
+    drop_corrupt_rows,
+    finite_json,
+    first_nonfinite,
+    reject_bad_id,
+    store_failed,
+    store_ready,
+)
 
 # Numeric columns of a stored rule (`enabled` is turned into a bool by the store); another writer can leave a string, a
 # blob or inf in any of them.
@@ -156,6 +165,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
         delete: Annotated[bool, Field(description="If true, delete the row instead.")] = False,
     ) -> dict[str, Any]:
         b = Builder()
+        if (bad := reject_bad_id(b, id=id)) is not None:  # 10**20 raised OverflowError out of the lookup
+            return bad
         if not await store_ready(b, rt, "rules"):
             return b.build(None, ok=False)
         try:

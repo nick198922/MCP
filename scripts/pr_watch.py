@@ -36,6 +36,9 @@ from gh_pr import READY_MARK, TOKEN_FILE, Call, caller  # noqa: E402
 from tg_send import load_env, send  # noqa: E402
 
 STALE_HOURS = 2.0
+RERUN_EVERY_HOURS = 2.0  # further re-runs when the CI set-up itself failed (a 504 installing uv), at most RERUN_MAX in all
+RERUN_MAX = 6
+SETUP_STEPS = ("setup-uv", "checkout", "uv sync", "set up job")  # a failure here says nothing about the code
 FAILED = {"failure", "timed_out", "cancelled", "action_required", "startup_failure"}
 LOG_DIR = Path(os.environ.get("TRADEDESK_AGENTS_LOG_DIR") or Path.home() / ".local/state/tradedesk-agents")
 REPO_DIR = Path(__file__).resolve().parent.parent
@@ -67,6 +70,23 @@ def failed_run_ids(check_runs: list[dict]) -> list[int]:
             if m:
                 ids.add(int(m.group(1)))
     return sorted(ids)
+
+
+def rerun_due(told: dict, now: datetime) -> bool:
+    """A failed CI was re-run once already: is another try allowed by now? (A state from before ``rerun_at`` counts as due.)"""
+    if int(told.get("reruns", 0)) >= RERUN_MAX:
+        return False
+    at = told.get("rerun_at")
+    return not at or (now - datetime.fromisoformat(at)).total_seconds() >= RERUN_EVERY_HOURS * 3600
+
+
+def infra_failure(call: Call, repo: str, run_id: int) -> bool:
+    """Did a job of this run fail in a CI set-up step rather than in lint or the tests?"""
+    status, data = call("GET", f"/repos/{repo}/actions/runs/{run_id}/jobs", None)
+    if status != 200:
+        return False
+    steps = [st for j in data.get("jobs", []) for st in j.get("steps", []) if st.get("conclusion") == "failure"]
+    return any(any(k in st.get("name", "").lower() for k in SETUP_STEPS) for st in steps)
 
 
 def findings(pr: dict, check_runs: list[dict], now: datetime) -> list[tuple[str, str]]:
@@ -220,11 +240,16 @@ def watch(call: Call, repo: str, state: dict, now: datetime, fix: Fixer | None =
             except RuntimeError as e:  # e.g. merged meanwhile by the workflow, or a conflict: the stale check tells
                 print(e, file=sys.stderr)
         rerun = failed_run_ids(check_runs) if ready and not told.get("rerun") else []
+        if ready and told.get("rerun") and rerun_due(told, now):
+            # A second failure of the CI set-up is GitHub's, not the code's: two such PRs stopped the agents for 33 hours.
+            rerun = [i for i in failed_run_ids(check_runs) if infra_failure(call, repo, i)]
         for run_id in rerun:
             status, _ = call("POST", f"/repos/{repo}/actions/runs/{run_id}/rerun-failed-jobs", {})
             print(f"PR #{pr['number']}: re-run of the failed jobs of run {run_id}: HTTP {status}")
         if rerun:
             told["rerun"] = True
+            told["reruns"] = int(told.get("reruns", 0)) + 1
+            told["rerun_at"] = now.isoformat()
             new_state[str(pr["number"])] = told
             continue
         for kind, detail in findings(pr, check_runs, now):

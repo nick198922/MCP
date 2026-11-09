@@ -516,7 +516,9 @@ async def _sync_trade(ctx: Ctx, t: dict[str, Any], positions: dict[str, Any]) ->
     opened = t["opened_ts"] or ctx.now
     rows = [r for r in await _closed_rows(ctx, m.market_id, opened - FILL_LAG_MS) if _closes_this(t, r, opened)]
     if not rows:
-        if ctx.now - opened > ORPHAN_MS:
+        # Final and it frees the coin and the risk in the guard's books, so one empty read is not enough: read once more
+        # (a failure goes up to ``ctx.safe`` and the trade stays open).
+        if ctx.now - opened > ORPHAN_MS and not (await ctx.client.positions()).get(sym):
             await _orphan(ctx, t)
         return  # the venue has not reported the close yet
     pnl = sum(float(r.get("closedPnl") or 0) for r in rows)
@@ -581,7 +583,7 @@ async def _closed_rows(ctx: Ctx, market_id: str, start_ms: int) -> list[dict[str
     while lo < ctx.now:
         hi = min(lo + CLOSED_PNL_WINDOW_MS, ctx.now)
         out += await ctx.client.closed_pnl(market_id, lo, hi)
-        lo = hi
+        lo = hi + 1  # the range is inclusive: a row on the boundary is read once
     return out
 
 
@@ -604,6 +606,9 @@ async def _orphan(ctx: Ctx, t: dict[str, Any]) -> None:
     await ctx.store.demo_trade_update(lid, status="orphaned")
     days = (ctx.now - (t["opened_ts"] or ctx.now)) / 86_400_000
     await ctx.audit("orphaned", link_id=lid, symbol=sym, setup=t["setup"], payload={"days": round(days, 1)})
+    for left in (t["tp_link"], t["exit_order"]):  # nobody will cancel these later, and they could cut the next trade
+        if left:
+            await ctx.safe("cancel_left", lambda left=left: ctx.client.cancel(sym, left), link_id=lid)
     await ctx.safe(
         "notify",
         lambda: ctx.notify(

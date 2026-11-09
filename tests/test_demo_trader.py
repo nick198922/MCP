@@ -436,6 +436,45 @@ async def test_open_trade_without_position_or_close_is_orphaned_once_with_an_ale
     assert sum("orphaned" in m for m in w.msgs) == 1
 
 
+async def test_orphan_cancels_the_orders_left_on_the_book(world):
+    w = world
+    await w.enter()
+    t = (await w.store.demo_trade_list())[0]
+    assert t["tp_link"]
+    w.venue.pos.clear()
+    w.signals["4h"] = []
+    await w.run(t["opened_ts"] + 2 * D1)
+    assert (await w.store.demo_trade_list())[0]["status"] == "orphaned"
+    assert ("cancel", BTC, t["tp_link"]) in w.venue.orders
+
+
+@pytest.mark.parametrize("second_read", ["position_is_back", "fails"])
+async def test_one_empty_position_read_never_orphans_a_trade(world, monkeypatch, second_read):
+    """A position missing from one read, then present (or a read that fails) must leave the trade open."""
+    w = world
+    await w.enter()
+    t = (await w.store.demo_trade_list())[0]
+    held = dict(w.venue.pos)
+    w.venue.pos.clear()
+    w.signals["4h"] = []
+    reads = []
+    real = w.venue.positions
+
+    async def flaky():
+        reads.append(1)
+        if len(reads) == 1:
+            return await real()
+        if second_read == "fails":
+            raise ccxt.NetworkError("timeout")
+        return held
+
+    monkeypatch.setattr(w.venue, "positions", flaky)
+    await w.run(t["opened_ts"] + 2 * D1)
+    assert len(reads) >= 2
+    assert (await w.store.demo_trade_list())[0]["status"] == "open"
+    assert not any("orphaned" in m for m in w.msgs)
+
+
 @pytest.mark.parametrize("failing_window", [0, 1])
 async def test_closed_pnl_failure_never_orphans_a_trade(world, monkeypatch, failing_window):
     """An orphan frees the coin and the risk in the guard's books, so a failed read must not look like «no close»."""

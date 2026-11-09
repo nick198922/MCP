@@ -29,6 +29,43 @@ def _sign(side: str) -> int:
     return 1 if side == "long" else -1 if side == "short" else 0
 
 
+def _real(x: Any) -> float | None:
+    """``x`` as a float, or None when it is not a real number (a bool, a non-numeric string, a container, None)."""
+    if isinstance(x, bool):
+        return None
+    try:
+        return float(x)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def leg_problem(legs: Iterable[dict[str, Any]]) -> str | None:
+    """Why a caller-supplied leg list cannot be priced as the module docstring describes, else None.
+
+    The helpers below skip a leg with an unknown side or a size <= 0, and an unknown kind counts as nothing in the
+    payoff but as a put in the greeks / MTM; an option strike <= 0 is priced in the payoff but skipped in the greeks.
+    Checked first, such a leg is reported instead of silently changing the answer. The message never echoes the
+    value (it may be megabytes of text)."""
+    for i, leg in enumerate(legs):
+        kind = leg.get("kind")
+        if kind not in ("call", "put", "linear"):
+            return f"legs.{i}.kind must be 'call', 'put' or 'linear'"
+        if leg.get("side") not in ("long", "short"):
+            return f"legs.{i}.side must be 'long' or 'short'"
+        size = _real(leg.get("size"))
+        if size is None or size <= 0:
+            return f"legs.{i}.size must be a number > 0 (the direction comes from side)"
+        if kind == "linear":
+            continue
+        strike = _real(leg.get("strike"))
+        if strike is None or strike <= 0:
+            return f"legs.{i}.strike must be a number > 0 for an option leg"
+        premium = leg.get("entry_premium")
+        if premium is not None and ((p := _real(premium)) is None or p < 0):
+            return f"legs.{i}.entry_premium must be a number >= 0 (USD paid or received; the sign comes from side)"
+    return None
+
+
 def _leg_payoff_at(leg: dict[str, Any], s: float) -> float:
     kind = leg.get("kind")
     sign = _sign(leg.get("side", ""))

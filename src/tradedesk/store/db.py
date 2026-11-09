@@ -85,6 +85,7 @@ _DEMO_TRADE_MUTABLE = frozenset(
         "exit_kind",
         "fees_usd",
         "note",
+        "gone_ts",
     }
 )
 

@@ -2362,33 +2362,22 @@ def test_info_notes_are_at_most_four_short_lines():
 
 
 # docs/design/PANEL.md rule 2: HELP keys of tiles still without the «what to do» line under them, on any tab of
-# _all_tab_pages (standing improvements, item 294: «Ринок» done; «Демо» and «Мої угоди» left). Like RULE3_TODO, the
-# list must match the fact both ways: a new tile without an action line, or a fixed one still listed, fails the test.
+# _all_tab_pages (standing improvements, item 294: «Ринок» done; item 295: «Демо» and the journal / «Середній R» tiles
+# of «Мої угоди»; the forecast journal, plans and paper recommendations left). Like RULE3_TODO, the list must match the
+# fact both ways: a new tile without an action line, or a fixed one still listed, fails the test.
 RULE2_MAX_WORDS = 8
 RULE2_TODO = frozenset(
     {
-        # «Демо»
-        "demo_refused",
-        "demo_setup",
-        "demo_skipped",
-        # «Мої угоди»: journal, paper recommendations, plans, forecast journal
-        "drawdown",
+        # «Мої угоди»: paper recommendations, plans, forecast journal
         "fc_brier",
         "fc_clim",
         "fc_expiries",
         "fc_n",
         "fc_ref",
-        "j_expectancy",
-        "j_open",
-        "j_pnl",
-        "j_rules",
-        "j_trades",
-        "j_winrate",
         "plan_exits",
         "plan_n",
         "plan_win",
         "plans",
-        "r",
         "rec_n",
         "rec_pct",
         "rec_pnl",
@@ -2423,6 +2412,83 @@ def test_rule2_tiles_have_a_short_action_line_except_the_listed(tmp_path):
             words = [w for w in a.split() if re.search(r"\w", w)]
             assert 0 < len(words) <= RULE2_MAX_WORDS, (name, key, a)
     assert not [r for r in rows if r[0].startswith("brief") and r[2] is None]  # «Ринок»: every tile
+
+
+def test_demo_and_journal_action_lines_on_their_notes_thresholds():
+    """Item 295 (docs/design/PANEL.md rule 2): the «Демо» and journal tiles' action lines. The only cut-offs are the
+    notes' 30 trades (JR_SMALL_SAMPLE = DEMO_MIN_N), rule 1's $100, the sign as each tile colours it (_signed_cls, the
+    expectancy tile's exp < 0), _demo_vs0's CI against 0, the «За правилами» counts and a guard halt within 7 days."""
+    import re
+
+    n = db.JR_SMALL_SAMPLE
+    assert n == db.DEMO_MIN_N == 30 and f"(≥ {n})" in db.HELP["r"][3] and f"до {n} закритих угод" in db.ACT["drawdown"][1]
+    assert f"≤ {db._usd(db.RULES_DEPOSIT * db.RULES_RISK_PCT / 100.0)} (правило 1)" in db.ACT["j_open"][3]
+    assert db.j_trades_act(n - 1) == "опис, не висновок: розмір не міняй" and db.j_trades_act(n) == "суди за середнім на угоду й R"
+    assert db.j_winrate_act(-0.01) == "середнє нижче 0: тримай стоп, дай плюсу дійти"
+    assert db.j_winrate_act(0.0) == db.j_winrate_act(None) == "середнє не в мінусі: низька частка не біда"
+    # P&L: the tile's own colour, _signed_cls's ±0.005 edge
+    assert db.j_pnl_act(-0.005, n) == "мінус: зменш розмір там, де він найбільший"
+    assert db.j_pnl_act(-0.0049, n) == db.j_pnl_act(0.0049, n) == db.j_pnl_act(None, n) == "у нулі: суди за середнім і R"
+    assert db.j_pnl_act(0.005, n - 1) == "плюс, але до 30 угод — не доказ"
+    assert db.j_pnl_act(0.005, n) == "плюс: систему суди за середнім і R"
+    assert db.j_expectancy_act(-0.001, n) == "менший розмір, суворіші правила входу"
+    assert db.j_expectancy_act(0.0, n - 1) == "до 30 угод не перевага: розмір не збільшуй"
+    assert db.j_expectancy_act(0.0, n) == "не нижче 0 на 30+ угодах: тримай правила"
+    assert db.r_mean_act(None, 0) == "угод з R немає: висновку ще нема"
+    assert db.r_mean_act(-0.005, 99) == "переглянь стопи й цілі, розмір не збільшуй"
+    assert db.r_mean_act(-0.0049, 99) == db.r_mean_act(0.0049, 99) == "переваги не видно: розмір не збільшуй"
+    assert db.r_mean_act(0.005, n - 1) == "до 30 угод з R — не доказ" and db.r_mean_act(0.005, n) == "вище 0 на 30+ угодах: ознака переваги"
+    assert db.drawdown_act(0.0, 99) == "просадки ще не було: розмір не міняй"
+    assert db.drawdown_act(0.01, n - 1) == "до 30 угод не показова: розмір не міняй"
+    assert db.drawdown_act(0.01, n) == "тримай розмір, з яким переживеш її знову"
+    assert db.j_open_act(0) == "нічого робити не треба" and db.j_open_act(1) == "перевір ризик кожної ≤ $100 і строк"
+    c = {"n_violated": 0, "n_unknown": 0, "n_approx": 0}
+    assert db.j_rules_act(c) == "порушень немає: тримай правила далі"
+    assert db.j_rules_act({**c, "n_approx": 1}) == "записуй час відкриття: правило 4 наближене"
+    assert db.j_rules_act({**c, "n_approx": 1, "n_unknown": 1}) == "записуй стоп і ціль у /trade"
+    assert db.j_rules_act({"n_violated": 1, "n_unknown": 1, "n_approx": 1}) == "знайди в тижневому звіті, яке правило ламаєш"
+    assert db.demo_setup_act(n - 1, "ok") == "замало угод: ризик на сетапі не збільшуй"
+    assert db.demo_setup_act(n, "ok") == "ДІ вище 0: звір із поточною версією"
+    assert db.demo_setup_act(n, "bad") == "ДІ нижче 0: ризик не збільшуй"
+    assert db.demo_setup_act(n, "") == "переваги не видно: ризик не збільшуй"
+    assert db.demo_refused_act(0, False) == "відмов немає: нічого не роби"
+    assert db.demo_refused_act(1, False) == "дивись найчастішу причину в таблиці нижче"
+    assert db.demo_refused_act(1, True) == "був kill-switch чи ліміт: перевір позиції"
+    assert db.demo_skipped_act(0) == "пропусків немає: нічого не роби" and db.demo_skipped_act(1) == "чи даремно — покажуть тіньові плани"
+
+    def act(page: str, key: str) -> list[str]:
+        return re.findall(re.escape(db._info(key)) + r"</span><span class='v'>.*?<span class='act'>([^<]*)</span></div>", page, re.S)
+
+    # on the tiles: a losing first trade (red edge, «система поки в мінусі») and one open trade
+    tiles = db.block_journal_tiles([{"status": "closed", "pnl": -5.0, "closed_ts": 1.0, "outcome": "loss", "r_multiple": -1.0}], 1, 2.0)
+    assert "система поки в мінусі" in tiles
+    for key, line in (
+        ("j_expectancy", "менший розмір, суворіші правила входу"),
+        ("j_trades", "опис, не висновок: розмір не міняй"),
+        ("j_pnl", "мінус: зменш розмір там, де він найбільший"),
+        ("j_winrate", "середнє нижче 0: тримай стоп, дай плюсу дійти"),
+        ("r", "переглянь стопи й цілі, розмір не збільшуй"),
+        ("drawdown", "до 30 угод не показова: розмір не міняй"),
+        ("j_open", "перевір ризик кожної ≤ $100 і строк"),
+    ):
+        assert act(tiles, key) == [line], key
+    assert len(act(tiles, "j_rules")) == 1
+    # a setup with 30 trades with R and its CI above 0, the others without trades (the yellow «замало» badge)
+    trades = [{"setup": "zz", "status": "closed", "r_multiple": 1.0 + (i % 2), "pnl_usd": 10.0} for i in range(n)]
+    page = db.block_demo_setups(trades)
+    got = act(page, "demo_setup")
+    assert got[-1] == "ДІ вище 0: звір із поточною версією" and set(got[:-1]) == {"замало угод: ризик на сетапі не збільшуй"}
+    assert page.count("<span class='sig warn'>замало для висновку") == len(got) - 1
+    # a kill-switch refusal 6 days ago halts the line; 8 days ago it is history and the table is the pointer
+    now = 100 * 86400.0
+    kill = json.dumps({"violations": ["kill-switch is on"]})
+    for days, line in ((6, "був kill-switch чи ліміт: перевір позиції"), (8, "дивись найчастішу причину в таблиці нижче")):
+        audit = [{"kind": "refused", "ts": (now - days * 86400) * 1000, "payload": kill}, {"kind": "skipped", "reason": "y"}]
+        page = db.block_demo_refusals(audit, now)
+        assert act(page, "demo_refused") == [line] and act(page, "demo_skipped") == ["чи даремно — покажуть тіньові плани"], days
+    page = db.block_demo_refusals([], now)
+    assert act(page, "demo_refused") == ["відмов немає: нічого не роби"]
+    assert act(page, "demo_skipped") == ["пропусків немає: нічого не роби"]
 
 
 def test_forecast_info_notes_are_instructions_with_thresholds_from_the_code():

@@ -1,5 +1,5 @@
 [Unit]
-Description=tradedesk: weekly project audit (Fable 5.1, xhigh)
+Description=tradedesk: weekly project audit (Fable 5.2, xhigh)
 
 [Service]
 Type=oneshot

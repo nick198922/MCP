@@ -404,6 +404,66 @@ def test_market_tab_short_info_notes_and_less_text():
     assert set(db.ACT) == set(db.HELP)  # item 278: every note is the short instruction now
 
 
+def test_market_tiles_all_have_an_action_line_from_their_notes_thresholds():
+    """Item 294 (docs/design/PANEL.md rule 2): every «Ринок» tile has a «what to do» line, including the price tiles,
+    the folded DVOL / RV30 / IV − RV30 tiles and a DVOL tile without its percentile; the thresholds are the ones its
+    «i» note names (ACT), so the line never contradicts the note or the tile's badge."""
+    import re
+
+    # the thresholds: ACT["price"] «до ±3 %», ACT["dvol"] 30th / 70th percentile, vol_lean's IV − RV30 ≤ 0 / ≥ +10 vp
+    assert f"±{db.BRIEF_PRICE_MOVE:g} %" in db.ACT["price"][0] and "30-го" in db.ACT["dvol"][0] and "70-го" in db.ACT["dvol"][2]
+    assert db.price_act(None) == "зміни за добу немає: дивись рівні"
+    assert db.price_act(2.99) == db.price_act(-2.99) == "звичайний день: рішення за рівнями"
+    assert db.price_act(3.0) == db.price_act(-3.0) == db.price_act(-12.0) == "різкий рух: не входь услід"
+    assert db.dvol_act(0.29) == "опціони дешеві: купувати вигідніше" and db.dvol_act(0.3) == db.dvol_act(0.7) == "опціони за звичною ціною"
+    assert db.dvol_act(0.71) == "опціони дорогі: купівля переплачує" and "перцентиля немає" in db.dvol_act(None)
+    assert db.rv_act(0.3, 0.4) == "ринок пожвавився: ширший стоп, менший розмір" and db.rv_act(0.3, 0.2) == "ринок заспокоївся: ближчі цілі"
+    assert db.rv_act(0.3, 0.3) == "темп руху той самий" and db.rv_act(0.3, None) == "7 дн немає: порівняти нема з чим"
+    for spr, act, badge in (
+        (-0.01, "не дорожчі за рух: сприяє покупцю", "покупцю дешево"),
+        (0.0, "не дорожчі за рух: сприяє покупцю", "покупцю дешево"),
+        (0.0999, "звична премія продавцю", ""),
+        (0.10, "покупець переплачує; продавцю вигідніше", "покупцю дорого"),
+    ):
+        tone = db.vol_lean(None, spr)[0][0]
+        assert db.vrp_act(tone) == act and db.lean_badge(tone) == badge, spr
+    tile = re.compile(r"<div class='tile[^']*'><span class='k'>(.*?)<span class='info'.*?<span class='v'>.*?</div>", re.S)
+    act = re.compile(r"<span class='act'>([^<]*)</span></div>\Z")
+
+    def acts(page: str) -> dict[str, str]:
+        out = {}
+        for m in tile.finditer(page):
+            a = act.search(m.group(0))
+            out[m.group(1)] = a.group(1) if a else None
+        return out
+
+    snap, asof = _snap()  # the real snapshot: BTC +0.9 %, ETH +1.9 %, SOL +2.0 %, DVOL 16th pct, RV7 < RV30, +5.2 vp
+    assert acts(db.render_brief(snap, None, asof + 300)) == {
+        "BTC": "звичайний день: рішення за рівнями",
+        "ETH": "звичайний день: рішення за рівнями",
+        "SOL": "звичайний день: рішення за рівнями",
+        "DVOL (IV BTC, 30 дн)": "опціони дешеві: купувати вигідніше",
+        "Рух до 23.10": "стоп — за межами цього діапазону",
+        "Funding BTC": "перекосу натовпу нема",
+        "Страх і жадібність": "звичайний розмір",
+        "DVOL": "опціони дешеві: купувати вигідніше",
+        "Реалізована 30 дн": "ринок заспокоївся: ближчі цілі",
+        "Премія IV − RV30": "звична премія продавцю",
+    }
+    # the other branches on the page: a sharp day, no 24 h change, no percentile, a livelier week, rich options
+    odd = json.loads(json.dumps(snap))
+    ticks = odd["sections"]["tickers"]["data"]["tickers"]
+    ticks[0]["percentage"], ticks[1]["percentage"], ticks[2]["percentage"] = -4.2, None, 3.0
+    cur = odd["sections"]["vrp"]["data"]["current"]
+    cur["dvol_percentile_365d"], cur["rv_7d"], cur["spread_vs_rv30"] = None, 0.45, 0.12
+    got = acts(db.render_brief(odd, None, asof + 300))
+    assert got["BTC"] == got["SOL"] == "різкий рух: не входь услід" and got["ETH"] == "зміни за добу немає: дивись рівні"
+    assert got["DVOL (IV BTC, 30 дн)"] == got["DVOL"] == "перцентиля немає: дивись премію IV − RV30"
+    assert got["Реалізована 30 дн"] == "ринок пожвавився: ширший стоп, менший розмір"
+    assert got["Премія IV − RV30"] == "покупець переплачує; продавцю вигідніше"
+    assert None not in got.values() and "Блок не вдалося" not in db.render_brief(odd, None, asof + 300)
+
+
 def test_nav_three_sections_then_the_rest_under_detailed():
     """docs/design/PANEL.md: Ринок · Мої угоди · Система, every other tab in a «Детально» drop-down; URLs unchanged."""
     main = db._nav("brief")
@@ -2299,6 +2359,70 @@ def test_info_notes_are_at_most_four_short_lines():
     # the four longest notes of «Мої угоди» before item 262 are short instructions now
     for key in ("j_rules", "rules_week", "j_review", "j_weeks"):
         assert "<span class='do'><i>" in db._info(key) and "порада" not in db._info(key), key
+
+
+# docs/design/PANEL.md rule 2: HELP keys of tiles still without the «what to do» line under them, on any tab of
+# _all_tab_pages (standing improvements, item 294: «Ринок» done; «Демо» and «Мої угоди» left). Like RULE3_TODO, the
+# list must match the fact both ways: a new tile without an action line, or a fixed one still listed, fails the test.
+RULE2_MAX_WORDS = 8
+RULE2_TODO = frozenset(
+    {
+        # «Демо»
+        "demo_refused",
+        "demo_setup",
+        "demo_skipped",
+        # «Мої угоди»: journal, paper recommendations, plans, forecast journal
+        "drawdown",
+        "fc_brier",
+        "fc_clim",
+        "fc_expiries",
+        "fc_n",
+        "fc_ref",
+        "j_expectancy",
+        "j_open",
+        "j_pnl",
+        "j_rules",
+        "j_trades",
+        "j_winrate",
+        "plan_exits",
+        "plan_n",
+        "plan_win",
+        "plans",
+        "r",
+        "rec_n",
+        "rec_pct",
+        "rec_pnl",
+        "rec_r_worst",
+        "rec_win",
+    }
+)
+
+
+def test_rule2_tiles_have_a_short_action_line_except_the_listed(tmp_path):
+    """Item 294 (docs/design/PANEL.md rule 2): under every tile an action line of at most RULE2_MAX_WORDS words; the
+    tiles not done yet are RULE2_TODO by their HELP key (found by the tile's exact «i» note, so shared titles such as
+    «Funding» do not mix keys up)."""
+    import html
+    import re
+
+    note = {db._info(k): k for k in db.HELP}
+    assert len(note) == len(db.HELP)  # every note's HTML is its own
+    tile = re.compile(r"<div class='tile[^']*'><span class='k'>(.*?)<span class='v'>(.*?)</div>", re.S)
+    rows = []
+    for name, page in _all_tab_pages(tmp_path).items():
+        for k, rest in tile.findall(page):
+            keys = [key for h, key in note.items() if h in k]
+            assert len(keys) == 1, (name, k[:80])
+            a = re.search(r"<span class='act'>([^<]*)</span>\Z", rest)
+            rows.append((name, keys[0], html.unescape(a.group(1)) if a else None))
+    assert len(rows) >= 100 and len({k for _, k, _ in rows}) >= 40  # the regex really matched the pages
+    missing = {k for _, k, a in rows if a is None}
+    assert missing == RULE2_TODO, ("tiles without an action line", sorted(missing - RULE2_TODO), "done, drop", sorted(RULE2_TODO - missing))
+    for name, key, a in rows:
+        if a is not None:
+            words = [w for w in a.split() if re.search(r"\w", w)]
+            assert 0 < len(words) <= RULE2_MAX_WORDS, (name, key, a)
+    assert not [r for r in rows if r[0].startswith("brief") and r[2] is None]  # «Ринок»: every tile
 
 
 def test_forecast_info_notes_are_instructions_with_thresholds_from_the_code():

@@ -3376,6 +3376,41 @@ def _fng_zone(latest: dict) -> str:
     return FNG_UA.get(str(z), _clean(z, 40)) if z else ""
 
 
+BRIEF_PRICE_MOVE = 3.0  # % in 24 h (ccxt `percentage`): ACT["price"]'s «до ±3 %»; from this on, «різкий рух»
+
+
+def price_act(pct: float | None) -> str:
+    """The «Ринок» price tile's action line (docs/design/PANEL.md rule 2), ACT["price"]'s two cases."""
+    if pct is None:
+        return "зміни за добу немає: дивись рівні"
+    return "різкий рух: не входь услід" if abs(pct) >= BRIEF_PRICE_MOVE else "звичайний день: рішення за рівнями"
+
+
+def dvol_act(pr: float | None) -> str:
+    """A DVOL tile's action line (rule 2) from its 365-day percentile, vol_lean's and ACT["dvol"]'s 30th / 70th."""
+    if pr is None:
+        return "перцентиля немає: дивись премію IV − RV30"
+    if pr < 0.3:
+        return "опціони дешеві: купувати вигідніше"
+    return "опціони дорогі: купівля переплачує" if pr > 0.7 else "опціони за звичною ціною"
+
+
+def rv_act(rv30: float, rv7: float | None) -> str:
+    """The realised-volatility tile's action line (rule 2): RV 7 d against RV 30 d, ACT["rv"]'s two cases."""
+    if rv7 is None:
+        return "7 дн немає: порівняти нема з чим"
+    if rv7 > rv30:
+        return "ринок пожвавився: ширший стоп, менший розмір"
+    return "ринок заспокоївся: ближчі цілі" if rv7 < rv30 else "темп руху той самий"
+
+
+def vrp_act(tone: str) -> str:
+    """The IV − RV30 tile's action line (rule 2) from vol_lean's buyer tone, so it never disagrees with the badge."""
+    return {"good": "не дорожчі за рух: сприяє покупцю", "bad": "покупець переплачує; продавцю вигідніше"}.get(
+        tone, "звична премія продавцю"
+    )
+
+
 def block_tiles(snap: dict) -> str:
     tiles = []
     tick = _tickers(snap)
@@ -3390,6 +3425,7 @@ def block_tiles(snap: dict) -> str:
                 _e(f"{_pc(pct, 2)} за 24 год"),
                 "" if pct is None else ("ok" if pct >= 0 else "bad"),
                 help="price",
+                act=price_act(pct),
             )
         )
     cur = (_data(snap, "vrp") or {}).get("current")
@@ -3402,15 +3438,7 @@ def block_tiles(snap: dict) -> str:
     if dvol is not None:
         pr = _num(cur.get("dvol_percentile_365d"))
         tone = (vol_lean(pr, None) or [("", "")])[0][0]
-        act = (
-            ""
-            if pr is None
-            else "опціони дешеві: купувати вигідніше"
-            if pr < 0.3
-            else "опціони дорогі: купівля переплачує"
-            if pr > 0.7
-            else "опціони за звичною ціною"
-        )
+        act = dvol_act(pr)
         tiles.append(
             _tile(
                 "DVOL (IV BTC, 30 дн)",
@@ -3659,12 +3687,24 @@ def block_vol(snap: dict) -> str:
     if dvol is not None:
         ch = _num(dv.get("change_7d_pts"))
         tiles.append(
-            _tile("DVOL", _e(_nf(dvol * 100, 1)), _e(f"за 7 днів {_pc(ch, 1).replace(' %', '')} вп" if ch is not None else ""), help="dvol")
+            _tile(
+                "DVOL",
+                _e(_nf(dvol * 100, 1)),
+                _e(f"за 7 днів {_pc(ch, 1).replace(' %', '')} вп" if ch is not None else ""),
+                help="dvol",
+                act=dvol_act(_num(cur.get("dvol_percentile_365d"))),
+            )
         )
     rv30, rv7 = _num(cur.get("rv_30d")), _num(cur.get("rv_7d"))
     if rv30 is not None:
         tiles.append(
-            _tile("Реалізована 30 дн", _e(_nf(rv30 * 100, 1)), _e(f"7 дн {_nf(rv7 * 100, 1)}" if rv7 is not None else ""), help="rv")
+            _tile(
+                "Реалізована 30 дн",
+                _e(_nf(rv30 * 100, 1)),
+                _e(f"7 дн {_nf(rv7 * 100, 1)}" if rv7 is not None else ""),
+                help="rv",
+                act=rv_act(rv30, rv7),
+            )
         )
     spr = _num(cur.get("spread_vs_rv30"))
     if spr is not None:
@@ -3677,6 +3717,7 @@ def block_vol(snap: dict) -> str:
                 help="vrp",
                 tone=tone,
                 badge=lean_badge(tone),
+                act=vrp_act(tone),
             )
         )
     out = [f"<div class='tiles'>{''.join(tiles)}</div>"] if tiles else []

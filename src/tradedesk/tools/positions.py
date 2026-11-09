@@ -121,6 +121,11 @@ def register(server: MCPServer, rt: Runtime) -> None:
         try:
             rows = await rt.store.positions_list(status=status, instrument=instrument, tag=tag, limit=limit)
             rows = drop_corrupt_rows(b, rows, "position", POSITION_NUMS, required=("size",))
+            # NaN / Infinity in the stored tags JSON (another writer, e.g. "[NaN]") came back as NaN / Infinity (item 296).
+            nonfinite = [p.get("id") for p in rows if not finite_json(p)]
+            if nonfinite:
+                b.warn(f"{len(nonfinite)} stored position rows skipped: NaN / Infinity in tags; id {nonfinite[:10]}")
+                rows = [p for p in rows if finite_json(p)]
             return b.build({"count": len(rows), "positions": rows})
         except STORE_ERRORS as e:
             return store_failed(b, e)

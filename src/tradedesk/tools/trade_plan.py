@@ -26,9 +26,11 @@ from ._util import (
     drop_corrupt_rows,
     finite_float,
     finite_json,
+    first_nonfinite,
     r,
     reject_bad_id,
     store_failed,
+    store_num,
     store_ready,
 )
 
@@ -51,6 +53,7 @@ SQLITE_INT_MAX = 2**63 - 1
 SHADOW_TAG = "src:demo-shadow"  # execution/demo_trader.py: one plan per setup signal, not the assistant's judgment
 # Numeric columns `_view` reads (expires_ts has its own guard, `_expires_view`).
 PLAN_NUMS = ("created_ts", "entry", "stop", "target", "filled_ts", "fill", "resolved_ts", "exit", "r_result")
+MAX_LEVEL_RATIO = 1000.0  # a plan level this many times away from the market's price is not a plan (review_open skips it)
 
 
 def _iso(ts: int | None) -> str | None:
@@ -116,12 +119,17 @@ def _view(p: dict[str, Any]) -> dict[str, Any]:
 
 
 def _listable(b: Builder, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """`_view` of the stored plans that another writer did not corrupt. A string / blob / inf in a level, a timestamp or
-    the result (TypeError / ValueError in `_view`, or an invalid UTF-8 blob failing the reply), entry 0 or entry = stop
-    (ZeroDivisionError in `geometry`), a reward:risk that overflows, or NaN / Infinity in the JSON of `tags` / `rules`:
-    the plan is skipped with a warning naming its id (invariant 1). plan_add validates its levels, so its own rows
-    always pass."""
-    views: list[dict[str, Any]] = []
+    """`_view` of the stored plans that another writer did not corrupt (see `_sound`)."""
+    return [v for _, v in _sound(b, rows)]
+
+
+def _sound(b: Builder, rows: list[dict[str, Any]]) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    """(row, `_view`) of the stored plans that another writer did not corrupt. A string / blob / inf in a level, a
+    timestamp or the result (TypeError / ValueError in `_view`, or an invalid UTF-8 blob failing the reply), entry 0 or
+    entry = stop (ZeroDivisionError in `geometry`), a reward:risk that overflows, or NaN / Infinity in the JSON of `tags`
+    / `rules`: the plan is skipped with a warning naming its id (invariant 1). plan_add validates its levels, so its own
+    rows always pass."""
+    views: list[tuple[dict[str, Any], dict[str, Any]]] = []
     bad: list[Any] = []
     for p in drop_corrupt_rows(b, rows, "plan", PLAN_NUMS, required=("created_ts", "entry", "stop", "target")):
         if p["entry"] <= 0 or p["entry"] == p["stop"]:
@@ -131,13 +139,42 @@ def _listable(b: Builder, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if v["rr"] is None or v["risk_pct"] is None or not math.isfinite(v["rr"]) or not math.isfinite(v["risk_pct"]) or not finite_json(v):
             bad.append(p["id"])
             continue
-        views.append(v)
+        views.append((p, v))
     if bad:
         b.warn(
             f"{len(bad)} stored plan rows skipped: entry <= 0, entry equal to stop, a reward:risk out of range, or NaN / "
             f"Infinity in tags / rules; id {bad[:10]}"
         )
     return views
+
+
+def _unscorable(p: dict[str, Any]) -> str | None:
+    """Why a stored open plan cannot be scored on candles, else None. plan_add and the demo trader's shadow plans always
+    pass; this guards rows another writer left with a blob, an unknown side / entry type, a level that is text (also
+    "NaN"), inf, <= 0 or equal to the stop, or a created / expires time that is no usable unix seconds (text, inf, 1e20).
+    Before item 296 such a plan raised out of `resolve_plan` / the candle query (ValueError, ZeroDivisionError,
+    OverflowError) and failed plan_review and the hourly plan_resolve job for every other plan, or was scored as garbage."""
+    if any(isinstance(v, (bytes, bytearray, memoryview)) for v in p.values()):
+        return "a blob in a column"
+    if p["side"] not in ("long", "short") or p["entry_type"] not in ("market", "limit", "stop"):
+        return "side / entry_type is not one plan_add writes"
+    entry, stop, target = (store_num(p[k]) for k in ("entry", "stop", "target"))
+    if entry is None or stop is None or target is None or min(entry, stop, target) <= 0:
+        return "entry / stop / target is not a positive finite number"
+    if entry == stop:
+        return "entry equals stop (zero risk)"
+    for k in ("created_ts", "expires_ts"):
+        if _expires_view(p[k])["expires"] is None:
+            return f"{k} is not usable unix seconds"
+    return None
+
+
+def _far_from(p: dict[str, Any], price: float | None) -> bool:
+    """True when a level is more than MAX_LEVEL_RATIO times away from the market's last close (1e308 written by another
+    writer: such a plan would be scored, e.g. 'target' with R -1, or overflow R to inf)."""
+    if price is None:
+        return False
+    return any(not price / MAX_LEVEL_RATIO <= float(p[k]) <= price * MAX_LEVEL_RATIO for k in ("entry", "stop", "target"))
 
 
 def _open_ms(x: Any) -> int | None:
@@ -198,8 +235,13 @@ async def review_open(rt: Runtime, b: Builder) -> list[int]:
     resolved: list[int] = []
     markets: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for p in open_rows:
-        if p["rec_paper_id"] is not None:
-            rec = await rt.store.rec_paper_get(int(p["rec_paper_id"]))
+        rid = p["rec_paper_id"]
+        if rid is not None:
+            if isinstance(rid, bool) or not isinstance(rid, int) or not 1 <= rid <= SQLITE_INT_MAX:
+                # text raised ValueError in int(), 1e308 OverflowError in the lookup (before item 296)
+                b.warn(f"plan {p['id']} skipped: stored rec_paper_id is not a row id")
+                continue
+            rec = await rt.store.rec_paper_get(rid)
             if rec is None:
                 b.miss(f"plan:{p['id']}", "tradedesk", "data_unavailable", f"linked rec_paper #{p['rec_paper_id']} not found")
             elif rec["status"] == "settled":
@@ -217,9 +259,9 @@ async def review_open(rt: Runtime, b: Builder) -> list[int]:
                 if n:
                     resolved.append(p["id"])
             continue  # a linked option plan is settled with its paper trade (assistant_paper_status), never on candles
-        if usable_expires(p["expires_ts"]) is None:
+        if (why := _unscorable(p)) is not None:
             # a warning, not `missing`: the collector job raises on `missing`, which would fail it every hour for one bad row
-            b.warn(f"plan {p['id']} skipped: stored expires_ts is not a number")
+            b.warn(f"plan {p['id']} skipped: stored {why}")
             continue
         markets[(p["exchange"], p["symbol"])].append(p)
     for (exchange, symbol), plans in markets.items():
@@ -229,8 +271,20 @@ async def review_open(rt: Runtime, b: Builder) -> list[int]:
         if got is None:
             continue  # in `missing`; the plans stay open
         tf, tf_ms, rows = got
+        closes = [c for x in rows if (c := store_num(x[4])) is not None and c > 0]
+        last_close = closes[-1] if closes else None
         for p in plans:
-            res = resolve_plan(p, rows, tf_ms=tf_ms, now_ts=now_ts, fee=TAKER_FEE)
+            if _far_from(p, last_close):
+                b.warn(f"plan {p['id']} skipped: a stored level is over {MAX_LEVEL_RATIO:g}x away from the market price")
+                continue
+            try:
+                res = resolve_plan(p, rows, tf_ms=tf_ms, now_ts=now_ts, fee=TAKER_FEE)
+            except (TypeError, ValueError, ZeroDivisionError, OverflowError) as e:  # never fail the other plans on one row
+                b.warn(f"plan {p['id']} skipped: scoring failed ({type(e).__name__})")
+                continue
+            if first_nonfinite(res) is not None:
+                b.warn(f"plan {p['id']} skipped: its levels overflow the R arithmetic (inf / NaN)")
+                continue
             if res["status"] == "resolved":
                 note = "scored on the underlying's stop / target, not on the option's P&L" if p["instrument"] == "option" else None
                 n = await rt.store.plan_resolve(
@@ -425,8 +479,11 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 b.warn(f"plans {stale} are past their horizon by more than a day and still open: candles missing for their market")
             done = await rt.store.plan_list(status="resolved", exclude_tag=SHADOW_TAG, limit=5000)
             shadow = await rt.store.plan_list(status="resolved", tag=SHADOW_TAG, limit=100_000)
-            summary = summarize_plans(done)
-            shadow_summary = summarize_plans(shadow)
+            # Rows another writer corrupted are left out with a warning: `_view` / the stats raised on them (item 296).
+            open_views = _listable(b, open_now)
+            done_ok = _sound(b, done)
+            summary = summarize_plans([p for p, _ in done_ok])
+            shadow_summary = summarize_plans([p for p, _ in _sound(b, shadow)])
 
             def rnd(s: dict[str, Any]) -> dict[str, Any]:
                 out = dict(s)
@@ -437,12 +494,12 @@ def register(server: MCPServer, rt: Runtime) -> None:
 
             data = {
                 "resolved_now": resolved_now,
-                "open": [_view(p) for p in open_now],
+                "open": open_views,
                 "summary": {
                     "by_verdict": {v: rnd(s) for v, s in summary["by_verdict"].items()},
                     "by_tag": {t: {v: rnd(s) for v, s in g.items()} for t, g in summary["by_tag"].items()},
                 },
-                "recent_resolved": [_view(p) for p in done[:50]],
+                "recent_resolved": [v for _, v in done_ok[:50]],
                 "demo_shadow": {
                     "open": len(open_shadow),
                     "by_verdict": {v: rnd(s) for v, s in shadow_summary["by_verdict"].items()},

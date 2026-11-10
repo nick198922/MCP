@@ -48,6 +48,7 @@ from typing import TYPE_CHECKING, Any
 from ..analytics.assistant import paper_rec_view, pick_expiries, pick_near_expiry
 from ..analytics.macro_calendar import build_macro_calendar
 from ..analytics.my_options import my_options_view
+from ..analytics.option_xvenue import ms, num
 from ..analytics.radar import FWD_EVENT_KINDS, IV_RANK_DAYS, METHOD, WEEK_DAYS, YEAR_DAYS, radar_view
 from ..core.envelope import Builder
 
@@ -187,6 +188,17 @@ RADAR_WARNINGS = [
 ]
 
 
+def _point(x: Any, col: int) -> tuple[int, float] | None:
+    """(unix ms, value) of a venue row ``[ts, ..., value at col]``: the time in 0 .. year 9999 and the value a finite
+    number in (0, MAX_NUM], else None. An infinite time raised OverflowError and voided the whole radar section; a NaN,
+    inf or 1e308 DVOL / close went into the IV rank and realized vol."""
+    try:
+        t, v = ms(x[0]), num(x[col])
+    except (TypeError, IndexError, KeyError):
+        return None
+    return (t, v) if t is not None and v is not None else None
+
+
 async def _radar_dvol(rt: "Runtime", b: Builder, asset: str, now: datetime) -> list[tuple[int, float]]:
     end = int(now.timestamp() * 1000)
     start = end - RADAR_DVOL_DAYS * _DAY_MS
@@ -196,26 +208,18 @@ async def _radar_dvol(rt: "Runtime", b: Builder, asset: str, now: datetime) -> l
         if not page:
             break
         for x in page.get("data") or []:
-            try:
-                pts[int(x[0])] = float(x[4])
-            except (TypeError, ValueError, IndexError):
-                continue
-        cont = page.get("continuation")
-        if not cont or int(cont) <= start or int(cont) >= end:
+            if (p := _point(x, 4)) is not None:
+                pts[p[0]] = p[1]
+        cont = ms(page.get("continuation"))
+        if not cont or cont <= start or cont >= end:
             break
-        end = int(cont)
+        end = cont
     return sorted(pts.items())
 
 
 async def _radar_closes(rt: "Runtime", b: Builder, asset: str) -> list[tuple[int, float]]:
     bars = await b.guard(f"radar:ohlcv:{asset}", f"ccxt:{SPOT_VENUE}", rt.exchanges.ohlcv(SPOT_VENUE, f"{asset}/USDT", "1d", RADAR_CLOSES))
-    out = []
-    for x in bars or []:
-        try:
-            out.append((int(x[0]), float(x[4])))
-        except (TypeError, ValueError, IndexError):
-            continue
-    return out
+    return [p for x in bars or [] if (p := _point(x, 4)) is not None]
 
 
 async def _radar_rows(rt: "Runtime", b: Builder, asset: str, now: datetime) -> list[dict[str, Any]]:

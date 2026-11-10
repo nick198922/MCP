@@ -108,10 +108,11 @@ async def _ccxt_oi(rt: "Runtime", b: Builder, ex: str, symbol: str) -> float | N
 
 
 def _latest(b: Builder, field: str, provider: str, rows: Any, key: str) -> Any:
-    """``key`` of the newest row (by ``timestamp``) that has it, else a miss."""
+    """``key`` of the newest row (by ``timestamp``) that has it as a number, else a miss (a NaN or a text value is a
+    miss too, so the partial row is fetched again within the hour instead of passing for complete)."""
     if rows is None:
         return None
-    cands = [r for r in rows if isinstance(r, dict) and r.get(key) is not None] if isinstance(rows, list) else []
+    cands = [r for r in rows if isinstance(r, dict) and fs.fnum(r.get(key)) is not None] if isinstance(rows, list) else []
     if not cands:
         b.miss(field, provider, "data_unavailable", f"no {key} in the answer")
         return None

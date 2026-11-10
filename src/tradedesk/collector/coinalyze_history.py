@@ -115,6 +115,11 @@ def history_rows(metric: str, history: Any, start: int, end: int) -> list[dict[s
     """Raw Coinalyze ``history`` rows -> store rows of ``metric`` with ``start <= ts < end``. Units: ``funding`` decimal
     per funding interval (API percent / 100); ``oi_usd`` as sent; ``long_short`` ratio and shares in [0, 1]. Malformed
     rows are dropped by the shared parsers (analytics/coinalyze_series.py)."""
+    return [r for r in parse_history(metric, history) if start <= r["ts"] < end]
+
+
+def parse_history(metric: str, history: Any) -> list[dict[str, Any]]:
+    """:func:`history_rows` without the window filter: every usable row (malformed and repeated ones dropped)."""
     hist = history if isinstance(history, list) else []
     if metric == "long_short":
         s = long_short_series(hist, "daily")
@@ -130,7 +135,7 @@ def history_rows(metric: str, history: Any, start: int, end: int) -> list[dict[s
         ]
     else:
         raise ValueError(f"unknown metric {metric!r}")
-    return [r for r in rows if start <= r["ts"] < end]
+    return rows
 
 
 def oi_not_usd(rows: list[dict[str, Any]]) -> bool:
@@ -200,7 +205,10 @@ class CoinalyzeHistoryJob:
                 hist = await b.guard(f"{metric}:{symbol}", "coinalyze", _fetch(rt, metric, symbol, start, end))
                 if hist is None:
                     continue
-                rows = history_rows(metric, hist, start, end)
+                parsed = parse_history(metric, hist)
+                if isinstance(hist, list) and len(hist) > len(parsed):  # a NaN / text / 1e308 value or a bad time
+                    log.warning("coinalyze_history: %s %s dropped %d malformed or repeated bar(s)", symbol, metric, len(hist) - len(parsed))
+                rows = [r for r in parsed if start <= r["ts"] < end]
                 if metric == "oi_usd" and oi_not_usd(rows):
                     b.miss(
                         f"{metric}:{symbol}", "coinalyze", "data_unavailable", f"OI median close below {MIN_OI_USD:g}: not USD, not stored"

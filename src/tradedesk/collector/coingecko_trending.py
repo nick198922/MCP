@@ -14,7 +14,7 @@ and the job returns 0; it never raises on a provider failure. Off by default: TR
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ..analytics.coingecko_trending import hour_ts, snapshot_rows
 from ..core.envelope import Builder
@@ -25,6 +25,28 @@ if TYPE_CHECKING:
 log = logging.getLogger("tradedesk.collector")
 
 PROVIDER = "coingecko"
+# (item part, field) -> stored column: the numbers `snapshot_rows` stores as NULL when malformed
+FIELDS = {
+    ("item", "coin_id"): "coin_num",
+    ("item", "market_cap_rank"): "market_cap_rank",
+    ("item", "score"): "score",
+    ("data", "price"): "price_usd",
+    ("data", "market_cap"): "market_cap_usd",
+    ("data", "total_volume"): "volume_usd",
+}
+
+
+def _nulled(payload: dict[str, Any], rows: list[dict[str, Any]]) -> int:
+    """Numeric fields CoinGecko sent (not None / "") that were stored as NULL: NaN, inf, 1e308, a 400-digit integer,
+    text that is not a number."""
+    n = 0
+    for r in rows:
+        item = payload["coins"][r["rank"] - 1]["item"]
+        data = item.get("data") if isinstance(item.get("data"), dict) else {}
+        for (part, field), col in FIELDS.items():
+            v = (item if part == "item" else data).get(field)
+            n += v is not None and v != "" and r[col] is None
+    return n
 
 
 async def collect_coingecko_trending(rt: "Runtime") -> int:
@@ -45,6 +67,9 @@ async def collect_coingecko_trending(rt: "Runtime") -> int:
         why = "; ".join(f"{m.field}: {m.reason} {m.detail}".strip()[:200] for m in b.missing[:2])
         log.warning("coingecko_trending: hour %d not recorded (retried on the next tick): %s", ts, why)
         return 0
+    bad = _nulled(payload, rows)
+    if bad:
+        log.warning("coingecko_trending: hour %d, %d malformed numeric field(s) stored as NULL", ts, bad)
     written = await rt.store.insert_coingecko_trending(ts, int(rt.now().timestamp()), rows)
     log.info(
         "coingecko_trending: hour %d, %d coins of %d listed (%s)",

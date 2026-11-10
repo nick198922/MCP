@@ -75,8 +75,9 @@ async def _last_price(rt: Runtime, b: Builder, venue: str, sym: str, fallback: f
 
 def _plausible_entries(b: Builder, venue: str, sym: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """`funding_entries(rows)` without rates beyond +-MAX_FUNDING_RATE per interval, with a warning: a finite 1e308 rate
-    passes `funding_entries` (collector/, shared with the feed job) and turned the pair's carry and P&L into NaN."""
-    entries = funding_entries(rows)
+    turned the pair's carry and P&L into NaN. `funding_entries` (collector/, shared with the feed job) drops such rows
+    silently by default; here they are counted first so the answer says so."""
+    entries = funding_entries(rows, max_rate=None)
     kept = [e for e in entries if abs(e["rate"]) <= MAX_FUNDING_RATE]
     if len(kept) < len(entries):
         b.warn(f"{venue} {sym}: {len(entries) - len(kept)} funding rows with a rate beyond +-{MAX_FUNDING_RATE:g} dropped")

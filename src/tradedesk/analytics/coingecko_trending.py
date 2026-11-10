@@ -27,32 +27,39 @@ from .hl_oi_cap import hour_ts
 __all__ = ["MAX_ROWS", "hour_ts", "snapshot_rows"]
 
 MAX_ROWS = 50  # the free list has 15 coins; a much longer list is a changed endpoint, not more signal
+MAX_NUM = 1e15  # USD, BTC or percent: far above any coin's market cap (BTC ~2e12 USD); 1e308 is garbage, not a number
+MAX_INT = 2**53  # ids, ranks and scores: exact as floats and inside SQLite's INTEGER range
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")  # CoinGecko API ids: lowercase slugs such as "usd-coin"
 _MONEY = re.compile(r"^\$?\s*([0-9][0-9,]*(?:\.[0-9]+)?(?:[eE][-+]?[0-9]+)?)$")
 
 
 def _num(x: Any, *, nonneg: bool = True) -> float | None:
-    """A finite float from a number or a plain numeric / ``"$1,234.5"`` string; anything else (HTML, bool, NaN) None."""
+    """A finite float up to +-MAX_NUM from a number or a plain numeric / ``"$1,234.5"`` string; anything else (HTML,
+    bool, NaN, 1e308, a 400-digit integer) None."""
     if isinstance(x, bool) or x is None:
         return None
-    if isinstance(x, int | float):
-        v = float(x)
-    elif isinstance(x, str):
-        s = x.strip()
-        neg = s.startswith("-")
-        m = _MONEY.match(s[1:] if neg else s)
-        if not m:
+    try:
+        if isinstance(x, int | float):
+            v = float(x)
+        elif isinstance(x, str):
+            s = x.strip()
+            neg = s.startswith("-")
+            m = _MONEY.match(s[1:] if neg else s)
+            if not m:
+                return None
+            v = float(m.group(1).replace(",", "")) * (-1.0 if neg else 1.0)
+        else:
             return None
-        v = float(m.group(1).replace(",", "")) * (-1.0 if neg else 1.0)
-    else:
+    except OverflowError:  # float() of an integer beyond the float range
         return None
-    if not math.isfinite(v) or (nonneg and v < 0):
+    if not math.isfinite(v) or abs(v) > MAX_NUM or (nonneg and v < 0):
         return None
     return v
 
 
 def _int(x: Any) -> int | None:
-    if isinstance(x, bool) or not isinstance(x, int | float) or not math.isfinite(x) or x != int(x):
+    """An integral number up to +-MAX_INT as an int, else None (NaN, inf, 1e308 or 10**20 would not fit SQLite)."""
+    if isinstance(x, bool) or not isinstance(x, int | float) or not -MAX_INT <= x <= MAX_INT or x != int(x):
         return None
     return int(x)
 

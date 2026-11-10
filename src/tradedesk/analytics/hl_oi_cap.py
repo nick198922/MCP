@@ -12,17 +12,27 @@ reports it; ``oi_usd`` = open interest in coins x mark price, USD; ``vol24h`` = 
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable
 from datetime import datetime
 from typing import Any
 
 HOUR_S = 3600
+MAX_VALUE = 1e15  # USD, price or hourly rate: far above any perp's OI or 24 h volume (BTC OI ~3.5e9 USD); 1e308 is garbage
 
 
 def hour_ts(now: datetime) -> int:
     """Unix seconds of the start of the UTC hour containing ``now`` (the snapshot key: one snapshot per hour)."""
     t = int(now.timestamp())
     return t - t % HOUR_S
+
+
+def _value(v: Any) -> float | None:
+    """A finite number up to +-MAX_VALUE, else None: the venue's "NaN" / "Infinity" strings parse to non-finite floats,
+    and a 1e308 open interest or mark gives an infinite ``oi_usd``; such a field is stored as NULL, the row is kept."""
+    if not isinstance(v, int | float) or isinstance(v, bool):
+        return None
+    return float(v) if math.isfinite(v) and abs(v) <= MAX_VALUE else None
 
 
 def snapshot_rows(capped: Iterable[str], contexts: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -46,11 +56,11 @@ def snapshot_rows(capped: Iterable[str], contexts: Iterable[dict[str, Any]]) -> 
         rows[coin] = {
             "coin": coin,
             "at_cap": int(coin in cap),
-            "oi_usd": c.get("open_interest_usd"),
-            "funding": c.get("funding_1h"),
-            "mark": c.get("mark_px"),
-            "oracle": c.get("oracle_px"),
-            "vol24h": c.get("day_volume_usd"),
+            "oi_usd": _value(c.get("open_interest_usd")),
+            "funding": _value(c.get("funding_1h")),
+            "mark": _value(c.get("mark_px")),
+            "oracle": _value(c.get("oracle_px")),
+            "vol24h": _value(c.get("day_volume_usd")),
         }
     for coin in cap - rows.keys() - delisted:
         rows[coin] = {"coin": coin, "at_cap": 1, "oi_usd": None, "funding": None, "mark": None, "oracle": None, "vol24h": None}

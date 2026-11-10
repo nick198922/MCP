@@ -168,6 +168,7 @@ def parsed_rows(rows: Any, parse: Callable[[Any], T]) -> list[T]:
 
 MAX_BAR_TS_MS = 253_402_300_799_999  # 9999-12-31T23:59:59.999Z in unix ms: a later bar time fits no datetime
 MAX_BAR_PRICE = 1e12  # far above any listed quote price; 1e308 in a bar is garbage, not a price
+MAX_FUNDING_RATE = 1.0  # 100 % per interval, far beyond any venue's cap; a 1e308 rate overflowed the carry to inf
 MAX_BAR_VOLUME = 1e20  # far above any bar's volume (a 1e-9 meme coin trades ~1e15 a day); sums of 1e308 overflow to inf
 
 

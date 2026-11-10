@@ -17,7 +17,7 @@ from ..analytics.trades import summarise as summarise_trades
 from ..core.envelope import Builder
 from ..providers.exchanges import PERP_EXCHANGES
 from ..runtime import Runtime
-from ._util import READ_ONLY, bar_rows, finite_float, hl_bar_row, json_num, parsed_rows, r, timeframe_seconds
+from ._util import MAX_FUNDING_RATE, READ_ONLY, bar_rows, finite_float, hl_bar_row, json_num, parsed_rows, r, timeframe_seconds
 
 BASE = Annotated[str, Field(description="Base asset, e.g. BTC, ETH, SOL")]
 SPREAD_WARNING = (
@@ -90,9 +90,6 @@ def _warn_short_coverage(b: Builder, venue: str, entries: list[dict[str, Any]], 
     first = min(e["ts_ms"] for e in entries)
     if first - since_ms > 2 * 86_400_000:
         b.warn(f"{venue} funding history starts {_iso(first)[:10]}, later than requested (venue retention or listing date)")
-
-
-MAX_FUNDING_RATE = 1.0  # 100 % per interval, far beyond any venue's cap; a 1e308 rate overflowed the carry to inf
 
 
 def _history_rate(x: Any) -> float:

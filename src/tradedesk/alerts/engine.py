@@ -34,6 +34,8 @@ OPS = {
 
 # Reserved ``health:`` rule ids already warned about in this process (see load_rules).
 _WARNED_RESERVED_IDS: set[str] = set()
+# Unreadable stored metric values already warned about in this process (see _warn_once).
+_WARNED_DATA: set[str] = set()
 
 
 @dataclass(frozen=True)
@@ -103,17 +105,42 @@ def load_rules(path: str | Path, *, default_cooldown: int = 1800) -> list[Rule]:
     return out
 
 
-async def _latest_metric(store: "Store", metric: dict[str, Any], *, now_ts: int) -> float | None:
+def _warn_once(key: str, msg: str, *args: Any) -> None:
+    """Log a data warning once per key per process: the alerts job runs every tick and would repeat it each time."""
+    if key not in _WARNED_DATA:
+        _WARNED_DATA.add(key)
+        log.warning(msg, *args)
+
+
+def _stored_number(v: Any, rule_id: str, col: str) -> float | None:
+    """A stored metric value as a float; text / blob of another writer is "no value" with a logged warning (item 300:
+    the comparison of a string with the threshold raised TypeError out of the alerts job)."""
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        _warn_once(
+            f"{rule_id}\x00{col}",
+            "alert rule %r: the latest stored %s is not a number (%s); read as no value",
+            rule_id,
+            col,
+            type(v).__name__,
+        )
+        return None
+
+
+async def _latest_metric(store: "Store", metric: dict[str, Any], *, now_ts: int, rule_id: str = "") -> float | None:
     kind = metric.get("kind")
     if kind == "funding":
         series = await store.funding_series(metric["venue"], metric["base"], 0, now_ts)
-        return series[-1]["annualized"] if series else None
+        return _stored_number(series[-1]["annualized"], rule_id, "funding annualized") if series else None
     if kind == "atm_iv":
         series = await store.atm_term_series(metric["currency"], metric["expiry"], 0, now_ts)
-        return series[-1]["atm_iv"] if series else None
+        return _stored_number(series[-1]["atm_iv"], rule_id, "atm_iv") if series else None
     if kind == "basis":
         series = await store.basis_series(metric["currency"], metric["expiry"], 0, now_ts)
-        return series[-1]["basis_pct"] if series else None
+        return _stored_number(series[-1]["basis_pct"], rule_id, "basis_pct") if series else None
     return None
 
 
@@ -152,7 +179,7 @@ async def evaluate_rules(rules: list[Rule], store: "Store", *, now_ts: int) -> l
         threshold = r.when.get("value")
         if op_fn is None or threshold is None:
             continue
-        value = await _latest_metric(store, r.metric, now_ts=now_ts)
+        value = await _latest_metric(store, r.metric, now_ts=now_ts, rule_id=r.id)
         if value is None:
             continue
         if not op_fn(value, threshold):
@@ -192,6 +219,7 @@ async def evaluate_dsl_rules(store: "Store", *, now_ts: int) -> list[FiredAlert]
         last = await store.last_alert_ts(rule_id)
         if last is not None and (now_ts - last) < int(row["cooldown_seconds"]):
             continue
+        ctx.notes.clear()
         try:
             compiled = compile_expr(row["expr"])
             result = await evaluate(compiled, {"names": {}, "calls": calls})
@@ -199,6 +227,10 @@ async def evaluate_dsl_rules(store: "Store", *, now_ts: int) -> list[FiredAlert]
             continue
         except Exception:  # noqa: BLE001 — a user expression should not crash the scheduler
             continue
+        finally:
+            # A text / blob stored metric reads as "no value" (the rule does not fire); before item 300 that was silent.
+            for note in dict.fromkeys(ctx.notes):
+                _warn_once(f"{rule_id}\x00{note}", "DSL rule %r: %s", rule_id, note)
         if not result:
             continue
         try:

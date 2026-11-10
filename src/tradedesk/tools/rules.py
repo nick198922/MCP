@@ -46,6 +46,12 @@ def _preset_ok(x: Any) -> bool:
     return isinstance(x.get("message"), str | None) and isinstance(x.get("enabled", True), bool)
 
 
+def _warn_notes(b: Builder, ctx: MetricContext) -> None:
+    """One warning per distinct note of the metric context (the same metric called twice notes the same row twice)."""
+    for note in dict.fromkeys(ctx.notes):
+        b.warn(note)
+
+
 def register(server: MCPServer, rt: Runtime) -> None:
     @server.tool(
         annotations=READ_ONLY,  # writes a row to the local store only
@@ -119,7 +125,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "Test a DSL expression WITHOUT storing it. Pass `expr` to evaluate now; omit it to "
             "get the list of available metric functions. Returns the evaluated value and parse "
             "diagnostics; useful for drafting rules. An expression that fails to evaluate, or whose value is NaN / inf "
-            "(e.g. an overflow or a non-finite stored metric), answers ok=false with the reason in `missing`."
+            "(e.g. an overflow or a non-finite stored metric), answers ok=false with the reason in `missing`. A stored metric "
+            "value that is not a number (text / blob) reads as no value (null, falsy) and is named in `warnings`."
         ),
     )
     async def rules_test(
@@ -145,7 +152,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 raise  # a failing store query is `missing: store` (below), not an evaluation error
             except Exception as e:  # noqa: BLE001
                 b.miss("eval", "tradedesk", "data_unavailable", f"{type(e).__name__}: {e}")
+                _warn_notes(b, ctx)
                 return b.build({"expr": expr, "parsed": True, "evaluated": False}, ok=False)
+            # A text / blob stored metric reads as "no value" (None, falsy); before item 300 that was silent with ok=true.
+            _warn_notes(b, ctx)
             if first_nonfinite(result) is not None:
                 # An inf / 1e400 literal, an overflow (1e308 * 10) or a non-finite stored value came back as Infinity /
                 # NaN with ok=true; a 400-digit int is beyond what a JSON reader parses as a number.

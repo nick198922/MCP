@@ -219,14 +219,31 @@ def history_alignment(
     book with a 1-cent spread), and the mean absolute distance of p to the previous and to the next trade
     (YES-equivalent prices). The distances describe the series only; they are not a lookahead test, since trades
     print at the standing quote.
+
+    A trade or point whose time or price is absent, not a number, NaN / inf, a 300+-digit integer or a price outside
+    [0, 1] is skipped and counted in ``skipped_trades`` / ``skipped_points``; the rest is used as usual.
     """
-    tr = sorted((int(x["timestamp"]), (float(x["price"]) if str(x.get("asset")) == yes_token else 1.0 - float(x["price"]))) for x in trades)
+    tr: list[tuple[int, float]] = []
+    pts: list[tuple[int, float]] = []
+    for rows, tk, pk, out in ((trades, "timestamp", "price", tr), (points, "t", "p", pts)):
+        for x in rows:
+            try:
+                ts, px = int(x[tk]), float(x[pk])
+            except (KeyError, TypeError, ValueError, OverflowError):  # OverflowError: int(inf), float() of a 300+-digit int
+                continue
+            if not 0.0 <= px <= 1.0:  # also drops NaN; a 1e308 price overflowed the mean distances to inf
+                continue
+            if out is tr and str(x.get("asset")) != yes_token:
+                px = 1.0 - px
+            out.append((ts, px))
+    skipped_trades, skipped_points = len(trades) - len(tr), len(points) - len(pts)
+    tr.sort()
+    pts.sort(key=lambda r: r[0])
     n = m_prev = m_last_in = m_first_in = half = 0
     d_prev: list[float] = []
     d_next: list[float] = []
     j = 0
-    for pt in sorted(points, key=lambda r: int(r["t"])):
-        t, p = int(pt["t"]), float(pt["p"])
+    for t, p in pts:
         while j < len(tr) and tr[j][0] <= t:
             j += 1
         if j == 0:
@@ -250,6 +267,8 @@ def history_alignment(
         "half_cent_share": half / n if n else None,
         "mean_abs_to_prev": sum(d_prev) / len(d_prev) if d_prev else None,
         "mean_abs_to_next": sum(d_next) / len(d_next) if d_next else None,
+        "skipped_trades": skipped_trades,
+        "skipped_points": skipped_points,
     }
 
 

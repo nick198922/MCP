@@ -1,0 +1,1 @@
+- Агенти: підсумок кроку обрізається по межі символу (`head_utf8` у `nightly_agents.sh` замість `head -c`), а `agents_status.py` і панель читають `history.tsv` з `errors="replace"`. 10.11 `head -c 600` розрізав кириличну літеру, і всі статуси о 16:00–22:00 падали з `UnicodeDecodeError`.

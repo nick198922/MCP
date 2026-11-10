@@ -102,7 +102,7 @@ def standard_rules(description: str, asset: str) -> bool:
 def outcome_yes(outcome_prices: Any) -> int | None:
     """1 if YES paid 1, 0 if NO paid 1, None for anything else (unresolved, 50/50, malformed)."""
     v = _json_list(outcome_prices)
-    if not v or len(v) != 2:
+    if not v or len(v) != 2 or any(isinstance(x, bool) for x in v):  # [true, false] read as "YES paid 1"
         return None
     try:
         a, b = float(v[0]), float(v[1])

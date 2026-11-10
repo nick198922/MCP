@@ -62,8 +62,8 @@ def _day(d: float) -> str:
 MAX_DVOL_PCT = 1000.0  # DVOL is annualised percent (BTC's record is ~200); a close beyond 1000 % is a corrupt row
 
 
-def _dvol_row(x: Any) -> tuple[int, float] | None:
-    """(ts_ms, close as a decimal vol) of a Deribit DVOL row ``[ts_ms, open, high, low, close]``, else None.
+def _dvol_pct_row(x: Any) -> tuple[int, float] | None:
+    """(ts_ms, close in percent) of a Deribit DVOL row ``[ts_ms, open, high, low, close]``, else None.
 
     The timestamp must be an integer unix ms in 0 .. year 9999 (an integral float counts) and the close a JSON number
     in (0, MAX_DVOL_PCT]: NaN (it passed float() and turned every vol of the reply into NaN), +-inf, 1e308, a bool, a
@@ -78,7 +78,20 @@ def _dvol_row(x: Any) -> tuple[int, float] | None:
     close = store_num(x[4])
     if close is None or not 0 < close <= MAX_DVOL_PCT:
         return None
-    return ts, close / 100.0
+    return ts, close
+
+
+def _dvol_row(x: Any) -> tuple[int, float] | None:
+    """(ts_ms, close as a decimal vol) of a well-formed DVOL row (see `_dvol_pct_row`), else None."""
+    p = _dvol_pct_row(x)
+    return None if p is None else (p[0], p[1] / 100.0)
+
+
+def _dvol_dropped_warning(n: int) -> str:
+    return (
+        f"dvol: {n} malformed DVOL rows (a timestamp or close that is not a finite number in range, "
+        f"close within 0..{MAX_DVOL_PCT:g} %) dropped"
+    )
 
 
 GEX_NOTE = (
@@ -567,13 +580,16 @@ def register(server: MCPServer, rt: Runtime) -> None:
         start_ms = end_ms - hours_back * 3_600_000
         data = await b.guard("dvol", "deribit", rt.deribit.volatility_index_data(currency, start_ms, end_ms, resolution))
         rows = (data or {}).get("data") or []
+        rows = rows if isinstance(rows, list) else []
         if not rows:
             if data is not None:
                 b.miss("dvol", "deribit", "data_unavailable", "empty series")
             return b.build(None, ok=False)
-        series = parsed_rows(
-            rows, lambda x: {"ts": int(x[0]), "open": float(x[1]), "high": float(x[2]), "low": float(x[3]), "close": float(x[4])}
-        )
+        # Only ts and close reach the reply. A NaN close passed float() and turned mean / stdev / min / max into NaN;
+        # inf / 1e308 / a bool / a text close or a non-integer time is dropped the same way and counted (as deribit_vrp).
+        series = [{"ts": p[0], "close": p[1]} for x in rows if (p := _dvol_pct_row(x)) is not None]
+        if len(series) < len(rows):
+            b.warn(_dvol_dropped_warning(len(rows) - len(series)))
         if not series:
             b.miss("dvol", "deribit", "data_unavailable", "no well-formed rows in the series")
             return b.build(None, ok=False)
@@ -670,10 +686,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 "(a timestamp, price or volume that is not a finite number in range) dropped"
             )
         if dvol_dropped:
-            b.warn(
-                f"dvol: {dvol_dropped} malformed DVOL rows (a timestamp or close that is not a finite number in range, "
-                f"close within 0..{MAX_DVOL_PCT:g} %) dropped"
-            )
+            b.warn(_dvol_dropped_warning(dvol_dropped))
         if not iv or not prices:
             if not iv and not any(m.field == "dvol" for m in b.missing):
                 detail = "no well-formed rows in the DVOL series" if dvol_dropped else "empty DVOL series"

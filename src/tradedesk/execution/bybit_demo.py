@@ -21,6 +21,7 @@ from ..core.health import redact
 
 ENV_FILE = Path.home() / ".config" / "tradedesk" / "bybit-demo.env"
 DEMO_HOST = "api-demo.bybit.com"
+DEMO_FUNDS_MAX = 100_000  # USDT per demo-apply-money request (Bybit's cap for USDT)
 CROSS = "REGULAR_MARGIN"  # Bybit unified account: cross margin
 CLOSED_PNL_WINDOW_MS = 7 * 86_400_000 - 60_000  # Bybit closed-pnl: start..end at most 7 days
 
@@ -233,6 +234,17 @@ class BybitDemo:
         r = await self.ex.privateGetV5AccountWalletBalance({"accountType": "UNIFIED"})
         rows = ((r or {}).get("result") or {}).get("list") or [{}]
         return float(rows[0].get("totalEquity") or 0.0)
+
+    async def apply_demo_funds(self, usdt: float) -> dict[str, Any]:
+        """Add play USDT to the demo account (Bybit /v5/account/demo-apply-money, demo host only; owner 10.11, ADR 0007
+        addition 10.11). At most DEMO_FUNDS_MAX per request."""
+        self._demo_only()
+        amount = int(usdt)
+        if not 0 < amount <= DEMO_FUNDS_MAX:
+            raise ValueError(f"demo funds: {amount} USDT outside 1..{DEMO_FUNDS_MAX}")
+        return await self.ex.privatePostV5AccountDemoApplyMoney(
+            {"adjustType": 0, "utaDemoApplyMoney": [{"coin": "USDT", "amountStr": str(amount)}]}
+        )
 
     async def positions(self) -> dict[str, dict[str, Any]]:
         """Open positions by ccxt symbol (non-zero size only)."""

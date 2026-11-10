@@ -1,0 +1,3 @@
+- Carry A: зареєстровано розклад витрат 2.27× за монетами, ногами, подіями, розміром і надійності (д) (`docs/verification/2026-11-10-carry-a-cost-breakdown.md`, попередня реєстрація до результатів).
+- Нова чиста аналітика `analytics/carry_cost_breakdown.py`, скрипт `scripts/verify_carry_a_cost_breakdown.py`, 10 тестів `tests/test_carry_cost_breakdown.py`.
+- Сам прогін і вердикт — наступний крок (реєстрація й прогін в одному кроці заборонені).

@@ -22,6 +22,8 @@ from typing import Any
 
 HOUR_S = 3600
 DAY_S = 86_400
+MAX_TS_S = 253_402_300_799  # 9999-12-31T23:59:59Z in unix seconds: a later print time is a corrupt row
+MAX_SIZE = 1e20  # shares; a larger print is a corrupt row (1e308 made notionals that sum to inf)
 
 
 # ----------------------------------------------------------------------------- detector (quotes)
@@ -106,7 +108,8 @@ def placebo_times(
 
 def yes_prints(trades: Iterable[dict[str, Any]], yes_token: str) -> list[dict[str, Any]]:
     """Normalise ``/trades`` rows to the YES token: ``t``, ``p`` (YES price), ``usd`` (notional), ``dir`` (+1/-1), ``wallet``.
-    A row whose time, price or size is absent, not a number, NaN / inf or a 300+-digit integer is skipped."""
+    A row whose time, price or size is absent, not a number, NaN / inf or a 300+-digit integer is skipped, as is a time
+    outside 0 .. year 9999 (unix s) or a size beyond MAX_SIZE."""
     out = []
     for r in trades:
         try:
@@ -114,8 +117,8 @@ def yes_prints(trades: Iterable[dict[str, Any]], yes_token: str) -> list[dict[st
         except (KeyError, TypeError, ValueError, OverflowError):  # OverflowError: int(inf), float() of a 300+-digit int
             continue
         side = str(r.get("side") or "").upper()
-        # NaN / inf price fails the range test; a NaN / inf size would make the notional NaN / inf
-        if side not in ("BUY", "SELL") or not (0.0 <= px <= 1.0) or not math.isfinite(sz) or sz <= 0:
+        # NaN / inf price or size fails the range tests (a NaN / inf / 1e308 size would make the notional NaN / inf)
+        if side not in ("BUY", "SELL") or not (0 <= t <= MAX_TS_S and 0.0 <= px <= 1.0 and 0 < sz <= MAX_SIZE):
             continue
         is_yes = str(r.get("asset")) == str(yes_token)
         buy = side == "BUY"

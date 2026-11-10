@@ -2363,28 +2363,10 @@ def test_info_notes_are_at_most_four_short_lines():
 
 # docs/design/PANEL.md rule 2: HELP keys of tiles still without the «what to do» line under them, on any tab of
 # _all_tab_pages (standing improvements, item 294: «Ринок» done; item 295: «Демо» and the journal / «Середній R» tiles
-# of «Мої угоди»; the forecast journal, plans and paper recommendations left). Like RULE3_TODO, the list must match the
-# fact both ways: a new tile without an action line, or a fixed one still listed, fails the test.
+# of «Мої угоди»; item 297: the forecast journal, plans and paper recommendations; none left). Like RULE3_TODO, the
+# list must match the fact both ways: a new tile without an action line, or a fixed one still listed, fails the test.
 RULE2_MAX_WORDS = 8
-RULE2_TODO = frozenset(
-    {
-        # «Мої угоди»: paper recommendations, plans, forecast journal
-        "fc_brier",
-        "fc_clim",
-        "fc_expiries",
-        "fc_n",
-        "fc_ref",
-        "plan_exits",
-        "plan_n",
-        "plan_win",
-        "plans",
-        "rec_n",
-        "rec_pct",
-        "rec_pnl",
-        "rec_r_worst",
-        "rec_win",
-    }
-)
+RULE2_TODO = frozenset()
 
 
 def test_rule2_tiles_have_a_short_action_line_except_the_listed(tmp_path):
@@ -2489,6 +2471,175 @@ def test_demo_and_journal_action_lines_on_their_notes_thresholds():
     page = db.block_demo_refusals([], now)
     assert act(page, "demo_refused") == ["відмов немає: нічого не роби"]
     assert act(page, "demo_skipped") == ["пропусків немає: нічого не роби"]
+
+
+def test_mytrades_paper_plans_forecast_action_lines_on_their_notes_thresholds():
+    """Item 297 (docs/design/PANEL.md rule 2): the paper recommendations', plans' and forecast journal's tiles. The only
+    cut-offs are the notes' H1 sample of 27 (REC_H1_N), 30 plans with R (PLAN_MIN_N), 30 expiry dates
+    (FC_MIN_EXPIRIES), Brier 0.25 of «always 50 %» (FC_BRIER_COIN), the plans' 95 % CI against 0 and the sign as
+    _signed_cls colours each tile (±0.005)."""
+    import html
+    import re
+
+    assert RULE2_TODO == frozenset()
+    h1, p, f = db.REC_H1_N, db.PLAN_MIN_N, db.FC_MIN_EXPIRIES
+    assert h1 == 27 and f"Більше {h1} (стільки в тесті H1)" == db.ACT["rec_n"][2] and f"n = {h1}" in db.REC_CAVEAT
+    assert "−0.59 %" in db.ACT["rec_n"][3] and f"(−0.59 %, n = {h1})" in db.HELP["rec_pct"][1]
+    assert p == 30 and db.ACT["plan_n"][0] == f"Менше {p} планів з R" and db.ACT["plan_n"][2] == f"Від {p} планів з R"
+    assert f == 30 and db.ACT["fc_expiries"][0] == f"Менше {f} дат експірації" and db.ACT["fc_expiries"][2] == f"Від {f} дат"
+    assert db.FC_BRIER_COIN == 0.5**2 and db.ACT["fc_brier"][0] == "Нижче 0.25" and db.ACT["fc_brier"][2] == "0.25 і вище"
+    lines = []
+
+    def got(x: str) -> str:
+        lines.append(x)
+        return x
+
+    # paper recommendations
+    assert got(db.rec_n_act(h1)) == "мало: висновку не роби, чекай експірацій"
+    assert got(db.rec_n_act(h1 + 1)) == "звір «Середнє, % спота» з −0.59 % тесту"
+    assert got(db.rec_win_act(-0.005)) == "середнє в мінусі: за методом не торгуй"
+    assert db.rec_win_act(-0.0049) == db.rec_win_act(0.005) == got(db.rec_win_act(None)) == "суди за «Середнє, % спота», не за часткою"
+    assert got(db.rec_pct_act(-0.005)) == "у мінусі, як у тесті H1: не торгуй"
+    assert db.rec_pct_act(-0.0049) == db.rec_pct_act(0.0049) == got(db.rec_pct_act(None)) == "у нулі: переваги не видно, не торгуй"
+    assert got(db.rec_pct_act(0.005)) == "плюс на папері — шум: угод не відкривай"
+    assert got(db.rec_r_worst_act(None)) == "R немає: висновку нема"
+    assert got(db.rec_r_worst_act(-0.005)) == "на папері втрачає ризик: не торгуй"
+    assert db.rec_r_worst_act(-0.0049) == got(db.rec_r_worst_act(0.0049)) == "переваги не видно: не торгуй"
+    assert got(db.rec_r_worst_act(0.005)) == "звір із «Середнє, % спота», угод не відкривай"
+    assert got(db.rec_pnl_act(-0.005)) == "мінус у доларах: суди за «Середнє, % спота»"
+    assert db.rec_pnl_act(-0.0049) == got(db.rec_pnl_act(0.0049)) == "у нулі: суди за «Середнє, % спота»"
+    assert got(db.rec_pnl_act(0.005)) == "папір, не гроші: за методом не торгуй"
+    # plans
+    assert got(db.plan_n_act(p - 1)) == "до 30 планів з R — висновку не роби"
+    assert got(db.plan_n_act(p)) == "дивись «Середній R» і «Проти 0»"
+    assert got(db.plan_win_act(None)) == "планів з R немає: висновку нема"
+    assert got(db.plan_win_act(-0.005)) == "середній R нижче 0: переглянь ціль чи стоп"
+    assert db.plan_win_act(-0.0049) == got(db.plan_win_act(0.005)) == "середній R не нижче 0: частка не біда"
+    assert got(db.plans_act(None, 99)) == "ДІ ще нема: чекай планів з R"
+    no_edge = "переваги не видно: за планами не торгуй"
+    assert db.plans_act([-0.3, -0.1], 99) == db.plans_act([-0.1, 0.2], 99) == got(db.plans_act([0.0, 0.2], 99)) == no_edge
+    assert got(db.plans_act([0.001, 0.2], p - 1)) == "до 30 планів з R — ще описово"
+    assert got(db.plans_act([0.001, 0.2], p)) == "розбери з Claude, звідки перевага"
+    o = dict.fromkeys(db.PLAN_OUTCOMES, 0)
+    assert got(db.plan_exits_act(o)) == "виходів ще немає: підправляти нічого"
+    assert got(db.plan_exits_act({**o, "target": 1, "expired": 1, "not_filled": 1})) == "вхід надто далеко: став ближче"
+    assert got(db.plan_exits_act({**o, "stop": 1, "expired": 1})) == "ціль далеко для строку: ближча чи довший строк"
+    assert (
+        got(db.plan_exits_act({**o, "target": 1, "stop": 1, "expired": 1, "not_filled": 1}))
+        == "здебільшого ціль / стоп: вхід і строк не міняй"
+    )
+    # forecast journal
+    assert got(db.fc_n_act(f - 1)) == "чекай: висновок — від 30 дат" and got(db.fc_n_act(f)) == "не вибірка: дивись плитку «Експірацій»"
+    assert got(db.fc_expiries_act(f - 1)) == "висновку немає: чекай 30 дат експірації"
+    assert got(db.fc_expiries_act(f)) == "читай еталони й калібрування"
+    assert got(db.fc_brier_act(None, f)) == "оцінки немає: висновку нема"
+    assert got(db.fc_brier_act(0.25, f)) == "не краще за «завжди 50 %»: не спирайся"
+    assert got(db.fc_brier_act(0.2499, f - 1)) == "краще за 50 %; висновок — від 30 дат"
+    assert got(db.fc_brier_act(0.2499, f)) == "краще за 50 %: звір з еталонами поруч"
+    for fn in (db.fc_ref_act, db.fc_clim_act):
+        assert got(fn(None, f)) == "еталона немає: висновку нема"
+    assert got(db.fc_ref_act(-0.005, f)) == "гірші за наївну оцінку: не спирайся"
+    assert db.fc_ref_act(-0.0049, f) == got(db.fc_ref_act(0.0049, f)) == "як наївна оцінка: переваги не видно"
+    assert got(db.fc_ref_act(0.005, f - 1)) == "точніші, але висновок — від 30 дат"
+    assert got(db.fc_ref_act(0.005, f)) == "точніші, та це ще не перевага для угоди"
+    assert got(db.fc_clim_act(-0.005, f)) == "еталон суворий: нічого не міняй"
+    assert db.fc_clim_act(-0.0049, f) == got(db.fc_clim_act(0.0049, f)) == "як частота заднім числом: нічого не міняй"
+    assert got(db.fc_clim_act(0.005, f - 1)) == "точніші за частоту; висновок — від 30 дат"
+    assert got(db.fc_clim_act(0.005, f)) == "точніші за частоту; угоду перевіряй окремо"
+    for x in lines:  # every line, also those the test pages do not show
+        assert 0 < len([w for w in x.split() if re.search(r"\w", w)]) <= RULE2_MAX_WORDS, x
+
+    def act(page: str, key: str) -> list[str]:
+        found = re.findall(re.escape(db._info(key)) + r"</span><span class='v'>.*?<span class='act'>([^<]*)</span></div>", page, re.S)
+        return [html.unescape(x) for x in found]
+
+    def check(page: str, want: dict) -> None:
+        for key, line in want.items():
+            assert act(page, key) == [line], key
+
+    # paper recommendations: one losing trade, then 28 winners (more than H1's 27)
+    rec = {"source": "method", "status": "settled", "pnl_usd": -5.0, "pnl_pct_spot": -0.01, "r_worst_case": -0.5}
+    check(
+        db.block_rec_paper([rec]),
+        {
+            "rec_n": "мало: висновку не роби, чекай експірацій",
+            "rec_win": "середнє в мінусі: за методом не торгуй",
+            "rec_pct": "у мінусі, як у тесті H1: не торгуй",
+            "rec_r_worst": "на папері втрачає ризик: не торгуй",
+            "rec_pnl": "мінус у доларах: суди за «Середнє, % спота»",
+        },
+    )
+    win = {**rec, "pnl_usd": 5.0, "pnl_pct_spot": 0.01, "r_worst_case": 0.5}
+    check(
+        db.block_rec_paper([win] * (h1 + 1)),
+        {
+            "rec_n": "звір «Середнє, % спота» з −0.59 % тесту",
+            "rec_win": "суди за «Середнє, % спота», не за часткою",
+            "rec_pct": "плюс на папері — шум: угод не відкривай",
+            "rec_r_worst": "звір із «Середнє, % спота», угод не відкривай",
+            "rec_pnl": "папір, не гроші: за методом не торгуй",
+        },
+    )
+    # plans: one stop (no CI yet); 30 winners with R and 31 never filled; two expired with the CI across 0
+    plan = {"verdict": "enter", "status": "resolved"}
+    check(
+        db.block_trade_plans([{**plan, "outcome": "stop", "r_result": -1.0}]),
+        {
+            "plan_n": "до 30 планів з R — висновку не роби",
+            "plan_win": "середній R нижче 0: переглянь ціль чи стоп",
+            "plans": "ДІ ще нема: чекай планів з R",
+            "plan_exits": "здебільшого ціль / стоп: вхід і строк не міняй",
+        },
+    )
+    rows = [{**plan, "outcome": "target", "r_result": 1.0 + i % 2} for i in range(p)] + [{**plan, "outcome": "not_filled"}] * (p + 1)
+    check(
+        db.block_trade_plans(rows),
+        {
+            "plan_n": "дивись «Середній R» і «Проти 0»",
+            "plan_win": "середній R не нижче 0: частка не біда",
+            "plans": "розбери з Claude, звідки перевага",
+            "plan_exits": "вхід надто далеко: став ближче",
+        },
+    )
+    page = db.block_trade_plans([{**plan, "outcome": "expired", "r_result": r} for r in (-0.2, 0.1)])
+    check(page, {"plans": no_edge, "plan_exits": "ціль далеко для строку: ближча чи довший строк"})
+    assert "95 % ДІ містить 0: переваги не видно" in page
+
+    # forecast journal: per expiry date a right and a wrong-side «above spot» forecast against the 50 % reference
+    def forecasts(n_dates: int, good: bool) -> list[dict]:
+        hi, lo = (0.8, 0.2) if good else (0.2, 0.8)
+        e0 = int(datetime(2026, 10, 30, 8, tzinfo=UTC).timestamp())
+        base = {"asset": "BTC", "kind": "above_spot", "ref_prob": 0.5, "status": "settled"}
+        return [{**base, "expiry_ts": e0 + i * 86400, "prob": q, "outcome": o} for i in range(n_dates) for q, o in ((hi, 1), (lo, 0))]
+
+    check(
+        db.block_forecasts(forecasts(f - 1, True)),
+        {
+            "fc_n": "чекай: висновок — від 30 дат",
+            "fc_expiries": "висновку немає: чекай 30 дат експірації",
+            "fc_brier": "краще за 50 %; висновок — від 30 дат",
+            "fc_ref": "точніші, але висновок — від 30 дат",
+            "fc_clim": "точніші за частоту; висновок — від 30 дат",
+        },
+    )
+    check(
+        db.block_forecasts(forecasts(f, True)),
+        {
+            "fc_n": "не вибірка: дивись плитку «Експірацій»",
+            "fc_expiries": "читай еталони й калібрування",
+            "fc_brier": "краще за 50 %: звір з еталонами поруч",
+            "fc_ref": "точніші, та це ще не перевага для угоди",
+            "fc_clim": "точніші за частоту; угоду перевіряй окремо",
+        },
+    )
+    check(
+        db.block_forecasts(forecasts(f, False)),
+        {
+            "fc_brier": "не краще за «завжди 50 %»: не спирайся",
+            "fc_ref": "гірші за наївну оцінку: не спирайся",
+            "fc_clim": "еталон суворий: нічого не міняй",
+        },
+    )
 
 
 def test_forecast_info_notes_are_instructions_with_thresholds_from_the_code():

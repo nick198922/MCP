@@ -2623,8 +2623,15 @@ def test_demo_and_journal_action_lines_on_their_notes_thresholds():
     assert n == db.DEMO_MIN_N == 30 and f"(≥ {n})" in db.HELP["r"][3] and f"до {n} закритих угод" in db.ACT["drawdown"][1]
     assert f"≤ {db._usd(db.RULES_DEPOSIT * db.RULES_RISK_PCT / 100.0)} (правило 1)" in db.ACT["j_open"][3]
     assert db.j_trades_act(n - 1) == "опис, не висновок: розмір не міняй" and db.j_trades_act(n) == "суди за середнім на угоду й R"
-    assert db.j_winrate_act(-0.01) == "середнє нижче 0: тримай стоп, дай плюсу дійти"
-    assert db.j_winrate_act(0.0) == db.j_winrate_act(None) == "середнє не в мінусі: низька частка не біда"
+    # «Частка в плюсі» (item 311): «тримай стоп» only for a high share (≥ JR_HIGH_WINRATE, named in ACT) with exp < 0
+    h = db.JR_HIGH_WINRATE
+    assert h == 0.5 and f"<i>Низька (до {100 * h:.0f} %)</i>" in db._info("j_winrate")
+    assert f"<i>Від {100 * h:.0f} %, а середнє нижче 0</i>" in db._info("j_winrate")
+    assert db.j_winrate_act(h, -0.01) == db.j_winrate_act(1.0, -0.01) == "середнє нижче 0: тримай стоп, дай плюсу дійти"
+    assert db.j_winrate_act(h - 0.01, -0.01) == db.j_winrate_act(0.0, -0.01) == "низька частка й мінус: дивись середнє на угоду"
+    assert db.j_winrate_act(h, 0.0) == db.j_winrate_act(h, None) == "частка сама мало каже: дивись середнє"
+    assert db.j_winrate_act(h - 0.01, 0.0) == db.j_winrate_act(0.0, None) == "середнє не в мінусі: низька частка не біда"
+    assert db.j_winrate_act(None, -0.01) == db.j_winrate_act(None, 0.0) == "частка невідома: дивись середнє на угоду"
     # P&L: the tile's own colour, _signed_cls's ±0.005 edge
     assert db.j_pnl_act(-0.005, n) == "мінус: зменш розмір там, де він найбільший"
     assert db.j_pnl_act(-0.0049, n) == db.j_pnl_act(0.0049, n) == db.j_pnl_act(None, n) == "у нулі: суди за середнім і R"
@@ -2665,13 +2672,16 @@ def test_demo_and_journal_action_lines_on_their_notes_thresholds():
         ("j_expectancy", "менший розмір, суворіші правила входу"),
         ("j_trades", "опис, не висновок: розмір не міняй"),
         ("j_pnl", "мінус: зменш розмір там, де він найбільший"),
-        ("j_winrate", "середнє нижче 0: тримай стоп, дай плюсу дійти"),
+        ("j_winrate", "низька частка й мінус: дивись середнє на угоду"),
         ("r", "переглянь стопи й цілі, розмір не збільшуй"),
         ("drawdown", "до 30 угод не показова: розмір не міняй"),
         ("j_open", "перевір ризик кожної ≤ $100 і строк"),
     ):
         assert act(tiles, key) == [line], key
     assert len(act(tiles, "j_rules")) == 1
+    # two small wins and one big loss: a high share (2 of 3) with a negative average is the note's «тримай стоп»
+    rows = [{"status": "closed", "pnl": p, "closed_ts": 1.0, "outcome": o} for p, o in ((1.0, "win"), (1.0, "win"), (-10.0, "loss"))]
+    assert act(db.block_journal_tiles(rows, 0, 2.0), "j_winrate") == ["середнє нижче 0: тримай стоп, дай плюсу дійти"]
     # a setup with 30 trades with R and its CI above 0, the others without trades (the yellow «замало» badge)
     trades = [{"setup": "zz", "status": "closed", "r_multiple": 1.0 + (i % 2), "pnl_usd": 10.0} for i in range(n)]
     page = db.block_demo_setups(trades)

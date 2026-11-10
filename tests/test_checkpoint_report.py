@@ -612,6 +612,97 @@ def test_script_lists_every_forward_card_of_the_repo(tmp_path):
     assert "- pm-weather-forecast-vs-price: планів 0" in text and "9.876" not in text
 
 
+BYBIT, CG, OI = "bybit-deribit-daily-option-dislocation-forward", "coingecko-trending-attention-fade-forward", "hl-oi-cap-state-forward"
+
+
+def test_journal_row_counts_observations_and_lists_forwards_without_collection():
+    """Item 312: the cards' own journals by counters only; no journal and no plan, an empty, absent or silent journal
+    = «форвард без збору»; a failed query is named, not counted as empty."""
+    now_s = NOW // 1000
+    slugs = (
+        BYBIT,
+        CG,
+        OI,
+        "polymarket-vs-options-forward",
+        "forward-paper-carry",
+        "eth-exit-queue-forward",
+        "alt-etp-launch-sell-the-news",
+    )
+    cards = [{"slug": s, "tags": frozenset({f"idea:{s}"})} for s in slugs]
+    first = cp._ms(2026, 10, 23, 3) // 1000
+    journals = {
+        BYBIT: {"n": 412, "first": first, "last": now_s - 3600},
+        CG: {"n": 60, "first": first, "last": now_s - 3 * 86_400},  # silent for three days
+        OI: {"absent": True},
+        "polymarket-vs-options-forward": {"n": 0, "first": None, "last": None},
+        "forward-paper-carry": {"error": "OperationalError"},
+    }
+    plans = [
+        _plan(1, ["idea:alt-etp-launch-sell-the-news"], r_result=7.777),
+        _plan(2, ["idea:eth-exit-queue-forward"], created=now_s + 60),  # after the report moment: not counted
+    ]
+    r = script.journal_row(cards, journals, plans, NOW)
+    assert (r["key"], r["n"], r["verdict"], r["metric"], r["band"]) == ("ideas:journals", 2, cp.COUNTS_ONLY, None, None)
+    c = r["counters"]
+    assert c[BYBIT].startswith("журнал option_xvenue_snapshot: годинних знімків BTC 412, з 2026-10-23 03:00 до 2026-11-02 11:00 UTC")
+    assert c[BYBIT].endswith("вердикт: кілл не раніше 2026-11-22, остаточний не раніше 2027-01-21")  # first + 30 / + 90 days
+    assert c["polymarket-vs-options-forward"].startswith("журнал pm_gap_snapshot: годинних знімків від T0 0;")
+    assert c["forward-paper-carry"].startswith("журнал cp_cycle: запит до cp_cycle: OperationalError")
+    assert c[OI].startswith("журналу hl_oi_cap_snapshot у цій БД нема")
+    assert c["форвард без збору (4)"] == (
+        f"{CG} (останній запис coingecko_trending 2026-10-30 12:00 UTC); {OI} (журналу hl_oi_cap_snapshot у БД нема); "
+        "polymarket-vs-options-forward (журнал pm_gap_snapshot порожній); eth-exit-queue-forward (журналу колектора нема, планів idea: 0)"
+    )
+    assert "alt-etp-launch-sell-the-news" not in str(c)  # no journal of its own, but a plan: collecting, shown by the plan row
+    text = cp.render({"now_ms": NOW, "forwards": [r], "notes": []})
+    assert "| Картки forward: власні журнали | 2 | — | — | лише лічильники |" in text and "7.777" not in text
+    unread = script.journal_row(cards, None, [], NOW)["counters"]  # the DB could not be read
+    assert unread[BYBIT].startswith("журнал option_xvenue_snapshot: БД не прочитано") and unread["форвард без збору (2)"]
+    with_plan = script.journal_row(cards[:2], journals, [_plan(3, [f"idea:{CG}"])], NOW)  # a silent journal, but a plan
+    assert with_plan["n"] == 2 and not any(k.startswith("форвард без збору") for k in with_plan["counters"])
+    assert any("не знайдено" in x for x in script.journal_row([], {}, [], NOW)["notes"])
+
+
+def test_every_card_journal_belongs_to_a_card_of_the_repo():
+    for slug, j in script.CARD_JOURNALS.items():
+        assert list(script.IDEAS.glob(f"IDEA-*-{slug}.md")), slug
+        assert j.sql.count("?") == 2 and j.sql.startswith("SELECT COUNT("), slug  # counters only, since T0 up to the report moment
+
+
+def test_script_counts_card_journals_read_only(tmp_path, monkeypatch, capsys):
+    db = _db(tmp_path)
+    con = sqlite3.connect(db)
+    base = cp._ms(2026, 11, 1, 10) // 1000
+    cols = "ts, currency, expiry_ts, tau_hours, strike, opt, b_bid, mode"
+    rows = [(base + h * 3600, "BTC", base + 86_400, 10.0, k, "C", 0.4321, "hourly") for h in range(3) for k in (100_000.0, 101_000.0)]
+    rows += [(base, "ETH", base + 86_400, 10.0, 4000.0, "C", 0.4321, "hourly")]  # ETH: descriptive, not counted
+    rows += [(base + 60, "BTC", base + 86_400, 10.0, 100_000.0, "C", 0.4321, "minute")]  # minute mode: not the hourly sample
+    rows += [(NOW // 1000 + 3600, "BTC", NOW // 1000 + 86_400, 10.0, 100_000.0, "C", 0.4321, "hourly")]  # after the report moment
+    con.executemany(f"INSERT INTO option_xvenue_snapshot ({cols}) VALUES (?,?,?,?,?,?,?,?)", rows)
+    con.executemany(
+        "INSERT INTO coingecko_trending (ts, rank, coin_id, price_usd, fetched_ts) VALUES (?,?,?,?,?)",
+        [(cp._ms(2026, 11, 1, 20) // 1000 + h * 3600, k, f"c{k}", 0.4321, 0) for h in range(2) for k in (1, 2)],
+    )
+    con.commit()
+    con.close()
+    before = Path(db).read_bytes()
+    monkeypatch.setattr(script, "time", type("Clock", (), {"time": staticmethod(lambda: NOW / 1000)}))
+    assert script.main(["--db", db]) == 0
+    text = capsys.readouterr().out
+    assert Path(db).read_bytes() == before  # read-only
+    assert f"- {BYBIT}: журнал option_xvenue_snapshot: годинних знімків BTC 3, з 2026-11-01 10:00 до 2026-11-01 12:00 UTC;" in text
+    assert f"- {CG}: журнал coingecko_trending: годинних знімків trending 2, з 2026-11-01 20:00 до 2026-11-01 21:00 UTC;" in text
+    assert "вердикт: крок 1 (тест) ≈ 2027-01-30" in text  # 01.11 + 90 days
+    # the fixture's 35 carry cycles stopped on 2026-10-29 08:00: silent for days, so «без збору» like the empty journals
+    idle = next(ln for ln in text.splitlines() if ln.startswith("- форвард без збору ("))
+    assert (
+        "forward-paper-carry (останній запис cp_cycle 2026-10-29 08:00 UTC)" in idle
+        and f"{OI} (журнал hl_oi_cap_snapshot порожній)" in idle
+    )
+    assert BYBIT not in idle and CG not in idle and "4321" not in text  # no price of a journal is read
+    assert "| Картки forward: власні журнали | 2 |" in text
+
+
 def test_script_survives_a_missing_db(tmp_path):
     inp = script.load_inputs(str(tmp_path / "none.sqlite"), NOW)
     assert any("не відкрито" in e for e in inp["errors"])

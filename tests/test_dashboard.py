@@ -367,7 +367,7 @@ def test_brief_lead_actions_and_folded_blocks():
     s = db.brief_summaries(snap)
     assert s["conditions"] == "купівля: за 1, проти 0 · продаж: за 0, проти 1"
     assert s["chart"] == "120 днів: +32 %, від 58.6k до 86.6k"
-    assert s["scenarios"] == "найімовірніше 80k – 85k — 22 % (ціна страховки, не прогноз)"
+    assert s["scenarios"] == "найімовірніше 80k – 85k — 22 % (ціна страховки)"  # «не прогноз»: once, at the bottom (rule 5)
     assert s["funding"] == "BTC +4…+11 % · ETH +3…+11 % річних" and s["events"].startswith("Oct 2026 FOMC 28.10 20:00")
     assert db.key_summary(db.key_items(snap)) == "ризик: захист · подія: подія · спокій: ринок, діапазон, волатильність"
     page = db.render_brief(snap, None, asof)
@@ -2411,6 +2411,101 @@ def test_rule2_tiles_have_a_short_action_line_except_the_listed(tmp_path):
     assert not [r for r in rows if r[0].startswith("brief") and r[2] is None]  # «Ринок»: every tile
     seen = {(n, k) for n, k, _ in rows}  # item 298: the last two keys are on the guarded pages now
     assert ("journal rv30", "fc_rv") in seen and sum(1 for n, k, _ in rows if (n, k) == ("demo vs bt", "demo_vs_bt_total")) == 3
+
+
+def _visible_text(html_part: str) -> str:
+    """The text a reader sees without opening anything: «i» notes (rule 3's, opened on a tap) and scripts dropped."""
+    import html
+    import re
+
+    x = re.sub(r"<script>.*?</script>", "", html_part, flags=re.S)
+    x = re.sub(r"<span class='tip' role='tooltip'>.*?</span></span>", "", x, flags=re.S)
+    return html.unescape(re.sub(r"<[^>]+>", "", x))
+
+
+# docs/design/PANEL.md rule 4 (standing improvements, item 302): the summary line of a folded section (`_fold`) shows
+# its main number or a status, not just what the section is about. A summary passes with a digit or a status word.
+# RULE4_TODO: HELP keys of folds whose summary is still a description, with why it is not a text fix; like
+# RULE2_TODO, it must match the fact both ways.
+# «спокій: / ризик: / подія: / нагода:» are the labels of «Головне сьогодні» (HELP["key"]); «не виконується» is the
+# risk rule's verdict in «Чи вкладається в ризик».
+RULE4_STATUS = ("немає", "нема", "вимкнено", "збій", "помилка", "застаріл", "порожньо", "невідомо", "чекає", "не виконується")
+RULE4_STATUS += ("спокій:", "ризик:", "подія:", "нагода:")
+RULE4_TODO: dict[str, str] = {
+    "rules_week": "the count of broken rules this week is computed inside block_rules_week; the summary needs it passed out",
+    "rec": "the paper recommendations' count / result live in block_rec_paper's rows; a new summary function is logic",
+    "plans": "the plans' count by verdict needs a summary over trade_plan rows (block_trade_plans has none)",
+    "fc": "the forecast count and expiry dates need a summary over forecast_log (fc_compare runs in the body only)",
+}
+
+
+def test_rule4_fold_summaries_carry_a_number_or_status_except_the_listed(tmp_path):
+    """Item 302 (docs/design/PANEL.md rule 4): every `_fold` on every tab of _all_tab_pages has a non-empty one-line
+    summary in its <summary>, other than its title, with a digit or a RULE4_STATUS word; the folds not done yet are
+    RULE4_TODO by their HELP key (found by the heading's exact «i» note, as in the rule 2 test)."""
+    import re
+
+    note = {db._info(k): k for k in db.HELP}
+    fold = re.compile(
+        r"<section class='wide fold' id='[^']+'><details><summary><h2>(.*?)</h2><span class='fs'>(.*?)</span></summary>", re.S
+    )
+    rows = []
+    for name, page in _all_tab_pages(tmp_path).items():
+        found = fold.findall(page)
+        assert len(found) == page.count("<section class='wide fold'"), name  # every fold matched, none skipped
+        for head, summ in found:
+            keys = [key for h, key in note.items() if h in head]
+            assert len(keys) == 1, (name, head[:80])
+            rows.append((name, keys[0], _visible_text(head).strip(), summ, _visible_text(summ).strip()))
+    assert len(rows) >= 100 and len({k for _, k, _, _, _ in rows}) >= 40  # the regex really matched the pages
+    bad = set()
+    for name, key, title, raw, text in rows:
+        assert text and "\n" not in text and "<br" not in raw and "<p" not in raw, (name, key, raw)  # one line
+        if text == title or not (re.search(r"\d", text) or any(w in text.lower() for w in RULE4_STATUS)):
+            bad.add(key)
+    assert bad == set(RULE4_TODO), (
+        "folds without a number or status",
+        sorted(bad - set(RULE4_TODO)),
+        "done, drop",
+        sorted(set(RULE4_TODO) - bad),
+    )
+    assert all(RULE4_TODO.values())
+
+
+# docs/design/PANEL.md rule 5 (item 302): each caveat once per page and never in a tile. The patterns are the
+# phrases and their variants as written in scripts/dashboard.py; «відхилено» alone is a verdict status on «Проєкт»,
+# so only the «tested and rejected» forms count. Text in «i» notes is rule 3's and is not counted.
+RULE5_CAVEATS = {
+    "risk-neutral": r"ризик-нейтральн",
+    "not a forecast": r"\bне прогноз\b",
+    "not advice": r"\bне\s+(?:інвестиційна\s+)?порад",
+    "past result": r"не гарантує майбутнього",
+    "tested and rejected": r"перевірено(?:\s+18\.10)?\s+[йі]\s+відхилено|\bH1\s+відхилено|відхилено\s+18\.10|18\.10\s+відхилено",
+}
+RULE5_TODO: frozenset[tuple[str, str]] = frozenset()  # (page, caveat) pairs still repeated; none left
+
+
+def test_rule5_caveats_once_per_page_and_not_in_tiles(tmp_path):
+    """Item 302 (docs/design/PANEL.md rule 5): no caveat phrase of RULE5_CAVEATS is said twice on a page of
+    _all_tab_pages or inside a number tile."""
+    import re
+
+    pats = {k: re.compile(p, re.I) for k, p in RULE5_CAVEATS.items()}
+    tile = re.compile(r"<div class='tile[^']*'><span class='k'>.*?</div>", re.S)
+    twice, seen, n_tiles = set(), {k: 0 for k in pats}, 0
+    for name, page in _all_tab_pages(tmp_path).items():
+        text = _visible_text(page)
+        for k, p in pats.items():
+            n = len(p.findall(text))
+            seen[k] += n
+            if n > 1:
+                twice.add((name, k))
+        for t in tile.findall(page):
+            n_tiles += 1
+            in_tile = [k for k, p in pats.items() if p.search(_visible_text(t))]
+            assert not in_tile, (name, in_tile, _visible_text(t)[:120])
+    assert twice == RULE5_TODO, ("caveats said twice", sorted(twice - RULE5_TODO), "done, drop", sorted(RULE5_TODO - twice))
+    assert all(n >= 3 for n in seen.values()) and n_tiles >= 100, (seen, n_tiles)  # the patterns really matched
 
 
 def test_fc_rv_and_demo_vs_bt_action_lines_on_their_notes_thresholds(tmp_path):

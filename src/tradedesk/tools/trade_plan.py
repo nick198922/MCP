@@ -54,6 +54,8 @@ SHADOW_TAG = "src:demo-shadow"  # execution/demo_trader.py: one plan per setup s
 # Numeric columns `_view` reads (expires_ts has its own guard, `_expires_view`).
 PLAN_NUMS = ("created_ts", "entry", "stop", "target", "filled_ts", "fill", "resolved_ts", "exit", "r_result")
 MAX_LEVEL_RATIO = 1000.0  # a plan level this many times away from the market's price is not a plan (review_open skips it)
+# |R| beyond this is no result of real prices; several r_result ~1e308 overflowed the summary's mean (item 299).
+MAX_ABS_R = 1e9
 
 
 def _iso(ts: int | None) -> str | None:
@@ -126,13 +128,14 @@ def _listable(b: Builder, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _sound(b: Builder, rows: list[dict[str, Any]]) -> list[tuple[dict[str, Any], dict[str, Any]]]:
     """(row, `_view`) of the stored plans that another writer did not corrupt. A string / blob / inf in a level, a
     timestamp or the result (TypeError / ValueError in `_view`, or an invalid UTF-8 blob failing the reply), entry 0 or
-    entry = stop (ZeroDivisionError in `geometry`), a reward:risk that overflows, or NaN / Infinity in the JSON of `tags`
-    / `rules`: the plan is skipped with a warning naming its id (invariant 1). plan_add validates its levels, so its own
-    rows always pass."""
+    entry = stop (ZeroDivisionError in `geometry`), a reward:risk that overflows, an |r_result| over MAX_ABS_R (several
+    ~1e308 raised OverflowError in the summary's mean, item 299), or NaN / Infinity in the JSON of `tags` / `rules`: the
+    plan is skipped with a warning naming its id (invariant 1). plan_add validates its levels, so its own rows always
+    pass."""
     views: list[tuple[dict[str, Any], dict[str, Any]]] = []
     bad: list[Any] = []
     for p in drop_corrupt_rows(b, rows, "plan", PLAN_NUMS, required=("created_ts", "entry", "stop", "target")):
-        if p["entry"] <= 0 or p["entry"] == p["stop"]:
+        if p["entry"] <= 0 or p["entry"] == p["stop"] or (p["r_result"] is not None and abs(p["r_result"]) > MAX_ABS_R):
             bad.append(p["id"])
             continue
         v = _view(p)
@@ -142,8 +145,8 @@ def _sound(b: Builder, rows: list[dict[str, Any]]) -> list[tuple[dict[str, Any],
         views.append((p, v))
     if bad:
         b.warn(
-            f"{len(bad)} stored plan rows skipped: entry <= 0, entry equal to stop, a reward:risk out of range, or NaN / "
-            f"Infinity in tags / rules; id {bad[:10]}"
+            f"{len(bad)} stored plan rows skipped: entry <= 0, entry equal to stop, a reward:risk or an R result out of "
+            f"range, or NaN / Infinity in tags / rules; id {bad[:10]}"
         )
     return views
 
@@ -166,6 +169,26 @@ def _unscorable(p: dict[str, Any]) -> str | None:
     for k in ("created_ts", "expires_ts"):
         if _expires_view(p[k])["expires"] is None:
             return f"{k} is not usable unix seconds"
+    return None
+
+
+def _rec_unusable(rec: dict[str, Any], plan: dict[str, Any]) -> str | None:
+    """Why a settled rec_paper row cannot score its linked option plan, else None. assistant_paper_status always writes
+    usable values; this guards rows another writer left with text / a blob / inf / 1e308 / 1e20 in settled_ts or
+    opened_ts (int() raised ValueError / OverflowError, or the store binding OverflowError, out of plan_review and the
+    plan_resolve job before item 299), or such a delivery_price / r_worst_case (written into the plan as garbage). A
+    delivery price more than MAX_LEVEL_RATIO times away from the plan's entry (the underlying's price) is garbage too."""
+    for k in ("settled_ts", "opened_ts"):
+        if _expires_view(rec[k])["expires"] is None:
+            return f"{k} is not usable unix seconds"
+    px = rec["delivery_price"]
+    if px is not None:
+        v, entry = store_num(px), store_num(plan["entry"])
+        if v is None or v <= 0 or (entry is not None and entry > 0 and not entry / MAX_LEVEL_RATIO <= v <= entry * MAX_LEVEL_RATIO):
+            return f"delivery_price is not a positive finite number within {MAX_LEVEL_RATIO:g}x of the plan's entry"
+    rw = rec["r_worst_case"]
+    if rw is not None and ((v := store_num(rw)) is None or abs(v) > MAX_ABS_R):
+        return f"r_worst_case is not a finite number within +-{MAX_ABS_R:g}"
     return None
 
 
@@ -245,6 +268,9 @@ async def review_open(rt: Runtime, b: Builder) -> list[int]:
             if rec is None:
                 b.miss(f"plan:{p['id']}", "tradedesk", "data_unavailable", f"linked rec_paper #{p['rec_paper_id']} not found")
             elif rec["status"] == "settled":
+                if (why := _rec_unusable(rec, p)) is not None:
+                    b.warn(f"plan {p['id']} skipped: its linked rec_paper #{rid} has a stored {why}")
+                    continue
                 n = await rt.store.plan_resolve(
                     p["id"],
                     outcome="expired",

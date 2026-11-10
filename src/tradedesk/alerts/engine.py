@@ -13,6 +13,8 @@ from __future__ import annotations
 import json
 import logging
 import operator
+import re
+import string
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -115,13 +117,26 @@ async def _latest_metric(store: "Store", metric: dict[str, Any], *, now_ts: int)
     return None
 
 
+_HUGE_SPEC = re.compile(r"\d{4}")  # a width / precision of 1000+ in a format spec
+
+
+def _safe_format(template: str, **values: float) -> str:
+    """``template.format(**values)``, or the template unchanged when it cannot format: an unknown or positional field,
+    ``{value[0]}`` / ``{value.x}`` (TypeError / AttributeError raised out of the alerts job before item 299), or a
+    format spec with a width / precision of 1000+ or a nested field (``{value:999999999}`` built a gigabyte string)."""
+    try:
+        for _, _, spec, _ in string.Formatter().parse(template):
+            if spec and ("{" in spec or _HUGE_SPEC.search(spec)):
+                return template
+        return template.format(**values)
+    except (KeyError, IndexError, ValueError, TypeError, AttributeError):
+        return template
+
+
 def _format_message(template: str, value: float, threshold: float) -> str:
     if not template:
         return ""
-    try:
-        return template.format(value=value, value_pct=value * 100, threshold=threshold, threshold_pct=threshold * 100)
-    except (KeyError, IndexError, ValueError):
-        return template
+    return _safe_format(template, value=value, value_pct=value * 100, threshold=threshold, threshold_pct=threshold * 100)
 
 
 async def evaluate_rules(rules: list[Rule], store: "Store", *, now_ts: int) -> list[FiredAlert]:
@@ -192,11 +207,7 @@ async def evaluate_dsl_rules(store: "Store", *, now_ts: int) -> list[FiredAlert]
             value_f = 1.0
         except OverflowError:  # an integer beyond the float range (e.g. 9 ** 999) raised out of the alerts job
             continue
-        msg = row.get("message") or ""
-        try:
-            msg = msg.format(value=value_f, value_pct=value_f * 100)
-        except (KeyError, IndexError, ValueError):
-            pass
+        msg = _safe_format(row.get("message") or "", value=value_f, value_pct=value_f * 100)
         fired.append(
             FiredAlert(
                 rule_id=rule_id,

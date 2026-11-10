@@ -15,7 +15,7 @@ from pydantic import Field
 from ..analytics.backtest import normalise_bars, run_backtest, signals_momentum
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, r, timeframe_seconds
+from ._util import READ_ONLY, bar_rows, r, timeframe_seconds
 
 
 def register(server: MCPServer, rt: Runtime) -> None:
@@ -54,11 +54,15 @@ def register(server: MCPServer, rt: Runtime) -> None:
         except ValueError as e:  # a tool never raises: an unknown timeframe is reported, not thrown
             b.miss("timeframe", "tradedesk", "config", str(e))
             return b.build(None, ok=False)
-        bars = await b.guard(f"ohlcv:{exchange}", f"ccxt:{exchange}", rt.exchanges.ohlcv(exchange, symbol, timeframe, limit))
-        usable = len(normalise_bars(bars)) if bars else 0
-        dropped = len(bars) - usable if bars else 0
+        raw = await b.guard(f"ohlcv:{exchange}", f"ccxt:{exchange}", rt.exchanges.ohlcv(exchange, symbol, timeframe, limit))
+        # `bar_row` also drops NaN / inf / 1e308 prices, which `normalise_bars` lets through: all-NaN closes gave ok=true.
+        bars, dropped = bar_rows(raw)
+        usable = len(normalise_bars(bars))
         if dropped:  # a dropped inner bar merges its two neighbours into one return
-            b.warn(f"{dropped} malformed bars (non-numeric fields) dropped; returns across those gaps span two bars")
+            b.warn(
+                f"{dropped} malformed bars (a timestamp, price or volume that is not a finite number in range) dropped; "
+                "returns across those gaps span two bars"
+            )
         if usable < max(lookback + 5, 50):  # the minimum counts the bars left after the malformed ones are dropped
             b.miss("ohlcv", f"ccxt:{exchange}", "data_unavailable", f"only {usable} usable bars available")
             return b.build(None, ok=False)

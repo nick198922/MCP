@@ -17,7 +17,7 @@ from ..analytics.trades import summarise as summarise_trades
 from ..core.envelope import Builder
 from ..providers.exchanges import PERP_EXCHANGES
 from ..runtime import Runtime
-from ._util import READ_ONLY, finite_float, json_num, parsed_rows, r, timeframe_seconds
+from ._util import READ_ONLY, bar_rows, finite_float, hl_bar_row, json_num, parsed_rows, r, timeframe_seconds
 
 BASE = Annotated[str, Field(description="Base asset, e.g. BTC, ETH, SOL")]
 SPREAD_WARNING = (
@@ -92,16 +92,28 @@ def _warn_short_coverage(b: Builder, venue: str, entries: list[dict[str, Any]], 
         b.warn(f"{venue} funding history starts {_iso(first)[:10]}, later than requested (venue retention or listing date)")
 
 
+MAX_FUNDING_RATE = 1.0  # 100 % per interval, far beyond any venue's cap; a 1e308 rate overflowed the carry to inf
+
+
+def _history_rate(x: Any) -> float:
+    v = finite_float(x)
+    if abs(v) > MAX_FUNDING_RATE:
+        raise ValueError(f"funding rate beyond +-{MAX_FUNDING_RATE:g} per interval")
+    return v
+
+
 def _funding_entries(b: Builder, label: str, rows: Any, ts_key: str) -> list[dict[str, Any]]:
     """[{ts_ms, rate}] of the funding-history rows that carry a rate and a timestamp. A row whose rate or timestamp is
-    not a finite number (a non-numeric string, NaN, +-inf) is dropped, and the drop is named in a warning with `label`
-    (venue and symbol), so a hole in the series is visible. Rows without a rate or timestamp are skipped silently."""
+    not a finite number (a non-numeric string, NaN, +-inf) or whose rate is beyond +-MAX_FUNDING_RATE (1e308 gave
+    Infinity / NaN in the carry and the z-score, or raised out of perps_funding_history) is dropped, and the drop is
+    named in a warning with `label` (venue and symbol), so a hole in the series is visible. Rows without a rate or
+    timestamp are skipped silently."""
     kept = [x for x in rows or [] if isinstance(x, dict) and x.get("fundingRate") is not None and x.get(ts_key)]
-    entries = parsed_rows(kept, lambda x: {"ts_ms": int(x[ts_key]), "rate": finite_float(x["fundingRate"])})
+    entries = parsed_rows(kept, lambda x: {"ts_ms": int(x[ts_key]), "rate": _history_rate(x["fundingRate"])})
     if len(entries) < len(kept):
         b.warn(
-            f"{label}: {len(kept) - len(entries)} funding rows dropped (rate or timestamp not a finite number); "
-            "the stats use the remaining rows"
+            f"{label}: {len(kept) - len(entries)} funding rows dropped (rate or timestamp not a finite number, or a rate "
+            f"beyond +-{MAX_FUNDING_RATE:g}); the stats use the remaining rows"
         )
     return entries
 
@@ -775,18 +787,18 @@ def register(server: MCPServer, rt: Runtime) -> None:
                         "hyperliquid",
                         rt.hyperliquid.candles(hl_names.get(sym, ""), "4h", now_ms - 42 * 4 * 3_600_000, now_ms),
                     )
-                    # HL candles are dicts (t, o, h, l, c): reshape to ccxt [ts, o, h, l, c]
-                    bars = [[x["t"], x["o"], x["h"], x["l"], x["c"]] for x in raw or [] if isinstance(x, dict) and "h" in x and "l" in x]
+                    # HL candles are dicts (t, o, h, l, c, v) with decimal strings: parsed to ccxt rows
+                    ok_bars, dropped = bar_rows(raw, hl_bar_row)
                 else:
-                    bars = await b.guard(
+                    raw = await b.guard(
                         f"ohlcv:{pair['short_venue']}:{sym}",
                         f"ccxt:{pair['short_venue']}",
                         rt.exchanges.ohlcv(pair["short_venue"], sym, "4h", 42),
                     )
-            ok_bars = parsed_rows(
-                [x for x in (bars or []) if isinstance(x, (list, tuple)) and len(x) >= 5], lambda x: (float(x[2]), float(x[3]))
-            )
-            range_7d = max(h for h, _ in ok_bars) / min(lo for _, lo in ok_bars) - 1.0 if ok_bars else None
+                    ok_bars, dropped = bar_rows(raw)
+            if dropped:  # an inf / 1e308 high gave range_7d = Infinity in the reply
+                b.warn(f"ohlcv {pair['short_venue']} {sym}: {dropped} malformed 4h bars dropped from range_7d")
+            range_7d = max(x[2] for x in ok_bars) / min(x[3] for x in ok_bars) - 1.0 if ok_bars else None
             flags = list(pair["flags"])
             if range_7d is not None and range_7d >= 1 / 3:
                 flags.append("volatile")
@@ -1110,7 +1122,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "coin (USDC for standard perps); volume is Hyperliquid's `v` field passed through (not converted to USD). "
             "summary.return_pct is in percent (first to last close; 1.5 = 1.5 %); summary.realized_vol_annualized is a "
             "decimal (0.45 = 45 %): stdev of close-to-close log-returns scaled by sqrt(365 days / candle size), "
-            "present only with at least 10 closes."
+            "present only with at least 10 closes. A candle with a time, price or volume that is not a finite number in "
+            "range is dropped (named in `warnings`)."
         ),
     )
     async def hyperliquid_candles(
@@ -1136,17 +1149,17 @@ def register(server: MCPServer, rt: Runtime) -> None:
             if raw is not None:
                 b.miss("candles", "hyperliquid", "data_unavailable", "empty result")
             return b.build(None, ok=False)
-        rows: list[list[float]] = []
-        for c in raw:
-            try:
-                rows.append([int(c["t"]), float(c["o"]), float(c["h"]), float(c["l"]), float(c["c"]), float(c["v"])])
-            except (KeyError, TypeError, ValueError, OverflowError):  # OverflowError: int() of a JSON Infinity
-                continue
+        # A candle whose time, price or volume is not a finite number in range ("NaN" / "Infinity" strings, a negative
+        # close, 1e308) is dropped: before, NaN / Infinity reached the reply and a negative or infinite close raised out
+        # of the tool (log of the return), as did all-zero closes (no first close).
+        rows, dropped = bar_rows(raw, hl_bar_row)
         if not rows:
             b.miss("candles", "hyperliquid", "data_unavailable", "no parsable candles")
             return b.build(None, ok=False)
+        if dropped:
+            b.warn(f"{dropped} malformed candles (a time, price or volume that is not a finite number in range) dropped")
         rows.sort(key=lambda x: x[0])
-        closes = [row[4] for row in rows if row[4]]
+        closes = [row[4] for row in rows]
         summary: dict[str, Any] = {"candles": len(rows), "first_close": closes[0], "last_close": closes[-1]}
         summary["return_pct"] = r((closes[-1] / closes[0] - 1) * 100, 3)
         if len(closes) >= 10:
@@ -1244,6 +1257,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
             return b.build(None, ok=False)
         normalised: list[dict[str, Any]] = []
         for t in raw:
+            if not isinstance(t, dict):  # a null / text row raised AttributeError out of the tool
+                continue
             side_code = str(t.get("side") or "").upper()
             if side_code not in ("B", "A"):
                 continue
@@ -1266,6 +1281,11 @@ def register(server: MCPServer, rt: Runtime) -> None:
             b.miss("trades", "hyperliquid", "data_unavailable", "no usable trades")
             return b.build(None, ok=False)
         summary = summarise_trades(normalised, top_n=top_n)
+        if summary.get("count", 0) == 0:  # every print had a NaN / inf / out-of-range price or size
+            b.miss("trades", "hyperliquid", "data_unavailable", "no usable trades")
+            return b.build(None, ok=False)
+        if (bad := len(normalised) - summary["count"]) > 0:
+            b.warn(f"{bad} trades with a price or size that is not a finite number in range were skipped")
         return b.build({"coin": coin, "fetched": len(raw), "parsed": len(normalised), "summary": summary})
 
     @server.tool(

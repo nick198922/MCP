@@ -85,11 +85,14 @@ SCALE = {"drawdown_365d": 0.10, "price_to_sma": 0.10, "funding7": 0.05, "basis7"
 NEGATE = {"<=": ">", "<": ">=", ">=": "<", ">": "<=", "|x|<=": "|x|>", "|x|>": "|x|<="}
 
 _ROW_ERRORS = (KeyError, TypeError, ValueError, OverflowError, IndexError)
+# Far above any listed quote price. Two closes of 1e308 overflowed math.fsum in the SMA (OverflowError out of the tool).
+MAX_CLOSE = 1e12
 
 
 def parse_closes(rows: Iterable[Any], *, positive: bool = True) -> dict[int, float]:
-    """Binance kline rows [open_ms, open, high, low, close, ...] -> {open_ms: close}. Non-numbers are dropped, and with
-    `positive` also closes <= 0 (premium-index klines are signed: pass positive=False)."""
+    """Binance kline rows [open_ms, open, high, low, close, ...] -> {open_ms: close}. Non-numbers and closes beyond
+    +-MAX_CLOSE are dropped, and with `positive` also closes <= 0 (premium-index klines are signed: pass
+    positive=False)."""
     out: dict[int, float] = {}
     for r in rows or []:
         try:
@@ -97,7 +100,7 @@ def parse_closes(rows: Iterable[Any], *, positive: bool = True) -> dict[int, flo
             c = float(r[4])
         except _ROW_ERRORS:
             continue
-        if math.isfinite(c) and (c > 0 or not positive):
+        if math.isfinite(c) and abs(c) <= MAX_CLOSE and (c > 0 or not positive):
             out[t] = c
     return out
 

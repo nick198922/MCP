@@ -29,7 +29,7 @@ from ..analytics.options import (
 from ..analytics.vrp import align_daily, vrp_summary
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, find_expiry, parsed_rows, r
+from ._util import READ_ONLY, bar_rows, find_expiry, parsed_rows, r
 
 CUR = Annotated[Literal["BTC", "ETH"], Field(description="Deribit inverse-option currency")]
 EXPIRY = Annotated[str, Field(description="Expiry as 26MAR27 or 2027-03-26 (08:00 UTC). Use deribit_vol_surface to list expiries.")]
@@ -631,7 +631,15 @@ def register(server: MCPServer, rt: Runtime) -> None:
         bars = await b.guard(
             f"ohlcv:{price_venue}", f"ccxt:{price_venue}", rt.exchanges.ohlcv(price_venue, f"{currency}/USDT", "1d", history_days)
         )
-        prices = parsed_rows([x for x in (bars or []) if isinstance(x, (list, tuple)) and len(x) >= 5], lambda x: (int(x[0]), float(x[4])))
+        # A bar whose timestamp or price is not a finite number in range is dropped: an inf / 1e308 close raised out of
+        # the tool, a NaN one reached the reply as NaN.
+        kept, dropped = bar_rows(bars)
+        prices = [(x[0], x[4]) for x in kept]
+        if dropped:
+            b.warn(
+                f"ohlcv:{price_venue}: {dropped} malformed daily bars "
+                "(a timestamp, price or volume that is not a finite number in range) dropped"
+            )
         if not iv or not prices:
             if not iv and not any(m.field == "dvol" for m in b.missing):
                 b.miss("dvol", "deribit", "data_unavailable", "empty DVOL series")

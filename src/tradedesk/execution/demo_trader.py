@@ -158,6 +158,15 @@ def hold_ms(setup: str | None, timeframe: str | None) -> int:
 
 
 MIN_SCORE = 2
+# Per-setup floor (owner 10.11, ADR 0007 addition 10.11): S28's target is a fixed 2R, so after fees its R:R never earns
+# a point and only the two trend points are left; at 2 it took no trade in 12 days.
+MIN_SCORE_BY_SETUP = {"S28": 1}
+
+
+def min_score(setup: str) -> int:
+    return MIN_SCORE_BY_SETUP.get(setup, MIN_SCORE)
+
+
 UNKNOWN_GRACE_MS = 10 * 60_000  # an 'unknown' order the venue still does not know after this is rejected
 FILL_LAG_MS = 20 * 60_000  # a fill may precede opened_ts (the cycle that saw it) by about a cycle
 ORPHAN_MS = 86_400_000  # no position and no close for this long since the position went missing -> 'orphaned' + alert
@@ -1050,7 +1059,7 @@ async def _enter(ctx: Ctx, c: Candidate, state: State) -> State:
 
 
 async def _select_and_enter(ctx: Ctx, cands: list[Candidate], state: State) -> None:
-    ok = [c for c in cands if not c.structural and c.score.points >= MIN_SCORE]
+    ok = [c for c in cands if not c.structural and c.score.points >= min_score(c.sig.setup)]
     ok.sort(key=lambda c: (-c.score.points, -c.p.reward_risk))
     used: Counter[str] | None = Counter()
     sampled: frozenset[str] = frozenset()
@@ -1096,8 +1105,8 @@ async def _select_and_enter(ctx: Ctx, cands: list[Candidate], state: State) -> N
         if c.structural:
             reason = c.structural
             kind = "refused"
-        elif c.score.points < MIN_SCORE:
-            reason, kind = [f"score {c.score.points} < {MIN_SCORE}"], "skipped"
+        elif c.score.points < min_score(c.sig.setup):
+            reason, kind = [f"score {c.score.points} < {min_score(c.sig.setup)}"], "skipped"
         else:
             reason = check(c.p, state, ctx.cfg) + _setup_cap(c.sig.setup, used, sampled) + _bar_cap(c.sig, per_bar) or ["lower rank"]
             kind = "skipped"

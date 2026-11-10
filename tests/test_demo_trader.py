@@ -726,7 +726,14 @@ async def test_audit_log_is_append_only(tmp_path):
 )
 async def test_client_refuses_private_calls_off_the_demo_host(ex):
     c = BybitDemo("k", "s", factory=lambda k, s: ex)
-    for call in (c.positions(), c.place_bracket(BTC, "long", 0.01, 1.0, 2.0, "x"), c.set_stop("BTCUSDT", 1.0), c.equity_usd()):
+    calls = (
+        c.positions(),
+        c.place_bracket(BTC, "long", 0.01, 1.0, 2.0, "x"),
+        c.set_stop("BTCUSDT", 1.0),
+        c.equity_usd(),
+        c.apply_demo_funds(1),
+    )
+    for call in calls:
         with pytest.raises(DemoOnlyError):
             await call
 
@@ -1214,3 +1221,38 @@ async def test_s12_resting_order_holds_its_slot_on_the_next_days(world):
     assert res["trades_today"] == 1 and res["entries_today"] == 1
     t = (await w.store.demo_trade_list())[0]
     assert demo_trader._today(t, T0 + D1) and not demo_trader._today({**t, "status": "missed"}, T0 + D1)
+
+
+async def test_demo_funds_request_is_usdt_add_only_and_capped():
+    sent = []
+
+    async def apply(params):
+        sent.append(params)
+        return {"retCode": 0}
+
+    ex = SimpleNamespace(
+        options={"enableDemoTrading": True},
+        hostname="bybit.com",
+        urls={"api": {"private": "https://api-demo.{hostname}"}},
+        privatePostV5AccountDemoApplyMoney=apply,
+    )
+    c = BybitDemo("k", "s", factory=lambda k, s: ex)
+    assert (await c.apply_demo_funds(40_250.7))["retCode"] == 0
+    assert sent == [{"adjustType": 0, "utaDemoApplyMoney": [{"coin": "USDT", "amountStr": "40250"}]}]
+    for bad in (0, -5, bybit_demo.DEMO_FUNDS_MAX + 1):
+        with pytest.raises(ValueError):
+            await c.apply_demo_funds(bad)
+    assert len(sent) == 1
+
+
+def test_s28_takes_signals_from_score_1_the_rest_from_2():
+    """Owner 10.11 (ADR 0007 addition 10.11): S28's fixed 2R target never earns an R:R point."""
+    assert demo_trader.min_score("S28") == 1
+    assert all(demo_trader.min_score(s) == demo_trader.MIN_SCORE == 2 for s in demo_trader.SETUPS if s != "S28")
+
+
+def test_capacity_limits_follow_adr_0007_addition_10_11():
+    from tradedesk.execution.guard import DEFAULT
+
+    assert DEFAULT.max_open_positions == 25 and DEFAULT.max_open_risk_usd == 25 * DEFAULT.risk_usd == 2500.0
+    assert DEFAULT.max_trades_per_day == 21 and DEFAULT.daily_max_loss_usd == 2100.0  # the day's limits are unchanged

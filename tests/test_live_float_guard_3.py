@@ -148,8 +148,8 @@ async def test_sentiment_fear_greed_drops_a_bad_reading_and_says_so(rt, field, b
     assert env["ok"] is True and env["data"]["count"] == 29
     assert env["data"]["latest"]["value"] == 30  # the broken latest reading is gone, the day before is the latest
     assert (
-        "alternative_me: 1 fear & greed reading(s) with a value or time that is not a finite number (or a value outside 0..100) dropped"
-        in env["warnings"]
+        "alternative_me: 1 fear & greed reading(s) with a value or time that is not a finite number"
+        " (or a value outside 0..100, or a time outside 1970..9999) dropped" in env["warnings"]
     )
 
 

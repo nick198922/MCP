@@ -3,17 +3,23 @@
 from __future__ import annotations
 
 import json
+import math
 from typing import Any
 
 
 def _f(x: Any) -> float | None:
+    """A finite float, else None: absent, not a number, NaN / inf or an integer beyond the float range (float() of a
+    300+-digit JSON integer raised OverflowError out of the Polymarket tools; a NaN price reached the reply)."""
     try:
-        return float(x) if x is not None else None
-    except (TypeError, ValueError):
+        v = float(x) if x is not None else None
+    except (TypeError, ValueError, OverflowError):
         return None
+    return v if v is not None and math.isfinite(v) else None
 
 
 def _maybe_json_list(x: Any) -> list[Any] | None:
+    """A list as is, or a JSON text of a list decoded; None otherwise. Text that is not valid JSON, holds an integer of
+    4300+ digits (ValueError, not JSONDecodeError) or nests too deep (RecursionError) is None too, not an exception."""
     if x is None:
         return None
     if isinstance(x, list):
@@ -22,9 +28,18 @@ def _maybe_json_list(x: Any) -> list[Any] | None:
         try:
             parsed = json.loads(x)
             return parsed if isinstance(parsed, list) else None
-        except json.JSONDecodeError:
+        except (ValueError, RecursionError):  # JSONDecodeError is a ValueError
             return None
     return None
+
+
+LIST_FIELDS = ("outcomes", "outcomePrices", "clobTokenIds")
+
+
+def undecodable_fields(raw: dict[str, Any]) -> list[str]:
+    """Names of Gamma's list fields that are present but not a list or a JSON text of one (`normalise_market` reads
+    them as absent), so a tool can say so in `warnings` instead of showing a market without outcomes silently."""
+    return [k for k in LIST_FIELDS if raw.get(k) not in (None, "") and _maybe_json_list(raw.get(k)) is None]
 
 
 def devig_multi(prices: list[float | None]) -> list[float | None] | None:

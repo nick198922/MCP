@@ -109,11 +109,14 @@ def placebo_times(
 def yes_prints(trades: Iterable[dict[str, Any]], yes_token: str) -> list[dict[str, Any]]:
     """Normalise ``/trades`` rows to the YES token: ``t``, ``p`` (YES price), ``usd`` (notional), ``dir`` (+1/-1), ``wallet``.
     A row whose time, price or size is absent, not a number, NaN / inf or a 300+-digit integer is skipped, as is a time
-    outside 0 .. year 9999 (unix s) or a size beyond MAX_SIZE."""
+    outside 0 .. year 9999 (unix s) or a size beyond MAX_SIZE, or a bool time / price / size (JSON true read as 1)."""
     out = []
     for r in trades:
         try:
-            t, px, sz = int(r["timestamp"]), float(r["price"]), float(r["size"])
+            raw = (r["timestamp"], r["price"], r["size"])
+            if any(isinstance(v, bool) for v in raw):
+                continue
+            t, px, sz = int(raw[0]), float(raw[1]), float(raw[2])
         except (KeyError, TypeError, ValueError, OverflowError):  # OverflowError: int(inf), float() of a 300+-digit int
             continue
         side = str(r.get("side") or "").upper()

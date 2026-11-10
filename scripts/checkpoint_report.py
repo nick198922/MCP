@@ -112,10 +112,10 @@ CARD_JOURNALS: dict[str, Journal] = {
     ),
     "polymarket-v2g-forward": Journal(
         "pm_gap_snapshot", _PM_SQL, "годинних знімків від T0 v2-g", _PM_MIN,
-        f"не раніше {_utc(verdict_ts_v2g(T0_V2G_TS, T0_TS))} UTC", since=T0_V2G_TS,
+        "не раніше {V2G} UTC", since=T0_V2G_TS,
     ),
     "polymarket-vs-options-forward": Journal(
-        "pm_gap_snapshot", _PM_SQL, "годинних знімків від T0", _PM_MIN, f"не раніше {_utc(verdict_ts(T0_TS))} UTC", since=T0_TS,
+        "pm_gap_snapshot", _PM_SQL, "годинних знімків від T0", _PM_MIN, "не раніше {VOPT} UTC", since=T0_TS,
     ),
     "forward-paper-carry": Journal(
         "cp_cycle",
@@ -240,6 +240,7 @@ def journal_row(
         else:
             first, last = int(got["first"]), int(got["last"])
             verdict = re.sub(r"\{\+(\d+)\}", lambda m, t0=first: _utc(t0 + int(m.group(1)) * 86_400, "%Y-%m-%d"), j.verdict)
+            verdict = verdict.replace("{V2G}", _utc(verdict_ts_v2g(T0_V2G_TS, T0_TS))).replace("{VOPT}", _utc(verdict_ts(T0_TS)))
             counters[slug] = (
                 f"журнал {j.table}: {j.unit} {got['n']}, з {_utc(first)} до {_utc(last)} UTC; мінімум: {j.minimum}; вердикт: {verdict}"
             )

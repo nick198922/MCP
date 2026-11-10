@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 from ..analytics.option_xvenue import MAX_NUM, ms
 from ..analytics.radar import build_surface, due_days, radar_row, window_ms
 from ..core.errors import ProviderError
+from .bad_rows import note_bad_rows
 
 if TYPE_CHECKING:
     from ..runtime import Runtime
@@ -76,6 +77,7 @@ async def fetch_trades(rt: "Runtime", currency: str, start_ms: int, end_ms: int)
         nxt = times[-1]
         cur = nxt if nxt > cur else cur + 1  # a full page inside one millisecond: step over it
     if bad:
+        note_bad_rows(bad)
         log.warning("radar archive: %s %d-%d: %d malformed or out-of-window print(s) dropped", currency, start_ms, end_ms, bad)
     return out
 

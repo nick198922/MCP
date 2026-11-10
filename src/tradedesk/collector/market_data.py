@@ -12,6 +12,7 @@ from typing import Any
 from ..core.envelope import Builder
 from ..runtime import Runtime
 from ..tools._util import MAX_BAR_PRICE, MAX_BAR_TS_MS, MAX_FUNDING_RATE, finite_float, parsed_rows
+from .bad_rows import note_bad_rows
 
 log = logging.getLogger("tradedesk.collector")
 
@@ -64,5 +65,6 @@ def funding_entries(rows: list[dict[str, Any]], max_rate: float | None = MAX_FUN
     entries = parsed_rows(given, lambda x: {"ts_ms": int(x["timestamp"]), "rate": finite_float(x["fundingRate"])})
     out = [e for e in entries if 0 <= e["ts_ms"] <= MAX_BAR_TS_MS and (max_rate is None or abs(e["rate"]) <= max_rate)]
     if len(out) < len(given):
+        note_bad_rows(len(given) - len(out))
         log.warning("funding_entries: %d of %d funding row(s) dropped (malformed time or rate)", len(given) - len(out), len(given))
     return out

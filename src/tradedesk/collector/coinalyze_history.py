@@ -48,6 +48,7 @@ from typing import TYPE_CHECKING, Any
 from ..analytics.coinalyze_series import FUNDING_PCT_TO_DECIMAL, long_short_series, ohlc_series
 from ..analytics.liquidations_agg import aggregated_symbol, api_interval, exchange_symbol, parse_exchanges
 from ..core.envelope import Builder, Fetched
+from .bad_rows import note_bad_rows
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable
@@ -207,6 +208,7 @@ class CoinalyzeHistoryJob:
                     continue
                 parsed = parse_history(metric, hist)
                 if isinstance(hist, list) and len(hist) > len(parsed):  # a NaN / text / 1e308 value or a bad time
+                    note_bad_rows(len(hist) - len(parsed))
                     log.warning("coinalyze_history: %s %s dropped %d malformed or repeated bar(s)", symbol, metric, len(hist) - len(parsed))
                 rows = [r for r in parsed if start <= r["ts"] < end]
                 if metric == "oi_usd" and oi_not_usd(rows):
@@ -217,6 +219,7 @@ class CoinalyzeHistoryJob:
                 if metric == "oi_usd":
                     rows, dropped = split_bad_oi(rows)
                     if dropped:
+                        note_bad_rows(len(dropped))
                         log.warning(
                             "coinalyze_history: %s oi_usd dropped %d damaged bar(s) with close below %g: %s",
                             symbol,

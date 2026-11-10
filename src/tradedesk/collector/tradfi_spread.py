@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any
 from ..analytics.option_xvenue import ms, num
 from ..analytics.tradfi_spread import is_tradfi_perp
 from ..core.envelope import Builder
+from .bad_rows import note_bad_rows
 
 if TYPE_CHECKING:
     from ..runtime import Runtime
@@ -68,6 +69,7 @@ def build_rows(symbols: Iterable[str], book: Any, premium: Any) -> list[dict[str
             bad += row[col] is None and not _empty(v)
         rows.append(row)
     if bad:
+        note_bad_rows(bad)
         log.warning("tradfi_spread: %d malformed field(s) (NaN / inf / text / beyond bounds) stored as NULL", bad)
     return rows
 

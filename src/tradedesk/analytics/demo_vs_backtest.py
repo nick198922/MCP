@@ -470,12 +470,14 @@ def day_turnover(klines: Sequence[Sequence[Any]], day_ms: int, now_ms: int) -> f
     the daily candle opening at ``day_ms``; None when the day has not closed by ``now_ms`` (a partial day understates),
     the candle is absent, or its turnover is not a number in 0 .. MAX_TURNOVER (NaN, inf, 1e308). A row that is not a
     sequence (a dict raised KeyError) or whose start or turnover is an infinite or 300+-digit number is skipped like a
-    malformed one."""
+    malformed one, as is a bool start or turnover (JSON true / false read as 1 / 0)."""
     if day_ms + DAY_MS > now_ms:
         return None
     for k in klines:
         try:
-            if int(k[0]) != day_ms:
+            if isinstance(k[0], bool) or int(k[0]) != day_ms:
+                continue
+            if isinstance(k[6], bool):
                 continue
             v = float(k[6])
         except (TypeError, ValueError, LookupError, OverflowError):  # OverflowError: int(inf), float() of a 300+-digit int

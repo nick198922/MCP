@@ -103,9 +103,9 @@ def json_list(x: Any) -> list[Any] | None:
 def resolved_outcome(outcome_prices: Any, tol: float = 1e-3) -> int | None:
     """1 if the first outcome paid 1, 0 if the second did, None for 50/50, unresolved or malformed (NaN / inf, a
     300+-digit integer or any price outside 0..1 within ``tol`` included: an infinite or 1e308 price is not a payout
-    of 1)."""
+    of 1; a bool too: JSON true / false read as 1 / 0)."""
     v = json_list(outcome_prices)
-    if not v or len(v) != 2:
+    if not v or len(v) != 2 or isinstance(v[0], bool) or isinstance(v[1], bool):
         return None
     try:
         a, b = float(v[0]), float(v[1])
@@ -344,11 +344,14 @@ def cluster_bootstrap_ci(rows: Iterable[tuple[str, str, float]], *, n_boot: int 
 def _yes_prints(trades: Iterable[dict[str, Any]], yes_token: str) -> list[tuple[int, float]]:
     """(time, YES-equivalent price) of the prints, sorted; a print whose time or price is absent, not a number,
     NaN / inf or a 300+-digit integer is skipped, as is a time outside 0 .. year 9999 (unix s) or a price outside 0..1
-    (1e308 made the lookahead check's distances 1e308)."""
+    (1e308 made the lookahead check's distances 1e308), or a bool time / price (JSON true read as 1)."""
     out = []
     for x in trades:
         try:
-            t, px = int(x["timestamp"]), float(x["price"])
+            t_raw, px_raw = x["timestamp"], x["price"]
+            if isinstance(t_raw, bool) or isinstance(px_raw, bool):
+                continue
+            t, px = int(t_raw), float(px_raw)
         except (KeyError, TypeError, ValueError, OverflowError):  # OverflowError: int(inf), float() of a 300+-digit int
             continue
         if not (0 <= t <= MAX_TS_S and 0.0 <= px <= 1.0):  # also False for a NaN price

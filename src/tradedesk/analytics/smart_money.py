@@ -89,7 +89,10 @@ def classify_account(account_value: float | None, vlm_month: float | None, posit
 
 def finite_num(x: Any) -> float | None:
     """``float(x)`` when it is a finite number, else None: absent, not a number, NaN / ±inf (also the strings "nan" /
-    "Infinity") or an integer beyond the float range (``float(10**400)`` raises OverflowError)."""
+    "Infinity") or an integer beyond the float range (``float(10**400)`` raises OverflowError), or a bool (JSON true /
+    false is no Hyperliquid number; it read as 1 / 0)."""
+    if isinstance(x, bool):
+        return None
     try:
         v = float(x)
     except (TypeError, ValueError, OverflowError):
@@ -105,6 +108,12 @@ def bounded_num(x: Any, lo: float, hi: float) -> float | None:
     """``finite_num(x)`` when it lies in [lo, hi], else None (1e308 is finite but no Hyperliquid time or USD amount)."""
     v = finite_num(x)
     return v if v is not None and lo <= v <= hi else None
+
+
+def _or_zero(x: Any) -> Any:
+    """``x or 0.0`` (an absent or empty field reads as 0, as before), except that a bool stays a bool, so `bounded_num`
+    rejects JSON false instead of reading it as 0."""
+    return x if isinstance(x, bool) else (x or 0.0)
 
 
 def dropped_note(source: str, dropped: Sequence[str]) -> str | None:
@@ -144,7 +153,7 @@ def parse_portfolio(raw: Any, dropped: list[str] | None = None) -> dict[str, dic
                 rows.append((int(t), v))
             return sorted(rows)
 
-        vlm = bounded_num(body.get("vlm") or 0.0, 0, MAX_USD)  # absent / empty reads as 0, as before
+        vlm = bounded_num(_or_zero(body.get("vlm")), 0, MAX_USD)  # absent / empty reads as 0, as before
         if vlm is None:
             bad.append(f"{name}.vlm")
         out[str(name)] = {"pnl": pts("pnlHistory"), "value": pts("accountValueHistory"), "vlm": vlm or 0.0}
@@ -241,8 +250,8 @@ def realized_pnl_windows(
             bad.append("fill")
             continue
         tf = bounded_num(f.get("time"), 0, MAX_TS_MS)
-        pnl = bounded_num(f.get("closedPnl") or 0.0, -MAX_USD, MAX_USD)
-        fee = bounded_num(f.get("fee") or 0.0, -MAX_USD, MAX_USD)
+        pnl = bounded_num(_or_zero(f.get("closedPnl")), -MAX_USD, MAX_USD)
+        fee = bounded_num(_or_zero(f.get("fee")), -MAX_USD, MAX_USD)
         if tf is None or pnl is None or fee is None:
             bad.append("time" if tf is None else "closedPnl" if pnl is None else "fee")
             continue

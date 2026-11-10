@@ -126,10 +126,13 @@ def binance_closes(bars: Iterable[Sequence[Any]], end_ts: int) -> tuple[float | 
     that open at ``end_ts``. The texts name either "the 1 minute candle ... 12:00" (2025) or "the 1 minute candle ...
     closing at 12:00" (since 2026-10-07), so both are kept for the cross-check. None where the bar is absent. A bar
     that is not a sequence (a dict raised KeyError), or whose open time or close is not a number, NaN / inf or a
-    300+-digit integer, or whose close is outside (0, MAX_CLOSE] (1e308 read as "above any strike") is skipped."""
+    300+-digit integer, or whose close is outside (0, MAX_CLOSE] (1e308 read as "above any strike") is skipped, as is a
+    bool open time or close (JSON true read as 1)."""
     at_end = nxt = None
     for b in bars:
         try:
+            if isinstance(b[0], bool) or isinstance(b[4], bool):
+                continue
             t, c = int(float(b[0]) // 1000), float(b[4])
         except (LookupError, TypeError, ValueError, OverflowError):  # OverflowError: int(inf), float() of a 300+-digit int
             continue

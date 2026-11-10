@@ -57,12 +57,14 @@ def _iso_ts(s: Any) -> int | None:
 
 
 def _json_list(x: Any) -> list[Any] | None:
+    """A list as is, or a JSON text of a list decoded; None otherwise. Text that is not valid JSON, holds an integer of
+    4300+ digits (ValueError, not JSONDecodeError) or nests too deep (RecursionError) is None too, not an exception."""
     if isinstance(x, list):
         return x
     if isinstance(x, str):
         try:
             v = json.loads(x)
-        except json.JSONDecodeError:
+        except (ValueError, RecursionError):  # JSONDecodeError is a ValueError
             return None
         return v if isinstance(v, list) else None
     return None

@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..analytics.coingecko_trending import hour_ts, snapshot_rows
 from ..core.envelope import Builder
+from .bad_rows import note_bad_rows
 
 if TYPE_CHECKING:
     from ..runtime import Runtime
@@ -69,6 +70,7 @@ async def collect_coingecko_trending(rt: "Runtime") -> int:
         return 0
     bad = _nulled(payload, rows)
     if bad:
+        note_bad_rows(bad)
         log.warning("coingecko_trending: hour %d, %d malformed numeric field(s) stored as NULL", ts, bad)
     written = await rt.store.insert_coingecko_trending(ts, int(rt.now().timestamp()), rows)
     log.info(

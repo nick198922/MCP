@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..analytics.hl_oi_cap import hour_ts, snapshot_rows
 from ..core.envelope import Builder
+from .bad_rows import note_bad_rows
 
 if TYPE_CHECKING:
     from ..runtime import Runtime
@@ -66,6 +67,7 @@ async def collect_hl_oi_cap(rt: "Runtime") -> int:
     rows = snapshot_rows(capped, contexts)
     bad = _nulled(contexts, rows)
     if bad:
+        note_bad_rows(bad)
         log.warning("hl_oi_cap: hour %d, %d malformed field(s) (NaN / inf / beyond bounds) stored as NULL", ts, bad)
     written = await rt.store.insert_hl_oi_cap_snapshot(ts, int(now.timestamp()), rows)
     at_cap = [r["coin"] for r in rows if r["at_cap"]]

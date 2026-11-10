@@ -2237,9 +2237,9 @@ ACT: dict[str, tuple[str, str, str, str]] = {
         "дивись середнє на угоду й середній R: нижче 0 — зменш розмір, посуворіш правила входу.",
     ),
     "j_winrate": (
-        "Низька",
+        "Низька (до 50 %)",
         "не біда, якщо середнє на угоду вище 0: прибутки більші за збитки.",
-        "Висока, а середнє нижче 0",
+        "Від 50 %, а середнє нижче 0",
         "прибутки ріжуться рано, збитки тримаються довго: тримай стоп, дай плюсу дійти до цілі.",
     ),
     "j_pnl": (
@@ -8904,6 +8904,7 @@ def max_drawdown_usd(rows: list[dict]) -> float:
 # (the fields shown; tests compare the pairs) over the owner's real trades, as scripts/journal_weekly_tg.py picks them.
 JOURNAL_BOT_TAGS = frozenset({"auto", "demo-paper", "bybit-demo"})  # scripts/journal_close_tg.BOT_TAGS: the demo trader
 JR_SMALL_SAMPLE = 30  # analytics.journal.SMALL_SAMPLE: fewer is a description, not a conclusion
+JR_HIGH_WINRATE = 0.5  # «Частка в плюсі» from which ACT["j_winrate"] calls it high (half the closed trades or more)
 JR_WEEK_S = 7 * 86400.0
 JR_WEEKS = 12  # newest ISO weeks in the table
 JR_DOTS_MAX = 80  # a dot per trade on the R curve up to this many trades
@@ -9360,15 +9361,23 @@ def _r(x: object) -> str:
 
 # «Мої угоди» tiles' action lines (docs/design/PANEL.md rule 2, standing improvements item 295): the only thresholds are
 # the notes' (ACT / HELP) 30 trades (JR_SMALL_SAMPLE), rule 1's $100, sign 0 as each tile colours it (_signed_cls, or
-# the expectancy tile's exp < 0 edge) and the «За правилами» counts; no other cut-off is invented.
+# the expectancy tile's exp < 0 edge), the «За правилами» counts and ACT["j_winrate"]'s 50 % (JR_HIGH_WINRATE, item 311);
+# no other cut-off is invented.
 def j_trades_act(n: int) -> str:
     """«Угод (закритих)»: ACT["j_trades"]'s under / from JR_SMALL_SAMPLE closed trades."""
     return "опис, не висновок: розмір не міняй" if n < JR_SMALL_SAMPLE else "суди за середнім на угоду й R"
 
 
-def j_winrate_act(exp: float | None) -> str:
-    """«Частка в плюсі»: read with the average per trade (its note); exp < 0 as the expectancy tile's red edge."""
-    return "середнє нижче 0: тримай стоп, дай плюсу дійти" if exp is not None and exp < 0 else "середнє не в мінусі: низька частка не біда"
+def j_winrate_act(win_rate: float | None, exp: float | None) -> str:
+    """«Частка в плюсі»: read with the average per trade (its note); exp < 0 as the expectancy tile's red edge and
+    ACT["j_winrate"]'s high share from JR_HIGH_WINRATE. «Тримай стоп» only where the note says it: a high share with a
+    negative average; a low share with a negative average points at the average, as does an unknown share."""
+    neg = exp is not None and exp < 0
+    if win_rate is None:
+        return "частка невідома: дивись середнє на угоду"
+    if win_rate >= JR_HIGH_WINRATE:
+        return "середнє нижче 0: тримай стоп, дай плюсу дійти" if neg else "частка сама мало каже: дивись середнє"
+    return "низька частка й мінус: дивись середнє на угоду" if neg else "середнє не в мінусі: низька частка не біда"
 
 
 def j_pnl_act(total: float | None, n: int) -> str:
@@ -9442,7 +9451,7 @@ def block_journal_tiles(real: list[dict], n_open: int, now: float) -> str:
     dd = max_drawdown_usd(real)
     tiles = [
         _tile("Угод (закритих)", _nf(n), f"у плюсі {s['wins']} · у мінусі {s['losses']}", help="j_trades", act=j_trades_act(n)),
-        _tile("Частка в плюсі", _share(s["win_rate"]), "за полем outcome", help="j_winrate", act=j_winrate_act(exp)),
+        _tile("Частка в плюсі", _share(s["win_rate"]), "за полем outcome", help="j_winrate", act=j_winrate_act(s["win_rate"], exp)),
         _tile(
             "P&L разом",
             f"<span class='{_signed_cls(total)}'>{_usd(total, True)}</span>",

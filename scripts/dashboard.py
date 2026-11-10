@@ -10356,6 +10356,20 @@ def fc_clim_act(skill: float | None, n_dates: int) -> str:
     return "точніші за частоту; угоду перевіряй окремо"
 
 
+def fc_rv_act(ci: list | None, n_dates: int) -> str:
+    """«Опціони проти RV30» (item 298): ACT["fc_rv"]'s «поки 95 % ДІ містить 0, різниці не видно» (the CI against 0 as
+    _demo_vs0 reads it: strictly above / below), minus = the options forecast better, plus = the RV30 model does; a
+    side is a conclusion only from FC_MIN_EXPIRIES expiry dates (the tile's badge, HELP's «лише від 30 дат»)."""
+    if ci is None:
+        return "ДІ — від 2 дат: висновку нема"
+    if not (ci[0] > 0 or ci[1] < 0):
+        return "ДІ містить 0: різниці не видно"
+    if n_dates < FC_MIN_EXPIRIES:
+        side = "опціони точніші" if ci[1] < 0 else "історія точніша"
+        return f"{side}; перевір від {FC_MIN_EXPIRIES} дат"
+    return "опціони точніші: на RV30 не спирайся" if ci[1] < 0 else "опціони хиблять з розміром руху: розбери з Claude"
+
+
 def block_forecasts(rows: list[dict] | None) -> str:
     """Weekly Brier and calibration of the risk-neutral range forecasts (table forecast_log), as forecast_log_status
     scores them. A small n_expiry_dates (the sample size, as forecast_log_status's `enough`) is said out loud: the numbers
@@ -10430,6 +10444,7 @@ def block_forecasts(rows: list[dict] | None) -> str:
                 help="fc_rv",
                 tone="" if c["enough"] else "warn",
                 badge="" if c["enough"] else "замало для висновку",
+                act=fc_rv_act(ci, c["n_dates"]),
             )
         )
     out = [f"<div class='tiles'>{''.join(tiles)}</div>"]
@@ -12040,6 +12055,38 @@ def _demo_vs_bt_file_note(doc_err: str | None) -> str:
     )
 
 
+# The «Звірка з бектестом» tiles' action lines (docs/design/PANEL.md rule 2, item 298): the only thresholds are the
+# notes' DEMO_MIN_N decided trades (the tile's «замало для висновку» badge, the file's own 'enough'), «Збігів більшість»
+# of ACT["demo_vs_bt"] (a share above one half) and ACT["demo_vs_bt_total"]'s «Різниця R далеко від 0» read as the 95 %
+# CI of the file (ci95_r_diff) strictly above or below 0, as _demo_vs0 reads a CI.
+def demo_vs_bt_n_act(few: bool) -> str:
+    """«Звірено угод»: ACT["demo_vs_bt_total"]'s «Менше 30 звірених» → wait, from there read the two tiles next to it."""
+    return "замало для висновку: чекай" if few else "читай частку збігів і різницю R"
+
+
+def demo_vs_bt_match_act(share: float | None, few: bool, min_n: int) -> str:
+    """«Збіг з бектестом»: below min_n decided no conclusion (the badge); then ACT["demo_vs_bt"]'s «Збігів більшість»
+    (share > 0.5) vs «Збігів мало» (HELP: a low share means the backtest describes other trading)."""
+    if share is None:
+        return "звірених ще немає: чекай"
+    if few:
+        return f"до {min_n} звірених — ще не висновок"
+    return "бектест описує демо: дивись різницю R" if share > 0.5 else "бектесту сетапу не вір: розбери з Claude"
+
+
+def demo_vs_bt_r_act(ci: object, few: bool, min_n: int) -> str:
+    """«Різниця R, демо − бектест»: below min_n decided no conclusion; then the file's 95 % CI against 0 (strictly, as
+    _demo_vs0): containing 0 → no difference seen, off 0 → ACT["demo_vs_bt_total"]'s «демо торгує інакше»."""
+    if few:
+        return f"до {min_n} звірених — ще не висновок"
+    lo, hi = (_num(ci[0]), _num(ci[1])) if isinstance(ci, list) and len(ci) == 2 else (None, None)
+    if lo is None or hi is None:
+        return "ДІ ще нема: мало угод з обома R"
+    if lo > 0 or hi < 0:
+        return "демо торгує інакше: розбери з Claude"
+    return "ДІ містить 0: розбіжності R не видно"
+
+
 def _demo_vs_bt_summary(doc: dict, now: float) -> str:
     s = doc["summary"]
     c = s.get("counts") if isinstance(s.get("counts"), dict) else {}
@@ -12062,6 +12109,7 @@ def _demo_vs_bt_summary(doc: dict, now: float) -> str:
             help="demo_vs_bt_total",
             tone="warn" if few else "",
             badge=f"замало для висновку ({decided} з {min_n})" if few else "",
+            act=demo_vs_bt_n_act(few),
         ),
         _tile(
             "Збіг з бектестом",
@@ -12069,12 +12117,14 @@ def _demo_vs_bt_summary(doc: dict, now: float) -> str:
             f"збіг {int(_num(c.get('match')) or 0)} · немає сигналу {int(_num(c.get('no_signal')) or 0)} · розбіжність "
             f"{int(_num(c.get('mismatch')) or 0)}",
             help="demo_vs_bt_total",
+            act=demo_vs_bt_match_act(_num(s.get("match_share")), few, min_n),
         ),
         _tile(
             "Різниця R, демо − бектест",
             f"<span class='{_signed_cls(md)}'>{_r(md)}</span>",
             f"угод з обома R {int(_num(s.get('n_r')) or 0)} · 95 % ДІ {_ci(s.get('ci95_r_diff'))}",
             help="demo_vs_bt_total",
+            act=demo_vs_bt_r_act(s.get("ci95_r_diff"), few, min_n),
         ),
     ]
     out = [f"<div class='tiles'>{''.join(tiles)}</div>"]

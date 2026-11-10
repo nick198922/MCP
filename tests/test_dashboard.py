@@ -1586,6 +1586,17 @@ def test_journal_tab_shows_forecast_brier_calibration_and_weeks(tmp_path):
         assert f"{100 * b['lo']:.0f}–{100 * b['hi']:.0f} %</td><td class='num'>{b['n']}</td>" in page, b
 
 
+def _fc_rv_db(path: Path) -> Path:
+    """The sample forecasts with the RV30 model's prob_rv, as the test below sets them (the «Опціони проти RV30» tile)."""
+    p = _fc_db(path, _sample_forecasts())
+    con = sqlite3.connect(p)
+    con.execute("UPDATE forecast_log SET prob_rv = CASE kind WHEN 'above_spot' THEN 0.5 ELSE MIN(1.0, prob * 1.05) END")
+    con.execute("UPDATE forecast_log SET prob_rv = NULL WHERE asset = 'ETH' AND expiry_ts = ?", (FC_E2,))
+    con.commit()
+    con.close()
+    return p
+
+
 def test_forecast_rv30_comparison_matches_the_analytics_and_renders(tmp_path):
     from tradedesk.analytics import forecast_log as af
 
@@ -2277,11 +2288,14 @@ def _all_tab_pages(tmp_path) -> dict[str, str]:
     con.close()
     pages["journal"] = db.render_journal(*db.load_journal(p), float(T0 + 10 * 86400))
     pages["journal empty"] = db.render_journal(*db.load_journal(_journal_db(tmp_path / "e.sqlite", [], [])), float(T0))
+    pages["journal rv30"] = db.render_journal(*db.load_journal(_fc_rv_db(tmp_path / "rv.sqlite")), float(FC_E2 + 86400))
     cols, rows = _pm_rows()
     pages["polymarket"] = db.render_polymarket(*db.load_pm_gap(_pm_db(tmp_path / "pm.sqlite", rows, cols)), float(PM_B + 600))
     import test_dashboard_demo as td
 
-    pages["demo"] = db.render_demo(*db.load_demo(td._filled(tmp_path, td.NOW)), td.NOW / 1000, vs_bt_on=False)
+    demo = db.load_demo(td._filled(tmp_path, td.NOW))
+    pages["demo"] = db.render_demo(*demo, td.NOW / 1000, vs_bt_on=False)
+    pages["demo vs bt"] = db.render_demo(*demo, td.NOW / 1000, vs_bt_on=True, vs_bt=(td._vs_bt_doc(td.NOW - 3_600_000), None))
     pages["demo empty"] = db.render_demo(*db.load_demo(td._store(tmp_path / "de.sqlite")), td.NOW / 1000)
     import test_dashboard_positions as tp
 
@@ -2363,7 +2377,8 @@ def test_info_notes_are_at_most_four_short_lines():
 
 # docs/design/PANEL.md rule 2: HELP keys of tiles still without the «what to do» line under them, on any tab of
 # _all_tab_pages (standing improvements, item 294: «Ринок» done; item 295: «Демо» and the journal / «Середній R» tiles
-# of «Мої угоди»; item 297: the forecast journal, plans and paper recommendations; none left). Like RULE3_TODO, the
+# of «Мої угоди»; item 297: the forecast journal, plans and paper recommendations; item 298: «Опціони проти RV30» and
+# the three «Звірка з бектестом» tiles, whose pages «journal rv30» / «demo vs bt» joined _all_tab_pages; none left). Like RULE3_TODO, the
 # list must match the fact both ways: a new tile without an action line, or a fixed one still listed, fails the test.
 RULE2_MAX_WORDS = 8
 RULE2_TODO = frozenset()
@@ -2394,6 +2409,76 @@ def test_rule2_tiles_have_a_short_action_line_except_the_listed(tmp_path):
             words = [w for w in a.split() if re.search(r"\w", w)]
             assert 0 < len(words) <= RULE2_MAX_WORDS, (name, key, a)
     assert not [r for r in rows if r[0].startswith("brief") and r[2] is None]  # «Ринок»: every tile
+    seen = {(n, k) for n, k, _ in rows}  # item 298: the last two keys are on the guarded pages now
+    assert ("journal rv30", "fc_rv") in seen and sum(1 for n, k, _ in rows if (n, k) == ("demo vs bt", "demo_vs_bt_total")) == 3
+
+
+def test_fc_rv_and_demo_vs_bt_action_lines_on_their_notes_thresholds(tmp_path):
+    """Item 298 (docs/design/PANEL.md rule 2): «Опціони проти RV30» and the three «Звірка з бектестом» tiles. The only
+    cut-offs are the notes' 30 expiry dates (FC_MIN_EXPIRIES) and 30 decided trades (DEMO_MIN_N, the badges), the
+    95 % CI strictly above / below 0 (ACT["fc_rv"], ACT["demo_vs_bt_total"]'s «Різниця R далеко від 0») and
+    ACT["demo_vs_bt"]'s «Збігів більшість» (a share above one half)."""
+    import html
+    import re
+
+    import test_dashboard_demo as td
+    from tradedesk.analytics import demo_vs_backtest as dvb
+
+    f, n = db.FC_MIN_EXPIRIES, db.DEMO_MIN_N
+    assert f == 30 and "поки 95 % ДІ містить 0, різниці не видно" in db.ACT["fc_rv"][1] and f"від {f} дат" in db.ACT["fc_rv"][3]
+    assert n == dvb.MIN_TRADES == 30 and db.ACT["demo_vs_bt_total"][0] == f"Менше {n} звірених"
+    assert db.ACT["demo_vs_bt_total"][2] == "Різниця R далеко від 0" and db.ACT["demo_vs_bt"][2] == "Збігів більшість"
+    lines = []
+
+    def got(x: str) -> str:
+        lines.append(x)
+        return x
+
+    # «Опціони проти RV30»: a CI touching 0 contains it; a side is a conclusion only from 30 dates
+    assert got(db.fc_rv_act(None, f)) == "ДІ — від 2 дат: висновку нема"
+    same = "ДІ містить 0: різниці не видно"
+    assert db.fc_rv_act([-0.1, 0.1], f) == db.fc_rv_act([-0.1, 0.0], f) == got(db.fc_rv_act([0.0, 0.1], f)) == same
+    assert got(db.fc_rv_act([-0.1, -0.001], f - 1)) == "опціони точніші; перевір від 30 дат"
+    assert got(db.fc_rv_act([-0.1, -0.001], f)) == "опціони точніші: на RV30 не спирайся"
+    assert got(db.fc_rv_act([0.001, 0.1], f - 1)) == "історія точніша; перевір від 30 дат"
+    assert got(db.fc_rv_act([0.001, 0.1], f)) == "опціони хиблять з розміром руху: розбери з Claude"
+    # «Звірено угод», «Збіг з бектестом», «Різниця R»
+    assert got(db.demo_vs_bt_n_act(True)) == "замало для висновку: чекай"
+    assert got(db.demo_vs_bt_n_act(False)) == "читай частку збігів і різницю R"
+    assert got(db.demo_vs_bt_match_act(None, True, n)) == "звірених ще немає: чекай"
+    assert got(db.demo_vs_bt_match_act(0.9, True, n)) == "до 30 звірених — ще не висновок"
+    assert got(db.demo_vs_bt_match_act(0.5, False, n)) == "бектесту сетапу не вір: розбери з Claude"
+    assert got(db.demo_vs_bt_match_act(0.5001, False, n)) == "бектест описує демо: дивись різницю R"
+    assert got(db.demo_vs_bt_r_act([0.001, 0.2], True, n)) == "до 30 звірених — ще не висновок"
+    no_ci = "ДІ ще нема: мало угод з обома R"
+    assert db.demo_vs_bt_r_act(None, False, n) == db.demo_vs_bt_r_act(["x", 1.0], False, n) == no_ci
+    assert got(db.demo_vs_bt_r_act([1.0], False, n)) == no_ci
+    same = "ДІ містить 0: розбіжності R не видно"
+    assert db.demo_vs_bt_r_act([-0.2, 0.0], False, n) == got(db.demo_vs_bt_r_act([0.0, 0.2], False, n)) == same
+    off = "демо торгує інакше: розбери з Claude"
+    assert db.demo_vs_bt_r_act([-0.2, -0.001], False, n) == got(db.demo_vs_bt_r_act([0.001, 0.2], False, n)) == off
+    for x in lines:
+        assert 0 < len([w for w in x.split() if re.search(r"\w", w)]) <= RULE2_MAX_WORDS, x
+
+    def act(page: str, key: str) -> list[str]:
+        found = re.findall(re.escape(db._info(key)) + r"</span><span class='v'>.*?<span class='act'>([^<]*)</span></div>", page, re.S)
+        return [html.unescape(x) for x in found]
+
+    # on the tiles: the RV30 sample (2 expiry dates) ...
+    data, _ = db.load_journal(_fc_rv_db(tmp_path / "rv.sqlite"))
+    c = db.fc_compare(data["forecast_log"])
+    assert c["n_dates"] == 2 and act(db.block_forecasts(data["forecast_log"]), "fc_rv") == [db.fc_rv_act(c["ci95"], 2)]
+    # ... and the replay file with 29 / 30 decided trades, all matched, R diff ≈ +0.15 (its CI above 0)
+    for k, want in (
+        (n - 1, ["замало для висновку: чекай"] + ["до 30 звірених — ще не висновок"] * 2),
+        (n, ["читай частку збігів і різницю R", "бектест описує демо: дивись різницю R", off]),
+    ):
+        rows = [
+            dvb.Replay(str(i), "S/USDT:USDT", "S3", "4h", "long", 0, 0, "match", r_demo=1.0, r_demo_bt=1.1 + 0.1 * (i % 2), r_bt=1.0, r_diff=0.1 + 0.1 * (i % 2))
+            for i in range(k)
+        ]  # fmt: skip
+        doc = {**td._vs_bt_doc(td.NOW), "summary": dvb.summary(rows)}
+        assert act(db.block_demo_vs_bt([], True, doc, None, td.NOW / 1000), "demo_vs_bt_total") == want, k
 
 
 def test_demo_and_journal_action_lines_on_their_notes_thresholds():

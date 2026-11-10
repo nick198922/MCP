@@ -21,10 +21,13 @@ FUNDING_PCT_TO_DECIMAL = 0.01
 LS_PCT_TO_FRACTION = 0.01
 
 
+MAX_ABS = 1e20  # far above any OI in USD, funding percent or ratio; a 1e308 close overflowed the stdev (OverflowError)
+
+
 def _num(x: Any) -> float:
     v = float(x)
-    if not math.isfinite(v):
-        raise ValueError("non-finite")
+    if not math.isfinite(v) or abs(v) > MAX_ABS:
+        raise ValueError("non-finite or beyond MAX_ABS")
     return v
 
 

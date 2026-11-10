@@ -6,23 +6,29 @@ live feed), so neither imports private helpers from the other. Read-only public 
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ..tools._util import finite_float, parsed_rows
+from ..tools._util import MAX_BAR_PRICE, MAX_BAR_TS_MS, MAX_FUNDING_RATE, finite_float, parsed_rows
+
+log = logging.getLogger("tradedesk.collector")
 
 BAR_MS = 4 * 3_600_000
 BAR_PAGE = 100  # OKX caps candles per request at 100; paginate rather than rely on a bigger page
 
 
 def parse_bar(x: Any) -> dict[str, Any] | None:
-    """ccxt row [ts, o, h, l, c, v] -> bar dict; None for malformed rows (None / non-numeric / non-positive prices)."""
+    """ccxt row [ts, o, h, l, c, v] -> bar dict; None for malformed rows: None / non-numeric fields, a time outside
+    0 .. year 9999 in unix ms (10**20 cannot be stored), a price that is not in (0, MAX_BAR_PRICE] (NaN, inf, 1e308)."""
     try:
         bar = {"ts": int(x[0]), "high": float(x[2]), "low": float(x[3]), "close": float(x[4])}
-    except (TypeError, ValueError, IndexError, KeyError):
+    except (TypeError, ValueError, IndexError, KeyError, OverflowError):  # OverflowError: int(inf), float(10**400)
         return None
-    return bar if min(bar["high"], bar["low"], bar["close"]) > 0 else None
+    if not 0 <= bar["ts"] <= MAX_BAR_TS_MS:
+        return None
+    return bar if all(0 < bar[k] <= MAX_BAR_PRICE for k in ("high", "low", "close")) else None
 
 
 async def bars_4h(rt: Runtime, b: Builder, venue: str, sym: str, since_ms: int, now_ms: int) -> list[dict[str, Any]] | None:
@@ -48,11 +54,15 @@ async def bars_4h(rt: Runtime, b: Builder, venue: str, sym: str, since_ms: int, 
     return [out[k] for k in sorted(out)]
 
 
-def funding_entries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def funding_entries(rows: list[dict[str, Any]], max_rate: float | None = MAX_FUNDING_RATE) -> list[dict[str, Any]]:
     """ccxt funding-history rows -> ``[{ts_ms, rate}]`` (rate as a decimal per interval); rows without a rate are dropped,
     and so are rows whose rate or timestamp is not a number (a string like "abc", a list) or not finite (NaN, inf),
-    instead of raising or poisoning the sum of payments; the paper-carry engine sees such a payment as missing."""
-    return parsed_rows(
-        [x for x in rows if x.get("fundingRate") is not None and x.get("timestamp")],
-        lambda x: {"ts_ms": int(x["timestamp"]), "rate": finite_float(x["fundingRate"])},
-    )
+    whose timestamp is outside 0 .. year 9999 in unix ms, or (unless ``max_rate`` is None) whose rate is beyond
+    +-``max_rate`` (a finite 1e308 overflowed the carry to inf), instead of raising or poisoning the sum of payments or
+    the stored history; the paper-carry engine sees such a payment as missing. Dropped malformed rows are logged."""
+    given = [x for x in rows if x.get("fundingRate") is not None and x.get("timestamp")]
+    entries = parsed_rows(given, lambda x: {"ts_ms": int(x["timestamp"]), "rate": finite_float(x["fundingRate"])})
+    out = [e for e in entries if 0 <= e["ts_ms"] <= MAX_BAR_TS_MS and (max_rate is None or abs(e["rate"]) <= max_rate)]
+    if len(out) < len(given):
+        log.warning("funding_entries: %d of %d funding row(s) dropped (malformed time or rate)", len(given) - len(out), len(given))
+    return out

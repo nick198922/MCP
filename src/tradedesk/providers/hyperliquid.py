@@ -21,7 +21,7 @@ NAMES_RETRY_S = 60.0
 def _f(x: Any) -> float | None:
     try:
         return None if x is None else float(x)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):  # OverflowError: float() of a 400-digit JSON integer
         return None
 
 

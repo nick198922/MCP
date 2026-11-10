@@ -43,21 +43,25 @@ DEPTH_KEYS = ("mid", "reach_bid", "reach_ask", *(f"{side}_usd_{label}" for label
 ROW_KEYS = (*DEPTH_KEYS, "oi_coins", "oi_usd", "funding_rate", "funding_hours", "funding_annualized", "long_share", "missing")
 
 
+MAX_ABS = 1e20  # far above any size, OI in coins or rate here (a 1e-9 meme coin trades ~1e15 a day); 1e308 is garbage
+MAX_PRICE = 1e12  # far above any quote price: a 1e308 level would cross the book and void its mid
+
+
 def fnum(v: Any) -> float | None:
-    """A finite float (sign kept), else None."""
+    """A finite float up to +-MAX_ABS (sign kept), else None (NaN, inf, 1e308, a 400-digit integer, text)."""
     if v is None or isinstance(v, bool):
         return None
     try:
         x = float(v)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):  # OverflowError: float() of an integer beyond the float range
         return None
-    return x if math.isfinite(x) else None
+    return x if math.isfinite(x) and abs(x) <= MAX_ABS else None
 
 
 def levels(rows: Any, size_mult: float = 1.0) -> list[tuple[float, float]]:
     """``[(price, size_in_base)]`` from venue levels: lists ``[price, size, ...]`` (ccxt, OKX raw strings) or Hyperliquid
     dicts ``{"px", "sz"}``. ``size_mult`` converts contracts to coins (OKX swaps: ``ctVal``). Bad or non-positive levels
-    are skipped."""
+    (and a price above MAX_PRICE) are skipped."""
     out: list[tuple[float, float]] = []
     for lv in rows if isinstance(rows, list) else []:
         if isinstance(lv, dict):
@@ -66,7 +70,7 @@ def levels(rows: Any, size_mult: float = 1.0) -> list[tuple[float, float]]:
             p, s = fnum(lv[0]), fnum(lv[1])
         else:
             continue
-        if p is not None and s is not None and p > 0 and s > 0:
+        if p is not None and s is not None and 0 < p <= MAX_PRICE and s > 0:
             out.append((p, s * size_mult))
     return out
 

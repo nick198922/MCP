@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ..analytics.hl_oi_cap import hour_ts, snapshot_rows
 from ..core.envelope import Builder
@@ -28,6 +28,18 @@ if TYPE_CHECKING:
 log = logging.getLogger("tradedesk.collector")
 
 PROVIDER = "hyperliquid"
+FIELDS = {"open_interest_usd": "oi_usd", "funding_1h": "funding", "mark_px": "mark", "oracle_px": "oracle", "day_volume_usd": "vol24h"}
+
+
+def _nulled(contexts: list[dict[str, Any]], rows: list[dict[str, Any]]) -> int:
+    """Fields the venue sent (parsed, not None) that `snapshot_rows` stored as NULL: NaN, inf or beyond its bounds."""
+    by_coin = {r["coin"]: r for r in rows}
+    n = 0
+    for c in contexts:
+        r = by_coin.get(c.get("coin")) if isinstance(c, dict) and not c.get("delisted") else None
+        if r is not None:
+            n += sum(1 for k, col in FIELDS.items() if c.get(k) is not None and r[col] is None)
+    return n
 
 
 async def collect_hl_oi_cap(rt: "Runtime") -> int:
@@ -52,6 +64,9 @@ async def collect_hl_oi_cap(rt: "Runtime") -> int:
         log.warning("hl_oi_cap: hour %d not recorded (retried on the next tick): %s", ts, why)
         return 0
     rows = snapshot_rows(capped, contexts)
+    bad = _nulled(contexts, rows)
+    if bad:
+        log.warning("hl_oi_cap: hour %d, %d malformed field(s) (NaN / inf / beyond bounds) stored as NULL", ts, bad)
     written = await rt.store.insert_hl_oi_cap_snapshot(ts, int(now.timestamp()), rows)
     at_cap = [r["coin"] for r in rows if r["at_cap"]]
     log.info(

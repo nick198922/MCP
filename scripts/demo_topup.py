@@ -43,6 +43,9 @@ async def run(client: Any, store: Store, now_ms: int, target: float, dry_run: bo
         return rep
     answer = await client.apply_demo_funds(add)
     rep["ret_code"] = (answer or {}).get("retCode")
+    if str(rep["ret_code"]) != "0":
+        rep["error"] = "the venue did not confirm the funds: nothing written to exec_audit"
+        return rep
     await asyncio.sleep(3)  # the wallet shows the funds a moment later
     rep["equity_after"] = round(await client.equity_usd(), 2)
     await store.exec_audit_add(
@@ -72,9 +75,12 @@ async def amain(db: str, keys: tuple[str, str], target: float, dry_run: bool) ->
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--db", default=os.environ.get("TRADEDESK_DB_PATH") or DEFAULT_DB)
-    ap.add_argument("--target", type=float, default=TARGET_USD, help="equity to reach, USD")
+    ap.add_argument("--target", type=float, default=TARGET_USD, help=f"equity to reach, USD (at most {TARGET_USD:,.0f}, ADR 0007)")
     ap.add_argument("--dry-run", action="store_true", help="read the equity and print the amount; no request")
     a = ap.parse_args(argv)
+    if a.target > TARGET_USD:
+        print(f"--target above {TARGET_USD:,.0f} USD is outside ADR 0007 (addition 10.11)")
+        return 2
     keys = load_keys()
     if keys is None:
         print("no demo key (~/.config/tradedesk/bybit-demo.env): nothing to do")

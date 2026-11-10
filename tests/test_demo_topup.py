@@ -57,3 +57,21 @@ async def test_dry_run_and_full_balance_ask_nothing(store):
     c = FakeClient(60_000.0)
     assert (await dt.run(c, store, 1, 50_000, dry_run=False))["add_usdt"] == 0 and c.asked == []
     assert await store.exec_audit_list(kinds=("funds",)) == []
+
+
+async def test_an_unconfirmed_top_up_writes_no_audit_row(store, monkeypatch):
+    c = FakeClient(9_500.0)
+
+    async def refused(usdt):
+        c.asked.append(usdt)
+        return {"retCode": 10001, "retMsg": "too frequent"}
+
+    monkeypatch.setattr(c, "apply_demo_funds", refused)
+    rep = await dt.run(c, store, 1, 50_000, dry_run=False)
+    assert rep["ret_code"] == 10001 and "error" in rep and "equity_after" not in rep
+    assert await store.exec_audit_list(kinds=("funds",)) == []
+
+
+def test_target_above_the_adr_is_refused_before_any_key_is_read(monkeypatch):
+    monkeypatch.setattr(dt, "load_keys", lambda: pytest.fail("keys read"))
+    assert dt.main(["--target", "60000"]) == 2

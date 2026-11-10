@@ -29,6 +29,7 @@ from ._util import (
     first_nonfinite,
     r,
     reject_bad_id,
+    shown_int,
     store_failed,
     store_num,
     store_ready,
@@ -65,7 +66,7 @@ def _iso(ts: int | None) -> str | None:
     try:
         return datetime.fromtimestamp(ts, UTC).isoformat(timespec="seconds")
     except (ValueError, OverflowError, OSError):
-        return str(ts)
+        return shown_int(ts)  # str() of a 5000-digit expires_ts raised out of plan_add
 
 
 def _expires_view(ts: Any) -> dict[str, Any]:
@@ -385,7 +386,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
             now_ts = int(rt.now().timestamp())
             err = validate_levels(side, entry, stop, target)
             if err is None and not now_ts + MIN_HORIZON_S <= expires_ts <= now_ts + MAX_HORIZON_S:
-                err = f"expires_ts must be 2 h to 180 days ahead (now {_iso(now_ts)}, got {_iso(expires_ts) if expires_ts > 0 else expires_ts})"
+                err = f"expires_ts must be 2 h to 180 days ahead (now {_iso(now_ts)}, got {_iso(expires_ts) if expires_ts > 0 else shown_int(expires_ts)})"
             if err is None and rules and not set(rules) <= RULE_KEYS:
                 err = f"rules keys must be '1'..'8', got {sorted(set(rules) - RULE_KEYS)}"
             if err is None and rec_paper_id is not None and instrument != "option":

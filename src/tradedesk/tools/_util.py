@@ -67,15 +67,25 @@ def finite_json(x: Any) -> bool:
     return True
 
 
+def shown_int(v: int) -> str:
+    """`v` as text for a message. An integer of 101+ digits is not echoed: str() of one beyond 4300 digits raises
+    ValueError (and so did the message of a tool refusing it), and a 400-digit echo helps nobody."""
+    return str(v) if -(10**100) < v < 10**100 else "an integer beyond +-1e100"
+
+
 def reject_bad_ts(b: Builder, field: str, ts: int | None) -> dict[str, Any] | None:
     """ok=false envelope when unix seconds `ts` fit no datetime (10**20 also overflows the SQLite INTEGER binding and
-    raised out of the tool; a millisecond value is beyond the year 9999), else None."""
+    raised out of the tool; a millisecond value is beyond the year 9999) or are negative (before 1970: no trade time),
+    else None."""
     if ts is None:
         return None
     try:
         datetime.fromtimestamp(ts, UTC)
     except (ValueError, OverflowError, OSError):
-        b.miss(field, "tradedesk", "invalid_input", f"{field}={ts} is outside the datetime range (unix seconds expected)")
+        b.miss(field, "tradedesk", "invalid_input", f"{field}={shown_int(ts)} is outside the datetime range (unix seconds expected)")
+        return b.build(None, ok=False)
+    if ts < 0:
+        b.miss(field, "tradedesk", "invalid_input", f"{field}={ts} is negative (before 1970); unix seconds >= 0 expected")
         return b.build(None, ok=False)
     return None
 

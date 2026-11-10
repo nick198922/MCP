@@ -82,6 +82,30 @@ def _warn_dropped_bars(b: Builder, raw: Any, bars: list[dict[str, Any]]) -> None
         b.warn(f"{dropped} malformed bars (non-numeric timestamp or price) dropped; ranges and sweeps skip them")
 
 
+MAX_BAR_TS_MS = 253_402_300_799_999  # 9999-12-31T23:59:59.999Z in unix ms: a later bar time fits no datetime
+MAX_BAR_PRICE = 1e12  # far above any listed quote price; 1e308 from another writer is garbage, not a price
+
+
+def _stored_bar_ok(x: dict[str, Any]) -> bool:
+    ts = x.get("ts")
+    if not isinstance(ts, int) or isinstance(ts, bool) or not 0 <= ts <= MAX_BAR_TS_MS:
+        return False
+    return all((v := store_num(x.get(k))) is not None and 0 < v <= MAX_BAR_PRICE for k in ("open", "high", "low", "close"))
+
+
+def _stored_bars(b: Builder, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """`rows` of ohlcv_hist without the bars another writer corrupted, with a warning (invariant 1). A text / blob price
+    raised ValueError out of range_detect / range_setup / market_regime, inf gave Infinity / NaN in the reply, and a
+    text / blob / 1e20 timestamp or a 1e308 price went into the ranges unchecked. Valid bars pass unchanged."""
+    bars = [x for x in rows if _stored_bar_ok(x)]
+    if len(bars) < len(rows):
+        b.warn(
+            f"{len(rows) - len(bars)} stored bars skipped: a timestamp that is not integer unix ms (0 .. year 9999) or an "
+            f"open / high / low / close that is not a finite number in (0, {MAX_BAR_PRICE:g}]; the window has fewer bars"
+        )
+    return bars
+
+
 def _stored_points(b: Builder, series: list[dict[str, Any]], key: str) -> list[tuple[int, float]]:
     """(ts, value) for the rows whose `key` is a finite number. NULL (a wing the collector could not fit) is skipped
     silently as before; a string, a blob or inf (another writer) is skipped with a warning instead of raising in the
@@ -334,8 +358,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
         venue: Annotated[str, Field(description="ccxt venue id, e.g. 'binanceusdm'.")],
         symbol: Annotated[str, Field(description="ccxt symbol, e.g. 'BTC/USDT:USDT'.")],
         timeframe: Annotated[str, Field(description="OHLCV timeframe as stored, e.g. '1h'.")] = "1h",
-        since_ts_ms: Annotated[int | None, Field(description="Unix ms lower bound (inclusive).")] = None,
-        until_ts_ms: Annotated[int | None, Field(description="Unix ms upper bound (inclusive).")] = None,
+        since_ts_ms: Annotated[int | None, Field(description="Unix ms lower bound (inclusive, >= 0).")] = None,
+        until_ts_ms: Annotated[int | None, Field(description="Unix ms upper bound (inclusive, >= 0).")] = None,
         limit: Annotated[
             int | None, Field(ge=1, le=50_000, description="Max bars, counted from the OLDEST in the window; omit for all.")
         ] = None,
@@ -343,8 +367,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
         b = Builder()
         if not await store_ready(b, rt, "history"):
             return b.build(None, ok=False)
-        if any(t is not None and abs(t) > SQLITE_INT_MAX for t in (since_ts_ms, until_ts_ms)):
-            b.miss("input", "tradedesk", "invalid_input", "since_ts_ms / until_ts_ms must fit a signed 64-bit integer (unix ms)")
+        # A negative bound (before 1970) can match no bar: invalid_input rather than "no bars stored".
+        if any(t is not None and not 0 <= t <= SQLITE_INT_MAX for t in (since_ts_ms, until_ts_ms)):
+            b.miss("input", "tradedesk", "invalid_input", "since_ts_ms / until_ts_ms must be unix ms from 0 to 2**63 - 1")
             return b.build(None, ok=False)
         try:
             rows = await rt.store.ohlcv_range(
@@ -424,7 +449,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 )
             except STORE_ERRORS as e:
                 return store_failed(b, e)
-            bars = rows[-lookback_bars:] if rows else []
+            bars = _stored_bars(b, rows[-lookback_bars:] if rows else [])
         if len(bars) < min_bars:
             b.miss("bars", "tradedesk", "data_unavailable", f"only {len(bars)} bars; need >= {min_bars}")
             return b.build(None, ok=False)
@@ -533,7 +558,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 )
             except STORE_ERRORS as e:
                 return store_failed(b, e)
-            bars = rows[-lookback_bars:] if rows else []
+            bars = _stored_bars(b, rows[-lookback_bars:] if rows else [])
         if len(bars) < min_bars:
             b.miss("bars", "tradedesk", "data_unavailable", f"only {len(bars)} bars; need >= {min_bars}")
             return b.build(None, ok=False)
@@ -849,7 +874,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 )
             except STORE_ERRORS as e:
                 return store_failed(b, e)
-            bars = rows[-lookback_bars:] if rows else []
+            bars = _stored_bars(b, rows[-lookback_bars:] if rows else [])
 
         if len(bars) < 3:
             b.miss(

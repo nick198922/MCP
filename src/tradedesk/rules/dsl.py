@@ -6,7 +6,8 @@ simple arithmetic (``+ - * / // % **``; ``**`` takes an exponent of at most
 +-1000 and no integer result may exceed 4096 bits; no str / list result may exceed
 100 000 items and ``%`` does not format strings), and calls to a *whitelisted* set of
 functions. No attribute access, no subscripts, no comprehensions, no
-assignments. Suitable for user-authored alert rules.
+assignments; at most 10 000 characters and 100 levels of nesting. Suitable for
+user-authored alert rules.
 
 Call ``compile_expr(src)`` once to validate and get a reusable AST, then
 ``evaluate(ast, env)`` with an environment ``{names: values, calls: {name: fn}}``.
@@ -38,6 +39,12 @@ MAX_INT_BITS = 4096
 # A repetition is checked BEFORE it is computed, a concatenation after; `%` formatting of a str / bytes is refused
 # outright (`"%999999999d" % 1` is as big, and a rule has no use for it).
 MAX_SEQ_LEN = 100_000
+# Expression size bounds (item 301): `1 + 1 + ... + 1` with 5000 terms compiled, was stored by rules_add and then raised
+# RecursionError on every evaluation (the alerts job skipped it silently each tick); a 50k-term comparison chain held the
+# event loop ~0.5 s per evaluation. The evaluator recurses once per nesting level, so the depth bound keeps it far below
+# the Python stack limit wherever it is called from; real rules are under 200 characters and a few levels deep.
+MAX_EXPR_LEN = 10_000
+MAX_DEPTH = 100
 _SEQ = (str, bytes, bytearray, list, tuple)
 _NOT_CONST = object()
 
@@ -121,6 +128,18 @@ def _fold(node: ast.AST) -> Any:
     return _NOT_CONST
 
 
+def _too_deep(root: ast.AST) -> bool:
+    """True when the tree nests more than MAX_DEPTH nodes deep (operator / context leaves count as one more level).
+    Iterative, so the check itself cannot overflow the stack."""
+    stack = [(root, 1)]
+    while stack:
+        node, depth = stack.pop()
+        if depth > MAX_DEPTH:
+            return True
+        stack.extend((child, depth + 1) for child in ast.iter_child_nodes(node))
+    return False
+
+
 @dataclass(frozen=True)
 class CompiledExpr:
     source: str
@@ -131,6 +150,8 @@ def compile_expr(src: str) -> CompiledExpr:
     """Parse and validate the expression. No execution yet."""
     if not isinstance(src, str) or not src.strip():
         raise DslError("empty expression")
+    if len(src) > MAX_EXPR_LEN:
+        raise DslError(f"expression longer than {MAX_EXPR_LEN} characters")
     try:
         tree = ast.parse(src, mode="eval")
     except SyntaxError as e:
@@ -139,6 +160,8 @@ def compile_expr(src: str) -> CompiledExpr:
         raise DslError(f"syntax error: {e}") from None
     except (RecursionError, MemoryError):  # a long flat chain such as 1 + 1 + ... (100k terms) overflows the parser's stack
         raise DslError("expression too long or too deeply nested") from None
+    if _too_deep(tree.body):
+        raise DslError(f"expression nested deeper than {MAX_DEPTH} levels")
 
     for node in ast.walk(tree):
         if isinstance(

@@ -244,9 +244,9 @@ async def test_rules_test_non_finite_stored_metric_is_not_ok(rt, sql, rows, expr
         (None, [], 'funding_mean("binanceusdm","BTC", 1e400)'),
         (None, [], 'funding_mean("binanceusdm","BTC", 10**20)'),
         (None, [], "1 / 0"),
-        (None, [], "x" * 1_000_000),
+        (None, [], "x" * 10_000),  # the longest name the DSL compiles (item 301 refuses longer expressions)
     ],
-    ids=["liq_str", "liq_blob", "zscore_overflow", "days_huge", "days_inf", "days_10e20", "div_zero", "megabyte_name"],
+    ids=["liq_str", "liq_blob", "zscore_overflow", "days_huge", "days_inf", "days_10e20", "div_zero", "longest_name"],
 )
 async def test_rules_test_evaluation_failure_is_not_ok(rt, sql, rows, expr):
     # A corrupt stored row or an extreme argument raised inside the metric; before item 289 that answered ok=true.
@@ -276,8 +276,8 @@ async def test_rules_test_extreme_but_valid_values_unchanged(rt):
         assert env["ok"] is True and env["data"]["value"] == HUGE and env["missing"] == []
         env = await call("rules_test", expr="1e400 > 1e308")
         assert env["ok"] is True and env["data"]["value"] is True
-        env = await call("rules_test", expr='"' + "m" * 1_000_000 + '"')
-        assert env["ok"] is True and len(env["data"]["value"]) == 1_000_000
+        env = await call("rules_test", expr='"' + "m" * 9_998 + '"')  # 10 000 characters: the DSL bound since item 301
+        assert env["ok"] is True and len(env["data"]["value"]) == 9_998
         env = await call("rules_test", expr="1 +")
         assert env["ok"] is False and env["data"] == {"expr": "1 +", "parsed": False} and _missing(env, "expr", "data_unavailable")
 

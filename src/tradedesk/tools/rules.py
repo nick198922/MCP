@@ -57,7 +57,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
         annotations=READ_ONLY,  # writes a row to the local store only
         description=(
             "Create a DSL rule in the local store. The expression is a safe boolean mini-language "
-            "over metric functions (see the output of rules_test with no args for the list). The "
+            "over metric functions (see the output of rules_test with no args for the list), at most 10 000 characters "
+            "and 100 levels of nesting (a longer / deeper one is refused as an expression error). The "
             "rule fires when the expression evaluates truthy AND its cooldown has elapsed since the "
             "last fire. `name` must be unique (a taken name returns invalid_input on `name`); use rules_disable to turn it off instead of deleting."
         ),

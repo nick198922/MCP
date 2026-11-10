@@ -223,9 +223,12 @@ async def evaluate_dsl_rules(store: "Store", *, now_ts: int) -> list[FiredAlert]
         try:
             compiled = compile_expr(row["expr"])
             result = await evaluate(compiled, {"names": {}, "calls": calls})
-        except DslError:
+        except DslError as e:
+            # A refused expression (too long / deep, a size bound, a stored rule another writer left) was skipped silently
+            # on every tick; it is logged once per rule now (item 301).
+            _warn_once(f"{rule_id}\x00expr", "DSL rule %r skipped: expression error: %s", rule_id, e)
             continue
-        except Exception:  # noqa: BLE001 — a user expression should not crash the scheduler
+        except Exception:  # noqa: BLE001 — e.g. None > 0.3 while a metric has no value: data, not the expression
             continue
         finally:
             # A text / blob stored metric reads as "no value" (the rule does not fire); before item 300 that was silent.

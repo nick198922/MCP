@@ -446,7 +446,7 @@ def snapshot() -> dict:
         _git("fetch", "-q", "--no-write-fetch-head", "origin")
         _last_fetch[0] = now
     try:
-        hist = (LOG_DIR / "history.tsv").read_text(encoding="utf-8").splitlines()
+        hist = (LOG_DIR / "history.tsv").read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         hist = []
     branches = st.open_branches(REPO)

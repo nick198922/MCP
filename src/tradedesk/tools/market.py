@@ -10,11 +10,19 @@ from ..analytics.orderbook import book_stats, walk_book
 from ..analytics.trades import summarise as summarise_trades
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, json_num, r, timeframe_seconds
+from ._util import MAX_BAR_PRICE, MAX_BAR_VOLUME, READ_ONLY, bar_rows, json_num, r, store_num, timeframe_seconds
 
 EX = Annotated[str, Field(description="ccxt exchange id: binance, binanceusdm (USDT perps), bybit, okx, kraken, coinbase ...")]
 SYM = Annotated[str, Field(description="ccxt unified symbol. Spot 'BTC/USDT'; linear perp 'BTC/USDT:USDT'")]
 MarketType = Literal["spot", "swap", "future", "option", "any"]
+
+
+def _level_ok(lv: Any) -> bool:
+    """A book level [price, size, ...] with a price in (0, MAX_BAR_PRICE] and a size in [0, MAX_BAR_VOLUME]."""
+    if not isinstance(lv, (list, tuple)) or len(lv) < 2:
+        return False
+    price, size = store_num(lv[0]), store_num(lv[1])
+    return price is not None and size is not None and 0 < price <= MAX_BAR_PRICE and 0 <= size <= MAX_BAR_VOLUME
 
 
 def register(server: MCPServer, rt: Runtime) -> None:
@@ -47,7 +55,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "currency; volume is passed through as the venue reports it via ccxt (not converted to USD). "
             "summary.return_pct is in percent (first to last close; 1.5 = 1.5 %); summary.realized_vol_annualized is a "
             "decimal (0.45 = 45 %): stdev of close-to-close log-returns scaled by sqrt(365 days / candle size), "
-            "present only with at least 10 closes."
+            "present only with at least 10 closes. A candle with a timestamp, price or volume that is not a finite number "
+            "in range is dropped (named in `warnings`)."
         ),
     )
     async def market_ohlcv(
@@ -65,15 +74,21 @@ def register(server: MCPServer, rt: Runtime) -> None:
         except ValueError as e:
             b.miss("timeframe", "tradedesk", "config", str(e))
             return b.build(None, ok=False)
-        rows = await b.guard("ohlcv", f"ccxt:{exchange}", rt.exchanges.ohlcv(exchange, symbol, timeframe, limit))
-        if not rows:
-            if rows is not None:
+        raw = await b.guard("ohlcv", f"ccxt:{exchange}", rt.exchanges.ohlcv(exchange, symbol, timeframe, limit))
+        if not raw:
+            if raw is not None:
                 b.miss("ohlcv", f"ccxt:{exchange}", "data_unavailable", "empty result")
             return b.build(None, ok=False)
-        closes = [c[4] for c in rows if json_num(c[4])]  # a close that is not a number is skipped like a missing one
-        if not closes:
+        # A candle whose timestamp or price is not a finite number in range (None, a string, NaN / inf, 1e308) is left
+        # out of rows and summary: before, it raised out of the tool (log of a negative or infinite close) or showed up
+        # in the reply as NaN / Infinity.
+        rows, dropped = bar_rows(raw)
+        if not rows:
             b.miss("ohlcv", f"ccxt:{exchange}", "data_unavailable", "no numeric close")
             return b.build(None, ok=False)
+        if dropped:
+            b.warn(f"{dropped} malformed candles (a timestamp, price or volume that is not a finite number in range) dropped")
+        closes = [c[4] for c in rows]
         summary: dict[str, Any] = {"candles": len(rows), "first_close": closes[0], "last_close": closes[-1]}
         summary["return_pct"] = r((closes[-1] / closes[0] - 1) * 100, 3)
         if len(closes) >= 10:
@@ -110,15 +125,16 @@ def register(server: MCPServer, rt: Runtime) -> None:
         if not isinstance(ob, dict):
             b.miss("orderbook", f"ccxt:{exchange}", "data_unavailable", f"unexpected response type {type(ob).__name__}")
             return b.build(None, ok=False)
-        # a level whose price or size is not a number (ccxt leaves None for a field the venue omitted) is dropped
-        bids, asks = (
-            [
-                lv
-                for lv in ob.get(side) or []
-                if isinstance(lv, (list, tuple)) and len(lv) >= 2 and None not in (json_num(lv[0]), json_num(lv[1]))
-            ]
-            for side in ("bids", "asks")
-        )
+        # A level whose price or size is not a finite number in range is dropped: None (ccxt leaves it for a field the
+        # venue omitted), a string, NaN / inf or 1e308 (before, NaN / Infinity reached mid and depth, and an integer
+        # beyond the float range raised out of the tool).
+        sent = [x if isinstance(x := ob.get(side), list | tuple) else [] for side in ("bids", "asks")]
+        bids, asks = ([lv for lv in levels if _level_ok(lv)] for levels in sent)
+        if dropped := len(sent[0]) + len(sent[1]) - len(bids) - len(asks):
+            b.warn(f"{dropped} malformed book levels (a price or size that is not a finite number in range) dropped")
+        if (sent[0] and not bids) or (sent[1] and not asks):
+            b.miss("orderbook", f"ccxt:{exchange}", "data_unavailable", "no valid level on one side of the book")
+            return b.build(None, ok=False)
         stats = book_stats(bids, asks)
         data: dict[str, Any] = {
             "symbol": symbol,
@@ -280,4 +296,6 @@ def register(server: MCPServer, rt: Runtime) -> None:
             return b.build(None, ok=False)
         if with_side < len(trades):
             b.warn(f"{len(trades) - with_side}/{len(trades)} trades had no aggressor side and were skipped")
+        if (bad := with_side - summary["count"]) > 0:  # NaN / inf / 1e308 / text in a print: no NaN or exception now
+            b.warn(f"{bad} trades with a price or amount that is not a finite number in range were skipped")
         return b.build({"symbol": symbol, "fetched": len(trades), "summary": summary})

@@ -24,7 +24,7 @@ from ..collector.market_data import BAR_MS, bars_4h, funding_entries, parse_bar
 from ..core.envelope import Builder
 from ..runtime import Runtime
 from ._util import READ_ONLY, STORE_ERRORS, finite_float, r, reject_bad_id, store_failed, store_ready
-from .perps import TAKER_FEES, current_funding
+from .perps import MAX_FUNDING_RATE, TAKER_FEES, current_funding
 
 # carry_paper_open writes a new row on every call (a retry after a timeout records a second pair), so it is not idempotent.
 # Re-validated through the aliases: model_copy(update=...) would not map the camelCase alias onto the field.
@@ -73,6 +73,16 @@ async def _last_price(rt: Runtime, b: Builder, venue: str, sym: str, fallback: f
     return fallback
 
 
+def _plausible_entries(b: Builder, venue: str, sym: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """`funding_entries(rows)` without rates beyond +-MAX_FUNDING_RATE per interval, with a warning: a finite 1e308 rate
+    passes `funding_entries` (collector/, shared with the feed job) and turned the pair's carry and P&L into NaN."""
+    entries = funding_entries(rows)
+    kept = [e for e in entries if abs(e["rate"]) <= MAX_FUNDING_RATE]
+    if len(kept) < len(entries):
+        b.warn(f"{venue} {sym}: {len(entries) - len(kept)} funding rows with a rate beyond +-{MAX_FUNDING_RATE:g} dropped")
+    return kept
+
+
 async def _entry_bars(rt: Runtime, b: Builder, venue: str, sym: str, opened_ms: int, now_ms: int) -> list[dict[str, Any]] | None:
     """15m bars from the entry's 15m slot to the end of the 4h bar containing the entry (at most 16, one request
     under every venue's cap). None when the request fails: the whole 4h bar is then used (conservative)."""
@@ -98,7 +108,7 @@ async def _leg_data(rt: Runtime, b: Builder, venue: str, sym: str, opened_ms: in
             f"{venue} {sym}: funding history incomplete (page limit, a later page failed, or rows with a malformed timestamp "
             "dropped); funding P&L may be understated"
         )
-    entries = funding_entries(hist["rows"])
+    entries = _plausible_entries(b, venue, sym, hist["rows"])
     if not entries:
         return None
     fine = await _entry_bars(rt, b, venue, sym, opened_ms, now_ms)
@@ -282,7 +292,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
                     f"funding_history:{v}:{sym}", f"ccxt:{v}", rt.exchanges.funding_rate_history_range(v, sym, since_ms, now_ms)
                 )
                 px = await _last_price(rt, b, v, sym, fallback=(cur or {}).get("mark"))
-                entries = funding_entries(hist["rows"]) if hist else []
+                entries = _plausible_entries(b, v, sym, hist["rows"]) if hist else []
                 if cur is None or not entries or px is None:
                     b.miss(
                         f"carry_paper_leg:{v}",

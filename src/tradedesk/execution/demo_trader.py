@@ -20,7 +20,7 @@ Hourly cycle:
    closed 1d and 4h bars; a signal older than ``FRESH_MS`` is ignored, and each signal is decided once.
 4. Each candidate is sized for $100 at the stop (fees included) from the live price, gets its leverage (the owner's
    tier, capped by the venue's maximum) and a confidence score. The account is on cross margin (owner 21.10): the guard
-   keeps the maintenance margin plus the loss at every stop within half of the equity, so stops come before liquidation. Candidates that pass the guard and score at least ``MIN_SCORE`` are
+   keeps the maintenance margin plus the loss at every stop within half of the equity, so stops come before liquidation. Candidates that pass the guard and score at least ``min_score(setup)`` (``MIN_SCORE``; S28 from 1, owner 10.11) are
    entered best first, each setup with ``OWN_SLOTS`` trades still at risk a UTC day of its own plus ``RESERVE_SLOTS``
    shared (owner 27.10; a setup in ``SAMPLE_DONE`` with its sample stops taking the reserve, owner 29.10): a trade with its stop at break-even, or closed without a real loss, frees its slot (owner
    21.10/22.10), at most 30 entries a day in all; S38 enters at most 2 shorts per 4h signal bar (``BAR_CAP``, owner

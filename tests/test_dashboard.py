@@ -2431,12 +2431,7 @@ def _visible_text(html_part: str) -> str:
 # risk rule's verdict in «Чи вкладається в ризик».
 RULE4_STATUS = ("немає", "нема", "вимкнено", "збій", "помилка", "застаріл", "порожньо", "невідомо", "чекає", "не виконується")
 RULE4_STATUS += ("спокій:", "ризик:", "подія:", "нагода:")
-RULE4_TODO: dict[str, str] = {
-    "rules_week": "the count of broken rules this week is computed inside block_rules_week; the summary needs it passed out",
-    "rec": "the paper recommendations' count / result live in block_rec_paper's rows; a new summary function is logic",
-    "plans": "the plans' count by verdict needs a summary over trade_plan rows (block_trade_plans has none)",
-    "fc": "the forecast count and expiry dates need a summary over forecast_log (fc_compare runs in the body only)",
-}
+RULE4_TODO: dict[str, str] = {}  # item 303: the four «Мої угоди» folds got summary functions (rules_week_line & co.)
 
 
 def test_rule4_fold_summaries_carry_a_number_or_status_except_the_listed(tmp_path):
@@ -2470,6 +2465,48 @@ def test_rule4_fold_summaries_carry_a_number_or_status_except_the_listed(tmp_pat
         sorted(set(RULE4_TODO) - bad),
     )
     assert all(RULE4_TODO.values())
+
+
+def test_rule4_journal_fold_summaries_count_the_blocks_rows(tmp_path):
+    """Item 303: the summaries of «Порушення правил за тиждень», «Паперові рекомендації», «Плани угод» and «Журнал
+    прогнозів» are computed from the block's own rows; no table / no rows give a status word; an odd row gives «збій»
+    instead of raising; every line is escaped one-line text."""
+    rows = _rules_rows()
+    weeks = db.rules_weekly(rows, datetime(2025, 10, 25, tzinfo=UTC).timestamp())
+    assert [(w["week"], w["n_trades"], w["n_violating"]) for w in weeks][0] == ("2025-W42", 11, 4)
+    in_w42 = datetime(2025, 10, 18, 12, tzinfo=UTC).timestamp()  # Saturday of 2025-W42
+    assert db.rules_week_line(rows, in_w42) == "цього тижня порушили 4 з 11 угод, P&amp;L −$607 · за весь журнал 9 з 23"
+    later = datetime(2026, 1, 10, tzinfo=UTC).timestamp()
+    assert db.rules_week_line(rows, later) == "цього тижня угод немає · за весь журнал 9 з 23"
+    assert db.rules_week_line(None, later) == "таблиці journal немає" and db.rules_week_line([], later) == "угод немає"
+    assert db.rules_week_line([{"symbol": "BTCUSDT"}], later) == "угод з часом відкриття немає"
+
+    data, _ = db.load_journal(_journal_db(tmp_path / "r.sqlite", _sample_journal(), _sample_rec()))
+    # one settled chain trade (+2 % of spot) and one open; the manual trade is outside the method's group
+    assert db.rec_paper_line(data["rec_paper"]) == "метод: розраховано 1, середнє +2.00 % спота, відкритих 1 · усього 3"
+    assert db.rec_paper_line([{"source": "method", "status": "open"}]) == "метод: розраховано 0, відкритих 1 · усього 1"
+    assert db.rec_paper_line(None) == "таблиці rec_paper немає" and db.rec_paper_line([]) == "рекомендацій ще немає"
+
+    data, _ = db.load_journal(_plan_db(tmp_path / "p.sqlite", _sample_plans()))
+    assert db.plans_line(data["trade_plan"]) == "вхід 5 · чекати 1 · пропустити 1 · розв&#x27;язано 5 з 7"  # shadow plan out
+    assert db.plans_line([{"verdict": "<b>", "status": "open"}]) == "вхід 0 · чекати 0 · пропустити 0 · інше 1 · розв&#x27;язано 0 з 1"
+    assert db.plans_line(None) == "таблиці trade_plan немає" and db.plans_line([]) == "планів ще немає"
+
+    data, _ = db.load_journal(_fc_db(tmp_path / "f.sqlite", _sample_forecasts()))
+    nearest = db._day(FC_E3)
+    assert db.forecasts_line(data["forecast_log"]) == f"розраховано 32 з 40 · відкритих 8, найближча експірація {nearest}"
+    assert db.forecasts_line([{"status": "open", "expiry_ts": "abc"}]) == "розраховано 0 з 1 · відкритих 1"  # no date: none named
+    assert db.forecasts_line(None) == "таблиці forecast_log немає" and db.forecasts_line([]) == "прогнозів ще немає"
+
+    # a corrupt row (not a dict, as a broken loader could pass) never raises: the status word, the body explains
+    for line in (db.rules_week_line([None], later), db.rec_paper_line([None]), db.plans_line([None]), db.forecasts_line([None])):
+        assert line == db.SUMMARY_FAILED and "збій" in line
+    assert db.plans_line("x") == db.SUMMARY_FAILED  # not even a list of rows
+
+    # the journal page carries them in the folds' summary lines
+    page = db.render_journal(*db.load_journal(tmp_path / "f.sqlite"), float(T0))
+    assert f"<span class='fs'>розраховано 32 з 40 · відкритих 8, найближча експірація {nearest}</span>" in page
+    assert "<span class='fs'>угод немає</span>" in page and "<span class='fs'>планів ще немає</span>" in page
 
 
 # docs/design/PANEL.md rule 5 (item 302): each caveat once per page and never in a tile. The patterns are the

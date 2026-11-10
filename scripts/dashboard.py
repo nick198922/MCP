@@ -10461,6 +10461,88 @@ def block_forecasts(rows: list[dict] | None) -> str:
     return "".join(out)
 
 
+# The one-line summaries of the four «Мої угоди» folds (docs/design/PANEL.md rule 4, standing improvements item 303):
+# the block's main number computed from the same rows the block reads, a status word when there is nothing to count.
+# Each returns escaped HTML and never raises: an odd row gives «збій: …», the body says what went wrong.
+SUMMARY_FAILED = "збій: несподіваний формат даних"
+PLAN_VERDICT_SHORT = {"enter": "вхід", "wait": "чекати", "skip": "пропустити"}
+
+
+def rules_week_line(rows: list[dict] | None, now: float) -> str:
+    """«Порушення правил за тиждень»: trades that broke a rule in the ISO week of `now` (UTC, the opening week as
+    rules_weekly groups them) with their P&L, then the whole journal's count. `rows` as block_rules_week takes them."""
+    try:
+        if rows is None:
+            return "таблиці journal немає"
+        if not rows:
+            return "угод немає"
+        weeks = rules_weekly(rows, now)
+        if not weeks:
+            return "угод з часом відкриття немає"
+        cur = next((w for w in weeks if w["week"] == _rules_week(now)), None)
+        if cur is None or not cur["n_trades"]:
+            line = "цього тижня угод немає"
+        else:
+            pnl = cur["pnl_violating"]
+            line = f"цього тижня порушили {cur['n_violating']} з {cur['n_trades']} угод" + (
+                f", P&L {_usd(pnl, True)}" if cur["n_violating"] and pnl is not None else ""
+            )
+        n_bad, n_all = sum(w["n_violating"] for w in weeks), sum(w["n_trades"] for w in weeks)
+        return _e(f"{line} · за весь журнал {n_bad} з {n_all}")
+    except Exception:  # noqa: BLE001 - one odd row must not take the page down
+        return SUMMARY_FAILED
+
+
+def rec_paper_line(rows: list[dict] | None) -> str:
+    """«Паперові рекомендації асистента»: the method's chain trades (the block's main group) settled / open and their
+    mean % of spot, then all rows."""
+    try:
+        if rows is None:
+            return "таблиці rec_paper немає"
+        if not rows:
+            return "рекомендацій ще немає"
+        meth = rec_groups(rows)["method"]
+        s = rec_summary(meth)
+        n_open = sum(1 for t in meth if t.get("status") == "open")
+        mean = f", середнє {_pc(100 * s['mean_pnl_pct_spot'], 2)} спота" if s["n"] else ""
+        return _e(f"метод: розраховано {s['n']}{mean}, відкритих {n_open} · усього {len(rows)}")
+    except Exception:  # noqa: BLE001 - one odd row must not take the page down
+        return SUMMARY_FAILED
+
+
+def plans_line(rows: list[dict] | None) -> str:
+    """«Плани угод асистента»: plans by verdict (as the block's table counts them) and how many are resolved."""
+    try:
+        if rows is None:
+            return "таблиці trade_plan немає"
+        if not rows:
+            return "планів ще немає"
+        parts = [f"{label} {sum(1 for x in rows if x.get('verdict') == v)}" for v, label in PLAN_VERDICT_SHORT.items()]
+        other = sum(1 for x in rows if x.get("verdict") not in PLAN_VERDICT_SHORT)
+        if other:
+            parts.append(f"інше {other}")
+        n_done = sum(1 for x in rows if x.get("status") == "resolved")
+        return _e(" · ".join(parts) + f" · розв'язано {n_done} з {len(rows)}")
+    except Exception:  # noqa: BLE001 - one odd row must not take the page down
+        return SUMMARY_FAILED
+
+
+def forecasts_line(rows: list[dict] | None) -> str:
+    """«Журнал прогнозів»: forecasts settled (as fc_score counts them) and open, and the nearest open expiry date
+    (as the block's «перша оцінка» names it)."""
+    try:
+        if rows is None:
+            return "таблиці forecast_log немає"
+        if not rows:
+            return "прогнозів ще немає"
+        open_ = [x for x in rows if x.get("status") == "open"]
+        nxt = min((v for x in open_ if (v := _num(x.get("expiry_ts"))) is not None), default=None)
+        nearest = f", найближча експірація {_day(nxt)}" if nxt is not None else ""
+        return _e(f"розраховано {len(_fc_settled(rows))} з {len(rows)} · відкритих {len(open_)}{nearest}")
+    except Exception:  # noqa: BLE001 - one odd row must not take the page down
+        return SUMMARY_FAILED
+
+
 JOURNAL_CSS = """
 form.jr{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;margin:0 12px 12px}
 form.jr button{font:600 14px -apple-system,"Segoe UI",Helvetica,Arial,sans-serif;border:0;border-radius:999px;padding:9px 18px;
@@ -10583,7 +10665,7 @@ def render_journal(
             rules = block_rules_week(real if rows else rows, now)
         except Exception as e:  # noqa: BLE001 - one odd row must not take the page down
             rules = _empty(f"Блок не вдалося показати: несподіваний формат даних ({type(e).__name__}).")
-        out.append(_fold("Порушення правил за тиждень", "rules_week", "які з твоїх правил порушено і скільки це коштувало", rules))
+        out.append(_fold("Порушення правил за тиждень", "rules_week", rules_week_line(real if rows else rows, now), rules))
         try:
             rec = block_rec_paper(data.get("rec_paper"))
         except Exception as e:  # noqa: BLE001 - one odd row must not take the page down
@@ -10592,7 +10674,7 @@ def render_journal(
             _fold(
                 "Паперові рекомендації асистента",
                 "rec",
-                "угоди методу асистента на папері: чи є перевага",
+                rec_paper_line(data.get("rec_paper")),
                 f"<p class='note warn'>{_e(REC_CAVEAT)}</p>{rec}",
                 CHIP_HYPOTHESIS,
             )
@@ -10605,7 +10687,7 @@ def render_journal(
             _fold(
                 "Плани угод асистента",
                 "plans",
-                "плани входу з вердиктами «вхід / чекати / пропустити»",
+                plans_line(data.get("trade_plan")),
                 f"<p class='note warn'>{_e(PLAN_CAVEAT)}</p>{plans}",
                 CHIP_LEDGER,
             )
@@ -10618,7 +10700,7 @@ def render_journal(
             _fold(
                 "Журнал прогнозів",
                 "fc",
-                "щоденні ймовірності з опціонів і як вони справдились",
+                forecasts_line(data.get("forecast_log")),
                 f"<p class='note warn'><b>Ризик-нейтральні ймовірності, не прогноз асистента.</b> {_e(FC_CAVEAT)}</p>{fc}",
                 CHIP_LEDGER,
             )

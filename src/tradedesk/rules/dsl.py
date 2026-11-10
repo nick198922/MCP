@@ -3,7 +3,8 @@
 Allowed grammar: literals (int, float, str, bool, None), identifier lookups,
 comparisons, boolean operators (``and`` / ``or`` / ``not``), unary ``-``,
 simple arithmetic (``+ - * / // % **``; ``**`` takes an exponent of at most
-+-1000 and no integer result may exceed 4096 bits), and calls to a *whitelisted* set of
++-1000 and no integer result may exceed 4096 bits; no str / list result may exceed
+100 000 items and ``%`` does not format strings), and calls to a *whitelisted* set of
 functions. No attribute access, no subscripts, no comprehensions, no
 assignments. Suitable for user-authored alert rules.
 
@@ -33,6 +34,11 @@ class DslError(Exception):
 # (3322 bits) still evaluates; an integer beyond MAX_INT_BITS is far outside the float range any metric is compared with.
 MAX_POW_EXPONENT = 1000
 MAX_INT_BITS = 4096
+# Sequence size bound: `"a" * 10**9` allocated a gigabyte (rules_test, the alerts job on a stored rule) before item 299.
+# A repetition is checked BEFORE it is computed, a concatenation after; `%` formatting of a str / bytes is refused
+# outright (`"%999999999d" % 1` is as big, and a rule has no use for it).
+MAX_SEQ_LEN = 100_000
+_SEQ = (str, bytes, bytearray, list, tuple)
 _NOT_CONST = object()
 
 
@@ -73,22 +79,33 @@ _BIN = {
 
 def _binop(op: ast.operator, left: Any, right: Any) -> Any:
     """One arithmetic step; an integer result longer than MAX_INT_BITS raises DslError, so every operand of the next
-    step stays small (a product of two such integers is at most twice as long)."""
+    step stays small (a product of two such integers is at most twice as long). A str / bytes / list / tuple result
+    longer than MAX_SEQ_LEN raises DslError too, a repetition before it is computed; `%` on a str / bytes is refused."""
+    if isinstance(op, ast.Mod) and isinstance(left, str | bytes | bytearray):
+        raise DslError("string formatting (%) is not allowed")
+    if isinstance(op, ast.Mult):
+        for seq, n in ((left, right), (right, left)):
+            if isinstance(seq, _SEQ) and isinstance(n, int) and len(seq) * n > MAX_SEQ_LEN:
+                raise DslError(f"sequence result beyond {MAX_SEQ_LEN} items")
     result = _BIN[type(op)](left, right)
     if isinstance(result, int) and result.bit_length() > MAX_INT_BITS:
         raise DslError(f"integer result beyond {MAX_INT_BITS} bits")
+    if isinstance(result, _SEQ) and len(result) > MAX_SEQ_LEN:
+        raise DslError(f"sequence result beyond {MAX_SEQ_LEN} items")
     return result
 
 
 def _fold(node: ast.AST) -> Any:
-    """Value of a subtree of numeric literals, unary +/- and arithmetic, else _NOT_CONST; one pass over every node.
-    Raises DslError where the evaluator would (an oversized `**` or integer); any other error of a literal subtree
-    (1 / 0, a float overflow) is left to evaluation, as before."""
+    """Value of a subtree of numeric / string literals, unary +/- and arithmetic, else _NOT_CONST; one pass over every
+    node. Raises DslError where the evaluator would (an oversized `**`, integer or sequence, `%` on a string); any other
+    error of a literal subtree (1 / 0, a float overflow, "a" + 1) is left to evaluation, as before."""
     if isinstance(node, ast.Constant):
-        return node.value if isinstance(node.value, int | float) else _NOT_CONST
+        return node.value if isinstance(node.value, int | float | str | bytes) else _NOT_CONST
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub | ast.UAdd):
         v = _fold(node.operand)
-        return v if v is _NOT_CONST or isinstance(node.op, ast.UAdd) else -v
+        if not isinstance(v, int | float):  # _NOT_CONST, or a string (-"a" is left to evaluation)
+            return _NOT_CONST
+        return v if isinstance(node.op, ast.UAdd) else -v
     if isinstance(node, ast.BinOp) and type(node.op) in _BIN:
         left, right = _fold(node.left), _fold(node.right)
         if left is _NOT_CONST or right is _NOT_CONST:

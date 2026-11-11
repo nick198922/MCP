@@ -324,4 +324,5 @@ def test_checkpoint_loaders(db):
     assert inp["demo_trades"] == [] and inp["rec_paper"] == [] and inp["pm_rows"] == [] and inp["plans"] == []
     assert set(inp["carry"]) == {"A", "B"} and inp["condor_t0"] is None
     # item 312: every card journal's table exists and its counter query runs (an error would hide the card's collection)
-    assert inp["journals"] == {slug: {"n": 0, "first": None, "last": None} for slug in cr.CARD_JOURNALS}
+    empty = {"n": 0, "first": None, "last": None}
+    assert inp["journals"] == {slug: empty | ({"all": 0} if j.table == "cp_cycle" else {}) for slug, j in cr.CARD_JOURNALS.items()}

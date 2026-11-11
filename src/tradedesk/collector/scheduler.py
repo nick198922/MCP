@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
+from .bad_rows import count_bad_rows
+
 if TYPE_CHECKING:  # avoid import cycle
     from ..runtime import Runtime
 
@@ -38,6 +40,10 @@ class JobMetrics:
     # shows failures=7 and no reason (liquidations:bybit / :okx, 2026-11-02).
     last_failure: str | None = None
     last_failure_ts: float | None = None
+    # Provider rows / fields the job dropped (or stored as NULL) as malformed (collector/bad_rows.py): the latest run,
+    # failed runs included, and the sum since the process started. None before the first run.
+    last_rows_dropped: int | None = None
+    rows_dropped_total: int = 0
     # WebSocket jobs only (liquidations:*): connection counters that survive reconnects inside a run
     # (providers.liquidations.StreamStats); None for the other jobs.
     stream: Any | None = None
@@ -85,30 +91,34 @@ class Scheduler:
     async def _run_job(self, job: PeriodicJob) -> None:
         while not self._stop.is_set():
             start = time.perf_counter()
-            try:
-                written = await job.fn(self.rt)
-                job.metrics.successes += 1
-                job.metrics.last_rows_written = written
-                job.metrics.last_error = None
-            except asyncio.CancelledError as e:
-                task = asyncio.current_task()
-                if self._stop.is_set() or (task is not None and task.cancelling()):
-                    raise
-                # A CancelledError from inside the job, not a cancel of this task: ending the loop here would stop the
-                # job for good with no trace, so record it as a failed run and keep going.
-                job.metrics.failures += 1
-                job.metrics.last_error = f"CancelledError: {e}" if str(e) else "CancelledError"
-                job.metrics.last_failure, job.metrics.last_failure_ts = job.metrics.last_error, time.time()
-                log.warning("collector job %s failed: %s", job.name, job.metrics.last_error, extra={"job": job.name})
-            except Exception as e:  # noqa: BLE001
-                job.metrics.failures += 1
-                job.metrics.last_error = f"{type(e).__name__}: {e}"
-                job.metrics.last_failure, job.metrics.last_failure_ts = job.metrics.last_error, time.time()
-                log.warning("collector job %s failed: %s", job.name, e, extra={"job": job.name, "error": job.metrics.last_error})
-            finally:
-                job.metrics.runs += 1
-                job.metrics.last_duration_ms = (time.perf_counter() - start) * 1000.0
-                job.metrics.last_run_ts = time.time()
+            with count_bad_rows() as dropped:  # a fresh count of malformed provider rows per run (bad_rows.py)
+                try:
+                    written = await job.fn(self.rt)
+                    job.metrics.successes += 1
+                    job.metrics.last_rows_written = written
+                    job.metrics.last_error = None
+                except asyncio.CancelledError as e:
+                    task = asyncio.current_task()
+                    if self._stop.is_set() or (task is not None and task.cancelling()):
+                        raise
+                    # A CancelledError from inside the job, not a cancel of this task: ending the loop here would stop
+                    # the job for good with no trace, so record it as a failed run and keep going.
+                    job.metrics.failures += 1
+                    job.metrics.last_error = f"CancelledError: {e}" if str(e) else "CancelledError"
+                    job.metrics.last_failure, job.metrics.last_failure_ts = job.metrics.last_error, time.time()
+                    log.warning("collector job %s failed: %s", job.name, job.metrics.last_error, extra={"job": job.name})
+                except Exception as e:  # noqa: BLE001
+                    job.metrics.failures += 1
+                    job.metrics.last_error = f"{type(e).__name__}: {e}"
+                    job.metrics.last_failure, job.metrics.last_failure_ts = job.metrics.last_error, time.time()
+                    log.warning("collector job %s failed: %s", job.name, e, extra={"job": job.name, "error": job.metrics.last_error})
+                finally:
+                    job.metrics.runs += 1
+                    job.metrics.last_duration_ms = (time.perf_counter() - start) * 1000.0
+                    job.metrics.last_run_ts = time.time()
+                    # A failed run keeps what it dropped before failing: those rows were still lost.
+                    job.metrics.last_rows_dropped = dropped.n
+                    job.metrics.rows_dropped_total += dropped.n
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=job.period_seconds)
                 return  # stop was set

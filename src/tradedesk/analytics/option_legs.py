@@ -30,7 +30,7 @@ from typing import Any
 
 from .instruments import parse_option_name
 from .option_condor import strike_for_delta
-from .option_xvenue import num
+from .option_xvenue import MAX_NUM, ms, num
 from .options import black76_greeks, year_fraction
 
 SNAPSHOT_HOUR_UTC = 9  # same reference hour as the backtest's day surfaces (put_skew.build_day ref_hour = 9)
@@ -88,9 +88,9 @@ def _nonneg(v: Any) -> float | None:
         return None
     try:
         x = float(v)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):  # OverflowError: float() of a 400-digit JSON integer
         return None
-    return x if 0 <= x < float("inf") else None
+    return x if 0 <= x <= MAX_NUM else None
 
 
 def expiry_surface(summary: Any, currency: str, expiry: datetime, now: datetime) -> dict[str, Any] | None:
@@ -208,7 +208,7 @@ def leg_row(
     for k in ("mark_iv", "bid_iv", "ask_iv"):  # Deribit IVs are percent
         q[k] = q[k] / 100.0 if q[k] is not None else None
     ts = q["quote_ts_ms"]
-    q["quote_ts_ms"] = int(ts) if isinstance(ts, (int, float)) and not isinstance(ts, bool) else None
+    q["quote_ts_ms"] = ms(ts) if isinstance(ts, (int, float)) else None  # NaN / inf raised, 1e308 overflowed SQLite
     K, S = leg["strike"], exp["spot"]
     is_call = leg["opt"] == "C"
     delta = black76_greeks(exp["F"], K, exp["T"], q["mark_iv"], is_call)["delta"] if q["mark_iv"] else None

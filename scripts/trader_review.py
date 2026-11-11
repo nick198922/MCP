@@ -39,7 +39,7 @@ from tg_send import load_env, send  # noqa: E402
 REPO_DIR = Path(__file__).resolve().parent.parent
 REVIEW_DIR = Path(os.environ.get("TRADEDESK_REVIEW_DIR") or Path.home() / "tradedesk-review")
 INSTRUCTIONS = REPO_DIR / ".claude" / "trader-review.md"
-CLAUDE = os.environ.get("TRADEDESK_CLAUDE_BIN", str(Path.home() / ".local" / "bin" / "claude"))
+CLAUDE = os.environ.get("TRADEDESK_CLAUDE_BIN", str(REPO_DIR / "scripts" / "claude_run.sh"))  # login or backup token
 MODEL = os.environ.get("TRADEDESK_REVIEW_MODEL", "opus")
 MAX_SECONDS = 1800
 MAX_ATTEMPTS = 2

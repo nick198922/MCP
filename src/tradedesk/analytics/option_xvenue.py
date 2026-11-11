@@ -46,16 +46,32 @@ MINUTE_STRIKES_EACH_SIDE = 2
 MODES = ("hourly", "minute")  # option_xvenue_snapshot.mode
 
 
+MAX_NUM = 1e12  # far above any price, size or IV percent these venues quote: 1e308 in a quote is garbage, not a number
+MAX_TS_MS = 253_402_300_799_999  # 9999-12-31T23:59:59.999Z in unix ms (as tools/_util.MAX_BAR_TS_MS)
+
+
 def num(v: Any) -> float | None:
-    """A strictly positive finite float, else None (venues send 0 / "0" / "" for an empty side). An integer too large
-    for a float (a 300+ digit JSON literal parses to a Python int, float() raises OverflowError) is None as well."""
+    """A strictly positive finite float up to MAX_NUM, else None (venues send 0 / "0" / "" for an empty side). An integer
+    too large for a float (a 300+ digit JSON literal parses to a Python int, float() raises OverflowError) is None as well."""
     if v is None or isinstance(v, bool):
         return None
     try:
         x = float(v)
     except (TypeError, ValueError, OverflowError):
         return None
-    return x if x > 0 and x != float("inf") else None
+    return x if 0 < x <= MAX_NUM else None
+
+
+def ms(v: Any) -> int | None:
+    """A venue time as unix ms in 0 .. year 9999 (a number or a numeric string, truncated to an integer), else None: a
+    NaN / inf (int() raises), a bool, text, or a time like 1e308 / 10**20 that no date has and SQLite cannot store."""
+    if v is None or isinstance(v, bool):
+        return None
+    try:
+        t = int(v)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return t if 0 <= t <= MAX_TS_MS else None
 
 
 def parse_bybit_symbol(symbol: str) -> dict[str, Any] | None:
@@ -96,7 +112,7 @@ def deribit_quote(t: dict[str, Any]) -> dict[str, Any]:
         x = num(t.get(k))
         return x / 100.0 if x is not None else None
 
-    ts = t.get("timestamp")
+    ts = t.get("timestamp")  # a JSON number only (as before), checked by `ms`: NaN / inf raised, 1e308 overflowed SQLite
     return {
         "bid": num(t.get("best_bid_price")),
         "ask": num(t.get("best_ask_price")),
@@ -107,7 +123,7 @@ def deribit_quote(t: dict[str, Any]) -> dict[str, Any]:
         "mark_iv": iv("mark_iv"),
         "index": num(t.get("index_price")),
         "underlying": num(t.get("underlying_price")),
-        "ts_ms": int(ts) if isinstance(ts, (int, float)) and not isinstance(ts, bool) else None,
+        "ts_ms": ms(ts) if isinstance(ts, (int, float)) else None,
     }
 
 

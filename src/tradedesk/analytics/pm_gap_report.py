@@ -63,6 +63,7 @@ from .pm_gap_paper import (
 from .pm_threshold import _json_list, outcome_yes
 
 DAY_S = 86_400
+MAX_CLOSE = 1e12  # a Binance close outside (0, 1e12] is a corrupt bar (as MAX_BAR_PRICE of tools/_util.bar_row)
 MAIN_PERIOD_DAYS = 112  # registration section 1: positions opened in [T0, T0 + 112 days) form the main test
 VERDICT_DAYS = 126  # the verdict is taken once, at T0 + 126 days (last main-period market resolved by then)
 T0_TS = 1792520435  # registered T0: the first pm_gap_snapshot, 2026-10-20 18:20:35 UTC (card and HANDOFF)
@@ -124,14 +125,18 @@ def binance_closes(bars: Iterable[Sequence[Any]], end_ts: int) -> tuple[float | 
     """Closes of the Binance 1m candles ``[open_ms, o, h, l, c, v]`` that close at ``end_ts`` (open = end - 60 s) and
     that open at ``end_ts``. The texts name either "the 1 minute candle ... 12:00" (2025) or "the 1 minute candle ...
     closing at 12:00" (since 2026-10-07), so both are kept for the cross-check. None where the bar is absent. A bar
-    whose open time or close is not a number, NaN / inf or a 300+-digit integer is skipped."""
+    that is not a sequence (a dict raised KeyError), or whose open time or close is not a number, NaN / inf or a
+    300+-digit integer, or whose close is outside (0, MAX_CLOSE] (1e308 read as "above any strike") is skipped, as is a
+    bool open time or close (JSON true read as 1)."""
     at_end = nxt = None
     for b in bars:
         try:
+            if isinstance(b[0], bool) or isinstance(b[4], bool):
+                continue
             t, c = int(float(b[0]) // 1000), float(b[4])
-        except (IndexError, TypeError, ValueError, OverflowError):  # OverflowError: int(inf), float() of a 300+-digit int
+        except (LookupError, TypeError, ValueError, OverflowError):  # OverflowError: int(inf), float() of a 300+-digit int
             continue
-        if not math.isfinite(c):
+        if not 0 < c <= MAX_CLOSE:  # also False for NaN
             continue
         if t == end_ts - 60:
             at_end = c

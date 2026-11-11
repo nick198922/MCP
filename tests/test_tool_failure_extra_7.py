@@ -39,6 +39,7 @@ from tradedesk.tools._util import first_nonfinite
 
 NOW_TS = int(NOW.timestamp())
 HUGE = 1e308  # finite, so the store keeps it
+LONG = 10_000  # a list far longer than any real call (see test_calculators_extreme_but_finite_inputs_answer)
 CORRUPT = ("abc", b"\x00\x01", b"\xff\xfe", float("inf"))
 NUMERIC_ERRORS = (ValueError, ZeroDivisionError, OverflowError)
 
@@ -244,9 +245,9 @@ async def test_rules_test_non_finite_stored_metric_is_not_ok(rt, sql, rows, expr
         (None, [], 'funding_mean("binanceusdm","BTC", 1e400)'),
         (None, [], 'funding_mean("binanceusdm","BTC", 10**20)'),
         (None, [], "1 / 0"),
-        (None, [], "x" * 1_000_000),
+        (None, [], "x" * 10_000),  # the longest name the DSL compiles (item 301 refuses longer expressions)
     ],
-    ids=["liq_str", "liq_blob", "zscore_overflow", "days_huge", "days_inf", "days_10e20", "div_zero", "megabyte_name"],
+    ids=["liq_str", "liq_blob", "zscore_overflow", "days_huge", "days_inf", "days_10e20", "div_zero", "longest_name"],
 )
 async def test_rules_test_evaluation_failure_is_not_ok(rt, sql, rows, expr):
     # A corrupt stored row or an extreme argument raised inside the metric; before item 289 that answered ok=true.
@@ -276,8 +277,8 @@ async def test_rules_test_extreme_but_valid_values_unchanged(rt):
         assert env["ok"] is True and env["data"]["value"] == HUGE and env["missing"] == []
         env = await call("rules_test", expr="1e400 > 1e308")
         assert env["ok"] is True and env["data"]["value"] is True
-        env = await call("rules_test", expr='"' + "m" * 1_000_000 + '"')
-        assert env["ok"] is True and len(env["data"]["value"]) == 1_000_000
+        env = await call("rules_test", expr='"' + "m" * 9_998 + '"')  # 10 000 characters: the DSL bound since item 301
+        assert env["ok"] is True and len(env["data"]["value"]) == 9_998
         env = await call("rules_test", expr="1 +")
         assert env["ok"] is False and env["data"] == {"expr": "1 +", "parsed": False} and _missing(env, "expr", "data_unavailable")
 
@@ -392,19 +393,21 @@ async def test_calculator_overflowing_result_is_not_ok(rt, tool, args):
 
 
 async def test_calculators_extreme_but_finite_inputs_answer(rt):
+    # LONG: no tool caps the list length and every step over it is linear, so 10k elements exercise the same code as
+    # 100k did (item 304: 100k cost ~4.5 s, mostly round() of 1e308-sized fib levels and the non-finite scans).
     async with _session(rt) as call:
         env = await call("odds_devig", odds=[HUGE, 1.01])
         assert env["ok"] is True and env["data"]["fair_probs"] == [0.0, 1.0]
         env = await call("odds_devig", odds=[10**20, 1.5], method="power")
         assert env["ok"] is True and env["missing"] == []
-        env = await call("odds_devig", odds=[2.0] * 100_000)
-        assert env["ok"] is True and len(env["data"]["fair_probs"]) == 100_000
+        env = await call("odds_devig", odds=[2.0] * LONG)
+        assert env["ok"] is True and len(env["data"]["fair_probs"]) == LONG
         env = await call("option_calc", forward=HUGE, strike=1.0, days=1.0, iv=0.5)
         assert env["ok"] is True and env["data"]["price_usd"] == pytest.approx(HUGE) and env["data"]["delta"] == 1.0
         env = await call("option_calc", **OPTION | {"days": 10**20})
         assert env["ok"] is True and env["data"]["price_in_underlying"] == pytest.approx(1.0)
-        env = await call("fib_retracement", p0=HUGE, l_point=1.0, levels=[0.5] * 100_000)
-        assert env["ok"] is True and len(env["data"]["ladder"]) == 100_000 and env["data"]["applicable"] is True
+        env = await call("fib_retracement", p0=HUGE, l_point=1.0, levels=[0.5] * LONG)
+        assert env["ok"] is True and len(env["data"]["ladder"]) == LONG and env["data"]["applicable"] is True
         env = await call("strategy_cash_and_carry", **CARRY | {"spot_price": HUGE, "futures_price": 1.0})
         assert env["ok"] is True and env["data"]["basis_pct"] == pytest.approx(-100.0)
         env = await call("strategy_cash_and_carry", **CARRY | {"days": 10**20, "iv": HUGE})

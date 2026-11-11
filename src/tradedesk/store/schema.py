@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 38
+SCHEMA_VERSION = 39
 
 # Each migration is a list of SQL statements executed in a single transaction.
 # `PRAGMA user_version` is bumped by Store.init() inside the same explicit transaction,
@@ -963,5 +963,10 @@ MIGRATIONS: dict[int, list[str]] = {
         "ALTER TABLE pm_gap_outcome ADD COLUMN closed_ts INTEGER",  # unix s: Gamma closedTime (first one stored); NULL = not seen closed
         # unix s: the collector run that found the market off the open list BEFORE its end_ts and Gamma said closed
         "ALTER TABLE pm_gap_outcome ADD COLUMN gone_ts INTEGER",
+    ],
+    39: [
+        # Demo trader ghost trades (PR #643 review): the day before 'orphaned' counts from the cycle that first saw neither
+        # the position nor its close, not from the fill. NULL = the position is there (or the trade is not open).
+        "ALTER TABLE demo_trade ADD COLUMN gone_ts INTEGER",  # unix ms
     ],
 }

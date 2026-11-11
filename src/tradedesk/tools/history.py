@@ -18,7 +18,19 @@ from ..analytics.ranges import classify_ranges, generate_setup
 from ..analytics.regime import classify_regime
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, STORE_ERRORS, drop_corrupt_rows, first_nonfinite, parsed_rows, r, store_failed, store_num, store_ready
+from ._util import (
+    MAX_BAR_PRICE,
+    MAX_BAR_TS_MS,
+    READ_ONLY,
+    STORE_ERRORS,
+    bar_rows,
+    drop_corrupt_rows,
+    first_nonfinite,
+    r,
+    store_failed,
+    store_num,
+    store_ready,
+)
 
 SFP_EDGE_WARNING = (
     "Unverified edge: walk-forward backtests (2022-10..2026-10, up to 50 Binance crypto perps, 4h/12h "
@@ -62,24 +74,46 @@ MIN_RR = Annotated[float, Field(ge=1, le=20, description="Min rr1 (reward to tp1
 
 def _live_bars(raw: Any) -> list[dict[str, Any]]:
     """ccxt OHLCV rows -> bar dicts. A None volume (ccxt hands it out for some venues) counts as 0, as in chart_markup; a
-    row with a non-numeric timestamp or price is dropped (parsed_rows) instead of raising out of the tool."""
-    return parsed_rows(
-        [x for x in (raw or []) if isinstance(x, (list, tuple)) and len(x) >= 5],
-        lambda x: {
-            "ts": int(x[0]),
-            "open": float(x[1]),
-            "high": float(x[2]),
-            "low": float(x[3]),
-            "close": float(x[4]),
-            "volume": float(x[5] or 0.0) if len(x) >= 6 else 0.0,
-        },
-    )
+    row whose timestamp, price or volume is not a finite number in range (None, a string, NaN / inf, 1e308; `bar_row`) is
+    dropped instead of raising out of the tool or reaching the reply as NaN / Infinity."""
+    return [
+        {"ts": x[0], "open": x[1], "high": x[2], "low": x[3], "close": x[4], "volume": (x[5] if len(x) >= 6 else None) or 0.0}
+        for x in bar_rows(raw)[0]
+    ]
+
+
+def _dropped(raw: Any, bars: list[dict[str, Any]]) -> int:
+    """Rows of a live answer `_live_bars` left out (a null or text row too, which used to go unnamed)."""
+    return (len(raw) if isinstance(raw, list | tuple) else 0) - len(bars)
 
 
 def _warn_dropped_bars(b: Builder, raw: Any, bars: list[dict[str, Any]]) -> None:
-    dropped = sum(1 for x in (raw or []) if isinstance(x, (list, tuple)) and len(x) >= 5) - len(bars)
+    dropped = _dropped(raw, bars)
     if dropped:  # a dropped bar joins its neighbours: a range or a sweep across that gap is built on one bar fewer
-        b.warn(f"{dropped} malformed bars (non-numeric timestamp or price) dropped; ranges and sweeps skip them")
+        b.warn(
+            f"{dropped} malformed bars (a timestamp, price or volume that is not a finite number in range) dropped; "
+            "ranges and sweeps skip them"
+        )
+
+
+def _stored_bar_ok(x: dict[str, Any]) -> bool:
+    ts = x.get("ts")
+    if not isinstance(ts, int) or isinstance(ts, bool) or not 0 <= ts <= MAX_BAR_TS_MS:
+        return False
+    return all((v := store_num(x.get(k))) is not None and 0 < v <= MAX_BAR_PRICE for k in ("open", "high", "low", "close"))
+
+
+def _stored_bars(b: Builder, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """`rows` of ohlcv_hist without the bars another writer corrupted, with a warning (invariant 1). A text / blob price
+    raised ValueError out of range_detect / range_setup / market_regime, inf gave Infinity / NaN in the reply, and a
+    text / blob / 1e20 timestamp or a 1e308 price went into the ranges unchecked. Valid bars pass unchanged."""
+    bars = [x for x in rows if _stored_bar_ok(x)]
+    if len(bars) < len(rows):
+        b.warn(
+            f"{len(rows) - len(bars)} stored bars skipped: a timestamp that is not integer unix ms (0 .. year 9999) or an "
+            f"open / high / low / close that is not a finite number in (0, {MAX_BAR_PRICE:g}]; the window has fewer bars"
+        )
+    return bars
 
 
 def _stored_points(b: Builder, series: list[dict[str, Any]], key: str) -> list[tuple[int, float]]:
@@ -181,7 +215,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
 
         latest = ivs[-1]
         lo, hi = min(ivs), max(ivs)
-        rank = (latest - lo) / (hi - lo) if hi > lo else None
+        # Halves: the same ratio for ordinary values, but stored +-1e308 (another writer) no longer overflow the
+        # differences to inf (inf / inf gave NaN, x / inf a false 0; item 296).
+        rank = (latest / 2 - lo / 2) / (hi / 2 - lo / 2) if hi > lo else None
         below = sum(1 for v in ivs if v < latest)
         ties = sum(1 for v in ivs if v == latest)
         pct = (below + 0.5 * ties) / len(ivs)
@@ -332,8 +368,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
         venue: Annotated[str, Field(description="ccxt venue id, e.g. 'binanceusdm'.")],
         symbol: Annotated[str, Field(description="ccxt symbol, e.g. 'BTC/USDT:USDT'.")],
         timeframe: Annotated[str, Field(description="OHLCV timeframe as stored, e.g. '1h'.")] = "1h",
-        since_ts_ms: Annotated[int | None, Field(description="Unix ms lower bound (inclusive).")] = None,
-        until_ts_ms: Annotated[int | None, Field(description="Unix ms upper bound (inclusive).")] = None,
+        since_ts_ms: Annotated[int | None, Field(description="Unix ms lower bound (inclusive, >= 0).")] = None,
+        until_ts_ms: Annotated[int | None, Field(description="Unix ms upper bound (inclusive, >= 0).")] = None,
         limit: Annotated[
             int | None, Field(ge=1, le=50_000, description="Max bars, counted from the OLDEST in the window; omit for all.")
         ] = None,
@@ -341,8 +377,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
         b = Builder()
         if not await store_ready(b, rt, "history"):
             return b.build(None, ok=False)
-        if any(t is not None and abs(t) > SQLITE_INT_MAX for t in (since_ts_ms, until_ts_ms)):
-            b.miss("input", "tradedesk", "invalid_input", "since_ts_ms / until_ts_ms must fit a signed 64-bit integer (unix ms)")
+        # A negative bound (before 1970) can match no bar: invalid_input rather than "no bars stored".
+        if any(t is not None and not 0 <= t <= SQLITE_INT_MAX for t in (since_ts_ms, until_ts_ms)):
+            b.miss("input", "tradedesk", "invalid_input", "since_ts_ms / until_ts_ms must be unix ms from 0 to 2**63 - 1")
             return b.build(None, ok=False)
         try:
             rows = await rt.store.ohlcv_range(
@@ -422,7 +459,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 )
             except STORE_ERRORS as e:
                 return store_failed(b, e)
-            bars = rows[-lookback_bars:] if rows else []
+            bars = _stored_bars(b, rows[-lookback_bars:] if rows else [])
         if len(bars) < min_bars:
             b.miss("bars", "tradedesk", "data_unavailable", f"only {len(bars)} bars; need >= {min_bars}")
             return b.build(None, ok=False)
@@ -531,7 +568,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 )
             except STORE_ERRORS as e:
                 return store_failed(b, e)
-            bars = rows[-lookback_bars:] if rows else []
+            bars = _stored_bars(b, rows[-lookback_bars:] if rows else [])
         if len(bars) < min_bars:
             b.miss("bars", "tradedesk", "data_unavailable", f"only {len(bars)} bars; need >= {min_bars}")
             return b.build(None, ok=False)
@@ -632,6 +669,13 @@ def register(server: MCPServer, rt: Runtime) -> None:
             out["reason"] = "fetch_failed"
             return out
         bars = _live_bars(raw)
+        dropped = _dropped(raw, bars)
+        if dropped:
+            b.warn(f"{symbol}: {dropped} malformed bars (a timestamp, price or volume that is not a finite number in range) dropped")
+        if raw and not bars:  # the venue answered, but not with one usable bar: as good as a failed fetch
+            b.miss(f"ohlcv:{symbol}", f"ccxt:{venue}", "data_unavailable", "no bar with a finite timestamp and prices in range")
+            out["reason"] = "malformed_bars"
+            return out
         if len(bars) < min_bars:
             out["reason"] = f"insufficient_bars: {len(bars)} < {min_bars}"
             return out
@@ -703,7 +747,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "accumulation / distribution / ambiguous → generate entry/stop/tp1/tp2/RR via the "
             "same `range_setup` mechanic. Returns `setups` (filtered + sorted by rr1 desc), "
             "`scanned` / `tradable` counts, and `rejected` (per-symbol reasons: no_range, "
-            "no_sweep_in_range, incoherent_sweep, insufficient_bars, fetch_failed). "
+            "no_sweep_in_range, incoherent_sweep, insufficient_bars, fetch_failed, malformed_bars = the venue answered "
+            "but no bar had a finite timestamp and prices). "
             "Filters: `only_tradable` keeps only rr1 ≥ min_rr; `exclude_ambiguous` drops ranges "
             "whose classification is `ambiguous` (keep this on for high-conviction scans); "
             "`max_sweep_age_bars` drops setups whose sweep closed more than N bars ago (stale). "
@@ -776,7 +821,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 continue
             setups.append(r_)
         setups.sort(key=lambda x: x["setup"]["rr1"], reverse=True)
-        any_fetched = any(x["reason"] != "fetch_failed" for x in results)
+        any_fetched = any(x["reason"] not in ("fetch_failed", "malformed_bars") for x in results)
         return b.build(
             {
                 "venue": venue,
@@ -828,10 +873,13 @@ def register(server: MCPServer, rt: Runtime) -> None:
         bars: list[dict[str, Any]] = []
         if source == "live":
             fetched = await b.guard(f"ohlcv:{venue}", f"ccxt:{venue}", rt.exchanges.ohlcv(venue, symbol, timeframe, lookback_bars))
-            bars = _live_bars(fetched)  # a row with a non-numeric timestamp or price is dropped, not raised
-            dropped = sum(1 for x in (fetched or []) if isinstance(x, (list, tuple)) and len(x) >= 5) - len(bars)
+            bars = _live_bars(fetched)  # a row with a bad timestamp or price is dropped, not raised
+            dropped = _dropped(fetched, bars)
             if dropped:
-                b.warn(f"{dropped} malformed bars (non-numeric timestamp or price) dropped; the regime window has fewer bars")
+                b.warn(
+                    f"{dropped} malformed bars (a timestamp, price or volume that is not a finite number in range) dropped; "
+                    "the regime window has fewer bars"
+                )
         else:
             if not await store_ready(b, rt, "source='store'"):
                 return b.build(None, ok=False)
@@ -847,7 +895,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 )
             except STORE_ERRORS as e:
                 return store_failed(b, e)
-            bars = rows[-lookback_bars:] if rows else []
+            bars = _stored_bars(b, rows[-lookback_bars:] if rows else [])
 
         if len(bars) < 3:
             b.miss(

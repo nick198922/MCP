@@ -179,7 +179,7 @@ def test_report_on_the_review_date_is_whole(tmp_path, monkeypatch, capsys, date,
     assert "запит не вдався" not in text and "таблиці немає" not in text and "не відкрито" not in text
     lines = text.splitlines()
     rows = [ln for ln in lines if ln.startswith("| ") and not ln.startswith(("| Форвард", "|---"))]
-    report = cp.build(script.load_inputs(db, script.at_date(date, wall_ms)), script.at_date(date, wall_ms))
+    report = script.build_report(script.load_inputs(db, script.at_date(date, wall_ms)), script.at_date(date, wall_ms))
     assert len(rows) == len(report["forwards"]) >= 20
     for ln in rows:  # name | n | metric | band | verdict: every cell filled, a number or a dash
         cells = [c.strip() for c in ln.strip("|").split("|")]
@@ -196,6 +196,9 @@ def test_report_on_the_review_date_is_whole(tmp_path, monkeypatch, capsys, date,
     cards = script.load_idea_cards()
     assert cards and all(f"- {c['slug']}: планів" in text for c in cards)
     assert "- hl-oi-cap-state-forward: планів 1, «входити» 1, оцінено 0" in text
+    # item 312: the cards' own journals; the seeded Polymarket snapshots end on 22.11, so by the review they are silent
+    assert "- polymarket-vs-options-forward: журнал pm_gap_snapshot: годинних знімків від T0 2, з 2026-11-21 12:00" in text
+    assert "polymarket-vs-options-forward (останній запис pm_gap_snapshot 2026-11-22 12:00 UTC)" in text
     # date-dependent branches: condor interim after T0, embargoes closed, assistant_paper state from the day before
     assert "- п'ятниць з 8, що минули: 4" in text and "- валідних входів BTC: 2" in text
     assert "рано: рішення після 2026-12-31 10:00 UTC" in text
@@ -218,7 +221,7 @@ def test_report_on_23_november_shows_immature_forwards_as_early(tmp_path, monkey
     lines = text.splitlines()
     rows = [ln for ln in lines if ln.startswith("| ") and not ln.startswith(("| Форвард", "|---"))]
     now = script.at_date("2026-11-23", cp._ms(2026, 11, 25))
-    report = cp.build(script.load_inputs(db, now), now)
+    report = script.build_report(script.load_inputs(db, now), now)
     assert len(rows) == len(report["forwards"]) >= 20
     table = {}
     for ln in rows:

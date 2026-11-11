@@ -74,12 +74,17 @@ async def fetch_daily(rt: Runtime, b: Builder, sym_base: str, now: datetime, his
             ),
         ),
     )
+    closes = {}
+    sources = (("spot", "spot_klines", got[0], True), ("perp", "perp_klines", got[1], True), ("premium", "premium_index", got[2], False))
+    for key, field, raw, positive in sources:
+        rows = _rows_of(b, field, raw)
+        closes[key] = cr.parse_closes(rows, positive=positive)
+        if dropped := len(rows) - len(closes[key]):  # walk_klines keys rows by open time: no repeats to explain this
+            b.warn(f"{field}: {dropped} klines without a close that is a finite number in range dropped")
     return {
         "symbol": symbol,
         "raw": got,
-        "spot": cr.parse_closes(_rows_of(b, "spot_klines", got[0])),
-        "perp": cr.parse_closes(_rows_of(b, "perp_klines", got[1])),
-        "premium": cr.parse_closes(_rows_of(b, "premium_index", got[2]), positive=False),
+        **closes,
         "funding": points(_rows_of(b, "funding", got[3]), "timestamp", "fundingRate", lo=-0.1, hi=0.1),
     }
 

@@ -65,6 +65,10 @@ PASSPORTS: dict[str, Passport] = {
     ),
 }
 PASSPORT_OF = {"v4": "v4", "v9": "v4", "v7": "v7"}  # v9 = back to the v4 entry (setup_versions)
+# The same v4 base (n 8829, OOS 2025-03..2026-09) for the mean R of 100 trades, 5th / 50th / 95th percentile, computed
+# with ``setup_passport.r_band`` (10 000 draws, seed 20261030), docs/verification/2026-11-11-s12-v4-band-n100.md.
+V4_BAND_IID_N100: tuple[float, float, float] = (-0.259, -0.019, 0.259)
+V4_BAND_SLIDING_N100: tuple[float, float, float] = (-0.524, -0.050, 0.652)
 
 
 def traded_version(row: Mapping[str, Any], *, now_ms: int) -> tuple[str, str]:

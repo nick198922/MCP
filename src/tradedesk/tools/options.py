@@ -29,7 +29,7 @@ from ..analytics.options import (
 from ..analytics.vrp import align_daily, vrp_summary
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, find_expiry, parsed_rows, r
+from ._util import MAX_BAR_TS_MS, READ_ONLY, bar_rows, find_expiry, parsed_rows, r, store_num
 
 CUR = Annotated[Literal["BTC", "ETH"], Field(description="Deribit inverse-option currency")]
 EXPIRY = Annotated[str, Field(description="Expiry as 26MAR27 or 2027-03-26 (08:00 UTC). Use deribit_vol_surface to list expiries.")]
@@ -57,6 +57,41 @@ def _in_bucket(p: float | None, lo: float, hi: float) -> bool:
 
 def _day(d: float) -> str:
     return datetime.fromtimestamp(int(d) * 86400, UTC).date().isoformat()
+
+
+MAX_DVOL_PCT = 1000.0  # DVOL is annualised percent (BTC's record is ~200); a close beyond 1000 % is a corrupt row
+
+
+def _dvol_pct_row(x: Any) -> tuple[int, float] | None:
+    """(ts_ms, close in percent) of a Deribit DVOL row ``[ts_ms, open, high, low, close]``, else None.
+
+    The timestamp must be an integer unix ms in 0 .. year 9999 (an integral float counts) and the close a JSON number
+    in (0, MAX_DVOL_PCT]: NaN (it passed float() and turned every vol of the reply into NaN), +-inf, 1e308, a bool, a
+    string or an integer beyond the float range fail, so one bad row is dropped instead of poisoning the series."""
+    if not isinstance(x, (list, tuple)) or len(x) < 5:
+        return None
+    ts = x[0]
+    if isinstance(ts, float) and ts.is_integer():  # False for NaN / inf
+        ts = int(ts)
+    if not isinstance(ts, int) or isinstance(ts, bool) or not 0 <= ts <= MAX_BAR_TS_MS:
+        return None
+    close = store_num(x[4])
+    if close is None or not 0 < close <= MAX_DVOL_PCT:
+        return None
+    return ts, close
+
+
+def _dvol_row(x: Any) -> tuple[int, float] | None:
+    """(ts_ms, close as a decimal vol) of a well-formed DVOL row (see `_dvol_pct_row`), else None."""
+    p = _dvol_pct_row(x)
+    return None if p is None else (p[0], p[1] / 100.0)
+
+
+def _dvol_dropped_warning(n: int) -> str:
+    return (
+        f"dvol: {n} malformed DVOL rows (a timestamp or close that is not a finite number in range, "
+        f"close within 0..{MAX_DVOL_PCT:g} %) dropped"
+    )
 
 
 GEX_NOTE = (
@@ -545,13 +580,16 @@ def register(server: MCPServer, rt: Runtime) -> None:
         start_ms = end_ms - hours_back * 3_600_000
         data = await b.guard("dvol", "deribit", rt.deribit.volatility_index_data(currency, start_ms, end_ms, resolution))
         rows = (data or {}).get("data") or []
+        rows = rows if isinstance(rows, list) else []
         if not rows:
             if data is not None:
                 b.miss("dvol", "deribit", "data_unavailable", "empty series")
             return b.build(None, ok=False)
-        series = parsed_rows(
-            rows, lambda x: {"ts": int(x[0]), "open": float(x[1]), "high": float(x[2]), "low": float(x[3]), "close": float(x[4])}
-        )
+        # Only ts and close reach the reply. A NaN close passed float() and turned mean / stdev / min / max into NaN;
+        # inf / 1e308 / a bool / a text close or a non-integer time is dropped the same way and counted (as deribit_vrp).
+        series = [{"ts": p[0], "close": p[1]} for x in rows if (p := _dvol_pct_row(x)) is not None]
+        if len(series) < len(rows):
+            b.warn(_dvol_dropped_warning(len(rows) - len(series)))
         if not series:
             b.miss("dvol", "deribit", "data_unavailable", "no well-formed rows in the series")
             return b.build(None, ok=False)
@@ -615,12 +653,19 @@ def register(server: MCPServer, rt: Runtime) -> None:
         end_ms = int(rt.now().timestamp() * 1000)
         start_ms = end_ms - history_days * 86_400_000
         iv: dict[int, float] = {}
+        dvol_dropped = 0
         end = end_ms
         for _ in range(5):
             page = await b.guard("dvol", "deribit", rt.deribit.volatility_index_data(currency, start_ms, end, 86400))
             if not page:
                 break
-            iv.update(parsed_rows(page.get("data"), lambda x: (int(x[0]), float(x[4]) / 100.0)))
+            raw_rows = page.get("data")
+            raw_rows = raw_rows if isinstance(raw_rows, list) else []
+            # A NaN close passed float() into the series (NaN vols in the reply); inf / 1e308 / a bool / a text row is
+            # dropped the same way and counted.
+            kept = [p for x in raw_rows if (p := _dvol_row(x)) is not None]
+            dvol_dropped += len(raw_rows) - len(kept)
+            iv.update(kept)
             cont = page.get("continuation")
             nxt = parsed_rows([cont] if cont and not isinstance(cont, bool) else [], int)
             if cont and not nxt:  # a wrong-type continuation ends the paging; the IV series may be cut short
@@ -631,10 +676,21 @@ def register(server: MCPServer, rt: Runtime) -> None:
         bars = await b.guard(
             f"ohlcv:{price_venue}", f"ccxt:{price_venue}", rt.exchanges.ohlcv(price_venue, f"{currency}/USDT", "1d", history_days)
         )
-        prices = parsed_rows([x for x in (bars or []) if isinstance(x, (list, tuple)) and len(x) >= 5], lambda x: (int(x[0]), float(x[4])))
+        # A bar whose timestamp or price is not a finite number in range is dropped: an inf / 1e308 close raised out of
+        # the tool, a NaN one reached the reply as NaN.
+        kept, dropped = bar_rows(bars)
+        prices = [(x[0], x[4]) for x in kept]
+        if dropped:
+            b.warn(
+                f"ohlcv:{price_venue}: {dropped} malformed daily bars "
+                "(a timestamp, price or volume that is not a finite number in range) dropped"
+            )
+        if dvol_dropped:
+            b.warn(_dvol_dropped_warning(dvol_dropped))
         if not iv or not prices:
             if not iv and not any(m.field == "dvol" for m in b.missing):
-                b.miss("dvol", "deribit", "data_unavailable", "empty DVOL series")
+                detail = "no well-formed rows in the DVOL series" if dvol_dropped else "empty DVOL series"
+                b.miss("dvol", "deribit", "data_unavailable", detail)
             if not prices and bars is not None:
                 b.miss(f"ohlcv:{price_venue}", f"ccxt:{price_venue}", "data_unavailable", "no daily closes")
             return b.build(None, ok=False)

@@ -8,6 +8,7 @@ import inspect
 import ipaddress
 import json
 import math
+import shutil
 import socket
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -911,6 +912,33 @@ def rt(state: State) -> Runtime:
 def server(rt: Runtime):
     srv, _ = build_server(rt)
     return srv
+
+
+@pytest.fixture(scope="session")
+def migrated_store_template(tmp_path_factory) -> Path:
+    """A store file migrated to the current schema, built once per process (each xdist worker has its own basetemp).
+    Migrating a fresh store costs ~0.2-0.35 s; copying this file and running `Store.init()` on the copy ~0.015 s.
+    Not for tests of the migrations themselves (test_store.py, test_pm_gap.py migration_*)."""
+    from tradedesk.store.db import Store
+
+    path = tmp_path_factory.mktemp("store_template") / "db.sqlite"
+
+    async def build() -> None:
+        store = Store(path)
+        await store.init()
+        await store.aclose()  # closing the last connection checkpoints the WAL into the main file: one file to copy
+
+    asyncio.run(build())
+    return path
+
+
+@pytest.fixture
+def migrated_db(tmp_path, migrated_store_template) -> Path:
+    """`tmp_path/tradedesk.sqlite`: a fresh copy of the migrated template. `Store.init()` on it still sets WAL and the
+    pragmas and checks the migrations (none pending)."""
+    path = tmp_path / "tradedesk.sqlite"
+    shutil.copyfile(migrated_store_template, path)
+    return path
 
 
 @pytest.fixture

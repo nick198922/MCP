@@ -11,7 +11,9 @@
 | `TRADEDESK_AGENTS_OWNER_ONLY_AT` | `scripts/dashboard.py` | `80` | Поріг тижневого використання плану Claude, %, від якого дашборд показує режим «агенти беруть лише картки власника» (поруч із паузою `TRADEDESK_AGENTS_MAX_USAGE`, 97) |
 | `TRADEDESK_AGENTS_STATE` | `scripts/channel_watch.py` | `~/.local/state/tradedesk-agents` | Тека стану агентів, звідки береться `usage.json` (використання плану, не старше години) для очікування при високому ліміті |
 | `TRADEDESK_CHAT_MAX_SECONDS` | `scripts/tg_bridge.py` | `1800` | Найдовша відповідь Claude в темі «💬 Claude», с |
-| `TRADEDESK_CLAUDE_BIN` | `scripts/channel_watch.py`, `scripts/tg_bridge.py`, `scripts/trader_review.py` | `~/.local/bin/claude` | Шлях до CLI `claude` |
+| `TRADEDESK_CLAUDE_BIN` | `scripts/channel_watch.py`, `scripts/tg_bridge.py`, `scripts/trader_review.py` | `scripts/claude_run.sh` | Шлях до CLI `claude`; за замовчуванням обгортка, що бере запасний токен, коли логін сплив (з 11.11) |
+| `TRADEDESK_CLAUDE_REAL` | `scripts/claude_run.sh`, `scripts/claude_auth.py`, `scripts/server/claude-token.sh` | `~/.local/bin/claude` | Справжній CLI `claude` за обгорткою |
+| `TRADEDESK_CLAUDE_TOKEN_FILE` | `scripts/claude_run.sh`, `scripts/claude_auth.py`, `scripts/server/claude-token.sh` | `~/.config/tradedesk/claude-token` | Запасний токен `claude setup-token` (рік, 0600) |
 | `TRADEDESK_DASHBOARD_STATE` | `scripts/dashboard.py`, `scripts/journal_refresh.py` | `~/.local/state/tradedesk-dashboard` | Тека стану дашборда; там `journal-refresh.json` (стан оновлення угод) і `journal-refresh.lock` |
 | `TRADEDESK_DATA_DIR` | `scripts/agents_status.py`, `scripts/collector_health.py`, `scripts/dashboard.py`, `scripts/journal_trade_tg.py` | `/var/lib/tradedesk-mcp` | Тека даних сервера: база `tradedesk.sqlite`, `assistant/snapshot.json` тощо |
 | `TRADEDESK_HL_ADDRESS_FILE` | `scripts/journal_refresh.py` | `/var/lib/tradedesk-mcp/journal/hl-address` | Файл з адресою Hyperliquid власника для імпорту публічних угод у журнал (поза git; вміст тут не наводиться) |
@@ -59,7 +61,7 @@
 
 Призначення без «не з'ясовано»: для всіх 20 назв воно видно з коду або коментарів скрипта.
 
-Назви з першої таблиці, які читають і shell-скрипти: `TRADEDESK_AGENTS_OWNER_ONLY_AT` (`agents_loop.sh`, `nightly_agents.sh`, той самий `80`), `TRADEDESK_AGENTS_NO_NOTIFY` (`agents_notify.sh`), `TRADEDESK_AGENTS_CACHE_DIR` (`nightly_agents.sh`, той самий шлях), `TRADEDESK_CLAUDE_BIN` (`nightly_agents.sh`, `agents_doctor.sh`, `agents_audit.sh`: за замовчуванням `claude` з `PATH`, а не `~/.local/bin/claude`).
+Назви з першої таблиці, які читають і shell-скрипти: `TRADEDESK_AGENTS_OWNER_ONLY_AT` (`agents_loop.sh`, `nightly_agents.sh`, той самий `80`), `TRADEDESK_AGENTS_NO_NOTIFY` (`agents_notify.sh`), `TRADEDESK_AGENTS_CACHE_DIR` (`nightly_agents.sh`, той самий шлях), `TRADEDESK_CLAUDE_BIN` (`nightly_agents.sh`, `agents_doctor.sh`, `agents_audit.sh`: за замовчуванням теж `scripts/claude_run.sh`).
 
 ## Як це перевіряє аудит
 

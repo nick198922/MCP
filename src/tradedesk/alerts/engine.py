@@ -13,6 +13,8 @@ from __future__ import annotations
 import json
 import logging
 import operator
+import re
+import string
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -32,6 +34,8 @@ OPS = {
 
 # Reserved ``health:`` rule ids already warned about in this process (see load_rules).
 _WARNED_RESERVED_IDS: set[str] = set()
+# Unreadable stored metric values already warned about in this process (see _warn_once).
+_WARNED_DATA: set[str] = set()
 
 
 @dataclass(frozen=True)
@@ -101,27 +105,65 @@ def load_rules(path: str | Path, *, default_cooldown: int = 1800) -> list[Rule]:
     return out
 
 
-async def _latest_metric(store: "Store", metric: dict[str, Any], *, now_ts: int) -> float | None:
+def _warn_once(key: str, msg: str, *args: Any) -> None:
+    """Log a data warning once per key per process: the alerts job runs every tick and would repeat it each time."""
+    if key not in _WARNED_DATA:
+        _WARNED_DATA.add(key)
+        log.warning(msg, *args)
+
+
+def _stored_number(v: Any, rule_id: str, col: str) -> float | None:
+    """A stored metric value as a float; text / blob of another writer is "no value" with a logged warning (item 300:
+    the comparison of a string with the threshold raised TypeError out of the alerts job)."""
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        _warn_once(
+            f"{rule_id}\x00{col}",
+            "alert rule %r: the latest stored %s is not a number (%s); read as no value",
+            rule_id,
+            col,
+            type(v).__name__,
+        )
+        return None
+
+
+async def _latest_metric(store: "Store", metric: dict[str, Any], *, now_ts: int, rule_id: str = "") -> float | None:
     kind = metric.get("kind")
     if kind == "funding":
         series = await store.funding_series(metric["venue"], metric["base"], 0, now_ts)
-        return series[-1]["annualized"] if series else None
+        return _stored_number(series[-1]["annualized"], rule_id, "funding annualized") if series else None
     if kind == "atm_iv":
         series = await store.atm_term_series(metric["currency"], metric["expiry"], 0, now_ts)
-        return series[-1]["atm_iv"] if series else None
+        return _stored_number(series[-1]["atm_iv"], rule_id, "atm_iv") if series else None
     if kind == "basis":
         series = await store.basis_series(metric["currency"], metric["expiry"], 0, now_ts)
-        return series[-1]["basis_pct"] if series else None
+        return _stored_number(series[-1]["basis_pct"], rule_id, "basis_pct") if series else None
     return None
+
+
+_HUGE_SPEC = re.compile(r"\d{4}")  # a width / precision of 1000+ in a format spec
+
+
+def _safe_format(template: str, **values: float) -> str:
+    """``template.format(**values)``, or the template unchanged when it cannot format: an unknown or positional field,
+    ``{value[0]}`` / ``{value.x}`` (TypeError / AttributeError raised out of the alerts job before item 299), or a
+    format spec with a width / precision of 1000+ or a nested field (``{value:999999999}`` built a gigabyte string)."""
+    try:
+        for _, _, spec, _ in string.Formatter().parse(template):
+            if spec and ("{" in spec or _HUGE_SPEC.search(spec)):
+                return template
+        return template.format(**values)
+    except (KeyError, IndexError, ValueError, TypeError, AttributeError):
+        return template
 
 
 def _format_message(template: str, value: float, threshold: float) -> str:
     if not template:
         return ""
-    try:
-        return template.format(value=value, value_pct=value * 100, threshold=threshold, threshold_pct=threshold * 100)
-    except (KeyError, IndexError, ValueError):
-        return template
+    return _safe_format(template, value=value, value_pct=value * 100, threshold=threshold, threshold_pct=threshold * 100)
 
 
 async def evaluate_rules(rules: list[Rule], store: "Store", *, now_ts: int) -> list[FiredAlert]:
@@ -137,7 +179,7 @@ async def evaluate_rules(rules: list[Rule], store: "Store", *, now_ts: int) -> l
         threshold = r.when.get("value")
         if op_fn is None or threshold is None:
             continue
-        value = await _latest_metric(store, r.metric, now_ts=now_ts)
+        value = await _latest_metric(store, r.metric, now_ts=now_ts, rule_id=r.id)
         if value is None:
             continue
         if not op_fn(value, threshold):
@@ -177,13 +219,21 @@ async def evaluate_dsl_rules(store: "Store", *, now_ts: int) -> list[FiredAlert]
         last = await store.last_alert_ts(rule_id)
         if last is not None and (now_ts - last) < int(row["cooldown_seconds"]):
             continue
+        ctx.notes.clear()
         try:
             compiled = compile_expr(row["expr"])
             result = await evaluate(compiled, {"names": {}, "calls": calls})
-        except DslError:
+        except DslError as e:
+            # A refused expression (too long / deep, a size bound, a stored rule another writer left) was skipped silently
+            # on every tick; it is logged once per rule now (item 301).
+            _warn_once(f"{rule_id}\x00expr", "DSL rule %r skipped: expression error: %s", rule_id, e)
             continue
-        except Exception:  # noqa: BLE001 — a user expression should not crash the scheduler
+        except Exception:  # noqa: BLE001 — e.g. None > 0.3 while a metric has no value: data, not the expression
             continue
+        finally:
+            # A text / blob stored metric reads as "no value" (the rule does not fire); before item 300 that was silent.
+            for note in dict.fromkeys(ctx.notes):
+                _warn_once(f"{rule_id}\x00{note}", "DSL rule %r: %s", rule_id, note)
         if not result:
             continue
         try:
@@ -192,11 +242,7 @@ async def evaluate_dsl_rules(store: "Store", *, now_ts: int) -> list[FiredAlert]
             value_f = 1.0
         except OverflowError:  # an integer beyond the float range (e.g. 9 ** 999) raised out of the alerts job
             continue
-        msg = row.get("message") or ""
-        try:
-            msg = msg.format(value=value_f, value_pct=value_f * 100)
-        except (KeyError, IndexError, ValueError):
-            pass
+        msg = _safe_format(row.get("message") or "", value=value_f, value_pct=value_f * 100)
         fired.append(
             FiredAlert(
                 rule_id=rule_id,

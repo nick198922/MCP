@@ -38,6 +38,6 @@ def register(server: MCPServer, rt: Runtime) -> None:
         if dropped:
             b.warn(
                 f"alternative_me: {dropped} fear & greed reading(s) with a value or time that is not a finite number"
-                " (or a value outside 0..100) dropped"
+                " (or a value outside 0..100, or a time outside 1970..9999) dropped"
             )
         return b.build({"days_requested": days, **summary})

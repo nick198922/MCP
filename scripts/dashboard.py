@@ -446,7 +446,7 @@ def snapshot() -> dict:
         _git("fetch", "-q", "--no-write-fetch-head", "origin")
         _last_fetch[0] = now
     try:
-        hist = (LOG_DIR / "history.tsv").read_text(encoding="utf-8").splitlines()
+        hist = (LOG_DIR / "history.tsv").read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         hist = []
     branches = st.open_branches(REPO)
@@ -2237,9 +2237,9 @@ ACT: dict[str, tuple[str, str, str, str]] = {
         "дивись середнє на угоду й середній R: нижче 0 — зменш розмір, посуворіш правила входу.",
     ),
     "j_winrate": (
-        "Низька",
+        "Низька (до 50 %)",
         "не біда, якщо середнє на угоду вище 0: прибутки більші за збитки.",
-        "Висока, а середнє нижче 0",
+        "Від 50 %, а середнє нижче 0",
         "прибутки ріжуться рано, збитки тримаються довго: тримай стоп, дай плюсу дійти до цілі.",
     ),
     "j_pnl": (
@@ -3376,6 +3376,41 @@ def _fng_zone(latest: dict) -> str:
     return FNG_UA.get(str(z), _clean(z, 40)) if z else ""
 
 
+BRIEF_PRICE_MOVE = 3.0  # % in 24 h (ccxt `percentage`): ACT["price"]'s «до ±3 %»; from this on, «різкий рух»
+
+
+def price_act(pct: float | None) -> str:
+    """The «Ринок» price tile's action line (docs/design/PANEL.md rule 2), ACT["price"]'s two cases."""
+    if pct is None:
+        return "зміни за добу немає: дивись рівні"
+    return "різкий рух: не входь услід" if abs(pct) >= BRIEF_PRICE_MOVE else "звичайний день: рішення за рівнями"
+
+
+def dvol_act(pr: float | None) -> str:
+    """A DVOL tile's action line (rule 2) from its 365-day percentile, vol_lean's and ACT["dvol"]'s 30th / 70th."""
+    if pr is None:
+        return "перцентиля немає: дивись премію IV − RV30"
+    if pr < 0.3:
+        return "опціони дешеві: купувати вигідніше"
+    return "опціони дорогі: купівля переплачує" if pr > 0.7 else "опціони за звичною ціною"
+
+
+def rv_act(rv30: float, rv7: float | None) -> str:
+    """The realised-volatility tile's action line (rule 2): RV 7 d against RV 30 d, ACT["rv"]'s two cases."""
+    if rv7 is None:
+        return "7 дн немає: порівняти нема з чим"
+    if rv7 > rv30:
+        return "ринок пожвавився: ширший стоп, менший розмір"
+    return "ринок заспокоївся: ближчі цілі" if rv7 < rv30 else "темп руху той самий"
+
+
+def vrp_act(tone: str) -> str:
+    """The IV − RV30 tile's action line (rule 2) from vol_lean's buyer tone, so it never disagrees with the badge."""
+    return {"good": "не дорожчі за рух: сприяє покупцю", "bad": "покупець переплачує; продавцю вигідніше"}.get(
+        tone, "звична премія продавцю"
+    )
+
+
 def block_tiles(snap: dict) -> str:
     tiles = []
     tick = _tickers(snap)
@@ -3390,6 +3425,7 @@ def block_tiles(snap: dict) -> str:
                 _e(f"{_pc(pct, 2)} за 24 год"),
                 "" if pct is None else ("ok" if pct >= 0 else "bad"),
                 help="price",
+                act=price_act(pct),
             )
         )
     cur = (_data(snap, "vrp") or {}).get("current")
@@ -3402,15 +3438,7 @@ def block_tiles(snap: dict) -> str:
     if dvol is not None:
         pr = _num(cur.get("dvol_percentile_365d"))
         tone = (vol_lean(pr, None) or [("", "")])[0][0]
-        act = (
-            ""
-            if pr is None
-            else "опціони дешеві: купувати вигідніше"
-            if pr < 0.3
-            else "опціони дорогі: купівля переплачує"
-            if pr > 0.7
-            else "опціони за звичною ціною"
-        )
+        act = dvol_act(pr)
         tiles.append(
             _tile(
                 "DVOL (IV BTC, 30 дн)",
@@ -3659,12 +3687,24 @@ def block_vol(snap: dict) -> str:
     if dvol is not None:
         ch = _num(dv.get("change_7d_pts"))
         tiles.append(
-            _tile("DVOL", _e(_nf(dvol * 100, 1)), _e(f"за 7 днів {_pc(ch, 1).replace(' %', '')} вп" if ch is not None else ""), help="dvol")
+            _tile(
+                "DVOL",
+                _e(_nf(dvol * 100, 1)),
+                _e(f"за 7 днів {_pc(ch, 1).replace(' %', '')} вп" if ch is not None else ""),
+                help="dvol",
+                act=dvol_act(_num(cur.get("dvol_percentile_365d"))),
+            )
         )
     rv30, rv7 = _num(cur.get("rv_30d")), _num(cur.get("rv_7d"))
     if rv30 is not None:
         tiles.append(
-            _tile("Реалізована 30 дн", _e(_nf(rv30 * 100, 1)), _e(f"7 дн {_nf(rv7 * 100, 1)}" if rv7 is not None else ""), help="rv")
+            _tile(
+                "Реалізована 30 дн",
+                _e(_nf(rv30 * 100, 1)),
+                _e(f"7 дн {_nf(rv7 * 100, 1)}" if rv7 is not None else ""),
+                help="rv",
+                act=rv_act(rv30, rv7),
+            )
         )
     spr = _num(cur.get("spread_vs_rv30"))
     if spr is not None:
@@ -3677,6 +3717,7 @@ def block_vol(snap: dict) -> str:
                 help="vrp",
                 tone=tone,
                 badge=lean_badge(tone),
+                act=vrp_act(tone),
             )
         )
     out = [f"<div class='tiles'>{''.join(tiles)}</div>"] if tiles else []
@@ -3962,7 +4003,7 @@ def brief_summaries(snap: dict) -> dict[str, str]:
     if bands:
         b = max(bands, key=lambda x: x["p"])
         lab = f"нижче {_k(b['hi'])}" if b["lo"] is None else f"вище {_k(b['lo'])}" if b["hi"] is None else f"{_k(b['lo'])} – {_k(b['hi'])}"
-        out["scenarios"] = f"найімовірніше {lab} — {_nf(b['p'] * 100)} % (ціна страховки, не прогноз)"
+        out["scenarios"] = f"найімовірніше {lab} — {_nf(b['p'] * 100)} % (ціна страховки)"
     cur = (_data(snap, "vrp") or {}).get("current")
     cur = cur if isinstance(cur, dict) else {}
     parts = []
@@ -8046,8 +8087,7 @@ RULES_WEEK_NOTE = (
     "8 — куплений опціон: премія > 1 % депозиту; менше 24 год до експірації (08:00 UTC) — порушено завжди; за 1–3 доби — "
     "лише з тезою й ціллю, беззбитком у межах 1σ руху за реалізованою волою і IV ≤ 1.2 × RV: в імпорті з бірж тези й цілі "
     "немає, тож такі купівлі — «порушено», а спота й IV на час відкриття журнал не має (ці дві умови — «невідомо»). "
-    "Депозит — сьогоднішні $10 000 для всіх тижнів. 3, 6 і 7 з журналу не перевіряються. "
-    "Минуле не гарантує майбутнього."
+    "Депозит — сьогоднішні $10 000 для всіх тижнів. 3, 6 і 7 з журналу не перевіряються."
 )
 
 
@@ -8542,9 +8582,21 @@ def tile_rules_compliance(rows: list[dict], now: float) -> str:
     try:
         c = rules_compliance(rows, now)
     except Exception as e:  # noqa: BLE001 - one odd row must not take the tiles down
-        return _tile("За правилами", "—", _e(f"не вдалося порахувати: несподіваний формат даних ({type(e).__name__})"), help="j_rules")
+        return _tile(
+            "За правилами",
+            "—",
+            _e(f"не вдалося порахувати: несподіваний формат даних ({type(e).__name__})"),
+            help="j_rules",
+            act="перевір останні записи журналу",
+        )
     if not c["n_trades"]:
-        return _tile("За правилами", "—", "немає угод з часом відкриття: перевіряти нема що", help="j_rules")
+        return _tile(
+            "За правилами",
+            "—",
+            "немає угод з часом відкриття: перевіряти нема що",
+            help="j_rules",
+            act="записуй угоди в /trade зі стопом і ціллю",
+        )
     sub = (
         f"{c['n_ok']} з {c['n_checked']} перевірених без жодного порушення"
         + (f" · порушили {c['n_violated']}" if c["n_violated"] else "")
@@ -8560,6 +8612,7 @@ def tile_rules_compliance(rows: list[dict], now: float) -> str:
         help="j_rules",
         tone="" if c["enough"] else "warn",
         badge="" if c["enough"] else "замало для висновку",
+        act=j_rules_act(c),
     )
 
 
@@ -8851,6 +8904,7 @@ def max_drawdown_usd(rows: list[dict]) -> float:
 # (the fields shown; tests compare the pairs) over the owner's real trades, as scripts/journal_weekly_tg.py picks them.
 JOURNAL_BOT_TAGS = frozenset({"auto", "demo-paper", "bybit-demo"})  # scripts/journal_close_tg.BOT_TAGS: the demo trader
 JR_SMALL_SAMPLE = 30  # analytics.journal.SMALL_SAMPLE: fewer is a description, not a conclusion
+JR_HIGH_WINRATE = 0.5  # «Частка в плюсі» from which ACT["j_winrate"] calls it high (half the closed trades or more)
 JR_WEEK_S = 7 * 86400.0
 JR_WEEKS = 12  # newest ISO weeks in the table
 JR_DOTS_MAX = 80  # a dot per trade on the R curve up to this many trades
@@ -9305,6 +9359,85 @@ def _r(x: object) -> str:
     return "—" if v is None else f"{v:+.2f} R".replace("-", "−")
 
 
+# «Мої угоди» tiles' action lines (docs/design/PANEL.md rule 2, standing improvements item 295): the only thresholds are
+# the notes' (ACT / HELP) 30 trades (JR_SMALL_SAMPLE), rule 1's $100, sign 0 as each tile colours it (_signed_cls, or
+# the expectancy tile's exp < 0 edge), the «За правилами» counts and ACT["j_winrate"]'s 50 % (JR_HIGH_WINRATE, item 311);
+# no other cut-off is invented.
+def j_trades_act(n: int) -> str:
+    """«Угод (закритих)»: ACT["j_trades"]'s under / from JR_SMALL_SAMPLE closed trades."""
+    return "опис, не висновок: розмір не міняй" if n < JR_SMALL_SAMPLE else "суди за середнім на угоду й R"
+
+
+def j_winrate_act(win_rate: float | None, exp: float | None) -> str:
+    """«Частка в плюсі»: read with the average per trade (its note); exp < 0 as the expectancy tile's red edge and
+    ACT["j_winrate"]'s high share from JR_HIGH_WINRATE. «Тримай стоп» only where the note says it: a high share with a
+    negative average; a low share with a negative average points at the average, as does an unknown share."""
+    neg = exp is not None and exp < 0
+    if win_rate is None:
+        return "частка невідома: дивись середнє на угоду"
+    if win_rate >= JR_HIGH_WINRATE:
+        return "середнє нижче 0: тримай стоп, дай плюсу дійти" if neg else "частка сама мало каже: дивись середнє"
+    return "низька частка й мінус: дивись середнє на угоду" if neg else "середнє не в мінусі: низька частка не біда"
+
+
+def j_pnl_act(total: float | None, n: int) -> str:
+    """«P&L разом»: ACT["j_pnl"]'s minus / plus by the tile's own colour (_signed_cls), plus under JR_SMALL_SAMPLE."""
+    cls = _signed_cls(total)
+    if cls == "bad":
+        return "мінус: зменш розмір там, де він найбільший"
+    if not cls:
+        return "у нулі: суди за середнім і R"
+    return f"плюс, але до {JR_SMALL_SAMPLE} угод — не доказ" if n < JR_SMALL_SAMPLE else "плюс: систему суди за середнім і R"
+
+
+def j_expectancy_act(exp: float | None, n: int) -> str:
+    """«Середнє на угоду»: ACT["j_expectancy"]; below 0 is the tile's red edge and badge, then JR_SMALL_SAMPLE trades."""
+    if exp is not None and exp < 0:
+        return "менший розмір, суворіші правила входу"
+    if n < JR_SMALL_SAMPLE:
+        return f"до {JR_SMALL_SAMPLE} угод не перевага: розмір не збільшуй"
+    return f"не нижче 0 на {JR_SMALL_SAMPLE}+ угодах: тримай правила"
+
+
+def r_mean_act(mean: float | None, n: int) -> str:
+    """A «Середній R» tile (journal, paper recommendations, plans): ACT["r"] by the sign as _signed_cls colours it, and
+    HELP["r"]'s ≥ 30 trades with R (JR_SMALL_SAMPLE) before a positive mean is a sign of an edge."""
+    if mean is None:
+        return "угод з R немає: висновку ще нема"
+    cls = _signed_cls(mean)
+    if cls == "bad":
+        return "переглянь стопи й цілі, розмір не збільшуй"
+    if not cls:
+        return "переваги не видно: розмір не збільшуй"
+    return f"до {JR_SMALL_SAMPLE} угод з R — не доказ" if n < JR_SMALL_SAMPLE else f"вище 0 на {JR_SMALL_SAMPLE}+ угодах: ознака переваги"
+
+
+def drawdown_act(dd: float, n: int) -> str:
+    """«Найбільша просадка» (dd ≥ 0, USD): ACT["drawdown"]'s «до 30 закритих угод не показова», then HELP's sizing."""
+    if dd <= 0:
+        return "просадки ще не було: розмір не міняй"
+    return f"до {JR_SMALL_SAMPLE} угод не показова: розмір не міняй" if n < JR_SMALL_SAMPLE else "тримай розмір, з яким переживеш її знову"
+
+
+def j_open_act(n_open: int) -> str:
+    """«Відкритих»: ACT["j_open"], rule 1's risk per trade (RULES_DEPOSIT × RULES_RISK_PCT)."""
+    if not n_open:
+        return "нічого робити не треба"
+    return f"перевір ризик кожної ≤ {_usd(RULES_DEPOSIT * RULES_RISK_PCT / 100.0)} і строк"
+
+
+def j_rules_act(c: dict) -> str:
+    """«За правилами» from rules_compliance's counts: exact violations first (ACT: find the rule in the weekly report),
+    then «невідомо» (record stop and target), then rule 4 judged on the close time only (record the open time)."""
+    if c["n_violated"]:
+        return "знайди в тижневому звіті, яке правило ламаєш"
+    if c["n_unknown"]:
+        return "записуй стоп і ціль у /trade"
+    if c["n_approx"]:
+        return "записуй час відкриття: правило 4 наближене"
+    return "порушень немає: тримай правила далі"
+
+
 def block_journal_tiles(real: list[dict], n_open: int, now: float) -> str:
     s = journal_summary(real)
     rules = tile_rules_compliance(real, now)
@@ -9314,12 +9447,17 @@ def block_journal_tiles(real: list[dict], n_open: int, now: float) -> str:
             + (f"<p class='note'>Відкритих: {n_open}.</p>" if n_open else "")
             + (f"<div class='tiles'>{rules}</div>" if real else "")
         )
-    total, exp = s["total_pnl"], s["expectancy_per_trade"]
+    total, exp, n = s["total_pnl"], s["expectancy_per_trade"], s["closed_trades"]
+    dd = max_drawdown_usd(real)
     tiles = [
-        _tile("Угод (закритих)", _nf(s["closed_trades"]), f"у плюсі {s['wins']} · у мінусі {s['losses']}", help="j_trades"),
-        _tile("Частка в плюсі", _share(s["win_rate"]), "за полем outcome", help="j_winrate"),
+        _tile("Угод (закритих)", _nf(n), f"у плюсі {s['wins']} · у мінусі {s['losses']}", help="j_trades", act=j_trades_act(n)),
+        _tile("Частка в плюсі", _share(s["win_rate"]), "за полем outcome", help="j_winrate", act=j_winrate_act(s["win_rate"], exp)),
         _tile(
-            "P&L разом", f"<span class='{_signed_cls(total)}'>{_usd(total, True)}</span>", "USD, усі біржі й опціони разом", help="j_pnl"
+            "P&L разом",
+            f"<span class='{_signed_cls(total)}'>{_usd(total, True)}</span>",
+            "USD, усі біржі й опціони разом",
+            help="j_pnl",
+            act=j_pnl_act(total, n),
         ),
         _tile(
             "Середнє на угоду",
@@ -9328,18 +9466,26 @@ def block_journal_tiles(real: list[dict], n_open: int, now: float) -> str:
             help="j_expectancy",
             tone="bad" if exp is not None and exp < 0 else "",
             badge="система поки в мінусі" if exp is not None and exp < 0 else "",
+            act=j_expectancy_act(exp, n),
         ),
-        _tile("Середній R", _r(s["avg_r"]), f"угод зі стопом {s['r_count']}" if s["r_count"] else "стопи не записані", help="r"),
+        _tile(
+            "Середній R",
+            _r(s["avg_r"]),
+            f"угод зі стопом {s['r_count']}" if s["r_count"] else "стопи не записані",
+            help="r",
+            act=r_mean_act(s["avg_r"], s["r_count"]),
+        ),
         _tile(
             "Найбільша просадка",
-            _usd(-max_drawdown_usd(real)),
+            _usd(-dd),
             "USD, одна крива P&L усіх бірж і опціонів за датою закриття",
             help="drawdown",
+            act=drawdown_act(dd, n),
         ),
         rules,
     ]
     if n_open:
-        tiles.append(_tile("Відкритих", _nf(n_open), help="j_open"))
+        tiles.append(_tile("Відкритих", _nf(n_open), help="j_open", act=j_open_act(n_open)))
     return f"<div class='tiles'>{''.join(tiles)}</div>"
 
 
@@ -9828,6 +9974,80 @@ REC_OTHER_UA = {
 }
 
 
+# Paper recommendations' and plans' action lines (docs/design/PANEL.md rule 2, standing improvements item 297): the
+# only thresholds are the notes' (ACT / HELP) H1 sample of 27 trades, PLAN_MIN_N plans with R, sign 0 as each tile (or
+# the tile it points to) colours it with _signed_cls, and the plans' 95 % CI against 0; no other cut-off is invented.
+REC_H1_N = 27  # the H1 test's n (REC_CAVEAT); ACT["rec_n"]'s «Більше 27 (стільки в тесті H1)»
+
+
+def rec_n_act(n: int) -> str:
+    """«Розраховано»: ACT["rec_n"]'s few settled vs more than the H1 test's REC_H1_N."""
+    return "мало: висновку не роби, чекай експірацій" if n <= REC_H1_N else "звір «Середнє, % спота» з −0.59 % тесту"
+
+
+def rec_win_act(mean_pct: float | None) -> str:
+    """«У плюсі» (paper): ACT["rec_win"] reads it with «Середнє, % спота», by that tile's colour (_signed_cls)."""
+    return "середнє в мінусі: за методом не торгуй" if _signed_cls(mean_pct) == "bad" else "суди за «Середнє, % спота», не за часткою"
+
+
+def rec_pct_act(mean_pct: float | None) -> str:
+    """«Середнє, % спота»: ACT["rec_pct"]'s red / green by the tile's own colour (_signed_cls on the percent)."""
+    cls = _signed_cls(mean_pct)
+    if cls == "bad":
+        return "у мінусі, як у тесті H1: не торгуй"
+    return "плюс на папері — шум: угод не відкривай" if cls else "у нулі: переваги не видно, не торгуй"
+
+
+def rec_r_worst_act(r: float | None) -> str:
+    """«Середній R (від найгіршого)»: ACT["rec_r_worst"]'s below / above 0, the sign as _signed_cls draws R."""
+    if r is None:
+        return "R немає: висновку нема"
+    cls = _signed_cls(r)
+    if cls == "bad":
+        return "на папері втрачає ризик: не торгуй"
+    return "звір із «Середнє, % спота», угод не відкривай" if cls else "переваги не видно: не торгуй"
+
+
+def rec_pnl_act(total: float | None) -> str:
+    """«P&L разом» (paper): ACT["rec_pnl"]'s minus / plus by the tile's own colour (_signed_cls)."""
+    cls = _signed_cls(total)
+    if cls == "bad":
+        return "мінус у доларах: суди за «Середнє, % спота»"
+    return "папір, не гроші: за методом не торгуй" if cls else "у нулі: суди за «Середнє, % спота»"
+
+
+def plan_n_act(n_r: int) -> str:
+    """«Розв'язано»: ACT["plan_n"]'s under / from PLAN_MIN_N plans with R."""
+    return f"до {PLAN_MIN_N} планів з R — висновку не роби" if n_r < PLAN_MIN_N else "дивись «Середній R» і «Проти 0»"
+
+
+def plan_win_act(mean: float | None) -> str:
+    """«У плюсі» (plans): ACT["plan_win"] reads it with the mean R, by the «Середній R» tile's colour (_signed_cls)."""
+    if mean is None:
+        return "планів з R немає: висновку нема"
+    return "середній R нижче 0: переглянь ціль чи стоп" if _signed_cls(mean) == "bad" else "середній R не нижче 0: частка не біда"
+
+
+def plans_act(ci: list | None, n_r: int) -> str:
+    """«Проти 0»: ACT["plans"]'s CI containing / below 0 vs above 0 (the tile's own ci[0] > 0), then PLAN_MIN_N."""
+    if ci is None:
+        return "ДІ ще нема: чекай планів з R"
+    if not ci[0] > 0:
+        return "переваги не видно: за планами не торгуй"
+    return f"до {PLAN_MIN_N} планів з R — ще описово" if n_r < PLAN_MIN_N else "розбери з Claude, звідки перевага"
+
+
+def plan_exits_act(o: dict) -> str:
+    """«Виходи»: ACT["plan_exits"]'s «багато без входу» / «багато за строком» as the most frequent of the tile's three
+    groups (ціль / стоп, за строком, без входу); a tie goes to the group the note says to fix. No count cut-off."""
+    ts, ex, nf = o.get("target", 0) + o.get("stop", 0), o.get("expired", 0), o.get("not_filled", 0)
+    if nf and nf >= max(ex, ts):
+        return "вхід надто далеко: став ближче"
+    if ex and ex >= ts:
+        return "ціль далеко для строку: ближча чи довший строк"
+    return "здебільшого ціль / стоп: вхід і строк не міняй" if ts else "виходів ще немає: підправляти нічого"
+
+
 def _rec_tiles(s: dict, n_open: int) -> str:
     if not s["n"]:
         return _empty(
@@ -9836,21 +10056,35 @@ def _rec_tiles(s: dict, n_open: int) -> str:
         )
     mean = 100 * s["mean_pnl_pct_spot"]
     tiles = [
-        _tile("Розраховано", _nf(s["n"]), f"метод за ланцюгом · відкритих {n_open}", help="rec_n"),
-        _tile("У плюсі", _share(s["win_share"]), help="rec_win"),
+        _tile("Розраховано", _nf(s["n"]), f"метод за ланцюгом · відкритих {n_open}", help="rec_n", act=rec_n_act(s["n"])),
+        _tile("У плюсі", _share(s["win_share"]), help="rec_win", act=rec_win_act(mean)),
         _tile(
             "Середнє, % спота",
             f"<span class='{_signed_cls(mean)}'>{_pc(mean, 2)}</span>",
             "на 1 BTC, порівнянне з H1, основна метрика",
             help="rec_pct",
+            act=rec_pct_act(mean),
         ),
-        _tile("Середній R (як у тесті)", _r(s["mean_r_study"]), f"угод з R {s['n_r_study']}", help="r"),
-        _tile("Середній R (від найгіршого)", _r(s["mean_r_worst_case"]), "P&L / ризик угоди", help="rec_r_worst"),
+        _tile(
+            "Середній R (як у тесті)",
+            _r(s["mean_r_study"]),
+            f"угод з R {s['n_r_study']}",
+            help="r",
+            act=r_mean_act(_num(s["mean_r_study"]), s["n_r_study"]),
+        ),
+        _tile(
+            "Середній R (від найгіршого)",
+            _r(s["mean_r_worst_case"]),
+            "P&L / ризик угоди",
+            help="rec_r_worst",
+            act=rec_r_worst_act(_num(s["mean_r_worst_case"])),
+        ),
         _tile(
             "P&L разом",
             f"<span class='{_signed_cls(s['sum_pnl_usd'])}'>{_usd(s['sum_pnl_usd'], True)}</span>",
             "USD на розмір угод",
             help="rec_pnl",
+            act=rec_pnl_act(s["sum_pnl_usd"]),
         ),
     ]
     return f"<div class='tiles'>{''.join(tiles)}</div>"
@@ -9949,15 +10183,22 @@ def block_trade_plans(rows: list[dict] | None, n_shadow: int = 0) -> str:
         else:
             vs0, cls = "95 % ДІ містить 0: переваги не видно", ""
         tiles = [
-            _tile("Розв'язано", _nf(s["n"]), f"з входом {s['n_filled']} · з R {s['n_r']}", help="plan_n"),
-            _tile("У плюсі", _share(s["win_rate"]), "частка планів з R > 0", help="plan_win"),
-            _tile("Середній R", f"<span class='{_signed_cls(mean)}'>{_r(mean)}</span>", f"95 % ДІ {_ci(ci)}", help="r"),
-            _tile("Проти 0", f"<span class='{cls}'>{_e(vs0)}</span>", "t-інтервал середнього R", help="plans"),
+            _tile("Розв'язано", _nf(s["n"]), f"з входом {s['n_filled']} · з R {s['n_r']}", help="plan_n", act=plan_n_act(s["n_r"])),
+            _tile("У плюсі", _share(s["win_rate"]), "частка планів з R > 0", help="plan_win", act=plan_win_act(mean)),
+            _tile(
+                "Середній R",
+                f"<span class='{_signed_cls(mean)}'>{_r(mean)}</span>",
+                f"95 % ДІ {_ci(ci)}",
+                help="r",
+                act=r_mean_act(mean, s["n_r"]),
+            ),
+            _tile("Проти 0", f"<span class='{cls}'>{_e(vs0)}</span>", "t-інтервал середнього R", help="plans", act=plans_act(ci, s["n_r"])),
             _tile(
                 "Виходи",
                 f"{o['target']} / {o['stop']}",
                 f"ціль / стоп · за строком {o['expired']} · без входу {o['not_filled']}",
                 help="plan_exits",
+                act=plan_exits_act(o),
             ),
         ]
         out.append(f"<div class='tiles'>{''.join(tiles)}</div>")
@@ -10071,6 +10312,72 @@ def _fc_weekly_block(rows: list[dict]) -> str:
     return "".join(out)
 
 
+# The forecast journal's action lines (docs/design/PANEL.md rule 2, standing improvements item 297): the only
+# thresholds are the notes' FC_MIN_EXPIRIES expiry dates (the «замало для висновку» badge), Brier 0.25 of «always
+# 50 %» (ACT["fc_brier"]) and skill 0 as _skill colours it (_signed_cls); no other cut-off is invented.
+FC_BRIER_COIN = 0.25  # Brier of always saying 50 % (0.5²): ACT["fc_brier"]'s «Нижче 0.25» / «0.25 і вище»
+
+
+def fc_n_act(n_dates: int) -> str:
+    """«Прогнозів розраховано»: ACT["fc_n"], the count is not the sample; the conclusion is from FC_MIN_EXPIRIES dates."""
+    return f"чекай: висновок — від {FC_MIN_EXPIRIES} дат" if n_dates < FC_MIN_EXPIRIES else "не вибірка: дивись плитку «Експірацій»"
+
+
+def fc_expiries_act(n_dates: int) -> str:
+    """«Експірацій»: ACT["fc_expiries"]'s under / from FC_MIN_EXPIRIES expiry dates (the tile's badge)."""
+    return f"висновку немає: чекай {FC_MIN_EXPIRIES} дат експірації" if n_dates < FC_MIN_EXPIRIES else "читай еталони й калібрування"
+
+
+def fc_brier_act(brier: float | None, n_dates: int) -> str:
+    """«Brier»: ACT["fc_brier"]'s below / from FC_BRIER_COIN, below it the conclusion is from FC_MIN_EXPIRIES dates."""
+    if brier is None:
+        return "оцінки немає: висновку нема"
+    if brier >= FC_BRIER_COIN:
+        return "не краще за «завжди 50 %»: не спирайся"
+    return f"краще за 50 %; висновок — від {FC_MIN_EXPIRIES} дат" if n_dates < FC_MIN_EXPIRIES else "краще за 50 %: звір з еталонами поруч"
+
+
+def fc_ref_act(skill: float | None, n_dates: int) -> str:
+    """«Проти фіксованого еталона»: ACT["fc_ref"]'s below / above 0 as _skill colours it, above it FC_MIN_EXPIRIES dates."""
+    if skill is None:
+        return "еталона немає: висновку нема"
+    cls = _signed_cls(skill)
+    if cls == "bad":
+        return "гірші за наївну оцінку: не спирайся"
+    if not cls:
+        return "як наївна оцінка: переваги не видно"
+    return f"точніші, але висновок — від {FC_MIN_EXPIRIES} дат" if n_dates < FC_MIN_EXPIRIES else "точніші, та це ще не перевага для угоди"
+
+
+def fc_clim_act(skill: float | None, n_dates: int) -> str:
+    """«Проти кліматології»: ACT["fc_clim"]'s below / above 0 as _skill colours it, above it FC_MIN_EXPIRIES dates, then
+    HELP's «як угоду це треба перевіряти окремо»."""
+    if skill is None:
+        return "еталона немає: висновку нема"
+    cls = _signed_cls(skill)
+    if cls == "bad":
+        return "еталон суворий: нічого не міняй"
+    if not cls:
+        return "як частота заднім числом: нічого не міняй"
+    if n_dates < FC_MIN_EXPIRIES:
+        return f"точніші за частоту; висновок — від {FC_MIN_EXPIRIES} дат"
+    return "точніші за частоту; угоду перевіряй окремо"
+
+
+def fc_rv_act(ci: list | None, n_dates: int) -> str:
+    """«Опціони проти RV30» (item 298): ACT["fc_rv"]'s «поки 95 % ДІ містить 0, різниці не видно» (the CI against 0 as
+    _demo_vs0 reads it: strictly above / below), minus = the options forecast better, plus = the RV30 model does; a
+    side is a conclusion only from FC_MIN_EXPIRIES expiry dates (the tile's badge, HELP's «лише від 30 дат»)."""
+    if ci is None:
+        return "ДІ — від 2 дат: висновку нема"
+    if not (ci[0] > 0 or ci[1] < 0):
+        return "ДІ містить 0: різниці не видно"
+    if n_dates < FC_MIN_EXPIRIES:
+        side = "опціони точніші" if ci[1] < 0 else "історія точніша"
+        return f"{side}; перевір від {FC_MIN_EXPIRIES} дат"
+    return "опціони точніші: на RV30 не спирайся" if ci[1] < 0 else "опціони хиблять з розміром руху: розбери з Claude"
+
+
 def block_forecasts(rows: list[dict] | None) -> str:
     """Weekly Brier and calibration of the risk-neutral range forecasts (table forecast_log), as forecast_log_status
     scores them. A small n_expiry_dates (the sample size, as forecast_log_status's `enough`) is said out loud: the numbers
@@ -10087,9 +10394,16 @@ def block_forecasts(rows: list[dict] | None) -> str:
             f"Розрахованих прогнозів ще немає (відкритих: {n_open}); перша оцінка — після delivery експірації "
             f"{_day(nxt)} (08:00 UTC), коли колектор її розрахує."
         )
-    small = s["n_expiry_dates"] < FC_MIN_EXPIRIES  # BTC and ETH of one date move together: dates, not (asset, expiry)
+    nd = s["n_expiry_dates"]
+    small = nd < FC_MIN_EXPIRIES  # BTC and ETH of one date move together: dates, not (asset, expiry)
     tiles = [
-        _tile("Прогнозів розраховано", _nf(s["n"]), f"відкритих {n_open} · 4 події × BTC і ETH щодня", help="fc_n"),
+        _tile(
+            "Прогнозів розраховано",
+            _nf(s["n"]),
+            f"відкритих {n_open} · 4 події × BTC і ETH щодня",
+            help="fc_n",
+            act=fc_n_act(nd),
+        ),
         _tile(
             "Експірацій",
             _nf(s["n_expiries"]),
@@ -10097,8 +10411,15 @@ def block_forecasts(rows: list[dict] | None) -> str:
             help="fc_expiries",
             tone="warn" if small else "",
             badge="замало для висновку" if small else "",
+            act=fc_expiries_act(nd),
         ),
-        _tile("Brier", _bs(s["brier"]), "середнє (p − o)² · 0 — ідеально, 0.25 — завжди 50 %", help="fc_brier"),
+        _tile(
+            "Brier",
+            _bs(s["brier"]),
+            "середнє (p − o)² · 0 — ідеально, 0.25 — завжди 50 %",
+            help="fc_brier",
+            act=fc_brier_act(_num(s["brier"]), nd),
+        ),
         _tile(
             "Проти фіксованого еталона",
             _skill(s["skill_vs_ref"]),
@@ -10108,12 +10429,14 @@ def block_forecasts(rows: list[dict] | None) -> str:
                 else "еталон є лише для «вище спота» і «±1σ»"
             ),
             help="fc_ref",
+            act=fc_ref_act(_num(s["skill_vs_ref"]), nd),
         ),
         _tile(
             "Проти кліматології",
             _skill(s["skill_vs_climatology"]),
             f"Brier {_bs(s['brier'])} проти {_bs(s['brier_climatology'])} · частота в цій вибірці, заднім числом",
             help="fc_clim",
+            act=fc_clim_act(_num(s["skill_vs_climatology"]), nd),
         ),
     ]
     c = fc_compare(rows)
@@ -10129,6 +10452,7 @@ def block_forecasts(rows: list[dict] | None) -> str:
                 help="fc_rv",
                 tone="" if c["enough"] else "warn",
                 badge="" if c["enough"] else "замало для висновку",
+                act=fc_rv_act(ci, c["n_dates"]),
             )
         )
     out = [f"<div class='tiles'>{''.join(tiles)}</div>"]
@@ -10144,6 +10468,88 @@ def block_forecasts(rows: list[dict] | None) -> str:
     if len(rows) >= FC_MAX_ROWS:
         out.append(f"<p class='note warn'>Прочитано лише {FC_MAX_ROWS} останніх прогнозів.</p>")
     return "".join(out)
+
+
+# The one-line summaries of the four «Мої угоди» folds (docs/design/PANEL.md rule 4, standing improvements item 303):
+# the block's main number computed from the same rows the block reads, a status word when there is nothing to count.
+# Each returns escaped HTML and never raises: an odd row gives «збій: …», the body says what went wrong.
+SUMMARY_FAILED = "збій: несподіваний формат даних"
+PLAN_VERDICT_SHORT = {"enter": "вхід", "wait": "чекати", "skip": "пропустити"}
+
+
+def rules_week_line(rows: list[dict] | None, now: float) -> str:
+    """«Порушення правил за тиждень»: trades that broke a rule in the ISO week of `now` (UTC, the opening week as
+    rules_weekly groups them) with their P&L, then the whole journal's count. `rows` as block_rules_week takes them."""
+    try:
+        if rows is None:
+            return "таблиці journal немає"
+        if not rows:
+            return "угод немає"
+        weeks = rules_weekly(rows, now)
+        if not weeks:
+            return "угод з часом відкриття немає"
+        cur = next((w for w in weeks if w["week"] == _rules_week(now)), None)
+        if cur is None or not cur["n_trades"]:
+            line = "цього тижня угод немає"
+        else:
+            pnl = cur["pnl_violating"]
+            line = f"цього тижня порушили {cur['n_violating']} з {cur['n_trades']} угод" + (
+                f", P&L {_usd(pnl, True)}" if cur["n_violating"] and pnl is not None else ""
+            )
+        n_bad, n_all = sum(w["n_violating"] for w in weeks), sum(w["n_trades"] for w in weeks)
+        return _e(f"{line} · за весь журнал {n_bad} з {n_all}")
+    except Exception:  # noqa: BLE001 - one odd row must not take the page down
+        return SUMMARY_FAILED
+
+
+def rec_paper_line(rows: list[dict] | None) -> str:
+    """«Паперові рекомендації асистента»: the method's chain trades (the block's main group) settled / open and their
+    mean % of spot, then all rows."""
+    try:
+        if rows is None:
+            return "таблиці rec_paper немає"
+        if not rows:
+            return "рекомендацій ще немає"
+        meth = rec_groups(rows)["method"]
+        s = rec_summary(meth)
+        n_open = sum(1 for t in meth if t.get("status") == "open")
+        mean = f", середнє {_pc(100 * s['mean_pnl_pct_spot'], 2)} спота" if s["n"] else ""
+        return _e(f"метод: розраховано {s['n']}{mean}, відкритих {n_open} · усього {len(rows)}")
+    except Exception:  # noqa: BLE001 - one odd row must not take the page down
+        return SUMMARY_FAILED
+
+
+def plans_line(rows: list[dict] | None) -> str:
+    """«Плани угод асистента»: plans by verdict (as the block's table counts them) and how many are resolved."""
+    try:
+        if rows is None:
+            return "таблиці trade_plan немає"
+        if not rows:
+            return "планів ще немає"
+        parts = [f"{label} {sum(1 for x in rows if x.get('verdict') == v)}" for v, label in PLAN_VERDICT_SHORT.items()]
+        other = sum(1 for x in rows if x.get("verdict") not in PLAN_VERDICT_SHORT)
+        if other:
+            parts.append(f"інше {other}")
+        n_done = sum(1 for x in rows if x.get("status") == "resolved")
+        return _e(" · ".join(parts) + f" · розв'язано {n_done} з {len(rows)}")
+    except Exception:  # noqa: BLE001 - one odd row must not take the page down
+        return SUMMARY_FAILED
+
+
+def forecasts_line(rows: list[dict] | None) -> str:
+    """«Журнал прогнозів»: forecasts settled (as fc_score counts them) and open, and the nearest open expiry date
+    (as the block's «перша оцінка» names it)."""
+    try:
+        if rows is None:
+            return "таблиці forecast_log немає"
+        if not rows:
+            return "прогнозів ще немає"
+        open_ = [x for x in rows if x.get("status") == "open"]
+        nxt = min((v for x in open_ if (v := _num(x.get("expiry_ts"))) is not None), default=None)
+        nearest = f", найближча експірація {_day(nxt)}" if nxt is not None else ""
+        return _e(f"розраховано {len(_fc_settled(rows))} з {len(rows)} · відкритих {len(open_)}{nearest}")
+    except Exception:  # noqa: BLE001 - one odd row must not take the page down
+        return SUMMARY_FAILED
 
 
 JOURNAL_CSS = """
@@ -10268,7 +10674,7 @@ def render_journal(
             rules = block_rules_week(real if rows else rows, now)
         except Exception as e:  # noqa: BLE001 - one odd row must not take the page down
             rules = _empty(f"Блок не вдалося показати: несподіваний формат даних ({type(e).__name__}).")
-        out.append(_fold("Порушення правил за тиждень", "rules_week", "які з твоїх правил порушено і скільки це коштувало", rules))
+        out.append(_fold("Порушення правил за тиждень", "rules_week", rules_week_line(real if rows else rows, now), rules))
         try:
             rec = block_rec_paper(data.get("rec_paper"))
         except Exception as e:  # noqa: BLE001 - one odd row must not take the page down
@@ -10277,7 +10683,7 @@ def render_journal(
             _fold(
                 "Паперові рекомендації асистента",
                 "rec",
-                "угоди методу асистента на папері: чи є перевага",
+                rec_paper_line(data.get("rec_paper")),
                 f"<p class='note warn'>{_e(REC_CAVEAT)}</p>{rec}",
                 CHIP_HYPOTHESIS,
             )
@@ -10290,7 +10696,7 @@ def render_journal(
             _fold(
                 "Плани угод асистента",
                 "plans",
-                "плани входу з вердиктами «вхід / чекати / пропустити»",
+                plans_line(data.get("trade_plan")),
                 f"<p class='note warn'>{_e(PLAN_CAVEAT)}</p>{plans}",
                 CHIP_LEDGER,
             )
@@ -10303,7 +10709,7 @@ def render_journal(
             _fold(
                 "Журнал прогнозів",
                 "fc",
-                "щоденні ймовірності з опціонів і як вони справдились",
+                forecasts_line(data.get("forecast_log")),
                 f"<p class='note warn'><b>Ризик-нейтральні ймовірності, не прогноз асистента.</b> {_e(FC_CAVEAT)}</p>{fc}",
                 CHIP_LEDGER,
             )
@@ -11547,6 +11953,29 @@ def demo_option_legs_note(legs: object) -> str:
     )
 
 
+def demo_setup_act(n: int, cls: str) -> str:
+    """A setup's «Середній R» tile (docs/design/PANEL.md rule 2): ACT["demo_setup"]'s yellow «замало» under DEMO_MIN_N
+    trades with R, then the 95 % CI against 0 as _demo_vs0 colours it; the risk is never raised before the CI is above 0."""
+    if n < DEMO_MIN_N:
+        return "замало угод: ризик на сетапі не збільшуй"
+    return {"ok": "ДІ вище 0: звір із поточною версією", "bad": "ДІ нижче 0: ризик не збільшуй"}.get(
+        cls, "переваги не видно: ризик не збільшуй"
+    )
+
+
+def demo_refused_act(n_ref: int, halt_week: bool) -> str:
+    """«Відмов guard» (rule 2): ACT["demo_refused"]. Its note names no count for «багато», so: none, a kill-switch or
+    daily-loss halt (DEMO_HALT_REASONS) within DEMO_WEEK_MS, or any other refusal → the reasons table below."""
+    if not n_ref:
+        return "відмов немає: нічого не роби"
+    return "був kill-switch чи ліміт: перевір позиції" if halt_week else "дивись найчастішу причину в таблиці нижче"
+
+
+def demo_skipped_act(n_skip: int) -> str:
+    """«Не відібрано» (rule 2): ACT["demo_skipped"]; whether the skips were in vain, the shadow plans show."""
+    return "чи даремно — покажуть тіньові плани" if n_skip else "пропусків немає: нічого не роби"
+
+
 def block_demo_setups(trades: list[dict]) -> str:
     stats = demo_setup_stats(trades)
     tiles = []
@@ -11565,6 +11994,7 @@ def block_demo_setups(trades: list[dict]) -> str:
                 help="demo_setup",
                 tone="warn" if few else "",
                 badge=f"замало для висновку ({s['n']} з {DEMO_MIN_N})" if few else "",
+                act=demo_setup_act(s["n"], cls),
             )
         )
     return f"<div class='tiles'>{''.join(tiles)}</div>"  # the «до 30 угод — описово» caveat is once, at the bottom
@@ -11653,15 +12083,29 @@ def block_demo_refusals(audit: list[dict] | None, now: float) -> str:
         return _demo_no_table("exec_audit")
     n_ref = sum(1 for a in audit if a.get("kind") == "refused")
     n_skip = len(audit) - n_ref
+    groups = demo_refusals(audit, now * 1000)
+    week = demo_refusals(_demo_refused_since(audit, now * 1000 - DEMO_WEEK_MS), now * 1000)
+    halt = any(g["reason"] in DEMO_HALT_REASONS for g in week)
     tiles = [
-        _tile("Відмов guard", _nf(n_ref), "сигнал порушив ліміт або правило guard", help="demo_refused"),
-        _tile("Не відібрано", _nf(n_skip), "низький бал, денні ліміти або сильніший сигнал", help="demo_skipped"),
+        _tile(
+            "Відмов guard",
+            _nf(n_ref),
+            "сигнал порушив ліміт або правило guard",
+            help="demo_refused",
+            act=demo_refused_act(n_ref, halt),
+        ),
+        _tile(
+            "Не відібрано",
+            _nf(n_skip),
+            "низький бал, денні ліміти або сильніший сигнал",
+            help="demo_skipped",
+            act=demo_skipped_act(n_skip),
+        ),
     ]
     out = [f"<div class='tiles'>{''.join(tiles)}</div>"]
     if not audit:
         out.append(_empty("Відмов і пропусків ще не було."))
         return "".join(out)
-    groups = demo_refusals(audit, now * 1000)
     table = [
         "<div class='scroll'><table><tr><th>Причина</th><th>Відмова guard</th><th>Не відібрано</th><th>За 7 днів</th><th>Останній раз</th></tr>"
     ]
@@ -11701,6 +12145,38 @@ def _demo_vs_bt_file_note(doc_err: str | None) -> str:
     )
 
 
+# The «Звірка з бектестом» tiles' action lines (docs/design/PANEL.md rule 2, item 298): the only thresholds are the
+# notes' DEMO_MIN_N decided trades (the tile's «замало для висновку» badge, the file's own 'enough'), «Збігів більшість»
+# of ACT["demo_vs_bt"] (a share above one half) and ACT["demo_vs_bt_total"]'s «Різниця R далеко від 0» read as the 95 %
+# CI of the file (ci95_r_diff) strictly above or below 0, as _demo_vs0 reads a CI.
+def demo_vs_bt_n_act(few: bool) -> str:
+    """«Звірено угод»: ACT["demo_vs_bt_total"]'s «Менше 30 звірених» → wait, from there read the two tiles next to it."""
+    return "замало для висновку: чекай" if few else "читай частку збігів і різницю R"
+
+
+def demo_vs_bt_match_act(share: float | None, few: bool, min_n: int) -> str:
+    """«Збіг з бектестом»: below min_n decided no conclusion (the badge); then ACT["demo_vs_bt"]'s «Збігів більшість»
+    (share > 0.5) vs «Збігів мало» (HELP: a low share means the backtest describes other trading)."""
+    if share is None:
+        return "звірених ще немає: чекай"
+    if few:
+        return f"до {min_n} звірених — ще не висновок"
+    return "бектест описує демо: дивись різницю R" if share > 0.5 else "бектесту сетапу не вір: розбери з Claude"
+
+
+def demo_vs_bt_r_act(ci: object, few: bool, min_n: int) -> str:
+    """«Різниця R, демо − бектест»: below min_n decided no conclusion; then the file's 95 % CI against 0 (strictly, as
+    _demo_vs0): containing 0 → no difference seen, off 0 → ACT["demo_vs_bt_total"]'s «демо торгує інакше»."""
+    if few:
+        return f"до {min_n} звірених — ще не висновок"
+    lo, hi = (_num(ci[0]), _num(ci[1])) if isinstance(ci, list) and len(ci) == 2 else (None, None)
+    if lo is None or hi is None:
+        return "ДІ ще нема: мало угод з обома R"
+    if lo > 0 or hi < 0:
+        return "демо торгує інакше: розбери з Claude"
+    return "ДІ містить 0: розбіжності R не видно"
+
+
 def _demo_vs_bt_summary(doc: dict, now: float) -> str:
     s = doc["summary"]
     c = s.get("counts") if isinstance(s.get("counts"), dict) else {}
@@ -11723,6 +12199,7 @@ def _demo_vs_bt_summary(doc: dict, now: float) -> str:
             help="demo_vs_bt_total",
             tone="warn" if few else "",
             badge=f"замало для висновку ({decided} з {min_n})" if few else "",
+            act=demo_vs_bt_n_act(few),
         ),
         _tile(
             "Збіг з бектестом",
@@ -11730,12 +12207,14 @@ def _demo_vs_bt_summary(doc: dict, now: float) -> str:
             f"збіг {int(_num(c.get('match')) or 0)} · немає сигналу {int(_num(c.get('no_signal')) or 0)} · розбіжність "
             f"{int(_num(c.get('mismatch')) or 0)}",
             help="demo_vs_bt_total",
+            act=demo_vs_bt_match_act(_num(s.get("match_share")), few, min_n),
         ),
         _tile(
             "Різниця R, демо − бектест",
             f"<span class='{_signed_cls(md)}'>{_r(md)}</span>",
             f"угод з обома R {int(_num(s.get('n_r')) or 0)} · 95 % ДІ {_ci(s.get('ci95_r_diff'))}",
             help="demo_vs_bt_total",
+            act=demo_vs_bt_r_act(s.get("ci95_r_diff"), few, min_n),
         ),
     ]
     out = [f"<div class='tiles'>{''.join(tiles)}</div>"]

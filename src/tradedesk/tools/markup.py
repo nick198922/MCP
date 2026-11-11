@@ -12,7 +12,7 @@ from pydantic import Field
 from ..analytics import markup as mk
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, parsed_rows, timeframe_seconds
+from ._util import READ_ONLY, bar_rows, timeframe_seconds
 
 FX_PAIR = re.compile(r"^([A-Z]{3})/?([A-Z]{3})$")
 
@@ -30,14 +30,16 @@ def px(x: float | None) -> float | None:
     return None if x is None else float(f"{float(x):.6g}")
 
 
-def _bars(rows: list[list[Any]] | None) -> list[dict[str, Any]]:
-    return parsed_rows(  # a bar with close=None (or any other field of the wrong type) is dropped
-        rows,
-        lambda x: {
-            "ts": int(x[0]), "open": float(x[1]), "high": float(x[2]), "low": float(x[3]), "close": float(x[4]),
-            "volume": float(x[5] or 0.0),
-        },
-    )  # fmt: skip
+def _bars(b: Builder, field: str, rows: list[list[Any]] | None) -> list[dict[str, Any]]:
+    """Bar dicts; a bar whose timestamp, price or volume is not a finite number in range (None, a string, NaN / inf,
+    1e308: `bar_row`) is dropped with a warning. Before, NaN / inf reached the reply, a 1e308 price or volume came out
+    as Infinity, and an infinite low or a 1e308 timestamp raised out of the tool. A None volume is 0."""
+    kept, dropped = bar_rows(rows)
+    if dropped:
+        b.warn(f"{field}: {dropped} malformed bars (a timestamp, price or volume that is not a finite number in range) dropped")
+    return [
+        {"ts": x[0], "open": x[1], "high": x[2], "low": x[3], "close": x[4], "volume": (x[5] if len(x) >= 6 else None) or 0.0} for x in kept
+    ]
 
 
 def _swing(s: dict[str, Any]) -> dict[str, Any]:
@@ -89,13 +91,13 @@ def register(server: MCPServer, rt: Runtime) -> None:
             calls.append(b.guard("ohlcv_4h", provider, rt.exchanges.ohlcv(exchange, sym, "4h", 220)))
             calls.append(b.guard("ohlcv_1d", provider, rt.exchanges.ohlcv(exchange, sym, "1d", 220)))
         results = await asyncio.gather(*calls)
-        bars = _bars(results[0])
+        bars = _bars(b, "ohlcv", results[0])
         if len(bars) < 30:
             if results[0] is not None:
                 b.miss("ohlcv", provider, "data_unavailable", f"{len(bars)} bars, need at least 30")
             return b.build(None, ok=False)
-        h4 = [x["close"] for x in _bars(results[1])] if htf_emas else None
-        d1 = [x["close"] for x in _bars(results[2])] if htf_emas else None
+        h4 = [x["close"] for x in _bars(b, "ohlcv_4h", results[1])] if htf_emas else None
+        d1 = [x["close"] for x in _bars(b, "ohlcv_1d", results[2])] if htf_emas else None
 
         price = bars[-1]["close"]
         atr = mk.atr(bars)

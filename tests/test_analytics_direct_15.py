@@ -67,7 +67,8 @@ def test_option_xvenue_num_takes_an_integer_too_large_for_a_float_as_none():
     # Review 2026-11-07-analytics-direct-tests-15: json.loads turns a 400-digit literal into a Python int and float()
     # raises OverflowError on it; num catches it like a malformed value instead of raising out of the tool.
     assert option_xvenue.num(10**400) is None and option_xvenue.num(-(10**400)) is None
-    assert option_xvenue.num(10**300) == 1e300  # still representable: kept
+    assert option_xvenue.num(10**300) is None  # item 306: beyond the 1e12 sanity limit of num
+    assert option_xvenue.num(10**9) == 1e9  # a plausible value is kept
 
 
 # --- expiry_pin.distance --------------------------------------------------------------------------------------------

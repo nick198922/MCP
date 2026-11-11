@@ -395,7 +395,7 @@ def collect(repo: Path, worktree: Path, log_dir: Path) -> dict:
     parked = parked_state(log_dir)
     agents_line, activity = agents_state(log_dir, worktree)
     try:
-        hist = (log_dir / "history.tsv").read_text(encoding="utf-8").splitlines()
+        hist = (log_dir / "history.tsv").read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         hist = []
     busy = {b for b, _ in parked} | ({work[0]} if work else set()) | wip_branches(hist)

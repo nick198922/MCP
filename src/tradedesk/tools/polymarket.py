@@ -6,7 +6,7 @@ from typing import Annotated, Any, Literal
 from mcp.server.mcpserver import MCPServer
 from pydantic import Field
 
-from ..analytics.polymarket import book_stats, normalise_market
+from ..analytics.polymarket import book_stats, normalise_market, undecodable_fields
 from ..core.envelope import Builder
 from ..runtime import Runtime
 from ._util import READ_ONLY, r
@@ -21,6 +21,14 @@ def _partial_devig(m: dict[str, Any]) -> bool:
     """True when an outcome lacks a price while others were de-vigged over the remaining ones."""
     outs = m.get("outcomes") or []
     return any(o.get("price") is None for o in outs) and any(o.get("price_devigged") is not None for o in outs)
+
+
+def _warn_undecodable(b: Builder, raw: dict[str, Any]) -> None:
+    """Warn when a Gamma list field came as malformed JSON (or a 4300+-digit integer, or nested too deep): it reads as
+    absent, so the market shows fewer outcomes, prices or token ids than Gamma has."""
+    bad = undecodable_fields(raw)
+    if bad:
+        b.warn(f"market {str(raw.get('id'))[:40]}: {', '.join(bad)} not a decodable JSON list (read as absent)")
 
 
 def register(server: MCPServer, rt: Runtime) -> None:
@@ -46,10 +54,13 @@ def register(server: MCPServer, rt: Runtime) -> None:
         rows = await b.guard("search", "polymarket:gamma", rt.polymarket.search(query, limit, active_only, include_closed))
         if rows is None:
             return b.build(None, ok=False)
-        out = [normalise_market(m) for m in rows if isinstance(m, dict)]
+        markets = [m for m in rows if isinstance(m, dict)]
+        out = [normalise_market(m) for m in markets]
         partial = [m.get("id") for m in out if _partial_devig(m)]
         if partial:
             b.warn(f"{PARTIAL_DEVIG} (market ids: {', '.join(str(i) for i in partial)})")
+        for m in markets:
+            _warn_undecodable(b, m)
         return b.build({"query": query, "count": len(out), "markets": out})
 
     @server.tool(
@@ -71,6 +82,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
         m = normalise_market(raw)
         if _partial_devig(m):
             b.warn(PARTIAL_DEVIG)
+        _warn_undecodable(b, raw)
 
         async def fetch_book(token: str) -> tuple[str, dict[str, Any] | None]:
             book = await b.guard(f"book:{token[:8]}", "polymarket:clob", rt.polymarket.book(token))

@@ -76,6 +76,7 @@ DAY_MS = 86_400_000
 # (group, lower bound of the entry day's quote turnover, USD), checked in order; then 'unknown'
 TURNOVER_BANDS: tuple[tuple[str, float], ...] = (("ge5m", 5e6), ("1to5m", 1e6), ("lt1m", 0.0))
 TURNOVER_GROUPS = (*(g for g, _ in TURNOVER_BANDS), "unknown")
+MAX_TURNOVER = 1e20  # USD; a larger daily turnover is a corrupt row (as the volume bound of tools/_util.bar_row)
 
 
 @dataclass(frozen=True)
@@ -467,18 +468,21 @@ def bybit_linear_id(symbol: str) -> str | None:
 def day_turnover(klines: Sequence[Sequence[Any]], day_ms: int, now_ms: int) -> float | None:
     """Quote turnover (index 6 of a Bybit v5 kline row ``[start, o, h, l, c, volume, turnover]``, strings as sent) of
     the daily candle opening at ``day_ms``; None when the day has not closed by ``now_ms`` (a partial day understates),
-    the candle is absent, or its turnover is not a finite number >= 0. A row whose start or turnover is an infinite or
-    300+-digit number is skipped like a malformed one."""
+    the candle is absent, or its turnover is not a number in 0 .. MAX_TURNOVER (NaN, inf, 1e308). A row that is not a
+    sequence (a dict raised KeyError) or whose start or turnover is an infinite or 300+-digit number is skipped like a
+    malformed one, as is a bool start or turnover (JSON true / false read as 1 / 0)."""
     if day_ms + DAY_MS > now_ms:
         return None
     for k in klines:
         try:
-            if int(k[0]) != day_ms:
+            if isinstance(k[0], bool) or int(k[0]) != day_ms:
+                continue
+            if isinstance(k[6], bool):
                 continue
             v = float(k[6])
-        except (TypeError, ValueError, IndexError, OverflowError):  # OverflowError: int(inf), float() of a 300+-digit int
+        except (TypeError, ValueError, LookupError, OverflowError):  # OverflowError: int(inf), float() of a 300+-digit int
             continue
-        return v if math.isfinite(v) and v >= 0 else None
+        return v if 0 <= v <= MAX_TURNOVER else None
     return None
 
 

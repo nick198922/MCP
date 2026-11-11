@@ -22,7 +22,7 @@ from ..analytics.event_study import MEASURES
 from ..analytics.event_study import event_study as _event_study
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, STORE_ERRORS, drop_corrupt_rows, r, store_failed, store_num, store_ready
+from ._util import READ_ONLY, STORE_ERRORS, drop_corrupt_rows, r, shown_int, store_failed, store_num, store_ready
 from ._util import finite_json as _finite_json
 
 # 2000-01-01T00:00:00Z in unix milliseconds: an events_add ts_ms below it is almost certainly unix seconds.
@@ -100,7 +100,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 ts = int(ts_ms) // 1000
                 if not _ts_ok(ts):
                     b.miss(
-                        "ts_ms", "tradedesk", "invalid_input", f"ts_ms={ts_ms} is outside the datetime range (unix milliseconds expected)"
+                        "ts_ms",
+                        "tradedesk",
+                        "invalid_input",
+                        f"ts_ms={shown_int(ts_ms)} is outside the datetime range (unix milliseconds expected)",
                     )
                     return b.build(None, ok=False)
                 if ts_ms < MIN_TS_MS:

@@ -54,6 +54,9 @@ PARKED="$LOG_DIR/parked.state" # one line per branch "<branch> <not-before epoch
 SUMMARY="$LOG_DIR/$STAMP.summary.md"
 : >"$SUMMARY"
 dirty() { [[ -n "$(git -C "$WT" status --porcelain 2>/dev/null)" ]]; }
+# head_utf8 <bytes> <file>: the first bytes of a file without a character cut in half (`head -c` alone left a broken
+# UTF-8 byte in history.tsv on 10.11, and every status message after it failed).
+head_utf8() { head -c "$1" "$2" 2>/dev/null | iconv -c -f UTF-8 -t UTF-8 2>/dev/null || true; }
 # True when everything this work changed against main (commits on the work branch plus the working tree) is run notes
 # under docs/agents/runs/, and something did change.
 only_run_notes() {
@@ -311,7 +314,7 @@ handover() {
   rm -f "$WORK" "$LOG_DIR/refusal.txt"
   finish 0 "$status" "$head
 $how
-$(head -c 3000 "$SUMMARY")" --button "🔀 Відкрити PR|$url"
+$(head_utf8 3000 "$SUMMARY")" --button "🔀 Відкрити PR|$url"
 }
 
 PROMPT="$(cat .claude/nightly.md)"
@@ -453,7 +456,7 @@ mkdir -p "$CACHE_DIR"
 T0="$(date +%s)"
 U0="$(usage_now)"
 set +e
-${KEEP_AWAKE[@]+"${KEEP_AWAKE[@]}"} perl -e 'alarm shift; exec @ARGV' "${TRADEDESK_AGENTS_MAX_SECONDS:-18000}" "${TRADEDESK_CLAUDE_BIN:-claude}" -p "$PROMPT" --permission-mode dontAsk \
+${KEEP_AWAKE[@]+"${KEEP_AWAKE[@]}"} perl -e 'alarm shift; exec @ARGV' "${TRADEDESK_AGENTS_MAX_SECONDS:-18000}" "${TRADEDESK_CLAUDE_BIN:-$REPO/scripts/claude_run.sh}" -p "$PROMPT" --permission-mode dontAsk \
   --model "${TRADEDESK_AGENTS_COORDINATOR_MODEL:-sonnet}" --add-dir "$CACHE_DIR" \
   --allowedTools "${ALLOWED[@]}" --disallowedTools "${DENIED[@]}" | tee -a "$SUMMARY"
 rc=${PIPESTATUS[0]}
@@ -497,19 +500,19 @@ if [[ $DRY -eq 0 && -z "$DELIVERED" ]] && only_run_notes; then
 fi
 if [[ $DRY -eq 1 ]]; then
   finish 0 "dry" "🧪 **Агенти: пробний прогін**
-$(head -c 3000 "$SUMMARY")" --silent
+$(head_utf8 3000 "$SUMMARY")" --silent
 elif [[ -n "$DELIVERED" ]]; then
   rm -f "$LOG_DIR/refusal.txt"
   if [[ "$NEXT" == park ]] && ((RUNS < MAX_RUNS)); then
     park_add "$DELIVERED" "$NOT_BEFORE" "$RUNS" "$FIRST"
     rm -f "$WORK"
     finish 4 "parked" "⏸ **Агенти: крок відкладено** (\`$DELIVERED\`, прогін $RUNS з $MAX_RUNS) до $(TZ=Europe/Kyiv date -d "@$NOT_BEFORE" '+%d.%m %H:%M' 2>/dev/null || echo "$NOT_BEFORE") за Києвом; тим часом агенти беруть інші кроки, потім продовжать його самі.
-$(head -c 1500 "$SUMMARY")" --silent
+$(head_utf8 1500 "$SUMMARY")" --silent
   fi
   if [[ "$NEXT" == continue ]] && ((RUNS < MAX_RUNS)); then
     echo "$DELIVERED $RUNS $FIRST" >"$WORK"
     finish 4 "continues" "🔄 **Агенти: проміжний крок збережено** (\`$DELIVERED\`, прогін $RUNS з $MAX_RUNS); наступний прогін продовжить сам, вам нічого робити не треба.
-$(head -c 1500 "$SUMMARY")" --silent
+$(head_utf8 1500 "$SUMMARY")" --silent
   fi
   head="✅ **Агенти здали крок:** \`$DELIVERED\`"
   [[ "$NEXT" == continue ]] && head="⚠️ **Агенти: крок ще не завершено, але це вже $RUNS-й прогін;** віддаю вам як є: \`$DELIVERED\`"
@@ -537,7 +540,7 @@ $(grep -v '^== ' "$LOG_DIR/$STAMP.log" | tail -5)"
     park_add "$WORK_BR" "$NOT_BEFORE" "$RUNS" "$FIRST"
     rm -f "$WORK"
     finish 4 "parked" "⏸ **Агенти: крок відкладено** (\`$WORK_BR\`) до $(TZ=Europe/Kyiv date -d "@$NOT_BEFORE" '+%d.%m %H:%M' 2>/dev/null || echo "$NOT_BEFORE") за Києвом; тим часом агенти беруть інші кроки, потім продовжать його самі.
-$(head -c 1500 "$SUMMARY")" --silent
+$(head_utf8 1500 "$SUMMARY")" --silent
   fi
   if ((saved == 0)); then
     printf '%s\n%s\n' "$why" "$DETAIL" >"$LOG_DIR/refusal.txt"
@@ -552,5 +555,5 @@ if ((rc != 0)); then
   finish 5 "error" "❌ **Агенти: claude завершився з помилкою** (код $rc), змін немає; лікар шукає причину. Кінець виводу:
 $(tail -c 800 "$SUMMARY")"
 else
-  finish 3 "idle" "💤 **Агенти: роботи немає.** $(head -c 600 "$SUMMARY")" --silent
+  finish 3 "idle" "💤 **Агенти: роботи немає.** $(head_utf8 600 "$SUMMARY")" --silent
 fi

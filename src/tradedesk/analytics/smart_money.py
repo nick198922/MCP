@@ -89,12 +89,31 @@ def classify_account(account_value: float | None, vlm_month: float | None, posit
 
 def finite_num(x: Any) -> float | None:
     """``float(x)`` when it is a finite number, else None: absent, not a number, NaN / ±inf (also the strings "nan" /
-    "Infinity") or an integer beyond the float range (``float(10**400)`` raises OverflowError)."""
+    "Infinity") or an integer beyond the float range (``float(10**400)`` raises OverflowError), or a bool (JSON true /
+    false is no Hyperliquid number; it read as 1 / 0)."""
+    if isinstance(x, bool):
+        return None
     try:
         v = float(x)
     except (TypeError, ValueError, OverflowError):
         return None
     return v if math.isfinite(v) else None
+
+
+MAX_TS_MS = 253_402_300_799_999  # 9999-12-31T23:59:59.999Z in unix ms: a later point / fill time is a corrupt row
+MAX_USD = 1e15  # |USD| of a history point, closedPnl, fee or vlm; beyond it is a corrupt row (two 1e308 sum to inf)
+
+
+def bounded_num(x: Any, lo: float, hi: float) -> float | None:
+    """``finite_num(x)`` when it lies in [lo, hi], else None (1e308 is finite but no Hyperliquid time or USD amount)."""
+    v = finite_num(x)
+    return v if v is not None and lo <= v <= hi else None
+
+
+def _or_zero(x: Any) -> Any:
+    """``x or 0.0`` (an absent or empty field reads as 0, as before), except that a bool stays a bool, so `bounded_num`
+    rejects JSON false instead of reading it as 0."""
+    return x if isinstance(x, bool) else (x or 0.0)
 
 
 def dropped_note(source: str, dropped: Sequence[str]) -> str | None:
@@ -108,8 +127,9 @@ def dropped_note(source: str, dropped: Sequence[str]) -> str | None:
 def parse_portfolio(raw: Any, dropped: list[str] | None = None) -> dict[str, dict[str, Any]]:
     """Hyperliquid info ``portfolio`` -> {window: {'pnl': [(ms, usd)], 'value': [(ms, usd)], 'vlm': usd}}, points sorted.
 
-    A point whose time or value is absent, not a number, NaN / ±inf or a 300+-digit integer is skipped; a present
-    ``vlm`` that is not a finite number reads as 0 (an absent one too, silently, as before). Each one is appended to ``dropped`` (when given) as ``"<window>.<key>.time"`` / ``".value"`` (or
+    A point whose time or value is absent, not a number, NaN / ±inf or a 300+-digit integer is skipped, as is a time
+    outside 0 .. MAX_TS_MS or a value beyond ±MAX_USD (1e308); a present ``vlm`` that is not a finite number in
+    0 .. MAX_USD reads as 0 (an absent one too, silently, as before). Each one is appended to ``dropped`` (when given) as ``"<window>.<key>.time"`` / ``".value"`` (or
     ``"<window>.<key>"`` for a point that is not a [time, value] pair; ``"<window>.vlm"``)."""
     out: dict[str, dict[str, Any]] = {}
     bad = dropped if dropped is not None else []
@@ -126,14 +146,14 @@ def parse_portfolio(raw: Any, dropped: list[str] | None = None) -> dict[str, dic
                 if not (isinstance(p, (list, tuple)) and len(p) >= 2):
                     bad.append(f"{name}.{key}")
                     continue
-                t, v = finite_num(p[0]), finite_num(p[1])
+                t, v = bounded_num(p[0], 0, MAX_TS_MS), bounded_num(p[1], -MAX_USD, MAX_USD)
                 if t is None or v is None:
                     bad.append(f"{name}.{key}.{'time' if t is None else 'value'}")
                     continue
                 rows.append((int(t), v))
             return sorted(rows)
 
-        vlm = finite_num(body.get("vlm") or 0.0)  # absent / empty reads as 0, as before
+        vlm = bounded_num(_or_zero(body.get("vlm")), 0, MAX_USD)  # absent / empty reads as 0, as before
         if vlm is None:
             bad.append(f"{name}.vlm")
         out[str(name)] = {"pnl": pts("pnlHistory"), "value": pts("accountValueHistory"), "vlm": vlm or 0.0}
@@ -218,8 +238,9 @@ def realized_pnl_windows(
     window starting before ``coverage_start`` or ending after ``coverage_end`` (the span the fill history is complete
     over; ``coverage_end=None`` means complete up to now, e.g. not truncated).
 
-    A fill that is not a mapping, or whose ``time`` is absent / not a finite number / a 300+-digit integer, or whose
-    present ``closedPnl`` / ``fee`` is not a finite number (NaN / ±inf / 300+ digits / text), is skipped and its field
+    A fill that is not a mapping, or whose ``time`` is absent / not a finite number / a 300+-digit integer / outside
+    0 .. MAX_TS_MS, or whose present ``closedPnl`` / ``fee`` is not a finite number within ±MAX_USD (NaN / ±inf /
+    1e308 / 300+ digits / text), is skipped and its field
     appended to ``dropped`` (when given): ``"fill"``, ``"time"``, ``"closedPnl"``, ``"fee"``. An absent or empty
     ``closedPnl`` / ``fee`` counts as 0, as before."""
     sums = [0.0] * (len(edges) - 1)
@@ -228,7 +249,9 @@ def realized_pnl_windows(
         if not isinstance(f, Mapping):
             bad.append("fill")
             continue
-        tf, pnl, fee = finite_num(f.get("time")), finite_num(f.get("closedPnl") or 0.0), finite_num(f.get("fee") or 0.0)
+        tf = bounded_num(f.get("time"), 0, MAX_TS_MS)
+        pnl = bounded_num(_or_zero(f.get("closedPnl")), -MAX_USD, MAX_USD)
+        fee = bounded_num(_or_zero(f.get("fee")), -MAX_USD, MAX_USD)
         if tf is None or pnl is None or fee is None:
             bad.append("time" if tf is None else "closedPnl" if pnl is None else "fee")
             continue

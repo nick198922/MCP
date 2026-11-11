@@ -2,15 +2,23 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+# Far beyond any real print. A trade outside them is dropped: two 1e308 prices or costs overflowed the sums to inf.
+MAX_PRICE = 1e12
+MAX_AMOUNT = 1e20
+MAX_TS_MS = 253_402_300_799_999  # 9999-12-31T23:59:59.999Z
+
 
 def _f(x: Any) -> float | None:
+    """A finite float (numbers and numeric strings), else None: NaN / +-inf and a 400-digit integer are not numbers."""
     try:
-        return float(x) if x is not None else None
-    except (TypeError, ValueError):
+        v = float(x) if x is not None else None
+    except (TypeError, ValueError, OverflowError):
         return None
+    return v if v is None or math.isfinite(v) else None
 
 
 def summarise(trades: Iterable[Mapping[str, Any]], *, top_n: int = 5) -> dict[str, Any]:
@@ -19,21 +27,28 @@ def summarise(trades: Iterable[Mapping[str, Any]], *, top_n: int = 5) -> dict[st
     Each trade must expose ``price``, ``amount`` (base units) and ``side`` ('buy'|'sell'),
     which in ccxt is the aggressor side (the taker). ``cost`` is used when present, else price*amount.
     All notionals returned here are in the quote currency the exchange reports (USD/USDT in practice).
+    A trade that is not a mapping, or whose price / amount is not a finite number in (0, MAX_PRICE] / (0, MAX_AMOUNT],
+    is skipped; a cost outside [0, MAX_PRICE * MAX_AMOUNT] (or absent) is replaced by price * amount; a timestamp that is not
+    a finite number in 0 .. MAX_TS_MS reads as absent.
     """
     rows: list[dict[str, Any]] = []
     for t in trades:
+        if not isinstance(t, Mapping):
+            continue
         price = _f(t.get("price"))
         amount = _f(t.get("amount"))
-        if price is None or amount is None or amount <= 0 or price <= 0:
+        if price is None or amount is None or not 0 < amount <= MAX_AMOUNT or not 0 < price <= MAX_PRICE:
             continue
         side = str(t.get("side") or "").lower()
         if side not in ("buy", "sell"):
             continue
         cost = _f(t.get("cost"))
-        if cost is None:
+        if cost is None or not 0 <= cost <= MAX_PRICE * MAX_AMOUNT:  # cost may exceed price * amount (contract size)
             cost = price * amount
         ts = t.get("timestamp")
-        rows.append({"ts": int(ts) if isinstance(ts, (int, float)) else None, "side": side, "price": price, "amount": amount, "cost": cost})
+        # a plain range check: NaN fails it, and math.isfinite() of a 400-digit int raises OverflowError
+        ok_ts = isinstance(ts, (int, float)) and not isinstance(ts, bool) and 0 <= ts <= MAX_TS_MS
+        rows.append({"ts": int(ts) if ok_ts else None, "side": side, "price": price, "amount": amount, "cost": cost})
 
     if not rows:
         return {"count": 0}

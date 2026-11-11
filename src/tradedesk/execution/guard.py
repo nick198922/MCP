@@ -36,11 +36,14 @@ class GuardConfig:
     venue: str = "bybit-demo"
     risk_usd: float = 100.0  # lost at the stop including fees (the owner's rule: 1 % of ~$10k)
     # owner 27.10 (Q-20261025-2): testing the setups comes first, so the day's limits follow the demo trader's slots
-    # (2 per setup for 7 setups + a reserve of 3) and do not brake it on their own; the cross-margin checks below stay
+    # (2 per setup for 9 setups + a reserve of 3, ADR 0007 p. 5) and do not brake it on their own; the cross-margin checks
+    # below stay
     max_trades_per_day: int = 21  # today's entries still at risk (break-even frees a slot), = demo_trader slots
     max_entries_per_day: int = 30  # hard ceiling of entries per UTC day, freed slots included
-    max_open_positions: int = 15
-    max_open_risk_usd: float = 1500.0  # sum of the losses at the stops of all open positions
+    # owner 10.11 (ADR 0007, addition 10.11): 15 positions stopped ~160 eligible signals a week; the play balance is
+    # raised to ~$50k with it, so the margin checks below do not become the new ceiling. Risk per trade is unchanged.
+    max_open_positions: int = 25
+    max_open_risk_usd: float = 2500.0  # sum of the losses at the stops of all open positions (= 25 x $100)
     daily_max_loss_usd: float = 2100.0  # realised loss of the UTC day (= a full day of stops); then no entries until 00:00 UTC
     max_margin_share: float = 0.90  # initial margin of all open positions / equity
     max_maint_and_risk_share: float = 0.50  # (maintenance margin of all + loss at all stops) / equity: cross-margin safety

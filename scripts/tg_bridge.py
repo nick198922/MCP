@@ -37,7 +37,7 @@ STATE = LOG_DIR / "tg-bridge.json"
 INBOX = LOG_DIR / "tg-inbox"
 INBOX_KEEP_DAYS = 30
 LOG = LOG_DIR / "tg-bridge.log"
-CLAUDE = os.environ.get("TRADEDESK_CLAUDE_BIN", str(HOME / ".local" / "bin" / "claude"))
+CLAUDE = os.environ.get("TRADEDESK_CLAUDE_BIN", str(Path(__file__).resolve().parent / "claude_run.sh"))  # login or backup token
 MAX_SECONDS = int(os.environ.get("TRADEDESK_CHAT_MAX_SECONDS", "1800"))
 UV = os.environ.get("TRADEDESK_UV_BIN", str(HOME / ".local" / "bin" / "uv"))
 TRADE_SCRIPT = Path(__file__).resolve().with_name("journal_trade_tg.py")
@@ -201,6 +201,20 @@ def parse_result(stdout: str) -> tuple[str, str | None, bool]:
     return str(data.get("result") or ""), data.get("session_id"), bool(data.get("is_error"))
 
 
+AUTH_ERRORS = ("failed to authenticate", "oauth session expired", "oauth access token", "please run /login")
+
+
+def error_answer(code: int, detail: str) -> str:
+    """The reply when Claude failed; a lost login gets what to do instead of the raw error (scripts/claude_auth.py)."""
+    if any(s in detail.lower() for s in AUTH_ERRORS):
+        return (
+            "🔑 Claude на сервері не може увійти: логін сплив.\n"
+            "Що зробити: зайди по ssh у сесію tradedesk, запусти claude і набери /login, потім повтори питання.\n"
+            "Щоб таке не зупиняло бот і агентів: один раз bash scripts/server/claude-token.sh (запасний токен на рік)."
+        )
+    return f"❌ Claude завершився з помилкою (код {code}).\n{detail}"
+
+
 # ---- I/O ----------------------------------------------------------------------------------------------------
 
 
@@ -318,7 +332,7 @@ def ask_claude(env: dict[str, str], state: dict, text: str) -> str:
         if session:
             state["session"] = session
         if run.returncode != 0 or is_error:
-            answer = f"❌ Claude завершився з помилкою (код {run.returncode}).\n{answer or run.stderr[-1500:]}"
+            answer = error_answer(run.returncode, answer or run.stderr[-1500:])
     except subprocess.TimeoutExpired:
         answer = f"⌛ Не встиг за {MAX_SECONDS // 60} хв. Робота в клоні лишилась; напишіть «продовжуй», щоб довести її."
     finally:

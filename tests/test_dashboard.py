@@ -367,7 +367,7 @@ def test_brief_lead_actions_and_folded_blocks():
     s = db.brief_summaries(snap)
     assert s["conditions"] == "купівля: за 1, проти 0 · продаж: за 0, проти 1"
     assert s["chart"] == "120 днів: +32 %, від 58.6k до 86.6k"
-    assert s["scenarios"] == "найімовірніше 80k – 85k — 22 % (ціна страховки, не прогноз)"
+    assert s["scenarios"] == "найімовірніше 80k – 85k — 22 % (ціна страховки)"  # «не прогноз»: once, at the bottom (rule 5)
     assert s["funding"] == "BTC +4…+11 % · ETH +3…+11 % річних" and s["events"].startswith("Oct 2026 FOMC 28.10 20:00")
     assert db.key_summary(db.key_items(snap)) == "ризик: захист · подія: подія · спокій: ринок, діапазон, волатильність"
     page = db.render_brief(snap, None, asof)
@@ -402,6 +402,66 @@ def test_market_tab_short_info_notes_and_less_text():
     assert "<span class='chip risk'>подія</span>" in page and "<b>Що робити:</b> до релізу" in page  # the advice stays in the lead
     assert set(db.ACT) <= set(db.HELP) and {"price", "key", "chart", "vol"} <= set(db.ACT)
     assert set(db.ACT) == set(db.HELP)  # item 278: every note is the short instruction now
+
+
+def test_market_tiles_all_have_an_action_line_from_their_notes_thresholds():
+    """Item 294 (docs/design/PANEL.md rule 2): every «Ринок» tile has a «what to do» line, including the price tiles,
+    the folded DVOL / RV30 / IV − RV30 tiles and a DVOL tile without its percentile; the thresholds are the ones its
+    «i» note names (ACT), so the line never contradicts the note or the tile's badge."""
+    import re
+
+    # the thresholds: ACT["price"] «до ±3 %», ACT["dvol"] 30th / 70th percentile, vol_lean's IV − RV30 ≤ 0 / ≥ +10 vp
+    assert f"±{db.BRIEF_PRICE_MOVE:g} %" in db.ACT["price"][0] and "30-го" in db.ACT["dvol"][0] and "70-го" in db.ACT["dvol"][2]
+    assert db.price_act(None) == "зміни за добу немає: дивись рівні"
+    assert db.price_act(2.99) == db.price_act(-2.99) == "звичайний день: рішення за рівнями"
+    assert db.price_act(3.0) == db.price_act(-3.0) == db.price_act(-12.0) == "різкий рух: не входь услід"
+    assert db.dvol_act(0.29) == "опціони дешеві: купувати вигідніше" and db.dvol_act(0.3) == db.dvol_act(0.7) == "опціони за звичною ціною"
+    assert db.dvol_act(0.71) == "опціони дорогі: купівля переплачує" and "перцентиля немає" in db.dvol_act(None)
+    assert db.rv_act(0.3, 0.4) == "ринок пожвавився: ширший стоп, менший розмір" and db.rv_act(0.3, 0.2) == "ринок заспокоївся: ближчі цілі"
+    assert db.rv_act(0.3, 0.3) == "темп руху той самий" and db.rv_act(0.3, None) == "7 дн немає: порівняти нема з чим"
+    for spr, act, badge in (
+        (-0.01, "не дорожчі за рух: сприяє покупцю", "покупцю дешево"),
+        (0.0, "не дорожчі за рух: сприяє покупцю", "покупцю дешево"),
+        (0.0999, "звична премія продавцю", ""),
+        (0.10, "покупець переплачує; продавцю вигідніше", "покупцю дорого"),
+    ):
+        tone = db.vol_lean(None, spr)[0][0]
+        assert db.vrp_act(tone) == act and db.lean_badge(tone) == badge, spr
+    tile = re.compile(r"<div class='tile[^']*'><span class='k'>(.*?)<span class='info'.*?<span class='v'>.*?</div>", re.S)
+    act = re.compile(r"<span class='act'>([^<]*)</span></div>\Z")
+
+    def acts(page: str) -> dict[str, str]:
+        out = {}
+        for m in tile.finditer(page):
+            a = act.search(m.group(0))
+            out[m.group(1)] = a.group(1) if a else None
+        return out
+
+    snap, asof = _snap()  # the real snapshot: BTC +0.9 %, ETH +1.9 %, SOL +2.0 %, DVOL 16th pct, RV7 < RV30, +5.2 vp
+    assert acts(db.render_brief(snap, None, asof + 300)) == {
+        "BTC": "звичайний день: рішення за рівнями",
+        "ETH": "звичайний день: рішення за рівнями",
+        "SOL": "звичайний день: рішення за рівнями",
+        "DVOL (IV BTC, 30 дн)": "опціони дешеві: купувати вигідніше",
+        "Рух до 23.10": "стоп — за межами цього діапазону",
+        "Funding BTC": "перекосу натовпу нема",
+        "Страх і жадібність": "звичайний розмір",
+        "DVOL": "опціони дешеві: купувати вигідніше",
+        "Реалізована 30 дн": "ринок заспокоївся: ближчі цілі",
+        "Премія IV − RV30": "звична премія продавцю",
+    }
+    # the other branches on the page: a sharp day, no 24 h change, no percentile, a livelier week, rich options
+    odd = json.loads(json.dumps(snap))
+    ticks = odd["sections"]["tickers"]["data"]["tickers"]
+    ticks[0]["percentage"], ticks[1]["percentage"], ticks[2]["percentage"] = -4.2, None, 3.0
+    cur = odd["sections"]["vrp"]["data"]["current"]
+    cur["dvol_percentile_365d"], cur["rv_7d"], cur["spread_vs_rv30"] = None, 0.45, 0.12
+    got = acts(db.render_brief(odd, None, asof + 300))
+    assert got["BTC"] == got["SOL"] == "різкий рух: не входь услід" and got["ETH"] == "зміни за добу немає: дивись рівні"
+    assert got["DVOL (IV BTC, 30 дн)"] == got["DVOL"] == "перцентиля немає: дивись премію IV − RV30"
+    assert got["Реалізована 30 дн"] == "ринок пожвавився: ширший стоп, менший розмір"
+    assert got["Премія IV − RV30"] == "покупець переплачує; продавцю вигідніше"
+    assert None not in got.values() and "Блок не вдалося" not in db.render_brief(odd, None, asof + 300)
 
 
 def test_nav_three_sections_then_the_rest_under_detailed():
@@ -1526,6 +1586,17 @@ def test_journal_tab_shows_forecast_brier_calibration_and_weeks(tmp_path):
         assert f"{100 * b['lo']:.0f}–{100 * b['hi']:.0f} %</td><td class='num'>{b['n']}</td>" in page, b
 
 
+def _fc_rv_db(path: Path) -> Path:
+    """The sample forecasts with the RV30 model's prob_rv, as the test below sets them (the «Опціони проти RV30» tile)."""
+    p = _fc_db(path, _sample_forecasts())
+    con = sqlite3.connect(p)
+    con.execute("UPDATE forecast_log SET prob_rv = CASE kind WHEN 'above_spot' THEN 0.5 ELSE MIN(1.0, prob * 1.05) END")
+    con.execute("UPDATE forecast_log SET prob_rv = NULL WHERE asset = 'ETH' AND expiry_ts = ?", (FC_E2,))
+    con.commit()
+    con.close()
+    return p
+
+
 def test_forecast_rv30_comparison_matches_the_analytics_and_renders(tmp_path):
     from tradedesk.analytics import forecast_log as af
 
@@ -2217,11 +2288,14 @@ def _all_tab_pages(tmp_path) -> dict[str, str]:
     con.close()
     pages["journal"] = db.render_journal(*db.load_journal(p), float(T0 + 10 * 86400))
     pages["journal empty"] = db.render_journal(*db.load_journal(_journal_db(tmp_path / "e.sqlite", [], [])), float(T0))
+    pages["journal rv30"] = db.render_journal(*db.load_journal(_fc_rv_db(tmp_path / "rv.sqlite")), float(FC_E2 + 86400))
     cols, rows = _pm_rows()
     pages["polymarket"] = db.render_polymarket(*db.load_pm_gap(_pm_db(tmp_path / "pm.sqlite", rows, cols)), float(PM_B + 600))
     import test_dashboard_demo as td
 
-    pages["demo"] = db.render_demo(*db.load_demo(td._filled(tmp_path, td.NOW)), td.NOW / 1000, vs_bt_on=False)
+    demo = db.load_demo(td._filled(tmp_path, td.NOW))
+    pages["demo"] = db.render_demo(*demo, td.NOW / 1000, vs_bt_on=False)
+    pages["demo vs bt"] = db.render_demo(*demo, td.NOW / 1000, vs_bt_on=True, vs_bt=(td._vs_bt_doc(td.NOW - 3_600_000), None))
     pages["demo empty"] = db.render_demo(*db.load_demo(td._store(tmp_path / "de.sqlite")), td.NOW / 1000)
     import test_dashboard_positions as tp
 
@@ -2299,6 +2373,500 @@ def test_info_notes_are_at_most_four_short_lines():
     # the four longest notes of «Мої угоди» before item 262 are short instructions now
     for key in ("j_rules", "rules_week", "j_review", "j_weeks"):
         assert "<span class='do'><i>" in db._info(key) and "порада" not in db._info(key), key
+
+
+# docs/design/PANEL.md rule 2: HELP keys of tiles still without the «what to do» line under them, on any tab of
+# _all_tab_pages (standing improvements, item 294: «Ринок» done; item 295: «Демо» and the journal / «Середній R» tiles
+# of «Мої угоди»; item 297: the forecast journal, plans and paper recommendations; item 298: «Опціони проти RV30» and
+# the three «Звірка з бектестом» tiles, whose pages «journal rv30» / «demo vs bt» joined _all_tab_pages; none left). Like RULE3_TODO, the
+# list must match the fact both ways: a new tile without an action line, or a fixed one still listed, fails the test.
+RULE2_MAX_WORDS = 8
+RULE2_TODO = frozenset()
+
+
+def test_rule2_tiles_have_a_short_action_line_except_the_listed(tmp_path):
+    """Item 294 (docs/design/PANEL.md rule 2): under every tile an action line of at most RULE2_MAX_WORDS words; the
+    tiles not done yet are RULE2_TODO by their HELP key (found by the tile's exact «i» note, so shared titles such as
+    «Funding» do not mix keys up)."""
+    import html
+    import re
+
+    note = {db._info(k): k for k in db.HELP}
+    assert len(note) == len(db.HELP)  # every note's HTML is its own
+    tile = re.compile(r"<div class='tile[^']*'><span class='k'>(.*?)<span class='v'>(.*?)</div>", re.S)
+    rows = []
+    for name, page in _all_tab_pages(tmp_path).items():
+        for k, rest in tile.findall(page):
+            keys = [key for h, key in note.items() if h in k]
+            assert len(keys) == 1, (name, k[:80])
+            a = re.search(r"<span class='act'>([^<]*)</span>\Z", rest)
+            rows.append((name, keys[0], html.unescape(a.group(1)) if a else None))
+    assert len(rows) >= 100 and len({k for _, k, _ in rows}) >= 40  # the regex really matched the pages
+    missing = {k for _, k, a in rows if a is None}
+    assert missing == RULE2_TODO, ("tiles without an action line", sorted(missing - RULE2_TODO), "done, drop", sorted(RULE2_TODO - missing))
+    for name, key, a in rows:
+        if a is not None:
+            words = [w for w in a.split() if re.search(r"\w", w)]
+            assert 0 < len(words) <= RULE2_MAX_WORDS, (name, key, a)
+    assert not [r for r in rows if r[0].startswith("brief") and r[2] is None]  # «Ринок»: every tile
+    seen = {(n, k) for n, k, _ in rows}  # item 298: the last two keys are on the guarded pages now
+    assert ("journal rv30", "fc_rv") in seen and sum(1 for n, k, _ in rows if (n, k) == ("demo vs bt", "demo_vs_bt_total")) == 3
+
+
+def _visible_text(html_part: str) -> str:
+    """The text a reader sees without opening anything: «i» notes (rule 3's, opened on a tap) and scripts dropped."""
+    import html
+    import re
+
+    x = re.sub(r"<script>.*?</script>", "", html_part, flags=re.S)
+    x = re.sub(r"<span class='tip' role='tooltip'>.*?</span></span>", "", x, flags=re.S)
+    return html.unescape(re.sub(r"<[^>]+>", "", x))
+
+
+# docs/design/PANEL.md rule 4 (standing improvements, item 302): the summary line of a folded section (`_fold`) shows
+# its main number or a status, not just what the section is about. A summary passes with a digit or a status word.
+# RULE4_TODO: HELP keys of folds whose summary is still a description, with why it is not a text fix; like
+# RULE2_TODO, it must match the fact both ways.
+# «спокій: / ризик: / подія: / нагода:» are the labels of «Головне сьогодні» (HELP["key"]); «не виконується» is the
+# risk rule's verdict in «Чи вкладається в ризик».
+RULE4_STATUS = ("немає", "нема", "вимкнено", "збій", "помилка", "застаріл", "порожньо", "невідомо", "чекає", "не виконується")
+RULE4_STATUS += ("спокій:", "ризик:", "подія:", "нагода:")
+RULE4_TODO: dict[str, str] = {}  # item 303: the four «Мої угоди» folds got summary functions (rules_week_line & co.)
+
+
+def test_rule4_fold_summaries_carry_a_number_or_status_except_the_listed(tmp_path):
+    """Item 302 (docs/design/PANEL.md rule 4): every `_fold` on every tab of _all_tab_pages has a non-empty one-line
+    summary in its <summary>, other than its title, with a digit or a RULE4_STATUS word; the folds not done yet are
+    RULE4_TODO by their HELP key (found by the heading's exact «i» note, as in the rule 2 test)."""
+    import re
+
+    note = {db._info(k): k for k in db.HELP}
+    fold = re.compile(
+        r"<section class='wide fold' id='[^']+'><details><summary><h2>(.*?)</h2><span class='fs'>(.*?)</span></summary>", re.S
+    )
+    rows = []
+    for name, page in _all_tab_pages(tmp_path).items():
+        found = fold.findall(page)
+        assert len(found) == page.count("<section class='wide fold'"), name  # every fold matched, none skipped
+        for head, summ in found:
+            keys = [key for h, key in note.items() if h in head]
+            assert len(keys) == 1, (name, head[:80])
+            rows.append((name, keys[0], _visible_text(head).strip(), summ, _visible_text(summ).strip()))
+    assert len(rows) >= 100 and len({k for _, k, _, _, _ in rows}) >= 40  # the regex really matched the pages
+    bad = set()
+    for name, key, title, raw, text in rows:
+        assert text and "\n" not in text and "<br" not in raw and "<p" not in raw, (name, key, raw)  # one line
+        if text == title or not (re.search(r"\d", text) or any(w in text.lower() for w in RULE4_STATUS)):
+            bad.add(key)
+    assert bad == set(RULE4_TODO), (
+        "folds without a number or status",
+        sorted(bad - set(RULE4_TODO)),
+        "done, drop",
+        sorted(set(RULE4_TODO) - bad),
+    )
+    assert all(RULE4_TODO.values())
+
+
+def test_rule4_journal_fold_summaries_count_the_blocks_rows(tmp_path):
+    """Item 303: the summaries of «Порушення правил за тиждень», «Паперові рекомендації», «Плани угод» and «Журнал
+    прогнозів» are computed from the block's own rows; no table / no rows give a status word; an odd row gives «збій»
+    instead of raising; every line is escaped one-line text."""
+    rows = _rules_rows()
+    weeks = db.rules_weekly(rows, datetime(2025, 10, 25, tzinfo=UTC).timestamp())
+    assert [(w["week"], w["n_trades"], w["n_violating"]) for w in weeks][0] == ("2025-W42", 11, 4)
+    in_w42 = datetime(2025, 10, 18, 12, tzinfo=UTC).timestamp()  # Saturday of 2025-W42
+    assert db.rules_week_line(rows, in_w42) == "цього тижня порушили 4 з 11 угод, P&amp;L −$607 · за весь журнал 9 з 23"
+    later = datetime(2026, 1, 10, tzinfo=UTC).timestamp()
+    assert db.rules_week_line(rows, later) == "цього тижня угод немає · за весь журнал 9 з 23"
+    assert db.rules_week_line(None, later) == "таблиці journal немає" and db.rules_week_line([], later) == "угод немає"
+    assert db.rules_week_line([{"symbol": "BTCUSDT"}], later) == "угод з часом відкриття немає"
+
+    data, _ = db.load_journal(_journal_db(tmp_path / "r.sqlite", _sample_journal(), _sample_rec()))
+    # one settled chain trade (+2 % of spot) and one open; the manual trade is outside the method's group
+    assert db.rec_paper_line(data["rec_paper"]) == "метод: розраховано 1, середнє +2.00 % спота, відкритих 1 · усього 3"
+    assert db.rec_paper_line([{"source": "method", "status": "open"}]) == "метод: розраховано 0, відкритих 1 · усього 1"
+    assert db.rec_paper_line(None) == "таблиці rec_paper немає" and db.rec_paper_line([]) == "рекомендацій ще немає"
+
+    data, _ = db.load_journal(_plan_db(tmp_path / "p.sqlite", _sample_plans()))
+    assert db.plans_line(data["trade_plan"]) == "вхід 5 · чекати 1 · пропустити 1 · розв&#x27;язано 5 з 7"  # shadow plan out
+    assert db.plans_line([{"verdict": "<b>", "status": "open"}]) == "вхід 0 · чекати 0 · пропустити 0 · інше 1 · розв&#x27;язано 0 з 1"
+    assert db.plans_line(None) == "таблиці trade_plan немає" and db.plans_line([]) == "планів ще немає"
+
+    data, _ = db.load_journal(_fc_db(tmp_path / "f.sqlite", _sample_forecasts()))
+    nearest = db._day(FC_E3)
+    assert db.forecasts_line(data["forecast_log"]) == f"розраховано 32 з 40 · відкритих 8, найближча експірація {nearest}"
+    assert db.forecasts_line([{"status": "open", "expiry_ts": "abc"}]) == "розраховано 0 з 1 · відкритих 1"  # no date: none named
+    assert db.forecasts_line(None) == "таблиці forecast_log немає" and db.forecasts_line([]) == "прогнозів ще немає"
+
+    # a corrupt row (not a dict, as a broken loader could pass) never raises: the status word, the body explains
+    for line in (db.rules_week_line([None], later), db.rec_paper_line([None]), db.plans_line([None]), db.forecasts_line([None])):
+        assert line == db.SUMMARY_FAILED and "збій" in line
+    assert db.plans_line("x") == db.SUMMARY_FAILED  # not even a list of rows
+
+    # the journal page carries them in the folds' summary lines
+    page = db.render_journal(*db.load_journal(tmp_path / "f.sqlite"), float(T0))
+    assert f"<span class='fs'>розраховано 32 з 40 · відкритих 8, найближча експірація {nearest}</span>" in page
+    assert "<span class='fs'>угод немає</span>" in page and "<span class='fs'>планів ще немає</span>" in page
+
+
+# docs/design/PANEL.md rule 5 (item 302): each caveat once per page and never in a tile. The patterns are the
+# phrases and their variants as written in scripts/dashboard.py; «відхилено» alone is a verdict status on «Проєкт»,
+# so only the «tested and rejected» forms count. Text in «i» notes is rule 3's and is not counted.
+RULE5_CAVEATS = {
+    "risk-neutral": r"ризик-нейтральн",
+    "not a forecast": r"\bне прогноз\b",
+    "not advice": r"\bне\s+(?:інвестиційна\s+)?порад",
+    "past result": r"не гарантує майбутнього",
+    "tested and rejected": r"перевірено(?:\s+18\.10)?\s+[йі]\s+відхилено|\bH1\s+відхилено|відхилено\s+18\.10|18\.10\s+відхилено",
+}
+RULE5_TODO: frozenset[tuple[str, str]] = frozenset()  # (page, caveat) pairs still repeated; none left
+
+
+def test_rule5_caveats_once_per_page_and_not_in_tiles(tmp_path):
+    """Item 302 (docs/design/PANEL.md rule 5): no caveat phrase of RULE5_CAVEATS is said twice on a page of
+    _all_tab_pages or inside a number tile."""
+    import re
+
+    pats = {k: re.compile(p, re.I) for k, p in RULE5_CAVEATS.items()}
+    tile = re.compile(r"<div class='tile[^']*'><span class='k'>.*?</div>", re.S)
+    twice, seen, n_tiles = set(), {k: 0 for k in pats}, 0
+    for name, page in _all_tab_pages(tmp_path).items():
+        text = _visible_text(page)
+        for k, p in pats.items():
+            n = len(p.findall(text))
+            seen[k] += n
+            if n > 1:
+                twice.add((name, k))
+        for t in tile.findall(page):
+            n_tiles += 1
+            in_tile = [k for k, p in pats.items() if p.search(_visible_text(t))]
+            assert not in_tile, (name, in_tile, _visible_text(t)[:120])
+    assert twice == RULE5_TODO, ("caveats said twice", sorted(twice - RULE5_TODO), "done, drop", sorted(RULE5_TODO - twice))
+    assert all(n >= 3 for n in seen.values()) and n_tiles >= 100, (seen, n_tiles)  # the patterns really matched
+
+
+def test_fc_rv_and_demo_vs_bt_action_lines_on_their_notes_thresholds(tmp_path):
+    """Item 298 (docs/design/PANEL.md rule 2): «Опціони проти RV30» and the three «Звірка з бектестом» tiles. The only
+    cut-offs are the notes' 30 expiry dates (FC_MIN_EXPIRIES) and 30 decided trades (DEMO_MIN_N, the badges), the
+    95 % CI strictly above / below 0 (ACT["fc_rv"], ACT["demo_vs_bt_total"]'s «Різниця R далеко від 0») and
+    ACT["demo_vs_bt"]'s «Збігів більшість» (a share above one half)."""
+    import html
+    import re
+
+    import test_dashboard_demo as td
+    from tradedesk.analytics import demo_vs_backtest as dvb
+
+    f, n = db.FC_MIN_EXPIRIES, db.DEMO_MIN_N
+    assert f == 30 and "поки 95 % ДІ містить 0, різниці не видно" in db.ACT["fc_rv"][1] and f"від {f} дат" in db.ACT["fc_rv"][3]
+    assert n == dvb.MIN_TRADES == 30 and db.ACT["demo_vs_bt_total"][0] == f"Менше {n} звірених"
+    assert db.ACT["demo_vs_bt_total"][2] == "Різниця R далеко від 0" and db.ACT["demo_vs_bt"][2] == "Збігів більшість"
+    lines = []
+
+    def got(x: str) -> str:
+        lines.append(x)
+        return x
+
+    # «Опціони проти RV30»: a CI touching 0 contains it; a side is a conclusion only from 30 dates
+    assert got(db.fc_rv_act(None, f)) == "ДІ — від 2 дат: висновку нема"
+    same = "ДІ містить 0: різниці не видно"
+    assert db.fc_rv_act([-0.1, 0.1], f) == db.fc_rv_act([-0.1, 0.0], f) == got(db.fc_rv_act([0.0, 0.1], f)) == same
+    assert got(db.fc_rv_act([-0.1, -0.001], f - 1)) == "опціони точніші; перевір від 30 дат"
+    assert got(db.fc_rv_act([-0.1, -0.001], f)) == "опціони точніші: на RV30 не спирайся"
+    assert got(db.fc_rv_act([0.001, 0.1], f - 1)) == "історія точніша; перевір від 30 дат"
+    assert got(db.fc_rv_act([0.001, 0.1], f)) == "опціони хиблять з розміром руху: розбери з Claude"
+    # «Звірено угод», «Збіг з бектестом», «Різниця R»
+    assert got(db.demo_vs_bt_n_act(True)) == "замало для висновку: чекай"
+    assert got(db.demo_vs_bt_n_act(False)) == "читай частку збігів і різницю R"
+    assert got(db.demo_vs_bt_match_act(None, True, n)) == "звірених ще немає: чекай"
+    assert got(db.demo_vs_bt_match_act(0.9, True, n)) == "до 30 звірених — ще не висновок"
+    assert got(db.demo_vs_bt_match_act(0.5, False, n)) == "бектесту сетапу не вір: розбери з Claude"
+    assert got(db.demo_vs_bt_match_act(0.5001, False, n)) == "бектест описує демо: дивись різницю R"
+    assert got(db.demo_vs_bt_r_act([0.001, 0.2], True, n)) == "до 30 звірених — ще не висновок"
+    no_ci = "ДІ ще нема: мало угод з обома R"
+    assert db.demo_vs_bt_r_act(None, False, n) == db.demo_vs_bt_r_act(["x", 1.0], False, n) == no_ci
+    assert got(db.demo_vs_bt_r_act([1.0], False, n)) == no_ci
+    same = "ДІ містить 0: розбіжності R не видно"
+    assert db.demo_vs_bt_r_act([-0.2, 0.0], False, n) == got(db.demo_vs_bt_r_act([0.0, 0.2], False, n)) == same
+    off = "демо торгує інакше: розбери з Claude"
+    assert db.demo_vs_bt_r_act([-0.2, -0.001], False, n) == got(db.demo_vs_bt_r_act([0.001, 0.2], False, n)) == off
+    for x in lines:
+        assert 0 < len([w for w in x.split() if re.search(r"\w", w)]) <= RULE2_MAX_WORDS, x
+
+    def act(page: str, key: str) -> list[str]:
+        found = re.findall(re.escape(db._info(key)) + r"</span><span class='v'>.*?<span class='act'>([^<]*)</span></div>", page, re.S)
+        return [html.unescape(x) for x in found]
+
+    # on the tiles: the RV30 sample (2 expiry dates) ...
+    data, _ = db.load_journal(_fc_rv_db(tmp_path / "rv.sqlite"))
+    c = db.fc_compare(data["forecast_log"])
+    assert c["n_dates"] == 2 and act(db.block_forecasts(data["forecast_log"]), "fc_rv") == [db.fc_rv_act(c["ci95"], 2)]
+    # ... and the replay file with 29 / 30 decided trades, all matched, R diff ≈ +0.15 (its CI above 0)
+    for k, want in (
+        (n - 1, ["замало для висновку: чекай"] + ["до 30 звірених — ще не висновок"] * 2),
+        (n, ["читай частку збігів і різницю R", "бектест описує демо: дивись різницю R", off]),
+    ):
+        rows = [
+            dvb.Replay(str(i), "S/USDT:USDT", "S3", "4h", "long", 0, 0, "match", r_demo=1.0, r_demo_bt=1.1 + 0.1 * (i % 2), r_bt=1.0, r_diff=0.1 + 0.1 * (i % 2))
+            for i in range(k)
+        ]  # fmt: skip
+        doc = {**td._vs_bt_doc(td.NOW), "summary": dvb.summary(rows)}
+        assert act(db.block_demo_vs_bt([], True, doc, None, td.NOW / 1000), "demo_vs_bt_total") == want, k
+
+
+def test_demo_and_journal_action_lines_on_their_notes_thresholds():
+    """Item 295 (docs/design/PANEL.md rule 2): the «Демо» and journal tiles' action lines. The only cut-offs are the
+    notes' 30 trades (JR_SMALL_SAMPLE = DEMO_MIN_N), rule 1's $100, the sign as each tile colours it (_signed_cls, the
+    expectancy tile's exp < 0), _demo_vs0's CI against 0, the «За правилами» counts and a guard halt within 7 days."""
+    import re
+
+    n = db.JR_SMALL_SAMPLE
+    assert n == db.DEMO_MIN_N == 30 and f"(≥ {n})" in db.HELP["r"][3] and f"до {n} закритих угод" in db.ACT["drawdown"][1]
+    assert f"≤ {db._usd(db.RULES_DEPOSIT * db.RULES_RISK_PCT / 100.0)} (правило 1)" in db.ACT["j_open"][3]
+    assert db.j_trades_act(n - 1) == "опис, не висновок: розмір не міняй" and db.j_trades_act(n) == "суди за середнім на угоду й R"
+    # «Частка в плюсі» (item 311): «тримай стоп» only for a high share (≥ JR_HIGH_WINRATE, named in ACT) with exp < 0
+    h = db.JR_HIGH_WINRATE
+    assert h == 0.5 and f"<i>Низька (до {100 * h:.0f} %)</i>" in db._info("j_winrate")
+    assert f"<i>Від {100 * h:.0f} %, а середнє нижче 0</i>" in db._info("j_winrate")
+    assert db.j_winrate_act(h, -0.01) == db.j_winrate_act(1.0, -0.01) == "середнє нижче 0: тримай стоп, дай плюсу дійти"
+    assert db.j_winrate_act(h - 0.01, -0.01) == db.j_winrate_act(0.0, -0.01) == "низька частка й мінус: дивись середнє на угоду"
+    assert db.j_winrate_act(h, 0.0) == db.j_winrate_act(h, None) == "частка сама мало каже: дивись середнє"
+    assert db.j_winrate_act(h - 0.01, 0.0) == db.j_winrate_act(0.0, None) == "середнє не в мінусі: низька частка не біда"
+    assert db.j_winrate_act(None, -0.01) == db.j_winrate_act(None, 0.0) == "частка невідома: дивись середнє на угоду"
+    # P&L: the tile's own colour, _signed_cls's ±0.005 edge
+    assert db.j_pnl_act(-0.005, n) == "мінус: зменш розмір там, де він найбільший"
+    assert db.j_pnl_act(-0.0049, n) == db.j_pnl_act(0.0049, n) == db.j_pnl_act(None, n) == "у нулі: суди за середнім і R"
+    assert db.j_pnl_act(0.005, n - 1) == "плюс, але до 30 угод — не доказ"
+    assert db.j_pnl_act(0.005, n) == "плюс: систему суди за середнім і R"
+    assert db.j_expectancy_act(-0.001, n) == "менший розмір, суворіші правила входу"
+    assert db.j_expectancy_act(0.0, n - 1) == "до 30 угод не перевага: розмір не збільшуй"
+    assert db.j_expectancy_act(0.0, n) == "не нижче 0 на 30+ угодах: тримай правила"
+    assert db.r_mean_act(None, 0) == "угод з R немає: висновку ще нема"
+    assert db.r_mean_act(-0.005, 99) == "переглянь стопи й цілі, розмір не збільшуй"
+    assert db.r_mean_act(-0.0049, 99) == db.r_mean_act(0.0049, 99) == "переваги не видно: розмір не збільшуй"
+    assert db.r_mean_act(0.005, n - 1) == "до 30 угод з R — не доказ" and db.r_mean_act(0.005, n) == "вище 0 на 30+ угодах: ознака переваги"
+    assert db.drawdown_act(0.0, 99) == "просадки ще не було: розмір не міняй"
+    assert db.drawdown_act(0.01, n - 1) == "до 30 угод не показова: розмір не міняй"
+    assert db.drawdown_act(0.01, n) == "тримай розмір, з яким переживеш її знову"
+    assert db.j_open_act(0) == "нічого робити не треба" and db.j_open_act(1) == "перевір ризик кожної ≤ $100 і строк"
+    c = {"n_violated": 0, "n_unknown": 0, "n_approx": 0}
+    assert db.j_rules_act(c) == "порушень немає: тримай правила далі"
+    assert db.j_rules_act({**c, "n_approx": 1}) == "записуй час відкриття: правило 4 наближене"
+    assert db.j_rules_act({**c, "n_approx": 1, "n_unknown": 1}) == "записуй стоп і ціль у /trade"
+    assert db.j_rules_act({"n_violated": 1, "n_unknown": 1, "n_approx": 1}) == "знайди в тижневому звіті, яке правило ламаєш"
+    assert db.demo_setup_act(n - 1, "ok") == "замало угод: ризик на сетапі не збільшуй"
+    assert db.demo_setup_act(n, "ok") == "ДІ вище 0: звір із поточною версією"
+    assert db.demo_setup_act(n, "bad") == "ДІ нижче 0: ризик не збільшуй"
+    assert db.demo_setup_act(n, "") == "переваги не видно: ризик не збільшуй"
+    assert db.demo_refused_act(0, False) == "відмов немає: нічого не роби"
+    assert db.demo_refused_act(1, False) == "дивись найчастішу причину в таблиці нижче"
+    assert db.demo_refused_act(1, True) == "був kill-switch чи ліміт: перевір позиції"
+    assert db.demo_skipped_act(0) == "пропусків немає: нічого не роби" and db.demo_skipped_act(1) == "чи даремно — покажуть тіньові плани"
+
+    def act(page: str, key: str) -> list[str]:
+        return re.findall(re.escape(db._info(key)) + r"</span><span class='v'>.*?<span class='act'>([^<]*)</span></div>", page, re.S)
+
+    # on the tiles: a losing first trade (red edge, «система поки в мінусі») and one open trade
+    tiles = db.block_journal_tiles([{"status": "closed", "pnl": -5.0, "closed_ts": 1.0, "outcome": "loss", "r_multiple": -1.0}], 1, 2.0)
+    assert "система поки в мінусі" in tiles
+    for key, line in (
+        ("j_expectancy", "менший розмір, суворіші правила входу"),
+        ("j_trades", "опис, не висновок: розмір не міняй"),
+        ("j_pnl", "мінус: зменш розмір там, де він найбільший"),
+        ("j_winrate", "низька частка й мінус: дивись середнє на угоду"),
+        ("r", "переглянь стопи й цілі, розмір не збільшуй"),
+        ("drawdown", "до 30 угод не показова: розмір не міняй"),
+        ("j_open", "перевір ризик кожної ≤ $100 і строк"),
+    ):
+        assert act(tiles, key) == [line], key
+    assert len(act(tiles, "j_rules")) == 1
+    # two small wins and one big loss: a high share (2 of 3) with a negative average is the note's «тримай стоп»
+    rows = [{"status": "closed", "pnl": p, "closed_ts": 1.0, "outcome": o} for p, o in ((1.0, "win"), (1.0, "win"), (-10.0, "loss"))]
+    assert act(db.block_journal_tiles(rows, 0, 2.0), "j_winrate") == ["середнє нижче 0: тримай стоп, дай плюсу дійти"]
+    # a setup with 30 trades with R and its CI above 0, the others without trades (the yellow «замало» badge)
+    trades = [{"setup": "zz", "status": "closed", "r_multiple": 1.0 + (i % 2), "pnl_usd": 10.0} for i in range(n)]
+    page = db.block_demo_setups(trades)
+    got = act(page, "demo_setup")
+    assert got[-1] == "ДІ вище 0: звір із поточною версією" and set(got[:-1]) == {"замало угод: ризик на сетапі не збільшуй"}
+    assert page.count("<span class='sig warn'>замало для висновку") == len(got) - 1
+    # a kill-switch refusal 6 days ago halts the line; 8 days ago it is history and the table is the pointer
+    now = 100 * 86400.0
+    kill = json.dumps({"violations": ["kill-switch is on"]})
+    for days, line in ((6, "був kill-switch чи ліміт: перевір позиції"), (8, "дивись найчастішу причину в таблиці нижче")):
+        audit = [{"kind": "refused", "ts": (now - days * 86400) * 1000, "payload": kill}, {"kind": "skipped", "reason": "y"}]
+        page = db.block_demo_refusals(audit, now)
+        assert act(page, "demo_refused") == [line] and act(page, "demo_skipped") == ["чи даремно — покажуть тіньові плани"], days
+    page = db.block_demo_refusals([], now)
+    assert act(page, "demo_refused") == ["відмов немає: нічого не роби"]
+    assert act(page, "demo_skipped") == ["пропусків немає: нічого не роби"]
+
+
+def test_mytrades_paper_plans_forecast_action_lines_on_their_notes_thresholds():
+    """Item 297 (docs/design/PANEL.md rule 2): the paper recommendations', plans' and forecast journal's tiles. The only
+    cut-offs are the notes' H1 sample of 27 (REC_H1_N), 30 plans with R (PLAN_MIN_N), 30 expiry dates
+    (FC_MIN_EXPIRIES), Brier 0.25 of «always 50 %» (FC_BRIER_COIN), the plans' 95 % CI against 0 and the sign as
+    _signed_cls colours each tile (±0.005)."""
+    import html
+    import re
+
+    assert RULE2_TODO == frozenset()
+    h1, p, f = db.REC_H1_N, db.PLAN_MIN_N, db.FC_MIN_EXPIRIES
+    assert h1 == 27 and f"Більше {h1} (стільки в тесті H1)" == db.ACT["rec_n"][2] and f"n = {h1}" in db.REC_CAVEAT
+    assert "−0.59 %" in db.ACT["rec_n"][3] and f"(−0.59 %, n = {h1})" in db.HELP["rec_pct"][1]
+    assert p == 30 and db.ACT["plan_n"][0] == f"Менше {p} планів з R" and db.ACT["plan_n"][2] == f"Від {p} планів з R"
+    assert f == 30 and db.ACT["fc_expiries"][0] == f"Менше {f} дат експірації" and db.ACT["fc_expiries"][2] == f"Від {f} дат"
+    assert db.FC_BRIER_COIN == 0.5**2 and db.ACT["fc_brier"][0] == "Нижче 0.25" and db.ACT["fc_brier"][2] == "0.25 і вище"
+    lines = []
+
+    def got(x: str) -> str:
+        lines.append(x)
+        return x
+
+    # paper recommendations
+    assert got(db.rec_n_act(h1)) == "мало: висновку не роби, чекай експірацій"
+    assert got(db.rec_n_act(h1 + 1)) == "звір «Середнє, % спота» з −0.59 % тесту"
+    assert got(db.rec_win_act(-0.005)) == "середнє в мінусі: за методом не торгуй"
+    assert db.rec_win_act(-0.0049) == db.rec_win_act(0.005) == got(db.rec_win_act(None)) == "суди за «Середнє, % спота», не за часткою"
+    assert got(db.rec_pct_act(-0.005)) == "у мінусі, як у тесті H1: не торгуй"
+    assert db.rec_pct_act(-0.0049) == db.rec_pct_act(0.0049) == got(db.rec_pct_act(None)) == "у нулі: переваги не видно, не торгуй"
+    assert got(db.rec_pct_act(0.005)) == "плюс на папері — шум: угод не відкривай"
+    assert got(db.rec_r_worst_act(None)) == "R немає: висновку нема"
+    assert got(db.rec_r_worst_act(-0.005)) == "на папері втрачає ризик: не торгуй"
+    assert db.rec_r_worst_act(-0.0049) == got(db.rec_r_worst_act(0.0049)) == "переваги не видно: не торгуй"
+    assert got(db.rec_r_worst_act(0.005)) == "звір із «Середнє, % спота», угод не відкривай"
+    assert got(db.rec_pnl_act(-0.005)) == "мінус у доларах: суди за «Середнє, % спота»"
+    assert db.rec_pnl_act(-0.0049) == got(db.rec_pnl_act(0.0049)) == "у нулі: суди за «Середнє, % спота»"
+    assert got(db.rec_pnl_act(0.005)) == "папір, не гроші: за методом не торгуй"
+    # plans
+    assert got(db.plan_n_act(p - 1)) == "до 30 планів з R — висновку не роби"
+    assert got(db.plan_n_act(p)) == "дивись «Середній R» і «Проти 0»"
+    assert got(db.plan_win_act(None)) == "планів з R немає: висновку нема"
+    assert got(db.plan_win_act(-0.005)) == "середній R нижче 0: переглянь ціль чи стоп"
+    assert db.plan_win_act(-0.0049) == got(db.plan_win_act(0.005)) == "середній R не нижче 0: частка не біда"
+    assert got(db.plans_act(None, 99)) == "ДІ ще нема: чекай планів з R"
+    no_edge = "переваги не видно: за планами не торгуй"
+    assert db.plans_act([-0.3, -0.1], 99) == db.plans_act([-0.1, 0.2], 99) == got(db.plans_act([0.0, 0.2], 99)) == no_edge
+    assert got(db.plans_act([0.001, 0.2], p - 1)) == "до 30 планів з R — ще описово"
+    assert got(db.plans_act([0.001, 0.2], p)) == "розбери з Claude, звідки перевага"
+    o = dict.fromkeys(db.PLAN_OUTCOMES, 0)
+    assert got(db.plan_exits_act(o)) == "виходів ще немає: підправляти нічого"
+    assert got(db.plan_exits_act({**o, "target": 1, "expired": 1, "not_filled": 1})) == "вхід надто далеко: став ближче"
+    assert got(db.plan_exits_act({**o, "stop": 1, "expired": 1})) == "ціль далеко для строку: ближча чи довший строк"
+    assert (
+        got(db.plan_exits_act({**o, "target": 1, "stop": 1, "expired": 1, "not_filled": 1}))
+        == "здебільшого ціль / стоп: вхід і строк не міняй"
+    )
+    # forecast journal
+    assert got(db.fc_n_act(f - 1)) == "чекай: висновок — від 30 дат" and got(db.fc_n_act(f)) == "не вибірка: дивись плитку «Експірацій»"
+    assert got(db.fc_expiries_act(f - 1)) == "висновку немає: чекай 30 дат експірації"
+    assert got(db.fc_expiries_act(f)) == "читай еталони й калібрування"
+    assert got(db.fc_brier_act(None, f)) == "оцінки немає: висновку нема"
+    assert got(db.fc_brier_act(0.25, f)) == "не краще за «завжди 50 %»: не спирайся"
+    assert got(db.fc_brier_act(0.2499, f - 1)) == "краще за 50 %; висновок — від 30 дат"
+    assert got(db.fc_brier_act(0.2499, f)) == "краще за 50 %: звір з еталонами поруч"
+    for fn in (db.fc_ref_act, db.fc_clim_act):
+        assert got(fn(None, f)) == "еталона немає: висновку нема"
+    assert got(db.fc_ref_act(-0.005, f)) == "гірші за наївну оцінку: не спирайся"
+    assert db.fc_ref_act(-0.0049, f) == got(db.fc_ref_act(0.0049, f)) == "як наївна оцінка: переваги не видно"
+    assert got(db.fc_ref_act(0.005, f - 1)) == "точніші, але висновок — від 30 дат"
+    assert got(db.fc_ref_act(0.005, f)) == "точніші, та це ще не перевага для угоди"
+    assert got(db.fc_clim_act(-0.005, f)) == "еталон суворий: нічого не міняй"
+    assert db.fc_clim_act(-0.0049, f) == got(db.fc_clim_act(0.0049, f)) == "як частота заднім числом: нічого не міняй"
+    assert got(db.fc_clim_act(0.005, f - 1)) == "точніші за частоту; висновок — від 30 дат"
+    assert got(db.fc_clim_act(0.005, f)) == "точніші за частоту; угоду перевіряй окремо"
+    for x in lines:  # every line, also those the test pages do not show
+        assert 0 < len([w for w in x.split() if re.search(r"\w", w)]) <= RULE2_MAX_WORDS, x
+
+    def act(page: str, key: str) -> list[str]:
+        found = re.findall(re.escape(db._info(key)) + r"</span><span class='v'>.*?<span class='act'>([^<]*)</span></div>", page, re.S)
+        return [html.unescape(x) for x in found]
+
+    def check(page: str, want: dict) -> None:
+        for key, line in want.items():
+            assert act(page, key) == [line], key
+
+    # paper recommendations: one losing trade, then 28 winners (more than H1's 27)
+    rec = {"source": "method", "status": "settled", "pnl_usd": -5.0, "pnl_pct_spot": -0.01, "r_worst_case": -0.5}
+    check(
+        db.block_rec_paper([rec]),
+        {
+            "rec_n": "мало: висновку не роби, чекай експірацій",
+            "rec_win": "середнє в мінусі: за методом не торгуй",
+            "rec_pct": "у мінусі, як у тесті H1: не торгуй",
+            "rec_r_worst": "на папері втрачає ризик: не торгуй",
+            "rec_pnl": "мінус у доларах: суди за «Середнє, % спота»",
+        },
+    )
+    win = {**rec, "pnl_usd": 5.0, "pnl_pct_spot": 0.01, "r_worst_case": 0.5}
+    check(
+        db.block_rec_paper([win] * (h1 + 1)),
+        {
+            "rec_n": "звір «Середнє, % спота» з −0.59 % тесту",
+            "rec_win": "суди за «Середнє, % спота», не за часткою",
+            "rec_pct": "плюс на папері — шум: угод не відкривай",
+            "rec_r_worst": "звір із «Середнє, % спота», угод не відкривай",
+            "rec_pnl": "папір, не гроші: за методом не торгуй",
+        },
+    )
+    # plans: one stop (no CI yet); 30 winners with R and 31 never filled; two expired with the CI across 0
+    plan = {"verdict": "enter", "status": "resolved"}
+    check(
+        db.block_trade_plans([{**plan, "outcome": "stop", "r_result": -1.0}]),
+        {
+            "plan_n": "до 30 планів з R — висновку не роби",
+            "plan_win": "середній R нижче 0: переглянь ціль чи стоп",
+            "plans": "ДІ ще нема: чекай планів з R",
+            "plan_exits": "здебільшого ціль / стоп: вхід і строк не міняй",
+        },
+    )
+    rows = [{**plan, "outcome": "target", "r_result": 1.0 + i % 2} for i in range(p)] + [{**plan, "outcome": "not_filled"}] * (p + 1)
+    check(
+        db.block_trade_plans(rows),
+        {
+            "plan_n": "дивись «Середній R» і «Проти 0»",
+            "plan_win": "середній R не нижче 0: частка не біда",
+            "plans": "розбери з Claude, звідки перевага",
+            "plan_exits": "вхід надто далеко: став ближче",
+        },
+    )
+    page = db.block_trade_plans([{**plan, "outcome": "expired", "r_result": r} for r in (-0.2, 0.1)])
+    check(page, {"plans": no_edge, "plan_exits": "ціль далеко для строку: ближча чи довший строк"})
+    assert "95 % ДІ містить 0: переваги не видно" in page
+
+    # forecast journal: per expiry date a right and a wrong-side «above spot» forecast against the 50 % reference
+    def forecasts(n_dates: int, good: bool) -> list[dict]:
+        hi, lo = (0.8, 0.2) if good else (0.2, 0.8)
+        e0 = int(datetime(2026, 10, 30, 8, tzinfo=UTC).timestamp())
+        base = {"asset": "BTC", "kind": "above_spot", "ref_prob": 0.5, "status": "settled"}
+        return [{**base, "expiry_ts": e0 + i * 86400, "prob": q, "outcome": o} for i in range(n_dates) for q, o in ((hi, 1), (lo, 0))]
+
+    check(
+        db.block_forecasts(forecasts(f - 1, True)),
+        {
+            "fc_n": "чекай: висновок — від 30 дат",
+            "fc_expiries": "висновку немає: чекай 30 дат експірації",
+            "fc_brier": "краще за 50 %; висновок — від 30 дат",
+            "fc_ref": "точніші, але висновок — від 30 дат",
+            "fc_clim": "точніші за частоту; висновок — від 30 дат",
+        },
+    )
+    check(
+        db.block_forecasts(forecasts(f, True)),
+        {
+            "fc_n": "не вибірка: дивись плитку «Експірацій»",
+            "fc_expiries": "читай еталони й калібрування",
+            "fc_brier": "краще за 50 %: звір з еталонами поруч",
+            "fc_ref": "точніші, та це ще не перевага для угоди",
+            "fc_clim": "точніші за частоту; угоду перевіряй окремо",
+        },
+    )
+    check(
+        db.block_forecasts(forecasts(f, False)),
+        {
+            "fc_brier": "не краще за «завжди 50 %»: не спирайся",
+            "fc_ref": "гірші за наївну оцінку: не спирайся",
+            "fc_clim": "еталон суворий: нічого не міняй",
+        },
+    )
 
 
 def test_forecast_info_notes_are_instructions_with_thresholds_from_the_code():

@@ -323,3 +323,6 @@ def test_checkpoint_loaders(db):
     assert not [e for e in inp["errors"] if "запит" in e or "БД" in e], inp["errors"]
     assert inp["demo_trades"] == [] and inp["rec_paper"] == [] and inp["pm_rows"] == [] and inp["plans"] == []
     assert set(inp["carry"]) == {"A", "B"} and inp["condor_t0"] is None
+    # item 312: every card journal's table exists and its counter query runs (an error would hide the card's collection)
+    empty = {"n": 0, "first": None, "last": None}
+    assert inp["journals"] == {slug: empty | ({"all": 0} if j.table == "cp_cycle" else {}) for slug, j in cr.CARD_JOURNALS.items()}

@@ -62,7 +62,7 @@ def _jlist(x: Any) -> list[Any]:
         try:
             v = json.loads(x)
             return v if isinstance(v, list) else []
-        except json.JSONDecodeError:
+        except (ValueError, RecursionError):  # a 4300+-digit JSON integer / deep nesting raised; JSONDecodeError is a ValueError
             return []
     return []
 

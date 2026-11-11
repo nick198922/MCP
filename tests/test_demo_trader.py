@@ -4,6 +4,7 @@ failures after the order."""
 
 from __future__ import annotations
 
+import shutil
 from collections import Counter
 from types import SimpleNamespace
 
@@ -179,16 +180,27 @@ class FakeVenue(BybitDemo):
         return [r for r in self.pnl_rows if lo <= int(r["updatedTime"]) <= end_ms]
 
 
+@pytest.fixture(scope="session")
+def _migrated_db_template(tmp_path_factory):
+    """Path of a migrated store file, built once per worker by the first `world` (a migration run costs ~0.25 s)."""
+    return tmp_path_factory.mktemp("demo_trader_template") / "db.sqlite"
+
+
 @pytest.fixture
-async def world(tmp_path, monkeypatch):
+async def world(tmp_path, monkeypatch, _migrated_db_template):
     monkeypatch.setattr(demo_trader, "HALT_FILE", tmp_path / "demo.halt")
     off = tmp_path / "demo-options.off"  # the futures tests run without the option leg (tests/test_demo_option_leg.py)
     off.write_text("off")
     monkeypatch.setattr(demo_trader, "OPTIONS_OFF_FILE", off)
     signals: dict = {"4h": [_sig()], "1d": []}
     monkeypatch.setattr(demo_trader, "scan", lambda bars, tf, setups: list(signals.get(tf, [])))
+    if not _migrated_db_template.exists():
+        template = Store(_migrated_db_template)
+        await template.init()
+        await template.aclose()  # the last close checkpoints the WAL into the main file
+    shutil.copyfile(_migrated_db_template, tmp_path / "db.sqlite")
     store = Store(tmp_path / "db.sqlite")
-    await store.init()
+    await store.init()  # still runs: WAL, pragmas, and a migration check that finds nothing pending
     msgs: list[str] = []
 
     async def notify(t):
@@ -390,6 +402,156 @@ async def test_close_reads_a_7_day_window_and_closes_journal_with_r(world):
     assert any("✅ Демо: закрито S14" in m and "+2.00R" in m and "комісії 2.10 USD" in m for m in w.msgs)
 
 
+async def test_close_older_than_the_latest_7_day_window_is_still_found(world):
+    w = world
+    await w.enter()
+    t = (await w.store.demo_trade_list())[0]
+    w.venue.pos.clear()
+    w.venue.pnl_rows = [{"closedPnl": str(-t["risk_usd"]), "avgExitPrice": str(t["stop"]), "updatedTime": str(t["opened_ts"] + D1)}]
+    w.signals["4h"] = []
+    await w.run(t["opened_ts"] + 12 * D1)  # the close is 11 days old: only the windows before the latest hold it
+    t = (await w.store.demo_trade_list())[0]
+    assert t["status"] == "closed" and t["exit_reason"] == "stop"
+    assert all(hi - lo <= 7 * D1 for lo, hi in w.venue.windows)
+
+
+async def test_stop_hit_before_the_cycle_that_saw_the_fill_is_matched_by_entry_price(world):
+    w = world
+    await w.enter()
+    t = (await w.store.demo_trade_list())[0]
+    w.venue.pos.clear()
+    before = str(t["opened_ts"] - 5 * 60_000)
+    w.venue.pnl_rows = [{"closedPnl": "50", "avgEntryPrice": str(t["fill"] * 1.05), "avgExitPrice": "1", "updatedTime": before}]
+    w.signals["4h"] = []
+    await w.run(w.now + 3_600_000)
+    assert (await w.store.demo_trade_list())[0]["status"] == "open"  # an earlier trade's close in the symbol: not ours
+    w.venue.pnl_rows.append(
+        {"closedPnl": str(-t["risk_usd"]), "avgEntryPrice": str(t["fill"]), "avgExitPrice": str(t["stop"]), "updatedTime": before}
+    )
+    await w.run(w.now + 2 * 3_600_000)
+    t = (await w.store.demo_trade_list())[0]
+    assert t["status"] == "closed" and t["exit_reason"] == "stop" and t["pnl_usd"] == pytest.approx(-t["risk_usd"])
+
+
+async def test_open_trade_without_position_or_close_is_orphaned_once_with_an_alert(world):
+    w = world
+    await w.enter()
+    t = (await w.store.demo_trade_list())[0]
+    w.venue.pos.clear()
+    w.signals["4h"] = []
+    await w.run(t["opened_ts"] + 3_600_000)
+    assert (await w.store.demo_trade_list())[0]["status"] == "open"  # the close may still be on its way
+    await w.run(t["opened_ts"] + 2 * D1)
+    assert (await w.store.demo_trade_list())[0]["status"] == "orphaned"
+    assert sum("orphaned" in m for m in w.msgs) == 1
+    await w.run(t["opened_ts"] + 3 * D1)
+    assert sum("orphaned" in m for m in w.msgs) == 1
+
+
+async def test_orphan_cancels_the_orders_left_on_the_book(world):
+    w = world
+    await w.enter()
+    t = (await w.store.demo_trade_list())[0]
+    assert t["tp_link"]
+    w.venue.pos.clear()
+    w.signals["4h"] = []
+    await w.run(t["opened_ts"] + 3_600_000)
+    await w.run(t["opened_ts"] + 2 * D1)
+    assert (await w.store.demo_trade_list())[0]["status"] == "orphaned"
+    assert ("cancel", BTC, t["tp_link"]) in w.venue.orders
+
+
+async def test_day_before_orphan_counts_from_the_position_going_missing_not_the_fill(world):
+    """PR #643 review: a trade held for days whose close the venue reports late is closed with its loss, not orphaned."""
+    w = world
+    await w.enter()
+    t = (await w.store.demo_trade_list())[0]
+    w.signals["4h"] = []
+    await w.run(t["opened_ts"] + 3 * D1)  # held for three days, the position is there
+    assert (await w.store.demo_trade_list())[0]["gone_ts"] is None
+    w.venue.pos.clear()
+    gone = t["opened_ts"] + 3 * D1 + 3_600_000
+    await w.run(gone)
+    t = (await w.store.demo_trade_list())[0]
+    assert t["status"] == "open" and t["gone_ts"] == gone  # the close may still be on its way
+    w.venue.pnl_rows = [{"closedPnl": str(-t["risk_usd"]), "avgExitPrice": str(t["stop"]), "updatedTime": str(gone)}]
+    await w.run(gone + 2 * 3_600_000)
+    t = (await w.store.demo_trade_list())[0]
+    assert t["status"] == "closed" and t["pnl_usd"] == pytest.approx(-t["risk_usd"]) and t["exit_reason"] == "stop"
+    assert not any("orphaned" in m for m in w.msgs)
+
+
+async def test_position_back_after_a_gap_restarts_the_orphan_clock(world):
+    w = world
+    await w.enter()
+    t = (await w.store.demo_trade_list())[0]
+    held = dict(w.venue.pos)
+    w.signals["4h"] = []
+    w.venue.pos.clear()
+    await w.run(t["opened_ts"] + 3_600_000)
+    assert (await w.store.demo_trade_list())[0]["gone_ts"]
+    w.venue.pos.update(held)
+    await w.run(t["opened_ts"] + 2 * 3_600_000)
+    assert (await w.store.demo_trade_list())[0]["gone_ts"] is None
+    w.venue.pos.clear()
+    await w.run(t["opened_ts"] + 2 * D1)  # a day after the fill, but the position went missing just now
+    t = (await w.store.demo_trade_list())[0]
+    assert t["status"] == "open" and t["gone_ts"] == t["opened_ts"] + 2 * D1
+
+
+@pytest.mark.parametrize("second_read", ["position_is_back", "fails"])
+async def test_one_empty_position_read_never_orphans_a_trade(world, monkeypatch, second_read):
+    """A position missing from one read, then present (or a read that fails) must leave the trade open."""
+    w = world
+    await w.enter()
+    t = (await w.store.demo_trade_list())[0]
+    held = dict(w.venue.pos)
+    w.venue.pos.clear()
+    w.signals["4h"] = []
+    reads = []
+    real = w.venue.positions
+
+    async def flaky():
+        reads.append(1)
+        if len(reads) == 1:
+            return await real()
+        if second_read == "fails":
+            raise ccxt.NetworkError("timeout")
+        return held
+
+    await w.run(t["opened_ts"] + 3_600_000)  # the first cycle without the position starts the clock
+    monkeypatch.setattr(w.venue, "positions", flaky)
+    await w.run(t["opened_ts"] + 2 * D1)
+    assert len(reads) >= 2
+    assert (await w.store.demo_trade_list())[0]["status"] == "open"
+    assert not any("orphaned" in m for m in w.msgs)
+
+
+@pytest.mark.parametrize("failing_window", [0, 1])
+async def test_closed_pnl_failure_never_orphans_a_trade(world, monkeypatch, failing_window):
+    """An orphan frees the coin and the risk in the guard's books, so a failed read must not look like «no close»."""
+    w = world
+    await w.enter()
+    t = (await w.store.demo_trade_list())[0]
+    w.venue.pos.clear()
+    w.signals["4h"] = []
+    await w.run(t["opened_ts"] + 3_600_000)  # the first cycle without the position starts the clock
+    calls = []
+    real = w.venue.closed_pnl
+
+    async def flaky(market_id, start_ms, end_ms):
+        calls.append(start_ms)
+        if len(calls) - 1 == failing_window:
+            raise RuntimeError("closed-pnl read failed")
+        return await real(market_id, start_ms, end_ms)
+
+    monkeypatch.setattr(w.venue, "closed_pnl", flaky)
+    await w.run(t["opened_ts"] + 10 * D1)  # over a day old and more than one 7-day window to read
+    assert len(calls) == failing_window + 1  # the read stopped at the failure
+    assert (await w.store.demo_trade_list())[0]["status"] == "open"
+    assert not any("orphaned" in m for m in w.msgs)
+
+
 async def test_stop_close_cancels_the_target_limit_left_on_the_book(world):
     w = world
     await w.enter()
@@ -576,7 +738,14 @@ async def test_audit_log_is_append_only(tmp_path):
 )
 async def test_client_refuses_private_calls_off_the_demo_host(ex):
     c = BybitDemo("k", "s", factory=lambda k, s: ex)
-    for call in (c.positions(), c.place_bracket(BTC, "long", 0.01, 1.0, 2.0, "x"), c.set_stop("BTCUSDT", 1.0), c.equity_usd()):
+    calls = (
+        c.positions(),
+        c.place_bracket(BTC, "long", 0.01, 1.0, 2.0, "x"),
+        c.set_stop("BTCUSDT", 1.0),
+        c.equity_usd(),
+        c.apply_demo_funds(1),
+    )
+    for call in calls:
         with pytest.raises(DemoOnlyError):
             await call
 
@@ -1064,3 +1233,38 @@ async def test_s12_resting_order_holds_its_slot_on_the_next_days(world):
     assert res["trades_today"] == 1 and res["entries_today"] == 1
     t = (await w.store.demo_trade_list())[0]
     assert demo_trader._today(t, T0 + D1) and not demo_trader._today({**t, "status": "missed"}, T0 + D1)
+
+
+async def test_demo_funds_request_is_usdt_add_only_and_capped():
+    sent = []
+
+    async def apply(params):
+        sent.append(params)
+        return {"retCode": 0}
+
+    ex = SimpleNamespace(
+        options={"enableDemoTrading": True},
+        hostname="bybit.com",
+        urls={"api": {"private": "https://api-demo.{hostname}"}},
+        privatePostV5AccountDemoApplyMoney=apply,
+    )
+    c = BybitDemo("k", "s", factory=lambda k, s: ex)
+    assert (await c.apply_demo_funds(40_250.7))["retCode"] == 0
+    assert sent == [{"adjustType": 0, "utaDemoApplyMoney": [{"coin": "USDT", "amountStr": "40250"}]}]
+    for bad in (0, -5, bybit_demo.DEMO_FUNDS_MAX + 1):
+        with pytest.raises(ValueError):
+            await c.apply_demo_funds(bad)
+    assert len(sent) == 1
+
+
+def test_s28_takes_signals_from_score_1_the_rest_from_2():
+    """Owner 10.11 (ADR 0007 addition 10.11): S28's fixed 2R target never earns an R:R point."""
+    assert demo_trader.min_score("S28") == 1
+    assert all(demo_trader.min_score(s) == demo_trader.MIN_SCORE == 2 for s in demo_trader.SETUPS if s != "S28")
+
+
+def test_capacity_limits_follow_adr_0007_addition_10_11():
+    from tradedesk.execution.guard import DEFAULT
+
+    assert DEFAULT.max_open_positions == 25 and DEFAULT.max_open_risk_usd == 25 * DEFAULT.risk_usd == 2500.0
+    assert DEFAULT.max_trades_per_day == 21 and DEFAULT.daily_max_loss_usd == 2100.0  # the day's limits are unchanged

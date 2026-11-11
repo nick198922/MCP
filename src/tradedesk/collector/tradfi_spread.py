@@ -22,9 +22,10 @@ from collections.abc import Iterable
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from ..analytics.option_xvenue import num
+from ..analytics.option_xvenue import ms, num
 from ..analytics.tradfi_spread import is_tradfi_perp
 from ..core.envelope import Builder
+from .bad_rows import note_bad_rows
 
 if TYPE_CHECKING:
     from ..runtime import Runtime
@@ -41,15 +42,6 @@ def tradfi_symbols(exchange_info: Any) -> frozenset[str]:
     return frozenset(str(s["symbol"]) for s in syms or [] if isinstance(s, dict) and s.get("symbol") and is_tradfi_perp(s))
 
 
-def _ms(v: Any) -> int | None:
-    if v is None or isinstance(v, bool):
-        return None
-    try:
-        return int(v)
-    except (TypeError, ValueError):
-        return None
-
-
 def _by_symbol(rows: Any, keep: frozenset[str]) -> dict[str, dict[str, Any]]:
     return {str(r["symbol"]): r for r in rows if isinstance(r, dict) and r.get("symbol") in keep} if isinstance(rows, list) else {}
 
@@ -60,20 +52,36 @@ def build_rows(symbols: Iterable[str], book: Any, premium: Any) -> list[dict[str
     keep = frozenset(symbols)
     bk, pm = _by_symbol(book, keep), _by_symbol(premium, keep)
     rows = []
+    bad = 0
     for s in sorted(keep & (bk.keys() | pm.keys())):
         b, p = bk.get(s, {}), pm.get(s, {})
-        rows.append(
-            {
-                "symbol": s,
-                "bid": num(b.get("bidPrice")),
-                "ask": num(b.get("askPrice")),
-                "mark_price": num(p.get("markPrice")),
-                "index_price": num(p.get("indexPrice")),
-                "book_ms": _ms(b.get("time")),
-                "premium_ms": _ms(p.get("time")),
-            }
-        )
+        raw = {
+            "bid": (b.get("bidPrice"), num),
+            "ask": (b.get("askPrice"), num),
+            "mark_price": (p.get("markPrice"), num),
+            "index_price": (p.get("indexPrice"), num),
+            "book_ms": (b.get("time"), ms),
+            "premium_ms": (p.get("time"), ms),
+        }
+        row: dict[str, Any] = {"symbol": s}
+        for col, (v, parse) in raw.items():
+            row[col] = parse(v)
+            bad += row[col] is None and not _empty(v)
+        rows.append(row)
+    if bad:
+        note_bad_rows(bad)
+        log.warning("tradfi_spread: %d malformed field(s) (NaN / inf / text / beyond bounds) stored as NULL", bad)
     return rows
+
+
+def _empty(v: Any) -> bool:
+    """An absent or empty side as venues send it (None, "", 0, "0", "0.00000000"): NULL by design, not malformed."""
+    if v is None or v == "":
+        return True
+    try:
+        return float(v) == 0
+    except (TypeError, ValueError, OverflowError):
+        return False
 
 
 async def scan_tradfi_spread(rt: "Runtime", b: Builder, symbols: Iterable[str]) -> list[dict[str, Any]]:

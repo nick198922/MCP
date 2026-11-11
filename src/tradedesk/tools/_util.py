@@ -67,15 +67,25 @@ def finite_json(x: Any) -> bool:
     return True
 
 
+def shown_int(v: int) -> str:
+    """`v` as text for a message. An integer of 101+ digits is not echoed: str() of one beyond 4300 digits raises
+    ValueError (and so did the message of a tool refusing it), and a 400-digit echo helps nobody."""
+    return str(v) if -(10**100) < v < 10**100 else "an integer beyond +-1e100"
+
+
 def reject_bad_ts(b: Builder, field: str, ts: int | None) -> dict[str, Any] | None:
     """ok=false envelope when unix seconds `ts` fit no datetime (10**20 also overflows the SQLite INTEGER binding and
-    raised out of the tool; a millisecond value is beyond the year 9999), else None."""
+    raised out of the tool; a millisecond value is beyond the year 9999) or are negative (before 1970: no trade time),
+    else None."""
     if ts is None:
         return None
     try:
         datetime.fromtimestamp(ts, UTC)
     except (ValueError, OverflowError, OSError):
-        b.miss(field, "tradedesk", "invalid_input", f"{field}={ts} is outside the datetime range (unix seconds expected)")
+        b.miss(field, "tradedesk", "invalid_input", f"{field}={shown_int(ts)} is outside the datetime range (unix seconds expected)")
+        return b.build(None, ok=False)
+    if ts < 0:
+        b.miss(field, "tradedesk", "invalid_input", f"{field}={ts} is negative (before 1970); unix seconds >= 0 expected")
         return b.build(None, ok=False)
     return None
 
@@ -154,6 +164,57 @@ def parsed_rows(rows: Any, parse: Callable[[Any], T]) -> list[T]:
         except (TypeError, ValueError, KeyError, IndexError, OverflowError):
             continue
     return out
+
+
+MAX_BAR_TS_MS = 253_402_300_799_999  # 9999-12-31T23:59:59.999Z in unix ms: a later bar time fits no datetime
+MAX_BAR_PRICE = 1e12  # far above any listed quote price; 1e308 in a bar is garbage, not a price
+MAX_FUNDING_RATE = 1.0  # 100 % per interval, far beyond any venue's cap; a 1e308 rate overflowed the carry to inf
+MAX_BAR_VOLUME = 1e20  # far above any bar's volume (a 1e-9 meme coin trades ~1e15 a day); sums of 1e308 overflow to inf
+
+
+def bar_row(x: Any) -> list[Any] | None:
+    """A ccxt OHLCV row ``[ts_ms, open, high, low, close(, volume)]`` fit to show and compute on, else None.
+
+    The timestamp must be an integer unix ms in 0 .. year 9999 (an integral float counts), every price a finite number
+    in (0, MAX_BAR_PRICE], the volume (when the row has one) null or a finite number in [0, MAX_BAR_VOLUME]. A string,
+    bool, NaN, +-inf, 1e308 or an integer beyond the float range fails, so one bad bar cannot raise out of a tool or
+    turn its reply into NaN / Infinity (invariant 1). ccxt hands out numbers: a numeric string is not a price here
+    (venues that send strings parse them first, see `hl_bar_row`). Valid rows come back as ``[int, float x4(, v)]``."""
+    if not isinstance(x, (list, tuple)) or len(x) < 5:
+        return None
+    ts = x[0]
+    if isinstance(ts, float) and ts.is_integer():  # False for NaN / inf
+        ts = int(ts)
+    if not isinstance(ts, int) or isinstance(ts, bool) or not 0 <= ts <= MAX_BAR_TS_MS:
+        return None
+    prices = [store_num(v) for v in x[1:5]]
+    if any(p is None or not 0 < p <= MAX_BAR_PRICE for p in prices):
+        return None
+    out: list[Any] = [ts, *prices]
+    if len(x) >= 6:
+        vol = x[5] if x[5] is None else store_num(x[5])
+        if x[5] is not None and (vol is None or not 0 <= vol <= MAX_BAR_VOLUME):
+            return None
+        out.append(vol)
+    return out
+
+
+def hl_bar_row(c: Any) -> list[Any] | None:
+    """A Hyperliquid candle ``{t, o, h, l, c, v}`` (prices and volume as decimal strings) as a `bar_row`, else None."""
+    if not isinstance(c, dict):
+        return None
+    try:
+        row = [c["t"], *(float(c[k]) for k in ("o", "h", "l", "c", "v"))]
+    except (KeyError, TypeError, ValueError, OverflowError):  # OverflowError: float() of a 400-digit JSON integer
+        return None
+    return bar_row(row)
+
+
+def bar_rows(raw: Any, parse: Callable[[Any], list[Any] | None] = bar_row) -> tuple[list[list[Any]], int]:
+    """(rows that `parse` keeps, how many it dropped) for a venue's bar answer; an answer that is not a list has none."""
+    rows = raw if isinstance(raw, list | tuple) else []
+    kept = [p for x in rows if (p := parse(x)) is not None]
+    return kept, len(rows) - len(kept)
 
 
 def finite_float(x: Any) -> float:

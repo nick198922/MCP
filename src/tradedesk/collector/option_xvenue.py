@@ -55,6 +55,7 @@ from ..analytics.option_xvenue import (
     bybit_quote,
     deribit_quote,
     extend_windows,
+    ms,
     num,
     parse_bybit_symbol,
     pick_daily_expiry,
@@ -115,12 +116,7 @@ def _bybit_chain(body: Any, cur: str, b: Builder, settle: str = BYBIT_SETTLE) ->
         msg = f"{cur}: Bybit option symbols with settle suffix {', '.join(sorted(other))} skipped (only {settle} is stored)"
         b.warn(msg)
         log.warning("option_xvenue: %s", msg)
-    t = body.get("time")
-    try:
-        ts = int(t) if t is not None and not isinstance(t, bool) else None
-    except (TypeError, ValueError):
-        ts = None
-    return chain, ts
+    return chain, ms(body.get("time"))
 
 
 async def _received(rt: "Runtime", call: Awaitable[Fetched]) -> Fetched:

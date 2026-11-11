@@ -1,0 +1,2 @@
+- S3: «ефективність рейнджу» (ER30) як вага — реєстрація, чисті функції `analytics/range_efficiency.py`, перевірка `scripts/verify_s3_range_efficiency.py`, 15 тестів.
+- Вердикт ◯: ворота MDE₈₀ (0.23R > 0.10R на OOS) не пройдено, вага не додається. Звіт: `docs/verification/2026-11-11-s3-range-efficiency.md`.

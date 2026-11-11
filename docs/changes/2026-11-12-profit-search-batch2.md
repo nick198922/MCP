@@ -1,0 +1,2 @@
+- Пошук прибутку, партія 2 (скаут): дві нові картки — `polymarket-sports-vs-sharp-book` (прийнято критиком) і `deribit-parity-locked-forward` (відхилено).
+- Тріаж критика A: `docs/reviews/2026-11-12-profit-search-batch2-triage.md`.

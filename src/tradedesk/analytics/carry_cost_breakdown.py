@@ -298,18 +298,25 @@ def reliability(cycles: Iterable[Mapping[str, Any]], *, as_of_ms: int) -> dict[s
 
 
 def payment_published(
-    flags: Iterable[Mapping[str, Any]], funding_ts: Mapping[str, Sequence[int]], *, interval_ms: int = 8 * 3_600_000
+    flags: Iterable[Mapping[str, Any]],
+    funding_ts: Mapping[str, Sequence[int]],
+    *,
+    interval_ms: int = 8 * 3_600_000,
+    as_of_ms: int | None = None,
 ) -> list[dict[str, Any]]:
     """For each flag 'scheduled_payment_missing' (a payment due at the cycle time absent from the history then): was a
     payment with ``cycle_ts - 1 min <= ts < cycle_ts + interval_ms`` stored later (``funding_ts``: symbol -> stored payment
     times from the engine's cache)? 'published_later' / 'never_stored'; plus the median gap between the symbol's stored
-    payments in the 3 days before the cycle (its funding interval then, hours; None with < 2 payments)."""
+    payments in the 3 days before the cycle (its funding interval then, hours; None with < 2 payments).
+
+    ``as_of_ms``: payments with ``ts > as_of_ms`` are ignored, so a re-run with a past cut-off sees only what was known
+    then ("later" means "by as_of"). None: every stored payment counts (as of the moment of reading)."""
     out = []
     for f in flags:
         if "scheduled_payment_missing" not in str(f.get("key")):
             continue
         t = int(f["cycle_ts"])
-        ts = sorted(funding_ts.get(str(f.get("symbol")), ()))
+        ts = sorted(x for x in funding_ts.get(str(f.get("symbol")), ()) if as_of_ms is None or x <= as_of_ms)
         hit = any(t - PAYMENT_SLACK_MS <= x < t + interval_ms for x in ts)
         prior = [x for x in ts if t - 3 * 86_400_000 <= x < t]
         gaps = sorted(b - a for a, b in zip(prior, prior[1:], strict=False))

@@ -172,7 +172,7 @@ def main(argv: list[str] | None = None) -> int:
     out.append("incomplete cycles by coin (issue / detail: cycles):")
     out += [f"  {c}: " + "; ".join(f"{k} {v}" for k, v in ks.items()) for c, ks in rel["incomplete_by_coin"].items()]
     out.append("incomplete cycles by UTC day: " + ", ".join(f"{k} {v}" for k, v in rel["incomplete_by_day"].items()))
-    pub = cb.payment_published(rel["flags"], d["funding"])
+    pub = cb.payment_published(rel["flags"], d["funding"], as_of_ms=as_of)
     out.append("scheduled_payment_missing flags: was the payment stored later?")
     out += [
         f"  {x['coin']} {ymd_ms(x['cycle_ts'])} {x['cycle_ts']} {x['key']}: {x['status']}, interval before {num(x['interval_h_before'], 1)} h"

@@ -696,11 +696,54 @@ def test_script_counts_card_journals_read_only(tmp_path, monkeypatch, capsys):
     # the fixture's 35 carry cycles stopped on 2026-10-29 08:00: silent for days, so «без збору» like the empty journals
     idle = next(ln for ln in text.splitlines() if ln.startswith("- форвард без збору ("))
     assert (
-        "forward-paper-carry (останній запис cp_cycle 2026-10-29 08:00 UTC)" in idle
+        "forward-paper-carry (останній запис cp_cycle зі статусом done 2026-10-29 08:00 UTC)" in idle
         and f"{OI} (журнал hl_oi_cap_snapshot порожній)" in idle
     )
     assert BYBIT not in idle and CG not in idle and "4321" not in text  # no price of a journal is read
     assert "| Картки forward: власні журнали | 2 |" in text
+
+
+def _carry_journal(tmp_path, statuses):
+    """The fixture DB with ``cp_cycle`` replaced by one cycle every 8 h, the last one 8 h before the report moment."""
+    tmp_path.mkdir()
+    db = _db(tmp_path)
+    con = sqlite3.connect(db)
+    con.execute("DELETE FROM cp_cycle")
+    t0 = NOW - len(statuses) * 8 * H
+    for k, (strat, status) in enumerate(statuses):
+        con.execute("INSERT INTO cp_cycle (strategy, cycle_ts, status, payload) VALUES (?, ?, ?, '{}')", (strat, t0 + k * 8 * H, status))
+    con.commit()
+    con.close()
+    return script.load_inputs(db, NOW)
+
+
+def test_carry_journal_counts_only_done_cycles(tmp_path):
+    """Item 313: a carry journal of failed / skipped cycles alone collects nothing; a mixed one counts done apart."""
+    card = [{"slug": "forward-paper-carry", "tags": frozenset({"idea:forward-paper-carry"})}]
+    bad = _carry_journal(tmp_path / "bad", [("A", "failed"), ("B", "skipped"), ("A", "failed"), ("B", "failed")])
+    assert bad["journals"]["forward-paper-carry"] == {"n": 0, "first": None, "last": None, "all": 4}
+    r = script.journal_row(card, bad["journals"], [], NOW)
+    assert r["n"] == 0  # fresh failures do not make it «collecting»
+    assert r["counters"]["forward-paper-carry"].startswith(
+        "журнал cp_cycle: циклів A і B зі статусом done 0 (усіх записів 4, жодного зарахованого);"
+    )
+    assert r["counters"]["форвард без збору (1)"] == "forward-paper-carry (у журналі cp_cycle циклів A і B зі статусом done 0 з 4 записів)"
+    # mixed: 3 done of 5; the last row (skipped, 8 h ago) is not the freshness, the last done (16 h ago) is
+    mixed = _carry_journal(tmp_path / "mixed", [("A", "done"), ("B", "failed"), ("A", "done"), ("B", "done"), ("A", "skipped")])
+    got = mixed["journals"]["forward-paper-carry"]
+    assert (got["n"], got["all"], got["last"]) == (3, 5, (NOW - 2 * 8 * H) // 1000)
+    r = script.journal_row(card, mixed["journals"], [], NOW)
+    assert r["n"] == 1 and not any(k.startswith("форвард без збору") for k in r["counters"])
+    assert r["counters"]["forward-paper-carry"].startswith("журнал cp_cycle: циклів A і B зі статусом done 3 (усіх записів 5), з ")
+    # the only done cycle 80 h ago: silent even with fresh failures after it
+    stale = _carry_journal(tmp_path / "stale", [("A", "done")] + [("A", "failed")] * 9)
+    idle = script.journal_row(card, stale["journals"], [], NOW)["counters"]["форвард без збору (1)"]
+    assert idle.startswith("forward-paper-carry (останній запис cp_cycle зі статусом done ")
+
+
+def test_trader_positions_journal_is_labelled_as_a_change_log():
+    unit = script.CARD_JOURNALS["hl-whale-liquidation-magnet"].unit
+    assert unit.startswith("записів змін позицій HL") and "годинн" not in unit
 
 
 def test_script_survives_a_missing_db(tmp_path):

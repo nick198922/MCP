@@ -62,7 +62,9 @@ FORWARD_TABLES = (
 @dataclass(frozen=True)
 class Journal:
     """A forward card's own journal, as the card names it. ``sql`` returns one row (observations, first, last unix s)
-    for ``since <= ts <= now`` (two ``?``, unix s); ``{+N}`` in ``verdict`` is the date of the first observation + N days."""
+    for ``since <= ts <= now`` (two ``?``, unix s); ``{+N}`` in ``verdict`` is the date of the first observation + N days.
+    An optional fourth column counts every row of the window when the first three count only the good ones (carry:
+    ``status = 'done'``), so a journal of failed / skipped cycles is neither fresh nor hidden."""
 
     table: str
     sql: str
@@ -102,7 +104,7 @@ CARD_JOURNALS: dict[str, Journal] = {
     "hl-whale-liquidation-magnet": Journal(
         "trader_positions",
         "SELECT COUNT(DISTINCT ts), MIN(ts), MAX(ts) FROM trader_positions WHERE venue = 'hyperliquid' AND ts >= ? AND ts <= ?",
-        "годинних записів позицій HL (журнал змін; liq_watch кроку 1 не збудовано)",
+        "записів змін позицій HL (liq_watch кроку 1 не збудовано)",
         "крок 0: ≥ 5 епізодів за 10 днів; вердикт при ≥ 90 подіях (епізоди визначає крок 0)",
         "дати в картці нема (≈ 12 міс. на 60 подій)",
     ),
@@ -119,8 +121,11 @@ CARD_JOURNALS: dict[str, Journal] = {
     ),
     "forward-paper-carry": Journal(
         "cp_cycle",
-        "SELECT COUNT(*), MIN(cycle_ts) / 1000, MAX(cycle_ts) / 1000 FROM cp_cycle WHERE cycle_ts >= ? * 1000 AND cycle_ts <= ? * 1000",
-        "циклів A і B", "критерії CHECKPOINT (рядки «Папір carry» вище)", "чекпоінт 2026-11-30",
+        # only 'done' cycles count and set the freshness (an engine failing every cycle collects nothing); all statuses aside
+        "SELECT COUNT(*) FILTER (WHERE status = 'done'), MIN(cycle_ts) FILTER (WHERE status = 'done') / 1000, "
+        "MAX(cycle_ts) FILTER (WHERE status = 'done') / 1000, COUNT(*) "
+        "FROM cp_cycle WHERE cycle_ts >= ? * 1000 AND cycle_ts <= ? * 1000",
+        "циклів A і B зі статусом done", "критерії CHECKPOINT (рядки «Папір carry» вище)", "чекпоінт 2026-11-30",
     ),
 }  # fmt: skip
 JOURNALS_NAME = "Картки forward: власні журнали"
@@ -190,19 +195,20 @@ def load_plans(con: sqlite3.Connection) -> list[dict[str, Any]]:
 
 
 def load_journals(con: sqlite3.Connection, now_ms: int) -> dict[str, dict[str, Any]]:
-    """Per card of ``CARD_JOURNALS``: ``{"n", "first", "last"}`` up to ``now_ms``, ``{"absent": True}`` without its table,
-    or ``{"error": name}`` when its query fails (one card's failure does not hide the others). Counters only."""
+    """Per card of ``CARD_JOURNALS``: ``{"n", "first", "last"}`` up to ``now_ms`` (plus ``"all"`` when the query has a
+    fourth column), ``{"absent": True}`` without its table, or ``{"error": name}`` when its query fails (one card's
+    failure does not hide the others). Counters only."""
     names, out = _tables(con), {}
     for slug, j in CARD_JOURNALS.items():
         if j.table not in names:
             out[slug] = {"absent": True}
             continue
         try:
-            n, first, last = con.execute(j.sql, (j.since, now_ms // 1000)).fetchone()
+            n, first, last, *rest = con.execute(j.sql, (j.since, now_ms // 1000)).fetchone()
         except sqlite3.Error as e:
             out[slug] = {"error": type(e).__name__}
             continue
-        out[slug] = {"n": int(n or 0), "first": first, "last": last}
+        out[slug] = {"n": int(n or 0), "first": first, "last": last} | ({"all": int(rest[0] or 0)} if rest else {})
     return out
 
 
@@ -235,17 +241,21 @@ def journal_row(
             counters[slug] = f"журналу {j.table} у цій БД нема; мінімум: {j.minimum}"
             why = f"журналу {j.table} у БД нема"
         elif not got["n"]:
-            counters[slug] = f"журнал {j.table}: {j.unit} 0; мінімум: {j.minimum}"
-            why = f"журнал {j.table} порожній"
+            other = f" (усіх записів {got['all']}, жодного зарахованого)" if got.get("all") else ""
+            counters[slug] = f"журнал {j.table}: {j.unit} 0{other}; мінімум: {j.minimum}"
+            why = f"у журналі {j.table} {j.unit} 0 з {got['all']} записів" if other else f"журнал {j.table} порожній"
         else:
             first, last = int(got["first"]), int(got["last"])
             verdict = re.sub(r"\{\+(\d+)\}", lambda m, t0=first: _utc(t0 + int(m.group(1)) * 86_400, "%Y-%m-%d"), j.verdict)
             verdict = verdict.replace("{V2G}", _utc(verdict_ts_v2g(T0_V2G_TS, T0_TS))).replace("{VOPT}", _utc(verdict_ts(T0_TS)))
+            other = f" (усіх записів {got['all']})" if "all" in got else ""
             counters[slug] = (
-                f"журнал {j.table}: {j.unit} {got['n']}, з {_utc(first)} до {_utc(last)} UTC; мінімум: {j.minimum}; вердикт: {verdict}"
+                f"журнал {j.table}: {j.unit} {got['n']}{other}, з {_utc(first)} до {_utc(last)} UTC; мінімум: {j.minimum}; "
+                f"вердикт: {verdict}"
             )
             fresh = now_s - last <= STALE_S
-            why = None if fresh else f"останній запис {j.table} {_utc(last)} UTC"
+            done = " зі статусом done" if "all" in got else ""
+            why = None if fresh else f"останній запис {j.table}{done} {_utc(last)} UTC"
         if fresh or _plan_count(card, plans, now_s):  # idea: plans are a journal too (the row above)
             collecting += 1
         elif why is not None:

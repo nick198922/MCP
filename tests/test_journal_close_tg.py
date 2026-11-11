@@ -20,16 +20,8 @@ OPENED = int(NOW) - 86400
 
 
 @pytest.fixture
-def journal_db(tmp_path):
-    path = tmp_path / "tradedesk.sqlite"
-
-    async def make():
-        s = Store(path)
-        await s.init()
-        await s.aclose()
-
-    asyncio.run(make())
-    return path
+def journal_db(migrated_db):
+    return migrated_db  # tmp_path/tradedesk.sqlite, a copy of the migrated template (tests/conftest.py)
 
 
 def add(path, **kw):

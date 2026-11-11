@@ -44,8 +44,11 @@ INF = float("inf")
 
 
 @pytest.fixture
-async def rt(state):
-    rt = Runtime(Settings(http_retries=0, cache_scale=0.0, db_path=":memory:"), transports=make_transports(state), exchange_factory=FakeEx)
+async def rt(state, migrated_db):
+    # A copy of the migrated template instead of ":memory:" (a fresh in-memory store migrates for ~0.2 s per test).
+    rt = Runtime(
+        Settings(http_retries=0, cache_scale=0.0, db_path=str(migrated_db)), transports=make_transports(state), exchange_factory=FakeEx
+    )
     rt.now = lambda: NOW
     await rt.store.init()
     yield rt

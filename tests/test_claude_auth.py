@@ -44,8 +44,8 @@ def test_token_end_is_a_year_after_saving():
 
 
 def test_kyiv_time():
-    assert ca.kyiv(dt.datetime(2026, 12, 10, 22, 10, tzinfo=dt.UTC)) == "11.12 00:10"  # EET, +2
-    assert ca.kyiv(dt.datetime(2026, 7, 1, 9, 0, tzinfo=dt.UTC)) == "01.07 12:00"  # EEST, +3
+    assert ca.kyiv(dt.datetime(2026, 12, 10, 22, 10, tzinfo=dt.UTC)) == "11.12.2026 00:10"  # EET, +2
+    assert ca.kyiv(dt.datetime(2026, 7, 1, 9, 0, tzinfo=dt.UTC)) == "01.07.2026 12:00"  # EEST, +3
 
 
 def test_no_alerts_while_all_is_well():
@@ -81,7 +81,7 @@ def test_one_message_per_kind_per_day():
 
 def test_status_line():
     line = ca.status_line(True, dt.datetime(2026, 12, 10, 22, 10, tzinfo=dt.UTC), None, NOW)
-    assert line == "Claude на сервері: логін діє до 11.12 00:10; запасного токена немає."
+    assert line == "Claude на сервері: логін діє до 11.12.2026 00:10; запасного токена немає."
     assert "логін сплив; запасний токен до" in ca.status_line(False, None, NOW + dt.timedelta(days=9), NOW)
 
 

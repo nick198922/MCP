@@ -1,0 +1,3 @@
+- Картка `polymarket-sports-vs-sharp-book`: кроки 0–1 (ворота) пройдено, статус `testing`; попередню реєстрацію записано до будь-яких g.
+- Новий `analytics/pm_sharp_clv.py` (де-віг, MDE) з тестами; скрипт `scripts/verify_pm_sports_step0.py`; зразки football-data і Gamma у `tests/fixtures/`.
+- Звіт: `docs/verification/2026-11-12-polymarket-sports-vs-sharp-book.md`.

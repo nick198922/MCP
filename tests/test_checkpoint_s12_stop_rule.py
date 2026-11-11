@@ -72,6 +72,16 @@ def test_v9_at_30_below_the_floor_stops_and_above_it_holds():
     assert hold["verdict"] == cp.S12_HOLD
 
 
+def test_text_says_the_n30_floor_is_an_alarm_not_a_test():
+    # item 315 (review of item 313, minor 1): daily looks at a growing n inflate the false-alarm rate above 5 %
+    sentence = (
+        "- поріг n 30 — сигнал «зупинити й розібрати», а не статистичний тест: середнє перевіряється щодня "
+        "на зростаючому n, тож хибна тривога буває частіше за 5 %"
+    )
+    for b in (cp.s12_stop_rule([], NOW), cp.s12_stop_rule(_v9(30, -0.84), NOW)):
+        assert cp.s12_stop_rule_lines(b).count(sentence) == 1
+
+
 def test_v4_entry_at_100_below_the_floor_drops():
     # 70 v9 at -0.6 (above the v9 floor: hold) + 30 untagged v4 at -0.6: the v4 entry mean -0.6 < -0.50 -> drop
     b = cp.s12_stop_rule(_v9(70, -0.6) + _v4(30, -0.6), NOW)
@@ -153,6 +163,7 @@ def test_script_prints_the_section_from_a_read_only_db(tmp_path):
     assert "- вхід v4 (v4 + v9): n 35," in sec and "рано (35 з 100), без вердикту" in sec
     assert "правило: n ≥ 30 і середній R < -0.827 → зупинити й розібрати виконання" in sec
     assert "правило: n ≥ 100 і середній R < -0.500 → зняти" in sec
+    assert "сигнал «зупинити й розібрати», а не статистичний тест" in sec
     assert text.index("## Подробиці") < text.index("## S12: правило зняття")
 
 

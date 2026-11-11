@@ -1,0 +1,3 @@
+- Profit-search, п. 3: скаут написав 3 картки нових структурних напрямів (Wikipedia-увага, COT-розгортання базису, пара USDC/USDT); критик A тріажував їх.
+- `wikipedia-attention-xs-spread` — `accepted` (основний тест — Фама-Макбет/IC, лаг 1 день); `cot-leveraged-basis-unwind` і `usdt-usdc-peg-riskoff` — `rejected`.
+- Рев'ю: `docs/reviews/2026-11-11-idea-triage-profit-search-3.md`. Коду не змінено.

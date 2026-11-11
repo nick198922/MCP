@@ -456,7 +456,7 @@ mkdir -p "$CACHE_DIR"
 T0="$(date +%s)"
 U0="$(usage_now)"
 set +e
-${KEEP_AWAKE[@]+"${KEEP_AWAKE[@]}"} perl -e 'alarm shift; exec @ARGV' "${TRADEDESK_AGENTS_MAX_SECONDS:-18000}" "${TRADEDESK_CLAUDE_BIN:-claude}" -p "$PROMPT" --permission-mode dontAsk \
+${KEEP_AWAKE[@]+"${KEEP_AWAKE[@]}"} perl -e 'alarm shift; exec @ARGV' "${TRADEDESK_AGENTS_MAX_SECONDS:-18000}" "${TRADEDESK_CLAUDE_BIN:-$REPO/scripts/claude_run.sh}" -p "$PROMPT" --permission-mode dontAsk \
   --model "${TRADEDESK_AGENTS_COORDINATOR_MODEL:-sonnet}" --add-dir "$CACHE_DIR" \
   --allowedTools "${ALLOWED[@]}" --disallowedTools "${DENIED[@]}" | tee -a "$SUMMARY"
 rc=${PIPESTATUS[0]}

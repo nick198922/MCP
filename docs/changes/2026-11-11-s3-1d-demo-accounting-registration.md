@@ -1,0 +1,2 @@
+- S3 на 1d: попередня реєстрація звірки демо з паспортом (9 стопів із 9) у картці `demo-setups-depth`; результатів ще немає.
+- Аналітика `s3_1d_audit.py`, runner `scripts/verify_s3_1d_demo_accounting.py` і 7 тестів.

@@ -44,7 +44,10 @@ async def test_report_renders_from_a_db_copy(tmp_path, tmp_path_factory):
     assert f"closed trades: {v['closed'].get('n', 0)}" in a_section
     assert f"realised {rep._usd(v['pnl_usd']['realised'])}" in a_section
     assert f"total {rep._usd(v['pnl_usd']['total'])}" in a_section
-    assert f"Open positions: {len(v['open'])}" in a_section
+    assert f"Open positions: {len(v['open'])} (free slots {v['free_slots']})" in a_section  # entries were open in this run
+    stopped = {**v, "engine": {**v["engine"], "new_entries_stopped": "kill criterion (b)"}}
+    line = next(x for x in rep.render_book("A", stopped, {}) if x.startswith("- Open positions"))
+    assert "(new entries stopped: kill criterion (b))" in line and "free slots" not in line
 
 
 def test_deferred_line_counts_share_and_applies_registered_thresholds():

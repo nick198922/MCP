@@ -82,6 +82,9 @@ class Settings:
     # Off by default; the job polls and runs one cycle after each 8h funding payment.
     paper_carry_enabled: bool = False
     paper_carry_seconds: int = 600
+    # New entries of carry A: stopped by kill criterion (b) (owner decision 2026-11-11, carry_paper_engine.ENTRIES_STOPPED);
+    # held A positions still close by their exit rule. Off by default; 1 re-opens A's entries. B is not affected.
+    paper_carry_a_entries_enabled: bool = False
     # Assistant snapshot (docs/ideas/IDEA-20261018-assistant.md): one JSON file for the dashboard, read-only data. Off by default.
     # Empty path = <directory of db_path>/assistant/snapshot.json.
     assistant_snapshot_enabled: bool = False
@@ -222,6 +225,7 @@ class Settings:
             traders_pm_pages=int(_float("TRADEDESK_TRADERS_PM_PAGES", 10)),
             paper_carry_enabled=os.environ.get("TRADEDESK_PAPER_CARRY_ENABLED", "").lower() in ("1", "true", "yes"),
             paper_carry_seconds=int(_float("TRADEDESK_PAPER_CARRY_SECONDS", 600)),
+            paper_carry_a_entries_enabled=os.environ.get("TRADEDESK_PAPER_CARRY_A_ENTRIES_ENABLED", "").lower() in ("1", "true", "yes"),
             assistant_snapshot_enabled=os.environ.get("TRADEDESK_ASSISTANT_SNAPSHOT_ENABLED", "").lower() in ("1", "true", "yes"),
             assistant_snapshot_seconds=int(_float("TRADEDESK_ASSISTANT_SNAPSHOT_SECONDS", 600)),
             assistant_snapshot_path=os.environ.get("TRADEDESK_ASSISTANT_SNAPSHOT_PATH", ""),

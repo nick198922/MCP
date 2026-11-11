@@ -16,7 +16,16 @@ import pytest
 from carry_synth import DAY, H4, H8, markets_a, markets_b
 from tradedesk.analytics.carry import simulate_carry_portfolio, simulate_perp_spread_portfolio
 from tradedesk.analytics.carry_rules import DECISION_DELAY_MS, cycle_grid, leg_execution
-from tradedesk.collector.carry_paper_engine import PARAMS_A, PARAMS_B, CarryParams, FeedData, run_cycle, run_due
+from tradedesk.collector.carry_paper_engine import (
+    ENTRIES_STOPPED,
+    PARAMS_A,
+    PARAMS_B,
+    CarryParams,
+    FeedData,
+    entry_stop_reason,
+    run_cycle,
+    run_due,
+)
 from tradedesk.store import Store
 
 LB = 7 * DAY
@@ -797,6 +806,82 @@ def test_registered_variants():
         0.01,
     )
     assert PARAMS_A.tag == "cc-paper" and PARAMS_B.tag == "pp-paper"
+
+
+def test_entry_stop_switch_stops_a_only():
+    # Kill criterion (b), owner decision 2026-11-11: A opens nothing new unless the setting re-opens it; B is never stopped.
+    assert entry_stop_reason("A") == ENTRIES_STOPPED["A"] and "(b)" in ENTRIES_STOPPED["A"]
+    assert entry_stop_reason("A", a_entries_enabled=True) is None
+    assert entry_stop_reason("B") is None and entry_stop_reason("B", a_entries_enabled=True) is None
+    assert "entries" not in repr(PARAMS_A)  # not a registered parameter: the params hash of the record is unchanged
+
+
+async def test_stopped_a_opens_nothing_and_closes_held_positions_as_without_the_stop(store, full_run):
+    mk, params, times = _scenario("A")
+    feed = FixtureFeed(mk, "A")
+    i = 0
+    while not await store.cp_positions("A", "open"):
+        await _drive(store, feed, params, [times[i]])
+        i += 1
+    held = {r["trade_id"] for r in await store.cp_positions("A", "open")}
+    reason = ENTRIES_STOPPED["A"]
+    for t in times[i:]:
+        out = await run_cycle(store, feed, params, t - DECISION_DELAY_MS, clock=lambda t=t: t, entries_stopped=reason)
+        assert out["status"] == "done" and out["opened"] == [], out
+    rows = await store.cp_positions("A")
+    assert {r["trade_id"] for r in rows} == held  # no position opened after the stop
+    ref = {r["trade_id"]: r for r in await (await full_run("A")).cp_positions("A")}
+    assert len(ref) > len(held)  # without the stop the engine kept opening
+    closed = [r for r in rows if r["status"] == "closed"]
+    assert closed  # held positions still close by their own exit rule, at the same cycle as without the stop
+    for r in rows:
+        want = ref[r["trade_id"]]
+        assert (r["status"], r["closed_ts"], r["exit_reason"]) == (want["status"], want["closed_ts"], want["exit_reason"])
+    assert await store.table_count("journal") == len(closed)
+    last = (await store.cp_cycles("A", 1))[0]
+    assert last["params_hash"] == params.hash() and last["payload"]["entries_stopped"] == reason
+    assert last["payload"]["ranked"] == [] and not any(d["action"] == "open" for d in last["payload"]["decisions"])
+
+    from types import SimpleNamespace
+
+    from tradedesk.tools.paper_carry import book_view
+
+    view = await book_view(SimpleNamespace(store=store), "A", times[-1], False)  # type: ignore[arg-type]
+    assert view["engine"]["new_entries_stopped"] == reason
+
+
+async def test_scheduler_job_stops_a_entries_and_leaves_b_alone(monkeypatch):
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+
+    from tradedesk.collector import carry_paper_engine, scheduler
+
+    seen: dict[str, str | None] = {}
+
+    async def fake_run_due(store, feed, params, *, clock, entries_stopped=None):
+        seen[params.strategy] = entries_stopped
+        return {"status": "done", "cycle_ts": 0}
+
+    monkeypatch.setattr(carry_paper_engine, "run_due", fake_run_due)
+    for enabled, want_a in ((False, ENTRIES_STOPPED["A"]), (True, None)):
+        rt = SimpleNamespace(
+            store=object(),
+            settings=SimpleNamespace(paper_carry_a_entries_enabled=enabled),
+            now=lambda: datetime(2026, 11, 11, tzinfo=UTC),
+        )
+        assert await scheduler._paper_carry(rt) == 2  # type: ignore[arg-type]
+        assert seen == {"A": want_a, "B": None}
+
+
+def test_a_entries_setting_defaults_off(monkeypatch):
+    from tradedesk.config import Settings
+
+    monkeypatch.delenv("TRADEDESK_PAPER_CARRY_A_ENTRIES_ENABLED", raising=False)
+    assert Settings.from_env().paper_carry_a_entries_enabled is False
+    monkeypatch.setenv("TRADEDESK_PAPER_CARRY_A_ENTRIES_ENABLED", "0")
+    assert Settings.from_env().paper_carry_a_entries_enabled is False
+    monkeypatch.setenv("TRADEDESK_PAPER_CARRY_A_ENTRIES_ENABLED", "1")
+    assert Settings.from_env().paper_carry_a_entries_enabled is True
 
 
 def test_engine_code_has_no_order_calls():

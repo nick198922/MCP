@@ -76,6 +76,22 @@ PARAMS_A = CarryParams("A", "cc-paper", entry_apr=0.20, fee_1=0.001, fee_2=0.000
 PARAMS_B = CarryParams("B", "pp-paper", entry_apr=0.10, fee_1=0.0005, fee_2=0.00055, capital_factor=1.0, max_entry_gap=0.02, stop_move=0.5)
 PARAMS = {"A": PARAMS_A, "B": PARAMS_B}
 
+# Strategies whose NEW entries are stopped, with the reason written into every cycle record (``entries_stopped``). Held
+# positions keep being marked and close by the registered exit rule. A: kill criterion (b) of the registration (actual
+# leg-side costs 2.27x the modelled ones on 20 sides, threshold 1.5; ~76 % of the excess on the spot leg), owner decision
+# 2026-11-11 (docs/ideas/IDEA-20261111-profit-search.md, item 1). Not part of ``CarryParams``: the registered params hash
+# stays the same. The collector setting ``paper_carry_a_entries_enabled`` (default off) re-opens A's entries.
+ENTRIES_STOPPED = {
+    "A": "kill criterion (b): actual leg-side costs 2.27x modelled (threshold 1.5), owner decision 2026-11-11",
+}
+
+
+def entry_stop_reason(strategy: str, *, a_entries_enabled: bool = False) -> str | None:
+    """Reason new entries of ``strategy`` are stopped, or None when the engine may open positions."""
+    if strategy == "A" and a_entries_enabled:
+        return None
+    return ENTRIES_STOPPED.get(strategy)
+
 
 @dataclass
 class FeedData:
@@ -361,11 +377,14 @@ async def run_cycle(
     cycle_ts: int,
     *,
     clock: Callable[[], int],
+    entries_stopped: str | None = None,
 ) -> dict[str, Any]:
     """Run (and persist) one cycle for ``params.strategy`` scheduled at ``cycle_ts`` (UTC ms). Never raises.
 
     Returns ``{"status": "done" | "exists" | "failed", ...}``. A failed attempt is logged (``cp_log`` kind 'event') and
     the cycle stays unwritten so the next job tick retries it until a later cycle makes it a recorded skip.
+    ``entries_stopped`` (a reason): no new position is opened; held ones are marked and closed by the rules as usual,
+    and the reason is written into the cycle payload.
     """
     started = clock()
     strat = params.strategy
@@ -432,6 +451,8 @@ async def run_cycle(
         flags += held + confirmed
         confirmed_by_sym = {c["symbol"]: c for c in confirmed}
         tradable = [s for s in objs if s not in aside]  # a held-aside position must not be re-opened as a new entry
+        if entries_stopped:
+            tradable = []  # the step still marks and closes the held positions; nothing is ranked or opened
         before = dict(open_pos)
         before_last = {s: p.get("last") for s, p in before.items()}
         paid: dict[str, dict[str, Any]] = {}
@@ -568,6 +589,8 @@ async def run_cycle(
             "on_time": finished - cycle_ts <= ON_TIME_MS,  # registered criterion (d) counts the cycle's finish, not its start
             "complete": not flags,
         }
+        if entries_stopped:
+            payload["entries_stopped"] = entries_stopped
         cycle = {
             "strategy": strat, "cycle_ts": cycle_ts, "status": "done", "started_ms": started, "finished_ms": finished,
             "git_sha": git_sha(), "params_hash": params.hash(), "payload": payload,
@@ -609,9 +632,12 @@ async def _skip_reason(store: Any, strategy: str, cycle_ts: int) -> str:
     return f"failed: {len(fails)} attempts, last error: {fails[-1].get('error')}"
 
 
-async def run_due(store: Any, feed: CarryFeed, params: CarryParams, *, clock: Callable[[], int]) -> dict[str, Any]:
+async def run_due(
+    store: Any, feed: CarryFeed, params: CarryParams, *, clock: Callable[[], int], entries_stopped: str | None = None
+) -> dict[str, Any]:
     """Run the latest due cycle; cycles missed since the last recorded one become recorded skips (with the reason:
-    'failed: N attempts, last error: ...' when attempts were journaled as ``cycle_failed``, else 'missed: ...')."""
+    'failed: N attempts, last error: ...' when attempts were journaled as ``cycle_failed``, else 'missed: ...').
+    ``entries_stopped``: as in ``run_cycle``."""
     now = clock()
     cur = cycle_grid(now)
     last = await store.cp_cycles(params.strategy, 1)
@@ -636,4 +662,4 @@ async def run_due(store: Any, feed: CarryFeed, params: CarryParams, *, clock: Ca
                 [],
             )
             ts += FUNDING_STEP_MS
-    return await run_cycle(store, feed, params, cur, clock=clock)
+    return await run_cycle(store, feed, params, cur, clock=clock, entries_stopped=entries_stopped)

@@ -598,6 +598,12 @@ def carry_forward(
         row["notes"].append("◯ у " + ", ".join(f"({c['id']})" for c in waits) + ": за реєстрацією це «узгоджено частково», папір іде далі")
     else:
         row["verdict"] = OK
+    stop = next((c for c in cyc if (c.get("payload") or {}).get("entries_stopped")), None)
+    if stop is not None:  # the engine opens nothing new (kill criterion); held positions close by the exit rule
+        row["notes"].append(
+            f"нові входи зупинено з циклу {_ymd_s(int(stop['cycle_ts']) // 1000)} ({stop['payload']['entries_stopped']}); "
+            "відкриті позиції закриваються за правилом виходу"
+        )
     row["notes"].append("P&L — лише описово (MDE: ≈ 40 угод A, ≈ 330 угод B); його тут не показано")
     return row
 

@@ -89,7 +89,9 @@ def render_book(key: str, v: dict[str, Any], events: dict[str, int], deferred: t
         f"last cycle complete: {e['last_cycle_complete']}, flags: {e['last_cycle_flags']}",
         f"- Events: {', '.join(f'{k} x{n}' for k, n in sorted(events.items())) or 'none'}",
         deferred_line(*deferred),
-        f"- Open positions: {len(v['open'])} (free slots {v['free_slots']}); closed trades: {c.get('n', 0)}",
+        f"- Open positions: {len(v['open'])} "
+        + (f"(new entries stopped: {e['new_entries_stopped']})" if e.get("new_entries_stopped") else f"(free slots {v['free_slots']})")
+        + f"; closed trades: {c.get('n', 0)}",
         f"- P&L (USD, portfolio notional {pnl['portfolio_notional_usd']:,.0f}): realised {_usd(pnl['realised'])}, "
         f"open marked at last cycle {_usd(pnl['open_marked_at_last_cycle'])}, total {_usd(pnl['total'])}; "
         f"on notional {_pct(pnl['on_notional'])}, on capital {_pct(pnl['on_capital'])} (cumulative since start, not annualised)",

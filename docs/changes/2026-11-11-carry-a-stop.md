@@ -1,0 +1,9 @@
+# Carry A: нові входи зупинено за критерієм «вбити» (б)
+
+Картка: [IDEA-20261111-profit-search](../ideas/IDEA-20261111-profit-search.md), пункт 1; реєстрація — [forward-paper-carry](../ideas/IDEA-20261017-forward-paper-carry.md), «Критерій «вбити»». Докази: [розклад витрат](../agents/runs/2026-11-10-carry-a-cost-breakdown.md) (2.27× моделі на 20 сторонах, поріг 1.5; 76 % надлишку — спотова нога).
+
+- Рушій (`src/tradedesk/collector/carry_paper_engine.py`): `ENTRIES_STOPPED` / `entry_stop_reason`, параметр `entries_stopped` у `run_cycle` / `run_due`. Коли він заданий, цикл не ранжує й не відкриває нічого нового, а відкриті позиції маркує й закриває за правилом виходу (APR ≤ 0), як і раніше; причина пишеться в payload циклу (`entries_stopped`). Параметри реєстрації (`CarryParams`) і їхній хеш не змінено.
+- Задача колектора `paper_carry` і `scripts/paper_carry_once.py` зупиняють лише A; B без змін. Перемикач `TRADEDESK_PAPER_CARRY_A_ENTRIES_ENABLED` (за замовчуванням вимкнено, у `deploy/features.env` явно `0`); `1` знову відкриває входи A.
+- Звітність: `paper_carry_status` → `engine.new_entries_stopped`; тижневий звіт пише «new entries stopped» замість вільних слотів; рядок carry A у `checkpoint_report` має примітку «нові входи зупинено з циклу …», вердикт («ні» за (б)) не змінюється, помилки немає.
+- На сервері на 11.11 у A відкрито 4 позиції (THE, XVG, BANK, ALPINE), закрито 3; вони закриються за своїм правилом. Нових входів не буде з першого циклу після оновлення сервісу.
+- Тести: `tests/test_carry_paper_engine.py` (A без нових входів, утримані позиції закриваються в той самий цикл, що й без зупинки; задача колектора зупиняє лише A; перемикач за замовчуванням вимкнено), `tests/test_checkpoint_report.py`, `tests/test_paper_carry_report.py`, `tests/test_collector_health.py` (`NOT_A_JOB`).

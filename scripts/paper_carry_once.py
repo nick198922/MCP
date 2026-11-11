@@ -21,7 +21,7 @@ import time
 
 from tradedesk.analytics.carry_report import cost_realism
 from tradedesk.analytics.carry_rules import cycle_grid
-from tradedesk.collector.carry_paper_engine import PARAMS, run_cycle
+from tradedesk.collector.carry_paper_engine import PARAMS, entry_stop_reason, run_cycle
 from tradedesk.collector.carry_paper_feed import LiveFeed
 from tradedesk.config import Settings
 from tradedesk.runtime import Runtime
@@ -37,7 +37,8 @@ async def main(db: str, which: str) -> None:
         feed = LiveFeed(rt)
         for key in ("A", "B") if which == "both" else (which,):
             t0 = time.time()
-            out = await run_cycle(rt.store, feed, PARAMS[key], cycle, clock=lambda: int(time.time() * 1000))
+            stopped = entry_stop_reason(key, a_entries_enabled=rt.settings.paper_carry_a_entries_enabled)
+            out = await run_cycle(rt.store, feed, PARAMS[key], cycle, clock=lambda: int(time.time() * 1000), entries_stopped=stopped)
             print(f"\n== {key} ({PARAMS[key].tag}) cycle {cycle}: {out} in {time.time() - t0:.0f}s")
             c = await rt.store.cp_cycle_get(key, cycle)
             if not c:

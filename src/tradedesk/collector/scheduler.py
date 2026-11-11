@@ -682,8 +682,9 @@ async def _collect_trader_positions(rt: "Runtime") -> int:
 
 
 async def _paper_carry(rt: "Runtime") -> int:
-    """Run the due forward-paper cycle of each carry strategy (no orders: bookkeeping and public market data only)."""
-    from .carry_paper_engine import PARAMS, run_due  # noqa: PLC0415
+    """Run the due forward-paper cycle of each carry strategy (no orders: bookkeeping and public market data only).
+    A's new entries are stopped unless ``paper_carry_a_entries_enabled`` (kill criterion (b), 2026-11-11)."""
+    from .carry_paper_engine import PARAMS, entry_stop_reason, run_due  # noqa: PLC0415
     from .carry_paper_feed import LiveFeed  # noqa: PLC0415
 
     assert rt.store is not None
@@ -694,7 +695,8 @@ async def _paper_carry(rt: "Runtime") -> int:
         return int(rt.now().timestamp() * 1000)
 
     for params in PARAMS.values():
-        out = await run_due(rt.store, feed, params, clock=clock)
+        stopped = entry_stop_reason(params.strategy, a_entries_enabled=rt.settings.paper_carry_a_entries_enabled)
+        out = await run_due(rt.store, feed, params, clock=clock, entries_stopped=stopped)
         done += out.get("status") == "done"
         if out.get("status") == "failed":
             log.warning("paper carry %s cycle %s failed: %s", params.strategy, out.get("cycle_ts"), out.get("error"))

@@ -268,6 +268,23 @@ def test_carry_g_counts_a_labelled_forced_close_proxy():
     assert g["status"] == cp.UNVERIFIABLE and "не визначається" in g["text"] and "проксі примусового закриття: 2 угоди за" in g["text"]
 
 
+def test_carry_a_stopped_entries_are_a_note_not_an_error():
+    # Kill criterion (b), 2026-11-11: the engine records ``entries_stopped`` in each cycle; the row says so and keeps its verdict.
+    side = {"cycle_ts": T, "kind": "side", "trade_id": "X"}
+    costly = [side | {"payload": {"actual_cost": 0.0034, "model_cost": 0.0015, "spread_bps": 3.0}} for _ in range(20)]
+    logs = {"side": costly, "mark": [], "close": [], "event": []}
+    cyc = _cycles(40)
+    for c in cyc[30:]:
+        c["payload"] = {**c["payload"], "entries_stopped": "kill criterion (b)"}
+    r = cp.carry_forward("A", [_pos("X")], logs, cyc, BENCH["A"]["bench"], NOW)
+    assert next(c for c in r["criteria"] if c["id"] == "б")["status"] == cp.FAIL and r["verdict"] == cp.NO
+    assert any("критерій «вбити»" in x for x in r["notes"])
+    stop = next(x for x in r["notes"] if x.startswith("нові входи зупинено"))
+    assert cp._ymd_s((T + 30 * 8 * H) // 1000) in stop and "kill criterion (b)" in stop
+    plain = cp.carry_forward("A", [_pos("X")], logs, _cycles(40), BENCH["A"]["bench"], NOW)
+    assert not any(x.startswith("нові входи зупинено") for x in plain["notes"]) and plain["verdict"] == r["verdict"]
+
+
 @pytest.mark.parametrize(
     ("n", "text"),
     [(0, "0 угод"), (1, "1 угода"), (2, "2 угоди"), (4, "4 угоди"), (5, "5 угод"), (11, "11 угод"), (12, "12 угод")]

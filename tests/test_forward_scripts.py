@@ -209,15 +209,16 @@ async def test_paper_carry_once_records_both_cycles_in_throwaway_db(tmp_path, mo
     assert f"== B (pp-paper) cycle {cycle}: {{'status': 'done'" in printed
     assert "universe 12, with data 12" in printed and "universe 10, with data 10" in printed
     assert printed.count("cost realism") == 2
-    assert printed.count("  side ") == 20  # 5 opens x 2 legs per strategy, each with its book spread and cost
+    assert printed.count("  side ") == 10  # only B opens (5 opens x 2 legs); A's new entries are stopped (2026-11-11)
     store = Store(db)  # the file outlives the run and holds both cycles, the open positions and their leg sides
     await store.init()
     try:
         for key in ("A", "B"):
             c = await store.cp_cycle_get(key, cycle)
             assert c is not None and c["payload"]["universe_size"] == (12 if key == "A" else 10)
-            assert len(await store.cp_positions(key, "open")) == 5
-            assert len(await store.cp_logs(key, "side")) == 10
+            n_open = 0 if key == "A" else 5  # A's new entries are stopped (2026-11-11)
+            assert len(await store.cp_positions(key, "open")) == n_open
+            assert len(await store.cp_logs(key, "side")) == 2 * n_open
     finally:
         await store.aclose()
 

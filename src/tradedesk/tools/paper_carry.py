@@ -106,6 +106,8 @@ async def book_view(rt: Runtime, key: str, now_ms: int, include_closed: bool) ->
             "on_time_share": r(sum(1 for c in done if c["payload"].get("on_time")) / len(done), 3) if done else None,
             "on_time_window_minutes": ON_TIME_MS // 60_000,
             "git_sha": last.get("git_sha") if last else None,
+            # reason the last cycle opened nothing new (kill criterion), None when entries were allowed
+            "new_entries_stopped": last["payload"].get("entries_stopped") if last else None,
         },
         "open": open_view,
         "free_slots": p.slots - len(open_rows),
@@ -140,7 +142,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
         description=(
             "State of the two forward PAPER carry books run by the collector engine (local store only; nothing is traded and no "
             "live data is fetched). Strategy A = cash-and-carry on Binance alts (long spot + short perp, 5 slots, enter when the "
-            "trailing 7d funding APR >= 20 %, exit <= 0 %; tag cc-paper). Strategy B = Binance<->Bybit perp-perp carry (5 slots, "
+            "trailing 7d funding APR >= 20 %, exit <= 0 %; tag cc-paper); A's NEW entries are stopped since 2026-11-11 by the "
+            "registered kill criterion (b) (actual costs 2.27x modelled), its held positions still close by the exit rule; "
+            "engine.new_entries_stopped gives the reason. Strategy B = Binance<->Bybit perp-perp carry (5 slots, "
             "trailing spread >= 10 %, price gap <= 2 %, 2x per leg, stop at 50 % against a leg + 1 % penalty; tag pp-paper). Slot = "
             "2000 USD per leg. Per strategy: the variant, engine health (last cycle, share of cycles run within 30 minutes of the "
             "funding payment, skipped cycles), open positions with their latest mark as of the LAST 8h cycle (funding, basis or "

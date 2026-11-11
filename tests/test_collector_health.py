@@ -187,7 +187,10 @@ EXEMPT: dict[str, str] = {
     "backfill that refills holes from the last stored bar. Switched on in features.env, it fails "
     "test_every_switched_on_job_is_checked_or_says_why_not until it gets a Spec",
 }
-NOT_A_JOB = {"TRADEDESK_ALERTS_HEALTH_ENABLED": "sub-switch of the alerts job (provider-health alerts), registers no job"}
+NOT_A_JOB = {
+    "TRADEDESK_ALERTS_HEALTH_ENABLED": "sub-switch of the alerts job (provider-health alerts), registers no job",
+    "TRADEDESK_PAPER_CARRY_A_ENTRIES_ENABLED": "sub-switch of the paper_carry job (carry A's new entries), registers no job",
+}
 
 
 def _jobs(monkeypatch, env: dict[str, str]) -> set[str]:

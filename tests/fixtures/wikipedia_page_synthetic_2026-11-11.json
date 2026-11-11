@@ -1,0 +1,25 @@
+{
+ "_note": "SYNTHETIC, written by hand on 2026-11-11: layout of an en.wikipedia action API answer (action=query, formatversion=2, redirects=1, prop=info|pageprops|redirects, ppprop=wikibase-shortdesc|disambiguation, rdnamespace=0) per the MediaWiki API docs; ids and titles are invented. A real sample could not be taken: HTTP 403 'Please respect our robot policy' from the server.",
+ "_source": "synthetic (format per mediawiki.org/wiki/API:Query), 2026-11-11",
+ "batchcomplete": true,
+ "query": {
+  "redirects": [{"from": "Solana (blockchain)", "to": "Solana (blockchain platform)"}],
+  "pages": [
+   {
+    "pageid": 1000001,
+    "ns": 0,
+    "title": "Solana (blockchain platform)",
+    "contentmodel": "wikitext",
+    "pagelanguage": "en",
+    "touched": "2026-11-01T00:00:00Z",
+    "lastrevid": 2000002,
+    "length": 30000,
+    "pageprops": {"wikibase-shortdesc": "Blockchain platform"},
+    "redirects": [
+     {"pageid": 1000002, "ns": 0, "title": "Solana (blockchain)"},
+     {"pageid": 1000003, "ns": 0, "title": "Solana (cryptocurrency)"}
+    ]
+   }
+  ]
+ }
+}

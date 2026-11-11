@@ -1,0 +1,9 @@
+{
+ "_note": "SYNTHETIC, written by hand on 2026-11-11: field layout of the Wikimedia REST Pageviews per-article daily answer (https://wikimedia.org/api/rest_v1/ docs); the numbers are invented. A real sample could not be taken: from the server both Wikimedia hosts answer HTTP 403 'Please respect our robot policy' to our generic User-Agent. Day 2026-10-03 is absent on purpose (the API omits zero-view days).",
+ "_source": "synthetic (format per wikimedia.org/api/rest_v1 docs), 2026-11-11",
+ "items": [
+  {"project": "en.wikipedia", "article": "Solana_(blockchain_platform)", "granularity": "daily", "timestamp": "2026100100", "access": "all-access", "agent": "user", "views": 1520},
+  {"project": "en.wikipedia", "article": "Solana_(blockchain_platform)", "granularity": "daily", "timestamp": "2026100200", "access": "all-access", "agent": "user", "views": 1388},
+  {"project": "en.wikipedia", "article": "Solana_(blockchain_platform)", "granularity": "daily", "timestamp": "2026100400", "access": "all-access", "agent": "user", "views": 2011}
+ ]
+}

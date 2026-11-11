@@ -30,6 +30,7 @@ from .providers import hyperliquid as hl_mod
 from .providers import pendle as pendle_mod
 from .providers import polymarket as poly_mod
 from .providers import thegraph as graph_mod
+from .providers import wikimedia as wiki_mod
 from .providers.alternative_me import AlternativeMe
 from .providers.binance_futures import BinanceFutures
 from .providers.binance_spot import BinanceSpot
@@ -48,6 +49,7 @@ from .providers.hyperliquid import Hyperliquid
 from .providers.pendle import Pendle
 from .providers.polymarket import Polymarket
 from .providers.thegraph import TheGraph
+from .providers.wikimedia import Wikimedia
 from .store import Store
 
 
@@ -69,7 +71,7 @@ class Runtime:
         self.cache = TTLCache()
         tr = transports or {}
 
-        def http(name: str, base: str, rate: float, burst: int, retries: int | None = None) -> Http:
+        def http(name: str, base: str, rate: float, burst: int, retries: int | None = None, headers: dict[str, str] | None = None) -> Http:
             return Http(
                 name,
                 base,
@@ -78,6 +80,7 @@ class Runtime:
                 timeout=s.http_timeout,
                 retries=s.http_retries if retries is None else retries,
                 backoff_base=s.http_retry_backoff,
+                headers=headers,
                 cache=self.cache,
                 cache_scale=s.cache_scale,
                 health=self.health,
@@ -117,6 +120,13 @@ class Runtime:
             stablecoins=http("defillama:stablecoins", llama_mod.STABLECOINS_URL, rate=1, burst=2),
         )
         self.pendle = Pendle(http("pendle", pendle_mod.BASE_URL, rate=2, burst=4))
+        # Article pageviews + en.wikipedia page metadata (research scripts, not tools). Pageviews allows ~100 req/s per
+        # client; we stay far below. Wikimedia asks for a descriptive User-Agent.
+        wiki_ua = {"User-Agent": wiki_mod.USER_AGENT}
+        self.wikimedia = Wikimedia(
+            http("wikimedia", wiki_mod.PAGEVIEWS_URL, rate=5, burst=10, headers=wiki_ua),
+            http("wikimedia:enwiki", wiki_mod.ENWIKI_URL, rate=2, burst=4, headers=wiki_ua),
+        )
         self.coinalyze = Coinalyze(
             Http(
                 "coinalyze",
@@ -208,6 +218,7 @@ class Runtime:
         await self.goplus.http.aclose()
         await self.defillama.aclose()
         await self.pendle.http.aclose()
+        await self.wikimedia.aclose()
         await self.coinalyze.http.aclose()
         await self.polymarket.aclose()
         await self.thegraph.aclose()

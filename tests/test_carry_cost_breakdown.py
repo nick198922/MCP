@@ -138,6 +138,15 @@ def test_payment_published_later_or_never():
     assert out[0]["interval_h_before"] == pytest.approx(4.0) and out[1]["interval_h_before"] == pytest.approx(8.0)
 
 
+def test_payment_published_ignores_payments_after_as_of():
+    flags = [{"cycle_ts": T0, "symbol": "WIF/USDT:USDT", "key": "funding_payment_missing / scheduled_payment_missing"}]
+    funding = {"WIF/USDT:USDT": [T0 - 2 * H8, T0 - H8, T0 + 3_600_000]}  # the payment was stored 1 h after the cycle
+    assert payment_published(flags, funding)[0]["status"] == "published_later"
+    assert payment_published(flags, funding, as_of_ms=T0 + 3_600_000)[0]["status"] == "published_later"
+    cut = payment_published(flags, funding, as_of_ms=T0 + 60_000)
+    assert cut[0]["status"] == "never_stored" and cut[0]["interval_h_before"] == pytest.approx(8.0)
+
+
 def test_results_before_t_do_not_change_with_later_data():
     rows = [side_row("X", "spot", "open", 0.001, k=0), side_row("Y", "perp", "open", 0.002, k=1)]
     later = rows + [side_row("Z", "spot", "close", 0.05, k=5)]

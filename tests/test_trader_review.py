@@ -1,5 +1,6 @@
 """Claude's review of held pull requests in scripts/trader_review.py (a fake GitHub and a fake Claude, no network)."""
 
+import json
 import sys
 from pathlib import Path
 
@@ -15,6 +16,7 @@ GREEN = [{"name": "test", "status": "completed", "conclusion": "success"}]
 @pytest.fixture(autouse=True)
 def no_git(monkeypatch):
     monkeypatch.setattr(tr, "checkout", lambda ref, sha: Path("."))
+    monkeypatch.setattr(tr, "fix_checkout", lambda ref, sha: Path("."))
 
 
 def pr(number=1, sha="abc", ready=True):
@@ -180,3 +182,82 @@ def test_commit_and_push_refuses_empty_and_forbidden_changes(tmp_path):
     (tmp_path / ".github" / "ci.yml").write_text("x")
     result, why = tr.commit_and_push(tmp_path, "x", "m")
     assert result == "failed" and ".github/" in why
+
+
+def test_fixer_runs_in_its_own_clone_without_git_access_and_without_the_pr_text():
+    assert tr.FIX_DIR != tr.REVIEW_DIR
+    assert {"Edit(.git/**)", "Write(.git/**)", "Bash(git commit:*)", "Bash(git push:*)"} <= set(tr.FIX_DENIED)
+    text = tr.fix_prompt(pr(), "Стоп не прикріплено.")
+    assert "<<<REVIEW\nСтоп не прикріплено." in text and "Demo trader: tweak" not in text and "<<<PR" not in text
+
+
+def test_time_budget_fits_the_unit():
+    unit = (Path(__file__).resolve().parent.parent / "deploy/user-units/tradedesk-trader-review.service").read_text()
+    assert "TimeoutStartSec=60min" in unit and tr.UNIT_SECONDS == 3600
+    assert tr.FIX_BUDGET_SECONDS < tr.UNIT_SECONDS and tr.MAX_SECONDS + 300 < tr.UNIT_SECONDS
+
+
+def test_the_round_is_saved_before_the_fixer_starts_and_one_claude_run_per_tick(no_sync):
+    state = {
+        "1": {"sha": "abc", "verdict": "changes", "review": "x"},
+        "2": {"sha": "abc", "verdict": "changes", "review": "y"},
+    }
+    saved = []
+
+    def ask(text, cwd):
+        assert saved and saved[-1]["fixes"] == {"1": 1} and saved[-1]["1"]["fix"] == "running"
+        return "не можу\nFIXED: no", True
+
+    lines = tr.fix(
+        fake([pr(1), pr(2)]),
+        "o/r",
+        state,
+        ask,
+        lambda *a: ("pushed", "x"),
+        lambda t, u: None,
+        lambda: saved.append(json.loads(json.dumps(state))),
+    )
+    assert lines == ["PR #1: fix failed"] and "fix" not in state["2"]
+
+
+def test_changed_paths_reads_porcelain_z():
+    z = " M src/a b.py\0?? tests/тест.py\0R  .github/new.yml\0old.yml\0"
+    assert tr.changed_paths(z) == ["src/a b.py", "tests/тест.py", ".github/new.yml", "old.yml"]
+
+
+def test_commit_and_push_commits_with_hooks_off_and_pushes_by_url(tmp_path):
+    import subprocess
+
+    bare, work = tmp_path / "remote.git", tmp_path / "work"
+    run = lambda *a, cwd=None: subprocess.run(list(a), cwd=cwd, check=True, capture_output=True)  # noqa: E731
+    run("git", "init", "-q", "--bare", str(bare))
+    run("git", "init", "-q", "-b", "main", str(work))
+    run("git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init", cwd=work)
+    hook = work / ".git" / "hooks" / "pre-commit"
+    hook.write_text(f"#!/bin/sh\ntouch {tmp_path}/hook-ran\n")
+    hook.chmod(0o755)
+    (work / "notes.md").write_text("x")
+    result, sha = tr.commit_and_push(work, "agent/x", "msg", push_url=str(bare))
+    assert result == "pushed" and len(sha) == 40
+    assert not (tmp_path / "hook-ran").exists()
+    out = subprocess.run(["git", "--git-dir", str(bare), "rev-parse", "refs/heads/agent/x"], capture_output=True, text=True)
+    assert out.stdout.strip() == sha
+
+
+def test_commit_and_push_stops_on_a_lint_failure(tmp_path, monkeypatch):
+    import subprocess
+
+    real = subprocess.run
+
+    def fake_run(cmd, **kw):
+        if cmd[:3] == ["uv", "run", "ruff"] and "check" in cmd:
+            return subprocess.CompletedProcess(cmd, 1, "E999 broken", "")
+        if cmd[:2] == ["uv", "run"]:
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        return real(cmd, **kw)
+
+    real(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / "a.py").write_text("x = 1\n")
+    monkeypatch.setattr(tr.subprocess, "run", fake_run)
+    result, why = tr.commit_and_push(tmp_path, "x", "m", push_url="nowhere")
+    assert result == "failed" and why.startswith("ruff: E999")

@@ -260,13 +260,14 @@ def demo_forward(spec: DemoSpec, trades: Sequence[Mapping[str, Any]], now_ms: in
 
 def fill_forward(spec: DemoSpec, trades: Sequence[Mapping[str, Any]], now_ms: int) -> dict[str, Any]:
     """Fill share of a limit setup over placements whose deadline (``rest_until``) has passed: «ні» when the 95 % Wilson
-    CI on >= 30 such placements does not contain the passport share. A ``closing`` trade is filled; a ``pending`` one
-    past its deadline (not reconciled yet) stays out of the share and is counted in a note."""
+    CI on >= 30 such placements does not contain the passport share. A ``closing`` or ``orphaned`` trade is filled (the
+    demo trader orphans only a filled trade whose position and close it can no longer find); a ``pending`` one past its deadline (not reconciled
+    yet) stays out of the share and is counted in a note."""
 
     def past(t: Mapping[str, Any]) -> bool:
         return (ru := _num(t.get("rest_until"))) is not None and ru <= now_ms
 
-    done = [t for t in trades if t.get("status") in ("open", "closing", "closed", "missed") and past(t)]
+    done = [t for t in trades if t.get("status") in ("open", "closing", "closed", "orphaned", "missed") and past(t)]
     stale = sum(1 for t in trades if t.get("status") == "pending" and past(t))
     filled = sum(1 for t in done if (o := _num(t.get("opened_ts"))) is not None and o <= now_ms)
     n = len(done)

@@ -107,6 +107,21 @@ def test_v4_entry_floor_is_the_computed_band_not_the_old_estimate():
     assert "√(30/100)" not in text and "ще не пораховано" not in text
 
 
+def test_general_demo_rule_for_s12_uses_the_n100_band_from_100_trades():
+    # item 319 (review of item 318, minor 3): the S12 row of the general demo rule (v9 only) switches to the n 100 band
+    s12 = next(s for s in cp.DEMO if s.setup == "S12")
+    assert cp.decision_band(s12.bands, 99)["n_ref"] == 30  # below 100: the wider n 30 band
+    band = cp.decision_band(s12.bands, 100)
+    assert band["n_ref"] == 100 and band["decision"] == (-0.524, 0.652)
+    low = cp.demo_forward(s12, _v9(100, -0.53), NOW)[0]
+    assert low["n"] == 100 and low["band"]["n_ref"] == 100 and low["band"]["decision"] == (-0.524, 0.652)
+    assert (low["verdict"], low["side"]) == (cp.NO, "нижче")
+    held = cp.demo_forward(s12, _v9(100, -0.51), NOW)[0]  # below -0.50 (old estimate), inside -0.524
+    assert held["verdict"] == cp.OK and held["side"] is None
+    high = cp.demo_forward(s12, _v9(100, 0.66), NOW)[0]
+    assert (high["verdict"], high["side"]) == (cp.NO, "вище")
+
+
 def test_v7_other_setups_open_and_future_trades_are_left_out():
     v7 = [_s12(i, 5.0, opened=cp._ms(2026, 10, 28), version=None, rest_until=cp._ms(2026, 10, 29)) for i in range(4)]
     tagged_v7 = [_s12(i, 5.0, opened=cp._ms(2026, 10, 29), version="v7") for i in range(2)]

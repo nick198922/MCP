@@ -1,0 +1,1 @@
+- Оновлено звіт трекера закликів `docs/calls/REPORT.md` на 11.11 (`scripts/calls_check.py`, 62 заклики, 0 відхилених рядків); додано заклик LIB-20261109-qivty-digest.

@@ -16,7 +16,8 @@ The idea cards with ``Статус: forward`` (``docs/ideas/``) are listed with 
 last one, the minimum for the verdict and its date as the card writes them; no price, event or result is read. Cards
 with neither a fresh journal nor an ``idea:`` plan are listed as «форвард без збору» (item 312).
 Demo trades still ``open`` more than a day past their hold get a closing note with their count
-(``tradedesk.analytics.stuck_demo``, item 133): they are missing from the closed samples.
+(``tradedesk.analytics.stuck_demo``, item 133): they are missing from the closed samples. So are the trades the
+demo trader set aside as ``orphaned`` (filled, no position and no close found on the venue): a note names them (item 326).
 Closed demo trades whose recorded P&L disagrees with ``(exit - entry) * qty`` minus fees get a note «Угоди з розбіжним
 P&L: N» (``tradedesk.analytics.demo_pnl_check``, item 140; only when N > 0): their exit price and reason are suspect.
 The section «S12: правило зняття» applies the owner's rule Q-20261109-1 to the closed S12 demo trades (v9: n >= 30 and
@@ -280,10 +281,38 @@ def journal_row(
     return row
 
 
+def orphaned_note(trades: Sequence[Mapping[str, Any]], now_ms: int) -> str | None:
+    """Item 326: demo trades the trader set aside as ``orphaned`` (filled, then neither the position nor its close found
+    on the venue for a day; ``execution/demo_trader.py``, ``_orphan``) and filled by ``now_ms`` (a row without its fill
+    time is dated by its signal bar). They are in no closed sample and, no longer ``open``, not among the stuck trades
+    either, so without this note the demo n would be short without a word. None when there is none."""
+
+    def t0(t: Mapping[str, Any]) -> float | None:
+        for k in ("opened_ts", "signal_ts"):
+            if isinstance(v := t.get(k), (int, float)) and not isinstance(v, bool):
+                return float(v)
+        return None
+
+    rows = sorted(
+        (t for t in trades if t.get("status") == "orphaned" and (o := t0(t)) is not None and o <= now_ms),
+        key=lambda t: (t0(t) or 0.0, str(t.get("link_id"))),
+    )
+    if not rows:
+        return None
+    named = ", ".join(f"{t.get('setup') or '?'} {t.get('symbol') or t.get('link_id')}" for t in rows)
+    return (
+        f"демо-угоди orphaned (заповнені, а ні позиції, ні закриття на біржі не знайдено): {len(rows)} — {named}; "
+        "вони не входять у закриті вибірки й не рахуються завислими, тож n демо неповне: закриття перевірити вручну"
+    )
+
+
 def build_report(inputs: Mapping[str, Any], now_ms: int) -> dict[str, Any]:
-    """``checkpoint.build`` plus the row of the cards' own journals (``journal_row``)."""
+    """``checkpoint.build`` plus the row of the cards' own journals (``journal_row``) and the orphaned demo trades
+    (``orphaned_note``)."""
     rep = build(inputs, now_ms)
     rep["forwards"].append(journal_row(inputs.get("idea_cards") or [], inputs.get("journals"), inputs.get("plans") or [], now_ms))
+    if note := orphaned_note(inputs.get("demo_trades") or [], now_ms):
+        rep["notes"].append(note)
     return rep
 
 

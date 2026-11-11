@@ -118,6 +118,16 @@ def test_fill_share_counts_closing_as_filled_and_notes_stale_pending():
     assert not any("pending" in x for x in cp.fill_forward(s28, filled + fresh, NOW)["notes"])
 
 
+def test_fill_share_counts_an_orphaned_placement_as_filled():
+    """Item 326: the demo trader orphans only a filled trade; it used to drop out of both sides of the share."""
+    s28 = next(s for s in cp.DEMO if s.setup == "S28")
+    base = {"setup": "S28", "timeframe": "4h", "signal_ts": V9, "rest_until": V9 + H}
+    missed = [base | {"link_id": f"m{i}", "status": "missed"} for i in range(2)]
+    orphan = [base | {"link_id": "o", "status": "orphaned", "opened_ts": V9 + H // 2}]
+    f = cp.fill_forward(s28, missed + orphan, NOW)
+    assert f["n"] == 3 and f["metric"] == pytest.approx(1 / 3)
+
+
 def test_fill_share_full_fill_is_above_the_passport():
     s28 = next(s for s in cp.DEMO if s.setup == "S28")
     first = [_trade(i, "S28", 0.0, rest_until=V9) for i in range(40)]
@@ -816,6 +826,21 @@ def test_script_without_the_schema_names_failed_queries_not_absent_tables(tmp_pa
     text = cp.render(cp.build(inp, AFTER_T0))
     for name in BLOCKS:
         assert name in text
+
+
+def test_orphaned_demo_trades_are_named_not_silently_dropped():
+    """Item 326: an ``orphaned`` trade is in no closed sample and no longer ``open`` (not stuck): the report names it."""
+    closed = [_trade(i, "S3", 0.1) for i in range(3)]
+    orphan = _trade(7, "S3", 0.0, status="orphaned", closed_ts=None, r_multiple=None, symbol="NEAR/USDT:USDT")
+    later = _trade(8, "S38", 0.0, opened=NOW + DAY, status="orphaned", closed_ts=None, r_multiple=None, symbol="X/USDT:USDT")
+    no_time = {"link_id": "S14-x", "setup": "S14", "status": "orphaned", "symbol": "Y/USDT:USDT", "signal_ts": V9}
+    rep = script.build_report({"demo_trades": [*closed, orphan, later, no_time]}, NOW)
+    assert _row(rep["forwards"], "demo:S3")["n"] == 3  # the orphan stays out of the closed sample
+    notes = [x for x in rep["notes"] if "orphaned" in x]
+    assert len(notes) == 1 and ": 2 — S14 Y/USDT:USDT, S3 NEAR/USDT:USDT;" in notes[0]  # filled after NOW: not yet
+    assert not any("завислі" in x for x in rep["notes"])  # not open, so not a stuck trade either
+    assert "Примітка: демо-угоди orphaned" in cp.render(rep)
+    assert not any("orphaned" in x for x in script.build_report({"demo_trades": closed}, NOW)["notes"])
 
 
 def test_at_date_is_end_of_day_and_capped():

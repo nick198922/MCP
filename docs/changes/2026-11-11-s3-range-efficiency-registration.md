@@ -1,3 +1,2 @@
-- S3, ефективність рейнджу (Kaufman ER₃₀, друга ознака VR(4)) як вага: у картці `demo-setups-depth` записано попередню реєстрацію (знак, терцилі, IS/OOS, плацебо, ворота MDE) до будь-якого результату R.
-- Нова чиста аналітика `analytics/range_efficiency.py`, скрипт `scripts/verify_s3_range_efficiency.py`, 15 тестів `tests/test_range_efficiency.py` (включно з перевіркою причинності ознаки).
-- Повний прогін (`--stage run`) і звіт — наступним кроком, після коміту реєстрації.
+- S3: «ефективність рейнджу» (ER30) як вага — реєстрація, чисті функції `analytics/range_efficiency.py`, перевірка `scripts/verify_s3_range_efficiency.py`, 15 тестів.
+- Вердикт ◯: ворота MDE₈₀ (0.23R > 0.10R на OOS) не пройдено, вага не додається. Звіт: `docs/verification/2026-11-11-s3-range-efficiency.md`.

@@ -1,0 +1,9 @@
+[Unit]
+Description=tradedesk: the server's Claude login and backup token, Telegram warning before they end (scripts/claude_auth.py check)
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/tradedesk/tradedesk-mcp
+ExecStart=/usr/bin/python3 -I scripts/claude_auth.py check
+TimeoutStartSec=5min
+NoNewPrivileges=true

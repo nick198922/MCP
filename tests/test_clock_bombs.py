@@ -164,6 +164,10 @@ def unexplained(found: dict[str, list[str]], reviewed: dict[str, tuple[int, str]
 REVIEWED: dict[str, tuple[int, str]] = {
     "tests/test_assistant_paper.py": (1, "test_no_store_configured: no store, both tools fail before any date is read"),
     "tests/test_assistant_paper_job.py": (2, "the two Runtimes only build the scheduler's job list; no tool, no clock read"),
+    "tests/test_claude_auth.py": (
+        2,
+        "wrapper tests: the subprocess reads the real clock, so the login end is real now +/- days (relative)",
+    ),
     "tests/test_contract_risk.py": (2, "GoPlus provider calls on a MockTransport (cache and health); no date logic"),
     "tests/test_dashboard.py": (1, "read_usage gets time.time() and offsets from it: cache ages are relative, no fixed date"),
     "tests/test_forecast_log.py": (1, "test_tool_without_store: the tool answers 'no store' before reading the clock"),

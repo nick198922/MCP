@@ -72,7 +72,7 @@ DENIED=(
 )
 
 set +e
-perl -e 'alarm shift; exec @ARGV' "${TRADEDESK_DOCTOR_MAX_SECONDS:-3600}" "${TRADEDESK_CLAUDE_BIN:-claude}" -p "$PROMPT" \
+perl -e 'alarm shift; exec @ARGV' "${TRADEDESK_DOCTOR_MAX_SECONDS:-3600}" "${TRADEDESK_CLAUDE_BIN:-$REPO/scripts/claude_run.sh}" -p "$PROMPT" \
   --permission-mode dontAsk --model "$MODEL" --add-dir "$LOG_DIR" \
   --allowedTools "${ALLOWED[@]}" --disallowedTools "${DENIED[@]}" | tee "$REPORT"
 rc=${PIPESTATUS[0]}

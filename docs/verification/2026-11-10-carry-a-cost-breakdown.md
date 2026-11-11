@@ -1,6 +1,6 @@
-# Carry A (папір): розклад витрат 2.27× і надійності (д) — реєстрація
+# Carry A (папір): розклад витрат 2.27× і надійності (д)
 
-**Статус:** реєстрація (10.11). Результатів розкладу ще не дивились; повний прогін — наступним кроком, після коміту цієї реєстрації (правило власника 03.11: реєстрація і перший повний прогін — не в одному кроці).
+**Статус:** виконано (описово). Реєстрацію закомічено 10.11 (`5a9ee6fc`) окремо від результатів; повний прогін — того ж вечора після коміту (`as_of` 1794345443914), критик B — approve ([рев'ю](../reviews/2026-11-10-carry-a-cost-breakdown.md)). 11.11 прогін відтворено кодом після правки `payment_published` (пункт 314, `53357eef`): усі числа збігаються. Реєстрація після коміту не змінювалась; відхилень від неї немає. Відповідь: перевищення (б) **широке** (усі 7 монет > 1.5), рушій — spot-нога; провал (д) — **дві монети** (MITO, VELODROME), виплати, які так і не збереглися.
 
 Пункт: `docs/BACKLOG.md`, розділ «З тижневого аудиту 2026-11-10», «Квант → критик B (до 23.11; лише витрати й лічильники)»; постійна картка [`standing-improvements`](../ideas/IDEA-20261102-standing-improvements.md), крок p. Контекст: [аудит 10.11](../reviews/2026-11-10-weekly-audit.md) («Carry (папір) — A під загрозою зняття»), [`CHECKPOINT-2026-11-30.md`](../CHECKPOINT-2026-11-30.md), рядок «Папір carry A», критерії (б) і (д) реєстрації [`IDEA-20261017-forward-paper-carry`](../ideas/IDEA-20261017-forward-paper-carry.md).
 
@@ -47,7 +47,9 @@
 - **Стійкість у часі:** поділ за 04.11: 2.56 (n=8) і 2.03 (n=10), але спільних монет 0 → ◯.
 
 **(д) Надійність.** Циклів 64; вчасно 63 (0.984); вчасно і повні 42 (0.656), поріг 0.95.
+- 22 невдалі цикли = 21 неповний + 1 запізнілий (> 30 хв; прапорців не має).
 - 21 неповний цикл, **усі через `scheduled_payment_missing`** (14 `funding_payment_missing` + 7 `funding_gap_confirmed`).
+- Описово, без висновку: неповні цикли зникають після закриття позицій MITO / VELODROME (29–30.10), і саме їхні perp/close-сторони — ті дві, що без книги.
 - За монетою (цикл рахується в кожній монеті, що його позначила): **MITO 21** (14 + 7), VELODROME 3 (2 + 1). Інших монет прапорців немає.
 - За днем: 23–30.10 (1, 3, 3, 3, 3, 3, 3, 2); після 30.10 неповних циклів немає.
 - Усі 24 прапорці-виплати (MITO 21, VELODROME 3) — «не збережена» ніколи пізніше: виплата не з'явилась у `cp_funding`. Інтервал збережених виплат за 3 дні до циклу: 4.0 год для MITO до 26.10 і для VELODROME; для MITO з 26.10 08:00 — порожньо (менше 2 збережених виплат у 3-денному вікні; тобто збір виплат MITO, схоже, зупинився близько 23.10 — слід перевірити колектор). Подія `funding_interval_change` є в обох монет (по 1).
@@ -76,4 +78,25 @@
 
 ## Сирий вивід
 
-JSON: `~/.cache/tradedesk-agents/carry-a-cost-breakdown/breakdown_1794345443914.json` (локально). Повний друк прогону відтворюється командою `uv run python scripts/verify_carry_a_cost_breakdown.py`.
+JSON: `~/.cache/tradedesk-agents/carry-a-cost-breakdown/breakdown_1794345443914.json` (локально). Повний друк прогону відтворюється командою `uv run python scripts/verify_carry_a_cost_breakdown.py --as-of-ms 1794345443914`.
+
+**Відтворення 11.11** (код після `53357eef`; кеш `~/.cache/tradedesk-agents/carry-a-cost-breakdown/repro-20261111/`), ключові рядки (скорочено: стовпці вирівняно, рядки розміру й монет злиті в один):
+
+```
+(b) pooled: sides 20, with book 18, full depth 18, ratio 2.271
+    consistency: carry_report.cost_realism ratio 2.271, with_book 18
+pooled 2.271; without top-1 2.226; without top-2 2.133; top-2 share of excess 0.46; leave-one-out min 2.201 max 2.352
+coins with >= 2 full sides 7, of them ratio > 1.5: 7; reading: broad
+perp  | 10 | 8  | 8  | 0 | 1.87 | 18.7 | 10.0 | 5.0  | 3.4  | 10.3 | 6.9  | 0.24
+spot  | 10 | 10 | 10 | 0 | 2.48 | 37.3 | 15.0 | 10.0 | 12.4 | 14.8 | 24.8 | 0.76
+close | 6  | 4  | 4  | 0 | 3.04 | 41.8 | 13.8 | 8.8  | 11.4 | 21.7 | 22.8 | 0.38
+open  | 14 | 14 | 14 | 0 | 2.03 | 25.3 | 12.5 | 7.5  | 7.6  | 10.3 | 15.1 | 0.62
+m 0.0: ratio 1.268; m 0.25: 1.663; m 0.5: 1.917; m 1.0: 2.271; m 2.0: 2.888 (depth short 0 everywhere)
+heterogeneity across coins (labels permuted within leg x event): n 18, coins 7, p 0.5135
+time split at 2026-11-04: first n 8 ratio 2.563; second n 10 ratio 2.025; coins in both 0
+cycles 64, done 64, on time 63 (0.984), on time and complete 42 (0.656; threshold 0.95)
+incomplete by issue: funding_gap_confirmed / scheduled_payment_missing 7; funding_payment_missing / scheduled_payment_missing 14
+by coin: MITO 7 + 14; VELODROME 1 + 2; all 24 flags never_stored
+```
+
+Smoke на 11.11 (`as_of` 1794363108855): сторін досі 20 (з книгою 18), циклів 65 — нових сторін немає, тож прогін на `as_of` 10.11 лишається основною вибіркою (б).

@@ -74,8 +74,8 @@ def token_end(mtime: float | None) -> dt.datetime | None:
 
 
 def kyiv(t: dt.datetime) -> str:
-    """dd.mm HH:MM in Kyiv time."""
-    return t.astimezone(ZoneInfo("Europe/Kyiv")).strftime("%d.%m %H:%M")
+    """dd.mm.yyyy HH:MM in Kyiv time (the year matters: the backup token lasts a year)."""
+    return t.astimezone(ZoneInfo("Europe/Kyiv")).strftime("%d.%m.%Y %H:%M")
 
 
 def alerts(logged_in: bool, end: dt.datetime | None, tok_end: dt.datetime | None, now: dt.datetime) -> list[tuple[str, str]]:

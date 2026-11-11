@@ -4,6 +4,7 @@ failures after the order."""
 
 from __future__ import annotations
 
+import shutil
 from collections import Counter
 from types import SimpleNamespace
 
@@ -179,16 +180,27 @@ class FakeVenue(BybitDemo):
         return [r for r in self.pnl_rows if lo <= int(r["updatedTime"]) <= end_ms]
 
 
+@pytest.fixture(scope="session")
+def _migrated_db_template(tmp_path_factory):
+    """Path of a migrated store file, built once per worker by the first `world` (a migration run costs ~0.25 s)."""
+    return tmp_path_factory.mktemp("demo_trader_template") / "db.sqlite"
+
+
 @pytest.fixture
-async def world(tmp_path, monkeypatch):
+async def world(tmp_path, monkeypatch, _migrated_db_template):
     monkeypatch.setattr(demo_trader, "HALT_FILE", tmp_path / "demo.halt")
     off = tmp_path / "demo-options.off"  # the futures tests run without the option leg (tests/test_demo_option_leg.py)
     off.write_text("off")
     monkeypatch.setattr(demo_trader, "OPTIONS_OFF_FILE", off)
     signals: dict = {"4h": [_sig()], "1d": []}
     monkeypatch.setattr(demo_trader, "scan", lambda bars, tf, setups: list(signals.get(tf, [])))
+    if not _migrated_db_template.exists():
+        template = Store(_migrated_db_template)
+        await template.init()
+        await template.aclose()  # the last close checkpoints the WAL into the main file
+    shutil.copyfile(_migrated_db_template, tmp_path / "db.sqlite")
     store = Store(tmp_path / "db.sqlite")
-    await store.init()
+    await store.init()  # still runs: WAL, pragmas, and a migration check that finds nothing pending
     msgs: list[str] = []
 
     async def notify(t):

@@ -40,7 +40,7 @@ from .condor_forward import EARLIEST_T0, ENTRY_CUTOFF_HOUR_UTC, condor_cost, cos
 from .demo_pnl_check import pnl_mismatches
 from .liquidation_flush import cluster_bootstrap_ci
 from .pm_gap_report import T0_TS, T0_V2G_TS, verdict_ts, verdict_ts_v2g, weekly_descriptive, weekly_v2g
-from .s12_demo_audit import PASSPORT_OF, PASSPORTS, traded_version
+from .s12_demo_audit import PASSPORT_OF, PASSPORTS, V4_BAND_SLIDING_N100, traded_version
 from .setup_signals import TF_MS
 from .setup_versions import EPOCHS, _setup, applies, version_of
 from .stuck_demo import stuck_trades
@@ -111,8 +111,8 @@ DEMO: tuple[DemoSpec, ...] = (
     ),
     DemoSpec(
         "S12", "Демо S12 v4 (вхід за закриттям свічки дотику, з 31.10)", frozenset({"v9"}),
-        {30: ((-0.440, 0.496), (-0.827, 1.095))},
-        source="verification/2026-11-01-s12-modules.md",
+        {30: ((-0.440, 0.496), (-0.827, 1.095)), 100: ((-0.259, 0.259), (-0.524, 0.652))},
+        source="verification/2026-11-01-s12-modules.md; n 100: verification/2026-11-11-s12-v4-band-n100.md",
     ),
     DemoSpec(
         "S28", "Демо S28 (4h, лонг, лімітка)", frozenset({"v8"}),
@@ -296,9 +296,8 @@ def fill_forward(spec: DemoSpec, trades: Sequence[Mapping[str, Any]], now_ms: in
 S12_STOP_N = 30  # v9 closed trades: an alarm, not an edge test
 S12_STOP_FLOOR = PASSPORTS["v4"].band_sliding[0]  # -0.827: rolling p5 of the v4 base for n = 30
 S12_DROP_N = 100  # closed trades with the v4 entry (v4 + v9)
-# The report's estimate of the rolling p5 of the v4 base for n = 100 (sqrt(30/100) scaling, ≈ -0.50R); not computed from
-# the base yet (CHECKPOINT: «n 100 не пораховано»), to be recomputed with ``r_band`` before the review.
-S12_DROP_FLOOR = -0.50
+# -0.524: rolling p5 of the v4 base for n = 100 (``r_band`` on the base, item 318; replaced the 09.11 estimate -0.50)
+S12_DROP_FLOOR = V4_BAND_SLIDING_N100[0]
 S12_CI_SEED, S12_CI_BOOT = 20261030, 10_000  # the report's clustered bootstrap
 S12_HOLD, S12_STOP, S12_DROP = "тримати (перевагу не доведено)", "зупинити й розібрати виконання", "зняти"
 
@@ -318,8 +317,8 @@ def _r_ci(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
 
 def s12_stop_rule(trades: Sequence[Mapping[str, Any]], now_ms: int) -> dict[str, Any]:
     """The owner's S12 stop rule on the closed demo trades at ``now_ms``: v9 (n >= 30, mean below the rolling p5 of the
-    v4 base for n 30 -> stop and review the execution) and the v4 entry, v4 + v9 (n >= 100, mean below ≈ -0.50R ->
-    drop). Below its n a check is «рано», no verdict; otherwise «тримати (перевагу не доведено)». R per trade risk."""
+    v4 base for n 30 -> stop and review the execution) and the v4 entry, v4 + v9 (n >= 100, mean below the rolling p5
+    of the v4 base for n 100 -> drop). Below its n a check is «рано», no verdict; otherwise «тримати (перевагу не доведено)». R per trade risk."""
     closed = _closed_r([t for t in trades if _setup(t.get("setup")) == "S12"], now_ms)
     ver = [traded_version(t, now_ms=now_ms)[0] for t in closed]
     v9 = [t for t, v in zip(closed, ver, strict=True) if v == "v9"]
@@ -353,8 +352,8 @@ def s12_stop_rule_lines(block: Mapping[str, Any]) -> list[str]:
     if block.get("other"):
         L.append(f"- закритих S12 з іншим входом (v7 чи версія невідома, не входять): {block['other']}")
     L += [
-        f"- поріг v9 {S12_STOP_FLOOR:+.3f} — нижня межа ковзної смуги бази v4 для n 30; поріг {S12_DROP_FLOOR:+.2f} для n 100 — "
-        "оцінка звіту 09.11 масштабом √(30/100), з бази ще не пораховано: перерахувати `r_band` до перегляду",
+        f"- поріг v9 {S12_STOP_FLOOR:+.3f} — нижня межа ковзної смуги бази v4 для n 30; поріг {S12_DROP_FLOOR:+.3f} для n 100 — "
+        "нижня межа ковзної смуги тієї самої бази для n 100 (`r_band`, звіт 11.11)",
         f"- поріг n {S12_STOP_N} — сигнал «зупинити й розібрати», а не статистичний тест: середнє перевіряється щодня "
         "на зростаючому n, тож хибна тривога буває частіше за 5 %",
         "- R — P&L біржі з комісіями / ризик угоди (не на капітал); CI — бутстреп кластерами за UTC-днем сигнальної "

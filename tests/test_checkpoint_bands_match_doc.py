@@ -1,8 +1,8 @@
 """The demo bands are written twice: in docs/CHECKPOINT-2026-11-30.md (section «Таблиця», registered before the review)
 and in ``analytics.checkpoint.DEMO`` (the report's constants). A silent drift would give a wrong «узгоджується» / «ні» in
 the one report of the review, so the n 30 and n 100 pairs (i.i.d. and rolling) of the table are parsed and compared with
-the code. No network. A pair the document does not give (S12 n 100 «не пораховано») is skipped explicitly and listed,
-so a new gap cannot pass unnoticed. A mismatch is not fixed here: the document's numbers are registered (item 249)."""
+the code. No network. A pair the document does not give («n 100 не пораховано»; none since S12 n 100, item 318) is
+skipped explicitly and listed, so a new gap cannot pass unnoticed. A mismatch is not fixed here: the document's numbers are registered (item 249)."""
 
 from __future__ import annotations
 
@@ -94,8 +94,8 @@ def test_demo_bands_in_code_match_the_checkpoint_table():
     doc, skips, problems = parse_doc(DOC.read_text(encoding="utf-8"))
     assert problems == []
     assert sorted(doc) == sorted(s.setup for s in DEMO) == sorted(["S3", "S12", "S28", "S17", "S14", "S16", "S38", "S39", "S40"])
-    # the only pair the document does not give; a new one must be added here on purpose
-    assert skips == ["S12 n 100"]
+    # every pair is given since item 318 (S12 n 100); a new gap must be added here on purpose
+    assert skips == []
     assert compare(doc, DEMO) == []
 
 

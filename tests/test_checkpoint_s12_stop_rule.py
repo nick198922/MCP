@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from tradedesk.analytics import checkpoint as cp
-from tradedesk.analytics.s12_demo_audit import PASSPORTS
+from tradedesk.analytics.s12_demo_audit import PASSPORTS, V4_BAND_IID_N100, V4_BAND_SLIDING_N100
 from tradedesk.store import Store
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
@@ -47,7 +47,10 @@ def test_thresholds_come_from_the_report():
     assert cp.S12_STOP_FLOOR == PASSPORTS["v4"].band_sliding[0] == -0.827  # rolling p5 of the v4 base, n 30
     s12 = next(s for s in cp.DEMO if s.setup == "S12")
     assert s12.bands[30][1][0] == cp.S12_STOP_FLOOR  # the same band as the S12 row of the table
-    assert (cp.S12_STOP_N, cp.S12_DROP_N, cp.S12_DROP_FLOOR) == (30, 100, -0.50)
+    # item 318: rolling p5 of the same v4 base for n 100 (r_band), not the sqrt(30/100) estimate -0.50
+    assert cp.S12_DROP_FLOOR == V4_BAND_SLIDING_N100[0] == -0.524
+    assert s12.bands[100] == ((V4_BAND_IID_N100[0], V4_BAND_IID_N100[2]), (V4_BAND_SLIDING_N100[0], V4_BAND_SLIDING_N100[2]))
+    assert (cp.S12_STOP_N, cp.S12_DROP_N) == (30, 100)
 
 
 def test_below_both_n_thresholds_is_early_without_a_verdict():
@@ -83,7 +86,7 @@ def test_text_says_the_n30_floor_is_an_alarm_not_a_test():
 
 
 def test_v4_entry_at_100_below_the_floor_drops():
-    # 70 v9 at -0.6 (above the v9 floor: hold) + 30 untagged v4 at -0.6: the v4 entry mean -0.6 < -0.50 -> drop
+    # 70 v9 at -0.6 (above the v9 floor: hold) + 30 untagged v4 at -0.6: the v4 entry mean -0.6 < -0.524 -> drop
     b = cp.s12_stop_rule(_v9(70, -0.6) + _v4(30, -0.6), NOW)
     assert _check(b, "v9")["verdict"] == cp.S12_HOLD
     v4e = _check(b, "вхід v4 (v4 + v9)")
@@ -91,6 +94,17 @@ def test_v4_entry_at_100_below_the_floor_drops():
     assert b["verdict"] == cp.S12_DROP  # the drop outranks hold
     held = cp.s12_stop_rule(_v9(70, -0.4) + _v4(30, -0.4), NOW)
     assert _check(held, "вхід v4 (v4 + v9)")["verdict"] == cp.S12_HOLD and held["verdict"] == cp.S12_HOLD
+
+
+def test_v4_entry_floor_is_the_computed_band_not_the_old_estimate():
+    # item 318: -0.51 dropped under the old estimate -0.50, it holds under the computed -0.524; -0.53 drops
+    held = cp.s12_stop_rule(_v9(70, -0.51) + _v4(30, -0.51), NOW)
+    assert _check(held, "вхід v4 (v4 + v9)")["verdict"] == cp.S12_HOLD
+    drop = cp.s12_stop_rule(_v9(70, -0.53) + _v4(30, -0.53), NOW)
+    assert _check(drop, "вхід v4 (v4 + v9)")["verdict"] == cp.S12_DROP
+    text = "\n".join(cp.s12_stop_rule_lines(drop))
+    assert "поріг -0.524 для n 100 — нижня межа ковзної смуги тієї самої бази для n 100" in text
+    assert "√(30/100)" not in text and "ще не пораховано" not in text
 
 
 def test_v7_other_setups_open_and_future_trades_are_left_out():
@@ -162,7 +176,7 @@ def test_script_prints_the_section_from_a_read_only_db(tmp_path):
     assert "- v9: n 30, днів" in sec and "середній R -0.900" in sec
     assert "- вхід v4 (v4 + v9): n 35," in sec and "рано (35 з 100), без вердикту" in sec
     assert "правило: n ≥ 30 і середній R < -0.827 → зупинити й розібрати виконання" in sec
-    assert "правило: n ≥ 100 і середній R < -0.500 → зняти" in sec
+    assert "правило: n ≥ 100 і середній R < -0.524 → зняти" in sec
     assert "сигнал «зупинити й розібрати», а не статистичний тест" in sec
     assert text.index("## Подробиці") < text.index("## S12: правило зняття")
 

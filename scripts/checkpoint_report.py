@@ -19,6 +19,9 @@ Demo trades still ``open`` more than a day past their hold get a closing note wi
 (``tradedesk.analytics.stuck_demo``, item 133): they are missing from the closed samples.
 Closed demo trades whose recorded P&L disagrees with ``(exit - entry) * qty`` minus fees get a note «Угоди з розбіжним
 P&L: N» (``tradedesk.analytics.demo_pnl_check``, item 140; only when N > 0): their exit price and reason are suspect.
+The section «S12: правило зняття» applies the owner's rule Q-20261109-1 to the closed S12 demo trades (v9: n >= 30 and
+mean R below -0.827 -> stop and review the execution; v4 entry, v4 + v9: n >= 100 and below ≈ -0.50R -> drop; else
+«рано» or «тримати»), with n, mean R and a 95 % CI (``tradedesk.analytics.checkpoint.s12_stop_rule``, item 313).
 The text (Ukrainian) is printed and, with ``--out``, written to a file.
 """
 

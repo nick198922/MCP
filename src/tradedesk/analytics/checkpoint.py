@@ -13,10 +13,12 @@ SD, edge, P&L or Brier; no verdict function is ever called), and the condor P&L 
 all. Condor part (a) shows only the count of valid Fridays until its registered decision moment. The paper engine
 ``assistant_paper`` has no band in CHECKPOINT: counters and the job's state only (no P&L), labelled «лише лічильники».
 So are the idea cards with status ``forward``, judged by plans tagged ``idea:<slug>``: plan counts per card, no R.
+One section outside the table, ``s12_stop_rule``: the owner's S12 stop rule (Q-20261109-1) with n, mean R and the 95 %
+CI clustered by signal day, for v9 and for the v4 entry (v4 + v9).
 
 What this module does not compute (the label says so in its notes): carry criteria (a) (re-run of the backtest code),
 (e) and (ye) (universe and capacity checks) and B's liquidation part of (g) (1m mark prices, network); the demo's
-secondary metric ``r_demo_bt`` and the clustered CI (``scripts/demo_vs_backtest.py``); the A v2 delisting cross-check.
+secondary metric ``r_demo_bt`` and its clustered CI (``scripts/demo_vs_backtest.py``); the A v2 delisting cross-check.
 """
 
 from __future__ import annotations
@@ -36,7 +38,9 @@ from .carry_v2 import a_v2_shadow
 from .catalyst_scalp import wilson_ci
 from .condor_forward import EARLIEST_T0, ENTRY_CUTOFF_HOUR_UTC, condor_cost, cost_fridays, cost_report, friday_entry
 from .demo_pnl_check import pnl_mismatches
+from .liquidation_flush import cluster_bootstrap_ci
 from .pm_gap_report import T0_TS, T0_V2G_TS, verdict_ts, verdict_ts_v2g, weekly_descriptive, weekly_v2g
+from .s12_demo_audit import PASSPORT_OF, PASSPORTS, traded_version
 from .setup_signals import TF_MS
 from .setup_versions import EPOCHS, _setup, applies, version_of
 from .stuck_demo import stuck_trades
@@ -283,6 +287,80 @@ def fill_forward(spec: DemoSpec, trades: Sequence[Mapping[str, Any]], now_ms: in
     if stale:
         row["notes"].append(f"pending з минулим строком (ще не звірені, поза часткою): {stale}")
     return row
+
+
+# --------------------------------------------------------------------------------------------- S12 stop rule
+# Owner decision Q-20261109-1, option 1 (docs/verification/2026-11-09-s12-demo-vs-passport.md, «Пропозиція власнику»):
+# S12 v9 stays on the demo as an execution control. The version of a trade is ``s12_demo_audit.traded_version``, as in
+# that report; v4 and v9 share the v4 entry and the v4 base (``PASSPORT_OF``).
+S12_STOP_N = 30  # v9 closed trades: an alarm, not an edge test
+S12_STOP_FLOOR = PASSPORTS["v4"].band_sliding[0]  # -0.827: rolling p5 of the v4 base for n = 30
+S12_DROP_N = 100  # closed trades with the v4 entry (v4 + v9)
+# The report's estimate of the rolling p5 of the v4 base for n = 100 (sqrt(30/100) scaling, ≈ -0.50R); not computed from
+# the base yet (CHECKPOINT: «n 100 не пораховано»), to be recomputed with ``r_band`` before the review.
+S12_DROP_FLOOR = -0.50
+S12_CI_SEED, S12_CI_BOOT = 20261030, 10_000  # the report's clustered bootstrap
+S12_HOLD, S12_STOP, S12_DROP = "тримати (перевагу не доведено)", "зупинити й розібрати виконання", "зняти"
+
+
+def _r_ci(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """n, mean R and the 95 % CI clustered by the UTC day of the signal bar (None with fewer than 2 days)."""
+    rs = [float(t["r_multiple"]) for t in rows]
+    if not rs:
+        return {"n": 0, "mean": None, "ci": None, "days": 0}
+    days = []
+    for t in rows:
+        sig = _num(t.get("signal_ts"))
+        days.append(datetime.fromtimestamp(sig / 1000, UTC).date().isoformat() if sig is not None else f"?{t.get('link_id')}")
+    ci = cluster_bootstrap_ci(rs, days, n_boot=S12_CI_BOOT, seed=S12_CI_SEED) if len(rs) >= 2 else None
+    return {"n": len(rs), "mean": statistics.fmean(rs), "ci": ci, "days": len(set(days))}
+
+
+def s12_stop_rule(trades: Sequence[Mapping[str, Any]], now_ms: int) -> dict[str, Any]:
+    """The owner's S12 stop rule on the closed demo trades at ``now_ms``: v9 (n >= 30, mean below the rolling p5 of the
+    v4 base for n 30 -> stop and review the execution) and the v4 entry, v4 + v9 (n >= 100, mean below ≈ -0.50R ->
+    drop). Below its n a check is «рано», no verdict; otherwise «тримати (перевагу не доведено)». R per trade risk."""
+    closed = _closed_r([t for t in trades if _setup(t.get("setup")) == "S12"], now_ms)
+    ver = [traded_version(t, now_ms=now_ms)[0] for t in closed]
+    v9 = [t for t, v in zip(closed, ver, strict=True) if v == "v9"]
+    v4e = [t for t, v in zip(closed, ver, strict=True) if PASSPORT_OF.get(v) == "v4"]
+    checks = []
+    for name, rows, n_min, floor, hit in (
+        ("v9", v9, S12_STOP_N, S12_STOP_FLOOR, S12_STOP),
+        ("вхід v4 (v4 + v9)", v4e, S12_DROP_N, S12_DROP_FLOOR, S12_DROP),
+    ):
+        s = _r_ci(rows)
+        if s["n"] < n_min:
+            verdict = EARLY
+        else:
+            verdict = hit if s["mean"] < floor else S12_HOLD
+        checks.append({"name": name, **s, "n_min": n_min, "floor": floor, "if_below": hit, "verdict": verdict})
+    got = {c["verdict"] for c in checks}
+    overall = next((v for v in (S12_DROP, S12_STOP, S12_HOLD) if v in got), EARLY)
+    return {"checks": checks, "verdict": overall, "other": len(closed) - len(v4e)}
+
+
+def s12_stop_rule_lines(block: Mapping[str, Any]) -> list[str]:
+    """The Ukrainian section of the report for ``s12_stop_rule``."""
+    L = ["## S12: правило зняття (Q-20261109-1, варіант 1)", "", f"- вердикт: {block['verdict']}"]
+    for c in block["checks"]:
+        ci = f"[{c['ci'][0]:+.3f}; {c['ci'][1]:+.3f}]" if c.get("ci") else "—"
+        state = f"рано ({c['n']} з {c['n_min']}), без вердикту" if c["verdict"] == EARLY else c["verdict"]
+        L.append(
+            f"- {c['name']}: n {c['n']}, днів {c['days']}, середній R {_f(c['mean'], 3, sign=True)}, 95 % CI {ci}; "
+            f"правило: n ≥ {c['n_min']} і середній R < {c['floor']:+.3f} → {c['if_below']}; зараз: {state}"
+        )
+    if block.get("other"):
+        L.append(f"- закритих S12 з іншим входом (v7 чи версія невідома, не входять): {block['other']}")
+    L += [
+        f"- поріг v9 {S12_STOP_FLOOR:+.3f} — нижня межа ковзної смуги бази v4 для n 30; поріг {S12_DROP_FLOOR:+.2f} для n 100 — "
+        "оцінка звіту 09.11 масштабом √(30/100), з бази ще не пораховано: перерахувати `r_band` до перегляду",
+        "- R — P&L біржі з комісіями / ризик угоди (не на капітал); CI — бутстреп кластерами за UTC-днем сигнальної "
+        f"свічки ({S12_CI_BOOT}, seed {S12_CI_SEED}); днів мало, тож CI занижений. «Тримати» не означає перевагу: "
+        "−0.01R від нуля демо не відрізнить",
+        "",
+    ]
+    return L
 
 
 # ---------------------------------------------------------------------------------------------------------- carry
@@ -940,7 +1018,7 @@ def build(inputs: Mapping[str, Any], now_ms: int) -> dict[str, Any]:
             + ", ".join(f"{t['setup']} {t['symbol']} ({t['recorded']:+.2f} проти {t['expected']:+.2f} USD)" for t in bad_pnl)
             + "; P&L у БД не збігається з (вихід − вхід)·qty − комісії, схоже на часткове закриття: ціну й причину виходу перевірити"
         )
-    return {"now_ms": now_ms, "forwards": out, "notes": notes}
+    return {"now_ms": now_ms, "forwards": out, "notes": notes, "s12_stop_rule": s12_stop_rule(trades, now_ms)}
 
 
 # ---------------------------------------------------------------------------------------------------------- text
@@ -1014,6 +1092,8 @@ def render(rep: Mapping[str, Any]) -> str:
         lines += [f"- {x}" for x in r["notes"]]
         if lines:
             L += [f"**{r['name']}** ({r['metric_name']})", *lines, ""]
+    if rep.get("s12_stop_rule"):
+        L += s12_stop_rule_lines(rep["s12_stop_rule"])
     L += [
         "Чого смуги демо не моделюють: денних слотів демо і того, що демо бере з кандидатів не випадкову підмножину. "
         "Сетапів 9: навіть за поведінки точно як у паспорті ймовірність, що хоч один вийде за свою i.i.d.-смугу, ≈ 60 %, "

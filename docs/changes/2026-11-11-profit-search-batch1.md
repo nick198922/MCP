@@ -1,0 +1,2 @@
+- Profit-search, пункт 2, партія 1: серед карток `inconclusive` жодна не проходить ворота потужності навіть з усіма наявними чи безкоштовними даними (потрібно ≈ 958 подій / 355 тижнів / 336 вікендів тощо).
+- У 4 картках (post-listing-midage-decay-short, oi-confirmed-liquidation-flush, xs-anchor-nearness-high-short, weekend-idio-reversal-alt-perps) додано рядок із розрахунком; прогонів і нових реєстрацій немає.

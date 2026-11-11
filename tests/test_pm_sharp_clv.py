@@ -1,10 +1,24 @@
 import csv
 import json
+import math
 from pathlib import Path
 
 import pytest
 
-from tradedesk.analytics.pm_sharp_clv import BANDS, bridge_delta, p_group, quote_at, sharp_probs
+from tradedesk.analytics.pm_sharp_clv import (
+    BANDS,
+    bridge_delta,
+    cluster_se,
+    drop_top_clusters,
+    kickoff_utc,
+    norm_team,
+    p_group,
+    quote_at,
+    resolve_teams,
+    sharp_probs,
+    taker_net,
+    team_sim,
+)
 
 FIX = Path(__file__).parent / "fixtures"
 
@@ -85,3 +99,73 @@ def test_real_gamma_soccer_event_is_three_yes_no_markets():
     for m in ev["markets"]:
         assert len(json.loads(m["clobTokenIds"])) == 2
         assert m["gameStartTime"].startswith(ev["startTime"][:10])
+
+
+def test_norm_team_and_similarity():
+    assert norm_team("1. FC Köln") == "koln"
+    assert team_sim("Arsenal FC", "Arsenal") == 1.0
+    # "city"/"united" are kept, so the two Manchester clubs stay apart
+    assert team_sim("Manchester City", "Man United") < 0.75
+
+
+def test_resolve_teams_overrides_ties_and_threshold():
+    fd = ["Barcelona", "Espanol", "Man City", "Man United", "Ath Madrid", "Real Madrid"]
+    # substring trap: without an override "RCD Espanyol de Barcelona" would map to "Barcelona"
+    auto = resolve_teams(["RCD Espanyol de Barcelona"], fd, {})
+    assert auto["RCD Espanyol de Barcelona"] == "Barcelona"
+    m = resolve_teams(
+        ["RCD Espanyol de Barcelona", "FC Barcelona", "Manchester City", "Unknown XI"],
+        fd,
+        {"RCD Espanyol de Barcelona": "Espanol", "Manchester City": "Man City"},
+    )
+    assert m == {"RCD Espanyol de Barcelona": "Espanol", "FC Barcelona": "Barcelona", "Manchester City": "Man City", "Unknown XI": None}
+    # an override to a name not in the football-data list is rejected rather than trusted
+    assert resolve_teams(["X"], fd, {"X": "Nowhere"}) == {"X": None}
+    # a tie between two candidates gives None ("Madrid" is contained in both)
+    assert resolve_teams(["Madrid"], ["Ath Madrid", "Real Madrid"], {}) == {"Madrid": None}
+
+
+def test_kickoff_utc_bst_and_gmt():
+    # 15/08/2025 20:00 UK summer time (BST, UTC+1) = 19:00 UTC
+    assert kickoff_utc("15/08/2025", "20:00") == 1755284400
+    # 10/01/2026 15:00 UK winter time (GMT) = 15:00 UTC; two-digit year accepted
+    assert kickoff_utc("10/01/26", "15:00") == 1768057200
+    assert kickoff_utc("10/01/2026", "") is None
+
+
+def test_taker_net_analytic():
+    # registered form |g| - 0.05 p (1 - p): g = -0.02, p = 0.10 -> 0.02 - 0.0045
+    assert taker_net(-0.02, 0.10) == pytest.approx(0.0155)
+    # directional: the pre-set side is "sell" (+1), so a negative g is a loss before the fee
+    assert taker_net(-0.02, 0.10, direction=1) == pytest.approx(-0.0245)
+    assert taker_net(-0.02, 0.70, direction=-1) == pytest.approx(0.02 - 0.0105)
+
+
+def test_cluster_se_analytic():
+    # one observation per cluster: CR1 = sample SD / sqrt(n)
+    v = [0.0, 1.0, 2.0, 3.0]
+    assert cluster_se(v, ["a", "b", "c", "d"]) == pytest.approx((5 / 3) ** 0.5 / 2)
+    # two clusters of identical pairs: residuals -0.5 each, cluster sums (-1, +1) -> sqrt((1 + 1) * 2 / 1) / 4 = 0.5
+    assert cluster_se([0.0, 0.0, 1.0, 1.0], ["a", "a", "b", "b"]) == pytest.approx(0.5)
+    assert math.isnan(cluster_se([1.0, 2.0], ["a", "a"]))
+
+
+def test_drop_top_clusters_removes_largest_contributions():
+    v = [5.0, 5.0, 0.1, -0.2, 0.3, -3.0]
+    c = ["big", "big", "x", "y", "z", "neg"]
+    kv, kc = drop_top_clusters(v, c, 0.2)  # ceil(0.2 * 5) = 1 cluster: "big" (|sum| 10)
+    assert "big" not in kc and len(kv) == 4
+    kv, kc = drop_top_clusters(v, c, 0.4)  # two clusters: "big" and "neg"
+    assert set(kc) == {"x", "y", "z"}
+    assert drop_top_clusters([], [], 0.05) == ([], [])
+
+
+def test_g_at_kickoff_ignores_points_after_reference():
+    # no look-ahead: points at or after T (the in-play jump) do not change p_PM(T) or g
+    T = 1_000_000
+    pre = [{"t": T - 600, "p": 0.10}, {"t": T - 60, "p": 0.12}]
+    post = [{"t": T, "p": 0.90}, {"t": T + 300, "p": 0.99}]
+    p_sharp = 0.10
+    g1 = quote_at(pre, T, 120)[0] - p_sharp
+    g2 = quote_at(pre + post, T, 120)[0] - p_sharp
+    assert g1 == g2 == pytest.approx(0.02)

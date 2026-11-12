@@ -102,6 +102,9 @@ MIN_DEMO = 30
 S3_FINAL_N = 100  # Q-20261030-3: the decision to drop S3 only on 100 trades
 S28_FLOOR_30 = -0.438  # Q-20261030-2: i.i.d. p5 of n 30, only on the check at the first 30 filled trades
 OLD_BE_VERSIONS = frozenset({"v1", "v2"})  # break-even at +30 % ROE (before v3): S3 descriptive split only
+# An ``orphaned`` trade (filled, its close never found) closed at its initial stop: P&L = -risk_usd, since the demo's
+# risk already holds both taker fees (``demo_trader._risk``). A scenario only; stop slippage would make it worse.
+ORPHAN_STOP_R = -1.0
 
 DEMO: tuple[DemoSpec, ...] = (
     DemoSpec(
@@ -202,7 +205,10 @@ def _closed_r(rows: Sequence[Mapping[str, Any]], now_ms: int) -> list[Mapping[st
 
 def demo_forward(spec: DemoSpec, trades: Sequence[Mapping[str, Any]], now_ms: int) -> list[dict[str, Any]]:
     """Rows of one demo setup: mean demo R (``r_multiple``: venue P&L with fees / risk from the fill) of the closed
-    trades of its current version against the band of the largest n' <= n; for a limit setup also the fill share."""
+    trades of its current version against the band of the largest n' <= n; for a limit setup also the fill share.
+    The ``orphaned`` trades of the current version (filled by ``now_ms``, no R) stay out of the sample; a note shows
+    the mean and the label with each of them closed at its stop (``ORPHAN_STOP_R``), so an «узгоджується» resting on them
+    is visible (review of item 326, remark 1)."""
     mine = [t for t in trades if _setup(t.get("setup")) == spec.setup and (spec.timeframe is None or t.get("timeframe") == spec.timeframe)]
     ver = {id(t): _versioned(t, now_ms) for t in mine}
     cur = [t for t in mine if spec.versions is None or ver[id(t)] in spec.versions]
@@ -223,6 +229,23 @@ def demo_forward(spec: DemoSpec, trades: Sequence[Mapping[str, Any]], now_ms: in
         row |= {"verdict": label, "side": side}
         if label == OK and edge:
             notes.append("поза i.i.d.-смугою, але в смузі рішення: на межі, не аргумент")
+    # dated by the fill, a row without it by its signal bar (as the report's orphan note)
+    at = [
+        next((v for k in ("opened_ts", "signal_ts") if (v := _num(t.get(k))) is not None), None)
+        for t in cur
+        if t.get("status") == "orphaned"
+    ]
+    orphans = sum(1 for o in at if o is not None and o <= now_ms)
+    if orphans:
+        m2 = statistics.fmean([*rs, *[ORPHAN_STOP_R] * orphans])
+        text = (
+            f"orphaned цієї версії (поза вибіркою): {orphans}; якщо кожну закрито за стопом ({ORPHAN_STOP_R:+.0f}R, "
+            f"проковзування дало б гірше): n {n} → {n + orphans}, середній R {_f(mean, 3, sign=True)} → {m2:+.3f}"
+        )
+        if n + orphans >= MIN_DEMO:
+            label2, side2, _ = _band_verdict(m2, decision_band(spec.bands, n + orphans))
+            text += f", вердикт {row['verdict']} → {label2}" + (f" ({side2})" if side2 else "")
+        notes.append(text + "; лише сценарій, закриття перевірити за журналом біржі")
     if spec.setup == "S3":
         old = sum(1 for t in closed if ver[id(t)] in OLD_BE_VERSIONS)
         notes.append(f"з них за старим правилом беззбитку (v1 / v2, +30 % ROE): {old}, лише описово")

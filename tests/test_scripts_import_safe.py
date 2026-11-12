@@ -266,6 +266,22 @@ def _imported_names(tree: ast.Module) -> frozenset[str]:
     return frozenset(names)
 
 
+def _prune(body: list[ast.stmt]) -> None:
+    """Empty, in place, what `_check` never reads: function bodies (of a `def` it reads only decorators and defaults)
+    and `if __name__ == "__main__":` blocks. Walks the statements `_check` walks (module, `if` / `try`, class bodies)."""
+    for st in body:
+        if isinstance(st, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            st.body = []
+        elif isinstance(st, ast.ClassDef):
+            _prune(st.body)
+        elif _is_main_guard(st):
+            st.body, st.orelse = [], []
+        elif isinstance(st, ast.If):
+            _prune(st.body + st.orelse)
+        elif isinstance(st, ast.Try):
+            _prune(st.body + [s for h in st.handlers for s in h.body] + st.orelse + st.finalbody)
+
+
 def scan(root: Path = SCRIPTS) -> tuple[int, dict[str, list[str]]]:
     """(files scanned, {path relative to ``root``: findings}) over ``root/**/*.py`` except ``_*.py``.
 
@@ -278,11 +294,13 @@ def scan(root: Path = SCRIPTS) -> tuple[int, dict[str, list[str]]]:
     top = by_dir.get(root, {})
     stems = {folder: frozenset({**top, **sources}) for folder, sources in by_dir.items()}
     # module_info of every script as each folder sees it (a top-level script is visible from every folder, unless a
-    # script of that folder has its stem). Each file is parsed once here and once for its own check below; parsing
-    # it again per folder was ~70 % of the scan time. Trees are not kept: all of them take ~340 MiB per worker.
+    # script of that folder has its stem). Each file is parsed once; parsing it again per folder was ~70 % of the scan
+    # time, a second parse for its own check ~40 % of the rest. Full trees are not kept (all of them take ~340 MiB per
+    # worker): once module_info has read the function bodies, `_prune` drops what the check below does not read.
     # module_info reads `siblings` only to test the names of the top-level `import x` / `from x import`, so folders
     # whose stems agree on those names share one result.
     infos: dict[Path, dict[str, Module]] = {folder: {} for folder in by_dir}
+    pruned: dict[tuple[Path, str], ast.Module] = {}
     for home, sources in by_dir.items():
         for stem, src in sources.items():
             tree = ast.parse(src)
@@ -294,13 +312,16 @@ def scan(root: Path = SCRIPTS) -> tuple[int, dict[str, list[str]]]:
                     if key not in shared:
                         shared[key] = module_info(tree, stems[folder])
                     infos[folder][stem] = shared[key]
+            if not stem.startswith("_"):
+                _prune(tree.body)
+                pruned[home, stem] = tree
     n, found = 0, {}
     for folder, sources in by_dir.items():
         others = infos[folder]
         for stem in (s for s in sources if not s.startswith("_")):
             n += 1
             # = import_side_effects(sources[stem], others): others[stem] is module_info(sources[stem], stems[folder])
-            hits = _side_effects(ast.parse(sources[stem]), others[stem], others)
+            hits = _side_effects(pruned.pop((folder, stem)), others[stem], others)
             if hits:
                 found[(folder.relative_to(root) / f"{stem}.py").as_posix()] = hits
     return n, found
@@ -528,6 +549,24 @@ def test_sibling_script_helpers_are_resolved():
         "ms, get = s1.ms, s1.load\nms = s1.ms\nget = s1.load\nF = ms(4)\nG = get()\n"
     )
     assert import_side_effects(src, others) == ["7: call s1.load()", "8: call load()", "13: call get()"]
+
+
+def test_pruned_tree_gives_the_same_findings():
+    # scan checks a tree whose function bodies and `__main__` block `_prune` emptied after module_info read them
+    src = (
+        "import time\nfrom tradedesk.core.http import Http\n\n\n"
+        "def load():\n    return Http().get('x')\n\n\n"
+        "class K:\n    LIMIT = load()\n\n    def m(self, now=time.time()):\n        return load()\n\n\n"
+        "try:\n    def f(a=fetch()):\n        return load()\nexcept ImportError:\n    H = Http()\n\n"
+        "if __name__ == '__main__':\n    load()\n"
+    )
+    tree = ast.parse(src)
+    mod = module_info(tree)
+    _prune(tree.body)
+    expected = ["10: call load()", "12: call time.time()", "17: call fetch()", "20: call Http()"]
+    assert import_side_effects(src) == expected and _side_effects(tree, mod, {}) == expected
+    fns = [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    assert len(fns) == 3 and all(fn.body == [] for fn in fns) and tree.body[-1].body == []
 
 
 def test_allowed_counts_and_scan(tmp_path):

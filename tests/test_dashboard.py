@@ -2437,7 +2437,7 @@ def _visible_text(html_part: str) -> str:
 # like RULE2_TODO, it must match the fact both ways.
 # «спокій: / ризик: / подія: / нагода:» are the labels of «Головне сьогодні» (HELP["key"]); «не виконується» is the
 # risk rule's verdict in «Чи вкладається в ризик». Item 331: whole words only («нема» is not found in «немає»,
-# «помилка» not in «помилкові»), so the stem «застаріл» became its forms.
+# «збій» not in «незбійний»), so the stem «застаріл» became its forms.
 RULE4_STATUS = ("немає", "нема", "вимкнено", "збій", "помилка", "порожньо", "невідомо", "чекає", "не виконується")
 RULE4_STATUS += ("застарілі", "застаріла", "застарілий", "застаріло", "спокій:", "ризик:", "подія:", "нагода:")
 RULE4_TODO: dict[str, str] = {}  # item 303: the four «Мої угоди» folds got summary functions (rules_week_line & co.)

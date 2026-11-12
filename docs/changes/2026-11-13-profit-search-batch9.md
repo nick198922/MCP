@@ -1,0 +1,1 @@
+- Партія 9 скаута (profit-search, п. 3): карток нема, у картці один рядок з відкинутими кандидатами (Kalshi, Derive/Aevo, Pendle, earn/lending, inverse/quanto).

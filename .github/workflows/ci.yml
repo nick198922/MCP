@@ -1,6 +1,9 @@
 name: ci
 on:
+  # Branches are tested by their pull request only (automerge acts on pull_request runs); a push run on the same
+  # commit was a duplicate, and each red one mailed the owner twice (12.11).
   push:
+    branches: [main]
   pull_request:
 
 jobs:

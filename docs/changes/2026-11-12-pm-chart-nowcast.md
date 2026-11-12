@@ -1,0 +1,4 @@
+- Картка `pm-chart-nowcast-popculture`: кроки 0–1 виконано, ворота не пройдено (немає безкоштовних добових даних назад для Spotify і Netflix; бокс-офіс — лише 8 подій) → статус `forward`, прогону немає.
+- Polymarket: 201 закрита подія серії, 190 з історією цін; правила розрахунку й комісія категорії зчитані.
+- Додано `scripts/verify_pm_chart_nowcast.py`, звіт `docs/verification/2026-11-12-pm-chart-nowcast-popculture.md`, рев'ю критика, запис S10 у `docs/knowledge/setups.md`.
+- Форвард: лише Spotify, дедлайн 2027-05-12 / 2027-11-12, колектор не побудовано.

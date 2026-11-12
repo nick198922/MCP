@@ -16,6 +16,8 @@ So are the idea cards with status ``forward``, judged by plans tagged ``idea:<sl
 One section outside the table, ``s12_stop_rule``: the owner's S12 stop rule (Q-20261109-1) with n, mean R and the 95 %
 CI clustered by signal day, for v9 and for the v4 entry (v4 + v9). Each demo row with fee data also gets a descriptive
 note (item 341): mean ``fee_gap_r`` of ``demo_execution`` and the taker-entry share; it changes no n, mean or label.
+Each demo row with n >= 30 notes the 95 % CI of its mean R clustered by the signal's UTC day (``_r_ci``, item 343), as
+the CHECKPOINT rule registers it: descriptive only, the label stays the band's (below 30 the few days make it noise).
 
 What this module does not compute (the label says so in its notes): carry criteria (a) (re-run of the backtest code),
 (e) and (ye) (universe and capacity checks) and B's liquidation part of (g) (1m mark prices, network); the demo's
@@ -255,6 +257,15 @@ def demo_forward(spec: DemoSpec, trades: Sequence[Mapping[str, Any]], now_ms: in
         row |= {"verdict": label, "side": side}
         if label == OK and edge:
             notes.append("поза i.i.d.-смугою, але в смузі рішення: на межі, не аргумент")
+    # CHECKPOINT, «Загальне правило демо», «Метрика»: the clustered CI is descriptive, the label is the band's. Only from
+    # MIN_DEMO on: below it a bootstrap over 2-6 signal days is degenerate (n 2 on 2 days gave [-1.032; -1.019] live)
+    if n >= MIN_DEMO:
+        s = _r_ci(closed)
+        ci = f"[{s['ci'][0]:+.3f}; {s['ci'][1]:+.3f}]" if s["ci"] else "— (усі угоди одного дня сигналу)"
+        notes.append(
+            f"95 % CI середнього R кластерами за UTC-днем сигналу: {ci}, днів {s['days']} (бутстреп {S12_CI_BOOT}, "
+            f"seed {S12_CI_SEED}); лише описово: вердикт — за смугою рішення; днів мало, тож CI занижений"
+        )
     # dated by the fill, a row without it by its signal bar (as the report's orphan note)
     at = [
         next((v for k in ("opened_ts", "signal_ts") if (v := _num(t.get(k))) is not None), None)

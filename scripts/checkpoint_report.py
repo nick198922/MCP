@@ -21,7 +21,8 @@ demo trader set aside as ``orphaned`` (filled, no position and no close found on
 Closed demo trades whose recorded P&L disagrees with ``(exit - entry) * qty`` minus fees get a note «Угоди з розбіжним
 P&L: N» (``tradedesk.analytics.demo_pnl_check``, item 140; only when N > 0): their exit price and reason are suspect.
 Each demo setup row with known fees notes the demo's fees against the backtest fee model (mean ``fee_gap_r``, taker
-entries; ``tradedesk.analytics.checkpoint.demo_fee_note``, item 341), descriptive only.
+entries; ``tradedesk.analytics.checkpoint.demo_fee_note``, item 341), descriptive only. Each demo setup row with n >= 30
+also notes the 95 % CI of its mean R clustered by the signal's UTC day, descriptive as CHECKPOINT registers it (item 343).
 The section «S12: правило зняття» applies the owner's rule Q-20261109-1 to the closed S12 demo trades (v9: n >= 30 and
 mean R below -0.827 -> stop and review the execution; v4 entry, v4 + v9: n >= 100 and below -0.524R -> drop; else
 «рано» or «тримати»), with n, mean R and a 95 % CI (``tradedesk.analytics.checkpoint.s12_stop_rule``, item 313).

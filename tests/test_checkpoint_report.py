@@ -122,6 +122,26 @@ def test_demo_fee_note_maker_and_taker_entry():
     assert with_fees["n"] == 2 and with_fees["metric"] == pytest.approx(0.1)
 
 
+def test_demo_row_notes_the_day_clustered_ci_descriptively():
+    """Item 343: CHECKPOINT («Загальне правило демо», «Метрика») registers a CI clustered by the signal's UTC day as
+    descriptive; the demo row now shows it, and it changes neither n, the mean nor the label."""
+    s3 = next(s for s in cp.DEMO if s.setup == "S3")
+    rows = [_trade(i, "S3", (-1.0, 0.5, 2.0)[i % 3]) for i in range(30)]  # signals 31.10 02:00 + i h: two UTC days
+    r = cp.demo_forward(s3, rows, NOW)[0]
+    note = next(x for x in r["notes"] if x.startswith("95 % CI середнього R"))
+    want = cp._r_ci(cp._closed_r(rows, NOW))
+    assert want["days"] == 2 and "днів 2" in note and "лише описово" in note
+    lo, hi = want["ci"]
+    assert lo <= r["metric"] <= hi
+    assert f"[{lo:+.3f}; {hi:+.3f}]" in note
+    assert (r["n"], r["verdict"]) == (30, cp.OK) and r["metric"] == pytest.approx(0.5)
+    one_day = [dict(t, signal_ts=V9) for t in rows]  # every signal on one day: no clustered CI, said so
+    note1 = next(x for x in cp.demo_forward(s3, one_day, NOW)[0]["notes"] if x.startswith("95 % CI"))
+    assert "усі угоди одного дня сигналу" in note1 and "днів 1" in note1
+    early = cp.demo_forward(s3, rows[:29], NOW)[0]  # below the minimum n: a CI over a few days is noise, none shown
+    assert early["verdict"] == cp.EARLY and not any(x.startswith("95 % CI") for x in early["notes"])
+
+
 def test_fill_share_counts_closing_as_filled_and_notes_stale_pending():
     s28 = next(s for s in cp.DEMO if s.setup == "S28")
     filled = [_trade(i, "S28", 0.0, rest_until=V9) for i in range(10)]

@@ -49,7 +49,7 @@ from tradedesk.analytics.pm_touch import (
     touch_prob,
     touched,
 )
-from tradedesk.core.errors import ProviderError
+from tradedesk.core.errors import ProviderError, is_permanent
 
 DEFAULT_CACHE = Path("~/.cache/tradedesk-agents/pm_touch").expanduser()
 CARD = Path(__file__).resolve().parents[1] / "docs/ideas/IDEA-20261015-polymarket-touch-ladder-event-days.md"
@@ -72,24 +72,12 @@ def _write(p: Path, obj: Any) -> None:
     tmp.replace(p)
 
 
-_NO_RETRY_REASONS = frozenset({"config", "auth", "provider_tier", "data_unavailable"})
-
-
-def _is_permanent(e: Exception) -> bool:
-    if not isinstance(e, ProviderError):
-        return False
-    if e.reason in _NO_RETRY_REASONS:
-        return True
-    m = re.match(r"HTTP (\d{3})\b", e.detail or "")
-    return bool(m) and 400 <= int(m.group(1)) < 500 and m.group(1) != "429"
-
-
 async def _retry(coro_fn, what: str, tries: int = 5):  # noqa: ANN001, ANN202
     for k in range(tries):
         try:
             return await coro_fn()
         except Exception as e:  # noqa: BLE001
-            if _is_permanent(e):
+            if is_permanent(e):
                 raise
             log(f"retry {what} after {type(e).__name__}: {str(e)[:120]}")
             await asyncio.sleep(5 * (k + 1))

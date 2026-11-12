@@ -29,7 +29,7 @@ from tradedesk.analytics.pm_threshold import (
     standard_rules,
     value_at,
 )
-from tradedesk.core.errors import ProviderError
+from tradedesk.core.errors import ProviderError, is_permanent
 from tradedesk.core.http import Http
 from tradedesk.providers.polymarket import Polymarket
 
@@ -301,12 +301,12 @@ async def test_trades_provider_failure_raises_provider_error():
     await pm.aclose()
 
 
-def _verify_script():
+def _verify_script(name: str = "verify_pm_threshold"):
     import importlib
     import sys
 
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
-    return importlib.import_module("verify_pm_threshold")
+    return importlib.import_module(name)
 
 
 @pytest.mark.parametrize(
@@ -314,12 +314,32 @@ def _verify_script():
     [(400, True), (404, True), (422, True), (403, True), (429, False), (500, False), (502, False)],
 )
 async def test_script_retry_classifies_http_errors_by_status(status, permanent):
-    vs = _verify_script()
     pm = _pm(lambda req: httpx.Response(status, text="x"))
     with pytest.raises(ProviderError) as ei:
         await pm.trades("0xabc", end=1)
-    assert vs._is_permanent(ei.value) is permanent
+    assert is_permanent(ei.value) is permanent
     await pm.aclose()
+
+
+def test_is_permanent_reasons_and_non_provider_errors():
+    for reason in ("config", "auth", "provider_tier", "data_unavailable"):
+        assert is_permanent(ProviderError("p", reason, "x")) is True
+    for reason in ("network", "rate_limited", "backend_error", "unknown"):
+        assert is_permanent(ProviderError("p", reason, "x")) is False
+    assert is_permanent(ProviderError("p", "backend_error", "HTTP 418: teapot")) is True
+    assert is_permanent(ProviderError("p", "backend_error", "HTTP 429: slow down")) is False
+    assert is_permanent(ProviderError("p", "backend_error", "HTTP 4000: not a status")) is False
+    assert is_permanent(ProviderError("p", "backend_error", "")) is False
+    assert is_permanent(TimeoutError("t")) is False
+    assert is_permanent(ValueError("HTTP 400")) is False
+
+
+@pytest.mark.parametrize("name", ["verify_pm_threshold", "verify_pm_touch", "verify_pm_yes_calibration"])
+def test_scripts_use_the_shared_is_permanent(name):
+    # standing-improvements tech debt: the three local '_is_permanent' copies now live in tradedesk.core.errors
+    mod = _verify_script(name)
+    assert mod.is_permanent is is_permanent
+    assert not hasattr(mod, "_is_permanent") and not hasattr(mod, "_NO_RETRY_REASONS")
 
 
 async def test_script_retry_does_not_repeat_permanent_errors():
@@ -334,5 +354,5 @@ async def test_script_retry_does_not_repeat_permanent_errors():
     with pytest.raises(ProviderError):
         await vs._retry(boom, "t")
     assert calls == 1
-    assert vs._is_permanent(ProviderError("polymarket", "config", "offset 20000 exceeds 10000")) is True
-    assert vs._is_permanent(ProviderError("polymarket", "network", "timeout: ReadTimeout")) is False
+    assert is_permanent(ProviderError("polymarket", "config", "offset 20000 exceeds 10000")) is True
+    assert is_permanent(ProviderError("polymarket", "network", "timeout: ReadTimeout")) is False

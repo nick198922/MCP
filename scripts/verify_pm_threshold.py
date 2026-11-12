@@ -43,7 +43,7 @@ from tradedesk.analytics.pm_threshold import (
     realized_vol,
     value_at,
 )
-from tradedesk.core.errors import ProviderError
+from tradedesk.core.errors import is_permanent
 
 ASSETS = {
     # asset: (Gamma series slug, Binance spot symbol, Deribit DVOL currency or None)
@@ -155,29 +155,12 @@ def listed_by(m: dict[str, Any], t: int) -> bool:
     return m.get("start") is not None and int(m["start"]) <= t
 
 
-_NO_RETRY_REASONS = frozenset({"config", "auth", "provider_tier", "data_unavailable"})
-
-
-def _is_permanent(e: Exception) -> bool:
-    """True for errors a retry cannot fix: caller/config errors and any HTTP 4xx except 429.
-
-    `Http` maps 404 -> data_unavailable, 401/403 -> auth, 402 -> provider_tier and other non-retryable 4xx
-    (400, 422, ...) -> backend_error with detail "HTTP <code>: ..."; so check the reason, then the detail prefix.
-    """
-    if not isinstance(e, ProviderError):
-        return False
-    if e.reason in _NO_RETRY_REASONS:
-        return True
-    m = re.match(r"HTTP (\d{3})\b", e.detail or "")
-    return bool(m) and 400 <= int(m.group(1)) < 500 and m.group(1) != "429"
-
-
 async def _retry(coro_fn, what: str, tries: int = 5):  # noqa: ANN001, ANN202
     for k in range(tries):
         try:
             return await coro_fn()
         except Exception as e:  # noqa: BLE001
-            if _is_permanent(e):
+            if is_permanent(e):
                 raise
             print(f"  retry {what} after {type(e).__name__}: {str(e)[:120]}", flush=True)
             await asyncio.sleep(5 * (k + 1))

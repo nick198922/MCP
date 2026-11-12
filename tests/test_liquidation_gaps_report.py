@@ -196,15 +196,18 @@ def test_default_cycle_matches_the_deployed_collector():
 def test_cycle_flags_change_the_expected_time(tmp_path, con):
     for stmt in MIGRATIONS[40]:
         con.execute(stmt)
-    # Hour 5 starts the journal; QUIET (hour 10) connected 3218 s: 98 % of E at 600 + 5, 97 % at 60 + 5.
+    # Hour 5 starts the journal; QUIET (hour 10) connected 3100 s: 93 % of E = 3323 at 60 + 5 (quiet market), but only
+    # 87 % of E = 3570 at 600 + 5 (unclear), so the class must use the flags' E, not the default one.
     con.executemany(
         "INSERT INTO liquidation_stream_hour (exchange, hour_ts, connected_s, frames) VALUES ('bybit', ?, ?, ?)",
-        [(T0 + 5 * H, 3600.0, 9), (T0 + QUIET * H, 3218.0, 9)],
+        [(T0 + 5 * H, 3600.0, 9), (T0 + QUIET * H, 3100.0, 9)],
     )
     con.commit()
     _, text = script.build(con, CUTOFF, None, 0, ("BTCUSDT",), 60.0, 8.0, 60.0, 5.0)
     assert "collector windows 60 s + pause 5 s -> expected connected 3323 s an hour" in text
-    assert "connected 89% of the hour (97% of the expected), frames 9: quiet market" in text
+    assert "connected 86% of the hour (93% of the expected), frames 9: quiet market" in text
+    _, default_text = script.build(con, CUTOFF, None, 0, ("BTCUSDT",), 60.0, 8.0)
+    assert "connected 86% of the hour (87% of the expected), frames 9: unclear" in default_text
     db, out = tmp_path / "liq.sqlite", tmp_path / "report.txt"
     file_con = sqlite3.connect(db)
     con.backup(file_con)

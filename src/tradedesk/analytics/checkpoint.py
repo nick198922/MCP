@@ -105,7 +105,7 @@ OLD_BE_VERSIONS = frozenset({"v1", "v2"})  # break-even at +30 % ROE (before v3)
 # An ``orphaned`` trade (filled, its close never found) closed at its initial stop: P&L = -risk_usd, since the demo's
 # risk already holds both taker fees (``demo_trader._risk``). A scenario only; stop slippage would make it worse.
 ORPHAN_STOP_R = -1.0
-ORPHAN_FLAT_R = 0.0  # the other end of the range: an orphan closed flat (0R); only a scenario as well
+ORPHAN_FLAT_R = 0.0  # break-even scenario: an orphan closed flat (0R); not an upper bound (it may have won); a scenario too
 
 DEMO: tuple[DemoSpec, ...] = (
     DemoSpec(
@@ -246,9 +246,9 @@ def demo_forward(spec: DemoSpec, trades: Sequence[Mapping[str, Any]], now_ms: in
         if n + orphans >= MIN_DEMO:
             label2, side2, _ = _band_verdict(m2, decision_band(spec.bands, n + orphans))
             text += f", вердикт {row['verdict']} → {label2}" + (f" ({side2})" if side2 else "")
-        # the other end of the range: each orphan closed flat (0R), the best case short of a win
+        # break-even scenario: each orphan closed flat (0R); not an upper bound, an orphan may have closed at a win
         m0 = statistics.fmean([*rs, *[ORPHAN_FLAT_R] * orphans])
-        text += f"; межа «орфани = 0R»: середній R {m0:+.3f}"
+        text += f"; сценарій беззбитку «орфани = 0R»: середній R {m0:+.3f}"
         if n + orphans >= MIN_DEMO:
             label0, side0, _ = _band_verdict(m0, decision_band(spec.bands, n + orphans))
             text += f", вердикт {label0}" + (f" ({side0})" if side0 else "")

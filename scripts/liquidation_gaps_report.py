@@ -1,6 +1,7 @@
 """Liquidation stream gaps: real holes or quiet hours? (standing-improvements card, item «дірки у стрімах ліквідацій»).
 
-    uv run python scripts/liquidation_gaps_report.py [--db PATH] [--cutoff ISO] [--min-ref N] [--top K] [--out PATH]
+    uv run python scripts/liquidation_gaps_report.py [--db PATH] [--cutoff ISO] [--min-ref N] [--top K]
+        [--window-seconds W] [--restart-seconds R] [--out PATH]
 
 Reads the ``liquidations`` table through a READ-ONLY connection (``mode=ro``: no migration, no write, no network).
 For each target stream (Bybit, OKX) it compares the rows with a reference stream on Binance USD-M, split before / after
@@ -18,7 +19,14 @@ reconnect/backoff change; the server ran it some minutes later, after the merge 
   reference count before the cutoff; a pause belongs to the hour it starts in), with the Poisson P(count <= observed);
 - quiet hours (reference below its pre-cutoff lower quartile): zero-target hours before vs after, and how many quiet
   hours after the cutoff without a zero hour would reject the pre-cutoff zero rate (P < 0.05). If the fix removed
-  real holes, quiet hours after it stop being empty; if they stay empty at the old rate, the market was quiet.
+  real holes, quiet hours after it stop being empty; if they stay empty at the old rate, the market was quiet;
+- zero hours the collector's connection journal covers (``liquidation_stream_hour``, schema 40, from the first FULL
+  hour after its first row: the service started inside that one): the connected time against the time the collector
+  is meant to be connected, E = 3600 * W / (W + R) s an hour (stream windows of W = ``--window-seconds``, default 600
+  as deployed, then a pause of R = ``--restart-seconds``, default 5, so a perfect link never reaches 3600 s), and the
+  frames received; >= 90 % of E with frames = "quiet market", < 50 % of E = "drop", else "unclear". Each such line
+  shows both the share of the hour and the share of E. A covered hour without a journal row had no connection (0 %).
+  Without the table or before its first full hour the report is as before.
 
 The reference for Bybit is Binance on the same symbols (the Bybit job subscribes only to ``--bybit-symbols``); for OKX
 (every SWAP) it is Binance on the symbols OKX also lists (``BTC-USDT-SWAP`` -> ``BTCUSDT``), so Binance-only coins do
@@ -39,6 +47,8 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
+from tradedesk.config import Settings
+
 DEFAULT_DB = "/var/lib/tradedesk-mcp/tradedesk.sqlite"
 # Commit 33844e53 (author time) that added docs/changes/2026-11-09-liquidation-stream-reconnect.md; merged as PR #949
 # at 21:22:30 UTC the same evening.
@@ -46,6 +56,22 @@ DEFAULT_CUTOFF = "2026-11-09T21:18:59+00:00"
 REFERENCE = "binanceusdm"
 BYBIT_SYMBOLS = "BTCUSDT,ETHUSDT,SOLUSDT"
 H = 3600
+# Collector connection journal (schema 40): a zero-row hour connected >= QUIET_SHARE of the expected time with frames =
+# quiet market, < DROP_SHARE = drop.
+QUIET_SHARE, DROP_SHARE = 0.9, 0.5
+# The collector's cycle: a stream window of W s, then the PeriodicJob pause of R s before the next one, so even a perfect
+# link is connected at most 3600 * W / (W + R) s an hour. W as deployed (deploy/features.env
+# TRADEDESK_COLLECT_LIQUIDATIONS_WINDOW_SECONDS; the code default is 60), R the code default (not overridden there).
+DEFAULT_WINDOW_S = 600.0
+DEFAULT_RESTART_S = float(Settings.collect_liquidations_restart_seconds)
+
+
+def expected_connected_s(window_s: float, restart_s: float) -> float:
+    """Seconds of an hour the collector is meant to be connected: 3600 * W / (W + R)."""
+    return H * window_s / (window_s + restart_s)
+
+
+EXPECTED_S = expected_connected_s(DEFAULT_WINDOW_S, DEFAULT_RESTART_S)
 
 
 def load_ts(con: sqlite3.Connection, venue: str, symbols: tuple[str, ...] | None = None) -> list[int]:
@@ -154,8 +180,58 @@ def quiet_hours(target: list[int], ref: list[int], lo: int, cutoff: int, hi: int
     return res
 
 
-def period(target: list[int], ref: list[int], ref_all: list[int], lo: int, hi: int, min_ref: int, top: int, ratio: float) -> dict:
-    """Hourly and gap figures of one period [lo, hi) (unix s)."""
+def load_stream_hours(con: sqlite3.Connection, exchange: str) -> dict[int, tuple[float, int]]:
+    """Hour index (ts // 3600) -> (seconds with an open connection, frames) from the collector's connection journal
+    (``liquidation_stream_hour``, schema 40); {} when the DB has no such table yet."""
+    try:
+        cur = con.execute("SELECT hour_ts, connected_s, frames FROM liquidation_stream_hour WHERE exchange = ?", (exchange,))
+    except sqlite3.OperationalError:  # no such table: a DB from before the journal
+        return {}
+    return {int(h) // H: (float(c), int(f)) for h, c, f in cur}
+
+
+def classify(connected_s: float, frames: int, expected_s: float = EXPECTED_S) -> str:
+    """A zero-row hour by its connection, against ``expected_s`` (the seconds the collector is meant to be connected,
+    ``expected_connected_s``): >= 90 % of it connected with frames (heartbeat replies count) = quiet market, < 50 % =
+    drop, anything between (or connected without a single frame) = unclear."""
+    if connected_s >= QUIET_SHARE * expected_s and frames > 0:
+        return "quiet market"
+    if connected_s < DROP_SHARE * expected_s:
+        return "drop"
+    return "unclear"
+
+
+def connection_notes(
+    hours: list[int], journal: dict[int, tuple[float, int]] | None, expected_s: float = EXPECTED_S
+) -> dict[int, tuple[float, float, int, str]]:
+    """(share of the hour connected, share of ``expected_s``, frames, class) of each hour index in ``hours`` the journal
+    covers. Coverage starts at the first FULL hour after the journal's first row (the service started inside that one);
+    earlier hours are left out (reported as before); a covered hour without a row had no connection at all."""
+    if not journal:
+        return {}
+    first = min(journal) + 1
+    notes = {}
+    for h in hours:
+        if h >= first:
+            c, f = journal.get(h, (0.0, 0))
+            notes[h] = (min(1.0, c / H), min(1.0, c / expected_s), f, classify(c, f, expected_s))
+    return notes
+
+
+def period(
+    target: list[int],
+    ref: list[int],
+    ref_all: list[int],
+    lo: int,
+    hi: int,
+    min_ref: int,
+    top: int,
+    ratio: float,
+    journal: dict[int, tuple[float, int]] | None = None,
+    expected_s: float = EXPECTED_S,
+) -> dict:
+    """Hourly and gap figures of one period [lo, hi) (unix s); ``journal``: ``load_stream_hours`` of the target,
+    ``expected_s``: ``expected_connected_s`` of the collector that wrote it."""
     h0, h1 = -(-lo // H), hi // H  # full hours only
     t_h, r_h = hourly(target, h0, h1), hourly(ref, h0, h1)
     zero = [(h, r) for h, t, r in zip(range(h0, h1), t_h, r_h, strict=True) if t == 0]
@@ -181,11 +257,22 @@ def period(target: list[int], ref: list[int], ref_all: list[int], lo: int, hi: i
         "flagged": [(h, r) for h, r in zero if r >= min_ref],
         "quiet": [(h, r) for h, r in zero if r < min_ref],
         "gaps": gaps,
+        "conn": connection_notes([h for h, _ in zero], journal, expected_s),
     }
 
 
 def analyse(
-    target: list[int], ref: list[int], ref_all: list[int], lo: int, hi: int, cutoff: int, min_ref: int | None, top: int, pause_min: float
+    target: list[int],
+    ref: list[int],
+    ref_all: list[int],
+    lo: int,
+    hi: int,
+    cutoff: int,
+    min_ref: int | None,
+    top: int,
+    pause_min: float,
+    journal: dict[int, tuple[float, int]] | None = None,
+    expected_s: float = EXPECTED_S,
 ) -> dict:
     """Both periods of one target stream; ``min_ref`` None = median hourly reference count over [lo, hi)."""
     ref_h = hourly(ref, -(-lo // H), hi // H)
@@ -198,8 +285,8 @@ def analyse(
     return {
         "min_ref": n,
         "ratio": ratio,
-        "pre": period(target, ref, ref_all, lo, cutoff, n, top, ratio),
-        "post": period(target, ref, ref_all, cutoff, hi, n, top, ratio),
+        "pre": period(target, ref, ref_all, lo, cutoff, n, top, ratio, journal, expected_s),
+        "post": period(target, ref, ref_all, cutoff, hi, n, top, ratio, journal, expected_s),
         "long": long_pause_test(target, ref, lo, cutoff, hi, pause_min),
         "quiet": quiet_hours(target, ref, lo, cutoff, hi),
     }
@@ -209,8 +296,26 @@ def _t(ts: float) -> str:
     return datetime.fromtimestamp(ts, UTC).strftime("%Y-%m-%d %H:%M")
 
 
-def render(results: dict[str, dict], lo: int, hi: int, cutoff: int, labels: dict[str, str]) -> str:
-    out = ["# Liquidation stream gaps", f"window {_t(lo)} .. {_t(hi)} UTC; cutoff (reconnect change) {_t(cutoff)} UTC", ""]
+def _conn(note: tuple[float, float, int, str] | None) -> str:
+    """Suffix of a zero-hour line: its connection from the journal (empty without journal data)."""
+    if note is None:
+        return ""
+    share, of_expected, frames, kind = note
+    return f"; connected {share:.0%} of the hour ({of_expected:.0%} of the expected), frames {frames}: {kind}"
+
+
+def render(
+    results: dict[str, dict], lo: int, hi: int, cutoff: int, labels: dict[str, str], cycle: tuple[float, float] | None = None
+) -> str:
+    """The report; ``cycle`` = (window s, pause s) the connection shares are measured against."""
+    out = ["# Liquidation stream gaps", f"window {_t(lo)} .. {_t(hi)} UTC; cutoff (reconnect change) {_t(cutoff)} UTC"]
+    if cycle and any(res["pre"].get("conn") or res["post"].get("conn") for res in results.values()):
+        w, r = cycle
+        out.append(
+            f"connection journal: collector windows {w:g} s + pause {r:g} s -> expected connected "
+            f"{expected_connected_s(w, r):.0f} s an hour; quiet market >= {QUIET_SHARE:.0%} of it with frames, drop < {DROP_SHARE:.0%}"
+        )
+    out.append("")
     for venue, res in results.items():
         n = res["min_ref"]
         out.append(f"## {venue} vs {labels[venue]}")
@@ -223,8 +328,15 @@ def render(results: dict[str, dict], lo: int, hi: int, cutoff: int, labels: dict
                 f"- {name}: {p['hours']} full hours, rows {p['target_rows']} (reference {p['ref_rows']}); "
                 f"zero hours {p['zero_hours']}: probable holes (reference >= N) {len(p['flagged'])}, quiet or unclear {len(p['quiet'])}"
             )
-            out.extend(f"  - hole? {_t(h * H)} reference {r}" for h, r in p["flagged"])
-            out.extend(f"  - quiet? {_t(h * H)} reference {r}" for h, r in p["quiet"])
+            conn = p.get("conn") or {}
+            if conn:
+                kinds = [c[-1] for c in conn.values()]
+                out.append(
+                    f"  - connection journal ({len(conn)} of the zero hours): "
+                    + ", ".join(f"{k} {kinds.count(k)}" for k in ("quiet market", "drop", "unclear"))
+                )
+            out.extend(f"  - hole? {_t(h * H)} reference {r}{_conn(conn.get(h))}" for h, r in p["flagged"])
+            out.extend(f"  - quiet? {_t(h * H)} reference {r}{_conn(conn.get(h))}" for h, r in p["quiet"])
             out.extend(
                 f"  - pause {g['minutes']:.0f} min from {_t(g['start'])}: reference {g['ref']}, expected {g['expected']:.1f}, "
                 f"P(0) {g['p0']:.2g}, all Binance {g['all']}"
@@ -254,8 +366,11 @@ def build(
     bybit_symbols: tuple[str, ...],
     bybit_pause: float,
     okx_pause: float,
+    window_s: float = DEFAULT_WINDOW_S,
+    restart_s: float = DEFAULT_RESTART_S,
 ) -> tuple[int, str]:
-    """(exit code, report text) over the window all three venues cover."""
+    """(exit code, report text) over the window all three venues cover; ``window_s`` / ``restart_s``: the collector's
+    stream window and pause between windows, for the expected connected time of an hour."""
     ref_all = load_ts(con, REFERENCE)
     common = okx_common_symbols(con)
     streams = {
@@ -273,8 +388,12 @@ def build(
     hi = min(ref_all[-1], *(s[0][-1] for s in streams.values()))
     if not lo < cutoff < hi:
         return 1, f"cutoff {_t(cutoff)} is outside the common window {_t(lo)} .. {_t(hi)}\n"
-    results = {v: analyse(t, r, ref_all, lo, hi, cutoff, min_ref, top, pm) for v, (t, r, _, pm) in streams.items()}
-    return 0, render(results, lo, hi, cutoff, {v: s[2] for v, s in streams.items()})
+    expected = expected_connected_s(window_s, restart_s)
+    results = {
+        v: analyse(t, r, ref_all, lo, hi, cutoff, min_ref, top, pm, load_stream_hours(con, v), expected)
+        for v, (t, r, _, pm) in streams.items()
+    }
+    return 0, render(results, lo, hi, cutoff, {v: s[2] for v, s in streams.items()}, (window_s, restart_s))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -286,14 +405,18 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--bybit-symbols", default=BYBIT_SYMBOLS)
     ap.add_argument("--bybit-pause-min", type=float, default=60.0, help="long-pause threshold for Bybit, minutes")
     ap.add_argument("--okx-pause-min", type=float, default=8.0, help="long-pause threshold for OKX, minutes")
+    ap.add_argument("--window-seconds", type=float, default=DEFAULT_WINDOW_S, help="collector stream window, s (as deployed: 600)")
+    ap.add_argument("--restart-seconds", type=float, default=DEFAULT_RESTART_S, help="collector pause between windows, s (code default: 5)")
     ap.add_argument("--out", default=None)
     a = ap.parse_args(argv)
+    if a.window_seconds <= 0 or a.restart_seconds < 0:
+        ap.error("--window-seconds must be > 0 and --restart-seconds >= 0")
     when = datetime.fromisoformat(a.cutoff)
     cutoff = int((when if when.tzinfo else when.replace(tzinfo=UTC)).timestamp())
     symbols = tuple(s.strip().upper() for s in a.bybit_symbols.split(",") if s.strip())
     con = sqlite3.connect(f"file:{a.db}?mode=ro", uri=True)
     try:
-        code, text = build(con, cutoff, a.min_ref, a.top, symbols, a.bybit_pause_min, a.okx_pause_min)
+        code, text = build(con, cutoff, a.min_ref, a.top, symbols, a.bybit_pause_min, a.okx_pause_min, a.window_seconds, a.restart_seconds)
     finally:
         con.close()
     if a.out:

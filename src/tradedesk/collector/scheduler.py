@@ -323,6 +323,22 @@ async def _collect_liquidations_okx(rt: "Runtime", stats: Any = None) -> int:
     )
 
 
+async def _liquidation_window(rt: "Runtime", *, exchange: str, fn: Callable[..., Awaitable[int]], stats: Any) -> int:
+    """Run one ``liquidations:<exchange>`` window, then add its per-hour connection tallies (``stats.take_hours``,
+    stamped with ``rt.now``) to ``liquidation_stream_hour``. Failed runs are journaled too: their failures are the point.
+    A failed journal write is logged and the tallies are kept for the next run; it never replaces the run's result."""
+    try:
+        return await fn(rt, stats=stats)
+    finally:
+        hours = stats.take_hours()
+        if hours and rt.store is not None:
+            try:
+                await rt.store.add_liquidation_stream_hours(exchange, hours)
+            except Exception as e:  # noqa: BLE001
+                stats.put_back_hours(hours)
+                log.warning("liquidation stream journal %s not written: %s", exchange, e, extra={"job": f"liquidations:{exchange}"})
+
+
 async def _health_alerts(rt: "Runtime", now_ts: int) -> list:
     """Provider-health transitions since the last tick (alerts/health.py). The announced states live on the runtime;
     after a restart they are loaded from the stored alerts, so a provider still down is not announced again."""
@@ -828,12 +844,12 @@ def build_default_scheduler(rt: "Runtime") -> Scheduler | None:
         for venue in ("binance", "bybit", "okx"):
             if venue not in venues:
                 continue
-            # One per job: the reconnect backoff and counters carry over between runs.
+            # One per job: the reconnect backoff and counters carry over between runs; the hourly tallies go to the DB.
             stats = StreamStats(clock=lambda: rt.now().timestamp())
             job = PeriodicJob(
                 name=f"liquidations:{venue}",
                 period_seconds=s.collect_liquidations_restart_seconds,
-                fn=partial(fns[venue], stats=stats),
+                fn=partial(_liquidation_window, exchange=venue, fn=fns[venue], stats=stats),
             )
             job.metrics.stream = stats
             jobs.append(job)

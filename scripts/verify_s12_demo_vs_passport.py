@@ -58,12 +58,13 @@ def rss_mb() -> float:
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 
 
-def load_s12(db: str, cutoff_ms: int) -> dict[str, list[dict[str, Any]]]:
-    """S12 rows by status over a read-only connection: closed before the cutoff, missed and open signalled before it."""
+def load_s12(db: str, cutoff_ms: int, setup: str = SETUP) -> dict[str, list[dict[str, Any]]]:
+    """``setup``'s rows (S12 by default) by status over a read-only connection: closed before the cutoff; missed, open
+    and orphaned signalled before it."""
     con = cmn.connect_ro(db)
     try:
         con.row_factory = sqlite3.Row
-        rows = [dict(r) for r in con.execute("SELECT * FROM demo_trade WHERE setup = ? ORDER BY signal_ts", (SETUP,))]
+        rows = [dict(r) for r in con.execute("SELECT * FROM demo_trade WHERE setup = ? ORDER BY signal_ts", (setup,))]
     finally:
         con.close()
     out: dict[str, list[dict[str, Any]]] = {"closed": [], "missed": [], "open": [], "orphaned": [], "other": []}

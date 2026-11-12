@@ -1,6 +1,5 @@
 """The pre-trade rules check from the owner's Telegram /check command (scripts/rules_pretrade_tg.py); temp DB, no network."""
 
-import asyncio
 import hashlib
 import json
 import re
@@ -14,8 +13,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 import journal_trade_tg as jt  # noqa: E402
 import rules_pretrade_tg as rp  # noqa: E402
-
-from tradedesk.store.db import Store  # noqa: E402
 
 NOW = datetime(2026, 10, 25, 10, tzinfo=UTC).timestamp()  # Sunday 13:00 Kyiv
 H = 3600.0
@@ -45,16 +42,8 @@ def _row(i, symbol, side, opened, closed=None, pnl=None, tags='["hyperliquid", "
 
 
 @pytest.fixture
-def journal_db(tmp_path):
-    path = tmp_path / "tradedesk.sqlite"
-
-    async def make():
-        s = Store(path)
-        await s.init()
-        await s.aclose()
-
-    asyncio.run(make())
-    return path
+def journal_db(migrated_db):
+    return migrated_db  # tmp_path/tradedesk.sqlite, a copy of the migrated template (tests/conftest.py)
 
 
 def test_an_option_purchase_in_the_one_to_three_day_zone_is_never_ok_without_the_live_checks(journal_db):

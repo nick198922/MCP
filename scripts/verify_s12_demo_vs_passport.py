@@ -46,6 +46,7 @@ from tradedesk.runtime import Runtime
 
 SETUP = "S12"
 CUTOFF = "2026-11-09T18:00"  # registered: trades closed before this UTC minute (35 at registration)
+PREV_CUTOFF_MS = int(datetime(2026, 11, 9, 18, tzinfo=UTC).timestamp() * 1000)  # the 09.11 run: later runs report the overlap
 SEED = 20261030
 N_BOOT = 10_000
 MIN_GROUP = 10
@@ -57,20 +58,21 @@ def rss_mb() -> float:
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 
 
-def load_s12(db: str, cutoff_ms: int) -> dict[str, list[dict[str, Any]]]:
-    """S12 rows by status over a read-only connection: closed before the cutoff, missed and open signalled before it."""
+def load_s12(db: str, cutoff_ms: int, setup: str = SETUP) -> dict[str, list[dict[str, Any]]]:
+    """``setup``'s rows (S12 by default) by status over a read-only connection: closed before the cutoff; missed, open
+    and orphaned signalled before it."""
     con = cmn.connect_ro(db)
     try:
         con.row_factory = sqlite3.Row
-        rows = [dict(r) for r in con.execute("SELECT * FROM demo_trade WHERE setup = ? ORDER BY signal_ts", (SETUP,))]
+        rows = [dict(r) for r in con.execute("SELECT * FROM demo_trade WHERE setup = ? ORDER BY signal_ts", (setup,))]
     finally:
         con.close()
-    out: dict[str, list[dict[str, Any]]] = {"closed": [], "missed": [], "open": [], "other": []}
+    out: dict[str, list[dict[str, Any]]] = {"closed": [], "missed": [], "open": [], "orphaned": [], "other": []}
     for r in rows:
         st = r.get("status")
         if st == "closed" and r.get("closed_ts") is not None and int(r["closed_ts"]) < cutoff_ms:
             out["closed"].append(r)
-        elif st in ("missed", "open") and int(r["signal_ts"]) < cutoff_ms:
+        elif st in ("missed", "open", "orphaned") and int(r["signal_ts"]) < cutoff_ms:
             out[st].append(r)
         elif int(r["signal_ts"]) < cutoff_ms:
             out["other"].append(r)
@@ -156,8 +158,18 @@ def smoke(db: str, cutoff_ms: int, cache: Path, venue: str) -> int:
     """Data checks only: counts, version tags, units, one timed replay of each entry rule (levels, no R)."""
     g = load_s12(db, cutoff_ms)
     closed = classify(g["closed"], cutoff_ms)
-    print(f"S12 closed < cutoff: {len(closed)}; missed {len(g['missed'])}; open {len(g['open'])}; other {len(g['other'])}")
+    print(
+        f"S12 closed < cutoff: {len(closed)}; missed {len(g['missed'])}; open {len(g['open'])}; "
+        f"orphaned {len(g['orphaned'])}; other {len(g['other'])}"
+    )
     print(f"versions (closed): {sorted(Counter((r['ver'], r['ver_src']) for r in closed).items())}")
+    for st in ("missed", "open", "orphaned"):
+        print(f"versions ({st}): {sorted(Counter(r['ver'] for r in classify(g[st], cutoff_ms)).items())}")
+    v9 = [r for r in closed if r["ver"] == "v9"]
+    if v9:
+        days = sorted({cmn.ymd_ms(int(r["signal_ts"])) for r in v9})
+        prev = sum(int(r["closed_ts"]) < PREV_CUTOFF_MS for r in v9)
+        print(f"v9 closed: {len(v9)}, signal days {len(days)} ({days[0]} .. {days[-1]}); closed before the 09.11 cutoff {prev}")
     print(f"timeframes {dict(Counter(r['timeframe'] for r in closed))}; venues {dict(Counter(r['venue'] for r in closed))}")
     print(f"entry kinds {dict(Counter(str(r.get('entry_kind')) for r in closed))}; symbols {len({r['symbol'] for r in closed})}")
     # consistency of tags: the column against the open-time epoch, rest_until against v7
@@ -202,16 +214,17 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--cutoff", default=CUTOFF, help="UTC YYYY-MM-DDTHH:MM; trades closed before it")
     ap.add_argument("--venue", default="bybit")
     ap.add_argument("--cache-dir", default=DEFAULT_CACHE)
+    ap.add_argument("--out-tag", default="s12", help="output names <tag>.txt / <tag>_rows.json in the cache dir")
     a = ap.parse_args(argv)
     cutoff_ms = int(datetime.strptime(a.cutoff, "%Y-%m-%dT%H:%M").replace(tzinfo=UTC).timestamp() * 1000)
     cache = Path(a.cache_dir).expanduser()
     cache.mkdir(parents=True, exist_ok=True)
     if a.stage == "smoke":
         return smoke(a.db, cutoff_ms, cache, a.venue)
-    return run(a.db, cutoff_ms, cache, a.venue)
+    return run(a.db, cutoff_ms, cache, a.venue, a.out_tag)
 
 
-def run(db: str, cutoff_ms: int, cache: Path, venue: str) -> int:  # noqa: PLR0915 - one linear report
+def run(db: str, cutoff_ms: int, cache: Path, venue: str, tag: str = "s12") -> int:  # noqa: PLR0915 - one linear report
     now = int(time.time() * 1000)
     g = load_s12(db, cutoff_ms)
     closed = classify(g["closed"], cutoff_ms)
@@ -237,7 +250,9 @@ def run(db: str, cutoff_ms: int, cache: Path, venue: str) -> int:  # noqa: PLR09
         for r, rp, v7 in zip(closed, reps, v7s, strict=True):
             d = {
                 **rp.as_dict(),
-                **{k: r.get(k) for k in ("ver", "ver_src", "passport", "entry_kind", "exit_reason", "rest_until", "opened_ts")},
+                **{
+                    k: r.get(k) for k in ("ver", "ver_src", "passport", "entry_kind", "exit_reason", "rest_until", "opened_ts", "closed_ts")
+                },
             }
             d.update(audit.exec_costs(r))
             d["v7"] = v7
@@ -270,7 +285,7 @@ def run(db: str, cutoff_ms: int, cache: Path, venue: str) -> int:  # noqa: PLR09
         "без тегу: v4 (за часом відкриття)": lambda r: r["ver"] == "v4",
         "без тегу: v7 (rest_until)": lambda r: r["ver"] == "v7",
         "без тегу разом": lambda r: r["ver_src"] != "column",
-        "усі 35 (змішує два паспорти)": lambda r: True,
+        f"усі {len(rows)} (змішує два паспорти)": lambda r: True,
     }
     res: dict[str, Any] = {}
     for name, f in groups.items():
@@ -289,6 +304,13 @@ def run(db: str, cutoff_ms: int, cache: Path, venue: str) -> int:  # noqa: PLR09
                 f"ковзна [{pp.band_sliding[0]:+.3f}; {pp.band_sliding[2]:+.3f}] -> {audit.band_verdict(s['mean'], pp)}; "
                 f"на n={s['n']} (описово) [{lo:+.3f}; {hi:+.3f}]; демо − OOS {diff}"
             )
+    # orphaned (filled, no close found on the venue): not in the sample; scenario «each closed at the initial stop, −1R»
+    # as in the checkpoint report (docs/changes/2026-11-12-checkpoint-orphan-stop-scenario.md), descriptive only
+    orph = classify(g["orphaned"], cutoff_ms)
+    for name, f in (("v9", lambda r: r["ver"] == "v9"), ("v4 + v9", lambda r: r["passport"] == "v4")):
+        oo = [dict(r, r_demo=-1.0) for r in orph if f(r)]
+        s2 = stat([r for r in rows if f(r)] + oo, "r_demo")
+        p(f"- orphaned {name}: {len(oo)}; сценарій «закрито за стопом, −1R» (описово): {fmt(s2) if oo else '—'}")
     p("")
     p("## Стійкість і розбивки (описово; R демо)")
     v49 = [r for r in rows if r["passport"] == "v4"]
@@ -298,6 +320,7 @@ def run(db: str, cutoff_ms: int, cache: Path, venue: str) -> int:  # noqa: PLR09
     v9 = [r for r in rows if r["ver"] == "v9"]
     top9 = sorted(v9, key=lambda r: r["r_demo"] or 0.0, reverse=True)
     p(f"- v9 без топ-3: {fmt(stat(top9[3:], 'r_demo'))}")
+    p(f"- v9 лише закриті після cutoff 09.11 (нові): {fmt(stat([r for r in v9 if int(r['closed_ts']) >= PREV_CUTOFF_MS], 'r_demo'))}")
     splits = {
         "лонг": lambda r: r["side"] == "long",
         "шорт": lambda r: r["side"] == "short",
@@ -384,8 +407,8 @@ def run(db: str, cutoff_ms: int, cache: Path, venue: str) -> int:  # noqa: PLR09
     p(f"seed {SEED}; бутстреп {N_BOOT} кластерами за днем сигналу; peak RSS {rss_mb():.0f} MB")
     text = "\n".join(L) + "\n"
     print(text, end="")
-    (cache / "s12.txt").write_text(text, encoding="utf-8")
-    (cache / "s12_rows.json").write_text(
+    (cache / f"{tag}.txt").write_text(text, encoding="utf-8")
+    (cache / f"{tag}_rows.json").write_text(
         json.dumps({"generated_ms": now, "cutoff_ms": cutoff_ms, "rows": rows}, default=str), encoding="utf-8"
     )
     return 0

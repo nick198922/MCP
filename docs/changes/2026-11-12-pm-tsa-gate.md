@@ -1,0 +1,3 @@
+- Картка `pm-tsa-daily-seasonal-nowcast`: брама кроку 0 (а) не пройдена — у Polymarket 0 відкритих і 0 нових подій TSA після 05.07.2026 (166 подій, обсяг згас до $0.9 тис.); статус `inconclusive` (архів), H1/H2 не проганялись.
+- Тригер повернення: нова відкрита подія з тегом `tsa` (напр. на тиждень Дня подяки).
+- Додано `scripts/verify_pm_tsa_seasonal.py` (стадія `gate`), звіт `docs/verification/2026-11-12-pm-tsa-daily-seasonal-nowcast.md`, рядок у `docs/knowledge/README.md`.

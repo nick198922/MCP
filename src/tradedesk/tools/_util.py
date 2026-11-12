@@ -113,11 +113,12 @@ def drop_corrupt_rows(
     numeric: tuple[str, ...],
     required: tuple[str, ...] = (),
     key: str = "id",
+    flags: tuple[str, ...] = (),
 ) -> list[dict[str, Any]]:
     """`rows` without the ones another writer corrupted, with a warning naming them by `key` (invariant 1). A row is
     dropped when any cell is a blob (an invalid UTF-8 blob fails the JSON reply of the whole tool), a `numeric` cell is
-    neither NULL nor a finite number (a string, inf), or a `required` cell is not a finite number. Valid rows pass
-    unchanged."""
+    neither NULL nor a finite number (a string, inf), a `required` cell is not a finite number, or a `flags` cell is not
+    a bool (the store turns only a stored 0 / 1 into one). Valid rows pass unchanged."""
     kept: list[dict[str, Any]] = []
     bad: list[Any] = []
     for row in rows:
@@ -125,6 +126,7 @@ def drop_corrupt_rows(
             not any(isinstance(v, (bytes, bytearray, memoryview)) for v in row.values())
             and all(row.get(k) is None or store_num(row.get(k)) is not None for k in numeric)
             and all(store_num(row.get(k)) is not None for k in required)
+            and all(isinstance(row.get(k), bool) for k in flags)
         )
         if ok:
             kept.append(row)
@@ -132,7 +134,10 @@ def drop_corrupt_rows(
             bad.append(row.get(key))
     if bad:
         shown = [i if isinstance(i, int) and not isinstance(i, bool) else None for i in bad[:10]]
-        b.warn(f"{len(bad)} stored {what} rows skipped: a blob, or a non-numeric / non-finite {', '.join(numeric)}; {key} {shown}")
+        flag_txt = f", or a non-0/1 flag {', '.join(flags)}" if flags else ""
+        b.warn(
+            f"{len(bad)} stored {what} rows skipped: a blob, or a non-numeric / non-finite {', '.join(numeric)}{flag_txt}; {key} {shown}"
+        )
     return kept
 
 

@@ -1,0 +1,40 @@
+{
+ "id": "35478",
+ "slug": "epl-liv-bou-2025-08-15",
+ "title": "Liverpool vs. Bournemouth",
+ "startTime": "2025-08-15T19:00:00Z",
+ "closed": true,
+ "seriesSlug": "premier-league-2025",
+ "markets": [
+  {
+   "id": "571013",
+   "question": "Will Liverpool win on 2025-08-15?",
+   "groupItemTitle": "Liverpool",
+   "gameStartTime": "2025-08-15 19:00:00+00",
+   "clobTokenIds": "[\"101477384355265856594107147439510831392463406587526113778946972938162665289555\", \"107631680063303742336089811789677892705576900569659695162566026079383068866432\"]",
+   "outcomes": "[\"Yes\", \"No\"]",
+   "closed": true,
+   "conditionId": "0xf4b3608e4c8066958a403212662dae7ea2852b46ff3e8fcc0326ed0402729df2"
+  },
+  {
+   "id": "571014",
+   "question": "Will Liverpool vs. Bournemouth end in a draw?",
+   "groupItemTitle": "Draw (Liverpool vs. Bournemouth)",
+   "gameStartTime": "2025-08-15 19:00:00+00",
+   "clobTokenIds": "[\"16420739735897554234670593304740525773296423332863299900941170063892339874014\", \"53964968798188701512757246162562456666946175640370848735290063813811782418426\"]",
+   "outcomes": "[\"Yes\", \"No\"]",
+   "closed": true,
+   "conditionId": "0x37fcf828abb63fd986423db5829bd2d79b4c1b6c2380839d5ae0b067c8542553"
+  },
+  {
+   "id": "571015",
+   "question": "Will Bournemouth win on 2025-08-15?",
+   "groupItemTitle": "Bournemouth",
+   "gameStartTime": "2025-08-15 19:00:00+00",
+   "clobTokenIds": "[\"7692937296334380322504843907795814690479115383016339557243042359886584491820\", \"22676139849741937512195432631143691886076855898934342407011903188446318007615\"]",
+   "outcomes": "[\"Yes\", \"No\"]",
+   "closed": true,
+   "conditionId": "0x7a3c4c2c93c6e1ebdaa5f1ec57c2a8fd299b61861443e34eaf882267c48187f8"
+  }
+ ]
+}

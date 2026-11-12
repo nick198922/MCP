@@ -8,7 +8,9 @@ are sorted by node id and shuffled with ``random.Random(N)`` in three levels, as
 modules, then of classes and top-level functions inside a module, then of the methods inside a class. Keeping a module
 together keeps module-scoped fixtures cheap. Without ``--order-seed`` the order is left alone. Under pytest-xdist every
 worker collects and shuffles with the same seed, so all workers see the same list (xdist requires that) and the
-scheduler hands out the shuffled order: tests meet different neighbours in each worker process.
+scheduler hands out the shuffled order: tests meet different neighbours in each worker process. With a seed the plugin
+writes ``test order: shuffled, --order-seed N`` to the terminal even under ``-q`` (the report header is not printed
+there), and in one process also the first node ids of the shuffled collection, so the log shows the shuffle was on.
 
 Runner:
 
@@ -35,6 +37,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = ROOT / "scripts"
 PLUGIN = "test_order_check"
 TAIL_LINES = 15
+FIRST_IDS = 3
 
 
 def shuffled(items: Sequence[Any], seed: int) -> list[Any]:
@@ -65,15 +68,32 @@ def pytest_addoption(parser: Any) -> None:
     parser.addoption("--order-seed", type=int, default=None, help="shuffle collected tests with this seed (scripts/test_order_check.py)")
 
 
-def pytest_report_header(config: Any) -> str | None:
+def order_line(config: Any) -> str | None:
     seed = config.getoption("--order-seed")
     return None if seed is None else f"test order: shuffled, --order-seed {seed}"
+
+
+def _write(config: Any, line: str) -> None:
+    # pytest_report_header is dropped under -q (the runner's mode), so the log would not show the shuffle was on
+    tr = config.pluginmanager.get_plugin("terminalreporter")
+    if tr is not None:
+        tr.write_line(line)
+
+
+def pytest_sessionstart(session: Any) -> None:
+    line = order_line(session.config)
+    if line is not None:
+        _write(session.config, line)
 
 
 def pytest_collection_modifyitems(session: Any, config: Any, items: list[Any]) -> None:
     seed = config.getoption("--order-seed")
     if seed is not None:
         items[:] = shuffled(items, seed)
+        # one process only: under xdist the workers shuffle and their output does not reach the log
+        if items:
+            head = ", ".join(i.nodeid for i in items[:FIRST_IDS])
+            _write(config, f"test order: first {min(FIRST_IDS, len(items))} of {len(items)} collected: {head}")
 
 
 # --- runner (no pytest_ prefix below: pytest would reject an unknown hook in this plugin) ---

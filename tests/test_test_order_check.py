@@ -49,16 +49,23 @@ def test_seeds_differ_and_modules_and_classes_stay_together():
         assert cls == list(range(cls[0], cls[0] + 3))
 
 
+def _cfg(seed, lines):
+    tr = SimpleNamespace(write_line=lines.append)
+    return SimpleNamespace(getoption=lambda name: seed, pluginmanager=SimpleNamespace(get_plugin=lambda name: tr))
+
+
 def test_hooks_leave_order_alone_without_seed():
-    items = _items(IDS)
-    cfg = SimpleNamespace(getoption=lambda name: None)
+    items, lines = _items(IDS), []
+    cfg = _cfg(None, lines)
+    toc.pytest_sessionstart(SimpleNamespace(config=cfg))
     toc.pytest_collection_modifyitems(None, cfg, items)
     assert [i.nodeid for i in items] == IDS
-    assert toc.pytest_report_header(cfg) is None
-    cfg = SimpleNamespace(getoption=lambda name: 3)
+    assert lines == []
+    cfg = _cfg(3, lines)
+    toc.pytest_sessionstart(SimpleNamespace(config=cfg))
     toc.pytest_collection_modifyitems(None, cfg, items)
     assert [i.nodeid for i in items] == _order(3)
-    assert "--order-seed 3" in toc.pytest_report_header(cfg)
+    assert lines == ["test order: shuffled, --order-seed 3", "test order: first 3 of 8 collected: " + ", ".join(_order(3)[:3])]
 
 
 def test_build_command():
@@ -106,10 +113,14 @@ def _run_pytest(tmp_path, *args):
 def test_plugin_reorders_a_real_collection(tmp_path):
     res = _run_pytest(tmp_path, "--collect-only", "-q", "--order-seed", "11")
     assert res.returncode == 0, res.stdout + res.stderr
-    got = [line for line in res.stdout.splitlines() if "::" in line]
+    out = res.stdout.splitlines()
+    got = [line for line in out if "::" in line and not line.startswith("test order:")]
     assert len(got) == 12
     assert got == [i.nodeid for i in toc.shuffled(_items(got), 11)]
     assert got != sorted(got)
+    # the log of a -q run says the shuffle was on and how it starts (review of item 293, finding 1)
+    assert "test order: shuffled, --order-seed 11" in out
+    assert "test order: first 3 of 12 collected: " + ", ".join(got[:3]) in out
 
 
 def test_plugin_runs_under_xdist(tmp_path):
@@ -117,3 +128,10 @@ def test_plugin_runs_under_xdist(tmp_path):
     res = _run_pytest(tmp_path, "-q", "-n", "2", "--order-seed", "4")
     assert res.returncode == 0, res.stdout + res.stderr
     assert "12 passed" in res.stdout
+    assert "test order: shuffled, --order-seed 4" in res.stdout.splitlines()
+
+
+def test_no_order_lines_without_seed(tmp_path):
+    res = _run_pytest(tmp_path, "-q")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "test order:" not in res.stdout

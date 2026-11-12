@@ -848,6 +848,11 @@ async def test_stopped_a_opens_nothing_and_closes_held_positions_as_without_the_
 
     view = await book_view(SimpleNamespace(store=store), "A", times[-1], False)  # type: ignore[arg-type]
     assert view["engine"]["new_entries_stopped"] == reason
+    # Review 2026-11-11 (carry-a-stop, note 4): a stopped book has empty slots, yet none of them will be filled.
+    assert len(view["open"]) < PARAMS_A.slots and view["free_slots"] == 0  # book_view counts the live 5 slots of A
+    ref_view = await book_view(SimpleNamespace(store=await full_run("A")), "A", times[-1], False)  # type: ignore[arg-type]
+    assert ref_view["engine"]["new_entries_stopped"] is None
+    assert ref_view["free_slots"] == PARAMS_A.slots - len(ref_view["open"]) > 0
 
 
 async def test_scheduler_job_stops_a_entries_and_leaves_b_alone(monkeypatch):

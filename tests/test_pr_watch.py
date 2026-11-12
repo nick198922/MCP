@@ -1,5 +1,6 @@
 """The stuck pull request watch in scripts/pr_watch.py (a fake GitHub, no network)."""
 
+import base64
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
@@ -217,8 +218,82 @@ def test_a_dirty_pr_not_marked_ready_is_left_to_its_author():
     assert msgs == []
 
 
+CARD_MAIN = "# C\n\n## Прогрес\n- [x] 326. main item\n- [x] 325. old\n- [ ] 8a. open\n\n## Як поповнювати\n- [x] 326. not an item\n"
+CARD_BRANCH = CARD_MAIN.replace("- [x] 325.", "- [x] 326. branch item\n- [x] 325.")
+
+
+def test_renumber_gives_the_branchs_item_the_next_free_number_and_keeps_mains():
+    out = pw.renumber_duplicates(CARD_BRANCH, CARD_MAIN)
+    assert "- [x] 326. main item\n- [x] 327. branch item\n" in out
+    assert out.endswith("- [x] 326. not an item\n")  # outside «## Прогрес»: left alone
+    assert pw.renumber_duplicates(CARD_MAIN, CARD_MAIN) is None
+    # main's item comes second in the file: it still keeps the number
+    flipped = CARD_MAIN.replace("- [x] 326. main item\n", "- [x] 326. branch item\n- [x] 326. main item\n")
+    assert "- [x] 327. branch item\n- [x] 326. main item\n" in pw.renumber_duplicates(flipped, CARD_MAIN)
+    # unknown to main (a check on the PR alone): the later one moves
+    assert "- [x] 327. branch item" in pw.renumber_duplicates(CARD_BRANCH, "")
+
+
+def with_card(call, text):
+    def wrapped(method, path, body):
+        if "/contents/" in path:
+            return 200, {"encoding": "base64", "content": base64.b64encode(text.encode()).decode()}
+        return call(method, path, body)
+
+    return wrapped
+
+
+def test_a_ready_red_pr_with_a_repeated_item_number_gets_fixed_once_per_commit():
+    seen = []
+
+    def fix(ref):
+        seen.append(ref)
+        return "blocked", ["x"]
+
+    call = with_card(fake([pr(ready=True)], {"abc": RED}), CARD_BRANCH)
+    _, state = pw.watch(call, "o/r", {}, NOW, fix=fix)
+    pw.watch(call, "o/r", state, NOW, fix=fix)
+    assert seen == ["agent/2026-10-20-x"] and "renumber" in state["1"]["kinds"]
+    fixed, _ = pw.watch(call, "o/r", {}, NOW, fix=lambda ref: ("fixed", []))
+    assert fixed == []
+    # a clean card, a green PR or a dry run: no fix
+    seen.clear()
+    pw.watch(with_card(fake([pr(ready=True)], {"abc": RED}), CARD_MAIN), "o/r", {}, NOW, fix=fix)
+    pw.watch(with_card(fake([pr(ready=True)], {"abc": GREEN}), CARD_BRANCH), "o/r", {}, NOW, fix=fix)
+    pw.watch(call, "o/r", {}, NOW, fix=None)
+    assert seen == []
+
+
 def sh(*args, cwd):
     subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+
+def test_merge_main_renumbers_a_repeated_item_of_the_standing_card(tmp_path, monkeypatch):
+    origin, work = tmp_path / "origin.git", tmp_path / "work"
+    card = work / pw.STANDING_CARD
+    sh("init", "-q", "--bare", "-b", "main", str(origin), cwd=tmp_path)
+    sh("clone", "-q", str(origin), str(work), cwd=tmp_path)
+    for k, v in (("user.name", "t"), ("user.email", "t@x")):
+        sh("config", k, v, cwd=work)
+    card.parent.mkdir(parents=True)
+    base = CARD_MAIN.replace("- [x] 326. main item\n", "")
+    card.write_text(base)
+    sh("add", ".", cwd=work)
+    sh("commit", "-qm", "base", cwd=work)
+    sh("push", "-q", "origin", "main", cwd=work)
+    sh("checkout", "-qb", "agent/x", cwd=work)
+    card.write_text(base.replace("- [ ] 8a.", "- [x] 326. branch item\n- [ ] 8a."))
+    sh("commit", "-qam", "branch item", cwd=work)
+    sh("push", "-q", "origin", "agent/x", cwd=work)
+    sh("checkout", "-q", "main", cwd=work)
+    card.write_text(CARD_MAIN)
+    sh("commit", "-qam", "main item", cwd=work)
+    sh("push", "-q", "origin", "main", cwd=work)
+    monkeypatch.setattr(pw, "REPO_DIR", work)
+    monkeypatch.setattr(pw, "FIX_DIR", tmp_path / "fix")
+    assert pw.merge_main("agent/x") == ("fixed", [f"{pw.STANDING_CARD} (номер пункту)"])
+    shown = subprocess.run(["git", "show", f"agent/x:{pw.STANDING_CARD}"], cwd=origin, capture_output=True, text=True, check=True)
+    assert "- [x] 326. main item\n" in shown.stdout and "- [x] 327. branch item\n" in shown.stdout
 
 
 def test_merge_main_resolves_additive_docs_conflicts_and_pushes(tmp_path, monkeypatch):

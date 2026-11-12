@@ -843,6 +843,41 @@ def test_orphaned_demo_trades_are_named_not_silently_dropped():
     assert not any("orphaned" in x for x in script.build_report({"demo_trades": closed}, NOW)["notes"])
 
 
+def test_demo_row_shows_its_orphans_closed_at_the_stop_as_a_scenario():
+    """Review of item 326, remark 1: an orphan stays out of the closed sample, but the setup's row shows the mean and the
+    label with each current-version orphan filled by NOW closed at its stop (-1R), so an «узгоджується» resting on them shows."""
+    s3 = next(s for s in cp.DEMO if s.setup == "S3")
+    orphan = {"status": "orphaned", "closed_ts": None, "r_multiple": None}
+    closed = [_trade(i, "S3", 0.0) for i in range(28)]
+    orphans = [_trade(30 + i, "S3", 0.0, **orphan) for i in range(2)]
+    later = _trade(40, "S3", 0.0, opened=NOW + DAY, **orphan)  # filled after NOW: not yet
+    row = cp.demo_forward(s3, [*closed, *orphans, later], NOW)[0]
+    assert (row["n"], row["verdict"]) == (28, cp.EARLY) and row["metric"] == pytest.approx(0.0)  # sample unchanged
+    note = next(x for x in row["notes"] if x.startswith("orphaned"))
+    assert ": 2;" in note and "n 28 → 30" in note and "+0.000 → -0.067" in note and f"вердикт {cp.EARLY} → {cp.OK}" in note
+    assert "(-1R," in note and f"межа «орфани = 0R»: середній R +0.000, вердикт {cp.OK}" in note  # (28 * 0 + 2 * 0) / 30
+    # 30 closed at -0.6 are inside the n 30 band; with 20 orphans at -1R, mean -0.76 is below the n 50 band (-0.545)
+    flip = [_trade(i, "S3", -0.6) for i in range(30)] + [_trade(30 + i, "S3", 0.0, **orphan) for i in range(20)]
+    row = cp.demo_forward(s3, flip, NOW)[0]
+    assert row["verdict"] == cp.OK
+    note = next(x for x in row["notes"] if x.startswith("orphaned"))
+    assert "-0.600 → -0.760" in note and f"вердикт {cp.OK} → {cp.NO} (нижче)" in note
+    # the other end, orphans = 0R: (30 * -0.6 + 20 * 0) / 50 = -0.36, inside the n 50 band; the -1R text stays
+    assert "(-1R," in note and f"межа «орфани = 0R»: середній R -0.360, вердикт {cp.OK}" in note
+    assert row["verdict"] == cp.OK and row["metric"] == pytest.approx(-0.6)  # row itself unchanged
+    # n + orphans < 30: the 0R mean is shown, no verdict for it: (3 * -0.3 + 0) / 4 = -0.225
+    short = [_trade(i, "S3", -0.3) for i in range(3)] + [_trade(9, "S3", 0.0, **orphan)]
+    note = next(x for x in cp.demo_forward(s3, short, NOW)[0]["notes"] if x.startswith("orphaned"))
+    assert "n 3 → 4" in note and note.endswith(
+        "межа «орфани = 0R»: середній R -0.225; лише сценарій, закриття перевірити за журналом біржі"
+    )
+    # another version's orphan is not this row's; without orphans there is no note
+    s12 = next(s for s in cp.DEMO if s.setup == "S12")
+    rows = [_trade(i, "S12", 0.1, version="v9") for i in range(3)] + [_trade(9, "S12", 0.0, version="v7", **orphan)]
+    assert not any(x.startswith("orphaned") for x in cp.demo_forward(s12, rows, NOW)[0]["notes"])
+    assert not any(x.startswith("orphaned") for x in cp.demo_forward(s3, closed, NOW)[0]["notes"])
+
+
 def test_at_date_is_end_of_day_and_capped():
     assert script.at_date("2026-11-01", NOW) == cp._ms(2026, 11, 2) - 1
     assert script.at_date("2027-03-01", NOW) == NOW  # a future date cannot open an embargo

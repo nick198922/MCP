@@ -10,7 +10,7 @@ import asyncio
 import contextlib
 import json
 import sqlite3
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -1699,6 +1699,35 @@ class Store:
         async with self._write():
             await self.conn.executemany(
                 "INSERT INTO liquidations (ts, venue, symbol, side, qty, price, notional_usd) VALUES (?,?,?,?,?,?,?)",
+                payload,
+            )
+        return len(payload)
+
+    async def add_liquidation_stream_hours(self, exchange: str, hours: Mapping[int, Mapping[str, float]]) -> int:
+        """Add the hourly connection tallies of one liquidation stream (StreamStats.take_hours: UTC hour start ->
+        connected_s / frames / rows / failures / reconnects) to ``liquidation_stream_hour``; an existing hour is summed,
+        not replaced. Returns the number of hours written."""
+        payload = [
+            (
+                exchange,
+                int(hour),
+                float(b.get("connected_s", 0)),
+                int(b.get("frames", 0)),
+                int(b.get("rows", 0)),
+                int(b.get("failures", 0)),
+                int(b.get("reconnects", 0)),
+            )
+            for hour, b in sorted(hours.items())
+        ]
+        if not payload:
+            return 0
+        async with self._write():
+            await self.conn.executemany(
+                "INSERT INTO liquidation_stream_hour (exchange, hour_ts, connected_s, frames, rows, failures, reconnects)"
+                " VALUES (?,?,?,?,?,?,?) ON CONFLICT(exchange, hour_ts) DO UPDATE SET"
+                " connected_s = connected_s + excluded.connected_s, frames = frames + excluded.frames,"
+                " rows = rows + excluded.rows, failures = failures + excluded.failures,"
+                " reconnects = reconnects + excluded.reconnects",
                 payload,
             )
         return len(payload)

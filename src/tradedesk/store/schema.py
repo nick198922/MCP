@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 39
+SCHEMA_VERSION = 40
 
 # Each migration is a list of SQL statements executed in a single transaction.
 # `PRAGMA user_version` is bumped by Store.init() inside the same explicit transaction,
@@ -968,5 +968,23 @@ MIGRATIONS: dict[int, list[str]] = {
         # Demo trader ghost trades (PR #643 review): the day before 'orphaned' counts from the cycle that first saw neither
         # the position nor its close, not from the fill. NULL = the position is there (or the trade is not open).
         "ALTER TABLE demo_trade ADD COLUMN gone_ts INTEGER",  # unix ms
+    ],
+    40: [
+        # Hourly connection journal of the liquidation WebSocket jobs (collector/scheduler.py, providers/liquidations.py
+        # StreamStats.hours; standing-improvements card item 348): tells an hour with no rows on a live link (quiet
+        # market) from one with the link down, offline. Added up after each `liquidations:<exchange>` run from the stream's
+        # own counters (no extra venue request); a later run of the same hour adds to the row. Not pruned (3 rows/hour).
+        """
+        CREATE TABLE IF NOT EXISTS liquidation_stream_hour (
+            exchange TEXT NOT NULL,                -- collector job venue: 'binance' | 'bybit' | 'okx'
+            hour_ts INTEGER NOT NULL,              -- unix seconds, start of the UTC hour
+            connected_s REAL NOT NULL DEFAULT 0,   -- seconds of that hour with an open connection
+            frames INTEGER NOT NULL DEFAULT 0,     -- frames received (heartbeat replies and acks included)
+            rows INTEGER NOT NULL DEFAULT 0,       -- liquidation rows parsed from them
+            failures INTEGER NOT NULL DEFAULT 0,   -- failed connections (handshake, keepalive, reset, venue error)
+            reconnects INTEGER NOT NULL DEFAULT 0, -- connections opened after a failure
+            PRIMARY KEY (exchange, hour_ts)
+        ) WITHOUT ROWID
+        """,
     ],
 }

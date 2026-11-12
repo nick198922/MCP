@@ -249,6 +249,10 @@ STABLE_SECONDS = 60.0
 
 log = logging.getLogger("tradedesk.collector")
 
+HOUR = 3600
+# Hourly connection tally of a stream (StreamStats.hours, table liquidation_stream_hour).
+HOUR_KEYS = ("connected_s", "frames", "rows", "failures", "reconnects")
+
 
 class StreamError(Exception):
     """The venue answered on the stream with an error (rejected subscription, bad op)."""
@@ -262,6 +266,10 @@ class StreamStats:
     ``reconnects`` the connections opened after such a failure. ``last_message_ts`` (any frame, heartbeat replies
     included) against ``last_row_ts`` (last liquidation) separates a quiet market from a dead link. Timestamps are
     epoch seconds from ``clock`` (the collector passes ``rt.now``; providers do not read the wall clock), None without.
+
+    With a clock the same events are also tallied per UTC hour in ``hours`` (hour start -> ``HOUR_KEYS`` counters:
+    seconds with an open connection, split at hour boundaries, frames, rows, failures, reconnects); the collector
+    moves them to the ``liquidation_stream_hour`` table after each run (``take_hours``), so they outlive a restart.
     """
 
     clock: Callable[[], float] | None = field(default=None, repr=False, compare=False)
@@ -270,17 +278,65 @@ class StreamStats:
     reconnects: int = 0
     failures: int = 0
     consecutive_failures: int = 0
+    frames: int = 0
+    rows: int = 0
     last_failure: str | None = None
     last_failure_ts: float | None = None
     last_connect_ts: float | None = None
     last_message_ts: float | None = None
     last_row_ts: float | None = None
+    connected_since: float | None = None  # clock stamp from which the open connection is not yet in ``hours``
+    hours: dict[int, dict[str, float]] = field(default_factory=dict, repr=False, compare=False)
 
     def stamp(self) -> float | None:
         return self.clock() if self.clock is not None else None
 
     def as_dict(self) -> dict[str, Any]:
-        return {f.name: getattr(self, f.name) for f in fields(self) if f.name != "clock"}
+        return {f.name: getattr(self, f.name) for f in fields(self) if f.name not in ("clock", "hours")}
+
+    def _bucket(self, ts: float) -> dict[str, float]:
+        hour = int(ts // HOUR) * HOUR
+        b = self.hours.get(hour)
+        if b is None:
+            b = self.hours[hour] = dict.fromkeys(HOUR_KEYS, 0)
+        return b
+
+    def count(self, key: str, ts: float | None) -> None:
+        """Add one ``key`` event to the hour of ``ts`` (no clock -> nothing)."""
+        if ts is not None:
+            self._bucket(ts)[key] += 1
+
+    def add_connected(self, start: float, end: float) -> None:
+        """Credit [start, end) of open connection to ``hours``, split at UTC hour boundaries."""
+        t = start
+        while t < end:
+            part_end = min(end, (int(t // HOUR) + 1) * HOUR)
+            self._bucket(t)["connected_s"] += part_end - t
+            t = part_end
+
+    def close_segment(self) -> None:
+        """The connection closed: credit its time since ``connected_since``."""
+        start, self.connected_since = self.connected_since, None
+        end = self.stamp() if start is not None else None
+        if start is not None and end is not None:
+            self.add_connected(start, end)
+
+    def take_hours(self) -> dict[int, dict[str, float]]:
+        """The hourly tallies since the last call, then cleared. A connection still open is credited up to now."""
+        if self.connected_since is not None:
+            now = self.stamp()
+            if now is not None:
+                self.add_connected(self.connected_since, now)
+                self.connected_since = now
+        out, self.hours = self.hours, {}
+        return out
+
+    def put_back_hours(self, hours: Mapping[int, Mapping[str, float]]) -> None:
+        """Merge tallies back (their write failed), so the next run writes them."""
+        for hour, b in hours.items():
+            mine = self._bucket(hour)
+            for k in HOUR_KEYS:
+                mine[k] += b.get(k, 0)
 
 
 def backoff_delay(failures: int, u: float, *, base: float = BACKOFF_BASE, cap: float = BACKOFF_CAP) -> float:
@@ -366,8 +422,10 @@ async def _ws_consume(
             ) as ws:
                 opened, opened_at = True, loop.time()
                 st.connected, st.connects, st.last_connect_ts = True, st.connects + 1, st.stamp()
+                st.connected_since = st.last_connect_ts
                 if st.consecutive_failures:
                     st.reconnects += 1
+                    st.count("reconnects", st.last_connect_ts)
                 if subscribe is not None:
                     await ws.send(json.dumps(subscribe))
                 while True:
@@ -388,6 +446,8 @@ async def _ws_consume(
                             await ws.send(heartbeat)
                         continue
                     st.last_message_ts = st.stamp()
+                    st.frames += 1
+                    st.count("frames", st.last_message_ts)
                     try:
                         event = json.loads(raw)
                     except (TypeError, ValueError):
@@ -400,6 +460,8 @@ async def _ws_consume(
                         continue
                     for row in [parsed] if isinstance(parsed, dict) else parsed:
                         st.last_row_ts = st.last_message_ts
+                        st.rows += 1
+                        st.count("rows", st.last_row_ts)
                         yield row
         except stream_errors as e:  # network / protocol / venue error: count it, back off, reconnect
             last_exc = e
@@ -408,6 +470,7 @@ async def _ws_consume(
             st.failures += 1
             st.consecutive_failures += 1
             st.last_failure, st.last_failure_ts = f"{type(e).__name__}: {e}", st.stamp()
+            st.count("failures", st.last_failure_ts)
             log.warning(
                 "liquidation stream %s failed (%d in a row): %s",
                 url,
@@ -417,6 +480,7 @@ async def _ws_consume(
             )
         finally:
             st.connected = False
+            st.close_segment()
     if not opened and last_exc is not None:
         raise last_exc
 

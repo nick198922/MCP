@@ -6,6 +6,8 @@ import copy
 import dataclasses
 import itertools
 import json
+import sqlite3
+from datetime import UTC, datetime
 from pathlib import Path
 
 import ccxt
@@ -492,6 +494,187 @@ async def test_stream_parser_bug_is_not_counted_as_a_dropped_link():
     with pytest.raises(KeyError):
         await _drain(liq._ws_consume(liq.OKX_WS_URL, None, parser, max_seconds=0.2, stats=st, connect=fake))
     assert st.failures == 0 and st.connects == 1 and st.connected is False
+
+
+# ---------- hourly connection journal (liquidation_stream_hour) ----------
+
+H0 = 1_794_000_000 // 3600 * 3600  # a UTC hour start (2026-11)
+
+
+class _Clock:
+    """The injected clock (``rt.now`` in the collector), moved only by the fake stream below."""
+
+    def __init__(self, t: float):
+        self.t = float(t)
+
+    def __call__(self) -> float:
+        return self.t
+
+
+class _TimedWS(_FakeWS):
+    """Frames given as ``(seconds, frame)`` move the fake clock by ``seconds`` before recv() returns (or raises) them."""
+
+    def __init__(self, frames, clock):
+        super().__init__(frames)
+        self.clock = clock
+
+    async def recv(self):
+        if self.frames and isinstance(self.frames[0], tuple):
+            dt, frame = self.frames.pop(0)
+            self.clock.t += dt
+            self.frames.insert(0, frame)
+        return await super().recv()
+
+
+class _TimedConnect(_FakeConnect):
+    """``(seconds, exc)`` = a handshake that fails after ``seconds`` of the fake clock; a list = a timed connection."""
+
+    def __init__(self, script, clock):
+        super().__init__(script)
+        self.clock = clock
+
+    @contextlib.asynccontextmanager
+    async def _cm(self, step):
+        if isinstance(step, tuple):
+            self.clock.t += step[0]
+            raise step[1]
+        ws = _TimedWS(step, self.clock)
+        self.opened.append(ws)
+        yield ws
+
+
+ACK = {"success": True, "ret_msg": "", "op": "subscribe"}
+
+
+async def test_stream_hours_drop_mid_window_lands_in_its_hour():
+    # Window from H0+50:00: up 500 s (2 frames, 1 row), reset at H0+58:20; the next handshake fails at H1+03:20; the
+    # third connection opens then and gets one frame 600 s later before the window ends.
+    clock = _Clock(H0 + 3000)
+    fake = _TimedConnect(
+        [
+            [(100, ACK), (200, WS["documented_bybit"]), (200, ConnectionResetError("reset"))],
+            (300, TimeoutError("timed out during opening handshake")),
+            [(600, ACK)],
+        ],
+        clock,
+    )
+    st = StreamStats(clock=clock)
+    rows = await _drain(
+        liq._ws_consume(liq.BYBIT_WS_URL, None, parse_bybit_liquidation, max_seconds=0.3, stats=st, connect=fake, backoff_base=0.01)
+    )
+    assert len(rows) == 1 and (st.frames, st.rows, st.failures, st.reconnects) == (3, 1, 2, 1)
+    hours = st.take_hours()
+    h1 = H0 + 3600
+    assert hours[H0] == {"connected_s": 500, "frames": 2, "rows": 1, "failures": 1, "reconnects": 0}
+    # The drop: H1 is connected only from 03:20 to 13:20 (600 s of 3600 = 17 %), with the failed handshake in it.
+    assert hours[h1] == {"connected_s": 600, "frames": 1, "rows": 0, "failures": 1, "reconnects": 1}
+    assert st.take_hours() == {} and st.connected_since is None  # taken once; nothing left open
+    assert "hours" not in st.as_dict() and st.as_dict()["frames"] == 3  # system_health gets totals, not the tally
+
+
+async def test_stream_hours_without_clock_stay_empty():
+    fake = _FakeConnect([[ACK, WS["documented_bybit"]]])
+    st = StreamStats()
+    await _drain(liq._ws_consume(liq.BYBIT_WS_URL, None, parse_bybit_liquidation, max_seconds=0.1, stats=st, connect=fake))
+    assert (st.frames, st.rows) == (2, 1) and st.take_hours() == {}
+
+
+def test_stream_hours_open_connection_is_credited_up_to_now_once():
+    clock = _Clock(H0 + 3500)
+    st = StreamStats(clock=clock, connected_since=clock.t)
+    clock.t += 200
+    assert st.take_hours() == {
+        H0: {"connected_s": 100, "frames": 0, "rows": 0, "failures": 0, "reconnects": 0},
+        H0 + 3600: {"connected_s": 100, "frames": 0, "rows": 0, "failures": 0, "reconnects": 0},
+    }
+    clock.t += 50
+    st.close_segment()  # the rest of the connection, not counted twice
+    assert st.take_hours()[H0 + 3600]["connected_s"] == 50
+
+
+async def _journal(rt, exchange="bybit") -> dict[int, tuple]:
+    cur = await rt.store.conn.execute(
+        "SELECT hour_ts, connected_s, frames, rows, failures, reconnects FROM liquidation_stream_hour WHERE exchange = ?", (exchange,)
+    )
+    return {r[0]: tuple(r[1:]) for r in await cur.fetchall()}
+
+
+async def test_collector_journals_hours_split_at_the_boundary_and_adds_on_rerun(state, tmp_path, monkeypatch):
+    clock = _Clock(H0 + 3500)
+    fake = _TimedConnect([[(200, ACK)], [(200, ACK), (0, WS["documented_bybit"])]], clock)
+    consume = liq._ws_consume
+    monkeypatch.setattr(liq, "_ws_consume", lambda *a, **kw: consume(*a, **kw, connect=fake))
+    rt = await _job_rt(state, tmp_path)
+    rt.settings = dataclasses.replace(
+        rt.settings,
+        collector_enabled=True,
+        collect_liquidations_enabled=True,
+        collect_liquidations_venues="bybit",
+        collect_liquidations_window_seconds=0.15,
+    )
+    rt.now = lambda: datetime.fromtimestamp(clock.t, UTC)
+    try:
+        job = next(j for j in build_default_scheduler(rt).jobs if j.name == "liquidations:bybit")
+        # Run 1: open at H0+58:20, one frame at H1+01:40, quiet to the end: 100 s in each hour.
+        assert await job.fn(rt) == 0
+        assert await _journal(rt) == {H0: (100.0, 0, 0, 0, 0), H0 + 3600: (100.0, 1, 0, 0, 0)}
+        # Run 2 in the same hour: added to the stored row, not written over it.
+        assert await job.fn(rt) == 1
+        assert await _journal(rt) == {H0: (100.0, 0, 0, 0, 0), H0 + 3600: (300.0, 3, 1, 0, 0)}
+        assert job.metrics.stream.hours == {}
+    finally:
+        await rt.aclose()
+
+
+async def test_store_sums_every_counter_of_a_rewritten_hour(state, tmp_path):
+    rt = await _job_rt(state, tmp_path)
+    first = {"connected_s": 100.5, "frames": 3, "rows": 2, "failures": 1, "reconnects": 1}
+    second = {"connected_s": 200.25, "frames": 5, "rows": 7, "failures": 2, "reconnects": 3}
+    try:
+        assert await rt.store.add_liquidation_stream_hours("bybit", {H0: first}) == 1
+        assert await rt.store.add_liquidation_stream_hours("bybit", {H0: second, H0 + 3600: second}) == 2
+        assert await rt.store.add_liquidation_stream_hours("bybit", {}) == 0
+        journal = await _journal(rt)
+        assert journal[H0][0] == pytest.approx(300.75) and journal[H0][1:] == (8, 9, 3, 4)  # summed, not overwritten
+        assert journal[H0 + 3600][1:] == (5, 7, 2, 3)
+        assert await _journal(rt, "okx") == {}  # keyed by exchange too
+    finally:
+        await rt.aclose()
+
+
+async def test_collector_journals_a_failed_run_and_keeps_tallies_when_the_write_fails(state, tmp_path, caplog):
+    caplog.set_level("WARNING", logger="tradedesk.collector")
+    rt = await _job_rt(state, tmp_path)
+    clock = _Clock(H0 + 600)
+    st = StreamStats(clock=clock)
+
+    async def down(_rt, stats):  # the venue refused every connection in the window
+        stats.failures += 2
+        stats.count("failures", clock.t)
+        stats.count("failures", clock.t + 30)
+        raise TimeoutError("timed out during opening handshake")
+
+    try:
+        with pytest.raises(TimeoutError):
+            await sched_mod._liquidation_window(rt, exchange="okx", fn=down, stats=st)
+        assert await _journal(rt, "okx") == {H0: (0.0, 0, 0, 2, 0)}
+
+        async def ok(_rt, stats):
+            stats.count("frames", clock.t)
+            return 0
+
+        async def broken(*_a, **_kw):
+            raise sqlite3.OperationalError("database is locked")
+
+        real = rt.store.add_liquidation_stream_hours
+        rt.store.add_liquidation_stream_hours = broken
+        assert await sched_mod._liquidation_window(rt, exchange="okx", fn=ok, stats=st) == 0  # the run's result stands
+        assert st.hours[H0]["frames"] == 1 and "journal okx not written" in caplog.text
+        rt.store.add_liquidation_stream_hours = real
+        await sched_mod._liquidation_window(rt, exchange="okx", fn=ok, stats=st)
+        assert await _journal(rt, "okx") == {H0: (0.0, 2, 0, 2, 0)}  # the kept tally is written by the next run
+    finally:
+        await rt.aclose()
 
 
 def test_venue_error_text_is_clipped():

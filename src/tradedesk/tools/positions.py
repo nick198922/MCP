@@ -7,6 +7,7 @@ runs a canonical set of spot/vol/time scenarios on top of them.
 
 from __future__ import annotations
 
+import math
 from typing import Annotated, Any, Literal
 
 from mcp.server.mcpserver import MCPServer
@@ -41,6 +42,48 @@ DEFAULT_SCENARIOS: list[dict[str, float]] = [
     {"d_spot_pct": 0.10, "d_vol_points": 0.0},
     {"d_spot_pct": -0.10, "d_vol_points": 0.05},  # crash-with-vol-up (classic)
 ]
+
+
+def _has_nonfinite(v: Any) -> bool:
+    """True when NaN / +-inf sits anywhere in the parsed JSON `v`; iterative, so any nesting depth is safe."""
+    stack = [v]
+    while stack:
+        x = stack.pop()
+        if isinstance(x, float) and not math.isfinite(x):
+            return True
+        if isinstance(x, list):
+            stack.extend(x)
+        elif isinstance(x, dict):
+            stack.extend(x.values())
+    return False
+
+
+def _clean_tags(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[Any], list[Any]]:
+    """(kept rows, ids skipped for NaN / Infinity in tags, ids whose tags were normalised). positions_add stores a JSON
+    list of strings; another writer can leave anything. A row with NaN / Infinity is skipped (item 296); any other
+    non-list or a list with non-strings is shown as its string items ("x" -> ["x"], 5 / {...} -> []), because a nested
+    value 300 levels deep failed the whole reply in the MCP serialiser. NULL / JSON null stays None (no tags)."""
+    kept: list[dict[str, Any]] = []
+    nonfinite: list[Any] = []
+    fixed: list[Any] = []
+    for p in rows:
+        tags = p.get("tags")
+        if not (tags is None or (isinstance(tags, list) and all(isinstance(t, str) for t in tags))):
+            if _has_nonfinite(tags):
+                nonfinite.append(p.get("id"))
+                continue
+            if isinstance(tags, str):
+                p["tags"] = [tags]
+            elif isinstance(tags, list):
+                p["tags"] = [t for t in tags if isinstance(t, str)]
+            else:
+                p["tags"] = []
+            fixed.append(p.get("id"))
+        if not finite_json(p):
+            nonfinite.append(p.get("id"))
+            continue
+        kept.append(p)
+    return kept, nonfinite, fixed
 
 
 def register(server: MCPServer, rt: Runtime) -> None:
@@ -120,12 +163,20 @@ def register(server: MCPServer, rt: Runtime) -> None:
             return b.build(None, ok=False)
         try:
             rows = await rt.store.positions_list(status=status, instrument=instrument, tag=tag, limit=limit)
+            stored = len(rows)
             rows = drop_corrupt_rows(b, rows, "position", POSITION_NUMS, required=("size",))
-            # NaN / Infinity in the stored tags JSON (another writer, e.g. "[NaN]") came back as NaN / Infinity (item 296).
-            nonfinite = [p.get("id") for p in rows if not finite_json(p)]
+            # NaN / Infinity in the stored tags JSON (another writer, e.g. "[NaN]") came back as NaN / Infinity (item 296);
+            # a deeply nested or non-list tags value failed the reply or broke the list-of-strings shape (item 352).
+            rows, nonfinite, fixed = _clean_tags(rows)
             if nonfinite:
                 b.warn(f"{len(nonfinite)} stored position rows skipped: NaN / Infinity in tags; id {nonfinite[:10]}")
-                rows = [p for p in rows if finite_json(p)]
+            if fixed:
+                b.warn(
+                    f"{len(fixed)} stored position rows had tags that were not a list of strings; shown as their string items; id {fixed[:10]}"
+                )
+            if stored and not rows:  # all malformed must not read as "no positions"
+                b.miss("positions", "store", "data_unavailable", f"all {stored} matching stored positions are malformed")
+                return b.build({"count": 0, "positions": []}, ok=False)
             return b.build({"count": len(rows), "positions": rows})
         except STORE_ERRORS as e:
             return store_failed(b, e)

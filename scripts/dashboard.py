@@ -477,6 +477,7 @@ def snapshot() -> dict:
         "cards": cards,
         "progress": project_progress(cards, _git("show", "origin/main:docs/PROGRESS.md"), delivered_pace(hist, now)),
         "commits": commits,
+        "commits_24h": int(n) if (n := _git("rev-list", "--count", "--since=24 hours ago", "origin/main").strip()).isdigit() else None,
         "questions": st.open_questions(_git("show", "origin/main:docs/QUESTIONS.md")),
         "services": services(),
         "machine": machine(),
@@ -2875,7 +2876,9 @@ def render(s: dict) -> str:
         )
     b.append("</table>")
     hs = a["history"]
-    summ = f"останній {hs[0]['when']} — {STATUS_UA.get(hs[0]['status'], hs[0]['status'])}" if hs else "кроків ще немає"
+    c = a.get("counts_24h") or {}  # rule 4: the headline number is the day's output, the last step's time is not one
+    day = f"за добу здано {c.get('delivered', 0)} з {sum(c.values())} · "
+    summ = f"{day}останній {hs[0]['when']} — {STATUS_UA.get(hs[0]['status'], hs[0]['status'])}" if hs else "кроків ще немає"
     out.append(_fold("Кроки агентів", "p_steps", _e(summ), "".join(b), sid="p-steps"))
 
     # Collector
@@ -2925,7 +2928,9 @@ def render(s: dict) -> str:
     # Commits
     rows = [row for row in s["commits"] if len(row) == 3]
     b = ["<table>"] + [f"<tr><td class='mut'>{_e(row[1])}</td><td>{_e(row[2][:110])}</td></tr>" for row in rows] + ["</table>"]
-    summ = f"останній {rows[0][1]} — {rows[0][2][:70]}" if rows else "комітів не прочитано"
+    n24 = s.get("commits_24h")  # rule 4: a count, since the last commit's date is not a headline number
+    day = f"комітів за добу {n24} · " if isinstance(n24, int) else ""
+    summ = f"{day}останній {rows[0][1]} — {rows[0][2][:70]}" if rows else "комітів не прочитано"
     out.append(_fold("Останні зміни в main", "p_changes", _e(summ), "".join(b), sid="p-changes"))
     caveats = "<div class='caveat'><b>Застереження</b><ul>" + "".join(f"<li>{_e(c)}</li>" for c in SYSTEM_CAVEATS) + "</ul></div>"
     out.append(f"</main>{caveats}</body></html>")
@@ -4022,7 +4027,12 @@ def brief_summaries(snap: dict) -> dict[str, str]:
     if ev is not None:
         evs = [x for x in merge_same_day(ev.get("events")) if isinstance(x, dict)][:2]
         out["events"] = (
-            " · ".join(f"{_clean(x.get('title'), 40).split(' · ')[0]} {kyiv(_iso(x.get('ts_utc')))}" for x in evs)
+            # rule 4: «через N год» is the headline number, the event's date alone is not one
+            " · ".join(
+                f"{_clean(x.get('title'), 40).split(' · ')[0]} {kyiv(_iso(x.get('ts_utc')))}"
+                + (f", {_in_hours(h)}" if (h := _num(x.get("hours_ahead"))) is not None and h > 0 else "")
+                for x in evs
+            )
             or "подій на 14 днів немає"
         )
     fparts = []

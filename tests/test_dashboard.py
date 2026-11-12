@@ -1,6 +1,7 @@
 """scripts/dashboard.py: the project dashboard (pure helpers and the page)."""
 
 import json
+import re
 import sqlite3
 import sys
 from datetime import UTC, datetime, timedelta
@@ -106,6 +107,7 @@ def _project_snap() -> dict:
             "eta_days": 5.0,
         },
         "commits": [["abc1234", "17.10 12:00", "Owner's decisions"]],
+        "commits_24h": 3,
         "questions": ["Q-1: ключ?"],
         "services": [{"label": "MCP", "unit": "tradedesk-mcp", "state": "active"}],
         "machine": {
@@ -172,11 +174,17 @@ def test_system_tab_follows_panel_rules():
         "p-progress": "33 % · зроблено 30 з 90 кроків · ≈ 5 дн. роботи агентів",
         "p-queue": "твоїх карток 1 · від агентів 0 · далі: паперовий carry",
         "p-results": "підтверджено 0 · форвард 0 · без вердикту 0 · відхилено 1",
-        "p-steps": "останній 17.10 08:31 — здано",
+        "p-steps": "за добу здано 11 з 12 · останній 17.10 08:31 — здано",
         "p-collector": "свіжі 1 з 1 таблиць",
         "p-server": "диск 11 % · пам&#x27;ять 8 % · бекап 1 год тому",
-        "p-changes": "останній 17.10 12:00 — Owner&#x27;s decisions",
+        "p-changes": "комітів за добу 3 · останній 17.10 12:00 — Owner&#x27;s decisions",
     }
+    # item 331: no history / no commit count keep the old forms (no count to show, never a crash)
+    bare = _project_snap()
+    bare["agents"] = bare["agents"] | {"counts_24h": {}, "history": []}
+    bare.pop("commits_24h")
+    p0 = db.render(bare)
+    assert "<span class='fs'>кроків ще немає</span>" in p0 and "<span class='fs'>останній 17.10 12:00 — Owner&#x27;s decisions</span>" in p0
     assert "<details open>" not in main
     # 6. what waits for the owner stays open, above the folds
     assert main.index("Питання агентів до тебе") < main.index("class='wide fold'") and "Q-1: ключ?" in main
@@ -368,7 +376,7 @@ def test_brief_lead_actions_and_folded_blocks():
     assert s["conditions"] == "купівля: за 1, проти 0 · продаж: за 0, проти 1"
     assert s["chart"] == "120 днів: +32 %, від 58.6k до 86.6k"
     assert s["scenarios"] == "найімовірніше 80k – 85k — 22 % (ціна страховки)"  # «не прогноз»: once, at the bottom (rule 5)
-    assert s["funding"] == "BTC +4…+11 % · ETH +3…+11 % річних" and s["events"].startswith("Oct 2026 FOMC 28.10 20:00")
+    assert s["funding"] == "BTC +4…+11 % · ETH +3…+11 % річних" and s["events"] == "Oct 2026 FOMC 28.10 20:00, через 8 дн"
     assert db.key_summary(db.key_items(snap)) == "ризик: захист · подія: подія · спокій: ринок, діапазон, волатильність"
     page = db.render_brief(snap, None, asof)
     for act in ("опціони дешеві: купувати вигідніше", "стоп — за межами цього діапазону", "перекосу натовпу нема", "звичайний розмір"):
@@ -2424,22 +2432,92 @@ def _visible_text(html_part: str) -> str:
 
 
 # docs/design/PANEL.md rule 4 (standing improvements, item 302): the summary line of a folded section (`_fold`) shows
-# its main number or a status, not just what the section is about. A summary passes with a digit or a status word.
-# RULE4_TODO: HELP keys of folds whose summary is still a description, with why it is not a text fix; like
-# RULE2_TODO, it must match the fact both ways.
+# its main number or a status, not just what the section is about. A summary passes with a headline number or a
+# status word. RULE4_TODO: HELP keys of folds whose summary is still a description, with why it is not a text fix;
+# like RULE2_TODO, it must match the fact both ways.
 # «спокій: / ризик: / подія: / нагода:» are the labels of «Головне сьогодні» (HELP["key"]); «не виконується» is the
-# risk rule's verdict in «Чи вкладається в ризик».
-RULE4_STATUS = ("немає", "нема", "вимкнено", "збій", "помилка", "застаріл", "порожньо", "невідомо", "чекає", "не виконується")
-RULE4_STATUS += ("спокій:", "ризик:", "подія:", "нагода:")
+# risk rule's verdict in «Чи вкладається в ризик». Item 331: whole words only («нема» is not found in «немає»,
+# «помилка» not in «помилкові»), so the stem «застаріл» became its forms.
+RULE4_STATUS = ("немає", "нема", "вимкнено", "збій", "помилка", "порожньо", "невідомо", "чекає", "не виконується")
+RULE4_STATUS += ("застарілі", "застаріла", "застарілий", "застаріло", "спокій:", "ризик:", "подія:", "нагода:")
 RULE4_TODO: dict[str, str] = {}  # item 303: the four «Мої угоди» folds got summary functions (rules_week_line & co.)
+# Item 331: digits that are not a headline number, removed before looking for one: ISO dates and weeks, dd.mm[.yyyy]
+# dates (a valid day and month, not followed by a unit, so «12.82 млрд» and «15.10 %» stay numbers), clock times,
+# years, ids where a letter leads the digits (Q4, S3, v10, RV30, Q-1) and the delta labels of the smile (10Δ).
+# A number with a unit glued after it (80k, 58.6k) still counts. Durations («24 год», «120 днів») count: a known limit.
+_RULE4_NOT_NUMBER = re.compile(
+    r"\d{4}-\d{2}-\d{2}|\d{4}-W\d{1,2}"
+    r"|(?<![\d.,])(?:0[1-9]|[12]\d|3[01])\.(?:0[1-9]|1[0-2])(?:\.\d{4})?(?![\d.,])(?!\s*(?:%|[kKMB]\b|млн|млрд|тис|вп|б\.п))"
+    r"|(?<![\d:])(?:[01]?\d|2[0-3]):[0-5]\d(?![\d:])"
+    r"|(?<![\d.,])(?:19|20)\d{2}(?![\d.,])"
+    r"|(?<!\w)[^\W\d_]+-?\d\w*"
+    r"|\d+Δ"
+)
+_RULE4_STATUS_RE = re.compile(r"(?<!\w)(?:" + "|".join(re.escape(w) for w in RULE4_STATUS) + r")(?!\w)")
+
+
+def _rule4_has_number(text: str) -> bool:
+    """A headline number left in ``text`` once dates, times, years and ids are dropped."""
+    return re.search(r"\d", _RULE4_NOT_NUMBER.sub(" ", text)) is not None
+
+
+def _rule4_has_status(text: str) -> bool:
+    return _RULE4_STATUS_RE.search(text.lower()) is not None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "свіжі 1 з 1 таблиць",
+        "диск 11 % · пам'ять 8 % · бекап 1 год тому",
+        "найімовірніше 80k – 85k — 22 % (ціна страховки)",
+        "80k – 85k",  # a number with a glued unit
+        "OI 12.82 млрд $",  # a decimal that is not a valid dd.mm
+        "15.10 % за тиждень",  # a valid dd.mm followed by % is a decimal
+        "81 093 · −3.0 % за тиждень (18.10 проти 11.10)",
+        "S3 v3, 13 з 30",
+        "Oct 2026 FOMC 28.10 20:00, через 8 дн",
+        "за добу здано 11 з 12 · останній 17.10 08:31 — здано",
+    ],
+)
+def test_rule4_headline_number_counts(text):
+    assert _rule4_has_number(text), text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "останній 17.10 08:31 — здано",  # a date and a time
+        "останній 17.10 12:00 — Owner's decisions",
+        "Oct 2026 FOMC 28.10 20:00",  # a year, a date, a time
+        "вердикт не раніше 23.02.2027",
+        "звіт за Q4",
+        "сетап S3 v10",  # ids
+        "питання Q-1",
+        "тиждень 2025-W42 · 2025-10-18",
+        "10Δ P · ATM · 10Δ C (18.10)",
+        "RV30 і DVOL",
+        "огляд ринку",  # no digits at all
+    ],
+)
+def test_rule4_dates_times_and_ids_are_not_a_headline_number(text):
+    assert not _rule4_has_number(text), text
+
+
+def test_rule4_status_words_are_whole_words():
+    for text in ("даних немає", "нема даних", "збій", "дані застарілі", "ризик: захист", "правило ризику не виконується"):
+        assert _rule4_has_status(text), text
+    for text in ("помилкові входи", "незбійний", "застарілість", "ризики й нагоди", "немаєш", "очікує", "очевидно"):
+        assert not _rule4_has_status(text), text
+    assert _rule4_has_status("Немає даних")  # case does not matter
+    assert not _rule4_has_status("ризик захист")  # «ризик:» is the label with its colon, not the word
 
 
 def test_rule4_fold_summaries_carry_a_number_or_status_except_the_listed(tmp_path):
     """Item 302 (docs/design/PANEL.md rule 4): every `_fold` on every tab of _all_tab_pages has a non-empty one-line
-    summary in its <summary>, other than its title, with a digit or a RULE4_STATUS word; the folds not done yet are
-    RULE4_TODO by their HELP key (found by the heading's exact «i» note, as in the rule 2 test)."""
-    import re
-
+    summary in its <summary>, other than its title, with a headline number or a RULE4_STATUS word (item 331: see
+    _rule4_has_number / _rule4_has_status); the folds not done yet are RULE4_TODO by their HELP key (found by the
+    heading's exact «i» note, as in the rule 2 test)."""
     note = {db._info(k): k for k in db.HELP}
     fold = re.compile(
         r"<section class='wide fold' id='[^']+'><details><summary><h2>(.*?)</h2><span class='fs'>(.*?)</span></summary>", re.S
@@ -2456,7 +2534,7 @@ def test_rule4_fold_summaries_carry_a_number_or_status_except_the_listed(tmp_pat
     bad = set()
     for name, key, title, raw, text in rows:
         assert text and "\n" not in text and "<br" not in raw and "<p" not in raw, (name, key, raw)  # one line
-        if text == title or not (re.search(r"\d", text) or any(w in text.lower() for w in RULE4_STATUS)):
+        if text == title or not (_rule4_has_number(text) or _rule4_has_status(text)):
             bad.add(key)
     assert bad == set(RULE4_TODO), (
         "folds without a number or status",

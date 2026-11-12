@@ -20,16 +20,8 @@ NOW = datetime(2026, 10, 23, 10, tzinfo=UTC).timestamp()  # Friday 13:00 Kyiv
 
 
 @pytest.fixture
-def journal_db(tmp_path):
-    path = tmp_path / "tradedesk.sqlite"
-
-    async def make():
-        s = Store(path)
-        await s.init()
-        await s.aclose()
-
-    asyncio.run(make())
-    return path
+def journal_db(migrated_db):
+    return migrated_db  # tmp_path/tradedesk.sqlite, a copy of the migrated template (tests/conftest.py)
 
 
 def rows(path):

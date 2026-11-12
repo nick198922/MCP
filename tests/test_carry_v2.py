@@ -138,8 +138,10 @@ class VanishFeed(FixtureFeed):
         super().__init__(markets, "A")
         self.symbol, self.cut = symbol, cut
 
-    async def load(self, params: CarryParams, decision_ts: int, open_positions: list[dict[str, Any]]) -> FeedData:
-        data = await super().load(params, decision_ts, open_positions)
+    async def load(
+        self, params: CarryParams, decision_ts: int, open_positions: list[dict[str, Any]], *, held_only: bool = False
+    ) -> FeedData:
+        data = await super().load(params, decision_ts, open_positions, held_only=held_only)
         d = data.markets[self.symbol]
         data.markets = {**data.markets, self.symbol: {**d, "funding": [e for e in d["funding"] if e["ts_ms"] < self.cut]}}
         return data

@@ -38,11 +38,14 @@ class FixtureFeed:
     def __init__(self, markets: dict[str, Any], strategy: str, fail: bool = False) -> None:
         self.markets, self.strategy, self.fail = markets, strategy, fail
         self.books: list[tuple[str, str]] = []
+        self.held_only_seen: list[bool] = []
 
     async def load(
         self, params: CarryParams, decision_ts: int, open_positions: list[dict[str, Any]], *, held_only: bool = False
     ) -> FeedData:
         # ``held_only`` (stopped entries) is ignored: the full series must give the same decisions on held positions.
+        # Subclasses overriding ``load`` must accept it and pass it on (CarryFeed contract).
+        self.held_only_seen.append(held_only)
         if self.fail:
             raise RuntimeError("venue down")
         spot = {s: (s.replace("USDT:USDT", "USDT"), 1) for s in self.markets} if self.strategy == "A" else {}
@@ -372,8 +375,10 @@ class TruncatedFeed(FixtureFeed):
             self._known_times[key] = known
         return series[: bisect.bisect_right(known, t)]
 
-    async def load(self, params: CarryParams, decision_ts: int, open_positions: list[dict[str, Any]]) -> FeedData:
-        data = await super().load(params, decision_ts, open_positions)
+    async def load(
+        self, params: CarryParams, decision_ts: int, open_positions: list[dict[str, Any]], *, held_only: bool = False
+    ) -> FeedData:
+        data = await super().load(params, decision_ts, open_positions, held_only=held_only)
         t, bm = decision_ts, params.bar_ms
         if self.strategy == "A":
             data.markets = {s: {k: self._cut(v, t, bm) for k, v in d.items()} for s, d in data.markets.items()}
@@ -440,16 +445,16 @@ async def test_exchange_interval_change_is_an_event(store):
     sym = (await store.cp_positions("A", "open"))[0]["symbol"]
 
     class Changed(FixtureFeed):
-        async def load(self, params, decision_ts, open_positions):
-            d = await super().load(params, decision_ts, open_positions)
+        async def load(self, params, decision_ts, open_positions, *, held_only=False):
+            d = await super().load(params, decision_ts, open_positions, held_only=held_only)
             d.current = {sym: {"interval_hours": 8.0}}
             return d
 
     await _drive(store, Changed(mk, "A"), params, [times[i]])
 
     class Changed4(Changed):
-        async def load(self, params, decision_ts, open_positions):
-            d = await FixtureFeed.load(self, params, decision_ts, open_positions)
+        async def load(self, params, decision_ts, open_positions, *, held_only=False):
+            d = await FixtureFeed.load(self, params, decision_ts, open_positions, held_only=held_only)
             d.current = {sym: {"interval_hours": 4.0}}
             return d
 
@@ -473,8 +478,8 @@ async def test_interval_change_across_a_skipped_cycle_is_an_event(store):
 
     def reporting(hours: float) -> FixtureFeed:
         class Reported(FixtureFeed):
-            async def load(self, params, decision_ts, open_positions):
-                d = await super().load(params, decision_ts, open_positions)
+            async def load(self, params, decision_ts, open_positions, *, held_only=False):
+                d = await super().load(params, decision_ts, open_positions, held_only=held_only)
                 d.current = {sym: {"interval_hours": hours}}
                 return d
 
@@ -498,8 +503,10 @@ class DroppingFeed(FixtureFeed):
         self.drop_cycle_ts = drop_cycle_ts
         self.dropped: set[int] = set()
 
-    async def load(self, params: CarryParams, decision_ts: int, open_positions: list[dict[str, Any]]) -> FeedData:
-        data = await super().load(params, decision_ts, open_positions)
+    async def load(
+        self, params: CarryParams, decision_ts: int, open_positions: list[dict[str, Any]], *, held_only: bool = False
+    ) -> FeedData:
+        data = await super().load(params, decision_ts, open_positions, held_only=held_only)
         if self.drop_cycle_ts != decision_ts - DECISION_DELAY_MS:
             return data
         lo = self.drop_cycle_ts - 60_000
@@ -548,8 +555,10 @@ class PermanentHoleFeed(FixtureFeed):
         super().__init__(markets, strategy)
         self.hole_ts = hole_ts
 
-    async def load(self, params: CarryParams, decision_ts: int, open_positions: list[dict[str, Any]]) -> FeedData:
-        data = await super().load(params, decision_ts, open_positions)
+    async def load(
+        self, params: CarryParams, decision_ts: int, open_positions: list[dict[str, Any]], *, held_only: bool = False
+    ) -> FeedData:
+        data = await super().load(params, decision_ts, open_positions, held_only=held_only)
         for sym, d in list(data.markets.items()):
             data.markets[sym] = {**d, "funding": [e for e in d["funding"] if abs(e["ts_ms"] - self.hole_ts) > 60_000]}
         return data
@@ -591,8 +600,10 @@ async def test_persistent_funding_gap_is_confirmed_after_three_cycles_and_settle
 class IncompleteHoleFeed(PermanentHoleFeed):
     """Like PermanentHoleFeed, but our own fetch is flagged incomplete (page limit, 429/418)."""
 
-    async def load(self, params: CarryParams, decision_ts: int, open_positions: list[dict[str, Any]]) -> FeedData:
-        data = await super().load(params, decision_ts, open_positions)
+    async def load(
+        self, params: CarryParams, decision_ts: int, open_positions: list[dict[str, Any]], *, held_only: bool = False
+    ) -> FeedData:
+        data = await super().load(params, decision_ts, open_positions, held_only=held_only)
         data.flags += [{"symbol": s, "issue": "funding_history_incomplete"} for s in data.markets]
         return data
 
@@ -641,8 +652,10 @@ class MidWindowHoleFeed(FixtureFeed):
         super().__init__(markets, "A")
         self.step, self.hole_cycle, self.report = interval_h * 3_600_000, hole_cycle, report
 
-    async def load(self, params: CarryParams, decision_ts: int, open_positions: list[dict[str, Any]]) -> FeedData:
-        data = await super().load(params, decision_ts, open_positions)
+    async def load(
+        self, params: CarryParams, decision_ts: int, open_positions: list[dict[str, Any]], *, held_only: bool = False
+    ) -> FeedData:
+        data = await super().load(params, decision_ts, open_positions, held_only=held_only)
         cycle = decision_ts - DECISION_DELAY_MS
         src, data.markets = data.markets, {}  # never mutate the shared fixture
         for sym, d in src.items():
@@ -856,6 +869,30 @@ async def test_stopped_a_opens_nothing_and_closes_held_positions_as_without_the_
     ref_view = await book_view(SimpleNamespace(store=await full_run("A")), "A", times[-1], False)  # type: ignore[arg-type]
     assert ref_view["engine"]["new_entries_stopped"] is None
     assert ref_view["free_slots"] == PARAMS_A.slots - len(ref_view["open"]) > 0
+
+
+async def test_stopped_a_runs_with_fixture_feed_subclasses(store):
+    # Item 346 (review of item 342, note 4): a stopped book calls ``load(..., held_only=True)``; every FixtureFeed
+    # subclass overriding ``load`` must accept the keyword and pass it on, or the cycle dies with TypeError.
+    mk, params, times = _scenario("A")
+    feed = FixtureFeed(mk, "A")
+    i = 0
+    while not await store.cp_positions("A", "open"):
+        await _drive(store, feed, params, [times[i]])
+        i += 1
+    hole = times[i] - DECISION_DELAY_MS
+    feeds = [
+        TruncatedFeed(mk, "A"),
+        DroppingFeed(mk, "A"),
+        PermanentHoleFeed(mk, "A", hole_ts=hole),
+        IncompleteHoleFeed(mk, "A", hole_ts=hole),
+        MidWindowHoleFeed(mk, 8),
+    ]
+    for n, f in enumerate(feeds):
+        t = times[i + n]
+        out = await run_cycle(store, f, params, t - DECISION_DELAY_MS, clock=lambda t=t: t, entries_stopped=ENTRIES_STOPPED["A"])
+        assert out["status"] == "done" and out["opened"] == [], (type(f).__name__, out)
+        assert f.held_only_seen == [True], type(f).__name__  # the flag reached FixtureFeed.load through the override
 
 
 async def test_scheduler_job_stops_a_entries_and_leaves_b_alone(monkeypatch):

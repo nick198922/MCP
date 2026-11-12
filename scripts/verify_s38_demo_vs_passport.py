@@ -9,11 +9,13 @@ The closed S38 demo trades (``demo_trade``, read over a ``mode=ro`` connection: 
 works for any setup) and set against the S38 passport (``docs/verification/2026-10-30-passport-s38-s39-s40.md``). Per
 trade: ``analytics/demo_vs_backtest.replay`` with the live S38 detector on Bybit candles (``scripts/demo_vs_backtest.py``
 paged fetch, cached through the S12 script's ``cached`` / ``cached_day``), the entry day's Bybit turnover (the passport
-does not exclude a handicap up to about 0.35R for shorts on $1-5M coins, so that group gets its own row), fees and exit
+does not exclude a handicap up to about 0.35R for shorts on $1-5M coins, so that group gets its own row; the row
+"без $1–5M" is every other S38 trade: >= $5M + < $1M + unknown turnover), fees and exit
 slippage against the backtest convention (``s12_demo_audit.exec_costs``), orphaned trades (filled, no close found) with
 the scenario «each closed at the initial stop, -1R», missed entries and the shadow plans (``analytics/demo_shadow``).
 CI: bootstrap clustered by the UTC day of the signal bar (``liquidation_flush.cluster_bootstrap_ci`` through the S12
-script's ``stat``). R is per trade risk, not on capital.
+script's ``stat``). R is per trade risk, not on capital. The passport bands are defined for n = 30: a group with fewer
+trades gets no band verdict (✓ / ≈ / ✗), only the neutral line "n < 30: смуга паспорта не застосовна".
 
 Not modelled here: the demo's cap of 2 S38 entries per 4h bar. The passport models it (``BAR_CAP``); the per-trade
 replay takes each closed trade alone and cannot see which signals the cap (or the daily slots) turned away.
@@ -46,6 +48,7 @@ from tradedesk.runtime import Runtime
 SETUP = "S38"
 DEFAULT_CACHE = "~/.cache/tradedesk-agents/s38-demo-vs-passport"
 BAR_CAP = 2  # the demo's limit of S38 entries per 4h signal bar (setup_versions v5)
+BAND_N = 30  # the passport bands are defined for 30 trades: no band verdict for a smaller group
 PASSPORT_DOC = "docs/verification/2026-10-30-passport-s38-s39-s40.md"
 # S38 passport, verdict sample (top-250 and >= $1M, demo filters, cap of 2 per bar, rule B, OOS >= 2025-03): line 15 of
 # PASSPORT_DOC (OOS -0.032 [-0.144; +0.084], n 1012; the n = 30 bands 5 / 50 / 95: i.i.d. -0.372 / -0.035 / +0.335,
@@ -155,17 +158,27 @@ def smoke(db: str, cutoff_ms: int, cache: Path, venue: str, now_ms: int | None =
     return 0
 
 
+def band_tail(s: dict[str, Any]) -> str:
+    """`` -> <band verdict>`` for a group of at least BAND_N trades, else empty: the passport band is defined for n = 30."""
+    return f" -> {audit.band_verdict(s['mean'], PASSPORT)}" if s.get("n", 0) >= BAND_N else ""
+
+
 def passport_lines(s: dict[str, Any]) -> list[str]:
-    """The comparison of one group's stat with the S38 passport (band of 30, rescaled band, demo minus OOS)."""
+    """The comparison of one group's stat with the S38 passport (band of 30, rescaled band, demo minus OOS).
+
+    The band verdict (✓ / ≈ / ✗) is printed only for n >= BAND_N; a smaller group gets a neutral line instead."""
     pp = PASSPORT
     lo, hi = audit.scaled_band(pp, s["n"])
     ci = s.get("ci")
     diff = f"{s['mean'] - pp.oos_mean:+.3f} [{ci[0] - pp.oos_mean:+.3f}; {ci[1] - pp.oos_mean:+.3f}]" if ci else "—"
-    return [
+    out = [
         f"    паспорт S38 OOS {pp.oos_mean:+.3f} [{pp.oos_ci[0]:+.3f}; {pp.oos_ci[1]:+.3f}]; смуга n=30 i.i.d. [{pp.band_iid[0]:+.3f}; "
-        f"{pp.band_iid[2]:+.3f}], ковзна [{pp.band_sliding[0]:+.3f}; {pp.band_sliding[2]:+.3f}] -> {audit.band_verdict(s['mean'], pp)}; "
+        f"{pp.band_iid[2]:+.3f}], ковзна [{pp.band_sliding[0]:+.3f}; {pp.band_sliding[2]:+.3f}]{band_tail(s)}; "
         f"на n={s['n']} (описово) [{lo:+.3f}; {hi:+.3f}]; демо − OOS {diff}"
     ]
+    if s["n"] < BAND_N:
+        out.append(f"    n < {BAND_N}: смуга паспорта не застосовна")
+    return out
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -245,7 +258,9 @@ def run(db: str, cutoff_ms: int, cache: Path, venue: str, tag: str = "s38", now_
             p(f"- orphaned {name}: 0")
             continue
         s2 = stat([r for r in rows if f(r)] + oo, "r_demo")
-        tail = f" -> {audit.band_verdict(s2['mean'], PASSPORT)}" if {r["passport"] for r in oo} == {"S38"} and s2.get("n") else ""
+        tail = ""
+        if {r["passport"] for r in oo} == {"S38"} and s2.get("n"):
+            tail = band_tail(s2) or f"; n < {BAND_N}: смуга паспорта не застосовна"
         p(f"- orphaned {name}: {len(oo)}; сценарій «закрито за стопом, −1R» (описово): {fmt(s2)}{tail}")
     p("")
     s38 = [r for r in rows if r["passport"] == "S38"]
@@ -255,8 +270,9 @@ def run(db: str, cutoff_ms: int, cache: Path, venue: str, tag: str = "s38", now_
         p(f"- оборот {label:<10} {fmt(s)}")
         if k in TURNOVER_REF:
             p(f"    {TURNOVER_REF[k]}")
+    # "без $1–5M" = every S38 trade outside the $1-5M group: ge5m + lt1m + unknown turnover (no Bybit daily candle)
     no15 = stat([r for r in s38 if r.get("turnover_group") != "1to5m"], "r_demo")
-    p(f"- без $1–5M (описово)  {fmt(no15)}")
+    p(f"- без $1–5M (= ≥ $5M + < $1M + невідомий; описово)  {fmt(no15)}")
     if no15.get("n"):
         L.extend(passport_lines(no15))
     m15, m5 = (

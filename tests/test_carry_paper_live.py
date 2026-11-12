@@ -148,6 +148,57 @@ async def test_steady_state_cycle_requests_only_new_funding_rows(tmp_path):
         await rt.aclose()
 
 
+async def test_stopped_a_fetches_funding_history_for_held_symbols_only(tmp_path):
+    # Item 342 (2026-11-12): with A's entries stopped an idle book must not walk the universe's funding history.
+    from tradedesk.collector.carry_paper_engine import ENTRIES_STOPPED
+
+    class Ex(LiveEx):
+        history_calls: list = []
+        cycle = CYCLE
+
+    stop = ENTRIES_STOPPED["A"]
+    for k in ("idle", "stop", "ref"):
+        (tmp_path / k).mkdir()
+    rts = {k: _rt(Ex, tmp_path / k) for k in ("idle", "stop", "ref")}
+    for rt in rts.values():
+        assert rt.store is not None
+        await rt.store.init()
+    try:
+        feeds = {k: LiveFeed(rt, workers=2, pacer=Pacer(10**6)) for k, rt in rts.items()}
+
+        async def cycle(k: str, ts: int, stopped: str | None) -> list[str]:
+            Ex.history_calls.clear()
+            out = await run_cycle(rts[k].store, feeds[k], PARAMS_A, ts, clock=lambda: ts + DECISION_DELAY_MS, entries_stopped=stopped)
+            assert out["status"] == "done", out
+            return sorted(s for _, s, _ in Ex.history_calls)
+
+        # (1) stopped, nothing held: no history request at all, the cycle is still recorded
+        assert await cycle("idle", CYCLE, stop) == []
+        idle = (await rts["idle"].store.cp_cycle_get("A", CYCLE))["payload"]
+        assert idle["entries_stopped"] == stop and idle["universe_size"] == 2 and idle["with_data"] == 0
+        assert await rts["idle"].store.cp_positions("A") == []
+
+        # (3) entries open (no stop): the whole universe, as before; both books open WIF
+        for k in ("stop", "ref"):
+            assert await cycle(k, CYCLE, None) == ["BTC/USDT:USDT", "WIF/USDT:USDT"]
+            assert [p["symbol"] for p in await rts[k].store.cp_positions("A", "open")] == ["WIF/USDT:USDT"]
+
+        # (2) stopped with WIF held: only WIF's history; the held position is marked exactly as without the stop
+        nxt = CYCLE + H8
+        Ex.cycle = nxt
+        assert await cycle("stop", nxt, stop) == ["WIF/USDT:USDT"]
+        assert await cycle("ref", nxt, None) == ["BTC/USDT:USDT", "WIF/USDT:USDT"]
+        (held,) = await rts["stop"].store.cp_positions("A", "open")
+        (ref,) = await rts["ref"].store.cp_positions("A", "open")
+        assert held["state"] == ref["state"] and held["state"]["last"] == nxt + DECISION_DELAY_MS
+        pay = {k: (await rts[k].store.cp_cycle_get("A", nxt))["payload"] for k in ("stop", "ref")}
+        assert pay["stop"]["decisions"] == pay["ref"]["decisions"] and pay["stop"]["candidates"] == pay["ref"]["candidates"]
+        assert pay["stop"]["flags"] == pay["ref"]["flags"] == []
+    finally:
+        for rt in rts.values():
+            await rt.aclose()
+
+
 async def test_pacer_waits_when_the_window_budget_is_spent():
     now = [0.0]
     slept: list[float] = []

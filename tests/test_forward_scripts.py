@@ -185,7 +185,9 @@ class SynthFeed:
         self.mk = {"A": markets_a(), "B": markets_b()}
         self.loads: list[str] = []
 
-    async def load(self, params: CarryParams, decision_ts: int, open_positions: list[dict[str, Any]]) -> FeedData:
+    async def load(
+        self, params: CarryParams, decision_ts: int, open_positions: list[dict[str, Any]], *, held_only: bool = False
+    ) -> FeedData:
         self.loads.append(params.strategy)
         mk = self.mk[params.strategy]
         spot = {s: (s.replace("USDT:USDT", "USDT"), 1) for s in mk} if params.strategy == "A" else {}

@@ -141,10 +141,24 @@ def test_main_on_tmp_tree(tmp_path):
     assert dc.main(["--root", str(tmp_path)]) == 1
 
 
-def test_main_on_repository(tmp_path):
+def test_main_on_repository(tmp_path, monkeypatch):
+    """src/tradedesk declares everything it imports; BACKLOG 6.38: scripts/ imports nothing undeclared unconditionally,
+    media scripts stop with their `uv run --no-project --with ...` command instead of an ImportError.
+
+    The scripts/ scope is read from the report `main` builds (the same `load_scope` sources and local names, the same
+    pyproject), so the repository is parsed once, not once more for that check."""
+    reports = []
+    real_check = dc.check
+    monkeypatch.setattr(dc, "check", lambda scopes, declared: reports.append(real_check(scopes, declared)) or reports[-1])
     out = tmp_path / "deps.md"
-    assert dc.main(["--root", str(ROOT), "--out", str(out)]) == 0  # src/tradedesk declares everything it imports
+    assert dc.main(["--root", str(ROOT), "--out", str(out)]) == 0
     assert out.read_text(encoding="utf-8").startswith("# deps_check:")
+    [rep] = reports
+    s = rep.scopes["scripts"]
+    assert s.files == len(dc.load_scope(ROOT / "scripts")[0]) > 200
+    assert s.undeclared == []
+    media = {"bs4", "faster_whisper", "imageio_ffmpeg", "mlx_whisper", "PIL", "youtube_transcript_api", "matplotlib"}
+    assert media <= set(s.conditional_undeclared)
 
 
 FIND_SPEC = """
@@ -264,16 +278,6 @@ def test_imports_nested_in_statements_are_found():
     assert set(found) == expected | {"contextlib"}
     assert {m for m in expected if found[m][0].conditional} == {"in_method_try", "in_case_spec"}
     assert found["in_case"][0] == dc.Use("n.py", 58, False)
-
-
-def test_repository_scripts_import_nothing_undeclared_unconditionally():
-    """BACKLOG 6.38: media scripts stop with their `uv run --no-project --with ...` command instead of an ImportError."""
-    declared = dc.declared_from_pyproject((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    sources, local = dc.load_scope(ROOT / "scripts")
-    s = dc.check_scope(sources, declared, local)
-    assert s.undeclared == []
-    media = {"bs4", "faster_whisper", "imageio_ffmpeg", "mlx_whisper", "PIL", "youtube_transcript_api", "matplotlib"}
-    assert media <= set(s.conditional_undeclared)
 
 
 @pytest.mark.parametrize(

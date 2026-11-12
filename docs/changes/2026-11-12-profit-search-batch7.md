@@ -1,0 +1,2 @@
+- Партія 7 скаута (profit-search, п. 3): одна картка `bybit-dual-asset-implied-vol-gap` (IV продукту Bybit Dual Asset проти Deribit); критик A — `rejected` (ефект ≈ $12–24 на рік, ємність мала).
+- Відкинуті кандидати партії (HIP-3, викупи токенів, комісії, ADL, dual Binance/OKX, стейблкоїни, терм-структура Deribit) записані в картці profit-search.

@@ -2876,9 +2876,11 @@ def render(s: dict) -> str:
         )
     b.append("</table>")
     hs = a["history"]
-    c = a.get("counts_24h") or {}  # rule 4: the headline number is the day's output, the last step's time is not one
-    day = f"за добу здано {c.get('delivered', 0)} з {sum(c.values())} · "
-    summ = f"{day}останній {hs[0]['when']} — {STATUS_UA.get(hs[0]['status'], hs[0]['status'])}" if hs else "кроків ще немає"
+    summ = "кроків ще немає"
+    if hs:
+        c = a.get("counts_24h") or {}  # rule 4: the headline number is the day's output, the last step's time is not one
+        day = f"за добу здано {c.get('delivered', 0)} з {sum(c.values())} · "
+        summ = f"{day}останній {hs[0]['when']} — {STATUS_UA.get(hs[0]['status'], hs[0]['status'])}"
     out.append(_fold("Кроки агентів", "p_steps", _e(summ), "".join(b), sid="p-steps"))
 
     # Collector
@@ -2928,9 +2930,11 @@ def render(s: dict) -> str:
     # Commits
     rows = [row for row in s["commits"] if len(row) == 3]
     b = ["<table>"] + [f"<tr><td class='mut'>{_e(row[1])}</td><td>{_e(row[2][:110])}</td></tr>" for row in rows] + ["</table>"]
-    n24 = s.get("commits_24h")  # rule 4: a count, since the last commit's date is not a headline number
-    day = f"комітів за добу {n24} · " if isinstance(n24, int) else ""
-    summ = f"{day}останній {rows[0][1]} — {rows[0][2][:70]}" if rows else "комітів не прочитано"
+    summ = "комітів не прочитано"
+    if rows:
+        n24 = s.get("commits_24h")  # rule 4: a count, since the last commit's date is not a headline number
+        day = f"комітів за добу {n24} · " if isinstance(n24, int) else ""
+        summ = f"{day}останній {rows[0][1]} — {rows[0][2][:70]}"
     out.append(_fold("Останні зміни в main", "p_changes", _e(summ), "".join(b), sid="p-changes"))
     caveats = "<div class='caveat'><b>Застереження</b><ul>" + "".join(f"<li>{_e(c)}</li>" for c in SYSTEM_CAVEATS) + "</ul></div>"
     out.append(f"</main>{caveats}</body></html>")

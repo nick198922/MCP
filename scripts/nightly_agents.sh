@@ -361,6 +361,14 @@ if [[ -n "${TRADEDESK_AGENTS_OWNER_ONLY:-}" && "$PROMPT" != *"BUDGET:"* ]]; then
 
 BUDGET: the agents are ${TRADEDESK_AGENTS_OWNER_ONLY}; the owner lets them work on his priority cards anyway, up to the 97 % pause. Take only step p, skipping cards with the line «Темп: за графіком», or the CONTINUE work."
 fi
+# The owner's cards with open items, listed by a script (12.11: the coordinator's own Grep over ~150 cards was cut off
+# and it idled while the owner's profit-search card had work).
+OWNER_NOTE="$(python3 "$REPO/scripts/owner_cards.py" docs/ideas 2>/dev/null || true)"
+if [[ -n "$OWNER_NOTE" ]]; then
+  PROMPT="$PROMPT
+
+$OWNER_NOTE"
+fi
 if [[ -n "$PARKED_NOTE" ]]; then
   PROMPT="$PROMPT
 

@@ -14,7 +14,8 @@ all. Condor part (a) shows only the count of valid Fridays until its registered 
 ``assistant_paper`` has no band in CHECKPOINT: counters and the job's state only (no P&L), labelled «лише лічильники».
 So are the idea cards with status ``forward``, judged by plans tagged ``idea:<slug>``: plan counts per card, no R.
 One section outside the table, ``s12_stop_rule``: the owner's S12 stop rule (Q-20261109-1) with n, mean R and the 95 %
-CI clustered by signal day, for v9 and for the v4 entry (v4 + v9).
+CI clustered by signal day, for v9 and for the v4 entry (v4 + v9). Each demo row with fee data also gets a descriptive
+note (item 341): mean ``fee_gap_r`` of ``demo_execution`` and the taker-entry share; it changes no n, mean or label.
 
 What this module does not compute (the label says so in its notes): carry criteria (a) (re-run of the backtest code),
 (e) and (ye) (universe and capacity checks) and B's liquidation part of (g) (1m mark prices, network); the demo's
@@ -37,6 +38,7 @@ from .carry_report import cost_realism
 from .carry_v2 import a_v2_shadow
 from .catalyst_scalp import wilson_ci
 from .condor_forward import EARLIEST_T0, ENTRY_CUTOFF_HOUR_UTC, condor_cost, cost_fridays, cost_report, friday_entry
+from .demo_execution import trade_metrics
 from .demo_pnl_check import pnl_mismatches
 from .liquidation_flush import cluster_bootstrap_ci
 from .pm_gap_report import T0_TS, T0_V2G_TS, verdict_ts, verdict_ts_v2g, weekly_descriptive, weekly_v2g
@@ -204,6 +206,29 @@ def _closed_r(rows: Sequence[Mapping[str, Any]], now_ms: int) -> list[Mapping[st
     return sorted(out, key=lambda r: (_num(r.get("opened_ts")) or 0.0, str(r.get("link_id"))))
 
 
+def demo_fee_note(closed: Sequence[Mapping[str, Any]], now_ms: int) -> str | None:
+    """Item 341: the demo's fees against the backtest fee model on the row's own sample (closed trades of the current
+    version), descriptive only. ``fee_gap_r`` per trade comes from ``demo_execution.trade_metrics`` (+ = cheaper than
+    the model) over the trades whose ``fees_usd``, ``risk_usd``, ``qty``, ``fill`` and ``exit`` are known; the taker
+    share counts the entries whose kind is recorded. None when no trade has its fees: the row then has no note."""
+    ms = [m for t in closed if (m := trade_metrics(t, now_ms)) is not None and m["fee_gap_r"] is not None]
+    if not ms:
+        return None
+    gap = round(statistics.fmean(float(m["fee_gap_r"]) for m in ms), 3) + 0.0  # + 0.0: no "-0.000" in the text
+    kinds = [m["entry_kind"] for m in ms if m["entry_kind"] in ("maker", "taker", "mixed")]
+    if kinds:
+        taker = sum(1 for k in kinds if k == "taker")
+        mixed = sum(1 for k in kinds if k == "mixed")
+        share = f"тейкерних входів {taker} з {len(kinds)} ({_pc(taker / len(kinds))})" + (f", змішаних {mixed}" if mixed else "")
+    else:
+        share = "тип входу не записано (рядки до 22.10)"
+    return (
+        f"комісії демо проти моделі бектесту (угод із відомими комісіями {len(ms)}): середній fee_gap_r {gap:+.3f}R "
+        f"(+ = дешевше за модель), {share}; паспорт з фактичними комісіями ≈ OOS + fee_gap_r = OOS {gap:+.3f}R на угоду; "
+        "лише описово: вибірку, n, середній R і вердикт не змінено"
+    )
+
+
 def demo_forward(spec: DemoSpec, trades: Sequence[Mapping[str, Any]], now_ms: int) -> list[dict[str, Any]]:
     """Rows of one demo setup: mean demo R (``r_multiple``: venue P&L with fees / risk from the fill) of the closed
     trades of its current version against the band of the largest n' <= n; for a limit setup also the fill share.
@@ -280,6 +305,8 @@ def demo_forward(spec: DemoSpec, trades: Sequence[Mapping[str, Any]], now_ms: in
             else:
                 what = "у межах"
             notes.append(f"звірка на перших 30 заповнених угодах за часом входу: {m30:+.3f}, {what}")
+    if fee := demo_fee_note(closed, now_ms):
+        notes.append(fee)
     if row["verdict"] == NO:
         notes.append("«ні» → спершу розбір виконання (CHECKPOINT, «Що робимо при „ні“»), версію за одним «ні» не міняємо")
     out = [row]

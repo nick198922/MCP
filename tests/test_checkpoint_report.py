@@ -104,6 +104,24 @@ def test_s28_first_30_filled_waits_while_one_is_still_open():
     assert not any("за часом входу:" in x for x in main["notes"])  # the 31st trade does not stand in for the open one
 
 
+def test_demo_fee_note_maker_and_taker_entry():
+    """Item 341: long, qty 1, fill 100, target exit 110, risk $2.5. The model charges maker on both sides
+    (0.02 + 0.022 = $0.042); a maker entry pays the same (gap 0), a taker entry 0.055 + 0.022 = $0.077 (gap -0.014R)."""
+    s38 = next(s for s in cp.DEMO if s.setup == "S38")
+    px = {"side": "long", "qty": 1.0, "fill": 100.0, "exit": 110.0, "risk_usd": 2.5, "exit_reason": "target"}
+    maker = _trade(0, "S38", 0.5, version="v5", entry_kind="maker", fees_usd=0.042, **px)
+    taker = _trade(1, "S38", -0.3, version="v5", entry_kind="taker", fees_usd=0.077, **px)
+    with_fees = cp.demo_forward(s38, [maker, taker], NOW)[0]
+    note = next(x for x in with_fees["notes"] if x.startswith("комісії демо"))
+    assert "угод із відомими комісіями 2" in note and "середній fee_gap_r -0.007R" in note
+    assert "тейкерних входів 1 з 2 (50 %)" in note and "≈ OOS + fee_gap_r = OOS -0.007R" in note
+    no_fees = cp.demo_forward(s38, [dict(t, fees_usd=None) for t in (maker, taker)], NOW)[0]
+    assert not any(x.startswith("комісії демо") for x in no_fees["notes"])
+    # the note changes neither the sample nor its mean or label
+    assert (with_fees["n"], with_fees["metric"], with_fees["verdict"]) == (no_fees["n"], no_fees["metric"], no_fees["verdict"])
+    assert with_fees["n"] == 2 and with_fees["metric"] == pytest.approx(0.1)
+
+
 def test_fill_share_counts_closing_as_filled_and_notes_stale_pending():
     s28 = next(s for s in cp.DEMO if s.setup == "S28")
     filled = [_trade(i, "S28", 0.0, rest_until=V9) for i in range(10)]

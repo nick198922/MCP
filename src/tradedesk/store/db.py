@@ -49,7 +49,7 @@ def _parse_carry_paper_row(row: dict[str, Any]) -> dict[str, Any]:
         if isinstance(v, str):
             try:
                 row[k] = json.loads(v)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, RecursionError):  # deep nesting raised out of carry_paper_* (item 355)
                 row[k] = []
     for k in ("stopped", "entry_tradable"):
         if row.get(k) is not None:
@@ -63,7 +63,7 @@ def _parse_json_cols(row: dict[str, Any], cols: tuple[str, ...]) -> dict[str, An
         if isinstance(v, str):
             try:
                 row[k] = json.loads(v)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, RecursionError):  # deep nesting raised out of plan_* / rec_paper (item 355)
                 row[k] = None
     return row
 

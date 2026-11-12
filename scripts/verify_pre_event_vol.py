@@ -107,7 +107,8 @@ def stage_prereg(cache: Path) -> None:
 
 
 def load_events() -> tuple[list[dict[str, Any]], set[int], list[dict[str, str]], dict[int, set[str]]]:
-    rows = list(csv.DictReader(EVENTS_CSV.open()))
+    with EVENTS_CSV.open() as fh:
+        rows = list(csv.DictReader(fh))
     prim = [
         (ms_of(date.fromisoformat(r["date"])), r["kind"])
         for r in rows

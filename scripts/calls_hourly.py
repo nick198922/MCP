@@ -269,7 +269,8 @@ def main() -> None:
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--md", type=Path)
     a = ap.parse_args()
-    rows = list(csv.DictReader(a.calls.open(encoding="utf-8")))
+    with a.calls.open(encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh))
     res = asyncio.run(run(rows))
     cols = [
         "id",

@@ -82,7 +82,8 @@ def test_bridge_delta_analytic():
 
 def test_real_football_data_sample_pinnacle_margin():
     # 2026-11-12, football-data.co.uk mmz4281/2526/E0.csv, first rows (Pinnacle closing triple present)
-    rows = list(csv.DictReader((FIX / "football_data_2526_E0_head.csv").open(encoding="utf-8-sig")))
+    with (FIX / "football_data_2526_E0_head.csv").open(encoding="utf-8-sig") as fh:
+        rows = list(csv.DictReader(fh))
     assert rows
     for r in rows:
         odds = [float(r[c]) for c in ("PSCH", "PSCD", "PSCA")]

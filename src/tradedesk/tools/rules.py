@@ -29,9 +29,10 @@ from ._util import (
     store_ready,
 )
 
-# Numeric columns of a stored rule (`enabled` is turned into a bool by the store); another writer can leave a string, a
-# blob or inf in any of them.
+# Numeric columns of a stored rule; another writer can leave a string, a blob or inf in any of them.
 RULE_NUMS = ("cooldown_seconds", "created_ts", "disabled_ts")
+# The store turns only a stored 0 / 1 `enabled` into a bool; text "false", 2 or 0.5 used to read as enabled (bool()).
+RULE_FLAGS = ("enabled",)
 
 
 def _preset_ok(x: Any) -> bool:
@@ -99,7 +100,11 @@ def register(server: MCPServer, rt: Runtime) -> None:
 
     @server.tool(
         annotations=READ_ONLY,
-        description="List DSL rules in the local store, optionally filtered to enabled ones.",
+        description=(
+            "List DSL rules in the local store, optionally filtered to enabled ones. A stored rule another writer left "
+            "malformed (a blob, a non-numeric cooldown / timestamp, an `enabled` other than 0 / 1) is skipped and named in "
+            "`warnings`."
+        ),
     )
     async def rules_list(
         enabled_only: Annotated[bool, Field(description="Return only enabled rules; false lists all.")] = False,
@@ -112,7 +117,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
             # An invalid UTF-8 blob in name / expr / message failed the whole reply, and inf in a numeric cell came back as
             # Infinity: such a rule is skipped with a warning (another writer); an all-malformed store is not "no rules".
             stored = len(rows)
-            rows = drop_corrupt_rows(b, rows, "rule", RULE_NUMS, required=("cooldown_seconds", "created_ts"))
+            rows = drop_corrupt_rows(b, rows, "rule", RULE_NUMS, required=("cooldown_seconds", "created_ts"), flags=RULE_FLAGS)
             if stored and not rows:
                 b.miss("rules", "store", "data_unavailable", f"all {stored} matching stored rules are malformed")
                 return b.build({"count": 0, "rules": []}, ok=False)
@@ -193,7 +198,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
             row = await rt.store.rule_get(id)
             # The switch reads no stored value, so a corrupt rule is still switched; but a blob cell failed the reply after
             # the write, and inf came back as Infinity: the stored row is then left out of the reply.
-            if row is not None and not drop_corrupt_rows(Builder(), [row], "rule", RULE_NUMS, required=("cooldown_seconds", "created_ts")):
+            if row is not None and not drop_corrupt_rows(
+                Builder(), [row], "rule", RULE_NUMS, required=("cooldown_seconds", "created_ts"), flags=RULE_FLAGS
+            ):
                 b.warn(f"rule id={id} was {'enabled' if enable else 'disabled'}, but its stored row is malformed, so it is not returned")
                 return b.build({"id": id, "enabled": enable})
             return b.build(row)

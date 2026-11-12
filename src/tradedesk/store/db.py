@@ -24,8 +24,18 @@ def _parse_journal_row(row: dict[str, Any]) -> dict[str, Any]:
     if isinstance(tags, str):
         try:
             row["tags"] = json.loads(tags)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, RecursionError):  # RecursionError: a deeply nested array ("[[[...") from another writer
             row["tags"] = []
+    return row
+
+
+def _parse_rule_row(row: dict[str, Any]) -> dict[str, Any]:
+    """`enabled` as a bool only when it is the integer 0 or 1 (what rule_insert writes; SQLite INTEGER affinity also turns
+    the text "0" / "1" into one). Any other value another writer left (text "false", 2, 0.5, a blob) stays as it is, so
+    the rules tools skip the row instead of bool() reading it as "enabled"."""
+    v = row.get("enabled")
+    if type(v) is int and v in (0, 1):
+        row["enabled"] = bool(v)
     return row
 
 
@@ -1471,9 +1481,7 @@ class Store:
         row = await cur.fetchone()
         if row is None:
             return None
-        d = dict(row)
-        d["enabled"] = bool(d["enabled"])
-        return d
+        return _parse_rule_row(dict(row))
 
     async def rule_set_enabled(self, rule_id: int, enabled: bool, *, ts: int) -> int:
         async with self._write():
@@ -1494,13 +1502,7 @@ class Store:
             sql += " WHERE enabled = 1"
         sql += " ORDER BY name"
         cur = await self.conn.execute(sql)
-        rows = await cur.fetchall()
-        out: list[dict[str, Any]] = []
-        for r in rows:
-            d = dict(r)
-            d["enabled"] = bool(d["enabled"])
-            out.append(d)
-        return out
+        return [_parse_rule_row(dict(r)) for r in await cur.fetchall()]
 
     # ---------- events (macro calendar) ----------
 

@@ -7,8 +7,8 @@ bool and rules_list / rules_disable skip any other value with a warning. The ale
 
 (2) positions_list on a `tags` cell holding "[NaN]" / "[Infinity]" / "1e400": already skipped with a warning since item
 296 (pinned here). A deeply nested array ("[[[...]]]") raised RecursionError out of the store's json.loads and failed the
-whole tool; it now reads as no tags, like any unparseable tags text. Non-list JSON (5, {"a": 1}) is valid JSON and is
-returned as stored.
+whole tool; it now reads as no tags, like any unparseable tags text. Non-list JSON (5, {"a": 1}) was returned as stored;
+since item 352 positions_list normalises it with a warning (tests/test_tool_failure_extra_19.py).
 
 The in-memory store is reopened empty on every MCP connection, so each test makes all its calls in one session.
 """
@@ -191,9 +191,10 @@ async def test_positions_list_deeply_nested_tags_reads_as_no_tags(rt):
         assert env["ok"] is True and env["data"]["status"] == "closed" and env["data"]["tags"] == []
 
 
-@pytest.mark.parametrize(("tags", "shown"), [("[oops", []), ("5", 5), ('{"a": 1}', {"a": 1}), ('"x"', "x"), ("null", None)])
+@pytest.mark.parametrize(("tags", "shown"), [("[oops", []), ("null", None)])
 async def test_positions_list_other_junk_tags_does_not_raise(rt, tags, shown):
-    # Unparseable text reads as no tags (unchanged); valid non-list JSON is finite and returned as stored.
+    # Unparseable text reads as no tags (the store), JSON null as None. Non-list JSON (5, {"a": 1}, "x") was returned as
+    # stored here until item 352; it is now normalised with a warning (tests/test_tool_failure_extra_19.py).
     await _rows(rt, POS_SQL, [_pos(tags=tags)])
     async with _session(rt) as call:
         env = await call("positions_list")

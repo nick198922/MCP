@@ -19,8 +19,8 @@ from ..runtime import Runtime
 from ._util import (
     READ_ONLY,
     STORE_ERRORS,
+    clean_tags,
     drop_corrupt_rows,
-    finite_json,
     r,
     reject_bad_id,
     reject_nonfinite,
@@ -95,10 +95,15 @@ def register(server: MCPServer, rt: Runtime) -> None:
             # as "[NaN]") came back as Infinity / NaN: such a trade is skipped with a warning (another writer).
             stored = len(rows)
             rows = drop_corrupt_rows(b, rows, "trade", JOURNAL_NUMS, required=("size", "entry"))
-            nonfinite = [t.get("id") for t in rows if not finite_json(t)]
+            # Tags that are not a list of strings (300 levels deep failed the MCP serialiser, item 353) are shown as their
+            # string items, as in positions_list.
+            rows, nonfinite, fixed = clean_tags(rows)
             if nonfinite:
                 b.warn(f"{len(nonfinite)} stored trade rows skipped: NaN / Infinity in tags; id {nonfinite[:10]}")
-                rows = [t for t in rows if finite_json(t)]
+            if fixed:
+                b.warn(
+                    f"{len(fixed)} stored trade rows had tags that were not a list of strings; shown as their string items; id {fixed[:10]}"
+                )
             if stored and not rows:  # all malformed must not read as "no trades"
                 b.miss("journal", "store", "data_unavailable", f"all {stored} matching stored trades are malformed")
                 return b.build({"count": 0, "trades": []}, ok=False)

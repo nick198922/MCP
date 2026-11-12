@@ -131,6 +131,7 @@ def test_demo_row_notes_the_day_clustered_ci_descriptively():
     note = next(x for x in r["notes"] if x.startswith("95 % CI середнього R"))
     want = cp._r_ci(cp._closed_r(rows, NOW))
     assert want["days"] == 2 and "днів 2" in note and "лише описово" in note
+    assert "CI може бути занижений" in note and "без часу сигналу" not in note  # every row has signal_ts
     lo, hi = want["ci"]
     assert lo <= r["metric"] <= hi
     assert f"[{lo:+.3f}; {hi:+.3f}]" in note
@@ -140,6 +141,21 @@ def test_demo_row_notes_the_day_clustered_ci_descriptively():
     assert "усі угоди одного дня сигналу" in note1 and "днів 1" in note1
     early = cp.demo_forward(s3, rows[:29], NOW)[0]  # below the minimum n: a CI over a few days is noise, none shown
     assert early["verdict"] == cp.EARLY and not any(x.startswith("95 % CI") for x in early["notes"])
+
+
+def test_demo_row_ci_note_counts_trades_without_signal_ts():
+    """Review of item 343, remark 1: ``_r_ci`` gives a row without ``signal_ts`` its own «day», which narrows the CI;
+    the note says how many such rows there are. n, the mean, the label and the sample stay as they were."""
+    s3 = next(s for s in cp.DEMO if s.setup == "S3")
+    rows = [_trade(i, "S3", (-1.0, 0.5, 2.0)[i % 3]) for i in range(30)]
+    base = cp.demo_forward(s3, rows, NOW)[0]
+    holed = [dict(t, signal_ts=None) if i < 3 else t for i, t in enumerate(rows)]
+    r = cp.demo_forward(s3, holed, NOW)[0]
+    note = next(x for x in r["notes"] if x.startswith("95 % CI середнього R"))
+    assert "угод без часу сигналу 3: кожна рахується окремим днем і звужує CI" in note
+    assert cp._r_ci(cp._closed_r(holed, NOW))["days"] == 2 + 3 and "днів 5" in note
+    assert (r["n"], r["verdict"]) == (base["n"], base["verdict"]) == (30, cp.OK)
+    assert r["metric"] == pytest.approx(base["metric"])
 
 
 def test_fill_share_counts_closing_as_filled_and_notes_stale_pending():

@@ -262,9 +262,12 @@ def demo_forward(spec: DemoSpec, trades: Sequence[Mapping[str, Any]], now_ms: in
     if n >= MIN_DEMO:
         s = _r_ci(closed)
         ci = f"[{s['ci'][0]:+.3f}; {s['ci'][1]:+.3f}]" if s["ci"] else "— (усі угоди одного дня сигналу)"
+        # _r_ci gives a row without signal_ts its own «day»: more days, a narrower CI (review of item 343, remark 1)
+        no_sig = sum(_num(t.get("signal_ts")) is None for t in closed)
         notes.append(
             f"95 % CI середнього R кластерами за UTC-днем сигналу: {ci}, днів {s['days']} (бутстреп {S12_CI_BOOT}, "
-            f"seed {S12_CI_SEED}); лише описово: вердикт — за смугою рішення; днів мало, тож CI занижений"
+            f"seed {S12_CI_SEED}); лише описово: вердикт — за смугою рішення; днів мало, тож CI може бути занижений"
+            + (f"; угод без часу сигналу {no_sig}: кожна рахується окремим днем і звужує CI" if no_sig else "")
         )
     # dated by the fill, a row without it by its signal bar (as the report's orphan note)
     at = [
@@ -426,7 +429,7 @@ def s12_stop_rule_lines(block: Mapping[str, Any]) -> list[str]:
         f"- поріг n {S12_STOP_N} — сигнал «зупинити й розібрати», а не статистичний тест: середнє перевіряється щодня "
         "на зростаючому n, тож хибна тривога буває частіше за 5 %",
         "- R — P&L біржі з комісіями / ризик угоди (не на капітал); CI — бутстреп кластерами за UTC-днем сигнальної "
-        f"свічки ({S12_CI_BOOT}, seed {S12_CI_SEED}); днів мало, тож CI занижений. «Тримати» не означає перевагу: "
+        f"свічки ({S12_CI_BOOT}, seed {S12_CI_SEED}); днів мало, тож CI може бути занижений. «Тримати» не означає перевагу: "
         "−0.01R від нуля демо не відрізнить",
         "",
     ]

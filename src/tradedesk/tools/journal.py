@@ -151,6 +151,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 return b.build(None, ok=False)
 
             ts = int(closed_ts) if closed_ts is not None else int(rt.now().timestamp())
+            closed: dict[str, Any] = {"status": "cancelled", "outcome": "cancelled"}  # what was written, for a row not returned
             if cancelled:
                 await rt.store.journal_update_close(
                     id,
@@ -182,7 +183,23 @@ def register(server: MCPServer, rt: Runtime) -> None:
                     r_multiple=r_val,
                     note=note,
                 )
-            return b.build(await rt.store.journal_get(id))
+                closed = {"status": "closed", "exit": float(exit), "outcome": outcome_of(p), "pnl": p, "r_multiple": r_val}
+            row = await rt.store.journal_get(id)
+            # Tags that are not a list of strings (300 levels deep failed the MCP serialiser after the close was already
+            # written, item 354) are shown as their string items, as in journal_list. NaN / Infinity in tags or any other
+            # cell that is not strict JSON: the close stays written, the stored row is left out of the reply.
+            if row is not None:
+                rows, _nonfinite, fixed = clean_tags([row])
+                if not rows:
+                    b.warn(
+                        f"trade id={id} was closed, but its stored row is not strict JSON (NaN / Infinity in tags or "
+                        "another cell), so it is not returned"
+                    )
+                    return b.build({"id": id, "closed_ts": ts, **closed})
+                if fixed:
+                    b.warn(f"trade id={id} had stored tags that were not a list of strings; shown as their string items")
+                row = rows[0]
+            return b.build(row)
         except STORE_ERRORS as e:
             return store_failed(b, e)
 

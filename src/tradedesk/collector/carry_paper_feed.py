@@ -288,10 +288,14 @@ class LiveFeed:
         except ProviderError:
             return None
 
-    async def load(self, params: CarryParams, decision_ts: int, open_positions: list[dict[str, Any]]) -> FeedData:
-        return await (self._load_a if params.strategy == "A" else self._load_b)(params, decision_ts, open_positions)
+    async def load(
+        self, params: CarryParams, decision_ts: int, open_positions: list[dict[str, Any]], *, held_only: bool = False
+    ) -> FeedData:
+        if params.strategy == "A":
+            return await self._load_a(params, decision_ts, open_positions, held_only=held_only)
+        return await self._load_b(params, decision_ts, open_positions)  # B's entries are never stopped: full universe
 
-    async def _load_a(self, params: CarryParams, t: int, open_positions: list[dict[str, Any]]) -> FeedData:
+    async def _load_a(self, params: CarryParams, t: int, open_positions: list[dict[str, Any]], *, held_only: bool = False) -> FeedData:
         b = Builder()
         lb = int(params.lookback_days * DAY_MS)
         perps = await b.guard(f"markets:{PERP_VENUE}", f"ccxt:{PERP_VENUE}", self.rt.exchanges.markets(PERP_VENUE))
@@ -313,7 +317,11 @@ class LiveFeed:
             since = min(t - lb - DAY_MS, opened.get(sym, t) - 3_600_000)
             return sym, await self._history(b, PERP_VENUE, sym, since, t, flags, reload.get(sym))
 
-        funding = dict(await self._gather([hist(s) for s in sorted(uni)], self.workers))
+        # Entries stopped: only the held symbols are marked and closed, so the rest of the universe needs no history (an
+        # idle book would otherwise spend one Binance request per universe symbol, ~400 per cycle, of the IP budget it
+        # shares with the collector). Bars follow: they are fetched for held symbols and funding-history candidates only.
+        hist_syms = sorted(s for s in uni if s in opened) if held_only else sorted(uni)
+        funding = dict(await self._gather([hist(s) for s in hist_syms], self.workers))
         want = set(opened)
         for sym, ev in funding.items():
             apr = _Market({"funding": ev, "spot": [], "perp": []}, params.bar_ms).apr(t, lb) if ev else None

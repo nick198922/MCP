@@ -111,7 +111,13 @@ class FeedData:
 
 
 class CarryFeed(Protocol):
-    async def load(self, params: CarryParams, decision_ts: int, open_positions: list[dict[str, Any]]) -> FeedData: ...
+    """``load(..., held_only=True)`` comes only from a cycle whose new entries are stopped: the feed may then skip every
+    symbol without an open position (no funding history, no bars): such a cycle ranks nothing, so it uses no other symbol.
+    A feed may ignore the flag and return the full universe; the decisions on held positions are the same."""
+
+    async def load(
+        self, params: CarryParams, decision_ts: int, open_positions: list[dict[str, Any]], *, held_only: bool = False
+    ) -> FeedData: ...
 
     async def book(self, venue: str, symbol: str) -> dict[str, Any] | None: ...
 
@@ -384,7 +390,8 @@ async def run_cycle(
     Returns ``{"status": "done" | "exists" | "failed", ...}``. A failed attempt is logged (``cp_log`` kind 'event') and
     the cycle stays unwritten so the next job tick retries it until a later cycle makes it a recorded skip.
     ``entries_stopped`` (a reason): no new position is opened; held ones are marked and closed by the rules as usual,
-    and the reason is written into the cycle payload.
+    and the reason is written into the cycle payload. The feed is asked for the held symbols only (``held_only``), so
+    ``with_data`` then counts those symbols, not the universe (``universe_size`` stays the listed universe).
     """
     started = clock()
     strat = params.strategy
@@ -396,7 +403,8 @@ async def run_cycle(
         rows = await store.cp_positions(strat, "open")
         open_pos = {r["state"]["symbol"]: r["state"] for r in rows}
         ids = {r["state"]["symbol"]: r["trade_id"] for r in rows}
-        data = await feed.load(params, t, rows)
+        # Stopped entries: the cycle only marks and closes held positions, so the feed loads their symbols only.
+        data = await (feed.load(params, t, rows, held_only=True) if entries_stopped else feed.load(params, t, rows))
         if params.strategy == "A":
             objs: dict[str, Any] = {
                 s: _Market(d, params.bar_ms) for s, d in data.markets.items() if d.get("funding") and d.get("spot") and d.get("perp")

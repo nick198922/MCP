@@ -39,7 +39,10 @@ class FixtureFeed:
         self.markets, self.strategy, self.fail = markets, strategy, fail
         self.books: list[tuple[str, str]] = []
 
-    async def load(self, params: CarryParams, decision_ts: int, open_positions: list[dict[str, Any]]) -> FeedData:
+    async def load(
+        self, params: CarryParams, decision_ts: int, open_positions: list[dict[str, Any]], *, held_only: bool = False
+    ) -> FeedData:
+        # ``held_only`` (stopped entries) is ignored: the full series must give the same decisions on held positions.
         if self.fail:
             raise RuntimeError("venue down")
         spot = {s: (s.replace("USDT:USDT", "USDT"), 1) for s in self.markets} if self.strategy == "A" else {}

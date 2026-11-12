@@ -9,6 +9,9 @@ The owner wants every merge automatic (2026-10-22), so before telling anything t
   top-level *.md) and both sides only added lines at the same place (two new rows of a table, two new BACKLOG items):
   the merge keeps main's lines, then the branch's, and is pushed to the branch in its own clone (~/tradedesk-prfix,
   never the live or the agents' clone); CI then runs and the merge follows. Any other conflict is told once.
+- gives the branch's item of the standing card the next free number when it took the same number as an item main
+  got meanwhile (two parallel steps both wrote «326.»; tests/test_idea_cards.py then keeps the PR red for good): on
+  every merge of main above, and for a ready red PR whose card has such a repeat (PR #1015, 11–12.11, idled the agents).
 Stuck means: CI failed again after the re-run, or the PR has not moved for STALE_HOURS. Each finding is told once
 per PR head commit. No Claude tokens are spent; fixing is left to the doctor or a Claude session. Runs as a user
 timer (deploy/user-units/tradedesk-pr-watch.*), reads the GitHub token like scripts/gh_pr.py and remembers what it
@@ -20,6 +23,7 @@ did in $LOG_DIR/pr_watch.json.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import re
@@ -142,6 +146,47 @@ def union_resolve(text: str, keep_both: bool = False) -> str | None:
     return "".join(out)
 
 
+STANDING_CARD = "docs/ideas/IDEA-20261102-standing-improvements.md"
+ITEM_RE = re.compile(r"- \[.\] (\d+)([a-z]?)\.")  # an item of «## Прогрес», as tests/test_idea_cards.py reads it
+
+
+def renumber_duplicates(text: str, main_text: str) -> str | None:
+    """The standing card with every «## Прогрес» item that repeats another item's number given the next free number;
+    the item main already has keeps its number (references in main point to it). None when no number repeats."""
+    lines = text.splitlines(keepends=True)
+    on_main = set(main_text.splitlines())
+    seen: dict[str, list[int]] = {}
+    top, inside = 0, False
+    for i, s in enumerate(lines):
+        if s.startswith("## "):
+            inside = s.strip() == "## Прогрес"
+            continue
+        m = ITEM_RE.match(s) if inside else None
+        if m:
+            seen.setdefault(m.group(1) + m.group(2), []).append(i)
+            top = max(top, int(m.group(1)))
+    repeats = [idx for idx in seen.values() if len(idx) > 1]
+    if not repeats:
+        return None
+    for idx in repeats:
+        keep = next((i for i in idx if lines[i].rstrip("\r\n") in on_main), idx[0])
+        for i in idx:
+            if i != keep:
+                top += 1
+                m = ITEM_RE.match(lines[i])
+                lines[i] = lines[i][: m.start(1)] + str(top) + lines[i][m.end(2) :]
+    return "".join(lines)
+
+
+def card_has_repeats(call: Call, repo: str, sha: str) -> bool:
+    """Does the standing card at this commit repeat an item number? (False when it cannot be read.)"""
+    status, data = call("GET", f"/repos/{repo}/contents/{STANDING_CARD}?ref={sha}", None)
+    if status != 200 or not isinstance(data, dict) or data.get("encoding") != "base64":
+        return False
+    text = base64.b64decode(data.get("content") or "").decode("utf-8", "replace")
+    return renumber_duplicates(text, "") is not None
+
+
 def git(*args: str, cwd: Path | None = None, check: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(["git", *args], cwd=cwd or FIX_DIR, capture_output=True, text=True, check=check)
 
@@ -183,6 +228,14 @@ def merge_main(ref: str) -> tuple[str, list[str]]:
             git("add", "--", f)
         git("commit", "-q", "--no-edit")
         conflicted = [f"{f} (обидві версії рядків)" if f in both else f for f in conflicted]
+    card = FIX_DIR / STANDING_CARD
+    if card.is_file():
+        main_card = git("show", f"origin/main:{STANDING_CARD}", check=False).stdout
+        renumbered = renumber_duplicates(card.read_text(encoding="utf-8"), main_card)
+        if renumbered is not None:
+            card.write_text(renumbered, encoding="utf-8")
+            git("commit", "-q", "-m", "Постійна картка: вільний номер пункту гілки (той самий номер уже в main)", "--", STANDING_CARD)
+            conflicted.append(f"{STANDING_CARD} (номер пункту)")
     git("push", "-q", "origin", f"HEAD:refs/heads/{ref}")
     return "fixed", conflicted
 
@@ -231,6 +284,22 @@ def watch(call: Call, repo: str, state: dict, now: datetime, fix: Fixer | None =
                 if verdict == "blocked" and "conflict" not in told["kinds"]:
                     out.append((message(pr, "conflict", "; ".join(paths)), pr["html_url"]))
                     told["kinds"].append("conflict")
+        if (
+            ready
+            and fix is not None
+            and failed_checks(check_runs)
+            and "renumber" not in told["kinds"]
+            and card_has_repeats(call, repo, sha)
+        ):
+            told["kinds"].append("renumber")  # once per head commit: a fix that did not help is not retried
+            try:
+                verdict, paths = fix(ref)
+            except (subprocess.CalledProcessError, OSError) as e:
+                verdict, paths = "error", [str(e)[:200]]
+            print(f"PR #{pr['number']}: repeated item number in the standing card: {verdict} {', '.join(paths)}")
+            if verdict == "fixed":
+                new_state[str(pr["number"])] = told
+                continue
         if ready and all_passed(check_runs):
             try:
                 result = merge(call, repo, pr["number"], sha)  # a 'claude:' hold waits for scripts/trader_review.py

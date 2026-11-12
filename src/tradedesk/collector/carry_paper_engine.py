@@ -113,7 +113,9 @@ class FeedData:
 class CarryFeed(Protocol):
     """``load(..., held_only=True)`` comes only from a cycle whose new entries are stopped: the feed may then skip every
     symbol without an open position (no funding history, no bars): such a cycle ranks nothing, so it uses no other symbol.
-    A feed may ignore the flag and return the full universe; the decisions on held positions are the same."""
+    A feed may ignore the flag and return the full universe; the decisions on held positions are the same. Every feed
+    (and every subclass overriding ``load``) must still accept the keyword: ``run_cycle`` passes it on a stopped book,
+    and a ``load`` without it raises ``TypeError`` there (review of item 342, note 4)."""
 
     async def load(
         self, params: CarryParams, decision_ts: int, open_positions: list[dict[str, Any]], *, held_only: bool = False

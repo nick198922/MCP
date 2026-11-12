@@ -1,0 +1,3 @@
+- Картка `wikipedia-attention-xs-spread`: контакт у User-Agent Wikimedia (URL репозиторію, змінна `TRADEDESK_WIKIMEDIA_CONTACT` лише для заміни), реальні зразки в `tests/fixtures/`, мапа монета → стаття (51 монета заморожена).
+- Ворота етапу 0b не пройдено (34 монети/тиждень, MDE 0.87 / 1.22 п.п. проти 0.8) → `inconclusive`, зареєстрований тест не запускався.
+- Рецензія критика: `docs/reviews/2026-11-12-wikipedia-attention-xs-spread.md` (approve).

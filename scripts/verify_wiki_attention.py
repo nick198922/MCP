@@ -241,7 +241,17 @@ CANDIDATES: dict[str, list[str]] = {
 
 # Excluded after resolution, decided on title/short description only (no returns): the page is about a company, an
 # exchange, a person, an animal or an unrelated topic rather than the token / its own protocol.
-EXCLUDE: dict[str, str] = {}
+# Filled 2026-11-12 from the `map` table (title | short description), before any pageviews or returns were fetched.
+EXCLUDE: dict[str, str] = {
+    "BNBUSDT": "page is the centralized exchange company (Binance), not the BNB token or BNB Chain",
+    "OPUSDT": "page is a different asset (Ethereum), not Optimism",
+    "ARUSDT": "page is a different platform (Odysee), not Arweave",
+    "WIFUSDT": "page is the generic topic 'Meme coin', not this token",
+    "1000FLOKIUSDT": "page is the generic topic 'Meme coin', not this token",
+    "FARTCOINUSDT": "page is the generic topic 'Meme coin', not this token",
+    "MELANIAUSDT": "page is a different token ($Trump)",
+    "ARKMUSDT": "page is the company (blockchain analytics company), not the token",
+}
 
 CRYPTO_WORDS = (
     "crypto",
@@ -341,10 +351,10 @@ async def stage_probe(save: bool) -> None:
         except ProviderError as e:
             print(f"enwiki action API: FAILED {e.reason}: {str(e)[:160]}")
         if save and pv is not None:
-            (FIX / "wikimedia_pageviews_solana_2026-11-11.json").write_text(json.dumps(pv.data, indent=1) + "\n")
+            (FIX / "wikimedia_pageviews_solana_2026-11-12.json").write_text(json.dumps(pv.data, indent=1) + "\n")
             print("pageviews fixture written")
         if save and pg is not None:
-            (FIX / "wikipedia_page_solana_2026-11-11.json").write_text(json.dumps(pg.data, indent=1, ensure_ascii=False) + "\n")
+            (FIX / "wikipedia_page_solana_2026-11-12.json").write_text(json.dumps(pg.data, indent=1, ensure_ascii=False) + "\n")
             print("page fixture written")
     finally:
         await rt.aclose()
@@ -377,7 +387,16 @@ async def stage_map(cache: Path) -> None:
                 if s and s["pageid"] and not s["disambiguation"] and s["ns"] == 0:
                     hit = {**s, "query": t}
                     break
-            wr(p, {"symbol": sym, "status": "ok" if hit else "unresolved", "tried": tried, "page": hit, "resolved_at": "2026-11-11"})
+            wr(
+                p,
+                {
+                    "symbol": sym,
+                    "status": "ok" if hit else "unresolved",
+                    "tried": tried,
+                    "page": hit,
+                    "resolved_at": datetime.now(UTC).strftime("%Y-%m-%d"),
+                },
+            )
             print(f"  {sym}: {'ok' if hit else 'unresolved'}", flush=True)
     finally:
         await rt.aclose()
@@ -402,7 +421,7 @@ def print_map(cache: Path) -> None:
             print(f"{r['symbol']:<14}{'-':>10}  {r['status']}")
             continue
         print(
-            f"{r['symbol']:<14}{pg['pageid']:>10}  {str(is_crypto(pg['shortdesc'])):<6} {len(pg['redirects']):>5}  {pg['title']} | {pg['shortdesc']}"
+            f"{r['symbol']:<14}{pg['pageid']:>10}  {str(is_crypto(pg['shortdesc'] or pg['title'])):<6} {len(pg['redirects']):>5}  {pg['title']} | {pg['shortdesc']}"
         )
     print(Counter(r["status"] for r in rows))
 
@@ -417,8 +436,9 @@ def stage_freeze(cache: Path) -> None:
             continue
         if r["symbol"] in EXCLUDE:
             status = "excluded: " + EXCLUDE[r["symbol"]]
-        elif not is_crypto(pg["shortdesc"]):
-            status = "excluded: short description is not about a crypto asset"
+        elif not is_crypto(pg["shortdesc"] or pg["title"]):
+            # Empty local short description (real answer for Solana, 2026-11-12): the title decides instead.
+            status = "excluded: short description (or title, if empty) is not about a crypto asset"
         else:
             status = "included"
         out.append(

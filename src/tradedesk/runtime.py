@@ -122,7 +122,7 @@ class Runtime:
         self.pendle = Pendle(http("pendle", pendle_mod.BASE_URL, rate=2, burst=4))
         # Article pageviews + en.wikipedia page metadata (research scripts, not tools). Pageviews allows ~100 req/s per
         # client; we stay far below. Wikimedia asks for a descriptive User-Agent.
-        wiki_ua = {"User-Agent": wiki_mod.USER_AGENT}
+        wiki_ua = {"User-Agent": wiki_mod.user_agent()}
         self.wikimedia = Wikimedia(
             http("wikimedia", wiki_mod.PAGEVIEWS_URL, rate=5, burst=10, headers=wiki_ua),
             http("wikimedia:enwiki", wiki_mod.ENWIKI_URL, rate=2, burst=4, headers=wiki_ua),

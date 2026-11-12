@@ -1,0 +1,67 @@
+{
+ "items": [
+  {
+   "project": "en.wikipedia",
+   "article": "Solana_(blockchain_platform)",
+   "granularity": "daily",
+   "timestamp": "2026100100",
+   "access": "all-access",
+   "agent": "user",
+   "views": 248
+  },
+  {
+   "project": "en.wikipedia",
+   "article": "Solana_(blockchain_platform)",
+   "granularity": "daily",
+   "timestamp": "2026100200",
+   "access": "all-access",
+   "agent": "user",
+   "views": 246
+  },
+  {
+   "project": "en.wikipedia",
+   "article": "Solana_(blockchain_platform)",
+   "granularity": "daily",
+   "timestamp": "2026100300",
+   "access": "all-access",
+   "agent": "user",
+   "views": 227
+  },
+  {
+   "project": "en.wikipedia",
+   "article": "Solana_(blockchain_platform)",
+   "granularity": "daily",
+   "timestamp": "2026100400",
+   "access": "all-access",
+   "agent": "user",
+   "views": 234
+  },
+  {
+   "project": "en.wikipedia",
+   "article": "Solana_(blockchain_platform)",
+   "granularity": "daily",
+   "timestamp": "2026100500",
+   "access": "all-access",
+   "agent": "user",
+   "views": 299
+  },
+  {
+   "project": "en.wikipedia",
+   "article": "Solana_(blockchain_platform)",
+   "granularity": "daily",
+   "timestamp": "2026100600",
+   "access": "all-access",
+   "agent": "user",
+   "views": 343
+  },
+  {
+   "project": "en.wikipedia",
+   "article": "Solana_(blockchain_platform)",
+   "granularity": "daily",
+   "timestamp": "2026100700",
+   "access": "all-access",
+   "agent": "user",
+   "views": 331
+  }
+ ]
+}

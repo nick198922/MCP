@@ -14,6 +14,7 @@ Wikimedia asks automated clients for a descriptive User-Agent (generic library a
 
 from __future__ import annotations
 
+import os
 from typing import Any
 from urllib.parse import quote
 
@@ -23,8 +24,20 @@ from ..core.http import Http
 
 PAGEVIEWS_URL = "https://wikimedia.org/api/rest_v1"
 ENWIKI_URL = "https://en.wikipedia.org"
-USER_AGENT = "tradedesk-mcp/0.1 (read-only research client; pageviews)"
+# Wikimedia's robot policy (https://w.wiki/4wJS) refuses agents without a contact (site or e-mail). The contact is the
+# public project repository (owner's decision, Q-20261111-1); TRADEDESK_WIKIMEDIA_CONTACT only overrides it.
+DEFAULT_CONTACT = "https://github.com/nick198922/MCP"
+CONTACT_ENV = "TRADEDESK_WIKIMEDIA_CONTACT"
 AGENTS = ("user", "all-agents", "spider", "automated")
+
+
+def user_agent(contact: str | None = None) -> str:
+    """Descriptive User-Agent with a contact, as Wikimedia's policy requires."""
+    c = (contact if contact is not None else os.environ.get(CONTACT_ENV, "")).strip() or DEFAULT_CONTACT
+    return f"tradedesk-mcp/0.1 ({c}; read-only research client; pageviews)"
+
+
+USER_AGENT = user_agent(DEFAULT_CONTACT)
 
 
 def article_key(title: str) -> str:

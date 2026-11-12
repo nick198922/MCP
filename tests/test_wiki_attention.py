@@ -28,11 +28,23 @@ from tradedesk.analytics.wiki_attention import (
 )
 from tradedesk.core.errors import ProviderError
 from tradedesk.core.http import Http
-from tradedesk.providers.wikimedia import USER_AGENT, Wikimedia, article_key, page_summary, pageviews_rows
+from tradedesk.providers.wikimedia import (
+    CONTACT_ENV,
+    DEFAULT_CONTACT,
+    USER_AGENT,
+    Wikimedia,
+    article_key,
+    page_summary,
+    pageviews_rows,
+    user_agent,
+)
 
 FIX = Path(__file__).parent / "fixtures"
-PV = json.loads((FIX / "wikimedia_pageviews_synthetic_2026-11-11.json").read_text())
-PAGE = json.loads((FIX / "wikipedia_page_synthetic_2026-11-11.json").read_text())
+# Real answers fetched from the server on 2026-11-12 (scripts/verify_wiki_attention.py probe --save-fixtures):
+# Pageviews per-article user/daily for "Solana (blockchain platform)" 2026-10-01..07, and the action API query for
+# "Solana (blockchain)" (a redirect to page 68695418).
+PV = json.loads((FIX / "wikimedia_pageviews_solana_2026-11-12.json").read_text())
+PAGE = json.loads((FIX / "wikipedia_page_solana_2026-11-12.json").read_text())
 
 
 def _wiki(handler_pv, handler_wiki=None) -> Wikimedia:
@@ -63,9 +75,31 @@ def test_article_key_escapes_reserved() -> None:
     assert article_key("$Trump") == "%24Trump"
 
 
+def test_user_agent_has_contact(monkeypatch) -> None:
+    monkeypatch.delenv(CONTACT_ENV, raising=False)
+    assert DEFAULT_CONTACT in user_agent() and USER_AGENT == user_agent()
+    monkeypatch.setenv(CONTACT_ENV, "https://example.org/research")
+    assert "https://example.org/research" in user_agent() and DEFAULT_CONTACT not in user_agent()
+    monkeypatch.setenv(CONTACT_ENV, "  ")
+    assert DEFAULT_CONTACT in user_agent()
+
+
 def test_pageviews_rows_from_fixture() -> None:
     rows = pageviews_rows(PV)
-    assert rows == [("20261001", 1520), ("20261002", 1388), ("20261004", 2011)]
+    assert rows == [
+        ("20261001", 248),
+        ("20261002", 246),
+        ("20261003", 227),
+        ("20261004", 234),
+        ("20261005", 299),
+        ("20261006", 343),
+        ("20261007", 331),
+    ]
+
+
+def test_pageviews_rows_zero_day_absent_and_sorted() -> None:
+    body = {"items": [{"timestamp": "2026100400", "views": 5}, {"timestamp": "2026100100", "views": 0}]}
+    assert pageviews_rows(body) == [("20261001", 0), ("20261004", 5)]
 
 
 @pytest.mark.parametrize("body", [{}, {"items": None}, {"items": [{"timestamp": "2026100100", "views": -1}]}, [1]])
@@ -76,12 +110,13 @@ def test_pageviews_rows_rejects_bad_shape(body) -> None:
 
 def test_page_summary_from_fixture() -> None:
     s = page_summary(PAGE)
-    assert s["pageid"] == 1000001
+    assert s["pageid"] == 68695418
     assert s["title"] == "Solana (blockchain platform)"
-    assert s["shortdesc"] == "Blockchain platform"
+    assert s["shortdesc"] == ""  # real answer: the local short description of this page is empty
     assert s["disambiguation"] is False
     assert s["redirected_from"] == ["Solana (blockchain)"]
-    assert s["redirects"] == ["Solana (blockchain)", "Solana (cryptocurrency)"]
+    assert s["redirects"] == ["Solana (blockchain)"]
+    assert s["lastrevid"] == 1384303981
 
 
 def test_page_summary_missing_and_disambiguation() -> None:
@@ -100,7 +135,7 @@ async def test_provider_pageviews_path_and_user_agent() -> None:
 
     w = _wiki(handler)
     f = await w.pageviews_daily("Solana (blockchain platform)", "20261001", "20261004", agent="all-agents")
-    assert f.data[0] == ("20261001", 1520)
+    assert f.data[0] == ("20261001", 248)
     assert (
         seen[0]
         .url.raw_path.decode()
@@ -144,7 +179,7 @@ async def test_provider_page_follows_redirect_continuation() -> None:
     w = _wiki(handler)
     f = await w.page("Solana (blockchain)")
     assert len(calls) == 2 and calls[1]["rdcontinue"] == "123|0"
-    assert f.data["redirects"] == ["SOL coin", "Solana (blockchain)", "Solana (cryptocurrency)"]
+    assert f.data["redirects"] == ["SOL coin", "Solana (blockchain)"]
     assert calls[0]["titles"] == "Solana (blockchain)" and calls[0]["redirects"] == "1"
     await w.aclose()
 

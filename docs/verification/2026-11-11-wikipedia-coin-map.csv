@@ -1,0 +1,164 @@
+symbol,status,pageid,title,shortdesc,n_redirects,lastrevid,resolved_at
+BTCUSDT,included,28249265,Bitcoin,Decentralized digital cryptocurrency,47,1382376340,2026-11-12
+ETHUSDT,included,41754003,Ethereum,Open-source blockchain computing platform,40,1383352660,2026-11-12
+BNBUSDT,"excluded: page is the centralized exchange company (Binance), not the BNB token or BNB Chain",56180153,Binance,International cryptocurrency exchange,13,1384827058,2026-11-12
+XRPUSDT,included,37194754,XRP Ledger,Cryptocurrency platform,20,1369506906,2026-11-12
+SOLUSDT,included,68695418,Solana (blockchain platform),,1,1384303981,2026-11-12
+ADAUSDT,included,52920286,Cardano (blockchain platform),Public blockchain platform,4,1345627574,2026-11-12
+DOGEUSDT,included,41360413,Dogecoin,Cryptocurrency,9,1384599127,2026-11-12
+TRXUSDT,included,61565140,Tron (blockchain),Blockchain computing platform,3,1384353149,2026-11-12
+DOTUSDT,included,56086757,Polkadot (blockchain platform),Cryptocurrency,5,1378697257,2026-11-12
+LTCUSDT,included,37395085,Litecoin,Cryptocurrency,8,1384561256,2026-11-12
+BCHUSDT,included,54679407,Bitcoin Cash,Cryptocurrency that is a fork of bitcoin,3,1383105966,2026-11-12
+LINKUSDT,included,67444790,Chainlink (blockchain oracle),Cryptocurrency and Ethereum token,3,1384717474,2026-11-12
+XLMUSDT,included,43737395,Stellar (payment network),Cryptocurrency,4,1384589309,2026-11-12
+XMRUSDT,included,45714713,Monero,Privacy-focused cryptocurrency,9,1383327494,2026-11-12
+ETCUSDT,included,51159152,Ethereum Classic,Blockchain computing platform,0,1384103551,2026-11-12
+AVAXUSDT,included,64064664,Avalanche (blockchain platform),Blockchain platform,5,1381043012,2026-11-12
+1000SHIBUSDT,included,67654959,Shiba Inu (cryptocurrency),Decentralized cryptocurrency,5,1366163714,2026-11-12
+DASHUSDT,included,42935766,Dash (cryptocurrency),Cryptocurrency,8,1383171559,2026-11-12
+ZECUSDT,included,51849458,Zcash,Cryptocurrency aimed at privacy,5,1381362683,2026-11-12
+EOSUSDT,included,55930375,EOS.IO,Blockchain protocol,4,1335647161,2026-11-12
+IOTAUSDT,included,56694947,IOTA (technology),Open-source distributed ledger and cryptocurrency,1,1384330603,2026-11-12
+NEOUSDT,included,56146044,NEO (blockchain),Cryptocurrency,3,1376905439,2026-11-12
+XTZUSDT,included,61225478,Tezos,Decentralized open-source blockchain,1,1383884019,2026-11-12
+ALGOUSDT,included,67291815,Algorand,Blockchain and cryptocurrency,2,1385196012,2026-11-12
+FILUSDT,included,54859253,Filecoin,"Open-source, public cryptocurrency",1,1371816113,2026-11-12
+ATOMUSDT,unresolved,,,,,,
+UNIUSDT,included,65962534,Uniswap,Decentralized cryptocurrency exchange,3,1379919424,2026-11-12
+AAVEUSDT,included,78346135,Aave,Decentralized finance protocol,0,1383227531,2026-11-12
+MKRUSDT,unresolved,,,,,,
+HBARUSDT,included,56941030,Hedera (distributed ledger),Distributed ledger technology,3,1384328260,2026-11-12
+VETUSDT,unresolved,,,,,,
+BSVUSDT,included,77963815,Bitcoin Satoshi Vision,Hard cryptocurrency fork of Bitcoin Cash,1,1383174725,2026-11-12
+NEARUSDT,included,81331455,NEAR (blockchain platform),Public blockchain platform,2,1374559820,2026-11-12
+ICPUSDT,unresolved,,,,,,
+TONUSDT,included,57402478,TON (blockchain),Public decentralised layer-1 blockchain platform,6,1376453791,2026-11-12
+SUIUSDT,unresolved,,,,,,
+APTUSDT,"excluded: short description (or title, if empty) is not about a crypto asset",78444053,Aptos Labs,American technology company,0,1384315268,2026-11-12
+ARBUSDT,unresolved,,,,,,
+OPUSDT,"excluded: page is a different asset (Ethereum), not Optimism",41754003,Ethereum,Open-source blockchain computing platform,40,1383352660,2026-11-12
+MATICUSDT,included,71464350,Polygon (blockchain),Blockchain and cryptocurrency,3,1384416088,2026-11-12
+POLUSDT,included,71464350,Polygon (blockchain),Blockchain and cryptocurrency,3,1384416088,2026-11-12
+FTMUSDT,unresolved,,,,,,
+SANDUSDT,unresolved,,,,,,
+MANAUSDT,included,58406152,Decentraland,3D virtual world with cryptocurrency elements,1,1371520910,2026-11-12
+AXSUSDT,included,68186473,Axie Infinity,2018 non-fungible token online game,3,1385179095,2026-11-12
+CHZUSDT,included,73019655,Chiliz,Blockchain platform,0,1383881082,2026-11-12
+ENJUSDT,"excluded: short description (or title, if empty) is not about a crypto asset",77444009,Enjin,Japanese idol boy band,0,1372965759,2026-11-12
+GALAUSDT,unresolved,,,,,,
+LUNAUSDT,included,70802298,Terra (blockchain),Blockchain protocol and payment platform,7,1383800602,2026-11-12
+LUNA2USDT,included,70802298,Terra (blockchain),Blockchain protocol and payment platform,7,1383800602,2026-11-12
+1000LUNCUSDT,included,70802298,Terra (blockchain),Blockchain protocol and payment platform,7,1383800602,2026-11-12
+USTCUSDT,included,70802298,Terra (blockchain),Blockchain protocol and payment platform,7,1383800602,2026-11-12
+WLDUSDT,included,73548731,World (blockchain),Cryptocurrency project,12,1362705171,2026-11-12
+HYPEUSDT,unresolved,,,,,,
+ENAUSDT,unresolved,,,,,,
+KASUSDT,"excluded: short description (or title, if empty) is not about a crypto asset",61836025,Kaspa,"Selo in Altai Republic, Russia",0,1378257740,2026-11-12
+STXUSDT,unresolved,,,,,,
+XEMUSDT,unresolved,,,,,,
+ZILUSDT,unresolved,,,,,,
+QTUMUSDT,unresolved,,,,,,
+ONTUSDT,unresolved,,,,,,
+WAVESUSDT,unresolved,,,,,,
+KSMUSDT,"excluded: short description (or title, if empty) is not about a crypto asset",439159,Yayoi Kusama,Japanese artist (1929–2026),4,1385020584,2026-11-12
+GRTUSDT,included,74636894,The Graph,Cryptocurrency,1,1372498982,2026-11-12
+RNDRUSDT,unresolved,,,,,,
+RENDERUSDT,unresolved,,,,,,
+THETAUSDT,unresolved,,,,,,
+HNTUSDT,included,70242990,Helium Network,Wireless network linked to cryptocurrency,4,1380044568,2026-11-12
+CRVUSDT,unresolved,,,,,,
+COMPUSDT,unresolved,,,,,,
+SNXUSDT,unresolved,,,,,,
+YFIUSDT,unresolved,,,,,,
+SUSHIUSDT,unresolved,,,,,,
+DYDXUSDT,unresolved,,,,,,
+LDOUSDT,unresolved,,,,,,
+IMXUSDT,unresolved,,,,,,
+FLOWUSDT,unresolved,,,,,,
+MINAUSDT,unresolved,,,,,,
+CELOUSDT,unresolved,,,,,,
+ONEUSDT,unresolved,,,,,,
+EGLDUSDT,"excluded: short description (or title, if empty) is not about a crypto asset",23139753,Elrond,Fictional elf from Tolkien's legendarium,5,1368648548,2026-11-12
+RUNEUSDT,unresolved,,,,,,
+CFXUSDT,unresolved,,,,,,
+KLAYUSDT,unresolved,,,,,,
+KAIAUSDT,unresolved,,,,,,
+TAOUSDT,unresolved,,,,,,
+OCEANUSDT,unresolved,,,,,,
+FETUSDT,unresolved,,,,,,
+AGIXUSDT,unresolved,,,,,,
+TIAUSDT,unresolved,,,,,,
+RVNUSDT,unresolved,,,,,,
+DGBUSDT,unresolved,,,,,,
+XVGUSDT,included,56116524,Verge (cryptocurrency),Cryptocurrency,0,1333546726,2026-11-12
+SCUSDT,unresolved,,,,,,
+ARUSDT,"excluded: page is a different platform (Odysee), not Arweave",66542773,Odysee,Decentralized video hosting platform,4,1383907674,2026-11-12
+STORJUSDT,unresolved,,,,,,
+LSKUSDT,"excluded: short description (or title, if empty) is not about a crypto asset",61305214,Lisk,Surname list,0,1345127604,2026-11-12
+OMGUSDT,unresolved,,,,,,
+HOTUSDT,unresolved,,,,,,
+ICXUSDT,unresolved,,,,,,
+1000PEPEUSDT,unresolved,,,,,,
+WIFUSDT,"excluded: page is the generic topic 'Meme coin', not this token",69225984,Meme coin,Cryptocurrency originating from internet meme,18,1376267521,2026-11-12
+1000BONKUSDT,unresolved,,,,,,
+1000FLOKIUSDT,"excluded: page is the generic topic 'Meme coin', not this token",69225984,Meme coin,Cryptocurrency originating from internet meme,18,1376267521,2026-11-12
+TRUMPUSDT,included,78920877,$Trump,Cryptocurrency launched by Donald Trump,17,1383347277,2026-11-12
+MELANIAUSDT,excluded: page is a different token ($Trump),78920877,$Trump,Cryptocurrency launched by Donald Trump,17,1383347277,2026-11-12
+WLFIUSDT,included,78065953,World Liberty Financial,Decentralized finance protocol,4,1384941606,2026-11-12
+NOTUSDT,unresolved,,,,,,
+HMSTRUSDT,"excluded: short description (or title, if empty) is not about a crypto asset",81944870,Hamster Kombat,Telegram-based tap-to-earn game on TON,0,1382686083,2026-11-12
+FARTCOINUSDT,"excluded: page is the generic topic 'Meme coin', not this token",69225984,Meme coin,Cryptocurrency originating from internet meme,18,1376267521,2026-11-12
+PENGUUSDT,"excluded: short description (or title, if empty) is not about a crypto asset",76152042,Pudgy Penguins,Consumer brand and IP franchise,0,1380538006,2026-11-12
+APEUSDT,unresolved,,,,,,
+GMTUSDT,unresolved,,,,,,
+CAKEUSDT,included,77631263,PancakeSwap,Decentralized cryptocurrency exchange,0,1344986783,2026-11-12
+PYTHUSDT,included,83428516,Pyth Network,Decentralized financial data oracle network,1,1362306585,2026-11-12
+ONDOUSDT,unresolved,,,,,,
+STRKUSDT,unresolved,,,,,,
+ZKUSDT,unresolved,,,,,,
+EIGENUSDT,unresolved,,,,,,
+SEIUSDT,unresolved,,,,,,
+INJUSDT,included,74929316,Injective (blockchain),Cryptocurrency,2,1353682014,2026-11-12
+BERAUSDT,unresolved,,,,,,
+VIRTUALUSDT,unresolved,,,,,,
+AI16ZUSDT,unresolved,,,,,,
+PUMPUSDT,included,78559650,Pump.fun,Solana token creation platform,1,1378787491,2026-11-12
+STEEMUSDT,included,51171266,Steemit,American blockchain-based blogging and social media website,2,1376111082,2026-11-12
+ROSEUSDT,"excluded: short description (or title, if empty) is not about a crypto asset",16904218,KNYD,"Radio station in Broken Arrow, Oklahoma",14,1360584301,2026-11-12
+BANDUSDT,unresolved,,,,,,
+KAVAUSDT,unresolved,,,,,,
+ZRXUSDT,unresolved,,,,,,
+BALUSDT,unresolved,,,,,,
+BNTUSDT,"excluded: short description (or title, if empty) is not about a crypto asset",3335637,Bancor,Formerly proposed currency,0,1369244867,2026-11-12
+LRCUSDT,unresolved,,,,,,
+IOTXUSDT,unresolved,,,,,,
+LPTUSDT,unresolved,,,,,,
+AUDIOUSDT,"excluded: short description (or title, if empty) is not about a crypto asset",2889845,Audianism,Sect of Christians in 4th century in Syria and Scythia,10,1384525766,2026-11-12
+ENSUSDT,unresolved,,,,,,
+CELRUSDT,unresolved,,,,,,
+POWRUSDT,unresolved,,,,,,
+RLCUSDT,unresolved,,,,,,
+TWTUSDT,included,81020197,Trust Wallet,Multi-chain non-custodial cryptocurrency wallet,0,1368611494,2026-11-12
+GLMUSDT,unresolved,,,,,,
+GLMRUSDT,unresolved,,,,,,
+JASMYUSDT,unresolved,,,,,,
+ARKMUSDT,"excluded: page is the company (blockchain analytics company), not the token",76753043,Arkham (cryptocurrency exchange),American blockchain analytics company,1,1384063192,2026-11-12
+ILVUSDT,"excluded: short description (or title, if empty) is not about a crypto asset",7847904,Illuvium,Material displaced across a soil profile,3,1310822675,2026-11-12
+YGGUSDT,unresolved,,,,,,
+RPLUSDT,unresolved,,,,,,
+CVXUSDT,unresolved,,,,,,
+PENDLEUSDT,unresolved,,,,,,
+ETHFIUSDT,unresolved,,,,,,
+DYMUSDT,unresolved,,,,,,
+MANTAUSDT,unresolved,,,,,,
+ZROUSDT,unresolved,,,,,,
+IPUSDT,unresolved,,,,,,
+MOVEUSDT,unresolved,,,,,,
+MEUSDT,unresolved,,,,,,
+OMUSDT,unresolved,,,,,,
+AXLUSDT,unresolved,,,,,,
+QNTUSDT,unresolved,,,,,,
+XAIUSDT,unresolved,,,,,,
+SAFEUSDT,unresolved,,,,,,
+GMXUSDT,unresolved,,,,,,

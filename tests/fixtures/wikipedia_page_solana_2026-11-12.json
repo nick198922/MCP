@@ -1,0 +1,38 @@
+{
+ "batchcomplete": true,
+ "query": {
+  "redirects": [
+   {
+    "from": "Solana (blockchain)",
+    "to": "Solana (blockchain platform)"
+   }
+  ],
+  "pages": [
+   {
+    "pageid": 68695418,
+    "ns": 0,
+    "title": "Solana (blockchain platform)",
+    "contentmodel": "wikitext",
+    "pagelanguage": "en",
+    "pagelanguagehtmlcode": "en",
+    "pagelanguagedir": "ltr",
+    "touched": "2026-11-10T05:56:27Z",
+    "lastrevid": 1384303981,
+    "length": 22770,
+    "pageprops": {
+     "wikibase-shortdesc": ""
+    },
+    "redirects": [
+     {
+      "pageid": 79183046,
+      "ns": 0,
+      "title": "Solana (blockchain)"
+     }
+    ]
+   }
+  ]
+ },
+ "limits": {
+  "redirects": 500
+ }
+}

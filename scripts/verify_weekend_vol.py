@@ -146,7 +146,8 @@ def load_bars(cache: Path) -> list[list[float]]:
 
 def load_events() -> tuple[set[int], set[int]]:
     """(Tuesdays of weeks with any event on Tue/Wed/Thu, Tuesdays of weeks whose Friday is an NFP date)."""
-    rows = list(csv.DictReader(EVENTS_CSV.open()))
+    with EVENTS_CSV.open() as fh:
+        rows = list(csv.DictReader(fh))
     all_d = [ms(date.fromisoformat(r["date"])) for r in rows if r["status"] != "cancelled"]
     nfp = [ms(date.fromisoformat(r["date"])) for r in rows if r["status"] != "cancelled" and r["kind"] == "nfp"]
     with resources.files("tradedesk.data").joinpath("events_seed.json").open("r", encoding="utf-8") as f:

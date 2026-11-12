@@ -129,7 +129,8 @@ def load_quotes(trades_dir: Path, cache: Path) -> tuple[dict[int, dict[str, Any]
 
 
 def load_events(path: Path) -> tuple[dict[int, str], set[int], list[dict[str, str]]]:
-    rows = list(csv.DictReader(path.open()))
+    with path.open() as fh:
+        rows = list(csv.DictReader(fh))
     prim = [(ms(date.fromisoformat(r["date"])), r["kind"]) for r in rows if r["status"] in PRIMARY_STATUS]
     prim = [(d, k) for d, k in prim if START_MS <= d <= END_MS]
     block_dates = [ms(date.fromisoformat(r["date"])) for r in rows if r["status"] != "cancelled"]

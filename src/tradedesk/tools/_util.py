@@ -67,6 +67,49 @@ def finite_json(x: Any) -> bool:
     return True
 
 
+def _has_nonfinite(v: Any) -> bool:
+    """True when NaN / +-inf sits anywhere in the parsed JSON `v`; iterative, so any nesting depth is safe."""
+    stack = [v]
+    while stack:
+        x = stack.pop()
+        if isinstance(x, float) and not math.isfinite(x):
+            return True
+        if isinstance(x, list):
+            stack.extend(x)
+        elif isinstance(x, dict):
+            stack.extend(x.values())
+    return False
+
+
+def clean_tags(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[Any], list[Any]]:
+    """(kept rows, ids skipped for NaN / Infinity in tags, ids whose tags were normalised). positions_add / journal_add
+    store a JSON list of strings; another writer can leave anything. A row with NaN / Infinity is skipped (item 296); any
+    other non-list or a list with non-strings is shown as its string items ("x" -> ["x"], 5 / {...} -> []), because a
+    nested value 300 levels deep failed the whole reply in the MCP serialiser (items 352, 353). NULL / JSON null stays
+    None (no tags). A row whose other cells are not strict JSON is skipped too (counted with the NaN ones)."""
+    kept: list[dict[str, Any]] = []
+    nonfinite: list[Any] = []
+    fixed: list[Any] = []
+    for p in rows:
+        tags = p.get("tags")
+        if not (tags is None or (isinstance(tags, list) and all(isinstance(t, str) for t in tags))):
+            if _has_nonfinite(tags):
+                nonfinite.append(p.get("id"))
+                continue
+            if isinstance(tags, str):
+                p["tags"] = [tags]
+            elif isinstance(tags, list):
+                p["tags"] = [t for t in tags if isinstance(t, str)]
+            else:
+                p["tags"] = []
+            fixed.append(p.get("id"))
+        if not finite_json(p):
+            nonfinite.append(p.get("id"))
+            continue
+        kept.append(p)
+    return kept, nonfinite, fixed
+
+
 def shown_int(v: int) -> str:
     """`v` as text for a message. An integer of 101+ digits is not echoed: str() of one beyond 4300 digits raises
     ValueError (and so did the message of a tool refusing it), and a 400-digit echo helps nobody."""

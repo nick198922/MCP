@@ -1,0 +1,1 @@
+- Бібліотека: `LIB-20261111-qivty-digest` опрацьовано скаутом → `triaged`, карток нема (Y6 — повтор macro-release-reaction-continuation, Y4 — одна подія), закликів із цінами нема.

@@ -147,7 +147,9 @@ def kickoff_utc(date_s: str, time_s: str, tz: str = "Europe/London") -> int | No
 def taker_net(g: float, p: float, direction: int | None = None, fee_rate: float = 0.05) -> float:
     """Taker P&L per contract (decimal of notional 1): edge minus fee ``fee_rate * p * (1 - p)`` at trade price p.
 
-    ``direction`` None: the card's registered |g| (an upper bound: noise in g also counts as edge);
+    ``direction`` None: the card's registered |g|, an upper bound that is not reachable in practice: p is a
+    book mid (a taker also pays half the spread) and the side is chosen from the sharp closing line at T,
+    which is not known when trading before T;
     +1 / -1: the pre-set side (sell an overpriced outcome when g > 0 is expected, buy when g < 0), edge = direction * g."""
     edge = abs(g) if direction is None else direction * g
     return edge - fee_rate * p * (1.0 - p)

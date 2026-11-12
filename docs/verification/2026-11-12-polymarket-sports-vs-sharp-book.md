@@ -4,6 +4,8 @@
 Скрипт: `scripts/verify_pm_sports_step0.py` (етапи `fd`, `probe`, `gamma`, `hist`, `gate`, `calib`, `fixtures`), кеш `~/.cache/tradedesk-agents/pm-sports-sharp/`.
 Чисті функції для прогону: `src/tradedesk/analytics/pm_sharp_clv.py` (тести `tests/test_pm_sharp_clv.py`, фікстури `tests/fixtures/football_data_2526_E0_head.csv`, `tests/fixtures/polymarket_gamma_epl_event_2526.json`).
 
+**Вердикт повного прогону (крок 2, за реєстрацією без змін): ✗ `rejected`** — [звіт H1](2026-11-12-polymarket-sports-sharp-h1.md). n: A 893 матчі (15.08.2025 – 01.2026, Pinnacle closing, 146 / 164 кластерів у кінцях), B 1 215 (01.02 – 08.11.2026, `AvgC*`); середнє g (power) A +0.12 [+0.01; +0.22] / −0.41 [−0.59; −0.22] п.п. проти порогів +1.5 / −1.0, B +0.19 / −0.74 проти +1.43 / −1.06; Холм на 4 тести; правило «|g| < 1.0 в обох кінцях A» виконано. Еталон (PSC power, 2012-25) не зміщений: −0.09 / +0.70 п.п.
+
 **Цей звіт не містить g = p_PM − p_sharp і жодних цін Polymarket біля T.** Етап `hist` записує лише кількість і час точок. Реєстрацію записано в картку до прогону; прогін H1 — наступним кроком.
 
 ## Підсумок

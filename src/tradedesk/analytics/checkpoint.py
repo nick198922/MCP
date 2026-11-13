@@ -19,9 +19,19 @@ note (item 341): mean ``fee_gap_r`` of ``demo_execution`` and the taker-entry sh
 Each demo row with n >= 30 notes the 95 % CI of its mean R clustered by the signal's UTC day (``_r_ci``, item 343), as
 the CHECKPOINT rule registers it: descriptive only, the label stays the band's (below 30 the few days make it noise).
 
-What this module does not compute (the label says so in its notes): carry criteria (a) (re-run of the backtest code),
-(e) and (ye) (universe and capacity checks) and B's liquidation part of (g) (1m mark prices, network); the demo's
-secondary metric ``r_demo_bt`` and its clustered CI (``scripts/demo_vs_backtest.py``); the A v2 delisting cross-check.
+Carry criteria (e) and (ye) (item 365) come from what the engine already writes, without network: (e) universe purity
+per entry from its candidate rows over the holding period (the registered collision metric, |median leg price gap| >
+0.005), its entry cycle (the candidate's funding interval; the feed's exclusion journal, which cannot fire for an
+entered symbol today) and its open ``side`` rows (the ``1000…`` multiplier of A's spot leg; the leg mids against the
+developer's coarse 1.5x bound, outside the registration); TradFi is not checked independently; (ye) capacity per entry
+from the open ``side`` rows (leg notional <= book depth within ±0.5 % of mid on every leg) and, for the Bybit leg only,
+the largest 2x position of the nearest dated ladder snapshot before the entry (``docs/paper/ladder/``, registration
+amendment (2): Binance's ladder is signed, so its leg is checked by depth only). The venue metadata at the checkpoint
+that the registration names for (e) is network, so (e) checks the engine against its own records, not the venue.
+
+What this module does not compute (the label says so in its notes): carry criterion (a) (re-run of the backtest code)
+and B's liquidation part of (g) (1m mark prices, network); the demo's secondary metric ``r_demo_bt`` and its clustered
+CI (``scripts/demo_vs_backtest.py``); the A v2 delisting cross-check.
 """
 
 from __future__ import annotations
@@ -457,6 +467,256 @@ def _crit(cid: str, status: str, text: str) -> dict[str, str]:
     return {"id": cid, "status": status, "text": text}
 
 
+# (e) universe purity and (ye) capacity (registration of the paper carry; amendment (2) for the ladder)
+MIN_E_ENTRIES = 1
+MIN_YE_ENTRIES = 10
+YE_PASS_SHARE = 0.90
+DEPTH_KEY = "0.5%"  # ``depth_usd`` of a side row (carry_rules.leg_execution): USD within ±0.5 % of mid, per book side
+BYBIT_VENUE = "bybit"  # the engine's second venue (collector.carry_paper_engine.BYBIT; analytics imports no collector)
+# The feed's exclusion reasons an entered symbol must never carry (``carry_paper_feed``): ``gap`` = too few common bars
+# to check the collision, so it counts as a collision too.
+E_EXCLUSIONS = {"tradfi": "tradfi", "collision": "collision", "gap": "collision"}
+E_PREFIX = re.compile(r"^(1000000|10000|1000)([A-Z].*)$")  # the feed's 1000x prefix rule (carry_paper_feed.MULT)
+E_INTERVAL_MAX_H = 8.0  # the longest regular funding interval (carry_paper_feed.RELOAD_BACK_MS)
+# The registered collision threshold: |median(price ratio of the legs) - 1| > 0.005, as the backtest that registered it
+# defines it (scripts/verify_carry_perp_perp.py, ``abs(statistics.median(ratios) - 1.0) > 0.005``; the feed's
+# carry_paper_feed.COLLISION_GAP), on the engine's candidate rows of the position from its entry cycle to its close (or
+# the report date). The window is ours: the registration names none; the backtest took the whole history (>= 20 bars).
+E_COLLISION_GAP = 0.005
+E_GAP_MIN_ROWS = 3  # fewer candidate rows over the holding period: the collision part of the entry is unchecked
+# Developer's coarse addition outside the registration: leg mids (A's spot times its multiplier) more than 1.5x apart at
+# entry, i.e. another asset or an unscaled multiplier (B enters at most 2 % apart, max_entry_gap)
+E_PRICE_RATIO_MAX = 1.5
+E_NAMES = {
+    "gap": f"|медіана розриву цін ніг| за утримання > {E_COLLISION_GAP * 100:g} % (колізія тікерів за метрикою реєстрації)",
+    "tradfi": "TradFi-перп у журналі виключень фіду (tradfi)",
+    "collision": "колізія в журналі виключень фіду (collision / gap)",
+    "interval": "інтервал funding поза (0; 8] год",
+    "multiplier": "множник 1000… спотової ноги не за префіксом перпа",
+    "price": f"mid ніг на вході розходяться більш ніж у {E_PRICE_RATIO_MAX:g} раза (груба межа розробника, поза реєстрацією)",
+}
+
+
+def _carry_entries(
+    pos: Sequence[Mapping[str, Any]], side_rows: Sequence[Mapping[str, Any]], cycles: Sequence[Mapping[str, Any]]
+) -> list[dict[str, Any]]:
+    """Per position: its symbol, entry time, open ``side`` payloads, entry cycle (the cycle of its open side rows, else
+    the cycle whose ``decision_ts`` is the position's ``opened_ts``; None when neither is recorded) and ``held``: its
+    candidate rows (``cp_cycle.candidates``, written every cycle while it is open) from the entry cycle (else
+    ``opened_ts``) to ``closed_ts`` (``pos`` as of the report date, so an open one runs to the last cycle)."""
+    opens: dict[str, list[Mapping[str, Any]]] = {}
+    for x in side_rows:
+        if (x.get("payload") or {}).get("event") == "open":
+            opens.setdefault(str(x.get("trade_id")), []).append(x)
+    by_ts = {int(c["cycle_ts"]): c for c in cycles}
+    by_decision = {int(d): c for c in cycles if (d := _num((c.get("payload") or {}).get("decision_ts"))) is not None}
+    out = []
+    for q in pos:
+        rows = opens.get(str(q["trade_id"]), [])
+        cyc = by_ts.get(int(rows[0]["cycle_ts"])) if rows else None
+        cyc = cyc if cyc is not None else by_decision.get(int(q["opened_ts"]))
+        sym = str(q.get("symbol"))
+        start = min(int(q["opened_ts"]), int(cyc["cycle_ts"])) if cyc is not None else int(q["opened_ts"])
+        end = int(q["closed_ts"]) if q.get("status") == "closed" and q.get("closed_ts") is not None else None
+        held = [
+            c
+            for x in cycles
+            if start <= int(x["cycle_ts"]) and (end is None or int(x["cycle_ts"]) <= end)
+            for c in (x.get("payload") or {}).get("candidates") or []
+            if isinstance(c, Mapping) and c.get("symbol") == sym
+        ]
+        out.append(
+            {"symbol": sym, "opened_ts": int(q["opened_ts"]), "legs": [x.get("payload") or {} for x in rows], "cycle": cyc, "held": held}
+        )
+    return out
+
+
+def _held_gap(strategy: str, rows: Sequence[Mapping[str, Any]]) -> float | None:
+    """|median price gap| between the legs over the candidate rows of a holding period (the gap signed, as the backtest's
+    ``abs(median(ratios) - 1)``): B ``gap`` (price_a / price_b - 1, else from the two prices); A ``perp`` / ``spot`` - 1
+    (``spot`` already times the multiplier, carry_paper_feed). None below ``E_GAP_MIN_ROWS`` rows with both prices."""
+    gaps = []
+    for r in rows:
+        if strategy == "B":
+            g = _num(r.get("gap"))
+            if g is None and (pa := _num(r.get("price_a"))) and (pb := _num(r.get("price_b"))) and pa > 0 and pb > 0:
+                g = pa / pb - 1.0
+        else:
+            s, p = _num(r.get("spot")), _num(r.get("perp"))
+            g = p / s - 1.0 if s and p and s > 0 and p > 0 else None
+        if g is not None:
+            gaps.append(g)
+    return abs(statistics.median(gaps)) if len(gaps) >= E_GAP_MIN_ROWS else None
+
+
+def _leg_ratio(legs: Sequence[Mapping[str, Any]]) -> float | None:
+    """Ratio of the two leg mids at entry, each times its contract multiplier; None without both books."""
+    mids = []
+    for leg in legs:
+        mid, mult = _num(leg.get("mid")), _num(leg.get("contract_multiplier"))
+        if mid is None or mid <= 0:
+            return None
+        mids.append(mid * (mult if mult and mult > 0 else 1.0))
+    return mids[0] / mids[1] if len(mids) == 2 else None
+
+
+def carry_universe(strategy: str, entries: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Criterion (e) on the entries (``_carry_entries``): 0 entries into a ticker collision (the registered metric: |median
+    price gap| between the legs > 0.005 over the position's candidate rows from entry to close, ``_held_gap``, at least
+    ``E_GAP_MIN_ROWS`` rows; for A the spot x multiplier vs perp gap, so basis counts too), an irregular funding interval
+    (outside (0, 8] h; an unknown one is only counted) or an unscaled ``1000…`` multiplier; >= 1 checked entry, else ◯.
+    Also counted as violations: the symbol in its entry cycle's exclusion journal as ``tradfi`` / ``collision`` / ``gap``
+    (a guard against future feed changes: today an excluded symbol never reaches the engine, so it cannot fire) and
+    the developer's coarse leg-mid ratio > 1.5x at entry (outside the registration). TradFi is not checked independently
+    (``underlyingType`` at the checkpoint is network). An entry without a violation is checked when its entry cycle holds
+    its candidate row, the exclusion list is complete (``excluded`` is capped at 500) and the gap has enough rows."""
+    fails: dict[str, list[str]] = {}
+    checked = no_cand = few_rows = no_price = no_interval = 0
+    widest: float | None = None
+    worst_gap: float | None = None
+    for e in entries:
+        p = (e["cycle"] or {}).get("payload") or {}
+        sym = e["symbol"]
+        cand = next((c for c in p.get("candidates") or [] if isinstance(c, Mapping) and c.get("symbol") == sym), None)
+        excl = [x for x in p.get("excluded") or [] if isinstance(x, Mapping)]
+        counts = p.get("excluded_counts") or {}
+        cut = sum(v for v in counts.values() if isinstance(v, int)) > len(excl) if isinstance(counts, Mapping) else False
+        why = {E_EXCLUSIONS[str(x.get("reason"))] for x in excl if x.get("symbol") == sym and str(x.get("reason")) in E_EXCLUSIONS}
+        med = _held_gap(strategy, e.get("held") or [])
+        if med is not None:
+            worst_gap = max(worst_gap or 0.0, med)
+            if med > E_COLLISION_GAP:
+                why.add("gap")
+        ivs = (cand or {}).get("interval_hours")
+        ivs = ivs if isinstance(ivs, list) else [ivs]
+        hours = [_num(v) for v in ivs] if cand is not None else []
+        if any(h is None for h in hours):
+            no_interval += 1  # unknown: the engine's APR is per time (sum of payments / window), so this is descriptive
+        if any(h is not None and not 0 < h <= E_INTERVAL_MAX_H for h in hours):
+            why.add("interval")
+        if strategy == "A" and (spot := next((x for x in e["legs"] if x.get("leg") == "spot"), None)) is not None:
+            base = sym.split("/")[0]
+            m = E_PREFIX.match(base)
+            mult, spot_base = (int(m.group(1)), m.group(2)) if m else (1, base)
+            if _num(spot.get("contract_multiplier")) != mult or str(spot.get("symbol")).split("/")[0] != spot_base:
+                why.add("multiplier")
+        ratio = _leg_ratio(e["legs"])
+        if ratio is None:
+            no_price += 1
+        else:
+            widest = max(widest or 0.0, abs(ratio - 1.0))
+            if not 1 / E_PRICE_RATIO_MAX <= ratio <= E_PRICE_RATIO_MAX:
+                why.add("price")
+        for w in why:
+            fails.setdefault(w, []).append(sym)
+        if why:  # a violation counts whatever else is missing (an excluded symbol has no candidate row)
+            checked += 1
+        elif cand is None or cut:
+            no_cand += 1
+        elif med is None:
+            few_rows += 1
+        else:
+            checked += 1
+    txt = f"перевірено входів {checked} з {len(entries)}"
+    txt += ", порушень: " + ("; ".join(f"{E_NAMES[k]} — {', '.join(v)}" for k, v in sorted(fails.items())) if fails else "0")
+    txt += (
+        f"; не перевірено: без рядка кандидата в циклі входу чи з обрізаним списком виключень {no_cand}, "
+        f"з < {E_GAP_MIN_ROWS} рядків кандидата за утримання {few_rows}; найбільша |медіана розриву цін ніг| за утримання "
+        f"{'—' if worst_gap is None else f'{worst_gap * 100:.2f} %'} (поріг реєстрації 0.5 %; "
+        f"{'A — spot×множник проти перпа, тобто разом із базисом' if strategy == 'A' else 'B — mid Binance проти Bybit'}); "
+        f"інтервал невідомий {no_interval} (описово); без цін обох ніг на вході {no_price}; "
+        f"поза реєстрацією — груба межа розробника {E_PRICE_RATIO_MAX:g}x для mid ніг на вході, найбільший розрив "
+        f"{'—' if widest is None else f'{widest * 100:.1f} %'}; TradFi незалежно НЕ перевірено: виключений фідом символ "
+        "до рушія не потрапляє, тож журнал виключень у циклі входу провалитися не може (лише запобіжник на зміни фіду), "
+        "а underlyingType на чекпоінт — мережа"
+    )
+    if checked < MIN_E_ENTRIES:
+        return _crit("е", UNVERIFIABLE, txt + f"; мінімум {MIN_E_ENTRIES} вхід")
+    return _crit("е", FAIL if fails else PASS, txt) | {"symbols": sorted({s for v in fails.values() for s in v})}
+
+
+def _bybit_id(symbol: str) -> str:
+    """ccxt unified ``ERA/USDT:USDT`` -> Bybit's ``ERAUSDT`` (the key of a ladder snapshot)."""
+    return symbol.split(":")[0].replace("/", "")
+
+
+def carry_capacity(entries: Sequence[Mapping[str, Any]], ladder: Sequence[Mapping[str, Any]], now_ms: int) -> dict[str, Any]:
+    """Criterion (ye) on the entries (``_carry_entries``): the share of entries where every leg's notional fits into the
+    book depth within ±0.5 % of mid on its side (``depth_usd``, the open side rows) and the Bybit leg's notional is
+    <= the largest 2x position of the nearest ladder snapshot taken before the entry (the first one for entries before
+    it). ``ladder``: ``{date, taken_ms, limits: {bybit id: max 2x position USD or None}}``; snapshots after ``now_ms``
+    are not used. Binance legs: depth only (amendment (2)). >= 90 % -> passed; < 10 entries with data -> ◯."""
+    snaps = sorted((s for s in ladder if int(s["taken_ms"]) <= now_ms), key=lambda s: int(s["taken_ms"]))
+    ok = thin = over = no_data = before_first = 0
+    used: dict[str, int] = {}
+    for e in entries:
+        legs = e["legs"]
+        has_data = len(legs) >= 2  # both legs' open side rows
+        depth_ok = limit_ok = True
+        snap_of: tuple[str, bool] | None = None  # (snapshot date, entry before the first snapshot)
+        for leg in legs if has_data else ():
+            need = _num(leg.get("notional_usd"))
+            band = (leg.get("depth_usd") or {}).get(DEPTH_KEY)
+            depth = _num(band.get("ask" if leg.get("side") == "buy" else "bid")) if isinstance(band, Mapping) else None
+            if need is None or depth is None:
+                has_data = False
+                break
+            depth_ok = depth_ok and need <= depth
+            if leg.get("venue") == BYBIT_VENUE:
+                prior = [s for s in snaps if int(s["taken_ms"]) <= e["opened_ts"]]
+                snap = prior[-1] if prior else (snaps[0] if snaps else None)
+                limits = (snap or {}).get("limits") or {}
+                key = _bybit_id(str(leg.get("symbol") or e["symbol"]))
+                if snap is None or key not in limits:
+                    has_data = False
+                    break
+                snap_of = (str(snap["date"]), not prior)
+                lim = _num(limits[key])  # None: no tier of the ladder allows 2x
+                limit_ok = limit_ok and lim is not None and need <= lim
+        if not has_data:
+            no_data += 1
+            continue
+        if snap_of is not None:
+            used[snap_of[0]] = used.get(snap_of[0], 0) + 1
+            before_first += snap_of[1]
+        ok += depth_ok and limit_ok
+        thin += not depth_ok
+        over += not limit_ok
+    n = len(entries) - no_data  # entries with data (one both thin and over limit is one entry)
+    txt = (
+        f"входів з даними {n} з {len(entries)}, номінал вміщується {ok} ({_pc(ok / n if n else None)}; поріг 90 %); "
+        f"книга ±0.5 % від mid мілкіша за номінал {thin}, понад ліміт Bybit для 2x {over}; без даних {no_data}; "
+        "Binance-нога — лише глибина (ladder Binance підписаний, поправка (2)); глибина — не більше 50 рівнів книги, "
+        "тож на дрібному кроці ціни занижена (консервативно)"
+    )
+    if used:
+        txt += "; ліміт Bybit-ноги — за знімком ladder до входу: " + ", ".join(f"{d} — {k}" for d, k in sorted(used.items()))
+        if before_first:
+            txt += f" (з них до першого знімка, за першим: {before_first})"
+    elif not snaps:
+        txt += "; знімків ladder Bybit до дати звіту немає"
+    if n < MIN_YE_ENTRIES:
+        return _crit("є", UNVERIFIABLE, txt + f"; мінімум {MIN_YE_ENTRIES} входів")
+    return _crit("є", PASS if ok / n >= YE_PASS_SHARE else FAIL, txt)
+
+
+def ladder_note(ladder: Sequence[Mapping[str, Any]], now_ms: int) -> str | None:
+    """The row note on skipped weekly ladder snapshots: entries between two snapshots more than a week apart are
+    checked against the earlier one, and entries after a last snapshot older than a week at ``now_ms`` against it.
+    None when neither happens (or there is no snapshot: the criterion's text says so)."""
+    snaps = sorted((s for s in ladder if int(s["taken_ms"]) <= now_ms), key=lambda s: int(s["taken_ms"]))
+    gaps = [(a, b) for a, b in zip(snaps, snaps[1:], strict=False) if int(b["taken_ms"]) - int(a["taken_ms"]) > 7 * DAY_MS]
+    parts = [f"входи до {b['date']} (дата першого нового знімка) звіряються зі знімком ladder {a['date']}" for a, b in gaps]
+    if gaps:
+        parts[-1] += ": щотижневі знімки, яких вимагала реєстрація, пропущено, їх не відновити; зміни ladder між знімками не видно"
+    if snaps and now_ms - int(snaps[-1]["taken_ms"]) > 7 * DAY_MS:
+        parts.append(
+            f"останній знімок ladder {snaps[-1]['date']} старший за тиждень на дату звіту: пізніші входи звіряються з ним; "
+            "реєстрація вимагає знімка на чекпоінт (scripts/paper_ladder_snapshot.py того ж дня)"
+        )
+    return "(є): " + "; ".join(parts) if parts else None
+
+
 def _asof(positions: Sequence[Mapping[str, Any]], now_ms: int) -> list[dict[str, Any]]:
     """Positions opened by ``now_ms``; one closed later is open at ``now_ms``."""
     out = []
@@ -484,12 +744,15 @@ def carry_forward(
     cycles: Sequence[Mapping[str, Any]],
     bench: Mapping[str, Any],
     now_ms: int,
+    *,
+    ladder: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
-    """Criteria (b), (v), (g), (d) of the paper carry registration (IDEA-20261017-forward-paper-carry) on the engine's
-    records: ``positions`` (cp_position rows, ``state`` / ``trade`` parsed), ``logs`` kind -> cp_log rows (``side``,
-    ``mark``, ``close``, ``event``; ``payload`` parsed), ``cycles`` (cp_cycle rows), ``bench`` the frozen bench of the
-    strategy (``docs/paper/bench.json`` -> ``<strategy>.bench``). Any computed criterion failed -> «ні» (for B a failed
-    (v) is exempt: registration, «Як читати (в) для B»); any ◯ -> «рано»; else «узгоджується»."""
+    """Criteria (b), (v), (g), (d), (e), (ye) of the paper carry registration (IDEA-20261017-forward-paper-carry) on the
+    engine's records: ``positions`` (cp_position rows, ``state`` / ``trade`` parsed), ``logs`` kind -> cp_log rows
+    (``side``, ``mark``, ``close``, ``event``; ``payload`` parsed), ``cycles`` (cp_cycle rows), ``bench`` the frozen
+    bench of the strategy (``docs/paper/bench.json`` -> ``<strategy>.bench``), ``ladder`` the dated Bybit ladder
+    snapshots for (ye) (``carry_capacity``). Any computed criterion failed -> «ні» (for B a failed (v) is exempt:
+    registration, «Як читати (в) для B»); any ◯ -> «рано»; else «узгоджується»."""
     pos = _asof(positions, now_ms)
     side_rows = [x for x in logs.get("side", ()) if int(x["cycle_ts"]) <= now_ms]
     marks = _by_trade(logs.get("mark", ()), now_ms)
@@ -646,10 +909,20 @@ def carry_forward(
     else:
         crit.append(_crit("д", PASS if good / len(cyc) >= CYCLE_PASS else FAIL, txt))
 
-    crit.append(_crit("а, е, є", NOT_HERE, f"входів {len(pos)}; еквівалентність рішень, чистота всесвіту й ємність — окремими перевірками"))
+    # (e) universe purity and (ye) capacity on the entries, from the engine's own records (no network)
+    entries = _carry_entries(pos, side_rows, cyc)
+    e_crit = carry_universe(strategy, entries)
+    crit.append({k: v for k, v in e_crit.items() if k != "symbols"})
+    crit.append(carry_capacity(entries, ladder, now_ms))
+
+    crit.append(_crit("а", NOT_HERE, f"входів {len(pos)}; еквівалентність рішень — окремою перевіркою (повторний прогін коду бектесту)"))
     fails = [c for c in crit if c["status"] == FAIL and not (strategy == "B" and c["id"] == "в")]
     waits = [c for c in crit if c["status"] == UNVERIFIABLE]
-    row = _row(f"carry:{strategy}", "carry", CARRY_NAMES[strategy], n=len(pos), metric_name="критерії (б)–(д) реєстрації", criteria=crit)
+    row = _row(f"carry:{strategy}", "carry", CARRY_NAMES[strategy], n=len(pos), metric_name="критерії (б)–(є) реєстрації", criteria=crit)
+    if strategy == "B" and (note := ladder_note(ladder, now_ms)):  # only B has a Bybit leg
+        row["notes"].append(note)
+    if e_crit["status"] == PASS:
+        row["notes"].append("(е) перевірено частково: TradFi — лише логіка самого фіду, незалежно не перевірено")
     if fails:
         row["verdict"] = NO
         row["notes"].append("не пройдено: " + ", ".join(f"({c['id']})" for c in fails))
@@ -657,6 +930,12 @@ def carry_forward(
             row["notes"].append("(б) або (г) системно → стратегія нереалістична на наших розмірах (критерій «вбити»)")
         if any(c["id"] == "в" for c in fails):
             row["notes"].append("(в) → розбір funding-даних і рушія, не «вбити»")
+        if any(c["id"] == "е" for c in fails):
+            row["notes"].append(f"(е) → баг рушія (реєстрація): розібрати входи {', '.join(e_crit.get('symbols', []))}")
+        if any(c["id"] == "є" for c in fails):
+            row["notes"].append(
+                "(є) → номінал ноги не вміщується в книгу ±0.5 % чи ліміт Bybit на > 10 % входів: розбір розміру ноги й всесвіту"
+            )
         if any(c["id"] == "д" for c in fails) and cyc and on_time / len(cyc) >= CYCLE_PASS:
             row["notes"].append(
                 "(д) не пройдено лише за «з повними даними» реєстрації: вчасно ≥ 95 %, а неповні цикли — це прапорці рушія "
@@ -1050,7 +1329,8 @@ def build(inputs: Mapping[str, Any], now_ms: int) -> dict[str, Any]:
     logs, cycles}}, ``bench`` {strategy: bench}, ``side_cost_a``, ``decision_delay_ms``, ``pm_rows``, ``pm_outcomes``,
     ``condor_t0`` (date or None), ``condor_rows``, ``rec_paper`` (rec_paper rows, no P&L columns needed),
     ``paper_state`` (the assistant_paper state file, parsed, or None), ``idea_cards`` (``forward_cards`` output),
-    ``plans`` (trade_plan rows without R / outcome, ``tags`` parsed), ``errors`` (strings from the loader)."""
+    ``plans`` (trade_plan rows without R / outcome, ``tags`` parsed), ``ladder`` (dated Bybit ladder snapshots for
+    carry (ye), see ``carry_capacity``), ``errors`` (strings from the loader)."""
     out: list[dict[str, Any]] = []
     trades = inputs.get("demo_trades") or []
     for spec in DEMO:
@@ -1066,6 +1346,7 @@ def build(inputs: Mapping[str, Any], now_ms: int) -> dict[str, Any]:
                 c.get("cycles", []),
                 (inputs.get("bench") or {}).get(s, {"buckets": []}),
                 now_ms,
+                ladder=inputs.get("ladder") or (),
             )
         )
     a = carry.get("A") or {}

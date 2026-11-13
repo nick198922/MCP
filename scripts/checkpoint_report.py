@@ -26,6 +26,8 @@ also notes the 95 % CI of its mean R clustered by the signal's UTC day, descript
 The section «S12: правило зняття» applies the owner's rule Q-20261109-1 to the closed S12 demo trades (v9: n >= 30 and
 mean R below -0.827 -> stop and review the execution; v4 entry, v4 + v9: n >= 100 and below -0.524R -> drop; else
 «рано» or «тримати»), with n, mean R and a 95 % CI (``tradedesk.analytics.checkpoint.s12_stop_rule``, item 313).
+The carry rows also count criteria (e) and (ye) (item 365): the dated Bybit ladder snapshots of ``docs/paper/ladder/``
+are read for the Bybit leg's 2x position limit (files only, no network).
 The text (Ukrainian) is printed and, with ``--out``, written to a file.
 """
 
@@ -56,6 +58,7 @@ from tradedesk.collector.carry_paper_engine import PARAMS_A  # noqa: E402
 
 DEFAULT_DB = "/var/lib/tradedesk-mcp/tradedesk.sqlite"
 BENCH = ROOT / "docs" / "paper" / "bench.json"
+LADDER = ROOT / "docs" / "paper" / "ladder"  # dated Bybit ladder snapshots (scripts/paper_ladder_snapshot.py)
 IDEAS = ROOT / "docs" / "ideas"
 CARRY_KINDS = ("side", "funding", "mark", "close", "event")
 # Every table a forward block reads. The migrations create them all, so an absent one means an older schema or another
@@ -330,6 +333,24 @@ def load_idea_cards(ideas: Path = IDEAS) -> list[dict[str, Any]]:
     return forward_cards(texts)
 
 
+def load_ladder(folder: Path = LADDER, errors: list[str] | None = None) -> list[dict[str, Any]]:
+    """The dated Bybit ladder snapshots ``YYYY-MM-DD-bybit.json`` for carry criterion (ye): per file its date, the moment
+    it was taken (``taken_utc``, UTC ms) and the largest 2x position per Bybit symbol (``max_position_usd``; None when no
+    tier allows 2x). A file that cannot be read is skipped and named in ``errors``."""
+    out = []
+    for p in sorted(folder.glob("*-bybit.json")):
+        try:
+            d = json.loads(p.read_text(encoding="utf-8"))
+            taken = datetime.strptime(d["taken_utc"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+            limits = {str(s): v.get("max_position_usd") for s, v in d["symbols"].items()}
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
+            if errors is not None:
+                errors.append(f"знімок ladder {p.name} не прочитано ({type(e).__name__}): для (є) його немає")
+            continue
+        out.append({"date": p.name[:10], "taken_ms": int(taken.timestamp() * 1000), "limits": limits})
+    return out
+
+
 def load_paper_state(db: str) -> dict[str, Any] | None:
     """The assistant_paper job's state file next to the DB (``collector.assistant_paper.state_path``), only the keys the
     report shows; None when it is absent or unreadable."""
@@ -352,6 +373,9 @@ def load_inputs(db: str, now_ms: int) -> dict[str, Any]:
         inp["bench"] = {s: bench[s]["bench"] for s in ("A", "B")}
     except (OSError, ValueError, KeyError) as e:
         inp["errors"].append(f"бенч carry не прочитано ({type(e).__name__}): критерій (в) — ◯")
+    inp["ladder"] = load_ladder(errors=inp["errors"])
+    if not inp["ladder"]:
+        inp["errors"].append("знімків ladder Bybit не знайдено: (є) для Bybit-ноги — без даних")
     inp["paper_state"] = load_paper_state(db)
     inp["idea_cards"] = load_idea_cards()
     try:

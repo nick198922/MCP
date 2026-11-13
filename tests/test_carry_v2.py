@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 from carry_synth import H8, markets_a
-from test_carry_paper_engine import SLOTS, FixtureFeed, _drive, _grid
+from test_carry_paper_engine import SLOTS, FixtureFeed, _drive, _grid, _stopped_cycle
 from tradedesk.analytics.carry_rules import DECISION_DELAY_MS, carry_side_cost
 from tradedesk.analytics.carry_v2 import A_V2_DESCRIPTION, A_V2_N_CYCLES, A_V2_TAG, a_v2_shadow, leg_vanished, vanish_rule_ts
 from tradedesk.collector.carry_paper_engine import PARAMS_A, CarryParams, FeedData
@@ -145,6 +145,25 @@ class VanishFeed(FixtureFeed):
         d = data.markets[self.symbol]
         data.markets = {**data.markets, self.symbol: {**d, "funding": [e for e in d["funding"] if e["ts_ms"] < self.cut]}}
         return data
+
+
+async def test_vanish_feed_runs_on_a_stopped_book():
+    # Item 350: a stopped A book calls ``load(..., held_only=True)``; VanishFeed must accept it and pass it on.
+    store = Store(":memory:")
+    await store.init()
+    try:
+        mk = markets_a(days=110)
+        params = replace(PARAMS_A, slots=SLOTS, entry_apr=0.10)
+        times = _grid(min(d["funding"][0]["ts_ms"] for d in mk.values()), 10**15)
+        plain = FixtureFeed(mk, "A")
+        i = 0
+        while not await store.cp_positions("A", "open"):
+            await _drive(store, plain, params, [times[i]])
+            i += 1
+        sym = (await store.cp_positions("A", "open"))[0]["symbol"]
+        await _stopped_cycle(store, VanishFeed(mk, sym, cut=times[i] - DECISION_DELAY_MS), params, times[i])
+    finally:
+        await store.aclose()
 
 
 async def _book(tmp_path, vanish: bool) -> tuple[str, int, str | None, int]:

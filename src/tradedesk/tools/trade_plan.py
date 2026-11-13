@@ -23,6 +23,7 @@ from ..runtime import Runtime
 from ._util import (
     READ_ONLY,
     STORE_ERRORS,
+    clean_row_tags,
     drop_corrupt_rows,
     finite_float,
     finite_json,
@@ -135,7 +136,13 @@ def _sound(b: Builder, rows: list[dict[str, Any]]) -> list[tuple[dict[str, Any],
     pass."""
     views: list[tuple[dict[str, Any], dict[str, Any]]] = []
     bad: list[Any] = []
-    for p in drop_corrupt_rows(b, rows, "plan", PLAN_NUMS, required=("created_ts", "entry", "stop", "target")):
+    kept = drop_corrupt_rows(b, rows, "plan", PLAN_NUMS, required=("created_ts", "entry", "stop", "target"))
+    # Tags that are not a list of strings are shown as their string items (300 levels deep failed the MCP serialiser, a
+    # number or a nested list raised TypeError in summarize_plans, item 356); NaN / Infinity is skipped below as before.
+    _nonfinite, fixed = clean_row_tags(kept)
+    if fixed:
+        b.warn(f"{len(fixed)} stored plan rows had tags that were not a list of strings; shown as their string items; id {fixed[:10]}")
+    for p in kept:
         if p["entry"] <= 0 or p["entry"] == p["stop"] or (p["r_result"] is not None and abs(p["r_result"]) > MAX_ABS_R):
             bad.append(p["id"])
             continue

@@ -734,6 +734,11 @@ async def test_liquidation_jobs_get_their_stream_stats_in_system_health(state, t
         assert stream["failures"] == 4 and "keepalive" in stream["last_failure"]
         assert {"connects", "reconnects", "consecutive_failures", "last_message_ts", "last_row_ts"} <= set(stream)
         assert "clock" not in stream
+        # 2026-11-12 review: heartbeat replies refresh last_message_ts, so a fresh one is no proof of a live subscription.
+        async with Client(srv) as c:
+            desc = next(t.description for t in (await c.list_tools()).tools if t.name == "system_health")
+        assert "is a quiet market" not in desc
+        assert "silently stopped the subscription" in desc and "rejected subscribe is counted in failures" in desc
     finally:
         await sched.stop()
         await rt.aclose()

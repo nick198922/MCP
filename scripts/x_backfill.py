@@ -282,7 +282,7 @@ def backfill(
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("handles", nargs="+", help="X user names without @")
-    ap.add_argument("--since", type=date.fromisoformat, default=date.today() - timedelta(days=730))
+    ap.add_argument("--since", type=date.fromisoformat, default=datetime.now(UTC).date() - timedelta(days=730))
     ap.add_argument("--interval", type=float, default=5.5, help="seconds between requests (5.5 for an account never topped up)")
     ap.add_argument("--max-tweets", type=int, default=60_000, help="new tweets per handle before stopping (budget guard)")
     ap.add_argument("--no-photos", action="store_true")

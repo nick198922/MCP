@@ -28,7 +28,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "last_failure, last_message_ts (any frame, heartbeat replies included) and last_row_ts (last liquidation). "
             "Expected, not a fault: liquidations:bybit covers only BTC/ETH/SOL and has 30-60 min without a row several "
             "times a day in calm hours (server data 2026-11-10..12: none of 16 such pauses was explained by logged "
-            "stream failures); a fresh last_message_ts with an old last_row_ts is a quiet market. A few stream "
+            "stream failures). A fresh last_message_ts with an old last_row_ts most likely means a quiet market, but it "
+            "is not proof: heartbeat replies keep last_message_ts (and the hourly frames count) fresh even if the venue "
+            "silently stopped the subscription. A rejected subscribe is counted in failures, a silent loss is not seen "
+            "here, so a long silence while other venues keep logging liquidations deserves a check. A few stream "
             "failures an hour (keepalive timeout, handshake timeout, reset; often Bybit and OKX together) reconnect "
             "within about a minute each; a dead link shows as a stale last_message_ts or a growing consecutive_failures."
         ),

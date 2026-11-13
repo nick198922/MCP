@@ -12,7 +12,7 @@ from ..analytics.carry_report import closed_stats, cost_realism
 from ..collector.carry_paper_engine import ON_TIME_MS, PARAMS
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, r, store_ready
+from ._util import MAX_CELL_DEPTH, READ_ONLY, cap_cell_depth, r, store_ready
 
 PAPER_CARRY_WARNING = (
     "Forward PAPER books, local bookkeeping only: no order is sent. Positions are opened and closed by the collector engine "
@@ -47,15 +47,29 @@ def _rounded(d: dict[str, Any], nd: int = 5) -> dict[str, Any]:
     return {k: (r(v, nd) if isinstance(v, float) else _rounded(v, nd) if isinstance(v, dict) else v) for k, v in d.items()}
 
 
-async def book_view(rt: Runtime, key: str, now_ms: int, include_closed: bool) -> dict[str, Any]:
+def _capped(
+    b: Builder | None, key: str, rows: list[dict[str, Any]], what: str, col: str, id_col: str, as_dict: bool = True
+) -> list[dict[str, Any]]:
+    """`rows` with the JSON cell `col` nested deeper than MAX_CELL_DEPTH read as {} (or None), with a warning on `b`:
+    such a cycle payload, mark or closed trade reached the reply raw and 300 levels failed the MCP serialiser (item 358)."""
+    deep = cap_cell_depth(rows, col, id_col, as_dict)
+    if deep and b is not None:
+        shown = "read as {}" if as_dict else "left out"
+        b.warn(
+            f"paper book {key}: {len(deep)} stored {what} rows had {col} nested deeper than {MAX_CELL_DEPTH} levels; {shown}; {id_col} {deep[:10]}"
+        )
+    return rows
+
+
+async def book_view(rt: Runtime, key: str, now_ms: int, include_closed: bool, b: Builder | None = None) -> dict[str, Any]:
     store = rt.store
     assert store is not None
     p = PARAMS[key]
-    cycles = await store.cp_cycles(key, 1000)
+    cycles = _capped(b, key, await store.cp_cycles(key, 1000), "cycle", "payload", "cycle_ts")
     done = [c for c in cycles if c["status"] == "done"]
     last = done[0] if done else None
     marks: dict[str, dict[str, Any]] = {}
-    for m in await store.cp_latest_marks(key):  # one row per trade: the latest by id
+    for m in _capped(b, key, await store.cp_latest_marks(key), "mark", "payload", "id"):  # one row per trade: the latest by id
         marks[m["trade_id"]] = {**m["payload"], "cycle_ts": m["cycle_ts"]}
     open_rows = await store.cp_positions(key, "open")
     open_view = []
@@ -74,9 +88,12 @@ async def book_view(rt: Runtime, key: str, now_ms: int, include_closed: bool) ->
         if mk:
             view["mark"] = _rounded({k: mk[k] for k in MARK_KEYS if k in mk})
         open_view.append(view)
-    closed_rows = await store.cp_positions(key, "closed", limit=5000)
+    closed_rows = _capped(
+        b, key, await store.cp_positions(key, "closed", limit=5000), "closed position", "trade", "trade_id", as_dict=False
+    )
     trades = [x["trade"] for x in closed_rows if x.get("trade")]
-    sides = [s["payload"] for s in await store.cp_logs(key, "side", limit=None)]  # cost realism is over every side
+    # cost realism is over every side
+    sides = [s["payload"] for s in _capped(b, key, await store.cp_logs(key, "side", limit=None), "side", "payload", "id")]
     # A position opened in the last cycle has no mark yet, but its entry costs are already paid: count -fees x notional.
     unrealised = sum(
         marks[x["trade_id"]].get("pnl_usd", 0.0) if x["trade_id"] in marks else -float(x["state"].get("fees") or 0.0) * x["slot_notional"]
@@ -173,7 +190,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
         out: dict[str, Any] = {}
         for key in ("A", "B") if strategy == "both" else (strategy,):
             try:
-                out[key] = await book_view(rt, key, now_ms, include_closed)
+                out[key] = await book_view(rt, key, now_ms, include_closed, b)
             except Exception as e:  # noqa: BLE001 - a store error must not escape the tool
                 b.miss(f"paper_carry:{key}", "store", "backend_error", f"{type(e).__name__}: {e}")
         return b.build(out or None, ok=bool(out))

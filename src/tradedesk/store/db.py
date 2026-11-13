@@ -896,7 +896,7 @@ class Store:
             d = dict(r)
             try:
                 d["payload"] = json.loads(d["payload"])
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, RecursionError):  # RecursionError: ~10000 levels failed every alerts tick (item 358)
                 d["payload"] = None
             out.append(d)
         return out
@@ -1195,16 +1195,13 @@ class Store:
         return {r[0] for r in await cur.fetchall()}
 
     async def radar_list(self, asset: str, *, since: str = "", limit: int = 1000) -> list[dict[str, Any]]:
-        """Rows of an asset on or after ``since``, oldest first; ``smile`` and ``expiries`` decoded from JSON."""
+        """Rows of an asset on or after ``since``, oldest first; ``smile`` and ``expiries`` decoded from JSON (None when a
+        cell is not valid JSON or nests too deep to parse: one such row hid the whole archive from the snapshot, item 358)."""
         cur = await self.conn.execute(
             "SELECT * FROM (SELECT * FROM radar_surface WHERE asset = ? AND day >= ? ORDER BY day DESC LIMIT ?) ORDER BY day",
             (asset, since, limit),
         )
-        rows = [dict(r) for r in await cur.fetchall()]
-        for row in rows:
-            row["smile"] = json.loads(row["smile"])
-            row["expiries"] = json.loads(row["expiries"])
-        return rows
+        return [_parse_json_cols(dict(r), ("smile", "expiries")) for r in await cur.fetchall()]
 
     # ---------- cycle_regime_log (daily cycle regime journal, IDEA-20261028-btc-cycle-regime-gauge step 2) ----------
 
@@ -1592,7 +1589,7 @@ class Store:
             if isinstance(m, str):
                 try:
                     d["meta"] = json.loads(m)
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, RecursionError):  # RecursionError: ~10000 levels raised out of events_* (item 358)
                     pass
             out.append(d)
         return out
@@ -1852,7 +1849,7 @@ class Store:
             d = dict(r)
             try:
                 d["payload"] = json.loads(d["payload"])
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, RecursionError):  # RecursionError: ~10000 levels raised out of alerts_recent (item 358)
                 pass
             d["delivered"] = bool(d["delivered"])
             out.append(d)

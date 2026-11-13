@@ -21,9 +21,11 @@ from ..runtime import Runtime
 from ._util import (
     MAX_BAR_PRICE,
     MAX_BAR_TS_MS,
+    MAX_CELL_DEPTH,
     READ_ONLY,
     STORE_ERRORS,
     bar_rows,
+    cap_cell_depth,
     drop_corrupt_rows,
     first_nonfinite,
     r,
@@ -955,4 +957,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
         if stored and not rows:  # all malformed must not read as "no alerts fired" (empty history stays ok=true)
             b.miss("alerts", "store", "data_unavailable", f"all {stored} stored alert rows are malformed")
             return b.build({"count": 0, "alerts": []}, ok=False)
+        deep = cap_cell_depth(rows, "payload")  # 300 levels failed the MCP serialiser of the whole reply (item 358)
+        if deep:
+            b.warn(f"{len(deep)} stored alert rows had a payload nested deeper than {MAX_CELL_DEPTH} levels; shown as null; id {deep[:10]}")
         return b.build({"count": len(rows), "alerts": rows})

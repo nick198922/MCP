@@ -22,7 +22,18 @@ from ..analytics.event_study import MEASURES
 from ..analytics.event_study import event_study as _event_study
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, STORE_ERRORS, drop_corrupt_rows, r, shown_int, store_failed, store_num, store_ready
+from ._util import (
+    MAX_CELL_DEPTH,
+    READ_ONLY,
+    STORE_ERRORS,
+    cap_cell_depth,
+    drop_corrupt_rows,
+    r,
+    shown_int,
+    store_failed,
+    store_num,
+    store_ready,
+)
 from ._util import finite_json as _finite_json
 
 # 2000-01-01T00:00:00Z in unix milliseconds: an events_add ts_ms below it is almost certainly unix seconds.
@@ -169,6 +180,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
             # another writer: the row is skipped with a warning; an all-malformed window is not "no events".
             stored = len(rows)
             rows = drop_corrupt_rows(b, rows, "event", ("ts",), required=("ts",))
+            deep = cap_cell_depth(rows, "meta")  # 300 levels failed the MCP serialiser of the whole reply (item 358)
+            if deep:
+                b.warn(f"{len(deep)} stored event rows had meta nested deeper than {MAX_CELL_DEPTH} levels; shown as null; id {deep[:10]}")
             nonfinite = [e.get("id") for e in rows if not _finite_json(e.get("meta"))]
             if nonfinite:
                 b.warn(f"{len(nonfinite)} stored event rows skipped: NaN / Infinity in meta; id {nonfinite[:10]}")

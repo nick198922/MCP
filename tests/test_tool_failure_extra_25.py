@@ -53,7 +53,10 @@ def test_json_too_deep_counts_container_levels():
     assert not json_too_deep([], limit=1) and json_too_deep([[]], limit=1)
     assert not json_too_deep({"a": [1, {"b": 2}]}, limit=3) and json_too_deep({"a": [1, {"b": {}}]}, limit=3)
     assert json_too_deep(json.loads(_deep(MAX_CELL_DEPTH + 1))) and not json_too_deep(json.loads(_deep(MAX_CELL_DEPTH)))
-    assert json_too_deep(json.loads(_deep(5000)))  # iterative: no RecursionError
+    value: list = []
+    for _ in range(4999):  # built by a loop: json.loads would hit the 3.11 recursion limit
+        value = [value]
+    assert json_too_deep(value)  # iterative: no RecursionError
 
 
 # ---------- events_list ----------

@@ -461,6 +461,8 @@ async def test_exchange_interval_change_is_an_event(store):
     await _drive(store, Changed4(mk, "A"), params, [times[i + 1]])
     ev = [e["payload"] for e in await store.cp_logs("A", "event") if e["payload"]["type"] == "funding_interval_change"]
     assert ev and ev[0]["old"] == 8.0 and ev[0]["new"] == 4.0
+    for n, f in enumerate((Changed(mk, "A"), Changed4(mk, "A"))):  # the same overrides on a stopped book
+        await _stopped_cycle(store, f, params, times[i + 2 + n])
 
 
 async def test_interval_change_across_a_skipped_cycle_is_an_event(store):
@@ -493,6 +495,7 @@ async def test_interval_change_across_a_skipped_cycle_is_an_event(store):
     await _drive(store, reporting(4.0), params, [times[i + 2]])
     ev = [e for e in await store.cp_logs("A", "event") if e["payload"]["type"] == "funding_interval_change"]
     assert [(e["cycle_ts"], e["payload"]["old"], e["payload"]["new"]) for e in ev] == [(times[i + 2] - DECISION_DELAY_MS, 8.0, 4.0)]
+    await _stopped_cycle(store, reporting(4.0), params, times[i + 3])  # the same override on a stopped book
 
 
 class DroppingFeed(FixtureFeed):
@@ -889,10 +892,16 @@ async def test_stopped_a_runs_with_fixture_feed_subclasses(store):
         MidWindowHoleFeed(mk, 8),
     ]
     for n, f in enumerate(feeds):
-        t = times[i + n]
-        out = await run_cycle(store, f, params, t - DECISION_DELAY_MS, clock=lambda t=t: t, entries_stopped=ENTRIES_STOPPED["A"])
-        assert out["status"] == "done" and out["opened"] == [], (type(f).__name__, out)
-        assert f.held_only_seen == [True], type(f).__name__  # the flag reached FixtureFeed.load through the override
+        await _stopped_cycle(store, f, params, times[i + n])
+
+
+async def _stopped_cycle(store: Store, feed: FixtureFeed, params: CarryParams, t: int) -> None:
+    """One cycle of a stopped A book at decision time ``t`` on a fresh ``feed`` (a FixtureFeed subclass). Item 350
+    (review of item 346, note 4): also run on the inline feeds of the interval tests here and on VanishFeed
+    (test_carry_v2), so every override of ``load`` is checked to accept ``held_only`` and pass it on."""
+    out = await run_cycle(store, feed, params, t - DECISION_DELAY_MS, clock=lambda: t, entries_stopped=ENTRIES_STOPPED["A"])
+    assert out["status"] == "done" and out["opened"] == [], (type(feed).__name__, out)
+    assert feed.held_only_seen == [True], type(feed).__name__  # the flag reached FixtureFeed.load through the override
 
 
 async def test_scheduler_job_stops_a_entries_and_leaves_b_alone(monkeypatch):

@@ -529,7 +529,8 @@ def _carry_entries(
         ]
         out.append(
             {
-                "symbol": sym, "opened_ts": int(q["opened_ts"]), "legs": [x.get("payload") or {} for x in rows], "cycle": cyc,
+                "trade_id": str(q["trade_id"]), "symbol": sym, "opened_ts": int(q["opened_ts"]),
+                "legs": [x.get("payload") or {} for x in rows], "cycle": cyc,
                 "held": [c for _, c in pairs], "held_ts": [ts for ts, _ in pairs],
             }
         )  # fmt: skip
@@ -559,9 +560,10 @@ def _held_gap(strategy: str, rows: Sequence[Mapping[str, Any]]) -> float | None:
 # descriptive only: it names the cause of an (e) gap failure in the row's notes and changes no verdict.
 E_FROZEN_ROWS = 6
 E_FROZEN_LEGS = {"A": ("perp", "spot"), "B": ("price_a", "price_b")}
-# Frozen legs whose delisting was checked against the venue's own bars (the note names the check)
+# Frozen legs whose delisting was checked against the venue's own bars (the note names the check), keyed by the one
+# trade and leg that were checked (item 368): a later entry into the same symbol is not covered by this check
 E_CONFIRMED_DELISTINGS = {
-    "MITO/USDT:USDT": (
+    ("A:MITO/USDT:USDT:1792684800000", "perp"): (
         "делістинг перевірено (Binance Vision: останній 4h-бар перпа з обсягом 23.10 08:00–12:00 UTC, далі обсяг 0 і ціна "
         "0.00919; останній funding обох бірж 23.10 08:00; верифікація 2026-11-13-carry-mito-frozen-price); P&L угоди (−21 % "
         "номіналу) пораховано на завмерлій ціні перпа, і майже весь він — спот без хеджу після зупинки перпа"
@@ -652,7 +654,7 @@ def carry_universe(strategy: str, entries: Sequence[Mapping[str, Any]]) -> dict[
         for w in why:
             fails.setdefault(w, []).append(sym)
         if "gap" in why and (fr := _frozen_leg(strategy, e.get("held") or [], e.get("held_ts") or [])) is not None:
-            frozen.append(fr | {"symbol": sym, "gap": med})
+            frozen.append(fr | {"symbol": sym, "trade_id": e.get("trade_id"), "gap": med})
         if why:  # a violation counts whatever else is missing (an excluded symbol has no candidate row)
             checked += 1
         elif cand is None or cut:
@@ -680,18 +682,25 @@ def carry_universe(strategy: str, entries: Sequence[Mapping[str, Any]]) -> dict[
 
 
 def frozen_leg_note(fr: Mapping[str, Any]) -> str:
-    """The row note naming a frozen leg as the cause of an (e) gap failure (item 367); the verdict stays as registered."""
+    """The row note naming a frozen leg as the cause of an (e) gap failure (item 367); the verdict stays as registered.
+    Only a checked delisting (``E_CONFIRMED_DELISTINGS``, this trade and leg) rules out a ticker collision; any other
+    frozen leg is a possible cause only (item 368)."""
     when = "—" if fr.get("from_ts") is None else _ymd_s(int(fr["from_ts"]) // 1000)
     before = fr.get("gap_before")
+    confirmed = E_CONFIRMED_DELISTINGS.get((str(fr.get("trade_id")), str(fr["leg"])))
+    cause = (
+        "ознака завмерлого перпа (делістинг / зупинка торгів, біржа далі публікує бари з нульовим обсягом), а не колізії тікерів"
+        if confirmed is not None
+        else f"можлива ознака завмерлої ноги {fr['leg']}; колізію не виключено, перевірити обсяг барів"
+    )
     txt = (
         f"(е) {fr['symbol']}: ціна ноги {fr['leg']} незмінна {fr['rows']} рядків кандидата поспіль з {when} ({fr['value']:g}) — "
-        f"ознака завмерлого перпа (делістинг / зупинка торгів, біржа далі публікує бари з нульовим обсягом), а не колізії "
-        f"тікерів; |медіана розриву| за утримання {fr['gap'] * 100:.2f} %, до завмирання "
+        f"{cause}; |медіана розриву| за утримання {fr['gap'] * 100:.2f} %, до завмирання "
         f"{'— (менше 3 рядків)' if before is None else f'{before * 100:.2f} %'} (поріг 0.5 %)"
     )
-    if (confirmed := E_CONFIRMED_DELISTINGS.get(str(fr["symbol"]))) is not None:
-        txt += f"; {confirmed}"
-    return txt + "; вердикт (е) за реєстрацією не змінюється, це лише названа причина"
+    if confirmed is not None:
+        return txt + f"; {confirmed}; вердикт (е) за реєстрацією не змінюється, це лише названа причина"
+    return txt + "; вердикт (е) за реєстрацією не змінюється, це лише можлива причина"
 
 
 def _bybit_id(symbol: str) -> str:

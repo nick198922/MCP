@@ -212,6 +212,263 @@ def _cycles(n: int, ok: bool = True):
     return [{"cycle_ts": T + k * 8 * H, "status": "done", "payload": {"on_time": ok, "complete": True}} for k in range(n)]
 
 
+def _leg(tid: str, leg: str, venue: str, symbol: str, side: str, *, mult: int = 1, mid: float = 1.0, depth: float = 5000.0):
+    """An open side row as the engine writes it (``_side_rows`` + ``leg_execution``), the fields (е) / (є) read."""
+    p = {
+        "trade_id": tid, "event": "open", "leg": leg, "venue": venue, "symbol": symbol, "contract_multiplier": mult, "side": side,
+        "notional_usd": 2000.0, "mid": mid, "depth_usd": {"0.5%": {"bid": depth, "ask": depth}}, "actual_cost": 0.002,
+        "model_cost": 0.0015, "spread_bps": 3.0,
+    }  # fmt: skip
+    return {"cycle_ts": T, "kind": "side", "trade_id": tid, "payload": p}
+
+
+def _held_row(strategy: str, sym: str, gap: float) -> dict:
+    """A candidate row as the engine writes it every cycle while the position is open (``_candidates``): the leg prices."""
+    if strategy == "A":
+        return {"symbol": sym, "spot": 2.0, "perp": 2.0 * (1 + gap), "open": True}
+    return {"symbol": sym, "price_a": 2.0 * (1 + gap), "price_b": 2.0, "gap": gap, "open": True}
+
+
+def _entries(strategy: str, tids, *, depth=None, mids=None, spot=None, excluded=(), interval: float | None = 8.0, gaps=None, rows: int = 5):
+    """Open side rows of positions ``tids`` (``_pos``: symbol <tid>/USDT:USDT, opened at T) and 40 cycles whose entry
+    cycle T lists them as candidates. ``depth``: tid -> USD within ±0.5 % (A: both legs; B: (Binance, Bybit));
+    ``mids``: tid -> (first leg mid, second leg mid); ``spot`` (A): tid -> (spot symbol, multiplier); ``gaps``: tid -> the
+    leg price gap of its candidate rows (default 0.001; a list: per row) in the first ``rows`` cycles (entry included)."""
+    depth, mids, spot, gaps = depth or {}, mids or {}, spot or {}, gaps or {}
+    sides, cands = [], []
+    for tid in tids:
+        sym = f"{tid}/USDT:USDT"
+        m1, m2 = mids.get(tid, (1.0, 1.0))
+        if strategy == "A":
+            d = depth.get(tid, 5000.0)
+            spot_sym, mult = spot.get(tid, (f"{tid}/USDT", 1))
+            sides += [
+                _leg(tid, "spot", "binance", spot_sym, "buy", mult=mult, mid=m1, depth=d),
+                _leg(tid, "perp", "binanceusdm", sym, "sell", mid=m2, depth=d),
+            ]
+            cands.append({"symbol": sym, "interval_hours": interval})
+        else:
+            da, db = depth.get(tid, (5000.0, 5000.0))
+            sides += [
+                _leg(tid, "short", "binanceusdm", sym, "sell", mid=m1, depth=da),
+                _leg(tid, "long", "bybit", sym, "buy", mid=m2, depth=db),
+            ]
+            cands.append({"symbol": sym, "interval_hours": [interval, interval]})
+    cyc = _cycles(40)
+    for k in range(rows):
+        held = [_held_row(strategy, f"{t}/USDT:USDT", g[k] if isinstance(g := gaps.get(t, 0.001), list) else g) for t in tids]
+        if k == 0:
+            held = [c | h | {"open": False} for c, h in zip(cands, held, strict=True)]  # the entry cycle: not open yet
+        cyc[k]["payload"] = {**cyc[k]["payload"], "candidates": held}
+    counts: dict[str, int] = {}
+    for x in excluded:
+        counts[x["reason"]] = counts.get(x["reason"], 0) + 1
+    cyc[0]["payload"] |= {"candidates": cyc[0]["payload"].get("candidates", cands), "excluded": list(excluded), "excluded_counts": counts}
+    return sides, cyc
+
+
+LADDER_1017 = cp._ms(2026, 10, 17, 13, 50)  # the first Bybit ladder snapshot, before the entry cycle T (18.10)
+
+
+def _ladder(tids, limit: float | None = 100_000.0, *, taken: int = LADDER_1017, date_: str = "2026-10-17"):
+    return {"date": date_, "taken_ms": taken, "limits": {f"{t}USDT": limit for t in tids}}
+
+
+def _crit_of(row, cid):
+    return next(c for c in row["criteria"] if c["id"] == cid)
+
+
+def test_carry_e_tradfi_in_the_journal_fails_and_names_the_symbol():
+    """Item 365, (е), a guard against future feed changes: today an excluded symbol never reaches the engine, so a state
+    with the symbol both in the entry cycle's candidates and its exclusion journal is not one the engine writes."""
+    tids = ["X", "Y"]
+    pos = [_pos(t) for t in tids]
+    sides, cyc = _entries("A", tids)
+    logs = {"side": sides, "mark": [], "close": [], "event": []}
+    clean = cp.carry_forward("A", pos, logs, cyc, BENCH["A"]["bench"], NOW)
+    e = _crit_of(clean, "е")
+    assert e["status"] == cp.PASS and "перевірено входів 2 з 2, порушень: 0" in e["text"] and "symbols" not in e
+    assert "TradFi незалежно НЕ перевірено" in e["text"] and "найбільша |медіана розриву цін ніг| за утримання 0.10 %" in e["text"]
+    assert "(е) перевірено частково: TradFi — лише логіка самого фіду, незалежно не перевірено" in clean["notes"]
+    sides, cyc = _entries(
+        "A", tids, excluded=[{"symbol": "Y/USDT:USDT", "reason": "tradfi"}, {"symbol": "Z/USDT:USDT", "reason": "no_spot"}]
+    )
+    r = cp.carry_forward("A", pos, {**logs, "side": sides}, cyc, BENCH["A"]["bench"], NOW)
+    e = _crit_of(r, "е")
+    assert e["status"] == cp.FAIL and "TradFi-перп у журналі виключень фіду (tradfi) — Y/USDT:USDT" in e["text"]
+    assert r["verdict"] == cp.NO and "(е)" in next(x for x in r["notes"] if x.startswith("не пройдено"))
+    assert any(x.startswith("(е) → баг рушія") and "Y/USDT:USDT" in x for x in r["notes"])
+    assert not any(x.startswith("(е) перевірено частково") for x in r["notes"])
+
+
+def test_carry_e_excluded_entry_without_a_candidate_row_fails():
+    """Review item 2: the state a real entry that bypassed the feed would leave (the engine writes no candidate row for a
+    symbol outside its markets) is a violation, not an unchecked entry."""
+    sides, cyc = _entries("A", ["X", "Y"], excluded=[{"symbol": "Y/USDT:USDT", "reason": "tradfi"}])
+    for c in cyc:
+        if "candidates" in c["payload"]:
+            c["payload"]["candidates"] = [x for x in c["payload"]["candidates"] if x["symbol"] != "Y/USDT:USDT"]
+    pos = [_pos("X"), _pos("Y")]
+    e = _crit_of(cp.carry_forward("A", pos, {"side": sides, "mark": [], "close": [], "event": []}, cyc, BENCH["A"]["bench"], NOW), "е")
+    assert e["status"] == cp.FAIL and "перевірено входів 2 з 2" in e["text"] and "(tradfi) — Y/USDT:USDT" in e["text"]
+    # no side rows either: the entry cycle is found by decision_ts
+    cyc[0]["payload"]["decision_ts"] = T
+    only_x = [x for x in sides if x["trade_id"] == "X"]
+    e = _crit_of(cp.carry_forward("A", pos, {"side": only_x, "mark": [], "close": [], "event": []}, cyc, BENCH["A"]["bench"], NOW), "е")
+    assert e["status"] == cp.FAIL and "(tradfi) — Y/USDT:USDT" in e["text"]
+
+
+def test_carry_e_registered_median_gap_over_the_holding_period():
+    """Review items 1 and 3: the registered collision metric, |median leg price gap| over the candidate rows from entry
+    to close > 0.005 (signed median, as the backtest's ``abs(median(ratios) - 1)``), for B (``gap``) and A (``perp`` /
+    ``spot``); fewer than 3 rows leave the entry unchecked."""
+    for s in ("A", "B"):
+        pos = [dict(_pos(t), strategy=s) for t in ("X", "Y")]
+
+        def e_of(gaps, rows=5, s=s, pos=pos):
+            sides, cyc = _entries(s, ["X", "Y"], gaps=gaps, rows=rows)
+            return _crit_of(
+                cp.carry_forward(s, pos, {"side": sides, "mark": [], "close": [], "event": []}, cyc, BENCH[s]["bench"], NOW), "е"
+            )
+
+        e = e_of({"Y": -0.006})
+        assert e["status"] == cp.FAIL and "|медіана розриву цін ніг| за утримання > 0.5 % (колізія тікерів" in e["text"]
+        assert "реєстрації) — Y/USDT:USDT" in e["text"] and "найбільша |медіана розриву цін ніг| за утримання 0.60 %" in e["text"]
+        e = e_of({"Y": 0.004})
+        assert e["status"] == cp.PASS and "перевірено входів 2 з 2, порушень: 0" in e["text"]
+        # a gap that flips sign around zero is no collision: signed median 0.001 although every |gap| is >= 0.006
+        e = e_of({"Y": [0.006, -0.006, 0.001, 0.008, -0.007]})
+        assert e["status"] == cp.PASS and "за утримання 0.10 %" in e["text"]
+        e = e_of({"Y": 0.006}, rows=2)
+        assert e["status"] == cp.UNVERIFIABLE and "з < 3 рядків кандидата за утримання 2" in e["text"]
+    # rows after the position's close do not count: closed after the entry cycle + 1, only 2 rows of a wider gap
+    sides, cyc = _entries("B", ["X"], gaps={"X": 0.006}, rows=10)
+    closed = dict(_pos("X", closed=T + 8 * H + 1), strategy="B")
+    e = _crit_of(cp.carry_forward("B", [closed], {"side": sides, "mark": [], "close": [], "event": []}, cyc, BENCH["B"]["bench"], NOW), "е")
+    assert e["status"] == cp.UNVERIFIABLE and "з < 3 рядків кандидата за утримання 1" in e["text"]  # 1 entry, 2 rows
+
+
+def test_carry_e_collision_multiplier_and_interval():
+    b = [dict(_pos(t), strategy="B") for t in ("X", "Y")]
+    sides, cyc = _entries("B", ["X", "Y"], excluded=[{"symbol": "X/USDT:USDT", "reason": "collision"}])  # guard, as above
+    e = _crit_of(cp.carry_forward("B", b, {"side": sides, "mark": [], "close": [], "event": []}, cyc, BENCH["B"]["bench"], NOW), "е")
+    assert e["status"] == cp.FAIL and "колізія в журналі виключень фіду (collision / gap) — X/USDT:USDT" in e["text"]
+    sides, cyc = _entries("B", ["X", "Y"], mids={"Y": (1.0, 3.0)})  # another asset behind one ticker: mids 3x apart
+    e = _crit_of(cp.carry_forward("B", b, {"side": sides, "mark": [], "close": [], "event": []}, cyc, BENCH["B"]["bench"], NOW), "е")
+    assert e["status"] == cp.FAIL and "розходяться" in e["text"] and "Y/USDT:USDT" in e["text"]
+    # A: a 1000x perp whose spot leg is PEPE x 1000 is clean; the same perp mapped to spot x 1 is an unscaled multiplier
+    pepe = [_pos("1000PEPE")]
+    ok_sides, cyc = _entries("A", ["1000PEPE"], spot={"1000PEPE": ("PEPE/USDT", 1000)}, mids={"1000PEPE": (0.00001, 0.01)})
+    logs = {"side": ok_sides, "mark": [], "close": [], "event": []}
+    e = _crit_of(cp.carry_forward("A", pepe, logs, cyc, BENCH["A"]["bench"], NOW), "е")
+    assert e["status"] == cp.PASS and "1.5x для mid ніг на вході, найбільший розрив 0.0 %" in e["text"]
+    bad, cyc = _entries("A", ["1000PEPE"], spot={"1000PEPE": ("PEPE/USDT", 1)}, mids={"1000PEPE": (0.00001, 0.01)})
+    e = _crit_of(cp.carry_forward("A", pepe, {**logs, "side": bad}, cyc, BENCH["A"]["bench"], NOW), "е")
+    assert e["status"] == cp.FAIL and "множник 1000…" in e["text"] and "розходяться" in e["text"]
+    # an irregular funding interval fails; an unknown one is only counted (the engine's APR is per time)
+    sides, cyc = _entries("A", ["X"], interval=24.0)
+    e = _crit_of(cp.carry_forward("A", [_pos("X")], {**logs, "side": sides}, cyc, BENCH["A"]["bench"], NOW), "е")
+    assert e["status"] == cp.FAIL and "інтервал funding" in e["text"]
+    sides, cyc = _entries("A", ["X"], interval=None)
+    e = _crit_of(cp.carry_forward("A", [_pos("X")], {**logs, "side": sides}, cyc, BENCH["A"]["bench"], NOW), "е")
+    assert e["status"] == cp.PASS and "інтервал невідомий 1 (описово)" in e["text"]
+
+
+def test_carry_e_truncated_exclusion_list_leaves_the_entry_unchecked():
+    sides, cyc = _entries("A", ["X"])
+    cyc[0]["payload"]["excluded_counts"] = {"no_spot": 600}  # the engine keeps the first 500 only; X may be among the cut
+    e = _crit_of(
+        cp.carry_forward("A", [_pos("X")], {"side": sides, "mark": [], "close": [], "event": []}, cyc, BENCH["A"]["bench"], NOW), "е"
+    )
+    assert e["status"] == cp.UNVERIFIABLE and "з обрізаним списком виключень 1" in e["text"]
+
+
+def test_carry_ye_thin_book_in_2_of_10_entries_fails():
+    """Item 365, (є): 2 of 10 entries with the Binance leg's book within ±0.5 % below the $2000 notional -> 80 % < 90 %."""
+    tids = [f"P{i}" for i in range(10)]
+    b = [dict(_pos(t), strategy="B") for t in tids]
+    sides, cyc = _entries("B", tids, depth={"P3": (1500.0, 5000.0), "P7": (1999.0, 5000.0)})
+    logs = {"side": sides, "mark": [], "close": [], "event": []}
+    r = cp.carry_forward("B", b, logs, cyc, BENCH["B"]["bench"], NOW, ladder=[_ladder(tids)])
+    ye = _crit_of(r, "є")
+    assert ye["status"] == cp.FAIL and "номінал вміщується 8 (80 %" in ye["text"] and "мілкіша за номінал 2" in ye["text"]
+    assert r["verdict"] == cp.NO and any(x.startswith("(є) → номінал ноги") for x in r["notes"])
+    sides, cyc = _entries("B", tids, depth={"P3": (5000.0, 1500.0)})  # one thin Bybit book of 10: 90 % passes
+    ye = _crit_of(cp.carry_forward("B", b, {**logs, "side": sides}, cyc, BENCH["B"]["bench"], NOW, ladder=[_ladder(tids)]), "є")
+    assert ye["status"] == cp.PASS and "номінал вміщується 9 (90 %" in ye["text"]
+    a = [_pos(t) for t in tids]  # A: both legs Binance, depth only, no ladder needed
+    sides, cyc = _entries("A", tids, depth={"P1": 1000.0, "P2": 1000.0})
+    ye = _crit_of(cp.carry_forward("A", a, {**logs, "side": sides}, cyc, BENCH["A"]["bench"], NOW), "є")
+    assert ye["status"] == cp.FAIL and "без даних 0" in ye["text"]
+
+
+def test_carry_ye_bybit_leg_over_the_ladder_limit_fails():
+    tids = [f"P{i}" for i in range(10)]
+    b = [dict(_pos(t), strategy="B") for t in tids]
+    sides, cyc = _entries("B", tids)
+    logs = {"side": sides, "mark": [], "close": [], "event": []}
+    low = [_ladder(tids, 1_000.0)]  # the largest 2x position below the $2000 leg
+    ye = _crit_of(cp.carry_forward("B", b, logs, cyc, BENCH["B"]["bench"], NOW, ladder=low), "є")
+    assert ye["status"] == cp.FAIL and "понад ліміт Bybit для 2x 10" in ye["text"] and "2026-10-17 — 10" in ye["text"]
+    none_2x = [_ladder(tids, None)]  # no tier allows 2x
+    assert _crit_of(cp.carry_forward("B", b, logs, cyc, BENCH["B"]["bench"], NOW, ladder=none_2x), "є")["status"] == cp.FAIL
+    # the nearest snapshot before the entry counts, a later one does not; one after the report date is never read
+    later = _ladder(tids, 1_000.0, taken=cp._ms(2026, 10, 25), date_="2026-10-25")
+    future = _ladder(tids, 1_000.0, taken=NOW + DAY, date_="2026-11-03")
+    ye = _crit_of(cp.carry_forward("B", b, logs, cyc, BENCH["B"]["bench"], NOW, ladder=[future, later, _ladder(tids)]), "є")
+    assert ye["status"] == cp.PASS and "2026-10-17 — 10" in ye["text"] and "2026-10-25" not in ye["text"]
+    # entries before the first snapshot are checked against it, flagged
+    ye = _crit_of(cp.carry_forward("B", b, logs, cyc, BENCH["B"]["bench"], NOW, ladder=[later]), "є")
+    assert ye["status"] == cp.FAIL and "до першого знімка, за першим: 10" in ye["text"]
+    # a symbol absent from the snapshot (or no snapshot at all): the entry has no data, so < 10 -> ◯
+    ye = _crit_of(cp.carry_forward("B", b, logs, cyc, BENCH["B"]["bench"], NOW, ladder=[_ladder(tids[:9])]), "є")
+    assert ye["status"] == cp.UNVERIFIABLE and "входів з даними 9 з 10" in ye["text"]
+    ye = _crit_of(cp.carry_forward("B", b, logs, cyc, BENCH["B"]["bench"], NOW), "є")
+    assert ye["status"] == cp.UNVERIFIABLE and "знімків ladder Bybit до дати звіту немає" in ye["text"]
+
+
+def test_carry_e_ye_without_entries_are_unverifiable():
+    for s in ("A", "B"):
+        r = cp.carry_forward(s, [], {"side": [], "mark": [], "close": [], "event": []}, _cycles(40), BENCH[s]["bench"], NOW)
+        e, ye = _crit_of(r, "е"), _crit_of(r, "є")
+        assert e["status"] == ye["status"] == cp.UNVERIFIABLE and "мінімум 1 вхід" in e["text"] and "мінімум 10 входів" in ye["text"]
+        assert r["verdict"] == cp.EARLY and r["metric_name"] == "критерії (б)–(є) реєстрації"
+        assert _crit_of(r, "а")["status"] == cp.NOT_HERE
+
+
+def test_carry_b_row_notes_the_skipped_weekly_ladder_snapshots():
+    tids = [f"P{i}" for i in range(10)]
+    sides, cyc = _entries("B", tids)
+    logs = {"side": sides, "mark": [], "close": [], "event": []}
+    snaps = [_ladder(tids), _ladder(tids, taken=cp._ms(2026, 11, 1), date_="2026-11-01")]
+    b = cp.carry_forward("B", [dict(_pos(t), strategy="B") for t in tids], logs, cyc, BENCH["B"]["bench"], NOW, ladder=snaps)
+    note = next(x for x in b["notes"] if x.startswith("(є): входи до"))
+    assert "входи до 2026-11-01 (дата першого нового знімка) звіряються зі знімком ladder 2026-10-17" in note
+    assert "щотижневі знімки" in note and "пропущено" in note
+    a = cp.carry_forward("A", [_pos(t) for t in tids], logs, cyc, BENCH["A"]["bench"], NOW, ladder=snaps)
+    assert not any(x.startswith("(є): входи до") for x in a["notes"])  # A has no Bybit leg
+    weekly = [_ladder(tids), _ladder(tids, taken=LADDER_1017 + 7 * DAY, date_="2026-10-24")]
+    assert cp.ladder_note(weekly, LADDER_1017 + 14 * DAY) is None
+    stale = cp.ladder_note(weekly, NOW)  # review item 4: the last snapshot 24.10 is 9 days old on 02.11
+    assert stale.startswith("(є): останній знімок ladder 2026-10-24 старший за тиждень") and "на чекпоінт" in stale
+    assert cp.ladder_note([], NOW) is None
+
+
+def test_script_loads_the_ladder_snapshots(tmp_path):
+    snaps = script.load_ladder()  # the repository's own snapshots, 17.10 and 13.11 (item 365)
+    dates = [s["date"] for s in snaps]
+    assert dates[:2] == ["2026-10-17", "2026-11-13"] and snaps[0]["taken_ms"] == cp._ms(2026, 10, 17, 13, 50) + 29_000
+    assert all(isinstance(v, float) for v in snaps[1]["limits"].values()) and len(snaps[1]["limits"]) > 800
+    (tmp_path / "2026-11-20-bybit.json").write_text("{not json", encoding="utf-8")
+    (tmp_path / "2026-11-21-bybit.json").write_text(
+        json.dumps({"taken_utc": "2026-11-21T10:00:00Z", "symbols": {"XUSDT": {"max_position_usd": 5e5}}}), encoding="utf-8"
+    )
+    errors: list[str] = []
+    got = script.load_ladder(tmp_path, errors)
+    assert got == [{"date": "2026-11-21", "taken_ms": cp._ms(2026, 11, 21, 10), "limits": {"XUSDT": 5e5}}]
+    assert len(errors) == 1 and "2026-11-20-bybit.json" in errors[0]
+
+
 def test_carry_a_g_event_gives_no_and_other_criteria_wait():
     pos = [_pos("X"), _pos("Y", closed=T + 10 * DAY)]
     marks = [_mark("X", 1, runup=0.1), _mark("X", 2, runup=0.6)]  # < 0.25 -> >= 0.50 between two cycles
@@ -234,7 +491,13 @@ def test_carry_v_band_costs_and_b_exemption():
     logs = {"side": sides, "mark": [], "close": [], "event": []}
     r = cp.carry_forward("A", pos, logs, _cycles(40), BENCH["A"]["bench"], NOW)
     crit = {c["id"]: c["status"] for c in r["criteria"]}
-    assert crit["б"] == cp.PASS and crit["в"] == cp.PASS and crit["г"] == cp.PASS and r["verdict"] == cp.OK
+    assert crit["б"] == cp.PASS and crit["в"] == cp.PASS and crit["г"] == cp.PASS
+    # item 365: without entry records (е) and (є) are ◯, so the row waits; with them it agrees
+    assert crit["е"] == crit["є"] == cp.UNVERIFIABLE and r["verdict"] == cp.EARLY
+    entry_sides, cyc = _entries("A", [p["trade_id"] for p in pos])
+    r = cp.carry_forward("A", pos, {**logs, "side": sides + entry_sides}, cyc, BENCH["A"]["bench"], NOW)
+    crit = {c["id"]: c["status"] for c in r["criteria"]}
+    assert crit["е"] == crit["є"] == cp.PASS and r["verdict"] == cp.OK
     deferred = [{"cycle_ts": T, "kind": "event", "trade_id": "P0", "payload": {"type": "funding_payment_missing"}}]
     r = cp.carry_forward("A", pos, {**logs, "event": deferred}, _cycles(40), BENCH["A"]["bench"], NOW)
     assert next(c for c in r["criteria"] if c["id"] == "в")["status"] == cp.UNVERIFIABLE  # 9 left

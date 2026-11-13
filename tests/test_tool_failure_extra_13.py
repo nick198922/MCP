@@ -238,12 +238,29 @@ async def test_dsl_bounds_themselves_still_evaluate():
     assert await evaluate("-" * (MAX_DEPTH - 1) + "1", {}) == -1
     assert await evaluate("1" + " " * (MAX_EXPR_LEN - 1), {}) == 1  # length exactly at the bound
     assert await evaluate("(" * 150 + "2 > 1" + ")" * 150, {}) is True  # parentheses add no level
-    t0 = time.monotonic()
     flat = _chain(MAX_EXPR_LEN // 6, " and ")  # ~10 000 characters, 1666 operands, one level
     assert len(flat) <= MAX_EXPR_LEN and await evaluate(flat, {}) == 1
     flat_cmp = _chain(MAX_EXPR_LEN // 3, "<=")
     assert len(flat_cmp) <= MAX_EXPR_LEN and await evaluate(flat_cmp, {}) is True
-    assert time.monotonic() - t0 < 2
+
+
+@pytest.mark.parametrize(("op", "width"), [(" and ", 6), ("<=", 3)], ids=["flat_and", "flat_compare"])
+async def test_flat_expressions_at_the_length_bound_evaluate_in_linear_time(op, width):
+    # Relative, not wall-clock: an absolute "< 2 s" failed at 2.65 s in a loaded sequential run (item 372). The chain at
+    # the length bound has 8x the operands of the small one: linear evaluation measures ~8-10x, quadratic ~50-60x
+    # (simulated). Small and big runs are interleaved and the best of each kept, so a slow machine slows both alike.
+    big_n = MAX_EXPR_LEN // width
+    small, big = _chain(big_n // 8, op), _chain(big_n, op)
+    assert len(big) <= MAX_EXPR_LEN
+    best_small = best_big = math.inf
+    for _ in range(7):
+        t0 = time.perf_counter()
+        await evaluate(small, {})
+        t1 = time.perf_counter()
+        await evaluate(big, {})
+        t2 = time.perf_counter()
+        best_small, best_big = min(best_small, t1 - t0), min(best_big, t2 - t1)
+    assert best_big < 24 * best_small, (best_small, best_big)
 
 
 @pytest.mark.parametrize("key", ["chain_5000", "unary_minus_200", "long_flat_compare"])

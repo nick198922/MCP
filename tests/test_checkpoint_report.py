@@ -348,6 +348,66 @@ def test_carry_e_registered_median_gap_over_the_holding_period():
     assert e["status"] == cp.UNVERIFIABLE and "з < 3 рядків кандидата за утримання 1" in e["text"]  # 1 entry, 2 rows
 
 
+# MITO, carry A, live engine rows 22.10 16:00 … 30.10 08:00 (perp, spot): the perp frozen at 0.00919 from the 4th row
+MITO_ROWS = [
+    (0.00983, 0.0098), (0.00885, 0.00886), (0.00897, 0.00889), (0.00919, 0.00927), (0.00919, 0.00845),
+    (0.00919, 0.00921), (0.00919, 0.00852), (0.00919, 0.00853), (0.00919, 0.00779), (0.00919, 0.00708),
+]  # fmt: skip
+
+
+def _frozen_case(tid: str, prices, strategy: str = "A"):
+    """Position ``tid`` held over ``len(prices)`` cycles from T with these leg prices (A: perp, spot; B: a, b)."""
+    sides, cyc = _entries(strategy, [tid], rows=1)
+    keys = ("perp", "spot") if strategy == "A" else ("price_a", "price_b")
+    for k, (p1, p2) in enumerate(prices):
+        row = {"symbol": f"{tid}/USDT:USDT", keys[0]: p1, keys[1]: p2, "open": k > 0}
+        if strategy == "B":
+            row["gap"] = p1 / p2 - 1.0
+        old = (cyc[k]["payload"].get("candidates") or [{}])[0] if k == 0 else {}
+        cyc[k]["payload"] = {**cyc[k]["payload"], "candidates": [old | row]}
+    pos = [dict(_pos(tid, closed=T + (len(prices) - 1) * 8 * H + 5 * 60_000), strategy=strategy)]
+    return pos, {"side": sides, "mark": [], "close": [], "event": []}, cyc
+
+
+def test_carry_e_frozen_perp_names_the_delisting_without_changing_the_verdict():
+    """Item 367: (е) fails on MITO because the delisted perp's price stood still (zero-volume bars at 0.00919), not by a
+    ticker collision; the row note names it (and the check against the venue's bars), the verdict stays «ні»."""
+    pos, logs, cyc = _frozen_case("MITO", MITO_ROWS)
+    r = cp.carry_forward("A", pos, logs, cyc, BENCH["A"]["bench"], NOW)
+    e = _crit_of(r, "е")
+    assert e["status"] == cp.FAIL and "за утримання 4.32 %" in e["text"] and "MITO/USDT:USDT" in e["text"]
+    assert "frozen" not in e and r["verdict"] == cp.NO
+    note = next(x for x in r["notes"] if x.startswith("(е) MITO/USDT:USDT: ціна ноги perp"))
+    assert f"незмінна 7 рядків кандидата поспіль з {cp._ymd_s((T + 3 * 8 * H) // 1000)} (0.00919)" in note
+    assert "за утримання 4.32 %, до завмирання 0.31 % (поріг 0.5 %)" in note
+    assert "делістинг перевірено" in note and "пораховано на завмерлій ціні перпа" in note
+    assert note.endswith("вердикт (е) за реєстрацією не змінюється, це лише названа причина")
+    # causal: cycles after the report date (a later perp price) change nothing
+    later = [
+        {"cycle_ts": NOW + k * 8 * H, "status": "done", "payload": {"candidates": [{"symbol": "MITO/USDT:USDT", "perp": 1.0, "spot": 1.0}]}}
+        for k in (1, 2)
+    ]
+    assert cp.carry_forward("A", pos, logs, cyc + later, BENCH["A"]["bench"], NOW)["notes"] == r["notes"]
+
+
+def test_carry_e_frozen_leg_note_only_for_a_gap_failure_with_six_rows():
+    # an unconfirmed symbol (B, the Bybit leg frozen): the cause is named, no delisting check is claimed
+    b_rows = [(1.0, 1.0), (1.01, 1.0), (1.02, 1.0), (1.03, 1.0), (1.04, 1.0), (1.05, 1.0)]
+    pos, logs, cyc = _frozen_case("Q", b_rows, "B")
+    r = cp.carry_forward("B", pos, logs, cyc, BENCH["B"]["bench"], NOW)
+    note = next(x for x in r["notes"] if x.startswith("(е) Q/USDT:USDT"))
+    assert "ціна ноги price_b незмінна 6 рядків кандидата поспіль з" in note and "до завмирання — (менше 3 рядків)" in note
+    assert "делістинг перевірено" not in note
+    # five frozen rows: (е) still fails on the gap, but no frozen-leg note
+    pos, logs, cyc = _frozen_case("Q", b_rows[:5], "B")
+    r = cp.carry_forward("B", pos, logs, cyc, BENCH["B"]["bench"], NOW)
+    assert _crit_of(r, "е")["status"] == cp.FAIL and not any(x.startswith("(е) Q/USDT:USDT") for x in r["notes"])
+    # a frozen leg without a gap failure: no note
+    pos, logs, cyc = _frozen_case("Q", [(1.001, 1.0)] * 8, "B")
+    r = cp.carry_forward("B", pos, logs, cyc, BENCH["B"]["bench"], NOW)
+    assert _crit_of(r, "е")["status"] == cp.PASS and not any(x.startswith("(е) Q/USDT:USDT") for x in r["notes"])
+
+
 def test_carry_e_collision_multiplier_and_interval():
     b = [dict(_pos(t), strategy="B") for t in ("X", "Y")]
     sides, cyc = _entries("B", ["X", "Y"], excluded=[{"symbol": "X/USDT:USDT", "reason": "collision"}])  # guard, as above

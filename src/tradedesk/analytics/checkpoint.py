@@ -28,6 +28,8 @@ from the open ``side`` rows (leg notional <= book depth within ±0.5 % of mid on
 the largest 2x position of the nearest dated ladder snapshot before the entry (``docs/paper/ladder/``, registration
 amendment (2): Binance's ladder is signed, so its leg is checked by depth only). The venue metadata at the checkpoint
 that the registration names for (e) is network, so (e) checks the engine against its own records, not the venue.
+An (e) gap failure whose entry has one leg price unchanged over >= 6 consecutive candidate rows gets a row note naming
+the frozen leg (a delisted perp's zero-volume bars, MITO; item 367); the verdict is unchanged.
 
 What this module does not compute (the label says so in its notes): carry criterion (a) (re-run of the backtest code)
 and B's liquidation part of (g) (1m mark prices, network); the demo's secondary metric ``r_demo_bt`` and its clustered
@@ -518,16 +520,19 @@ def _carry_entries(
         sym = str(q.get("symbol"))
         start = min(int(q["opened_ts"]), int(cyc["cycle_ts"])) if cyc is not None else int(q["opened_ts"])
         end = int(q["closed_ts"]) if q.get("status") == "closed" and q.get("closed_ts") is not None else None
-        held = [
-            c
+        pairs = [
+            (int(x["cycle_ts"]), c)
             for x in cycles
             if start <= int(x["cycle_ts"]) and (end is None or int(x["cycle_ts"]) <= end)
             for c in (x.get("payload") or {}).get("candidates") or []
             if isinstance(c, Mapping) and c.get("symbol") == sym
         ]
         out.append(
-            {"symbol": sym, "opened_ts": int(q["opened_ts"]), "legs": [x.get("payload") or {} for x in rows], "cycle": cyc, "held": held}
-        )
+            {
+                "symbol": sym, "opened_ts": int(q["opened_ts"]), "legs": [x.get("payload") or {} for x in rows], "cycle": cyc,
+                "held": [c for _, c in pairs], "held_ts": [ts for ts, _ in pairs],
+            }
+        )  # fmt: skip
     return out
 
 
@@ -547,6 +552,42 @@ def _held_gap(strategy: str, rows: Sequence[Mapping[str, Any]]) -> float | None:
         if g is not None:
             gaps.append(g)
     return abs(statistics.median(gaps)) if len(gaps) >= E_GAP_MIN_ROWS else None
+
+
+# A leg price unchanged over this many consecutive candidate rows of a held position is a frozen leg: a delisted perp
+# whose venue keeps publishing zero-volume bars at its last price (MITO, A, 24.10 … 30.10: 7 rows at 0.00919). Item 367,
+# descriptive only: it names the cause of an (e) gap failure in the row's notes and changes no verdict.
+E_FROZEN_ROWS = 6
+E_FROZEN_LEGS = {"A": ("perp", "spot"), "B": ("price_a", "price_b")}
+# Frozen legs whose delisting was checked against the venue's own bars (the note names the check)
+E_CONFIRMED_DELISTINGS = {
+    "MITO/USDT:USDT": (
+        "делістинг перевірено (Binance Vision: останній 4h-бар перпа з обсягом 23.10 08:00–12:00 UTC, далі обсяг 0 і ціна "
+        "0.00919; останній funding обох бірж 23.10 08:00; верифікація 2026-11-13-carry-mito-frozen-price); P&L угоди (−21 % "
+        "номіналу) пораховано на завмерлій ціні перпа, і майже весь він — спот без хеджу після зупинки перпа"
+    ),
+}
+
+
+def _frozen_leg(strategy: str, held: Sequence[Mapping[str, Any]], held_ts: Sequence[int]) -> dict[str, Any] | None:
+    """The longest run of one leg's price unchanged over consecutive candidate rows of a holding period, when it is at
+    least ``E_FROZEN_ROWS`` rows: ``{leg, rows, value, from_ts, gap_before}`` (``gap_before``: ``_held_gap`` of the rows
+    before the run, None below ``E_GAP_MIN_ROWS``); None otherwise."""
+    best: dict[str, Any] | None = None
+    for leg in E_FROZEN_LEGS[strategy]:
+        vals = [_num(r.get(leg)) for r in held]
+        run = start = 0
+        for i, v in enumerate(vals):
+            if v is not None and i > 0 and v == vals[i - 1]:
+                run += 1
+            else:
+                run, start = int(v is not None), i
+            if run >= E_FROZEN_ROWS and (best is None or run > best["rows"]):
+                ts = held_ts[start] if start < len(held_ts) else None
+                best = {"leg": leg, "rows": run, "value": v, "from_ts": ts, "start": start}
+    if best is not None:
+        best["gap_before"] = _held_gap(strategy, held[: best.pop("start")])
+    return best
 
 
 def _leg_ratio(legs: Sequence[Mapping[str, Any]]) -> float | None:
@@ -571,6 +612,7 @@ def carry_universe(strategy: str, entries: Sequence[Mapping[str, Any]]) -> dict[
     (``underlyingType`` at the checkpoint is network). An entry without a violation is checked when its entry cycle holds
     its candidate row, the exclusion list is complete (``excluded`` is capped at 500) and the gap has enough rows."""
     fails: dict[str, list[str]] = {}
+    frozen: list[dict[str, Any]] = []
     checked = no_cand = few_rows = no_price = no_interval = 0
     widest: float | None = None
     worst_gap: float | None = None
@@ -609,6 +651,8 @@ def carry_universe(strategy: str, entries: Sequence[Mapping[str, Any]]) -> dict[
                 why.add("price")
         for w in why:
             fails.setdefault(w, []).append(sym)
+        if "gap" in why and (fr := _frozen_leg(strategy, e.get("held") or [], e.get("held_ts") or [])) is not None:
+            frozen.append(fr | {"symbol": sym, "gap": med})
         if why:  # a violation counts whatever else is missing (an excluded symbol has no candidate row)
             checked += 1
         elif cand is None or cut:
@@ -632,7 +676,22 @@ def carry_universe(strategy: str, entries: Sequence[Mapping[str, Any]]) -> dict[
     )
     if checked < MIN_E_ENTRIES:
         return _crit("е", UNVERIFIABLE, txt + f"; мінімум {MIN_E_ENTRIES} вхід")
-    return _crit("е", FAIL if fails else PASS, txt) | {"symbols": sorted({s for v in fails.values() for s in v})}
+    return _crit("е", FAIL if fails else PASS, txt) | {"symbols": sorted({s for v in fails.values() for s in v}), "frozen": frozen}
+
+
+def frozen_leg_note(fr: Mapping[str, Any]) -> str:
+    """The row note naming a frozen leg as the cause of an (e) gap failure (item 367); the verdict stays as registered."""
+    when = "—" if fr.get("from_ts") is None else _ymd_s(int(fr["from_ts"]) // 1000)
+    before = fr.get("gap_before")
+    txt = (
+        f"(е) {fr['symbol']}: ціна ноги {fr['leg']} незмінна {fr['rows']} рядків кандидата поспіль з {when} ({fr['value']:g}) — "
+        f"ознака завмерлого перпа (делістинг / зупинка торгів, біржа далі публікує бари з нульовим обсягом), а не колізії "
+        f"тікерів; |медіана розриву| за утримання {fr['gap'] * 100:.2f} %, до завмирання "
+        f"{'— (менше 3 рядків)' if before is None else f'{before * 100:.2f} %'} (поріг 0.5 %)"
+    )
+    if (confirmed := E_CONFIRMED_DELISTINGS.get(str(fr["symbol"]))) is not None:
+        txt += f"; {confirmed}"
+    return txt + "; вердикт (е) за реєстрацією не змінюється, це лише названа причина"
 
 
 def _bybit_id(symbol: str) -> str:
@@ -912,7 +971,7 @@ def carry_forward(
     # (e) universe purity and (ye) capacity on the entries, from the engine's own records (no network)
     entries = _carry_entries(pos, side_rows, cyc)
     e_crit = carry_universe(strategy, entries)
-    crit.append({k: v for k, v in e_crit.items() if k != "symbols"})
+    crit.append({k: v for k, v in e_crit.items() if k not in ("symbols", "frozen")})
     crit.append(carry_capacity(entries, ladder, now_ms))
 
     crit.append(_crit("а", NOT_HERE, f"входів {len(pos)}; еквівалентність рішень — окремою перевіркою (повторний прогін коду бектесту)"))
@@ -932,6 +991,7 @@ def carry_forward(
             row["notes"].append("(в) → розбір funding-даних і рушія, не «вбити»")
         if any(c["id"] == "е" for c in fails):
             row["notes"].append(f"(е) → баг рушія (реєстрація): розібрати входи {', '.join(e_crit.get('symbols', []))}")
+            row["notes"] += [frozen_leg_note(fr) for fr in e_crit.get("frozen") or []]
         if any(c["id"] == "є" for c in fails):
             row["notes"].append(
                 "(є) → номінал ноги не вміщується в книгу ±0.5 % чи ліміт Bybit на > 10 % входів: розбір розміру ноги й всесвіту"

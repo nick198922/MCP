@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import bisect
+import fcntl
 import math
+import os
 import re
 import shutil
 from collections.abc import Sequence
@@ -101,20 +103,38 @@ def _scenario(strategy: str) -> tuple[dict[str, Any], CarryParams, range]:
 _FULL_RUNS: dict[str, Path] = {}  # strategy -> snapshot file of the engine's run of _scenario on the full source
 
 
+async def _build_full_run(strategy: str, path: Path) -> None:
+    mk, params, times = _scenario(strategy)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    s = Store(":memory:")
+    await s.init()
+    try:
+        await _drive(s, FixtureFeed(mk, strategy), params, times)
+        await s.conn.execute("VACUUM INTO ?", (str(tmp),))
+    finally:
+        await s.aclose()
+    os.replace(tmp, path)  # a failed build leaves no file behind that another worker could take as finished
+
+
 async def full_run_snapshot(strategy: str, tmp_path_factory: pytest.TempPathFactory) -> Path:
     """Snapshot file (``VACUUM INTO``) of the engine's run of ``_scenario(strategy)`` on the full source (``FixtureFeed``,
-    an in-memory store). The run (~5 s, 307 cycles) is made once per strategy and process; callers must copy the file
-    before writing to it (test_paper_carry_report reads the same scenario-A run)."""
+    an in-memory store). The run (~5-6 s, 307 cycles) is made once per strategy and test session: under xdist the
+    workers share the session's base temp directory and the first one to ask builds the file under a lock, the others
+    wait and read it (item 374: up to five workers rebuilt the same run before). Every session starts from an empty
+    directory, so the run always comes from the code under test. Callers must copy the file before writing to it
+    (test_paper_carry_report reads the same scenario-A run)."""
     if strategy not in _FULL_RUNS:
-        mk, params, times = _scenario(strategy)
-        path = tmp_path_factory.mktemp(f"carry-full-{strategy}") / "full.db"
-        s = Store(":memory:")
-        await s.init()
-        try:
-            await _drive(s, FixtureFeed(mk, strategy), params, times)
-            await s.conn.execute("VACUUM INTO ?", (str(path),))
-        finally:
-            await s.aclose()
+        if os.environ.get("PYTEST_XDIST_WORKER"):
+            root = tmp_path_factory.getbasetemp().parent  # pytest-N/ of this session; workers have pytest-N/popen-gwK
+            path = root / f"carry-full-{strategy}.db"
+            # A blocking open and lock are intended: the worker has nothing else to run until the snapshot exists.
+            with open(root / f"carry-full-{strategy}.lock", "w") as lock:  # noqa: ASYNC230
+                fcntl.flock(lock, fcntl.LOCK_EX)  # released when the file closes, also when the build fails
+                if not path.exists():
+                    await _build_full_run(strategy, path)
+        else:
+            path = tmp_path_factory.mktemp(f"carry-full-{strategy}") / "full.db"
+            await _build_full_run(strategy, path)
         _FULL_RUNS[strategy] = path
     return _FULL_RUNS[strategy]
 

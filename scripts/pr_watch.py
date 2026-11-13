@@ -12,8 +12,11 @@ The owner wants every merge automatic (2026-10-22), so before telling anything t
 - gives the branch's item of the standing card the next free number when it took the same number as an item main
   got meanwhile (two parallel steps both wrote «326.»; tests/test_idea_cards.py then keeps the PR red for good): on
   every merge of main above, and for a ready red PR whose card has such a repeat (PR #1015, 11–12.11, idled the agents).
+- hands an agent/* branch whose CI failed again after the re-run back to the agents (hand_back: parked due now, the
+  failure in the launcher's refusal note), at most HANDBACK_MAX times per PR (PR #1077, 13.11: red on Python 3.11
+  only, it held its card and idled the agents).
 Stuck means: CI failed again after the re-run, or the PR has not moved for STALE_HOURS. Each finding is told once
-per PR head commit. No Claude tokens are spent; fixing is left to the doctor or a Claude session. Runs as a user
+per PR head commit. No Claude tokens are spent here; fixing is left to the agents, the doctor or a Claude session. Runs as a user
 timer (deploy/user-units/tradedesk-pr-watch.*), reads the GitHub token like scripts/gh_pr.py and remembers what it
 did in $LOG_DIR/pr_watch.json.
 
@@ -112,6 +115,25 @@ def is_docs(path: str) -> bool:
     return path.startswith("docs/") or ("/" not in path and path.endswith(".md"))
 
 
+def merge_hunk(ours: list[str], base: list[str], theirs: list[str]) -> list[str]:
+    """An edit conflict kept both ways: main's lines, then the branch's lines main lacks. A line main left as it was
+    (it is in ``base``) but the branch changed gives way to the branch's lines, in its place: the branch ticked «[ ] 358»
+    while main added «359» under it, and keeping main's unticked line beside the branch's ticked one reopened the done
+    item, which the renumbering then kept as a duplicate «360» (PR #1077, 13.11)."""
+    new = [x for x in ours if x not in theirs]
+    stale = {x for x in theirs if x in base and x not in ours}
+    if not stale:
+        return theirs + new
+    out: list[str] = []
+    for x in theirs:
+        if x in stale:
+            out += new
+            new = []
+        else:
+            out.append(x)
+    return out
+
+
 def union_resolve(text: str, keep_both: bool = False) -> str | None:
     """The file with every conflict hunk (diff3 style) replaced by main's lines, then the branch's; None when a hunk
     changed lines both sides started from (a real edit conflict) or the file has no hunk at all. ``keep_both``: an edit
@@ -130,7 +152,7 @@ def union_resolve(text: str, keep_both: bool = False) -> str | None:
         elif line.startswith(">>>>>>> ") and part == "theirs":
             if base and not keep_both:
                 return None
-            out += theirs + ([x for x in ours if x not in theirs] if base else ours)  # theirs = origin/main, ours = the PR
+            out += merge_hunk(ours, base, theirs) if base else theirs + ours  # theirs = origin/main, ours = the PR
             hunks += 1
             part = ""
         elif part == "ours":
@@ -240,6 +262,42 @@ def merge_main(ref: str) -> tuple[str, list[str]]:
     return "fixed", conflicted
 
 
+HANDBACK_MAX = 2  # hand-backs of one PR to the agents (across its commits): a fix that fails twice goes to the owner
+GiveBack = Callable[[dict, str, datetime], bool]  # (pr, failed check names, now) -> handed back
+
+
+def hand_back(pr: dict, failed: str, now: datetime) -> bool:
+    """Give a red agent branch back to the agents: park it due now (scripts/nightly_agents.sh resumes a due parked branch
+    in CONTINUE mode) with the failure in refusal.txt, which that run gets in its prompt. Without this a red PR held its
+    card until a person fixed it: the coordinator skips cards an open branch changes (PR #1077 red on Python 3.11 only,
+    13.11, idled the agents). False, to try again on a later watch, while a run or other work is under way or a note
+    waits; a branch already parked is left to its own time."""
+    ref = pr["head"]["ref"]
+    if any((LOG_DIR / f).exists() for f in ("run.active", "work.state", "refusal.txt")):
+        return False
+    parked = LOG_DIR / "parked.state"
+    lines = [x for x in (parked.read_text().splitlines() if parked.exists() else []) if x.strip()]
+    if any(x.split()[0] == ref for x in lines):
+        return False
+    versions = sorted(set(re.findall(r"\b3\.\d+\b", failed)))
+    how = (
+        "Reproduce it on the failing Python version(s) first: `make test` runs only the server's Python, CI runs 3.11, 3.12 and "
+        "3.13 — "
+        + "; ".join(
+            f"`uv run --isolated --python {v} --extra dev pytest -q -p no:cacheprovider <test files>`" for v in versions or ["3.11"]
+        )
+    )
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    (LOG_DIR / "refusal.txt").write_text(
+        f"CI on GitHub failed for PR #{pr['number']} of this branch (`{ref}`): {failed}, again after a re-run, so it is not "
+        f"a flaky set-up. {how}. Fix the cause on this branch (the code or the test, never by skipping it), run `make lint` "
+        "and `make test`, and deliver it again with the same delivery as before.\n",
+        encoding="utf-8",
+    )
+    parked.write_text("".join(x + "\n" for x in [*lines, f"{ref} {int(now.timestamp())} 1 {now.strftime('%Y-%m-%d_%H%M%S')}"]))
+    return True
+
+
 def message(pr: dict, kind: str, detail: str, held: bool = False) -> str:
     title = f"#{pr['number']} {pr.get('title', '')}".strip()
     if kind == "conflict":
@@ -251,9 +309,12 @@ def message(pr: dict, kind: str, detail: str, held: bool = False) -> str:
     return f"⏳ <b>PR застряг</b> {detail} год без руху, хоча мав злитись сам: {title}."
 
 
-def watch(call: Call, repo: str, state: dict, now: datetime, fix: Fixer | None = merge_main) -> tuple[list[tuple[str, str]], dict]:
-    """Messages to send (text, PR url) and the new state; a finding is told once per head commit. Merges, re-runs
-    and docs conflict fixes on the way (printed, not sent); ``fix=None`` (a dry run) only tells about conflicts."""
+def watch(
+    call: Call, repo: str, state: dict, now: datetime, fix: Fixer | None = merge_main, give_back: GiveBack | None = hand_back
+) -> tuple[list[tuple[str, str]], dict]:
+    """Messages to send (text, PR url) and the new state; a finding is told once per head commit. Merges, re-runs,
+    docs conflict fixes and hand-backs of red agent branches on the way (printed, not sent); a dry run passes
+    ``fix=None`` and ``give_back=None`` and only tells."""
     status, prs = call("GET", f"/repos/{repo}/pulls?state=open&per_page=100", None)
     if status != 200 or not isinstance(prs, list):
         raise RuntimeError(f"GitHub pulls: HTTP {status}")
@@ -266,7 +327,8 @@ def watch(call: Call, repo: str, state: dict, now: datetime, fix: Fixer | None =
         status, runs = call("GET", f"/repos/{repo}/commits/{sha}/check-runs?per_page=100", None)
         check_runs = runs.get("check_runs", []) if status == 200 and isinstance(runs, dict) else []
         told = state.get(str(pr["number"]), {})
-        told = told if told.get("sha") == sha else {"sha": sha, "kinds": []}
+        handbacks = int(told.get("handbacks", 0))  # counted across the PR's commits
+        told = told if told.get("sha") == sha else {"sha": sha, "kinds": [], **({"handbacks": handbacks} if handbacks else {})}
         ready = READY_MARK in (pr.get("body") or "")
         if ready:
             status, detail = call("GET", f"/repos/{repo}/pulls/{pr['number']}", None)
@@ -327,6 +389,26 @@ def watch(call: Call, repo: str, state: dict, now: datetime, fix: Fixer | None =
             hold = kind == "stale" and classify(pr_files(call, repo, pr["number"])).startswith("claude:")
             out.append((message(pr, kind, detail, hold), pr["html_url"]))
             told["kinds"].append(kind)
+        failed = failed_checks(check_runs)
+        if (
+            ready
+            and give_back is not None
+            and failed
+            and "red" in told["kinds"]
+            and "handback" not in told["kinds"]
+            and handbacks < HANDBACK_MAX
+            and ref.startswith("agent/")
+            and "-fix-" not in ref  # the doctor's own fixes are not the agents' work
+            and give_back(pr, ", ".join(failed), now)
+        ):
+            told["kinds"].append("handback")
+            told["handbacks"] = handbacks + 1
+            print(f"PR #{pr['number']}: red CI handed back to the agents ({ref})")
+            note = "↩️ Повернув агентам: наступний прогін виправить."
+            if out and out[-1][1] == pr["html_url"] and "CI впав" in out[-1][0]:  # told just now: one message
+                out[-1] = (out[-1][0].replace(" Автозлиття не буде, доки не виправлять.", "") + " " + note, pr["html_url"])
+            else:
+                out.append((f"PR #{pr['number']}: CI червоний ({', '.join(failed)}). {note}", pr["html_url"]))
         new_state[str(pr["number"])] = told
     return out, new_state
 
@@ -345,7 +427,14 @@ def main(argv: list[str] | None = None) -> int:
         state = json.loads(state_file.read_text())
     except (OSError, ValueError):
         state = {}
-    msgs, new_state = watch(caller(token), args.repo, state, datetime.now(UTC), fix=None if args.dry_run else merge_main)
+    msgs, new_state = watch(
+        caller(token),
+        args.repo,
+        state,
+        datetime.now(UTC),
+        fix=None if args.dry_run else merge_main,
+        give_back=None if args.dry_run else hand_back,
+    )
     for text, url in msgs:
         if args.dry_run:
             print(text, url)

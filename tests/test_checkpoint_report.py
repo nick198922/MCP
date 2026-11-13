@@ -353,10 +353,12 @@ MITO_ROWS = [
     (0.00983, 0.0098), (0.00885, 0.00886), (0.00897, 0.00889), (0.00919, 0.00927), (0.00919, 0.00845),
     (0.00919, 0.00921), (0.00919, 0.00852), (0.00919, 0.00853), (0.00919, 0.00779), (0.00919, 0.00708),
 ]  # fmt: skip
+MITO_TID = "A:MITO/USDT:USDT:1792684800000"  # the live MITO trade whose delisting was checked (item 367)
 
 
-def _frozen_case(tid: str, prices, strategy: str = "A"):
-    """Position ``tid`` held over ``len(prices)`` cycles from T with these leg prices (A: perp, spot; B: a, b)."""
+def _frozen_case(tid: str, prices, strategy: str = "A", *, trade_id: str | None = None, open_: bool = False):
+    """Position ``tid`` (trade id ``trade_id``, default ``tid``) held over ``len(prices)`` cycles from T with these leg
+    prices (A: perp, spot; B: a, b); closed after the last of them, or still open with ``open_``."""
     sides, cyc = _entries(strategy, [tid], rows=1)
     keys = ("perp", "spot") if strategy == "A" else ("price_a", "price_b")
     for k, (p1, p2) in enumerate(prices):
@@ -365,20 +367,23 @@ def _frozen_case(tid: str, prices, strategy: str = "A"):
             row["gap"] = p1 / p2 - 1.0
         old = (cyc[k]["payload"].get("candidates") or [{}])[0] if k == 0 else {}
         cyc[k]["payload"] = {**cyc[k]["payload"], "candidates": [old | row]}
-    pos = [dict(_pos(tid, closed=T + (len(prices) - 1) * 8 * H + 5 * 60_000), strategy=strategy)]
+    closed = None if open_ else T + (len(prices) - 1) * 8 * H + 5 * 60_000
+    pos = [dict(_pos(tid, closed=closed), strategy=strategy, trade_id=trade_id or tid)]
+    sides = [dict(x, trade_id=trade_id or tid) for x in sides]
     return pos, {"side": sides, "mark": [], "close": [], "event": []}, cyc
 
 
 def test_carry_e_frozen_perp_names_the_delisting_without_changing_the_verdict():
     """Item 367: (е) fails on MITO because the delisted perp's price stood still (zero-volume bars at 0.00919), not by a
     ticker collision; the row note names it (and the check against the venue's bars), the verdict stays «ні»."""
-    pos, logs, cyc = _frozen_case("MITO", MITO_ROWS)
+    pos, logs, cyc = _frozen_case("MITO", MITO_ROWS, trade_id=MITO_TID)
     r = cp.carry_forward("A", pos, logs, cyc, BENCH["A"]["bench"], NOW)
     e = _crit_of(r, "е")
     assert e["status"] == cp.FAIL and "за утримання 4.32 %" in e["text"] and "MITO/USDT:USDT" in e["text"]
     assert "frozen" not in e and r["verdict"] == cp.NO
     note = next(x for x in r["notes"] if x.startswith("(е) MITO/USDT:USDT: ціна ноги perp"))
     assert f"незмінна 7 рядків кандидата поспіль з {cp._ymd_s((T + 3 * 8 * H) // 1000)} (0.00919)" in note
+    assert "ознака завмерлого перпа (делістинг / зупинка торгів, біржа далі публікує бари з нульовим обсягом), а не колізії тікерів" in note
     assert "за утримання 4.32 %, до завмирання 0.31 % (поріг 0.5 %)" in note
     assert "делістинг перевірено" in note and "пораховано на завмерлій ціні перпа" in note
     assert note.endswith("вердикт (е) за реєстрацією не змінюється, це лише названа причина")
@@ -387,7 +392,41 @@ def test_carry_e_frozen_perp_names_the_delisting_without_changing_the_verdict():
         {"cycle_ts": NOW + k * 8 * H, "status": "done", "payload": {"candidates": [{"symbol": "MITO/USDT:USDT", "perp": 1.0, "spot": 1.0}]}}
         for k in (1, 2)
     ]
-    assert cp.carry_forward("A", pos, logs, cyc + later, BENCH["A"]["bench"], NOW)["notes"] == r["notes"]
+    assert cp.carry_forward("A", pos, logs, cyc + later, BENCH["A"]["bench"], NOW) == r
+    # item 368: the same for a position still open at the report date, where the holding window has no close to cut it
+    pos_open, logs, cyc = _frozen_case("MITO", MITO_ROWS, trade_id=MITO_TID, open_=True)
+    assert pos_open[0]["status"] == "open" and pos_open[0]["closed_ts"] is None
+    r_open = cp.carry_forward("A", pos_open, logs, cyc, BENCH["A"]["bench"], NOW)
+    assert "за утримання 4.32 %" in _crit_of(r_open, "е")["text"] and any(x.startswith("(е) MITO/USDT:USDT") for x in r_open["notes"])
+    assert cp.carry_forward("A", pos_open, logs, cyc + later, BENCH["A"]["bench"], NOW) == r_open
+    # the rows after NOW would change the gap (and the note) if they were read: the check above is not trivial
+    seen = cp.carry_universe("A", cp._carry_entries(pos_open, logs["side"], cyc + later))
+    assert seen["status"] == cp.FAIL and "за утримання 4.32 %" not in seen["text"]
+
+
+def test_carry_e_frozen_leg_note_claims_no_more_than_was_checked():
+    """Item 368 (review of item 367, remarks 1 and 2): «not a collision» only for the checked delisting of that one trade
+    and leg; a frozen spot is never called a frozen perp; a later MITO entry gets neither the check nor its P&L."""
+    # A, the spot leg frozen (an unchecked symbol): a possible cause, no «perp», no «not a collision»
+    spot_rows = [(1.0 + 0.01 * k, 1.0) for k in range(7)]
+    pos, logs, cyc = _frozen_case("Q", spot_rows)
+    r = cp.carry_forward("A", pos, logs, cyc, BENCH["A"]["bench"], NOW)
+    note = next(x for x in r["notes"] if x.startswith("(е) Q/USDT:USDT"))
+    assert "ціна ноги spot незмінна 7 рядків кандидата поспіль з" in note
+    assert "можлива ознака завмерлої ноги spot; колізію не виключено, перевірити обсяг барів" in note
+    assert "перп" not in note and "а не колізії" not in note and "делістинг перевірено" not in note
+    assert note.endswith("вердикт (е) за реєстрацією не змінюється, це лише можлива причина") and r["verdict"] == cp.NO
+    # the checked MITO trade, but its spot leg frozen: the check covers the perp only
+    pos, logs, cyc = _frozen_case("MITO", [(1.0 + 0.01 * k, 1.0) for k in range(7)], trade_id=MITO_TID)
+    note = next(x for x in cp.carry_forward("A", pos, logs, cyc, BENCH["A"]["bench"], NOW)["notes"] if x.startswith("(е) MITO"))
+    assert "перп" not in note and "а не колізії" not in note and "делістинг перевірено" not in note
+    # a second MITO entry outside the checked window (another trade id), the perp frozen as before: no check, no P&L
+    pos, logs, cyc = _frozen_case("MITO", MITO_ROWS, trade_id=f"A:MITO/USDT:USDT:{cp._ms(2026, 11, 5)}")
+    r = cp.carry_forward("A", pos, logs, cyc, BENCH["A"]["bench"], NOW)
+    note = next(x for x in r["notes"] if x.startswith("(е) MITO/USDT:USDT: ціна ноги perp"))
+    assert "можлива ознака завмерлої ноги perp; колізію не виключено, перевірити обсяг барів" in note
+    assert "делістинг перевірено" not in note and "а не колізії" not in note and "−21 %" not in note
+    assert "за утримання 4.32 %, до завмирання 0.31 % (поріг 0.5 %)" in note and r["verdict"] == cp.NO
 
 
 def test_carry_e_frozen_leg_note_only_for_a_gap_failure_with_six_rows():

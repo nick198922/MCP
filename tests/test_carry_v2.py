@@ -13,7 +13,7 @@ from carry_synth import H8, markets_a
 from test_carry_paper_engine import SLOTS, FixtureFeed, _drive, _grid, _stopped_cycle
 from tradedesk.analytics.carry_rules import DECISION_DELAY_MS, carry_side_cost
 from tradedesk.analytics.carry_v2 import A_V2_DESCRIPTION, A_V2_N_CYCLES, A_V2_TAG, a_v2_shadow, leg_vanished, vanish_rule_ts
-from tradedesk.collector.carry_paper_engine import PARAMS_A, CarryParams, FeedData
+from tradedesk.collector.carry_paper_engine import GAP_CONFIRM_CYCLES, PARAMS_A, CarryParams, FeedData
 from tradedesk.store import Store
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
@@ -149,6 +149,9 @@ class VanishFeed(FixtureFeed):
 
 async def test_vanish_feed_runs_on_a_stopped_book():
     # Item 350: a stopped A book calls ``load(..., held_only=True)``; VanishFeed must accept it and pass it on.
+    # Review of item 360 (note 1): the leg must really vanish on the stopped book, not only the flag pass through. The
+    # held leg's payments stop at cycle i: the frozen engine holds it aside for GAP_CONFIRM_CYCLES - 1 cycles (event, no
+    # mark), then confirms the gap and settles it, as on a running book (test_report_shows_a_v2_next_to_the_unchanged_a_book).
     store = Store(":memory:")
     await store.init()
     try:
@@ -160,8 +163,25 @@ async def test_vanish_feed_runs_on_a_stopped_book():
         while not await store.cp_positions("A", "open"):
             await _drive(store, plain, params, [times[i]])
             i += 1
-        sym = (await store.cp_positions("A", "open"))[0]["symbol"]
-        await _stopped_cycle(store, VanishFeed(mk, sym, cut=times[i] - DECISION_DELAY_MS), params, times[i])
+        held = await store.cp_positions("A", "open")
+        sym, tid = held[0]["symbol"], held[0]["trade_id"]
+        others = {p["trade_id"] for p in held[1:]}
+        assert others  # the book holds more than the vanishing leg, so "only that leg is held aside" means something
+        for n in range(GAP_CONFIRM_CYCLES):
+            t = times[i + n]
+            cycle_ts = t - DECISION_DELAY_MS
+            await _stopped_cycle(store, VanishFeed(mk, sym, cut=times[i] - DECISION_DELAY_MS), params, t)
+            events = [e["payload"] for e in await store.cp_logs("A", "event", cycle_ts=cycle_ts)]
+            marked = {m["trade_id"] for m in await store.cp_logs("A", "mark", cycle_ts=cycle_ts)}
+            closed = {c["trade_id"] for c in await store.cp_logs("A", "close", cycle_ts=cycle_ts)}
+            state = next(p for p in await store.cp_positions("A") if p["trade_id"] == tid)
+            assert others <= marked  # the legs that did not vanish are marked as usual
+            if n < GAP_CONFIRM_CYCLES - 1:
+                assert [(e["type"], e["symbol"], e["gap_cycles"]) for e in events] == [("funding_payment_missing", sym, n + 1)]
+                assert tid not in marked | closed and state["status"] == "open" and state["state"]["gap_cycles"] == n + 1
+            else:
+                assert [(e["type"], e["symbol"], e["cycles"]) for e in events] == [("funding_gap_confirmed", sym, n + 1)]
+                assert tid in marked | closed and "gap_cycles" not in state["state"]
     finally:
         await store.aclose()
 

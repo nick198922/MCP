@@ -19,7 +19,7 @@ import paper_carry_report as rep  # noqa: E402
 
 
 async def test_report_renders_from_a_db_copy(tmp_path, tmp_path_factory):
-    # The engine's scenario-A run over the whole segment, shared with test_carry_paper_engine (made once per process).
+    # The engine's scenario-A run over the whole segment, shared with test_carry_paper_engine (made once per session).
     _, params, times = _scenario("A")
     assert params == replace(PARAMS_A, slots=SLOTS, entry_apr=0.10)  # the report is read from this scenario's run
     db = str(tmp_path / "copy.sqlite")

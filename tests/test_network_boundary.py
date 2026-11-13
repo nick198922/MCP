@@ -78,6 +78,10 @@ ALLOWED_SCRIPTS: dict[str, tuple[frozenset[str], str]] = {
         frozenset({"urllib.request"}),
         "public t.me/s/<channel> web preview and TradingView snapshot images for the library; not market data",
     ),
+    "x_backfill.py": (
+        frozenset({"urllib.request"}),
+        "twitterapi.io search and pbs.twimg.com pictures of public X posts for the library (owner 13.11); not market data",
+    ),
     "agents_status.py": (
         frozenset({"urllib.request"}),
         "Anthropic plan-usage endpoint (api/oauth/usage) for the status message; not market data",

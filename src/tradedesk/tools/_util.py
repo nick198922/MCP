@@ -110,6 +110,22 @@ def clean_tags(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[A
     return kept, nonfinite, fixed
 
 
+def clean_row_tags(rows: list[dict[str, Any]]) -> tuple[list[Any], list[Any]]:
+    """`clean_tags` on the `tags` cell alone, in place: no row is dropped and the other cells are not checked (tools whose
+    rows have their own checks, item 356). Returns (ids whose tags hold NaN / Infinity, left as stored for the caller to
+    handle; ids whose tags were normalised to their string items)."""
+    nonfinite: list[Any] = []
+    fixed: list[Any] = []
+    for p in rows:
+        kept, bad, norm = clean_tags([{"tags": p.get("tags")}])
+        if bad:
+            nonfinite.append(p.get("id"))
+        elif norm:
+            p["tags"] = kept[0]["tags"]
+            fixed.append(p.get("id"))
+    return nonfinite, fixed
+
+
 def shown_int(v: int) -> str:
     """`v` as text for a message. An integer of 101+ digits is not echoed: str() of one beyond 4300 digits raises
     ValueError (and so did the message of a tool refusing it), and a 400-digit echo helps nobody."""

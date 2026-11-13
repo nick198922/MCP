@@ -23,7 +23,7 @@ from ..analytics.journal import pnl as pnl_fn
 from ..collector.market_data import BAR_MS, bars_4h, funding_entries, parse_bar
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, STORE_ERRORS, finite_float, r, reject_bad_id, store_failed, store_ready
+from ._util import READ_ONLY, STORE_ERRORS, clean_row_tags, finite_float, r, reject_bad_id, store_failed, store_ready
 from .perps import MAX_FUNDING_RATE, TAKER_FEES, current_funding
 
 # carry_paper_open writes a new row on every call (a retry after a timeout records a second pair), so it is not idempotent.
@@ -169,6 +169,21 @@ async def mark_trade(rt: Runtime, b: Builder, t: dict[str, Any], now_ms: int) ->
             "entry bar is used, so prices from before the entry may trigger the stop (conservative)"
         )
     return {**m, "long_now": lg["price"], "short_now": sg["price"], "stop_check": stop_check}
+
+
+def _clean_pair_tags(b: Builder, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """`rows` with `tags` as a list of strings, in place, so no pair is hidden (item 356): tags 300 levels deep failed the
+    MCP serialiser after carry_paper_close had written the close and its journal mirror, a number raised TypeError in the
+    close. Anything that is not a list of strings is shown as its string items, NaN / Infinity in tags as []; warnings."""
+    nonfinite, fixed = clean_row_tags(rows)
+    for t in rows:
+        if t.get("id") in nonfinite:
+            t["tags"] = []
+    if fixed:
+        b.warn(f"stored paper pair id {fixed[:10]} had tags that were not a list of strings; shown as their string items")
+    if nonfinite:
+        b.warn(f"stored paper pair id {nonfinite[:10]} had NaN / Infinity in tags; shown as no tags")
+    return rows
 
 
 def _view(t: dict[str, Any], m: dict[str, Any] | None) -> dict[str, Any]:
@@ -458,6 +473,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 rows = [one]
             else:
                 rows = await rt.store.carry_paper_list(status="open")
+            rows = _clean_pair_tags(b, rows)
             open_rows = [x for x in rows if x["status"] == "open"]
             sem = asyncio.Semaphore(3)
 
@@ -468,6 +484,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
 
             views = list(await asyncio.gather(*[one_mark(t) for t in open_rows]))
             closed_all = await rt.store.carry_paper_list(status="closed", limit=5000)
+            if include_closed and id is None:  # only these closed rows are shown
+                _clean_pair_tags(b, closed_all[:200])
             data: dict[str, Any] = {"open": views, "summary_closed": paper_summary(closed_all)}
             if id is not None and rows[0]["status"] != "open":
                 data["trade"] = _closed_view(rows[0])
@@ -524,6 +542,11 @@ def register(server: MCPServer, rt: Runtime) -> None:
             if t["status"] != "open":
                 b.miss("carry_paper", "store", "data_unavailable", f"paper pair id={id} is already {t['status']}")
                 return b.build(None, ok=False)
+            _clean_pair_tags(b, [t])  # before the journal mirror copies them
+
+            def reread(row: dict[str, Any]) -> dict[str, Any]:
+                return {**row, "tags": t["tags"]}  # the stored cell is unchanged; shown as cleaned (warned) above
+
             now = rt.now()
             ts = int(now.timestamp())
             already = ("carry_paper", "store", "data_unavailable", f"paper pair id={id} was closed by another call; nothing written")
@@ -531,7 +554,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 if not await rt.store.carry_paper_close(id, status="cancelled", closed_ts=ts, exit_reason=reason, note=note):
                     b.miss(*already)
                     return b.build(None, ok=False)
-                return b.build(_closed_view(await rt.store.carry_paper_get(id)))
+                return b.build(_closed_view(reread(await rt.store.carry_paper_get(id))))
             m = await mark_trade(rt, b, t, ts * 1000)
             if m is None:
                 return b.build(None, ok=False)
@@ -589,7 +612,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
             if not won:
                 b.miss(*already)
                 return b.build(None, ok=False)
-            out = _closed_view(await rt.store.carry_paper_get(id))
+            out = _closed_view(reread(await rt.store.carry_paper_get(id)))
             out["exit_signal_at_close"] = m["exit_signal"]
             return b.build(out)
         except STORE_ERRORS as e:

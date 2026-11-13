@@ -20,7 +20,7 @@ from ..analytics.options import OptionRow, black76_greeks, build_chain, group_by
 from ..analytics.rec_paper import open_paper, settle_paper, summarize
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, STORE_ERRORS, find_expiry, finite_float, r, store_failed, store_ready
+from ._util import READ_ONLY, STORE_ERRORS, find_expiry, finite_float, r, store_failed, store_num, store_ready
 
 PAPER_WARNING = (
     "HYPOTHESIS, paper trade in the local store only: no order is sent. The recommendation method was tested on 2026-10-18 "
@@ -64,6 +64,16 @@ def surface_of(rows: list[OptionRow]) -> dict[str, Any]:
     return {"F": rows[0].forward, "strikes": strikes}
 
 
+def _good_legs(legs: Any) -> tuple[list[list[Any]], bool]:
+    """(legs of the form ``[strike, is_call, qty, exec_iv, entry_price]`` with finite numbers, True when that is all of
+    them). book_paper always stores such a list; another writer can leave anything, and `legs` that is not a list (None
+    after parsing, a number, a nested list) raised TypeError / ValueError in `_view` and in the settlement (item 356)."""
+    if not isinstance(legs, list):
+        return [], False
+    good = [x for x in legs if isinstance(x, list) and len(x) == 5 and all(store_num(v) is not None for v in (x[0], x[2], x[3], x[4]))]
+    return good, bool(good) and len(good) == len(legs)
+
+
 def _view(t: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {
         "id": t["id"],
@@ -77,7 +87,7 @@ def _view(t: dict[str, Any]) -> dict[str, Any]:
         "forward": r(t["forward"], 2),
         "legs": [
             {"strike": k, "type": "call" if c else "put", "qty": q, "exec_iv": r(iv, 4), "entry_price_usd": r(p, 2)}
-            for k, c, q, iv, p in t["legs"]
+            for k, c, q, iv, p in _good_legs(t["legs"])[0]
         ],
         "premium_usd_per_btc": r(t["premium_per_btc"], 2),
         "entry_fees_usd_per_btc": r(t["entry_fees_per_btc"], 2),
@@ -347,6 +357,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
                             except (TypeError, ValueError, AttributeError, OverflowError):
                                 b.miss(f"delivery_prices:{cur}", "deribit", "parse_error", f"bad delivery row {str(d)[:80]}")
                 for t in due:
+                    if not _good_legs(t["legs"])[1]:  # settling on part of the legs would book a wrong P&L for good
+                        b.warn(f"rec_paper {t['id']} not settled: its stored legs are malformed; it stays open")
+                        continue
                     day = datetime.fromtimestamp(t["expiry_ts"], UTC).date().isoformat()
                     dp = deliveries.get(t["currency"], {}).get(day)
                     if dp is None:
@@ -386,6 +399,12 @@ def register(server: MCPServer, rt: Runtime) -> None:
                     if k in s:
                         s[k] = r(s[k], nd)
                 summary[src] = s
+            shown = open_now + (settled[:200] if include_settled else [])
+            if bad_legs := [x["id"] for x in shown if not _good_legs(x["legs"])[1]]:
+                b.warn(
+                    f"paper trade(s) {bad_legs[:10]} have stored legs that are not a list of [strike, is_call, qty, exec_iv, "
+                    "entry_price] numbers; only the well-formed legs are shown"
+                )
             data: dict[str, Any] = {"label": "hypothesis", "open": [_view(x) for x in open_now], "summary_settled": summary}
             if include_settled:
                 data["settled"] = [_view(x) for x in settled[:200]]

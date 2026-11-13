@@ -200,6 +200,16 @@ async def _vrp(tmp_path, mode: tuple | None) -> dict:
     return await _env(rt, "deribit_vrp", VRP_ARGS)
 
 
+_VRP_DROP_REF: list[dict] = []  # one reply per process: fixed clock, fake transports and a fresh DB make it the same each time
+
+
+async def _vrp_drop_ref(tmp_path) -> dict:
+    """The reference reply with the middle DVOL row dropped, computed once per process (a full deribit_vrp, ~0.3 s)."""
+    if not _VRP_DROP_REF:
+        _VRP_DROP_REF.append(await _vrp(tmp_path, ("drop",)))
+    return copy.deepcopy(_VRP_DROP_REF[0])
+
+
 CLOSE_POISON: list[Any] = [math.nan, math.inf, -math.inf, 1e308, -1e308, 10**400, None, "abc", "45.0", True, False, 0, -5.0, 1001.0]
 TS_POISON: list[Any] = [math.nan, math.inf, 1e308, 10**20, -1, True, None, "abc", 1.5]
 ROW_POISON: list[Any] = [None, "abc", 5, {}, [], [1, 2, 3]]
@@ -211,7 +221,7 @@ ROW_POISON: list[Any] = [None, "abc", 5, {}, [], [1, 2, 3]]
     ids=_id,
 )
 async def test_deribit_vrp_drops_a_poisoned_dvol_row_and_says_so(tmp_path, mode):
-    ref = await _vrp(tmp_path, ("drop",))
+    ref = await _vrp_drop_ref(tmp_path)
     env = await _vrp(tmp_path, mode)  # a NaN close gave NaN vols in the reply before
     assert (env["ok"], env["data"], env["missing"]) == (ref["ok"], ref["data"], ref["missing"]), str(env)[:600]
     assert env["ok"] is True

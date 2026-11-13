@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import shutil
 import statistics
 import sys
 from datetime import date, timedelta
@@ -445,7 +446,11 @@ def test_v2g_metrics_only_at_the_verdict_beside_an_unchanged_v1():
 # ----------------------------------------------------------------------------- the runner (read-only DB)
 
 
-async def _db(path: Path, all_rows: list[dict[str, Any]] | None = None, outcomes: list[dict[str, Any]] | None = None) -> None:
+async def _db(
+    template: Path, path: Path, all_rows: list[dict[str, Any]] | None = None, outcomes: list[dict[str, Any]] | None = None
+) -> None:
+    """A store at `path` with the rows; starts from a copy of the migrated template (conftest), not a fresh migration."""
+    shutil.copyfile(template, path)
     s = Store(path)
     await s.init()
     try:
@@ -460,9 +465,9 @@ async def _db(path: Path, all_rows: list[dict[str, Any]] | None = None, outcomes
         await s.aclose()
 
 
-async def test_runner_writes_the_weekly_report_and_refuses_the_early_verdict(tmp_path, monkeypatch, capsys):
+async def test_runner_writes_the_weekly_report_and_refuses_the_early_verdict(tmp_path, monkeypatch, capsys, migrated_store_template):
     db = tmp_path / "db.sqlite"
-    await _db(db)
+    await _db(migrated_store_template, db)
     digest = hashlib.sha256(db.read_bytes()).hexdigest()
     out = tmp_path / "paper" / "pm_gap_REPORT.md"
     assert script.main(["--db", str(db), "--out", str(out), "--now", str(END + 2 * H)]) == 0
@@ -491,9 +496,9 @@ def test_verdict_gate_cannot_be_moved_from_the_command_line(tmp_path, capsys):
         assert "not allowed" in capsys.readouterr().err and not out.exists()
 
 
-async def test_verdict_runs_only_on_the_wall_clock_and_the_registered_t0(tmp_path, monkeypatch):
+async def test_verdict_runs_only_on_the_wall_clock_and_the_registered_t0(tmp_path, monkeypatch, migrated_store_template):
     db = tmp_path / "db.sqlite"
-    await _db(db)  # first snapshot = T0 of this fixture
+    await _db(migrated_store_template, db)  # first snapshot = T0 of this fixture
     monkeypatch.setattr(script.time, "time", lambda: float(verdict_ts(T0) + 60))
     # the clock is past the fixture's gate, but the DB does not start at the registered T0: refused
     code, text = script.build_verdict(str(db))
@@ -509,13 +514,13 @@ async def test_verdict_runs_only_on_the_wall_clock_and_the_registered_t0(tmp_pat
     assert code == 2 and "refused" in text and "Вердикт" not in text
 
 
-async def test_runner_carries_the_gamma_close_time_from_the_db_to_both_reports(tmp_path, monkeypatch):
+async def test_runner_carries_the_gamma_close_time_from_the_db_to_both_reports(tmp_path, monkeypatch, migrated_store_template):
     """Review 2026-11-04 (pm-gap-verdict-both-variants, item 3): closed_ts must travel Store (schema 38) -> load() ->
     report. Other tests give it to the pure functions in memory only, so a column lost or mistyped on the way would print
     zero counts in the weekly 'missing' explanation and in the verdict's second variants without failing anything."""
     rows, _, outs = _early_h24_case()
     db = tmp_path / "db.sqlite"
-    await _db(db, rows, outs)
+    await _db(migrated_store_template, db, rows, outs)
     loaded = {o["market_id"]: o["closed_ts"] for o in script.load(str(db))[1]}
     assert loaded == {o["market_id"]: o["closed_ts"] for o in outs} and all(type(v) is int for v in loaded.values() if v)
     # weekly: of the 'missing' +24 h points (m2, m3, m5) only m2 closed before its point
@@ -863,11 +868,11 @@ def test_v1_verdict_cuts_every_v2g_row_to_entries_before_t0_v2g():
     assert "лише знімки й входи до" in render_verdict_v2g(a)
 
 
-async def test_runner_v1_verdict_text_unchanged_by_v2g_rows_after_t0_v2g(tmp_path, monkeypatch):
+async def test_runner_v1_verdict_text_unchanged_by_v2g_rows_after_t0_v2g(tmp_path, monkeypatch, migrated_store_template):
     texts = []
     for name, rows in (("a", ROWS_G), ("b", _bump_eth(ROWS_G))):
         db = tmp_path / f"{name}.sqlite"
-        await _db(db, rows)
+        await _db(migrated_store_template, db, rows)
         monkeypatch.setattr(script, "T0_TS", T0)
         monkeypatch.setattr(script, "T0_V2G_TS", T0V)
         monkeypatch.setattr(script.time, "time", lambda: float(verdict_ts(T0) + 60))
@@ -877,9 +882,9 @@ async def test_runner_v1_verdict_text_unchanged_by_v2g_rows_after_t0_v2g(tmp_pat
     assert texts[0] == texts[1]  # not one line of the v1 verdict print changes
 
 
-async def test_runner_v1_blocks_do_not_depend_on_t0_v2g(tmp_path, monkeypatch):
+async def test_runner_v1_blocks_do_not_depend_on_t0_v2g(tmp_path, monkeypatch, migrated_store_template):
     db = tmp_path / "db.sqlite"
-    await _db(db, ROWS_OWN, OUTCOMES_OWN)
+    await _db(migrated_store_template, db, ROWS_OWN, OUTCOMES_OWN)
     monkeypatch.setattr(script, "T0_TS", T0)
     monkeypatch.setattr(script.time, "time", lambda: float(verdict_ts(T0) + 60))
     v1_parts, weekly_parts = [], []
@@ -896,9 +901,9 @@ async def test_runner_v1_blocks_do_not_depend_on_t0_v2g(tmp_path, monkeypatch):
     assert v1_parts[0] == v1_parts[1] == v1_parts[2] and weekly_parts[0] == weekly_parts[1] == weekly_parts[2]
 
 
-async def test_runner_v2g_verdict_gate_and_database_checks(tmp_path, monkeypatch, capsys):
+async def test_runner_v2g_verdict_gate_and_database_checks(tmp_path, monkeypatch, capsys, migrated_store_template):
     db = tmp_path / "db.sqlite"
-    await _db(db, ROWS_OWN, OUTCOMES_OWN)
+    await _db(migrated_store_template, db, ROWS_OWN, OUTCOMES_OWN)
     out = tmp_path / "v2g.md"
     # a day before the registered gate: refused by the time gate, nothing written (the wall clock is pinned: on the real
     # one the gate opens on 2027-03-07 and the run would be refused only for the fixture's first snapshot); flags that
@@ -931,11 +936,11 @@ async def test_runner_v2g_verdict_gate_and_database_checks(tmp_path, monkeypatch
     assert code == 2 and "not the registered T0" in text
 
 
-async def test_runner_verdicts_default_to_their_own_files_not_the_weekly_report(tmp_path, monkeypatch):
+async def test_runner_verdicts_default_to_their_own_files_not_the_weekly_report(tmp_path, monkeypatch, migrated_store_template):
     """Review 2026-11-01 (pm-v2g-verdict-report, item 3): without --out both verdicts wrote pm_gap_REPORT.md, which the
     Sunday timer rewrites a few days later. Each verdict now defaults to its own file beside the weekly one."""
     db = tmp_path / "db.sqlite"
-    await _db(db, ROWS_OWN, OUTCOMES_OWN)
+    await _db(migrated_store_template, db, ROWS_OWN, OUTCOMES_OWN)
     weekly = tmp_path / "paper" / "pm_gap_REPORT.md"
     monkeypatch.setenv(script.ENV_OUT, str(weekly))
     assert script.main(["--db", str(db), "--now", str(END + 2 * H)]) == 0

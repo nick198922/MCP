@@ -126,6 +126,47 @@ def clean_row_tags(rows: list[dict[str, Any]]) -> tuple[list[Any], list[Any]]:
     return nonfinite, fixed
 
 
+def _clean_row_cell(rows: list[dict[str, Any]], col: str, as_dict: bool) -> tuple[list[Any], list[Any]]:
+    """Normalise the JSON cell `col` of every row in place to a dict of strings (`as_dict`) or a list of strings. NULL /
+    JSON null stays None. A dict keeps only its string values; a list keeps its string items; a bare string becomes
+    [s] (lists only); anything else (a number, a bool, the other container type) becomes {} / []. Returns (ids whose
+    cell holds NaN / Infinity, left as stored for the caller to handle; ids whose cell was normalised)."""
+    nonfinite: list[Any] = []
+    fixed: list[Any] = []
+    for p in rows:
+        v = p.get(col)
+        if v is None:
+            continue
+        if as_dict:
+            if isinstance(v, dict) and all(isinstance(x, str) for x in v.values()):
+                continue
+        elif isinstance(v, list) and all(isinstance(x, str) for x in v):
+            continue
+        if _has_nonfinite(v):
+            nonfinite.append(p.get("id"))
+            continue
+        if as_dict:
+            p[col] = {str(k): x for k, x in v.items() if isinstance(x, str)} if isinstance(v, dict) else {}
+        elif isinstance(v, str):
+            p[col] = [v]
+        else:
+            p[col] = [x for x in v if isinstance(x, str)] if isinstance(v, list) else []
+        fixed.append(p.get("id"))
+    return nonfinite, fixed
+
+
+def clean_row_rules(rows: list[dict[str, Any]]) -> tuple[list[Any], list[Any]]:
+    """`rules` of trade plans (plan_add writes a JSON object rule -> 'pass' / 'fail' / 'warn') as a dict of strings, in
+    place; see `_clean_row_cell`. A nested value 300 levels deep failed the whole reply in the MCP serialiser (item 357)."""
+    return _clean_row_cell(rows, "rules", as_dict=True)
+
+
+def clean_row_flags(rows: list[dict[str, Any]]) -> tuple[list[Any], list[Any]]:
+    """`entry_flags` of carry paper pairs (carry_paper_open writes a JSON list of scan flags) as a list of strings, in
+    place; see `_clean_row_cell`. A nested value 300 levels deep failed the whole reply in the MCP serialiser (item 357)."""
+    return _clean_row_cell(rows, "entry_flags", as_dict=False)
+
+
 def shown_int(v: int) -> str:
     """`v` as text for a message. An integer of 101+ digits is not echoed: str() of one beyond 4300 digits raises
     ValueError (and so did the message of a tool refusing it), and a 400-digit echo helps nobody."""

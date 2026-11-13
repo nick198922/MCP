@@ -23,6 +23,7 @@ from ..runtime import Runtime
 from ._util import (
     READ_ONLY,
     STORE_ERRORS,
+    clean_row_rules,
     clean_row_tags,
     drop_corrupt_rows,
     finite_float,
@@ -142,6 +143,13 @@ def _sound(b: Builder, rows: list[dict[str, Any]]) -> list[tuple[dict[str, Any],
     _nonfinite, fixed = clean_row_tags(kept)
     if fixed:
         b.warn(f"{len(fixed)} stored plan rows had tags that were not a list of strings; shown as their string items; id {fixed[:10]}")
+    # Rules that are not an object of strings are shown as their string entries (300 levels deep failed the MCP
+    # serialiser, item 357); NaN / Infinity is skipped below as before.
+    _nonfinite, fixed = clean_row_rules(kept)
+    if fixed:
+        b.warn(
+            f"{len(fixed)} stored plan rows had rules that were not an object of strings; shown as their string entries; id {fixed[:10]}"
+        )
     for p in kept:
         if p["entry"] <= 0 or p["entry"] == p["stop"] or (p["r_result"] is not None and abs(p["r_result"]) > MAX_ABS_R):
             bad.append(p["id"])

@@ -1,0 +1,10 @@
+[Unit]
+Description=tradedesk-ladder-weekly (Sunday 12:00 Europe/Kyiv)
+
+[Timer]
+OnCalendar=Sun *-*-* 12:00:00 Europe/Kyiv
+# A missed Sunday (reboot) is still worth a snapshot: catch up on boot. The file is named by its UTC date.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

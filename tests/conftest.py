@@ -115,6 +115,13 @@ def is_loopback(address: object) -> bool:
 
 
 @pytest.fixture(autouse=True)
+def no_server_ladder_dir(monkeypatch):
+    """scripts/checkpoint_report.py also reads the weekly ladder timer's directory (/var/lib/tradedesk-mcp/ladder by
+    default); on the server it exists, so tests point it at a path that is never there to stay host-independent."""
+    monkeypatch.setenv("TRADEDESK_LADDER_DIR", "/nonexistent/tradedesk-tests/ladder")
+
+
+@pytest.fixture(autouse=True)
 def no_real_network(request, monkeypatch):
     """Yields the list of refused addresses (a test of the guard itself may clear it); a non-empty list fails the test."""
     attempts: list[str] = []

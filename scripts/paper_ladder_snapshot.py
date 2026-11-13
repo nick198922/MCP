@@ -9,6 +9,10 @@ is not taken (see the card's registration amendment, item 2).
 Usage:
     uv run python scripts/paper_ladder_snapshot.py --out docs/paper/ladder/2026-10-17-bybit.json \
         --raw-out ~/.cache/tradedesk-agents/paper_carry_bench/ladder/2026-10-17-bybit-raw.json
+    uv run python scripts/paper_ladder_snapshot.py --out-dir /var/lib/tradedesk-mcp/ladder   # <UTC date>-bybit.json
+
+``--out-dir`` names the file by the UTC date of the snapshot (the form ``scripts/checkpoint_report.py`` reads) and
+creates the directory; the weekly user timer ``deploy/user-units/tradedesk-ladder-weekly.*`` uses it.
 """
 
 from __future__ import annotations
@@ -52,10 +56,15 @@ async def fetch() -> list[dict[str, Any]]:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--out", required=True, help="compact summary per symbol (goes to git)")
+    dest = ap.add_mutually_exclusive_group(required=True)
+    dest.add_argument("--out", help="compact summary per symbol (goes to git)")
+    dest.add_argument("--out-dir", help="write the summary to DIR/<UTC date>-bybit.json (created if absent)")
     ap.add_argument("--raw-out", default="", help="optional: all tiers per symbol (large, keep outside the repo)")
     a = ap.parse_args()
     rows = asyncio.run(fetch())
+    taken = time.gmtime()
+    if a.out_dir:
+        a.out = str(Path(a.out_dir).expanduser() / f"{time.strftime('%Y-%m-%d', taken)}-bybit.json")
     by: dict[str, list[dict[str, Any]]] = {}
     for r in rows:
         sym = str(r.get("symbol") or "")
@@ -66,7 +75,7 @@ def main() -> None:
         )
     out = {
         "source": "Bybit GET /v5/market/risk-limit?category=linear (public)",
-        "taken_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "taken_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", taken),
         "leg_notional_usd": NOTIONAL_USD,
         "leverage": LEVERAGE,
         "symbols": {s: ladder_summary(t, notional_usd=NOTIONAL_USD, leverage=LEVERAGE) for s, t in sorted(by.items())},

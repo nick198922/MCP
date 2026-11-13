@@ -17,6 +17,7 @@
 | `TRADEDESK_DASHBOARD_STATE` | `scripts/dashboard.py`, `scripts/journal_refresh.py` | `~/.local/state/tradedesk-dashboard` | Тека стану дашборда; там `journal-refresh.json` (стан оновлення угод) і `journal-refresh.lock` |
 | `TRADEDESK_DATA_DIR` | `scripts/agents_status.py`, `scripts/collector_health.py`, `scripts/dashboard.py`, `scripts/journal_trade_tg.py` | `/var/lib/tradedesk-mcp` | Тека даних сервера: база `tradedesk.sqlite`, `assistant/snapshot.json` тощо |
 | `TRADEDESK_HL_ADDRESS_FILE` | `scripts/journal_refresh.py` | `/var/lib/tradedesk-mcp/journal/hl-address` | Файл з адресою Hyperliquid власника для імпорту публічних угод у журнал (поза git; вміст тут не наводиться) |
+| `TRADEDESK_LADDER_DIR` | `scripts/checkpoint_report.py` | `/var/lib/tradedesk-mcp/ladder` | Каталог щотижневих знімків ladder Bybit (user-таймер `tradedesk-ladder-weekly`), який звіт чекпоінта читає разом із `docs/paper/ladder/` |
 | `TRADEDESK_LIVE_POSITIONS` | `scripts/dashboard.py` | `/var/lib/tradedesk-mcp/assistant/live_positions.json` | Файл стану `scripts/bybit_live.py` (живі позиції Bybit) для вкладки «Позиції» |
 | `TRADEDESK_PRFIX_DIR` | `scripts/pr_watch.py` | `~/tradedesk-prfix` | Окремий клон, у якому сторож PR зливає `main` у гілку PR при конфлікті в документації |
 | `TRADEDESK_PRIVATE_DIR` | `scripts/channel_watch.py` | `~/private` | Приватна тека поза git: `library/courses/<канал>/…` (пости, live, відео) і `tg-inbox/` |

@@ -17,6 +17,7 @@ import sqlite3
 import statistics
 import subprocess
 import sys
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -299,6 +300,26 @@ def test_paper_ladder_main_writes_summary_and_raw(tmp_path, monkeypatch, capsys)
     raw_got = json.loads(raw.read_text())
     assert [t["limit_usd"] for t in raw_got["symbols"]["TINYUSDT"]] == [1_000.0, 50_000.0]
     assert "symbols 2; $2000 leg fits at 2x: 1" in capsys.readouterr().out
+
+
+def test_paper_ladder_out_dir_names_the_file_by_utc_date(tmp_path, monkeypatch):
+    """Item 366: the weekly timer passes a directory; the file is <UTC date>-bybit.json, the directory is created."""
+
+    async def fake_fetch() -> list[dict[str, Any]]:
+        return PAGES["c1"]["result"]["list"]
+
+    taken = time.struct_time((2026, 11, 15, 23, 30, 5, 6, 319, 0))  # Sunday 23:30 UTC (already Monday in Kyiv)
+    monkeypatch.setattr(pls, "fetch", fake_fetch)
+    monkeypatch.setattr(pls, "time", SimpleNamespace(gmtime=lambda: taken, strftime=time.strftime))
+    folder = tmp_path / "var" / "ladder"
+    monkeypatch.setattr(sys, "argv", ["paper_ladder_snapshot.py", "--out-dir", str(folder)])
+    pls.main()
+    assert [p.name for p in folder.iterdir()] == ["2026-11-15-bybit.json"]
+    got = json.loads((folder / "2026-11-15-bybit.json").read_text())
+    assert got["taken_utc"] == "2026-11-15T23:30:05Z" and list(got["symbols"]) == ["TINYUSDT"]
+    monkeypatch.setattr(sys, "argv", ["paper_ladder_snapshot.py", "--out", "x.json", "--out-dir", str(folder)])
+    with pytest.raises(SystemExit):
+        pls.main()  # one destination only
 
 
 # ---------------------------------------------------------------------------------------------------------------------

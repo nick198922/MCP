@@ -59,6 +59,11 @@ KINDS: dict[str, Any] = {"null": None, "abc": "abc", "empty_list": []}
 KEY_KINDS = ("null", "empty_list")  # for a string field a cache is keyed by ("abc" is a valid string there)
 WHERE = {"first": 0, "second": 1, "last": -1}
 
+# deribit_vrp's default 1000-day history is ~0.09 s of pure computation per call (~43 calls here: 4.6 s). 400 days
+# (> the 365-day percentile window + the 30-day straddle) read the same fields, give the same picked mutations and the
+# same answer keys (checked 2026-11-13); only the row counts shrink, still >= 3, so `last` stays a distinct row.
+TOOL_ARGS: dict[str, dict[str, Any]] = {**ARGS, "deribit_vrp": {"history_days": 400}}
+
 # Sources cached in-process, which only the cold-cache test breaks before the cache is filled.
 CCXT_MARKETS = re.compile(r"^ccxt:[^.]+\.load_markets[.\[]")
 HL_COIN_NAMES = re.compile(r"^http:api\.hyperliquid\.xyz/info(\[\*\])?\.universe\[\*\]\.name$")
@@ -287,14 +292,14 @@ async def run_tool(tmp_path, name: str, seeded: Path) -> dict[str, Any]:
         # one-shot side effects (carry_paper_close), the second records only the fields every call reads again.
         for recording in (None, {}):
             m.seen = recording
-            res = await c.call_tool(name, ARGS.get(name, {}))
+            res = await c.call_tool(name, TOOL_ARGS.get(name, {}))
             if (err := _failure(res)) is not None:
                 report["failures"]["clean"] = err
         triples = mutations(m.seen, keep=lambda f: not is_key(f))
         m.seen = None
         for field, kind, where in triples:
             m.target, m.hits = (field, KINDS[kind], where), 0
-            res = await c.call_tool(name, ARGS.get(name, {}))
+            res = await c.call_tool(name, TOOL_ARGS.get(name, {}))
             report["mutations"] += 1
             report["hits"] += bool(m.hits)
             if (err := _failure(res)) is not None:
@@ -310,7 +315,7 @@ async def _cold_calls(tmp_path, name: str, m: Mutator, db: str, calls: int, seed
     out = []
     async with Client(srv) as c:
         for _ in range(calls):
-            if (err := _failure(await c.call_tool(name, ARGS.get(name, {})))) is not None:
+            if (err := _failure(await c.call_tool(name, TOOL_ARGS.get(name, {})))) is not None:
                 out.append(err)
     return out
 

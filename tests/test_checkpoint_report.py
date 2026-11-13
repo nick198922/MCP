@@ -455,7 +455,7 @@ def test_carry_b_row_notes_the_skipped_weekly_ladder_snapshots():
 
 
 def test_script_loads_the_ladder_snapshots(tmp_path):
-    snaps = script.load_ladder()  # the repository's own snapshots, 17.10 and 13.11 (item 365)
+    snaps = script.load_ladder(script.LADDER)  # the repository's own snapshots, 17.10 and 13.11 (item 365)
     dates = [s["date"] for s in snaps]
     assert dates[:2] == ["2026-10-17", "2026-11-13"] and snaps[0]["taken_ms"] == cp._ms(2026, 10, 17, 13, 50) + 29_000
     assert all(isinstance(v, float) for v in snaps[1]["limits"].values()) and len(snaps[1]["limits"]) > 800
@@ -467,6 +467,55 @@ def test_script_loads_the_ladder_snapshots(tmp_path):
     got = script.load_ladder(tmp_path, errors)
     assert got == [{"date": "2026-11-21", "taken_ms": cp._ms(2026, 11, 21, 10), "limits": {"XUSDT": 5e5}}]
     assert len(errors) == 1 and "2026-11-20-bybit.json" in errors[0]
+
+
+def _snap(folder: Path, day: str, limit: float, hour: int = 10) -> None:
+    folder.mkdir(parents=True, exist_ok=True)
+    body = {"taken_utc": f"{day}T{hour:02d}:00:00Z", "symbols": {"XUSDT": {"max_position_usd": limit}}}
+    (folder / f"{day}-bybit.json").write_text(json.dumps(body), encoding="utf-8")
+
+
+def test_load_ladder_merges_repo_and_timer_dirs(tmp_path, monkeypatch):
+    """Item 366: the weekly timer's snapshots (outside git) and the repository's are one sorted list, one per date."""
+    repo, timer = tmp_path / "repo", tmp_path / "timer"
+    _snap(repo, "2026-10-17", 1e6)
+    _snap(repo, "2026-11-13", 2e6)
+    _snap(timer, "2026-11-08", 3e6)
+    _snap(timer, "2026-11-13", 9e6, hour=12)  # the same day in both places: the repository's copy is kept
+    _snap(timer, "2026-11-15", 4e6)
+    errors: list[str] = []
+    got = script.load_ladder([repo, timer], errors)
+    assert [s["date"] for s in got] == ["2026-10-17", "2026-11-08", "2026-11-13", "2026-11-15"]
+    assert [s["limits"]["XUSDT"] for s in got] == [1e6, 3e6, 2e6, 4e6]
+    assert got[2]["taken_ms"] == cp._ms(2026, 11, 13, 10) and errors == []
+    # The default reads docs/paper/ladder/ and TRADEDESK_LADDER_DIR.
+    monkeypatch.setattr(script, "LADDER", repo)
+    monkeypatch.setenv("TRADEDESK_LADDER_DIR", str(timer))
+    assert script.ladder_dirs() == [repo, timer] and script.load_ladder() == got
+    monkeypatch.delenv("TRADEDESK_LADDER_DIR")
+    assert script.ladder_dirs() == [repo, Path("/var/lib/tradedesk-mcp/ladder")]
+
+
+def test_load_ladder_unreadable_copy_falls_back_to_the_other_dir(tmp_path):
+    repo, timer = tmp_path / "repo", tmp_path / "timer"
+    repo.mkdir()
+    (repo / "2026-11-15-bybit.json").write_text("{broken", encoding="utf-8")
+    _snap(timer, "2026-11-15", 4e6)
+    errors: list[str] = []
+    got = script.load_ladder([repo, timer], errors)
+    assert [(s["date"], s["limits"]["XUSDT"]) for s in got] == [("2026-11-15", 4e6)]
+    assert len(errors) == 1 and "узято копію з іншого каталогу" in errors[0]
+
+
+def test_load_ladder_missing_dir_is_not_an_error(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    _snap(repo, "2026-10-17", 1e6)
+    errors: list[str] = []
+    alone = script.load_ladder(repo, errors)
+    assert script.load_ladder([repo, tmp_path / "absent"], errors) == alone and len(alone) == 1 and errors == []
+    assert script.load_ladder([tmp_path / "absent"], errors) == [] and errors == []
+    monkeypatch.setattr(script, "LADDER", repo)  # the report's default path with the timer directory absent
+    assert script.load_ladder() == alone
 
 
 def test_carry_a_g_event_gives_no_and_other_criteria_wait():

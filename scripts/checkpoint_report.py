@@ -27,6 +27,7 @@ The section «S12: правило зняття» applies the owner's rule Q-2026
 mean R below -0.827 -> stop and review the execution; v4 entry, v4 + v9: n >= 100 and below -0.524R -> drop; else
 «рано» or «тримати»), with n, mean R and a 95 % CI (``tradedesk.analytics.checkpoint.s12_stop_rule``, item 313).
 The carry rows also count criteria (e) and (ye) (item 365): the dated Bybit ladder snapshots of ``docs/paper/ladder/``
+and of the weekly timer's directory (``TRADEDESK_LADDER_DIR``, default ``/var/lib/tradedesk-mcp/ladder``; item 366)
 are read for the Bybit leg's 2x position limit (files only, no network).
 The text (Ukrainian) is printed and, with ``--out``, written to a file.
 """
@@ -35,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sqlite3
 import sys
@@ -59,6 +61,8 @@ from tradedesk.collector.carry_paper_engine import PARAMS_A  # noqa: E402
 DEFAULT_DB = "/var/lib/tradedesk-mcp/tradedesk.sqlite"
 BENCH = ROOT / "docs" / "paper" / "bench.json"
 LADDER = ROOT / "docs" / "paper" / "ladder"  # dated Bybit ladder snapshots (scripts/paper_ladder_snapshot.py)
+# Weekly snapshots of the user timer deploy/user-units/tradedesk-ladder-weekly.* (outside git); TRADEDESK_LADDER_DIR overrides.
+LADDER_SERVER = "/var/lib/tradedesk-mcp/ladder"
 IDEAS = ROOT / "docs" / "ideas"
 CARRY_KINDS = ("side", "funding", "mark", "close", "event")
 # Every table a forward block reads. The migrations create them all, so an absent one means an older schema or another
@@ -333,22 +337,45 @@ def load_idea_cards(ideas: Path = IDEAS) -> list[dict[str, Any]]:
     return forward_cards(texts)
 
 
-def load_ladder(folder: Path = LADDER, errors: list[str] | None = None) -> list[dict[str, Any]]:
+def ladder_dirs() -> list[Path]:
+    """Where the ladder snapshots live, in order of precedence: the repository's ``docs/paper/ladder/`` and the weekly
+    timer's directory (``TRADEDESK_LADDER_DIR``, default ``/var/lib/tradedesk-mcp/ladder``)."""
+    return [LADDER, Path(os.environ.get("TRADEDESK_LADDER_DIR") or LADDER_SERVER)]
+
+
+def load_ladder(folders: Path | Sequence[Path] | None = None, errors: list[str] | None = None) -> list[dict[str, Any]]:
     """The dated Bybit ladder snapshots ``YYYY-MM-DD-bybit.json`` for carry criterion (ye): per file its date, the moment
     it was taken (``taken_utc``, UTC ms) and the largest 2x position per Bybit symbol (``max_position_usd``; None when no
-    tier allows 2x). A file that cannot be read is skipped and named in ``errors``."""
-    out = []
-    for p in sorted(folder.glob("*-bybit.json")):
+    tier allows 2x). ``folders`` defaults to ``ladder_dirs()``; a missing directory gives nothing, without an error. A
+    date found in several directories is taken once, from the first one that reads; the result is sorted by date. A file
+    that cannot be read is skipped and named in ``errors``."""
+    if folders is None:
+        folders = ladder_dirs()
+    elif isinstance(folders, Path):
+        folders = [folders]
+    got: dict[str, dict[str, Any]] = {}
+    failed: list[tuple[Path, str]] = []
+    for folder in folders:
         try:
-            d = json.loads(p.read_text(encoding="utf-8"))
-            taken = datetime.strptime(d["taken_utc"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
-            limits = {str(s): v.get("max_position_usd") for s, v in d["symbols"].items()}
-        except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
-            if errors is not None:
-                errors.append(f"знімок ladder {p.name} не прочитано ({type(e).__name__}): для (є) його немає")
-            continue
-        out.append({"date": p.name[:10], "taken_ms": int(taken.timestamp() * 1000), "limits": limits})
-    return out
+            files = sorted(folder.glob("*-bybit.json"))
+        except OSError:
+            files = []
+        for p in files:
+            if p.name[:10] in got:
+                continue
+            try:
+                d = json.loads(p.read_text(encoding="utf-8"))
+                taken = datetime.strptime(d["taken_utc"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+                limits = {str(s): v.get("max_position_usd") for s, v in d["symbols"].items()}
+            except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
+                failed.append((p, type(e).__name__))
+                continue
+            got[p.name[:10]] = {"date": p.name[:10], "taken_ms": int(taken.timestamp() * 1000), "limits": limits}
+    if errors is not None:
+        for p, err in failed:
+            tail = "узято копію з іншого каталогу" if p.name[:10] in got else "для (є) його немає"
+            errors.append(f"знімок ladder {p} не прочитано ({err}): {tail}")
+    return [got[k] for k in sorted(got)]
 
 
 def load_paper_state(db: str) -> dict[str, Any] | None:

@@ -1,7 +1,9 @@
-"""The Graph provider (providers/thegraph.py) behind MockTransport, on hand-built synthetic answers (no live sample yet).
+"""The Graph provider (providers/thegraph.py) behind MockTransport.
 
-Once the owner has run `scripts/thegraph_sample.py` on the server, the happy-path and error tests switch to
-`tests/fixtures/thegraph_live_<date>.json` (same labels: meta, page_1, page_2, error_query; each with status and body).
+Happy path, paging and the GraphQL error replay the live gateway answers in `tests/fixtures/thegraph_live_2026-10-29.json`
+(recorded by `scripts/thegraph_sample.py`: labels meta, page_1, page_2, error_query, each with the request sent, status
+and raw body), and check that the provider sends the same request that produced each answer. Shapes the live sample does
+not have (partial errors, auth errors in a 200 body, a short last page) stay on hand-built synthetic answers (`FIX`).
 """
 
 import gzip
@@ -23,6 +25,7 @@ from tradedesk.providers.thegraph import POLYMARKET_SUBGRAPH_ID, TheGraph, heade
 from tradedesk.runtime import Runtime
 
 FIX = json.loads((Path(__file__).parent / "fixtures/thegraph_synthetic_2026-10-28.json").read_text())
+LIVE = json.loads((Path(__file__).parent / "fixtures/thegraph_live_2026-10-29.json").read_text())
 SECRET = "gRaPhKeY0123456789abcdefSECRET"
 PNL_ID = "7nQSyntheticPnzSubgraphXd1111111111111111111"  # base58: no 0, O, I, l
 PAGES_Q = (
@@ -53,19 +56,37 @@ def answer(body, status=200):
     return lambda req: httpx.Response(status, json=body)
 
 
+def live(label):
+    """Replay one recorded gateway answer (status and raw body) from the live sample."""
+    return answer(LIVE[label]["body"], LIVE[label]["status"])
+
+
+def sent_as_recorded(req, label):
+    """The provider sent the request that produced the recorded answer: same path, query text and variables."""
+    rec = LIVE[label]["request"]
+    body = json.loads(req.content)
+    return req.url.path == rec["path"] and body["query"] == rec["query"] and body["variables"] == rec["variables"]
+
+
+def test_live_sample_is_the_polymarket_subgraph():
+    assert LIVE["_source"].startswith("LIVE, 2026-10-29") and LIVE["subgraph_id"] == POLYMARKET_SUBGRAPH_ID
+    assert all(LIVE[k]["status"] == 200 for k in ("meta", "page_1", "page_2", "error_query"))
+    assert all(LIVE[k]["request"]["path"] == f"/api/subgraphs/id/{POLYMARKET_SUBGRAPH_ID}" for k in LIVE["outcomes"])
+
+
 async def test_query_happy_path_sends_bearer_header_and_explicit_user_agent():
-    rt, seen = make_rt(answer(FIX["meta"]))
+    rt, seen = make_rt(live("meta"))
     f = await rt.thegraph.meta(POLYMARKET_SUBGRAPH_ID)
-    assert f.data["_meta"]["block"]["number"] == 78000000
+    assert f.data["_meta"]["block"]["number"] == 96398364
+    assert f.data["_meta"]["block"]["timestamp"] == 1793302975 and f.data["_meta"]["hasIndexingErrors"] is False
     req = seen[0]
     assert req.method == "POST"
     assert str(req.url) == f"https://gateway.thegraph.com/api/subgraphs/id/{POLYMARKET_SUBGRAPH_ID}"
+    assert sent_as_recorded(req, "meta")
     assert SECRET not in str(req.url)
     assert req.headers["authorization"] == f"Bearer {SECRET}"
     ua = req.headers["user-agent"]
     assert ua.startswith("tradedesk-mcp/") and "python" not in ua.lower()  # Cloudflare 1010 refuses Python-urllib
-    body = json.loads(req.content)
-    assert "_meta" in body["query"] and body["variables"] == {}
     ev = f.evidence
     assert ev.provider == "thegraph" and ev.tool == "graphql" and ev.cached is False
     assert ev.args["subgraph_id"] == POLYMARKET_SUBGRAPH_ID
@@ -73,12 +94,31 @@ async def test_query_happy_path_sends_bearer_header_and_explicit_user_agent():
 
 
 async def test_polymarket_helper_passes_variables():
-    rt, seen = make_rt(answer(FIX["page_2"]))
-    f = await rt.thegraph.polymarket("query($n: Int!) { positions(first: $n) { id amount } }", {"n": 1})
-    assert f.data["positions"][0]["id"] == "0x03"
-    assert seen[0].url.path.endswith(POLYMARKET_SUBGRAPH_ID)
-    assert json.loads(seen[0].content)["variables"] == {"n": 1}
-    assert f.evidence.args["variables"] == {"n": 1}
+    rec = LIVE["page_2"]["request"]
+    rt, seen = make_rt(live("page_2"))
+    f = await rt.thegraph.polymarket(rec["query"], rec["variables"])
+    assert f.data["conditions"][0]["id"] == "0x0000048bd9dcb0e2adb49f52791e9152a39cb491222a6fe4a3e03457b6f2a178"
+    assert sent_as_recorded(seen[0], "page_2")
+    assert f.evidence.args["variables"] == rec["variables"]
+
+
+async def test_query_pages_on_live_pages_sends_the_recorded_cursor():
+    pages = ["page_1", "page_2"]
+    rt, seen = make_rt(lambda req: live(pages[len(seen) - 1])(req))
+    q = LIVE["page_1"]["request"]["query"]  # declares `$lastId: ID!`, the type of `Condition.id` in the live schema
+    f = await rt.thegraph.query_pages(POLYMARKET_SUBGRAPH_ID, q, "conditions", page_size=2, max_pages=2)
+    ids = [r["id"] for p in pages for r in LIVE[p]["body"]["data"]["conditions"]]
+    assert [r["id"] for r in f.data["rows"]] == ids and len(set(ids)) == 4
+    assert f.data["pages"] == 2 and f.data["complete"] is False  # both live pages are full, so the walk was cut
+    assert sent_as_recorded(seen[0], "page_1") and sent_as_recorded(seen[1], "page_2")
+
+
+async def test_live_graphql_error_is_backend_error_with_the_gateway_message():
+    rt, _ = make_rt(live("error_query"))
+    with pytest.raises(ProviderError) as e:
+        await rt.thegraph.polymarket(LIVE["error_query"]["request"]["query"])
+    assert e.value.reason == "backend_error"
+    assert f"{e.value.reason}: {e.value.detail}" == LIVE["outcomes"]["error_query"]  # as recorded on 29.10
 
 
 @pytest.mark.parametrize(
@@ -86,7 +126,8 @@ async def test_polymarket_helper_passes_variables():
     [("error_query", "backend_error"), ("error_partial", "backend_error"), ("error_auth", "auth")],
 )
 async def test_graphql_errors_payload_is_a_failure_and_not_cached(sample, reason):
-    rt, seen = make_rt(answer(FIX[sample]), cache_scale=1.0)
+    body = LIVE["error_query"]["body"] if sample == "error_query" else FIX[sample]
+    rt, seen = make_rt(answer(body), cache_scale=1.0)
     for _ in range(2):
         with pytest.raises(ProviderError) as e:
             await rt.thegraph.polymarket("{ foo }")
@@ -213,7 +254,7 @@ async def test_network_error_text_is_scrubbed():
     assert e.value.reason == "network" and SECRET not in e.value.detail and "***" in e.value.detail
 
 
-async def test_query_pages_walks_by_id_cursor():
+async def test_query_pages_walks_by_id_cursor():  # synthetic: a short last page ends the walk (complete=True)
     pages = [FIX["page_1"], FIX["page_2"]]
     rt, seen = make_rt(lambda req: httpx.Response(200, json=pages[len(seen) - 1]))
     f = await rt.thegraph.query_pages(POLYMARKET_SUBGRAPH_ID, PAGES_Q, "positions", page_size=2)

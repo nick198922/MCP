@@ -45,6 +45,45 @@ def test_note_is_short_and_empty_without_cards(tmp_path):
     assert all(len(line) < 400 for line in text.splitlines())
 
 
+def test_refill_note_names_the_standing_card_even_with_no_open_items(tmp_path):
+    refill = "\n\n## Як поповнювати\n- BACKLOG\n"
+    write(tmp_path, "20261102-standing", items="- [x] 1. зроблено")
+    with open(tmp_path / "IDEA-20261102-standing.md", "a", encoding="utf-8") as f:
+        f.write(refill)
+    write(tmp_path, "20261103-two", items="- [ ] 1. a\n- [ ] 2. b")
+    with open(tmp_path / "IDEA-20261103-two.md", "a", encoding="utf-8") as f:
+        f.write(refill)
+    write(tmp_path, "20261104-closed", status="rejected")
+    with open(tmp_path / "IDEA-20261104-closed.md", "a", encoding="utf-8") as f:
+        f.write(refill)
+    write(tmp_path, "20261105-no-refill")
+    write(tmp_path, "20261106-not-owner", owner=False)
+    with open(tmp_path / "IDEA-20261106-not-owner.md", "a", encoding="utf-8") as f:
+        f.write(refill)
+    cards = oc.refill_cards(tmp_path)
+    assert cards == [("IDEA-20261102-standing.md", 0), ("IDEA-20261103-two.md", 2)]
+    text = oc.refill_note(cards)
+    assert text.count("REFILL: ") == 2
+    assert "IDEA-20261102-standing.md has 0 open item(s)" in text
+    assert "Як поповнювати" in text and "before step f" in text and "BUDGET" in text
+    assert oc.refill_note([]) == ""
+
+
+def test_main_prints_both_notes(tmp_path, capsys):
+    write(tmp_path, "20261102-standing", items="- [x] 1. зроблено")
+    with open(tmp_path / "IDEA-20261102-standing.md", "a", encoding="utf-8") as f:
+        f.write("\n\n## Як поповнювати\n- BACKLOG\n")
+    write(tmp_path, "20261111-open")
+    assert oc.main([str(tmp_path)]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("OWNER CARDS") and "\nREFILL: IDEA-20261102-standing.md has 0" in out
+
+
+def test_the_live_standing_card_gets_a_refill_note():
+    ideas = Path(__file__).resolve().parent.parent / "docs" / "ideas"
+    assert "IDEA-20261102-standing-improvements.md" in [c[0] for c in oc.refill_cards(ideas)]
+
+
 def test_the_launcher_appends_the_note():
     sh = (Path(__file__).resolve().parent.parent / "scripts" / "nightly_agents.sh").read_text(encoding="utf-8")
     assert 'OWNER_NOTE="$(python3 "$REPO/scripts/owner_cards.py" docs/ideas' in sh

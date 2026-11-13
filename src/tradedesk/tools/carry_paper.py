@@ -23,7 +23,7 @@ from ..analytics.journal import pnl as pnl_fn
 from ..collector.market_data import BAR_MS, bars_4h, funding_entries, parse_bar
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import READ_ONLY, STORE_ERRORS, clean_row_tags, finite_float, r, reject_bad_id, store_failed, store_ready
+from ._util import READ_ONLY, STORE_ERRORS, clean_row_flags, clean_row_tags, finite_float, r, reject_bad_id, store_failed, store_ready
 from .perps import MAX_FUNDING_RATE, TAKER_FEES, current_funding
 
 # carry_paper_open writes a new row on every call (a retry after a timeout records a second pair), so it is not idempotent.
@@ -174,7 +174,8 @@ async def mark_trade(rt: Runtime, b: Builder, t: dict[str, Any], now_ms: int) ->
 def _clean_pair_tags(b: Builder, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """`rows` with `tags` as a list of strings, in place, so no pair is hidden (item 356): tags 300 levels deep failed the
     MCP serialiser after carry_paper_close had written the close and its journal mirror, a number raised TypeError in the
-    close. Anything that is not a list of strings is shown as its string items, NaN / Infinity in tags as []; warnings."""
+    close. Anything that is not a list of strings is shown as its string items, NaN / Infinity in tags as []; warnings.
+    `entry_flags` is normalised the same way (item 357)."""
     nonfinite, fixed = clean_row_tags(rows)
     for t in rows:
         if t.get("id") in nonfinite:
@@ -183,6 +184,15 @@ def _clean_pair_tags(b: Builder, rows: list[dict[str, Any]]) -> list[dict[str, A
         b.warn(f"stored paper pair id {fixed[:10]} had tags that were not a list of strings; shown as their string items")
     if nonfinite:
         b.warn(f"stored paper pair id {nonfinite[:10]} had NaN / Infinity in tags; shown as no tags")
+    # entry_flags the same way (300 levels deep failed the reply of carry_paper_status / _close, item 357).
+    nonfinite, fixed = clean_row_flags(rows)
+    for t in rows:
+        if t.get("id") in nonfinite:
+            t["entry_flags"] = []
+    if fixed:
+        b.warn(f"stored paper pair id {fixed[:10]} had entry_flags that were not a list of strings; shown as their string items")
+    if nonfinite:
+        b.warn(f"stored paper pair id {nonfinite[:10]} had NaN / Infinity in entry_flags; shown as no flags")
     return rows
 
 
@@ -545,7 +555,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
             _clean_pair_tags(b, [t])  # before the journal mirror copies them
 
             def reread(row: dict[str, Any]) -> dict[str, Any]:
-                return {**row, "tags": t["tags"]}  # the stored cell is unchanged; shown as cleaned (warned) above
+                # the stored cells are unchanged; shown as cleaned (warned) above
+                return {**row, "tags": t["tags"], "entry_flags": t.get("entry_flags")}
 
             now = rt.now()
             ts = int(now.timestamp())

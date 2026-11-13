@@ -804,7 +804,7 @@ class Store:
         if prev_row and prev_row[1]:
             try:
                 prev = {str(p["market"]): p for p in json.loads(prev_row[1])}
-            except (ValueError, TypeError, KeyError):
+            except (ValueError, TypeError, KeyError, RecursionError):  # RecursionError: a cell nested ~10000 deep (item 361)
                 prev = {}
         changed = [p for m, p in now.items() if m not in prev or key(prev[m]) != key(p)]
         closed = [{"market": m, "side": "closed", "size": 0.0, "title": p.get("title")} for m, p in prev.items() if m not in now]

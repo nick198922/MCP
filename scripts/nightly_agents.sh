@@ -333,7 +333,7 @@ if [[ $MODE == continue ]]; then
   if [[ -s "$LOG_DIR/refusal.txt" ]]; then
     refused="
 
-The launcher refused the previous delivery. Fix exactly this before you request delivery again:
+The previous delivery was refused (by the launcher, or by CI on GitHub after it: scripts/pr_watch.py). Fix exactly this before you request delivery again:
 $(cat "$LOG_DIR/refusal.txt")"
   fi
   PROMPT="$PROMPT

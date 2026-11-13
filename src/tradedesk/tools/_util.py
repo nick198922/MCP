@@ -167,6 +167,38 @@ def clean_row_flags(rows: list[dict[str, Any]]) -> tuple[list[Any], list[Any]]:
     return _clean_row_cell(rows, "entry_flags", as_dict=False)
 
 
+# Nesting levels a free-form stored JSON cell (events.meta, alerts.payload, cp_* payloads) may have in a reply. The MCP
+# serialiser (pydantic_core.to_json) fails the whole tool result at about 254 levels from the envelope root ("Circular
+# reference detected (depth exceeded)", item 358); real cells nest a few levels and the envelope adds under ten.
+MAX_CELL_DEPTH = 64
+
+
+def json_too_deep(v: Any, limit: int = MAX_CELL_DEPTH) -> bool:
+    """True when the parsed JSON `v` nests lists / dicts more than `limit` levels (a scalar is 0, [] is 1, [[]] is 2);
+    iterative, so any nesting depth is safe."""
+    stack = [(v, 0)]
+    while stack:
+        x, d = stack.pop()
+        if isinstance(x, (list, dict)):
+            if d + 1 > limit:
+                return True
+            stack.extend((y, d + 1) for y in (x.values() if isinstance(x, dict) else x))
+    return False
+
+
+def cap_cell_depth(rows: list[dict[str, Any]], col: str, key: str = "id", as_dict: bool = False) -> list[Any]:
+    """Replace the JSON cell `col` of every row nested deeper than MAX_CELL_DEPTH, in place, by None (or {} when
+    `as_dict`: callers that read keys from it); returns the `key` of the rows changed, for the caller's warning. A cell
+    300 levels deep failed the whole reply in the MCP serialiser (item 358); shallower cells pass unchanged. The type
+    checks of `_clean_row_cell` (item 357) do not fit here: these cells are free-form JSON."""
+    capped: list[Any] = []
+    for p in rows:
+        if json_too_deep(p.get(col)):
+            p[col] = {} if as_dict else None
+            capped.append(p.get(key))
+    return capped
+
+
 def shown_int(v: int) -> str:
     """`v` as text for a message. An integer of 101+ digits is not echoed: str() of one beyond 4300 digits raises
     ValueError (and so did the message of a tool refusing it), and a 400-digit echo helps nobody."""

@@ -1,0 +1,9 @@
+# 2026-11-13 — глибокі JSON-клітинки в `events_list`, `alerts_recent`, `paper_carry_status` (пункт 358)
+
+Інваріант 1 `CLAUDE.md`; знайдено пробою в пункті 357 ([зміни](2026-11-13-rules-flags-robust.md)).
+
+- **Помилка:** `events.meta` і `alerts.payload`, вкладені на 300 рівнів, розбиралися, але валили серіалізатор MCP («Circular reference detected (depth exceeded)», `is_error=true`) у `events_list` і `alerts_recent`. Те саме в `paper_carry_status`: глибокий `payload` циклу (`engine.new_entries_stopped`), маркування (`open[].mark`) або закрита угода `trade` (`closed_trades`) потрапляли у відповідь як є. Серіалізатор ламається приблизно на 254 рівнях від кореня відповіді.
+- **Виправлено:** нові `json_too_deep` і `cap_cell_depth` у `tools/_util.py` (ітеративні, `MAX_CELL_DEPTH = 64`). Хелпери пункту 357 (`_clean_row_cell`) тут не підходять: ці клітинки — довільний JSON, а не словник чи список рядків. Клітинка, глибша за 64 рівні, показується як `null` (`payload` у `cp_*` читається як `{}`, закрита угода не входить у статистику) з попередженням, де названо id рядка. Мілкі клітинки не змінюються, сховище теж.
+- **Сховище:** клітинка, глибша приблизно за 10 000 рівнів, давала `RecursionError` у `json.loads`. Тепер вона читається як невалідний JSON: `meta`/`payload` лишаються текстом, у `last_alerts_with_prefix` стає `null`. Раніше вона валила `events_list`, `event_study`, `alerts_recent` і кожен тік алертів. `radar_list` тепер читає невалідні або надто глибокі `smile`/`expiries` як `null`; раніше один такий рядок ховав увесь архів радара від знімка асистента.
+- **Перевірено, не MCP-вихід:** `components` у `cycle_regime_log` читає лише колектор (порівнює `state`), `RecursionError` там уже ловився. `smile`/`expiries` радара йдуть у знімок лише як числа (`normalize_row`, `forward_vols`). `state` у `cp_position` у відповідь не потрапляє.
+- Новий `tests/test_tool_failure_extra_25.py` (29 тестів). Якщо вимкнути обмеження глибини, падають 10 з них.

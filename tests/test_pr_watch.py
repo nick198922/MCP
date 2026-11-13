@@ -15,6 +15,14 @@ import pr_watch as pw  # noqa: E402
 NOW = datetime(2026, 10, 20, 12, 0, tzinfo=UTC)
 
 
+@pytest.fixture(autouse=True)
+def log_dir(tmp_path, monkeypatch):
+    """hand_back writes the launcher's state: never the real one from a test."""
+    d = tmp_path / "state"
+    monkeypatch.setattr(pw, "LOG_DIR", d)
+    return d
+
+
 def pr(number=1, ref="agent/2026-10-20-x", sha="abc", updated="2026-10-20T11:30:00Z", ready=False):
     return {
         "number": number,
@@ -112,7 +120,7 @@ def test_red_ci_of_a_ready_pr_is_rerun_once_then_told():
     msgs, state = pw.watch(fake([pr(ready=True)], {"abc": RED}, calls=calls), "o/r", {}, NOW)
     assert msgs == [] and ("POST", "/repos/o/r/actions/runs/555/rerun-failed-jobs") in calls
     calls.clear()
-    msgs, _ = pw.watch(fake([pr(ready=True)], {"abc": RED}, calls=calls), "o/r", state, NOW)
+    msgs, _ = pw.watch(fake([pr(ready=True)], {"abc": RED}, calls=calls), "o/r", state, NOW, give_back=None)
     assert len(msgs) == 1 and "після перезапуску" in msgs[0][0] and not any(m == "POST" for m, _ in calls)
 
 
@@ -178,6 +186,64 @@ def test_union_resolve_keep_both_takes_mains_edit_then_the_branchs_new_lines():
     assert pw.union_resolve(text, keep_both=True) == "x\nmain edit\nold note\nbranch line\ny\n"
     same = "x\n" + hunk("same\n", "old\n", "same\n")
     assert pw.union_resolve(same, keep_both=True) == "x\nsame\n"
+
+
+def test_union_resolve_keep_both_lets_the_branchs_edit_replace_a_line_main_left_alone():
+    """PR #1077 (13.11): the branch ticked item 358, main added 359 under it; keeping main's unticked 358 beside the
+    branch's ticked one reopened the done item (and the renumbering made the ticked one a duplicate 360)."""
+    text = "a\n" + hunk("- [x] 358. done\n", "- [ ] 358. todo\n", "- [ ] 358. todo\n- [x] 359. other\n") + "b\n"
+    resolved = pw.union_resolve(text, keep_both=True)
+    assert resolved == "a\n- [x] 358. done\n- [x] 359. other\nb\n"
+    assert pw.renumber_duplicates(resolved, "") is None
+
+
+def red_on(version):
+    return [
+        {
+            "name": f"test ({version})",
+            "status": "completed",
+            "conclusion": "failure",
+            "details_url": "https://github.com/o/r/actions/runs/555/job/9",
+        }
+    ]
+
+
+def test_a_red_agent_pr_is_handed_back_to_the_agents_once_per_commit(log_dir):
+    told = {"1": {"sha": "abc", "kinds": [], "rerun": True}}  # re-run once already: this failure is told
+    msgs, state = pw.watch(fake([pr(ready=True)], {"abc": red_on("3.11")}), "o/r", told, NOW)
+    ((msg, _),) = msgs
+    assert "після перезапуску" in msg and "Повернув агентам" in msg and "Автозлиття не буде" not in msg
+    assert (log_dir / "parked.state").read_text() == f"agent/2026-10-20-x {int(NOW.timestamp())} 1 2026-10-20_120000\n"
+    note = (log_dir / "refusal.txt").read_text()
+    assert "PR #1" in note and "test (3.11)" in note and "--python 3.11" in note
+    assert state["1"]["handbacks"] == 1 and "handback" in state["1"]["kinds"]
+    again, _ = pw.watch(fake([pr(ready=True)], {"abc": red_on("3.11")}), "o/r", state, NOW, give_back=lambda *a: pytest.fail("once"))
+    assert again == []
+
+
+def test_hand_backs_stop_at_the_limit_across_commits():
+    state = {"1": {"sha": "old", "kinds": ["red", "handback"], "handbacks": pw.HANDBACK_MAX}}
+    _, state = pw.watch(fake([pr(ready=True, sha="new")], {"new": RED}), "o/r", state, NOW)  # re-run of the new commit
+    assert state["1"]["handbacks"] == pw.HANDBACK_MAX
+    msgs, _ = pw.watch(fake([pr(ready=True, sha="new")], {"new": RED}), "o/r", state, NOW, give_back=lambda *a: pytest.fail("limit"))
+    assert len(msgs) == 1 and "CI впав" in msgs[0][0]
+
+
+def test_no_hand_back_for_doctor_fixes_unready_prs_or_while_work_is_under_way(log_dir):
+    for p in (pr(ready=True, ref="agent/2026-10-20-fix-x"), pr(ready=True, ref="claude/x"), pr()):
+        told = {"1": {"sha": "abc", "kinds": [], "rerun": True}}
+        msgs, _ = pw.watch(fake([p], {"abc": RED}), "o/r", told, NOW, give_back=lambda *a: pytest.fail("no hand-back"))
+        assert len(msgs) == 1 and "CI впав" in msgs[0][0]
+    log_dir.mkdir()
+    for f in ("run.active", "work.state", "refusal.txt"):
+        (log_dir / f).write_text("x")
+        assert not pw.hand_back(pr(ready=True), "test (3.11)", NOW)
+        (log_dir / f).unlink()
+    (log_dir / "parked.state").write_text("agent/2026-10-20-x 1 1 s\n")
+    assert not pw.hand_back(pr(ready=True), "test (3.11)", NOW) and not (log_dir / "refusal.txt").exists()
+    assert pw.hand_back(pr(ready=True, ref="agent/2026-10-20-y"), "test (3.13)", NOW)
+    assert (log_dir / "parked.state").read_text().splitlines()[0] == "agent/2026-10-20-x 1 1 s"
+    assert "--python 3.13" in (log_dir / "refusal.txt").read_text()
 
 
 def test_is_docs():

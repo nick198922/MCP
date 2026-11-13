@@ -59,10 +59,11 @@ def store_num(x: Any) -> float | None:
 
 
 def finite_json(x: Any) -> bool:
-    """True when `x` serialises to strict JSON: no NaN / +-inf float and no blob anywhere (a string "inf" is just text)."""
+    """True when `x` serialises to strict JSON: no NaN / +-inf float and no blob anywhere (a string "inf" is just text).
+    A value nested too deep for the encoder is False too, never a raised RecursionError (invariant 1)."""
     try:
         json.dumps(x, allow_nan=False)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, RecursionError):
         return False
     return True
 

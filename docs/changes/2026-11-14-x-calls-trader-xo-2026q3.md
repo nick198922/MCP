@@ -1,0 +1,2 @@
+- Заклики Trader_XO за 2026-Q3 (x-traders, пункт 2, партія 7): +10 конкретних закликів у `docs/calls/x/Trader_XO.csv`, 25 розмитих пораховано.
+- Звіт `docs/verification/2026-11-14-x-calls-trader_xo-2026q3.md`, рев'ю `docs/reviews/2026-11-14-x-calls-trader_xo-2026q3.md`; журнал партій і пари для пункту 3 оновлено в картці.

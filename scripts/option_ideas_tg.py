@@ -6,7 +6,11 @@ numbers — «short, actionable: expiry, strikes, premium, why and R:R»; Bybit,
     uv run python scripts/option_ideas_tg.py --risk 100  # max loss per idea, USD (owner's rule: $100 of $10k)
 
 Quotes: Bybit v5 option tickers (bid/ask, mark IV, delta), daily closes: Binance spot, both through the project's
-providers (rt.exchanges, so limits, retries and health apply). Rules of the ideas: tradedesk.analytics.option_ideas.
+providers (rt.exchanges, so limits, retries and health apply). Rules of the ideas: the options playbook
+(docs/knowledge/options-playbook.md) as ``option_ideas.RULES``; their conditions are measured by our MCP tools, called
+in this process (deribit_vrp, deribit_atm_term, macro_calendar, skew_percentile — the last one reads the collector's
+history in TRADEDESK_DB_PATH, defaulting to --db), so the numbers are the ones the chat sees. Up to 3 ideas per coin,
+strongest evidence first, each with its rule and evidence status; ✗ and unmeasured rules are never sent.
 Every sent idea is appended to IDEAS_LOG (JSON lines, with all legs and prices) so it can be settled at expiry
 (``option_ideas.payoff_at``) and the record judged; the forecast-log line under the ideas comes from
 scripts/forecast_weekly_tg.py's own summary functions (offline, read-only).
@@ -36,6 +40,7 @@ import tg_send  # noqa: E402
 
 from tradedesk.analytics import forecast_log as fl  # noqa: E402
 from tradedesk.analytics import option_ideas as oi  # noqa: E402
+from tradedesk.collector.assistant_snapshot import _call as call_tool  # noqa: E402 - one MCP call -> {ok, data, …}, never raises
 
 COINS = ("BTC", "ETH")
 IDEAS_LOG = Path(os.environ.get("TRADEDESK_OPTION_IDEAS_LOG", "/var/lib/tradedesk-mcp/assistant/option_ideas.jsonl"))
@@ -95,7 +100,23 @@ def idea_block(n: int, idea: oi.Idea, risk: float) -> list[str]:
         sz = f"Розмір під {_usd(risk)}: <b>{idea.qty:g} {c}</b> (ризик {_usd(idea.qty * idea.max_loss)})"
     else:
         sz = f"Мін. лот {oi.LOT[c]:g} {c} ризикує {_usd(oi.LOT[c] * idea.max_loss)} — більше за {_usd(risk)}"
-    return [head, _h(_legs_line(idea)), _h(f"{money}; {where}"), sz, f"<i>Чому: {_h(idea.why)}</i>"]
+    out = [head, _h(_legs_line(idea)), _h(f"{money}; {where}"), sz, f"<i>Чому: {_h(idea.why)}</i>"]
+    rule = oi.RULES.get(idea.rule)
+    if rule:
+        out.append(_h(f"Правило: {rule.code} {rule.name} · докази: {rule.evidence}"))
+    return out
+
+
+def note_line(code: str, ctx: dict, coin: bool = True) -> str:
+    """A context rule whose condition holds (a tag or a risk rule, not a trade)."""
+    rule, chk = oi.RULES[code], ctx["checks"][code]
+    who = f"{ctx['coin']}: " if coin else ""
+    return _h(f"{who}{chk['detail']}. Правило: {rule.code} {rule.name} · докази: {rule.evidence} (контекст, не угода)")
+
+
+def not_sent_line() -> str:
+    bad = [f"{r.code} {r.name}" for r in oi.RULES.values() if r.kind == "trade" and r.status == "✗"]
+    return _h(f"Не надсилаємо (✗ у плейбуку): {'; '.join(bad)}. Правила й докази: {oi.PLAYBOOK}.")
 
 
 def ctx_line(ctx: dict) -> str:
@@ -127,32 +148,69 @@ def forecast_line(path: Path) -> str:
 def build_message(per_coin: list[tuple[list[oi.Idea], dict]], now: float, risk: float, fline: str = "") -> str:
     head = f"<b>Опціонні ідеї на тиждень · {_h(db.kyiv(datetime.fromtimestamp(now, UTC)))}{ab._tz()}</b>"
     body = [head, *(ctx_line(ctx) for _, ctx in per_coin)]
+    shown: set[str] = set()
+    notes = []
+    for _, ctx in per_coin:
+        for code in ctx.get("notes") or []:
+            if code in oi.MARKET_WIDE:
+                if code not in shown:
+                    shown.add(code)
+                    notes.append(note_line(code, ctx, coin=False))
+            else:
+                notes.append(note_line(code, ctx))
+    if notes:
+        body += ["", *notes]
     n = 0
     for ideas, _ in per_coin:
         for idea in ideas:
             n += 1
             body += ["", *idea_block(n, idea, risk)]
     if not n:
-        body += ["", _h("Цього тижня ідей нема: премія близька до реального руху і тренду нема (або немає ліквідних цін).")]
-    tail = [""] + ([fline] if fline else []) + [f"<i>{_h(CAVEAT)}</i>"]
+        body += ["", _h("Цього тижня ідей нема: умови правил плейбуку, що надсилаються, не виконані (або немає ліквідних цін Bybit).")]
+    tail = [""] + ([fline] if fline else []) + [f"<i>{not_sent_line()}</i>", f"<i>{_h(CAVEAT)}</i>"]
     return ab._fit(body, tail)
 
 
+def _data(sec: dict) -> dict | None:
+    return sec.get("data") if sec.get("ok") and isinstance(sec.get("data"), dict) else None
+
+
+async def market_for(client, coin: str, calendar: dict | None) -> dict:
+    """The MCP tools' data the playbook rules read for one coin (a failed tool leaves its rules unmeasured)."""
+    vrp, term = await asyncio.gather(
+        call_tool(client, "deribit_vrp", {"currency": coin, "history_days": 1000}),
+        call_tool(client, "deribit_atm_term", {"currency": coin}),
+    )
+    m = {"vrp": _data(vrp), "term": _data(term), "calendar": calendar, "skew": None}
+    iso = oi.month_expiry_iso(m["term"])
+    if iso:
+        args = {"currency": coin, "expiry": iso, "delta_target": "25", "lookback_days": oi.SKEW_LOOKBACK_DAYS, "min_points": 2}
+        m["skew"] = _data(await call_tool(client, "skew_percentile", args))
+    return m
+
+
 async def gather(risk: float, now_ms: int) -> list[tuple[list[oi.Idea], dict]]:
+    from mcp import Client
+
     from tradedesk.server import build_server
 
-    _, rt = build_server()
+    server, rt = build_server()
     out = []
     try:
-        for coin in COINS:
-            try:
-                body = (await rt.exchanges.public_get("bybit", "publicGetV5MarketTickers", {"category": "option", "baseCoin": coin})).data
-                rows = ((body or {}).get("result") or {}).get("list") or []
-                bars = (await rt.exchanges.ohlcv("binance", f"{coin}/USDT", "1d", 260)).data or []
-                closes = [float(b[4]) for b in bars[:-1] if isinstance(b, list | tuple) and len(b) >= 5]  # complete days only
-                out.append(oi.ideas_for(coin, oi.parse_bybit_tickers(rows, coin), closes, now_ms, risk))
-            except Exception as e:  # noqa: BLE001 - one coin failing must not drop the other
-                out.append(([], {"coin": coin, "skip": f"{type(e).__name__}"}))
+        async with Client(server) as c:
+            calendar = _data(await call_tool(c, "macro_calendar", {"horizon_days": 14}))
+            for coin in COINS:
+                try:
+                    market = await market_for(c, coin, calendar)
+                    body = (
+                        await rt.exchanges.public_get("bybit", "publicGetV5MarketTickers", {"category": "option", "baseCoin": coin})
+                    ).data
+                    rows = ((body or {}).get("result") or {}).get("list") or []
+                    bars = (await rt.exchanges.ohlcv("binance", f"{coin}/USDT", "1d", 260)).data or []
+                    closes = [float(b[4]) for b in bars[:-1] if isinstance(b, list | tuple) and len(b) >= 5]  # complete days only
+                    out.append(oi.ideas_for(coin, oi.parse_bybit_tickers(rows, coin), closes, now_ms, risk, market=market))
+                except Exception as e:  # noqa: BLE001 - one coin failing must not drop the other
+                    out.append(([], {"coin": coin, "skip": f"{type(e).__name__}"}))
     finally:
         await rt.aclose()
     return out
@@ -177,6 +235,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--db", type=Path, default=db.JOURNAL_DB, help="SQLite file of the forecast log")
     ap.add_argument("--topic", default="alerts")
     a = ap.parse_args(argv)
+    os.environ.setdefault("TRADEDESK_DB_PATH", str(a.db))  # skew_percentile reads the collector's history there
     now = time.time()
     per_coin = asyncio.run(gather(a.risk, int(now * 1000)))
     text = build_message(per_coin, now, a.risk, forecast_line(a.db))

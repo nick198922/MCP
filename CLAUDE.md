@@ -56,6 +56,7 @@ scripts/       live_smoke.py
 
 ## Git
 - Невеликі осмислені коміти; перед комітом `make lint && make test`.
+- Поза клоном (`~/private`, `~/.cache/tradedesk-agents`, інші клони) `ls` і `git -C` агентам відхиляються: файли шукати `Glob` (абсолютний шлях або посилання в клоні, напр. `docs/library/courses/…`), читати `Read`; стан клону — `git status --short`. По одному виклику, без ланцюжків `ls a; ls b`.
 - Порівняти з незміненим кодом: `git show origin/main:<path>` (або `git diff origin/main -- <path>`), а не `git stash` / `git restore` / `git worktree add`: ці команди агентам заборонені.
 - Атрибуція в кінці повідомлення коміту/PR — за інструкцією середовища (рядки `Co-Authored-By` / `Claude-Session`).
 - Репозиторій: GitHub `nick198922/MCP`, гілка `main` (історія — `docs/history/HANDOFF-2026-10-17.md`).

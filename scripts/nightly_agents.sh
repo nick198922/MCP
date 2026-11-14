@@ -451,6 +451,12 @@ DENIED=(
   "Bash(cat /etc/tradedesk-bybit.env:*)" "Bash(head /etc/tradedesk-bybit.env:*)" "Bash(tail /etc/tradedesk-bybit.env:*)" "Bash(grep /etc/tradedesk-bybit.env:*)"
   "mcp__claude_ai_DOUBLETOP__fetch__fetch" "mcp__claude_ai_DOUBLETOP__coingecko__execute"
   "mcp__claude_ai_Google_Drive" "mcp__claude_ai_Claude_Docs"
+  # Our MCP is read for the agents: the tools that write to the live store (journal, plans, rules, events, paper books)
+  # are denied (owner 14.11, Q-20261114-1 «Г1»; the same list as scripts/mcp_call.py WRITE_TOOLS, test_mcp_call checks it).
+  "mcp__tradedesk__journal_add" "mcp__tradedesk__journal_close" "mcp__tradedesk__positions_add" "mcp__tradedesk__positions_close"
+  "mcp__tradedesk__rules_add" "mcp__tradedesk__rules_disable" "mcp__tradedesk__plan_add" "mcp__tradedesk__plan_link"
+  "mcp__tradedesk__events_add" "mcp__tradedesk__events_seed_load" "mcp__tradedesk__rules_presets_load"
+  "mcp__tradedesk__carry_paper_open" "mcp__tradedesk__carry_paper_close" "mcp__tradedesk__assistant_paper_open"
 )
 
 # The coordinator only routes and stages, so it runs on Sonnet; each subagent keeps the model from its

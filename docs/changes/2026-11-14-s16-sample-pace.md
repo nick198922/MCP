@@ -1,1 +1,2 @@
-- S16, темп вибірки (облік): попередня реєстрація в картці `IDEA-20261030-demo-setups-depth`, чистий модуль `analytics/sample_pace.py` з тестами, раннер `scripts/verify_s16_sample_pace.py`. Повний прогін — наступним кроком.
+- S16, темп вибірки (облік): модуль `analytics/sample_pace.py` з тестами, раннер `scripts/verify_s16_sample_pace.py`, звіт `docs/verification/2026-11-14-s16-sample-pace.md`.
+- Паспорт допускає 13.65 угод/тиждень (F100: 5.19), демо дає 1.91; 30 закритих угод S16 ≈ 10.02.2027. Рядок про це додано в `docs/CHECKPOINT-2026-11-30.md`.

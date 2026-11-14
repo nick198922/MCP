@@ -699,3 +699,118 @@ def payoff_at(idea: dict[str, Any], price: float) -> float:
 
 def expiry_label(expiry_ms: int) -> str:
     return datetime.fromtimestamp(expiry_ms / 1000, UTC).strftime("%d.%m")
+
+
+# --- Settlement of the ideas journal (card IDEA-20261114-options-playbook item 3) -----------------------------------
+
+MIN_SETTLED = 30  # a rule's record is judged only from this many settled ideas (card: «висновки лише від 30»)
+MIN_CLUSTERS = 10  # ... and from this many distinct expiries (ideas of one expiry are one cluster, not independent)
+_MONTHS = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
+
+
+def bybit_option_symbol(coin: str, expiry_ms: int, strike: float, is_call: bool) -> str:
+    """Bybit USDT option symbol, e.g. BTC-7NOV26-70000-C-USDT (the day is not zero-padded, as Bybit lists it)."""
+    d = datetime.fromtimestamp(expiry_ms / 1000, UTC)
+    k = f"{strike:.0f}" if float(strike).is_integer() else f"{strike:g}"
+    return f"{coin}-{d.day}{_MONTHS[d.month - 1]}{d.year % 100:02d}-{k}-{'C' if is_call else 'P'}-USDT"
+
+
+def parse_bybit_delivery(body: Any, expiry_ms: int) -> float | None:
+    """Delivery price of ``/v5/market/delivery-price?category=option&symbol=…`` (USD), or None when the body has none
+    or its ``deliveryTime`` is not ``expiry_ms`` (the price of another expiry is never used)."""
+    for r in _get(body, "result", "list") or []:
+        if not isinstance(r, dict):
+            continue
+        px, t = _num(r.get("deliveryPrice")), _num(r.get("deliveryTime"))
+        if px is not None and px > 0 and (t is None or int(t) == int(expiry_ms)):
+            return px
+    return None
+
+
+def _settleable(idea: Any) -> bool:
+    """A logged idea has what ``payoff_at`` and R need: numeric net and max loss > 0, legs with a strike, a type and a
+    buy / sell action."""
+    if not isinstance(idea, dict) or _num(idea.get("net")) is None or not (_num(idea.get("max_loss")) or 0) > 0:
+        return False
+    legs = idea.get("legs")
+    if not isinstance(legs, list) or not legs:
+        return False
+    return all(
+        isinstance(g, dict)
+        and _num(g.get("strike")) is not None
+        and isinstance(g.get("is_call"), bool)
+        and g.get("action") in ("buy", "sell")
+        for g in legs
+    )
+
+
+def settle_idea(idea: Any, price: Any, now_ms: int) -> dict[str, Any] | None:
+    """Settlement fields of a logged idea (``Idea.to_dict``) at the delivery ``price``, or None when it cannot be
+    settled yet (``now_ms`` before ``expiry_ms``), the price is not a positive number or the record is malformed.
+
+    ``pnl_per_unit`` = ``payoff_at`` (intrinsic value of the legs plus the logged net premium, entry fees included;
+    Bybit's delivery fee is NOT deducted, so ITM results are slightly optimistic); ``pnl_usd`` = that times the logged
+    size ``qty`` (None when the idea could not be sized under the risk); ``r`` = ``pnl_per_unit`` / logged ``max_loss``
+    (−1 = the whole risk lost)."""
+    px, exp = _num(price), _num(idea.get("expiry_ms")) if isinstance(idea, dict) else None
+    if px is None or px <= 0 or exp is None or now_ms < exp or not _settleable(idea):
+        return None
+    pnl = payoff_at(idea, px)
+    if not math.isfinite(pnl):
+        return None
+    qty = _num(idea.get("qty")) or 0.0
+    return {
+        "status": "settled",
+        "settled_ms": int(now_ms),
+        "delivery_price": px,
+        "pnl_per_unit": pnl,
+        "pnl_usd": pnl * qty if qty > 0 else None,
+        "r": pnl / float(idea["max_loss"]),
+    }
+
+
+def rule_summary(records: Any) -> dict[str, dict[str, Any]]:
+    """Per playbook rule, over settled journal records: ``n``, ``sum_r``, ``mean_r`` (per idea), ``win_share``
+    (R > 0), ``n_clusters`` and ``verdict``.
+
+    Ideas sharing an expiry are not independent (BTC and ETH ideas of one Saturday share it, and BTC/ETH move
+    together), so the verdict is cluster-level: one cluster per ``expiry_ms`` (records without one form a single
+    cluster), its value the mean R of its ideas; ``cluster_mean_r`` is the mean of those and ``se_r`` their standard
+    error. The verdict is None below ``MIN_SETTLED`` ideas or ``MIN_CLUSTERS`` expiries (``se_r`` and
+    ``cluster_mean_r`` then None too); from there 'plus' / 'minus' when ``cluster_mean_r`` is more than 2 ``se_r``
+    from 0, else 'flat'. Records without a rule are grouped under '—'; malformed ones skipped. Rules come in
+    ``RULES`` order."""
+    rs: dict[str, list[float]] = {}
+    clusters: dict[str, dict[int | None, list[float]]] = {}
+    for rec in records if isinstance(records, list) else []:
+        if not isinstance(rec, dict) or rec.get("status") != "settled":
+            continue
+        r = _num(rec.get("r"))
+        if r is not None:
+            code = str(rec.get("rule") or "—")
+            rs.setdefault(code, []).append(r)
+            exp = _num(rec.get("expiry_ms"))
+            clusters.setdefault(code, {}).setdefault(int(exp) if exp is not None else None, []).append(r)
+    order = list(RULES)
+    out: dict[str, dict[str, Any]] = {}
+    for code in sorted(rs, key=lambda c: (order.index(c) if c in RULES else len(order), c)):
+        x = rs[code]
+        n, mean = len(x), sum(x) / len(x)
+        cm = [sum(v) / len(v) for v in clusters[code].values()]
+        g = len(cm)
+        verdict, se, cmean = None, None, None
+        if n >= MIN_SETTLED and g >= MIN_CLUSTERS:
+            cmean = sum(cm) / g
+            se = math.sqrt(sum((v - cmean) ** 2 for v in cm) / (g - 1) / g)
+            verdict = "plus" if cmean - 2 * se > 0 else "minus" if cmean + 2 * se < 0 else "flat"
+        out[code] = {
+            "n": n,
+            "n_clusters": g,
+            "sum_r": sum(x),
+            "mean_r": mean,
+            "cluster_mean_r": cmean,
+            "se_r": se,
+            "win_share": sum(v > 0 for v in x) / n,
+            "verdict": verdict,
+        }
+    return out

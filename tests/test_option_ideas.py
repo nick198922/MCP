@@ -348,3 +348,318 @@ def test_market_for_survives_failed_tools():
 def test_message_without_ideas():
     text = tg.build_message([([], {"coin": "BTC", "skip": "x"}), ([], {"coin": "ETH", "skip": "x"})], NOW / 1000, 100.0)
     assert "ідей нема" in text
+
+
+# --- settlement of the ideas journal (card item 3) --------------------------------------------------------------
+
+AFTER = EXP + 3_600_000  # an hour after the 08:00 UTC expiry
+
+
+def _leg(action: str, is_call: bool, strike: float, price: float = 1.0) -> dict:
+    return {"action": action, "is_call": is_call, "strike": strike, "price": price, "delta": None}
+
+
+def _rec(kind: str, legs: list[dict], net: float, max_loss: float, qty: float = 0.5, rule: str = "P3", **kw) -> dict:
+    return {
+        "ts": NOW // 1000,
+        "status": "open",
+        "coin": "BTC",
+        "kind": kind,
+        "expiry_ms": EXP,
+        "legs": legs,
+        "net": net,
+        "max_loss": max_loss,
+        "qty": qty,
+        "rule": rule,
+        **kw,
+    }
+
+
+CALL_SPREAD = _rec("call_debit_spread", [_leg("buy", True, 100), _leg("sell", True, 110)], net=-4, max_loss=4)
+PUT_SPREAD = _rec("put_debit_spread", [_leg("buy", False, 100), _leg("sell", False, 90)], net=-3, max_loss=3)
+CONDOR = _rec(
+    "iron_condor",
+    [_leg("sell", False, 90), _leg("buy", False, 85), _leg("sell", True, 110), _leg("buy", True, 115)],
+    net=2,
+    max_loss=3,
+)
+
+
+@pytest.mark.parametrize(
+    ("rec", "price", "pnl"),
+    [
+        (CALL_SPREAD, 95, -4),  # below both strikes: the debit is lost
+        (CALL_SPREAD, 100, -4),  # at the long strike
+        (CALL_SPREAD, 104, 0),  # breakeven
+        (CALL_SPREAD, 105, 1),
+        (CALL_SPREAD, 110, 6),  # at the short strike: max profit
+        (CALL_SPREAD, 130, 6),
+        (PUT_SPREAD, 105, -3),
+        (PUT_SPREAD, 100, -3),
+        (PUT_SPREAD, 95, 2),
+        (PUT_SPREAD, 90, 7),
+        (PUT_SPREAD, 50, 7),
+        (CONDOR, 100, 2),  # between the shorts: keep the credit
+        (CONDOR, 90, 2),  # at the short put
+        (CONDOR, 88, 0),  # lower breakeven
+        (CONDOR, 85, -3),  # at the long put: max loss
+        (CONDOR, 60, -3),
+        (CONDOR, 110, 2),
+        (CONDOR, 112, 0),
+        (CONDOR, 115, -3),
+        (CONDOR, 200, -3),
+    ],
+)
+def test_settle_idea_usd_and_r(rec, price, pnl):
+    s = oi.settle_idea(rec, price, AFTER)
+    assert s["status"] == "settled" and s["delivery_price"] == price and s["settled_ms"] == AFTER
+    assert s["pnl_per_unit"] == pytest.approx(pnl)
+    assert s["pnl_usd"] == pytest.approx(pnl * 0.5)
+    assert s["r"] == pytest.approx(pnl / rec["max_loss"])
+    assert -1 - 1e-9 <= s["r"]  # never more than the risked max loss
+
+
+def test_settle_idea_matches_payoff_of_a_real_condor():
+    d = oi.iron_condor(QUOTES, EXP, NOW, "BTC").to_dict()
+    s = oi.settle_idea(d, SPOT, AFTER)
+    assert s["r"] == pytest.approx(d["max_profit"] / d["max_loss"]) and s["pnl_usd"] is None  # qty 0: not sized
+
+
+def test_settle_idea_waits_for_expiry_and_rejects_bad_input():
+    assert oi.settle_idea(CALL_SPREAD, 105, EXP - 1) is None  # a millisecond before expiry
+    assert oi.settle_idea(CALL_SPREAD, 105, EXP) is not None  # at expiry
+    for price in (None, 0, -5, float("nan"), float("inf"), "x"):
+        assert oi.settle_idea(CALL_SPREAD, price, AFTER) is None
+    bad = [
+        None,
+        "x",
+        {**CALL_SPREAD, "legs": []},
+        {**CALL_SPREAD, "legs": None},
+        {**CALL_SPREAD, "legs": [_leg("hold", True, 100)]},
+        {**CALL_SPREAD, "legs": [{"action": "buy", "is_call": True}]},
+        {**CALL_SPREAD, "max_loss": 0},
+        {**CALL_SPREAD, "net": "?"},
+        {k: v for k, v in CALL_SPREAD.items() if k != "expiry_ms"},
+    ]
+    for rec in bad:
+        assert oi.settle_idea(rec, 105, AFTER) is None
+
+
+def test_bybit_option_symbol_and_delivery_parse():
+    assert oi.bybit_option_symbol("BTC", EXP, 70_000.0, True) == "BTC-27NOV26-70000-C-USDT"
+    seven = int(datetime(2026, 11, 7, 8, tzinfo=UTC).timestamp() * 1000)
+    assert oi.bybit_option_symbol("ETH", seven, 2512.5, False) == "ETH-7NOV26-2512.5-P-USDT"  # day not zero-padded
+    # the shape of a live answer (14.11, BTC-13NOV26-70000-C-USDT)
+    body = {
+        "retCode": 0,
+        "result": {"list": [{"symbol": "BTC-27NOV26-70000-C-USDT", "deliveryPrice": "68776.89740864", "deliveryTime": str(EXP)}]},
+    }
+    assert oi.parse_bybit_delivery(body, EXP) == pytest.approx(68776.89740864)
+    assert oi.parse_bybit_delivery(body, EXP + 86_400_000) is None  # another expiry's price is never used
+    for b in (None, {}, {"result": {"list": []}}, {"result": {"list": [{"deliveryPrice": "0"}, "x"]}}):
+        assert oi.parse_bybit_delivery(b, EXP) is None
+
+
+WEEK = 7 * 86_400_000
+
+
+def _settled(r: float, rule: str = "P3", k: int | None = None) -> dict:
+    """A settled record; ``k`` picks its expiry (EXP + k weeks), None leaves it without one."""
+    rec = {"status": "settled", "rule": rule, "r": r}
+    return rec if k is None else {**rec, "expiry_ms": EXP + k * WEEK}
+
+
+def test_rule_summary_needs_30_for_a_verdict():
+    rs = [0.5] * 20 + [-1.0] * 9
+    recs = [_settled(r, k=i) for i, r in enumerate(rs)] + [_rec("x", [], 0, 1), "junk", {"status": "settled", "r": None}]
+    s = oi.rule_summary(recs)
+    assert list(s) == ["P3"]
+    p3 = s["P3"]
+    assert p3["n"] == 29 and p3["sum_r"] == pytest.approx(1.0) and p3["win_share"] == pytest.approx(20 / 29)
+    assert p3["verdict"] is None and p3["se_r"] is None and p3["cluster_mean_r"] is None and p3["n_clusters"] == 29
+    s = oi.rule_summary(recs + [_settled(0.5, k=29)])
+    assert s["P3"]["n"] == 30 and s["P3"]["verdict"] == "flat"  # mean +0.05, 2 SE ≈ 0.26
+    assert oi.rule_summary([_settled(0.5 + 0.01 * i, k=i) for i in range(30)])["P3"]["verdict"] == "plus"
+    assert oi.rule_summary([_settled(-1.0 + 0.01 * i, k=i) for i in range(30)])["P3"]["verdict"] == "minus"
+    mixed = oi.rule_summary([_settled(1.0, "—"), _settled(1.0, "P2"), {"status": "settled", "r": -1}])
+    assert list(mixed) == ["P2", "—"] and mixed["—"]["n"] == 2  # RULES order; no rule → '—'
+    assert oi.rule_summary(None) == {} and oi.rule_summary([]) == {}
+
+
+def test_rule_summary_needs_10_expiries_for_a_verdict():
+    strong = [0.5 + 0.01 * i for i in range(30)]  # 'plus' when independent
+    nine = oi.rule_summary([_settled(r, k=i % 9) for i, r in enumerate(strong)])["P3"]
+    assert nine["n"] == 30 and nine["n_clusters"] == 9 and nine["verdict"] is None and nine["se_r"] is None
+    ten = oi.rule_summary([_settled(r, k=i % 10) for i, r in enumerate(strong)])["P3"]
+    assert ten["n_clusters"] == 10 and ten["verdict"] == "plus"
+    no_expiry = oi.rule_summary([_settled(r) for r in strong])["P3"]  # records without an expiry: one cluster
+    assert no_expiry["n_clusters"] == 1 and no_expiry["verdict"] is None
+
+
+def test_rule_summary_se_is_per_expiry_cluster():
+    """30 ideas in 15 expiries with the same R inside each pair (BTC and ETH of one Saturday) carry the information
+    of 15, not 30: the band is wider (√(870/420) ≈ 1.44×) and here turns a naive 'plus' into 'flat'."""
+    vals = [0.2 + 0.1 * (k - 7) for k in range(15)]
+    paired = oi.rule_summary([_settled(v, k=k) for k, v in enumerate(vals) for _ in range(2)])["P3"]
+    indep = oi.rule_summary([_settled(v, k=2 * k + j) for k, v in enumerate(vals) for j in range(2)])["P3"]
+    assert paired["n"] == indep["n"] == 30 and paired["n_clusters"] == 15 and indep["n_clusters"] == 30
+    assert paired["mean_r"] == pytest.approx(indep["mean_r"]) and paired["cluster_mean_r"] == pytest.approx(0.2)
+    assert paired["se_r"] / indep["se_r"] == pytest.approx(math.sqrt(870 / 420))
+    assert indep["verdict"] == "plus" and paired["verdict"] == "flat"
+    # unequal clusters: the verdict's mean is the mean of the per-expiry means, not of the ideas
+    uneven = [_settled(1.0, k=0)] * 21 + [_settled(-0.1, k=k) for k in range(1, 10)]
+    u = oi.rule_summary(uneven)["P3"]
+    assert u["mean_r"] == pytest.approx((21 - 0.9) / 30) and u["cluster_mean_r"] == pytest.approx((1.0 - 0.9) / 10)
+
+
+def _rows(*recs) -> list:
+    return [(json.dumps(r) if isinstance(r, dict) else r, r if isinstance(r, dict) else None) for r in recs]
+
+
+def test_due_lists_only_open_expired_records():
+    later = {**CALL_SPREAD, "expiry_ms": EXP + 7 * 86_400_000}
+    settled = {**PUT_SPREAD, "status": "settled"}
+    rows = _rows(CALL_SPREAD, later, settled, "not json", {**CONDOR, "legs": 5}, {**CONDOR, "expiry_ms": 1e300})
+    assert tg.due(rows, AFTER) == {("BTC", EXP): ["BTC-27NOV26-100-C-USDT", "BTC-27NOV26-110-C-USDT"]}
+    assert tg.due(rows, EXP - 1) == {}
+
+
+def test_settle_rows_is_idempotent_and_keeps_bad_lines(tmp_path):
+    log = tmp_path / "ideas.jsonl"
+    log.write_text(json.dumps(CALL_SPREAD) + "\n{broken\n\n" + json.dumps({**PUT_SPREAD, "coin": "ETH"}) + "\n[1, 2]\n", encoding="utf-8")
+    rows = tg.read_log(log)
+    assert len(rows) == 4 and rows[1] == ("{broken", None) and rows[3][1] is None
+    prices = {("BTC", EXP): 105.0}  # ETH: no delivery price → stays open
+    rows, n = tg.settle_rows(rows, prices, AFTER)
+    assert n == 1
+    assert tg.write_log(rows, log)
+    again, n2 = tg.settle_rows(tg.read_log(log), {("BTC", EXP): 999.0, ("ETH", EXP): 95.0}, AFTER + 1)
+    assert n2 == 1  # only the ETH record; the BTC one is not settled twice
+    recs = [r for _, r in again if r is not None]
+    btc, eth = recs
+    assert btc["status"] == "settled" and btc["delivery_price"] == 105.0 and btc["r"] == pytest.approx(0.25)
+    assert eth["status"] == "settled" and eth["pnl_per_unit"] == pytest.approx(2)
+    assert [line for line, r in again if r is None] == ["{broken", "[1, 2]"]  # malformed lines kept as they were
+    assert tg.settle_rows(again, {("BTC", EXP): 1.0, ("ETH", EXP): 1.0}, AFTER + 2)[1] == 0
+    assert tg.read_log(tmp_path / "missing.jsonl") == []
+
+
+@pytest.mark.parametrize("sep", [" ", " ", "\x85"])
+def test_line_separators_inside_a_record_survive_a_rewrite(tmp_path, sep):
+    """str.splitlines cuts at U+2028 / U+2029 / U+0085; an older record holding one raw (written with
+    ensure_ascii=False) must stay one line through read → settle another → write → read."""
+    log = tmp_path / "ideas.jsonl"
+    odd = {**PUT_SPREAD, "coin": "ETH", "context": {"checks": {"P9": {"detail": f"CPI{sep}in 5 h"}}}}
+    log.write_text(json.dumps(odd, ensure_ascii=False) + "\r\n" + json.dumps(CALL_SPREAD) + "\n", encoding="utf-8")
+    rows = tg.read_log(log)
+    assert [r is not None for _, r in rows] == [True, True]
+    rows, n = tg.settle_rows(rows, {("BTC", EXP): 105.0}, AFTER)
+    assert n == 1 and tg.write_log(rows, log)
+    lines = log.read_text(encoding="utf-8").split("\n")
+    assert len(lines) == 3 and lines[2] == ""
+    assert json.loads(lines[0]) == odd and json.loads(lines[1])["status"] == "settled"
+    assert sep not in lines[1]  # rewritten records are ASCII-escaped
+    assert [r for _, r in tg.read_log(log)][0] == odd
+    assert list(tmp_path.iterdir()) == [log]  # no temp file left behind
+
+
+def test_log_ideas_writes_ascii_lines(tmp_path):
+    ideas, ctx = oi.ideas_for("BTC", QUOTES, [80_000 - i * 40 for i in range(260)], NOW)
+    ctx = {**ctx, "note": "a b"}
+    log = tmp_path / "ideas.jsonl"
+    assert tg.log_ideas([(ideas, ctx)], NOW / 1000, log) == 1
+    text = log.read_text(encoding="utf-8")
+    assert text.isascii() and json.loads(text)["context"]["note"] == "a b"
+
+
+def test_write_log_failure_returns_false(tmp_path):
+    assert tg.write_log([("{}", {})], tmp_path / "no-such-dir" / "ideas.jsonl") is False
+
+
+def _run_main(monkeypatch, tmp_path, argv: list[str], sent_ok: bool = True):
+    """main() with the network (gather), Telegram and the journal path replaced; returns (rc, sends, log path)."""
+    past = EXP - 30 * 86_400_000  # long expired whatever the clock says
+    log = tmp_path / "ideas.jsonl"
+    log.write_text(json.dumps({**CALL_SPREAD, "expiry_ms": past}) + "\n", encoding="utf-8")
+    per = [oi.ideas_for("BTC", QUOTES, [80_000 - i * 40 for i in range(260)], NOW)]
+
+    async def fake_gather(risk, now_ms, wanted):
+        assert list(wanted) == [("BTC", past)]
+        return per, {k: 105.0 for k in wanted}
+
+    sends = []
+
+    def fake_send(text, topic, buttons):
+        sends.append((text, log.read_text(encoding="utf-8")))  # the journal as it is at sending time
+        return sent_ok
+
+    monkeypatch.setattr(tg, "IDEAS_LOG", log)
+    monkeypatch.setattr(tg, "gather", fake_gather)
+    monkeypatch.setattr(tg.tg_send, "send", fake_send)
+    monkeypatch.setattr(tg.fw, "journal_buttons", lambda: [])
+    monkeypatch.setenv("TRADEDESK_DB_PATH", str(tmp_path / "none.db"))
+    rc = tg.main([*argv, "--db", str(tmp_path / "none.db")])
+    return rc, sends, log
+
+
+def test_main_print_writes_nothing(monkeypatch, tmp_path, capsys):
+    rc, sends, log = _run_main(monkeypatch, tmp_path, ["--print"])
+    before = json.dumps({**CALL_SPREAD, "expiry_ms": EXP - 30 * 86_400_000}) + "\n"
+    assert rc == 0 and sends == [] and log.read_text(encoding="utf-8") == before
+    out = capsys.readouterr().out
+    assert "Опціонні ідеї" in out and "сума R +0.25" in out  # settled in memory only
+
+
+def test_main_settles_before_sending_then_logs(monkeypatch, tmp_path):
+    rc, sends, log = _run_main(monkeypatch, tmp_path, [])
+    assert rc == 0 and len(sends) == 1
+    assert '"status": "settled"' in sends[0][1]  # the settlement was written before the message went out
+    recs = [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines()]
+    assert [r["status"] for r in recs] == ["settled", "open"]  # then the new idea appended
+
+
+def test_main_failed_send_logs_no_new_ideas(monkeypatch, tmp_path):
+    rc, _, log = _run_main(monkeypatch, tmp_path, [], sent_ok=False)
+    recs = [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines()]
+    assert rc == 1 and [r["status"] for r in recs] == ["settled"]
+
+
+class _Ex:
+    """Stands in for rt.exchanges: delivery answers by symbol, raises for unknown contracts."""
+
+    def __init__(self, answers: dict):
+        self.answers, self.calls = answers, []
+
+    async def public_get(self, ex_id: str, endpoint: str, params: dict, ttl: float = 0):
+        self.calls.append((ex_id, endpoint, params["symbol"]))
+        if params["symbol"] not in self.answers:
+            raise RuntimeError("bybit: The contract doesn't exist.")
+        return type("F", (), {"data": self.answers[params["symbol"]]})()
+
+
+def test_fetch_deliveries_tries_legs_and_survives_failures():
+    import asyncio
+    from types import SimpleNamespace
+
+    good = {"result": {"list": [{"deliveryPrice": "67155.4", "deliveryTime": str(EXP)}]}}
+    ex = _Ex({"BTC-27NOV26-110-C-USDT": good})
+    wanted = {("BTC", EXP): ["BTC-27NOV26-100-C-USDT", "BTC-27NOV26-110-C-USDT"], ("ETH", EXP): ["ETH-27NOV26-2000-P-USDT"]}
+    prices = asyncio.run(tg.fetch_deliveries(SimpleNamespace(exchanges=ex), wanted))
+    assert prices == {("BTC", EXP): pytest.approx(67155.4)}  # ETH failed: left out, its records stay open
+    assert ex.calls[0] == ("bybit", "publicGetV5MarketDeliveryPrice", "BTC-27NOV26-100-C-USDT")
+
+
+def test_journal_lines_in_the_message():
+    assert tg.journal_lines([]) == []
+    assert tg.journal_lines([CALL_SPREAD]) == ["Журнал ідей: відкритих 1, розрахованих на експірації ще нема."]
+    recs = [_settled(1.5)] * 2 + [_settled(-1.0)] + [CALL_SPREAD]
+    lines = tg.journal_lines(recs)
+    assert "відкритих 1" in lines[0]
+    assert lines[1] == "P3 200-денний тренд → дебетовий спред: n 3, сума R +2.00, у плюсі 67% · n&lt;30, ще без висновку"  # HTML
+    few = tg.journal_lines([_settled(0.5 + 0.01 * i, k=i % 9) for i in range(30)])
+    assert few[1].endswith("у плюсі 100% · експірацій 9&lt;10, ще без висновку")
+    lines = tg.journal_lines([_settled(0.5 + 0.01 * i, k=i) for i in range(30)])
+    assert "висновок: плюс (середній R по експіраціях +0.6" in lines[1] and "експірацій 30)" in lines[1]
+    assert "без висновку" not in lines[1]
+    text = tg.build_message([([], {"coin": "BTC", "skip": "x"})], NOW / 1000, 100.0, journal=lines)
+    assert "Журнал ідей" in text and text.index("Журнал ідей") < text.index("Не надсилаємо")

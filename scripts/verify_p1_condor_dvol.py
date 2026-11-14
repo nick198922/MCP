@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import statistics
 import sys
 import time
@@ -272,11 +273,11 @@ def full(L: list[str], D: dict[str, Any], cache: Path, t0: float) -> None:
         L.append(table_row(f"рік {y}", [t for t in base if ymd_ms(t["day"])[:4] == y], ep_hi, elig))
     rs = [t["r"] for t in sorted(base, key=lambda t: t["day"])]
     bb = block_bootstrap_mean(rs, block=4, n_boot=N_BOOT, seed=SEED)
-    L.append(f"\n- блоковий бутстреп (тижні, блок 4): {rr(bb.get('mean'))} {ci_r(bb.get('ci95'))}")
+    L.append(f"\n- блоковий бутстреп (тижні, блок 4): {rr(bb['mean'])} {ci_r(bb['ci'])}")
     for k in (0, 1):
         sub = rs[k::2]
         bk = block_bootstrap_mean(sub, block=2, n_boot=N_BOOT, seed=SEED)
-        L.append(f"- неперекривна підвибірка {k + 1} (кожен другий вхід): n = {len(sub)}, {rr(bk.get('mean'))} {ci_r(bk.get('ci95'))}")
+        L.append(f"- неперекривна підвибірка {k + 1} (кожен другий вхід): n = {len(sub)}, {rr(bk.get('mean'))} {ci_r(bk.get('ci'))}")
     L.append(
         f"- хвіст: найгірший R {min(rs):+.3f}, CVaR 5 % {cvar(rs):+.3f}, найбільша просадка суми R {max_drawdown(rs):.2f}; "
         f"без 5 найкращих {mean_without_top(rs, 5):+.3f}; MDE {s1['mde']:.3f} R; виходи {dict(Counter(t['exit'] for t in base))}\n"
@@ -318,9 +319,9 @@ def full(L: list[str], D: dict[str, Any], cache: Path, t0: float) -> None:
     oos_m = vp3.summary([t for t in base if t["day"] >= OOS], ep_hi)["mean"]
     # registered: few clusters make the cluster CI unreliable, so the verdict uses the union of the cluster-bootstrap
     # and the weekly block-bootstrap CIs (the wider bound on each side)
+    # read the key directly: a wrong key name must fail loudly, not drop the block CI silently (the old ``ci95`` bug)
     lo, hi = s1["ci"]
-    if bb.get("ci95"):
-        lo, hi = min(lo, bb["ci95"][0]), max(hi, bb["ci95"][1])
+    lo, hi = min(lo, bb["ci"][0]), max(hi, bb["ci"][1])
     L.append(f"- CI для вердикту (об'єднання кластерного й блокового): [{lo:+.3f}; {hi:+.3f}]; кластерів серед угод {s1['n_clusters']}")
     if lo > 0 and adj["P1-H1"] < 0.05 and oos_m > 0 and s_stress["mean"] > 0:
         v = "✓"
@@ -331,7 +332,8 @@ def full(L: list[str], D: dict[str, Any], cache: Path, t0: float) -> None:
     else:
         v = "◯"
     L.append(
-        f"\n**Вердикт H1 (механічно за реєстрацією): {v}** — середній R {rr(s1['mean'])} {ci_r(s1['ci'])}, IS {rr(is_m)}, OOS {rr(oos_m)}, "
+        f"\n**Вердикт H1 (механічно за реєстрацією): {v}** — середній R {rr(s1['mean'])}, CI об'єднання [{lo:+.3f}; {hi:+.3f}], "
+        f"IS {rr(is_m)}, OOS {rr(oos_m)}, "
         f"стрес 3 в.п. {rr(s_stress['mean'])}, Холм p {adj['P1-H1']:.3f}, MDE {s1['mde']:.3f} R\n"
     )
     log("verdict done", t0)
@@ -364,6 +366,97 @@ def full(L: list[str], D: dict[str, Any], cache: Path, t0: float) -> None:
     L.append(
         "\nЄдиний актив (BTC): пункт 5а (по активах) не застосовний; ETH не покрито кешем поверхонь. Маржа Bybit не зменшується крилом, тож R на макс. збиток — верхня межа дохідності на фактичну маржу.\n"
     )
+    tail_exploratory(L, D, base, allp, pcts)
+
+
+def tail_exploratory(
+    L: list[str], D: dict[str, Any], base: list[dict[str, Any]], allp: list[dict[str, Any]], pcts: dict[int, float]
+) -> None:
+    """EXPLORATORY (added after seeing the full run): what a loss-free sample can and cannot say about a short-premium payoff."""
+    L.append("## Розвідувально (додано після повного прогону): хвіст, якого у вибірці нема\n")
+    wins = [t["r"] for t in base if t["r"] > 0]
+    w = sum(wins) / len(wins) if wins else float("nan")
+    for name, grp in (("усі з перцентилем", allp), ("< 0.8", [t for t in allp if t["pct"] < THRESH])):
+        lo_ = [t["r"] for t in grp if t["r"] <= 0]
+        if not lo_:
+            continue
+        loss = -sum(lo_) / len(lo_)
+        L.append(
+            f"- збитки в групі «{name}»: {len(lo_)} з {len(grp)} ({len(lo_) / len(grp):.0%}), середній збиток {-loss:+.3f} R, "
+            f"найгірший {min(lo_):+.3f} R → беззбитковий виграш при середньому виграші ≥ 0.8 ({w:+.3f} R): "
+            f"{loss / (w + loss):.1%} угод у плюсі"
+        )
+        n = len(base)
+        for k in (1, 2):
+            m = (sum(t["r"] for t in base) - k * w - k * loss) / n
+            L.append(f"  - якби {k} з {n} угод ≥ 0.8 замість середнього виграшу дали середній збиток цієї групи: середній R {m:+.3f}")
+    for n_eff, lab in ((len(base), "угод"), (len(base) // 2, "неперекривних угод"), (5, "кластерів")):
+        L.append(f"- 0 збитків з {n_eff} {lab}: одностороння 95 % верхня межа частки збиткових {1 - 0.05 ** (1 / n_eff):.1%}")
+    # realised move of the eligible Saturdays, built vs skipped (selection check): z = ln(delivery / F) / (ATM IV sqrt T)
+    built = {t["day"] for t in base}
+    rows: dict[str, list[float]] = {"побудовані": [], "пропущені": []}
+    for d, p in pcts.items():
+        if p < THRESH:
+            continue
+        s = D["days"].get(d)
+        if s is None:
+            continue
+        e = choose_expiry(s, BASE["target"], BASE["lo"], BASE["hi"], rule="nearest")
+        dp = D["delivery"].get(ymd_ms(e)) if e is not None else None
+        if e is None or dp is None:
+            continue
+        x = s["expiries"][e]
+        iv = iv_at_strike(x, x["F"])[0]
+        tt = (e - d - 9 * 3600 * 1000) / (365 * DAY_MS)
+        if iv and tt > 0:
+            rows["побудовані" if d in built else "пропущені"].append(math.log(dp / x["F"]) / (iv * math.sqrt(tt)))
+    for k, zs in rows.items():
+        if zs:
+            L.append(
+                f"- реалізований рух до експірації, ≥ 0.8, {k}: n = {len(zs)}, |z| медіана {statistics.median(abs(z) for z in zs):.2f}, "
+                f"макс {max(abs(z) for z in zs):.2f}, |z| > 1.04 (≈ 15Δ): {sum(1 for z in zs if abs(z) > 1.04)}"
+            )
+    skipped_relaxed(L, D, base, pcts)
+    L.append("")
+
+
+def skipped_relaxed(L: list[str], D: dict[str, Any], base: list[dict[str, Any]], pcts: dict[int, float]) -> None:
+    """EXPLORATORY (critic's review): the >= 0.8 Saturdays the coverage filter skipped, rebuilt with a looser strike
+    tolerance (0.03 and 0.05 of spot instead of 0.015). The wings then deviate from the registered construction, so the
+    R values and the intent-to-treat mean are a selection check, not a result."""
+    bands = (0.03, 0.05)
+    L.append(
+        "\n### Пропущені суботи ≥ 0.8 з послабленим допуском страйків (розвідувально, рев'ю критика; крила відхиляються від "
+        "зареєстрованої конструкції)\n"
+    )
+    L.append("| субота | перцентиль | причина пропуску | поставка / спот − 1 | " + " | ".join(f"R, допуск {b:.2f}" for b in bands) + " |")
+    L.append("|---|---|---|---|" + "---|" * len(bands))
+    built = {t["day"] for t in base}
+    itt = {t["day"]: t["r"] for t in base}
+    for d in sorted(d for d, p in pcts.items() if p >= THRESH and d not in built):
+        _, why = build(D, d, BASE)
+        snap = D["days"].get(d)
+        e = choose_expiry(snap, BASE["target"], BASE["lo"], BASE["hi"], rule="nearest") if snap else None
+        dp = D["delivery"].get(ymd_ms(e)) if e is not None else None
+        mv = f"{dp / snap['spot'] - 1:+.1%}" if (dp and snap) else "—"
+        cells = []
+        for band in bands:
+            Pb = {**BASE, "band": band}
+            b2, why2 = build(D, d, Pb)
+            if b2 is None:
+                cells.append(f"не побудовано ({why2})")
+            else:
+                r = outcome(D, b2, Pb)["r"]
+                cells.append(f"{r:+.3f}")
+                itt[d] = r  # the loosest band that builds wins (bands ascend)
+        L.append(f"| {ymd_ms(d)} | {pcts[d]:.3f} | {why} | {mv} | " + " | ".join(cells) + " |")
+    rs = list(itt.values())
+    n_hi = sum(1 for p in pcts.values() if p >= THRESH)
+    if rs:
+        L.append(
+            f"\n- «намір торгувати» (база + пропущені з допуском до {bands[-1]:.2f}): n = {len(rs)} з {n_hi} субот ≥ 0.8, "
+            f"середній R {sum(rs) / len(rs):+.3f}, у плюсі {sum(1 for r in rs if r > 0)} / {len(rs)}, найгірший {min(rs):+.3f} R"
+        )
 
 
 def main() -> None:

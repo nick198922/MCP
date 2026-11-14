@@ -1,0 +1,3 @@
+- Партія «заклики» KillaXBT 2025-Q4 (неповна: жовтня й 01–08.11 в архіві нема): 21 рядок у `docs/calls/x/KillaXBT.csv`, 302 розмитих твіти.
+- Звіт `docs/verification/2026-11-14-x-calls-killaxbt-2025q4.md`, рев'ю критика B (request changes → approve) у `docs/reviews/`.
+- Картка `IDEA-20261113-x-traders`: журнал партій, пари для пункту 3 (KX 2025-Q4).

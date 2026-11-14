@@ -1,0 +1,3 @@
+- Заклики Trader_XO за 2026-Q1 (x-traders, пункт 2, партія 5): 7 рядків у `docs/calls/x/Trader_XO.csv` з 6 твітів, 16 розмитих пораховано, текст і всі 137 картинок кварталу.
+- Звіт `docs/verification/2026-11-14-x-calls-trader_xo-2026q1.md`, рев'ю критика (request changes → approve) у `docs/reviews/`.
+- Нові пари для пункту 3 у картці `IDEA-20261113-x-traders`; наступна партія — 2026-Q2.

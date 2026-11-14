@@ -70,6 +70,9 @@
 - **Режим «план угоди» (власник 21.10, діє):** кожен план — `plan_add`, оцінка `plan_resolve`, `plan_review` за вердиктом і тегами `idea:<slug>`; блок на «Журналі».
 - **Діють також:** підказки «i» для кожного заголовка й плитки панелі (`HELP`, тест); Upbit / Bithumb прибрано (20.10); канал QG — [LIB-20261026-qivty-channel](library/LIB-20261026-qivty-channel.md), дайджест вотчера.
 
+## Рішення власника 2026-11-14
+- **Опціонні ідеї замість голих чисел журналу прогнозів:** «короткі і змістовні поради що можна відкрити: дати експірації, страйки, ціна премії, пояснення чому і Р:Р»; BTC + ETH, за цінами Bybit (він там торгує). Субота 12:00 — `scripts/option_ideas_tg.py` (правила в `analytics/option_ideas.py`), ідеї пишуться в `/var/lib/tradedesk-mcp/assistant/option_ideas.jsonl`; розрахунок ідей на експірації — наступний крок ([зміни](changes/2026-11-14-option-ideas.md)).
+
 ## Рішення власника 2026-11-13
 - **Чотири трейдери з X** (@Trader_XO, @btc_charlie, @docXBT, @KillaXBT): архів постів за 2 роки → чесна оцінка всіх конкретних закликів (`docs/calls/x/`) проти плацебо → сетапи лише з того, що пройде, → демо. Картка [x-traders](ideas/IDEA-20261113-x-traders.md) (Порядок 0). Доступ — twitterapi.io (відповідь «А»; ключ — `scripts/server/twitterapi-key.sh`, архів — `scripts/x_backfill.py` у `~/private/library/courses/x-<handle>/`).
 

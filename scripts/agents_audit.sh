@@ -52,6 +52,18 @@ PROMPT="$(cat .claude/audit.md)
 ## Context
 
 Today: $(date +%F). Agents' logs (read them, do not change them): $LOG_DIR. The agents' clone: $(dirname "$REPO")/tradedesk-agents. This server user: $(whoami), without sudo."
+# The owner's one-off requests for the next audit (docs/audit-requests.md, open "- [ ]" items): appended to the prompt;
+# the auditor answers each in its report and ticks it in its delivery.
+if [[ -f docs/audit-requests.md ]] && grep -q '^- \[ \]' docs/audit-requests.md; then
+  PROMPT="$PROMPT
+
+## Owner's requests for this audit (docs/audit-requests.md)
+
+Answer every open item below in its own section of the report, then tick it (\`- [x]\`, with the date and a link to
+the report section) in docs/audit-requests.md in your delivery.
+
+$(cat docs/audit-requests.md)"
+fi
 
 ALLOWED=(
   Read Write Edit Glob Grep WebSearch WebFetch
@@ -60,6 +72,7 @@ ALLOWED=(
   "Bash(git fetch:*)" "Bash(git rev-parse:*)" "Bash(git ls-tree:*)" "Bash(git ls-files:*)" "Bash(git grep:*)" "Bash(git add:*)"
   "Bash(ls:*)" "Bash(date:*)" "Bash(head:*)" "Bash(tail:*)" "Bash(wc:*)" "Bash(grep:*)" "Bash(df:*)" "Bash(du:*)"
   "Bash(systemctl is-active:*)" "Bash(systemctl --user list-timers:*)" "Bash(mkdir -p .agent:*)"
+  mcp__tradedesk mcp__claude_ai_DOUBLETOP  # read-only MCP servers: ours (registered for this clone) and DOUBLETOP's, to compare
 )
 DENIED=(
   "Bash(git push:*)" "Bash(git commit:*)" "Bash(git reset --hard:*)" "Bash(git config:*)" "Bash(rm -rf:*)" "Bash(sudo:*)"

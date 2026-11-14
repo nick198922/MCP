@@ -388,8 +388,8 @@ RULES: dict[str, Rule] = {
             "200-денний тренд → дебетовий спред",
             "денні закриття: ціна нижче падаючої SMA200 (нахил за 20 д) → ведмежий; вище зростаючої → бичачий",
             "bear put / bull call spread 7–24 д: куплена |Δ| ≈ 0.40, продана ≈ 0.15; ризик = дебет",
-            "не перевірено",
-            "не перевірено: доказів нема; очікування купівця опціонів ≤ 0 за VRP; напрям, не перевага",
+            "✗",
+            "✗ BTC 2021–2026: −0.18 R на дебет [−0.42; −0.01] після витрат, n = 197 / 16 епізодів; IS і OOS мінус",
             "p3-200-денний-тренд--вертикальний-дебетовий-спред",
         ),
         Rule(
@@ -641,9 +641,10 @@ def ideas_for(
 
     ``market``: the ``data`` of MCP tools for this coin — ``vrp`` (deribit_vrp), ``term`` (deribit_atm_term),
     ``calendar`` (macro_calendar), ``skew`` (skew_percentile of the ≈ 30-day expiry, 3-day lookback); a missing one
-    leaves its rules unmeasured. Trade rules now: P3 (200-day trend → debit spread). Context rules (tags, risk
-    rules; never a trade): P2, P9, P10, P15 — their met checks are listed in ``ctx['notes']``. ✗ rules (P1 IV ≥ RV
-    condor, P4 IV < RV strangle, P5) and unmeasured ones are never sent.
+    leaves its rules unmeasured. Trade rules: P3 (200-day trend → debit spread) is still built and checked, but it
+    is ✗ since 14.11 (docs/verification/2026-11-14-p3-trend-debit-spread.md), so ``rank_ideas`` drops it. Context
+    rules (tags, risk rules; never a trade): P2, P9, P10, P15 — their met checks are listed in ``ctx['notes']``.
+    ✗ rules (P1 IV ≥ RV condor, P3, P4 IV < RV strangle, P5) and unmeasured ones are never sent.
     """
     m = market or {}
     checks = [

@@ -7,6 +7,7 @@ import json
 import math
 import re
 import sys
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -138,7 +139,21 @@ def test_realized_vol_and_trend():
     assert oi.trend(down) == "bear" and oi.trend(down[::-1]) == "bull" and oi.trend([1.0] * 30) == "neutral"
 
 
-def test_ideas_for_sends_trend_spread_but_never_the_x_rules():
+@pytest.fixture
+def p3_sendable(monkeypatch):
+    """P3 as it was before its ✗ verdict (14.11), to keep testing the trade path and the message layout."""
+    old = oi.RULES["P3"]
+    monkeypatch.setitem(oi.RULES, "P3", replace(old, status="не перевірено", evidence="не перевірено: доказів нема"))
+
+
+def test_p3_is_x_since_its_backtest_and_is_not_sent():
+    down = [80_000 - i * 40 for i in range(260)]
+    ideas, ctx = oi.ideas_for("BTC", QUOTES, down, NOW)
+    assert ctx["trend"] == "bear" and ctx["checks"]["P3"]["met"] is True and ideas == []
+    assert oi.RULES["P3"].status == "✗" and not oi.RULES["P3"].sendable
+
+
+def test_ideas_for_sends_trend_spread_but_never_the_x_rules(p3_sendable):
     down = [80_000 - i * 40 for i in range(260)]  # falling, tiny realized vol → IV ≫ RV (P1 would say condor: ✗)
     ideas, ctx = oi.ideas_for("BTC", QUOTES, down, NOW)
     assert ctx["trend"] == "bear" and [(i.kind, i.rule) for i in ideas] == [("put_debit_spread", "P3")]
@@ -168,11 +183,12 @@ def test_rules_table_mirrors_the_playbook():
         assert r.status in (*oi.EVIDENCE_ORDER, "✗") and r.kind in ("trade", "context")
         assert r.evidence.startswith(r.status if r.status != "не перевірено" else "не перевірено") or r.code == "P7"
     # ✗ rules and the ones no MCP tool measures are never sent
-    assert {c for c, r in oi.RULES.items() if not r.sendable} == {"P1", "P4", "P5", "P14", "P6", "P7", "P8", "P11", "P12", "P13"}
-    assert {c for c, r in oi.RULES.items() if r.sendable} == {"P2", "P3", "P9", "P10", "P15"}
+    not_sent = {"P1", "P3", "P4", "P5", "P14", "P6", "P7", "P8", "P11", "P12", "P13"}
+    assert {c for c, r in oi.RULES.items() if not r.sendable} == not_sent
+    assert {c for c, r in oi.RULES.items() if r.sendable} == {"P2", "P9", "P10", "P15"}
 
 
-def test_rank_ideas_drops_x_and_orders_by_evidence():
+def test_rank_ideas_drops_x_and_orders_by_evidence(p3_sendable):
     c = oi.iron_condor(QUOTES, EXP, NOW, "BTC")
     s = oi.debit_spread(QUOTES, EXP, NOW, "BTC", bearish=True)
     c.rule, s.rule = "P1", "P3"  # P1 is ✗
@@ -273,7 +289,14 @@ tg = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(tg)
 
 
-def test_message_has_strikes_premium_rr_size_rule_and_caveat(tmp_path):
+def test_message_lists_p3_as_not_sent():
+    down = [80_000 - i * 40 for i in range(260)]
+    text = tg.build_message([oi.ideas_for("BTC", QUOTES, down, NOW)], NOW / 1000, 100.0, "")
+    assert "Правило: P3" not in text and "пут-спред" not in text.split("Не надсилаємо")[0]
+    assert "P3 200-денний тренд → дебетовий спред" in text.split("Не надсилаємо (✗ у плейбуку)")[1]
+
+
+def test_message_has_strikes_premium_rr_size_rule_and_caveat(tmp_path, p3_sendable):
     down = [80_000 - i * 40 for i in range(260)]
     market = {"calendar": {"high_impact_within_48h": True, "events": [{"kind": "cpi", "hours_ahead": 20.0}]}}
     per = [oi.ideas_for("BTC", QUOTES, down, NOW, market=market), ([], {"coin": "ETH", "skip": "TimeoutError"})]
@@ -563,7 +586,7 @@ def test_line_separators_inside_a_record_survive_a_rewrite(tmp_path, sep):
     assert list(tmp_path.iterdir()) == [log]  # no temp file left behind
 
 
-def test_log_ideas_writes_ascii_lines(tmp_path):
+def test_log_ideas_writes_ascii_lines(tmp_path, p3_sendable):
     ideas, ctx = oi.ideas_for("BTC", QUOTES, [80_000 - i * 40 for i in range(260)], NOW)
     ctx = {**ctx, "note": "a b"}
     log = tmp_path / "ideas.jsonl"
@@ -610,7 +633,7 @@ def test_main_print_writes_nothing(monkeypatch, tmp_path, capsys):
     assert "Опціонні ідеї" in out and "сума R +0.25" in out  # settled in memory only
 
 
-def test_main_settles_before_sending_then_logs(monkeypatch, tmp_path):
+def test_main_settles_before_sending_then_logs(monkeypatch, tmp_path, p3_sendable):
     rc, sends, log = _run_main(monkeypatch, tmp_path, [])
     assert rc == 0 and len(sends) == 1
     assert '"status": "settled"' in sends[0][1]  # the settlement was written before the message went out

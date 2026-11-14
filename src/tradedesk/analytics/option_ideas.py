@@ -7,6 +7,12 @@ forecasts. The ideas are hypotheses (no tested edge; the credit structures rest 
 as IV above realized vol, but not yet as a profit of the traded structure after spreads — docs/knowledge/options.md);
 they are logged and settled with ``payoff_at`` at expiry so their record can be judged later.
 
+Which ideas go out is decided by the rules of the options playbook (``RULES``, docs/knowledge/options-playbook.md;
+card IDEA-20261114-options-playbook item 2): a rule is sent only when an MCP tool measures its condition and its
+evidence status is not ✗; ideas are ordered by evidence (✓ > ≈ > ◯ > not tested). The rules' inputs are the ``data``
+of our MCP tools (deribit_vrp, deribit_atm_term, macro_calendar, skew_percentile), passed in by the caller;
+thresholds are the playbook's, not tuned here.
+
 Units: prices and P/L in USD per 1 unit of the underlying (1 BTC / 1 ETH), IV and probabilities as decimals.
 """
 
@@ -118,6 +124,7 @@ class Idea:
     why: str = ""
     qty: float = 0.0
     extra: dict[str, Any] = field(default_factory=dict)
+    rule: str = ""  # playbook rule code (RULES), e.g. "P3"
 
     @property
     def reward_to_risk(self) -> float | None:
@@ -312,16 +319,347 @@ def size(idea: Idea, risk_usd: float) -> float:
     return round(n * step, 4)
 
 
-def ideas_for(
-    coin: str, quotes: list[Quote], closes: list[float], now_ms: int, risk_usd: float = 100.0, target_days: float = 14
-) -> tuple[list[Idea], dict[str, Any]]:
-    """Up to two ideas for one coin and the context they rest on.
+# --- Options playbook rules (docs/knowledge/options-playbook.md) --------------------------------------------------
 
-    1. Volatility: options priced above the last 30 days' realized move (ATM IV ≥ RV30) → iron condor (sell the
-       premium, risk capped by the wings); priced below (IV < 0.9 × RV30) → long strangle; in between → nothing.
-    2. Direction: 200-day trend 'bear' → bear put spread, 'bull' → bull call spread, 'neutral' → nothing.
+PLAYBOOK = "docs/knowledge/options-playbook.md"
+EVIDENCE_ORDER = ("✓", "≈", "◯", "не перевірено")  # strongest first; ✗ is never sent
+MAX_IDEAS_PER_COIN = 3
+
+# Thresholds, all from the playbook (their sources are named there; changing one goes through item 4 of the card).
+DVOL_PCT_HIGH = 0.8  # P2: deribit_vrp current.dvol_percentile_365d
+FRONT_MAX_DAYS = 8.0  # P10: the front expiry is at most 8 days out …
+MONTH_DAYS = 30.0  # … the monthly one is the expiry nearest 30 days …
+MONTH_BAND = (21.0, 45.0)  # … within this band (else not measured)
+FRONT_INVERSION = 0.015  # P10: front ATM IV minus monthly ≥ 1.5 vol points
+EVENT_KINDS = ("fomc", "cpi")  # P10: macro_calendar kinds that count as the event between the expiries
+RR25_FEAR = -0.05  # P15: 25Δ risk reversal at or below −5 vol points …
+RR25_TURN = 0.01  # … and the latest value at least 1 point above that minimum …
+SKEW_LOOKBACK_DAYS = 3  # … within the last 3 days (skew_percentile lookback)
+
+
+@dataclass(frozen=True)
+class Rule:
+    """One playbook rule. ``kind``: 'trade' = a structure priced at Bybit; 'context' = a tag or a risk rule shown
+    next to the ideas, never a trade. ``measured`` is False when no MCP tool measures the condition («не вимірюється»)."""
+
+    code: str
+    name: str
+    condition: str
+    construction: str
+    status: str  # ✓ | ≈ | ◯ | ✗ | не перевірено
+    evidence: str  # the «докази: …» text of the message
+    anchor: str  # heading anchor in the playbook
+    kind: str = "trade"
+    measured: bool = True
+
+    @property
+    def link(self) -> str:
+        return f"{PLAYBOOK}#{self.anchor}"
+
+    @property
+    def sendable(self) -> bool:
+        return self.measured and self.status in EVIDENCE_ORDER
+
+
+RULES: dict[str, Rule] = {
+    r.code: r
+    for r in (
+        Rule(
+            "P1",
+            "IV вища за реалізовану → залізний кондор",
+            "deribit_vrp → current.spread_vs_rv30 ≥ 0 (ATM IV / RV30 ≥ 1.0; поріг — дизайн генератора 14.11)",
+            "кондор 7–24 д: продані пут і кол |Δ| ≈ 0.15, крила ≈ 3 % спота далі",
+            "✗",
+            "✗ розрив IV − RV не прогнозує наступної премії; конструкція 15Δ / +3 % не тестована",
+            "p1-iv-вища-за-реалізовану--залізний-кондор",
+        ),
+        Rule(
+            "P2",
+            "DVOL у верхніх 20 % за рік",
+            "deribit_vrp → current.dvol_percentile_365d ≥ 0.8",
+            "контекст-позначка, не окрема угода (тестували хеджований ATM-стреддл 30 д)",
+            "◯",
+            "◯ на реальних марках +1.43 % [−0.13; +3.45], n = 16, CI містить 0; не підтверджено",
+            "p2-рівень-dvol-перцентиль-як-умова-продажу-премії--розміру",
+            kind="context",
+        ),
+        Rule(
+            "P3",
+            "200-денний тренд → дебетовий спред",
+            "денні закриття: ціна нижче падаючої SMA200 (нахил за 20 д) → ведмежий; вище зростаючої → бичачий",
+            "bear put / bull call spread 7–24 д: куплена |Δ| ≈ 0.40, продана ≈ 0.15; ризик = дебет",
+            "не перевірено",
+            "не перевірено: доказів нема; очікування купівця опціонів ≤ 0 за VRP; напрям, не перевага",
+            "p3-200-денний-тренд--вертикальний-дебетовий-спред",
+        ),
+        Rule(
+            "P4",
+            "IV нижча за реалізовану → довгий стренгл",
+            "ATM IV / RV30 < 0.9 (дизайн генератора 14.11)",
+            "довгий 25Δ стренгл 7–24 д",
+            "✗",
+            "✗ купівля вола на марках −0.59 % [−2.43; +1.51], n = 27; покупець у середньому платить VRP",
+            "p4-iv-нижча-за-реалізовану--довгий-стренгл--відхилено-не-надсилати",
+        ),
+        Rule(
+            "P5",
+            "напрямна купівля кол / пут при низькому IV rank",
+            "iv_rank → iv_rank ≤ 0.33 і теза власника",
+            "кол / пут |Δ| 0.40–0.50",
+            "✗",
+            "✗ як перевага: покупець у середньому платить VRP",
+            "p5-напрямна-купівля-кол--пут-з-низькою-iv-як-знижкою--відхилено-не-надсилати",
+        ),
+        Rule(
+            "P6",
+            "вертикальний спред до рівня (S20)",
+            "напрямна теза і рівень, який ціна навряд чи пройде (задає людина)",
+            "bull call / bear put spread з проданою ногою на рівні",
+            "не перевірено",
+            "не перевірено; ◯ як правило виразу тези",
+            "p6-вертикальний-спред-до-рівня-s20--не-вимірюється-не-для-розсилки",
+            measured=False,
+        ),
+        Rule(
+            "P7",
+            "захисний пут для спот-позиції (S21)",
+            "довгострокова спот-позиція і конкретний ризик (знає лише власник)",
+            "1 пут на 1 монету, ATM / OTM, 2–4 тижні; пут-спред дешевший",
+            "не перевірено",
+            "правило ризику, не джерело прибутку",
+            "p7-захисний-пут-для-спот-позиції-s21--хедж",
+            kind="context",
+            measured=False,
+        ),
+        Rule(
+            "P8",
+            "опціон замість стопу",
+            "сигнал демо-трейдера (подія в журналі, не поле MCP)",
+            "кол / пут |Δ| ≈ 0.40 на премію ≤ $100 поруч із перпом",
+            "◯",
+            "◯ форвард-тест demo_option_pairs, до 30 пар — замало даних",
+            "p8-опціон-замість-стопу-парний-тест-з-2310--не-вимірюється-не-для-розсилки-лише-форвард-тест",
+            measured=False,
+        ),
+        Rule(
+            "P9",
+            "подія ≤ 48 год: не тримати куплену коротку вегу",
+            "macro_calendar → high_impact_within_48h = true",
+            "правило ризику: не тримати куплену коротку вегу через подію; експірація ≥ 3–5 днів після події",
+            "✓",
+            "✓ ціна події: ATM IV у день події 63 % проти 53 %; ◯ як угода",
+            "p9-подієві-правила-нічого-не-купувати-перед-подією-на-короткий-строк",
+            kind="context",
+        ),
+        Rule(
+            "P10",
+            "інверсія фронту перед подією → календар",
+            "deribit_atm_term: ATM IV строку ≤ 8 д, що включає FOMC / CPI (macro_calendar), мінус строку ≈ 30 д ≥ +1.5 п.",
+            "календар: продати тижневий ATM-стреддл, купити місячний (ціни Bybit розсилка ще не рахує)",
+            "не перевірено",
+            "не перевірено (H2 LIB DataHawks); сусідні подієві тести ◯",
+            "p10-інверсія-фронту--діагональ--календар-s29-h2-lib",
+            kind="context",
+        ),
+        Rule(
+            "P11",
+            "кондор / метелик на подію",
+            "подія ≤ 48 год і завищена IV фронту",
+            "кондор / метелик з обмеженим ризиком",
+            "не перевірено",
+            "не перевірено",
+            "p11-закриті-конструкції-на-подію-продаж-кондора--метелика-перед-cpi-fomc--не-перевірено-не-вимірюється-не-для-розсилки",
+            measured=False,
+        ),
+        Rule(
+            "P12",
+            "продаж 25Δ стренглу з хеджем (премія в крилах)",
+            "умови нема (розвідувальна знахідка)",
+            "кондор із 25Δ шортами",
+            "◯",
+            "◯ розвідувально +0.73 % [+0.21; +1.51], n = 40",
+            "p12-продаж-стренглу-25δ-з-хеджем-премія-в-крилах--не-вимірюється-не-для-розсилки-лише-гіпотеза-для-пункту-4",
+            measured=False,
+        ),
+        Rule(
+            "P13",
+            "ведення позиції: продаж далекого страйку, ролл (S30)",
+            "куплена позиція в прибутку (поля MCP нема)",
+            "продати вищий страйк / закрити частину / перенести страйк",
+            "◯",
+            "◯ правило ведення, не перевага",
+            "p13-ведення-позиції-перебудова-профілю-продаж-далекого-страйку-ролл-s30--не-вимірюється-не-для-розсилки-дисципліна-ведення",
+            kind="context",
+            measured=False,
+        ),
+        Rule(
+            "P14",
+            "GEX / max pain / пін як прогноз",
+            "deribit_gamma_exposure, deribit_max_pain, deribit_oi_by_strike",
+            "лише опис, не прогноз",
+            "✗",
+            "✗ GEX не прогнозує діапазон (β = −0.001); ◯ пін",
+            "p14-позиціонування-опціонів-як-контекст-gex-max-pain-пін-не-правило-описова-позначка",
+            kind="context",
+        ),
+        Rule(
+            "P15",
+            "скью RR25 ≤ −5 п. і розворот: «страх на максимумі»",
+            "skew_percentile (25Δ, експірація ≈ 30 д, 3 доби): мінімум rr ≤ −0.05 і останнє ≥ мінімум + 0.01",
+            "тег режиму, не сигнал (продаж пута після паніки несе ризик VRP-продажу)",
+            "◯",
+            "◯ розвідка на 13 подіях ETH: не краще за «купити після падіння ≥ 15 %»",
+            "p15-скью-rr25-як-контр-індикатор-страху-eth--5--розворот--дно",
+            kind="context",
+        ),
+    )
+}
+MARKET_WIDE = ("P9",)  # the same for every coin: shown once
+
+
+@dataclass(frozen=True)
+class Check:
+    """Whether a rule's condition holds now. ``met`` None = not measured this time (the tool gave no data)."""
+
+    code: str
+    met: bool | None
+    detail: str
+
+
+def _get(d: Any, *path: str) -> Any:
+    for k in path:
+        d = d.get(k) if isinstance(d, dict) else None
+    return d
+
+
+def check_dvol_high(vrp: dict[str, Any] | None) -> Check:
+    """P2 on ``deribit_vrp`` data."""
+    p, dvol = _num(_get(vrp, "current", "dvol_percentile_365d")), _num(_get(vrp, "current", "dvol"))
+    if p is None:
+        return Check("P2", None, "deribit_vrp не дав перцентиля DVOL")
+    lvl = f"DVOL {dvol:.0%}, " if dvol is not None else ""
+    return Check("P2", p >= DVOL_PCT_HIGH, f"{lvl}перцентиль за 365 д {p:.2f} (поріг ≥ {DVOL_PCT_HIGH})")
+
+
+def check_trend(closes: list[float]) -> Check:
+    """P3 on daily closes (``trend``)."""
+    t = trend(closes)
+    word = {"bear": "ведмежий", "bull": "бичачий"}.get(t, "нейтральний")
+    return Check("P3", t in ("bear", "bull"), f"200-денний тренд {word}")
+
+
+def check_event(calendar: dict[str, Any] | None) -> Check:
+    """P9 on ``macro_calendar`` data."""
+    if not isinstance(calendar, dict) or "high_impact_within_48h" not in calendar:
+        return Check("P9", None, "macro_calendar без даних")
+    if calendar["high_impact_within_48h"] is not True:
+        return Check("P9", False, "подій високого впливу в найближчі 48 год нема")
+    events = [e for e in calendar.get("events") or [] if isinstance(e, dict) and _num(e.get("hours_ahead")) is not None]
+    ev = min(events, key=lambda e: abs(_num(e["hours_ahead"]) or 0.0), default=None)
+    what = "подія високого впливу"
+    if ev:
+        h = _num(ev["hours_ahead"]) or 0.0
+        when = f"через {h:.0f} год" if h >= 0 else f"{-h:.0f} год тому"
+        what = f"{str(ev.get('kind') or 'подія').upper()} {when}"
+    return Check("P9", True, f"{what}: не тримати куплену коротку вегу через подію")
+
+
+def _term_rows(term: dict[str, Any] | None) -> list[tuple[float, float, str]]:
+    """(days, atm_iv, expiry token) of ``deribit_atm_term`` data, nearest first."""
+    out = []
+    for x in _get(term, "expiries") or []:
+        d, iv = _num(_get(x, "days")), _num(_get(x, "atm_iv"))
+        if d is not None and iv is not None and d > 0 and isinstance(_get(x, "expiry"), str):
+            out.append((d, iv, x["expiry"]))
+    return sorted(out)
+
+
+def _month(rows: list[tuple[float, float, str]]) -> tuple[float, float, str] | None:
+    lo, hi = MONTH_BAND
+    ok = [x for x in rows if lo <= x[0] <= hi]
+    return min(ok, key=lambda x: abs(x[0] - MONTH_DAYS)) if ok else None
+
+
+def month_expiry_iso(term: dict[str, Any] | None) -> str | None:
+    """ISO expiry (as the collector stores it) of the ``deribit_atm_term`` expiry nearest 30 days; the input of
+    ``skew_percentile`` for P15."""
+    m = _month(_term_rows(term))
+    exp = parse_expiry_token(m[2]) if m else None
+    return exp.isoformat() if exp else None
+
+
+def check_front_inversion(term: dict[str, Any] | None, calendar: dict[str, Any] | None) -> Check:
+    """P10 on ``deribit_atm_term`` and ``macro_calendar`` data (both measure days / hours from now)."""
+    rows = _term_rows(term)
+    month = _month(rows)
+    if month is None or not isinstance(calendar, dict) or not isinstance(calendar.get("events"), list):
+        return Check("P10", None, "немає строкової структури або календаря")
+    days = [
+        h / 24
+        for e in calendar["events"]
+        if isinstance(e, dict) and e.get("kind") in EVENT_KINDS and (h := _num(e.get("hours_ahead"))) is not None and h >= 0
+    ]
+    ev = min((d for d in days if d < FRONT_MAX_DAYS), default=None)
+    if ev is None:
+        return Check("P10", False, f"FOMC / CPI у найближчі {FRONT_MAX_DAYS:.0f} д нема")
+    front = next((x for x in rows if ev < x[0] <= FRONT_MAX_DAYS), None)
+    if front is None:
+        return Check("P10", False, f"немає експірації ≤ {FRONT_MAX_DAYS:.0f} д після події")
+    diff = front[1] - month[1]
+    return Check(
+        "P10",
+        diff >= FRONT_INVERSION,
+        f"ATM IV {front[2]} {front[1]:.1%} мінус {month[2]} {month[1]:.1%} = {diff * 100:+.1f} п. (поріг +{FRONT_INVERSION * 100:.1f})",
+    )
+
+
+def check_skew_fear(skew: dict[str, Any] | None) -> Check:
+    """P15 on ``skew_percentile`` data (rr25 of the ≈ 30-day expiry over the last 3 days)."""
+    lo, last = _num(_get(skew, "rr", "min")), _num(_get(skew, "rr", "latest"))
+    if lo is None or last is None:
+        return Check("P15", None, "skew_percentile без історії колектора")
+    met = lo <= RR25_FEAR and last - lo >= RR25_TURN
+    return Check("P15", met, f"RR25 мінімум за 3 доби {lo * 100:+.1f} п., зараз {last * 100:+.1f} п.")
+
+
+def rank_ideas(ideas: list[Idea], limit: int = MAX_IDEAS_PER_COIN) -> list[Idea]:
+    """Sendable ideas only (rule measured, status not ✗), strongest evidence first, at most ``limit``."""
+    ok = [i for i in ideas if i.rule in RULES and RULES[i.rule].sendable]
+    return sorted(ok, key=lambda i: EVIDENCE_ORDER.index(RULES[i.rule].status))[:limit]
+
+
+def ideas_for(
+    coin: str,
+    quotes: list[Quote],
+    closes: list[float],
+    now_ms: int,
+    risk_usd: float = 100.0,
+    target_days: float = 14,
+    market: dict[str, Any] | None = None,
+) -> tuple[list[Idea], dict[str, Any]]:
+    """Up to ``MAX_IDEAS_PER_COIN`` ideas for one coin by the playbook rules, and the context they rest on.
+
+    ``market``: the ``data`` of MCP tools for this coin — ``vrp`` (deribit_vrp), ``term`` (deribit_atm_term),
+    ``calendar`` (macro_calendar), ``skew`` (skew_percentile of the ≈ 30-day expiry, 3-day lookback); a missing one
+    leaves its rules unmeasured. Trade rules now: P3 (200-day trend → debit spread). Context rules (tags, risk
+    rules; never a trade): P2, P9, P10, P15 — their met checks are listed in ``ctx['notes']``. ✗ rules (P1 IV ≥ RV
+    condor, P4 IV < RV strangle, P5) and unmeasured ones are never sent.
     """
-    ctx: dict[str, Any] = {"coin": coin, "trend": trend(closes), "rv30": realized_vol(closes)}
+    m = market or {}
+    checks = [
+        check_trend(closes),
+        check_dvol_high(m.get("vrp")),
+        check_event(m.get("calendar")),
+        check_front_inversion(m.get("term"), m.get("calendar")),
+        check_skew_fear(m.get("skew")),
+    ]
+    ctx: dict[str, Any] = {
+        "coin": coin,
+        "trend": trend(closes),
+        "rv30": realized_vol(closes),
+        "checks": {c.code: {"met": c.met, "detail": c.detail} for c in checks},
+        "notes": [c.code for c in checks if c.met and RULES[c.code].kind == "context" and RULES[c.code].sendable],
+    }
     exp = pick_expiry(quotes, now_ms, target_days)
     if exp is None:
         ctx["skip"] = "no Bybit expiry with enough two-sided quotes 7-24 days out"
@@ -329,32 +667,20 @@ def ideas_for(
     ctx["expiry_ms"] = exp
     ctx["iv"] = iv = atm_iv(quotes, exp)
     ctx["spot"] = next((q.underlying for q in quotes if q.expiry_ms == exp), None)
-    rv = ctx["rv30"]
+    if iv and ctx["rv30"]:
+        ctx["iv_rv"] = iv / ctx["rv30"]  # context only: IV ≥ RV as a sell signal is ✗ (P1)
     out: list[Idea] = []
-    if iv and rv:
-        ratio = iv / rv
-        ctx["iv_rv"] = ratio
-        if ratio >= 1.0:
-            idea = iron_condor(quotes, exp, now_ms, coin)
-            if idea:
-                idea.why = (
-                    f"опціони дорожчі за реальний рух (IV {iv:.0%} проти {rv:.0%} за 30 днів): продаємо премію, ризик обмежений крилами"
-                )
-                out.append(idea)
-        elif ratio < 0.9:
-            idea = long_strangle(quotes, exp, now_ms, coin)
-            if idea:
-                idea.why = f"опціони дешевші за реальний рух (IV {iv:.0%} проти {rv:.0%} за 30 днів): купуємо рух в обидва боки"
-                out.append(idea)
-    if ctx["trend"] in ("bear", "bull"):
+    if ctx["checks"]["P3"]["met"]:
         idea = debit_spread(quotes, exp, now_ms, coin, bearish=ctx["trend"] == "bear")
         if idea:
+            idea.rule = "P3"
             idea.why = (
                 "ціна нижче 200-денної середньої, а вона падає: ставка на продовження падіння з обмеженим ризиком"
                 if ctx["trend"] == "bear"
                 else "ціна вище 200-денної середньої, а вона росте: ставка на продовження росту з обмеженим ризиком"
             )
             out.append(idea)
+    out = rank_ideas(out)
     for idea in out:
         idea.qty = size(idea, risk_usd)
     return out, ctx

@@ -1,0 +1,3 @@
+- x-traders, пункт 3: оцінка трейдера KillaXBT: реєстрація (розділ 3.1 картки) і повний прогін. Вердикт ✗ «перевага не доведена»: середнє −0.075 R на заклик, 95 % CI [−0.26; +0.12], плацебо p 0.51, n = 129 закликів у 55 тижневих кластерах.
+- Нове: `analytics/trader_eval.py` (чисті функції), `tests/test_trader_eval.py`, `scripts/verify_killaxbt_eval.py` (`--stage coverage` / `full` / `--smoke`), розмітка `docs/calls/x/KillaXBT-eval.csv`.
+- Звіт `docs/verification/2026-11-14-killaxbt-trader-eval.md`, рев'ю критика `docs/reviews/2026-11-14-killaxbt-trader-eval.md`.

@@ -6,7 +6,7 @@
 <!-- proposed → accepted | rejected → testing → confirmed | rejected | inconclusive → built -->
 
 ## Навіщо
-З 14.11 MCP tradedesk зареєстровано для клону агентів, координатору дозволено `mcp__tradedesk` (`scripts/nightly_agents.sh`), а підагенти ходять до інструментів через `uv run python scripts/mcp_call.py` ([зміни](../changes/2026-11-14-agents-mcp.md)). Прямого доступу (`mcp__tradedesk__*` як інструменти) у підагентів нема: його задає рядок `tools:` у `.claude/agents/*.md`, а сесії чату Claude правити `.claude/` заборонено. Агентам — можна.
+З 14.11 MCP tradedesk зареєстровано для клону агентів, координатору дозволено `mcp__tradedesk` (`scripts/nightly_agents.sh`), а підагенти ходять до інструментів через `uv run python scripts/mcp_call.py` (`docs/changes/2026-11-14-agents-mcp.md`, PR #1147). Прямого доступу (`mcp__tradedesk__*` як інструменти) у підагентів нема: його задає рядок `tools:` у `.claude/agents/*.md`, а сесії чату Claude правити `.claude/` заборонено. Агентам — можна.
 
 ## Прогрес
 - [ ] 1. Розробник → критик C: у рядок `tools:` **кожного** визначення `.claude/agents/*.md` (scout, quant, builder, critic, harvester) дописати `mcp__tradedesk` (увесь сервер; він лише читає). У `.claude/nightly.md` — одне речення в правилах: «MCP tradedesk доступний тобі й підагентам (`mcp__tradedesk__*`); для живих даних — спершу він, у Bash — `scripts/mcp_call.py`». У `docs/AGENTS.md` — те саме одним рядком. Перевірка: наступний прогін, у транскрипті є хоча б один виклик `mcp__tradedesk__…` підагента (рядок у `docs/changes/`). Нічого більше в цих файлах не міняти.

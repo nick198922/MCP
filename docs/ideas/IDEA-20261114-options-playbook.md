@@ -16,6 +16,9 @@
 - Канал @DataHawks: [LIB-20261018-datahawks-options](../library/LIB-20261018-datahawks-options.md), [LIB-20261104-datahawks-eth-skew-bottom](../library/LIB-20261104-datahawks-eth-skew-bottom.md), архів `docs/library/courses/DataHawks/` (`posts.md`, `parts/`).
 - Інші записи бібліотеки з опціонами (qivty, X-трейдери — якщо в них трапляться опціонні заклики).
 
+## Дані — через наш MCP (власник 14.11: «МСР потрібно також використовувати для ідей по опціонам»)
+Кожна умова плейбуку має назву **інструменту MCP tradedesk**, яким вона вимірюється (і поле його відповіді), щоб власник міг перевірити ідею тим самим інструментом у чаті, а генератор і MCP ніколи не розходились у числах. Основні: `deribit_dvol`, `deribit_vrp` (DVOL проти RV, рівень DVOL), `iv_rank`, `deribit_atm_term` / `deribit_skew_term` / `deribit_vol_surface` (строкова структура, скью), `skew_percentile` (z-score 25Δ / 10Δ), `deribit_expected_move`, `prob_from_options` / `touch_probability`, `deribit_gamma_exposure` (GEX — евристика), `deribit_max_pain` / `deribit_oi_by_strike` / `calendar_expiries` (експірації, пін), `macro_calendar` (подія до експірації), `cycle_regime` / `market_regime` (тренд, фаза), `perps_funding_compare` / `funding_zscore`, `liquidations_summary`, `deribit_largest_trades` (великі угоди), `strategy_iron_condor` / `strategy_payoff` / `strategy_scenario_matrix` (профіль конструкції). Генератор (пункт 2) викликає ці інструменти в процесі (`build_server()`, як `scripts/calls_check.py`), а не рахує їхні числа заново; умова, якої жоден інструмент не міряє, — кандидат на новий інструмент (окремий пункт BACKLOG з посиланням сюди), а до того правило має статус «не вимірюється».
+
 ## Прогрес
 Пункти беруться згори вниз, по одному за прогін.
 

@@ -1,0 +1,3 @@
+- Опціонний плейбук, P9 (вега на подію, експірація ≥ 3 д після події): перевірка на 182 днях FOMC/CPI/NFP. H1 ✗ (−0.104 R, CI [−0.140; −0.065]), H2 ≈, H3 ✗ (слабкий). Правило P9 лишається ✓ як ризик-правило.
+- Нова аналітика `analytics/event_vega.py`, `scripts/verify_p9_event_vega.py`, тести `tests/test_event_vega.py`.
+- Звіт `docs/verification/2026-11-14-p9-event-vega-3to5d.md`, рев'ю критика `docs/reviews/2026-11-14-p9-event-vega.md` (approve).

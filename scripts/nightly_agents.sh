@@ -382,6 +382,7 @@ fi
 
 ALLOWED=(
   Read Write Edit Glob Grep WebSearch WebFetch Agent
+  mcp__tradedesk  # our read-only MCP server (127.0.0.1:8000, registered for this clone with `claude mcp add`; owner 14.11)
   "Bash(uv run:*)" "Bash(uv sync:*)" "Bash(make:*)"
   "Bash(git status:*)" "Bash(git diff:*)" "Bash(git log:*)" "Bash(git show:*)" "Bash(git branch:*)"
   "Bash(git fetch:*)" "Bash(git rev-parse:*)" "Bash(git ls-tree:*)" "Bash(git ls-files:*)" "Bash(git add:*)"

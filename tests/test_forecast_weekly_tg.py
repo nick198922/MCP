@@ -248,6 +248,7 @@ def test_flag_path_matches_between_the_unit_and_step_26():
     d = re.search(r"^DIR=(\S+)$", step, re.M).group(1)
     flag = re.search(r'^FLAG="\$DIR/(\S+)"$', step, re.M).group(1)
     assert cond == f"{d}/{flag}" and flag not in ("brief-telegram.on", "radar-telegram.on")  # its own switch
-    assert "scripts/forecast_weekly_tg.py" in unit and re.search(r"^OnCalendar=Sat \*-\*-\* 12:00:00 Europe/Kyiv$", timer, re.M)
+    assert "scripts/option_ideas_tg.py" in unit  # owner 14.11: the ideas replace the bare summary
+    assert re.search(r"^OnCalendar=Sat \*-\*-\* 12:00:00 Europe/Kyiv$", timer, re.M)
     assert "runuser" not in step and "sudo -" not in step and '"$(id -un)" == "$SVC"' in step  # runs as tradedesk
     assert re.search(r"^DB=(\S+)$", step, re.M).group(1) == "/var/lib/tradedesk-mcp/tradedesk.sqlite"  # dashboard.JOURNAL_DB on the server

@@ -1,0 +1,3 @@
+- x-traders, пункт 3: попередня реєстрація оцінки KillaXBT (розділ 3.1 картки), до будь-якого P&L.
+- Нове: `analytics/trader_eval.py` (чисті функції), `tests/test_trader_eval.py`, `scripts/verify_killaxbt_eval.py` (`--stage coverage` / `full` / `--smoke`), розмітка `docs/calls/x/KillaXBT-eval.csv`.
+- Стадія 0: 228 рядків, основна вибірка 131 заклик у 56 тижневих кластерах; MDE ≈ 0.50 R на заклик.

@@ -1,0 +1,1 @@
+- Заклики KillaXBT за 2025-Q3 (x-traders, пункт 2, партія 12, неповна: серпня і 01–12.09 в архіві нема): 25 рядків у `docs/calls/x/KillaXBT.csv`, 179 розмитих, звіт `docs/verification/2026-11-14-x-calls-killaxbt-2025q3.md`, рев'ю критика (approve після одного раунду).

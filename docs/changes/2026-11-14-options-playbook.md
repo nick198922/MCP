@@ -1,0 +1,3 @@
+- Плейбук опціонів `docs/knowledge/options-playbook.md`: 15 правил (умова з інструментом MCP, конструкція, вихід, механізм, докази) і таблиця «Не робимо, і чому»; рядок у `docs/knowledge/README.md`.
+- Рев'ю критика `docs/reviews/2026-11-14-options-playbook.md` (запит змін → виправлено → approve).
+- Картка `options-playbook`: пункт 1 виконано.

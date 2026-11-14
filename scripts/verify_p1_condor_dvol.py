@@ -249,7 +249,7 @@ def trades_for(D: dict[str, Any], P: dict[str, Any], *, thr: float | None) -> tu
 
 def table_row(label: str, tr: list[dict[str, Any]], ep: dict[int, int], elig: int) -> str:
     cov = len(tr) / elig if elig else 0.0
-    return vp3.row(label, tr, ep)[:-1] + f" {cov:.0%} |"
+    return vp3.row(label, tr, ep) + f" {cov:.0%} |"
 
 
 HDR = [

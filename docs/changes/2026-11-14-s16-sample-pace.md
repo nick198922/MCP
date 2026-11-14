@@ -1,0 +1,1 @@
+- S16, темп вибірки (облік): попередня реєстрація в картці `IDEA-20261030-demo-setups-depth`, чистий модуль `analytics/sample_pace.py` з тестами, раннер `scripts/verify_s16_sample_pace.py`. Повний прогін — наступним кроком.

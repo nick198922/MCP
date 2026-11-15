@@ -55,8 +55,7 @@ EXPECTED_TOOLS = {
     "macro_calendar",
     "deribit_dvol",
     "deribit_vrp",
-    "deribit_atm_term",
-    "deribit_skew_term",
+    "deribit_skew_term",  # also the ATM IV term structure, view="atm" (the former deribit_atm_term, merged 2026-11-15)
     "deribit_largest_trades",
     "perps_basis_compare",
     "polymarket_search",
@@ -815,17 +814,41 @@ async def test_deribit_dvol(server):
     assert d["latest"]["value_pct"] >= d["mean_pct"]  # rising series
 
 
-async def test_deribit_atm_term(server):
-    env = await call(server, "deribit_atm_term", currency="BTC", min_days=0, max_days=400)
+async def test_deribit_skew_term_atm_view(server):
+    # The former deribit_atm_term tool (merged into deribit_skew_term as view="atm" on 2026-11-15).
+    env = await call(server, "deribit_skew_term", currency="BTC", min_days=0, max_days=400, view="atm")
     d = env["data"]
+    assert env["ok"] is True and set(d) == {"currency", "shape", "expiries"}  # the old tool's data, no skew keys
     assert d["currency"] == "BTC"
     assert len(d["expiries"]) == 3  # fixture: 30OCT26, 27NOV26, 26MAR27
     assert d["expiries"][0]["days"] < d["expiries"][-1]["days"]
     # SMILE["base"] = 0.40 → each ATM IV should be close to 0.40
     for row in d["expiries"]:
+        assert set(row) == {"expiry", "days", "forward", "atm_iv", "strikes"}
         assert 0.35 < row["atm_iv"] < 0.45
         assert row["forward"] > 0 and row["strikes"] >= 3
     assert d["shape"] in ("contango", "backwardation", "flat")
+    # Reference values of deribit_atm_term on the same fixtures, recorded before the merge.
+    ref = [("30OCT26", 19.79, 82915.5, 0.4011, 17), ("27NOV26", 47.79, 83246.5, 0.401, 17), ("26MAR27", 166.79, 84736.0, 0.4002, 17)]
+    for row, (exp, days, fwd, iv, n) in zip(d["expiries"], ref, strict=True):
+        assert row["expiry"] == exp and row["strikes"] == n
+        assert row["days"] == pytest.approx(days, abs=0.01)
+        assert row["forward"] == pytest.approx(fwd, abs=0.01) and row["atm_iv"] == pytest.approx(iv, abs=1e-4)
+    assert d["shape"] == "backwardation"
+    # Same ATM IV as the skew view's rows (one smile, one atm_iv function).
+    skew = (await call(server, "deribit_skew_term", currency="BTC", min_days=0, max_days=400))["data"]
+    assert {x["expiry"]: x["atm_iv"] for x in skew["expiries"]} == {x["expiry"]: x["atm_iv"] for x in d["expiries"]}
+    assert "rr_shape" in skew and "shape" not in skew  # the default view is unchanged
+
+
+async def test_deribit_skew_term_atm_view_defaults_and_empty_window(server):
+    env = await call(server, "deribit_skew_term", currency="BTC", view="atm")  # old defaults: min_days 0.5, max_days 400
+    assert env["ok"] is True and [x["expiry"] for x in env["data"]["expiries"]] == ["30OCT26", "27NOV26", "26MAR27"]
+    one = await call(server, "deribit_skew_term", currency="ETH", min_days=20, max_days=60, view="atm")
+    assert one["ok"] is True and len(one["data"]["expiries"]) == 1 and one["data"]["shape"] is None
+    none = await call(server, "deribit_skew_term", currency="BTC", min_days=1000, max_days=2000, view="atm")
+    assert none["ok"] is False and none["data"] is None
+    assert any(m["field"] == "atm_term" and m["reason"] == "data_unavailable" for m in none["missing"])
 
 
 async def test_coin_snapshot(server):

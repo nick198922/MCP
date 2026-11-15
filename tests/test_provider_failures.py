@@ -58,8 +58,8 @@ def _assert_failed(env: dict, provider: str) -> None:
         ("prob_from_options", {"expiry": "27NOV26", "level": 90000, "kind": "above", "currency": "BTC"}),
         ("deribit_expected_move", {"currency": "BTC"}),
         ("deribit_oi_by_strike", {"currency": "BTC"}),
-        ("deribit_atm_term", {"currency": "BTC"}),
         ("deribit_skew_term", {"currency": "BTC"}),
+        ("deribit_skew_term", {"currency": "BTC", "view": "atm"}),  # the former deribit_atm_term
     ],
 )
 async def test_deribit_down_returns_envelope(server, state, tool, args):

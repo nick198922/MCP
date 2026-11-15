@@ -43,7 +43,7 @@ claude mcp add tradedesk -- uv run --directory /ABSOLUTE/PATH/TO/tradedesk-mcp t
 
 - `token_deep_analysis(project)` — глибокий 10-секційний інвест-аналіз крипто-проекту / токена (російською): продукт, залучений капітал, партнерства, токеноміка, розлоки, revenue, value accrual, roadmap, нарратив, тех. аналіз → bull/base/bear + оцінки 1–10 на 3 горизонтах. Промт автоматично підказує моделі, які інструменти tradedesk-mcp використати для частини «графік + позиціювання». Файл: `src/tradedesk/prompts/token_deep_analysis.md` — редагуйте, перезапуск сервера не потрібен (перечитується на кожен виклик).
 
-## Інструменти (105)
+## Інструменти (104)
 
 | Група | Інструмент | Що дає |
 |---|---|---|
@@ -74,8 +74,7 @@ claude mcp add tradedesk -- uv run --directory /ABSOLUTE/PATH/TO/tradedesk-mcp t
 | | `prob_from_options` | ризик-нейтральна ймовірність above/below/touch з урахуванням skew |
 | | `deribit_dvol` | DVOL (річний %) time series + latest / mean / stdev / min / max / change 24h / 7d |
 | | `deribit_vrp` | премія за волатильність: DVOL проти реалізованої (7д/30д), перцентиль DVOL за історію і за рік, історична премія і результат хеджованого продажу ATM-стреддла, у т.ч. по квінтилях рівня DVOL. Перевірку на історії див. у `docs/verification/2026-10-13-vrp.md` |
-| | `deribit_atm_term` | ATM-IV term structure (contango/backwardation) по експіраціях |
-| | `deribit_skew_term` | term structure 25Δ-RR і 25Δ-fly (puts/calls richer, flattening/steepening) |
+| | `deribit_skew_term` | term structure 25Δ-RR і 25Δ-fly (puts/calls richer, flattening/steepening); `view="atm"` — ATM-IV term structure (contango/backwardation) по експіраціях (колишній `deribit_atm_term`, див. `docs/changes/2026-11-15-mcp-cleanup-atm-term.md`) |
 | | `deribit_largest_trades` | останні крупні трейди (options/futures), фільтр блок-угод, buy/sell imbalance |
 | Квант | `odds_devig`, `option_calc`, `touch_probability`, `fib_retracement` | маржа й справедливі ймовірності, калькулятор опціону, barrier-ймовірність, fib-retracement ладдер (23.6/38.2/50/61.8/78.6%) |
 | Настрій | `sentiment_fear_greed` | Crypto Fear & Greed (alternative.me): latest + zone, mean 7d/30d, зміни, частка днів у кожній зоні |

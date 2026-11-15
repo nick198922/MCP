@@ -8,7 +8,7 @@ numbers — «short, actionable: expiry, strikes, premium, why and R:R»; Bybit,
 Quotes: Bybit v5 option tickers (bid/ask, mark IV, delta), daily closes: Binance spot, both through the project's
 providers (rt.exchanges, so limits, retries and health apply). Rules of the ideas: the options playbook
 (docs/knowledge/options-playbook.md) as ``option_ideas.RULES``; their conditions are measured by our MCP tools, called
-in this process (deribit_vrp, deribit_atm_term, macro_calendar, skew_percentile — the last one reads the collector's
+in this process (deribit_vrp, deribit_skew_term view=atm, macro_calendar, skew_percentile — the last one reads the collector's
 history in TRADEDESK_DB_PATH, defaulting to --db), so the numbers are the ones the chat sees. Up to 3 ideas per coin,
 strongest evidence first, each with its rule and evidence status; ✗ and unmeasured rules are never sent.
 Every sent idea is appended to IDEAS_LOG (JSON lines, with all legs and prices). Each run first settles the open
@@ -217,7 +217,7 @@ async def market_for(client, coin: str, calendar: dict | None) -> dict:
     """The MCP tools' data the playbook rules read for one coin (a failed tool leaves its rules unmeasured)."""
     vrp, term = await asyncio.gather(
         call_tool(client, "deribit_vrp", {"currency": coin, "history_days": 1000}),
-        call_tool(client, "deribit_atm_term", {"currency": coin}),
+        call_tool(client, "deribit_skew_term", {"currency": coin, "view": "atm"}),
     )
     m = {"vrp": _data(vrp), "term": _data(term), "calendar": calendar, "skew": None}
     iso = oi.month_expiry_iso(m["term"])

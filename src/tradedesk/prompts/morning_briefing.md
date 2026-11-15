@@ -20,7 +20,7 @@
 ## 3. Волатильність і skew
 - `deribit_dvol('BTC', hours_back=24)` + `deribit_dvol('ETH', hours_back=24)` —
   DVOL latest + change_24h.
-- `deribit_atm_term('BTC')` — shape (contango/back).
+- `deribit_skew_term('BTC', view='atm')` — shape (contango/back).
 - `deribit_skew_term('BTC', target_delta=0.25)` — чи зміщення у puts
   (downside skew) чи вирівняно.
 

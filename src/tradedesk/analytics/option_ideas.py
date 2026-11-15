@@ -10,7 +10,7 @@ they are logged and settled with ``payoff_at`` at expiry so their record can be 
 Which ideas go out is decided by the rules of the options playbook (``RULES``, docs/knowledge/options-playbook.md;
 card IDEA-20261114-options-playbook item 2): a rule is sent only when an MCP tool measures its condition and its
 evidence status is not ✗; ideas are ordered by evidence (✓ > ≈ > ◯ > not tested). The rules' inputs are the ``data``
-of our MCP tools (deribit_vrp, deribit_atm_term, macro_calendar, skew_percentile), passed in by the caller;
+of our MCP tools (deribit_vrp, deribit_skew_term view=atm, macro_calendar, skew_percentile), passed in by the caller;
 thresholds are the playbook's, not tuned here.
 
 Units: prices and P/L in USD per 1 unit of the underlying (1 BTC / 1 ETH), IV and probabilities as decimals.
@@ -454,7 +454,7 @@ RULES: dict[str, Rule] = {
         Rule(
             "P10",
             "інверсія фронту перед подією → календар",
-            "deribit_atm_term: ATM IV строку ≤ 8 д, що включає FOMC / CPI (macro_calendar), мінус строку ≈ 30 д ≥ +1.5 п.",
+            "deribit_skew_term (view=atm): ATM IV строку ≤ 8 д, що включає FOMC / CPI (macro_calendar), мінус строку ≈ 30 д ≥ +1.5 п.",
             "календар: продати тижневий ATM-стреддл, купити місячний (ціни Bybit розсилка ще не рахує)",
             "не перевірено",
             "не перевірено (H2 LIB DataHawks); сусідні подієві тести ◯",
@@ -565,7 +565,7 @@ def check_event(calendar: dict[str, Any] | None) -> Check:
 
 
 def _term_rows(term: dict[str, Any] | None) -> list[tuple[float, float, str]]:
-    """(days, atm_iv, expiry token) of ``deribit_atm_term`` data, nearest first."""
+    """(days, atm_iv, expiry token) of ``deribit_skew_term(view="atm")`` data, nearest first."""
     out = []
     for x in _get(term, "expiries") or []:
         d, iv = _num(_get(x, "days")), _num(_get(x, "atm_iv"))
@@ -581,7 +581,7 @@ def _month(rows: list[tuple[float, float, str]]) -> tuple[float, float, str] | N
 
 
 def month_expiry_iso(term: dict[str, Any] | None) -> str | None:
-    """ISO expiry (as the collector stores it) of the ``deribit_atm_term`` expiry nearest 30 days; the input of
+    """ISO expiry (as the collector stores it) of the ``deribit_skew_term(view="atm")`` expiry nearest 30 days; the input of
     ``skew_percentile`` for P15."""
     m = _month(_term_rows(term))
     exp = parse_expiry_token(m[2]) if m else None
@@ -589,7 +589,7 @@ def month_expiry_iso(term: dict[str, Any] | None) -> str | None:
 
 
 def check_front_inversion(term: dict[str, Any] | None, calendar: dict[str, Any] | None) -> Check:
-    """P10 on ``deribit_atm_term`` and ``macro_calendar`` data (both measure days / hours from now)."""
+    """P10 on ``deribit_skew_term(view="atm")`` and ``macro_calendar`` data (both measure days / hours from now)."""
     rows = _term_rows(term)
     month = _month(rows)
     if month is None or not isinstance(calendar, dict) or not isinstance(calendar.get("events"), list):
@@ -639,7 +639,7 @@ def ideas_for(
 ) -> tuple[list[Idea], dict[str, Any]]:
     """Up to ``MAX_IDEAS_PER_COIN`` ideas for one coin by the playbook rules, and the context they rest on.
 
-    ``market``: the ``data`` of MCP tools for this coin — ``vrp`` (deribit_vrp), ``term`` (deribit_atm_term),
+    ``market``: the ``data`` of MCP tools for this coin — ``vrp`` (deribit_vrp), ``term`` (deribit_skew_term view=atm),
     ``calendar`` (macro_calendar), ``skew`` (skew_percentile of the ≈ 30-day expiry, 3-day lookback); a missing one
     leaves its rules unmeasured. Trade rules: P3 (200-day trend → debit spread) is still built and checked, but it
     is ✗ since 14.11 (docs/verification/2026-11-14-p3-trend-debit-spread.md), so ``rank_ideas`` drops it. Context

@@ -103,7 +103,9 @@ def test_no_lookahead_later_data_does_not_change_earlier_pairs():
         first = [x for x in base if x["expiry"] == EXP]
         assert len(first) == 2
         later = dict(days)
-        later[d2] = surf(d2, spot=30.0, iv=1.5, expiry=e2)  # data after the first expiry changes
+        # d2 is before EXP, but its surface lists only e2, so it cannot price the first pairs
+        later[d2] = surf(d2, spot=30.0, iv=1.5, expiry=e2)
+        # data after the first expiry: a later surface and the second expiry's delivery price
         later[EXP + ts.DAY_MS] = surf(EXP + ts.DAY_MS, spot=10.0, expiry=e2)
         changed, _ = sv.pairs_for(later, {EXP: 107.0, e2: 300.0}, entries, Q)
         assert [x for x in changed if x["expiry"] == EXP] == first

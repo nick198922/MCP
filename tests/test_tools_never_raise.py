@@ -91,22 +91,8 @@ ARGS: dict[str, dict] = {
     "strategy_backtest_momentum": {"exchange": "binanceusdm", "symbol": "BTC/USDT:USDT"},
     "strategy_cash_and_carry": {"spot_price": 83000.0, "futures_price": 84000.0, "days": 30.0, "iv": 0.4},
     "strategy_funding_carry": {"long_mark": 83000.0, "short_mark": 83010.0, "days": 30.0, "iv": 0.4},
-    "strategy_iron_condor": {
-        "long_put_strike": 70000.0,
-        "short_put_strike": 75000.0,
-        "short_call_strike": 90000.0,
-        "long_call_strike": 95000.0,
-        "long_put_premium": 200.0,
-        "short_put_premium": 600.0,
-        "short_call_premium": 600.0,
-        "long_call_premium": 200.0,
-        **_PREMIUMS,
-    },
     "strategy_payoff": {"legs": _LEGS, **_PREMIUMS},
-    "strategy_risk_reversal": {"call_strike": 90000.0, "put_strike": 75000.0, "call_premium": 800.0, "put_premium": 900.0, **_PREMIUMS},
     "strategy_scenario_matrix": {"legs": _LEGS, "spot": 83000.0},
-    "strategy_straddle": {"strike": 83000.0, "call_premium": 1500.0, "put_premium": 1500.0, **_PREMIUMS},
-    "strategy_strangle": {"call_strike": 90000.0, "put_strike": 75000.0, "call_premium": 800.0, "put_premium": 900.0, **_PREMIUMS},
     "touch_probability": {"spot": 83000.0, "barrier": 90000.0, "days": 20.0, "iv": 0.4},
 }
 

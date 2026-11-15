@@ -1,7 +1,8 @@
 """Invariant 1 / 5: analytics failure, garbage legs and extreme values -> envelope, never an exception (item 292, BACKLOG 6.53).
 
 The last seven tools of the 6.53 list: strategy_payoff, strategy_straddle, strategy_strangle, strategy_risk_reversal,
-strategy_iron_condor, strategy_funding_carry and strategy_scenario_matrix. They have neither a store nor a provider,
+strategy_iron_condor, strategy_funding_carry and strategy_scenario_matrix (since 2026-11-15 the four templates are the
+presets of strategy_payoff, and their cases call it with `preset`). They have neither a store nor a provider,
 so their dependency is the analytics (`summarise`, `scenario_matrix`): the tests make it raise or return NaN / inf,
 and check them with no store and every venue failing. Strings and bytes reach these tools only inside the caller's leg
 dicts (the MCP arguments are JSON, so a lone surrogate stands in for invalid UTF-8). Found on the way: strategy_payoff
@@ -35,21 +36,28 @@ LEG = {"kind": "call", "side": "long", "size": 1.0, "strike": 100.0, "entry_prem
 MARKET = {"spot": 100.0, "days": 30.0, "iv": 0.5}
 PAYOFF = {"legs": [LEG], **MARKET}
 MATRIX = {"legs": [LEG], "spot": 100.0}
-STRADDLE = {"strike": 100.0, "call_premium": 5.0, "put_premium": 5.0, **MARKET}
-STRANGLE = {"call_strike": 110.0, "put_strike": 90.0, "call_premium": 2.0, "put_premium": 2.0, **MARKET}
-RR = {"call_strike": 110.0, "put_strike": 90.0, "call_premium": 2.0, "put_premium": 3.0, **MARKET}
-CONDOR = {"long_put_strike": 80.0, "short_put_strike": 90.0, "short_call_strike": 110.0, "long_call_strike": 120.0}
+STRADDLE = {"preset": "straddle", "strike": 100.0, "call_premium": 5.0, "put_premium": 5.0, **MARKET}
+STRANGLE = {"preset": "strangle", "call_strike": 110.0, "put_strike": 90.0, "call_premium": 2.0, "put_premium": 2.0, **MARKET}
+RR = {"preset": "risk_reversal", "call_strike": 110.0, "put_strike": 90.0, "call_premium": 2.0, "put_premium": 3.0, **MARKET}
+CONDOR = {"preset": "iron_condor", "long_put_strike": 80.0, "short_put_strike": 90.0, "short_call_strike": 110.0, "long_call_strike": 120.0}
 CONDOR |= {"long_put_premium": 1.0, "short_put_premium": 2.0, "short_call_premium": 2.0, "long_call_premium": 1.0, **MARKET}
 FUNDING = {"long_mark": 100.0, "short_mark": 101.0, "days": 30.0, "iv": 0.5}
 TEMPLATES = [
-    ("strategy_straddle", STRADDLE),
-    ("strategy_strangle", STRANGLE),
-    ("strategy_risk_reversal", RR),
-    ("strategy_iron_condor", CONDOR),
+    ("strategy_payoff", STRADDLE),
+    ("strategy_payoff", STRANGLE),
+    ("strategy_payoff", RR),
+    ("strategy_payoff", CONDOR),
     ("strategy_funding_carry", FUNDING),
 ]
 ALL = [("strategy_payoff", PAYOFF), *TEMPLATES, ("strategy_scenario_matrix", MATRIX)]
-IDS = [t.removeprefix("strategy_") for t, _ in ALL]
+
+
+def _id(tool: str, args: dict) -> str:
+    return args.get("preset") or tool.removeprefix("strategy_")
+
+
+IDS = [_id(t, a) for t, a in ALL]
+TEMPLATE_IDS = [_id(t, a) for t, a in TEMPLATES]
 
 
 @pytest.fixture
@@ -94,7 +102,7 @@ def _boom(exc):
 
 
 @pytest.mark.parametrize("exc", NUMERIC_ERRORS)
-@pytest.mark.parametrize(("tool", "args"), TEMPLATES, ids=[t for t, _ in TEMPLATES])
+@pytest.mark.parametrize(("tool", "args"), TEMPLATES, ids=TEMPLATE_IDS)
 async def test_template_analytics_error_goes_to_missing(rt, monkeypatch, tool, args, exc):
     monkeypatch.setattr(strategy_tools, "summarise", _boom(exc))
     async with _session(rt) as call:
@@ -209,8 +217,8 @@ async def test_non_finite_input_is_invalid(rt, tool, args):
     ("tool", "args", "field"),
     [
         ("strategy_payoff", {"legs": [LEG | {"strike": HUGE}], "spot": HUGE, "days": 30.0, "iv": 0.5}, "result"),
-        ("strategy_straddle", STRADDLE | {"call_premium": HUGE, "put_premium": HUGE}, "result"),
-        ("strategy_iron_condor", CONDOR | {"long_call_strike": HUGE, "long_call_premium": HUGE, "size": HUGE}, "result"),
+        ("strategy_payoff", STRADDLE | {"call_premium": HUGE, "put_premium": HUGE}, "result"),
+        ("strategy_payoff", CONDOR | {"long_call_strike": HUGE, "long_call_premium": HUGE, "size": HUGE}, "result"),
         ("strategy_funding_carry", FUNDING | {"long_mark": 1e-308, "short_mark": HUGE}, "result"),
         ("strategy_funding_carry", FUNDING | {"long_mark": HUGE, "short_mark": HUGE}, "input"),  # the mid overflows
         ("strategy_scenario_matrix", MATRIX | {"spot": HUGE, "price_grid_pct": [100.0]}, "result"),
@@ -230,13 +238,13 @@ async def test_extreme_but_valid_inputs_answer(rt):
         assert env["ok"] is True and env["data"]["breakevens"] == [105.0]
         env = await call("strategy_funding_carry", **FUNDING | {"days": 10**20})
         assert env["ok"] is True and env["data"]["spread_bps"] == pytest.approx(100.0)
-        env = await call("strategy_risk_reversal", **RR | {"call_strike": 90.0, "put_strike": 110.0})  # crossed strikes: a real structure
+        env = await call("strategy_payoff", **RR | {"call_strike": 90.0, "put_strike": 110.0})  # crossed strikes: a real structure
         assert env["ok"] is True and env["missing"] == []
         env = await call("strategy_scenario_matrix", **MATRIX | {"horizons": [{"days": 10**20, "iv": 0.5}]})
         assert env["ok"] is True and env["data"]["matrix"][0]["pnl_usd"][3] == pytest.approx(95.0)
         env = await call("strategy_scenario_matrix", **MATRIX | {"price_grid_pct": [1e306]})
         assert env["ok"] is True and env["data"]["matrix"][-1]["pnl_usd"][0] == pytest.approx(1e306, rel=1e-6)
-        env = await call("strategy_iron_condor", **CONDOR | {"long_put_strike": 95.0})  # bad strike order
+        env = await call("strategy_payoff", **CONDOR | {"long_put_strike": 95.0})  # bad strike order
         _not_ok(env, "strikes", "data_unavailable", "long_put < short_put")
-        env = await call("strategy_strangle", **STRANGLE | {"put_strike": 110.0})
+        env = await call("strategy_payoff", **STRANGLE | {"put_strike": 110.0})
         _not_ok(env, "strikes", "data_unavailable", "put_strike must be below call_strike")

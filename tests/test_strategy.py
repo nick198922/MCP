@@ -23,6 +23,7 @@ from tradedesk.analytics.strategy import (
 from tradedesk.config import Settings
 from tradedesk.runtime import Runtime
 from tradedesk.server import build_server
+from tradedesk.tools import strategy as strategy_tools
 
 # ---------- pure analytics ----------
 
@@ -177,10 +178,8 @@ def test_cash_and_carry_payoff_locks_in_basis():
     assert pnl == pytest.approx([2.0, 2.0, 2.0, 2.0])
 
 
-async def test_strategy_straddle_mcp(state):
-    from tradedesk.runtime import Runtime  # noqa: PLC0415
-    from tradedesk.server import build_server  # noqa: PLC0415
-
+async def test_strategy_payoff_preset_straddle_mcp(state):
+    # The former strategy_straddle test, on strategy_payoff(preset="straddle") since 2026-11-15.
     rt = Runtime(
         Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=""),
         transports=make_transports(state),
@@ -191,7 +190,8 @@ async def test_strategy_straddle_mcp(state):
     try:
         env = await _call(
             srv,
-            "strategy_straddle",
+            "strategy_payoff",
+            preset="straddle",
             strike=83000.0,
             call_premium=1500.0,
             put_premium=1500.0,
@@ -204,8 +204,131 @@ async def test_strategy_straddle_mcp(state):
         assert len(d["breakevens"]) == 2
         assert d["max_loss_usd"] == pytest.approx(-3000.0, abs=1.0)
         assert d["greeks"]["gamma"] > 0
+        assert "prices" not in d  # a preset answers in summary mode by default, as the template tools did
     finally:
         await rt.aclose()
+
+
+# ---------- strategy_payoff presets (the former template tools) ----------
+
+MARKET = {"spot": 83000.0, "days": 20.0, "iv": 0.4}
+# preset -> (its arguments, the analytics builder the former template tool called with them)
+PRESET_CASES = {
+    "straddle": ({"strike": 83000.0, "call_premium": 1500.0, "put_premium": 1400.0, "side": "short", "size": 2.0}, build_straddle),
+    "strangle": ({"call_strike": 90000.0, "put_strike": 75000.0, "call_premium": 800.0, "put_premium": 900.0}, build_strangle),
+    "risk_reversal": (
+        {"call_strike": 90000.0, "put_strike": 75000.0, "call_premium": 800.0, "put_premium": 900.0, "direction": "bearish"},
+        build_risk_reversal,
+    ),
+    "iron_condor": (
+        {
+            "long_put_strike": 70000.0,
+            "short_put_strike": 75000.0,
+            "short_call_strike": 90000.0,
+            "long_call_strike": 95000.0,
+            "long_put_premium": 200.0,
+            "short_put_premium": 600.0,
+            "short_call_premium": 650.0,
+            "long_call_premium": 150.0,
+            "size": 0.5,
+        },
+        build_iron_condor,
+    ),
+}
+
+
+@pytest.fixture
+async def srv(state):
+    rt = Runtime(
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=""),
+        transports=make_transports(state),
+        exchange_factory=FakeEx,
+    )
+    rt.now = lambda: NOW
+    yield build_server(rt)[0]
+    await rt.aclose()
+
+
+@pytest.mark.parametrize("kind", [None, "detailed"])
+@pytest.mark.parametrize("preset", PRESET_CASES)
+async def test_preset_matches_the_former_template_tool(srv, preset, kind):
+    # The former strategy_<preset> tool answered `_packed(build_<preset>(args), ...)` with kind="summary" by default;
+    # the preset gives the same legs and the same numbers.
+    args, builder = PRESET_CASES[preset]
+    extra = {} if kind is None else {"kind": kind}
+    env = await _call(srv, "strategy_payoff", preset=preset, **args, **MARKET, **extra)
+    assert env["ok"] is True and env["missing"] == [] and env["evidence"] == []
+    # Same process, same code path: equal to the last bit (no pinned float literals here).
+    want = strategy_tools._packed(builder(**args), forward=None, width_pct=0.3, grid=201, kind=kind or "summary", **MARKET)
+    assert env["data"] == json.loads(json.dumps(want))
+    # ... and the same numbers as strategy_payoff on those legs
+    legs_env = await _call(srv, "strategy_payoff", legs=env["data"]["legs"], **MARKET, kind=kind or "summary")
+    assert {k: v for k, v in env["data"].items() if k != "legs"} == legs_env["data"]
+
+
+async def test_preset_reference_numbers(srv):
+    # Reference values of the former template tools' tests (tests/test_strategy.py before 2026-11-15) and of
+    # payoff_extremes: iron condor 80/90/110/120 with credit 4.5 -> max profit 4.5, max loss -(10 - 4.5).
+    condor = {
+        "long_put_strike": 80.0,
+        "short_put_strike": 90.0,
+        "short_call_strike": 110.0,
+        "long_call_strike": 120.0,
+        "long_put_premium": 1.0,
+        "short_put_premium": 4.0,
+        "short_call_premium": 2.0,
+        "long_call_premium": 0.5,
+    }
+    d = (await _call(srv, "strategy_payoff", preset="iron_condor", **condor, spot=100.0, days=30.0, iv=0.5))["data"]
+    assert d["max_profit_usd"] == pytest.approx(4.5) and d["max_loss_usd"] == pytest.approx(-5.5)
+    assert [leg["side"] for leg in d["legs"]] == ["long", "short", "short", "long"]
+    # bullish risk reversal is the default direction; a bearish one flips the sides
+    rr = {"call_strike": 110.0, "put_strike": 90.0, "call_premium": 3.0, "put_premium": 2.0, "spot": 100.0, "days": 30.0, "iv": 0.5}
+    bull = (await _call(srv, "strategy_payoff", preset="risk_reversal", **rr))["data"]
+    bear = (await _call(srv, "strategy_payoff", preset="risk_reversal", **rr, direction="bearish"))["data"]
+    assert [leg["side"] for leg in bull["legs"]] == ["long", "short"] and [leg["side"] for leg in bear["legs"]] == ["short", "long"]
+    assert bull["greeks"]["delta"] > 0 > bear["greeks"]["delta"]
+    # long strangle 90/110, premiums 2 + 2: breakevens 86 / 114, max loss 4
+    st = {"call_strike": 110.0, "put_strike": 90.0, "call_premium": 2.0, "put_premium": 2.0, "spot": 100.0, "days": 30.0, "iv": 0.5}
+    d = (await _call(srv, "strategy_payoff", preset="strangle", **st))["data"]
+    assert d["breakevens"] == pytest.approx([86.0, 114.0], abs=0.5) and d["max_loss_usd"] == pytest.approx(-4.0)
+
+
+BAD_PRESET_CALLS = {
+    "neither": ({}, "legs", "give legs or a preset"),
+    "both": ({"preset": "straddle", "legs": [{"kind": "linear", "side": "long", "size": 1.0, "entry": 100.0}]}, "legs", "not both"),
+    "missing": ({"preset": "strangle", "call_strike": 110.0, "call_premium": 2.0}, "preset", "needs put_strike, put_premium"),
+    "foreign": (
+        {"preset": "risk_reversal", "call_strike": 110.0, "put_strike": 90.0, "call_premium": 2.0, "put_premium": 2.0, "side": "short"},
+        "preset",
+        "side do not apply to preset 'risk_reversal'",
+    ),
+    "condor_foreign": (
+        {"preset": "iron_condor", **PRESET_CASES["iron_condor"][0], "strike": 80000.0},
+        "preset",
+        "strike do not apply",
+    ),
+    "params_without_preset": (
+        {"legs": [{"kind": "linear", "side": "long", "size": 1.0, "entry": 100.0}], "strike": 100.0},
+        "preset",
+        "apply only with a preset",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", BAD_PRESET_CALLS)
+async def test_bad_preset_call_is_invalid_input_not_raised(srv, case):
+    args, field, detail = BAD_PRESET_CALLS[case]
+    env = await _call(srv, "strategy_payoff", **args, spot=100.0, days=30.0, iv=0.5)
+    assert env["ok"] is False and env["data"] is None
+    assert [(m["field"], m["reason"]) for m in env["missing"]] == [(field, "invalid_input")]
+    assert detail in env["missing"][0]["detail"]
+
+
+async def test_unknown_preset_is_refused_by_the_schema(srv):
+    async with Client(srv) as c:
+        res = await c.call_tool("strategy_payoff", {"preset": "butterfly", "spot": 100.0, "days": 30.0, "iv": 0.5})
+    assert res.is_error and "validation error" in res.content[0].text
 
 
 async def test_strategy_cash_and_carry_reports_basis(state):

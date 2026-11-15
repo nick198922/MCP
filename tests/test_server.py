@@ -104,11 +104,7 @@ EXPECTED_TOOLS = {
     "rules_test",
     "rules_disable",
     "rules_presets_load",
-    "strategy_payoff",
-    "strategy_straddle",
-    "strategy_strangle",
-    "strategy_risk_reversal",
-    "strategy_iron_condor",
+    "strategy_payoff",  # also the straddle / strangle / risk_reversal / iron_condor presets (merged 2026-11-15)
     "strategy_cash_and_carry",
     "strategy_funding_carry",
     "strategy_backtest_momentum",

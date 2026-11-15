@@ -766,23 +766,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
             }
         return b.build(data)
 
-    @server.tool(
-        annotations=READ_ONLY,
-        description=(
-            "ATM implied-vol term structure for a currency (BTC/ETH): one row per Deribit expiry with the "
-            "forward, days-to-expiry and ATM IV (decimal, 0.45 = 45 %). ATM IV is the smile value AT the "
-            "forward, linear-interpolated in log-moneyness. Rising curve = contango, falling = backwardation."
-        ),
-    )
-    async def deribit_atm_term(
-        currency: CUR = "BTC",
-        min_days: MIN_DAYS = 0.5,
-        max_days: MAX_DAYS = 400,
-    ) -> dict[str, Any]:
-        b = Builder()
-        rows = await _chain(rt, b, currency)
-        if rows is None:
-            return b.build(None, ok=False)
+    def _atm_term(b: Builder, currency: str, rows: list[OptionRow], min_days: float, max_days: float) -> dict[str, Any]:
+        """ATM IV term structure (formerly the `deribit_atm_term` tool, merged 2026-11-15): every priced expiry."""
         by = group_by_expiry(rows)
         out: list[dict[str, Any]] = []
         for exp, rs in by.items():
@@ -821,7 +806,12 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "butterfly (fly = (IV_call + IV_put)/2 - ATM_IV; positive = wings richer than ATM). IVs are "
             "decimals. target_delta picks the wings (0.25 -> 25-delta call vs 25-delta put). Also reports the "
             "most-extreme expiry by |RR| and whether the skew is `flattening` / `steepening` / `stable` from "
-            "front to back. IV rank/percentile for RR/fly needs stored history (Phase 2)."
+            "front to back. Expiries whose smile does not reach the target delta are skipped. "
+            "view='atm' returns the ATM implied-vol term structure instead: one row per priced expiry (also "
+            "those without usable wings) with the forward (USD), days-to-expiry, ATM IV (decimal, 0.45 = 45 %; "
+            "the smile value AT the forward, linear-interpolated in log-moneyness) and the number of strikes, "
+            "plus `shape` = contango (back ATM IV above front) / backwardation (below) / flat; target_delta is "
+            "ignored there. IV rank/percentile for RR/fly needs stored history (Phase 2)."
         ),
     )
     async def deribit_skew_term(
@@ -829,11 +819,22 @@ def register(server: MCPServer, rt: Runtime) -> None:
         target_delta: Annotated[float, Field(gt=0, lt=0.5, description="Call-equivalent target delta for the wings.")] = 0.25,
         min_days: MIN_DAYS = 0.5,
         max_days: MAX_DAYS = 400,
+        view: Annotated[
+            Literal["skew", "atm"],
+            Field(
+                description=(
+                    "'skew' (default): RR / fly per expiry. 'atm': ATM IV term structure per expiry "
+                    "(forward, days, atm_iv, strikes) with contango / backwardation `shape`."
+                )
+            ),
+        ] = "skew",
     ) -> dict[str, Any]:
         b = Builder()
         rows = await _chain(rt, b, currency)
         if rows is None:
             return b.build(None, ok=False)
+        if view == "atm":
+            return _atm_term(b, currency, rows, min_days, max_days)
         by = group_by_expiry(rows)
         out: list[dict[str, Any]] = []
         for exp, rs in by.items():

@@ -349,12 +349,13 @@ def test_market_for_reads_the_mcp_tools():
     c = _Client(
         {
             "deribit_vrp": {"ok": True, "data": {"current": {"dvol_percentile_365d": 0.9}}},
-            "deribit_atm_term": {"ok": True, "data": term},
+            "deribit_skew_term": {"ok": True, "data": term},
             "skew_percentile": {"ok": True, "data": {"rr": {"min": -0.07, "latest": -0.05}}},
         }
     )
     m = asyncio.run(tg.market_for(c, "ETH", {"events": []}))
     assert m["vrp"]["current"]["dvol_percentile_365d"] == 0.9 and m["term"] == term and m["skew"]["rr"]["min"] == -0.07
+    assert dict(c.calls)["deribit_skew_term"] == {"currency": "ETH", "view": "atm"}  # the ATM term view, not the skew one
     skew_args = dict(c.calls)["skew_percentile"]
     assert skew_args["expiry"] == "2026-12-11T08:00:00+00:00" and skew_args["currency"] == "ETH" and skew_args["lookback_days"] == 3
 

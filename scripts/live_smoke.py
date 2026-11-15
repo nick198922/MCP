@@ -40,7 +40,7 @@ CASES: list[tuple[str, dict]] = [
     ("sentiment_fear_greed", {"days": 30}),
     ("calendar_expiries", {"currencies": ["BTC", "ETH"], "horizon_days": 60, "funding_hours_ahead": 24}),
     ("deribit_dvol", {"currency": "BTC", "hours_back": 168, "resolution": 3600}),
-    ("deribit_atm_term", {"currency": "BTC"}),
+    ("deribit_skew_term", {"currency": "BTC", "view": "atm"}),  # the former deribit_atm_term (merged 2026-11-15)
     ("deribit_skew_term", {"currency": "BTC", "target_delta": 0.25}),
     ("deribit_largest_trades", {"currency": "BTC", "kind": "option", "count": 200, "top_n": 5}),
     ("perps_basis_compare", {"base": "BTC"}),

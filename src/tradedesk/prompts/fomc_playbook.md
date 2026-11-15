@@ -73,7 +73,7 @@ retest P&L при переналаштуванні на L − 2.5 %.
 - `event_study` — усі 5 measures.
 - `calendar_expiries` — найближчі експірації Deribit і макро-події в
   horizon-вікні.
-- `deribit_vol_surface`, `deribit_atm_term`, `deribit_dvol` — поточна IV
+- `deribit_vol_surface`, `deribit_skew_term(view='atm')`, `deribit_dvol` — поточна IV
   surface + історія DVOL.
 - `strategy_payoff`, `strategy_scenario_matrix` — многоногий payoff +
   grid по горизонтах.

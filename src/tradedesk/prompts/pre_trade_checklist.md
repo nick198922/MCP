@@ -33,7 +33,7 @@
 - `perps_basis_compare(base)`; для BTC/ETH також `deribit_oi_by_strike` і `deribit_gamma_exposure` (евристика).
 
 ## 4. Волатильність і шум
-- BTC/ETH: `deribit_expected_move` — очікуваний рух до горизонту угоди; `deribit_dvol`, `deribit_atm_term`, `deribit_skew_term`.
+- BTC/ETH: `deribit_expected_move` — очікуваний рух до горизонту угоди; `deribit_dvol`, `deribit_skew_term` (скью; `view='atm'` — ATM IV за строками).
 - Альти: денна реалізована волатильність із `market_ohlcv` (σ денних дохідностей за 30 днів).
 - Стоп ближче за 1-денний очікуваний рух → ⚠: шум, швидше за все, вибʼє його.
 

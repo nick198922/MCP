@@ -353,7 +353,7 @@ async def build_snapshot(rt: "Runtime") -> dict[str, Any]:
             "dvol": ("deribit_dvol", {"currency": "BTC", "hours_back": 192, "resolution": 3600}),
             # 1000 days: by-DVOL-level stats need 365 d of lookback plus 30 d per trade
             "vrp": ("deribit_vrp", {"currency": "BTC", "history_days": 1000}),
-            "term": ("deribit_atm_term", {"currency": "BTC"}),
+            "term": ("deribit_skew_term", {"currency": "BTC", "view": "atm"}),
             "skew": ("deribit_skew_term", {"currency": "BTC"}),
             "funding_btc": ("perps_funding_compare", {"base": "BTC"}),
             "funding_eth": ("perps_funding_compare", {"base": "ETH"}),

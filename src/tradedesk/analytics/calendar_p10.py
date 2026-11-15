@@ -8,7 +8,7 @@ each expiry's own forward, prices and P&L in USD per 1 BTC per leg (times the le
 
 * The condition is `option_ideas.check_front_inversion` on a surface: an FOMC / CPI event within ``FRONT_MAX_DAYS``
   of the reference time, the front = first expiry after the event with DTE <= ``FRONT_MAX_DAYS``, the month = the
-  expiry in ``MONTH_BAND`` nearest ``MONTH_DAYS``; ATM IV = smile at the forward (as ``deribit_atm_term``).
+  expiry in ``MONTH_BAND`` nearest ``MONTH_DAYS``; ATM IV = smile at the forward (as ``deribit_skew_term(view="atm")``).
 * Static-arbitrage check of every mark that prices a leg (card 4.4 (a)): call prices at the fresh strikes around K
   must be monotone, with verticals no wider than the strike gap, and convex on every consecutive triple holding K.
 * R = P&L / debit (debit = net premium paid plus entry fees): the return on the capital at risk of a long calendar.
@@ -50,7 +50,7 @@ def event_times_ms(rows: Iterable[Mapping[str, str]], kinds: Sequence[str] = EVE
 
 
 def atm_iv(exp: dict[str, Any]) -> float | None:
-    """Smile at the forward (linear in ln K/F between fresh strikes, flat beyond): ``deribit_atm_term`` -> atm_iv."""
+    """Smile at the forward (linear in ln K/F between fresh strikes, flat beyond): ``deribit_skew_term(view="atm")`` -> atm_iv."""
     return iv_at_strike(exp, exp["F"])[0]
 
 

@@ -1,0 +1,2 @@
+- Бібліотека: відео @DataHawks [0L_UFtw02Rc](https://youtu.be/0L_UFtw02Rc) (15.11, «Страшно покупать Bitcoin?») розібрано в LIB-20261115-datahawks-btc-diagonal: claim-и V1–V9 з вердиктами; ключові кадри.
+- Розвідка `scripts/explore_rr25_bottom_btc.py` → [звіт](../verification/2026-11-15-rr25-bottom-btc-explore.md): «RR25 1M ≤ −6 п. і розворот = дно» на BTC 2021–2026 ✗ (n = 40, 30 д +2.6 % проти контролю +3.9 %). Плейбук P15 доповнено; нових карток нема.

@@ -118,12 +118,8 @@ NO_NETWORK: set[str] = {
     "option_calc",
     "strategy_cash_and_carry",
     "strategy_funding_carry",
-    "strategy_iron_condor",
     "strategy_payoff",
-    "strategy_risk_reversal",
     "strategy_scenario_matrix",
-    "strategy_straddle",
-    "strategy_strangle",
     "touch_probability",
     # the local store (SQLite), the bundled event seed and the in-process health registry
     "alerts_recent",
@@ -431,8 +427,8 @@ async def test_successful_answers_have_the_envelope_shape(tmp_path):
     assert report["listed"] >= len(EXPECTED_TOOLS)
     assert report["called"] == report["listed"] - len(SKIP)
     assert EXTRA_OK.isdisjoint(report["not_ok"]), f"no longer ok=true on the fakes: {sorted(EXTRA_OK & set(report['not_ok']))}"
-    # 109 of 109 on 2026-11-06 (85 before item 176, 100 before item 181).
-    assert report["ok"] >= 104, f"too few tools answered ok=true on the fakes; ok=false: {report['not_ok']}"
+    # 109 of 109 on 2026-11-06 (85 before item 176, 100 before item 181); 105 tools since the strategy presets merged.
+    assert report["ok"] >= 100, f"too few tools answered ok=true on the fakes; ok=false: {report['not_ok']}"
     new = {k: v for k, v in report["problems"].items() if k not in KNOWN}
     assert new == {}, "fix these tools (Builder.add / guard / warn), or list them in KNOWN and docs/BACKLOG.md"
     assert set(KNOWN) - set(report["problems"]) == set(), "these tools are fixed: remove them from KNOWN"

@@ -38,7 +38,7 @@
 | Тренд, фаза BTC | `cycle_regime` → `state`, `trend`, `trend_confirmed`, `components.price_to_sma`; `market_regime` | контекст, не сигнал; пороги станів ще не бектестовані |
 | Funding, плече | `perps_funding_compare`, `funding_zscore`, `liquidations_summary` | допоміжні |
 | Позиціонування опціонів | `deribit_gamma_exposure`, `deribit_max_pain`, `deribit_oi_by_strike`, `deribit_largest_trades` | лише опис (див. P14) |
-| Профіль конструкції | `strategy_iron_condor`, `strategy_payoff`, `strategy_scenario_matrix`, `option_calc` | Black-76, r = 0 |
+| Профіль конструкції | `strategy_payoff` (`preset="iron_condor"` або власні ноги), `strategy_scenario_matrix`, `option_calc` | Black-76, r = 0 |
 
 **Умови, яких жоден інструмент не міряє зараз** (кандидати на BACKLOG): форвардна вола по тижнях (є лише в нашому радарі, не окремим інструментом), IV rank за **365 днів для ATM постійного строку** (є rank DVOL за вікно колектора, не за рік), 25Δ скью **постійного строку 30 д** (є по експірації).
 

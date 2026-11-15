@@ -29,8 +29,17 @@ BASE: dict[str, dict[str, Any]] = {
     "touch_probability": {"spot": 100.0, "barrier": 110.0, "days": 30.0, "iv": 0.5},
     "fib_retracement": {"p0": 100.0, "l_point": 90.0},
     "strategy_payoff": {"legs": [LEG], "spot": 100.0, "days": 30.0, "iv": 0.5},
-    "strategy_straddle": {"strike": 100.0, "call_premium": 5.0, "put_premium": 5.0, "spot": 100.0, "days": 30.0, "iv": 0.5},
-    "strategy_strangle": {
+    "strategy_payoff:straddle": {
+        "preset": "straddle",
+        "strike": 100.0,
+        "call_premium": 5.0,
+        "put_premium": 5.0,
+        "spot": 100.0,
+        "days": 30.0,
+        "iv": 0.5,
+    },
+    "strategy_payoff:strangle": {
+        "preset": "strangle",
         "call_strike": 110.0,
         "put_strike": 90.0,
         "call_premium": 2.0,
@@ -39,7 +48,8 @@ BASE: dict[str, dict[str, Any]] = {
         "days": 30.0,
         "iv": 0.5,
     },
-    "strategy_iron_condor": {
+    "strategy_payoff:iron_condor": {
+        "preset": "iron_condor",
         "long_put_strike": 80.0,
         "short_put_strike": 90.0,
         "short_call_strike": 110.0,
@@ -52,7 +62,8 @@ BASE: dict[str, dict[str, Any]] = {
         "days": 30.0,
         "iv": 0.5,
     },
-    "strategy_risk_reversal": {
+    "strategy_payoff:risk_reversal": {
+        "preset": "risk_reversal",
         "call_strike": 110.0,
         "put_strike": 90.0,
         "call_premium": 2.0,
@@ -63,6 +74,15 @@ BASE: dict[str, dict[str, Any]] = {
     },
     "strategy_scenario_matrix": {"legs": [LEG], "spot": 100.0},
 }
+# A key "tool:preset" calls `tool` with that preset (the strategy templates are presets of strategy_payoff since
+# 2026-11-15); `tool_of` gives the tool name.
+PRESET_CASES = ("strategy_payoff:straddle", "strategy_payoff:strangle", "strategy_payoff:iron_condor", "strategy_payoff:risk_reversal")
+
+
+def tool_of(key: str) -> str:
+    return key.split(":")[0]
+
+
 # Scalars: values that pass `gt=0` / `ge=0` and become +inf ("nan" fails `gt=0` in the schema itself).
 SCALAR_BAD = ["inf", "1e400"]
 # List and dict members carry no bounds: NaN and -inf get through as well.
@@ -78,7 +98,7 @@ def _cases() -> list[tuple[str, dict[str, Any]]]:
         optional = ["forward"] if tool.startswith("strategy_") else []
         optional += ["days", "iv"] if tool == "strategy_scenario_matrix" else []
         out += [(tool, {**base, p: v}) for p in optional for v in SCALAR_BAD]
-        if tool in ("strategy_straddle", "strategy_strangle", "strategy_iron_condor", "strategy_risk_reversal"):
+        if tool in PRESET_CASES:
             out += [(tool, {**base, "size": v}) for v in SCALAR_BAD]
     out += [("odds_devig", {"odds": [v, 2.0]}) for v in MEMBER_BAD]
     out += [("fib_retracement", {"p0": 100.0, "l_point": 90.0, "levels": [0.5, v]}) for v in MEMBER_BAD]
@@ -101,7 +121,10 @@ EXTREME: list[tuple[str, dict[str, Any]]] = [
     ("touch_probability", {"spot": 100.0, "barrier": 110.0, "days": 30.0, "iv": 1e-300}),  # sigma^2 underflows -> / 0
     ("fib_retracement", {"p0": 1e308, "l_point": 1e-300, "levels": [1e308]}),  # ladder price overflows
     ("strategy_payoff", {"legs": [{**LEG, "size": 1e300, "entry_premium": 1e300}], "spot": 100.0, "days": 30.0, "iv": 0.5}),
-    ("strategy_straddle", {"strike": 1e300, "call_premium": 1.0, "put_premium": 1.0, "spot": 1e-300, "days": 30.0, "iv": 0.5}),
+    (
+        "strategy_payoff:straddle",
+        {"preset": "straddle", "strike": 1e300, "call_premium": 1.0, "put_premium": 1.0, "spot": 1e-300, "days": 30.0, "iv": 0.5},
+    ),
     ("strategy_scenario_matrix", {"legs": [{**LEG, "size": 1e300}], "spot": 1e300, "price_grid_pct": [1e300]}),
 ]
 
@@ -130,12 +153,12 @@ async def test_nonfinite_inputs_answer_invalid_input():
     cases = _cases()
     reached: set[str] = set()
     async with Client(srv) as c:
-        for tool, args in cases:
-            res = await c.call_tool(tool, args)
+        for key, args in cases:
+            res = await c.call_tool(tool_of(key), args)
             if _schema_rejected(res):
                 continue
-            _assert_invalid(res, tool, args)
-            reached.add(tool)
+            _assert_invalid(res, key, args)
+            reached.add(key)
     assert len(cases) >= 100
     assert reached == set(BASE)  # every calculator really ran on a non-finite input
 
@@ -144,7 +167,7 @@ async def test_nonfinite_inputs_answer_invalid_input():
 async def test_extreme_finite_inputs_answer_invalid_input(tool, args):
     srv, _ = build_server(working_runtime(""))
     async with Client(srv) as c:
-        _assert_invalid(await c.call_tool(tool, args), tool, args)
+        _assert_invalid(await c.call_tool(tool_of(tool), args), tool, args)
 
 
 async def test_normal_inputs_unchanged():
@@ -152,7 +175,7 @@ async def test_normal_inputs_unchanged():
     srv, _ = build_server(working_runtime(""))
     async with Client(srv) as c:
         for tool, args in BASE.items():
-            res = await c.call_tool(tool, args)
+            res = await c.call_tool(tool_of(tool), args)
             assert check(res) is None
             env = _text_envelope(res)
             assert env["ok"] is True and env["missing"] == [], (tool, env["missing"])

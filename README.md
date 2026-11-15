@@ -43,7 +43,7 @@ claude mcp add tradedesk -- uv run --directory /ABSOLUTE/PATH/TO/tradedesk-mcp t
 
 - `token_deep_analysis(project)` — глибокий 10-секційний інвест-аналіз крипто-проекту / токена (російською): продукт, залучений капітал, партнерства, токеноміка, розлоки, revenue, value accrual, roadmap, нарратив, тех. аналіз → bull/base/bear + оцінки 1–10 на 3 горизонтах. Промт автоматично підказує моделі, які інструменти tradedesk-mcp використати для частини «графік + позиціювання». Файл: `src/tradedesk/prompts/token_deep_analysis.md` — редагуйте, перезапуск сервера не потрібен (перечитується на кожен виклик).
 
-## Інструменти (109)
+## Інструменти (105)
 
 | Група | Інструмент | Що дає |
 |---|---|---|
@@ -99,7 +99,7 @@ claude mcp add tradedesk -- uv run --directory /ABSOLUTE/PATH/TO/tradedesk-mcp t
 | Ліквідації, історія | `liquidations_history` | Coinalyze (потрібен `COINALYZE_API_KEY`): ліквідації лонгів/шортів перпа на Binance (`.A`, за замовчуванням) або сума вибраних бірж (`exchanges`: `binance`/`.A`, `bybit`/`.6`, лише USDT-перпи; інші коди відхиляються), daily/hourly, USD або базові одиниці; net, long_share, пік, перелік використаних бірж. USD у Coinalyze = монети × close дня, тож у день обвалу суми зсунуті; точні суми — `liquidations_summary` |
 | Історія Coinalyze (Binance) | `coinalyze_oi_history`, `coinalyze_funding_history`, `coinalyze_long_short_history` | Coinalyze (потрібен `COINALYZE_API_KEY`), лише Binance (суфікс `.A` = Binance, не сума бірж; для OI — параметр `exchanges`: сума Binance `.A` + Bybit `.6`), daily/hourly: OI (OHLC, USD = монети × close інтервалу, або базові монети), funding (OHLC, десятковий дріб за інтервал виплати, не річний; Coinalyze шле відсотки, ділимо на 100), лонг/шорт рахунків (ratio, частки 0–1); latest/mean/stdev/min/max, z-score останнього, зміна |
 | Правила (Фаза 3) | `rules_add`, `rules_list`, `rules_test`, `rules_disable`, `rules_presets_load` | DSL правил alert'ів (безпечний AST + metric funcs); 8 готових пресетів у wheel; зберігає й читається alerts job'ом |
-| Стратегії (Фаза 3) | `strategy_payoff`, `strategy_straddle`, `strategy_strangle`, `strategy_risk_reversal`, `strategy_iron_condor`, `strategy_cash_and_carry`, `strategy_funding_carry`, `strategy_scenario_matrix` | многоногий payoff + шаблони + multi-horizon MTM-grid (τ-aware Black-76): P&L крива, breakevens, max profit/loss, δ/γ/vega/θ, MTM, risk-neutral PoP, scenario matrix |
+| Стратегії (Фаза 3) | `strategy_payoff`, `strategy_cash_and_carry`, `strategy_funding_carry`, `strategy_scenario_matrix` | многоногий payoff (власні ноги або `preset`: straddle / strangle / risk_reversal / iron_condor — колишні окремі інструменти, див. `docs/changes/2026-11-15-mcp-cleanup-strategy-presets.md`) + шаблони carry + multi-horizon MTM-grid (τ-aware Black-76): P&L крива, breakevens, max profit/loss, δ/γ/vega/θ, MTM, risk-neutral PoP, scenario matrix |
 | Бектест (Фаза 3) | `strategy_backtest_momentum` | walk-forward momentum breakout на ccxt OHLCV; fee+slippage у bps; equity, trades, Sharpe/Sortino/maxDD/win-rate |
 
 MCP-промпти: `token_deep_analysis`, `fomc_playbook`, `pre_trade_checklist` (план угоди: безпека контракту `contract_risk` для он-чейн токенів, контекст, розмір від рахунку й ризику, вердикт, запис у журнал), `journal_review` (щомісячний розбір журналу за тегами), `morning_briefing` (шаблони з підказками, які `tradedesk-mcp` інструменти викликати).

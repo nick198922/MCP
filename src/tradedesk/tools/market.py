@@ -28,26 +28,6 @@ def _level_ok(lv: Any) -> bool:
 def register(server: MCPServer, rt: Runtime) -> None:
     @server.tool(
         annotations=READ_ONLY,
-        description="Latest price, bid/ask, 24h high/low/volume/change for one symbol on one exchange (via ccxt).",
-    )
-    async def market_ticker(exchange: EX, symbol: SYM) -> dict[str, Any]:
-        b = Builder()
-        t = await b.guard("ticker", f"ccxt:{exchange}", rt.exchanges.ticker(exchange, symbol))
-        if t is None:
-            return b.build(None, ok=False)
-        if not isinstance(t, dict):
-            b.miss("ticker", f"ccxt:{exchange}", "data_unavailable", f"unexpected response type {type(t).__name__}")
-            return b.build(None, ok=False)
-        data = {
-            k: t.get(k) for k in ("symbol", "last", "bid", "ask", "high", "low", "baseVolume", "quoteVolume", "percentage", "timestamp")
-        }
-        bid, ask = json_num(t.get("bid")), json_num(t.get("ask"))  # ccxt hands out numbers: anything else is absent
-        if bid and ask:
-            data["spread_bps"] = r((ask - bid) / ((ask + bid) / 2) * 1e4, 3)
-        return b.build(data)
-
-    @server.tool(
-        annotations=READ_ONLY,
         description=(
             "OHLCV candles (oldest first, columns: ts_ms, open, high, low, close, volume) plus summary: "
             "period return and annualised close-to-close realised volatility. timeframe like 1m,5m,1h,4h,1d. "
@@ -155,23 +135,47 @@ def register(server: MCPServer, rt: Runtime) -> None:
     @server.tool(
         annotations=READ_ONLY,
         description=(
-            "Batch tickers for several symbols on one exchange (ccxt fetch_tickers). "
-            "Returns slim ticker rows sorted by 24h quote volume (desc), the top 3 movers by 24h percent change, "
-            "and spread_bps when bid/ask are present. Pass `symbols` to limit the batch; omit for the exchange default set "
-            "(some venues reject that — the error is reported in `missing`)."
+            "Tickers for one or several symbols on one exchange (via ccxt): last price, bid / ask, 24h high / low, "
+            "baseVolume (base currency), quoteVolume (quote currency, USDT for linear perps), percentage = 24h change in "
+            "percent (1.5 = 1.5 %), timestamp in Unix ms, and spread_bps ((ask - bid) / mid in basis points) when bid and "
+            "ask are present. Prices are in the symbol's quote currency. One symbol (a string or a one-item list) is "
+            "fetched with fetch_ticker, which also works on venues without batch tickers; several symbols, or none for the "
+            "venue's full default set, with one fetch_tickers call (some venues reject that: the error is in `missing`). "
+            "Rows are sorted by 24h quote volume (desc) and cut to `limit`; `count` is the number before the cut; "
+            "`top_movers` = the 3 largest 24h moves by |percentage|. For one symbol read data.tickers[0]."
         ),
     )
     async def market_tickers(
         exchange: EX,
-        symbols: Annotated[list[str] | None, Field(description="ccxt unified symbols. Omit for the full default set.")] = None,
+        symbols: Annotated[
+            list[str] | str | None,
+            Field(
+                description="ccxt unified symbol(s), e.g. 'BTC/USDT:USDT' or ['BTC/USDT:USDT', 'ETH/USDT:USDT']. "
+                "Omit for the venue's full default set."
+            ),
+        ] = None,
         limit: Annotated[int, Field(ge=1, le=500, description="Max rows kept after sorting by quote volume.")] = 50,
     ) -> dict[str, Any]:
         b = Builder()
-        tk = await b.guard("tickers", f"ccxt:{exchange}", rt.exchanges.tickers(exchange, symbols))
-        if not tk:
-            if tk is not None:
-                b.miss("tickers", f"ccxt:{exchange}", "data_unavailable", "empty result")
-            return b.build(None, ok=False)
+        wanted = list(dict.fromkeys([symbols] if isinstance(symbols, str) else symbols or []))
+        if len(wanted) == 1:  # the single-symbol path (the former market_ticker): fetch_ticker works on every venue
+            t = await b.guard("ticker", f"ccxt:{exchange}", rt.exchanges.ticker(exchange, wanted[0]))
+            if t is None:
+                return b.build(None, ok=False)
+            if not isinstance(t, dict):
+                b.miss("ticker", f"ccxt:{exchange}", "data_unavailable", f"unexpected response type {type(t).__name__}")
+                return b.build(None, ok=False)
+            named = t.get("symbol")
+            tk: Any = {named if isinstance(named, str) and named else wanted[0]: t}
+        else:
+            tk = await b.guard("tickers", f"ccxt:{exchange}", rt.exchanges.tickers(exchange, wanted or None))
+            if not tk:
+                if tk is not None:
+                    b.miss("tickers", f"ccxt:{exchange}", "data_unavailable", "empty result")
+                return b.build(None, ok=False)
+            if not isinstance(tk, dict):
+                b.miss("tickers", f"ccxt:{exchange}", "data_unavailable", f"unexpected response type {type(tk).__name__}")
+                return b.build(None, ok=False)
         rows: list[dict[str, Any]] = []
         for sym, t in tk.items():
             if not isinstance(t, dict):

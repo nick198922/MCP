@@ -133,7 +133,7 @@ async def test_carry_paper_status_normalises_entry_flags(rt, flags, shown):
     async with _session(rt) as call:
         pid = await _open_pair(call, rt)
         await _set(rt, "carry_paper", "entry_flags", flags, pid)
-        env = await call("carry_paper_status")
+        env = await call("paper_carry_status", strategy="manual")
         (pair,) = env["data"]["open"]
         assert env["ok"] is True and pair["id"] == pid and "mark" in pair and pair["entry_flags"] == shown
         assert any(f"paper pair id {[pid]} {FLAGS_WARNING}" in w for w in env["warnings"])
@@ -144,7 +144,7 @@ async def test_carry_paper_status_non_finite_entry_flags_read_as_empty(rt, flags
     async with _session(rt) as call:
         pid = await _open_pair(call, rt)
         await _set(rt, "carry_paper", "entry_flags", flags, pid)
-        env = await call("carry_paper_status")
+        env = await call("paper_carry_status", strategy="manual")
         assert env["ok"] is True and [(p["id"], p["entry_flags"]) for p in env["data"]["open"]] == [(pid, [])]
         assert any(f"paper pair id {[pid]} had NaN / Infinity in entry_flags" in w for w in env["warnings"])
 
@@ -168,7 +168,7 @@ async def test_carry_paper_close_with_bad_entry_flags_closes_once(rt, flags, sho
             1,
         )
         assert sum(f"paper pair id {[pid]}" in w and "entry_flags" in w for w in env["warnings"]) == 1
-        env = await call("carry_paper_status", include_closed=True)
+        env = await call("paper_carry_status", strategy="manual", include_closed=True)
         assert env["ok"] is True and [(t["id"], t["entry_flags"]) for t in env["data"]["closed"]] == [(pid, shown)]
         env = await call("carry_paper_close", id=pid, reason="manual")  # closed once
         assert env["ok"] is False and "already closed" in env["missing"][0]["detail"]
@@ -180,7 +180,7 @@ async def test_carry_paper_cancel_and_single_status_with_deep_entry_flags(rt):
         await _set(rt, "carry_paper", "entry_flags", _deep(300), pid)
         env = await call("carry_paper_close", id=pid, reason="manual", cancelled=True)
         assert env["ok"] is True and (env["data"]["status"], env["data"]["entry_flags"]) == ("cancelled", [])
-        env = await call("carry_paper_status", id=pid)
+        env = await call("paper_carry_status", strategy="manual", id=pid)
         assert env["ok"] is True and (env["data"]["trade"]["id"], env["data"]["trade"]["entry_flags"]) == (pid, [])
 
 
@@ -188,16 +188,16 @@ async def test_carry_paper_valid_entry_flags_unchanged_and_store_failure(rt, mon
     async with _session(rt) as call:
         pid = await _open_pair(call, rt)
         await _set(rt, "carry_paper", "entry_flags", '["price_gap", "current_spread_reversed"]', pid)
-        env = await call("carry_paper_status")
+        env = await call("paper_carry_status", strategy="manual")
         assert env["data"]["open"][0]["entry_flags"] == ["price_gap", "current_spread_reversed"]
         assert not any("entry_flags" in w for w in env["warnings"])
         await _set(rt, "carry_paper", "entry_flags", "null", pid)
-        env = await call("carry_paper_status")
+        env = await call("paper_carry_status", strategy="manual")
         assert env["data"]["open"][0]["entry_flags"] == [] and not any("entry_flags" in w for w in env["warnings"])
 
         async def boom(*_a, **_k):
             raise sqlite3.OperationalError("disk I/O error")
 
         monkeypatch.setattr(rt.store, "carry_paper_list", boom)
-        env = await call("carry_paper_status")
+        env = await call("paper_carry_status", strategy="manual")
         assert env["ok"] is False and [(m["field"], m["reason"]) for m in env["missing"]] == [("store", "backend_error")]

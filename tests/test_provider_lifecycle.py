@@ -310,9 +310,9 @@ async def test_lifespan_survives_corrupt_store(tmp_path, caplog):
     with caplog.at_level(logging.ERROR, logger="tradedesk.store"):
         async with Client(srv) as c:
             assert rt.scheduler is None  # every collector job writes to the store
-            ticker = _payload(await c.call_tool("market_ticker", {"exchange": "binanceusdm", "symbol": "BTC/USDT:USDT"}))
+            ticker = _payload(await c.call_tool("market_tickers", {"exchange": "binanceusdm", "symbols": ["BTC/USDT:USDT"]}))
             journal = _payload(await c.call_tool("journal_list", {}))
-    assert ticker["ok"] is True and ticker["data"]["last"] == 82750.0
+    assert ticker["ok"] is True and ticker["data"]["tickers"][0]["last"] == 82750.0
     assert journal["ok"] is False
     assert [m for m in journal["missing"] if m["field"] == "store" and "file is not a database" in m["detail"]]
     assert any("store init failed" in r.getMessage() and "DatabaseError" in r.getMessage() for r in caplog.records)

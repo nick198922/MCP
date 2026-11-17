@@ -83,7 +83,8 @@ async def test_no_tool_raises_on_malformed_200(tmp_path, mode):
 @pytest.mark.parametrize(
     ("tool", "args"),
     [
-        ("market_ticker", {"exchange": "binanceusdm", "symbol": "BTC/USDT:USDT"}),
+        ("market_tickers", {"exchange": "binanceusdm", "symbols": ["BTC/USDT:USDT"]}),
+        ("market_tickers", {"exchange": "binanceusdm", "symbols": ["BTC/USDT:USDT", "ETH/USDT:USDT"]}),
         ("market_orderbook", {"exchange": "binanceusdm", "symbol": "BTC/USDT:USDT"}),
     ],
 )
@@ -98,7 +99,8 @@ async def test_ccxt_list_instead_of_dict_goes_to_missing(tmp_path, tool, args):
     data = data.get("result", data)
     assert data["ok"] is False
     assert [(m["provider"], m["reason"]) for m in data["missing"]] == [("ccxt:binanceusdm", "data_unavailable")]
-    assert "list" in data["missing"][0]["detail"]
+    detail = data["missing"][0]["detail"]
+    assert "list" in detail or detail == "empty result"  # batch path: a non-dict reply counts as empty
 
 
 def test_known_raisers_name_registered_tools_only():

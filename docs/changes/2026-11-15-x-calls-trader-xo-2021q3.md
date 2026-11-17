@@ -1,0 +1,2 @@
+- X-трейдери: Trader_XO 2021-Q3 — партія «заклики»: 53 рядки з 43 твітів (38 лонг, 15 шорт) у `docs/calls/x/Trader_XO.csv`, звіт `docs/verification/2026-11-15-x-calls-trader_xo-2021q3.md`.
+- Поіменні списки рішень для 245 не-рядків (а 42 · б 35 · в 168); критик B: approve після одного раунду виправлень (`docs/reviews/2026-11-15-x-calls-trader_xo-2021q3.md`).

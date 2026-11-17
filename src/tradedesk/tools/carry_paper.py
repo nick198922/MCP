@@ -184,7 +184,7 @@ def _clean_pair_tags(b: Builder, rows: list[dict[str, Any]]) -> list[dict[str, A
         b.warn(f"stored paper pair id {fixed[:10]} had tags that were not a list of strings; shown as their string items")
     if nonfinite:
         b.warn(f"stored paper pair id {nonfinite[:10]} had NaN / Infinity in tags; shown as no tags")
-    # entry_flags the same way (300 levels deep failed the reply of carry_paper_status / _close, item 357).
+    # entry_flags the same way (300 levels deep failed the reply of the manual book status / carry_paper_close, item 357).
     nonfinite, fixed = clean_row_flags(rows)
     for t in rows:
         if t.get("id") in nonfinite:
@@ -262,6 +262,59 @@ def _closed_view(t: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+async def manual_book_status(rt: Runtime, id: int | None, include_closed: bool) -> dict[str, Any]:
+    """Envelope of paper_carry_status(strategy='manual'): the pairs opened with carry_paper_open, marked with live data.
+    The body of the former carry_paper_status tool (merged into paper_carry_status 2026-11-17), unchanged."""
+    b = Builder()
+    b.warn(PAPER_WARNING)
+    if (bad := reject_bad_id(b, id=id)) is not None:  # 10**20 raised OverflowError out of the lookup
+        return bad
+    if not await store_ready(b, rt, "the journal"):
+        return b.build(None, ok=False)
+    try:
+        now_ms = int(rt.now().timestamp() * 1000)
+        if id is not None:
+            one = await rt.store.carry_paper_get(id)
+            if one is None:
+                b.miss("carry_paper", "store", "data_unavailable", f"paper pair id={id} not found")
+                return b.build(None, ok=False)
+            rows = [one]
+        else:
+            rows = await rt.store.carry_paper_list(status="open")
+        rows = _clean_pair_tags(b, rows)
+        open_rows = [x for x in rows if x["status"] == "open"]
+        sem = asyncio.Semaphore(3)
+
+        async def one_mark(t: dict[str, Any]) -> dict[str, Any]:
+            async with sem:
+                m = await mark_trade(rt, b, t, now_ms)
+            return _view(t, m)
+
+        views = list(await asyncio.gather(*[one_mark(t) for t in open_rows]))
+        closed_all = await rt.store.carry_paper_list(status="closed", limit=5000)
+        if include_closed and id is None:  # only these closed rows are shown
+            _clean_pair_tags(b, closed_all[:200])
+        data: dict[str, Any] = {"open": views, "summary_closed": paper_summary(closed_all)}
+        if id is not None and rows[0]["status"] != "open":
+            data["trade"] = _closed_view(rows[0])
+        if include_closed and id is None:
+            data["closed"] = [_closed_view(t) for t in closed_all[:200]]
+        for s in (data["summary_closed"], data["summary_closed"]["entry_tradable"]):
+            for k in ("mean_return", "median_return", "share_losing", "share_stopped"):
+                if k in s:
+                    s[k] = r(s[k], 5)
+            for k in ("mean_held_days",):
+                if k in s:
+                    s[k] = r(s[k], 2)
+            for k in ("sum_funding_usd", "sum_price_usd", "sum_costs_usd", "sum_pnl_usd"):
+                if k in s:
+                    s[k] = r(s[k], 2)
+        ok = not open_rows or any("mark" in v for v in views) or (include_closed and bool(closed_all))
+        return b.build(data, ok=ok)
+    except STORE_ERRORS as e:
+        return store_failed(b, e)
+
+
 def register(server: MCPServer, rt: Runtime) -> None:
     @server.tool(
         annotations=OPEN_ANNOTATIONS,  # writes to the LOCAL store only — no orders, no external effects; not idempotent
@@ -273,7 +326,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "nothing written) when the price gap between the venues exceeds `max_entry_gap` or looks like different tokens "
             "(> 20 %), as the backtest never opens those. If the pair is not `tradable_now` or opposes the scan's direction "
             "it is still recorded, with a warning. Stop distance = 1 / `leverage`. Close with carry_paper_close; track with "
-            "carry_paper_status. Not idempotent: every call records a new pair (a repeat warns about the duplicate). "
+            "paper_carry_status(strategy='manual'). Not idempotent: every call records a new pair (a repeat warns about the duplicate). "
             "See `warnings`: the backtest median trade was negative."
         ),
     )
@@ -445,83 +498,11 @@ def register(server: MCPServer, rt: Runtime) -> None:
             return store_failed(b, e)
 
     @server.tool(
-        annotations=READ_ONLY,
-        description=(
-            "Mark PAPER perp-perp carry pairs with live data (local store + public market data; nothing is traded). Per open "
-            "pair: funding P&L (long leg pays, short leg receives, at each payment's leg price), price P&L, costs (entry + "
-            "estimated exit fees and slippage), net P&L in USD and as a fraction of notional, held days, realized APR, the "
-            "largest adverse move of each leg since entry, the trailing spread now, and `exit_signal` (null / 'spread_exit' "
-            "when the trailing spread <= exit_apr / 'stop'). The stop is the backtest's: the first 4h bar where either leg's "
-            "high or low is >= 1 / leverage away from that leg's entry; the result is then FROZEN at that bar (funding up to "
-            "it, price P&L at its close, exit costs and the 1 % penalty) with `stop_at`, and later moves do not count. "
-            "The 4h bar containing the entry is replaced by 15m bars from the entry on, so prices before the entry do "
-            "not count (if they cannot be fetched the whole 4h bar is used, with a warning). `stop_check` says whether "
-            "completed-bar coverage was complete (the bar in progress is not required). `id` marks a single pair. `summary_closed` covers closed "
-            "pairs: n, mean / median return on notional, share losing, share stopped, mean held days, sums of funding / "
-            "price / costs in USD, and the same under `entry_tradable` for pairs opened while tradable_now held (the "
-            "backtest-comparable subset). A pair whose data cannot be fetched goes to `missing`; the others are still "
-            "returned; ok=false when no open pair could be marked."
-        ),
-    )
-    async def carry_paper_status(
-        id: Annotated[int | None, Field(ge=1, description="Mark only this pair (any status).")] = None,
-        include_closed: Annotated[bool, Field(description="Also list closed / cancelled pairs.")] = False,
-    ) -> dict[str, Any]:
-        b = Builder()
-        b.warn(PAPER_WARNING)
-        if (bad := reject_bad_id(b, id=id)) is not None:  # 10**20 raised OverflowError out of the lookup
-            return bad
-        if not await store_ready(b, rt, "the journal"):
-            return b.build(None, ok=False)
-        try:
-            now_ms = int(rt.now().timestamp() * 1000)
-            if id is not None:
-                one = await rt.store.carry_paper_get(id)
-                if one is None:
-                    b.miss("carry_paper", "store", "data_unavailable", f"paper pair id={id} not found")
-                    return b.build(None, ok=False)
-                rows = [one]
-            else:
-                rows = await rt.store.carry_paper_list(status="open")
-            rows = _clean_pair_tags(b, rows)
-            open_rows = [x for x in rows if x["status"] == "open"]
-            sem = asyncio.Semaphore(3)
-
-            async def one_mark(t: dict[str, Any]) -> dict[str, Any]:
-                async with sem:
-                    m = await mark_trade(rt, b, t, now_ms)
-                return _view(t, m)
-
-            views = list(await asyncio.gather(*[one_mark(t) for t in open_rows]))
-            closed_all = await rt.store.carry_paper_list(status="closed", limit=5000)
-            if include_closed and id is None:  # only these closed rows are shown
-                _clean_pair_tags(b, closed_all[:200])
-            data: dict[str, Any] = {"open": views, "summary_closed": paper_summary(closed_all)}
-            if id is not None and rows[0]["status"] != "open":
-                data["trade"] = _closed_view(rows[0])
-            if include_closed and id is None:
-                data["closed"] = [_closed_view(t) for t in closed_all[:200]]
-            for s in (data["summary_closed"], data["summary_closed"]["entry_tradable"]):
-                for k in ("mean_return", "median_return", "share_losing", "share_stopped"):
-                    if k in s:
-                        s[k] = r(s[k], 5)
-                for k in ("mean_held_days",):
-                    if k in s:
-                        s[k] = r(s[k], 2)
-                for k in ("sum_funding_usd", "sum_price_usd", "sum_costs_usd", "sum_pnl_usd"):
-                    if k in s:
-                        s[k] = r(s[k], 2)
-            ok = not open_rows or any("mark" in v for v in views) or (include_closed and bool(closed_all))
-            return b.build(data, ok=ok)
-        except STORE_ERRORS as e:
-            return store_failed(b, e)
-
-    @server.tool(
         annotations=READ_ONLY,  # carry_paper_close writes to the LOCAL store only — no orders
         description=(
             "Close a PAPER perp-perp carry pair at live last prices (local store only, nothing is traded). `reason` "
             "('signal' / 'stop' / 'manual') records your intent only. Whether the pair was stopped comes from the bar data "
-            "(see carry_paper_status): a stopped pair is closed at its stop bar (funding, price P&L and exit costs frozen "
+            "(see paper_carry_status, strategy='manual'): a stopped pair is closed at its stop bar (funding, price P&L and exit costs frozen "
             "there, plus the 1 % of notional penalty) whatever `reason` says, and reason='stop' without a stop in the data "
             "adds no penalty (warning). The close is atomic: a repeated or concurrent close returns ok=false and writes "
             "nothing. Stores funding / price / cost P&L in USD and the return on notional, "

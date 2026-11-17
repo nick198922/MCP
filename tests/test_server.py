@@ -6,8 +6,7 @@ from mcp import Client
 
 EXPECTED_TOOLS = {
     "system_health",
-    "market_ticker",
-    "market_tickers",
+    "market_tickers",  # also one symbol via fetch_ticker (the former market_ticker, merged 2026-11-17)
     "market_markets",
     "market_ohlcv",
     "chart_markup",
@@ -83,9 +82,8 @@ EXPECTED_TOOLS = {
     "journal_close",
     "journal_stats",
     "carry_paper_open",
-    "carry_paper_status",
     "carry_paper_close",
-    "paper_carry_status",
+    "paper_carry_status",  # also the manual pairs, strategy="manual" (the former carry_paper_status, merged 2026-11-17)
     "assistant_paper_open",
     "assistant_paper_status",
     "forecast_log_status",
@@ -621,8 +619,9 @@ async def test_oi_by_strike_reference_forward_warning_uses_tolerance(server, mon
 
 
 async def test_market_tools(server):
-    t = await call(server, "market_ticker", exchange="binanceusdm", symbol="BTC/USDT:USDT")
-    assert t["data"]["last"] == 82750.0 and t["data"]["spread_bps"] == pytest.approx(0.1208, abs=0.01)
+    t = await call(server, "market_tickers", exchange="binanceusdm", symbols="BTC/USDT:USDT")
+    row = t["data"]["tickers"][0]
+    assert row["last"] == 82750.0 and row["spread_bps"] == pytest.approx(0.1208, abs=0.01)
     o = await call(server, "market_ohlcv", exchange="binanceusdm", symbol="BTC/USDT:USDT", timeframe="1h", limit=100)
     assert o["data"]["summary"]["realized_vol_annualized"] > 0 and len(o["data"]["rows"]) == 100
     bad = await call(server, "market_ohlcv", exchange="binanceusdm", symbol="BTC/USDT:USDT", timeframe="1x")
@@ -632,8 +631,26 @@ async def test_market_tools(server):
 
 
 async def test_exchange_failure_is_graceful(server):
-    env = await call(server, "market_ticker", exchange="bybit", symbol="BTC/USDT:USDT")
+    env = await call(server, "market_tickers", exchange="bybit", symbols=["BTC/USDT:USDT"])
     assert env["ok"] is False and env["missing"][0]["reason"] == "auth"
+    assert env["missing"][0]["field"] == "ticker" and env["data"] is None
+
+
+async def test_market_tickers_one_symbol_uses_fetch_ticker(server):
+    # The former market_ticker: one symbol, as a string or a one-item list (duplicates collapse), is one fetch_ticker
+    # call, so it answers on a venue without batch tickers (kraken in FakeEx raises NotSupported on fetch_tickers).
+    keys = ("symbol", "last", "bid", "ask", "high", "low", "baseVolume", "quoteVolume", "percentage", "timestamp", "spread_bps")
+    for symbols in ("BTC/USDT:USDT", ["BTC/USDT:USDT"], ["BTC/USDT:USDT", "BTC/USDT:USDT"]):
+        env = await call(server, "market_tickers", exchange="kraken", symbols=symbols)
+        assert env["ok"] is True and not env["missing"], symbols
+        d = env["data"]
+        assert d["count"] == 1 and d["returned"] == 1 and set(d["tickers"][0]) == set(keys)
+        row = d["tickers"][0]
+        assert row["symbol"] == "BTC/USDT:USDT" and row["last"] == 82750.0 and row["quoteVolume"] == 8e9
+        assert row["spread_bps"] == pytest.approx(1 / 82750.0 * 1e4, abs=1e-3)
+        assert d["top_movers"] == [{"symbol": "BTC/USDT:USDT", "percentage": 1.2, "last": 82750.0}]
+    many = await call(server, "market_tickers", exchange="kraken", symbols=["BTC/USDT:USDT", "ETH/USDT:USDT"])
+    assert many["ok"] is False and many["missing"][0]["field"] == "tickers"  # two symbols: the batch call
 
 
 async def test_market_tickers_sorts_and_picks_top_movers(server):

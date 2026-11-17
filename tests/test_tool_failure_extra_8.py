@@ -190,11 +190,11 @@ async def test_plan_add_rec_paper_id_beyond_sqlite_integer(rt, big):
 @pytest.mark.parametrize("big", TOO_BIG)
 async def test_carry_paper_id_beyond_sqlite_integer(rt, big):
     async with _session(rt) as call:
-        env = await call("carry_paper_status", id=big)
+        env = await call("paper_carry_status", strategy="manual", id=big)
         assert env["ok"] is False and env["data"] is None and _missing(env, "id", "invalid_input", "SQLite INTEGER")
         env = await call("carry_paper_close", id=big, reason="manual")
         assert env["ok"] is False and env["data"] is None and _missing(env, "id", "invalid_input", "SQLite INTEGER")
-        for tool, kw in (("carry_paper_status", {}), ("carry_paper_close", {"reason": "manual"})):
+        for tool, kw in (("paper_carry_status", {"strategy": "manual"}), ("carry_paper_close", {"reason": "manual"})):
             env = await call(tool, id=SQLITE_INT_MAX, **kw)
             assert env["ok"] is False and _missing(env, "carry_paper", "data_unavailable", "not found")
 
@@ -216,7 +216,7 @@ ID_TOOLS = [
     ("rules_disable", "id", {}),
     ("journal_close", "id", {"exit": 100.0}),
     ("plan_add", "rec_paper_id", PLAN),
-    ("carry_paper_status", "id", {}),
+    ("paper_carry_status", "id", {"strategy": "manual"}),
     ("carry_paper_close", "id", {"reason": "manual"}),
 ]
 

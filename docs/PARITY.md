@@ -19,11 +19,11 @@ DOUBLETOP: **74 інструменти** (66 від 17 бекендів + 8 вл
 
 | DOUBLETOP | Наш аналог |
 |---|---|
-| ccxt `get-ticker` | ✅ `market_ticker` |
+| ccxt `get-ticker` | ✅ `market_tickers` з одним символом (рядком або списком з одного; `fetch_ticker`, працює й на біржах без batch). Колишній `market_ticker`, злито 17.11 |
 | ccxt `get-ohlcv` | ✅ `market_ohlcv` (+ реалізована вола) |
 | — (власне, курс DoubleTop) | ✅ `chart_markup` — розмітка графіка: EMA-групи, VWAP, профіль об'єму, структура курсу (HL/HH, BOS/CHoCH/sweep) і внутрішня, ліквідність, FVG, OB/брейкери, premium/discount/OTE, азійська сесія; працює й для форекс-перпів BingX |
 | ccxt `get-orderbook` | ✅ `market_orderbook` (+ slippage під ваш розмір) |
-| ccxt `batch-get-tickers` | ✅ `market_tickers` (сортування за quote volume, top-movers за 24h %) |
+| ccxt `batch-get-tickers` | ✅ `market_tickers` з кількома символами або без них (сортування за quote volume, top-movers за 24h %) |
 | ccxt `get-markets` | ✅ `market_markets` (пошук за підрядком, фільтр spot/swap/future/option, active) |
 | ccxt `get-trades` | ✅ `market_trades` (+ aggressor flow: buy/sell notional, imbalance, VWAP, CVD, топ-прінти) |
 | coinalyze `funding_rate_history` | ✅ `perps_funding_history` (з бірж); поточний — `perps_funding_compare`; довга історія Binance — ✅ `coinalyze_funding_history` (Coinalyze, `.A` = Binance; відсотки → десятковий дріб, звірено з виплатами Binance 2026-10-18 на зразку DoubleTop; живий виклик з нашим ключем ще не звірено) |
@@ -83,7 +83,7 @@ DOUBLETOP: **74 інструменти** (66 від 17 бекендів + 8 вл
 
 Funding carry: `funding_spread_scan` (крос-біржовий спред для перп-перп з прапорцями ризику; Hyperliquid опційно, kPEPE зіставляється з 1000PEPE за множником), `funding_carry_scan` (trailing APR з фактичних виплат, пороги, окупність комісій, наявність спота, фільтр TradFi-перпів) + бектест cash-and-carry (`scripts/verify_funding_carry.py`).
 
-Паперова перевірка carry перп-перп: `carry_paper_open` / `carry_paper_status` / `carry_paper_close` (пара ніг на двох біржах у локальній SQLite, облік як у бектесті `simulate_perp_spread_portfolio`; закриті пари дзеркаляться в `journal` з тегом `pp-paper`). Ордерів немає.
+Паперова перевірка carry перп-перп: `carry_paper_open` / `paper_carry_status(strategy="manual")` (колишній `carry_paper_status`) / `carry_paper_close` (пара ніг на двох біржах у локальній SQLite, облік як у бектесті `simulate_perp_spread_portfolio`; закриті пари дзеркаляться в `journal` з тегом `pp-paper`). Ордерів немає.
 
 Паперовий журнал рекомендацій асистента: `assistant_paper_open` / `assistant_paper_status` (структура з живого ланцюга Deribit за марками ± 1 вп, розмір за депозитом і ризиком, розрахунок на delivery; таблиця `rec_paper` з міткою `hypothesis`, у `journal` не дзеркалиться). Аналога в DOUBLETOP немає. Ордерів немає.
 
@@ -91,7 +91,7 @@ Funding carry: `funding_spread_scan` (крос-біржовий спред дл�
 
 Плани угод асистента: `plan_add` / `plan_list` / `plan_review` / `plan_link` (кожен план за будь-якого вердикту в таблиці `trade_plan`, оцінка на свічках біржі за правилами `analytics/trade_plan.py`, підсумок за вердиктом і тегом; щогодинна робота колектора `plan_resolve`). Аналога в DOUBLETOP немає. Ордерів немає.
 
-Форвард-папір carry від рушія колектора: `paper_carry_status` (дві книги A `cc-paper` і B `pp-paper`, правила й облік спільні з бектестами в `analytics/carry_rules.py`; відкриває й закриває сам рушій, не людина). Аналога в DOUBLETOP немає. Ордерів немає.
+Форвард-папір carry від рушія колектора: `paper_carry_status` (дві книги A `cc-paper` і B `pp-paper`, правила й облік спільні з бектестами в `analytics/carry_rules.py`; відкриває й закриває сам рушій, не людина; `strategy="manual"` — ручні пари з абзацу вище). Аналога в DOUBLETOP немає. Ордерів немає.
 
 Розриви Polymarket ↔ опціони: `polymarket_options_gap` (поточні розриви відкритих ринків BTC/ETH проти ймовірності з поверхні Deribit після комісії й спреду; колектор `pm_gap` пише щогодини для форвард-тесту CLV). Аналога в DOUBLETOP немає. Ордерів немає.
 
@@ -192,7 +192,7 @@ Price-action за навчальними відео DoubleTop (не з їхнь�
 
 | DOUBLETOP | Наш інструмент |
 |---|---|
-| — | ✅ `carry_paper_open` / `carry_paper_status` / `carry_paper_close` — паперові пари перп-перп carry вручну, позначка живими даними, стоп як у бектесті, закриті пари дзеркаляться в `journal` (тег `pp-paper`); медіанна угода бектесту від'ємна; ордерів немає |
-| — | ✅ `paper_carry_status` — стан двох форвард-паперових книг рушія колектора (A `cc-paper`, B `pp-paper`) за останнім 8-годинним циклом; живих даних не бере, ордерів немає |
+| — | ✅ `carry_paper_open` / `carry_paper_close` — паперові пари перп-перп carry вручну, стоп як у бектесті, закриті пари дзеркаляться в `journal` (тег `pp-paper`); стан і позначка живими даними — `paper_carry_status(strategy="manual")`; медіанна угода бектесту від'ємна; ордерів немає |
+| — | ✅ `paper_carry_status` — стан двох форвард-паперових книг рушія колектора (A `cc-paper`, B `pp-paper`) за останнім 8-годинним циклом, живих даних для них не бере; `strategy="manual"` — ручні пари з живим маркуванням (колишній `carry_paper_status`, злито 17.11); ордерів немає |
 | — | ✅ `assistant_paper_open` / `assistant_paper_status` — паперовий журнал опціонних рекомендацій асистента (ціни з живого ланцюга Deribit, розрахунок на delivery, мітка `hypothesis`, у `journal` не дзеркалиться); ордерів немає |
 | — | ✅ `forecast_log_status` — журнал ризик-нейтральних прогнозів діапазону BTC/ETH: розрахунок на delivery, Brier, калібрування, порівняння з моделлю RV30 |

@@ -1,4 +1,5 @@
-"""paper_carry_status: read-only view of the forward paper engine's books (collector/carry_paper_engine.py)."""
+"""paper_carry_status: read-only view of the forward paper engine's books (collector/carry_paper_engine.py) and, with
+strategy='manual', of the pairs opened with carry_paper_open (tools/carry_paper.py; the former carry_paper_status)."""
 
 from __future__ import annotations
 
@@ -13,6 +14,7 @@ from ..collector.carry_paper_engine import ON_TIME_MS, PARAMS
 from ..core.envelope import Builder
 from ..runtime import Runtime
 from ._util import MAX_CELL_DEPTH, READ_ONLY, cap_cell_depth, r, store_ready
+from .carry_paper import manual_book_status
 
 PAPER_CARRY_WARNING = (
     "Forward PAPER books, local bookkeeping only: no order is sent. Positions are opened and closed by the collector engine "
@@ -159,8 +161,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
     @server.tool(
         annotations=READ_ONLY,
         description=(
-            "State of the two forward PAPER carry books run by the collector engine (local store only; nothing is traded and no "
-            "live data is fetched). Strategy A = cash-and-carry on Binance alts (long spot + short perp, 5 slots, enter when the "
+            "State of the PAPER carry books (nothing is traded). A / B / both: the two forward books run by the collector "
+            "engine (local store only, no live data is fetched). Strategy A = cash-and-carry on Binance alts (long spot + short perp, 5 slots, enter when the "
             "trailing 7d funding APR >= 20 %, exit <= 0 %; tag cc-paper); A's NEW entries are stopped since 2026-11-11 by the "
             "registered kill criterion (b) (actual costs 2.27x modelled), its held positions still close by the exit rule; "
             "engine.new_entries_stopped gives the reason and free_slots is then 0. Strategy B = Binance<->Bybit perp-perp carry (5 slots, "
@@ -171,18 +173,47 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "on capital as decimal fractions, 0.01 = 1 %; share losing; funding / price / costs in USD), total P&L in USD, on "
             "notional and on capital (A capital = 1.5 x notional, B = 1.0 x), and cost realism: mean actual cost per executed leg "
             "side (taker fee + |VWAP - mid| / mid from the recorded book) vs the modelled fee + slippage. Paper results are not "
-            "live fills and say nothing about profit at this sample size; read them against the registered criteria. Not the "
-            "same as carry_paper_status, which marks manually opened perp-perp pairs with live data."
+            "live fills and say nothing about profit at this sample size; read them against the registered criteria. "
+            "strategy='manual' is a third, separate book: the perp-perp pairs YOU opened with carry_paper_open, marked NOW with "
+            "live public data (funding, 4h / 15m bars, last prices). Per open pair: funding P&L (long leg pays, short leg "
+            "receives, at each payment's leg price), price P&L, costs (entry + estimated exit fees and slippage), net P&L in USD "
+            "and as a fraction of notional, held days, realized APR, the largest adverse move of each leg since entry, the "
+            "trailing spread now (decimal APR) and `exit_signal` (null / 'spread_exit' when the trailing spread <= exit_apr / "
+            "'stop'). Its stop is the backtest's: the first 4h bar where either leg's high or low is >= 1 / leverage from that "
+            "leg's entry; the result is then FROZEN at that bar (funding up to it, price P&L at its close, exit costs and the "
+            "1 % penalty) with `stop_at`; the 4h bar containing the entry is replaced by 15m bars from the entry on (the whole "
+            "4h bar, with a warning, if they cannot be fetched); `stop_check` says whether completed-bar coverage was complete. "
+            "`id` marks a single manual pair. `summary_closed` covers closed manual pairs (n, mean / median return on notional, "
+            "share losing / stopped, mean held days, USD sums) and the same under `entry_tradable` (opened while tradable_now "
+            "held: the backtest-comparable subset). A manual pair whose data cannot be fetched goes to `missing`; ok=false "
+            "when no open manual pair could be marked."
         ),
     )
     async def paper_carry_status(
         strategy: Annotated[
-            Literal["A", "B", "both"], Field(description="Which book: A (cash-and-carry), B (perp-perp) or both.")
+            Literal["A", "B", "both", "manual"],
+            Field(
+                description="Which book: A (engine cash-and-carry), B (engine perp-perp), both engine books, or manual (pairs "
+                "opened with carry_paper_open, marked with live data; the former carry_paper_status)."
+            ),
         ] = "both",
-        include_closed: Annotated[bool, Field(description="Also list the 50 most recent closed trades per strategy.")] = False,
+        include_closed: Annotated[
+            bool,
+            Field(
+                description="Also list closed trades: the 50 most recent per engine book; for manual, up to 200 closed / cancelled pairs."
+            ),
+        ] = False,
+        id: Annotated[
+            int | None, Field(ge=1, description="Manual pair id (strategy='manual' only): mark only this pair, any status.")
+        ] = None,
     ) -> dict[str, Any]:
+        if strategy == "manual":
+            return await manual_book_status(rt, id, include_closed)
         b = Builder()
         b.warn(PAPER_CARRY_WARNING)
+        if id is not None:  # engine trades have string ids (A:1); `id` is the manual pair's row id
+            b.miss("id", "tradedesk", "invalid_input", "id selects a manual pair: use it with strategy='manual'")
+            return b.build(None, ok=False)
         if not await store_ready(b, rt, "the journal"):
             return b.build(None, ok=False)
         assert rt.store is not None

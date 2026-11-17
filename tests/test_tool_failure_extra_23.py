@@ -152,7 +152,7 @@ async def test_carry_paper_status_normalises_tags(rt, tags, shown):
     async with _session(rt) as call:
         pid = await _open_pair(call, rt)
         await _set(rt, "carry_paper", "tags", tags, pid)
-        env = await call("carry_paper_status")
+        env = await call("paper_carry_status", strategy="manual")
         (pair,) = env["data"]["open"]
         assert env["ok"] is True and pair["id"] == pid and "mark" in pair and pair["tags"] == shown
         assert any(f"paper pair id {[pid]} {TAGS_WARNING}" in w for w in env["warnings"])
@@ -163,7 +163,7 @@ async def test_carry_paper_status_non_finite_tags_read_as_empty(rt, tags):
     async with _session(rt) as call:
         pid = await _open_pair(call, rt)
         await _set(rt, "carry_paper", "tags", tags, pid)
-        env = await call("carry_paper_status")
+        env = await call("paper_carry_status", strategy="manual")
         assert env["ok"] is True and [(p["id"], p["tags"]) for p in env["data"]["open"]] == [(pid, [])]
         assert any(f"paper pair id {[pid]} had NaN / Infinity in tags" in w for w in env["warnings"])
 
@@ -190,7 +190,7 @@ async def test_carry_paper_close_with_bad_tags_closes_and_mirrors_string_tags(rt
         assert sum(f"paper pair id {[pid]}" in w and "tags" in w for w in env["warnings"]) == 1
         env = await call("journal_list", tag="pp-paper")
         assert [t["tags"] for t in env["data"]["trades"]] == [["pp-paper", "pp-paper-offrule", *user_tags]]
-        env = await call("carry_paper_status", include_closed=True)
+        env = await call("paper_carry_status", strategy="manual", include_closed=True)
         assert env["ok"] is True and [(t["id"], t["tags"]) for t in env["data"]["closed"]] == [(pid, shown)]
         env = await call("carry_paper_close", id=pid, reason="manual")  # closed once
         assert env["ok"] is False and "already closed" in env["missing"][0]["detail"]
@@ -202,17 +202,17 @@ async def test_carry_paper_cancel_and_single_status_with_deep_tags(rt):
         await _set(rt, "carry_paper", "tags", _deep(300), pid)
         env = await call("carry_paper_close", id=pid, reason="manual", cancelled=True)
         assert env["ok"] is True and (env["data"]["status"], env["data"]["tags"]) == ("cancelled", [])
-        env = await call("carry_paper_status", id=pid)
+        env = await call("paper_carry_status", strategy="manual", id=pid)
         assert env["ok"] is True and (env["data"]["trade"]["id"], env["data"]["trade"]["tags"]) == (pid, [])
 
 
 async def test_carry_paper_valid_tags_unchanged_and_store_failure(rt, monkeypatch):
     async with _session(rt) as call:
         pid = await _open_pair(call, rt)
-        env = await call("carry_paper_status")
+        env = await call("paper_carry_status", strategy="manual")
         assert env["data"]["open"][0]["tags"] == ["t1"] and not any("tags" in w for w in env["warnings"])
         await _set(rt, "carry_paper", "tags", "null", pid)
-        env = await call("carry_paper_status")
+        env = await call("paper_carry_status", strategy="manual")
         assert env["data"]["open"][0]["tags"] == [] and not any("tags" in w for w in env["warnings"])
 
         async def boom(*_a, **_k):

@@ -512,6 +512,14 @@ async def test_paper_carry_status_tool_happy_path(tmp_path):
         assert any("descriptive only" in w and "+6.5 %" in w for w in res["warnings"])  # honest backtest result and limits
         one = await _call(srv, "paper_carry_status", strategy="B", include_closed=True)
         assert set(one["data"]) == {"B"} and one["data"]["B"]["closed_trades"] == []
+        # `id` belongs to the manual book (the former carry_paper_status): with an engine book it is refused, not ignored
+        bad = await _call(srv, "paper_carry_status", strategy="A", id=1)
+        assert bad["ok"] is False and bad["data"] is None
+        assert [(m["field"], m["reason"]) for m in bad["missing"]] == [("id", "invalid_input")]
+        manual = await _call(srv, "paper_carry_status", strategy="manual")  # no manual pair: an empty, ok book
+        assert manual["ok"] is True and manual["data"]["open"] == [] and manual["data"]["summary_closed"]["n"] == 0
+        assert not any("descriptive only" in w for w in manual["warnings"])  # the manual book's own caveat, not the engine's
+        assert any("-8.7 % APR" in w for w in manual["warnings"])
     finally:
         await rt.aclose()
 

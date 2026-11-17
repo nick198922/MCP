@@ -21,13 +21,13 @@ from tradedesk.server import build_server
 
 CASES: list[tuple[str, dict]] = [
     ("system_health", {"probe": True}),
-    ("market_ticker", {"exchange": "binanceusdm", "symbol": "BTC/USDT:USDT"}),
+    ("market_tickers", {"exchange": "binanceusdm", "symbols": "BTC/USDT:USDT"}),  # one symbol: the former market_ticker
     ("market_tickers", {"exchange": "binanceusdm", "symbols": ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT"]}),
     ("market_markets", {"exchange": "binanceusdm", "query": "BTC", "market_type": "swap", "limit": 10}),
     ("market_ohlcv", {"exchange": "bybit", "symbol": "BTC/USDT:USDT", "timeframe": "1h", "limit": 200}),
     ("chart_markup", {"exchange": "binanceusdm", "symbol": "BTC/USDT:USDT", "timeframe": "4h"}),
     ("chart_markup", {"exchange": "bingx", "symbol": "EURUSD", "timeframe": "1h"}),
-    ("market_ticker", {"exchange": "bingx", "symbol": "NCFXEUR2USD/USDT:USDT"}),
+    ("market_tickers", {"exchange": "bingx", "symbols": ["NCFXEUR2USD/USDT:USDT"]}),
     ("market_orderbook", {"exchange": "okx", "symbol": "BTC/USDT:USDT", "notional_usd": 1_000_000}),
     ("market_trades", {"exchange": "binanceusdm", "symbol": "BTC/USDT:USDT", "limit": 200, "top_n": 5}),
     ("perps_funding_compare", {"base": "BTC"}),

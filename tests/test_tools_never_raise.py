@@ -57,7 +57,6 @@ ARGS: dict[str, dict] = {
     "market_ohlcv": {"exchange": "binanceusdm", "symbol": "BTC/USDT:USDT"},
     "market_orderbook": {"exchange": "binanceusdm", "symbol": "BTC/USDT:USDT"},
     "market_regime": {"venue": "binanceusdm", "symbol": "BTC/USDT:USDT"},
-    "market_ticker": {"exchange": "binanceusdm", "symbol": "BTC/USDT:USDT"},
     "market_tickers": {"exchange": "binanceusdm"},
     "market_trades": {"exchange": "binanceusdm", "symbol": "BTC/USDT:USDT"},
     "odds_devig": {"odds": [1.9, 1.9]},

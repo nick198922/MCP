@@ -140,10 +140,10 @@ async def test_carry_paper_status_survives_a_deeply_nested_json_cell(rt, col):
     await rt.store.conn.execute(f"UPDATE carry_paper SET {col} = ? WHERE id = ?", (DEEP, pid))
     await rt.store.conn.commit()
     async with _session(rt) as call:
-        env = await call("carry_paper_status", id=pid)
+        env = await call("paper_carry_status", strategy="manual", id=pid)
         assert env["ok"] is True and env["data"]["open"] == []
         assert env["data"]["trade"]["id"] == pid and env["data"]["trade"][col] == []
-        env = await call("carry_paper_status", include_closed=True)
+        env = await call("paper_carry_status", strategy="manual", include_closed=True)
         assert env["ok"] is True and env["data"]["open"] == []
 
 

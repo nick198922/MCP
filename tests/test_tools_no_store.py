@@ -48,7 +48,6 @@ QUERY_GUARDED = {
     "assistant_paper_status",
     "carry_paper_close",
     "carry_paper_open",
-    "carry_paper_status",
     "event_study",
     "events_add",
     "events_list",
@@ -289,4 +288,25 @@ async def test_range_setup_store_source_never_raises(tmp_path, mode):
     data = res.structured_content
     data = data.get("result", data)
     assert data["ok"] is False
+    assert ("store", "backend_error") in {(m["field"], m["reason"]) for m in data["missing"]}
+
+
+@pytest.mark.parametrize("mode", ["query_error", "unreachable"])
+async def test_paper_carry_status_manual_store_failure_never_raises(tmp_path, mode):
+    """paper_carry_status(strategy='manual') (the former carry_paper_status; the scan above calls the default engine books)."""
+    rt = await _runtime(tmp_path, "empty")
+    srv, _ = build_server(rt)
+    async with Client(srv) as c:
+        if mode == "unreachable":
+            blocker = tmp_path / "a_file"
+            blocker.write_text("not a directory")
+            await rt.store.aclose()
+            rt.store = Store(blocker / "store.sqlite")
+        else:
+            rt.store = _QueryFailingStore(rt.store)
+        res = await c.call_tool("paper_carry_status", {"strategy": "manual", "include_closed": True})
+    assert not res.is_error, res.content[0].text[:300] if res.content else ""
+    data = res.structured_content
+    data = data.get("result", data)
+    assert data["ok"] is False and data["data"] is None
     assert ("store", "backend_error") in {(m["field"], m["reason"]) for m in data["missing"]}

@@ -348,7 +348,7 @@ async def test_open_status_close_roundtrip(state, tmp_path):
         assert any("-8.7 %" in w and "zero or negative" in w for w in o["warnings"])  # honest backtest caveat
 
         rt.now = lambda: NOW
-        s = await _call(srv, "carry_paper_status")
+        s = await _call(srv, "paper_carry_status", strategy="manual")
         assert s["ok"] is True, s
         (tr,) = s["data"]["open"]
         mk = tr["mark"]
@@ -382,7 +382,7 @@ async def test_open_status_close_roundtrip(state, tmp_path):
         assert row["symbol"] == "PP:BTC:binanceusdm/bybit" and row["side"] == "long" and "t1" in row["tags"]
         assert row["exit"] == pytest.approx(1 + cd["return_on_notional"], abs=1e-4)
 
-        s2 = await _call(srv, "carry_paper_status", include_closed=True)
+        s2 = await _call(srv, "paper_carry_status", strategy="manual", include_closed=True)
         assert s2["data"]["open"] == [] and s2["data"]["summary_closed"]["n"] == 1 and len(s2["data"]["closed"]) == 1
         # opened while not tradable_now: counted in `n` but not in the backtest-comparable subset, tagged off-rule
         assert s2["data"]["summary_closed"]["entry_tradable"]["n"] == 0 and "pp-paper-offrule" in row["tags"]
@@ -494,7 +494,7 @@ async def test_non_finite_last_price_never_marks_the_pair(state, tmp_path, bad):
         assert o["ok"] is True, o  # the entry falls back to the mark price of the funding feed
         assert o["data"]["short_entry"] == pytest.approx(82760.0 * 1.0001)
         assert any("bybit BTC/USDT:USDT: last price in the ticker is not a finite number" in w for w in o["warnings"])
-        s = await _call(srv, "carry_paper_status")
+        s = await _call(srv, "paper_carry_status", strategy="manual")
         (tr,) = s["data"]["open"]
         assert "mark" not in tr and any(m["field"] == "carry_paper:1" for m in s["missing"])
         assert any("bybit BTC/USDT:USDT: last price" in w for w in s["warnings"])
@@ -544,7 +544,7 @@ async def test_open_and_status_skip_a_wrong_type_funding_rate(state, tmp_path):
         o = await _call(srv, "carry_paper_open", base="BTC", long_venue="binanceusdm", short_venue="bybit")
         assert o["ok"] is True, o
         rt.now = lambda: NOW
-        s = await _call(srv, "carry_paper_status")
+        s = await _call(srv, "paper_carry_status", strategy="manual")
         assert s["ok"] is True, s
         (tr,) = s["data"]["open"]
         end, step = 1791637200000, H8
@@ -581,7 +581,7 @@ async def test_status_and_close_with_provider_failure(state, tmp_path):
             notional_usd=1000.0, long_entry=82750.0, short_entry=82750.0, leverage=2.0, stop_move=0.5, lookback_days=7.0, exit_apr=0.0,
             slippage=0.0005,
         )  # fmt: skip
-        s = await _call(srv, "carry_paper_status")
+        s = await _call(srv, "paper_carry_status", strategy="manual")
         assert len(s["data"]["open"]) == 2
         marked = [t for t in s["data"]["open"] if "mark" in t]
         assert [t["id"] for t in marked] == [1]
@@ -593,7 +593,7 @@ async def test_status_and_close_with_provider_failure(state, tmp_path):
         assert (await rt.store.carry_paper_get(2))["status"] == "open"
         assert await rt.store.journal_list(tag="pp-paper") == []
 
-        nf = await _call(srv, "carry_paper_status", id=99)
+        nf = await _call(srv, "paper_carry_status", strategy="manual", id=99)
         assert nf["ok"] is False
     finally:
         await rt.store.aclose()
@@ -608,7 +608,7 @@ async def test_tools_without_store_report_config_miss(state):
     srv, _ = build_server(rt)
     for name, args in (
         ("carry_paper_open", dict(base="BTC", long_venue="binanceusdm", short_venue="bybit")),
-        ("carry_paper_status", {}),
+        ("paper_carry_status", {"strategy": "manual"}),
         ("carry_paper_close", dict(id=1, reason="manual")),
     ):
         env = await _call(srv, name, **args)
@@ -673,7 +673,7 @@ async def test_status_detects_stop_through_paginated_bars_and_close_freezes_it(s
         rt.now = lambda: open_at
         assert (await _call(srv, "carry_paper_open", base="BTC", long_venue="binanceusdm", short_venue="bybit"))["ok"]
         rt.now = lambda: NOW
-        s = await _call(srv, "carry_paper_status")
+        s = await _call(srv, "paper_carry_status", strategy="manual")
         (tr,) = s["data"]["open"]
         mk = tr["mark"]
         for venue in ("binanceusdm", "bybit"):
@@ -696,7 +696,7 @@ async def test_status_detects_stop_through_paginated_bars_and_close_freezes_it(s
         assert d["closed"] == mk["stop_at"] and d["costs_usd"] == mk["costs_usd"]
         assert d["return_on_notional"] == pytest.approx(mk["return_on_notional"], abs=1e-4)
         assert any("hit its stop" in w for w in c["warnings"])
-        s2 = await _call(srv, "carry_paper_status")
+        s2 = await _call(srv, "paper_carry_status", strategy="manual")
         assert s2["data"]["summary_closed"]["share_stopped"] == 1.0
     finally:
         await rt.store.aclose()
@@ -733,7 +733,7 @@ async def test_bar_page_failure_warns_and_marks_stop_check_incomplete(state, tmp
         rt.now = lambda: NOW - timedelta(days=20)
         assert (await _call(srv, "carry_paper_open", base="BTC", long_venue="binanceusdm", short_venue="bybit"))["ok"]
         rt.now = lambda: NOW
-        s = await _call(srv, "carry_paper_status")
+        s = await _call(srv, "paper_carry_status", strategy="manual")
         assert s["ok"] is True
         (tr,) = s["data"]["open"]
         assert tr["mark"]["stop_check"] == "incomplete"
@@ -753,7 +753,7 @@ async def test_status_is_not_ok_when_no_open_pair_can_be_marked(state, tmp_path)
             notional_usd=1000.0, long_entry=82750.0, short_entry=82750.0, leverage=2.0, stop_move=0.5, lookback_days=7.0, exit_apr=0.0,
         )  # fmt: skip
         for args in ({}, {"id": 1}):
-            s = await _call(srv, "carry_paper_status", **args)
+            s = await _call(srv, "paper_carry_status", strategy="manual", **args)
             assert s["ok"] is False and s["data"]["open"][0].get("mark") is None
             assert any(m["field"] == "carry_paper:1" for m in s["missing"])
     finally:
@@ -772,7 +772,7 @@ async def test_entry_tradable_subset_in_summary_and_journal_tags(state, tmp_path
             )  # fmt: skip
         for i in (1, 2):
             assert (await _call(srv, "carry_paper_close", id=i, reason="manual"))["ok"]
-        s = await _call(srv, "carry_paper_status")
+        s = await _call(srv, "paper_carry_status", strategy="manual")
         assert s["data"]["summary_closed"]["n"] == 2 and s["data"]["summary_closed"]["entry_tradable"]["n"] == 1
         tags = [t["tags"] for t in (await _call(srv, "journal_list", tag="pp-paper"))["data"]["trades"]]
         assert sum("pp-paper-offrule" in t for t in tags) == 1
@@ -813,7 +813,7 @@ async def test_status_ignores_prices_before_entry_inside_the_entry_bar(state, tm
         rt.now = lambda: NOW - timedelta(hours=2)
         assert (await _call(srv, "carry_paper_open", base="BTC", long_venue="binanceusdm", short_venue="bybit"))["ok"]
         rt.now = lambda: NOW
-        s = await _call(srv, "carry_paper_status")
+        s = await _call(srv, "paper_carry_status", strategy="manual")
         assert s["ok"] is True, s
         mk = s["data"]["open"][0]["mark"]
         assert mk["stop_check"] == "complete"
@@ -846,7 +846,7 @@ async def test_status_complete_when_venue_returns_only_closed_bars(state, tmp_pa
         rt.now = lambda: NOW - timedelta(days=2)
         assert (await _call(srv, "carry_paper_open", base="BTC", long_venue="binanceusdm", short_venue="bybit"))["ok"]
         rt.now = lambda: NOW
-        s = await _call(srv, "carry_paper_status")
+        s = await _call(srv, "paper_carry_status", strategy="manual")
         assert s["data"]["open"][0]["mark"]["stop_check"] == "complete"
         assert not any("bar(s) missing" in w for w in s["warnings"])
     finally:
@@ -862,6 +862,7 @@ async def test_open_is_not_idempotent_in_annotations(state, tmp_path):
         op = tools["carry_paper_open"].annotations.model_dump(by_alias=True)
         assert op["idempotentHint"] is False and op["readOnlyHint"] is True and op["destructiveHint"] is False
         assert op["openWorldHint"] is True
-        assert tools["carry_paper_status"].annotations.model_dump(by_alias=True)["idempotentHint"] is True
+        assert tools["paper_carry_status"].annotations.model_dump(by_alias=True)["idempotentHint"] is True
+        assert "carry_paper_status" not in tools  # merged into paper_carry_status(strategy="manual") 2026-11-17
     finally:
         await rt.store.aclose()

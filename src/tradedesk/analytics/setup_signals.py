@@ -49,7 +49,7 @@ Rules taken from the verification runs (status of each setup: docs/knowledge/set
   flags are known (``arm``), if the top of the bearish candle's body was not touched since the engulfing candle; the
   entry is a limit resting at that level for ``S28_WAIT`` bars (indicator ``rest_until_ms``), stop 1 ATR (of the
   engulfing candle) under it, target 2R. **Rejected by the backtest** (``docs/verification/2026-10-17-course-step4-fvg-ob.md``);
-  a detector for the scanner only (opt-in name "S28"), not traded by the demo.
+  an opt-in detector (name "S28"), on the demo since 2026-10-29 by the owner's decision (version v8).
 - S17 (the retest of an impulsively broken POB; 1d and 4h, both sides): ``course_pob.pob_events`` with the registered
   main rules of step 5 (``scripts/verify_course_step5_s17.py``, ``Var(tf)``): the POB is the bar with the highest close
   among the 5 before an impulse bar whose low is >= 10 % and >= 3 ATR below that close; the signal is the first close

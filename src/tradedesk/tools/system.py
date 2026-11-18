@@ -35,7 +35,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "failures an hour (keepalive timeout, handshake timeout, reset; often Bybit and OKX together) reconnect "
             "within about a minute each; a dead link shows as a stale last_message_ts or a growing consecutive_failures. "
             "book_walls:* jobs (order-book walls collector) show the same counters per feed: "
-            "stream = {depth: {...}, trades: {...}} for binance, {book: {...}} for bybit."
+            "stream = {depth: {...}, trades: {...}} for binance, {book: {...}} for bybit, binance_spot and coinbase."
         ),
     )
     async def system_health(

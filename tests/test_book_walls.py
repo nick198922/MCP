@@ -383,7 +383,59 @@ async def test_merge_streams_aclose_does_not_hang_on_a_full_queue(monkeypatch):
     merged = obs.merge_streams(endless("a"), endless("b"))
     assert (await anext(merged))[1] == 1
     await asyncio.sleep(0.05)  # the consumer stalls (a REST fetch, a slow write): both pumps block on the full queue
-    await asyncio.wait_for(merged.aclose(), timeout=2)
+    # A task + wait, not wait_for: the merge's cleanup swallows the cancel wait_for sends, so a regression would hang
+    # the test run instead of failing it (2026-11-18 review R1).
+    closing = asyncio.create_task(merged.aclose())
+    finished, _ = await asyncio.wait({closing}, timeout=2)
+    assert finished, "merge_streams.aclose() hangs on a full queue"
+
+
+async def test_merge_streams_stops_at_once_on_a_primary_error():
+    async def endless_trades():
+        while True:
+            await asyncio.sleep(0.01)
+            yield {"kind": "trade"}
+
+    async def depth_bug():
+        yield {"kind": "_open", "feed": "depth"}
+        raise KeyError("parser bug")  # not a dropped link: _ws_consume lets it through
+
+    async def drain():
+        return await _drain(obs.merge_streams(depth_bug(), endless_trades()))
+
+    run = asyncio.create_task(drain())
+    finished, _ = await asyncio.wait({run}, timeout=2)  # the trade feed would go on to the end of the window
+    assert finished, "merge_streams waits for the other feeds after the book failed"
+    with pytest.raises(KeyError):
+        run.result()
+
+
+async def test_closing_a_book_stream_closes_its_feeds_before_it_returns(monkeypatch):
+    closed = []
+
+    async def fake(url, subscribe, parser, **kw):
+        try:
+            while True:
+                await asyncio.sleep(0)
+                yield {"kind": "_open", "feed": kw["lifecycle"]}
+        finally:
+            closed.append(kw["lifecycle"])  # _ws_consume's finally: socket closed, StreamStats segment ended
+
+    monkeypatch.setattr(liq, "_ws_consume", fake)
+    monkeypatch.setattr(obs, "QUEUE_MAX", 1)  # Binance: the pumps are cancelled while blocked on put, feeds at a yield
+    for stream, feeds in (
+        (obs.binance_book_stream, ["depth", "trades"]),
+        (obs.bybit_book_stream, ["book"]),
+        (obs.binance_spot_book_stream, ["book"]),
+        (obs.coinbase_book_stream, ["book"]),
+    ):
+        closed.clear()
+        s = stream(["BTCUSDT"], max_seconds=1, stats=obs.StreamGroup())
+        await anext(s)
+        await asyncio.sleep(0.01)  # Binance: both pumps running, rows waiting in the queue
+        await s.aclose()
+        # not left to the garbage collector: the job writes the hourly journal right after aclose()
+        assert sorted(closed) == feeds, stream.__name__
 
 
 async def test_secondary_feed_logs_its_error_and_ends_with_a_drop_row(caplog):

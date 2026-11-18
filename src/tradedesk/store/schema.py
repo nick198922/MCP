@@ -993,8 +993,8 @@ MIGRATIONS: dict[int, list[str]] = {
         """
         CREATE TABLE IF NOT EXISTS book_wall_event (
             id INTEGER PRIMARY KEY,
-            venue TEXT NOT NULL,                   -- 'binanceusdm' | 'bybit' (perps)
-            symbol TEXT NOT NULL,                  -- venue symbol, e.g. 'BTCUSDT'
+            venue TEXT NOT NULL,                   -- 'binanceusdm' | 'bybit' (perps), 'binance' | 'coinbase' (spot)
+            symbol TEXT NOT NULL,                  -- venue symbol: 'BTCUSDT' (Binance, Bybit), 'BTC-USD' (Coinbase)
             side TEXT NOT NULL,                    -- 'bid' | 'ask'
             price REAL NOT NULL,
             open_ms INTEGER NOT NULL,              -- venue time (unix ms) the level first passed the bar
@@ -1030,7 +1030,7 @@ MIGRATIONS: dict[int, list[str]] = {
         ) WITHOUT ROWID
         """,
         # Hourly connection journal of the book streams, as liquidation_stream_hour ('binance:depth', 'binance:trades',
-        # 'bybit:book').
+        # 'bybit:book', 'binance_spot:book', 'coinbase:book').
         """
         CREATE TABLE IF NOT EXISTS book_stream_hour (
             stream TEXT NOT NULL,

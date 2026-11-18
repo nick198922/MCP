@@ -15,7 +15,7 @@ BTC / ETH (perps and spot) for a run window, keeps a local L2 book per symbol an
 * ``book_walls:coinbase``: Advanced Trade ``level2`` + ``market_trades`` on one connection, products 'BTC-USD' /
   'ETH-USD' (the job's USDT symbols mapped, ``coinbase_product``). The venue sends the whole book as the snapshot;
   it is cut to ``FULL_BOOK_KEEP`` of the mid (``near_mid``) and kept as a bounded book, so later updates further out
-  are dropped. A skipped ``sequence_num`` fails the connection in the stream, which reconnects with a new snapshot.
+  are dropped; a snapshot without a mid (a side empty or crossed) is refused and counted as a bad row. A skipped ``sequence_num`` fails the connection in the stream, which reconnects with a new snapshot.
 
 The job object (books, open walls, connection counters) lives as long as the process: a run ends every
 ``collect_book_walls_window_seconds`` and the next one reconnects, which the walls see as a feed break (``gaps``).
@@ -129,7 +129,10 @@ class BookWallsJob:
                 if self.restart:
                     break
         finally:
-            await stream.aclose()
+            try:
+                await stream.aclose()
+            except Exception as e:  # noqa: BLE001 - the last write below must still happen
+                log.warning("book walls %s: closing the stream failed: %s", self.venue, e)
             stored += events
             written += await self._flush(rt, events, depth)
             await self._journal(rt)
@@ -172,7 +175,19 @@ class BookWallsJob:
         if kind == "snapshot":
             bids, asks = row["bids"], row["asks"]
             if self.venue == "coinbase":  # the whole book: only the part around the mid can hold a wall
-                bids, asks = near_mid(bids, asks, FULL_BOOK_KEEP)
+                cut = near_mid(bids, asks, FULL_BOOK_KEEP)
+                if cut is None:
+                    # No mid (a side empty or crossed): kept whole, 13k / 25k levels would be scanned on every update
+                    # until the next connection (2026-11-18 review, finding 2). Refused instead: the book stays not
+                    # ready until a fresh snapshot (a sequence_num break or the next run reconnects).
+                    note_bad_rows(1)
+                    if book.ready:
+                        book.clear()
+                        tracker.depth_gap()
+                    self.last_u[sym] = None
+                    log.warning("book walls %s %s: snapshot without a mid refused, book waits for the next one", self.venue, sym)
+                    return [], None
+                bids, asks = cut
             book.reset(bids, asks)
             self.last_u[sym] = row["u"]
             return tracker.on_book(row["ts"], book)

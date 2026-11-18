@@ -80,8 +80,6 @@ ARGS: dict[str, dict] = {
     "positions_close": {"id": 1},
     "prob_from_options": {"expiry": "27NOV26", "level": 90000.0},
     "range_detect": {"venue": "binanceusdm", "symbol": "BTC/USDT:USDT"},
-    "range_setup": {"venue": "binanceusdm", "symbol": "BTC/USDT:USDT"},
-    "range_setup_scan": {"venue": "binanceusdm", "symbols": ["BTC/USDT:USDT"]},
     "rules_add": {"name": "funding hot", "expr": 'funding("binanceusdm","BTC") > 0.30'},
     "rules_disable": {"id": 1},
     "strategy_backtest_momentum": {"exchange": "binanceusdm", "symbol": "BTC/USDT:USDT"},

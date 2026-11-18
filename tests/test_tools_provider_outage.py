@@ -224,7 +224,7 @@ async def run_all(mode: str, db_path: str) -> Outcome:
 async def test_no_tool_raises_when_every_provider_is_down(mode, tmp_path):
     out = await run_all(mode, str(tmp_path / "outage.sqlite"))
     assert out.leaks == []  # every request went to the failing transports, none to a real venue
-    assert out.called >= 95  # the guard really walked the registry (99 tools since the coinalyze merge, 2026-11-18)
+    assert out.called >= 95  # the guard really walked the registry (97 tools since the range_* merge, 2026-11-18)
     assert out.attempted >= 50  # and the failing providers were really hit
     assert set(SKIP) - out.names == set(), "SKIP names a tool that is not registered"
     new = {name: why for name, why in out.violations.items() if name not in KNOWN}
@@ -244,3 +244,28 @@ async def test_coinalyze_source_reports_the_outage(mode, tool, tmp_path):
     env = as_envelope(res)
     assert not res.is_error and ENVELOPE_KEYS <= set(env) and env["ok"] is False
     assert calls and env["missing"][0]["provider"] == "coinalyze"
+
+
+@pytest.mark.parametrize("mode", FAILURES)
+@pytest.mark.parametrize(
+    ("view", "args"),
+    [
+        ("ranges", {"symbol": "BTC/USDT:USDT", "source": "live"}),
+        ("setup", {"symbol": "BTC/USDT:USDT"}),
+        ("scan", {"symbols": ["BTC/USDT:USDT", "ETH/USDT:USDT"]}),
+    ],
+)
+async def test_range_detect_live_views_report_the_outage(mode, view, args, tmp_path):
+    """view='setup' / 'scan' (the former range_setup / range_setup_scan, merged 2026-11-18) and live 'ranges' read ccxt
+    bars; the sweep above calls range_detect with its required `venue` only (no symbol: invalid_input, no request)."""
+    calls: list[str] = []
+    srv, _ = build_server(failing_runtime(mode, str(tmp_path / "outage.sqlite"), calls))
+    async with Client(srv) as c:
+        res = await c.call_tool("range_detect", {"venue": "binanceusdm", "view": view, **args})
+    env = as_envelope(res)
+    assert not res.is_error and ENVELOPE_KEYS <= set(env) and env["ok"] is False
+    assert calls and any(m["provider"] == "ccxt:binanceusdm" for m in env["missing"]), env["missing"]
+    if view == "scan":
+        assert env["data"]["rejected"] == [{"symbol": s, "reason": "fetch_failed"} for s in args["symbols"]]
+    else:
+        assert env["data"] is None

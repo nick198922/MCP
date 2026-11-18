@@ -201,33 +201,34 @@ async def _call(rt: Runtime, name: str, args: dict) -> Any:
         return await c.call_tool(name, args)
 
 
-@pytest.mark.parametrize("name", ["range_detect", "range_setup"])
-async def test_live_ranges_take_a_none_volume_as_zero(tmp_path, name):
-    args = {"venue": "binanceusdm", "symbol": "BTC/USDT:USDT", "source": "live"}
-    res = await _call(_bars_runtime(tmp_path, None), name, args)
+@pytest.mark.parametrize("view", ["ranges", "setup"])  # range_detect and the former range_setup (merged 2026-11-18)
+async def test_live_ranges_take_a_none_volume_as_zero(tmp_path, view):
+    args = {"venue": "binanceusdm", "symbol": "BTC/USDT:USDT", "source": "live", "view": view}
+    res = await _call(_bars_runtime(tmp_path, None), "range_detect", args)
     assert _failure(res) is None, _failure(res)  # raised TypeError before
     env = as_envelope(res)
-    zero = as_envelope(await _call(_bars_runtime(tmp_path, 0.0), name, args))
+    zero = as_envelope(await _call(_bars_runtime(tmp_path, 0.0), "range_detect", args))
     assert (env["ok"], env["data"], env["missing"]) == (zero["ok"], zero["data"], zero["missing"])
     assert not any("malformed" in w for w in env["warnings"])
 
 
-@pytest.mark.parametrize("name", ["range_detect", "range_setup"])
-async def test_live_ranges_drop_a_bar_with_a_bad_price_and_say_so(tmp_path, name):
-    args = {"venue": "binanceusdm", "symbol": "BTC/USDT:USDT", "source": "live"}
-    res = await _call(_bars_runtime(tmp_path, 10.0, bad_close=5), name, args)
+@pytest.mark.parametrize("view", ["ranges", "setup"])
+async def test_live_ranges_drop_a_bar_with_a_bad_price_and_say_so(tmp_path, view):
+    args = {"venue": "binanceusdm", "symbol": "BTC/USDT:USDT", "source": "live", "view": view}
+    res = await _call(_bars_runtime(tmp_path, 10.0, bad_close=5), "range_detect", args)
     assert _failure(res) is None, _failure(res)  # raised ValueError before
     env = as_envelope(res)
     assert any(w.startswith("1 malformed bars") for w in env["warnings"]), env["warnings"]
-    if name == "range_detect":
-        clean = as_envelope(await _call(_bars_runtime(tmp_path, 10.0), name, args))
+    if view == "ranges":
+        clean = as_envelope(await _call(_bars_runtime(tmp_path, 10.0), "range_detect", args))
         assert env["data"]["n_bars_evaluated"] == clean["data"]["n_bars_evaluated"] - 1
 
 
 async def test_range_setup_scan_keeps_bars_with_a_none_volume(tmp_path):
-    """Leftover 2(c) of the wrong-type review: a None volume on every bar is not `insufficient_bars`."""
-    args = {"venue": "binanceusdm", "symbols": ["BTC/USDT:USDT"]}
-    env = as_envelope(await _call(_bars_runtime(tmp_path, None), "range_setup_scan", args))
-    zero = as_envelope(await _call(_bars_runtime(tmp_path, 0.0), "range_setup_scan", args))
+    """Leftover 2(c) of the wrong-type review: a None volume on every bar is not `insufficient_bars` (view='scan', the
+    former range_setup_scan)."""
+    args = {"venue": "binanceusdm", "symbols": ["BTC/USDT:USDT"], "view": "scan"}
+    env = as_envelope(await _call(_bars_runtime(tmp_path, None), "range_detect", args))
+    zero = as_envelope(await _call(_bars_runtime(tmp_path, 0.0), "range_detect", args))
     assert env["data"] == zero["data"]
     assert "insufficient_bars" not in str(env["data"])

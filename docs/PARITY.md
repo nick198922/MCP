@@ -73,7 +73,7 @@ DOUBLETOP: **74 інструменти** (66 від 17 бекендів + 8 вл
 - **Корисне для поточних напрямів, чого в нас нема:** історія OI ринку Polymarket (`get_oi_history`, рядок 🔜 вище) і P&L трейдерів Polymarket як інструмент (у нас — лише знімки колектора `trader_snapshot`); ставки Boros у `pendle_briefing` (своп на funding) — для carry. Для опціонних ідей, демо-трейдера й X-трейдерів у DOUBLETOP немає нічого. Кандидати — [`BACKLOG.md`](BACKLOG.md), «З тижневого аудиту 2026-11-14».
 - **Де наш гірший:** ончейн (у них ≈ 25 інструментів, у нас 4 — свідомо, Фаза 5); Coinalyze працює лише всередині служби MCP, і чотири позначки «живий виклик ще не звірено» в таблиці нижче стоять з 18.10, як і звірка чисел шести пар; `market_markets` віддає 19 тис. символів одразу, їхній `get-markets` пагінований.
 - **Де наш кращий:** конверт з `evidence / missing / warnings`, єдині одиниці, повний `hyperliquid_overview`, нормалізований funding між біржами, опціони, квант-калькулятори, пам'ять, потоки, режим циклу.
-- **Наш сервер:** 99 інструментів (109 до злиттів: 15.11 пресети стратегій → `strategy_payoff`, `deribit_atm_term` → `deribit_skew_term`; 17.11 `market_ticker` → `market_tickers`, `carry_paper_status` → `paper_carry_status`; 18.11 три `coinalyze_*` → `perps_*` з `source="coinalyze"`); за 30 днів напряму викликали 17. Що прибрати, злити чи сховати — [Q-20261114-1](QUESTIONS.md) і [таблиця](reviews/2026-11-14-mcp-inventory.md).
+- **Наш сервер:** 97 інструментів (109 до злиттів: 15.11 пресети стратегій → `strategy_payoff`, `deribit_atm_term` → `deribit_skew_term`; 17.11 `market_ticker` → `market_tickers`, `carry_paper_status` → `paper_carry_status`; 18.11 три `coinalyze_*` → `perps_*` з `source="coinalyze"`, `range_setup` / `range_setup_scan` → `range_detect` з `view="setup"` / `"scan"`); за 30 днів напряму викликали 17. Що прибрати, злити чи сховати — [Q-20261114-1](QUESTIONS.md) і [таблиця](reviews/2026-11-14-mcp-inventory.md).
 
 ## Чого в DOUBLETOP не було, а в нас є або буде
 
@@ -99,7 +99,7 @@ Funding carry: `funding_spread_scan` (крос-біржовий спред дл�
 
 Режим циклу (на кшталт денної панелі BTC у каналі QG): `cycle_regime` — стан останнього закритого дня (дно / накопичення / перегрів / ріст / падіння) за зафіксованими до даних порогами з денних закриттів Binance: просадка від 365-денного максимуму, funding7 (річний), базис7 перп/спот, RSI14, ціна до SMA365 і нахил SMA365; найближчий інший стан і що має змінитись; історія станів. У DOUBLETOP аналога не було. Контекст, не сигнал; перевірку на історії ще не зроблено ([IDEA-20261028-btc-cycle-regime-gauge](ideas/IDEA-20261028-btc-cycle-regime-gauge.md)).
 
-Price-action за навчальними відео DoubleTop (не з їхнього MCP): `range_detect` (рейнджі, sweeps, deviations, accumulation/distribution), `range_setup` (SFP-сетап: entry/stop/TP/RR), `range_setup_scan` (сканер SFP-сетапів по списку тикерів).
+Price-action за навчальними відео DoubleTop (не з їхнього MCP): `range_detect` (рейнджі, sweeps, deviations, accumulation/distribution; `view="setup"` — SFP-сетап: entry/stop/TP/RR; `view="scan"` — сканер SFP-сетапів по списку тикерів; до 18.11 — окремі `range_setup` і `range_setup_scan`).
 
 ## Наші інструменти без відповідника
 
@@ -158,7 +158,7 @@ Price-action за навчальними відео DoubleTop (не з їхнь�
 |---|---|
 | — | ✅ `market_regime` — режим up / down / chop за нахилом і `trend_strength` на останніх барах (з `ohlcv_hist` або живі бари ccxt) |
 | — | ✅ `range_detect` — рейнджі, sweeps і deviations на OHLCV (за лекцією DoubleTop «Ranges») |
-| — | ✅ `range_setup` / `range_setup_scan` — SFP-сетап з останнього sweep у рейнджі (entry / stop / tp1 / tp2 / RR) і сканер таких сетапів по символах однієї біржі; механічна пропозиція, дворічний walk-forward значущої переваги не знайшов |
+| — | ✅ `range_detect(view="setup")` / `range_detect(view="scan")` (колишні `range_setup` / `range_setup_scan`) — SFP-сетап з останнього sweep у рейнджі (entry / stop / tp1 / tp2 / RR) і сканер таких сетапів по символах однієї біржі; механічна пропозиція, дворічний walk-forward значущої переваги не знайшов |
 | — | ✅ `fib_retracement` — драбина Фібоначчі 23.6 / 38.2 / 50 / 61.8 / 78.6 % між ціною до реакції та її екстремумом, прапорець `applicable`; чиста математика, без даних |
 
 ### Стратегії та бектест

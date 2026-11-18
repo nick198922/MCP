@@ -70,7 +70,6 @@ ARGS: dict[str, dict] = {
     "pendle_yield_curve": {"asset": "sUSDe"},
     "polymarket_options_gap": {"max_days": 30, "min_net_edge": -1},
     "positions_close": {"id": 2},
-    "range_setup": {**NEVER_RAISE_ARGS["range_setup"], "source": "store"},
     "skew_percentile": {"expiry": EXPIRY},
 }
 
@@ -102,7 +101,6 @@ EXTRA_OK: set[str] = {
     "event_study",
     "positions_risk",
     "carry_paper_close",
-    "range_setup",
 }
 
 ENVELOPE_TYPES: dict[str, type] = {"ok": bool, "evidence": list, "missing": list, "warnings": list, "as_of": str}
@@ -151,7 +149,6 @@ NO_NETWORK: set[str] = {
     "ohlcv_history",
     "positions_risk",
     "range_detect",
-    "range_setup",
     "skew_percentile",
 }
 
@@ -425,7 +422,7 @@ async def test_successful_answers_have_the_envelope_shape(tmp_path):
     assert report["called"] == report["listed"] - len(SKIP)
     assert EXTRA_OK.isdisjoint(report["not_ok"]), f"no longer ok=true on the fakes: {sorted(EXTRA_OK & set(report['not_ok']))}"
     # 109 of 109 on 2026-11-06 (85 before item 176, 100 before item 181); 105 tools since the strategy presets merged,
-    # 99 of 99 since the coinalyze_* history tools merged into perps_* (2026-11-18).
+    # 99 of 99 since the coinalyze_* history tools merged into perps_* (2026-11-18), 97 since the range_* merge.
     assert report["ok"] >= 95, f"too few tools answered ok=true on the fakes; ok=false: {report['not_ok']}"
     new = {k: v for k, v in report["problems"].items() if k not in KNOWN}
     assert new == {}, "fix these tools (Builder.add / guard / warn), or list them in KNOWN and docs/BACKLOG.md"
@@ -445,6 +442,26 @@ async def test_coinalyze_source_answers_have_the_envelope_shape(tmp_path):
             assert env["ok"] is True, (name, env)
             assert calls and all("coinalyze" in x for x in calls), (name, calls)
             assert shape_problems(env, made_calls=True) == [], name
+
+
+async def test_range_detect_setup_and_scan_views_have_the_envelope_shape(tmp_path):
+    """range_detect's view='setup' (store, the 4h sweep bars of _seed_store) and view='scan' (live FakeEx), the former
+    range_setup (in EXTRA_OK / NO_NETWORK) and range_setup_scan, merged 2026-11-18: the sweep above calls view='ranges'."""
+    calls: list[str] = []
+    rt = _runtime(tmp_path, calls)
+    await _seed_store(rt)
+    srv, _ = build_server(rt)
+    base = {"venue": "binanceusdm"}
+    async with Client(srv) as c:
+        for args, network in (
+            ({"symbol": "BTC/USDT:USDT", "view": "setup", "source": "store"}, False),
+            ({"symbols": ["BTC/USDT:USDT", "ETH/USDT:USDT"], "view": "scan"}, True),
+        ):
+            calls.clear()
+            env = as_envelope(await c.call_tool("range_detect", {**base, **args}))
+            assert env["ok"] is True, (args, env)
+            assert bool(calls) is network, (args, calls)
+            assert shape_problems(env, made_calls=network) == [], args
 
 
 async def test_the_check_catches_a_tool_without_evidence(tmp_path):

@@ -293,6 +293,7 @@ async def test_range_detect_live_source(state):
 
 
 async def test_range_setup_live_mcp(state):
+    # view='setup' is the former range_setup tool (merged into range_detect on 2026-11-18).
     rt = Runtime(
         Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=""),
         transports=make_transports(state),
@@ -303,7 +304,8 @@ async def test_range_setup_live_mcp(state):
     try:
         env = await _call(
             srv,
-            "range_setup",
+            "range_detect",
+            view="setup",
             venue="binanceusdm",
             symbol="BTC/USDT:USDT",
             timeframe="1h",
@@ -345,12 +347,14 @@ def _scan_rt(state, factory=FakeEx):
 
 
 async def test_range_setup_scan_happy_path(state):
+    # view='scan' is the former range_setup_scan tool (merged into range_detect on 2026-11-18).
     rt = _scan_rt(state)
     srv, _ = build_server(rt)
     try:
         env = await _call(
             srv,
-            "range_setup_scan",
+            "range_detect",
+            view="scan",
             venue="binanceusdm",
             symbols=["BTC/USDT:USDT", "ETH/USDT:USDT"],
             timeframe="1h",
@@ -377,8 +381,8 @@ async def test_range_setup_scan_stale_filter(state):
         args = dict(
             venue="binanceusdm", symbols=["BTC/USDT:USDT"], timeframe="1h", lookback_bars=100, max_width_pct=10, only_tradable=False
         )
-        loose = await _call(srv, "range_setup_scan", max_sweep_age_bars=1000, **args)
-        strict = await _call(srv, "range_setup_scan", max_sweep_age_bars=0, **args)
+        loose = await _call(srv, "range_detect", view="scan", max_sweep_age_bars=1000, **args)
+        strict = await _call(srv, "range_detect", view="scan", max_sweep_age_bars=0, **args)
         for s in strict["data"]["setups"]:
             assert s["sweep"]["bars_since_sweep"] == 0
         for s in loose["data"]["setups"]:
@@ -394,7 +398,8 @@ async def test_range_setup_scan_partial_provider_failure(state):
     try:
         env = await _call(
             srv,
-            "range_setup_scan",
+            "range_detect",
+            view="scan",
             venue="binanceusdm",
             symbols=["BTC/USDT:USDT", "BAD/USDT:USDT"],
             timeframe="1h",
@@ -412,7 +417,7 @@ async def test_range_setup_scan_all_failed_is_not_ok(state):
     rt = _scan_rt(state, _OhlcvFailEx)
     srv, _ = build_server(rt)
     try:
-        env = await _call(srv, "range_setup_scan", venue="binanceusdm", symbols=["BAD1/USDT:USDT", "BAD2/USDT:USDT"])
+        env = await _call(srv, "range_detect", view="scan", venue="binanceusdm", symbols=["BAD1/USDT:USDT", "BAD2/USDT:USDT"])
         assert env["ok"] is False
         assert env["data"]["tradable"] == 0
     finally:
@@ -423,15 +428,15 @@ async def test_range_setup_scan_empty_symbols(state):
     rt = _scan_rt(state)
     srv, _ = build_server(rt)
     try:
-        env = await _call(srv, "range_setup_scan", venue="binanceusdm", symbols=[])
+        env = await _call(srv, "range_detect", view="scan", venue="binanceusdm", symbols=[])
         assert env["ok"] is False
         assert env["missing"][0]["field"] == "symbols"
     finally:
         await rt.aclose()
 
 
-@pytest.mark.parametrize("tool", ["range_detect", "range_setup"])
-async def test_range_tools_store_source_use_latest_bars(state, tmp_path, monkeypatch, tool):
+@pytest.mark.parametrize("view", ["ranges", "setup"])
+async def test_range_tools_store_source_use_latest_bars(state, tmp_path, monkeypatch, view):
     import tradedesk.tools.history as history
 
     seen: list[list[dict]] = []
@@ -454,7 +459,9 @@ async def test_range_tools_store_source_use_latest_bars(state, tmp_path, monkeyp
     await rt.store.insert_ohlcv_batch("binanceusdm", "BTC/USDT:USDT", "4h", bars)
     srv, _ = build_server(rt)
     try:
-        await _call(srv, tool, venue="binanceusdm", symbol="BTC/USDT:USDT", timeframe="4h", lookback_bars=100, source="store")
+        await _call(
+            srv, "range_detect", view=view, venue="binanceusdm", symbol="BTC/USDT:USDT", timeframe="4h", lookback_bars=100, source="store"
+        )
         assert len(seen) == 1
         assert [b["ts"] for b in seen[0]] == [b[0] for b in bars[900:]]
     finally:
@@ -473,5 +480,131 @@ async def test_range_detect_store_source_missing(state, tmp_path):
     try:
         env = await _call(srv, "range_detect", venue="binanceusdm", symbol="BTC/USDT:USDT", source="store")
         assert env["ok"] is False
+    finally:
+        await rt.aclose()
+
+
+# ---------- range_detect views (range_setup / range_setup_scan merged in as view='setup' / 'scan', 2026-11-18) ----------
+
+
+async def _sweep_rt(state, tmp_path) -> Runtime:
+    """FakeEx plus a store with the 4h BTC bars of test_tools_envelope_shape: one high-side sweep inside a range."""
+    from test_tools_envelope_shape import _sweep_bars
+
+    rt = Runtime(
+        Settings(http_retries=0, http_retry_backoff=0.0, cache_scale=0.0, db_path=str(tmp_path / "sweep.sqlite")),
+        transports=make_transports(state),
+        exchange_factory=FakeEx,
+    )
+    rt.now = lambda: NOW
+    await rt.store.init()
+    now_ts = int(NOW.timestamp())
+    await rt.store.insert_ohlcv_batch("binanceusdm", "BTC/USDT:USDT", "4h", _sweep_bars(now_ts // 14_400 * 14_400))
+    return rt
+
+
+async def test_range_detect_setup_view_reference_numbers(state, tmp_path):
+    """Reference answer of range_setup(source='store') on the sweep bars, recorded before the merge (2026-11-18)."""
+    rt = await _sweep_rt(state, tmp_path)
+    srv, _ = build_server(rt)
+    try:
+        args = dict(venue="binanceusdm", symbol="BTC/USDT:USDT", view="setup", source="store")
+        env = await _call(srv, "range_detect", **args)
+        tight = await _call(srv, "range_detect", use_tight_stop=True, min_rr=1.5, stop_mult=1.0, **args)
+    finally:
+        await rt.aclose()
+    assert env["ok"] is True and any("Unverified edge" in w for w in env["warnings"])
+    d = env["data"]
+    assert set(d) == {"venue", "symbol", "timeframe", "range", "latest_sweep", "setup", "hints"}  # the old keys, no more
+    assert d["timeframe"] == "4h"  # the setup default, not the 1h of view='ranges'
+    rng = d["range"]
+    assert (rng["top"], rng["bottom"], rng["mid"]) == (83500.0, 81400.0, 82450.0)
+    assert rng["width_pct"] == pytest.approx(2.547, abs=1e-3) and rng["classification"]["type"] == "distribution"
+    sw = d["latest_sweep"]
+    assert (sw["side"], sw["swept_level"], sw["bars_since_sweep"], sw["same_side_in_last_5"]) == ("high", 82600.0, 3, 1)
+    assert sw["overshoot_pct"] == pytest.approx(1.0896, abs=1e-4) and sw["reversal_pct"] == pytest.approx(0.0606, abs=1e-4)
+    s = d["setup"]
+    assert (s["direction"], s["entry"], s["tp1"], s["tp2"], s["tradable"], s["min_rr"]) == ("short", 82550.0, 82450.0, 81400.0, False, 2.0)
+    assert s["stop"] == pytest.approx(84400.0, abs=0.01) and s["stop_offset_pct"] == pytest.approx(2.1792, abs=1e-4)
+    assert s["risk_pct_from_entry"] == pytest.approx(2.2411, abs=1e-4)
+    assert s["rr1"] == pytest.approx(0.054, abs=1e-3) and s["rr2"] == pytest.approx(0.622, abs=1e-3)
+    assert d["hints"]["consider_tight_stop"] is False
+    t = tight["data"]["setup"]
+    assert t["stop"] == pytest.approx(83583.5, abs=0.01) and t["min_rr"] == 1.5
+    assert t["rr1"] == pytest.approx(0.097, abs=1e-3) and t["rr2"] == pytest.approx(1.113, abs=1e-3)
+
+
+@pytest.mark.parametrize(
+    ("view", "args", "want"),
+    [  # (timeframe, limit) of the ccxt request and max_width_pct of the analytics: the old tools' defaults
+        ("ranges", {"symbol": "BTC/USDT:USDT", "source": "live"}, ("1h", 500, 10.0)),
+        ("setup", {"symbol": "BTC/USDT:USDT"}, ("4h", 300, 15.0)),  # live by default
+        ("scan", {"symbols": ["BTC/USDT:USDT"]}, ("4h", 300, 15.0)),
+    ],
+)
+async def test_range_detect_views_keep_the_old_defaults(state, monkeypatch, view, args, want):
+    import tradedesk.tools.history as history
+
+    rt = _scan_rt(state)
+    fetched: list[tuple] = []
+    widths: list[float] = []
+    orig_ohlcv, orig_classify = rt.exchanges.ohlcv, history.classify_ranges
+
+    async def ohlcv(ex_id, symbol, timeframe, limit, *a, **k):
+        fetched.append((timeframe, limit))
+        return await orig_ohlcv(ex_id, symbol, timeframe, limit, *a, **k)
+
+    def classify(bars, **kw):
+        widths.append(kw["max_width_pct"])
+        return orig_classify(bars, **kw)
+
+    monkeypatch.setattr(rt.exchanges, "ohlcv", ohlcv)
+    monkeypatch.setattr(history, "classify_ranges", classify)
+    srv, _ = build_server(rt)
+    try:
+        await _call(srv, "range_detect", venue="binanceusdm", view=view, **args)
+    finally:
+        await rt.aclose()
+    assert fetched == [want[:2]] and widths == [want[2]]
+
+
+async def test_range_detect_default_view_reads_the_store(state, tmp_path, monkeypatch):
+    rt = await _sweep_rt(state, tmp_path)
+    fetched: list[str] = []
+
+    async def ohlcv(*a, **k):
+        fetched.append("ohlcv")
+        raise AssertionError("view='ranges' reads the store by default")
+
+    monkeypatch.setattr(rt.exchanges, "ohlcv", ohlcv)
+    srv, _ = build_server(rt)
+    try:
+        env = await _call(srv, "range_detect", venue="binanceusdm", symbol="BTC/USDT:USDT", timeframe="4h")
+    finally:
+        await rt.aclose()
+    assert env["ok"] is True and env["data"]["source"] == "store" and fetched == []
+    assert env["data"]["n_bars_evaluated"] == 54 and env["data"]["n_sweeps"] == 1
+
+
+async def test_range_detect_view_argument_rules(state):
+    rt = _scan_rt(state)
+    srv, _ = build_server(rt)
+    try:
+        for view in ("ranges", "setup"):  # no symbol: invalid_input, no fetch
+            env = await _call(srv, "range_detect", venue="binanceusdm", view=view)
+            assert env["ok"] is False and env["data"] is None and not env["evidence"]
+            assert [(m["field"], m["reason"]) for m in env["missing"]] == [("symbol", "invalid_input")]
+        env = await _call(srv, "range_detect", venue="binanceusdm", view="scan", symbol="BTC/USDT:USDT")
+        assert env["ok"] is False and [(m["field"], m["reason"]) for m in env["missing"]] == [("symbols", "invalid_input")]
+        # a parameter of another view: ignored, `symbols` and source='store' with a warning
+        env = await _call(srv, "range_detect", venue="binanceusdm", symbol="BTC/USDT:USDT", symbols=["ETH/USDT:USDT"], source="live")
+        assert env["ok"] is True and env["data"]["symbol"] == "BTC/USDT:USDT"
+        assert "symbols applies to view='scan' only; ignored here" in env["warnings"]
+        args = dict(venue="binanceusdm", view="scan", symbols=["BTC/USDT:USDT"], timeframe="1h", lookback_bars=100, max_width_pct=10)
+        live = await _call(srv, "range_detect", **args)
+        store = await _call(srv, "range_detect", source="store", **args)
+        assert store["ok"] is True and store["data"] == live["data"] and store["evidence"]
+        assert "view='scan' reads live ccxt bars only; source='store' ignored" in store["warnings"]
+        assert not any("ignored" in w for w in live["warnings"])
     finally:
         await rt.aclose()

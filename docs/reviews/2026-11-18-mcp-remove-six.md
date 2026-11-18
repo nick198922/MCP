@@ -34,3 +34,16 @@
 
 - Живий виклик `paper_carry_status(strategy="manual")` на службі. Служба побачить зміну лише після злиття й перезапуску.
 - Повний `make test`. Його запускає координатор, і зауваження 1 він має відтворити.
+
+## Раунд 2
+
+**Вердикт: approve.** Усі п'ять зауважень виправлено, перевірено самостійно по коду й прогоном.
+
+- `make lint`: чисто. Тести `test_tools_bad_input`, `test_tools_envelope_shape`, `test_tools_provider_outage`, `test_carry_paper`, `test_events`, `test_rules`, `test_server`, `test_mcp_call`: 167 passed.
+1. **Закрито.** Пороги відносні: `len(tools_hit) >= len(EXPECTED_TOOLS) - 15` (фактично 78 з 91, запас 2), `report["ok"] >= len(EXPECTED_TOOLS) - 2`, `out.called >= len(EXPECTED_TOOLS) - len(SKIP) - 2`. `test_tools_bad_input` тепер проходить.
+2. **Закрито.** Обидва скрипти: `--db` за замовчуванням `os.environ.get("TRADEDESK_DB_PATH") or "/var/lib/tradedesk-mcp/tradedesk.sqlite"`, абсолютний шлях іде в stderr до запису, docstring виправлено. Тести розбору аргументів є: `test_events.py:168–171`, `test_rules.py:310–313` (`delenv` дає шлях служби, із змінною береться вона).
+3. **Закрито.** `test_status_shows_closed_manual_pairs_with_summary` (`test_carry_paper.py:481`): дві закриті пари через `carry_paper_close`, `paper_carry_status(strategy="manual", include_closed=True)` перевіряє `summary_closed.n == 2`, `share_stopped == 0.5`, підмножину `entry_tradable` (n == 1), округлення й поля `closed[*]`, а також `ok=true` без відкритих пар.
+4. **Закрито.** `PAPER_WARNING`: без «(or mark)», речення про журнал переписано в минулому часі з датою 2026-11-18. `docs/BACKLOG.md`: «10 інструментам запису».
+5. **Закрито.** Перелік коду, що живе лише заради тестів, уже є в картці mcp-cleanup (пункт 3).
+
+Нових зауважень немає. Повний `make test` лишається за координатором.

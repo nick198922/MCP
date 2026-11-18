@@ -73,7 +73,7 @@ DOUBLETOP: **74 інструменти** (66 від 17 бекендів + 8 вл
 - **Корисне для поточних напрямів, чого в нас нема:** історія OI ринку Polymarket (`get_oi_history`, рядок 🔜 вище) і P&L трейдерів Polymarket як інструмент (у нас — лише знімки колектора `trader_snapshot`); ставки Boros у `pendle_briefing` (своп на funding) — для carry. Для опціонних ідей, демо-трейдера й X-трейдерів у DOUBLETOP немає нічого. Кандидати — [`BACKLOG.md`](BACKLOG.md), «З тижневого аудиту 2026-11-14».
 - **Де наш гірший:** ончейн (у них ≈ 25 інструментів, у нас 4 — свідомо, Фаза 5); Coinalyze працює лише всередині служби MCP, і чотири позначки «живий виклик ще не звірено» в таблиці нижче стоять з 18.10, як і звірка чисел шести пар; `market_markets` віддає 19 тис. символів одразу, їхній `get-markets` пагінований.
 - **Де наш кращий:** конверт з `evidence / missing / warnings`, єдині одиниці, повний `hyperliquid_overview`, нормалізований funding між біржами, опціони, квант-калькулятори, пам'ять, потоки, режим циклу.
-- **Наш сервер:** 97 інструментів (109 до злиттів: 15.11 пресети стратегій → `strategy_payoff`, `deribit_atm_term` → `deribit_skew_term`; 17.11 `market_ticker` → `market_tickers`, `carry_paper_status` → `paper_carry_status`; 18.11 три `coinalyze_*` → `perps_*` з `source="coinalyze"`, `range_setup` / `range_setup_scan` → `range_detect` з `view="setup"` / `"scan"`); за 30 днів напряму викликали 17. Що прибрати, злити чи сховати — [Q-20261114-1](QUESTIONS.md) і [таблиця](reviews/2026-11-14-mcp-inventory.md).
+- **Наш сервер:** 91 інструмент (109 до злиттів і прибирання: 15.11 пресети стратегій → `strategy_payoff`, `deribit_atm_term` → `deribit_skew_term`; 17.11 `market_ticker` → `market_tickers`, `carry_paper_status` → `paper_carry_status`; 18.11 три `coinalyze_*` → `perps_*` з `source="coinalyze"`, `range_setup` / `range_setup_scan` → `range_detect` з `view="setup"` / `"scan"`; 18.11 прибрано шість: `carry_paper_open`, `carry_paper_close`, `fib_retracement`, `strategy_backtest_momentum`, `events_seed_load`, `rules_presets_load`, два останні тепер скрипти в `scripts/`); за 30 днів напряму викликали 17. Що прибрати, злити чи сховати — [Q-20261114-1](QUESTIONS.md) і [таблиця](reviews/2026-11-14-mcp-inventory.md).
 
 ## Чого в DOUBLETOP не було, а в нас є або буде
 
@@ -83,7 +83,7 @@ DOUBLETOP: **74 інструменти** (66 від 17 бекендів + 8 вл
 
 Funding carry: `funding_spread_scan` (крос-біржовий спред для перп-перп з прапорцями ризику; Hyperliquid опційно, kPEPE зіставляється з 1000PEPE за множником), `funding_carry_scan` (trailing APR з фактичних виплат, пороги, окупність комісій, наявність спота, фільтр TradFi-перпів) + бектест cash-and-carry (`scripts/verify_funding_carry.py`).
 
-Паперова перевірка carry перп-перп: `carry_paper_open` / `paper_carry_status(strategy="manual")` (колишній `carry_paper_status`) / `carry_paper_close` (пара ніг на двох біржах у локальній SQLite, облік як у бектесті `simulate_perp_spread_portfolio`; закриті пари дзеркаляться в `journal` з тегом `pp-paper`). Ордерів немає.
+Паперова перевірка carry перп-перп вручну: `paper_carry_status(strategy="manual")` (колишній `carry_paper_status`) показує пари, відкриті раніше (пара ніг на двох біржах у локальній SQLite, облік як у бектесті `simulate_perp_spread_portfolio`). Інструменти відкриття й закриття `carry_paper_open` / `carry_paper_close` прибрано 18.11: ручний папір замінив рушій колектора (книги A і B). Ордерів немає.
 
 Паперовий журнал рекомендацій асистента: `assistant_paper_open` / `assistant_paper_status` (структура з живого ланцюга Deribit за марками ± 1 вп, розмір за депозитом і ризиком, розрахунок на delivery; таблиця `rec_paper` з міткою `hypothesis`, у `journal` не дзеркалиться). Аналога в DOUBLETOP немає. Ордерів немає.
 
@@ -149,7 +149,7 @@ Price-action за навчальними відео DoubleTop (не з їхнь�
 
 | DOUBLETOP | Наш інструмент |
 |---|---|
-| — | ✅ `events_add` / `events_list` / `events_seed_load` — локальний календар подій: додати подію (ідемпотентно), список із фільтрами за `kind`, `impact` і датами UTC, вбудований сід FOMC / CPI / NFP 2024–2027 і виборів США 2026-11-03 (дати ФРС 2026 у сіді прогнозні, звіряти з офіційними) |
+| — | ✅ `events_add` / `events_list` — локальний календар подій: додати подію (ідемпотентно), список із фільтрами за `kind`, `impact` і датами UTC; вбудований сід FOMC / CPI / NFP 2024–2027 і виборів США 2026-11-03 завантажує разово скрипт `scripts/events_seed_load.py` (колишній інструмент, прибрано 18.11; дати ФРС 2026 у сіді прогнозні, звіряти з офіційними) |
 | — | ✅ `event_study` — event-study: розподіл метрики у вікні навколо збережених подій (`direction`, `close_vs_t0`, `max_up`, `max_dd`, `volatility`), `n_sample`, прапорець малої вибірки при n < 20; описова статистика, не прогноз |
 
 ### Ціна: режим, рейнджі, рівні
@@ -159,7 +159,6 @@ Price-action за навчальними відео DoubleTop (не з їхнь�
 | — | ✅ `market_regime` — режим up / down / chop за нахилом і `trend_strength` на останніх барах (з `ohlcv_hist` або живі бари ccxt) |
 | — | ✅ `range_detect` — рейнджі, sweeps і deviations на OHLCV (за лекцією DoubleTop «Ranges») |
 | — | ✅ `range_detect(view="setup")` / `range_detect(view="scan")` (колишні `range_setup` / `range_setup_scan`) — SFP-сетап з останнього sweep у рейнджі (entry / stop / tp1 / tp2 / RR) і сканер таких сетапів по символах однієї біржі; механічна пропозиція, дворічний walk-forward значущої переваги не знайшов |
-| — | ✅ `fib_retracement` — драбина Фібоначчі 23.6 / 38.2 / 50 / 61.8 / 78.6 % між ціною до реакції та її екстремумом, прапорець `applicable`; чиста математика, без даних |
 
 ### Стратегії та бектест
 
@@ -169,7 +168,6 @@ Price-action за навчальними відео DoubleTop (не з їхнь�
 | — | ✅ `strategy_scenario_matrix` — матриця сценаріїв: переоцінка стратегії за Black-76 по горизонтах × цінах, P&L і нетто-грецькі |
 | — | ✅ `strategy_cash_and_carry` — long спот + short датований ф'ючерс; конвергенція базису не моделюється, PoP — лише перевірка |
 | — | ✅ `strategy_funding_carry` — long перп на дешевій біржі + short на дорогій; показано лише конвергенцію mark-спреду, різницю funding не нараховує |
-| — | ✅ `strategy_backtest_momentum` — walk-forward бектест моментуму на OHLCV ccxt з комісіями й прослизанням; перевірка, не пропозиція стратегії; без funding, один інструмент |
 
 ### Пам'ять: журнал, позиції, плани
 
@@ -185,14 +183,12 @@ Price-action за навчальними відео DoubleTop (не з їхнь�
 | DOUBLETOP | Наш інструмент |
 |---|---|
 | — | ✅ `rules_add` / `rules_disable` / `rules_list` / `rules_test` — DSL-правила в локальному сховищі: створити, увімкнути / вимкнути / видалити, список, перевірити вираз без збереження |
-| — | ✅ `rules_presets_load` — вбудовані пресети правил (екстремуми funding, z-score funding, HL ↔ Deribit carry, каскади ліквідацій); пороги не бектестовані й не з досліджень |
 | — | ✅ `alerts_recent` — історія алертів з локальної SQLite; потрібна увімкнена робота alerts (`TRADEDESK_ALERTS_ENABLED=1`) |
 
 ### Паперові книги й журнал прогнозів
 
 | DOUBLETOP | Наш інструмент |
 |---|---|
-| — | ✅ `carry_paper_open` / `carry_paper_close` — паперові пари перп-перп carry вручну, стоп як у бектесті, закриті пари дзеркаляться в `journal` (тег `pp-paper`); стан і позначка живими даними — `paper_carry_status(strategy="manual")`; медіанна угода бектесту від'ємна; ордерів немає |
 | — | ✅ `paper_carry_status` — стан двох форвард-паперових книг рушія колектора (A `cc-paper`, B `pp-paper`) за останнім 8-годинним циклом, живих даних для них не бере; `strategy="manual"` — ручні пари з живим маркуванням (колишній `carry_paper_status`, злито 17.11); ордерів немає |
 | — | ✅ `assistant_paper_open` / `assistant_paper_status` — паперовий журнал опціонних рекомендацій асистента (ціни з живого ланцюга Deribit, розрахунок на delivery, мітка `hypothesis`, у `journal` не дзеркалиться); ордерів немає |
 | — | ✅ `forecast_log_status` — журнал ризик-нейтральних прогнозів діапазону BTC/ETH: розрахунок на delivery, Brier, калібрування, порівняння з моделлю RV30 |

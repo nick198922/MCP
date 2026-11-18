@@ -1,5 +1,10 @@
 """Backtest MCP tools.
 
+NOT REGISTERED since 2026-11-18: strategy_backtest_momentum was removed from the MCP server (owner's decision
+Q-20261114-1 «Б2», docs/changes/2026-11-18-mcp-remove-six.md); `tools.register_all` no longer imports this module and
+the file is left for the owner to delete (agents may not delete tracked files). The pure backtest stays in
+analytics/backtest.py.
+
 Phase 3.5 MVP: one momentum-breakout backtest over ccxt OHLCV. Lets you
 sanity-check an idea on a single instrument before touching the full strategy
 machinery. The tool is explicit about the limitations in its description.

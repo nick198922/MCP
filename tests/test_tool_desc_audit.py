@@ -23,7 +23,7 @@ def _checks(tool):
 def test_normal_tool_has_no_findings():
     assert tda.check_tool(_tool()) == []
     assert tda.check_tool(_tool(params={})) == []  # a tool without parameters
-    # the non-idempotent read-only variant (carry_paper_open) passes too
+    # the non-idempotent read-only variant (the former carry_paper_open, removed 2026-11-18) passes too
     assert tda.check_tool(_tool(annotations={**READ_ONLY, "idempotentHint": False})) == []
     gex = _tool(name="deribit_gamma_exposure", description="Dealer gamma by strike, USD. Heuristic: assumes dealers are short.")
     prob = _tool(

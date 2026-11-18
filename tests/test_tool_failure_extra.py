@@ -3,7 +3,7 @@
 Tools whose provider path had no dedicated failure test (audit 2026-11-08): the generic outage sweeps
 (test_tools_never_raise / test_tools_provider_outage) call market_regime and range_detect with the default
 source='store', so their live ccxt path never met a failing venue; market_trades, calendar_expiries and
-strategy_backtest_momentum had only happy-path tests. FakeEx raises ccxt.NetworkError for any `DOWN/...` OHLCV
+strategy_backtest_momentum (removed 2026-11-18) had only happy-path tests. FakeEx raises ccxt.NetworkError for any `DOWN/...` OHLCV
 symbol and ccxt.RateLimitExceeded for every okx call. Found on the way: market_regime(source='live') raised on a bar
 with None prices (the venue answered, one row was broken); it now drops the row like range_detect does.
 """
@@ -55,11 +55,6 @@ async def test_market_regime_live_drops_a_bar_with_none_prices_instead_of_raisin
 async def test_market_trades_rate_limited_venue_returns_envelope(server):
     env = await call(server, "market_trades", exchange="okx", symbol="BTC/USDT:USDT", limit=50)
     _failed(env, "ccxt:okx", ("rate_limited",))
-
-
-async def test_strategy_backtest_momentum_venue_down_returns_envelope(server):
-    env = await call(server, "strategy_backtest_momentum", exchange="binanceusdm", symbol=DOWN, timeframe="1h", limit=200)
-    _failed(env, "ccxt:binanceusdm", ("network", "backend_error"))
 
 
 async def test_calendar_expiries_deribit_down_keeps_the_rest(server, state, monkeypatch):

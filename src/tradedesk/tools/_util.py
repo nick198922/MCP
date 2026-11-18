@@ -163,7 +163,7 @@ def clean_row_rules(rows: list[dict[str, Any]]) -> tuple[list[Any], list[Any]]:
 
 
 def clean_row_flags(rows: list[dict[str, Any]]) -> tuple[list[Any], list[Any]]:
-    """`entry_flags` of carry paper pairs (carry_paper_open writes a JSON list of scan flags) as a list of strings, in
+    """`entry_flags` of carry paper pairs (the former carry_paper_open wrote a JSON list of scan flags) as a list of strings, in
     place; see `_clean_row_cell`. A nested value 300 levels deep failed the whole reply in the MCP serialiser (item 357)."""
     return _clean_row_cell(rows, "entry_flags", as_dict=False)
 

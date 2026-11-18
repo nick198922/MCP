@@ -3,8 +3,8 @@ on a stored `legs` cell that is not a list of legs (item 356; found by a trial r
 
 Found: tags nested 300 levels deep parsed fine (item 355 covered only the depth where json.loads raises) but failed the
 MCP serialiser ("Circular reference detected (depth exceeded)") of plan_list / plan_review / plan_link and
-carry_paper_status / carry_paper_close; carry_paper_close also copied them into the journal row it writes, and a bare
-number in tags raised TypeError there (and in plan_review's summary by tag). A rec_paper `legs` that is not a list
+carry_paper_status / carry_paper_close; carry_paper_close (removed 2026-11-18, with carry_paper_open) also copied them
+into the journal row it writes, and a bare number in tags raised TypeError there (and in plan_review's summary by tag). A rec_paper `legs` that is not a list
 (None after parsing, a number, a nested list) raised TypeError / ValueError in `_view` of assistant_paper_status, and in
 the settlement of a due trade.
 
@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import httpx
 import pytest
@@ -139,18 +139,19 @@ async def test_plan_tags_valid_unchanged_and_store_failure(rt, monkeypatch):
 # ---------- carry_paper ----------
 
 
-async def _open_pair(call, rt) -> int:
-    rt.now = lambda: NOW - timedelta(days=3)
-    env = await call("carry_paper_open", base="btc", long_venue="binanceusdm", short_venue="bybit", notional_usd=1000, tags=["t1"])
-    rt.now = lambda: NOW
-    assert env["ok"] is True, env
-    return env["data"]["id"]
+async def _open_pair(rt) -> int:
+    """An open pair as carry_paper_open (removed 2026-11-18) recorded it three days ago, written through the store."""
+    return await rt.store.carry_paper_insert(
+        opened_ts=NOW_TS - 3 * 86_400, base="BTC", symbol="BTC/USDT:USDT", long_venue="binanceusdm", short_venue="bybit",
+        qty=1000 / 82750.0, notional_usd=1000.0, long_entry=82750.0, short_entry=82750.0, leverage=2.0, stop_move=0.5,
+        lookback_days=7.0, exit_apr=0.0, slippage=0.0005, tags=["t1"],
+    )  # fmt: skip
 
 
 @pytest.mark.parametrize(("tags", "shown"), NORMALISED, ids=NORMALISED_IDS)
 async def test_carry_paper_status_normalises_tags(rt, tags, shown):
     async with _session(rt) as call:
-        pid = await _open_pair(call, rt)
+        pid = await _open_pair(rt)
         await _set(rt, "carry_paper", "tags", tags, pid)
         env = await call("paper_carry_status", strategy="manual")
         (pair,) = env["data"]["open"]
@@ -161,54 +162,25 @@ async def test_carry_paper_status_normalises_tags(rt, tags, shown):
 @pytest.mark.parametrize("tags", NAN_TAGS, ids=NAN_IDS)
 async def test_carry_paper_status_non_finite_tags_read_as_empty(rt, tags):
     async with _session(rt) as call:
-        pid = await _open_pair(call, rt)
+        pid = await _open_pair(rt)
         await _set(rt, "carry_paper", "tags", tags, pid)
         env = await call("paper_carry_status", strategy="manual")
         assert env["ok"] is True and [(p["id"], p["tags"]) for p in env["data"]["open"]] == [(pid, [])]
         assert any(f"paper pair id {[pid]} had NaN / Infinity in tags" in w for w in env["warnings"])
 
 
-@pytest.mark.parametrize(
-    ("tags", "shown", "user_tags"),
-    [
-        ("5", [], []),
-        ('[1, "x", ["y"], "pp-paper-rule"]', ["x", "pp-paper-rule"], ["x"]),  # tracker tags are never copied to the journal
-        ('"solo"', ["solo"], ["solo"]),
-        (_deep(300), [], []),
-        ("[NaN]", [], []),
-    ],
-    ids=["number", "mixed", "string", "deep300", "nan"],
-)
-async def test_carry_paper_close_with_bad_tags_closes_and_mirrors_string_tags(rt, tags, shown, user_tags):
-    # A number raised TypeError before the close; deep tags failed the reply after the close and went into the journal.
+async def test_carry_paper_single_status_with_deep_tags(rt):
     async with _session(rt) as call:
-        pid = await _open_pair(call, rt)
-        await _set(rt, "carry_paper", "tags", tags, pid)
-        env = await call("carry_paper_close", id=pid, reason="manual")
-        assert env["ok"] is True and env["missing"] == []
-        assert (env["data"]["status"], env["data"]["tags"], env["data"]["journal_id"]) == ("closed", shown, 1)
-        assert sum(f"paper pair id {[pid]}" in w and "tags" in w for w in env["warnings"]) == 1
-        env = await call("journal_list", tag="pp-paper")
-        assert [t["tags"] for t in env["data"]["trades"]] == [["pp-paper", "pp-paper-offrule", *user_tags]]
-        env = await call("paper_carry_status", strategy="manual", include_closed=True)
-        assert env["ok"] is True and [(t["id"], t["tags"]) for t in env["data"]["closed"]] == [(pid, shown)]
-        env = await call("carry_paper_close", id=pid, reason="manual")  # closed once
-        assert env["ok"] is False and "already closed" in env["missing"][0]["detail"]
-
-
-async def test_carry_paper_cancel_and_single_status_with_deep_tags(rt):
-    async with _session(rt) as call:
-        pid = await _open_pair(call, rt)
+        pid = await _open_pair(rt)
         await _set(rt, "carry_paper", "tags", _deep(300), pid)
-        env = await call("carry_paper_close", id=pid, reason="manual", cancelled=True)
-        assert env["ok"] is True and (env["data"]["status"], env["data"]["tags"]) == ("cancelled", [])
+        await _set(rt, "carry_paper", "status", "cancelled", pid)
         env = await call("paper_carry_status", strategy="manual", id=pid)
         assert env["ok"] is True and (env["data"]["trade"]["id"], env["data"]["trade"]["tags"]) == (pid, [])
 
 
 async def test_carry_paper_valid_tags_unchanged_and_store_failure(rt, monkeypatch):
     async with _session(rt) as call:
-        pid = await _open_pair(call, rt)
+        pid = await _open_pair(rt)
         env = await call("paper_carry_status", strategy="manual")
         assert env["data"]["open"][0]["tags"] == ["t1"] and not any("tags" in w for w in env["warnings"])
         await _set(rt, "carry_paper", "tags", "null", pid)
@@ -219,7 +191,7 @@ async def test_carry_paper_valid_tags_unchanged_and_store_failure(rt, monkeypatc
             raise sqlite3.OperationalError("disk I/O error")
 
         monkeypatch.setattr(rt.store, "carry_paper_get", boom)
-        env = await call("carry_paper_close", id=pid, reason="manual")
+        env = await call("paper_carry_status", strategy="manual", id=pid)
         assert env["ok"] is False and [(m["field"], m["reason"]) for m in env["missing"]] == [("store", "backend_error")]
 
 

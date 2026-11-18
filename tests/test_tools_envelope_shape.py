@@ -56,8 +56,9 @@ COINALYZE_TEST_KEY = "test-dummy-key"  # not a real key: the Coinalyze transport
 
 # events_add needs a time (ts_ms or date) to succeed; the outage tests only need it to reach the store. The rest point
 # the on-chain / Pendle / history / Polymarket tools at what the saved samples and the seeded store hold (the outage tests
-# only need any valid argument). The seeded store has carry pair 1, journal row 1 (written by carry_paper_close) and
-# position 1, so journal_close and positions_close take the rows journal_add / positions_add create (id 2).
+# only need any valid argument). The seeded store has position 1, so positions_close takes the row positions_add creates
+# (id 2); journal_close takes journal row 1, which journal_add creates (it was row 2 while carry_paper_close, removed
+# 2026-11-18, closed the seeded carry pair into the journal first).
 ARGS: dict[str, dict] = {
     **NEVER_RAISE_ARGS,
     "events_add": {**NEVER_RAISE_ARGS["events_add"], "date": "2026-11-05"},
@@ -65,7 +66,7 @@ ARGS: dict[str, dict] = {
     "contract_risk": {"chain": "ethereum", "address": SHIB},
     "dex_pairs": {"addresses": [FART]},
     "iv_rank": {"expiry": EXPIRY},
-    "journal_close": {**NEVER_RAISE_ARGS["journal_close"], "id": 2},
+    "journal_close": {**NEVER_RAISE_ARGS["journal_close"], "id": 1},
     "pendle_market": {"market": SUSDE_ETH},
     "pendle_yield_curve": {"asset": "sUSDe"},
     "polymarket_options_gap": {"max_days": 30, "min_net_edge": -1},
@@ -100,7 +101,6 @@ EXTRA_OK: set[str] = {
     "polymarket_options_gap",
     "event_study",
     "positions_risk",
-    "carry_paper_close",
 }
 
 ENVELOPE_TYPES: dict[str, type] = {"ok": bool, "evidence": list, "missing": list, "warnings": list, "as_of": str}
@@ -108,7 +108,6 @@ ENVELOPE_TYPES: dict[str, type] = {"ok": bool, "evidence": list, "missing": list
 # Tools that answer ok=true without any provider call, so an empty `evidence` is right for them.
 NO_NETWORK: set[str] = {
     # pure calculators
-    "fib_retracement",
     "odds_devig",
     "option_calc",
     "strategy_cash_and_carry",
@@ -121,7 +120,6 @@ NO_NETWORK: set[str] = {
     "assistant_paper_status",
     "events_add",
     "events_list",
-    "events_seed_load",
     "forecast_log_status",
     "journal_add",
     "journal_close",
@@ -138,7 +136,6 @@ NO_NETWORK: set[str] = {
     "rules_add",
     "rules_disable",
     "rules_list",
-    "rules_presets_load",
     "rules_test",
     "system_health",
     # history in the local store (seeded by _seed_store)
@@ -293,7 +290,8 @@ async def _seed_store(rt: Runtime) -> None:
     """History the store-backed tools read (as tests/test_history.py and tests/test_regime.py seed it): hourly funding
     and ATM-term points before NOW, and 200 hourly BTC bars that swing inside a 4 % band. Item 181 adds an FOMC event
     inside those bars (event_study), an open option position with greeks (positions_risk), an open paper carry pair
-    (carry_paper_close, as tests/test_carry_paper.py inserts it) and 4h BTC bars with a sweep (range_setup)."""
+    (read by paper_carry_status(strategy='manual'); carry_paper_close, which closed it, was removed 2026-11-18) and 4h BTC
+    bars with a sweep (range_detect, view='setup')."""
     await rt.store.init()
     now_ts = int(NOW.timestamp())
     await rt.store.event_insert(ts=now_ts - 100 * 3600, kind="fomc", label="FOMC (envelope-shape seed)", impact="high")
@@ -422,8 +420,10 @@ async def test_successful_answers_have_the_envelope_shape(tmp_path):
     assert report["called"] == report["listed"] - len(SKIP)
     assert EXTRA_OK.isdisjoint(report["not_ok"]), f"no longer ok=true on the fakes: {sorted(EXTRA_OK & set(report['not_ok']))}"
     # 109 of 109 on 2026-11-06 (85 before item 176, 100 before item 181); 105 tools since the strategy presets merged,
-    # 99 of 99 since the coinalyze_* history tools merged into perps_* (2026-11-18), 97 since the range_* merge.
-    assert report["ok"] >= 95, f"too few tools answered ok=true on the fakes; ok=false: {report['not_ok']}"
+    # 99 of 99 since the coinalyze_* history tools merged into perps_* (2026-11-18), 97 since the range_* merge,
+    # 91 of 91 since six tools were removed (2026-11-18, docs/changes/2026-11-18-mcp-remove-six.md).
+    # relative to the tool count, so removing a tool does not break the guard
+    assert report["ok"] >= len(EXPECTED_TOOLS) - 2, f"too few tools answered ok=true on the fakes; ok=false: {report['not_ok']}"
     new = {k: v for k, v in report["problems"].items() if k not in KNOWN}
     assert new == {}, "fix these tools (Builder.add / guard / warn), or list them in KNOWN and docs/BACKLOG.md"
     assert set(KNOWN) - set(report["problems"]) == set(), "these tools are fixed: remove them from KNOWN"

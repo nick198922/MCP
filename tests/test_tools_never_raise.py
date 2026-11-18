@@ -30,8 +30,6 @@ _LEGS = [
 _PREMIUMS = {"spot": 83000.0, "days": 20.0, "iv": 0.4}
 ARGS: dict[str, dict] = {
     "assistant_paper_open": {"structure": "long_straddle"},
-    "carry_paper_close": {"id": 1, "reason": "manual"},
-    "carry_paper_open": {"base": "BTC", "long_venue": "binanceusdm", "short_venue": "bybit"},
     "chain_metrics": {"chain": "Ethereum"},
     "chart_markup": {"exchange": "binanceusdm", "symbol": "BTC/USDT:USDT"},
     "coin_snapshot": {"coin_id": "bitcoin"},
@@ -41,7 +39,6 @@ ARGS: dict[str, dict] = {
     "dex_pairs": {"addresses": ["0x" + "cd" * 20]},
     "event_study": {"venue": "binanceusdm", "symbol": "BTC/USDT:USDT"},
     "events_add": {"kind": "fomc", "label": "FOMC test"},
-    "fib_retracement": {"p0": 80000.0, "l_point": 70000.0},
     "funding_zscore": {"venue": "binanceusdm"},
     "hyperliquid_book": {"coin": "BTC"},
     "hyperliquid_candles": {"coin": "BTC"},
@@ -82,7 +79,6 @@ ARGS: dict[str, dict] = {
     "range_detect": {"venue": "binanceusdm", "symbol": "BTC/USDT:USDT"},
     "rules_add": {"name": "funding hot", "expr": 'funding("binanceusdm","BTC") > 0.30'},
     "rules_disable": {"id": 1},
-    "strategy_backtest_momentum": {"exchange": "binanceusdm", "symbol": "BTC/USDT:USDT"},
     "strategy_cash_and_carry": {"spot_price": 83000.0, "futures_price": 84000.0, "days": 30.0, "iv": 0.4},
     "strategy_funding_carry": {"long_mark": 83000.0, "short_mark": 83010.0, "days": 30.0, "iv": 0.4},
     "strategy_payoff": {"legs": _LEGS, **_PREMIUMS},

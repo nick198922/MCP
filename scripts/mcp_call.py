@@ -42,10 +42,6 @@ WRITE_TOOLS = frozenset(
         "plan_add",
         "plan_link",
         "events_add",
-        "events_seed_load",
-        "rules_presets_load",
-        "carry_paper_open",
-        "carry_paper_close",
         "assistant_paper_open",
     }
 )

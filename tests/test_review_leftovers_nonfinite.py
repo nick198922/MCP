@@ -120,13 +120,12 @@ async def test_hyperliquid_funding_history_drops_a_non_finite_rate(tmp_path, val
         ("funding_carry_scan", CCXT_HIST.format("binanceusdm")),
         ("funding_spread_scan", CCXT_HIST.format("binanceusdm")),
         ("funding_spread_scan", CCXT_HIST.format("bybit")),
-        ("carry_paper_open", CCXT_HIST.format("bybit")),
     ],
 )
 @pytest.mark.parametrize("value", [math.nan, math.inf])
-async def test_funding_scans_and_paper_carry_drop_a_non_finite_rate(tmp_path, name, field, value):
+async def test_funding_scans_drop_a_non_finite_rate(tmp_path, name, field, value):
     # Before the fix the NaN came out as null trailing APRs, funding_spread_scan paired a venue with itself and
-    # carry_paper_open warned "trailing spread ... is +nan%". One payment fewer moves the numbers a little, but no
+    # carry_paper_open (removed 2026-11-18) warned "trailing spread ... is +nan%". One payment fewer moves the numbers a little, but no
     # number may turn into null and no label (venue, status, flag) may change.
     clean, res = await _clean_and_broken(tmp_path, name, field, value, "last")
     assert _failure(res) is None

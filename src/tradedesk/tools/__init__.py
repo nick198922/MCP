@@ -9,9 +9,7 @@ def register_all(server: MCPServer, rt: Runtime) -> None:
     from .. import prompts
     from . import (
         assistant_paper,
-        backtest,
         calendar,
-        carry_paper,
         coinalyze,
         coingecko,
         cycle,
@@ -58,7 +56,6 @@ def register_all(server: MCPServer, rt: Runtime) -> None:
         cycle,
         history,
         journal,
-        carry_paper,
         paper_carry,
         assistant_paper,
         forecast_log,
@@ -69,7 +66,6 @@ def register_all(server: MCPServer, rt: Runtime) -> None:
         pendle,
         rules,
         strategy,
-        backtest,
         events,
         prompts,
     ):

@@ -27,9 +27,10 @@ risks. Не пиши прогноз; пиши дескриптивну стат�
 - **Якщо n < 20** — вкажи це явно у висновку і не роби сильних тверджень.
 
 ### 3. Level calculator
-Якщо користувач дав `P0` і `L` (recent low після події), виклич
-`fib_retracement(p0, l_point, min_drop_pct=2)` і наведи ladder 23.6 / 38.2 /
-50 / 61.8 / 78.6 % з цінами і % від P0.
+Якщо користувач дав `P0` і `L` (recent low після події), порахуй ladder
+23.6 / 38.2 / 50 / 61.8 / 78.6 %: ціна рівня = `L + (P0 − L) × level`, і
+наведи ціни і % від P0. Якщо |P0 − L| / P0 < 2 % — скажи, що рух у межах шуму
+і ladder не застосовний.
 
 ### 4. Scenario P&L по горизонтах
 Виклич `strategy_scenario_matrix` для запропонованих ніг:
@@ -77,7 +78,6 @@ retest P&L при переналаштуванні на L − 2.5 %.
   surface + історія DVOL.
 - `strategy_payoff`, `strategy_scenario_matrix` — многоногий payoff +
   grid по горизонтах.
-- `fib_retracement` — level calculator.
 - `touch_probability` — ймовірність досягти L за T годин.
 - `market_regime` — up/down/chop context.
 - `ohlcv_history`, `market_ohlcv` — bars.

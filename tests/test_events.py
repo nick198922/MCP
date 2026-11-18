@@ -9,6 +9,7 @@ from tradedesk.config import Settings
 from tradedesk.runtime import Runtime
 from tradedesk.server import build_server
 from tradedesk.store import Store
+from tradedesk.tools.events import events_seed_load
 
 
 async def _call(server, name, **args):
@@ -113,16 +114,18 @@ async def test_events_add_rejects_ts_ms_in_seconds(state, tmp_path):
 
 
 async def test_events_seed_load_installs_bundled_dataset(state, tmp_path):
+    # events_seed_load is a function for scripts/events_seed_load.py since 2026-11-18 (no longer an MCP tool)
     rt = await _rt(state, tmp_path)
     srv, _ = build_server(rt)
     try:
-        env = await _call(srv, "events_seed_load")
+        env = await events_seed_load(rt)
+        assert env["ok"] is True
         d = env["data"]
         assert d["candidates"] >= 24  # 2024 FOMC × 8 + CPI × 12 + NFP × 12 at minimum
         assert d["inserted"] == d["candidates"]  # fresh DB
-        # second call: no new rows but tool still returns ok
-        again = await _call(srv, "events_seed_load")
-        assert again["data"]["inserted"] == 0
+        # second call: no new rows but the envelope is still ok
+        again = await events_seed_load(rt)
+        assert again["ok"] is True and again["data"]["inserted"] == 0
         assert again["data"]["already_present"] == d["candidates"]
         assert d["meta"]["generated_at"] == "2026-10-22"
 
@@ -133,3 +136,36 @@ async def test_events_seed_load_installs_bundled_dataset(state, tmp_path):
         assert "midterm" in row["label"]
     finally:
         await rt.aclose()
+
+
+def test_events_seed_load_script(tmp_path, capsys):
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parent.parent / "scripts" / "events_seed_load.py"
+    spec = importlib.util.spec_from_file_location("events_seed_load_script", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    db = str(tmp_path / "seed.sqlite")
+    assert mod.main(["--db", db]) == 0
+    first = json.loads(capsys.readouterr().out)
+    assert first["ok"] is True and first["data"]["inserted"] == first["data"]["candidates"] > 0
+    assert mod.main(["--db", db]) == 0  # idempotent
+    assert json.loads(capsys.readouterr().out)["data"]["inserted"] == 0
+    assert mod.main(["--db", ""]) == 1  # no store: the envelope says so, exit 1
+    assert json.loads(capsys.readouterr().out)["missing"][0]["field"] == "store"
+
+
+def test_events_seed_load_script_default_db_is_the_service_db(monkeypatch):
+    # the service reads TRADEDESK_DB_PATH from /etc/tradedesk-mcp.env, the shell has none: the default must be its db
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parent.parent / "scripts" / "events_seed_load.py"
+    spec = importlib.util.spec_from_file_location("events_seed_load_script_default", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    monkeypatch.delenv("TRADEDESK_DB_PATH", raising=False)
+    assert mod.parse_args([]).db == "/var/lib/tradedesk-mcp/tradedesk.sqlite"
+    monkeypatch.setenv("TRADEDESK_DB_PATH", "/tmp/x.sqlite")
+    assert mod.parse_args([]).db == "/tmp/x.sqlite"

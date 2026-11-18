@@ -5,7 +5,8 @@ Pure functions, no I/O, time passed in. Prices are what a taker gets on Bybit: s
 ask, minus the taker fee (``fee``). Probabilities come from the quotes' deltas, so they are RISK-NEUTRAL hints, not
 forecasts. The ideas are hypotheses (no tested edge; the credit structures rest on the volatility premium, confirmed
 as IV above realized vol, but not yet as a profit of the traded structure after spreads — docs/knowledge/options.md);
-they are logged and settled with ``payoff_at`` at expiry so their record can be judged later.
+they are logged and settled with ``settle_idea`` at expiry (``payoff_at`` less Bybit's delivery fee) so their record
+can be judged later.
 
 Which ideas go out is decided by the rules of the options playbook (``RULES``, docs/knowledge/options-playbook.md;
 card IDEA-20261114-options-playbook item 2): a rule is sent only when an MCP tool measures its condition and its
@@ -28,6 +29,12 @@ from .instruments import parse_expiry_token
 DAY_MS = 86_400_000
 TAKER_RATE = 0.0003  # Bybit options taker fee: 0.03 % of the underlying per contract …
 FEE_CAP = 0.07  # … capped at 7 % of the option price
+# Bybit options delivery fee: 0.015 % of the delivery price per in-the-money contract, capped at 12.5 % of its
+# intrinsic value (Bybit help "Option fees explained", last updated 2026-08-19, quoted in
+# docs/reviews/2026-10-23-option-xvenue-registration2.md; instruments-info deliveryFeeRate = 0.00015).
+# rec_paper.DELIVERY_FEE / FEE_CAP have the same numbers but are Deribit's, so they are not reused here.
+DELIVERY_RATE = 0.00015
+DELIVERY_CAP = 0.125
 LOT = {"BTC": 0.01, "ETH": 0.1}  # Bybit minimum order / step (instruments-info, 14.11)
 
 
@@ -689,12 +696,28 @@ def ideas_for(
 
 def payoff_at(idea: dict[str, Any], price: float) -> float:
     """P/L per unit at expiry for a logged idea (``Idea.to_dict``) settled at ``price``: legs' intrinsic value plus
-    the net premium (fees at entry included in ``net``; delivery fees not)."""
+    the net premium (fees at entry included in ``net``). Bybit's delivery fee is a separate term (``delivery_fee``);
+    ``settle_idea`` deducts it."""
     total = float(idea["net"])
     for leg in idea["legs"]:
-        k = float(leg["strike"])
-        intrinsic = max(price - k, 0.0) if leg["is_call"] else max(k - price, 0.0)
+        intrinsic = _intrinsic(leg, price)
         total += intrinsic if leg["action"] == "buy" else -intrinsic
+    return total
+
+
+def _intrinsic(leg: dict[str, Any], price: float) -> float:
+    k = float(leg["strike"])
+    return max(price - k, 0.0) if leg["is_call"] else max(k - price, 0.0)
+
+
+def delivery_fee(idea: dict[str, Any], price: float) -> float:
+    """Bybit delivery fee per unit of a logged idea settled at ``price``, USD: on every in-the-money leg (bought or
+    sold) min(``DELIVERY_RATE`` x price, ``DELIVERY_CAP`` x intrinsic); legs out of the money or at the strike pay 0."""
+    total = 0.0
+    for leg in idea["legs"]:
+        intrinsic = _intrinsic(leg, price)
+        if intrinsic > 0:
+            total += min(DELIVERY_RATE * price, DELIVERY_CAP * intrinsic)
     return total
 
 
@@ -749,14 +772,17 @@ def settle_idea(idea: Any, price: Any, now_ms: int) -> dict[str, Any] | None:
     """Settlement fields of a logged idea (``Idea.to_dict``) at the delivery ``price``, or None when it cannot be
     settled yet (``now_ms`` before ``expiry_ms``), the price is not a positive number or the record is malformed.
 
-    ``pnl_per_unit`` = ``payoff_at`` (intrinsic value of the legs plus the logged net premium, entry fees included;
-    Bybit's delivery fee is NOT deducted, so ITM results are slightly optimistic); ``pnl_usd`` = that times the logged
-    size ``qty`` (None when the idea could not be sized under the risk); ``r`` = ``pnl_per_unit`` / logged ``max_loss``
-    (−1 = the whole risk lost)."""
+    ``delivery_fee_per_unit`` = ``delivery_fee`` (Bybit's fee on the in-the-money legs, USD per unit);
+    ``pnl_per_unit`` = ``payoff_at`` (intrinsic value of the legs plus the logged net premium, entry fees included)
+    minus that fee; ``pnl_usd`` = ``pnl_per_unit`` times the logged size ``qty`` (None when the idea could not be sized
+    under the risk); ``r`` = ``pnl_per_unit`` / logged ``max_loss`` (−1 = the whole logged risk lost; the logged
+    ``max_loss`` has no delivery fee, so a loss with legs in the money can be a little below −1). Records settled
+    before the fee was deducted keep their numbers (the journal never settles a record twice)."""
     px, exp = _num(price), _num(idea.get("expiry_ms")) if isinstance(idea, dict) else None
     if px is None or px <= 0 or exp is None or now_ms < exp or not _settleable(idea):
         return None
-    pnl = payoff_at(idea, px)
+    dfee = delivery_fee(idea, px)
+    pnl = payoff_at(idea, px) - dfee
     if not math.isfinite(pnl):
         return None
     qty = _num(idea.get("qty")) or 0.0
@@ -764,6 +790,7 @@ def settle_idea(idea: Any, price: Any, now_ms: int) -> dict[str, Any] | None:
         "status": "settled",
         "settled_ms": int(now_ms),
         "delivery_price": px,
+        "delivery_fee_per_unit": dfee,
         "pnl_per_unit": pnl,
         "pnl_usd": pnl * qty if qty > 0 else None,
         "r": pnl / float(idea["max_loss"]),

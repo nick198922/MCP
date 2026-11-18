@@ -435,12 +435,65 @@ CONDOR = _rec(
     ],
 )
 def test_settle_idea_usd_and_r(rec, price, pnl):
+    """``pnl`` is the payoff before the delivery fee; the fee is recomputed here by the Bybit rule per ITM leg."""
+    fee = 0.0
+    for g in rec["legs"]:
+        intrinsic = max(price - g["strike"], 0) if g["is_call"] else max(g["strike"] - price, 0)
+        fee += min(0.00015 * price, 0.125 * intrinsic) if intrinsic > 0 else 0.0
     s = oi.settle_idea(rec, price, AFTER)
     assert s["status"] == "settled" and s["delivery_price"] == price and s["settled_ms"] == AFTER
-    assert s["pnl_per_unit"] == pytest.approx(pnl)
-    assert s["pnl_usd"] == pytest.approx(pnl * 0.5)
-    assert s["r"] == pytest.approx(pnl / rec["max_loss"])
-    assert -1 - 1e-9 <= s["r"]  # never more than the risked max loss
+    assert s["delivery_fee_per_unit"] == pytest.approx(fee, abs=1e-12)
+    assert s["pnl_per_unit"] == pytest.approx(pnl - fee)
+    assert s["pnl_usd"] == pytest.approx((pnl - fee) * 0.5)
+    assert s["r"] == pytest.approx((pnl - fee) / rec["max_loss"])
+    assert -1 - fee / rec["max_loss"] - 1e-9 <= s["r"]  # never more than the risked max loss plus the delivery fee
+
+
+# A BTC-sized call debit spread: buy 70 000 C, sell 72 000 C, debit $800 after entry fees, 0.01 BTC.
+BTC_CALL_SPREAD = _rec("call_debit_spread", [_leg("buy", True, 70_000), _leg("sell", True, 72_000)], net=-800, max_loss=800, qty=0.01)
+
+
+@pytest.mark.parametrize(
+    ("price", "fee"),
+    [
+        (69_000.0, 0.0),  # both legs out of the money
+        (70_000.0, 0.0),  # at the long strike: not in the money, no fee
+        (70_000.01, 0.125 * 0.01),  # a cent in the money: the 12.5 % cap of intrinsic binds
+        (70_040.0, 5.0),  # shallow ITM: 12.5 % x 40 = 5 < 0.015 % x 70 040 = 10.506
+        (71_000.0, 10.65),  # deeper: 0.015 % x 71 000 = 10.65 < 12.5 % x 1 000
+        (72_000.0, 10.8),  # at the short strike: only the bought leg pays
+        (73_000.0, 2 * 10.95),  # both legs in the money: each pays 0.015 % x 73 000
+    ],
+)
+def test_settle_idea_deducts_bybit_delivery_fee_per_itm_leg(price, fee):
+    s = oi.settle_idea(BTC_CALL_SPREAD, price, AFTER)
+    gross = oi.payoff_at(BTC_CALL_SPREAD, price)  # payoff_at itself stays gross of the delivery fee
+    assert s["delivery_fee_per_unit"] == pytest.approx(fee, abs=1e-9)
+    assert s["pnl_per_unit"] == pytest.approx(gross - fee)
+    assert s["r"] == pytest.approx((gross - fee) / 800)
+    assert s["pnl_usd"] == pytest.approx((gross - fee) * 0.01)
+
+
+def test_settle_idea_delivery_fee_example_and_several_legs():
+    # 71 000: payoff +200, fee 10.65 → +189.35 per BTC, R 0.2367 (was 0.25 without the fee)
+    s = oi.settle_idea(BTC_CALL_SPREAD, 71_000, AFTER)
+    assert s["pnl_per_unit"] == pytest.approx(189.35) and s["r"] == pytest.approx(0.2366875)
+    condor = _rec(
+        "iron_condor",
+        [_leg("sell", False, 60_000), _leg("buy", False, 58_000), _leg("sell", True, 72_000), _leg("buy", True, 74_000)],
+        net=500,
+        max_loss=1_500,
+        qty=0.01,
+    )
+    inside = oi.settle_idea(condor, 66_000, AFTER)  # no leg in the money: no fee, the credit is kept
+    assert inside["delivery_fee_per_unit"] == 0 and inside["pnl_per_unit"] == pytest.approx(500)
+    up = oi.settle_idea(condor, 80_000, AFTER)  # both calls ITM (sold one too): 2 x 0.015 % x 80 000
+    assert up["delivery_fee_per_unit"] == pytest.approx(24) and up["pnl_per_unit"] == pytest.approx(-1_524)
+    assert up["r"] == pytest.approx(-1.016)  # a little below −1: the logged max loss has no delivery fee
+    down = oi.settle_idea(condor, 50_000, AFTER)  # both puts ITM: 2 x 7.5
+    assert down["delivery_fee_per_unit"] == pytest.approx(15) and down["pnl_per_unit"] == pytest.approx(-1_515)
+    one = oi.settle_idea(condor, 59_000, AFTER)  # only the sold put ITM, by 1 000: 0.015 % x 59 000 = 8.85
+    assert one["delivery_fee_per_unit"] == pytest.approx(8.85) and one["pnl_per_unit"] == pytest.approx(500 - 1_000 - 8.85)
 
 
 def test_settle_idea_matches_payoff_of_a_real_condor():
@@ -561,11 +614,23 @@ def test_settle_rows_is_idempotent_and_keeps_bad_lines(tmp_path):
     assert n2 == 1  # only the ETH record; the BTC one is not settled twice
     recs = [r for _, r in again if r is not None]
     btc, eth = recs
-    assert btc["status"] == "settled" and btc["delivery_price"] == 105.0 and btc["r"] == pytest.approx(0.25)
-    assert eth["status"] == "settled" and eth["pnl_per_unit"] == pytest.approx(2)
+    # 105: the bought call is 5 ITM, delivery fee min(0.015 % x 105, 12.5 % x 5) = 0.01575 → (1 − 0.01575) / 4
+    assert btc["status"] == "settled" and btc["delivery_price"] == 105.0 and btc["r"] == pytest.approx(0.2460625)
+    assert btc["delivery_fee_per_unit"] == pytest.approx(0.01575)
+    assert eth["status"] == "settled" and eth["pnl_per_unit"] == pytest.approx(2 - 0.01425)  # bought put 5 ITM at 95
     assert [line for line, r in again if r is None] == ["{broken", "[1, 2]"]  # malformed lines kept as they were
     assert tg.settle_rows(again, {("BTC", EXP): 1.0, ("ETH", EXP): 1.0}, AFTER + 2)[1] == 0
     assert tg.read_log(tmp_path / "missing.jsonl") == []
+
+
+def test_settled_record_from_before_the_delivery_fee_is_not_rewritten():
+    """A record settled by the old code (no delivery_fee_per_unit, R gross of the fee) keeps its line and its R."""
+    old = {**CALL_SPREAD, "status": "settled", "settled_ms": AFTER, "delivery_price": 105.0, "pnl_per_unit": 1.0, "pnl_usd": 0.5, "r": 0.25}
+    rows = _rows(old, {**PUT_SPREAD, "coin": "ETH"})
+    out, n = tg.settle_rows(rows, {("BTC", EXP): 105.0, ("ETH", EXP): 95.0}, AFTER + 1)
+    assert n == 1 and out[0] == rows[0]  # the old line is byte-for-byte the same
+    assert "delivery_fee_per_unit" not in out[0][1] and out[1][1]["delivery_fee_per_unit"] == pytest.approx(0.01425)
+    assert oi.rule_summary([r for _, r in out])["P3"]["sum_r"] == pytest.approx(0.25 + (2 - 0.01425) / 3)
 
 
 @pytest.mark.parametrize("sep", [" ", " ", "\x85"])

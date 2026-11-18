@@ -1729,6 +1729,112 @@ class Store:
             )
         return len(payload)
 
+    # ---------- order-book walls (collector/book_walls.py) ----------
+
+    BOOK_WALL_COLUMNS = (
+        "venue", "symbol", "side", "price", "open_ms", "close_ms", "size_open", "size_max", "size_end", "threshold",
+        "dist_open", "dist_min", "dist_close", "mid_close", "traded", "reason", "gaps",
+    )  # fmt: skip
+    BOOK_DEPTH_COLUMNS = (
+        "venue", "symbol", "ts", "mid", "spread", "bid_05", "bid_1", "bid_2", "ask_05", "ask_1", "ask_2",
+        "bid_view", "ask_view", "walls_bid", "walls_ask", "gaps", "short_walls",
+    )  # fmt: skip
+
+    async def insert_book_wall_events(self, rows: list[Mapping[str, Any]]) -> int:
+        """Closed walls (analytics.book_walls.EVENT_KEYS) into ``book_wall_event``; returns the rows written."""
+        if not rows:
+            return 0
+        payload = [tuple(r.get(c) for c in self.BOOK_WALL_COLUMNS) for r in rows]
+        async with self._write():
+            await self.conn.executemany(
+                "INSERT INTO book_wall_event (venue, symbol, side, price, open_ms, close_ms, size_open, size_max, size_end,"
+                " threshold, dist_open, dist_min, dist_close, mid_close, traded, reason, gaps)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                payload,
+            )
+        return len(payload)
+
+    async def insert_book_depth(self, rows: list[Mapping[str, Any]]) -> int:
+        """Minute depth rows into ``book_depth_minute``; a row for a minute already stored replaces it."""
+        if not rows:
+            return 0
+        payload = [tuple(r.get(c) for c in self.BOOK_DEPTH_COLUMNS) for r in rows]
+        async with self._write():
+            await self.conn.executemany(
+                "INSERT OR REPLACE INTO book_depth_minute (venue, symbol, ts, mid, spread, bid_05, bid_1, bid_2, ask_05,"
+                " ask_1, ask_2, bid_view, ask_view, walls_bid, walls_ask, gaps, short_walls)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                payload,
+            )
+        return len(payload)
+
+    async def book_wall_events(
+        self, *, since_ms: int = 0, until_ms: int | None = None, venue: str | None = None, symbol: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Stored walls closed in [since_ms, until_ms], oldest close first."""
+        where, params = ["close_ms >= ?"], [int(since_ms)]
+        if until_ms is not None:
+            where.append("close_ms <= ?")
+            params.append(int(until_ms))
+        if venue:
+            where.append("venue = ?")
+            params.append(venue)
+        if symbol:
+            where.append("symbol = ?")
+            params.append(symbol)
+        cur = await self.conn.execute(
+            "SELECT venue, symbol, side, price, open_ms, close_ms, size_open, size_max, size_end, threshold, dist_open,"
+            " dist_min, dist_close, mid_close, traded, reason, gaps FROM book_wall_event WHERE "
+            + " AND ".join(where)
+            + " ORDER BY close_ms, id",
+            params,
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def book_depth_rows(self, *, since_ts: int = 0, venue: str | None = None, symbol: str | None = None) -> list[dict[str, Any]]:
+        """Stored minute depth rows from ``since_ts`` (unix s), oldest first."""
+        where, params = ["ts >= ?"], [int(since_ts)]
+        if venue:
+            where.append("venue = ?")
+            params.append(venue)
+        if symbol:
+            where.append("symbol = ?")
+            params.append(symbol)
+        cur = await self.conn.execute(
+            "SELECT venue, symbol, ts, mid, spread, bid_05, bid_1, bid_2, ask_05, ask_1, ask_2, bid_view, ask_view,"
+            " walls_bid, walls_ask, gaps, short_walls FROM book_depth_minute WHERE " + " AND ".join(where) + " ORDER BY ts, venue, symbol",
+            params,
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def add_book_stream_hours(self, stream: str, hours: Mapping[int, Mapping[str, float]]) -> int:
+        """Hourly connection tallies of one book stream ('binance:depth', ...) into ``book_stream_hour``; an existing
+        hour is summed (as ``add_liquidation_stream_hours``). Returns the number of hours written."""
+        payload = [
+            (
+                stream,
+                int(hour),
+                float(b.get("connected_s", 0)),
+                int(b.get("frames", 0)),
+                int(b.get("rows", 0)),
+                int(b.get("failures", 0)),
+                int(b.get("reconnects", 0)),
+            )
+            for hour, b in sorted(hours.items())
+        ]
+        if not payload:
+            return 0
+        async with self._write():
+            await self.conn.executemany(
+                "INSERT INTO book_stream_hour (stream, hour_ts, connected_s, frames, rows, failures, reconnects)"
+                " VALUES (?,?,?,?,?,?,?) ON CONFLICT(stream, hour_ts) DO UPDATE SET"
+                " connected_s = connected_s + excluded.connected_s, frames = frames + excluded.frames,"
+                " rows = rows + excluded.rows, failures = failures + excluded.failures,"
+                " reconnects = reconnects + excluded.reconnects",
+                payload,
+            )
+        return len(payload)
+
     async def liquidations_in_window(
         self,
         *,

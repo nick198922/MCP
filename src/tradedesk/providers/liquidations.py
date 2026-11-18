@@ -383,8 +383,16 @@ async def _ws_consume(
     backoff_cap: float = BACKOFF_CAP,
     stable_seconds: float = STABLE_SECONDS,
     heartbeat_seconds: float = HEARTBEAT_SECONDS,
+    lifecycle: str | None = None,
+    label: str = "liquidation",
 ) -> AsyncIterator[dict[str, Any]]:
     """Shared WS consumer for a bounded run window that survives disconnects.
+
+    ``lifecycle`` (a feed name) also yields ``{"kind": "_open", "feed": lifecycle}`` after each connection opens and
+    ``{"kind": "_drop", "feed": lifecycle, "error": ...}`` after each failure, not counted in ``rows``: a consumer that
+    keeps state built from the stream (a local order book, providers/orderbook_stream.py) must rebuild it.
+    ``label`` starts the failure log line (``"<label> stream <url> failed (N in a row): <error>"``); the default keeps
+    the liquidation line that scripts/liquidation_gaps_vs_log.py parses, other streams pass their own.
 
     ``parser`` receives each decoded message; it may return a single row or a list of rows (or None / empty for
     messages that aren't events). A dropped connection, a failed handshake or an error message (``error_of``) is
@@ -416,6 +424,7 @@ async def _ws_consume(
         if delay > 0:
             await asyncio.sleep(delay)
         opened_at: float | None = None
+        dropped: str | None = None
         try:
             async with connect(
                 url, open_timeout=OPEN_TIMEOUT, ping_interval=PING_INTERVAL, ping_timeout=PING_TIMEOUT, close_timeout=CLOSE_TIMEOUT
@@ -426,6 +435,8 @@ async def _ws_consume(
                 if st.consecutive_failures:
                     st.reconnects += 1
                     st.count("reconnects", st.last_connect_ts)
+                if lifecycle is not None:
+                    yield {"kind": "_open", "feed": lifecycle}
                 if subscribe is not None:
                     await ws.send(json.dumps(subscribe))
                 while True:
@@ -472,15 +483,19 @@ async def _ws_consume(
             st.last_failure, st.last_failure_ts = f"{type(e).__name__}: {e}", st.stamp()
             st.count("failures", st.last_failure_ts)
             log.warning(
-                "liquidation stream %s failed (%d in a row): %s",
+                "%s stream %s failed (%d in a row): %s",
+                label,
                 url,
                 st.consecutive_failures,
                 st.last_failure,
                 extra={"stream": url, "error": st.last_failure},
             )
+            dropped = st.last_failure
         finally:
             st.connected = False
             st.close_segment()
+        if lifecycle is not None and dropped is not None:
+            yield {"kind": "_drop", "feed": lifecycle, "error": dropped}
     if not opened and last_exc is not None:
         raise last_exc
 

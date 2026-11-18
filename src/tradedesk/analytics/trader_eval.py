@@ -122,8 +122,13 @@ def simulate(
     cancel_ms: int | None = None,
     author: tuple[str, int] | None = None,
     sorted_bars: bool = False,
+    author_entry: float | None = None,
 ) -> Trade:
-    """Replay ``plan`` on ``bars`` (any order unless ``sorted_bars``; bars before ``start_ms`` are ignored)."""
+    """Replay ``plan`` on ``bars`` (any order unless ``sorted_bars``; bars before ``start_ms`` are ignored).
+
+    ``author_entry`` (disclosures of an open position, card item 3.2): if the market at our fill is already beyond the
+    stop, the author was stopped before the call could be followed; the call books the loss from ``author_entry`` to the
+    stop (−1 R before costs, status ``stopped_before``) instead of "no R"."""
     w = list(bars) if sorted_bars else sorted(bars, key=lambda b: b.t)
     i0 = bisect_left([b.t for b in w], start_ms) if not sorted_bars else _first_at(w, start_ms)
     w = w[i0:]
@@ -158,6 +163,15 @@ def simulate(
         else:
             fill = max(w[fi].open, e) if long else min(w[fi].open, e)
     planned = fill if plan.entry is None else plan.entry
+    if author_entry is not None and plan.kind == "market" and plan.stop is not None:
+        s = plan.stop
+        sane = s < author_entry if long else s > author_entry
+        if sane and (fill <= s if long else fill >= s):
+            ret = _ret(long, author_entry, s)
+            risk = abs(author_entry - s)
+            return Trade(
+                "stopped_before", w[0].t, author_entry, w[0].t, s, risk, ret, -1.0, (ret - cost_frac) * author_entry / risk, ret - cost_frac
+            )
     stop = plan.stop
     if stop is not None and (stop >= min(fill, planned) if long else stop <= max(fill, planned)):
         stop = None
@@ -374,6 +388,73 @@ def verdict(
     if not failed:
         return Verdict("✓", "all pre-registered conditions hold")
     return Verdict("≈", "failed: " + "; ".join(failed))
+
+
+def per_call_ret(trades: Sequence[Trade]) -> list[float]:
+    """Net return on notional per call (card item 3.2): unfilled = 0 (no trade, no cost); filled = ``ret_net``;
+    ``no_data`` / ``pending`` are dropped."""
+    out = []
+    for t in trades:
+        if t.status == "no_fill":
+            out.append(0.0)
+        elif t.filled and t.ret_net is not None:
+            out.append(t.ret_net)
+    return out
+
+
+def call_moment(ids: Sequence[int | str], day_start_ms: int) -> tuple[int, str]:
+    """Causal moment of a call from the tweet ids in its note and the start of its row date (UTC).
+
+    The first id dated on the row's day; else the first id dated after it (the call became public then); else the end
+    of the row's day (no id of that day is known, so nothing earlier can be assumed). Returns (ms, rule)."""
+    day_end = day_start_ms + 86_400_000
+    times = [snowflake_ms(i) for i in ids]
+    same = [t for t in times if day_start_ms <= t < day_end]
+    if same:
+        return same[0], "same_day"
+    later = [t for t in times if t >= day_end]
+    if later:
+        return later[0], "later_id"
+    return day_end - 60_000, "day_end"
+
+
+def funding_paid(rates: Sequence[tuple[int, float]], side: str, t_in: int, t_out: int) -> float:
+    """Funding paid by a position held from ``t_in`` to ``t_out`` (fraction of notional; negative = received).
+
+    ``rates`` are (settlement time ms, rate per interval); a long pays a positive rate, a short receives it. Settlements
+    in (t_in, t_out] count."""
+    s = math.fsum(r for t, r in rates if t_in < t <= t_out)
+    return s if side == "long" else -s
+
+
+def trailing_vol(closes: Sequence[float], k: int) -> float:
+    """Standard deviation of log returns of the last ``k`` + 1 closes (all before the call), per bar; nan if short."""
+    if len(closes) < k + 1 or k < 2:
+        return float("nan")
+    xs = [math.log(closes[i] / closes[i - 1]) for i in range(len(closes) - k, len(closes))]
+    m = math.fsum(xs) / len(xs)
+    return math.sqrt(math.fsum((x - m) ** 2 for x in xs) / (len(xs) - 1))
+
+
+def verdict_checks(
+    *,
+    n_calls: int,
+    n_filled: int,
+    mean_x: float,
+    p_placebo: float,
+    checks: dict[str, bool],
+    min_calls: int = 30,
+    min_filled: int = 20,
+    alpha: float = 0.05,
+) -> Verdict:
+    """Pre-registered verdict with named ✓ conditions (card item 3.2): ◯ coverage gate; ✗ mean <= 0 or p >= alpha;
+    ✓ every check holds; ≈ otherwise."""
+    if n_calls < min_calls or n_filled < min_filled:
+        return Verdict("◯", f"coverage gate: {n_calls} calls (< {min_calls}) or {n_filled} filled (< {min_filled})")
+    if not mean_x > 0 or p_placebo >= alpha:
+        return Verdict("✗", f"mean net <= 0 or not better than placebo (p >= {alpha})")
+    failed = [k for k, ok in checks.items() if not ok]
+    return Verdict("✓", "all pre-registered conditions hold") if not failed else Verdict("≈", "failed: " + "; ".join(failed))
 
 
 def sample_starts(bar_times: Sequence[int], lo_ms: int, hi_ms: int, k: int, rnd: random.Random) -> list[int]:

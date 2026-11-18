@@ -38,7 +38,6 @@ SEED = ("journal_add", "positions_add", "rules_add", "plan_add")
 # id 1; rules_add is not here: the seeded rule has its name, so it stops at the duplicate check before writing). Reads
 # keep working under a WAL write lock, so the other store tools answer from the last committed data.
 LOCKED_WRITERS = {
-    "events_seed_load",
     "journal_add",
     "journal_close",
     "plan_add",
@@ -46,7 +45,6 @@ LOCKED_WRITERS = {
     "positions_add",
     "positions_close",
     "rules_disable",
-    "rules_presets_load",
 }
 
 

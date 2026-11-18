@@ -7,8 +7,8 @@ writer left with a string / blob / inf, and extreme arguments (1e308, "inf", "1e
 megabyte of text). Found on the way: positions_add stored size / greeks "inf" as inf and raised OverflowError on
 opened_ts = 10**20; positions_close raised on closed_ts = 10**20 and failed its reply on a blob cell after it had written
 the close; rules_add raised RecursionError on a 100k-term expression (compile_expr); rules_list and rules_disable failed
-their reply on a blob and returned Infinity from an inf cell; rules_presets_load raised on a seed that is not
-{"presets": [...]} and on a preset with a cooldown "abc" / inf / 1e308, and returned NaN from the seed's _meta;
+their reply on a blob and returned Infinity from an inf cell; rules_presets_load (an MCP tool until 2026-11-18,
+now a function for scripts/rules_presets_load.py) raised on a seed that is not {"presets": [...]} and on a preset with a cooldown "abc" / inf / 1e308, and returned NaN from the seed's _meta;
 journal_list failed its reply on a blob and returned Infinity / NaN. All of these now answer ok=false (or skip the row
 with a warning).
 
@@ -353,11 +353,15 @@ def _seed(monkeypatch, text: str | None) -> None:
 SEED_RULE = {"name": "p_ok", "expr": "1 > 0", "message": "m", "cooldown_seconds": 3600, "enabled": True}
 
 
+# rules_presets_load is a function for scripts/rules_presets_load.py since 2026-11-18 (no longer an MCP tool): called
+# directly.
+load_presets = rules_tools.rules_presets_load
+
+
 @pytest.mark.parametrize("method", ["rules_list", "rule_insert"])
 async def test_rules_presets_load_store_failure_goes_to_missing(rt, monkeypatch, method):
     _fails(rt, monkeypatch, method)
-    async with _session(rt) as call:
-        _store_failed(await call("rules_presets_load"))
+    _store_failed(await load_presets(rt))
 
 
 @pytest.mark.parametrize(
@@ -368,10 +372,9 @@ async def test_rules_presets_load_store_failure_goes_to_missing(rt, monkeypatch,
 async def test_rules_presets_load_unusable_seed_is_not_ok(rt, monkeypatch, text):
     # A list or an int / str `presets` raised AttributeError / TypeError before item 288; no presets read as ok=true.
     _seed(monkeypatch, text)
-    async with _session(rt) as call:
-        env = await call("rules_presets_load")
-        assert env["ok"] is False and env["data"] is None and _missing(env, "presets", "data_unavailable")
-        assert await _count(rt, "rules") == 0
+    env = await load_presets(rt)
+    assert env["ok"] is False and env["data"] is None and _missing(env, "presets", "data_unavailable")
+    assert await _count(rt, "rules") == 0
 
 
 BAD_PRESETS = [
@@ -397,41 +400,37 @@ async def test_rules_presets_load_skips_malformed_presets(rt, monkeypatch):
     long_ = json.dumps({"name": "p_long", "expr": LONG_EXPR})
     meta = '{"updated": "x", "bad": NaN}'
     _seed(monkeypatch, '{"_meta": ' + meta + ', "presets": [' + json.dumps(SEED_RULE) + ", " + long_ + ", " + ", ".join(BAD_PRESETS) + "]}")
-    async with _session(rt) as call:
-        env = await call("rules_presets_load")
-        d = env["data"]
-        assert env["ok"] is True and d["candidates"] == 2 and d["inserted"] == 1 and d["already_present"] == []
-        assert [f["name"] for f in d["failed"]] == ["p_long"] and d["meta"] is None
-        assert any(w.startswith(f"{len(BAD_PRESETS)} seed presets skipped") for w in env["warnings"])
-        assert any("_meta holds NaN or Infinity" in w for w in env["warnings"])
-        assert [x["name"] for x in await rt.store.rules_list()] == ["p_ok"]
+    env = await load_presets(rt)
+    d = env["data"]
+    assert env["ok"] is True and d["candidates"] == 2 and d["inserted"] == 1 and d["already_present"] == []
+    assert [f["name"] for f in d["failed"]] == ["p_long"] and d["meta"] is None and first_nonfinite(d) is None
+    assert any(w.startswith(f"{len(BAD_PRESETS)} seed presets skipped") for w in env["warnings"])
+    assert any("_meta holds NaN or Infinity" in w for w in env["warnings"])
+    assert [x["name"] for x in await rt.store.rules_list()] == ["p_ok"]
 
 
 async def test_rules_presets_load_only_malformed_presets_is_not_ok(rt, monkeypatch):
     _seed(monkeypatch, '{"presets": [' + ", ".join(BAD_PRESETS) + "]}")
-    async with _session(rt) as call:
-        env = await call("rules_presets_load")
-        assert env["ok"] is False and _missing(env, "presets", "data_unavailable", f"all {len(BAD_PRESETS)} seed presets are malformed")
-        assert await _count(rt, "rules") == 0
+    env = await load_presets(rt)
+    assert env["ok"] is False and _missing(env, "presets", "data_unavailable", f"all {len(BAD_PRESETS)} seed presets are malformed")
+    assert await _count(rt, "rules") == 0
 
 
 async def test_rules_presets_load_skips_names_of_corrupt_stored_rules(rt):
     # A stored rule with a blob name or a string cooldown does not break the duplicate check.
     await _rows(rt, RULE_SQL, [_rule(id=50, name=b"\xff\xfe"), _rule(id=51, name="preset_eth_funding_hot", cooldown_seconds="abc")])
-    async with _session(rt) as call:
-        env = await call("rules_presets_load", only=["preset_eth_funding_hot", "preset_btc_funding_hot_binance", "x" * 1_000_000])
-        d = env["data"]
-        assert env["ok"] is True and d["candidates"] == 2 and d["inserted"] == 1 and d["already_present"] == ["preset_eth_funding_hot"]
+    env = await load_presets(rt, only=["preset_eth_funding_hot", "preset_btc_funding_hot_binance", "x" * 1_000_000])
+    d = env["data"]
+    assert env["ok"] is True and d["candidates"] == 2 and d["inserted"] == 1 and d["already_present"] == ["preset_eth_funding_hot"]
 
 
 async def test_rules_presets_load_bundled_seed_loads_without_skips(rt):
-    async with _session(rt) as call:
-        env = await call("rules_presets_load")
-        d = env["data"]
-        assert env["ok"] is True and d["inserted"] == d["candidates"] == 8 and d["failed"] == [] and env["warnings"] == []
-        assert d["meta"]["updated"] == "2026-10-12"
-        again = await call("rules_presets_load")
-        assert again["data"]["inserted"] == 0 and len(again["data"]["already_present"]) == 8
+    env = await load_presets(rt)
+    d = env["data"]
+    assert env["ok"] is True and d["inserted"] == d["candidates"] == 8 and d["failed"] == [] and env["warnings"] == []
+    assert d["meta"]["updated"] == "2026-10-12"
+    again = await load_presets(rt)
+    assert again["data"]["inserted"] == 0 and len(again["data"]["already_present"]) == 8
 
 
 # ---------- journal_list ----------

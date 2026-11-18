@@ -69,6 +69,49 @@ def _seed_row_ok(x: Any) -> bool:
     return all(isinstance(x.get(k), str) and x.get(k) for k in ("kind", "label"))
 
 
+async def events_seed_load(rt: Runtime) -> dict[str, Any]:
+    """Load the bundled events seed (FOMC / CPI / NFP 2024-2027, US election day 2026-11-03 as kind 'election' at a
+    nominal 12:00 UTC) into the local store; idempotent on (ts, kind, label). Returns the envelope. Not an MCP tool since
+    2026-11-18 (a one-off action): run ``uv run python scripts/events_seed_load.py``. 2026 Fed dates are projected."""
+    b = Builder()
+    if not await store_ready(b, rt, "events"):
+        return b.build(None, ok=False)
+    try:
+        try:
+            with resources.files("tradedesk.data").joinpath("events_seed.json").open("r", encoding="utf-8") as f:
+                seed = json.load(f)
+        except (FileNotFoundError, ValueError, OSError) as e:
+            b.miss("seed", "tradedesk", "data_unavailable", f"{type(e).__name__}: {e}")
+            return b.build(None, ok=False)
+        # A seed that is not {"events": [...]} raised AttributeError / TypeError; rows that cannot be stored are skipped.
+        raw = seed.get("events") if isinstance(seed, dict) else None
+        if not isinstance(raw, list) or not raw:
+            b.miss("seed", "tradedesk", "data_unavailable", "the seed is not an object with a non-empty `events` list")
+            return b.build(None, ok=False)
+        rows = [x for x in raw if _seed_row_ok(x)]
+        if len(rows) < len(raw):
+            b.warn(f"{len(raw) - len(rows)} seed rows skipped: not an object with an in-range ts, text kind / label, strict JSON meta")
+        if not rows:
+            b.miss("seed", "tradedesk", "data_unavailable", f"all {len(raw)} seed rows are malformed")
+            return b.build(None, ok=False)
+        before = await rt.store.event_count()
+        inserted = await rt.store.events_insert_many(rows)
+        total = await rt.store.event_count()
+        b.warn("2026 Fed dates in the seed are projected; verify against the official calendar")
+        return b.build(
+            {
+                "candidates": len(rows),
+                "inserted": inserted,
+                "already_present": len(rows) - inserted,
+                "events_before": before,
+                "events_after": total,
+                "meta": seed.get("_meta"),
+            }
+        )
+    except STORE_ERRORS as e:
+        return store_failed(b, e)
+
+
 def register(server: MCPServer, rt: Runtime) -> None:
     @server.tool(
         annotations=READ_ONLY,
@@ -191,54 +234,6 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 b.miss("events", "store", "data_unavailable", f"all {stored} matching stored events are malformed")
                 return b.build({"count": 0, "events": []}, ok=False)
             return b.build({"count": len(rows), "events": rows})
-        except STORE_ERRORS as e:
-            return store_failed(b, e)
-
-    @server.tool(
-        annotations=READ_ONLY,
-        description=(
-            "Load the bundled historical events seed (FOMC / CPI / NFP 2024-2027, plus US election "
-            "day 2026-11-03 as kind 'election' with a nominal 12:00 UTC time) into the "
-            "local store. Idempotent — rows with the same (ts, kind, label) are ignored. 2026 "
-            "Fed dates in the seed are PROJECTED; verify against the official Fed/BLS calendars."
-        ),
-    )
-    async def events_seed_load() -> dict[str, Any]:
-        b = Builder()
-        if not await store_ready(b, rt, "events"):
-            return b.build(None, ok=False)
-        try:
-            try:
-                with resources.files("tradedesk.data").joinpath("events_seed.json").open("r", encoding="utf-8") as f:
-                    seed = json.load(f)
-            except (FileNotFoundError, ValueError, OSError) as e:
-                b.miss("seed", "tradedesk", "data_unavailable", f"{type(e).__name__}: {e}")
-                return b.build(None, ok=False)
-            # A seed that is not {"events": [...]} raised AttributeError / TypeError; rows that cannot be stored are skipped.
-            raw = seed.get("events") if isinstance(seed, dict) else None
-            if not isinstance(raw, list) or not raw:
-                b.miss("seed", "tradedesk", "data_unavailable", "the seed is not an object with a non-empty `events` list")
-                return b.build(None, ok=False)
-            rows = [x for x in raw if _seed_row_ok(x)]
-            if len(rows) < len(raw):
-                b.warn(f"{len(raw) - len(rows)} seed rows skipped: not an object with an in-range ts, text kind / label, strict JSON meta")
-            if not rows:
-                b.miss("seed", "tradedesk", "data_unavailable", f"all {len(raw)} seed rows are malformed")
-                return b.build(None, ok=False)
-            before = await rt.store.event_count()
-            inserted = await rt.store.events_insert_many(rows)
-            total = await rt.store.event_count()
-            b.warn("2026 Fed dates in the seed are projected; verify against the official calendar")
-            return b.build(
-                {
-                    "candidates": len(rows),
-                    "inserted": inserted,
-                    "already_present": len(rows) - inserted,
-                    "events_before": before,
-                    "events_after": total,
-                    "meta": seed.get("_meta"),
-                }
-            )
         except STORE_ERRORS as e:
             return store_failed(b, e)
 

@@ -62,7 +62,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
         description=(
             "Structured FOMC trade plan for a crypto perp/option: event-study on past FOMC days, "
             "retracement ladder, multi-horizon scenario matrix, exit ladder, risks. Pulls event_study / "
-            "strategy_scenario_matrix / fib_retracement / touch_probability / market_regime. "
+            "strategy_scenario_matrix / touch_probability / market_regime. "
             "Pattern mirrors the DoubleTop FOMC write-up — descriptive stats + prebuilt levels, "
             "not a forecast."
         ),

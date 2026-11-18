@@ -10,7 +10,8 @@ with a string / blob / inf level, entry = stop or 0, a string created_ts (after 
 on a blob, returned Infinity / NaN from an inf level or NaN tags, and raised OverflowError on an id of 10**20; rules_test
 answered ok=true with Infinity / NaN (an inf literal, an overflow, inf in a stored funding / liquidation row) or a 400-digit
 int, answered ok=true when the evaluation failed, and reported a failing store query as an evaluation error;
-fib_retracement returned Infinity with ok=true when a huge custom level overflowed a ladder below the noise floor; plan_list
+fib_retracement (removed 2026-11-18 with its tests) returned Infinity with ok=true when a huge custom level overflowed a
+ladder below the noise floor; plan_list
 returned NaN from NaN tags (same `_listable` as plan_link). All of these now answer ok=false (or leave the row out with a
 warning).
 
@@ -283,11 +284,10 @@ async def test_rules_test_extreme_but_valid_values_unchanged(rt):
         assert env["ok"] is False and env["data"] == {"expr": "1 +", "parsed": False} and _missing(env, "expr", "data_unavailable")
 
 
-# ---------- calculators: odds_devig, option_calc, fib_retracement, strategy_cash_and_carry ----------
+# ---------- calculators: odds_devig, option_calc, strategy_cash_and_carry (fib_retracement removed 2026-11-18) ----------
 
 ODDS = {"odds": [1.9, 2.1]}
 OPTION = {"forward": 100.0, "strike": 105.0, "days": 30.0, "iv": 0.5}
-FIB = {"p0": 100.0, "l_point": 90.0}
 CARRY = {"spot_price": 100.0, "futures_price": 101.0, "days": 30.0, "iv": 0.5}
 
 
@@ -329,14 +329,6 @@ def _nan_devig(_odds, method):
     return {"method": method, "margin": float("nan"), "implied_raw": [0.5, 0.5], "fair_probs": [0.5, 0.5], "fair_odds": [2.0, 2.0]}
 
 
-def _nan_fib(applicable: bool):
-    def f(p0, l_point, **_k):
-        return {"p0": p0, "l": l_point, "diff_abs": 1.0, "diff_pct": 1.0, "direction": "drop", "applicable": applicable,
-                "min_drop_pct": 2.0, "ladder": [{"level": 0.5, "price": float("nan")}]}  # fmt: skip
-
-    return f
-
-
 def _nan_carry(*_a, **_k):
     return {"breakevens": [], "max_profit": float("inf"), "max_loss": 0.0, "mtm_usd": 0.0, "pop": None, "greeks": {}}
 
@@ -346,14 +338,11 @@ def _nan_carry(*_a, **_k):
     [
         (odds_mod, "devig", _nan_devig, "odds_devig", ODDS),
         (quant_tools, "black76_price", lambda *_a: float("nan"), "option_calc", OPTION),
-        (quant_tools, "summarise_retracement", _nan_fib(True), "fib_retracement", FIB),
-        (quant_tools, "summarise_retracement", _nan_fib(False), "fib_retracement", FIB),
         (strategy_tools, "summarise", _nan_carry, "strategy_cash_and_carry", CARRY),
     ],
-    ids=["odds", "option", "fib_applicable", "fib_not_applicable", "carry"],
+    ids=["odds", "option", "carry"],
 )
 async def test_calculator_non_finite_analytics_result_is_not_ok(rt, monkeypatch, module, fn, fake, tool, args):
-    # fib_not_applicable answered ok=true with NaN / Infinity before item 289 (only the applicable branch was checked).
     monkeypatch.setattr(module, fn, fake)
     async with _session(rt) as call:
         env = await call(tool, **args)
@@ -364,8 +353,6 @@ async def test_calculator_non_finite_analytics_result_is_not_ok(rt, monkeypatch,
     ("tool", "args"),
     [("odds_devig", {"odds": [2.0, v]}) for v in ("inf", "1e400", "-inf")]
     + [("option_calc", OPTION | {k: v}) for k in ("forward", "strike", "days") for v in ("inf", "1e400")]
-    + [("fib_retracement", FIB | {k: v}) for k in ("p0", "l_point") for v in ("inf", "1e400")]
-    + [("fib_retracement", FIB | {"levels": [0.5, v]}) for v in ("inf", "1e400", "nan")]
     + [
         ("strategy_cash_and_carry", CARRY | {k: v}) for k in ("spot_price", "futures_price", "days", "iv", "size") for v in ("inf", "1e400")
     ],
@@ -379,12 +366,10 @@ async def test_calculator_non_finite_input_is_invalid(rt, tool, args):
 @pytest.mark.parametrize(
     ("tool", "args"),
     [
-        ("fib_retracement", {"p0": HUGE, "l_point": 0.99 * HUGE, "levels": [HUGE]}),  # Infinity with ok=true before item 289
-        ("fib_retracement", {"p0": HUGE, "l_point": 1e-300, "levels": [HUGE]}),
         ("strategy_cash_and_carry", CARRY | {"spot_price": HUGE, "futures_price": HUGE, "size": HUGE}),
         ("strategy_cash_and_carry", CARRY | {"spot_price": 1e-308, "futures_price": HUGE}),
     ],
-    ids=["fib_not_applicable_overflow", "fib_applicable_overflow", "carry_huge", "carry_basis_overflow"],
+    ids=["carry_huge", "carry_basis_overflow"],
 )
 async def test_calculator_overflowing_result_is_not_ok(rt, tool, args):
     async with _session(rt) as call:
@@ -406,8 +391,6 @@ async def test_calculators_extreme_but_finite_inputs_answer(rt):
         assert env["ok"] is True and env["data"]["price_usd"] == pytest.approx(HUGE) and env["data"]["delta"] == 1.0
         env = await call("option_calc", **OPTION | {"days": 10**20})
         assert env["ok"] is True and env["data"]["price_in_underlying"] == pytest.approx(1.0)
-        env = await call("fib_retracement", p0=HUGE, l_point=1.0, levels=[0.5] * LONG)
-        assert env["ok"] is True and len(env["data"]["ladder"]) == LONG and env["data"]["applicable"] is True
         env = await call("strategy_cash_and_carry", **CARRY | {"spot_price": HUGE, "futures_price": 1.0})
         assert env["ok"] is True and env["data"]["basis_pct"] == pytest.approx(-100.0)
         env = await call("strategy_cash_and_carry", **CARRY | {"days": 10**20, "iv": HUGE})
@@ -416,7 +399,7 @@ async def test_calculators_extreme_but_finite_inputs_answer(rt):
 
 @pytest.mark.parametrize(
     ("tool", "args"),
-    [("odds_devig", ODDS), ("option_calc", OPTION), ("fib_retracement", FIB), ("strategy_cash_and_carry", CARRY)],
+    [("odds_devig", ODDS), ("option_calc", OPTION), ("strategy_cash_and_carry", CARRY)],
 )
 async def test_calculator_needs_no_store_or_venue(tool, args):
     # No store (db_path empty), every HTTP request 500 and every ccxt call failing: the calculator still answers.

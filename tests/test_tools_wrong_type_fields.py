@@ -4,7 +4,7 @@ Sibling of tests/test_tools_malformed_200.py (a malformed body) and tests/test_t
 fakes, the seeded store, ARGS and SKIP, all reused here). A venue answers 200 with the expected keys, but one numeric
 field is `null`, the string "abc" or an empty list. For every registered tool:
 1. a warm-up call fills the in-process caches (Hyperliquid's coin map, ccxt markets) and runs one-shot side effects
-   (carry_paper_close closes its pair); a second clean call records the numeric fields (numbers and numeric strings)
+   (a store write); a second clean call records the numeric fields (numbers and numeric strings)
    of every JSON body and every ccxt result the tool reads. A field is named by its source (host + path, or ccxt
    exchange + method) and its path in the tree, with list indices folded to `[*]` (only short lists of scalars, i.e.
    rows like an OHLCV bar or a [price, size] level, keep their index);
@@ -80,9 +80,8 @@ def known_failures_match(failures: dict[str, str], pattern: str) -> bool:
 
 
 # Tools that read no numeric field on the recording call, so nothing is mutated (the test fails if one starts to):
-# the calculators and store tools of NO_NETWORK, plus these two.
+# the calculators and store tools of NO_NETWORK, plus this one (carry_paper_close, the other, was removed 2026-11-18).
 NO_FIELDS: dict[str, str] = {
-    "carry_paper_close": "the warm-up call closes the seeded pair; the next calls answer from the store",
     "plan_review": "each tool gets a fresh store here, so there is no open plan whose candles it would fetch",
 }
 
@@ -289,7 +288,7 @@ async def run_tool(tmp_path, name: str, seeded: Path) -> dict[str, Any]:
     report: dict[str, Any] = {"mutations": 0, "hits": 0, "failures": {}}
     async with Client(srv) as c:
         # Two clean calls: the first warms the in-process caches (Hyperliquid's coin map, ccxt markets) and runs the
-        # one-shot side effects (carry_paper_close), the second records only the fields every call reads again.
+        # one-shot side effects (a store write), the second records only the fields every call reads again.
         for recording in (None, {}):
             m.seen = recording
             res = await c.call_tool(name, TOOL_ARGS.get(name, {}))

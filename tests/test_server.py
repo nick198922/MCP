@@ -4,6 +4,8 @@ import math
 import pytest
 from mcp import Client
 
+# Removed 2026-11-18 (docs/changes/2026-11-18-mcp-remove-six.md): carry_paper_open, carry_paper_close, fib_retracement,
+# strategy_backtest_momentum, events_seed_load and rules_presets_load (the two loaders are scripts/*.py now).
 EXPECTED_TOOLS = {
     "system_health",
     "market_tickers",  # also one symbol via fetch_ticker (the former market_ticker, merged 2026-11-17)
@@ -73,14 +75,11 @@ EXPECTED_TOOLS = {
     "range_detect",
     "events_add",
     "events_list",
-    "events_seed_load",
     "event_study",
     "journal_add",
     "journal_list",
     "journal_close",
     "journal_stats",
-    "carry_paper_open",
-    "carry_paper_close",
     "paper_carry_status",  # also the manual pairs, strategy="manual" (the former carry_paper_status, merged 2026-11-17)
     "assistant_paper_open",
     "assistant_paper_status",
@@ -98,13 +97,10 @@ EXPECTED_TOOLS = {
     "rules_list",
     "rules_test",
     "rules_disable",
-    "rules_presets_load",
     "strategy_payoff",  # also the straddle / strangle / risk_reversal / iron_condor presets (merged 2026-11-15)
     "strategy_cash_and_carry",
     "strategy_funding_carry",
-    "strategy_backtest_momentum",
     "strategy_scenario_matrix",
-    "fib_retracement",
 }
 
 

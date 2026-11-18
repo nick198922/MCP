@@ -332,25 +332,28 @@ def _fake_rate(venue: str, i: int) -> float:
     return base + ((-1) ** i) * 0.00001 * (i % 7)
 
 
-async def test_open_status_close_roundtrip(state, tmp_path):
+async def _open(rt: Runtime, opened_at=NOW, long_venue: str = "binanceusdm", short_venue: str = "bybit", **kw) -> int:
+    """A manual pair as carry_paper_open recorded it (that tool was removed 2026-11-18; the manual book is still marked
+    by paper_carry_status(strategy='manual')): entries at the fake tickers' last price 82750, 1000 USD per leg at 2x."""
+    row = dict(
+        opened_ts=int(opened_at.timestamp()), base="BTC", symbol="BTC/USDT:USDT", long_venue=long_venue, short_venue=short_venue,
+        qty=1000 / 82750.0, notional_usd=1000.0, long_entry=82750.0, short_entry=82750.0, leverage=2.0, stop_move=0.5,
+        lookback_days=7.0, exit_apr=0.0, slippage=0.0005,
+    )  # fmt: skip
+    return await rt.store.carry_paper_insert(**{**row, **kw})
+
+
+async def test_status_marks_an_open_pair_with_live_data(state, tmp_path):
     rt = await _rt(state, tmp_path)
     srv, _ = build_server(rt)
     try:
         open_at = NOW - timedelta(days=3)
-        rt.now = lambda: open_at
-        o = await _call(srv, "carry_paper_open", base="btc", long_venue="binanceusdm", short_venue="bybit", notional_usd=1000, tags=["t1"])
-        assert o["ok"] is True, o
-        d = o["data"]
-        assert d["id"] == 1 and d["base"] == "BTC" and d["qty"] == pytest.approx(1000 / 82750.0, rel=1e-6)
-        assert d["stop_move"] == 0.5 and d["price_gap"] == 0
-        assert d["tradable_now"] is False  # fake spread is far below the 10 % entry bar
-        assert any("not tradable_now" in w for w in o["warnings"])
-        assert any("-8.7 %" in w and "zero or negative" in w for w in o["warnings"])  # honest backtest caveat
-
-        rt.now = lambda: NOW
+        assert await _open(rt, open_at, tags=["t1"]) == 1
         s = await _call(srv, "paper_carry_status", strategy="manual")
         assert s["ok"] is True, s
+        assert any("-8.7 %" in w and "zero or negative" in w for w in s["warnings"])  # honest backtest caveat
         (tr,) = s["data"]["open"]
+        assert tr["base"] == "BTC" and tr["tags"] == ["t1"] and tr["qty"] == pytest.approx(1000 / 82750.0, rel=1e-6)
         mk = tr["mark"]
         # fake history is on the 8h grid ending 2026-10-10 12:00 UTC; payments in (open, NOW]; price falls back to entry
         end, step = 1791637200000, H8
@@ -365,103 +368,8 @@ async def test_open_status_close_roundtrip(state, tmp_path):
         assert s["data"]["summary_closed"] == {"n": 0, "entry_tradable": {"n": 0}}
         assert mk["stopped"] is False and mk["stop_check"] == "complete" and tr["exit_signal"] != "stop"
         assert not any("missing" in w and "4h bar" in w for w in s["warnings"])
-
-        c = await _call(srv, "carry_paper_close", id=1, reason="manual", note="done")
-        assert c["ok"] is True, c
-        cd = c["data"]
-        assert cd["status"] == "closed" and cd["exit_reason"] == "manual" and cd["stopped"] is False
-        assert cd["return_on_notional"] == pytest.approx(mk["return_on_notional"], abs=1e-4)
-        again = await _call(srv, "carry_paper_close", id=1, reason="manual")
-        assert again["ok"] is False
-
-        stats = await _call(srv, "journal_stats", tag="pp-paper")
-        assert stats["data"]["closed_trades"] == 1
-        assert stats["data"]["total_pnl"] == pytest.approx(cd["pnl_usd"], abs=0.01)
-        jl = await _call(srv, "journal_list", tag="pp-paper")
-        (row,) = jl["data"]["trades"]
-        assert row["symbol"] == "PP:BTC:binanceusdm/bybit" and row["side"] == "long" and "t1" in row["tags"]
-        assert row["exit"] == pytest.approx(1 + cd["return_on_notional"], abs=1e-4)
-
-        s2 = await _call(srv, "paper_carry_status", strategy="manual", include_closed=True)
-        assert s2["data"]["open"] == [] and s2["data"]["summary_closed"]["n"] == 1 and len(s2["data"]["closed"]) == 1
-        # opened while not tradable_now: counted in `n` but not in the backtest-comparable subset, tagged off-rule
-        assert s2["data"]["summary_closed"]["entry_tradable"]["n"] == 0 and "pp-paper-offrule" in row["tags"]
     finally:
         await rt.store.aclose()
-
-
-async def test_close_stop_charges_penalty_and_cancel(state, tmp_path):
-    rt = await _rt(state, tmp_path)
-    srv, _ = build_server(rt)
-    try:
-        first = await _call(srv, "carry_paper_open", base="BTC", long_venue="binanceusdm", short_venue="bybit")
-        assert first["ok"] and not any("already exist" in w for w in first["warnings"])
-        second = await _call(srv, "carry_paper_open", base="BTC", long_venue="binanceusdm", short_venue="bybit")
-        assert second["ok"] and any("already exist" in w for w in second["warnings"])  # warned, still recorded
-        # reason='stop' without a stop in the data invents no penalty and no stopped flag
-        fake_stop = await _call(srv, "carry_paper_close", id=1, reason="stop")
-        manual = await _call(srv, "carry_paper_close", id=2, reason="manual")
-        assert fake_stop["data"]["stopped"] is False and fake_stop["data"]["exit_reason"] == "stop"
-        assert any("no stop is found" in w for w in fake_stop["warnings"])
-        assert fake_stop["data"]["costs_usd"] == pytest.approx(manual["data"]["costs_usd"], abs=0.01)
-        assert (await _call(srv, "carry_paper_open", base="BTC", long_venue="bybit", short_venue="binanceusdm"))["ok"]
-        canc = await _call(srv, "carry_paper_close", id=3, reason="manual", cancelled=True)
-        assert canc["data"]["status"] == "cancelled"
-        assert (await _call(srv, "journal_stats", tag="pp-paper"))["data"]["closed_trades"] == 2
-    finally:
-        await rt.store.aclose()
-
-
-async def test_open_refuses_price_gap_and_provider_failure(state, tmp_path):
-    class GapEx(FakeEx):
-        async def fetch_tickers(self, symbols=None):
-            out = await super().fetch_tickers(symbols)
-            if self.id == "bybit":
-                for v in out.values():
-                    v["last"] = v["last"] * 1.05
-            return out
-
-    rt = Runtime(
-        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=str(tmp_path / "gap.sqlite")),
-        transports=make_transports(state),
-        exchange_factory=GapEx,
-    )
-    rt.now = lambda: NOW
-    await rt.store.init()
-    srv, _ = build_server(rt)
-    try:
-        gap = await _call(srv, "carry_paper_open", base="BTC", long_venue="binanceusdm", short_venue="bybit")
-        assert gap["ok"] is False and gap["data"] is None
-        assert any(m["field"] == "price_gap" for m in gap["missing"])
-        far = await _call(srv, "carry_paper_open", base="BTC", long_venue="binanceusdm", short_venue="bybit", max_entry_gap=0.2)
-        assert far["ok"] is True  # 5 % is inside a 20 % allowance
-        await rt.store.init()
-        rt2_before = len(await rt.store.carry_paper_list())
-
-        mism = Runtime(
-            Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=str(tmp_path / "mm.sqlite")),
-            transports=make_transports(state),
-            exchange_factory=type("MM", (GapEx,), {"fetch_tickers": _mismatch_tickers}),
-        )
-        mism.now = lambda: NOW
-        await mism.store.init()
-        srv2, _ = build_server(mism)
-        bad = await _call(srv2, "carry_paper_open", base="BTC", long_venue="binanceusdm", short_venue="bybit", max_entry_gap=0.2)
-        assert bad["ok"] is False and any(m["field"] == "price_mismatch" for m in bad["missing"])
-        await mism.store.init()
-        assert await mism.store.carry_paper_list() == []
-        await mism.store.aclose()
-        assert rt2_before == 1
-    finally:
-        await rt.store.aclose()
-
-
-async def _mismatch_tickers(self, symbols=None):
-    out = await FakeEx.fetch_tickers(self, symbols)
-    if self.id == "bybit":
-        for v in out.values():
-            v["last"] = v["last"] * 3
-    return out
 
 
 class _BadLastEx(FakeEx):
@@ -490,14 +398,11 @@ async def test_non_finite_last_price_never_marks_the_pair(state, tmp_path, bad):
     srv, _ = build_server(rt)
     try:
         _BadLastEx.bad = bad
-        o = await _call(srv, "carry_paper_open", base="BTC", long_venue="binanceusdm", short_venue="bybit")
-        assert o["ok"] is True, o  # the entry falls back to the mark price of the funding feed
-        assert o["data"]["short_entry"] == pytest.approx(82760.0 * 1.0001)
-        assert any("bybit BTC/USDT:USDT: last price in the ticker is not a finite number" in w for w in o["warnings"])
+        await _open(rt)
         s = await _call(srv, "paper_carry_status", strategy="manual")
         (tr,) = s["data"]["open"]
         assert "mark" not in tr and any(m["field"] == "carry_paper:1" for m in s["missing"])
-        assert any("bybit BTC/USDT:USDT: last price" in w for w in s["warnings"])
+        assert any("bybit BTC/USDT:USDT: last price in the ticker is not a finite number" in w for w in s["warnings"])
     finally:
         _BadLastEx.bad = None
         await rt.store.aclose()
@@ -529,7 +434,7 @@ class _BadRateEx(FakeEx):
         return rows
 
 
-async def test_open_and_status_skip_a_wrong_type_funding_rate(state, tmp_path):
+async def test_status_skips_a_wrong_type_funding_rate(state, tmp_path):
     rt = Runtime(
         Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=str(tmp_path / "bad_rate.sqlite")),
         transports=make_transports(state),
@@ -540,10 +445,7 @@ async def test_open_and_status_skip_a_wrong_type_funding_rate(state, tmp_path):
     srv, _ = build_server(rt)
     try:
         open_at = NOW - timedelta(days=3)
-        rt.now = lambda: open_at
-        o = await _call(srv, "carry_paper_open", base="BTC", long_venue="binanceusdm", short_venue="bybit")
-        assert o["ok"] is True, o
-        rt.now = lambda: NOW
+        await _open(rt, open_at)
         s = await _call(srv, "paper_carry_status", strategy="manual")
         assert s["ok"] is True, s
         (tr,) = s["data"]["open"]
@@ -556,45 +458,72 @@ async def test_open_and_status_skip_a_wrong_type_funding_rate(state, tmp_path):
         await rt.store.aclose()
 
 
-async def test_open_provider_failure_writes_nothing(state, tmp_path):
+async def test_status_with_provider_failure(state, tmp_path):
     rt = await _rt(state, tmp_path)
     srv, _ = build_server(rt)
     try:
-        env = await _call(srv, "carry_paper_open", base="BTC", long_venue="okx", short_venue="bybit")
-        assert env["ok"] is False and env["missing"]
-        await rt.store.init()
-        assert await rt.store.carry_paper_list() == []
-        same = await _call(srv, "carry_paper_open", base="BTC", long_venue="bybit", short_venue="bybit")
-        assert same["ok"] is False
-    finally:
-        await rt.store.aclose()
-
-
-async def test_status_and_close_with_provider_failure(state, tmp_path):
-    rt = await _rt(state, tmp_path)
-    srv, _ = build_server(rt)
-    try:
-        assert (await _call(srv, "carry_paper_open", base="BTC", long_venue="binanceusdm", short_venue="bybit"))["ok"]
-        await rt.store.init()
-        await rt.store.carry_paper_insert(
-            opened_ts=int(NOW.timestamp()) - 86400, base="BTC", symbol="BTC/USDT:USDT", long_venue="okx", short_venue="bybit", qty=0.01,
-            notional_usd=1000.0, long_entry=82750.0, short_entry=82750.0, leverage=2.0, stop_move=0.5, lookback_days=7.0, exit_apr=0.0,
-            slippage=0.0005,
-        )  # fmt: skip
+        await _open(rt)
+        await _open(rt, NOW - timedelta(days=1), long_venue="okx", qty=0.01)
         s = await _call(srv, "paper_carry_status", strategy="manual")
         assert len(s["data"]["open"]) == 2
         marked = [t for t in s["data"]["open"] if "mark" in t]
         assert [t["id"] for t in marked] == [1]
         assert any(m["field"] == "carry_paper:2" for m in s["missing"])
-
-        c = await _call(srv, "carry_paper_close", id=2, reason="manual")
-        assert c["ok"] is False and c["data"] is None
         await rt.store.init()
         assert (await rt.store.carry_paper_get(2))["status"] == "open"
-        assert await rt.store.journal_list(tag="pp-paper") == []
 
         nf = await _call(srv, "paper_carry_status", strategy="manual", id=99)
         assert nf["ok"] is False
+    finally:
+        await rt.store.aclose()
+
+
+async def test_status_shows_closed_manual_pairs_with_summary(state, tmp_path):
+    # the closing tool is gone (2026-11-18); closed pairs already in the store are still summarised by the status tool
+    rt = await _rt(state, tmp_path)
+    srv, _ = build_server(rt)
+    try:
+        closed_ts = int(NOW.timestamp()) - 86400
+        rows = (
+            (True, 12.3456, 0.0123456, False),  # opened while the entry rule held
+            (False, -6.1, -0.0061, True),  # off-rule and stopped
+        )
+        for tradable, pnl, ret, stopped in rows:
+            tid = await _open(rt, NOW - timedelta(days=5), entry_tradable=tradable)
+            assert (
+                await rt.store.carry_paper_close(
+                    tid,
+                    status="closed",
+                    closed_ts=closed_ts,
+                    exit_reason="stop" if stopped else "manual",
+                    funding_pnl=1.0,
+                    price_pnl=0.0,
+                    costs=2.0,
+                    pnl_usd=pnl,
+                    return_on_notional=ret,
+                    stopped=stopped,
+                    stop_ts=closed_ts if stopped else None,
+                )  # fmt: skip
+                == 1
+            )
+        s = await _call(srv, "paper_carry_status", strategy="manual", include_closed=True)
+        assert s["ok"] is True, s  # nothing open, but closed pairs were asked for and exist
+        assert s["data"]["open"] == []
+        sm = s["data"]["summary_closed"]
+        assert sm["n"] == 2 and sm["share_stopped"] == 0.5 and sm["share_losing"] == 0.5
+        assert sm["mean_return"] == pytest.approx((0.0123456 - 0.0061) / 2, abs=1e-5)  # rounded to 5 places
+        assert sm["sum_pnl_usd"] == pytest.approx(12.3456 - 6.1, abs=0.01) and sm["mean_held_days"] == pytest.approx(4.0)
+        sub = sm["entry_tradable"]
+        assert sub["n"] == 1 and sub["share_stopped"] == 0.0 and sub["mean_return"] == pytest.approx(0.0123456, abs=1e-5)
+        got = {c["id"]: c for c in s["data"]["closed"]}
+        assert set(got) == {1, 2}
+        for tid, (tradable, pnl, ret, stopped) in enumerate(rows, start=1):
+            c = got[tid]
+            assert c["entry_tradable"] is tradable and c["stopped"] is stopped
+            assert c["pnl_usd"] == pytest.approx(pnl, abs=0.01) and c["return_on_notional"] == pytest.approx(ret, abs=1e-5)
+        assert got[2]["exit_reason"] == "stop" and got[2]["stop_at"] is not None and got[1]["stop_at"] is None
+        one = await _call(srv, "paper_carry_status", strategy="manual", id=2)
+        assert one["data"]["trade"]["pnl_usd"] == pytest.approx(-6.1) and one["data"]["trade"]["status"] == "closed"
     finally:
         await rt.store.aclose()
 
@@ -605,17 +534,13 @@ async def test_tools_without_store_report_config_miss(state):
         transports=make_transports(state),
         exchange_factory=FakeEx,
     )
+    rt.now = lambda: NOW
     srv, _ = build_server(rt)
-    for name, args in (
-        ("carry_paper_open", dict(base="BTC", long_venue="binanceusdm", short_venue="bybit")),
-        ("paper_carry_status", {"strategy": "manual"}),
-        ("carry_paper_close", dict(id=1, reason="manual")),
-    ):
-        env = await _call(srv, name, **args)
-        assert env["ok"] is False and env["missing"][0]["provider"] == "tradedesk"
+    env = await _call(srv, "paper_carry_status", strategy="manual")
+    assert env["ok"] is False and env["missing"][0]["provider"] == "tradedesk"
 
 
-# ---------- stop detection, pagination, atomic close through the tools ----------
+# ---------- stop detection and pagination through the tool ----------
 
 SPIKE_TS = 1791590400000  # 2026-10-10 00:00 UTC on the 4h grid; the bar closes 04:00, 9 h before NOW
 
@@ -665,14 +590,12 @@ def _expected_funding_to(stop_ms: int, open_ms: int) -> float:
     return sum(_fake_rate("bybit", i) - _fake_rate("binanceusdm", i) for i in idx) * 1000.0
 
 
-async def test_status_detects_stop_through_paginated_bars_and_close_freezes_it(state, tmp_path):
+async def test_status_detects_stop_through_paginated_bars(state, tmp_path):
     rt = await _rt_with(state, tmp_path, SpikeEx)
     srv, _ = build_server(rt)
     try:
         open_at = NOW - timedelta(days=20)  # 20 d of 4h bars = 120 > one 100-bar page
-        rt.now = lambda: open_at
-        assert (await _call(srv, "carry_paper_open", base="BTC", long_venue="binanceusdm", short_venue="bybit"))["ok"]
-        rt.now = lambda: NOW
+        await _open(rt, open_at)
         s = await _call(srv, "paper_carry_status", strategy="manual")
         (tr,) = s["data"]["open"]
         mk = tr["mark"]
@@ -688,39 +611,6 @@ async def test_status_detects_stop_through_paginated_bars_and_close_freezes_it(s
         assert mk["costs_usd"] == pytest.approx(2 * side + 10.0, abs=0.01)  # exit costs and penalty frozen at the stop
         assert mk["price_pnl_usd"] == 0 and mk["held_days"] == pytest.approx((stop_ms - open_ms) / DAY_MS, abs=0.01)
 
-        # closing by hand later still records the stop, the penalty and the frozen result
-        c = await _call(srv, "carry_paper_close", id=1, reason="manual")
-        assert c["ok"] is True, c
-        d = c["data"]
-        assert d["stopped"] is True and d["exit_reason"] == "manual" and d["stop_at"] == mk["stop_at"]
-        assert d["closed"] == mk["stop_at"] and d["costs_usd"] == mk["costs_usd"]
-        assert d["return_on_notional"] == pytest.approx(mk["return_on_notional"], abs=1e-4)
-        assert any("hit its stop" in w for w in c["warnings"])
-        s2 = await _call(srv, "paper_carry_status", strategy="manual")
-        assert s2["data"]["summary_closed"]["share_stopped"] == 1.0
-    finally:
-        await rt.store.aclose()
-
-
-async def test_concurrent_close_writes_one_journal_row(state, tmp_path):
-    rt = await _rt_with(state, tmp_path, SpikeEx)
-    srv, _ = build_server(rt)
-    try:
-        assert (await _call(srv, "carry_paper_open", base="BTC", long_venue="binanceusdm", short_venue="bybit"))["ok"]
-        a, b = await _call_many(
-            srv, [("carry_paper_close", dict(id=1, reason="manual")), ("carry_paper_close", dict(id=1, reason="manual"))]
-        )
-        oks = sorted([a["ok"], b["ok"]])
-        assert oks == [False, True]
-        loser = a if not a["ok"] else b
-        assert loser["data"] is None and loser["missing"][0]["field"] == "carry_paper"
-        jl = await _call(srv, "journal_list", tag="pp-paper")
-        assert jl["data"]["count"] == 1
-        assert (await _call(srv, "journal_stats", tag="pp-paper"))["data"]["closed_trades"] == 1
-        # a repeated close afterwards is rejected too
-        again = await _call(srv, "carry_paper_close", id=1, reason="manual")
-        assert again["ok"] is False
-        assert (await _call(srv, "journal_list", tag="pp-paper"))["data"]["count"] == 1
     finally:
         await rt.store.aclose()
 
@@ -730,9 +620,7 @@ async def test_bar_page_failure_warns_and_marks_stop_check_incomplete(state, tmp
     SpikeEx.fail_second_bybit_page = True
     srv, _ = build_server(rt)
     try:
-        rt.now = lambda: NOW - timedelta(days=20)
-        assert (await _call(srv, "carry_paper_open", base="BTC", long_venue="binanceusdm", short_venue="bybit"))["ok"]
-        rt.now = lambda: NOW
+        await _open(rt, NOW - timedelta(days=20))
         s = await _call(srv, "paper_carry_status", strategy="manual")
         assert s["ok"] is True
         (tr,) = s["data"]["open"]
@@ -756,31 +644,6 @@ async def test_status_is_not_ok_when_no_open_pair_can_be_marked(state, tmp_path)
             s = await _call(srv, "paper_carry_status", strategy="manual", **args)
             assert s["ok"] is False and s["data"]["open"][0].get("mark") is None
             assert any(m["field"] == "carry_paper:1" for m in s["missing"])
-    finally:
-        await rt.store.aclose()
-
-
-async def test_entry_tradable_subset_in_summary_and_journal_tags(state, tmp_path):
-    rt = await _rt_with(state, tmp_path, SpikeEx)
-    srv, _ = build_server(rt)
-    try:
-        for tradable in (True, False):
-            await rt.store.carry_paper_insert(
-                opened_ts=int(NOW.timestamp()) - 3600, base="BTC", symbol="BTC/USDT:USDT", long_venue="binanceusdm",
-                short_venue="bybit", qty=0.01, notional_usd=1000.0, long_entry=82750.0, short_entry=82750.0, leverage=2.0,
-                stop_move=0.5, lookback_days=7.0, exit_apr=0.0, entry_tradable=tradable, tags=["pp-paper-rule", "mine"],
-            )  # fmt: skip
-        for i in (1, 2):
-            assert (await _call(srv, "carry_paper_close", id=i, reason="manual"))["ok"]
-        s = await _call(srv, "paper_carry_status", strategy="manual")
-        assert s["data"]["summary_closed"]["n"] == 2 and s["data"]["summary_closed"]["entry_tradable"]["n"] == 1
-        tags = [t["tags"] for t in (await _call(srv, "journal_list", tag="pp-paper"))["data"]["trades"]]
-        assert sum("pp-paper-offrule" in t for t in tags) == 1
-        # N3: the rule-based pair carries pp-paper-rule; a user tag of that name is not copied to the off-rule pair
-        assert sum("pp-paper-rule" in t for t in tags) == 1
-        assert not any("pp-paper-rule" in t and "pp-paper-offrule" in t for t in tags)
-        assert all(t.count("pp-paper") == 1 for t in tags)
-        assert (await _call(srv, "journal_stats", tag="pp-paper-rule"))["data"]["closed_trades"] == 1
     finally:
         await rt.store.aclose()
 
@@ -810,9 +673,7 @@ async def test_status_ignores_prices_before_entry_inside_the_entry_bar(state, tm
     rt = await _rt_with(state, tmp_path, PreEntrySpikeEx)
     srv, _ = build_server(rt)
     try:
-        rt.now = lambda: NOW - timedelta(hours=2)
-        assert (await _call(srv, "carry_paper_open", base="BTC", long_venue="binanceusdm", short_venue="bybit"))["ok"]
-        rt.now = lambda: NOW
+        await _open(rt, NOW - timedelta(hours=2))
         s = await _call(srv, "paper_carry_status", strategy="manual")
         assert s["ok"] is True, s
         mk = s["data"]["open"][0]["mark"]
@@ -843,9 +704,7 @@ async def test_status_complete_when_venue_returns_only_closed_bars(state, tmp_pa
     rt = await _rt_with(state, tmp_path, ClosedBarsOnlyEx)
     srv, _ = build_server(rt)
     try:
-        rt.now = lambda: NOW - timedelta(days=2)
-        assert (await _call(srv, "carry_paper_open", base="BTC", long_venue="binanceusdm", short_venue="bybit"))["ok"]
-        rt.now = lambda: NOW
+        await _open(rt, NOW - timedelta(days=2))
         s = await _call(srv, "paper_carry_status", strategy="manual")
         assert s["data"]["open"][0]["mark"]["stop_check"] == "complete"
         assert not any("bar(s) missing" in w for w in s["warnings"])
@@ -853,16 +712,15 @@ async def test_status_complete_when_venue_returns_only_closed_bars(state, tmp_pa
         await rt.store.aclose()
 
 
-async def test_open_is_not_idempotent_in_annotations(state, tmp_path):
+async def test_manual_book_tools_on_the_server(state, tmp_path):
     rt = await _rt(state, tmp_path)
     srv, _ = build_server(rt)
     try:
         async with Client(srv) as c:
             tools = {t.name: t for t in (await c.list_tools()).tools}
-        op = tools["carry_paper_open"].annotations.model_dump(by_alias=True)
-        assert op["idempotentHint"] is False and op["readOnlyHint"] is True and op["destructiveHint"] is False
-        assert op["openWorldHint"] is True
         assert tools["paper_carry_status"].annotations.model_dump(by_alias=True)["idempotentHint"] is True
+        # removed 2026-11-18 (docs/changes/2026-11-18-mcp-remove-six.md): the manual book is only read now
+        assert not {"carry_paper_open", "carry_paper_close"} & set(tools)
         assert "carry_paper_status" not in tools  # merged into paper_carry_status(strategy="manual") 2026-11-17
     finally:
         await rt.store.aclose()

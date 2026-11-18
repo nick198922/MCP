@@ -24,6 +24,7 @@ import pytest
 from mcp import Client
 
 from conftest import NOW
+from test_server import EXPECTED_TOOLS
 from tradedesk.config import Settings
 from tradedesk.core.ratelimit import TokenBucket
 from tradedesk.runtime import Runtime
@@ -61,7 +62,6 @@ ARRAYS = {
     "legs": [{"kind": "call", "side": "long", "size": 1, "strike": 82_000, "entry_premium": 2_000}],
 }
 ARGS: dict[str, dict[str, Any]] = {
-    "carry_paper_open": {"long_venue": "binanceusdm", "short_venue": "bybit"},
     # Coinalyze takes a bare coin; with a dummy key (failing_runtime) the call reaches the failing transport.
     "liquidations_history": {"symbol": "BTC"},
     "plan_add": {"entry": 82_750.0, "stop": 80_000.0, "target": 90_000.0, "expires_ts": int(NOW.timestamp()) + 86_400},
@@ -224,7 +224,9 @@ async def run_all(mode: str, db_path: str) -> Outcome:
 async def test_no_tool_raises_when_every_provider_is_down(mode, tmp_path):
     out = await run_all(mode, str(tmp_path / "outage.sqlite"))
     assert out.leaks == []  # every request went to the failing transports, none to a real venue
-    assert out.called >= 95  # the guard really walked the registry (97 tools since the range_* merge, 2026-11-18)
+    # the guard really walked the registry: relative to the tool count, so removing tools does not break it
+    # (91 tools, 89+ called on 2026-11-18)
+    assert out.called >= len(EXPECTED_TOOLS) - len(SKIP) - 2
     assert out.attempted >= 50  # and the failing providers were really hit
     assert set(SKIP) - out.names == set(), "SKIP names a tool that is not registered"
     new = {name: why for name, why in out.violations.items() if name not in KNOWN}

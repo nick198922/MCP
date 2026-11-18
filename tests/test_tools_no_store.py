@@ -46,12 +46,9 @@ QUERY_GUARDED = {
     "alerts_recent",
     "assistant_paper_open",
     "assistant_paper_status",
-    "carry_paper_close",
-    "carry_paper_open",
     "event_study",
     "events_add",
     "events_list",
-    "events_seed_load",
     "forecast_log_status",
     "funding_zscore",
     "iv_rank",
@@ -75,17 +72,16 @@ QUERY_GUARDED = {
     "rules_add",
     "rules_disable",
     "rules_list",
-    "rules_presets_load",
     "rules_test",
     "skew_percentile",
     "system_health",
 }
 
-# Guarded tools that do not report `missing: store` on a query error with the test ARGS: four return before their first
-# store query (providers fail first in the two `*_open`, `events_add` has no time, `rules_test` has no expression);
+# Guarded tools that do not report `missing: store` on a query error with the test ARGS: three return before their first
+# store query (providers fail first in `assistant_paper_open`, `events_add` has no time, `rules_test` has no expression);
 # `paper_carry_status` catches the error per book and reports it as `paper_carry:<book>`. range_detect's view='setup'
 # (the former range_setup) reads live bars by default: its source='store' path has its own test below.
-NO_QUERY_WITH_ARGS = {"assistant_paper_open", "carry_paper_open", "events_add", "rules_test", "paper_carry_status"}
+NO_QUERY_WITH_ARGS = {"assistant_paper_open", "events_add", "rules_test", "paper_carry_status"}
 
 # Guarded tools that still have other data when the store fails, so they report `missing: store` with ok=true.
 PARTIAL_ON_STORE_ERROR = {"system_health"}
@@ -264,7 +260,7 @@ def test_store_tool_discovery():
     """The AST scan finds the store tools (a broken scan would make the test above vacuous)."""
     assert STORE_TOOLS <= EXPECTED_TOOLS
     assert {"journal_add", "journal_list", "rules_add", "positions_list", "plan_add", "liquidations_summary"} <= STORE_TOOLS
-    assert len(STORE_TOOLS) >= 35
+    assert len(STORE_TOOLS) >= 32  # 36 until four store tools were removed 2026-11-18 (docs/changes/2026-11-18-mcp-remove-six.md)
     assert set().union(*KNOWN_RAISERS.values()) <= STORE_TOOLS
     assert QUERY_GUARDED == STORE_TOOLS, f"store tools without a query-error check: {sorted(STORE_TOOLS - QUERY_GUARDED)}"
 

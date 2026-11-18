@@ -59,9 +59,24 @@ def test_write_tools_exist_on_the_server():
     assert mc.WRITE_TOOLS <= names  # a renamed tool must not slip out of the refusal list
 
 
+# Write tools removed from the MCP server on 2026-11-18 (docs/changes/2026-11-18-mcp-remove-six.md). The agents may not
+# edit scripts/nightly_agents.sh, so its deny list may still name them until the owner drops them there (denying a tool
+# that no longer exists is harmless). Only these names may be extra; once the owner removes them this still passes.
+REMOVED_WRITE_TOOLS = frozenset({"events_seed_load", "rules_presets_load", "carry_paper_open", "carry_paper_close"})
+
+
 def test_agents_launcher_denies_the_same_write_tools():
     import re
 
     sh = (Path(__file__).resolve().parent.parent / "scripts" / "nightly_agents.sh").read_text(encoding="utf-8")
     denied = set(re.findall(r'"mcp__tradedesk__([a-z_]+)"', sh))
-    assert denied == set(mc.WRITE_TOOLS)
+    assert denied - REMOVED_WRITE_TOOLS == set(mc.WRITE_TOOLS)
+    assert not REMOVED_WRITE_TOOLS & mc.WRITE_TOOLS
+
+
+def test_removed_write_tools_are_not_on_the_server():
+    from tradedesk.server import build_server
+
+    server, _ = build_server()
+    names = {t.name for t in __import__("asyncio").run(server.list_tools())}
+    assert not REMOVED_WRITE_TOOLS & names

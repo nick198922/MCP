@@ -27,7 +27,6 @@ BASE: dict[str, dict[str, Any]] = {
     "odds_devig": {"odds": [1.9, 2.0]},
     "option_calc": {"forward": 100.0, "strike": 100.0, "days": 30.0, "iv": 0.5},
     "touch_probability": {"spot": 100.0, "barrier": 110.0, "days": 30.0, "iv": 0.5},
-    "fib_retracement": {"p0": 100.0, "l_point": 90.0},
     "strategy_payoff": {"legs": [LEG], "spot": 100.0, "days": 30.0, "iv": 0.5},
     "strategy_payoff:straddle": {
         "preset": "straddle",
@@ -101,7 +100,6 @@ def _cases() -> list[tuple[str, dict[str, Any]]]:
         if tool in PRESET_CASES:
             out += [(tool, {**base, "size": v}) for v in SCALAR_BAD]
     out += [("odds_devig", {"odds": [v, 2.0]}) for v in MEMBER_BAD]
-    out += [("fib_retracement", {"p0": 100.0, "l_point": 90.0, "levels": [0.5, v]}) for v in MEMBER_BAD]
     for tool in ("strategy_payoff", "strategy_scenario_matrix"):
         base = BASE[tool]
         for key in ("size", "strike", "entry_premium"):
@@ -119,7 +117,6 @@ EXTREME: list[tuple[str, dict[str, Any]]] = [
     ("odds_devig", {"odds": [1.001, 1.001, 1e300], "method": "power"}),  # p**k underflows to 0 -> 1 / 0
     ("option_calc", {"forward": 1e-300, "strike": 1e300, "days": 30.0, "iv": 0.5}),  # F / K underflows -> log(0)
     ("touch_probability", {"spot": 100.0, "barrier": 110.0, "days": 30.0, "iv": 1e-300}),  # sigma^2 underflows -> / 0
-    ("fib_retracement", {"p0": 1e308, "l_point": 1e-300, "levels": [1e308]}),  # ladder price overflows
     ("strategy_payoff", {"legs": [{**LEG, "size": 1e300, "entry_premium": 1e300}], "spot": 100.0, "days": 30.0, "iv": 0.5}),
     (
         "strategy_payoff:straddle",

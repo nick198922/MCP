@@ -119,14 +119,10 @@ TOOL_CALLS = {
     "assistant_paper.py::assistant_paper_status::rec_paper_list#1": "due trades: settled only when every leg is well formed",
     "assistant_paper.py::assistant_paper_status::rec_paper_list#2": GOOD_LEGS,
     "assistant_paper.py::assistant_paper_status::rec_paper_list#3": GOOD_LEGS + "; summary numbers",
-    "carry_paper.py::carry_paper_open::carry_paper_list#1": "not in the reply: ids of duplicates",
     # paper_carry_status(strategy="manual"), the former carry_paper_status tool
     "carry_paper.py::manual_book_status::carry_paper_get#1": PAIR_TAGS,
     "carry_paper.py::manual_book_status::carry_paper_list#1": PAIR_TAGS,
     "carry_paper.py::manual_book_status::carry_paper_list#2": PAIR_TAGS + " for the rows shown; summary numbers",
-    "carry_paper.py::carry_paper_close::carry_paper_get#1": PAIR_TAGS + ", before the journal mirror copies tags",
-    "carry_paper.py::carry_paper_close::carry_paper_get#2": "reread: the cleaned tags / entry_flags of #1 replace the stored ones",
-    "carry_paper.py::carry_paper_close::carry_paper_get#3": "reread: the cleaned tags / entry_flags of #1 replace the stored ones",
 }
 
 

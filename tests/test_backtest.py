@@ -1,16 +1,12 @@
 from __future__ import annotations
 
-import json
-
 import pytest
-from mcp import Client
 
-from conftest import NOW, FakeEx, make_transports
 from tradedesk.analytics.backtest import run_backtest, signals_momentum
-from tradedesk.config import Settings
-from tradedesk.runtime import Runtime
-from tradedesk.server import build_server
 from tradedesk.tools._util import timeframe_seconds
+
+# The MCP tool strategy_backtest_momentum was removed 2026-11-18 (docs/changes/2026-11-18-mcp-remove-six.md); the pure
+# backtest stays in analytics/backtest.py.
 
 # ---------- helpers ----------
 
@@ -81,63 +77,3 @@ def test_run_backtest_stats_block_shape():
     s = res["stats"]
     for key in ("count", "total_return", "mean_bar_return", "stdev_bar_return", "max_drawdown", "num_trades"):
         assert key in s
-
-
-# ---------- MCP tool ----------
-
-
-async def _call(server, name, **args):
-    async with Client(server) as c:
-        res = await c.call_tool(name, args)
-    data = res.structured_content if res.structured_content is not None else json.loads(res.content[0].text)
-    if set(data) == {"result"}:
-        data = data["result"]
-    return data
-
-
-async def test_strategy_backtest_momentum_runs(state):
-    rt = Runtime(
-        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=""),
-        transports=make_transports(state),
-        exchange_factory=FakeEx,
-    )
-    rt.now = lambda: NOW
-    srv, _ = build_server(rt)
-    try:
-        env = await _call(
-            srv,
-            "strategy_backtest_momentum",
-            exchange="binanceusdm",
-            symbol="BTC/USDT:USDT",
-            timeframe="1h",
-            limit=100,
-            lookback=20,
-            threshold_pct=0.3,
-            fee_bps=0.0,
-            slippage_bps=0.0,
-        )
-        d = env["data"]
-        assert d["exchange"] == "binanceusdm"
-        assert d["bars_used"] == 100
-        # FakeEx walks a mild up-trend, so a lookback=20 / thr=0.3% breakout should fire ≥ once.
-        assert d["stats"]["num_trades"] >= 1
-        assert d["stats"]["max_drawdown"] <= 0
-    finally:
-        await rt.aclose()
-
-
-async def test_strategy_backtest_momentum_bad_timeframe_is_reported_not_raised(state):
-    rt = Runtime(
-        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=""),
-        transports=make_transports(state),
-        exchange_factory=FakeEx,
-    )
-    rt.now = lambda: NOW
-    srv, _ = build_server(rt)
-    try:
-        env = await _call(srv, "strategy_backtest_momentum", exchange="binanceusdm", symbol="BTC/USDT:USDT", timeframe="1x")
-        assert env["ok"] is False
-        assert env["missing"][0]["field"] == "timeframe"
-        assert env["missing"][0]["reason"] == "config"
-    finally:
-        await rt.aclose()

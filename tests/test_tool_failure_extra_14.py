@@ -41,7 +41,7 @@ _DB = itertools.count()
 
 
 def _rt(tmp_path, ex: type = FakeEx, transports: dict | None = None) -> Runtime:
-    """A runtime with its own store file: carry_paper_open writes a pair, the reference run must not see it."""
+    """A runtime with its own store file (carry_paper_open, removed 2026-11-18, wrote a pair the reference run must not see)."""
     rt = Runtime(
         Settings(http_retries=0, http_retry_backoff=0.0, cache_scale=0.0, db_path=str(tmp_path / f"extra14_{next(_DB)}.sqlite")),
         transports=transports or make_transports(State()),
@@ -107,7 +107,6 @@ BAR_TOOLS = {
     "range_detect:setup": {"venue": "binanceusdm", "symbol": SYM, "view": "setup"},
     "range_detect:scan": {"venue": "binanceusdm", "symbols": [SYM], "view": "scan"},
     "market_regime": {"venue": "binanceusdm", "symbol": SYM, "source": "live"},
-    "strategy_backtest_momentum": {"exchange": "binanceusdm", "symbol": SYM},
     "funding_spread_scan": {},
 }
 
@@ -328,14 +327,13 @@ FUNDING_TOOLS = {
     "perps_funding_history": {"base": "BTC"},
     "funding_carry_scan": {},
     "funding_spread_scan": {},
-    "carry_paper_open": {"base": "BTC", "long_venue": "binanceusdm", "short_venue": "bybit"},
 }
 
 
 @pytest.mark.parametrize("tool", FUNDING_TOOLS)
 @pytest.mark.parametrize("value", [HUGE, -HUGE, 2.0], ids=["1e308", "neg_1e308", "200pct"])
 async def test_a_funding_rate_beyond_100_pct_is_dropped(tmp_path, tool, value):
-    # 1e308 raised out of perps_funding_history and gave Infinity / NaN in the scans and carry_paper_open.
+    # 1e308 raised out of perps_funding_history and gave Infinity / NaN in the scans (and the removed carry_paper_open).
     ref = await _env(_rt(tmp_path, _funding_ex(("drop",))), tool, FUNDING_TOOLS[tool])
     env = await _env(_rt(tmp_path, _funding_ex(("cell", "rate", value))), tool, FUNDING_TOOLS[tool])
     _same(env, ref)

@@ -91,7 +91,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "rejected spot-vs-perp-flow-divergence, taker-imbalance-8h-continuation, oi-quadrant-squeeze-vs-newlong, "
             "liquidation-flush-overshoot, gex-taker-flow-range, us-demand-flows (Coinbase premium); inconclusive "
             "funding-crowding-longshort, oi-confirmed-liquidation-flush, perp-spot-premium-spike-convergence; the "
-            "combined test is not done. A source that fails goes to `missing`; the rest is returned."
+            "combined test is not done. A source that fails goes to `missing`; the rest is returned. By default only "
+            "the summaries, quadrants, sentences and latest per-venue values are returned (a few thousand characters); "
+            "set `include_series=true` for the full per-bar series (about 64k characters for 7 days of 1h bars)."
         ),
     )
     async def market_flow(
@@ -111,7 +113,15 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 )
             ),
         ] = None,
-        include_series: Annotated[bool, Field(description="Return the per-bar series (false = summaries only).")] = True,
+        include_series: Annotated[
+            bool,
+            Field(
+                description=(
+                    "Also return the per-bar series (price, CVD, OI, funding, liquidations, long share, premium per bar, "
+                    "same units as the summaries); false (default) = summaries only, a compact answer."
+                )
+            ),
+        ] = False,
     ) -> dict[str, Any]:
         b = Builder()
         sym_base = (base or "").strip().upper()

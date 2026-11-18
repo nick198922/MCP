@@ -17,6 +17,7 @@ from ..analytics.trades import summarise as summarise_trades
 from ..core.envelope import Builder
 from ..providers.exchanges import PERP_EXCHANGES
 from ..runtime import Runtime
+from . import coinalyze as cz
 from ._util import MAX_FUNDING_RATE, READ_ONLY, bar_rows, finite_float, hl_bar_row, json_num, parsed_rows, r, timeframe_seconds
 
 BASE = Annotated[str, Field(description="Base asset, e.g. BTC, ETH, SOL")]
@@ -57,6 +58,38 @@ INCLUDE_SERIES = Annotated[bool, Field(description="Also return each venue's raw
 _PERIOD_SECONDS = {"5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14400, "1d": 86400}
 _PERIOD_BINANCE = {"5m": "5m", "15m": "15m", "30m": "30m", "1h": "1h", "4h": "4h", "1d": "1d"}
 _PERIOD_BYBIT = {"5m": "5min", "15m": "15min", "30m": "30min", "1h": "1h", "4h": "4h", "1d": "1d"}
+
+# source="coinalyze" (the former coinalyze_* history tools, merged 2026-11-18): Coinalyze-only parameters.
+SOURCE = Annotated[
+    Literal["exchanges", "coinalyze"],
+    Field(
+        description=(
+            "'exchanges' (default): the venues' own public APIs, recent history side by side. 'coinalyze': Coinalyze "
+            "history (needs the COINALYZE_API_KEY setting), daily back years or hourly for a recent window, with its "
+            "own row format (see the tool description)."
+        )
+    ),
+]
+CZ_INTERVAL = Annotated[
+    Literal["daily", "hourly"],
+    Field(description="source='coinalyze' only: bucket size, UTC-aligned; hourly is capped at 30 days. Ignored by source='exchanges'."),
+]
+CZ_DAYS = Annotated[
+    int,
+    Field(
+        ge=1,
+        le=365,
+        description="source='coinalyze' only: look-back window in days (hourly is capped at 30). Ignored by source='exchanges' (period, limit).",
+    ),
+]
+CZ_MARGIN = Annotated[
+    Literal["usdt", "usd"],
+    Field(
+        description="source='coinalyze' only: 'usdt' = USDT-margined perps (default), 'usd' = coin-margined perps. Ignored by source='exchanges'."
+    ),
+]
+_CZ_ONLY = "{param} applies to source='coinalyze' only; ignored here."
+_EX_ONLY = "{param} applies to source='exchanges' only; ignored here."
 
 
 def _series_stats(values: list[float], step_seconds: int) -> dict[str, Any]:
@@ -392,13 +425,26 @@ def register(server: MCPServer, rt: Runtime) -> None:
     @server.tool(
         annotations=READ_ONLY,
         description=(
-            "Historical perp funding across venues (Binance USDT-M, Bybit, OKX via ccxt; Hyperliquid). "
+            "Historical perp funding. source='exchanges' (default): across venues (Binance USDT-M, Bybit, OKX via ccxt; "
+            "Hyperliquid), up to 180 days back. "
             "For each venue returns: count, interval (auto-detected from the median timestamp spacing), latest rate per interval and annualised, "
             "mean/stdev/min/max of the rate, 7d and 30d means, carry APR (= sum of actual payments over the covered span, annualised; robust to interval changes), z-score and percentile of the latest "
             "value vs the whole window, polarity flips. Plus a cross-venue summary (highest/lowest carry, biggest absolute z). "
             "Rates are decimals per funding interval (0.0001 = 0.01 %); annualised values and carry APR are simple decimals "
             "(0.10 = 10 %/year). "
-            "Set `include_series=true` to also receive each venue's raw [ts_ms, rate] rows."
+            "Set `include_series=true` to also receive each venue's raw [ts_ms, rate] rows. "
+            "source='coinalyze': funding-rate history (OHLC per interval) of the perp on **Binance only** from Coinalyze "
+            "(symbol suffix '.A' is the Binance exchange code, not an all-exchanges aggregate; needs the COINALYZE_API_KEY "
+            "setting); days_back in whole days up to 365, `interval` daily (back years) or hourly (a limited recent "
+            "window, capped at 30 days), `margin`; exchanges / include_hyperliquid / include_series are ignored. Units: "
+            "decimal fractions per funding interval (0.0001 = 0.01 % per settlement, usually 8 h on Binance, some symbols "
+            "4 h or 1 h); NOT annualised, no carry APR. Coinalyze sends percent; we divide by 100. For daily bars use close "
+            "(= last settlement of the UTC day) and high (= largest settlement), both checked against Binance payments "
+            "2026-10-18; open and low may carry the previous day's last rate, so they are not this day's settlements. "
+            "Stats over the closes: latest, mean, stdev, min, max, z-score of the latest, change. The mean of daily "
+            "closes is neither the average rate of the day nor the sum of its payments: do not compute carry from it. "
+            "Hourly bars are unverified (in hours without a settlement Coinalyze may repeat the last rate, send a "
+            "predicted one or skip the bar). Descriptive data, not a signal."
         ),
     )
     async def perps_funding_history(
@@ -409,15 +455,36 @@ def register(server: MCPServer, rt: Runtime) -> None:
             float,
             Field(
                 gt=0,
-                le=180,
-                description="History window in days back from now. Venues may keep less (OKX about 3 months); a warning flags short coverage.",
+                le=365,
+                description=(
+                    "History window in days back from now. source='exchanges': up to 180; venues may keep less (OKX about "
+                    "3 months), a warning flags short coverage. source='coinalyze': whole days, 1 to 365 (hourly capped at 30)."
+                ),
             ),
         ] = 30.0,
         include_series: Annotated[
             bool, Field(description="Also return each venue's raw rows [ts_ms, rate per interval as a decimal]; false = stats only.")
         ] = False,
+        source: SOURCE = "exchanges",
+        interval: CZ_INTERVAL = "daily",
+        margin: CZ_MARGIN = "usdt",
     ) -> dict[str, Any]:
         b = Builder()
+        if source == "coinalyze":
+            if exchanges is not None:
+                b.warn(_EX_ONLY.format(param="exchanges"))
+            if days_back < 1 or days_back != int(days_back):
+                b.miss("days_back", "tradedesk", "invalid_argument", "source='coinalyze' takes whole days from 1 to 365")
+                return b.build(None, ok=False)
+            return await cz.funding_history(b, rt, base, interval, int(days_back), margin)
+        if days_back > 180:
+            b.miss(
+                "days_back",
+                "tradedesk",
+                "invalid_argument",
+                "source='exchanges' keeps up to 180 days; longer daily history: source='coinalyze'",
+            )
+            return b.build(None, ok=False)
         base = base.upper()
         symbol = f"{base}/USDT:USDT"
         venues = [e.lower() for e in (exchanges or PERP_EXCHANGES)]
@@ -851,10 +918,20 @@ def register(server: MCPServer, rt: Runtime) -> None:
     @server.tool(
         annotations=READ_ONLY,
         description=(
-            "Retail long/short account ratio history on Binance USDT-M and Bybit (public /futures/data and /v5/market/account-ratio). "
+            "Retail long/short account ratio history. source='exchanges' (default): Binance USDT-M and Bybit (public /futures/data and /v5/market/account-ratio). "
             "Both report **account fractions** (not notional-weighted), summing to ~1.0. Per venue returns the raw series plus latest/mean/min/max/24h-change/z-score. "
             "Cross-venue: who is most long right now, and absolute divergence between venues (large divergence = disagreement between retail cohorts). "
-            "`period` is one of 5m/15m/30m/1h/4h/1d; `limit` up to 500. Set `include_series=true` to see all rows."
+            "`period` is one of 5m/15m/30m/1h/4h/1d; `limit` up to 500. Set `include_series=true` to see all rows. "
+            "source='coinalyze': long/short account-ratio history of the perp on **Binance only** from Coinalyze (symbol "
+            "suffix '.A' is the Binance exchange code, not an all-exchanges aggregate; needs the COINALYZE_API_KEY "
+            "setting); uses interval (daily back years, hourly a limited recent window capped at 30 days) / days / "
+            "margin, ignores period / limit / include_series. Rows: ratio = long accounts / short accounts, long_share "
+            "and short_share as fractions in [0, 1] (Coinalyze sends percent; we divide by 100). Counts accounts, not "
+            "notional: a crowd of small longs can face a few large shorts. Matches Binance globalLongShortAccountRatio "
+            "(checked 2026-10-18), including its timestamps one to one: a row at t is most likely Binance's snapshot "
+            "taken at t (known at t, not at the end of the bar; inferred, not independently verified), unlike the "
+            "OI/funding OHLC rows whose t is the interval start; mind lookahead in backtests. Stats: ratio latest, mean, "
+            "stdev, min, max, z-score of the latest; latest and mean long_share. Descriptive data, not a signal."
         ),
     )
     async def perps_long_short_ratio(
@@ -862,7 +939,13 @@ def register(server: MCPServer, rt: Runtime) -> None:
         period: PERIOD = "1h",
         limit: SERIES_LIMIT = 48,
         include_series: INCLUDE_SERIES = False,
+        source: SOURCE = "exchanges",
+        interval: CZ_INTERVAL = "daily",
+        days: CZ_DAYS = 30,
+        margin: CZ_MARGIN = "usdt",
     ) -> dict[str, Any]:
+        if source == "coinalyze":
+            return await cz.long_short_history(Builder(), rt, base, interval, days, margin)
         b = Builder()
         base = base.upper()
         symbol = f"{base}USDT"
@@ -949,9 +1032,23 @@ def register(server: MCPServer, rt: Runtime) -> None:
     @server.tool(
         annotations=READ_ONLY,
         description=(
-            "Open-interest history on Binance USDT-M and Bybit (public /futures/data/openInterestHist and /v5/market/open-interest). "
+            "Open-interest history. source='exchanges' (default): Binance USDT-M and Bybit (public /futures/data/openInterestHist and /v5/market/open-interest). "
             "Binance reports both sum open interest in the base asset and in USD; Bybit reports the base-asset total only (USD estimate omitted). "
-            "Per venue: current OI (base and USD when available), mean, 24h change, z-score of latest vs the window. `period` is 5m/15m/30m/1h/4h/1d; `limit` ≤500."
+            "Per venue: current OI (base and USD when available), mean, 24h change, z-score of latest vs the window. `period` is 5m/15m/30m/1h/4h/1d; `limit` ≤500. "
+            "source='coinalyze': OI history (OHLC per interval) from Coinalyze (needs the COINALYZE_API_KEY setting); uses "
+            "interval (daily back years, hourly a limited recent window capped at 30 days) / days / margin / in_usd / "
+            "exchanges, ignores period / limit / include_series. On Binance by default or summed over the selected "
+            "exchanges: 'binance' (Coinalyze code '.A') and/or 'bybit' ('.6', USDT-margined only); no other codes are "
+            "accepted. Each code is one exchange, not an all-exchanges aggregate; the response lists the exchanges used, "
+            "and an exchange that fails or has no data goes to `missing` while the rest is summed (only intervals present "
+            "on every used exchange are summed; summed high/low are sums of per-exchange extremes, i.e. bounds). Rows: "
+            "open/high/low/close OI; stats over the closes: latest, mean, stdev, min, max, z-score of the latest, change "
+            "and change_pct (fraction, 0.05 = +5 %) from the first to the last close. Units: USD by default, or "
+            "base-asset coins with in_usd=false. USD in Coinalyze = coins x the close of the interval (its own "
+            "conversion, checked on daily liquidations), so on crash days USD values are shifted against the coin "
+            "counts; exact USD liquidation sums come from liquidations_summary. Timestamps are interval starts (Binance "
+            "openInterestHist stamps the interval end, so its daily series sits one day later). For live OI per venue "
+            "use perps_open_interest. Descriptive data, not a signal."
         ),
     )
     async def perps_oi_history(
@@ -959,8 +1056,30 @@ def register(server: MCPServer, rt: Runtime) -> None:
         period: PERIOD = "1h",
         limit: SERIES_LIMIT = 48,
         include_series: INCLUDE_SERIES = False,
+        source: SOURCE = "exchanges",
+        interval: CZ_INTERVAL = "daily",
+        days: CZ_DAYS = 30,
+        margin: CZ_MARGIN = "usdt",
+        in_usd: Annotated[
+            bool,
+            Field(description="source='coinalyze' only: OI in USD (true; coins x the interval close) or in base-asset coins (false)."),
+        ] = True,
+        exchanges: Annotated[
+            list[str] | None,
+            Field(
+                description=(
+                    "source='coinalyze' only: exchanges to sum, by name or Coinalyze code: 'binance' / '.A' (default when "
+                    "omitted) and 'bybit' / '.6' (USDT-margined only). Any other value is rejected (no request is made). "
+                    "Ignored, with a warning, by source='exchanges' (it always shows Binance and Bybit side by side)."
+                )
+            ),
+        ] = None,
     ) -> dict[str, Any]:
         b = Builder()
+        if source == "coinalyze":
+            return await cz.oi_history(b, rt, base, interval, days, margin, in_usd, exchanges)
+        if exchanges is not None:
+            b.warn(_CZ_ONLY.format(param="exchanges"))
         base = base.upper()
         symbol = f"{base}USDT"
         step = _PERIOD_SECONDS[period]

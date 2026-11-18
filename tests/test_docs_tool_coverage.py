@@ -64,8 +64,8 @@ def test_checker_on_a_fixture_tree(tmp_path):
 
 
 def test_every_expected_tool_is_in_readme_and_parity():
-    """08.11: 109 tools, 0 gaps in README.md and docs/PARITY.md."""
-    assert len(EXPECTED_TOOLS) > 100, "EXPECTED_TOOLS looks truncated"
+    """08.11: 109 tools, 0 gaps in README.md and docs/PARITY.md (99 tools since the coinalyze merge, 18.11)."""
+    assert len(EXPECTED_TOOLS) > 90, "EXPECTED_TOOLS looks truncated"
     gaps = missing_tools(ROOT, EXPECTED_TOOLS)
     new = sorted(gaps - ALLOWLIST)
     assert new == [], "tools without a table row (document, tool); add a row or an ALLOWLIST entry with a reason:\n" + "\n".join(

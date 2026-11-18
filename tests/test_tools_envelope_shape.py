@@ -97,9 +97,6 @@ EXTRA_OK: set[str] = {
     "skew_percentile",
     # item 181: Coinalyze with a test-only dummy key (samples 2026-10-17 / 2026-10-18), Gamma events + CLOB books of
     # tests/test_pm_gap.py, and the store seeded with an event, a position, a paper carry pair and 4h bars with a sweep
-    "coinalyze_funding_history",
-    "coinalyze_long_short_history",
-    "coinalyze_oi_history",
     "liquidations_history",
     "polymarket_options_gap",
     "event_study",
@@ -427,12 +424,27 @@ async def test_successful_answers_have_the_envelope_shape(tmp_path):
     assert report["listed"] >= len(EXPECTED_TOOLS)
     assert report["called"] == report["listed"] - len(SKIP)
     assert EXTRA_OK.isdisjoint(report["not_ok"]), f"no longer ok=true on the fakes: {sorted(EXTRA_OK & set(report['not_ok']))}"
-    # 109 of 109 on 2026-11-06 (85 before item 176, 100 before item 181); 105 tools since the strategy presets merged.
-    assert report["ok"] >= 100, f"too few tools answered ok=true on the fakes; ok=false: {report['not_ok']}"
+    # 109 of 109 on 2026-11-06 (85 before item 176, 100 before item 181); 105 tools since the strategy presets merged,
+    # 99 of 99 since the coinalyze_* history tools merged into perps_* (2026-11-18).
+    assert report["ok"] >= 95, f"too few tools answered ok=true on the fakes; ok=false: {report['not_ok']}"
     new = {k: v for k, v in report["problems"].items() if k not in KNOWN}
     assert new == {}, "fix these tools (Builder.add / guard / warn), or list them in KNOWN and docs/BACKLOG.md"
     assert set(KNOWN) - set(report["problems"]) == set(), "these tools are fixed: remove them from KNOWN"
     assert report["no_network"] == NO_NETWORK, "update NO_NETWORK: the tools that answer ok=true without a provider call"
+
+
+async def test_coinalyze_source_answers_have_the_envelope_shape(tmp_path):
+    """source='coinalyze' of the three perps_* history tools (the former coinalyze_* tools in EXTRA_OK, merged
+    2026-11-18): the sweep above calls the default source only."""
+    calls: list[str] = []
+    srv, _ = build_server(_runtime(tmp_path, calls))
+    async with Client(srv) as c:
+        for name in ("perps_funding_history", "perps_long_short_ratio", "perps_oi_history"):
+            calls.clear()
+            env = as_envelope(await c.call_tool(name, {"source": "coinalyze", "base": "BTC"}))
+            assert env["ok"] is True, (name, env)
+            assert calls and all("coinalyze" in x for x in calls), (name, calls)
+            assert shape_problems(env, made_calls=True) == [], name
 
 
 async def test_the_check_catches_a_tool_without_evidence(tmp_path):

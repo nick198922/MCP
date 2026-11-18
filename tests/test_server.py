@@ -13,6 +13,8 @@ EXPECTED_TOOLS = {
     "market_orderbook",
     "market_trades",
     "perps_funding_compare",
+    # The next three also take source="coinalyze" (the former coinalyze_funding_history / coinalyze_long_short_history /
+    # coinalyze_oi_history, merged 2026-11-18; tests in test_coinalyze_history.py and test_coinalyze_exchanges.py).
     "perps_funding_history",
     "funding_carry_scan",
     "funding_spread_scan",
@@ -47,9 +49,6 @@ EXPECTED_TOOLS = {
     "pendle_market",
     "pendle_yield_curve",
     "liquidations_history",
-    "coinalyze_oi_history",
-    "coinalyze_funding_history",
-    "coinalyze_long_short_history",
     "calendar_expiries",
     "macro_calendar",
     "deribit_dvol",
@@ -361,6 +360,18 @@ async def test_oi_history_cross_venue(server):
     assert by["binanceusdm"]["base_stats"]["change_24h"] > 0  # fixture is rising
     assert len(by["binanceusdm"]["series"]) == 48
     assert d["cross_venue"]["biggest_gain_24h"]["venue"] in ("binanceusdm", "bybit")
+    assert not any("source='coinalyze' only" in w for w in env["warnings"])
+
+
+async def test_perps_source_exchanges_argument_rules(server):
+    """source='exchanges' (default) after the coinalyze merge: Coinalyze-only `exchanges` on perps_oi_history is ignored
+    with a warning; days_back above 180 is refused in the envelope (source='coinalyze' takes up to 365)."""
+    env = await call(server, "perps_oi_history", base="BTC", exchanges=["bybit"])
+    assert env["ok"] is True and {v["venue"] for v in env["data"]["venues"]} == {"binanceusdm", "bybit"}
+    assert any("exchanges applies to source='coinalyze' only" in w for w in env["warnings"])
+    env = await call(server, "perps_funding_history", base="BTC", days_back=200)
+    assert env["ok"] is False and env["data"] is None
+    assert env["missing"][0]["field"] == "days_back" and env["missing"][0]["reason"] == "invalid_argument"
 
 
 async def test_open_interest(server):

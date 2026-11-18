@@ -1,0 +1,11 @@
+# 2026-11-18 · Стислі типові відповіді `funding_carry_scan` і `market_markets`
+
+Пункт 382 постійної картки, BACKLOG «З тижневого аудиту 2026-11-14» → «великі відповіді за замовчуванням» (четвертий і п'ятий інструменти; попередні — [379](2026-11-18-compact-default-responses.md), [381](2026-11-18-compact-funding-spread-scan.md)).
+
+- `funding_carry_scan`: новий параметр `include_details` (типово `false`). Без нього — `summary` по всіх просканованих символах (як і раніше), `rows` — top 10 за `trailing_apr` (ті самі рядки, без змін полів), evidence злито по парі (провайдер, виклик) тим самим `_merge_evidence`, що й у `funding_spread_scan`; попередження «compact answer: top N of M rows …». З `include_details=true` — усі рядки й evidence по кожному запиту, як було.
+- `market_markets`: новий параметр `include_details` (типово `false`). Без нього — `symbols` (усі повернені збіги до `limit`, за символом) і `markets` — повні рядки лише перших 10; попередження «compact answer: …», коли рядків більше 10. З `include_details=true` — повні рядки до `limit`, як було (без `symbols`). `total_markets`, `matched` і попередження про `limit` однакові в обох режимах.
+- Числа й одиниці не змінились: стислі рядки — ті самі повні рядки (перші 10).
+- Розмір (JSON-конверт, символи). На фейках тесту: `funding_carry_scan` (20 кандидатів) 14 434 → 5 907 (5 записів evidence замість 24); `market_markets` (без фільтра, `limit` 100) 19 762 → 4 344. Живий виклик 18.11 з цього сервера через `build_server()`: `funding_carry_scan` 14 198 → 5 659 (`summary` однаковий), `market_markets` binanceusdm (814 збігів) 19 074 → 4 339.
+- Споживачі: скрипти, колектор і панель обидва інструменти не читають (Grep); `scripts/live_smoke.py` викликає `market_markets` з `limit` 10, тобто повні рядки й так. Наявні тести не змінено: на фейках conftest скан carry дає ≤ 5 рядків, а виклики `market_markets` — ≤ 10.
+- Тести: `tests/test_compact_defaults.py` — для обох інструментів типова відповідь ≤ 8 000 символів, повна > 8 000, стислі рядки = перші 10 повних, зведення однакові, злиті evidence зберігають кількість запитів; збій історії однієї бази (carry) і `load_markets` (markets) — запис у `missing`.
+- `docs/PARITY.md`: рядок «`market_markets` віддає 19 тис. символів одразу» оновлено.

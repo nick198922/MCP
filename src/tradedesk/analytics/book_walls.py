@@ -79,13 +79,14 @@ def min_qty_for(symbol: str) -> float | None:
 
 def near_mid(
     bids: list[tuple[float, float]], asks: list[tuple[float, float]], keep: float
-) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
-    """The levels of a full-book snapshot within ``keep`` (decimal) of its mid; both sides whole when there is no mid
-    (a side empty or crossed). For a venue that sends the whole book (Coinbase: 13k / 25k levels for BTC-USD on
-    2026-11-18), so the per-update wall scan only walks the part of the book that can hold a wall."""
+) -> tuple[list[tuple[float, float]], list[tuple[float, float]]] | None:
+    """The levels of a full-book snapshot within ``keep`` (decimal) of its mid; None when there is no mid (a side empty
+    or crossed), so the caller can refuse the snapshot instead of keeping the whole book. For a venue that sends the
+    whole book (Coinbase: 13k / 25k levels for BTC-USD on 2026-11-18), so the per-update wall scan only walks the part
+    of the book that can hold a wall."""
     pos = [p for p, q in bids if q > 0], [p for p, q in asks if q > 0]
     if not pos[0] or not pos[1] or max(pos[0]) >= min(pos[1]):
-        return bids, asks
+        return None
     mid = (max(pos[0]) + min(pos[1])) / 2
     lo, hi = mid * (1 - keep), mid * (1 + keep)
     return [lv for lv in bids if lv[0] >= lo], [lv for lv in asks if lv[0] <= hi]

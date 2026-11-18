@@ -66,8 +66,9 @@ def test_coinbase_symbols_minimums_and_the_full_book_cut():
     asks = [(101.0, 1.0), (102.4, 1.0), (102.6, 1.0), (1000.0, 9.0)]
     nb, na = bw.near_mid(bids, asks, 0.025)  # mid 100: keep 97.5 .. 102.5
     assert nb == [(99.0, 1.0), (97.6, 1.0)] and na == [(101.0, 1.0), (102.4, 1.0)]
-    assert bw.near_mid([(101.0, 1.0)], asks, 0.025) == ([(101.0, 1.0)], asks)  # crossed: no mid, left whole
-    assert bw.near_mid([], asks, 0.025) == ([], asks)
+    assert bw.near_mid([(101.0, 1.0)], asks, 0.025) is None  # crossed: no mid, the caller refuses the snapshot
+    assert bw.near_mid([], asks, 0.025) is None
+    assert bw.near_mid(bids, [(101.0, 0.0)], 0.025) is None  # only removed levels on a side: empty too
 
 
 def test_iso_ms():
@@ -340,6 +341,33 @@ async def test_coinbase_job_cuts_the_full_book_and_stores_a_wall(state, tmp_path
         assert job.resyncs == 0  # no u on Coinbase rows: no Bybit-style sequence check
         depth = await rt.store.book_depth_rows()
         assert depth[0]["venue"] == "coinbase" and depth[0]["bid_view"] == pytest.approx((63_005 - 62_710) / 63_005)
+    finally:
+        await rt.aclose()
+
+
+async def test_coinbase_job_refuses_a_snapshot_without_a_mid(state, tmp_path, monkeypatch, caplog):
+    caplog.set_level("WARNING", logger="tradedesk.collector")
+    snap = {"kind": "snapshot", "symbol": "BTC-USD", "u": None}
+    rows = [
+        {"kind": "_open", "feed": "book"},
+        snap | {"ts": T0, "bids": BTC_BIDS, "asks": BTC_ASKS},
+        snap | {"ts": T0 + 1_000, "bids": [*BTC_BIDS, (63_100.0, 1.0)], "asks": [*BTC_ASKS, (50_000.0, 5.0)]},  # crossed
+        {"kind": "delta", "symbol": "BTC-USD", "ts": T0 + 1_500, "u": None, "bids": [(62_995.0, 1.0)], "asks": []},
+        snap | {"ts": T0 + 2_000, "bids": BTC_BIDS, "asks": [(63_010.0, 0.0)]},  # an empty side
+        snap | {"ts": T0 + 3_000, "bids": BTC_BIDS, "asks": BTC_ASKS},  # a good one is taken again
+    ]
+    _fake_stream(monkeypatch, "coinbase_book_stream", rows)
+    rt = await _rt(state, tmp_path)
+    job = BookWallsJob("coinbase", ["BTCUSDT"])
+    try:
+        with count_bad_rows() as n:
+            await job(rt)
+        assert n.n == 2 and caplog.text.count("snapshot without a mid refused") == 2
+        # the T0 minute row reset the count; the refused snapshot dropped a live book: one depth break, the empty one none
+        assert job.trackers["BTC-USD"].gaps_since_row == 1
+        book = job.books["BTC-USD"]
+        assert book.ready and 50_000.0 not in book.asks and 62_995.0 not in book.bids  # the delta waited for a book
+        assert len(book.bids) == len(BTC_BIDS) and len(book.asks) == len(BTC_ASKS)
     finally:
         await rt.aclose()
 

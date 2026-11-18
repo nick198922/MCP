@@ -183,9 +183,10 @@ def parse_bybit(msg: Any) -> list[dict[str, Any]]:
 
 
 async def merge_streams(primary: AsyncIterator[dict[str, Any]], *others: AsyncIterator[dict[str, Any]]) -> AsyncIterator[dict[str, Any]]:
-    """Rows of several streams in arrival order. Ends when all have ended; re-raises the ``primary`` stream's error
-    (no book = a failed run). The others' errors are not raised: wrap them in ``secondary_feed`` so they are logged and
-    end with a ``_drop`` row."""
+    """Rows of several streams in arrival order. Ends when all have ended, or as soon as the ``primary`` stream fails,
+    re-raising its error (no book = a failed run; the other feeds are not waited for, which could take the rest of the
+    window). The others' errors are not raised: wrap them in ``secondary_feed`` so they are logged and end with a
+    ``_drop`` row. Closing the merge closes every feed before it returns (sockets, connection counters)."""
     queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=QUEUE_MAX)
     done = object()
 
@@ -196,6 +197,11 @@ async def merge_streams(primary: AsyncIterator[dict[str, Any]], *others: AsyncIt
             async for row in gen:
                 await queue.put(row)
         except asyncio.CancelledError:
+            # Close the feed now (its socket, its StreamStats segment), not when the garbage collector finds it.
+            aclose = getattr(gen, "aclose", None)
+            if aclose is not None:
+                with contextlib.suppress(Exception):
+                    await aclose()
             raise
         except BaseException:
             await queue.put(done)
@@ -204,15 +210,22 @@ async def merge_streams(primary: AsyncIterator[dict[str, Any]], *others: AsyncIt
 
     gens = (primary, *others)
     tasks = [asyncio.create_task(pump(g)) for g in gens]
+
+    def primary_error() -> BaseException | None:
+        p = tasks[0]
+        return p.exception() if p.done() and not p.cancelled() else None
+
     try:
         left = len(tasks)
         while left:
             item = await queue.get()
             if item is done:
                 left -= 1
+                if primary_error() is not None:
+                    break  # the pump puts ``done`` and raises in one step, so its task is already finished here
                 continue
             yield item
-        exc = tasks[0].exception()
+        exc = primary_error()
         if exc is not None:
             raise exc
     finally:
@@ -228,8 +241,9 @@ async def secondary_feed(gen: AsyncIterator[dict[str, Any]], feed: str) -> Async
     or a bug such as a parser error, which ``_ws_consume`` does not count) is logged and ends the feed with a ``_drop``
     row, so the consumer marks the trade counts of open walls as a lower bound instead of losing them silently."""
     try:
-        async for row in gen:
-            yield row
+        async with contextlib.aclosing(gen) as rows:  # closed with this feed, see binance_book_stream
+            async for row in rows:
+                yield row
     except Exception as e:  # noqa: BLE001
         log.warning("book stream %s ended early for this run: %s: %s", feed, type(e).__name__, e)
         yield {"kind": "_drop", "feed": feed, "error": f"{type(e).__name__}: {e}"}
@@ -240,7 +254,7 @@ async def binance_book_stream(symbols: list[str], *, max_seconds: float, stats: 
     connection counters go to ``stats.feeds['depth']`` / ``['trades']``."""
     depth = stats.feeds.setdefault("depth", StreamStats())
     trades = stats.feeds.setdefault("trades", StreamStats())
-    async for row in merge_streams(
+    merged = merge_streams(
         ws_mod._ws_consume(
             binance_depth_url(symbols),
             None,
@@ -262,8 +276,13 @@ async def binance_book_stream(symbols: list[str], *, max_seconds: float, stats: 
             ),
             "trades",
         ),
-    ):
-        yield row
+    )
+    # ``aclosing``: ``async for`` alone leaves the inner generator to the garbage collector, so the job's
+    # ``stream.aclose()`` would return with the sockets open and the last connection segment not yet in StreamStats
+    # (the hourly journal is written right after it). The same in the one-connection streams below.
+    async with contextlib.aclosing(merged) as rows:
+        async for row in rows:
+            yield row
 
 
 async def bybit_book_stream(
@@ -271,7 +290,7 @@ async def bybit_book_stream(
 ) -> AsyncIterator[dict[str, Any]]:
     """``orderbook.<depth>`` and ``publicTrade`` of the symbols on one connection (feed name 'book')."""
     sub = {"op": "subscribe", "args": [f"orderbook.{depth}.{s}" for s in symbols] + [f"publicTrade.{s}" for s in symbols]}
-    async for row in ws_mod._ws_consume(
+    feed = ws_mod._ws_consume(
         BYBIT_WS_URL,
         sub,
         parse_bybit,
@@ -281,8 +300,10 @@ async def bybit_book_stream(
         error_of=ws_mod._bybit_error,
         lifecycle="book",
         label="book bybit:book",
-    ):
-        yield row
+    )
+    async with contextlib.aclosing(feed) as rows:
+        async for row in rows:
+            yield row
 
 
 # ---------- spot ----------
@@ -300,7 +321,7 @@ def parse_binance_spot(msg: Any) -> dict[str, Any] | None:
 
 async def binance_spot_book_stream(symbols: list[str], *, max_seconds: float, stats: StreamGroup) -> AsyncIterator[dict[str, Any]]:
     """Spot depth diffs and aggTrades of the symbols on one connection (feed name 'book')."""
-    async for row in ws_mod._ws_consume(
+    feed = ws_mod._ws_consume(
         binance_spot_url(symbols),
         None,
         parse_binance_spot,
@@ -308,8 +329,10 @@ async def binance_spot_book_stream(symbols: list[str], *, max_seconds: float, st
         stats=stats.feeds.setdefault("book", StreamStats()),
         lifecycle="book",
         label="book binance_spot:book",
-    ):
-        yield row
+    )
+    async with contextlib.aclosing(feed) as rows:
+        async for row in rows:
+            yield row
 
 
 def coinbase_product(symbol: str) -> str:
@@ -410,7 +433,7 @@ async def coinbase_book_stream(products: list[str], *, max_seconds: float, stats
     products ('BTC-USD') on one connection (feed name 'book')."""
     subs: list[dict[str, Any]] = [{"type": "subscribe", "product_ids": products, "channel": c} for c in ("level2", "market_trades")]
     subs.append({"type": "subscribe", "channel": "heartbeats"})
-    async for row in ws_mod._ws_consume(
+    feed = ws_mod._ws_consume(
         COINBASE_WS,
         subs,
         parse_coinbase,
@@ -420,5 +443,7 @@ async def coinbase_book_stream(products: list[str], *, max_seconds: float, stats
         max_size=COINBASE_MAX_FRAME,
         lifecycle="book",
         label="book coinbase:book",
-    ):
-        yield row
+    )
+    async with contextlib.aclosing(feed) as rows:
+        async for row in rows:
+            yield row

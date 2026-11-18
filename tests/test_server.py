@@ -69,9 +69,8 @@ EXPECTED_TOOLS = {
     "alerts_recent",
     "ohlcv_history",
     "market_regime",
+    # Also view="setup" / view="scan" (the former range_setup / range_setup_scan, merged 2026-11-18; tests in test_ranges.py).
     "range_detect",
-    "range_setup",
-    "range_setup_scan",
     "events_add",
     "events_list",
     "events_seed_load",

@@ -1,2 +1,2 @@
-- X-трейдери, пункт 5: реєстрація перевірки специфікації XO-1 (ротація від краю value area) — гіпотези H1/H2, Холм, витрати, ворота, критерії вердикту; P&L ще не рахувався.
-- Нове: `analytics/xo1_va_rotation.py`, `scripts/verify_xo1_va_rotation.py` (стадія 0 — лише лічильники), `tests/test_xo1_va_rotation.py`.
+- X-трейдери, пункт 5: перевірка специфікації XO-1 (ротація від краю value area) — реєстрація до P&L, повний прогін, вердикт ✗ NOT CONFIRMED для D1 і C7 (звіт `docs/verification/2026-11-18-xo1-va-rotation.md`, рев'ю критика B — approve).
+- Нове: `analytics/xo1_va_rotation.py`, `scripts/verify_xo1_va_rotation.py`, `tests/test_xo1_va_rotation.py`; нотатки у `docs/knowledge/indicators.md` і LIB-записі Trader_XO.

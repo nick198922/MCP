@@ -111,7 +111,7 @@ async def test_hyperliquid_funding_history_drops_a_non_finite_rate(tmp_path, val
     clean, res = await _clean_and_broken(tmp_path, "hyperliquid_funding_history", f"{HL}.fundingRate", value, "last")
     env = as_envelope(res)
     assert env["ok"] is True and _non_finite(env) == []
-    assert len(env["data"]["entries"]) == env["data"]["stats"]["count"] == clean["data"]["stats"]["count"] - 1
+    assert env["data"]["stats"]["count"] == clean["data"]["stats"]["count"] - 1  # entries come only with include_series
 
 
 @pytest.mark.parametrize(

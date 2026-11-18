@@ -1407,14 +1407,24 @@ def register(server: MCPServer, rt: Runtime) -> None:
     @server.tool(
         annotations=READ_ONLY,
         description=(
-            "Hyperliquid funding-rate history for one coin over a lookback window (default 30 days, interval 1h). Returns the raw series plus "
+            "Hyperliquid funding-rate history for one coin over a lookback window (default 30 days, interval 1h). Returns "
             "mean/stdev/min/max/7d-mean/30d-mean of the per-hour rate, annualised carry (sum of payments over the covered span), the latest rate's z-score and percentile "
-            "relative to the window, and polarity flips (sign changes). Rates are decimals (0.0001 = 0.01 % per hour)."
+            "relative to the window, and polarity flips (sign changes). Rates are decimals (0.0001 = 0.01 % per hour). "
+            "By default stats only (a compact answer); set `include_series=true` for the raw hourly payments as "
+            "`entries` [{ts_ms, rate}] (about 33k characters for 30 days)."
         ),
     )
     async def hyperliquid_funding_history(
         coin: HL_COIN,
         days_back: Annotated[float, Field(gt=0, le=180, description="History window in days back from now (up to 180).")] = 30.0,
+        include_series: Annotated[
+            bool,
+            Field(
+                description=(
+                    "Also return the raw hourly payments as `entries` [{ts_ms, rate per hour as a decimal}]; false (default) = stats only."
+                )
+            ),
+        ] = False,
     ) -> dict[str, Any]:
         b = Builder()
         now_ms = int(rt.now().timestamp() * 1000)
@@ -1433,7 +1443,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
             b.miss("funding_history", "hyperliquid", "data_unavailable", "no parsable entries")
             return b.build(None, ok=False)
         stats = summarise_funding_history(entries, interval_hours=1.0, now_ms=now_ms)
-        return b.build({"coin": coin, "days_requested": days_back, "stats": stats, "entries": entries})
+        data = {"coin": coin, "days_requested": days_back, "stats": stats}
+        return b.build({**data, "entries": entries} if include_series else data)
 
     @server.tool(
         annotations=READ_ONLY,

@@ -383,7 +383,7 @@ def _oi(t: int) -> float:
 async def test_market_flow_happy_path_on_captured_responses():
     rt = _flow_rt()
     srv, _ = build_server(rt)
-    env = await call(srv, "market_flow", base="btc", timeframe="1h", days=1)
+    env = await call(srv, "market_flow", base="btc", timeframe="1h", days=1, include_series=True)
     await rt.aclose()
     assert env["ok"] and env["missing"] == []
     d = env["data"]
@@ -431,8 +431,8 @@ async def test_market_flow_happy_path_on_captured_responses():
 async def test_market_flow_4h_buckets_and_summaries_only():
     rt = _flow_rt()
     srv, _ = build_server(rt)
-    env = await call(srv, "market_flow", base="BTC", timeframe="4h", days=1, venues=["binance"])
-    env2 = await call(srv, "market_flow", base="BTC", days=1, include_series=False)
+    env = await call(srv, "market_flow", base="BTC", timeframe="4h", days=1, venues=["binance"], include_series=True)
+    env2 = await call(srv, "market_flow", base="BTC", days=1)  # default: summaries only
     await rt.aclose()
     d = env["data"]
     series_end = END // (4 * H) * (4 * H)
@@ -467,7 +467,7 @@ async def test_market_flow_provider_failures_land_in_missing():
     # only Coinbase down: everything else is returned, the premium is empty and named in missing
     rt = _flow_rt(handlers={"coinbase": down})
     srv, _ = build_server(rt)
-    env = await call(srv, "market_flow", base="BTC", days=1)
+    env = await call(srv, "market_flow", base="BTC", days=1, include_series=True)
     await rt.aclose()
     assert env["ok"] and [m["field"] for m in env["missing"]] == ["premium:coinbase"]
     assert all(r["premium"] is None and r["premium_adj"] is None for r in env["data"]["series"])

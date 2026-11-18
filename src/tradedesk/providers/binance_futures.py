@@ -125,6 +125,17 @@ class BinanceFutures:
         """Mark and index price of every USD-M symbol: ``[{symbol, markPrice, indexPrice, time, ...}]``."""
         return await self._get("/fapi/v1/premiumIndex", {}, ttl=0, tool="fapi/v1/premiumIndex")
 
+    async def depth(self, symbol: str, limit: int = 1000) -> Fetched:
+        """Order-book snapshot ``{"lastUpdateId", "E", "T", "bids": [[price, qty], ...], "asks": [...]}`` (strings), the
+        nearest ``limit`` levels per side (weight 20 at 1000). Not cached: it seeds a local book from the diff stream
+        (collector/book_walls.py), which must start from the latest state."""
+        params = {"symbol": symbol, "limit": int(limit)}
+        f = await self.http.get_json("/fapi/v1/depth", params=params, ttl=0, tool="fapi/v1/depth", args=params)
+        d = f.data
+        if not isinstance(d, dict) or not isinstance(d.get("bids"), list) or not isinstance(d.get("asks"), list) or "lastUpdateId" not in d:
+            raise ProviderError(self.name, "backend_error", "unexpected response shape at /fapi/v1/depth")
+        return f
+
     async def exchange_info(self) -> Fetched:
         """USD-M ``exchangeInfo`` (``{"symbols": [{symbol, contractType, underlyingType, quoteAsset, ...}], ...}``)."""
         f = await self.http.get_json("/fapi/v1/exchangeInfo", ttl=0, tool="fapi/v1/exchangeInfo", args={})

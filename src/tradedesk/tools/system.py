@@ -24,7 +24,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "and last_rows_dropped / rows_dropped_total - malformed provider rows or numeric fields the job dropped "
             "or stored as NULL (NaN, inf, text, out of bounds) in its latest run / since the server started (a count, "
             "not a fraction; in-memory, reset on restart). "
-            "collector[].stream (WebSocket jobs liquidations:*, else null): connects, reconnects, failures, "
+            "collector[].stream (WebSocket jobs liquidations:* and book_walls:*, else null): connects, reconnects, failures, "
             "last_failure, last_message_ts (any frame, heartbeat replies included) and last_row_ts (last liquidation). "
             "Expected, not a fault: liquidations:bybit covers only BTC/ETH/SOL and has 30-60 min without a row several "
             "times a day in calm hours (server data 2026-11-10..12: none of 16 such pauses was explained by logged "
@@ -33,7 +33,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "silently stopped the subscription. A rejected subscribe is counted in failures, a silent loss is not seen "
             "here, so a long silence while other venues keep logging liquidations deserves a check. A few stream "
             "failures an hour (keepalive timeout, handshake timeout, reset; often Bybit and OKX together) reconnect "
-            "within about a minute each; a dead link shows as a stale last_message_ts or a growing consecutive_failures."
+            "within about a minute each; a dead link shows as a stale last_message_ts or a growing consecutive_failures. "
+            "book_walls:* jobs (order-book walls collector) show the same counters per feed: "
+            "stream = {depth: {...}, trades: {...}} for binance, {book: {...}} for bybit."
         ),
     )
     async def system_health(

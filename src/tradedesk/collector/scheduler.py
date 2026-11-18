@@ -44,8 +44,9 @@ class JobMetrics:
     # failed runs included, and the sum since the process started. None before the first run.
     last_rows_dropped: int | None = None
     rows_dropped_total: int = 0
-    # WebSocket jobs only (liquidations:*): connection counters that survive reconnects inside a run
-    # (providers.liquidations.StreamStats); None for the other jobs.
+    # WebSocket jobs only (liquidations:*, book_walls:*): connection counters that survive reconnects inside a run
+    # (providers.liquidations.StreamStats; book_walls: providers.orderbook_stream.StreamGroup, one per feed); None for
+    # the other jobs.
     stream: Any | None = None
 
 
@@ -852,5 +853,19 @@ def build_default_scheduler(rt: "Runtime") -> Scheduler | None:
                 fn=partial(_liquidation_window, exchange=venue, fn=fns[venue], stats=stats),
             )
             job.metrics.stream = stats
+            jobs.append(job)
+    if s.collect_book_walls_enabled:
+        from .book_walls import VENUES as BOOK_VENUES  # noqa: PLC0415
+        from .book_walls import BookWallsJob  # noqa: PLC0415
+
+        venues = {v.strip().lower() for v in s.collect_book_walls_venues.split(",") if v.strip()}
+        symbols = [sym.strip().upper() for sym in s.collect_book_walls_symbols.split(",") if sym.strip()]
+        for venue in BOOK_VENUES:
+            if venue not in venues:
+                continue
+            # One object per job: the books, the open walls and the connection counters carry over between runs.
+            walls = BookWallsJob(venue, symbols, clock=lambda: rt.now().timestamp())
+            job = PeriodicJob(name=f"book_walls:{venue}", period_seconds=s.collect_book_walls_restart_seconds, fn=walls)
+            job.metrics.stream = walls.stats
             jobs.append(job)
     return Scheduler(rt, jobs)

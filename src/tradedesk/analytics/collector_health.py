@@ -117,6 +117,12 @@ SPECS: tuple[Spec, ...] = (
         note="WebSocket stream (VENUES=binance,bybit,okx); an hour counts with >= 1 liquidation; calm hours can be empty",
     ),
     Spec(
+        "book_walls", "TRADEDESK_COLLECT_BOOK_WALLS_ENABLED", "book_depth_minute", "ts", MINUTE, 2 * MINUTE,
+        group_col="venue", groups=("binanceusdm", "bybit"),
+        note="WebSocket book streams (VENUES=binance,bybit); one depth row per symbol and minute; a run restart or a "
+        "resync can skip a minute",
+    ),
+    Spec(
         "cycle_regime_log", "TRADEDESK_COLLECT_CYCLE_REGIME_ENABLED", "cycle_regime_log", _DAY_TS.format("date"), DAY,
         DAY + HOUR, group_col="base", groups=("BTC",),
         note="one row per closed UTC day, written from 00:05 UTC of the next day",

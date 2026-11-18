@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 40
+SCHEMA_VERSION = 41
 
 # Each migration is a list of SQL statements executed in a single transaction.
 # `PRAGMA user_version` is bumped by Store.init() inside the same explicit transaction,
@@ -984,6 +984,63 @@ MIGRATIONS: dict[int, list[str]] = {
             failures INTEGER NOT NULL DEFAULT 0,   -- failed connections (handshake, keepalive, reset, venue error)
             reconnects INTEGER NOT NULL DEFAULT 0, -- connections opened after a failure
             PRIMARY KEY (exchange, hour_ts)
+        ) WITHOUT ROWID
+        """,
+    ],
+    41: [
+        # Order-book walls collector (collector/book_walls.py, analytics/book_walls.py; IDEA-20261114-book-walls item 1).
+        # Not the full L2: one row per closed wall and one depth row per venue x symbol x minute. Forward-only, not pruned.
+        """
+        CREATE TABLE IF NOT EXISTS book_wall_event (
+            id INTEGER PRIMARY KEY,
+            venue TEXT NOT NULL,                   -- 'binanceusdm' | 'bybit' (perps)
+            symbol TEXT NOT NULL,                  -- venue symbol, e.g. 'BTCUSDT'
+            side TEXT NOT NULL,                    -- 'bid' | 'ask'
+            price REAL NOT NULL,
+            open_ms INTEGER NOT NULL,              -- venue time (unix ms) the level first passed the bar
+            close_ms INTEGER NOT NULL,             -- venue time it stopped being a wall ('gap': last time it was seen)
+            size_open REAL NOT NULL,               -- coins
+            size_max REAL NOT NULL,                -- coins
+            size_end REAL,                         -- coins left on the level at the close (0 = level gone); NULL for 'gap'
+            threshold REAL NOT NULL,               -- the bar it passed: max(K x median of the top-50 sizes, coin minimum)
+            dist_open REAL NOT NULL,               -- decimal distance from the mid (0.001 = 10 bp), at the open
+            dist_min REAL NOT NULL,                -- closest approach of the mid while open
+            dist_close REAL NOT NULL,              -- at the close
+            mid_close REAL NOT NULL,
+            traded REAL NOT NULL,                  -- coins traded into it (taker sells on a bid wall) open .. close + 1 s
+            reason TEXT NOT NULL,                  -- consumed | pulled_near | withdrawn | gap | out_of_view
+            gaps INTEGER NOT NULL DEFAULT 0        -- feed breaks while open (> 0: `traded` is a lower bound)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS book_wall_event_close ON book_wall_event (venue, symbol, close_ms)",
+        """
+        CREATE TABLE IF NOT EXISTS book_depth_minute (
+            venue TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            ts INTEGER NOT NULL,                   -- unix seconds, start of the UTC minute (first book state in it)
+            mid REAL NOT NULL,
+            spread REAL NOT NULL,                  -- (ask - bid) / mid, decimal
+            bid_05 REAL, bid_1 REAL, bid_2 REAL,   -- coins resting within 0.5 / 1 / 2 % below the mid ...
+            ask_05 REAL, ask_1 REAL, ask_2 REAL,   -- ... and above it; only the visible book (see *_view)
+            bid_view REAL, ask_view REAL,          -- decimal distance the book reaches from the mid (a band past it is cut)
+            walls_bid INTEGER, walls_ask INTEGER,  -- walls open at that moment
+            gaps INTEGER,                          -- book (depth feed) breaks / resyncs since the previous row
+            short_walls INTEGER,                   -- 'withdrawn' walls closed since the previous row that lived < 5 s (not stored)
+            PRIMARY KEY (venue, symbol, ts)
+        ) WITHOUT ROWID
+        """,
+        # Hourly connection journal of the book streams, as liquidation_stream_hour ('binance:depth', 'binance:trades',
+        # 'bybit:book').
+        """
+        CREATE TABLE IF NOT EXISTS book_stream_hour (
+            stream TEXT NOT NULL,
+            hour_ts INTEGER NOT NULL,
+            connected_s REAL NOT NULL DEFAULT 0,
+            frames INTEGER NOT NULL DEFAULT 0,
+            rows INTEGER NOT NULL DEFAULT 0,
+            failures INTEGER NOT NULL DEFAULT 0,
+            reconnects INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (stream, hour_ts)
         ) WITHOUT ROWID
         """,
     ],

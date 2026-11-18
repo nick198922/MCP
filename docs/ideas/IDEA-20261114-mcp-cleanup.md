@@ -14,6 +14,7 @@
 - [ ] 2. **А1, решта злиттів:** `deribit_atm_term` → `deribit_skew_term`; три `coinalyze_*` → відповідні `perps_*` з параметром `source`; `market_ticker` ↔ `market_tickers`; `carry_paper_status` ↔ `paper_carry_status`; три `range_*` → один. По одному злиттю за прогін, якщо зміна велика.
   - 15.11: deribit_atm_term -> deribit_skew_term done ([зміни](../changes/2026-11-15-mcp-cleanup-atm-term.md): `view="atm"`, 105 → 104 інструменти).
   - 17.11: зроблено: `market_ticker` → `market_tickers` (один символ рядком або списком — `fetch_ticker`), `carry_paper_status` → `paper_carry_status(strategy="manual")`, 104 → 102 ([зміни](../changes/2026-11-17-mcp-merge-ticker-carry-status.md)). Лишились три `coinalyze_*` і три `range_*`.
+  - 18.11: три `coinalyze_*` → `perps_oi_history` / `perps_funding_history` / `perps_long_short_ratio` з `source="coinalyze"`, 102 → 99 ([зміни](../changes/2026-11-18-mcp-merge-coinalyze-perps.md), [рев'ю](../reviews/2026-11-18-mcp-merge-coinalyze-perps.md)). Лишились три `range_*`.
 - [ ] 3. **Б2, прибрати шість:** `carry_paper_open`, `carry_paper_close`, `fib_retracement`, `strategy_backtest_momentum`, `events_seed_load`, `rules_presets_load` (разові дії — скриптом у `scripts/`, якщо ще потрібні). `positions_*` лишаються. Після прибирання — оновити `WRITE_TOOLS` у `scripts/mcp_call.py` і заборони в `scripts/nightly_agents.sh` (тест `tests/test_mcp_call.py` звіряє їх із сервером).
 
 ## Критерій «вбити»

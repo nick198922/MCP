@@ -1,4 +1,5 @@
-"""`exchanges` in liquidations_history / coinalyze_oi_history: whitelist, per-exchange symbols, sum across exchanges.
+"""`exchanges` in liquidations_history / perps_oi_history(source="coinalyze") (the former coinalyze_oi_history, merged
+2026-11-18): whitelist, per-exchange symbols, sum across exchanges.
 
 Samples: DoubleTop's relay of Coinalyze captured 2026-10-25 (tests/fixtures/doubletop/coinalyze__*_2026-10-25.json):
 daily liquidations of BTCUSDT_PERP.A (Binance) and BTCUSDT.6 (Bybit) in coins, hourly OI of the same two symbols.
@@ -42,6 +43,16 @@ async def call(server, name, **args):
     if data is None:
         data = json.loads(res.content[0].text)
     return data["result"] if set(data) == {"result"} else data
+
+
+OI_TOOL = "perps_oi_history"  # with source="coinalyze"; the former coinalyze_oi_history
+
+
+async def run(server, tool, symbol, **args):
+    """liquidations_history takes `symbol`; perps_oi_history takes `base` and source='coinalyze'."""
+    if tool == OI_TOOL:
+        return await call(server, tool, source="coinalyze", base=symbol, **args)
+    return await call(server, tool, symbol=symbol, **args)
 
 
 async def descriptions(server):
@@ -133,7 +144,7 @@ async def test_liquidations_default_is_binance_only_with_usd_note():
 
 async def test_oi_sum_hourly_codes_accepted():
     srv, seen = make_server(NOW_HOURLY)
-    env = await call(srv, "coinalyze_oi_history", symbol="BTC", interval="hourly", days=1, in_usd=False, exchanges=[".A", ".6"])
+    env = await run(srv, OI_TOOL, "BTC", interval="hourly", days=1, in_usd=False, exchanges=[".A", ".6"])
     assert env["ok"] is True and env["missing"] == []
     d = env["data"]
     assert len(d["rows"]) == 3 and d["unit"] == "BTC"
@@ -143,12 +154,12 @@ async def test_oi_sum_hourly_codes_accepted():
     assert not any("close of the interval" in w for w in env["warnings"])  # USD note only with in_usd
 
 
-@pytest.mark.parametrize("tool", ["liquidations_history", "coinalyze_oi_history"])
+@pytest.mark.parametrize("tool", ["liquidations_history", OI_TOOL])
 async def test_one_exchange_down_is_missing_rest_summed(tool):
     now = NOW_DAILY if tool == "liquidations_history" else NOW_HOURLY
     srv, _ = make_server(now, fail={BY})
-    env = await call(
-        srv, tool, symbol="BTC", interval="daily" if tool == "liquidations_history" else "hourly", days=7, exchanges=["binance", "bybit"]
+    env = await run(
+        srv, tool, "BTC", interval="daily" if tool == "liquidations_history" else "hourly", days=7, exchanges=["binance", "bybit"]
     )
     assert env["ok"] is True
     assert [(m["field"].split(".")[-1], m["provider"]) for m in env["missing"]] == [("bybit", "coinalyze")]
@@ -156,19 +167,19 @@ async def test_one_exchange_down_is_missing_rest_summed(tool):
     assert any("partial sum: bybit" in w for w in env["warnings"])
 
 
-@pytest.mark.parametrize("tool", ["liquidations_history", "coinalyze_oi_history"])
+@pytest.mark.parametrize("tool", ["liquidations_history", OI_TOOL])
 async def test_all_exchanges_down_returns_envelope(tool):
     srv, _ = make_server(NOW_DAILY, fail={BN, BY})
-    env = await call(srv, tool, symbol="BTC", exchanges=["binance", "bybit"])
+    env = await run(srv, tool, "BTC", exchanges=["binance", "bybit"])
     assert env["ok"] is False and env["data"] is None
     assert len(env["missing"]) == 2 and all(m["provider"] == "coinalyze" for m in env["missing"])
 
 
-@pytest.mark.parametrize("tool", ["liquidations_history", "coinalyze_oi_history"])
+@pytest.mark.parametrize("tool", ["liquidations_history", OI_TOOL])
 @pytest.mark.parametrize("bad", [["okx"], ["binance", "BTCUSDT.6&symbols=ETHUSDT.6"], []])
 async def test_unknown_exchange_rejected_without_request(tool, bad):
     srv, seen = make_server(NOW_DAILY)
-    env = await call(srv, tool, symbol="BTC", exchanges=bad)
+    env = await run(srv, tool, "BTC", exchanges=bad)
     assert env["ok"] is False and seen == []
     m = env["missing"][0]
     assert m["field"] == "exchanges" and m["reason"] == "invalid_argument" and "allowed" in m["detail"]
@@ -197,7 +208,7 @@ async def test_interval_missing_on_one_exchange_is_left_out():
 async def test_descriptions_state_usd_conversion_and_exchanges():
     srv, _ = make_server(NOW_DAILY)
     desc = await descriptions(srv)
-    for tool in ("liquidations_history", "coinalyze_oi_history"):
+    for tool in ("liquidations_history", OI_TOOL):
         text = desc[tool]
         assert "coins x the close" in text and "liquidations_summary" in text and "crash days" in text
         assert "'.A'" in text and "'.6'" in text

@@ -1,4 +1,6 @@
-"""coinalyze_oi_history / coinalyze_funding_history / coinalyze_long_short_history behind MockTransport.
+"""perps_oi_history / perps_funding_history / perps_long_short_ratio with source="coinalyze" behind MockTransport
+(the former coinalyze_oi_history / coinalyze_funding_history / coinalyze_long_short_history, merged 2026-11-18; these
+are their reference tests, ported: `symbol` -> `base`, `days` -> `days_back` for funding).
 
 Response shapes come from DoubleTop's relay of Coinalyze captured 2026-10-18 (tests/fixtures/doubletop/coinalyze__*
 _2026-10-18.json, BTCUSDT_PERP.A daily, 4 rows). They are real Coinalyze data, but NOT a direct live call with our
@@ -35,9 +37,9 @@ SAMPLES = {"/v1/open-interest-history": OI, "/v1/funding-rate-history": FUND, "/
 SECRET = "k3y-SECRET-0123"
 NOW = datetime(2026, 10, 18, 0, 0, tzinfo=UTC)
 TOOLS = {
-    "coinalyze_oi_history": "/v1/open-interest-history",
-    "coinalyze_funding_history": "/v1/funding-rate-history",
-    "coinalyze_long_short_history": "/v1/long-short-ratio-history",
+    "perps_oi_history": "/v1/open-interest-history",
+    "perps_funding_history": "/v1/funding-rate-history",
+    "perps_long_short_ratio": "/v1/long-short-ratio-history",
 }
 
 
@@ -48,6 +50,14 @@ async def call(server, name, **args):
     if data is None:
         data = json.loads(res.content[0].text)
     return data["result"] if set(data) == {"result"} else data
+
+
+async def cz(server, tool, symbol="BTC", days=None, **args):
+    """Call `tool` with source='coinalyze' the way the old coinalyze_* tool was called (symbol, days)."""
+    args = {"source": "coinalyze", "base": symbol, **args}
+    if days is not None:
+        args["days_back" if tool == "perps_funding_history" else "days"] = days
+    return await call(server, tool, **args)
 
 
 def make_server(handler=None, key=SECRET):
@@ -147,7 +157,7 @@ async def test_oi_history_happy_and_key_not_leaked():
     the owner's live call, save a USD sample and check its magnitude (~7.6e9 for BTC, like Binance
     sumOpenInterestValue in ours__binance_openInterestHist_BTCUSDT_1d_2026-10-18.json)."""
     srv, seen = make_server()
-    env = await call(srv, "coinalyze_oi_history", symbol="btc", days=4)
+    env = await cz(srv, "perps_oi_history", symbol="btc", days=4)
     assert env["ok"] is True and env["missing"] == []
     d = env["data"]
     assert d["symbol"] == "BTCUSDT_PERP.A" and d["unit"] == "USD" and len(d["rows"]) == 4
@@ -163,7 +173,7 @@ async def test_oi_history_happy_and_key_not_leaked():
 
 async def test_oi_history_base_units_and_hourly_cap():
     srv, seen = make_server()
-    env = await call(srv, "coinalyze_oi_history", symbol="ETH", interval="hourly", days=90, in_usd=False)
+    env = await cz(srv, "perps_oi_history", symbol="ETH", interval="hourly", days=90, in_usd=False)
     assert env["ok"] is True and env["data"]["unit"] == "ETH" and env["data"]["days"] == 30
     assert any("capped" in w for w in env["warnings"])
     assert seen[0].url.params["interval"] == "1hour" and seen[0].url.params["convert_to_usd"] == "false"
@@ -171,7 +181,7 @@ async def test_oi_history_base_units_and_hourly_cap():
 
 async def test_funding_history_happy_decimal_units():
     srv, seen = make_server()
-    env = await call(srv, "coinalyze_funding_history", symbol="BTC", days=4)
+    env = await cz(srv, "perps_funding_history", symbol="BTC", days=4)
     assert env["ok"] is True
     d = env["data"]
     assert d["rows"][-1]["close"] == pytest.approx(FUND[-1]["c"] / 100)
@@ -184,14 +194,14 @@ async def test_funding_history_happy_decimal_units():
 
 async def test_funding_history_hourly_is_flagged_unverified():
     srv, _ = make_server()
-    env = await call(srv, "coinalyze_funding_history", symbol="BTC", interval="hourly", days=4)
+    env = await cz(srv, "perps_funding_history", symbol="BTC", interval="hourly", days=4)
     assert env["ok"] is True
     assert any("hourly bar semantics are not verified" in w for w in env["warnings"])
 
 
 async def test_long_short_history_happy_fractions():
     srv, seen = make_server()
-    env = await call(srv, "coinalyze_long_short_history", symbol="BTC", days=4, margin="usdt")
+    env = await cz(srv, "perps_long_short_ratio", symbol="BTC", days=4, margin="usdt")
     assert env["ok"] is True
     d = env["data"]
     assert d["rows"][0]["long_share"] == pytest.approx(0.5634) and d["rows"][0]["ratio"] == pytest.approx(1.2904)
@@ -205,7 +215,7 @@ async def test_long_short_history_happy_fractions():
 @pytest.mark.parametrize("tool", sorted(TOOLS))
 async def test_provider_failure_is_missing(tool):
     srv, seen = make_server(lambda req: httpx.Response(503, text="down"))
-    env = await call(srv, tool, symbol="BTC")
+    env = await cz(srv, tool, symbol="BTC")
     assert env["ok"] is False and env["data"] is None
     assert env["missing"][0]["provider"] == "coinalyze" and seen[0].url.path == TOOLS[tool]
 
@@ -213,14 +223,14 @@ async def test_provider_failure_is_missing(tool):
 @pytest.mark.parametrize("tool", sorted(TOOLS))
 async def test_bad_key_is_auth_missing(tool):
     srv, _ = make_server(lambda req: httpx.Response(401, text="invalid api key"))
-    env = await call(srv, tool, symbol="BTC")
+    env = await cz(srv, tool, symbol="BTC")
     assert env["ok"] is False and env["missing"][0]["reason"] == "auth"
 
 
 @pytest.mark.parametrize("tool", sorted(TOOLS))
 async def test_missing_key_makes_no_request(tool):
     srv, seen = make_server(key=None)
-    env = await call(srv, tool, symbol="BTC")
+    env = await cz(srv, tool, symbol="BTC")
     assert env["ok"] is False and env["missing"][0]["reason"] == "config"
     assert "COINALYZE_API_KEY" in env["missing"][0]["detail"] and seen == []
 
@@ -228,10 +238,10 @@ async def test_missing_key_makes_no_request(tool):
 @pytest.mark.parametrize("tool", sorted(TOOLS))
 async def test_empty_range_and_bad_shape(tool):
     srv, _ = make_server(lambda req: httpx.Response(200, json=[]))
-    env = await call(srv, tool, symbol="BTC")
+    env = await cz(srv, tool, symbol="BTC")
     assert env["ok"] is False and env["missing"][0]["reason"] == "data_unavailable"
     srv, _ = make_server(lambda req: httpx.Response(200, json={"error": "x"}))
-    env = await call(srv, tool, symbol="BTC")
+    env = await cz(srv, tool, symbol="BTC")
     assert env["ok"] is False and env["missing"][0]["reason"] == "backend_error"
 
 
@@ -252,15 +262,45 @@ async def test_bad_timestamp_rows_return_envelope(tool, ts):
         return httpx.Response(200, content=f'[{{"symbol": "BTCUSDT_PERP.A", "history": [{bad}, {good}]}}]'.encode())
 
     srv, _ = make_server(only_bad)
-    env = await call(srv, tool, symbol="BTC", days=4)
+    env = await cz(srv, tool, symbol="BTC", days=4)
     assert env["ok"] is False and env["data"] is None and env["missing"][0]["reason"] == "data_unavailable"
     srv, _ = make_server(mixed)
-    env = await call(srv, tool, symbol="BTC", days=4)
+    env = await cz(srv, tool, symbol="BTC", days=4)
     assert env["ok"] is True and len(env["data"]["rows"]) == 1
 
 
 @pytest.mark.parametrize("tool", sorted(TOOLS))
 async def test_invalid_symbol_makes_no_request(tool):
     srv, seen = make_server()
-    env = await call(srv, tool, symbol="BTC/../x")
+    env = await cz(srv, tool, symbol="BTC/../x")
     assert env["ok"] is False and env["missing"][0]["reason"] == "invalid_argument" and seen == []
+
+
+# ---- the merge into perps_* (2026-11-18) ----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("days_back", [0.5, 7.5])
+async def test_funding_coinalyze_takes_whole_days_only(days_back):
+    srv, seen = make_server()
+    env = await call(srv, "perps_funding_history", source="coinalyze", base="BTC", days_back=days_back)
+    assert env["ok"] is False and seen == []
+    assert env["missing"][0]["field"] == "days_back" and env["missing"][0]["reason"] == "invalid_argument"
+
+
+async def test_funding_coinalyze_reaches_365_days_and_ignores_exchange_args():
+    """days_back up to 365 (the old tool's `days`), beyond the 180 of source='exchanges'; venue lists are ignored."""
+    srv, seen = make_server()
+    env = await call(srv, "perps_funding_history", source="coinalyze", base="BTC", days_back=365, exchanges=["okx"])
+    assert env["ok"] is True and env["data"]["days"] == 365 and len(seen) == 1
+    assert int(seen[0].url.params["from"]) == int(NOW.timestamp()) - 365 * 86_400
+    assert any("exchanges applies to source='exchanges' only" in w for w in env["warnings"])
+
+
+async def test_coinalyze_source_makes_no_venue_call():
+    """source='coinalyze' goes to Coinalyze only: the same answer shape as the old tools, no Binance / Bybit rows."""
+    srv, seen = make_server()
+    for tool in sorted(TOOLS):
+        env = await cz(srv, tool, symbol="BTC", days=4)
+        assert env["ok"] is True and "venues" not in env["data"] and env["data"]["symbol"] == "BTCUSDT_PERP.A"
+        assert {e["provider"] for e in env["evidence"]} == {"coinalyze"}
+    assert [r.url.path for r in seen] == [TOOLS[t] for t in sorted(TOOLS)]

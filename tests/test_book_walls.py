@@ -758,7 +758,7 @@ async def test_job_run_fails_when_the_book_stream_is_down(state, tmp_path, monke
 
 def test_job_is_off_by_default_and_switches_are_allow_listed(monkeypatch):
     s = Settings()
-    assert s.collect_book_walls_enabled is False and s.collect_book_walls_venues == "binance,bybit"
+    assert s.collect_book_walls_enabled is False and s.collect_book_walls_venues == "binance,bybit,binance_spot,coinbase"
     for name in ("ENABLED", "VENUES", "SYMBOLS", "WINDOW_SECONDS", "RESTART_SECONDS"):
         assert allowed(f"TRADEDESK_COLLECT_BOOK_WALLS_{name}")
     monkeypatch.setenv("TRADEDESK_COLLECT_BOOK_WALLS_ENABLED", "1")
@@ -770,7 +770,7 @@ def test_job_is_off_by_default_and_switches_are_allow_listed(monkeypatch):
     assert not any(j.name.startswith("book_walls") for j in off.jobs)
     rt = SimpleNamespace(settings=dataclasses.replace(base, collect_book_walls_enabled=True), store=object())
     jobs = [j for j in build_default_scheduler(rt).jobs if j.name.startswith("book_walls")]
-    assert [j.name for j in jobs] == ["book_walls:binance", "book_walls:bybit"]
+    assert [j.name for j in jobs][:2] == ["book_walls:binance", "book_walls:bybit"]  # + spot: test_book_walls_spot.py
     assert all(isinstance(j.metrics.stream, obs.StreamGroup) and j.metrics.stream is j.fn.stats for j in jobs)
     assert all(j.period_seconds == 2 for j in jobs)
     assert set(jobs[0].metrics.stream.as_dict()) == {"depth", "trades"} and set(jobs[1].metrics.stream.as_dict()) == {"book"}

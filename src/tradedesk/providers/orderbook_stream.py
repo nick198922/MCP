@@ -1,5 +1,5 @@
 """Public order-book and trade streams for the book-walls collector (collector/book_walls.py): Binance USD-M and Bybit
-linear perps. No key; read-only.
+linear perps, Binance spot and Coinbase spot. No key; read-only.
 
 Endpoints (checked live 2026-11-18 from the server, samples in tests/fixtures/book_walls_live_2026-11-18.json):
 
@@ -12,12 +12,27 @@ Endpoints (checked live 2026-11-18 from the server, samples in tests/fixtures/bo
   2026-11-18 the 200-level book reached only +-0.045 % (BTC) / +-0.12 % (ETH) from the mid, the 1000-level book
   +-0.3-0.4 % / +-0.9-1.0 %.
 
+Spot (checked live 2026-11-18 from the server, samples in tests/fixtures/book_walls_spot_live_2026-11-18.json):
+
+* Binance spot ``<symbol>@depth@1000ms`` and ``<symbol>@aggTrade`` on one combined-stream connection
+  (``stream.binance.com:9443``). Spot diffs have no ``pu``: they chain by ``U`` = previous ``u`` + 1
+  (``DiffSequencer(spot=True)``), seeded by ``GET /api/v3/depth`` (``providers.binance_spot.BinanceSpot.depth``;
+  1000 levels reached -0.33 % / +0.64 % of the BTCUSDT mid).
+* Coinbase: the Exchange feed's ``level2`` channel needs a key ("level2, level3, and full channels now require
+  authentication"), so the public Advanced Trade feed is used: ``level2`` (a full-book ``snapshot`` per product, then
+  ``update``s; asks are ``side: "offer"``), ``market_trades`` and ``heartbeats``, one subscribe message per channel.
+  Every message of a connection carries ``sequence_num`` counting from 0; a skipped number ends the connection
+  (``CoinbaseSequence``), so the next one sends a fresh snapshot. The snapshot is the whole book (4.2 MB for BTC-USD),
+  hence a larger frame cap (``COINBASE_MAX_FRAME``).
+
 Rows (all prices / sizes floats, sizes in coins, ``ts`` = venue time in ms):
 
-* ``{"kind": "depth", "symbol", "ts", "U", "u", "pu", "bids", "asks"}`` (Binance diff);
-* ``{"kind": "snapshot" | "delta", "symbol", "ts", "u", "bids", "asks"}`` (Bybit);
+* ``{"kind": "depth", "symbol", "ts", "U", "u", "pu", "bids", "asks"}`` (Binance diff; ``pu`` None on spot);
+* ``{"kind": "snapshot" | "delta", "symbol", "ts", "u", "bids", "asks"}`` (Bybit; Coinbase with ``u`` None, symbol =
+  product id 'BTC-USD');
 * ``{"kind": "trade", "symbol", "ts", "price", "qty", "side"}``, ``side`` = taker side 'buy' | 'sell' (Binance
-  ``m`` = buyer is the maker -> a taker sell; Bybit ``S`` is the taker side);
+  ``m`` = buyer is the maker -> a taker sell; Bybit ``S`` is the taker side; Coinbase ``side`` is the maker side:
+  live 2026-11-18, 1766 'SELL' prints at or above the best ask against 552 at or below the best bid);
 * ``{"kind": "_open" | "_drop", "feed"}`` connection life cycle (providers.liquidations._ws_consume ``lifecycle``).
 
 Malformed messages are dropped and counted (collector.bad_rows).
@@ -29,8 +44,10 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 from ..analytics.book_walls import levels_of
@@ -49,6 +66,10 @@ BYBIT_WS_URL = ws_mod.BYBIT_WS_URL
 BINANCE_DEPTH_SPEED = "500ms"
 BYBIT_BOOK_DEPTH = 1000
 QUEUE_MAX = 10_000  # rows waiting for the consumer (a REST snapshot fetch pauses it); then the feeds wait too
+BINANCE_SPOT_WS = "wss://stream.binance.com:9443/stream?streams="
+BINANCE_SPOT_DEPTH_SPEED = "1000ms"  # spot offers 1000 or 100 ms; 1 s is enough for walls that live seconds
+COINBASE_WS = "wss://advanced-trade-ws.coinbase.com"
+COINBASE_MAX_FRAME = 32 * 2**20  # the level2 snapshot is the whole book (4.2 MB for BTC-USD); websockets' cap is 1 MiB
 
 
 @dataclass
@@ -260,5 +281,144 @@ async def bybit_book_stream(
         error_of=ws_mod._bybit_error,
         lifecycle="book",
         label="book bybit:book",
+    ):
+        yield row
+
+
+# ---------- spot ----------
+
+
+def binance_spot_url(symbols: list[str]) -> str:
+    streams = [f"{s.lower()}@depth@{BINANCE_SPOT_DEPTH_SPEED}" for s in symbols] + [f"{s.lower()}@aggTrade" for s in symbols]
+    return BINANCE_SPOT_WS + "/".join(streams)
+
+
+def parse_binance_spot(msg: Any) -> dict[str, Any] | None:
+    """A spot combined-stream ``depthUpdate`` (``pu`` None) or ``aggTrade`` -> row; None for anything else."""
+    return parse_binance_depth(msg) or parse_binance_agg_trade(msg)
+
+
+async def binance_spot_book_stream(symbols: list[str], *, max_seconds: float, stats: StreamGroup) -> AsyncIterator[dict[str, Any]]:
+    """Spot depth diffs and aggTrades of the symbols on one connection (feed name 'book')."""
+    async for row in ws_mod._ws_consume(
+        binance_spot_url(symbols),
+        None,
+        parse_binance_spot,
+        max_seconds=max_seconds,
+        stats=stats.feeds.setdefault("book", StreamStats()),
+        lifecycle="book",
+        label="book binance_spot:book",
+    ):
+        yield row
+
+
+def coinbase_product(symbol: str) -> str:
+    """The Coinbase product of a collector symbol: 'BTCUSDT' -> 'BTC-USD' (USD, not USDT, is Coinbase's main book)."""
+    s = symbol.upper()
+    return s if "-" in s else s.removesuffix("USDT") + "-USD"
+
+
+def iso_ms(s: Any) -> int:
+    """Coinbase time '2026-11-18T19:05:57.103389162Z' -> epoch ms (UTC; the fraction, of any length, cut to ms).
+    Raises ValueError / TypeError on anything else."""
+    if not isinstance(s, str) or not s.endswith("Z"):
+        raise ValueError(f"not a UTC time: {s!r}")
+    base, _, frac = s[:-1].partition(".")
+    sec = datetime.strptime(base, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=UTC).timestamp()
+    if frac and not frac.isdigit():
+        raise ValueError(f"bad fraction in {s!r}")
+    return int(sec) * 1000 + (int((frac + "00")[:3]) if frac else 0)
+
+
+_COINBASE_KIND = {"snapshot": "snapshot", "update": "delta"}
+_COINBASE_TAKER = {"BUY": "sell", "SELL": "buy"}  # ``side`` is the maker's: a resting buy was hit by a taker sell
+
+
+def parse_coinbase(msg: Any) -> list[dict[str, Any]]:
+    """An Advanced Trade ``l2_data`` or ``market_trades`` message -> rows; [] for subscriptions, heartbeats, the
+    ``snapshot`` of recent trades (older than the book) and other channels."""
+    channel = msg.get("channel") if isinstance(msg, dict) else None
+    events = msg.get("events") if isinstance(msg, dict) else None
+    if channel not in ("l2_data", "market_trades"):
+        return []
+    if not isinstance(events, list):
+        _bad()
+        return []
+    rows: list[dict[str, Any]] = []
+    for ev in events:
+        if channel == "l2_data":
+            try:
+                kind, symbol, ups = _COINBASE_KIND[ev["type"]], str(ev["product_id"]), ev["updates"]
+                raw: dict[str, list[tuple[Any, Any]]] = {"bid": [], "offer": []}
+                for u in ups:
+                    raw[u["side"]].append((u["price_level"], u["new_quantity"]))
+                ts = iso_ms(ups[0]["event_time"] if ups else msg["timestamp"])
+            except (KeyError, TypeError, ValueError, IndexError):
+                _bad()
+                continue
+            bids, asks = levels_of(raw["bid"]), levels_of(raw["offer"])
+            if bids is None or asks is None:
+                _bad()
+                continue
+            rows.append({"kind": kind, "symbol": symbol, "ts": ts, "u": None, "bids": bids, "asks": asks})
+            continue
+        if not isinstance(ev, dict) or ev.get("type") != "update":
+            continue
+        for t in ev.get("trades") if isinstance(ev.get("trades"), list) else []:
+            try:
+                row = {
+                    "kind": "trade",
+                    "symbol": str(t["product_id"]),
+                    "ts": iso_ms(t["time"]),
+                    "price": float(t["price"]),
+                    "qty": float(t["size"]),
+                    "side": _COINBASE_TAKER.get(t["side"]),
+                }
+            except (KeyError, TypeError, ValueError):
+                row = None
+            if row is None or row["side"] is None or not (0 < row["price"] < math.inf and 0 < row["qty"] < math.inf):
+                _bad()
+                continue
+            rows.append(row)
+    return rows
+
+
+class CoinbaseSequence:
+    """``error_of`` of the Coinbase connection: an ``error`` message, or a ``sequence_num`` that is not the previous
+    one + 1 (it numbers every message of a connection from 0), fails the connection. ``_ws_consume`` then reconnects
+    and the new subscription sends a fresh snapshot, the only way back for a book that lost an update."""
+
+    def __init__(self) -> None:
+        self.last: int | None = None
+
+    def __call__(self, event: Any) -> str | None:
+        if not isinstance(event, dict):
+            return None
+        if event.get("type") == "error":
+            return ws_mod._clip(f"coinbase error: {event.get('message')}: {event.get('reason')}")
+        n = event.get("sequence_num")
+        if not isinstance(n, int) or isinstance(n, bool):
+            return None
+        prev, self.last = self.last, n
+        if n == 0 or prev is None or n == prev + 1:  # 0: a new connection
+            return None
+        return f"coinbase sequence_num {prev} -> {n}"
+
+
+async def coinbase_book_stream(products: list[str], *, max_seconds: float, stats: StreamGroup) -> AsyncIterator[dict[str, Any]]:
+    """Advanced Trade ``level2`` + ``market_trades`` (+ ``heartbeats``, which keep a quiet subscription open) of the
+    products ('BTC-USD') on one connection (feed name 'book')."""
+    subs: list[dict[str, Any]] = [{"type": "subscribe", "product_ids": products, "channel": c} for c in ("level2", "market_trades")]
+    subs.append({"type": "subscribe", "channel": "heartbeats"})
+    async for row in ws_mod._ws_consume(
+        COINBASE_WS,
+        subs,
+        parse_coinbase,
+        max_seconds=max_seconds,
+        stats=stats.feeds.setdefault("book", StreamStats()),
+        error_of=CoinbaseSequence(),
+        max_size=COINBASE_MAX_FRAME,
+        lifecycle="book",
+        label="book coinbase:book",
     ):
         yield row

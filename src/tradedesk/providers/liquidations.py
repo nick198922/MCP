@@ -371,7 +371,7 @@ def _okx_error(event: Any) -> str | None:
 
 async def _ws_consume(
     url: str,
-    subscribe: dict[str, Any] | None,
+    subscribe: dict[str, Any] | list[dict[str, Any]] | None,
     parser,
     *,
     max_seconds: float,
@@ -385,6 +385,7 @@ async def _ws_consume(
     heartbeat_seconds: float = HEARTBEAT_SECONDS,
     lifecycle: str | None = None,
     label: str = "liquidation",
+    max_size: int | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Shared WS consumer for a bounded run window that survives disconnects.
 
@@ -400,7 +401,9 @@ async def _ws_consume(
     window ends. The wait is capped at half the window, so every run makes at least one attempt. The run raises the
     last error only when no connection opened in the whole window, so the scheduler still counts a venue that is
     down as a failed run. Any other exception (a parser bug) is not a dropped link and propagates.
-    ``heartbeat`` is sent after ``heartbeat_seconds`` without a message.
+    ``heartbeat`` is sent after ``heartbeat_seconds`` without a message. ``subscribe`` is one message or a list sent
+    in order after each connect (Coinbase takes one channel per subscribe message). ``max_size`` raises websockets'
+    1 MiB cap on an incoming message (Coinbase sends the whole book as one); None keeps the default.
     """
     import asyncio  # noqa: PLC0415
 
@@ -415,6 +418,7 @@ async def _ws_consume(
     loop = asyncio.get_running_loop()
     deadline = loop.time() + max_seconds
     cap = min(backoff_cap, max_seconds / 2)
+    frame = {} if max_size is None else {"max_size": max_size}
     opened = False
     last_exc: Exception | None = None
     while True:
@@ -427,7 +431,12 @@ async def _ws_consume(
         dropped: str | None = None
         try:
             async with connect(
-                url, open_timeout=OPEN_TIMEOUT, ping_interval=PING_INTERVAL, ping_timeout=PING_TIMEOUT, close_timeout=CLOSE_TIMEOUT
+                url,
+                open_timeout=OPEN_TIMEOUT,
+                ping_interval=PING_INTERVAL,
+                ping_timeout=PING_TIMEOUT,
+                close_timeout=CLOSE_TIMEOUT,
+                **frame,
             ) as ws:
                 opened, opened_at = True, loop.time()
                 st.connected, st.connects, st.last_connect_ts = True, st.connects + 1, st.stamp()
@@ -437,8 +446,8 @@ async def _ws_consume(
                     st.count("reconnects", st.last_connect_ts)
                 if lifecycle is not None:
                     yield {"kind": "_open", "feed": lifecycle}
-                if subscribe is not None:
-                    await ws.send(json.dumps(subscribe))
+                for sub in subscribe if isinstance(subscribe, list) else [] if subscribe is None else [subscribe]:
+                    await ws.send(json.dumps(sub))
                 while True:
                     now = loop.time()
                     if st.consecutive_failures and now - opened_at >= stable_seconds:

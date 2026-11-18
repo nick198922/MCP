@@ -45,6 +45,9 @@ from typing import Any
 
 BAND = 0.02  # walls are looked for within +-2 % of the mid (card); the visible book is usually narrower (see Book.view)
 VIEW_MARGIN = 0.8  # ... and within 80 % of the visible distance: levels at its edge blink in and out of view
+# A full-book snapshot (Coinbase) is cut to this distance from its mid (near_mid): the whole BAND stays in reach
+# (VIEW_MARGIN x 2.5 % = 2 %); the levels further away can never hold a wall.
+FULL_BOOK_KEEP = BAND / VIEW_MARGIN
 TOP_N = 50  # levels of a side nearest the mid whose median size is the yardstick
 K_MEDIAN = 50.0  # a wall is >= this many times that median ...
 # ... and >= this many coins (~$1.6 M / ~$1.3 M on 2026-11-18). A 3-minute live trial with 10 BTC / 300 ETH found 15-57
@@ -68,15 +71,31 @@ EVENT_KEYS = (
 
 
 def min_qty_for(symbol: str) -> float | None:
-    """The coin minimum of a USDT-quoted symbol ('BTCUSDT' -> MIN_QTY['BTC']), None for a base without one."""
-    base = symbol.upper().removesuffix("USDT")
+    """The coin minimum of a USDT- or USD-quoted symbol ('BTCUSDT', Coinbase 'BTC-USD' -> MIN_QTY['BTC']), None for a
+    base without one."""
+    base = symbol.upper().removesuffix("USDT").removesuffix("-USD")
     return MIN_QTY.get(base)
+
+
+def near_mid(
+    bids: list[tuple[float, float]], asks: list[tuple[float, float]], keep: float
+) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
+    """The levels of a full-book snapshot within ``keep`` (decimal) of its mid; both sides whole when there is no mid
+    (a side empty or crossed). For a venue that sends the whole book (Coinbase: 13k / 25k levels for BTC-USD on
+    2026-11-18), so the per-update wall scan only walks the part of the book that can hold a wall."""
+    pos = [p for p, q in bids if q > 0], [p for p, q in asks if q > 0]
+    if not pos[0] or not pos[1] or max(pos[0]) >= min(pos[1]):
+        return bids, asks
+    mid = (max(pos[0]) + min(pos[1])) / 2
+    lo, hi = mid * (1 - keep), mid * (1 + keep)
+    return [lv for lv in bids if lv[0] >= lo], [lv for lv in asks if lv[0] <= hi]
 
 
 class Book:
     """Local L2 book of one symbol: price -> size per side.
 
-    ``bounded=True`` (Binance USD-M): the book is a REST snapshot of the nearest N levels plus every later diff. Diffs
+    ``bounded=True`` (Binance USD-M and spot; Coinbase, whose full-book snapshot is first cut by ``near_mid``): the
+    book is a snapshot of the nearest levels plus every later diff. Diffs
     also report levels far outside the snapshot, but the levels there that did not change are unknown, so updates
     outside the snapshot's range are dropped and ``view`` stays the snapshot's deepest bid / ask. ``bounded=False``
     (Bybit ``orderbook.N``): the venue keeps the top N levels itself (a level leaving them is deleted), so ``view`` is
@@ -149,11 +168,15 @@ class Book:
 
 
 class DiffSequencer:
-    """Binance USD-M diff-depth sequencing (docs "How to manage a local order book correctly"): after a REST snapshot
+    """Binance diff-depth sequencing (docs "How to manage a local order book correctly"). USD-M: after a REST snapshot
     with ``lastUpdateId`` L, drop events with ``u`` < L; the first applied one must have ``U`` <= L <= ``u``; every
-    later one must have ``pu`` equal to the previous event's ``u``. Anything else is a gap: take a new snapshot."""
+    later one must have ``pu`` equal to the previous event's ``u``. Spot (``spot=True``; its events carry no ``pu``):
+    drop events with ``u`` <= L; the first applied one must have ``U`` <= L + 1 <= ``u``; every later one must have
+    ``U`` equal to the previous event's ``u`` + 1. Anything else is a gap: take a new snapshot. In both, ``last`` is
+    the id of the last update the book holds (a snapshot's L or an applied event's ``u``)."""
 
-    def __init__(self) -> None:
+    def __init__(self, spot: bool = False) -> None:
+        self.spot = spot
         self.last: int | None = None
         self.first = True
 
@@ -172,13 +195,14 @@ class DiffSequencer:
         if self.last is None:
             return "unsynced"
         if self.first:
-            if final_id < self.last:
+            nxt = self.last + 1 if self.spot else self.last  # the update id the first applied event must cover
+            if final_id < nxt:
                 return "skip"
-            if first_id <= self.last <= final_id:
+            if first_id <= nxt <= final_id:
                 self.last, self.first = final_id, False
                 return "apply"
             return "gap"
-        if prev_final_id == self.last:
+        if (first_id == self.last + 1) if self.spot else (prev_final_id == self.last):
             self.last = final_id
             return "apply"
         return "gap"

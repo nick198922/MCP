@@ -118,9 +118,9 @@ SPECS: tuple[Spec, ...] = (
     ),
     Spec(
         "book_walls", "TRADEDESK_COLLECT_BOOK_WALLS_ENABLED", "book_depth_minute", "ts", MINUTE, 2 * MINUTE,
-        group_col="venue", groups=("binanceusdm", "bybit"),
-        note="WebSocket book streams (VENUES=binance,bybit); one depth row per symbol and minute; a run restart or a "
-        "resync can skip a minute",
+        group_col="venue", groups=("binanceusdm", "bybit", "binance", "coinbase"),
+        note="WebSocket book streams (VENUES=binance,bybit,binance_spot,coinbase; venue binance = spot); one depth row "
+        "per symbol and minute; a run restart or a resync can skip a minute",
     ),
     Spec(
         "cycle_regime_log", "TRADEDESK_COLLECT_CYCLE_REGIME_ENABLED", "cycle_regime_log", _DAY_TS.format("date"), DAY,

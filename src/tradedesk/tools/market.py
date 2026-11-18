@@ -15,6 +15,7 @@ from ._util import MAX_BAR_PRICE, MAX_BAR_VOLUME, READ_ONLY, bar_rows, json_num,
 EX = Annotated[str, Field(description="ccxt exchange id: binance, binanceusdm (USDT perps), bybit, okx, kraken, coinbase ...")]
 SYM = Annotated[str, Field(description="ccxt unified symbol. Spot 'BTC/USDT'; linear perp 'BTC/USDT:USDT'")]
 MarketType = Literal["spot", "swap", "future", "option", "any"]
+MARKETS_COMPACT_ROWS = 10  # market_markets full rows in the default (compact) answer
 
 
 def _level_ok(lv: Any) -> bool:
@@ -213,7 +214,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
         description=(
             "Search tradable markets on one exchange (ccxt load_markets). Filter by substring (`query`, case-insensitive on symbol/id/base/quote), "
             "`market_type` (spot/swap/future/option/any), and `active_only`. Returns slim rows: symbol, type, base, quote, settle, linear/inverse, "
-            "contractSize, active, plus expiry/strike/optionType when the venue lists them. Markets rarely change (cached ~1h)."
+            "contractSize, active, plus expiry/strike/optionType when the venue lists them. Markets rarely change (cached ~1h). "
+            "By default the answer is compact: `symbols` lists every returned match (up to `limit`, sorted by symbol) and "
+            "`markets` holds full rows for the first 10 of them; `include_details=true` returns full rows for all."
         ),
     )
     async def market_markets(
@@ -224,8 +227,23 @@ def register(server: MCPServer, rt: Runtime) -> None:
         ] = "any",
         active_only: Annotated[bool, Field(description="Skip markets the venue flags as inactive (delisted or suspended).")] = True,
         limit: Annotated[
-            int, Field(ge=1, le=1000, description="Max rows returned, sorted by symbol; a warning reports the full match count.")
+            int,
+            Field(
+                ge=1,
+                le=1000,
+                description="Max matches returned, sorted by symbol (as `symbols`, or as full rows with include_details); "
+                "a warning reports the full match count.",
+            ),
         ] = 100,
+        include_details: Annotated[
+            bool,
+            Field(
+                description=(
+                    "Return a full row for every returned match in `markets`; false (default) = a compact answer: the "
+                    "symbols of every returned match in `symbols`, full rows for the first 10 only. Rows are the same either way."
+                )
+            ),
+        ] = False,
     ) -> dict[str, Any]:
         b = Builder()
         mk = await b.guard("markets", f"ccxt:{exchange}", rt.exchanges.markets(exchange))
@@ -269,7 +287,22 @@ def register(server: MCPServer, rt: Runtime) -> None:
         picked.sort(key=lambda x: str(x["symbol"]))
         if len(picked) > limit:
             b.warn(f"matched {len(picked)} markets; returning first {limit}. Narrow `query` or raise `limit`.")
-        return b.build({"total_markets": len(mk), "matched": len(picked), "markets": picked[:limit]})
+        shown = picked[:limit]
+        if include_details:
+            return b.build({"total_markets": len(mk), "matched": len(picked), "markets": shown})
+        if len(shown) > MARKETS_COMPACT_ROWS:
+            b.warn(
+                f"compact answer: full rows for the first {MARKETS_COMPACT_ROWS} of {len(shown)} returned markets, every "
+                "returned symbol in `symbols`; include_details=true for every row"
+            )
+        return b.build(
+            {
+                "total_markets": len(mk),
+                "matched": len(picked),
+                "symbols": [x["symbol"] for x in shown],
+                "markets": shown[:MARKETS_COMPACT_ROWS],
+            }
+        )
 
     @server.tool(
         annotations=READ_ONLY,

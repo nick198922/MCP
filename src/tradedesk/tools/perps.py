@@ -156,6 +156,7 @@ def _warn_partial(b: Builder) -> None:
 
 
 SPREAD_COMPACT_ROWS = 10  # funding_spread_scan rows in the default (compact) answer
+CARRY_COMPACT_ROWS = 10  # funding_carry_scan rows in the default (compact) answer
 
 
 def _merge_evidence(b: Builder) -> None:
@@ -607,7 +608,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "Without `bases` the venue's `candidates` perps with the highest current funding are scanned, by default "
             "only crypto perps (TradFi perps skipped) that also have a spot market. "
             "All rates and APRs are decimals (0.10 = 10 %), on position notional; capital needed is higher "
-            "(spot leg + perp margin). Carry is not risk-free: see `warnings`."
+            "(spot leg + perp margin). By default the answer is compact: `summary` over every scanned symbol, the "
+            "top 10 `rows` by trailing APR and evidence merged per provider call; `include_details=true` returns every "
+            "row and one evidence item per fetch (same numbers). Carry is not risk-free: see `warnings`."
         ),
     )
     async def funding_carry_scan(
@@ -641,6 +644,16 @@ def register(server: MCPServer, rt: Runtime) -> None:
             bool, Field(description="When picking candidates, keep only bases with a spot market on `spot_venue` (cash-and-carry).")
         ] = True,
         max_concurrency: Annotated[int, Field(ge=1, le=16, description="Parallel funding-history requests.")] = 4,
+        include_details: Annotated[
+            bool,
+            Field(
+                description=(
+                    "Return every scanned row and one evidence item per fetch; false (default) = a compact answer: the "
+                    "top 10 rows by trailing APR, evidence merged per provider call. `summary` and the row numbers are "
+                    "the same either way."
+                )
+            ),
+        ] = False,
     ) -> dict[str, Any]:
         b = Builder()
         b.warn(CARRY_WARNING)
@@ -727,20 +740,28 @@ def register(server: MCPServer, rt: Runtime) -> None:
         rows.sort(key=lambda x: x["trailing_apr"] if x["trailing_apr"] is not None else float("-inf"), reverse=True)
         trailing = sorted(x["trailing_apr"] for x in rows if x["trailing_apr"] is not None)
         above = [x["base"] for x in rows if x["status"] == "above_entry"]
+        summary = {
+            "scanned": len(rows),
+            "above_entry": above,
+            "above_entry_with_spot": [
+                x["base"] for x in rows if x["status"] == "above_entry" and x["spot_available"] and not x["incomplete_history"]
+            ],
+            "incomplete_history": [x["base"] for x in rows if x["incomplete_history"]],
+            "median_trailing_apr": r(trailing[len(trailing) // 2], 4) if trailing else None,
+        }
+        if not include_details:
+            b.warn(
+                f"compact answer: top {min(len(rows), CARRY_COMPACT_ROWS)} of {len(rows)} rows by trailing APR, evidence "
+                "merged per provider call; include_details=true for the full scan"
+            )
+            rows = rows[:CARRY_COMPACT_ROWS]
+            _merge_evidence(b)
         return b.build(
             {
                 "venue": venue,
                 "lookback_days": lookback_days,
                 "thresholds": {"entry_apr": entry_apr, "exit_apr": exit_apr, "roundtrip_fee": roundtrip_fee},
-                "summary": {
-                    "scanned": len(rows),
-                    "above_entry": above,
-                    "above_entry_with_spot": [
-                        x["base"] for x in rows if x["status"] == "above_entry" and x["spot_available"] and not x["incomplete_history"]
-                    ],
-                    "incomplete_history": [x["base"] for x in rows if x["incomplete_history"]],
-                    "median_trailing_apr": r(trailing[len(trailing) // 2], 4) if trailing else None,
-                },
+                "summary": summary,
                 "rows": rows,
             }
         )

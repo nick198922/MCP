@@ -188,6 +188,16 @@ def test_rules_table_mirrors_the_playbook():
     assert {c for c, r in oi.RULES.items() if r.sendable} == {"P2", "P9", "P10", "P15"}
 
 
+def test_p10_p11_carry_the_playbook_status():
+    # playbook 14.11: P10 ◯ «не вимірюється на історії» (5 deals), P11 ◯ «замало даних» (n = 178)
+    p10, p11 = oi.RULES["P10"], oi.RULES["P11"]
+    assert p10.status == p11.status == "◯"
+    assert "не вимірюється на історії" in p10.evidence and "n = 5" in p10.evidence
+    assert "+0.008 R [−0.045; +0.057]" in p11.evidence and "n = 178" in p11.evidence
+    assert p10.sendable and p10.kind == "context" and not p11.sendable
+    assert {c for c, r in oi.RULES.items() if r.status == "не перевірено"} == {"P6", "P7"}
+
+
 def test_rank_ideas_drops_x_and_orders_by_evidence(p3_sendable):
     c = oi.iron_condor(QUOTES, EXP, NOW, "BTC")
     s = oi.debit_spread(QUOTES, EXP, NOW, "BTC", bearish=True)
@@ -277,6 +287,8 @@ def test_context_rules_land_in_notes_not_ideas():
     }
     ideas, ctx = oi.ideas_for("BTC", QUOTES, flat, NOW, market=market)
     assert ideas == [] and ctx["notes"] == ["P2", "P9", "P10", "P15"]
+    line = tg.note_line("P10", ctx)
+    assert "Правило: P10" in line and "докази: ◯ не вимірюється на історії" in line and "не перевірено" not in line
     json.dumps(ctx)  # logged with the ideas
     ideas, ctx = oi.ideas_for("BTC", QUOTES, flat, NOW)
     assert ctx["notes"] == [] and ctx["checks"]["P2"]["met"] is None

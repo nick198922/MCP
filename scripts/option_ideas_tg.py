@@ -13,7 +13,8 @@ history in TRADEDESK_DB_PATH, defaulting to --db), so the numbers are the ones t
 strongest evidence first, each with its rule and evidence status; ✗ and unmeasured rules are never sent.
 Every sent idea is appended to IDEAS_LOG (JSON lines, with all legs and prices). Each run first settles the open
 records whose expiry has passed: Bybit's delivery price of one of the idea's legs (v5 market/delivery-price, through
-rt.exchanges) → ``option_ideas.settle_idea`` (USD and R), written back in place of the open record (once: settled
+rt.exchanges) → ``option_ideas.settle_idea`` (USD and R, net of Bybit's delivery fee on legs in the money; records
+settled before 18.11 have no fee deducted and keep their numbers), written back in place of the open record (once: settled
 records are never touched again; malformed lines are kept as they are; no delivery price → the record stays open
 until the next run). The message then carries a per-rule line of the settled record (n, sum of R, share in plus;
 a conclusion only from ``option_ideas.MIN_SETTLED`` ideas over ``MIN_CLUSTERS`` expiries, its standard error per

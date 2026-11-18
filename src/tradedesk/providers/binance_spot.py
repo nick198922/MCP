@@ -1,4 +1,5 @@
-"""Binance spot public market data (no key): klines with the taker-buy split.
+"""Binance spot public market data (no key): klines with the taker-buy split; the depth snapshot that seeds the spot
+book of the book-walls collector (``depth``).
 
 ccxt's unified OHLCV drops the taker-buy columns that spot CVD needs, so `/api/v3/klines` is read directly through
 our own `Http` (retries, rate limit, cache, health, `Evidence`). Rows are Binance's as-is:
@@ -115,6 +116,17 @@ class BinanceSpot:
         f = await self.http.get_json("/api/v3/klines", params=params, ttl=300, tool="api/v3/klines", args=params)
         if not isinstance(f.data, list):
             raise ProviderError(self.name, "backend_error", "unexpected response shape at /api/v3/klines")
+        return f
+
+    async def depth(self, symbol: str, limit: int = 1000) -> Fetched:
+        """Order-book snapshot ``{"lastUpdateId", "bids": [[price, qty], ...], "asks": [...]}`` (strings), the nearest
+        ``limit`` levels per side (weight 50 at 1000, of 6000 a minute per IP; checked live 2026-11-18). Not cached: it
+        seeds a local book from the diff stream (collector/book_walls.py), which must start from the latest state."""
+        params = {"symbol": symbol, "limit": int(limit)}
+        f = await self.http.get_json("/api/v3/depth", params=params, ttl=0, tool="api/v3/depth", args=params)
+        d = f.data
+        if not isinstance(d, dict) or not isinstance(d.get("bids"), list) or not isinstance(d.get("asks"), list) or "lastUpdateId" not in d:
+            raise ProviderError(self.name, "backend_error", "unexpected response shape at /api/v3/depth")
         return f
 
     async def klines_range(self, symbol: str, interval: str, start_ms: int, end_ms: int, *, max_pages: int = 6) -> Fetched:

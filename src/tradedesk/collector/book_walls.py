@@ -1,6 +1,7 @@
 """Order-book walls collector (IDEA-20261114-book-walls item 1): one job per venue holds the book and trade streams of
-BTC / ETH perps for a run window, keeps a local L2 book per symbol and stores closed walls (``book_wall_event``) and one
-depth row per symbol and minute (``book_depth_minute``); the analysis is pure (analytics/book_walls.py).
+BTC / ETH (perps and spot) for a run window, keeps a local L2 book per symbol and stores closed walls
+(``book_wall_event``) and one depth row per symbol and minute (``book_depth_minute``); the analysis is pure
+(analytics/book_walls.py).
 
 * ``book_walls:binance``: USD-M depth diffs + aggTrades (two connections, providers/orderbook_stream.py). The book is
   seeded with a REST snapshot of 1000 levels (``BinanceFutures.depth``) and re-seeded every ``RESNAPSHOT_MS``, because
@@ -9,6 +10,12 @@ depth row per symbol and minute (``book_depth_minute``); the analysis is pure (a
   most once per ``SNAPSHOT_RETRY_MS`` per symbol, and a re-seed older than the book is discarded.
 * ``book_walls:bybit``: linear ``orderbook.1000`` + ``publicTrade`` on one connection; the venue sends the snapshot. A
   break in the delta ``u`` sequence ends the run early, so the next run reconnects and gets a new snapshot.
+* ``book_walls:binance_spot``: spot depth diffs + aggTrades on one connection, seeded and re-seeded from
+  ``GET /api/v3/depth`` (``BinanceSpot.depth``) like USD-M; spot diffs chain by ``U`` = previous ``u`` + 1.
+* ``book_walls:coinbase``: Advanced Trade ``level2`` + ``market_trades`` on one connection, products 'BTC-USD' /
+  'ETH-USD' (the job's USDT symbols mapped, ``coinbase_product``). The venue sends the whole book as the snapshot;
+  it is cut to ``FULL_BOOK_KEEP`` of the mid (``near_mid``) and kept as a bounded book, so later updates further out
+  are dropped. A skipped ``sequence_num`` fails the connection in the stream, which reconnects with a new snapshot.
 
 The job object (books, open walls, connection counters) lives as long as the process: a run ends every
 ``collect_book_walls_window_seconds`` and the next one reconnects, which the walls see as a feed break (``gaps``).
@@ -23,7 +30,16 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from ..analytics.book_walls import Book, DiffSequencer, WallTracker, levels_of, min_qty_for, walls_summary
+from ..analytics.book_walls import (
+    FULL_BOOK_KEEP,
+    Book,
+    DiffSequencer,
+    WallTracker,
+    levels_of,
+    min_qty_for,
+    near_mid,
+    walls_summary,
+)
 from ..core.errors import ProviderError
 from .bad_rows import note_bad_rows
 
@@ -32,10 +48,14 @@ if TYPE_CHECKING:  # avoid import cycle
 
 log = logging.getLogger("tradedesk.collector")
 
-VENUE_ID = {"binance": "binanceusdm", "bybit": "bybit"}  # ccxt ids, as in the liquidations table
+# Job venue -> ccxt id stored in the tables (as in the liquidations table): USD-M perps, Bybit linear, Binance spot,
+# Coinbase (Advanced Trade).
+VENUE_ID = {"binance": "binanceusdm", "bybit": "bybit", "binance_spot": "binance", "coinbase": "coinbase"}
 VENUES = tuple(VENUE_ID)
-SNAPSHOT_LIMIT = 1000  # Binance REST depth levels per side (weight 20)
-RESNAPSHOT_MS = 60_000  # re-seed the Binance book every minute: 2 symbols x weight 20 = 40 of the 2400 a minute
+SNAPSHOT_LIMIT = 1000  # Binance REST depth levels per side (weight 20 on USD-M, 50 on spot)
+# Re-seed the Binance books every minute: 2 symbols x weight 20 = 40 of the 2400 a minute (USD-M); 2 x 50 = 100 of
+# the 6000 a minute (spot).
+RESNAPSHOT_MS = 60_000
 # At most one snapshot fetch per symbol this often, whatever the outcome: after a sequence break a snapshot that is
 # always older than the stream would otherwise be fetched on every 500 ms diff (weight 20 each, 2400 a minute per IP,
 # shared with every Binance collector; 2026-11-18 review).
@@ -48,11 +68,13 @@ class BookWallsJob:
 
     def __init__(self, venue: str, symbols: list[str], *, clock: Callable[[], float] | None = None) -> None:
         from ..providers.liquidations import StreamStats  # noqa: PLC0415
-        from ..providers.orderbook_stream import StreamGroup  # noqa: PLC0415
+        from ..providers.orderbook_stream import BYBIT_BOOK_DEPTH, StreamGroup, coinbase_product  # noqa: PLC0415
 
         if venue not in VENUE_ID:
             raise ValueError(f"book walls: unknown venue {venue!r}")
         self.venue = venue
+        if venue == "coinbase":
+            symbols = list(dict.fromkeys(coinbase_product(s) for s in symbols))
         self.symbols = [s for s in symbols if min_qty_for(s) is not None]
         skipped = [s for s in symbols if s not in self.symbols]
         if skipped:
@@ -60,11 +82,9 @@ class BookWallsJob:
         self.stats = StreamGroup()
         for feed in ("depth", "trades") if venue == "binance" else ("book",):
             self.stats.feeds[feed] = StreamStats(clock=clock)
-        from ..providers.orderbook_stream import BYBIT_BOOK_DEPTH  # noqa: PLC0415
-
-        bounded = venue == "binance"
+        bounded = venue != "bybit"  # Bybit keeps its own top 1000; the others are a snapshot plus diffs
         self.books = {s: Book(bounded=bounded, depth=None if bounded else BYBIT_BOOK_DEPTH) for s in self.symbols}
-        self.seq = {s: DiffSequencer() for s in self.symbols}
+        self.seq = {s: DiffSequencer(spot=venue == "binance_spot") for s in self.symbols}
         self.trackers = {s: WallTracker(VENUE_ID[venue], s, min_qty_for(s) or 0.0) for s in self.symbols}
         self.snapshot_ms: dict[str, int | None] = dict.fromkeys(self.symbols)
         self.retry_ms: dict[str, int] = dict.fromkeys(self.symbols, 0)
@@ -78,9 +98,13 @@ class BookWallsJob:
     def _stream(self, window: float):
         from ..providers import orderbook_stream as obs  # noqa: PLC0415
 
-        if self.venue == "binance":
-            return obs.binance_book_stream(self.symbols, max_seconds=window, stats=self.stats)
-        return obs.bybit_book_stream(self.symbols, max_seconds=window, stats=self.stats)
+        fn = {
+            "binance": obs.binance_book_stream,
+            "bybit": obs.bybit_book_stream,
+            "binance_spot": obs.binance_spot_book_stream,
+            "coinbase": obs.coinbase_book_stream,
+        }[self.venue]
+        return fn(self.symbols, max_seconds=window, stats=self.stats)
 
     async def __call__(self, rt: "Runtime") -> int:
         if not self.symbols:
@@ -146,7 +170,10 @@ class BookWallsJob:
         if kind == "depth":
             return await self._binance_depth(rt, sym, row, book, tracker)
         if kind == "snapshot":
-            book.reset(row["bids"], row["asks"])
+            bids, asks = row["bids"], row["asks"]
+            if self.venue == "coinbase":  # the whole book: only the part around the mid can hold a wall
+                bids, asks = near_mid(bids, asks, FULL_BOOK_KEEP)
+            book.reset(bids, asks)
             self.last_u[sym] = row["u"]
             return tracker.on_book(row["ts"], book)
         if kind == "delta":
@@ -154,7 +181,8 @@ class BookWallsJob:
                 return [], None
             prev = self.last_u[sym]
             self.last_u[sym] = row["u"]
-            if prev is not None and row["u"] != prev + 1:
+            # Bybit's ``u``; Coinbase rows carry none (its sequence is checked in the stream, which reconnects on a gap)
+            if prev is not None and row["u"] is not None and row["u"] != prev + 1:
                 self._resync(sym, f"bybit update id {prev} -> {row['u']}")
                 self.restart = True  # Bybit sends a snapshot only on (re)subscribe: end the run, the next one reconnects
                 return [], None
@@ -202,15 +230,16 @@ class BookWallsJob:
         """Seed (or re-seed) the book from REST, at most once per SNAPSHOT_RETRY_MS per symbol. A failure keeps the old
         book; so does a re-seed older than the update the book already holds (it would read as a sequence gap)."""
         self.retry_ms[sym] = ts + SNAPSHOT_RETRY_MS
+        fetch = rt.binance_spot.depth if self.venue == "binance_spot" else rt.binance_futures.depth
         try:
-            d = (await rt.binance_futures.depth(sym, SNAPSHOT_LIMIT)).data
+            d = (await fetch(sym, SNAPSHOT_LIMIT)).data
             bids, asks, last_id = levels_of(d.get("bids")), levels_of(d.get("asks")), int(d["lastUpdateId"])
         except (ProviderError, KeyError, TypeError, ValueError) as e:
-            log.warning("book walls binance %s: depth snapshot failed: %s", sym, e)
+            log.warning("book walls %s %s: depth snapshot failed: %s", self.venue, sym, e)
             return
         if bids is None or asks is None:
             note_bad_rows(1)
-            log.warning("book walls binance %s: malformed depth snapshot dropped", sym)
+            log.warning("book walls %s %s: malformed depth snapshot dropped", self.venue, sym)
             return
         seq = self.seq[sym]
         if seq.last is not None and last_id <= seq.last:
@@ -219,7 +248,7 @@ class BookWallsJob:
             if last_id < seq.last:
                 self.snapshot_ms[sym] = ts
                 self.stale_snapshots += 1
-                log.info("book walls binance %s: snapshot %d older than the book (%d), kept the book", sym, last_id, seq.last)
+                log.info("book walls %s %s: snapshot %d older than the book (%d), kept the book", self.venue, sym, last_id, seq.last)
                 return
             self.books[sym].reset(bids, asks)
             self.snapshot_ms[sym] = ts

@@ -1,17 +1,22 @@
+import math
 import random
 
 import pytest
 
 from tradedesk.analytics.trade_replay import Bar
 from tradedesk.analytics.trader_eval import (
+    SNOWFLAKE_EPOCH_MS,
     Plan,
     Trade,
+    call_moment,
     cluster_bootstrap_ci,
     cochran_q,
+    funding_paid,
     holm,
     label_permutation_p,
     mde,
     per_call_r,
+    per_call_ret,
     permutation_p,
     placed_plan,
     plan_entry,
@@ -20,7 +25,9 @@ from tradedesk.analytics.trader_eval import (
     sample_starts,
     simulate,
     snowflake_ms,
+    trailing_vol,
     verdict,
+    verdict_checks,
     week_of,
 )
 
@@ -180,6 +187,77 @@ def test_verdict_rules():
     assert verdict(**base, halves_positive=False, without_recovered_positive=True).mark == "≈"
     assert verdict(**{**base, "p_placebo": 0.2}, halves_positive=True, without_recovered_positive=True).mark == "✗"
     assert verdict(**{**base, "n_calls": 20}, halves_positive=True, without_recovered_positive=True).mark == "◯"
+
+
+def test_bar_holding_the_call_moment_is_ignored():
+    # review of 3.1, item 3: a bar opening before start_ms with a "favourable" price must not change the result
+    b = bars((101, 101, 99, 100), (100, 104, 99, 103), (103, 104, 102, 103))
+    before = Bar(T0 - H, 50, 500, 1, 60)  # would fill the limit and hit the target if it were used
+    p = Plan("long", "limit", 99.5, 95.0, 104.0)
+    kw = {"start_ms": T0, "fill_ms": 48 * H, "hold_ms": 48 * H, "cost_frac": 0.001}
+    assert simulate([before, *b], p, **kw) == simulate(b, p, **kw)
+    assert simulate([before, *b], p, **kw).fill_t == T0
+
+
+def test_disclosure_already_beyond_stop_books_the_loss_from_the_author_price():
+    # review of 3.1, item 2: "short from 100, stop 105" told when the market is at 106 -> -1 R minus costs, not "no R"
+    b = bars((106, 107, 105, 106), (106, 106, 100, 101))
+    p = Plan("short", "market", None, 105.0, 90.0)
+    t = simulate(b, p, start_ms=T0, fill_ms=H, hold_ms=48 * H, cost_frac=0.0015, author_entry=100.0)
+    assert t.status == "stopped_before" and t.fill == 100.0 and t.exit == 105.0
+    assert t.r_gross == -1.0 and t.r_net == pytest.approx(-1.0 - 0.0015 * 100 / 5)
+    assert t.ret_net == pytest.approx(-0.05 - 0.0015)
+    # without author_entry the old rule holds (stop on the wrong side -> no R), and a stop still in front is untouched
+    assert simulate(b, p, start_ms=T0, fill_ms=H, hold_ms=48 * H, cost_frac=0.0015).r_net is None
+    ok = simulate(b, Plan("short", "market", None, 110.0, 90.0), start_ms=T0, fill_ms=H, hold_ms=48 * H, cost_frac=0.0, author_entry=100.0)
+    assert ok.status in ("time", "open") and ok.fill == 106
+
+
+def test_per_call_ret_counts_unfilled_as_zero_and_drops_unknown():
+    ts = [
+        Trade("no_fill"),
+        Trade("pending"),
+        Trade("no_data"),
+        Trade("time", fill=1.0, ret_net=0.02),
+        Trade("stop", fill=1.0, ret_net=-0.03),
+    ]
+    assert per_call_ret(ts) == [0.0, 0.02, -0.03]
+
+
+def test_call_moment_rules():
+    day = 1_700_006_400_000  # 2023-11-15 00:00 UTC
+    tid = lambda ms: (ms - SNOWFLAKE_EPOCH_MS) << 22  # noqa: E731
+    prev, same, nxt = tid(day - 3_600_000), tid(day + 5 * 3_600_000), tid(day + 30 * 3_600_000)
+    assert call_moment([prev, same, nxt], day) == (day + 5 * 3_600_000, "same_day")
+    assert call_moment([prev, nxt], day) == (day + 30 * 3_600_000, "later_id")
+    assert call_moment([prev], day) == (day + 86_400_000 - 60_000, "day_end")
+    assert call_moment([], day)[1] == "day_end"
+
+
+def test_funding_paid_by_side_and_window():
+    rates = [(10, 0.001), (20, 0.002), (30, -0.0005)]
+    assert funding_paid(rates, "long", 10, 30) == pytest.approx(0.0015)  # (10, 30]: 20 and 30
+    assert funding_paid(rates, "short", 10, 30) == pytest.approx(-0.0015)
+    assert funding_paid(rates, "long", 30, 40) == 0.0
+
+
+def test_trailing_vol_matches_the_sample_sd_of_log_returns():
+    closes = [100.0 * 1.01 ** (i % 2) for i in range(11)]  # log returns alternate +a, -a (5 each)
+    a = math.log(1.01)
+    assert trailing_vol(closes, 10) == pytest.approx(math.sqrt(10 * a * a / 9))
+    assert trailing_vol([1.0] * 50 + closes, 10) == pytest.approx(trailing_vol(closes, 10))  # only the last k returns
+    assert math.isnan(trailing_vol([100.0, 101.0], 5))
+    assert trailing_vol([100.0] * 11, 10) == 0.0
+
+
+def test_verdict_checks_rules():
+    base = dict(n_calls=60, n_filled=40, mean_x=0.004, p_placebo=0.005)
+    assert verdict_checks(**base, checks={"a": True, "b": True}).mark == "✓"
+    v = verdict_checks(**base, checks={"a": True, "b": False})
+    assert v.mark == "≈" and "b" in v.reason
+    assert verdict_checks(**{**base, "p_placebo": 0.06}, checks={}).mark == "✗"
+    assert verdict_checks(**{**base, "mean_x": -0.001}, checks={}).mark == "✗"
+    assert verdict_checks(**{**base, "n_filled": 10}, checks={}).mark == "◯"
 
 
 def test_sample_starts_within_bounds():

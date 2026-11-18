@@ -65,6 +65,9 @@ ARGS: dict[str, dict] = {
     "chain_metrics": {"chain": "Solana"},
     "contract_risk": {"chain": "ethereum", "address": SHIB},
     "dex_pairs": {"addresses": [FART]},
+    # the full answer (per-venue `venues`, per-fetch evidence), a superset of the compact default: the non-finite /
+    # wrong-type tests that reuse ARGS (_clean_and_broken) then see every number the scan computes
+    "funding_spread_scan": {"include_details": True},
     "iv_rank": {"expiry": EXPIRY},
     "journal_close": {**NEVER_RAISE_ARGS["journal_close"], "id": 1},
     "pendle_market": {"market": SUSDE_ETH},

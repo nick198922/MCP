@@ -14,7 +14,7 @@ from ..analytics.funding_spread import normalize_asset
 from ..analytics.instruments import expiry_token, parse_future_name
 from ..analytics.orderbook import book_stats, walk_book
 from ..analytics.trades import summarise as summarise_trades
-from ..core.envelope import Builder
+from ..core.envelope import Builder, Evidence
 from ..providers.exchanges import PERP_EXCHANGES
 from ..runtime import Runtime
 from . import coinalyze as cz
@@ -153,6 +153,43 @@ def _warn_partial(b: Builder) -> None:
     names = list(dict.fromkeys(m.provider.removeprefix("ccxt:") for m in b.missing))
     if names:
         b.warn(f"partial: {', '.join(names)} unavailable, see missing; the cross-venue comparison is incomplete")
+
+
+SPREAD_COMPACT_ROWS = 10  # funding_spread_scan rows in the default (compact) answer
+
+
+def _merge_evidence(b: Builder) -> None:
+    """One evidence item per (provider, call) instead of one per fetch: a 20-base funding_spread_scan makes ~60
+    per-symbol history / OHLCV fetches (~15 000 characters of evidence). The merged item keeps the provider, the call,
+    the args shared by every fetch, the number of fetches and symbols, the earliest fetch time (`fetched_at`) and the
+    latest one (`args.last_fetched_at`), the slowest latency, and cached=true only if every fetch was cached."""
+    groups: dict[tuple[str, str], list[Evidence]] = {}
+    for e in b.evidence:
+        groups.setdefault((e.provider, e.tool), []).append(e)
+    merged: list[Evidence] = []
+    for (provider, tool), items in groups.items():
+        if len(items) == 1:
+            merged.append(items[0])
+            continue
+        first = items[0].args
+        args: dict[str, Any] = {k: v for k, v in first.items() if all(k in x.args and x.args[k] == v for x in items[1:])}
+        args["fetches"] = len(items)
+        symbols = {str(x.args["symbol"]) for x in items if "symbol" in x.args}
+        if symbols:
+            args["symbols"] = len(symbols)
+        args["last_fetched_at"] = max(x.fetched_at for x in items)
+        latencies = [x.latency_ms for x in items if x.latency_ms is not None]
+        merged.append(
+            Evidence(
+                provider=provider,
+                tool=tool,
+                args=args,
+                fetched_at=min(x.fetched_at for x in items),
+                latency_ms=max(latencies) if latencies else None,
+                cached=all(x.cached for x in items),
+            )
+        )
+    b.evidence = merged
 
 
 def _row_from_stats(stats: dict[str, Any]) -> dict[str, Any]:
@@ -724,7 +761,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "kPEPE-style names are matched to 1000PEPE-style CEX tickers by multiplier, other naming differences stay unmatched; "
             "the HL<->Binance 7d carry backtest was unprofitable after costs, so treat it as monitoring, not a signal). `tradable_now` = above entry with no price, reversal or incomplete_history flag. "
             "Without `bases`, the `candidates` crypto perps listed on at least two venues with the widest current spread "
-            "are scanned. Rates and APRs are decimals on notional. See `warnings` before acting."
+            "are scanned. Rates and APRs are decimals on notional. By default the answer is compact: `summary` over every "
+            "scanned base, the top 10 `rows` by trailing spread without the per-venue `venues` breakdown, and evidence "
+            "merged per provider call; `include_details=true` returns every row with `venues` and one evidence item per "
+            "fetch (same numbers). See `warnings` before acting."
         ),
     )
     async def funding_spread_scan(
@@ -749,6 +789,17 @@ def register(server: MCPServer, rt: Runtime) -> None:
         ] = 0.02,
         crypto_only: Annotated[bool, Field(description="Skip TradFi perps flagged by the venue when picking candidates.")] = True,
         max_concurrency: Annotated[int, Field(ge=1, le=16, description="Parallel requests.")] = 4,
+        include_details: Annotated[
+            bool,
+            Field(
+                description=(
+                    "Return every scanned row with its per-venue breakdown `venues` (trailing / 30d / current APR, "
+                    "current rate, interval hours, cap, mark, coverage days) and one evidence item per fetch; false "
+                    "(default) = a compact answer: the top 10 rows by trailing spread without `venues`, evidence merged "
+                    "per provider call. `summary` and the row numbers are the same either way."
+                )
+            ),
+        ] = False,
     ) -> dict[str, Any]:
         b = Builder()
         b.warn(SPREAD_WARNING)
@@ -900,17 +951,25 @@ def register(server: MCPServer, rt: Runtime) -> None:
             return b.build(None, ok=False)
         rows.sort(key=lambda x: x["trailing_spread_apr"] if x["trailing_spread_apr"] is not None else float("-inf"), reverse=True)
         spreads = sorted(x["trailing_spread_apr"] for x in rows if x["trailing_spread_apr"] is not None)
+        summary = {
+            "scanned": len(rows),
+            "tradable_now": [x["base"] for x in rows if x["tradable_now"]],
+            "above_entry": [x["base"] for x in rows if x["status"] == "above_entry"],
+            "median_trailing_spread_apr": r(spreads[len(spreads) // 2], 4) if spreads else None,
+        }
+        if not include_details:
+            b.warn(
+                f"compact answer: top {min(len(rows), SPREAD_COMPACT_ROWS)} of {len(rows)} rows by trailing spread, without "
+                "the per-venue `venues` breakdown, evidence merged per provider call; include_details=true for the full scan"
+            )
+            rows = [{k: v for k, v in x.items() if k != "venues"} for x in rows[:SPREAD_COMPACT_ROWS]]
+            _merge_evidence(b)
         return b.build(
             {
                 "venues": vs,
                 "lookback_days": lookback_days,
                 "thresholds": {"entry_apr": entry_apr, "exit_apr": exit_apr, "slippage": slippage, "max_entry_gap": max_entry_gap},
-                "summary": {
-                    "scanned": len(rows),
-                    "tradable_now": [x["base"] for x in rows if x["tradable_now"]],
-                    "above_entry": [x["base"] for x in rows if x["status"] == "above_entry"],
-                    "median_trailing_spread_apr": r(spreads[len(spreads) // 2], 4) if spreads else None,
-                },
+                "summary": summary,
                 "rows": rows,
             }
         )

@@ -300,7 +300,7 @@ async def test_funding_history_warns_when_venue_history_is_shorter(server):
 
 
 async def test_funding_spread_scan_candidates(server):
-    env = await call(server, "funding_spread_scan", entry_apr=0.01)
+    env = await call(server, "funding_spread_scan", entry_apr=0.01, include_details=True)
     assert env["ok"], env["missing"]
     assert any("Backtest" in w for w in env["warnings"])
     rows = {x["base"]: x for x in env["data"]["rows"]}

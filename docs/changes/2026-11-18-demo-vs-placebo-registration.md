@@ -1,0 +1,3 @@
+- Демо-сетапи: реєстрація обліку «S38 / S39 / S40 проти плацебо тієї самої свічки» у картці `demo-setups-depth` (до прогону).
+- Код `analytics/demo_placebo.py`, раннер `scripts/verify_demo_vs_placebo.py` (`--stage smoke|run`), 12 тестів; смоук без R і Δ.
+- Прогін і звіт — наступним кроком.

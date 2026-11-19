@@ -42,7 +42,7 @@ def serve(req: httpx.Request) -> httpx.Response:
     return httpx.Response(404, text="not mocked")
 
 
-def make_server(handler=serve, key: str | None = KEY, cache_scale: float = 0.0):
+def make_server(handler=serve, key: str | None = KEY, cache_scale: float = 0.0, slept: list[float] | None = None):
     # The production bucket (2 req/s) would only pace the fakes in real time.
     with patch("tradedesk.core.http.TokenBucket", lambda rate, burst: TokenBucket(1_000.0, 1_000)):
         rt = Runtime(
@@ -50,6 +50,12 @@ def make_server(handler=serve, key: str | None = KEY, cache_scale: float = 0.0):
             transports={SRC: httpx.MockTransport(handler)},
         )
     rt.now = lambda: NOW
+    pauses = slept if slept is not None else []
+
+    async def no_sleep(seconds: float) -> None:  # the rate-limit retry pause, recorded instead of waited
+        pauses.append(seconds)
+
+    rt.etherscan.sleep = no_sleep
     srv, _ = build_server(rt)
     return srv
 
@@ -252,11 +258,13 @@ async def test_rate_limit_on_eth_call_is_a_failure_not_a_revert():
 async def test_transient_eth_call_failure_is_not_cached(bad, reason):
     # Caching ON (production scale): a node error must not be cached as "not an ERC-20" for the 1 h TTL.
     seen = []
+    tries = 2 if reason == "rate_limited" else 1  # a rate limit is asked twice per call before it fails
 
     def flaky(req):
         if req.url.params.get("module") == "proxy":
-            seen.append(req.url.params.get("data"))
-            if len(seen) == 1:
+            view = req.url.params.get("data")
+            seen.append(view)
+            if view == seen[0] and seen.count(view) <= tries:
                 return httpx.Response(200, json=bad)
         return serve(req)
 
@@ -267,7 +275,7 @@ async def test_transient_eth_call_failure_is_not_cached(bad, reason):
     assert list(failed.values()) == [reason] and failed.keys() <= {"decimals", "symbol"}
     assert not any("does not look like an ERC-20" in w for w in first["warnings"])
     assert second["missing"] == [] and (second["data"]["decimals"], second["data"]["symbol"]) == (6, "USDT")
-    assert len(seen) == 3  # the failed view was asked again; the good one came from the cache
+    assert len(seen) == 2 + tries  # the failed view was asked again; the good one came from the cache
 
 
 async def test_revert_on_eth_call_is_still_data_unavailable_and_cached():
@@ -288,7 +296,7 @@ async def test_revert_on_eth_call_is_still_data_unavailable_and_cached():
 
 async def test_empty_page_is_cached_and_status_0_is_not():
     seen = []
-    answers = [FIX["error_rate_limit"], FIX["tokentx_empty"]]
+    answers = [FIX["error_rate_limit"], FIX["error_rate_limit"], FIX["tokentx_empty"]]
 
     def scripted(req):
         seen.append(req.url)
@@ -298,7 +306,70 @@ async def test_empty_page_is_cached_and_status_0_is_not():
     envs = [await call(srv, "onchain_address_txs", chain="base", address=HOLDER, kind="erc20") for _ in range(3)]
     assert envs[0]["ok"] is False and envs[0]["missing"][0]["reason"] == "rate_limited"
     assert envs[1]["ok"] is True and envs[2]["ok"] is True and envs[2]["data"]["count"] == 0
-    assert len(seen) == 2  # the NOTOK answer was asked again, the empty page came from the cache
+    assert len(seen) == 3  # the NOTOK answer (asked twice) was asked again, the empty page came from the cache
+
+
+async def test_rate_limit_in_a_200_body_is_retried_once_then_answers():
+    seen, slept = [], []
+
+    def scripted(req):
+        seen.append(req.url)
+        return httpx.Response(200, json=FIX["error_rate_limit"]) if len(seen) == 1 else serve(req)
+
+    env = await call(make_server(scripted, slept=slept), "onchain_address_txs", chain="ethereum", address=HOLDER)
+    assert env["ok"] is True and env["missing"] == [] and env["data"]["count"] == 2
+    assert len(seen) == 2 and slept == [1.0]
+
+
+async def test_rate_limit_on_each_eth_call_is_retried_once():
+    seen, slept = [], []
+
+    def once_per_view(req):
+        if req.url.params.get("module") == "proxy":
+            view = req.url.params.get("data")
+            seen.append(view)
+            if seen.count(view) == 1:
+                return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": "Max rate limit reached"})
+        return serve(req)
+
+    env = await call(make_server(once_per_view, slept=slept), "onchain_token_info", chain="ethereum", address=USDT)
+    assert env["ok"] is True and env["missing"] == [] and env["data"]["symbol"] == "USDT"
+    assert len(seen) == 8 and slept == [1.0] * 4
+
+
+async def test_rate_limit_twice_goes_to_missing_after_two_requests():
+    seen, slept = [], []
+
+    def limited(req):
+        seen.append(req.url)
+        return httpx.Response(200, json=FIX["error_rate_limit"])
+
+    env = await call(make_server(limited, slept=slept), "onchain_balance", chain="ethereum", address=HOLDER)
+    assert env["ok"] is False and env["data"] is None
+    [m] = env["missing"]
+    assert (m["field"], m["provider"], m["reason"]) == ("balance", SRC, "rate_limited")
+    assert len(seen) == 2 and slept == [1.0]
+
+
+@pytest.mark.parametrize(
+    ("answer", "reason"),
+    [
+        (httpx.Response(200, json=FIX["error_invalid_key"]), "auth"),
+        (httpx.Response(200, json=FIX["error_chain_not_free"]), "provider_tier"),
+        (httpx.Response(200, json={"status": "0", "message": "NOTOK", "result": "something new"}), "backend_error"),
+        (httpx.Response(429, text="Too Many Requests"), "rate_limited"),  # HTTP 429: Http's own retries, not this one
+    ],
+)
+async def test_other_failures_are_not_retried_by_the_provider(answer, reason):
+    seen, slept = [], []
+
+    def failing(req):
+        seen.append(req.url)
+        return answer
+
+    env = await call(make_server(failing, slept=slept), "onchain_balance", chain="ethereum", address=HOLDER)
+    assert env["ok"] is False and env["missing"][0]["reason"] == reason
+    assert len(seen) == 1 and slept == []
 
 
 def test_proxy_check():

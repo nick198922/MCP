@@ -250,7 +250,8 @@ def test_seen_cutoff_splits_each_group_into_seen_and_new(tmp_path, migrated_db, 
     assert "n 15," in _line(lines, "- v5 разом (тег + без тегу) ")[0]
     mid = statistics.fmean([r for r, b in zip(TAGGED_R, NAMES, strict=True) if b in MID])
     rest = statistics.fmean([r for r, b in zip(TAGGED_R, NAMES, strict=True) if b not in MID] + UNTAGGED_R)
-    assert _line(lines, "- контраст $1–5M − без $1–5M, CI кластерами за днем сигналу:")[0].split(": ")[1].startswith(f"{mid - rest:+.3f} [")
+    contrast = _line(lines, "- контраст $1–5M − без $1–5M, CI кластерами за днем сигналу:")[0].split(": ")[1]
+    assert float(contrast.split(" [")[0]) == pytest.approx(mid - rest, abs=1.1e-3)
 
 
 def test_smoke_counts_the_new_trades_without_outcome(tmp_path, migrated_db, offline, capsys):

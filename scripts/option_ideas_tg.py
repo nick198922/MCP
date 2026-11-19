@@ -355,6 +355,7 @@ async def gather(
                     rows = ((body or {}).get("result") or {}).get("list") or []
                     bars = (await rt.exchanges.ohlcv("binance", f"{coin}/USDT", "1d", 260)).data or []
                     closes = [float(b[4]) for b in bars[:-1] if isinstance(b, list | tuple) and len(b) >= 5]  # complete days only
+                    # parse_bybit_tickers reads USDT-settled symbols only, as option_structure_quote prices them
                     out.append(oi.ideas_for(coin, oi.parse_bybit_tickers(rows, coin), closes, now_ms, risk, market=market))
                 except Exception as e:  # noqa: BLE001 - one coin failing must not drop the other
                     out.append(([], {"coin": coin, "skip": f"{type(e).__name__}"}))

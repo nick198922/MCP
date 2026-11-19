@@ -17,6 +17,7 @@ SYM = Annotated[str, Field(description="ccxt unified symbol. Spot 'BTC/USDT'; li
 MarketType = Literal["spot", "swap", "future", "option", "any"]
 MARKETS_COMPACT_ROWS = 10  # market_markets full rows in the default (compact) answer
 OHLCV_COMPACT_ROWS = 10  # market_ohlcv: the latest candles in the default (compact) answer
+TICKERS_COMPACT_ROWS = 10  # market_tickers full rows (top by quote volume) in the default (compact) answer
 
 
 def _level_ok(lv: Any) -> bool:
@@ -167,8 +168,11 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "ask are present. Prices are in the symbol's quote currency. One symbol (a string or a one-item list) is "
             "fetched with fetch_ticker, which also works on venues without batch tickers; several symbols, or none for the "
             "venue's full default set, with one fetch_tickers call (some venues reject that: the error is in `missing`). "
-            "Rows are sorted by 24h quote volume (desc) and cut to `limit`; `count` is the number before the cut; "
-            "`top_movers` = the 3 largest 24h moves by |percentage|. For one symbol read data.tickers[0]."
+            "Rows are sorted by 24h quote volume (desc) and cut to `limit`; `count` is the number before the cut, "
+            "`returned` the number after it; `top_movers` = the 3 largest 24h moves by |percentage| among all `count` "
+            "rows. By default the answer is compact: `symbols` lists every returned ticker (in volume order) and "
+            "`tickers` holds full rows for the top 10 by quote volume only; include_details=true returns a full row for "
+            "every returned ticker (no `symbols`). Rows are the same either way. For one symbol read data.tickers[0]."
         ),
     )
     async def market_tickers(
@@ -181,6 +185,15 @@ def register(server: MCPServer, rt: Runtime) -> None:
             ),
         ] = None,
         limit: Annotated[int, Field(ge=1, le=500, description="Max rows kept after sorting by quote volume.")] = 50,
+        include_details: Annotated[
+            bool,
+            Field(
+                description=(
+                    "Return a full row for every returned ticker in `tickers`; false (default) = a compact answer: the "
+                    "symbols of every returned ticker in `symbols`, full rows for the top 10 by quote volume only."
+                )
+            ),
+        ] = False,
     ) -> dict[str, Any]:
         b = Builder()
         wanted = list(dict.fromkeys([symbols] if isinstance(symbols, str) else symbols or []))
@@ -226,13 +239,24 @@ def register(server: MCPServer, rt: Runtime) -> None:
         rows.sort(key=lambda x: json_num(x.get("quoteVolume")) or 0.0, reverse=True)
         with_pct = [x for x in rows if isinstance(x.get("percentage"), (int, float))]
         top_movers = sorted(with_pct, key=lambda x: abs(x["percentage"]), reverse=True)[:3]
-        data = {
-            "count": len(rows),
-            "returned": min(limit, len(rows)),
-            "tickers": rows[:limit],
-            "top_movers": [{"symbol": x["symbol"], "percentage": x["percentage"], "last": x["last"]} for x in top_movers],
-        }
-        return b.build(data)
+        shown = rows[:limit]
+        movers = [{"symbol": x["symbol"], "percentage": x["percentage"], "last": x["last"]} for x in top_movers]
+        if include_details:
+            return b.build({"count": len(rows), "returned": len(shown), "tickers": shown, "top_movers": movers})
+        if len(shown) > TICKERS_COMPACT_ROWS:
+            b.warn(
+                f"compact answer: full rows for the top {TICKERS_COMPACT_ROWS} of {len(shown)} returned tickers (by quote "
+                "volume), every returned symbol in `symbols`; include_details=true for every row"
+            )
+        return b.build(
+            {
+                "count": len(rows),
+                "returned": len(shown),
+                "symbols": [x["symbol"] for x in shown],
+                "tickers": shown[:TICKERS_COMPACT_ROWS],
+                "top_movers": movers,
+            }
+        )
 
     @server.tool(
         annotations=READ_ONLY,

@@ -47,7 +47,7 @@ claude mcp add tradedesk -- uv run --directory /ABSOLUTE/PATH/TO/tradedesk-mcp t
 
 | Група | Інструмент | Що дає |
 |---|---|---|
-| Система | `system_health` | стан провайдерів; `probe=true` робить живий пінг |
+| Система | `system_health` | стан провайдерів; `probe=true` робить живий пінг (і віддає повний звіт; типово звіт стислий без втрат, повний — `include_details=true`) |
 | Ринок | `market_tickers`, `market_ohlcv`, `market_orderbook`, `market_markets`, `market_trades` | котирування одного символу (через `fetch_ticker`, працює й там, де біржа не дає batch) або кількох / усіх (batch, сортування за обсягом, top-movers; колишній `market_ticker` злито сюди, див. `docs/changes/2026-11-17-mcp-merge-ticker-carry-status.md`), свічки з реалізованою вола, стакан зі slippage для заданого розміру, пошук ринків, останні угоди з aggressor-flow (buy/sell, VWAP, CVD) |
 | Розмітка графіка | `chart_markup` | рівні й зони курсу DoubleTop зі свічок біржі: EMA Trend 13/21/34, Daily (EMA 100/200 з 4h), Weekly (EMA 100/200 з 1d), VWAP з якорем і смугою 1σ, профіль об'єму (POC/VAH/VAL), структура курсу на структурних свінгах (захищений HL/LH, HH/LL, BOS/CHoCH лише закриттям, тінь — sweep) і внутрішня структура на всіх 3-свічкових свінгах, неторкнута ліквідність і рівні хаї/лої, FVG зі станом заповнення, OB з прапорцями валідності й брейкери, premium/discount і OTE, ATR/RSI, азійський рейндж і свип на відкритті Франкфурта/Лондона; BingX-форекс приймає `EURUSD` |
 | Перпи | `perps_funding_compare` | funding по Binance/Bybit/OKX/Hyperliquid/Deribit, приведений до річних |

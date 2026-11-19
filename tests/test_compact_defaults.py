@@ -1,21 +1,24 @@
-"""Compact default answers (BACKLOG «великі відповіді за замовчуванням», standing card items 379, 381, 382, 390 and 405).
+"""Compact default answers (BACKLOG «великі відповіді за замовчуванням», standing card items 379, 381, 382, 390, 405, 406).
 
 The default call of `market_flow`, `hyperliquid_funding_history`, `funding_spread_scan`, `funding_carry_scan`,
-`market_markets`, `polymarket_options_gap`, `market_ohlcv`, `cycle_regime` and `polymarket_search` stays small
-(<= 8 000 characters of JSON) so it does not flood a chat or an agent's context; the full per-bar / per-payment /
-per-candle series comes only with `include_series=true`, the full scan (every row, the per-venue breakdown, per-fetch
-evidence), every full market row, every day of the cycle history or every full search result with
-`include_details=true`. Fakes only (tests/conftest.py, the captured market_flow responses of 2026-10-28, the Binance
-daily rows of 2026-10-28, the Gamma search answer of 2026-11-19). No network.
+`market_markets`, `polymarket_options_gap`, `market_ohlcv`, `cycle_regime`, `polymarket_search`, `market_tickers` and
+`system_health` (without the collector) stays small (<= 8 000 characters of JSON) so it does not flood a chat or an
+agent's context; the full per-bar / per-payment / per-candle series comes only with `include_series=true`, the full scan
+(every row, the per-venue breakdown, per-fetch evidence), every full market / ticker row, every day of the cycle history,
+every full search result or every health field with `include_details=true`. Fakes only (tests/conftest.py, the captured
+market_flow responses of 2026-10-28, the Binance daily rows of 2026-10-28, the Gamma search answer of 2026-11-19).
+No network.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
 import ccxt
 import httpx
+from mcp import Client
 
 from conftest import NOW, FakeEx, State, make_transports
 from test_cycle_regime import FX_NOW as CYCLE_FX_NOW
@@ -26,11 +29,14 @@ from test_cycle_regime import _fx_handler as _cycle_fx
 from test_cycle_regime import _rt as _cycle_rt
 from test_market_flow import _flow_rt
 from test_pm_gap import END_ABOVE, _book, _market, iso
-from test_server import call
+from test_server import EXPECTED_TOOLS, call
+from tradedesk.collector.scheduler import PeriodicJob, Scheduler
 from tradedesk.config import Settings
+from tradedesk.providers.liquidations import StreamStats
 from tradedesk.runtime import Runtime
 from tradedesk.server import build_server
 from tradedesk.tools.pm_gap import COMPACT_FIELDS
+from tradedesk.tools.system import JOB_NO_FAILURES, PROVIDER_NO_ERRORS, PROVIDER_UNUSED
 
 MAX_DEFAULT_CHARS = 8_000
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -545,3 +551,212 @@ async def test_polymarket_search_compact_still_reports_a_provider_failure(state)
     (env,) = await _search_envs(_search_rt(state, status=502), {})
     assert env["ok"] is False and env["data"] is None
     assert [(m["field"], m["provider"]) for m in env["missing"]] == [("search", "polymarket:gamma")]
+
+
+# market_tickers (item 406): 60 USDT perps with fields of the live length (the live default call on binanceusdm, limit 50,
+# was 10 969 characters on 19.11, ~209 per row).
+TICKER_BASES = [f"TK{i:02d}" for i in range(60)]
+
+
+class _ManyTickersEx(FakeEx):
+    async def fetch_tickers(self, symbols=None):
+        out = {}
+        for i, base in enumerate(TICKER_BASES):
+            sym = f"{base}/USDT:USDT"
+            last = round(0.0173 * (i + 1) ** 1.7 * 1.000731, 6)
+            out[sym] = {
+                "symbol": sym,
+                "last": last,
+                "bid": round(last * 0.99993, 6),
+                "ask": round(last * 1.00007, 6),
+                "high": round(last * 1.0412, 6),
+                "low": round(last * 0.9617, 6),
+                "baseVolume": round(91_234_567.123 / (i + 1), 3),
+                "quoteVolume": round(3_456_789_012.3456 / (i + 1) ** 1.3, 4),
+                "percentage": round(((-1) ** i) * (0.317 + 0.4123 * i), 3),
+                "timestamp": 1791637668000 + 17 * i,
+            }
+        return {k: v for k, v in out.items() if not symbols or k in symbols}
+
+
+async def test_market_tickers_default_is_compact_and_details_are_opt_in(state):
+    rt = _spread_rt(state, _ManyTickersEx)
+    try:
+        srv, _ = build_server(rt)
+        default = await call(srv, "market_tickers", exchange="binanceusdm")  # the call a model makes: limit 50
+        full = await call(srv, "market_tickers", exchange="binanceusdm", include_details=True)
+        few = await call(srv, "market_tickers", exchange="binanceusdm", symbols=["TK01/USDT:USDT", "TK02/USDT:USDT"])
+    finally:
+        await rt.aclose()
+    assert default["ok"] and full["ok"] and few["ok"]
+    assert _size(default) <= MAX_DEFAULT_CHARS, _size(default)
+    assert _size(full) > MAX_DEFAULT_CHARS
+    rows = full["data"]["tickers"]
+    assert len(rows) == full["data"]["returned"] == default["data"]["returned"] == 50
+    assert full["data"]["count"] == default["data"]["count"] == 60
+    # every returned symbol by default, in volume order; the top 10 full rows unchanged; the same movers (of all 60)
+    assert default["data"]["symbols"] == [x["symbol"] for x in rows]
+    assert default["data"]["tickers"] == rows[:10]
+    assert default["data"]["top_movers"] == full["data"]["top_movers"]
+    assert [x["symbol"] for x in full["data"]["top_movers"]] == ["TK59/USDT:USDT", "TK58/USDT:USDT", "TK57/USDT:USDT"]
+    assert "symbols" not in full["data"]
+    assert any("compact answer: full rows for the top 10 of 50 returned tickers" in w for w in default["warnings"])
+    assert not any("compact answer" in w for w in full["warnings"])
+    # ten rows or fewer: every full row, no compact warning
+    assert len(few["data"]["tickers"]) == len(few["data"]["symbols"]) == 2
+    assert not any("compact answer" in w for w in few["warnings"])
+
+
+async def test_market_tickers_compact_still_reports_a_provider_failure(server):
+    env = await call(server, "market_tickers", exchange="okx")  # the fake okx answers fetch_tickers with a 429
+    assert env["ok"] is False and env["data"] is None
+    assert [(m["field"], m["provider"], m["reason"]) for m in env["missing"]] == [("tickers", "ccxt:okx", "rate_limited")]
+
+
+# system_health (item 406): the compact report leaves out only implied values, so the full one is rebuilt from it.
+def _expand_health(data: dict) -> dict:
+    """The full system_health `data` rebuilt from the compact one (without `tools`, which becomes a count)."""
+    h = data["health"]
+    providers = {n: dict(PROVIDER_UNUSED) for n in h["unknown"]}
+    providers |= {n: {**PROVIDER_NO_ERRORS, **p} for n, p in h["providers"].items()}
+    jobs = None
+    if data["collector"] is not None:
+        jobs = []
+        for j in data["collector"]:
+            out = {**JOB_NO_FAILURES, "successes": j["runs"] - j["failures"], **j}
+            if "rows_dropped_total" not in j:
+                out |= {"rows_dropped_total": 0, "last_rows_dropped": None if j["runs"] == 0 else 0}
+            jobs.append(out)
+    rest = {k: v for k, v in data.items() if k not in ("health", "collector", "tool_count")}
+    return rest | {"health": {"summary": h["summary"], "providers": dict(sorted(providers.items()))}, "collector": jobs}
+
+
+def _without_tools(data: dict) -> dict:
+    return {k: v for k, v in data.items() if k != "tools"}
+
+
+async def test_system_health_default_is_compact_and_lossless(server):
+    # the audit's setting (14.11: 9.1k characters): no collector, every provider registered, some of them called
+    for name, args in (("deribit_vol_surface", {}), ("perps_funding_compare", {"coin": "BTC"}), ("market_tickers", {"exchange": "okx"})):
+        await call(server, name, **args)
+    default = await call(server, "system_health")
+    full = await call(server, "system_health", include_details=True)
+    probe = await call(server, "system_health", probe=True)
+    assert default["ok"] and full["ok"] and probe["ok"]
+    assert _size(default) <= MAX_DEFAULT_CHARS, _size(default)
+    d, f = default["data"], full["data"]
+    assert d["tool_count"] == len(f["tools"]) == len(EXPECTED_TOOLS) and "tools" not in d
+    assert _expand_health(d) == _without_tools(f)  # nothing but implied values left out
+    provs = f["health"]["providers"]
+    assert set(d["health"]["unknown"]) == {n for n, p in provs.items() if p["calls"] == 0} != set()
+    assert d["health"]["providers"]["ccxt:okx"] == provs["ccxt:okx"]  # a provider with a failure keeps its full row
+    assert d["health"]["summary"] == f["health"]["summary"]
+    assert any("compact answer (not a fault)" in w for w in default["warnings"])
+    # include_details and probe=true: the full report as before, no compact note
+    assert set(f) == set(probe["data"]) == {"version", "health", "tools", "store", "collector"}
+    assert not any("compact answer" in w for w in full["warnings"] + probe["warnings"])
+    assert all(set(p) == set(PROVIDER_UNUSED) for p in probe["data"]["health"]["providers"].values())
+
+
+# The live collector of 19.11: 23 periodic jobs and 3 liquidation streams (system_health was 19 096 characters with it).
+LIVE_JOBS = [
+    ("atm_term", 300), ("funding", 3600), ("basis", 300), ("retention", 86400), ("traders", 86400),
+    ("trader_positions", 3600), ("supply", 86400), ("paper_carry", 600), ("assistant_snapshot", 600), ("pm_gap", 3600),
+    ("assistant_paper", 3600), ("plan_resolve", 3600), ("forecast_log", 3600), ("radar_archive", 3600),
+    ("option_xvenue", 60), ("coinalyze_history", 3600), ("tradfi_spread", 60), ("hl_oi_cap", 600),
+    ("flow_snapshot", 600), ("cycle_regime_log", 300), ("coingecko_trending", 600), ("option_legs", 600), ("alerts", 60),
+    ("liquidations:binance", 5), ("liquidations:bybit", 5), ("liquidations:okx", 5),
+]  # fmt: skip
+
+
+async def _never(_rt) -> int:
+    await asyncio.Event().wait()  # the scheduler starts with the session: keep the metrics as set below
+    return 0
+
+
+def _live_scheduler(rt: Runtime) -> Scheduler:
+    jobs = [PeriodicJob(name=n, period_seconds=p, fn=_never) for n, p in LIVE_JOBS]
+    for i, j in enumerate(jobs):
+        m = j.metrics
+        m.runs = m.successes = 1 + 7 * i
+        m.last_run_ts, m.last_duration_ms = 1795097219.683238 - 13.7 * i, 189.30315971374512 * (i + 1)
+        m.last_rows_written, m.last_rows_dropped = 24 * i, 0
+        if j.name.startswith("liquidations:"):
+            m.stream = StreamStats(connected=True, connects=7, reconnects=2, failures=3, frames=158, rows=38)
+            m.stream.last_failure = "ConnectionClosedError: sent 1011 (internal error) keepalive ping timeout; no close frame received"
+            m.stream.last_failure_ts, m.stream.last_connect_ts = 1795095766.399628, 1795096926.733353
+            m.stream.last_message_ts, m.stream.last_row_ts = 1795097269.720114, 1795097207.876428
+            m.stream.connected_since = m.stream.last_connect_ts
+    # one job failed once and then recovered; one dropped malformed rows
+    bad = jobs[1].metrics
+    bad.failures, bad.successes = 1, bad.runs - 1
+    bad.last_failure, bad.last_failure_ts = "TimeoutError: binanceusdm fetch_funding_rate_history", 1795094515.4
+    jobs[2].metrics.last_rows_dropped = jobs[2].metrics.rows_dropped_total = 3
+    return Scheduler(rt, jobs)
+
+
+async def test_system_health_compact_keeps_collector_diagnostics(state, monkeypatch):
+    rt = Runtime(
+        Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=":memory:", collector_enabled=True),
+        transports=make_transports(state),
+        exchange_factory=FakeEx,
+    )
+    rt.now = lambda: NOW
+    names = sorted(rt.health.snapshot()["providers"])
+    for i, name in enumerate(names[:19]):  # 19 providers called (2 with failures), the rest never: as live on 19.11
+        rt.health.ok(name, 100.0 + 37.3 * i)
+    rt.health.error(names[3], "backend_error", 'HTTP 503: {"error":"request timed out","code":"request_timeout"}')
+    rt.health.error(names[5], "data_unavailable", "HTTP 404: <html><head><title>404 Not Found</title></head></html>")
+    rt.health.ok(names[5], 787.1)
+    sched = _live_scheduler(rt)
+    monkeypatch.setattr("tradedesk.collector.build_default_scheduler", lambda _rt: sched)
+    srv, _ = build_server(rt)
+    try:
+        async with Client(srv) as c:  # one session: the metrics stay put between the calls
+            default = _payload(await c.call_tool("system_health", {}))
+            full = _payload(await c.call_tool("system_health", {"include_details": True}))
+    finally:
+        await sched.stop()
+        await rt.aclose()
+    d, f = default["data"], full["data"]
+    assert _expand_health(d) == _without_tools(f)  # lossless
+    assert len(d["collector"]) == len(f["collector"]) == len(LIVE_JOBS)
+    # collector[].stream (what standing item 8a reads) is the same object in both reports
+    assert [j["stream"] for j in d["collector"]] == [j["stream"] for j in f["collector"]]
+    rows = {j["name"]: j for j in d["collector"]}
+    assert rows["liquidations:bybit"]["stream"]["failures"] == 3 and "keepalive" in rows["liquidations:bybit"]["stream"]["last_failure"]
+    # the failed job keeps its failure fields, the dropping job its counts; a healthy job keeps its timing and rows
+    assert rows["funding"]["last_failure"].startswith("TimeoutError") and rows["funding"]["last_error"] is None
+    assert (rows["basis"]["last_rows_dropped"], rows["basis"]["rows_dropped_total"]) == (3, 3)
+    assert set(rows["atm_term"]) == {
+        "name",
+        "period_seconds",
+        "runs",
+        "failures",
+        "last_run_ts",
+        "last_duration_ms",
+        "last_rows_written",
+        "stream",
+    }
+    assert d["health"]["providers"][names[3]]["last_detail"].startswith("HTTP 503")  # failures keep their full rows
+    assert d["health"]["providers"][names[5]]["status"] == "ok" and d["health"]["providers"][names[5]]["failures"] == 1
+    # about half the full report (9 734 of 18 580 here); still above 8 000 with 26 jobs, because every collector counter
+    # that is not implied is kept: the 8 000 bound holds without the collector (the test above), not with it
+    assert _size(default) <= 10_000 and _size(default) < 0.55 * _size(full), (_size(default), _size(full))
+
+
+def _payload(res) -> dict:
+    data = res.structured_content if res.structured_content is not None else json.loads(res.content[0].text)
+    return data["result"] if set(data) == {"result"} else data
+
+
+async def test_system_health_compact_still_reports_a_provider_failure(server, state):
+    state.deribit_status = 503
+    env = await call(server, "deribit_vol_surface")
+    assert env["ok"] is False and env["missing"][0]["provider"] == "deribit"
+    h = await call(server, "system_health")
+    full = await call(server, "system_health", include_details=True)
+    deribit = h["data"]["health"]["providers"]["deribit"]
+    assert deribit == full["data"]["health"]["providers"]["deribit"]  # the full row: status, reason, detail
+    assert deribit["status"] == "down" and deribit["consecutive_failures"] >= 1 and deribit["last_reason"] in ("backend_error", "network")
+    assert h["data"]["health"]["summary"]["down"] >= 1 and _size(h) <= MAX_DEFAULT_CHARS

@@ -8,7 +8,7 @@ DOUBLETOP: **74 інструменти** (66 від 17 бекендів + 8 вл
 
 | DOUBLETOP | Рішення |
 |---|---|
-| `provider_readiness` | ✅ `system_health` (+ `probe=true` для живої перевірки; у DOUBLETOP 15 з 17 перевірок були застарілими) |
+| `provider_readiness` | ✅ `system_health` (+ `probe=true` для живої перевірки; у DOUBLETOP 15 з 17 перевірок були застарілими). З 19.11 типово — стислий звіт без втрат: пропущено лише значення, що випливають з інших (нулі / null без збоїв, провайдери без жодного виклику — іменами в `health.unknown`, назви інструментів — числом `tool_count`); `collector[].stream` без змін; повний звіт — `include_details=true` або `probe=true` |
 | `whoami` | ⏭ автентифікація буде нашою (Фаза 6) |
 | `chain_trend_snapshot` (панелі TVL, DEX-обсяг, fees), `pair_discovery` | ✅ `chain_metrics` (DefiLlama: TVL, DEX-обсяг і fees за 24 год зі змінами 7д/30д та week-over-week, десяткові частки) і `dex_pairs` (DexScreener: числа числами, symbol без пробілів, сортування за ліквідністю, прапорець `likely_fake` для «SOL»-підробок). `trending_tokens` не відтворюємо: у DOUBLETOP це фейкові токени ([IDEA-20261017-doubletop-to-ours](ideas/IDEA-20261017-doubletop-to-ours.md)) |
 | `token_card_snapshot`, `risk_hints_token`, `risk_hints_address`, `wallet_snapshot` | 🟡 `risk_hints_token` ≈ `contract_risk` (23.10: GoPlus token_security для 7 EVM-мереж + ліквідність / кап DexScreener; вердикти pass / fail / unknown за порогами курсу; 19.11 друге джерело honeypot.is, розбіжність = гірший вердикт; Solana і Etherscan — далі). Решта 🔜 Фаза 5. Перевірка 17.10: картка ETH порожня, ризики PEPE порожні (зразки в `tests/fixtures/doubletop/`); GoPlus 23.10 для PEPE теж дав порожній `result` |
@@ -23,7 +23,7 @@ DOUBLETOP: **74 інструменти** (66 від 17 бекендів + 8 вл
 | ccxt `get-ohlcv` | ✅ `market_ohlcv` (+ реалізована вола, максимум / мінімум вікна). З 19.11 типово — зведення по всіх свічках і останні 10 свічок; усі свічки — `include_series=true` (`get-ohlcv` у DOUBLETOP віддає весь ряд одразу) |
 | — (власне, курс DoubleTop) | ✅ `chart_markup` — розмітка графіка: EMA-групи, VWAP, профіль об'єму, структура курсу (HL/HH, BOS/CHoCH/sweep) і внутрішня, ліквідність, FVG, OB/брейкери, premium/discount/OTE, азійська сесія; працює й для форекс-перпів BingX |
 | ccxt `get-orderbook` | ✅ `market_orderbook` (+ slippage під ваш розмір) |
-| ccxt `batch-get-tickers` | ✅ `market_tickers` з кількома символами або без них (сортування за quote volume, top-movers за 24h %) |
+| ccxt `batch-get-tickers` | ✅ `market_tickers` з кількома символами або без них (сортування за quote volume, top-movers за 24h %). З 19.11 типово — усі повернені символи в `symbols` і повні рядки top 10 за обсягом (≈ 3.7 тис. символів замість ≈ 11 тис. при `limit=50`); усі повні рядки — `include_details=true` |
 | ccxt `get-markets` | ✅ `market_markets` (пошук за підрядком, фільтр spot/swap/future/option, active) |
 | ccxt `get-trades` | ✅ `market_trades` (+ aggressor flow: buy/sell notional, imbalance, VWAP, CVD, топ-прінти) |
 | coinalyze `funding_rate_history` | ✅ `perps_funding_history` (з бірж); поточний — `perps_funding_compare`; довга історія Binance — ✅ `perps_funding_history(source="coinalyze")` (колишній `coinalyze_funding_history`, злито 18.11; Coinalyze, `.A` = Binance; відсотки → десятковий дріб, звірено з виплатами Binance 2026-10-18 на зразку DoubleTop; живий виклик з нашим ключем ще не звірено) |

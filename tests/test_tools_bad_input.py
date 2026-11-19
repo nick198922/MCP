@@ -172,8 +172,8 @@ async def test_no_tool_raises_on_absurd_input(tmp_path):
                             violations.setdefault(f"{tool.name}.{param}", f"{param}={str(value)[:40]!r}: {why}")
     assert calls >= 500  # the guard really walked the registry
     # relative to the tool count, so removing tools does not break the guard: 78 of 91 tools have such parameters
-    # on 2026-11-18 (the rest take none or only free-form ones)
-    assert len(tools_hit) >= len(EXPECTED_TOOLS) - 15
+    # on 2026-11-18 (the rest take none or only free-form ones); 79 of 96 on 2026-11-19 (four btc_* tools take none)
+    assert len(tools_hit) >= len(EXPECTED_TOOLS) - 17
     new = {key: why for key, why in violations.items() if key not in KNOWN}
     assert new == {}, "validate these inputs (invalid_input in `missing`), or list them in KNOWN and docs/BACKLOG.md 6.19"
     assert set(KNOWN) - set(violations) == set(), "these inputs are handled now: remove them from KNOWN"

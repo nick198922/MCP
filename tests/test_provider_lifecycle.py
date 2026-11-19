@@ -76,6 +76,7 @@ BODIES: dict[str, Any] = {
     "defillama": [],
     "defillama:stablecoins": {"peggedAssets": []},
     "pendle": {"markets": []},
+    "mempool": {"fastestFee": 1},
     "wikimedia": {"items": []},
     "wikimedia:enwiki": {"query": {"pages": [{"pageid": 1, "ns": 0, "title": "Bitcoin"}]}},
     "coinalyze": [],
@@ -107,6 +108,7 @@ CALLS: dict[str, list[Call]] = {
     "goplus": [lambda rt: rt.goplus.token_security("1", ADDR)],
     "defillama": [lambda rt: rt.defillama.chain_tvl("Ethereum"), lambda rt: rt.defillama.stablecoin_assets()],
     "pendle": [lambda rt: rt.pendle.markets()],
+    "mempool": [lambda rt: rt.mempool.fees_recommended()],
     "wikimedia": [lambda rt: rt.wikimedia.pageviews_daily("Bitcoin", "20261001", "20261002"), lambda rt: rt.wikimedia.page("Bitcoin")],
     "coinalyze": [lambda rt: rt.coinalyze.funding_rate_history("BTCUSDT_PERP.A", "daily", 1791504000, 1791590400)],
     "polymarket": [

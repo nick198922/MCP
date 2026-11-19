@@ -7,11 +7,13 @@ chain view live in ``analytics/bybit_options.py`` (pure).
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
 from mcp.server.mcpserver import MCPServer
 from pydantic import Field
 
+from ..analytics import option_ideas as oi
 from ..analytics.bybit_options import SETTLE, days_to, expiry_view, index_price, parse_chain, select_expiries
 from ..analytics.instruments import expiry_token
 from ..analytics.option_xvenue import ms
@@ -52,6 +54,55 @@ def _round_expiry(e: dict[str, Any]) -> dict[str, Any]:
     out["oi_calls"], out["oi_puts"] = r(e["oi_calls"], 2), r(e["oi_puts"], 2)
     out["strikes"] = [{"strike": s["strike"], "call": _round_leg(s["call"]), "put": _round_leg(s["put"])} for s in e["strikes"]]
     return out
+
+
+Structure = Literal["iron_condor", "put_debit_spread", "call_debit_spread", "long_strangle", "long_straddle"]
+# Strike-selection defaults per structure: those of analytics/option_ideas.py (the weekly ideas generator), so a default
+# quote and the generator's idea of the same expiry are the same legs and numbers.
+STRUCTURE_DEFAULTS: dict[str, dict[str, float]] = {
+    "iron_condor": {"short_delta": 0.15, "wing": 0.03},
+    "put_debit_spread": {"long_delta": 0.40, "short_delta": 0.15},
+    "call_debit_spread": {"long_delta": 0.40, "short_delta": 0.15},
+    "long_strangle": {"long_delta": 0.25},
+    "long_straddle": {},
+}
+STRUCTURE_WARNINGS = (
+    "Live Bybit top of book at quote_time_ms, taker fills: sold legs at the bid, bought legs at the ask; the size at the "
+    "touch may be small and the quote moves. All money fields are USD per 1 coin at expiry (European), not per Bybit lot "
+    "(0.01 BTC / 0.1 ETH).",
+    "net_premium includes Bybit's taker fee per leg (0.03 % of the underlying, capped at 7 % of the option price); "
+    "Bybit's delivery fee (0.015 % of the delivery price per in-the-money leg, capped at 12.5 % of its intrinsic value) "
+    "is NOT in net_premium, max_loss or breakevens.",
+    "prob_profit is risk-neutral, interpolated from Bybit's put deltas: a market-implied hint, not a forecast.",
+    "A price quote, not a signal: as trade rules the IV>RV condor (P1), the 200-day-trend debit spread (P3) and the "
+    "IV<RV long strangle (P4) tested negative (docs/knowledge/options-playbook.md).",
+)
+SHORT_MARGIN_WARNING = (
+    "Sold legs need margin on Bybit, and the bought wing does not reduce the sold leg's margin (regular margin): the "
+    "capital tied up is larger than max_loss."
+)
+
+
+def _build(kind: str, quotes: list[oi.Quote], exp: int, now_ms: int, coin: str, p: dict[str, float]) -> oi.Idea | None:
+    if kind == "iron_condor":
+        return oi.iron_condor(quotes, exp, now_ms, coin, short_delta=p["short_delta"], wing=p["wing"])
+    if kind in ("put_debit_spread", "call_debit_spread"):
+        bear = kind == "put_debit_spread"
+        return oi.debit_spread(quotes, exp, now_ms, coin, bearish=bear, long_delta=p["long_delta"], short_delta=p["short_delta"])
+    if kind == "long_strangle":
+        return oi.long_strangle(quotes, exp, now_ms, coin, delta=p["long_delta"])
+    return oi.long_straddle(quotes, exp, now_ms, coin)
+
+
+def _listed(quotes: list[oi.Quote], now_ms: int) -> str:
+    """Expiries of the parsed quotes with their days and two-sided quote count, for a missing-expiry detail."""
+    n: dict[int, int] = {}
+    for q in quotes:
+        n[q.expiry_ms] = n.get(q.expiry_ms, 0) + (q.bid > 0 and q.ask > 0)
+    return ", ".join(
+        f"{expiry_token(datetime.fromtimestamp(e / 1000, UTC))} ({(e - now_ms) / oi.DAY_MS:.1f} d, {c} two-sided)"
+        for e, c in sorted(n.items())
+    )
 
 
 def register(server: MCPServer, rt: Runtime) -> None:
@@ -146,4 +197,153 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "expiries_in_window": len(window),
             "expiries": expiries,
         }
+        return b.build(data)
+
+    @server.tool(
+        annotations=READ_ONLY,
+        description=(
+            "Price an option structure on Bybit's live BTC/ETH option chain (USDT-settled), the way the weekly option-ideas "
+            "generator prices it. kind: iron_condor (sell the ~short_delta put and call, buy wings about wing x underlying further "
+            "out, same width both sides), put_debit_spread / call_debit_spread (buy the ~long_delta option, sell the ~short_delta one "
+            "further out), long_strangle (buy the ~long_delta put and call), long_straddle (buy the call and put at the strike "
+            "nearest the underlying). Deltas are absolute Bybit deltas (0.15 = 15-delta). Expiry: the one nearest `days` within "
+            "[min_days, max_days] calendar days that has at least 8 two-sided quotes (defaults 14 in [7, 24], the generator's; for a "
+            "weekly use e.g. days=7, min_days=2). Returns the legs (Bybit symbol, side, strike, bid, ask, the fill price, its taker "
+            "fee, delta, mark IV as a decimal), gross_premium (before fees), fees, net_premium after fees (> 0 credit, < 0 debit), "
+            "max_profit (null = unlimited), max_loss, breakevens, reward_to_risk (max_profit / max_loss) and a risk-neutral "
+            "prob_profit; all in USD per 1 coin at expiry. Caveats in `warnings`: live top-of-book prices, Bybit's delivery fee not "
+            "included, short legs need margin that the wing does not reduce, a quote not a signal."
+        ),
+    )
+    async def option_structure_quote(
+        currency: Annotated[Literal["BTC", "ETH"], Field(description="Underlying coin of the Bybit options.")] = "BTC",
+        kind: Annotated[
+            Structure,
+            Field(
+                description="Structure: iron_condor, put_debit_spread (bearish), call_debit_spread (bullish), long_strangle or "
+                "long_straddle."
+            ),
+        ] = "iron_condor",
+        days: Annotated[
+            float, Field(gt=0, le=400, description="Target calendar days to expiry; the nearest eligible expiry is used.")
+        ] = 14,
+        min_days: Annotated[float, Field(ge=0, le=400, description="Earliest expiry considered, calendar days (inclusive).")] = 7,
+        max_days: Annotated[float, Field(gt=0, le=400, description="Latest expiry considered, calendar days (inclusive).")] = 24,
+        short_delta: Annotated[
+            float | None,
+            Field(
+                gt=0,
+                lt=1,
+                description="|delta| of the sold leg(s): iron_condor and the debit spreads (default 0.15). Ignored by the long "
+                "strangle / straddle.",
+            ),
+        ] = None,
+        long_delta: Annotated[
+            float | None,
+            Field(
+                gt=0,
+                lt=1,
+                description="|delta| of the bought leg(s): debit spreads (default 0.40) and long_strangle (default 0.25). Ignored "
+                "by iron_condor (wings are set by `wing`) and long_straddle (ATM).",
+            ),
+        ] = None,
+        wing: Annotated[
+            float | None,
+            Field(
+                gt=0,
+                le=0.5,
+                description="iron_condor only: wing width as a fraction of the underlying (0.03 = 3 %, default), the bought strike "
+                "nearest that distance beyond each sold one.",
+            ),
+        ] = None,
+    ) -> dict[str, Any]:
+        b = Builder()
+        given = {"short_delta": short_delta, "long_delta": long_delta, "wing": wing}
+        defaults = STRUCTURE_DEFAULTS[kind]
+        ignored = [k for k, v in given.items() if v is not None and k not in defaults]
+        if ignored:
+            b.warn(f"{', '.join(ignored)} not used by {kind}; ignored")
+        params = {k: given[k] if given[k] is not None else v for k, v in defaults.items()}
+        body = await b.guard(
+            f"bybit_options:{currency}",
+            f"ccxt:{BYBIT}",
+            rt.exchanges.public_get(BYBIT, BYBIT_TICKERS, {"category": "option", "baseCoin": currency}, ttl=TICKERS_TTL),
+        )
+        if body is None:
+            return b.build(None, ok=False)
+        result = body.get("result") if isinstance(body, dict) else None
+        rows = result.get("list") if isinstance(result, dict) else None
+        _, other = parse_chain(rows, currency)
+        if other:
+            b.warn(f"{currency}: Bybit option symbols with settle suffix {', '.join(other)} skipped (only {SETTLE} is priced)")
+        usdt = [x for x in rows or [] if isinstance(x, dict) and str(x.get("symbol", "")).endswith(f"-{SETTLE}")]
+        quotes = oi.parse_bybit_tickers(usdt, currency)
+        if not quotes:
+            b.miss(
+                f"bybit_options:{currency}", f"ccxt:{BYBIT}", "data_unavailable", f"no parsable {SETTLE}-settled {currency} option ticker"
+            )
+            return b.build(None, ok=False)
+        now_ms = int(rt.now().timestamp() * 1000)
+        exp = oi.pick_expiry(quotes, now_ms, days, min_days, max_days)
+        if exp is None:
+            b.miss(
+                "expiry",
+                "tradedesk",
+                "data_unavailable",
+                f"no {currency} expiry within {min_days:g}-{max_days:g} days with at least 8 two-sided quotes; listed: "
+                f"{_listed(quotes, now_ms)}",
+            )
+            return b.build(None, ok=False)
+        idea = _build(kind, quotes, exp, now_ms, currency, params)
+        token = expiry_token(datetime.fromtimestamp(exp / 1000, UTC))
+        if idea is None:
+            b.miss(
+                "structure",
+                "tradedesk",
+                "data_unavailable",
+                f"no {kind} on {token} with {params}: a leg near the target delta has no bid / ask (or no delta), or the "
+                "net premium after fees is not between 0 and the strike width",
+            )
+            return b.build(None, ok=False)
+        view = oi.structure_legs(idea, quotes)
+        legs = [
+            dict(
+                g,
+                bid=r(g["bid"], 2),
+                ask=r(g["ask"], 2),
+                price=r(g["price"], 2),
+                fee=r(g["fee"], 2),
+                delta=r(g["delta"], 4),
+                mark_iv=r(g["mark_iv"], 4),
+            )
+            for g in view["legs"]
+        ]
+        for w in STRUCTURE_WARNINGS:
+            b.warn(w)
+        if any(g.action == "sell" for g in idea.legs):
+            b.warn(SHORT_MARGIN_WARNING)
+        rr = idea.reward_to_risk
+        data = {
+            "currency": currency,
+            "kind": kind,
+            "settle": SETTLE,
+            "quote_time_ms": ms(body.get("time")),
+            "expiry": token,
+            "days": r((exp - now_ms) / oi.DAY_MS, 2),
+            "underlying": r(idea.spot, 2),
+            "atm_iv": r(oi.atm_iv(quotes, exp), 4),
+            "params": params,
+            "legs": legs,
+            "gross_premium": r(view["gross"], 2),
+            "fees": r(view["fees"], 2),
+            "net_premium": r(idea.net, 2),
+            "net_type": "credit" if idea.net > 0 else "debit",
+            "max_profit": r(idea.max_profit, 2),
+            "max_loss": r(idea.max_loss, 2),
+            "breakevens": [r(x, 2) for x in idea.breakevens],
+            "reward_to_risk": r(rr, 4),
+            "prob_profit": r(idea.prob_profit, 4),
+        }
+        if "prob_max_profit" in idea.extra:
+            data["prob_max_profit"] = r(idea.extra["prob_max_profit"], 4)
         return b.build(data)

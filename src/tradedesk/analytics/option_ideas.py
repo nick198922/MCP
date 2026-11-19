@@ -118,7 +118,7 @@ class Leg:
 @dataclass
 class Idea:
     coin: str
-    kind: str  # iron_condor | put_debit_spread | call_debit_spread | long_strangle
+    kind: str  # iron_condor | put_debit_spread | call_debit_spread | long_strangle | long_straddle
     expiry_ms: int
     days: float
     spot: float
@@ -279,6 +279,66 @@ def long_strangle(quotes: list[Quote], expiry_ms: int, now_ms: int, coin: str, d
         breakevens=[lo, hi],
         prob_profit=None if pl is None or ph is None else pl + (1 - ph),
     )
+
+
+def long_straddle(quotes: list[Quote], expiry_ms: int, now_ms: int, coin: str) -> Idea | None:
+    """Buy the call and the put at the strike nearest the underlying among strikes where both have an ask (ties: the
+    lower strike): pays when the move is bigger than the straddle costs."""
+    puts, calls = _side(quotes, expiry_ms, False), _side(quotes, expiry_ms, True)
+    put_at = {q.strike: q for q in puts if q.ask > 0}
+    both = [q for q in calls if q.ask > 0 and q.strike in put_at]
+    if not both:
+        return None
+    spot = both[0].underlying
+    c = min(both, key=lambda q: abs(q.strike - spot))
+    p = put_at[c.strike]
+    debit = p.ask + c.ask + fee(spot, p.ask) + fee(spot, c.ask)
+    lo, hi = c.strike - debit, c.strike + debit
+    pl, ph = _prob_below(puts, lo), _prob_below(puts, hi)
+    return Idea(
+        coin=coin,
+        kind="long_straddle",
+        expiry_ms=expiry_ms,
+        days=_days(expiry_ms, now_ms),
+        spot=spot,
+        legs=[Leg("buy", False, p.strike, p.ask, p.delta), Leg("buy", True, c.strike, c.ask, c.delta)],
+        net=-debit,
+        max_profit=None,
+        max_loss=debit,
+        breakevens=[lo, hi],
+        prob_profit=None if pl is None or ph is None else pl + (1 - ph),
+    )
+
+
+def structure_legs(idea: Idea, quotes: list[Quote]) -> dict[str, Any]:
+    """The legs of a built structure with their live quote, for the ``option_structure_quote`` tool: Bybit symbol,
+    side, type, strike, bid / ask (None = that side not quoted), ``price`` (the fill the structure was priced at: bid for
+    a sold leg, ask for a bought one), the taker ``fee`` of that fill, Bybit's delta and mark IV (decimal). Also
+    ``gross`` (sold fills minus bought fills, before fees; > 0 = credit) and ``fees`` (their sum); ``gross - fees`` is
+    the structure's ``net``. USD per 1 unit of the underlying."""
+    book = {(q.strike, q.is_call): q for q in quotes if q.expiry_ms == idea.expiry_ms}
+    legs = []
+    for g in idea.legs:
+        q = book.get((g.strike, g.is_call))
+        legs.append(
+            {
+                "symbol": bybit_option_symbol(idea.coin, idea.expiry_ms, g.strike, g.is_call),
+                "side": g.action,
+                "type": "call" if g.is_call else "put",
+                "strike": g.strike,
+                "bid": q.bid if q and q.bid > 0 else None,
+                "ask": q.ask if q and q.ask > 0 else None,
+                "price": g.price,
+                "fee": fee(idea.spot, g.price),
+                "delta": g.delta,
+                "mark_iv": q.iv if q else None,
+            }
+        )
+    return {
+        "legs": legs,
+        "gross": sum(g.price if g.action == "sell" else -g.price for g in idea.legs),
+        "fees": sum(x["fee"] for x in legs),
+    }
 
 
 def atm_iv(quotes: list[Quote], expiry_ms: int) -> float | None:

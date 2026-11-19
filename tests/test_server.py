@@ -34,6 +34,7 @@ EXPECTED_TOOLS = {
     "deribit_vol_surface",
     "deribit_option_chain",
     "bybit_option_chain",  # Bybit USDT-settled options, added 2026-11-19 (tests in test_bybit_option_chain.py)
+    "option_structure_quote",  # a structure priced on the Bybit chain, added 2026-11-19 (tests in test_option_structure_quote.py)
     "deribit_max_pain",
     "deribit_gamma_exposure",
     "deribit_expected_move",

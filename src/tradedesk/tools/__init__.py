@@ -10,6 +10,7 @@ def register_all(server: MCPServer, rt: Runtime) -> None:
     from . import (
         assistant_paper,
         bitcoin,
+        bybit_options,
         calendar,
         coinalyze,
         coingecko,
@@ -47,6 +48,7 @@ def register_all(server: MCPServer, rt: Runtime) -> None:
         markup,
         perps,
         options,
+        bybit_options,
         quant,
         sentiment,
         calendar,

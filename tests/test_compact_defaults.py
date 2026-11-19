@@ -1,8 +1,8 @@
 """Compact default answers (BACKLOG «великі відповіді за замовчуванням», standing card items 379, 381, 382, 390, 405, 406).
 
 The default call of `market_flow`, `hyperliquid_funding_history`, `funding_spread_scan`, `funding_carry_scan`,
-`market_markets`, `polymarket_options_gap`, `market_ohlcv`, `cycle_regime`, `polymarket_search`, `market_tickers` and
-`system_health` (without the collector) stays small (<= 8 000 characters of JSON) so it does not flood a chat or an
+`market_markets`, `polymarket_options_gap`, `market_ohlcv`, `cycle_regime`, `polymarket_search`, `market_tickers`,
+`bybit_option_chain` and `system_health` (without the collector) stays small (<= 8 000 characters of JSON) so it does not flood a chat or an
 agent's context; the full per-bar / per-payment / per-candle series comes only with `include_series=true`, the full scan
 (every row, the per-venue breakdown, per-fetch evidence), every full market / ticker row, every day of the cycle history,
 every full search result or every health field with `include_details=true`. Fakes only (tests/conftest.py, the captured
@@ -21,6 +21,7 @@ import httpx
 from mcp import Client
 
 from conftest import NOW, FakeEx, State, make_transports
+from test_bybit_option_chain import chain_rt
 from test_cycle_regime import FX_NOW as CYCLE_FX_NOW
 from test_cycle_regime import DownEx as CycleDownEx
 from test_cycle_regime import FixtureEx as CycleFixtureEx
@@ -760,3 +761,18 @@ async def test_system_health_compact_still_reports_a_provider_failure(server, st
     assert deribit == full["data"]["health"]["providers"]["deribit"]  # the full row: status, reason, detail
     assert deribit["status"] == "down" and deribit["consecutive_failures"] >= 1 and deribit["last_reason"] in ("backend_error", "network")
     assert h["data"]["health"]["summary"]["down"] >= 1 and _size(h) <= MAX_DEFAULT_CHARS
+
+
+async def test_bybit_option_chain_default_is_compact_and_details_are_opt_in():
+    rt = chain_rt()
+    srv, _ = build_server(rt)
+    default = await call(srv, "bybit_option_chain")  # 3 nearest expiries, ATM +- 3 strikes
+    full = await call(srv, "bybit_option_chain", include_details=True)  # every expiry and strike of the sample
+    await rt.aclose()
+    assert default["ok"] and full["ok"]
+    assert _size(default) <= MAX_DEFAULT_CHARS, _size(default)
+    assert _size(full) > MAX_DEFAULT_CHARS
+    assert len(default["data"]["expiries"]) == 3 and len(full["data"]["expiries"]) == 4
+    # the per-expiry summary is the same either way; only the strike rows and their fields differ
+    strip = [{k: v for k, v in e.items() if k != "strikes"} for e in default["data"]["expiries"]]
+    assert strip == [{k: v for k, v in e.items() if k != "strikes"} for e in full["data"]["expiries"][:3]]

@@ -16,6 +16,7 @@ EX = Annotated[str, Field(description="ccxt exchange id: binance, binanceusdm (U
 SYM = Annotated[str, Field(description="ccxt unified symbol. Spot 'BTC/USDT'; linear perp 'BTC/USDT:USDT'")]
 MarketType = Literal["spot", "swap", "future", "option", "any"]
 MARKETS_COMPACT_ROWS = 10  # market_markets full rows in the default (compact) answer
+OHLCV_COMPACT_ROWS = 10  # market_ohlcv: the latest candles in the default (compact) answer
 
 
 def _level_ok(lv: Any) -> bool:
@@ -30,8 +31,11 @@ def register(server: MCPServer, rt: Runtime) -> None:
     @server.tool(
         annotations=READ_ONLY,
         description=(
-            "OHLCV candles (oldest first, columns: ts_ms, open, high, low, close, volume) plus summary: "
-            "period return and annualised close-to-close realised volatility. timeframe like 1m,5m,1h,4h,1d. "
+            "OHLCV candles (oldest first, columns: ts_ms, open, high, low, close, volume) plus summary over every fetched "
+            "candle: period return, annualised close-to-close realised volatility, window high / low and first / last "
+            "candle time. timeframe like 1m,5m,1h,4h,1d. "
+            "By default the answer is compact: `rows` holds only the latest 10 candles (the summary still covers all "
+            "`limit` of them); include_series=true returns every candle. "
             "Units: ts_ms is Unix epoch milliseconds (UTC); prices (and first_close/last_close) are in the symbol's quote "
             "currency; volume is ccxt's unified bar volume, in base-asset units (e.g. BTC for BTC/USDT:USDT; ccxt's "
             "parse_ohlcv picks the base-volume column on binance/bybit/okx perps), though another venue may report "
@@ -52,6 +56,15 @@ def register(server: MCPServer, rt: Runtime) -> None:
             int,
             Field(ge=2, le=1000, description="Most recent candles to fetch in one request; a venue with a lower cap returns fewer."),
         ] = 200,
+        include_series: Annotated[
+            bool,
+            Field(
+                description=(
+                    "Return every fetched candle in `rows`; false (default) = a compact answer: the latest 10 candles "
+                    "only. `summary` is computed over every fetched candle either way."
+                )
+            ),
+        ] = False,
     ) -> dict[str, Any]:
         b = Builder()
         try:
@@ -81,6 +94,14 @@ def register(server: MCPServer, rt: Runtime) -> None:
             mean = sum(lr) / len(lr)
             var = sum((x - mean) ** 2 for x in lr) / (len(lr) - 1)
             summary["realized_vol_annualized"] = r(math.sqrt(var) * math.sqrt(365 * 86400 / tf_sec), 4)
+        # window extent, so the compact answer (latest candles only) still tells the range of the whole fetch
+        summary.update(high=max(c[2] for c in rows), low=min(c[3] for c in rows), first_ts_ms=rows[0][0], last_ts_ms=rows[-1][0])
+        if not include_series and len(rows) > OHLCV_COMPACT_ROWS:
+            b.warn(
+                f"compact answer: the latest {OHLCV_COMPACT_ROWS} of {len(rows)} candles in `rows` (summary covers all); "
+                "include_series=true for every candle"
+            )
+            rows = rows[-OHLCV_COMPACT_ROWS:]
         return b.build({"columns": ["ts_ms", "open", "high", "low", "close", "volume"], "rows": rows, "summary": summary})
 
     @server.tool(

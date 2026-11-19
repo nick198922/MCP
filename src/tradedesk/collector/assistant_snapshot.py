@@ -348,7 +348,11 @@ async def build_snapshot(rt: "Runtime") -> dict[str, Any]:
     async with Client(server) as c:
         plan: dict[str, tuple[str, dict[str, Any]]] = {
             "tickers": ("market_tickers", {"exchange": VENUE, "symbols": TICKER_SYMBOLS}),
-            "ohlc": ("market_ohlcv", {"exchange": SPOT_VENUE, "symbol": "BTC/USDT", "timeframe": "1d", "limit": 120}),
+            # the dashboard's BTC chart and the brief read every candle: the full series, not the compact default
+            "ohlc": (
+                "market_ohlcv",
+                {"exchange": SPOT_VENUE, "symbol": "BTC/USDT", "timeframe": "1d", "limit": 120, "include_series": True},
+            ),
             "fng": ("sentiment_fear_greed", {"days": 30}),
             "dvol": ("deribit_dvol", {"currency": "BTC", "hours_back": 192, "resolution": 3600}),
             # 1000 days: by-DVOL-level stats need 365 d of lookback plus 30 d per trade

@@ -1,5 +1,6 @@
 """Item 395 (review docs/reviews/2026-11-19-twin-tool-descriptions.md): unit claims in the descriptions of
-perps_open_interest, ohlcv_history and positions_list, each checked against the code that backs it.
+perps_open_interest, ohlcv_history and positions_list, each checked against the code that backs it. Item 412: what the
+compact defaults of system_health and polymarket_search leave out.
 
 Every key phrase is pinned twice: the phrase is in the description, and the code does what the phrase says. If a test
 here fails after a logic change, update the description in the same change (the model reads the units from it).
@@ -14,7 +15,8 @@ import pytest
 from mcp import Client
 
 from conftest import NOW, FakeEx, make_transports
-from test_server import call
+from test_compact_defaults import _search_envs, _search_rt
+from test_server import EXPECTED_TOOLS, call
 from tradedesk.config import Settings
 from tradedesk.runtime import Runtime
 from tradedesk.server import build_server
@@ -179,3 +181,37 @@ async def test_positions_list_units_as_stored_and_tag_limits(store_rt):
         assert await ids("a_b") == []
         assert await ids("a%") == []
         assert await ids("a%b") == ["ETH/USDT:USDT"]
+
+
+# ---------- compact defaults: system_health, polymarket_search (item 412) ----------
+
+
+async def test_system_health_description_names_the_only_loss(server):
+    d = await _description(server, "system_health")
+    assert "loses nothing except the tool names (`tools` is replaced by tool_count)" in d
+    assert "otherwise only fields whose value is implied are left out" in d
+    assert "compact but loses nothing:" not in d  # the old wording, wrong: the tool names are dropped
+
+
+async def test_system_health_compact_drops_only_the_tool_names(server):
+    compact, full = await call(server, "system_health"), await call(server, "system_health", include_details=True)
+    assert "tools" not in compact["data"] and compact["data"]["tool_count"] == len(full["data"]["tools"]) == len(EXPECTED_TOOLS)
+    assert "tool_count" not in full["data"]
+
+
+async def test_polymarket_search_description_count_vs_shown(server):
+    d = await _description(server, "polymarket_search")
+    for phrase in (
+        "`count` = the number of markets found (up to `limit`), not the length of `markets`",
+        "`markets` holds up to the first 10 of them (`shown` = how many)",
+        "include_details=true returns every market in full",
+    ):
+        assert phrase in d, phrase
+
+
+async def test_polymarket_search_count_is_markets_found_not_shown(state):
+    default, full = await _search_envs(_search_rt(state), {}, {"include_details": True})
+    d = default["data"]
+    assert d["count"] == full["data"]["count"] == 20  # markets found (limit 20)
+    assert d["shown"] == len(d["markets"]) == 10 != d["count"]  # the compact answer lists the first 10
+    assert full["data"]["shown"] == len(full["data"]["markets"]) == full["data"]["count"]

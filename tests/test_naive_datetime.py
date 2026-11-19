@@ -81,17 +81,39 @@ def _cannot_hit(source: str) -> bool:
     return not _may_spell_ascii_names(source)
 
 
+def _imports_and_attr_calls(tree: ast.AST) -> tuple[list[ast.stmt], list[ast.Call]]:
+    """Every Import / ImportFrom node and every call of an attribute (`x.y(...)`) in `tree`, in no particular order
+    (callers use sets and sort by line). Speed only: the same nodes as filtering `ast.walk(tree)`, whose generator chain
+    (walk -> iter_child_nodes -> iter_fields) cost about as much as parsing; this explicit stack is ~2.5x faster. An
+    import statement holds only `alias` nodes, so its children are not visited. `type(x) is` instead of isinstance:
+    ast.parse builds exact node classes, never subclasses."""
+    imports: list[ast.stmt] = []
+    calls: list[ast.Call] = []
+    stack = [tree]
+    pop, push, extend = stack.pop, stack.append, stack.extend
+    is_ast, imp, imp_from, call, attr = ast.AST, ast.Import, ast.ImportFrom, ast.Call, ast.Attribute
+    while stack:
+        node = pop()
+        tp = type(node)
+        if tp is imp or tp is imp_from:
+            imports.append(node)
+            continue
+        if tp is call and type(node.func) is attr:
+            calls.append(node)
+        for name in node._fields:
+            value = getattr(node, name, None)
+            if type(value) is list:
+                extend([x for x in value if isinstance(x, is_ast)])  # lists may hold str (Global) or None (Dict)
+            elif isinstance(value, is_ast):
+                push(value)
+    return imports, calls
+
+
 def naive_time_calls(source: str) -> list[str]:
     """`"<line>: <class>.<method>()"` for every naive-time call in `source`, in line order; [] if none."""
     if _cannot_hit(source):
         return []
-    tree = ast.parse(source)
-    imports, calls = [], []  # one walk over the tree (it is most of the scan time), aliases resolved afterwards
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.Import, ast.ImportFrom)):
-            imports.append(node)
-        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-            calls.append(node)
+    imports, calls = _imports_and_attr_calls(ast.parse(source))
     modules, dt_classes, date_classes = _aliases(ast.Module(body=imports, type_ignores=[]))
     out = []
     for node in calls:
@@ -209,6 +231,23 @@ def test_detector_on_fixture():
     assert not _HAS_METHOD.search(fullwidth) and naive_time_calls(fullwidth) == ["2: date.today()"]
     assert _cannot_hit("import os\nx = os.now()\n") and not _cannot_hit("import datetime as d\nx = d.datetime.now()\n")
     assert _cannot_hit("import os\nx = os.now()  # Київ — 🙂\n")  # non-ASCII that cannot spell an identifier
+
+
+def test_stack_walk_finds_the_same_nodes_as_ast_walk():
+    """The explicit-stack collector equals filtering ast.walk, also for imports and calls nested in defs, classes,
+    decorators, comprehensions, lambdas, f-strings, match cases and default arguments."""
+    source = _FIXTURE + (
+        "@deco(datetime.now())\ndef f(a=datetime.today(), *, b=dtm.date.today()):\n    import time as tm\n"
+        "    global g\n    return [datetime.now() for _ in x if date.today()] or {None: 1, **d} or (lambda: DT.now())\n"
+        "class C(Base, meta=datetime.utcnow()):\n    from datetime import date as D\n    y = f'{D.today()}'\n"
+        "match v:\n    case P(kw=1) if datetime.now():\n        datetime.fromtimestamp(0)\n"
+    )
+    tree = ast.parse(source)
+    imports, calls = _imports_and_attr_calls(tree)
+    want_imports = [n for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom))]
+    want_calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)]
+    assert len(imports) == len(want_imports) == 6 and {id(n) for n in imports} == {id(n) for n in want_imports}
+    assert len(calls) == len(want_calls) > 30 and {id(n) for n in calls} == {id(n) for n in want_calls}
 
 
 def test_allowed_file_and_counts(tmp_path):

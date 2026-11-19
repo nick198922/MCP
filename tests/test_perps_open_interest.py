@@ -6,7 +6,8 @@ only by the text (tests/test_tool_desc_audit.py pins the text).
 (b) a ccxt venue without it: oi_usd = openInterestAmount x ticker last, the venue named in `warnings`;
 (c) Deribit: oi_base null, oi_usd = the PERPETUAL's USD open interest (not a dated future's);
 (d) Hyperliquid: oi_base in coins, oi_usd from the asset context (coins x mark);
-(e) one provider failing: an entry in `missing`, `ok` true with the remaining venues (invariant 1).
+(e) one provider failing (Hyperliquid, Deribit, a ccxt venue): an entry in `missing`, `ok` true with the remaining
+    venues and the total (invariant 1).
 No network: conftest's MockTransports and FakeEx.
 """
 
@@ -128,7 +129,10 @@ async def test_d_hyperliquid_coins_and_usd_from_context(server):
     env = await call(server, "perps_open_interest", base="btc")  # lower case is upper-cased
     assert env["data"]["base"] == "BTC"
     row = _rows(env)["hyperliquid"]
-    ctx = next(c for c in hl_payload()[1] if c["openInterest"] == "1500")  # the BTC row of the fake
+    meta, ctxs = hl_payload()  # asset contexts carry no coin: the name is the universe entry at the same index
+    names = [u["name"] for u in meta["universe"]]
+    assert "BTC" in names, "the Hyperliquid fake has no BTC in its universe"
+    ctx = ctxs[names.index("BTC")]
     assert row["oi_base"] == pytest.approx(float(ctx["openInterest"]))  # coins, as reported
     assert row["oi_usd"] == pytest.approx(float(ctx["openInterest"]) * float(ctx["markPx"]))  # coins x mark
 
@@ -142,6 +146,21 @@ async def test_e_one_http_provider_down(state):
     assert env["data"]["total_oi_usd"] == pytest.approx(sum(v["oi_usd"] for v in env["data"]["venues"] if v["oi_usd"]))
     assert sum(v["share"] for v in env["data"]["venues"] if v["share"] is not None) == pytest.approx(1.0, abs=1e-3)
     assert any(w.startswith("partial:") and "hyperliquid" in w for w in env["warnings"])
+
+
+@pytest.mark.parametrize("base", ["BTC", "ETH"])
+async def test_e_deribit_down(state, base):
+    state.deribit_status = 503  # conftest's Deribit fake answers every request with 503
+    env = await call(_server(state), "perps_open_interest", base=base)
+    assert env["ok"] is True
+    rows = _rows(env)
+    assert "deribit" not in rows
+    assert {"binanceusdm", "bybit", "hyperliquid"} <= set(rows)
+    assert any(m["provider"] == "deribit" for m in env["missing"])
+    assert env["data"]["total_oi_usd"] > 0
+    assert env["data"]["total_oi_usd"] == pytest.approx(sum(v["oi_usd"] for v in env["data"]["venues"] if v["oi_usd"]))
+    assert sum(v["share"] for v in env["data"]["venues"] if v["share"] is not None) == pytest.approx(1.0, abs=1e-3)
+    assert any(w.startswith("partial:") and "deribit" in w for w in env["warnings"])
 
 
 async def test_e_one_ccxt_venue_down(state):

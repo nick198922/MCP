@@ -48,6 +48,7 @@ from test_tools_never_raise import SKIP
 from test_tools_provider_outage import as_envelope
 from tradedesk.config import Settings
 from tradedesk.core.envelope import Builder
+from tradedesk.core.ratelimit import TokenBucket
 from tradedesk.runtime import Runtime
 from tradedesk.server import build_server
 
@@ -331,17 +332,19 @@ async def _seed_store(rt: Runtime) -> None:
 
 def _runtime(tmp_path, calls: list[str]) -> Runtime:
     fakes = _extra_fakes(make_transports(State()))
-    rt = Runtime(
-        Settings(
-            http_retries=0,
-            http_retry_backoff=0.0,
-            cache_scale=0.0,
-            db_path=str(tmp_path / "envelope_shape.sqlite"),
-            coinalyze_api_key=COINALYZE_TEST_KEY,
-        ),
-        transports=_Transports({name: _CountingTransport(t, calls) for name, t in fakes.items()}),
-        exchange_factory=lambda ex_id: _CountingEx(ex_id, calls),
-    )
+    # Production rate limits (Deribit 8 req/s, CoinGecko, Hyperliquid) only paced the fakes in real time: ~1.3 s a sweep.
+    with patch("tradedesk.core.http.TokenBucket", lambda rate, burst: TokenBucket(1_000.0, 1_000)):
+        rt = Runtime(
+            Settings(
+                http_retries=0,
+                http_retry_backoff=0.0,
+                cache_scale=0.0,
+                db_path=str(tmp_path / "envelope_shape.sqlite"),
+                coinalyze_api_key=COINALYZE_TEST_KEY,
+            ),
+            transports=_Transports({name: _CountingTransport(t, calls) for name, t in fakes.items()}),
+            exchange_factory=lambda ex_id: _CountingEx(ex_id, calls),
+        )
     rt.now = lambda: NOW
     return rt
 

@@ -5,6 +5,7 @@ import random
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -15,6 +16,7 @@ from tradedesk.collector.assistant_paper import collect_assistant_paper, fetch_c
 from tradedesk.collector.scheduler import build_default_scheduler
 from tradedesk.config import Settings
 from tradedesk.core.envelope import Builder, Evidence, Fetched
+from tradedesk.core.ratelimit import TokenBucket
 from tradedesk.runtime import Runtime
 
 T40 = 40 / 365
@@ -134,13 +136,20 @@ def test_method_pick_returns_summary_unconverted():
 def _rt(tmp_path: Path, status: int = 200, **kw: Any) -> Runtime:
     state = State()
     state.deribit_status = status
-    rt = Runtime(
-        Settings(
-            http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=str(tmp_path / "p.sqlite"), assistant_paper_enabled=True, **kw
-        ),
-        transports=make_transports(state),
-        exchange_factory=FakeEx,
-    )
+    # Deribit's production limit (8 req/s, burst 10) only paced the fake chain in real time: ~0.3 s in the trigger test.
+    with patch("tradedesk.core.http.TokenBucket", lambda rate, burst: TokenBucket(1_000.0, 1_000)):
+        rt = Runtime(
+            Settings(
+                http_retries=1,
+                http_retry_backoff=0.0,
+                cache_scale=0.0,
+                db_path=str(tmp_path / "p.sqlite"),
+                assistant_paper_enabled=True,
+                **kw,
+            ),
+            transports=make_transports(state),
+            exchange_factory=FakeEx,
+        )
     rt.now = lambda: NOW
     return rt
 

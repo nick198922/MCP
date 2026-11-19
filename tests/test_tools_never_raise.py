@@ -30,6 +30,7 @@ _LEGS = [
 _PREMIUMS = {"spot": 83000.0, "days": 20.0, "iv": 0.4}
 ARGS: dict[str, dict] = {
     "assistant_paper_open": {"structure": "long_straddle"},
+    "btc_address": {"address": "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"},
     "chain_metrics": {"chain": "Ethereum"},
     "chart_markup": {"exchange": "binanceusdm", "symbol": "BTC/USDT:USDT"},
     "coin_snapshot": {"coin_id": "bitcoin"},

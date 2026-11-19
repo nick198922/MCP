@@ -9,6 +9,7 @@ def register_all(server: MCPServer, rt: Runtime) -> None:
     from .. import prompts
     from . import (
         assistant_paper,
+        bitcoin,
         calendar,
         coinalyze,
         coingecko,
@@ -63,6 +64,7 @@ def register_all(server: MCPServer, rt: Runtime) -> None:
         positions,
         liquidations,
         onchain,
+        bitcoin,
         pendle,
         rules,
         strategy,

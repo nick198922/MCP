@@ -27,6 +27,7 @@ from .providers import dexscreener as dexs_mod
 from .providers import forexfactory as ff_mod
 from .providers import goplus as goplus_mod
 from .providers import hyperliquid as hl_mod
+from .providers import mempool as mempool_mod
 from .providers import pendle as pendle_mod
 from .providers import polymarket as poly_mod
 from .providers import thegraph as graph_mod
@@ -46,6 +47,7 @@ from .providers.exchanges import Exchanges
 from .providers.forexfactory import ForexFactory
 from .providers.goplus import GoPlus
 from .providers.hyperliquid import Hyperliquid
+from .providers.mempool import Mempool
 from .providers.pendle import Pendle
 from .providers.polymarket import Polymarket
 from .providers.thegraph import TheGraph
@@ -120,6 +122,9 @@ class Runtime:
             stablecoins=http("defillama:stablecoins", llama_mod.STABLECOINS_URL, rate=1, burst=2),
         )
         self.pendle = Pendle(http("pendle", pendle_mod.BASE_URL, rate=2, burst=4))
+        # Bitcoin network data (btc_* tools). mempool.space publishes no fixed limit for its public API (429 when hit):
+        # 1 req/s is a conservative guess; btc_latest_block makes two requests, the other btc_* tools one.
+        self.mempool = Mempool(http("mempool", mempool_mod.BASE_URL, rate=1, burst=4))
         # Article pageviews + en.wikipedia page metadata (research scripts, not tools). Pageviews allows ~100 req/s per
         # client; we stay far below. Wikimedia asks for a descriptive User-Agent.
         wiki_ua = {"User-Agent": wiki_mod.user_agent()}
@@ -218,6 +223,7 @@ class Runtime:
         await self.goplus.http.aclose()
         await self.defillama.aclose()
         await self.pendle.http.aclose()
+        await self.mempool.http.aclose()
         await self.wikimedia.aclose()
         await self.coinalyze.http.aclose()
         await self.polymarket.aclose()

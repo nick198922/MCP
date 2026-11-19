@@ -15,7 +15,7 @@
 
 - [x] 1. **Мапа паритету:** таблиця в цій картці — кожен ончейн-інструмент DOUBLETOP → наш аналог (є / частково / нема), джерело даних (безкоштовний API, ключ), ціна, чи потрібен ключ; пріоритет — що корисне для торгівлі (рух китів, біржові потоки, топ-холдери, нові пули й ліквідність, ризик токена, комісії мереж). Ключі: Etherscan і Dune — крок `scripts/server/onchain-keys.sh` (25.10); Helius (Solana) — новий безкоштовний ключ від власника: питання в `docs/QUESTIONS.md`, коли дійде черга. _19.11: розділ «Мапа паритету» нижче — 40 інструментів DOUBLETOP: є 2, частково 11, нема 27; P1 — перекази адрес Etherscan, ризик токена, пули DefiLlama; питання про Helius ще не потрібне (пункт 4 останній)._
 - [ ] 2. **EVM (Etherscan v2, мульти-чейн):** баланс нативний / ERC-20, транзакції й ERC-20 перекази адреси, інформація про токен, топ-холдери, вихідний код контракту — інструменти `onchain_*` у `tools/` (один провайдер `providers/etherscan.py`).
-- [ ] 3. **Bitcoin (mempool.space, без ключа):** комісії, стан мемпулу, останній блок, складність / хешрейт, огляд адреси.
+- [x] 3. **Bitcoin (mempool.space, без ключа):** комісії, стан мемпулу, останній блок, складність / хешрейт, огляд адреси. _19.11: `btc_fees`, `btc_mempool`, `btc_latest_block`, `btc_difficulty_hashrate`, `btc_address` (провайдер `providers/mempool.py`, 1 запит/с; адреса mainnet перевіряється за контрольною сумою до запиту). Зразок знято живцем з сервера 19.11 (`tests/fixtures/mempool_space_2026-11-19.json`); перевірка інструментів після злиття через MCP служби на сервері ще за власником / розробником наступного прогону. [Зміни](../changes/2026-11-19-btc-mempool-tools.md)._
 - [ ] 4. **Solana (Helius):** актив, баланс, підписи адреси, транзакція, пошук активів — після ключа власника.
 - [ ] 5. **DefiLlama пули й ризики:** пули з APY / TVL і їхня історія (у нас частково через `providers/defillama.py`), ризик токена / адреси (GoPlus у нас є — звести з `contract_risk`).
 - [ ] 6. **Огляд:** що з цього дає сигнал для торгівлі (рух на біржі, кити, нові пули) — короткий розділ у `docs/knowledge/defi.md` і 1–3 картки ідей (скаут), якщо є механізм.
@@ -27,7 +27,7 @@
 - **Etherscan V2:** безкоштовний ключ `ETHERSCAN_API_KEY` лежить у `~/.config/tradedesk/onchain.env` з 25.10, на сервері перевірено. Живцем перевірено `tokentx` (`stats/ethprice` — лише виклик у `scripts/server/onchain-keys.sh`, результату в репозиторії нема) (до 1000 рядків за виклик). `getTokenInfo`, `tokenTopHolders` і мітки `nametag` доступні лише на платному тарифі, ціна не перевірено. Те, які мережі V2 відкриває безкоштовний ключ, теж не перевірено.
 - **Dune:** ключ є, але `credits_included = 0`, тож будь-який SQL дає HTTP 402. Жоден інструмент DOUBLETOP на Dune не спирається, тому для паритету ключ не потрібен.
 - **Helius (Solana):** потрібен новий безкоштовний ключ від власника. Тариф і ліміти не перевірено.
-- **mempool.space, DefiLlama (`yields.llama.fi`):** обидва публічні, без ключа. Ендпоінти лише задокументовано ([D] у `api-notes.md`), живцем не перевірено.
+- **mempool.space, DefiLlama (`yields.llama.fi`):** обидва публічні, без ключа. Ендпоінти лише задокументовано ([D] у `api-notes.md`), живцем не перевірено. _19.11: шість шляхів mempool.space (`fees/recommended`, `mempool`, `blocks/tip/height`, `v1/blocks`, `mining/hashrate/3d`, `address/{addr}`) перевірено живцем з сервера._
 - **DefiLlama (`api.llama.fi`, `stablecoins.llama.fi`), DexScreener, GoPlus, Pendle:** без ключа, уже працюють у наших провайдерах.
 
 Шкала пріоритетів: **P1** — дані для рішення про ончейн-угоду (ризик токена, ліквідність / нові пули, рух китів і біржові потоки); **P2** — корисне доповнення (топ-холдери, баланси, комісії мереж, огляд гаманця); **P3** — довідка. Рух китів і біржові потоки — це дані, а не перевірений сигнал: H3 (депозити гаманців ММ на біржі → шорт) дав ◯, 0 подій ([верифікація 25.10](../verification/2026-10-25-market-makers-onchain.md)).
@@ -47,11 +47,11 @@
 | 11 | helius `get_signatures_for_address` | — | нема | Helius RPC | так, новий | те саме | рух китів Solana | P2 |
 | 12 | helius `get_transaction` | — | нема | Helius RPC | так, новий | те саме | довідка | P3 |
 | 13 | helius `search_assets` | — | нема | Helius DAS | так, новий | те саме | вміст гаманця Solana | P3 |
-| 14 | mempool `fees_recommended` | — | нема | mempool.space публічний API | ні | без ключа; ліміти не перевірено | комісії мережі BTC | P2 |
-| 15 | mempool `mempool_summary` | — | нема | mempool.space | ні | те саме | завантаженість мережі BTC | P2 |
-| 16 | mempool `block_latest` | — | нема | mempool.space | ні | те саме | довідка | P3 |
-| 17 | mempool `difficulty_hashrate` | — | нема | mempool.space | ні | те саме | довідка (майнери) | P3 |
-| 18 | mempool `address_overview` | — | нема | mempool.space | ні | те саме | баланс / рух кита BTC | P2 |
+| 14 | mempool `fees_recommended` | `btc_fees` (19.11) | є | mempool.space публічний API | ні | без ключа; ліміт не опубліковано (429 при перевищенні) | комісії мережі BTC | P2 |
+| 15 | mempool `mempool_summary` | `btc_mempool` (19.11, + смуги комісій) | є | mempool.space | ні | те саме | завантаженість мережі BTC | P2 |
+| 16 | mempool `block_latest` | `btc_latest_block` (19.11) | є | mempool.space | ні | те саме | довідка | P3 |
+| 17 | mempool `difficulty_hashrate` | `btc_difficulty_hashrate` (19.11) | є | mempool.space | ні | те саме | довідка (майнери) | P3 |
+| 18 | mempool `address_overview` | `btc_address` (19.11) | є | mempool.space | ні | те саме | баланс / рух кита BTC | P2 |
 | 19 | defillama `get_protocols` | — | нема | `api.llama.fi/protocols` | ні | безкоштовно | довідка | P3 |
 | 20 | defillama `get_tvl__by_protocol` | — | нема | `api.llama.fi/protocol/{name}` | ні | безкоштовно | приплив / відплив капіталу протоколу | P3 |
 | 21 | defillama `get_v2_chains` | — | нема | `api.llama.fi/v2/chains` | ні | безкоштовно | довідка | P3 |

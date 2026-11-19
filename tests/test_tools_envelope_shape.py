@@ -3,7 +3,7 @@
 Complements tests/test_tools_never_raise.py and tests/test_tools_provider_outage.py, which check that failing providers
 still give an envelope. Here every registered tool is called through a real MCP client against the happy-path fakes of
 tests/conftest.py (Deribit / Hyperliquid / Binance / Bybit / Polymarket / CoinGecko / ... transports and FakeEx), plus
-Pendle, DefiLlama, GoPlus, DexScreener, Binance daily klines and Coinalyze (a test-only dummy key) served from the saved
+Pendle, DefiLlama, GoPlus, DexScreener, mempool.space, Binance daily klines and Coinalyze (a test-only dummy key) served from the saved
 samples in tests/fixtures, the Polymarket events and books of tests/test_pm_gap.py, and a store seeded with funding /
 ATM-term / OHLCV history, an event, a position and a paper carry pair; providers without a fake answer 404, and nothing
 reaches the real network. Arguments and SKIP come from tests/test_tools_never_raise.py. For every answer with ok=true it
@@ -30,6 +30,8 @@ import httpx
 from mcp import Client
 
 from conftest import NOW, FakeEx, State, make_transports
+from test_bitcoin import ADDR as BTC_ADDR
+from test_bitcoin import serve as mempool_handler
 from test_coinalyze import SAMPLE as LIQ_SAMPLE
 from test_coinalyze_history import SAMPLES as COINALYZE_SAMPLES
 from test_contract_risk import DEX_PAIRS as SHIB_DEX_PAIRS
@@ -63,6 +65,7 @@ COINALYZE_TEST_KEY = "test-dummy-key"  # not a real key: the Coinalyze transport
 ARGS: dict[str, dict] = {
     **NEVER_RAISE_ARGS,
     "events_add": {**NEVER_RAISE_ARGS["events_add"], "date": "2026-11-05"},
+    "btc_address": {"address": BTC_ADDR},
     "chain_metrics": {"chain": "Solana"},
     "contract_risk": {"chain": "ethereum", "address": SHIB},
     "dex_pairs": {"addresses": [FART]},
@@ -92,6 +95,12 @@ EXTRA_OK: set[str] = {
     "contract_risk",
     "dex_pairs",
     "cycle_regime",
+    # mempool.space, real sample 2026-11-19
+    "btc_fees",
+    "btc_mempool",
+    "btc_latest_block",
+    "btc_difficulty_hashrate",
+    "btc_address",
     # the seeded store
     "funding_zscore",
     "iv_rank",
@@ -270,6 +279,7 @@ def _extra_fakes(fakes: dict) -> dict:
         "defillama:stablecoins": httpx.MockTransport(stablecoins_handler),
         "goplus": httpx.MockTransport(lambda req: httpx.Response(200, json=SHIB_BODY)),
         "dexscreener": httpx.MockTransport(_dexscreener),
+        "mempool": httpx.MockTransport(mempool_handler),
         "binance_spot": _DailyKlines(fakes["binance_spot"]),
         "binance_futures": _DailyKlines(fakes["binance_futures"]),
         "coinalyze": httpx.MockTransport(_coinalyze),

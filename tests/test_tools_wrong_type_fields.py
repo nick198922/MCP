@@ -180,6 +180,9 @@ class Mutator:
                 self.seen[name] = max(self.seen.get(name, 0), n)
         if self.target is not None:
             field, value, where = self.target
+            if field == prefix:  # the whole body is one scalar (mempool.space /api/blocks/tip/height: a bare integer)
+                self.hits += 1
+                return copy.copy(value)
             if field.startswith(prefix + ".") or field.startswith(prefix + "["):
                 tree = tree if fresh else copy.deepcopy(tree)
                 self.hits += break_field(tree, prefix, field, value, where)

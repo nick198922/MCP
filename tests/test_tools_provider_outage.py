@@ -62,6 +62,8 @@ ARRAYS = {
     "legs": [{"kind": "call", "side": "long", "size": 1, "strike": 82_000, "entry_premium": 2_000}],
 }
 ARGS: dict[str, dict[str, Any]] = {
+    # `address` above is an EVM address; a Bitcoin one passes the checksum check and reaches the failing transport.
+    "btc_address": {"address": "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"},
     # Coinalyze takes a bare coin; with a dummy key (failing_runtime) the call reaches the failing transport.
     "liquidations_history": {"symbol": "BTC"},
     "plan_add": {"entry": 82_750.0, "stop": 80_000.0, "target": 90_000.0, "expires_ts": int(NOW.timestamp()) + 86_400},

@@ -59,7 +59,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "smallest unit (wei for the native coin, the token's base unit for ERC-20) as a decimal string, decimals, "
             "and balance = balance_raw / 10^decimals as a float (approximate, for reading). For a token, decimals and "
             "symbol are read from the contract (eth_call); when decimals cannot be read, balance is null and only the "
-            "raw amount is given. Caveats: one address is not an entity (no owner labels: exchange, fund or whale is "
+            "raw amount is given; when neither decimals nor symbol can be read, a warning says the token address does "
+            "not look like an ERC-20 contract and a zero balance there is not meaningful. Caveats: one address is not an entity (no owner labels: exchange, fund or whale is "
             "unknown); no USD value; " + COVERAGE + " " + UNTRUSTED + " Cached ~30 s."
         ),
     )
@@ -180,7 +181,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "Facts of one ERC-20 token contract read from the chain through Etherscan API V2 (eth_call at the latest "
             "block): name, symbol, decimals, total_supply_raw (exact integer in the token's smallest unit, decimal "
             "string) and total_supply = raw / 10^decimals (float). Four calls; a field the contract does not expose "
-            "(or that cannot be decoded) is null and listed in `missing`. Not included: price, market cap, holders and "
+            "(or that cannot be decoded) is null and listed in `missing`; when neither symbol nor decimals can be read, a "
+            "warning says the address does not look like an ERC-20 contract (e.g. a wallet). Not included: price, market cap, holders and "
             "holder count (Etherscan's token info and top-holder endpoints are paid API Pro; holder concentration of "
             "the top 10 is in contract_risk, price and FDV in coin_snapshot / dex_pairs). Caveats: name and symbol "
             "are whatever the contract returns, so a fake token can claim any ticker; total supply may include burned "
@@ -203,6 +205,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
             *(b.guard(f, SRC, rt.etherscan.erc20_view(chain_id, tok, v)) for f, v in zip(fields, views, strict=True))
         )
         got = dict(zip(fields, values, strict=True))
+        unread = {m.field for m in b.missing if m.reason == "data_unavailable"}
+        if {"decimals", "symbol"} <= unread:  # both views reverted or returned nothing: no ERC-20 code there
+            b.warn("The address does not look like an ERC-20 contract (symbol and decimals cannot be read); it may be a wallet.")
         if all(v is None for v in values):
             return b.build(None, ok=False)
         supply = got["total_supply"]

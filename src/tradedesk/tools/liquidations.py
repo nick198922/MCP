@@ -26,7 +26,12 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "Binance undercounts: its stream sends at most the latest liquidation per symbol each second, so cascades "
             "are understated (a lower bound, not the full volume). Bybit covers only the configured symbols (default "
             "BTC/ETH/SOL USDT perps); OKX says its channel is not the total of its liquidations. Prices: Binance "
-            "average fill, Bybit bankruptcy price, OKX liquidation mark price."
+            "average fill, Bybit bankruptcy price, OKX liquidation mark price. "
+            "Units: notionals in USD (each liquidation at its own price); imbalance a fraction from -1 to 1; ts in "
+            "Unix seconds (UTC); qty in base-asset coins (OKX contracts converted). "
+            "When to pick it: the last minutes up to 24 hours (window_minutes <= 1440) with each liquidation's own USD; "
+            "for days to months of daily / hourly history (Coinalyze, Binance / Bybit, USD approximated from the close) "
+            "use liquidations_history."
         ),
     )
     async def liquidations_summary(

@@ -567,7 +567,11 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "Deribit DVOL index (implied-volatility index) time series via /public/get_volatility_index_data. "
             "DVOL is reported in annualised PERCENT (e.g. 45.3 means 45.3 %). Returns the OHLC series plus "
             "latest/mean/min/max/stdev and point-change vs 24h/7d ago. Resolutions supported: 60s, 3600s, "
-            "43200s, 86400s; defaults to 3600s. IV rank/percentile needs stored history (Phase 2)."
+            "43200s, 86400s; defaults to 3600s; at most 30 days back. "
+            "When to pick it: the raw DVOL path and its recent point changes (values in PERCENT, unlike the decimals "
+            "of deribit_vrp and iv_rank); for DVOL's percentile over up to 1000 days, implied vs realized vol and the "
+            "straddle-selling record use deribit_vrp; for the IV rank of one listed expiry over our stored history use "
+            "iv_rank."
         ),
     )
     async def deribit_dvol(
@@ -632,7 +636,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "(DVOL minus the following 30 days' realized vol); and the record of selling a 30d ATM straddle at "
             "DVOL - `entry_cost_vol` with daily delta hedging (P&L as a fraction of spot per trade), overall and by "
             "DVOL's percentile within the trailing 365 days (`by_dvol_level`, current bucket flagged). Vols are "
-            "decimals (0.45 = 45 %). Historical, not a forecast: see `warnings`."
+            "decimals (0.45 = 45 %). Historical, not a forecast: see `warnings`. "
+            "When to pick it: is implied vol rich or cheap against realized and against its own past (daily data, no "
+            "stored history needed); for the intraday DVOL series in percent use deribit_dvol; for the IV rank of one "
+            "listed expiry (not the 30-day index) over our stored history use iv_rank."
         ),
     )
     async def deribit_vrp(

@@ -180,7 +180,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "(0.45 = 45 %). IV rank = (latest - min) / (max - min), 0..1. "
             "Percentile = fraction of past points strictly below latest, plus half the ties. Both are "
             "informative only — the lookback window matters more than tiny differences. Needs the "
-            "collector enabled and some stored history (otherwise ok=false)."
+            "collector enabled and some stored history (otherwise ok=false). "
+            "When to pick it: the rank of ONE listed expiry's ATM IV over our own stored history (up to the lookback); "
+            "for the 30-day constant-maturity DVOL percentile over up to 1000 days with no stored data, plus implied vs "
+            "realized vol, use deribit_vrp; for the raw DVOL series in percent and its 24h / 7d change, use deribit_dvol."
         ),
     )
     async def iv_rank(
@@ -363,7 +366,12 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "ohlcv_hist collector enabled (TRADEDESK_COLLECT_OHLCV_HIST_ENABLED=1 with a market "
             "list in TRADEDESK_COLLECT_OHLCV_HIST_MARKETS). Returns stored bars for the "
             "(venue, symbol, timeframe), optionally bounded by since/until (unix MILLISECONDS, "
-            "ccxt convention). Reports the inclusive date range of what's actually stored."
+            "ccxt convention). Reports the inclusive date range of what's actually stored. "
+            "Units: bar ts is Unix epoch milliseconds (UTC) of the bar's open; open/high/low/close are in the symbol's "
+            "quote currency; volume is stored as the venue reported it via ccxt (not converted to USD). No return or "
+            "volatility summary. When to pick it: long stored series (more bars than one live request) for the markets "
+            "the collector records; for the latest live candles of any ccxt venue with a return / realised-vol summary "
+            "use market_ohlcv; for Hyperliquid coins use hyperliquid_candles."
         ),
     )
     async def ohlcv_history(

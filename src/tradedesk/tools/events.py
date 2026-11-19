@@ -191,7 +191,11 @@ def register(server: MCPServer, rt: Runtime) -> None:
         annotations=READ_ONLY,
         description=(
             "List events from the local calendar. Filter by `kind`, `impact`, and a UTC date "
-            "window (`since_date` / `until_date` as 'YYYY-MM-DD'). Ordered oldest-first."
+            "window (`since_date` / `until_date` as 'YYYY-MM-DD'). Ordered oldest-first. "
+            "Units: ts is Unix SECONDS (UTC; the ts_ms of events_add is milliseconds, stored as seconds); the window covers "
+            "since_date 00:00 to until_date 23:59 UTC; `limit` keeps the OLDEST events of the window, so narrow "
+            "since_date to see the latest ones. Rows: id, ts, kind, label, impact (low / medium / high), meta (JSON). "
+            "The calendar holds only what was added locally; an empty list is not proof that no event happened."
         ),
     )
     async def events_list(

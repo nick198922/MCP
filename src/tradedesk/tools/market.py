@@ -37,7 +37,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "summary.return_pct is in percent (first to last close; 1.5 = 1.5 %); summary.realized_vol_annualized is a "
             "decimal (0.45 = 45 %): stdev of close-to-close log-returns scaled by sqrt(365 days / candle size), "
             "present only with at least 10 closes. A candle with a timestamp, price or volume that is not a finite number "
-            "in range is dropped (named in `warnings`)."
+            "in range is dropped (named in `warnings`). "
+            "When to pick it: the latest live candles (up to 1000, one request) on any ccxt venue; for longer series "
+            "stored by our collector use ohlcv_history; for Hyperliquid coins (prices in USDC) use hyperliquid_candles."
         ),
     )
     async def market_ohlcv(

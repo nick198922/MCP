@@ -149,7 +149,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "liquidations_summary (our own live-collected stream). Intervals are UTC-aligned daily or hourly. "
             "Coinalyze keeps hourly data only for a limited recent window (older ranges come back empty). "
             "Liquidation counts are exchange-reported and understate forced closes on venues that publish only the "
-            "largest order per second. Do not read the totals as market-wide liquidations."
+            "largest order per second. Do not read the totals as market-wide liquidations. "
+            "When to pick it: history beyond the last 24 hours (up to 365 days daily, 30 days hourly); for the last "
+            "minutes to 24 hours with exact per-liquidation USD and Binance / Bybit / OKX use liquidations_summary."
         ),
     )
     async def liquidations_history(

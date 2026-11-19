@@ -253,7 +253,13 @@ def register(server: MCPServer, rt: Runtime) -> None:
 
     @server.tool(
         annotations=READ_ONLY,  # writes to the local store only
-        description="Enable, disable or delete a DSL rule in the local store.",
+        description=(
+            "Enable, disable or delete a DSL rule in the local store. Default (enable=false) disables the rule: the "
+            "alert engine evaluates only enabled rules, so it stops firing; enable=true re-enables it; delete=true "
+            "removes the row for good and wins over `enable`. Returns the stored rule row (disabled_ts and created_ts in "
+            "Unix seconds UTC, cooldown_seconds in seconds; disabled_ts is null when enabled), or {id, deleted} after a "
+            "delete. An unknown id goes to `missing`. Touches only the local store: no exchange call, no order."
+        ),
     )
     async def rules_disable(
         id: Annotated[int, Field(ge=1, description="Rule id from rules_add / rules_list.")],

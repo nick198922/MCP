@@ -1,0 +1,162 @@
+{
+ "_source": "LIVE samples, 2026-11-19, fetched from the Contabo server through tradedesk Http (no key): GET https://api.honeypot.is/v2/IsHoneypot?address=<token>&chainID=<1|56>. Tokens: WETH 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2 (1), SHIB 0x95aD61b0a150d79219dCF64E1E6Cc01f0B64C4cE (1), FLOKI 0xcf0C122c6b73ff809C693DB761e7BaeBe62b6a2E (1), EverGrow 0xC001BBe2B87079294C63EcE98BdD0a88D761434e (56), SafeMoon 0x42981d0bfbAf196529376EE702F2a9Eb9092fcB5 (56). Trimmed: only the keys token, summary, simulationSuccess, simulationError, honeypotResult, simulationResult, flags, contractCode, chain are kept where present (pair, router, withToken, holderAnalysis dropped); values unchanged. FLOKI and EverGrow were saved with summary/simulation keys only. Taxes are percent (FLOKI 0.3 here vs GoPlus buy_tax '0.003' in the same minute). EverGrow: honeypot.is isHoneypot=true, sellTax=100 while GoPlus said is_honeypot '0' and sell_tax '' (a live disagreement). Other live answers: chainID 137 and 42161 -> HTTP 400 'Invalid chain'; address 0x...01 on chain 1 -> HTTP 404 'Token not found'; response header x-ratelimit-limit: 50.",
+ "responses": {
+  "weth_ethereum": {
+   "token": {
+    "name": "Wrapped Ether",
+    "symbol": "WETH",
+    "decimals": 18,
+    "address": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+    "totalHolders": 3330747
+   },
+   "summary": {
+    "risk": "low",
+    "riskLevel": 1,
+    "flags": []
+   },
+   "simulationSuccess": true,
+   "honeypotResult": {
+    "isHoneypot": false
+   },
+   "simulationResult": {
+    "buyTax": 0,
+    "sellTax": 0,
+    "transferTax": 0,
+    "buyGas": "146675",
+    "sellGas": "130900"
+   },
+   "flags": [],
+   "contractCode": {
+    "openSource": true,
+    "rootOpenSource": true,
+    "isProxy": true,
+    "hasProxyCalls": true
+   },
+   "chain": {
+    "id": "1",
+    "name": "Ethereum",
+    "shortName": "eth",
+    "currency": "ETH"
+   }
+  },
+  "shib_ethereum": {
+   "token": {
+    "name": "SHIBA INU",
+    "symbol": "SHIB",
+    "decimals": 18,
+    "address": "0x95aD61b0a150d79219dCF64E1E6Cc01f0B64C4cE",
+    "totalHolders": 1700772
+   },
+   "summary": {
+    "risk": "low",
+    "riskLevel": 1,
+    "flags": []
+   },
+   "simulationSuccess": true,
+   "honeypotResult": {
+    "isHoneypot": false
+   },
+   "simulationResult": {
+    "buyTax": 0,
+    "sellTax": 0,
+    "transferTax": 0,
+    "buyGas": "145452",
+    "sellGas": "105317"
+   },
+   "flags": [],
+   "contractCode": {
+    "openSource": true,
+    "rootOpenSource": true,
+    "isProxy": false,
+    "hasProxyCalls": false
+   },
+   "chain": {
+    "id": "1",
+    "name": "Ethereum",
+    "shortName": "eth",
+    "currency": "ETH"
+   }
+  },
+  "floki_ethereum": {
+   "summary": {
+    "risk": "low",
+    "riskLevel": 1,
+    "flags": []
+   },
+   "simulationSuccess": true,
+   "honeypotResult": {
+    "isHoneypot": false
+   },
+   "simulationResult": {
+    "buyTax": 0.3,
+    "sellTax": 0.3,
+    "transferTax": 0,
+    "buyGas": "198162",
+    "sellGas": "351400"
+   },
+   "flags": []
+  },
+  "evergrow_bsc": {
+   "summary": {
+    "risk": "honeypot",
+    "riskLevel": 100,
+    "flags": [
+     {
+      "flag": "medium_fail_rate",
+      "description": "A high amount of users cannot sell their tokens.",
+      "severity": "high",
+      "severityIndex": 16
+     }
+    ]
+   },
+   "simulationSuccess": true,
+   "honeypotResult": {
+    "isHoneypot": true,
+    "honeypotReason": "execution reverted: TransferHelper: TRANSFER_FROM_FAILED: 0x08c379a0000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000245472616e7366657248656c7065723a205452414e534645525f46524f4d5f4641494c454400000000000000000000000000000000000000000000000000000000"
+   },
+   "simulationResult": {
+    "buyTax": 0,
+    "sellTax": 100,
+    "transferTax": 0,
+    "buyGas": "0",
+    "sellGas": "0"
+   },
+   "flags": [
+    "medium_fail_rate"
+   ]
+  },
+  "safemoon_bsc": {
+   "token": {
+    "name": "SafeMoon",
+    "symbol": "SFM",
+    "decimals": 9,
+    "address": "0x42981d0bfbAf196529376EE702F2a9Eb9092fcB5",
+    "totalHolders": 711107
+   },
+   "summary": {
+    "risk": "unknown",
+    "flags": [
+     {
+      "flag": "high_fail_rate",
+      "description": "A very high amount of users cannot sell their tokens.",
+      "severity": "critical",
+      "severityIndex": 20
+     }
+    ]
+   },
+   "simulationSuccess": false,
+   "simulationError": "execution reverted: HP: BUY_FAILED: 0x08c379a00000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000000e48503a204255595f4641494c4544000000000000000000000000000000000000",
+   "honeypotResult": null,
+   "simulationResult": null,
+   "flags": [
+    "high_fail_rate"
+   ],
+   "chain": {
+    "id": "56",
+    "name": "Binance Smart Chain",
+    "shortName": "bsc",
+    "currency": "BNB"
+   }
+  }
+ }
+}

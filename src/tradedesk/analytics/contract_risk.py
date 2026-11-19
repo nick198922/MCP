@@ -11,6 +11,11 @@ V2_LIQ_MIN and TOP10_MAX are our own judgement calls, not calibrated.
 
 Every check is `pass`, `fail` or `unknown`. Missing or unparsable data is always `unknown`, never `pass`, and
 the overall verdict is `pass` only when every check passed. A filter against -100 % outcomes, not a signal.
+
+`cross_check` adds honeypot.is (a buy/sell simulation) as a second source for honeypot, cannot_sell_all, buy_tax
+and sell_tax: the worse verdict wins, a disagreement is reported, and without a honeypot.is answer those four
+checks cannot pass. TAX_GAP_MAX (2 percentage points) is our own threshold. honeypot.is's holder sell fail-rate
+flags are a separate check of their own (holder_sell_fail_rate), with the source's own severity.
 """
 
 from __future__ import annotations
@@ -331,6 +336,18 @@ def _fake_token_value(v: Any) -> Any:
     return v.get("value") if isinstance(v, dict) else v
 
 
+def _summary(checks: list[dict[str, Any]]) -> dict[str, Any]:
+    failed = [c["name"] for c in checks if c["verdict"] == "fail"]
+    unknown = [c["name"] for c in checks if c["verdict"] == "unknown"]
+    return {
+        "overall": "fail" if failed else ("unknown" if unknown else "pass"),
+        "critical_failed": [c["name"] for c in checks if c["verdict"] == "fail" and c["severity"] == "critical"],
+        "failed": failed,
+        "unknown": unknown,
+        "passed_count": sum(1 for c in checks if c["verdict"] == "pass"),
+    }
+
+
 def assess(
     token: dict[str, Any], *, now: datetime, liquidity_usd: float | None = None, market_cap_usd: float | None = None
 ) -> dict[str, Any]:
@@ -381,10 +398,6 @@ def assess(
         _liquidity_check(liquidity_usd, market_cap_usd),
     ]
 
-    failed = [c["name"] for c in checks if c["verdict"] == "fail"]
-    unknown = [c["name"] for c in checks if c["verdict"] == "unknown"]
-    critical = [c["name"] for c in checks if c["verdict"] == "fail" and c["severity"] == "critical"]
-    overall = "fail" if failed else ("unknown" if unknown else "pass")
     holders = _dec(token.get("holder_count"))
     cex = token.get("is_in_cex")
     return {
@@ -392,11 +405,7 @@ def assess(
             "name": clean_text(token.get("token_name"), 40),
             "symbol": clean_text(token.get("token_symbol"), 20),
         },
-        "overall": overall,
-        "critical_failed": critical,
-        "failed": failed,
-        "unknown": unknown,
-        "passed_count": sum(1 for c in checks if c["verdict"] == "pass"),
+        **_summary(checks),
         "checks": checks,
         "info": {
             "holder_count": None if holders is None else int(holders),
@@ -409,3 +418,177 @@ def assess(
             "market_cap_usd": None if market_cap_usd is None else round(market_cap_usd, 2),
         },
     }
+
+
+# ---------- second source: honeypot.is buy/sell simulation ----------
+
+CROSS_CHECKED = ("honeypot", "cannot_sell_all", "buy_tax", "sell_tax")
+TAX_GAP_MAX = 0.02  # ours: taxes from the two sources disagree when they differ by more than 2 percentage points
+# honeypot.is flags that say many holders could not sell ("A (very) high amount of users cannot sell their tokens.",
+# live 2026-11-19 for SafeMoon and EverGrow on BSC); matched only, never echoed beyond the flag name. They feed
+# only holder_sell_fail_rate, not cannot_sell_all (a different property; see _fail_rate_check).
+_SELL_FAIL_FLAGS = frozenset({"high_fail_rate", "medium_fail_rate"})
+_RANK = {"pass": 0, "unknown": 1, "fail": 2}
+
+
+def _flag_names(raw: Any, key: str | None) -> list[str] | None:
+    """Flag names from a honeypot.is flags list: plain strings (top-level `flags`, key=None) or objects with a string
+    `key` (`summary.flags[].flag`). None when it is not a list or any entry has another shape."""
+    if not isinstance(raw, list):
+        return None
+    names = []
+    for x in raw[:20]:
+        name = x if key is None else (x.get(key) if isinstance(x, dict) else None)
+        if not isinstance(name, str):
+            return None
+        names.append(clean_text(name, 40))
+    return [n for n in names if n]
+
+
+def parse_honeypot_is(body: Any) -> dict[str, Any]:
+    """Normalised honeypot.is IsHoneypot answer. Taxes become decimals (the API sends percent: 0.3 = 0.3 %) and are
+    read only after a successful simulation; anything missing or of the wrong type is None. Free text
+    (honeypotReason, simulationError, flag descriptions) is dropped. `flags` joins the top-level list of strings and
+    the names in `summary.flags[].flag`; when the top-level list is missing or of another shape it is None (no
+    fail-rate pass), unless `summary.flags` names a fail-rate flag, which is then kept alone so it still fails."""
+    b = body if isinstance(body, dict) else {}
+    res = b.get("honeypotResult") if isinstance(b.get("honeypotResult"), dict) else {}
+    sim = b.get("simulationResult") if isinstance(b.get("simulationResult"), dict) else {}
+    summary = b.get("summary") if isinstance(b.get("summary"), dict) else {}
+    ok = b.get("simulationSuccess")
+    ok = ok if isinstance(ok, bool) else None
+    is_hp = res.get("isHoneypot")
+    level = summary.get("riskLevel")
+
+    def tax(key: str) -> float | None:
+        v = num(sim.get(key)) if ok is True else None
+        return None if v is None or v < 0 else round(v / 100.0, 6)
+
+    top = _flag_names(b.get("flags"), None)
+    names = list(dict.fromkeys((top or []) + (_flag_names(summary.get("flags"), "flag") or [])))
+    flags = names if top is not None else ([n for n in names if n in _SELL_FAIL_FLAGS] or None)
+    return {
+        "simulation_success": ok,
+        "is_honeypot": is_hp if isinstance(is_hp, bool) else None,
+        "buy_tax": tax("buyTax"),
+        "sell_tax": tax("sellTax"),
+        "risk": clean_text(summary.get("risk"), 20) or None,
+        "risk_level": level if isinstance(level, int) and not isinstance(level, bool) else None,
+        "flags": flags,
+    }
+
+
+def _second_verdicts(hp: dict[str, Any]) -> dict[str, tuple[str, Any, str]]:
+    """honeypot.is (verdict, value, detail) for each CROSS_CHECKED name. A pass needs a successful simulation.
+    cannot_sell_all rests only on the simulated sell (isHoneypot); the fail-rate flags are a separate check."""
+    sim_ok = hp.get("simulation_success") is True
+    is_hp = hp.get("is_honeypot")
+    if is_hp is True:
+        honeypot = ("fail", True, "honeypot.is buy/sell simulation: the sell failed (isHoneypot = true)")
+    elif hp.get("risk") == "honeypot":
+        honeypot = ("fail", True, "honeypot.is rates the token risk as 'honeypot'")
+    elif is_hp is False and sim_ok:
+        honeypot = ("pass", False, "honeypot.is buy/sell simulation: buy and sell went through")
+    else:
+        honeypot = ("unknown", is_hp, "honeypot.is simulation failed or gave no honeypot result")
+    out = {"honeypot": honeypot, "cannot_sell_all": honeypot}
+    for name in ("buy_tax", "sell_tax"):
+        v = hp.get(name)
+        if v is None:
+            out[name] = ("unknown", None, "honeypot.is simulated tax not available")
+        else:
+            out[name] = ("fail" if v > TAX_MAX else "pass", v, "honeypot.is simulated tax, decimal (0.05 = 5 %)")
+    return out
+
+
+def _fail_rate_check(hp: dict[str, Any] | None) -> dict[str, Any]:
+    """honeypot.is-only check of its holder sell fail-rate flags, with the source's own severity: high_fail_rate
+    ("a very high amount of users cannot sell", critical there) fails as critical, medium_fail_rate ("a high
+    amount", high there) fails as a red flag. Neither flag in a well-formed flag list after a successful simulation
+    passes; anything else (no answer, failed simulation, missing or malformed flags) is unknown. A sample of holders
+    whose simulated sell failed (blacklist, wallet or transaction limits, cooldown, contract holders, ...), not a
+    contract property, so it is not compared with GoPlus."""
+    thr = "no honeypot.is high_fail_rate / medium_fail_rate flag"
+    raw = (hp or {}).get("flags")
+    flags = {x for x in (raw if isinstance(raw, list) else ()) if isinstance(x, str)} & _SELL_FAIL_FLAGS
+    if "high_fail_rate" in flags:
+        return _check(
+            "holder_sell_fail_rate",
+            "fail",
+            "critical",
+            "high_fail_rate",
+            thr,
+            "honeypot.is: a very high share of sampled holders could not sell (its own severity: critical)",
+        )
+    if flags:
+        return _check(
+            "holder_sell_fail_rate",
+            "fail",
+            "red_flag",
+            "medium_fail_rate",
+            thr,
+            "honeypot.is: a high share of sampled holders could not sell (its own severity: high); causes include "
+            "blacklists, wallet or transaction limits and cooldowns, so check why before trading",
+        )
+    if hp is None:
+        return _check("holder_sell_fail_rate", "unknown", "critical", None, thr, "honeypot.is gave no answer")
+    if hp.get("simulation_success") is not True:
+        return _check("holder_sell_fail_rate", "unknown", "critical", None, thr, "honeypot.is simulation failed")
+    if not isinstance(raw, list):
+        return _check("holder_sell_fail_rate", "unknown", "critical", None, thr, "honeypot.is flag list missing or malformed")
+    return _check("holder_sell_fail_rate", "pass", "critical", None, thr, "honeypot.is: no fail-rate flag")
+
+
+def _merge_check(check: dict[str, Any], second: tuple[str, Any, str] | None) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """The check with the worse verdict of the two sources (fail > unknown > pass) and the disagreement, if any.
+    `value` and `detail` come from the source that decided the verdict (GoPlus on a tie or when honeypot.is gave no
+    answer; for taxes `value` is the higher of the two). Without a second answer a GoPlus pass becomes unknown: one
+    source alone never makes it green."""
+    g, gv = check["verdict"], check["value"]
+    h, hv, hd = second if second is not None else ("unknown", None, "honeypot.is gave no answer")
+    by_second = second is not None and _RANK[h] > _RANK[g]
+    merged = h if _RANK[h] > _RANK[g] else g
+    value = hv if by_second else gv
+    if check["name"] in ("buy_tax", "sell_tax"):
+        known = [v for v in (gv, hv) if isinstance(v, float | int)]
+        value = max(known) if known else None  # the worse (higher) tax
+    if second is None:
+        detail = f"GoPlus: {check['detail']}; honeypot.is gave no answer, so this rests on GoPlus alone and cannot pass"
+    elif by_second:
+        detail = f"verdict from honeypot.is: {hd}; GoPlus: {g} ({check['detail']}); the worse verdict of the two is kept"
+    else:
+        detail = f"verdict from GoPlus: {check['detail']}; honeypot.is: {h} ({hd}); the worse verdict of the two is kept"
+    out = {
+        **check,
+        "verdict": merged,
+        "value": value,
+        "detail": detail,
+        "sources": {"goplus": {"verdict": g, "value": gv}, "honeypot_is": {"verdict": h, "value": hv}},
+    }
+    split = {g, h} == {"pass", "fail"}
+    if check["name"] in ("buy_tax", "sell_tax") and isinstance(gv, float | int) and isinstance(hv, float | int):
+        split = split or abs(gv - hv) > TAX_GAP_MAX + 1e-9
+    disagreement = {"check": check["name"], "goplus": [g, gv], "honeypot_is": [h, hv]} if split else None
+    return out, disagreement
+
+
+def cross_check(result: dict[str, Any], second: dict[str, Any] | None) -> dict[str, Any]:
+    """A new `assess` result where honeypot, cannot_sell_all, buy_tax and sell_tax take the worse verdict of GoPlus
+    and honeypot.is (`second` = parse_honeypot_is(...), or None when honeypot.is gave no answer). A honeypot.is pass
+    never upgrades a GoPlus verdict. Adds the honeypot.is-only holder_sell_fail_rate check after cannot_sell_all
+    and `second_source` with honeypot.is's own summary and the disagreements (pass vs fail, or taxes more than
+    TAX_GAP_MAX apart)."""
+    verdicts = _second_verdicts(second) if second is not None else {}
+    checks, disagreements = [], []
+    for c in result["checks"]:
+        if c["name"] in CROSS_CHECKED:
+            c, d = _merge_check(c, verdicts.get(c["name"]) if second is not None else None)
+            if d is not None:
+                disagreements.append(d)
+        checks.append(c)
+        if c["name"] == "cannot_sell_all":
+            checks.append(_fail_rate_check(second))  # honeypot.is only, never a disagreement
+    src: dict[str, Any] = {"provider": "honeypot.is", "available": second is not None, "disagreements": disagreements}
+    if second is not None:
+        src |= {k: second.get(k) for k in ("simulation_success", "risk", "risk_level", "flags")}
+    return {**result, **_summary(checks), "checks": checks, "second_source": src}

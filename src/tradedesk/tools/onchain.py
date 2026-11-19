@@ -68,8 +68,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
     @server.tool(
         annotations=READ_ONLY,
         description=(
-            "Token contract safety filter for one EVM token address (GoPlus Security token_security, free tier; "
-            "liquidity and market cap from DexScreener). Each check returns verdict pass / fail / unknown with its "
+            "Token contract safety filter for one EVM token address (GoPlus Security token_security, free tier, "
+            "cross-checked with honeypot.is; liquidity and market cap from DexScreener). Each check returns verdict pass / fail / unknown with its "
             "value and threshold: honeypot, cannot_sell_all, cannot_buy, selfdestruct, buy_tax, sell_tax and "
             "transfer_tax (decimals, 0.05 = 5 %; > 0.05 fails), tax_modifiable, open_source, proxy, hidden_owner, "
             "mintable, pausable, blacklist, whitelist, owner_change_balance, external_call, trading_cooldown, "
@@ -87,9 +87,21 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "fail it by design). Severity is 'critical' (honeypot, cannot sell, cannot buy, selfdestruct, closed "
             "source) or 'red_flag' (acceptable "
             "only with a stated reason). Missing data is always unknown, never pass; `overall` is pass only when "
-            "every check passed. Caveats: a heuristic from one checker that can lag or be wrong, not advice and "
-            "not proof of safety; it reduces the -100 % tail, it is not a trading signal. Top-10 holders without "
-            "wallet clustering understate concentration. Token name and symbol are untrusted third-party text. "
+            "every check passed. Second source: honeypot.is (free buy/sell simulation, ethereum, bsc and base only) "
+            "is checked for honeypot, cannot_sell_all, buy_tax and sell_tax; each of these takes the worse verdict "
+            "of the two (fail > unknown > pass, taxes as the higher decimal), shows both in `sources`, and a "
+            "disagreement (pass vs fail, or taxes more than 0.02 = 2 percentage points apart, our threshold) is "
+            "listed in `second_source.disagreements` and `warnings`; `value` and `detail` come from the source that "
+            "decided the verdict, and `detail` names it. holder_sell_fail_rate is a honeypot.is-only check of its "
+            "holder sell fail-rate flags (share of sampled holders whose simulated sell failed, e.g. blacklist, "
+            "wallet limits or cooldowns; not compared with GoPlus): high_fail_rate fails as critical, "
+            "medium_fail_rate fails as a red flag, no flag after a successful simulation passes. When honeypot.is "
+            "gives no answer (outage, token not found, or a chain it does not cover) these five checks cannot pass, "
+            "so `overall` cannot be pass on arbitrum, polygon, optimism or avalanche. honeypot.is simulates on a "
+            "pair it picks itself, not necessarily the pool you would trade in. Caveats: heuristics from two checkers that can lag "
+            "or both be wrong, not advice and not proof of safety; it reduces the -100 % tail, it is not a trading "
+            "signal. Top-10 holders without wallet clustering understate concentration. Token name and symbol are "
+            "untrusted third-party text. "
             "Chains: ethereum, bsc, base, arbitrum, polygon, optimism, avalanche (Solana not supported yet)."
         ),
     )
@@ -110,22 +122,44 @@ def register(server: MCPServer, rt: Runtime) -> None:
         if addr is None:
             b.miss("address", "goplus", "invalid_argument", err or "invalid address")
             return b.build(None, ok=False)
-        sec, rows = await asyncio.gather(
+        sec, rows, hp_body = await asyncio.gather(
             b.guard("contract_risk", "goplus", rt.goplus.token_security(chain_id, addr)),
             b.guard("liquidity_to_mcap", "dexscreener", rt.dexscreener.token_pairs([addr])),
+            b.guard("honeypot_is", "honeypot_is", rt.honeypot_is.token_check(chain_id, addr)),
         )
         if sec is None:
             return b.build(None, ok=False)
         liq, mcap, n_fake = (None, None, 0)
         if rows is not None:
             liq, mcap, n_fake = cr.liquidity_from_pairs(summarise_pairs(rows, chain=dex_chain, limit=100)["pairs"], addr)
-        data = cr.assess(sec["token"], now=rt.now(), liquidity_usd=liq, market_cap_usd=mcap)
+        hp = cr.parse_honeypot_is(hp_body) if hp_body is not None else None
+        data = cr.cross_check(cr.assess(sec["token"], now=rt.now(), liquidity_usd=liq, market_cap_usd=mcap), hp)
         data["chain"] = dex_chain
         data["address"] = addr
         b.warn(
-            "Heuristic from a single checker (GoPlus); checkers lag and disagree, so cross-check in 2-3 sources. "
+            "Heuristic from two checkers (GoPlus flags, honeypot.is buy/sell simulation) that lag and can both be wrong; "
             "pass is not proof of safety and not advice; the filter only cuts the worst (-100 %) outcomes."
         )
+        if hp is None:
+            b.warn(
+                "honeypot.is gave no answer (see missing): honeypot, cannot_sell_all, buy_tax and sell_tax rest on GoPlus "
+                "alone, so none of them can pass, and holder_sell_fail_rate is unknown."
+            )
+        elif hp["simulation_success"] is not True:
+            b.warn(
+                "honeypot.is could not simulate a buy and sell of this token, so its verdicts are unknown; a failed "
+                "simulation often means trading is restricted, but can also mean no usable pool."
+            )
+        if hp is not None and hp["risk"] in ("high", "very_high") and hp["is_honeypot"] is not True:
+            b.warn(
+                f"honeypot.is rates the token's overall risk as {hp['risk']} (see second_source.risk and flags) "
+                "although it does not flag a honeypot; treat that as a red flag and check why before trading."
+            )
+        for d in data["second_source"]["disagreements"]:
+            b.warn(
+                f"GoPlus and honeypot.is disagree on {d['check']} (GoPlus {d['goplus'][0]}, value {d['goplus'][1]}; "
+                f"honeypot.is {d['honeypot_is'][0]}, value {d['honeypot_is'][1]}); the worse verdict is kept."
+            )
         if sec["code"] != 1:
             b.warn("GoPlus returned partial data (code 2); some checks may be unknown.")
         if n_fake:

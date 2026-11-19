@@ -36,7 +36,7 @@ from test_bitcoin import serve as mempool_handler
 from test_coinalyze import SAMPLE as LIQ_SAMPLE
 from test_coinalyze_history import SAMPLES as COINALYZE_SAMPLES
 from test_contract_risk import DEX_PAIRS as SHIB_DEX_PAIRS
-from test_contract_risk import SHIB, SHIB_BODY
+from test_contract_risk import HP_SHIB, SHIB, SHIB_BODY
 from test_cycle_regime import FX as CYCLE_FX
 from test_cycle_regime import serve_daily
 from test_evm import HOLDER as EVM_HOLDER
@@ -292,6 +292,7 @@ def _extra_fakes(fakes: dict) -> dict:
         "defillama": httpx.MockTransport(_defillama),
         "defillama:stablecoins": httpx.MockTransport(stablecoins_handler),
         "goplus": httpx.MockTransport(lambda req: httpx.Response(200, json=SHIB_BODY)),
+        "honeypot_is": httpx.MockTransport(lambda req: httpx.Response(200, json=HP_SHIB)),
         "dexscreener": httpx.MockTransport(_dexscreener),
         "mempool": httpx.MockTransport(mempool_handler),
         "etherscan": httpx.MockTransport(etherscan_handler),

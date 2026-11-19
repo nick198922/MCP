@@ -66,6 +66,7 @@ STRING_PARAMS = {
     "until_date",
     "date",
     "time_utc",
+    "event_ts",  # deribit_event_move: an ISO-8601 string, not unix seconds
     "event_kind",
     "spot_venue",
     "price_venue",

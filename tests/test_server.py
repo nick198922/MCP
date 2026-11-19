@@ -38,6 +38,7 @@ EXPECTED_TOOLS = {
     "deribit_max_pain",
     "deribit_gamma_exposure",
     "deribit_expected_move",
+    "deribit_event_move",  # implied event move between two adjacent expiries, added 2026-11-19 (tests in test_event_move.py)
     "deribit_oi_by_strike",
     "prob_from_options",
     "odds_devig",

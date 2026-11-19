@@ -143,7 +143,7 @@ async def test_journal_list_very_deep_tags_does_not_raise(rt):
 
 
 async def test_journal_list_only_normalised_rows_is_ok(rt):
-    # Trades whose tags were only reshaped are still shown, so the reply is ok; the LIKE filter matches the bare string.
+    # Trades whose tags were only reshaped are still shown, so the reply is ok; the tag filter reads a bare string as one tag.
     await _rows(rt, JOURNAL_SQL, [_trade("5", id=1), _trade('"hedge"')])
     async with _session(rt) as call:
         env = await call("journal_list")

@@ -139,9 +139,10 @@ async def test_positions_list_description_units(server):
         "delta in coins, i.e. USD per $1 spot move",
         "vega in USD per 1 vol point",
         "theta in USD per calendar day",
-        "ASCII case-insensitive",
-        "a tag with non-ASCII characters never matches",
-        "`%` / `_` in the tag act as SQL wildcards",
+        "one whole stored tag, not a substring",
+        "ASCII letters case-insensitive",
+        "non-ASCII tags such as Cyrillic match",
+        "`%` / `_` are literal characters",
     ):
         assert phrase in d, phrase
 
@@ -160,7 +161,7 @@ async def test_positions_list_units_as_stored_and_tag_limits(store_rt):
             opened_ts=1,
             **greeks,
         )
-        await go("positions_add", instrument="ETH/USDT:USDT", kind="perp", side="long", size=1.0, tags=["axb", "хедж"], opened_ts=2)
+        await go("positions_add", instrument="ETH/USDT:USDT", kind="perp", side="long", size=1.0, tags=["axb", "хедж", "a%b"], opened_ts=2)
         env = await go("positions_list")
         rows = env["data"]["positions"]
         assert [p["opened_ts"] for p in rows] == [2, 1]  # newest first, Unix seconds as entered
@@ -172,6 +173,9 @@ async def test_positions_list_units_as_stored_and_tag_limits(store_rt):
             return [p["instrument"] for p in (await go("positions_list", tag=tag))["data"]["positions"]]
 
         assert await ids("core") == ["BTC-27NOV26-90000-C"]  # ASCII case-insensitive
-        # Known limits stated in the description (proposed fix: docs/changes/2026-11-19-tool-desc-units.md).
-        assert await ids("хедж") == []  # stored as "х..." by json.dumps, so the LIKE pattern never matches
-        assert await ids("a_b") == ["ETH/USDT:USDT"]  # `_` is a LIKE wildcard
+        assert await ids("co") == []  # one whole tag, not a substring
+        # Item 396a: stored \u-escaped by json.dumps, the Cyrillic tag still matches; `%` / `_` are not wildcards.
+        assert await ids("хедж") == ["ETH/USDT:USDT"]
+        assert await ids("a_b") == []
+        assert await ids("a%") == []
+        assert await ids("a%b") == ["ETH/USDT:USDT"]

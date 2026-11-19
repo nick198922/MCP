@@ -1,0 +1,3 @@
+- Демо-сетапи, п. 6: повторна звірка S38 на 46 закритих угодах v5 — ✓ всередині i.i.d.-смуги паспорта (+0.083R [−0.374; +0.550]), переваги не показує; нового питання власнику немає. Звіт `docs/verification/2026-11-19-s38-demo-vs-passport.md`, рев'ю критика B.
+- S39 (17 угод) і S40 (3) — описово; рядок S38 у `docs/knowledge/setups.md`.
+- `scripts/verify_s38_demo_vs_passport.py`: `--setup`, `--seen-cutoff`, рядок контрасту групи $1–5M; `analytics/s12_demo_audit.contrast_ci` + тести.

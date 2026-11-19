@@ -235,6 +235,80 @@ def test_smoke_prints_counts_but_no_outcome_metric(tmp_path, migrated_db, offlin
     assert not list(tmp_path.glob("*.txt"))  # the smoke writes no report
 
 
+SEEN = T0 + 6 * DAY  # tagged trades i 0..4 closed before it (i + 1 days after T0 + 4h10m), i 5..11 after; untagged all before
+
+
+def test_seen_cutoff_splits_each_group_into_seen_and_new(tmp_path, migrated_db, offline):
+    db = _store(migrated_db)
+    assert mod.run(str(db), CUTOFF, tmp_path, "bybit", "t", now_ms=NOW, seen_ms=SEEN) == 0
+    lines = (tmp_path / "t.txt").read_text(encoding="utf-8").splitlines()
+    new, _ = _line(lines, "- v5 разом (тег + без тегу): нові (закриті ≥ 2026-11-01 08:00)")
+    old, _ = _line(lines, "- v5 разом (тег + без тегу): бачені (закриті < 2026-11-01 08:00)")
+    assert "n  7," in new and f"середнє {statistics.fmean(TAGGED_R[5:]):+.3f}" in new
+    assert "n  8," in old and f"середнє {statistics.fmean(TAGGED_R[:5] + UNTAGGED_R):+.3f}" in old
+    # the main rows are unchanged by the split
+    assert "n 15," in _line(lines, "- v5 разом (тег + без тегу) ")[0]
+    mid = statistics.fmean([r for r, b in zip(TAGGED_R, NAMES, strict=True) if b in MID])
+    rest = statistics.fmean([r for r, b in zip(TAGGED_R, NAMES, strict=True) if b not in MID] + UNTAGGED_R)
+    contrast = _line(lines, "- контраст $1–5M − без $1–5M, CI кластерами за днем сигналу:")[0].split(": ")[1]
+    assert float(contrast.split(" [")[0]) == pytest.approx(mid - rest, abs=1.1e-3)
+
+
+def test_smoke_counts_the_new_trades_without_outcome(tmp_path, migrated_db, offline, capsys):
+    assert mod.smoke(str(_store(migrated_db)), CUTOFF, tmp_path, "bybit", now_ms=NOW, seen_ms=SEEN) == 0
+    out = capsys.readouterr().out
+    assert "closed >= seen cutoff 2026-11-01 08:00 UTC: 7 (versions [(('v5', 'column'), 7)]); signal days 7" in out
+    assert "середнє" not in out and f"{statistics.fmean(TAGGED_R[5:]):+.3f}" not in out
+
+
+@pytest.fixture
+def s39():
+    mod.configure("S39")
+    yield
+    mod.configure("S38")
+
+
+def test_s39_runs_against_its_own_passport_without_a_bar_cap(tmp_path, migrated_db, offline, s39):
+    db = _store(migrated_db)
+    con = sqlite3.connect(db)
+    con.execute("UPDATE demo_trade SET setup = 'S39'")
+    con.commit()
+    con.close()
+    lines = _run(tmp_path, db)
+    assert lines[0].startswith("# S39: демо проти паспорта")
+    _, comp = _line(lines, "- v5 (тег)")
+    assert "паспорт S39 OOS +0.002 [-0.236; +0.245]" in comp and "[-0.327; +0.346]" in comp and "[-0.837; +1.010]" in comp
+    assert any(x.endswith("ліміту входів на свічку для S39 немає") for x in lines)
+    assert not any("ліміт демо 2 входи" in x for x in lines)
+    assert any("паспорт OOS −0.162 (n 102, рядок 57)" in x for x in lines)
+
+
+def test_main_selects_the_setup(tmp_path, monkeypatch):
+    seen: dict = {}
+    monkeypatch.setattr(mod, "run", lambda *a, **k: seen.update(setup=mod.SETUP, seen=k.get("seen_ms")) or 0)
+    try:
+        assert (
+            mod.main(
+                [
+                    "--stage",
+                    "run",
+                    "--cutoff",
+                    "2026-11-19T00:00",
+                    "--setup",
+                    "S40",
+                    "--seen-cutoff",
+                    "2026-11-12T10:00",
+                    "--cache-dir",
+                    str(tmp_path),
+                ]
+            )
+            == 0
+        )
+    finally:
+        mod.configure("S38")
+    assert seen == {"setup": "S40", "seen": _ms(2026, 11, 12, 10)}
+
+
 def test_run_needs_the_registered_cutoff(tmp_path):
     with pytest.raises(SystemExit) as e:
         mod.main(["--stage", "run", "--db", str(tmp_path / "x.sqlite"), "--cache-dir", str(tmp_path)])

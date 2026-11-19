@@ -13,6 +13,9 @@ does not exclude a handicap up to about 0.35R for shorts on $1-5M coins, so that
 "без $1–5M" is every other S38 trade: >= $5M + < $1M + unknown turnover), fees and exit
 slippage against the backtest convention (``s12_demo_audit.exec_costs``), orphaned trades (filled, no close found) with
 the scenario «each closed at the initial stop, -1R», missed entries and the shadow plans (``analytics/demo_shadow``).
+``--setup S39`` / ``S40`` runs the same comparison against their passports (lines 16 / 17 of the same report; descriptive
+while a group has fewer than 30 trades); ``--seen-cutoff`` (a repeat comparison) adds, per group, the rows of the trades
+an earlier comparison saw (closed before it) and of the new ones.
 CI: bootstrap clustered by the UTC day of the signal bar (``liquidation_flush.cluster_bootstrap_ci`` through the S12
 script's ``stat``). R is per trade risk, not on capital. The passport bands are defined for n = 30: a group with fewer
 trades gets no band verdict (✓ / ≈ / ✗), only the neutral line "n < 30: смуга паспорта не застосовна".
@@ -68,6 +71,58 @@ TURNOVER_REF = {
     "1to5m": "паспорт OOS −0.162 (n 110, рядок 38); контраст $1–5M − решта OOS −0.146 [−0.395; +0.110] (рядок 9); гандикап шортів до ≈ 0.35R не виключено (рядки 9, 99)",
     "ge5m": "паспорт OOS −0.031 (ge5m), top30 +0.057 (рядок 38)",
 }
+# S39 / S40 (descriptive runs of the same script, ``--setup``): passport table lines 16 / 17 of PASSPORT_DOC, turnover rows
+# lines 57 / 76. S39 has no per-bar cap on the demo (Q-20261115-1), S40 neither.
+SETUPS: dict[str, dict[str, Any]] = {
+    "S38": {"passport": PASSPORT, "passport_of": PASSPORT_OF, "turnover_ref": TURNOVER_REF, "bar_cap": BAR_CAP},
+    "S39": {
+        "passport": audit.Passport(
+            "провалений свип S3 униз, шорт, 4h; вхід за закриттям сигнальної свічки, без ліміту входів на свічку",
+            0.002,
+            (-0.236, 0.245),
+            (-0.327, -0.007, 0.346),
+            (-0.837, -0.030, 1.010),
+            None,
+            f"{PASSPORT_DOC}:16",
+        ),
+        "passport_of": {"v5": "S39"},
+        "turnover_ref": {
+            "1to5m": "паспорт OOS −0.162 (n 102, рядок 57); контраст $1–5M − решта OOS −0.186 [−0.457; +0.102]; гандикап шортів S38 + S39 до ≈ 0.35R не виключено (рядки 9, 99)",
+            "ge5m": "паспорт OOS +0.018 (ge5m), top30 +0.051 (рядок 57)",
+        },
+        "bar_cap": None,
+    },
+    "S40": {
+        "passport": audit.Passport(
+            "провалений свип S3 угору, лонг, 4h; вхід за закриттям сигнальної свічки, без ліміту входів на свічку",
+            0.012,
+            (-0.297, 0.322),
+            (-0.338, 0.012, 0.388),
+            (-0.898, -0.138, 1.492),
+            None,
+            f"{PASSPORT_DOC}:17",
+        ),
+        "passport_of": {"v6": "S40"},
+        "turnover_ref": {
+            "1to5m": "паспорт OOS +0.335 (n 50, рядок 76); контраст OOS +0.342 [−0.152; +0.926]; розвідувально, не висновок",
+            "ge5m": "паспорт 2021+ −0.069 (ge5m), top30 +0.053 (рядок 76)",
+        },
+        "bar_cap": None,
+    },
+}
+
+
+def configure(setup: str) -> None:
+    """Point the module at one setup's passport (S38 is the default; S39 / S40 only descriptive while n < 30)."""
+    global SETUP, PASSPORT, PASSPORT_OF, TURNOVER_REF, BAR_CAP
+    c = SETUPS[setup]
+    SETUP, PASSPORT, PASSPORT_OF, TURNOVER_REF, BAR_CAP = setup, c["passport"], c["passport_of"], c["turnover_ref"], c["bar_cap"]
+
+
+def cap_text(pb: Counter[int]) -> str:
+    if BAR_CAP is None:
+        return f"ліміту входів на свічку для {SETUP} немає"
+    return f"свічок понад ліміт {BAR_CAP}: {sum(v for k, v in pb.items() if k > BAR_CAP)}"
 
 
 def open_sources(venue: str, cache: Path) -> tuple[Any, Builder, dvb.Fetch, dvb.DayFetch]:
@@ -111,12 +166,17 @@ def per_bar(rows: list[dict[str, Any]]) -> Counter[int]:
     return Counter(Counter(int(r["signal_ts"]) for r in rows).values())
 
 
-def smoke(db: str, cutoff_ms: int, cache: Path, venue: str, now_ms: int | None = None) -> int:
+def is_new(r: dict[str, Any], seen_ms: int | None) -> bool:
+    """Closed at or after the cutoff of an earlier comparison (``--seen-cutoff``): trades that comparison did not see."""
+    return seen_ms is not None and int(r.get("closed_ts") or 0) >= seen_ms
+
+
+def smoke(db: str, cutoff_ms: int, cache: Path, venue: str, now_ms: int | None = None, seen_ms: int | None = None) -> int:
     """Counts, version tags, units and data availability only: no mean, sum, share or verdict of any R."""
     now = int(time.time() * 1000) if now_ms is None else now_ms
     g = v12.load_s12(db, cutoff_ms, SETUP)
     closed = classify(g["closed"], cutoff_ms)
-    print(f"S38, cutoff {datetime.fromtimestamp(cutoff_ms / 1000, UTC):%Y-%m-%d %H:%M} UTC")
+    print(f"{SETUP}, cutoff {datetime.fromtimestamp(cutoff_ms / 1000, UTC):%Y-%m-%d %H:%M} UTC")
     print(
         f"closed < cutoff: {len(closed)}; missed {len(g['missed'])}; open {len(g['open'])}; "
         f"orphaned {len(g['orphaned'])}; other {len(g['other'])}"
@@ -132,10 +192,13 @@ def smoke(db: str, cutoff_ms: int, cache: Path, venue: str, now_ms: int | None =
     print(f"sides {dict(Counter(r['side'] for r in closed))}; entry kinds {dict(Counter(str(r.get('entry_kind')) for r in closed))}")
     filled = closed + g["open"] + g["orphaned"]
     pb = per_bar(filled)
-    print(
-        f"filled entries per 4h signal bar (closed + open + orphaned): {sorted(pb.items())}; bars above the cap of {BAR_CAP}: "
-        f"{sum(v for k, v in pb.items() if k > BAR_CAP)} (the cap is not modelled in the per-trade replay)"
-    )
+    if BAR_CAP is None:
+        print(f"filled entries per 4h signal bar (closed + open + orphaned): {sorted(pb.items())}; no per-bar cap for {SETUP}")
+    else:
+        print(
+            f"filled entries per 4h signal bar (closed + open + orphaned): {sorted(pb.items())}; bars above the cap of {BAR_CAP}: "
+            f"{sum(v for k, v in pb.items() if k > BAR_CAP)} (the cap is not modelled in the per-trade replay)"
+        )
     miss = [
         k
         for k in ("qty", "risk_usd", "fees_usd", "fill", "exit", "exit_reason", "r_multiple", "pnl_usd", "opened_ts")
@@ -154,6 +217,14 @@ def smoke(db: str, cutoff_ms: int, cache: Path, venue: str, now_ms: int | None =
     avail = Counter("candles and 1h path" if x.verdict not in ("no_data", "unsupported", "pending") else x.verdict for x in reps)
     print(f"replay data (no verdicts, no R): {dict(avail)}; {time.monotonic() - t0:.1f} s")
     print(f"entry-day turnover (Bybit daily candle): { {k: sum(x.turnover_group == k for x in reps) for k in TURNOVER_GROUPS} }")
+    if seen_ms is not None:
+        new = [(r, x) for r, x in zip(closed, reps, strict=True) if is_new(r, seen_ms)]
+        nd = sorted({cmn.ymd_ms(int(r["signal_ts"])) for r, _ in new})
+        print(
+            f"closed >= seen cutoff {datetime.fromtimestamp(seen_ms / 1000, UTC):%Y-%m-%d %H:%M} UTC: {len(new)} "
+            f"(versions {sorted(Counter((r['ver'], r['ver_src']) for r, _ in new).items())}); signal days {len(nd)}"
+            f"{f' ({nd[0]} .. {nd[-1]})' if nd else ''}; turnover { {k: sum(x.turnover_group == k for _, x in new) for k in TURNOVER_GROUPS} }"
+        )
     print(f"missing: {[f'{m.field}: {m.reason}' for m in b.missing[:5]]}; peak RSS {cmn.rss_mb():.0f} MB")
     return 0
 
@@ -164,7 +235,7 @@ def band_tail(s: dict[str, Any]) -> str:
 
 
 def passport_lines(s: dict[str, Any]) -> list[str]:
-    """The comparison of one group's stat with the S38 passport (band of 30, rescaled band, demo minus OOS).
+    """The comparison of one group's stat with the setup's passport (band of 30, rescaled band, demo minus OOS).
 
     The band verdict (✓ / ≈ / ✗) is printed only for n >= BAND_N; a smaller group gets a neutral line instead."""
     pp = PASSPORT
@@ -172,7 +243,7 @@ def passport_lines(s: dict[str, Any]) -> list[str]:
     ci = s.get("ci")
     diff = f"{s['mean'] - pp.oos_mean:+.3f} [{ci[0] - pp.oos_mean:+.3f}; {ci[1] - pp.oos_mean:+.3f}]" if ci else "—"
     out = [
-        f"    паспорт S38 OOS {pp.oos_mean:+.3f} [{pp.oos_ci[0]:+.3f}; {pp.oos_ci[1]:+.3f}]; смуга n=30 i.i.d. [{pp.band_iid[0]:+.3f}; "
+        f"    паспорт {SETUP} OOS {pp.oos_mean:+.3f} [{pp.oos_ci[0]:+.3f}; {pp.oos_ci[1]:+.3f}]; смуга n=30 i.i.d. [{pp.band_iid[0]:+.3f}; "
         f"{pp.band_iid[2]:+.3f}], ковзна [{pp.band_sliding[0]:+.3f}; {pp.band_sliding[2]:+.3f}]{band_tail(s)}; "
         f"на n={s['n']} (описово) [{lo:+.3f}; {hi:+.3f}]; демо − OOS {diff}"
     ]
@@ -191,7 +262,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--venue", default="bybit")
     ap.add_argument("--cache-dir", default=DEFAULT_CACHE)
     ap.add_argument("--out-tag", default="s38", help="output names <tag>.txt / <tag>_rows.json in the cache dir")
+    ap.add_argument("--setup", choices=sorted(SETUPS), default="S38", help="S38 (default); S39 / S40 against their passports")
+    ap.add_argument("--seen-cutoff", help="UTC YYYY-MM-DDTHH:MM, the cutoff of an earlier comparison: trades closed after it get own rows")
     a = ap.parse_args(argv)
+    configure(a.setup)
+    seen_ms = int(datetime.strptime(a.seen_cutoff, "%Y-%m-%dT%H:%M").replace(tzinfo=UTC).timestamp() * 1000) if a.seen_cutoff else None
     if a.cutoff is None:
         if a.stage == "run":
             ap.error("--stage run needs --cutoff (the minute written in the registration)")
@@ -201,11 +276,11 @@ def main(argv: list[str] | None = None) -> int:
     cache = Path(a.cache_dir).expanduser()
     cache.mkdir(parents=True, exist_ok=True)
     if a.stage == "smoke":
-        return smoke(a.db, cutoff_ms, cache, a.venue)
-    return run(a.db, cutoff_ms, cache, a.venue, a.out_tag)
+        return smoke(a.db, cutoff_ms, cache, a.venue, seen_ms=seen_ms)
+    return run(a.db, cutoff_ms, cache, a.venue, a.out_tag, seen_ms=seen_ms)
 
 
-def run(db: str, cutoff_ms: int, cache: Path, venue: str, tag: str = "s38", now_ms: int | None = None) -> int:
+def run(db: str, cutoff_ms: int, cache: Path, venue: str, tag: str = "s38", now_ms: int | None = None, seen_ms: int | None = None) -> int:
     """The registered comparison: prints the report and writes ``<tag>.txt`` and ``<tag>_rows.json`` to ``cache``."""
     now = int(time.time() * 1000) if now_ms is None else now_ms
     g = v12.load_s12(db, cutoff_ms, SETUP)
@@ -223,7 +298,7 @@ def run(db: str, cutoff_ms: int, cache: Path, venue: str, tag: str = "s38", now_
     L: list[str] = []
     p = L.append
     p(
-        f"# S38: демо проти паспорта; cutoff {datetime.fromtimestamp(cutoff_ms / 1000, UTC):%Y-%m-%d %H:%M} UTC; "
+        f"# {SETUP}: демо проти паспорта; cutoff {datetime.fromtimestamp(cutoff_ms / 1000, UTC):%Y-%m-%d %H:%M} UTC; "
         f"повтор {datetime.fromtimestamp(now / 1000, UTC):%Y-%m-%d %H:%M} UTC, venue {venue}"
     )
     p(
@@ -233,7 +308,7 @@ def run(db: str, cutoff_ms: int, cache: Path, venue: str, tag: str = "s38", now_
     p(f"сигнальні дні: {len({cmn.ymd_ms(int(r['signal_ts'])) for r in rows})}; монет {len({r['symbol'] for r in rows})}")
     p(f"паспорт: {PASSPORT.source} ({PASSPORT.entry})")
     p("")
-    p("## Пункт 6: R демо (од. демо, на ризик угоди, не на капітал) проти паспорта S38")
+    p(f"## Пункт 6: R демо (од. демо, на ризик угоди, не на капітал) проти паспорта {SETUP}")
     groups: dict[str, Any] = {}
     for ver, src in sorted({(r["ver"], r["ver_src"]) for r in rows}):
         groups[ver_name(ver, src)] = lambda r, ver=ver, src=src: r["ver"] == ver and r["ver_src"] == src
@@ -241,15 +316,22 @@ def run(db: str, cutoff_ms: int, cache: Path, venue: str, tag: str = "s38", now_
         if len({r["ver_src"] for r in rows if r["ver"] == ver}) > 1:
             groups[f"{ver} разом (тег + без тегу)"] = lambda r, ver=ver: r["ver"] == ver
     groups[f"усі {len(rows)}"] = lambda r: True
-    for name, f in groups.items():
+    shown: dict[str, Any] = dict(groups)
+    if seen_ms is not None:
+        # a repeat comparison: the trades the earlier one saw (closed before --seen-cutoff) and the new ones, descriptive
+        seen = f"{datetime.fromtimestamp(seen_ms / 1000, UTC):%Y-%m-%d %H:%M}"
+        for name, f in groups.items():
+            shown[f"{name}: нові (закриті ≥ {seen})"] = lambda r, f=f: f(r) and is_new(r, seen_ms)
+            shown[f"{name}: бачені (закриті < {seen})"] = lambda r, f=f: f(r) and not is_new(r, seen_ms)
+    for name, f in shown.items():
         sub = [r for r in rows if f(r)]
         s = stat(sub, "r_demo")
         p(f"- {name:<36} {fmt(s)}")
         pk = {r["passport"] for r in sub}
-        if pk == {"S38"} and s.get("n"):
+        if pk == {SETUP} and s.get("n"):
             L.extend(passport_lines(s))
         elif s.get("n"):
-            p(f"    паспорта для версій {sorted(str(x) for x in pk - {'S38'})} тут немає: з паспортом S38 не звіряю")
+            p(f"    паспорта для версій {sorted(str(x) for x in pk - {SETUP})} тут немає: з паспортом {SETUP} не звіряю")
     # orphaned (filled, no close found on the venue): not in the sample; scenario «each closed at the initial stop, −1R»,
     # as in docs/changes/2026-11-12-checkpoint-orphan-stop-scenario.md, descriptive only
     for name, f in groups.items():
@@ -259,12 +341,12 @@ def run(db: str, cutoff_ms: int, cache: Path, venue: str, tag: str = "s38", now_
             continue
         s2 = stat([r for r in rows if f(r)] + oo, "r_demo")
         tail = ""
-        if {r["passport"] for r in oo} == {"S38"} and s2.get("n"):
+        if {r["passport"] for r in oo} == {SETUP} and s2.get("n"):
             tail = band_tail(s2) or f"; n < {BAND_N}: смуга паспорта не застосовна"
         p(f"- orphaned {name}: {len(oo)}; сценарій «закрито за стопом, −1R» (описово): {fmt(s2)}{tail}")
     p("")
-    s38 = [r for r in rows if r["passport"] == "S38"]
-    p("## Оборот монети в день входу (денна свічка Bybit, UTC), угоди з паспортом S38")
+    s38 = [r for r in rows if r["passport"] == SETUP]  # the name stays from the S38-only version: trades with this passport
+    p(f"## Оборот монети в день входу (денна свічка Bybit, UTC), угоди з паспортом {SETUP}")
     for k, label in (("ge5m", "≥ $5M"), ("1to5m", "$1–5M"), ("lt1m", "< $1M"), ("unknown", "невідомий")):
         s = stat([r for r in s38 if r.get("turnover_group") == k], "r_demo")
         p(f"- оборот {label:<10} {fmt(s)}")
@@ -281,8 +363,18 @@ def run(db: str, cutoff_ms: int, cache: Path, venue: str, tag: str = "s38", now_
     )
     if m15.get("n") and m5.get("n"):
         p(f"- різниця середніх $1–5M − ≥ $5M (точково, описово): {m15['mean'] - m5['mean']:+.3f}")
+    cr = [r for r in s38 if r.get("r_demo") is not None]
+    d, ci = audit.contrast_ci(
+        [float(r["r_demo"]) for r in cr],
+        [r.get("turnover_group") == "1to5m" for r in cr],
+        [cmn.ymd_ms(int(r["signal_ts"])) for r in cr],
+        n_boot=v12.N_BOOT,
+        seed=v12.SEED,
+    )
+    cis = f"[{ci[0]:+.3f}; {ci[1]:+.3f}]" if ci else "[—]"
+    p(f"- контраст $1–5M − без $1–5M, CI кластерами за днем сигналу: {d:+.3f} {cis}")
     p("")
-    p("## Стійкість і розбивки (описово; R демо, угоди з паспортом S38)")
+    p(f"## Стійкість і розбивки (описово; R демо, угоди з паспортом {SETUP})")
     top = sorted(s38, key=lambda r: r["r_demo"] or 0.0, reverse=True)
     for k in (3, 5):
         p(f"- без топ-{k}: {fmt(stat(top[k:], 'r_demo'))}")
@@ -290,12 +382,9 @@ def run(db: str, cutoff_ms: int, cache: Path, venue: str, tag: str = "s38", now_
         p(f"- вхід {k:<6} {fmt(stat([r for r in s38 if r.get('entry_kind') == k], 'r_demo'))}")
     p(f"- угод на монету: {sorted(Counter(Counter(r['symbol'] for r in s38).values()).items())} (к-сть угод: монет)")
     pb = per_bar(rows + opened + orph)
-    p(
-        f"- входів на 4h-свічку сигналу (закриті + відкриті + orphaned): {sorted(pb.items())}; свічок понад ліміт {BAR_CAP}: "
-        f"{sum(v for k, v in pb.items() if k > BAR_CAP)}"
-    )
+    p(f"- входів на 4h-свічку сигналу (закриті + відкриті + orphaned): {sorted(pb.items())}; {cap_text(pb)}")
     p("")
-    p("## Пункт 9: демо проти бектесту по угодах (угоди з паспортом S38)")
+    p(f"## Пункт 9: демо проти бектесту по угодах (угоди з паспортом {SETUP})")
     p(f"вердикти повтору: {sorted(Counter((r['ver'], r['verdict']) for r in rows).items())}")
     p(f"причини розбіжностей: {dict(Counter(x for r in s38 for x in r.get('reasons') or []))}")
     p(f"вхід демо проти закриття свічки (entry_edge_r, + = демо краще) {fmt(stat(s38, 'entry_edge_r'))}")
@@ -334,7 +423,9 @@ def run(db: str, cutoff_ms: int, cache: Path, venue: str, tag: str = "s38", now_
     trades = [t for t in trades if int(t.get("signal_ts") or 0) < cutoff_ms]
     aud = [x for x in aud if int(x.get("ts") or 0) < cutoff_ms]
     srows = [x for x in demo_shadow.match_rows(trades, aud, plans, now_ms=now) if x.setup == SETUP and x.decided_ts < cutoff_ms]
-    p(f"## Невиконані сигнали S38 проти тіньових планів (R без беззбитку, од. демо; t-CI з demo_shadow){' — ' + ne_err if ne_err else ''}")
+    p(
+        f"## Невиконані сигнали {SETUP} проти тіньових планів (R без беззбитку, од. демо; t-CI з demo_shadow){' — ' + ne_err if ne_err else ''}"
+    )
     if srows:
         sm = demo_shadow.summary(srows, now_ms=now)
         for gname, s in sm["groups"].items():
@@ -359,10 +450,13 @@ def run(db: str, cutoff_ms: int, cache: Path, venue: str, tag: str = "s38", now_
     p("")
     p(f"відкриті (не входять): {[(x['symbol'].split('/')[0], cmn.ymd_ms(int(x['signal_ts'])), x['ver']) for x in opened]}")
     p(f"orphaned (не входять, лише сценарій −1R): {[(x['symbol'].split('/')[0], cmn.ymd_ms(int(x['signal_ts'])), x['ver']) for x in orph]}")
-    p(
-        f"не змодельовано: ліміт демо {BAR_CAP} входи S38 на 4h-свічку (паспорт його моделює, {PASSPORT_DOC} рядки 5 і 11; повтор "
-        "по угодах бере кожну угоду окремо і не бачить, які сигнали відкинув ліміт чи денні слоти)"
-    )
+    if BAR_CAP is not None:
+        p(
+            f"не змодельовано: ліміт демо {BAR_CAP} входи {SETUP} на 4h-свічку (паспорт його моделює, {PASSPORT_DOC} рядки 5 і 11; повтор "
+            "по угодах бере кожну угоду окремо і не бачить, які сигнали відкинув ліміт чи денні слоти)"
+        )
+    else:
+        p(f"не змодельовано: денні слоти демо (повтор по угодах бере кожну угоду {SETUP} окремо)")
     p("паспорт: свічки й оборот Binance, топ-250 і ≥ $1M, OOS з 2025-03; демо: Bybit, монети від $1M, оборот дня входу з Bybit")
     p(f"missing: {[f'{m.field}: {m.reason}' for m in b.missing[:10]]}; warnings {b.warnings[:5]}")
     p(f"seed {v12.SEED}; бутстреп {v12.N_BOOT} кластерами за днем сигналу; peak RSS {cmn.rss_mb():.0f} MB")

@@ -155,3 +155,16 @@ def test_v7_replay_ignores_bars_after_the_exit(monkeypatch: pytest.MonkeyPatch) 
         _row("long", 100.0, 95.0, 110.0), _bars4(), _path([(101, 102), (99.9, 101), (104, 106), (104, 111)]), now_ms=now, hold_ms=7 * 24 * H
     )
     assert c["verdict"] == "no_data"
+
+
+def test_contrast_ci_point_and_cluster_resampling() -> None:
+    # every cluster holds one A trade at 1.0 and one B trade at 0.0: any resample gives exactly +1.0
+    d, ci = m.contrast_ci([1.0, 0.0, 1.0, 0.0, 1.0, 0.0], [True, False] * 3, ["d1", "d1", "d2", "d2", "d3", "d3"], n_boot=200, seed=1)
+    assert d == pytest.approx(1.0) and ci == pytest.approx((1.0, 1.0))
+    # point estimate is mean(A) - mean(B); the CI brackets it and is reproducible with the seed
+    v, g, c = [2.0, -1.0, -1.0, 0.5, -1.0, 2.0], [True, True, False, False, True, False], ["a", "b", "c", "a", "b", "c"]
+    d2, ci2 = m.contrast_ci(v, g, c, n_boot=500, seed=7)
+    assert d2 == pytest.approx(0.0 - 0.5)
+    assert ci2 is not None and ci2[0] <= d2 <= ci2[1] and ci2 == m.contrast_ci(v, g, c, n_boot=500, seed=7)[1]
+    assert m.contrast_ci([1.0, 2.0], [True, True], ["a", "b"])[1] is None  # group B empty
+    assert m.contrast_ci([1.0, 2.0], [True, False], ["a", "a"]) == (pytest.approx(-1.0), None)  # one cluster

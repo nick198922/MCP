@@ -255,7 +255,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "close(t0) (0.01 = 1 %); 'volatility' is a decimal, the per-bar stdev of log-returns times "
             "sqrt(bars in the window), NOT annualised; 'direction' values are 0/1 and hit_rate is a "
             "fraction 0-1. mean/median/p25/p75/min/max are in the measure's own unit. "
-            "Reports n_sample and small_sample_flag=true when n<20. "
+            "Reports n_sample and small_sample_flag=true when n<20; when no event has a complete bar window "
+            "(n_sample=0) the answer is ok=false with the per-event list kept. "
             "Hit rates and medians are DESCRIPTIVE statistics on a finite sample — they are not "
             "forecasts; always eyeball n_sample and the regime window before trading on them."
         ),
@@ -333,7 +334,16 @@ def register(server: MCPServer, rt: Runtime) -> None:
 
             res = _event_study(bars, ev_ts_ms, before_minutes=before_minutes, after_minutes=after_minutes, measure=measure)
             stats = res["stats"]
-            if stats["small_sample_flag"]:
+            # No event with a complete bar window answered ok=true with every statistic null before item 396.
+            evaluated = res["n_events_evaluated"] > 0
+            if not evaluated:
+                b.miss(
+                    "ohlcv_hist",
+                    "store",
+                    "data_unavailable",
+                    f"no event of {len(ev_ts_ms)} has complete stored bars around it (t0 and a bar after it in the window)",
+                )
+            elif stats["small_sample_flag"]:
                 b.warn(f"small sample: n_sample={stats['n_sample']}; stats are noisy")
 
             # Round where sensible, keep hit_rate / returns in decimal form.
@@ -358,7 +368,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
                         }
                         for pe in res["per_event"]
                     ],
-                }
+                },
+                ok=evaluated,
             )
         except STORE_ERRORS as e:
             return store_failed(b, e)

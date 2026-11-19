@@ -8,6 +8,7 @@ from mcp.server.mcpserver import MCPServer
 from pydantic import Field
 
 from ..analytics import probability
+from ..analytics.event_move import implied_event_move
 from ..analytics.instruments import expiry_token
 from ..analytics.options import (
     OptionRow,
@@ -29,7 +30,7 @@ from ..analytics.options import (
 from ..analytics.vrp import align_daily, vrp_summary
 from ..core.envelope import Builder
 from ..runtime import Runtime
-from ._util import MAX_BAR_TS_MS, READ_ONLY, bar_rows, find_expiry, parsed_rows, r, store_num
+from ._util import MAX_BAR_TS_MS, READ_ONLY, bar_rows, find_expiry, parsed_rows, r, reject_nonfinite_result, store_num
 
 CUR = Annotated[Literal["BTC", "ETH"], Field(description="Deribit inverse-option currency")]
 EXPIRY = Annotated[str, Field(description="Expiry as 26MAR27 or 2027-03-26 (08:00 UTC). Use deribit_vol_surface to list expiries.")]
@@ -411,6 +412,120 @@ def register(server: MCPServer, rt: Runtime) -> None:
             return b.build(None, ok=False)
         spot = next((x.index for x in rows if x.index), None)
         return b.build({"currency": currency, "spot_index": spot, "expiries": out})
+
+    @server.tool(
+        annotations=READ_ONLY,
+        description=(
+            "Implied move of a dated event (FOMC, CPI, ...) from the two adjacent Deribit BTC/ETH expiries around it. "
+            "ATM IV (decimal, 0.45 = 45 %) of each expiry is read at its forward from the mark-IV smile; T = days / 365. "
+            "Forward variance between the expiries is (iv2^2 T2 - iv1^2 T1) / (T2 - T1) and `forward_iv` is its square root "
+            "(annualised decimal). `event_move_pct` = sqrt(iv2^2 T2 - iv1^2 T1) x 100 is a 1-sigma move in percent and "
+            "`event_move_usd` ~ that fraction x the later expiry's forward (USD). It is the 1-sigma move of the WHOLE window "
+            "(`window_days`): the event plus the window's ordinary diffusion, which is not removed, so it is an upper bound on "
+            "the event's own move even for a one-day window (one day of ordinary diffusion is itself a few percent). An event "
+            "premium is visible only when `forward_iv` exceeds the vol without the event (e.g. a neighbouring window's forward "
+            "vol); `forward_iv` below both ATM IVs shows no sign of an event premium in the marks. "
+            "`vs_expected_move` puts it next to deribit_expected_move for the later expiry "
+            "(ATM straddle in percent of the forward, sigma move to expiry) and gives the event's share of that expiry's "
+            "variance. Risk-neutral, not a forecast. A non-positive forward variance (calendar arbitrage in the marks) gives no "
+            "move and a warning. ok=false when the event is in the past or not between two listed expiries."
+        ),
+    )
+    async def deribit_event_move(
+        event_ts: Annotated[
+            str,
+            Field(
+                description="Event time, ISO-8601 (e.g. '2026-12-16T19:00:00Z', as macro_calendar's ts_utc); "
+                "a time without an offset is read as UTC. Must lie between two listed expiries (08:00 UTC)."
+            ),
+        ],
+        currency: CUR = "BTC",
+    ) -> dict[str, Any]:
+        b = Builder()
+        try:
+            ev = datetime.fromisoformat(event_ts.strip())
+            ev = ev.replace(tzinfo=UTC) if ev.tzinfo is None else ev.astimezone(UTC)
+        except (ValueError, OverflowError):
+            b.miss("event_ts", "tradedesk", "invalid_input", "event_ts is not an ISO-8601 time such as 2026-12-16T19:00:00Z")
+            return b.build(None, ok=False)
+        now = rt.now()
+        if ev <= now:
+            b.miss("event_ts", "tradedesk", "invalid_input", f"event {ev.isoformat()} is not in the future")
+            return b.build(None, ok=False)
+        rows = await _chain(rt, b, currency)
+        if rows is None:
+            return b.build(None, ok=False)
+        by = group_by_expiry(rows)
+        ivs: dict[datetime, float] = {}
+        no_smile: list[datetime] = []
+        for exp, rs in by.items():
+            sm = build_smile(rs) if exp > now else None
+            a = atm_iv(sm) if sm is not None else None
+            if a is not None and math.isfinite(a) and a > 0:
+                ivs[exp] = a
+            elif exp > now:
+                no_smile.append(exp)
+        res = implied_event_move(ivs.items(), ev, now)
+        if not res["ok"]:
+            b.miss("event_move", "tradedesk", "data_unavailable", res["reason"])
+            return b.build(None, ok=False)
+        e1, e2 = res["before"]["expiry"], res["after"]["expiry"]
+        skipped = [expiry_token(e) for e in no_smile if e1 < e < e2]
+        if skipped:
+            b.warn(f"expiries between the pair skipped (fewer than 3 priced strikes): {', '.join(skipped)}")
+        f1, f2 = by[e1][0].forward, by[e2][0].forward
+        move = res["event_move"]
+        st = atm_straddle(by[e2])
+        vs: dict[str, Any] = {
+            "expiry": expiry_token(e2),
+            "sigma_move_pct": r(res["after"]["iv"] * math.sqrt(res["after"]["T"]) * 100, 3),
+            "event_share_of_variance": r(res["event_share"], 4),
+        }
+        if st is not None:
+            vs["straddle_pct"] = r(st["straddle_pct_of_forward"] * 100, 3)
+            vs["straddle_usd"] = r(st["straddle_usd"], 2)
+        data = {
+            "currency": currency,
+            "event_utc": ev.isoformat(),
+            "expiry_before": {
+                "expiry": expiry_token(e1),
+                "days": r(res["before"]["T"] * 365, 3),
+                "forward": r(f1, 2),
+                "atm_iv": r(res["before"]["iv"], 4),
+            },
+            "expiry_after": {
+                "expiry": expiry_token(e2),
+                "days": r(res["after"]["T"] * 365, 3),
+                "forward": r(f2, 2),
+                "atm_iv": r(res["after"]["iv"], 4),
+            },
+            "window_days": r(res["window_days"], 3),
+            "forward_variance": r(res["forward_var"], 6),
+            "forward_iv": r(res["forward_iv"], 4),
+            "event_move_pct": r(move * 100, 3) if move is not None else None,
+            "event_move_usd": r(move * f2, 2) if move is not None else None,
+            "calendar_arbitrage": res["calendar_arbitrage"],
+            "vs_expected_move": vs,
+            "spot_index": next((x.index for x in rows if x.index), None),
+        }
+        if bad := reject_nonfinite_result(b, data):
+            return bad
+        if res["calendar_arbitrage"]:
+            b.miss("event_move", "tradedesk", "data_unavailable", "non-positive forward variance between the expiries")
+            b.warn(
+                f"calendar arbitrage in the marks: total variance to {expiry_token(e2)} is not above {expiry_token(e1)}'s, "
+                "so no event move is implied (no square root of a negative number is taken)"
+            )
+        b.warn(
+            f"The move is the 1-sigma move of the whole {res['window_days']:.2f}-day window (the event plus the window's "
+            "ordinary diffusion, which is not removed), so it is an upper bound on the event's own move, even for a one-day "
+            "window. An event premium is visible only when forward_iv exceeds the vol without the event (e.g. a "
+            "neighbouring window's forward vol); forward_iv below both ATM IVs shows no sign of an event premium in the marks."
+        )
+        b.warn(
+            "Risk-neutral (option marks), not a forecast; ATM IVs of short-dated expiries are noisy and the difference amplifies the noise."
+        )
+        return b.build(data)
 
     @server.tool(
         annotations=READ_ONLY,

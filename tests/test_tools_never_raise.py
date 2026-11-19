@@ -35,6 +35,7 @@ ARGS: dict[str, dict] = {
     "chart_markup": {"exchange": "binanceusdm", "symbol": "BTC/USDT:USDT"},
     "coin_snapshot": {"coin_id": "bitcoin"},
     "contract_risk": {"chain": "ethereum", "address": "0x" + "ab" * 20},
+    "deribit_event_move": {"event_ts": "2026-11-05T19:00:00Z"},  # between the 30OCT26 and 27NOV26 fake expiries
     "deribit_max_pain": {"expiry": "27NOV26"},
     "deribit_option_chain": {"expiry": "27NOV26"},
     "dex_pairs": {"addresses": ["0x" + "cd" * 20]},

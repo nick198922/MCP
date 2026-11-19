@@ -40,6 +40,7 @@ STRINGS = {
     "symbol": "BTC/USDT:USDT",
     "coin": "BTC",
     "expiry": "27NOV26",
+    "event_ts": "2026-11-05T19:00:00Z",
     "market_id": "516700",
     "token_id": "TOK_YES",
     "coin_id": "bitcoin",

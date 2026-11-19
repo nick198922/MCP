@@ -18,6 +18,11 @@ import aiosqlite
 
 from .schema import MIGRATIONS
 
+# Tag filter: one whole top-level element of the stored `tags` JSON equals the bound tag (ASCII case-insensitive, as
+# the LIKE filter it replaces). json_each decodes the \u escapes json.dumps writes, so non-ASCII tags match in old and
+# new rows, and `%` / `_` are plain characters. Text that is not valid JSON reads as no tags instead of failing the query.
+_TAG_MATCH = "EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(tags) THEN tags ELSE '[]' END) WHERE value = ? COLLATE NOCASE)"
+
 
 def _parse_journal_row(row: dict[str, Any]) -> dict[str, Any]:
     tags = row.get("tags")
@@ -965,9 +970,8 @@ class Store:
             where.append("symbol = ?")
             params.append(symbol)
         if tag:
-            # tags are stored as JSON array; use LIKE on the quoted value.
-            where.append("tags LIKE ?")
-            params.append(f'%"{tag}"%')
+            where.append(_TAG_MATCH)
+            params.append(tag)
         sql = "SELECT * FROM journal"
         if where:
             sql += " WHERE " + " AND ".join(where)
@@ -1265,11 +1269,11 @@ class Store:
                 where.append(f"{col} = ?")
                 params.append(v)
         if tag:
-            where.append("tags LIKE ?")  # JSON array: match the quoted value
-            params.append(f'%"{tag}"%')
+            where.append(_TAG_MATCH)
+            params.append(tag)
         if exclude_tag:
-            where.append("tags NOT LIKE ?")
-            params.append(f'%"{exclude_tag}"%')
+            where.append(f"NOT {_TAG_MATCH}")
+            params.append(exclude_tag)
         sql = "SELECT * FROM trade_plan" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY created_ts DESC, id DESC LIMIT ?"
         cur = await self.conn.execute(sql, [*params, limit])
         return [_parse_json_cols(dict(r), ("rules", "tags")) for r in await cur.fetchall()]
@@ -1933,8 +1937,8 @@ class Store:
             where.append("instrument = ?")
             params.append(instrument)
         if tag:
-            where.append("tags LIKE ?")
-            params.append(f'%"{tag}"%')
+            where.append(_TAG_MATCH)
+            params.append(tag)
         sql = "SELECT * FROM positions"
         if where:
             sql += " WHERE " + " AND ".join(where)

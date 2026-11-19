@@ -77,7 +77,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
         annotations=READ_ONLY,
         description=(
             "List journal trades. Filter by `status` (open / closed / cancelled), by `symbol`, by "
-            "`tag` (substring match on the stored JSON array), newest first, up to `limit` rows."
+            "`tag` (one whole stored tag, not a substring; ASCII letters case-insensitive, other characters exact, so "
+            "non-ASCII tags match and `%` / `_` are literal), newest first, up to `limit` rows."
         ),
     )
     async def journal_list(

@@ -27,6 +27,7 @@ from .providers import dexscreener as dexs_mod
 from .providers import etherscan as etherscan_mod
 from .providers import forexfactory as ff_mod
 from .providers import goplus as goplus_mod
+from .providers import honeypot_is as honeypot_mod
 from .providers import hyperliquid as hl_mod
 from .providers import mempool as mempool_mod
 from .providers import pendle as pendle_mod
@@ -48,6 +49,7 @@ from .providers.etherscan import Etherscan
 from .providers.exchanges import Exchanges
 from .providers.forexfactory import ForexFactory
 from .providers.goplus import GoPlus
+from .providers.honeypot_is import HoneypotIs
 from .providers.hyperliquid import Hyperliquid
 from .providers.mempool import Mempool
 from .providers.pendle import Pendle
@@ -118,6 +120,9 @@ class Runtime:
             health=self.health,
             ttl=goplus_mod.TTL_SECONDS * s.cache_scale,
         )
+        # Second source of contract_risk (buy/sell simulation), free without a key. Its answer says x-ratelimit-limit: 50
+        # with an undocumented window, so 0.5/s (30 a minute) stays below it; one call per contract_risk.
+        self.honeypot_is = HoneypotIs(http("honeypot_is", honeypot_mod.BASE_URL, rate=honeypot_mod.RATE_PER_SECOND, burst=2))
         self.defillama = DefiLlama(
             http("defillama", llama_mod.BASE_URL, rate=4, burst=8),
             # Stablecoin supply (stablecoin_supply): daily data, two requests per call and cached for 10 min.
@@ -242,6 +247,7 @@ class Runtime:
         await self.forexfactory.http.aclose()
         await self.dexscreener.http.aclose()
         await self.goplus.http.aclose()
+        await self.honeypot_is.http.aclose()
         await self.defillama.aclose()
         await self.pendle.http.aclose()
         await self.mempool.http.aclose()

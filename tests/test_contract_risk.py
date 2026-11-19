@@ -19,6 +19,8 @@ from tradedesk.server import build_server
 FIX = Path(__file__).parent / "fixtures"
 SHIB_BODY = json.loads((FIX / "goplus_token_security_shib_2026-10-23.json").read_text())["response"]
 EMPTY_BODY = json.loads((FIX / "goplus_token_security_empty_2026-10-23.json").read_text())["response"]
+HP_LIVE = json.loads((FIX / "honeypot_is_2026-11-19.json").read_text())["responses"]  # honeypot.is, live 2026-11-19
+HP_SHIB = HP_LIVE["shib_ethereum"]
 SHIB = "0x95ad61b0a150d79219dcf64e1e6cc01f0b64c4ce"
 SHIB_TOKEN = SHIB_BODY["result"][SHIB]
 NOW = datetime(2026, 10, 23, 12, 0, tzinfo=UTC)
@@ -419,7 +421,7 @@ async def call(server, name, **args):
     return data["result"] if set(data) == {"result"} else data
 
 
-def make_server(goplus_handler=None, dex_handler=None, seen=None):
+def make_server(goplus_handler=None, dex_handler=None, seen=None, hp_handler=None):
     def default_goplus(req):
         if seen is not None:
             seen.append(req)
@@ -428,6 +430,7 @@ def make_server(goplus_handler=None, dex_handler=None, seen=None):
     tr = {
         "goplus": httpx.MockTransport(goplus_handler or default_goplus),
         "dexscreener": httpx.MockTransport(dex_handler or (lambda req: httpx.Response(200, json=DEX_PAIRS))),
+        "honeypot_is": httpx.MockTransport(hp_handler or (lambda req: httpx.Response(200, json=copy.deepcopy(HP_SHIB)))),
     }
     rt = Runtime(Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0), transports=tr)
     rt.now = lambda: NOW
@@ -446,7 +449,7 @@ async def test_contract_risk_happy():
     c = by_name(d)
     assert c["liquidity_to_mcap"]["value"] == pytest.approx(0.0008)  # bsc pair ignored
     assert d["info"]["liquidity_usd"] == 4_000_000.0
-    assert {e["provider"] for e in env["evidence"]} == {"goplus", "dexscreener"}
+    assert {e["provider"] for e in env["evidence"]} == {"goplus", "dexscreener", "honeypot_is"}
     assert any("Heuristic" in w for w in env["warnings"])
     assert any("unknown is not pass" in w for w in env["warnings"])
 

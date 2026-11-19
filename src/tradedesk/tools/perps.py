@@ -1234,10 +1234,12 @@ def register(server: MCPServer, rt: Runtime) -> None:
         description=(
             "Open interest for a base asset across venues in USD where available "
             "(ccxt exchanges, Hyperliquid, Deribit for BTC/ETH). Use to see where leverage sits. "
-            "A point-in-time snapshot; for OI over time use perps_oi_history. Units: oi_base in base-asset coins as "
-            "reported (ccxt openInterestAmount for the {base}/USDT:USDT perp; Hyperliquid open interest; null for "
-            "Deribit); oi_usd in USD (when a ccxt venue reports no USD value it is estimated as oi_base x last price, "
-            "named in `warnings`; Hyperliquid = coins x mark; Deribit = the perpetual's USD open interest); total_oi_usd "
+            "A point-in-time snapshot; for OI over time use perps_oi_history. Units: oi_base is ccxt openInterestAmount "
+            "for the {base}/USDT:USDT perp passed through as the venue reports it: base-asset coins on binanceusdm and "
+            "bybit, but CONTRACTS on okx (BTC-USDT-SWAP = 0.01 BTC each), so do not compare oi_base across venues; "
+            "Hyperliquid open interest in coins; null for Deribit. oi_usd in USD (when a ccxt venue reports no USD "
+            "value it is estimated as oi_base x last price, named in `warnings`, which is only right where oi_base is "
+            "in coins; Hyperliquid = coins x mark; Deribit = the perpetual's USD open interest); total_oi_usd "
             "sums the venues with a USD figure; share is a fraction 0-1 of that total. A venue without a USD figure is "
             "named in `warnings` and left out of the total; a failing venue goes to `missing`."
         ),

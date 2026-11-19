@@ -110,7 +110,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
         annotations=READ_ONLY,
         description=(
             "List tracked positions, newest-first (by opened_ts). Filter by status (open / closed), instrument "
-            "(exact match) or tag (one whole stored tag, ASCII case-insensitive: SQL LIKE on the stored JSON array). "
+            "(exact match) or tag (one whole stored tag, ASCII case-insensitive: SQL LIKE on the stored JSON array; "
+            "known limits: a tag with non-ASCII characters never matches, since the store keeps them \\u-escaped, "
+            "and `%` / `_` in the tag act as SQL wildcards). "
             "Rows are the manually added positions of the local store (positions_add), not synced from an exchange. "
             "Units as stored: opened_ts / closed_ts in Unix seconds (UTC); size in contracts or coins (always > 0, the "
             "sign is `side`); entry in quote currency; mark in USD per contract / coin; per-contract greeks in the units "

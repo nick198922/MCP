@@ -12,6 +12,35 @@ from ..collector.pm_gap import scan_gaps
 from ..core.envelope import Builder
 from ..runtime import Runtime
 from ._util import READ_ONLY, r
+from .perps import _merge_evidence
+
+COMPACT_ROWS = 10  # markets in the default (compact) answer
+# Fields of a compact row: what the market is, its book top, the model number, the gap and the tradable edge. The full
+# row (include_details=true) adds volume, fee, IV / expiry match, touch path, per-side edges, spot and DVOL.
+COMPACT_FIELDS = (
+    "market_id", "asset", "kind", "direction", "strike", "question", "hours_to_end", "yes_bid", "yes_ask", "no_bid",
+    "no_ask", "model_prob", "gap_mid", "side", "net_edge", "ask_depth_usd",
+)  # fmt: skip
+COMPACT_QUESTION_CHARS = 80  # the compact row cuts a longer question (Polymarket text) to this many characters
+
+
+def _short(question: str) -> str:
+    """The question cut to COMPACT_QUESTION_CHARS characters, the last one an ellipsis when cut."""
+    return question if len(question) <= COMPACT_QUESTION_CHARS else question[: COMPACT_QUESTION_CHARS - 1] + "…"
+
+
+def _flags(row: dict[str, Any]) -> list[str]:
+    """What sets a listed row apart, in place of the full row's model_note / rules_standard / model_covered (live 19.11
+    the three took ~66 characters a row and pushed the compact include_nonstandard answer over 8 000): [] for a standard
+    covered market, 'touched' for a level already reached (model_prob = 1), 'rules_nonstandard' and
+    'strike_outside_quotes' (flat-extrapolated IV) only with include_nonstandard."""
+    flags = [] if row["model_note"] == "ok" else [str(row["model_note"])]
+    if not row["rules_standard"]:
+        flags.append("rules_nonstandard")
+    if row["model_covered"] is False:
+        flags.append("strike_outside_quotes")
+    return flags
+
 
 GAP_WARNINGS = (
     "The options probability is RISK-NEUTRAL (what Deribit options price), not a real-world forecast; no risk-premium discount is "
@@ -46,7 +75,14 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "end, the options-implied probability (RISK-NEUTRAL, decimal), gap_mid = model - YES mid (decimals; positive = YES "
             "looks cheap), and net_edge = expected profit per share of the better side at its best ask after the taker fee and "
             "the half-spread, if the model were right. Only markets whose best ask holds at least min_depth_usd and whose net_edge "
-            "is at least min_net_edge are listed, best first. Spot is the Deribit index (USD), DVOL a decimal (0.45 = 45 %). "
+            "is at least min_net_edge are listed, best first. Spot is the Deribit index (USD), DVOL a decimal (0.45 = 45 %), "
+            "per asset in `underlying`. By default the answer is compact: the top 10 listed markets with the key fields "
+            "(book top, model_prob, gap_mid, side, net_edge, depth; question cut to 80 characters; `flags` = [] for a "
+            "standard covered market, else 'touched' / 'rules_nonstandard' / 'strike_outside_quotes' in place of the full "
+            "row's model_note / rules_standard / model_covered; `shown` = rows listed, `count` = markets that passed the "
+            "filters, up to `limit`) and evidence merged per provider call; "
+            "include_details=true returns up to `limit` full rows (volume, fee, model IV and expiry match, touch path, "
+            "per-side edges, spot, DVOL) and one evidence item per fetch. The counts are the same either way. "
             "A gap is a price difference, not a proven edge: see warnings. Live read of public data; the hourly collector "
             "(TRADEDESK_PM_GAP_ENABLED) stores the same snapshots for the forward test."
         ),
@@ -63,12 +99,28 @@ def register(server: MCPServer, rt: Runtime) -> None:
             ),
         ] = 0.0,
         max_days: Annotated[float, Field(gt=0, le=30, description="Only markets ending within this many days.")] = 14.0,
-        limit: Annotated[int, Field(ge=1, le=100, description="Maximum markets returned.")] = 30,
+        limit: Annotated[
+            int,
+            Field(
+                ge=1, le=100, description="Maximum markets listed (full rows with include_details; the compact default shows the top 10)."
+            ),
+        ] = 30,
         include_nonstandard: Annotated[
             bool,
             Field(
                 description="Also list markets whose resolution text is not the standard Binance-candle rule or whose strike "
-                "is outside the quoted Deribit strikes (flat-extrapolated IV). Off by default; they are counted instead."
+                "is outside the quoted Deribit strikes (flat-extrapolated IV), marked by rules_standard and model_covered "
+                "(full rows) or `flags` (compact rows). Off by default; they are counted instead."
+            ),
+        ] = False,
+        include_details: Annotated[
+            bool,
+            Field(
+                description=(
+                    "Return a full row for every listed market (up to `limit`) and one evidence item per fetch; false "
+                    "(default) = a compact answer: the top 10 by net_edge with the key fields only, evidence merged per "
+                    "provider call. Numbers and counts are the same either way."
+                )
             ),
         ] = False,
     ) -> dict[str, Any]:
@@ -140,6 +192,19 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 }
             )
         out.sort(key=lambda d: d["net_edge"], reverse=True)
+        listed = out[:limit]
+        underlying: dict[str, dict[str, Any]] = {}
+        for x in wanted:  # the same Deribit index and DVOL on every row of an asset: once per asset here
+            underlying.setdefault(x["asset"], {"spot": r(x["spot"], 2), "dvol": r(x["dvol"], 4)})
+        if not include_details:
+            b.warn(
+                f"compact answer: top {min(len(listed), COMPACT_ROWS)} of {len(listed)} listed markets, key fields, evidence "
+                "merged per provider call; include_details=true for full rows"
+            )
+            listed = [
+                {k: x[k] for k in COMPACT_FIELDS} | {"question": _short(x["question"]), "flags": _flags(x)} for x in listed[:COMPACT_ROWS]
+            ]
+            _merge_evidence(b)
         return b.build(
             {
                 "asset": asset,
@@ -151,7 +216,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 "excluded_nonstandard_or_uncovered": nonstandard,
                 "without_model_probability": len(wanted) - with_model,
                 "count": min(len(out), limit),
-                "markets": out[:limit],
+                "shown": len(listed),  # rows in `markets`: up to 10 in the compact answer, `count` with include_details
+                "underlying": dict(sorted(underlying.items())),
+                "markets": listed,
             },
             ok=True,
         )

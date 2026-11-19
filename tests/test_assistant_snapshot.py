@@ -210,6 +210,11 @@ async def test_snapshot_happy_path(state, tmp_path):
         assert snap["sections"][name]["asof_utc"] == "2026-10-10T13:07:00Z"
     assert snap["missing"] == ["em_week"]
     assert snap["sections"]["em_week"]["missing"][0]["reason"] == "data_unavailable"
+    # the dashboard's BTC chart and the brief read every daily candle: the snapshot asks market_ohlcv for the full series
+    # (include_series=true), not its compact default of the latest 10 (item 390)
+    ohlc = snap["sections"]["ohlc"]["data"]
+    assert len(ohlc["rows"]) == ohlc["summary"]["candles"] == 120
+    assert not any("compact answer" in w for w in snap["sections"]["ohlc"]["warnings"])
     # cycle_regime for the brief: today's state and 30 days of states (the state-change message); funding from the
     # shared FakeEx (0.01 %/8 h, about 11 %/yr)
     cycle = snap["sections"]["cycle"]

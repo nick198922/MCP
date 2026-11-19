@@ -628,7 +628,7 @@ async def test_market_tools(server):
     t = await call(server, "market_tickers", exchange="binanceusdm", symbols="BTC/USDT:USDT")
     row = t["data"]["tickers"][0]
     assert row["last"] == 82750.0 and row["spread_bps"] == pytest.approx(0.1208, abs=0.01)
-    o = await call(server, "market_ohlcv", exchange="binanceusdm", symbol="BTC/USDT:USDT", timeframe="1h", limit=100)
+    o = await call(server, "market_ohlcv", exchange="binanceusdm", symbol="BTC/USDT:USDT", timeframe="1h", limit=100, include_series=True)
     assert o["data"]["summary"]["realized_vol_annualized"] > 0 and len(o["data"]["rows"]) == 100
     bad = await call(server, "market_ohlcv", exchange="binanceusdm", symbol="BTC/USDT:USDT", timeframe="1x")
     assert bad["ok"] is False

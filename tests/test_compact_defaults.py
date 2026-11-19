@@ -1,10 +1,10 @@
-"""Compact default answers (BACKLOG «великі відповіді за замовчуванням», standing card items 379, 381 and 382).
+"""Compact default answers (BACKLOG «великі відповіді за замовчуванням», standing card items 379, 381, 382 and 390).
 
-The default call of `market_flow`, `hyperliquid_funding_history`, `funding_spread_scan`, `funding_carry_scan` and
-`market_markets` stays small (<= 8 000 characters of JSON) so it does not flood a chat or an agent's context; the full
-per-bar / per-payment series comes only with `include_series=true`, the full scan (every row, the per-venue breakdown,
-per-fetch evidence) or every full market row with `include_details=true`. Fakes only (tests/conftest.py, the captured
-market_flow responses of 2026-10-28). No network.
+The default call of `market_flow`, `hyperliquid_funding_history`, `funding_spread_scan`, `funding_carry_scan`,
+`market_markets`, `polymarket_options_gap` and `market_ohlcv` stays small (<= 8 000 characters of JSON) so it does not
+flood a chat or an agent's context; the full per-bar / per-payment / per-candle series comes only with
+`include_series=true`, the full scan (every row, the per-venue breakdown, per-fetch evidence) or every full market row
+with `include_details=true`. Fakes only (tests/conftest.py, the captured market_flow responses of 2026-10-28). No network.
 """
 
 from __future__ import annotations
@@ -12,13 +12,16 @@ from __future__ import annotations
 import json
 
 import ccxt
+import httpx
 
 from conftest import NOW, FakeEx, State, make_transports
 from test_market_flow import _flow_rt
+from test_pm_gap import END_ABOVE, _book, _market, iso
 from test_server import call
 from tradedesk.config import Settings
 from tradedesk.runtime import Runtime
 from tradedesk.server import build_server
+from tradedesk.tools.pm_gap import COMPACT_FIELDS
 
 MAX_DEFAULT_CHARS = 8_000
 
@@ -276,3 +279,141 @@ async def test_market_markets_compact_still_reports_a_provider_failure(state):
         await rt.aclose()
     assert env["ok"] is False and env["data"] is None
     assert [m["field"] for m in env["missing"]] == ["markets"]
+
+
+# polymarket_options_gap (item 390): 24 standard BTC "above $K on October 29" markets with strikes inside the fake
+# Deribit strikes (50-130k) and deep books, so every one is listed (min_net_edge=-1) as in a busy live scan of 19.11
+# (16-17 listed rows of ~730 characters, 15 evidence items).
+PM_STRIKES = list(range(60_000, 108_000, 2_000))
+PM_QUESTION = "Will the price of Bitcoin be above ${k:,} on October 29?"
+# ~190 characters, three times a live question: the compact row cuts it to 80, so the answer's size does not follow it
+PM_LONG_QUESTION = "Bitcoin price market (Binance BTC/USDT 1 minute candle, noon ET close), " * 2 + PM_QUESTION
+
+
+def _pm_gamma(question: str):
+    def handler(req: httpx.Request) -> httpx.Response:
+        markets = [_market(f"g{k}", question.format(k=k), f"Y{k}", f"N{k}", endDate=iso(END_ABOVE)) for k in PM_STRIKES]
+        event = {"id": "1", "slug": "bitcoin-above-on-october-29", "markets": markets}
+        return httpx.Response(200, json={"events": [event], "next_cursor": None})  # the same event under both tags
+
+    return handler
+
+
+def _pm_clob(req: httpx.Request) -> httpx.Response:
+    books = []
+    for i, k in enumerate(PM_STRIKES):
+        p = round(0.95 - 0.037 * i, 3)  # YES mid falls with the strike
+        books.append(_book(f"Y{k}", [(round(p - 0.01, 3), 20_000)], [(round(p + 0.01, 3), 20_000)]))
+        books.append(_book(f"N{k}", [(round(0.99 - p, 3), 20_000)], [(round(1.01 - p, 3), 20_000)]))
+    wanted = {x["token_id"] for x in json.loads(req.content)}
+    return httpx.Response(200, json=[x for x in books if x["asset_id"] in wanted])
+
+
+def _pm_rt(state: State, question: str = PM_QUESTION) -> Runtime:
+    tr = make_transports(state)
+    tr["polymarket:gamma"] = httpx.MockTransport(_pm_gamma(question))
+    tr["polymarket:clob"] = httpx.MockTransport(_pm_clob)
+    rt = Runtime(Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=""), transports=tr, exchange_factory=FakeEx)
+    rt.now = lambda: NOW
+    return rt
+
+
+PM_ARGS = {"max_days": 30, "min_net_edge": -1}  # every market of the fake scan listed: a large typical answer
+
+
+async def test_polymarket_options_gap_default_is_compact_and_details_are_opt_in(state):
+    rt = _pm_rt(state)
+    try:
+        srv, _ = build_server(rt)
+        default = await call(srv, "polymarket_options_gap", **PM_ARGS)
+        full = await call(srv, "polymarket_options_gap", **PM_ARGS, include_details=True)
+        wide = await call(srv, "polymarket_options_gap", **PM_ARGS, include_nonstandard=True)
+    finally:
+        await rt.aclose()
+    assert default["ok"] and full["ok"] and not default["missing"], default["missing"]
+    assert _size(default) <= MAX_DEFAULT_CHARS, _size(default)
+    assert _size(full) > MAX_DEFAULT_CHARS
+    rows = full["data"]["markets"]
+    assert len(rows) == full["data"]["count"] == default["data"]["count"] == len(PM_STRIKES)
+    # the compact rows are the top 10 full rows (by net_edge) cut to the key fields: same numbers, same counts
+    # (plus `flags`, [] for these standard covered markets, in place of model_note / rules_standard / model_covered)
+    assert default["data"]["markets"] == [{k: x[k] for k in COMPACT_FIELDS} | {"flags": []} for x in rows[:10]]
+    # `shown` tells a reader of `data` alone that only 10 of `count` markets are listed
+    assert (default["data"]["shown"], full["data"]["shown"]) == (10, len(PM_STRIKES))
+    same = {"markets", "shown"}
+    assert {k: v for k, v in default["data"].items() if k not in same} == {k: v for k, v in full["data"].items() if k not in same}
+    assert default["data"]["underlying"]["BTC"] == {"spot": rows[0]["spot"], "dvol": rows[0]["dvol"]}
+    # include_nonstandard: the same compact rows (no per-row booleans), and the answer stays small
+    assert wide["data"]["markets"] == default["data"]["markets"]
+    assert _size(wide) <= MAX_DEFAULT_CHARS, _size(wide)
+    # the risk-neutral / no-backtest warnings stay in the compact answer
+    assert any("RISK-NEUTRAL" in w and "no backtest" in w for w in default["warnings"])
+    assert any(f"compact answer: top 10 of {len(PM_STRIKES)} listed markets" in w for w in default["warnings"])
+    assert not any("compact answer" in w for w in full["warnings"])
+    full_calls = [(e["provider"], e["tool"]) for e in full["evidence"]]
+    merged = {(e["provider"], e["tool"]): e for e in default["evidence"]}
+    assert len(merged) == len(default["evidence"]) == len(set(full_calls)) < len(full_calls)
+    for key, e in merged.items():
+        assert e["args"].get("fetches", 1) == full_calls.count(key) and e["fetched_at"]
+
+
+async def test_polymarket_options_gap_compact_size_does_not_follow_long_questions(state):
+    rt = _pm_rt(state, PM_LONG_QUESTION)
+    try:
+        srv, _ = build_server(rt)
+        default = await call(srv, "polymarket_options_gap", **PM_ARGS)
+        wide = await call(srv, "polymarket_options_gap", **PM_ARGS, include_nonstandard=True)
+        full = await call(srv, "polymarket_options_gap", **PM_ARGS, include_details=True)
+    finally:
+        await rt.aclose()
+    assert len(full["data"]["markets"]) == default["data"]["count"] == len(PM_STRIKES)  # the long text still parses
+    for env in (default, wide):
+        assert env["ok"] and _size(env) <= MAX_DEFAULT_CHARS, _size(env)
+        for x in env["data"]["markets"]:
+            assert len(x["question"]) == 80 and x["question"].endswith("…")
+            assert PM_LONG_QUESTION.format(k=int(x["strike"])).startswith(x["question"][:-1])
+    # the full row keeps the whole question
+    assert all(x["question"] == PM_LONG_QUESTION.format(k=int(x["strike"])) for x in full["data"]["markets"])
+
+
+async def test_polymarket_options_gap_compact_still_reports_a_provider_failure(state):
+    state.deribit_status = 503
+    rt = _pm_rt(state)
+    try:
+        srv, _ = build_server(rt)
+        env = await call(srv, "polymarket_options_gap", **PM_ARGS)
+    finally:
+        await rt.aclose()
+    # no smile, no model probability: nothing listed, and the Deribit failure is in `missing` despite merged evidence
+    assert env["ok"] and env["data"]["markets"] == [] and env["data"]["with_model_probability"] == 0
+    assert {m["field"] for m in env["missing"]} >= {"option_book:BTC", "option_book:ETH"}
+    assert all(m["provider"] == "deribit" for m in env["missing"]) and _size(env) <= MAX_DEFAULT_CHARS
+
+
+# market_ohlcv (item 390): the default 200 candles of the fake venue (floats of the live length, ~13 000 characters in all)
+async def test_market_ohlcv_default_is_compact_and_series_is_opt_in(server):
+    args = {"exchange": "binanceusdm", "symbol": "BTC/USDT:USDT"}  # 1h, limit 200: the call a model makes
+    default = await call(server, "market_ohlcv", **args)
+    full = await call(server, "market_ohlcv", **args, include_series=True)
+    short = await call(server, "market_ohlcv", **args, limit=10)
+    assert default["ok"] and full["ok"] and short["ok"]
+    assert _size(default) <= MAX_DEFAULT_CHARS, _size(default)
+    assert _size(full) > MAX_DEFAULT_CHARS
+    rows = full["data"]["rows"]
+    assert len(rows) == full["data"]["summary"]["candles"] == 200
+    # the latest 10 candles by default; the summary covers all 200 either way
+    assert default["data"]["rows"] == rows[-10:]
+    assert default["data"]["summary"] == full["data"]["summary"]
+    s = full["data"]["summary"]
+    assert (s["first_ts_ms"], s["last_ts_ms"]) == (rows[0][0], rows[-1][0])
+    assert s["high"] == max(x[2] for x in rows) and s["low"] == min(x[3] for x in rows)
+    assert any("compact answer: the latest 10 of 200 candles" in w for w in default["warnings"])
+    assert not any("compact answer" in w for w in full["warnings"])
+    # ten candles or fewer: every candle, no compact warning
+    assert len(short["data"]["rows"]) == 10 and not any("compact answer" in w for w in short["warnings"])
+
+
+async def test_market_ohlcv_compact_still_reports_a_provider_failure(server):
+    env = await call(server, "market_ohlcv", exchange="binanceusdm", symbol="DOWN/USDT:USDT")
+    assert env["ok"] is False and env["data"] is None
+    assert [(m["field"], m["provider"]) for m in env["missing"]] == [("ohlcv", "ccxt:binanceusdm")]

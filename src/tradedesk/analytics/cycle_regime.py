@@ -420,6 +420,33 @@ def line_ua(comps: Mapping[str, Any] | None, state: str | None, closest: Mapping
     return text
 
 
+# --------------------------------------------------------------------------------------------- history summary
+
+
+def history_summary(history: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
+    """Summary of the daily states of `cycle_regime(...)["history"]` (oldest first): days per state (`undecided` for a
+    day without a state), the number of state changes between consecutive decided days, and the run of the last day's
+    state (how many days and since which date). None for an empty history."""
+    if not history:
+        return None
+    states = [h.get("state") for h in history]
+    days: dict[str, int] = {}
+    for s in [*STATES, None]:
+        if n := sum(1 for x in states if x == s):
+            days[s or "undecided"] = n
+    decided = [s for s in states if s is not None]
+    run = next((i for i, s in enumerate(reversed(states)) if s != states[-1]), len(states))
+    return {
+        "days": len(history),
+        "first_date": history[0].get("date"),
+        "last_date": history[-1].get("date"),
+        "state_days": days,
+        "changes": sum(1 for a, b in zip(decided, decided[1:], strict=False) if a != b),
+        "current_run_days": run,
+        "current_run_since": history[-run].get("date"),
+    }
+
+
 # ------------------------------------------------------------------------------------------------------- entry point
 
 

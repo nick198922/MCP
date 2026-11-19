@@ -43,7 +43,7 @@ DOUBLETOP: **74 інструменти** (66 від 17 бекендів + 8 вл
 | coinstats `wallet_balances` | 🔜 Фаза 5 |
 | fear_greed `get_fear_greed_index` | ✅ `sentiment_fear_greed` — крипто-індекс alternative.me, 1..365 днів, latest + zone, mean 7d/30d, min/max, change_7d/30d, zone_share. Деннa частотa; шо DOUBLETOP відважив — індекс фондового ринку США, у нас виключно крипто |
 | — (у DOUBLETOP макрокалендаря нема) | ✅ `macro_calendar` — ForexFactory, події з високим впливом (USD + ECB/BoJ/BoE), час UTC і Київ, прогноз/попереднє; дати поза вікном двох тижнів — із сіду (наближені) |
-| graph_polymarket (7) | ✅ `polymarket_search`, `polymarket_market`, `polymarket_history`; топ-трейдери — колектор `trader_snapshot` (лідерборд Polymarket); OI-історія — 🔜 |
+| graph_polymarket (7) | ✅ `polymarket_search` (з 19.11 типово — перші 10 ринків без `slug` і `token_id`; повні рядки — `include_details=true`), `polymarket_market`, `polymarket_history`; топ-трейдери — колектор `trader_snapshot` (лідерборд Polymarket); OI-історія — 🔜 |
 
 ## Ончейн, DeFi (Фаза 5, низький пріоритет)
 
@@ -135,7 +135,7 @@ Price-action за навчальними відео DoubleTop (не з їхнь�
 | — | ✅ `funding_carry_scan` — funding carry на одній біржі: поточний і trailing APR з фактичних виплат, статус щодо порогів входу / виходу, дні окупності комісій, наявність спота, позначка `incomplete_history` для неповної історії funding; десяткові дроби; carry не безризиковий |
 | — | ✅ `funding_spread_scan` — крос-біржовий спред funding для перп-перп carry: найкраща пара, trailing і поточний спред, витрати, прапорці ризику; Hyperliquid опційно (бектест HL ↔ Binance збитковий після витрат: моніторинг, не сигнал) |
 | — | ✅ `market_flow` — потоки однієї монети: спот- і перп-CVD Binance, OI, funding, ліквідації (Coinalyze), частка лонгів рахунків, премія Coinbase, квадрант ціна × OI × перп-CVD. Окремо ці потоки в наших бектестах напрям не передбачили; описово, не сигнал |
-| — | ✅ `cycle_regime` — денний режим циклу (дно / накопичення / перегрів / ріст / падіння) за зафіксованими порогами з денних даних Binance; контекст, не сигнал; на історії не перевірено |
+| — | ✅ `cycle_regime` — денний режим циклу (дно / накопичення / перегрів / ріст / падіння) за зафіксованими порогами з денних даних Binance; контекст, не сигнал; на історії не перевірено. З 19.11 типово — останні 10 днів історії станів і `history_summary` по всіх днях, переходи без `changes`; усе — `include_details=true` |
 
 ### Прогнозні ринки, ймовірності, коефіцієнти
 

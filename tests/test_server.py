@@ -933,7 +933,7 @@ async def test_coingecko_provider_failure(state):
 
 
 async def test_polymarket_search(server):
-    env = await call(server, "polymarket_search", query="btc", limit=5)
+    env = await call(server, "polymarket_search", query="btc", limit=5, include_details=True)
     d = env["data"]
     assert d["count"] == 1
     m = d["markets"][0]

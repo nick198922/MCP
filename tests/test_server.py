@@ -51,6 +51,10 @@ EXPECTED_TOOLS = {
     "btc_latest_block",
     "btc_difficulty_hashrate",
     "btc_address",
+    "onchain_balance",  # native coin, or one ERC-20 with token=
+    "onchain_address_txs",  # kind="normal" | "erc20"
+    "onchain_token_info",
+    "onchain_contract_source",
     "pendle_expiry_calendar",
     "pendle_fixed_yields",
     "pendle_market",

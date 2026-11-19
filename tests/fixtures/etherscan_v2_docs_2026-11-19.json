@@ -1,0 +1,144 @@
+{
+ "_source": "DOCUMENTATION-DERIVED, NOT LIVE. Built by hand on 2026-11-19 from the response shapes in the Etherscan API V2 documentation (https://docs.etherscan.io: Accounts, Contracts, Geth/Parity Proxy, and the common error answers) because the agent run has no access to the key; numbers and hashes are illustrative, not chain state. Token: USDT on Ethereum (0xdac17f958d2ee523a2206206994597c13d831ec7; name 'Tether USD', symbol 'USDT', 6 decimals are its real values, the supply is made up). Contract source shortened to a stand-in. eth_call results are ABI encodings of those values. Only account/tokentx was seen live (2026-10-25, scripts/verify_market_makers_onchain.py) with the same {status, message, result} envelope. The one LIVE entry is error_missing_key_live: the real answer of GET https://api.etherscan.io/v2/api?chainid=1&module=account&action=balance (and of module=proxy&action=eth_call) sent WITHOUT a key from the tradedesk server on 2026-11-19 through tradedesk.core.http.Http. Replace with a live capture through the MCP service once the key is in its environment.",
+ "holder": "0x28c6c06298d514db089934071355e5743bf21d60",
+ "token": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+ "balance": {"status": "1", "message": "OK", "result": "40891626854930000000000"},
+ "tokenbalance": {"status": "1", "message": "OK", "result": "1234567890123"},
+ "txlist": {
+  "status": "1",
+  "message": "OK",
+  "result": [
+   {
+    "blockNumber": "21234567",
+    "timeStamp": "1795070079",
+    "hash": "0x5c504ed432cb51138bcf09aa5e8a410dd4a1e204ef84bfed1be16dfba1b22060",
+    "nonce": "0",
+    "blockHash": "0x7d5a4369273c723454ac137f48a4f142b097aa2779464e6505f1b1c5e37b5382",
+    "transactionIndex": "0",
+    "from": "0x28c6c06298d514db089934071355e5743bf21d60",
+    "to": "0xa9d1e08c7793af67e9d92fe308d5697fb81d3e43",
+    "value": "1500000000000000000",
+    "gas": "21000",
+    "gasPrice": "20000000000",
+    "isError": "0",
+    "txreceipt_status": "1",
+    "input": "0x",
+    "contractAddress": "",
+    "cumulativeGasUsed": "21000",
+    "gasUsed": "21000",
+    "confirmations": "120",
+    "methodId": "0x",
+    "functionName": ""
+   },
+   {
+    "blockNumber": "21234500",
+    "timeStamp": "1795069275",
+    "hash": "0x9d9b1c8b3e9b5f1e7a1f0b9c3d2e4f5a6b7c8d9e0f1a2b3c4d5e6f708192a3b4",
+    "nonce": "17",
+    "blockHash": "0x1f2e3d4c5b6a79881726354453627180f9e8d7c6b5a4938271605f4e3d2c1b0a",
+    "transactionIndex": "42",
+    "from": "0x3f5ce5fbfe3e9af3971dd833d26ba9b5c936f0be",
+    "to": "0x28c6c06298d514db089934071355e5743bf21d60",
+    "value": "0",
+    "gas": "100000",
+    "gasPrice": "15000000000",
+    "isError": "1",
+    "txreceipt_status": "0",
+    "input": "0xa9059cbb",
+    "contractAddress": "",
+    "cumulativeGasUsed": "3000000",
+    "gasUsed": "50000",
+    "confirmations": "187",
+    "methodId": "0xa9059cbb",
+    "functionName": "transfer(address _to, uint256 _value)"
+   }
+  ]
+ },
+ "tokentx": {
+  "status": "1",
+  "message": "OK",
+  "result": [
+   {
+    "blockNumber": "21234560",
+    "timeStamp": "1795069995",
+    "hash": "0x2bd6b1f8f9a0a8f9b6b0e1c7d3f4e5a6b7c8d9e0f1a2b3c4d5e6f708192a3b4c",
+    "nonce": "1001",
+    "blockHash": "0x0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9",
+    "from": "0x28c6c06298d514db089934071355e5743bf21d60",
+    "contractAddress": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "to": "0x56eddb7aa87536c09ccc2793473599fd21a8b17f",
+    "value": "250000000000",
+    "tokenName": "Tether USD",
+    "tokenSymbol": "USDT",
+    "tokenDecimal": "6",
+    "transactionIndex": "7",
+    "gas": "94813",
+    "gasPrice": "20000000000",
+    "gasUsed": "63209",
+    "cumulativeGasUsed": "512345",
+    "input": "deprecated",
+    "methodId": "0xa9059cbb",
+    "functionName": "transfer(address _to, uint256 _value)",
+    "confirmations": "127"
+   }
+  ]
+ },
+ "tokentx_empty": {"status": "0", "message": "No transactions found", "result": []},
+ "getsourcecode_verified": {
+  "status": "1",
+  "message": "OK",
+  "result": [
+   {
+    "SourceCode": "pragma solidity ^0.4.17;\n\n/**\n * @title TetherToken (stand-in excerpt)\n */\ncontract TetherToken {\n    string public name;\n}\n",
+    "ABI": "[{\"constant\":true,\"inputs\":[],\"name\":\"name\",\"outputs\":[{\"name\":\"\",\"type\":\"string\"}],\"type\":\"function\"}]",
+    "ContractName": "TetherToken",
+    "CompilerVersion": "v0.4.18+commit.9cf6e910",
+    "CompilerType": "solc",
+    "OptimizationUsed": "0",
+    "Runs": "200",
+    "ConstructorArguments": "000000000000000000000000000000000000000000000000000000174876e800",
+    "EVMVersion": "Default",
+    "Library": "",
+    "ContractFileName": "",
+    "LicenseType": "None",
+    "Proxy": "0",
+    "Implementation": "",
+    "SwarmSource": "bzzr://645ee12d73db47fd78ba77fa1f824c3c8f9184061b3b10386beb4dc9236abb28",
+    "SimilarMatch": ""
+   }
+  ]
+ },
+ "getsourcecode_unverified": {
+  "status": "1",
+  "message": "OK",
+  "result": [
+   {
+    "SourceCode": "",
+    "ABI": "Contract source code not verified",
+    "ContractName": "",
+    "CompilerVersion": "",
+    "OptimizationUsed": "",
+    "Runs": "",
+    "ConstructorArguments": "",
+    "EVMVersion": "",
+    "Library": "",
+    "LicenseType": "",
+    "Proxy": "0",
+    "Implementation": "",
+    "SwarmSource": ""
+   }
+  ]
+ },
+ "eth_call": {
+  "0x06fdde03": {"jsonrpc": "2.0", "id": 1, "result": "0x0000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000000a5465746865722055534400000000000000000000000000000000000000000000"},
+  "0x95d89b41": {"jsonrpc": "2.0", "id": 1, "result": "0x000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000045553445400000000000000000000000000000000000000000000000000000000"},
+  "0x313ce567": {"jsonrpc": "2.0", "id": 1, "result": "0x0000000000000000000000000000000000000000000000000000000000000006"},
+  "0x18160ddd": {"jsonrpc": "2.0", "id": 1, "result": "0x00000000000000000000000000000000000000000000000001550f7dca700000"}
+ },
+ "eth_call_reverted": {"jsonrpc": "2.0", "id": 1, "error": {"code": -32000, "message": "execution reverted"}},
+ "error_invalid_key": {"status": "0", "message": "NOTOK", "result": "Invalid API Key (#err2)|x"},
+ "error_missing_key_live": {"status": "0", "message": "NOTOK", "result": "Missing/Invalid API Key"},
+ "error_rate_limit": {"status": "0", "message": "NOTOK", "result": "Max calls per sec rate limit reached (3/sec)"},
+ "error_chain_not_free": {"status": "0", "message": "NOTOK", "result": "Free API access is not supported for this chain. Please upgrade your api plan for full chain coverage. https://etherscan.io/apis"},
+ "error_pro_endpoint": {"status": "0", "message": "NOTOK", "result": "Sorry, it looks like you are trying to access an API Pro endpoint. Contact us to upgrade to API Pro."}
+}

@@ -38,6 +38,9 @@ class Settings:
     # not pinned in code (read it off Graph Explorer).
     graph_api_key: str | None = field(default=None, repr=False)
     graph_pnl_subgraph_id: str | None = None
+    # Etherscan V2 (providers/etherscan.py, onchain_* tools). The free key lives in ~/.config/tradedesk/onchain.env; the MCP
+    # service reads only its own environment, so without ETHERSCAN_API_KEY there the tools answer `missing: config`.
+    etherscan_api_key: str | None = field(default=None, repr=False)
     # Local SQLite history (Phase 2). Empty string disables the store entirely.
     db_path: str = "data/tradedesk.sqlite"
     collector_enabled: bool = False
@@ -203,6 +206,7 @@ class Settings:
             # non-ASCII keys are refused by the provider as `config` (providers/thegraph.key_problem)
             graph_api_key=(os.environ.get("GRAPH_API_KEY") or "").strip() or None,
             graph_pnl_subgraph_id=os.environ.get("TRADEDESK_GRAPH_PNL_SUBGRAPH_ID") or None,
+            etherscan_api_key=(os.environ.get("ETHERSCAN_API_KEY") or "").strip() or None,
             db_path=os.environ.get("TRADEDESK_DB_PATH", "data/tradedesk.sqlite"),
             collector_enabled=os.environ.get("TRADEDESK_COLLECTOR_ENABLED", "").lower() in ("1", "true", "yes"),
             collect_atm_term_seconds=int(_float("TRADEDESK_COLLECT_ATM_TERM_SECONDS", 300)),

@@ -43,7 +43,16 @@ from mcp import Client
 
 from conftest import NOW, FakeEx, State, make_transports
 from test_server import EXPECTED_TOOLS
-from test_tools_envelope_shape import ARGS, COINALYZE_TEST_KEY, NO_NETWORK, SKIP, _extra_fakes, _seed_store, _Transports
+from test_tools_envelope_shape import (
+    ARGS,
+    COINALYZE_TEST_KEY,
+    ETHERSCAN_TEST_KEY,
+    NO_NETWORK,
+    SKIP,
+    _extra_fakes,
+    _seed_store,
+    _Transports,
+)
 from test_tools_provider_outage import as_envelope
 from tradedesk.analytics.options import build_chain
 from tradedesk.config import Settings
@@ -240,6 +249,7 @@ def _runtime(tmp_path, mutator: Mutator, cache_scale: float = 0.0, db: str = "wr
                 cache_scale=cache_scale,
                 db_path=str(tmp_path / f"{db}.sqlite"),
                 coinalyze_api_key=COINALYZE_TEST_KEY,
+                etherscan_api_key=ETHERSCAN_TEST_KEY,
             ),
             transports=_Transports({name: _MutatingTransport(t, mutator) for name, t in fakes.items()}),
             exchange_factory=lambda ex_id: _MutatingEx(ex_id, mutator),

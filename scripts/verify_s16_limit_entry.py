@@ -175,12 +175,20 @@ def load(a: argparse.Namespace, out: Path) -> tuple[dict[str, np.ndarray], dict[
         ]
     )
     IS, OOS = (T["t_in"] >= vsp.PASSPORT_MS) & (T["t_in"] < vsp.OOS_MS), T["t_in"] >= vsp.OOS_MS
+    turn5 = np.nan_to_num(T["turn"], nan=-1) >= 5e6
+    in_top100 = vsp.in_prev_day_top(T, vsp.top_n_days(qv, vsp.TOP_N))
+    P = vsp.chain(T, period & demo & turn1)
     M = {
         "period": period,
         "demo": demo,
         "pool": period & turn1 & in_top,
         "V": vsp.chain(T, period & demo & turn1 & in_top),
-        "P": vsp.chain(T, period & demo & turn1),
+        "P": P,
+        # Second registration (2026-11-19, «S16 ліміт — ширша V»): the verdict sample W is the side sample P of the
+        # first registration (>= $1M previous-day turnover, no top-250 rank), with its own occupancy chain.
+        "W": P,
+        "top250": in_top,
+        "demo_list": turn5 & in_top100,  # the demo's own universe: top-100 by turnover and >= $5M
         "demo_l": demo_l,
         "IS": IS,
         "OOS": OOS,
@@ -188,9 +196,10 @@ def load(a: argparse.Namespace, out: Path) -> tuple[dict[str, np.ndarray], dict[
     return T, M
 
 
-def gate_numbers(T: dict[str, np.ndarray], M: dict[str, np.ndarray]) -> dict[str, Any]:
-    """n, clusters, fill share, SE and MDE80 of the per-signal delta on OOS V. Reads no mean of any R."""
-    m = M["V"] & M["OOS"]
+def gate_numbers(T: dict[str, np.ndarray], M: dict[str, np.ndarray], key: str = "V") -> dict[str, Any]:
+    """n, clusters, fill share, SE and MDE80 of the per-signal delta on the OOS part of sample ``key``.
+    Reads no mean of any R."""
+    m = M[key] & M["OOS"]
     ok = m & np.isfinite(T["D"])
     se = le.cluster_se(T["D"][ok], T["week"][ok])
     mde = le.mde80(se, ALPHA)
@@ -202,7 +211,13 @@ def gate_numbers(T: dict[str, np.ndarray], M: dict[str, np.ndarray]) -> dict[str
         "se": se,
         "mde80": mde,
         "pass": bool(np.isfinite(mde) and mde <= GATE_MDE),
+        "sample": key,
     }
+
+
+def suffix(key: str) -> str:
+    """File suffix of a verdict sample: V keeps the first registration's files (gate.json), W writes gate_W.json."""
+    return "" if key == "V" else f"_{key}"
 
 
 def eligibility(T: dict[str, np.ndarray], M: dict[str, np.ndarray]) -> None:
@@ -231,25 +246,35 @@ def stage_gate(a: argparse.Namespace, out: Path) -> None:
     emit(
         f"# S16 limit entry gate: passport candidates {T['B'].size}; V ∪ P {int((M['V'] | M['P']).sum())}, without a row {int(((M['V'] | M['P']) & ~T['_has']).sum())}; base R equal to the passport on {int(np.sum(np.abs(T['m_B'][agree] - T['B'][agree]) < 1e-9))} of {int(agree.sum())}"
     )
-    mo = M["V"] & M["OOS"] & T["_has"]
+    key = a.sample
+    so = M[key] & M["OOS"]
+    mo = so & T["_has"]
     emit(
-        f"геометрія OOS V: лімітка = входу бази {np.mean(T['lr_eq_e'][mo]):.1%}; відстань входу бази до межі, частки R бази: медіана {np.nanmedian(T['m_geo'][mo]):.2f}, квартилі {np.nanquantile(T['m_geo'][mo], 0.25):.2f} / {np.nanquantile(T['m_geo'][mo], 0.75):.2f}"
+        f"геометрія OOS {key}: лімітка = входу бази {np.mean(T['lr_eq_e'][mo]):.1%}; відстань входу бази до межі, частки R бази: медіана {np.nanmedian(T['m_geo'][mo]):.2f}, квартилі {np.nanquantile(T['m_geo'][mo], 0.25):.2f} / {np.nanquantile(T['m_geo'][mo], 0.75):.2f}"
     )
-    g = gate_numbers(T, M)
+    if key != "V":
+        # composition of the wider sample (counts only): how much of it the demo could trade at all
+        emit(
+            f"склад OOS {key}: відібрано {int(so.sum())}, монет {np.unique(T['sym'][so]).size}; у топ-250 {int((so & M['top250']).sum())}, "
+            f"поза топ-250 {int((so & ~M['top250']).sum())}; у списку демо (топ-100 і ≥ $5M) {int((so & M['demo_list']).sum())}; "
+            f"для порівняння OOS V відібрано {int((M['V'] & M['OOS']).sum())}"
+        )
+    g = gate_numbers(T, M, key)
     emit(
-        f"ВОРОТА (OOS V): n {g['n']} (відібрано {g['n_sel']}), тижнів {g['weeks']}, заповнено {g['fill']:.1%}; SE(Δ) кластерна {g['se']:.4f}R; MDE₈₀ = {le.mde80(1.0, ALPHA):.3f}·SE = {g['mde80']:.3f}R → {'пройдено' if g['pass'] else 'НЕ пройдено'} (поріг {GATE_MDE:g}R)"
+        f"ВОРОТА (OOS {key}): n {g['n']} (відібрано {g['n_sel']}), тижнів {g['weeks']}, заповнено {g['fill']:.1%}; SE(Δ) кластерна {g['se']:.4f}R; MDE₈₀ = {le.mde80(1.0, ALPHA):.3f}·SE = {g['mde80']:.3f}R → {'пройдено' if g['pass'] else 'НЕ пройдено'} (поріг {GATE_MDE:g}R)"
     )
     eligibility(T, M)
-    (out / "gate.json").write_text(json.dumps(g))
+    (out / f"gate{suffix(key)}.json").write_text(json.dumps(g))
 
 
 # ---------------------------------------------------------------- report (only after a passed gate)
 
 
-def placebo_col(T: dict[str, np.ndarray], M: dict[str, np.ndarray]) -> np.ndarray:
-    """Placebo R per signal: fill frequency and delay pool from the limit on OOS V, per timeframe."""
+def placebo_col(T: dict[str, np.ndarray], M: dict[str, np.ndarray], key: str = "V") -> np.ndarray:
+    """Placebo R per signal: fill frequency and delay pool from the limit on the OOS part of sample ``key``, per
+    timeframe."""
     out = np.full(T["B"].size, math.nan)
-    base = M["V"] & M["OOS"] & T["_has"]
+    base = M[key] & M["OOS"] & T["_has"]
     for tf in ("4h", "1d"):
         mt = base & (T["tf"] == tf)
         f = float(np.mean(T["fill"][mt])) if mt.any() else 0.0
@@ -264,24 +289,25 @@ def placebo_col(T: dict[str, np.ndarray], M: dict[str, np.ndarray]) -> np.ndarra
 
 
 def stage_report(a: argparse.Namespace, out: Path) -> None:
-    gp = out / "gate.json"
+    key = a.sample
+    gp = out / f"gate{suffix(key)}.json"
     if not gp.exists() or not json.loads(gp.read_text()).get("pass"):
-        emit("ворота не пройдено або не рахувалися: середні не рахуються (реєстрація)")
+        emit(f"ворота ({key}) не пройдено або не рахувалися: середні не рахуються (реєстрація)")
         return
     T, M = load(a, out)
-    V, P, IS, OOS = M["V"], M["P"], M["IS"], M["OOS"]
+    S, P, IS, OOS = M[key], M["P"], M["IS"], M["OOS"]
     D = T["D"]
-    PL = placebo_col(T, M)
-    m = V & OOS
+    PL = placebo_col(T, M, key)
+    m = S & OOS
     r = v3.paired(T, D, m)
     rp = v3.paired(T, T["LS"] - PL, m)
     adj = holm([r["p1"] if np.isfinite(r["p1"]) else 1.0, rp["p1"] if np.isfinite(rp["p1"]) else 1.0])
     emit(
-        f"OOS V: n {int(r['n'])}, Δ ліміт − база {fmtd(r)} p₁ {r['p1']:.4f} (Холм {adj[0]:.4f}); ліміт − плацебо {fmtd(rp)} p₁ {rp['p1']:.4f} (Холм {adj[1]:.4f})"
+        f"OOS {key}: n {int(r['n'])}, Δ ліміт − база {fmtd(r)} p₁ {r['p1']:.4f} (Холм {adj[0]:.4f}); ліміт − плацебо {fmtd(rp)} p₁ {rp['p1']:.4f} (Холм {adj[1]:.4f})"
     )
     ok = m & np.isfinite(D)
     emit(
-        f"  E[R] на сигнал OOS V: база {np.mean(T['B'][ok]):+.3f}, ліміт {np.mean(T['LS'][ok]):+.3f}, плацебо {np.nanmean(PL[ok]):+.3f}; ×1.5: база {np.nanmean(T['B15'][ok]):+.3f}, ліміт {np.nanmean(T['LS15'][ok]):+.3f}"
+        f"  E[R] на сигнал OOS {key}: база {np.mean(T['B'][ok]):+.3f}, ліміт {np.mean(T['LS'][ok]):+.3f}, плацебо {np.nanmean(PL[ok]):+.3f}; ×1.5: база {np.nanmean(T['B15'][ok]):+.3f}, ліміт {np.nanmean(T['LS15'][ok]):+.3f}"
     )
     fl = ok & T["fill"]
     emit(
@@ -291,8 +317,22 @@ def stage_report(a: argparse.Namespace, out: Path) -> None:
     emit(
         f"  угод / рік: база {ok.sum() / yrs:.0f}, ліміт {fl.sum() / yrs:.0f}; сума R / рік: база {np.sum(T['B'][ok]) / yrs:+.1f}, ліміт {np.sum(T['LS'][ok]) / yrs:+.1f}"
     )
-    ri, rP, r21 = v3.paired(T, D, V & IS), v3.paired(T, D, P & OOS), v3.paired(T, D, V)
-    emit(f"  IS V Δ {fmtd(ri)}; 2021+ V Δ {fmtd(r21)}; OOS P Δ {fmtd(rP)} (n {int(rP['n'])})")
+    ri, r21 = v3.paired(T, D, S & IS), v3.paired(T, D, S)
+    if key == "V":
+        # first registration, condition (4): delta > 0 on OOS P
+        rP = v3.paired(T, D, P & OOS)
+        emit(f"  IS V Δ {fmtd(ri)}; 2021+ V Δ {fmtd(r21)}; OOS P Δ {fmtd(rP)} (n {int(rP['n'])})")
+        cond4 = bool(rP["m"] > 0)
+    else:
+        # second registration, condition (4): delta > 0 on both disjoint liquidity parts of OOS W
+        rin, rout = v3.paired(T, D, m & M["top250"]), v3.paired(T, D, m & ~M["top250"])
+        rdl, rv = v3.paired(T, D, m & M["demo_list"]), v3.paired(T, D, M["V"] & OOS)
+        emit(f"  IS {key} Δ {fmtd(ri)}; 2021+ {key} Δ {fmtd(r21)}")
+        emit(f"  умова (4): OOS {key} у топ-250 Δ {fmtd(rin)} (n {int(rin['n'])}); поза топ-250 Δ {fmtd(rout)} (n {int(rout['n'])})")
+        emit(
+            f"  описово: OOS {key} у списку демо (топ-100, ≥ $5M) Δ {fmtd(rdl)} (n {int(rdl['n'])}); OOS V першої реєстрації Δ {fmtd(rv)} (n {int(rv['n'])})"
+        )
+        cond4 = bool(rin["m"] > 0 and rout["m"] > 0)
     cells = []
     for lab, c in (
         ("2025", T["year"] == 2025),
@@ -306,10 +346,10 @@ def stage_report(a: argparse.Namespace, out: Path) -> None:
         cells.append((lab, float(np.mean(D[mm])) if mm.any() else math.nan))
     mt, top = v3.drop_top(T, D, ok)
     cells.append(("без топ-5 монет", float(np.nanmean(D[mt]))))
-    emit("  розбивки OOS V (Δ): " + "; ".join(f"{c} {v:+.3f}" for c, v in cells) + f" (топ-5: {', '.join(top)})")
-    v3.per_asset(T, D, V & IS, V & OOS, "S16 ліміт")
+    emit(f"  розбивки OOS {key} (Δ): " + "; ".join(f"{c} {v:+.3f}" for c, v in cells) + f" (топ-5: {', '.join(top)})")
+    v3.per_asset(T, D, S & IS, S & OOS, f"S16 ліміт {key}")
     robust = all(np.isfinite(v) and v > 0 for c, v in cells if c in ("2025", "2026", "long", "short", "без топ-5 монет"))
-    passed = r["m"] > 0 and adj[0] < 0.05 and adj[1] < 0.05 and robust and rP["m"] > 0
+    passed = r["m"] > 0 and adj[0] < 0.05 and adj[1] < 0.05 and robust and cond4
     if passed:
         verdict = "✓ пройшов" + (" (торгова ідея)" if np.mean(T["LS"][ok]) > 0 else " (менший збиток)")
     elif r["m"] > 0 and r["p1"] < 0.05:
@@ -319,7 +359,7 @@ def stage_report(a: argparse.Namespace, out: Path) -> None:
     else:
         verdict = "◯ незначуще, CI сумісний і з 0, і з 0.10R"
     emit(
-        f"\nВЕРДИКТ: {verdict}; стійкість {'так' if robust else 'ні'}; SE бутстрепу {r.get('se', math.nan):.4f}, MDE₈₀ {le.mde80(r.get('se', math.nan), ALPHA):.3f}"
+        f"\nВЕРДИКТ ({key}): {verdict}; стійкість {'так' if robust else 'ні'}; умова (4) {'так' if cond4 else 'ні'}; SE бутстрепу {r.get('se', math.nan):.4f}, MDE₈₀ {le.mde80(r.get('se', math.nan), ALPHA):.3f}"
     )
     new = M["pool"] & ~M["demo"] & T["_has"] & M["demo_l"] & OOS
     emit(
@@ -335,15 +375,22 @@ def main() -> int:
     ap.add_argument("--passport-cache", type=Path, default=Path.home() / ".cache/tradedesk-agents/setup_passport")
     ap.add_argument("--s1-cache", type=Path, default=Path.home() / ".cache/tradedesk-agents/course_s14_ema")
     ap.add_argument("--data-dir", type=Path, default=Path.home() / ".cache/tradedesk-agents/funding_crowding")
+    ap.add_argument(
+        "--sample",
+        choices=("V", "W"),
+        default="V",
+        help="verdict sample: V = first registration (top-250, >= $1M); W = second registration (>= $1M, no rank)",
+    )
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--force", action="store_true")
     a = ap.parse_args()
     out = a.cache_dir
     out.mkdir(parents=True, exist_ok=True)
-    with (a.out or out / f"{a.stage}.txt").open("w") as fh:
+    sfx = "" if a.stage == "run" else suffix(a.sample)
+    with (a.out or out / f"{a.stage}{sfx}.txt").open("w") as fh:
         vsp.OUT["fh"] = fh
-        emit(f"verify_s16_limit_entry --stage {a.stage} at {datetime.now(UTC):%Y-%m-%d %H:%M} UTC")
+        emit(f"verify_s16_limit_entry --stage {a.stage} --sample {a.sample} at {datetime.now(UTC):%Y-%m-%d %H:%M} UTC")
         {"run": stage_run, "gate": stage_gate, "report": stage_report}[a.stage](a, out)
         emit(f"peak rss {vsp.rss_mb():.0f} MB")
     return 0

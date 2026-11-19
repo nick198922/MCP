@@ -7,12 +7,13 @@
 
 ## 0.1. Безпека контракту (лише он-чейн токени)
 - Перп чи спот лише на CEX, BTC/ETH, опціони, Polymarket — крок не застосовується, так і напиши.
-- Токен купуєш он-чейн (EVM: ethereum, bsc, base, arbitrum, polygon, optimism, avalanche) і адреса контракту відома з офіційного джерела проєкту (не за тікером) — спершу `contract_risk(chain, address)`, до всіх інших кроків.
+- Токен купуєш он-чейн (EVM: ethereum, bsc, base, arbitrum, polygon, optimism, avalanche; або solana — адреса mint) і адреса контракту відома з офіційного джерела проєкту (не за тікером) — спершу `contract_risk(chain, address)`, до всіх інших кроків.
+- Solana: симуляції купівлі й продажу немає, тому `honeypot` завжди unknown і `overall` не буває pass → ⚠ і ручна перевірка продажу. Критичні перевірки Solana — non_transferable і default_account_frozen; freezable (freeze authority) — головна ознака Solana-скаму. EVM-перевірки, яких нема в схемі GoPlus Solana (зокрема pausable: паузу Token-2022 GoPlus не показує), перелічені в `not_checked` — назви їх «не перевірено».
 - Будь-який `fail` (список `failed`; критичні — honeypot, cannot_sell_all, cannot_buy, selfdestruct, закритий код, holder_sell_fail_rate при `high_fail_rate` — у `critical_failed`) → ❌ пропустити, далі чекліст не проходь.
 - Кожну перевірку зі списку `unknown` назви поіменно як «не перевірено» — це не ✓. Невідомі honeypot чи cannot_sell_all → ⚠, перевір вручну в 2–3 джерелах до входу.
 - GoPlus покриває не всі токени (для PEPE 23.10 повернув `code 1` з порожнім результатом): `ok=false` чи `goplus` у `missing` → прямо скажи, що контракт не перевірено, і познач ⚠.
 - `honeypot_is` у `missing` (завжди на arbitrum, polygon, optimism, avalanche) → honeypot, cannot_sell_all, buy_tax, sell_tax і holder_sell_fail_rate «не перевірено» другим джерелом, а не ✓; так і напиши.
-- `overall=pass` не доводить безпеку: це евристика двох чекерів (GoPlus і симуляція honeypot.is), що зрізає хвіст −100 %, а не стратегія й не сигнал входу.
+- `overall=pass` (можливий лише на ethereum, bsc, base) не доводить безпеку: це евристика двох чекерів (GoPlus і симуляція honeypot.is), що зрізає хвіст −100 %, а не стратегія й не сигнал входу. На інших EVM-мережах і на Solana чекер один (GoPlus), і `overall` не буває pass.
 
 ## 1. Теза і джерело
 - Один рядок: **чому** ця угода і **що її скасовує** (ціна чи подія, після якої теза хибна).

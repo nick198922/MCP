@@ -406,7 +406,8 @@ def test_address_and_chain_validation():
     assert cr.resolve_chain("ETH") == ("ethereum", "1")
     assert cr.resolve_chain("56") == ("bsc", "56")
     assert cr.resolve_chain("base") == ("base", "8453")
-    assert cr.resolve_chain("solana") is None and cr.resolve_chain(None) is None
+    assert cr.resolve_chain("tron") is None and cr.resolve_chain(None) is None
+    assert cr.resolve_chain("SOL") == ("solana", "solana")  # Solana: see test_contract_risk_solana.py
 
 
 # ---------- MCP tool ----------
@@ -547,6 +548,10 @@ async def test_contract_risk_invalid_arguments_make_no_request():
     srv = make_server(seen=seen)
     env = await call(srv, "contract_risk", chain="ethereum", address="0xnot-an-address")
     assert env["ok"] is False and env["missing"][0]["reason"] == "invalid_argument"
-    env = await call(srv, "contract_risk", chain="solana", address=SHIB)
+    env = await call(srv, "contract_risk", chain="tron", address=SHIB)
     assert env["ok"] is False and env["missing"][0]["field"] == "chain"
+    assert "solana" in env["missing"][0]["detail"]
+    # An EVM address is not a Solana mint (base58 has no '0' or 'x').
+    env = await call(srv, "contract_risk", chain="solana", address=SHIB)
+    assert env["ok"] is False and env["missing"][0]["field"] == "address"
     assert seen == []

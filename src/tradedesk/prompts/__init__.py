@@ -94,7 +94,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
         title="Trade plan / pre-trade checklist",
         description=(
             "Trade plan before opening a position, in Ukrainian: honest frame (no entry-timing edge is verified), contract "
-            "safety via contract_risk for on-chain EVM tokens (any fail = skip; unknown is not pass; n/a for CEX-only), thesis and "
+            "safety via contract_risk for on-chain EVM and Solana tokens (any fail = skip; unknown is not pass; n/a for CEX-only), thesis and "
             "source, regime, derivatives positioning, volatility vs stop distance, calendar (defined-risk alternatives on "
             "macro days: options or Polymarket vs touch_probability), "
             "position size from account and risk %, execution, "

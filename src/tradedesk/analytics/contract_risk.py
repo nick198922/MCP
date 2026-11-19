@@ -16,6 +16,12 @@ the overall verdict is `pass` only when every check passed. A filter against -10
 and sell_tax: the worse verdict wins, a disagreement is reported, and without a honeypot.is answer those four
 checks cannot pass. TAX_GAP_MAX (2 percentage points) is our own threshold. honeypot.is's holder sell fail-rate
 flags are a separate check of their own (holder_sell_fail_rate), with the source's own severity.
+
+`assess_solana` reads GoPlus's Solana schema with the same thresholds and rules: the SPL token-program powers that
+can block a sale or dilute holders (non-transferable, frozen by default, freeze / mint / close authority, permanent
+delegate, transfer hook, transfer fee and the authorities that can change them) replace the EVM contract flags;
+EVM-only checks are listed in `not_checked`, never invented. There is no second source and no sell simulation for
+Solana, so its `honeypot` check is always unknown and the overall verdict is never pass.
 """
 
 from __future__ import annotations
@@ -34,6 +40,7 @@ V2_LIQ_MIN = 0.90  # ours: lp_locked can pass only if V2-style pools hold this s
 TOP10_MAX = 0.30  # ours (the course gives no number; top-N without clustering understates it)
 
 EVM_ADDRESS = re.compile(r"0x[0-9a-fA-F]{40}")  # always used with fullmatch (`$` would let a trailing "\n" pass)
+SOLANA_ADDRESS = re.compile(r"[1-9A-HJ-NP-Za-km-z]{32,44}")  # base58, fullmatch only
 BURN_ADDRESSES = frozenset(
     {
         "0x0000000000000000000000000000000000000000",
@@ -59,14 +66,20 @@ CHAINS: dict[str, str] = {
     "optimism": "10",
     "avalanche": "43114",
 }
+SOLANA = "solana"  # GoPlus has a separate Solana endpoint and schema (assess_solana)
+SUPPORTED = (*CHAINS, SOLANA)
 _ALIASES = {"eth": "ethereum", "bnb": "bsc", "arb": "arbitrum", "matic": "polygon", "op": "optimism", "avax": "avalanche"}
 _ALIASES |= {v: k for k, v in CHAINS.items()}  # numeric chain ids are accepted too
+_ALIASES["sol"] = SOLANA
 
 
 def resolve_chain(chain: str | None) -> tuple[str, str] | None:
-    """('ethereum', '1') for 'ethereum', 'eth' or '1'; None for unsupported chains."""
+    """('ethereum', '1') for 'ethereum', 'eth' or '1'; ('solana', 'solana') for 'solana' or 'sol'; None for
+    unsupported chains."""
     c = (chain or "").strip().lower()
     c = _ALIASES.get(c, c)
+    if c == SOLANA:
+        return SOLANA, SOLANA
     return (c, CHAINS[c]) if c in CHAINS else None
 
 
@@ -76,6 +89,14 @@ def valid_evm_address(address: str | None) -> tuple[str | None, str | None]:
     if not EVM_ADDRESS.fullmatch(a):
         return None, f"invalid EVM token address: {clean_text(a, 50)!r} (expected 0x followed by 40 hex characters)"
     return a.lower(), None
+
+
+def valid_solana_address(address: str | None) -> tuple[str | None, str | None]:
+    """A base58 mint address (32-44 characters, case kept: base58 is case-sensitive), or (None, error)."""
+    a = (address or "").strip()
+    if not SOLANA_ADDRESS.fullmatch(a):
+        return None, f"invalid Solana mint address: {clean_text(a, 50)!r} (expected 32-44 base58 characters)"
+    return a, None
 
 
 def _flag(v: Any) -> bool | None:
@@ -257,23 +278,30 @@ def _lp_check(token: dict[str, Any], now: datetime) -> dict[str, Any]:
     return _check("lp_locked", verdict, "red_flag", round(locked, 6), thr, detail)
 
 
+_TOP10_THR = f"<= {TOP10_MAX} of non-burned supply (our threshold)"
+
+
 def _top10_check(token: dict[str, Any]) -> dict[str, Any]:
-    thr = f"<= {TOP10_MAX} of non-burned supply (our threshold)"
     rows = _holders(token.get("holders"))
     if not rows:
-        return _check("top10_holders", "unknown", "red_flag", None, thr, "no holder data")
+        return _check("top10_holders", "unknown", "red_flag", None, _TOP10_THR, "no holder data")
     pools = {_addr(d.get("pair")) for d in _holders(token.get("dex"))} - {None}
+    return _top10_verdict([(_dec(h.get("percent")), _is_burn(h), _addr(h.get("address")) in pools) for h in rows], "DEX pools")
+
+
+def _top10_verdict(rows: list[tuple[float | None, bool, bool]], pools_note: str) -> dict[str, Any]:
+    """top10_holders from (share, is_burn, is_dex_pool) per listed holder; `pools_note` names what was excluded."""
+    thr = _TOP10_THR
     burned = 0.0
     shares = []
     skipped = 0
-    for h in rows:
-        share = _dec(h.get("percent"))
+    for share, burn, pool in rows:
         if share is None or share < 0:
             skipped += 1
             continue
-        if _is_burn(h):
+        if burn:
             burned += share
-        elif _addr(h.get("address")) not in pools:
+        elif not pool:
             shares.append(share)
     if not shares:
         return _check(
@@ -289,7 +317,7 @@ def _top10_check(token: dict[str, Any]) -> dict[str, Any]:
         return _check("top10_holders", "unknown", "red_flag", None, thr, "listed burned share is 100 %")
     top = round(sum(sorted(shares, reverse=True)[:10]) / live, 6)
     detail = (
-        f"10 largest listed holders as a share of non-burned supply (burned {burned:.4f} excluded, DEX pools excluded); "
+        f"10 largest listed holders as a share of non-burned supply (burned {burned:.4f} excluded, {pools_note} excluded); "
         "wallets are not clustered and exchange wallets are not separated"
     )
     if top > TOP10_MAX:
@@ -417,6 +445,237 @@ def assess(
             "liquidity_usd": None if liquidity_usd is None else round(liquidity_usd, 2),
             "market_cap_usd": None if market_cap_usd is None else round(market_cap_usd, 2),
         },
+    }
+
+
+# ---------- Solana: GoPlus solana/token_security ----------
+
+# Burn sink for SPL tokens (Solana burns usually reduce supply instead, so they never show up as a holder).
+SOL_BURN_ADDRESSES = frozenset({"1nc1nerator11111111111111111111111111111111"})
+# Pool authorities that own the token vaults of many pools at once, so a pool's id never appears as the holder:
+# Raydium AMM v4 and Raydium CPMM (both are top wSOL holders in the live sample of 2026-11-19).
+SOL_DEX_AUTHORITIES = frozenset({"5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1", "GpMZbSM2GgvTKHJirzeGfMFoaZ8UR2X7F4v8vHTvxFbL"})
+# SPL AccountState enum: 1 = Initialized, 2 = Frozen (GoPlus sends the number as a string; "1" live 2026-11-19).
+_ACCOUNT_STATE = {"1": "initialized", "2": "frozen"}
+# EVM checks without a field in the GoPlus Solana schema: left out of `checks` and listed here, never invented.
+SOLANA_NOT_CHECKED: dict[str, str] = {
+    **dict.fromkeys(
+        ("cannot_sell_all", "cannot_buy", "holder_sell_fail_rate"),
+        "no buy/sell simulation for Solana (honeypot.is covers ethereum, bsc and base only; GoPlus Solana has no "
+        "such flag); the always-unknown honeypot check stands for them",
+    ),
+    **dict.fromkeys(
+        ("buy_tax", "sell_tax"), "SPL tokens have no buy/sell tax; a Token-2022 transfer fee (transfer_tax) hits every transfer"
+    ),
+    **dict.fromkeys(
+        ("open_source", "proxy", "selfdestruct", "external_call"),
+        "SPL mints run on the shared token programs, there is no per-token contract code",
+    ),
+    **dict.fromkeys(
+        ("hidden_owner", "ownership_renounced"), "Solana tokens have authorities instead of an owner (see the authority checks)"
+    ),
+    "pausable": "Token-2022 Pausable extension (a pause authority stops every transfer): no field in the GoPlus Solana schema, not checked",
+    **dict.fromkeys(("blacklist", "whitelist"), "covered by freezable and default_account_frozen"),
+    **dict.fromkeys(("trading_cooldown", "anti_whale_modifiable"), "no such field in the GoPlus Solana schema"),
+    "same_creator_honeypot": "GoPlus Solana has no creator honeypot history; its per-address malicious_address flag "
+    "(authorities, creators) is not read yet",
+}
+SOL_HONEYPOT_DETAIL = (
+    "no buy/sell simulation for Solana (honeypot.is does not cover it, GoPlus Solana has no honeypot flag); "
+    "token-program powers are checked separately, Token-2022 pause and pool-program blocks are not visible"
+)
+
+
+def _sol_addr(v: Any) -> str | None:
+    """A payload base58 address, stripped, only if well-formed (else not echoed or matched)."""
+    if not isinstance(v, str):
+        return None
+    s = v.strip()
+    return s if SOLANA_ADDRESS.fullmatch(s) else None
+
+
+def _status(v: Any) -> Any:
+    """`status` of a GoPlus Solana authority object {"authority": [...], "status": "0"/"1"}; None otherwise."""
+    return v.get("status") if isinstance(v, dict) else None
+
+
+def _sol_transfer_tax(token: dict[str, Any]) -> dict[str, Any]:
+    """Token-2022 transfer fee as a decimal (GoPlus fee_rate = basis points / 10 000: BERN 0.0269, live 2026-11-19).
+    The worse of the current and every scheduled rate counts (GoPlus `current_fee_rate` can be the older one once
+    the scheduled epoch has passed). `{}` = no transfer-fee extension = 0."""
+    thr = f"<= {TAX_MAX}"
+    tf = token.get("transfer_fee")
+    if not isinstance(tf, dict):
+        return _check("transfer_tax", "unknown", "red_flag", None, thr, "transfer fee not reported")
+    if not tf:
+        return _check("transfer_tax", "pass", "red_flag", 0.0, thr, "no Token-2022 transfer-fee extension")
+    cur = tf.get("current_fee_rate")
+    rates = [_dec(cur.get("fee_rate")) if isinstance(cur, dict) else None]
+    sched = tf.get("scheduled_fee_rate")
+    if isinstance(sched, list):
+        rates += [_dec(s.get("fee_rate")) if isinstance(s, dict) else None for s in sched]
+    elif sched is not None:
+        rates.append(None)
+    known = [r for r in rates if r is not None and r >= 0]
+    detail = "Token-2022 transfer fee on every transfer, decimal (0.05 = 5 %), worse of current and scheduled rates"
+    if known and max(known) > TAX_MAX:
+        return _check("transfer_tax", "fail", "red_flag", round(max(known), 6), thr, detail)
+    if not known or len(known) < len(rates):
+        return _check("transfer_tax", "unknown", "red_flag", None, thr, "transfer fee rate missing or unparsable")
+    return _check("transfer_tax", "pass", "red_flag", round(max(known), 6), thr, detail)
+
+
+def _sol_default_frozen(token: dict[str, Any]) -> dict[str, Any]:
+    raw = token.get("default_account_state")
+    key = raw.strip() if isinstance(raw, str) else (str(raw) if isinstance(raw, int) and not isinstance(raw, bool) else None)
+    state = _ACCOUNT_STATE.get(key or "")
+    verdict = {"initialized": "pass", "frozen": "fail"}.get(state or "", "unknown")
+    detail = {
+        "pass": "new token accounts start usable",
+        "fail": "new token accounts start frozen: a buyer cannot move or sell until the freeze authority thaws them",
+        "unknown": "default account state missing or not recognised",
+    }[verdict]
+    return _check("default_account_frozen", verdict, "critical", state, "must be initialized (SPL AccountState 1)", detail)
+
+
+def _sol_transfer_hook(token: dict[str, Any]) -> dict[str, Any]:
+    raw = token.get("transfer_hook")
+    thr = "no transfer hook program"
+    if not isinstance(raw, list):
+        return _check("transfer_hook", "unknown", "red_flag", None, thr, "transfer hook not reported")
+    if raw:
+        return _check("transfer_hook", "fail", "red_flag", len(raw), thr, "a custom program runs on every transfer and can block it")
+    return _check("transfer_hook", "pass", "red_flag", 0, thr, "no transfer hook")
+
+
+def _sol_lp_check(token: dict[str, Any], liquidity_usd: float | None) -> dict[str, Any]:
+    """Liquidity-weighted burned/locked share of the pools GoPlus lists (`dex[].burn_percent`, percent 0-100, e.g.
+    100 on a BERN pool live 2026-11-19; null = not reported). Liquidity outside the listed pools (DexScreener
+    liquidity above the listed TVL) and pools without burn_percent count as unknown: pass needs the known locked
+    share to reach LP_LOCKED_MIN, fail needs even the best case (all unknown liquidity locked) to stay below it."""
+    thr = f">= {LP_LOCKED_MIN} of pool liquidity (TVL-weighted) burned or locked per GoPlus burn_percent (our threshold)"
+    rows = _holders(token.get("dex"))
+    if not rows:
+        return _check("lp_locked", "unknown", "red_flag", None, thr, "no pool data")
+    listed = locked = no_burn = 0.0
+    for d in rows:
+        tvl = _dec(d.get("tvl"))
+        if tvl is None or tvl < 0:
+            return _check("lp_locked", "unknown", "red_flag", None, thr, "pool TVL not reported")
+        bp = _dec(d.get("burn_percent"))
+        if bp is not None and not 0 <= bp <= 100:
+            return _check("lp_locked", "unknown", "red_flag", None, thr, "burn_percent outside 0-100 (inconsistent data)")
+        listed += tvl
+        if bp is None:
+            no_burn += tvl
+        else:
+            locked += tvl * bp / 100.0
+    whole = max(listed, liquidity_usd or 0.0)
+    if whole <= 0:
+        return _check("lp_locked", "unknown", "red_flag", None, thr, "pools report no liquidity")
+    share = locked / whole
+    best = (whole - listed + locked + no_burn) / whole
+    verdict = "pass" if share >= LP_LOCKED_MIN else ("fail" if best < LP_LOCKED_MIN else "unknown")
+    detail = (
+        f"burned or locked share of pool liquidity over the {len(rows)} pools GoPlus lists (TVL {listed:.2f} USD; "
+        f"without burn_percent {no_burn / whole:.4f}; outside the listed pools {(whole - listed) / whole:.4f} of "
+        f"{whole:.2f} USD); lock end times are not reported for Solana pools"
+    )
+    return _check("lp_locked", verdict, "red_flag", round(share, 6), thr, detail)
+
+
+def _sol_top10_check(token: dict[str, Any]) -> dict[str, Any]:
+    rows = _holders(token.get("holders"))
+    if not rows:
+        return _check("top10_holders", "unknown", "red_flag", None, _TOP10_THR, "no holder data")
+    supply = _dec(token.get("total_supply"))
+    if supply is None or supply <= 0:  # wSOL live 2026-11-19: total_supply "0" and every share "0"
+        return _check("top10_holders", "unknown", "red_flag", None, _TOP10_THR, "total supply not reported, so holder shares are unusable")
+    pools = ({_sol_addr(d.get("id")) for d in _holders(token.get("dex"))} - {None}) | SOL_DEX_AUTHORITIES
+
+    def burn(h: dict[str, Any]) -> bool:
+        if _sol_addr(h.get("account")) in SOL_BURN_ADDRESSES:
+            return True
+        tag = h.get("tag")
+        return isinstance(tag, str) and tag.strip().lower() in _BURN_TAGS and _flag(h.get("is_locked")) is True
+
+    entries = [(_dec(h.get("percent")), burn(h), _sol_addr(h.get("account")) in pools) for h in rows]
+    if not any(s is not None and s > 0 for s, _, _ in entries):  # positive supply but every listed share 0 or missing
+        return _check("top10_holders", "unknown", "red_flag", None, _TOP10_THR, "every listed holder share is zero or missing")
+    return _top10_verdict(entries, "DEX pools and Raydium pool authorities")
+
+
+def assess_solana(token: dict[str, Any], *, liquidity_usd: float | None = None, market_cap_usd: float | None = None) -> dict[str, Any]:
+    """Per-check verdicts for one GoPlus solana/token_security entry, with the EVM thresholds and the same
+    pass / fail / unknown rules (missing = unknown, never pass). There is no buy/sell simulation, so `honeypot` is
+    always unknown (critical) and `overall` is never pass; the token-program powers that can block a sale
+    (non-transferable, frozen by default, freeze authority, transfer hook, permanent delegate) are checked
+    separately; EVM-only checks are listed in `not_checked`."""
+    flat = {
+        f: _status(token.get(f))
+        for f in (
+            "freezable",
+            "mintable",
+            "closable",
+            "balance_mutable_authority",
+            "transfer_fee_upgradable",
+            "transfer_hook_upgradable",
+            "default_account_state_upgradable",
+        )
+    } | {"non_transferable": token.get("non_transferable")}
+    checks = [
+        # Always unknown: without a sell simulation `overall` can never be pass on Solana.
+        _check("honeypot", "unknown", "critical", None, "buy and sell simulation must succeed", SOL_HONEYPOT_DETAIL),
+        _flags_check("non_transferable", flat, ("non_transferable",), "critical", "the token cannot be transferred, so it cannot be sold"),
+        _sol_default_frozen(token),
+        _flags_check(
+            "freezable",
+            flat,
+            ("freezable",),
+            "red_flag",
+            "freeze authority set: holders' token accounts can be frozen, which blocks selling (the usual Solana honeypot)",
+        ),
+        _sol_transfer_hook(token),
+        _sol_transfer_tax(token),
+        _flags_check("tax_modifiable", flat, ("transfer_fee_upgradable",), "red_flag", "an authority can change the transfer fee"),
+        _flags_check("mintable", flat, ("mintable",), "red_flag", "mint authority set: new tokens can be minted"),
+        _flags_check(
+            "owner_change_balance",
+            flat,
+            ("balance_mutable_authority",),
+            "red_flag",
+            "a permanent delegate can move or burn tokens from any account",
+        ),
+        _flags_check("closable", flat, ("closable",), "red_flag", "mint close authority set"),
+        _flags_check(
+            "upgradable",
+            flat,
+            ("transfer_hook_upgradable", "default_account_state_upgradable"),
+            "red_flag",
+            "an authority can set or change a transfer hook or make new token accounts frozen by default",
+        ),
+        _sol_lp_check(token, liquidity_usd),
+        _sol_top10_check(token),
+        _liquidity_check(liquidity_usd, market_cap_usd),
+    ]
+    meta = token.get("metadata") if isinstance(token.get("metadata"), dict) else {}
+    holders = _dec(token.get("holder_count"))
+    supply = _dec(token.get("total_supply"))
+    meta_mut = token.get("metadata_mutable")
+    return {
+        "token": {"name": clean_text(meta.get("name"), 40), "symbol": clean_text(meta.get("symbol"), 20)},
+        **_summary(checks),
+        "checks": checks,
+        "not_checked": dict(SOLANA_NOT_CHECKED),
+        "info": {
+            "holder_count": None if holders is None else int(holders),
+            "total_supply": supply,
+            "metadata_mutable": _flag(_status(meta_mut)),
+            "goplus_trusted_token": _flag(token.get("trusted_token")),
+            "liquidity_usd": None if liquidity_usd is None else round(liquidity_usd, 2),
+            "market_cap_usd": None if market_cap_usd is None else round(market_cap_usd, 2),
+        },
+        "second_source": {"provider": "honeypot.is", "available": False, "disagreements": []},
     }
 
 

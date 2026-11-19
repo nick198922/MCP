@@ -17,9 +17,10 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
+from ._text import CTRL_RE as _CTRL
+
 _YEAR_DAYS = 365.0
 ADDR_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
-_CTRL = re.compile(r"[\x00-\x1f\x7f-\x9f​-‏‪-‮⁠-⁤﻿]")
 
 
 def pt_price_to_apy(price: float, days: float) -> float | None:

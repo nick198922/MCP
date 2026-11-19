@@ -46,6 +46,7 @@ QUERY_GUARDED = {
     "alerts_recent",
     "assistant_paper_open",
     "assistant_paper_status",
+    "demo_status",
     "event_study",
     "events_add",
     "events_list",

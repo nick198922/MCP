@@ -151,6 +151,7 @@ NO_NETWORK: set[str] = {
     # the local store (SQLite), the bundled event seed and the in-process health registry
     "alerts_recent",
     "assistant_paper_status",
+    "demo_status",
     "events_add",
     "events_list",
     "forecast_log_status",

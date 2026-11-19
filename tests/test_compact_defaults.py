@@ -2,7 +2,7 @@
 
 The default call of `market_flow`, `hyperliquid_funding_history`, `funding_spread_scan`, `funding_carry_scan`,
 `market_markets`, `polymarket_options_gap`, `market_ohlcv`, `cycle_regime`, `polymarket_search`, `market_tickers`,
-`bybit_option_chain` and `system_health` (without the collector) stays small (<= 8 000 characters of JSON) so it does not flood a chat or an
+`bybit_option_chain`, `demo_status` and `system_health` (without the collector) stays small (<= 8 000 characters of JSON) so it does not flood a chat or an
 agent's context; the full per-bar / per-payment / per-candle series comes only with `include_series=true`, the full scan
 (every row, the per-venue breakdown, per-fetch evidence), every full market / ticker row, every day of the cycle history,
 every full search result or every health field with `include_details=true`. Fakes only (tests/conftest.py, the captured
@@ -28,9 +28,14 @@ from test_cycle_regime import FixtureEx as CycleFixtureEx
 from test_cycle_regime import _down as _cycle_down
 from test_cycle_regime import _fx_handler as _cycle_fx
 from test_cycle_regime import _rt as _cycle_rt
+from test_demo_status import V9 as DEMO_V9
+from test_demo_status import _row as _demo_row
+from test_demo_status import demo_envs, demo_rows
+from test_demo_status import seed as demo_seed
 from test_market_flow import _flow_rt
 from test_pm_gap import END_ABOVE, _book, _market, iso
 from test_server import EXPECTED_TOOLS, call
+from tradedesk.analytics import checkpoint as cp
 from tradedesk.collector.scheduler import PeriodicJob, Scheduler
 from tradedesk.config import Settings
 from tradedesk.providers.liquidations import StreamStats
@@ -776,3 +781,26 @@ async def test_bybit_option_chain_default_is_compact_and_details_are_opt_in():
     # the per-expiry summary is the same either way; only the strike rows and their fields differ
     strip = [{k: v for k, v in e.items() if k != "strikes"} for e in default["data"]["expiries"]]
     assert strip == [{k: v for k, v in e.items() if k != "strikes"} for e in full["data"]["expiries"][:3]]
+
+
+# demo_status (item 409): 40 open positions and 240 closed trades with notes on every setup (the live store of 19.11 had
+# 23 open and 232 closed), so the default answer is bounded by its own cut, not by a small sample.
+async def test_demo_status_default_is_compact_and_details_are_opt_in(tmp_path):
+    rows = [{**x, "link_id": f"{x['link_id']}-{k}"} for k in range(7) for x in demo_rows() if x["status"] == "closed"]
+    rows += [_demo_row(f"op{i}", s.setup, "open", DEMO_V9 + i * 3_600_000) for i, s in enumerate(cp.DEMO * 5)][:40]
+    db = str(tmp_path / "demo.sqlite")
+    await demo_seed(db, rows)
+    default, full = await demo_envs(db, {}, {"include_details": True})
+    assert default["ok"] and full["ok"]
+    assert _size(default) <= MAX_DEFAULT_CHARS, _size(default)
+    assert _size(full) > MAX_DEFAULT_CHARS
+    assert default["data"]["open_count"] == full["data"]["open_count"] == len(full["data"]["open"]) == 40
+    assert len(default["data"]["open"]) == 10 and len(full["data"]["closed_recent"]) == 50
+    # the per-setup numbers, the S12 rule and the notes are the same either way; only lists and per-setup text differ
+    slim = [{k: v for k, v in s.items() if k not in ("name", "source", "notes")} for s in full["data"]["setups"]]
+    for s in slim:
+        s["band"] = {k: v for k, v in s["band"].items() if k != "rolling"}
+        if "fill" in s:
+            s["fill"] = {k: v for k, v in s["fill"].items() if k != "notes"}
+    assert default["data"]["setups"] == slim
+    assert default["data"]["s12_stop_rule"] == full["data"]["s12_stop_rule"] and default["data"]["notes"] == full["data"]["notes"]

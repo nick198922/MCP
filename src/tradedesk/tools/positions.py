@@ -106,7 +106,12 @@ def register(server: MCPServer, rt: Runtime) -> None:
         annotations=READ_ONLY,
         description=(
             "List tracked positions, newest-first. Filter by status (open / closed), instrument "
-            "or tag (substring match on the stored JSON array)."
+            "or tag (substring match on the stored JSON array). "
+            "Rows are the manually added positions of the local store (positions_add), not synced from an exchange. "
+            "Units as stored: opened_ts / closed_ts in Unix seconds (UTC); size in contracts or coins (always > 0, the "
+            "sign is `side`); entry in quote currency; mark in USD per contract / coin; per-contract greeks in the units "
+            "they were entered with (Deribit convention: delta in coin per $, gamma in coin per $^2, vega in USD per 1 "
+            "vol point, theta in USD per day). For net greeks and scenario PnL use positions_risk."
         ),
     )
     async def positions_list(

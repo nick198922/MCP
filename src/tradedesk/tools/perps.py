@@ -1233,7 +1233,13 @@ def register(server: MCPServer, rt: Runtime) -> None:
         annotations=READ_ONLY,
         description=(
             "Open interest for a base asset across venues in USD where available "
-            "(ccxt exchanges, Hyperliquid, Deribit for BTC/ETH). Use to see where leverage sits."
+            "(ccxt exchanges, Hyperliquid, Deribit for BTC/ETH). Use to see where leverage sits. "
+            "A point-in-time snapshot; for OI over time use perps_oi_history. Units: oi_base in base-asset coins as "
+            "reported (ccxt openInterestAmount for the {base}/USDT:USDT perp; Hyperliquid open interest; null for "
+            "Deribit); oi_usd in USD (when a ccxt venue reports no USD value it is estimated as oi_base x last price, "
+            "named in `warnings`; Hyperliquid = coins x mark; Deribit = the perpetual's USD open interest); total_oi_usd "
+            "sums the venues with a USD figure; share is a fraction 0-1 of that total. A venue without a USD figure is "
+            "named in `warnings` and left out of the total; a failing venue goes to `missing`."
         ),
     )
     async def perps_open_interest(base: BASE = "BTC", exchanges: CCXT_VENUES = None) -> dict[str, Any]:
@@ -1319,7 +1325,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "summary.return_pct is in percent (first to last close; 1.5 = 1.5 %); summary.realized_vol_annualized is a "
             "decimal (0.45 = 45 %): stdev of close-to-close log-returns scaled by sqrt(365 days / candle size), "
             "present only with at least 10 closes. A candle with a time, price or volume that is not a finite number in "
-            "range is dropped (named in `warnings`)."
+            "range is dropped (named in `warnings`). "
+            "When to pick it: a Hyperliquid coin (including coins listed only there) over an `hours_back` window; for "
+            "other venues' live candles use market_ohlcv; for long series stored by our collector use ohlcv_history."
         ),
     )
     async def hyperliquid_candles(

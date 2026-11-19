@@ -634,6 +634,52 @@ async def test_bybit_job_stores_a_wall_and_depth_rows(state, tmp_path, monkeypat
         await rt.aclose()
 
 
+async def test_job_still_writes_walls_and_journal_when_closing_the_stream_fails(state, tmp_path, monkeypatch, caplog):
+    caplog.set_level("WARNING", logger="tradedesk.collector")
+    wall = (62_850.0, 40.0)
+    rows = [
+        {"kind": "_open", "feed": "book"},
+        {"kind": "snapshot", "symbol": "BTCUSDT", "ts": T0, "u": 10, "bids": [*BTC_BIDS, wall], "asks": BTC_ASKS},
+        {"kind": "trade", "symbol": "BTCUSDT", "ts": T0 + 100, "price": 62_850.0, "qty": 2.0, "side": "sell"},
+        {"kind": "delta", "symbol": "BTCUSDT", "ts": T0 + 7_000, "u": 11, "bids": [(62_850.0, 0.0)], "asks": []},
+        {"kind": "delta", "symbol": "BTCUSDT", "ts": T0 + 61_000, "u": 12, "bids": [], "asks": [(63_010.0, 2.0)]},
+    ]
+
+    class BadClose:
+        def __init__(self):
+            self._rows = iter(rows)
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self._rows)
+            except StopIteration:
+                raise StopAsyncIteration from None
+
+        async def aclose(self):
+            raise OSError("socket close failed")
+
+    monkeypatch.setattr(obs, "bybit_book_stream", lambda symbols, *, max_seconds, stats: BadClose())
+    rt = await _rt(state, tmp_path)
+    job = BookWallsJob("bybit", ["BTCUSDT"])
+    journaled = []
+
+    async def journal(_rt):
+        journaled.append(True)
+
+    monkeypatch.setattr(job, "_journal", journal)
+    try:
+        assert await job(rt) >= 1  # the wall is still stored
+        (e,) = await rt.store.book_wall_events()
+        assert e["price"] == 62_850.0 and e["reason"] == "withdrawn"
+        assert journaled == [True]
+        assert "closing the stream failed" in caplog.text
+    finally:
+        await rt.aclose()
+
+
 async def test_bybit_job_ends_the_run_on_an_update_id_gap(state, tmp_path, monkeypatch, caplog):
     caplog.set_level("WARNING", logger="tradedesk.collector")
     rows = [

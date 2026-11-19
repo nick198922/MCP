@@ -20,6 +20,7 @@ from ..runtime import Runtime
 from ._util import READ_ONLY, warn_incomplete_range
 
 D = cr.DAY_MS
+COMPACT_HISTORY_DAYS = 10  # days of `history` in the default (compact) answer
 
 CONTEXT_NOTE = (
     "Context, not a signal: the states and thresholds were fixed in card IDEA-20261028-btc-cycle-regime-gauge before "
@@ -102,7 +103,11 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "(trend_confirmed = SMA365's 30-day slope agrees). Precedence: bottom, accumulation, overheat. Returns every "
             "component (spot close, SMA365, price_to_sma, sma_slope_30d, drawdown_365d, dist_30d_low, RSI14, basis7, "
             "funding7, premium7), every rule with its conditions, the nearest other state and what must change to get "
-            "there, a Ukrainian one-liner and the states of the last `history_days` days. Units: decimals (0.01 = "
+            "there, a Ukrainian one-liner and the states of the last `history_days` days with `history_summary` (days "
+            "per state, state changes, the current run). By default the answer is compact: `history` lists only the "
+            "latest 10 days (`history_summary` still covers all `history_days`) and `transitions` keep state, "
+            "n_changes, score and reaches without their `changes` (`closest` keeps them in full); "
+            "include_details=true returns every day and every transition's changes. Units: decimals (0.01 = "
             "1 %); funding7 simple-annualised (Binance base 0.01 %/8 h = 0.1095); basis7 = mean of 7 daily perp/spot "
             "closes - 1; RSI in points. Data: Binance spot and USD-M daily klines, premium-index klines and funding "
             "history (needs about 400 days of spot history). Caveats: not backtested yet; few independent cycles, so "
@@ -113,8 +118,24 @@ def register(server: MCPServer, rt: Runtime) -> None:
     async def cycle_regime(
         base: Annotated[str, Field(description="Base asset ticker, e.g. 'BTC' (Binance BASEUSDT spot and USD-M perp).")] = "BTC",
         history_days: Annotated[
-            int, Field(ge=0, le=365, description="Closed days of state history to return, oldest first (0 = none).")
+            int,
+            Field(
+                ge=0,
+                le=365,
+                description="Closed days of state history to evaluate, oldest first (0 = none); `history_summary` "
+                "covers all of them, `history` lists the latest 10 unless include_details=true.",
+            ),
         ] = 90,
+        include_details: Annotated[
+            bool,
+            Field(
+                description=(
+                    "Return every day of `history` and the `changes` of every transition; false (default) = a compact "
+                    "answer: the latest 10 days and transitions without their changes. The state, components, rules, "
+                    "closest, line_ua and history_summary are the same either way."
+                )
+            ),
+        ] = False,
     ) -> dict[str, Any]:
         b = Builder()
         sym_base = (base or "").strip().upper()
@@ -157,4 +178,18 @@ def register(server: MCPServer, rt: Runtime) -> None:
         b.warn(UNITS_NOTE)
         b.warn(TREND_NOTE)
         b.warn(CLOSEST_NOTE)
-        return b.build(round_tree({"base": sym_base, "history_days": history_days, **data}))
+        out = {"base": sym_base, "history_days": history_days, **data}
+        history = out.pop("history")
+        out["history_summary"] = cr.history_summary(history)
+        if not include_details:
+            cut = []
+            if len(history) > COMPACT_HISTORY_DAYS:
+                cut.append(f"the latest {COMPACT_HISTORY_DAYS} of {len(history)} days of history (history_summary covers all)")
+                history = history[-COMPACT_HISTORY_DAYS:]
+            if any(t.get("changes") for t in out["transitions"]):
+                cut.append("transitions without their changes (closest keeps them)")
+                out["transitions"] = [{k: v for k, v in t.items() if k != "changes"} for t in out["transitions"]]
+            if cut:
+                b.warn(f"compact answer: {'; '.join(cut)}; include_details=true for all")
+        out["history"] = history
+        return b.build(round_tree(out))

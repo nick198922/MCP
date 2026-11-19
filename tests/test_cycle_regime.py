@@ -272,7 +272,7 @@ def _rt(spot=_spot_handler, futures=_futures_handler, ex=CycleEx) -> Runtime:
 async def test_cycle_regime_tool_happy_path():
     rt = _rt()
     srv, _ = build_server(rt)
-    env = await call(srv, "cycle_regime")
+    env = await call(srv, "cycle_regime", include_details=True)
     await rt.aclose()
     assert env["ok"] and env["missing"] == []
     d = env["data"]
@@ -379,7 +379,7 @@ async def test_cycle_regime_tool_on_real_binance_responses_of_28_10():
     rt = _rt(spot=_fx_handler, futures=_fx_handler, ex=FixtureEx)
     rt.now = lambda: FX_NOW
     srv, _ = build_server(rt)
-    env = await call(srv, "cycle_regime", base="BTC", history_days=90)
+    env = await call(srv, "cycle_regime", base="BTC", history_days=90, include_details=True)
     await rt.aclose()
     assert env["ok"] and env["missing"] == [] and not any("incomplete" in w for w in env["warnings"])
     # BTC on Binance: no calendar gaps, a steady 8 h funding interval
@@ -409,6 +409,24 @@ async def test_cycle_regime_tool_on_real_binance_responses_of_28_10():
     assert {s: sum(h["state"] == s for h in hist) for s in ("decline", "accumulation", "growth")} == {
         "decline": 35, "accumulation": 50, "growth": 5,
     }  # fmt: skip
+
+
+def test_history_summary_counts_states_changes_and_the_current_run():
+    states = ["decline", None, "decline", "accumulation", "accumulation", None, "growth", "growth", "growth"]
+    hist = [{"date": f"2026-10-{i + 1:02d}", "state": s, "close": 1.0} for i, s in enumerate(states)]
+    # changes over decided days only (as the brief counts them): decline -> accumulation -> growth
+    assert cr.history_summary(hist) == {
+        "days": 9,
+        "first_date": "2026-10-01",
+        "last_date": "2026-10-09",
+        "state_days": {"accumulation": 2, "growth": 3, "decline": 2, "undecided": 2},
+        "changes": 2,
+        "current_run_days": 3,
+        "current_run_since": "2026-10-07",
+    }
+    one = cr.history_summary([{"date": "2026-10-01", "state": None}])
+    assert one["state_days"] == {"undecided": 1} and (one["current_run_days"], one["current_run_since"]) == (1, "2026-10-01")
+    assert cr.history_summary([]) is None
 
 
 async def test_premium_index_klines_provider_on_the_real_sample():

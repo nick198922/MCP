@@ -368,8 +368,9 @@ async def build_snapshot(rt: "Runtime") -> dict[str, Any]:
             "flow_btc": ("market_flow", {"base": "BTC", "timeframe": "1h", "days": FLOW_TAB_DAYS, "include_series": True}),
             "flow_eth": ("market_flow", {"base": "ETH", "timeframe": "1h", "days": FLOW_TAB_DAYS, "include_series": True}),
             # the brief's «Режим циклу» line and state-change message (IDEA-20261028-btc-cycle-regime-gauge): today's
-            # state and 30 days of states (yesterday vs the day before, and how often it changed)
-            "cycle": ("cycle_regime", {"base": "BTC", "history_days": CYCLE_HISTORY_DAYS}),
+            # state and 30 days of states (yesterday vs the day before, and how often it changed): every day, not the
+            # compact default of the latest 10
+            "cycle": ("cycle_regime", {"base": "BTC", "history_days": CYCLE_HISTORY_DAYS, "include_details": True}),
             # the brief's one descriptive liquidity line (total stablecoin supply, 7 / 30 d change); not a signal
             "stablecoins": ("stablecoin_supply", {}),
         }

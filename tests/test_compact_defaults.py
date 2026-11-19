@@ -1,20 +1,29 @@
-"""Compact default answers (BACKLOG «великі відповіді за замовчуванням», standing card items 379, 381, 382 and 390).
+"""Compact default answers (BACKLOG «великі відповіді за замовчуванням», standing card items 379, 381, 382, 390 and 405).
 
 The default call of `market_flow`, `hyperliquid_funding_history`, `funding_spread_scan`, `funding_carry_scan`,
-`market_markets`, `polymarket_options_gap` and `market_ohlcv` stays small (<= 8 000 characters of JSON) so it does not
-flood a chat or an agent's context; the full per-bar / per-payment / per-candle series comes only with
-`include_series=true`, the full scan (every row, the per-venue breakdown, per-fetch evidence) or every full market row
-with `include_details=true`. Fakes only (tests/conftest.py, the captured market_flow responses of 2026-10-28). No network.
+`market_markets`, `polymarket_options_gap`, `market_ohlcv`, `cycle_regime` and `polymarket_search` stays small
+(<= 8 000 characters of JSON) so it does not flood a chat or an agent's context; the full per-bar / per-payment /
+per-candle series comes only with `include_series=true`, the full scan (every row, the per-venue breakdown, per-fetch
+evidence), every full market row, every day of the cycle history or every full search result with
+`include_details=true`. Fakes only (tests/conftest.py, the captured market_flow responses of 2026-10-28, the Binance
+daily rows of 2026-10-28, the Gamma search answer of 2026-11-19). No network.
 """
 
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import ccxt
 import httpx
 
 from conftest import NOW, FakeEx, State, make_transports
+from test_cycle_regime import FX_NOW as CYCLE_FX_NOW
+from test_cycle_regime import DownEx as CycleDownEx
+from test_cycle_regime import FixtureEx as CycleFixtureEx
+from test_cycle_regime import _down as _cycle_down
+from test_cycle_regime import _fx_handler as _cycle_fx
+from test_cycle_regime import _rt as _cycle_rt
 from test_market_flow import _flow_rt
 from test_pm_gap import END_ABOVE, _book, _market, iso
 from test_server import call
@@ -24,6 +33,7 @@ from tradedesk.server import build_server
 from tradedesk.tools.pm_gap import COMPACT_FIELDS
 
 MAX_DEFAULT_CHARS = 8_000
+FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def _size(env: dict) -> int:
@@ -417,3 +427,121 @@ async def test_market_ohlcv_compact_still_reports_a_provider_failure(server):
     env = await call(server, "market_ohlcv", exchange="binanceusdm", symbol="DOWN/USDT:USDT")
     assert env["ok"] is False and env["data"] is None
     assert [(m["field"], m["provider"]) for m in env["missing"]] == [("ohlcv", "ccxt:binanceusdm")]
+
+
+# cycle_regime (item 405): the real Binance responses of 28.10 (tests/fixtures/cycle_regime_btc_1d_2026-10-28.json), the
+# default call (BTC, 90 days of history) about as long as the live one of 19.11 (12 443 characters before this change).
+async def _cycle_envs(*args: dict, spot=_cycle_fx, futures=_cycle_fx, ex=CycleFixtureEx) -> list[dict]:
+    rt = _cycle_rt(spot=spot, futures=futures, ex=ex)
+    rt.now = lambda: CYCLE_FX_NOW
+    try:
+        srv, _ = build_server(rt)
+        return [await call(srv, "cycle_regime", **a) for a in args]
+    finally:
+        await rt.aclose()
+
+
+async def test_cycle_regime_default_is_compact_and_details_are_opt_in():
+    default, full, short = await _cycle_envs({}, {"include_details": True}, {"history_days": 5})
+    assert default["ok"] and full["ok"] and short["ok"] and not default["missing"]
+    assert _size(default) <= MAX_DEFAULT_CHARS, _size(default)
+    assert _size(full) > MAX_DEFAULT_CHARS
+    d, f = default["data"], full["data"]
+    # the latest 10 of 90 days; the summary covers all 90 either way (the counts of test_cycle_regime's fixture test)
+    assert len(f["history"]) == 90 and d["history"] == f["history"][-10:]
+    assert d["history_summary"] == f["history_summary"]
+    s = f["history_summary"]
+    assert s["state_days"] == {"accumulation": 50, "growth": 5, "decline": 35} and s["days"] == 90
+    assert (s["first_date"], s["last_date"]) == ("2026-07-30", "2026-10-27") == (f["history"][0]["date"], d["history"][-1]["date"])
+    # transitions without their changes; closest (= the first transition) keeps them in full
+    assert len(f["transitions"]) == 4 and all(t["changes"] for t in f["transitions"])
+    assert d["transitions"] == [{k: v for k, v in t.items() if k != "changes"} for t in f["transitions"]]
+    assert d["closest"] == f["closest"] == f["transitions"][0]
+    same = {"history", "transitions"}
+    assert {k: v for k, v in d.items() if k not in same} == {k: v for k, v in f.items() if k not in same}
+    # one evidence item per provider call already (each paginated range is one item): nothing to merge
+    calls = [(e["provider"], e["tool"]) for e in default["evidence"]]
+    assert len(calls) == len(set(calls)) == 4 and sorted(calls) == sorted((e["provider"], e["tool"]) for e in full["evidence"])
+    # the context / not-backtested caveats stay in the compact answer
+    assert any("not a signal" in w and "NOT backtested" in w for w in default["warnings"])
+    assert any("compact answer: the latest 10 of 90 days of history" in w and "transitions" in w for w in default["warnings"])
+    assert not any("compact answer" in w for w in full["warnings"])
+    # ten days or fewer: every day listed, only the transitions are cut
+    assert len(short["data"]["history"]) == 5 and short["data"]["history_summary"]["days"] == 5
+    assert [w for w in short["warnings"] if "compact answer" in w] == [
+        "compact answer: transitions without their changes (closest keeps them); include_details=true for all"
+    ]
+
+
+async def test_cycle_regime_compact_still_reports_a_provider_failure():
+    (env,) = await _cycle_envs({}, futures=_cycle_down, ex=CycleDownEx)  # perp, premium index and funding down
+    assert env["ok"] and {m["field"] for m in env["missing"]} == {"perp_klines", "premium_index", "funding"}
+    assert env["data"]["state"] is None and env["data"]["transitions"] == [] and len(env["data"]["history"]) == 10
+    days = env["data"]["history_summary"]["state_days"]  # a day the price alone cannot decide is counted as undecided
+    assert sum(days.values()) == 90 and days["undecided"] > 0 and env["data"]["history"][-1]["state"] is None
+    assert _size(env) <= MAX_DEFAULT_CHARS, _size(env)
+    (env,) = await _cycle_envs({}, spot=_cycle_down)  # no spot: no answer at all, the envelope still comes back
+    assert env["ok"] is False and env["data"] is None and "spot_klines" in {m["field"] for m in env["missing"]}
+
+
+# polymarket_search (item 405): the real Gamma /public-search?q=bitcoin answer of 19.11 (5 events, 115 markets, trimmed to
+# the fields the tool reads); the default call (limit 20) about as long as the live one (12 2xx characters before).
+PM_SEARCH_FX = json.loads((FIXTURES / "polymarket_public_search_bitcoin_2026-11-19.json").read_text(encoding="utf-8"))
+
+
+def _search_rt(state: State, payload: dict | None = None, status: int = 200) -> Runtime:
+    tr = make_transports(state)
+    body = payload or {k: v for k, v in PM_SEARCH_FX.items() if not k.startswith("_")}
+    tr["polymarket:gamma"] = httpx.MockTransport(lambda req: httpx.Response(status, json=body))
+    rt = Runtime(Settings(http_retries=1, http_retry_backoff=0.0, cache_scale=0.0, db_path=""), transports=tr, exchange_factory=FakeEx)
+    rt.now = lambda: NOW
+    return rt
+
+
+async def _search_envs(rt: Runtime, *args: dict) -> list[dict]:
+    try:
+        srv, _ = build_server(rt)
+        return [await call(srv, "polymarket_search", query="bitcoin", **a) for a in args]
+    finally:
+        await rt.aclose()
+
+
+async def test_polymarket_search_default_is_compact_and_details_are_opt_in(state):
+    default, full, wide, wide_full = await _search_envs(
+        _search_rt(state), {}, {"include_details": True}, {"limit": 100}, {"limit": 100, "include_details": True}
+    )
+    assert default["ok"] and full["ok"] and wide["ok"] and not default["missing"]
+    for env in (default, wide):
+        assert _size(env) <= MAX_DEFAULT_CHARS, _size(env)
+    assert _size(full) > MAX_DEFAULT_CHARS
+    rows = full["data"]["markets"]
+    assert len(rows) == full["data"]["count"] == default["data"]["count"] == 20 and wide_full["data"]["count"] > 20
+    assert (default["data"]["shown"], full["data"]["shown"], wide["data"]["shown"]) == (10, 20, 10)
+    # the compact rows are the first 10 full rows without slug and token ids: same ids, prices, volumes and flags
+    slim = [
+        {k: v for k, v in x.items() if k != "slug"} | {"outcomes": [{k: v for k, v in o.items() if k != "token_id"} for o in x["outcomes"]]}
+        for x in rows[:10]
+    ]
+    assert default["data"]["markets"] == slim and wide["data"]["markets"] == slim
+    assert all(o["token_id"] for x in rows for o in x["outcomes"])  # the full rows keep the token ids
+    assert default["evidence"][0]["tool"] == "public-search" and len(default["evidence"]) == 1  # one fetch: nothing to merge
+    assert any("compact answer: first 10 of 20 markets" in w for w in default["warnings"])
+    assert any("compact answer: first 10 of " in w for w in wide["warnings"])
+    assert not any("compact answer" in w for w in full["warnings"] + wide_full["warnings"])
+
+
+async def test_polymarket_search_compact_cuts_long_questions(state):
+    long_q = "Will the price of Bitcoin, as reported by the resolution source named in the rules, " * 4 + "close above $100k?"
+    market = {**PM_SEARCH_FX["events"][0]["markets"][0], "question": long_q, "active": True, "closed": False}
+    payload = {"events": [{"id": "E1", "markets": [market] * 12}], "pagination": {}}
+    default, full = await _search_envs(_search_rt(state, payload), {}, {"include_details": True})
+    assert len(long_q) > 300 and default["data"]["count"] == full["data"]["count"] == 12
+    assert all(len(x["question"]) == 160 and long_q.startswith(x["question"][:-1]) for x in default["data"]["markets"])
+    assert all(x["question"] == long_q for x in full["data"]["markets"])
+    assert _size(default) <= MAX_DEFAULT_CHARS, _size(default)
+
+
+async def test_polymarket_search_compact_still_reports_a_provider_failure(state):
+    (env,) = await _search_envs(_search_rt(state, status=502), {})
+    assert env["ok"] is False and env["data"] is None
+    assert [(m["field"], m["provider"]) for m in env["missing"]] == [("search", "polymarket:gamma")]

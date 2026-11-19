@@ -2623,6 +2623,100 @@ def test_rule5_caveats_once_per_page_and_not_in_tiles(tmp_path):
     assert all(n >= 3 for n in seen.values()) and n_tiles >= 100, (seen, n_tiles)  # the patterns really matched
 
 
+# docs/design/PANEL.md rule 6 (standing improvements, item 397): what needs action comes first and stays open. Per page
+# of _all_tab_pages, the blocks that carry the action: LEAD is the «what now / what to do» lead, where every tab puts a
+# high-impact event within 48 h (brief_lead, radar_lead, flow_lead, opt_lead_html, live_lead), a stalled collector or a
+# service down (system_lead, live_lead), guard halting entries (demo_lead) and the nearest stop / expiry / liquidation
+# (live_lead); the rest are <h2> titles: open positions, violated rules, the owner's questions, collector health. Each
+# must sit in <main> before its first <details> (so never under a `_fold`), and the lead before any heading. The
+# journal's «Порушення правил за тиждень» stays folded on purpose: it reviews closed trades (ACT: «знайди, яке правило
+# ламаєш»), nothing to do on an open one; its count is in the fold's summary line (rule 4). RULE6_TODO: pages still
+# breaking the rule, with the reason; like RULE2_TODO, it must match the fact both ways.
+RULE6_LEAD = "LEAD"
+_RULE6_OPTIONS = (RULE6_LEAD, "Правила власника перед угодою")
+_RULE6_DEMO = (RULE6_LEAD, "Відкриті позиції", "Порушені правила guard · 7 днів")
+RULE6_ACTION: dict[str, tuple[str, ...]] = {
+    "project": (RULE6_LEAD, "Агенти зараз", "Питання агентів до тебе", "Здоров'я колекторів"),
+    "project bad health": (RULE6_LEAD, "Здоров'я колекторів"),
+    "brief": (RULE6_LEAD,),
+    "brief event 48h": (RULE6_LEAD,),
+    "options ": _RULE6_OPTIONS,
+    "options s=short_strangle": _RULE6_OPTIONS,
+    "options s=iron_condor": _RULE6_OPTIONS,
+    "options no chain": ("Конструктор",),  # no chain, no trade: the block says why
+    "radar BTC": (RULE6_LEAD,),
+    "radar ETH": (RULE6_LEAD,),
+    "flows BTC": (RULE6_LEAD,),
+    "flows ETH": (RULE6_LEAD,),
+    "journal": ("Відкриті зараз",),
+    "journal empty": ("Мої угоди",),  # no trades yet: the empty state is the first block
+    "journal rv30": ("Мої угоди",),
+    "polymarket": (RULE6_LEAD, "Проходять поріг (≥ 5 п.п.)"),
+    "demo": _RULE6_DEMO,
+    "demo vs bt": _RULE6_DEMO,
+    "demo empty": _RULE6_DEMO,
+    "positions": (RULE6_LEAD, "Відкриті позиції"),
+    "positions empty": ("Позиції",),  # no positions file: the block says why
+}
+RULE6_TODO: dict[str, str] = {}
+
+
+def _rule6_problems(page: str, marks: tuple[str, ...]) -> list[str]:
+    """What of ``marks`` is not first and open on ``page``: missing, under a <details>, after it, or a lead below a
+    heading."""
+    main = page[page.find("<main") :] if "<main" in page else page[page.find("</nav>") :]
+    first_details = main.find("<details")
+    first_details = len(main) if first_details < 0 else first_details
+    out = []
+    for m in marks:
+        at = main.find("<div class='lead'>" if m == RULE6_LEAD else f"<h2>{db._e(m)}<span class='info'")
+        if at < 0:
+            out.append(f"{m}: not found")
+        elif at > first_details:
+            out.append(f"{m}: after the first <details>")
+        elif m == RULE6_LEAD and "<h2>" in main[:at]:
+            out.append(f"{m}: below a heading")
+    return out
+
+
+def test_rule6_action_first_and_open_except_the_listed(tmp_path):
+    """Item 397 (docs/design/PANEL.md rule 6): on every page of _all_tab_pages, plus an event within 48 h on «Ринок» and
+    a collector needing attention on «Система», the blocks of RULE6_ACTION come before any <details> of <main>."""
+    import test_dashboard_health as th
+
+    pages = _all_tab_pages(tmp_path)
+    snap, asof = _snap()
+    ev = json.loads(json.dumps(snap))
+    ev["sections"]["events"]["data"]["high_impact_within_48h"] = True
+    pages["brief event 48h"] = db.render_brief(ev, None, asof + 300)
+    pages["project bad health"] = th._page(db.load_collector_health(th._pm_db(tmp_path / "gap.sqlite", range(30, 50)), th.NOW, th.PM))
+    assert set(pages) == set(RULE6_ACTION), (
+        "classify the page",
+        sorted(set(pages) - set(RULE6_ACTION)),
+        sorted(set(RULE6_ACTION) - set(pages)),
+    )
+    bad = {name: p for name, page in pages.items() if (p := _rule6_problems(page, RULE6_ACTION[name]))}
+    assert set(bad) == set(RULE6_TODO), ("action not first or folded", bad, "done, drop", sorted(set(RULE6_TODO) - set(bad)))
+    assert all(RULE6_TODO.values())
+    # the variants really show the action: the event in the lead, the series needing attention open
+    assert "<span class='chip risk'>подія</span>" in pages["brief event 48h"]
+    assert "Потребують уваги" in pages["project bad health"] and "<details id='p-series' open>" in pages["project bad health"]
+    # the guard catches a folded action block and one moved below a <details>
+    folded = pages["demo"].replace(
+        f"<section class='wide'>{db._h2('Відкриті позиції', 'demo_open_pos')}",
+        "<section class='wide'><details>" + db._h2("Відкриті позиції", "demo_open_pos"),
+        1,
+    )
+    assert _rule6_problems(folded, _RULE6_DEMO) == [
+        "Відкриті позиції: after the first <details>",
+        "Порушені правила guard · 7 днів: after the first <details>",
+    ]
+    assert _rule6_problems(pages["brief"].replace("<div class='lead'>", "<h2>x</h2><div class='lead'>", 1), (RULE6_LEAD,)) == [
+        "LEAD: below a heading"
+    ]
+    assert _rule6_problems(pages["journal"], ("Порушення правил за тиждень",)) == ["Порушення правил за тиждень: after the first <details>"]
+
+
 def test_fc_rv_and_demo_vs_bt_action_lines_on_their_notes_thresholds(tmp_path):
     """Item 298 (docs/design/PANEL.md rule 2): «Опціони проти RV30» and the three «Звірка з бектестом» tiles. The only
     cut-offs are the notes' 30 expiry dates (FC_MIN_EXPIRIES) and 30 decided trades (DEMO_MIN_N, the badges), the

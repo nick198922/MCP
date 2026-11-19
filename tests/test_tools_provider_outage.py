@@ -69,6 +69,8 @@ ARGS: dict[str, dict[str, Any]] = {
     "plan_add": {"entry": 82_750.0, "stop": 80_000.0, "target": 90_000.0, "expires_ts": int(NOW.timestamp()) + 86_400},
     "strategy_cash_and_carry": {"spot_price": 82_750.0, "futures_price": 83_500.0},
     "strategy_funding_carry": {"long_mark": 82_750.0, "short_mark": 82_760.0},
+    # a DefiLlama pool id (UUID) passes the check and reaches the failing transport
+    "yield_pool_history": {"pool": "00000000-0000-4000-8000-000000000002"},
 }
 
 # Tools whose required arguments cannot be guessed: none so far. Format: {"tool": "reason"}.

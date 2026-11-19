@@ -89,6 +89,7 @@ ARGS: dict[str, dict] = {
     "strategy_payoff": {"legs": _LEGS, **_PREMIUMS},
     "strategy_scenario_matrix": {"legs": _LEGS, "spot": 83000.0},
     "touch_probability": {"spot": 83000.0, "barrier": 90000.0, "days": 20.0, "iv": 0.4},
+    "yield_pool_history": {"pool": "00000000-0000-4000-8000-000000000002"},
 }
 
 # Tools not called here, with the reason. Empty: with a temp SQLite store and no keys every tool can be called.

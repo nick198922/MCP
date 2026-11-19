@@ -38,6 +38,7 @@ def register_all(server: MCPServer, rt: Runtime) -> None:
         strategy,
         system,
         trade_plan,
+        yields,
     )
 
     for module in (
@@ -67,6 +68,7 @@ def register_all(server: MCPServer, rt: Runtime) -> None:
         onchain,
         evm,
         bitcoin,
+        yields,
         pendle,
         rules,
         strategy,

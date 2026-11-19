@@ -52,6 +52,8 @@ from test_stablecoin_supply import default_handler as stablecoins_handler
 from test_tools_never_raise import ARGS as NEVER_RAISE_ARGS
 from test_tools_never_raise import SKIP
 from test_tools_provider_outage import as_envelope
+from test_yields import POOL as YIELD_POOL
+from test_yields import serve as yields_handler
 from tradedesk.config import Settings
 from tradedesk.core.envelope import Builder
 from tradedesk.core.ratelimit import TokenBucket
@@ -88,6 +90,7 @@ ARGS: dict[str, dict] = {
     "polymarket_options_gap": {"max_days": 30, "min_net_edge": -1},
     "positions_close": {"id": 2},
     "skew_percentile": {"expiry": EXPIRY},
+    "yield_pool_history": {"pool": YIELD_POOL},
 }
 
 # Tools that answered ok=false on the conftest fakes (item 173) and answer ok=true here thanks to the fakes and the
@@ -110,6 +113,9 @@ EXTRA_OK: set[str] = {
     "btc_latest_block",
     "btc_difficulty_hashrate",
     "btc_address",
+    # DefiLlama yields, synthetic sample 2026-11-19 of the documented shape (not live)
+    "yield_pools",
+    "yield_pool_history",
     # Etherscan V2 with a test-only dummy key, documentation-derived sample 2026-11-19 (not live)
     "onchain_balance",
     "onchain_address_txs",
@@ -291,6 +297,7 @@ def _extra_fakes(fakes: dict) -> dict:
         "pendle": httpx.MockTransport(_pendle),
         "defillama": httpx.MockTransport(_defillama),
         "defillama:stablecoins": httpx.MockTransport(stablecoins_handler),
+        "defillama:yields": httpx.MockTransport(yields_handler),
         "goplus": httpx.MockTransport(lambda req: httpx.Response(200, json=SHIB_BODY)),
         "honeypot_is": httpx.MockTransport(lambda req: httpx.Response(200, json=HP_SHIB)),
         "dexscreener": httpx.MockTransport(_dexscreener),

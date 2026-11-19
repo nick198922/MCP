@@ -127,6 +127,10 @@ class Runtime:
             http("defillama", llama_mod.BASE_URL, rate=4, burst=8),
             # Stablecoin supply (stablecoin_supply): daily data, two requests per call and cached for 10 min.
             stablecoins=http("defillama:stablecoins", llama_mod.STABLECOINS_URL, rate=1, burst=2),
+            # Yield pools (yield_pools, yield_pool_history). No published limit for the free API: 1 req/s is a guess;
+            # the pool list is one large body, cached as slimmed rows in the provider for 10 min.
+            yields=http("defillama:yields", llama_mod.YIELDS_URL, rate=1, burst=2),
+            pools_ttl=llama_mod.POOLS_TTL_SECONDS * s.cache_scale,
         )
         self.pendle = Pendle(http("pendle", pendle_mod.BASE_URL, rate=2, burst=4))
         # Bitcoin network data (btc_* tools). mempool.space publishes no fixed limit for its public API (429 when hit):

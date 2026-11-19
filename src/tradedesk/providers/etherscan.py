@@ -19,12 +19,16 @@ totalSupply of an ERC-20). Not used: token info (`token/tokeninfo`) and top hold
 The key: only from Settings (environment). It goes into the query string, so it is passed to `Http` as a secret (scrubbed
 from every error detail) and never into `Evidence` (explicit args without it). Error text in `result` is third-party:
 it is matched against known phrases and never echoed.
-Free tier: 3 requests/s and 100,000 a day per key (Etherscan's published limits); the runtime keeps 2/s.
+Free tier: 3 requests/s and 100,000 a day per key (Etherscan's published limits); the runtime keeps 2/s. The key is
+shared with the research scripts, so the limit can still be hit: a request-limit answer in an HTTP 200 body is asked
+once more after ~1 s (`Http` retries only HTTP 429/5xx); other status "0" answers are not repeated.
 """
 
 from __future__ import annotations
 
+import asyncio
 import re
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from ..analytics.evm import abi_string, hex_uint, uint_text, valid_evm_address
@@ -36,6 +40,8 @@ BASE_URL = "https://api.etherscan.io"
 PATH = "/v2/api"
 RATE_PER_SECOND = 2.0  # free tier allows 3/s per key; the research scripts share the key
 MAX_ROWS = 10_000  # Etherscan returns at most page x offset <= 10,000 rows of one listing
+RATE_LIMIT_RETRY_S = 1.0  # one more try after this pause when the body says "rate limit" (at most two requests)
+RATE_LIMIT_DETAIL = "Etherscan request limit reached (free key: 3 requests/s, 100k/day)"
 
 # name -> (chain id, native coin). Which of them the free key covers is not verified (the card's parity map).
 CHAINS: dict[str, tuple[int, str]] = {
@@ -55,7 +61,7 @@ SELECTORS = {"name": "0x06fdde03", "symbol": "0x95d89b41", "decimals": "0x313ce5
 
 # Phrases of Etherscan's error text (lower-case) -> (reason, our own detail). First match wins.
 _ERRORS: tuple[tuple[tuple[str, ...], str, str], ...] = (
-    (("rate limit",), "rate_limited", "Etherscan request limit reached (free key: 3 requests/s, 100k/day)"),
+    (("rate limit",), "rate_limited", RATE_LIMIT_DETAIL),
     (("api key", "apikey"), "auth", "Etherscan rejected the API key"),
     (
         ("upgrade", "not supported for this chain", "api pro", "exclusive", "pro endpoint", "paid"),
@@ -123,10 +129,18 @@ def _proxy_check(body: Any) -> tuple[str, str] | None:
 class Etherscan:
     name = "etherscan"
 
-    def __init__(self, http: Http, *, api_key: str | None) -> None:
+    def __init__(
+        self,
+        http: Http,
+        *,
+        api_key: str | None,
+        retry_delay: float = RATE_LIMIT_RETRY_S,
+        sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,
+    ) -> None:
         self.http = http
         self._key = api_key
         self.has_key = bool(api_key)
+        self.retry_delay, self.sleep = retry_delay, sleep  # injectable: tests never really wait
 
     def _need_key(self) -> None:
         if not self._key:
@@ -137,14 +151,26 @@ class Etherscan:
     async def _get(self, chain_id: int, module: str, action: str, ttl: float, proxy: bool = False, **params: Any) -> Fetched:
         self._need_key()
         args = {"chainid": chain_id, "module": module, "action": action, **params}
-        return await self.http.get_json(
-            PATH,
-            params={**args, "apikey": self._key},
-            ttl=ttl,
-            tool=f"{module}/{action}",
-            args=args,  # never the key
-            check=_proxy_check if proxy else _body_check,
-        )
+
+        async def fetch() -> Fetched:
+            return await self.http.get_json(
+                PATH,
+                params={**args, "apikey": self._key},
+                ttl=ttl,
+                tool=f"{module}/{action}",
+                args=args,  # never the key
+                check=_proxy_check if proxy else _body_check,
+            )
+
+        try:
+            return await fetch()
+        except ProviderError as e:
+            # Only the request-limit text of an HTTP 200 body (our own detail from _classify) earns one more try; an HTTP
+            # 429 was already retried by Http, and other NOTOK answers (key, plan, address) would only fail again.
+            if e.reason != "rate_limited" or e.detail != RATE_LIMIT_DETAIL:
+                raise
+        await self.sleep(self.retry_delay)
+        return await fetch()
 
     def _uint(self, f: Fetched, what: str) -> Fetched:
         v = uint_text(f.data.get("result"))

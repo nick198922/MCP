@@ -15,6 +15,7 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
+from ._text import CTRL_RE as _CTRL
 from .chain_metrics import resolve_chain
 
 DAY = 86400
@@ -23,8 +24,6 @@ STALE_AFTER = 2 * DAY  # latest history point older than this (vs `now`) is repo
 MAX_TOKENS = 10  # reward / underlying token addresses kept per pool
 
 POOL_ID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
-# C0/C1 controls, zero-width, bidi embeddings / overrides, invisible operators, BOM (escaped so a diff shows them)
-_CTRL = re.compile(r"[\x00-\x1f\x7f-\x9f​-‏‪-‮⁠-⁤﻿]")
 SORT_KEYS = ("tvl_usd", "apy", "newest")
 
 

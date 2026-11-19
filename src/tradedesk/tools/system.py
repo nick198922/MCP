@@ -12,7 +12,8 @@ from ..providers.exchanges import PERP_EXCHANGES
 from ..runtime import Runtime
 from ._util import READ_ONLY, STORE_ERRORS
 
-# The compact report (item 406) leaves out only fields whose value is implied, so it loses nothing:
+# The compact report (item 406) leaves out only fields whose value is implied, so it loses nothing except the tool
+# names (tool_count instead):
 # a provider registered but never called (every field 0 / null) is named in health.unknown, ...
 PROVIDER_UNUSED = {
     "status": "unknown",
@@ -83,13 +84,14 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "within about a minute each; a dead link shows as a stale last_message_ts or a growing consecutive_failures. "
             "book_walls:* jobs (order-book walls collector) show the same counters per feed: "
             "stream = {depth: {...}, trades: {...}} for binance, {book: {...}} for bybit, binance_spot and coinbase. "
-            "By default the report is compact but loses nothing: only fields whose value is implied are left out. "
+            "By default the report is compact and loses nothing except the tool names (`tools` is replaced by "
+            "tool_count): otherwise only fields whose value is implied are left out. "
             "health.unknown names the providers never called since the server started (status unknown, every counter 0, "
             "every time null); a provider without failures omits failures, consecutive_failures (0) and last_error_at, "
             "last_reason, last_detail (null); a provider with any failure keeps its full row. A collector job omits "
             "successes when it equals runs - failures, its null last_error / last_failure / last_failure_ts while "
             "failures = 0, and last_rows_dropped / rows_dropped_total while nothing was dropped; collector[].stream is "
-            "always shown in full. `tools` (the tool names) is replaced by tool_count. include_details=true, or "
+            "always shown in full. include_details=true, or "
             "probe=true, returns the full report with every field."
         ),
     )

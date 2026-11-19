@@ -10,7 +10,14 @@ import httpx
 import pytest
 
 from test_server import call
-from tradedesk.analytics.bitcoin import address_summary, block_summary, fee_bands, mempool_summary, valid_btc_address
+from tradedesk.analytics.bitcoin import (
+    address_summary,
+    block_summary,
+    fee_bands,
+    fees_summary,
+    mempool_summary,
+    valid_btc_address,
+)
 from tradedesk.config import Settings
 from tradedesk.core.ratelimit import TokenBucket
 from tradedesk.runtime import Runtime
@@ -100,6 +107,7 @@ async def test_btc_mempool_happy():
     assert bands[0.0]["vsize_vb"] == 31_508_026 and bands[0.0]["share"] == pytest.approx(31_508_026 / 31_672_781)
     assert bands[50.0]["max_sat_vb"] is None and all(bands[e]["vsize_vb"] == 0 for e in (50.0, 20.0, 10.0, 5.0, 2.0))
     _evidence_ok(env, 1)
+    assert any("fee_bands are approximate" in w for w in env["warnings"])
 
 
 async def test_btc_latest_block_happy():
@@ -263,6 +271,31 @@ async def test_invalid_address_makes_no_request():
 
 
 # ---------------------------------------------------------------- pure helpers on edge cases
+
+
+_FEES_BODY = {"fastestFee": 5, "halfHourFee": 4, "hourFee": 3, "economyFee": 2, "minimumFee": 1}
+
+
+def test_fees_summary_maps_each_key_to_its_own_field():
+    # distinct values per key: a swap in _FEE_KEYS would fail here (the live sample has all five at 1.0)
+    assert fees_summary(_FEES_BODY) == {
+        "fastest_sat_vb": 5.0,
+        "half_hour_sat_vb": 4.0,
+        "hour_sat_vb": 3.0,
+        "economy_sat_vb": 2.0,
+        "minimum_sat_vb": 1.0,
+    }
+
+
+def test_fees_summary_missing_key_is_none_only_in_that_field():
+    body = {k: v for k, v in _FEES_BODY.items() if k != "hourFee"}
+    assert fees_summary(body) == {
+        "fastest_sat_vb": 5.0,
+        "half_hour_sat_vb": 4.0,
+        "hour_sat_vb": None,
+        "economy_sat_vb": 2.0,
+        "minimum_sat_vb": 1.0,
+    }
 
 
 def test_fee_bands_edges_and_bad_rows():

@@ -131,8 +131,15 @@ def failing_runtime(mode: str, db_path: str, calls: list[str]) -> Runtime:
             raise httpx.ReadTimeout("timed out", request=req)
         return httpx.Response(500, text="down")
 
-    # A dummy Coinalyze key (never a real one): without a key the tools answer `missing: config` before any request.
-    settings = Settings(http_retries=0, http_retry_backoff=0.0, cache_scale=0.0, db_path=db_path, coinalyze_api_key="outage-test")
+    # Dummy Coinalyze / Etherscan keys (never real ones): without a key the tools answer `missing: config` before any request.
+    settings = Settings(
+        http_retries=0,
+        http_retry_backoff=0.0,
+        cache_scale=0.0,
+        db_path=db_path,
+        coinalyze_api_key="outage-test",
+        etherscan_api_key="outage-test",
+    )
     # Production rate limits (GoPlus 0.2 req/s, ...) would only make the failing fake calls wait in real time.
     with patch("tradedesk.core.http.TokenBucket", lambda rate, burst: TokenBucket(1_000.0, 1_000)):
         rt = Runtime(

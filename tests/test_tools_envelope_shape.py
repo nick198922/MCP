@@ -3,7 +3,8 @@
 Complements tests/test_tools_never_raise.py and tests/test_tools_provider_outage.py, which check that failing providers
 still give an envelope. Here every registered tool is called through a real MCP client against the happy-path fakes of
 tests/conftest.py (Deribit / Hyperliquid / Binance / Bybit / Polymarket / CoinGecko / ... transports and FakeEx), plus
-Pendle, DefiLlama, GoPlus, DexScreener, mempool.space, Binance daily klines and Coinalyze (a test-only dummy key) served from the saved
+Pendle, DefiLlama, GoPlus, DexScreener, mempool.space, Etherscan, Binance daily klines and Coinalyze (Etherscan and Coinalyze with
+test-only dummy keys) served from the saved
 samples in tests/fixtures, the Polymarket events and books of tests/test_pm_gap.py, and a store seeded with funding /
 ATM-term / OHLCV history, an event, a position and a paper carry pair; providers without a fake answer 404, and nothing
 reaches the real network. Arguments and SKIP come from tests/test_tools_never_raise.py. For every answer with ok=true it
@@ -38,6 +39,9 @@ from test_contract_risk import DEX_PAIRS as SHIB_DEX_PAIRS
 from test_contract_risk import SHIB, SHIB_BODY
 from test_cycle_regime import FX as CYCLE_FX
 from test_cycle_regime import serve_daily
+from test_evm import HOLDER as EVM_HOLDER
+from test_evm import USDT as EVM_TOKEN
+from test_evm import serve as etherscan_handler
 from test_onchain import DEX as FART_DEX
 from test_onchain import FART, LLAMA
 from test_pendle import PENDLE, SUSDE_ETH
@@ -56,6 +60,7 @@ from tradedesk.server import build_server
 
 EXPIRY = "2026-11-27T08:00:00+00:00"  # a Deribit expiry of the conftest option book, seeded into atm_term below
 COINALYZE_TEST_KEY = "test-dummy-key"  # not a real key: the Coinalyze transport below is a fake
+ETHERSCAN_TEST_KEY = "test-dummy-etherscan-key"  # likewise for the Etherscan transport
 
 # events_add needs a time (ts_ms or date) to succeed; the outage tests only need it to reach the store. The rest point
 # the on-chain / Pendle / history / Polymarket tools at what the saved samples and the seeded store hold (the outage tests
@@ -74,6 +79,10 @@ ARGS: dict[str, dict] = {
     "funding_spread_scan": {"include_details": True},
     "iv_rank": {"expiry": EXPIRY},
     "journal_close": {**NEVER_RAISE_ARGS["journal_close"], "id": 1},
+    "onchain_address_txs": {"chain": "ethereum", "address": EVM_HOLDER},
+    "onchain_balance": {"chain": "ethereum", "address": EVM_HOLDER},
+    "onchain_contract_source": {"chain": "ethereum", "address": EVM_TOKEN},
+    "onchain_token_info": {"chain": "ethereum", "address": EVM_TOKEN},
     "pendle_market": {"market": SUSDE_ETH},
     "pendle_yield_curve": {"asset": "sUSDe"},
     "polymarket_options_gap": {"max_days": 30, "min_net_edge": -1},
@@ -101,6 +110,11 @@ EXTRA_OK: set[str] = {
     "btc_latest_block",
     "btc_difficulty_hashrate",
     "btc_address",
+    # Etherscan V2 with a test-only dummy key, documentation-derived sample 2026-11-19 (not live)
+    "onchain_balance",
+    "onchain_address_txs",
+    "onchain_token_info",
+    "onchain_contract_source",
     # the seeded store
     "funding_zscore",
     "iv_rank",
@@ -280,6 +294,7 @@ def _extra_fakes(fakes: dict) -> dict:
         "goplus": httpx.MockTransport(lambda req: httpx.Response(200, json=SHIB_BODY)),
         "dexscreener": httpx.MockTransport(_dexscreener),
         "mempool": httpx.MockTransport(mempool_handler),
+        "etherscan": httpx.MockTransport(etherscan_handler),
         "binance_spot": _DailyKlines(fakes["binance_spot"]),
         "binance_futures": _DailyKlines(fakes["binance_futures"]),
         "coinalyze": httpx.MockTransport(_coinalyze),
@@ -351,6 +366,7 @@ def _runtime(tmp_path, calls: list[str]) -> Runtime:
                 cache_scale=0.0,
                 db_path=str(tmp_path / "envelope_shape.sqlite"),
                 coinalyze_api_key=COINALYZE_TEST_KEY,
+                etherscan_api_key=ETHERSCAN_TEST_KEY,
             ),
             transports=_Transports({name: _CountingTransport(t, calls) for name, t in fakes.items()}),
             exchange_factory=lambda ex_id: _CountingEx(ex_id, calls),

@@ -24,6 +24,7 @@ from .providers import coingecko as cg_mod
 from .providers import defillama as llama_mod
 from .providers import deribit as deribit_mod
 from .providers import dexscreener as dexs_mod
+from .providers import etherscan as etherscan_mod
 from .providers import forexfactory as ff_mod
 from .providers import goplus as goplus_mod
 from .providers import hyperliquid as hl_mod
@@ -43,6 +44,7 @@ from .providers.coingecko import CoinGecko
 from .providers.defillama import DefiLlama
 from .providers.deribit import Deribit
 from .providers.dexscreener import DexScreener
+from .providers.etherscan import Etherscan
 from .providers.exchanges import Exchanges
 from .providers.forexfactory import ForexFactory
 from .providers.goplus import GoPlus
@@ -125,6 +127,25 @@ class Runtime:
         # Bitcoin network data (btc_* tools). mempool.space publishes no fixed limit for its public API (429 when hit):
         # 1 req/s is a conservative guess; btc_latest_block makes two requests, the other btc_* tools one.
         self.mempool = Mempool(http("mempool", mempool_mod.BASE_URL, rate=1, burst=4))
+        # EVM chains through Etherscan V2 (onchain_* tools). Free key: 3 req/s per key, shared with research scripts, so
+        # 2 req/s without a burst. The key rides in the query string: a secret of this Http (scrubbed from error text).
+        self.etherscan = Etherscan(
+            Http(
+                "etherscan",
+                etherscan_mod.BASE_URL,
+                rate=etherscan_mod.RATE_PER_SECOND,
+                burst=1,
+                timeout=s.http_timeout,
+                retries=s.http_retries,
+                backoff_base=s.http_retry_backoff,
+                secrets=(s.etherscan_api_key,) if s.etherscan_api_key else (),
+                cache=self.cache,
+                cache_scale=s.cache_scale,
+                health=self.health,
+                transport=tr.get("etherscan"),
+            ),
+            api_key=s.etherscan_api_key,
+        )
         # Article pageviews + en.wikipedia page metadata (research scripts, not tools). Pageviews allows ~100 req/s per
         # client; we stay far below. Wikimedia asks for a descriptive User-Agent.
         wiki_ua = {"User-Agent": wiki_mod.user_agent()}
@@ -224,6 +245,7 @@ class Runtime:
         await self.defillama.aclose()
         await self.pendle.http.aclose()
         await self.mempool.http.aclose()
+        await self.etherscan.http.aclose()
         await self.wikimedia.aclose()
         await self.coinalyze.http.aclose()
         await self.polymarket.aclose()

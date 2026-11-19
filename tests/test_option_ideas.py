@@ -58,6 +58,18 @@ def test_parse_skips_other_coins_and_bad_rows():
     assert {q.is_call for q in qs} == {True, False}
 
 
+def test_usdc_rows_with_a_better_bid_never_price_an_idea():
+    """scripts/option_ideas_tg.py passes every Bybit row to parse_bybit_tickers: a USDC-settled duplicate (no suffix)
+    with a far better bid must not reach the quotes, so the generator and option_structure_quote agree."""
+    usdc = [dict(x, symbol=x["symbol"].removesuffix("-USDT"), bid1Price="50000") for x in _chain()]
+    assert oi.parse_bybit_tickers(usdc, "BTC") == []
+    mixed = oi.parse_bybit_tickers(usdc + _chain(), "BTC")
+    assert mixed == QUOTES
+    assert oi.iron_condor(mixed, EXP, NOW, "BTC") == oi.iron_condor(QUOTES, EXP, NOW, "BTC")
+    other = [dict(x, symbol=x["symbol"].replace("-USDT", "-USDC")) for x in _chain()[:4]]  # any other suffix too
+    assert oi.parse_bybit_tickers(other, "BTC") == []
+
+
 def test_fee_is_capped_at_7pct_of_price():
     assert oi.fee(67_000, 1_000) == pytest.approx(20.1)  # 0.03 % of the underlying
     assert oi.fee(67_000, 100) == pytest.approx(7.0)  # 7 % cap
@@ -76,6 +88,7 @@ def test_iron_condor_prices_at_bid_ask_with_fees():
     assert (sp.action, sp.is_call, lp.action, sc.action, sc.is_call, lc.action) == ("sell", False, "buy", "sell", True, "buy")
     assert lp.strike < sp.strike < SPOT < sc.strike < lc.strike
     assert sp.strike - lp.strike == lc.strike - sc.strike == 2_000  # one wing width (3 % of 67k ≈ 2k)
+    assert c.extra == {"put_wing": 2_000, "call_wing": 2_000}
     gross = sp.price + sc.price - lp.price - lc.price
     fees = sum(oi.fee(SPOT, p) for p in (sp.price, sc.price, lp.price, lc.price))
     assert c.net == pytest.approx(gross - fees) and c.max_profit == c.net
@@ -120,6 +133,7 @@ def test_long_strangle():
     d = s.to_dict()
     assert oi.payoff_at(d, SPOT) == pytest.approx(-s.max_loss)
     assert oi.payoff_at(d, s.breakevens[1]) == pytest.approx(0, abs=1e-6)
+    assert s.extra == {} and 0 < s.prob_profit < 1  # breakevens inside the 54k..80k put strikes: interpolated
 
 
 def test_size_rounds_down_to_lot():

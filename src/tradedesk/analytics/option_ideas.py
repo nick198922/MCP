@@ -61,13 +61,15 @@ def _num(x: Any) -> float | None:
 
 def parse_bybit_tickers(rows: Any, coin: str) -> list[Quote]:
     """Quotes of ``/v5/market/tickers?category=option`` rows for ``coin`` (symbols like BTC-27NOV26-62000-P-USDT;
-    unreadable rows are skipped). A missing bid or ask is 0 (no side to trade)."""
+    unreadable rows are skipped). Only USDT-settled symbols are read: Bybit also lists USDC-settled ones without the
+    suffix (BTC-27NOV26-62000-P), whose quotes must not price a leg named by its USDT symbol (``bybit_option_symbol``).
+    A missing bid or ask is 0 (no side to trade)."""
     out: list[Quote] = []
     for r in rows if isinstance(rows, list) else []:
         if not isinstance(r, dict):
             continue
         parts = str(r.get("symbol", "")).split("-")
-        if len(parts) < 4 or parts[0] != coin or parts[3] not in ("C", "P"):
+        if len(parts) != 5 or parts[0] != coin or parts[3] not in ("C", "P") or parts[4] != "USDT":
             continue
         exp = parse_expiry_token(parts[1])
         strike, und = _num(parts[2]), _num(r.get("underlyingPrice"))
@@ -168,12 +170,24 @@ def _prob_below(puts: list[Quote], price: float) -> float | None:
     return None
 
 
+def _prob_outside(puts: list[Quote], lo: float, hi: float) -> tuple[float | None, dict[str, Any]]:
+    """Risk-neutral P(S_T < lo) + P(S_T > hi) of a long strangle / straddle with breakevens ``lo`` and ``hi``, and the
+    idea's ``extra``. None when a breakeven lies outside the put strikes: ``_prob_below`` holds the end delta flat there,
+    which overstates the tail on both ends; ``extra['put_strikes']`` then names the strike range."""
+    if len(puts) >= 2 and not (puts[0].strike <= lo and hi <= puts[-1].strike):
+        return None, {"put_strikes": [puts[0].strike, puts[-1].strike]}
+    pl, ph = _prob_below(puts, lo), _prob_below(puts, hi)
+    return (None if pl is None or ph is None else pl + (1 - ph)), {}
+
+
 def _days(expiry_ms: int, now_ms: int) -> float:
     return round((expiry_ms - now_ms) / DAY_MS, 1)
 
 
 def iron_condor(quotes: list[Quote], expiry_ms: int, now_ms: int, coin: str, short_delta: float = 0.15, wing: float = 0.03) -> Idea | None:
-    """Sell the ≈``short_delta`` put and call, buy wings about ``wing`` × spot further out (the same width each side)."""
+    """Sell the ≈``short_delta`` put and call, buy wings about ``wing`` × spot further out (the same target width each
+    side; the listed strike nearest it, so on a coarse grid the two widths can differ). ``max_loss`` is the wider side's;
+    ``extra`` has ``put_wing`` and ``call_wing`` (strike distances, USD)."""
     puts, calls = _side(quotes, expiry_ms, False), _side(quotes, expiry_ms, True)
     if not puts or not calls:
         return None
@@ -213,6 +227,7 @@ def iron_condor(quotes: list[Quote], expiry_ms: int, now_ms: int, coin: str, sho
         max_loss=width - credit,
         breakevens=[sp.strike - credit, sc.strike + credit],
         prob_profit=pop,
+        extra={"put_wing": sp.strike - lp.strike, "call_wing": lc.strike - sc.strike},
     )
 
 
@@ -265,7 +280,7 @@ def long_strangle(quotes: list[Quote], expiry_ms: int, now_ms: int, coin: str, d
     spot = p.underlying
     debit = p.ask + c.ask + fee(spot, p.ask) + fee(spot, c.ask)
     lo, hi = p.strike - debit, c.strike + debit
-    pl, ph = _prob_below(puts, lo), _prob_below(puts, hi)
+    pop, extra = _prob_outside(puts, lo, hi)
     return Idea(
         coin=coin,
         kind="long_strangle",
@@ -277,7 +292,8 @@ def long_strangle(quotes: list[Quote], expiry_ms: int, now_ms: int, coin: str, d
         max_profit=None,
         max_loss=debit,
         breakevens=[lo, hi],
-        prob_profit=None if pl is None or ph is None else pl + (1 - ph),
+        prob_profit=pop,
+        extra=extra,
     )
 
 
@@ -294,7 +310,7 @@ def long_straddle(quotes: list[Quote], expiry_ms: int, now_ms: int, coin: str) -
     p = put_at[c.strike]
     debit = p.ask + c.ask + fee(spot, p.ask) + fee(spot, c.ask)
     lo, hi = c.strike - debit, c.strike + debit
-    pl, ph = _prob_below(puts, lo), _prob_below(puts, hi)
+    pop, extra = _prob_outside(puts, lo, hi)
     return Idea(
         coin=coin,
         kind="long_straddle",
@@ -306,7 +322,8 @@ def long_straddle(quotes: list[Quote], expiry_ms: int, now_ms: int, coin: str) -
         max_profit=None,
         max_loss=debit,
         breakevens=[lo, hi],
-        prob_profit=None if pl is None or ph is None else pl + (1 - ph),
+        prob_profit=pop,
+        extra=extra,
     )
 
 

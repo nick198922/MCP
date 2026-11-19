@@ -77,9 +77,15 @@ STRUCTURE_WARNINGS = (
     "A price quote, not a signal: as trade rules the IV>RV condor (P1), the 200-day-trend debit spread (P3) and the "
     "IV<RV long strangle (P4) tested negative (docs/knowledge/options-playbook.md).",
 )
-SHORT_MARGIN_WARNING = (
-    "Sold legs need margin on Bybit, and the bought wing does not reduce the sold leg's margin (regular margin): the "
-    "capital tied up is larger than max_loss."
+# Bybit Regular margin does not net a spread's bought leg against the sold one (docs/knowledge/options.md, Bybit Help
+# Center "Initial and Maintenance Margin Calculation (Options)"), so a debit spread's sold leg needs margin too.
+CREDIT_MARGIN_WARNING = (
+    "Credit structure: sold legs need margin on Bybit, and the bought wing does not reduce the sold leg's margin (Regular "
+    "margin; only Portfolio Margin nets them): the capital tied up is larger than max_loss."
+)
+DEBIT_MARGIN_WARNING = (
+    "The debit spread's sold leg still needs margin on Bybit under Regular margin (the bought leg is not netted; only "
+    "Portfolio Margin nets them): the capital tied up is the debit plus that margin, larger than max_loss."
 )
 
 
@@ -211,8 +217,12 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "weekly use e.g. days=7, min_days=2). Returns the legs (Bybit symbol, side, strike, bid, ask, the fill price, its taker "
             "fee, delta, mark IV as a decimal), gross_premium (before fees), fees, net_premium after fees (> 0 credit, < 0 debit), "
             "max_profit (null = unlimited), max_loss, breakevens, reward_to_risk (max_profit / max_loss) and a risk-neutral "
-            "prob_profit; all in USD per 1 coin at expiry. Caveats in `warnings`: live top-of-book prices, Bybit's delivery fee not "
-            "included, short legs need margin that the wing does not reduce, a quote not a signal."
+            "prob_profit; all in USD per 1 coin at expiry. iron_condor also returns wing_widths (put / call strike distance, "
+            "USD): the grid can make them unequal, max_loss is then the wider side's and `warnings` says so. prob_profit is null "
+            "for a long strangle / straddle whose breakeven lies outside the quoted put strikes (the delta interpolation cannot "
+            "reach it). min_days must not exceed max_days. Caveats in `warnings`: live top-of-book prices, Bybit's delivery fee "
+            "not included, sold legs need margin that the bought leg does not reduce (credit structures and debit spreads), a "
+            "quote not a signal."
         ),
     )
     async def option_structure_quote(
@@ -264,6 +274,14 @@ def register(server: MCPServer, rt: Runtime) -> None:
         if ignored:
             b.warn(f"{', '.join(ignored)} not used by {kind}; ignored")
         params = {k: given[k] if given[k] is not None else v for k, v in defaults.items()}
+        if min_days > max_days:
+            b.miss(
+                "min_days",
+                "tradedesk",
+                "invalid_input",
+                f"min_days={min_days:g} is greater than max_days={max_days:g}: the expiry window is empty",
+            )
+            return b.build(None, ok=False)
         body = await b.guard(
             f"bybit_options:{currency}",
             f"ccxt:{BYBIT}",
@@ -276,8 +294,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
         _, other = parse_chain(rows, currency)
         if other:
             b.warn(f"{currency}: Bybit option symbols with settle suffix {', '.join(other)} skipped (only {SETTLE} is priced)")
-        usdt = [x for x in rows or [] if isinstance(x, dict) and str(x.get("symbol", "")).endswith(f"-{SETTLE}")]
-        quotes = oi.parse_bybit_tickers(usdt, currency)
+        quotes = oi.parse_bybit_tickers(rows, currency)  # USDT-settled symbols only, as the ideas generator
         if not quotes:
             b.miss(
                 f"bybit_options:{currency}", f"ccxt:{BYBIT}", "data_unavailable", f"no parsable {SETTLE}-settled {currency} option ticker"
@@ -321,7 +338,21 @@ def register(server: MCPServer, rt: Runtime) -> None:
         for w in STRUCTURE_WARNINGS:
             b.warn(w)
         if any(g.action == "sell" for g in idea.legs):
-            b.warn(SHORT_MARGIN_WARNING)
+            b.warn(CREDIT_MARGIN_WARNING if idea.net > 0 else DEBIT_MARGIN_WARNING)
+        wings = (idea.extra.get("put_wing"), idea.extra.get("call_wing"))
+        if kind == "iron_condor" and None not in wings and abs(wings[0] - wings[1]) > 1e-9:
+            narrow = min(wings) - idea.net
+            b.warn(
+                f"Unequal wings (strike grid): put wing {wings[0]:g}, call wing {wings[1]:g} USD; max_loss "
+                f"({idea.max_loss:.2f}) is the wider side's, the narrower side loses at most {narrow:.2f}."
+            )
+        if idea.prob_profit is None and "put_strikes" in idea.extra:
+            lo, hi = idea.extra["put_strikes"]
+            outside = ", ".join(f"{x:.2f}" for x in idea.breakevens if not lo <= x <= hi)
+            b.warn(
+                f"prob_profit is null: breakeven(s) {outside} outside the put strikes with a delta ({lo:g}-{hi:g}); "
+                "holding the end delta flat there would overstate the probability."
+            )
         rr = idea.reward_to_risk
         data = {
             "currency": currency,
@@ -344,6 +375,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "reward_to_risk": r(rr, 4),
             "prob_profit": r(idea.prob_profit, 4),
         }
+        if kind == "iron_condor" and None not in wings:
+            data["wing_widths"] = {"put": r(wings[0], 2), "call": r(wings[1], 2)}
         if "prob_max_profit" in idea.extra:
             data["prob_max_profit"] = r(idea.extra["prob_max_profit"], 4)
         return b.build(data)

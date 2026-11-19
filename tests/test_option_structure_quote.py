@@ -20,6 +20,7 @@ from tradedesk.analytics import option_ideas as oi
 from tradedesk.config import Settings
 from tradedesk.runtime import Runtime
 from tradedesk.server import build_server
+from tradedesk.tools.bybit_options import DEBIT_MARGIN_WARNING
 
 NOW = datetime(2026, 11, 13, 8, tzinfo=UTC)  # 14.0 days before the 27NOV26 08:00 UTC expiry
 U = 80_000.0
@@ -36,19 +37,37 @@ BOOK = [
 ]
 
 
-def _rows(usdc_dup: bool = False) -> list[dict]:
+# ETH: the BTC book scaled by 1/25 (underlying 3200), so the fee is the capped one on the cheap wings.
+U_ETH = 3_200.0
+ETH_BOOK = [
+    (2_960, "P", 4.0, 4.4, -0.05, 0.55),
+    (3_040, "P", 16.0, 16.8, -0.15, 0.50),
+    (3_120, "P", 35.2, 36.0, -0.35, 0.47),
+    (3_200, "P", 79.2, 80.0, -0.50, 0.45),
+    (3_200, "C", 83.2, 84.0, 0.50, 0.45),
+    (3_280, "C", 36.0, 36.8, 0.30, 0.46),
+    (3_360, "C", 15.2, 16.0, 0.15, 0.48),
+    (3_440, "C", 3.6, 4.0, 0.05, 0.52),
+]
+# A 73500 put: its distance from the sold 76000 put (2500) is nearer the 3 % wing (2400) than 74000's, so the put wing
+# becomes 2500 while the call wing stays 2000.
+UNEVEN_PUT = (73_500, "P", 60, 70, -0.03, 0.52)
+
+
+def _rows(usdc_dup: bool = False, coin: str = "BTC", uneven: bool = False) -> list[dict]:
+    book, und = (ETH_BOOK, U_ETH) if coin == "ETH" else (BOOK + [UNEVEN_PUT] * uneven, U)
     rows = [
         {
-            "symbol": f"BTC-27NOV26-{k}-{t}-USDT",
+            "symbol": f"{coin}-27NOV26-{k}-{t}-USDT",
             "bid1Price": str(bid),
             "ask1Price": str(ask),
             "markPrice": str((bid + ask) / 2),
             "markIv": str(iv),
             "delta": str(d),
-            "underlyingPrice": str(U),
-            "indexPrice": str(U),
+            "underlyingPrice": str(und),
+            "indexPrice": str(und),
         }
-        for k, t, bid, ask, d, iv in BOOK
+        for k, t, bid, ask, d, iv in book
     ]
     if usdc_dup:  # the same strikes settled in USDC (no suffix) with a far better bid: must never be priced
         rows += [dict(x, symbol=x["symbol"].removesuffix("-USDT"), bid1Price="5000") for x in rows]
@@ -60,7 +79,11 @@ def hand_rt(mode: str = "ok") -> Runtime:
         async def publicGetV5MarketTickers(self, params):  # noqa: N802 - ccxt implicit endpoint name
             if mode == "down":
                 raise ccxt.NetworkError("bybit unreachable")
-            rows = _rows(mode == "usdc_dup") if params.get("baseCoin") == "BTC" else []
+            coin = params.get("baseCoin")
+            if coin == "BTC":
+                rows = _rows(mode == "usdc_dup", uneven=mode == "uneven")
+            else:
+                rows = _rows(coin="ETH") if mode == "eth" else []
             return {"retCode": 0, "result": {"category": "option", "list": rows}, "time": int(NOW.timestamp() * 1000)}
 
     rt = Runtime(
@@ -108,11 +131,16 @@ async def test_iron_condor_matches_hand_computation():
     # P(below 75492.7) = 0.05 + 0.10 x 1492.7 / 2000 = 0.124635 (put deltas); P(below 84507.3) = 0.50 (last put)
     assert d["prob_profit"] == pytest.approx(0.5 - 0.124635, abs=1e-4)
     assert d["atm_iv"] == pytest.approx(0.40)
-    assert any("margin" in w for w in env["warnings"]) and any("delivery fee" in w for w in env["warnings"])
+    assert d["wing_widths"] == {"put": 2000.0, "call": 2000.0}
+    assert any(w.startswith("Credit structure: sold legs need margin") for w in env["warnings"])
+    assert any("delivery fee" in w for w in env["warnings"]) and not any("Unequal wings" in w for w in env["warnings"])
 
 
 async def test_put_debit_spread_and_straddle_match_hand_computation():
-    s = (await _quote(hand_rt(), kind="put_debit_spread"))["data"]
+    senv = await _quote(hand_rt(), kind="put_debit_spread")
+    s = senv["data"]
+    # Bybit Regular margin does not net the bought leg: the sold leg's margin is named, in debit-spread words
+    assert [w for w in senv["warnings"] if "margin" in w] == [DEBIT_MARGIN_WARNING] and "wing_widths" not in s
     # buy 78000 P (|delta| 0.35, nearest 0.40) at ask 900, sell 76000 P (0.15) at bid 400; fees 24 + 24
     assert [(g["strike"], g["side"]) for g in s["legs"]] == [(78000.0, "buy"), (76000.0, "sell")]
     assert (s["gross_premium"], s["net_premium"], s["net_type"]) == (-500.0, -548.0, "debit")
@@ -125,6 +153,29 @@ async def test_put_debit_spread_and_straddle_match_hand_computation():
     assert (t["net_premium"], t["max_loss"], t["max_profit"], t["reward_to_risk"]) == (-4148.0, 4148.0, None, None)
     assert t["breakevens"] == [75852.0, 84148.0]
     assert not any("margin" in w for w in env["warnings"])  # nothing sold
+    # 84148 is above the highest put (80000): the delta interpolation would hold 0.50 there (true P(below) is higher),
+    # overstating P(above); prob_profit is null and the warning names the breakeven and the put strike range
+    assert t["prob_profit"] is None
+    assert any(
+        w.startswith("prob_profit is null: breakeven(s) 84148.00 outside the put strikes with a delta (74000-80000)")
+        for w in env["warnings"]
+    )
+
+
+def test_strangle_and_straddle_prob_is_null_only_off_the_put_grid():
+    now_ms = int(NOW.timestamp() * 1000)
+    quotes = oi.parse_bybit_tickers(_rows(), "BTC")
+    exp = oi.pick_expiry(quotes, now_ms)
+    t = oi.long_straddle(quotes, exp, now_ms, "BTC")
+    assert t.prob_profit is None and t.extra == {"put_strikes": [74_000.0, 80_000.0]}
+    # puts extended to 90000 (|delta| 0.95): both breakevens inside -> interpolated, P(below 75852) + P(above 84148)
+    wide = quotes + [oi.Quote(exp, 90_000.0, False, 9_900, 10_100, 10_000, 0.4, -0.95, U)]
+    t2 = oi.long_straddle(wide, exp, now_ms, "BTC")
+    p_lo = 0.05 + 0.10 * 1_852 / 2_000
+    p_hi = 0.50 + 0.45 * 4_148 / 10_000
+    assert t2.extra == {} and t2.prob_profit == pytest.approx(p_lo + 1 - p_hi)
+    s = oi.long_strangle(quotes, exp, now_ms, "BTC", delta=0.35)  # 78000 P / 82000 C; 82000 + debit > 80000
+    assert s.prob_profit is None and s.extra["put_strikes"] == [74_000.0, 80_000.0]
 
 
 def test_long_straddle_payoff_is_the_debit_at_the_strike_and_zero_at_breakevens():
@@ -145,6 +196,48 @@ async def test_usdc_rows_are_not_priced():
 async def test_ignored_parameter_is_named():
     env = await _quote(hand_rt(), kind="long_straddle", wing=0.05, short_delta=0.2)
     assert env["ok"] and env["warnings"][0] == "short_delta, wing not used by long_straddle; ignored"
+
+
+async def test_unequal_condor_wings_are_shown_and_warned():
+    env = await _quote(hand_rt("uneven"))
+    d = env["data"]
+    assert [(g["strike"], g["side"], g["price"]) for g in d["legs"]][:2] == [(76000.0, "sell", 400.0), (73500.0, "buy", 70.0)]
+    assert d["wing_widths"] == {"put": 2500.0, "call": 2000.0}
+    # gross 400 + 380 - 70 - 100 = 610; fees 24 + 4.9 + 24 + 7 = 59.9; net 550.1; max loss on the wider (put) side
+    # 2500 - 550.1 = 1949.9; the call side loses at most 2000 - 550.1 = 1449.9
+    assert d["net_premium"] == pytest.approx(550.1) and d["max_loss"] == pytest.approx(1949.9)
+    assert (
+        "Unequal wings (strike grid): put wing 2500, call wing 2000 USD; max_loss (1949.90) is the wider side's, the "
+        "narrower side loses at most 1449.90." in env["warnings"]
+    )
+
+
+async def test_min_days_above_max_days_is_named_without_a_fetch():
+    rt = hand_rt("down")  # a fetch would fail: the check comes first
+    env = await _quote(rt, min_days=10, max_days=5)
+    assert env["ok"] is False and env["data"] is None and env["evidence"] == []
+    assert [(m["field"], m["reason"], m["detail"]) for m in env["missing"]] == [
+        ("min_days", "invalid_input", "min_days=10 is greater than max_days=5: the expiry window is empty")
+    ]
+
+
+async def test_eth_iron_condor_matches_hand_computation():
+    env = await _quote(hand_rt("eth"), currency="ETH")
+    assert env["ok"] is True and env["missing"] == []
+    d = env["data"]
+    assert (d["currency"], d["expiry"], d["underlying"]) == ("ETH", "27NOV26", U_ETH)
+    assert [(g["symbol"], g["side"], g["price"]) for g in d["legs"]] == [
+        ("ETH-27NOV26-3040-P-USDT", "sell", 16.0),
+        ("ETH-27NOV26-2960-P-USDT", "buy", 4.4),
+        ("ETH-27NOV26-3360-C-USDT", "sell", 15.2),
+        ("ETH-27NOV26-3440-C-USDT", "buy", 4.0),
+    ]
+    # fee = min(0.03 % x 3200 = 0.96, 7 % x price): 0.96, 0.308, 0.96, 0.28 = 2.508
+    assert [g["fee"] for g in d["legs"]] == [0.96, 0.31, 0.96, 0.28] and d["fees"] == pytest.approx(2.51)
+    # gross 16 + 15.2 - 4.4 - 4 = 22.8; net 20.292 credit; width 80 -> max loss 59.708
+    assert d["gross_premium"] == pytest.approx(22.8) and d["net_premium"] == pytest.approx(20.29)
+    assert d["max_loss"] == pytest.approx(59.71) and d["breakevens"] == [pytest.approx(3019.71), pytest.approx(3380.29)]
+    assert d["wing_widths"] == {"put": 80.0, "call": 80.0}
 
 
 async def test_no_expiry_in_window_is_missing():

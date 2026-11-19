@@ -5,9 +5,10 @@ A ``position`` is a dict with at least ``side`` (``long`` | ``short``), ``size``
 in quote currency per contract and used by notional-value aggregation. The
 sign convention: longs contribute greeks as-is; shorts flip the sign.
 
-Greeks must be in a consistent set of units (we recommend Deribit-style:
-delta in coin/\\$, vega in \\$ per 1 vol-point, theta in \\$ per day,
-gamma in coin/\\$^2) — the aggregator does not try to translate.
+Greeks must be in a consistent set of units (Deribit / our Black-76
+convention: delta in coins, i.e. \\$ per \\$1 spot move; gamma = change of
+delta per \\$1 spot move; vega in \\$ per 1 vol point, i.e. 1 percentage point
+of IV; theta in \\$ per calendar day) — the aggregator does not try to translate.
 """
 
 from __future__ import annotations
@@ -83,7 +84,8 @@ def scenario_pnl(
     * ``d_spot_pct`` is the move in percent (0.10 = +10 %). We convert to an
       absolute USD move using ``reference_spot`` (the first position's mark if
       not given). This is an approximation; it does NOT re-price option legs.
-    * ``d_vol_points`` is the IV shift in vol-points (vega-compatible units).
+    * ``d_vol_points`` is the IV shift in vol points, i.e. percentage points of
+      IV (5.0 = 50 % -> 55 %), matching vega per 1 vol point; not a decimal.
     * ``days`` optionally decays positions via their theta.
     """
     rows = list(positions)

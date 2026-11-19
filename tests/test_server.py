@@ -51,6 +51,8 @@ EXPECTED_TOOLS = {
     "btc_latest_block",
     "btc_difficulty_hashrate",
     "btc_address",
+    "yield_pools",
+    "yield_pool_history",
     "onchain_balance",  # native coin, or one ERC-20 with token=
     "onchain_address_txs",  # kind="normal" | "erc20"
     "onchain_token_info",

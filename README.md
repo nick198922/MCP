@@ -43,7 +43,7 @@ claude mcp add tradedesk -- uv run --directory /ABSOLUTE/PATH/TO/tradedesk-mcp t
 
 - `token_deep_analysis(project)` — глибокий 10-секційний інвест-аналіз крипто-проекту / токена (російською): продукт, залучений капітал, партнерства, токеноміка, розлоки, revenue, value accrual, roadmap, нарратив, тех. аналіз → bull/base/bear + оцінки 1–10 на 3 горизонтах. Промт автоматично підказує моделі, які інструменти tradedesk-mcp використати для частини «графік + позиціювання». Файл: `src/tradedesk/prompts/token_deep_analysis.md` — редагуйте, перезапуск сервера не потрібен (перечитується на кожен виклик).
 
-## Інструменти (91)
+## Інструменти (103)
 
 | Група | Інструмент | Що дає |
 |---|---|---|
@@ -68,6 +68,7 @@ claude mcp add tradedesk -- uv run --directory /ABSOLUTE/PATH/TO/tradedesk-mcp t
 | Ф'ючерси | `deribit_futures_curve` | basis і term structure (прості та лог. річні) |
 | Опціони | `deribit_vol_surface` | ATM IV, RR/Fly 25Δ і 10Δ, очікуваний рух, P/C по експірації |
 | | `deribit_option_chain` | ланцюжок з greeks (Black-76, збігається з Deribit) |
+| | `bybit_option_chain` | ланцюг опціонів Bybit (BTC / ETH, розрахунок у USDT): на експірацію — дні, ціна базового активу Bybit, ATM-страйк і ATM IV, OI колів і путів; на страйк — bid / ask / mid кола й пута в USD, спред у % від mid і в пунктах IV (десятковий дріб), mark IV, OI в монетах. Типово 3 найближчі експірації й ATM ± 3 страйки; усе (плюс розміри на кращому рівні, IV bid / ask, mark, delta) — `include_details=true`. Лише верх стакана; індекс Bybit (USDT) відрізняється від Deribit на кілька bp |
 | | `deribit_max_pain`, `deribit_gamma_exposure` | max pain, GEX із рівнем flip |
 | | `deribit_expected_move` | ціна ATM-страддла в USD, breakeven-и й 1σ-діапазон за експіраціями |
 | | `deribit_oi_by_strike` | OI-стіни по страйках: кол/пут/USD-ноцінал, топ-рівні підтримки/опору |

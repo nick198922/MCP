@@ -49,7 +49,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "bytes), blocks_of_backlog = vsize / 1,000,000 vB (one block holds at most ~1,000,000 vB = 4M weight "
             "units), total_fee_sats / total_fee_btc, avg_fee_rate_sat_vb (total fee / vsize) and fee_bands: vsize and "
             "share of the mempool paying >= 50, 20-50, 10-20, 5-10, 2-5, 1-2 and under 1 sat/vB (from mempool.space's "
-            "fee histogram). Caveats: one node's view (other nodes' mempools differ by policy and size limits); "
+            "fee histogram). Caveats: fee_bands are approximate, because each histogram bin is counted in the band of "
+            "its lower fee-rate edge (a bin spanning 1.95-2.3 sat/vB lands wholly in 1-2); one node's view (other nodes' mempools differ by policy and size limits); "
             "blocks_of_backlog is not a clearing time, because new transactions keep arriving and the low-fee tail can "
             "be evicted instead of mined. Cached ~30 s. Network context, not a trading signal."
         ),
@@ -66,6 +67,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
         if data["histogram_vsize_vb"] == 0:
             b.warn("The fee histogram was empty or unusable: fee_bands are zero.")
         b.warn("Snapshot of mempool.space's node; blocks_of_backlog is a size, not a time to clear.")
+        b.warn("fee_bands are approximate: each histogram bin is counted in the band of its lower fee-rate edge.")
         return b.build(data)
 
     @server.tool(

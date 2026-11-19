@@ -14,7 +14,7 @@ from test_server import call
 from tradedesk.analytics.evm import abi_string, hex_uint, scaled, source_summary, tx_row, uint_text, valid_evm_address
 from tradedesk.config import Settings
 from tradedesk.core.ratelimit import TokenBucket
-from tradedesk.providers.etherscan import _body_check, _proxy_check, resolve_chain
+from tradedesk.providers.etherscan import SELECTORS, _body_check, _proxy_check, resolve_chain
 from tradedesk.runtime import Runtime
 from tradedesk.server import build_server
 
@@ -179,6 +179,36 @@ async def test_token_info_of_a_wallet_is_not_ok():
     assert env["ok"] is False and env["data"] is None
     assert {m["field"] for m in env["missing"]} == {"name", "symbol", "decimals", "total_supply"}
     assert all(m["reason"] == "data_unavailable" for m in env["missing"])
+    assert any("does not look like an ERC-20 contract" in w for w in env["warnings"])
+
+
+async def test_token_info_warns_not_erc20_when_symbol_and_decimals_revert_but_ok_is_unchanged():
+    # name and totalSupply answer, symbol and decimals revert: partial data stays ok=true, with the not-ERC-20 warning.
+    def two_revert(req):
+        p = req.url.params
+        if p.get("module") == "proxy" and p.get("data") in (SELECTORS["symbol"], SELECTORS["decimals"]):
+            return httpx.Response(200, json=FIX["eth_call_reverted"])
+        return serve(req)
+
+    env = await call(make_server(two_revert), "onchain_token_info", chain="ethereum", address=USDT)
+    assert env["ok"] is True and env["data"]["name"] == "Tether USD" and env["data"]["total_supply"] is None
+    assert env["data"]["total_supply_raw"] == "96000000000000000"
+    assert {(m["field"], m["reason"]) for m in env["missing"]} == {("symbol", "data_unavailable"), ("decimals", "data_unavailable")}
+    assert any("does not look like an ERC-20 contract" in w for w in env["warnings"])
+
+
+async def test_token_info_of_a_real_token_or_a_transient_failure_has_no_not_erc20_warning():
+    env = await call(make_server(), "onchain_token_info", chain="ethereum", address=USDT)
+    assert not any("ERC-20 contract" in w for w in env["warnings"])
+
+    def node_error(req):  # every view fails upstream (not a revert): a failure, not evidence about the contract
+        if req.url.params.get("module") == "proxy":
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "error": {"code": -32000, "message": "header not found"}})
+        return serve(req)
+
+    env = await call(make_server(node_error), "onchain_token_info", chain="ethereum", address=USDT)
+    assert env["ok"] is False and {m["reason"] for m in env["missing"]} == {"backend_error"}
+    assert not any("ERC-20 contract" in w for w in env["warnings"])
 
 
 async def test_contract_source_verified_without_and_with_excerpt():

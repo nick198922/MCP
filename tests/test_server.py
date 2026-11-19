@@ -100,6 +100,7 @@ EXPECTED_TOOLS = {
     "plan_list",
     "plan_review",
     "plan_link",
+    "demo_status",  # read-only demo trader status vs passport bands, added 2026-11-19 (tests in test_demo_status.py)
     "positions_add",
     "positions_list",
     "positions_close",

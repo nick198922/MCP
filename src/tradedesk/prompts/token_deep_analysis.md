@@ -17,12 +17,13 @@
 Это защита от −100 %, а не стратегия и не аргумент за покупку.
 
 - Если токен торгуется только на CEX (перп или спот) и on-chain его не покупают — напиши, что шаг не применяется.
-- Если это EVM-токен (ethereum, bsc, base, arbitrum, polygon, optimism, avalanche) и адрес контракта известен из официального источника проекта (не по тикеру) — до всех разделов вызови `contract_risk(chain, address)`.
+- Если это EVM-токен (ethereum, bsc, base, arbitrum, polygon, optimism, avalanche) или Solana-токен (chain solana, адрес mint) и адрес контракта известен из официального источника проекта (не по тикеру) — до всех разделов вызови `contract_risk(chain, address)`.
 - Любой `fail` (список `failed`; honeypot, cannot_sell_all и другие критичные — в `critical_failed`) → токен не торговать; анализ дальше вести только как разбор, с этим выводом в начале.
 - Каждую проверку из списка `unknown` назови поимённо как «не проверено» — это не pass.
 - GoPlus покрывает не все токены (для PEPE 23.10 вернул `code 1` с пустым результатом): `ok=false` или `goplus` в `missing` → прямо напиши, что контракт не проверен.
 - `honeypot_is` в `missing` (всегда на arbitrum, polygon, optimism, avalanche) → honeypot, cannot_sell_all, buy_tax, sell_tax и holder_sell_fail_rate «не проверено» вторым источником, а не pass; так и напиши.
-- `overall=pass` не доказывает безопасность: эвристика двух чекеров (GoPlus и симуляция honeypot.is), оба могут отставать или ошибаться.
+- `overall=pass` (возможен только на ethereum, bsc, base) не доказывает безопасность: эвристика двух чекеров (GoPlus и симуляция honeypot.is), оба могут отставать или ошибаться. На других EVM-сетях и на Solana чекер один (GoPlus), и `overall` не бывает pass.
+- Solana: симуляции продажи нет, поэтому `honeypot` всегда unknown — напиши, что продажу нужно проверить вручную; пауза Token-2022 и блокировки на уровне программы пула GoPlus не видны. Проверки EVM без поля в схеме GoPlus Solana — в `not_checked`, назови их «не проверено».
 
 ---
 

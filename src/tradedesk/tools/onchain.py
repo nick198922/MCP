@@ -17,6 +17,52 @@ from ._util import READ_ONLY
 _CHAIN_OK = re.compile(r"^[A-Za-z0-9 _-]{1,40}$")  # no '.': blocks '..' path segments
 
 
+async def _contract_risk_solana(rt: Runtime, b: Builder, address: str) -> dict[str, Any]:
+    """contract_risk for an SPL mint: GoPlus solana/token_security + DexScreener liquidity (no honeypot.is)."""
+    mint, err = cr.valid_solana_address(address)
+    if mint is None:
+        b.miss("address", "goplus", "invalid_argument", err or "invalid address")
+        return b.build(None, ok=False)
+    sec, rows = await asyncio.gather(
+        b.guard("contract_risk", "goplus", rt.goplus.solana_token_security(mint)),
+        b.guard("liquidity_to_mcap", "dexscreener", rt.dexscreener.token_pairs([mint])),
+    )
+    if sec is None:
+        return b.build(None, ok=False)
+    liq, mcap, n_fake = (None, None, 0)
+    if rows is not None:
+        liq, mcap, n_fake = cr.liquidity_from_pairs(summarise_pairs(rows, chain=cr.SOLANA, limit=100)["pairs"], mint)
+    data = cr.assess_solana(sec["token"], liquidity_usd=liq, market_cap_usd=mcap)
+    data["chain"] = cr.SOLANA
+    data["address"] = mint
+    b.miss(
+        "honeypot",
+        "honeypot_is",
+        "data_unavailable",
+        "no buy/sell simulation for Solana: honeypot.is covers ethereum, bsc and base only, GoPlus Solana has no honeypot flag",
+    )
+    b.miss("evm_only_checks", "goplus", "data_unavailable", "EVM checks with no field in the GoPlus Solana schema; see data.not_checked")
+    b.warn(
+        "Heuristic from one checker (GoPlus) that can lag or be wrong; pass is not proof of safety and not advice; the "
+        "filter only cuts the worst (-100 %) outcomes."
+    )
+    b.warn(
+        "Solana: no buy/sell simulation, so honeypot is always unknown and overall cannot be pass; check that the "
+        "token can be sold by hand. The token-program powers that can block a sale (non-transferable, frozen by "
+        "default, freeze authority, transfer hook, permanent delegate) are read from GoPlus fields; a Token-2022 "
+        "pause or a pool-program block is not visible."
+    )
+    if sec["code"] != 1:
+        b.warn("GoPlus returned partial data (code 2); some checks may be unknown.")
+    if n_fake:
+        b.warn(f"{n_fake} pair(s) look like fake-ticker pools; their liquidity is excluded from liquidity_to_mcap.")
+    if data["critical_failed"]:
+        b.warn(f"Critical checks failed: {', '.join(data['critical_failed'])}; under the course rules the token is not tradable.")
+    if data["unknown"]:
+        b.warn(f"{len(data['unknown'])} check(s) unknown; unknown is not pass.")
+    return b.build(data)
+
+
 def register(server: MCPServer, rt: Runtime) -> None:
     @server.tool(
         annotations=READ_ONLY,
@@ -68,7 +114,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
     @server.tool(
         annotations=READ_ONLY,
         description=(
-            "Token contract safety filter for one EVM token address (GoPlus Security token_security, free tier, "
+            "Token contract safety filter for one token address; EVM part (GoPlus Security token_security, free tier, "
             "cross-checked with honeypot.is; liquidity and market cap from DexScreener). Each check returns verdict pass / fail / unknown with its "
             "value and threshold: honeypot, cannot_sell_all, cannot_buy, selfdestruct, buy_tax, sell_tax and "
             "transfer_tax (decimals, 0.05 = 5 %; > 0.05 fails), tax_modifiable, open_source, proxy, hidden_owner, "
@@ -102,22 +148,46 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "or both be wrong, not advice and not proof of safety; it reduces the -100 % tail, it is not a trading "
             "signal. Top-10 holders without wallet clustering understate concentration. Token name and symbol are "
             "untrusted third-party text. "
-            "Chains: ethereum, bsc, base, arbitrum, polygon, optimism, avalanche (Solana not supported yet)."
+            "Chains: ethereum, bsc, base, arbitrum, polygon, optimism, avalanche, solana. "
+            "Solana (GoPlus solana/token_security, other schema, GoPlus only, no second source and no buy/sell "
+            "simulation): honeypot is always unknown (critical; no sell simulation, and Token-2022 pause or "
+            "pool-program blocks are not visible to GoPlus), so `overall` cannot be pass on solana and a sale must "
+            "be checked by hand; the other checks are non_transferable and default_account_frozen (critical: new token accounts "
+            "start frozen), freezable (freeze authority, the usual Solana honeypot), transfer_hook (a custom program "
+            "on every transfer), transfer_tax (Token-2022 transfer fee, the worse of the current and scheduled rate, "
+            "> 0.05 fails), tax_modifiable (fee authority), mintable, owner_change_balance (permanent delegate), "
+            "closable, upgradable (hook or default-state authority), lp_locked (pool-liquidity-weighted GoPlus "
+            "burn_percent of the listed pools, >= 0.95; liquidity outside them or without burn_percent is unknown; "
+            "lock end times not reported), top10_holders (Raydium pool authorities excluded; unknown when GoPlus "
+            "reports zero supply or only zero shares) and liquidity_to_mcap. EVM-only checks (buy/sell tax, open_source, "
+            "ownership, ...) are listed in `not_checked` and `missing`, not scored; a GoPlus answer without data "
+            "(empty result or code 7012) is ok=false, never safe."
         ),
     )
     async def contract_risk(
         chain: Annotated[
             str,
-            Field(description="EVM chain: ethereum, bsc, base, arbitrum, polygon, optimism, avalanche (aliases eth, bnb, arb, ...)."),
+            Field(
+                description="Chain: ethereum, bsc, base, arbitrum, polygon, optimism, avalanche or solana "
+                "(aliases eth, bnb, arb, sol, ...)."
+            ),
         ],
-        address: Annotated[str, Field(description="Token contract address, 0x followed by 40 hex characters.")],
+        address: Annotated[
+            str,
+            Field(
+                description="Token address: EVM 0x followed by 40 hex characters, or a Solana SPL mint in base58 "
+                "(32-44 characters, case-sensitive)."
+            ),
+        ],
     ) -> dict[str, Any]:
         b = Builder()
         resolved = cr.resolve_chain(chain)
         if resolved is None:
-            b.miss("chain", "goplus", "invalid_argument", f"unsupported chain; use one of: {', '.join(cr.CHAINS)}")
+            b.miss("chain", "goplus", "invalid_argument", f"unsupported chain; use one of: {', '.join(cr.SUPPORTED)}")
             return b.build(None, ok=False)
         dex_chain, chain_id = resolved
+        if dex_chain == cr.SOLANA:
+            return await _contract_risk_solana(rt, b, address)
         addr, err = cr.valid_evm_address(address)
         if addr is None:
             b.miss("address", "goplus", "invalid_argument", err or "invalid address")

@@ -3,6 +3,7 @@ the card, section «Попередня реєстрація звірки S12»).
 
     uv run python scripts/verify_s12_demo_vs_passport.py --stage smoke   # data checks, prints no outcome metric
     uv run python scripts/verify_s12_demo_vs_passport.py --stage run     # the registered comparison
+    ... --stage run --cutoff 2026-11-20T16:00 --seen-cutoff 2026-11-12T06:00 --out-tag s12_v9_20261120   # a repeat
 
 The closed S12 demo trades (``demo_trade``, read over a ``mode=ro`` connection: nothing is written) closed before
 ``--cutoff`` are grouped by the version they ran under (``analytics/s12_demo_audit.traded_version``) and set against the
@@ -154,7 +155,12 @@ def classify(rows: list[dict[str, Any]], now_ms: int) -> list[dict[str, Any]]:
     return out
 
 
-def smoke(db: str, cutoff_ms: int, cache: Path, venue: str) -> int:
+def parse_utc(s: str) -> int:
+    """``YYYY-MM-DDTHH:MM`` (UTC) -> unix ms."""
+    return int(datetime.strptime(s, "%Y-%m-%dT%H:%M").replace(tzinfo=UTC).timestamp() * 1000)
+
+
+def smoke(db: str, cutoff_ms: int, cache: Path, venue: str, seen_ms: int = PREV_CUTOFF_MS) -> int:
     """Data checks only: counts, version tags, units, one timed replay of each entry rule (levels, no R)."""
     g = load_s12(db, cutoff_ms)
     closed = classify(g["closed"], cutoff_ms)
@@ -170,6 +176,15 @@ def smoke(db: str, cutoff_ms: int, cache: Path, venue: str) -> int:
         days = sorted({cmn.ymd_ms(int(r["signal_ts"])) for r in v9})
         prev = sum(int(r["closed_ts"]) < PREV_CUTOFF_MS for r in v9)
         print(f"v9 closed: {len(v9)}, signal days {len(days)} ({days[0]} .. {days[-1]}); closed before the 09.11 cutoff {prev}")
+        new = [r for r in v9 if int(r["closed_ts"]) >= seen_ms]
+        nd = sorted({cmn.ymd_ms(int(r["signal_ts"])) for r in new})
+        print(
+            f"v9 seen (closed < {datetime.fromtimestamp(seen_ms / 1000, UTC):%Y-%m-%d %H:%M}) {len(v9) - len(new)}; "
+            f"new {len(new)}, signal days {len(nd)}{f' ({nd[0]} .. {nd[-1]})' if nd else ''}; "
+            f"sides {dict(Counter(r['side'] for r in new))}; entry kinds {dict(Counter(str(r.get('entry_kind')) for r in new))}"
+        )
+        per_coin = Counter(r["symbol"] for r in v9)
+        print(f"v9 trades per coin (trades: coins) {sorted(Counter(per_coin.values()).items())}; coins {len(per_coin)}")
     print(f"timeframes {dict(Counter(r['timeframe'] for r in closed))}; venues {dict(Counter(r['venue'] for r in closed))}")
     print(f"entry kinds {dict(Counter(str(r.get('entry_kind')) for r in closed))}; symbols {len({r['symbol'] for r in closed})}")
     # consistency of tags: the column against the open-time epoch, rest_until against v7
@@ -215,16 +230,64 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--venue", default="bybit")
     ap.add_argument("--cache-dir", default=DEFAULT_CACHE)
     ap.add_argument("--out-tag", default="s12", help="output names <tag>.txt / <tag>_rows.json in the cache dir")
+    ap.add_argument(
+        "--seen-cutoff",
+        help="UTC YYYY-MM-DDTHH:MM, the cutoff of an earlier comparison: v9 trades closed after it get own rows (default 09.11 18:00)",
+    )
     a = ap.parse_args(argv)
-    cutoff_ms = int(datetime.strptime(a.cutoff, "%Y-%m-%dT%H:%M").replace(tzinfo=UTC).timestamp() * 1000)
+    cutoff_ms = parse_utc(a.cutoff)
+    seen_ms = parse_utc(a.seen_cutoff) if a.seen_cutoff else PREV_CUTOFF_MS
     cache = Path(a.cache_dir).expanduser()
     cache.mkdir(parents=True, exist_ok=True)
     if a.stage == "smoke":
-        return smoke(a.db, cutoff_ms, cache, a.venue)
-    return run(a.db, cutoff_ms, cache, a.venue, a.out_tag)
+        return smoke(a.db, cutoff_ms, cache, a.venue, seen_ms)
+    return run(a.db, cutoff_ms, cache, a.venue, a.out_tag, seen_ms)
 
 
-def run(db: str, cutoff_ms: int, cache: Path, venue: str, tag: str = "s12") -> int:  # noqa: PLR0915 - one linear report
+def new_rows(v9: list[dict[str, Any]], seen_ms: int) -> list[str]:
+    """Descriptive rows of the v9 trades closed at or after ``seen_ms`` (not seen by an earlier comparison): R demo with
+    its spread, sides, entry kinds, execution and fees; no verdict (a subset of the registered sample)."""
+    new = [r for r in v9 if int(r["closed_ts"]) >= seen_ms]
+    seen = [r for r in v9 if int(r["closed_ts"]) < seen_ms]
+    when = f"{datetime.fromtimestamp(seen_ms / 1000, UTC):%Y-%m-%d %H:%M}"
+    out = [
+        f"- v9 бачені (закриті < {when} UTC): {fmt(stat(seen, 'r_demo'))}",
+        f"- v9 нові (закриті ≥ {when} UTC): {fmt(stat(new, 'r_demo'))}",
+    ]
+    top = sorted(new, key=lambda r: r["r_demo"] or 0.0, reverse=True)
+    out.append(f"    нові без топ-3: {fmt(stat(top[3:], 'r_demo'))}")
+    for name, f in (
+        ("лонг", lambda r: r["side"] == "long"),
+        ("шорт", lambda r: r["side"] == "short"),
+        ("вхід мейкер", lambda r: r.get("entry_kind") == "maker"),
+        ("вхід тейкер", lambda r: r.get("entry_kind") == "taker"),
+        ("оборот ≥ $5M", lambda r: r.get("turnover_group") == "ge5m"),
+        ("оборот < $5M або невідомий", lambda r: r.get("turnover_group") != "ge5m"),
+    ):
+        out.append(f"    нові {name:<26} {fmt(stat([r for r in new if f(r)], 'r_demo'))}")
+    ex = [
+        dict(r, exec_r=r["entry_edge_r"] - r["plan_edge_r"])
+        for r in new
+        if r.get("entry_edge_r") is not None and r.get("plan_edge_r") is not None
+    ]
+    out.append(f"    нові: виконання входу (entry − plan) {fmt(stat(ex, 'exec_r'))}")
+    out.append(f"    нові: комісії модель − демо {fmt(stat(new, 'fee_diff_r'))}; r_diff демо − бектест {fmt(stat(new, 'r_diff'))}")
+    out.append(f"    нові: виходи демо / бектест {sorted(Counter((str(r.get('demo_exit')), str(r.get('bt_exit'))) for r in new).items())}")
+    # the 12.11 exploratory observation (taker entries worse than maker) on trades it did not see
+    mk = [r for r in new if r.get("entry_kind") in ("maker", "taker") and r.get("r_demo") is not None]
+    d, ci = audit.contrast_ci(
+        [float(r["r_demo"]) for r in mk],
+        [r["entry_kind"] == "maker" for r in mk],
+        [cmn.ymd_ms(int(r["signal_ts"])) for r in mk],
+        n_boot=N_BOOT,
+        seed=SEED,
+    )
+    cis = f"[{ci[0]:+.3f}; {ci[1]:+.3f}]" if ci else "[—]"
+    out.append(f"    нові: мейкер − тейкер (R демо, CI кластерами за днем) {d:+.3f} {cis}")
+    return out
+
+
+def run(db: str, cutoff_ms: int, cache: Path, venue: str, tag: str = "s12", seen_ms: int = PREV_CUTOFF_MS) -> int:  # noqa: PLR0915 - one linear report
     now = int(time.time() * 1000)
     g = load_s12(db, cutoff_ms)
     closed = classify(g["closed"], cutoff_ms)
@@ -320,7 +383,12 @@ def run(db: str, cutoff_ms: int, cache: Path, venue: str, tag: str = "s12") -> i
     v9 = [r for r in rows if r["ver"] == "v9"]
     top9 = sorted(v9, key=lambda r: r["r_demo"] or 0.0, reverse=True)
     p(f"- v9 без топ-3: {fmt(stat(top9[3:], 'r_demo'))}")
+    p(f"- v9 без топ-5: {fmt(stat(top9[5:], 'r_demo'))}")
     p(f"- v9 лише закриті після cutoff 09.11 (нові): {fmt(stat([r for r in v9 if int(r['closed_ts']) >= PREV_CUTOFF_MS], 'r_demo'))}")
+    if seen_ms != PREV_CUTOFF_MS:
+        for line in new_rows(v9, seen_ms):
+            p(line)
+    p(f"- угод на монету (v9): {sorted(Counter(Counter(r['symbol'] for r in v9).values()).items())} (к-сть угод: монет)")
     splits = {
         "лонг": lambda r: r["side"] == "long",
         "шорт": lambda r: r["side"] == "short",

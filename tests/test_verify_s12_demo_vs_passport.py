@@ -123,3 +123,29 @@ def test_shadow_plans_repeat_at_the_cutoff_whatever_the_run_time(tmp_path, migra
     c = _run(out, migrated_db, "c", CUTOFF + 2 * HOUR)
     assert "n 2, з R 2, відкрито 0" in next(x for x in _section(c) if x.startswith("- skipped:"))
     assert offline["fetch"] == 0  # no S12 demo trades: nothing to replay
+
+
+def _v9(day: int, r: float, side: str = "short", kind: str = "maker") -> dict:
+    sig = _ms(2026, 11, day)
+    return {
+        "signal_ts": sig, "closed_ts": sig + 8 * HOUR, "r_demo": r, "side": side, "entry_kind": kind,
+        "turnover_group": "ge5m", "entry_edge_r": 0.1, "plan_edge_r": 0.0, "fee_diff_r": -0.01, "r_diff": 0.0,
+        "demo_exit": "stop", "bt_exit": "stop",
+    }  # fmt: skip
+
+
+def test_new_rows_split_at_the_seen_cutoff():
+    """Seen = closed before the earlier comparison's cutoff, new = the rest; means are the plain means of each part,
+    and the seen row does not change when trades closed after the cutoff change."""
+    seen_ms = _ms(2026, 11, 12, 6)
+    v9 = [_v9(1, 1.0), _v9(2, -1.0), _v9(3, 2.0), _v9(14, -1.0, "long", "taker"), _v9(15, 0.5), _v9(16, -0.5)]
+    lines = mod.new_rows(v9, seen_ms)
+    assert "n  3, днів  3, середнє +0.667" in lines[0]  # (1 − 1 + 2) / 3
+    assert "n  3, днів  3, середнє -0.333" in lines[1]  # (−1 + 0.5 − 0.5) / 3
+    assert "n 0" in next(x for x in lines if "без топ-3" in x)
+    assert "n  1, днів  1, середнє -1.000" in next(x for x in lines if "нові лонг" in x)
+    assert "середнє +0.100" in next(x for x in lines if "виконання входу" in x)
+    assert ") +1.000 [" in next(x for x in lines if "мейкер − тейкер" in x)  # maker (0.5 − 0.5) / 2 = 0 minus taker −1
+    changed = [*v9[:3], _v9(14, 3.0), _v9(17, 3.0)]
+    assert mod.new_rows(changed, seen_ms)[0] == lines[0]
+    assert mod.parse_utc("2026-11-12T06:00") == seen_ms

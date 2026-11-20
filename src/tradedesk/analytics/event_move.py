@@ -12,7 +12,9 @@ A non-positive w2 - w1 is a calendar arbitrage in the marks: no square root is t
 The event's excess over the base diffusion (the way an earnings move is backed out of equity options): the base
 forward variance is that of a neighbouring window with no event, (E0, E1] or (E2, E3] (``base_forward_iv``), and
 excess = sqrt(max(w2 - w1 - base_forward_var * (T2 - T1), 0)) (``excess_event_move``). An estimate, not a forecast: it
-assumes the neighbouring window's forward vol is the vol the event window would have without the event.
+assumes the neighbouring window's forward vol is the vol the event window would have without the event. It is not
+clean when another event lies inside (E1, E2] (``events_in_event_window``) or when the base window is short
+(``base_window_is_short``).
 """
 
 from __future__ import annotations
@@ -173,3 +175,21 @@ def excess_event_move(event_var: float, base_forward_var: float, t1: float, t2: 
     base_var = base_forward_var * (t2 - t1)
     x = event_var - base_var
     return {"base_var": base_var, "excess_var": x, "excess_move": math.sqrt(x) if x > 0 else 0.0, "below_base": x <= 0}
+
+
+def events_in_event_window(other_events: Iterable[datetime], event: datetime, start: datetime, end: datetime) -> list[datetime]:
+    """``other_events`` that fall inside the event's own window (start, end] = (E1, E2], sorted and each time once
+    (duplicates collapsed); the event itself (equal to ``event``) is not counted. Their variance is in w2 - w1 too, so
+    the excess is attributed to the main event although it is not that event's alone. Aware UTC datetimes; pure, no
+    clock."""
+    return sorted({x for x in other_events if start < x <= end and x != event})
+
+
+SHORT_BASE_DAYS = 1.0  # a base window under one day is a difference of two nearly equal total variances
+SHORT_BASE_SHARE = 0.5  # or under half the event window: its forward vol is scaled up over a much longer window
+
+
+def base_window_is_short(base_days: float, event_days: float) -> bool:
+    """True when the base window is shorter than ``SHORT_BASE_DAYS`` or than ``SHORT_BASE_SHARE`` of the event window
+    (both in days): its forward variance is noisy and scaling it to the event window may bias the excess badly."""
+    return base_days < SHORT_BASE_DAYS or base_days < SHORT_BASE_SHARE * event_days

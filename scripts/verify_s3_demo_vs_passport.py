@@ -1,12 +1,15 @@
 """S3 demo vs its passport (IDEA-20261030-demo-setups-depth, items 6 and 9; pre-registered in the card).
 
     uv run python scripts/verify_s3_demo_vs_passport.py --json ~/.cache/tradedesk-agents/s3-demo-vs-passport/dvb.json
-                                                       [--setup S3] [--out FILE]
+                                                       [--setup S3] [--out FILE] [--cutoff YYYY-MM-DDTHH:MM [--db FILE]]
 
 Thin reader, no network and no new numeric logic: the per-trade replay comes from the ``--json`` output of
 ``scripts/demo_vs_backtest.py`` (pure ``analytics/demo_vs_backtest.py``); the CI is
 ``analytics/liquidation_flush.cluster_bootstrap_ci`` with the UTC day of the signal bar as the cluster; the not-executed
 signals of the setup are summarised with ``analytics/demo_shadow.summary``. R is per trade risk, not on capital.
+Without ``--cutoff`` the shadow plans are the JSON's (as of its run time); with it they are read from the store as of the
+cutoff (``demo_shadow`` with ``now_ms`` = the cutoff, as ``verify_s12`` / ``verify_s38``), so a repeat on the same cutoff
+gives the same section whenever it runs.
 """
 
 from __future__ import annotations
@@ -20,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 import common_helpers as cmn  # scripts/common_helpers.py (the script's directory is on sys.path)
+import demo_vs_backtest as dvb  # scripts/demo_vs_backtest.py: the read-only loader of the not-executed rows
 
 from tradedesk.analytics import demo_shadow
 from tradedesk.analytics.demo_vs_backtest import BE_SWITCH_MS
@@ -60,11 +64,27 @@ def band_verdict(m: float) -> str:
     return "✗ поза ковзною смугою"
 
 
+def shadow_rows_at(db: str, setup: str, cutoff_ms: int) -> tuple[list[demo_shadow.ShadowRow], str | None]:
+    """``setup``'s not-executed signals and filled trades with their shadow plans as of ``cutoff_ms`` (read-only store,
+    the same filters as ``verify_s12_demo_vs_passport``): decided before the cutoff, a plan resolved after it is open."""
+    trades, aud, plans, err = dvb.load_not_executed(db)
+    trades = [t for t in trades if int(t.get("signal_ts") or 0) < cutoff_ms]
+    aud = [x for x in aud if int(x.get("ts") or 0) < cutoff_ms]
+    rows = demo_shadow.match_rows(trades, aud, plans, now_ms=cutoff_ms)
+    return [x for x in rows if x.setup == setup and x.decided_ts < cutoff_ms], err
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--json", required=True, help="output of scripts/demo_vs_backtest.py --json")
     ap.add_argument("--setup", default="S3")
     ap.add_argument("--out", help="also write the text to this file")
+    ap.add_argument(
+        "--cutoff",
+        help="UTC YYYY-MM-DDTHH:MM: the shadow-plan section is read from --db as of this minute (a plan resolved after it "
+        "counts as open, later decisions are left out), not from the JSON's run time; the closed trades stay the JSON's",
+    )
+    ap.add_argument("--db", default=dvb.DEFAULT_DB, help="store read (read-only) for the shadow plans with --cutoff")
     a = ap.parse_args(argv)
     doc = json.loads(Path(a.json).expanduser().read_text(encoding="utf-8"))
     rows = [r for r in doc["rows"] if r["setup"] == a.setup]
@@ -155,12 +175,24 @@ def main(argv: list[str] | None = None) -> int:
             p(
                 f"  {r['symbol']} {cmn.ymd_ms(int(r['signal_ts']))} {r['timeframe']} {r['side']}: {r['verdict']} {r.get('reasons')} demo {r.get('r_demo')} demo_bt {r.get('r_demo_bt')} bt [{r.get('r_bt')}; {r.get('r_bt_fast')}] fill [{r.get('r_bt_fill')}; {r.get('r_bt_fill_fast')}] edge {r.get('entry_edge_r')} exit {r.get('demo_exit')}/{r.get('bt_exit')}"
             )
-    ne = doc.get("not_executed") or {}
-    srows = [demo_shadow.ShadowRow(**x) for x in ne.get("rows", []) if x.get("setup") == a.setup]
     p("")
-    p(f"## Невиконані сигнали {a.setup} проти тіньових планів (R без беззбитку, од. демо; t-CI з demo_shadow)")
+    if a.cutoff:
+        # shadow plans as of the cutoff, not the JSON's run time (as verify_s12 / verify_s38): rows decided at or after
+        # the cutoff are left out and a plan resolved after it counts as open, so a repeat on the same cutoff repeats
+        cutoff_ms = int(datetime.strptime(a.cutoff, "%Y-%m-%dT%H:%M").replace(tzinfo=UTC).timestamp() * 1000)
+        srows, ne_err = shadow_rows_at(a.db, a.setup, cutoff_ms)
+        now_ms = cutoff_ms
+        p(
+            f"## Невиконані сигнали {a.setup} проти тіньових планів на cutoff {a.cutoff} UTC (R без беззбитку, од. демо; t-CI з demo_shadow)"
+            f"{' — ' + ne_err if ne_err else ''}"
+        )
+    else:
+        ne = doc.get("not_executed") or {}
+        srows = [demo_shadow.ShadowRow(**x) for x in ne.get("rows", []) if x.get("setup") == a.setup]
+        now_ms = int(ne.get("now_ms") or doc["generated_ms"])
+        p(f"## Невиконані сигнали {a.setup} проти тіньових планів (R без беззбитку, од. демо; t-CI з demo_shadow)")
     if srows:
-        sm = demo_shadow.summary(srows, now_ms=int(ne.get("now_ms") or doc["generated_ms"]))
+        sm = demo_shadow.summary(srows, now_ms=now_ms)
         for g, s in sm["groups"].items():
             ci = f"[{s['ci95_r'][0]:+.2f}; {s['ci95_r'][1]:+.2f}]" if s.get("ci95_r") else "[—]"
             mr = f"{s['mean_r']:+.3f}" if s.get("mean_r") is not None else "—"

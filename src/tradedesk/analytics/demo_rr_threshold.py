@@ -176,7 +176,7 @@ def label_permutation_p(values: Sequence[float], labels: Sequence[Hashable], *, 
 
 
 def week_key(ts_ms: int) -> int:
-    """ISO week number (UTC, Monday start) counted from the Monday 1970-01-05 (week 1); 1970-01-01..04 are week 0."""
+    """Monday-aligned week index (UTC, not the ISO week number) counted from the Monday 1970-01-05 (week 1); 1970-01-01..04 are week 0."""
     return (ts_ms // DAY_MS + 3) // 7
 
 

@@ -17,6 +17,8 @@ import statistics
 from collections.abc import Hashable, Iterable, Mapping, Sequence
 from typing import Any
 
+import numpy as np
+
 from .oi_flush import cluster_se_diff, cluster_se_mean
 from .smart_money import t975
 
@@ -171,6 +173,146 @@ def label_permutation_p(values: Sequence[float], labels: Sequence[Hashable], *, 
         if between_ss(values, lab) >= obs - 1e-12:
             hit += 1
     return (hit + 1) / (n_perm + 1)
+
+
+def week_key(ts_ms: int) -> int:
+    """Monday-aligned week index (UTC, not the ISO week number) counted from the Monday 1970-01-05 (week 1); 1970-01-01..04 are week 0."""
+    return (ts_ms // DAY_MS + 3) // 7
+
+
+# Webb six-point weights: mean 0, variance 1; better than Rademacher with few clusters (more distinct draws).
+WEBB = (-math.sqrt(1.5), -1.0, -math.sqrt(0.5), math.sqrt(0.5), 1.0, math.sqrt(1.5))
+
+
+def _cluster_arrays(
+    values: Sequence[float], clusters: Sequence[Hashable], order: Sequence[Hashable], base: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """Per-cluster counts and residual sums (value - base), aligned to ``order``."""
+    idx = {c: i for i, c in enumerate(order)}
+    n = np.zeros(len(order))
+    e = np.zeros(len(order))
+    for v, c in zip(values, clusters, strict=True):
+        n[idx[c]] += 1.0
+        e[idx[c]] += v - base
+    return n, e
+
+
+def _wild_stats(
+    w: np.ndarray, n_a: np.ndarray, e_a: np.ndarray, base_a: float, n_b: np.ndarray | None, e_b: np.ndarray | None, base_b: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """Bootstrap estimates and CR1 SEs for draws y* = base + w_g * e (w: draws x clusters). Estimate = mean(A) or
+    mean(A) - mean(B); the SE is the same influence-sum formula as ``oi_flush.cluster_se_mean/diff``."""
+    g = w.shape[1]
+    na = n_a.sum()
+    sa = base_a * n_a + w * e_a
+    ma = sa.sum(axis=1) / na
+    infl = (sa - n_a * ma[:, None]) / na
+    est = ma
+    if n_b is not None and e_b is not None and n_b.sum() > 0:
+        nb = n_b.sum()
+        sb = base_b * n_b + w * e_b
+        mb = sb.sum(axis=1) / nb
+        infl = infl - (sb - n_b * mb[:, None]) / nb
+        est = ma - mb
+    se = np.sqrt((infl**2).sum(axis=1) * g / (g - 1))
+    return est, se
+
+
+def wild_cluster(
+    a: Sequence[float],
+    ca: Sequence[Hashable],
+    b: Sequence[float] | None = None,
+    cb: Sequence[Hashable] | None = None,
+    *,
+    n_boot: int = 9_999,
+    seed: int = 20261120,
+) -> dict[str, Any]:
+    """Wild cluster bootstrap of mean(A) (or mean(A) - mean(B) with shared clusters), Webb weights per cluster.
+
+    p values impose the null (WCR: estimate = 0; residuals from the pooled mean): ``p_two`` (|t*| >= |t|), ``p_gt``
+    (t* >= t, alternative estimate > 0), ``p_lt`` (t* <= t). The 95 % CI is percentile-t from unrestricted residuals
+    (WCU): [est - q97.5(t*) se, est - q2.5(t*) se]. t = estimate / CR1 SE. Needs >= 2 clusters."""
+    two = b is not None and cb is not None
+    va, vb = list(a), list(b or [])
+    cla, clb = list(ca), list(cb or [])
+    order = sorted(set(cla) | set(clb), key=repr)
+    g = len(order)
+    out: dict[str, Any] = {
+        "g": g,
+        "n_boot": n_boot,
+        "est": None,
+        "se": None,
+        "p_two": None,
+        "p_gt": None,
+        "p_lt": None,
+        "lo": None,
+        "hi": None,
+    }
+    if not va or (two and not vb) or g < 2:
+        return out
+    ma = math.fsum(va) / len(va)
+    mb = math.fsum(vb) / len(vb) if two else 0.0
+    est = ma - mb if two else ma
+    one = np.ones((1, g))
+    # unrestricted residuals (WCU): around each group's own mean
+    n_a, e_a = _cluster_arrays(va, cla, order, ma)
+    n_b, e_b = _cluster_arrays(vb, clb, order, mb) if two else (None, None)
+    _, se0 = _wild_stats(one, n_a, e_a, ma, n_b, e_b, mb)
+    se = float(se0[0])
+    out.update(est=est, se=se)
+    if not se > 0:
+        return out
+    t_obs = est / se
+    rng = np.random.default_rng(seed)
+    w = np.asarray(WEBB)[rng.integers(0, len(WEBB), size=(n_boot, g))]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        bu, su = _wild_stats(w, n_a, e_a, ma, n_b, e_b, mb)
+        tu = (bu - est) / su
+        # restricted (WCR): null imposed, both groups around the pooled mean (one group: around 0)
+        pooled = math.fsum(va + vb) / (len(va) + len(vb)) if two else 0.0
+        rn_a, re_a = _cluster_arrays(va, cla, order, pooled)
+        rn_b, re_b = _cluster_arrays(vb, clb, order, pooled) if two else (None, None)
+        br, sr = _wild_stats(w, rn_a, re_a, pooled, rn_b, re_b, pooled)
+        tr = br / sr
+    tu = tu[np.isfinite(tu)]
+    tr = tr[np.isfinite(tr)]
+    if tr.size:
+        out.update(
+            p_two=float((np.abs(tr) >= abs(t_obs) - 1e-12).mean()),
+            p_gt=float((tr >= t_obs - 1e-12).mean()),
+            p_lt=float((tr <= t_obs + 1e-12).mean()),
+        )
+    if tu.size:
+        q_lo, q_hi = np.quantile(tu, [0.025, 0.975])
+        out.update(lo=est - float(q_hi) * se, hi=est - float(q_lo) * se)
+    return out
+
+
+def decision(
+    h1_widest: Mapping[str, Any], h1_wild: Mapping[str, Any], h2_diff: float | None, new_mean: float | None, mde_r: float | None
+) -> dict[str, Any]:
+    """The pre-registered verdict of the 20.11 repeat (docs/verification/2026-11-20-demo-rr-threshold-repeat.md)."""
+    lo, hi, wlo, whi = h1_widest.get("lo"), h1_widest.get("hi"), h1_wild.get("lo"), h1_wild.get("hi")
+    cr_up = lo is not None and lo > 0
+    cr_down = hi is not None and hi < 0
+    wb_up = wlo is not None and wlo > 0
+    wb_down = whi is not None and whi < 0
+    h1b = hi is not None and hi < 0.20
+    if cr_up and wb_up and (h2_diff is not None and h2_diff >= 0) and (new_mean is not None and new_mean > 0):
+        verdict, why = "✓", "refused plans profitable on both CR1 and wild bootstrap"
+    elif cr_down and wb_down:
+        verdict, why = "✗", "refused plans lose on average (both intervals below zero)"
+    elif cr_up != wb_up or cr_down != wb_down:
+        verdict, why = "≈", "CR1 and wild bootstrap disagree"
+    elif cr_up and wb_up:
+        verdict, why = "◯", "H1 intervals above zero, but H2 difference < 0 or new-data mean <= 0"
+    elif mde_r is not None and mde_r > 0.20:
+        verdict, why = "◯", "underpowered for a 0.2 R effect"
+    elif h1b:
+        verdict, why = "◯", "no effect >= 0.2 R (H1b), H1 not shown"
+    else:
+        verdict, why = "◯", "inconclusive"
+    return {"verdict": verdict, "why": why, "h1b": h1b, "cr_up": cr_up, "cr_down": cr_down, "wild_up": wb_up, "wild_down": wb_down}
 
 
 def overlap_share(rows: Sequence[Mapping[str, Any]], hold_ms: Mapping[str, int]) -> dict[str, Any]:

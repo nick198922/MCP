@@ -8,7 +8,7 @@ from mcp.server.mcpserver import MCPServer
 from pydantic import Field
 
 from ..analytics import probability
-from ..analytics.event_move import implied_event_move
+from ..analytics.event_move import base_forward_iv, excess_event_move, implied_event_move
 from ..analytics.instruments import expiry_token
 from ..analytics.options import (
     OptionRow,
@@ -58,6 +58,15 @@ def _in_bucket(p: float | None, lo: float, hi: float) -> bool:
 
 def _day(d: float) -> str:
     return datetime.fromtimestamp(int(d) * 86400, UTC).date().isoformat()
+
+
+def _iso_utc(s: str) -> datetime | None:
+    """An ISO-8601 time as an aware UTC datetime (no offset = UTC), or None when it does not parse."""
+    try:
+        t = datetime.fromisoformat(s.strip())
+        return t.replace(tzinfo=UTC) if t.tzinfo is None else t.astimezone(UTC)
+    except (ValueError, OverflowError):
+        return None
 
 
 MAX_DVOL_PCT = 1000.0  # DVOL is annualised percent (BTC's record is ~200); a close beyond 1000 % is a corrupt row
@@ -422,9 +431,16 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "(annualised decimal). `event_move_pct` = sqrt(iv2^2 T2 - iv1^2 T1) x 100 is a 1-sigma move in percent and "
             "`event_move_usd` ~ that fraction x the later expiry's forward (USD). It is the 1-sigma move of the WHOLE window "
             "(`window_days`): the event plus the window's ordinary diffusion, which is not removed, so it is an upper bound on "
-            "the event's own move even for a one-day window (one day of ordinary diffusion is itself a few percent). An event "
-            "premium is visible only when `forward_iv` exceeds the vol without the event (e.g. a neighbouring window's forward "
-            "vol); `forward_iv` below both ATM IVs shows no sign of an event premium in the marks. "
+            "the event's own move even for a one-day window (one day of ordinary diffusion is itself a few percent). "
+            "The excess over the base diffusion is the event's own estimate: `base_forward_iv` is the forward vol "
+            "(annualised decimal) of a neighbouring window between two expiries, just before or just after the event's, that holds "
+            "no event from `other_events` (`base_window` says which; when both qualify, the one closest in length to the "
+            "event window), and `excess_event_move_pct` = sqrt(max(event_var - base_forward_iv^2 x (T2 - T1), 0)) x 100 "
+            "(`_usd` ~ that fraction x the later forward), as an earnings move is backed out of equity options. It is 0 when the "
+            "window's variance is not above the base (no event premium in the marks) and null with a warning when no "
+            "neighbouring window qualifies (no expiry there, another event inside it, or calendar arbitrage). It is an "
+            "estimate, not a forecast: it assumes the neighbouring window's forward vol is the event window's vol without the "
+            "event (term structure, weekends and unlisted events bias it). "
             "`vs_expected_move` puts it next to deribit_expected_move for the later expiry "
             "(ATM straddle in percent of the forward, sigma move to expiry) and gives the event's share of that expiry's "
             "variance. Risk-neutral, not a forecast. A non-positive forward variance (calendar arbitrage in the marks) gives no "
@@ -440,14 +456,27 @@ def register(server: MCPServer, rt: Runtime) -> None:
             ),
         ],
         currency: CUR = "BTC",
+        other_events: Annotated[
+            list[str] | None,
+            Field(
+                description="Other dated events (ISO-8601, as event_ts; e.g. events_list / macro_calendar times) that rule "
+                "out a neighbouring window as the base diffusion for excess_event_move. Max 50.",
+                max_length=50,
+            ),
+        ] = None,
     ) -> dict[str, Any]:
         b = Builder()
-        try:
-            ev = datetime.fromisoformat(event_ts.strip())
-            ev = ev.replace(tzinfo=UTC) if ev.tzinfo is None else ev.astimezone(UTC)
-        except (ValueError, OverflowError):
+        ev = _iso_utc(event_ts)
+        if ev is None:
             b.miss("event_ts", "tradedesk", "invalid_input", "event_ts is not an ISO-8601 time such as 2026-12-16T19:00:00Z")
             return b.build(None, ok=False)
+        others: list[datetime] = []
+        for s in other_events or []:
+            o = _iso_utc(s)
+            if o is None:
+                b.miss("other_events", "tradedesk", "invalid_input", f"{str(s)[:40]!r} is not an ISO-8601 time")
+                return b.build(None, ok=False)
+            others.append(o)
         now = rt.now()
         if ev <= now:
             b.miss("event_ts", "tradedesk", "invalid_input", f"event {ev.isoformat()} is not in the future")
@@ -484,6 +513,18 @@ def register(server: MCPServer, rt: Runtime) -> None:
         if st is not None:
             vs["straddle_pct"] = r(st["straddle_pct_of_forward"] * 100, 3)
             vs["straddle_usd"] = r(st["straddle_usd"], 2)
+        base = base_forward_iv(ivs.items(), ev, now, others)
+        base_window: dict[str, Any] | None = None
+        excess: dict[str, Any] | None = None
+        if base["ok"]:
+            base_window = {
+                "side": base["side"],
+                "from": expiry_token(base["start"]),
+                "to": expiry_token(base["end"]),
+                "days": r(base["window_days"], 3),
+            }
+            if not res["calendar_arbitrage"]:
+                excess = excess_event_move(res["event_var"], base["forward_var"], res["before"]["T"], res["after"]["T"])
         data = {
             "currency": currency,
             "event_utc": ev.isoformat(),
@@ -505,11 +546,23 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "event_move_pct": r(move * 100, 3) if move is not None else None,
             "event_move_usd": r(move * f2, 2) if move is not None else None,
             "calendar_arbitrage": res["calendar_arbitrage"],
+            "base_forward_iv": r(base["forward_iv"], 4) if base["ok"] else None,
+            "base_window": base_window,
+            "excess_event_move_pct": r(excess["excess_move"] * 100, 3) if excess is not None else None,
+            "excess_event_move_usd": r(excess["excess_move"] * f2, 2) if excess is not None else None,
             "vs_expected_move": vs,
             "spot_index": next((x.index for x in rows if x.index), None),
         }
         if bad := reject_nonfinite_result(b, data):
             return bad
+        if not base["ok"]:
+            b.warn(f"no base forward vol without the event, so excess_event_move is null: {base['reason']}")
+        elif excess is not None and excess["below_base"]:
+            b.warn(
+                f"the window's variance is not above the base diffusion (base_forward_iv {base['forward_iv']:.4f} over "
+                f"{expiry_token(base['start'])}..{expiry_token(base['end'])}), so excess_event_move is 0: "
+                "no event premium in the marks"
+            )
         if res["calendar_arbitrage"]:
             b.miss("event_move", "tradedesk", "data_unavailable", "non-positive forward variance between the expiries")
             b.warn(
@@ -519,8 +572,9 @@ def register(server: MCPServer, rt: Runtime) -> None:
         b.warn(
             f"The move is the 1-sigma move of the whole {res['window_days']:.2f}-day window (the event plus the window's "
             "ordinary diffusion, which is not removed), so it is an upper bound on the event's own move, even for a one-day "
-            "window. An event premium is visible only when forward_iv exceeds the vol without the event (e.g. a "
-            "neighbouring window's forward vol); forward_iv below both ATM IVs shows no sign of an event premium in the marks."
+            "window. excess_event_move is the estimate of the event's own move: the excess over the base diffusion "
+            "(base_forward_iv of a neighbouring window with no event from other_events), an estimate that assumes that "
+            "window's vol is the event window's vol without the event (term structure, weekends and unlisted events bias it)."
         )
         b.warn(
             "Risk-neutral (option marks), not a forecast; ATM IVs of short-dated expiries are noisy and the difference amplifies the noise."

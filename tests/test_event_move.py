@@ -10,7 +10,7 @@ import pytest
 
 from conftest import EXPIRIES, NOW, SPOT, FakeEx, State, make_transports
 from test_server import call
-from tradedesk.analytics.event_move import forward_variance, implied_event_move
+from tradedesk.analytics.event_move import base_forward_iv, excess_event_move, forward_variance, implied_event_move
 from tradedesk.analytics.options import black76_price
 from tradedesk.config import Settings
 from tradedesk.runtime import Runtime
@@ -91,6 +91,101 @@ def test_forward_variance_rejects_bad_inputs():
             forward_variance(*args)
 
 
+# --- base diffusion and the excess (item 414) ---------------------------------------------------------------------
+
+E3 = T0 + timedelta(days=3)
+EV12 = T0 + timedelta(days=12)  # inside (E10, E17]
+# sigma 0.40 / 3 d, 0.42 / 10 d, 0.55 / 17 d, 0.50 / 24 d; T = days / 365, so every w = sigma^2 x days / 365
+LADDER = [(E3, 0.40), (E10, 0.42), (E17, 0.55), (E24, 0.50)]
+EVENT_VAR = (0.55**2 * 17 - 0.42**2 * 10) / 365  # 3.3785 / 365
+BEFORE_FWD = (0.42**2 * 10 - 0.40**2 * 3) / 7  # (1.764 - 0.48) / 7 = 0.183429 (annualised)
+AFTER_FWD = (0.50**2 * 24 - 0.55**2 * 17) / 7  # (6 - 5.1425) / 7 = 0.1225 = 0.35^2
+
+
+def test_base_forward_iv_analytic_reference_and_tie_goes_to_the_earlier_window():
+    base = base_forward_iv(LADDER, EV12, T0)
+    assert base["ok"] is True and base["rejected"] == []
+    assert base["side"] == "before" and base["start"] == E3 and base["end"] == E10  # both 7 d long: the earlier one
+    assert base["window_days"] == pytest.approx(7.0)
+    assert base["forward_var"] == pytest.approx(BEFORE_FWD)
+    assert base["forward_iv"] == pytest.approx(math.sqrt(1.284 / 7))  # 0.4283
+    ex = excess_event_move(EVENT_VAR, base["forward_var"], 10 / 365, 17 / 365)
+    assert ex["base_var"] == pytest.approx(1.284 / 365)
+    assert ex["excess_var"] == pytest.approx((3.3785 - 1.284) / 365)
+    assert ex["excess_move"] == pytest.approx(math.sqrt(2.0945 / 365))  # 0.0758 = 7.58 % 1-sigma, vs 9.62 % for the window
+    assert ex["below_base"] is False
+    assert ex["excess_move"] < implied_event_move(LADDER, EV12, T0)["event_move"]
+
+
+def test_base_window_with_another_event_falls_back_to_the_other_side():
+    base = base_forward_iv(LADDER, EV12, T0, [T0 + timedelta(days=5)])  # inside (E3, E10]
+    assert base["ok"] is True and base["side"] == "after" and base["start"] == E17 and base["end"] == E24
+    assert base["forward_iv"] == pytest.approx(0.35)
+    assert len(base["rejected"]) == 1 and "before" in base["rejected"][0] and "another event" in base["rejected"][0]
+    ex = excess_event_move(EVENT_VAR, base["forward_var"], 10 / 365, 17 / 365)
+    assert ex["excess_move"] == pytest.approx(math.sqrt((3.3785 - 0.8575) / 365))
+    # an event exactly at E10 belongs to (E3, E10], like the event window (E1, E2]; one at E3 does not
+    assert base_forward_iv(LADDER, EV12, T0, [E10])["side"] == "after"
+    assert base_forward_iv(LADDER, EV12, T0, [E3])["side"] == "before"
+
+
+def test_both_neighbours_with_events_or_absent_give_no_base():
+    both = base_forward_iv(LADDER, EV12, T0, [T0 + timedelta(days=5), T0 + timedelta(days=20)])
+    assert both["ok"] is False and both["reason"].count("another event") == 2
+    absent = base_forward_iv([(E10, 0.42), (E17, 0.55)], EV12, T0)
+    assert absent["ok"] is False
+    assert "before: no earlier expiry" in absent["reason"] and "after: no later expiry" in absent["reason"]
+    one_side = base_forward_iv([(E10, 0.42), (E17, 0.55), (E24, 0.50)], EV12, T0)  # no E0: the after window only
+    assert one_side["ok"] is True and one_side["side"] == "after" and "no earlier expiry" in one_side["rejected"][0]
+    # no event window at all: the same reason implied_event_move gives
+    assert base_forward_iv(LADDER, E24 + timedelta(days=1), T0) == {
+        "ok": False,
+        "reason": implied_event_move(LADDER, E24 + timedelta(days=1), T0)["reason"],
+    }
+
+
+def test_neighbour_with_calendar_arbitrage_is_not_a_base():
+    ladder = [(E3, 0.80), (E10, 0.42), (E17, 0.55), (E24, 0.50)]  # 0.42^2 x 10 = 1.764 < 0.80^2 x 3 = 1.92
+    base = base_forward_iv(ladder, EV12, T0)
+    assert base["side"] == "after" and "non-positive forward variance" in base["rejected"][0]
+
+
+def test_unequal_t_base_window_length_closest_to_the_event_window():
+    e5, e9, e31 = (T0 + timedelta(days=d) for d in (5, 9, 31))
+    # event window 7 d; before 5 d (off by 2), after 7 d (off by 0): the after window
+    assert base_forward_iv([(e5, 0.40), (E10, 0.42), (E17, 0.55), (E24, 0.50)], EV12, T0)["side"] == "after"
+    # before 1 d (off by 6), after 14 d (off by 7): the before window, whose 1-day forward variance scales to 7 days
+    ladder = [(e9, 0.41), (E10, 0.42), (E17, 0.55), (e31, 0.50)]
+    base = base_forward_iv(ladder, EV12, T0)
+    fwd = (0.42**2 * 10 - 0.41**2 * 9) / 1  # 1.764 - 1.5129 = 0.2511 (annualised)
+    assert base["side"] == "before" and base["window_days"] == pytest.approx(1.0)
+    assert base["forward_var"] == pytest.approx(fwd)
+    ex = excess_event_move(EVENT_VAR, fwd, 10 / 365, 17 / 365)
+    assert ex["base_var"] == pytest.approx(fwd * 7 / 365)
+    assert ex["excess_move"] == pytest.approx(math.sqrt((3.3785 - 0.2511 * 7) / 365))
+
+
+def test_excess_below_the_base_is_zero():
+    ex = excess_event_move(0.001, 0.25, 10 / 365, 17 / 365)  # base var 0.25 x 7 / 365 = 0.004795 > 0.001
+    assert ex["excess_move"] == 0.0 and ex["below_base"] is True
+    assert ex["excess_var"] == pytest.approx(0.001 - 0.25 * 7 / 365)
+    exact = excess_event_move(0.25 * 7 / 365, 0.25, 10 / 365, 17 / 365)
+    assert exact["excess_move"] == pytest.approx(0.0, abs=1e-6) and exact["excess_var"] == pytest.approx(0.0, abs=1e-12)
+
+
+def test_excess_event_move_rejects_bad_inputs():
+    for args in (
+        (math.nan, 0.2, 0.1, 0.2),
+        (0.01, 0.0, 0.1, 0.2),
+        (0.01, -0.1, 0.1, 0.2),
+        (0.01, 0.2, 0.2, 0.2),
+        (0.01, 0.2, -0.1, 0.2),
+        (0.01, math.inf, 0.1, 0.2),
+    ):
+        with pytest.raises(ValueError):
+            excess_event_move(*args)
+
+
 # --- the tool ------------------------------------------------------------------------------------------------------
 
 
@@ -165,6 +260,47 @@ async def test_tool_happy_path_matches_the_analytic_value():
     # the same numbers deribit_expected_move gives for that expiry
     em = await call(srv, "deribit_expected_move", expiry="27NOV26")
     assert em["data"]["expiries"][0]["straddle_pct"] == vs["straddle_pct"]
+    # item 414: no expiry before 30OCT26, so the base diffusion is the forward vol of (27NOV26, 26MAR27]
+    t3 = (MAR - NOW).total_seconds() / (365 * 86400)
+    base_fwd = (0.50**2 * t3 - 0.55**2 * t2) / (t3 - t2)
+    assert d["base_window"] == {"side": "after", "from": "27NOV26", "to": "26MAR27", "days": pytest.approx(119.0)}
+    assert d["base_forward_iv"] == pytest.approx(math.sqrt(base_fwd), abs=1e-4)  # ~0.478
+    excess = math.sqrt(ev - base_fwd * (t2 - t1))
+    assert d["excess_event_move_pct"] == pytest.approx(excess * 100, abs=1e-3)  # ~11.6 %, below the window's 13.6 %
+    assert d["excess_event_move_usd"] == pytest.approx(excess * d["expiry_after"]["forward"], abs=0.02)
+    assert 0 < d["excess_event_move_pct"] < d["event_move_pct"]
+    assert any("excess over the base diffusion" in w and "estimate" in w for w in env["warnings"])
+    assert not any("no base forward vol" in w for w in env["warnings"])
+
+
+async def test_tool_neighbour_window_with_another_event_gives_no_excess():
+    srv = _server({OCT: 0.40, NOV: 0.55, MAR: 0.50})
+    env = await call(srv, "deribit_event_move", event_ts="2026-11-05T19:00:00Z", other_events=["2026-12-16T19:00:00Z"])
+    assert env["ok"] is True, env["missing"]
+    d = env["data"]
+    assert d["base_forward_iv"] is None and d["base_window"] is None
+    assert d["excess_event_move_pct"] is None and d["excess_event_move_usd"] is None
+    assert d["event_move_pct"] is not None  # the window's own numbers are still there
+    w = next(w for w in env["warnings"] if w.startswith("no base forward vol"))
+    assert "before: no earlier expiry" in w and "after: window" in w and "another event (2026-12-16T19:00:00+00:00)" in w
+
+
+async def test_tool_excess_below_the_base_is_zero_with_a_warning():
+    # base (27NOV26, 26MAR27] forward vol ~0.65, far above the event window's ~0.43: no event premium
+    srv = _server({OCT: 0.40, NOV: 0.42, MAR: 0.60})
+    env = await call(srv, "deribit_event_move", event_ts="2026-11-05T19:00:00Z")
+    assert env["ok"] is True, env["missing"]
+    d = env["data"]
+    assert d["base_forward_iv"] > d["forward_iv"]
+    assert d["excess_event_move_pct"] == 0.0 and d["excess_event_move_usd"] == 0.0
+    assert any("not above the base diffusion" in w and "27NOV26..26MAR27" in w for w in env["warnings"])
+
+
+async def test_tool_bad_other_event_is_invalid_input_without_a_request(server, state):
+    state.deribit_status = 503  # a request would show up as a deribit miss
+    env = await call(server, "deribit_event_move", event_ts="2026-11-05T19:00:00Z", other_events=["2026-12-16", "soon"])
+    assert env["ok"] is False and env["data"] is None
+    assert [(m["field"], m["reason"]) for m in env["missing"]] == [("other_events", "invalid_input")]
 
 
 async def test_tool_skips_a_thin_expiry_between_the_pair_and_says_so():
@@ -214,8 +350,9 @@ async def test_tool_naive_time_is_utc(server):
     assert env["ok"] is True and env["data"]["event_utc"] == "2026-11-05T19:00:00+00:00"
 
 
-async def test_tool_deribit_down_goes_to_missing(server, state):
+@pytest.mark.parametrize("extra", [{}, {"other_events": ["2026-12-16T19:00:00Z"]}])
+async def test_tool_deribit_down_goes_to_missing(server, state, extra):
     state.deribit_status = 503
-    env = await call(server, "deribit_event_move", event_ts="2026-11-05T19:00:00Z")
+    env = await call(server, "deribit_event_move", event_ts="2026-11-05T19:00:00Z", **extra)
     assert env["ok"] is False and env["data"] is None
     assert any(m["provider"] == "deribit" and m["reason"] in ("backend_error", "network") for m in env["missing"])

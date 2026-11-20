@@ -8,6 +8,11 @@ ordinary crypto diffusion is itself a move of a few percent); for a one-day wind
 forward_iv * sqrt(1/365). An event premium shows only when the forward IV exceeds the vol without the event (e.g. the
 forward vol of a neighbouring window with no event). Risk-neutral, not a forecast.
 A non-positive w2 - w1 is a calendar arbitrage in the marks: no square root is taken, the move is None.
+
+The event's excess over the base diffusion (the way an earnings move is backed out of equity options): the base
+forward variance is that of a neighbouring window with no event, (E0, E1] or (E2, E3] (``base_forward_iv``), and
+excess = sqrt(max(w2 - w1 - base_forward_var * (T2 - T1), 0)) (``excess_event_move``). An estimate, not a forecast: it
+assumes the neighbouring window's forward vol is the vol the event window would have without the event.
 """
 
 from __future__ import annotations
@@ -32,6 +37,29 @@ def forward_variance(iv1: float, t1: float, iv2: float, t2: float) -> float:
     return (iv2 * iv2 * t2 - iv1 * iv1 * t1) / (t2 - t1)
 
 
+Point = tuple[datetime, float, float]  # (expiry, T in years, ATM IV as a decimal)
+
+
+def _locate(expiries: Iterable[tuple[datetime, float]], event: datetime, now: datetime) -> tuple[list[Point], int] | str:
+    """Live (expiry, T, iv) points sorted by expiry and the index of E2 (first expiry at or after ``event``), or the
+    reason there is no window (E1, E2] around the event."""
+    if event <= now:
+        return "the event time is not after now"
+    pts = sorted(
+        (e, year_fraction(e, now), float(iv))
+        for e, iv in expiries
+        if e > now and isinstance(iv, (int, float)) and math.isfinite(iv) and iv > 0
+    )
+    if not pts:
+        return "no live expiry with an ATM IV"
+    after = next((i for i, p in enumerate(pts) if p[0] >= event), None)
+    if after is None:
+        return f"the event is after the last listed expiry ({pts[-1][0].isoformat()})"
+    if after == 0:
+        return f"the event is at or before the first listed expiry ({pts[0][0].isoformat()}): no earlier expiry to difference against"
+    return pts, after
+
+
 def implied_event_move(expiries: Iterable[tuple[datetime, float]], event: datetime, now: datetime) -> dict[str, Any]:
     """Implied move of an event at ``event`` (aware UTC datetime) from the two adjacent expiries around it.
 
@@ -45,23 +73,10 @@ def implied_event_move(expiries: Iterable[tuple[datetime, float]], event: dateti
     log move as a decimal, None when not positive), ``event_share`` (``event_var`` / ``total_var_after``) and
     ``calendar_arbitrage`` (``event_var`` <= 0).
     """
-    if event <= now:
-        return {"ok": False, "reason": "the event time is not after now"}
-    pts = sorted(
-        (e, year_fraction(e, now), float(iv))
-        for e, iv in expiries
-        if e > now and isinstance(iv, (int, float)) and math.isfinite(iv) and iv > 0
-    )
-    if not pts:
-        return {"ok": False, "reason": "no live expiry with an ATM IV"}
-    after = next((i for i, p in enumerate(pts) if p[0] >= event), None)
-    if after is None:
-        return {"ok": False, "reason": f"the event is after the last listed expiry ({pts[-1][0].isoformat()})"}
-    if after == 0:
-        return {
-            "ok": False,
-            "reason": f"the event is at or before the first listed expiry ({pts[0][0].isoformat()}): no earlier expiry to difference against",
-        }
+    loc = _locate(expiries, event, now)
+    if isinstance(loc, str):
+        return {"ok": False, "reason": loc}
+    pts, after = loc
     (e1, t1, v1), (e2, t2, v2) = pts[after - 1], pts[after]
     w1, w2 = v1 * v1 * t1, v2 * v2 * t2
     ev = w2 - w1
@@ -80,3 +95,81 @@ def implied_event_move(expiries: Iterable[tuple[datetime, float]], event: dateti
         "event_share": ev / w2 if w2 > 0 else None,
         "calendar_arbitrage": ev <= 0,
     }
+
+
+def base_forward_iv(
+    expiries: Iterable[tuple[datetime, float]],
+    event: datetime,
+    now: datetime,
+    other_events: Iterable[datetime] = (),
+) -> dict[str, Any]:
+    """Forward vol of a window next to the event's window (E1, E2] that holds no event: (E0, E1] or (E2, E3].
+
+    ``expiries`` and ``event`` as in ``implied_event_move`` (same filtering, same window); ``other_events``: aware UTC
+    datetimes of other dated events. A side is unusable when the neighbouring expiry is missing, when one of
+    ``other_events`` falls inside its window (start, end], or when its forward variance is not positive (calendar
+    arbitrage). Of the usable sides the one whose length is closest to the event window's is taken (a tie goes to the
+    earlier window). Returns ``{"ok": False, "reason": ...}`` (the reasons of both sides, or why there is no event
+    window) or ``ok`` True and: ``side`` ("before" / "after"), ``start`` / ``end`` (expiries), ``T_start`` / ``T_end``
+    (years), ``window_days``, ``forward_var`` (annualised decimal), ``forward_iv`` (its square root) and ``rejected``
+    (reasons for an unusable other side, empty when both were usable)."""
+    loc = _locate(expiries, event, now)
+    if isinstance(loc, str):
+        return {"ok": False, "reason": loc}
+    pts, after = loc
+    others = list(other_events)
+    event_days = (pts[after][0] - pts[after - 1][0]).total_seconds() / 86400.0
+    usable: list[dict[str, Any]] = []
+    rejected: list[str] = []
+    for side, i, j in (("before", after - 2, after - 1), ("after", after, after + 1)):
+        if i < 0 or j >= len(pts):
+            rejected.append(f"{side}: no {'earlier' if side == 'before' else 'later'} expiry with an ATM IV")
+            continue
+        (s, ts, vs), (e, te, ve) = pts[i], pts[j]
+        if te <= ts:  # the same expiry listed twice
+            rejected.append(f"{side}: expiry {e.isoformat()} is listed twice")
+            continue
+        inside = sorted(x for x in others if s < x <= e)
+        if inside:
+            rejected.append(f"{side}: window ({s.isoformat()}, {e.isoformat()}] holds another event ({inside[0].isoformat()})")
+            continue
+        fv = forward_variance(vs, ts, ve, te)
+        if fv <= 0:
+            rejected.append(f"{side}: non-positive forward variance between {s.isoformat()} and {e.isoformat()}")
+            continue
+        days = (e - s).total_seconds() / 86400.0
+        usable.append(
+            {
+                "side": side,
+                "start": s,
+                "end": e,
+                "T_start": ts,
+                "T_end": te,
+                "window_days": days,
+                "forward_var": fv,
+                "forward_iv": math.sqrt(fv),
+            }
+        )
+    if not usable:
+        return {"ok": False, "reason": "; ".join(rejected)}
+    best = min(usable, key=lambda u: abs(u["window_days"] - event_days))  # min keeps the first ("before") on a tie
+    return {"ok": True, **best, "rejected": rejected}
+
+
+def excess_event_move(event_var: float, base_forward_var: float, t1: float, t2: float) -> dict[str, Any]:
+    """The event's own variance and 1-sigma move beyond the base diffusion of its window (E1, E2].
+
+    ``event_var`` = iv2^2 T2 - iv1^2 T1 (from ``implied_event_move``), ``base_forward_var`` the annualised forward variance
+    without the event (``base_forward_iv``), T in years. Returns ``base_var`` = base_forward_var * (t2 - t1),
+    ``excess_var`` = event_var - base_var (may be negative), ``excess_move`` = sqrt(max(excess_var, 0)) (a 1-sigma log
+    move as a decimal; 0.0 when the window's variance is not above the base) and ``below_base`` (excess_var <= 0).
+    Raises ValueError unless every input is finite, base_forward_var > 0 and 0 <= t1 < t2."""
+    if not all(math.isfinite(x) for x in (event_var, base_forward_var, t1, t2)):
+        raise ValueError("inputs must be finite")
+    if base_forward_var <= 0:
+        raise ValueError("base_forward_var must be positive")
+    if not 0 <= t1 < t2:
+        raise ValueError("need 0 <= t1 < t2")
+    base_var = base_forward_var * (t2 - t1)
+    x = event_var - base_var
+    return {"base_var": base_var, "excess_var": x, "excess_move": math.sqrt(x) if x > 0 else 0.0, "below_base": x <= 0}

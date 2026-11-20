@@ -140,6 +140,16 @@ def _closed_view(t: dict[str, Any]) -> dict[str, Any]:
     }  # fmt: skip
 
 
+def _cut_note(note: str) -> str:
+    """A note longer than NOTE_CHARS cut at the last ', ' list separator within the limit (whole trade ids kept), else
+    at NOTE_CHARS characters (no separator in the second half of the limit); ends with ' …'."""
+    if len(note) <= NOTE_CHARS:
+        return note
+    i = note.rfind(", ", 0, NOTE_CHARS + 2)  # a separator starting at NOTE_CHARS still leaves a whole item before it
+    head = note[:i] if i >= NOTE_CHARS // 2 else note[:NOTE_CHARS]
+    return head.rstrip() + " …"
+
+
 def _newest(rows: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
     return sorted(rows, key=lambda t: t.get(key) if t.get(key) is not None else float("-inf"), reverse=True)
 
@@ -161,7 +171,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "with a 95 % Wilson CI. `s12_stop_rule`: the owner's S12 stop rule (v9: n >= 30 and mean below -0.827 -> stop "
             "and review the execution; v4 entry: n >= 100 and below -0.524 -> drop) with a 95 % CI clustered by signal day. "
             "`notes` (Ukrainian): stuck, orphaned and P&L-mismatch trades, 'no' verdicts on 3+ setups; by default a note "
-            f"longer than {NOTE_CHARS} characters is cut (ends with ' …', a warning says so). `open`: filled positions not "
+            f"longer than {NOTE_CHARS} characters is cut at the last ', ' before that limit, so trade ids stay whole (ends "
+            "with ' …', a warning says so). `open`: filled positions not "
             f"closed yet (stop = break-even stop once moved; prices in USDT), newest {COMPACT_OPEN} by default with counts per "
             "setup. include_details=true adds every open position with more fields, each setup's name, passport source and "
             f"notes (clustered CI, fees vs the backtest model, orphan scenarios), the full text of every demo note, and the "
@@ -216,8 +227,11 @@ def register(server: MCPServer, rt: Runtime) -> None:
         shown = opened if include_details else opened[:COMPACT_OPEN]
         notes = block["notes"]
         if not include_details and (cut := sum(len(n) > NOTE_CHARS for n in notes)):
-            notes = [n if len(n) <= NOTE_CHARS else n[:NOTE_CHARS].rstrip() + " …" for n in notes]
-            b.warn(f"compact answer: {cut} long note(s) cut to {NOTE_CHARS} characters; include_details=true for the full text")
+            notes = [_cut_note(n) for n in notes]
+            b.warn(
+                f"compact answer: {cut} long note(s) cut to at most {NOTE_CHARS} characters (at a ', ' list boundary); "
+                "include_details=true for the full text"
+            )
         data: dict[str, Any] = {
             "as_of": now.astimezone(UTC).isoformat(timespec="seconds"),
             "trades_by_status": dict(sorted(by_status.items())),

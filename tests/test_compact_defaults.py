@@ -41,6 +41,7 @@ from tradedesk.config import Settings
 from tradedesk.providers.liquidations import StreamStats
 from tradedesk.runtime import Runtime
 from tradedesk.server import build_server
+from tradedesk.tools import demo_status as demo_status_tool
 from tradedesk.tools.pm_gap import COMPACT_FIELDS
 from tradedesk.tools.system import JOB_NO_FAILURES, PROVIDER_NO_ERRORS, PROVIDER_UNUSED
 
@@ -819,10 +820,12 @@ async def test_demo_status_default_cuts_long_notes_and_stays_bounded(tmp_path):
     assert len(long_note) > MAX_DEFAULT_CHARS  # without the cut this one note alone breaks the bound
     d_notes, f_notes = default["data"]["notes"], full["data"]["notes"]
     assert len(d_notes) == len(f_notes)
+    cap = demo_status_tool.NOTE_CHARS
     for d, f in zip(d_notes, f_notes, strict=True):  # short notes unchanged, a long one is the head of the full text
-        if len(f) <= 600:
+        if len(f) <= cap:
             assert d == f
-        else:
-            assert d.endswith(" …") and f.startswith(d[:-2]) and len(d) <= 602
-    assert any("1 long note(s) cut to 600 characters" in w for w in default["warnings"])
+        else:  # cut at a ', ' list boundary: the next characters of the full text are the separator, no id split
+            assert d.endswith(" …") and f.startswith(d[:-2]) and len(d) <= cap + 2
+            assert f[len(d) - 2 :].startswith(", ")
+    assert any(f"1 long note(s) cut to at most {cap} characters" in w for w in default["warnings"])
     assert not any("note(s) cut" in w for w in full["warnings"])

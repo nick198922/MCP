@@ -722,6 +722,7 @@
 - **Код (змінено цим кроком):** `scripts/verify_s12_demo_vs_passport.py` — `--seen-cutoff` (рядки «бачені / нові» і розбивки нових, `new_rows`), v9 без топ-5, угод на монету для v9, контраст мейкер − тейкер на нових (`s12_demo_audit.contrast_ci`); тест `tests/test_verify_s12_demo_vs_passport.py::test_new_rows_split_at_the_seen_cutoff` (аналітичні середні й незмінність рядка «бачені» при зміні пізніших угод). Аналітику не змінено. Команда прогону:
   - `uv run python scripts/verify_s12_demo_vs_passport.py --stage run --cutoff 2026-11-20T16:00 --seen-cutoff 2026-11-12T06:00 --out-tag s12_v9_20261120` (кеш `~/.cache/tradedesk-agents/s12-demo-vs-passport/`, вивід `s12_v9_20261120.txt`, рядки `s12_v9_20261120_rows.json`).
   Далі звіт `docs/verification/2026-11-20-s12-v9-demo-vs-passport-n69.md` за зразком [S3 n58](../verification/2026-11-20-s3-demo-vs-passport-n58.md).
+- **Результат (20.11 16:52 UTC):** v9 n 69 +0.233R [−0.164; +0.661] — ✓ всередині смуги n=30; переваги немає; тримати до 100 угод v4 + v9; мейкер − тейкер на нових не підтверджено. [Звіт](../verification/2026-11-20-s12-v9-demo-vs-passport-n69.md), [рев'ю](../reviews/2026-11-20-s12-v9-demo-vs-passport-n69.md), `Q-20261120-2`.
 
 ## Попередня реєстрація 10a (2026-10-31, квант, до прогону)
 Що вже відомо до реєстрації: лише розбивка H2 зі звіту модулів S3 (4h / 1d, вибірка P, 2021-01 … 2026-09): край = рівень IS −0.006 (n 4 485), OOS +0.011 (n 2 179); далі за 0.3 ATR IS −0.098, OOS −0.101. Жодного R на 2h / 8h / 12h і жодного R 2020 року в розрізі ознаки я не бачив.

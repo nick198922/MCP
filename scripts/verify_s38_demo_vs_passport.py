@@ -14,7 +14,9 @@ does not exclude a handicap up to about 0.35R for shorts on $1-5M coins, so that
 slippage against the backtest convention (``s12_demo_audit.exec_costs``), orphaned trades (filled, no close found) with
 the scenario «each closed at the initial stop, -1R», missed entries and the shadow plans (``analytics/demo_shadow``).
 ``--setup S39`` / ``S40`` runs the same comparison against their passports (lines 16 / 17 of the same report; descriptive
-while a group has fewer than 30 trades); ``--seen-cutoff`` (a repeat comparison) adds, per group, the rows of the trades
+while a group has fewer than 30 trades); ``--setup S3`` repeats the 30.10 S3 comparison
+(``scripts/verify_s3_demo_vs_passport.py``, same passport numbers) with the fee / exit-slippage rows and the
+timeframe x side and break-even-rule splits; ``--seen-cutoff`` (a repeat comparison) adds, per group, the rows of the trades
 an earlier comparison saw (closed before it) and of the new ones.
 CI: bootstrap clustered by the UTC day of the signal bar (``liquidation_flush.cluster_bootstrap_ci`` through the S12
 script's ``stat``). R is per trade risk, not on capital. The passport bands are defined for n = 30: a group with fewer
@@ -109,14 +111,41 @@ SETUPS: dict[str, dict[str, Any]] = {
         },
         "bar_cap": None,
     },
+    # S3 (repeat of the 30.10 comparison, card item 6): the demo-list passport of docs/verification/2026-10-30-passport-s3.md,
+    # top-100 and >= $5M, OOS (line 36: -0.076 [-0.155; +0.004], n 2790; line 100: the n = 30 i.i.d. band; line 200: the
+    # sliding band). The same numbers as scripts/verify_s3_demo_vs_passport.py. Every S3 epoch (v1-v3 by open time, and any
+    # tag) is set against this one passport, as on 30.10: the passport models only today's break-even rule (v3).
+    "S3": {
+        "passport": audit.Passport(
+            "свип рівня рейнджу і повернення (S3), 4h і 1d, лонг і шорт; вхід за закриттям сигнальної свічки, правило беззбитку B",
+            -0.076,
+            (-0.155, 0.004),
+            (-0.473, -0.087, 0.361),
+            (-0.719, -0.102, 0.652),
+            None,
+            "docs/verification/2026-10-30-passport-s3.md:36,100,200",
+        ),
+        "passport_of": {"v1": "S3", "v2": "S3", "v3": "S3"},
+        "turnover_ref": {
+            "1to5m": "паспорт S3 (список демо) покриває лише ≥ $5M: для $1–5M еталона немає, рядок описовий",
+            "ge5m": "паспорт S3 топ-100 і ≥ $5M OOS −0.076 (рядок 36)",
+        },
+        "bar_cap": None,
+        "universe": "паспорт: свічки й ранг Binance, топ-100 і ≥ $5M, OOS з 2025-03; демо: Bybit, оборот дня входу з Bybit",
+        "splits": True,
+    },
 }
+UNIVERSE_DEFAULT = "паспорт: свічки й оборот Binance, топ-250 і ≥ $1M, OOS з 2025-03; демо: Bybit, монети від $1M, оборот дня входу з Bybit"
+UNIVERSE = UNIVERSE_DEFAULT
+SPLITS = False  # timeframe x side and break-even-rule rows (S3 trades both sides on 4h and 1d)
 
 
 def configure(setup: str) -> None:
     """Point the module at one setup's passport (S38 is the default; S39 / S40 only descriptive while n < 30)."""
-    global SETUP, PASSPORT, PASSPORT_OF, TURNOVER_REF, BAR_CAP
+    global SETUP, PASSPORT, PASSPORT_OF, TURNOVER_REF, BAR_CAP, UNIVERSE, SPLITS
     c = SETUPS[setup]
     SETUP, PASSPORT, PASSPORT_OF, TURNOVER_REF, BAR_CAP = setup, c["passport"], c["passport_of"], c["turnover_ref"], c["bar_cap"]
+    UNIVERSE, SPLITS = c.get("universe", UNIVERSE_DEFAULT), bool(c.get("splits"))
 
 
 def cap_text(pb: Counter[int]) -> str:
@@ -262,7 +291,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--venue", default="bybit")
     ap.add_argument("--cache-dir", default=DEFAULT_CACHE)
     ap.add_argument("--out-tag", default="s38", help="output names <tag>.txt / <tag>_rows.json in the cache dir")
-    ap.add_argument("--setup", choices=sorted(SETUPS), default="S38", help="S38 (default); S39 / S40 against their passports")
+    ap.add_argument("--setup", choices=sorted(SETUPS), default="S38", help="S38 (default); S39 / S40 / S3 against their passports")
     ap.add_argument("--seen-cutoff", help="UTC YYYY-MM-DDTHH:MM, the cutoff of an earlier comparison: trades closed after it get own rows")
     a = ap.parse_args(argv)
     configure(a.setup)
@@ -381,6 +410,22 @@ def run(db: str, cutoff_ms: int, cache: Path, venue: str, tag: str = "s38", now_
     for k in ("maker", "taker"):
         p(f"- вхід {k:<6} {fmt(stat([r for r in s38 if r.get('entry_kind') == k], 'r_demo'))}")
     p(f"- угод на монету: {sorted(Counter(Counter(r['symbol'] for r in s38).values()).items())} (к-сть угод: монет)")
+    if SPLITS:
+        # the 30.10 S3 rows: timeframe, side, timeframe x side, break-even rule (descriptive; n < 10 is unmeasurable)
+        split_groups: dict[str, Any] = {}
+        for tf in sorted({r["timeframe"] for r in s38}):
+            split_groups[tf] = lambda r, tf=tf: r["timeframe"] == tf
+        for sd in sorted({r["side"] for r in s38}):
+            split_groups[sd] = lambda r, sd=sd: r["side"] == sd
+        for tf, sd in sorted({(r["timeframe"], r["side"]) for r in s38}):
+            split_groups[f"{tf} {sd}"] = lambda r, tf=tf, sd=sd: r["timeframe"] == tf and r["side"] == sd
+        for be in sorted({str(r.get("be_rule")) for r in s38}):
+            split_groups[f"беззбиток {be}"] = lambda r, be=be: str(r.get("be_rule")) == be
+        for name, f in split_groups.items():
+            sub = [r for r in s38 if f(r)]
+            p(f"- {name:<14} {fmt(stat(sub, 'r_demo'))}")
+            if seen_ms is not None:
+                p(f"    нові {fmt(stat([r for r in sub if is_new(r, seen_ms)], 'r_demo'))}")
     pb = per_bar(rows + opened + orph)
     p(f"- входів на 4h-свічку сигналу (закриті + відкриті + orphaned): {sorted(pb.items())}; {cap_text(pb)}")
     p("")
@@ -412,6 +457,16 @@ def run(db: str, cutoff_ms: int, cache: Path, venue: str, tag: str = "s38", now_
         sub = [r for r in s38 if r.get("exit_reason") == k]
         p(f"проковзування виходу {k:<9} демо {fmt(stat(sub, 'exit_slip_r'))}")
         p(f"      модель {fmt(stat(sub, 'model_slip_r'))}; демо − модель {fmt(stat(sub, 'slip_diff_r'))}")
+    if seen_ms is not None:
+        nw = [r for r in s38 if is_new(r, seen_ms)]
+        p(f"лише нові угоди (закриті ≥ {datetime.fromtimestamp(seen_ms / 1000, UTC):%Y-%m-%d %H:%M}), описово:")
+        p(f"  вердикти повтору {sorted(Counter(r['verdict'] for r in nw).items())}")
+        p(f"  entry_edge_r {fmt(stat(nw, 'entry_edge_r'))}")
+        p(f"  виконання (entry − plan) {fmt(stat([r for r in ex if is_new(r, seen_ms)], 'exec_r'))}")
+        p(f"  r_diff {fmt(stat(nw, 'r_diff'))}")
+        p(f"  комісії модель − демо {fmt(stat(nw, 'fee_diff_r'))}")
+        p(f"  проковзування виходу демо − модель (усі виходи) {fmt(stat(nw, 'slip_diff_r'))}")
+        p(f"  виходи демо / бектест: {sorted(Counter((str(r.get('demo_exit')), str(r.get('bt_exit'))) for r in nw).items())}")
     p("")
     p("## Незаповнені входи (status missed) за версією; заповнено = закриті + відкриті + orphaned")
     for ver in sorted({r["ver"] for r in rows + opened + orph + missed}):
@@ -457,7 +512,7 @@ def run(db: str, cutoff_ms: int, cache: Path, venue: str, tag: str = "s38", now_
         )
     else:
         p(f"не змодельовано: денні слоти демо (повтор по угодах бере кожну угоду {SETUP} окремо)")
-    p("паспорт: свічки й оборот Binance, топ-250 і ≥ $1M, OOS з 2025-03; демо: Bybit, монети від $1M, оборот дня входу з Bybit")
+    p(UNIVERSE)
     p(f"missing: {[f'{m.field}: {m.reason}' for m in b.missing[:10]]}; warnings {b.warnings[:5]}")
     p(f"seed {v12.SEED}; бутстреп {v12.N_BOOT} кластерами за днем сигналу; peak RSS {cmn.rss_mb():.0f} MB")
     text = "\n".join(L) + "\n"

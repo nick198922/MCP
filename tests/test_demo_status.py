@@ -18,6 +18,7 @@ from tradedesk.config import Settings
 from tradedesk.runtime import Runtime
 from tradedesk.server import build_server
 from tradedesk.store import Store
+from tradedesk.tools import demo_status as demo_status_tool
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import checkpoint_report as script  # noqa: E402
@@ -180,6 +181,20 @@ async def test_demo_status_store_off_or_failing_goes_to_missing(tmp_path):
     assert [(m["field"], m["reason"], m["detail"]) for m in env["missing"]] == [
         ("store", "backend_error", "OperationalError: disk I/O error")
     ]
+
+
+async def test_demo_status_warns_when_the_store_read_fills_its_row_cap(tmp_path, monkeypatch):
+    # review of item 409, finding 1: a read that returns the whole cap may have left the oldest trades out
+    db = str(tmp_path / "demo.sqlite")
+    await seed(db)
+    n = len(demo_rows())
+    monkeypatch.setattr(demo_status_tool, "MAX_ROWS", n + 1)
+    (below,) = await demo_envs(db, {})
+    monkeypatch.setattr(demo_status_tool, "MAX_ROWS", n)
+    (at_cap,) = await demo_envs(db, {})
+    assert below["ok"] and at_cap["ok"]
+    assert not any("cap of" in w for w in below["warnings"])
+    assert any(f"cap of {n} demo_trade rows" in w and "older trades may be left out" in w for w in at_cap["warnings"])
 
 
 async def test_demo_status_skips_a_corrupt_row_with_a_warning(tmp_path):

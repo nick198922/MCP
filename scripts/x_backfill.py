@@ -3,7 +3,7 @@
     python3 scripts/x_backfill.py Trader_XO btc_charlie docXBT KillaXBT       # since 2 years ago, with photos
     python3 scripts/x_backfill.py Trader_XO --since 2025-01-01 --interval 0.1 # after a top-up (20 requests/s)
     python3 scripts/x_backfill.py Trader_XO --md                              # only rebuild tweets.md / parts/
-    python3 scripts/x_backfill.py Trader_XO --stat                            # state only: no key, no network
+    python3 scripts/x_backfill.py Trader_XO --stat                            # state + coverage: no key, no network
 
 Output (outside git, next to the Telegram channels): ~/private/library/courses/x-<handle>/
     tweets.json          every tweet (normalised fields below), sorted by time
@@ -35,7 +35,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -241,6 +241,76 @@ def unverified_months(state: dict[str, Any]) -> list[str]:
     return sorted(m for m in set(state["done_months"]) if m not in state["oldest"])
 
 
+def _day_ranges(days: list[int]) -> str:
+    """Sorted day numbers as ranges: ``[1, 2, 3, 7]`` -> ``"1-3, 7"``."""
+    out, i = [], 0
+    while i < len(days):
+        j = i
+        while j + 1 < len(days) and days[j + 1] == days[j] + 1:
+            j += 1
+        out.append(str(days[i]) if i == j else f"{days[i]}-{days[j]}")
+        i = j + 1
+    return ", ".join(out)
+
+
+def coverage_report(tweets: Iterable[dict[str, Any]], state: dict[str, Any], today: date) -> dict[str, Any]:
+    """Days without a stored tweet per calendar month (UTC), from stored data only: pure, ``today`` is passed in.
+
+    Covers every month from the earliest to the latest one seen in the tweets or ``state`` (none after ``today``). Per
+    month: window ``from``/``to`` (the current month ends with ``today``), stored ``tweets``, ``first``/``last`` tweet
+    time, ``empty_days`` with their ``empty_share`` and day numbers (``empty``, as ranges) and ``status``: ``done``
+    (window exhausted), ``unverified`` (marked done by an older version: may miss its first days) or ``open`` (current,
+    incomplete or never fetched). The totals ``days``/``empty_days``/``empty_share`` count from ``counted_from``, the
+    month of the first stored tweet: earlier months (often before the account posted at all) stay listed but would
+    inflate the share. Caveats: a trader may not post on some days, so empty days bound the holes from above; a month
+    counts from the 1st even if the run began later (``--since`` is not stored); undated tweets are left out."""
+    by_month: dict[str, list[str]] = defaultdict(list)
+    for t in tweets:
+        iso = t.get("date") or ""
+        if len(iso) >= 10:
+            by_month[iso[:7]].append(iso)
+    cur = f"{today.year:04d}-{today.month:02d}"
+    done = set(state["done_months"])
+    labels = {m for m in set(by_month) | done | set(state["oldest"]) if m <= cur}
+    months: list[dict[str, Any]] = []
+    if labels:
+        y, m = int(min(labels)[:4]), int(min(labels)[5:7])
+        last = max(labels)
+        while (label := f"{y:04d}-{m:02d}") <= last:
+            start, nxt = date(y, m, 1), date(y + (m == 12), m % 12 + 1, 1)
+            n_days = (min(nxt, today + timedelta(days=1)) - start).days
+            stamps = sorted(by_month.get(label, []))
+            posted = {int(s[8:10]) for s in stamps}
+            empty = [d for d in range(1, n_days + 1) if d not in posted]
+            months.append(
+                {
+                    "month": label,
+                    "from": start.isoformat(),
+                    "to": (start + timedelta(days=n_days - 1)).isoformat(),
+                    "status": ("done" if label in state["oldest"] else "unverified") if label in done else "open",
+                    "tweets": len(stamps),
+                    "first": stamps[0] if stamps else None,
+                    "last": stamps[-1] if stamps else None,
+                    "days": n_days,
+                    "empty_days": len(empty),
+                    "empty_share": round(len(empty) / n_days, 3),
+                    "empty": _day_ranges(empty),
+                }
+            )
+            y, m = nxt.year, nxt.month
+    first_month = min(by_month) if by_month else None
+    counted = [x for x in months if first_month and x["month"] >= first_month]
+    days = sum(x["days"] for x in counted)
+    empty_days = sum(x["empty_days"] for x in counted)
+    return {
+        "counted_from": first_month,
+        "days": days,
+        "empty_days": empty_days,
+        "empty_share": round(empty_days / days, 3) if days else None,
+        "months": months,
+    }
+
+
 def save(handle: str, tweets: dict[str, dict], state: dict[str, Any]) -> None:
     d = out_dir(handle)
     d.mkdir(parents=True, exist_ok=True)
@@ -368,14 +438,16 @@ def backfill(
     }
 
 
-def stat(handle: str) -> dict[str, Any]:
-    """What is stored for ``handle`` (local files only: no key, no network)."""
+def stat(handle: str, today: date | None = None) -> dict[str, Any]:
+    """What is stored for ``handle`` with its coverage report (local files only: no key, no network)."""
     state = load_state(handle)
+    tweets = load(handle)
     return {
         "handle": handle,
-        "tweets": len(load(handle)),
+        "tweets": len(tweets),
         "done_months": len(set(state["done_months"])),
         "unverified": unverified_months(state),
+        "coverage": coverage_report(tweets.values(), state, today or datetime.now(UTC).date()),
     }
 
 
@@ -387,7 +459,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--max-tweets", type=int, default=60_000, help="new tweets per handle before stopping (budget guard)")
     ap.add_argument("--no-photos", action="store_true")
     ap.add_argument("--md", action="store_true", help="only rebuild tweets.md and parts/ from tweets.json")
-    ap.add_argument("--stat", action="store_true", help="only print stored counts and unverified months (no key, no network)")
+    ap.add_argument(
+        "--stat", action="store_true", help="only print stored counts, unverified months and empty days per month (no key, no network)"
+    )
     a = ap.parse_args(argv)
     handles = [h.lstrip("@").strip() for h in a.handles]
     if a.stat:

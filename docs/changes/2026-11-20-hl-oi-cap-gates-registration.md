@@ -1,3 +1,2 @@
-- Картка `hl-oi-cap-state-forward`, крок 1: записано попередню реєстрацію воріт G1/G2 (подія = ≥ 6 год підряд у стані ліміту OI, правило 24 год, вердикт-правило) до перегляду подій.
-- Нове: `analytics/hl_oi_cap_events.py` (чисті функції), `scripts/verify_hl_oi_cap_gates.py` (`--stage smoke|run`, БД лише для читання), `tests/test_hl_oi_cap_gates.py` (13 тестів).
-- Покриття колектора `hl_oi_cap` з 01.11: 444 з 444 годин, 179 перпів щогодини, пропусків нема. Подій і вердикту ще нема: прогін — наступним кроком (правило 03.11).
+- HL OI-cap: ворота G1/G2 кроку 1 прораховано за зареєстрованими правилами: 5 подій за 2.5 тижня (2.0/тиждень при порозі 8) → картка `rejected`, колектор `hl_oi_cap` рекомендовано вимкнути.
+- Нове: `analytics/hl_oi_cap_events.py`, `scripts/verify_hl_oi_cap_gates.py`, `tests/test_hl_oi_cap_gates.py`; звіт `docs/verification/2026-11-20-hl-oi-cap-gates.md`, рев'ю критика B.

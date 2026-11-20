@@ -73,7 +73,7 @@ STRING_PARAMS = {
     "vs_currency",
 }
 STRINGS = ["", "   ", "NOT/A:SYMBOL", "x" * 300]
-LIST_PARAMS = {"symbols", "exchanges", "venues", "bases", "currencies", "addresses"}
+LIST_PARAMS = {"symbols", "exchanges", "venues", "bases", "currencies", "addresses", "other_events"}
 LISTS: list[list[str]] = [[], [""]]
 
 # Violations found and not fixed yet (also listed in docs/BACKLOG.md 6.19). Format: {"tool.param": "what is wrong"}.

@@ -51,6 +51,7 @@ USD_PER_REQUEST_MIN = 0.00015
 UA = "tradedesk-x-backfill/1.0"
 MONTH_START_TOLERANCE_S = 60  # an oldest tweet this close to the month start counts as reaching it
 MAX_WINDOWS_PER_MONTH = 100  # loop guard: follow-up windows per month before giving up (month stays not done)
+SUSPECT_GAP_DAYS = 1  # --stat flags a done month whose oldest tweet is later than its start by more than this
 
 Getter = Callable[[dict[str, str]], dict[str, Any]]
 
@@ -262,12 +263,21 @@ def coverage_report(tweets: Iterable[dict[str, Any]], state: dict[str, Any], tod
     (window exhausted), ``unverified`` (marked done by an older version: may miss its first days) or ``open`` (current,
     incomplete or never fetched). The totals ``days``/``empty_days``/``empty_share`` count from ``counted_from``, the
     month of the first stored tweet: earlier months (often before the account posted at all) stay listed but would
-    inflate the share. Caveats: a trader may not post on some days, so empty days bound the holes from above; a month
-    counts from the 1st even if the run began later (``--since`` is not stored); undated tweets are left out."""
+    inflate the share. ``suspect_months``: ``done`` months whose recorded ``oldest`` tweet is more than
+    ``SUSPECT_GAP_DAYS`` after the month start (``month``, ``oldest``, ``gap_days``): the API may have cut the paging
+    with no newer-than-before tweet, so the month's first days may be missing (or the trader simply did not post; the
+    first month of a ``--since`` run also starts late). ``unverified`` months have no ``oldest`` and are never suspect.
+    ``ignored_future``: tweets dated after ``today`` (clock skew), left out of every count. Caveats: a trader may not
+    post on some days, so empty days bound the holes from above; a month counts from the 1st even if the run began
+    later (``--since`` is not stored); undated tweets are left out."""
     by_month: dict[str, list[str]] = defaultdict(list)
+    ignored_future = 0
     for t in tweets:
         iso = t.get("date") or ""
         if len(iso) >= 10:
+            if iso[:10] > today.isoformat():
+                ignored_future += 1
+                continue
             by_month[iso[:7]].append(iso)
     cur = f"{today.year:04d}-{today.month:02d}"
     done = set(state["done_months"])
@@ -302,11 +312,21 @@ def coverage_report(tweets: Iterable[dict[str, Any]], state: dict[str, Any], tod
     counted = [x for x in months if first_month and x["month"] >= first_month]
     days = sum(x["days"] for x in counted)
     empty_days = sum(x["empty_days"] for x in counted)
+    suspect = []
+    for x in months:
+        oldest = state["oldest"].get(x["month"]) if x["status"] == "done" else None
+        if oldest:
+            start_dt = datetime.fromisoformat(x["from"]).replace(tzinfo=UTC)
+            gap = (datetime.strptime(oldest, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC) - start_dt).total_seconds() / 86400
+            if gap > SUSPECT_GAP_DAYS:
+                suspect.append({"month": x["month"], "oldest": oldest, "gap_days": round(gap, 1)})
     return {
         "counted_from": first_month,
         "days": days,
         "empty_days": empty_days,
         "empty_share": round(empty_days / days, 3) if days else None,
+        "ignored_future": ignored_future,
+        "suspect_months": suspect,
         "months": months,
     }
 
@@ -460,7 +480,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--no-photos", action="store_true")
     ap.add_argument("--md", action="store_true", help="only rebuild tweets.md and parts/ from tweets.json")
     ap.add_argument(
-        "--stat", action="store_true", help="only print stored counts, unverified months and empty days per month (no key, no network)"
+        "--stat",
+        action="store_true",
+        help="only print stored counts, unverified and suspect months, empty days per month (no key, no network)",
     )
     a = ap.parse_args(argv)
     handles = [h.lstrip("@").strip() for h in a.handles]

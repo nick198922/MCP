@@ -261,8 +261,41 @@ def test_coverage_report_empty_days_first_last_and_status():
         "days": 0,
         "empty_days": 0,
         "empty_share": None,
+        "ignored_future": 0,
+        "suspect_months": [],
         "months": [],
     }
+
+
+def test_coverage_report_flags_suspect_done_months_and_counts_future_tweets():
+    """A done month whose oldest tweet is mid-month is suspect (paging may have been cut); a done month reaching its
+    start, a tweetless done month and an unverified month (no ``oldest``) are not. Tweets after today are counted in
+    ``ignored_future`` and left out of the month counts."""
+    tweets = [
+        xb.normalize(_tw(1, created="Wed Jan 15 06:00:00 +0000 2025")),
+        xb.normalize(_tw(2, created="Mon Feb 03 12:00:00 +0000 2025")),
+        xb.normalize(_tw(3, created="Mon Mar 10 08:00:00 +0000 2025")),
+        xb.normalize(_tw(4, created="Wed Mar 12 08:00:00 +0000 2025")),  # after today (11 March)
+        xb.normalize(_tw(5, created="Tue May 06 08:00:00 +0000 2025")),  # a future month
+    ]
+    state = {
+        "done_months": ["2024-11", "2024-12", "2025-01", "2025-02"],
+        "oldest": {
+            "2024-11": None,  # done, no tweets at all: nothing to judge
+            "2025-01": "2025-01-15T06:00:00Z",  # 14.25 days after the start: suspect
+            "2025-02": "2025-02-01T23:00:00Z",  # within a day of the start: fine
+        },  # 2024-12: done by an older version, no oldest: unverified, not suspect
+    }
+    rep = xb.coverage_report(tweets, state, date(2025, 3, 11))
+    [sus] = rep["suspect_months"]
+    assert (sus["month"], sus["oldest"]) == ("2025-01", "2025-01-15T06:00:00Z")
+    assert sus["gap_days"] == pytest.approx(14.25, abs=0.06)
+    assert rep["ignored_future"] == 2
+    by = {x["month"]: x for x in rep["months"]}
+    assert by["2024-12"]["status"] == "unverified"
+    assert list(by)[-1] == "2025-03" and by["2025-03"]["tweets"] == 1 and by["2025-03"]["last"] == "2025-03-10T08:00:00Z"
+    just_over = {"done_months": ["2025-02"], "oldest": {"2025-02": "2025-02-02T00:01:00Z"}}
+    assert [x["month"] for x in xb.coverage_report([], just_over, date(2025, 3, 11))["suspect_months"]] == ["2025-02"]
 
 
 def test_truncated_paging_leaves_no_empty_days_in_coverage(root):

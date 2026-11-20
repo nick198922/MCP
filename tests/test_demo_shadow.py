@@ -219,6 +219,28 @@ def test_time_is_a_parameter():
     assert s["groups"]["skipped"]["week"] == 8 and s["now_ms"] == avax["ts"] - 1
 
 
+def test_plans_resolved_after_now_count_as_open():
+    """A cutoff in the past repeats: the store as at the cutoff (plan open) and a later store (the plan resolved after
+    the cutoff) give the same rows and numbers with now_ms = the cutoff, whatever the run time."""
+    c = NOW
+    a = {"ts": c - 5 * H, "kind": "skipped", "link_id": f"td-S3-l-4h-DOT-{(c - 7 * H) // 1000}", "symbol": "DOT/USDT:USDT",
+         "setup": "S3", "payload": json.dumps({"violations": ["score 1 < 2"]})}  # fmt: skip
+    plan_open = {
+        "id": 1, "created_ts": (c - 5 * H) // 1000, "symbol": "DOT/USDT:USDT", "side": "long", "status": "open",
+        "tags": ["src:demo-shadow", "setup:S3", "tf:4h", "demo:skipped"],
+    }  # fmt: skip
+    done = {**plan_open, "status": "resolved", "outcome": "target", "fill": 4.0, "stop": 3.8, "exit": 4.5, "r_result": 2.4}
+    late = {**done, "resolved_ts": (c + H) // 1000}
+    at_cut = ds.not_executed([], [a], [plan_open], now_ms=c)
+    again = ds.not_executed([], [a], [late], now_ms=c)
+    assert at_cut == again and again["groups"]["skipped"]["open"] == 1 and again["groups"]["skipped"]["n_r"] == 0
+    after = ds.match_rows([], [a], [late], now_ms=c + 2 * H)[0]
+    assert after.status == "resolved" and after.r == pytest.approx(ds.shadow_r("long", 4.0, 3.8, 4.5, "target"))
+    # resolved at the very second of now: resolved; no resolved_ts (cannot be dated): resolved, as stored
+    assert ds.match_rows([], [a], [{**done, "resolved_ts": c // 1000}], now_ms=c)[0].status == "resolved"
+    assert ds.match_rows([], [a], [done], now_ms=c)[0].status == "resolved"
+
+
 def test_enough_plans_give_a_conclusion():
     rows = [
         ds.ShadowRow("skipped", "score N < 2", "score 1 < 2", None, "A", "S3", "4h", "long", NOW - i, None, "resolved", "target", 1.0, r)

@@ -378,10 +378,14 @@ def run(db: str, cutoff_ms: int, cache: Path, venue: str, tag: str = "s12") -> i
     trades, aud, plans, ne_err = dvb.load_not_executed(db)
     trades = [t for t in trades if int(t.get("signal_ts") or 0) < cutoff_ms]
     aud = [x for x in aud if int(x.get("ts") or 0) < cutoff_ms]
-    srows = [x for x in demo_shadow.match_rows(trades, aud, plans, now_ms=now) if x.setup == SETUP and x.decided_ts < cutoff_ms]
-    p(f"## Невиконані сигнали S12 проти тіньових планів (R без беззбитку, од. демо; t-CI з demo_shadow){' — ' + ne_err if ne_err else ''}")
+    # shadow plans as of the cutoff, not the run time: a plan resolved after the cutoff counts as open, so a repeat repeats
+    srows = [x for x in demo_shadow.match_rows(trades, aud, plans, now_ms=cutoff_ms) if x.setup == SETUP and x.decided_ts < cutoff_ms]
+    p(
+        f"## Невиконані сигнали S12 проти тіньових планів на cutoff (R без беззбитку, од. демо; t-CI з demo_shadow)"
+        f"{' — ' + ne_err if ne_err else ''}"
+    )
     if srows:
-        sm = demo_shadow.summary(srows, now_ms=now)
+        sm = demo_shadow.summary(srows, now_ms=cutoff_ms)
         for gname, s in sm["groups"].items():
             ci = f"[{s['ci95_r'][0]:+.2f}; {s['ci95_r'][1]:+.2f}]" if s.get("ci95_r") else "[—]"
             mr = f"{s['mean_r']:+.3f}" if s.get("mean_r") is not None else "—"

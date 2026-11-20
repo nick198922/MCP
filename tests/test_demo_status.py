@@ -197,6 +197,16 @@ async def test_demo_status_warns_when_the_store_read_fills_its_row_cap(tmp_path,
     assert any(f"cap of {n} demo_trade rows" in w and "older trades may be left out" in w for w in at_cap["warnings"])
 
 
+def test_demo_status_cuts_a_long_note_at_a_list_boundary(monkeypatch):
+    # review of item 440, finding 1: the compact cut ends on a whole list item, not inside a trade id
+    monkeypatch.setattr(demo_status_tool, "NOTE_CHARS", 30)
+    cut = demo_status_tool._cut_note
+    assert cut("short, note") == "short, note"
+    assert cut("orphaned: 4 — S38 AAAUSDT, S38 BBBUSDT, S38 CCCUSDT") == "orphaned: 4 — S38 AAAUSDT …"
+    assert cut("x, " + "y" * 40) == "x, " + "y" * 27 + " …"  # the only separator is too early: cut by characters
+    assert cut("z" * 40) == "z" * 30 + " …"  # no separator: cut by characters
+
+
 async def test_demo_status_skips_a_corrupt_row_with_a_warning(tmp_path):
     db = str(tmp_path / "demo.sqlite")
     await seed(db)

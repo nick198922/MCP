@@ -695,6 +695,41 @@ def test_reverse_diagonal_against_a_reference_black76(price):
     assert s["pnl_usd"] == pytest.approx((expected - fee) * 0.01, rel=1e-9, abs=1e-8)
 
 
+def _b76_put(f: float, k: float, t: float, iv: float) -> float:
+    """Black-76 put (r = 0), written out here as an independent reference: K N(−d2) − F N(−d1)."""
+    d1 = (math.log(f / k) + iv * iv * t / 2) / (iv * math.sqrt(t))
+    return k * _ncdf(-(d1 - iv * math.sqrt(t))) - f * _ncdf(-d1)
+
+
+@pytest.mark.parametrize("price", [40_000.0, 60_000.0, 64_000.0, 67_960.0, 68_000.0, 75_000.0])
+def test_reverse_put_diagonal_against_a_reference_black76(price):
+    """Bought front put 68 000, sold back put 64 000 (28 days later, IV 0.45), net debit 300 after fees (item 427).
+    The sold later leg is valued at forward = the delivery price, r = 0, T = 28 / 365."""
+    t = 28 / 365
+    back = {**_leg("sell", False, 64_000), "expiry_ms": BACK, "iv": 0.45}
+    rec = _rec("put_diagonal", [_leg("buy", False, 68_000), back], net=-300, max_loss=5_000, qty=0.01)
+    put = _b76_put(price, 64_000, t, 0.45)
+    if price == 64_000.0:  # at the back strike: the closed-form ATM value F (2 N(σ√T / 2) − 1) ≈ 3 180
+        assert put == pytest.approx(_atm_b76(64_000, 0.45, t), rel=1e-12) and put == pytest.approx(3_180, abs=1)
+    assert put >= max(64_000 - price, 0.0)  # the reference itself respects the floor
+    front = max(68_000 - price, 0.0)
+    expected = -300 + front - put
+    got = oi.payoff_at(rec, price)
+    assert got == pytest.approx(expected, rel=1e-9, abs=1e-6)
+    # sign: the sold later leg costs its value, so P/L sits below the front leg plus net, by at least its intrinsic
+    sold_value = -300 + front - got
+    assert sold_value > 0 and sold_value >= max(64_000 - price, 0.0) - 1e-9
+    bought = {**rec, "legs": [rec["legs"][0], {**back, "action": "buy"}]}
+    assert oi.payoff_at(bought, price) - got == pytest.approx(2 * put, rel=1e-9, abs=1e-6)
+    fee = min(0.00015 * price, 0.125 * (68_000 - price)) if price < 68_000 else 0.0  # 67 960: the 12.5 % cap binds
+    s = oi.settle_idea(rec, price, AFTER)  # only the front (bought) put is delivered; the sold back put is not
+    assert s["delivery_fee_per_unit"] == pytest.approx(fee)
+    assert s["pnl_per_unit"] == pytest.approx(expected - fee, rel=1e-9, abs=1e-6)
+    assert s["r"] == pytest.approx((expected - fee) / 5_000, rel=1e-9, abs=1e-9)
+    assert s["pnl_usd"] == pytest.approx((expected - fee) * 0.01, rel=1e-9, abs=1e-8)
+    assert s["later_legs"] == "model" and s["close_fee_per_unit"] == 0
+
+
 def test_bybit_option_symbol_and_delivery_parse():
     assert oi.bybit_option_symbol("BTC", EXP, 70_000.0, True) == "BTC-27NOV26-70000-C-USDT"
     seven = int(datetime(2026, 11, 7, 8, tzinfo=UTC).timestamp() * 1000)

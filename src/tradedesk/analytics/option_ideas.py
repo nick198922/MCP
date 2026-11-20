@@ -25,6 +25,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from .instruments import parse_expiry_token
+from .options import black76_price
 
 DAY_MS = 86_400_000
 TAKER_RATE = 0.0003  # Bybit options taker fee: 0.03 % of the underlying per contract …
@@ -115,6 +116,10 @@ class Leg:
     strike: float
     price: float  # bid for a sold leg, ask for a bought one
     delta: float | None
+    # Own expiry of the leg, ms; None = the idea's ``expiry_ms`` (every single-expiry structure). A later expiry (the
+    # long leg of a calendar) is valued at the idea's settlement by Black-76 at ``iv`` (decimal), see ``payoff_at``.
+    expiry_ms: int | None = None
+    iv: float | None = None
 
 
 @dataclass
@@ -773,14 +778,45 @@ def ideas_for(
 
 
 def payoff_at(idea: dict[str, Any], price: float) -> float:
-    """P/L per unit at expiry for a logged idea (``Idea.to_dict``) settled at ``price``: legs' intrinsic value plus
-    the net premium (fees at entry included in ``net``). Bybit's delivery fee is a separate term (``delivery_fee``);
-    ``settle_idea`` deducts it."""
+    """P/L per unit at expiry for a logged idea (``Idea.to_dict``) settled at ``price``: legs' value plus the net
+    premium (fees at entry included in ``net``). Bybit's delivery fee is a separate term (``delivery_fee``);
+    ``settle_idea`` deducts it.
+
+    A leg expiring with the idea (its ``expiry_ms`` absent, None or equal to the idea's) is worth its intrinsic value.
+    A leg expiring later (the long leg of a calendar) is still alive at the idea's expiry: it is worth its Black-76
+    value at that moment (forward = ``price``, r = 0, T = days from the idea's expiry to the leg's / 365, at the leg's
+    logged ``iv``, decimal) — a model value at the entry IV, not a quote: the IV move by then, the bid / ask and the
+    fee of closing the leg are not in it. NaN when such a leg has no positive ``iv`` or a leg expires before the
+    idea (it cannot be valued here)."""
     total = float(idea["net"])
     for leg in idea["legs"]:
-        intrinsic = _intrinsic(leg, price)
-        total += intrinsic if leg["action"] == "buy" else -intrinsic
+        value = _leg_value(leg, price, idea.get("expiry_ms"))
+        total += value if leg["action"] == "buy" else -value
     return total
+
+
+def _later_years(leg: dict[str, Any], idea_expiry_ms: Any) -> float | None:
+    """Years from the idea's expiry to the leg's own one (> 0), 0.0 when the leg expires with the idea, None when it
+    cannot be placed (the leg has its own expiry but the idea none, or the leg expires earlier)."""
+    own = _num(leg.get("expiry_ms"))
+    if own is None:
+        return 0.0
+    base = _num(idea_expiry_ms)
+    if base is None or own < base:
+        return None
+    return (own - base) / DAY_MS / 365
+
+
+def _leg_value(leg: dict[str, Any], price: float, idea_expiry_ms: Any) -> float:
+    t = _later_years(leg, idea_expiry_ms)
+    if t is None:
+        return math.nan
+    if t == 0:
+        return _intrinsic(leg, price)
+    iv = _num(leg.get("iv"))
+    if iv is None or iv <= 0:
+        return math.nan
+    return black76_price(price, float(leg["strike"]), t, iv, bool(leg["is_call"]))
 
 
 def _intrinsic(leg: dict[str, Any], price: float) -> float:
@@ -790,9 +826,12 @@ def _intrinsic(leg: dict[str, Any], price: float) -> float:
 
 def delivery_fee(idea: dict[str, Any], price: float) -> float:
     """Bybit delivery fee per unit of a logged idea settled at ``price``, USD: on every in-the-money leg (bought or
-    sold) min(``DELIVERY_RATE`` x price, ``DELIVERY_CAP`` x intrinsic); legs out of the money or at the strike pay 0."""
+    sold) min(``DELIVERY_RATE`` x price, ``DELIVERY_CAP`` x intrinsic); legs out of the money or at the strike pay 0,
+    and so do legs expiring later than the idea (not delivered at this expiry)."""
     total = 0.0
     for leg in idea["legs"]:
+        if _later_years(leg, idea.get("expiry_ms")) != 0:
+            continue
         intrinsic = _intrinsic(leg, price)
         if intrinsic > 0:
             total += min(DELIVERY_RATE * price, DELIVERY_CAP * intrinsic)
@@ -831,7 +870,7 @@ def parse_bybit_delivery(body: Any, expiry_ms: int) -> float | None:
 
 def _settleable(idea: Any) -> bool:
     """A logged idea has what ``payoff_at`` and R need: numeric net and max loss > 0, legs with a strike, a type and a
-    buy / sell action."""
+    buy / sell action; a leg with its own expiry expires with the idea or later, and a later one has a positive IV."""
     if not isinstance(idea, dict) or _num(idea.get("net")) is None or not (_num(idea.get("max_loss")) or 0) > 0:
         return False
     legs = idea.get("legs")
@@ -842,6 +881,8 @@ def _settleable(idea: Any) -> bool:
         and _num(g.get("strike")) is not None
         and isinstance(g.get("is_call"), bool)
         and g.get("action") in ("buy", "sell")
+        and (t := _later_years(g, idea.get("expiry_ms"))) is not None
+        and (t == 0 or (_num(g.get("iv")) or 0) > 0)
         for g in legs
     )
 
@@ -851,8 +892,8 @@ def settle_idea(idea: Any, price: Any, now_ms: int) -> dict[str, Any] | None:
     settled yet (``now_ms`` before ``expiry_ms``), the price is not a positive number or the record is malformed.
 
     ``delivery_fee_per_unit`` = ``delivery_fee`` (Bybit's fee on the in-the-money legs, USD per unit);
-    ``pnl_per_unit`` = ``payoff_at`` (intrinsic value of the legs plus the logged net premium, entry fees included)
-    minus that fee; ``pnl_usd`` = ``pnl_per_unit`` times the logged size ``qty`` (None when the idea could not be sized
+    ``pnl_per_unit`` = ``payoff_at`` (intrinsic value of the legs, Black-76 value at the logged IV for a leg expiring
+    later, plus the logged net premium, entry fees included) minus that fee; ``pnl_usd`` = ``pnl_per_unit`` times the logged size ``qty`` (None when the idea could not be sized
     under the risk); ``r`` = ``pnl_per_unit`` / logged ``max_loss`` (−1 = the whole logged risk lost; the logged
     ``max_loss`` has no delivery fee, so a loss with legs in the money can be a little below −1). Records settled
     before the fee was deducted keep their numbers (the journal never settles a record twice)."""

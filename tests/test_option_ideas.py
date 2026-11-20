@@ -548,6 +548,77 @@ def test_settle_idea_waits_for_expiry_and_rejects_bad_input():
         assert oi.settle_idea(rec, 105, AFTER) is None
 
 
+# --- legs with their own expiry (item 421): a calendar settled at the front expiry -----------------------------------
+
+BACK = EXP + 28 * 86_400_000  # the long leg expires 28 days after the front
+CAL_IV = 0.45
+CAL_K = 67_000.0
+CAL_DEBIT = 1_720.0  # sold front call 1 500, bought back call 3 200, entry fees 20
+
+
+def _calendar(iv: float | None = CAL_IV, back: int | None = BACK) -> dict:
+    legs = [
+        oi.Leg("sell", True, CAL_K, 1_500.0, -0.5),
+        oi.Leg("buy", True, CAL_K, 3_200.0, 0.5, expiry_ms=back, iv=iv),
+    ]
+    idea = oi.Idea("BTC", "call_calendar", EXP, 13.0, SPOT, legs, -CAL_DEBIT, None, CAL_DEBIT, [], None, qty=0.01, rule="P10")
+    return idea.to_dict()
+
+
+def _atm_b76(f: float, iv: float, t: float) -> float:
+    """Black-76 ATM call (K = F, r = 0) in closed form: F (2 N(σ√T / 2) − 1)."""
+    return f * (2 * _ncdf(iv * math.sqrt(t) / 2) - 1)
+
+
+def test_leg_own_expiry_defaults_to_the_idea():
+    leg = oi.debit_spread(QUOTES, EXP, NOW, "BTC", bearish=True).to_dict()["legs"][0]
+    assert leg["expiry_ms"] is None and leg["iv"] is None
+
+
+def test_calendar_at_the_strike_is_back_time_value_minus_debit():
+    t = 28 / 365
+    tv = _atm_b76(CAL_K, CAL_IV, t)
+    assert tv == pytest.approx(3_329, abs=1)  # ≈ 0.4 F σ √T = 3 341 (the small-σ√T approximation)
+    d = _calendar()
+    assert oi.payoff_at(d, CAL_K) == pytest.approx(tv - CAL_DEBIT, rel=1e-9)
+    s = oi.settle_idea(d, CAL_K, AFTER)  # at the strike no leg is in the money: no delivery fee
+    assert s["delivery_fee_per_unit"] == 0 and s["pnl_per_unit"] == pytest.approx(tv - CAL_DEBIT, rel=1e-9)
+    assert s["r"] == pytest.approx((tv - CAL_DEBIT) / CAL_DEBIT, rel=1e-9)
+    assert s["pnl_usd"] == pytest.approx((tv - CAL_DEBIT) * 0.01, rel=1e-9)
+
+
+@pytest.mark.parametrize("price", [30_000.0, 130_000.0])
+def test_calendar_far_from_the_strike_loses_about_the_debit(price):
+    d = _calendar()
+    assert oi.payoff_at(d, price) == pytest.approx(-CAL_DEBIT, abs=1.0)  # back leg ≈ intrinsic, front pays intrinsic
+    assert oi.payoff_at(d, price) > -CAL_DEBIT - 1e-9  # the back leg is never worth less than its intrinsic value
+    s = oi.settle_idea(d, price, AFTER)
+    # only the front (delivered) leg pays Bybit's delivery fee; the back leg is not delivered at this expiry
+    fee = 0.00015 * price if price > CAL_K else 0.0
+    assert s["delivery_fee_per_unit"] == pytest.approx(fee)
+    assert s["pnl_per_unit"] == pytest.approx(oi.payoff_at(d, price) - fee)
+
+
+def test_leg_with_the_idea_expiry_keeps_intrinsic_and_old_records_settle_the_same():
+    same = {**CALL_SPREAD, "legs": [{**g, "expiry_ms": EXP, "iv": 0.5} for g in CALL_SPREAD["legs"]]}
+    none = {**CALL_SPREAD, "legs": [{**g, "expiry_ms": None, "iv": None} for g in CALL_SPREAD["legs"]]}
+    for price in (95, 100, 104, 105, 110, 130):
+        old = oi.settle_idea(CALL_SPREAD, price, AFTER)  # a journal line written before legs had an expiry
+        assert oi.settle_idea(same, price, AFTER) == old and oi.settle_idea(none, price, AFTER) == old
+    real = oi.iron_condor(QUOTES, EXP, NOW, "BTC").to_dict()
+    stripped = {**real, "legs": [{k: v for k, v in g.items() if k not in ("expiry_ms", "iv")} for g in real["legs"]]}
+    for price in (50_000, SPOT, 90_000):
+        assert oi.settle_idea(stripped, price, AFTER) == oi.settle_idea(real, price, AFTER)
+
+
+def test_calendar_leg_that_cannot_be_valued_is_not_settled():
+    for d in (_calendar(iv=None), _calendar(iv=0.0), _calendar(back=EXP - 86_400_000)):
+        assert oi.settle_idea(d, CAL_K, AFTER) is None
+        assert math.isnan(oi.payoff_at(d, CAL_K))
+    no_exp = {k: v for k, v in _calendar().items() if k != "expiry_ms"}
+    assert math.isnan(oi.payoff_at(no_exp, CAL_K))
+
+
 def test_bybit_option_symbol_and_delivery_parse():
     assert oi.bybit_option_symbol("BTC", EXP, 70_000.0, True) == "BTC-27NOV26-70000-C-USDT"
     seven = int(datetime(2026, 11, 7, 8, tzinfo=UTC).timestamp() * 1000)

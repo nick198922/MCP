@@ -208,7 +208,7 @@ def test_p10_p11_carry_the_playbook_status():
     assert p10.status == p11.status == "◯"
     assert "не вимірюється на історії" in p10.evidence and "n = 5" in p10.evidence
     assert "+0.008 R [−0.045; +0.057]" in p11.evidence and "n = 178" in p11.evidence
-    assert p10.sendable and p10.kind == "context" and not p11.sendable
+    assert p10.sendable and p10.kind == "trade" and not p11.sendable  # P10: a calendar since item 436
     assert {c for c, r in oi.RULES.items() if r.status == "не перевірено"} == {"P6", "P7"}
 
 
@@ -300,9 +300,13 @@ def test_context_rules_land_in_notes_not_ideas():
         "skew": {"rr": {"min": -0.07, "latest": -0.05}},
     }
     ideas, ctx = oi.ideas_for("BTC", QUOTES, flat, NOW, market=market)
+    # P10 met, but QUOTES hold only 27NOV26: the 20NOV / 11DEC calendar cannot be priced, so P10 stays a condition line
     assert ideas == [] and ctx["notes"] == ["P2", "P9", "P10", "P15"]
+    assert ctx["unpriced"] == {"P10": "немає котирувань Bybit на 20.11 / 11.12"}
     line = tg.note_line("P10", ctx)
     assert "Правило: P10" in line and "докази: ◯ не вимірюється на історії" in line and "не перевірено" not in line
+    assert line.endswith("(контекст, не угода: конструкцію за цінами Bybit не побудовано — немає котирувань Bybit на 20.11 / 11.12)")
+    assert tg.note_line("P2", ctx).endswith("(контекст, не угода)")
     json.dumps(ctx)  # logged with the ideas
     ideas, ctx = oi.ideas_for("BTC", QUOTES, flat, NOW)
     assert ctx["notes"] == [] and ctx["checks"]["P2"]["met"] is None
@@ -843,7 +847,7 @@ def _run_main(monkeypatch, tmp_path, argv: list[str], sent_ok: bool = True):
 
     async def fake_gather(risk, now_ms, wanted):
         assert list(wanted) == [("BTC", past)]
-        return per, {k: 105.0 for k in wanted}
+        return per, {k: 105.0 for k in wanted}, {}
 
     sends = []
 
@@ -951,3 +955,250 @@ def test_journal_counts_open_records_settle_idea_refuses():
     out, n = tg.settle_rows(rows, {("BTC", EXP): CAL_K}, AFTER)
     assert n == 0 and out == rows
     assert tg.unsettled_count([r for _, r in out], AFTER) == 1
+
+
+# --- P10 calendar in the mailing (item 436): sell the front straddle, buy the month one at Bybit prices ----------
+
+DAY = 86_400_000
+CAL_NOW = int(datetime(2026, 11, 21, 10, tzinfo=UTC).timestamp() * 1000)  # a Saturday: front 27NOV26 5.9 d out
+MONTH = int(datetime(2026, 12, 25, 8, tzinfo=UTC).timestamp() * 1000)  # 25DEC26, 33.9 d out, 28 d after the front
+FRONT_IV, MONTH_IV = 0.50, 0.42
+T_GAP = 28 / 365  # years from the front expiry to the month one
+
+
+def _b76_put(f: float, k: float, t: float, iv: float) -> float:
+    return _b76_call(f, k, t, iv) - f + k  # parity, r = 0
+
+
+def _expiry_rows(token: str, exp_ms: int, now_ms: int, iv: float, strikes=range(60_000, 75_000, 1_000), spread=0.05) -> list[dict]:
+    """Bybit-shaped ticker rows of one expiry priced with Black-76 (r = 0, flat ``iv``) on the forward SPOT."""
+    t = (exp_ms - now_ms) / DAY / 365
+    rows = []
+    for k in strikes:
+        d1 = (math.log(SPOT / k) + iv * iv * t / 2) / (iv * math.sqrt(t))
+        for typ, px, delta in (("C", _b76_call(SPOT, k, t, iv), _ncdf(d1)), ("P", _b76_put(SPOT, k, t, iv), _ncdf(d1) - 1)):
+            rows.append(
+                {
+                    "symbol": f"BTC-{token}-{k}-{typ}-USDT",
+                    "bid1Price": str(round(px * (1 - spread), 2)) if px > 5 else "0",
+                    "ask1Price": str(round(px * (1 + spread), 2)),
+                    "markPrice": str(px),
+                    "markIv": str(iv),
+                    "delta": str(delta),
+                    "underlyingPrice": str(SPOT),
+                }
+            )
+    return rows
+
+
+CAL_QUOTES = oi.parse_bybit_tickers(
+    _expiry_rows("27NOV26", EXP, CAL_NOW, FRONT_IV) + _expiry_rows("25DEC26", MONTH, CAL_NOW, MONTH_IV), "BTC"
+)
+CAL_MARKET = {
+    "calendar": {"high_impact_within_48h": False, "events": [{"kind": "cpi", "hours_ahead": 72.0}]},  # before 27NOV
+    "term": {
+        "expiries": [
+            {"expiry": "27NOV26", "days": 5.9, "atm_iv": FRONT_IV},
+            {"expiry": "25DEC26", "days": 33.9, "atm_iv": MONTH_IV},  # nearest 30 d: +8 points of inversion
+        ]
+    },
+}
+
+
+def _cal_ref(price: float, debit: float, k: float = SPOT) -> float:
+    """Independent reference of the calendar at the front expiry: the month straddle by Black-76 at its entry IV
+    minus the sold straddle's intrinsic value, minus the debit."""
+    return -debit + _b76_call(price, k, T_GAP, MONTH_IV) + _b76_put(price, k, T_GAP, MONTH_IV) - abs(price - k)
+
+
+def test_p10_expiries_are_the_ones_the_condition_compares():
+    cal = {"events": [{"kind": "cpi", "hours_ahead": 50.0}]}
+    f, m = oi.p10_expiries(_term(0.41), cal)
+    assert (oi.expiry_label(f), oi.expiry_label(m)) == ("20.11", "11.12") and datetime.fromtimestamp(f / 1000, UTC).hour == 8
+    assert oi.p10_expiries(_term(0.41), {"events": []}) is None  # no event: no front
+    assert oi.p10_expiries(None, cal) is None and oi.p10_expiries(_term(0.41), None) is None
+    assert oi.p10_expiries(CAL_MARKET["term"], CAL_MARKET["calendar"]) == (EXP, MONTH)
+
+
+def test_p10_calendar_at_bybit_bid_ask_with_fees_against_black76():
+    idea, why = oi.calendar_straddle(CAL_QUOTES, EXP, MONTH, CAL_NOW, "BTC")
+    assert why == "" and idea.kind == "straddle_calendar" and idea.expiry_ms == EXP and idea.days == 5.9
+    book = {(q.expiry_ms, q.is_call): q for q in CAL_QUOTES if q.strike == SPOT}  # the ATM strike = the underlying
+    fc, fp, mc, mp = book[(EXP, True)], book[(EXP, False)], book[(MONTH, True)], book[(MONTH, False)]
+    assert [(g.action, g.is_call, g.strike, g.price, g.expiry_ms, g.iv) for g in idea.legs] == [
+        ("sell", True, SPOT, fc.bid, None, None),
+        ("sell", False, SPOT, fp.bid, None, None),
+        ("buy", True, SPOT, mc.ask, MONTH, MONTH_IV),
+        ("buy", False, SPOT, mp.ask, MONTH, MONTH_IV),
+    ]
+    fees = sum(min(0.0003 * SPOT, 0.07 * p) for p in (fc.bid, fp.bid, mc.ask, mp.ask))
+    debit = mc.ask + mp.ask - fc.bid - fp.bid + fees
+    assert idea.net == pytest.approx(-debit) and idea.max_loss == pytest.approx(debit)
+    # the message's model numbers net the cost of closing the month legs as the journal does: (mark − bid) of each
+    # (the model values them at ≈ the mark, the journal sells at the bid) plus two closing taker fees
+    exit_cost = sum(q.mark - q.bid + min(0.0003 * SPOT, 0.07 * q.bid) for q in (mc, mp))
+    assert exit_cost > 0
+    # at the strike: the month ATM straddle 2 F (2 N(σ√T / 2) − 1) minus the debit (closed form) minus that cost
+    assert idea.max_profit == pytest.approx(2 * _atm_b76(SPOT, MONTH_IV, T_GAP) - debit - exit_cost, rel=1e-9)
+    assert idea.max_profit == pytest.approx(_cal_ref(SPOT, debit) - exit_cost, rel=1e-9)
+    lo, hi = idea.breakevens
+    assert lo < SPOT < hi
+    assert _cal_ref(lo, debit + exit_cost) == pytest.approx(0, abs=1e-4) and _cal_ref(hi, debit + exit_cost) == pytest.approx(0, abs=1e-4)
+    d = idea.to_dict()
+    for price in (55_000.0, 63_000.0, SPOT, 70_500.0, 90_000.0):  # payoff_at (the journal's model) has no exit cost
+        assert oi.payoff_at(d, price) == pytest.approx(_cal_ref(price, debit), rel=1e-9, abs=1e-6)
+        assert oi.payoff_at(d, price) > -debit - 1e-9  # the loss is at most the debit
+    # risk-neutral P(lo < S < hi) at the front expiry ≈ N(−d1(hi)) − N(−d1(lo)) at the front IV (|put delta| ≈ N(−d1))
+    t = (EXP - CAL_NOW) / DAY / 365
+
+    def below(x: float) -> float:
+        return _ncdf(-(math.log(SPOT / x) + FRONT_IV**2 * t / 2) / (FRONT_IV * math.sqrt(t)))
+
+    assert idea.prob_profit == pytest.approx(below(hi) - below(lo), abs=0.01)
+    assert idea.extra["month_expiry_ms"] == MONTH and idea.extra["model_leg"] is True
+    assert idea.extra["front_iv"] == pytest.approx(FRONT_IV) and idea.extra["month_iv"] == pytest.approx(MONTH_IV)
+    assert idea.extra["strike_off_pct"] == 0.0  # the ATM strike is the underlying here
+
+
+def test_p10_met_sends_the_calendar_instead_of_the_condition_line(tmp_path):
+    ideas, ctx = oi.ideas_for("BTC", CAL_QUOTES, [60_000.0] * 260, CAL_NOW, market=CAL_MARKET)
+    assert ctx["checks"]["P10"]["met"] is True and "skip" in ctx  # no 7-24 d expiry here: P10 does not need one
+    assert [(i.kind, i.rule) for i in ideas] == [("straddle_calendar", "P10")]
+    assert ctx["notes"] == [] and "unpriced" not in ctx
+    cal = ideas[0]
+    assert cal.qty == oi.size(cal, 100.0) > 0 and cal.qty * cal.max_loss <= 100.0
+    text = tg.build_message([(ideas, ctx)], CAL_NOW / 1000, 100.0)
+    assert "1. BTC · календар (продати тижневий стреддл, купити місячний) · 27.11 (6 дн)" in text
+    assert "продати кол 67 000 (27.11) · продати пут 67 000 (27.11) · купити кол 67 000 (25.12) · купити пут 67 000 (25.12)" in text
+    assert f"Дебет {tg._usd(cal.max_loss)} (ризик ≈ дебет)" in text and "куплений стреддл 25.12 закрити після експірації фронту" in text
+    assert "Правило: P10 інверсія фронту перед подією → календар" in text and "контекст, не угода" not in text
+    # logged, then settled at the front expiry with the month legs closed at the next run's Bybit bids (IV fell to 0.38)
+    log = tmp_path / "ideas.jsonl"
+    assert tg.log_ideas([(ideas, ctx)], CAL_NOW / 1000, log) == 1
+    rows = tg.read_log(log)
+    later = oi.parse_bybit_tickers(_expiry_rows("25DEC26", MONTH, AFTER, 0.38), "BTC")
+    out, n = tg.settle_rows(rows, {("BTC", EXP): SPOT}, AFTER, {"BTC": later})
+    rec = out[0][1]
+    bids = {q.is_call: q.bid for q in later if q.strike == SPOT}
+    cfee = sum(min(0.0003 * SPOT, 0.07 * b) for b in bids.values())
+    expected = -cal.max_loss + bids[True] + bids[False] - cfee  # the front straddle expires at the strike: worth 0, no fee
+    assert n == 1 and rec["status"] == "settled" and rec["later_legs"] == "bybit" and rec["close_lag_h"] == pytest.approx(1.0)
+    assert rec["delivery_fee_per_unit"] == 0 and rec["close_fee_per_unit"] == pytest.approx(cfee)
+    assert rec["pnl_per_unit"] == pytest.approx(expected) and rec["r"] == pytest.approx(expected / cal.max_loss)
+    model, _ = tg.settle_rows(rows, {("BTC", EXP): SPOT}, AFTER)  # no quotes this run: the model value, flagged
+    exit_cost = sum(q.mark - q.bid + min(0.0003 * SPOT, 0.07 * q.bid) for q in CAL_QUOTES if q.expiry_ms == MONTH and q.strike == SPOT)
+    assert model[0][1]["later_legs"] == "model" and model[0][1]["pnl_per_unit"] == pytest.approx(cal.max_profit + exit_cost)
+
+
+def _no_month_asks(qs: list) -> list:
+    return [replace(q, ask=0.0) if q.expiry_ms == MONTH else q for q in qs]
+
+
+@pytest.mark.parametrize(
+    ("quotes", "reason"),
+    [
+        ([], "немає котирувань Bybit на 27.11 / 25.12"),  # the Bybit chain failed or is empty
+        ([q for q in CAL_QUOTES if q.expiry_ms == EXP], "немає котирувань Bybit на 27.11 / 25.12"),  # no month expiry
+        (_no_month_asks(CAL_QUOTES), "на 27.11 / 25.12 нема страйка з bid обох ніг фронту й ask обох місячних"),
+        (
+            [q for q in CAL_QUOTES if q.expiry_ms == EXP or q.strike >= 70_000],  # month listed only 4.5 % away
+            "найближчий торгований страйк 70000 далі 1.5% від ціни 67000",
+        ),
+    ],
+)
+def test_p10_without_bybit_quotes_stays_a_condition_line(quotes, reason):
+    ideas, ctx = oi.ideas_for("BTC", quotes, [60_000.0] * 260, CAL_NOW, market=CAL_MARKET)
+    assert ideas == [] and ctx["checks"]["P10"]["met"] is True
+    assert ctx["notes"] == ["P10"] and ctx["unpriced"] == {"P10": reason}
+    text = tg.build_message([(ideas, ctx)], CAL_NOW / 1000, 100.0)
+    assert f"(контекст, не угода: конструкцію за цінами Bybit не побудовано — {reason})" in text and "ідей нема" in text
+    json.dumps(ctx)
+
+
+def test_p10_calendar_on_a_coarse_month_grid_takes_the_atm_strike_of_that_grid():
+    """Bybit lists ETH monthlies every 100 (≈ 6 % of the price): the nearest common strike may be beyond 1.5 % but
+    within half the month's strike step, and it is still the ATM strike of that grid."""
+    month = _expiry_rows("25DEC26", MONTH, CAL_NOW, MONTH_IV, strikes=range(61_000, 75_000, 4_000))  # 61, 65, 69, 73k
+    quotes = oi.parse_bybit_tickers(_expiry_rows("27NOV26", EXP, CAL_NOW, FRONT_IV) + month, "BTC")
+    idea, why = oi.calendar_straddle(quotes, EXP, MONTH, CAL_NOW, "BTC")
+    assert why == "" and {g.strike for g in idea.legs} == {65_000.0}  # 2 000 (3.0 %) away, a tie with 69k: the lower
+    exit_cost = sum(q.mark - q.bid + min(0.0003 * SPOT, 0.07 * q.bid) for q in quotes if q.expiry_ms == MONTH and q.strike == 65_000.0)
+    assert idea.max_profit == pytest.approx(_cal_ref(65_000.0, idea.max_loss, k=65_000.0) - exit_cost, rel=1e-9)
+    assert idea.extra["strike_off_pct"] == pytest.approx(-2_000 / SPOT)  # outside the measured 1.5 % band: logged
+    holes = [q for q in quotes if q.expiry_ms == EXP or q.strike >= 69_000]  # 65k not listed: 69k is 3 % off, step unknown
+    assert oi.calendar_straddle(holes, EXP, MONTH, CAL_NOW, "BTC") == (None, "найближчий торгований страйк 69000 далі 1.5% від ціни 67000")
+
+
+def test_p10_calendar_rejects_misordered_expiries_and_unmet_condition():
+    assert oi.calendar_straddle(CAL_QUOTES, MONTH, EXP, CAL_NOW, "BTC")[0] is None
+    assert oi.calendar_straddle(CAL_QUOTES, EXP, MONTH, EXP + 1, "BTC")[0] is None  # the front already expired
+    flat = {**CAL_MARKET, "term": {"expiries": [{**x, "atm_iv": MONTH_IV} for x in CAL_MARKET["term"]["expiries"]]}}
+    ideas, ctx = oi.ideas_for("BTC", CAL_QUOTES, [60_000.0] * 260, CAL_NOW, market=flat)  # no inversion: nothing built
+    assert ideas == [] and ctx["checks"]["P10"]["met"] is False and ctx["notes"] == [] and "unpriced" not in ctx
+
+
+def test_calendar_later_leg_closed_at_the_bybit_price():
+    d = _calendar()  # sold front call, bought back call (leg 1) at the entry IV 0.45
+    for price in (60_000.0, CAL_K, 75_000.0):
+        front = max(price - CAL_K, 0.0)
+        dfee = min(0.00015 * price, 0.125 * front) if front > 0 else 0.0
+        cfee = min(0.0003 * price, 0.07 * 3_000.0)
+        assert oi.payoff_at(d, price, {1: 3_000.0}) == pytest.approx(-CAL_DEBIT - front + 3_000.0)
+        s = oi.settle_idea(d, price, AFTER, {1: 3_000.0})
+        assert s["later_legs"] == "bybit" and s["close_fee_per_unit"] == pytest.approx(cfee)
+        assert s["delivery_fee_per_unit"] == pytest.approx(dfee)
+        assert s["pnl_per_unit"] == pytest.approx(-CAL_DEBIT - front + 3_000.0 - dfee - cfee)
+    model = oi.settle_idea(d, CAL_K, AFTER)
+    assert model["later_legs"] == "model" and model["close_fee_per_unit"] == 0 and model["close_lag_h"] == pytest.approx(1.0)
+    assert oi.settle_idea(d, CAL_K, EXP + 8 * 86_400_000)["close_lag_h"] == pytest.approx(192.0)  # a missed weekly run
+    assert model["pnl_per_unit"] == pytest.approx(_atm_b76(CAL_K, CAL_IV, 28 / 365) - CAL_DEBIT, rel=1e-9)  # as before
+    # a close for the leg expiring with the idea, or a non-positive one, is ignored
+    assert oi.settle_idea(d, CAL_K, AFTER, {0: 999.0, 1: 0.0}) == model
+    assert oi.settle_idea(d, CAL_K, AFTER, {1: float("nan")}) == model
+
+
+def test_close_prices_bid_for_a_bought_later_leg_ask_for_a_sold_one():
+    q = oi.Quote(BACK, CAL_K, True, bid=3_000.0, ask=3_100.0, mark=3_050.0, iv=0.4, delta=0.5, underlying=SPOT)
+    d = _calendar()
+    assert oi.close_prices(d, [q]) == {1: 3_000.0}
+    flip = {"buy": "sell", "sell": "buy"}
+    rev = {**d, "net": CAL_DEBIT, "legs": [{**g, "action": flip[g["action"]]} for g in d["legs"]]}
+    assert oi.close_prices(rev, [q]) == {1: 3_100.0}
+    assert oi.close_prices(d, [replace(q, bid=0.0)]) == {}  # no bid: valued by the model
+    assert oi.close_prices(d, [replace(q, strike=CAL_K + 1_000)]) == {} and oi.close_prices(d, [replace(q, is_call=False)]) == {}
+    assert oi.close_prices(d, []) == {} and oi.close_prices({"legs": 5}, [q]) == {} and oi.close_prices(None, [q]) == {}
+
+
+@pytest.mark.parametrize("rec", [CALL_SPREAD, PUT_SPREAD, CONDOR, BTC_CALL_SPREAD])
+def test_closes_never_change_single_expiry_settlement(rec):
+    keys = {"status", "settled_ms", "delivery_price", "delivery_fee_per_unit", "pnl_per_unit", "pnl_usd", "r"}
+    for price in (50, 88, 100, 105, 112, 71_000):
+        old = oi.settle_idea(rec, price, AFTER)
+        assert set(old) == keys  # no calendar fields on a single-expiry idea
+        assert oi.settle_idea(rec, price, AFTER, {0: 5.0, 1: 7.0}) == old
+        assert oi.payoff_at(rec, price, {0: 5.0, 1: 7.0}) == oi.payoff_at(rec, price)
+    assert oi.close_prices(rec, CAL_QUOTES) == {}
+
+
+def test_model_settled_calendars_stay_out_of_the_p10_result():
+    """A calendar settled by the model (no Bybit bid for a month leg) is optimistic (no month IV drop, spread or fee):
+    it must not change P10's n, R or conclusion; the journal counts it apart (critic 20.11, blocker)."""
+    bybit = [{**_settled(-0.2 + 0.03 * i, "P10", k=i % 10), "later_legs": "bybit"} for i in range(30)]
+    model = [{**_settled(0.9, "P10", k=i), "later_legs": "model"} for i in range(5)]
+    base = oi.rule_summary(bybit)
+    assert base["P10"]["n"] == 30 and base["P10"]["verdict"] == "plus"
+    assert oi.rule_summary(bybit + model) == base  # without the exclusion: n 35, sum R +4.5 higher
+    assert oi.rule_summary(model) == {} and all(oi.model_settled(r) for r in model) and not oi.model_settled(bybit[0])
+    assert not oi.model_settled({"status": "open", "later_legs": "model"})
+    head, line = tg.journal_lines(bybit + model)
+    assert "розраховано моделлю (без ціни Bybit) 5, у результат не входять" in head
+    assert line.startswith("P10 інверсія фронту перед подією → календар: n 30, сума R +7.05, у плюсі ") and "висновок: плюс" in line
+    assert tg.journal_lines(bybit) == [head.replace("; розраховано моделлю (без ціни Bybit) 5, у результат не входять", ""), line]
+    only = tg.journal_lines(model)
+    assert only == ["Журнал ідей: відкритих 0; розраховано моделлю (без ціни Bybit) 5, у результат не входять, інших розрахованих ще нема."]
+    # end to end: a record settle_rows closes by the model (no quotes this run) shows only in the counter
+    ideas, ctx = oi.ideas_for("BTC", CAL_QUOTES, [60_000.0] * 260, CAL_NOW, market=CAL_MARKET)
+    rec = {**ideas[0].to_dict(), "status": "open"}
+    out, n = tg.settle_rows(_rows(rec), {("BTC", EXP): SPOT}, AFTER)
+    assert n == 1 and out[0][1]["later_legs"] == "model" and oi.rule_summary([out[0][1]]) == {}
+    assert "розраховано моделлю (без ціни Bybit) 1" in tg.journal_lines([out[0][1]], AFTER)[0]

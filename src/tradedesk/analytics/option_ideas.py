@@ -5,8 +5,8 @@ Pure functions, no I/O, time passed in. Prices are what a taker gets on Bybit: s
 ask, minus the taker fee (``fee``). Probabilities come from the quotes' deltas, so they are RISK-NEUTRAL hints, not
 forecasts. The ideas are hypotheses (no tested edge; the credit structures rest on the volatility premium, confirmed
 as IV above realized vol, but not yet as a profit of the traded structure after spreads — docs/knowledge/options.md);
-they are logged and settled with ``settle_idea`` at expiry (``payoff_at`` less Bybit's delivery fee) so their record
-can be judged later.
+they are logged and settled with ``settle_idea`` at expiry (``payoff_at`` less Bybit's delivery fee; the later legs
+of a calendar closed at Bybit's bid / ask) so their record can be judged later.
 
 Which ideas go out is decided by the rules of the options playbook (``RULES``, docs/knowledge/options-playbook.md;
 card IDEA-20261114-options-playbook item 2): a rule is sent only when an MCP tool measures its condition and its
@@ -117,7 +117,8 @@ class Leg:
     price: float  # bid for a sold leg, ask for a bought one
     delta: float | None
     # Own expiry of the leg, ms; None = the idea's ``expiry_ms`` (every single-expiry structure). A later expiry (the
-    # long leg of a calendar) is valued at the idea's settlement by Black-76 at ``iv`` (decimal), see ``payoff_at``.
+    # long leg of a calendar) is valued at the idea's settlement at its Bybit close price (``close_prices``), else by
+    # Black-76 at ``iv`` (decimal, the entry mark IV), see ``payoff_at``.
     expiry_ms: int | None = None
     iv: float | None = None
 
@@ -334,6 +335,134 @@ def long_straddle(quotes: list[Quote], expiry_ms: int, now_ms: int, coin: str) -
     )
 
 
+# P10 calendar: strike within 1.5 % of the underlying, the band of calendar_p10.plan_calendar (the measured
+# +0.050 R); calendar_straddle widens it to half the month's strike step on a coarse grid (ETH: up to ≈ 3 %), and logs
+# the strike's distance (``extra['strike_off_pct']``) so the records outside 1.5 % can be told apart.
+CAL_BAND = 0.015
+
+
+def _root(f: Any, a: float, b: float, steps: int = 100) -> float | None:
+    """A zero of ``f`` in [a, b] by bisection, None without a sign change."""
+    fa, fb = f(a), f(b)
+    if not (math.isfinite(fa) and math.isfinite(fb)) or (fa > 0) == (fb > 0):
+        return None
+    for _ in range(steps):
+        m = (a + b) / 2
+        fm = f(m)
+        if (fm > 0) == (fa > 0):
+            a, fa = m, fm
+        else:
+            b = m
+    return (a + b) / 2
+
+
+def _mean_iv(*qs: Quote) -> float | None:
+    ivs = [q.iv for q in qs if q.iv and q.iv > 0]
+    return sum(ivs) / len(ivs) if ivs else None
+
+
+def _exit_cost(q: Quote, underlying: float) -> float:
+    """What selling a bought leg later costs against its model value (≈ the mark), USD per unit: the half spread under
+    the mark (mark - bid; ask - mark when no bid is quoted) plus the taker fee at the bid. The mark is the mid when
+    Bybit gives none."""
+    ref = q.mark if q.mark > 0 else (q.bid + q.ask) / 2
+    half = max(0.0, ref - q.bid if q.bid > 0 else q.ask - ref)
+    return half + fee(underlying, max(ref - half, 0.0))
+
+
+def calendar_straddle(
+    quotes: list[Quote], front_ms: int, month_ms: int, now_ms: int, coin: str, band: float = CAL_BAND
+) -> tuple[Idea | None, str]:
+    """P10 calendar at Bybit prices: sell the front straddle (call and put at their bids), buy the month straddle at
+    the same strike (asks; each bought leg logs its own expiry and Bybit mark IV). The strike is the one nearest the
+    front underlying among strikes where all four legs trade, within ``band`` x underlying or half the month's strike
+    step around the underlying, whichever is wider (the ATM strike of a coarse grid: ETH monthlies on Bybit are
+    listed every 100, ≈ 6 % of the price, so a 1.5 % band alone would miss the ATM strike about half the time).
+
+    ``net`` = front bids - month asks - the four taker fees (< 0, a debit); ``max_loss`` = the debit: at the front
+    expiry the month straddle is worth at least |S - K|, what the sold one pays, so the loss is at most the debit
+    (before the fee and spread of closing the month legs, and the basis between the two expiries). ``max_profit`` and
+    ``breakevens`` are MODEL values at the front expiry (``payoff_at``: the month legs by Black-76 at their entry mark
+    IV, r = 0) less the cost of closing the month legs as the journal does (``_exit_cost``: today's mark - bid of each
+    plus the taker fee of selling it), i.e. they assume the month IV and spread do not move; the profit peaks at the
+    strike. ``extra['strike_off_pct']`` = (strike - underlying) / underlying, decimal. ``prob_profit``:
+    risk-neutral P(lower < S < upper breakeven) at the front expiry from the front puts' deltas (None off their strike
+    grid). Returns (idea, "") or (None, the reason, Ukrainian, for the message)."""
+    lab = f"{expiry_label(front_ms)} / {expiry_label(month_ms)}"
+    if not now_ms < front_ms < month_ms:
+        return None, f"експірації {lab} не в порядку «зараз < фронт < місяць»"
+    book = {(q.expiry_ms, q.strike, q.is_call): q for q in quotes if q.expiry_ms in (front_ms, month_ms)}
+    front = [q for q in quotes if q.expiry_ms == front_ms]
+    if not front or not any(q.expiry_ms == month_ms for q in quotes):
+        return None, f"немає котирувань Bybit на {lab}"
+    spot = front[0].underlying
+    ok = []
+    for k in {q.strike for q in front}:
+        fc, fp = book.get((front_ms, k, True)), book.get((front_ms, k, False))
+        mc, mp = book.get((month_ms, k, True)), book.get((month_ms, k, False))
+        if fc and fp and mc and mp and fc.bid > 0 and fp.bid > 0 and mc.ask > 0 and mp.ask > 0 and (mc.iv or 0) > 0 and (mp.iv or 0) > 0:
+            ok.append(k)
+    if not ok:
+        return None, f"на {lab} нема страйка з bid обох ніг фронту й ask обох місячних"
+    k = min(ok, key=lambda s: (abs(s - spot), s))
+    listed = {q.strike for q in quotes if q.expiry_ms == month_ms}
+    below, above = max((s for s in listed if s <= spot), default=None), min((s for s in listed if s > spot), default=None)
+    tol = max(band * spot, (above - below) / 2 if below is not None and above is not None else 0.0)
+    if abs(k - spot) > tol + 1e-9:
+        return None, f"найближчий торгований страйк {k:g} далі {tol / spot:.1%} від ціни {spot:g}"
+    fc, fp, mc, mp = book[(front_ms, k, True)], book[(front_ms, k, False)], book[(month_ms, k, True)], book[(month_ms, k, False)]
+    debit = mc.ask + mp.ask - fc.bid - fp.bid + sum(fee(spot, p) for p in (fc.bid, fp.bid, mc.ask, mp.ask))
+    if debit <= 0:
+        return None, "дебет календаря не додатний (котирування неузгоджені)"
+    legs = [
+        Leg("sell", True, k, fc.bid, fc.delta),
+        Leg("sell", False, k, fp.bid, fp.delta),
+        Leg("buy", True, k, mc.ask, mc.delta, expiry_ms=month_ms, iv=mc.iv),
+        Leg("buy", False, k, mp.ask, mp.delta, expiry_ms=month_ms, iv=mp.iv),
+    ]
+    rec = {"net": -debit, "expiry_ms": front_ms, "legs": [asdict(g) for g in legs]}
+    exit_cost = _exit_cost(mc, spot) + _exit_cost(mp, spot)  # not in payoff_at: the journal closes at real bids
+
+    def pnl(s: float) -> float:
+        return payoff_at(rec, s) - exit_cost
+
+    top = pnl(k)
+    if not top > 0:
+        return None, "за моделлю календар не заробляє навіть на страйку"
+    lo, hi = _root(pnl, 0.05 * k, k), _root(pnl, k, 5.0 * k)
+    if lo is None or hi is None:
+        return None, "беззбиток календаря не знайдено"
+    out_p, extra = _prob_outside(_side(quotes, front_ms, False), lo, hi)
+    f_iv, m_iv = _mean_iv(fc, fp), _mean_iv(mc, mp)
+    ivs = f" (ATM IV Bybit {f_iv:.0%} проти {m_iv:.0%})" if f_iv and m_iv else ""
+    return Idea(
+        coin=coin,
+        kind="straddle_calendar",
+        expiry_ms=front_ms,
+        days=_days(front_ms, now_ms),
+        spot=spot,
+        legs=legs,
+        net=-debit,
+        max_profit=top,
+        max_loss=debit,
+        breakevens=[lo, hi],
+        prob_profit=None if out_p is None else max(0.0, 1.0 - out_p),
+        why=(
+            f"фронт {expiry_label(front_ms)} дорожчий за місячний {expiry_label(month_ms)}{ivs}, бо включає подію: "
+            "продаємо подієву премію тижневого стреддлу, куплений місячний того ж страйку обмежує ризик дебетом"
+        ),
+        extra={
+            **extra,
+            "month_expiry_ms": month_ms,
+            "month_days": _days(month_ms, now_ms),
+            "front_iv": f_iv,
+            "month_iv": m_iv,
+            "strike_off_pct": (k - spot) / spot,
+            "model_leg": True,
+        },
+    ), ""
+
+
 def structure_legs(idea: Idea, quotes: list[Quote]) -> dict[str, Any]:
     """The legs of a built structure with their live quote, for the ``option_structure_quote`` tool: Bybit symbol,
     side, type, strike, bid / ask (None = that side not quoted), ``price`` (the fill the structure was priced at: bid for
@@ -546,12 +675,12 @@ RULES: dict[str, Rule] = {
             "P10",
             "інверсія фронту перед подією → календар",
             "deribit_skew_term (view=atm): ATM IV строку ≤ 8 д, що включає FOMC / CPI (macro_calendar), мінус строку ≈ 30 д ≥ +1.5 п.",
-            "календар: продати тижневий ATM-стреддл, купити місячний (ціни Bybit розсилка ще не рахує)",
+            "календар за цінами Bybit: продати ATM-стреддл фронту ≤ 8 д (включає подію), купити місячний того ж "
+            "страйку; bid / ask з комісією, ризик ≈ дебет; без котирувань — лише рядок умови",
             "◯",
             "◯ не вимірюється на історії (умова — 33 зі 110 субот з подією); календар +0.050 R [−0.182; +0.207], "
             "n = 5; перевірка — форвардом",
             "p10-інверсія-фронту--діагональ--календар-s29-h2-lib",
-            kind="context",
         ),
         Rule(
             "P11",
@@ -680,12 +809,15 @@ def month_expiry_iso(term: dict[str, Any] | None) -> str | None:
     return exp.isoformat() if exp else None
 
 
-def check_front_inversion(term: dict[str, Any] | None, calendar: dict[str, Any] | None) -> Check:
-    """P10 on ``deribit_skew_term(view="atm")`` and ``macro_calendar`` data (both measure days / hours from now)."""
+_TermRow = tuple[float, float, str]
+
+
+def _p10_rows(term: dict[str, Any] | None, calendar: dict[str, Any] | None) -> tuple[_TermRow | None, _TermRow | None, str]:
+    """(front, month, reason) of P10: month None = not measured; front None = no event or no front after it."""
     rows = _term_rows(term)
     month = _month(rows)
     if month is None or not isinstance(calendar, dict) or not isinstance(calendar.get("events"), list):
-        return Check("P10", None, "немає строкової структури або календаря")
+        return None, None, "немає строкової структури або календаря"
     days = [
         h / 24
         for e in calendar["events"]
@@ -693,10 +825,29 @@ def check_front_inversion(term: dict[str, Any] | None, calendar: dict[str, Any] 
     ]
     ev = min((d for d in days if d < FRONT_MAX_DAYS), default=None)
     if ev is None:
-        return Check("P10", False, f"FOMC / CPI у найближчі {FRONT_MAX_DAYS:.0f} д нема")
+        return None, month, f"FOMC / CPI у найближчі {FRONT_MAX_DAYS:.0f} д нема"
     front = next((x for x in rows if ev < x[0] <= FRONT_MAX_DAYS), None)
     if front is None:
-        return Check("P10", False, f"немає експірації ≤ {FRONT_MAX_DAYS:.0f} д після події")
+        return None, month, f"немає експірації ≤ {FRONT_MAX_DAYS:.0f} д після події"
+    return front, month, ""
+
+
+def p10_expiries(term: dict[str, Any] | None, calendar: dict[str, Any] | None) -> tuple[int, int] | None:
+    """(front, month) expiries of P10 as epoch ms (08:00 UTC), the ones ``check_front_inversion`` compares; None when
+    the condition has no front (no event, no expiry after it, no term structure) or a token is unreadable."""
+    front, month, _ = _p10_rows(term, calendar)
+    f = parse_expiry_token(front[2]) if front else None
+    m = parse_expiry_token(month[2]) if month else None
+    return (int(f.timestamp() * 1000), int(m.timestamp() * 1000)) if f and m else None
+
+
+def check_front_inversion(term: dict[str, Any] | None, calendar: dict[str, Any] | None) -> Check:
+    """P10 on ``deribit_skew_term(view="atm")`` and ``macro_calendar`` data (both measure days / hours from now)."""
+    front, month, why = _p10_rows(term, calendar)
+    if month is None:
+        return Check("P10", None, why)
+    if front is None:
+        return Check("P10", False, why)
     diff = front[1] - month[1]
     return Check(
         "P10",
@@ -733,10 +884,12 @@ def ideas_for(
 
     ``market``: the ``data`` of MCP tools for this coin — ``vrp`` (deribit_vrp), ``term`` (deribit_skew_term view=atm),
     ``calendar`` (macro_calendar), ``skew`` (skew_percentile of the ≈ 30-day expiry, 3-day lookback); a missing one
-    leaves its rules unmeasured. Trade rules: P3 (200-day trend → debit spread) is still built and checked, but it
-    is ✗ since 14.11 (docs/verification/2026-11-14-p3-trend-debit-spread.md), so ``rank_ideas`` drops it. Context
-    rules (tags, risk rules; never a trade): P2, P9, P10, P15 — their met checks are listed in ``ctx['notes']``.
-    ✗ rules (P1 IV ≥ RV condor, P3, P4 IV < RV strangle, P5) and unmeasured ones are never sent.
+    leaves its rules unmeasured. Trade rules: P10 (front inversion before FOMC / CPI → ``calendar_straddle`` on the
+    front and month expiries of the condition, at Bybit prices); P3 (200-day trend → debit spread) is still built and
+    checked, but it is ✗ since 14.11 (docs/verification/2026-11-14-p3-trend-debit-spread.md), so ``rank_ideas`` drops
+    it. Context rules (tags, risk rules; never a trade): P2, P9, P15. ``ctx['notes']`` lists the met context rules and
+    the met sendable trade rules that could not be priced (``ctx['unpriced']``: rule → reason, e.g. no Bybit quotes
+    for P10's expiries). ✗ rules (P1 IV ≥ RV condor, P3, P4 IV < RV strangle, P5) and unmeasured ones are never sent.
     """
     m = market or {}
     checks = [
@@ -751,50 +904,87 @@ def ideas_for(
         "trend": trend(closes),
         "rv30": realized_vol(closes),
         "checks": {c.code: {"met": c.met, "detail": c.detail} for c in checks},
-        "notes": [c.code for c in checks if c.met and RULES[c.code].kind == "context" and RULES[c.code].sendable],
+        "notes": [],
     }
+    out: list[Idea] = []
+    unpriced: dict[str, str] = {}
+    if ctx["checks"]["P10"]["met"]:
+        exps = p10_expiries(m.get("term"), m.get("calendar"))
+        cal, why = calendar_straddle(quotes, *exps, now_ms, coin) if exps else (None, "експірації умови не прочитано")
+        if cal:
+            cal.rule = "P10"
+            out.append(cal)
+        else:
+            unpriced["P10"] = why
     exp = pick_expiry(quotes, now_ms, target_days)
     if exp is None:
         ctx["skip"] = "no Bybit expiry with enough two-sided quotes 7-24 days out"
-        return [], ctx
-    ctx["expiry_ms"] = exp
-    ctx["iv"] = iv = atm_iv(quotes, exp)
-    ctx["spot"] = next((q.underlying for q in quotes if q.expiry_ms == exp), None)
-    if iv and ctx["rv30"]:
-        ctx["iv_rv"] = iv / ctx["rv30"]  # context only: IV ≥ RV as a sell signal is ✗ (P1)
-    out: list[Idea] = []
-    if ctx["checks"]["P3"]["met"]:
-        idea = debit_spread(quotes, exp, now_ms, coin, bearish=ctx["trend"] == "bear")
-        if idea:
-            idea.rule = "P3"
-            idea.why = (
-                "ціна нижче 200-денної середньої, а вона падає: ставка на продовження падіння з обмеженим ризиком"
-                if ctx["trend"] == "bear"
-                else "ціна вище 200-денної середньої, а вона росте: ставка на продовження росту з обмеженим ризиком"
-            )
-            out.append(idea)
+    else:
+        ctx["expiry_ms"] = exp
+        ctx["iv"] = iv = atm_iv(quotes, exp)
+        ctx["spot"] = next((q.underlying for q in quotes if q.expiry_ms == exp), None)
+        if iv and ctx["rv30"]:
+            ctx["iv_rv"] = iv / ctx["rv30"]  # context only: IV ≥ RV as a sell signal is ✗ (P1)
+        if ctx["checks"]["P3"]["met"]:
+            idea = debit_spread(quotes, exp, now_ms, coin, bearish=ctx["trend"] == "bear")
+            if idea:
+                idea.rule = "P3"
+                idea.why = (
+                    "ціна нижче 200-денної середньої, а вона падає: ставка на продовження падіння з обмеженим ризиком"
+                    if ctx["trend"] == "bear"
+                    else "ціна вище 200-денної середньої, а вона росте: ставка на продовження росту з обмеженим ризиком"
+                )
+                out.append(idea)
     out = rank_ideas(out)
     for idea in out:
         idea.qty = size(idea, risk_usd)
+    sent = {i.rule for i in out}
+    ctx["notes"] = [c.code for c in checks if c.met and RULES[c.code].sendable and (RULES[c.code].kind == "context" or c.code not in sent)]
+    if unpriced:
+        ctx["unpriced"] = unpriced
     return out, ctx
 
 
-def payoff_at(idea: dict[str, Any], price: float) -> float:
+def payoff_at(idea: dict[str, Any], price: float, closes: dict[int, float] | None = None) -> float:
     """P/L per unit at expiry for a logged idea (``Idea.to_dict``) settled at ``price``: legs' value plus the net
     premium (fees at entry included in ``net``). Bybit's delivery fee is a separate term (``delivery_fee``);
     ``settle_idea`` deducts it.
 
     A leg expiring with the idea (its ``expiry_ms`` absent, None or equal to the idea's) is worth its intrinsic value.
-    A leg expiring later (the long leg of a calendar) is still alive at the idea's expiry: it is worth its Black-76
-    value at that moment (forward = ``price``, r = 0, T = days from the idea's expiry to the leg's / 365, at the leg's
-    logged ``iv``, decimal) — a model value at the entry IV, not a quote: the IV move by then, the bid / ask and the
-    fee of closing the leg are not in it. NaN when such a leg has no positive ``iv`` or a leg expires before the
-    idea (it cannot be valued here)."""
+    A leg expiring later (the long leg of a calendar) is still alive at the idea's expiry. With a close price in
+    ``closes`` (leg index → USD per unit, ``close_prices``: the Bybit price the leg was closed at) it is worth that
+    price. Otherwise it is worth its Black-76 value at that moment (forward = ``price``, r = 0, T = days from the
+    idea's expiry to the leg's / 365, at the leg's logged ``iv``, decimal) — a model value at the entry IV, not a
+    quote: the IV move by then, the bid / ask and the fee of closing the leg are not in it. NaN when such a leg has
+    neither, or a leg expires before the idea (it cannot be valued here)."""
     total = float(idea["net"])
-    for leg in idea["legs"]:
-        value = _leg_value(leg, price, idea.get("expiry_ms"))
+    for i, leg in enumerate(idea["legs"]):
+        value = _leg_value(leg, price, idea.get("expiry_ms"), (closes or {}).get(i))
         total += value if leg["action"] == "buy" else -value
     return total
+
+
+def _later_legs(idea: dict[str, Any]) -> list[int]:
+    """Indices of the legs expiring after the idea (alive at its settlement)."""
+    return [i for i, g in enumerate(idea["legs"]) if (t := _later_years(g, idea.get("expiry_ms"))) is not None and t > 0]
+
+
+def close_prices(idea: dict[str, Any], quotes: list[Quote]) -> dict[int, float]:
+    """Bybit taker prices to close the later legs of a logged idea (leg index → USD per unit): a bought leg is sold at
+    the bid, a sold one bought back at the ask (the fills the ideas are priced at, ``parse_bybit_tickers`` quotes of
+    the leg's own expiry). A leg whose side is not quoted (expired, delisted, no bid) is left out, so ``payoff_at``
+    values it by the model. Malformed records give {}."""
+    if not _settleable(idea):
+        return {}
+    book = {(q.expiry_ms, q.strike, q.is_call): q for q in quotes}
+    out: dict[int, float] = {}
+    for i in _later_legs(idea):
+        g = idea["legs"][i]
+        q = book.get((int(float(g["expiry_ms"])), float(g["strike"]), g["is_call"]))
+        px = (q.bid if g["action"] == "buy" else q.ask) if q else 0.0
+        if px > 0:
+            out[i] = px
+    return out
 
 
 def _later_years(leg: dict[str, Any], idea_expiry_ms: Any) -> float | None:
@@ -809,12 +999,14 @@ def _later_years(leg: dict[str, Any], idea_expiry_ms: Any) -> float | None:
     return (own - base) / DAY_MS / 365
 
 
-def _leg_value(leg: dict[str, Any], price: float, idea_expiry_ms: Any) -> float:
+def _leg_value(leg: dict[str, Any], price: float, idea_expiry_ms: Any, close: float | None = None) -> float:
     t = _later_years(leg, idea_expiry_ms)
     if t is None:
         return math.nan
     if t == 0:
         return _intrinsic(leg, price)
+    if close is not None and math.isfinite(close) and close > 0:
+        return close
     iv = _num(leg.get("iv"))
     if iv is None or iv <= 0:
         return math.nan
@@ -889,30 +1081,45 @@ def _settleable(idea: Any) -> bool:
     )
 
 
-def settle_idea(idea: Any, price: Any, now_ms: int) -> dict[str, Any] | None:
+MODEL_SETTLED = "model"  # ``later_legs`` of a record whose later leg was valued by the model, not closed at Bybit
+
+
+def settle_idea(idea: Any, price: Any, now_ms: int, closes: dict[int, float] | None = None) -> dict[str, Any] | None:
     """Settlement fields of a logged idea (``Idea.to_dict``) at the delivery ``price``, or None when it cannot be
     settled yet (``now_ms`` before ``expiry_ms``), the price is not a positive number or the record is malformed.
 
     ``delivery_fee_per_unit`` = ``delivery_fee`` (Bybit's fee on the in-the-money legs, USD per unit);
-    ``pnl_per_unit`` = ``payoff_at`` (intrinsic value of the legs, Black-76 value at the logged IV for a leg expiring
-    later, plus the logged net premium, entry fees included) minus that fee; ``pnl_usd`` = ``pnl_per_unit`` times
-    the logged size ``qty`` (None when the idea could not be sized under the risk); ``r`` = ``pnl_per_unit`` / logged
-    ``max_loss`` (−1 = the whole logged risk lost; the logged ``max_loss`` has no delivery fee, so a loss with legs
-    in the money can be a little below −1). Records settled before the fee was deducted keep their numbers (the
-    journal never settles a record twice).
+    ``pnl_per_unit`` = ``payoff_at`` (intrinsic value of the legs, for a leg expiring later its ``closes`` price or
+    else its Black-76 value at the logged IV, plus the logged net premium, entry fees included) minus that fee;
+    ``pnl_usd`` = ``pnl_per_unit`` times the logged size ``qty`` (None when the idea could not be sized under the
+    risk); ``r`` = ``pnl_per_unit`` / logged ``max_loss`` (−1 = the whole logged risk lost; the logged ``max_loss``
+    has no delivery fee, so a loss with legs in the money can be a little below −1). Records settled before the fee
+    was deducted keep their numbers (the journal never settles a record twice).
 
-    The forward of a later leg is taken equal to the delivery ``price`` (r = 0, no basis between the two expiries).
-    A record whose later leg has no positive IV, or whose leg expires before the idea, is never settled (None at any
-    price): the journal keeps it open and counts it as unsettled."""
+    An idea with legs expiring later (a calendar) also gets ``close_fee_per_unit`` (the taker ``fee`` of each leg
+    closed at a ``closes`` price, with the delivery price as the underlying; deducted from ``pnl_per_unit``) and
+    ``later_legs`` = "bybit" when every later leg was closed at a Bybit price, else "model" (at least one valued by
+    Black-76 at the entry IV, an optimistic estimate: no IV move, spread or closing fee; ``rule_summary`` leaves such
+    records out), and ``close_lag_h`` = hours from the idea's expiry to ``now_ms``, when the later legs were closed
+    (the weekly run closes them ≈ 25-26 h after a Friday front, a week later when a run is missed; the P10 check closed
+    at the first surface after the front). Ideas without such legs get none of these fields, so their settlement is
+    the same as before.
+
+    The forward of a later leg valued by the model is taken equal to the delivery ``price`` (r = 0, no basis between
+    the two expiries). A record whose later leg has no positive IV, or whose leg expires before the idea, is never
+    settled (None at any price): the journal keeps it open and counts it as unsettled."""
     px, exp = _num(price), _num(idea.get("expiry_ms")) if isinstance(idea, dict) else None
     if px is None or px <= 0 or exp is None or now_ms < exp or not _settleable(idea):
         return None
+    later = _later_legs(idea)
+    used = {i: v for i, c in (closes or {}).items() if i in later and (v := _num(c)) is not None and v > 0}
     dfee = delivery_fee(idea, px)
-    pnl = payoff_at(idea, px) - dfee
+    cfee = sum(fee(px, c) for c in used.values())
+    pnl = payoff_at(idea, px, used) - dfee - cfee
     if not math.isfinite(pnl):
         return None
     qty = _num(idea.get("qty")) or 0.0
-    return {
+    out = {
         "status": "settled",
         "settled_ms": int(now_ms),
         "delivery_price": px,
@@ -921,6 +1128,17 @@ def settle_idea(idea: Any, price: Any, now_ms: int) -> dict[str, Any] | None:
         "pnl_usd": pnl * qty if qty > 0 else None,
         "r": pnl / float(idea["max_loss"]),
     }
+    if later:
+        out["close_fee_per_unit"] = cfee
+        out["later_legs"] = "bybit" if len(used) == len(later) else MODEL_SETTLED
+        out["close_lag_h"] = (now_ms - exp) / 3_600_000
+    return out
+
+
+def model_settled(rec: Any) -> bool:
+    """A settled record whose later leg was valued by Black-76 at the entry IV (``settle_idea``: ``later_legs`` =
+    "model"): an optimistic estimate kept in the journal but out of ``rule_summary``."""
+    return isinstance(rec, dict) and rec.get("status") == "settled" and rec.get("later_legs") == MODEL_SETTLED
 
 
 def rule_summary(records: Any) -> dict[str, dict[str, Any]]:
@@ -932,12 +1150,14 @@ def rule_summary(records: Any) -> dict[str, dict[str, Any]]:
     cluster), its value the mean R of its ideas; ``cluster_mean_r`` is the mean of those and ``se_r`` their standard
     error. The verdict is None below ``MIN_SETTLED`` ideas or ``MIN_CLUSTERS`` expiries (``se_r`` and
     ``cluster_mean_r`` then None too); from there 'plus' / 'minus' when ``cluster_mean_r`` is more than 2 ``se_r``
-    from 0, else 'flat'. Records without a rule are grouped under '—'; malformed ones skipped. Rules come in
-    ``RULES`` order."""
+    from 0, else 'flat'. Records without a rule are grouped under '—'; malformed ones skipped, and so are the ones
+    settled by the model (``model_settled``: a calendar whose month leg had no Bybit price to close at; that value
+    ignores the month IV drop after the event, the spread and the fee, so it would bias P10's record upwards). Rules
+    come in ``RULES`` order."""
     rs: dict[str, list[float]] = {}
     clusters: dict[str, dict[int | None, list[float]]] = {}
     for rec in records if isinstance(records, list) else []:
-        if not isinstance(rec, dict) or rec.get("status") != "settled":
+        if not isinstance(rec, dict) or rec.get("status") != "settled" or model_settled(rec):
             continue
         r = _num(rec.get("r"))
         if r is not None:

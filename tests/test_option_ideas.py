@@ -404,6 +404,16 @@ def test_message_without_ideas():
     assert "ідей нема" in text
 
 
+def test_ctx_line_on_skip_without_spot_keeps_the_coin_and_the_reason():
+    """Card item 438 (review of the P10 calendar, finding 6): a skipped coin has no spot and no IV, and the context
+    line still names the coin and why: no 7-24 d expiry (ideas_for), or the fetch failure (gather's exception name)."""
+    _, ctx = oi.ideas_for("BTC", [], [60_000.0] * 260, NOW)
+    assert ctx["skip"] == oi.NO_EXPIRY_SKIP and "spot" not in ctx and "iv" not in ctx
+    assert tg.ctx_line(ctx) == "BTC · тренд нейтральний · немає ліквідної експірації 7–24 дні"
+    line = tg.ctx_line({"coin": "ETH", "skip": "TimeoutError"})  # no trend, rv30 or checks either
+    assert line.startswith("ETH · тренд") and "дані не отримано (TimeoutError)" in line and "7–24" not in line
+
+
 def test_strangle_line_drops_the_probability_only_off_the_put_grid():
     """prob_profit comes from the shared analytics function (review 2026-11-19, finding 1): on a narrow put grid a
     strangle breakeven off the put strikes gives null, and the generator prints the line without ``(≈ N%)``."""

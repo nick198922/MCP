@@ -736,6 +736,7 @@ RULES: dict[str, Rule] = {
     )
 }
 MARKET_WIDE = ("P9",)  # the same for every coin: shown once
+NO_EXPIRY_SKIP = "no Bybit expiry with enough two-sided quotes 7-24 days out"  # ctx["skip"] from ideas_for
 
 
 @dataclass(frozen=True)
@@ -918,7 +919,7 @@ def ideas_for(
             unpriced["P10"] = why
     exp = pick_expiry(quotes, now_ms, target_days)
     if exp is None:
-        ctx["skip"] = "no Bybit expiry with enough two-sided quotes 7-24 days out"
+        ctx["skip"] = NO_EXPIRY_SKIP
     else:
         ctx["expiry_ms"] = exp
         ctx["iv"] = iv = atm_iv(quotes, exp)

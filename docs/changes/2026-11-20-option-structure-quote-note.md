@@ -1,0 +1,2 @@
+- Пункт 415 картки [standing-improvements](../ideas/IDEA-20261102-standing-improvements.md): закрито знахідку 1 [рев'ю](../reviews/2026-11-19-option-structure-quote-findings.md) — у [записі змін пункту 411](2026-11-19-option-structure-quote-findings.md) тепер сказано, що `prob_profit = null` (беззбиток поза сіткою путів) діє й на тижневий генератор.
+- Знахідка 2 (допуск хвоста |delta| < 0.03) лишається умовною: вводити, якщо `null` на живих ланцюгах стане частим. Код не змінено.

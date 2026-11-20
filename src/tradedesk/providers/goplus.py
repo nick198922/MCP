@@ -4,15 +4,17 @@
 `{"code": 1, "message": "OK", "result": {"<lower-case address>": {...flags...}}}`. Flags are strings
 ("1"/"0", empty when GoPlus could not tell), taxes and holder shares are decimal strings (0.05 = 5 %).
 `code` 1 is a complete answer, 2 a partial one; anything else is an error even with HTTP 200 (4029 = request
-limit). An empty `result` means GoPlus has nothing for that token (seen live 2026-10-23 for PEPE on chain 1).
+limit). An empty `result` means GoPlus has nothing for that address on that chain (live 2026-10-23 for a mistyped
+PEPE address, `...ddbf47...` instead of `...ddbe47...`; the real PEPE answers in full, live 2026-11-20).
 
 Solana: `GET /api/v1/solana/token_security?contract_addresses={mint}` (free, no key; live 2026-11-19) answers in the
 same envelope, keyed by the mint address exactly as sent (base58 is case-sensitive, so it is never lower-cased), with
 another schema: authorities as `{"authority": [...], "status": "0"/"1"}` (mintable, freezable, closable,
 balance_mutable_authority, *_upgradable), `transfer_fee`, `transfer_hook`, `default_account_state`,
 `non_transferable`, `holders` (by `account`), `dex` (pools with `tvl`, `type`, `burn_percent` in percent 0-100) and
-`metadata`. Code 7012 ("Not fungible spl token address") comes for unknown or non-fungible mints; live 2026-11-19
-it also came for BONK, so it is read as "GoPlus has no data" (data_unavailable), not as a provider failure.
+`metadata`. Code 7012 ("Not fungible spl token address") comes for unknown or non-fungible mints (live 2026-11-19 for
+a random address and for a mistyped BONK mint; the real BONK mint answers in full, live 2026-11-20), so it is read as
+"GoPlus has no data" (data_unavailable), not as a provider failure.
 
 Caching: GoPlus reports errors such as 4029 inside an HTTP 200 body, so the generic `Http` cache would keep an
 error answer for its whole TTL and health would show the provider as ok. The request therefore goes through
@@ -34,7 +36,7 @@ from ..core.http import Http
 BASE_URL = "https://api.gopluslabs.io"
 OK_CODES = (1, 2)  # 1 = complete, 2 = partial data
 RATE_LIMIT_CODE = 4029
-SOLANA_NO_TOKEN_CODE = 7012  # "Not fungible spl token address" (live 2026-11-19: random address and BONK)
+SOLANA_NO_TOKEN_CODE = 7012  # "Not fungible spl token address" (live 2026-11-19: random and mistyped-BONK addresses)
 TTL_SECONDS = 60.0
 
 

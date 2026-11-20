@@ -283,6 +283,34 @@ def test_s39_runs_against_its_own_passport_without_a_bar_cap(tmp_path, migrated_
     assert any("паспорт OOS −0.162 (n 102, рядок 57)" in x for x in lines)
 
 
+@pytest.fixture
+def s3():
+    mod.configure("S3")
+    yield
+    mod.configure("S38")
+
+
+def test_s3_runs_against_its_passport_with_the_30_10_splits(tmp_path, migrated_db, offline, s3):
+    db = _store(migrated_db)
+    con = sqlite3.connect(db)
+    con.execute("UPDATE demo_trade SET setup = 'S3', version = NULL")
+    con.execute("UPDATE demo_trade SET timeframe = '1d', side = 'long' WHERE symbol LIKE 'U%'")
+    con.commit()
+    con.close()
+    assert mod.run(str(db), CUTOFF, tmp_path, "bybit", "t", now_ms=NOW, seen_ms=SEEN) == 0
+    lines = (tmp_path / "t.txt").read_text(encoding="utf-8").splitlines()
+    assert lines[0].startswith("# S3: демо проти паспорта")
+    allr, comp = _line(lines, "- усі 15")
+    assert f"середнє {statistics.fmean(TAGGED_R + UNTAGGED_R):+.3f}" in allr
+    assert "паспорт S3 OOS -0.076 [-0.155; +0.004]" in comp and "[-0.473; +0.361]" in comp and "[-0.719; +0.652]" in comp
+    one_d, _ = _line(lines, "- 1d ")
+    assert "n  3," in one_d and f"середнє {statistics.fmean(UNTAGGED_R):+.3f}" in one_d
+    assert any(x.startswith("- 4h short") for x in lines) and any(x.startswith("- беззбиток ") for x in lines)
+    assert any(x.startswith("лише нові угоди (закриті ≥") for x in lines)
+    assert any(x.startswith("паспорт: свічки й ранг Binance, топ-100 і ≥ $5M") for x in lines)
+    assert not any("ліміт демо 2 входи" in x for x in lines)
+
+
 def test_main_selects_the_setup(tmp_path, monkeypatch):
     seen: dict = {}
     monkeypatch.setattr(mod, "run", lambda *a, **k: seen.update(setup=mod.SETUP, seen=k.get("seen_ms")) or 0)

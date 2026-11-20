@@ -487,6 +487,36 @@ async def test_contract_risk_empty_result_and_error_codes():
     assert env["ok"] is True and any("partial" in w for w in env["warnings"])
 
 
+@pytest.mark.parametrize(
+    ("dex_handler", "expect"),
+    [
+        # The real PEPE/BONK cases (live 2026-11-20): a mistyped address has no pool on DexScreener either.
+        (lambda req: httpx.Response(200, json={"pairs": []}), "mistyped"),
+        (lambda req: httpx.Response(200, json={"pairs": DEX_PAIRS["pairs"][2:]}), "mistyped"),  # a pool on bsc only
+        (lambda req: httpx.Response(200, json=DEX_PAIRS), "lists 2 pool(s) for it on ethereum"),
+        (lambda req: httpx.Response(503, text="down"), "DexScreener did not answer"),
+    ],
+)
+async def test_contract_risk_no_goplus_data_explains_why(dex_handler, expect):
+    srv = make_server(goplus_handler=lambda req: httpx.Response(200, json=EMPTY_BODY), dex_handler=dex_handler)
+    env = await call(srv, "contract_risk", chain="ethereum", address=SHIB)
+    assert env["ok"] is False and env["data"] is None
+    assert any(m["provider"] == "goplus" and m["reason"] == "data_unavailable" for m in env["missing"])
+    hints = [w for w in env["warnings"] if "GoPlus has no data" in w]
+    assert len(hints) == 1 and expect in hints[0]
+    assert ("official source" if expect == "mistyped" else "not a pass") in hints[0]
+    if "lists 2 pool" in expect:
+        assert "honeypot.is" in hints[0]
+
+
+async def test_contract_risk_goplus_outage_gets_no_address_hint():
+    # A provider failure (HTTP 503) is not "GoPlus has no data": no hint about a mistyped address.
+    env = await call(
+        make_server(goplus_handler=lambda req: httpx.Response(503, text="down")), "contract_risk", chain="ethereum", address=SHIB
+    )
+    assert env["ok"] is False and not any("GoPlus has no data" in w for w in env["warnings"])
+
+
 async def test_goplus_error_codes_are_not_cached_and_hit_health():
     calls = []
     limited = {"code": 4029, "message": "too many requests", "result": {}}

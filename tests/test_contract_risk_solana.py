@@ -322,6 +322,17 @@ async def test_contract_risk_solana_no_data_is_not_safe(body):
     assert env["missing"][0]["provider"] == "goplus" and env["missing"][0]["reason"] == "data_unavailable"
 
 
+@pytest.mark.parametrize(("dex", "expect"), [({"pairs": []}, "mistyped"), (None, "pool(s) for it on solana")])
+async def test_contract_risk_solana_7012_explains_why(dex, expect):
+    # Live 2026-11-20: the 7012 recorded for BONK came from a mistyped mint (no DexScreener pool either).
+    env = await call(solana_server(goplus_body=LIVE["bonk_7012"], dex=dex), "contract_risk", chain="solana", address=JUP)
+    assert env["ok"] is False and env["data"] is None
+    hints = [w for w in env["warnings"] if "GoPlus has no data" in w]
+    assert len(hints) == 1 and expect in hints[0]
+    if dex is None:  # JUP pools listed: GoPlus does not cover the token; no second source on Solana
+        assert "no second source for Solana" in hints[0] and "honeypot.is" not in hints[0]
+
+
 async def test_contract_risk_solana_invalid_address_makes_no_request():
     seen = []
     env = await call(solana_server(seen=seen), "contract_risk", chain="solana", address="0OIl" * 10)

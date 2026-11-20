@@ -17,6 +17,39 @@ from ._util import READ_ONLY
 _CHAIN_OK = re.compile(r"^[A-Za-z0-9 _-]{1,40}$")  # no '.': blocks '..' path segments
 
 
+def _explain_no_goplus_data(b: Builder, rows: list[Any] | None, dex_chain: str) -> None:
+    """GoPlus answered without data (empty result, Solana code 7012): say what that most likely means.
+
+    Live 2026-11-20: the empty answers recorded for PEPE (2026-10-23) and BONK (2026-11-19) came from mistyped
+    addresses; with the right addresses GoPlus answers in full. DexScreener (already fetched) tells the two cases apart.
+    """
+    if not any(m.provider == "goplus" and m.reason == "data_unavailable" for m in b.missing):
+        return
+    if rows is None:
+        b.warn(
+            f"GoPlus has no data for this address on {dex_chain} and DexScreener did not answer, so it is unknown whether "
+            "the address is a traded token there; check the address first. The contract is not checked, which is not a pass."
+        )
+        return
+    n = summarise_pairs(rows, chain=dex_chain, limit=1)["pairs_total"]
+    if n == 0:
+        b.warn(
+            f"GoPlus has no data for this address on {dex_chain} and DexScreener lists no pool for it there either: the "
+            "address is most likely mistyped, on another chain, or not a traded token. Check it against the project's "
+            "official source before reading this as 'GoPlus does not cover the token'."
+        )
+        return
+    second = (
+        "check by hand (no second source for Solana)"
+        if dex_chain == cr.SOLANA
+        else "honeypot.is (buy/sell simulation; ethereum, bsc and base only) is not scored here without GoPlus, check it by hand"
+    )
+    b.warn(
+        f"GoPlus has no data for this token although DexScreener lists {n} pool(s) for it on {dex_chain}: GoPlus does not "
+        f"cover it (or not yet; retry later). The contract is not checked, which is not a pass; {second}."
+    )
+
+
 async def _contract_risk_solana(rt: Runtime, b: Builder, address: str) -> dict[str, Any]:
     """contract_risk for an SPL mint: GoPlus solana/token_security + DexScreener liquidity (no honeypot.is)."""
     mint, err = cr.valid_solana_address(address)
@@ -28,6 +61,7 @@ async def _contract_risk_solana(rt: Runtime, b: Builder, address: str) -> dict[s
         b.guard("liquidity_to_mcap", "dexscreener", rt.dexscreener.token_pairs([mint])),
     )
     if sec is None:
+        _explain_no_goplus_data(b, rows, cr.SOLANA)
         return b.build(None, ok=False)
     liq, mcap, n_fake = (None, None, 0)
     if rows is not None:
@@ -161,7 +195,10 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "lock end times not reported), top10_holders (Raydium pool authorities excluded; unknown when GoPlus "
             "reports zero supply or only zero shares) and liquidity_to_mcap. EVM-only checks (buy/sell tax, open_source, "
             "ownership, ...) are listed in `not_checked` and `missing`, not scored; a GoPlus answer without data "
-            "(empty result or code 7012) is ok=false, never safe."
+            "(empty result or code 7012) is ok=false, never safe. In that case `warnings` say whether DexScreener "
+            "lists a pool for the address on that chain: no pool usually means a mistyped address or the wrong chain "
+            "(the earlier empty answers for PEPE and BONK were mistyped addresses); pools without GoPlus data mean "
+            "GoPlus does not cover the token, and the contract is not checked."
         ),
     )
     async def contract_risk(
@@ -198,6 +235,7 @@ def register(server: MCPServer, rt: Runtime) -> None:
             b.guard("honeypot_is", "honeypot_is", rt.honeypot_is.token_check(chain_id, addr)),
         )
         if sec is None:
+            _explain_no_goplus_data(b, rows, dex_chain)
             return b.build(None, ok=False)
         liq, mcap, n_fake = (None, None, 0)
         if rows is not None:

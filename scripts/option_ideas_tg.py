@@ -151,8 +151,9 @@ def ctx_line(ctx: dict) -> str:
     bits = [f"{c} {_px(ctx['spot'], c)}" if ctx.get("spot") else c, f"тренд {TREND.get(ctx.get('trend'), '—')}"]
     if ctx.get("iv") and ctx.get("rv30"):
         bits.append(f"IV {ctx['iv']:.0%} / реальна 30д {ctx['rv30']:.0%}")
-    if ctx.get("skip"):
-        bits.append("немає ліквідної експірації 7–24 дні")
+    if skip := ctx.get("skip"):
+        # ideas_for's own skip, or the exception name when fetching the coin failed (gather)
+        bits.append("немає ліквідної експірації 7–24 дні" if skip == oi.NO_EXPIRY_SKIP else f"дані не отримано ({skip})")
     return _h(" · ".join(bits))
 
 

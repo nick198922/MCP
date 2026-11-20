@@ -110,3 +110,144 @@ def test_overlap_share_same_symbol_side_within_hold():
     assert out["overlapping"] == 2
     assert out["share"] == pytest.approx(0.5)
     assert out["keys"] == 2
+
+
+def _ms(*args):
+    from datetime import UTC, datetime
+
+    return int(datetime(*args, tzinfo=UTC).timestamp() * 1000)
+
+
+def test_week_key_monday_start():
+    assert d.week_key(_ms(1970, 1, 5)) == 1  # first Monday
+    assert d.week_key(_ms(1970, 1, 4, 23, 59)) == 0
+    mon = _ms(2026, 11, 16)  # Monday
+    assert d.week_key(mon) == d.week_key(_ms(2026, 11, 22, 23, 59))  # same ISO week through Sunday
+    assert d.week_key(mon - 1) == d.week_key(mon) - 1
+
+
+def test_webb_weights_mean_zero_variance_one():
+    assert math.fsum(d.WEBB) == pytest.approx(0.0, abs=1e-12)
+    assert math.fsum(w * w for w in d.WEBB) / 6 == pytest.approx(1.0)
+
+
+def test_wild_cluster_se_matches_cr1_and_ci_contains_estimate():
+    from tradedesk.analytics.oi_flush import cluster_se_diff, cluster_se_mean
+
+    vals = [1.0, -1.0, 0.5, 2.0, -0.3, 0.8, 1.2, -0.7, 0.1, 0.9]
+    cl = [0, 0, 1, 1, 2, 2, 3, 3, 4, 4]
+    out = d.wild_cluster(vals, cl, n_boot=2000, seed=3)
+    assert out["est"] == pytest.approx(sum(vals) / len(vals))
+    assert out["se"] == pytest.approx(cluster_se_mean(vals, cl))
+    assert out["lo"] < out["est"] < out["hi"]
+    b, cb = [0.2, -0.4, 0.0, 0.6], [0, 1, 2, 5]
+    o2 = d.wild_cluster(vals, cl, b, cb, n_boot=2000, seed=3)
+    assert o2["est"] == pytest.approx(sum(vals) / 10 - sum(b) / 4)
+    assert o2["se"] == pytest.approx(cluster_se_diff(vals, cl, b, cb))
+    assert o2["g"] == 6
+    assert o2["lo"] < o2["est"] < o2["hi"]
+
+
+def test_wild_cluster_zero_mean_gives_p_one_and_strong_effect_small_p():
+    # cluster means alternate +0.5 / -0.5: the estimate is exactly 0, so |t*| >= |t| = 0 for every draw
+    vals, cl = [], []
+    for g in range(10):
+        m = 0.5 if g % 2 == 0 else -0.5
+        vals += [m - 0.1, m + 0.1]
+        cl += [g, g]
+    out = d.wild_cluster(vals, cl, n_boot=2000, seed=1)
+    assert out["est"] == pytest.approx(0.0, abs=1e-12)
+    assert out["p_two"] == pytest.approx(1.0)
+    # every cluster clearly positive: the null is rejected and the interval sits above zero
+    pos = [1.0 + 0.1 * ((i * 7) % 5 - 2) for i in range(30)]
+    cpos = [i // 3 for i in range(30)]
+    o = d.wild_cluster(pos, cpos, n_boot=4000, seed=2)
+    assert o["p_gt"] < 0.01
+    assert o["p_lt"] > 0.99
+    assert o["lo"] > 0
+    # determinism with a seed
+    assert d.wild_cluster(pos, cpos, n_boot=500, seed=9) == d.wild_cluster(pos, cpos, n_boot=500, seed=9)
+
+
+def test_wild_cluster_needs_two_clusters():
+    out = d.wild_cluster([1.0, 2.0], ["a", "a"])
+    assert out["lo"] is None and out["p_two"] is None
+    assert d.wild_cluster([], [])["est"] is None
+
+
+def test_wild_cluster_before_t_ignores_later_rows():
+    rows = [_row(f"s{i}", i * DAY // 2, r=(-1.0 if i % 3 else 1.2)) for i in range(20)]
+    t = 6 * DAY
+
+    def run(rs):
+        first = d.first_decisions(rs, now_ms=t)
+        return d.wild_cluster([x["r"] for x in first], [d.day_key(x["decided_ts"]) for x in first], n_boot=500, seed=4)
+
+    base = run(rows)
+    changed = [dict(r, r=5.0) if r["decided_ts"] > t else r for r in rows] + [_row("late", 9 * DAY, r=-3.0)]
+    assert run(changed) == base
+
+
+@pytest.mark.parametrize(
+    ("widest", "wild", "h2", "new", "mde", "verdict"),
+    [
+        ({"lo": 0.05, "hi": 0.4}, {"lo": 0.02, "hi": 0.5}, 0.1, 0.2, 0.15, "✓"),
+        ({"lo": 0.05, "hi": 0.4}, {"lo": 0.02, "hi": 0.5}, -0.1, 0.2, 0.15, "◯"),
+        ({"lo": -0.4, "hi": -0.05}, {"lo": -0.5, "hi": -0.01}, 0.0, -0.2, 0.15, "✗"),
+        ({"lo": -0.4, "hi": -0.05}, {"lo": -0.5, "hi": 0.01}, 0.0, -0.2, 0.15, "≈"),
+        ({"lo": -0.3, "hi": 0.1}, {"lo": -0.3, "hi": 0.1}, 0.0, 0.0, 0.25, "◯"),
+    ],
+)
+def test_decision_rule(widest, wild, h2, new, mde, verdict):
+    assert d.decision(widest, wild, h2, new, mde)["verdict"] == verdict
+
+
+def test_verify_script_runs_on_synthetic_file(tmp_path, capsys):
+    import importlib.util
+    import json
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "scripts" / "verify_demo_rr_threshold.py"
+    spec = importlib.util.spec_from_file_location("verify_demo_rr_threshold", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    t0 = _ms(2026, 10, 21)
+    rows = []
+    for i in range(60):
+        r = 1.0 if i % 3 == 0 else -1.0
+        base = {
+            "decided_ts": t0 + i * DAY // 3,
+            "r": r,
+            "r_plan": r - 0.01,
+            "symbol": f"C{i % 9}/USDT:USDT",
+            "side": "short",
+            "timeframe": "4h",
+        }
+        rows.append(
+            {
+                **base,
+                "group": "refused",
+                "reason": d.RR_REASON,
+                "link_id": f"x{i}",
+                "status": "open" if i == 59 else "resolved",
+                "outcome": "target" if r > 0 else "stop",
+                "example": "reward/risk 1.19 after fees < 1.5",
+                "setup": "S3",
+            }
+        )
+        if i % 4 == 0:
+            rows.append({**base, "group": "taken", "link_id": f"t{i}", "status": "resolved", "outcome": "stop", "r": -1.0, "setup": "S3"})
+    f = tmp_path / "latest.json"
+    f.write_text(json.dumps({"schema": 2, "generated_ms": t0 + 25 * DAY, "not_executed": {"rows": rows}}))
+    assert mod.main(["--in", str(f), "--cache-dir", str(tmp_path / "c"), "--smoke"]) == 0
+    assert "no outcome metric" in capsys.readouterr().out
+    assert mod.main(["--in", str(f), "--cache-dir", str(tmp_path / "c"), "--new-after-ms", str(t0 + 10 * DAY)]) == 0
+    out = json.loads((tmp_path / "c" / "result.json").read_text())
+    assert out["decision"]["verdict"] in {"✓", "≈", "✗", "◯"}
+    assert out["robustness"]["h1_wild_day"]["g"] >= 2
+    assert out["new_data"]["iid"]["n"] > 0
+
+
+def test_decision_h1b_when_powered():
+    out = d.decision({"lo": -0.25, "hi": 0.15}, {"lo": -0.25, "hi": 0.15}, 0.0, 0.0, 0.18)
+    assert out["verdict"] == "◯" and out["h1b"] and "0.2" in out["why"]

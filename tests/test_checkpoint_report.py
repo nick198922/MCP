@@ -1072,7 +1072,8 @@ def test_script_lists_every_forward_card_of_the_repo(tmp_path):
         if p.read_text(encoding="utf-8").split("Статус:", 1)[-1].lstrip().startswith("forward")
     ]
     assert len(cards) == len(on_disk) >= 20
-    assert "idea:hl-oi-cap" in cards["hl-oi-cap-state-forward"] and "idea:hl-liq-magnet" in cards["hl-whale-liquidation-magnet"]
+    assert "hl-oi-cap-state-forward" not in cards  # rejected on 20.11 (gates G1/G2)
+    assert "idea:hl-liq-magnet" in cards["hl-whale-liquidation-magnet"]
     db = _db(tmp_path)
     con = sqlite3.connect(db)
     cols = "created_ts, exchange, symbol, instrument, side, entry_type, entry, stop, target, expires_ts, verdict, tags, status, r_result"
@@ -1100,7 +1101,7 @@ def test_script_lists_every_forward_card_of_the_repo(tmp_path):
     inp = script.load_inputs(db, NOW)
     assert inp["plans"] and all("r_result" not in p for p in inp["plans"])
     text = cp.render(cp.build(inp, NOW))
-    assert "- hl-oi-cap-state-forward: планів 1, «входити» 1, оцінено 0" in text  # resolved_ts not set: not «оцінено»
+    assert "- hl-oi-cap-state-forward:" not in text  # the card is rejected: no longer listed among forwards
     assert "- pm-weather-forecast-vs-price: планів 0" in text and "9.876" not in text
 
 
@@ -1187,10 +1188,8 @@ def test_script_counts_card_journals_read_only(tmp_path, monkeypatch, capsys):
     assert "вердикт: крок 1 (тест) ≈ 2027-01-30" in text  # 01.11 + 90 days
     # the fixture's 35 carry cycles stopped on 2026-10-29 08:00: silent for days, so «без збору» like the empty journals
     idle = next(ln for ln in text.splitlines() if ln.startswith("- форвард без збору ("))
-    assert (
-        "forward-paper-carry (останній запис cp_cycle зі статусом done 2026-10-29 08:00 UTC)" in idle
-        and f"{OI} (журнал hl_oi_cap_snapshot порожній)" in idle
-    )
+    assert "forward-paper-carry (останній запис cp_cycle зі статусом done 2026-10-29 08:00 UTC)" in idle
+    assert OI not in idle  # rejected on 20.11: no longer a forward card
     assert BYBIT not in idle and CG not in idle and "4321" not in text  # no price of a journal is read
     assert "| Картки forward: власні журнали | 2 |" in text
 

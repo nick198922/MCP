@@ -121,11 +121,14 @@ def _truncating(timeline: list[dict], page: int = 3, inclusive: bool = False):
     the paging mid-month). ``inclusive`` also returns tweets at exactly ``until_time``."""
     calls: list[tuple[int, int]] = []
 
+    def epoch(t: dict) -> int:  # parsed here, not with the code under test
+        return int(datetime.strptime(t["createdAt"], "%a %b %d %H:%M:%S %z %Y").timestamp())
+
     def get(params):
         lo, hi = _window(params)
         calls.append((lo, hi))
-        hits = [t for t in timeline if lo <= xb.created_epoch(t) and (xb.created_epoch(t) <= hi if inclusive else xb.created_epoch(t) < hi)]
-        hits.sort(key=xb.created_epoch, reverse=True)
+        hits = [t for t in timeline if lo <= epoch(t) and (epoch(t) <= hi if inclusive else epoch(t) < hi)]
+        hits.sort(key=epoch, reverse=True)
         return {"tweets": hits[:page], "has_next_page": False, "next_cursor": ""}
 
     return get, calls
@@ -205,7 +208,12 @@ def test_old_state_without_oldest_is_kept_and_reported_unverified(root, capsys):
     (d / "state.json").write_text(json.dumps({"done_months": ["2024-12", "2025-01"]}))
     assert xb.main(["XO", "--stat"]) == 0  # no key file needed
     out = json.loads(capsys.readouterr().out)
+    cov = out.pop("coverage")
     assert out == {"handle": "XO", "tweets": 1, "done_months": 2, "unverified": ["2024-12", "2025-01"]}
+    assert [(x["month"], x["status"], x["empty_days"]) for x in cov["months"]] == [
+        ("2024-12", "unverified", 31),
+        ("2025-01", "unverified", 30),
+    ]
 
     calls = []
 
@@ -219,6 +227,54 @@ def test_old_state_without_oldest_is_kept_and_reported_unverified(root, capsys):
     state = json.loads((d / "state.json").read_text())
     assert state["done_months"] == ["2024-12", "2025-01"] and state["oldest"] == {"2025-02": None}
     assert json.loads((d / "tweets.json").read_text()) == old
+
+
+def test_coverage_report_empty_days_first_last_and_status():
+    tweets = [
+        xb.normalize(_tw(1, created="Tue Dec 31 10:00:00 +0000 2024")),
+        xb.normalize(_tw(2, created="Mon Jan 20 09:00:00 +0000 2025")),
+        xb.normalize(_tw(3, created="Sat Jan 25 08:00:00 +0000 2025")),
+        xb.normalize(_tw(4, created="Sat Jan 25 21:00:00 +0000 2025")),
+        xb.normalize(_tw(5, created="Fri Jan 31 23:59:00 +0000 2025")),
+        xb.normalize(_tw(6, created="Mon Feb 03 12:00:00 +0000 2025")),
+        xb.normalize(_tw(7, created="garbage")),  # undated: left out
+    ]
+    state = {"done_months": ["2024-11", "2024-12", "2025-01"], "oldest": {"2024-11": None, "2025-01": "2025-01-20T09:00:00Z"}}
+    rep = xb.coverage_report(tweets, state, date(2025, 2, 10))
+    by = {x["month"]: x for x in rep["months"]}
+    assert list(by) == ["2024-11", "2024-12", "2025-01", "2025-02"]
+    nov, dec, jan, feb = by.values()
+    assert nov["status"] == "done" and nov["tweets"] == 0 and nov["first"] is None and nov["empty"] == "1-30"
+    assert dec["status"] == "unverified" and dec["empty_days"] == 30 and dec["first"] == dec["last"] == "2024-12-31T10:00:00Z"
+    assert jan["status"] == "done" and jan["tweets"] == 4 and jan["empty"] == "1-19, 21-24, 26-30"
+    assert jan["first"] == "2025-01-20T09:00:00Z" and jan["last"] == "2025-01-31T23:59:00Z"
+    assert jan["empty_days"] == 28 and jan["empty_share"] == pytest.approx(28 / 31, abs=1e-3)
+    # the current month ends with today: days after it are not holes
+    assert feb["status"] == "open" and (feb["from"], feb["to"], feb["days"]) == ("2025-02-01", "2025-02-10", 10)
+    assert feb["empty"] == "1-2, 4-10"
+    # totals start at the first stored tweet (December): the tweetless November before it is listed, not counted
+    assert rep["counted_from"] == "2024-12"
+    assert (rep["days"], rep["empty_days"]) == (31 + 31 + 10, 30 + 28 + 9)
+    assert rep["empty_share"] == pytest.approx(67 / 72, abs=1e-3)
+    assert xb.coverage_report([], {"done_months": [], "oldest": {}}, date(2025, 2, 10)) == {
+        "counted_from": None,
+        "days": 0,
+        "empty_days": 0,
+        "empty_share": None,
+        "months": [],
+    }
+
+
+def test_truncated_paging_leaves_no_empty_days_in_coverage(root):
+    """A tweet every day of January, but the fake API returns 3 per window and never a cursor: the month must be
+    exhausted (every day present) before it is marked done, and --stat must show it."""
+    daily = [_at(d, JAN_START + (d - 1) * DAY + 12 * 3600) for d in range(1, 32)]
+    get, calls = _truncating(daily)
+    rep = xb.backfill("XO", get, date(2025, 1, 1), date(2025, 2, 10), lambda: None, 1000, log=lambda s: None)
+    assert rep["tweets"] == 31 and rep.get("incomplete") == []
+    jan = xb.stat("XO", today=date(2025, 2, 10))["coverage"]["months"][0]
+    assert (jan["month"], jan["status"], jan["tweets"], jan["empty_days"]) == ("2025-01", "done", 31, 0)
+    assert jan["first"] == "2025-01-01T12:00:00Z" and jan["last"] == "2025-01-31T12:00:00Z"
 
 
 def test_backfill_budget_guard(root):

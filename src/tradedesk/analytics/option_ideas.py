@@ -179,6 +179,8 @@ def _prob_outside(puts: list[Quote], lo: float, hi: float) -> tuple[float | None
     """Risk-neutral P(S_T < lo) + P(S_T > hi) of a long strangle / straddle with breakevens ``lo`` and ``hi``, and the
     idea's ``extra``. None when a breakeven lies outside the put strikes: ``_prob_below`` holds the end delta flat there,
     which overstates the tail on both ends; ``extra['put_strikes']`` then names the strike range."""
+    # Strict range check, conservative: a breakeven just past the end strike (|delta| ~0.01-0.02) is null too, though the
+    # overstatement there is tiny. If null turns out frequent on live chains, treat an end |delta| < 0.03 as a zero tail.
     if len(puts) >= 2 and not (puts[0].strike <= lo and hi <= puts[-1].strike):
         return None, {"put_strikes": [puts[0].strike, puts[-1].strike]}
     pl, ph = _prob_below(puts, lo), _prob_below(puts, hi)

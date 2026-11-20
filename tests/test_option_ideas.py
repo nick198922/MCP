@@ -400,6 +400,21 @@ def test_message_without_ideas():
     assert "ідей нема" in text
 
 
+def test_strangle_line_drops_the_probability_only_off_the_put_grid():
+    """prob_profit comes from the shared analytics function (review 2026-11-19, finding 1): on a narrow put grid a
+    strangle breakeven off the put strikes gives null, and the generator prints the line without ``(≈ N%)``."""
+    full = oi.long_strangle(QUOTES, EXP, NOW, "BTC")
+    assert full.prob_profit is not None  # breakevens inside the 54k..80k puts
+    line = tg.idea_block(1, full, 100.0)[2]
+    assert "нижче або вище за" in line and f"(≈ {full.prob_profit:.0%})" in line
+    narrow = [q for q in QUOTES if q.is_call or q.strike <= 70_000]  # puts end at 70k, below the upper breakeven
+    s = oi.long_strangle(narrow, EXP, NOW, "BTC")
+    assert s.breakevens[1] > 70_000 and s.prob_profit is None and s.extra == {"put_strikes": [54_000.0, 70_000.0]}
+    line = tg.idea_block(1, s, 100.0)[2]
+    assert line.endswith(tg._h(f"нижче або вище за {' і '.join(tg._px(b, 'BTC') for b in s.breakevens)}"))
+    assert "≈" not in line and "%" not in line
+
+
 # --- settlement of the ideas journal (card item 3) --------------------------------------------------------------
 
 AFTER = EXP + 3_600_000  # an hour after the 08:00 UTC expiry

@@ -16,7 +16,8 @@ records whose expiry has passed: Bybit's delivery price of one of the idea's leg
 rt.exchanges) → ``option_ideas.settle_idea`` (USD and R, net of Bybit's delivery fee on legs in the money; records
 settled before 18.11 have no fee deducted and keep their numbers), written back in place of the open record (once: settled
 records are never touched again; malformed lines are kept as they are; no delivery price → the record stays open
-until the next run). The message then carries a per-rule line of the settled record (n, sum of R, share in plus;
+until the next run; one ``settle_idea`` refuses at any price stays open and is counted as unsettled in the journal
+line). The message then carries a per-rule line of the settled record (n, sum of R, share in plus;
 a conclusion only from ``option_ideas.MIN_SETTLED`` ideas over ``MIN_CLUSTERS`` expiries, its standard error per
 expiry cluster, since the ideas of one expiry are not independent). The forecast-log line under the ideas comes from
 scripts/forecast_weekly_tg.py's own summary functions (offline, read-only).
@@ -156,16 +157,31 @@ def forecast_line(path: Path) -> str:
 VERDICT = {"plus": "плюс", "minus": "мінус", "flat": "від нуля не відрізняється"}
 
 
-def journal_lines(records: list[dict]) -> list[str]:
+def unsettled_count(records: list[dict], now_ms: int) -> int:
+    """Open records past their expiry that ``oi.settle_idea`` refuses at any delivery price (a later leg without a
+    positive IV, a leg expiring before the idea, a malformed record), so they would stay open forever. Records still
+    waiting for Bybit's delivery price are not counted; records without an expiry cannot be placed and are not either."""
+    n = 0
+    for r in records:
+        exp = oi._num(r.get("expiry_ms")) if isinstance(r, dict) and r.get("status") == "open" else None
+        if exp is not None and exp <= now_ms and not oi._settleable(r):
+            n += 1
+    return n
+
+
+def journal_lines(records: list[dict], now_ms: int | None = None) -> list[str]:
     """The ideas journal under the ideas: one line per rule with settled ideas (n, sum of R, share in plus; a
     conclusion only from oi.MIN_SETTLED ideas over oi.MIN_CLUSTERS expiries of that rule, as the mean R per expiry
-    ± 2 cluster standard errors), or a count of the open ones; [] for an empty journal."""
+    ± 2 cluster standard errors), or a count of the open ones; [] for an empty journal. With ``now_ms`` the head line
+    also names the open records that cannot be settled (``unsettled_count``), when there are any."""
     recs = [r for r in records if isinstance(r, dict)]
     n_open = sum(1 for r in recs if r.get("status") == "open")
+    n_bad = unsettled_count(recs, now_ms) if now_ms is not None else 0
+    opened = f"відкритих {n_open}" + (f", з них не розраховано після експірації {n_bad}" if n_bad else "")
     summ = oi.rule_summary(recs)
     if not summ:
-        return [_h(f"Журнал ідей: відкритих {n_open}, розрахованих на експірації ще нема.")] if n_open else []
-    out = [_h(f"Журнал ідей (ціна поставки Bybit; R = результат / макс. збиток; відкритих {n_open}):")]
+        return [_h(f"Журнал ідей: {opened}, розрахованих на експірації ще нема.")] if n_open else []
+    out = [_h(f"Журнал ідей (ціна поставки Bybit; R = результат / макс. збиток; {opened}):")]
     for code, s in summ.items():
         name = f"{code} {oi.RULES[code].name}" if code in oi.RULES else code
         line = f"{name}: n {s['n']}, сума R {s['sum_r']:+.2f}, у плюсі {s['win_share']:.0%}"
@@ -389,7 +405,7 @@ def main(argv: list[str] | None = None) -> int:
     rows = read_log(IDEAS_LOG)
     per_coin, prices = asyncio.run(gather(a.risk, now_ms, due(rows, now_ms)))
     rows, n_settled = settle_rows(rows, prices, now_ms)
-    journal = journal_lines([rec for _, rec in rows if rec is not None])
+    journal = journal_lines([rec for _, rec in rows if rec is not None], now_ms)
     text = build_message(per_coin, now, a.risk, forecast_line(a.db), journal)
     if a.print_only:
         print(text)

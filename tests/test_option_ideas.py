@@ -619,6 +619,63 @@ def test_calendar_leg_that_cannot_be_valued_is_not_settled():
     assert math.isnan(oi.payoff_at(no_exp, CAL_K))
 
 
+@pytest.mark.parametrize("drop", [True, False])
+def test_calendar_without_the_idea_expiry_is_nan_and_never_settled(drop):
+    """A calendar whose idea lost its expiry (key gone or null): the back leg cannot be placed in time."""
+    d = _calendar()
+    d = {k: v for k, v in d.items() if k != "expiry_ms"} if drop else {**d, "expiry_ms": None}
+    for price in (30_000.0, CAL_K, 130_000.0):
+        assert math.isnan(oi.payoff_at(d, price))
+        assert oi.settle_idea(d, price, AFTER) is None
+    assert tg.unsettled_count([{**d, "status": "open"}], AFTER) == 0  # no expiry: not known to be past it
+
+
+def _b76_call(f: float, k: float, t: float, iv: float) -> float:
+    """Black-76 call (r = 0), written out here as an independent reference."""
+    d1 = (math.log(f / k) + iv * iv * t / 2) / (iv * math.sqrt(t))
+    return f * _ncdf(d1) - k * _ncdf(d1 - iv * math.sqrt(t))
+
+
+@pytest.mark.parametrize("price", [30_000.0, 60_000.0, CAL_K, 75_000.0, 130_000.0])
+def test_put_calendar_with_a_later_put_leg_matches_the_call_calendar_by_parity(price):
+    """Same strike, same debit: P = C − (F − K) and (K − F)+ = (F − K)+ − (F − K) make the payoffs equal."""
+    call = _calendar()
+    put = {**call, "kind": "put_calendar", "legs": [{**g, "is_call": False} for g in call["legs"]]}
+    assert put["legs"][1]["expiry_ms"] == BACK and put["legs"][1]["iv"] == CAL_IV
+    assert oi.payoff_at(put, price) == pytest.approx(oi.payoff_at(call, price), abs=1e-6)
+    s = oi.settle_idea(put, price, AFTER)
+    fee = 0.00015 * price if price < CAL_K else 0.0  # only the front (sold) put is delivered, when in the money
+    assert s["delivery_fee_per_unit"] == pytest.approx(fee)
+    assert s["pnl_per_unit"] == pytest.approx(oi.payoff_at(put, price) - fee)
+
+
+@pytest.mark.parametrize("price", [30_000.0, CAL_K, 75_000.0, 130_000.0])
+def test_reverse_calendar_sells_the_later_leg_and_mirrors_the_calendar(price):
+    cal = _calendar()
+    flip = {"buy": "sell", "sell": "buy"}
+    rev = {**cal, "net": CAL_DEBIT, "legs": [{**g, "action": flip[g["action"]]} for g in cal["legs"]]}
+    assert oi.payoff_at(rev, price) == pytest.approx(-oi.payoff_at(cal, price), abs=1e-6)
+    s = oi.settle_idea(rev, price, AFTER)
+    fee = 0.00015 * price if price > CAL_K else 0.0  # the bought front call is delivered; the sold back one is not
+    assert s["delivery_fee_per_unit"] == pytest.approx(fee)
+    assert s["pnl_per_unit"] == pytest.approx(-oi.payoff_at(cal, price) - fee)
+
+
+@pytest.mark.parametrize("price", [60_000.0, 66_000.0, 66_040.0, 68_000.0, 75_000.0])
+def test_reverse_diagonal_against_a_reference_black76(price):
+    """Bought front call 66 000, sold back call 70 000 (28 days later, IV 0.45), net debit 300 after fees."""
+    back = {**_leg("sell", True, 70_000), "expiry_ms": BACK, "iv": 0.45}
+    rec = _rec("call_diagonal", [_leg("buy", True, 66_000), back], net=-300, max_loss=5_000, qty=0.01)
+    expected = -300 + max(price - 66_000, 0.0) - _b76_call(price, 70_000, 28 / 365, 0.45)
+    assert oi.payoff_at(rec, price) == pytest.approx(expected, rel=1e-9, abs=1e-6)
+    fee = min(0.00015 * price, 0.125 * (price - 66_000)) if price > 66_000 else 0.0  # 66 040: the 12.5 % cap binds
+    s = oi.settle_idea(rec, price, AFTER)
+    assert s["delivery_fee_per_unit"] == pytest.approx(fee)
+    assert s["pnl_per_unit"] == pytest.approx(expected - fee, rel=1e-9, abs=1e-6)
+    assert s["r"] == pytest.approx((expected - fee) / 5_000, rel=1e-9, abs=1e-9)
+    assert s["pnl_usd"] == pytest.approx((expected - fee) * 0.01, rel=1e-9, abs=1e-8)
+
+
 def test_bybit_option_symbol_and_delivery_parse():
     assert oi.bybit_option_symbol("BTC", EXP, 70_000.0, True) == "BTC-27NOV26-70000-C-USDT"
     seven = int(datetime(2026, 11, 7, 8, tzinfo=UTC).timestamp() * 1000)
@@ -849,3 +906,33 @@ def test_journal_lines_in_the_message():
     assert "без висновку" not in lines[1]
     text = tg.build_message([([], {"coin": "BTC", "skip": "x"})], NOW / 1000, 100.0, journal=lines)
     assert "Журнал ідей" in text and text.index("Журнал ідей") < text.index("Не надсилаємо")
+
+
+def test_journal_counts_open_records_settle_idea_refuses():
+    no_iv = {**_calendar(iv=None), "status": "open"}
+    early = {**_calendar(back=EXP - 86_400_000), "status": "open"}  # the "later" leg expires a day before the idea
+    broken = {**CONDOR, "legs": 5}
+    recs = [
+        CALL_SPREAD,  # settleable, only waiting for the delivery price: not counted
+        {**_calendar(), "status": "open"},  # a valid calendar: not counted
+        no_iv,
+        early,
+        broken,
+        {**no_iv, "expiry_ms": EXP + WEEK},  # not expired yet
+        {**no_iv, "status": "settled"},
+        _settled(0.5),
+    ]
+    assert tg.unsettled_count(recs, AFTER) == 3
+    assert tg.unsettled_count(recs, EXP - 1) == 0
+    lines = tg.journal_lines(recs, AFTER)
+    assert "відкритих 6, з них не розраховано після експірації 3)" in lines[0]
+    assert "не розраховано" not in tg.journal_lines(recs)[0]  # without the clock: the line as before
+    assert "не розраховано" not in tg.journal_lines(recs, EXP - 1)[0]
+    assert tg.journal_lines([no_iv], AFTER) == [
+        "Журнал ідей: відкритих 1, з них не розраховано після експірації 1, розрахованих на експірації ще нема."
+    ]
+    # the same record through the journal run: a delivery price is there, settle_idea refuses, the line stays as it was
+    rows = _rows(no_iv)
+    out, n = tg.settle_rows(rows, {("BTC", EXP): CAL_K}, AFTER)
+    assert n == 0 and out == rows
+    assert tg.unsettled_count([r for _, r in out], AFTER) == 1

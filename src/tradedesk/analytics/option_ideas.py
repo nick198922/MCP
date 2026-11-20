@@ -893,10 +893,15 @@ def settle_idea(idea: Any, price: Any, now_ms: int) -> dict[str, Any] | None:
 
     ``delivery_fee_per_unit`` = ``delivery_fee`` (Bybit's fee on the in-the-money legs, USD per unit);
     ``pnl_per_unit`` = ``payoff_at`` (intrinsic value of the legs, Black-76 value at the logged IV for a leg expiring
-    later, plus the logged net premium, entry fees included) minus that fee; ``pnl_usd`` = ``pnl_per_unit`` times the logged size ``qty`` (None when the idea could not be sized
-    under the risk); ``r`` = ``pnl_per_unit`` / logged ``max_loss`` (−1 = the whole logged risk lost; the logged
-    ``max_loss`` has no delivery fee, so a loss with legs in the money can be a little below −1). Records settled
-    before the fee was deducted keep their numbers (the journal never settles a record twice)."""
+    later, plus the logged net premium, entry fees included) minus that fee; ``pnl_usd`` = ``pnl_per_unit`` times
+    the logged size ``qty`` (None when the idea could not be sized under the risk); ``r`` = ``pnl_per_unit`` / logged
+    ``max_loss`` (−1 = the whole logged risk lost; the logged ``max_loss`` has no delivery fee, so a loss with legs
+    in the money can be a little below −1). Records settled before the fee was deducted keep their numbers (the
+    journal never settles a record twice).
+
+    The forward of a later leg is taken equal to the delivery ``price`` (r = 0, no basis between the two expiries).
+    A record whose later leg has no positive IV, or whose leg expires before the idea, is never settled (None at any
+    price): the journal keeps it open and counts it as unsettled."""
     px, exp = _num(price), _num(idea.get("expiry_ms")) if isinstance(idea, dict) else None
     if px is None or px <= 0 or exp is None or now_ms < exp or not _settleable(idea):
         return None

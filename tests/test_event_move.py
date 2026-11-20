@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 
 import httpx
 import pytest
@@ -204,6 +204,12 @@ def test_events_in_event_window_boundaries_and_the_event_itself():
     assert events_in_event_window([], EV12, E10, E17) == []
 
 
+def test_events_in_event_window_returns_a_duplicated_time_once():
+    inside = T0 + timedelta(days=15)
+    same_instant = inside.astimezone(timezone(timedelta(hours=2)))  # equal datetime, other tz: still one event
+    assert events_in_event_window([inside, E17, inside, same_instant, E17], EV12, E10, E17) == [inside, E17]
+
+
 def test_base_window_is_short_thresholds():
     assert base_window_is_short(0.5, 0.75) is True  # under 1 day
     assert base_window_is_short(3.0, 7.0) is True  # under half the event window (3.5)
@@ -218,6 +224,15 @@ async def test_tool_other_event_inside_the_event_window_warns():
     assert env["ok"] is True and env["data"]["excess_event_move_pct"] is not None
     w = next(w for w in env["warnings"] if w.startswith("another event inside the event window"))
     assert "(30OCT26, 27NOV26]" in w and "2026-11-18T19:00:00+00:00" in w and "attributed to the main event" in w
+
+
+async def test_tool_duplicated_other_event_is_printed_once():
+    srv = _server({OCT: 0.40, NOV: 0.55, MAR: 0.50})
+    dup = ["2026-11-18T19:00:00Z", "2026-11-18T19:00:00Z"]
+    env = await call(srv, "deribit_event_move", event_ts="2026-11-05T19:00:00Z", other_events=dup)
+    assert env["ok"] is True and env["data"]["excess_event_move_pct"] is not None
+    w = next(w for w in env["warnings"] if w.startswith("another event inside the event window"))
+    assert w.count("2026-11-18T19:00:00+00:00") == 1
 
 
 @pytest.mark.parametrize(

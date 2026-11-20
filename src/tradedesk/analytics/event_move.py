@@ -178,10 +178,11 @@ def excess_event_move(event_var: float, base_forward_var: float, t1: float, t2: 
 
 
 def events_in_event_window(other_events: Iterable[datetime], event: datetime, start: datetime, end: datetime) -> list[datetime]:
-    """``other_events`` that fall inside the event's own window (start, end] = (E1, E2], sorted; the event itself
-    (equal to ``event``) is not counted. Their variance is in w2 - w1 too, so the excess is attributed to the main
-    event although it is not that event's alone. Aware UTC datetimes; pure, no clock."""
-    return sorted(x for x in other_events if start < x <= end and x != event)
+    """``other_events`` that fall inside the event's own window (start, end] = (E1, E2], sorted and each time once
+    (duplicates collapsed); the event itself (equal to ``event``) is not counted. Their variance is in w2 - w1 too, so
+    the excess is attributed to the main event although it is not that event's alone. Aware UTC datetimes; pure, no
+    clock."""
+    return sorted({x for x in other_events if start < x <= end and x != event})
 
 
 SHORT_BASE_DAYS = 1.0  # a base window under one day is a difference of two nearly equal total variances

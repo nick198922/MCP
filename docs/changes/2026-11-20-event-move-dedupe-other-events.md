@@ -1,0 +1,3 @@
+- Картка [standing-improvements](../ideas/IDEA-20261102-standing-improvements.md), пункт 423 ([рев'ю event-move-warnings](../reviews/2026-11-20-event-move-warnings.md), зауваження 1): `events_in_event_window` (`analytics/event_move.py`) повертає кожен час іншої події один раз (`sorted({...})`), тож попередження `deribit_event_move` «another event inside the event window …» більше не друкує ту саму подію двічі. Вікно (E1, E2], виключення самої події, числа й одиниці — без змін.
+- Тести (`tests/test_event_move.py`): дубль часу (зокрема той самий момент в іншому часовому поясі) у `other_events` → один запис; інструмент із двома однаковими `other_events` → час у попередженні рівно один раз.
+- Живцем не перевіряв (за вказівкою координатора — лише lint і цільові тести).

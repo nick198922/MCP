@@ -804,3 +804,25 @@ async def test_demo_status_default_is_compact_and_details_are_opt_in(tmp_path):
             s["fill"] = {k: v for k, v in s["fill"].items() if k != "notes"}
     assert default["data"]["setups"] == slim
     assert default["data"]["s12_stop_rule"] == full["data"]["s12_stop_rule"] and default["data"]["notes"] == full["data"]["notes"]
+
+
+# review of item 409, finding 3: the stuck / orphaned / P&L-mismatch notes name every trade, so a mass of orphans grew
+# the default answer past its bound; by default a long note is cut, the full text is opt-in
+async def test_demo_status_default_cuts_long_notes_and_stays_bounded(tmp_path):
+    rows = demo_rows() + [_demo_row(f"orph{i}", "S38", "orphaned", DEMO_V9 + i * 60_000, version="v5") for i in range(400)]
+    db = str(tmp_path / "demo.sqlite")
+    await demo_seed(db, rows)
+    default, full = await demo_envs(db, {}, {"include_details": True})
+    assert default["ok"] and full["ok"]
+    assert _size(default) <= MAX_DEFAULT_CHARS, _size(default)
+    (long_note,) = [n for n in full["data"]["notes"] if n.startswith("демо-угоди orphaned") and "): 401 — " in n]
+    assert len(long_note) > MAX_DEFAULT_CHARS  # without the cut this one note alone breaks the bound
+    d_notes, f_notes = default["data"]["notes"], full["data"]["notes"]
+    assert len(d_notes) == len(f_notes)
+    for d, f in zip(d_notes, f_notes, strict=True):  # short notes unchanged, a long one is the head of the full text
+        if len(f) <= 600:
+            assert d == f
+        else:
+            assert d.endswith(" …") and f.startswith(d[:-2]) and len(d) <= 602
+    assert any("1 long note(s) cut to 600 characters" in w for w in default["warnings"])
+    assert not any("note(s) cut" in w for w in full["warnings"])

@@ -21,6 +21,8 @@ from ._util import READ_ONLY, STORE_ERRORS, drop_corrupt_rows, r, store_failed, 
 
 COMPACT_OPEN = 10  # open positions listed in full by default (newest fills first); the rest only counted
 RECENT_CLOSED = 50  # closed trades listed with include_details (newest closes first)
+MAX_ROWS = 100_000  # demo_trade rows read (newest first); a read that fills it may leave the oldest trades out
+NOTE_CHARS = 600  # a demo note longer than this (a long list of stuck / orphaned / P&L-mismatch trades) is cut by default
 # demo_trade columns the analytics or the views read as numbers (a string / inf there drops the row with a warning)
 NUMERIC = (
     "signal_ts", "entry", "stop", "target", "qty", "leverage", "risk_usd", "fill", "opened_ts", "exit", "closed_ts",
@@ -158,10 +160,12 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "also have `fill`: share of placements past their deadline that filled (decimal) against the passport share "
             "with a 95 % Wilson CI. `s12_stop_rule`: the owner's S12 stop rule (v9: n >= 30 and mean below -0.827 -> stop "
             "and review the execution; v4 entry: n >= 100 and below -0.524 -> drop) with a 95 % CI clustered by signal day. "
-            "`notes` (Ukrainian): stuck, orphaned and P&L-mismatch trades, 'no' verdicts on 3+ setups. `open`: filled positions not "
+            "`notes` (Ukrainian): stuck, orphaned and P&L-mismatch trades, 'no' verdicts on 3+ setups; by default a note "
+            f"longer than {NOTE_CHARS} characters is cut (ends with ' …', a warning says so). `open`: filled positions not "
             f"closed yet (stop = break-even stop once moved; prices in USDT), newest {COMPACT_OPEN} by default with counts per "
             "setup. include_details=true adds every open position with more fields, each setup's name, passport source and "
-            f"notes (clustered CI, fees vs the backtest model, orphan scenarios), and the {RECENT_CLOSED} most recent closed "
+            f"notes (clustered CI, fees vs the backtest model, orphan scenarios), the full text of every demo note, and the "
+            f"{RECENT_CLOSED} most recent closed "
             "trades. Consistent is not evidence of an edge (see `warnings`). Needs the store the demo trader writes "
             "(TRADEDESK_DB_PATH)."
         ),
@@ -171,8 +175,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
             bool,
             Field(
                 description=(
-                    "Every open position with more fields, per-setup names, passport sources and notes, and the "
-                    f"{RECENT_CLOSED} most recent closed trades (default: compact)."
+                    "Every open position with more fields, per-setup names, passport sources and notes, the full text "
+                    f"of every demo note, and the {RECENT_CLOSED} most recent closed trades (default: compact)."
                 )
             ),
         ] = False,
@@ -182,9 +186,14 @@ def register(server: MCPServer, rt: Runtime) -> None:
         if not await store_ready(b, rt, "the demo trader's journal"):
             return b.build(None, ok=False)
         try:
-            raw = await rt.store.demo_trade_list(limit=100_000)
+            raw = await rt.store.demo_trade_list(limit=MAX_ROWS)
         except STORE_ERRORS as e:
             return store_failed(b, e)
+        if len(raw) >= MAX_ROWS:
+            b.warn(
+                f"the store read stopped at its cap of {MAX_ROWS} demo_trade rows (newest first): older trades may be left "
+                "out, so n and mean R may differ from scripts/checkpoint_report.py"
+            )
         trades = drop_corrupt_rows(b, raw, "demo_trade", NUMERIC, key="link_id")
         # the report reads ORDER BY signal_ts (NULL first); the store lists newest first
         trades.sort(key=lambda t: (t.get("signal_ts") is not None, t.get("signal_ts") or 0))
@@ -205,12 +214,16 @@ def register(server: MCPServer, rt: Runtime) -> None:
         for t in opened:
             open_by_setup[str(t.get("setup"))] = open_by_setup.get(str(t.get("setup")), 0) + 1
         shown = opened if include_details else opened[:COMPACT_OPEN]
+        notes = block["notes"]
+        if not include_details and (cut := sum(len(n) > NOTE_CHARS for n in notes)):
+            notes = [n if len(n) <= NOTE_CHARS else n[:NOTE_CHARS].rstrip() + " …" for n in notes]
+            b.warn(f"compact answer: {cut} long note(s) cut to {NOTE_CHARS} characters; include_details=true for the full text")
         data: dict[str, Any] = {
             "as_of": now.astimezone(UTC).isoformat(timespec="seconds"),
             "trades_by_status": dict(sorted(by_status.items())),
             "setups": setups,
             "s12_stop_rule": s12,
-            "notes": block["notes"],
+            "notes": notes,
             "open_count": len(opened),
             "open_by_setup": dict(sorted(open_by_setup.items())),
             "open": [_open_view(t, include_details) for t in shown],

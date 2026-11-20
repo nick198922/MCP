@@ -10,7 +10,14 @@ import pytest
 
 from conftest import EXPIRIES, NOW, SPOT, FakeEx, State, make_transports
 from test_server import call
-from tradedesk.analytics.event_move import base_forward_iv, excess_event_move, forward_variance, implied_event_move
+from tradedesk.analytics.event_move import (
+    base_forward_iv,
+    base_window_is_short,
+    events_in_event_window,
+    excess_event_move,
+    forward_variance,
+    implied_event_move,
+)
 from tradedesk.analytics.options import black76_price
 from tradedesk.config import Settings
 from tradedesk.runtime import Runtime
@@ -184,6 +191,61 @@ def test_excess_event_move_rejects_bad_inputs():
     ):
         with pytest.raises(ValueError):
             excess_event_move(*args)
+
+
+# --- caveats on the excess (item 424) -----------------------------------------------------------------------------
+
+
+def test_events_in_event_window_boundaries_and_the_event_itself():
+    inside, later = T0 + timedelta(days=15), T0 + timedelta(days=20)
+    assert events_in_event_window([later, inside, E17], EV12, E10, E17) == [inside, E17]  # E2 itself is inside (E1, E2]
+    assert events_in_event_window([E10, later, E3], EV12, E10, E17) == []  # E1 is not inside; outside events ignored
+    assert events_in_event_window([EV12], EV12, E10, E17) == []  # the event itself is not "another event"
+    assert events_in_event_window([], EV12, E10, E17) == []
+
+
+def test_base_window_is_short_thresholds():
+    assert base_window_is_short(0.5, 0.75) is True  # under 1 day
+    assert base_window_is_short(3.0, 7.0) is True  # under half the event window (3.5)
+    assert base_window_is_short(3.5, 7.0) is False  # exactly half: not short
+    assert base_window_is_short(1.0, 2.0) is False  # exactly 1 day and half: not short
+    assert base_window_is_short(7.0, 7.0) is False and base_window_is_short(119.0, 28.0) is False
+
+
+async def test_tool_other_event_inside_the_event_window_warns():
+    srv = _server({OCT: 0.40, NOV: 0.55, MAR: 0.50})
+    env = await call(srv, "deribit_event_move", event_ts="2026-11-05T19:00:00Z", other_events=["2026-11-18T19:00:00Z"])
+    assert env["ok"] is True and env["data"]["excess_event_move_pct"] is not None
+    w = next(w for w in env["warnings"] if w.startswith("another event inside the event window"))
+    assert "(30OCT26, 27NOV26]" in w and "2026-11-18T19:00:00+00:00" in w and "attributed to the main event" in w
+
+
+@pytest.mark.parametrize(
+    "other",
+    [
+        ["2026-10-30T08:00:00Z"],  # exactly E1: not inside (E1, E2]
+        ["2026-11-05T19:00:00Z"],  # the event itself
+        ["2026-10-20T12:00:00Z", "2027-04-01T12:00:00Z"],  # outside every window used
+    ],
+)
+async def test_tool_other_event_outside_or_on_the_boundary_does_not_warn(other):
+    srv = _server({OCT: 0.40, NOV: 0.55, MAR: 0.50})
+    env = await call(srv, "deribit_event_move", event_ts="2026-11-05T19:00:00Z", other_events=other)
+    assert env["ok"] is True and env["data"]["excess_event_move_pct"] is not None
+    assert not any("another event inside the event window" in w for w in env["warnings"])
+    # the base window (27NOV26, 26MAR27] is 119 days, longer than the 28-day event window: no short-base warning
+    assert not any("base window is short" in w for w in env["warnings"])
+
+
+async def test_tool_short_base_window_warns():
+    # event in (27NOV26, 26MAR27] (119 d); the only base is (30OCT26, 27NOV26] (28 d), under half of it
+    srv = _server({OCT: 0.40, NOV: 0.45, MAR: 0.60})
+    env = await call(srv, "deribit_event_move", event_ts="2026-12-16T19:00:00Z")
+    assert env["ok"] is True, env["missing"]
+    d = env["data"]
+    assert d["base_window"]["side"] == "before" and d["excess_event_move_pct"] is not None
+    w = next(w for w in env["warnings"] if w.startswith("the base window is short"))
+    assert "28.00 days" in w and "119.00" in w and "badly biased" in w
 
 
 # --- the tool ------------------------------------------------------------------------------------------------------

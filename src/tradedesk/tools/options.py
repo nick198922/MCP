@@ -8,7 +8,13 @@ from mcp.server.mcpserver import MCPServer
 from pydantic import Field
 
 from ..analytics import probability
-from ..analytics.event_move import base_forward_iv, excess_event_move, implied_event_move
+from ..analytics.event_move import (
+    base_forward_iv,
+    base_window_is_short,
+    events_in_event_window,
+    excess_event_move,
+    implied_event_move,
+)
 from ..analytics.instruments import expiry_token
 from ..analytics.options import (
     OptionRow,
@@ -440,7 +446,8 @@ def register(server: MCPServer, rt: Runtime) -> None:
             "window's variance is not above the base (no event premium in the marks) and null with a warning when no "
             "neighbouring window qualifies (no expiry there, another event inside it, or calendar arbitrage). It is an "
             "estimate, not a forecast: it assumes the neighbouring window's forward vol is the event window's vol without the "
-            "event (term structure, weekends and unlisted events bias it). "
+            "event (term structure, weekends and unlisted events bias it); a warning flags it when one of `other_events` lies "
+            "inside the event window itself or the base window is under 1 day or under half the event window. "
             "`vs_expected_move` puts it next to deribit_expected_move for the later expiry "
             "(ATM straddle in percent of the forward, sigma move to expiry) and gives the event's share of that expiry's "
             "variance. Risk-neutral, not a forecast. A non-positive forward variance (calendar arbitrage in the marks) gives no "
@@ -563,6 +570,20 @@ def register(server: MCPServer, rt: Runtime) -> None:
                 f"{expiry_token(base['start'])}..{expiry_token(base['end'])}), so excess_event_move is 0: "
                 "no event premium in the marks"
             )
+        if excess is not None:
+            inside = events_in_event_window(others, ev, e1, e2)
+            if inside:
+                b.warn(
+                    f"another event inside the event window ({expiry_token(e1)}, {expiry_token(e2)}]: "
+                    f"{', '.join(x.isoformat() for x in inside)}; its variance is attributed to the main event, "
+                    "so excess_event_move is not that event's alone"
+                )
+            if base_window_is_short(base["window_days"], res["window_days"]):
+                b.warn(
+                    f"the base window is short ({base['window_days']:.2f} days vs the event window's "
+                    f"{res['window_days']:.2f}; under 1 day or under half of it): its forward variance is a noisy "
+                    "difference of two IVs, so excess_event_move may be badly biased"
+                )
         if res["calendar_arbitrage"]:
             b.miss("event_move", "tradedesk", "data_unavailable", "non-positive forward variance between the expiries")
             b.warn(

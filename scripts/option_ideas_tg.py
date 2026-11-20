@@ -13,7 +13,8 @@ history in TRADEDESK_DB_PATH, defaulting to --db), so the numbers are the ones t
 strongest evidence first, each with its rule and evidence status; ✗ and unmeasured rules are never sent.
 Every sent idea is appended to IDEAS_LOG (JSON lines, with all legs and prices). Each run first settles the open
 records whose expiry has passed: Bybit's delivery price of one of the idea's legs (v5 market/delivery-price, through
-rt.exchanges) → ``option_ideas.settle_idea`` (USD and R, net of Bybit's delivery fee on legs in the money; records
+rt.exchanges) → ``option_ideas.settle_idea`` (USD and R, net of Bybit's delivery fee on legs in the money; a P10
+calendar's month legs are closed at this run's Bybit bid less the taker fee, else valued by the model; records
 settled before 18.11 have no fee deducted and keep their numbers), written back in place of the open record (once: settled
 records are never touched again; malformed lines are kept as they are; no delivery price → the record stays open
 until the next run; one ``settle_idea`` refuses at any price stays open and is counted as unsettled in the journal
@@ -58,6 +59,7 @@ KIND = {
     "put_debit_spread": "ведмежий пут-спред",
     "call_debit_spread": "бичачий кол-спред",
     "long_strangle": "купити рух (стренгл)",
+    "straddle_calendar": "календар (продати тижневий стреддл, купити місячний)",
 }
 TREND = {"bear": "ведмежий", "bull": "бичачий", "neutral": "нейтральний"}
 CAVEAT = (
@@ -76,10 +78,12 @@ def _px(x: float, coin: str) -> str:
 
 
 def _legs_line(idea: oi.Idea) -> str:
+    multi = any(leg.expiry_ms not in (None, idea.expiry_ms) for leg in idea.legs)  # a calendar: name each leg's expiry
     parts = []
     for leg in idea.legs:
         verb = "продати" if leg.action == "sell" else "купити"
-        parts.append(f"{verb} {'кол' if leg.is_call else 'пут'} {_px(leg.strike, idea.coin)}")
+        when = f" ({oi.expiry_label(leg.expiry_ms or idea.expiry_ms)})" if multi else ""
+        parts.append(f"{verb} {'кол' if leg.is_call else 'пут'} {_px(leg.strike, idea.coin)}{when}")
     return " · ".join(parts)
 
 
@@ -91,13 +95,18 @@ def idea_block(n: int, idea: oi.Idea, risk: float) -> list[str]:
     else:
         money = f"Ціна {_usd(-idea.net)} (це і є ризик)"
     rr = idea.reward_to_risk
-    if idea.max_profit is None:
+    calendar = idea.kind == "straddle_calendar"
+    if calendar:  # max profit and breakevens are model values (month IV as at entry), not an R:R to quote
+        money = f"Дебет {_usd(-idea.net)} (ризик ≈ дебет)"
+        if idea.max_profit is not None:
+            money += f" · на страйку за моделлю {_usd(idea.max_profit)} (IV місячного як на вході)"
+    elif idea.max_profit is None:
         money += " · прибуток без межі"
     elif rr:
         ratio = f"1 : {1 / rr:.1f}" if rr < 1 else f"{rr:.1f} : 1"
         money += f" · макс. прибуток {_usd(idea.max_profit)} · прибуток : ризик = {ratio}"
     be = " і ".join(_px(b, c) for b in idea.breakevens)
-    if idea.kind == "iron_condor":
+    if idea.kind in ("iron_condor", "straddle_calendar"):
         where = f"заробляє, якщо {oi.expiry_label(idea.expiry_ms)} {c} між {be}"
     elif idea.kind == "long_strangle":
         where = f"заробляє, якщо {c} нижче або вище за {be}"
@@ -105,6 +114,12 @@ def idea_block(n: int, idea: oi.Idea, risk: float) -> list[str]:
         where = f"беззбиток {be}"
     if idea.prob_profit is not None:
         where += f" (≈ {idea.prob_profit:.0%})"
+    if calendar:
+        month = idea.extra.get("month_expiry_ms")
+        where += " і місячна IV не впаде сильно"
+        if month:
+            where += f"; куплений стреддл {oi.expiry_label(month)} закрити після експірації фронту"
+        where += "; продані ноги Bybit маржує окремо (маржа більша за дебет)"
     if idea.qty > 0:
         sz = f"Розмір під {_usd(risk)}: <b>{idea.qty:g} {c}</b> (ризик {_usd(idea.qty * idea.max_loss)})"
     else:
@@ -117,10 +132,13 @@ def idea_block(n: int, idea: oi.Idea, risk: float) -> list[str]:
 
 
 def note_line(code: str, ctx: dict, coin: bool = True) -> str:
-    """A context rule whose condition holds (a tag or a risk rule, not a trade)."""
+    """A context rule whose condition holds (a tag or a risk rule, not a trade), or a trade rule whose condition holds
+    but whose structure could not be priced (``ctx['unpriced']``: the reason)."""
     rule, chk = oi.RULES[code], ctx["checks"][code]
     who = f"{ctx['coin']}: " if coin else ""
-    return _h(f"{who}{chk['detail']}. Правило: {rule.code} {rule.name} · докази: {rule.evidence} (контекст, не угода)")
+    why = (ctx.get("unpriced") or {}).get(code)
+    tail = f"(контекст, не угода: конструкцію за цінами Bybit не побудовано — {why})" if why else "(контекст, не угода)"
+    return _h(f"{who}{chk['detail']}. Правило: {rule.code} {rule.name} · докази: {rule.evidence} {tail}")
 
 
 def not_sent_line() -> str:
@@ -173,14 +191,20 @@ def journal_lines(records: list[dict], now_ms: int | None = None) -> list[str]:
     """The ideas journal under the ideas: one line per rule with settled ideas (n, sum of R, share in plus; a
     conclusion only from oi.MIN_SETTLED ideas over oi.MIN_CLUSTERS expiries of that rule, as the mean R per expiry
     ± 2 cluster standard errors), or a count of the open ones; [] for an empty journal. With ``now_ms`` the head line
-    also names the open records that cannot be settled (``unsettled_count``), when there are any."""
+    also names the open records that cannot be settled (``unsettled_count``), when there are any. Records settled by
+    the model (``oi.model_settled``: a calendar's month leg had no Bybit price) are counted on the head line apart and
+    are not in any rule's n, R or conclusion."""
     recs = [r for r in records if isinstance(r, dict)]
     n_open = sum(1 for r in recs if r.get("status") == "open")
     n_bad = unsettled_count(recs, now_ms) if now_ms is not None else 0
+    n_model = sum(1 for r in recs if oi.model_settled(r))
     opened = f"відкритих {n_open}" + (f", з них не розраховано після експірації {n_bad}" if n_bad else "")
+    if n_model:
+        opened += f"; розраховано моделлю (без ціни Bybit) {n_model}, у результат не входять"
     summ = oi.rule_summary(recs)
     if not summ:
-        return [_h(f"Журнал ідей: {opened}, розрахованих на експірації ще нема.")] if n_open else []
+        tail = "інших розрахованих ще нема" if n_model else "розрахованих на експірації ще нема"
+        return [_h(f"Журнал ідей: {opened}, {tail}.")] if n_open or n_model else []
     out = [_h(f"Журнал ідей (ціна поставки Bybit; R = результат / макс. збиток; {opened}):")]
     for code, s in summ.items():
         name = f"{code} {oi.RULES[code].name}" if code in oi.RULES else code
@@ -310,14 +334,21 @@ async def fetch_deliveries(rt, wanted: dict[tuple[str, int], list[str]]) -> dict
     return out
 
 
-def settle_rows(rows: list[Row], prices: dict[tuple[str, int], float], now_ms: int) -> tuple[list[Row], int]:
+def settle_rows(
+    rows: list[Row], prices: dict[tuple[str, int], float], now_ms: int, books: dict[str, list[oi.Quote]] | None = None
+) -> tuple[list[Row], int]:
     """Open records with a delivery price become settled (``oi.settle_idea``); every other line is kept as it was.
-    Idempotent: a settled record is never settled again."""
+    Legs expiring after the record (a calendar's month legs) are closed at this run's Bybit quotes of the coin
+    (``books``, ``oi.close_prices``: bid for a bought leg), else valued by the model (``later_legs`` = "model", kept
+    out of the rule's result by ``journal_lines``). The later legs are closed when this run happens: the weekly run
+    on Saturday 12:00 Kyiv closes them ≈ 25-26 h after a Friday 08:00 UTC front, a week later when a run is missed
+    (``close_lag_h`` in the record). Idempotent: a settled record is never settled again."""
     out: list[Row] = []
     n = 0
     for line, rec in rows:
         k = _key(rec) if rec is not None and rec.get("status") == "open" else None
-        s = oi.settle_idea(rec, prices[k], now_ms) if k in prices else None
+        closes = oi.close_prices(rec, (books or {}).get(k[0], [])) if k in prices else None
+        s = oi.settle_idea(rec, prices[k], now_ms, closes) if k in prices else None
         if s is None:
             out.append((line, rec))
             continue
@@ -349,8 +380,9 @@ def write_log(rows: list[Row], path: Path = IDEAS_LOG) -> bool:
 
 async def gather(
     risk: float, now_ms: int, wanted: dict[tuple[str, int], list[str]] | None = None
-) -> tuple[list[tuple[list[oi.Idea], dict]], dict[tuple[str, int], float]]:
-    """The ideas per coin, and the Bybit delivery prices of the journal's ``wanted`` expiries."""
+) -> tuple[list[tuple[list[oi.Idea], dict]], dict[tuple[str, int], float], dict[str, list[oi.Quote]]]:
+    """The ideas per coin, the Bybit delivery prices of the journal's ``wanted`` expiries, and the coin's Bybit option
+    quotes of this run (to close the later legs of settled calendars)."""
     from mcp import Client
 
     from tradedesk.server import build_server
@@ -358,6 +390,7 @@ async def gather(
     server, rt = build_server()
     out = []
     prices: dict[tuple[str, int], float] = {}
+    books: dict[str, list[oi.Quote]] = {}
     try:
         prices = await fetch_deliveries(rt, wanted or {})
         async with Client(server) as c:
@@ -372,12 +405,13 @@ async def gather(
                     bars = (await rt.exchanges.ohlcv("binance", f"{coin}/USDT", "1d", 260)).data or []
                     closes = [float(b[4]) for b in bars[:-1] if isinstance(b, list | tuple) and len(b) >= 5]  # complete days only
                     # parse_bybit_tickers reads USDT-settled symbols only, as option_structure_quote prices them
-                    out.append(oi.ideas_for(coin, oi.parse_bybit_tickers(rows, coin), closes, now_ms, risk, market=market))
+                    books[coin] = quotes = oi.parse_bybit_tickers(rows, coin)
+                    out.append(oi.ideas_for(coin, quotes, closes, now_ms, risk, market=market))
                 except Exception as e:  # noqa: BLE001 - one coin failing must not drop the other
                     out.append(([], {"coin": coin, "skip": f"{type(e).__name__}"}))
     finally:
         await rt.aclose()
-    return out, prices
+    return out, prices, books
 
 
 def log_ideas(per_coin: list[tuple[list[oi.Idea], dict]], now: float, path: Path = IDEAS_LOG) -> int:
@@ -403,8 +437,8 @@ def main(argv: list[str] | None = None) -> int:
     now = time.time()
     now_ms = int(now * 1000)
     rows = read_log(IDEAS_LOG)
-    per_coin, prices = asyncio.run(gather(a.risk, now_ms, due(rows, now_ms)))
-    rows, n_settled = settle_rows(rows, prices, now_ms)
+    per_coin, prices, books = asyncio.run(gather(a.risk, now_ms, due(rows, now_ms)))
+    rows, n_settled = settle_rows(rows, prices, now_ms, books)
     journal = journal_lines([rec for _, rec in rows if rec is not None], now_ms)
     text = build_message(per_coin, now, a.risk, forecast_line(a.db), journal)
     if a.print_only:

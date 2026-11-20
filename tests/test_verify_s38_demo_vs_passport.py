@@ -311,6 +311,61 @@ def test_s3_runs_against_its_passport_with_the_30_10_splits(tmp_path, migrated_d
     assert not any("ліміт демо 2 входи" in x for x in lines)
 
 
+def test_open_and_other_are_classified_at_the_cutoff():
+    """opened_ts < cutoff <= closed_ts -> open at the cutoff, whatever the status is today; filled after it -> other."""
+    c = CUTOFF
+    rows = {
+        "closed_after": {"status": "closed", "signal_ts": c - 9, "opened_ts": c - 5, "closed_ts": c + 1},
+        "closed_at": {"status": "closed", "signal_ts": c - 8, "opened_ts": c - 5, "closed_ts": c},
+        "still_open": {"status": "open", "signal_ts": c - 7, "opened_ts": c - 5},
+        "open_no_time": {"status": "open", "signal_ts": c - 6, "opened_ts": None},
+        "open_late": {"status": "open", "signal_ts": c - 4, "opened_ts": c},
+        "closed_late": {"status": "closed", "signal_ts": c - 3, "opened_ts": c + 1, "closed_ts": c + 2},
+        "cancelled": {"status": "cancelled", "signal_ts": c - 2},
+    }
+    rows = {k: {**v, "link_id": k} for k, v in rows.items()}
+    g = {"closed": [], "missed": [{"link_id": "m"}], "orphaned": [], "open": [], "other": []}
+    for k in ("still_open", "open_no_time", "open_late"):
+        g["open"].append(rows[k])
+    for k in ("closed_after", "closed_at", "closed_late", "cancelled"):
+        g["other"].append(rows[k])
+    out = mod.at_cutoff(g, c)
+    assert [r["link_id"] for r in out["open"]] == ["closed_after", "closed_at", "still_open", "open_no_time"]
+    assert [r["link_id"] for r in out["other"]] == ["open_late", "closed_late", "cancelled"]
+    assert out["missed"] == g["missed"] and out["closed"] == [] and out["orphaned"] == []
+    assert len(g["open"]) == 3  # the input groups are not changed
+
+
+def test_run_counts_a_trade_closed_after_the_cutoff_as_open_and_filled(tmp_path, migrated_db, offline):
+    """A repeat after the open trade closed gives the same open / other and filled counts as the run at the cutoff."""
+    db = _store(migrated_db)
+    con = sqlite3.connect(db)
+    con.execute(
+        "UPDATE demo_trade SET status = 'closed', exit = 100.0, closed_ts = ?, pnl_usd = 0.0, r_multiple = 0.0, "
+        "exit_reason = 'breakeven' WHERE symbol LIKE 'OPN/%'",
+        (CUTOFF + 600_000,),
+    )
+    con.commit()
+    con.close()
+    lines = _run(tmp_path, db)
+    assert "missed 1; open 1; orphaned 0; other 0" in lines[1] and lines[1].startswith("закритих 15;")
+    assert _line(lines, "- v5:")[0].startswith("- v5: заповнено 16, не заповнено 1")
+
+
+def test_run_prints_the_n_ref_band_from_the_setup_config(tmp_path, migrated_db, offline, s3):
+    db = _store(migrated_db)
+    con = sqlite3.connect(db)
+    con.execute("UPDATE demo_trade SET setup = 'S3'")
+    con.commit()
+    con.close()
+    lines = _run(tmp_path, db)
+    band = "смуга n=50 (docs/CHECKPOINT-2026-11-30.md:112): i.i.d. [-0.388; +0.265], ковзна [-0.545; +0.494]"
+    assert any(x.startswith(band) for x in lines)
+    assert mod.ref_band_line().startswith(band)
+    mod.configure("S38")
+    assert mod.ref_band_line().startswith("смуга n=50 (docs/CHECKPOINT-2026-11-30.md:118): i.i.d. [-0.296; +0.245]")
+
+
 def test_main_selects_the_setup(tmp_path, monkeypatch):
     seen: dict = {}
     monkeypatch.setattr(mod, "run", lambda *a, **k: seen.update(setup=mod.SETUP, seen=k.get("seen_ms")) or 0)

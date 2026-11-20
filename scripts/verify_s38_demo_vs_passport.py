@@ -20,7 +20,9 @@ timeframe x side and break-even-rule splits; ``--seen-cutoff`` (a repeat compari
 an earlier comparison saw (closed before it) and of the new ones.
 CI: bootstrap clustered by the UTC day of the signal bar (``liquidation_flush.cluster_bootstrap_ci`` through the S12
 script's ``stat``). R is per trade risk, not on capital. The passport bands are defined for n = 30: a group with fewer
-trades gets no band verdict (✓ / ≈ / ✗), only the neutral line "n < 30: смуга паспорта не застосовна".
+trades gets no band verdict (✓ / ≈ / ✗), only the neutral line "n < 30: смуга паспорта не застосовна". The setup's n 50
+band (CHECKPOINT table) is printed from its config, without a verdict. "open" / "other" and the filled counts are taken
+as at the cutoff (``at_cutoff``), so a repeat after a trade closes gives the same counts.
 
 Not modelled here: the demo's cap of 2 S38 entries per 4h bar. The passport models it (``BAR_CAP``); the per-trade
 replay takes each closed trade alone and cannot see which signals the cap (or the daily slots) turned away.
@@ -75,8 +77,18 @@ TURNOVER_REF = {
 }
 # S39 / S40 (descriptive runs of the same script, ``--setup``): passport table lines 16 / 17 of PASSPORT_DOC, turnover rows
 # lines 57 / 76. S39 has no per-bar cap on the demo (Q-20261115-1), S40 neither.
+# n_ref band per setup (printed only; no verdict is taken from it here): (n, i.i.d. p5 / p95, sliding p5 / p95, source).
+# The n 50 rows of the CHECKPOINT table (scripts/verify_band_n.py): between 30 and 99 trades the decision band of S3
+# (Q-20261030-3) and, by the general demo rule, of the largest n' <= n for the others.
+CHECKPOINT_DOC = "docs/CHECKPOINT-2026-11-30.md"
 SETUPS: dict[str, dict[str, Any]] = {
-    "S38": {"passport": PASSPORT, "passport_of": PASSPORT_OF, "turnover_ref": TURNOVER_REF, "bar_cap": BAR_CAP},
+    "S38": {
+        "passport": PASSPORT,
+        "passport_of": PASSPORT_OF,
+        "turnover_ref": TURNOVER_REF,
+        "bar_cap": BAR_CAP,
+        "ref_band": (50, (-0.296, 0.245), (-0.468, 0.374), f"{CHECKPOINT_DOC}:118"),
+    },
     "S39": {
         "passport": audit.Passport(
             "провалений свип S3 униз, шорт, 4h; вхід за закриттям сигнальної свічки, без ліміту входів на свічку",
@@ -93,6 +105,7 @@ SETUPS: dict[str, dict[str, Any]] = {
             "ge5m": "паспорт OOS +0.018 (ge5m), top30 +0.051 (рядок 57)",
         },
         "bar_cap": None,
+        "ref_band": (50, (-0.256, 0.268), (-0.801, 0.857), f"{CHECKPOINT_DOC}:119"),
     },
     "S40": {
         "passport": audit.Passport(
@@ -110,6 +123,7 @@ SETUPS: dict[str, dict[str, Any]] = {
             "ge5m": "паспорт 2021+ −0.069 (ge5m), top30 +0.053 (рядок 76)",
         },
         "bar_cap": None,
+        "ref_band": (50, (-0.262, 0.300), (-0.839, 1.250), f"{CHECKPOINT_DOC}:120"),
     },
     # S3 (repeat of the 30.10 comparison, card item 6): the demo-list passport of docs/verification/2026-10-30-passport-s3.md,
     # top-100 and >= $5M, OOS (line 36: -0.076 [-0.155; +0.004], n 2790; line 100: the n = 30 i.i.d. band; line 200: the
@@ -133,19 +147,46 @@ SETUPS: dict[str, dict[str, Any]] = {
         "bar_cap": None,
         "universe": "паспорт: свічки й ранг Binance, топ-100 і ≥ $5M, OOS з 2025-03; демо: Bybit, оборот дня входу з Bybit",
         "splits": True,
+        "ref_band": (50, (-0.388, 0.265), (-0.545, 0.494), f"{CHECKPOINT_DOC}:112"),
     },
 }
 UNIVERSE_DEFAULT = "паспорт: свічки й оборот Binance, топ-250 і ≥ $1M, OOS з 2025-03; демо: Bybit, монети від $1M, оборот дня входу з Bybit"
 UNIVERSE = UNIVERSE_DEFAULT
 SPLITS = False  # timeframe x side and break-even-rule rows (S3 trades both sides on 4h and 1d)
+REF_BAND: tuple[int, tuple[float, float], tuple[float, float], str] = SETUPS["S38"]["ref_band"]
 
 
 def configure(setup: str) -> None:
     """Point the module at one setup's passport (S38 is the default; S39 / S40 only descriptive while n < 30)."""
-    global SETUP, PASSPORT, PASSPORT_OF, TURNOVER_REF, BAR_CAP, UNIVERSE, SPLITS
+    global SETUP, PASSPORT, PASSPORT_OF, TURNOVER_REF, BAR_CAP, UNIVERSE, SPLITS, REF_BAND
     c = SETUPS[setup]
     SETUP, PASSPORT, PASSPORT_OF, TURNOVER_REF, BAR_CAP = setup, c["passport"], c["passport_of"], c["turnover_ref"], c["bar_cap"]
-    UNIVERSE, SPLITS = c.get("universe", UNIVERSE_DEFAULT), bool(c.get("splits"))
+    UNIVERSE, SPLITS, REF_BAND = c.get("universe", UNIVERSE_DEFAULT), bool(c.get("splits")), c["ref_band"]
+
+
+def ref_band_line() -> str:
+    """The setup's n_ref band from its config (printed so the report does not take it by hand; no verdict here)."""
+    n, iid, sl, src = REF_BAND
+    return f"смуга n={n} ({src}): i.i.d. [{iid[0]:+.3f}; {iid[1]:+.3f}], ковзна [{sl[0]:+.3f}; {sl[1]:+.3f}] (лише друк, вердикту за нею скрипт не виносить)"
+
+
+def at_cutoff(g: dict[str, list[dict[str, Any]]], cutoff_ms: int) -> dict[str, list[dict[str, Any]]]:
+    """``load_s12``'s groups with "open" and "other" as they stood at the cutoff, not by today's status.
+
+    A trade filled before the cutoff and not closed before it (``opened_ts < cutoff <= closed_ts``, or still open) is
+    "open"; a trade with status open but filled at or after the cutoff is "other" (not filled yet then). Status open
+    without an open time stays "open". Closed, missed and orphaned stay as loaded (missed / orphaned carry no time of the
+    status change)."""
+
+    def was_open(r: dict[str, Any]) -> bool:
+        o = r.get("opened_ts")
+        if r.get("status") == "open":
+            return o is None or int(o) < cutoff_ms
+        # a closed trade here has closed_ts >= cutoff (or none): load_s12 put the ones closed before it in "closed"
+        return r.get("status") == "closed" and o is not None and int(o) < cutoff_ms
+
+    pool = sorted(g["open"] + g["other"], key=lambda r: int(r["signal_ts"]))
+    return {**g, "open": [r for r in pool if was_open(r)], "other": [r for r in pool if not was_open(r)]}
 
 
 def cap_text(pb: Counter[int]) -> str:
@@ -203,7 +244,7 @@ def is_new(r: dict[str, Any], seen_ms: int | None) -> bool:
 def smoke(db: str, cutoff_ms: int, cache: Path, venue: str, now_ms: int | None = None, seen_ms: int | None = None) -> int:
     """Counts, version tags, units and data availability only: no mean, sum, share or verdict of any R."""
     now = int(time.time() * 1000) if now_ms is None else now_ms
-    g = v12.load_s12(db, cutoff_ms, SETUP)
+    g = at_cutoff(v12.load_s12(db, cutoff_ms, SETUP), cutoff_ms)
     closed = classify(g["closed"], cutoff_ms)
     print(f"{SETUP}, cutoff {datetime.fromtimestamp(cutoff_ms / 1000, UTC):%Y-%m-%d %H:%M} UTC")
     print(
@@ -312,7 +353,7 @@ def main(argv: list[str] | None = None) -> int:
 def run(db: str, cutoff_ms: int, cache: Path, venue: str, tag: str = "s38", now_ms: int | None = None, seen_ms: int | None = None) -> int:
     """The registered comparison: prints the report and writes ``<tag>.txt`` and ``<tag>_rows.json`` to ``cache``."""
     now = int(time.time() * 1000) if now_ms is None else now_ms
-    g = v12.load_s12(db, cutoff_ms, SETUP)
+    g = at_cutoff(v12.load_s12(db, cutoff_ms, SETUP), cutoff_ms)  # open / other as at the cutoff: the counts repeat
     closed = classify(g["closed"], cutoff_ms)
     missed = classify(g["missed"], cutoff_ms)
     opened = classify(g["open"], cutoff_ms)
@@ -336,6 +377,7 @@ def run(db: str, cutoff_ms: int, cache: Path, venue: str, tag: str = "s38", now_
     )
     p(f"сигнальні дні: {len({cmn.ymd_ms(int(r['signal_ts'])) for r in rows})}; монет {len({r['symbol'] for r in rows})}")
     p(f"паспорт: {PASSPORT.source} ({PASSPORT.entry})")
+    p(ref_band_line())
     p("")
     p(f"## Пункт 6: R демо (од. демо, на ризик угоди, не на капітал) проти паспорта {SETUP}")
     groups: dict[str, Any] = {}

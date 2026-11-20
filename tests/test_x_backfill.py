@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
@@ -101,6 +101,124 @@ def test_backfill_resumes_and_refetches_current_month(root):
     calls.clear()
     xb.backfill("XO", get, date(2025, 1, 1), date(2025, 3, 10), lambda: None, 1000, log=lambda s: None)
     assert len(calls) == 1 and "since_time:1740787200" in calls[0]  # only March again
+
+
+JAN_START, JAN_END = 1735689600, 1738368000  # 2025-01-01 / 2025-02-01 00:00 UTC
+DAY = 86400
+
+
+def _at(i: int, epoch: int) -> dict:
+    return _tw(i, created=datetime.fromtimestamp(epoch, UTC).strftime("%a %b %d %H:%M:%S +0000 %Y"))
+
+
+def _window(params: dict) -> tuple[int, int]:
+    q = params["query"]
+    return int(q.split("since_time:")[1].split()[0]), int(q.split("until_time:")[1].split()[0])
+
+
+def _truncating(timeline: list[dict], page: int = 3, inclusive: bool = False):
+    """A fake search: tweets in the window newest first, but only ``page`` of them and never a cursor (the API ending
+    the paging mid-month). ``inclusive`` also returns tweets at exactly ``until_time``."""
+    calls: list[tuple[int, int]] = []
+
+    def get(params):
+        lo, hi = _window(params)
+        calls.append((lo, hi))
+        hits = [t for t in timeline if lo <= xb.created_epoch(t) and (xb.created_epoch(t) <= hi if inclusive else xb.created_epoch(t) < hi)]
+        hits.sort(key=xb.created_epoch, reverse=True)
+        return {"tweets": hits[:page], "has_next_page": False, "next_cursor": ""}
+
+    return get, calls
+
+
+def test_fetch_month_continues_after_page_without_cursor():
+    timeline = [_at(i, JAN_START + (3 + 3 * i) * DAY) for i in range(1, 8)]  # Jan 7 .. Jan 25
+    get, calls = _truncating(timeline)
+    raw, n, oldest, complete = xb.fetch_month(get, "XO", JAN_START, JAN_END, lambda: None)
+    assert sorted(t["id"] for t in raw) == [str(i) for i in range(1, 8)]
+    assert complete and oldest == JAN_START + 6 * DAY
+    assert n == 4  # 3 + 3 + 1 tweets, then the empty follow-up window
+    assert [hi for _, hi in calls] == [JAN_END, JAN_START + 18 * DAY, JAN_START + 9 * DAY, JAN_START + 6 * DAY]
+    assert all(lo == JAN_START for lo, _ in calls)
+
+
+def test_fetch_month_reaching_window_start_needs_no_extra_window():
+    get, calls = _truncating([_at(1, JAN_START + 20 * DAY), _at(2, JAN_START + 30)])
+    raw, n, oldest, complete = xb.fetch_month(get, "XO", JAN_START, JAN_END, lambda: None)
+    assert complete and oldest == JAN_START + 30 and n == 1 and len(calls) == 1
+
+
+def test_fetch_month_empty_month_is_complete():
+    get, calls = _truncating([])
+    assert xb.fetch_month(get, "XO", JAN_START, JAN_END, lambda: None) == ([], 1, None, True)
+
+
+def test_fetch_month_dedupes_overlapping_windows():
+    timeline = [_at(i, JAN_START + (3 + 3 * i) * DAY) for i in range(1, 6)]
+    get, calls = _truncating(timeline, page=2, inclusive=True)  # every window repeats the previous oldest tweet
+    raw, n, oldest, complete = xb.fetch_month(get, "XO", JAN_START, JAN_END, lambda: None)
+    ids = [t["id"] for t in raw]
+    assert sorted(ids) == ["1", "2", "3", "4", "5"] and len(ids) == len(set(ids))
+    assert complete and oldest == JAN_START + 6 * DAY
+
+
+def test_fetch_month_loop_guards():
+    stuck = iter(range(100, 200))  # new ids each time, but never older than the first one
+    get = lambda p: {"tweets": [_at(next(stuck), JAN_START + 10 * DAY)], "has_next_page": False}  # noqa: E731
+    raw, n, oldest, complete = xb.fetch_month(get, "XO", JAN_START, JAN_END, lambda: None)
+    assert not complete and n == 2 and oldest == JAN_START + 10 * DAY
+
+    undated = iter(range(100, 200))
+    get = lambda p: {"tweets": [_tw(next(undated), created="garbage")]}  # noqa: E731
+    assert xb.fetch_month(get, "XO", JAN_START, JAN_END, lambda: None)[1:] == (1, None, False)
+
+    creep = iter(range(100, 200))  # always one second older: would walk for weeks of requests without the cap
+    get = lambda p: {"tweets": [_at(next(creep), _window(p)[1] - 1)], "has_next_page": False}  # noqa: E731
+    raw, n, oldest, complete = xb.fetch_month(get, "XO", JAN_START, JAN_END, lambda: None, max_windows=5)
+    assert not complete and n == 5 and oldest == JAN_END - 5
+
+
+def test_backfill_marks_month_done_only_when_complete_and_rerun(root):
+    timeline = [_at(i, JAN_START + (3 + 3 * i) * DAY) for i in range(1, 8)]
+    get, calls = _truncating(timeline)
+    rep = xb.backfill("XO", get, date(2025, 1, 1), date(2025, 2, 10), lambda: None, 1000, log=lambda s: None)
+    assert rep["tweets"] == 7 and rep["incomplete"] == [] and rep["unverified"] == []
+    state = json.loads((root / "x-XO" / "state.json").read_text())
+    assert state["done_months"] == ["2025-01"]
+    assert state["oldest"] == {"2025-01": "2025-01-07T00:00:00Z", "2025-02": None}
+    calls.clear()
+    rep = xb.backfill("XO", get, date(2025, 1, 1), date(2025, 2, 10), lambda: None, 1000, log=lambda s: None)
+    assert all(lo == 1738368000 for lo, _ in calls) and rep["new"] == 0  # only February (current month) again
+
+    stuck = iter(range(100, 200))
+    get = lambda p: {"tweets": [_at(next(stuck), _window(p)[0] + 10 * DAY)], "has_next_page": False}  # noqa: E731
+    rep = xb.backfill("YY", get, date(2025, 1, 1), date(2025, 2, 10), lambda: None, 1000, log=lambda s: None)
+    assert rep["incomplete"] == ["2025-01"]
+    assert json.loads((root / "x-YY" / "state.json").read_text())["done_months"] == []  # refetched next run
+
+
+def test_old_state_without_oldest_is_kept_and_reported_unverified(root, capsys):
+    d = root / "x-XO"
+    d.mkdir()
+    old = [xb.normalize(_at(1, JAN_START + 20 * DAY))]
+    (d / "tweets.json").write_text(json.dumps(old))
+    (d / "state.json").write_text(json.dumps({"done_months": ["2024-12", "2025-01"]}))
+    assert xb.main(["XO", "--stat"]) == 0  # no key file needed
+    out = json.loads(capsys.readouterr().out)
+    assert out == {"handle": "XO", "tweets": 1, "done_months": 2, "unverified": ["2024-12", "2025-01"]}
+
+    calls = []
+
+    def get(params):
+        calls.append(_window(params))
+        return {"tweets": [], "has_next_page": False}
+
+    rep = xb.backfill("XO", get, date(2024, 12, 1), date(2025, 2, 10), lambda: None, 1000, log=lambda s: None)
+    assert [lo for lo, _ in calls] == [1738368000]  # the done months are not refetched
+    assert rep["unverified"] == ["2024-12", "2025-01"] and rep["tweets"] == 1
+    state = json.loads((d / "state.json").read_text())
+    assert state["done_months"] == ["2024-12", "2025-01"] and state["oldest"] == {"2025-02": None}
+    assert json.loads((d / "tweets.json").read_text()) == old
 
 
 def test_backfill_budget_guard(root):

@@ -322,16 +322,18 @@ def test_open_and_other_are_classified_at_the_cutoff():
         "open_late": {"status": "open", "signal_ts": c - 4, "opened_ts": c},
         "closed_late": {"status": "closed", "signal_ts": c - 3, "opened_ts": c + 1, "closed_ts": c + 2},
         "cancelled": {"status": "cancelled", "signal_ts": c - 2},
+        # closed without a close time: it may have closed before the cutoff, so not "open"; stays "other" as load_s12 put it
+        "closed_no_time": {"status": "closed", "signal_ts": c - 1, "opened_ts": c - 5, "closed_ts": None},
     }
     rows = {k: {**v, "link_id": k} for k, v in rows.items()}
     g = {"closed": [], "missed": [{"link_id": "m"}], "orphaned": [], "open": [], "other": []}
     for k in ("still_open", "open_no_time", "open_late"):
         g["open"].append(rows[k])
-    for k in ("closed_after", "closed_at", "closed_late", "cancelled"):
+    for k in ("closed_after", "closed_at", "closed_late", "cancelled", "closed_no_time"):
         g["other"].append(rows[k])
     out = mod.at_cutoff(g, c)
     assert [r["link_id"] for r in out["open"]] == ["closed_after", "closed_at", "still_open", "open_no_time"]
-    assert [r["link_id"] for r in out["other"]] == ["open_late", "closed_late", "cancelled"]
+    assert [r["link_id"] for r in out["other"]] == ["open_late", "closed_late", "cancelled", "closed_no_time"]
     assert out["missed"] == g["missed"] and out["closed"] == [] and out["orphaned"] == []
     assert len(g["open"]) == 3  # the input groups are not changed
 
@@ -350,6 +352,61 @@ def test_run_counts_a_trade_closed_after_the_cutoff_as_open_and_filled(tmp_path,
     lines = _run(tmp_path, db)
     assert "missed 1; open 1; orphaned 0; other 0" in lines[1] and lines[1].startswith("закритих 15;")
     assert _line(lines, "- v5:")[0].startswith("- v5: заповнено 16, не заповнено 1")
+
+
+def _shadow(con: sqlite3.Connection, pid: int, base: str, decided: int, resolved: int | None) -> None:
+    """A skipped S38 signal decided at ``decided`` and its shadow plan, resolved at ``resolved`` (a short at the target,
+    unix ms) or still open (None)."""
+    link = f"td-S38-s-4h-{base}-{decided // 1000}"
+    con.execute(
+        "INSERT INTO exec_audit (ts, venue, kind, link_id, symbol, setup, payload) VALUES (?, 'bybit-demo', 'skipped', ?, ?, 'S38', ?)",
+        (decided, link, f"{base}/USDT:USDT", json.dumps({"violations": ["score 1 < 2"]})),
+    )
+    done = {"status": "resolved", "outcome": "target", "fill": 100.0, "exit": 94.0, "r_result": 1.9}
+    if resolved is not None:
+        done["resolved_ts"] = resolved // 1000
+    plan = {
+        "id": pid, "created_ts": decided // 1000, "exchange": "bybit", "symbol": f"{base}/USDT:USDT", "instrument": "perp",
+        "side": "short", "entry_type": "market", "entry": 100.0, "stop": 103.0, "target": 94.0,
+        "expires_ts": decided // 1000 + 7 * 86_400, "verdict": "enter",
+        "tags": json.dumps(["src:demo-shadow", "setup:S38", "tf:4h", "demo:skipped"]),
+        **(done if resolved is not None else {"status": "open"}),
+    }  # fmt: skip
+    con.execute(f"INSERT INTO trade_plan ({', '.join(plan)}) VALUES ({', '.join('?' * len(plan))})", tuple(plan.values()))
+
+
+def test_shadow_plans_repeat_at_the_cutoff_whatever_the_run_time(tmp_path, migrated_db, offline):
+    """Two runs on the same cutoff, the second later and after a shadow plan resolved past the cutoff: the same report
+    (only the run-time header and the RSS line differ). Before 20.11 the second run counted that plan resolved."""
+    db = _store(migrated_db)
+    con = sqlite3.connect(db)
+    _shadow(con, 1, "SH1", CUTOFF - 3 * DAY, CUTOFF - DAY)  # resolved before the cutoff: in both runs
+    _shadow(con, 2, "SH2", CUTOFF - DAY, None)  # open at the cutoff
+    con.commit()
+    con.close()
+    out = tmp_path / "out"
+    out.mkdir()
+    assert mod.run(str(db), CUTOFF, out, "bybit", "a", now_ms=NOW) == 0
+    con = sqlite3.connect(db)
+    con.execute(
+        "UPDATE trade_plan SET status = 'resolved', outcome = 'target', fill = 100.0, exit = 94.0, resolved_ts = ? WHERE id = 2",
+        ((CUTOFF + 3_600_000) // 1000,),
+    )
+    con.commit()
+    con.close()
+    assert mod.run(str(db), CUTOFF, out, "bybit", "b", now_ms=NOW + 5 * DAY) == 0
+
+    def body(tag: str) -> list[str]:
+        lines = (out / f"{tag}.txt").read_text(encoding="utf-8").splitlines()
+        return [x for x in lines[1:] if not x.startswith("seed ")]
+
+    a, b = body("a"), body("b")
+    assert a == b
+    sk, _ = _line(a, "- skipped:")
+    assert "n 2, з R 1, відкрито 1" in sk  # SH2 open at the cutoff in both runs
+    # the plan does count as resolved once the cutoff is past its resolution
+    assert mod.run(str(db), CUTOFF + 2 * 3_600_000, out, "bybit", "c", now_ms=NOW + 5 * DAY) == 0
+    assert "n 2, з R 2, відкрито 0" in _line(body("c"), "- skipped:")[0]
 
 
 def test_run_prints_the_n_ref_band_from_the_setup_config(tmp_path, migrated_db, offline, s3):

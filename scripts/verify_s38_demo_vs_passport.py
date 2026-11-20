@@ -22,7 +22,8 @@ CI: bootstrap clustered by the UTC day of the signal bar (``liquidation_flush.cl
 script's ``stat``). R is per trade risk, not on capital. The passport bands are defined for n = 30: a group with fewer
 trades gets no band verdict (✓ / ≈ / ✗), only the neutral line "n < 30: смуга паспорта не застосовна". The setup's n 50
 band (CHECKPOINT table) is printed from its config, without a verdict. "open" / "other" and the filled counts are taken
-as at the cutoff (``at_cutoff``), so a repeat after a trade closes gives the same counts.
+as at the cutoff (``at_cutoff``), so a repeat after a trade closes gives the same counts; the shadow plans too
+(``demo_shadow`` with ``now_ms`` = the cutoff: a plan resolved after it counts as open).
 
 Not modelled here: the demo's cap of 2 S38 entries per 4h bar. The passport models it (``BAR_CAP``); the per-trade
 replay takes each closed trade alone and cannot see which signals the cap (or the daily slots) turned away.
@@ -175,15 +176,17 @@ def at_cutoff(g: dict[str, list[dict[str, Any]]], cutoff_ms: int) -> dict[str, l
 
     A trade filled before the cutoff and not closed before it (``opened_ts < cutoff <= closed_ts``, or still open) is
     "open"; a trade with status open but filled at or after the cutoff is "other" (not filled yet then). Status open
-    without an open time stays "open". Closed, missed and orphaned stay as loaded (missed / orphaned carry no time of the
-    status change)."""
+    without an open time stays "open"; status closed without a close time stays "other", as ``load_s12`` put it.
+    Closed, missed and orphaned stay as loaded (missed / orphaned carry no time of the status change)."""
 
     def was_open(r: dict[str, Any]) -> bool:
-        o = r.get("opened_ts")
+        o, c = r.get("opened_ts"), r.get("closed_ts")
         if r.get("status") == "open":
             return o is None or int(o) < cutoff_ms
-        # a closed trade here has closed_ts >= cutoff (or none): load_s12 put the ones closed before it in "closed"
-        return r.get("status") == "closed" and o is not None and int(o) < cutoff_ms
+        # a closed trade here has closed_ts >= cutoff (load_s12 put the ones closed before it in "closed") or none. A
+        # closed row without a close time cannot be placed against the cutoff (it may have closed before it), so it is
+        # not counted open: it stays in "other", as load_s12 left it before at_cutoff existed.
+        return r.get("status") == "closed" and c is not None and o is not None and int(o) < cutoff_ms
 
     pool = sorted(g["open"] + g["other"], key=lambda r: int(r["signal_ts"]))
     return {**g, "open": [r for r in pool if was_open(r)], "other": [r for r in pool if not was_open(r)]}
@@ -519,12 +522,14 @@ def run(db: str, cutoff_ms: int, cache: Path, venue: str, tag: str = "s38", now_
     trades, aud, plans, ne_err = dvb.load_not_executed(db)
     trades = [t for t in trades if int(t.get("signal_ts") or 0) < cutoff_ms]
     aud = [x for x in aud if int(x.get("ts") or 0) < cutoff_ms]
-    srows = [x for x in demo_shadow.match_rows(trades, aud, plans, now_ms=now) if x.setup == SETUP and x.decided_ts < cutoff_ms]
+    # shadow plans as of the cutoff, not the run time: a plan resolved after the cutoff counts as open, so a repeat repeats
+    srows = [x for x in demo_shadow.match_rows(trades, aud, plans, now_ms=cutoff_ms) if x.setup == SETUP and x.decided_ts < cutoff_ms]
     p(
-        f"## Невиконані сигнали {SETUP} проти тіньових планів (R без беззбитку, од. демо; t-CI з demo_shadow){' — ' + ne_err if ne_err else ''}"
+        f"## Невиконані сигнали {SETUP} проти тіньових планів на cutoff (R без беззбитку, од. демо; t-CI з demo_shadow)"
+        f"{' — ' + ne_err if ne_err else ''}"
     )
     if srows:
-        sm = demo_shadow.summary(srows, now_ms=now)
+        sm = demo_shadow.summary(srows, now_ms=cutoff_ms)
         for gname, s in sm["groups"].items():
             ci = f"[{s['ci95_r'][0]:+.2f}; {s['ci95_r'][1]:+.2f}]" if s.get("ci95_r") else "[—]"
             mr = f"{s['mean_r']:+.3f}" if s.get("mean_r") is not None else "—"

@@ -311,6 +311,32 @@ def test_s3_runs_against_its_passport_with_the_30_10_splits(tmp_path, migrated_d
     assert not any("ліміт демо 2 входи" in x for x in lines)
 
 
+@pytest.fixture
+def s14():
+    mod.configure("S14")
+    yield
+    mod.configure("S38")
+
+
+def test_s14_runs_against_its_passport_with_splits(tmp_path, migrated_db, offline, s14):
+    db = _store(migrated_db)
+    con = sqlite3.connect(db)
+    con.execute("UPDATE demo_trade SET setup = 'S14', version = 'v3'")
+    con.execute("UPDATE demo_trade SET timeframe = '1d', side = 'long' WHERE symbol LIKE 'U%'")
+    con.commit()
+    con.close()
+    assert mod.run(str(db), CUTOFF, tmp_path, "bybit", "t", now_ms=NOW, seen_ms=SEEN) == 0
+    lines = (tmp_path / "t.txt").read_text(encoding="utf-8").splitlines()
+    assert lines[0].startswith("# S14: демо проти паспорта")
+    tagged, comp = _line(lines, "- v3 (тег)")
+    assert f"середнє {statistics.fmean(TAGGED_R + UNTAGGED_R):+.3f}" in tagged
+    assert "паспорт S14 OOS -0.049 [-0.188; +0.108]" in comp and "[-0.455; +0.408]" in comp and "[-0.830; +1.031]" in comp
+    assert any(x.startswith("- 1d long") for x in lines) and any(x.startswith("- 4h short") for x in lines)
+    assert any(x.endswith("ліміту входів на свічку для S14 немає") for x in lines)
+    assert any("паспорт S14 $1–5M −0.117 (рядок 18)" in x for x in lines)
+    assert any("CHECKPOINT-2026-11-30.md:113" in x for x in lines)
+
+
 def test_open_and_other_are_classified_at_the_cutoff():
     """opened_ts < cutoff <= closed_ts -> open at the cutoff, whatever the status is today; filled after it -> other."""
     c = CUTOFF

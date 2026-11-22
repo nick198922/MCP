@@ -1,0 +1,1140 @@
+{
+ "_source": "LIVE, 2026-11-22 09:17-09:18 UTC: answers of the running tradedesk MCP service on the server (streamable-http 127.0.0.1:8000, called like scripts/mcp_call.py) with the free ETHERSCAN_API_KEY in the service environment. The key never left the service and is not in this file (evidence args are the tool's own, without apikey). These are our tool envelopes (data, evidence, missing; warnings and latencies dropped), NOT Etherscan's raw bodies: the service never returns those. Raw shapes for the parser tests stay in etherscan_v2_docs_2026-11-19.json; this file pins the live numbers and the free-key chain coverage. Addresses: Ethereum Foundation 0xde0b...7bae (native balance on each chain), Binance 14 0x28c6...1d60 (USDC balance and transfers), USDC 0xa0b8...eb48 (FiatTokenProxy) and WETH 0xc02a...6cc2 (token info, transactions, contract source). source_excerpt is third-party code text. Added 09:28-09:29 UTC the same way (free-key coverage is per endpoint, not per chain): chain_source = onchain_contract_source on all seven chains (a verified token per chain: USDC, on bsc USDT; source_files names are third-party text), token_info_polygon (USDC 0x3c49...3359), txs_normal_arbitrum (USDC 0xaf88...5831), and the refusals token_info_bsc_refused (eth_call) and txs_normal_base_refused (txlist).",
+ "balance_native": {
+  "args": {
+   "chain": "ethereum",
+   "address": "0xde0B295669a9FD93d5F28D9Ec85E40f4cb697BAe"
+  },
+  "envelope": {
+   "ok": true,
+   "data": {
+    "chain": "ethereum",
+    "chain_id": 1,
+    "address": "0xde0b295669a9fd93d5f28d9ec85e40f4cb697bae",
+    "asset": "native",
+    "token": null,
+    "symbol": "ETH",
+    "decimals": 18,
+    "balance_raw": "4774551794456062094343",
+    "balance": 4774.551794456062
+   },
+   "evidence": [
+    {
+     "tool": "account/balance",
+     "args": {
+      "chainid": 1,
+      "module": "account",
+      "action": "balance",
+      "address": "0xde0b295669a9fd93d5f28d9ec85e40f4cb697bae",
+      "tag": "latest"
+     }
+    }
+   ],
+   "missing": []
+  }
+ },
+ "balance_usdc": {
+  "args": {
+   "chain": "ethereum",
+   "address": "0x28C6c06298d514Db089934071355E5743bf21d60",
+   "token": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+  },
+  "envelope": {
+   "ok": true,
+   "data": {
+    "chain": "ethereum",
+    "chain_id": 1,
+    "address": "0x28c6c06298d514db089934071355e5743bf21d60",
+    "asset": "erc20",
+    "token": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "symbol": "USDC",
+    "decimals": 6,
+    "balance_raw": "52363119552",
+    "balance": 52363.119552
+   },
+   "evidence": [
+    {
+     "tool": "account/tokenbalance",
+     "args": {
+      "chainid": 1,
+      "module": "account",
+      "action": "tokenbalance",
+      "contractaddress": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+      "address": "0x28c6c06298d514db089934071355e5743bf21d60",
+      "tag": "latest"
+     }
+    },
+    {
+     "tool": "proxy/eth_call",
+     "args": {
+      "chainid": 1,
+      "module": "proxy",
+      "action": "eth_call",
+      "to": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+      "data": "0x313ce567",
+      "tag": "latest"
+     }
+    },
+    {
+     "tool": "proxy/eth_call",
+     "args": {
+      "chainid": 1,
+      "module": "proxy",
+      "action": "eth_call",
+      "to": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+      "data": "0x95d89b41",
+      "tag": "latest"
+     }
+    }
+   ],
+   "missing": []
+  }
+ },
+ "txs_normal_weth": {
+  "args": {
+   "chain": "ethereum",
+   "address": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+   "kind": "normal",
+   "limit": 2
+  },
+  "envelope": {
+   "ok": true,
+   "data": {
+    "chain": "ethereum",
+    "chain_id": 1,
+    "native": "ETH",
+    "address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "kind": "normal",
+    "token": null,
+    "page": 1,
+    "limit": 2,
+    "count": 2,
+    "has_more": true,
+    "rows": [
+     {
+      "hash": "0x89c4015ab2ed85eee4472d5a2948a8a1bbf1a120ae86c9c10475b40e9ceb2e0b",
+      "block": 26469704,
+      "time_utc": "2026-11-22T09:17:35+00:00",
+      "from": "0x171b25bc9814e72364dcca3371de28e0185ef2fd",
+      "to": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+      "direction": "in",
+      "value_wei": "0",
+      "value": 0.0,
+      "fee": 5.27230297776e-06,
+      "failed": false,
+      "method": "approve",
+      "contract_created": null
+     },
+     {
+      "hash": "0x6d662cf659543788304890580ae317eb00d7e3554a1d4113a3e801f66f5dfa89",
+      "block": 26469703,
+      "time_utc": "2026-11-22T09:17:23+00:00",
+      "from": "0x6d2aac889349feb6a61e9bf8bfeab558791f1e79",
+      "to": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+      "direction": "in",
+      "value_wei": "0",
+      "value": 0.0,
+      "fee": 1.2466674912448e-05,
+      "failed": false,
+      "method": "approve",
+      "contract_created": null
+     }
+    ]
+   },
+   "evidence": [
+    {
+     "tool": "account/txlist",
+     "args": {
+      "chainid": 1,
+      "module": "account",
+      "action": "txlist",
+      "address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+      "page": 1,
+      "offset": 2,
+      "sort": "desc"
+     }
+    }
+   ],
+   "missing": []
+  }
+ },
+ "txs_erc20_usdc": {
+  "args": {
+   "chain": "ethereum",
+   "address": "0x28C6c06298d514Db089934071355E5743bf21d60",
+   "kind": "erc20",
+   "token": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+   "limit": 2
+  },
+  "envelope": {
+   "ok": true,
+   "data": {
+    "chain": "ethereum",
+    "chain_id": 1,
+    "native": "ETH",
+    "address": "0x28c6c06298d514db089934071355e5743bf21d60",
+    "kind": "erc20",
+    "token": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "page": 1,
+    "limit": 2,
+    "count": 2,
+    "has_more": true,
+    "rows": [
+     {
+      "hash": "0x8b7bdd74f4105d290b8c18c7ba2b73969ea3f015989140bb4f4e7ee7cc63b800",
+      "block": 26276997,
+      "time_utc": "2026-10-26T12:55:47+00:00",
+      "from": "0x873ca3e76bb4cc871a871db634889374685f0d90",
+      "to": "0x28c6c06298d514db089934071355e5743bf21d60",
+      "direction": "in",
+      "token": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+      "token_symbol": "USDC",
+      "token_name": "USDC",
+      "token_decimals": 6,
+      "value_raw": "246611332",
+      "value": 246.611332
+     },
+     {
+      "hash": "0x47f0af56bfb19f64dec28cb2c74e1a07a541078278302875f58320a0bd87b5a7",
+      "block": 26256123,
+      "time_utc": "2026-10-23T15:08:23+00:00",
+      "from": "0x6a36ac63bf65c29015c1f7eb71a25cbdfe35d9aa",
+      "to": "0x28c6c06298d514db089934071355e5743bf21d60",
+      "direction": "in",
+      "token": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+      "token_symbol": "USDC",
+      "token_name": "USDC",
+      "token_decimals": 6,
+      "value_raw": "99200000",
+      "value": 99.2
+     }
+    ]
+   },
+   "evidence": [
+    {
+     "tool": "account/tokentx",
+     "args": {
+      "chainid": 1,
+      "module": "account",
+      "action": "tokentx",
+      "address": "0x28c6c06298d514db089934071355e5743bf21d60",
+      "page": 1,
+      "offset": 2,
+      "sort": "desc",
+      "contractaddress": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+     }
+    }
+   ],
+   "missing": []
+  }
+ },
+ "token_info_usdc": {
+  "args": {
+   "chain": "ethereum",
+   "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+  },
+  "envelope": {
+   "ok": true,
+   "data": {
+    "chain": "ethereum",
+    "chain_id": 1,
+    "address": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "name": "USD Coin",
+    "symbol": "USDC",
+    "decimals": 6,
+    "total_supply_raw": "44287475172770754",
+    "total_supply": 44287475172.77075
+   },
+   "evidence": [
+    {
+     "tool": "proxy/eth_call",
+     "args": {
+      "chainid": 1,
+      "module": "proxy",
+      "action": "eth_call",
+      "to": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+      "data": "0x95d89b41",
+      "tag": "latest"
+     }
+    },
+    {
+     "tool": "proxy/eth_call",
+     "args": {
+      "chainid": 1,
+      "module": "proxy",
+      "action": "eth_call",
+      "to": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+      "data": "0x313ce567",
+      "tag": "latest"
+     }
+    },
+    {
+     "tool": "proxy/eth_call",
+     "args": {
+      "chainid": 1,
+      "module": "proxy",
+      "action": "eth_call",
+      "to": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+      "data": "0x06fdde03",
+      "tag": "latest"
+     }
+    },
+    {
+     "tool": "proxy/eth_call",
+     "args": {
+      "chainid": 1,
+      "module": "proxy",
+      "action": "eth_call",
+      "to": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+      "data": "0x18160ddd",
+      "tag": "latest"
+     }
+    }
+   ],
+   "missing": []
+  }
+ },
+ "token_info_weth": {
+  "args": {
+   "chain": "ethereum",
+   "address": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+  },
+  "envelope": {
+   "ok": true,
+   "data": {
+    "chain": "ethereum",
+    "chain_id": 1,
+    "address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "name": "Wrapped Ether",
+    "symbol": "WETH",
+    "decimals": 18,
+    "total_supply_raw": "2167872335965881319070710",
+    "total_supply": 2167872.335965881
+   },
+   "evidence": [
+    {
+     "tool": "proxy/eth_call",
+     "args": {
+      "chainid": 1,
+      "module": "proxy",
+      "action": "eth_call",
+      "to": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+      "data": "0x06fdde03",
+      "tag": "latest"
+     }
+    },
+    {
+     "tool": "proxy/eth_call",
+     "args": {
+      "chainid": 1,
+      "module": "proxy",
+      "action": "eth_call",
+      "to": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+      "data": "0x95d89b41",
+      "tag": "latest"
+     }
+    },
+    {
+     "tool": "proxy/eth_call",
+     "args": {
+      "chainid": 1,
+      "module": "proxy",
+      "action": "eth_call",
+      "to": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+      "data": "0x313ce567",
+      "tag": "latest"
+     }
+    },
+    {
+     "tool": "proxy/eth_call",
+     "args": {
+      "chainid": 1,
+      "module": "proxy",
+      "action": "eth_call",
+      "to": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+      "data": "0x18160ddd",
+      "tag": "latest"
+     }
+    }
+   ],
+   "missing": []
+  }
+ },
+ "source_usdc": {
+  "args": {
+   "chain": "ethereum",
+   "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+   "source_chars": 200
+  },
+  "envelope": {
+   "ok": true,
+   "data": {
+    "chain": "ethereum",
+    "chain_id": 1,
+    "address": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "verified": true,
+    "contract_name": "FiatTokenProxy",
+    "compiler": "v0.4.24+commit.e67f0147",
+    "compiler_type": "solc",
+    "optimization": false,
+    "runs": 200,
+    "evm_version": "Default",
+    "license": null,
+    "proxy": true,
+    "implementation": "0x43506849d7c04f9138d1a2050bbf3a0c054402dd",
+    "source_format": "single_file",
+    "source_files_count": 1,
+    "source_files": [],
+    "source_chars_total": 11012,
+    "source_excerpt": "pragma solidity ^0.4.24;\n\n// File: zos-lib/contracts/upgradeability/Proxy.sol\n\n/**\n * @title Proxy\n * @dev Implements delegation of calls to other contracts, with proper\n * forwarding of return values"
+   },
+   "evidence": [
+    {
+     "tool": "contract/getsourcecode",
+     "args": {
+      "chainid": 1,
+      "module": "contract",
+      "action": "getsourcecode",
+      "address": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+     }
+    }
+   ],
+   "missing": []
+  }
+ },
+ "source_weth": {
+  "args": {
+   "chain": "ethereum",
+   "address": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+  },
+  "envelope": {
+   "ok": true,
+   "data": {
+    "chain": "ethereum",
+    "chain_id": 1,
+    "address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "verified": true,
+    "contract_name": "WETH9",
+    "compiler": "v0.4.19+commit.c4cbbb05",
+    "compiler_type": "solc",
+    "optimization": false,
+    "runs": 200,
+    "evm_version": "Default",
+    "license": null,
+    "proxy": false,
+    "implementation": null,
+    "source_format": "single_file",
+    "source_files_count": 1,
+    "source_files": [],
+    "source_chars_total": 38401,
+    "source_excerpt": null
+   },
+   "evidence": [
+    {
+     "tool": "contract/getsourcecode",
+     "args": {
+      "chainid": 1,
+      "module": "contract",
+      "action": "getsourcecode",
+      "address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+     }
+    }
+   ],
+   "missing": []
+  }
+ },
+ "chain_balance": {
+  "ethereum": {
+   "args": {
+    "chain": "ethereum",
+    "address": "0xde0B295669a9FD93d5F28D9Ec85E40f4cb697BAe"
+   },
+   "envelope": {
+    "ok": true,
+    "data": {
+     "chain": "ethereum",
+     "chain_id": 1,
+     "address": "0xde0b295669a9fd93d5f28d9ec85e40f4cb697bae",
+     "asset": "native",
+     "token": null,
+     "symbol": "ETH",
+     "decimals": 18,
+     "balance_raw": "4774551794456062094343",
+     "balance": 4774.551794456062
+    },
+    "evidence": [
+     {
+      "tool": "account/balance",
+      "args": {
+       "chainid": 1,
+       "module": "account",
+       "action": "balance",
+       "address": "0xde0b295669a9fd93d5f28d9ec85e40f4cb697bae",
+       "tag": "latest"
+      }
+     }
+    ],
+    "missing": []
+   }
+  },
+  "bsc": {
+   "args": {
+    "chain": "bsc",
+    "address": "0xde0B295669a9FD93d5F28D9Ec85E40f4cb697BAe"
+   },
+   "envelope": {
+    "ok": false,
+    "data": null,
+    "evidence": [],
+    "missing": [
+     {
+      "field": "balance",
+      "provider": "etherscan",
+      "reason": "provider_tier",
+      "detail": "needs a paid Etherscan plan (the free key does not cover this endpoint or chain)"
+     }
+    ]
+   }
+  },
+  "polygon": {
+   "args": {
+    "chain": "polygon",
+    "address": "0xde0B295669a9FD93d5F28D9Ec85E40f4cb697BAe"
+   },
+   "envelope": {
+    "ok": true,
+    "data": {
+     "chain": "polygon",
+     "chain_id": 137,
+     "address": "0xde0b295669a9fd93d5f28d9ec85e40f4cb697bae",
+     "asset": "native",
+     "token": null,
+     "symbol": "POL",
+     "decimals": 18,
+     "balance_raw": "319881134511850000001",
+     "balance": 319.88113451185
+    },
+    "evidence": [
+     {
+      "tool": "account/balance",
+      "args": {
+       "chainid": 137,
+       "module": "account",
+       "action": "balance",
+       "address": "0xde0b295669a9fd93d5f28d9ec85e40f4cb697bae",
+       "tag": "latest"
+      }
+     }
+    ],
+    "missing": []
+   }
+  },
+  "arbitrum": {
+   "args": {
+    "chain": "arbitrum",
+    "address": "0xde0B295669a9FD93d5F28D9Ec85E40f4cb697BAe"
+   },
+   "envelope": {
+    "ok": true,
+    "data": {
+     "chain": "arbitrum",
+     "chain_id": 42161,
+     "address": "0xde0b295669a9fd93d5f28d9ec85e40f4cb697bae",
+     "asset": "native",
+     "token": null,
+     "symbol": "ETH",
+     "decimals": 18,
+     "balance_raw": "352925993210000",
+     "balance": 0.00035292599321
+    },
+    "evidence": [
+     {
+      "tool": "account/balance",
+      "args": {
+       "chainid": 42161,
+       "module": "account",
+       "action": "balance",
+       "address": "0xde0b295669a9fd93d5f28d9ec85e40f4cb697bae",
+       "tag": "latest"
+      }
+     }
+    ],
+    "missing": []
+   }
+  },
+  "optimism": {
+   "args": {
+    "chain": "optimism",
+    "address": "0xde0B295669a9FD93d5F28D9Ec85E40f4cb697BAe"
+   },
+   "envelope": {
+    "ok": false,
+    "data": null,
+    "evidence": [],
+    "missing": [
+     {
+      "field": "balance",
+      "provider": "etherscan",
+      "reason": "provider_tier",
+      "detail": "needs a paid Etherscan plan (the free key does not cover this endpoint or chain)"
+     }
+    ]
+   }
+  },
+  "base": {
+   "args": {
+    "chain": "base",
+    "address": "0xde0B295669a9FD93d5F28D9Ec85E40f4cb697BAe"
+   },
+   "envelope": {
+    "ok": false,
+    "data": null,
+    "evidence": [],
+    "missing": [
+     {
+      "field": "balance",
+      "provider": "etherscan",
+      "reason": "provider_tier",
+      "detail": "needs a paid Etherscan plan (the free key does not cover this endpoint or chain)"
+     }
+    ]
+   }
+  },
+  "avalanche": {
+   "args": {
+    "chain": "avalanche",
+    "address": "0xde0B295669a9FD93d5F28D9Ec85E40f4cb697BAe"
+   },
+   "envelope": {
+    "ok": false,
+    "data": null,
+    "evidence": [],
+    "missing": [
+     {
+      "field": "balance",
+      "provider": "etherscan",
+      "reason": "provider_tier",
+      "detail": "needs a paid Etherscan plan (the free key does not cover this endpoint or chain)"
+     }
+    ]
+   }
+  }
+ },
+ "chain_source": {
+  "ethereum": {
+   "args": {
+    "chain": "ethereum",
+    "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+   },
+   "envelope": {
+    "ok": true,
+    "data": {
+     "chain": "ethereum",
+     "chain_id": 1,
+     "address": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+     "verified": true,
+     "contract_name": "FiatTokenProxy",
+     "compiler": "v0.4.24+commit.e67f0147",
+     "compiler_type": "solc",
+     "optimization": false,
+     "runs": 200,
+     "evm_version": "Default",
+     "license": null,
+     "proxy": true,
+     "implementation": "0x43506849d7c04f9138d1a2050bbf3a0c054402dd",
+     "source_format": "single_file",
+     "source_files_count": 1,
+     "source_files": [],
+     "source_chars_total": 11012,
+     "source_excerpt": null
+    },
+    "evidence": [
+     {
+      "tool": "contract/getsourcecode",
+      "args": {
+       "chainid": 1,
+       "module": "contract",
+       "action": "getsourcecode",
+       "address": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+      }
+     }
+    ],
+    "missing": []
+   }
+  },
+  "bsc": {
+   "args": {
+    "chain": "bsc",
+    "address": "0x55d398326f99059fF775485246999027B3197955"
+   },
+   "envelope": {
+    "ok": true,
+    "data": {
+     "chain": "bsc",
+     "chain_id": 56,
+     "address": "0x55d398326f99059ff775485246999027b3197955",
+     "verified": true,
+     "contract_name": "BEP20USDT",
+     "compiler": "v0.5.16+commit.9c3226ce",
+     "compiler_type": "solc",
+     "optimization": true,
+     "runs": 200,
+     "evm_version": "Default",
+     "license": "Apache-2.0",
+     "proxy": false,
+     "implementation": null,
+     "source_format": "single_file",
+     "source_files_count": 1,
+     "source_files": [],
+     "source_chars_total": 19319,
+     "source_excerpt": null
+    },
+    "evidence": [
+     {
+      "tool": "contract/getsourcecode",
+      "args": {
+       "chainid": 56,
+       "module": "contract",
+       "action": "getsourcecode",
+       "address": "0x55d398326f99059ff775485246999027b3197955"
+      }
+     }
+    ],
+    "missing": []
+   }
+  },
+  "polygon": {
+   "args": {
+    "chain": "polygon",
+    "address": "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
+   },
+   "envelope": {
+    "ok": true,
+    "data": {
+     "chain": "polygon",
+     "chain_id": 137,
+     "address": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
+     "verified": true,
+     "contract_name": "FiatTokenProxy",
+     "compiler": "v0.6.12+commit.27d51765",
+     "compiler_type": "solc-j",
+     "optimization": true,
+     "runs": 10000000,
+     "evm_version": "Default",
+     "license": null,
+     "proxy": true,
+     "implementation": "0x235ae97b28466db30469b89a9fe4cff0659f82cb",
+     "source_format": "standard_json",
+     "source_files_count": 5,
+     "source_files": [
+      "/contracts/v1/FiatTokenProxy.sol",
+      "/contracts/upgradeability/UpgradeabilityProxy.sol",
+      "/contracts/upgradeability/Proxy.sol",
+      "/contracts/upgradeability/AdminUpgradeabilityProxy.sol",
+      "@openzeppelin/contracts/utils/Address.sol"
+     ],
+     "source_chars_total": 22642,
+     "source_excerpt": null
+    },
+    "evidence": [
+     {
+      "tool": "contract/getsourcecode",
+      "args": {
+       "chainid": 137,
+       "module": "contract",
+       "action": "getsourcecode",
+       "address": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359"
+      }
+     }
+    ],
+    "missing": []
+   }
+  },
+  "arbitrum": {
+   "args": {
+    "chain": "arbitrum",
+    "address": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"
+   },
+   "envelope": {
+    "ok": true,
+    "data": {
+     "chain": "arbitrum",
+     "chain_id": 42161,
+     "address": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+     "verified": true,
+     "contract_name": "FiatTokenProxy",
+     "compiler": "v0.6.12+commit.27d51765",
+     "compiler_type": "solc-j",
+     "optimization": true,
+     "runs": 10000000,
+     "evm_version": "Default",
+     "license": null,
+     "proxy": true,
+     "implementation": "0x86e721b43d4ecfa71119dd38c0f938a75fdb57b3",
+     "source_format": "standard_json",
+     "source_files_count": 5,
+     "source_files": [
+      "/Users/mgrant/Developer/centre-tokens/contracts/v1/FiatTokenProxy.sol",
+      "@openzeppelin/contracts/utils/Address.sol",
+      "/Users/mgrant/Developer/centre-tokens/contracts/upgradeability/UpgradeabilityProxy.sol",
+      "/Users/mgrant/Developer/centre-tokens/contracts/upgradeability/Proxy.sol",
+      "/Users/mgrant/Developer/centre-tokens/contracts/upgradeability/AdminUpgradeabilityProxy.sol"
+     ],
+     "source_chars_total": 22790,
+     "source_excerpt": null
+    },
+    "evidence": [
+     {
+      "tool": "contract/getsourcecode",
+      "args": {
+       "chainid": 42161,
+       "module": "contract",
+       "action": "getsourcecode",
+       "address": "0xaf88d065e77c8cc2239327c5edb3a432268e5831"
+      }
+     }
+    ],
+    "missing": []
+   }
+  },
+  "optimism": {
+   "args": {
+    "chain": "optimism",
+    "address": "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85"
+   },
+   "envelope": {
+    "ok": true,
+    "data": {
+     "chain": "optimism",
+     "chain_id": 10,
+     "address": "0x0b2c639c533813f4aa9d7837caf62653d097ff85",
+     "verified": true,
+     "contract_name": "FiatTokenProxy",
+     "compiler": "v0.6.12+commit.27d51765",
+     "compiler_type": "solc-j",
+     "optimization": true,
+     "runs": 10000000,
+     "evm_version": "Default",
+     "license": null,
+     "proxy": true,
+     "implementation": "0xded3b9a8dbedc2f9cb725b55d0e686a81e6d06dc",
+     "source_format": "standard_json",
+     "source_files_count": 5,
+     "source_files": [
+      "/Users/steven.cheung/Circle/centre-tokens/contracts/v1/FiatTokenProxy.sol",
+      "@openzeppelin/contracts/utils/Address.sol",
+      "/Users/steven.cheung/Circle/centre-tokens/contracts/upgradeability/UpgradeabilityProxy.sol",
+      "/Users/steven.cheung/Circle/centre-tokens/contracts/upgradeability/Proxy.sol",
+      "/Users/steven.cheung/Circle/centre-tokens/contracts/upgradeability/AdminUpgradeabilityProxy.sol"
+     ],
+     "source_chars_total": 22806,
+     "source_excerpt": null
+    },
+    "evidence": [
+     {
+      "tool": "contract/getsourcecode",
+      "args": {
+       "chainid": 10,
+       "module": "contract",
+       "action": "getsourcecode",
+       "address": "0x0b2c639c533813f4aa9d7837caf62653d097ff85"
+      }
+     }
+    ],
+    "missing": []
+   }
+  },
+  "base": {
+   "args": {
+    "chain": "base",
+    "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+   },
+   "envelope": {
+    "ok": true,
+    "data": {
+     "chain": "base",
+     "chain_id": 8453,
+     "address": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+     "verified": true,
+     "contract_name": "FiatTokenProxy",
+     "compiler": "v0.6.12+commit.27d51765",
+     "compiler_type": "solc-j",
+     "optimization": true,
+     "runs": 10000000,
+     "evm_version": "istanbul",
+     "license": null,
+     "proxy": true,
+     "implementation": "0x2ce6311ddae708829bc0784c967b7d77d19fd779",
+     "source_format": "standard_json",
+     "source_files_count": 5,
+     "source_files": [
+      "/Users/lnguyen/circle/centre-tokens/contracts/v1/FiatTokenProxy.sol",
+      "@openzeppelin/contracts/utils/Address.sol",
+      "/Users/lnguyen/circle/centre-tokens/contracts/upgradeability/UpgradeabilityProxy.sol",
+      "/Users/lnguyen/circle/centre-tokens/contracts/upgradeability/Proxy.sol",
+      "/Users/lnguyen/circle/centre-tokens/contracts/upgradeability/AdminUpgradeabilityProxy.sol"
+     ],
+     "source_chars_total": 22782,
+     "source_excerpt": null
+    },
+    "evidence": [
+     {
+      "tool": "contract/getsourcecode",
+      "args": {
+       "chainid": 8453,
+       "module": "contract",
+       "action": "getsourcecode",
+       "address": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"
+      }
+     }
+    ],
+    "missing": []
+   }
+  },
+  "avalanche": {
+   "args": {
+    "chain": "avalanche",
+    "address": "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E"
+   },
+   "envelope": {
+    "ok": true,
+    "data": {
+     "chain": "avalanche",
+     "chain_id": 43114,
+     "address": "0xb97ef9ef8734c71904d8002f8b6bc66dd9c48a6e",
+     "verified": true,
+     "contract_name": "FiatTokenProxy",
+     "compiler": "v0.6.12+commit.27d51765",
+     "compiler_type": "solc",
+     "optimization": true,
+     "runs": 10000000,
+     "evm_version": "Default",
+     "license": "MIT",
+     "proxy": true,
+     "implementation": "0x30dfe0469803bce76f8f62ac24b18d33d3d6ffe6",
+     "source_format": "single_file",
+     "source_files_count": 1,
+     "source_files": [],
+     "source_chars_total": 13293,
+     "source_excerpt": null
+    },
+    "evidence": [
+     {
+      "tool": "contract/getsourcecode",
+      "args": {
+       "chainid": 43114,
+       "module": "contract",
+       "action": "getsourcecode",
+       "address": "0xb97ef9ef8734c71904d8002f8b6bc66dd9c48a6e"
+      }
+     }
+    ],
+    "missing": []
+   }
+  }
+ },
+ "token_info_polygon": {
+  "args": {
+   "chain": "polygon",
+   "address": "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
+  },
+  "envelope": {
+   "ok": true,
+   "data": {
+    "chain": "polygon",
+    "chain_id": 137,
+    "address": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
+    "name": "USD Coin",
+    "symbol": "USDC",
+    "decimals": 6,
+    "total_supply_raw": "568018854635793",
+    "total_supply": 568018854.635793
+   },
+   "evidence": [
+    {
+     "tool": "proxy/eth_call",
+     "args": {
+      "chainid": 137,
+      "module": "proxy",
+      "action": "eth_call",
+      "to": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
+      "data": "0x06fdde03",
+      "tag": "latest"
+     }
+    },
+    {
+     "tool": "proxy/eth_call",
+     "args": {
+      "chainid": 137,
+      "module": "proxy",
+      "action": "eth_call",
+      "to": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
+      "data": "0x95d89b41",
+      "tag": "latest"
+     }
+    },
+    {
+     "tool": "proxy/eth_call",
+     "args": {
+      "chainid": 137,
+      "module": "proxy",
+      "action": "eth_call",
+      "to": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
+      "data": "0x313ce567",
+      "tag": "latest"
+     }
+    },
+    {
+     "tool": "proxy/eth_call",
+     "args": {
+      "chainid": 137,
+      "module": "proxy",
+      "action": "eth_call",
+      "to": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
+      "data": "0x18160ddd",
+      "tag": "latest"
+     }
+    }
+   ],
+   "missing": []
+  }
+ },
+ "txs_normal_arbitrum": {
+  "args": {
+   "chain": "arbitrum",
+   "address": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+   "limit": 3
+  },
+  "envelope": {
+   "ok": true,
+   "data": {
+    "chain": "arbitrum",
+    "chain_id": 42161,
+    "native": "ETH",
+    "address": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+    "kind": "normal",
+    "token": null,
+    "page": 1,
+    "limit": 3,
+    "count": 3,
+    "has_more": true,
+    "rows": [
+     {
+      "hash": "0xebf8b50ffe953379d0e6587fb0d3187f84bf291481be448cda9b52ce468f5eff",
+      "block": 526478406,
+      "time_utc": "2026-11-22T09:28:53+00:00",
+      "from": "0x3b1b026aa1362846ed711f55a96b918c138414a5",
+      "to": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+      "direction": "in",
+      "value_wei": "0",
+      "value": 0.0,
+      "fee": 8.1274e-07,
+      "failed": false,
+      "method": "transfer",
+      "contract_created": null
+     },
+     {
+      "hash": "0xb0bd86a937c47e527019f5b699f2efce6d5356a2031679dd8a213d2d7deb6ab3",
+      "block": 526478403,
+      "time_utc": "2026-11-22T09:28:52+00:00",
+      "from": "0x493a27bf4ae788ad3cf84c048477fe6ca80c631e",
+      "to": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+      "direction": "in",
+      "value_wei": "0",
+      "value": 0.0,
+      "fee": 8.9342e-07,
+      "failed": false,
+      "method": "transfer",
+      "contract_created": null
+     },
+     {
+      "hash": "0xb4da98c69db258482cab6229921f5234e9a34baa906d70b43e4d25c176b8773a",
+      "block": 526478380,
+      "time_utc": "2026-11-22T09:28:45+00:00",
+      "from": "0x074d76947eb19ef59ab8b7b279836e3192113aef",
+      "to": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+      "direction": "in",
+      "value_wei": "0",
+      "value": 0.0,
+      "fee": 8.1388125e-07,
+      "failed": false,
+      "method": "transfer",
+      "contract_created": null
+     }
+    ]
+   },
+   "evidence": [
+    {
+     "tool": "account/txlist",
+     "args": {
+      "chainid": 42161,
+      "module": "account",
+      "action": "txlist",
+      "address": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+      "page": 1,
+      "offset": 3,
+      "sort": "desc"
+     }
+    }
+   ],
+   "missing": []
+  }
+ },
+ "token_info_bsc_refused": {
+  "args": {
+   "chain": "bsc",
+   "address": "0x55d398326f99059fF775485246999027B3197955"
+  },
+  "envelope": {
+   "ok": false,
+   "data": null,
+   "evidence": [],
+   "missing": [
+    {
+     "field": "name",
+     "provider": "etherscan",
+     "reason": "provider_tier",
+     "detail": "needs a paid Etherscan plan (the free key does not cover this endpoint or chain)"
+    },
+    {
+     "field": "symbol",
+     "provider": "etherscan",
+     "reason": "provider_tier",
+     "detail": "needs a paid Etherscan plan (the free key does not cover this endpoint or chain)"
+    },
+    {
+     "field": "decimals",
+     "provider": "etherscan",
+     "reason": "provider_tier",
+     "detail": "needs a paid Etherscan plan (the free key does not cover this endpoint or chain)"
+    },
+    {
+     "field": "total_supply",
+     "provider": "etherscan",
+     "reason": "provider_tier",
+     "detail": "needs a paid Etherscan plan (the free key does not cover this endpoint or chain)"
+    }
+   ]
+  }
+ },
+ "txs_normal_base_refused": {
+  "args": {
+   "chain": "base",
+   "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+   "limit": 3
+  },
+  "envelope": {
+   "ok": false,
+   "data": null,
+   "evidence": [],
+   "missing": [
+    {
+     "field": "transactions",
+     "provider": "etherscan",
+     "reason": "provider_tier",
+     "detail": "needs a paid Etherscan plan (the free key does not cover this endpoint or chain)"
+    }
+   ]
+  }
+ }
+}

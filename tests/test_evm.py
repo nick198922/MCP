@@ -1,6 +1,8 @@
-"""onchain_* tools (Etherscan API V2) on a DOCUMENTATION-DERIVED sample (tests/fixtures/etherscan_v2_docs_2026-11-19.json,
-not a live capture: the shapes follow the Etherscan docs, the numbers are illustrative) behind httpx.MockTransport. The
-key is a test-only dummy; the tests check it reaches the request but never the envelope."""
+"""onchain_* tools (Etherscan API V2) on a DOCUMENTATION-DERIVED sample of raw bodies (tests/fixtures/
+etherscan_v2_docs_2026-11-19.json: the shapes follow the Etherscan docs, the numbers are illustrative) behind
+httpx.MockTransport, plus the LIVE envelopes of the MCP service from 2026-11-22 (tests/fixtures/
+etherscan_v2_live_2026-11-22.json: live numbers, free-key chain coverage, output shape). The key is a test-only dummy;
+the tests check it reaches the request but never the envelope."""
 
 import json
 from datetime import UTC, datetime
@@ -9,16 +11,26 @@ from unittest.mock import patch
 
 import httpx
 import pytest
+from mcp import Client
 
 from test_server import call
 from tradedesk.analytics.evm import abi_string, hex_uint, scaled, source_summary, tx_row, uint_text, valid_evm_address
 from tradedesk.config import Settings
 from tradedesk.core.ratelimit import TokenBucket
-from tradedesk.providers.etherscan import SELECTORS, _body_check, _proxy_check, resolve_chain
+from tradedesk.providers.etherscan import (
+    CHAINS,
+    FREE_CHAINS,
+    FREE_SOURCE_CHAINS,
+    SELECTORS,
+    _body_check,
+    _proxy_check,
+    resolve_chain,
+)
 from tradedesk.runtime import Runtime
 from tradedesk.server import build_server
 
 FIX = json.loads((Path(__file__).parent / "fixtures" / "etherscan_v2_docs_2026-11-19.json").read_text())
+LIVE = json.loads((Path(__file__).parent / "fixtures" / "etherscan_v2_live_2026-11-22.json").read_text())
 HOLDER = FIX["holder"]
 USDT = FIX["token"]
 KEY = "test-dummy-etherscan-key"  # not a real key: the transport below is a fake
@@ -534,3 +546,147 @@ def test_source_summary_standard_json_and_files():
     assert broken["source_format"] == "single_file" and broken["source_files_count"] == 1
     assert source_summary(None) is None
     assert source_summary({"SourceCode": "x", "ABI": "Contract source code not verified"})["verified"] is False
+
+
+# ---------------------------------------------------------------- live envelopes of 2026-11-22 (MCP service, free key)
+
+
+def _word(n: int) -> str:
+    return n.to_bytes(32, "big").hex()
+
+
+def _abi_string(s: str) -> str:
+    raw = s.encode()
+    return "0x" + _word(32) + _word(len(raw)) + raw.hex().ljust(64 * max(1, -(-len(raw) // 32)), "0")
+
+
+def _live_raw(views: dict[str, object], balances: dict[str, str]):
+    """A fake Etherscan that answers with the raw bodies the live numbers imply (balances as returned, views ABI-encoded)."""
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        p = req.url.params
+        if p.get("module") == "account" and p.get("action") in balances:
+            return httpx.Response(200, json={"status": "1", "message": "OK", "result": balances[p["action"]]})
+        if p.get("module") == "proxy":
+            view = next(v for v, sel in SELECTORS.items() if sel == p.get("data"))
+            value = views[view]
+            result = _abi_string(value) if isinstance(value, str) else "0x" + _word(int(value))
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": result})
+        return httpx.Response(404, text="not mocked")
+
+    return handler
+
+
+COVERAGE_KEYS = (
+    "_source",
+    "chain_balance",
+    "chain_source",
+    "token_info_polygon",
+    "txs_normal_arbitrum",
+    "token_info_bsc_refused",
+    "txs_normal_base_refused",
+)
+
+
+def _answered(env: dict, chain: str) -> bool:
+    return env["ok"] is True and env["missing"] == [] and env["data"]["chain_id"] == CHAINS[chain][0]
+
+
+def _refused(env: dict) -> bool:
+    return env["ok"] is False and env["missing"] != [] and all(m["reason"] == "provider_tier" for m in env["missing"])
+
+
+def test_live_free_key_chain_coverage_matches_the_code():
+    # account/* and eth_call: FREE_CHAINS answer, the rest are refused as paid-plan chains.
+    live = LIVE["chain_balance"]
+    assert set(live) == set(CHAINS)
+    for chain, entry in live.items():
+        env = entry["envelope"]
+        if chain in FREE_CHAINS:
+            assert _answered(env, chain), chain
+        else:
+            assert _refused(env) and [m["reason"] for m in env["missing"]] == ["provider_tier"], chain
+    # Not only the balance: token info (eth_call) on polygon and transactions (txlist) on arbitrum answer too.
+    assert set(FREE_CHAINS) == {"ethereum", "polygon", "arbitrum"}
+    info = LIVE["token_info_polygon"]["envelope"]
+    assert _answered(info, "polygon") and (info["data"]["symbol"], info["data"]["decimals"]) == ("USDC", 6)
+    assert [e["tool"] for e in info["evidence"]] == ["proxy/eth_call"] * 4
+    txs = LIVE["txs_normal_arbitrum"]["envelope"]
+    assert _answered(txs, "arbitrum") and txs["data"]["count"] > 0
+    assert [e["tool"] for e in txs["evidence"]] == ["account/txlist"]
+    # ... and the same endpoints are refused off FREE_CHAINS (one missing per eth_call view).
+    assert "bsc" not in FREE_CHAINS and "base" not in FREE_CHAINS
+    refused_info = LIVE["token_info_bsc_refused"]["envelope"]
+    assert _refused(refused_info) and len(refused_info["missing"]) == 4
+    assert _refused(LIVE["txs_normal_base_refused"]["envelope"])
+
+
+def test_live_free_key_reads_contract_source_on_every_chain():
+    live = LIVE["chain_source"]
+    assert set(live) == set(CHAINS) == set(FREE_SOURCE_CHAINS)
+    assert set(CHAINS) - set(FREE_CHAINS) == {"bsc", "optimism", "base", "avalanche"}  # the account / eth_call refusals
+    for chain, entry in live.items():
+        env = entry["envelope"]
+        assert _answered(env, chain) and env["data"]["verified"] is True, chain
+        assert [e["tool"] for e in env["evidence"]] == ["contract/getsourcecode"], chain
+        assert all("apikey" not in e["args"] for e in env["evidence"]), chain
+
+
+async def test_source_tool_is_not_described_as_refused_on_paid_chains():
+    async with Client(make_server()) as c:
+        tools = {t.name: t for t in (await c.list_tools()).tools}
+    source = tools["onchain_contract_source"]
+    text = (source.description + " " + source.input_schema["properties"]["chain"]["description"]).lower()
+    assert "refused" not in text and "provider_tier" not in text and "paid" not in text
+    assert all(chain in text for chain in CHAINS)
+    for name in ("onchain_balance", "onchain_address_txs", "onchain_token_info"):
+        tool = tools[name]
+        assert "provider_tier" in tool.description and "refused" in tool.description, name
+        assert "provider_tier" in tool.input_schema["properties"]["chain"]["description"], name
+
+
+def test_live_envelopes_carry_no_key_and_answered_on_ethereum():
+    for name, entry in LIVE.items():
+        if name in COVERAGE_KEYS:
+            continue
+        env = entry["envelope"]
+        assert env["ok"] is True and env["missing"] == [], name
+        assert all("apikey" not in e["args"] and e["args"]["chainid"] == 1 for e in env["evidence"]), name
+
+
+async def test_live_numbers_round_trip_native_and_token_balance():
+    native = LIVE["balance_native"]
+    handler = _live_raw({}, {"balance": native["envelope"]["data"]["balance_raw"]})
+    env = await call(make_server(handler), "onchain_balance", **native["args"])
+    assert env["ok"] is True and env["data"] == native["envelope"]["data"]
+    usdc = LIVE["balance_usdc"]
+    d = usdc["envelope"]["data"]
+    handler = _live_raw({"decimals": d["decimals"], "symbol": d["symbol"]}, {"tokenbalance": d["balance_raw"]})
+    env = await call(make_server(handler), "onchain_balance", **usdc["args"])
+    assert env["ok"] is True and env["data"] == d and env["data"]["balance"] == pytest.approx(52_363.119552)
+
+
+@pytest.mark.parametrize("name", ["token_info_usdc", "token_info_weth"])
+async def test_live_numbers_round_trip_token_info(name):
+    live = LIVE[name]
+    d = live["envelope"]["data"]
+    views = {"name": d["name"], "symbol": d["symbol"], "decimals": d["decimals"], "totalSupply": int(d["total_supply_raw"])}
+    env = await call(make_server(_live_raw(views, {})), "onchain_token_info", **live["args"])
+    assert env["ok"] is True and env["data"] == d
+    assert [e["tool"] for e in env["evidence"]] == ["proxy/eth_call"] * 4
+
+
+async def test_live_output_shapes_match_the_tools_on_the_documented_bodies():
+    # The live rows / summaries came out complete: the raw field names the parser reads are the ones Etherscan sends.
+    normal = LIVE["txs_normal_weth"]["envelope"]["data"]["rows"]
+    erc20 = LIVE["txs_erc20_usdc"]["envelope"]["data"]["rows"]
+    assert normal and all(v is not None for r in normal for k, v in r.items() if k != "contract_created")
+    assert erc20 and all(v is not None for r in erc20 for v in r.values())
+    docs_normal = await call(make_server(), "onchain_address_txs", chain="ethereum", address=HOLDER)
+    docs_erc20 = await call(make_server(), "onchain_address_txs", chain="ethereum", address=HOLDER, kind="erc20")
+    assert set(normal[0]) == set(docs_normal["data"]["rows"][0]) and set(erc20[0]) == set(docs_erc20["data"]["rows"][0])
+    src = LIVE["source_usdc"]["envelope"]["data"]
+    docs_src = await call(make_server(), "onchain_contract_source", chain="ethereum", address=USDT)
+    assert set(src) == set(docs_src["data"])
+    assert (src["verified"], src["proxy"], src["contract_name"]) == (True, True, "FiatTokenProxy")
+    assert src["implementation"] is not None and src["source_excerpt"].startswith("pragma solidity")

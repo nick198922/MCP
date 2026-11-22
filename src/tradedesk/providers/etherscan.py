@@ -1,10 +1,15 @@
 """Etherscan API V2 (one endpoint for many EVM chains, a free key: ETHERSCAN_API_KEY).
 
 `GET https://api.etherscan.io/v2/api?chainid=<id>&module=<m>&action=<a>&...&apikey=<key>`. Shapes from the Etherscan
-V2 documentation (docs.etherscan.io); successful answers not checked live by this code yet (a documentation-derived
-sample is in tests/fixtures/etherscan_v2_docs_2026-11-19.json). Live so far: `account/tokentx` on 2026-10-25
-(scripts/verify_market_makers_onchain.py) and, without a key on 2026-11-19, `account/balance` and `proxy/eth_call` both
-answered `{"status": "0", "message": "NOTOK", "result": "Missing/Invalid API Key"}`. The envelope:
+V2 documentation (docs.etherscan.io), checked live through the MCP service with the free key on 2026-11-22: all four
+onchain_* tools answered on ethereum (balance, tokenbalance, txlist, tokentx, getsourcecode, eth_call). Free-key
+coverage depends on the endpoint, not only the chain: `contract/getsourcecode` answered on all seven CHAINS, while
+`account/*` and `proxy/eth_call` answered on ethereum, polygon and arbitrum only and were refused as a paid-plan chain on
+bsc, optimism, base and avalanche (account/balance on all four, txlist on base, eth_call on bsc), see FREE_CHAINS and
+FREE_SOURCE_CHAINS (tests/fixtures/etherscan_v2_live_2026-11-22.json; raw row shapes still in
+etherscan_v2_docs_2026-11-19.json).
+Without a key (2026-11-19) `account/balance` and `proxy/eth_call` both answered
+`{"status": "0", "message": "NOTOK", "result": "Missing/Invalid API Key"}`. The envelope:
 - module APIs answer `{"status": "1", "message": "OK", "result": ...}`; an error is HTTP 200 with `status` "0",
   `message` "NOTOK" and the reason as text in `result` (invalid key, the 3 requests/s limit, a paid-only endpoint or
   chain); an empty list is `status` "0" with `message` "No transactions found" and `result` [];
@@ -43,7 +48,8 @@ MAX_ROWS = 10_000  # Etherscan returns at most page x offset <= 10,000 rows of o
 RATE_LIMIT_RETRY_S = 1.0  # one more try after this pause when the body says "rate limit" (at most two requests)
 RATE_LIMIT_DETAIL = "Etherscan request limit reached (free key: 3 requests/s, 100k/day)"
 
-# name -> (chain id, native coin). Which of them the free key covers is not verified (the card's parity map).
+# name -> (chain id, native coin). All stay mapped: the free key reads contract source on all of them, and a paid key
+# would open the account / eth_call endpoints on the rest.
 CHAINS: dict[str, tuple[int, str]] = {
     "ethereum": (1, "ETH"),
     "bsc": (56, "BNB"),
@@ -53,6 +59,12 @@ CHAINS: dict[str, tuple[int, str]] = {
     "base": (8453, "ETH"),
     "avalanche": (43114, "AVAX"),
 }
+# Free-key coverage per endpoint, checked live 2026-11-22 through the MCP service. account/* and proxy/eth_call
+# (onchain_balance, onchain_address_txs, onchain_token_info) answer on FREE_CHAINS only; the other CHAINS are refused as
+# paid-plan chains (classified provider_tier; the raw text is never echoed, so not recorded).
+FREE_CHAINS: tuple[str, ...] = ("ethereum", "polygon", "arbitrum")
+# contract/getsourcecode (onchain_contract_source) answers on every chain with the free key.
+FREE_SOURCE_CHAINS: tuple[str, ...] = tuple(CHAINS)
 _ALIASES = {"eth": "ethereum", "bnb": "bsc", "matic": "polygon", "arb": "arbitrum", "op": "optimism", "avax": "avalanche"}
 _ALIASES |= {str(cid): name for name, (cid, _) in CHAINS.items()}  # numeric chain ids too
 

@@ -203,8 +203,24 @@ def test_demo_status_cuts_a_long_note_at_a_list_boundary(monkeypatch):
     cut = demo_status_tool._cut_note
     assert cut("short, note") == "short, note"
     assert cut("orphaned: 4 — S38 AAAUSDT, S38 BBBUSDT, S38 CCCUSDT") == "orphaned: 4 — S38 AAAUSDT …"
-    assert cut("x, " + "y" * 40) == "x, " + "y" * 27 + " …"  # the only separator is too early: cut by characters
-    assert cut("z" * 40) == "z" * 30 + " …"  # no separator: cut by characters
+    assert cut("x, " + "y" * 40) == "x, " + "y" * 25 + " …"  # the only separator is too early: cut by characters
+    assert cut("z" * 40) == "z" * 28 + " …"  # no separator: cut by characters
+    assert all(len(cut(n)) <= 30 for n in ("x, " + "y" * 40, "z" * 40, "a, b; " + "c" * 40))
+
+
+def test_demo_status_cut_note_keeps_the_explanatory_tail(monkeypatch):
+    # review of item 442, findings 4 and 5: the tail after the list survives the cut, the list still ends on a whole item
+    monkeypatch.setattr(demo_status_tool, "NOTE_CHARS", 60)
+    cut = demo_status_tool._cut_note
+    note = "orphaned: 5 — S38 AAAUSDT, S38 BBBUSDT, S38 CCCUSDT, S38 DDDUSDT, S38 EEEUSDT; check by hand"
+    assert cut(note) == "orphaned: 5 — S38 AAAUSDT, S38 BBBUSDT …; check by hand"
+    assert len(cut(note)) <= 60
+    # a tail longer than a third of the limit is not kept: the note is cut as a plain list
+    long_tail = "orphaned: 5 — S38 AAAUSDT, S38 BBBUSDT, S38 CCCUSDT; " + "t" * 25
+    assert cut(long_tail) == "orphaned: 5 — S38 AAAUSDT, S38 BBBUSDT …"
+    # a tail with no ', ' in the second half of the room left: the list is cut by characters, the tail kept
+    no_sep = "orphaned: " + "Q" * 60 + "; check"
+    assert cut(no_sep) == "orphaned: " + "Q" * 41 + " …; check" and len(cut(no_sep)) == 60
 
 
 async def test_demo_status_skips_a_corrupt_row_with_a_warning(tmp_path):

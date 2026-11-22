@@ -313,6 +313,19 @@ def test_coverage_report_lists_unparsable_oldest_instead_of_crashing():
     assert {x["month"]: x["status"] for x in rep["months"]}["2025-01"] == "done"
 
 
+def test_coverage_report_lists_falsy_oldest_but_not_none():
+    """Falsy non-strings (0, "", []) in ``oldest`` of a done month are damage, not "no value": they go to
+    ``bad_oldest`` without crashing. ``None`` is a legitimate "no value" (empty month) and is not listed."""
+    state = {
+        "done_months": ["2025-01", "2025-02", "2025-03", "2025-04"],
+        "oldest": {"2025-01": 0, "2025-02": "", "2025-03": [], "2025-04": None},
+    }
+    rep = xb.coverage_report([], state, date(2025, 5, 2))
+    assert rep["bad_oldest"] == ["2025-01", "2025-02", "2025-03"]
+    assert rep["suspect_months"] == []
+    assert {x["month"]: x["status"] for x in rep["months"]}["2025-04"] == "done"
+
+
 def test_truncated_paging_leaves_no_empty_days_in_coverage(root):
     """A tweet every day of January, but the fake API returns 3 per window and never a cursor: the month must be
     exhausted (every day present) before it is marked done, and --stat must show it."""

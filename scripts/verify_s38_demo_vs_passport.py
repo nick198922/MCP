@@ -16,7 +16,8 @@ the scenario «each closed at the initial stop, -1R», missed entries and the sh
 ``--setup S39`` / ``S40`` runs the same comparison against their passports (lines 16 / 17 of the same report; descriptive
 while a group has fewer than 30 trades); ``--setup S3`` repeats the 30.10 S3 comparison
 (``scripts/verify_s3_demo_vs_passport.py``, same passport numbers) with the fee / exit-slippage rows and the
-timeframe x side and break-even-rule splits; ``--seen-cutoff`` (a repeat comparison) adds, per group, the rows of the trades
+timeframe x side and break-even-rule splits; ``--setup S14`` sets the S14 demo trades (v3) against the S14 passport
+(``docs/verification/2026-10-30-passport-s14-s16.md``) with the same splits; ``--seen-cutoff`` (a repeat comparison) adds, per group, the rows of the trades
 an earlier comparison saw (closed before it) and of the new ones.
 CI: bootstrap clustered by the UTC day of the signal bar (``liquidation_flush.cluster_bootstrap_ci`` through the S12
 script's ``stat``). R is per trade risk, not on capital. The passport bands are defined for n = 30: a group with fewer
@@ -149,6 +150,29 @@ SETUPS: dict[str, dict[str, Any]] = {
         "universe": "паспорт: свічки й ранг Binance, топ-100 і ≥ $5M, OOS з 2025-03; демо: Bybit, оборот дня входу з Bybit",
         "splits": True,
         "ref_band": (50, (-0.388, 0.265), (-0.545, 0.494), f"{CHECKPOINT_DOC}:112"),
+    },
+    # S14 (first comparison, card item 6, 22.11): docs/verification/2026-10-30-passport-s14-s16.md, top-250 and >= $1M,
+    # OOS (line 10: -0.049 [-0.188; +0.108], n 1868; line 20: the n = 30 bands, i.i.d. and sliding; line 18: turnover).
+    # The passport models rule B (break-even at half the path), i.e. the demo's v3; the S14 demo trades so far are all v3.
+    # Both sides on 4h and 1d, so the S3 splits (timeframe x side) are printed too.
+    "S14": {
+        "passport": audit.Passport(
+            "EMA-імпульс (S14), 4h і 1d, лонг і шорт; вхід за закриттям сигнальної свічки, правило беззбитку B",
+            -0.049,
+            (-0.188, 0.108),
+            (-0.455, -0.062, 0.408),
+            (-0.830, -0.117, 1.031),
+            None,
+            "docs/verification/2026-10-30-passport-s14-s16.md:10,20",
+        ),
+        "passport_of": {"v3": "S14"},
+        "turnover_ref": {
+            "1to5m": "паспорт S14 $1–5M −0.117 (рядок 18); контраст $1–5M − решта OOS +0.079 [−0.162; +0.322], групу значуще гіршою не виявлено",
+            "ge5m": "паспорт S14 ≥ $5M −0.089, top30 −0.096 (рядок 18)",
+        },
+        "bar_cap": None,
+        "splits": True,
+        "ref_band": (50, (-0.366, 0.310), (-0.672, 0.691), f"{CHECKPOINT_DOC}:113"),
     },
 }
 UNIVERSE_DEFAULT = "паспорт: свічки й оборот Binance, топ-250 і ≥ $1M, OOS з 2025-03; демо: Bybit, монети від $1M, оборот дня входу з Bybit"
@@ -335,7 +359,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--venue", default="bybit")
     ap.add_argument("--cache-dir", default=DEFAULT_CACHE)
     ap.add_argument("--out-tag", default="s38", help="output names <tag>.txt / <tag>_rows.json in the cache dir")
-    ap.add_argument("--setup", choices=sorted(SETUPS), default="S38", help="S38 (default); S39 / S40 / S3 against their passports")
+    ap.add_argument("--setup", choices=sorted(SETUPS), default="S38", help="S38 (default); S39 / S40 / S3 / S14 against their passports")
     ap.add_argument("--seen-cutoff", help="UTC YYYY-MM-DDTHH:MM, the cutoff of an earlier comparison: trades closed after it get own rows")
     a = ap.parse_args(argv)
     configure(a.setup)

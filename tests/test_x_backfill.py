@@ -263,6 +263,7 @@ def test_coverage_report_empty_days_first_last_and_status():
         "empty_share": None,
         "ignored_future": 0,
         "suspect_months": [],
+        "bad_oldest": [],
         "months": [],
     }
 
@@ -296,6 +297,20 @@ def test_coverage_report_flags_suspect_done_months_and_counts_future_tweets():
     assert list(by)[-1] == "2025-03" and by["2025-03"]["tweets"] == 1 and by["2025-03"]["last"] == "2025-03-10T08:00:00Z"
     just_over = {"done_months": ["2025-02"], "oldest": {"2025-02": "2025-02-02T00:01:00Z"}}
     assert [x["month"] for x in xb.coverage_report([], just_over, date(2025, 3, 11))["suspect_months"]] == ["2025-02"]
+    assert rep["bad_oldest"] == []
+
+
+def test_coverage_report_lists_unparsable_oldest_instead_of_crashing():
+    """A damaged or hand-edited state.json (wrong date format, a number) must not crash --stat: such done months go to
+    ``bad_oldest`` and are not judged; a valid month next to them is still flagged as suspect."""
+    state = {
+        "done_months": ["2025-01", "2025-02", "2025-03"],
+        "oldest": {"2025-01": "2025-01-15 06:00", "2025-02": 1738368000, "2025-03": "2025-03-20T00:00:00Z"},
+    }
+    rep = xb.coverage_report([], state, date(2025, 4, 2))
+    assert rep["bad_oldest"] == ["2025-01", "2025-02"]
+    assert [x["month"] for x in rep["suspect_months"]] == ["2025-03"]
+    assert {x["month"]: x["status"] for x in rep["months"]}["2025-01"] == "done"
 
 
 def test_truncated_paging_leaves_no_empty_days_in_coverage(root):

@@ -5,7 +5,7 @@ per cycle) and independent venue bars (``[open_ms, open, high, low, close, volum
 IDEA-20261102-standing-improvements, «Попередня реєстрація — пункт 383») fixes the thresholds below before the data:
 
 - R1 frozen leg: one leg's price equal over >= ``FROZEN_ROWS`` consecutive rows while the other changes, or the venue's
-  bar behind a row has zero volume;
+  bar behind a row has zero volume (an explicit 0; an unknown volume stays None and is not zero);
 - R2 foreign bar: a row's leg price differs from the venue's own bar closing at the cycle by > ``BAR_TOL`` (relative);
 - R4 units: the two prices differ by more than ``RATIO_MAX`` times;
 - market subclass by 1m closes over the holding: |median a/b - 1| > ``GAP`` = persistent, else close noise.
@@ -55,24 +55,33 @@ def longest_equal_run(values: Sequence[float | None]) -> int:
     return best
 
 
+def _vol(bar: Sequence[float | None] | None) -> float | None:
+    """Bar volume, None when the bar or its volume is unknown (never turned into 0: only an explicit 0 is R1)."""
+    if not bar or len(bar) < 5 or bar[4] is None:
+        return None
+    return float(bar[4])
+
+
 def row_checks(
-    rows: Sequence[Mapping[str, Any]], bars_a: Mapping[int, Sequence[float]], bars_b: Mapping[int, Sequence[float]]
+    rows: Sequence[Mapping[str, Any]],
+    bars_a: Mapping[int, Sequence[float | None]],
+    bars_b: Mapping[int, Sequence[float | None]],
 ) -> list[dict[str, Any]]:
     """Per candidate row (``cycle_ts``, ``price_a``, ``price_b``): the venues' own bars closing at the cycle
     (``bars_x`` open_ms -> [open, high, low, close, volume]), the relative deviation of each engine price from that
-    close, the bar volumes and the independent gap. A missing bar leaves its fields None."""
+    close, the bar volumes and the independent gap. A missing bar leaves its fields None; an unknown volume stays None."""
     out = []
     for r in rows:
         k = cycle_bar_open(int(r["cycle_ts"]))
         pa, pb = r.get("price_a"), r.get("price_b")
         ba, bb = bars_a.get(k), bars_b.get(k)
-        ca = float(ba[3]) if ba else None
-        cb = float(bb[3]) if bb else None
+        ca = float(ba[3]) if ba and ba[3] is not None else None
+        cb = float(bb[3]) if bb and bb[3] is not None else None
         out.append(
             {
                 "cycle_ts": int(r["cycle_ts"]), "bar_open": k, "price_a": pa, "price_b": pb,
                 "gap": pa / pb - 1.0 if pa and pb else None,
-                "close_a": ca, "close_b": cb, "vol_a": float(ba[4]) if ba else None, "vol_b": float(bb[4]) if bb else None,
+                "close_a": ca, "close_b": cb, "vol_a": _vol(ba), "vol_b": _vol(bb),
                 "dev_a": pa / ca - 1.0 if pa and ca else None, "dev_b": pb / cb - 1.0 if pb and cb else None,
                 "gap_indep": ca / cb - 1.0 if ca and cb else None,
             }
@@ -102,26 +111,41 @@ def no_bar_rows(checks: Sequence[Mapping[str, Any]]) -> dict[str, int]:
     return {leg: sum(1 for c in checks if c[f"price_{leg}"] and not c[f"close_{leg}"]) for leg in ("a", "b")}
 
 
+def _frozen(checks: Sequence[Mapping[str, Any]], leg: str) -> bool:
+    """R1: the leg's engine price is equal over >= ``FROZEN_ROWS`` consecutive rows while the other leg changes."""
+    other = "b" if leg == "a" else "a"
+    vals = [c[f"price_{leg}"] for c in checks]
+    return longest_equal_run(vals) >= FROZEN_ROWS and len({c[f"price_{other}"] for c in checks}) > 1
+
+
+def _units(checks: Sequence[Mapping[str, Any]]) -> bool:
+    """R4: the two engine prices of some row differ by more than ``RATIO_MAX`` times."""
+    return any(
+        c["price_a"] and c["price_b"] and max(c["price_a"], c["price_b"]) / min(c["price_a"], c["price_b"]) > RATIO_MAX for c in checks
+    )
+
+
 def classify(checks: Sequence[Mapping[str, Any]], minute: Mapping[str, Any]) -> dict[str, Any]:
     """Registered verdict of one entry on «engine defect?»: ✓ defect explains the failure, ≈ defect that does not,
     ✗ market («persistent» / «close noise»), ◯ no rows or no independent bars, or no flag but some rows without a
     4h bar («R2 unknown»: a foreign bar could hide there). ``no_bar`` counts such rows per leg and ``r2_unknown`` is
-    True when any exist; a ✓ / ≈ verdict then keeps its class with an «R2 unknown on N rows» suffix."""
+    True when any exist; a ✓ / ≈ verdict then keeps its class with an «R2 unknown on N rows» suffix. R1 «zero volume»
+    needs an explicit 0 (an unknown volume, None, is not zero). Without independent bars the verdict is ◯ «no data»,
+    but the bar-free flags (R1 frozen, R4 units) are still computed and shown in ``flags``."""
     no_bar = no_bar_rows(checks)
     r2_unknown = any(no_bar.values())
     if not checks or not any(c["gap_indep"] is not None for c in checks):
-        return {"verdict": "◯", "cls": "no data", "flags": [], "no_bar": no_bar, "r2_unknown": r2_unknown}
+        early = [f"R1 frozen {leg}" for leg in ("a", "b") if _frozen(checks, leg)] + (["R4 units"] if _units(checks) else [])
+        return {"verdict": "◯", "cls": "no data", "flags": early, "no_bar": no_bar, "r2_unknown": r2_unknown}
     flags = []
     for leg in ("a", "b"):
-        other = "b" if leg == "a" else "a"
-        vals = [c[f"price_{leg}"] for c in checks]
-        if longest_equal_run(vals) >= FROZEN_ROWS and len({c[f"price_{other}"] for c in checks}) > 1:
+        if _frozen(checks, leg):
             flags.append(f"R1 frozen {leg}")
-        if any(c[f"vol_{leg}"] == 0 for c in checks):
+        if any(c[f"vol_{leg}"] is not None and c[f"vol_{leg}"] == 0 for c in checks):
             flags.append(f"R1 zero volume {leg}")
         if any(c[f"dev_{leg}"] is not None and abs(c[f"dev_{leg}"]) > BAR_TOL for c in checks):
             flags.append(f"R2 foreign bar {leg}")
-    if any(c["price_a"] and c["price_b"] and max(c["price_a"], c["price_b"]) / min(c["price_a"], c["price_b"]) > RATIO_MAX for c in checks):
+    if _units(checks):
         flags.append("R4 units")
     eng = median_gap([c["gap"] for c in checks])
     ind = median_gap([c["gap_indep"] for c in checks])

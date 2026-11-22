@@ -38,6 +38,10 @@ def _pc(x: float | None, nd: int = 2) -> str:
     return "—" if x is None else f"{x * 100:+.{nd}f} %"
 
 
+def _vol(x: float | None) -> str:
+    return "—" if x is None else f"{x:.0f}"
+
+
 def _rss() -> str:
     return f"rss {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.0f} MB"
 
@@ -54,21 +58,24 @@ def load_b(db: str) -> dict[str, Any]:
     return {"positions": pos, "side": side, "cycles": cyc}
 
 
-async def bars(rt: Any, cache: Path, venue: str, sym: str, tf: str, start: int, end: int, fetch: bool) -> dict[int, list[float]]:
-    """Bars [open, high, low, close, volume] by open ms in [start, end), cached per (venue, sym, tf, start, end)."""
+async def bars(rt: Any, cache: Path, venue: str, sym: str, tf: str, start: int, end: int, fetch: bool) -> dict[int, list[float | None]]:
+    """Bars [open, high, low, close, volume] by open ms in [start, end), cached per (venue, sym, tf, start, end).
+    An unknown volume stays None (only an explicit 0 is a zero-volume bar for R1)."""
     p = cache / f"{venue}_{sym.split('/')[0]}_{tf}_{start}_{end}.json"
     if p.exists():
         return {int(k): v for k, v in json.loads(p.read_text()).items()}
     if not fetch or rt is None:
         return {}
-    out: dict[int, list[float]] = {}
+    out: dict[int, list[float | None]] = {}
     cur = start
     while cur < end:
         until = min(cur + PAGE * TF_MS[tf] - 1, end - 1)
         rows = (await rt.exchanges.ohlcv(venue, sym, tf, PAGE, cur, until)).data or []
         for r in rows:
             if start <= int(r[0]) < end and r[4] is not None:
-                out[int(r[0])] = [float(x) if x is not None else 0.0 for x in r[1:6]]
+                vol = r[5] if len(r) > 5 else None
+                ohlc: list[float | None] = [float(x) if x is not None else 0.0 for x in r[1:5]]
+                out[int(r[0])] = [*ohlc, float(vol) if vol is not None else None]
         cur = until + 1
         await asyncio.sleep(0.2)
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -153,8 +160,8 @@ def show(res: dict[str, Any]) -> None:
         print("  cycle        price_a(Bin)  close_a    vol_a        price_b(Byb)  close_b    vol_b        gap      gap_indep")
         for c in e["checks"]:
             print(
-                f"  {_t(c['cycle_ts'])}  {c['price_a']!s:>12}  {c['close_a']!s:>9}  {c['vol_a'] or 0:>11.0f}  "
-                f"{c['price_b']!s:>12}  {c['close_b']!s:>9}  {c['vol_b'] or 0:>11.0f}  {_pc(c['gap'])}  {_pc(c['gap_indep'])}"
+                f"  {_t(c['cycle_ts'])}  {c['price_a']!s:>12}  {c['close_a']!s:>9}  {_vol(c['vol_a']):>11}  "
+                f"{c['price_b']!s:>12}  {c['close_b']!s:>9}  {_vol(c['vol_b']):>11}  {_pc(c['gap'])}  {_pc(c['gap_indep'])}"
             )
         m = e["minute"]
         print(

@@ -75,6 +75,30 @@ def test_units_and_no_data() -> None:
     assert g.classify([], {})["verdict"] == "◯"
 
 
+def test_missing_bar_makes_r2_unknown() -> None:
+    pairs = [(0.99, 1.0), (1.98, 2.0), (2.97, 3.0)]
+    ba, bb = _indep(pairs)
+    full = g.classify(g.row_checks(_rows(pairs), ba, bb), {"median": -0.01})
+    assert (full["verdict"], full["no_bar"], full["r2_unknown"]) == ("✗", {"a": 0, "b": 0}, False)
+    # the bar behind the third row is missing on leg a: a foreign bar could hide there, so no market verdict
+    del ba[g.cycle_bar_open(C0 + 16 * H)]
+    v = g.classify(g.row_checks(_rows(pairs), ba, bb), {"median": -0.01})
+    assert (v["verdict"], v["no_bar"], v["r2_unknown"], v["flags"]) == ("◯", {"a": 1, "b": 0}, True, [])
+    assert v["cls"].startswith("R2 unknown")
+    # a zero close is no usable bar either
+    bb[g.cycle_bar_open(C0)] = [1.0, 1.0, 1.0, 0.0, 10.0]
+    assert g.classify(g.row_checks(_rows(pairs), ba, bb), {})["no_bar"] == {"a": 1, "b": 1}
+
+
+def test_missing_bar_marks_a_defect_verdict() -> None:
+    engine = [(1.0, 1.0), (1.0, 1.1), (1.0, 1.2)]
+    ba, bb = _indep([(1.0, 1.0), (1.1, 1.1), (1.2, 1.2)])
+    del bb[g.cycle_bar_open(C0 + 16 * H)]
+    v = g.classify(g.row_checks(_rows(engine), ba, bb), {"median": 0.0})
+    assert v["verdict"] == "✓" and "R1 frozen a" in v["flags"] and v["r2_unknown"]
+    assert v["cls"].startswith("engine; R2 unknown on 0/1 rows")
+
+
 def test_minute_gap_closing_minutes_and_window() -> None:
     a = {k * 60_000: 1.0 for k in range(240)} | {4 * H - 60_000: 1.02}
     b = {k * 60_000: 1.0 for k in range(240)}

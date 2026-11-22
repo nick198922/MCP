@@ -9,6 +9,9 @@ IDEA-20261102-standing-improvements, «Попередня реєстрація �
 - R2 foreign bar: a row's leg price differs from the venue's own bar closing at the cycle by > ``BAR_TOL`` (relative);
 - R4 units: the two prices differ by more than ``RATIO_MAX`` times;
 - market subclass by 1m closes over the holding: |median a/b - 1| > ``GAP`` = persistent, else close noise.
+
+A row with a leg price but no venue 4h bar (or a zero close) behind it cannot be checked for R2; such rows are counted
+(``no_bar``) and, when no defect flag is found, the verdict is ◯ «R2 unknown» instead of a market class (item 383b).
 """
 
 from __future__ import annotations
@@ -94,11 +97,20 @@ def minute_gap(m1_a: Mapping[int, float], m1_b: Mapping[int, float], start_ms: i
     }
 
 
+def no_bar_rows(checks: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    """Rows per leg with an engine price but no usable venue 4h bar (missing or zero close): R2 is unknown there."""
+    return {leg: sum(1 for c in checks if c[f"price_{leg}"] and not c[f"close_{leg}"]) for leg in ("a", "b")}
+
+
 def classify(checks: Sequence[Mapping[str, Any]], minute: Mapping[str, Any]) -> dict[str, Any]:
     """Registered verdict of one entry on «engine defect?»: ✓ defect explains the failure, ≈ defect that does not,
-    ✗ market («persistent» / «close noise»), ◯ no rows or no independent bars."""
+    ✗ market («persistent» / «close noise»), ◯ no rows or no independent bars, or no flag but some rows without a
+    4h bar («R2 unknown»: a foreign bar could hide there). ``no_bar`` counts such rows per leg and ``r2_unknown`` is
+    True when any exist; a ✓ / ≈ verdict then keeps its class with an «R2 unknown on N rows» suffix."""
+    no_bar = no_bar_rows(checks)
+    r2_unknown = any(no_bar.values())
     if not checks or not any(c["gap_indep"] is not None for c in checks):
-        return {"verdict": "◯", "cls": "no data", "flags": []}
+        return {"verdict": "◯", "cls": "no data", "flags": [], "no_bar": no_bar, "r2_unknown": r2_unknown}
     flags = []
     for leg in ("a", "b"):
         other = "b" if leg == "a" else "a"
@@ -113,10 +125,18 @@ def classify(checks: Sequence[Mapping[str, Any]], minute: Mapping[str, Any]) -> 
         flags.append("R4 units")
     eng = median_gap([c["gap"] for c in checks])
     ind = median_gap([c["gap_indep"] for c in checks])
-    out: dict[str, Any] = {"flags": flags, "median_engine": eng, "median_indep": ind, "minute_median": minute.get("median")}
+    out: dict[str, Any] = {
+        "flags": flags, "median_engine": eng, "median_indep": ind, "minute_median": minute.get("median"),
+        "no_bar": no_bar, "r2_unknown": r2_unknown,
+    }  # fmt: skip
     if flags:
         ok = ind is not None and abs(ind) <= GAP
-        return out | {"verdict": "✓" if ok else "≈", "cls": "engine" if ok else "engine, does not explain"}
+        cls = "engine" if ok else "engine, does not explain"
+        if r2_unknown:
+            cls += f"; R2 unknown on {no_bar['a']}/{no_bar['b']} rows (a/b) without a 4h bar"
+        return out | {"verdict": "✓" if ok else "≈", "cls": cls}
+    if r2_unknown:
+        return out | {"verdict": "◯", "cls": f"R2 unknown: {no_bar['a']}/{no_bar['b']} rows (a/b) without a 4h bar"}
     mm = minute.get("median")
     if mm is None:
         return out | {"verdict": "✗", "cls": "market (1m unknown)"}

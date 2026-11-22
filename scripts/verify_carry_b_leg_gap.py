@@ -168,7 +168,11 @@ def show(res: dict[str, Any]) -> None:
                 f"book skew {s['book_skew_s']} s, latency {s['latency_s']} s, spread bps {s['spread_bps']}, "
                 f"model/mid-1 {[_pc(x) for x in s['model_vs_mid']]}, sides {s['sides']}"
             )
+        nb = e.get("no_bar") or {}
+        print(f"  rows without a 4h bar: a {nb.get('a', 0)}, b {nb.get('b', 0)}" + (" (R2 unknown there)" if e.get("r2_unknown") else ""))
         print(f"  flags {e['flags']} -> {e['verdict']} {e['cls']}")
+    n_unk = sum(1 for e in res["entries"] if e.get("r2_unknown"))
+    print(f"entries with rows without a 4h bar (R2 unknown): {n_unk} of {len(res['entries'])}")
 
 
 def main() -> None:
